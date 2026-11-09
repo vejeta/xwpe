@@ -8,13 +8,8 @@
 # line.  "keep" is a permanent exception and stays in --strict mode too.
 # Each pass deletes the lines it clears; the last pass deletes the file.
 
-# the assistant's waits for a model's reply
-we_ai_http.o poll 1 P9l
-we_ai.o poll 3 P9l
-we_ai.o usleep 1 P9l the mock backend's delay, to become a loop timer
-we_ai.o STDIN_FILENO 2 P9l watches fd 0 for Esc during the modal wait
-we_ai_ui.o STDIN_FILENO 1 P9l the model listing watches fd 0 for Esc
-we_ai_ui.o e_u_kbhit 1 P9l the model listing reads Esc through the display table
+# the assistant's tool commands: their output is captured with a wait
+we_ai.o poll 1 P9s the capture of a tool command's output
 
 # the debugger
 we_debug.o usleep 1 P9o the external xterm settle
@@ -53,7 +48,7 @@ we_prog.o popen 1 P9n
 we_prog.o pclose 1 P9n
 we_debug.o popen 1 P9n
 we_debug.o pclose 1 P9n
-we_ai.o fork 3 P9s one is the mock delay (P9l)
+we_ai.o fork 2 P9s
 we_ai.o kill 2 P9s
 we_ai.o waitpid 2 P9s
 we_ai.o setsid 1 P9s
@@ -70,7 +65,7 @@ we_fl_unix.o system 2 P9n
 
 # writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
 we_ai_host.o write 4 P9s the hosted engine's turn, permission answers and interrupt
-we_ai.o write 3 P9s the prompt to the command-line backend moves; the forked child's reply and the temporary file stay
-we_ai_http.o write 1 P9l a server's socket, not a child: its own POLLOUT wait moves under wpe_fd_wait_for
+we_ai.o write 2 P9s the prompt to the command-line backend moves; the test backend's temporary file stays
+we_ai_http.o write 1 keep a server's socket, not a child: written from the loop's wake-ups, a TLS write retried with the same buffer
 we_wayland.o write 1 P9o the clipboard pipe
 we_ai.o fdopen 1 keep the API key file, not a child

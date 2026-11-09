@@ -852,3 +852,420 @@ def test_build_and_fix_with_no_build_command_runs_nothing(tmp_path):
         "the pane does not say which file types have a check:\n" + disp
     assert "fix-build cmd=" not in log, "a build command was run:\n" + log
     assert "DONE nothing" not in disp, "the agent ran without a build command:\n" + disp
+
+
+# ------------------------------------------- waits on the model's server --
+
+# How long the stand-in takes to list its models: long enough to type during
+# it, and always inside the listing's own deadline, whatever the wait scale.
+MODELS_DELAY_S = min(3 * WAIT_SCALE, LISTING_DEADLINE_S - 1.5)
+ESC = "\033"
+DOWN = "\033[B"
+
+
+class SlowModelsServer:
+    """Ollama or OpenAI-compatible on 127.0.0.1: the model listing answers
+    after MODELS_DELAY_S with the given names; a chat request is recorded
+    and answered at once with `reply` (Ollama NDJSON)."""
+
+    def __init__(self, names, reply="REPLY"):
+        self.chats = []
+        chats = self.chats
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                time.sleep(MODELS_DELAY_S)
+                if self.path.endswith("/models"):
+                    body = {"object": "list", "data": [{"id": n} for n in names]}
+                else:
+                    body = {"models": [{"name": n} for n in names]}
+                b = json.dumps(body).encode()
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(b)))
+                    self.end_headers()
+                    self.wfile.write(b)
+                except OSError:
+                    pass                    # the editor gave the listing up: expected
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0))
+                chats.append(self.rfile.read(n).decode("utf-8", "replace"))
+                b = (json.dumps({"message": {"role": "assistant", "content": reply},
+                                 "done": False}) + "\n" +
+                     json.dumps({"done": True}) + "\n").encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+
+        class Threaded(HTTPServer):
+            daemon_threads = True
+
+            def process_request(self, request, client_address):
+                threading.Thread(target=self.process_request_thread,
+                                 args=(request, client_address), daemon=True).start()
+
+            def process_request_thread(self, request, client_address):
+                try:
+                    self.finish_request(request, client_address)
+                finally:
+                    self.shutdown_request(request)
+
+        self.srv = Threaded(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    @property
+    def url(self):
+        return "http://127.0.0.1:%d" % self.port
+
+    def stop(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def ollama_no_model_env(url, **extra):
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "ollama",
+           "XWPE_AI_ENDPOINT": url, "XWPE_AI_MODEL": "", "XWPE_AI_POLICY": "ask"}
+    env.update(extra)
+    return env
+
+
+def ask_for(s, letter, goal):
+    s.key(ALT.AI, delay=0.5); s.key(letter, delay=0.8)
+    s.key(goal, delay=0.3); s.key("\r", delay=0.3)
+
+
+def seconds_until_on_screen(s, needle, limit):
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        s._drain(0.1)
+        if needle in "\n".join(s.display(drain=0)):
+            return time.time() - t0
+    return limit
+
+
+def first_menu_after(s, keys, needle, limit=MODELS_DELAY_S + 3):
+    """Type keys; the seconds until needle (a menu row) is on the screen."""
+    s._drain(0.1)
+    os.write(s.master_fd, keys.encode())
+    return seconds_until_on_screen(s, needle, limit)
+
+
+# The model listing before a task: Edit, Multi-file edit and Agent each wait
+# for it the same way.
+TASK_LETTERS = [("edit", "e"), ("plan", "f"), ("agent", "g")]
+
+
+# @scenario SC-ai-runtime-19
+@pytest.mark.parametrize("mode,letter", TASK_LETTERS, ids=[m for m, _ in TASK_LETTERS])
+def test_model_listing_before_a_task_takes_esc_and_sends_nothing(tmp_path, mode, letter):
+    srv = SlowModelsServer(["m1"])
+    try:
+        with WpeSession(str(tmp_path), SEED, env_extra=ollama_no_model_env(srv.url)) as s:
+            ask_for(s, letter, "do it")
+            waiting = screen(s, 0.3)
+            t0 = time.time()
+            os.write(s.master_fd, ESC.encode())
+            esc_s = seconds_until_on_screen(s, "[AI] cancelled", MODELS_DELAY_S + 3)
+            s._drain(max(0.0, MODELS_DELAY_S + 1.0 - (time.time() - t0)))
+            after = screen(s)
+    finally:
+        srv.stop()
+    assert esc_s < FROZEN_LIMIT_S, \
+        "Esc took %.1fs to cancel the model listing (the editor waited for it)" % esc_s
+    assert not srv.chats, "the %s request went out after Esc:\n%r" % (mode, srv.chats)
+    assert "[AI] cancelled" in after, "the cancel was not said:\n" + after
+    assert "choosing a model from 127.0.0.1:%d" % srv.port in waiting, \
+        "no waiting line while the model listing runs:\n" + waiting
+
+
+# @scenario SC-ai-runtime-19
+def test_model_listing_before_an_edit_takes_keys_and_the_edit_then_runs(tmp_path):
+    new = "int main(void){return 7;}"
+    srv = SlowModelsServer(["m1"], reply=new)
+    try:
+        with WpeSession(str(tmp_path), SEED, env_extra=ollama_no_model_env(srv.url)) as s:
+            ask_for(s, "e", "return 7")
+            menu_s = first_menu_after(s, ALT.AI, "Ask (chat)")
+            s.key(ESC, delay=0.5)                      # closes the menu, not the task
+            shown = wait_screen(s, "Proposed change", MODELS_DELAY_S + 8)
+            s.key("a", delay=1.0)
+            s.save()
+            text = s.text()
+    finally:
+        srv.stop()
+    assert menu_s < FROZEN_LIMIT_S, \
+        "Alt-G took %.1fs to open while the models were listed" % menu_s
+    assert srv.chats and '"model":"m1"' in srv.chats[0].replace(" ", ""), \
+        "the Edit did not go out with the model the listing chose: %r" % srv.chats
+    assert shown, "the Edit's review did not open once the model was chosen"
+    assert text.startswith(new), "the reply was not applied:\n" + repr(text)
+
+
+# @scenario SC-ai-runtime-19
+def test_text_typed_while_the_model_is_chosen_lands_in_the_file(tmp_path):
+    srv = SlowModelsServer(["m1"])
+    try:
+        with WpeSession(str(tmp_path), SEED, env_extra=ollama_no_model_env(srv.url)) as s:
+            ask_for(s, "e", "do it")
+            waiting = screen(s, 0.3)
+            s.key("TYPED", delay=0.5)
+            os.write(s.master_fd, ESC.encode())
+            seconds_until_on_screen(s, "[AI] cancelled", MODELS_DELAY_S + 3)
+            s.key("MORE", delay=0.5)                   # after Esc the file still has the keys
+            s.save()
+            text = s.text()
+    finally:
+        srv.stop()
+    assert "choosing a model from" in waiting, "the check did not wait:\n" + waiting
+    assert "TYPED" in text and "MORE" in text, \
+        "keys typed while the model was chosen did not reach the file:\n" + repr(text)
+    assert not srv.chats, "a request went out: %r" % srv.chats
+
+
+# @scenario SC-ai-runtime-20
+def test_a_down_typed_while_the_models_list_moves_the_picker_when_they_come(tmp_path):
+    srv = SlowModelsServer(["m1", "m2", "m3"])
+    try:
+        env = options_ai_env(tmp_path, srv.url + "/v1")
+        with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+            open_ai_options(s)
+            s.key("\033m", delay=0.5)
+            os.write(s.master_fd, DOWN.encode())
+            listed = wait_screen(s, "Model (3) at", MODELS_DELAY_S + 5)
+            s.key("\r", delay=1.0)
+            dialog = screen(s)
+    finally:
+        srv.stop()
+    assert listed, "the picker never showed the list:\n" + dialog
+    assert "listing cancelled" not in dialog, "the typed key cancelled the listing:\n" + dialog
+    assert re.search(r"\bm2\b", dialog), \
+        "the Down typed while the list loaded was lost (m2 not chosen):\n" + dialog
+
+
+def editor_children(pid):
+    """The pids whose parent is the editor (its own threads' children lists)."""
+    kids = set()
+    for tid in os.listdir("/proc/%d/task" % pid):
+        try:
+            with open("/proc/%d/task/%s/children" % (pid, tid)) as fh:
+                kids.update(int(k) for k in fh.read().split())
+        except OSError:
+            pass
+    return kids
+
+
+# @scenario SC-ai-runtime-21
+def test_a_late_test_reply_starts_no_process(tmp_path):
+    trace = tmp_path / "ai.trace"
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+           "XWPE_AI_MOCK_REPLY": "other text", "XWPE_AI_TRACE": str(trace),
+           "XWPE_AI_MOCK_DELAY_MS": str(int(5000 * WAIT_SCALE))}
+    with WpeSession(str(tmp_path), "plain text\n", filename="notes.txt", env_extra=env) as s:
+        before = editor_children(s.proc.pid)
+        ask_for(s, "e", "change it")
+        started = wait_trace(trace, "edit stream fd=", 5)
+        during = editor_children(s.proc.pid)
+        reply = wait_screen(s, "Proposed change", 10)
+        s.key(ESC, delay=0.5)
+    assert started, "the Edit did not start"
+    assert during == before, \
+        "the late test reply started a process: %r" % sorted(during - before)
+    assert reply, "the late reply never came"
+
+
+PAGE_DELAY_S = 3 * WAIT_SCALE     # how long the stand-in takes to serve a web page
+PAGE_WORDS = "SLOWPAGEWORDS"
+
+
+class AgentWithSlowPageServer:
+    """OpenAI-compatible on 127.0.0.1: the agent's first turn asks for a web
+    page served by the same server after PAGE_DELAY_S, the second ends the
+    run; every chat request body is recorded."""
+
+    def __init__(self):
+        self.chats = []
+        chats, port = self.chats, {}
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                time.sleep(PAGE_DELAY_S)
+                b = ("<html><body>%s</body></html>" % PAGE_WORDS).encode()
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(b)))
+                    self.end_headers()
+                    self.wfile.write(b)
+                except OSError:
+                    pass
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0))
+                chats.append(self.rfile.read(n).decode("utf-8", "replace"))
+                if len(chats) == 1:
+                    content = "TOOL web_fetch http://127.0.0.1:%d/page" % port["n"]
+                else:
+                    content = "DONE read it"
+                b = (('data: {"choices":[{"delta":{"content":%s}}]}\n\n'
+                      % json.dumps(content)).encode() + b'data: [DONE]\n\n')
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b)
+
+        class Threaded(HTTPServer):
+            def process_request(self, request, client_address):
+                threading.Thread(target=self._one, args=(request, client_address),
+                                 daemon=True).start()
+
+            def _one(self, request, client_address):
+                try:
+                    self.finish_request(request, client_address)
+                finally:
+                    self.shutdown_request(request)
+
+        self.srv = Threaded(("127.0.0.1", 0), H)
+        self.port = port["n"] = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def stop(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+# @scenario SC-ai-runtime-23
+def test_an_agent_web_page_is_read_while_the_editor_takes_keys(tmp_path):
+    srv = AgentWithSlowPageServer()
+    try:
+        env = openai_env("http://127.0.0.1:%d/v1" % srv.port,
+                         XWPE_AI_POLICY="auto", XWPE_AI_WEB="1")
+        with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+            ask_for(s, "g", "read the page")
+            running = seconds_until_on_screen(s, "running web_fetch", 6)
+            menu_s = first_menu_after(s, ALT.AI, "Ask (chat)")
+            s.key(ESC, delay=0.5)                      # closes the menu, not the run
+            end = time.time() + PAGE_DELAY_S + 8
+            while time.time() < end and len(srv.chats) < 2:
+                s._drain(0.3)
+    finally:
+        srv.stop()
+    assert running < 6, "the agent never asked for the page"
+    assert menu_s < FROZEN_LIMIT_S, \
+        "Alt-G took %.1fs to open while the agent read a web page" % menu_s
+    assert len(srv.chats) >= 2 and PAGE_WORDS in srv.chats[1], \
+        "the page did not reach the model's next turn: %r" % srv.chats[1:]
+
+
+STALE_ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
+STALE_REGION = "int b = 22;\nint c = 33;\n"
+STALE_WANT = "\nint a = 1;\nint b = 22;\nint c = 33;\nint d = 4;\nint e = 5;\n"
+
+
+# @scenario SC-ai-runtime-22
+def test_an_edit_reply_is_not_spliced_after_edit_undo_moved_its_lines(tmp_path):
+    trace = tmp_path / "ai.trace"
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+           "XWPE_AI_MOCK_REPLY": STALE_REGION, "XWPE_AI_TRACE": str(trace),
+           "XWPE_AI_MOCK_DELAY_MS": str(int(6000 * WAIT_SCALE))}
+    with WpeSession(str(tmp_path), STALE_ORIG, env_extra=env) as s:
+        s.key("\r", delay=0.4)                         # a blank first line: one undo step
+        s.key(DOWN)                                    # line 3, "int b = 2;"
+        s.key(ALT.BLOCK, "b", delay=0.4)
+        s.key(DOWN); s.key(DOWN)
+        s.key(ALT.BLOCK, "e", delay=0.4)               # lines 3-4 marked
+        ask_for(s, "e", "double them")
+        started = wait_trace(trace, "sel=2..3", 6)
+        s.menu(ALT.EDIT, "u")                          # Edit > Undo while the reply is out
+        s._drain(0.6)
+        shown = wait_screen(s, "Proposed change", 12)
+        s.key("a", delay=1.0)
+        s.save()
+        text = s.text()
+    assert started, "the block Edit did not start:\n" + (trace.read_text() if trace.exists() else "")
+    assert shown, "the review did not open"
+    assert text == STALE_WANT, \
+        "the reply was spliced at lines that had moved:\n" + repr(text)
+
+
+SLOW_CHAT_S = 5 * WAIT_SCALE      # how long the stand-in takes to answer a request
+SLOW_CHAT_REPLY = "int main(void){return 9;}"
+
+
+class SlowChatServer:
+    """Ollama on 127.0.0.1 with a model: every chat request is answered after
+    SLOW_CHAT_S with SLOW_CHAT_REPLY."""
+
+    def __init__(self):
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                time.sleep(SLOW_CHAT_S)
+                b = (json.dumps({"message": {"role": "assistant", "content": SLOW_CHAT_REPLY},
+                                 "done": False}) + "\n" +
+                     json.dumps({"done": True}) + "\n").encode()
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(b)))
+                    self.end_headers()
+                    self.wfile.write(b)
+                except OSError:
+                    pass                    # the editor gave the request up: expected
+
+        class Threaded(HTTPServer):
+            def process_request(self, request, client_address):
+                threading.Thread(target=self._one, args=(request, client_address),
+                                 daemon=True).start()
+
+            def _one(self, request, client_address):
+                try:
+                    self.finish_request(request, client_address)
+                finally:
+                    self.shutdown_request(request)
+
+        self.srv = Threaded(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def stop(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+# @scenario SC-ai-runtime-24
+def test_opening_the_chat_keeps_the_running_task_cancellable(tmp_path):
+    srv = SlowChatServer()
+    trace = tmp_path / "ai.trace"
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "ollama",
+           "XWPE_AI_ENDPOINT": "http://127.0.0.1:%d" % srv.port,
+           "XWPE_AI_MODEL": "m1", "XWPE_AI_POLICY": "ask",
+           "XWPE_AI_TRACE": str(trace)}
+    try:
+        with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
+            ask_for(s, "e", "return 9")
+            started = wait_trace(trace, "edit stream fd=", 5)
+            s.key(ALT.AI, delay=0.5); s.key("a", delay=1.5)   # the chat opens
+            s.key(ESC, delay=0.8); s.key(ESC, delay=0.8)
+            after_esc = screen(s)
+            offered = wait_screen(s, "Proposed change", SLOW_CHAT_S + 3)
+    finally:
+        srv.stop()
+    assert started, "the Edit did not start"
+    assert "[AI] cancelled" in after_esc, \
+        "Esc no longer cancels the running Edit once the chat opened:\n" + after_esc
+    assert not offered, "the cancelled Edit's reply was still offered"

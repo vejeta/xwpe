@@ -233,6 +233,24 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The editor keeps working while the assistant's server answers.  With
+  AIModel empty, an Edit, a Multi-file edit, an Agent run, a completion or
+  the chat first asks the server for its models: the pane now says
+  "[AI] choosing a model from host:port", the editor takes keys, Esc
+  cancels it and nothing is sent; the action used to freeze the editor
+  for up to 5 seconds and went out even after Esc.  The agent's and the
+  chat's web pages (web_fetch, web_search) are read the same way instead
+  of freezing the editor for up to 20 seconds.  The check that the server
+  is there before a request no longer holds the editor (up to 3 seconds
+  for a remote server that drops the connect; the pane says "[AI]
+  reaching host:port"), and a server that stops reading a request no
+  longer freezes it.  In Options >
+  AI > Model the picker opens at once and fills in when the list comes; a
+  Down typed meanwhile moves the selection instead of being thrown away.
+  Edit > Undo from the menu is refused while an Edit's reply is out, as
+  Ctrl-U already was, and a reply that finds the file changed anyway is
+  dropped rather than written over lines that moved.
+
 * gdb can be driven over its machine interface (MI): set
   XWPE_GDB_INTERFACE=mi.  The default stays gdb's line interface; any value
   other than "mi" or "cli" keeps it and the status row says so.  Under MI

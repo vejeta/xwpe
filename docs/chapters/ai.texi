@@ -187,23 +187,34 @@ A deterministic in-process backend used by the test suite; no network.
 
 @cindex AI, deadline
 @cindex AI, waiting for a server
-Before a request the editor checks that something listens at the endpoint: a
-TCP connect bounded at 3 seconds, the one wait it still sits through (a server
-that drops the connection attempt holds it that long; one that refuses answers
-at once).  From there on the editor never waits inside a connection.  A chat,
-an Edit, a completion or
-an agent turn opens its connection on the editor's own loop: the connect, the
-TLS handshake and the wait for the first byte of the answer share one deadline,
-120 seconds by default (@env{XWPE_AI_TIMEOUT} sets it for a session), long
-enough for a local model that loads before it answers.  Meanwhile the pane
-shows its waiting line, the editor takes keys and @key{Esc} cancels.  A server
+The editor never waits for a server: everything the assistant asks of one
+runs on the editor's own loop, so the editor takes keys and @key{Esc} cancels
+whatever is waiting.  Before a request the editor checks that something
+listens at the endpoint (the pane says @samp{[AI] reaching
+@var{host}:@var{port}} while it does): a server that refuses the connection,
+or does not take it within 3 seconds, is named with what to do, and nothing
+is sent.  A chat, an Edit, a completion
+or an agent turn opens its connection on that loop: the connect has 3
+seconds, then the TLS handshake, the sending of the request and the wait for
+the first byte of the answer share one deadline, 600 seconds by default
+(@code{AIAnswerTimeout}, or @env{XWPE_AI_TIMEOUT} for a session), long enough
+for a local model that loads before it answers; a server that stops reading
+the request for 10 seconds ends it with @samp{@var{host}:@var{port} stopped
+reading the request}.  Meanwhile the pane shows its waiting line.  A server
 that lets the deadline pass ends the request with @samp{no answer from
-@var{host}:@var{port} within @var{N} s}.  The model list (@key{Alt-M}) has its
-own deadline of 5 seconds; while it waits, a box over the dialog says
-@samp{listing models from @var{host}:@var{port} @dots{} (Esc cancels)}, and
-@key{Esc} abandons it with @samp{listing cancelled}.  The host name itself is
-looked up before the deadline starts: a numeric address or @code{localhost}
-resolves at once, and any other name is bounded by the system resolver.
+@var{host}:@var{port} within @var{N} s}.  With @code{AIModel} empty the
+server's model list is asked for first: the pane says @samp{[AI] choosing a
+model from @var{host}:@var{port}}, @key{Esc} cancels it and nothing is sent,
+and the action starts by itself once a model is chosen.  The model list of
+the dialog (@key{Alt-M}) has its own deadline of 5 seconds; the picker opens
+at once and says @samp{listing models from @var{host}:@var{port} @dots{} (Esc
+cancels)} until the list fills it.  Up, Down, PgUp and PgDn typed meanwhile
+move the selection once the list is there, and @key{Esc} abandons it with
+@samp{listing cancelled}.  A web page the agent or the chat reads
+(@code{web_fetch}, @code{web_search}) is read the same way, with the editor
+taking keys, and @key{Esc} ends the task.  The host name itself is looked up
+before the deadline starts: a numeric address or @code{localhost} resolves at
+once, and any other name is bounded by the system resolver.
 
 @cindex AI, error lines
 Every failure names where it happened and why:
@@ -419,7 +430,10 @@ window that is waiting is locked, and its status row says
 @samp{The assistant is working on this window (Esc cancels)}.  The reason is
 that the reply is written back over the lines that were sent, so a keystroke
 accepted meanwhile would come back to you as a change to revert, or would move
-the lines the reply belongs to.  Asking for a second action while one runs is
+the lines the reply belongs to; @samp{Edit}, @samp{Undo} from the menu is
+refused the same way.  A reply that finds the text changed anyway is dropped,
+and the pane says @samp{[AI edit] dropped: the file changed while the model
+answered}.  Asking for a second action while one runs is
 not refused either: it is @dfn{queued}, the pane says which action is waiting,
 and it starts by itself when the running one ends, on its own window.
 

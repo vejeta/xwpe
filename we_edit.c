@@ -2953,6 +2953,26 @@ int e_make_redo(FENSTER *f)
  return(e_make_rudo(f, 1));
 }
 
+#ifdef WPE_AI
+/**
+ * e_undo_waits_for_the_assistant - Must Undo or Redo leave this window alone?
+ * @f: the window Undo would change.
+ *
+ * An Edit or a Complete splices its reply over the lines it sent, so while
+ * one waits the window's text must stay as sent; Ctrl-U already asks, and
+ * Edit > Undo and Redo from the menu ask here, so the status row says why
+ * and Esc frees the window.
+ * Return: 1 when the window is locked for a pending reply.
+ */
+static int e_undo_waits_for_the_assistant(FENSTER *f)
+{
+ if (!wpe_ai_window_locked(f))
+  return(0);
+ wpe_ai_report_window_locked(f);
+ return(1);
+}
+#endif
+
 int e_make_rudo(FENSTER *f, int sw)
 {
  BUFFER *b;
@@ -2964,6 +2984,10 @@ int e_make_rudo(FENSTER *f, int sw)
  if (i <= 0) return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
+#ifdef WPE_AI
+ if (e_undo_waits_for_the_assistant(f))
+  return(0);
+#endif
  b = f->b;  s = f->s;
  if (!sw) ud = b->ud;
  else ud = b->rd;

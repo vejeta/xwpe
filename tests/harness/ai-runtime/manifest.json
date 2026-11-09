@@ -45,6 +45,14 @@
   {"id": "SC-ai-runtime-17", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_diagnostics.py::test_chat_prompt_includes_diagnostics", "status": "covered", "needs": ["clangd"]},
   {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_build_and_fix_checks_a_lone_c_file_with_the_compiler", "status": "covered"},
   {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_fix_build.py::test_fix_build_loop", "status": "covered"},
-  {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_build_and_fix_with_no_build_command_runs_nothing", "status": "new"}
+  {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_build_and_fix_with_no_build_command_runs_nothing", "status": "new"},
+  {"id": "SC-ai-runtime-19", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_model_listing_before_a_task_takes_esc_and_sends_nothing", "status": "new"},
+  {"id": "SC-ai-runtime-19", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_model_listing_before_an_edit_takes_keys_and_the_edit_then_runs", "status": "new"},
+  {"id": "SC-ai-runtime-19", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_text_typed_while_the_model_is_chosen_lands_in_the_file", "status": "new"},
+  {"id": "SC-ai-runtime-20", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_a_down_typed_while_the_models_list_moves_the_picker_when_they_come", "status": "new"},
+  {"id": "SC-ai-runtime-21", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_a_late_test_reply_starts_no_process", "status": "new"},
+  {"id": "SC-ai-runtime-22", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_an_edit_reply_is_not_spliced_after_edit_undo_moved_its_lines", "status": "new"},
+  {"id": "SC-ai-runtime-23", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_an_agent_web_page_is_read_while_the_editor_takes_keys", "status": "new"},
+  {"id": "SC-ai-runtime-24", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_opening_the_chat_keeps_the_running_task_cancellable", "status": "new"}
  ]
 }

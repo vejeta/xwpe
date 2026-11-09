@@ -343,13 +343,18 @@ The model list is queried live where possible (Ollama `/api/tags`, OpenAI
 `/v1/models`) and shown in the picker; the Claude CLI offers its aliases
 (default/sonnet/opus/haiku).
 
-**Waiting for a server.** Before a request the editor checks that something
-listens at the endpoint: a TCP connect bounded at 3 s, the one wait it still
-sits through (a server that drops the connection attempt holds it that long;
-one that refuses answers at once). From there on it never waits inside a
-connection. A chat, Edit, completion or agent turn opens its connection on the editor's
-loop: the connect, the TLS handshake and the first byte of the answer share
-one deadline, 600 s by default (`AIAnswerTimeout` in `xwperc`, or
+**Waiting for a server.** The editor never waits for a server: everything the
+assistant asks of one runs on the editor's loop, so the editor takes keys and
+Esc cancels. Before a request the editor checks that something listens at the
+endpoint (the pane says `[AI] reaching host:port` while it does): a server that
+refuses the connection, or does not take it within 3 s, is named with what to
+do and nothing is sent. With `AIModel` empty the server's model
+list is asked for first: the pane says `[AI] choosing a model from host:port`,
+Esc cancels it and nothing is sent, and the action starts once a model is
+chosen. A web page the agent or the chat reads is read the same way. A chat,
+Edit, completion or agent turn opens its connection on the editor's
+loop: the connect has 3 s; the TLS handshake, the request and the first byte of
+the answer share one deadline, 600 s by default (`AIAnswerTimeout` in `xwperc`, or
 `XWPE_AI_TIMEOUT` for one session). Only that first byte is bounded: once the
 answer streams there is no deadline at all, so a slow model may take its time
 between tokens and Esc is the user's say. The default is sized for a local
@@ -358,9 +363,10 @@ anything. Meanwhile the waiting line shows with the seconds elapsed, the editor
 takes keys and Esc cancels. A server that lets the deadline pass ends the
 request with `no answer from host:port within N s (AIAnswerTimeout)`, naming the
 key that sets the wait. The model
-list (Alt-M) has its own 5 s deadline; a box over the dialog says
-`listing models from host:port ... (Esc cancels)`, and Esc abandons it with
-`listing cancelled`. Host names are looked up before the deadline starts: a
+list (Alt-M) has its own 5 s deadline; the picker opens at once and says
+`listing models from host:port ... (Esc cancels)` until the list fills it,
+Up/Down/PgUp/PgDn typed meanwhile move the selection once it is there, and
+Esc abandons it with `listing cancelled`. Host names are looked up before the deadline starts: a
 numeric address or `localhost` resolves at once, other names are bounded by
 the system resolver.
 

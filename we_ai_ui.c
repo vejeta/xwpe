@@ -463,6 +463,10 @@ static char *ai_chat_tool_result(ai_chat_session *s, const char *reply);
 static char *ai_chat_run_web_tool(ai_chat_session *s, const char *tool, const char *arg);
 static char *ai_chat_refuse_tool(FENSTER *f, const char *tool, const char *lead,
                                  const char *why);
+/* A web tool's page is read on the loop; the tool step then answers this. */
+static int   ai_tool_waits(const char *result);
+static void  ai_chat_stream_put_down(ai_chat_session *s);
+static void  ai_chat_go_on_with_tool_result(ai_chat_session *s, char *tr);
 static void ai_chat_show_sources(ai_chat_session *s);
 static FENSTER *ai_pane_win(FENSTER *f);
 static void  ai_tr_line(FENSTER *wf, const char *str, int role);
@@ -485,6 +489,29 @@ static void ai_chat_wait_begin(ai_chat_session *s);
 static void ai_chat_wait_end(ai_chat_session *s);
 static void ai_enqueue(FENSTER *f, void (*launch)(FENSTER *, const char *),
                        const char *goal);
+
+/* How a task is started: the window it belongs to and the user's goal.  The
+ * queue, and a task that had to wait for its check, start it again this way. */
+typedef void (*ai_launch_fn)(FENSTER *f, const char *goal);
+
+/* How a task words what stops it before it starts. */
+typedef struct {
+ const char *unavailable;   /* before "the server is not there"   */
+ const char *lead;          /* before "no model"                  */
+ const char *none;          /* "no model" when nothing says why   */
+} ai_ready_words;
+
+static const ai_ready_words ai_ready_words_task = { "", "", "no model set" };
+static const ai_ready_words ai_ready_words_chat =
+ { "[AI unavailable] ", "[AI] ", "no model set (set AIModel)" };
+
+/* The check before a task: is the server there, has the session a model
+   (below)?  What it says about a task that wants to start: */
+#define AI_READY_NEVER (-1)   /* it cannot start: the reason is in the pane     */
+#define AI_READY_LATER   0    /* the check waits on the loop; the task starts then */
+#define AI_READY_NOW     1    /* go on                                          */
+static int ai_task_ready(FENSTER *f, ai_launch_fn launch, const char *goal,
+                         const ai_ready_words *words);
 
 /**
  * ai_pane_show - Repaint the pane after its lines or roles changed.
@@ -2151,10 +2178,10 @@ int wpe_ai_pane_save(FENSTER *f)
  return 0;
 }
 
-/* A "working" indicator for the blocking Edit/Plan/Agent waits: a rotating
- * -\|/ plus the seconds elapsed, redrawn in place on one pane line so a slow
- * local model looks alive instead of frozen.  wpe_ai_complete calls ai_spin_cb
- * ~8x/second (see wpe_ai_progress_cb). */
+/* A "working" indicator for a task waiting on the model: a rotating -\|/ plus
+ * the seconds elapsed, redrawn in place on one pane line so a slow local
+ * model looks alive instead of frozen.  The task's heartbeat (ai_op_tick)
+ * calls ai_spin_cb about 8 times a second. */
 typedef struct {
  FENSTER *f;
  const char *label;
@@ -2175,8 +2202,8 @@ static void ai_spin_cb(void *ud, int elapsed_s)
  ai_pane_set_last(wf, line);
 }
 
-/* Open a fresh pane line and return a spinner bound to `label`, ready to hand to
- * wpe_ai_complete as its progress callback.  The line is the task's until
+/* Open a fresh pane line and return a spinner bound to `label`, for the
+ * task's heartbeat to turn.  The line is the task's until
  * ai_spin_end takes it out, or the chat's painter writes the answer over it. */
 static ai_spin ai_spin_begin(FENSTER *f, const char *label)
 {
@@ -2652,12 +2679,40 @@ static int ai_chat_take_tool_turn(ai_chat_session *s)
  if (!tr)
   return 0;
  wpe_ai_session_mark_tool_turn();
+ if (ai_tool_waits(tr)) {
+  ai_chat_stream_put_down(s);           /* the page comes from the loop */
+  return 1;
+ }
+ ai_chat_go_on_with_tool_result(s, tr);
+ return 1;
+}
+
+/**
+ * ai_chat_stream_put_down - The finished turn's stream is done with: close it.
+ * @s: the chat, waiting for a tool's page.
+ *
+ * Nothing is read from it again, and its descriptor must not wake the loop
+ * while the page is read.
+ */
+static void ai_chat_stream_put_down(ai_chat_session *s)
+{
+ wpe_fd_del(s->fd);
+ wpe_ai_stream_free(s->st);
+ s->st = NULL;
+ s->fd = -1;
+}
+
+/**
+ * ai_chat_go_on_with_tool_result - Feed a tool's result to the next chat turn.
+ * @s: the chat; @tr: the result, taken over.
+ */
+static void ai_chat_go_on_with_tool_result(ai_chat_session *s, char *tr)
+{
  tr = ai_tool_result_nonempty(tr);      /* an empty result becomes an explicit note */
  ai_chat_record_tool_result(tr);
  free(tr);
  s->turns++;
  ai_chat_restart_turn(s);
- return 1;
 }
 
 /**
@@ -5098,26 +5153,16 @@ int e_ai_chat_key(FENSTER *f, int c)
  * resumed, and the user types straight into the pane's input row: Enter
  * sends, Ctrl-J breaks the line, Esc leaves.
  */
+static void ai_launch_chat(FENSTER *f, const char *goal);
+
 static int e_ai_chat(FENSTER *f)
 {
- char err[320], line[400];
-
  if (g_ai_chat_pane) {                            /* already open: just refocus it */
   ai_chat_focus_pane(f);
   return 0;
  }
- err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
-  snprintf(line, sizeof line, "[AI unavailable] %s", err);
-  ai_pane(f, line, AI_ROLE_ERROR, 1);
+ if (ai_task_ready(f, ai_launch_chat, "", &ai_ready_words_chat) != AI_READY_NOW)
   return 0;
- }
- err[0] = '\0';
- if (wpe_ai_ensure_model(err, sizeof err)) {
-  snprintf(line, sizeof line, "[AI] %s", err[0] ? err : "no model set (set AIModel)");
-  ai_pane(f, line, AI_ROLE_ERROR, 1);
-  return 0;
- }
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;
  wpe_ai_session_load(f);                         /* resume this workspace's talk */
@@ -5125,6 +5170,16 @@ static int e_ai_chat(FENSTER *f)
     window: type and Enter to send, Ctrl-J for a newline, Esc to leave. */
  e_ai_chat_arm(f);
  return 0;
+}
+
+/**
+ * ai_launch_chat - Open the chat once its model is chosen.
+ * @f: the window the chat was asked from; @goal: unused, the chat asks its own.
+ */
+static void ai_launch_chat(FENSTER *f, const char *goal)
+{
+ (void)goal;
+ e_ai_chat(f);
 }
 
 /* ======================= Post-edit hook ================================= */
@@ -6819,6 +6874,7 @@ static void ai_ml_add_diagnostics(struct ai_mlist *m)
 #define AI_KIND_AGENT    "agent"
 #define AI_KIND_PLAN     "plan"
 #define AI_KIND_CHAT     "chat"
+#define AI_KIND_READY    "ready"   /* the check before a task: server, model */
 
 /* --- one background operation at a time.  A single-turn op (Edit) leaves
  * `process` NULL; a multi-turn op (Agent, Plan) supplies process()/finish() and
@@ -6856,6 +6912,9 @@ struct ai_async_op {
  void   (*finish)(ai_async_op *op);                /* finalize (apply, save)     */
  void    *ud;               /* op-specific payload (proposals, scope, ...)      */
  void   (*free_ud)(void *ud);                      /* free ud on finish/cancel   */
+ char    *sent_text;        /* Edit, Complete: the whole text of the window when
+                               the request left, to tell a reply that came after
+                               the text changed                                 */
 };
 
 static ai_async_op *g_ai_op = NULL;
@@ -7062,8 +7121,11 @@ static void ai_spin_end(ai_spin *sp, ECNT *cn)
  * so no AI callbacks (this stream, the heartbeat) fire underneath it.  The
  * waiting line goes here too: every result line written after it takes its
  * place. */
+static void ai_page_drop_for(ai_async_op *op);   /* with the web tools, below */
+
 static void ai_op_detach(ai_async_op *op)
 {
+ ai_page_drop_for(op);
  ai_spin_end(&op->spin, op->cn);
  if (op->fd >= 0) wpe_fd_del(op->fd);
  ai_hb_release();
@@ -7080,7 +7142,46 @@ static void ai_op_free(ai_async_op *op)
  ai_ml_free(&op->ml);
  free(op->acc);
  free(op->err_msg);
+ free(op->sent_text);
  free(op);
+}
+
+/**
+ * ai_op_target_changed - Has the window's text changed since the request left?
+ * @op: an Edit or a Complete whose reply is in.
+ *
+ * Their reply is spliced at the lines captured when the request left; the
+ * window is locked meanwhile, and this is the check that holds whatever
+ * path changed the text anyway.  Return: 1 when the text is not the one sent.
+ */
+static int ai_op_target_changed(const ai_async_op *op)
+{
+ char *now;
+ int changed;
+ if (!op->sent_text)
+  return 0;
+ now = ai_full_file_text(op->f);
+ changed = (!now || strcmp(now, op->sent_text) != 0);
+ free(now);
+ return changed;
+}
+
+/**
+ * ai_op_drop_stale - Say that a reply came after the file changed, and drop it.
+ * @op: the Edit or Complete, already detached; @prefix: "[AI edit]" or
+ * "[AI complete]".
+ *
+ * What the user gains: a change is never applied at lines that no longer
+ * hold the text the model was given; the pane says why nothing happened.
+ */
+static void ai_op_drop_stale(ai_async_op *op, const char *prefix)
+{
+ char line[AI_OP_FAILURE_LINE_MAX];
+ snprintf(line, sizeof line, "%s dropped: the file changed while the model answered",
+          prefix);
+ ai_pane(op->f, line, AI_ROLE_MACHINERY, 0);
+ wpe_ai_trace("%s dropped (the text changed)", op->kind ? op->kind : "task");
+ ai_op_free(op);
 }
 
 /* True if window `f` is still one of the desktop's live windows. */
@@ -7299,8 +7400,318 @@ void wpe_ai_cancel(void)
  if (alive) ai_pane(f, "[AI] cancelled", AI_ROLE_MACHINERY, 0);
  ai_op_free(op);
  /* Leave the pane ready to type in, so the user can continue right there
-    (ask a follow-up / a new question) instead of facing a dead pane. */
- if (alive) ai_chat_offer_input(f);
+    (ask a follow-up / a new question) instead of facing a dead pane.  A
+    check before a task is the exception: no model may be chosen yet, so a
+    question typed there would go out without one; the user stays in the
+    window the task was asked from. */
+ if (alive && strcmp(kind, AI_KIND_READY) != 0) ai_chat_offer_input(f);
+}
+
+/* ---- before a task: is the server there, and which model --------------------
+ * A task on an HTTP backend first checks that something listens at the
+ * endpoint, and with AIModel empty it must also learn the server's models
+ * before it can name one.  Both are a task of their own on the loop (kind
+ * "ready"): the pane shows the waiting line, the editor takes keys, Esc
+ * cancels and nothing is sent, a second request queues behind it, and once
+ * both are settled the task that asked starts as if it had just been asked.
+ * Nothing of the target window is captured until then, so that window stays
+ * editable meanwhile, as for a queued request.  On a local server the
+ * connect settles within the same loop pass. */
+
+/* Room for the waiting line and the reason of a check before a task. */
+#define AI_MODEL_LINE_MAX 400
+
+/* Where the check before a task stands, as it ends. */
+enum { AI_READY_STEP_READY = 0, AI_READY_STEP_WAITS, AI_READY_STEP_FAILED };
+
+typedef struct {
+ wpe_ai_reach         *reach;      /* the reachability connect still out, or NULL */
+ wpe_ai_listing       *listing;    /* the model listing still out, or NULL        */
+ ai_launch_fn          launch;     /* the task to start once it is settled        */
+ char                 *goal;       /* its goal, as the user typed it              */
+ const ai_ready_words *words;      /* how the task words a failure                */
+ int                   ready;      /* the task may start                          */
+ int                   unreachable;/* the failure is the server's absence         */
+ char                  label[AI_MODEL_LINE_MAX];   /* the waiting line           */
+ char                  why[AI_MODEL_LINE_MAX];     /* the reason it cannot start */
+} ai_ready_wait;
+
+/* The task now starting was just cleared by its check; it does not ask again. */
+static int g_ai_ready_passed = 0;
+
+/**
+ * ai_ready_wait_free - Let go of a check's payload.
+ * @ud: the payload.
+ *
+ * Runs when the check ends however it ends: on Esc and when its window
+ * closes the connect or the listing is still out and is given up here, so
+ * its answer is never acted on.
+ */
+static void ai_ready_wait_free(void *ud)
+{
+ ai_ready_wait *w = ud;
+ if (!w) return;
+ wpe_ai_preflight_cancel(w->reach);
+ wpe_ai_list_models_cancel(w->listing);
+ free(w->goal);
+ free(w);
+}
+
+/**
+ * ai_ready_say_failed - Tell the user why the task cannot start.
+ * @f: the window the task was asked from; @w: the check.
+ */
+static void ai_ready_say_failed(FENSTER *f, const ai_ready_wait *w)
+{
+ char line[AI_MODEL_LINE_MAX + 32];
+ if (w->unreachable)
+  snprintf(line, sizeof line, "%s%s", w->words->unavailable, w->why);
+ else if (w->why[0])
+  snprintf(line, sizeof line, "%s%s", w->words->lead, w->why);
+ else
+  snprintf(line, sizeof line, "%s%s", w->words->lead, w->words->none);
+ ai_pane(f, line, AI_ROLE_ERROR, 1);
+}
+
+/**
+ * ai_ready_start_task - The check passed: start the task it was for.
+ * @f: its window; @w: the check.
+ *
+ * The task goes through its own start exactly as when it was asked, and its
+ * check, met again there, lets it through at once.
+ */
+static void ai_ready_start_task(FENSTER *f, const ai_ready_wait *w)
+{
+ g_ai_ready_passed = 1;
+ w->launch(f, w->goal);
+ g_ai_ready_passed = 0;
+}
+
+/**
+ * ai_ready_deliver - The check is over and the editor is idle: go on.
+ * @op: the check's task.
+ *
+ * The check's task ends first, so the task it was for finds nothing running
+ * and starts at once; otherwise the reason takes the waiting line's place.
+ * Whenever nothing runs afterwards (the check failed, the task could not
+ * start, or it was the chat, which opens without a request) the queue moves
+ * on, so a request queued behind the check is never stranded.
+ */
+static void ai_ready_deliver(ai_async_op *op)
+{
+ ai_ready_wait *w = op->ud;
+ FENSTER *f = op->f;
+ int alive = ai_window_alive(op->cn, f);
+ int starts = alive && w->ready;
+ ai_op_detach(op);
+ if (starts)
+  ai_ready_start_task(f, w);
+ else if (alive)
+  ai_ready_say_failed(f, w);
+ ai_op_free(op);
+ if (!wpe_ai_busy())
+  ai_queue_run();                   /* nothing runs: not this task, nor its failure */
+}
+
+/**
+ * ai_ready_label - The waiting line: what is being done, and where.
+ * @w: the check; @doing: "reaching" or "choosing a model from".
+ */
+static void ai_ready_label(ai_ready_wait *w, const char *doing)
+{
+ char host[256], path[512];
+ int port = 0, https = 0;
+ const char *url = e_ai_endpoint ? e_ai_endpoint : "";
+ if (wpe_http_parse_url(url, host, sizeof host, &port, &https, path, sizeof path))
+  snprintf(w->label, sizeof w->label, "[AI] %s the server", doing);
+ else
+  snprintf(w->label, sizeof w->label, "[AI] %s %.200s:%d", doing, host, port);
+}
+
+/**
+ * ai_ready_listed - The model listing answered (or failed).
+ * @n, @names: the models; @why: the reason when n < 0; @ud: the check's task.
+ */
+static void ai_ready_listed(int n, char **names, const char *why, void *ud)
+{
+ ai_async_op *op = ud;
+ ai_ready_wait *w = op->ud;
+ w->listing = NULL;
+ snprintf(w->why, sizeof w->why, "%s", why ? why : "");
+ w->ready = (wpe_ai_take_model(names, n, w->why, sizeof w->why) == 0);
+ wpe_ai_trace("model chosen=%d %s", w->ready, w->ready ? e_ai_model : w->why);
+ ai_op_reply_complete(op, ai_ready_deliver);
+}
+
+/**
+ * ai_ready_model_step - The server is there: has the session a model?
+ * @op: the check's task (registered or not yet).
+ *
+ * Return: AI_READY_STEP_READY when the task may start, _WAITS while the
+ * server's models are listed (ai_ready_listed goes on), _FAILED with the
+ * reason in the payload.
+ */
+static int ai_ready_model_step(ai_async_op *op)
+{
+ ai_ready_wait *w = op->ud;
+ int rc;
+ w->why[0] = '\0';
+ rc = wpe_ai_ensure_model_now(w->why, sizeof w->why);
+ if (rc == 0) {
+  w->ready = 1;
+  return AI_READY_STEP_READY;
+ }
+ if (rc != WPE_AI_LIST_ONLINE)
+  return AI_READY_STEP_FAILED;
+ w->listing = wpe_ai_list_models_start(e_ai_backend, ai_ready_listed, op,
+                                       w->why, sizeof w->why);
+ if (!w->listing)
+  return AI_READY_STEP_FAILED;
+ ai_ready_label(w, "choosing a model from");
+ return AI_READY_STEP_WAITS;
+}
+
+/**
+ * ai_ready_reached - The reachability connect settled.
+ * @ok: something listens; @why: the reason when not, with what to do; @ud:
+ * the check's task.
+ */
+static void ai_ready_reached(int ok, const char *why, void *ud)
+{
+ ai_async_op *op = ud;
+ ai_ready_wait *w = op->ud;
+ w->reach = NULL;
+ if (!ok) {
+  w->unreachable = 1;
+  snprintf(w->why, sizeof w->why, "%s", why ? why : "");
+  ai_op_reply_complete(op, ai_ready_deliver);
+  return;
+ }
+ if (ai_ready_model_step(op) == AI_READY_STEP_WAITS)
+  return;                           /* the listing goes on; the line now says so */
+ ai_op_reply_complete(op, ai_ready_deliver);
+}
+
+/**
+ * ai_ready_new - The check's task for @launch with @goal, not yet running.
+ * Return: the task, or NULL out of memory.
+ */
+static ai_async_op *ai_ready_new(FENSTER *f, ai_launch_fn launch, const char *goal,
+                                 const ai_ready_words *words)
+{
+ ai_async_op *op = calloc(1, sizeof *op);
+ ai_ready_wait *w = calloc(1, sizeof *w);
+ if (w) w->goal = strdup(goal ? goal : "");
+ if (!op || !w || !w->goal) {
+  free(op);
+  ai_ready_wait_free(w);
+  return NULL;
+ }
+ w->launch = launch;
+ w->words = words;
+ op->f = f; op->cn = f->ed; op->fd = -1; op->save_id = -1;
+ op->kind = AI_KIND_READY;
+ op->ud = w; op->free_ud = ai_ready_wait_free;
+ return op;
+}
+
+static void ai_plan_back_to_window(ECNT *cn, FENSTER *w);   /* with Multi-file */
+
+/**
+ * ai_ready_run - Let the check's task wait on the loop with its waiting line.
+ * @op: the check's task.
+ *
+ * The waiting line may open the pane on top; the window the task was asked
+ * from goes back on top, so what the user types meanwhile lands there, as
+ * it does while an Edit waits for its reply.
+ */
+static void ai_ready_run(ai_async_op *op)
+{
+ ai_ready_wait *w = op->ud;
+ op->start = time(NULL);
+ op->spin = ai_spin_begin(op->f, w->label);
+ ai_plan_back_to_window(op->cn, op->f);
+ g_ai_op = op;
+ ai_hb_acquire(ai_op_tick);
+}
+
+/**
+ * ai_ready_settled_now - The check ended without waiting: go on or say why.
+ * @op: the check's task, not running; @step: AI_READY_STEP_*.
+ * Return: AI_READY_NOW, AI_READY_LATER or AI_READY_NEVER.
+ */
+static int ai_ready_settled_now(ai_async_op *op, int step)
+{
+ if (step == AI_READY_STEP_WAITS) {
+  ai_ready_run(op);
+  return AI_READY_LATER;
+ }
+ if (step == AI_READY_STEP_FAILED)
+  ai_ready_say_failed(op->f, op->ud);
+ ai_op_free(op);
+ if (step == AI_READY_STEP_READY)
+  return AI_READY_NOW;
+ return AI_READY_NEVER;
+}
+
+/**
+ * ai_ready_while_busy - A task asked while another one runs: may it start?
+ * @f: the window it was asked from; @launch, @goal: the task.
+ *
+ * Only the chat opens while a task runs (every other request queues before
+ * it gets here).  The running task passed this same check, so the server
+ * was there and a model chosen: the chat opens at once, as it always has,
+ * and the running task keeps its place, its lock and its Esc.  While a
+ * check of its own is still out the chat queues behind it instead.
+ * Return: AI_READY_NOW, or AI_READY_LATER when it was queued.
+ */
+static int ai_ready_while_busy(FENSTER *f, ai_launch_fn launch, const char *goal)
+{
+ if (strcmp(g_ai_op->kind ? g_ai_op->kind : "", AI_KIND_READY) != 0)
+  return AI_READY_NOW;
+ ai_enqueue(f, launch, goal);
+ return AI_READY_LATER;
+}
+
+/**
+ * ai_task_ready - May the task start: is the server there, has it a model?
+ * @f: the window the task was asked from; @launch, @goal: the task, to start
+ * again once the check passes; @words: how the task words a failure.
+ *
+ * What the user gains: the editor never freezes before a request.  A server
+ * that is down is named with what to do; with AIModel empty the server's
+ * models are listed and the best taken; meanwhile the pane says what it is
+ * waiting for, Esc cancels and nothing is sent, and the task starts by
+ * itself once both are settled.
+ * Return: AI_READY_NOW, AI_READY_LATER or AI_READY_NEVER.
+ */
+static int ai_task_ready(FENSTER *f, ai_launch_fn launch, const char *goal,
+                         const ai_ready_words *words)
+{
+ ai_async_op *op;
+ ai_ready_wait *w;
+ int rc;
+ if (g_ai_ready_passed) {
+  g_ai_ready_passed = 0;
+  return AI_READY_NOW;
+ }
+ if (wpe_ai_busy())
+  return ai_ready_while_busy(f, launch, goal);
+ op = ai_ready_new(f, launch, goal, words);
+ if (!op) return AI_READY_NEVER;
+ w = op->ud;
+ rc = wpe_ai_preflight_start(e_ai_backend, ai_ready_reached, op, &w->reach,
+                             w->why, sizeof w->why);
+ if (rc == WPE_AI_REACH_PENDING) {
+  ai_ready_label(w, "reaching");
+  ai_ready_run(op);
+  return AI_READY_LATER;
+ }
+ if (rc == WPE_AI_REACH_FAILED) {
+  w->unreachable = 1;
+  return ai_ready_settled_now(op, AI_READY_STEP_FAILED);
+ }
+ return ai_ready_settled_now(op, ai_ready_model_step(op));
 }
 
 /* ---- the chat turn as a background task ------------------------------------
@@ -7629,6 +8040,10 @@ static void ai_edit_done(ai_async_op *op)
   ai_op_free(op);
   return;
  }
+ if (ai_op_target_changed(op)) {
+  ai_op_drop_stale(op, "[AI edit]");
+  return;
+ }
  /* The backend reported a failure (e.g. the claude CLI is not logged in); its
     message is a diagnostic, not new file content.  Show it and apply NOTHING --
     an error must never overwrite the buffer. */
@@ -7756,6 +8171,11 @@ static void ai_edit_fd_cb(int fd, void *data)
  * every turn. */
 static void ai_conv_finish(ai_async_op *op);
 static void ai_conv_fd_cb(int fd, void *data);
+static void ai_conv_after_process(ai_async_op *op, int r);
+
+/* What process() answers when its tool's result comes later, from the loop
+   (a web page): the task waits with nothing in flight but that page. */
+#define AI_PROCESS_WAITS 2
 
 static void ai_conv_next_turn(ai_async_op *op)
 {
@@ -7825,6 +8245,20 @@ static void ai_conv_on_reply(ai_async_op *op)
  }
  ai_ml_add(&op->ml, "assistant", op->acc ? op->acc : "");
  r = op->process ? op->process(op, op->acc ? op->acc : "") : 1;
+ if (r == AI_PROCESS_WAITS)
+  return;                           /* a tool's page comes later, from the loop */
+ ai_conv_after_process(op, r);
+}
+
+/**
+ * ai_conv_after_process - A turn's tool has its result: go on or wrap up.
+ * @op: the multi-turn task; @r: what process() said (0 = keep going).
+ *
+ * Shared by a tool that answered at once and by a page that came later, so
+ * the step limit counts both the same way.
+ */
+static void ai_conv_after_process(ai_async_op *op, int r)
+{
  op->iter++;
  if (r != 0 || op->iter >= op->max_iter) {
   if (op->iter >= op->max_iter && r == 0 && ai_window_alive(op->cn, op->f))
@@ -7931,13 +8365,8 @@ static void ai_edit_launch(FENSTER *f, const char *instr)
  /* Remember the edited window so focus returns to it after the pane work. */
  for (wi = 1; wi <= cn->mxedt; wi++)
   if (cn->f[wi] == f) { save_id = cn->edt[wi]; break; }
- err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, AI_ROLE_ERROR, 1); return; }
- err[0] = '\0';
- if (wpe_ai_ensure_model(err, sizeof err)) {
-  ai_pane(f, err[0] ? err : "no model set", AI_ROLE_ERROR, 1);
+ if (ai_task_ready(f, ai_edit_launch, instr, &ai_ready_words_task) != AI_READY_NOW)
   return;
- }
 
  /* The text for the model: whole file, marked block, or the window around the
     cursor on a file over the cap.  The reply is diffed and applied against the
@@ -7974,6 +8403,7 @@ static void ai_edit_launch(FENSTER *f, const char *instr)
     interactive; ai_edit_fd_cb finishes (diff + apply) when the reply lands. */
  op->f = f; op->cn = cn; op->save_id = save_id;
  op->kind = AI_KIND_EDIT;
+ op->sent_text = ai_full_file_text(f);
  op->sel_y0 = sy0;                  /* -1 for a whole-file edit, else the lines sent */
  op->sel_y1 = sy1;
  op->fd = wpe_ai_stream_fd(op->st);
@@ -8293,6 +8723,7 @@ static void ai_complete_done(ai_async_op *op)
 
  ai_op_detach(op);
  if (!ai_window_alive(op->cn, f)) { ai_op_free(op); return; }
+ if (ai_op_target_changed(op)) { ai_op_drop_stale(op, "[AI complete]"); return; }
  if (op->had_error) { ai_pane(f, "[AI complete] backend error", AI_ROLE_ERROR, 1); ai_op_free(op); return; }
  if (op->acc_len == 0) { ai_pane(f, "[AI complete] no suggestion", AI_ROLE_MACHINERY, 0); ai_op_free(op); return; }
  clean = ai_completion_text(op->acc);
@@ -8453,10 +8884,8 @@ static int e_ai_complete(FENSTER *f)
 
  if (ai_refuse_non_file_window(f)) return 0;
  if (wpe_ai_busy()) { ai_enqueue(f, ai_launch_complete, ""); return 0; }
- err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, AI_ROLE_ERROR, 1); return 0; }
- err[0] = '\0';
- if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", AI_ROLE_ERROR, 1); return 0; }
+ if (ai_task_ready(f, ai_launch_complete, "", &ai_ready_words_task) != AI_READY_NOW)
+  return 0;
 
  /* Split the COMPLETE file at the cursor: the reply is spliced back as
     before + suggestion + after, so a capped copy here would drop the tail.
@@ -8493,6 +8922,7 @@ static int e_ai_complete(FENSTER *f)
  }
  op->f = f; op->cn = cn; op->save_id = save_id;
  op->kind = AI_KIND_COMPLETE;
+ op->sent_text = ai_full_file_text(f);
  op->sel_y0 = op->sel_y1 = -1;
  op->ud = ud; op->free_ud = ai_complete_ud_free;
  op->fd = wpe_ai_stream_fd(op->st);
@@ -8597,37 +9027,6 @@ static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
    only caller (no Alt-G menu row lists models), passes 0 and refreshes its own
    Model button instead, so it is not disturbed. */
 /**
- * ai_listing_cancelled - Did the user press Esc while the models list?
- * @ud: unused.
- *
- * Asked by the listing on every wake-up while it waits for the server, so a
- * slow or silent endpoint never keeps the user in front of a frozen dialog.
- * Return: 1 when the key read was Esc.
- */
-static int ai_listing_cancelled(void *ud)
-{
- (void)ud;
- return e_u_kbhit() == WPE_ESC;
-}
-
-/**
- * ai_listing_watch - What the model listing listens to while it waits.
- * @w: filled in.
- *
- * The terminal's keys arrive on standard input, so the listing wakes the
- * moment one is typed; the graphical backends queue their keys elsewhere,
- * and the listing asks them on its short wake-ups instead.
- */
-static void ai_listing_watch(wpe_http_watch *w)
-{
- w->fd = -1;
- if (!WpeIsXwin())
-  w->fd = STDIN_FILENO;
- w->cancelled = ai_listing_cancelled;
- w->ud = NULL;
-}
-
-/**
  * ai_listing_goes_online - Does listing this backend's models ask a server?
  * @backend: a WPE_AI_* backend.
  *
@@ -8685,64 +9084,365 @@ static void ai_listing_report(FENSTER *f, const char *why)
  e_error(msg, 0, f->fb);
 }
 
+/* ---- the Model picker: the list fills in while the user waits in it -------
+ * The picker opens at once with the listing's waiting line in its box, and
+ * reads its keys from the editor's own key loop, which serves the listing's
+ * socket meanwhile; the listing's continuation fills the box and repaints it
+ * (nothing else paints under a modal box).  Keys typed while it lists are
+ * kept: Up, Down, PgUp and PgDn move the selection as soon as the list is
+ * there, Enter says the list has not come yet, Esc gives the listing up. */
+
+/* Where the picker stands. */
+enum { AI_MP_LISTING = 0, AI_MP_LISTED, AI_MP_FAILED };
+
+/* What the picker's loop does with the key it read. */
+enum { AI_MP_GO_ON = 0, AI_MP_CHOSEN, AI_MP_CLOSED, AI_MP_CANCELLED };
+
+typedef struct {
+ FENSTER        *f;
+ wpe_ai_listing *listing;                 /* out while state is AI_MP_LISTING */
+ int             state;
+ char           *names[WPE_AI_MODELS_MAX];
+ int             n;
+ int             sel, top, vis;
+ int             moves;                   /* rows typed ahead (Up -1, Down +1) */
+ int             pages;                   /* pages typed ahead (PgUp, PgDn)    */
+ int             enter_early;             /* Enter came before the list        */
+ char            title[AI_LISTING_LINE_MAX];
+ char            why[AI_LISTING_LINE_MAX];
+ PIC            *pic;                     /* the box on the screen, or NULL    */
+} ai_model_picker;
+
+#define AI_MP_HINT       " Up/Dn move  PgUp/PgDn page  Enter ok  Esc cancel "
+#define AI_MP_EARLY_LINE " the list has not come yet (Esc cancels) "
+#define AI_MP_CLOSE_HINT " any key closes "
+/* Rows the picker keeps clear of the screen's top and bottom. */
+#define AI_MP_SCREEN_MARGIN_ROWS 8
+#define AI_MP_TOP_ROW            2
+#define AI_MP_SIDE_COLS          4
+
 /**
- * ai_listing_fetch - List the backend's models, with a waiting line for a server.
- * @f: the window; @names, @max: the list to fill; @why, @whysz: the reason.
- *
- * Return: the number of models, or <= 0 with the reason in @why.
+ * ai_mp_close_box - Take the picker's box off the screen.
+ * @p: the picker.
  */
-static int ai_listing_fetch(FENSTER *f, char **names, int max, char *why, size_t whysz)
+static void ai_mp_close_box(ai_model_picker *p)
 {
- wpe_http_watch watch;
- PIC *pic;
- int n;
- if (!ai_listing_goes_online(e_ai_backend))
-  return wpe_ai_list_models(e_ai_backend, names, max, why, whysz);
- ai_listing_watch(&watch);
- pic = ai_listing_wait_open(f);
- n = wpe_ai_list_models_watch(e_ai_backend, names, max, &watch, why, whysz);
- if (pic)
-  e_close_view(pic, 1);
- return n;
+ if (!p->pic) return;
+ e_close_view(p->pic, 1);
+ p->pic = NULL;
 }
 
-static int e_ai_pick_model_apply(FENSTER *f, int announce)
+/**
+ * ai_mp_paint_waiting - The box while the list is awaited: where it is asked.
+ * @p: the picker.
+ */
+static void ai_mp_paint_waiting(ai_model_picker *p)
 {
- char *names[32];
- char title[AI_LISTING_LINE_MAX], line[220];
- int n, i, sel;
+ int w, xa, ya;
+ p->pic = ai_listing_wait_open(p->f);
+ if (!p->pic || !p->enter_early) return;
+ w = (int)strlen(AI_MP_EARLY_LINE) + AI_LISTING_BOX_FRAME;
+ xa = (MAXSCOL - w) / 2;
+ ya = MAXSLNS / 2 - 1;
+ e_pr_str(xa + 1, ya + AI_LISTING_BOX_ROWS - 1, AI_MP_EARLY_LINE,
+          p->f->fb->nr.fb, 0, 0, 0, 0);
+}
 
- title[0] = '\0';
- n = ai_listing_fetch(f, names, 32, title, sizeof title);
- if (n <= 0) {
-  if (title[0])
-   ai_listing_report(f, title);
-  else
-   ai_listing_report(f, "no models found");
-  return 0;
+/**
+ * ai_mp_paint_failed - The box when the listing gave no model: why.
+ * @p: the picker.
+ */
+static void ai_mp_paint_failed(ai_model_picker *p)
+{
+ char line[AI_LISTING_LINE_MAX];
+ int w, xa, ya, hl;
+ snprintf(line, sizeof line, " %.*s ", MAXSCOL - AI_LISTING_BOX_MARGIN, p->why);
+ w = (int)strlen(line) + AI_LISTING_BOX_FRAME;
+ if (w > MAXSCOL) w = MAXSCOL;
+ xa = (MAXSCOL - w) / 2;
+ ya = MAXSLNS / 2 - 1;
+ p->pic = e_std_kst(xa, ya, xa + w - 1, ya + AI_LISTING_BOX_ROWS - 1, "Model", 1,
+                    p->f->fb->nr.fb, p->f->fb->nt.fb, p->f->fb->ne.fb);
+ if (!p->pic) return;
+ e_pr_str(xa + 1, ya + 1, line, p->f->fb->nt.fb, 0, 0, 0, 0);
+ hl = (int)strlen(AI_MP_CLOSE_HINT);
+ e_pr_str(xa + (w - hl) / 2, ya + AI_LISTING_BOX_ROWS - 1, AI_MP_CLOSE_HINT,
+          p->f->fb->nr.fb, 0, 0, 0, 0);
+}
+
+/**
+ * ai_mp_box_width - How wide the list box is, for its longest row.
+ * @p: a picker with its list.
+ */
+static int ai_mp_box_width(const ai_model_picker *p)
+{
+ int i, maxw = 0;
+ for (i = 0; i < p->n; i++)
+  if ((int)strlen(p->names[i]) > maxw) maxw = (int)strlen(p->names[i]);
+ if (maxw > AI_PICK_MAXW) maxw = AI_PICK_MAXW;
+ if (maxw < (int)strlen(p->title)) maxw = (int)strlen(p->title);
+ if (maxw < (int)strlen(AI_MP_HINT)) maxw = (int)strlen(AI_MP_HINT);
+ if (maxw + AI_MP_SIDE_COLS > MAXSCOL - AI_MP_SIDE_COLS)
+  return MAXSCOL - AI_MP_SIDE_COLS;
+ return maxw + AI_MP_SIDE_COLS;
+}
+
+/**
+ * ai_mp_keep_selection_shown - Scroll the list so the selection is in view.
+ * @p: a picker with its list.
+ */
+static void ai_mp_keep_selection_shown(ai_model_picker *p)
+{
+ if (p->sel < p->top) p->top = p->sel;
+ if (p->sel >= p->top + p->vis) p->top = p->sel - p->vis + 1;
+ if (p->top > p->n - p->vis) p->top = p->n - p->vis;
+ if (p->top < 0) p->top = 0;
+}
+
+/**
+ * ai_mp_paint_list - The list, the selection highlighted.
+ * @p: a picker with its list.
+ */
+static void ai_mp_paint_list(ai_model_picker *p)
+{
+ int boxw = ai_mp_box_width(p), xa, xe, ya, ye, j, hl, hx;
+ char line[600];
+ xa = (MAXSCOL - boxw) / 2;
+ if (xa < 1) xa = 1;
+ xe = xa + boxw; ya = AI_MP_TOP_ROW; ye = ya + p->vis + 1;
+ ai_mp_keep_selection_shown(p);
+ p->pic = e_std_kst(xa, ya, xe, ye, p->title, 1,
+                    p->f->fb->nr.fb, p->f->fb->nt.fb, p->f->fb->ne.fb);
+ if (!p->pic) return;
+ for (j = 0; j < p->vis && p->top + j < p->n; j++) {
+  int row = p->top + j, attr = p->f->fb->nt.fb;
+  if (row == p->sel) attr = p->f->fb->fz.fb;          /* highlight the choice */
+  snprintf(line, sizeof line, " %-*.*s", boxw - 3, boxw - 3, p->names[row]);
+  e_pr_str(xa + 1, ya + 1 + j, line, attr, 0, 0, 0, 0);
  }
- for (i = 0; i < n; i++)                 /* pre-mark the model in use */
-  if (e_ai_model && !strcmp(e_ai_model, names[i])) break;
+ hl = (int)strlen(AI_MP_HINT);
+ hx = xa + (xe - xa - hl) / 2;
+ if (hx < xa + 1) hx = xa + 1;
+ e_pr_str(hx, ye, AI_MP_HINT, p->f->fb->nr.fb, 0, 0, 0, 0);
+}
+
+/**
+ * ai_mp_paint - Show the picker as it stands now.
+ * @p: the picker.
+ *
+ * Called by the picker's own loop after each key and by the listing's
+ * continuation when the list or its failure comes, so the box changes the
+ * moment the answer arrives, without a key.
+ */
+static void ai_mp_paint(ai_model_picker *p)
+{
+ ai_mp_close_box(p);
+ if (p->state == AI_MP_LISTING)
+  ai_mp_paint_waiting(p);
+ else if (p->state == AI_MP_LISTED)
+  ai_mp_paint_list(p);
+ else
+  ai_mp_paint_failed(p);
+ e_refresh();
+}
+
+/**
+ * ai_mp_clamp - Keep the selection on a row of the list.
+ * @p: a picker with its list.
+ */
+static void ai_mp_clamp(ai_model_picker *p)
+{
+ if (p->sel > p->n - 1) p->sel = p->n - 1;
+ if (p->sel < 0) p->sel = 0;
+}
+
+/**
+ * ai_mp_take_names - The list came: keep it, mark the model in use, and apply
+ * what was typed ahead.
+ * @p: the picker; @names, @n: the models (copied).
+ */
+static void ai_mp_take_names(ai_model_picker *p, char **names, int n)
+{
+ int i;
+ p->n = 0;
+ for (i = 0; i < n && i < WPE_AI_MODELS_MAX; i++) {
+  p->names[p->n] = strdup(names[i]);
+  if (p->names[p->n]) p->n++;
+ }
+ p->sel = 0;
+ for (i = 0; i < p->n; i++)                       /* pre-mark the model in use */
+  if (e_ai_model && !strcmp(e_ai_model, p->names[i])) { p->sel = i; break; }
+ p->vis = p->n;
+ if (p->vis > MAXSLNS - AI_MP_SCREEN_MARGIN_ROWS) p->vis = MAXSLNS - AI_MP_SCREEN_MARGIN_ROWS;
+ if (p->vis < 1) p->vis = 1;
+ p->sel += p->moves + p->pages * p->vis;
+ ai_mp_clamp(p);
  /* Name the source for the HTTP backends: both read the single AIEndpoint, so
     OpenAI-compatible lists whatever that URL serves.  Left on the Ollama default
     (localhost:11434, which also answers /v1/models) it returns Ollama's models --
     spelling out the endpoint makes that visible instead of surprising. */
- if (e_ai_backend == WPE_AI_OLLAMA || e_ai_backend == WPE_AI_OPENAI)
-  snprintf(title, sizeof title, "Model (%d) at %s", n,
+ if (ai_listing_goes_online(e_ai_backend))
+  snprintf(p->title, sizeof p->title, "Model (%d) at %.300s", p->n,
            e_ai_endpoint ? e_ai_endpoint : "?");
  else
-  snprintf(title, sizeof title, "Model (%d available)", n);
- sel = e_ai_pick(f, title, (const char *const *)names, n, i < n ? i : 0);
- if (sel >= 0) {
-  free(e_ai_model);
-  e_ai_model = strdup(names[sel]);
-  if (announce) {
-   snprintf(line, sizeof line, "[AI] model = %s", names[sel]);
-   ai_pane(f, line, AI_ROLE_MACHINERY, 1);
-  }
-  wpe_ai_trace("model set %s", names[sel]);
+  snprintf(p->title, sizeof p->title, "Model (%d available)", p->n);
+ p->state = AI_MP_LISTED;
+}
+
+/**
+ * ai_mp_listed - The listing answered while the picker waits in its loop.
+ * @n, @names, @why: the answer; @ud: the picker.
+ */
+static void ai_mp_listed(int n, char **names, const char *why, void *ud)
+{
+ ai_model_picker *p = ud;
+ p->listing = NULL;
+ if (n > 0)
+  ai_mp_take_names(p, names, n);
+ else {
+  snprintf(p->why, sizeof p->why, "%s", (why && why[0]) ? why : "no models found");
+  p->state = AI_MP_FAILED;
  }
- for (i = 0; i < n; i++) free(names[i]);
+ ai_mp_paint(p);
+}
+
+/**
+ * ai_mp_key_listing - A key typed while the list is awaited.
+ * @p: the picker; @c: the key.  Return: AI_MP_*.
+ */
+static int ai_mp_key_listing(ai_model_picker *p, int c)
+{
+ if (c == WPE_ESC) return AI_MP_CANCELLED;
+ if (c == CUP) p->moves--;
+ else if (c == CDO) p->moves++;
+ else if (c == BUP) p->pages--;
+ else if (c == BDO) p->pages++;
+ else if (c == WPE_CR || c == '\n') p->enter_early = 1;
+ return AI_MP_GO_ON;
+}
+
+/**
+ * ai_mp_key_listed - A key typed in the list.
+ * @p: the picker; @c: the key.  Return: AI_MP_*.
+ */
+static int ai_mp_key_listed(ai_model_picker *p, int c)
+{
+ if (c == WPE_ESC) return AI_MP_CLOSED;
+ if (c == WPE_CR || c == '\n') return AI_MP_CHOSEN;
+ if (c == CUP) p->sel--;
+ else if (c == CDO) p->sel++;
+ else if (c == BUP) p->sel -= p->vis;
+ else if (c == BDO) p->sel += p->vis;
+ ai_mp_clamp(p);
+ return AI_MP_GO_ON;
+}
+
+/**
+ * ai_mp_key - Act on one key in whatever state the picker is.
+ * @p: the picker; @c: the key.  Return: AI_MP_*.
+ */
+static int ai_mp_key(ai_model_picker *p, int c)
+{
+ if (p->state == AI_MP_LISTING) return ai_mp_key_listing(p, c);
+ if (p->state == AI_MP_LISTED) return ai_mp_key_listed(p, c);
+ return AI_MP_CLOSED;                          /* the reason box: any key closes */
+}
+
+/**
+ * ai_mp_run - The picker's key loop, until a choice, a close or a cancel.
+ * @p: the picker, already painted.  Return: AI_MP_CHOSEN, _CLOSED or _CANCELLED.
+ *
+ * The keys come from the editor's key loop, which serves the listing's
+ * socket and timer while it waits for the next key.
+ */
+static int ai_mp_run(ai_model_picker *p)
+{
+ extern int wpe_modal_active;
+ int saved = wpe_modal_active, how;
+ wpe_modal_active = 1;                  /* other painters wait: the box is ours */
+ fk_cursor(0);
+ for (;;) {
+  how = ai_mp_key(p, e_getch());
+  if (how != AI_MP_GO_ON) break;
+  ai_mp_paint(p);
+ }
+ ai_mp_close_box(p);
+ fk_cursor(1);
+ e_cursor(p->f, 0);
+ wpe_modal_active = saved;
+ return how;
+}
+
+/**
+ * ai_mp_start - Fill the picker at once, or start the listing it waits for.
+ * @p: the picker; @why, @whysz: the reason when no picker can open.
+ * Return: 0 when the picker can open, -1 with the reason.
+ */
+static int ai_mp_start(ai_model_picker *p, char *why, size_t whysz)
+{
+ char *names[WPE_AI_MODELS_MAX];
+ int n = wpe_ai_list_models_now(e_ai_backend, names, WPE_AI_MODELS_MAX), i;
+ if (n != WPE_AI_LIST_ONLINE) {
+  if (n <= 0) { snprintf(why, whysz, "no models found"); return -1; }
+  ai_mp_take_names(p, names, n);
+  for (i = 0; i < n; i++) free(names[i]);
+  return 0;
+ }
+ why[0] = '\0';
+ p->listing = wpe_ai_list_models_start(e_ai_backend, ai_mp_listed, p, why, whysz);
+ if (!p->listing) return -1;
+ p->state = AI_MP_LISTING;
+ return 0;
+}
+
+/**
+ * ai_mp_free - Let go of the picker, giving up a listing still out.
+ * @p: the picker.
+ */
+static void ai_mp_free(ai_model_picker *p)
+{
+ int i;
+ wpe_ai_list_models_cancel(p->listing);
+ p->listing = NULL;
+ for (i = 0; i < p->n; i++) free(p->names[i]);
+ p->n = 0;
+}
+
+/**
+ * ai_mp_apply - The user chose a model: it is the session's from now on.
+ * @f: the window; @name: the model; @announce: echo it into the pane.
+ */
+static void ai_mp_apply(FENSTER *f, const char *name, int announce)
+{
+ char line[220];
+ free(e_ai_model);
+ e_ai_model = strdup(name);
+ if (announce) {
+  snprintf(line, sizeof line, "[AI] model = %s", name);
+  ai_pane(f, line, AI_ROLE_MACHINERY, 1);
+ }
+ wpe_ai_trace("model set %s", name);
+}
+
+static int e_ai_pick_model_apply(FENSTER *f, int announce)
+{
+ ai_model_picker p;
+ char why[AI_LISTING_LINE_MAX];
+ int how;
+ memset(&p, 0, sizeof p);
+ p.f = f;
+ if (ai_mp_start(&p, why, sizeof why) < 0) {
+  ai_listing_report(f, why[0] ? why : "no models found");
+  ai_mp_free(&p);
+  return 0;
+ }
+ ai_mp_paint(&p);
+ how = ai_mp_run(&p);
+ if (how == AI_MP_CHOSEN)
+  ai_mp_apply(f, p.names[p.sel], announce);
+ ai_mp_free(&p);
+ if (how == AI_MP_CANCELLED)
+  ai_listing_report(f, "listing cancelled");
  return 0;
 }
 
@@ -10952,30 +11652,150 @@ static char *ai_agent_tool_run_command(FENSTER *f, const char *arg)
  return result;
 }
 
+/* ---- the web page a tool step waits for ------------------------------------
+ * A web tool's page is read on the editor's loop: the tool step answers
+ * AI_TOOL_WAITS, the task keeps its heartbeat and its place, the editor
+ * takes keys, and the page's continuation hands the model its result and
+ * starts the next turn.  Esc, or the window closing, ends the task, and
+ * ai_op_detach gives the page up with it.  One task runs at a time, so one
+ * page is awaited at a time. */
+
+/* What a tool step answers when its result comes later, from the loop. */
+static char ai_tool_waits_mark[] = "(the page is being read)";
+#define AI_TOOL_WAITS ai_tool_waits_mark
+
+/* Who is told when the page has come: the task, and how to go on with it. */
+typedef void (*ai_page_done_fn)(ai_async_op *op, char *result,
+                                const char *tool, const char *arg);
+
+static struct {
+ wpe_ai_fetch   *fetch;      /* out while a tool step waits for its page      */
+ ai_async_op    *op;         /* the task the page is for                       */
+ ai_page_done_fn done;       /* how that task goes on                          */
+ char           *tool, *arg; /* the request, for the sources line of a chat    */
+ const char     *failed;     /* the words for a failure with no reason         */
+} g_ai_page;
+
 /**
- * ai_agent_fetch_as_text - GET a page and reduce it to text for the model.
- * @url: what to fetch; @failed: the words for a failure with no reason.
+ * ai_tool_waits - Did the tool step leave its result to the loop?
+ * @result: what the step answered.  Return: 1 for AI_TOOL_WAITS.
+ */
+static int ai_tool_waits(const char *result)
+{
+ return result == AI_TOOL_WAITS;
+}
+
+/**
+ * ai_page_owner - Say which task the next web tool's page is for.
+ * @op: the task; @done: how it goes on; @tool, @arg: the request.
+ *
+ * Set by the agent and the chat just before they run a tool, so the web
+ * functions they share need not know which of the two asked.
+ */
+static void ai_page_owner(ai_async_op *op, ai_page_done_fn done,
+                          const char *tool, const char *arg)
+{
+ g_ai_page.op = op;
+ g_ai_page.done = done;
+ free(g_ai_page.tool);
+ free(g_ai_page.arg);
+ g_ai_page.tool = strdup(tool ? tool : "");
+ g_ai_page.arg = strdup(arg ? arg : "");
+}
+
+/**
+ * ai_page_forget - The page is no longer awaited: drop what was kept for it.
+ */
+static void ai_page_forget(void)
+{
+ g_ai_page.fetch = NULL;
+ g_ai_page.op = NULL;
+ g_ai_page.done = NULL;
+ free(g_ai_page.tool);
+ free(g_ai_page.arg);
+ g_ai_page.tool = g_ai_page.arg = NULL;
+}
+
+/**
+ * ai_page_drop_for - The task is ending: give its page up.
+ * @op: the task being detached.
+ *
+ * Esc, a closed window or the task's own end: the fetch is cancelled, so its
+ * result can never reach a task that is gone.
+ */
+static void ai_page_drop_for(ai_async_op *op)
+{
+ if (!g_ai_page.fetch || g_ai_page.op != op)
+  return;
+ wpe_ai_web_fetch_cancel(g_ai_page.fetch);
+ wpe_ai_trace("web page given up");
+ ai_page_forget();
+}
+
+/**
+ * ai_tool_error_reason - The "TOOL ERROR: <reason>" result for a page that
+ * did not come.
+ * @why: the fetcher's reason, or NULL / ""; @failed: the words without one.
+ * Return: the malloc'd result, or NULL out of memory.
+ */
+static char *ai_tool_error_reason(const char *why, const char *failed)
+{
+ size_t n;
+ char *result;
+ if (!why || !why[0]) why = failed;
+ n = strlen(why) + AI_FETCH_ERROR_ROOM;
+ result = malloc(n);
+ if (result) snprintf(result, n, AI_TOOL_ERROR_HEAD "%s", why);
+ return result;
+}
+
+/**
+ * ai_page_fetched - The page came, or did not: give the task its result.
+ * @page: the body, malloc'd, or NULL; @why: the reason when NULL; @ud: unused.
  *
  * The body is reduced to text so the model reads content, not markup; a
- * failure comes back as a TOOL ERROR line the model can read and act on.
- * Return: the malloc'd result, or NULL out of memory.
+ * failure becomes a TOOL ERROR line the model can read and act on.
+ */
+static void ai_page_fetched(char *page, const char *why, void *ud)
+{
+ ai_async_op *op = g_ai_page.op;
+ ai_page_done_fn done = g_ai_page.done;
+ char *tool = g_ai_page.tool, *arg = g_ai_page.arg;
+ char *result;
+ (void)ud;
+ if (page)
+  result = ai_html_to_text(page);
+ else
+  result = ai_tool_error_reason(why, g_ai_page.failed);
+ free(page);
+ g_ai_page.tool = g_ai_page.arg = NULL;
+ ai_page_forget();
+ wpe_ai_trace("web page read");
+ if (done && op)
+  done(op, result, tool, arg);
+ else
+  free(result);
+ free(tool);
+ free(arg);
+}
+
+/**
+ * ai_agent_fetch_as_text - Start reading a page for the model.
+ * @url: what to fetch; @failed: the words for a failure with no reason.
+ *
+ * Return: AI_TOOL_WAITS while the page is read on the loop, or the malloc'd
+ * TOOL ERROR result when the fetch could not begin.
  */
 static char *ai_agent_fetch_as_text(const char *url, const char *failed)
 {
- char *raw = NULL, *result, werr[AI_FETCH_REASON_MAX];
- const char *reason = failed;
- size_t n;
+ char werr[AI_FETCH_REASON_MAX];
  werr[0] = '\0';
- if (wpe_ai_web_fetch(url, AI_WEB_FETCH_MAX, &raw, werr, sizeof werr) == 0 && raw) {
-  result = ai_html_to_text(raw);
-  free(raw);
-  return result;
- }
- if (werr[0]) reason = werr;
- n = strlen(werr) + AI_FETCH_ERROR_ROOM;
- result = malloc(n);
- if (result) snprintf(result, n, AI_TOOL_ERROR_HEAD "%s", reason);
- return result;
+ g_ai_page.failed = failed;
+ g_ai_page.fetch = wpe_ai_web_fetch_start(url, AI_WEB_FETCH_MAX, ai_page_fetched, NULL,
+                                          werr, sizeof werr);
+ if (g_ai_page.fetch)
+  return AI_TOOL_WAITS;
+ return ai_tool_error_reason(werr, failed);
 }
 
 /**
@@ -11304,6 +12124,9 @@ static void ai_chat_note_source(ai_chat_session *s, const char *tool, const char
  * is answered aloud so the turn goes on.
  * Return: the malloc'd result the model reads.
  */
+static void ai_chat_page_done(ai_async_op *op, char *result,
+                              const char *tool, const char *arg);
+
 static char *ai_chat_run_web_tool(ai_chat_session *s, const char *tool, const char *arg)
 {
  FENSTER *f = s->ref;
@@ -11313,12 +12136,30 @@ static char *ai_chat_run_web_tool(ai_chat_session *s, const char *tool, const ch
   return ai_chat_refuse_tool(f, tool, AI_CHAT_REFUSED_WEB_OFF, AI_CHAT_WHY_WEB_OFF);
  if (answer == AI_WEB_NOT_NOW)
   return ai_chat_refuse_tool(f, tool, AI_CHAT_REFUSED_WEB_NOT_NOW, AI_CHAT_WHY_WEB_NOT_NOW);
+ ai_page_owner(s->op, ai_chat_page_done, tool, arg);
  if (!strcmp(tool, AI_TOOL_WEB_SEARCH))
   result = ai_agent_tool_web_search(f, arg);
  else
   result = ai_agent_tool_web_fetch(f, arg);
- ai_chat_note_source(s, tool, arg, result);
+ if (!ai_tool_waits(result))
+  ai_chat_note_source(s, tool, arg, result);
  return result;
+}
+
+/**
+ * ai_chat_page_done - The page a chat's tool turn waited for has come.
+ * @op: the chat's task; @result: what the model reads, taken over;
+ * @tool, @arg: the request, for the sources line.
+ *
+ * The chat goes on exactly as after a tool that answered at once: the page
+ * is named among the answer's sources and the next turn starts.
+ */
+static void ai_chat_page_done(ai_async_op *op, char *result,
+                              const char *tool, const char *arg)
+{
+ ai_chat_session *s = op->ud;
+ ai_chat_note_source(s, tool, arg, result);
+ ai_chat_go_on_with_tool_result(s, result);
 }
 
 /**
@@ -11586,8 +12427,12 @@ static void ai_agent_feed_result(ai_async_op *op, char *result)
  * the reasoning before the tool line is shown, the tool is run under the
  * dial and its result becomes the next turn.  Runs from the conversation
  * driver with the spinner paused, so an approval question can wait for keys.
- * Return: 1 when the agent is done, 0 to keep going.
+ * Return: 1 when the agent is done, 0 to keep going, AI_PROCESS_WAITS when
+ * the tool's page is read on the loop (ai_agent_page_done goes on then).
  */
+static void ai_agent_page_done(ai_async_op *op, char *result,
+                               const char *tool, const char *arg);
+
 static int ai_agent_process(ai_async_op *op, char *reply)
 {
  FENSTER *f = op->f;
@@ -11605,9 +12450,28 @@ static int ai_agent_process(ai_async_op *op, char *reply)
  ai_copy_bounded(action, sizeof action, act, len);
  ai_split_tool(action, &tool, &arg);   /* shared parse: tolerates "read_file:" */
  ai_agent_show_tool(f, tool, arg);
+ ai_page_owner(op, ai_agent_page_done, tool, arg);
  result = ai_agent_run_tool(op, tool, arg, firstnl);
+ if (ai_tool_waits(result))
+  return AI_PROCESS_WAITS;                      /* the page goes on from the loop */
  ai_agent_feed_result(op, result);
  return 0;                                      /* keep going */
+}
+
+/**
+ * ai_agent_page_done - The page a tool step waited for has come.
+ * @op: the agent task; @result: what the model reads, taken over;
+ * @tool, @arg: the request (unused: the pane already named it).
+ *
+ * The run goes on exactly as after any other tool: the result is the next
+ * turn's input and the next turn starts.
+ */
+static void ai_agent_page_done(ai_async_op *op, char *result,
+                               const char *tool, const char *arg)
+{
+ (void)tool; (void)arg;
+ ai_agent_feed_result(op, result);
+ ai_conv_after_process(op, 0);
 }
 
 /**
@@ -11679,33 +12543,24 @@ static const char ai_agent_system_prompt[] =
    "short summary of what you changed. Output nothing else; wait for each tool "
    "result before continuing.";
 
-/* Room for a preflight reason and for the pane's task line. */
-#define AI_AGENT_ERR_MAX       320
+/* Room for the pane's task line. */
 #define AI_AGENT_TASK_LINE_MAX 1100
 /* The pane line when no model is set and the check gave no words. */
 #define AI_AGENT_NO_MODEL_LINE "no model set"
 
 /**
  * ai_agent_ready - Can a run start: is the backend reachable and a model set?
- * @f: the window the pane belongs to.
+ * @f: the window the pane belongs to; @resume, @goal: the run to start once
+ * a model is chosen, when one has to be.
  *
  * The reason is shown in the pane before anything is sent, so the user
  * fixes the setting instead of watching a run that cannot begin.
- * Return: 1 when the run may start.
+ * Return: 1 when the run may start now.
  */
-static int ai_agent_ready(FENSTER *f)
+static int ai_agent_ready(FENSTER *f, ai_launch_fn resume, const char *goal)
 {
- char err[AI_AGENT_ERR_MAX];
- err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) {
-  ai_pane(f, err, AI_ROLE_ERROR, 1);
-  return 0;
- }
- err[0] = '\0';
- if (!wpe_ai_ensure_model(err, sizeof err)) return 1;
- if (err[0]) ai_pane(f, err, AI_ROLE_ERROR, 1);
- else ai_pane(f, AI_AGENT_NO_MODEL_LINE, AI_ROLE_ERROR, 1);
- return 0;
+ static const ai_ready_words words = { "", "", AI_AGENT_NO_MODEL_LINE };
+ return ai_task_ready(f, resume, goal, &words) == AI_READY_NOW;
 }
 
 /**
@@ -11800,7 +12655,8 @@ static void ai_agent_compose(ai_async_op *op, const char *goal, const char *extr
 /**
  * ai_agent_launch - Start the built-in agent on an already-formed goal.
  * @f: the window the run belongs to; @goal: the task; @extra: an optional
- * system message after the identity, NULL for none.
+ * system message after the identity, NULL for none; @resume: how the run is
+ * started again once a model is chosen, when one has to be.
  *
  * Shared by Alt-G g (prompted) and Build & fix, so both runs open, prompt
  * and checkpoint the same way.  The external CLI is held to text only: the
@@ -11808,10 +12664,11 @@ static void ai_agent_compose(ai_async_op *op, const char *goal, const char *extr
  * the CLI's own tools, which would bypass that review, are never enabled.
  * Return: 0 always (the run goes on in the background).
  */
-static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
+static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra,
+                           ai_launch_fn resume)
 {
  ai_async_op *op;
- if (!ai_agent_ready(f)) return 0;
+ if (!ai_agent_ready(f, resume, goal)) return 0;
  ai_messages_start_run(f);          /* one run per Messages window, as F9 does */
  ai_agent_announce_task(f, goal);
  wpe_ai_session_load(f);
@@ -11826,7 +12683,7 @@ static int ai_agent_launch(FENSTER *f, const char *goal, const char *extra)
 /* Queue adapter for the agent (matches the void(FENSTER*,const char*) slot). */
 static void ai_launch_agent(FENSTER *f, const char *goal)
 {
- ai_agent_launch(f, goal, NULL);
+ ai_agent_launch(f, goal, NULL, ai_launch_agent);
 }
 
 int e_ai_agent(FENSTER *f)
@@ -11863,7 +12720,7 @@ int e_ai_agent(FENSTER *f)
   ai_enqueue(f, ai_launch_agent, goal);
   return 0;
  }
- return ai_agent_launch(f, goal, NULL);
+ return ai_agent_launch(f, goal, NULL, ai_launch_agent);
 }
 
 /* ai_build_command - the command that builds the current work, written into
@@ -11950,7 +12807,7 @@ static int e_ai_fix_build(FENSTER *f)
    "root cause (not by silencing warnings), then run the build command again. "
    "Repeat until the build succeeds, then reply DONE with a short summary of "
    "what you changed.", cmd, cmd);
- return ai_agent_launch(f, "Fix the failing build.", extra);
+ return ai_agent_launch(f, "Fix the failing build.", extra, ai_launch_fix_build);
 }
 
 /**
@@ -12404,7 +13261,7 @@ static void ai_plan_finish(ai_async_op *op)
  */
 static void ai_plan_launch(FENSTER *f, const char *task)
 {
- char err[320], line[1400];
+ char line[1400];
  ECNT *cn = f->ed;
  ai_async_op *op;
  ai_plan_data *pd;
@@ -12420,10 +13277,8 @@ static void ai_plan_launch(FENSTER *f, const char *task)
    "Do not modify files yourself; the editor applies the plan after the user "
    "approves it. Output nothing else.";
 
- err[0] = '\0';
- if (wpe_ai_preflight(e_ai_backend, err, sizeof err)) { ai_pane(f, err, AI_ROLE_ERROR, 1); return; }
- err[0] = '\0';
- if (wpe_ai_ensure_model(err, sizeof err)) { ai_pane(f, err[0] ? err : "no model set", AI_ROLE_ERROR, 1); return; }
+ if (ai_task_ready(f, ai_plan_launch, task, &ai_ready_words_task) != AI_READY_NOW)
+  return;
 
  e_ai_cli_mode = WPE_AI_CLI_TEXTONLY;               /* xwpe owns every edit */
  wpe_ai_session_load(f);

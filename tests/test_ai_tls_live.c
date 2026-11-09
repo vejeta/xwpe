@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <poll.h>
-#include "we_ai_http.h"
+#include "we_ai_http_sync.h"
 
 /* The extra CA file is owned by the configuration layer (we_ai.c), which
  * this test does not link; left empty, the system trust store is used. */
@@ -31,7 +31,7 @@ int main(int argc, char **argv)
  char err[160] = "", buf[4096];
  int i, st, ok;
 
- if (wpe_http_open(url, &c, LIVE_OPEN_DEADLINE_MS, NULL, err, sizeof err)) {
+ if (wpe_http_open(url, &c, LIVE_OPEN_DEADLINE_MS, err, sizeof err)) {
   printf("open FAIL: %s\n", err);
   return 1;
  }

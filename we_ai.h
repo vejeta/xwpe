@@ -11,7 +11,7 @@
 #ifdef WPE_AI
 
 #include <stddef.h>   /* size_t */
-#include "we_ai_http.h"   /* wpe_http_watch: what a bounded wait listens to */
+#include "we_ai_http.h"
 
 /* ----- backend selection ------------------------------------------------- */
 enum {
@@ -258,29 +258,74 @@ typedef struct {
 } wpe_ai_req;
 
 /* ----- reachability / models (zero-config plug-and-play) ----------------- */
-/* Quick TCP reachability probe.  0 = reachable; -1 with a friendly hint in
- * errbuf (e.g. "Ollama not reachable at ... - run `ollama serve`"). */
-int  wpe_ai_preflight(int backend, char *errbuf, size_t errsz);
+/* Is the backend there at all?  For the HTTP backends a TCP connect on the
+ * editor's loop, bounded by WPE_AI_REACH_DEADLINE_MS; the mock and the claude
+ * CLI answer at once.  Returns WPE_AI_REACH_OK or _FAILED (the reason in
+ * errbuf, with what to do: "Ollama not reachable at ... - is it running? (try
+ * `ollama serve`)"), or _PENDING with *out set: done(ok, why, ud) is then
+ * called once from the loop, why worded the same way, unless
+ * wpe_ai_preflight_cancel comes first. */
+enum { WPE_AI_REACH_FAILED = -1, WPE_AI_REACH_PENDING = 0, WPE_AI_REACH_OK = 1 };
+typedef void (*wpe_ai_reached_fn)(int ok, const char *why, void *ud);
+typedef struct wpe_ai_reach wpe_ai_reach;
+int  wpe_ai_preflight_start(int backend, wpe_ai_reached_fn done, void *ud,
+                            wpe_ai_reach **out, char *errbuf, size_t errsz);
+void wpe_ai_preflight_cancel(wpe_ai_reach *r);
 
-/* GET an arbitrary http/https URL, returning its body (bounded to maxbytes,
- * caller frees *out).  Backs the built-in agent's web_fetch tool.  0 on
- * success, -1 on failure with a reason in errbuf. */
-int  wpe_ai_web_fetch(const char *url, size_t maxbytes, char **out,
-                      char *errbuf, size_t errsz);
+/* A web page for the built-in agent's web_fetch and web_search tools, read on
+ * the editor's loop: a model with no web tool of its own (Ollama, or a
+ * Groq/Lumo endpoint reached over the plain OpenAI protocol) can still read a
+ * page the user points it at, via the same TLS HTTP client the backends use.
+ * done(page, why, ud) is called once, from the loop: page is the body bounded
+ * to maxbytes (malloc'd, the callee frees it; a >= 400 status comes as content
+ * prefixed with "(HTTP nnn)"), or NULL with the reason in why ("timed out"
+ * after WPE_AI_WEB_DEADLINE_MS).  start returns NULL with the reason in errbuf
+ * when the fetch could not begin (done is then never called); cancel gives it
+ * up and done is not called. */
+typedef void (*wpe_ai_page_fn)(char *page, const char *why, void *ud);
+typedef struct wpe_ai_fetch wpe_ai_fetch;
+wpe_ai_fetch *wpe_ai_web_fetch_start(const char *url, size_t maxbytes,
+                                     wpe_ai_page_fn done, void *ud,
+                                     char *errbuf, size_t errsz);
+void          wpe_ai_web_fetch_cancel(wpe_ai_fetch *f);
 
-/* List available model names (Ollama /api/tags, OpenAI /v1/models, mock: one).
- * Fills names[0..max) with malloc'd strings; returns the count or -1. */
-int  wpe_ai_list_models(int backend, char **names, int max,
-                        char *errbuf, size_t errsz);
-/* The same, bounded by WPE_AI_LIST_DEADLINE_MS and abandoned with "listing
- * cancelled" when the watch (may be NULL) says the user pressed Esc. */
-int  wpe_ai_list_models_watch(int backend, char **names, int max,
-                              const wpe_http_watch *watch,
-                              char *errbuf, size_t errsz);
+/* ----- the models a backend offers ----------------------------------------- */
+/* The most names one listing hands over. */
+#define WPE_AI_MODELS_MAX 32
+/* wpe_ai_list_models_now / wpe_ai_ensure_model_now: the list is the server's. */
+#define WPE_AI_LIST_ONLINE (-2)
 
-/* If e_ai_model is empty, fill it with the first available model.  0 on success
- * (or already set); -1 if none could be determined (errbuf set). */
-int  wpe_ai_ensure_model(char *errbuf, size_t errsz);
+/* The names a backend offers without asking a server (mock: one; the Claude
+ * backends: their aliases), into names[0..max) as malloc'd strings.  Returns
+ * the count, or WPE_AI_LIST_ONLINE for Ollama and OpenAI-compatible, whose
+ * lists come from the endpoint (wpe_ai_list_models_start). */
+int  wpe_ai_list_models_now(int backend, char **names, int max);
+
+/* Ask the endpoint for its models (Ollama /api/tags, OpenAI /v1/models) on the
+ * editor's loop, bounded by WPE_AI_LIST_DEADLINE_MS.  done(n, names, why, ud)
+ * is called once, from the loop: names[0..n) are valid for the call only; n is
+ * -1 with the reason in why ("HTTP 401 from host:port: ...", "no answer from
+ * host:port within 5 s").  start returns NULL with the reason in errbuf when
+ * the listing could not begin (a refused local connect); done is then never
+ * called.  cancel gives it up and done is not called. */
+typedef void (*wpe_ai_models_fn)(int n, char **names, const char *why, void *ud);
+typedef struct wpe_ai_listing wpe_ai_listing;
+wpe_ai_listing *wpe_ai_list_models_start(int backend, wpe_ai_models_fn done, void *ud,
+                                         char *errbuf, size_t errsz);
+void            wpe_ai_list_models_cancel(wpe_ai_listing *l);
+
+/* Must a request learn the backend's models first?  1 when AIModel is empty
+ * and the backend needs one named (the claude CLI picks its own). */
+int  wpe_ai_model_missing(void);
+/* Make the best of names[0..n) the session's model (a code model first, then
+ * the larger).  0, or -1 with the reason in errbuf when n <= 0 (an empty
+ * errbuf gets "No Ollama models found ... ollama pull ...", or "no models
+ * available"). */
+int  wpe_ai_take_model(char **names, int n, char *errbuf, size_t errsz);
+/* The same for a backend whose list needs no server: 0 when the model is
+ * set (or was already), -1 with the reason, WPE_AI_LIST_ONLINE when the
+ * server must be asked first. */
+int  wpe_ai_ensure_model_now(char *errbuf, size_t errsz);
 
 /* ----- streaming chat ---------------------------------------------------- */
 typedef struct wpe_ai_stream wpe_ai_stream;
@@ -315,19 +360,6 @@ char *wpe_ai_stream_error_message(wpe_ai_stream *st);
  * must refuse to act on it. */
 int   wpe_ai_stream_had_error(wpe_ai_stream *st);
 void  wpe_ai_stream_free(wpe_ai_stream *st);
-
-/* Called repeatedly while wpe_ai_complete waits, ~8x/second, with the seconds
- * elapsed so far -- the UI uses it to animate a "working" spinner so a slow
- * local model does not look frozen.  May be NULL. */
-typedef void (*wpe_ai_progress_cb)(void *ud, int elapsed_s);
-
-/* Collect the FULL assistant reply (for Edit/Plan/Agent, which need the whole
- * answer before acting).  Pumps a progress callback while it waits and aborts if
- * the user presses Esc.  Returns malloc'd text, or NULL (errbuf says why:
- * "cancelled", "timed out", ...). */
-char *wpe_ai_complete(const wpe_ai_req *req, int timeout_ms,
-                      wpe_ai_progress_cb progress, void *ud,
-                      char *errbuf, size_t errsz);
 
 /* ----- line diff (we_ai_diff.c) ----------------------------------------- */
 /* Unified-style line diff of a -> b (space/-/+ prefixes).  Malloc'd; NULL on

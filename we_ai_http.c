@@ -30,6 +30,7 @@
 #endif
 
 #include "we_ai_http.h"
+#include "we_fdloop.h"   /* the GET is driven by the loop's descriptors and timers */
 
 /* The extra CA/self-signed cert to trust, owned by we_ai.c (AICAFile /
  * XWPE_AI_CAFILE); we_ai_http.c does not pull the whole we_ai.h/edit.h graph. */
@@ -108,11 +109,11 @@ static void ai_http_seterr(char *buf, size_t sz, const char *msg)
  if (buf && sz) { strncpy(buf, msg, sz - 1); buf[sz - 1] = '\0'; }
 }
 
-/* ----- the bounded, non-blocking open ------------------------------------
+/* ----- the non-blocking open -------------------------------------------
  * The editor never waits inside connect() or the TLS handshake: the socket is
- * non-blocking from its creation, every wait is a poll() with a deadline, and
- * a caller with its own event loop (the chat, the Edit) drives the open one
- * step per wake-up with wpe_http_open_begin / wpe_http_open_step.  Name
+ * non-blocking from its creation, and the caller's event loop (the chat, the
+ * Edit, a GET) drives the open one step per wake-up with wpe_http_open_begin /
+ * wpe_http_open_step; the deadline is the caller's timer.  Name
  * resolution is the one step outside the deadline: a numeric host or
  * "localhost" resolves at once from the hosts file, and a name is bounded by
  * the system resolver's own timeout. */
@@ -124,11 +125,6 @@ static void ai_http_seterr(char *buf, size_t sz, const char *msg)
 #define AI_HTTP_TLS_CLOSED      "the server closed the connection during the handshake"
 /* Said only when the reason is a certificate the editor could not verify. */
 #define AI_HTTP_TLS_CA_ADVICE   " -- if the server uses its own certificate, set its CA file in Options > AI (Alt-C)"
-/* How long one stalled write of a request waits for the socket to drain. */
-#define AI_HTTP_SEND_STALL_MS   10000
-/* How often a watched wait wakes to ask whether the user cancelled, for a
-   keyboard whose keys are not readable on the watched descriptor (X11). */
-#define AI_HTTP_WATCH_SLICE_MS  100
 #define AI_HTTP_MS_PER_S        1000L
 #define AI_HTTP_NS_PER_MS       1000000L
 /* Whether an open goes on to the TLS handshake of an https URL. */
@@ -517,6 +513,121 @@ int wpe_http_open_begin(const char *url, wpe_http_conn *c, char *errbuf, size_t 
  return ai_http_begin(url, c, AI_HTTP_WITH_TLS, errbuf, errsz);
 }
 
+int wpe_http_connect_begin(const char *url, wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ return ai_http_begin(url, c, AI_HTTP_WITHOUT_TLS, errbuf, errsz);
+}
+
+/* ----- the reachability check, on the loop ------------------------------ */
+
+/* Room for the reason a reachability check failed. */
+#define AI_HTTP_REACH_WHY_MAX 400
+
+struct wpe_http_reach {
+ wpe_http_conn       conn;
+ int                 deadline_ms;
+ int                 timer;
+ wpe_http_reached_fn done;
+ void               *ud;
+};
+
+/**
+ * ai_http_reach_free - Close the check's socket and leave the loop.
+ * @r: the check.
+ */
+static void ai_http_reach_free(wpe_http_reach *r)
+{
+ if (r->conn.fd >= 0)
+  wpe_fd_del(r->conn.fd);
+ wpe_timer_del(r->timer);
+ wpe_http_close(&r->conn);
+ free(r);
+}
+
+/**
+ * ai_http_reach_end - Tell the check's owner the outcome, then free it.
+ * @r: the check; @ok: 1 when something listens; @why: the reason when not.
+ */
+static void ai_http_reach_end(wpe_http_reach *r, int ok, const char *why)
+{
+ wpe_http_reached_fn done = r->done;
+ void *ud = r->ud;
+ char line[AI_HTTP_REACH_WHY_MAX];
+ snprintf(line, sizeof line, "%s", why ? why : "");
+ ai_http_reach_free(r);
+ done(ok, line, ud);
+}
+
+/**
+ * ai_http_reach_on_fd - The connect settled (or woke): tell the owner.
+ * @fd: the socket; @data: the check.
+ */
+static void ai_http_reach_on_fd(int fd, void *data)
+{
+ wpe_http_reach *r = data;
+ char why[AI_HTTP_REACH_WHY_MAX];
+ int rc;
+ (void)fd;
+ why[0] = '\0';
+ rc = wpe_http_open_step(&r->conn, why, sizeof why);
+ if (rc == WPE_HTTP_OPEN_PENDING) {
+  wpe_fd_add(r->conn.fd, r->conn.want, ai_http_reach_on_fd, r);
+  return;
+ }
+ ai_http_reach_end(r, rc == WPE_HTTP_OPEN_READY, why);
+}
+
+/**
+ * ai_http_reach_on_deadline - Nothing answered the connect in time.
+ * @data: the check.
+ */
+static void ai_http_reach_on_deadline(void *data)
+{
+ wpe_http_reach *r = data;
+ char why[AI_HTTP_REACH_WHY_MAX];
+ r->timer = 0;
+ wpe_http_describe_timeout(&r->conn, r->deadline_ms, why, sizeof why);
+ ai_http_reach_end(r, 0, why);
+}
+
+int wpe_http_reach_start(const char *url, int deadline_ms, wpe_http_reached_fn done,
+                         void *ud, wpe_http_reach **out, char *errbuf, size_t errsz)
+{
+ wpe_http_reach *r = calloc(1, sizeof *r);
+ int rc;
+ *out = NULL;
+ if (!r) { ai_http_seterr(errbuf, errsz, "out of memory"); return WPE_HTTP_OPEN_FAILED; }
+ rc = ai_http_begin(url, &r->conn, AI_HTTP_WITHOUT_TLS, errbuf, errsz);
+ if (rc != WPE_HTTP_OPEN_PENDING) {
+  wpe_http_close(&r->conn);
+  free(r);
+  return rc;
+ }
+ r->deadline_ms = deadline_ms;
+ r->done = done;
+ r->ud = ud;
+ if (wpe_fd_add(r->conn.fd, r->conn.want, ai_http_reach_on_fd, r) < 0) {
+  if (errbuf && errsz) wpe_fd_refusal("the connection", r->conn.fd, errbuf, errsz);
+  ai_http_reach_free(r);
+  return WPE_HTTP_OPEN_FAILED;
+ }
+ r->timer = wpe_timer_add(deadline_ms, 0, ai_http_reach_on_deadline, r);
+ if (r->timer <= WPE_TIMER_NONE) {
+  r->timer = WPE_TIMER_NONE;
+  if (errbuf && errsz) wpe_fd_refusal("the connection", r->conn.fd, errbuf, errsz);
+  ai_http_reach_free(r);
+  return WPE_HTTP_OPEN_FAILED;
+ }
+ *out = r;
+ return WPE_HTTP_OPEN_PENDING;
+}
+
+void wpe_http_reach_cancel(wpe_http_reach *r)
+{
+ if (r)
+  ai_http_reach_free(r);
+}
+
 int wpe_http_open_step(wpe_http_conn *c, char *errbuf, size_t errsz)
 {
  if (c->phase == WPE_HTTP_PHASE_CONNECT)
@@ -531,94 +642,13 @@ int wpe_http_open_events(const wpe_http_conn *c)
  return c->want;
 }
 
-/**
- * ai_http_watch_slice - How long one poll may sleep before asking the watch.
- * @w: the watch, or NULL; @left: the milliseconds to the deadline.
- *
- * Return: @left, cut to AI_HTTP_WATCH_SLICE_MS when someone must be asked.
- */
-static long ai_http_watch_slice(const wpe_http_watch *w, long left)
-{
- if (w && w->cancelled && left > AI_HTTP_WATCH_SLICE_MS)
-  return AI_HTTP_WATCH_SLICE_MS;
- return left;
-}
-
-int wpe_http_wait(int fd, int events, long deadline, const wpe_http_watch *w)
-{
- struct pollfd pf[2];
- int n = 1, pr;
- long left = deadline - wpe_http_now_ms();
- if (left <= 0) return WPE_HTTP_WAIT_TIMEOUT;
- pf[0].fd = fd; pf[0].events = (short)events; pf[0].revents = 0;
- if (w && w->fd >= 0) {
-  pf[1].fd = w->fd; pf[1].events = POLLIN; pf[1].revents = 0;
-  n = 2;
- }
- pr = poll(pf, (nfds_t)n, (int)ai_http_watch_slice(w, left));
- if (w && w->cancelled && w->cancelled(w->ud))
-  return WPE_HTTP_WAIT_CANCELLED;
- if (pr < 0 && errno != EINTR)
-  return WPE_HTTP_WAIT_READY;              /* let the caller's step see the error */
- if (pr > 0 && pf[0].revents)
-  return WPE_HTTP_WAIT_READY;
- return WPE_HTTP_WAIT_IDLE;
-}
-
-/**
- * ai_http_wait_open - Drive an open to its end, no later than the deadline.
- * @c: the connection; @rc: what the begin returned; @deadline: absolute ms;
- * @deadline_ms: the same as a length, for the message; @w: the watch, or NULL;
- * @errbuf, @errsz: the reason on failure.
- *
- * Return: WPE_HTTP_OPEN_READY or WPE_HTTP_OPEN_FAILED.
- */
-static int ai_http_wait_open(wpe_http_conn *c, int rc, long deadline, int deadline_ms,
-                             const wpe_http_watch *w, char *errbuf, size_t errsz)
-{
- while (rc == WPE_HTTP_OPEN_PENDING) {
-  int seen = wpe_http_wait(c->fd, c->want, deadline, w);
-  if (seen == WPE_HTTP_WAIT_TIMEOUT) {
-   wpe_http_describe_timeout(c, deadline_ms, errbuf, errsz);
-   return WPE_HTTP_OPEN_FAILED;
-  }
-  if (seen == WPE_HTTP_WAIT_CANCELLED) {
-   ai_http_seterr(errbuf, errsz, "cancelled");
-   return WPE_HTTP_OPEN_FAILED;
-  }
-  if (seen == WPE_HTTP_WAIT_READY)
-   rc = wpe_http_open_step(c, errbuf, errsz);
- }
- return rc;
-}
-
-int wpe_http_open(const char *url, wpe_http_conn *c, int deadline_ms,
-                  const wpe_http_watch *watch, char *errbuf, size_t errsz)
-{
- long deadline = wpe_http_now_ms() + deadline_ms;
- int rc = ai_http_begin(url, c, AI_HTTP_WITH_TLS, errbuf, errsz);
- rc = ai_http_wait_open(c, rc, deadline, deadline_ms, watch, errbuf, errsz);
- if (rc != WPE_HTTP_OPEN_READY) {
-  wpe_http_close(c);
-  return -1;
- }
- return 0;
-}
-
-int wpe_http_reach(const char *url, int deadline_ms, char *errbuf, size_t errsz)
-{
- wpe_http_conn c;
- long deadline = wpe_http_now_ms() + deadline_ms;
- int rc = ai_http_begin(url, &c, AI_HTTP_WITHOUT_TLS, errbuf, errsz);
- rc = ai_http_wait_open(&c, rc, deadline, deadline_ms, NULL, errbuf, errsz);
- wpe_http_close(&c);
- return rc == WPE_HTTP_OPEN_READY ? 0 : -1;
-}
-
 void wpe_http_close(wpe_http_conn *c)
 {
  if (!c) return;
  ai_http_free_addrs(c);
+ free(c->out);
+ c->out = NULL;
+ c->out_len = c->out_off = 0;
 #ifdef WPE_AI_TLS
  if (c->tls) {
 # ifdef WPE_AI_TLS_OPENSSL
@@ -667,91 +697,449 @@ ssize_t wpe_http_read(wpe_http_conn *c, void *buf, size_t n)
  return -1;
 }
 
-/**
- * ai_http_await - Wait for a stalled socket to take or give bytes again.
- * @fd: the socket; @events: POLLOUT for a full send buffer, POLLIN when TLS
- * must read before it can write.
- *
- * A request is small and the server reads it at once, so this is normally
- * never reached; a server that stops reading ends the send after
- * AI_HTTP_SEND_STALL_MS instead of holding the editor.
- *
- * Return: 1 when the socket is ready, 0 when it stayed stalled.
- */
-static int ai_http_await(int fd, int events)
-{
- long deadline = wpe_http_now_ms() + AI_HTTP_SEND_STALL_MS;
- int seen;
- do
-  seen = wpe_http_wait(fd, events, deadline, NULL);
- while (seen == WPE_HTTP_WAIT_IDLE);
- return seen == WPE_HTTP_WAIT_READY;
-}
+/* ----- the send, one wake-up at a time ------------------------------------
+ * The whole request is built once into the connection and written from the
+ * caller's loop as the socket takes it.  A TLS write that could not finish is
+ * retried with the same buffer and length (both libraries require that),
+ * which the buffer held here guarantees; no write ever waits. */
 
-ssize_t wpe_http_write_all(wpe_http_conn *c, const void *buf, size_t n)
+/* Room for the request line and the headers of any request the assistant sends. */
+#define AI_HTTP_HEADER_MAX 8192
+
+/**
+ * ai_http_header_text - Write the request line and the headers into @hdr.
+ * @c: the connection (Host); @method, @path: the request; @headers: the
+ * caller's extra headers, NULL-terminated, or NULL; @body: the body or NULL.
+ *
+ * Return: the header's length, or 0 when it does not fit.
+ */
+static size_t ai_http_header_text(char *hdr, size_t sz, const wpe_http_conn *c,
+                                  const char *method, const char *path,
+                                  const char *const *headers, const char *body)
 {
  size_t off = 0;
- const char *p = buf;
- while (off < n) {
-#ifdef WPE_AI_TLS
-  if (c->is_tls) {
-# ifdef WPE_AI_TLS_OPENSSL
-   int w = SSL_write((SSL *)c->tls, p + off, (int)(n - off));
-   if (w > 0) { off += (size_t)w; continue; }
-   {
-    int e = SSL_get_error((SSL *)c->tls, w);
-    if (e == SSL_ERROR_WANT_WRITE && ai_http_await(c->fd, POLLOUT)) continue;
-    if (e == SSL_ERROR_WANT_READ && ai_http_await(c->fd, POLLIN)) continue;
-    return -1;
-   }
-# else
-   ssize_t w = tls_write(c->tls, p + off, n - off);
-   if (w == TLS_WANT_POLLOUT && ai_http_await(c->fd, POLLOUT)) continue;
-   if (w == TLS_WANT_POLLIN && ai_http_await(c->fd, POLLIN)) continue;
-   if (w < 0) return -1;
-   off += (size_t)w;
-   continue;
-# endif
-  }
-#endif
-  {
-   ssize_t w = write(c->fd, p + off, n - off);
-   if (w >= 0) { off += (size_t)w; continue; }
-   if (errno == EINTR) continue;
-   if ((errno == EAGAIN || errno == EWOULDBLOCK) && ai_http_await(c->fd, POLLOUT))
-    continue;
-   return -1;
-  }
- }
- return (ssize_t)off;
+ int i;
+ off += snprintf(hdr + off, sz - off, "%s %s HTTP/1.1\r\n",
+                 method, (path && *path) ? path : "/");
+ off += snprintf(hdr + off, sz - off, "Host: %s:%d\r\n", c->host, c->port);
+ off += snprintf(hdr + off, sz - off, "User-Agent: xwpe\r\n");
+ off += snprintf(hdr + off, sz - off, "Accept: */*\r\n");
+ off += snprintf(hdr + off, sz - off, "Connection: close\r\n");
+ for (i = 0; headers && headers[i] && off < sz; i++)
+  off += snprintf(hdr + off, sz - off, "%s\r\n", headers[i]);
+ if (body && off < sz)
+  off += snprintf(hdr + off, sz - off, "Content-Length: %zu\r\n", strlen(body));
+ if (off < sz)
+  off += snprintf(hdr + off, sz - off, "\r\n");
+ if (off >= sz)
+  return 0;
+ return off;
 }
 
-int wpe_http_request(wpe_http_conn *c, const char *method, const char *path,
-                     const char *const *headers, const char *body)
+int wpe_http_send_begin(wpe_http_conn *c, const char *method, const char *path,
+                        const char *const *headers, const char *body)
 {
- char hdr[8192];
- size_t off = 0, blen = body ? strlen(body) : 0;
- int i;
-
- off += snprintf(hdr + off, sizeof hdr - off, "%s %s HTTP/1.1\r\n",
-                 method, (path && *path) ? path : "/");
- off += snprintf(hdr + off, sizeof hdr - off, "Host: %s:%d\r\n", c->host, c->port);
- off += snprintf(hdr + off, sizeof hdr - off, "User-Agent: xwpe\r\n");
- off += snprintf(hdr + off, sizeof hdr - off, "Accept: */*\r\n");
- off += snprintf(hdr + off, sizeof hdr - off, "Connection: close\r\n");
- if (headers)
-  for (i = 0; headers[i]; i++)
-   off += snprintf(hdr + off, sizeof hdr - off, "%s\r\n", headers[i]);
- if (body)
-  off += snprintf(hdr + off, sizeof hdr - off, "Content-Length: %zu\r\n", blen);
- off += snprintf(hdr + off, sizeof hdr - off, "\r\n");
- if (off >= sizeof hdr) return -1;
-
- if (wpe_http_write_all(c, hdr, off) < 0) return -1;
- if (body && blen && wpe_http_write_all(c, body, blen) < 0) return -1;
- /* The socket has been non-blocking since the open, so the streaming reads
-    already fit the editor's fd-loop. */
+ char hdr[AI_HTTP_HEADER_MAX];
+ size_t hlen = ai_http_header_text(hdr, sizeof hdr, c, method, path, headers, body);
+ size_t blen = body ? strlen(body) : 0;
+ if (hlen == 0)
+  return -1;
+ free(c->out);
+ c->out = malloc(hlen + blen + 1);
+ if (!c->out)
+  return -1;
+ memcpy(c->out, hdr, hlen);
+ if (blen)
+  memcpy(c->out + hlen, body, blen);
+ c->out_len = hlen + blen;
+ c->out_off = 0;
+ c->out_moved = wpe_http_now_ms();
+ c->want = POLLOUT;
  return 0;
+}
+
+/* What one write attempt of the send did. */
+#define AI_HTTP_WROTE_FAILED  (-1)
+#define AI_HTTP_WROTE_WAIT_OUT  0     /* the socket is full: wait until it is writable */
+#define AI_HTTP_WROTE_WAIT_IN   (-2)  /* TLS must read before it can write */
+
+/**
+ * ai_http_write_once - One write of what is left of the request.
+ * @c: the connection.
+ *
+ * Return: the bytes taken, or AI_HTTP_WROTE_*.
+ */
+static ssize_t ai_http_write_once(wpe_http_conn *c)
+{
+ const char *p = c->out + c->out_off;
+ size_t n = c->out_len - c->out_off;
+ ssize_t w;
+#ifdef WPE_AI_TLS
+ if (c->is_tls) {
+# ifdef WPE_AI_TLS_OPENSSL
+  int r = SSL_write((SSL *)c->tls, p, (int)n);
+  int e;
+  if (r > 0) return r;
+  e = SSL_get_error((SSL *)c->tls, r);
+  if (e == SSL_ERROR_WANT_WRITE) return AI_HTTP_WROTE_WAIT_OUT;
+  if (e == SSL_ERROR_WANT_READ) return AI_HTTP_WROTE_WAIT_IN;
+  return AI_HTTP_WROTE_FAILED;
+# else
+  w = tls_write(c->tls, p, n);
+  if (w == TLS_WANT_POLLOUT) return AI_HTTP_WROTE_WAIT_OUT;
+  if (w == TLS_WANT_POLLIN) return AI_HTTP_WROTE_WAIT_IN;
+  if (w < 0) return AI_HTTP_WROTE_FAILED;
+  return w;
+# endif
+ }
+#endif
+ w = write(c->fd, p, n);
+ if (w > 0) return w;
+ if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+  return AI_HTTP_WROTE_WAIT_OUT;
+ return AI_HTTP_WROTE_FAILED;
+}
+
+int wpe_http_send_step(wpe_http_conn *c)
+{
+ while (c->out && c->out_off < c->out_len) {
+  ssize_t w = ai_http_write_once(c);
+  if (w == AI_HTTP_WROTE_FAILED)
+   return WPE_HTTP_SEND_FAILED;
+  if (w == AI_HTTP_WROTE_WAIT_OUT) {
+   c->want = POLLOUT;
+   return WPE_HTTP_SEND_PENDING;
+  }
+  if (w == AI_HTTP_WROTE_WAIT_IN) {
+   c->want = POLLIN;
+   return WPE_HTTP_SEND_PENDING;
+  }
+  c->out_off += (size_t)w;
+  c->out_moved = wpe_http_now_ms();
+ }
+ free(c->out);
+ c->out = NULL;
+ c->out_len = c->out_off = 0;
+ c->want = POLLIN;
+ return WPE_HTTP_SEND_DONE;
+}
+
+int wpe_http_send_stalled(const wpe_http_conn *c, long now_ms)
+{
+ if (!c->out)
+  return 0;
+ return now_ms - c->out_moved >= WPE_HTTP_SEND_STALL_MS;
+}
+
+void wpe_http_describe_stall(const wpe_http_conn *c, char *errbuf, size_t errsz)
+{
+ if (errbuf && errsz)
+  snprintf(errbuf, errsz, "%s:%d stopped reading the request (nothing sent for %d s)",
+           c->host, c->port, WPE_HTTP_SEND_STALL_MS / (int)AI_HTTP_MS_PER_S);
+}
+
+/* ----- one whole GET on the editor's loop --------------------------------- */
+
+/* How much the GET reads in one go. */
+#define AI_HTTP_GET_CHUNK 4096
+/* Room for the reason a GET failed. */
+#define AI_HTTP_GET_WHY_MAX 400
+/* The status of an answer whose status line never came: the server closed
+   the connection without answering, which the owner reads as "no response". */
+#define AI_HTTP_NO_STATUS 0
+
+struct wpe_http_get {
+ wpe_http_conn   conn;
+ wpe_http_stream hs;
+ char           *path;
+ char           *hdrs;        /* the caller's headers, copied, '\0'-separated */
+ int             nhdrs;
+ int             deadline_ms;
+ size_t          maxbytes;
+ int             timer;       /* the deadline's one-shot timer */
+ int             sent;        /* the request has gone out whole */
+ wpe_http_got_fn done;
+ void           *ud;
+ char            why[AI_HTTP_GET_WHY_MAX];
+};
+
+static void ai_http_get_on_fd(int fd, void *data);
+
+/**
+ * ai_http_get_free - Let go of everything a GET holds, from the loop too.
+ * @g: the GET.
+ */
+static void ai_http_get_free(wpe_http_get *g)
+{
+ if (g->conn.fd >= 0)
+  wpe_fd_del(g->conn.fd);
+ wpe_timer_del(g->timer);
+ wpe_http_close(&g->conn);
+ wpe_http_stream_free(&g->hs);
+ free(g->path);
+ free(g->hdrs);
+ free(g);
+}
+
+/**
+ * ai_http_get_end - Tell the GET's owner how it ended, then free it.
+ * @g: the GET; @how: WPE_HTTP_GOT_*.
+ *
+ * The GET leaves the loop before its owner is told, so whatever the owner
+ * opens from its continuation (a picker, the next request) never finds
+ * this socket still watched.  A deadline or a failure after part of the
+ * body came hands that part over as a DONE, as an answer cut short.
+ */
+static void ai_http_get_end(wpe_http_get *g, int how)
+{
+ wpe_http_got got;
+ char phrase[96];
+ if (g->conn.fd >= 0)
+  wpe_fd_del(g->conn.fd);
+ wpe_timer_del(g->timer);
+ g->timer = 0;
+ if (how != WPE_HTTP_GOT_DONE && g->hs.body_len > 0)
+  how = WPE_HTTP_GOT_DONE;
+ phrase[0] = '\0';
+ wpe_http_stream_status_reason(&g->hs, phrase, sizeof phrase);
+ got.how = how;
+ got.status = wpe_http_stream_status(&g->hs);
+ got.body = g->hs.body ? g->hs.body : "";
+ got.body_len = g->hs.body_len;
+ got.phrase = phrase;
+ got.why = g->why;
+ g->done(&got, g->ud);
+ ai_http_get_free(g);
+}
+
+/**
+ * ai_http_get_fail - End the GET with a reason the owner shows.
+ * @g: the GET; @how: WPE_HTTP_GOT_FAILED or _TIMED_OUT; @why: the reason.
+ */
+static void ai_http_get_fail(wpe_http_get *g, int how, const char *why)
+{
+ snprintf(g->why, sizeof g->why, "%s", why);
+ ai_http_get_end(g, how);
+}
+
+/**
+ * ai_http_get_on_deadline - The GET's deadline came before its answer.
+ * @data: the GET.
+ */
+static void ai_http_get_on_deadline(void *data)
+{
+ wpe_http_get *g = data;
+ char why[AI_HTTP_GET_WHY_MAX];
+ g->timer = 0;                         /* a one-shot timer is gone once it fired */
+ wpe_http_describe_timeout(&g->conn, g->deadline_ms, why, sizeof why);
+ ai_http_get_fail(g, WPE_HTTP_GOT_TIMED_OUT, why);
+}
+
+/**
+ * ai_http_get_headers - The caller's headers as the NULL-terminated list
+ * wpe_http_send_begin takes.
+ * @g: the GET; @list: room for g->nhdrs + 1 pointers.
+ */
+static void ai_http_get_headers(const wpe_http_get *g, const char **list)
+{
+ const char *p = g->hdrs;
+ int i;
+ for (i = 0; i < g->nhdrs; i++) {
+  list[i] = p;
+  p += strlen(p) + 1;
+ }
+ list[g->nhdrs] = NULL;
+}
+
+/**
+ * ai_http_get_send - The connection stands: build the request and send it.
+ * @g: the GET.  Return: WPE_HTTP_SEND_*.
+ */
+static int ai_http_get_send(wpe_http_get *g)
+{
+ const char **list = malloc(((size_t)g->nhdrs + 1) * sizeof *list);
+ int rc;
+ if (!list)
+  return WPE_HTTP_SEND_FAILED;
+ ai_http_get_headers(g, list);
+ rc = wpe_http_send_begin(&g->conn, "GET", g->path, list, NULL);
+ free(list);
+ if (rc < 0)
+  return WPE_HTTP_SEND_FAILED;
+ g->sent = 1;
+ return wpe_http_send_step(&g->conn);
+}
+
+/**
+ * ai_http_get_read - Take what the server has sent so far.
+ * @g: the GET.  Return: 1 when the answer is complete, 0 to read on.
+ */
+static int ai_http_get_read(wpe_http_get *g)
+{
+ char buf[AI_HTTP_GET_CHUNK];
+ for (;;) {
+  ssize_t r = wpe_http_read(&g->conn, buf, sizeof buf);
+  if (r == 0)
+   return wpe_http_stream_done(&g->hs);
+  if (r < 0) {
+   wpe_http_stream_eof(&g->hs);
+   return 1;
+  }
+  if (wpe_http_stream_push(&g->hs, buf, (size_t)r) < 0)
+   return 1;
+  if (g->maxbytes && g->hs.body_len >= g->maxbytes)
+   return 1;
+  if (wpe_http_stream_done(&g->hs))
+   return 1;
+ }
+}
+
+/**
+ * ai_http_get_advance - Take the GET as far as the socket allows now.
+ * @g: the GET.  Return: 1 when it has ended (and is freed), 0 to wait on.
+ */
+static int ai_http_get_advance(wpe_http_get *g)
+{
+ char why[AI_HTTP_GET_WHY_MAX];
+ int rc;
+ why[0] = '\0';
+ if (g->conn.phase != WPE_HTTP_PHASE_READY) {
+  rc = wpe_http_open_step(&g->conn, why, sizeof why);
+  if (rc == WPE_HTTP_OPEN_FAILED) {
+   ai_http_get_fail(g, WPE_HTTP_GOT_FAILED, why[0] ? why : "connection failed");
+   return 1;
+  }
+  if (rc == WPE_HTTP_OPEN_PENDING)
+   return 0;
+ }
+ if (!g->sent)
+  rc = ai_http_get_send(g);
+ else
+  rc = wpe_http_send_step(&g->conn);
+ if (rc == WPE_HTTP_SEND_FAILED) {
+  ai_http_get_fail(g, WPE_HTTP_GOT_FAILED, "request failed");
+  return 1;
+ }
+ if (rc == WPE_HTTP_SEND_PENDING)
+  return 0;
+ if (!ai_http_get_read(g))
+  return 0;
+ if (wpe_http_stream_status(&g->hs) == AI_HTTP_NO_STATUS) {
+  ai_http_get_fail(g, WPE_HTTP_GOT_FAILED, "no response");
+  return 1;
+ }
+ ai_http_get_end(g, WPE_HTTP_GOT_DONE);
+ return 1;
+}
+
+/**
+ * ai_http_get_on_fd - The GET's socket woke: open, send or read on.
+ * @fd: the socket; @data: the GET.
+ */
+static void ai_http_get_on_fd(int fd, void *data)
+{
+ wpe_http_get *g = data;
+ (void)fd;
+ if (ai_http_get_advance(g))
+  return;
+ wpe_fd_add(g->conn.fd, g->conn.want, ai_http_get_on_fd, g);
+}
+
+/**
+ * ai_http_get_copy_headers - Keep the caller's headers for the send.
+ * @g: the GET; @headers: NULL-terminated, or NULL.  Return: 0, -1 out of memory.
+ */
+static int ai_http_get_copy_headers(wpe_http_get *g, const char *const *headers)
+{
+ size_t need = 1, off = 0;
+ int i;
+ for (i = 0; headers && headers[i]; i++)
+  need += strlen(headers[i]) + 1;
+ g->hdrs = malloc(need);
+ if (!g->hdrs)
+  return -1;
+ for (i = 0; headers && headers[i]; i++) {
+  size_t l = strlen(headers[i]) + 1;
+  memcpy(g->hdrs + off, headers[i], l);
+  off += l;
+ }
+ g->nhdrs = i;
+ return 0;
+}
+
+/**
+ * ai_http_get_first_events - What the new GET's socket is first watched for.
+ * @g: a GET whose connect has begun.
+ *
+ * A connect that is already through waits to send; one under way waits for
+ * what its open step names.
+ */
+static int ai_http_get_first_events(const wpe_http_get *g)
+{
+ if (g->conn.phase == WPE_HTTP_PHASE_READY)
+  return POLLOUT;
+ return wpe_http_open_events(&g->conn);
+}
+
+/**
+ * ai_http_get_refused - The loop has no room for the GET: say so and drop it.
+ * @g: the GET; @errbuf, @errsz: the line the owner shows.
+ *
+ * Without a watch or a deadline the answer would never be read and the
+ * owner's waiting line would stand for ever; the owner reports this at once
+ * instead, the way it reports a refused connect.
+ */
+static void ai_http_get_refused(wpe_http_get *g, char *errbuf, size_t errsz)
+{
+ if (errbuf && errsz)
+  wpe_fd_refusal("the answer", g->conn.fd, errbuf, errsz);
+ ai_http_get_free(g);
+}
+
+wpe_http_get *wpe_http_get_start(const char *url, const char *path,
+                                 const char *const *headers, int deadline_ms,
+                                 size_t maxbytes, wpe_http_got_fn done, void *ud,
+                                 char *errbuf, size_t errsz)
+{
+ wpe_http_get *g = calloc(1, sizeof *g);
+ if (!g) {
+  ai_http_seterr(errbuf, errsz, "out of memory");
+  return NULL;
+ }
+ g->conn.fd = -1;
+ wpe_http_stream_init(&g->hs);
+ g->deadline_ms = deadline_ms;
+ g->maxbytes = maxbytes;
+ g->done = done;
+ g->ud = ud;
+ g->path = malloc(strlen(path ? path : "") + 1);
+ if (!g->path || ai_http_get_copy_headers(g, headers) < 0) {
+  ai_http_seterr(errbuf, errsz, "out of memory");
+  ai_http_get_free(g);
+  return NULL;
+ }
+ strcpy(g->path, path ? path : "");
+ if (wpe_http_open_begin(url, &g->conn, errbuf, errsz) == WPE_HTTP_OPEN_FAILED) {
+  ai_http_get_free(g);
+  return NULL;
+ }
+ if (wpe_fd_add(g->conn.fd, ai_http_get_first_events(g), ai_http_get_on_fd, g) < 0) {
+  ai_http_get_refused(g, errbuf, errsz);
+  return NULL;
+ }
+ g->timer = wpe_timer_add(deadline_ms, 0, ai_http_get_on_deadline, g);
+ if (g->timer <= WPE_TIMER_NONE) {
+  g->timer = WPE_TIMER_NONE;
+  ai_http_get_refused(g, errbuf, errsz);
+  return NULL;
+ }
+ return g;
+}
+
+void wpe_http_get_cancel(wpe_http_get *g)
+{
+ if (g)
+  ai_http_get_free(g);
 }
 
 /* ===================== streaming decoder ================================= */
