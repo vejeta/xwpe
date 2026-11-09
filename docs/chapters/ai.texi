@@ -633,18 +633,22 @@ described below and to the post-edit hook (@code{AIEditHook}).
 
 @cindex AI, tool time limit
 @cindex AIToolTimeout
-While a command or a web tool runs, xwpe reads no keys, so the pane says what
-is happening: its last line reads @samp{[agent] running run_command @dots{}
-(result follows)} (or @code{web_search}, @code{web_fetch}) from before the run
-starts until its result lands.  A command is given @code{AIToolTimeout} seconds
-(default 60; also @env{XWPE_AI_TOOL_TIMEOUT}): when it runs longer, xwpe ends it
-(the whole process group, TERM then KILL), the pane says @samp{run_command timed
-out after @var{N} s} and the model reads @samp{TOOL ERROR: timed out after
-@var{N} s}, so it can split the work or you can raise the key for a command that
-legitimately needs longer.  The bound reaches the command's process group; a
-command that detaches itself from it (@command{setsid}, @command{nohup @dots{}
-&}) is beyond it and runs on.  The read-only tools and the post-edit hook run
-through the same function and share the limit.  The web tools have their own,
+While a command or a web tool runs, xwpe goes on taking keys, and the pane says
+what is happening: its last line reads @samp{[agent] running run_command
+@dots{} (result follows)} (or @code{web_search}, @code{web_fetch}) from before
+the run starts until its result lands.  @kbd{Esc} ends the task and the command
+with it.  A command is given @code{AIToolTimeout} seconds (default 60; also
+@env{XWPE_AI_TOOL_TIMEOUT}): when it runs longer, xwpe sends its whole process
+group SIGTERM and, if it is still there two seconds later, SIGKILL; the pane
+then says @samp{run_command timed out after @var{N} s} and the model reads
+@samp{TOOL ERROR: timed out after @var{N} s}, so it can split the work or you
+can raise the key for a command that legitimately needs longer.  A command that
+ignores SIGTERM therefore ends at the limit plus those two seconds.  The bound
+reaches the command's process group; a command that detaches itself from it
+(@command{setsid}, @command{nohup @dots{} &}) is beyond it and runs on.  The
+read-only tools (@code{list_dir}, @code{grep}, @code{glob}) run the same way
+and share the limit; the post-edit hook shares the limit too, but xwpe waits
+for it, since its result is applied at once.  The web tools have their own,
 shorter time limit on the connection.  A tool result is bounded in size as well:
 a command's output or a file read with @code{read_file} is cut at 6000 bytes and
 then ends with the line @samp{(output cut at 6000 bytes)}, so the model knows it

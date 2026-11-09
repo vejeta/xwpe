@@ -128,6 +128,8 @@ int  wpe_child_signal_pid(WpeChild *c, int sig);
 int  wpe_child_signal_named(WpeChild *c, int pid, int sig);
 void wpe_child_end(WpeChild *c, int polite_sig);
 void wpe_child_end_detached(WpeChild *c, int polite_sig);
+void wpe_child_end_rest(int pgid, int polite_sig);
+int  wpe_child_wake_fd(void);
 void wpe_child_forget(WpeChild *c);
 int  wpe_child_ended(const WpeChild *c, int *status);
 int  wpe_child_ending(void);

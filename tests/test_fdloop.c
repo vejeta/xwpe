@@ -1300,6 +1300,51 @@ static int test_del_keeps_the_queue_and_close_forgets_it(void)
  return 0;
 }
 
+/* Is the writer's end of the pipe whose reader is @rd closed?  A read of an
+ * emptied pipe says 0 (end of file) then, and EAGAIN while it is open. */
+static int writer_closed(int rd)
+{
+ char c;
+
+ return read(rd, &c, 1) == 0;
+}
+
+static int test_close_when_written_sends_every_byte_then_end_of_file(void)
+{
+ int p[2], q[2], r;
+ long fill = full_pipe(p);
+ char got[64];
+
+ if (fill <= 0) return 1;
+ if (wpe_fd_write(p[1], "last\n", 5, WRITE_WHAT, WRITE_ENDS) != WPE_FD_WRITE_QUEUED)
+ { printf("FAIL: not queued\n"); return 1; }
+ r = wpe_fd_close_when_written(p[1]);
+ if (r != 1)
+ { printf("FAIL: the input was closed with 5 bytes waiting (%d)\n", r); return 1; }
+ if (fcntl(p[1], F_GETFD) < 0)
+ { printf("FAIL: the descriptor is gone before its bytes went out\n"); return 1; }
+ wpe_fd_poll(0);
+ if (fcntl(p[1], F_GETFD) < 0)
+ { printf("FAIL: closed while the child read nothing\n"); return 1; }
+ if (drain_bytes(p[0], fill) != 0) return 1;
+ wpe_fd_poll(0);
+ read_now(p[0], got, sizeof got);
+ if (strcmp(got, "last\n"))
+ { printf("FAIL: the child read \"%s\", not the last bytes\n", got); return 1; }
+ if (!writer_closed(p[0]))
+ { printf("FAIL: no end of file after the last byte\n"); close(p[1]); close(p[0]); return 1; }
+ close(p[0]);
+ /* Nothing waiting: closed at once. */
+ if (pipe(q) != 0) return 1;
+ set_nonblocking(q[0]);
+ set_nonblocking(q[1]);
+ r = wpe_fd_close_when_written(q[1]);
+ if (r != 0 || !writer_closed(q[0]))
+ { printf("FAIL: an input with nothing queued was not closed at once (%d)\n", r); return 1; }
+ close(q[0]);
+ return 0;
+}
+
 int main(void)
 {
  int rc = 0;
@@ -1342,6 +1387,7 @@ int main(void)
  rc |= test_the_stall_line_comes_when_every_timer_is_taken();
  rc |= test_epipe_drops_the_queue_and_reports_closed();
  rc |= test_del_keeps_the_queue_and_close_forgets_it();
+ rc |= test_close_when_written_sends_every_byte_then_end_of_file();
  if (rc == 0) printf("test_fdloop: OK\n");
  return rc;
 }

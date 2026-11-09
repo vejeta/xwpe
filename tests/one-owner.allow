@@ -8,8 +8,11 @@
 # line.  "keep" is a permanent exception and stays in --strict mode too.
 # Each pass deletes the lines it clears; the last pass deletes the file.
 
-# the assistant's tool commands: their output is captured with a wait
-we_ai.o poll 1 P9s the capture of a tool command's output
+# the assistant's commands whose callers need the answer before they return
+# (the edit hook, the checkpoint, the changeset review inside its own key
+# loop): one bounded wait on the command's output and the owner's wake pipe.
+# A tool step's command runs on the loop.
+we_ai.o poll 1 P9s2 the bounded wait of the hook, checkpoint and review commands
 
 # the debugger
 we_debug.o usleep 1 P9o the external xterm settle
@@ -48,24 +51,13 @@ we_prog.o popen 1 P9n
 we_prog.o pclose 1 P9n
 we_debug.o popen 1 P9n
 we_debug.o pclose 1 P9n
-we_ai.o fork 2 P9s
-we_ai.o kill 2 P9s
-we_ai.o waitpid 2 P9s
-we_ai.o setsid 1 P9s
-we_ai.o execv 1 P9s
-we_ai.o execvp 1 P9s
-we_ai_host.o fork 1 P9s
-we_ai_host.o kill 3 P9s
-we_ai_host.o waitpid 3 P9s
-we_ai_host.o execvp 2 P9s
 we_render_cairo.o popen 1 P9n
 we_render_cairo.o pclose 2 P9n
 we_fl_fkt.o system 2 P9n
 we_fl_unix.o system 2 P9n
 
 # writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
-we_ai_host.o write 4 P9s the hosted engine's turn, permission answers and interrupt
-we_ai.o write 2 P9s the prompt to the command-line backend moves; the test backend's temporary file stays
+we_ai.o write 1 keep the test backend's temporary file, not a child
 we_ai_http.o write 1 keep a server's socket, not a child: written from the loop's wake-ups, a TLS write retried with the same buffer
 we_wayland.o write 1 P9o the clipboard pipe
 we_ai.o fdopen 1 keep the API key file, not a child

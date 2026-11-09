@@ -571,6 +571,48 @@ static void test_a_member_deaf_to_sigterm_is_killed_after_its_leader_ended(void)
 	close_ends(&r);
 }
 
+/* What a shell that leaves at once leaves behind: a member of its group,
+ * deaf to SIGTERM, still holding the shell's output.  The member says its
+ * PID once it is deaf, so no signal can reach it before. */
+#define LEADER_GONE_MEMBER_DEAF "(trap '' TERM; exec sh -c 'echo $$; exec sleep 30') &"
+
+/* A shell already reported ended, a member of its group still running (an
+ * assistant's command that put something in the background): the rest of
+ * the group gets the polite signal, then SIGKILL when the grace is over; a
+ * group with nobody left is not signalled and costs no ladder. */
+static void test_the_rest_of_a_group_whose_leader_ended_is_ended_after_the_grace(void)
+{
+	static Run r;
+	pid_t bg, leader;
+	long t0, deadline, gone_ms;
+
+	chk("start", start_sh(&r, LEADER_GONE_MEMBER_DEAF), 0);
+	leader = r.c.pid;
+	bg = read_pid(r.c.out_fd);
+	chk_true("the member's pid", bg > 0);
+	loop_until_ended(&r, 1, SLACK_MS);
+	chk("the shell's end was reported", r.calls, 1);
+	chk_true("the member outlives its shell", bg > 0 && kill(bg, 0) == 0);
+	t0 = now_ms();
+	wpe_child_end_rest(leader, SIGTERM);
+	chk("its end is on the ladder", wpe_child_ending(), 1);
+	wpe_fd_poll(0);
+	chk_true("the member outlives the polite signal", kill(bg, 0) == 0);
+	deadline = t0 + WPE_CHILD_END_GRACE_MS + SLACK_MS;
+	while (kill(bg, 0) == 0 && now_ms() < deadline)
+		wpe_fd_poll(LOOP_SLICE_MS);
+	gone_ms = now_ms() - t0;
+	chk_true("the member is gone after the grace", kill(bg, 0) < 0);
+	if (gone_ms < WPE_CHILD_END_GRACE_MS)
+		printf("gone after %ld ms\n", gone_ms);
+	chk_true("not before it", gone_ms >= WPE_CHILD_END_GRACE_MS);
+	wpe_child_end_rest(leader, SIGTERM);
+	chk("an empty group costs no ladder", wpe_child_ending(), 0);
+	if (bg > 0)
+		kill(bg, SIGKILL);
+	close_ends(&r);
+}
+
 /* A third end asked for at once (a key pressed again and again) changes
  * nothing once SIGKILL is out: the kernel is given its kill grace, the end is
  * reported with SIGKILL's status, and nobody reads "did not end". */
@@ -939,6 +981,7 @@ int main(void)
 	test_a_full_loop_fails_the_start_with_nothing_left_open();
 	test_the_group_not_only_the_shell_is_ended();
 	test_a_member_deaf_to_sigterm_is_killed_after_its_leader_ended();
+	test_the_rest_of_a_group_whose_leader_ended_is_ended_after_the_grace();
 	test_a_third_end_gives_the_kernel_its_kill_grace();
 	test_a_detached_child_is_ended_with_nobody_called_back();
 	test_a_child_on_a_pty_has_it_as_its_terminal();

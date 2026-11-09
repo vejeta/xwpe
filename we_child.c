@@ -1526,6 +1526,52 @@ void wpe_child_end_detached(WpeChild *c, int polite_sig)
 }
 
 /**
+ * wpe_child_end_rest - End what is left of a group whose leader has ended.
+ * @pgid: the process ID of a child started here that led its group, its end
+ * already reported; @polite_sig: as for wpe_child_end.
+ *
+ * A shell the assistant ran has exited, but a command it put in the
+ * background still holds the output the editor reads: at the command's
+ * deadline the rest of the group gets the polite signal now and SIGKILL when
+ * the grace is over, on the same ladder as any child, so the tool step ends
+ * and nothing the command started is left.  A group with nobody left needs
+ * nothing, and its number is not signalled.
+ */
+void wpe_child_end_rest(int pgid, int polite_sig)
+{
+ WpeChildLinger *l;
+
+ if (pgid <= 0 || !wpe_child_group_has_members(pgid))
+  return;
+ if (polite_sig != WPE_CHILD_NO_SIGNAL)
+  kill(-pgid, polite_sig);
+ l = wpe_child_linger_free();
+ if (!l)
+ {
+  kill(-pgid, SIGKILL);
+  return;
+ }
+ l->pgid = pgid;
+ l->due_ms = wpe_child_now_ms() + WPE_CHILD_END_GRACE_MS;
+ wpe_child_ladder_rearm();
+}
+
+/**
+ * wpe_child_wake_fd - The descriptor that turns readable when a followed
+ * child has ended.
+ *
+ * For the one wait that must hand its caller a short command's status before
+ * it returns (the assistant's edit hook and workspace commands): it watches
+ * this beside the command's output and lets wpe_fd_dispatch report the end,
+ * so the status still comes only from the SIGCHLD handler.
+ * Return: the descriptor, or WPE_CHILD_NO_FD when none was made.
+ */
+int wpe_child_wake_fd(void)
+{
+ return(wpe_child_wake_rd);
+}
+
+/**
  * wpe_child_ending - How many children are being ended and not gone yet.
  *
  * The editor's own end waits, within its bound, until this is 0, so a

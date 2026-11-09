@@ -85,6 +85,7 @@ typedef struct {
  const char *ends;       /* what ends it, or NULL                             */
  int64_t stall_due_ms;   /* no byte taken by then: the stall line             */
  int stalled;            /* the stall line was said, no byte taken since      */
+ int close_when_empty;   /* the loop closes fd once the last byte is out      */
 } wpe_fd_writer;
 
 static wpe_fd_writer writer_table[WPE_FD_WRITERS_MAX];
@@ -673,6 +674,22 @@ static int wpe_fd_write_once(int fd, const char *buf, size_t n, size_t *taken)
 }
 
 /**
+ * wpe_fd_writer_finish - @w has nothing more to write: give its slot back,
+ * and close its descriptor when its owner handed the close to the loop.
+ * @w: the queue, emptied or failed.
+ */
+static void wpe_fd_writer_finish(wpe_fd_writer *w)
+{
+ int fd = w->fd, close_it = w->close_when_empty;
+
+ wpe_fd_writer_free(w);
+ if (!close_it)
+  return;
+ wpe_fd_del(fd);
+ close(fd);
+}
+
+/**
  * wpe_fd_writer_flush - Write what @w's descriptor takes now.
  * Return: WPE_FD_WRITE_SENT once nothing waits (@w is then free),
  * WPE_FD_WRITE_QUEUED while bytes wait, or WPE_FD_WRITE_CLOSED /
@@ -686,7 +703,7 @@ static int wpe_fd_writer_flush(wpe_fd_writer *w)
 
  if (r != WPE_FD_WRITE_SENT)
  {
-  wpe_fd_writer_free(w);
+  wpe_fd_writer_finish(w);
   return r;
  }
  if (taken > 0)
@@ -696,7 +713,7 @@ static int wpe_fd_writer_flush(wpe_fd_writer *w)
  }
  if (wpe_fd_writer_waiting(w))
   return WPE_FD_WRITE_QUEUED;
- wpe_fd_writer_free(w);
+ wpe_fd_writer_finish(w);
  return WPE_FD_WRITE_SENT;
 }
 
@@ -840,6 +857,37 @@ int wpe_fd_close(int fd)
  wpe_fd_writer_forget(fd);
  wpe_fd_del(fd);
  return close(fd);
+}
+
+/**
+ * wpe_fd_close_when_written - Close a child's input once every byte queued
+ * for it has gone out.
+ * @fd: the descriptor, written with wpe_fd_write; a negative one is left alone.
+ *
+ * For a child that reads its input to the end before it answers (the claude
+ * command line reads the whole prompt, a plain-text agent its task): the end
+ * of file reaches it right after the last byte, never before, so a long
+ * prompt arrives whole however slowly it is read, and the editor does not
+ * wait for that.  A child that ends first takes the queue with it (the write
+ * says EPIPE) and the descriptor is closed then.  The caller hands the
+ * descriptor over: it never names @fd again, since the number may belong to
+ * another descriptor once the loop has closed it.
+ * Return: 0 when it was closed now (nothing waited), 1 when the loop closes it.
+ */
+int wpe_fd_close_when_written(int fd)
+{
+ wpe_fd_writer *w;
+
+ if (fd < 0)
+  return 0;
+ w = wpe_fd_writer_find(fd);
+ if (!w || !wpe_fd_writer_waiting(w))
+ {
+  wpe_fd_close(fd);
+  return 0;
+ }
+ w->close_when_empty = 1;
+ return 1;
 }
 
 /**

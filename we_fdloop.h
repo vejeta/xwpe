@@ -92,6 +92,7 @@ int  wpe_fd_write(int fd, const void *buf, size_t n, const char *what,
 int  wpe_fd_write_flush(int fd);
 long wpe_fd_write_pending(int fd);
 int  wpe_fd_close(int fd);   /* the one way a child's input is closed */
+int  wpe_fd_close_when_written(int fd);   /* ... once its queue is out */
 int  wpe_fd_write_stalled(int fd);
 void wpe_fd_write_say_set(void (*say)(const char *line));
 

@@ -204,32 +204,53 @@ static void ws_output_reason(const char *out, int status, char *buf, size_t sz)
  snprintf(buf, sz, "the command failed (status %d)", status);
 }
 
+/* The permissions a folder this layer makes gets, before the user's umask. */
+#define WS_DIR_MODE 0777
+
+/**
+ * ws_make_dir_parents - Make @path and every folder above it that is missing.
+ * @path: the directory.
+ *
+ * What `mkdir -p` does, done here: no shell is started for it, so making a
+ * folder for the agent's write or a checkpoint costs the editor no process
+ * and no wait.  Each failure is left to the check that follows, which asks
+ * the filesystem.
+ */
+static void ws_make_dir_parents(const char *path)
+{
+ char buf[PATH_MAX];
+ size_t i, n = strlen(path);
+
+ if (n == 0 || n >= sizeof buf) return;
+ memcpy(buf, path, n + 1);
+ for (i = 1; i < n; i++) {
+  if (buf[i] != '/') continue;
+  buf[i] = '\0';
+  mkdir(buf, WS_DIR_MODE);
+  buf[i] = '/';
+ }
+ mkdir(buf, WS_DIR_MODE);
+}
+
 /**
  * ws_make_dir - Create a directory this layer is about to write into.
  * @f: any window of the editor; @path: the directory to create.
  *
- * The directory is made by handing `mkdir -p` to a shell, and the result used
- * to be dropped: every write below it then failed too, and the user was told
- * nothing about either.  Checking turns that into one pane line naming the
- * directory and the reason, before the writes that need it are attempted, so a
- * folder that is missing is reported once and not once per file that would
- * have gone into it.
+ * The result used to be dropped: every write below it then failed too, and
+ * the user was told nothing about either.  Checking turns that into one pane
+ * line naming the directory and the reason, before the writes that need it
+ * are attempted, so a folder that is missing is reported once and not once
+ * per file that would have gone into it.
  *
- * The check asks the filesystem, not the shell's exit code.  What the writes
- * need is a directory at @path, however it came to be there, so a status that
- * disagrees with the filesystem would report a failure that is not one, and
- * name a reason errno never held.
+ * The check asks the filesystem.  What the writes need is a directory at
+ * @path, however it came to be there.
  * Return: 0 when @path is a directory afterwards.
  */
 static int ws_make_dir(FENSTER *f, const char *path)
 {
- char q[1100], cmd[1400], *out;
  struct stat st;
 
- wpe_ai_shell_quote(q, sizeof q, path);
- snprintf(cmd, sizeof cmd, "mkdir -p %s", q);
- out = wpe_ai_run_capture(cmd);
- free(out);
+ ws_make_dir_parents(path);
  errno = 0;
  if (stat(path, &st) == 0) {
   if (S_ISDIR(st.st_mode)) return 0;

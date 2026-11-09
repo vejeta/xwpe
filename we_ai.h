@@ -143,10 +143,19 @@ char *wpe_ai_tool_result_mark_cut(char *result, size_t len);
  * quote in it reaches a command as the one argument it is. */
 void  wpe_ai_shell_quote(char *dst, size_t sz, const char *src);
 
-/* Put the calling child process in a session of its own, between a fork and
- * the exec that follows it.  Every process the assistant starts goes through
- * this, so none of them can paint over the editor; see we_ai.c. */
-int   wpe_ai_child_new_session(void);
+/* A command run for a tool step, its result handed back on the editor's loop:
+ * the editor takes keys while it runs.  The command runs in a session of its
+ * own, so it cannot reach the editor's screen; after timeout_s seconds its
+ * group gets SIGTERM, and SIGKILL after the children's grace.  @done gets the
+ * malloc'd result (bounded, the cut note, or the timeout line), the status in
+ * a shell's terms and whether the bound fired, once.  NULL when the command
+ * could not be started (nothing runs, @done never comes). */
+typedef struct wpe_ai_capture wpe_ai_capture;
+typedef void (*wpe_ai_captured_fn)(char *result, int status, int timed_out, void *ud);
+wpe_ai_capture *wpe_ai_capture_start(const char *cmd, int timeout_s,
+                                     wpe_ai_captured_fn done, void *ud);
+/* Esc or the task's end: the command is ended, @done never comes. */
+void  wpe_ai_capture_cancel(wpe_ai_capture *c);
 
 /* Effective config (defaults baked in so an EMPTY config file just works).
  * Persisted in the Programming section as AIBackend/AIEndpoint/AIModel and

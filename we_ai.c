@@ -30,7 +30,7 @@
 
 #include "we_ai.h"
 #include "we_ai_http.h"
-#include "we_childsig.h"
+#include "we_child.h"     /* every command and CLI the assistant runs */
 #include "we_fdloop.h"   /* the mock's delay is a timer on the editor's loop */
 
 static char *ai_strdup(const char *s);            /* defined below; used early */
@@ -285,265 +285,178 @@ int wpe_ai_web_state(void)
 #define AI_CAPTURE_CHUNK 4096
 /* What the model reads when a command outlived its time limit. */
 #define AI_CAPTURE_TIMEOUT_FMT "TOOL ERROR: timed out after %d s"
-/* After SIGTERM a command gets this long to end on its own before SIGKILL, so
- * one that cleans up on TERM may, and one that ignores it still ends. */
-#define AI_CAPTURE_KILL_GRACE_MS 2000
 #define AI_CAPTURE_MS_PER_S 1000
+/* How the command is named in the owner's lines ("... did not end"). */
+#define AI_CAPTURE_WHAT "the tool command"
+/* What the caller reads for a command that could not be started. */
+#define AI_CAPTURE_NOT_STARTED "(could not run command)"
+#define AI_CAPTURE_NO_MEMORY   "(out of memory)"
 /* Exit status of a child whose shell could not be executed, the convention
  * every shell uses for "command not found". */
 #define AI_CAPTURE_NOEXEC 127
 /* Shells report a child killed by a signal as 128 plus the signal number. */
 #define AI_CAPTURE_SIGNAL_BASE 128
 
-/**
- * wpe_ai_child_new_session - Put the calling child in a session of its own.
- *
- * Called in every process the assistant starts, between the fork and the exec.
- * A child otherwise keeps the editor's controlling terminal and can reopen it
- * as /dev/tty: its text then lands on the screen around ncurses, which the
- * user sees as the display going black with the command's output scrolling
- * over the editor until the next full repaint.  In its own session the child
- * has no controlling terminal, that open fails, and the pipe the editor reads
- * is the only way out of the child.
- *
- * A freshly forked child is never a process group leader, so this cannot fail
- * for the one reason POSIX gives; should it fail anyway the caller carries on
- * and runs the command, because a command the user asked for is worth more
- * than the isolation around it.
- *
- * Return: 1 when the child got its own session, 0 when it did not.
- */
-int wpe_ai_child_new_session(void)
-{
- if (setsid() == (pid_t)-1) return 0;
- return 1;
-}
-
-/**
- * ai_capture_child_no_input - Point the command's standard input at /dev/null.
- *
- * The editor's terminal is otherwise still on descriptor 0, so a command that
- * reads input would take the keys the user is typing, and could write back
- * onto the screen through that descriptor.  Reading /dev/null ends at once
- * instead, so such a command fails quickly rather than stalling the run.
- */
-static void ai_capture_child_no_input(void)
-{
- int devnull = open("/dev/null", O_RDONLY);
- if (devnull < 0) return;
- dup2(devnull, 0);
- close(devnull);
-}
-
-/**
- * ai_capture_child - Become the command: own session, our pipe, then the shell.
- * @cmd: the command line, handed to `/bin/sh -c` exactly as the caller wrote it
- * @pfd: the pipe, read end [0] (the editor's) and write end [1] (ours)
- *
- * Standard error is pointed at the same pipe as standard output, which is the
- * merged stream every caller parses.  Does not return.
- */
-/**
- * ai_capture_child_signals - Give the command the signal mask a shell expects.
- *
- * The editor blocks SIGCHLD around the fork so that it, not its own handler,
- * reaps the command (see ai_capture_hold_sigchld); the child inherits that
- * mask across exec and a shell with SIGCHLD blocked may never notice its own
- * children ending.  Clearing the mask here gives the command a normal start.
- * The editor also ignores SIGINT and SIGPIPE, which would pass through the
- * shell to the command: `yes | head -1` would then print a broken-pipe error
- * instead of ending quietly, so every signal goes back to its default.
- */
-static void ai_capture_child_signals(void)
-{
- wpe_child_default_signals();
-}
-
-static void ai_capture_child(const char *cmd, int *pfd)
-{
- char *argv[4];
-
- wpe_ai_child_new_session();
- ai_capture_child_signals();
- ai_capture_child_no_input();
- dup2(pfd[1], 1);
- dup2(pfd[1], 2);
- close(pfd[0]);
- close(pfd[1]);
- argv[0] = "/bin/sh";
- argv[1] = "-c";
- argv[2] = (char *)cmd;
- argv[3] = NULL;
- execv("/bin/sh", argv);
- _exit(AI_CAPTURE_NOEXEC);
-}
-
-/**
- * ai_capture_start - Start one command with its output on a pipe we own.
- * @cmd: the command line; @fd: filled with the read end; @pid: filled with the child
- *
- * Return: 0 when the command is running, -1 when it could not be started.
- */
-static int ai_capture_start(const char *cmd, int *fd, pid_t *pid)
-{
- int pfd[2];
- pid_t child;
-
- if (pipe(pfd) != 0) return -1;
- child = fork();
- if (child < 0) { close(pfd[0]); close(pfd[1]); return -1; }
- if (child == 0) ai_capture_child(cmd, pfd);     /* does not return */
- close(pfd[1]);
- *fd = pfd[0];
- *pid = child;
- return 0;
-}
-
-/* What one command run produced: the bounded text and what happened to it. */
-struct ai_capture {
- char  *out;        /* the bounded output, NUL-terminated; NULL out of memory */
- size_t len;        /* bytes kept in out                                      */
- int    cut;        /* bytes past the bound were read and dropped             */
- int    timed_out;  /* the deadline passed before the output ended            */
+/* One command run for the assistant: started by the children's owner, its
+ * output read from the editor's loop (or, for the callers that need the
+ * answer before they return, from the one bounded wait below), its end
+ * reported by the owner. */
+struct wpe_ai_capture {
+ WpeChild child;           /* the shell, on the owner                          */
+ int    leader;            /* its pid, kept after the report: the group's id    */
+ char  *out;               /* the bounded output, NUL-terminated                */
+ size_t len;               /* bytes kept in out                                 */
+ int    cut;               /* bytes past the bound were read and dropped        */
+ int    out_open;          /* the output has not reached end of file            */
+ int    ended;             /* the owner reported the shell's end                */
+ int    status;            /* its status in a shell's terms, once ended         */
+ int    timed_out;         /* the deadline passed before the command was done   */
+ int    timeout_s;         /* the bound, for the result the model reads         */
+ int    timer;             /* the deadline on the loop, or WPE_TIMER_NONE       */
+ int    wake_watched;      /* the bounded wait still watches the owner's wake   */
+ wpe_ai_captured_fn done;  /* the continuation; NULL for the bounded wait       */
+ void  *ud;
 };
 
 /**
  * ai_capture_store - Keep as much of one read as the bounded result allows.
- * @cap: the result so far; @buf/@n: the bytes just read.
+ * @c: the run; @buf/@n: the bytes just read.
  *
  * Notes when bytes had to be dropped, so the finished result can say it was
  * cut instead of passing the first part off as the whole.
  */
-static void ai_capture_store(struct ai_capture *cap, const char *buf, size_t n)
+static void ai_capture_store(struct wpe_ai_capture *c, const char *buf, size_t n)
 {
- size_t room = AI_CAPTURE_MAX - cap->len;
- if (n > room) { cap->cut = 1; n = room; }
+ size_t room = AI_CAPTURE_MAX - c->len;
+ if (n > room) { c->cut = 1; n = room; }
  if (n == 0) return;
- memcpy(cap->out + cap->len, buf, n);
- cap->len += n;
+ memcpy(c->out + c->len, buf, n);
+ c->len += n;
+ c->out[c->len] = '\0';
 }
 
 /**
- * ai_capture_deadline - The moment a command started now must have ended by.
- * @timeout_s: the bound in seconds (e_ai_tool_timeout for a tool run).
- */
-static long ai_capture_deadline(int timeout_s)
-{
- return ai_now_ms() + (long)timeout_s * AI_CAPTURE_MS_PER_S;
-}
-
-/**
- * ai_capture_wait_output - Wait for the command to write, or for its deadline.
- * @fd: the read end of the command's pipe; @deadline_ms: when to stop waiting.
+ * ai_capture_exit_status - The command's exit status in the shell's terms.
+ * @wstatus: the wait status the owner reported for the shell.
  *
- * A poll() with the time left, never a sleep and never a loop that spins: the
- * editor is blocked for exactly as long as the command works or the bound
- * allows, and not a moment more.
- * Return: 1 when the pipe has output (or end of file) to read, 0 when the
- * deadline passed first.
+ * A command that exited gives its own status; one killed by a signal is
+ * reported as 128 plus the signal number, the convention a shell uses, so a
+ * caller that shows the status to the user shows what their own shell would.
  */
-static int ai_capture_wait_output(int fd, long deadline_ms)
+static int ai_capture_exit_status(int wstatus)
 {
- struct pollfd pfd;
- for (;;) {
-  long left = deadline_ms - ai_now_ms();
-  int r;
-  if (left <= 0) return 0;
-  pfd.fd = fd;
-  pfd.events = POLLIN;
-  pfd.revents = 0;
-  r = poll(&pfd, 1, (int)left);
-  if (r < 0 && errno == EINTR) continue;
-  if (r == 0) return 0;
-  return 1;
- }
+ if (WIFEXITED(wstatus)) return WEXITSTATUS(wstatus);
+ if (WIFSIGNALED(wstatus)) return AI_CAPTURE_SIGNAL_BASE + WTERMSIG(wstatus);
+ return AI_CAPTURE_NOEXEC;
 }
 
 /**
- * ai_capture_read - Read the command's output into one allocated string.
- * @fd: the read end of the command's pipe; @deadline_ms: when to give up;
- * @cap: receives the output and what happened to it.
+ * ai_capture_take_end - Note the shell's end and its status.
+ * @c: the run; @wstatus: the wait status; @how: WPE_CHILD_ENDED, or
+ * WPE_CHILD_ENDED_UNKNOWN when even SIGKILL did not end it in time.
+ */
+static void ai_capture_take_end(struct wpe_ai_capture *c, int wstatus, int how)
+{
+ c->ended = 1;
+ if (how == WPE_CHILD_ENDED)
+  c->status = ai_capture_exit_status(wstatus);
+ else
+  c->status = AI_CAPTURE_SIGNAL_BASE + SIGKILL;
+}
+
+/**
+ * ai_capture_close_output - The command's output is done with: stop reading it.
+ * @c: the run.
+ */
+static void ai_capture_close_output(struct wpe_ai_capture *c)
+{
+ if (!c->out_open) return;
+ wpe_fd_close(c->child.out_fd);
+ c->child.out_fd = WPE_CHILD_NO_FD;
+ c->out_open = 0;
+}
+
+/**
+ * ai_capture_read_ready - Take what the command has written so far.
+ * @c: the run, its output open.
  *
  * Reads all the way to end of file even once the result is full, so a chatty
- * command finishes its work instead of blocking on a pipe nobody empties --
- * which would hang the editor with the user's task half done.  A command that
- * is still running at the deadline is left to the caller to end: the user gets
- * the editor back after the configured time instead of after Ctrl-C from
- * another terminal.
+ * command finishes its work instead of blocking on a pipe nobody empties.
+ * The descriptor never blocks: the owner made it non-blocking.
  */
-static void ai_capture_read(int fd, long deadline_ms, struct ai_capture *cap)
+static void ai_capture_read_ready(struct wpe_ai_capture *c)
 {
  char buf[AI_CAPTURE_CHUNK];
 
- cap->len = 0;
- cap->cut = 0;
- cap->timed_out = 0;
- cap->out = malloc(AI_CAPTURE_MAX + AI_CAPTURE_CUT_NOTE_ROOM);
- if (!cap->out) return;
- for (;;) {
-  ssize_t n;
-  if (!ai_capture_wait_output(fd, deadline_ms)) { cap->timed_out = 1; break; }
-  n = read(fd, buf, sizeof buf);
+ while (c->out_open) {
+  ssize_t n = read(c->child.out_fd, buf, sizeof buf);
+  if (n > 0) { ai_capture_store(c, buf, (size_t)n); continue; }
   if (n < 0 && errno == EINTR) continue;
-  if (n <= 0) break;
-  ai_capture_store(cap, buf, (size_t)n);
- }
- cap->out[cap->len] = '\0';
-}
-
-/**
- * ai_capture_signal_group - Send a signal to the command and everything it started.
- * @pid: the child the editor forked; @sig: SIGTERM or SIGKILL.
- *
- * The child put itself in a session of its own, so its pid is its process
- * group and the group holds the shell and whatever the shell ran.  Signalling
- * the group ends a pipeline whole, not only the shell in front of it.  Should
- * the group be gone already, the pid alone is tried, which is harmless for an
- * exited child that is still ours to reap.
- */
-static void ai_capture_signal_group(pid_t pid, int sig)
-{
- if (kill(-pid, sig) == 0) return;
- kill(pid, sig);
-}
-
-/**
- * ai_capture_drain_until_eof - Give an ended command its grace to close the pipe.
- * @fd: the read end of the command's pipe; @deadline_ms: the end of the grace.
- *
- * Output that still arrives is read and dropped; the model already has its
- * timeout answer.  End of file within the grace means every process holding
- * the pipe has gone.
- * Return: 1 on end of file, 0 when the grace ran out first.
- */
-static int ai_capture_drain_until_eof(int fd, long deadline_ms)
-{
- char buf[AI_CAPTURE_CHUNK];
- for (;;) {
-  ssize_t n;
-  if (!ai_capture_wait_output(fd, deadline_ms)) return 0;
-  n = read(fd, buf, sizeof buf);
-  if (n < 0 && errno == EINTR) continue;
-  if (n <= 0) return 1;
+  if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+  ai_capture_close_output(c);          /* end of file, or the pipe failed */
  }
 }
 
 /**
- * ai_capture_end_child - End a command that outlived its time limit.
- * @pid: the child the editor forked; @fd: the read end of its pipe.
+ * ai_capture_settled - Is there nothing more to wait for?
+ * @c: the run.
  *
- * TERM first, so a command that cleans up on it may; KILL once the grace is
- * over, so one that ignores TERM ends all the same.  KILL is sent even when
- * the pipe closed within the grace: a process that closed its output and kept
- * running would otherwise outlive the editor's wait for it.  Signals go to
- * the process group, never to a name, so nothing but this command is touched.
+ * A command is done when its shell has ended and its output has reached end
+ * of file.  Once the deadline has passed, the shell's end is enough: whatever
+ * still holds the output is ended with the shell's group.
  */
-static void ai_capture_end_child(pid_t pid, int fd)
+static int ai_capture_settled(const struct wpe_ai_capture *c)
 {
- long grace_end = ai_now_ms() + AI_CAPTURE_KILL_GRACE_MS;
- ai_capture_signal_group(pid, SIGTERM);
- ai_capture_drain_until_eof(fd, grace_end);
- ai_capture_signal_group(pid, SIGKILL);
+ if (!c->ended) return 0;
+ if (c->timed_out) return 1;
+ return !c->out_open;
+}
+
+/**
+ * ai_capture_end_command - End a command that outlived its time limit.
+ * @c: the run.
+ *
+ * SIGTERM to its group, so a command that cleans up on it may; the owner's
+ * ladder sends SIGKILL after its grace, so one that ignores TERM ends all the
+ * same, and reports the end.  A shell that has exited while something it put
+ * in the background still holds the output gets the same ladder for what is
+ * left of its group.  Nothing waits here.
+ */
+static void ai_capture_end_command(struct wpe_ai_capture *c)
+{
+ if (c->child.pid > 0) {
+  wpe_child_end(&c->child, SIGTERM);
+  return;
+ }
+ if (c->out_open) wpe_child_end_rest(c->leader, SIGTERM);
+}
+
+/**
+ * ai_capture_let_go - Hand a command still running over to the owner.
+ * @c: the run, about to be freed.
+ *
+ * Esc, the task's end, or a bounded wait that ran out: the command is ended
+ * on the owner's ladder with nobody called back, so freeing @c is safe at
+ * once and nothing of the command is left behind.
+ */
+static void ai_capture_let_go(struct wpe_ai_capture *c)
+{
+ if (c->timer != WPE_TIMER_NONE) wpe_timer_del(c->timer);
+ c->timer = WPE_TIMER_NONE;
+ if (c->child.pid > 0)
+  wpe_child_end_detached(&c->child, SIGTERM);
+ else if (c->out_open)
+  wpe_child_end_rest(c->leader, SIGTERM);
+ ai_capture_close_output(c);
+}
+
+/**
+ * ai_capture_free - Give a run's memory back; the command is gone or let go.
+ */
+static void ai_capture_free(struct wpe_ai_capture *c)
+{
+ free(c->out);
+ free(c);
 }
 
 /**
@@ -575,74 +488,346 @@ char *wpe_ai_tool_result_mark_cut(char *result, size_t len)
 }
 
 /**
- * ai_capture_finish_text - Turn what was read into the result the model gets.
- * @cap: the finished capture (not timed out).
+ * ai_capture_take_result - Turn what was read into the result the model gets.
+ * @c: the settled run; its output buffer is handed over.
  *
- * A cut result ends with the cut note; an untouched one is returned as read.
- * Return: the malloc'd result, or NULL out of memory.
+ * A command that ran out of time answers the timeout line; a cut result ends
+ * with the cut note; an untouched one is returned as read.
+ * Return: the malloc'd result, never NULL (a short note out of memory).
  */
-static char *ai_capture_finish_text(struct ai_capture *cap)
+static char *ai_capture_take_result(struct wpe_ai_capture *c)
 {
- if (!cap->out) return NULL;
- if (!cap->cut) return cap->out;
- return wpe_ai_tool_result_mark_cut(cap->out, cap->len);
+ char *out = c->out;
+
+ c->out = NULL;
+ if (c->timed_out) {
+  free(out);
+  out = ai_capture_timeout_result(c->timeout_s);
+ } else if (out && c->cut) {
+  out = wpe_ai_tool_result_mark_cut(out, c->len);
+ }
+ if (!out) return ai_strdup(AI_CAPTURE_NO_MEMORY);
+ return out;
 }
 
 /**
- * ai_capture_exit_status - The command's exit status in the shell's terms.
- * @wstatus: what waitpid() reported for the child.
- *
- * A command that exited gives its own status; one killed by a signal is
- * reported as 128 plus the signal number, the convention a shell uses, so a
- * caller that shows the status to the user shows what their own shell would.
+ * ai_capture_new - A run with its result buffer, nothing started yet.
+ * @timeout_s: the bound in seconds.
+ * Return: the run, or NULL out of memory.
  */
-static int ai_capture_exit_status(int wstatus)
+static struct wpe_ai_capture *ai_capture_new(int timeout_s)
 {
- if (WIFEXITED(wstatus)) return WEXITSTATUS(wstatus);
- if (WIFSIGNALED(wstatus)) return AI_CAPTURE_SIGNAL_BASE + WTERMSIG(wstatus);
- return AI_CAPTURE_NOEXEC;
+ struct wpe_ai_capture *c = calloc(1, sizeof *c);
+
+ if (!c) return NULL;
+ c->out = malloc(AI_CAPTURE_MAX + AI_CAPTURE_CUT_NOTE_ROOM);
+ if (!c->out) { free(c); return NULL; }
+ c->out[0] = '\0';
+ c->timeout_s = timeout_s;
+ c->timer = WPE_TIMER_NONE;
+ c->child.pid = 0;
+ c->child.out_fd = WPE_CHILD_NO_FD;
+ return c;
+}
+
+static void ai_capture_progress(struct wpe_ai_capture *c);
+
+/**
+ * ai_capture_on_ended - The owner reports the shell's end.
+ * @child: the shell; @wstatus: its wait status; @how: how it ended;
+ * @data: the run.
+ */
+static void ai_capture_on_ended(WpeChild *child, int wstatus, int how, void *data)
+{
+ struct wpe_ai_capture *c = data;
+
+ (void)child;
+ ai_capture_take_end(c, wstatus, how);
+ ai_capture_progress(c);
 }
 
 /**
- * ai_capture_wait - Reap the command's child once its output has ended.
+ * ai_capture_spawn - Start the command in a session of its own.
+ * @c: the run; @cmd: the command line, handed to `/bin/sh -c` as written.
  *
- * Return: the child's exit status, see ai_capture_exit_status().
+ * Its own session: no controlling terminal, so the command cannot paint on
+ * the editor's screen through /dev/tty, and a signal to its group ends a
+ * pipeline whole.  Its input is /dev/null, so a command that reads input
+ * fails at once instead of taking the user's keys; its standard error joins
+ * standard output, the one stream every caller parses.  It dies with the
+ * editor.
+ * Return: 0 when it runs, -1 when it could not be started.
  */
-static int ai_capture_wait(pid_t pid)
+static int ai_capture_spawn(struct wpe_ai_capture *c, const char *cmd)
+{
+ char *argv[4];
+ WpeChildSpec spec;
+
+ argv[0] = "/bin/sh";
+ argv[1] = "-c";
+ argv[2] = (char *)cmd;
+ argv[3] = NULL;
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.stdin_null = 1;
+ spec.stderr_to_stdout = 1;
+ spec.die_with_editor = 1;
+ spec.side_pty_slave = WPE_CHILD_NO_FD;
+ spec.tty_fd = WPE_CHILD_NO_FD;
+ spec.what = AI_CAPTURE_WHAT;
+ if (wpe_child_start(&spec, &c->child, ai_capture_on_ended, c) != 0) return -1;
+ c->leader = c->child.pid;
+ c->out_open = 1;
+ wpe_ai_trace("agent tool pid=%d", c->leader);
+ return 0;
+}
+
+/* ---- a run whose result comes back on the loop: a tool step ---- */
+
+/**
+ * ai_capture_finish - Hand the settled run's result to its continuation.
+ * @c: the run, freed here before the continuation runs (which may start the
+ * next command).
+ */
+static void ai_capture_finish(struct wpe_ai_capture *c)
+{
+ wpe_ai_captured_fn done = c->done;
+ void *ud = c->ud;
+ int status = c->status, timed_out = c->timed_out;
+ char *result;
+
+ if (c->timer != WPE_TIMER_NONE) wpe_timer_del(c->timer);
+ c->timer = WPE_TIMER_NONE;
+ ai_capture_close_output(c);
+ result = ai_capture_take_result(c);
+ ai_capture_free(c);
+ wpe_ai_trace("agent tool done status=%d timed_out=%d", status, timed_out);
+ done(result, status, timed_out, ud);
+}
+
+/**
+ * ai_capture_progress - A run on the loop moved on: finish it when settled.
+ * @c: the run.  The bounded wait asks ai_capture_settled itself.
+ */
+static void ai_capture_progress(struct wpe_ai_capture *c)
+{
+ if (!c->done) return;
+ if (ai_capture_settled(c)) ai_capture_finish(c);
+}
+
+/** ai_capture_on_output - The loop's callback: the command wrote, or ended its output. */
+static void ai_capture_on_output(int fd, void *data)
+{
+ struct wpe_ai_capture *c = data;
+
+ (void)fd;
+ ai_capture_read_ready(c);
+ ai_capture_progress(c);
+}
+
+/**
+ * ai_capture_on_deadline - AIToolTimeout ran out with the command not done.
+ * @data: the run.
+ *
+ * The command is ended; the step's result comes when the owner reports the
+ * end, at most its grace and the kill grace later.
+ */
+static void ai_capture_on_deadline(void *data)
+{
+ struct wpe_ai_capture *c = data;
+
+ c->timer = WPE_TIMER_NONE;
+ c->timed_out = 1;
+ wpe_ai_trace("agent tool deadline after %d s", c->timeout_s);
+ ai_capture_end_command(c);
+ ai_capture_progress(c);
+}
+
+/**
+ * ai_capture_watch - Put the run's output and deadline on the editor's loop.
+ * @c: a started run.
+ * Return: 1, or 0 when the loop has no room for one of them.
+ */
+static int ai_capture_watch(struct wpe_ai_capture *c)
+{
+ long ms = (long)c->timeout_s * AI_CAPTURE_MS_PER_S;
+
+ if (wpe_fd_add(c->child.out_fd, POLLIN, ai_capture_on_output, c) != 0) return 0;
+ c->timer = wpe_timer_add(ms, 0, ai_capture_on_deadline, c);
+ if (c->timer > WPE_TIMER_NONE) return 1;
+ c->timer = WPE_TIMER_NONE;
+ return 0;
+}
+
+wpe_ai_capture *wpe_ai_capture_start(const char *cmd, int timeout_s,
+                                     wpe_ai_captured_fn done, void *ud)
+{
+ struct wpe_ai_capture *c = ai_capture_new(timeout_s);
+
+ if (!c) return NULL;
+ if (ai_capture_spawn(c, cmd) != 0) {
+  ai_capture_free(c);
+  return NULL;
+ }
+ c->done = done;
+ c->ud = ud;
+ if (!ai_capture_watch(c)) {
+  ai_capture_let_go(c);
+  ai_capture_free(c);
+  return NULL;
+ }
+ return c;
+}
+
+void wpe_ai_capture_cancel(wpe_ai_capture *c)
+{
+ if (!c) return;
+ wpe_ai_trace("agent tool cancelled pid=%d", c->leader);
+ ai_capture_let_go(c);
+ ai_capture_free(c);
+}
+
+/* ---- a run whose caller needs the result before it returns ----
+ * The edit hook, the checkpoint and the changeset review read the command's
+ * answer inline (the review inside its own key loop), so they wait here, the
+ * one bounded wait of this file: the output and the owner's wake pipe, until
+ * the command is done or its time is up.  The end and its status still come
+ * from the owner. */
+
+/**
+ * ai_capture_take_own_end - Has the owner's handler reaped this shell?
+ * @c: the run.
+ *
+ * Read from its slot, so the answer comes even when the wake pipe's callback
+ * is the one running (a wait started inside another child's report); the
+ * slot is then let go, and its report never comes.
+ * Return: 1 when the end is now known.
+ */
+static int ai_capture_take_own_end(struct wpe_ai_capture *c)
 {
  int wstatus = 0;
- while (waitpid(pid, &wstatus, 0) == -1 && errno == EINTR)
-  ;
- return ai_capture_exit_status(wstatus);
+
+ if (c->ended) return 1;
+ if (c->child.pid <= 0) return 0;
+ if (wpe_child_ended(&c->child, &wstatus) != WPE_CHILD_ENDED) return 0;
+ ai_capture_take_end(c, wstatus, WPE_CHILD_ENDED);
+ wpe_child_forget(&c->child);
+ return 1;
 }
 
 /**
- * ai_capture_hold_sigchld - Keep the command's child reapable by this code.
- * @old: receives the signal mask to restore once the child is reaped.
+ * ai_capture_serve_wake - The wake pipe turned readable during the wait.
+ * @c: the run.
  *
- * The editor's SIGCHLD handler reaps every child with waitpid(-1) and drops
- * the status.  If it got to the command's child first, waitpid() here would
- * fail and the command would look as if it had succeeded, so a hook that
- * refused a file would go unreported and its half-done output be taken as
- * the result.  Blocking SIGCHLD from before the fork until the reap keeps the
- * child ours; the same guard protects the compiler run in we_prog.c.  The
- * block is this thread's; the handler never runs on another one (it hands
- * a signal a library thread took to this thread, where it waits).
+ * Its own end is taken from the slot; any other child's end is reported to
+ * its owner as the loop would, which empties the pipe.  When the pipe cannot
+ * be served here (its callback is the one running), the wait stops watching
+ * it and learns this shell's end from the output's end of file instead.
  */
-static void ai_capture_hold_sigchld(sigset_t *old)
+static void ai_capture_serve_wake(struct wpe_ai_capture *c)
 {
- sigset_t chld;
- sigemptyset(&chld);
- sigaddset(&chld, SIGCHLD);
- pthread_sigmask(SIG_BLOCK, &chld, old);
+ int wake = wpe_child_wake_fd();
+
+ if (ai_capture_take_own_end(c)) return;
+ wpe_fd_dispatch(wake);
+ if (c->ended) return;
+ if (wpe_fd_readable_now(wake) == WPE_FD_READABLE) c->wake_watched = 0;
 }
 
 /**
- * ai_capture_release_sigchld - Put the signal mask back after the reap.
+ * ai_capture_poll_set - What the bounded wait watches now.
+ * @c: the run; @pfd: room for two entries.
+ * Return: the entries filled.
  */
-static void ai_capture_release_sigchld(const sigset_t *old)
+static int ai_capture_poll_set(const struct wpe_ai_capture *c, struct pollfd *pfd)
 {
- pthread_sigmask(SIG_SETMASK, old, NULL);
+ int n = 0;
+
+ if (c->out_open) {
+  pfd[n].fd = c->child.out_fd;
+  pfd[n].events = POLLIN;
+  pfd[n].revents = 0;
+  n++;
+ }
+ if (c->wake_watched && !c->ended) {
+  pfd[n].fd = wpe_child_wake_fd();
+  pfd[n].events = POLLIN;
+  pfd[n].revents = 0;
+  n++;
+ }
+ return n;
+}
+
+/**
+ * ai_capture_done_waiting - Is the bounded wait over?
+ * @c: the run.
+ *
+ * Done with the output's end and the shell's end; and also with the output's
+ * end alone once the wake pipe could not be watched, the shell's status then
+ * taken from its slot if the handler has reaped it.
+ */
+static int ai_capture_done_waiting(struct wpe_ai_capture *c)
+{
+ if (c->out_open) return 0;
+ if (ai_capture_take_own_end(c)) return 1;
+ return !c->wake_watched;
+}
+
+/**
+ * ai_capture_wait_settled - Wait, bounded, for the command to be done.
+ * @c: a started run; @deadline_ms: when its time is up (ai_now_ms clock).
+ *
+ * A poll() with the time left, never a sleep and never a loop that spins.  A
+ * run whose time ran out is marked timed out and left to its caller to let go.
+ */
+static void ai_capture_wait_settled(struct wpe_ai_capture *c, long deadline_ms)
+{
+ struct pollfd pfd[2];
+
+ c->wake_watched = wpe_child_wake_fd() != WPE_CHILD_NO_FD;
+ while (!ai_capture_done_waiting(c)) {
+  long left = deadline_ms - ai_now_ms();
+  int n, r;
+  if (left <= 0) { c->timed_out = 1; return; }
+  n = ai_capture_poll_set(c, pfd);
+  r = poll(pfd, (nfds_t)n, (int)left);
+  if (r < 0 && errno == EINTR) continue;
+  if (r < 0) { c->timed_out = 1; return; }
+  if (c->out_open && pfd[0].revents) ai_capture_read_ready(c);
+  if (n > 0 && pfd[n - 1].fd == wpe_child_wake_fd() && pfd[n - 1].revents)
+   ai_capture_serve_wake(c);
+ }
+}
+
+/**
+ * ai_capture_settle_late - The bounded wait ran out: end the command, not wait.
+ * @c: the run.
+ *
+ * The command is handed to the owner's ladder and the caller gets its answer
+ * now; one that had not ended counts as ended by the editor's SIGTERM, so a
+ * caller that checks the status never takes a command cut short for one
+ * that did its job.
+ */
+static void ai_capture_settle_late(struct wpe_ai_capture *c)
+{
+ ai_capture_let_go(c);
+ if (!c->ended) c->status = AI_CAPTURE_SIGNAL_BASE + SIGTERM;
+}
+
+/**
+ * ai_capture_settle_unknown - The output ended and the shell's end could not
+ * be learnt (the wake pipe was not served here): status unknown.
+ * @c: the run.
+ *
+ * A shell whose output has ended is ending; should it run on, the owner's
+ * ladder ends it after the grace, with nobody called back.
+ */
+static void ai_capture_settle_unknown(struct wpe_ai_capture *c)
+{
+ wpe_child_end_detached(&c->child, WPE_CHILD_NO_SIGNAL);
+ c->status = AI_CAPTURE_NOEXEC;
 }
 
 /**
@@ -657,31 +842,23 @@ static void ai_capture_report(int *status, int exited, int *timed_out, int fired
 char *wpe_ai_run_capture_bounded(const char *cmd, int timeout_s,
                                  int *status, int *timed_out)
 {
- int fd, exited;
- pid_t pid;
- struct ai_capture cap;
+ struct wpe_ai_capture *c = ai_capture_new(timeout_s);
  char *out;
- sigset_t old_mask;
 
- ai_capture_hold_sigchld(&old_mask);
- if (ai_capture_start(cmd, &fd, &pid) != 0) {
-  ai_capture_release_sigchld(&old_mask);
+ if (!c || ai_capture_spawn(c, cmd) != 0) {
+  if (c) ai_capture_free(c);
   ai_capture_report(status, AI_CAPTURE_NOEXEC, timed_out, 0);
-  return ai_strdup("(could not run command)");
+  return ai_strdup(AI_CAPTURE_NOT_STARTED);
  }
- wpe_ai_trace("agent tool pid=%d", (int)pid);
- ai_capture_read(fd, ai_capture_deadline(timeout_s), &cap);
- if (cap.timed_out) ai_capture_end_child(pid, fd);
- close(fd);
- exited = ai_capture_wait(pid);
- ai_capture_release_sigchld(&old_mask);
- ai_capture_report(status, exited, timed_out, cap.timed_out);
- if (cap.timed_out) {
-  free(cap.out);
-  return ai_capture_timeout_result(timeout_s);
- }
- out = ai_capture_finish_text(&cap);
- if (!out) return ai_strdup("(out of memory)");
+ ai_capture_wait_settled(c, ai_now_ms() + (long)timeout_s * AI_CAPTURE_MS_PER_S);
+ if (c->timed_out)
+  ai_capture_settle_late(c);
+ else if (!c->ended)
+  ai_capture_settle_unknown(c);
+ ai_capture_close_output(c);
+ ai_capture_report(status, c->status, timed_out, c->timed_out);
+ out = ai_capture_take_result(c);
+ ai_capture_free(c);
  return out;
 }
 
@@ -1904,7 +2081,7 @@ struct wpe_ai_stream {
  int             done;
  int             eof;
  int             is_subproc;   /* claudecli: read a child pipe, not a socket   */
- pid_t           pid;
+ WpeChild        child;        /* the claude CLI, on the children's owner      */
  int             out_fd;       /* child stdout (subprocess transport)          */
  int             had_error;    /* backend reported a failure, not a real reply */
  char           *err_msg;      /* error text from an in-stream {"error":...} event
@@ -1997,35 +2174,21 @@ static int ai_cli_deny_web(char **argv, int a)
  return ai_cli_web_names(argv, a);
 }
 
-/* Spawn `claude -p --output-format json`, feeding the prompt on stdin and
- * reading the single JSON result off the child's stdout.  Uses the user's own
- * Claude Code login -- no API key, no extra dependency. */
-static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
+/* How the command-line backend is named in the owner's and the writer's lines. */
+#define AI_CLI_WHAT "the claude CLI"
+#define AI_CLI_ENDS "Esc cancels the request"
+/* Room for the CLI's argument vector: the longest dial builds 19 words. */
+#define AI_CLI_ARGV_MAX 24
+
+/**
+ * ai_claudecli_argv - The command line of one `claude -p` request.
+ * @argv: receives the words, NULL-terminated; room for AI_CLI_ARGV_MAX.
+ *
+ * Built before the start, so the child only executes it.
+ */
+static void ai_claudecli_argv(char **argv)
 {
- int in[2], out[2];
- pid_t pid;
- char *prompt;
-
- if (pipe(in) != 0) return -1;
- if (pipe(out) != 0) { close(in[0]); close(in[1]); return -1; }
- prompt = ai_flatten_prompt(req);
-
- pid = fork();
- if (pid < 0) {
-  close(in[0]); close(in[1]); close(out[0]); close(out[1]);
-  free(prompt);
-  return -1;
- }
- if (pid == 0) {                      /* child */
-  char *argv[24];
-  int a = 0, dn, web_on;
-  wpe_ai_child_new_session();         /* no controlling terminal to paint on */
-  wpe_child_default_signals();        /* the CLI is an ordinary program */
-  dup2(in[0], 0);
-  dup2(out[1], 1);
-  dn = open("/dev/null", O_WRONLY);
-  if (dn >= 0) { dup2(dn, 2); close(dn); }
-  close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+  int a = 0, web_on;
   argv[a++] = "claude";
   argv[a++] = "-p";
   argv[a++] = "--output-format";
@@ -2073,23 +2236,89 @@ static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
    if (!web_on) a = ai_cli_web_names(argv, a);
   }
   argv[a] = NULL;
-  execvp("claude", argv);
-  _exit(127);
- }
- /* parent */
- close(in[0]);
- close(out[1]);
- if (prompt) {
-  size_t pl = strlen(prompt), off = 0;
-  while (off < pl) { ssize_t w = write(in[1], prompt + off, pl - off); if (w <= 0) break; off += (size_t)w; }
-  free(prompt);
- }
- close(in[1]);                        /* EOF to the child's stdin */
- { int fl = fcntl(out[0], F_GETFL, 0); if (fl != -1) fcntl(out[0], F_SETFL, fl | O_NONBLOCK); }
+}
 
- st->is_subproc = 1;
- st->pid = pid;
- st->out_fd = out[0];
+/** ai_claudecli_on_ended - The CLI's end: its answer is read to end of file. */
+static void ai_claudecli_on_ended(WpeChild *c, int status, int how, void *data)
+{
+ (void)c; (void)data;
+ wpe_ai_trace("claudecli ended how=%d status=%d", how, status);
+}
+
+/**
+ * ai_claudecli_spawn - Start the CLI in a session of its own.
+ * @st: the stream; @argv: its command line.
+ *
+ * Its own session, so it cannot paint on the editor's screen; its errors go
+ * to /dev/null (its answer, an error included, is the JSON on stdout); it
+ * dies with the editor.
+ * Return: 0, or -1 when it could not be started.
+ */
+static int ai_claudecli_spawn(struct wpe_ai_stream *st, char **argv)
+{
+ WpeChildSpec spec;
+
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.stderr_to_null = 1;
+ spec.die_with_editor = 1;
+ spec.side_pty_slave = WPE_CHILD_NO_FD;
+ spec.tty_fd = WPE_CHILD_NO_FD;
+ spec.what = AI_CLI_WHAT;
+ return wpe_child_start(&spec, &st->child, ai_claudecli_on_ended, st);
+}
+
+/**
+ * ai_claudecli_hand_prompt - Give the CLI the whole prompt, then end of file.
+ * @st: the stream, its CLI started; @prompt: the flattened request.
+ *
+ * The CLI reads its stdin to the end before it answers, so the prompt goes
+ * through the editor's writer: what the pipe does not take now is written
+ * as the CLI reads, the end of file follows the last byte, and the editor
+ * takes keys meanwhile.  A long prompt therefore arrives whole however slowly
+ * it is read, and a CLI that stops reading is named on the status row.
+ * Return: 0, or -1 when the writer refused the prompt (the request then fails
+ * with a line, never with a prompt cut short).
+ */
+static int ai_claudecli_hand_prompt(struct wpe_ai_stream *st, const char *prompt)
+{
+ int in = st->child.in_fd, r;
+
+ st->child.in_fd = WPE_CHILD_NO_FD;   /* the loop closes it once written */
+ r = wpe_fd_write(in, prompt, strlen(prompt), AI_CLI_WHAT, AI_CLI_ENDS);
+ wpe_ai_trace("claudecli prompt bytes=%lu write=%d", (unsigned long)strlen(prompt), r);
+ if (r == WPE_FD_WRITE_REFUSED) {
+  wpe_fd_close(in);
+  return -1;
+ }
+ wpe_fd_close_when_written(in);
+ return 0;
+}
+
+/* Spawn `claude -p --output-format json`, feeding the prompt on stdin and
+ * reading the single JSON result off the child's stdout.  Uses the user's own
+ * Claude Code login -- no API key, no extra dependency. */
+static int ai_claudecli_open(struct wpe_ai_stream *st, const wpe_ai_req *req)
+{
+ char *argv[AI_CLI_ARGV_MAX];
+ char *prompt = ai_flatten_prompt(req);
+
+ st->is_subproc = 1;                  /* freed as a CLI stream from here on */
+ st->out_fd = WPE_CHILD_NO_FD;
+ if (!prompt) return -1;
+ ai_claudecli_argv(argv);
+ if (ai_claudecli_spawn(st, argv) != 0) {
+  free(prompt);
+  return -1;
+ }
+ st->out_fd = st->child.out_fd;
+ if (ai_claudecli_hand_prompt(st, prompt) != 0) {
+  free(prompt);
+  return -1;                          /* the stream's free ends the CLI */
+ }
+ free(prompt);
  wpe_http_stream_init(&st->hs);
  st->hs.header_done = 1;              /* no HTTP: treat all child output as body */
  st->hs.status = 200;
@@ -2370,7 +2599,7 @@ wpe_ai_stream *wpe_ai_stream_start(const wpe_ai_req *req, char *errbuf, size_t e
  if (st->backend == WPE_AI_CLAUDECLI) {
   if (ai_claudecli_open(st, req) != 0) {
    if (errbuf) snprintf(errbuf, errsz, "could not start the claude CLI");
-   free(st);
+   wpe_ai_stream_free(st);
    return NULL;
   }
   wpe_ai_trace("stream start backend=claudecli");
@@ -2880,36 +3109,29 @@ int wpe_ai_stream_pump(wpe_ai_stream *st,
 }
 
 /**
- * ai_stream_reap_child - Let go of the stream's child without blocking on it.
- * @st: a stream with a child (the claude CLI).
+ * ai_stream_end_child - Let go of the stream's CLI without waiting for it.
+ * @st: a stream, with or without a child.
  *
  * A stream freed before its end (Esc, the window closed, the task dropped)
- * used to block here on a waiting waitpid until the child finished on its own,
- * so the editor froze for the rest of the reply: a window closed mid-run
- * stayed painted for nine seconds against a nine-second reply, because the
- * close could not repaint until the free returned.  The child is reaped only
- * if it has already exited; one still running is left to the editor's own
- * SIGCHLD reaper (WpeSignalChild in we_unix.c, which collects every child),
- * so freeing the stream returns at once and the close repaints without
- * waiting.  The child is not signalled: its output pipe is closed just after,
- * so a one-shot stream child (a `claude -p` call) ends on its
- * own, and nothing is read or waited for on the way out, so the window
- * dispatcher keeps control and the next window takes keys immediately.
+ * must not keep the editor: a window closed mid-run used to stay painted for
+ * the rest of the reply.  A CLI still running is ended on the children's
+ * owner, SIGTERM then SIGKILL after the grace, with nobody called back, so
+ * the free returns at once and no `claude -p` is left answering a request
+ * nobody reads.  One that already ended needs nothing.
  */
-static void ai_stream_reap_child(struct wpe_ai_stream *st)
+static void ai_stream_end_child(struct wpe_ai_stream *st)
 {
- int status;
- if (st->pid <= 0) return;
- waitpid(st->pid, &status, WNOHANG);
+ if (!st->is_subproc) return;
+ wpe_child_end_detached(&st->child, SIGTERM);
 }
 
 void wpe_ai_stream_free(wpe_ai_stream *st)
 {
  if (!st) return;
- ai_stream_reap_child(st);                     /* before the fd it reads is closed */
+ ai_stream_end_child(st);
  ai_mock_forget(st);
  if (st->is_subproc) {
-  if (st->out_fd >= 0) close(st->out_fd);
+  wpe_fd_close(st->out_fd);
  } else {
   wpe_http_close(&st->conn);
  }

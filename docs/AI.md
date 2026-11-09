@@ -430,15 +430,19 @@ the command's lines scrolled across the file until the next repaint. The same
 holds for the external agent CLI behind the *Claude Code* engine and for the
 post-edit hook.
 
-While a command or a web tool runs the editor reads no keys, so the pane's last
-line says `[agent] running run_command ... (result follows)` (or `web_search`,
-`web_fetch`) for the whole run. A command gets `AIToolTimeout` seconds (default
-60, `XWPE_AI_TOOL_TIMEOUT` for one session); past that it is ended (its whole
-process group, TERM then KILL), the pane says `run_command timed out after N s`
-and the model reads `TOOL ERROR: timed out after N s`. The bound reaches the
-command's process group; a command that detaches itself from it (`setsid`,
-`nohup ... &`) is beyond it and runs on. The read-only tools and the post-edit
-hook share the limit. A command's output or a file read with
+While a command or a web tool runs the editor goes on taking keys, and the
+pane's last line says `[agent] running run_command ... (result follows)` (or
+`web_search`, `web_fetch`) for the whole run; Esc ends the task and the command
+with it. A command gets `AIToolTimeout` seconds (default 60,
+`XWPE_AI_TOOL_TIMEOUT` for one session); past that its whole process group gets
+SIGTERM, and SIGKILL two seconds later if it is still there, so a command that
+ignores SIGTERM ends at the limit plus two seconds. The pane then says
+`run_command timed out after N s` and the model reads
+`TOOL ERROR: timed out after N s`. The bound reaches the command's process
+group; a command that detaches itself from it (`setsid`, `nohup ... &`) is
+beyond it and runs on. The read-only tools (`list_dir`, `grep`, `glob`) run the
+same way and share the limit; the post-edit hook shares the limit, and the
+editor waits for it, since its result is applied at once. A command's output or a file read with
 `read_file` is cut at 6000 bytes and then ends with the line
 `(output cut at 6000 bytes)`, so the model asks for less instead of taking the
 beginning for the whole.

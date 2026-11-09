@@ -233,6 +233,15 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The editor keeps taking keys while an agent's command runs.  A
+  run_command, list_dir, grep or glob used to hold the editor until it
+  ended: Esc was read only afterwards.  Esc now ends the task and the
+  command with it.  A command that outlives AIToolTimeout gets SIGTERM and,
+  two seconds later, SIGKILL, so one that ignores SIGTERM still ends and
+  nothing of it is left.  The claude command-line backend is handed its
+  prompt while the editor goes on, so a long prompt reaches it whole even
+  when it is slow to read it.  The hosted agent ends with the editor.
+
 * The editor keeps working while the assistant's server answers.  With
   AIModel empty, an Edit, a Multi-file edit, an Agent run, a completion or
   the chat first asks the server for its models: the pane now says

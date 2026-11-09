@@ -13,7 +13,8 @@
 #include "we_ai.h"
 #include "we_ai_http.h"
 #include "we_ai_host.h"
-#include "we_childsig.h"
+#include "we_child.h"
+#include "we_fdloop.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -22,11 +23,16 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
-#include <sys/wait.h>
 #include <json-c/json.h>
 
 #define HOST_MAX_EDITS 32
 #define HOST_PATH_MAX  1024
+/* Room for the hosted CLI's argument vector: the longest dial builds 22 words. */
+#define HOST_ARGV_MAX  24
+/* How the hosted engine is named in the owner's and the writer's lines, and
+   what ends it when it stops reading. */
+#define HOST_WHAT      "the agent"
+#define HOST_ENDS      "Esc at the prompt ends the session"
 
 /* The control-request subtype that asks the CLI to stop the turn it is in, and
    the prefix of the request ids the editor mints for it (each id is fresh so a
@@ -35,7 +41,7 @@
 #define HOST_INTERRUPT_ID_PREFIX    "xwpe-interrupt-"
 
 struct wpe_host {
- pid_t           pid;
+ WpeChild        child;                 /* the CLI, on the children's owner   */
  int             in_fd;                 /* child stdin  (we write user turns) */
  int             out_fd;                /* child stdout (stream-json events)  */
  wpe_http_stream hs;                    /* incremental line framer            */
@@ -50,12 +56,6 @@ struct wpe_host {
 };
 
 /* ------------------------------------------------------------------ helpers */
-
-static void host_set_nonblock(int fd)
-{
- int fl = fcntl(fd, F_GETFL, 0);
- if (fl != -1) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-}
 
 /* Remember a path an edit tool wrote, de-duplicated, for reload at turn end. */
 static void host_note_edit(wpe_host *h, const char *path)
@@ -131,47 +131,21 @@ const char *wpe_host_command(void)
  return NULL;
 }
 
-wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
-                         char *err, size_t errsz)
+/**
+ * host_argv - The command line of the hosted engine.
+ * @argv: receives the words, NULL-terminated; room for HOST_ARGV_MAX;
+ * @hostcmd: a configured command (run through the shell), or NULL for the
+ * built-in `claude` argv; @model, @resume, @policy: as for wpe_host_start.
+ *
+ * Built before the start, so the child only executes it.
+ */
+static void host_argv(char **argv, const char *hostcmd, const char *model,
+                      const char *resume, int policy)
 {
- int in[2], out[2];
- pid_t pid;
- wpe_host *h;
- /* Which agent CLI to host: XWPE_AI_HOST_CMD (tests / one-off) wins, else the
-    persisted AIHostCommand (Options), else NULL -> the built-in `claude` argv. */
- const char *hostcmd = wpe_host_command();
-
- if (err && errsz) err[0] = '\0';
- /* The "text" adapter renders a plain prompt-in/text-out CLI, so it needs a
-    command to run -- there is no built-in text CLI. */
- if (e_ai_host_adapter == WPE_AI_HOST_ADAPTER_TEXT && (!hostcmd || !*hostcmd)) {
-  if (err) snprintf(err, errsz, "AIHostAdapter text needs AIHostCommand set");
-  return NULL;
- }
- if (pipe(in) != 0) { if (err) snprintf(err, errsz, "pipe: %s", strerror(errno)); return NULL; }
- if (pipe(out) != 0) { close(in[0]); close(in[1]);
-   if (err) snprintf(err, errsz, "pipe: %s", strerror(errno)); return NULL; }
-
- pid = fork();
- if (pid < 0) {
-  close(in[0]); close(in[1]); close(out[0]); close(out[1]);
-  if (err) snprintf(err, errsz, "fork: %s", strerror(errno));
-  return NULL;
- }
- if (pid == 0) {                        /* child */
-  char *argv[24];
-  int a = 0, dn;
-  wpe_ai_child_new_session();           /* no controlling terminal to paint on */
-  wpe_child_default_signals();          /* the CLI and a host command are ordinary programs */
-  dup2(in[0], 0);
-  dup2(out[1], 1);
-  dn = open("/dev/null", O_WRONLY);
-  if (dn >= 0) { dup2(dn, 2); close(dn); }
-  close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+  int a = 0;
   if (hostcmd && hostcmd[0]) {          /* mock/other host: run via the shell */
    argv[a++] = "/bin/sh"; argv[a++] = "-c"; argv[a++] = (char *)hostcmd; argv[a] = NULL;
-   execvp("/bin/sh", argv);
-   _exit(127);
+   return;
   }
   argv[a++] = "claude";
   argv[a++] = "--print";
@@ -207,23 +181,69 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
    argv[a++] = "WebSearch"; argv[a++] = "WebFetch";
   }
   argv[a] = NULL;
-  execvp("claude", argv);
-  _exit(127);
- }
+}
 
- close(in[0]); close(out[1]);           /* parent keeps in[1] (write), out[0] (read) */
- h = calloc(1, sizeof *h);
+/** host_on_ended - The engine's end: the session sees it as its output's end. */
+static void host_on_ended(WpeChild *c, int status, int how, void *data)
+{
+ (void)c; (void)data;
+ wpe_ai_trace("host ended how=%d status=%d", how, status);
+}
+
+/**
+ * host_spawn - Start the engine in a session of its own.
+ * @h: the session; @argv: its command line.
+ *
+ * Its own session, so it cannot paint on the editor's screen; its stderr to
+ * /dev/null (its answers are the stream on stdout); it dies with the editor.
+ * Return: 0, or -1 with errno when it could not be started.
+ */
+static int host_spawn(wpe_host *h, char **argv)
+{
+ WpeChildSpec spec;
+
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.stderr_to_null = 1;
+ spec.die_with_editor = 1;
+ spec.side_pty_slave = WPE_CHILD_NO_FD;
+ spec.tty_fd = WPE_CHILD_NO_FD;
+ spec.what = HOST_WHAT;
+ return wpe_child_start(&spec, &h->child, host_on_ended, h);
+}
+
+wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
+                         char *err, size_t errsz)
+{
+ char *argv[HOST_ARGV_MAX];
+ wpe_host *h;
+ /* Which agent CLI to host: XWPE_AI_HOST_CMD (tests / one-off) wins, else the
+    persisted AIHostCommand (Options), else NULL -> the built-in `claude` argv. */
+ const char *hostcmd = wpe_host_command();
+
+ if (err && errsz) err[0] = '\0';
+ /* The "text" adapter renders a plain prompt-in/text-out CLI, so it needs a
+    command to run -- there is no built-in text CLI. */
+ if (e_ai_host_adapter == WPE_AI_HOST_ADAPTER_TEXT && (!hostcmd || !*hostcmd)) {
+  if (err) snprintf(err, errsz, "AIHostAdapter text needs AIHostCommand set");
+  return NULL;
+ }
+ h = calloc(1, sizeof *h);              /* before the start: nothing to end if it fails */
  if (!h) {
-  close(in[1]); close(out[0]);
-  kill(pid, SIGKILL); waitpid(pid, NULL, 0);
   if (err) snprintf(err, errsz, "out of memory");
   return NULL;
  }
- h->pid = pid;
- h->in_fd = in[1];
- h->out_fd = out[0];
+ host_argv(argv, hostcmd, model, resume, policy);
+ if (host_spawn(h, argv) != 0) {
+  if (err) snprintf(err, errsz, "start: %s", strerror(errno));
+  free(h);
+  return NULL;
+ }
+ h->in_fd = h->child.in_fd;
+ h->out_fd = h->child.out_fd;
  h->adapter = e_ai_host_adapter;
- host_set_nonblock(h->out_fd);
  wpe_http_stream_init(&h->hs);
  h->hs.header_done = 1;                 /* raw pipe: bytes are body, not HTTP */
  h->hs.status = 200;
@@ -241,25 +261,59 @@ const char *wpe_host_session_id(wpe_host *h) { return h ? h->session_id : ""; }
  * @h: the live session; @o: the object, serialised plain (one line, no spaces).
  *
  * Every message the editor sends on the channel (a user turn, a permission
- * answer, an interrupt) goes through here, so a partial write or a closed stdin
- * is handled once and the three cannot frame their lines differently.
- * Return: 0 when the whole line went out, -1 on a write error.
+ * answer, an interrupt) goes through here, so a closed stdin is handled once
+ * and the three cannot frame their lines differently.  The line and its
+ * newline go to the editor's writer as one message: whole and in order, the
+ * part the CLI does not take now written as it reads, and the editor takes
+ * keys meanwhile; a CLI that stops reading is named on the status row.
+ * Return: 0 when the line went out or waits its turn, -1 when the writer
+ * refused it or the CLI's stdin is gone.
  */
 static int host_write_line(wpe_host *h, struct json_object *o)
 {
  const char *line;
- size_t len, off;
- char nl = '\n';
+ char *msg;
+ size_t len;
+ int r;
 
  if (!h || h->in_fd < 0 || !o) return -1;
  line = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);
  len = strlen(line);
- for (off = 0; off < len; ) {
-  ssize_t w = write(h->in_fd, line + off, len - off);
-  if (w < 0) { if (errno == EINTR) continue; return -1; }
-  off += (size_t)w;
+ msg = malloc(len + 1);
+ if (!msg) return -1;
+ memcpy(msg, line, len);
+ msg[len] = '\n';
+ r = wpe_fd_write(h->in_fd, msg, len + 1, HOST_WHAT, HOST_ENDS);
+ free(msg);
+ if (r == WPE_FD_WRITE_REFUSED || r == WPE_FD_WRITE_CLOSED) return -1;
+ return 0;
+}
+
+/**
+ * host_send_text_and_close - The text adapter's turn: the task, then end of file.
+ * @h: the live session; @text: the task.
+ *
+ * A plain prompt-in/text-out CLI answers once its stdin ends, so the stdin is
+ * handed to the editor's loop, which closes it after the last byte.
+ * Return: 0, or -1 when the writer refused the task.
+ */
+static int host_send_text_and_close(wpe_host *h, const char *text)
+{
+ size_t tl = strlen(text);
+ char *msg = malloc(tl + 1);
+ int fd = h->in_fd, r;
+
+ if (!msg) return -1;
+ memcpy(msg, text, tl);
+ msg[tl] = '\n';
+ r = wpe_fd_write(fd, msg, tl + 1, HOST_WHAT, HOST_ENDS);
+ free(msg);
+ h->in_fd = -1;                         /* the loop owns it from here */
+ if (r == WPE_FD_WRITE_REFUSED || r == WPE_FD_WRITE_CLOSED) {
+  wpe_fd_close(fd);
+  return -1;
  }
- if (write(h->in_fd, &nl, 1) < 0) return -1;
+ wpe_fd_close_when_written(fd);         /* EOF: let the CLI produce its answer */
  return 0;
 }
 
@@ -275,18 +329,8 @@ int wpe_host_send(wpe_host *h, const char *user_text)
     close its stdin so it gets EOF, processes, and exits -- its stdout streams
     back as the answer and the turn ends when it closes stdout.  (One-shot: the
     session ends after the turn; a fresh Alt-G g starts the next.) */
- if (h->adapter == WPE_AI_HOST_ADAPTER_TEXT) {
-  const char *t = user_text ? user_text : "";
-  size_t tl = strlen(t), o2;
-  for (o2 = 0; o2 < tl; ) {
-   ssize_t w = write(h->in_fd, t + o2, tl - o2);
-   if (w < 0) { if (errno == EINTR) continue; return -1; }
-   o2 += (size_t)w;
-  }
-  { char nl = '\n'; if (write(h->in_fd, &nl, 1) < 0) return -1; }
-  close(h->in_fd); h->in_fd = -1;        /* EOF: let the CLI produce its answer */
-  return 0;
- }
+ if (h->adapter == WPE_AI_HOST_ADAPTER_TEXT)
+  return host_send_text_and_close(h, user_text ? user_text : "");
 
  o = json_object_new_object();
  m = json_object_new_object();
@@ -503,21 +547,20 @@ void wpe_host_pump(wpe_host *h, const wpe_host_events *ev, void *ud,
 
 /* ------------------------------------------------------------------ teardown */
 
+/**
+ * wpe_host_free - End the session: the engine is asked to quit, never waited for.
+ * @h: the session, freed here.
+ *
+ * End of file on its stdin and SIGTERM ask the CLI to exit; the children's
+ * owner sends SIGKILL after its grace if it does not, with nobody called
+ * back, so the pane's "session ended" comes at once and no engine is left.
+ */
 void wpe_host_free(wpe_host *h)
 {
  if (!h) return;
- if (h->in_fd >= 0)  close(h->in_fd);   /* EOF on stdin asks the child to exit */
- if (h->out_fd >= 0) close(h->out_fd);
- if (h->pid > 0) {
-  int status;
-  pid_t r;
-  kill(h->pid, SIGTERM);                /* ask it to quit (stdin EOF + SIGTERM) */
-  r = waitpid(h->pid, &status, WNOHANG);
-  if (r == 0) {                         /* still running: force it and reap */
-   kill(h->pid, SIGKILL);
-   waitpid(h->pid, &status, 0);
-  }
- }
+ wpe_fd_close(h->in_fd);
+ wpe_fd_close(h->out_fd);
+ wpe_child_end_detached(&h->child, SIGTERM);
  wpe_http_stream_free(&h->hs);
  free(h);
 }

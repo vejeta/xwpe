@@ -53,6 +53,11 @@
   {"id": "SC-ai-runtime-21", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_a_late_test_reply_starts_no_process", "status": "new"},
   {"id": "SC-ai-runtime-22", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_an_edit_reply_is_not_spliced_after_edit_undo_moved_its_lines", "status": "new"},
   {"id": "SC-ai-runtime-23", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_an_agent_web_page_is_read_while_the_editor_takes_keys", "status": "new"},
-  {"id": "SC-ai-runtime-24", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_opening_the_chat_keeps_the_running_task_cancellable", "status": "new"}
+  {"id": "SC-ai-runtime-24", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_opening_the_chat_keeps_the_running_task_cancellable", "status": "new"},
+  {"id": "SC-ai-runtime-25", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_tool_children.py::test_a_tool_command_that_ignores_sigterm_ends_at_the_deadline_plus_the_grace", "status": "new"},
+  {"id": "SC-ai-runtime-26", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_tool_children.py::test_esc_during_a_tool_command_ends_it_and_the_turn", "status": "new"},
+  {"id": "SC-ai-runtime-27", "requirement": "Backends and their errors", "layer": "ncurses", "test": "tests/test_ai_tool_children.py::test_a_long_prompt_reaches_the_cli_whole", "status": "new"},
+  {"id": "SC-ai-runtime-28", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_tool_children.py::test_the_editors_end_leaves_no_hosted_engine", "status": "new"},
+  {"id": "SC-ai-runtime-29", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_tool_children.py::test_ending_a_hosted_session_ends_an_engine_deaf_to_sigterm", "status": "new"}
  ]
 }
