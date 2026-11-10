@@ -233,6 +233,15 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A write through a link that leads outside the workspace now asks, like
+  any other write outside it.  A link inside the project (a vendored
+  directory, a link the model made with a command) pointing out of the
+  tree used to let an unattended run (edits or auto) write beyond it
+  without the box.  The path is now followed before the check, so a file
+  under such a directory, a dangling link and a link loop all ask, and the
+  box and the pane say where the file really lands.  A link that stays
+  inside the project asks nothing extra.
+
 * The editor keeps taking keys while an agent's command runs.  A
   run_command, list_dir, grep or glob used to hold the editor until it
   ended: Esc was read only afterwards.  Esc now ends the task and the

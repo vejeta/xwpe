@@ -6430,6 +6430,29 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
 #define AI_MULTIFILE_NAME   "Multi-file edit"
 #define AI_MULTIFILE_PREFIX "[" AI_MULTIFILE_NAME "]"
 
+/* Room for the place a link leads to, and for the clause that names it. */
+#define AI_LANDING_PLACE_MAX  1200
+#define AI_LANDING_CLAUSE_MAX (AI_LANDING_PLACE_MAX + 100)
+
+/**
+ * ai_landing_clause - Say where a file really goes when a link on its path leads elsewhere.
+ * @f: the window the pane belongs to; @path: the file, as the model named it;
+ * @clause/@sz: receive " (lands at <place>)", or an empty string when the
+ * path names the place itself.
+ *
+ * The box and the pane name the path the way the model wrote it, so a write
+ * to "vendor/x.c" through a link to another project reads as that and not as
+ * a surprise; this clause adds the place the bytes will go, so the user can
+ * judge it.
+ */
+static void ai_landing_clause(FENSTER *f, const char *path, char *clause, size_t sz)
+{
+ char real[AI_LANDING_PLACE_MAX];
+ clause[0] = '\0';
+ wpe_ai_path_landing(f, path, real, sizeof real);
+ if (real[0]) snprintf(clause, sz, " (lands at %s)", real);
+}
+
 /* A write box for a file outside the workspace carries one more row, the mark. */
 #define AI_DIFF_OUTSIDE_ROWS 1
 
@@ -6444,11 +6467,13 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
  * comes before the path so it stays on screen when the path is too long for
  * the box.
  */
-static void ai_diff_add_outside_row(char **rt, int *ra, int *nrows,
+static void ai_diff_add_outside_row(FENSTER *f, char **rt, int *ra, int *nrows,
                                     const char *path, int attr)
 {
- char row[1400];
- snprintf(row, sizeof row, "%s %s: %s", AI_PLAN_OUTSIDE_MARK, AI_PLAN_OUTSIDE_WORD, path);
+ char row[1400], clause[AI_LANDING_CLAUSE_MAX];
+ ai_landing_clause(f, path, clause, sizeof clause);
+ snprintf(row, sizeof row, "%s %s: %s%s", AI_PLAN_OUTSIDE_MARK, AI_PLAN_OUTSIDE_WORD,
+          path, clause);
  rt[*nrows] = strdup(row);
  ra[*nrows] = attr;
  (*nrows)++;
@@ -6559,7 +6584,7 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
  rt = malloc((size_t)cap * sizeof *rt);
  ra = malloc((size_t)cap * sizeof *ra);
  if (!rt || !ra) { free(rt); free(ra); wpe_ai_segs_free(segs, nseg); return 1; }
- if (outside) ai_diff_add_outside_row(rt, ra, &nrows, path, red);
+ if (outside) ai_diff_add_outside_row(f, rt, ra, &nrows, path, red);
 
  rows.text = rt; rows.attr = ra; rows.n = nrows; rows.cap = cap;
  nl = 1;                                         /* running new-file line number */
@@ -11033,8 +11058,9 @@ static int ai_agent_ask_outside_write(FENSTER *f, const char *path, const char *
  */
 static void ai_agent_report_outside(FENSTER *f, const char *path)
 {
- char line[1400];
- snprintf(line, sizeof line, "[agent] wrote %s, %s", path, AI_PLAN_OUTSIDE_WORD);
+ char line[1400], clause[AI_LANDING_CLAUSE_MAX];
+ ai_landing_clause(f, path, clause, sizeof clause);
+ snprintf(line, sizeof line, "[agent] wrote %s, %s%s", path, AI_PLAN_OUTSIDE_WORD, clause);
  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("agent wrote outside workspace %s", path);
 }
@@ -13129,15 +13155,17 @@ static void ai_row_append(char *row, size_t sz, const char *text)
 static void ai_plan_row(FENSTER *f, const ai_proposal *p, char *row, size_t sz, int *attr)
 {
  int plus, minus, exists, outside;
- char counts[64];
+ char counts[64], clause[AI_LANDING_CLAUSE_MAX];
  exists = ai_plan_count_change(f, p, &plus, &minus);
  outside = wpe_ai_path_outside_workspace(f, p->path);
+ ai_landing_clause(f, p->path, clause, sizeof clause);
  snprintf(counts, sizeof counts, "  (+%d -%d)", plus, minus);
  if (outside) snprintf(row, sz, "%s %s", AI_PLAN_OUTSIDE_MARK, p->path);
  else snprintf(row, sz, "  %s", p->path);
  ai_row_append(row, sz, counts);
  if (!exists) ai_row_append(row, sz, "  [new file]");
  if (outside) ai_row_append(row, sz, "  " AI_PLAN_OUTSIDE_WORD);
+ if (outside) ai_row_append(row, sz, clause);
  if (outside) *attr = f->fb->db.fb;      /* the deletion colour: look twice   */
  else *attr = f->fb->dy.fb;             /* green: a proposed change          */
 }
@@ -13152,9 +13180,10 @@ static void ai_plan_row(FENSTER *f, const ai_proposal *p, char *row, size_t sz, 
  */
 static void ai_plan_report_outside(FENSTER *f, const char *path)
 {
- char line[1400];
+ char line[1400], clause[AI_LANDING_CLAUSE_MAX];
  if (!wpe_ai_path_outside_workspace(f, path)) return;
- snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " applied %s, %s", path, AI_PLAN_OUTSIDE_WORD);
+ ai_landing_clause(f, path, clause, sizeof clause);
+ snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " applied %s, %s%s", path, AI_PLAN_OUTSIDE_WORD, clause);
  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("plan applied outside workspace %s", path);
 }

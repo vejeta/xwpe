@@ -1140,6 +1140,76 @@
    "layer": "ncurses",
    "test": "tests/test_ai_plan_checklist.py::test_a_run_that_writes_nothing_to_messages_leaves_the_compile_output",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-71",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_write_through_a_directory_link_leading_out_asks_and_names_the_place",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-71",
+   "requirement": "Writes",
+   "layer": "c-unit",
+   "test": "test_ai_path",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-72",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_new_file_under_a_directory_link_leading_out_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-73",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_dangling_link_leading_out_as_the_last_component_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-74",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_link_loop_counts_as_outside_and_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-75",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_link_that_stays_inside_the_tree_asks_nothing_under_auto",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-76",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_dots_after_a_link_go_up_from_where_the_link_leads",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-77",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_the_logins_link_a_test_asks_for_is_outside_and_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-78",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_a_session_has_no_link_to_the_machines_login_unless_it_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-32",
+   "requirement": "Writes",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_links.py::test_a_long_relative_path_that_climbs_out_still_asks",
+   "status": "new"
   }
  ]
 }

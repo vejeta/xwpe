@@ -13,6 +13,7 @@
 #include "WeExpArr.h"
 #include "progr.h"
 #include "we_ai.h"
+#include "we_ai_path.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1000,36 +1001,79 @@ static const char *ws_absolute_path(const char *path, char *buf, size_t sz)
 }
 
 /**
- * wpe_ai_path_outside_workspace - Would this path land outside the workspace?
- * @f: any window of the editor; @path: the file, as the model named it.
+ * ws_absolute_unfolded - Make a path absolute without folding its dots.
+ * @path: as the model wrote it; @buf/@sz: room for the result.
+ *
+ * ws_absolute_path folds ".." before any link is looked at, which is wrong
+ * for the workspace check: "vendor/../x" is not "x" when "vendor" is a link
+ * to another directory.  The check hands the text to the resolver as it is.
+ *
+ * Return: `buf`, or NULL when there is no working directory or it does not fit.
+ */
+static const char *ws_absolute_unfolded(const char *path, char *buf, size_t sz)
+{
+ char cwd[WPE_PATH_RESOLVED_MAX];
+ int n;
+ if (!path) return NULL;
+ if (path[0] == '/') n = snprintf(buf, sz, "%s", path);
+ else if (getcwd(cwd, sizeof cwd)) n = snprintf(buf, sz, "%s/%s", cwd, path);
+ else return NULL;
+ if (n < 0 || (size_t)n >= sz) return NULL;
+ return buf;
+}
+
+/**
+ * wpe_ai_path_landing - Where would a write to this path really go, and is that outside?
+ * @f: any window of the editor; @path: the file, as the model named it;
+ * @real/@sz: receive the place the file really lands when that is not the
+ * place the text names (a link on the way), else an empty string; may be NULL.
  *
  * The workspace is the project's directory when a project is open, else the
  * directory of the file the request came from: the same root the scope list
- * and the checkpoint use.  A Multi-file proposal for "../outside.c" is
- * flagged with this so the user sees, before approving, that the model is
- * writing beyond the tree.  It is not refused: the model may be right.
+ * and the checkpoint use.  Links are followed on both sides (we_ai_path.c), so
+ * a vendored directory or a link the model made with a command, pointing out
+ * of the tree, no longer lets a write through without the box.  A Multi-file
+ * proposal for "../outside.c" is flagged with this so the user sees, before
+ * approving, that the model is writing beyond the tree.  It is not refused:
+ * the model may be right.
  *
- * Return: 1 when the file lies outside, 0 when inside or when it cannot be
- * told (no root, or the root is "/", below which nothing is outside).
+ * Return: 1 when the file lands outside, 0 when inside or when it cannot be
+ * told (no root, or the root is "/", below which nothing is outside).  A path
+ * that cannot be made absolute (too long, no working directory) is outside:
+ * the write would still be attempted, so the safe answer is to ask.
+ */
+int wpe_ai_path_landing(FENSTER *f, const char *path, char *real, size_t sz)
+{
+ char rootabs[WPE_PATH_RESOLVED_MAX], pathabs[WPE_PATH_RESOLVED_MAX];
+ char lexbuf[WPE_PATH_RESOLVED_MAX], resolved[WPE_PATH_RESOLVED_MAX];
+ char *root = ws_root(f);
+ const char *lexical, *rp, *pp;
+ int outside;
+ if (real && sz) real[0] = '\0';
+ if (!root || !path) { free(root); return 0; }
+ rp = ws_absolute_unfolded(root, rootabs, sizeof rootabs);
+ pp = ws_absolute_unfolded(path, pathabs, sizeof pathabs);
+ free(root);
+ if (!rp) return 0;
+ if (!pp) return 1;
+ outside = wpe_path_lands_outside(rp, pp, resolved, sizeof resolved);
+ lexical = ws_absolute_path(path, lexbuf, sizeof lexbuf);
+ if (real && sz && resolved[0] && lexical && strcmp(resolved, lexical) != 0)
+  snprintf(real, sz, "%s", resolved);
+ return outside;
+}
+
+/**
+ * wpe_ai_path_outside_workspace - Would this path land outside the workspace?
+ * @f: any window of the editor; @path: the file, as the model named it.
+ *
+ * The yes/no of wpe_ai_path_landing, for the callers that do not name where.
+ *
+ * Return: 1 when the file lands outside, 0 when inside or when it cannot be told.
  */
 int wpe_ai_path_outside_workspace(FENSTER *f, const char *path)
 {
- char abs[1200], rootbuf[1200];
- const char *full = ws_absolute_path(path, abs, sizeof abs);
- char *root = ws_root(f);
- const char *rootfull;
- size_t rl;
- int outside;
- if (!root || !full) { free(root); return 0; }
- rootfull = ws_absolute_path(root, rootbuf, sizeof rootbuf);
- rl = strlen(rootfull);
- while (rl > 1 && rootfull[rl - 1] == '/') rl--;
- if (rl <= 1) outside = 0;
- else if (strncmp(full, rootfull, rl) != 0) outside = 1;
- else if (full[rl] != '/' && full[rl] != '\0') outside = 1;
- else outside = 0;
- free(root);
- return outside;
+ return wpe_ai_path_landing(f, path, NULL, 0);
 }
 
 /**

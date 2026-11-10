@@ -616,10 +616,14 @@ Whatever the dial, the argument of @code{list_dir}, @code{grep} and @code{glob}
 reaches the shell as a single word: a pattern with spaces is one pattern, and no
 character in it (a @samp{;}, a @samp{$(...)}) is a command, so a line planted in
 a fetched page cannot run anything through a read-only tool.  A write to a file
-outside the working tree (an absolute path beyond it, or one that climbs out
-with @file{..}) always asks, under @code{edits} and @code{auto} too: the write
-box carries the @samp{!} mark and the words @samp{outside the workspace}, as the
-Multi-file dialog does, and the pane names the file again once it is written.
+outside the working tree (an absolute path beyond it, one that climbs out
+with @file{..}, or one that goes through a symbolic link leading out of it)
+always asks, under @code{edits} and @code{auto} too: the write box carries the
+@samp{!} mark and the words @samp{outside the workspace}, as the Multi-file
+dialog does, and the pane names the file again once it is written.  When a
+link is on the way, the box and the pane add @samp{(lands at @var{place})}
+with where the file really goes; a link that stays inside the project asks
+nothing extra.
 
 @cindex AI, command output
 Whatever the dial allows, a command the assistant runs cannot reach your screen.

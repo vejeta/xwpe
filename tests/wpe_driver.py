@@ -584,10 +584,30 @@ def pane_text_with_history(session, needle_words, pages=PANE_HISTORY_PAGES,
 
 class WpeSession:
     """A live wpe instance under a pyte-backed pty, with helpers to send
-    keys, drive menus, save, and read back the file or the screen."""
+    keys, drive menus, save, and read back the file or the screen.
+
+    ``real_login=True`` is for the one kind of test that talks to a real
+    `claude` CLI: it links the machine's ``~/.claude`` and ``~/.claude.json``
+    into the session's HOME so that CLI finds its login.  Off by default,
+    because the session's HOME is also the editor's workspace: with the link
+    in place every process a test starts can read and write the user's
+    credentials, settings and transcripts.  A test with a stub CLI never needs
+    it."""
+
+    @staticmethod
+    def _link_real_login(real_home, workdir):
+        """Link the machine's claude login into ``workdir`` (see real_login)."""
+        for name in (".claude", ".claude.json"):
+            src = os.path.join(real_home, name)
+            dst = os.path.join(workdir, name)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    os.symlink(src, dst)
+                except OSError:
+                    pass
 
     def __init__(self, workdir, seed, filename="t.c", cols=COLS, rows=ROWS,
-                 wait=1.3, env_extra=None):
+                 wait=1.3, env_extra=None, real_login=False):
         self.workdir = workdir
         self.path = os.path.join(workdir, filename)
         with open(self.path, "w") as fh:
@@ -623,20 +643,15 @@ class WpeSession:
         _real_home = os.path.expanduser("~")
         env.setdefault("RUSTUP_HOME", os.path.join(_real_home, ".rustup"))
         env.setdefault("CARGO_HOME", os.path.join(_real_home, ".cargo"))
-        # Same problem for the claude CLI backend: it reads its credentials from
-        # $HOME/.claude/ + $HOME/.claude.json, so under HOME=workdir a real login
-        # is invisible and every claudecli turn comes back "Not logged in".  Link
-        # the real ones into the test HOME (read-only use) so a claudecli-live
-        # test can authenticate; if they do not exist (CI, no login) nothing is
-        # linked and that test simply self-skips.  ~/.xwpe stays isolated.
-        for _c in (".claude", ".claude.json"):
-            _src = os.path.join(_real_home, _c)
-            _dst = os.path.join(workdir, _c)
-            if os.path.exists(_src) and not os.path.exists(_dst):
-                try:
-                    os.symlink(_src, _dst)
-                except OSError:
-                    pass
+        # The claude CLI backend reads its credentials from $HOME/.claude/ +
+        # $HOME/.claude.json, so under HOME=workdir a real login is invisible
+        # and a turn against the real CLI comes back "Not logged in".  Only a
+        # test that asks for it (real_login) gets the machine's ones linked in;
+        # if they do not exist (CI, no login) nothing is linked and that test
+        # self-skips.  Every other test keeps a HOME with nothing of the
+        # user's in it.  ~/.xwpe stays isolated either way.
+        if real_login:
+            self._link_real_login(_real_home, workdir)
         # The menu/file/etc. tests do not exercise the LSP, but opening t.c
         # on a box with clangd installed (e.g. Homebrew on macOS) pops up a
         # "Starting language server..." Messages window that overlays the

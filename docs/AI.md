@@ -214,7 +214,7 @@ its `(+added -removed)` counts taken
 against the buffer as it is now, unsaved edits included; `[new file]` marks a
 file that does not exist yet; and a `!` mark with the words
 `outside the workspace` flags a path the model wants to write beyond the
-project's (or the current file's) directory. Such a file is not refused, but you
+project's (or the current file's) directory, a link on the way included. Such a file is not refused, but you
 see it before approving and the pane names it when it is applied. **Enter/A**
 applies all, **F** reviews file-by-file (each in the diff box), and **Q/Esc**
 cancels. Nothing is written until you approve. (This
@@ -418,9 +418,11 @@ this run cannot be reverted from the review`.
 Whatever the dial, the argument of `list_dir`, `grep` and `glob` is passed to
 the shell as a single word: a pattern with spaces is one pattern, and no
 character in it is a command. A write to a file outside the working tree (an
-absolute path beyond it, or one that climbs out with `..`) always asks, under
-*edits* and *auto* too; the write box carries the `!` mark and the words
-`outside the workspace`, and the pane names the file again once it is written.
+absolute path beyond it, one that climbs out with `..`, or one that goes
+through a link leading out of it) always asks, under *edits* and *auto* too;
+the write box carries the `!` mark and the words `outside the workspace`, with
+the place the file really lands when a link is on the way, and the pane names
+the file again once it is written.
 
 Whatever the dial says, a command the assistant runs **cannot reach your
 screen**: it runs in a session of its own with no terminal attached, so its

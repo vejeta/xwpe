@@ -32,7 +32,7 @@ def test_ai_claudecli_chat(tmp_path):
         "XWPE_AI_TRACE": str(trace),
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=env) as s:
+                    env_extra=env, real_login=True) as s:
         s.key(ALT.AI)
         s.key("a")
         s.key("Reply with exactly the single word PONG")
@@ -58,7 +58,8 @@ def test_ai_claudecli_agent_uses_tool_protocol(tmp_path):
     each tool.  The old dial mapping turned auto into --dangerously-skip-
     permissions, letting the CLI use its own tools and never emitting a TOOL
     line -- this asserts a TOOL line appears.  Self-skips if this HOME has no
-    claude login (the harness links ~/.claude in, but CI may have none)."""
+    claude login (the test asks the driver to link ~/.claude in, but CI may
+    have none)."""
     trace = tmp_path / "ai.trace"
     env = {
         "XWPE_AI_ENABLE": "1",
@@ -67,7 +68,7 @@ def test_ai_claudecli_agent_uses_tool_protocol(tmp_path):
         "XWPE_AI_TRACE": str(trace),
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=env, filename="t.c") as s:
+                    env_extra=env, filename="t.c", real_login=True) as s:
         s.key(ALT.AI); s.key("g")
         s.key("Run list_dir on the current directory, then reply DONE. Change nothing.")
         s.key("\r", delay=2.0)

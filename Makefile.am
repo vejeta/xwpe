@@ -168,7 +168,7 @@ endif
 # already linked; the plain-HTTP backends (Ollama, localhost OpenAI-compatible)
 # need no extra library.  TLS libs are pulled in only under --enable-ai-tls.
 if WPE_AI
-we_SOURCES += we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_agent.c we_ai_ws.c
+we_SOURCES += we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_agent.c we_ai_ws.c we_ai_path.c
 if WPE_AI_TLS
 AM_CFLAGS += $(AITLS_CFLAGS)
 we_LDADD += $(AITLS_LIBS)
@@ -205,6 +205,7 @@ noinst_HEADERS = \
   we_bsp.h \
   we_lsp.h \
   we_ai.h \
+  we_ai_path.h \
   we_ai_http.h \
   we_ai_http_sync.h \
   we_ai_host.h \
@@ -519,8 +520,10 @@ AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
 # local socket; we_ai_http_sync.c, the waiting calls a test needs, is linked
 # into the tests only, never into the editor.
 if WPE_AI
-check_PROGRAMS += test_ai_http test_ai_diff
-TESTS += test_ai_http test_ai_diff
+check_PROGRAMS += test_ai_http test_ai_diff test_ai_path
+TESTS += test_ai_http test_ai_diff test_ai_path
+test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c
+test_ai_path_CFLAGS = $(XWPE_STDFLAG)
 test_ai_http_SOURCES = tests/test_ai_http.c we_ai_http.c we_ai_http_sync.c we_fdloop.c
 test_ai_http_CFLAGS = $(XWPE_STDFLAG) $(AITLS_CFLAGS)
 test_ai_http_LDADD = $(AITLS_LIBS)

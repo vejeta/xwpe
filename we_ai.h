@@ -475,6 +475,9 @@ int   wpe_ai_window_is_editable_file(struct FNST *w);
  * edits count), else the file on disk.  Malloc'd, or NULL. */
 char *wpe_ai_read_scope_file(struct FNST *f, const char *path);
 int   wpe_ai_path_outside_workspace(struct FNST *f, const char *path);
+/* The same question, and where the file really lands when a link on the way
+ * leads elsewhere (empty when the path names the place itself). */
+int   wpe_ai_path_landing(struct FNST *f, const char *path, char *real, size_t sz);
 /* Checkpoint before an edits/auto run: a git ref (stash create / HEAD) when
  * the workspace is a git tree, else snapshot copies of the scope files.
  * Returns 0 when the checkpoint is active, -1 when it was not taken because it
