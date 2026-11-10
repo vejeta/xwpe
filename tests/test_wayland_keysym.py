@@ -69,3 +69,30 @@ def test_wayland_break_and_ctrl_pause_are_ctrl_break():
         assert rows, "selftest has no %r case:\n%s" % (name, out)
         assert rows[0].rstrip().endswith("OK"), \
             "selftest case %r failed: %r" % (name, rows[0])
+
+
+# @scenario SC-debug-26
+# @scenario SC-debug-62
+def test_wayland_reads_the_debug_chords_and_the_sun_keys_like_the_others():
+    """The compositor-free Wayland row of the one key table: the Ctrl-F
+    chords the Debug menu shows (^F2 Quit, ^F7 Make Watch, ^F8 Toggle
+    Breakpoint, ^F10 Run/Continue), Shift-F10 and Alt-F5, Alt-Left, and the
+    Sun keys, which Wayland did not read at all, give the keys.h codes the
+    terminal and X11 give.  F11, whose symbol is also the Sun Stop key, does
+    nothing, as in the terminal.  A debug session cannot start under the
+    headless compositor, so the keys are fed to keysym_to_xwpe directly."""
+    env = dict(os.environ, XWPE_BACKEND="wayland", XWPE_WL_KEYTEST="1")
+    env.pop("WAYLAND_DISPLAY", None)
+    r = subprocess.run([XWPE_BIN], env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       timeout=30)
+    out = r.stdout.decode("utf-8", "replace")
+    assert r.returncode == 0, "keysym selftest failed:\n" + out
+    for name in ("Ctrl+F2", "Ctrl+F7", "Ctrl+F8", "Ctrl+F10", "Shift+F10",
+                 "Alt+F5", "F11", "Sun Front", "Sun Cut", "Alt+Left",
+                 "Ctrl+Shift+Delete", "Shift+BackSpace"):
+        rows = [line for line in out.splitlines()
+                if line.strip().startswith(name + " ")]
+        assert rows, "selftest has no %r case:\n%s" % (name, out)
+        assert rows[0].rstrip().endswith("OK"), \
+            "selftest case %r failed: %r" % (name, rows[0])

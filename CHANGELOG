@@ -233,6 +233,25 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The Ctrl-F chords the Debug menu and the bars show now work in a
+  terminal.  Only Ctrl-F9 and Alt-F5 were read there, so Ctrl-F2 (Quit),
+  Ctrl-F7 (Make Watch), Ctrl-F8 (Toggle Breakpoint), Ctrl-F10
+  (Run/Continue) and the other Ctrl, Shift and Alt function keys did
+  nothing, and xterm's Ctrl-F2 was taken for Shift-F10.  The terminal, X11
+  and Wayland now read every key through one table, so a key gives the same
+  action on all three.  Where they differed: Wayland reads the Sun keys
+  (Props, Undo, Front, Copy, Open, Paste, Find, Cut) as X11 does;
+  Alt-Left, Alt-Right, Alt-Up, Alt-Down, Alt-Home, Alt-End and the Alt page
+  keys, which a terminal always read, now work on X11 and Wayland too; F11
+  and F12, whose key symbols are also the Sun Stop and Again keys, no
+  longer quit the editor and redo on X11, and do nothing on every display,
+  as in the terminal; in a terminal Alt-Insert pastes and Alt-Delete copies
+  the marked block (it used to cut it), as they paste and copy the X buffer
+  on X11.  Escape sequences a terminal's terminfo does
+  not name (Ctrl-F chords under TERM=linux or screen, Shift-Tab as ESC [ Z)
+  are read as well, and a raw modified key such as ESC [ 1;5D no longer
+  leaves "5D" typed into the file.
+
 * A write through a link that leads outside the workspace now asks, like
   any other write outside it.  A link inside the project (a vendored
   directory, a link the model made with a command) pointing out of the

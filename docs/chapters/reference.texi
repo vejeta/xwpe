@@ -79,6 +79,23 @@ sends the same bytes for it on both, and xwpe reads them the same way.
 differ is whether the key press reaches the terminal at all, and that is
 decided by the keyboard and the system before xwpe sees anything.
 
+The terminal, X11 and Wayland read keys through one table, so the same
+key does the same thing on all three.  A terminal sends a Ctrl or Alt
+function key as an escape sequence, and xwpe reads it whether or not the
+terminal's terminfo entry names it: @kbd{Ctrl-F8} is
+@code{ESC [ 19;5~} under xterm and under @env{TERM=linux} alike.  The
+Linux console has no Ctrl or Alt function keys and sends
+@kbd{Shift-F1} to @kbd{Shift-F10} as @key{F11} to @key{F20}; xwpe reads
+the shift state the console reports and takes them as Shift-@key{F1} to
+Shift-@key{F10} there only.  @kbd{Alt-Left} and @kbd{Alt-Right} move by
+word like @kbd{Ctrl-Left} and @kbd{Ctrl-Right}, and @kbd{Alt-Home} and
+@kbd{Alt-End} jump like @kbd{Ctrl-Home} and @kbd{Ctrl-End}, in all
+three.  @key{F11} and @key{F12} do nothing in any of them (under X they
+share their key symbols with the Sun keyboard's Stop and Again keys, which
+are not read).  A terminal sends @kbd{Alt-}@var{key}
+as @key{Esc} and the key together, and xwpe joins them when the second
+byte follows within about 50 milliseconds.
+
 @table @asis
 @item Linux (xterm, Konsole, the console)
 @key{F1}--@key{F4} always arrive.  One known exception: GNOME Terminal
@@ -274,8 +291,8 @@ These commands operate on the clipboard (kill-buffer).  (Documented since v1.4.)
 @item @kbd{Alt-Y} @tab Show Buffer: browse the paste/kill buffer (Edit @result{} Show Buffer) @tab
 @item @kbd{Ctrl-U} @tab Undo last change @tab
 @item @kbd{Ctrl-R} @tab Redo (undo the last undo) @tab
-@item @kbd{Alt-Delete} @tab Copy marked text to X selection buffer @tab
-@item @kbd{Alt-Insert} @tab Paste from X selection buffer @tab
+@item @kbd{Alt-Delete} @tab Copy marked text to X selection buffer (in a terminal: copy, as @kbd{Ctrl-C}) @tab
+@item @kbd{Alt-Insert} @tab Paste from X selection buffer (in a terminal: paste the buffer, as @kbd{Ctrl-V}) @tab
 @end multitable
 
 @subsection Read and save

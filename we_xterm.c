@@ -12,6 +12,7 @@
 #include "we_fdloop.h"
 #include "we_childsig.h"
 #include "we_clip.h"
+#include "we_keymap.h"
 #include <X11/Xatom.h>
 #include <poll.h>
 
@@ -1431,19 +1432,43 @@ static int e_x_next_pending_utf8(void)
 }
 
 /**
- * e_x_is_break_key - Is this keystroke Ctrl-Break?
- * @keysym: the key's symbol; @state: the modifiers held.
+ * e_x_mods - The modifiers a key event carried, as the key table reads them.
+ * @state: the XKeyEvent state mask.
  *
- * A PC keyboard's Ctrl+Pause reaches X as the symbol Break, so that is
- * pause for the program under the debugger; a layout that delivers Pause
- * with Control held is taken the same way.  A plain Pause key is not.
- * Return: 1 for Ctrl-Break.
+ * Alt is whichever modifier the server maps to it (WpeXInfo.altmask), as
+ * for every other Alt test of this reader.
+ * Return: WPE_MOD_* bits.
  */
-static int e_x_is_break_key(KeySym keysym, unsigned int state)
+static unsigned e_x_mods(unsigned int state)
 {
- if (keysym == XK_Break)
-  return(1);
- return(keysym == XK_Pause && (state & ControlMask));
+ unsigned mods = WPE_MOD_NONE;
+
+ if (state & ShiftMask)
+  mods |= WPE_MOD_SHIFT;
+ if (state & ControlMask)
+  mods |= WPE_MOD_CTRL;
+ if (state & WpeXInfo.altmask)
+  mods |= WPE_MOD_ALT;
+ return(mods);
+}
+
+/**
+ * e_x_table_key - The editor key for a keysym the key table binds.
+ * @keysym: the key's symbol; @mods: the modifiers held (WPE_MOD_*).
+ *
+ * Function keys, the cursor block, Shift+Tab, Break (and Ctrl+Pause, which a
+ * PC keyboard reaches X as) and the Sun keys give the same code here as on
+ * the terminal and on Wayland.
+ * Return: the key code, or 0 when the symbol is not a bound key (a letter,
+ * a dead key, a modifier), so the caller goes on with the text it produced.
+ */
+static int e_x_table_key(KeySym keysym, unsigned mods)
+{
+ WpeBaseKey base;
+
+ if (!wpe_key_from_keysym((unsigned long)keysym, &mods, &base))
+  return(0);
+ return(wpe_key_code(base, mods));
 }
 
 static int e_x_first_utf8_codepoint(unsigned char *buf, int len)
@@ -1748,109 +1773,23 @@ int e_x_getch()
       return composed;
     }
     e_compose_pending = 0;
-    /* Shift+Tab is delivered as the ISO_Left_Tab keysym (usually with
-       charcount 0), not as Shift+Tab, so the old `ShiftMask && '\t'` test
-       below never matched and dialogs got no back-tab.  Map it to WPE_BTAB
-       for backward field navigation in option dialogs. */
-    if (keysym == XK_ISO_Left_Tab)
-     return(WPE_BTAB);
-    if (e_x_is_break_key(keysym, key_b))
-     return(CtrlBrk);
+    /* The keys the table binds (function keys, the cursor block, Shift+Tab
+       arriving as ISO_Left_Tab, Break, the Sun keys) are decoded by the
+       one table every display shares. */
+    c = e_x_table_key(keysym, e_x_mods(key_b));
+    if (c != 0)
+     return(c);
     if (charcount == 1)
     {
      if (*buffer == 127)
-     {
-      if (key_b & ControlMask)
-       return(CENTF);
-      else if (key_b & ShiftMask)
-       return(ShiftDel);
-      else if (key_b & WpeXInfo.altmask)
-       return(AltDel);
-      else
-       return(ENTF);
-     }
+      return(wpe_key_code(WPE_KEY_DELETE, e_x_mods(key_b)));
      if ((key_b & ShiftMask) && (*buffer == '\t'))
-      return(WPE_BTAB);
+      return(wpe_key_code(WPE_KEY_TAB, WPE_MOD_SHIFT));
 
      if (key_b & WpeXInfo.altmask)
       c = e_tast_sim(key_b & ShiftMask ? toupper(*buffer) : *buffer);
      else
       return(*buffer);
-    }
-    else
-    {
-     c = 0;
-     if (key_b & ControlMask)
-     {
-      if (keysym == XK_Left) c = CCLE;
-      else if (keysym == XK_Right) c = CCRI;
-      else if (keysym == XK_Home) c = CPS1;
-      else if (keysym == XK_End) c = CEND;
-      else if (keysym == XK_Insert) c = CEINFG;
-      else if (keysym == XK_Delete) c = CENTF;
-      else if (keysym == XK_Prior) c = CBUP;
-      else if (keysym == XK_Next) c = CBDO;
-      else if (keysym == XK_F1) c = CF1;
-      else if (keysym == XK_F2) c = CF2;
-      else if (keysym == XK_F3) c = CF3;
-      else if (keysym == XK_F4) c = CF4;
-      else if (keysym == XK_F5) c = CF5;
-      else if (keysym == XK_F6) c = CF6;
-      else if (keysym == XK_F7) c = CF7;
-      else if (keysym == XK_F8) c = CF8;
-      else if (keysym == XK_F9) c = CF9;
-      else if (keysym == XK_F10) c = CF10;
-     }
-     else if (key_b & WpeXInfo.altmask)
-     {
-      if (keysym == XK_F1) c = AF1;
-      else if (keysym == XK_F2) c = AF2;
-      else if (keysym == XK_F3) c = AF3;
-      else if (keysym == XK_F4) c = AF4;
-      else if (keysym == XK_F5) c = AF5;
-      else if (keysym == XK_F6) c = AF6;
-      else if (keysym == XK_F7) c = AF7;
-      else if (keysym == XK_F8) c = AF8;
-      else if (keysym == XK_F9) c = AF9;
-      else if (keysym == XK_F10) c = AF10;
-      else if (keysym == XK_Insert) c = AltEin;
-      else if (keysym == XK_Delete) c = AltDel;
-     }
-     else
-     {
-      if (keysym == XK_Left) c = CLE;
-      else if (keysym == XK_Right) c = CRI;
-      else if (keysym == XK_Up) c = CUP;
-      else if (keysym == XK_Down) c = CDO;
-      else if (keysym == XK_Home) c = POS1;
-      else if (keysym == XK_End) c = ENDE;
-      else if (keysym == XK_Insert) c = EINFG;
-      else if (keysym == XK_Delete) c = ENTF;
-      else if (keysym == XK_BackSpace) c = CtrlH;
-      else if (keysym == XK_Prior) c = BUP;
-      else if (keysym == XK_Next) c = BDO;
-      else if (keysym == XK_F1) c = F1;
-      else if (keysym == XK_F2) c = F2;
-      else if (keysym == XK_F3) c = F3;
-      else if (keysym == XK_F4) c = F4;
-      else if (keysym == XK_F5) c = F5;
-      else if (keysym == XK_F6) c = F6;
-      else if (keysym == XK_F7) c = F7;
-      else if (keysym == XK_F8) c = F8;
-      else if (keysym == XK_F9) c = F9;
-      else if (keysym == XK_F10) c = F10;
-      else if (keysym == XK_L1) c = STOP;
-      else if (keysym == XK_L2) c = AGAIN;
-      else if (keysym == XK_L3) c = PROPS;
-      else if (keysym == XK_L4) c = UNDO;
-      else if (keysym == XK_L5) c = FRONT;
-      else if (keysym == XK_L6) c = COPY;
-      else if (keysym == XK_L7) c = OPEN;
-      else if (keysym == XK_L8) c = PASTE;
-      else if (keysym == XK_L9) c = FID;
-      else if (keysym == XK_L10) c = CUT;
-      else if (keysym == XK_Help) c = HELP;
-     }
     }
     if (c != 0)
     {

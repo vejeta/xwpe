@@ -39,6 +39,12 @@ we_prog.o e_shell_run 3 keep the definition, e_system and e_install_run
 we_xterm.o e_shell_run 1 keep e_x_system
 we_term.o e_shell_run 1 keep e_t_system
 
+# keys: the names a platform gives its keys are spelled by the key table
+# (we_keymap.c) and nowhere else in the display code.  What is left is text,
+# not keys.
+we_xterm.o XK_ 65 keep the dead-key compose table and the Alt-letter recovery of XQuartz's Compose mode: text, not keys
+we_wayland.o XKB_KEY_ 38 keep the built-in keysym selftest's table of keys to feed keysym_to_xwpe
+
 # console mouse, clipboard, display
 we_gpm.o poll 1 P9o the gpm handshake
 we_gpm.o STDIN_FILENO 2 keep isatty asks whether the terminal is the console; no read

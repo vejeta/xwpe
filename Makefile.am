@@ -63,6 +63,7 @@ we_SOURCES = \
   we_menue.c \
   we_menurows.c \
   we_mousedrain.c \
+  we_keymap.c \
   we_mouse.c \
   we_opt.c \
   we_wind.c \
@@ -192,6 +193,7 @@ noinst_HEADERS = \
   we_gdbmi.h \
   we_menurows.h \
   we_mousedrain.h \
+  we_keymap.h \
   we_render.h \
   we_render_glyphs.h \
   we_childsig.h \
@@ -303,7 +305,14 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_keymap
+
+# The key decoder's table: we_keymap.c alone, no editor and no display
+# library.  Every bound pair has one row, the curses, keysym and escape
+# sequence forms of a key give the same code, a chord the Debug menu shows is
+# decoded, and an unbound key gives 0 and never a letter.
+test_keymap_SOURCES = tests/test_keymap.c we_keymap.c
+test_keymap_CFLAGS = $(XWPE_STDFLAG)
 
 # The children's owner: we_child.c with the fd loop only (the status line is a
 # hook, stubbed).  Real children: twenty ending at once each report their own
@@ -501,7 +510,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child
+  test_child test_keymap
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -646,6 +655,8 @@ EXTRA_DIST = \
   tests/test_popup_close_button.py \
   tests/test_scrollbar_glyphs.py \
   tests/test_keys_modified.py \
+  tests/test_keymap_terminal.py \
+  tests/test_wayland_keysym.py \
   tests/test_chrome_ascii.py \
   tests/test_algol68.py \
   tests/test_algol68_debug.py \
@@ -684,6 +695,7 @@ EXTRA_DIST = \
   tests/wayland/test_menu_window.py \
   tests/wayland/test_menu_system.py \
   tests/wayland/test_menu_help.py \
+  tests/wayland/test_keymap.py \
   tests/wayland/test_menu_nav.py \
   tests/wayland/test_editor_options.py \
   tests/x11/conftest.py \
@@ -699,6 +711,7 @@ EXTRA_DIST = \
   tests/x11/test_menu_window.py \
   tests/x11/test_menu_project.py \
   tests/x11/test_menu_run.py \
+  tests/x11/test_keymap.py \
   tests/x11/test_menu_debug.py \
   tests/x11/test_menu_status_bar.py \
   tests/x11/test_popup_close_button.py \

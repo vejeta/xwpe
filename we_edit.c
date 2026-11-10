@@ -1171,14 +1171,12 @@ int e_tst_fkt(int c, ECNT *e)
   case CtrlV:
    e_edt_einf(f);
    break;
-#if !defined(NO_XWINDOWS)
-  case AltEin:
+  case AltEin:      /*  every display sets these two: the terminal's paste and copy  */
    e_copy_X_buffer(f);
    break;
   case AltDel:
    e_paste_X_buffer(f);
    break;
-#endif
   case COPY:
   case CtrlEin:    /*  ctrl Einf  */
 /*               case 401:    */

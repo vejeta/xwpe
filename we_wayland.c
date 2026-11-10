@@ -49,6 +49,7 @@
 #include "we_fdloop.h"
 #include "we_clip.h"        /* e_clip_os_set / e_clip_os_get function pointers */
 #include "we_trace.h"
+#include "we_keymap.h"      /* the key table: keysyms to editor keys */
 
 extern int e_codepoint_to_utf8(int cp, unsigned char *out);  /* we_edit.c */
 extern int e_refresh();                                      /* editor refresh wrapper */
@@ -499,25 +500,45 @@ static int wl_key_pop(int *is_char)
 }
 
 /**
- * wl_is_break_key - Is this keystroke Ctrl-Break?
- * @sym: the key's symbol; @ctrl: whether Control is held.
- *
- * Same rule as the X11 reader: a PC keyboard's Ctrl+Pause arrives as the
- * symbol Break, and a layout that sends Pause with Control held means the
- * same, so the user pauses the program under the debugger either way.  A
- * plain Pause key is not.
- * Return: 1 for Ctrl-Break.
+ * wl_mods - The modifiers held, as the key table reads them.
+ * @ctrl, @shift, @alt: whether each is held (xkb's effective state).
+ * Return: WPE_MOD_* bits.
  */
-static int wl_is_break_key(xkb_keysym_t sym, int ctrl)
+static unsigned wl_mods(int ctrl, int shift, int alt)
 {
- if (sym == XKB_KEY_Break)
-  return 1;
- return sym == XKB_KEY_Pause && ctrl;
+ unsigned mods = WPE_MOD_NONE;
+
+ if (ctrl)
+  mods |= WPE_MOD_CTRL;
+ if (shift)
+  mods |= WPE_MOD_SHIFT;
+ if (alt)
+  mods |= WPE_MOD_ALT;
+ return mods;
+}
+
+/**
+ * wl_table_key - The editor key for a keysym the key table binds.
+ * @sym: the key's symbol; @mods: the modifiers held (WPE_MOD_*).
+ *
+ * Function keys, the cursor block, Shift+Tab, Break (and Ctrl+Pause) and the
+ * Sun keys give the same code here as on the terminal and on X11.
+ * Return: the key code, or 0 when the symbol is not a bound key (a letter,
+ * a dead key, a modifier), so the caller goes on with the text it produced.
+ */
+static int wl_table_key(xkb_keysym_t sym, unsigned mods)
+{
+ WpeBaseKey base;
+
+ if (!wpe_key_from_keysym((unsigned long)sym, &mods, &base))
+  return 0;
+ return wpe_key_code(base, mods);
 }
 
 /* keysym_to_xwpe - map an xkbcommon keysym (plus the UTF-8 text it produced and
    the active modifiers) to an internal xwpe key code.  This mirrors the X11
-   translation in e_x_getch one-for-one: xkbcommon's XKB_KEY_* values are the
+   translation in e_x_getch: both hand the keysym to the one key table
+   (we_keymap.c), since xkbcommon's XKB_KEY_* values are the
    same numbers as Xlib's XK_*, so the two backends agree key-for-key.  `u8len`
    plays the role of XLookupString's charcount: 1 means a character was
    produced; 0 or >1 means a special key or a multibyte codepoint.  Returns 0
@@ -525,93 +546,29 @@ static int wl_is_break_key(xkb_keysym_t sym, int ctrl)
 int keysym_to_xwpe(xkb_keysym_t sym, const char *utf8, int u8len,
                    int ctrl, int shift, int alt)
 {
- int c = 0;
+ unsigned mods = wl_mods(ctrl, shift, alt);
+ int c;
 
  g_wl_last_was_char = 0;             /* a key code unless the decoder says otherwise */
 
- if (sym == XKB_KEY_ISO_Left_Tab)
-  return WPE_BTAB;
- if (wl_is_break_key(sym, ctrl))
-  return CtrlBrk;
+ /* The keys the table binds (function keys, the cursor block, Shift+Tab,
+    Break, the Sun keys) are decoded by the table every display shares. */
+ c = wl_table_key(sym, mods);
+ if (c != 0)
+  return c;
 
  if (u8len == 1)
  {
   unsigned char ch = (unsigned char)utf8[0];
 
   if (ch == 127)
-  {
-   if (ctrl)  return CENTF;
-   if (shift) return ShiftDel;
-   if (alt)   return AltDel;
-   return ENTF;
-  }
+   return wpe_key_code(WPE_KEY_DELETE, mods);
   if (shift && ch == '\t')
-   return WPE_BTAB;
+   return wpe_key_code(WPE_KEY_TAB, WPE_MOD_SHIFT);
   if (alt)
    c = e_tast_sim(shift ? toupper(ch) : ch);   /* Alt+<letter> menu accelerator */
   else
    return ch;
- }
- else if (ctrl)
- {
-  if      (sym == XKB_KEY_Left)   c = CCLE;
-  else if (sym == XKB_KEY_Right)  c = CCRI;
-  else if (sym == XKB_KEY_Home)   c = CPS1;
-  else if (sym == XKB_KEY_End)    c = CEND;
-  else if (sym == XKB_KEY_Insert) c = CEINFG;
-  else if (sym == XKB_KEY_Delete) c = CENTF;
-  else if (sym == XKB_KEY_Prior)  c = CBUP;
-  else if (sym == XKB_KEY_Next)   c = CBDO;
-  else if (sym == XKB_KEY_F1)  c = CF1;
-  else if (sym == XKB_KEY_F2)  c = CF2;
-  else if (sym == XKB_KEY_F3)  c = CF3;
-  else if (sym == XKB_KEY_F4)  c = CF4;
-  else if (sym == XKB_KEY_F5)  c = CF5;
-  else if (sym == XKB_KEY_F6)  c = CF6;
-  else if (sym == XKB_KEY_F7)  c = CF7;
-  else if (sym == XKB_KEY_F8)  c = CF8;
-  else if (sym == XKB_KEY_F9)  c = CF9;
-  else if (sym == XKB_KEY_F10) c = CF10;
- }
- else if (alt)
- {
-  if      (sym == XKB_KEY_F1)  c = AF1;
-  else if (sym == XKB_KEY_F2)  c = AF2;
-  else if (sym == XKB_KEY_F3)  c = AF3;
-  else if (sym == XKB_KEY_F4)  c = AF4;
-  else if (sym == XKB_KEY_F5)  c = AF5;
-  else if (sym == XKB_KEY_F6)  c = AF6;
-  else if (sym == XKB_KEY_F7)  c = AF7;
-  else if (sym == XKB_KEY_F8)  c = AF8;
-  else if (sym == XKB_KEY_F9)  c = AF9;
-  else if (sym == XKB_KEY_F10) c = AF10;
-  else if (sym == XKB_KEY_Insert) c = AltEin;
-  else if (sym == XKB_KEY_Delete) c = AltDel;
- }
- else
- {
-  if      (sym == XKB_KEY_Left)      c = CLE;
-  else if (sym == XKB_KEY_Right)     c = CRI;
-  else if (sym == XKB_KEY_Up)        c = CUP;
-  else if (sym == XKB_KEY_Down)      c = CDO;
-  else if (sym == XKB_KEY_Home)      c = POS1;
-  else if (sym == XKB_KEY_End)       c = ENDE;
-  else if (sym == XKB_KEY_Insert)    c = EINFG;
-  else if (sym == XKB_KEY_Delete)    c = ENTF;
-  else if (sym == XKB_KEY_BackSpace) c = CtrlH;
-  else if (sym == XKB_KEY_Prior)     c = BUP;
-  else if (sym == XKB_KEY_Next)      c = BDO;
-  else if (sym == XKB_KEY_F1)  c = F1;
-  else if (sym == XKB_KEY_F2)  c = F2;
-  else if (sym == XKB_KEY_F3)  c = F3;
-  else if (sym == XKB_KEY_F4)  c = F4;
-  else if (sym == XKB_KEY_F5)  c = F5;
-  else if (sym == XKB_KEY_F6)  c = F6;
-  else if (sym == XKB_KEY_F7)  c = F7;
-  else if (sym == XKB_KEY_F8)  c = F8;
-  else if (sym == XKB_KEY_F9)  c = F9;
-  else if (sym == XKB_KEY_F10) c = F10;
-  else if (sym == XKB_KEY_Help) c = HELP;
  }
 
  if (c != 0)
@@ -1860,7 +1817,20 @@ static void wl_keytest(void)
   { XKB_KEY_Break,       "",     0, 0,0,0, CtrlBrk,  "Break"      },
   { XKB_KEY_Break,       "",     0, 1,0,0, CtrlBrk,  "Ctrl+Break" },
   { XKB_KEY_Pause,       "",     0, 1,0,0, CtrlBrk,  "Ctrl+Pause" },
-  { XKB_KEY_Pause,       "",     0, 0,0,0, 0,        "Pause alone" }
+  { XKB_KEY_Pause,       "",     0, 0,0,0, 0,        "Pause alone" },
+  /* the chords the Debug menu shows, and the keys the terminal and X11 read the same way */
+  { XKB_KEY_F2,          "",     0, 1,0,0, CF2,      "Ctrl+F2"    },
+  { XKB_KEY_F7,          "",     0, 1,0,0, CF7,      "Ctrl+F7"    },
+  { XKB_KEY_F8,          "",     0, 1,0,0, CF8,      "Ctrl+F8"    },
+  { XKB_KEY_F10,         "",     0, 1,0,0, CF10,     "Ctrl+F10"   },
+  { XKB_KEY_F10,         "",     0, 0,1,0, SF10,     "Shift+F10"  },
+  { XKB_KEY_F5,          "",     0, 0,0,1, AF5,      "Alt+F5"     },
+  { XKB_KEY_F11,         "",     0, 0,0,0, 0,        "F11"        },
+  { XKB_KEY_L5,          "",     0, 0,0,0, FRONT,    "Sun Front"  },
+  { XKB_KEY_L10,         "",     0, 0,0,0, CUT,      "Sun Cut"    },
+  { XKB_KEY_Left,        "",     0, 0,0,1, CCLE,     "Alt+Left"   },
+  { XKB_KEY_Delete,      "\177", 1, 1,1,0, CENTF,    "Ctrl+Shift+Delete" },
+  { XKB_KEY_BackSpace,   "\010", 1, 0,1,0, CtrlH,    "Shift+BackSpace" }
  };
  int n = (int)(sizeof t / sizeof t[0]), i, fails = 0;
 

@@ -47,3 +47,22 @@ to quit at its prompt, or sent SIGTERM while its program runs, and
 killed only if it is still there two seconds later, so the debugger ends
 its program and leaves no core file.
 @end table
+
+@section Keys
+
+@table @asis
+@item F11 and F12 under X
+@cindex F11, F12
+The original read the key symbols of @key{F11} and @key{F12} as the Sun
+keyboard's Stop and Again keys, which they also are, so a PC keyboard's
+@key{F11} quit the editor and @key{F12} redid.  They now do nothing, as
+they always did in a terminal: one key gives one action on every display,
+and quitting on a key no menu names surprised users.
+
+@item Alt-Delete in a terminal
+@cindex Alt-Delete, in a terminal
+The original read Esc then Delete in a terminal as Shift-Delete and cut
+the marked block.  It is now @kbd{Alt-Delete} on every display, which
+copies the block (to the X selection under X, to the buffer in a
+terminal) and leaves it in the file.
+@end table

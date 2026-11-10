@@ -7,6 +7,7 @@
 
 #include "edit.h"
 #include "we_lsp.h"           /* e_lsp_sem_slot_rgb: semantic-token truecolor */
+#include "we_keymap.h"        /* the key table: curses codes and escape tails to editor keys */
 #ifdef UNIX
 
 #include <termios.h>
@@ -245,6 +246,36 @@ char *tgoto();
 
 int WpeGpmMouseInit(void);
 
+/**
+ * e_t_copy_X_buffer - Alt-Insert in a terminal: paste.
+ * @f: the window the key was pressed in.
+ *
+ * Under X, Alt-Insert pastes the X selection.  A terminal cannot read the
+ * system's selection, so the editor's own clipboard is pasted, as
+ * Shift-Insert does; the key works instead of doing nothing.
+ * Return: 0.
+ */
+static int e_t_copy_X_buffer(FENSTER *f)
+{
+ e_edt_einf(f);
+ return(0);
+}
+
+/**
+ * e_t_paste_X_buffer - Alt-Delete in a terminal: copy the marked text.
+ * @f: the window the key was pressed in.
+ *
+ * Under X, Alt-Delete copies the marked block to the X selection.  In a
+ * terminal the copy goes to the editor's clipboard and, where the terminal
+ * accepts it, to the system clipboard (OSC 52), the same as Ctrl-Insert.
+ * Return: 0.
+ */
+static int e_t_paste_X_buffer(FENSTER *f)
+{
+ e_edt_copy(f);
+ return(0);
+}
+
 int WpeDllInit(int *argc, char **argv)
 {
  fk_u_cursor = fk_t_cursor;
@@ -262,6 +293,8 @@ int WpeDllInit(int *argc, char **argv)
  e_u_system = e_t_system;
  fk_u_putchar = fk_t_putchar;
  e_clip_os_set = e_clip_t_os_set;   /* ^C / ^Ins -> OS clipboard via OSC 52 */
+ e_u_copy_X_buffer = e_t_copy_X_buffer;
+ e_u_paste_X_buffer = e_t_paste_X_buffer;
 #ifdef HAVE_LIBGPM
  if (WpeGpmMouseInit() == 0)
  {
@@ -1605,6 +1638,76 @@ static int e_t_sgr_mouse(void)
  return(-1);
 }
 
+/* The longest escape sequence tail kept: "15;2~" is the longest one a key
+   sends, so this leaves room for a modifier and a final byte. */
+#define E_T_CSI_TAIL_MAX 16
+
+/**
+ * e_t_csi_read_tail - Read the rest of an escape sequence the keyboard sent.
+ * @first: the byte already read after the introducer.
+ * @tail: out, @first and the bytes after it, up to and including the final
+ *   byte (a digit or ';' continues the sequence, anything else ends it).
+ * @size: the room in @tail.
+ *
+ * Waits only the Alt delay for each byte, so a sequence that stops short
+ * (a lone ESC [ typed by hand) does not hold the editor.
+ * Return: how many bytes are in @tail.
+ */
+static size_t e_t_csi_read_tail(int first, char *tail, size_t size)
+{
+ size_t n = 0;
+ int c = first;
+
+ timeout(ESC_ALT_DELAY_MS);
+ while (n < size)
+ {
+  tail[n++] = (char)c;
+  if (!(c >= '0' && c <= '9') && c != ';')
+   break;
+  c = fk_getch();
+  if (c == ERR || c > 0xff)
+   break;
+ }
+ timeout(-1);
+ return(n);
+}
+
+/**
+ * e_t_csi_paste_marker - Is this tail a bracketed-paste marker?
+ * @tail: the sequence's tail; @n: its length.
+ *
+ * The terminal wraps pasted text in "ESC [ 200 ~" and "ESC [ 201 ~".  They
+ * are not keys, so they never go to the key table.
+ * Return: WPE_PASTE_BEG, WPE_PASTE_END, or 0 when the tail is neither.
+ */
+static int e_t_csi_paste_marker(const char *tail, size_t n)
+{
+ if (n == 4 && strncmp(tail, "200~", 4) == 0)
+  return(WPE_PASTE_BEG);
+ if (n == 4 && strncmp(tail, "201~", 4) == 0)
+  return(WPE_PASTE_END);
+ return(0);
+}
+
+/**
+ * e_t_csi_tail_key - The editor key an escape sequence's tail stands for.
+ * @tail: the tail; @n: its length.
+ *
+ * Gives the same answer for "ESC [ 1;5P" as for the KEY_F(25) ncurses
+ * folds it into, so a Ctrl-F chord works whether or not the terminfo entry
+ * of the terminal knows it.
+ * Return: the key code, or 0 when the tail is not a bound key.
+ */
+static int e_t_csi_tail_key(const char *tail, size_t n)
+{
+ WpeBaseKey base;
+ unsigned mods;
+
+ if (!wpe_key_from_csi(tail, n, &base, &mods))
+  return(0);
+ return(wpe_key_code(base, mods));
+}
+
 /* Decode the tail of a VT100 cursor/navigation escape after we have already read
    ESC and the introducer byte (@intro is '[' for CSI or 'O' for SS3).  ncurses
    keypad() normally folds a whole arrow sequence into one KEY_DOWN/etc. code, but
@@ -1616,39 +1719,70 @@ static int e_t_sgr_mouse(void)
    return the proper xwpe key, or 0 if it is not a sequence we recognise. */
 static int e_t_csi_key(int intro)
 {
- int c;
+ char tail[E_T_CSI_TAIL_MAX];
+ size_t n;
+ int c, marker;
 
  (void)intro;
  timeout(ESC_ALT_DELAY_MS);
  c = fk_getch();
  timeout(-1);
- switch (c)
- {
-  case 'A':  return(CUP);
-  case 'B':  return(CDO);
-  case 'C':  return(CRI);
-  case 'D':  return(CLE);
-  case 'H':  return(POS1);
-  case 'F':  return(ENDE);
-  /* "ESC [ < ..." is an SGR (1006) mouse report ncurses did not fold into
-     KEY_MOUSE (FreeBSD termcap console / OpenBSD base curses); decode it here. */
-  case '<':  return(e_t_sgr_mouse());
-  /* "ESC [ <n> ~" forms: consume the trailing '~' (or modifier digits). */
-  case '1': case '7':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(POS1); }
-  case '4': case '8':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(ENDE); }
-  /* "ESC [ 2 ~" is Insert; "ESC [ 200 ~" / "ESC [ 201 ~" are the bracketed-paste
-     start/end markers -- accumulate the digits to tell them apart. */
-  case '2':  { int t, n = 2; timeout(ESC_ALT_DELAY_MS); while ((t = fk_getch()) >= '0' && t <= '9') n = n * 10 + (t - '0'); timeout(-1); return(n == 200 ? WPE_PASTE_BEG : n == 201 ? WPE_PASTE_END : EINFG); }
-  case '3':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(ENTF); }
-  case '5':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(BUP); }
-  case '6':  { int t; timeout(ESC_ALT_DELAY_MS); do t = fk_getch(); while (t >= '0' && t <= '9'); timeout(-1); return(BDO); }
-  default:   return(0);
- }
+ /* "ESC [ < ..." is an SGR (1006) mouse report ncurses did not fold into
+    KEY_MOUSE (FreeBSD termcap console / OpenBSD base curses); decode it here. */
+ if (c == '<')
+  return(e_t_sgr_mouse());
+ if (c == ERR || c > 0xff)
+  return(0);
+ n = e_t_csi_read_tail(c, tail, sizeof tail);
+ marker = e_t_csi_paste_marker(tail, n);
+ if (marker != 0)
+  return(marker);
+ return(e_t_csi_tail_key(tail, n));
+}
+
+/**
+ * e_t_console_mods - The shift and control held on a Linux console.
+ *
+ * A bare console tells the editor its keyboard state through an ioctl
+ * (bioskey); no terminal emulator does, and there this is 0.  Alt is not
+ * reported: ESC before the key says it.
+ * Return: WPE_MOD_* bits.
+ */
+static unsigned e_t_console_mods(void)
+{
+ int state = bioskey();
+ unsigned mods = WPE_MOD_NONE;
+
+ if (state & 3)
+  mods |= WPE_MOD_SHIFT;
+ if (state & 4)
+  mods |= WPE_MOD_CTRL;
+ return(mods);
+}
+
+/**
+ * e_t_curses_key - The editor key for a key curses delivered.
+ * @ch: the curses key code (above KEY_CODE_YES).
+ * @extra_mods: modifiers the caller knows (WPE_MOD_ALT after an ESC).
+ *
+ * The one call between curses' words for a key and the editor's code: the
+ * layout of terminfo's function keys and the modifiers a console reports
+ * are the key table's business, not this file's.
+ * Return: the key code, or 0 when the key is not bound.
+ */
+static int e_t_curses_key(int ch, unsigned extra_mods)
+{
+ WpeBaseKey base;
+ unsigned mods;
+
+ if (!wpe_key_from_curses(ch, e_t_console_mods(), &base, &mods))
+  return(0);
+ return(wpe_key_code(base, mods | extra_mods));
 }
 
 int e_t_getch()
 {
- int c, bk;
+ int c;
  extern int g_mouse_buttons;
 
  e_refresh();
@@ -1657,27 +1791,6 @@ int e_t_getch()
  {
   switch (c)
   {
-   case KEY_F(1):  c = F1; break;
-   case KEY_F(2):  c = F2; break;
-   case KEY_F(3):  c = F3; break;
-   case KEY_F(4):  c = F4; break;
-   case KEY_F(5):  c = F5; break;
-   case KEY_F(6):  c = F6; break;
-   case KEY_F(7):  c = F7; break;
-   case KEY_F(8):  c = F8; break;
-   case KEY_F(9):  c = F9; break;
-   case KEY_F(10):  c = F10; break;
-   case KEY_UP:  c = CUP; break;
-   case KEY_DOWN:  c = CDO; break;
-   case KEY_LEFT:  c = CLE; break;
-   case KEY_RIGHT:  c = CRI; break;
-   case KEY_IC:  c = EINFG; break;
-   case KEY_DC:  c = ENTF; break;
-   case KEY_PPAGE:  c = BUP; break;
-   case KEY_NPAGE:  c = BDO; break;
-   case KEY_HOME:  c = POS1; break;
-   case KEY_END:  c = ENDE; break;
-   case KEY_BTAB:  c = WPE_BTAB; break;
    case KEY_RESIZE:
    {
     int i, old_scol = MAXSCOL, old_slns = MAXSLNS;
@@ -1711,7 +1824,6 @@ int e_t_getch()
     }
     return WPE_RESIZE;
    }
-   case KEY_BACKSPACE:  c = WPE_DC; break;
 #if MOUSE
    case KEY_MOUSE:
    {
@@ -1729,49 +1841,11 @@ int e_t_getch()
     break;
    }
 #endif
-   case KEY_HELP:  c = HELP; break;
-#ifdef KEY_BREAK
-   case KEY_BREAK:  c = CtrlBrk; break;  /* where a terminal sends it */
-#endif
-   case KEY_LL:  c = ENDE; break;
-   case KEY_F(17):  c = SF1; break;
-   case KEY_F(18):  c = SF2; break;
-   case KEY_F(19):  c = SF3; break;
-   case KEY_F(20):  c = SF4; break;
-   case KEY_F(21):  c = SF5; break;
-   case KEY_F(22):  c = SF6; break;
-   case KEY_F(23):  c = SF7; break;
-   case KEY_F(24):  c = SF8; break;
-   case KEY_F(25):  c = SF9; break;
-   case KEY_F(26):  c = SF10; break;
-   /* Modern terminals (xterm modifyOtherKeys, gnome/vte, kitty) report
-      Ctrl-/Alt-modified function keys as distinct ncurses keycodes in the
-      standard ranges -- Ctrl-Fn = KEY_F(24+n), Alt-Fn = KEY_F(48+n) -- which
-      the offset-via-bioskey() path cannot recover because bioskey() reads the
-      Linux-console keyboard state and returns 0 in an emulator.  Map the ones
-      xwpe binds as shortcuts so they work in a terminal emulator too, not
-      only on a bare VT.  (A full Shift/Ctrl/Alt function-key table for all
-      terminals is a 1.6.4 cleanup -- see TODO.) */
-   case KEY_F(33):  c = CF9; break;   /* Ctrl-F9  -> Run program        */
-   case KEY_F(53):  c = AF5; break;   /* Alt-F5   -> Borland User Screen */
-   case KEY_PREVIOUS:  c = CUP+512; break;
-   case KEY_NEXT:  c = CDO+512; break;
-   default:  c = 0; break;
+   default:  c = e_t_curses_key(c, WPE_MOD_NONE); break;
   }
-  bk = bioskey();
-  if (bk & 3)
-   c += 512;
-  else if (bk & 4)
-   c += 514;
  }
  else if ( c == WPE_TAB )
- {
-  bk = bioskey(); 
-  if ( bk & 3)
-   c = WPE_BTAB;
-  else
-   c = WPE_TAB;
- }
+  c = wpe_key_code(WPE_KEY_TAB, e_t_console_mods() & WPE_MOD_SHIFT);
  else if (c == 127)
  {
   /* macOS Terminal.app, kitty and most modern emulators send DEL (0x7f) for
@@ -1792,42 +1866,7 @@ int e_t_getch()
   if (c == ERR)
    return(WPE_ESC);
   if (c > KEY_CODE_YES)
-  {
-   switch (c)
-   {
-    case KEY_F(1):  c = AF1; break;
-    case KEY_F(2):  c = AF2; break;
-    case KEY_F(3):  c = AF3; break;
-    case KEY_F(4):  c = AF4; break;
-    case KEY_F(5):  c = AF5; break;
-    case KEY_F(6):  c = AF6; break;
-    case KEY_F(7):  c = AF7; break;
-    case KEY_F(8):  c = AF8; break;
-    case KEY_F(9):  c = AF9; break;
-    case KEY_F(10):  c = AF10; break;
-    case KEY_UP:  c = BUP; break;
-    case KEY_DOWN:  c = BDO; break;
-    case KEY_LEFT:  c = CCLE; break;
-    case KEY_RIGHT:  c = CCRI; break;
-    case KEY_IC:  c = EINFG+512; break;
-    case KEY_DC:  c = ENTF+512; break;
-    case KEY_PPAGE:  c = CBUP; break;
-    case KEY_NPAGE:  c = CBDO; break;
-    case KEY_HOME:  c = CPS1; break;
-    case KEY_END:  c = CEND; break;
-    case KEY_BACKSPACE:  c = AltBS; break;
-    case KEY_HELP:  c = AF1; break;
-    case KEY_LL:  c = CEND; break;
-    case KEY_PREVIOUS:  c = BUP+512; break;
-    case KEY_NEXT:  c = BDO+512; break;
-    default:  c = 0; break;
-   }
-   bk = bioskey();
-   if (bk & 3)
-    c += 512;
-   else if (bk & 4)
-    c += 514;
-  }
+   c = e_t_curses_key(c, WPE_MOD_ALT);   /* ESC then a key is that key with Alt */
   else if (c == 127)
    c = AltBS;
   else if (c == '[' || c == 'O')

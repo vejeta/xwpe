@@ -100,7 +100,16 @@ e_shell_run
 SYS_pidfd_open
 write we_fdloop.c we_unix.c we_child.c we_clip.c
 fdopen
+KEY_F we_keymap.c
+XK_ we_keymap.c
+XKB_KEY_ we_keymap.c
 EOF
+
+# The key table owns the names a platform gives its keys: curses' KEY_F(n)
+# (a call form), X's XK_* and xkbcommon's XKB_KEY_* (prefix forms: every
+# name that starts so).  A display that spells one of them is decoding a key
+# on its own, which is how the three displays came to disagree.  What stays
+# in a display is a counted line of the allow file with its reason.
 
 # normalise: the name as the source spells it.  One leading "_" (Mach-O),
 # a "$..." suffix (macOS versioned names), "@..." (versioned ELF), and the
@@ -226,6 +235,18 @@ for talker in we_debug.o we_lsp.o we_dap.o we_bsp.o; do
       problem "canary: $talker does not import wpe_fd_close (a child's input is closed with its bytes still queued)"
   done
 done
+# Every display decodes its keys through the one table: a display that does
+# not import wpe_key_code has gone back to a ladder of its own, which the
+# name scan below would not see while it spells no new name.
+for display in we_term.o we_xterm.o we_wayland.o; do
+  for obj in $OBJECTS; do
+    [ "$(basename "$obj")" = "$display" ] || continue
+    [ -f "$obj" ] || continue
+    "$NMTOOL" -u "$obj" 2>/dev/null | normalise > "$WORK/display"
+    grep -qx wpe_key_code "$WORK/display" ||
+      problem "canary: $display does not import wpe_key_code (keys are decoded some other way)"
+  done
+done
 # The call-form branch of the source scan must see the writer's own write(.
 if fdloop=$(stripped_source we_fdloop.o); then
   [ "$(count_uses write "$fdloop")" -gt 0 ] ||
@@ -244,7 +265,8 @@ for obj in $OBJECTS; do
     case $word in
       'read(0') n=$(count_uses "read[ \t]*[(][ \t]*0[ \t]*," "$file") ;;
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
-      wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen) n=$(count_uses "$word" "$file") ;;
+      wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F) n=$(count_uses "$word" "$file") ;;
+      XK_|XKB_KEY_) n=$(count_words "$word[A-Za-z0-9_]+" "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac
     [ "$n" -gt 0 ] && echo "$base $word $n" >> "$WORK/found"
