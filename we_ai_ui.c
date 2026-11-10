@@ -1362,16 +1362,14 @@ static FENSTER *ai_caret_window(FENSTER *act)
  */
 static void ai_pane_paint(FENSTER *wf)
 {
- extern int wpe_modal_active;                    /* a dropdown/dialog box is open */
  FENSTER *caret = ai_caret_window(ai_top_window(wf));
  int pane_focused = ai_pane_is_focused(wf);
 
- /* A menu or dialog is up on top of us (its whole lifetime sets this flag): do
-    NOT repaint under it, or a streaming token / the working spinner draws over
-    the box and corrupts it -- the same guard the async language-server painter
-    uses.  The buffer already holds the new text; the next paint once the box
-    closes shows it. */
- if (wpe_modal_active)
+ /* A menu or dialog is up on top of us (it owns the screen for its whole
+    lifetime): do NOT repaint under it, or a streaming token / the working
+    spinner draws over the box and corrupts it.  The buffer already holds the
+    new text; the next paint once the box closes shows it. */
+ if (wpe_paint_modal_depth() > 0)
   return;
 
  ai_pane_reflow(wf);                  /* the rows at the pane's present width */
@@ -4309,11 +4307,10 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
  e_add_bttstr(18, 6, 1, AltS, " Send ", NULL, o);
  e_add_bttstr(32, 6, 0, AltM, "Multi-line", NULL, o);
  e_add_bttstr(50, 6, 0, AltC, "Cancel", NULL, o);
- /* A background task may be animating its spinner: mark a modal so the AI
-    heartbeat's repaint (which moves the caret to the pane) is suppressed while
-    this dialog owns the input -- otherwise it steals focus and eats keystrokes. */
- { extern int wpe_modal_active; int sv = wpe_modal_active; wpe_modal_active = 1;
-   ret = e_opt_kst(o); wpe_modal_active = sv; }
+ /* The dialog engine owns the screen while it runs, so a background task's
+    spinner (whose repaint moves the caret to the pane) waits meanwhile instead
+    of stealing focus and eating keystrokes. */
+ ret = e_opt_kst(o);
  if (ret != WPE_ESC) {                        /* keep what was typed either way */
   strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX);
   out[AI_PROMPT_MAX] = '\0';
@@ -6141,12 +6138,10 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
                             const char *title, const char *hint, const char *accept,
                             int ya_pref)
 {
- extern int wpe_modal_active;
  ai_box_frame fr;
  int width = ai_box_content_width(rt, nrows, title, hint);
  int top = 0, ret = WPE_ESC;
- int modal_save = wpe_modal_active;
- wpe_modal_active = 1;              /* a review/confirm box is up: async paints defer */
+ wpe_paint_modal_enter("the review box");   /* async paints wait for it */
 
  ai_box_frame_fit(f, ya_pref, nrows, width, &fr);
  fk_cursor(0);
@@ -6189,7 +6184,7 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
  }
  fk_cursor(1);
  e_cursor(f, 0);
- wpe_modal_active = modal_save;
+ wpe_paint_modal_leave();
  return ret;
 }
 
@@ -7281,30 +7276,6 @@ static int ai_window_alive(ECNT *cn, FENSTER *f)
  * loop delivers it before it waits for the next key. */
 
 /**
- * ai_editor_idle - Is the editor in its own key loop, free to open a review box?
- * @cn: the desktop.
- *
- * True when no transient box (dialog, prompt, picker, pulldown, a review of
- * its own) owns the screen and the window on top is a text window: the file
- * manager is a window of its own type with its own key loop, so a reply
- * landing while it is up must wait as well.  The same two checks the
- * language-server painter uses to keep its output from drawing under a box.
- */
-static int ai_editor_idle(ECNT *cn)
-{
- extern int wpe_modal_active;
- FENSTER *top;
- if (wpe_modal_active)
-  return 0;
- if (!cn || cn->mxedt < 1)
-  return 0;
- top = cn->f[cn->mxedt];
- if (!top)
-  return 0;
- return DTMD_ISTEXT(top->dtmd);
-}
-
-/**
  * ai_op_hold_reply - Keep a finished reply until the editor is idle again.
  * @op: the task whose reply is complete; @deliver: its done path.
  *
@@ -7350,38 +7321,40 @@ static void ai_op_deliver_held(ai_async_op *op)
 }
 
 /**
+ * ai_deliver_held_reply - Deliver a held reply now that the editor is idle.
+ * @data: unused; the reply is the running task's, if it still has one.
+ *
+ * The screen's owner runs this once the editor is back in its key loop,
+ * the one point that is certainly outside every dialog's own key loop.  A
+ * reply held behind a dialog opens its review here, before the user's next
+ * keystroke, so that keystroke can never be mistaken for a review key.  A
+ * reply dropped meanwhile (Esc, the window closed) is not there any more.
+ */
+static void ai_deliver_held_reply(void *data)
+{
+ ai_async_op *op = g_ai_op;
+ (void)data;
+ if (!op || !op->ready)
+  return;
+ ai_op_deliver_held(op);
+}
+
+/**
  * ai_op_reply_complete - A task's reply is complete: finish now or hold it.
  * @op: the task; @deliver: its done path (review, apply, next turn).
  *
  * Called from the stream callback the moment the backend is done.  With the
  * editor idle this is the ordinary immediate finish; with a dialog open the
- * reply is held and the key loop delivers it when the dialog closes.
+ * reply is held and shown by the screen's owner when the dialog closes.
  */
 static void ai_op_reply_complete(ai_async_op *op, void (*deliver)(ai_async_op *op))
 {
- if (ai_editor_idle(op->cn)) {
+ if (wpe_paint_idle()) {
   deliver(op);
   return;
  }
  ai_op_hold_reply(op, deliver);
-}
-
-/**
- * wpe_ai_deliver_held_reply - Deliver a held reply now that the editor is idle.
- *
- * The editor's key loop calls this just before it waits for a key, which is
- * the one point that is certainly outside every dialog's own key loop.  A
- * reply held behind a dialog opens its review here, before the user's next
- * keystroke, so that keystroke can never be mistaken for a review key.
- */
-void wpe_ai_deliver_held_reply(void)
-{
- ai_async_op *op = g_ai_op;
- if (!op || !op->ready)
-  return;
- if (!ai_editor_idle(op->cn))
-  return;
- ai_op_deliver_held(op);
+ wpe_paint_request(ai_deliver_held_reply, NULL, "the assistant's reply");
 }
 
 /* ---- request queue (stack depth 1) ------------------------------------------
@@ -8043,19 +8016,17 @@ static void ai_reply_confirm_question(char *out, size_t n,
  */
 static int ai_edit_reply_trusted(FENSTER *f, const char *filetext, const char *reply)
 {
- extern int wpe_modal_active;
  char question[160];
- int modal_save, answer;
+ int answer;
 
  if (!ai_reply_would_destroy_file(filetext, reply))
   return 1;
  ai_reply_confirm_question(question, sizeof question,
                            ai_text_line_count(reply),
                            ai_text_line_count(filetext));
- modal_save = wpe_modal_active;
- wpe_modal_active = 1;            /* a question is up: async paints defer */
+ wpe_paint_modal_enter("a question");   /* async paints wait for the answer */
  answer = e_message(1, question, f);
- wpe_modal_active = modal_save;
+ wpe_paint_modal_leave();
  return answer == 'Y';
 }
 
@@ -9434,9 +9405,8 @@ static int ai_mp_key(ai_model_picker *p, int c)
  */
 static int ai_mp_run(ai_model_picker *p)
 {
- extern int wpe_modal_active;
- int saved = wpe_modal_active, how;
- wpe_modal_active = 1;                  /* other painters wait: the box is ours */
+ int how;
+ wpe_paint_modal_enter("the model picker");   /* other painters wait: the box is ours */
  fk_cursor(0);
  for (;;) {
   how = ai_mp_key(p, e_getch());
@@ -9446,7 +9416,7 @@ static int ai_mp_run(ai_model_picker *p)
  ai_mp_close_box(p);
  fk_cursor(1);
  e_cursor(p->f, 0);
- wpe_modal_active = saved;
+ wpe_paint_modal_leave();
  return how;
 }
 
@@ -14341,7 +14311,7 @@ static void host_end_interrupt_overdue(void)
 {
  if (!g_host || !g_host_interrupting) return;
  wpe_ai_trace("host interrupt deadline: session ended after %d s", e_ai_tool_timeout);
- if (wpe_ai_checkpoint_active() && ai_editor_idle(g_host_cn))
+ if (wpe_ai_checkpoint_active() && wpe_paint_idle())
   wpe_ai_changeset_review(g_host_win);
  host_end_session_notice();
 }
@@ -14754,12 +14724,7 @@ static int e_ai_menu_items(OPTK *it)
  */
 static int ai_menu_run_dropdown(OPTK *items, int xa, int ya, int xe, int ye, FENSTER *f)
 {
- extern int wpe_modal_active;
- int saved = wpe_modal_active, verdict;
- wpe_modal_active = 1;
- verdict = WpeHandleSubmenuFromPrefix(xa, ya, xe, ye, AltG, items, f);
- wpe_modal_active = saved;
- return verdict;
+ return WpeHandleSubmenuFromPrefix(xa, ya, xe, ye, AltG, items, f);
 }
 
 /**

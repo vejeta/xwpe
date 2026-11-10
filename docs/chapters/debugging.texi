@@ -281,7 +281,8 @@ Until the debugger has confirmed a breakpoint its line is drawn
 background, instead of the solid red bar (underlined on a display without
 colour).  It turns solid once the debugger has the breakpoint, which is
 at once when you set it at a stop and, under every debugger but sdb, dbx
-and xdb, while the program runs.
+and xdb, while the program runs.  If the debugger's word comes while a
+dialog or a menu is open, the line turns solid when it closes.
 
 A breakpoint the debugger refuses stays in the margin, hollow, and the
 status row gives the debugger's own words, as @samp{Breakpoint at line 2

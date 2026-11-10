@@ -86,6 +86,7 @@ we_SOURCES = \
   we_render.c \
   we_render_cairo.c \
   we_fdloop.c \
+  we_paint.c \
   we_trace.c \
   we_vterm.c \
   we_dap_proto.c \
@@ -200,6 +201,7 @@ noinst_HEADERS = \
   we_child.h \
   we_wayland.h \
   we_fdloop.h \
+  we_paint.h \
   we_trace.h \
   we_vterm.h \
   we_dap_proto.h \
@@ -305,7 +307,15 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint
+
+# The screen's owner: we_paint.c with the fd loop only (the desk is given
+# through hooks the test sets).  A paint asked for under a box waits, the
+# same paint is kept once, the queue is bounded and says what it refused,
+# paints run in the order asked, one that opens a box leaves the rest for
+# later, a box inside a box keeps the screen, and nothing runs on leave.
+test_paint_SOURCES = tests/test_paint.c we_paint.c we_fdloop.c
+test_paint_CFLAGS = $(XWPE_STDFLAG)
 
 # The key decoder's table: we_keymap.c alone, no editor and no display
 # library.  Every bound pair has one row, the curses, keysym and escape
@@ -517,7 +527,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap
+  test_child test_childsig test_keymap test_paint
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -722,6 +732,9 @@ EXTRA_DIST = \
   tests/x11/test_menu_run.py \
   tests/x11/test_keymap.py \
   tests/x11/test_menu_debug.py \
+  tests/test_screen_owner.py \
+  tests/x11/test_screen_owner.py \
+  tests/wayland/test_screen_owner.py \
   tests/x11/test_menu_status_bar.py \
   tests/x11/test_popup_close_button.py \
   tests/x11/test_user_screen.py \

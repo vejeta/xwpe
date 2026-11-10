@@ -444,3 +444,18 @@ Each window has:
 @item Horizontal and vertical scrollbars.
 @item A status line showing the cursor position and edit mode.
 @end itemize
+
+@section What arrives while a box is open
+
+@cindex dialog, output while open
+@cindex box, what waits for it
+A box keeps the screen: what arrives meanwhile is shown when it closes.
+While a dialog, a dropdown, an error box, the assistant's review box or
+a window with keys of its own (the File Manager, the Window list) is in
+front, xwpe draws nothing under it.  The program's output goes on into
+Messages unseen, a stop, the end of a build, the assistant's reply and a
+language server's answer wait, and all of it is shown, in the order it
+came, as soon as you are back in a source window.  The same holds while a
+command run from the editor has the terminal.  The menu bar itself
+(@kbd{F10}), the @kbd{Ctrl-G} and @kbd{Ctrl-K} prefixes and the User
+Screen are not yet boxes in this sense.

@@ -67,6 +67,19 @@ copies the block (to the X selection under X, to the buffer in a
 terminal) and leaves it in the file.
 @end table
 
+@section What arrives while a box is open
+
+@table @asis
+@item Output, stops and answers under a dialog or a menu
+@cindex dialog, output while open
+The original did nothing in the background: while a build ran, the
+debugger started or the program ran, the editor waited, so no menu or
+dialog could be open when output or a stop arrived.  xwpe keeps the
+keyboard meanwhile, so a box can be open when they arrive; what arrives
+then is kept and drawn when the box closes (@pxref{Interface tour}).  A
+box drawn over is a box you can no longer read.
+@end table
+
 @section Short commands
 
 @table @asis

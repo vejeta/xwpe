@@ -843,20 +843,16 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, int pref
 }
 
 /* WpeHandleSubmenu - public entry to the dropdown engine (top File/Edit menus and
-   the Alt-Q language-server menu).  Runs the real loop with the async LSP fd-loop's
-   painting suspended for the dropdown's lifetime, so a server update arriving while
-   a menu is open never draws under the box and corrupts it.  The box pushes no
-   window, so the suspend is by depth counter (e_lsp_modal_enter/leave). */
+   the Alt-Q language-server menu).  The dropdown owns the screen for its whole
+   lifetime, so output, a stop or a server update arriving while a menu is open
+   waits for it to close instead of drawing under the box.  The box pushes no
+   window, so it tells the screen's owner (we_paint.c) instead. */
 int WpeHandleSubmenu(int xa, int ya, int xe, int ye, int nm, OPTK * fopt, FENSTER * f)
 {
   int ret;
-#ifdef DEBUGGER
-  e_lsp_modal_enter();
-#endif
+  wpe_paint_modal_enter("a dropdown");
   ret = WpeHandleSubmenu_run(xa, ya, xe, ye, nm, 0, fopt, f);
-#ifdef DEBUGGER
-  e_lsp_modal_leave();
-#endif
+  wpe_paint_modal_leave();
   return(ret);
 }
 
@@ -877,13 +873,9 @@ int WpeHandleSubmenuFromPrefix(int xa, int ya, int xe, int ye, int prefix,
                                OPTK * fopt, FENSTER * f)
 {
   int ret;
-#ifdef DEBUGGER
-  e_lsp_modal_enter();
-#endif
+  wpe_paint_modal_enter("a prefix's dropdown");
   ret = WpeHandleSubmenu_run(xa, ya, xe, ye, WPE_SUBMENU_NO_BAR_MENU, prefix, fopt, f);
-#ifdef DEBUGGER
-  e_lsp_modal_leave();
-#endif
+  wpe_paint_modal_leave();
   return(ret);
 }
 

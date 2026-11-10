@@ -25,7 +25,6 @@
 extern char *e_d_prog_output;
 extern int e_d_prog_output_len;
 extern void e_d_pty_drain(void);
-extern int wpe_chrome_suppress;   /* gate the fluid scrollbar overlay (we_render.c) */
 
 /* xwpe's attribute byte packs both colours into one int: attr = bg*16 + fg,
    each index in 0..15 into the editor's 16-colour palette (the renderer reads
@@ -219,15 +218,15 @@ int e_x_vterm_user_screen(FENSTER *f)
     the editor's and Messages' scrollbars bleed on top of the program's
     painted screen.  Restored before the editor repaint so its scrollbars
     come back.  Same gate the scrollbar-drag path uses (we_mouse.c). */
- saved_chrome = wpe_chrome_suppress;
- wpe_chrome_suppress = 1;
+ saved_chrome = wpe_paint_chrome_suppressed();
+ wpe_paint_chrome_suppress(1);
 
  e_x_vterm_render_output();
  e_refresh();
 
  e_getch();   /* modal: any key returns to the editor */
 
- wpe_chrome_suppress = saved_chrome;
+ wpe_paint_chrome_suppress(saved_chrome);
  e_repaint_desk(f->ed->f[f->ed->mxedt]);
  return 0;
 }

@@ -1,0 +1,80 @@
+{
+ "capability": "screen-owner",
+ "scenarios": [
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_program_output_under_a_dialog_paints_nothing_under_it_and_shows_when_it_closes",
+   "status": "new",
+   "needs": ["gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "x11",
+   "test": "tests/x11/test_screen_owner.py::test_program_output_under_a_dialog_paints_nothing_under_it_and_shows_when_it_closes",
+   "status": "new",
+   "needs": ["gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "wayland",
+   "test": null,
+   "status": "blocked",
+   "reason": "the headless compositor harness cannot start a debug session; tests/wayland/test_screen_owner.py runs the X11 body and skips; manual line in WAYLAND-TESTING.txt"
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "c-unit",
+   "test": "test_paint",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_a_breakpoint_confirmed_under_a_menu_is_solid_when_the_menu_closes",
+   "status": "new",
+   "needs": ["jdb", "javac"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_program_output_kept_under_the_debug_menu_survives_quitting_from_it",
+   "status": "new",
+   "needs": ["gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "c-unit",
+   "test": "test_paint",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-03",
+   "requirement": "A box stays a box",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_a_review_box_stays_a_box_after_an_error_box_inside_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-03",
+   "requirement": "A box stays a box",
+   "layer": "c-unit",
+   "test": "test_paint",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-06",
+   "requirement": "One owner of the screen",
+   "layer": "c-unit",
+   "test": "tests/check-one-owner.sh",
+   "status": "new"
+  }
+ ]
+}

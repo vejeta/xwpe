@@ -233,6 +233,13 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Nothing is drawn under an open box any more.  Program output that
+  arrived while a dialog was open scrolled Messages under it; a language
+  server's diagnostics were drawn under the assistant's review box; a
+  breakpoint confirmed while a menu was open stayed hollow until the next
+  stop.  What arrives while a dialog, a dropdown, an error box or the
+  review box is up now waits and is shown, in order, when it closes.
+
 * File > Print File works again, compressed files open whatever their
   names, and help on a very long word no longer crashes.  The print
   command was cut to seven characters and never ran.  Compressed help and

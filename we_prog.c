@@ -1758,6 +1758,8 @@ static e_build_cont g_build_final;
 static void *g_build_final_data;
 
 static void e_build_step_end(void);
+static void e_build_deliver_held(void);
+static void e_build_deliver_held_replay(void *data);
 
 /**
  * e_build_busy - Is a build running, or between two of its steps?
@@ -1845,28 +1847,6 @@ FENSTER *e_build_messages(ECNT *cn)
 }
 
 /**
- * e_build_ui_idle - May the build paint, or end, right now?
- * @cn: the desktop.
- *
- * True when no dialog, menu or picker owns the screen and a text window is
- * on top: the same test the assistant applies before it shows a reply.  A
- * build that ends while a dialog is open waits for the dialog to close, so
- * the jump to the first error never lands under it.
- */
-int e_build_ui_idle(ECNT *cn)
-{
- extern int wpe_modal_active;
- FENSTER *top;
-
- if (wpe_modal_active || !cn || cn->mxedt < 1)
-  return(0);
- top = cn->f[cn->mxedt];
- if (!top)
-  return(0);
- return(DTMD_ISTEXT(top->dtmd));
-}
-
-/**
  * e_build_drop_last_row - Take the last row out of the Messages buffer.
  * @b: the Messages buffer.
  */
@@ -1937,7 +1917,7 @@ void e_messages_show_tail(ECNT *cn)
 {
  FENSTER *mf = e_build_messages(cn);
 
- if (!mf || !e_build_ui_idle(cn))
+ if (!mf || !wpe_paint_idle())
   return;
  mf->b->b.y = mf->b->mxlines - 1;
  mf->b->b.x = 0;
@@ -2037,12 +2017,13 @@ static void e_build_close_stream(int fd)
  */
 static void e_build_finish_or_hold(void)
 {
- if (e_build_ui_idle(g_build.cn))
+ if (wpe_paint_idle())
  {
   e_build_step_end();
   return;
  }
  g_build.held = 1;
+ wpe_paint_request(e_build_deliver_held_replay, NULL, "the build's end");
 }
 
 /**
@@ -2228,18 +2209,29 @@ void e_build_end_at_exit(void)
 /**
  * e_build_deliver_held - End a build step that finished behind a dialog.
  *
- * The editor's key loop calls this before it waits for a key, the point
- * that is certainly outside every dialog: the jump to the first error and
- * the next step of the build happen there, never under an open box.
+ * Run once the editor is back in its key loop, the point that is certainly
+ * outside every dialog: the jump to the first error and the next step of
+ * the build happen there, never under an open box.
  */
-void e_build_deliver_held(void)
+static void e_build_deliver_held(void)
 {
  if (!g_build.held)
   return;
- if (!e_build_ui_idle(g_build.cn))
+ if (!wpe_paint_idle())
   return;
  g_build.held = 0;
  e_build_step_end();
+}
+
+/**
+ * e_build_deliver_held_replay - The screen's owner's turn for a build that
+ * ended behind a dialog.
+ * @data: unused.
+ */
+static void e_build_deliver_held_replay(void *data)
+{
+ (void)data;
+ e_build_deliver_held();
 }
 
 /**

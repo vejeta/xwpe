@@ -258,10 +258,10 @@ def test_altq_menu_brackets_the_lsp_modal_guard(tmp_path):
     """Opening the Alt-Q action menu suspends the async LSP fd-loop's painting.
 
     The menu (and every dialog/picker/rename) is an e_opt_kst popup that draws a
-    box over the editor but pushes NO window, so e_lsp_ui_safe's window check
-    cannot see it.  e_opt_kst therefore brackets its input loop with
-    e_lsp_modal_enter/leave, and e_lsp_ui_safe returns false while the depth is
-    non-zero -- that is what stops a streamed Metals diagnostic / status repaint
+    box over the editor but pushes NO window, so a window check cannot see it.
+    e_opt_kst therefore brackets its input loop with the screen owner's
+    wpe_paint_modal_enter/leave, and wpe_paint_idle returns false while the
+    depth is non-zero -- that is what stops a streamed Metals diagnostic / status repaint
     from drawing under the open box and corrupting it.
 
     The race itself (a server message landing in the exact window the box is up)
@@ -284,8 +284,8 @@ def test_altq_menu_brackets_the_lsp_modal_guard(tmp_path):
         w._drain(0.5)
 
         log = trace.read_text() if trace.exists() else ""
-        enters = log.count("lsp modal enter")
-        leaves = log.count("lsp modal leave")
+        enters = log.count("modal enter")
+        leaves = log.count("modal leave")
         assert enters >= 1, \
             "opening the Alt-Q menu did not enter the LSP modal guard:\n%s" % log
         assert enters == leaves, \

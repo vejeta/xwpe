@@ -717,7 +717,6 @@ int e_lst_mouse(x, y, n, sw, max, nf)
      int nf;
 {
    extern struct mouse e_mouse;
-   extern int wpe_chrome_suppress;
    int g[4];  /*  = { 1, 0, 0, 0 };  */
    int inew, iold, nret, frb = e_gt_col(x, y);
    double d;

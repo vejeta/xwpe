@@ -783,7 +783,8 @@ void wpe_render_chrome(void)
  extern ECNT *WpeEditor;
  int w;
 
- if (!cr || !WpeEditor || wpe_chrome_suppress || wpe_modal_active)
+ if (!cr || !WpeEditor || wpe_paint_chrome_suppressed() ||
+     wpe_paint_modal_depth() > 0)
   return;
 
  for (w = 1; w <= WpeEditor->mxedt; w++)

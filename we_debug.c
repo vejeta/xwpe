@@ -1314,6 +1314,8 @@ static void e_d_resume_drop(void);              /* nothing runs again */
 static void e_d_compile_deliver_held(void);     /* compile for debug */
 static void e_d_compile_end_at_exit(void);
 static void e_d_debugger_deliver_held(void);    /* the debugger's end */
+static void e_d_start_deliver_held(void *data); /* all of the start's holds */
+static void e_d_start_deliver_later(void);      /* (below) */
 static int  e_d_dap_source_ext(const char *datnam);
 static int  e_d_dap_start(FENSTER *f);
 static int  e_d_dap_run(FENSTER *f);
@@ -2881,31 +2883,48 @@ static void e_d_run_on_gone(void)
  * ever); the run stays going, so debugger keys still say the program runs
  * until the stop is shown by e_d_run_deliver_held_stop.
  */
+static void e_d_run_deliver_held_stop(void *data);
+
 static void e_d_run_hold_stop(void)
 {
  wpe_fd_del(e_d_run.ops->answer_fd());
  e_d_run.stop_held = 1;
+ wpe_paint_request(e_d_run_deliver_held_stop, NULL, "the program's stop");
 }
 
 /**
  * e_d_run_deliver_held_stop - Show a stop that arrived while a box or a
  * non-text window was in front.
+ * @data: unused.
  *
- * The editor's key loop calls this before it waits for a key, the point
- * that is outside every dialog, menu and non-text window, however the user
- * got back to a source window: closing the box, opening a file from the
- * File Manager, picking a window from the Window list.  The user then sees
- * the mark at the stop and the debugger keys work again.  A stop of a run
- * that has ended since is not held any more (e_d_run_unwatch drops it).
+ * The screen's owner runs this once the editor is back in its key loop,
+ * the point that is outside every dialog, menu and non-text window, however
+ * the user got back to a source window: closing the box, opening a file
+ * from the File Manager, picking a window from the Window list.  The user
+ * then sees the mark at the stop and the debugger keys work again.  A stop
+ * of a run that has ended since is not held any more (e_d_run_unwatch drops
+ * it).
  */
-void e_d_run_deliver_held_stop(void)
+static void e_d_run_deliver_held_stop(void *data)
 {
+ (void)data;
  if (!e_d_run.stop_held || !e_d_run_going())
-  return;
- if (!e_build_ui_idle(e_d_run.cn))
   return;
  e_d_run_release_hold();
  e_d_run_on_stop();
+}
+
+/**
+ * e_d_brk_repaint_live_answers - Draw the margin again with the debugger's
+ * word on the breakpoints, if it changed since the margin was drawn.
+ * @data: the desktop.
+ */
+static void e_d_brk_repaint_live_answers(void *data)
+{
+ if (!e_d_brk_live_changed)
+  return;
+ e_d_brk_live_changed = 0;
+ e_d_run_repaint_margin((ECNT *)data);
 }
 
 /**
@@ -2913,15 +2932,15 @@ void e_d_run_deliver_held_stop(void)
  * word on a breakpoint set or removed while the program runs has come.
  *
  * The user sees the hollow mark turn solid while the program goes on.
- * With a box or a non-text window in front the drawing waits for a later
- * answer or the stop, so nothing is drawn over the box.
+ * With a box or a non-text window in front the drawing waits for the box
+ * to close, so nothing is drawn over it and the mark is right afterwards.
  */
 static void e_d_run_show_live_answers(void)
 {
- if (!e_d_brk_live_changed || !e_build_ui_idle(e_d_run.cn))
+ if (!e_d_brk_live_changed)
   return;
- e_d_brk_live_changed = 0;
- e_d_run_repaint_margin(e_d_run.cn);
+ wpe_paint_request(e_d_brk_repaint_live_answers, e_d_run.cn,
+                   "a breakpoint's answer");
 }
 
 /**
@@ -2940,7 +2959,7 @@ static void e_d_run_on_answer(int fd, void *data)
  fed = e_d_run.ops->feed(e_d_run_window(e_d_run.cn));
  if (fed == E_D_FEED_GOING)
   e_d_run_show_live_answers();
- if (fed == E_D_FEED_STOPPED && !e_build_ui_idle(e_d_run.cn))
+ if (fed == E_D_FEED_STOPPED && !wpe_paint_idle())
   e_d_run_hold_stop();
  else if (fed == E_D_FEED_STOPPED)
   e_d_run_on_stop();
@@ -3017,7 +3036,7 @@ static void e_d_run_process_ended(void)
 {
  if (!e_d_run_going())
   return;
- if (!e_build_ui_idle(e_d_run.cn))
+ if (!wpe_paint_idle())
   e_d_run_hold_stop();
  else
   e_d_run_on_stop();
@@ -3186,13 +3205,29 @@ static void e_d_pty_unwatch_if_hung(int fd)
 }
 
 /**
+ * e_d_messages_show_output - Draw Messages with the program's latest output.
+ * @data: unused; Messages is looked up afresh, the user may have closed it.
+ */
+static void e_d_messages_show_output(void *data)
+{
+ FENSTER *mf = e_d_find_messages_window();
+
+ (void)data;
+ if (!mf)
+  return;
+ e_d_messages_redraw(mf);
+ e_d_messages_place_cursor(mf);
+}
+
+/**
  * e_d_on_pty_readable - The program printed while it runs: show it.
  * @fd: the pty master; @data: unused.
  *
  * The user sees the text in Messages as it comes, or on the User Screen
- * when Messages is closed.  It is read either way: text left in the pty
- * would wake the editor again at once, and it would use a whole core until
- * the program stopped.
+ * when Messages is closed; while a box owns the screen it is kept in
+ * Messages and drawn when the box closes.  It is read either way: text left
+ * in the pty would wake the editor again at once, and it would use a whole
+ * core until the program stopped.
  */
 static void e_d_on_pty_readable(int fd, void *data)
 {
@@ -3203,10 +3238,7 @@ static void e_d_on_pty_readable(int fd, void *data)
  n = e_d_pty_read_to_messages(mf, E_D_READS_PER_WAKE);
  e_d_pty_unwatch_if_hung(fd);
  if (n > 0 && mf)
- {
-  e_d_messages_redraw(mf);
-  e_d_messages_place_cursor(mf);
- }
+  wpe_paint_request(e_d_messages_show_output, NULL, "program output");
 }
 
 static void e_d_pty_flush_line(FENSTER *f, int force)
@@ -7631,17 +7663,19 @@ static void e_d_compile_on_ended(WpeChild *c, int status, int how, void *data)
  e_d_compile.ok = (how == WPE_CHILD_ENDED && WIFEXITED(status) &&
                    WEXITSTATUS(status) == 0);
  e_d_compile.held = 1;
- if (e_build_ui_idle(WpeEditor))
+ if (wpe_paint_idle())
   e_d_compile_tell();
+ else
+  e_d_start_deliver_later();
 }
 
 /**
  * e_d_compile_deliver_held - Go on with a compile that ended behind a
- * dialog.  The key loop calls this outside every dialog.
+ * dialog.  Run by the screen's owner once the dialog has closed.
  */
 static void e_d_compile_deliver_held(void)
 {
- if (e_d_compile.held && e_build_ui_idle(WpeEditor))
+ if (e_d_compile.held && wpe_paint_idle())
   e_d_compile_tell();
 }
 
@@ -7828,17 +7862,19 @@ static void e_scala_setup_on_ended(WpeChild *c, int status, int how,
  su->running = 0;
  su->ok = e_scala_setup_succeeded(status, how);
  su->held = 1;
- if (e_build_ui_idle(WpeEditor))
+ if (wpe_paint_idle())
   e_scala_setup_tell(su);
+ else
+  e_d_start_deliver_later();
 }
 
 /**
  * e_scala_setup_deliver_held - Go on with a setup that ended behind a
- * dialog.  The key loop calls this outside every dialog.
+ * dialog.  Run by the screen's owner once the dialog has closed.
  */
 static void e_scala_setup_deliver_held(void)
 {
- if (!e_build_ui_idle(WpeEditor))
+ if (!wpe_paint_idle())
   return;
  if (e_scala_setup_lsp.held)
   e_scala_setup_tell(&e_scala_setup_lsp);
@@ -8189,13 +8225,15 @@ static void e_d_bsp_after(void)
  if (!e_d_bsp.held)
   return;
  e_d_bsp_unwatch();
- if (e_build_ui_idle(WpeEditor) && !wpe_fd_waiting_for())
+ if (wpe_paint_idle())
   e_d_bsp_tell();
+ else
+  e_d_start_deliver_later();
 }
 
 /**
- * e_d_bsp_deliver_held - Tell a start that ended behind a dialog.  The key
- * loop calls this outside every dialog.
+ * e_d_bsp_deliver_held - Tell a start that ended behind a dialog.  Run by
+ * the screen's owner once the dialog has closed.
  */
 static void e_d_bsp_deliver_held(void)
 {
@@ -9846,33 +9884,62 @@ static void e_d_start_continue(void)
 static void e_d_start_answered(void)
 {
  e_d_start_unwatch_output();
- if (e_build_ui_idle(e_d_start.cn))
+ if (wpe_paint_idle())
  {
   e_d_start_continue();
   return;
  }
  e_d_start_heartbeat_stop();
  e_d_start.held = 1;
+ e_d_start_deliver_later();
 }
 
 /**
- * e_d_start_deliver_held - Go on with a session whose debugger answered
- * behind a dialog.
- *
- * The editor's key loop calls this before it waits for a key, the point
- * that is outside every dialog.
+ * e_d_start_holds_left - Is any part of a start still held: a build or a
+ * setup that ended, a build server's answer, the debugger's answer or its
+ * end?  One of them may have opened a box that holds the others again.
  */
-void e_d_start_deliver_held(void)
+static int e_d_start_holds_left(void)
 {
+ if (e_d_compile.held || e_d_bsp.held)
+  return(1);
+ if (e_scala_setup_lsp.held || e_scala_setup_dap.held)
+  return(1);
+ if (e_d_dbg.held && e_d_dbg.live)
+  return(1);
+ if (e_d_dbg.say_later && e_d_dbg.ended)
+  return(1);
+ return(e_d_start.active && e_d_start.held);
+}
+
+/**
+ * e_d_start_deliver_held - Go on with a session whose debugger answered,
+ * whose build or setup ended, or whose debugger ended, behind a dialog.
+ * @data: unused.
+ *
+ * Run by the screen's owner once the editor is back in its key loop, the
+ * point that is outside every dialog.
+ */
+static void e_d_start_deliver_held(void *data)
+{
+ (void)data;
  e_scala_setup_deliver_held();
  e_d_compile_deliver_held();
  e_d_bsp_deliver_held();
  e_d_debugger_deliver_held();
- if (!e_d_start.active || !e_d_start.held)
-  return;
- if (!e_build_ui_idle(e_d_start.cn))
-  return;
- e_d_start_continue();
+ if (e_d_start.active && e_d_start.held && wpe_paint_idle())
+  e_d_start_continue();
+ if (e_d_start_holds_left() && !wpe_paint_idle())
+  e_d_start_deliver_later();
+}
+
+/**
+ * e_d_start_deliver_later - Something of the start was held behind a box:
+ * the screen's owner goes on with it once the box has closed.
+ */
+static void e_d_start_deliver_later(void)
+{
+ wpe_paint_request(e_d_start_deliver_held, NULL, "the debugger's start");
 }
 
 /* ---- The debugger's end, as the owner of the editor's children reports it */
@@ -9893,9 +9960,10 @@ static void e_d_debugger_session_end(void)
    e_d_start_end();
   return;
  }
- if (!e_build_ui_idle(WpeEditor))
+ if (!wpe_paint_idle())
  {
   e_d_dbg.held = 1;
+  e_d_start_deliver_later();
   return;
  }
  e_d_dbg.held = 0;
@@ -9904,12 +9972,12 @@ static void e_d_debugger_session_end(void)
 
 /**
  * e_d_debugger_deliver_held - End a session whose debugger ended behind a
- * dialog, or say how the debugger of an ended session went.  The key loop
- * calls this outside every dialog.
+ * dialog, or say how the debugger of an ended session went.  Run by the
+ * screen's owner once the dialog has closed.
  */
 static void e_d_debugger_deliver_held(void)
 {
- if (!e_build_ui_idle(WpeEditor))
+ if (!wpe_paint_idle())
   return;
  if (e_d_dbg.held && e_d_dbg.live)
   e_d_debugger_session_end();
@@ -9940,8 +10008,10 @@ static void e_d_on_debugger_ended(WpeChild *c, int status, int how,
  e_d_debugger_close_input();
  if (e_d_dbg.say_later)
  {
-  if (e_build_ui_idle(WpeEditor))
+  if (wpe_paint_idle())
    e_d_debugger_say_died();
+  else
+   e_d_start_deliver_later();
   return;
  }
  if (!e_d_dbg.live || e_d_dbg.end_expected)
@@ -10292,7 +10362,7 @@ void e_d_start_cancel(void)
   return;
  if (e_d_start.held)
  {
-  e_d_start_deliver_held();
+  e_d_start_deliver_held(NULL);
   return;
  }
  e_d_start_stop(E_D_START_CANCELLED);
@@ -17020,18 +17090,17 @@ static void e_d_dr_run_begins(void)
  * e_d_dr_show_breakpoint_answers - Draw the margin again once the adapter's
  * word on a breakpoint set at a stop has come.
  *
- * The user sees the hollow mark turn solid.  With a box or a non-text
- * window in front, or while the stop's own answers still come (they draw
- * the windows at their end), the drawing waits.
+ * The user sees the hollow mark turn solid.  While the stop's own answers
+ * still come (they draw the windows at their end) the drawing waits for
+ * them; with a box or a non-text window in front it waits for the box to
+ * close.
  */
 static void e_d_dr_show_breakpoint_answers(void)
 {
  if (!e_d_brk_live_changed || e_d_run_going() || e_d_dr.chain != E_D_GA_NONE)
   return;
- if (!e_build_ui_idle(WpeEditor))
-  return;
- e_d_brk_live_changed = 0;
- e_d_run_repaint_margin(WpeEditor);
+ wpe_paint_request(e_d_brk_repaint_live_answers, WpeEditor,
+                   "a breakpoint's answer");
 }
 
 /**
@@ -25427,11 +25496,10 @@ static e_lsp_session *g_lsp = NULL;        /* the live server session, or NULL *
 static char           g_lsp_file[1024] = "";  /* full path g_lsp is opened for */
 static FENSTER       *g_lsp_fenster = NULL;
 static FENSTER       *g_lsp_pending_ws = NULL; /* worksheet to focus once ready */
-static int            g_lsp_ui_suspended = 0;  /* defer fd-loop painting (modal up) */
-static int            g_lsp_modal_depth = 0;   /* >0 while a transient popup (dialog,
-                                                  picker, Alt-Q menu) owns the screen
-                                                  without pushing a window -- see
-                                                  e_lsp_modal_enter / e_lsp_ui_safe */
+static int            g_lsp_ui_suspended = 0;  /* the screen was not the editor's when
+                                                  this read began (wpe_paint_idle):
+                                                  its paints wait, and its stale
+                                                  flags ask again later */
 static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
                                               output (live polls show a summary) */
 static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
@@ -25591,7 +25659,21 @@ static int e_lsp_sem_color_at(SCHIRM *s, int y, int x, int base)
    an overlay fetched for an older copy has its positions on other text. */
 static unsigned long g_lsp_doc_gen = 0;
 
-static int e_lsp_ui_safe(void);            /* (below) */
+static void e_lsp_deliver_held(void *data);   /* (below) */
+
+/**
+ * e_lsp_deliver_later - An answer or an overlay came while a box owns the
+ * screen: the screen's owner shows it once the box has closed.
+ *
+ * While the editor is idle nothing is asked: the reader that took the
+ * answer shows it itself once its read has returned, never from inside it.
+ */
+static void e_lsp_deliver_later(void)
+{
+ if (wpe_paint_idle())
+  return;
+ wpe_paint_request(e_lsp_deliver_held, NULL, "a language server's answer");
+}
 
 /* What an overlay fetch was sent for: the file and the server's copy of it. */
 typedef struct
@@ -25953,8 +26035,11 @@ static void e_lsp_overlay_deliver(void)
 
  if (!g_inlay_held.ready && !g_sem_held.ready)
   return;
- if (!e_lsp_ui_safe() || wpe_fd_waiting_for() != NULL)
+ if (!wpe_paint_idle())
+ {
+  e_lsp_deliver_later();
   return;
+ }
  changed = e_lsp_inlay_take();
  changed |= e_lsp_sem_take();
  if (changed)
@@ -26169,64 +26254,7 @@ static void e_lsp_on_diag(const char *path, int line, int ch,
   e_d_p_message(buf, g_lsp_fenster, 1);
 }
 
-/* e_lsp_modal_enter / e_lsp_modal_leave - bracket a transient modal popup's input
-   loop (called by e_opt_kst, which backs every dialog, picker and the Alt-Q menu).
-   Such a popup draws a box over the editor and runs its own e_getch loop but does
-   NOT push a window onto the editor stack, so e_lsp_ui_safe's window check cannot
-   see it; the depth counter is how it tells the fd-loop "a box is up, do not paint
-   under me".  A counter, not a flag, so nested dialogs balance correctly. */
 static void e_lsp_ui_trace(const char *fmt, ...);   /* XWPE_UI_TRACE diag (below) */
-/* Keep the X11 fluid-scrollbar gate in sync with the modal depth: while any box
-   is up, the overlay must not paint over it (the box is not a window the
-   occlusion clip can see, so an unclipped bottom scrollbar bled over the Alt-Q
-   menu and dialogs -- X11 only; the console has no overlay). */
-static void e_lsp_modal_sync_chrome(void)
-{
- extern int wpe_modal_active;
- wpe_modal_active = (g_lsp_modal_depth > 0);
-}
-void e_lsp_modal_enter(void)
-{
- /* A dialog is the user's next thing to read: a status line kept until the
-    next key would otherwise come back on the dialog's bottom row. */
- e_status_drop_held();
- g_lsp_modal_depth++;
- e_lsp_modal_sync_chrome();
- e_lsp_ui_trace("lsp modal enter depth=%d", g_lsp_modal_depth);
-}
-void e_lsp_modal_leave(void)
-{
- if (g_lsp_modal_depth > 0)
-  g_lsp_modal_depth--;
- e_lsp_modal_sync_chrome();
- e_lsp_ui_trace("lsp modal leave depth=%d", g_lsp_modal_depth);
-}
-
-/* e_lsp_ui_safe - Is it safe for the async LSP fd-loop to PAINT right now?
-   Returns true only when a normal text window sits on top AND no transient popup
-   owns the screen.  The same keyboard poll (e_t_getch_poll -> wpe_fd_poll) pumps
-   the fd-loop while a MODAL runs its own input loop -- a file manager (F3/F6) or
-   project dialog (a non-text WINDOW, caught by the DTMD check below), or a
-   dialog/picker/Alt-Q menu (a box that pushes NO window, caught by the modal
-   depth).  A pushed Metals message, a diagnostics line, a Doctor redraw or the
-   inlay overlay drawn underneath either corrupts it (the user saw an F3
-   file-manager body half-erased, and a streamed update bleeding into an open
-   Alt-Q picker, while Metals was still loading).  When unsafe, the fd-loop still
-   DRAINS the socket -- it just defers every visible paint until the editor is
-   back on top, so it neither corrupts the box nor spins at 100% CPU on an unread
-   fd. */
-static int e_lsp_ui_safe(void)
-{
- ECNT *cn;
- if (g_lsp_modal_depth > 0)
-  return(0);                            /* a dialog/picker/menu box is up */
- if (!g_lsp_fenster || !g_lsp_fenster->ed)
-  return(1);
- cn = g_lsp_fenster->ed;
- if (cn->mxedt < 1 || !cn->f[cn->mxedt])
-  return(1);
- return(DTMD_ISTEXT(cn->f[cn->mxedt]->dtmd));
-}
 
 /* End of a publishDiagnostics batch: swap the freshly-collected marks in
    (atomic replace -- even when the totals are unchanged the positions may have
@@ -26623,12 +26651,13 @@ static void e_lsp_on_fd_readable(int fd, void *data)
 
  if (!g_lsp)
  {  e_lsp_fd_unregister();  return;  }
- /* A modal window (file manager, project dialog) pumps this same fd poll through
-    its own input loop.  Drain the socket as usual, but defer every visible paint
-    until the editor is back on top, so a background Metals message / Doctor /
-    inlay redraw never corrupts the dialog.  Deferred work re-fires on a later
-    poll because g_lsp_ready_done stays unset and the inlay snapshot stays stale. */
- g_lsp_ui_suspended = !e_lsp_ui_safe();
+ /* A box, a menu or a modal window (file manager, project dialog) pumps this
+    same fd poll through its own input loop.  Drain the socket as usual, but
+    defer every visible paint until the screen is the editor's again, so a
+    background Metals message / Doctor / inlay redraw never corrupts the box.
+    Deferred work re-fires on a later poll because g_lsp_ready_done stays unset
+    and the inlay snapshot stays stale. */
+ g_lsp_ui_suspended = !wpe_paint_idle();
  was_started = e_lsp_started(g_lsp);
  qsave = g_lsp_quiet;
  g_lsp_quiet = 1;                          /* startup: show the summary, not each line */
@@ -27250,6 +27279,7 @@ static void e_lsp_ask_told(e_lsp_ask_t *a, E_D_REQ_END how)
 {
  a->how = how;
  a->ready = 1;
+ e_lsp_deliver_later();
 }
 
 /** e_lsp_text_told - A hover's or a signature's answer: its text, or NULL. */
@@ -27481,16 +27511,6 @@ static int e_lsp_ask_at_cursor(int kind)
         kind == E_LSP_ASK_ACTIONS);
 }
 
-/**
- * e_lsp_ask_idle - May an answer be shown now?  Not under a dialog, a
- * menu or a picker, nor while a non-text window is on top.
- */
-static int e_lsp_ask_idle(void)
-{
- return(g_lsp_modal_depth == 0 && e_build_ui_idle(WpeEditor) &&
-        e_lsp_screen_ours());
-}
-
 static int  e_lsp_hover_show(FENSTER *f, char *hov);                /* (below) */
 static void e_lsp_jump_show(FENSTER *f, const e_lsp_ask_t *a);      /* (below) */
 static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a);  /* (below) */
@@ -27603,8 +27623,9 @@ static int e_lsp_ask_delivering = 0;
 
 /**
  * e_lsp_ask_deliver - Hand over the answers kept by the continuations, in
- * the order asked, once the editor can show them.  The key loop calls this
- * outside every dialog, as do the readers that may have read them.
+ * the order asked, once the editor can show them.  The readers that may have
+ * read them call this; what is left behind a box is shown by the screen's
+ * owner once the box has closed.
  */
 static void e_lsp_ask_deliver(void)
 {
@@ -27614,7 +27635,7 @@ static void e_lsp_ask_deliver(void)
  if (e_lsp_ask_delivering)
   return;
  e_lsp_ask_delivering = 1;
- while ((a = e_lsp_ask_next_ready()) != NULL && e_lsp_ask_idle())
+ while ((a = e_lsp_ask_next_ready()) != NULL && wpe_paint_idle())
  {
   if (!e_lsp_ask_busy())
    e_lsp_rq_waiting_clear();
@@ -27627,6 +27648,8 @@ static void e_lsp_ask_deliver(void)
    e_lsp_ask_free(a);    /* given up: the cancel or the deadline said so */
  }
  e_lsp_ask_delivering = 0;
+ if (e_lsp_ask_next_ready())
+  e_lsp_deliver_later();
  /* Shown from the loop, with no key after it to flush the screen: a
     highlight, a grown mark or a jump would otherwise stay unseen. */
  if (shown)
@@ -27634,12 +27657,13 @@ static void e_lsp_ask_deliver(void)
 }
 
 /**
- * e_lsp_deliver_held - The key loop's turn: an answer that came behind a
- * dialog is shown now that the editor is idle, and an overlay fetched
- * meanwhile is painted.
+ * e_lsp_deliver_held - The screen is the editor's again: an answer that
+ * came behind a box is shown, and an overlay fetched meanwhile is painted.
+ * @data: unused.
  */
-void e_lsp_deliver_held(void)
+static void e_lsp_deliver_held(void *data)
 {
+ (void)data;
  e_lsp_ask_deliver();
  e_lsp_overlay_deliver();
 }
@@ -28133,9 +28157,7 @@ static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text,
  }
  e_refresh();
 
- e_lsp_modal_enter();                          /* defer async LSP paints behind it */
- c = e_getch();                                /* any key dismisses (consumed)     */
- e_lsp_modal_leave();
+ c = wpe_paint_modal_getch();                  /* any key dismisses (consumed)     */
 
  e_close_view(pic, 1);                         /* restore what the box covered     */
  fk_cursor(1);

@@ -604,13 +604,9 @@ int e_error(char *text, int sw, FARBE *f)
  if (e_emergency_save_running())
   return(sw);
 #endif
-#ifdef DEBUGGER
- e_lsp_modal_enter();
-#endif
+ wpe_paint_modal_enter("an error box");
  ret = e_error_run(text, sw, f);
-#ifdef DEBUGGER
- e_lsp_modal_leave();
-#endif
+ wpe_paint_modal_leave();
  return(ret);
 }
 

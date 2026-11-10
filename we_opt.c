@@ -2788,22 +2788,17 @@ e_opt_kst_restart:
    return(r.ret);
 }
 
-/* e_opt_kst - public entry to the modal dialog/picker/menu engine.  Runs the
-   real loop (e_opt_kst_run) with the async LSP fd-loop's painting suspended for
-   its whole lifetime, so a server update (diagnostics, inlay, status line, a
-   Doctor or worksheet redraw) arriving mid-dialog never draws under the box and
-   corrupts it.  This box pushes no window onto the editor stack, so the suspend
-   is by depth counter (e_lsp_modal_enter/leave), not the window check. */
+/* e_opt_kst - public entry to the modal dialog/picker/menu engine.  The box
+   owns the screen for its whole lifetime, so program output, a stop, a reply or
+   a server update arriving mid-dialog waits for it to close instead of drawing
+   under it.  This box pushes no window onto the editor stack, so it tells the
+   screen's owner (we_paint.c) instead. */
 int e_opt_kst(W_OPTSTR *o)
 {
    int ret;
-#ifdef DEBUGGER
-   e_lsp_modal_enter();
-#endif
+   wpe_paint_modal_enter("a dialog");
    ret = e_opt_kst_run(o);
-#ifdef DEBUGGER
-   e_lsp_modal_leave();
-#endif
+   wpe_paint_modal_leave();
    return(ret);
 }
 

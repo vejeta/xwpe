@@ -442,8 +442,8 @@ def test_error_box_brackets_the_lsp_modal_guard(tmp_path, monkeypatch):
             "Alt-Q on a server-less file did not pop the e_error box\n%s" % body
         w.key("\033", delay=0.4)           # dismiss the box
         log = trace.read_text() if trace.exists() else ""
-        enters = log.count("lsp modal enter")
-        leaves = log.count("lsp modal leave")
+        enters = log.count("modal enter")
+        leaves = log.count("modal leave")
         assert enters >= 1, \
             "the e_error box did not enter the LSP modal guard:\n%s" % log
         assert enters == leaves, \

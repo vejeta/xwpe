@@ -4,7 +4,7 @@ While Edit/Plan/Agent stream, a heartbeat spinner repaints the AI pane about onc
 a second.  If a menu is open (its box overlaps the bottom-docked pane), that
 repaint used to draw over it and corrupt it -- the menu "flickered away" under
 the cursor animation.  The pane paint now defers while a menu/dialog is up
-(wpe_modal_active), the same guard the async language-server painter uses.
+(the screen owner's modal depth), the guard every async painter uses.
 
 Reproduction: start a slow (delayed-mock) Edit so the spinner is live, click the
 bottom-bar "Alt-G AI" entry to open the action menu (that click opens the menu

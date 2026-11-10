@@ -587,6 +587,71 @@ int e_edit(ECNT *cn, char *filename)
  return(0);
 }
 
+/* The line that names a paint the screen's owner could not keep. */
+#define E_PAINT_LOST_FMT "Not shown while a box was open: %s"
+#define E_PAINT_LOST_MAX 120
+
+/**
+ * e_paint_text_on_top - Is a text window on top of the desk?
+ *
+ * The screen's owner asks this before content is drawn from outside the
+ * user's keys: the File Manager, the Window list or a project dialog is a
+ * window with a key loop of its own, and nothing is drawn under it.
+ */
+static int e_paint_text_on_top(void)
+{
+ FENSTER *top;
+
+ if (!WpeEditor || WpeEditor->mxedt < 1)
+  return(0);
+ top = WpeEditor->f[WpeEditor->mxedt];
+ if (!top)
+  return(0);
+ return(DTMD_ISTEXT(top->dtmd));
+}
+
+/** e_paint_read_key - The display's key reader, for a box's key. */
+static int e_paint_read_key(void)
+{
+ return(e_getch());
+}
+
+/**
+ * e_paint_box_opens - A box takes the screen: a status line kept until the
+ * next key gives way, or it would come back on the box's bottom row.
+ */
+static void e_paint_box_opens(void)
+{
+ e_status_drop_held();
+}
+
+/**
+ * e_paint_say_lost - Name on the status row an update that was not shown
+ * because too many waited behind a box, so the user knows to look again.
+ */
+static void e_paint_say_lost(const char *what)
+{
+ char line[E_PAINT_LOST_MAX];
+
+ if (!WpeEditor || WpeEditor->mxedt < 1)
+  return;
+ snprintf(line, sizeof line, E_PAINT_LOST_FMT, what);
+ e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
+}
+
+/**
+ * e_paint_desk_ready - Tell the screen's owner how to see the editor's
+ * desk.  Called once, before anything is drawn.
+ */
+void e_paint_desk_ready(void)
+{
+ static const WpePaintDesk desk = {
+  e_paint_text_on_top, e_paint_read_key, e_paint_box_opens, e_paint_say_lost
+ };
+
+ wpe_paint_desk_set(&desk);
+}
+
 /* The bytes Enter and Tab add to a window, as far as a size limit counts
    them: the line break is one byte, and Tab is counted as one character. */
 #define E_LINE_BREAK_BYTES 1
@@ -641,17 +706,12 @@ int e_eingabe(ECNT *e)
   else if (!DTMD_ISTEXT(f->dtmd)) return(0);
   else
   {
-#ifdef WPE_AI
-   wpe_ai_deliver_held_reply();   /* a reply that landed behind a dialog: review it now */
-#endif
-#ifdef PROG
-   e_build_deliver_held();        /* a build that ended behind a dialog: report it now */
-#endif
-#ifdef DEBUGGER
-   e_d_start_deliver_held();      /* a debugger that answered behind a dialog: go on */
-   e_d_run_deliver_held_stop();   /* a stop held behind a box: show it */
-   e_lsp_deliver_held();          /* a language server's answer: show it */
-#endif
+   /* What came behind a box (a reply, a build's end, a stop, an answer,
+      program output) is shown now, before the next key is read. */
+   wpe_paint_replay_if_idle();
+   if (e->mxedt < 1)
+    continue;                     /* what was shown closed the last window */
+   f = e->f[e->mxedt];            /* or put another one on top */
    if (f->save > f->ed->maxchg) e_autosave(f);
    c = e_getch();
    /* A build ending while the editor waited for this key may have put

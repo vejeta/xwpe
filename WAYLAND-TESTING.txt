@@ -85,3 +85,8 @@ things the emulated pipeline does not cover:
       translation is asserted by tests/test_wayland_keysym.py; the session
       itself needs a real compositor (the X11 twin is test_ctrl_break_pauses
       in tests/x11/test_menu_debug.py).
+  [ ] Output under a dialog: while gdb runs a program that prints all the
+      time, Search > Find opens its dialog; nothing in the window changes
+      while it is up, and once Esc closes it Messages scrolls on with what
+      was printed meanwhile.  The X11 twin is
+      tests/x11/test_screen_owner.py.

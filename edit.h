@@ -25,6 +25,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <limits.h>
+#include "we_paint.h"
 
 #ifdef HAVE_LIBGPM
 #include <gpm.h>
@@ -488,6 +489,7 @@ int e_rep_search(FENSTER *f);
 /*   we_edit.c   */
 int e_edit(ECNT *cn, char *filename);
 int e_eingabe(ECNT *e);
+void e_paint_desk_ready(void);
 int e_tst_cur(int c, ECNT *e);
 int e_tst_fkt(int c, ECNT *e);
 int e_ctrl_k(FENSTER *f);
@@ -771,10 +773,6 @@ int e_opt_move(W_OPTSTR *o);
 int e_get_sw_cmp(int xin, int yin, int x, int y, int xmin, int ymin, int c);
 int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o);
 int e_opt_kst(W_OPTSTR *o);
-#ifdef DEBUGGER
-void e_lsp_modal_enter(void);   /* suspend the async LSP fd-loop's painting while */
-void e_lsp_modal_leave(void);   /* a dialog/picker/menu box owns the screen       */
-#endif
 int e_edt_options(FENSTER *f);
 int e_read_colors(FENSTER *f);
 int e_ad_colors_md(FENSTER *f, int md);
@@ -938,11 +936,8 @@ void e_d_compile_cancel(void);
 void e_d_end_at_exit(void);
 int e_d_answer_busy(void);
 void e_d_answer_cancel(void);
-void e_d_start_deliver_held(void);
-void e_d_run_deliver_held_stop(void);
 int e_lsp_answer_busy(void);
 void e_lsp_answer_cancel(void);
-void e_lsp_deliver_held(void);
 int e_d_bsp_busy(void);
 void e_d_bsp_cancel(void);
 void e_d_run_flush_live_sync(void);
