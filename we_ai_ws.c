@@ -16,6 +16,7 @@
 #include "we_ai_path.h"
 
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
@@ -505,6 +506,20 @@ static char **ck_files;
 static int    ck_n;
 static char **ck_before;  static int ck_before_n;  /* files present before   */
 static char **ck_dirs;    static int ck_dirs_n;    /* dirs watched for new   */
+/* git mode: the untracked files that already existed when the checkpoint was
+   taken, as absolute paths under the workspace.  A file in this list is the
+   user's, never the run's, so it is never listed as new and never removed. */
+static char **ck_untracked; static int ck_untracked_n;
+/* git mode: what git ignored when the checkpoint was taken, a whole ignored
+   folder as one entry ending in '/'.  A run that edits .gitignore can make
+   these show up as untracked; they are still the user's. */
+static char **ck_ignored; static int ck_ignored_n;
+/* snapshot mode: every directory the checkpoint's walk met, and those whose
+   entries it listed to the end.  A name missing from a listed directory was
+   made after the checkpoint; in a directory the bound cut short, nobody can
+   say. */
+static char **ck_met;     static int ck_met_n,    ck_met_cap;
+static char **ck_listed;  static int ck_listed_n, ck_listed_cap;
 
 int wpe_ai_checkpoint_active(void) { return ck_mode != 0; }
 
@@ -513,9 +528,17 @@ static void ck_clear(void)
  wpe_ai_free_list(ck_files, ck_n);
  wpe_ai_free_list(ck_before, ck_before_n);
  wpe_ai_free_list(ck_dirs, ck_dirs_n);
+ wpe_ai_free_list(ck_untracked, ck_untracked_n);
+ wpe_ai_free_list(ck_ignored, ck_ignored_n);
+ wpe_ai_free_list(ck_met, ck_met_n);
+ wpe_ai_free_list(ck_listed, ck_listed_n);
  ck_files = NULL; ck_n = 0;
  ck_before = NULL; ck_before_n = 0;
  ck_dirs = NULL; ck_dirs_n = 0;
+ ck_untracked = NULL; ck_untracked_n = 0;
+ ck_ignored = NULL; ck_ignored_n = 0;
+ ck_met = NULL; ck_met_n = ck_met_cap = 0;
+ ck_listed = NULL; ck_listed_n = ck_listed_cap = 0;
  ck_mode = 0; ck_ref[0] = '\0';
 }
 
@@ -547,14 +570,23 @@ static void ws_strip_slash(char *d);
  * workspace that holds that directory would otherwise see them listed as new
  * files.  Each directory met is resolved the same way before the comparison,
  * so the spelling of the environment variable does not decide the match.
+ * A directory's own entries are all read before any of its subdirectories is
+ * entered, so a deep tree spends the bound below it and not the files beside
+ * the open one.
+ * @record: the checkpoint's own walk; each directory met goes into ck_met and,
+ * when its entries were read to the end, into ck_listed, so the review can
+ * tell a file the run made from one the bound kept out of sight.
  * Return: 1 when the bound stopped the walk, 0 when everything was seen.
  */
-static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, int *cap)
+static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, int *cap,
+                         int record)
 {
  DIR *d = opendir(dir);
  struct dirent *de;
- int stopped = 0;
- while (d && (de = readdir(d))) {
+ char **subs = NULL;
+ int nsubs = 0, scap = 0, stopped = 0, k;
+ if (!d) return 0;
+ while ((de = readdir(d))) {
   char *p, real[PATH_MAX];
   size_t L;
   struct stat st;
@@ -574,22 +606,34 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
   }
   if (S_ISDIR(st.st_mode)) {
    if (skip && realpath(p, real) && !strcmp(real, skip)) { free(p); continue; }
-   if (ws_walk_files(p, skip, l, n, cap)) stopped = 1;
-   free(p);
+   ws_list_push(&subs, &nsubs, &scap, p);
   } else if (S_ISREG(st.st_mode) && !ws_list_has(*l, *n, p)) {
    ws_list_push(l, n, cap, p);
   } else free(p);
  }
- if (d) closedir(d);
+ closedir(d);
+ if (record) {
+  ws_list_push(&ck_met, &ck_met_n, &ck_met_cap, ws_strdup(dir));
+  if (!stopped) ws_list_push(&ck_listed, &ck_listed_n, &ck_listed_cap, ws_strdup(dir));
+ }
+ for (k = 0; k < nsubs; k++) {
+  if (stopped) {
+   /* never read, but met: a file in it is not the run's for that */
+   if (record) ws_list_push(&ck_met, &ck_met_n, &ck_met_cap, ws_strdup(subs[k]));
+  } else if (ws_walk_files(subs[k], skip, l, n, cap, record)) stopped = 1;
+ }
+ wpe_ai_free_list(subs, nsubs);
  return stopped;
 }
 
 /**
  * ws_list_watched_files - The files under every watched directory, now.
  * @l/@n: receives the list.
+ * @record: the checkpoint's own walk; it also notes which directories it met
+ * and which it read to the end (ck_met, ck_listed).
  * Return: 1 when the bound stopped the walk before every file was seen.
  */
-static int ws_list_watched_files(char ***l, int *n)
+static int ws_list_watched_files(char ***l, int *n, int record)
 {
  char own[1024], real[PATH_MAX];
  const char *skip;
@@ -600,9 +644,45 @@ static int ws_list_watched_files(char ***l, int *n)
     and a directory that is not there cannot be met by the walk */
  skip = realpath(own, real) ? real : NULL;
  *l = NULL; *n = 0;
+ if (record) {
+  wpe_ai_free_list(ck_met, ck_met_n);
+  wpe_ai_free_list(ck_listed, ck_listed_n);
+  ck_met = NULL; ck_met_n = ck_met_cap = 0;
+  ck_listed = NULL; ck_listed_n = ck_listed_cap = 0;
+ }
  for (k = 0; k < ck_dirs_n; k++)
-  if (ws_walk_files(ck_dirs[k], skip, l, n, &cap)) stopped = 1;
+  if (ws_walk_files(ck_dirs[k], skip, l, n, &cap, record)) stopped = 1;
  return stopped;
+}
+
+/**
+ * ws_snapshot_run_created - Can the snapshot say the run made this file?
+ * @path: a file the walk sees now.
+ *
+ * A file is the run's when the checkpoint did not see it and the directory
+ * that should have shown it was read to the end: its own directory, or, for a
+ * directory the run made, the nearest one the checkpoint met.  In a workspace
+ * larger than the bound, the files the checkpoint never reached were there all
+ * along: the review does not call them new and `r` does not remove them,
+ * whatever the run deleted to bring them into view.
+ * Return: 1 when the file is the run's, 0 when it was there or nobody can say.
+ */
+static int ws_snapshot_run_created(const char *path)
+{
+ char dir[PATH_MAX];
+ char *sl;
+ if (ws_list_has(ck_before, ck_before_n, path)) return 0;
+ if (strlen(path) >= sizeof dir) return 0;
+ strcpy(dir, path);
+ for (;;) {
+  sl = strrchr(dir, '/');
+  if (!sl) return 0;
+  if (sl == dir) sl[1] = '\0';
+  else           sl[0] = '\0';
+  if (ws_list_has(ck_listed, ck_listed_n, dir)) return 1;
+  if (ws_list_has(ck_met, ck_met_n, dir)) return 0;
+  if (ws_list_has(ck_dirs, ck_dirs_n, dir) || sl == dir) return 0;
+ }
 }
 
 /**
@@ -661,10 +741,281 @@ static void ws_watch_dirs(char **scope, int nscope)
  }
 }
 
+/* The most a git file list may hold, in bytes (16 MB: some 200,000 names). */
+#define WS_GIT_LIST_MAX 16000000L
+/* What wpe_ai_shell_quote needs beyond the quoted text itself: room it keeps
+   free for the last escape, the closing quote and the terminating NUL. */
+#define WS_QUOTE_SLACK 5
+
+/**
+ * ws_quote_whole - Shell-quote a path only when all of it fits.
+ * @dst/@sz: the quoted result; @src: the path.
+ *
+ * wpe_ai_shell_quote stops at the end of its buffer and still closes the
+ * quote, which turns a long name into a shorter one: a removal would then hit
+ * whatever file has that shorter name.  Every command that removes or
+ * restores a file builds its paths here, so a name that does not fit is
+ * refused instead of cut.
+ * Return: 0 with @dst holding all of @src, -1 when it would not fit.
+ */
+static int ws_quote_whole(char *dst, size_t sz, const char *src)
+{
+ size_t need = 2;
+ const char *p;
+ for (p = src; *p; p++) need += (*p == '\'') ? 4 : 1;
+ if (need + WS_QUOTE_SLACK > sz) return -1;
+ wpe_ai_shell_quote(dst, sz, src);
+ return 0;
+}
+
+/**
+ * ws_format_whole - Build a command only when all of it fits.
+ * @dst/@sz: the command; @fmt: its pattern and arguments.
+ *
+ * A command cut short can still be a valid one that does something else (the
+ * tail of "-- 'name' 2>&1" cut to "-- 'name' 2" removes a file called 2), so
+ * the caller runs nothing when this fails.
+ * Return: 0 when the whole command is in @dst, -1 when it was cut.
+ */
+static int ws_format_whole(char *dst, size_t sz, const char *fmt, ...)
+{
+ va_list ap;
+ int n;
+ va_start(ap, fmt);
+ n = vsnprintf(dst, sz, fmt, ap);
+ va_end(ap);
+ if (n < 0 || (size_t)n >= sz) { if (sz) dst[0] = '\0'; return -1; }
+ return 0;
+}
+
+/**
+ * ws_rel_stays_inside - Is a workspace-relative path really below the workspace?
+ * @rel: a path as git prints it for the workspace folder.
+ *
+ * A path that is empty, absolute or climbs out with ".." is not a file of the
+ * workspace, so nothing built from it may be listed or removed.
+ * Return: 1 when it names something under the workspace, 0 otherwise.
+ */
+static int ws_rel_stays_inside(const char *rel)
+{
+ const char *p = rel;
+ if (!rel || !*rel || *rel == '/') return 0;
+ while (*p) {
+  const char *e = strchr(p, '/');
+  size_t l = e ? (size_t)(e - p) : strlen(p);
+  if (l == 2 && p[0] == '.' && p[1] == '.') return 0;
+  if (!e) break;
+  p = e + 1;
+ }
+ return 1;
+}
+
+/**
+ * ws_join_workspace - The one place a workspace-relative path becomes a full path.
+ * @rel: the path git printed from inside the workspace; @out/@sz: the result.
+ *
+ * Every file the review lists in git mode is named through here, so a path
+ * that would land outside the workspace is dropped before it can be shown to
+ * the user or handed to a revert.
+ * Return: 0 with @out filled, -1 when @rel leaves the workspace or does not fit.
+ */
+static int ws_join_workspace(const char *rel, char *out, size_t sz)
+{
+ int n;
+ if (!ws_rel_stays_inside(rel)) return -1;
+ n = snprintf(out, sz, "%s/%s", ck_dir, rel);
+ if (n < 0 || (size_t)n >= sz) return -1;
+ return 0;
+}
+
+/**
+ * ws_workspace_rel - The part of a full path below the workspace, or NULL.
+ * @path: a full path as a review row holds it.
+ *
+ * The reverse of ws_join_workspace: a revert acts on what this returns, so a
+ * row that somehow names a place outside the workspace cannot reach it.
+ */
+static const char *ws_workspace_rel(const char *path)
+{
+ size_t dl = strlen(ck_dir);
+ if (strncmp(path, ck_dir, dl) != 0 || path[dl] != '/') return NULL;
+ if (!ws_rel_stays_inside(path + dl + 1)) return NULL;
+ return path + dl + 1;
+}
+
+/**
+ * ws_parse_nul_list - Split a NUL-terminated name list into full workspace paths.
+ * @buf/@len: the bytes git wrote with -z; @l/@n: receives the paths.
+ *
+ * A name with a newline or leading blanks arrives whole, because only a NUL
+ * ends a name.  A name that would leave the workspace is skipped.
+ */
+static void ws_parse_nul_list(const char *buf, size_t len, char ***l, int *n)
+{
+ size_t i = 0;
+ int cap = 0;
+ while (i < len) {
+  const char *name = buf + i;
+  size_t nl = strnlen(name, len - i);
+  char full[1200];
+  if (nl && ws_join_workspace(name, full, sizeof full) == 0)
+   ws_list_push(l, n, &cap, ws_strdup(full));
+  i += nl + 1;
+ }
+}
+
+/**
+ * ws_git_list - Ask git for a list of files in the workspace, whatever their names.
+ * @git_args: the git words after "git --literal-pathspecs", ending in -z output;
+ * @l/@n: receives the full paths, in git's order.
+ *
+ * The answer goes through a file under the state folder, not through the
+ * command's captured text: the capture is cut at a few thousand bytes and a
+ * list cut short would let a file that was there all along look like one the
+ * run made.  git runs from the workspace, so its paths are relative to it.
+ * The file gets a fresh name of its own each time (mkstemp), so two editors,
+ * or a link left at a known name, never decide where git's answer is written.
+ * Return: 0 when git answered in full, -1 when it failed or the answer did not
+ * fit; the caller then takes the safe side.
+ */
+static int ws_git_list(const char *git_args, char ***l, int *n)
+{
+ char dir[1024], file[1100], q[1100], qf[1100], cmd[2800], *out, *buf;
+ int status = 0, fd;
+ long len;
+ FILE *fp;
+ *l = NULL; *n = 0;
+ ws_state_dir(dir, sizeof dir);
+ ws_make_dir_parents(dir);
+ if (ws_format_whole(file, sizeof file, "%s/git-list-XXXXXX", dir) != 0) return -1;
+ fd = mkstemp(file);
+ if (fd < 0) return -1;
+ close(fd);
+ if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, file) != 0 ||
+     ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs %s > %s 2>/dev/null",
+                     q, git_args, qf) != 0) {
+  unlink(file);
+  return -1;
+ }
+ out = wpe_ai_run_capture_status(cmd, &status);
+ free(out);
+ fp = status == 0 ? fopen(file, "rb") : NULL;
+ if (!fp) { unlink(file); return -1; }
+ fseek(fp, 0, SEEK_END);
+ len = ftell(fp);
+ rewind(fp);
+ buf = (len >= 0 && len <= WS_GIT_LIST_MAX) ? malloc((size_t)len + 1) : NULL;
+ if (buf && fread(buf, 1, (size_t)len, fp) != (size_t)len) { free(buf); buf = NULL; }
+ fclose(fp);
+ unlink(file);
+ if (!buf) return -1;
+ ws_parse_nul_list(buf, (size_t)len, l, n);
+ free(buf);
+ return 0;
+}
+
+/**
+ * ws_git_tracks_workspace - Is git really keeping this workspace?
+ * @q: the shell-quoted workspace.
+ *
+ * Git mode puts a revert in git's hands, which is right only when git tracks
+ * the files the run will change.  A workspace inside a folder an outer repo
+ * ignores answers "inside a work tree" yet holds nothing of that repo, so the
+ * review would list the repo's own files; one with nothing committed has no
+ * before image to revert to.  Both are better served by the snapshot copies.
+ * Return: 1 when the workspace is inside a work tree, not ignored by it, and
+ * holds at least one tracked file; 0 otherwise.
+ */
+static int ws_git_tracks_workspace(const char *q)
+{
+ char cmd[1400], **tracked, *out;
+ int ntracked, yes;
+ if (ws_format_whole(cmd, sizeof cmd, "cd %s && git rev-parse --is-inside-work-tree 2>/dev/null",
+                     q) != 0) return 0;
+ out = wpe_ai_run_capture(cmd);
+ yes = out && !strncmp(out, "true", 4);
+ free(out);
+ if (!yes) return 0;
+ if (ws_format_whole(cmd, sizeof cmd, "cd %s && git check-ignore -q . 2>/dev/null && echo ignored",
+                     q) != 0) return 0;
+ out = wpe_ai_run_capture(cmd);
+ yes = !(out && !strncmp(out, "ignored", 7));
+ free(out);
+ if (!yes) return 0;
+ if (ws_git_list("ls-files -z -- .", &tracked, &ntracked) != 0) return 0;
+ wpe_ai_free_list(tracked, ntracked);
+ return ntracked > 0;
+}
+
+/**
+ * ws_git_stash_ref - Save the workspace as git sees it, as the revert's reference.
+ * @q: the shell-quoted workspace.
+ *
+ * `git stash create` writes the worktree's uncommitted edits into a commit and
+ * prints its name, or prints nothing when there is nothing to save, in which
+ * case HEAD is the image.  When it fails (a merge stopped on a conflict,
+ * another git process holding the index, nothing committed yet) there is no
+ * image of the user's uncommitted edits at all: HEAD in its place would list
+ * them as the run's and `r` would throw them away.  So a failure is a failure,
+ * and the caller takes the snapshot copies instead.
+ * Return: 0 with ck_ref set, -1 when git could not save the worktree.
+ */
+static int ws_git_stash_ref(const char *q)
+{
+ char cmd[1400], *out;
+ int status = 0;
+ size_t l;
+ if (ws_format_whole(cmd, sizeof cmd, "cd %s && git stash create 2>/dev/null", q) != 0) return -1;
+ out = wpe_ai_run_capture_status(cmd, &status);
+ if (status != 0 || !out) { free(out); return -1; }
+ l = strlen(out);
+ while (l && (out[l-1] == '\n' || out[l-1] == ' ')) out[--l] = '\0';
+ if (l == 0) strcpy(ck_ref, "HEAD");
+ else if (l < sizeof ck_ref && strspn(out, "0123456789abcdef") == l) strcpy(ck_ref, out);
+ else { free(out); return -1; }
+ free(out);
+ return 0;
+}
+
+/**
+ * ws_git_was_there - Was this file already in the workspace, untracked, at the checkpoint?
+ * @path: the full path of a file git calls untracked now.
+ *
+ * True for a file git listed as untracked then, and for one git ignored then,
+ * alone or inside an ignored folder: a run that edits .gitignore can make
+ * those show up as untracked, and they are still the user's.
+ */
+static int ws_git_was_there(const char *path)
+{
+ int i;
+ if (ws_list_has(ck_untracked, ck_untracked_n, path)) return 1;
+ for (i = 0; i < ck_ignored_n; i++) {
+  size_t l = strlen(ck_ignored[i]);
+  if (!strcmp(ck_ignored[i], path)) return 1;
+  if (l && ck_ignored[i][l - 1] == '/' && !strncmp(ck_ignored[i], path, l)) return 1;
+ }
+ return 0;
+}
+
+/**
+ * ws_git_record_untracked - Note the files git does not track, before the run.
+ *
+ * Every one of them is the user's.  When git cannot list them the review
+ * could not tell them from the run's, so the caller does not take git mode.
+ * Return: 0 when both lists were taken, -1 otherwise.
+ */
+static int ws_git_record_untracked(void)
+{
+ if (ws_git_list("ls-files --others --exclude-standard -z -- .",
+                 &ck_untracked, &ck_untracked_n) != 0) return -1;
+ return ws_git_list("ls-files --others --ignored --exclude-standard --directory -z -- .",
+                    &ck_ignored, &ck_ignored_n);
+}
+
 int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
 {
  char *root = ws_root(f);
- char q[1100], cmd[1400], *out;
+ char q[1100];
  int i;
 
  ck_clear();
@@ -673,22 +1024,20 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  ws_strip_slash(ck_dir);
  free(root);
 
- wpe_ai_shell_quote(q, sizeof q, ck_dir);
- snprintf(cmd, sizeof cmd, "cd %s && git rev-parse --is-inside-work-tree 2>/dev/null", q);
- out = wpe_ai_run_capture(cmd);
- if (out && !strncmp(out, "true", 4)) {
-  free(out);
-  snprintf(cmd, sizeof cmd, "cd %s && git stash create 2>/dev/null", q);
-  out = wpe_ai_run_capture(cmd);
-  if (out) { size_t l = strlen(out); while (l && (out[l-1] == '\n' || out[l-1] == ' ')) out[--l] = '\0'; }
-  if (out && *out && strlen(out) < sizeof ck_ref) strcpy(ck_ref, out);
-  else strcpy(ck_ref, "HEAD");
-  free(out);
+ /* git mode needs the workspace tracked, the user's untracked and ignored
+    files on record, and an image of the worktree to go back to; short of any
+    of them, the snapshot copies. */
+ if (ws_quote_whole(q, sizeof q, ck_dir) == 0 && ws_git_tracks_workspace(q) &&
+     ws_git_record_untracked() == 0 && ws_git_stash_ref(q) == 0) {
   ck_mode = 1;
   wpe_ai_trace("checkpoint git ref=%s dir=%s", ck_ref, ck_dir);
   return 0;
  }
- free(out);
+ wpe_ai_free_list(ck_untracked, ck_untracked_n);
+ wpe_ai_free_list(ck_ignored, ck_ignored_n);
+ ck_untracked = NULL; ck_untracked_n = 0;
+ ck_ignored = NULL; ck_ignored_n = 0;
+ ck_ref[0] = '\0';
 
  /* snapshot copies */
  {
@@ -722,7 +1071,7 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
   /* remember what exists now, so files the run CREATES are detected too */
   ws_watch_dirs(scope, nscope);
   wpe_ai_free_list(ck_before, ck_before_n);
-  if (ws_list_watched_files(&ck_before, &ck_before_n))
+  if (ws_list_watched_files(&ck_before, &ck_before_n, 1))
    ws_say_watch_bound(f, ck_before_n);
   /* A checkpoint with no before image in it can put nothing back, so it is not
      taken: leaving it active would open a review that offers a revert over
@@ -828,50 +1177,88 @@ static int ws_hidden_path(const char *rel)
  return 0;
 }
 
+/**
+ * ws_collect_git_edits - Add a row for each tracked file the run changed.
+ * @c/@n/@cap: the changeset being built.
+ *
+ * Only files below the workspace are asked about (`--relative` and `-- .`), so
+ * a change the user made elsewhere in the repository never shows up as the
+ * run's, and every row names its file by the path the workspace knows.
+ */
+/* The row for a changed file whose path is too long to hand to git diff. */
+#define WS_CHANGED_UNREAD "[AI] changed"
+
+static void ws_collect_git_edits(ws_change **c, int *n, int *cap)
+{
+ char **names, q[1100], cmd[2800];
+ int nn, i;
+ char args[300];
+ snprintf(args, sizeof args, "diff --relative --name-only -z %s -- .", ck_ref);
+ if (ws_git_list(args, &names, &nn) != 0) {
+  wpe_ai_trace("changeset git edit list failed dir=%s", ck_dir);
+  return;
+ }
+ if (ws_quote_whole(q, sizeof q, ck_dir) != 0) {
+  wpe_ai_free_list(names, nn);
+  return;
+ }
+ for (i = 0; i < nn; i++) {
+  char qf[1300], *d;
+  const char *rel = ws_workspace_rel(names[i]);
+  if (!rel || ws_hidden_path(rel)) continue;
+  /* -U0: no context, so a hunk starts at the first line the run changed.
+     With git's default three context lines the hunk starts three lines above
+     it, and both the row and the jump it registers then point at a line the
+     run never touched. */
+  if (ws_quote_whole(qf, sizeof qf, rel) != 0 ||
+      ws_format_whole(cmd, sizeof cmd,
+                      "cd %s && git --literal-pathspecs diff -U0 --relative %s -- %s 2>/dev/null",
+                      q, ck_ref, qf) != 0) {
+   /* still the run's change: listed, so the user sees it and r says why it
+      cannot put this one back */
+   ws_add_change(c, n, cap, names[i], 1, WS_CHANGED_UNREAD, 0);
+   continue;
+  }
+  d = wpe_ai_run_capture(cmd);
+  ws_changes_from_gitdiff(d ? d : "", names[i], c, n, cap);
+  free(d);
+ }
+ wpe_ai_free_list(names, nn);
+}
+
+/**
+ * ws_collect_git_new_files - Add a row for each file the run created.
+ * @c/@n/@cap: the changeset being built.
+ *
+ * A file is the run's only when it is untracked now and was neither untracked
+ * nor ignored when the checkpoint was taken.  The notes or build output the
+ * user already had lying in the workspace are therefore never offered for
+ * removal, even when the run's edit to .gitignore uncovers them.
+ */
+static void ws_collect_git_new_files(ws_change **c, int *n, int *cap)
+{
+ char **now;
+ int nn, i;
+ if (ws_git_list("ls-files --others --exclude-standard -z -- .", &now, &nn) != 0) {
+  wpe_ai_trace("changeset git new-file list failed dir=%s", ck_dir);
+  return;
+ }
+ for (i = 0; i < nn; i++) {
+  const char *rel = ws_workspace_rel(now[i]);
+  if (!rel || ws_hidden_path(rel)) continue;
+  if (ws_git_was_there(now[i])) continue;
+  ws_add_change(c, n, cap, now[i], 1, "[AI] new file", 1);
+ }
+ wpe_ai_free_list(now, nn);
+}
+
 static int ws_collect_changes(ws_change **c, int *n)
 {
  int cap = 0;
  *c = NULL; *n = 0;
  if (ck_mode == 1) {
-  char q[1100], cmd[1400], *out, *line;
-  wpe_ai_shell_quote(q, sizeof q, ck_dir);
-  snprintf(cmd, sizeof cmd, "cd %s && git diff --name-only %s 2>/dev/null", q, ck_ref);
-  out = wpe_ai_run_capture(cmd);
-  line = out;
-  while (line && *line) {
-   char *nl = strchr(line, '\n'), qf[1100], full[1200], *d;
-   if (nl) *nl = '\0';
-   if (*line && !ws_hidden_path(line)) {
-    snprintf(full, sizeof full, "%s/%s", ck_dir, line);
-    wpe_ai_shell_quote(qf, sizeof qf, line);
-    /* -U0: no context, so a hunk starts at the first line the run changed.
-       With git's default three context lines the hunk starts three lines above
-       it, and both the row and the jump it registers then point at a line the
-       run never touched. */
-    snprintf(cmd, sizeof cmd, "cd %s && git diff -U0 %s -- %s 2>/dev/null", q, ck_ref, qf);
-    d = wpe_ai_run_capture(cmd);
-    ws_changes_from_gitdiff(d ? d : "", full, c, n, &cap);
-    free(d);
-   }
-   if (!nl) break;
-   line = nl + 1;
-  }
-  free(out);
-  snprintf(cmd, sizeof cmd, "cd %s && git status --porcelain --untracked-files=all 2>/dev/null", q);
-  out = wpe_ai_run_capture(cmd);
-  line = out;
-  while (line && *line) {
-   char *nl = strchr(line, '\n');
-   if (nl) *nl = '\0';
-   if (!strncmp(line, "?? ", 3) && !ws_hidden_path(line + 3)) {
-    char full[1200];
-    snprintf(full, sizeof full, "%s/%s", ck_dir, line + 3);
-    ws_add_change(c, n, &cap, full, 1, "[AI] new file", 1);
-   }
-   if (!nl) break;
-   line = nl + 1;
-  }
-  free(out);
+  ws_collect_git_edits(c, n, &cap);
+  ws_collect_git_new_files(c, n, &cap);
   return *n;
  }
  if (ck_mode == 2) {
@@ -901,9 +1288,9 @@ static int ws_collect_changes(ws_change **c, int *n)
   {
    char **nowl;
    int nn, k;
-   ws_list_watched_files(&nowl, &nn);
+   ws_list_watched_files(&nowl, &nn, 0);
    for (k = 0; k < nn; k++)
-    if (!ws_list_has(ck_before, ck_before_n, nowl[k]))
+    if (ws_snapshot_run_created(nowl[k]))
      ws_add_change(c, n, &cap, nowl[k], 1, "[AI] new file", 1);
    wpe_ai_free_list(nowl, nn);
   }
@@ -1460,6 +1847,52 @@ static int ws_revert_failed(FENSTER *f, const char *what, const char *path, cons
  return -1;
 }
 
+/* Why a revert refused a path, in the words the pane shows. */
+#define WS_OUTSIDE_WORKSPACE "it is outside the workspace"
+#define WS_NOT_RUN_CREATED   "the run did not create it"
+#define WS_NAME_TOO_LONG     "its name is too long to hand to the shell whole"
+
+/**
+ * ws_revert_command - The shell command that puts one git-mode file back.
+ * @cmd/@sz: the command; @rel: the file, relative to the workspace;
+ * @is_new: remove it rather than restore it.
+ *
+ * The workspace and the file name are quoted whole or not at all, and the
+ * command is built whole or not at all, so a revert never acts on a name
+ * other than the one the review listed.
+ * Return: 0 with @cmd ready to run, -1 when it could not be built whole.
+ */
+static int ws_revert_command(char *cmd, size_t sz, const char *rel, int is_new)
+{
+ char q[1100], qf[1300];
+ if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, rel) != 0)
+  return -1;
+ if (is_new)
+  return ws_format_whole(cmd, sz, "cd %s && rm -f -- %s 2>&1", q, qf);
+ return ws_format_whole(cmd, sz, "cd %s && git --literal-pathspecs checkout %s -- %s 2>&1",
+                        q, ck_ref, qf);
+}
+
+/**
+ * ws_git_run_created - Did the run create this file, as far as git can tell?
+ * @path: the full path of a file a review row calls new.
+ *
+ * Removing a file is the one revert that cannot be undone, so it is allowed
+ * only for a file that is untracked now and was not there when the checkpoint
+ * was taken.  A file the user had before the run, or one git tracks, stays.
+ * Return: 1 when it is the run's, 0 when it is not or git could not say.
+ */
+static int ws_git_run_created(const char *path)
+{
+ char **now;
+ int nn, yes;
+ if (ws_git_was_there(path)) return 0;
+ if (ws_git_list("ls-files --others --exclude-standard -z -- .", &now, &nn) != 0) return 0;
+ yes = ws_list_has(now, nn, path);
+ wpe_ai_free_list(now, nn);
+ return yes;
+}
+
 /**
  * ws_revert_path - Put one file back the way the checkpoint found it.
  * @f: any window of the editor; @path: the file to put back;
@@ -1476,15 +1909,14 @@ static int ws_revert_failed(FENSTER *f, const char *what, const char *path, cons
 static int ws_revert_path(FENSTER *f, const char *path, int is_new)
 {
  if (ck_mode == 1) {
-  char q[1100], qf[1100], cmd[1400], *out, reason[600];
+  char cmd[2800], *out, reason[600];
   int status = 0;
-  const char *rel = path;
-  size_t dl = strlen(ck_dir);
-  if (!strncmp(path, ck_dir, dl) && path[dl] == '/') rel = path + dl + 1;
-  wpe_ai_shell_quote(q, sizeof q, ck_dir);
-  wpe_ai_shell_quote(qf, sizeof qf, rel);
-  if (is_new) snprintf(cmd, sizeof cmd, "cd %s && rm -f -- %s 2>&1", q, qf);
-  else        snprintf(cmd, sizeof cmd, "cd %s && git checkout %s -- %s 2>&1", q, ck_ref, qf);
+  const char *rel = ws_workspace_rel(path);
+  if (!rel) return ws_revert_failed(f, is_new ? "remove" : "restore", path, WS_OUTSIDE_WORKSPACE);
+  if (is_new && !ws_git_run_created(path))
+   return ws_revert_failed(f, "remove", path, WS_NOT_RUN_CREATED);
+  if (ws_revert_command(cmd, sizeof cmd, rel, is_new) != 0)
+   return ws_revert_failed(f, is_new ? "remove" : "restore", path, WS_NAME_TOO_LONG);
   out = wpe_ai_run_capture_status(cmd, &status);
   if (status != 0) {
    ws_output_reason(out, status, reason, sizeof reason);
@@ -1496,6 +1928,8 @@ static int ws_revert_path(FENSTER *f, const char *path, int is_new)
   char snap[1200], *text;
   int i;
   if (is_new) {
+   if (!ws_snapshot_run_created(path))
+    return ws_revert_failed(f, "remove", path, WS_NOT_RUN_CREATED);
    if (unlink(path) != 0) return ws_revert_failed(f, "remove", path, strerror(errno));
    wpe_ai_trace("changeset revert %s", path);
    return 0;
@@ -1677,11 +2111,13 @@ static int ws_git_on_changeset(FENSTER *f, const char *what, const char *verb,
 {
  char q[1100], ql[1100], cmd[3600], reason[600], *o;
  int status = 0;
- wpe_ai_shell_quote(q, sizeof q, ck_dir);
- wpe_ai_shell_quote(ql, sizeof ql, list);
- snprintf(cmd, sizeof cmd,
-          "cd %s && git %s --pathspec-from-file=%s --pathspec-file-nul 2>&1",
-          q, verb, ql);
+ if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(ql, sizeof ql, list) != 0 ||
+     ws_format_whole(cmd, sizeof cmd,
+                     "cd %s && git %s --pathspec-from-file=%s --pathspec-file-nul 2>&1",
+                     q, verb, ql) != 0) {
+  ws_say_failed(f, what, "the changeset", WS_NAME_TOO_LONG);
+  return -1;
+ }
  o = wpe_ai_run_capture_status(cmd, &status);
  if (status != 0) {
   ws_output_reason(o, status, reason, sizeof reason);

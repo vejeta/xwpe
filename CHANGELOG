@@ -233,6 +233,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The review after an assistant run lists only what the run changed, and
+  r removes only what the run created.  In a git workspace, files you
+  already had untracked (notes, build output) were listed as new files and
+  deleted by r; changes elsewhere in the repository were listed as the
+  run's; a workspace inside a folder another repository ignores got that
+  repository's files.  Now the checkpoint records the untracked files
+  first, git looks at the workspace folder only, and a workspace git does
+  not track is checkpointed by snapshot copies.  File names with a newline
+  or leading blanks are handled.  Also: in the middle of a merge, or while
+  another git process held the index, r put the last commit back over your
+  uncommitted edits (now the snapshot is used); an ignored file the run
+  uncovered by editing .gitignore was deleted by r; in a workspace larger
+  than the snapshot's bound, files the run brought into view by deleting
+  others were listed as new and deleted by r; a very long file name could
+  be cut to another file's name.
+
 * Nothing is drawn under an open box any more.  Program output that
   arrived while a dialog was open scrolled Messages under it; a language
   server's diagnostics were drawn under the assistant's review box; a

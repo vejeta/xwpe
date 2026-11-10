@@ -878,14 +878,16 @@ build without @option{--enable-ai-agent-host} contains none of it, and the
 @cindex AI, checkpoint
 @cindex AI, revert
 Before an @code{edits} or @code{auto} run, xwpe takes a @dfn{checkpoint}: a
-@command{git} reference when the workspace is a git tree, otherwise a private
-snapshot of the files under @file{$XDG_STATE_HOME/xwpe/checkpoints/} (default
+@command{git} reference when the workspace is a git tree that tracks it, otherwise
+a private snapshot of the files under @file{$XDG_STATE_HOME/xwpe/checkpoints/} (default
 @file{~/.local/state/xwpe/checkpoints/}).  The snapshot watches the files under
 the workspace root as deep as they go, hidden folders skipped and a symbolic
 link counted as one entry that is never followed, so a file or a link the
 run creates in any directory of the workspace is listed and can be removed;
 in a workspace too large to walk whole the pane says how many files it
-watches and that a file created beyond them is unseen.  Afterwards it writes
+watches and that a file created beyond them is unseen, and a file the
+checkpoint never reached is never called new, even when the run deletes
+others and brings it into view.  Afterwards it writes
 the @dfn{changeset} into the @samp{Messages} window, one line per changed hunk in
 the compiler's @code{file:line:} format -- so you step through the AI's changes
 with the very same @kbd{Alt-T} (Next) and @kbd{Alt-V} (Previous) keys you use for
@@ -894,6 +896,18 @@ The file is named by its path under the workspace root, as a compiler run from
 the root names it, so a row still shows its line and its @samp{+added -removed}
 counts in the narrow @samp{Messages} window the docked pane leaves; a file the
 run created reads @samp{new file}.
+
+The review holds only what the run changed.  In a git tree the checkpoint also
+records the untracked and ignored files already lying in the workspace, so
+notes or build output you had before the run are never listed as new and
+@kbd{r} never removes them, even when the run edits @file{.gitignore}; the
+commands look at the workspace folder only, so changes elsewhere in the
+repository are not the run's either.  A workspace that is a git folder without
+a single tracked file, or one the surrounding repository ignores, is
+checkpointed by snapshot instead, since git holds nothing of it to go back to;
+so is one git cannot save as it stands (a merge stopped on a conflict, another
+git process holding the index), so that @kbd{r} never puts the last commit back
+over an edit you had not committed.
 
 A review prompt then offers @kbd{a} keep all, @kbd{r} revert everything back to
 the checkpoint, @kbd{f} decide file by file, and (in a git tree) @kbd{c} commit
@@ -909,7 +923,7 @@ edit of yours made before the run stays uncommitted where you left it.  When
 git refuses the commit after the files were staged (a hook, for instance), the
 pane gives git's reason and says the listed files stay staged, so you can fix
 what the hook asked for and commit them yourself.  Reverting a file the agent
-created deletes it.  When a file cannot be put back (the workspace refuses,
+created deletes it, and only a file the run created.  When a file cannot be put back (the workspace refuses,
 the created file cannot be removed, the checkpoint holds no copy of it) the
 pane says which file and why, the review's summary counts it as kept, and its
 window is left as it is; nothing claims a revert that did not happen.  This

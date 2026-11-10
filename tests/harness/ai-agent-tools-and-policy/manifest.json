@@ -1301,6 +1301,62 @@
    "layer": "c-unit",
    "test": "test_ai_scope",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-92",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_scope.py::test_untracked_files_from_before_the_run_are_not_listed_and_survive_r",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-93",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_scope.py::test_a_workspace_inside_a_repository_lists_only_its_own_changes",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-94",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_scope.py::test_a_workspace_in_an_ignored_folder_of_another_repository_is_not_that_repository",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-95",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_scope.py::test_a_file_the_run_creates_is_listed_new_and_r_removes_only_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-96",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_scope.py::test_an_edit_the_user_had_before_the_run_survives_r_when_git_cannot_stash",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-97",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_scope.py::test_a_file_the_run_stops_ignoring_is_not_new_and_survives_r",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-98",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_scope.py::test_files_beyond_the_snapshot_bound_are_not_new_when_the_run_deletes_others",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-99",
+   "requirement": "Checkpoint and review",
+   "layer": "ncurses",
+   "test": "tests/test_ai_changeset_scope.py::test_a_created_file_with_a_long_quoted_name_never_removes_a_shorter_one",
+   "status": "new"
   }
  ]
 }

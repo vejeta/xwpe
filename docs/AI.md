@@ -406,7 +406,15 @@ out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
 - **auto** -- runs unattended inside the workspace (reads and writes beyond it
   still ask, see below); a checkpoint is taken first and every change is
   listed in the end-of-run changeset (keep all / revert all / file-by-file /
-  commit). Each row names the file by its path under the workspace root and
+  commit). The review holds only what the run changed: untracked or ignored
+  files you had before the run are never listed as new and `r` never removes
+  them, and changes elsewhere in the repository are not the run's either. A
+  workspace git does not track (ignored by the repository around it, or with
+  nothing committed), or one git cannot save as it stands (a merge stopped on
+  a conflict, the index held by another git process), is checkpointed by
+  snapshot instead; there, files beyond the snapshot's bound are never called
+  new. Each row names the file by
+  its path under the workspace root and
   the first line the hunk changed, where `Alt-T` / `Alt-V` then jump; `Esc`
   keeps, at the top of the review and inside the file-by-file questions,
   where it keeps the files not yet asked about; `c` commits the listed files
