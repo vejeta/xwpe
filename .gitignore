@@ -44,6 +44,11 @@ xwpe
 # Debug symbols
 *.dSYM/
 
+# Vagrant state of the test VMs under contrib/: machine ids and the private
+# keys vagrant generates for each VM.  Ignoring it also keeps the copy that
+# tests/run-tests.sh makes for the sanitizer build from taking the keys along.
+.vagrant/
+
 # Test artifacts
 tests/.venv/
 tests/harness/out/
