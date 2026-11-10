@@ -1357,6 +1357,34 @@
    "layer": "ncurses",
    "test": "tests/test_ai_changeset_scope.py::test_a_created_file_with_a_long_quoted_name_never_removes_a_shorter_one",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-100",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_apply_patch_outside_asks_before_reading_and_a_no_reads_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-101",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_apply_patch_on_a_missing_outside_file_asks_before_saying_it_is_missing",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-102",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_apply_patch_inside_asks_nothing_beyond_the_write_review",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-103",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_apply_patch_in_a_granted_folder_skips_the_read_box_and_shows_the_write_box",
+   "status": "new"
   }
  ]
 }

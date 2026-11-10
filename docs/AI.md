@@ -461,6 +461,10 @@ project that leads out counts as outside) and judges where a path really lands:
   them; Enter withdraws one. Grants end with *Clear conversation* and never
   allow a write. The root folder `/` is never a grant, from the box, the include
   path or `AIReadRoots`: it would switch the scope off.
+- `apply_patch` reads the file it edits, so a file outside the workspace asks
+  with the same read box before anything is read; `n` gives the model the
+  same refusal, whether or not the file exists. The write box follows as for
+  `write_file`.
 - `grep` and `glob` search from the working directory, so that directory is
   what is judged. A search does not follow a link that leads out of the folder
   it started in, and its result says how many it left alone.

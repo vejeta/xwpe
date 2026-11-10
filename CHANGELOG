@@ -284,8 +284,11 @@ Changes
   folders opened this session and Alt-G r takes one back.  A search says
   how many links leading out of the folder it did not follow.  The write
   box shows where a linked file really lands on a row of its own, and the
-  file is opened at that place.  Not covered: a command you let the
-  assistant run can still read anything you can.
+  file is opened at that place.  apply_patch is a read too: it used to
+  open a file outside the workspace before asking, so a missing file or a
+  text that did not match reached the model unasked; it now asks first.
+  Not covered: a command you let the assistant run can still read anything
+  you can.
 
 * The Ctrl-F chords the Debug menu and the bars show now work in a
   terminal.  Only Ctrl-F9 and Alt-F5 were read there, so Ctrl-F2 (Quit),

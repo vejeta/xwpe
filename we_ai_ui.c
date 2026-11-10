@@ -464,7 +464,7 @@ static void  ai_page_owner(struct ai_async_op *op,
                            const char *tool, const char *arg);
 static char *ai_tool_command_start(const char *cmd, int report_timeout);
 static void  ai_page_set_note(char *note);
-static char *ai_scope_read_gate(FENSTER *f, const char *tool, const char *arg);
+static int   ai_scope_read_gate(FENSTER *f, const char *tool, const char *arg, char **refusal);
 static char *ai_scope_skipped_note(const char *tool, const char *arg);
 static void  ai_chat_command_done(struct ai_async_op *op, char *result,
                                   const char *tool, const char *arg);
@@ -3802,14 +3802,14 @@ static int ai_tool_shell_command(const char *tool, const char *arg, char *cmd, s
  * workspace is asked about before anything runs, and the output of a search
  * ends with how many links it left alone.
  * Return: AI_TOOL_WAITS while it runs, the malloc'd note when it could not be
- * started or was refused, NULL when @tool is not one of the three.
+ * started or was refused, NULL when @tool is not one of the three or a
+ * refusal could not be allocated (nothing ran).
  */
 static char *ai_tool_run_readonly(FENSTER *f, const char *tool, const char *arg)
 {
  char cmd[AI_TOOL_CMD_MAX], *result;
  if (!ai_tool_shell_command(tool, arg, cmd, sizeof cmd)) return NULL;
- result = ai_scope_read_gate(f, tool, arg);
- if (result) return result;
+ if (!ai_scope_read_gate(f, tool, arg, &result)) return result;
  result = ai_tool_command_start(cmd, 0);
  if (ai_tool_waits(result)) ai_page_set_note(ai_scope_skipped_note(tool, arg));
  return result;
@@ -10288,10 +10288,10 @@ static int ai_buf_grow(char **buf, size_t *cap)
 static char *ai_read_file_bounded(FENSTER *f, const char *path)
 {
  FILE *fp;
- char *out, *refused = ai_scope_read_gate(f, AI_TOOL_READ_FILE, path);
+ char *out;
  size_t cap = AI_READ_FIRST_CAP, len = 0;
  int ch;
- if (refused) return refused;
+ if (!ai_scope_read_gate(f, AI_TOOL_READ_FILE, path, &out)) return out;
  fp = fopen(path, "rb");
  if (!fp) return strdup(AI_TOOL_NO_FILE_RESULT);
  out = malloc(cap);
@@ -10435,16 +10435,17 @@ enum ai_scope_answer {
 
 /**
  * ai_scope_read_target - The place a read tool is about to look at.
- * @tool: read_file, list_dir, grep or glob; @arg: the model's argument.
+ * @tool: read_file, apply_patch, list_dir, grep or glob; @arg: the model's argument.
  *
- * read_file and list_dir name their path.  grep and glob take only a pattern
- * and search from the editor's working directory, so that directory is the
- * place a search reads.
+ * read_file, apply_patch and list_dir name their path (apply_patch reads the
+ * file before it edits it).  grep and glob take only a pattern and search
+ * from the editor's working directory, so that directory is the place a
+ * search reads.
  * Return: the path to judge, never NULL.
  */
 static const char *ai_scope_read_target(const char *tool, const char *arg)
 {
- if (!strcmp(tool, AI_TOOL_READ_FILE)) return arg;
+ if (!strcmp(tool, AI_TOOL_READ_FILE) || !strcmp(tool, AI_TOOL_APPLY_PATCH)) return arg;
  if (!strcmp(tool, AI_TOOL_LIST_DIR) && arg[0]) return arg;
  return AI_TOOL_LIST_DIR_DEFAULT;
 }
@@ -10585,21 +10586,27 @@ static enum ai_scope_verdict ai_scope_ask_read(FENSTER *f, const char *tool, con
 
 /**
  * ai_scope_read_gate - Let a read tool reach only what the user's scope allows.
- * @f: the window the pane belongs to; @tool: read_file, list_dir, grep or glob;
- * @arg: the model's argument, as it wrote it.
+ * @f: the window the pane belongs to; @tool: read_file, apply_patch, list_dir,
+ * grep or glob; @arg: the model's argument, as it wrote it; @refusal:
+ * receives what the model reads when the read may not run.
  *
  * A refused read gives the model an error that names the path and says it is
- * outside the workspace, so it asks the user instead of retrying.
- * Return: NULL when the read may run, else the malloc'd result the model reads.
+ * outside the workspace, so it asks the user instead of retrying.  The answer
+ * is the return value, not the refusal text: when memory runs out the refusal
+ * is NULL and the read still does not run, so a "no" the user gave is never
+ * lost to an allocation.
+ * Return: 1 when the read may run (@refusal is NULL), 0 when it may not
+ * (@refusal is the malloc'd result, or NULL out of memory).
  */
-static char *ai_scope_read_gate(FENSTER *f, const char *tool, const char *arg)
+static int ai_scope_read_gate(FENSTER *f, const char *tool, const char *arg, char **refusal)
 {
  char folder[AI_LANDING_PLACE_MAX];
  const char *path = ai_scope_read_target(tool, arg);
  enum ai_scope_verdict verdict = ai_scope_ask_read(f, tool, path, folder, sizeof folder);
- if (verdict == AI_SCOPE_USER_REFUSED)
-  return ai_scope_refuse(f, tool, path);
- return NULL;
+ *refusal = NULL;
+ if (verdict != AI_SCOPE_USER_REFUSED) return 1;
+ *refusal = ai_scope_refuse(f, tool, path);
+ return 0;
 }
 
 /* What the model reads when a search left links alone, and the reason. */
@@ -12716,12 +12723,17 @@ static char *ai_agent_tool_write_file(ai_async_op *op, const char *path, const c
  * of only what changed.  A missing file, a missing body or an unmatched
  * SEARCH text is a TOOL ERROR the model reads and retries from, so a wrong
  * guess at the file's text never rewrites the wrong place.
+ * Reading the file is a read like any other: a file outside the workspace
+ * goes through the scope gate first (ai_scope_read_gate), at every dial, so
+ * the model never learns whether an outside file exists, or what it holds,
+ * before the user was asked.  The write review follows as for write_file.
  * Return: the malloc'd result the model reads.
  */
 static char *ai_agent_apply_patch(ai_async_op *op, const char *path, const char *firstnl)
 {
- char *old = ai_slurp_file(path);
- char *newc = NULL, *result, perr[AI_PATCH_ERR_MAX];
+ char *old, *newc = NULL, *result, perr[AI_PATCH_ERR_MAX];
+ if (!ai_scope_read_gate(op->f, AI_TOOL_APPLY_PATCH, path, &result)) return result;
+ old = ai_slurp_file(path);
  if (!old) return strdup(AI_PATCH_NO_FILE_RESULT);
  if (!firstnl) result = strdup(AI_PATCH_NO_BLOCKS_RESULT);
  else if (!ai_apply_search_replace(old, firstnl + 1, &newc, perr, sizeof perr)) result = ai_tool_error_alloc(perr);
@@ -13313,8 +13325,8 @@ static void ai_plan_command_done(ai_async_op *op, char *result,
 static char *ai_plan_run_tool(ai_async_op *op, const char *tool, const char *arg)
 {
  if (!strcmp(tool, "read_file")) {
-  char *refused = ai_scope_read_gate(op->f, AI_TOOL_READ_FILE, arg);
-  if (refused) return refused;
+  char *refused;
+  if (!ai_scope_read_gate(op->f, AI_TOOL_READ_FILE, arg, &refused)) return refused;
   return wpe_ai_read_scope_file(op->f, arg);
  }
  if (!strcmp(tool, AI_TOOL_LIST_DIR) || !strcmp(tool, AI_TOOL_GREP)) {

@@ -469,6 +469,115 @@ def test_the_write_box_names_the_real_place_on_its_own_row(tmp_path):
         "the place shares the mark's row, so a long path clips it:\n" + "\n".join(rows)
 
 
+# --- apply_patch reads the file it edits: that read is judged too ----------------
+
+WRITE_BOX_MARK = " Write "
+
+
+def _patch_reply(path, search, replace="REPLACED"):
+    return ("TOOL apply_patch %s\n<<<<<<< SEARCH\n%s\n=======\n%s\n>>>>>>> REPLACE\n@@END"
+            % (path, search, replace))
+
+
+def _patch_run(tree, path, search, policy, answers, extra_lines=()):
+    """One agent run whose model sends apply_patch for `path`.  Each box is
+    answered with the next of `answers`; `events` lists which box came, in
+    order ("read" or "write").  Returns the server, the events, the final
+    screen, the trace and the TOOL RESULTs the model read."""
+    server = Server([_patch_reply(path, search)])
+    events, pending = [], list(answers)
+    try:
+        _config(tree, server, policy, extra_lines)
+        with WpeSession(str(tree.ws), SEED, env_extra=_env(tree), filename="t.c") as s:
+            s.key(ALT.AI, delay=0.6); s.key("g", delay=0.6)
+            s.key("patch", delay=0.1); s.key("\r", delay=1.0)
+            end = time.time() + RUN_POLL_S
+            while time.time() < end:
+                s._drain(0.3)
+                scr = "\n".join(s.display(drain=0))
+                if BOX_TITLE in scr:
+                    events.append("read")
+                    s.key(pending.pop(0) if pending else "n", delay=0.8)
+                elif WRITE_BOX_MARK in scr:
+                    events.append("write")
+                    s.key(pending.pop(0) if pending else "n", delay=0.8)
+                elif server.done():
+                    break
+            s._drain(1.0)
+            screen = _screen(s)
+        results = server.results() if server.captured else []
+        return server, events, screen, tree.trace(), results
+    finally:
+        server.close()
+
+
+# @scenario SC-ai-agent-100
+@pytest.mark.parametrize("policy", DIALS)
+def test_apply_patch_outside_asks_before_reading_and_a_no_reads_nothing(tmp_path, policy):
+    """A SEARCH that does not match used to come back as a match error, so the
+    model learned that an outside file existed and what it did not hold,
+    without the user being asked."""
+    tree = Tree(tmp_path)
+    path = tree.out / "a.txt"
+    before = path.read_text()
+    server, events, screen, trace, results = _patch_run(
+        tree, str(path), "NOT-IN-THE-FILE", policy, ["n"])
+    assert events == ["read"], "no read box before apply_patch read the file (%s): %s" % (policy, events)
+    assert results and DENIED_RESULT in results[-1], \
+        "the model did not read the refusal:\n%s" % results
+    assert SECRET not in results[-1], results
+    assert path.read_text() == before, "the outside file changed"
+    assert "agent deny apply_patch %s" % path in trace or \
+        "[agent] denied: apply_patch %s" % path in screen, trace
+
+
+# @scenario SC-ai-agent-101
+def test_apply_patch_on_a_missing_outside_file_asks_before_saying_it_is_missing(tmp_path):
+    tree = Tree(tmp_path)
+    path = tree.out / "missing.txt"
+    server, events, screen, trace, results = _patch_run(
+        tree, str(path), "ANY", "auto", ["n"])
+    assert events == ["read"], "a missing outside file was reported without asking: %s" % events
+    assert results and DENIED_RESULT in results[-1], results
+    assert "file not found" not in results[-1], \
+        "the model learned the outside file does not exist:\n%s" % results
+    assert not path.exists()
+
+
+# @scenario SC-ai-agent-100
+def test_apply_patch_outside_allowed_once_goes_on_to_the_write_box(tmp_path):
+    tree = Tree(tmp_path)
+    path = tree.out / "a.txt"
+    before = path.read_text()
+    server, events, screen, trace, results = _patch_run(
+        tree, str(path), SECRET + " a", "auto", ["y", "n"])
+    assert events == ["read", "write"], events
+    assert "agent read outside workspace apply_patch %s -> once" % path in trace, trace
+    assert path.read_text() == before, "the write was refused but the file changed"
+
+
+# @scenario SC-ai-agent-102
+def test_apply_patch_inside_asks_nothing_beyond_the_write_review(tmp_path):
+    tree = Tree(tmp_path)
+    path = tree.ws / "in.txt"
+    server, events, screen, trace, results = _patch_run(
+        tree, str(path), "INSIDE-TEXT", "edits", [])
+    assert "read" not in events, "a patch inside the workspace asked a read box: %s" % events
+    assert path.read_text() == "REPLACED\n", path.read_text()
+
+
+# @scenario SC-ai-agent-103
+def test_apply_patch_in_a_granted_folder_skips_the_read_box_and_shows_the_write_box(tmp_path):
+    tree = Tree(tmp_path)
+    path = tree.other / "e.txt"
+    before = path.read_text()
+    server, events, screen, trace, results = _patch_run(
+        tree, str(path), "ELSEWHERE-TEXT", "auto", ["n"],
+        extra_lines=["AIReadRoots : %s" % tree.other])
+    assert events == ["write"], "a granted folder asked a read box, or no write box: %s" % events
+    assert path.read_text() == before
+
+
 # --- the hosted engine ------------------------------------------------------------
 
 def _host_perm(tree, tool, tool_input, policy, answers, filename="t.c", resp_dir=None):

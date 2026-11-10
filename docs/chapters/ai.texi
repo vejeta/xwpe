@@ -661,7 +661,10 @@ box reads @samp{! Read outside the workspace: @var{path}}, adds the real place
 when a link is on the way, and offers @kbd{y} (this read only), @kbd{f} (this
 folder) and @kbd{n} or @key{Esc}.  @kbd{f} opens the folder, and everything
 below it, for reads until the session ends.  @kbd{n} gives the model an error
-that names the folder it could ask you to open.
+that names the path and says it is outside the workspace.  @code{apply_patch} reads the
+file it edits, so a file outside the workspace asks with the same box before
+anything is read, and @kbd{n} gives the model the same refusal whether or not
+the file exists; the write box then follows as for @code{write_file}.
 @end table
 
 A grant is shown, not hidden: the pane header says @samp{reads: 1 folder}
