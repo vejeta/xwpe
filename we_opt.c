@@ -1058,6 +1058,9 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
  } else if (WpeStrccmp("AIHostCommand", option) == 0) {
   free(e_ai_host_command);
   e_ai_host_command = (value && *value) ? WpeStrdup(value) : NULL;
+ } else if (WpeStrccmp("AIReadRoots", option) == 0) {
+  free(e_ai_read_roots);
+  e_ai_read_roots = (value && *value) ? WpeStrdup(value) : NULL;
  } else if (WpeStrccmp("AIHostAdapter", option) == 0) {
   e_ai_host_adapter = (WpeStrccmp(value, "text") == 0) ? WPE_AI_HOST_ADAPTER_TEXT
                                                        : WPE_AI_HOST_ADAPTER_CLAUDE;
@@ -1114,6 +1117,10 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
   fprintf(opt_file, "AIEditHook : %s\n", e_ai_edit_hook);
  if (e_ai_host_command && *e_ai_host_command)
   fprintf(opt_file, "AIHostCommand : %s\n", e_ai_host_command);
+ /* Roots the user wrote by hand are kept when the file is rewritten; the
+    editor never adds one itself. */
+ if (e_ai_read_roots && *e_ai_read_roots)
+  fprintf(opt_file, "AIReadRoots : %s\n", e_ai_read_roots);
  if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_HOST_ADAPTER) == WPE_AI_HOST_ADAPTER_TEXT)
   fprintf(opt_file, "AIHostAdapter : text\n");
  fprintf(opt_file, "AICAFile : %s\n", wpe_ai_cfg_str_to_save(WPE_AI_CFG_CAFILE));

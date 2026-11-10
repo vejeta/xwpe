@@ -337,9 +337,8 @@ def test_hook_and_git_checkpoint_spawns_are_their_own_session(tmp_path):
 
 def _assert_web_denied(argv):
     """The hosted CLI must be told not to use its web tools while the web
-    switch is not on.  Its permission callback cannot carry the switch at every
-    dial -- the auto dial asks the CLI to run unattended and routes no prompt
-    back to the editor -- so this list is the lever that holds everywhere.
+    switch is not on.  The list holds even where the CLI would not ask, so it
+    is stated at every dial as well as answered by the permission callback.
     @argv is one argument per element, as the stub recorded them."""
     shown = " ".join(argv)
     assert "--disallowedTools" in argv, \
@@ -398,7 +397,10 @@ def test_hosted_engine_argv_under_ask(tmp_path):
     if not _host_build():
         pytest.skip("built without --enable-ai-agent-host")
     rows, argv, hf, _, _ = _host_run(tmp_path, "ask")
-    assert "--permission-mode" in argv and "default" in argv, argv
+    # The installed CLI has no "default" mode; its modes are acceptEdits, auto,
+    # bypassPermissions, manual, dontAsk and plan, and manual is the one that
+    # asks about everything.
+    assert argv[argv.index("--permission-mode") + 1] == "manual", argv
     assert "--permission-prompts" in argv and "host" in argv, argv
     assert "--permission-prompt-tool" in argv and "stdio" in argv, argv
     assert "--dangerously-skip-permissions" not in argv, argv
@@ -421,10 +423,12 @@ def test_hosted_engine_argv_under_auto(tmp_path):
     if not _host_build():
         pytest.skip("built without --enable-ai-agent-host")
     rows, argv, hf, _, _ = _host_run(tmp_path, "auto")
-    assert "--dangerously-skip-permissions" in argv, argv
-    assert "--permission-mode" not in argv, argv
-    # This dial routes no prompt back to the editor, so the deny list is the
-    # only place the web switch can speak here.
+    # Auto no longer asks the CLI to skip its checks: the CLI runs in its edit
+    # mode with its prompts routed to the editor, which answers what is inside
+    # the workspace at once and asks beyond it.
+    assert "--dangerously-skip-permissions" not in argv, argv
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits", argv
+    assert "--permission-prompts" in argv and "--permission-prompt-tool" in argv, argv
     _assert_web_denied(argv)
 
 

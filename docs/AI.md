@@ -201,7 +201,17 @@ seconds is ended as if it had exited. The permission dial gates its tools **per
 tool**, classed like the editor's own: *Ask* pops a `y`/`n` for each gated tool
 call; *Edits* auto-accepts the file-editing tools (`Write`, `Edit`, `MultiEdit`,
 `NotebookEdit`) and asks for `Bash`, `WebFetch`, `WebSearch` and any other tool;
-*Auto* runs unattended (a checkpoint is taken either way, announced with the same
+*Auto* allows what stays inside the workspace without asking. At every dial the
+CLI runs in its edit mode (`--permission-mode acceptEdits`, `manual` under *ask*)
+with its prompts routed to the editor and without the option that turns its
+checks off, and its file tools (`Read`, `Grep`, `Glob`, `LS`, `Write`, `Edit`,
+`MultiEdit`, `NotebookEdit`) are judged by the path they name with the workspace
+scope below: beyond it a read or a write asks, even under *auto*; inside it a
+read is never asked, at any dial, as for the editor's own read tools; a file
+tool that names no path is refused, and a tool the editor does not know that
+names a file is judged like a write. The CLI starts in the workspace folder, so
+a relative path means the same place to both. Folders you already opened are
+passed to the CLI as `--add-dir`. (A checkpoint is taken either way, announced with the same
 `[agent] checkpoint taken` line as the built-in loop). A refusal shows
 `[agent] denied: <tool> <arg>` and the CLI reads "Denied by the user". It is
 built as a generic "host an agent CLI that speaks stream-json" (Claude Code
@@ -275,9 +285,9 @@ gets the list only, since `claude -p` cannot be asked anything once it runs:
 while it is off. The hosted `claude-code` engine (`AIAgentEngine : claude-code`,
 Alt-G g) gets both: the list while the web is off, and the question at the
 *ask* and *edits* dials, so with the web on you still see a box for a fetch.
-The *auto* dial sends no question, so there the list is all that holds and the
-editor cannot promise the CLI honours it. Move off the *auto* dial if you need
-the web demonstrably shut.
+At the *auto* dial the editor answers the question itself: a web tool passes
+while the switch is on and is refused while it is off. The CLI is no longer
+started with its permission bypass, so the list and the question both hold.
 
 One case the switch cannot reach: a hosted engine named in Options
 (`AIHostCommand`, for instance `aider`) is run through the shell as you wrote
@@ -393,7 +403,8 @@ out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
 
 - **ask** -- every file write and every command needs a `y`/`n`.
 - **edits** -- writes apply automatically; commands still ask.
-- **auto** -- runs unattended; a checkpoint is taken first and every change is
+- **auto** -- runs unattended inside the workspace (reads and writes beyond it
+  still ask, see below); a checkpoint is taken first and every change is
   listed in the end-of-run changeset (keep all / revert all / file-by-file /
   commit). Each row names the file by its path under the workspace root and
   the first line the hunk changed, where `Alt-T` / `Alt-V` then jump; `Esc`
@@ -417,12 +428,37 @@ this run cannot be reverted from the review`.
 
 Whatever the dial, the argument of `list_dir`, `grep` and `glob` is passed to
 the shell as a single word: a pattern with spaces is one pattern, and no
-character in it is a command. A write to a file outside the working tree (an
-absolute path beyond it, one that climbs out with `..`, or one that goes
-through a link leading out of it) always asks, under *edits* and *auto* too;
-the write box carries the `!` mark and the words `outside the workspace`, with
-the place the file really lands when a link is on the way, and the pane names
-the file again once it is written.
+character in it is a command.
+
+**The workspace scope.** The dial decides how much you are asked about work
+inside the workspace; it never widens the workspace. One rule, the same for the
+built-in tools and the hosted engine, follows links first (a link inside the
+project that leads out counts as outside) and judges where a path really lands:
+
+- A write to a file outside the working tree (an absolute path beyond it, one
+  that climbs out with `..`, or one that goes through a link leading out of it)
+  always asks, under *edits* and *auto* too; the write box carries the `!` mark
+  and the words `outside the workspace`, with the place the file really lands on
+  a row of its own when a link is on the way, and the pane names the file again
+  once it is written. The file is opened at that place, so a link made after
+  the question makes the write fail instead of landing elsewhere.
+- `read_file`, `list_dir`, `grep` and `glob` run unasked inside the workspace,
+  below the project's `System-Include-Path` directories, below the roots in
+  `AIReadRoots` (xwperc, colon separated, written by hand, never added by the
+  editor) and below folders opened in this session. Anywhere else they ask, at
+  every dial, *auto* included, because a read followed by a web fetch is a way to
+  send a file out. The box offers `y` (this read), `f` (this folder, until the
+  session ends) and `n`/`Esc` (the model reads an error naming the folder). The
+  pane header shows `reads: N folder(s)` while one is open and `Alt-G r` lists
+  them; Enter withdraws one. Grants end with *Clear conversation* and never
+  allow a write. The root folder `/` is never a grant, from the box, the include
+  path or `AIReadRoots`: it would switch the scope off.
+- `grep` and `glob` search from the working directory, so that directory is
+  what is judged. A search does not follow a link that leads out of the folder
+  it started in, and its result says how many it left alone.
+- **Not covered:** a command you let the assistant run (`run_command`, the hosted
+  engine's `Bash`, unasked under *auto*) can read anything you can; the scope
+  judges the paths tools name, not what is inside a command line.
 
 Whatever the dial says, a command the assistant runs **cannot reach your
 screen**: it runs in a session of its own with no terminal attached, so its

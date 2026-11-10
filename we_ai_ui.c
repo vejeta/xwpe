@@ -14,6 +14,7 @@
 #include "progr.h"
 #include "we_fdloop.h"
 #include "we_ai.h"
+#include "we_ai_path.h"
 #include "we_ai_host.h"
 
 #include <stdlib.h>
@@ -454,7 +455,7 @@ static void ai_chat_set_pending(ai_chat_session *s, const char *seed)
 }
 
 /* read-only tool helpers (defined in the Agent section) + the turn starter */
-static char *ai_read_file_bounded(const char *path);
+static char *ai_read_file_bounded(FENSTER *f, const char *path);
 /* A tool's command runs on the loop like a web tool's page: the step answers
    AI_TOOL_WAITS and the task named by ai_page_owner goes on when it is done. */
 static void  ai_page_owner(struct ai_async_op *op,
@@ -462,6 +463,9 @@ static void  ai_page_owner(struct ai_async_op *op,
                                         const char *tool, const char *arg),
                            const char *tool, const char *arg);
 static char *ai_tool_command_start(const char *cmd, int report_timeout);
+static void  ai_page_set_note(char *note);
+static char *ai_scope_read_gate(FENSTER *f, const char *tool, const char *arg);
+static char *ai_scope_skipped_note(const char *tool, const char *arg);
 static void  ai_chat_command_done(struct ai_async_op *op, char *result,
                                   const char *tool, const char *arg);
 static void  ai_chat_next_turn(ai_chat_session *s);
@@ -2916,9 +2920,13 @@ static void ai_identity_text(char *buf, size_t n)
   snprintf(buf, n, "You are served by the \"%s\" backend%s", be, tail);
 }
 
+/* Room for the part of the header that says how many folders are open for reading. */
+#define AI_STATUS_READS_MAX 40
+
 /**
  * ai_status_text - One-line "who am I talking to" indicator for the pane header:
- * the active backend, model and permission policy.
+ * the active backend, model and permission policy, and how many folders the
+ * user opened for reading in this session (none: nothing is added).
  * @buf: destination; @n: its size.
  *
  * Shown at the top of a fresh AI pane so the working setup is visible without
@@ -2930,11 +2938,16 @@ static void ai_status_text(char *buf, size_t n)
  const char *be = wpe_ai_backend_name(e_ai_backend);
  const char *pol = wpe_ai_policy_name(e_ai_policy);
  const char *model = (e_ai_model && *e_ai_model) ? e_ai_model : "(default)";
+ char reads[AI_STATUS_READS_MAX];
+ int grants = wpe_ai_scope_grant_count();
+ reads[0] = '\0';
+ if (grants > 0)
+  snprintf(reads, sizeof reads, " | reads: %d folder%s", grants, grants == 1 ? "" : "s");
  if (wpe_ai_web_state() == WPE_AI_WEB_ON) {
-  snprintf(buf, n, "[AI: %s | model: %s | policy: %s | web]", be, model, pol);
+  snprintf(buf, n, "[AI: %s | model: %s | policy: %s | web%s]", be, model, pol, reads);
   return;
  }
- snprintf(buf, n, "[AI: %s | model: %s | policy: %s]", be, model, pol);
+ snprintf(buf, n, "[AI: %s | model: %s | policy: %s%s]", be, model, pol, reads);
 }
 
 /* ----- the pane header follows the configuration ---------------------------
@@ -3787,14 +3800,21 @@ static int ai_tool_shell_command(const char *tool, const char *arg, char *cmd, s
  * editor's loop, so a grep over a large tree no longer freezes the editor:
  * the caller has named its task with ai_page_owner first, and the output
  * reaches that task when the command is done.
+ * The scope gate comes first (ai_scope_read_gate): a folder outside the
+ * workspace is asked about before anything runs, and the output of a search
+ * ends with how many links it left alone.
  * Return: AI_TOOL_WAITS while it runs, the malloc'd note when it could not be
- * started, NULL when @tool is not one of the three.
+ * started or was refused, NULL when @tool is not one of the three.
  */
-static char *ai_tool_run_readonly(const char *tool, const char *arg)
+static char *ai_tool_run_readonly(FENSTER *f, const char *tool, const char *arg)
 {
- char cmd[AI_TOOL_CMD_MAX];
+ char cmd[AI_TOOL_CMD_MAX], *result;
  if (!ai_tool_shell_command(tool, arg, cmd, sizeof cmd)) return NULL;
- return ai_tool_command_start(cmd, 0);
+ result = ai_scope_read_gate(f, tool, arg);
+ if (result) return result;
+ result = ai_tool_command_start(cmd, 0);
+ if (ai_tool_waits(result)) ai_page_set_note(ai_scope_skipped_note(tool, arg));
+ return result;
 }
 
 /* The lead of the result a refused tool line gets, and the pane's reason. */
@@ -3824,7 +3844,7 @@ static int ai_tool_is_web(const char *tool)
 static char *ai_chat_run_readonly(ai_chat_session *s, const char *tool, const char *arg)
 {
  ai_page_owner(s->op, ai_chat_command_done, tool, arg);
- return ai_tool_run_readonly(tool, arg);
+ return ai_tool_run_readonly(s->ref, tool, arg);
 }
 
 /**
@@ -3854,7 +3874,7 @@ static char *ai_chat_tool_result(ai_chat_session *s, const char *reply)
  { size_t l = strlen(action); while (l && (action[l-1]==' '||action[l-1]=='\r')) action[--l]='\0'; }
  ai_split_tool(action, &tool, &arg);
  if (!strcmp(tool, "read_file"))
-  return ai_read_file_bounded(arg);
+  return ai_read_file_bounded(s->ref, arg);
  if (ai_tool_is_shell_readonly(tool))
   return ai_chat_run_readonly(s, tool, arg);
  if (ai_tool_is_web(tool))
@@ -6453,8 +6473,9 @@ static void ai_landing_clause(FENSTER *f, const char *path, char *clause, size_t
  if (real[0]) snprintf(clause, sz, " (lands at %s)", real);
 }
 
-/* A write box for a file outside the workspace carries one more row, the mark. */
-#define AI_DIFF_OUTSIDE_ROWS 1
+/* A write box for a file outside the workspace carries two more rows: the mark,
+   and the real place when a link makes it differ from the name. */
+#define AI_DIFF_OUTSIDE_ROWS 2
 
 /**
  * ai_diff_add_outside_row - Put the outside-the-workspace mark at the top of a write box.
@@ -6465,15 +6486,21 @@ static void ai_landing_clause(FENSTER *f, const char *path, char *clause, size_t
  * <path>" in the colour of a deletion, so a write that reaches beyond the
  * project is seen as such before the diff below it is judged.  The word
  * comes before the path so it stays on screen when the path is too long for
- * the box.
+ * the box.  When a link on the path leads elsewhere, the place the bytes will
+ * really go has a row of its own below it, so a long path never pushes it off
+ * the edge of the box.
  */
 static void ai_diff_add_outside_row(FENSTER *f, char **rt, int *ra, int *nrows,
                                     const char *path, int attr)
 {
  char row[1400], clause[AI_LANDING_CLAUSE_MAX];
  ai_landing_clause(f, path, clause, sizeof clause);
- snprintf(row, sizeof row, "%s %s: %s%s", AI_PLAN_OUTSIDE_MARK, AI_PLAN_OUTSIDE_WORD,
-          path, clause);
+ snprintf(row, sizeof row, "%s %s: %s", AI_PLAN_OUTSIDE_MARK, AI_PLAN_OUTSIDE_WORD, path);
+ rt[*nrows] = strdup(row);
+ ra[*nrows] = attr;
+ (*nrows)++;
+ if (!clause[0]) return;
+ snprintf(row, sizeof row, "  %s", clause + 1);          /* the clause starts with a space */
  rt[*nrows] = strdup(row);
  ra[*nrows] = attr;
  (*nrows)++;
@@ -10284,14 +10311,18 @@ static int ai_buf_grow(char **buf, size_t *cap)
  * so the model asks for a narrower read (a grep, a line range) instead of
  * taking the beginning for the whole file.  A missing file is a result, not
  * an error, so the run goes on.
+ * A file outside the workspace goes through the scope gate first
+ * (ai_scope_read_gate), at every dial.
  * Return: the malloc'd result, or NULL out of memory.
  */
-static char *ai_read_file_bounded(const char *path)
+static char *ai_read_file_bounded(FENSTER *f, const char *path)
 {
- FILE *fp = fopen(path, "rb");
- char *out;
+ FILE *fp;
+ char *out, *refused = ai_scope_read_gate(f, AI_TOOL_READ_FILE, path);
  size_t cap = AI_READ_FIRST_CAP, len = 0;
  int ch;
+ if (refused) return refused;
+ fp = fopen(path, "rb");
  if (!fp) return strdup(AI_TOOL_NO_FILE_RESULT);
  out = malloc(cap);
  if (!out) { fclose(fp); return NULL; }
@@ -10400,6 +10431,231 @@ static char *ai_agent_deny(FENSTER *f, const char *tool, const char *arg)
  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  wpe_ai_trace("agent deny %s %s", tool, arg);
  return strdup(AI_TOOL_DENIED_RESULT);
+}
+
+/* ---- one scope for every read the assistant makes -------------------------
+ * The assistant's reach is the workspace.  A read of a file or folder outside
+ * it (and outside the folders the user already allowed) asks, whatever the
+ * dial: under auto a read plus a web fetch is a way to send a file out, so the
+ * dial decides how much is asked about work inside the scope and never widens
+ * it.  The judge is wpe_ai_scope_judge; every read tool of every loop (chat,
+ * agent, plan) goes through ai_scope_read_gate, so one loop cannot be fixed
+ * and another left behind. */
+
+/* What the model reads when the user refused a read beyond the workspace. */
+#define AI_SCOPE_REFUSED_FMT AI_TOOL_ERROR_HEAD "the user did not allow reading %s, outside the workspace"
+/* The read box: its title, the keys it lists and the keys it takes. */
+#define AI_SCOPE_BOX_TITLE " Allow this read? "
+#define AI_SCOPE_BOX_HINT  " y once  f this folder  n / Esc no "
+#define AI_SCOPE_BOX_KEYS  "YFN"
+/* The same box when the folder cannot be opened for the session. */
+#define AI_SCOPE_BOX_HINT_ONCE " y once  n / Esc no "
+#define AI_SCOPE_BOX_KEYS_ONCE "YN"
+/* A read box has at most the mark row, the place row and the folder row. */
+#define AI_SCOPE_BOX_ROWS  3
+/* Room for the text of one box row. */
+#define AI_SCOPE_ROW_MAX   (AI_LANDING_PLACE_MAX + 200)
+
+/* What the user answered to the read box. */
+enum ai_scope_answer {
+ AI_SCOPE_NO = 0,
+ AI_SCOPE_ONCE,                 /* this read only                               */
+ AI_SCOPE_FOLDER                /* this folder, until the session ends          */
+};
+
+/**
+ * ai_scope_read_target - The place a read tool is about to look at.
+ * @tool: read_file, list_dir, grep or glob; @arg: the model's argument.
+ *
+ * read_file and list_dir name their path.  grep and glob take only a pattern
+ * and search from the editor's working directory, so that directory is the
+ * place a search reads.
+ * Return: the path to judge, never NULL.
+ */
+static const char *ai_scope_read_target(const char *tool, const char *arg)
+{
+ if (!strcmp(tool, AI_TOOL_READ_FILE)) return arg;
+ if (!strcmp(tool, AI_TOOL_LIST_DIR) && arg[0]) return arg;
+ return AI_TOOL_LIST_DIR_DEFAULT;
+}
+
+/**
+ * ai_scope_row - Put one finished row in the read box rows.
+ * @rt/@ra/@n: the rows, their colours and their count, advanced by one;
+ * @text: the row; @attr: its colour.
+ */
+static void ai_scope_row(char **rt, int *ra, int *n, const char *text, int attr)
+{
+ if (*n >= AI_SCOPE_BOX_ROWS) return;
+ rt[*n] = strdup(text);
+ ra[*n] = attr;
+ (*n)++;
+}
+
+/**
+ * ai_scope_read_box - Ask whether the assistant may read beyond the workspace.
+ * @f: the window the pane belongs to; @path: what it asked to read, as it
+ * named it; @folder: what "this folder" would grant.
+ *
+ * The first row says what is asked and marks it in the colour of a deletion,
+ * as the write box does; the place the path really leads to comes on its own
+ * row when a link makes it differ from the text, so the user judges the
+ * place and not the name; the last row says what the second answer grants.
+ * Enter is the narrowest yes, this read only.  When the folder cannot be
+ * granted (the root of the disk, which would hold everything, or a path that
+ * cannot be followed) the box offers only this read and no.
+ * Return: AI_SCOPE_ONCE, AI_SCOPE_FOLDER or AI_SCOPE_NO.
+ */
+static enum ai_scope_answer ai_scope_read_box(FENSTER *f, const char *path, const char *folder)
+{
+ char *rt[AI_SCOPE_BOX_ROWS], row[AI_SCOPE_ROW_MAX], clause[AI_LANDING_CLAUSE_MAX];
+ int ra[AI_SCOPE_BOX_ROWS], n = 0, key, i, red = f->fb->db.fb;
+ int grantable = wpe_ai_scope_can_grant(folder);
+ snprintf(row, sizeof row, "%s Read %s: %s", AI_PLAN_OUTSIDE_MARK, AI_PLAN_OUTSIDE_WORD, path);
+ ai_scope_row(rt, ra, &n, row, red);
+ ai_landing_clause(f, path, clause, sizeof clause);
+ if (clause[0]) {
+  snprintf(row, sizeof row, "  %s", clause + 1);        /* the clause starts with a space */
+  ai_scope_row(rt, ra, &n, row, red);
+ }
+ if (grantable) {
+  snprintf(row, sizeof row, "  this folder: %s", folder);
+  ai_scope_row(rt, ra, &n, row, f->fb->nt.fb);
+  key = ai_diff_box_show(f, rt, ra, n, AI_SCOPE_BOX_TITLE, AI_SCOPE_BOX_HINT,
+                         AI_SCOPE_BOX_KEYS, -1);
+ } else
+  key = ai_diff_box_show(f, rt, ra, n, AI_SCOPE_BOX_TITLE, AI_SCOPE_BOX_HINT_ONCE,
+                         AI_SCOPE_BOX_KEYS_ONCE, -1);
+ for (i = 0; i < n; i++) free(rt[i]);
+ if (key == 'F' && grantable) return AI_SCOPE_FOLDER;
+ if (key == 'Y' || key == 13) return AI_SCOPE_ONCE;
+ return AI_SCOPE_NO;
+}
+
+/**
+ * ai_scope_note_allowed - Record in the pane and the trace what the user allowed.
+ * @f: the window the pane belongs to; @tool/@path: the read; @answer: the
+ * answer; @folder: the folder granted when the answer was AI_SCOPE_FOLDER.
+ *
+ * The box warned before the choice; this line is the record after it, so a
+ * user reading the pane later knows which read went beyond the tree and which
+ * folder stays open until the session ends.
+ */
+static void ai_scope_note_allowed(FENSTER *f, const char *tool, const char *path,
+                                  enum ai_scope_answer answer, const char *folder)
+{
+ char line[AI_SCOPE_ROW_MAX];
+ if (answer == AI_SCOPE_FOLDER)
+  snprintf(line, sizeof line, "[agent] reading %s is allowed for this session", folder);
+ else
+  snprintf(line, sizeof line, "[agent] %s %s, %s", tool, path, AI_PLAN_OUTSIDE_WORD);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+ wpe_ai_trace("agent read outside workspace %s %s -> %s", tool, path,
+              answer == AI_SCOPE_FOLDER ? "folder" : "once");
+}
+
+/**
+ * ai_scope_refuse - The result a read gets when the user said no.
+ * @f: the window the pane belongs to; @tool/@path: the read.
+ *
+ * The pane and the trace record the denial as for any refused tool; the model
+ * reads why, so it asks the user for the folder instead of retrying.
+ * Return: the malloc'd result.
+ */
+static char *ai_scope_refuse(FENSTER *f, const char *tool, const char *path)
+{
+ char *result = malloc(AI_SCOPE_ROW_MAX + AI_LANDING_PLACE_MAX);
+ free(ai_agent_deny(f, tool, path));
+ if (!result) return NULL;
+ snprintf(result, AI_SCOPE_ROW_MAX + AI_LANDING_PLACE_MAX, AI_SCOPE_REFUSED_FMT, path);
+ return result;
+}
+
+/* What asking about a read came to.  Every caller runs with its window alive
+   (the loops stop a run whose window closed before its next tool), so a box can
+   always be drawn and answered. */
+enum ai_scope_verdict {
+ AI_SCOPE_INSIDE_SCOPE,         /* inside the workspace or a granted folder: nothing was asked */
+ AI_SCOPE_USER_ALLOWED,         /* outside, and the user said yes                              */
+ AI_SCOPE_USER_REFUSED          /* outside, and the user said no                               */
+};
+
+/**
+ * ai_scope_ask_read - Judge a read and, when it is outside the scope, ask the user.
+ * @f: the window the pane belongs to; @tool: the tool, for the lines it leaves;
+ * @path: what it wants to read, as it named it; @folder/@sz: receive the folder
+ * "this folder" would open.
+ *
+ * The one conversation about a read beyond the workspace, shared by the
+ * editor's own tools and by the hosted engine's, so both ask the same
+ * question in the same words and keep the same grants.  A path inside the
+ * workspace, below a folder the project declares as an include directory,
+ * below a root the user wrote into xwperc or below a folder allowed in this
+ * session is not asked about, at any dial.  Any other path asks with the read
+ * box, at any dial: "this read only" lets it through, "this folder" lets it
+ * through and keeps the folder open for the session (the status shows it and
+ * withdraws it), and "no" refuses it.
+ * Return: an ai_scope_verdict.
+ */
+static enum ai_scope_verdict ai_scope_ask_read(FENSTER *f, const char *tool, const char *path,
+                                               char *folder, size_t sz)
+{
+ enum ai_scope_answer answer;
+ folder[0] = '\0';
+ if (wpe_ai_scope_judge(f, path, WPE_SCOPE_READ, NULL, 0) != WPE_SCOPE_OUTSIDE)
+  return AI_SCOPE_INSIDE_SCOPE;
+ wpe_ai_scope_folder_of(path, folder, sz);
+ answer = ai_scope_read_box(f, path, folder);
+ if (answer == AI_SCOPE_NO) return AI_SCOPE_USER_REFUSED;
+ if (answer == AI_SCOPE_FOLDER && wpe_ai_scope_grant(folder) != 0)
+  answer = AI_SCOPE_ONCE;                       /* the list is full: this read only */
+ ai_scope_note_allowed(f, tool, path, answer, folder);
+ return AI_SCOPE_USER_ALLOWED;
+}
+
+/**
+ * ai_scope_read_gate - Let a read tool reach only what the user's scope allows.
+ * @f: the window the pane belongs to; @tool: read_file, list_dir, grep or glob;
+ * @arg: the model's argument, as it wrote it.
+ *
+ * A refused read gives the model an error that names the path and says it is
+ * outside the workspace, so it asks the user instead of retrying.
+ * Return: NULL when the read may run, else the malloc'd result the model reads.
+ */
+static char *ai_scope_read_gate(FENSTER *f, const char *tool, const char *arg)
+{
+ char folder[AI_LANDING_PLACE_MAX];
+ const char *path = ai_scope_read_target(tool, arg);
+ enum ai_scope_verdict verdict = ai_scope_ask_read(f, tool, path, folder, sizeof folder);
+ if (verdict == AI_SCOPE_USER_REFUSED)
+  return ai_scope_refuse(f, tool, path);
+ return NULL;
+}
+
+/* What the model reads when a search left links alone, and the reason. */
+#define AI_SCOPE_SKIPPED_FMT "(%s%d link%s leading outside the folder searched %s not followed)"
+
+/**
+ * ai_scope_skipped_note - Say how many links a search did not follow.
+ * @f: the window the pane belongs to; @tool/@arg: the read tool.
+ *
+ * A search that stays inside its start does not follow a link that leads out
+ * of it.  Saying how many were left alone keeps an empty or short result from
+ * being read as "nothing there".
+ * Return: the malloc'd note, or NULL when no link leads out.
+ */
+static char *ai_scope_skipped_note(const char *tool, const char *arg)
+{
+ const char *path = ai_scope_read_target(tool, arg);
+ int depth = strcmp(tool, AI_TOOL_LIST_DIR) ? WPE_SCAN_ALL_LEVELS : WPE_SCAN_ONE_LEVEL;
+ int truncated, n = wpe_ai_scope_count_skipped_links(path, depth, &truncated);
+ char *note;
+ if (n <= 0) return NULL;
+ note = malloc(AI_SCOPE_ROW_MAX);
+ if (!note) return NULL;
+ snprintf(note, AI_SCOPE_ROW_MAX, AI_SCOPE_SKIPPED_FMT, truncated ? "at least " : "", n,
+          n == 1 ? "" : "s", n == 1 ? "was" : "were");
+ return note;
 }
 
 /* What the model reads when a write could not be made. */
@@ -10952,15 +11208,14 @@ static void ai_plan_mark_done(FENSTER *f, const char *arg)
  * ai_agent_write_file - Put the agent's content on disk.
  * @path: the file, as the agent named it; @content: its complete new text.
  *
+ * The file is opened at the place the scope check looked at (wpe_path_open_write):
+ * a link made on the last component after the question was asked makes the
+ * open fail instead of sending the bytes somewhere the user was not shown.
  * Return: 1 when written, 0 when the file could not be opened for writing.
  */
 static int ai_agent_write_file(const char *path, const char *content)
 {
- FILE *w = fopen(path, "wb");
- if (!w) return 0;
- fwrite(content, 1, strlen(content), w);
- fclose(w);
- return 1;
+ return wpe_ai_write_judged_file(path, content) == 0;
 }
 
 /**
@@ -11722,7 +11977,42 @@ static struct {
  ai_page_done_fn done;       /* how that task goes on                          */
  char           *tool, *arg; /* the request, for the sources line of a chat    */
  const char     *failed;     /* the words for a failure with no reason         */
+ char           *note;       /* a line the command's output ends with, or NULL */
 } g_ai_page;
+
+/**
+ * ai_page_set_note - Name a line the running command's output will end with.
+ * @note: malloc'd, taken over, or NULL for none.
+ *
+ * A search says how many links it did not follow; the line is added when the
+ * command is done, so it follows the output it is about.
+ */
+static void ai_page_set_note(char *note)
+{
+ free(g_ai_page.note);
+ g_ai_page.note = note;
+}
+
+/**
+ * ai_result_end_with - Add a line to the end of a tool's result.
+ * @result: the result, malloc'd, taken over; @note: the line, malloc'd, taken over.
+ * Return: the result with the line after it, or the result itself when
+ * memory ran out.
+ */
+static char *ai_result_end_with(char *result, char *note)
+{
+ size_t rl, nl;
+ char *joined;
+ if (!note) return result;
+ rl = result ? strlen(result) : 0;
+ nl = strlen(note);
+ joined = realloc(result, rl + nl + 2);
+ if (!joined) { free(note); return result; }
+ if (rl && joined[rl - 1] != '\n') joined[rl++] = '\n';
+ memcpy(joined + rl, note, nl + 1);
+ free(note);
+ return joined;
+}
 
 /**
  * ai_tool_waits - Did the tool step leave its result to the loop?
@@ -11764,6 +12054,7 @@ static void ai_page_forget(void)
  free(g_ai_page.tool);
  free(g_ai_page.arg);
  g_ai_page.tool = g_ai_page.arg = NULL;
+ ai_page_set_note(NULL);
 }
 
 /**
@@ -11849,11 +12140,14 @@ static void ai_page_command_done(char *result, int status, int timed_out, void *
  ai_async_op *op = g_ai_page.op;
  ai_page_done_fn done = g_ai_page.done;
  char *tool = g_ai_page.tool, *arg = g_ai_page.arg;
+ char *note = g_ai_page.note;
  int report = g_ai_page.report_timeout;
 
  (void)ud;
  g_ai_page.tool = g_ai_page.arg = NULL;
+ g_ai_page.note = NULL;
  ai_page_forget();
+ result = ai_result_end_with(result, note);
  wpe_ai_trace("tool command read status=%d", status);
  if (timed_out && report && op && ai_window_alive(op->cn, op->f))
   ai_agent_report_timeout(op->f, tool, result);
@@ -12507,8 +12801,8 @@ static char *ai_agent_run_tool(ai_async_op *op, const char *tool, const char *ar
                                const char *firstnl)
 {
  FENSTER *f = op->f;
- if (ai_tool_is_shell_readonly(tool)) return ai_tool_run_readonly(tool, arg);
- if (!strcmp(tool, AI_TOOL_READ_FILE)) return ai_read_file_bounded(arg);
+ if (ai_tool_is_shell_readonly(tool)) return ai_tool_run_readonly(f, tool, arg);
+ if (!strcmp(tool, AI_TOOL_READ_FILE)) return ai_read_file_bounded(f, arg);
  if (!strcmp(tool, AI_TOOL_RUN_COMMAND)) return ai_agent_tool_run_command(f, arg);
  if (!strcmp(tool, AI_TOOL_WEB_FETCH)) return ai_agent_tool_web_fetch(f, arg);
  if (!strcmp(tool, AI_TOOL_WEB_SEARCH)) return ai_agent_tool_web_search(f, arg);
@@ -12823,9 +13117,9 @@ int e_ai_agent(FENSTER *f)
 #ifdef WPE_AI_AGENT_HOST
  /* One-time nudge for the Claude CLI backend: the built-in agent runs the model
     text-only and applies each tool itself under the dial -- it never hands the
-    model --dangerously-skip-permissions, so "Auto" does not make Claude act on
-    its own here.  Full autonomy (the model driving its own tools) is the Claude
-    Code agent engine, which is where the dial reaches the model's own tools. */
+    model a permission bypass, so "Auto" does not make Claude act on its own
+    here.  Full autonomy (the model driving its own tools) is the Claude Code
+    agent engine, which is where the dial reaches the model's own tools. */
  {
   static int nudged = 0;
   if (!nudged && e_ai_backend == WPE_AI_CLAUDECLI && e_ai_policy != WPE_AI_POLICY_ASK) {
@@ -13048,11 +13342,14 @@ static void ai_plan_command_done(ai_async_op *op, char *result,
  */
 static char *ai_plan_run_tool(ai_async_op *op, const char *tool, const char *arg)
 {
- if (!strcmp(tool, "read_file"))
+ if (!strcmp(tool, "read_file")) {
+  char *refused = ai_scope_read_gate(op->f, AI_TOOL_READ_FILE, arg);
+  if (refused) return refused;
   return wpe_ai_read_scope_file(op->f, arg);
+ }
  if (!strcmp(tool, AI_TOOL_LIST_DIR) || !strcmp(tool, AI_TOOL_GREP)) {
   ai_page_owner(op, ai_plan_command_done, tool, arg);
-  return ai_tool_run_readonly(tool, arg);
+  return ai_tool_run_readonly(op->f, tool, arg);
  }
  return strdup("(only read-only tools are allowed in plan mode)");
 }
@@ -13542,6 +13839,7 @@ static int e_ai_plan(FENSTER *f)
 static wpe_host *g_host;                /* the live session, or NULL */
 static ECNT     *g_host_cn;             /* container, for liveness checks */
 static FENSTER  *g_host_win;            /* pane's anchor window */
+static char     *g_host_root;           /* the folder the engine was started in, malloc'd */
 static int       g_host_fd = -1;        /* child stdout on the fd-loop */
 static int       g_host_turn;           /* a turn is streaming */
 static int       g_host_in_prompt;      /* a permission y/n modal is up */
@@ -13557,11 +13855,18 @@ static int       g_host_deadline_due;   /* it ran out while a permission modal w
 #define HOST_TOOL_EDIT          "Edit"
 #define HOST_TOOL_MULTIEDIT     "MultiEdit"
 #define HOST_TOOL_NOTEBOOKEDIT  "NotebookEdit"
+#define HOST_TOOL_READ          "Read"
+#define HOST_TOOL_GREP          "Grep"
+#define HOST_TOOL_GLOB          "Glob"
+#define HOST_TOOL_LS            "LS"
+#define HOST_TOOL_NOTEBOOKREAD  "NotebookRead"
 
-/* How the permission dial reads a CLI tool: the classes the built-in loop has. */
+/* How the permission dial reads a CLI tool: the classes the built-in loop has,
+   and the reads, which the workspace scope judges by their path. */
 enum host_tool_class {
  HOST_TOOL_CLASS_COMMAND,               /* runs a command or reaches the web */
  HOST_TOOL_CLASS_WRITE,                 /* edits a file */
+ HOST_TOOL_CLASS_READ,                  /* reads a file or a folder */
  HOST_TOOL_CLASS_OTHER                  /* anything else the CLI gates */
 };
 
@@ -13641,6 +13946,7 @@ static void e_ai_host_end(const char *why)
   host_bring_pane_to_front(g_host_win);
  }
  g_host_win = NULL; g_host_cn = NULL; g_host_turn = 0;
+ free(g_host_root); g_host_root = NULL;
 }
 
 /**
@@ -13756,10 +14062,12 @@ static void host_ev_result(const char *summary, int is_error, void *ud)
  *
  * The dial reads "edits" as "file edits pass, anything that runs or reaches
  * out asks".  The CLI's Bash, WebFetch and WebSearch are the commands; its
- * Write, Edit, MultiEdit and NotebookEdit are the writes; a tool the editor
- * does not know asks rather than passing as if it were an edit, which is how a
- * web fetch used to be auto-approved under edits.
- * Return: HOST_TOOL_CLASS_COMMAND, HOST_TOOL_CLASS_WRITE or HOST_TOOL_CLASS_OTHER.
+ * Write, Edit, MultiEdit and NotebookEdit are the writes; its Read, Grep,
+ * Glob, LS and NotebookRead are the reads, judged by the workspace scope; a
+ * tool the editor does not know asks rather than passing as if it were an
+ * edit, which is how a web fetch used to be auto-approved under edits.
+ * Return: HOST_TOOL_CLASS_COMMAND, HOST_TOOL_CLASS_WRITE, HOST_TOOL_CLASS_READ
+ * or HOST_TOOL_CLASS_OTHER.
  */
 static enum host_tool_class ai_host_tool_class(const char *name)
 {
@@ -13771,6 +14079,11 @@ static enum host_tool_class ai_host_tool_class(const char *name)
  if (!strcmp(name, HOST_TOOL_EDIT))      return HOST_TOOL_CLASS_WRITE;
  if (!strcmp(name, HOST_TOOL_MULTIEDIT)) return HOST_TOOL_CLASS_WRITE;
  if (!strcmp(name, HOST_TOOL_NOTEBOOKEDIT)) return HOST_TOOL_CLASS_WRITE;
+ if (!strcmp(name, HOST_TOOL_READ))      return HOST_TOOL_CLASS_READ;
+ if (!strcmp(name, HOST_TOOL_GREP))      return HOST_TOOL_CLASS_READ;
+ if (!strcmp(name, HOST_TOOL_GLOB))      return HOST_TOOL_CLASS_READ;
+ if (!strcmp(name, HOST_TOOL_LS))        return HOST_TOOL_CLASS_READ;
+ if (!strcmp(name, HOST_TOOL_NOTEBOOKREAD)) return HOST_TOOL_CLASS_READ;
  return HOST_TOOL_CLASS_OTHER;
 }
 
@@ -13803,24 +14116,162 @@ static int ai_host_tool_asks_under_edits(enum host_tool_class cls)
  return 1;
 }
 
+/* What the workspace scope says about a hosted tool's request. */
+enum host_scope_answer {
+ HOST_SCOPE_DIAL,                       /* inside the scope: the dial decides   */
+ HOST_SCOPE_ALLOW,                      /* beyond it, and the user said yes     */
+ HOST_SCOPE_DENY                        /* beyond it and refused, or no path    */
+};
+
 /**
- * host_ev_permission - The CLI asks to use a tool; the dial and the user decide.
- * @tool: the CLI's tool name; @arg: its short argument; @ud: the pane's window.
+ * ai_host_scope_path - The place a hosted tool's request is about.
+ * @name: the CLI's tool name; @path: the path its request carried, or NULL;
+ * @buf/@sz: room for the path made absolute.
  *
- * Reuses the built-in loop's approval (auto passes everything with the
- * auto-approved line, edits passes writes and asks for the rest, ask asks
- * every time) and its denial record, so a refused WebFetch shows
- * "[agent] denied: WebFetch <url>" exactly as a refused web_fetch does.
+ * The path the request names is the one judged.  The engine runs in the
+ * workspace's folder (g_host_root), so a relative path and a search that
+ * names no path both mean a place below that folder, and are judged there,
+ * whatever folder the editor itself was started in.  Any other tool of the
+ * file classes that names no path cannot be judged, and what cannot be judged
+ * is refused, never passed by its class.
+ * Return: the path to judge, or NULL when there is none or it does not fit.
+ */
+static const char *ai_host_scope_path(const char *name, const char *path, char *buf, size_t sz)
+{
+ int n;
+ if (!path || !path[0]) {
+  if (strcmp(name, HOST_TOOL_GREP) && strcmp(name, HOST_TOOL_GLOB)) return NULL;
+  path = AI_TOOL_LIST_DIR_DEFAULT;
+ }
+ if (path[0] == '/' || !g_host_root) return path;
+ n = snprintf(buf, sz, "%s/%s", g_host_root, path);
+ if (n < 0 || (size_t)n >= sz) return NULL;
+ return buf;
+}
+
+/**
+ * host_tool_judged_as_write - Is this request judged as a write beyond the workspace would be?
+ * @cls: the tool's class; @path: the path its request carried, or NULL.
+ *
+ * The file-editing tools are writes.  A tool the editor does not know that
+ * still names a path is held to the same rule, the strictest one: a grant
+ * for reads does not widen it, and beyond the workspace it asks at every
+ * dial, so a new tool of the engine cannot reach a file the scope would
+ * refuse just because its name is not on the editor's list.
+ * Return: 1 when the request takes the write judgement.
+ */
+static int host_tool_judged_as_write(enum host_tool_class cls, const char *path)
+{
+ if (cls == HOST_TOOL_CLASS_WRITE) return 1;
+ return cls == HOST_TOOL_CLASS_OTHER && path && path[0];
+}
+
+/**
+ * host_ask_outside_write - Ask about a hosted write beyond the workspace, whatever the dial.
+ * @f: the window the pane belongs to; @name: the CLI's tool; @path: the file.
+ *
+ * The same marked box the editor's own write gives: "! outside the workspace:
+ * <path>", the real place on its own row when a link makes it differ, and the
+ * key line.  The CLI's request carries edits, not the whole new file, so the
+ * box has no diff; its title names the tool.  The CLI edits the file itself
+ * after the yes, so the pane records the answer here.
+ * Return: 1 to allow, 0 to deny.
+ */
+static int host_ask_outside_write(FENSTER *f, const char *name, const char *path)
+{
+ char *rt[AI_DIFF_OUTSIDE_ROWS];
+ int ra[AI_DIFF_OUTSIDE_ROWS], n = 0, key, i, allow;
+ char title[80], line[AI_SCOPE_ROW_MAX];
+ ai_diff_add_outside_row(f, rt, ra, &n, path, f->fb->db.fb);
+ snprintf(title, sizeof title, " %.20s %.48s ? ", name, path);
+ key = ai_diff_box_show(f, rt, ra, n, title, " y allow  n / Esc deny ", "YN", -1);
+ for (i = 0; i < n; i++) free(rt[i]);
+ allow = (key == 13 || key == 'Y');
+ wpe_ai_trace("host write outside workspace %s %s -> %s", name, path, allow ? "allow" : "deny");
+ if (!allow) return 0;
+ snprintf(line, sizeof line, "[agent] %s %s, %s", name, path, AI_PLAN_OUTSIDE_WORD);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 0);
+ return 1;
+}
+
+/**
+ * host_scope_decide - Judge a hosted file tool's path by the workspace scope.
+ * @f: the window the pane belongs to; @name: the CLI's tool; @cls: its class;
+ * @path: the path its request carried, or NULL.
+ *
+ * The scope is the same one the editor's own tools answer to: inside it, the
+ * dial decides as it always did; beyond it, the user is asked at every dial,
+ * auto included.  A read asks with the read box and a write with the marked
+ * write box.  A command, and a tool the editor does not know that names no
+ * path, is not judged here.
+ * Return: HOST_SCOPE_DIAL, HOST_SCOPE_ALLOW or HOST_SCOPE_DENY.
+ */
+static enum host_scope_answer host_scope_decide(FENSTER *f, const char *name,
+                                                enum host_tool_class cls, const char *path)
+{
+ char folder[AI_LANDING_PLACE_MAX], abs[WPE_PATH_RESOLVED_MAX];
+ const char *target;
+ enum ai_scope_verdict verdict;
+ if (cls != HOST_TOOL_CLASS_READ && !host_tool_judged_as_write(cls, path)) return HOST_SCOPE_DIAL;
+ target = ai_host_scope_path(name, path, abs, sizeof abs);
+ if (!target) {
+  wpe_ai_trace("host %s names no path: refused", name);
+  return HOST_SCOPE_DENY;
+ }
+ if (host_tool_judged_as_write(cls, path)) {
+  if (wpe_ai_scope_judge(f, target, WPE_SCOPE_WRITE, NULL, 0) != WPE_SCOPE_OUTSIDE)
+   return HOST_SCOPE_DIAL;
+  return host_ask_outside_write(f, name, target) ? HOST_SCOPE_ALLOW : HOST_SCOPE_DENY;
+ }
+ verdict = ai_scope_ask_read(f, name, target, folder, sizeof folder);
+ if (verdict == AI_SCOPE_INSIDE_SCOPE) return HOST_SCOPE_DIAL;
+ if (verdict == AI_SCOPE_USER_ALLOWED) return HOST_SCOPE_ALLOW;
+ return HOST_SCOPE_DENY;
+}
+
+/**
+ * host_dial_decides - Answer a hosted request the workspace scope let through.
+ * @f: the window the pane belongs to; @cls: the tool's class; @name/@shown:
+ * the tool and its short argument, for the box and the pane.
+ *
+ * A read inside the scope is never asked about, at any dial, exactly as the
+ * editor's own read_file, list_dir, grep and glob are not: one judge gives one
+ * answer, so the same file is not free to one engine and asked about by the
+ * other.  Everything else goes to the dial (auto passes it, edits passes
+ * writes and asks for the rest, ask asks).
+ * Return: 1 allow, 0 deny.
+ */
+static int host_dial_decides(FENSTER *f, enum host_tool_class cls, const char *name,
+                             const char *shown)
+{
+ char what[720];
+ if (cls == HOST_TOOL_CLASS_READ) return 1;
+ snprintf(what, sizeof what, "%s %.640s", name, shown);
+ return ai_agent_approve(f, what, ai_host_tool_asks_under_edits(cls));
+}
+
+/**
+ * host_ev_permission - The CLI asks to use a tool; the scope, the dial and the user decide.
+ * @tool: the CLI's tool name; @arg: its short argument; @path: the file or
+ * folder the request names, or NULL; @ud: the pane's window.
+ *
+ * A file tool is judged by the workspace scope first (host_scope_decide), so
+ * a read or write beyond it asks at every dial, auto included.  What the
+ * scope lets through is answered by host_dial_decides: a read inside it
+ * passes at every dial, and the rest reuses the built-in loop's approval
+ * (auto passes everything with the auto-approved line, edits passes writes
+ * and asks for the rest, ask asks every time) and its denial record, so a refused WebFetch
+ * shows "[agent] denied: WebFetch <url>" exactly as a refused web_fetch does.
  * g_host_in_prompt stops the fd pump from re-entering while the box reads a key.
  * Return: 1 allow, 0 deny (the CLI then reads "Denied by the user").
  */
-static int host_ev_permission(const char *tool, const char *arg, void *ud)
+static int host_ev_permission(const char *tool, const char *arg, const char *path, void *ud)
 {
  FENSTER *f = ud;
- char what[720];
  const char *name = tool ? tool : "tool";
  const char *shown = arg ? arg : "";
  enum host_tool_class cls = ai_host_tool_class(tool);
+ enum host_scope_answer scope;
  int ok;
  /* The web switch decides before the dial does.  The dial asks at two of its
     three positions, so at `auto` a host task would have reached the network
@@ -13830,9 +14281,12 @@ static int host_ev_permission(const char *tool, const char *arg, void *ud)
   free(ai_agent_refuse_web(f, name, shown));
   return 0;
  }
- snprintf(what, sizeof what, "%s %.640s", name, shown);
  g_host_in_prompt = 1;
- ok = ai_agent_approve(f, what, ai_host_tool_asks_under_edits(cls));
+ scope = host_scope_decide(f, name, cls, path);
+ if (scope == HOST_SCOPE_DIAL)
+  ok = host_dial_decides(f, cls, name, shown);
+ else
+  ok = (scope == HOST_SCOPE_ALLOW);
  g_host_in_prompt = 0;
  if (!ok) free(ai_agent_deny(f, name, shown));   /* the pane and trace lines; the model text is the CLI's own */
  wpe_ai_trace("host permission tool=%s allow=%d", name, ok);
@@ -13843,6 +14297,35 @@ static const wpe_host_events g_host_ev = {
  host_ev_text, host_ev_tool, host_ev_file, host_ev_notice, host_ev_result,
  host_ev_permission
 };
+
+/**
+ * host_start_session - Start the hosted engine, told which folders it may already read.
+ * @err/@errsz: receive the reason when it cannot start.
+ *
+ * The folders the user allowed (the project's include directories, the roots
+ * in xwperc, the folders granted so far) go to the engine as --add-dir, so it
+ * does not ask the editor about a read the editor would let through.  A folder
+ * granted after the session started is not known to the engine, which then
+ * asks, and the editor answers from the same list.  The engine starts in the
+ * workspace's folder (g_host_root), so what it reads without asking is the
+ * workspace and a relative path it names means the same place to both.
+ * @f: the pane's window, whose workspace the session works in.
+ * Return: the session, or NULL.
+ */
+static wpe_host *host_start_session(FENSTER *f, char *err, size_t errsz)
+{
+ const char *dirs[WPE_HOST_ADD_DIR_MAX + 1];
+ char **list;
+ int n = wpe_ai_scope_read_dirs(&list), i;
+ wpe_host *h;
+ for (i = 0; i < n && i < WPE_HOST_ADD_DIR_MAX; i++) dirs[i] = list[i];
+ dirs[i] = NULL;
+ free(g_host_root);
+ g_host_root = wpe_ai_workspace_dir(f);
+ h = wpe_host_start(e_ai_model, "", e_ai_policy, g_host_root, dirs, err, errsz);
+ wpe_ai_free_list(list, n);
+ return h;
+}
 
 /**
  * host_end_interrupt_overdue - End a session whose engine ignored the interrupt.
@@ -14017,7 +14500,7 @@ int e_ai_host(FENSTER *f)
  }
  if (!g_host) {
   err[0] = '\0';
-  g_host = wpe_host_start(e_ai_model, "", e_ai_policy, err, sizeof err);
+  g_host = host_start_session(f, err, sizeof err);
   if (!g_host) {
    char l[360];
    snprintf(l, sizeof l, "[agent] could not start %.80s: %.240s",
@@ -14107,6 +14590,40 @@ static int e_ai_menu_new_session(FENSTER *f)
  * fkt on Enter, so it must not be NULL). */
 static int e_ai_menu_divider(FENSTER *f) { (void)f; return 0; }
 
+/* The caption of the picker that withdraws a granted read folder, and the
+   words of the flash that says one was withdrawn. */
+#define AI_GRANT_PICK_TITLE "Read folders (Enter withdraws)"
+#define AI_GRANT_WITHDRAWN_FLASH " AI: that folder is no longer open for reading"
+/* Room for one folder label in that picker. */
+#define AI_GRANT_LABEL_MAX 600
+
+/**
+ * e_ai_menu_read_folders - List the folders opened for reading and withdraw one.
+ * @f: the current window.
+ *
+ * The row exists only while the session has a folder the user opened with
+ * "this folder" in a read box.  The picker lists them; Enter on one takes it
+ * back, so reads there ask again.  Esc leaves them as they are.
+ */
+static int e_ai_menu_read_folders(FENSTER *f)
+{
+ char label[WPE_AI_GRANTS_MAX][AI_GRANT_LABEL_MAX];
+ const char *labels[WPE_AI_GRANTS_MAX];
+ int n = wpe_ai_scope_grant_count(), i, sel;
+ if (n > WPE_AI_GRANTS_MAX) n = WPE_AI_GRANTS_MAX;
+ if (n <= 0) return 0;
+ for (i = 0; i < n; i++) {
+  snprintf(label[i], sizeof label[i], "%s", wpe_ai_scope_grant_at(i));
+  labels[i] = label[i];
+ }
+ sel = e_ai_pick(f, AI_GRANT_PICK_TITLE, labels, n, 0);
+ if (sel < 0) return 0;
+ wpe_ai_trace("agent read folder withdrawn %s", label[sel]);
+ wpe_ai_scope_grant_withdraw(sel);
+ wpe_ai_flash(f, AI_GRANT_WITHDRAWN_FLASH);
+ return 0;
+}
+
 /* Fill `it` with the menu rows (name left, "Alt-G <key>" right-aligned so the
  * keyboard shortcut lines up like the LSP menu).  The Model and Permissions rows
  * show the CURRENT value so the active setup is visible; a blank separator
@@ -14127,10 +14644,28 @@ static const struct ai_menu_row {
  { "Build & fix (agent)", 'B', e_ai_fix_build        },
  { NULL,                  0,   NULL                  },   /* separator */
  { "Permissions",         'Y', e_ai_menu_policy      },
+ { "Read folders",        'R', e_ai_menu_read_folders },  /* only while a folder is open */
  { "Clear conversation",  'N', e_ai_menu_new_session },
  { "AI settings...",      'S', e_ai_options          }
 };
 #define AI_MENU_NROWS ((int)(sizeof ai_menu_rows / sizeof ai_menu_rows[0]))
+/* The most rows the menu can show: every row of the table. */
+#define AI_MENU_MAXROWS AI_MENU_NROWS
+
+/**
+ * ai_menu_row_shown - Does the menu offer this row now?
+ * @r: a row of ai_menu_rows.
+ *
+ * Every row is always offered except Read folders, which appears only while
+ * the session has a folder the user opened for reading; without one the
+ * menu is exactly the menu it always was.
+ * Return: 1 when the row is shown.
+ */
+static int ai_menu_row_shown(const struct ai_menu_row *r)
+{
+ if (r->fkt == e_ai_menu_read_folders) return wpe_ai_scope_grant_count() > 0;
+ return 1;
+}
 
 /**
  * ai_menu_has_key - Whether a typed letter is one of the AI menu shortcuts.
@@ -14141,7 +14676,7 @@ static int ai_menu_has_key(int key)
 {
  int i, up = e_toupper(key);
  for (i = 0; i < AI_MENU_NROWS; i++)
-  if (ai_menu_rows[i].fkt && ai_menu_rows[i].key &&
+  if (ai_menu_rows[i].fkt && ai_menu_rows[i].key && ai_menu_row_shown(&ai_menu_rows[i]) &&
       e_toupper((int)ai_menu_rows[i].key) == up)
    return 1;
  return 0;
@@ -14160,7 +14695,7 @@ static int ai_menu_dispatch_key(FENSTER *f, int key)
 {
  int i, up = e_toupper(key);
  for (i = 0; i < AI_MENU_NROWS; i++)
-  if (ai_menu_rows[i].fkt && ai_menu_rows[i].key &&
+  if (ai_menu_rows[i].fkt && ai_menu_rows[i].key && ai_menu_row_shown(&ai_menu_rows[i]) &&
       e_toupper((int)ai_menu_rows[i].key) == up) {
    ai_menu_rows[i].fkt(f);
    return 1;
@@ -14170,33 +14705,39 @@ static int ai_menu_dispatch_key(FENSTER *f, int key)
 
 static int e_ai_menu_items(OPTK *it)
 {
- static char label[10][AI_MENU_TEXTW + 4];
- static char perm_row[48];
- int i, n = AI_MENU_NROWS;
+ static char label[AI_MENU_MAXROWS][AI_MENU_TEXTW + 4];
+ static char perm_row[48], grants_row[48];
+ int i, k = 0;
 
  snprintf(perm_row, sizeof perm_row, "Permissions: %s",
           wpe_ai_policy_name(e_ai_policy));
- for (i = 0; i < n; i++) {
+ snprintf(grants_row, sizeof grants_row, "Read folders: %d", wpe_ai_scope_grant_count());
+ for (i = 0; i < AI_MENU_NROWS; i++) {
   const char *name = ai_menu_rows[i].name;
   char code[12];
   int pad, hl, j;
+  if (!ai_menu_row_shown(&ai_menu_rows[i])) continue;
   if (!name) {                                  /* blank, non-selectable divider */
-   for (j = 0; j < AI_MENU_TEXTW; j++) label[i][j] = '-';
-   label[i][AI_MENU_TEXTW] = '\0';
-   it[i] = WpeFillSubmenuItem(label[i], -1, 0, e_ai_menu_divider);
+   for (j = 0; j < AI_MENU_TEXTW; j++) label[k][j] = '-';
+   label[k][AI_MENU_TEXTW] = '\0';
+   it[k] = WpeFillSubmenuItem(label[k], -1, 0, e_ai_menu_divider);
+   k++;
    continue;
   }
   if (ai_menu_rows[i].fkt == e_ai_menu_policy)  /* show the live policy caption */
    name = perm_row;
+  if (ai_menu_rows[i].fkt == e_ai_menu_read_folders)
+   name = grants_row;
   snprintf(code, sizeof code, "Alt-G %c", ai_menu_rows[i].key);   /* 7 chars */
   pad = AI_MENU_TEXTW - (int)strlen(name) - (int)strlen(code);
   if (pad < 1)
    pad = 1;
-  snprintf(label[i], sizeof label[i], "%s%*s%s", name, pad, "", code);
-  hl = (int)strlen(label[i]) - 1;               /* the letter in "Alt-G X" */
-  it[i] = WpeFillSubmenuItem(label[i], hl, ai_menu_rows[i].key, ai_menu_rows[i].fkt);
+  snprintf(label[k], sizeof label[k], "%s%*s%s", name, pad, "", code);
+  hl = (int)strlen(label[k]) - 1;               /* the letter in "Alt-G X" */
+  it[k] = WpeFillSubmenuItem(label[k], hl, ai_menu_rows[i].key, ai_menu_rows[i].fkt);
+  k++;
  }
- return n;
+ return k;
 }
 
 /**

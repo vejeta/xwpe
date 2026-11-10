@@ -44,6 +44,7 @@ char *e_ai_model    = NULL;            /* "" => auto-pick the first model       
 char *e_ai_model_fallback = NULL;      /* retried once when the primary fails    */
 char *e_ai_edit_hook = NULL;           /* command run on a file after an AI edit  */
 char *e_ai_host_command = NULL;        /* agent-host CLI to run (default: claude)  */
+char *e_ai_read_roots = NULL;          /* directories the user lets the assistant read beyond the workspace, colon separated (xwperc AIReadRoots) */
 int   e_ai_host_adapter = 0;           /* 0 = claude-code (stream-json), 1 = text  */
 char *e_ai_search_url = NULL;          /* web_search URL template ("%s" = query);
                                           NULL => the built-in keyless default      */

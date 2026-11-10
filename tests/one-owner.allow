@@ -67,3 +67,4 @@ we_ai.o write 1 keep the test backend's temporary file, not a child
 we_ai_http.o write 1 keep a server's socket, not a child: written from the loop's wake-ups, a TLS write retried with the same buffer
 we_wayland.o write 1 P9o the clipboard pipe
 we_ai.o fdopen 1 keep the API key file, not a child
+we_ai_ws.o write 1 keep a regular file the model named, opened at the place the scope judged (wpe_path_open_write): no child, no pipe

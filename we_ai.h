@@ -166,6 +166,7 @@ extern char *e_ai_model;      /* model name; "" => auto-pick first from server *
 extern char *e_ai_model_fallback; /* retried once when the primary model fails (or NULL) */
 extern char *e_ai_edit_hook;      /* command run on a file after an AI edit (or NULL) */
 extern char *e_ai_host_command;   /* agent-host CLI, e.g. "claude"/"aider" (or NULL => claude) */
+extern char *e_ai_read_roots;     /* extra directories the assistant may read, colon separated (or NULL) */
 /* Which host adapter parses the CLI's output: stream-json (Claude Code) or a
    plain "prompt in -> text out" CLI whose stdout is rendered as the answer. */
 #define WPE_AI_HOST_ADAPTER_CLAUDE 0
@@ -478,6 +479,41 @@ int   wpe_ai_path_outside_workspace(struct FNST *f, const char *path);
 /* The same question, and where the file really lands when a link on the way
  * leads elsewhere (empty when the path names the place itself). */
 int   wpe_ai_path_landing(struct FNST *f, const char *path, char *real, size_t sz);
+/* The one scope judge: where does a path land for a read (access
+ * WPE_SCOPE_READ) or a write (WPE_SCOPE_WRITE), as WPE_SCOPE_INSIDE (the
+ * workspace), WPE_SCOPE_GRANTED (outside, but a directory the user allowed
+ * for reads) or WPE_SCOPE_OUTSIDE.  @real receives the place the path really
+ * leads to when that is not the place it names; may be NULL.  Constants are
+ * in we_ai_path.h. */
+int   wpe_ai_scope_judge(struct FNST *f, const char *path, int access,
+                         char *real, size_t sz);
+/* The workspace's folder, absolute and malloc'd (NULL when it cannot be
+ * formed): the root wpe_ai_scope_judge compares against. */
+char *wpe_ai_workspace_dir(struct FNST *f);
+/* Read grants for this session: directories the user answered "Yes for this
+ * folder" for.  They end with the session (Clear conversation, or leaving the
+ * editor) and can be withdrawn one by one. */
+#define WPE_AI_GRANTS_MAX 16        /* folders one session can open for reading */
+int   wpe_ai_scope_can_grant(const char *dir);   /* 0 for "/" and for what cannot be followed */
+int   wpe_ai_scope_grant(const char *dir);
+int   wpe_ai_scope_grant_count(void);
+const char *wpe_ai_scope_grant_at(int i);
+void  wpe_ai_scope_grant_withdraw(int i);
+/* The directories the hosted engine is told it may read (the session's
+ * grants and the persistent roots), as a NULL-terminated malloc'd array of
+ * malloc'd paths (free with wpe_ai_free_list(list, n)); returns the count. */
+int   wpe_ai_scope_read_dirs(char ***out);
+/* The directory a "Yes for this folder" answer grants for a path that was
+ * read: the place the path leads to when it is a directory, else the one that
+ * holds it ("" when the path cannot be followed). */
+void  wpe_ai_scope_folder_of(const char *path, char *dir, size_t sz);
+/* How many links below a folder lead out of it (0 for a path that is not a
+ * folder); the depth is WPE_SCAN_ONE_LEVEL or WPE_SCAN_ALL_LEVELS and
+ * *truncated says the look stopped at its entry bound. */
+int   wpe_ai_scope_count_skipped_links(const char *path, int depth, int *truncated);
+/* Write a whole file at the place the scope judged (the last link is not
+ * followed); 0 when written, -1 with errno set. */
+int   wpe_ai_write_judged_file(const char *path, const char *text);
 /* Checkpoint before an edits/auto run: a git ref (stash create / HEAD) when
  * the workspace is a git tree, else snapshot copies of the scope files.
  * Returns 0 when the checkpoint is active, -1 when it was not taken because it

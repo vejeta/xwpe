@@ -233,6 +233,23 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The assistant's reach is the workspace, for reads as for writes, whatever
+  the dial.  read_file, list_dir, grep and glob used to read any path
+  unasked, and the hosted Claude Code engine at the auto dial was started
+  with its permission checks off, so it was not asked about anything.  Now
+  a read outside the workspace asks (y this read, f this folder for the
+  session, n), under auto too, and a hosted Read, Grep, Glob, LS or Write
+  is judged by the path it names with the same rule, and the engine starts
+  in the workspace folder; a file tool that names no path is refused.
+  Reads stay unasked inside the workspace at every dial, below the
+  project's System-Include-Path, below the folders listed in xwperc as
+  AIReadRoots and below folders you opened; the pane header shows the
+  folders opened this session and Alt-G r takes one back.  A search says
+  how many links leading out of the folder it did not follow.  The write
+  box shows where a linked file really lands on a row of its own, and the
+  file is opened at that place.  Not covered: a command you let the
+  assistant run can still read anything you can.
+
 * The Ctrl-F chords the Debug menu and the bars show now work in a
   terminal.  Only Ctrl-F9 and Alt-F5 were read there, so Ctrl-F2 (Quit),
   Ctrl-F7 (Make Watch), Ctrl-F8 (Toggle Breakpoint), Ctrl-F10

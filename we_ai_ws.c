@@ -141,7 +141,39 @@ static int ws_write_file(const char *path, const char *text)
 }
 
 /**
- * ws_say_failed - Tell the user one file this layer could not do what it promised.
+ * wpe_ai_write_judged_file - Put the model's text in a file at the place the scope judged.
+ * @path: the file, as the model named it; @text: its whole new content.
+ *
+ * What the user gains: an approved write goes where the box said it would.
+ * The file is opened by wpe_path_open_write, which follows the path as the
+ * scope did and does not follow one more link at the end, so a link put there
+ * after the question makes the write fail instead of landing elsewhere.  Every
+ * byte is written and the close is part of the answer, as for ws_write_file.
+ * Return: 0 when the file holds @text, -1 with errno set when it does not.
+ */
+int wpe_ai_write_judged_file(const char *path, const char *text)
+{
+ int fd = wpe_path_open_write(path), err;
+ size_t left = strlen(text);
+ const char *p = text;
+ if (fd < 0) return -1;
+ while (left) {
+  ssize_t n = write(fd, p, left);
+  if (n < 0) {
+   if (errno == EINTR) continue;
+   err = errno;
+   close(fd);
+   errno = err;
+   return -1;
+  }
+  p += n;
+  left -= (size_t)n;
+ }
+ return close(fd);
+}
+
+/**
+ * ws_say_failed -Tell the user one file this layer could not do what it promised.
  * @f: any window of the editor; @what: the job as a verb phrase ("restore",
  * "save the conversation to"); @path: the file it was about; @reason: why it
  * did not happen, in the words of whoever refused.
@@ -1022,45 +1054,285 @@ static const char *ws_absolute_unfolded(const char *path, char *buf, size_t sz)
  return buf;
 }
 
+/* ---- the read grants: directories beyond the workspace the assistant may read ---
+ * Three sources, one list for the judge: the include directories the project
+ * already declares (Project Options, "System-Include-Path"), the roots the user
+ * wrote into xwperc (AIReadRoots, never written by the editor on its own),
+ * and the folders the user answered "Yes for this folder" for in this session.
+ * Only the last kind is kept here; it ends with the session. */
+#define WS_GRANT_MAX WPE_AI_GRANTS_MAX
+static char *ws_session_grants[WS_GRANT_MAX];
+static int   ws_session_ngrants;
+
 /**
- * wpe_ai_path_landing - Where would a write to this path really go, and is that outside?
- * @f: any window of the editor; @path: the file, as the model named it;
- * @real/@sz: receive the place the file really lands when that is not the
- * place the text names (a link on the way), else an empty string; may be NULL.
+ * ws_grants_clear - Forget every folder granted in this session.
  *
- * The workspace is the project's directory when a project is open, else the
- * directory of the file the request came from: the same root the scope list
- * and the checkpoint use.  Links are followed on both sides (we_ai_path.c), so
- * a vendored directory or a link the model made with a command, pointing out
- * of the tree, no longer lets a write through without the box.  A Multi-file
- * proposal for "../outside.c" is flagged with this so the user sees, before
- * approving, that the model is writing beyond the tree.  It is not refused:
- * the model may be right.
- *
- * Return: 1 when the file lands outside, 0 when inside or when it cannot be
- * told (no root, or the root is "/", below which nothing is outside).  A path
- * that cannot be made absolute (too long, no working directory) is outside:
- * the write would still be attempted, so the safe answer is to ask.
+ * A new conversation starts with only the workspace, the project's include
+ * directories and the roots the user wrote down.
  */
-int wpe_ai_path_landing(FENSTER *f, const char *path, char *real, size_t sz)
+static void ws_grants_clear(void)
+{
+ int i;
+ for (i = 0; i < ws_session_ngrants; i++) {
+  free(ws_session_grants[i]);
+  ws_session_grants[i] = NULL;
+ }
+ ws_session_ngrants = 0;
+}
+
+/**
+ * wpe_ai_scope_can_grant - May this folder be opened for reading for the session?
+ * @dir: the folder a read box would offer, absolute.
+ *
+ * The root of the disk holds every file, so opening it would switch the scope
+ * off for reads rather than widen it; the classifier gives such a grant no
+ * weight from any source, and the read box does not offer it.  A folder that
+ * cannot be followed is not offered either.
+ * Return: 1 when the folder can be granted.
+ */
+int wpe_ai_scope_can_grant(const char *dir)
+{
+ char real[WPE_PATH_RESOLVED_MAX];
+ if (!dir || !dir[0]) return 0;
+ if (wpe_path_resolve(dir, real, sizeof real) != WPE_PATH_RESOLVED) return 0;
+ return strcmp(real, "/") != 0;
+}
+
+/**
+ * wpe_ai_scope_grant - Let the assistant read a folder for the rest of the session.
+ * @dir: the folder, absolute, as the user was shown it.
+ *
+ * The folder is followed first and the place it leads to is what is kept, so a
+ * grant given through a link covers that place and nothing the link was made
+ * for later.  Granting a folder twice keeps one.
+ * Return: 0 when granted, -1 when the folder cannot be followed or the list is full.
+ */
+int wpe_ai_scope_grant(const char *dir)
+{
+ char real[WPE_PATH_RESOLVED_MAX];
+ int i;
+ if (!wpe_ai_scope_can_grant(dir)) return -1;
+ if (wpe_path_resolve(dir, real, sizeof real) != WPE_PATH_RESOLVED) return -1;
+ for (i = 0; i < ws_session_ngrants; i++)
+  if (!strcmp(ws_session_grants[i], real)) return 0;
+ if (ws_session_ngrants >= WS_GRANT_MAX) return -1;
+ ws_session_grants[ws_session_ngrants] = ws_strdup(real);
+ if (!ws_session_grants[ws_session_ngrants]) return -1;
+ ws_session_ngrants++;
+ return 0;
+}
+
+int wpe_ai_scope_grant_count(void) { return ws_session_ngrants; }
+
+const char *wpe_ai_scope_grant_at(int i)
+{
+ if (i < 0 || i >= ws_session_ngrants) return NULL;
+ return ws_session_grants[i];
+}
+
+/**
+ * wpe_ai_scope_grant_withdraw - Take one granted folder back.
+ * @i: its position in the list the status shows.
+ *
+ * Reads there ask again from the next tool call on.
+ */
+void wpe_ai_scope_grant_withdraw(int i)
+{
+ if (i < 0 || i >= ws_session_ngrants) return;
+ free(ws_session_grants[i]);
+ memmove(ws_session_grants + i, ws_session_grants + i + 1,
+         (size_t)(ws_session_ngrants - i - 1) * sizeof *ws_session_grants);
+ ws_session_ngrants--;
+ ws_session_grants[ws_session_ngrants] = NULL;
+}
+
+/**
+ * ws_push_path_list - Add the directories of a colon-separated list to a grant list.
+ * @l/@n/@cap: the list being built; @text: the list as the user wrote it, or NULL.
+ *
+ * An entry that is not absolute is read from the working directory, as the
+ * editor reads the same include path when it looks for a header.
+ */
+static void ws_push_path_list(char ***l, int *n, int *cap, const char *text)
+{
+ char *copy, *p, *next;
+ char abs[WPE_PATH_RESOLVED_MAX];
+ if (!text || !*text) return;
+ copy = ws_strdup(text);
+ if (!copy) return;
+ for (p = copy; p; p = next) {
+  next = strchr(p, ':');
+  if (next) *next++ = '\0';
+  if (!*p) continue;
+  if (ws_absolute_unfolded(p, abs, sizeof abs))
+   ws_list_push(l, n, cap, ws_strdup(abs));
+ }
+ free(copy);
+}
+
+/**
+ * ws_collect_read_grants - Every folder outside the workspace the assistant may read.
+ * @l/@n: receive a malloc'd list of malloc'd absolute paths (free with wpe_ai_free_list).
+ */
+static void ws_collect_read_grants(char ***l, int *n)
+{
+ int cap = 0, i;
+ *l = NULL; *n = 0;
+ ws_push_path_list(l, n, &cap, e_prog.sys_include);
+ ws_push_path_list(l, n, &cap, e_ai_read_roots);
+ for (i = 0; i < ws_session_ngrants; i++)
+  ws_list_push(l, n, &cap, ws_strdup(ws_session_grants[i]));
+}
+
+/**
+ * wpe_ai_scope_read_dirs - The folders the hosted engine is told it may read.
+ * @out: receives a malloc'd array of malloc'd paths.
+ *
+ * The same folders the judge lets through, minus any that is not a directory
+ * on this machine (the engine refuses a name it cannot open), so the engine
+ * does not ask about what the user has already allowed.
+ * Return: the number of folders.
+ */
+int wpe_ai_scope_read_dirs(char ***out)
+{
+ char **all, **keep = NULL;
+ int nall, nkeep = 0, cap = 0, i;
+ struct stat st;
+ ws_collect_read_grants(&all, &nall);
+ for (i = 0; i < nall; i++) {
+  if (!wpe_ai_scope_can_grant(all[i])) continue;      /* "/" would let the engine read everything unasked */
+  if (stat(all[i], &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+  if (ws_list_has(keep, nkeep, all[i])) continue;
+  ws_list_push(&keep, &nkeep, &cap, ws_strdup(all[i]));
+ }
+ wpe_ai_free_list(all, nall);
+ *out = keep;
+ return nkeep;
+}
+
+/**
+ * wpe_ai_scope_folder_of - The folder a "Yes for this folder" answer would grant.
+ * @path: what the model read, as it named it; @dir/@sz: receive the folder,
+ * empty when the path cannot be followed.
+ *
+ * The place the path really leads to is the one that counts.  A directory
+ * that is read (a listing, a search) is granted whole; a file is granted
+ * through the folder that holds it, so the next file beside it is not asked
+ * about again.
+ */
+void wpe_ai_scope_folder_of(const char *path, char *dir, size_t sz)
+{
+ char abs[WPE_PATH_RESOLVED_MAX];
+ struct stat st;
+ char *slash;
+ if (sz) dir[0] = '\0';
+ if (!path || !ws_absolute_unfolded(path, abs, sizeof abs)) return;
+ if (wpe_path_resolve(abs, dir, sz) != WPE_PATH_RESOLVED) { dir[0] = '\0'; return; }
+ if (stat(dir, &st) == 0 && S_ISDIR(st.st_mode)) return;
+ slash = strrchr(dir, '/');
+ if (!slash) return;
+ if (slash == dir) dir[1] = '\0';
+ else *slash = '\0';
+}
+
+/**
+ * wpe_ai_scope_count_skipped_links - How many links below a folder lead out of it?
+ * @path: the folder a search starts in, as the model named it, relative to
+ * the working directory or absolute; @depth: WPE_SCAN_ONE_LEVEL or
+ * WPE_SCAN_ALL_LEVELS; @truncated: set to 1 when the look stopped at its entry
+ * bound; may be NULL.
+ *
+ * A search never follows such a link; the count is what the result tells the
+ * model so a short answer is not taken for the whole tree.
+ * Return: the number of links, 0 when @path is not a folder.
+ */
+int wpe_ai_scope_count_skipped_links(const char *path, int depth, int *truncated)
+{
+ char abs[WPE_PATH_RESOLVED_MAX];
+ if (truncated) *truncated = 0;
+ if (!path || !ws_absolute_unfolded(path, abs, sizeof abs)) return 0;
+ return wpe_path_count_outward_links(abs, depth, truncated);
+}
+
+/**
+ * wpe_ai_workspace_dir - The workspace's folder, absolute.
+ * @f: any window of the editor.
+ *
+ * The same root the judge compares against.  The hosted engine is started
+ * there, so its own idea of the project's folder (what it reads without
+ * asking, what a path it names relative means) is the editor's, and not the
+ * folder the editor happened to be started in.
+ * Return: the malloc'd folder, or NULL when it cannot be formed.
+ */
+char *wpe_ai_workspace_dir(FENSTER *f)
+{
+ char abs[WPE_PATH_RESOLVED_MAX];
+ char *root = ws_root(f), *out = NULL;
+ if (root && ws_absolute_unfolded(root, abs, sizeof abs)) out = ws_strdup(abs);
+ free(root);
+ return out;
+}
+
+/**
+ * wpe_ai_scope_judge - Where does a path land for a read or a write: inside, granted or outside?
+ * @f: any window of the editor; @path: the file, as the model named it;
+ * @access: WPE_SCOPE_READ or WPE_SCOPE_WRITE; @real/@sz: receive the place the
+ * file really lands when that is not the place the text names (a link on the
+ * way), else an empty string; may be NULL.
+ *
+ * The one owner of the assistant's reach, for the editor's own tools and for
+ * the hosted engine's alike.  The workspace is the project's directory when a
+ * project is open, else the directory of the file the request came from: the
+ * same root the scope list and the checkpoint use.  Links are followed on
+ * both sides (we_ai_path.c), so a vendored directory or a link the model made
+ * with a command, pointing out of the tree, no longer passes unseen.  A read
+ * is also let through below the project's include directories, the roots the
+ * user wrote into xwperc and the folders granted in this session; a write is
+ * never widened by any of them.
+ *
+ * Return: WPE_SCOPE_INSIDE, WPE_SCOPE_GRANTED or WPE_SCOPE_OUTSIDE.  A path
+ * that cannot be made absolute (too long, no working directory) is outside:
+ * the tool would still be attempted, so the safe answer is to ask.  With no
+ * root, or the root "/", nothing is outside.
+ */
+int wpe_ai_scope_judge(FENSTER *f, const char *path, int access, char *real, size_t sz)
 {
  char rootabs[WPE_PATH_RESOLVED_MAX], pathabs[WPE_PATH_RESOLVED_MAX];
  char lexbuf[WPE_PATH_RESOLVED_MAX], resolved[WPE_PATH_RESOLVED_MAX];
- char *root = ws_root(f);
+ char *root = ws_root(f), **grants = NULL;
  const char *lexical, *rp, *pp;
- int outside;
+ int where, ngrants = 0;
  if (real && sz) real[0] = '\0';
- if (!root || !path) { free(root); return 0; }
+ if (!root || !path) { free(root); return WPE_SCOPE_INSIDE; }
  rp = ws_absolute_unfolded(root, rootabs, sizeof rootabs);
  pp = ws_absolute_unfolded(path, pathabs, sizeof pathabs);
  free(root);
- if (!rp) return 0;
- if (!pp) return 1;
- outside = wpe_path_lands_outside(rp, pp, resolved, sizeof resolved);
+ if (!rp) return WPE_SCOPE_INSIDE;
+ if (!pp) return WPE_SCOPE_OUTSIDE;
+ if (access == WPE_SCOPE_READ) ws_collect_read_grants(&grants, &ngrants);
+ where = wpe_scope_classify(rp, (const char *const *)grants, ngrants, pp, access,
+                            resolved, sizeof resolved);
+ wpe_ai_free_list(grants, ngrants);
  lexical = ws_absolute_path(path, lexbuf, sizeof lexbuf);
  if (real && sz && resolved[0] && lexical && strcmp(resolved, lexical) != 0)
   snprintf(real, sz, "%s", resolved);
- return outside;
+ return where;
+}
+
+/**
+ * wpe_ai_path_landing - Where would a write to this path really go, and is that outside?
+ * @f: any window of the editor; @path: the file, as the model named it;
+ * @real/@sz: as for wpe_ai_scope_judge.
+ *
+ * A Multi-file proposal for "../outside.c" is flagged with this so the user
+ * sees, before approving, that the model is writing beyond the tree.  It is
+ * not refused: the model may be right.
+ *
+ * Return: 1 when the file lands outside, 0 when inside or when it cannot be told.
+ */
+int wpe_ai_path_landing(FENSTER *f, const char *path, char *real, size_t sz)
+{
+ return wpe_ai_scope_judge(f, path, WPE_SCOPE_WRITE, real, sz) == WPE_SCOPE_OUTSIDE;
 }
 
 /**
@@ -1828,6 +2100,7 @@ void wpe_ai_session_reset(FENSTER *f)
 {
  char path[1300];
  sess_free();
+ ws_grants_clear();                      /* a granted folder lasts as long as the conversation */
  free(e_ai_resume_session); e_ai_resume_session = NULL;
  free(e_ai_last_session_id); e_ai_last_session_id = NULL;
  ws_session_path(f, path, sizeof path);

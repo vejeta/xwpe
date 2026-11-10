@@ -7,8 +7,9 @@ text block and then waits inside its turn so the test can press Esc.
 
 Two contracts are checked.  Under the dial position "edits" the CLI's requests
 follow the same classes as the editor's own tools: Bash and the web tools ask
-with the command box, the file-editing tools are auto-approved, anything else
-asks; a denial reaches the CLI and is shown in the pane.  Esc during a hosted
+with the command box, the file-editing tools are auto-approved, a read inside
+the workspace passes, anything else asks; a denial reaches the CLI and is shown
+in the pane.  Esc during a hosted
 turn sends the engine its interrupt request and the turn ends with the session
 alive; an engine that ignores the request is ended at AIToolTimeout.
 
@@ -126,9 +127,11 @@ def test_host_edits_write_is_auto_approved_without_a_box(tmp_path):
 
 
 # @scenario SC-ai-agent-51
-def test_host_edits_read_asks(tmp_path):
-    txt, disp, asked, resp = _perm_run(tmp_path, "Read", '{"file_path": "t.c"}', "y")
-    assert asked, "Read was auto-approved under edits (anything else asks):\n" + disp
+def test_host_edits_read_inside_the_workspace_is_not_asked(tmp_path):
+    # A read inside the workspace is free at every dial, for the hosted engine
+    # as for the editor's own read tools; one beyond it asks (SC-ai-agent-87).
+    txt, disp, asked, resp = _perm_run(tmp_path, "Read", '{"file_path": "t.c"}', None)
+    assert not asked, "a Read inside the workspace asked under edits:\n" + disp
     assert "host permission tool=Read allow=1" in txt, txt
     assert "ALLOWEDPATH" in disp, "allow was not sent to the agent:\n" + disp
 
@@ -284,7 +287,9 @@ def test_host_esc_ignored_ends_session_at_tool_timeout(tmp_path):
 
 
 # The fake streams a first text block and waits.  On the interrupt request it
-# does not end the turn: it asks for a tool, so the editor's permission box is
+# does not end the turn: it asks to run a command (a tool the edits dial still
+# asks about; a read inside the workspace would pass unasked), so the editor's
+# permission box is
 # up when the bound falls due, then records the answer and goes silent.
 MOCK_ASK_AFTER_INTERRUPT = textwrap.dedent('''\
     import sys, json
@@ -296,8 +301,8 @@ MOCK_ASK_AFTER_INTERRUPT = textwrap.dedent('''\
         {"type": "text", "text": "FIRSTBLOCK streamed before the wait"}]}})
     sys.stdin.readline()                         # the interrupt request
     emit({"type": "control_request", "request_id": "r9", "request": {
-        "subtype": "can_use_tool", "tool_name": "Read",
-        "input": {"file_path": "t.c"}}})
+        "subtype": "can_use_tool", "tool_name": "Bash",
+        "input": {"command": "true"}}})
     resp = sys.stdin.readline()                  # the editor's answer
     with open(%(record)r, "a") as fh:
         fh.write(resp)
@@ -343,11 +348,11 @@ def test_host_deadline_under_permission_modal_waits_for_the_answer(tmp_path):
             "the turn did not end once the box was answered:\n" + "\n".join(s.display())
         s._drain(1.0)
     txt = trace.read_text()
-    assert "host permission tool=Read allow=1" in txt, \
+    assert "host permission tool=Bash allow=1" in txt, \
         "the box did not take its key:\n" + txt
     assert txt.count("host interrupt deadline") == 1, \
         "the bound did not end the turn exactly once:\n" + txt
-    assert txt.index("host permission tool=Read allow=1") < \
+    assert txt.index("host permission tool=Bash allow=1") < \
         txt.index("host interrupt deadline"), "the turn ended before the answer:\n" + txt
     assert txt.count("host end notice") == 1,"the session ended more than once:\n" + txt
     assert record.exists() and '"behavior":"allow"' in record.read_text().replace(" ", ""), \

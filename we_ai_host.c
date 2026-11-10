@@ -27,8 +27,17 @@
 
 #define HOST_MAX_EDITS 32
 #define HOST_PATH_MAX  1024
-/* Room for the hosted CLI's argument vector: the longest dial builds 22 words. */
-#define HOST_ARGV_MAX  24
+/* Room for the hosted CLI's argument vector: the longest dial builds 22 words,
+   and each folder the user already allowed adds one. */
+#define HOST_ARGV_MAX  48
+
+/* The CLI's permission modes, by dial.  The auto dial runs the CLI in the
+   same mode as edits: its prompts are routed to the editor, and the editor
+   answers the ones inside the workspace at once.  It does not ask the CLI to
+   bypass its checks, because a bypass is the one setting the editor cannot
+   hold to the workspace. */
+#define HOST_MODE_ASK   "manual"
+#define HOST_MODE_EDITS "acceptEdits"
 /* How the hosted engine is named in the owner's and the writer's lines, and
    what ends it when it stops reading. */
 #define HOST_WHAT      "the agent"
@@ -135,12 +144,13 @@ const char *wpe_host_command(void)
  * host_argv - The command line of the hosted engine.
  * @argv: receives the words, NULL-terminated; room for HOST_ARGV_MAX;
  * @hostcmd: a configured command (run through the shell), or NULL for the
- * built-in `claude` argv; @model, @resume, @policy: as for wpe_host_start.
+ * built-in `claude` argv; @model, @resume, @policy, @add_dirs: as for
+ * wpe_host_start.
  *
  * Built before the start, so the child only executes it.
  */
 static void host_argv(char **argv, const char *hostcmd, const char *model,
-                      const char *resume, int policy)
+                      const char *resume, int policy, const char *const *add_dirs)
 {
   int a = 0;
   if (hostcmd && hostcmd[0]) {          /* mock/other host: run via the shell */
@@ -155,27 +165,29 @@ static void host_argv(char **argv, const char *hostcmd, const char *model,
   if (model && *model && strcmp(model, "default")) { argv[a++] = "--model"; argv[a++] = (char *)model; }
   if (resume && *resume) { argv[a++] = "--resume"; argv[a++] = (char *)resume; }
   /* Permission dial -> the CLI's permission mode, with per-tool prompts routed
-     back to the editor (--permission-prompts host --permission-prompt-tool stdio:
-     the CLI emits a control_request and blocks until we answer on stdin).
-       Auto  : run unattended, no prompts.
-       Edits : auto-accept file edits, ask before commands/other gated tools.
-       Ask   : ask before every gated tool. */
-  if (policy == WPE_AI_POLICY_AUTO) {
-   argv[a++] = "--dangerously-skip-permissions";
-  } else {
-   argv[a++] = "--permission-mode";
-   argv[a++] = (policy == WPE_AI_POLICY_EDITS) ? "acceptEdits" : "default";
-   argv[a++] = "--permission-prompts"; argv[a++] = "host";
-   argv[a++] = "--permission-prompt-tool"; argv[a++] = "stdio";
+     back to the editor at EVERY dial (--permission-prompts host
+     --permission-prompt-tool stdio: the CLI emits a control_request and blocks
+     until we answer on stdin).  The editor judges each request by the one
+     workspace scope (a path beyond it asks, whatever the dial), so no dial
+     asks the CLI to skip its own checks.
+       Auto  : the CLI's edit mode; the editor allows work inside the scope at once.
+       Edits : the same mode; the editor asks before commands and other gated tools.
+       Ask   : the CLI asks about every gated tool; the editor asks the user. */
+  argv[a++] = "--permission-mode";
+  argv[a++] = (policy == WPE_AI_POLICY_ASK) ? HOST_MODE_ASK : HOST_MODE_EDITS;
+  argv[a++] = "--permission-prompts"; argv[a++] = "host";
+  argv[a++] = "--permission-prompt-tool"; argv[a++] = "stdio";
+  /* The folders the user already allowed the assistant to read, so the CLI
+     does not escalate a read the editor would let through.  Variadic: it takes
+     words up to the next flag, so it comes before the one that ends the line. */
+  if (add_dirs && add_dirs[0]) {
+   int d;
+   argv[a++] = "--add-dir";
+   for (d = 0; add_dirs[d] && d < WPE_HOST_ADD_DIR_MAX; d++) argv[a++] = (char *)add_dirs[d];
   }
-  /* The web switch, on the command line rather than through the editor's
-     permission callback.  The callback only runs where the dial routes prompts
-     back to us, and the auto dial does not: it asks the CLI to run unattended,
-     so a task would otherwise reach the network with the switch unanswered and
-     nothing on the pane.  Naming the two tools here is the lever that is left
-     at every dial.  The auto dial also tells the CLI to bypass its own checks,
-     which the editor cannot undo, so this is what it can state, not a promise
-     it can keep; the manual says so beside the switch. */
+  /* The web switch, on the command line as well as through the editor's
+     permission callback: naming the two tools here keeps the CLI from reaching
+     the network with the switch unanswered even where it would not ask. */
   if (wpe_ai_web_state() != WPE_AI_WEB_ON) {
    argv[a++] = "--disallowedTools";
    argv[a++] = "WebSearch"; argv[a++] = "WebFetch";
@@ -194,16 +206,18 @@ static void host_on_ended(WpeChild *c, int status, int how, void *data)
  * host_spawn - Start the engine in a session of its own.
  * @h: the session; @argv: its command line.
  *
+ * @cwd: the folder it starts in, or NULL for the editor's own.
  * Its own session, so it cannot paint on the editor's screen; its stderr to
  * /dev/null (its answers are the stream on stdout); it dies with the editor.
  * Return: 0, or -1 with errno when it could not be started.
  */
-static int host_spawn(wpe_host *h, char **argv)
+static int host_spawn(wpe_host *h, char **argv, const char *cwd)
 {
  WpeChildSpec spec;
 
  memset(&spec, 0, sizeof spec);
  spec.argv = argv;
+ spec.cwd = cwd;
  spec.io = WPE_CHILD_IO_PIPES;
  spec.group = WPE_CHILD_OWN_SESSION;
  spec.stderr_to_null = 1;
@@ -215,6 +229,7 @@ static int host_spawn(wpe_host *h, char **argv)
 }
 
 wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
+                         const char *cwd, const char *const *add_dirs,
                          char *err, size_t errsz)
 {
  char *argv[HOST_ARGV_MAX];
@@ -235,8 +250,8 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
   if (err) snprintf(err, errsz, "out of memory");
   return NULL;
  }
- host_argv(argv, hostcmd, model, resume, policy);
- if (host_spawn(h, argv) != 0) {
+ host_argv(argv, hostcmd, model, resume, policy, add_dirs);
+ if (host_spawn(h, argv, cwd) != 0) {
   if (err) snprintf(err, errsz, "start: %s", strerror(errno));
   free(h);
   return NULL;
@@ -511,7 +526,8 @@ static void host_handle_line(wpe_host *h, const char *line,
    json_object_object_get_ex(req, "input", &inp);
   }
   if (!strcmp(subt, "can_use_tool")) {
-   int allow = ev->on_permission ? ev->on_permission(tool, host_tool_arg(tool, inp), ud) : 0;
+   int allow = ev->on_permission
+     ? ev->on_permission(tool, host_tool_arg(tool, inp), host_tool_path(inp), ud) : 0;
    host_answer_permission(h, reqid, allow, inp);
   }
  }

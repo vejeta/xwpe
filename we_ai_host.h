@@ -18,6 +18,10 @@
 
 #include <stddef.h>
 
+/* The most folders wpe_host_start passes to the CLI as --add-dir; the rest are
+   still judged by the editor when the CLI asks. */
+#define WPE_HOST_ADD_DIR_MAX 16
+
 /* Opaque handle to one hosted agent session. */
 typedef struct wpe_host wpe_host;
 
@@ -29,14 +33,21 @@ typedef struct {
  void (*on_file_edit)(const char *path, void *ud);       /* a tool wrote this path */
  void (*on_notice)(const char *text, void *ud);          /* system/init/error line */
  void (*on_result)(const char *summary, int is_error, void *ud); /* end of a turn */
- /* The agent asks to use a tool; return 1 to allow, 0 to deny.  NULL denies. */
- int  (*on_permission)(const char *tool, const char *arg, void *ud);
+ /* The agent asks to use a tool; return 1 to allow, 0 to deny.  NULL denies.
+    `path` is the file or folder the tool is about (its file_path, path or
+    notebook_path), NULL when the tool names none. */
+ int  (*on_permission)(const char *tool, const char *arg, const char *path, void *ud);
 } wpe_host_events;
 
 /* Spawn the agent CLI.  `model` and `resume` may be NULL or "".  `policy` is a
-   WPE_AI_POLICY_* value (maps to the CLI's permission flags).  Returns a handle,
-   or NULL with `err` filled. */
+   WPE_AI_POLICY_* value (maps to the CLI's permission flags).  `cwd` is the
+   folder the CLI starts in (the workspace), or NULL for the editor's own.
+   `add_dirs` is NULL or a NULL-terminated list of folders the user already
+   allowed the assistant to read; the built-in `claude` is told so (--add-dir)
+   and does not ask about them again.  Returns a handle, or NULL with `err`
+   filled. */
 wpe_host   *wpe_host_start(const char *model, const char *resume, int policy,
+                           const char *cwd, const char *const *add_dirs,
                            char *err, size_t errsz);
 
 /* The CLI the next spawn will host: XWPE_AI_HOST_CMD, else the persisted

@@ -952,7 +952,7 @@
    "id": "SC-ai-agent-51",
    "requirement": "The hosted engine",
    "layer": "ncurses",
-   "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_edits_read_asks",
+   "test": "tests/test_ai_host_dial_and_interrupt.py::test_host_edits_read_inside_the_workspace_is_not_asked",
    "status": "new"
   },
   {
@@ -1209,6 +1209,97 @@
    "requirement": "Writes",
    "layer": "ncurses",
    "test": "tests/test_ai_workspace_links.py::test_a_long_relative_path_that_climbs_out_still_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-79",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_read_file_outside_the_workspace_asks_at_every_dial",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-80",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_yes_for_this_folder_opens_it_and_the_menu_withdraws_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-81",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_no_gives_the_model_an_error_naming_the_folder",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-82",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_a_search_skips_a_link_leading_out_and_says_so",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-83",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_reads_inside_the_workspace_are_not_asked_at_any_dial",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-84",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_include_directories_and_configured_roots_are_read_unasked",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-85",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_the_chat_reads_outside_the_workspace_only_after_asking",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-86",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_the_write_box_names_the_real_place_on_its_own_row",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-87",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_a_hosted_read_outside_the_workspace_asks_at_every_dial",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-88",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_a_hosted_write_outside_the_workspace_shows_the_marked_box",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-89",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_a_hosted_file_tool_with_no_path_is_refused_never_passed_by_class",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-90",
+   "requirement": "One scope for every tool",
+   "layer": "ncurses",
+   "test": "tests/test_ai_read_scope.py::test_the_hosted_engine_routes_its_prompts_to_the_editor_at_every_dial",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-91",
+   "requirement": "One scope for every tool",
+   "layer": "c-unit",
+   "test": "test_ai_scope",
    "status": "new"
   }
  ]

@@ -298,9 +298,10 @@ the list only, since it cannot be asked anything once it is running
 pre-approved while the web is on and denied while it is off.  The hosted
 @code{claude-code} engine gets both, the list while the web is off and the
 question at the @code{ask} and @code{edits} dials, so with the web on a fetch
-still raises a box.  The @code{auto} dial sends no question, so there the list
-is all that holds and the editor cannot promise the CLI honours it: move off
-that dial if you need the web demonstrably shut.
+still raises a box.  At the @code{auto} dial the editor answers the question
+itself and lets a web tool through while the switch is on; with the switch off
+it refuses.  The CLI is no longer started with its permission bypass, so the
+list and the question both hold there.
 
 One case the switch cannot reach.  A hosted engine named in Options
 (@code{AIHostCommand}, see @emph{The hosted engine}) is run through the shell
@@ -570,7 +571,8 @@ or revert step as after an agent run: the edits live in the open buffers, and
 @cindex AI, permissions
 @kbd{Alt-G g} runs the model as an autonomous agent with a small, bounded set of
 tools: @code{read_file}, @code{list_dir}, @code{grep} and @code{glob} (find files
-by name) run on their own, while @code{web_search}, @code{web_fetch},
+by name) run on their own inside the workspace and ask outside it (see
+@ref{AI workspace scope}), while @code{web_search}, @code{web_fetch},
 @code{write_file}, @code{apply_patch} and @code{run_command} are governed by the
 @dfn{permission dial}.  @code{web_fetch} reads a web page over the built-in TLS
 client and @code{web_search} looks one up (its query engine is set by
@@ -586,8 +588,13 @@ every write or command asks you @kbd{y}/@kbd{n}.
 @item @code{edits}
 writes go through automatically; commands still ask.
 @item @code{auto}
-everything runs unattended; you review the result afterwards.
+everything inside the workspace runs unattended; you review the result
+afterwards.  Reads and writes beyond the workspace still ask.
 @end table
+
+The dial decides how much you are asked about work @emph{inside} the
+workspace.  It never widens the workspace: a read or a write beyond it asks at
+every position, @code{auto} included.
 
 Set the dial from the @samp{AI} menu, with @kbd{Alt-G y}, or with @code{AIPolicy}
 / @env{XWPE_AI_POLICY}.  @code{edits} and @code{auto} always take a checkpoint
@@ -611,19 +618,72 @@ below, is where the dial maps onto it).  Under @code{auto} the
 pane adds a tip pointing to that engine.
 
 @cindex AI, tool argument
-@cindex AI, outside the workspace
 Whatever the dial, the argument of @code{list_dir}, @code{grep} and @code{glob}
 reaches the shell as a single word: a pattern with spaces is one pattern, and no
 character in it (a @samp{;}, a @samp{$(...)}) is a command, so a line planted in
-a fetched page cannot run anything through a read-only tool.  A write to a file
-outside the working tree (an absolute path beyond it, one that climbs out
-with @file{..}, or one that goes through a symbolic link leading out of it)
-always asks, under @code{edits} and @code{auto} too: the write box carries the
-@samp{!} mark and the words @samp{outside the workspace}, as the Multi-file
-dialog does, and the pane names the file again once it is written.  When a
-link is on the way, the box and the pane add @samp{(lands at @var{place})}
-with where the file really goes; a link that stays inside the project asks
-nothing extra.
+a fetched page cannot run anything through a read-only tool.
+
+@anchor{AI workspace scope}
+@cindex AI, outside the workspace
+@cindex AI, read scope
+@cindex AIReadRoots
+
+@strong{The workspace scope.}  The assistant's reach is the workspace: the
+folder of the open project, or of the file it was asked from.  One rule, the same for the editor's own tools and
+for the hosted engine, decides where a path lands.  A symbolic link is followed
+first, so a link inside the project that leads out of it counts as outside, a
+link loop counts as outside, and what is judged is the place the bytes really
+go.
+
+@table @asis
+@item Writes
+A write to a file outside the workspace (an absolute path beyond it, one that
+climbs out with @file{..}, or one that goes through a symbolic link leading
+out of it) always asks, at every dial: the write box carries the @samp{!} mark
+and the words @samp{outside the workspace}, as the Multi-file dialog does, and
+the pane names the file again once it is written.  When a link is on the way,
+the place the file really goes has a row of its own in the box
+(@samp{lands at @var{place}}) and is added to the pane line; a link that stays
+inside the project asks nothing extra.  The file is opened at that place, so a
+link made after the question was asked makes the write fail instead of landing
+somewhere you were not shown.
+
+@item Reads
+@code{read_file}, @code{list_dir}, @code{grep} and @code{glob} run unasked
+inside the workspace, below the directories of the project's
+@samp{System-Include-Path} (Project Options), below the roots you wrote into
+@file{xwperc} as @code{AIReadRoots} (colon separated, in the
+@samp{[Programming]} section; the editor keeps the line when it rewrites the
+file and never adds a root itself), and below folders you opened in this
+session.  Anywhere else the read asks, at every dial, @code{auto} included,
+because a read followed by a @code{web_fetch} is a way to send a file out.  The
+box reads @samp{! Read outside the workspace: @var{path}}, adds the real place
+when a link is on the way, and offers @kbd{y} (this read only), @kbd{f} (this
+folder) and @kbd{n} or @key{Esc}.  @kbd{f} opens the folder, and everything
+below it, for reads until the session ends.  @kbd{n} gives the model an error
+that names the folder it could ask you to open.
+@end table
+
+A grant is shown, not hidden: the pane header says @samp{reads: 1 folder}
+while one is open, and @kbd{Alt-G} then has a @samp{Read folders} row (also
+@kbd{Alt-G r}) that lists them; @key{Enter} on one takes it back.  Grants end
+with the conversation (@samp{Clear conversation}) and when you leave the
+editor, and a grant never allows a write.  The root folder @file{/} is never a
+grant, whether from the box, the include path or @code{AIReadRoots}: it holds
+every file, so it would switch the scope off; a read box about a path directly
+in it offers only @kbd{y} and @kbd{n}.  @code{grep} and @code{glob} take only
+a pattern and search from the editor's working directory, so that directory is
+the place judged: started in a folder above the file you are editing, they ask.
+A search does not follow a link that leads out of the folder it started in; its
+result ends with @samp{(1 link leading outside the folder searched was not
+followed)} so a short answer is not taken for the whole tree.
+
+@strong{What this does not cover.}  A command you let the assistant run
+(@code{run_command}, or the hosted engine's shell, unasked under @code{auto})
+can read anything you can.  The scope judges the paths the tools name; it does
+not read inside a command line, and guessing at one would be wrong in both
+directions.  Keep @code{run_command} on @code{ask} or @code{edits} when that
+matters.  A sandbox for the commands themselves is a separate piece of work.
 
 @cindex AI, command output
 Whatever the dial allows, a command the assistant runs cannot reach your screen.
@@ -767,7 +827,25 @@ tool call (the CLI blocks until you answer); @code{edits} auto-accepts the
 file-editing tools (@code{Write}, @code{Edit}, @code{MultiEdit},
 @code{NotebookEdit}) with the line @samp{[agent] auto-approved (edits): ...} and
 asks with the command box for @code{Bash}, @code{WebFetch}, @code{WebSearch} and
-any tool it does not know; @code{auto} runs unattended.  A refusal answers the
+any tool it does not know; @code{auto} allows what stays inside the workspace
+without asking.  At every dial the CLI is started in its edit mode
+(@option{--permission-mode acceptEdits}, or @code{manual} under @code{ask}) with
+its permission prompts routed to the editor, and never with the option that
+turns its checks off: the editor judges every request, so the dial can never
+widen what the engine may touch.  The CLI's file tools (@code{Read},
+@code{Grep}, @code{Glob}, @code{LS}, @code{Write}, @code{Edit},
+@code{MultiEdit}, @code{NotebookEdit}) are judged by the path they name, with
+the same scope as the editor's own tools (@pxref{AI workspace scope}): beyond the
+workspace a read asks with the read box and a write with the marked write box,
+whatever the dial; inside it a read is never asked, at any dial, as for the
+editor's own read tools.  A file tool that names no path is refused, and a tool
+the editor does not know that names a file is judged like a write.  The CLI is
+started in the workspace folder, so a relative path means the same place to it
+and to the editor, and its own idea of the project's folder is the workspace,
+not the folder the editor was started in.  The folders
+you already opened are passed to the CLI as @option{--add-dir}.  A command the
+engine runs (@code{Bash}) is not judged by path: it can read anything you can,
+and under @code{auto} it runs unasked.  A refusal answers the
 CLI ``Denied by the user'' and the pane shows @samp{[agent] denied: <tool>
 <arg>}, as for a built-in tool.  Either way xwpe takes a checkpoint at the start
 of the session and says so with the same @samp{[agent] checkpoint taken} line as
@@ -963,6 +1041,12 @@ their own key.
 The active profile's name (empty for an ad-hoc endpoint typed into the field).
 @item AIPolicy
 @code{ask}, @code{edits} or @code{auto}.
+@item AIReadRoots
+Folders the assistant may read beyond the workspace, colon separated, for
+example @code{AIReadRoots : /usr/share/doc:/home/me/notes}.  Written by hand
+in the @samp{[Programming]} section; the editor keeps the line when it rewrites
+the file and never adds to it (a folder opened from a read box lasts for the
+session only).  Reads there are not asked about; writes are never widened.
 @item AIModelFallback
 A model retried once, automatically, when the primary fails a turn (unavailable,
 or too slow / timed out); xwpe says @samp{primary model failed @dots{} retrying
