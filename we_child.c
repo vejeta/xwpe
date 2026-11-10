@@ -142,6 +142,29 @@ int wpe_child_fd_private(int fd)
 }
 
 /**
+ * wpe_child_sigchld_install - Take SIGCHLD with @handler, which reaps.
+ * @handler: the signal handler.
+ *
+ * The flags are the point: SA_RESTART, so a read the editor makes on a pipe
+ * or a file is not cut short by a child's end where the system would
+ * otherwise fail it with EINTR (every system, for a read that waits), and
+ * SA_NOCLDSTOP, so only an end is reported.  The handler only reaps and
+ * writes the wake pipe; poll() is never restarted, on any system, and the
+ * wake pipe tells it.
+ * Return: 0, or -1 when the system refused.
+ */
+int wpe_child_sigchld_install(void (*handler)(int))
+{
+ struct sigaction act;
+
+ memset(&act, 0, sizeof act);
+ act.sa_handler = handler;
+ sigemptyset(&act.sa_mask);
+ act.sa_flags = SA_NOCLDSTOP | SA_RESTART;
+ return(sigaction(SIGCHLD, &act, NULL));
+}
+
+/**
  * WpeChildWakeOpen - Make the pipe that wakes the editor when a watched
  * child ends.
  *
@@ -744,7 +767,8 @@ static int wpe_child_pipes_open(const WpeChildSpec *spec, int (*p)[2])
   p[i][0] = p[i][1] = WPE_CHILD_NO_FD;
  if (!wpe_child_io_has_pipes(spec->io))
   return(0);
- if (!spec->stdout_to_null && pipe(p[WPE_CHILD_P_OUT]) < 0)
+ if (!spec->stdout_to_null && !spec->stdout_path &&
+     pipe(p[WPE_CHILD_P_OUT]) < 0)
   return(-1);
  if (!spec->stdin_null && pipe(p[WPE_CHILD_P_IN]) < 0)
  {
@@ -785,6 +809,27 @@ static void wpe_child_dup_null(int fd, int flags)
   close(nul);
 }
 
+/** The mode of a file a child writes its output into: the user's alone. */
+#define WPE_CHILD_OUT_FILE_MODE 0600
+
+/**
+ * wpe_child_stdout_to_file - In the child: @path, created or emptied, on
+ * stdout.
+ *
+ * A file the child cannot open ends it as a program that cannot run, so
+ * the editor never reads an empty result as a good one.
+ */
+static void wpe_child_stdout_to_file(const char *path)
+{
+ int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, WPE_CHILD_OUT_FILE_MODE);
+
+ if (fd < 0)
+  _exit(WPE_CHILD_EXEC_FAILED);
+ dup2(fd, STDOUT_FILENO);
+ if (fd > STDERR_FILENO)
+  close(fd);
+}
+
 /**
  * wpe_child_io_pipes - In the child: the pipes on 0, 1 and 2 as @spec says.
  * @spec: the child; @p: the pipes.
@@ -797,6 +842,8 @@ static void wpe_child_io_pipes(const WpeChildSpec *spec, int (*p)[2])
   dup2(p[WPE_CHILD_P_IN][WPE_CHILD_PIPE_RD], WPE_CHILD_FD_IN);
  if (spec->stdout_to_null)
   wpe_child_dup_null(STDOUT_FILENO, O_WRONLY);
+ else if (spec->stdout_path)
+  wpe_child_stdout_to_file(spec->stdout_path);
  else
   dup2(p[WPE_CHILD_P_OUT][WPE_CHILD_PIPE_WR], STDOUT_FILENO);
  if (spec->stderr_to_stdout)
@@ -1618,4 +1665,325 @@ int wpe_child_ended(const WpeChild *c, int *status)
  if (c->pid <= 0)
   return(WPE_CHILD_ENDED_UNKNOWN);
  return(WpeChildEnded(c->pid, status));
+}
+
+/* ---- short commands, waited for on the loop ------------------------------ */
+
+#define WPE_CAPTURE_CHUNK        4096    /* what one read takes */
+#define WPE_CAPTURE_KILL_WAIT_MS (WPE_CHILD_END_KILL_MS + 500)
+#define WPE_CAPTURE_WHAT         "a command"
+#define WPE_CAPTURE_STATUS_LOST  (-1)    /* the end was reported without one */
+/* A command still running after this long is named on the status row with
+   its deadline, so the user knows what the editor waits for and how long. */
+#define WPE_CAPTURE_SLOW_MS      1000L
+#define WPE_CAPTURE_SLOW_FMT     "Waiting for %s (at most %ld s)"
+#define WPE_MS_PER_S             1000L
+
+/* The display, while a command is waited for: the descriptor the loop must
+   not wake for (the console's keyboard) and what answers the window's
+   repaint and resize events.  Unset until the display is open. */
+static int (*wpe_capture_quiet_fd_hook)(void);
+static void (*wpe_capture_serve_hook)(void);
+
+/**
+ * wpe_child_capture_display_set - Tell the owner how the display is served
+ * while it waits for a short command.
+ * @quiet_fd: the descriptor whose input stays queued for the editor (the
+ * console's keyboard), or NULL; @serve: answers the window's repaint and
+ * resize events, or NULL.
+ *
+ * Set once the display is open, so a window covered or resized while the
+ * editor waits for the print command or a manual page is drawn again at
+ * once, and a key typed meanwhile is read by the editor afterwards.
+ */
+void wpe_child_capture_display_set(int (*quiet_fd)(void), void (*serve)(void))
+{
+ wpe_capture_quiet_fd_hook = quiet_fd;
+ wpe_capture_serve_hook = serve;
+}
+
+/* The command being waited for.  Only the innermost one is asked about: a
+   wait is entered and left in order. */
+typedef struct {
+ WpeChild child;
+ int ended;                      /* the owner reported the end */
+ int status;                     /* its wait status, or _STATUS_LOST */
+ int eof;                        /* the output pipe was read to its end */
+ char *out;                      /* where its output goes, or NULL */
+ size_t max, len;
+ const char *what;               /* names it on the status row */
+} WpeCapture;
+
+static WpeCapture *wpe_capture_now;
+
+/**
+ * wpe_capture_read - Take what the command has written so far.
+ * @cap: the command.
+ *
+ * Output past the room given is read and dropped, so the command is never
+ * left blocked on a full pipe.
+ */
+static void wpe_capture_read(WpeCapture *cap)
+{
+ char dropped[WPE_CAPTURE_CHUNK];
+ char *dst;
+ size_t room;
+ ssize_t n;
+
+ for (;;)
+ {
+  dst = dropped;
+  room = sizeof dropped;
+  if (cap->out && cap->len + 1 < cap->max)
+  {
+   dst = cap->out + cap->len;
+   room = cap->max - 1 - cap->len;
+  }
+  n = read(cap->child.out_fd, dst, room);
+  if (n < 0 && errno == EINTR)
+   continue;
+  if (n <= 0)
+  {
+   cap->eof = (n == 0);
+   return;
+  }
+  if (dst != dropped)
+   cap->len += (size_t)n;
+ }
+}
+
+/** wpe_capture_on_readable - The loop: the command wrote, or closed its output. */
+static void wpe_capture_on_readable(int fd, void *data)
+{
+ WpeCapture *cap = data;
+
+ wpe_capture_read(cap);
+ if (cap->eof)
+  wpe_fd_del(fd);
+}
+
+/** wpe_capture_on_end - The owner: the command ended. */
+static void wpe_capture_on_end(WpeChild *c, int status, int how, void *data)
+{
+ WpeCapture *cap = data;
+
+ (void)c;
+ if (cap->child.out_fd >= 0 && !cap->eof)
+  wpe_capture_read(cap);   /* all it wrote before it ended is in the pipe */
+ cap->status = (how == WPE_CHILD_ENDED) ? status : WPE_CAPTURE_STATUS_LOST;
+ cap->ended = 1;
+}
+
+/** wpe_capture_has_ended - The wait's condition. */
+static int wpe_capture_has_ended(void)
+{
+ return(wpe_capture_now->ended);
+}
+
+/**
+ * wpe_capture_spec - The spec of a short command: no input, errors with the
+ * output (the version of a Java is written on its stderr), or its output
+ * into a file.
+ */
+static void wpe_capture_spec(WpeChildSpec *spec, char *const argv[],
+                             const char *path, const char *what)
+{
+ memset(spec, 0, sizeof *spec);
+ spec->argv = argv;
+ spec->io = WPE_CHILD_IO_PIPES;
+ spec->group = WPE_CHILD_OWN_SESSION;
+ spec->stdin_null = 1;
+ spec->stdout_path = path;
+ spec->stderr_to_stdout = (path == NULL);
+ spec->stderr_to_null = (path != NULL);
+ spec->side_pty_slave = WPE_CHILD_NO_FD;
+ spec->tty_fd = WPE_CHILD_NO_FD;
+ spec->what = what ? what : WPE_CAPTURE_WHAT;
+}
+
+/**
+ * wpe_capture_begin - Start the command and watch its output.
+ * @cap: the command's record; @spec: what to run.
+ * Return: 0, or -1 with nothing left running.
+ */
+static int wpe_capture_begin(WpeCapture *cap, const WpeChildSpec *spec)
+{
+ if (wpe_child_start(spec, &cap->child, wpe_capture_on_end, cap) < 0)
+  return(-1);
+ if (cap->child.out_fd < 0)
+  return(0);
+ if (wpe_fd_add(cap->child.out_fd, POLLIN, wpe_capture_on_readable, cap) < 0)
+ {
+  wpe_child_end(&cap->child, SIGKILL);
+  close(cap->child.out_fd);
+  wpe_child_forget(&cap->child);
+  return(-1);
+ }
+ return(0);
+}
+
+/**
+ * wpe_capture_serve_until - Wait on the loop, the display served, until the
+ * command ends or @ms have passed.
+ * @cap: the command; @ms: the longest this part of the wait takes.
+ * Return: 1 when the command has ended, else 0.
+ */
+static int wpe_capture_serve_until(WpeCapture *cap, long ms)
+{
+ int quiet_fd = -1;
+
+ if (wpe_capture_quiet_fd_hook)
+  quiet_fd = wpe_capture_quiet_fd_hook();
+ wpe_fd_wait_serving(wpe_capture_has_ended, cap->what, quiet_fd,
+                     wpe_capture_serve_hook, ms);
+ return(cap->ended);
+}
+
+/**
+ * wpe_capture_say_slow - Name the command the editor is waiting for, and
+ * the most it will wait, on the status row.
+ * @cap: the command; @deadline_ms: its deadline.
+ */
+static void wpe_capture_say_slow(const WpeCapture *cap, long deadline_ms)
+{
+ char line[WPE_CHILD_LINE_MAX];
+
+ if (!wpe_child_say_hook)
+  return;
+ snprintf(line, sizeof line, WPE_CAPTURE_SLOW_FMT, cap->what,
+          (deadline_ms + WPE_MS_PER_S - 1) / WPE_MS_PER_S);
+ wpe_child_say_hook(line);
+}
+
+/**
+ * wpe_capture_wait - Wait on the loop until the command ends or the deadline
+ * comes; at the deadline, end it.
+ * @cap: the command; @deadline_ms: as wpe_child_capture.
+ *
+ * A command that answers at once is waited for without a word; one that
+ * takes longer is named on the status row with its deadline, so the user
+ * reads why the editor does not take keys yet and for how long at most.
+ * Return: WPE_CAPTURE_ENDED or WPE_CAPTURE_TIMED_OUT.
+ */
+static int wpe_capture_wait(WpeCapture *cap, long deadline_ms)
+{
+ long first = deadline_ms;
+
+ wpe_capture_now = cap;
+ if (first > WPE_CAPTURE_SLOW_MS)
+  first = WPE_CAPTURE_SLOW_MS;
+ if (wpe_capture_serve_until(cap, first))
+  return(WPE_CAPTURE_ENDED);
+ if (deadline_ms > first)
+ {
+  wpe_capture_say_slow(cap, deadline_ms);
+  if (wpe_capture_serve_until(cap, deadline_ms - first))
+   return(WPE_CAPTURE_ENDED);
+ }
+ wpe_child_end(&cap->child, SIGKILL);
+ wpe_capture_serve_until(cap, WPE_CAPTURE_KILL_WAIT_MS);
+ return(WPE_CAPTURE_TIMED_OUT);
+}
+
+/**
+ * wpe_capture_finish - Release the command's descriptors and record.
+ * @cap: the command, ended or given up on.
+ *
+ * One given up on is forgotten, so the owner never calls back into a record
+ * that is gone.
+ */
+static void wpe_capture_finish(WpeCapture *cap)
+{
+ if (!cap->ended)
+  wpe_child_forget(&cap->child);
+ if (cap->child.out_fd >= 0)
+ {
+  if (!cap->eof)
+   wpe_fd_del(cap->child.out_fd);
+  close(cap->child.out_fd);
+ }
+ if (cap->out && cap->max)
+  cap->out[cap->len] = '\0';
+}
+
+/**
+ * wpe_capture_run - Run one short command and wait for it on the loop.
+ * @path: where its output goes as a file, or NULL to read it into @out.
+ * Return: WPE_CAPTURE_*; the rest as wpe_child_capture.
+ */
+static int wpe_capture_run(char *const argv[], const char *path, char *out,
+                           size_t max, long deadline_ms, int *status,
+                           const char *what)
+{
+ WpeCapture cap, *outer = wpe_capture_now;
+ WpeChildSpec spec;
+ int result;
+
+ memset(&cap, 0, sizeof cap);
+ cap.out = out;
+ cap.max = max;
+ cap.status = WPE_CAPTURE_STATUS_LOST;
+ if (out && max)
+  out[0] = '\0';
+ wpe_capture_spec(&spec, argv, path, what);
+ cap.what = spec.what;
+ if (wpe_capture_begin(&cap, &spec) < 0)
+  return(WPE_CAPTURE_NOT_STARTED);
+ result = wpe_capture_wait(&cap, deadline_ms);
+ wpe_capture_finish(&cap);
+ wpe_capture_now = outer;
+ if (status)
+  *status = cap.status;
+ return(result);
+}
+
+/**
+ * wpe_child_capture - Run a short command and read what it prints.
+ * @argv: the program and its arguments, NULL-ended; no shell is involved;
+ * @out: receives its output (errors too), always ended with a NUL;
+ * @max: its size; @deadline_ms: the longest the command may take;
+ * @status: receives its wait status (WPE_CAPTURE_STATUS_LOST when none);
+ * @what: names the command on the status row ("the print command"), or NULL.
+ *
+ * For what the editor must know before it goes on (the version of the user's
+ * Java, the system's font): a program that hangs costs the user the
+ * deadline, never the editor.  The editor answers its other work and the
+ * window's repaints while it waits, says what it waits for once the command
+ * takes longer than a moment, and kills a command still running at the
+ * deadline.  There is always a deadline: the keys typed meanwhile wait for
+ * the command, so a command without one could hold the editor for ever.
+ * Return: WPE_CAPTURE_ENDED, WPE_CAPTURE_TIMED_OUT or WPE_CAPTURE_NOT_STARTED.
+ */
+int wpe_child_capture(char *const argv[], char *out, size_t max,
+                      long deadline_ms, int *status, const char *what)
+{
+ return(wpe_capture_run(argv, NULL, out, max, deadline_ms, status, what));
+}
+
+/**
+ * wpe_child_run_to_file - Run a command that writes its output into a file,
+ * and wait for it on the loop.
+ * @argv: as wpe_child_capture; @path: the file, created or emptied;
+ * @deadline_ms, @status, @what: as there.
+ *
+ * Opening a compressed file or reading a manual page: the editor shows the
+ * file or page when the command is done, and the user sees a failure
+ * rather than a half-written file taken for the whole.
+ * Return: WPE_CAPTURE_*.
+ */
+int wpe_child_run_to_file(char *const argv[], const char *path,
+                          long deadline_ms, int *status, const char *what)
+{
+ return(wpe_capture_run(argv, path, NULL, 0, deadline_ms, status, what));
+}
+
+/**
+ * wpe_capture_succeeded - Did the command run and exit with status 0?
+ * @result: what wpe_child_capture or wpe_child_run_to_file returned;
+ * @status: the status it gave.
+ */
+int wpe_capture_succeeded(int result, int status)
+{
+ return(result == WPE_CAPTURE_ENDED && status != WPE_CAPTURE_STATUS_LOST &&
+        WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }

@@ -944,7 +944,8 @@ static int test_wait_serving_does_not_wake_for_a_muted_keyboard(void)
  wpe_fd_add(p[0], POLLIN, NULL, NULL);
  if (write(p[1], "k", 1) != 1) return 1;
  id = wpe_timer_add(SERVING_TIMER_MS, 0, serving_timer, NULL);
- r = wpe_fd_wait_serving(serving_pred, WAIT_LABEL, p[0], serving_serve);
+ r = wpe_fd_wait_serving(serving_pred, WAIT_LABEL, p[0], serving_serve,
+                         WPE_WAIT_FOREVER);
  (void)id;
  if (r != WPE_WAIT_DONE)
  { printf("FAIL: the muted wait ended with %d\n", r); return 1; }

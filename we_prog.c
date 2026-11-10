@@ -931,41 +931,170 @@ static char e_run_src_dirct[256], e_run_src_datnam[256];
 
 static int e_run_program(ECNT *cn);
 
+/* The no-terminal run's output, cut into lines: what the program has written
+   since its last newline waits here, and goes to Messages as one line when
+   the newline comes, when it is as long as a line can be, or at the end. */
+#define E_RUN_LINE_MAX 1024
+#define E_RUN_READ_MAX 512
+static struct {
+ BUFFER *b;
+ char line[E_RUN_LINE_MAX];
+ int len;
+} e_run_text;
+
+/** e_run_text_flush - Send the line gathered so far to Messages. */
+static void e_run_text_flush(void)
+{
+ e_run_text.line[e_run_text.len] = '\0';
+ print_to_end_of_buffer(e_run_text.b, e_run_text.line, 0);
+ e_run_text.len = 0;
+}
+
+/** e_run_text_feed - Take one byte of the program's output. */
+static void e_run_text_feed(char c)
+{
+ if (c == '\n')
+ {
+  e_run_text_flush();
+  return;
+ }
+ e_run_text.line[e_run_text.len++] = c;
+ if (e_run_text.len == E_RUN_LINE_MAX - 1)
+  e_run_text_flush();
+}
+
+/**
+ * e_run_text_drain - Take everything the program has written so far.
+ * @fd: its output, non-blocking.
+ * Return: 1 when the program closed its output, else 0.
+ */
+static int e_run_text_drain(int fd)
+{
+ char buf[E_RUN_READ_MAX];
+ ssize_t n, k;
+
+ for (;;)
+ {
+  n = read(fd, buf, sizeof buf);
+  if (n < 0 && errno == EINTR)
+   continue;
+  if (n <= 0)
+   return(n == 0);
+  for (k = 0; k < n; k++)
+   e_run_text_feed(buf[k]);
+ }
+}
+
+/** e_run_text_on_readable - The loop: the program wrote or closed its output. */
+static void e_run_text_on_readable(int fd, void *data)
+{
+ (void)data;
+ if (e_run_text_drain(fd))
+  wpe_fd_del(fd);
+}
+
+/**
+ * e_run_text_serve_key - Stop the program on Ctrl-C; the other keys are
+ * dropped, since a program with no terminal has no input to give them to.
+ */
+static void e_run_text_serve_key(void)
+{
+ int c = e_t_key_now();
+
+ if (c == CtrlC || e_run_interrupted)
+ {
+  e_run_interrupted = 0;
+  e_run_interrupt_program();
+ }
+}
+
+/**
+ * e_run_text_loop - Wait for the program with no terminal to end, its
+ * output going to Messages as the loop reads it.
+ *
+ * The same loop as the run on a terminal: each pass waits at most
+ * WPE_FD_POLL_MS, then takes the user's keys, so Ctrl-C stops the program
+ * here too, and the end is the owner's report.
+ */
+static void e_run_text_loop(void)
+{
+ while (!e_run_prog.ended)
+ {
+  wpe_fd_poll(WPE_FD_POLL_MS);
+  if (e_run_prog.ended)
+   break;
+  e_run_text_serve_key();
+ }
+}
+
+/**
+ * e_run_start_text - Start the user's program with its output on a pipe and
+ * no input.
+ * @cmd: the command line, run by the shell, its errors with its output.
+ * Return: the editor's end of the pipe, non-blocking, or -1 when the program
+ * could not be started.
+ */
+static int e_run_start_text(char *cmd)
+{
+ char *argv[] = { "/bin/sh", "-c", NULL, NULL };
+ WpeChildSpec spec;
+
+ argv[2] = cmd;
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.group = WPE_CHILD_OWN_SESSION;
+ spec.stdin_null = 1;
+ spec.stderr_to_stdout = 1;
+ spec.side_pty_slave = WPE_CHILD_NO_FD;
+ spec.tty_fd = WPE_CHILD_NO_FD;
+ spec.what = "the program";
+ e_run_prog.ended = 0;
+ e_run_prog.status = 0;
+ if (wpe_child_start(&spec, &e_run_prog.child, e_run_on_end, NULL) != 0)
+  return(-1);
+ return(e_run_prog.child.out_fd);
+}
+
 /**
  * e_run_without_pty - Run the program when no terminal could be made for it:
- * its output is read whole, with no input.
- * @cmd: the command line, with room to be extended; @cap: its size;
- * @b: Messages.
+ * its output goes to Messages line by line, with no input.
+ * @cmd: the command line; @b: Messages.
  *
- * The system's own wait reaps the program, so the editor's child reaper is
- * held back until it has: it would otherwise take the status first.
+ * The program is a child of the editor's owner and its output is read on the
+ * loop as it is written, so a program that runs for a while shows its lines
+ * as they come, the build and the servers are served meanwhile, and Ctrl-C
+ * stops it as on a terminal; no wait of the system's holds the editor or
+ * the reaper.
  * Return: the program's exit code, or -1 when it could not be started.
  */
-static int e_run_without_pty(char *cmd, size_t cap, BUFFER *b)
+static int e_run_without_pty(char *cmd, BUFFER *b)
 {
- FILE *pp;
- char line[1024];
- int len, ret = -1;
- sigset_t saved;
+ int out_fd;
+ struct sigaction old_int;
 
  print_to_end_of_buffer(b, "--- Run output ---", 0);
- e_strlcat(cmd, " </dev/null 2>&1", cap);
- WpeChildSignalBlock(&saved);
- pp = popen(cmd, "r");
- if (pp)
+ e_run_text.b = b;
+ e_run_text.len = 0;
+ out_fd = e_run_start_text(cmd);
+ if (out_fd < 0)
+  return(-1);
+ if (e_fd_watch(out_fd, POLLIN, e_run_text_on_readable, NULL,
+                "the program's output") != 0)
  {
-  while (fgets(line, sizeof(line), pp))
-  {
-   len = strlen(line);
-   if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
-   print_to_end_of_buffer(b, line, 0);
-  }
-  /* WEXITSTATUS must take an lvalue: macOS expands it to *(int*)&(x), so a
-     bare pclose(pp) rvalue does not compile.  Store the status first. */
-  { int status = pclose(pp);  ret = WEXITSTATUS(status);  }
+  wpe_child_end(&e_run_prog.child, SIGKILL);
+  wpe_child_forget(&e_run_prog.child);
+  wpe_fd_close(out_fd);
+  return(-1);
  }
- WpeChildSignalRestore(&saved);
- return ret;
+ e_run_catch_sigint(&old_int);
+ e_run_text_loop();
+ e_run_release_sigint(&old_int);
+ e_run_text_drain(out_fd);   /* all it wrote before it ended is in the pipe */
+ if (e_run_text.len > 0)
+  e_run_text_flush();
+ wpe_fd_close(out_fd);
+ return(e_run_status_code(e_run_prog.status));
 }
 
 /**
@@ -1079,7 +1208,7 @@ static int e_run_program(ECNT *cn)
  cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
  ret = e_run_with_pty(estr, b, mf);
  if (ret < 0)
-  ret = e_run_without_pty(estr, sizeof(estr), b);
+  ret = e_run_without_pty(estr, b);
  if (cwd_chg)
   e_build_popd(cwd_saved);
 #ifdef NCURSES
@@ -4627,7 +4756,7 @@ static int e_shell_keyboard_fd(void)
 static void e_shell_wait(void)
 {
  wpe_fd_wait_serving(e_shell_has_ended, E_SHELL_WHAT, e_shell_keyboard_fd(),
-                     e_shell_serve_display);
+                     e_shell_serve_display, WPE_WAIT_FOREVER);
 }
 
 /**

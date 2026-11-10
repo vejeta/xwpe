@@ -60,7 +60,7 @@ typedef int (*wpe_wait_pred)(void);
 int  wpe_fd_wait_for(wpe_wait_pred pred, long deadline_ms, const char *what);
 const char *wpe_fd_waiting_for(void);
 int  wpe_fd_wait_serving(wpe_wait_pred pred, const char *what, int quiet_fd,
-                         void (*serve)(void));
+                         void (*serve)(void), long deadline_ms);
 /* At the editor's end only: run the loop, the keyboard and displays no
    longer read, until @pred or the deadline. */
 int  wpe_fd_end_wait(wpe_wait_pred pred, long deadline_ms);

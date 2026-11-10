@@ -46,8 +46,10 @@ In X11 mode, output is captured to the Messages buffer through a
 terminal of the program's own; no xterm is spawned.  What you type goes
 to the program, @kbd{Ctrl-C} stops it and everything it started, and a
 program that has stopped reading its input never holds the editor: the
-status row says how much is waiting.  A shell script (@file{.sh}) is the
-exception: it runs in a terminal window of its own.
+status row says how much is waiting.  On a system that cannot give the
+program a terminal, its output still reaches Messages line by line and
+@kbd{Ctrl-C} still stops it, but it gets no input.  A shell script
+(@file{.sh}) is the exception: it runs in a terminal window of its own.
 @end table
 
 After compilation, errors appear in the Message Window.  Use

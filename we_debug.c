@@ -26440,34 +26440,54 @@ static void e_lsp_raise_source(FENSTER *src)
   }
 }
 
-/* Major feature version of the JDK at `java_bin` (e.g. 21, 26, or 8 for a "1.8.0"
-   string), or -1 if it cannot be determined.  Runs `java -version` and parses the
-   first version token. */
+/* The longest `java -version` waits for: a JVM that cannot start in this
+   long is not one the editor can use, and the user is not kept waiting. */
+#define E_JDK_PROBE_MS    5000L
+#define E_JDK_PROBE_MAX   1024     /* the banner `java -version` prints */
+#define E_JDK_VERSION_KEY "version \""
+#define E_JDK_PROBE_WHAT  "java -version"
+
+/**
+ * e_jdk_major_from_banner - The feature version a `java -version` banner
+ * names (21, 26, or 8 for "1.8.0"), or -1 when it names none.
+ * @banner: what `java -version` printed.
+ */
+static int e_jdk_major_from_banner(const char *banner)
+{
+ const char *v = strstr(banner, E_JDK_VERSION_KEY);
+
+ if (!v)
+  return(-1);
+ v += strlen(E_JDK_VERSION_KEY);
+ if (strncmp(v, "1.", 2) == 0)
+  return(atoi(v + 2));                      /* 1.8.0 -> 8                 */
+ return(atoi(v));                           /* 21.0.1 -> 21, 26.0.1 -> 26 */
+}
+
+/**
+ * e_jdk_major - Major feature version of the JDK at @java_bin, or -1 when it
+ * cannot be told.
+ * @java_bin: a path, or "java" for the one on PATH.
+ *
+ * Starting a debug session for a Java or Scala program needs to know whether
+ * the JDK is too new for the compiler.  `java -version` runs as a command of
+ * its own on the editor's loop, the path handed to it as an argument, and a
+ * JVM that hangs costs the user the probe's deadline, not the editor.
+ */
 static int e_jdk_major(const char *java_bin)
 {
- char cmd[1200], line[256];
- FILE *fp;
- int major = -1;
+ char banner[E_JDK_PROBE_MAX];
+ char *argv[3];
+ int status, ran;
 
- snprintf(cmd, sizeof(cmd), "'%s' -version 2>&1", java_bin);
- fp = popen(cmd, "r");
- if (!fp)
+ argv[0] = (char *)java_bin;
+ argv[1] = "-version";
+ argv[2] = NULL;
+ ran = wpe_child_capture(argv, banner, sizeof banner, E_JDK_PROBE_MS, &status,
+                         E_JDK_PROBE_WHAT);
+ if (ran != WPE_CAPTURE_ENDED)
   return(-1);
- while (fgets(line, sizeof(line), fp))
- {
-  char *v = strstr(line, "version \"");
-  if (v)
-  {
-   v += 9;                                   /* past: version "            */
-   if (strncmp(v, "1.", 2) == 0)
-    major = atoi(v + 2);                      /* 1.8.0 -> 8                 */
-   else
-    major = atoi(v);                          /* 21.0.1 -> 21, 26.0.1 -> 26 */
-   break;
-  }
- }
- pclose(fp);
- return(major);
+ return(e_jdk_major_from_banner(banner));
 }
 
 /* Find an LTS JDK the Scala 3 compiler is happy on (17..23, newest preferred) in

@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_ai.h"
+#include "we_child.h"
 
 #ifdef UNIX
 
@@ -3286,9 +3287,52 @@ int WpeShell(FENSTER * f)
 
 /*   print file */
 #ifndef NOPRINTER
+/* The longest the print command may take to hand the file over. */
+#define E_PRINT_MS      60000L
+#define E_PRINT_OUT_MAX 256      /* what it says, read and dropped */
+#define E_PRINT_WHAT    "the print command"
+/* The user's print command as shell text, run in the folder given as $1 on
+   the file given as $2: the editor's own words never enter the text. */
+#define E_PRINT_SCRIPT_FMT "cd \"$1\" && %s \"$2\""
+
+/**
+ * e_print_run - Run the user's print command on a file.
+ * @dir: where the file is; @cmd: the print command from the options, shell
+ * text as the user wrote it; @file: the file's name.
+ *
+ * The command is the user's own setting, so it stays shell text; the file's
+ * name goes to it as an argument, so a name with a space or a ';' prints
+ * that file and nothing else.  The editor goes on serving its loop while the
+ * command hands the file over.
+ * Return: 1 when the command ended with status 0, else 0.
+ */
+static int e_print_run(const char *dir, const char *cmd, const char *file)
+{
+ char out[E_PRINT_OUT_MAX];
+ char *script, *argv[7];
+ size_t size = strlen(E_PRINT_SCRIPT_FMT) + strlen(cmd) + 1;
+ int status, ran;
+
+ if (!(script = MALLOC(size)))
+  return(0);
+ snprintf(script, size, E_PRINT_SCRIPT_FMT, cmd);
+ argv[0] = "sh";
+ argv[1] = "-c";
+ argv[2] = script;
+ argv[3] = "sh";               /* $0 */
+ argv[4] = (char *)dir;        /* $1 */
+ argv[5] = (char *)file;       /* $2 */
+ argv[6] = NULL;
+ ran = wpe_child_capture(argv, out, sizeof out, E_PRINT_MS, &status,
+                         E_PRINT_WHAT);
+ FREE(script);
+ return(wpe_capture_succeeded(ran, status));
+}
+
 int WpePrintFile(FENSTER *f)
 {
  char           *str, *dp;
+ size_t          size;
  int             c, sins = f->ins;
 
  for (c = f->ed->mxedt; c > 0 && !DTMD_ISTEXT(f->ed->f[c]->dtmd); c--)
@@ -3301,10 +3345,11 @@ int WpePrintFile(FENSTER *f)
  {
   return(e_error(e_msg[ERR_NOPRINT], 0, f->fb));
  }
- if ((str = MALLOC(strlen(f->datnam) + 32 )) == NULL)
+ size = strlen(f->datnam) + 32;
+ if ((str = MALLOC(size)) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
- snprintf(str, sizeof(str), "File: %s\nDo you want to print it?", f->datnam);
+ snprintf(str, size, "File: %s\nDo you want to print it?", f->datnam);
  c = e_message(1, str, f);
  FREE(str);
  if (c != 'Y')
@@ -3319,15 +3364,13 @@ int WpePrintFile(FENSTER *f)
  f->dirct = dp;
  f->ins = sins;
 
- if ((str = MALLOC(strlen(e_tmp_dir) + 7 +
-                   strlen(f->ed->print_cmd) + strlen(f->datnam) )) == NULL)
-  e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
- snprintf(str, sizeof(str), "cd %s; %s %s", e_tmp_dir, f->ed->print_cmd, f->datnam);
- if (system(str))
+ if (!e_print_run(e_tmp_dir, f->ed->print_cmd, f->datnam))
   e_error(e_msg[ERR_NOTINSTALL], 0, f->fb);
 
- snprintf(str, sizeof(str), "%s/%s", e_tmp_dir, f->datnam);
+ size = strlen(e_tmp_dir) + strlen(f->datnam) + 2;
+ if ((str = MALLOC(size)) == NULL)
+  e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
+ snprintf(str, size, "%s/%s", e_tmp_dir, f->datnam);
  if (remove(str))
   e_error(e_msg[ERR_DELFILE], 0, f->ed->fb);
 
@@ -3607,10 +3650,104 @@ int WpeFindWindow(FENSTER * f)
 
 
 
+/* The longest the manual page program may take to write a page. */
+#define E_MAN_MS        30000L
+#define E_MAN_WORD_MAX  80       /* the page's name, with its end */
+#define E_MAN_SECT_MAX  10       /* the section's name, with its end */
+#define E_MAN_WHAT      "the manual page"
+
+/**
+ * e_man_split - Take the page's name and its section out of a word such as
+ * "printf(3)".
+ * @str: what the user asked help for; @hstr, @hsize: receive the name;
+ * @nstr, @nsize: receive the section, empty when there is none.
+ *
+ * A word longer than the room is cut: help on any text the user selects
+ * must not write past the end of the editor's own buffers.
+ */
+static void e_man_split(const char *str, char *hstr, size_t hsize,
+                        char *nstr, size_t nsize)
+{
+  size_t i = 0, h = 0, j = 0;
+
+  for(; str[i] && str[i] != '(' && str[i] != ')'; i++)
+    if(h + 1 < hsize)
+      hstr[h++] = str[i];
+  hstr[h] = '\0';
+  nstr[0] = '\0';
+  if(str[i] != '(')
+    return;
+  for(++i; str[i] && str[i] != ')' && str[i] != '('; i++)
+    if(j + 1 < nsize)
+      nstr[j++] = str[i];
+  nstr[j] = '\0';
+  /* Some SEE ALSO's are list as "foobar(3X)" but are in section 3 not 3X.
+     This is a quick hack to fix the problem.  -- Dennis */
+  if(isdigit((unsigned char)nstr[0]))
+    nstr[1] = '\0';
+}
+
+/**
+ * e_man_outfile - The file in the editor's temp folder the page is written
+ * into, named after what the user asked for.
+ * @tstr, @size: receive the path; @str: the word.
+ *
+ * A '/' in the word becomes '_', so the page can never be written outside
+ * the temp folder, and a word longer than a file name is cut.
+ */
+static void e_man_outfile(char *tstr, size_t size, const char *str)
+{
+  size_t n = (size_t)snprintf(tstr, size, "%s/", e_tmp_dir);
+
+  if(n >= size)
+    n = size - 1;
+  for(; *str && n + 1 < size; str++, n++)
+    tstr[n] = (*str == '/') ? '_' : *str;
+  tstr[n] = '\0';
+}
+
+/**
+ * e_man_run - Write the manual page into @tstr.
+ * @nstr: the section, or ""; @hstr: the page's name; @tstr: the file.
+ *
+ * `man` gets the name as an argument, so no word the user selected is read
+ * as shell text, and the editor serves its loop while the page is made.  A
+ * name that could be taken for an option, or a program that fails or hangs,
+ * leaves the file empty, which the caller shows as "No manual entry".
+ */
+static void e_man_run(const char *nstr, const char *hstr, const char *tstr)
+{
+  char *argv[6];
+  int n = 0, status, ran;
+  FILE *fp;
+
+  if(hstr[0] != '-')
+  {
+    argv[n++] = "man";
+#ifdef MAN_S_OPT
+    if(nstr[0])
+    {
+      argv[n++] = "-s";
+      argv[n++] = (char *)nstr;
+    }
+#else
+    if(nstr[0])
+      argv[n++] = (char *)nstr;
+#endif
+    argv[n++] = (char *)hstr;
+    argv[n] = NULL;
+    ran = wpe_child_run_to_file(argv, tstr, E_MAN_MS, &status, E_MAN_WHAT);
+    if(ran == WPE_CAPTURE_ENDED)
+      return;
+  }
+  if((fp = fopen(tstr, "w")))
+    fclose(fp);
+}
+
 int e_ed_man(char *str, FENSTER * f)
 {
-  char            command[256], tstr[_POSIX_PATH_MAX];
-  char            cc, hstr[80], nstr[10];
+  char            tstr[_POSIX_PATH_MAX];
+  char            cc, hstr[E_MAN_WORD_MAX], nstr[E_MAN_SECT_MAX];
   int             mdsv = f->ed->dtmd, bg, i, j = 0;
   BUFFER         *b;
 
@@ -3628,31 +3765,12 @@ int e_ed_man(char *str, FENSTER * f)
     }
   }
   WpeMouseChangeShape(WpeWorkingShape);
-  sprintf(tstr, "%s/%s", e_tmp_dir, str);
-  for(i = 0; (hstr[i] = str[i]) && str[i] != '(' && str[i] != ')'; i++);
-  hstr[i] = '\0';
-  if(str[i] == '(')
-  {
-    for(++i; (nstr[j] = str[i]) && str[i] != ')' && str[i] != '('; i++, j++);
-
-    /* Some SEE ALSO's are list as "foobar(3X)" but are in section 3 not 3X.
-       This is a quick hack to fix the problem.  -- Dennis */
-    if(isdigit(nstr[0]))
-      j = 1;
-  }
-  nstr[j] = '\0';
+  e_man_outfile(tstr, sizeof tstr, str);
+  e_man_split(str, hstr, sizeof hstr, nstr, sizeof nstr);
 
   while(1)
   {
-#ifdef MAN_S_OPT
-    if(!nstr[0])
-      sprintf(command, " man %s > \'%s\' 2> /dev/null", hstr, tstr);
-    else
-      sprintf(command, " man -s %s %s > \'%s\' 2> /dev/null", nstr, hstr, tstr);
-#else
-    sprintf(command, " man %s %s > \'%s\' 2> /dev/null", nstr, hstr, tstr);
-#endif
-    system(command);
+    e_man_run(nstr, hstr, tstr);
     chmod(tstr, 0400);
     f->ed->dtmd = DTMD_HELP;
     e_edit(f->ed, tstr);

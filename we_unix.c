@@ -300,6 +300,59 @@ static void wpe_child_say_on_status_row(const char *line)
  e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
 }
 
+/**
+ * e_ini_children - Make the editor ready to start programs and to be told
+ * when they end.
+ *
+ * Done before the display is opened: the graphical editor asks the desktop
+ * for its font while it starts, a command the editor waits for, and a
+ * command's end is only ever told by the SIGCHLD handler through the wake
+ * pipe.  The pipe exists before the handler can write to it.
+ */
+static void e_ini_children(void)
+{
+ WpeChildWakeOpen();
+ wpe_child_say_set(wpe_child_say_on_status_row);
+ wpe_fd_write_say_set(wpe_child_say_on_status_row);
+ wpe_child_sigchld_install(WpeSignalChild);
+}
+
+/**
+ * e_capture_quiet_fd - While the editor waits for a short command: the
+ * console's keyboard, whose keys stay queued for the editor; none for a
+ * window, whose keys arrive with its other events.
+ */
+static int e_capture_quiet_fd(void)
+{
+ if (WpeIsXwin())
+  return(-1);
+ return(e_t_keyboard_fd());
+}
+
+/**
+ * e_capture_serve_display - While the editor waits for a short command:
+ * answer the window's repaint and resize events, keys and clicks left
+ * queued.
+ */
+static void e_capture_serve_display(void)
+{
+ if (e_u_serve_display)
+  (*e_u_serve_display)();
+}
+
+/**
+ * e_ini_children_display - Once the display is open: serve it while the
+ * editor waits for a short command (the print command, a manual page, an
+ * unpack), so a window covered or resized meanwhile is drawn again at once.
+ */
+static void e_ini_children_display(void)
+{
+ if (WpeIsXwin())
+  wpe_child_capture_display_set(e_capture_quiet_fd, e_capture_serve_display);
+ else
+  wpe_child_capture_display_set(e_capture_quiet_fd, NULL);
+}
+
 int e_ini_unix(int *argc, char **argv)
 {
  extern OPT opt[];
@@ -318,10 +371,11 @@ int e_ini_unix(int *argc, char **argv)
     mouse tracking still on.  Until the editor has opened its windows there is
     nothing to save, so the handler ends the editor at once, restoring the
     terminal from `otermio` (read just above); afterwards it asks the editor's
-    loop to save the unsaved windows and end.  (Crash signals and SIGCHLD are
-    installed lower down; they have no such ordering dependency.)  The pipe
-    that carries the request to the loop exists before the handler can write
-    to it. */
+    loop to save the unsaved windows and end.  (Crash signals are installed
+    lower down; they have no such ordering dependency.  SIGCHLD is installed
+    next, before the display opens, because opening it runs a command.)  The
+    pipe that carries the request to the loop exists before the handler can
+    write to it. */
  wpe_end_request_open();
  act.sa_handler = WpeSignalTerm;
  sigfillset(&act.sa_mask);
@@ -330,6 +384,7 @@ int e_ini_unix(int *argc, char **argv)
 #ifdef SIGHUP
  sigaction(SIGHUP, &act, NULL);
 #endif
+ e_ini_children();
  u_fb = NULL;
  x_fb = NULL;
  debug = 0;
@@ -404,6 +459,7 @@ int e_ini_unix(int *argc, char **argv)
   WpeTermInit(argc, argv);
  }
 #endif
+ e_ini_children_display();
  if (WpeIsProg())
  {
 #ifndef DEBUGGER
@@ -460,13 +516,6 @@ int e_ini_unix(int *argc, char **argv)
     test_dead_server_does_not_spin show up as the editor itself dying
     instead of cleanly tearing the session down. */
  sigaction(SIGPIPE, &act, NULL);
- /* Catch SIGCHLD; its wake pipe exists before the handler can write to it. */
- WpeChildWakeOpen();
- wpe_child_say_set(wpe_child_say_on_status_row);
- wpe_fd_write_say_set(wpe_child_say_on_status_row);
- act.sa_handler = WpeSignalChild;
- act.sa_flags = SA_NOCLDSTOP;
- sigaction(SIGCHLD, &act, NULL);
  return(*argc);
 }
 

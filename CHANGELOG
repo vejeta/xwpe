@@ -233,6 +233,20 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* File > Print File works again, compressed files open whatever their
+  names, and help on a very long word no longer crashes.  The print
+  command was cut to seven characters and never ran.  Compressed help and
+  info files were unpacked through a shell line that broke on a space or a
+  ';' in the name.  Help on a word longer than 80 characters wrote past a
+  buffer.  The editor's own words (file names, the word) now reach these
+  commands as arguments, never as shell text.  Each command has a time
+  limit, a window covered meanwhile is drawn again at once, and one that
+  takes longer than a second is named on the status row with its limit.
+  The same goes for the Java version probe and the desktop font query at
+  start-up, which no longer freeze the editor when the command hangs.  A
+  program Run on a system that cannot give it a terminal can now be
+  stopped with Ctrl-C.
+
 * The assistant's reach is the workspace, for reads as for writes, whatever
   the dial.  read_file, list_dir, grep and glob used to read any path
   unasked, and the hosted Claude Code engine at the auto dial was started

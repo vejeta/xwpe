@@ -69,6 +69,9 @@ typedef struct {
  int stdin_null;                 /* stdin from /dev/null, no pipe: the build */
  int stdout_to_null;             /* stdout to /dev/null, no pipe: a command
                                     run only for what it leaves on disk */
+ const char *stdout_path;        /* stdout into this file, created or emptied
+                                    (mode 0600), no pipe: a command run for
+                                    the file it writes; NULL for none */
  int stderr_to_null;             /* servers are chatty */
  int stderr_to_stdout;           /* the build: one merged stream, in order */
  int stderr_inherit;             /* the editor's own stderr: a stdio debug adapter */
@@ -135,6 +138,20 @@ int  wpe_child_ended(const WpeChild *c, int *status);
 int  wpe_child_ending(void);
 void wpe_child_say_set(void (*say)(const char *line));
 
+/* A short command the editor needs the answer of before it goes on, run and
+   waited for on the loop.  The command is an argv, never shell text: what the
+   editor adds (a path, a word) is an argument.  Every one has a deadline;
+   @what names it on the status row when it takes longer than a moment. */
+#define WPE_CAPTURE_ENDED       0    /* the command ended by itself */
+#define WPE_CAPTURE_TIMED_OUT   1    /* the deadline came: it was ended */
+#define WPE_CAPTURE_NOT_STARTED (-1) /* it could not be started */
+int  wpe_child_capture(char *const argv[], char *out, size_t max,
+                       long deadline_ms, int *status, const char *what);
+int  wpe_child_run_to_file(char *const argv[], const char *path,
+                           long deadline_ms, int *status, const char *what);
+int  wpe_capture_succeeded(int result, int status);
+void wpe_child_capture_display_set(int (*quiet_fd)(void), void (*serve)(void));
+
 /* For the SIGCHLD handler and the crash and end handlers (async-signal-safe),
    and the fd that wakes the loop. */
 void wpe_child_note_ended(pid_t pid, int status);
@@ -144,6 +161,7 @@ int  wpe_child_fd_private(int fd);
 /* The pid-based watch, which wpe_child_start is built on. */
 typedef void (*WpeChildEndCallback)(int pid, int status, void *data);
 void WpeChildWakeOpen(void);
+int  wpe_child_sigchld_install(void (*handler)(int));
 void WpeChildSignalBlock(sigset_t *saved);
 void WpeChildSignalRestore(const sigset_t *saved);
 int  WpeChildWatch(int pid, WpeChildEndCallback cb, void *data);

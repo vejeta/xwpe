@@ -81,7 +81,10 @@ Search for a file by name.
 @item G -- Grep
 Search for a regular expression across files.
 @item P -- Print
-Print the current file (uses the @env{PRNTCMD} setting).
+Print the current file (uses the @env{PRNTCMD} setting).  The print
+command gets the file's name as its argument and has a minute to take
+the file; a command that takes longer than a second is named on the
+status row with that limit.
 @item Q -- Quit
 Exit xwpe.  Prompts to save unsaved files.
 @end table
@@ -301,7 +304,8 @@ Display the watch window.
 @item E -- Editor
 Open the in-app editor help.
 @item T -- Topic Search
-Search UNIX man pages.
+Search UNIX man pages.  A page that takes longer than a second to make is
+named on the status row; @command{man} has 30 seconds at most.
 @item U -- Function Index
 Display the function index.
 @item I -- Info

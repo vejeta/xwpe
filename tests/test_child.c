@@ -954,8 +954,154 @@ static void test_the_owner_says_when_its_own_kill_ended_the_child(void)
 	close_ends(&own);
 }
 
+/* The deadlines and sizes of the short-command cases. */
+#define CAPTURE_DEADLINE_MS  300
+#define CAPTURE_MAX          64
+#define BIG_OUTPUT_BYTES     (256 * 1024)  /* four pipe buffers or more */
+#define BIG_OUT_MAX          (BIG_OUTPUT_BYTES + 16)
+#define CAPTURE_ECHO_EXIT    5
+#define FILE_CASE_DEADLINE   5000
+
+/* 23: a command that does not end is ended at its deadline, and the answer
+ * says so, with the status of the end the owner gave it; the loop's other
+ * timers ran meanwhile. */
+static int ticks_during_capture;
+
+static void count_tick(void *data)
+{
+	(void)data;
+	ticks_during_capture++;
+}
+
+static void test_capture_ends_a_command_at_its_deadline_with_a_status(void)
+{
+	char out[CAPTURE_MAX];
+	char *hang[] = { "sh", "-c", "echo before; exec sleep 30", NULL };
+	char *quick[] = { "sh", "-c", "echo said; exit 5", NULL };
+	int status = 0, ran, id;
+	long t0, took;
+
+	id = wpe_timer_add(LOOP_SLICE_MS, 1, count_tick, NULL);
+	t0 = now_ms();
+	ran = wpe_child_capture(hang, out, sizeof out, CAPTURE_DEADLINE_MS,
+				&status, NULL);
+	took = now_ms() - t0;
+	wpe_timer_del(id);
+	chk("the deadline ended it", ran, WPE_CAPTURE_TIMED_OUT);
+	chk_true("by SIGKILL", WIFSIGNALED(status) &&
+		 WTERMSIG(status) == SIGKILL);
+	chk_true("not before the deadline", took >= CAPTURE_DEADLINE_MS);
+	chk_true("and soon after it", took < CAPTURE_DEADLINE_MS + SLACK_MS);
+	chk_true("the loop's timers ran meanwhile", ticks_during_capture > 3);
+	chk_true("what it said before is kept", !strcmp(out, "before\n"));
+	chk_true("not a success", !wpe_capture_succeeded(ran, status));
+
+	ran = wpe_child_capture(quick, out, sizeof out, FILE_CASE_DEADLINE,
+				&status, NULL);
+	chk("a command that ends by itself", ran, WPE_CAPTURE_ENDED);
+	chk("with its own exit code", WEXITSTATUS(status), CAPTURE_ECHO_EXIT);
+	chk_true("and its output", !strcmp(out, "said\n"));
+}
+
+/* 24: an output larger than the pipe's buffer is read whole, and one larger
+ * than the room is cut with the command left to end. */
+static void test_capture_reads_an_output_larger_than_a_pipe_buffer(void)
+{
+	static char big[BIG_OUT_MAX];
+	char small[CAPTURE_MAX];
+	char *gen[] = { "sh", "-c", "head -c 262144 /dev/zero | tr '\\0' x",
+			NULL };
+	int status = 0, ran;
+
+	ran = wpe_child_capture(gen, big, sizeof big, FILE_CASE_DEADLINE,
+				&status, NULL);
+	chk("ended", ran, WPE_CAPTURE_ENDED);
+	chk_true("exit 0", wpe_capture_succeeded(ran, status));
+	chk("every byte", (long)strlen(big), BIG_OUTPUT_BYTES);
+	ran = wpe_child_capture(gen, small, sizeof small, FILE_CASE_DEADLINE,
+				&status, NULL);
+	chk("a small room: still ended", ran, WPE_CAPTURE_ENDED);
+	chk_true("a small room: still exit 0",
+		 wpe_capture_succeeded(ran, status));
+	chk("the room, less its end", (long)strlen(small), CAPTURE_MAX - 1);
+}
+
+/* 25: a command that cannot be run is not started; one whose output goes to a
+ * file leaves the file whole, with no shell in between: a name with a space
+ * and a ';' is one argument. */
+static void test_a_command_into_a_file_takes_its_names_as_arguments(void)
+{
+	char *none[] = { NO_SUCH_PROGRAM, NULL };
+	char *echo[] = { "sh", "-c", "printf '%s' \"$1\"", "sh",
+			 "a b;c", NULL };
+	char out[CAPTURE_MAX];
+	char path[] = "xwpe-test-child-file-XXXXXX";  /* in the build folder */
+	int status = 0, ran, fd;
+	FILE *fp;
+
+	ran = wpe_child_capture(none, out, sizeof out, FILE_CASE_DEADLINE,
+				&status, NULL);
+	chk("a missing program ends as one that cannot run", ran,
+	    WPE_CAPTURE_ENDED);
+	chk_true("and is not a success", !wpe_capture_succeeded(ran, status));
+
+	fd = mkstemp(path);
+	chk_true("a scratch name", fd >= 0);
+	if (fd < 0)
+		return;
+	close(fd);
+	ran = wpe_child_run_to_file(echo, path, FILE_CASE_DEADLINE, &status,
+				    NULL);
+	chk("into a file", ran, WPE_CAPTURE_ENDED);
+	chk_true("exit 0", wpe_capture_succeeded(ran, status));
+	out[0] = '\0';
+	fp = fopen(path, "r");
+	if (fp) {
+		if (!fgets(out, sizeof out, fp))
+			out[0] = '\0';
+		fclose(fp);
+	}
+	chk_true("the file holds the one argument", !strcmp(out, "a b;c"));
+	unlink(path);
+}
+
+/* 26: a command that takes longer than a moment is named on the status row
+ * with the most the editor will wait; one that answers at once says nothing.
+ * The deadline still ends it. */
+#define SLOW_DEADLINE_MS     1500
+#define SLOW_WHAT            "the probe"
+#define SLOW_SAYS            "Waiting for the probe (at most 2 s)"
+
+static void test_a_slow_capture_is_named_with_its_deadline(void)
+{
+	char out[CAPTURE_MAX];
+	char *hang[] = { "sh", "-c", "exec sleep 30", NULL };
+	char *quick[] = { "true", NULL };
+	int status = 0, ran;
+	long t0, took;
+
+	said[0] = '\0';
+	ran = wpe_child_capture(quick, out, sizeof out, SLOW_DEADLINE_MS,
+				&status, SLOW_WHAT);
+	chk("a quick one ends", ran, WPE_CAPTURE_ENDED);
+	chk_true("and says nothing", said[0] == '\0');
+
+	t0 = now_ms();
+	ran = wpe_child_capture(hang, out, sizeof out, SLOW_DEADLINE_MS,
+				&status, SLOW_WHAT);
+	took = now_ms() - t0;
+	chk("a slow one is ended at its deadline", ran, WPE_CAPTURE_TIMED_OUT);
+	chk_true("not before it", took >= SLOW_DEADLINE_MS);
+	chk_true("and soon after it", took < SLOW_DEADLINE_MS + SLACK_MS);
+	if (strcmp(said, SLOW_SAYS) != 0)
+		printf("  said: '%s'\n", said);
+	chk_true("named with its deadline", !strcmp(said, SLOW_SAYS));
+}
+
 /* @scenario SC-debug-72 */
 /* @scenario SC-debug-82 */
+/* @scenario SC-debug-103 */
+/* @scenario SC-debug-111 */
 int main(void)
 {
 	struct sigaction act;
@@ -993,6 +1139,10 @@ int main(void)
 	test_a_named_process_is_signalled_only_while_its_child_runs();
 	test_a_wait_inside_an_end_report_gets_the_next_end();
 	test_the_owner_says_when_its_own_kill_ended_the_child();
+	test_capture_ends_a_command_at_its_deadline_with_a_status();
+	test_capture_reads_an_output_larger_than_a_pipe_buffer();
+	test_a_command_into_a_file_takes_its_names_as_arguments();
+	test_a_slow_capture_is_named_with_its_deadline();
 
 	if (fails) {
 		printf("%d failure(s)\n", fails);

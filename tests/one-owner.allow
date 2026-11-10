@@ -35,6 +35,7 @@ we_unix.o wpe_fd_end_wait 1 keep e_exit_teardown, the one nested wait
 # manager's Execute under X11 and Wayland) in we_xterm.c; e_t_system
 # (File > Shell and the file manager's Execute on the console) in we_term.c
 we_prog.o wpe_fd_wait_serving 1 keep e_shell_wait, the wait of a command that has the terminal or window
+we_child.o wpe_fd_wait_serving 1 keep wpe_capture_serve_until, a short command whose answer the editor needs, always within its deadline
 we_prog.o e_shell_run 3 keep the definition, e_system and e_install_run
 we_xterm.o e_shell_run 1 keep e_x_system
 we_term.o e_shell_run 1 keep e_t_system
@@ -53,14 +54,6 @@ we_xterm.o poll 1 P9o the paste wait for SelectionNotify
 
 # children: started, signalled and reaped only by we_child.c.
 we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_child.c
-we_prog.o popen 1 P9n
-we_prog.o pclose 1 P9n
-we_debug.o popen 1 P9n
-we_debug.o pclose 1 P9n
-we_render_cairo.o popen 1 P9n
-we_render_cairo.o pclose 2 P9n
-we_fl_fkt.o system 2 P9n
-we_fl_unix.o system 2 P9n
 
 # writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
 we_ai.o write 1 keep the test backend's temporary file, not a child

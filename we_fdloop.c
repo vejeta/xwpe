@@ -1424,34 +1424,95 @@ int wpe_fd_wait_for(wpe_wait_pred pred, long deadline_ms, const char *what)
 }
 
 /**
- * wpe_fd_wait_serving - Wait on the loop, for as long as it takes, for a
- * command that has the editor's terminal or window.
+ * wpe_fd_mute_unread - Stop waking for every descriptor no callback reads.
+ * @saved: receives what each was watched for, indexed as the table is
+ * (WPE_FD_MAX entries), to give back to wpe_fd_unmute_unread.
+ */
+static void wpe_fd_mute_unread(int *saved)
+{
+ int i;
+
+ for (i = 0; i < WPE_FD_MAX; i++)
+ {
+  saved[i] = -1;
+  if (fd_table[i].active && !fd_table[i].callback)
+   saved[i] = wpe_fd_mute(fd_table[i].fd);
+ }
+}
+
+/** wpe_fd_unmute_unread - Watch again what wpe_fd_mute_unread silenced. */
+static void wpe_fd_unmute_unread(const int *saved)
+{
+ int i;
+
+ for (i = 0; i < WPE_FD_MAX; i++)
+ {
+  if (saved[i] >= 0 && fd_table[i].active)
+   wpe_fd_unmute(fd_table[i].fd, saved[i]);
+ }
+}
+
+/**
+ * wpe_wait_left - What is left of a deadline.
+ * @start: when the wait began; @deadline_ms: its deadline, or
+ * WPE_WAIT_FOREVER.
+ * Return: WPE_WAIT_FOREVER without a deadline, else the milliseconds left,
+ * 0 once it has come.
+ */
+static long wpe_wait_left(int64_t start, long deadline_ms)
+{
+ int64_t left;
+
+ if (deadline_ms == WPE_WAIT_FOREVER)
+  return WPE_WAIT_FOREVER;
+ left = deadline_ms - (wpe_clock_ms() - start);
+ if (left < 0)
+  return 0;
+ return (long)left;
+}
+
+/**
+ * wpe_fd_wait_serving - Wait on the loop for a command whose end the editor
+ * needs before it goes on: one that has the editor's terminal or window, or
+ * a short one whose answer it needs.
  * @pred: non-zero ends the wait; @what: names it for wpe_fd_waiting_for();
  * @quiet_fd: a descriptor the loop does not wake for meanwhile (the
- * console's keyboard, whose keys are the command's), or -1 for none;
+ * console's keyboard, whose keys are the command's or wait for the editor),
+ * or -1 for none;
  * @serve: called now and whenever the display has an event for the editor
- * (a repaint after another window covered it), or NULL.
+ * (a repaint after another window covered it), or NULL when there is no
+ * display to serve: every descriptor no callback reads is then left unread
+ * for the wait, so a key that arrives stays queued and cannot wake the wait
+ * again and again;
+ * @deadline_ms: the longest wait, or WPE_WAIT_FOREVER for a command that
+ * has the terminal or window, which the user ends.
  *
- * The editor serves everything else the loop serves while it waits, and the
- * display's events are answered, so a window that was covered and uncovered
- * is drawn again at once.
- * Return: WPE_WAIT_DONE when @pred held; WPE_WAIT_TIMEOUT when the loop has
- * nothing left that could make it hold.
+ * The one nested wait of the editor.  It serves everything else the loop
+ * serves while it waits, and the display's events are answered, so a
+ * window that was covered and uncovered, or resized, is drawn again at once.
+ * Return: WPE_WAIT_DONE when @pred held; WPE_WAIT_TIMEOUT when the deadline
+ * came, or the loop has nothing left that could make it hold.
  */
 int wpe_fd_wait_serving(wpe_wait_pred pred, const char *what, int quiet_fd,
-                        void (*serve)(void))
+                        void (*serve)(void), long deadline_ms)
 {
+ int64_t start = wpe_clock_ms();
+ int saved[WPE_FD_MAX];
  int events = wpe_fd_mute(quiet_fd);
  int result;
 
  if (serve)
   serve();
+ else
+  wpe_fd_mute_unread(saved);
  do
  {
-  result = wpe_fd_wait_for(pred, WPE_WAIT_FOREVER, what);
+  result = wpe_fd_wait_for(pred, wpe_wait_left(start, deadline_ms), what);
   if (result == WPE_WAIT_INPUT && serve)
    serve();
  } while (result == WPE_WAIT_INPUT);
+ if (!serve)
+  wpe_fd_unmute_unread(saved);
  wpe_fd_unmute(quiet_fd, events);
  return result;
 }

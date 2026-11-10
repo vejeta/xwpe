@@ -305,7 +305,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_keymap
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap
 
 # The key decoder's table: we_keymap.c alone, no editor and no display
 # library.  Every bound pair has one row, the curses, keysym and escape
@@ -324,6 +324,13 @@ test_keymap_CFLAGS = $(XWPE_STDFLAG)
 test_child_SOURCES = tests/test_child.c we_child.c we_fdloop.c
 test_child_CFLAGS = $(XWPE_STDFLAG)
 test_child_LDADD = $(UTIL_LIBS)
+
+# A read that waits survives the editor's SIGCHLD: the handler is installed
+# by the editor's own function, children end during a blocking read.  Also
+# the short commands' cases live in test_child.
+test_childsig_SOURCES = tests/test_childsig.c we_child.c we_fdloop.c
+test_childsig_CFLAGS = $(XWPE_STDFLAG)
+test_childsig_LDADD = $(UTIL_LIBS)
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
@@ -510,7 +517,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_keymap
+  test_child test_childsig test_keymap
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)

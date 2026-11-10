@@ -9,6 +9,9 @@
 #include "edit.h"
 #include "makro.h"
 #include "we_ai.h"
+#include "we_child.h"
+#include "we_fdloop.h"
+#include <ftw.h>
 #ifdef UNIX
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -216,11 +219,40 @@ int e_saveall(FENSTER *f)
  return(ret);
 }
 
+/** The most directories nftw holds open while it walks the temp folder. */
+#define E_TMP_WALK_FDS 16
+
+/** e_tmp_remove_entry - nftw's callback: remove one entry, links as links. */
+static int e_tmp_remove_entry(const char *path, const struct stat *sb,
+                              int type, struct FTW *ftw)
+{
+ (void)sb;
+ (void)type;
+ (void)ftw;
+ remove(path);
+ return(0);
+}
+
+/**
+ * e_tmp_remove - Remove the editor's temp folder and what is in it, when
+ * the editor ends.
+ * @dir: the folder the editor made at start-up.
+ *
+ * Needs no shell, and the editor's exit stays as fast as the folder is
+ * small.  A link inside it is removed as a link: nothing it points at,
+ * inside or outside the folder, is touched.
+ */
+static void e_tmp_remove(const char *dir)
+{
+ if (!dir || !dir[0])
+  return;
+ nftw(dir, e_tmp_remove_entry, E_TMP_WALK_FDS, FTW_DEPTH | FTW_PHYS);
+}
+
 /*	terminate edit session */
 int e_quit(FENSTER *f)
 {
  int i;
- char tmp[128];
 #if  MOUSE
  int g[4];
 #endif
@@ -240,8 +272,7 @@ int e_quit(FENSTER *f)
 #ifdef UNIX
  if (WpeQuitWastebasket(cn->f[0]))
   return(0);
- sprintf(tmp, "rm -rf %s&", e_tmp_dir);
- system(tmp);
+ e_tmp_remove(e_tmp_dir);
 #endif
 #if  MOUSE
  g[0] = 2;
@@ -612,6 +643,39 @@ int e_mkdir_path(char *path)
  return(0);
 }
 
+#ifndef HAS_LIBZ
+/* The longest an unpack may take: a help or info file unpacks in well under
+   a second, and one that does not end (a damaged or endless input) must not
+   hold the editor, whose keys wait meanwhile. */
+#define E_UNPACK_MS   30000L
+#define E_UNPACK_WHAT "gunzip"
+
+/**
+ * e_unpack_to_file - Unpack a compressed file into @dest, for the help and
+ * info readers.
+ * @src: the compressed file; @dest: where its text goes.
+ *
+ * The names are arguments of the program, whatever characters they hold, so
+ * a file named "a b;c.gz" opens like any other.  A failed, cut-short or
+ * endless unpack leaves no file behind: the reader would otherwise take the
+ * part that was written for the whole text, now and on every later open.
+ * Return: 1 when @dest holds the whole text, 0 otherwise.
+ */
+static int e_unpack_to_file(const char *src, const char *dest)
+{
+ char *argv[] = { "gunzip", "-c", "--", NULL, NULL };
+ int status, ran;
+
+ argv[3] = (char *)src;
+ ran = wpe_child_run_to_file(argv, dest, E_UNPACK_MS, &status,
+                             E_UNPACK_WHAT);
+ if (wpe_capture_succeeded(ran, status))
+  return(1);
+ remove(dest);
+ return(0);
+}
+#endif
+
 IFILE *e_i_fopen(char *path, char *stat)
 {
  char *tmp2;
@@ -665,7 +729,7 @@ IFILE *e_i_fopen(char *path, char *stat)
  return(NULL);
 #else
  extern char *e_tmp_dir;
- char *tmp, *command;
+ char *tmp;
  int len;
  IFILE *fp = MALLOC(sizeof(IFILE));
 
@@ -724,18 +788,20 @@ IFILE *e_i_fopen(char *path, char *stat)
   FREE(tmp2);
   return(fp);
  }
- command = MALLOC((strlen(tmp) + strlen(tmp2) + 14) * sizeof(char));
- if (!command) {  FREE(fp);  FREE(tmp);  FREE(tmp2);  return(NULL);  }
  e_mkdir_path(tmp);
- sprintf(command, "gunzip < %s > %s", tmp2, tmp);
+ if (!e_unpack_to_file(tmp2, tmp))
+ {
+  FREE(fp);
+  FREE(tmp);
+  FREE(tmp2);
+  return(NULL);
+ }
  FREE(tmp2);
- system(command);
- FREE(command);  
  fp->fp = fopen(tmp, stat);
  FREE(tmp);
  if (!fp->fp) {  FREE(fp);  return(NULL);  }
  fp->sw = 1;
- return(fp);  
+ return(fp);
 #endif
 }
 
@@ -1547,7 +1613,8 @@ int e_topic_search(FENSTER *f)
  if(x<0 && !isalnum(s[0]) && s[0]!='_')
   return(0);
  x++;
- for(; x<=b->bf[y].len && (isalnum(s[x])||s[x]=='_');x++,ptr++)
+ for(; x<=b->bf[y].len && (isalnum(s[x])||s[x]=='_') &&
+      ptr < item + sizeof(item) - 1; x++,ptr++)
   *ptr=s[x];
  *ptr=0; 
  e_ed_man(item, f);

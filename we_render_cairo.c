@@ -7,6 +7,7 @@
 
 #include "we_render.h"
 #include "edit.h"
+#include "we_child.h"
 #include <cairo.h>
 #include <cairo-xlib.h>
 #include <cairo-ft.h>
@@ -280,38 +281,54 @@ static void cr_init_surface(int pixel_w, int pixel_h)
    Filled in by cr_get_system_monospace_font(), read by cr_font_point_size(). */
 static int cr_monospace_pt;
 
+/* The longest the desktop's font setting is waited for at start-up: a
+   settings service that does not answer must not keep the window from
+   opening, and the editor then uses "monospace". */
+#define CR_FONT_QUERY_MS  1500L
+#define CR_FONT_QUERY_MAX 128
+#define CR_FONT_QUERY_WHAT "the desktop's font setting"
+
+/**
+ * cr_query_desktop_font - Ask the desktop for its monospace font.
+ * @fontname: receives the raw setting, e.g. 'JetBrains Mono 13'.
+ * @size: its size.
+ * Return: 1 when the desktop answered, 0 when it has no such setting, the
+ * program is missing, or it did not answer in time.
+ */
+static int cr_query_desktop_font(char *fontname, size_t size)
+{
+ char *argv[] = { "gsettings", "get", "org.gnome.desktop.interface",
+                  "monospace-font-name", NULL };
+ int status, ran;
+
+ ran = wpe_child_capture(argv, fontname, size, CR_FONT_QUERY_MS, &status,
+                         CR_FONT_QUERY_WHAT);
+ return(wpe_capture_succeeded(ran, status) && fontname[0] != '\0');
+}
+
 static const char *cr_get_system_monospace_font(void)
 {
- static char fontname[128];
- FILE *p = popen(
-   "gsettings get org.gnome.desktop.interface monospace-font-name "
-   "2>/dev/null", "r");
+ static char fontname[CR_FONT_QUERY_MAX];
  cr_monospace_pt = 0;
- if (p)
+ if (cr_query_desktop_font(fontname, sizeof(fontname)))
  {
-  if (fgets(fontname, sizeof(fontname), p))
+  char *s = fontname;
+  char *e;
+  while (*s == '\'' || *s == ' ') s++;
+  e = s + strlen(s) - 1;
+  while (e > s && (*e == '\'' || *e == '\n' || *e == ' ')) *e-- = 0;
+  /* The family name ends in a trailing point size ("JetBrains Mono 13").
+     Remember it -- so the editor honours the size the user configured --
+     then strip it off, leaving just the family for fontconfig. */
+  if (e > s && *e >= '0' && *e <= '9')
   {
-   char *s = fontname;
-   char *e;
-   while (*s == '\'' || *s == ' ') s++;
-   e = s + strlen(s) - 1;
-   while (e > s && (*e == '\'' || *e == '\n' || *e == ' ')) *e-- = 0;
-   /* The family name ends in a trailing point size ("JetBrains Mono 13").
-      Remember it -- so the editor honours the size the user configured --
-      then strip it off, leaving just the family for fontconfig. */
-   if (e > s && *e >= '0' && *e <= '9')
-   {
-    char *d = e;
-    while (d > s && *d >= '0' && *d <= '9') d--;
-    cr_monospace_pt = atoi(d + 1);
-    while (e > s && *e >= '0' && *e <= '9') *e-- = 0;
-    while (e > s && *e == ' ') *e-- = 0;
-   }
-   pclose(p);
-   if (*s) return s;
+   char *d = e;
+   while (d > s && *d >= '0' && *d <= '9') d--;
+   cr_monospace_pt = atoi(d + 1);
+   while (e > s && *e >= '0' && *e <= '9') *e-- = 0;
+   while (e > s && *e == ' ') *e-- = 0;
   }
-  else
-   pclose(p);
+  if (*s) return s;
  }
  return "monospace";
 }

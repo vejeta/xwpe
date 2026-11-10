@@ -66,3 +66,17 @@ the marked block.  It is now @kbd{Alt-Delete} on every display, which
 copies the block (to the X selection under X, to the buffer in a
 terminal) and leaves it in the file.
 @end table
+
+@section Short commands
+
+@table @asis
+@item Print, manual pages and compressed help files
+@cindex print command, time limit
+@cindex man, time limit
+The original ran the print command, @command{man} and @command{gunzip}
+through the shell and waited for them with no limit, the editor frozen
+meanwhile.  Each now has a time limit (a minute to print, 30 seconds for
+a page or an unpack), the window is drawn again while it runs, and one
+that takes longer than a second is named on the status row.  A command
+that hung used to leave no way out but killing the editor.
+@end table
