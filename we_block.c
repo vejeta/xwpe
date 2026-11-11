@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_clip.h"
+#include "we_buffer.h"
 #include <ctype.h>
 
 extern int e_undo_sw;
@@ -345,7 +346,8 @@ void e_clip_pull_os_into_buffer(FENSTER *w0)
 
  if ((text = e_clip_os_get(&len)) == NULL)
   return;
- e_buffer_set_text(w0->b, text);
+ if (e_buffer_replace_all(w0->b, text, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(w0->b, "the pasted text");
  free(text);
  w0->s->mark_begin.x = w0->s->mark_begin.y = 0;
  w0->s->mark_end.y = w0->b->mxlines - 1;

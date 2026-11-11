@@ -75,14 +75,6 @@ we_ai_ws.o write 1 keep a regular file the model named, opened at the place the 
 
 # the text: every line a window adds or removes goes through its owner
 # (we_buffer.c).  What is left are the callers each later pass moves onto it.
-# the whole-buffer callers (an accepted Edit, a language server's edit, the
-# assistant's file reloads, the clipboard pull): one replace_all each
-we_ai_ui.o e_buffer_set_text 1 P11b the composer's seed
-we_ai_ui.o e_replace_buffer_undoable 1 P11b an accepted Edit
-we_ai_ws.o e_add_undo 1 P11b a reload's step, now taken by the swap itself
-we_ai_ws.o e_buffer_set_text 1 P11b a reload and the hook's rewrite
-we_block.o e_buffer_set_text 1 P11b the clipboard pull
-we_debug.o e_replace_buffer_undoable 1 P11b a language server's edit
 # the block code: copy, move, delete and paste splice and detach
 we_block.o e_new_line 1 P11c the block's split line
 we_block.o e_add_undo 5 P11c the block kinds and Replace

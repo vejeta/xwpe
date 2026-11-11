@@ -29744,16 +29744,21 @@ static void e_lsp_edit_show(FENSTER *f, const e_lsp_ask_t *a)
  e_error(m, -1, f->fb);
 }
 
-/* Replace the whole editor buffer with `newtext` (a server-side reformat / rename
-   / code-action result).  Records a single whole-buffer Undo entry first, so the
-   refactor is reversible with Ctrl-U (and Redo-able) like any other edit, then
-   swaps the content via the shared e_buffer_set_text. */
+/**
+ * e_lsp_replace_buffer - Put a server's reformat, rename or code action into
+ * the window as one undoable change.
+ * @f: the window; @newtext: the whole file as the server wants it.
+ *
+ * Only the lines that differ change, so the breakpoints, the block and the
+ * colours of the lines the server left alone stay on them, and one Ctrl-U
+ * takes the whole change back.  The edited spot is shown at once, not on the
+ * next key.
+ */
 static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
 {
- /* One undoable whole-buffer swap with the cursor kept in place -- the shared
-    spine (we_edit.c), so a rename/format/code-action reverts with a single
-    Ctrl-U and shows the edited spot immediately, not on the next keystroke. */
- e_replace_buffer_undoable(f, newtext);
+ if (e_buffer_replace_all(f->b, newtext, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(f->b, "the new text");
+ e_window_show_replaced_text(f);
  e_lsp_after_bulk_edit(f);          /* tell the server the buffer changed, so its
                                        diagnostics re-publish for the fixed text
                                        (e.g. the error a quick-fix removed clears) */

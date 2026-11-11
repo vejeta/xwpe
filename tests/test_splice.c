@@ -431,6 +431,179 @@ static void case_replace_all_changes_only_the_middle(void)
  fixture_free();
 }
 
+/* The buffer holds @text, saved, with nothing to undo. */
+static void load_text(const char *text)
+{
+ e_buffer_replace_all(&buf, text, E_BUFFER_STEP_COVERED);
+ e_buffer_history_drop(&buf);
+ win.save = 0;
+ hooks_reset();
+}
+
+static void case_a_format_is_cut_into_hunks(void)
+{
+ static const char old_text[] = "int f()\n{\n\ta = 1;\n\tfoo(a);\n\tbar(a);\n\tbaz(a);\n\treturn;\n}\n";
+ static const char new_text[] =
+  "int f()\n{\n\n    a = 1;\n    foo(a);\n    bar(a);\n    baz(a);\n    return;\n}\n";
+ int rows[2] = {3, 5};
+
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ load_text(old_text);
+ brp_set(2, rows);
+ scr.mark_begin = pnt(1, 4);
+ chk("11 format", e_buffer_replace_all(&buf, new_text, E_BUFFER_STEP_NEW), E_BUFFER_OK);
+ chk_str("11 the new text", text_of(), new_text);
+ chk("11 two hunks", moved_calls, 2);
+ chk("11 one record per hunk", list_len(buf.ud), 2);
+ chk("11 the row below the insertion moved", brp_has(4), 1);
+ chk("11 the other row moved", brp_has(6), 1);
+ chk("11 no row left on the old lines", brp_has(3) + brp_has(5), 0);
+ chk("11 the mark followed its line", scr.mark_begin.y, 5);
+ chk("11 the dirty mark counts both hunks", win.save, E_BUFFER_SAVE_PER_LINE * (1 + 10));
+ chk("11 one Undo takes both back", e_buffer_undo(&buf, &scr), E_BUFFER_OK);
+ chk_str("11 the old text", text_of(), old_text);
+ chk("11 the rows are back", brp_has(3) && brp_has(5) && scr.brp[0] == 2, 1);
+ chk("11 one Redo gives both", e_buffer_redo(&buf, &scr), E_BUFFER_OK);
+ chk_str("11 the new text again", text_of(), new_text);
+ chk("11 the rows follow again", brp_has(4) && brp_has(6) && scr.brp[0] == 2, 1);
+ fixture_free();
+}
+
+/* Memory refused at any point of a swap of several hunks: either the swap
+   is complete, or nothing changed (text, breakpoints, dirty mark, undo); no
+   line is lost or freed twice (the sanitizer build proves the second). */
+static void case_a_refused_swap_changes_nothing(void)
+{
+ static const char old_text[] = "int f()\n{\n\ta = 1;\n\tfoo(a);\n\tbar(a);\n\treturn;\n}\n";
+ static const char new_text[] = "int f()\n{\n\n    a = 1;\n    foo(a);\n    bar(a);\n    return;\n}\n";
+ int rows[2] = {3, 6};
+ int n, r, bad = 0, refused = 0, whole = 0;
+
+ for (n = 1; n < 80; n++) {
+  fixture(1, E_BUFFER_HISTORY_FULL);
+  load_text(old_text);
+  brp_set(2, rows);
+  e_buffer_test_fail_allocs(n);
+  r = e_buffer_replace_all(&buf, new_text, E_BUFFER_STEP_NEW);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   whole++;
+   if (strcmp(text_of(), new_text) != 0 || !brp_has(4) || !brp_has(7))
+    bad++;
+  }
+  if (r == E_BUFFER_NOMEM) {
+   refused++;
+   if (strcmp(text_of(), old_text) != 0 || buf.ud != NULL || win.save != 0 ||
+       !brp_has(3) || !brp_has(6) || scr.brp[0] != 2 || moved_calls != 0)
+    bad++;
+  }
+  fixture_free();
+ }
+ chk("11 a refused swap is whole or changes nothing", bad, 0);
+ chk("11 some allocation was refused", refused > 0, 1);
+ chk("11 and some swap went through", whole > 0, 1);
+}
+
+/* A swap made while a block operation moves its own rows (e_undo_sw): the
+   rows below an inserted line stay put meanwhile, so the swap is one hunk,
+   measured where it stands; the breakpoint stays on its line. */
+static void case_a_swap_inside_a_block_operation(void)
+{
+ int rows[1] = {4};
+ int r;
+
+ fixture(6, E_BUFFER_HISTORY_FULL);
+ brp_set(1, rows);
+ e_undo_sw = 1;
+ r = e_buffer_replace_all(&buf, "X\nL0\nL1\nL2\nL4\nL5\n", E_BUFFER_STEP_NEW);
+ e_undo_sw = 0;
+ chk("11 a swap inside a block operation", r, E_BUFFER_OK);
+ chk_str("11 its text", text_of(), "X\nL0\nL1\nL2\nL4\nL5\n");
+ chk("11 one hunk", moved_calls, 1);
+ chk("11 the breakpoint stays on L4", brp_has(4) && scr.brp[0] == 1, 1);
+ fixture_free();
+}
+
+/* A swap of more lines than the diff will search for is one hunk, never a
+   refusal and never a different text. */
+static void case_a_swap_beyond_the_bound_is_one_hunk(void)
+{
+ enum { LINES = E_BUFFER_DIFF_MAX / 2 + 10 };
+ char *old_text = malloc((size_t) LINES * 12), *new_text = malloc((size_t) LINES * 12);
+ size_t po = 0, pn = 0;
+ char last[32];
+ int i;
+
+ for (i = 0; i < LINES; i++) {
+  po += (size_t) sprintf(old_text + po, "old%d\n", i);
+  pn += (size_t) sprintf(new_text + pn, "new%d\n", i);
+ }
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ load_text(old_text);
+ chk("11 big swap", e_buffer_replace_all(&buf, new_text, E_BUFFER_STEP_NEW), E_BUFFER_OK);
+ chk("11 big swap: every line is the new one", buf.mxlines, LINES);
+ chk_str("11 big swap: first line", (char *) buf.bf[0].s, "new0\n");
+ snprintf(last, sizeof last, "new%d\n", LINES - 1);
+ chk_str("11 big swap: last line", (char *) buf.bf[LINES - 1].s, last);
+ chk("11 big swap: one hunk", moved_calls, 1);
+ chk("11 big swap: one record", list_len(buf.ud), 1);
+ fixture_free();
+ free(old_text);
+ free(new_text);
+}
+
+static unsigned fuzz_state = 12345u;
+
+static unsigned fuzz_next(unsigned bound)
+{
+ fuzz_state = fuzz_state * 1103515245u + 12345u;
+ return((fuzz_state >> 16) % bound);
+}
+
+/* Random text of a few lines from a small stock, the kind a formatter
+   shuffles: repeated lines, the same line with other blanks, empty lines. */
+static void fuzz_text(char *out, size_t size)
+{
+ static const char *const stock[] = {"a", "b", "c", "  a", "\tb", "", "x y", "x  y", "{", "}"};
+ unsigned lines = 1 + fuzz_next(24), i;
+ size_t used = 0;
+
+ for (i = 0; i < lines && used + 16 < size; i++)
+  used += (size_t) snprintf(out + used, size - used, "%s\n", stock[fuzz_next(10)]);
+}
+
+/* Whatever two texts are, the swap gives the new one, one Undo gives the
+   old one back and one Redo the new one again. */
+static void case_the_swap_is_exact_for_any_texts(void)
+{
+ char old_text[1024], new_text[1024], before[1024];
+ int round, bad = 0;
+
+ for (round = 0; round < 400; round++) {
+  fuzz_text(old_text, sizeof old_text);
+  fuzz_text(new_text, sizeof new_text);
+  fixture(1, E_BUFFER_HISTORY_FULL);
+  load_text(old_text);
+  snprintf(before, sizeof before, "%s", text_of());
+  if (e_buffer_replace_all(&buf, new_text, E_BUFFER_STEP_NEW) != E_BUFFER_OK)
+   bad++;
+  if (strcmp(text_of(), new_text) != 0)
+   bad++;
+  if (e_buffer_undo(&buf, &scr) != E_BUFFER_OK && strcmp(before, new_text) != 0)
+   bad++;
+  if (strcmp(text_of(), before) != 0)
+   bad++;
+  if (buf.ud != NULL)
+   bad++;
+  if (list_len(buf.rd) > 0 && e_buffer_redo(&buf, &scr) != E_BUFFER_OK)
+   bad++;
+  if (strcmp(text_of(), new_text) != 0)
+   bad++;
+  fixture_free();
+ }
+ chk("11 400 random swaps, undone and redone, are exact", bad, 0);
+}
+
 static void case_syntax_states_move(void)
 {
  static const int want[6] = {STATE_PLAIN, STATE_COMMENT, STATE_COMMENT, STATE_COMMENT,
@@ -678,6 +851,11 @@ int main(void)
  case_covered_deletion_and_the_pocket();
  case_detach_then_splice();
  case_replace_all_changes_only_the_middle();
+ case_a_format_is_cut_into_hunks();
+ case_a_refused_swap_changes_nothing();
+ case_a_swap_inside_a_block_operation();
+ case_a_swap_beyond_the_bound_is_one_hunk();
+ case_the_swap_is_exact_for_any_texts();
  case_syntax_states_move();
  case_a_view();
  case_no_window();

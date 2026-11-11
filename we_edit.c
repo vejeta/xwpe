@@ -2902,39 +2902,52 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
  return(0);
 }
 
-/**
- * e_buffer_set_text - Make the buffer hold @text, lines split on '\n'.
- * @b: the buffer; @text: the whole new content.
- *
- * Only the lines that differ change, as one undoable change (inside the
- * caller's step when it opened one): the user's breakpoints, block and
- * colours on the lines a tool did not touch stay where they were, and the
- * file has the shape the reader gives the same bytes ("a\nb\n" is two
- * lines).  On a view nothing is recorded.  The caller places the cursor.
- */
-void e_buffer_set_text(BUFFER *b, const char *text)
-{
- if (e_buffer_replace_all(b, text, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
-  wpe_buffer_say_nomem(b, "the new text");
-}
+/* What the screen's owner calls the paint of a window's new text. */
+#define E_REPLACED_TEXT_WHAT "a window's new text"
 
-/* e_replace_buffer_undoable - swap the whole buffer for `newtext` as ONE undoable
-   step, keeping the cursor where the user was working and repainting now.  This
-   is the shared spine of every "the tool rewrote the file" action -- an LSP code
-   action / rename / format (via e_lsp_replace_buffer, which then notifies the
-   server) and an accepted AI edit (via e_ai_apply_text).  Only the lines that
-   differ change, so the breakpoints, the block and the colours of the lines the
-   tool left alone stay on them, and a single Ctrl-U reverts the whole change;
-   the cursor is clamped to the rebuilt buffer so the edited spot stays on screen
-   instead of snapping to the top.  Callers that have a language server
-   attached notify it afterwards. */
-void e_replace_buffer_undoable(FENSTER *f, const char *newtext)
+/**
+ * e_window_paint_replaced_text - Draw a window whose lines were just replaced.
+ * @f: the window.
+ *
+ * The window is opened over its new lines and the desk is drawn again, so
+ * the user sees the new text, with the cursor where they were working,
+ * instead of the old rows until the next key.
+ */
+static void e_window_paint_replaced_text(FENSTER *f)
 {
- e_buffer_set_text(f->b, newtext);
- e_firstl(f, 1);                    /* re-open the view over the new buffer */
+ e_firstl(f, 1);                    /* re-open the view over the new lines */
  e_schirm(f, 1);
  e_rep_win_tree(f->ed);             /* full repaint */
  e_refresh();                       /* flush to the terminal now, not next key */
+}
+
+/* The screen's owner's turn for a window's new text that waited behind a
+   box.  The window may have closed meanwhile: it is looked up, never
+   followed. */
+static void e_window_replaced_text_replay(void *data)
+{
+ int i;
+
+ for (i = 1; i <= WpeEditor->mxedt; i++)
+  if (WpeEditor->f[i] == (FENSTER *)data)
+  {
+   e_window_paint_replaced_text((FENSTER *)data);
+   return;
+  }
+}
+
+/**
+ * e_window_show_replaced_text - Show the new text of a window a tool rewrote.
+ * @f: the window whose lines an accepted Edit, a language server's edit or a
+ * reload just replaced.
+ *
+ * What the user gains: the rewritten file is on the screen at once when
+ * nothing is in the way, and under a box or a menu it is drawn the moment
+ * that closes, on the window the user then sees.
+ */
+void e_window_show_replaced_text(FENSTER *f)
+{
+ wpe_paint_request(e_window_replaced_text_replay, f, E_REPLACED_TEXT_WHAT);
 }
 
 int e_make_undo(FENSTER *f)

@@ -1311,31 +1311,31 @@ static void ws_free_changes(ws_change *c, int n)
 #define WS_RELOAD_MAX 4000000
 
 /**
- * ws_window_show_text - Put `text` in the window's buffer and repaint it.
+ * ws_window_take_text - Put `text` in the window's buffer.
  * @w: an open file window; @text: the complete new content.
  *
- * Takes no undo snapshot of its own: the caller decides whether this is a new
- * step for Ctrl-U or the continuation of one already taken.  The cursor is
+ * Takes no undo step of its own: the lines that differ are one change for
+ * Ctrl-U, inside the step the caller opened when it opened one, so a write
+ * and the hook's reformatting that follows are one Ctrl-U.  The cursor is
  * kept on a line that still exists and the window is marked modified, so the
- * user sees the new text at once and is asked before losing it.
+ * user is asked before losing the new text.  The caller shows the window.
  */
-static void ws_window_show_text(FENSTER *w, const char *text)
+static void ws_window_take_text(FENSTER *w, const char *text)
 {
- e_buffer_set_text(w->b, text);
+ if (e_buffer_replace_all(w->b, text, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(w->b, "the new text");
  if (w->b->b.y >= w->b->mxlines) w->b->b.y = w->b->mxlines ? w->b->mxlines - 1 : 0;
  w->save++;
- e_firstl(w, 1);
- e_schirm(w, 1);
- e_rep_win_tree(w->ed);
- e_refresh();
 }
 
 /**
  * ws_window_reload_undoable - Reload a window from its file as ONE undo step.
  * @w: the open window; @path: the file to read.
  *
- * The text the user had is snapshotted first, so a single Ctrl-U brings it
- * back after a tool rewrote the file or a changeset revert restored it.
+ * Only the lines that differ change, so a single Ctrl-U brings back the text
+ * the user had after a tool rewrote the file or a changeset revert restored
+ * it, and the lines the file kept have their breakpoints and block.  The new
+ * text is shown at once, or when the box in the way closes.
  * Return: 1 when the file was read and shown, 0 when it could not be read
  * (the buffer is then left untouched and no undo step is taken).
  */
@@ -1343,8 +1343,8 @@ static int ws_window_reload_undoable(FENSTER *w, const char *path)
 {
  char *text = ws_read_file(path, WS_RELOAD_MAX);
  if (!text) return 0;
- e_add_undo('B', w->b, w->b->b.x, w->b->b.y, 0);
- ws_window_show_text(w, text);
+ ws_window_take_text(w, text);
+ e_window_show_replaced_text(w);
  free(text);
  return 1;
 }
@@ -1779,13 +1779,14 @@ BUFFER *wpe_ai_open_window_buffer(FENSTER *f, const char *path)
  *
  * For the post-edit hook: the caller has opened the undo step the change and
  * its reformatting share, so the user undoes both with one Ctrl-U instead of
- * seeing a half-undone file after the first.  Return: 1 when taken.
+ * seeing a half-undone file after the first.  The caller shows the window.
+ * Return: 1 when taken.
  */
 int wpe_ai_window_take_file(FENSTER *w, const char *path)
 {
  char *text = ws_read_file(path, WS_RELOAD_MAX);
  if (!text) return 0;
- ws_window_show_text(w, text);
+ ws_window_take_text(w, text);
  free(text);
  return 1;
 }
@@ -1804,7 +1805,9 @@ int wpe_ai_refresh_open_window(FENSTER *f, const char *path)
  const char *full = ws_absolute_path(path, abs, sizeof abs);
  FENSTER *w = ws_find_window(f, full);
  if (!w) return 0;
- return wpe_ai_window_take_file(w, full);
+ if (!wpe_ai_window_take_file(w, full)) return 0;
+ e_window_show_replaced_text(w);
+ return 1;
 }
 
 /**

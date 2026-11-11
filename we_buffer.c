@@ -164,7 +164,7 @@ void e_buffer_lines_free(STRING *lines, int n)
  free(lines);
 }
 
-static int buffer_lines_equal(STRING *a, STRING *b)
+static int buffer_lines_equal(const STRING *a, const STRING *b)
 {
  return(a->len == b->len && a->s[a->len] == b->s[b->len] &&
         memcmp(a->s, b->s, (size_t)a->len) == 0);
@@ -604,9 +604,12 @@ static Undo *buffer_line_record_new(int n_del, int rows_out)
  return(rec);
 }
 
-/* Take every allocation the splice needs; nothing moves yet. */
+/* Take every allocation the splice needs; nothing moves yet.  pocket_room:
+   the pocket to make room in for the rows the splice removes, or NULL when
+   the caller made that room already. */
 static int buffer_splice_prepare(BUFFER *b, int y, int n_del, int n_ins, int nbrk,
-                                 int records, int detach, BufferSpliceMem *m)
+                                 int records, int detach, Undo *pocket_room,
+                                 BufferSpliceMem *m)
 {
  int *brp = buffer_brp(b);
  int rows_out = brp_count_in(brp, y, y + n_del);
@@ -635,7 +638,7 @@ static int buffer_splice_prepare(BUFFER *b, int y, int n_del, int n_ins, int nbr
  if ((rows_out > 0 && m->removed == NULL) ||
      (nbrk > 0 && brp != NULL && m->added == NULL) ||
      buffer_brp_reserve(b, nbrk) != E_BUFFER_OK ||
-     buffer_pocket_reserve(buffer_splice_pocket(b, records), rows_out) != E_BUFFER_OK)
+     buffer_pocket_reserve(pocket_room, rows_out) != E_BUFFER_OK)
  {
   buffer_splice_mem_free(m);
   return(E_BUFFER_NOMEM);
@@ -692,6 +695,80 @@ static const char *buffer_step_name(WpeBufferStep step)
  return("replay");
 }
 
+/* The second half of a splice, with its memory taken: it cannot fail, so a
+   change made of several splices whose memory was all taken first is made
+   whole or not at all.  Arguments as buffer_splice; m: what
+   buffer_splice_prepare took, used up and freed here. */
+static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
+                                 const int *brk, int nbrk, WpeBufferStep step,
+                                 int no_changed, STRING *out, int *brk_out, int *nbrk_out,
+                                 Undo *pocket, BufferSpliceMem *m)
+{
+ int changed, old_mxlines, i, delta, rows_move;
+
+ if (m->need_canon)
+ {
+  lines = &m->canon;
+  n_ins = 1;
+  no_changed = 1;
+ }
+ changed = no_changed ? 0 : (n_del < n_ins ? n_del : n_ins);
+ if (m->rec != NULL)
+ {
+  m->rec->b = b->b;
+  m->rec->span = y;
+  m->rec->n_old = n_del;
+  m->rec->n_new = n_ins;
+  if (no_changed)
+   m->rec->flags |= E_UNDO_EMPTIED;
+  if (b->f != NULL && b->f->s != NULL)
+  {
+   m->rec->a = b->f->s->mark_begin;
+   m->rec->e = b->f->s->mark_end;
+  }
+ }
+ if (out != NULL && nbrk_out != NULL)
+  *nbrk_out = 0;
+ rows_move = !buffer_rows_left_to_block_code(n_del, n_ins);
+ if (rows_move)
+  buffer_brp_move(b, y, n_del, n_ins, changed, brk, nbrk, m, pocket, brk_out, nbrk_out);
+ for (i = 0; i < n_del; i++)
+ {
+  if (m->rec != NULL)
+   m->rec->old[i] = b->bf[y+i];
+  else if (out != NULL)
+   out[i] = b->bf[y+i];
+  else
+   free(b->bf[y+i].s);
+ }
+ old_mxlines = b->mxlines;
+ delta = n_ins - n_del;
+ if (old_mxlines - y - n_del > 0 && delta != 0)
+  memmove(b->bf + y + n_ins, b->bf + y + n_del,
+          (size_t)(old_mxlines - y - n_del) * sizeof(STRING));
+ for (i = 0; i < n_ins; i++)
+  b->bf[y+i] = lines[i];
+ m->canon.s = NULL;             /* adopted, when it was made */
+ b->mxlines = old_mxlines + delta;
+ buffer_syntax_move(b, y, n_del, n_ins, old_mxlines);
+ buffer_marks_move(b, y, n_del, n_ins, changed);
+ if (buffer_keeps_history(b))
+  b->f->save += E_BUFFER_SAVE_PER_LINE * (n_del + n_ins);
+ if (buffer_keeps_history(b) && rows_move)
+  wpe_buffer_lines_moved(b, y, n_del, n_ins, m->removed, m->nremoved, m->added, m->nadded);
+ if (m->rec != NULL)
+ {
+  buffer_record_link(b, m->rec);
+  wpe_buffer_trace("buffer record kind=R n_old=%d n_new=%d more=%d", m->rec->n_old,
+                   m->rec->n_new, (m->rec->flags & E_UNDO_MORE) ? 1 : 0);
+  m->rec = NULL;
+ }
+ wpe_buffer_trace("buffer splice y=%d del=%d ins=%d step=%s covered=%d", y, n_del,
+                  n_ins, buffer_step_name(step), b->covered);
+ buffer_splice_mem_free(m);
+ buffer_syntax_flush(b);
+}
+
 /* The splice itself.  no_changed: no row of the span is a changed row (a
    buffer emptied, or the replay of such a record).  detach: the removed
    lines go to out[] with their rows instead of being freed or recorded. */
@@ -700,7 +777,7 @@ static int buffer_splice(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
                          int no_changed, STRING *out, int *brk_out, int *nbrk_out)
 {
  BufferSpliceMem m;
- int records, changed, old_mxlines, i, delta, rows_move;
+ int records, i;
  Undo *pocket;
 
  if (y < 0 || n_del < 0 || n_ins < 0 || y > b->mxlines)
@@ -724,69 +801,10 @@ static int buffer_splice(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
  }
  records = buffer_splice_records(b, step);
  pocket = buffer_splice_pocket(b, records);
- if (buffer_splice_prepare(b, y, n_del, n_ins, nbrk, records, out != NULL, &m) != E_BUFFER_OK)
+ if (buffer_splice_prepare(b, y, n_del, n_ins, nbrk, records, out != NULL, pocket, &m) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
- if (m.need_canon)
- {
-  lines = &m.canon;
-  n_ins = 1;
-  no_changed = 1;
- }
- changed = no_changed ? 0 : (n_del < n_ins ? n_del : n_ins);
- if (m.rec != NULL)
- {
-  m.rec->b = b->b;
-  m.rec->span = y;
-  m.rec->n_old = n_del;
-  m.rec->n_new = n_ins;
-  if (no_changed)
-   m.rec->flags |= E_UNDO_EMPTIED;
-  if (b->f != NULL && b->f->s != NULL)
-  {
-   m.rec->a = b->f->s->mark_begin;
-   m.rec->e = b->f->s->mark_end;
-  }
- }
- if (out != NULL && nbrk_out != NULL)
-  *nbrk_out = 0;
- rows_move = !buffer_rows_left_to_block_code(n_del, n_ins);
- if (rows_move)
-  buffer_brp_move(b, y, n_del, n_ins, changed, brk, nbrk, &m, pocket, brk_out, nbrk_out);
- for (i = 0; i < n_del; i++)
- {
-  if (m.rec != NULL)
-   m.rec->old[i] = b->bf[y+i];
-  else if (out != NULL)
-   out[i] = b->bf[y+i];
-  else
-   free(b->bf[y+i].s);
- }
- old_mxlines = b->mxlines;
- delta = n_ins - n_del;
- if (old_mxlines - y - n_del > 0 && delta != 0)
-  memmove(b->bf + y + n_ins, b->bf + y + n_del,
-          (size_t)(old_mxlines - y - n_del) * sizeof(STRING));
- for (i = 0; i < n_ins; i++)
-  b->bf[y+i] = lines[i];
- m.canon.s = NULL;              /* adopted, when it was made */
- b->mxlines = old_mxlines + delta;
- buffer_syntax_move(b, y, n_del, n_ins, old_mxlines);
- buffer_marks_move(b, y, n_del, n_ins, changed);
- if (buffer_keeps_history(b))
-  b->f->save += E_BUFFER_SAVE_PER_LINE * (n_del + n_ins);
- if (buffer_keeps_history(b) && rows_move)
-  wpe_buffer_lines_moved(b, y, n_del, n_ins, m.removed, m.nremoved, m.added, m.nadded);
- if (m.rec != NULL)
- {
-  buffer_record_link(b, m.rec);
-  wpe_buffer_trace("buffer record kind=R n_old=%d n_new=%d more=%d", m.rec->n_old,
-                   m.rec->n_new, (m.rec->flags & E_UNDO_MORE) ? 1 : 0);
-  m.rec = NULL;
- }
- wpe_buffer_trace("buffer splice y=%d del=%d ins=%d step=%s covered=%d", y, n_del,
-                  n_ins, buffer_step_name(step), b->covered);
- buffer_splice_mem_free(&m);
- buffer_syntax_flush(b);
+ buffer_splice_commit(b, y, n_del, lines, n_ins, brk, nbrk, step, no_changed, out,
+                      brk_out, nbrk_out, pocket, &m);
  return(E_BUFFER_OK);
 }
 
@@ -1070,20 +1088,571 @@ STRING *e_buffer_lines_from_text(const char *text, int mx_x, int *n)
  return(lines);
 }
 
+/* ---- the diff of a whole-buffer swap ---- */
+
+/* One splice of the swap: at old line old_at, n_del lines become the n_ins
+   new lines from new_at.  Both positions count from the start of the middle,
+   and the hunks come in order. */
+typedef struct
+{
+ int old_at, n_del, new_at, n_ins;
+} BufferHunk;
+
+/* The lines being compared, one level at a time.  keyed: lines count as the
+   same when they differ only in blanks and tabs (a re-indented line). */
+typedef struct
+{
+ const STRING *a, *b;
+ const unsigned long *ha, *hb;
+ int keyed;
+} BufferSeq;
+
+/* The middle of a swap being diffed: both sides, their hashes, the hunks. */
+typedef struct
+{
+ const STRING *old_lines, *new_lines;
+ unsigned long *hx_old, *hx_new, *hk_old, *hk_new;
+ BufferHunk *hunks;
+ int nhunks, cap;
+} BufferDiff;
+
+#define BUFFER_HASH_SEED  5381UL
+
+static int buffer_is_blank(unsigned char c)
+{
+ return(c == ' ' || c == '\t');
+}
+
+/* A hash of the bytes of a line, or of its bytes without blanks (keyed). */
+static unsigned long buffer_hash_line(const STRING *l, int keyed)
+{
+ unsigned long h = BUFFER_HASH_SEED;
+ int i;
+
+ for (i = 0; i < l->len; i++)
+ {
+  if (keyed && buffer_is_blank(l->s[i]))
+   continue;
+  h = (h * 33UL) ^ l->s[i];
+ }
+ if (!keyed)
+  h = (h * 33UL) ^ l->s[l->len];
+ return(h);
+}
+
+static int buffer_keys_equal(const STRING *a, const STRING *b)
+{
+ int i = 0, j = 0;
+
+ for (;;)
+ {
+  while (i < a->len && buffer_is_blank(a->s[i]))
+   i++;
+  while (j < b->len && buffer_is_blank(b->s[j]))
+   j++;
+  if (i == a->len || j == b->len)
+   return(i == a->len && j == b->len);
+  if (a->s[i++] != b->s[j++])
+   return(0);
+ }
+}
+
+static int buffer_seq_same(const BufferSeq *q, int i, int j)
+{
+ if (q->ha[i] != q->hb[j])
+  return(0);
+ if (q->keyed)
+  return(buffer_keys_equal(&q->a[i], &q->b[j]));
+ return(buffer_lines_equal(&q->a[i], &q->b[j]));
+}
+
+/* Walk back through the saved search states from the end of both sequences
+   and write, for every line of a that is also in b, where it is. */
+static void buffer_myers_trace_back(int *const *trace, int d, int na, int nb, int *match)
+{
+ int x = na, y = nb, k, prev_k, prev_x, prev_y, mid_x, mid_y;
+
+ for (; d > 0; d--)
+ {
+  k = x - y;
+  if (k == -d || (k != d && trace[d][k - 1 + d] < trace[d][k + 1 + d]))
+   prev_k = k + 1;
+  else
+   prev_k = k - 1;
+  prev_x = trace[d][prev_k + d];
+  prev_y = prev_x - prev_k;
+  if (prev_k == k + 1)
+   mid_x = prev_x;
+  else
+   mid_x = prev_x + 1;
+  mid_y = mid_x - k;
+  while (x > mid_x && y > mid_y)
+  {
+   x--;
+   y--;
+   match[x] = y;
+  }
+  x = prev_x;
+  y = prev_y;
+ }
+ while (x > 0 && y > 0)
+ {
+  x--;
+  y--;
+  match[x] = y;
+ }
+}
+
+/* The furthest x reached on diagonal k after d edits, the new best on k. */
+static int buffer_myers_reach(const BufferSeq *q, int na, int nb, const int *v, int d, int k)
+{
+ int x, y;
+
+ if (k == -d || (k != d && v[k - 1] < v[k + 1]))
+  x = v[k + 1];
+ else
+  x = v[k - 1] + 1;
+ y = x - k;
+ while (x < na && y < nb && buffer_seq_same(q, x, y))
+ {
+  x++;
+  y++;
+ }
+ return(x);
+}
+
+/**
+ * buffer_myers - Pair the lines two sequences share, in order.
+ * @q: the sequences; @na, @nb: their lengths; @max_d: the most edits to look
+ * for; @match: receives, for every line of a, its place in b or -1.
+ *
+ * The shortest edit script of Myers' O(ND) search, kept to @max_d edits so a
+ * rewrite of the whole file costs a bounded time and memory.
+ * Return: 1 when @match is filled; 0 when the sequences differ by more than
+ * @max_d edits or memory ran out (the caller then takes them as one hunk).
+ */
+static int buffer_myers(const BufferSeq *q, int na, int nb, int max_d, int *match)
+{
+ int *v, **trace;
+ int off, d, k, x, found = -1, i;
+
+ if (max_d > na + nb)
+  max_d = na + nb;
+ off = max_d + 1;
+ v = buffer_malloc((size_t)(2 * max_d + 3) * sizeof(int));
+ trace = buffer_malloc((size_t)(max_d + 1) * sizeof(int *));
+ if (v == NULL || trace == NULL)
+ {
+  free(v);
+  free(trace);
+  return(0);
+ }
+ memset(v, 0, (size_t)(2 * max_d + 3) * sizeof(int));
+ memset(trace, 0, (size_t)(max_d + 1) * sizeof(int *));
+ for (i = 0; i < na; i++)
+  match[i] = -1;
+ for (d = 0; d <= max_d && found < 0; d++)
+ {
+  if (d > 0)
+  {
+   trace[d] = buffer_malloc((size_t)(2 * d + 1) * sizeof(int));
+   if (trace[d] == NULL)
+    break;
+   memcpy(trace[d], v + off - d, (size_t)(2 * d + 1) * sizeof(int));
+  }
+  for (k = -d; k <= d; k += 2)
+  {
+   x = buffer_myers_reach(q, na, nb, v + off, d, k);
+   v[off + k] = x;
+   if (k == na - nb && x >= na)
+   {
+    found = d;
+    break;
+   }
+  }
+ }
+ if (found >= 0)
+  buffer_myers_trace_back(trace, found, na, nb, match);
+ for (i = 0; i <= max_d; i++)
+  free(trace[i]);
+ free(trace);
+ free(v);
+ return(found >= 0);
+}
+
+static int buffer_diff_emit(BufferDiff *d, int old_at, int n_del, int new_at, int n_ins)
+{
+ BufferHunk *tmp;
+
+ if (n_del == 0 && n_ins == 0)
+  return(1);
+ if (d->nhunks == d->cap)
+ {
+  tmp = buffer_realloc(d->hunks, (size_t)(d->cap * 2 + 8) * sizeof(BufferHunk));
+  if (tmp == NULL)
+   return(0);
+  d->hunks = tmp;
+  d->cap = d->cap * 2 + 8;
+ }
+ d->hunks[d->nhunks].old_at = old_at;
+ d->hunks[d->nhunks].n_del = n_del;
+ d->hunks[d->nhunks].new_at = new_at;
+ d->hunks[d->nhunks].n_ins = n_ins;
+ d->nhunks++;
+ return(1);
+}
+
+static int buffer_diff_gap(BufferDiff *d, int oa, int na, int ob, int nb);
+
+/* Go through one level's pairing: what lies between two pairs is a gap, and
+   a run of pairs is a run of lines that stand in both texts.  At the exact
+   level the runs are lines that did not change and the gaps go on to the
+   keyed level; at the keyed level the runs are lines changed in place (the
+   same line re-indented) and the gaps are insertions, deletions or lines
+   changed beyond recognition. */
+static int buffer_diff_walk(BufferDiff *d, const int *match, int oa, int na, int ob,
+                            int nb, int keyed)
+{
+ int i = 0, j = 0, next, end, run;
+
+ while (i < na || j < nb)
+ {
+  next = i;
+  while (next < na && match[next] < 0)
+   next++;
+  end = (next == na) ? nb : match[next];
+  if (next > i || end > j)
+  {
+   if (keyed && !buffer_diff_emit(d, oa + i, next - i, ob + j, end - j))
+    return(0);
+   if (!keyed && !buffer_diff_gap(d, oa + i, next - i, ob + j, end - j))
+    return(0);
+  }
+  if (next == na)
+   break;
+  run = 1;
+  while (next + run < na && match[next + run] == match[next] + run)
+   run++;
+  if (keyed && !buffer_diff_emit(d, oa + next, run, ob + end, run))
+   return(0);
+  i = next + run;
+  j = end + run;
+ }
+ return(1);
+}
+
+/* Pair the lines of one gap with the blanks left out, or take the gap whole. */
+static int buffer_diff_gap(BufferDiff *d, int oa, int na, int ob, int nb)
+{
+ BufferSeq q;
+ int *match, ok;
+
+ if (na == 0 || nb == 0)
+  return(buffer_diff_emit(d, oa, na, ob, nb));
+ q.a = d->old_lines + oa;
+ q.b = d->new_lines + ob;
+ q.ha = d->hk_old + oa;
+ q.hb = d->hk_new + ob;
+ q.keyed = 1;
+ match = buffer_malloc((size_t)na * sizeof(int));
+ if (match == NULL || !buffer_myers(&q, na, nb, E_BUFFER_DIFF_MAX, match))
+ {
+  free(match);
+  return(buffer_diff_emit(d, oa, na, ob, nb));
+ }
+ ok = buffer_diff_walk(d, match, oa, na, ob, nb, 1);
+ free(match);
+ return(ok);
+}
+
+/* The exact level over the whole middle; what it cannot pair goes on. */
+static int buffer_diff_exact(BufferDiff *d, int na, int nb)
+{
+ BufferSeq q;
+ int *match, ok;
+
+ if (na == 0 || nb == 0)
+  return(buffer_diff_emit(d, 0, na, 0, nb));
+ q.a = d->old_lines;
+ q.b = d->new_lines;
+ q.ha = d->hx_old;
+ q.hb = d->hx_new;
+ q.keyed = 0;
+ match = buffer_malloc((size_t)na * sizeof(int));
+ if (match == NULL || !buffer_myers(&q, na, nb, E_BUFFER_DIFF_MAX, match))
+ {
+  free(match);
+  return(buffer_diff_gap(d, 0, na, 0, nb));
+ }
+ ok = buffer_diff_walk(d, match, 0, na, 0, nb, 0);
+ free(match);
+ return(ok);
+}
+
+/**
+ * buffer_diff_middle - Cut the middle of a swap into hunks.
+ * @old_lines, @na: the lines now in the buffer; @new_lines, @nb: the lines
+ * that are to be there.
+ *
+ * Two levels: Myers on exact lines first, then, inside every stretch it
+ * cannot pair, Myers on the lines without their blanks.  A re-indented line
+ * pairs with its old self and is a changed row; the lines left over are
+ * insertions and deletions.  Return: the hunks in @d, 1; or 0 when memory
+ * ran out (the caller takes the whole middle as one hunk).
+ */
+static int buffer_diff_middle(BufferDiff *d, const STRING *old_lines, int na,
+                              const STRING *new_lines, int nb)
+{
+ int i;
+ unsigned long *hashes;
+
+ memset(d, 0, sizeof(*d));
+ d->old_lines = old_lines;
+ d->new_lines = new_lines;
+ hashes = buffer_malloc((size_t)(2 * na + 2 * nb) * sizeof(unsigned long));
+ if (hashes == NULL)
+  return(0);
+ d->hx_old = hashes;
+ d->hk_old = hashes + na;
+ d->hx_new = hashes + 2 * na;
+ d->hk_new = hashes + 2 * na + nb;
+ for (i = 0; i < na; i++)
+ {
+  d->hx_old[i] = buffer_hash_line(&old_lines[i], 0);
+  d->hk_old[i] = buffer_hash_line(&old_lines[i], 1);
+ }
+ for (i = 0; i < nb; i++)
+ {
+  d->hx_new[i] = buffer_hash_line(&new_lines[i], 0);
+  d->hk_new[i] = buffer_hash_line(&new_lines[i], 1);
+ }
+ if (buffer_diff_exact(d, na, nb))
+ {
+  free(hashes);
+  return(1);
+ }
+ free(hashes);
+ free(d->hunks);
+ d->hunks = NULL;
+ d->nhunks = 0;
+ return(0);
+}
+
+/* The one hunk of the whole middle: what a swap does when it cannot diff. */
+static int buffer_diff_one_hunk(BufferDiff *d, int na, int nb)
+{
+ d->hunks = NULL;
+ d->nhunks = d->cap = 0;
+ return(buffer_diff_emit(d, 0, na, 0, nb));
+}
+
+/* A finer cut is worth its search: the buffer keeps breakpoints, colours and
+   undo, and no block operation is moving its own rows (e_undo_sw), which
+   would leave the rows below an inserted hunk where they were, so the hunks
+   after it could not be measured where they stand before any of them lands. */
+static int buffer_swap_cuts_finely(BUFFER *b)
+{
+ return(buffer_keeps_history(b) && e_undo_sw == 0);
+}
+
+/**
+ * buffer_cut_middle - The hunks of a swap: cut by the diff, or one.
+ * @b: the buffer; @head: where the middle starts; @na, @nb: the lines it
+ * has now and the lines it is to have; @new_lines: the new ones.
+ *
+ * A buffer that keeps no breakpoints, colours or undo (a view, or one whose
+ * window has closed) has nothing a finer cut would keep, so it takes the
+ * whole middle as one hunk and pays for no search; so does a swap made in
+ * the middle of a block operation.  Return: 1, or 0 when memory ran out.
+ */
+static int buffer_cut_middle(BUFFER *b, BufferDiff *d, int head, int na,
+                             const STRING *new_lines, int nb)
+{
+ if (buffer_swap_cuts_finely(b) && buffer_diff_middle(d, b->bf + head, na, new_lines, nb))
+  return(1);
+ return(buffer_diff_one_hunk(d, na, nb));
+}
+
+/* What one hunk of a swap needs, taken before the first hunk lands. */
+typedef struct
+{
+ BufferSpliceMem m;
+ int unchanged;       /* its new lines are the old ones byte for byte: no splice */
+} BufferHunkMem;
+
+static void buffer_swap_mem_free(BufferHunkMem *hm, int n)
+{
+ int h;
+
+ for (h = 0; h < n; h++)
+  buffer_splice_mem_free(&hm[h].m);
+ free(hm);
+}
+
+/* The hunk's new lines are its old ones byte for byte (a pairing of
+   re-indented lines can hold some that did not change at all). */
+static int buffer_hunk_unchanged(BUFFER *b, int y, const BufferHunk *hk, const STRING *lines)
+{
+ int i;
+
+ if (hk->n_del != hk->n_ins)
+  return(0);
+ for (i = 0; i < hk->n_del; i++)
+  if (!buffer_lines_equal(&b->bf[y + i], &lines[i]))
+   return(0);
+ return(1);
+}
+
+/* Room for the swap as a whole: the table for the most lines it can reach
+   on its way, the pocket for every row its hunks can take off. */
+static int buffer_swap_reserve(BUFFER *b, int head, const BufferDiff *d, Undo *pocket)
+{
+ int h, grow = 0, rows = 0;
+ const BufferHunk *hk;
+
+ for (h = 0; h < d->nhunks; h++)
+ {
+  hk = &d->hunks[h];
+  if (hk->n_ins > hk->n_del)
+   grow += hk->n_ins - hk->n_del;
+  rows += brp_count_in(buffer_brp(b), head + hk->old_at, head + hk->old_at + hk->n_del);
+ }
+ if (buffer_grow(b, b->mxlines + grow) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ return(buffer_pocket_reserve(pocket, rows));
+}
+
+/**
+ * buffer_swap_prepare - Take the memory of every hunk of a swap at once.
+ * @b: the buffer; @lines: the new text's lines; @head: where the middle
+ * starts; @d: the hunks; @records: whether the splices record; @pocket:
+ * where removed rows go when they do not; @out: receives the hunks' memory.
+ *
+ * Every hunk is measured where it stands before any of them lands: the
+ * hunks above it only move it, they bring no breakpoint row into it.  So
+ * memory refused for any hunk leaves the text exactly as the user had it.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with nothing taken.
+ */
+static int buffer_swap_prepare(BUFFER *b, const STRING *lines, int head, const BufferDiff *d,
+                               int records, Undo *pocket, BufferHunkMem **out)
+{
+ BufferHunkMem *hm;
+ const BufferHunk *hk;
+ int h;
+
+ *out = NULL;
+ if (d->nhunks == 0)
+  return(E_BUFFER_OK);
+ hm = buffer_malloc((size_t)d->nhunks * sizeof(BufferHunkMem));
+ if (hm == NULL)
+  return(E_BUFFER_NOMEM);
+ memset(hm, 0, (size_t)d->nhunks * sizeof(BufferHunkMem));
+ if (buffer_swap_reserve(b, head, d, pocket) != E_BUFFER_OK)
+ {
+  free(hm);
+  return(E_BUFFER_NOMEM);
+ }
+ for (h = 0; h < d->nhunks; h++)
+ {
+  hk = &d->hunks[h];
+  hm[h].unchanged = buffer_hunk_unchanged(b, head + hk->old_at, hk, lines + head + hk->new_at);
+  if (hm[h].unchanged)
+   continue;
+  if (buffer_splice_prepare(b, head + hk->old_at, hk->n_del, hk->n_ins, 0, records, 0,
+                            NULL, &hm[h].m) != E_BUFFER_OK)
+  {
+   buffer_swap_mem_free(hm, h);
+   return(E_BUFFER_NOMEM);
+  }
+ }
+ *out = hm;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * buffer_swap_hunks - Land the hunks of a swap, all of them or none.
+ * @b: the buffer; @lines: the new text's lines; @used: marks the lines a
+ * hunk took in; @head: where the middle starts; @d: the hunks; @step: how
+ * the swap counts for Ctrl-U.
+ *
+ * Top-down, each hunk at its old place moved by what the hunks above it
+ * added or removed.  A swap that counts for Ctrl-U is one step, so one key
+ * takes all of it back.  The memory of every hunk is taken first, so when
+ * memory runs out the user's text, breakpoints and undo are as they were.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with nothing changed.
+ */
+static int buffer_swap_hunks(BUFFER *b, STRING *lines, char *used, int head,
+                             const BufferDiff *d, WpeBufferStep step)
+{
+ int h, offset = 0, i, records = buffer_splice_records(b, step);
+ Undo *pocket = buffer_splice_pocket(b, records);
+ const BufferHunk *hk;
+ BufferHunkMem *hm;
+
+ if (buffer_swap_prepare(b, lines, head, d, records, pocket, &hm) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ if (step == E_BUFFER_STEP_NEW)
+  e_buffer_step_begin(b);
+ for (h = 0; h < d->nhunks; h++)
+ {
+  hk = &d->hunks[h];
+  if (!hm[h].unchanged)
+  {
+   buffer_splice_commit(b, head + hk->old_at + offset, hk->n_del,
+                        lines + head + hk->new_at, hk->n_ins, NULL, 0, step, 0,
+                        NULL, NULL, NULL, pocket, &hm[h].m);
+   for (i = 0; i < hk->n_ins; i++)
+    used[head + hk->new_at + i] = 1;
+  }
+  offset += hk->n_ins - hk->n_del;
+ }
+ if (step == E_BUFFER_STEP_NEW)
+  e_buffer_step_end(b);
+ free(hm);
+ return(E_BUFFER_OK);
+}
+
+/* How many lines at the start, then at the end, the buffer and the new text
+   have in common byte for byte. */
+static int buffer_common_head(BUFFER *b, const STRING *lines, int n)
+{
+ int head = 0;
+
+ while (head < n && head < b->mxlines && buffer_lines_equal(&b->bf[head], &lines[head]))
+  head++;
+ return(head);
+}
+
+static int buffer_common_tail(BUFFER *b, const STRING *lines, int n, int head)
+{
+ int tail = 0;
+
+ while (tail < n - head && tail < b->mxlines - head &&
+        buffer_lines_equal(&b->bf[b->mxlines - 1 - tail], &lines[n - 1 - tail]))
+  tail++;
+ return(tail);
+}
+
 /**
  * e_buffer_replace_all - Make the buffer hold `text`, changing only what differs.
  * @step: how the change counts for Ctrl-U.
  *
  * A tool's rewrite of the file (an accepted Edit, a rename, a format) leaves
- * the lines it did not touch where they were: their breakpoints, marks and
- * colours stay, and Ctrl-U gives back the old lines.  The common leading and
- * trailing lines are kept; the middle is one splice.  Return: as
- * e_buffer_splice; identical text changes nothing and records nothing.
+ * the lines it did not touch where they were: their breakpoints, block
+ * marks and colours stay on their code, and one Ctrl-U gives back the old
+ * lines.  A line the tool only re-indented counts as the same line.  The
+ * common leading and trailing lines are kept and the middle is cut into
+ * hunks; a rewrite too different to cut (more than E_BUFFER_DIFF_MAX
+ * edits) is one hunk, as a change to the whole middle always was.
+ * Return: as e_buffer_splice; identical text changes nothing and records
+ * nothing.
  */
 int e_buffer_replace_all(BUFFER *b, const char *text, WpeBufferStep step)
 {
  STRING *lines;
- int n, head = 0, tail = 0, r, i;
+ BufferDiff d;
+ char *used;
+ int n, head, tail, na, nb, r, i;
 
  lines = e_buffer_lines_from_text(text, b->mx.x, &n);
  if (n < 0)
@@ -1094,21 +1663,30 @@ int e_buffer_replace_all(BUFFER *b, const char *text, WpeBufferStep step)
    return(E_BUFFER_OK);         /* empty text over the one empty line */
   return(e_buffer_splice(b, 0, b->mxlines, NULL, 0, NULL, 0, step));
  }
- while (head < n && head < b->mxlines && buffer_lines_equal(&b->bf[head], &lines[head]))
-  head++;
- while (tail < n - head && tail < b->mxlines - head &&
-        buffer_lines_equal(&b->bf[b->mxlines - 1 - tail], &lines[n - 1 - tail]))
-  tail++;
- for (i = 0; i < head; i++)
-  free(lines[i].s);
- for (i = n - tail; i < n; i++)
-  free(lines[i].s);
- r = e_buffer_splice(b, head, b->mxlines - head - tail, lines + head,
-                     n - head - tail > 0 ? n - head - tail : 0, NULL, 0, step);
- if (r != E_BUFFER_OK)
-  for (i = head; i < n - tail; i++)
+ used = buffer_malloc((size_t)n);
+ if (used == NULL)
+ {
+  e_buffer_lines_free(lines, n);
+  return(E_BUFFER_NOMEM);
+ }
+ memset(used, 0, (size_t)n);
+ head = buffer_common_head(b, lines, n);
+ tail = buffer_common_tail(b, lines, n, head);
+ na = b->mxlines - head - tail;
+ nb = n - head - tail;
+ if (!buffer_cut_middle(b, &d, head, na, lines + head, nb))
+ {
+  e_buffer_lines_free(lines, n);
+  free(used);
+  return(E_BUFFER_NOMEM);
+ }
+ r = buffer_swap_hunks(b, lines, used, head, &d, step);
+ free(d.hunks);
+ for (i = 0; i < n; i++)
+  if (!used[i])
    free(lines[i].s);
  free(lines);
+ free(used);
  return(r);
 }
 

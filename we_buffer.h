@@ -20,6 +20,14 @@
 #define E_BUFFER_NOTHING       (-3)  /* Undo or Redo with an empty list */
 #define E_BUFFER_SAVE_PER_LINE  10   /* what a line counts toward f->save */
 
+/* The most edits (lines taken out plus lines put in) the diff of a
+   whole-buffer swap looks for before it gives up and takes what is left as
+   one changed hunk.  The search costs time in proportion to this bound times
+   the number of lines, and memory in proportion to its square. */
+#ifndef E_BUFFER_DIFF_MAX
+#define E_BUFFER_DIFF_MAX     2000
+#endif
+
 /* b->history */
 #define E_BUFFER_HISTORY_FULL    0   /* a file: undo, dirty mark, breakpoints */
 #define E_BUFFER_NO_HISTORY      1   /* a view the editor writes: no record, no dirty

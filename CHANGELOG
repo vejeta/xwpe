@@ -245,6 +245,12 @@ Changes
   marked past the end of a file a tool shortened is cut to the file
   instead of reading freed memory.
 
+* A format, a rename or an accepted Edit that adds, removes or re-indents
+  lines keeps every breakpoint on its own code (a format that added a line
+  left them one line off, under other code), and one Ctrl-U gives back the
+  whole change.  A rewrite that adds or removes over two thousand lines
+  keeps them on their line numbers.
+
 * A breakpoint moved by an edit during a debugging session moves in the
   debugger too.  Enter above a breakpoint at a stop used to move the mark
   while gdb, pdb or the debug adapter kept the old line, so Ctrl-G R

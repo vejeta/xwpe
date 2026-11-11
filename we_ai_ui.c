@@ -4086,7 +4086,8 @@ static void ai_chat_next_turn(ai_chat_session *s)
 static void ai_compose_show_seed(FENSTER *w, const char *seed)
 {
  BUFFER *b = w->b;
- e_buffer_set_text(b, seed);
+ if (e_buffer_replace_all(b, seed, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the composer's text");
  e_buffer_history_drop(b);                   /* the seed is not the user's to undo */
  b->b.y = b->mxlines - 1;                    /* caret after the text */
  b->b.x = b->bf[b->b.y].len;
@@ -5381,19 +5382,22 @@ static void ai_hook_after_accept(FENSTER *f)
  * e_ai_apply_text - Put an accepted AI change into the window as one undo step.
  * @f: the window; @newtext: the whole file as accepted.
  *
- * The same one-undo whole-buffer swap the LSP apply path uses (the shared
- * spine is in we_edit.c), so an Edit, a completion or a multi-file change
- * reverts with a single Ctrl-U exactly like a code action.  With a post-edit
- * hook set, its reformatting lands inside that same step and the file on disk
- * stays as it was until the user saves.  The step is opened here, so it holds
- * the change and the hook's rewrite and nothing the user did before them.
+ * The same one-undo whole-buffer swap a language server's edit uses, so an
+ * Edit, a completion or a multi-file change reverts with a single Ctrl-U
+ * exactly like a code action, and the lines the change left alone keep their
+ * breakpoints, block and colours.  With a post-edit hook set, its
+ * reformatting lands inside that same step and the file on disk stays as it
+ * was until the user saves.  The step is opened here, so it holds the change
+ * and the hook's rewrite and nothing the user did before them.
  */
 static void e_ai_apply_text(FENSTER *f, const char *newtext)
 {
  e_buffer_step_begin(f->b);
- e_replace_buffer_undoable(f, newtext);
+ if (e_buffer_replace_all(f->b, newtext, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(f->b, "the new text");
  ai_hook_after_accept(f);
  e_buffer_step_end(f->b);
+ e_window_show_replaced_text(f);
 }
 
 /* Reply bytes a fence may be wrapped in: blanks and line breaks around the

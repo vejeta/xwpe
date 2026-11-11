@@ -156,6 +156,18 @@ with Undo, and stays on its code when lines move, so the program stops
 where the margin shows.  During a debugging session the debugger is told
 of the move too, at once at a stop and after its answer while it is
 answering, so a key that moves a breakpoint is never refused for it.
+
+@item Formats, renames and accepted Edits
+@cindex breakpoints, format
+@cindex undo, format
+The original had no tool that rewrote the whole file.  Here a format, a
+rename, a code action and an accepted assistant Edit change only the lines
+that differ, and a line that only changed its indentation counts as the same
+line.  A breakpoint, the block and the colours stay on their code when the
+tool adds, removes or re-indents lines, and one @kbd{Ctrl-U} gives back the
+whole change.  Too different a rewrite (more than about two thousand lines
+added or removed) is taken as one change to the lines in the middle, and
+there breakpoints stay on their line numbers.
 @end table
 
 @section Short commands

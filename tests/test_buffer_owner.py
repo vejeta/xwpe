@@ -202,6 +202,71 @@ def test_a_breakpoint_below_an_accepted_edit_moves_with_its_line(tmp_path):
         assert s.alive(), "wpe died"
 
 
+# The same file as a formatter leaves it: a blank line after the opening
+# brace and the body indented by four.
+FORMATTED = ("int main(void)\n"
+             "{\n"
+             "\n"
+             "    int a = 1;\n"
+             "    foo(a);\n"
+             "    bar(a);\n"
+             "    baz(a);\n"
+             "    return 0;\n"
+             "}\n")
+FOO_ROW = 3
+
+
+# @scenario SC-buffer-04
+@needs_ai
+def test_a_format_that_adds_a_line_keeps_the_breakpoints_on_their_code(tmp_path):
+    """A format adds a line after the brace and re-indents every line below
+    it: each breakpoint is still on its own code, one line further down, and
+    Ctrl-U puts them back on the lines they had."""
+    with WpeSession(str(tmp_path), SEED, env_extra=_ai_env(tmp_path, FORMATTED)) as s:
+        _toggle_breakpoint_at(s, FOO_ROW)
+        _go_top(s, FOO_ROW)
+        _toggle_breakpoint_at(s, BAZ_ROW)
+        _go_top(s, BAZ_ROW)
+        assert s.breakpoint_lines() == [FOO_ROW + 1, BAZ_ROW + 1], \
+            "the breakpoints were not set: %s" % s.breakpoint_lines()
+        _accept_edit(s, tmp_path)
+        assert "    baz(a);" in _line_text(s, BAZ_ROW + 2), "the format was not applied"
+        assert s.breakpoint_lines() == [FOO_ROW + 2, BAZ_ROW + 2], \
+            "the breakpoints are on lines %s, their code is on %s" % (
+                s.breakpoint_lines(), [FOO_ROW + 2, BAZ_ROW + 2])
+        s.key(CTRL_U, delay=0.8)
+        assert "  baz(a);" in _line_text(s, BAZ_ROW + 1), "Ctrl-U did not revert the format"
+        assert s.breakpoint_lines() == [FOO_ROW + 1, BAZ_ROW + 1], \
+            "after Ctrl-U the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+@needs_ai
+def test_redo_of_an_edit_with_a_hook_restores_both_swaps(tmp_path):
+    """An accepted Edit and the post-edit hook's rewrite are one Ctrl-U; one
+    Ctrl-R gives the Edit and the hook's rewrite back together."""
+    hook = hook_contracts._hook_script(tmp_path, 'printf %s >> "$1"' % hook_contracts.MARK)
+    home = hook_contracts._home_with_hook(tmp_path, hook)
+    env = hook_contracts._edit_env(home, hook_contracts.EDIT_NEW, tmp_path / "e.trace")
+    with WpeSession(str(tmp_path), hook_contracts.EDIT_ORIG, env_extra=env,
+                    filename="t.c") as s:
+        hook_contracts._accept_edit(s, tmp_path, "e.trace")
+        shown = "\n".join(s.display())
+        assert "int b = 22;" in shown and hook_contracts.MARK in shown, \
+            "the Edit and the hook's rewrite are not both shown:\n" + shown
+        s.key(CTRL_U, delay=0.8)
+        undone = "\n".join(s.display())
+        assert "int b = 2;" in undone and hook_contracts.MARK not in undone, \
+            "one Ctrl-U did not take back both:\n" + undone
+        s.key(CTRL_R, delay=0.8)
+        redone = "\n".join(s.display())
+        assert "int b = 22;" in redone, "Ctrl-R did not give the Edit back:\n" + redone
+        assert hook_contracts.MARK in redone, \
+            "Ctrl-R did not give the hook's rewrite back:\n" + redone
+        assert s.alive(), "wpe died"
+
+
 # @scenario SC-buffer-04
 @needs_ai
 def test_undo_of_a_swap_brings_the_breakpoint_back_to_its_line(tmp_path):
