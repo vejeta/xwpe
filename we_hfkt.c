@@ -324,6 +324,50 @@ void e_status_hold(const char *text)
  e_status_held_line = WpeStrdup(text);
 }
 
+/* What the screen's owner calls a status line kept for later, in its trace. */
+#define E_STATUS_KEPT_WHAT "a status line"
+
+/**
+ * e_status_show_held - Draw the line kept for the bottom row.
+ * @data: unused.
+ *
+ * Run by the screen's owner once no box, menu or User Screen holds the
+ * screen.  A key pressed since, or a newer line, has already taken the
+ * line's place, and then nothing is drawn: the user never reads a line
+ * that is no longer the last one said.
+ */
+static void e_status_show_held(void *data)
+{
+ (void)data;
+ if (!e_status_held_line || !WpeEditor || !WpeEditor->fb)
+  return;
+ e_status_paint(WpeEditor->fb, e_status_held_line);
+ e_refresh();
+}
+
+/**
+ * e_status_keep_until_free - Keep a line for the bottom row while the
+ * screen is not the editor's.
+ * @text: the line.
+ *
+ * For a line the editor says by itself, from the loop (a stream that
+ * stopped reading, a stream it cannot watch, why it gave up waiting for an
+ * answer): while a box, a menu, the User Screen or a command the editor
+ * waits for has the screen, the line is not drawn over it.  It is kept
+ * until the next key, and drawn as soon as the screen is the editor's
+ * again.
+ * Return: 1 when the line was kept for later (nothing to draw now), 0 when
+ * the caller draws it now.
+ */
+int e_status_keep_until_free(const char *text)
+{
+ if (wpe_paint_idle())
+  return(0);
+ e_status_hold(text);
+ wpe_paint_request(e_status_show_held, NULL, E_STATUS_KEPT_WHAT);
+ return(1);
+}
+
 /**
  * e_status_drop_held - Forget the status line kept until the next key.
  *
@@ -380,11 +424,14 @@ void e_status_key_pressed(FENSTER *f)
  * @text: the line.
  *
  * For a line said from code that has no window at hand (a stream's
- * callback): it is painted at once when the screen is up, and every repaint
- * of the bar keeps it until the user presses a key.
+ * callback): it is painted at once when the screen is the editor's, when a
+ * box closes otherwise, and every repaint of the bar keeps it until the
+ * user presses a key.
  */
 static void e_status_say_anywhere(const char *text)
 {
+ if (e_status_keep_until_free(text))
+  return;
  e_status_hold(text);
  if (!WpeEditor || !WpeEditor->fb)
   return;

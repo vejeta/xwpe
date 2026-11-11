@@ -233,11 +233,24 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Every box now reads its keys through the editor's one screen owner:
+  dialogs and their text fields, dropdowns, error boxes, pickers, the
+  colour menu, the About and System Info boxes and the assistant's
+  boxes.  Status lines the editor says by itself wait for a box as the
+  rest does: a debugger's, build server's or language server's waiting
+  line is drawn again when the box closes, with the seconds of then, and
+  "gave up waiting" or "stopped reading its input" stays until your next
+  key.  A resize while a box is open lays the windows out and draws the
+  box again; the About and System Info boxes vanished, and under Wayland
+  no box was told of the resize, so the old box came back when it
+  closed.  Closing the window a language server was started from, then
+  letting it publish its problems, could crash the editor; it no longer
+  does.
+
 * Output, replies and messages arriving from the background no longer
-  draw over a box or a running program (status lines still do; that is
-  next).  An assistant reply that landed while a Ctrl-F9 program
-  ran opened its review over the program; it now waits until the program
-  ends.  The build's output, the assistant's waiting line and what a
+  draw over a box or a running program.  An assistant reply that landed
+  while a Ctrl-F9 program ran opened its review over the program; it now
+  waits until the program ends.  The build's output, the assistant's waiting line and what a
   language server says wait for a dialog or a dropdown and are drawn when
   it closes: the "LSP: 1 error(s)" line and the message that the server
   stopped were lost when they came under one.  Output kept behind a

@@ -55,20 +55,10 @@ we_xterm.o poll 1 P9o the paste wait for SelectionNotify
 # children: started, signalled and reaped only by we_child.c.
 we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_child.c
 
-# the screen: a box that reads its own keys.  The menu bar, the prefixes
-# (Ctrl-K, Ctrl-O, Ctrl-G, Alt-Q), the move/size loop and the User Screen
-# read through the owner's bracket; the dialog engines (dialogs, pickers,
-# text fields, dropdowns, popups, the assistant's boxes) move to it in P10d.
-# The main loop's read and the owner's key hook stay in we_edit.c.
+# the screen: every box, menu, prefix and dialog reads its keys through the
+# owner's bracket.  The main loop's read and the owner's key hook stay in
+# we_edit.c; the check allows no other line for the screen's names.
 we_edit.o e_getch 2 keep the main loop's read and the owner's key hook (e_paint_read_key)
-we_menue.o e_getch 2 P10d the dropdown engine
-we_opt.o e_getch 9 P10d the dialog engine
-we_wind.o e_getch 4 P10d the error box and the selection box
-we_e_aus.o e_getch 3 P10d the dialogs' text fields
-we_fl_fkt.o e_getch 2 P10d the file pickers
-we_unix.o e_getch 2 P10d the colour menu
-we_ai_ui.o e_getch 6 P10d the assistant's boxes
-we_ai_ws.o e_getch 2 P10d the changeset review
 
 # writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
 we_ai.o write 1 keep the test backend's temporary file, not a child

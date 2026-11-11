@@ -346,7 +346,7 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
  fk_cursor(1);
  /* `|| g_bracketed_paste` keeps the loop alive on an Esc byte arriving inside
     a terminal paste; the pasted digits are typed, the control bytes dropped. */
- while ((c = e_getch()) != WPE_ESC || g_bracketed_paste)
+ while ((c = wpe_paint_modal_getch()) != WPE_ESC || g_bracketed_paste)
  {
   if (g_bracketed_paste && e_pasted_control_byte(c))
    continue;
@@ -503,7 +503,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
     terminal paste (mode 2004); such control bytes are swallowed just below so a
     pasted API key -- or any text ending in a newline -- inserts its printable
     characters without confirming, cancelling or navigating the dialog. */
- while ((c = e_getch()) != WPE_ESC || g_bracketed_paste)
+ while ((c = wpe_paint_modal_getch()) != WPE_ESC || g_bracketed_paste)
  {
   if (c == WPE_PASTE_END && pasted_lines)
   {
@@ -628,7 +628,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
   }
   else if (!sond && c == CtrlO)
   {
-   if ((c = e_getch()) != CtrlT && toupper(c) != 'T') continue;
+   if ((c = wpe_paint_modal_getch()) != CtrlT && toupper(c) != 'T') continue;
    c = jc - e_su_rblk(jc, tmp);
    {
     for( i = jc-c; i <= l-c; i++)

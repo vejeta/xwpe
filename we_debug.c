@@ -8045,6 +8045,83 @@ static e_dap_session *e_d_dap_spawn(char *const *adapter,
 
 static long e_d_ga_now_ms(void *io);   /* the editor's clock (below) */
 
+/* A waiting line asked for while the screen was not the editor's: what the
+   editor waits for and how long it had waited then, so the line drawn
+   later says the seconds of the moment it is drawn. */
+typedef struct
+{
+ int  due;                   /* a line waits for the screen              */
+ char cmd[E_D_REQ_CMD_MAX];  /* what is waited for                       */
+ long secs;                  /* the seconds it had waited, when asked    */
+ long asked_ms;              /* the clock then                           */
+} e_d_wait_line;
+
+/* What the screen's owner calls a waiting line kept for later. */
+#define E_D_WAIT_LINE_WHAT "a waiting line"
+
+/**
+ * e_d_wait_line_keep - Keep a waiting line for later when the screen is
+ * not the editor's.
+ * @w: where it is kept; @cmd, @secs: what is waited for and since when;
+ * @show: says the line again, from @w; it is run by the screen's owner.
+ *
+ * While a box, a menu, the User Screen or a command the editor waits for
+ * has the screen, "waiting for gdb to answer ... 12s" is not drawn over
+ * it.  Once the screen is the editor's again the line is said once more,
+ * with the seconds counted on to that moment; an answer that came
+ * meanwhile cleared it (e_d_wait_line_forget) and nothing is drawn.
+ * Return: 1 when kept (the caller draws nothing now), 0 when the caller
+ * draws the line now.
+ */
+static int e_d_wait_line_keep(e_d_wait_line *w, const char *cmd, long secs,
+                              WpePaintReplay show)
+{
+ if (wpe_paint_idle())
+ {
+  w->due = 0;
+  return(0);
+ }
+ w->due = 1;
+ snprintf(w->cmd, sizeof w->cmd, "%s", cmd ? cmd : "");
+ w->secs = secs;
+ w->asked_ms = e_d_ga_now_ms(NULL);
+ wpe_paint_request(show, w, E_D_WAIT_LINE_WHAT);
+ return(1);
+}
+
+/**
+ * e_d_wait_line_secs_now - The seconds a kept waiting line says now.
+ * @w: the kept line.
+ */
+static long e_d_wait_line_secs_now(const e_d_wait_line *w)
+{
+ long since = e_d_ga_now_ms(NULL) - w->asked_ms;
+
+ if (since < 0)
+  since = 0;
+ return(w->secs + since / WPE_TIMER_MS_PER_S);
+}
+
+/**
+ * e_d_wait_line_take - Take a kept waiting line for drawing.
+ * @w: the kept line.
+ * Return: 1 when a line is still due (it is no longer kept), 0 when the
+ * answer came meanwhile.
+ */
+static int e_d_wait_line_take(e_d_wait_line *w)
+{
+ if (!w->due)
+  return(0);
+ w->due = 0;
+ return(1);
+}
+
+/** e_d_wait_line_forget - The answer came: a kept waiting line is not drawn. */
+static void e_d_wait_line_forget(e_d_wait_line *w)
+{
+ w->due = 0;
+}
+
 static struct
 {
  e_bsp_session *b;           /* the start, until the session takes it    */
@@ -8055,8 +8132,10 @@ static struct
  int ok;                     /* ... with the endpoint                    */
  int ready;                  /* the endpoint waits for the command again */
  int waiting_painted;        /* the waiting line is on the status row    */
+ e_d_wait_line kept;         /* a waiting line asked for under a box     */
 } e_d_bsp = { NULL, { 0 }, { E_D_BSP_NO_TIMER, E_D_BSP_NO_TIMER,
-                             E_D_BSP_NO_TIMER }, E_D_BSP_NO_FD, 0, 0, 0, 0 };
+                             E_D_BSP_NO_TIMER }, E_D_BSP_NO_FD, 0, 0, 0, 0,
+              { 0 } };
 
 /** e_d_bsp_window - The window the status row is drawn for. */
 static FENSTER *e_d_bsp_window(void)
@@ -8069,16 +8148,31 @@ static FENSTER *e_d_bsp_window(void)
  * `buildTarget/compile` ... 12s (Esc cancels)" on the status row.
  * @cmd, @secs: what is waited for and since when; @io: unused.
  */
+static void e_d_bsp_waiting_show_kept(void *data);   /* (below) */
+
 static void e_d_bsp_waiting(const char *cmd, long secs, void *io)
 {
  char line[E_D_BSP_ERR_MAX + E_D_REQ_CMD_MAX];
 
  (void)io;
- if (wpe_fd_waiting_for())
-  return;                  /* a command has the terminal: not drawn over it */
+ if (e_d_wait_line_keep(&e_d_bsp.kept, cmd, secs, e_d_bsp_waiting_show_kept))
+  return;                  /* a box or a command has the screen */
  snprintf(line, sizeof line, E_D_BSP_WAIT_FMT, E_D_BSP_NAME, cmd, secs);
  e_status_say(e_d_bsp_window(), line);
  e_d_bsp.waiting_painted = 1;
+}
+
+/**
+ * e_d_bsp_waiting_show_kept - Say the build server's waiting line kept
+ * while the screen was not the editor's, with the seconds of now.
+ * @data: the kept line.
+ */
+static void e_d_bsp_waiting_show_kept(void *data)
+{
+ e_d_wait_line *w = data;
+
+ if (e_d_wait_line_take(w))
+  e_d_bsp_waiting(w->cmd, e_d_wait_line_secs_now(w), NULL);
 }
 
 /** e_d_bsp_waiting_clear - The wait is over: the key hints come back. */
@@ -8086,6 +8180,7 @@ static void e_d_bsp_waiting_clear(void)
 {
  FENSTER *f = e_d_bsp_window();
 
+ e_d_wait_line_forget(&e_d_bsp.kept);
  if (!e_d_bsp.waiting_painted)
   return;
  e_d_bsp.waiting_painted = 0;
@@ -8102,11 +8197,11 @@ static void e_d_bsp_notice(const char *msg, void *io)
 
  (void)io;
  e_d_bsp.waiting_painted = 0;
+ e_d_wait_line_forget(&e_d_bsp.kept);
  snprintf(line, sizeof line, " %s", msg);
- if (wpe_fd_waiting_for())
-  e_status_hold(line);     /* shown by the next repaint of the bar */
- else
-  e_status_say_until_key(e_d_bsp_window(), line);
+ if (e_status_keep_until_free(line))
+  return;                  /* drawn when the screen is the editor's */
+ e_status_say_until_key(e_d_bsp_window(), line);
 }
 
 /** e_d_bsp_disarm - Stop timer @which, if it runs. */
@@ -16099,6 +16194,7 @@ static struct
  E_D_ACT act[E_D_GA_ACT_MAX];
  int nact;
  int act_timer;
+ e_d_wait_line kept;         /* a waiting line asked for under a box */
 } e_d_ga;
 
 /**
@@ -16345,6 +16441,8 @@ static void e_d_ga_waiting_line(char *line, size_t n, const char *cmd,
  * e_d_ga_waiting - Show the waiting line on the status row.
  * @cmd, @secs: what is waited for and since when; @io: unused.
  */
+static void e_d_ga_waiting_show_kept(void *data);   /* (below) */
+
 static void e_d_ga_waiting(const char *cmd, long secs, void *io)
 {
  char line[E_D_GA_LINE_MAX];
@@ -16352,9 +16450,24 @@ static void e_d_ga_waiting(const char *cmd, long secs, void *io)
  (void)io;
  if (e_d_ga.running_said)
   return;
+ if (e_d_wait_line_keep(&e_d_ga.kept, cmd, secs, e_d_ga_waiting_show_kept))
+  return;                  /* a box or a command has the screen */
  e_d_ga_waiting_line(line, sizeof line, cmd, secs);
  e_status_say(e_d_ga_window(), line);
  e_d_ga.waiting_painted = 1;
+}
+
+/**
+ * e_d_ga_waiting_show_kept - Say the debugger's waiting line kept while the
+ * screen was not the editor's, with the seconds of now.
+ * @data: the kept line.
+ */
+static void e_d_ga_waiting_show_kept(void *data)
+{
+ e_d_wait_line *w = data;
+
+ if (e_d_wait_line_take(w))
+  e_d_ga_waiting(w->cmd, e_d_wait_line_secs_now(w), NULL);
 }
 
 /**
@@ -16367,6 +16480,7 @@ static void e_d_ga_waiting_clear(void)
 {
  FENSTER *f;
 
+ e_d_wait_line_forget(&e_d_ga.kept);
  if (!e_d_ga.waiting_painted)
   return;
  e_d_ga.waiting_painted = 0;
@@ -16386,7 +16500,10 @@ static void e_d_ga_notice(const char *msg, void *io)
  char line[E_D_GA_LINE_MAX + E_D_REQ_MSG_MAX];
 
  (void)io;
+ e_d_wait_line_forget(&e_d_ga.kept);
  snprintf(line, sizeof line, " %s", msg);
+ if (e_status_keep_until_free(line))
+  return;                  /* drawn when the screen is the editor's */
  e_status_say_until_key(e_d_ga_window(), line);
 }
 
@@ -27065,6 +27182,7 @@ static struct
  int  waiting_painted;           /* the waiting line is on the status row  */
  int  start_asked;               /* the user waits for the start           */
  char name[E_LSP_NAME_MAX];      /* the server, in the lines               */
+ e_d_wait_line kept;             /* a waiting line asked for under a box   */
 } e_lsp_rq;
 
 /**
@@ -27096,6 +27214,8 @@ static FENSTER *e_lsp_rq_window(void)
  * A start the user did not ask for (the eager start on opening a file)
  * says nothing: the user waits for nothing.
  */
+static void e_lsp_rq_waiting_show_kept(void *data);   /* (below) */
+
 static void e_lsp_rq_waiting(const char *cmd, long secs, void *io)
 {
  char line[E_D_GA_LINE_MAX];
@@ -27104,14 +27224,27 @@ static void e_lsp_rq_waiting(const char *cmd, long secs, void *io)
  (void)io;
  if (starting && !e_lsp_rq.start_asked)
   return;
- if (!e_lsp_screen_ours())
-  return;                        /* the next second's line says it */
+ if (e_d_wait_line_keep(&e_lsp_rq.kept, cmd, secs, e_lsp_rq_waiting_show_kept))
+  return;                        /* a box or a command has the screen */
  if (starting)
   snprintf(line, sizeof line, E_LSP_START_WAIT_FMT, e_lsp_rq.name, secs);
  else
   snprintf(line, sizeof line, E_LSP_WAIT_FMT, e_lsp_rq.name, cmd, secs);
  e_status_say(e_lsp_rq_window(), line);
  e_lsp_rq.waiting_painted = 1;
+}
+
+/**
+ * e_lsp_rq_waiting_show_kept - Say the language server's waiting line kept
+ * while the screen was not the editor's, with the seconds of now.
+ * @data: the kept line.
+ */
+static void e_lsp_rq_waiting_show_kept(void *data)
+{
+ e_d_wait_line *w = data;
+
+ if (e_d_wait_line_take(w))
+  e_lsp_rq_waiting(w->cmd, e_d_wait_line_secs_now(w), NULL);
 }
 
 /**
@@ -27122,6 +27255,7 @@ static void e_lsp_rq_waiting_clear(void)
 {
  FENSTER *f;
 
+ e_d_wait_line_forget(&e_lsp_rq.kept);
  if (!e_lsp_rq.waiting_painted)
   return;
  e_lsp_rq.waiting_painted = 0;
@@ -27142,11 +27276,11 @@ static void e_lsp_rq_notice(const char *msg, void *io)
 
  (void)io;
  e_lsp_rq.waiting_painted = 0;
+ e_d_wait_line_forget(&e_lsp_rq.kept);
  snprintf(line, sizeof line, " %s", msg);
- if (e_lsp_screen_ours())
-  e_status_say_until_key(e_lsp_rq_window(), line);
- else
-  e_status_hold(line);          /* shown by the next repaint of the bar */
+ if (e_status_keep_until_free(line))
+  return;                       /* drawn when the screen is the editor's */
+ e_status_say_until_key(e_lsp_rq_window(), line);
 }
 
 /**
@@ -29548,6 +29682,26 @@ void e_lsp_ui_shutdown(void)
  g_lsp_busy = 0;
  g_lsp_file[0] = '\0';
  g_lsp_fenster = NULL;
+}
+
+/**
+ * e_lsp_window_closing - A window is closing: the language server's news
+ * no longer goes to it.
+ * @f: the window, still whole.
+ *
+ * The server keeps running for the file and may still publish its
+ * problems, readiness or status after the user closed the window it was
+ * started from.  What it says then is not drawn into a window that is
+ * gone: the problems wait for the file to be opened again.
+ */
+void e_lsp_window_closing(FENSTER *f)
+{
+ if (!f)
+  return;
+ if (g_lsp_fenster == f)
+  g_lsp_fenster = NULL;
+ if (g_lsp_pending_ws == f)
+  g_lsp_pending_ws = NULL;
 }
 
 /* Human-readable name of the language server wired for f's file, for menu and

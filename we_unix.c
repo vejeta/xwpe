@@ -290,13 +290,16 @@ static void wpe_library_threads_start(void)
  * wpe_child_say_on_status_row - Where the children's owner and the loop's
  * writer speak: the status row of the window on top, so the user reads why
  * a program did not start, that one did not end, or that one stopped
- * reading its input.
+ * reading its input.  Said while a box or a command the editor waits for
+ * has the screen, the line waits for it and is kept until the next key.
  * @line: the line.
  */
 static void wpe_child_say_on_status_row(const char *line)
 {
  wpe_paint_trace_say(line);
  if (WpeEditor == NULL || WpeEditor->mxedt < 0)
+  return;
+ if (e_status_keep_until_free(line))
   return;
  e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
 }
@@ -1466,9 +1469,9 @@ int e_frb_t_menue(int sw, int xa, int ya, FENSTER *f, int md)
   e_pr_t_col_kasten(xa, ya, fb, fb, f, 1);
   e_pr_ed_beispiel(1, 2, f, sw, md);
 #if  MOUSE
-  if ((c=e_getch()) == -1) c = e_opt_ck_mouse(xa, ya, md);
+  if ((c=wpe_paint_modal_getch()) == -1) c = e_opt_ck_mouse(xa, ya, md);
 #else
-  c = e_getch();
+  c = wpe_paint_modal_getch();
 #endif
  } while (c != WPE_ESC && c != WPE_CR && c > -2);
  if (c == WPE_ESC || c < -1) frb[sw] = e_n_clr(fsv);

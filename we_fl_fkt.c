@@ -478,9 +478,9 @@ int e_file_window(int sw, FLWND *fw, int ft, int fz)
    while (1)
    {  e_pr_file_window(fw, 1, 1, ft, fz, 0);
 #if  MOUSE
-      if((c = e_getch()) < 0) c = fl_wnd_mouse(sw, c, fw);
+      if((c = wpe_paint_modal_getch()) < 0) c = fl_wnd_mouse(sw, c, fw);
 #else
-      c = e_getch();
+      c = wpe_paint_modal_getch();
 #endif
       /* Empty list: there is nothing to navigate, but still hand the key
          back so commands like Add (AltA) work on a new, empty project. */

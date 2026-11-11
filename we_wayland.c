@@ -282,11 +282,15 @@ static void wl_note_configure_size(int w, int h)
    only when the grid actually changes, re-lays-out the windows and repaints --
    e_repaint_desk (WpeIsXwin) reallocates the grid and the wl_shm buffer through
    e_w_ini_size, re-points Cairo, and presents.  When only the sub-cell remainder
-   changed, the existing buffer is already correct and we just re-present. */
-static void wl_apply_pending_resize(void)
+   changed, the existing buffer is already correct and we just re-present.
+   Returns 1 when the grid changed and the desk was laid out again: the key
+   reader then hands WPE_RESIZE to whoever reads keys, as X11's ConfigureNotify
+   and the terminal's KEY_RESIZE do, so a box that is up lays itself out again
+   over the new desk instead of vanishing until its next key. */
+static int wl_apply_pending_resize(void)
 {
  static int in_progress;
- int old_scol, old_slns, cols, rows;
+ int old_scol, old_slns, cols, rows, relaid = 0;
 
  /* Non-reentrant: the relayout below repaints the desktop, and that repaint can
     poll the pointer (fk_w_mouse -> wl_pump_once), which would call back into
@@ -296,9 +300,9 @@ static void wl_apply_pending_resize(void)
     call.  (The X11 backend cannot hit this: it handles ConfigureNotify at a
     single point in its event loop, never from inside a repaint.) */
  if (!g_resize_pending || in_progress)
-  return;
+  return(0);
  if (WpeRender.font_width <= 0 || WpeRender.font_height <= 0 || !WpeRender.draw_text)
-  return;
+  return(0);
  in_progress = 1;
  g_resize_pending = 0;
 
@@ -317,6 +321,10 @@ static void wl_apply_pending_resize(void)
  {
   MAXSCOL = cols;
   MAXSLNS = rows;
+  /* As X11's ConfigureNotify: a box's cells describe the old screen, so the
+     repaint below must not keep it on top; the box draws itself again when
+     the key reader hands it WPE_RESIZE. */
+  e_forget_box_view_on_resize(WpeEditor);
   e_relayout_windows(WpeEditor, old_scol, old_slns);
   /* Do NOT e_free_all_pics here: this is a WpeIsXwin backend, so e_repaint_desk
      dereferences e_X_l_pic (the last view's backing pic) and reallocates the
@@ -333,8 +341,10 @@ static void wl_apply_pending_resize(void)
   e_w_render_dirty_cells(1);
   if (WpeRender.flush_all)
    WpeRender.flush_all();
+  relaid = 1;
  }
  in_progress = 0;
+ return(relaid);
 }
 
 /* xdg_surface.configure: the compositor is ready for content.  Acknowledge,
@@ -1689,7 +1699,11 @@ static int e_w_getch(void)
   /* The ONE place a pending resize is applied: the top of the input loop, never
      from inside a pump/repaint (see wl_pump_once).  A configure dispatched by
      any nested pump just leaves g_resize_pending set for the next pass here. */
-  wl_apply_pending_resize();
+  if (wl_apply_pending_resize())
+  {
+   e_input_was_char = 0;
+   return WPE_RESIZE;
+  }
 
   {
    int is_char = 0;

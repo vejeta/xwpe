@@ -635,6 +635,81 @@ static int WpeSubmenuKeyIsIgnored(int nm, int prefix, OPTK *fopt, int count, int
   return WpeSubmenuKeyIsRowAltForm(fopt, count, c);
 }
 
+/* What WpeSubmenuOpenBox highlights when the dropdown opens: no row yet,
+   the loop draws the first highlight itself. */
+#define WPE_SUBMENU_NO_HIGHLIGHT (-1)
+
+/**
+ * WpeSubmenuOpenBox - Draw the dropdown over the desk.
+ * @xa, @ya, @xe, @ye: the box; @n: the row drawn highlighted, or
+ * WPE_SUBMENU_NO_HIGHLIGHT; @fopt: the rows; @f: the current window.
+ *
+ * Saves what is behind the box first, so closing it gives the user back
+ * the windows as they were.  Used when the dropdown opens, when a key it
+ * passed on to the editor has run, and after a resize.
+ * Return: the saved background, or NULL when there is no memory for it.
+ */
+static PIC *WpeSubmenuOpenBox(int xa, int ya, int xe, int ye, int n,
+                              OPTK * fopt, FENSTER * f)
+{
+  PIC *pic;
+  int  i;
+
+#ifdef NEWSTYLE
+  if(WpeIsXwin())
+    pic = e_open_view(xa + 1, ya, xe - 1, ye, f->fb->mt.fb, 1);
+  else
+#endif
+    pic = e_open_view(xa, ya, xe, ye, f->fb->mt.fb, 1);
+  if(pic == NULL)
+    return(NULL);
+  e_std_rahmen(xa + 1, ya, xe - 1, ye, NULL, 0, f->fb->mr.fb, 0);
+  for(i = ya + 1; i < ye; i++)
+    e_pr_str_scan(xa + 3, i, fopt[i - ya - 1].t, f->fb->mt.fb, fopt[i - ya - 1].x, 1,
+                  f->fb->ms.fb, xa + 2, xe - 2);
+  if(n != WPE_SUBMENU_NO_HIGHLIGHT)
+    e_pr_str_scan(xa + 3, n + ya + 1, fopt[n].t, f->fb->mz.fb, fopt[n].x, 1,
+                  f->fb->mz.fb, xa + 2, xe - 2);
+  return(pic);
+}
+
+/**
+ * WpeSubmenuFits - Does the dropdown still fit on the screen?
+ * @xe, @ye: its right and bottom edges.
+ *
+ * After the terminal or the window shrank, a dropdown hanging from the bar
+ * may reach past the status line; it is then closed rather than drawn
+ * over cells the screen no longer has.
+ */
+static int WpeSubmenuFits(int xe, int ye)
+{
+  return(xe < MAXSCOL && ye < MAXSLNS - 1);
+}
+
+/**
+ * WpeSubmenuAfterResize - Lay the dropdown out again for the resized screen.
+ * @pic: the background saved before the resize; the other arguments as
+ * WpeSubmenuOpenBox.
+ *
+ * The display has drawn the desk again at the new size before the dropdown
+ * hears of the resize, so the cells saved behind the box are the old
+ * screen's: they are dropped, never put back, and the box is drawn again
+ * over the new desk with the highlight where it was.
+ * Return: the new background, or NULL when the dropdown no longer fits (it
+ * is then closed).
+ */
+static PIC *WpeSubmenuAfterResize(PIC *pic, int xa, int ya, int xe, int ye,
+                                  int n, OPTK * fopt, FENSTER * f)
+{
+  e_close_view(pic, 0);
+  if(!WpeSubmenuFits(xe, ye))
+    return(NULL);
+  return(WpeSubmenuOpenBox(xa, ya, xe, ye, n, fopt, f));
+}
+
+/* What the dropdown returns when it closed without a choice (Esc). */
+#define WPE_SUBMENU_CLOSED 255
+
 /* sub menu box; @prefix is the key that opened a dropdown hanging from no
    bar menu (0 for the bar menus) */
 static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, int prefix,
@@ -654,27 +729,14 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, int pref
   if(nold == n)
     nold = n + 1;
 
-  /* save whatever will be behind the submenu */
-#ifdef NEWSTYLE
-  if(WpeIsXwin())
-    pic = e_open_view(xa + 1, ya, xe - 1, ye, f->fb->mt.fb, 1);
-  else
-#endif
-    pic = e_open_view(xa, ya, xe, ye, f->fb->mt.fb, 1);
-
+  /* save whatever will be behind the submenu, then draw the box with no
+     row highlighted yet */
+  pic = WpeSubmenuOpenBox(xa, ya, xe, ye, WPE_SUBMENU_NO_HIGHLIGHT, fopt, f);
   if(pic == NULL)
   {
     e_error(e_msg[ERR_LOWMEM], 0, f->fb);
     return(WPE_ESC);
   }
-
-  /* draw the frame and the background of the submenu */
-  e_std_rahmen(xa + 1, ya, xe - 1, ye, NULL, 0, f->fb->mr.fb, 0);
-
-  /* draw the submenu items (colors are default, none selected) */
-  for(i = ya + 1; i < ye; i++)
-    e_pr_str_scan(xa + 3, i, fopt[i - ya - 1].t, f->fb->mt.fb, fopt[i - ya - 1].x, 1,
-                  f->fb->ms.fb, xa + 2, xe - 2);
 
 #if MOUSE
   /* show the actual changes */
@@ -746,14 +808,23 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, int pref
 #if MOUSE
     if(c != MBKEY)
     {
-      if((c = e_toupper(e_getch())) == -1)
+      if((c = e_toupper(wpe_paint_modal_getch())) == -1)
         c = e_m2_mouse(xa, ya, xe, ye, fopt);
     }
     else
       c = WPE_CR;  /* mouse released at a proper place, submenu item accepted */
 #else
-    c = e_toupper(e_getch());
+    c = e_toupper(wpe_paint_modal_getch());
 #endif
+
+    if(c == WPE_RESIZE)
+    {
+      pic = WpeSubmenuAfterResize(pic, xa, ya, xe, ye, n, fopt, f);
+      if(pic == NULL)
+        return(WPE_SUBMENU_CLOSED);
+      nold = n;
+      continue;
+    }
 
     /* check main menu shortcut keys */
     for(i = 0; i < MENOPT; i++)
@@ -835,24 +906,14 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, int pref
 #endif
                          ))
         return(WPE_ESC);
-#ifdef NEWSTYLE
-      pic = e_open_view(xa + 1, ya, xe - 1, ye, f->fb->mt.fb, 1);
-#else
-      pic = e_open_view(xa, ya, xe, ye, f->fb->mt.fb, 1);
-#endif
-      /* draw the frame for the submenu */
-      e_std_rahmen(xa + 1, ya, xe - 1, ye, NULL, 0, f->fb->mr.fb, 0);
-      /* draw every item in the submenu, unselected */
-      for(i = ya + 1; i < ye; i++)
-        e_pr_str_scan(xa + 3, i, fopt[i - ya - 1].t, f->fb->mt.fb, fopt[i - ya - 1].x, 1,
-                      f->fb->ms.fb, xa + 2, xe - 2);
-      /* draw the selected item */
-      e_pr_str_scan(xa + 3, n + ya + 1, fopt[n].t, f->fb->mz.fb, fopt[n].x, 1,
-                    f->fb->mz.fb, xa + 2, xe - 2);
+      /* the key was not the editor's either: the dropdown comes back */
+      pic = WpeSubmenuOpenBox(xa, ya, xe, ye, n, fopt, f);
+      if(pic == NULL)
+        return(WPE_SUBMENU_CLOSED);
     }
   }
   e_close_view(pic, 1);
-  return(c == WPE_ESC ? 255 : c);
+  return(c == WPE_ESC ? WPE_SUBMENU_CLOSED : c);
 }
 
 /* WpeHandleSubmenu - public entry to the dropdown engine (top File/Edit menus and

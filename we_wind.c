@@ -88,6 +88,36 @@ void e_repaint_desk_nopic(FENSTER *f)
  e_refresh();
 }
 
+/**
+ * e_forget_box_view_on_resize - Stop the desk's repaint from putting a box
+ * back after a resize.
+ * @cn: the desktop.
+ *
+ * On X11 and Wayland the desk's repaint keeps the last box opened (a
+ * dialog, a dropdown, the About box) on top of the windows it draws, so an
+ * expose does not wipe the box.  After a resize that box's cells describe
+ * the old screen: kept, they would stay behind as a ghost of the box at its
+ * old place, and its saved background would put the ghost back when the
+ * box closes.  So, unless the last view is a window's own, it is forgotten
+ * before the desk is drawn at the new size; the box hears of the resize
+ * (WPE_RESIZE) and draws itself again over the new desk.  The terminal
+ * repaints no box, so it does not need this.
+ */
+void e_forget_box_view_on_resize(ECNT *cn)
+{
+#ifndef NO_XWINDOWS
+ extern PIC *e_X_l_pic;
+ int i;
+
+ for (i = 0; i <= cn->mxedt; i++)
+  if (e_X_l_pic == cn->f[i]->pic)
+   return;
+ (*e_u_setlastpic)(NULL);
+#else
+ (void)cn;
+#endif
+}
+
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
 {
  int i;
@@ -562,7 +592,7 @@ e_error_restart:
  do
  {
 #if  MOUSE
-  if ((i = e_toupper(e_getch())) == -1)
+  if ((i = e_toupper(wpe_paint_modal_getch())) == -1)
   {
    extern struct mouse e_mouse;
    i = e_er_mouse(xa+3, ya,(xe+xa-4)/2, ya+4);
@@ -570,11 +600,14 @@ e_error_restart:
     i = WPE_ESC;   /* clicked the title-bar [X] close box -> dismiss */
   }
 #else
-  i = e_toupper(e_getch());
+  i = e_toupper(wpe_paint_modal_getch());
 #endif
   if (i == WPE_RESIZE)
   {
-   e_close_view(pic, 1);
+   /* The display drew the desk again at the new size: the cells saved
+      behind the box are the old screen's, so they are dropped, not put
+      back, and the box is drawn again over the new desk. */
+   e_close_view(pic, 0);
    goto e_error_restart;
   }
  } while (i != WPE_ESC && i != WPE_CR && i != 'O');
@@ -1337,6 +1370,11 @@ int e_close_window(FENSTER *f)
      task started from it must let go of it here, before its name, buffer and
      screen are freed below, or its next heartbeat paints through freed memory. */
   wpe_ai_window_closing(f);
+#endif
+#ifdef DEBUGGER
+  /* The language server's news must not be drawn into the window after it
+     is freed below. */
+  e_lsp_window_closing(f);
 #endif
   /* Check if file system could have an autosave or emergency save file
      >12 check is to eliminate dos file systems */
@@ -2317,10 +2355,10 @@ int e_opt_sec_box(int xa, int ya, int num, OPTK *opt, FENSTER *f, int sw)
 	 nold = n;
       }
 #if  MOUSE
-      if( (c = e_toupper(e_getch())) == -1)
+      if( (c = e_toupper(wpe_paint_modal_getch())) == -1)
       c = e_m2_mouse(xa, ya, xe, ye, opt);
 #else
-      c = e_toupper(e_getch());
+      c = e_toupper(wpe_paint_modal_getch());
 #endif
       for (i = 0; i < ye - ya - 1; i++)
       if( c == opt[i].o) {  c = WPE_CR;  n = i;  break;  }

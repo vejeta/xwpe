@@ -475,3 +475,19 @@ are kept the same way while a dialog or a dropdown is open, and drawn
 when it closes, not at your next key.  A status line you were meant to
 read stays until you press a key, however many keys the menu bar or the
 size and move command reads first.
+
+@cindex status line, while a box is open
+@cindex waiting line, while a box is open
+Lines the editor says by itself on the status line wait for a box too:
+how long it has waited for a debugger, a build server or a language
+server, why it gave up waiting, and that a program stopped reading its
+input.  A waiting line comes back with the seconds counted on to the
+moment the box closed, and a line meant to be read stays until your next
+key.
+
+@cindex resize, while a box is open
+If the terminal or the window changes size while a box is open, the
+windows are laid out for the new size and the box is drawn again over
+them, on the terminal, under X11 and under Wayland alike; when it closes
+you see the windows as they are now, not what was behind the box before.
+A dropdown that no longer fits under the menu bar closes.

@@ -2248,7 +2248,7 @@ int wpe_ai_changeset_review(FENSTER *f)
 
  ws_show_review_keys(f);
  for (;;) {
-  int k = e_toupper(e_getch());
+  int k = e_toupper(wpe_paint_modal_getch());
   if (k == 'A' || k == WPE_ESC || k == 13 || k == '\r' || k == '\n') {
    kept = n;
    e_d_p_message("[AI] changes kept", f, 0);
@@ -2277,7 +2277,7 @@ int wpe_ai_changeset_review(FENSTER *f)
              ws_path_under_root(c[i].path, ck_dir));
     e_d_p_message(line, f, 0);
     for (;;) {
-     int kk = e_toupper(e_getch());
+     int kk = e_toupper(wpe_paint_modal_getch());
      if (kk == 'Y' || kk == 13 || kk == '\r' || kk == '\n') { kept++; break; }
      if (kk == 'N') {
       if (ws_revert_path(f, c[i].path, c[i].is_new) != 0) bad++;

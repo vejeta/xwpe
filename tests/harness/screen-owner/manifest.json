@@ -256,6 +256,63 @@
    "layer": "c-unit",
    "test": "tests/check-one-owner.sh",
    "status": "new"
+  },
+  {
+   "id": "SC-screen-04",
+   "requirement": "Resize under a box",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_boxes.py::test_resize_under_a_box_repaints_the_desk_and_the_box",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-04",
+   "requirement": "Resize under a box",
+   "layer": "x11",
+   "test": "tests/x11/test_screen_owner_boxes.py::test_resize_under_a_box_repaints_the_desk_and_the_box",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-04",
+   "requirement": "Resize under a box",
+   "layer": "wayland",
+   "test": "tests/wayland/test_screen_owner_boxes.py::test_resize_under_a_box_repaints_the_desk_and_the_box",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-screen-03",
+   "requirement": "A box stays a box",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_boxes.py::test_two_nested_boxes_closed_in_order_replay_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_boxes.py::test_a_reply_that_arrives_between_two_keys_of_a_dialog_is_not_drawn_on_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_boxes.py::test_a_waiting_line_from_the_loop_under_a_dialog_waits_for_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-05",
+   "requirement": "A timer is a callback too",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_boxes.py::test_a_waiting_line_from_the_loop_under_the_user_screen_waits_for_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "asan",
+   "test": "tests/test_screen_owner_boxes.py::test_a_closed_window_gets_no_news_from_its_language_server",
+   "status": "new"
   }
  ]
 }

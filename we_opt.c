@@ -46,20 +46,81 @@ WpeOptionSection WpeSectionRead[] = {
  {OPT_SECTION_LANGUAGE, WpeReadLanguage}
 };
 
-/*    About WE      */
-int e_about_WE(FENSTER *f)
+/* Draws an information box and returns the background it saved, or NULL. */
+typedef PIC *(*e_opt_box_draw)(FENSTER *f);
+
+/**
+ * e_opt_box_wait_key - Hold an information box until the user presses a key.
+ * @pic: the box's saved background, replaced when the box is drawn again;
+ * @draw: draws the box; @f: the current window.
+ *
+ * The About box and the System Info box stay until a key.  A resize is not
+ * that key: the display has already drawn the desk at the new size, so the
+ * background saved before it is dropped, never put back, and the box is
+ * drawn again over the new desk.  While the box waits, what arrives from
+ * the loop waits for it.
+ * Return: the key, or WPE_ESC when the box could not be drawn again (*@pic
+ * is then NULL).
+ */
+static int e_opt_box_wait_key(PIC **pic, e_opt_box_draw draw, FENSTER *f)
 {
- PIC *pic = NULL;
- int xa = 8, ya = 3, xe = xa + 54, ye = ya + 17;
- char tmp[60];
+ int c;
+
+#if  MOUSE
+ while (e_mshit() != 0)
+  ;
+#endif
+ while ((c = wpe_paint_modal_getch()) == WPE_RESIZE)
+ {
+  e_close_view(*pic, 0);
+  *pic = draw(f);
+  if (*pic == NULL)
+   return(WPE_ESC);
+ }
+#if  MOUSE
+ while (e_mshit() != 0)
+  ;
+#endif
+ return(c);
+}
+
+/**
+ * e_opt_box_show - Show an information box until a key, then take it away.
+ * @draw: draws the box; @f: the current window.
+ * Return: 0, or WPE_ESC when there was no memory for the box.
+ */
+static int e_opt_box_show(e_opt_box_draw draw, FENSTER *f)
+{
+ PIC *pic;
 
  fk_cursor(0);
- pic = e_std_kst(xa, ya, xe, ye, NULL, 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
+ pic = draw(f);
  if (pic == NULL)
  {
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
   return(WPE_ESC);
  }
+ e_opt_box_wait_key(&pic, draw, f);
+ if (pic != NULL)
+  e_close_view(pic, 1);
+ return(0);
+}
+
+/**
+ * e_about_box_draw - Draw the About box: the program, its version, who
+ * wrote and keeps it, and its licence.
+ * @f: the current window.
+ * Return: the background the box saved, or NULL when there is no memory.
+ */
+static PIC *e_about_box_draw(FENSTER *f)
+{
+ PIC *pic = NULL;
+ int xa = 8, ya = 3, xe = xa + 54, ye = ya + 17;
+ char tmp[60];
+
+ pic = e_std_kst(xa, ya, xe, ye, NULL, 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
+ if (pic == NULL)
+  return(NULL);
 
  sprintf(tmp, "Version %s", VERSION);
 #ifdef UNIX
@@ -82,17 +143,13 @@ int e_about_WE(FENSTER *f)
  e_pr_str(xa+2, ya+12, "This is free software, and you are welcome to", f->fb->nt.fb, 0, 0, 0, 0);
  e_pr_str(xa+2, ya+13, "redistribute it under certain conditions;", f->fb->nt.fb, 0, 0, 0, 0);
  e_pr_str(xa+2, ya+14, "See 'Help\\Editor\\GNU Pub...' for details.", f->fb->nt.fb, 0, 0, 0, 0);
-#if  MOUSE
- while (e_mshit() != 0)
-  ;
- e_getch();
- while (e_mshit() != 0)
-  ;
-#else
- e_getch();
-#endif
- e_close_view(pic, 1);
- return(0);
+ return(pic);
+}
+
+/*    About WE      */
+int e_about_WE(FENSTER *f)
+{
+ return(e_opt_box_show(e_about_box_draw, f));
 }
 
 /*    delete everything    */
@@ -239,6 +296,8 @@ static int e_pr_str_wrap(int x, int y, char *str, int width, int col)
  return(rows > 0 ? rows : 1);
 }
 
+static PIC *e_sys_info_box_draw(FENSTER *f);   /* (below) */
+
 /**
  * e_sys_info - Display the System Information dialog.
  * @f: Current window (FENSTER).  Used to read the filename, directory,
@@ -255,6 +314,17 @@ static int e_pr_str_wrap(int x, int y, char *str, int width, int col)
  * Return: 0 on success, WPE_ESC on memory error.
  */
 int e_sys_info(FENSTER *f)
+{
+ return(e_opt_box_show(e_sys_info_box_draw, f));
+}
+
+/**
+ * e_sys_info_box_draw - Draw the System Information box at the present
+ * screen size.
+ * @f: the current window.
+ * Return: the background the box saved, or NULL when there is no memory.
+ */
+static PIC *e_sys_info_box_draw(FENSTER *f)
 {
  PIC *pic = NULL;
  char tmp[512];
@@ -288,9 +358,9 @@ int e_sys_info(FENSTER *f)
  ye = ya + 4 + file_rows + dir_rows + 2;
  if (ye > MAXSLNS - 2) ye = MAXSLNS - 2;
 
- fk_cursor(0);
  pic = e_std_kst(xa, ya, xe, ye, " Information ", 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
- if (pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 1, f->fb); return(WPE_ESC);  }
+ if (pic == NULL)
+  return(NULL);
 
  row = ya + 2;
  { int col = f->fb->nt.fb;
@@ -310,16 +380,7 @@ int e_sys_info(FENSTER *f)
  e_pr_text(xa+23, row,
    WpeNumberToString(f->ed->mxedt, WpeNumberOfPlaces(f->ed->mxedt), tmp), col);
  }
-
-#if  MOUSE
- while(e_mshit() != 0);
- e_getch();
- while(e_mshit() != 0);
-#else
- e_getch();
-#endif
- e_close_view(pic, 1);
- return(0);
+ return(pic);
 }
 
 /*   color adjustments  */
@@ -398,10 +459,10 @@ int e_dif_colors(int sw, int xa, int ya, FENSTER *f, int md)
   e_pr_col_kasten(xa-28, ya+1, frb[sw+bg].f, frb[sw+bg].b , f, 0);
   e_pr_ed_beispiel(1, 2, f, sw, md);
 #if  MOUSE
-  if ((c = e_getch()) == -1)
+  if ((c = wpe_paint_modal_getch()) == -1)
    c = e_opt_cw_mouse(xa, ya, md);
 #else
-  c = e_getch();
+  c = wpe_paint_modal_getch();
 #endif
   if (c >= 375 && c <= 393)
   {
@@ -509,9 +570,9 @@ int e_frb_x_menue(int sw, int xa, int ya, FENSTER *f, int md)
   frb[sw] = e_s_clr(x, y);
   e_pr_ed_beispiel(1, 2, f, sw, md);
 #if  MOUSE
-  if ((c=e_getch()) == -1) c = e_opt_ck_mouse(xa, ya, md);
+  if ((c = wpe_paint_modal_getch()) == -1) c = e_opt_ck_mouse(xa, ya, md);
 #else
-  c = e_getch();
+  c = wpe_paint_modal_getch();
 #endif
  } while (c != WPE_ESC && c != WPE_CR && c > -2);
  if (c == WPE_ESC || c < -1)
@@ -1704,7 +1765,7 @@ static int e_opt_getch(void)
  int c;
 
  do
-  c = e_getch();
+  c = wpe_paint_modal_getch();
  while (g_bracketed_paste);
  return c;
 }

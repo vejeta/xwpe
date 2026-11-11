@@ -6174,7 +6174,7 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
   PIC *pic = ai_box_paint(f, &fr, rt, ra, nrows, top, title, hint);
   int c, decision;
   if (!pic) break;
-  c = e_getch();
+  c = wpe_paint_modal_getch();
   if (c == WPE_RESIZE) {
    /* The terminal layer has relaid the windows and repainted the desk under
       the box, so the background saved at the old size is dropped, not put
@@ -9056,6 +9056,7 @@ static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
  xa = (MAXSCOL - boxw) / 2; if (xa < 1) xa = 1;
  xe = xa + boxw; ya = 2; ye = ya + vis + 1;
 
+ wpe_paint_modal_enter("the list picker");   /* the box owns the screen until it closes */
  fk_cursor(0);
  for (;;) {
   PIC *pic;
@@ -9081,17 +9082,24 @@ static int e_ai_pick(FENSTER *f, const char *title, const char *const *labels,
     e_pr_str(hx, ye, (char *)hint, f->fb->nr.fb, 0, 0, 0, 0); }
   e_refresh();
 
-  c = e_getch();
+  c = wpe_paint_modal_getch();
   if (c == CUP)      { if (sel > 0) sel--; e_close_view(pic, 1); continue; }
   if (c == CDO)      { if (sel < n - 1) sel++; e_close_view(pic, 1); continue; }
   if (c == BUP)      { sel -= vis; if (sel < 0) sel = 0; e_close_view(pic, 1); continue; }
   if (c == BDO)      { sel += vis; if (sel > n - 1) sel = n - 1; e_close_view(pic, 1); continue; }
   if (c == 13 || c == '\r' || c == '\n') { ret = sel; e_close_view(pic, 1); break; }
   if (c == WPE_ESC)  { ret = -1; e_close_view(pic, 1); break; }
+  if (c == WPE_RESIZE) {
+   /* the desk was drawn again at the new size: what was saved behind the
+      box is the old screen's, so it is dropped and the box drawn again */
+   e_close_view(pic, 0);
+   continue;
+  }
   e_close_view(pic, 1);                          /* ignore other keys, redraw */
  }
  fk_cursor(1);
  e_cursor(f, 0);
+ wpe_paint_modal_leave();
  return ret;
 }
 
@@ -9434,7 +9442,7 @@ static int ai_mp_run(ai_model_picker *p)
  wpe_paint_modal_enter("the model picker");   /* other painters wait: the box is ours */
  fk_cursor(0);
  for (;;) {
-  how = ai_mp_key(p, e_getch());
+  how = ai_mp_key(p, wpe_paint_modal_getch());
   if (how != AI_MP_GO_ON) break;
   ai_mp_paint(p);
  }
@@ -10223,7 +10231,7 @@ static int ai_consent_gate(FENSTER *f, int *pass_key)
          AI_ROLE_MACHINERY, 1);
  ai_pane_attn(f, "Enter / y = enable and continue      n / Esc = not now");
  for (;;) {
-  int c = e_getch();
+  int c = wpe_paint_modal_getch();
   if (c == WPE_ESC || e_toupper(c) == 'N') {
    ai_pane(f, "[AI] not enabled - press Alt-G again when you want it", AI_ROLE_MACHINERY, 0);
    return 0;
@@ -10376,7 +10384,7 @@ static void ai_agent_note_auto_approved(FENSTER *f, const char *what)
 static int ai_agent_read_yes_no(void)
 {
  for (;;) {
-  int c = e_getch();
+  int c = wpe_paint_modal_getch();
   if (c == WPE_ESC || e_toupper(c) == 'N') return 0;
   if (e_toupper(c) == 'Y' || c == WPE_CR || c == WPE_WR) return 1;
  }
@@ -12427,7 +12435,7 @@ static int ai_web_notice(FENSTER *f)
          AI_ROLE_MACHINERY, 1);
  ai_pane_attn(f, AI_WEB_NOTICE_KEYS);
  for (;;) {
-  int c = e_getch();
+  int c = wpe_paint_modal_getch();
   if (c == WPE_ESC || e_toupper(c) == 'N') {
    ai_pane(f, AI_WEB_NOT_NOW_LINE, AI_ROLE_MACHINERY, 0);
    wpe_ai_trace("chat web access not enabled");

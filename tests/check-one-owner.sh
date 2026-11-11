@@ -90,7 +90,6 @@ cat > "$WORK/srcrules" <<'EOF'
 read(0 we_term.c
 STDIN_FILENO we_term.c
 fileno(stdin) we_term.c
-e_u_kbhit we_term.c we_xterm.c we_wayland.c we_unix.c
 e_u_key_take we_term.c we_xterm.c we_wayland.c we_unix.c we_edit.c
 e_kbhit we_term.c we_xterm.c we_wayland.c
 e_t_kbhit we_term.c
@@ -281,11 +280,48 @@ canary_import we_paint.o wpe_loop_hooks_set "the loop's callbacks are not bracke
 for engine in we_opt.o we_menue.o we_wind.o we_ai_ui.o; do
   canary_import $engine wpe_paint_modal_enter "a box owns the screen without telling its owner"
 done
-# The menu bar, the prefixes and the move/size loop read their keys through
-# the owner's bracket; the Run loop and a short command's Esc take a key
+# The menu bar, the prefixes, the move/size loop and every box (dialogs and
+# their text fields, dropdowns, error boxes, pickers, the colour menu, the
+# assistant's boxes and its changeset review) read their keys through the
+# owner's bracket; the Run loop and a short command's Esc take a key
 # through the owner's one key peek, which every display answers alike.
-for loop in we_menue.o we_edit.o we_debug.o we_wind.o; do
+for loop in we_menue.o we_edit.o we_debug.o we_wind.o we_opt.o we_e_aus.o \
+            we_fl_fkt.o we_unix.o we_ai_ui.o we_ai_ws.o; do
   canary_import $loop wpe_paint_modal_getch "a key loop reads its keys around the owner"
+done
+# Gone for good: the second flags, idle tests and replays the screen's owner
+# replaced, and the old key test each display answered its own way.  An
+# object that exports one again has brought back a flag or a replay of its
+# own beside the owner.  (A replay body the owner runs may keep its name as
+# a file's own static function: it is not exported.)
+DELETED_SYMBOLS="e_build_ui_idle e_lsp_ui_safe ai_editor_idle
+  e_lsp_modal_enter e_lsp_modal_leave e_lsp_modal_sync_chrome
+  wpe_ai_deliver_held_reply e_build_deliver_held e_d_start_deliver_held
+  e_d_run_deliver_held_stop e_u_kbhit"
+defined_names() {
+  "$NMTOOL" -g --defined-only "$1" 2>/dev/null | awk '
+    NF >= 2 && $(NF-1) != "U" {
+      n = $NF
+      sub(/@.*/, "", n)
+      sub(/\$.*/, "", n)
+      print n
+      if (n ~ /^_/) { m = n; sub(/^_/, "", m); print m }
+    }'
+}
+for obj in $OBJECTS; do
+  [ -f "$obj" ] || continue
+  defined_names "$obj" > "$WORK/defined"
+  for sym in $DELETED_SYMBOLS; do
+    grep -qx "$sym" "$WORK/defined" &&
+      problem "deleted symbol: $(basename "$obj") defines $sym again (the screen has one owner, we_paint.c)"
+  done
+done
+# The canary of that rule: a scanner that lists no definitions sees nothing.
+for obj in $OBJECTS; do
+  [ "$(basename "$obj")" = we_paint.o ] || continue
+  [ -f "$obj" ] || continue
+  defined_names "$obj" | grep -qx wpe_paint_modal_getch ||
+    problem "canary: wpe_paint_modal_getch not seen defined in we_paint.o (the deleted-symbol scan is blind)"
 done
 for taker in we_prog.o we_unix.o; do
   canary_import $taker wpe_paint_take_key "a key is taken without waiting some other way"
@@ -340,6 +376,15 @@ if [ -f "$ALLOW" ]; then
 else
   [ $STRICT -eq 1 ] || problem "no allow file at $ALLOW"
 fi
+
+# The screen's section is strict in every mode: no box, menu or flag of its
+# own waits for a later pass, so an allow line for one of its names must be
+# a permanent exception with its reason.
+SCREEN_WORDS="e_getch wpe_modal_active g_lsp_modal_depth g_lsp_ui_suspended wpe_chrome_suppress"
+awk -v words=" $SCREEN_WORDS " '
+  $4 != "keep" && index(words, " " $2 " ") {
+    print "the screen section is strict: the allow line \"" $1 " " $2 "\" (" $4 ") may only be a keep line"
+  }' "$WORK/allowed" >> "$WORK/problems"
 
 # In strict mode only permanent exceptions stand.
 if [ $STRICT -eq 1 ]; then

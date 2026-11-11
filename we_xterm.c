@@ -1535,7 +1535,7 @@ static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
  if (snap_w == MAXSCOL * WpeXInfo.font_width &&
      snap_h == MAXSLNS * WpeXInfo.font_height)
   return;
- { int _i, _old_scol = MAXSCOL, _old_slns = MAXSLNS;
+ { int _old_scol = MAXSCOL, _old_slns = MAXSLNS;
    MAXSCOL = snap_w / WpeXInfo.font_width;
    MAXSLNS = snap_h / WpeXInfo.font_height;
 #ifdef HAVE_XFT
@@ -1564,13 +1564,7 @@ static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
       DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
    }
 #endif
-   { extern PIC *e_X_l_pic;
-     int _is_win_pic = 0;
-     for (_i = 0; _i <= WpeEditor->mxedt; _i++)
-      if (e_X_l_pic == WpeEditor->f[_i]->pic) { _is_win_pic = 1; break; }
-     if (!_is_win_pic)
-      (*e_u_setlastpic)(NULL);
-   }
+   e_forget_box_view_on_resize(WpeEditor);
    XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
      WpeXInfo.gc, 0, 0,
      MAXSCOL * WpeXInfo.font_width, MAXSLNS * WpeXInfo.font_height, 0, 0);
@@ -1680,7 +1674,7 @@ int e_x_getch()
     }
     break;
    case ConfigureNotify:
-    { int _i, _pw, _ph, _old_scol, _old_slns;
+    { int _pw, _ph, _old_scol, _old_slns;
       if (e_x_apply_configure(&report, &_pw, &_ph, &_old_scol, &_old_slns))
       {
        XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
@@ -1690,13 +1684,7 @@ int e_x_getch()
        /* If the last-view pic is not a live window's, drop it: the grid (and so
           every pic) was just resized, and e_x_repaint_desk would dereference a
           stale one. */
-       { extern PIC *e_X_l_pic;
-         int _is_win_pic = 0;
-         for (_i = 0; _i <= WpeEditor->mxedt; _i++)
-          if (e_X_l_pic == WpeEditor->f[_i]->pic) { _is_win_pic = 1; break; }
-         if (!_is_win_pic)
-          (*e_u_setlastpic)(NULL);
-       }
+       e_forget_box_view_on_resize(WpeEditor);
        XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
          WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
        e_relayout_windows(WpeEditor, _old_scol, _old_slns);
