@@ -240,6 +240,225 @@ def test_a_breakpoint_confirmed_under_a_menu_is_solid_when_the_menu_closes(
             "row proved nothing):\n%s" % _read(str(trace))
 
 
+# ---- a stop or a build's end under the menu bar or a prefix -------------
+
+F10 = "\033[21~"
+# A program that stops twice: on its first line of output, and on the line
+# after a sleep, so the second stop comes while the test holds the menu bar
+# or a prefix open.  It writes printed.txt once it is past the first line.
+STOP_PROG = (
+    "#include <stdio.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  FILE *o;\n"
+    "  setvbuf(stdout, NULL, _IONBF, 0);\n"
+    "  printf(\"FIRST LINE\\n\");\n"
+    "  o = fopen(\"printed.txt\", \"w\");\n"
+    "  fclose(o);\n"
+    "  sleep(4);\n"
+    "  printf(\"SECOND LINE\\n\");\n"
+    "  return 0;\n"
+    "}\n"
+)
+FIRST_STOP_LINE = 7
+SECOND_STOP_LINE = 11
+DEFERRED_STOP = "paint deferred the program's stop"
+REPLAYED_STOP = "paint replay the program's stop"
+STOP_DEFERRED_S = 12          # the sleep, and gdb's answer after it
+STACK_TITLE = "Stack"
+
+
+def _two_breakpoints_and_run_on(w, tmp_path):
+    """Breakpoints on both stop lines, Ctrl-G R to the first, Ctrl-G R on:
+    return once the program is past its first line, sleeping before the
+    second stop."""
+    w.key(*([DOWN] * (FIRST_STOP_LINE - 1)), delay=0.1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(*([DOWN] * (SECOND_STOP_LINE - FIRST_STOP_LINE)), delay=0.1)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+    assert _wait_for(w, lambda: w.mark_line() == FIRST_STOP_LINE,
+                     START_TIMEOUT_S), \
+        "Ctrl-G R should stop on line %d:\n%s" % (FIRST_STOP_LINE, _screen(w))
+    w.key(CTRL_G, "r", delay=0.3)
+    assert _wait_for(w, lambda: (tmp_path / "printed.txt").exists(),
+                     OUTPUT_TIMEOUT_S), \
+        "the program should run on past its first line:\n%s" % _screen(w)
+
+
+def _nothing_drawn_until_the_stop_waits(w, trace, what):
+    """Hold the screen as it is until the trace says the stop waited; the
+    screen must not have changed meanwhile."""
+    w._drain(0.5)
+    before = w.display(drain=0)
+    assert _wait_for(w, lambda: DEFERRED_STOP in _read(str(trace)),
+                     STOP_DEFERRED_S), \
+        "the stop that came under %s should wait for it:\n%s\ntrace:\n%s" \
+        % (what, _screen(w), _read(str(trace)))
+    w._drain(0.5)
+    after = w.display(drain=0)
+    assert after == before, \
+        "nothing may be drawn under %s:\nbefore:\n%s\nafter:\n%s" \
+        % (what, "\n".join(before), "\n".join(after))
+
+
+# @scenario SC-screen-02
+def test_stop_under_the_f10_bar_is_shown_when_it_closes(tmp_path):
+    """F10 opens the menu bar while the program sleeps before its second
+    stop.  The stop comes while the bar is up: nothing is drawn under it,
+    the trace says the stop waited, and once Esc closes the bar the mark is
+    on the second stop's line."""
+    _need("gcc", "gdb")
+    trace = tmp_path / TRACE
+    with WpeSession(str(tmp_path), STOP_PROG, filename="s.c", wait=1.5,
+                    env_extra={"XWPE_UI_TRACE": str(trace)}) as w:
+        _two_breakpoints_and_run_on(w, tmp_path)
+        w.key(F10, delay=0.3)
+        _nothing_drawn_until_the_stop_waits(w, trace, "the menu bar")
+        w.key(ESC, delay=0.6)
+        assert _wait_for(w, lambda: w.mark_line() == SECOND_STOP_LINE,
+                         OUTPUT_TIMEOUT_S), \
+            "once the bar closes the stop on line %d should show:\n%s" \
+            % (SECOND_STOP_LINE, _screen(w))
+        assert REPLAYED_STOP in _read(str(trace)), _read(str(trace))
+        assert w.alive(), "wpe died closing the menu bar"
+
+
+# @scenario SC-screen-02
+def test_stop_under_a_ctrl_g_prefix_acts_on_the_current_window(tmp_path):
+    """Ctrl-G is pressed while the program sleeps before its second stop,
+    and the stop comes before the letter.  Nothing is drawn while the prefix
+    waits; the letter (K, the stack) is taken for the editor the user saw,
+    a program that runs, so it says so on the source window instead of
+    opening the Stack window; the stop is shown right after, on that
+    window."""
+    _need("gcc", "gdb")
+    trace = tmp_path / TRACE
+    with WpeSession(str(tmp_path), STOP_PROG, filename="s.c", wait=1.5,
+                    env_extra={"XWPE_UI_TRACE": str(trace)}) as w:
+        _two_breakpoints_and_run_on(w, tmp_path)
+        w.key(CTRL_G, delay=0.3)
+        _nothing_drawn_until_the_stop_waits(w, trace, "the Ctrl-G prefix")
+        w.key("k", delay=0.8)
+        assert _wait_for(w, lambda: w.mark_line() == SECOND_STOP_LINE,
+                         OUTPUT_TIMEOUT_S), \
+            "after the letter the stop on line %d should show:\n%s" \
+            % (SECOND_STOP_LINE, _screen(w))
+        assert not any(" %s " % STACK_TITLE in row for row in w.display(drain=0)), \
+            "the letter was taken for a stopped program the user never " \
+            "saw:\n%s" % _screen(w)
+        assert REPLAYED_STOP in _read(str(trace)), _read(str(trace))
+        assert w.alive(), "wpe died after the prefix"
+
+
+# A make that names an error in the file after a pause.
+SLOW_ERROR_MAKEFILE = (
+    "all:\n"
+    "\t@echo BUILD_START\n"
+    "\t@sleep 4\n"
+    "\t@echo \"b.c:3:5: error: STUB_ERROR\" >&2\n"
+    "\t@false\n"
+)
+BUILD_SRC = "int main(void)\n{\n    undef_x = 1;\n    return 0;\n}\n"
+ALT_A = "\033a"               # Run > Execute Make
+DEFERRED_BUILD = "paint deferred the build's end"
+BUILD_STATUS_RE = re.compile(r"^m+q[A-Z][* ]q\s+(\d+):(\d+)\s+q")
+BUILD_END_S = 15
+
+
+def _cursor_position(w):
+    """(line, column) on the bottom border of the active window, or None."""
+    for row in w.display(drain=0):
+        m = BUILD_STATUS_RE.match(row)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    return None
+
+
+# @scenario SC-screen-02
+def test_a_build_that_ends_under_the_f10_bar_jumps_to_its_error_when_it_closes(
+        tmp_path):
+    """Run > Execute Make starts a make that names an error after a pause;
+    F10 opens the menu bar before it ends.  The build's end waits for the
+    bar: nothing is drawn under it, and once Esc closes it the cursor is on
+    the line and column the error names."""
+    (tmp_path / "Makefile").write_text(SLOW_ERROR_MAKEFILE)
+    trace = tmp_path / TRACE
+    with WpeSession(str(tmp_path), BUILD_SRC, filename="b.c", cols=160,
+                    wait=1.5, env_extra={"XWPE_UI_TRACE": str(trace)}) as w:
+        w.key(ALT_A, delay=0.8)
+        assert _wait_for(w, lambda: "BUILD_START" in _screen(w), OUTPUT_TIMEOUT_S), \
+            "the make should start:\n%s" % _screen(w)
+        w.key(F10, delay=0.3)
+        w._drain(0.5)
+        before = w.display(drain=0)
+        assert _wait_for(w, lambda: DEFERRED_BUILD in _read(str(trace)),
+                         BUILD_END_S), \
+            "the build's end under the bar should wait for it:\n%s\ntrace:\n%s" \
+            % (_screen(w), _read(str(trace)))
+        w._drain(0.5)
+        after = w.display(drain=0)
+        assert after == before, \
+            "nothing may be drawn under the menu bar:\nbefore:\n%s\nafter:\n%s" \
+            % ("\n".join(before), "\n".join(after))
+        w.key(ESC, delay=0.8)
+        assert _wait_for(w, lambda: _cursor_position(w) == (3, 5),
+                         OUTPUT_TIMEOUT_S), \
+            "once the bar closes the cursor should be on 3:5:\n%s" % _screen(w)
+        assert w.alive(), "wpe died closing the menu bar"
+
+
+# ---- the loops that read through the owner still do their work ----------
+
+CTRL_O = "\x0f"
+PGUP = "\033[5~"              # in Size/Move: one row shorter
+ENTER = "\r"
+SHRINK_STEPS = 3
+BOTTOM_LEFT_CORNER = "m"
+
+
+def _bottom_border_row(w):
+    """The screen row of the source window's bottom border, or -1."""
+    for i, row in enumerate(w.display(drain=0)):
+        if row.startswith(BOTTOM_LEFT_CORNER):
+            return i
+    return -1
+
+
+# @scenario SC-screen-06
+def test_ctrl_o_y_still_deletes_to_the_end_of_the_line(tmp_path):
+    """Ctrl-O reads its letter through the screen's owner: Ctrl-O Y still
+    deletes from the cursor to the end of the line, and the trace shows the
+    prefix owned the screen while it waited."""
+    trace = tmp_path / TRACE
+    with WpeSession(str(tmp_path), "abc def\nnext\n", filename="o.c",
+                    env_extra={"XWPE_UI_TRACE": str(trace)}) as w:
+        w.key(CTRL_O, "y", delay=0.5)
+        w.save()
+        assert w.text() == "\nnext\n", "Ctrl-O Y left %r" % w.text()
+        assert "modal enter depth=1 a key read by a box" in _read(str(trace))
+
+
+# @scenario SC-screen-06
+def test_size_move_still_sizes_the_window_with_the_keys(tmp_path):
+    """Window > Size/Move reads its keys through the screen's owner: three
+    PgUp make the window three rows shorter, and Enter keeps it so."""
+    trace = tmp_path / TRACE
+    with WpeSession(str(tmp_path), "int x;\n", filename="m.c",
+                    env_extra={"XWPE_UI_TRACE": str(trace)}) as w:
+        before = _bottom_border_row(w)
+        w.key(ALT.WINDOW, "s", delay=0.5)
+        w.key(*([PGUP] * SHRINK_STEPS), delay=0.3)
+        w.key(ENTER, delay=0.6)
+        after = _bottom_border_row(w)
+        assert after == before - SHRINK_STEPS, \
+            "the bottom border moved from row %d to %d:\n%s\ntrace:\n%s" \
+            % (before, after, _screen(w), _read(str(trace)))
+        assert _read(str(trace)).count("a key read by a box") >= SHRINK_STEPS + 1
+        assert w.alive()
+
+
 # ---- the assistant's review box and a language server -------------------
 
 STUB_LOG = "lsp-stub.log"
@@ -378,14 +597,14 @@ def _box_rows(rows):
 
 
 # @scenario SC-screen-03
-def test_a_review_box_stays_a_box_after_an_error_box_inside_it(tmp_path):
+def test_a_language_server_publishing_under_the_review_box_draws_nothing_under_it(tmp_path):
     """The assistant's review box is up when the language server publishes
     an error for the file.  Nothing is drawn while the box is up: not the
     file's window repainted with its marks over the box, not the
     "LSP: 1 error(s)" line, not "Language server ready" in Messages.  The
-    review box owns the screen as every other box does, so a
-    box opened and closed inside it (an error box) cannot hand the screen
-    back either (the owner's one depth, tests/test_paint.c)."""
+    review box owns the screen as every other box does.  That a box opened
+    and closed inside it (an error box) cannot hand the screen back is the
+    owner's one depth, pinned by tests/test_paint.c, not by this row."""
     if not assistant_build():
         pytest.skip("wpe built without the assistant")
     env = _stand_in_server(tmp_path)

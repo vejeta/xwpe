@@ -836,7 +836,7 @@ static int e_run_program_key(int c)
  */
 static void e_run_serve_key(int pty_master)
 {
- int c = e_t_key_now();
+ int c = wpe_paint_take_key(WPE_PAINT_ANY_KEY);
 
  if (c == CtrlC || e_run_interrupted)
  {
@@ -999,7 +999,7 @@ static void e_run_text_on_readable(int fd, void *data)
  */
 static void e_run_text_serve_key(void)
 {
- int c = e_t_key_now();
+ int c = wpe_paint_take_key(WPE_PAINT_ANY_KEY);
 
  if (c == CtrlC || e_run_interrupted)
  {

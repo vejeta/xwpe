@@ -89,9 +89,10 @@ terminal) and leaves it in the file.
 The original did nothing in the background: while a build ran, the
 debugger started or the program ran, the editor waited, so no menu or
 dialog could be open when output or a stop arrived.  xwpe keeps the
-keyboard meanwhile, so a box can be open when they arrive; what arrives
-then is kept and drawn when the box closes (@pxref{Interface tour}).  A
-box drawn over is a box you can no longer read.
+keyboard meanwhile, so a box, the menu bar, a prefix such as
+@kbd{Ctrl-G} or the User Screen can be open when they arrive; what
+arrives then is kept and drawn when it closes (@pxref{Interface tour}).
+A box drawn over is a box you can no longer read.
 @end table
 
 @section Short commands
@@ -104,6 +105,14 @@ The original ran the print command, @command{man} and @command{gunzip}
 through the shell and waited for them with no limit, the editor frozen
 meanwhile.  Each now has a time limit (a minute to print, 30 seconds for
 a page or an unpack), the window is drawn again while it runs, and one
-that takes longer than a second is named on the status row.  A command
-that hung used to leave no way out but killing the editor.
+that takes longer than a second is named on the status row.  On X11 and
+Wayland, @key{Esc} ends it at once and the status row says
+@samp{Esc: stopped waiting for} the command; nothing else follows, so no
+``Not Installed'' box after Print and no ``No manual entry'' window after
+Help, since you chose not to wait.  The keys typed before @key{Esc} are
+still read by the editor afterwards.  A check the editor makes by itself
+(the version of your Java before a Scala session, the desktop's font) does
+not take your @key{Esc}: it stays for what you were doing.  In a terminal
+the keyboard waits for the editor until the command ends.  A command that
+hung used to leave no way out but killing the editor.
 @end table

@@ -617,6 +617,18 @@ static int e_paint_read_key(void)
 }
 
 /**
+ * e_paint_take_key - The display's key taken without waiting, for a loop
+ * that must not wait (Run, a short command's Esc).
+ * @want: WPE_PAINT_ANY_KEY, or one key.
+ */
+static int e_paint_take_key(int want)
+{
+ if (!e_u_key_take)
+  return(0);
+ return((*e_u_key_take)(want));
+}
+
+/**
  * e_paint_box_opens - A box takes the screen: a status line kept until the
  * next key gives way, or it would come back on the box's bottom row.
  */
@@ -646,7 +658,8 @@ static void e_paint_say_lost(const char *what)
 void e_paint_desk_ready(void)
 {
  static const WpePaintDesk desk = {
-  e_paint_text_on_top, e_paint_read_key, e_paint_box_opens, e_paint_say_lost
+  e_paint_text_on_top, e_paint_read_key, e_paint_box_opens, e_paint_say_lost,
+  e_paint_take_key
  };
 
  wpe_paint_desk_set(&desk);
@@ -1293,13 +1306,21 @@ int e_tst_fkt(int c, ECNT *e)
  return(0);
 }
 
+/**
+ * e_ctrl_k - Ctrl-K: read the block command's letter and run it.
+ * @f: the window the prefix was pressed in.
+ *
+ * While the prefix waits for its letter, a stop, a build's end or a reply
+ * that comes is shown after the command, on the window the user then sees.
+ * Return: 0.
+ */
 int e_ctrl_k(FENSTER *f)
 {
  BUFFER *b = f->ed->f[f->ed->mxedt]->b;
  SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
  int c;
 
- c = e_toupper(e_getch());
+ c = e_toupper(wpe_paint_modal_getch());
  if (c < 32)
   c = c + 'A' - 1;
  switch (c)
@@ -1394,7 +1415,13 @@ int e_ctrl_k(FENSTER *f)
  return 0;
 }
 
-/*   Ctrl - O - Dispatcher     */
+/**
+ * e_ctrl_o - Ctrl-O: read the editing command's letter and run it.
+ * @f: the window the prefix was pressed in.
+ *
+ * Like Ctrl-K, what comes while the prefix waits is shown after the command.
+ * Return: 0.
+ */
 int e_ctrl_o(FENSTER *f)
 {
  BUFFER *b = f->ed->f[f->ed->mxedt]->b;
@@ -1402,7 +1429,7 @@ int e_ctrl_o(FENSTER *f)
  int i, c;
  unsigned char cc;
 
- c = e_toupper(e_getch());
+ c = e_toupper(wpe_paint_modal_getch());
  if (c < 32) c = c + 'A' - 1;
  switch(c)
  {

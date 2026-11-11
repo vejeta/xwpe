@@ -649,6 +649,7 @@ int e_mkdir_path(char *path)
    hold the editor, whose keys wait meanwhile. */
 #define E_UNPACK_MS   30000L
 #define E_UNPACK_WHAT "gunzip"
+static int e_unpack_was_stopped;
 
 /**
  * e_unpack_to_file - Unpack a compressed file into @dest, for the help and
@@ -659,6 +660,8 @@ int e_mkdir_path(char *path)
  * a file named "a b;c.gz" opens like any other.  A failed, cut-short or
  * endless unpack leaves no file behind: the reader would otherwise take the
  * part that was written for the whole text, now and on every later open.
+ * Esc ends the wait: only the part written into @dest is removed, never
+ * @src, and e_unpack_stopped then tells the readers not to try another file.
  * Return: 1 when @dest holds the whole text, 0 otherwise.
  */
 static int e_unpack_to_file(const char *src, const char *dest)
@@ -669,11 +672,27 @@ static int e_unpack_to_file(const char *src, const char *dest)
  argv[3] = (char *)src;
  ran = wpe_child_run_to_file(argv, dest, E_UNPACK_MS, &status,
                              E_UNPACK_WHAT);
+ e_unpack_was_stopped = (ran == WPE_CAPTURE_CANCELLED);
  if (wpe_capture_succeeded(ran, status))
   return(1);
  remove(dest);
  return(0);
 }
+
+/**
+ * e_unpack_stopped - Did the user press Esc during the last unpack?
+ *
+ * The help and info readers ask after an open that gave nothing: a user who
+ * stopped the wait does not want the next candidate file unpacked, and
+ * waited for, in its place.
+ * Return: non-zero when the last unpack was stopped.
+ */
+static int e_unpack_stopped(void)
+{
+ return(e_unpack_was_stopped);
+}
+#else
+#define e_unpack_stopped() 0
 #endif
 
 IFILE *e_i_fopen(char *path, char *stat)
@@ -733,6 +752,8 @@ IFILE *e_i_fopen(char *path, char *stat)
  int len;
  IFILE *fp = MALLOC(sizeof(IFILE));
 
+ /* An Esc from an earlier open must not stop the readers' search now. */
+ e_unpack_was_stopped = 0;
  if (!fp) return(NULL);
  if (!path) {  FREE(fp); return(NULL);  }
  if ((fp->fp = fopen(path, stat))) {  fp->sw = 0;  return(fp);  }
@@ -1355,7 +1376,7 @@ int e_read_info(char *str, FENSTER *f, char *file)
    do
    {  path = e_mk_info_path(path, file);
       fp = e_i_fopen(path, "rb");
-   } while(!fp && path);
+   } while(!fp && path && !e_unpack_stopped());
    if(!fp) return(1);
    e_close_buffer(f->b);
    if( (f->b = (BUFFER *) MALLOC(sizeof(BUFFER))) == NULL)
@@ -1436,7 +1457,11 @@ int e_read_info(char *str, FENSTER *f, char *file)
  */
 static int e_read_xwpe_info(FENSTER *hw)
 {
- if (e_read_info("Top", hw, "xwpe") != 1)
+ int not_opened = e_read_info("Top", hw, "xwpe");
+
+ if (not_opened == 1 && e_unpack_stopped())
+  return(0);
+ if (not_opened != 1)
  {
   if (ud_help)
   {

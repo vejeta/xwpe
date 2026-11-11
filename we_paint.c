@@ -53,6 +53,19 @@ static void wpe_paint_trace(const char *fmt, ...)
  fclose(tf);
 }
 
+/**
+ * wpe_paint_trace_say - Write a line the editor said on the status row to
+ * the trace.
+ * @line: what was said.
+ *
+ * A test, or a user chasing a "why did it stop", reads there what the
+ * editor told about a command it waited for or ended.
+ */
+void wpe_paint_trace_say(const char *line)
+{
+ wpe_paint_trace("say %s", line);
+}
+
 /* What a trace line calls a box or a paint whose caller gave no name. */
 #define WPE_PAINT_UNNAMED "?"
 
@@ -177,6 +190,26 @@ int wpe_paint_modal_getch(void)
   c = paint_desk.read_key();
  wpe_paint_modal_leave();
  return c;
+}
+
+/**
+ * wpe_paint_take_key - Take a key the user has typed, without waiting.
+ * @want: WPE_PAINT_ANY_KEY for the first key, whatever it is; or one key
+ * (WPE_ESC), taken only if it was typed, every other key left where it is.
+ *
+ * The one way a loop that must not wait looks at the keyboard: the Run
+ * loop passes the user's typing to the program, and a short command the
+ * editor waits for is ended by Esc while the keys typed before it are
+ * still the editor's afterwards.  The same on the terminal, X11 and
+ * Wayland, because each display answers it through its own table entry.
+ * Nothing is waited for, so no output or reply can arrive meanwhile.
+ * Return: the key taken, 0 for none.
+ */
+int wpe_paint_take_key(int want)
+{
+ if (!paint_desk_known || !paint_desk.take_key)
+  return 0;
+ return paint_desk.take_key(want);
 }
 
 /**

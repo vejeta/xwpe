@@ -91,3 +91,8 @@ things the emulated pipeline does not cover:
       while it is up, and once Esc closes it Messages scrolls on with what
       was printed meanwhile.  The X11 twin is
       tests/x11/test_screen_owner.py.
+  [ ] User Screen: after a Ctrl-F9 Run or a debug session that printed,
+      Alt-F5 shows the program's screen and a key returns to the editor.
+      Known to end the editor today (the User Screen reads its colours from
+      an X display); tests/wayland/test_screen_owner.py keeps its row as an
+      expected failure until that is fixed.

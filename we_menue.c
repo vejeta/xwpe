@@ -28,6 +28,25 @@ int             e_hp_back(FENSTER *f);
 int             e_hp_prev(FENSTER *f);
 int             e_hp_next(FENSTER *f);
 
+/**
+ * WpeMainmenuReadKey - Read the next key, or click, for the menu bar.
+ *
+ * While the bar waits for the user it owns the screen: a stop, a build's
+ * end or a reply that comes meanwhile is shown once the bar has closed, so
+ * the command picked from it acts on the editor the user was looking at.
+ * Return: the key; a click on the bar is turned into the key it stands for.
+ */
+static int WpeMainmenuReadKey(void)
+{
+  int c = wpe_paint_modal_getch();
+
+#if MOUSE
+  if (c == -1)
+    c = e_m1_mouse();
+#endif
+  return c;
+}
+
 /* main menu control bar */
 int WpeHandleMainmenu(int n, FENSTER *f)
 {
@@ -440,13 +459,7 @@ int WpeHandleMainmenu(int n, FENSTER *f)
     else
     {
       e_hlp = e_hlp_str[24];
-#if MOUSE
-      if((c = e_getch()) == -1)
-        c = e_m1_mouse();
-#else
-      c = e_getch();
-#endif
-      c = e_toupper(c);
+      c = e_toupper(WpeMainmenuReadKey());
     }
     if(c == CDO || c == CtrlN)        /* down -> submenu open */
       c = WPE_CR;

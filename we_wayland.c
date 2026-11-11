@@ -499,6 +499,44 @@ static int wl_key_pop(int *is_char)
  return code;
 }
 
+/** wl_key_remove_at - Take slot @i out of the key queue, the rest kept in order. */
+static void wl_key_remove_at(int i)
+{
+ int next = (i + 1) % WL_KEYQ_LEN;
+
+ while (next != WpeWl.key_tail)
+ {
+  WpeWl.key_q[i] = WpeWl.key_q[next];
+  WpeWl.key_char_q[i] = WpeWl.key_char_q[next];
+  i = next;
+  next = (next + 1) % WL_KEYQ_LEN;
+ }
+ WpeWl.key_tail = i;
+}
+
+/**
+ * wl_key_take - Take the key code @want out of the queue if it was typed.
+ *
+ * Every other key stays where it was, so what the user typed before an Esc
+ * that stops a wait is still read by the editor afterwards.  A decoded
+ * character is never taken for a key code of the same number.
+ * Return: @want, or 0 when it is not queued.
+ */
+static int wl_key_take(int want)
+{
+ int i;
+
+ for (i = WpeWl.key_head; i != WpeWl.key_tail; i = (i + 1) % WL_KEYQ_LEN)
+ {
+  if (WpeWl.key_q[i] == want && !WpeWl.key_char_q[i])
+  {
+   wl_key_remove_at(i);
+   return want;
+  }
+ }
+ return 0;
+}
+
 /**
  * wl_mods - The modifiers held, as the key table reads them.
  * @ctrl, @shift, @alt: whether each is held (xkb's effective state).
@@ -1555,14 +1593,49 @@ static int e_w_refresh(void)
  return 0;
 }
 
-/* Non-blocking peek: drain pending Wayland events, report a queued key or a
-   pending mouse click/scroll. */
-static int e_w_kbhit(void)
+/**
+ * e_w_take_next - The next key or click the compositor delivered, taken, or 0.
+ *
+ * As on X11, a click is a negative code and a wheel step is taken with
+ * nothing returned for it: a loop that only wants typing sees neither.
+ */
+static int e_w_take_next(void)
+{
+ int is_char = 0;
+ int code = wl_key_pop(&is_char);
+
+ if (code != 0)
+ {
+  e_input_was_char = is_char;
+  return code;
+ }
+ code = g_mouse_pending;
+ g_mouse_pending = 0;
+ e_input_was_char = 0;
+ if (code < 0)
+  return code;
+ return 0;
+}
+
+/**
+ * e_w_key_take - Wayland's answer to wpe_paint_take_key: the key the user
+ * typed, taken without waiting, or 0.
+ * @want: WPE_PAINT_ANY_KEY for the next key or click; or one key, taken only
+ * if it was typed.
+ *
+ * The compositor's pending events are read first (without waiting), so a
+ * line and a Ctrl-C typed for a program the Run menu started reach it, and
+ * Esc stops a short command, as on X11.
+ * Return: the key, or 0.
+ */
+static int e_w_key_take(int want)
 {
  if (!WpeWl.display)
   return 0;
  wl_pump_once(0);
- return (WpeWl.key_head != WpeWl.key_tail) || g_mouse_pending != 0;
+ if (want == WPE_PAINT_ANY_KEY)
+  return e_w_take_next();
+ return wl_key_take(want);
 }
 
 /* Does the shared loop watch the compositor connection (keys, pointer)? */
@@ -1970,7 +2043,7 @@ int WpeWaylandInit(int *argc, char **argv)
  fk_mouse          = fk_w_mouse;
  fk_u_grab_pointer = fk_w_grab_pointer;
  fk_u_drag_next    = fk_w_drag_next;
- e_u_kbhit         = e_w_kbhit;
+ e_u_key_take      = e_w_key_take;
  e_u_change        = e_w_change;
  e_u_serve_display = e_w_serve_display;
  e_u_ini_size      = e_w_ini_size;

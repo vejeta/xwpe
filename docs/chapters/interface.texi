@@ -456,6 +456,10 @@ front, xwpe draws nothing under it.  The program's output goes on into
 Messages unseen, a stop, the end of a build, the assistant's reply and a
 language server's answer wait, and all of it is shown, in the order it
 came, as soon as you are back in a source window.  The same holds while a
-command run from the editor has the terminal.  The menu bar itself
-(@kbd{F10}), the @kbd{Ctrl-G} and @kbd{Ctrl-K} prefixes and the User
-Screen are not yet boxes in this sense.
+command run from the editor has the terminal, while the menu bar
+(@kbd{F10}) is open, while a prefix (@kbd{Ctrl-G}, @kbd{Ctrl-K},
+@kbd{Ctrl-O}, @kbd{Alt-Q}) waits for its letter, while you move or size a
+window, drag a scrollbar, or look at the User Screen (@kbd{Alt-F5}).  A
+stop that comes while @kbd{Ctrl-G} waits for its letter is shown after
+the command: the letter is taken for the program as you saw it, still
+running.

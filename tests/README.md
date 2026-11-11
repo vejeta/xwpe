@@ -402,7 +402,10 @@ C-source tests built by `make check`:
   outside `we_fdloop.o` calls `poll`, `select`, `usleep` or the like, outside
   `we_term.o` calls `getch`, outside `we_xterm.o` reads X events, outside
   `we_wayland.o` dispatches Wayland events; a source scan adds fd 0 and the
-  display's `e_u_kbhit` table.  The offenders still to go are in
+  display's key slots (`e_u_key_take`, the key taken without waiting, is
+  read only by the displays and the screen owner's hook in `we_edit.c`); a
+  "screen" section counts the key loops that still read `e_getch` outside
+  the screen owner's bracket.  The offenders still to go are in
   `tests/one-owner.allow` (`object symbol count pass`; the count may only
   fall and a line that matches nothing fails).  `tests/check-one-owner.sh
   --strict` ignores that file except its `keep` lines (the two permanent

@@ -72,7 +72,9 @@ EOF
 
 # The source scan: "word-regex  source files allowed to contain it".
 # fd 0 and the display's key getters belong to the displays; the loop's own
-# wait helper belongs to the code that waits on a display or the mouse.
+# wait helper belongs to the code that waits on a display or the mouse.  The
+# key taken without waiting (e_u_key_take) is also the screen owner's, through
+# its key hook in we_edit.c.
 # Bytes for a child go through wpe_fd_write (we_fdloop.c): a plain write(
 # is allowed only where it writes no child's input -- the signal handlers'
 # wake pipes and the crash log, which must stay async-signal-safe (we_unix.c,
@@ -89,6 +91,7 @@ read(0 we_term.c
 STDIN_FILENO we_term.c
 fileno(stdin) we_term.c
 e_u_kbhit we_term.c we_xterm.c we_wayland.c we_unix.c
+e_u_key_take we_term.c we_xterm.c we_wayland.c we_unix.c we_edit.c
 e_kbhit we_term.c we_xterm.c we_wayland.c
 e_t_kbhit we_term.c
 e_x_kbhit we_xterm.c
@@ -280,6 +283,15 @@ canary_import() {
 canary_import we_edit.o wpe_paint_replay_if_idle "what came behind a box is shown some other way"
 for engine in we_opt.o we_menue.o we_wind.o we_ai_ui.o; do
   canary_import $engine wpe_paint_modal_enter "a box owns the screen without telling its owner"
+done
+# The menu bar, the prefixes and the move/size loop read their keys through
+# the owner's bracket; the Run loop and a short command's Esc take a key
+# through the owner's one key peek, which every display answers alike.
+for loop in we_menue.o we_edit.o we_debug.o we_wind.o; do
+  canary_import $loop wpe_paint_modal_getch "a key loop reads its keys around the owner"
+done
+for taker in we_prog.o we_unix.o; do
+  canary_import $taker wpe_paint_take_key "a key is taken without waiting some other way"
 done
 # The call-form branch of the source scan must see the writer's own write(.
 if fdloop=$(stripped_source we_fdloop.o); then

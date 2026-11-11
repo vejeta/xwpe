@@ -224,7 +224,7 @@ int e_x_vterm_user_screen(FENSTER *f)
  e_x_vterm_render_output();
  e_refresh();
 
- e_getch();   /* modal: any key returns to the editor */
+ wpe_paint_modal_getch();   /* any key returns to the editor */
 
  wpe_paint_chrome_suppress(saved_chrome);
  e_repaint_desk(f->ed->f[f->ed->mxedt]);

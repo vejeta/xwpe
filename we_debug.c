@@ -3356,7 +3356,9 @@ extern char *e_p_msg[];
  * leaves the text alone.  The window is looked up again after the key is
  * read, because the end of a session closes the Watches and Stack windows
  * and switches to the source, and the answer belongs on the window the user
- * now sees.
+ * now sees.  A stop that comes while the prefix waits for its letter is
+ * shown after the letter: the command is the one the user chose for the
+ * editor as they saw it.
  * Return: 0 when the letter was a command, else the key that was not one.
  */
 int e_deb_inp(FENSTER *f)
@@ -3364,7 +3366,7 @@ int e_deb_inp(FENSTER *f)
  ECNT *cn = f->ed;
  int c = 0;
 
- c = e_getch();
+ c = wpe_paint_modal_getch();
  f = cn->f[cn->mxedt];
  switch(c)
  {
@@ -26568,8 +26570,8 @@ static int e_jdk_major(const char *java_bin)
  argv[0] = (char *)java_bin;
  argv[1] = "-version";
  argv[2] = NULL;
- ran = wpe_child_capture(argv, banner, sizeof banner, E_JDK_PROBE_MS, &status,
-                         E_JDK_PROBE_WHAT);
+ ran = wpe_child_probe(argv, banner, sizeof banner, E_JDK_PROBE_MS, &status,
+                       E_JDK_PROBE_WHAT);
  if (ran != WPE_CAPTURE_ENDED)
   return(-1);
  return(e_jdk_major_from_banner(banner));
@@ -28268,7 +28270,7 @@ static int e_lsp_hover_show(FENSTER *f, char *hov)
    /* Alt-Q while the peek is up: chain straight into the next action (e.g. hover
       then Alt-Q d to jump to the definition) instead of just dismissing. */
    if (k == AltQ)
-    return(e_lsp_ui_dispatch(f, e_getch()));
+    return(e_lsp_ui_dispatch(f, wpe_paint_modal_getch()));
  }
  return(0);
 }
@@ -28550,7 +28552,7 @@ static int e_lsp_signature_show(FENSTER *f, char *sig)
  k = e_lsp_cursor_popup(f, "Signature", sig, "Press any key to close");
  free(sig);
  if (k == AltQ)                         /* chain into the next Alt-Q action */
-  return(e_lsp_ui_dispatch(f, e_getch()));
+  return(e_lsp_ui_dispatch(f, wpe_paint_modal_getch()));
  return(0);
 }
 
@@ -28627,7 +28629,7 @@ static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
                          ". next   , prev   any other key closes");
   if (c == AltQ)                                  /* re-pressed the Alt-Q prefix:    */
   {
-   int k = e_getch();                             /* take its letter                 */
+   int k = wpe_paint_modal_getch();               /* take its letter                 */
    if (k == '.')  {  dir = +1;  continue;  }      /* '.'/',' keep walking the list   */
    if (k == ',')  {  dir = -1;  continue;  }
    return(e_lsp_ui_dispatch(f, k));               /* Alt-Q <action>: close + run it
@@ -29794,7 +29796,7 @@ static int e_lsp_ui_dispatch(FENSTER *f, int c)
    the silent fast one.  Read the action key and dispatch it. */
 int e_lsp_ui_key(FENSTER *f)
 {
- int c = e_getch();
+ int c = wpe_paint_modal_getch();
 
  e_lsp_ui_trace("e_lsp_ui_key c=%d '%c'", c, (c >= 32 && c < 127) ? c : '?');
  return(e_lsp_ui_dispatch(f, c));

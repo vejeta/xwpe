@@ -1759,6 +1759,11 @@ int wpe_child_ended(const WpeChild *c, int *status)
    its deadline, so the user knows what the editor waits for and how long. */
 #define WPE_CAPTURE_SLOW_MS      1000L
 #define WPE_CAPTURE_SLOW_FMT     "Waiting for %s (at most %ld s)"
+#define WPE_CAPTURE_STOPPED_FMT  "Esc: stopped waiting for %s"
+/* Whether a wait takes the user's Esc (a command the user started) or leaves
+   it queued (a probe the editor made on its own). */
+#define WPE_CAPTURE_ASKS_ESC     0
+#define WPE_CAPTURE_IGNORES_ESC  1
 #define WPE_MS_PER_S             1000L
 
 /* The display, while a command is waited for: the descriptor the loop must
@@ -1766,22 +1771,27 @@ int wpe_child_ended(const WpeChild *c, int *status)
    repaint and resize events.  Unset until the display is open. */
 static int (*wpe_capture_quiet_fd_hook)(void);
 static void (*wpe_capture_serve_hook)(void);
+static int (*wpe_capture_cancel_hook)(void);
 
 /**
  * wpe_child_capture_display_set - Tell the owner how the display is served
  * while it waits for a short command.
  * @quiet_fd: the descriptor whose input stays queued for the editor (the
  * console's keyboard), or NULL; @serve: answers the window's repaint and
- * resize events, or NULL.
+ * resize events, or NULL; @cancel_asked: non-zero once the user pressed the
+ * key that stops the wait (Esc), or NULL when the display has none.
  *
  * Set once the display is open, so a window covered or resized while the
  * editor waits for the print command or a manual page is drawn again at
- * once, and a key typed meanwhile is read by the editor afterwards.
+ * once, a key typed meanwhile is read by the editor afterwards, and Esc
+ * ends the command instead of leaving the user to wait out its deadline.
  */
-void wpe_child_capture_display_set(int (*quiet_fd)(void), void (*serve)(void))
+void wpe_child_capture_display_set(int (*quiet_fd)(void), void (*serve)(void),
+                                   int (*cancel_asked)(void))
 {
  wpe_capture_quiet_fd_hook = quiet_fd;
  wpe_capture_serve_hook = serve;
+ wpe_capture_cancel_hook = cancel_asked;
 }
 
 /* The command being waited for.  Only the innermost one is asked about: a
@@ -1791,6 +1801,9 @@ typedef struct {
  int ended;                      /* the owner reported the end */
  int status;                     /* its wait status, or _STATUS_LOST */
  int eof;                        /* the output pipe was read to its end */
+ int cancelled;                  /* the user stopped the wait */
+ int killed;                     /* ended by the editor: only its end is waited for */
+ int deaf;                       /* the user did not start it: Esc is not asked */
  char *out;                      /* where its output goes, or NULL */
  size_t max, len;
  const char *what;               /* names it on the status row */
@@ -1856,10 +1869,43 @@ static void wpe_capture_on_end(WpeChild *c, int status, int how, void *data)
  cap->ended = 1;
 }
 
-/** wpe_capture_has_ended - The wait's condition. */
+/** wpe_capture_has_ended - The wait's condition: the command ended, or the
+ * user stopped waiting for it before the editor ended it. */
 static int wpe_capture_has_ended(void)
 {
- return(wpe_capture_now->ended);
+ if (wpe_capture_now->ended)
+  return(1);
+ return(wpe_capture_now->cancelled && !wpe_capture_now->killed);
+}
+
+/**
+ * wpe_capture_serve - What the wait does whenever the display has an event
+ * for the editor: answer the window's repaints, then look for the key that
+ * stops the wait.
+ */
+static void wpe_capture_serve(void)
+{
+ wpe_capture_serve_hook();
+ if (wpe_capture_now->killed || wpe_capture_now->deaf ||
+     !wpe_capture_cancel_hook)
+  return;
+ if (wpe_capture_cancel_hook())
+  wpe_capture_now->cancelled = 1;
+}
+
+/* What wpe_fd_wait_serving calls to serve the display. */
+typedef void (*WpeCaptureServe)(void);
+
+/**
+ * wpe_capture_display_server - What serves the display during the wait:
+ * wpe_capture_serve, or NULL while no display is served (the console, or
+ * before the window is open).
+ */
+static WpeCaptureServe wpe_capture_display_server(void)
+{
+ if (!wpe_capture_serve_hook)
+  return(NULL);
+ return(wpe_capture_serve);
 }
 
 /**
@@ -1908,7 +1954,7 @@ static int wpe_capture_begin(WpeCapture *cap, const WpeChildSpec *spec)
  * wpe_capture_serve_until - Wait on the loop, the display served, until the
  * command ends or @ms have passed.
  * @cap: the command; @ms: the longest this part of the wait takes.
- * Return: 1 when the command has ended, else 0.
+ * Return: 1 when the command has ended or the user stopped the wait, else 0.
  */
 static int wpe_capture_serve_until(WpeCapture *cap, long ms)
 {
@@ -1917,8 +1963,37 @@ static int wpe_capture_serve_until(WpeCapture *cap, long ms)
  if (wpe_capture_quiet_fd_hook)
   quiet_fd = wpe_capture_quiet_fd_hook();
  wpe_fd_wait_serving(wpe_capture_has_ended, cap->what, quiet_fd,
-                     wpe_capture_serve_hook, ms);
- return(cap->ended);
+                     wpe_capture_display_server(), ms);
+ return(wpe_capture_has_ended());
+}
+
+/**
+ * wpe_capture_kill - End the command now and wait, bounded, for its end to
+ * be reported, so its status says how it ended.
+ */
+static void wpe_capture_kill(WpeCapture *cap)
+{
+ wpe_child_end(&cap->child, SIGKILL);
+ cap->killed = 1;
+ wpe_capture_serve_until(cap, WPE_CAPTURE_KILL_WAIT_MS);
+}
+
+/**
+ * wpe_capture_verdict - The wait is over before the deadline: the command
+ * ended by itself, or the user stopped it, and then it is ended now.
+ *
+ * The user who pressed Esc reads on the status row that the wait was
+ * stopped, so the editor's silence afterwards is not taken for a failure
+ * of the command.
+ * Return: WPE_CAPTURE_ENDED or WPE_CAPTURE_CANCELLED.
+ */
+static int wpe_capture_verdict(WpeCapture *cap)
+{
+ if (cap->ended)
+  return(WPE_CAPTURE_ENDED);
+ wpe_capture_kill(cap);
+ wpe_child_say(WPE_CAPTURE_STOPPED_FMT, cap->what);
+ return(WPE_CAPTURE_CANCELLED);
 }
 
 /**
@@ -1945,7 +2020,8 @@ static void wpe_capture_say_slow(const WpeCapture *cap, long deadline_ms)
  * A command that answers at once is waited for without a word; one that
  * takes longer is named on the status row with its deadline, so the user
  * reads why the editor does not take keys yet and for how long at most.
- * Return: WPE_CAPTURE_ENDED or WPE_CAPTURE_TIMED_OUT.
+ * Esc, on a display that has it, ends the command at once.
+ * Return: WPE_CAPTURE_ENDED, WPE_CAPTURE_CANCELLED or WPE_CAPTURE_TIMED_OUT.
  */
 static int wpe_capture_wait(WpeCapture *cap, long deadline_ms)
 {
@@ -1955,15 +2031,14 @@ static int wpe_capture_wait(WpeCapture *cap, long deadline_ms)
  if (first > WPE_CAPTURE_SLOW_MS)
   first = WPE_CAPTURE_SLOW_MS;
  if (wpe_capture_serve_until(cap, first))
-  return(WPE_CAPTURE_ENDED);
+  return(wpe_capture_verdict(cap));
  if (deadline_ms > first)
  {
   wpe_capture_say_slow(cap, deadline_ms);
   if (wpe_capture_serve_until(cap, deadline_ms - first))
-   return(WPE_CAPTURE_ENDED);
+   return(wpe_capture_verdict(cap));
  }
- wpe_child_end(&cap->child, SIGKILL);
- wpe_capture_serve_until(cap, WPE_CAPTURE_KILL_WAIT_MS);
+ wpe_capture_kill(cap);
  return(WPE_CAPTURE_TIMED_OUT);
 }
 
@@ -1995,7 +2070,7 @@ static void wpe_capture_finish(WpeCapture *cap)
  */
 static int wpe_capture_run(char *const argv[], const char *path, char *out,
                            size_t max, long deadline_ms, int *status,
-                           const char *what)
+                           const char *what, int deaf)
 {
  WpeCapture cap, *outer = wpe_capture_now;
  WpeChildSpec spec;
@@ -2004,6 +2079,7 @@ static int wpe_capture_run(char *const argv[], const char *path, char *out,
  memset(&cap, 0, sizeof cap);
  cap.out = out;
  cap.max = max;
+ cap.deaf = deaf;
  cap.status = WPE_CAPTURE_STATUS_LOST;
  if (out && max)
   out[0] = '\0';
@@ -2033,13 +2109,35 @@ static int wpe_capture_run(char *const argv[], const char *path, char *out,
  * window's repaints while it waits, says what it waits for once the command
  * takes longer than a moment, and kills a command still running at the
  * deadline.  There is always a deadline: the keys typed meanwhile wait for
- * the command, so a command without one could hold the editor for ever.
- * Return: WPE_CAPTURE_ENDED, WPE_CAPTURE_TIMED_OUT or WPE_CAPTURE_NOT_STARTED.
+ * the command, so a command without one could hold the editor for ever.  On
+ * X11 and Wayland, Esc ends it sooner and the status row says the wait was
+ * stopped; the caller then shows no error, for the user chose it.
+ * Return: WPE_CAPTURE_ENDED, WPE_CAPTURE_TIMED_OUT, WPE_CAPTURE_CANCELLED or
+ * WPE_CAPTURE_NOT_STARTED.
  */
 int wpe_child_capture(char *const argv[], char *out, size_t max,
                       long deadline_ms, int *status, const char *what)
 {
- return(wpe_capture_run(argv, NULL, out, max, deadline_ms, status, what));
+ return(wpe_capture_run(argv, NULL, out, max, deadline_ms, status, what,
+                        WPE_CAPTURE_ASKS_ESC));
+}
+
+/**
+ * wpe_child_probe - Run a short command the user did not start and read
+ * what it prints, without taking Esc.
+ * @argv, @out, @max, @deadline_ms, @status, @what: as wpe_child_capture.
+ *
+ * For what the editor asks while it does something else the user did start
+ * (the version of a Java before a Scala session, the desktop's font before
+ * the window opens): an Esc typed then is meant for that work, so it stays
+ * queued and the probe ends at its answer or its deadline only.
+ * Return: WPE_CAPTURE_ENDED, WPE_CAPTURE_TIMED_OUT or WPE_CAPTURE_NOT_STARTED.
+ */
+int wpe_child_probe(char *const argv[], char *out, size_t max,
+                    long deadline_ms, int *status, const char *what)
+{
+ return(wpe_capture_run(argv, NULL, out, max, deadline_ms, status, what,
+                        WPE_CAPTURE_IGNORES_ESC));
 }
 
 /**
@@ -2056,7 +2154,8 @@ int wpe_child_capture(char *const argv[], char *out, size_t max,
 int wpe_child_run_to_file(char *const argv[], const char *path,
                           long deadline_ms, int *status, const char *what)
 {
- return(wpe_capture_run(argv, path, NULL, 0, deadline_ms, status, what));
+ return(wpe_capture_run(argv, path, NULL, 0, deadline_ms, status, what,
+                        WPE_CAPTURE_ASKS_ESC));
 }
 
 /**

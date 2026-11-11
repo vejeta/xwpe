@@ -49,6 +49,7 @@ int e_x_repaint_desk(FENSTER *f);
 void e_setlastpic(PIC *pic);
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
 int e_x_kbhit(void);
+static int e_x_key_take(int want);
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -160,7 +161,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_paste_X_buffer = e_x_paste_X_buffer;
  e_clip_os_set = e_clip_x_set;   /* ^C / ^Ins -> PRIMARY + CLIPBOARD (UTF-8) */
  e_clip_os_get = e_clip_x_get;   /* ^V <- the OS selection when another app owns it */
- e_u_kbhit = e_x_kbhit;
+ e_u_key_take = e_x_key_take;
  e_u_change = e_x_change;
  e_u_serve_display = e_x_serve_display;
  e_u_ini_size = e_ini_size;
@@ -1930,6 +1931,79 @@ int e_x_kbhit()
   if(charcount == 1) return(*buffer);
   return(0);
  }
+}
+
+/* The editor keys a loop can ask for by name, with the X name of their key.
+   A printable ASCII key is its own X keysym and needs no row. */
+static const struct
+{
+ int key;
+ const char *keysym_name;
+} e_x_named_keys[] = {
+ { WPE_ESC, "Escape" },
+};
+#define E_X_NAMED_KEYS ((int)(sizeof e_x_named_keys / sizeof e_x_named_keys[0]))
+#define E_X_FIRST_PRINTABLE ' '
+#define E_X_LAST_PRINTABLE  '~'
+
+/**
+ * e_x_keysym_of - The X keysym of the editor key @key, or NoSymbol.
+ */
+static KeySym e_x_keysym_of(int key)
+{
+ int i;
+
+ for (i = 0; i < E_X_NAMED_KEYS; i++)
+ {
+  if (e_x_named_keys[i].key == key)
+   return XStringToKeysym(e_x_named_keys[i].keysym_name);
+ }
+ if (key >= E_X_FIRST_PRINTABLE && key <= E_X_LAST_PRINTABLE)
+  return (KeySym)key;
+ return NoSymbol;
+}
+
+/**
+ * e_x_is_press_of - Is @ev a press of the key whose keycode @arg points to?
+ *
+ * Asked by Xlib of every queued event while it looks for that one press;
+ * it only compares, as Xlib requires of such a test.
+ */
+static Bool e_x_is_press_of(Display *display, XEvent *ev, XPointer arg)
+{
+ (void)display;
+ return ev->type == KeyPress && ev->xkey.keycode == *(KeyCode *)arg;
+}
+
+/**
+ * e_x_key_take - X11's answer to wpe_paint_take_key: the key the user
+ * typed, taken without waiting, or 0.
+ * @want: WPE_PAINT_ANY_KEY for the next key or click; or one key, taken
+ * only if it was pressed.
+ *
+ * A key asked for by name is picked out of the queue with every other
+ * event left in its place and order, so the user who typed ahead and then
+ * pressed Esc to stop a wait keeps what was typed.
+ * Return: the key, or 0.
+ */
+static int e_x_key_take(int want)
+{
+ XEvent report;
+ KeySym sym;
+ KeyCode code;
+
+ if (want == WPE_PAINT_ANY_KEY)
+  return e_x_kbhit();
+ sym = e_x_keysym_of(want);
+ if (sym == NoSymbol)
+  return 0;
+ code = XKeysymToKeycode(WpeXInfo.display, sym);
+ if (code == 0)
+  return 0;
+ if (XCheckIfEvent(WpeXInfo.display, &report, e_x_is_press_of,
+                   (XPointer)&code) == False)
+  return 0;
+ return want;
 }
 
 void e_setlastpic(PIC *pic)

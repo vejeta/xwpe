@@ -62,8 +62,25 @@ static void desk_say_lost(const char *what)
 	lost_times++;
 }
 
+/* The display's answer to a key taken without waiting: the one key typed
+   is ESC_TYPED; WPE_PAINT_ANY_KEY takes it, a named key only if it is it. */
+#define ESC_TYPED 27
+#define OTHER_KEY 'q'
+static int asked_for = -1;
+static int depth_seen_by_take = -1;
+
+static int desk_take_key(int want)
+{
+	asked_for = want;
+	depth_seen_by_take = wpe_paint_modal_depth();
+	if (want == WPE_PAINT_ANY_KEY || want == ESC_TYPED)
+		return ESC_TYPED;
+	return 0;
+}
+
 static const WpePaintDesk desk = {
-	desk_text_on_top, desk_read_key, desk_box_opens, desk_say_lost
+	desk_text_on_top, desk_read_key, desk_box_opens, desk_say_lost,
+	desk_take_key
 };
 
 /* ---- the paints: each appends its letter to the log ---- */
@@ -356,6 +373,24 @@ static void test_the_overlay_switch(void)
 static void test_nothing_is_idle_before_the_desk_is_known(void)
 {
 	chk("before the editor said how to see its desk", wpe_paint_idle(), 0);
+	chk("no key is taken before the desk is known",
+	    wpe_paint_take_key(WPE_PAINT_ANY_KEY), 0);
+}
+
+/* The one key peek: what is asked for reaches the display unchanged, its
+   answer comes back, and it opens no box (nothing is waited for). */
+static void test_a_key_taken_without_waiting_is_the_displays(void)
+{
+	reset();
+	boxes_opened = 0;
+	chk("any key: the one typed", wpe_paint_take_key(WPE_PAINT_ANY_KEY),
+	    ESC_TYPED);
+	chk("asked for any key", asked_for, WPE_PAINT_ANY_KEY);
+	chk("Esc asked for and typed", wpe_paint_take_key(ESC_TYPED), ESC_TYPED);
+	chk("another key asked for is not taken", wpe_paint_take_key(OTHER_KEY), 0);
+	chk("the display was asked for it", asked_for, OTHER_KEY);
+	chk("no box owns the screen meanwhile", depth_seen_by_take, 0);
+	chk("no box opened", boxes_opened, 0);
 }
 
 int main(void)
@@ -377,6 +412,7 @@ int main(void)
 	test_the_trace_shows_deferred_then_replay();
 	test_the_overlay_switch();
 	test_a_paint_that_asks_for_itself_cannot_hold_the_key_loop();
+	test_a_key_taken_without_waiting_is_the_displays();
 	if (fails) {
 		printf("test_paint: %d failure(s)\n", fails);
 		return 1;

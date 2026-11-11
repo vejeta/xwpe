@@ -35,6 +35,9 @@ typedef enum
  WPE_PAINT_REFUSED       /* the queue was full: named on the status row */
 } WpePaintVerdict;
 
+/* What wpe_paint_take_key is asked for when any key will do. */
+#define WPE_PAINT_ANY_KEY     0
+
 /* What the owner needs to know of the editor, given once at start. */
 typedef struct
 {
@@ -42,15 +45,18 @@ typedef struct
  int  (*read_key)(void);            /* the display's key reader */
  void (*box_opens)(void);           /* a box takes the screen */
  void (*say_lost)(const char *what);   /* a refused paint, said on the status row */
+ int  (*take_key)(int want);        /* the display's key taken without waiting */
 } WpePaintDesk;
 
 void wpe_paint_desk_set(const WpePaintDesk *desk);
 
 int  wpe_paint_idle(void);
+void wpe_paint_trace_say(const char *line);
 void wpe_paint_modal_enter(const char *what);
 void wpe_paint_modal_leave(void);
 int  wpe_paint_modal_depth(void);
 int  wpe_paint_modal_getch(void);
+int  wpe_paint_take_key(int want);
 
 WpePaintVerdict wpe_paint_request(WpePaintReplay fn, void *data,
                                   const char *what);

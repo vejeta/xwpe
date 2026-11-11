@@ -145,6 +145,7 @@ static int e_t_paste_ended(void)
 static int s_t_pending_click_release = 0;
 int e_t_initscr(void);
 int e_t_kbhit(void);
+static int e_t_key_take(int want);
 int e_t_d_switch_out(int sw);
 int e_t_switch_screen(int sw);
 int e_t_deb_out(FENSTER *f);
@@ -283,7 +284,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_d_switch_out = e_t_d_switch_out;
  e_u_switch_screen = e_t_switch_screen;
  e_u_deb_out = e_t_deb_out;
- e_u_kbhit = e_t_kbhit;
+ e_u_key_take = e_t_key_take;
  e_u_s_sys_end = e_s_sys_end;
  e_u_s_sys_ini = e_s_sys_ini;
  e_u_refresh = e_t_refresh;
@@ -1236,11 +1237,15 @@ int e_t_kbhit()
  * nothing else in the editor reads fd 0.  The user sees the command's
  * output stay until they choose to go on.  It is a terminal-only wait: the
  * X11 and Wayland callers do not reach it for a shell command, and the box
- * that does reach it there has always met the same read.
+ * that does reach it there has always met the same read.  The wait owns the
+ * screen: a stop or a reply that comes meanwhile is shown once the user is
+ * back in the editor, not over the command's output.
  */
 void e_t_wait_for_enter_on_raw_terminal(void)
 {
+ wpe_paint_modal_enter("a Hit CR wait");
  fk_getch();
+ wpe_paint_modal_leave();
 }
 
 /* The lead bytes of a multi-byte UTF-8 character, and how long the Run
@@ -1251,13 +1256,13 @@ void e_t_wait_for_enter_on_raw_terminal(void)
 
 #ifdef NCURSES
 /**
- * e_t_run_key_from_curses - The key typed on the terminal for a program the
- * Run menu started, or 0 when none is waiting.
+ * e_t_key_from_curses - The key typed on the terminal, or 0 when none is
+ * waiting.
  *
  * A multi-byte UTF-8 character arrives as one code point, so a user typing
  * an accented letter for their program sends that letter, not its bytes.
  */
-static int e_t_run_key_from_curses(void)
+static int e_t_key_from_curses(void)
 {
  int c, cp, i, expect, cont;
 
@@ -1286,28 +1291,27 @@ static int e_t_run_key_from_curses(void)
 #endif
 
 /**
- * e_t_key_now - The key the user typed for a program the Run menu started,
- * or 0 when none is waiting.
+ * e_t_key_take - The terminal's answer to wpe_paint_take_key: the key the
+ * user typed, taken without waiting, or 0.
+ * @want: WPE_PAINT_ANY_KEY, or one key.
  *
- * Never waits: the Run loop asks between reads of the program's output, so
- * the user's typing reaches the program while its output keeps scrolling.
- * The terminal's key comes from ncurses here, with the other readers of the
- * terminal; a graphical display's comes through its own key table.
- * Special keys and Ctrl-C stay with the caller.
+ * The Run loop asks between reads of the program's output, so the user's
+ * typing reaches the program while its output keeps scrolling.  The console
+ * takes only the next key, never one picked out of what was typed: its
+ * keyboard is one byte stream, often the command's own while the editor
+ * waits, and looking further into it would mean reading it.  So a key
+ * asked for by name is never taken here, and every byte stays where it is.
+ * Return: the key, or 0.
  */
-int e_t_key_now(void)
+static int e_t_key_take(int want)
 {
- int c = 0;
-
+ if (want != WPE_PAINT_ANY_KEY)
+  return 0;
 #ifdef NCURSES
- if (!WpeIsXwin())
-  c = e_t_run_key_from_curses();
+ return e_t_key_from_curses();
+#else
+ return e_t_kbhit();
 #endif
-#ifndef NO_XWINDOWS
- if (WpeIsXwin())
-  c = (*e_u_kbhit)();
-#endif
- return c;
 }
 
 #ifndef NO_XWINDOWS
@@ -1348,7 +1352,7 @@ int e_t_drain_keys_after_box(int xa, int xe, int ye)
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
  {
-  while ((i = (*e_u_kbhit)()))
+  while ((i = wpe_paint_take_key(WPE_PAINT_ANY_KEY)))
   {
    if (i == -1 && e_t_box_click_is_cancel(xa, xe, ye))
     i = CtrlC;
@@ -1358,7 +1362,7 @@ int e_t_drain_keys_after_box(int xa, int xe, int ye)
   return i;
  }
 #endif
- while ((i = (*e_u_kbhit)()) && i != CtrlC)
+ while ((i = wpe_paint_take_key(WPE_PAINT_ANY_KEY)) && i != CtrlC)
   ;
  return i;
 }
@@ -2336,7 +2340,9 @@ int e_t_user_screen(FENSTER *f)
  fputs("\033[0m\r\n\033[7m xwpe: press any key to return to the editor \033[0m",
    stderr);
  fflush(stderr);
+ wpe_paint_modal_enter("the User Screen");
  e_t_wait_for_any_key();
+ wpe_paint_modal_leave();
  e_t_take_terminal_back();
  return(0);
 }

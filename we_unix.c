@@ -134,7 +134,7 @@ int (*e_u_deb_out)(struct FNST *f);
 int (*e_u_cp_X_to_buffer)(struct FNST *f);
 int (*e_u_copy_X_buffer)(struct FNST *f);
 int (*e_u_paste_X_buffer)(struct FNST *f);
-int (*e_u_kbhit)(void);
+int (*e_u_key_take)(int want);
 int (*e_u_change)(PIC *pic);
 void (*e_u_serve_display)(void);
 int (*e_u_ini_size)(void);
@@ -295,6 +295,7 @@ static void wpe_library_threads_start(void)
  */
 static void wpe_child_say_on_status_row(const char *line)
 {
+ wpe_paint_trace_say(line);
  if (WpeEditor == NULL || WpeEditor->mxedt < 0)
   return;
  e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
@@ -341,16 +342,29 @@ static void e_capture_serve_display(void)
 }
 
 /**
+ * e_capture_cancel_asked - While the editor waits for a short command: did
+ * the user press Esc in the window?  The Esc is taken; the keys typed
+ * before it stay queued for the editor.
+ */
+static int e_capture_cancel_asked(void)
+{
+ return(wpe_paint_take_key(WPE_ESC) == WPE_ESC);
+}
+
+/**
  * e_ini_children_display - Once the display is open: serve it while the
  * editor waits for a short command (the print command, a manual page, an
- * unpack), so a window covered or resized meanwhile is drawn again at once.
+ * unpack), so a window covered or resized meanwhile is drawn again at once
+ * and Esc ends the command.  The console's keyboard waits for the editor
+ * meanwhile, as it always has.
  */
 static void e_ini_children_display(void)
 {
  if (WpeIsXwin())
-  wpe_child_capture_display_set(e_capture_quiet_fd, e_capture_serve_display);
+  wpe_child_capture_display_set(e_capture_quiet_fd, e_capture_serve_display,
+                                e_capture_cancel_asked);
  else
-  wpe_child_capture_display_set(e_capture_quiet_fd, NULL);
+  wpe_child_capture_display_set(e_capture_quiet_fd, NULL, NULL);
 }
 
 int e_ini_unix(int *argc, char **argv)

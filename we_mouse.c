@@ -37,7 +37,6 @@ int e_mouse_cursor();
 void e_scroll_drag_v(FENSTER *f);
 void e_scroll_drag_h(FENSTER *f);
 #ifndef NO_XWINDOWS
-static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on);
 static void e_scroll_drag_end_cursor(FENSTER *f);
 #endif
 
@@ -600,18 +599,33 @@ static int e_scroll_pixel_to_pos(int px, int track_start, int track_end,
  return pos;
 }
 
+/**
+ * e_scroll_drag_begin - A scrollbar thumb is grabbed: the drag owns the
+ * screen until the button is let go.
+ *
+ * A stop, program output or a reply that comes while the user drags is
+ * shown once the drag is over, alike on X11 and Wayland (whose drag waits
+ * on the editor's loop and so runs its callbacks meanwhile).
+ */
 static void e_scroll_drag_begin(void)
 {
+ wpe_paint_modal_enter("a scrollbar drag");
  wpe_scroll_dragging = 1;
  fk_u_grab_pointer(1);
 }
 
+/**
+ * e_scroll_drag_end - The button is let go: the pointer, the text cursor
+ * and the screen are the editor's again.
+ * @f: the window dragged; @saved_cur_on: the cursor's state before the drag.
+ */
 static void e_scroll_drag_end(FENSTER *f, int saved_cur_on)
 {
  fk_u_grab_pointer(0);
  wpe_scroll_dragging = 0;
  cur_on = saved_cur_on;
  e_scroll_drag_end_cursor(f);
+ wpe_paint_modal_leave();
 }
 #endif  /* NO_XWINDOWS */
 
@@ -642,7 +656,7 @@ void e_scroll_drag_h(FENSTER *f)
   e_scroll_render_h(f, new_bx);
   old_bx = new_bx;
  }
- e_scroll_drag_end_h(f, cur_on);
+ e_scroll_drag_end(f, cur_on);
 #endif
 }
 
@@ -662,14 +676,6 @@ static void e_scroll_drag_end_cursor(FENSTER *f)
  e_cursor_pos_only(f);
  e_schirm(f, 1);
  e_refresh();
-}
-
-static void e_scroll_drag_end_h(FENSTER *f, int saved_cur_on)
-{
- fk_u_grab_pointer(0);
- wpe_scroll_dragging = 0;
- cur_on = saved_cur_on;
- e_scroll_drag_end_cursor(f);
 }
 #endif  /* NO_XWINDOWS */
 

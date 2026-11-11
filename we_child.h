@@ -147,13 +147,17 @@ void wpe_child_say_set(void (*say)(const char *line));
    @what names it on the status row when it takes longer than a moment. */
 #define WPE_CAPTURE_ENDED       0    /* the command ended by itself */
 #define WPE_CAPTURE_TIMED_OUT   1    /* the deadline came: it was ended */
+#define WPE_CAPTURE_CANCELLED   2    /* the user stopped the wait: it was ended */
 #define WPE_CAPTURE_NOT_STARTED (-1) /* it could not be started */
 int  wpe_child_capture(char *const argv[], char *out, size_t max,
                        long deadline_ms, int *status, const char *what);
+int  wpe_child_probe(char *const argv[], char *out, size_t max,
+                     long deadline_ms, int *status, const char *what);
 int  wpe_child_run_to_file(char *const argv[], const char *path,
                            long deadline_ms, int *status, const char *what);
 int  wpe_capture_succeeded(int result, int status);
-void wpe_child_capture_display_set(int (*quiet_fd)(void), void (*serve)(void));
+void wpe_child_capture_display_set(int (*quiet_fd)(void), void (*serve)(void),
+                                   int (*cancel_asked)(void));
 
 /* For the SIGCHLD handler and the crash and end handlers (async-signal-safe),
    and the fd that wakes the loop. */

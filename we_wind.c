@@ -1110,7 +1110,15 @@ int e_schirm(FENSTER *f, int sw)
  return(j);
 }
 
-/*   Move and modify window */
+/**
+ * e_size_move - Move and size the window with the cursor keys until Enter
+ * or Esc.
+ * @f: the window.
+ *
+ * While the user moves the frame, a stop or program output that comes is
+ * shown once the window has its new place, not drawn under the moving frame.
+ * Return: the key that ended it.
+ */
 int e_size_move(FENSTER *f)
 {
  int xa = f->a.x, ya = f->a.y, xe = f->e.x, ye = f->e.y;
@@ -1121,7 +1129,7 @@ int e_size_move(FENSTER *f)
   xmin = 15;
  else if (!DTMD_ISTEXT(f->dtmd))
   ymin = 9;
- while ((c = e_getch()) != WPE_ESC && c != WPE_CR)
+ while ((c = wpe_paint_modal_getch()) != WPE_ESC && c != WPE_CR)
  {
   switch (c)
   {

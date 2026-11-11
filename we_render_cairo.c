@@ -301,8 +301,8 @@ static int cr_query_desktop_font(char *fontname, size_t size)
                   "monospace-font-name", NULL };
  int status, ran;
 
- ran = wpe_child_capture(argv, fontname, size, CR_FONT_QUERY_MS, &status,
-                         CR_FONT_QUERY_WHAT);
+ ran = wpe_child_probe(argv, fontname, size, CR_FONT_QUERY_MS, &status,
+                       CR_FONT_QUERY_WHAT);
  return(wpe_capture_succeeded(ran, status) && fontname[0] != '\0');
 }
 

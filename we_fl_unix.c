@@ -3291,6 +3291,10 @@ int WpeShell(FENSTER * f)
 #define E_PRINT_MS      60000L
 #define E_PRINT_OUT_MAX 256      /* what it says, read and dropped */
 #define E_PRINT_WHAT    "the print command"
+/* What e_print_run answers. */
+#define E_PRINT_FAILED  0
+#define E_PRINT_DONE    1
+#define E_PRINT_STOPPED 2
 /* The user's print command as shell text, run in the folder given as $1 on
    the file given as $2: the editor's own words never enter the text. */
 #define E_PRINT_SCRIPT_FMT "cd \"$1\" && %s \"$2\""
@@ -3304,7 +3308,10 @@ int WpeShell(FENSTER * f)
  * name goes to it as an argument, so a name with a space or a ';' prints
  * that file and nothing else.  The editor goes on serving its loop while the
  * command hands the file over.
- * Return: 1 when the command ended with status 0, else 0.
+ * Esc ends the wait: the file is then not printed and the status row says
+ * the wait was stopped, which is not a command that failed.
+ * Return: E_PRINT_DONE when the command ended with status 0,
+ * E_PRINT_STOPPED when the user pressed Esc, else E_PRINT_FAILED.
  */
 static int e_print_run(const char *dir, const char *cmd, const char *file)
 {
@@ -3314,7 +3321,7 @@ static int e_print_run(const char *dir, const char *cmd, const char *file)
  int status, ran;
 
  if (!(script = MALLOC(size)))
-  return(0);
+  return(E_PRINT_FAILED);
  snprintf(script, size, E_PRINT_SCRIPT_FMT, cmd);
  argv[0] = "sh";
  argv[1] = "-c";
@@ -3326,7 +3333,9 @@ static int e_print_run(const char *dir, const char *cmd, const char *file)
  ran = wpe_child_capture(argv, out, sizeof out, E_PRINT_MS, &status,
                          E_PRINT_WHAT);
  FREE(script);
- return(wpe_capture_succeeded(ran, status));
+ if (ran == WPE_CAPTURE_CANCELLED)
+  return(E_PRINT_STOPPED);
+ return(wpe_capture_succeeded(ran, status) ? E_PRINT_DONE : E_PRINT_FAILED);
 }
 
 int WpePrintFile(FENSTER *f)
@@ -3364,7 +3373,7 @@ int WpePrintFile(FENSTER *f)
  f->dirct = dp;
  f->ins = sins;
 
- if (!e_print_run(e_tmp_dir, f->ed->print_cmd, f->datnam))
+ if (e_print_run(e_tmp_dir, f->ed->print_cmd, f->datnam) == E_PRINT_FAILED)
   e_error(e_msg[ERR_NOTINSTALL], 0, f->fb);
 
  size = strlen(e_tmp_dir) + strlen(f->datnam) + 2;
@@ -3655,6 +3664,9 @@ int WpeFindWindow(FENSTER * f)
 #define E_MAN_WORD_MAX  80       /* the page's name, with its end */
 #define E_MAN_SECT_MAX  10       /* the section's name, with its end */
 #define E_MAN_WHAT      "the manual page"
+/* What e_man_run answers. */
+#define E_MAN_WRITTEN   0
+#define E_MAN_STOPPED   1
 
 /**
  * e_man_split - Take the page's name and its section out of a word such as
@@ -3713,9 +3725,12 @@ static void e_man_outfile(char *tstr, size_t size, const char *str)
  * `man` gets the name as an argument, so no word the user selected is read
  * as shell text, and the editor serves its loop while the page is made.  A
  * name that could be taken for an option, or a program that fails or hangs,
- * leaves the file empty, which the caller shows as "No manual entry".
+ * leaves the file empty, which the caller shows as "No manual entry".  Esc
+ * ends the wait instead: the user chose not to wait, which says nothing
+ * about the page, so the caller shows no window.
+ * Return: E_MAN_STOPPED when the user pressed Esc, else E_MAN_WRITTEN.
  */
-static void e_man_run(const char *nstr, const char *hstr, const char *tstr)
+static int e_man_run(const char *nstr, const char *hstr, const char *tstr)
 {
   char *argv[6];
   int n = 0, status, ran;
@@ -3737,11 +3752,28 @@ static void e_man_run(const char *nstr, const char *hstr, const char *tstr)
     argv[n++] = (char *)hstr;
     argv[n] = NULL;
     ran = wpe_child_run_to_file(argv, tstr, E_MAN_MS, &status, E_MAN_WHAT);
+    if(ran == WPE_CAPTURE_CANCELLED)
+      return(E_MAN_STOPPED);
     if(ran == WPE_CAPTURE_ENDED)
-      return;
+      return(E_MAN_WRITTEN);
   }
   if((fp = fopen(tstr, "w")))
     fclose(fp);
+  return(E_MAN_WRITTEN);
+}
+
+/**
+ * e_man_give_up - Leave Help on a word after the user pressed Esc.
+ * @tstr: the page's file, partly written or empty.
+ *
+ * Takes the file away and gives the pointer its shape back, so the editor
+ * is as it was before the user asked.
+ */
+static void e_man_give_up(const char *tstr)
+{
+  chmod(tstr, 0600);
+  remove(tstr);
+  WpeMouseRestoreShape();
 }
 
 int e_ed_man(char *str, FENSTER * f)
@@ -3770,7 +3802,11 @@ int e_ed_man(char *str, FENSTER * f)
 
   while(1)
   {
-    e_man_run(nstr, hstr, tstr);
+    if(e_man_run(nstr, hstr, tstr) == E_MAN_STOPPED)
+    {
+      e_man_give_up(tstr);
+      return(0);
+    }
     chmod(tstr, 0400);
     f->ed->dtmd = DTMD_HELP;
     e_edit(f->ed, tstr);

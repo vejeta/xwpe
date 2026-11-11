@@ -1189,6 +1189,83 @@ static void test_a_slow_capture_is_named_with_its_deadline(void)
 	chk_true("named with its deadline", !strcmp(said, SLOW_SAYS));
 }
 
+/* 27: on a display that has a cancel key, the user who presses it while a
+ * short command runs ends the command at once; the display is served first,
+ * and the console, which sets no such key, waits as before. */
+#define CANCEL_DEADLINE_MS   20000
+/* A cancelled command is ended by SIGKILL: its end comes within the kill's
+   grace, never near the deadline. */
+#define CANCEL_ENDS_WITHIN_MS (WPE_CHILD_END_KILL_MS + SLACK_MS)
+#define CANCEL_WHAT  "the probe"
+#define CANCEL_SAYS  "Esc: stopped waiting for the probe"
+static int served_before_cancel;
+
+static void serve_display(void)
+{
+	served_before_cancel++;
+}
+
+static int cancel_pressed(void)
+{
+	return served_before_cancel > 0;
+}
+
+static void test_a_short_command_the_user_cancels_is_ended_at_once(void)
+{
+	char out[CAPTURE_MAX];
+	char *hang[] = { "sh", "-c", "exec sleep 30", NULL };
+	int status = 0, ran;
+	long t0, took;
+
+	served_before_cancel = 0;
+	said[0] = '\0';
+	wpe_child_capture_display_set(NULL, serve_display, cancel_pressed);
+	t0 = now_ms();
+	ran = wpe_child_capture(hang, out, sizeof out, CANCEL_DEADLINE_MS,
+				&status, CANCEL_WHAT);
+	took = now_ms() - t0;
+	wpe_child_capture_display_set(NULL, NULL, NULL);
+	chk("the user's cancel ended it", ran, WPE_CAPTURE_CANCELLED);
+	if (strcmp(said, CANCEL_SAYS) != 0)
+		printf("  said: '%s'\n", said);
+	chk_true("and the editor says it stopped waiting",
+		 !strcmp(said, CANCEL_SAYS));
+	chk_true("by SIGKILL", WIFSIGNALED(status) &&
+		 WTERMSIG(status) == SIGKILL);
+	chk_true("long before the deadline", took < CANCEL_ENDS_WITHIN_MS);
+	chk_true("the display was served first", served_before_cancel > 0);
+	chk_true("not a success", !wpe_capture_succeeded(ran, status));
+}
+
+/* 28: a probe the editor made on its own does not take the user's Esc: the
+ * cancel key is never asked, the probe ends at its deadline, and the editor
+ * says nothing about a stop. */
+#define PROBE_DEADLINE_MS  300
+static int cancel_asked_of_probe;
+
+static int cancel_counted(void)
+{
+	cancel_asked_of_probe++;
+	return 1;
+}
+
+static void test_a_probe_is_not_ended_by_the_users_cancel(void)
+{
+	char out[CAPTURE_MAX];
+	char *hang[] = { "sh", "-c", "exec sleep 30", NULL };
+	int status = 0, ran;
+
+	cancel_asked_of_probe = 0;
+	said[0] = '\0';
+	wpe_child_capture_display_set(NULL, serve_display, cancel_counted);
+	ran = wpe_child_probe(hang, out, sizeof out, PROBE_DEADLINE_MS,
+			      &status, CANCEL_WHAT);
+	wpe_child_capture_display_set(NULL, NULL, NULL);
+	chk("it ended at its deadline", ran, WPE_CAPTURE_TIMED_OUT);
+	chk("the cancel key was not asked", cancel_asked_of_probe, 0);
+	chk_true("and no stop was said", strstr(said, "Esc") == NULL);
+}
+
 /* @scenario SC-debug-72 */
 /* @scenario SC-debug-82 */
 /* @scenario SC-debug-103 */
@@ -1235,6 +1312,8 @@ int main(void)
 	test_capture_reads_an_output_larger_than_a_pipe_buffer();
 	test_a_command_into_a_file_takes_its_names_as_arguments();
 	test_a_slow_capture_is_named_with_its_deadline();
+	test_a_short_command_the_user_cancels_is_ended_at_once();
+	test_a_probe_is_not_ended_by_the_users_cancel();
 
 	if (fails) {
 		printf("%d failure(s)\n", fails);

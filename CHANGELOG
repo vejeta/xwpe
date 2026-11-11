@@ -276,6 +276,21 @@ Changes
   stop.  What arrives while a dialog, a dropdown, an error box or the
   review box is up now waits and is shown, in order, when it closes.
 
+* The menu bar, the prefixes and the User Screen keep the screen too, and
+  on Wayland the Run menu's program gets what you type.  A stop or a
+  build's end that came while F10's bar was open, while Ctrl-G, Ctrl-K,
+  Ctrl-O or Alt-Q waited for its letter, while a window was moved or a
+  scrollbar dragged, or while the User Screen was up, was drawn under it,
+  and the letter then acted on a window you had not seen.  Now it is shown
+  when they close.  On Wayland a program started with Ctrl-F9 received
+  Ctrl-A for ever instead of the line typed for it, and Ctrl-C did not
+  stop it.  On X11 and Wayland, Esc now ends a short command the editor
+  waits for (a manual page, the print command) instead of waiting out its
+  time limit; the status row says "Esc: stopped waiting for" the command,
+  no error box or "No manual entry" window follows, and the keys typed
+  before Esc are kept.  Checks the editor makes by itself, such as the
+  Java version, leave your Esc alone.
+
 * File > Print File works again, compressed files open whatever their
   names, and help on a very long word no longer crashes.  The print
   command was cut to seven characters and never ran.  Compressed help and

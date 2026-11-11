@@ -51,15 +51,145 @@
   {
    "id": "SC-screen-02",
    "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_stop_under_the_f10_bar_is_shown_when_it_closes",
+   "status": "new",
+   "needs": ["gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_stop_under_a_ctrl_g_prefix_acts_on_the_current_window",
+   "status": "new",
+   "needs": ["gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_a_build_that_ends_under_the_f10_bar_jumps_to_its_error_when_it_closes",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "x11",
+   "test": "tests/x11/test_screen_owner.py::test_stop_under_the_user_screen_waits_for_the_key",
+   "status": "new",
+   "needs": ["gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "wayland",
+   "test": "tests/wayland/test_screen_owner.py::test_stop_under_the_user_screen_waits_for_the_key",
+   "status": "blocked",
+   "reason": "Alt-F5 with program output ends the editor on Wayland (SIGSEGV): the User Screen reads its colours from the X display; xfail until that is fixed",
+   "needs": ["weston", "gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
    "layer": "c-unit",
    "test": "test_paint",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-07",
+   "requirement": "A key taken without waiting is the same on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_run_typing.py::test_a_line_and_ctrl_c_typed_for_a_running_program_reach_it",
+   "status": "new",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-screen-07",
+   "requirement": "A key taken without waiting is the same on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_run_typing.py::test_a_line_and_ctrl_c_typed_for_a_running_program_reach_it",
+   "status": "new",
+   "needs": ["weston", "gcc"]
+  },
+  {
+   "id": "SC-screen-07",
+   "requirement": "A key taken without waiting is the same on every display",
+   "layer": "c-unit",
+   "test": "test_paint",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "x11",
+   "test": "tests/x11/test_short_command_cancel.py::test_esc_ends_a_short_command_the_editor_waits_for",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "wayland",
+   "test": "tests/wayland/test_short_command_cancel.py::test_esc_ends_a_short_command_the_editor_waits_for",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "x11",
+   "test": "tests/x11/test_short_command_cancel.py::test_a_key_typed_before_esc_is_still_read_by_the_editor",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "wayland",
+   "test": "tests/wayland/test_short_command_cancel.py::test_a_key_typed_before_esc_is_still_read_by_the_editor",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "x11",
+   "test": "tests/x11/test_short_command_cancel.py::test_esc_on_help_says_it_stopped_and_shows_no_error",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "wayland",
+   "test": "tests/wayland/test_short_command_cancel.py::test_esc_on_help_says_it_stopped_and_shows_no_error",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "x11",
+   "test": "tests/x11/test_short_command_cancel.py::test_esc_on_print_says_it_stopped_and_shows_no_not_installed_box",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "wayland",
+   "test": "tests/wayland/test_short_command_cancel.py::test_esc_on_print_says_it_stopped_and_shows_no_not_installed_box",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-screen-08",
+   "requirement": "Esc ends a short command the editor waits for",
+   "layer": "c-unit",
+   "test": "test_child",
    "status": "new"
   },
   {
    "id": "SC-screen-03",
    "requirement": "A box stays a box",
    "layer": "ncurses",
-   "test": "tests/test_screen_owner.py::test_a_review_box_stays_a_box_after_an_error_box_inside_it",
+   "test": "tests/test_screen_owner.py::test_a_language_server_publishing_under_the_review_box_draws_nothing_under_it",
    "status": "new"
   },
   {
