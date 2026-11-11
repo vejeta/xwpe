@@ -1315,6 +1315,36 @@ def _assert_copy_whole_or_nothing(s, tmp_path, key, what):
         "after the refusal the %s did not land: %r" % (what, s.text())
 
 
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", range(1, 9))
+def test_a_block_copy_refused_for_memory_changes_nothing(tmp_path, n):
+    """Ctrl-K C into a line as wide as the window, its memory cut at the
+    n-th allocation: the copy is whole, or nothing changed, the line it was
+    dropped into keeps every byte, and the status row says so."""
+    with WpeSession(str(tmp_path), WRAP_SEED, env_extra=_fault_env(tmp_path, "block-copy:%d" % n)) as s:
+        _mark_the_wrapping_block(s)
+        _to_the_long_line(s)
+        s.key(CTRL_K, "c", delay=0.8)
+        _assert_fault_fired(tmp_path, "block-copy")
+        _assert_copy_whole_or_nothing(s, tmp_path, CTRL_K + "c", "block copy")
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", range(1, 9))
+def test_a_paste_refused_for_memory_changes_nothing(tmp_path, n):
+    """Ctrl-V into a line as wide as the window, its memory cut at the n-th
+    allocation: the paste is whole, or nothing changed, the line it was
+    dropped into keeps every byte, and the status row says so."""
+    with WpeSession(str(tmp_path), WRAP_SEED, env_extra=_fault_env(tmp_path, "block-copy:%d" % n)) as s:
+        _mark_the_wrapping_block(s)
+        s.key(CTRL_C, delay=0.5)
+        _to_the_long_line(s)
+        s.key(CTRL_V, delay=0.8)
+        _assert_fault_fired(tmp_path, "block-copy")
+        _assert_copy_whole_or_nothing(s, tmp_path, CTRL_V, "paste")
+        assert s.alive(), "wpe died"
+
 
 def _mark_in_line(s, row, begin, end):
     """From the top of the file, mark columns @begin up to @end of @row and
@@ -1382,7 +1412,7 @@ def _assert_undone_and_redone(s, want, what):
 
 
 # @scenario SC-buffer-01
-@pytest.mark.parametrize("key", ["v"])
+@pytest.mark.parametrize("key", ["c", "v"])
 @pytest.mark.parametrize("col", [100, 112, 115, 117])
 def test_a_block_dropped_into_a_full_line_is_undone(tmp_path, col, key):
     """"bar" copied or moved to a column near the end of a line as wide as
@@ -1409,7 +1439,7 @@ def _mark_bar_to_k1(s):
 
 
 # @scenario SC-buffer-01
-@pytest.mark.parametrize("key", ["v"])
+@pytest.mark.parametrize("key", ["c", "v"])
 @pytest.mark.parametrize("col", [100, 115])
 def test_a_block_of_two_lines_dropped_into_a_full_line_is_undone(tmp_path, col, key):
     """A block over two lines copied or moved into a line as wide as the

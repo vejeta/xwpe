@@ -67,7 +67,10 @@ removed above them as you type (@key{Return}, a wrapped line, @kbd{Ctrl-Y},
 takes its breakpoint along) or by a tool's rewrite of the file, and
 a breakpoint on a line that was deleted, alone or in a block, or joined to
 the one above comes back with Undo.  The colours of a window always are those of
-its text, after a tool's rewrite too.
+its text, after a tool's rewrite too.  A block move, copy, paste or delete,
+and its Undo or Redo, that runs out of memory is not made at all: the text,
+the block, the breakpoints and Undo stay as they were, and the status row
+says so.
 
 @section Block operations
 

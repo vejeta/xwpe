@@ -263,6 +263,16 @@ Changes
   the block's start, copies the marked text (it wrote stray bytes into the
   file).
 
+* A block move, copy, paste or delete that runs out of memory, and its
+  Ctrl-U or Ctrl-R, is made whole or not at all and the status row says
+  so (it could lose the moved lines, cut the line it was dropped into, or
+  drop the step from Undo).  A file that cannot be read for want of memory
+  is not opened (it opened empty under its name, and saving it emptied the
+  file).  Ctrl-U of a block moved inside its own line puts it back where it
+  was, and Ctrl-U of a block copied or moved into a line as wide as the
+  window takes back that block and nothing else (it could delete your own
+  characters next to it).
+
 * A file read into a window with Block > Read (Ctrl-K R) is one Ctrl-U and
   marks the window modified (Ctrl-U took back what you had typed before,
   and the insert stayed), and the breakpoints below move down with their

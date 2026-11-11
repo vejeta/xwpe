@@ -375,6 +375,20 @@
   {
    "id": "SC-buffer-08",
    "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_copy_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_paste_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
    "layer": "c-unit",
    "test": "test_splice",
    "status": "new"
