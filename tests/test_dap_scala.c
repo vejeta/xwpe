@@ -10,9 +10,16 @@
  * SKIPs (exit 77) when `scala-cli` is missing.  Slow on first run (the build
  * server resolves the Scala toolchain via coursier), so it is not in the
  * default CI Test-Depends -- it self-skips there. */
+#include <dirent.h>
+#include <errno.h>
+#include <limits.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "../we_bsp.h"
@@ -48,9 +55,203 @@ static int have_tools(void)
 
 static int fail(const char *msg) { printf("FAIL: %s\n", msg); return 1; }
 
+/* The whole session gets this long (a cold coursier cache included) before
+   the test gives up on it and fails, so a build server that stops answering
+   fails `make check` with a line instead of holding it.  A slower machine
+   sets TEST_DEADLINE_ENV. */
+#define TEST_DEADLINE_S    600
+#define TEST_DEADLINE_ENV  "XWPE_TEST_DAP_SCALA_DEADLINE_S"
+/* After the session, its program gets this long to end by itself. */
+#define PROGRAM_END_MS     5000
+#define PROGRAM_COMM       "java"   /* the kernel's command name of a JVM */
+#define PROC_ROOT          "/proc"
+#define PROC_PATH_MAX      64
+#define COMM_MAX           32
+
+static volatile sig_atomic_t deadline_passed = 0;
+
+static void on_deadline(int sig) { (void)sig; deadline_passed = 1; }
+
+static int session(const char *dir);
+
+/**
+ * test_deadline_s - How long the session may take: TEST_DEADLINE_S, or
+ * what TEST_DEADLINE_ENV says.
+ */
+static int test_deadline_s(void)
+{
+ const char *v = getenv(TEST_DEADLINE_ENV);
+ int n = v ? atoi(v) : 0;
+
+ return n > 0 ? n : TEST_DEADLINE_S;
+}
+
+/**
+ * run_within_deadline - Run the session in a child of the test's, and give
+ * up on it at the deadline.
+ * @dir: the session's folder.
+ *
+ * Every wait of the session is bounded on its own, but a build server that
+ * stops answering between them could still hold `make check` for many
+ * minutes; past the deadline the child is killed and the test fails saying
+ * so.  Only the child is signalled: the build server it may have started is
+ * shared and is left alone.
+ * Return: the session's exit status, or 1 when it was given up on.
+ */
+static int run_within_deadline(const char *dir)
+{
+ struct sigaction sa;
+ int st = 0, secs = test_deadline_s();
+ pid_t pid;
+
+ fflush(stdout);
+ pid = fork();
+ if (pid < 0)
+  return fail("fork");
+ if (pid == 0)
+ {
+  int rc = session(dir);
+
+  fflush(stdout);
+  _exit(rc);
+ }
+ memset(&sa, 0, sizeof sa);
+ sa.sa_handler = on_deadline;       /* no SA_RESTART: the wait is cut short */
+ sigemptyset(&sa.sa_mask);
+ sigaction(SIGALRM, &sa, NULL);
+ alarm(secs);
+ while (waitpid(pid, &st, 0) < 0)
+ {
+  if (errno != EINTR)
+   return fail("waitpid");
+  if (!deadline_passed)
+   continue;
+  printf("FAIL: the Scala session did not finish within %d s "
+         "(set %s for a slower machine); ended it\n", secs, TEST_DEADLINE_ENV);
+  kill(pid, SIGKILL);
+  while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
+   ;
+  return 1;
+ }
+ alarm(0);
+ return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+}
+
+/**
+ * is_program_in - Is @pid a live JVM whose working folder is @dir?
+ * @pid: a process; @dir: the session's folder, resolved.
+ *
+ * The program runs as the shared build server's child, not the test's, so
+ * it is told from every other JVM by the folder it was started in.
+ */
+static int is_program_in(int pid, const char *dir)
+{
+ char p[PROC_PATH_MAX], comm[COMM_MAX], cwd[PATH_MAX];
+ FILE *f;
+ ssize_t n;
+ int ok;
+
+ snprintf(p, sizeof p, PROC_ROOT "/%d/comm", pid);
+ if (!(f = fopen(p, "r")))
+  return 0;
+ ok = fgets(comm, sizeof comm, f) != NULL;
+ fclose(f);
+ if (!ok || strncmp(comm, PROGRAM_COMM "\n", sizeof PROGRAM_COMM) != 0)
+  return 0;
+ snprintf(p, sizeof p, PROC_ROOT "/%d/cwd", pid);
+ n = readlink(p, cwd, sizeof cwd - 1);
+ if (n < 0)
+  return 0;
+ cwd[n] = '\0';
+ return strcmp(cwd, dir) == 0;
+}
+
+/**
+ * wait_program_end - Give a program that is still ending PROGRAM_END_MS.
+ * @pid: the program.
+ *
+ * Waits on the process's own descriptor where the system has one (it is
+ * not the test's child, so waitpid cannot); elsewhere it is not waited for.
+ * Return: 1 once it has ended.
+ */
+static int wait_program_end(int pid)
+{
+#ifdef SYS_pidfd_open
+ struct pollfd pfd;
+ int fd = (int)syscall(SYS_pidfd_open, pid, 0);
+
+ if (fd >= 0)
+ {
+  pfd.fd = fd;
+  pfd.events = POLLIN;
+  while (poll(&pfd, 1, PROGRAM_END_MS) < 0 && errno == EINTR)
+   ;
+  close(fd);
+ }
+#endif
+ return kill(pid, 0) != 0;
+}
+
+/**
+ * end_programs_left - The session is over: no program of it may be left
+ * running under the build server.
+ * @dir: the session's folder.
+ *
+ * A program held at a breakpoint by a session that did not end it ignores
+ * SIGTERM and stays for as long as the build server runs, so each one found
+ * fails the test, named, and is ended (only it, never the server).
+ * Return: 0 when none was left, 1 otherwise.
+ */
+static int end_programs_left(const char *dir)
+{
+ char real[PATH_MAX];
+ struct dirent *e;
+ DIR *d;
+ int pid, rc = 0;
+
+ if (!realpath(dir, real) || !(d = opendir(PROC_ROOT)))
+  return 0;
+ while ((e = readdir(d)) != NULL)
+ {
+  pid = atoi(e->d_name);
+  if (pid <= 0 || !is_program_in(pid, real) || wait_program_end(pid))
+   continue;
+  printf("FAIL: the session left its program running (pid %d in %s); "
+         "ended it\n", pid, real);
+  kill(pid, SIGKILL);
+  rc = 1;
+ }
+ closedir(d);
+ return rc;
+}
+
 int main(void)
 {
  char dir[] = "/tmp/xwpe-dapscala-XXXXXX";
+ char cmd[512];
+ int rc;
+
+ if (!have_tools())
+ {
+  printf("SKIP: scala-cli is required for the Scala BSP/DAP test\n");
+  return 77;
+ }
+ if (!mkdtemp(dir))
+  return fail("mkdtemp");
+ rc = run_within_deadline(dir);
+ if (end_programs_left(dir))
+  rc = 1;
+ snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
+ if (system(cmd) != 0) { /* best-effort cleanup of our own mkdtemp dir */ }
+ return rc;
+}
+
+/**
+ * session - The Scala session itself, in the folder @dir.
+ * Return: 0 when it passed, 1 when it failed.
+ */
+static int session(const char *dir)
+{
  char scala[300], path[400], cmd[512];
  char host[64], mainclass[256], err[256];
  int port = 0, rc = 0;
@@ -60,14 +261,6 @@ int main(void)
  e_bsp_session *bsp;
  e_dap_session *s;
  char *val;
-
- if (!have_tools())
- {
-  printf("SKIP: scala-cli is required for the Scala BSP/DAP test\n");
-  return 77;
- }
- if (!mkdtemp(dir))
-  return fail("mkdtemp");
 
  snprintf(scala, sizeof(scala), "%s/factorial.scala", dir);
  if (!(f = fopen(scala, "w"))) { rc = fail("write factorial.scala"); goto out; }
@@ -144,7 +337,5 @@ close:
 closebsp:
  e_bsp_close(bsp);
 out:
- snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
- if (system(cmd) != 0) { /* best-effort cleanup of our own mkdtemp dir */ }
  return rc;
 }

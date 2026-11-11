@@ -68,6 +68,8 @@
   {"id": "SC-debug-24", "requirement": "Stepping and the mark", "layer": "ncurses", "test": "tests/test_scala_dap.py::test_scala_dap_run_step_watch", "status": "covered", "needs": ["scala-cli"]},
   {"id": "SC-debug-47", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_scala_dap.py::test_quit_ends_the_scala_program", "status": "new", "needs": ["scala-cli"]},
   {"id": "SC-debug-47", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_scala_dap.py::test_sigterm_to_the_editor_ends_the_scala_program", "status": "new", "needs": ["scala-cli"]},
+  {"id": "SC-debug-47", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_scala_dap.py::test_every_end_of_a_scala_session_ends_its_program", "status": "new", "needs": ["scala-cli"]},
+  {"id": "SC-debug-47", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_scala_dap.py::test_a_killed_editors_test_leaves_no_scala_program", "status": "new", "needs": ["scala-cli"]},
   {"id": "SC-debug-25", "requirement": "Starting and ending a session", "layer": "ncurses", "test": "tests/test_debugger_integration.py::test_a_debugger_not_installed_is_named_and_nothing_hangs", "status": "covered", "needs": ["gcc"]},
   {"id": "SC-debug-26", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": "tests/test_keymap_terminal.py::test_ctrl_f8_toggles_a_breakpoint_and_ctrl_f10_runs_on", "status": "new", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-26", "requirement": "The bars and the menu tell the truth", "layer": "ncurses", "test": "tests/test_keymap_terminal.py::test_ctrl_f7_opens_the_add_watch_box", "status": "new", "needs": ["gcc", "gdb"]},

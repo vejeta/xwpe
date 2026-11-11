@@ -220,3 +220,80 @@ def test_sigterm_to_the_editor_ends_the_scala_program(tmp_path):
                 "the program (pid %d) should end with the editor" % program
     finally:
         _end_program_if_left(workdir)
+
+
+def _close_the_terminal(w):
+    """Close the editor's terminal, as a closed terminal window does: the
+    editor reads the end of its input and gets SIGHUP."""
+    os.close(w.master_fd)
+    if w.input_fd != w.master_fd:
+        os.close(w.input_fd)
+    w.master_fd = w.input_fd = -1
+
+
+def _run_to_its_end(w):
+    """Take the breakpoint away and continue: the program runs to its end
+    with the session open."""
+    w.key(CTRL_G, "b", delay=1.0)
+    w.key(CTRL_G, "r", delay=1.0)
+
+
+EDITOR_ENDS = {
+    "alt_x": lambda w: w.key("\033x", delay=0.5),
+    "sighup": lambda w: os.kill(w.proc.pid, signal.SIGHUP),
+    "terminal_closed": _close_the_terminal,
+    "program_runs_to_its_end": _run_to_its_end,
+}
+
+
+def _no_program_left(w, workdir, server):
+    """True once the build server runs no program of this session; the
+    editor is drained while it still has a terminal to drain."""
+    if w.alive() and w.master_fd >= 0:
+        w._drain(POLL_S)
+    return not procinfo.children_in(server, workdir, JAVA)
+
+
+# @scenario SC-debug-47
+@pytest.mark.skipif(not procinfo.has_procfs(),
+                    reason="finds the program by its directory in /proc")
+@pytest.mark.parametrize("end", sorted(EDITOR_ENDS))
+def test_every_end_of_a_scala_session_ends_its_program(tmp_path, end):
+    """However the session ends with the editor running its course (Alt-X,
+    a hang-up, a closed terminal, the program running to its end), the
+    build server runs no program of this session's folder afterwards."""
+    workdir = str(tmp_path)
+    try:
+        with WpeSession(workdir, PROG, filename="factorial.scala",
+                        wait=2.0) as w:
+            program, server = _stopped_with_its_program(w, workdir)
+            EDITOR_ENDS[end](w)
+            assert _wait_until(
+                lambda: _no_program_left(w, workdir, server),
+                PROGRAM_ENDS_S), \
+                "the program (pid %d) should end on %s" % (program, end)
+    finally:
+        _end_program_if_left(workdir)
+
+
+# @scenario SC-debug-47
+@pytest.mark.skipif(not procinfo.has_procfs(),
+                    reason="finds the program by its directory in /proc")
+def test_a_killed_editors_test_leaves_no_scala_program(tmp_path):
+    """A test that ends its session by killing the editor (every session's
+    close, SIGKILL to the editor's group) leaves no program behind under
+    the shared build server: the program is held at a breakpoint, ignores
+    SIGTERM, and would otherwise stay for as long as the server runs."""
+    workdir = str(tmp_path)
+    try:
+        w = WpeSession(workdir, PROG, filename="factorial.scala", wait=2.0)
+        try:
+            program, server = _stopped_with_its_program(w, workdir)
+        finally:
+            w.close()
+        left = procinfo.children_in(server, workdir, JAVA)
+        assert not left, \
+            "the session's close left its program running under the build " \
+            "server %d: %s" % (server, left)
+    finally:
+        _end_program_if_left(workdir)

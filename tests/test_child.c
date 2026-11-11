@@ -613,6 +613,97 @@ static void test_the_rest_of_a_group_whose_leader_ended_is_ended_after_the_grace
 	close_ends(&r);
 }
 
+/* Two members of one group, each deaf to SIGTERM, each saying its PID once
+ * it is deaf; the shell that started them ends at once, so neither is the
+ * test's child (as a debug adapter's program is not the editor's). */
+#define TWO_DEAF_MEMBERS \
+	"(trap '' TERM; exec sh -c 'echo $$; exec sleep 30') & " \
+	"(trap '' TERM; exec sh -c 'echo $$; exec sleep 30') &"
+#define TWO_PIDS_MAX       64
+
+/** read_two_pids - The two PIDs TWO_DEAF_MEMBERS says, one per line. */
+static void read_two_pids(int fd, pid_t *a, pid_t *b)
+{
+	char buf[TWO_PIDS_MAX];
+	long deadline = now_ms() + SLACK_MS;
+	ssize_t n = 0, got;
+	long x = 0, y = 0;
+
+	while (now_ms() < deadline &&
+	       !(n > 0 && buf[n - 1] == '\n' && memchr(buf, '\n', n) != buf + n - 1)) {
+		got = read(fd, buf + n, sizeof buf - 1 - n);
+		if (got > 0)
+			n += got;
+		else
+			wpe_fd_poll(LOOP_SLICE_MS);
+	}
+	buf[n] = '\0';
+	if (sscanf(buf, "%ld %ld", &x, &y) != 2)
+		x = y = 0;
+	*a = (pid_t)x;
+	*b = (pid_t)y;
+}
+
+/** until_gone - Run the loop until @pid, not the test's child, is reaped by
+ * whoever adopted it, or SLACK_MS. */
+static void until_gone(pid_t pid)
+{
+	long deadline = now_ms() + SLACK_MS;
+
+	while (kill(pid, 0) == 0 && now_ms() < deadline)
+		wpe_fd_poll(LOOP_SLICE_MS);
+}
+
+/** loop_while_ending - Run the loop until no end is on the ladder, or @ms. */
+static long loop_while_ending(long ms)
+{
+	long t0 = now_ms(), deadline = t0 + ms;
+
+	while (wpe_child_ending() > 0 && now_ms() < deadline)
+		wpe_fd_poll(LOOP_SLICE_MS);
+	return now_ms() - t0;
+}
+
+/* A process the editor did not start but was told about (a debug adapter's
+ * program) that ignores SIGTERM is killed when the grace is over, that
+ * process alone: a member of its group is left running.  One that ends by
+ * itself is let go at once, so the editor's end does not wait out the
+ * grace; one that is gone already costs nothing. */
+static void test_a_named_process_is_ended_alone_after_the_grace(void)
+{
+	static Run r;
+	pid_t named, other;
+	long t0, gone_ms;
+
+	chk("start", start_sh(&r, TWO_DEAF_MEMBERS), 0);
+	read_two_pids(r.c.out_fd, &named, &other);
+	chk_true("the two members' pids", named > 0 && other > 0);
+	loop_until_ended(&r, 1, SLACK_MS);
+	chk("the shell's end was reported", r.calls, 1);
+	t0 = now_ms();
+	wpe_child_end_named(named, SIGTERM);
+	chk("its end is on the ladder", wpe_child_ending(), 1);
+	wpe_fd_poll(0);
+	chk_true("it outlives the polite signal", kill(named, 0) == 0);
+	loop_while_ending(WPE_CHILD_END_GRACE_MS + SLACK_MS);
+	gone_ms = now_ms() - t0;
+	chk_true("it was killed after the grace", gone_ms >= WPE_CHILD_END_GRACE_MS);
+	until_gone(named);
+	chk_true("it is gone", kill(named, 0) < 0);
+	chk_true("its group's other member is left running", kill(other, 0) == 0);
+
+	wpe_child_end_named(other, WPE_CHILD_NO_SIGNAL);
+	chk("the other is on the ladder", wpe_child_ending(), 1);
+	kill(other, SIGKILL);              /* it ends by itself, early */
+	gone_ms = loop_while_ending(WPE_CHILD_END_GRACE_MS + SLACK_MS);
+	chk_true("one that ended is let go before the grace",
+	         gone_ms < WPE_CHILD_END_GRACE_MS);
+	until_gone(other);
+	wpe_child_end_named(other, SIGTERM);
+	chk("one that is gone costs no ladder", wpe_child_ending(), 0);
+	close_ends(&r);
+}
+
 /* A third end asked for at once (a key pressed again and again) changes
  * nothing once SIGKILL is out: the kernel is given its kill grace, the end is
  * reported with SIGKILL's status, and nobody reads "did not end". */
@@ -1128,6 +1219,7 @@ int main(void)
 	test_the_group_not_only_the_shell_is_ended();
 	test_a_member_deaf_to_sigterm_is_killed_after_its_leader_ended();
 	test_the_rest_of_a_group_whose_leader_ended_is_ended_after_the_grace();
+	test_a_named_process_is_ended_alone_after_the_grace();
 	test_a_third_end_gives_the_kernel_its_kill_grace();
 	test_a_detached_child_is_ended_with_nobody_called_back();
 	test_a_child_on_a_pty_has_it_as_its_terminal();

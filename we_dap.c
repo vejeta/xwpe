@@ -134,6 +134,9 @@ struct e_dap_session {
  int           program_ended; /* `terminated` or `exited` said so    */
  int           exit_known;    /* the `exited` event named a code      */
  int           exit_code;     /* that code                           */
+ int           program_pid;   /* the `process` event's systemProcessId:
+                                 the program, on this machine; 0 when the
+                                 adapter named none (Bloop's does not)  */
  char          bp_file[512];
  int           bp_lines[DAP_MAX_BP];
  int           bp_n;
@@ -424,6 +427,75 @@ static void dap_note_exit_code(e_dap_session *s, struct json_object *body)
   return;
  s->exit_code = json_object_get_int(v);
  s->exit_known = 1;
+}
+
+/* The `process` event's startMethod for a program the adapter started
+   itself; `attach` and `attachForSuspendedLaunch` name one it joined. */
+#define DAP_START_METHOD_LAUNCH "launch"
+
+/**
+ * dap_process_was_launched - Did the adapter start the program a `process`
+ * event names, rather than attach to one already running?
+ * @body: the event's body.
+ *
+ * Quit ends only a program the session started: a process the user had
+ * running and attached the debugger to goes on after the session.  An
+ * event without startMethod is taken as a launch, which is all the editor
+ * asks adapters for.
+ * Return: 1 for a launch, 0 otherwise.
+ */
+static int dap_process_was_launched(struct json_object *body)
+{
+ struct json_object *v = NULL;
+ const char *how;
+
+ if (!json_object_object_get_ex(body, "startMethod", &v))
+  return 1;
+ how = json_object_get_string(v);
+ return how != NULL && strcmp(how, DAP_START_METHOD_LAUNCH) == 0;
+}
+
+/**
+ * dap_note_program_pid - Keep the process number a `process` event names.
+ * @s: the session; @body: the event's body.
+ *
+ * Quit asks the adapter to end the program; one that answers and leaves it
+ * running would leave the user's program behind the session, so the editor
+ * keeps the number to end it itself.  A remote program (isLocalProcess
+ * false), a process the adapter attached to rather than started (the
+ * user's own, which must outlive the session) and a number that is not a
+ * process (lldb-dap may say 0) are not kept.
+ */
+static void dap_note_program_pid(e_dap_session *s, struct json_object *body)
+{
+ struct json_object *v = NULL;
+ int pid;
+
+ if (!body || !json_object_object_get_ex(body, "systemProcessId", &v))
+  return;
+ pid = json_object_get_int(v);
+ if (json_object_object_get_ex(body, "isLocalProcess", &v) &&
+     !json_object_get_boolean(v))
+  return;
+ if (!dap_process_was_launched(body))
+  return;
+ if (pid > 0)
+  s->program_pid = pid;
+}
+
+/**
+ * e_dap_program_pid - The program the adapter said it runs, while it runs.
+ * @s: the session.
+ *
+ * Return: its process number, from the adapter's `process` event, or 0
+ * when the adapter named none or said the program ended (the number may
+ * be another process's by then).
+ */
+int e_dap_program_pid(const e_dap_session *s)
+{
+ if (!s || s->program_ended)
+  return 0;
+ return s->program_pid;
 }
 
 static int obj_bool(struct json_object *o, const char *k)
@@ -1078,6 +1150,8 @@ static void dap_handle_event(e_dap_session *s, struct json_object *m)
   dap_stop_event(s, body);
  else if (!strcmp(ev, "breakpoint"))
   dap_breakpoint_event(s, body);
+ else if (!strcmp(ev, "process"))
+  dap_note_program_pid(s, body);
  else if (!strcmp(ev, "terminated") || !strcmp(ev, "exited"))
  {
   if (!strcmp(ev, "exited"))

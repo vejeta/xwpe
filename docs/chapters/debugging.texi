@@ -770,12 +770,15 @@ server's launcher and starts nothing (@samp{Scala build server start
 cancelled.}).  Each request is given up after four minutes, which a first
 compile that fetches the toolchain needs.
 @samp{Debug @result{} Quit} ends the program Bloop runs for the session,
-and so does the editor's own end on @code{SIGTERM} or a hangup; Bloop itself
+and so do @kbd{Alt-X}, the editor's own end on @code{SIGTERM} or a hangup,
+a closed terminal, and the program running to its end; Bloop itself
 is shared (Metals uses it too) and is left running.  The editor then gives
 @command{scala-cli}'s launcher up to two seconds to close its connection
 before ending it, while you keep typing.  An editor killed outright (@code{SIGKILL}, a crash)
 cannot tell Bloop to end the program, and Bloop does not end it by itself:
-look for a @command{java} process in the source's directory then.
+look for a @command{java} process in the source's directory then and end
+it with @code{kill -9}, since a program held at a breakpoint does not end
+on @code{SIGTERM}.
 @end itemize
 Run/Continue (@kbd{Ctrl-G R}), Step Over (@kbd{F8}), Step Into (@kbd{F7}),
 watches (@kbd{Ctrl-G W}, evaluated with the DAP @code{evaluate} request),
@@ -784,7 +787,10 @@ Show stack (@kbd{Ctrl-G K}, the @code{stackTrace} request), Finish function
 gdb.  Quit asks the adapter to end the program and waits for its answer
 and its exit, up to a few seconds for an adapter that does not answer
 (@command{lldb-dap} takes about a second), so no program is left
-running.  The first @kbd{Ctrl-G R} stops
+running.  An adapter that names its program (gdb does, Bloop does not)
+and still leaves it running after Quit has it ended by the editor: two
+seconds, then @code{SIGKILL}, to that process alone; a process the
+adapter says it attached to, or one on another machine, is never ended.  The first @kbd{Ctrl-G R} stops
 on your first breakpoint, even one on a line that runs only once; xwpe runs
 on only past the adapter's own entry stop (Go's @code{main.main}), told
 apart by the reason the adapter gives for the stop.

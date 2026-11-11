@@ -17860,12 +17860,32 @@ static void e_d_dap_close_await_answer(E_D_DAP_CLOSING *c)
  * SIGCHLD handler reaps it.
  * @s: the session; @bsp: its build server, or NULL.
  */
+static void e_d_dap_close_end_program(e_dap_session *s, int polite_sig);
+
 static void e_d_dap_close_now(e_dap_session *s, e_bsp_session *bsp)
 {
+ e_d_dap_close_end_program(s, SIGTERM);
  e_dap_signal(s, SIGKILL);
  e_dap_free(s);   /* the owner stops following it; the handler reaps it */
  if (bsp)
   e_bsp_close(bsp);
+}
+
+/**
+ * e_d_dap_close_end_program - Quit: make sure the program the adapter
+ * named ends with the session.
+ * @s: the session; @polite_sig: WPE_CHILD_NO_SIGNAL once `disconnect`
+ * asked the adapter to end it, SIGTERM when it could not be asked.
+ *
+ * An adapter that answers Quit and leaves the program running would leave
+ * the user's program behind the session, and behind the editor: the one it
+ * named in its `process` event gets the owner's grace, then SIGKILL, that
+ * process alone.  An adapter that names none (Scala's, hosted by the build
+ * server) is trusted to end its program, which it does on `disconnect`.
+ */
+static void e_d_dap_close_end_program(e_dap_session *s, int polite_sig)
+{
+ wpe_child_end_named(e_dap_program_pid(s), polite_sig);
 }
 
 /**
@@ -17895,9 +17915,11 @@ static void e_d_dap_close_begin(e_dap_session *s, e_bsp_session *bsp)
  snprintf(c->name, sizeof c->name, "%s", g_dap_adapter_name);
  if (e_dap_disconnect(s) == 0)
  {
+  e_d_dap_close_end_program(s, WPE_CHILD_NO_SIGNAL);
   e_d_dap_close_await_answer(c);
   return;
  }
+ e_d_dap_close_end_program(s, SIGTERM);
  e_d_dap_close_end(c, E_D_DAP_END_NOT_ASKED);
 }
 

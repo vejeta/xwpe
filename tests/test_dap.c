@@ -766,6 +766,60 @@ static void test_pump_going_stopped_ended(void)
  end_session(s, conn, lfd, &rd);
 }
 
+/* Process numbers the fake `process` events name; never signalled here. */
+#define PID_ATTACHED  4242
+#define PID_REMOTE    4243
+#define PID_LAUNCHED  4244
+
+/* Send one `process` event and pump it. */
+static void process_event(int conn, e_dap_session *s, const char *body)
+{
+ char buf[ADAPTER_BUF];
+
+ snprintf(buf, sizeof buf,
+          "{\"seq\":3,\"type\":\"event\",\"event\":\"process\",\"body\":%s}",
+          body);
+ put_msg(conn, buf);
+ CHECK(pump_when_readable(s) == E_DAP_RUN_GOING, "a process event ended the run");
+}
+
+/* Quit may end only the program the session started on this machine: a
+ * process the adapter attached to is the user's own and outlives the
+ * session, a remote one is not this machine's, and once the program has
+ * ended its number may be another process's. */
+static void test_only_a_launched_local_program_is_named(void)
+{
+ char buf[ADAPTER_BUF];
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ e_dap_session *s;
+ int conn = -1, lfd = -1;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = ready_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ CHECK(e_dap_program_pid(s) == 0, "a program was named before any event");
+ snprintf(buf, sizeof buf, "{\"name\":\"p\",\"systemProcessId\":%d,"
+          "\"isLocalProcess\":true,\"startMethod\":\"attach\"}", PID_ATTACHED);
+ process_event(conn, s, buf);
+ CHECK(e_dap_program_pid(s) == 0, "an attached process was taken as the program");
+ snprintf(buf, sizeof buf, "{\"name\":\"p\",\"systemProcessId\":%d,"
+          "\"isLocalProcess\":false,\"startMethod\":\"launch\"}", PID_REMOTE);
+ process_event(conn, s, buf);
+ CHECK(e_dap_program_pid(s) == 0, "a remote process was taken as the program");
+ snprintf(buf, sizeof buf, "{\"name\":\"p\",\"systemProcessId\":%d,"
+          "\"isLocalProcess\":true,\"startMethod\":\"launch\"}", PID_LAUNCHED);
+ process_event(conn, s, buf);
+ CHECK(e_dap_program_pid(s) == PID_LAUNCHED, "the launched program was not named");
+ put_msg(conn, "{\"seq\":4,\"type\":\"event\",\"event\":\"terminated\"}");
+ CHECK(pump_when_readable(s) == E_DAP_RUN_ENDED, "pump did not answer ENDED");
+ CHECK(e_dap_program_pid(s) == 0, "an ended program is still named");
+ end_session(s, conn, lfd, &rd);
+}
+
 /* The breakpoint answer of TEST_FILE lines 6 (pending) and 9 (verified). */
 static void answer_breakpoints_pending(char *dst, size_t sz, int seq)
 {
@@ -2245,6 +2299,7 @@ int main(int argc, char **argv)
  test_start_machine();
  test_start_refused();
  test_pump_going_stopped_ended();
+ test_only_a_launched_local_program_is_named();
  test_late_breakpoints_during_stack_trace();
  test_events_during_evaluate_are_delivered();
  test_late_breakpoints_during_the_stops_location();
@@ -2283,7 +2338,7 @@ int main(int argc, char **argv)
         "events during waits, stop before its resume answer, pause, stops "
         "read with the start's last answer, an answer read with evaluate's, "
         "refused continue, evaluate's frame, no block before ready, end in "
-        "mid-message), quit (answered, silent, SIGTERM before SIGKILL, "
+        "mid-message, the program named only when launched here), quit (answered, silent, SIGTERM before SIGKILL, "
         "a late stop location, an adapter that floods, during the start, "
         "a forgotten session's timers) and requests by callback (an answer "
         "among events, a late answer dropped, the deadline, the next one's "

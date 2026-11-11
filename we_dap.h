@@ -215,6 +215,7 @@ void e_dap_select_frame(e_dap_session *s, int frame_id);
 /* The exit code the debuggee's `exited` event carried: 1 with *code set
  * when the adapter reported one, else 0 (`terminated` carries none). */
 int e_dap_exit_code(const e_dap_session *s, int *code);
+int e_dap_program_pid(const e_dap_session *s);
 
 /* True once the debuggee has terminated/exited. */
 int e_dap_ended(const e_dap_session *s);

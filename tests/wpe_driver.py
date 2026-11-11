@@ -49,6 +49,14 @@ WPE_BIN = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "
 # exist on the Linux dev box but not on a fresh macOS runner.
 XWPE_LIB_DIR = os.path.dirname(os.path.abspath(WPE_BIN))
 
+# A session on one of these files runs its program under a build server the
+# editor does not own (scala-cli's Bloop): close() ends that program, found
+# by the kernel's command name and this session's folder.
+SERVER_PROGRAM_SUFFIXES = (".scala", ".sc")
+SERVER_PROGRAM_COMM = "java"
+SERVER_PROGRAM_GONE_S = 10      # the server reaps a killed program well within this
+SERVER_PROGRAM_POLL_S = 0.1
+
 # macOS reserves the F1-F12 keys at the OS / terminal layer, so they never reach
 # wpe -- macOS users drive those actions from the menu instead, which is the
 # supported path there. Map each advertised function-key accelerator the tests
@@ -935,4 +943,30 @@ class WpeSession:
             except Exception:
                 pass
         self.proc.wait()
+        self._end_programs_left_under_a_server()
         return code
+
+    def _end_programs_left_under_a_server(self):
+        """End the program a shared build server ran for this session.
+
+        A Scala session's program is started by the build server (Bloop),
+        which other editors share and which is outside the editor's
+        process group, so the group kill above never reaches it; and a
+        program the editor was killed beside, held at a breakpoint, stays
+        suspended for as long as the server runs.  Only a JVM whose
+        working directory is this session's own folder is ended, never the
+        server and never another session's program."""
+        if not self.path.endswith(SERVER_PROGRAM_SUFFIXES):
+            return
+        import procinfo
+        if not procinfo.has_procfs():
+            return
+        for pid in procinfo.processes_in(self.workdir, SERVER_PROGRAM_COMM):
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+        deadline = time.time() + SERVER_PROGRAM_GONE_S
+        while (procinfo.processes_in(self.workdir, SERVER_PROGRAM_COMM)
+               and time.time() < deadline):
+            time.sleep(SERVER_PROGRAM_POLL_S)

@@ -76,8 +76,14 @@ static WpeChildSlot wpe_child_table[WPE_CHILD_MAX];
    is over.  The number cannot name another group meanwhile: a PID is not
    given out again while a group of that number has members. */
 typedef struct {
- int pgid;                       /* 0 while the record is free */
- long due_ms;                    /* when its grace is over */
+ int pgid;                       /* 0 while the record is free; with @alone,
+                                    the one process, not a group */
+ long due_ms;                    /* when its grace is over, or, with @alone,
+                                    when it is next looked at */
+ int alone;                      /* a process a child named, not the editor's
+                                    (wpe_child_end_named): signalled by its
+                                    number only, never its group */
+ long kill_ms;                   /* @alone: when its grace is over */
 } WpeChildLinger;
 
 static WpeChildLinger wpe_child_lingers[WPE_CHILD_MAX];
@@ -253,7 +259,9 @@ void wpe_child_end_from_handler(void)
 
  for (i = 0; i < WPE_CHILD_MAX; i++)
  {
-  if (wpe_child_lingers[i].pgid > 0)
+  if (wpe_child_lingers[i].pgid > 0 && wpe_child_lingers[i].alone)
+   kill(wpe_child_lingers[i].pgid, SIGKILL);
+  else if (wpe_child_lingers[i].pgid > 0)
    kill(-wpe_child_lingers[i].pgid, SIGKILL);
   if (wpe_child_table[i].pid <= 0 || wpe_child_table[i].ended)
    continue;
@@ -406,10 +414,46 @@ static long wpe_child_now_ms(void)
  * over: SIGKILL to what is left of it.
  * @l: the record, free afterwards.
  */
+static void wpe_child_named_step(WpeChildLinger *l);
+
 static void wpe_child_linger_kill(WpeChildLinger *l)
 {
+ if (l->alone)
+ {
+  wpe_child_named_step(l);
+  return;
+ }
  kill(-l->pgid, SIGKILL);
  l->pgid = 0;
+}
+
+/**
+ * wpe_child_named_step - Look at a process a child named, whose end the
+ * editor follows: gone, it needs nothing more; past its grace, SIGKILL;
+ * else it is looked at again shortly.
+ * @l: its record, free once the process is done with.
+ *
+ * Looking every WPE_CHILD_NAMED_POLL_MS rather than once at the grace lets
+ * the editor's own end go the moment the program has ended.
+ */
+static void wpe_child_named_step(WpeChildLinger *l)
+{
+ long now = wpe_child_now_ms();
+
+ if (kill(l->pgid, 0) != 0)
+ {
+  memset(l, 0, sizeof(*l));
+  return;
+ }
+ if (now >= l->kill_ms)
+ {
+  kill(l->pgid, SIGKILL);
+  memset(l, 0, sizeof(*l));
+  return;
+ }
+ l->due_ms = now + WPE_CHILD_NAMED_POLL_MS;
+ if (l->due_ms > l->kill_ms)
+  l->due_ms = l->kill_ms;
 }
 
 /**
@@ -1600,6 +1644,44 @@ void wpe_child_end_rest(int pgid, int polite_sig)
  }
  l->pgid = pgid;
  l->due_ms = wpe_child_now_ms() + WPE_CHILD_END_GRACE_MS;
+ wpe_child_ladder_rearm();
+}
+
+/**
+ * wpe_child_end_named - End a process the editor did not start but was
+ * told about, without waiting for it.
+ * @pid: the process a child named (a debug adapter's program, from its
+ * `process` event); @polite_sig: as for wpe_child_end, WPE_CHILD_NO_SIGNAL
+ * when the child was already asked to end it.
+ *
+ * Quit of a debug session whose adapter does not end the program it was
+ * told to end: the program gets the polite signal, then SIGKILL when
+ * WPE_CHILD_END_GRACE_MS is over, on the same ladder as the editor's own
+ * children, so it does not run on after the session (or after the editor).
+ * Only that process is signalled, never its group: it may share one with a
+ * server other editors use.  One that has ended needs nothing, and neither
+ * init nor the editor itself is ever signalled, whatever a child says.
+ */
+void wpe_child_end_named(int pid, int polite_sig)
+{
+ WpeChildLinger *l;
+ long now;
+
+ if (pid <= WPE_CHILD_INIT_PID || pid == (int)getpid() || kill(pid, 0) != 0)
+  return;
+ if (polite_sig != WPE_CHILD_NO_SIGNAL)
+  kill(pid, polite_sig);
+ l = wpe_child_linger_free();
+ if (!l)
+ {
+  kill(pid, SIGKILL);
+  return;
+ }
+ now = wpe_child_now_ms();
+ l->alone = 1;
+ l->kill_ms = now + WPE_CHILD_END_GRACE_MS;
+ l->due_ms = now + WPE_CHILD_NAMED_POLL_MS;
+ l->pgid = pid;
  wpe_child_ladder_rearm();
 }
 

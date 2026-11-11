@@ -233,6 +233,16 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* No debugged program is left running after its session.  An adapter that
+  names its program (gdb does) and leaves it running after Quit has it
+  ended by the editor: two seconds, then SIGKILL, to that process alone,
+  and never to a process the adapter attached to.  Scala's adapter names none and ends its program on every end the editor
+  goes through (Quit, Alt-X, SIGTERM, a hangup, a closed terminal, the
+  program's own end); only a killed editor leaves it, and the test suite
+  no longer does: each Scala test ends the program its session left under
+  the shared build server, and the Scala C test fails after ten minutes
+  instead of holding make check.
+
 * Debugging works when the editor was not started from a terminal.  With
   the native Wayland display, starting a debugger ended the editor.  In the
   terminal editor with its input not a terminal, gdb, sdb, dbx and xdb were

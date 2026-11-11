@@ -24,6 +24,8 @@
 #define WPE_CHILD_END_GRACE_MS   2000    /* after the polite signal, before SIGKILL */
 #define WPE_CHILD_END_KILL_MS    1000    /* after SIGKILL, before "did not end" */
 #define WPE_CHILD_NO_SIGNAL      0       /* wpe_child_end: the caller already said "quit" on the pipe */
+#define WPE_CHILD_NAMED_POLL_MS  100     /* wpe_child_end_named: how often a named process is looked at */
+#define WPE_CHILD_INIT_PID       1       /* wpe_child_end_named: init, and every lower number, is never ended */
 
 /* How a child ended, for WpeChildEnded and the callbacks. */
 #define WPE_CHILD_RUNS          0   /* still running */
@@ -132,6 +134,7 @@ int  wpe_child_signal_named(WpeChild *c, int pid, int sig);
 void wpe_child_end(WpeChild *c, int polite_sig);
 void wpe_child_end_detached(WpeChild *c, int polite_sig);
 void wpe_child_end_rest(int pgid, int polite_sig);
+void wpe_child_end_named(int pid, int polite_sig);
 int  wpe_child_wake_fd(void);
 void wpe_child_forget(WpeChild *c);
 int  wpe_child_ended(const WpeChild *c, int *status);
