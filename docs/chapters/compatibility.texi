@@ -192,6 +192,28 @@ tool adds, removes or re-indents lines, and one @kbd{Ctrl-U} gives back the
 whole change.  Too different a rewrite (more than about two thousand lines
 added or removed) is taken as one change to the lines in the middle, and
 there breakpoints stay on their line numbers.
+
+@item A file read into the middle of a window
+@cindex undo, Block Read
+@cindex breakpoints, Block Read
+The original split the line at the cursor and put the file's lines in by
+hand (@kbd{Ctrl-K R}), recording nothing: @kbd{Ctrl-U} took back whatever
+you had typed before, not the insert, the window did not read as modified
+because of it, and the breakpoints below stayed on their line numbers.  The
+insert is now one undo step, the window reads as modified, and the
+breakpoints below move down with their lines, as they do for a paste.
+
+@item The Stack and Watches windows
+@cindex undo, Stack and Watches
+The original recorded the rows it took out of the Stack window, so
+@key{Edit}, @key{Undo} there put back a row of an earlier listing.  What
+the debugger printed is not yours to undo: those windows are rewritten at
+every stop, and Undo in them says there is nothing to undo.
+
+@item A stack that gets shorter
+The original left every other row of the old listing in the Stack window
+when the stack lost two or more frames.  The window now shows the new
+listing and nothing else.
 @end table
 
 @section Short commands

@@ -247,6 +247,41 @@
    "status": "new"
   },
   {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_file_inserted_from_the_file_manager_is_one_undo_and_marks_the_window",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-02",
+   "requirement": "The dirty mark lands on the written window, on Undo too",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_the_stack_window_has_no_undo_after_three_refreshes",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-02",
+   "requirement": "The dirty mark lands on the written window, on Undo too",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_the_watches_window_has_no_undo_after_a_refresh",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-06",
+   "requirement": "A view says so with a flag",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_stack_shrinking_by_two_leaves_no_stale_row",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-06",
+   "requirement": "A view says so with a flag",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_messages_output_rate_is_unchanged",
+   "status": "new"
+  },
+  {
    "id": "SC-buffer-07",
    "requirement": "One owner of the text",
    "layer": "c-unit",

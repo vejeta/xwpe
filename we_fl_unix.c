@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_ai.h"
+#include "we_buffer.h"
 #include "we_child.h"
 
 #ifdef UNIX
@@ -683,7 +684,8 @@ int WpeHandleFileManager(ECNT * cn)
   BUFFER         *be = NULL;
   SCHIRM         *se = NULL;
   int             c = AltC, i, j, t;
-  int             winnum = 0, nco, svmode = -1, fmode, len, start;
+  int             winnum = 0, nco, svmode = -1, fmode, len;
+  POINT           mark_end;
   int             g[4], cold = AltN;
   char            filen[128], *ftmp, *dtp = NULL, *ftp = NULL, *svdir = NULL;
   char           *dirtmp = NULL;
@@ -1318,28 +1320,16 @@ int WpeHandleFileManager(ECNT * cn)
             be = fe->b;
             se = fe->s;
             f = cn->f[cn->mxedt];
-            if(be->b.x != 0)
-            {
-              e_new_line(be->b.y + 1, be);
-              if(*(be->bf[be->b.y].s + be->bf[be->b.y].len) != '\0')
-                (be->bf[be->b.y].len)++;
-              for(i = be->b.x; i <= be->bf[be->b.y].len; i++)
-                *(be->bf[be->b.y + 1].s + i - be->b.x) = *(be->bf[be->b.y].s + i);
-              *(be->bf[be->b.y].s + be->b.x) = '\0';
-              be->bf[be->b.y].len = be->b.x;
-              be->bf[be->b.y + 1].len = e_str_len(be->bf[be->b.y + 1].s);
-              be->bf[be->b.y + 1].nrc = e_str_nrc(be->bf[be->b.y + 1].s);
-            }
-            se->mark_begin.x = be->b.x;
-            start = se->mark_begin.y = be->b.y;
             dtmd = fe->dtmd;
-            se->mark_end = e_readin(be->b.x, be->b.y, fp, be, &dtmd);
+            if(e_read_file_into(fp, be, be->b.x, be->b.y, &dtmd, &mark_end) == E_BUFFER_OK)
+            {
+              /* the inserted text is the block */
+              se->mark_begin = be->b;
+              se->mark_end = mark_end;
+            }
+            else
+              wpe_buffer_say_nomem(be, "the insert");
             fclose(fp);
-
-            if(se->mark_begin.x > 0)
-              start++;
-            len = se->mark_end.y - start;
-            e_brk_recalc(f, start, len);
 
             e_schirm(fe, 1);
           }
@@ -3813,6 +3803,7 @@ int e_ed_man(char *str, FENSTER * f)
     f->ed->dtmd = mdsv;
     f = f->ed->f[f->ed->mxedt];
     b = f->b;
+    e_buffer_mark_view(b);
     if(b->mxlines > 1 || !nstr[1])
       break;
     nstr[1] = '\0';
@@ -3827,9 +3818,9 @@ int e_ed_man(char *str, FENSTER * f)
     e_ins_nchar(f->b, f->s, ".", b->b.x, b->b.y, 1);
   }
   for(i = 0; i < b->mxlines; i++)
-    if(b->bf[i].len == 0 && (i == 0 || b->bf[i - 1].len == 0))
+    if(b->mxlines > 1 && b->bf[i].len == 0 && (i == 0 || b->bf[i - 1].len == 0))
     {
-      e_del_line(i, b, f->s);
+      e_buffer_delete_lines(b, i, 1, E_BUFFER_STEP_NEW);
       i--;
     }
   for(bg = 0; bg < b->bf[0].len && isspace(b->bf[0].s[bg]); bg++);

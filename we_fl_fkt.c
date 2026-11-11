@@ -51,15 +51,118 @@ char *e_mkfilename(char *dr, char *fn)
  return(fl);
 }
 
-/*   read file routine     */
-POINT e_readin(int i, int j, FILE *fp, BUFFER *b, char *type)
+/* How many lines the table of a file being read holds before it first grows. */
+#define E_READ_FIRST_CAP 64
+
+/* The lines a file makes while it is read: a table that grows, whose lines
+   have the width of the buffer they are for. */
+typedef struct
 {
- POINT pkt;
- int ii, k, n = 1, hb = 0;
+ STRING *line;
+ int n, cap;
+ BUFFER *b;
+} E_READ_LINES;
+
+/**
+ * e_read_push - Add an empty line at the end of the lines read so far.
+ * @rl: the lines read.
+ *
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the lines as they were.
+ */
+static int e_read_push(E_READ_LINES *rl)
+{
+ STRING *tmp;
+ STRING fresh;
+
+ if (rl->n == rl->cap)
+ {
+  tmp = REALLOC(rl->line, (rl->cap * 2 + E_READ_FIRST_CAP) * sizeof(STRING));
+  if (tmp == NULL)
+   return(E_BUFFER_NOMEM);
+  rl->line = tmp;
+  rl->cap = rl->cap * 2 + E_READ_FIRST_CAP;
+ }
+ if (e_buffer_line_new(rl->b, &fresh) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ memset(fresh.s, 0, (size_t)rl->b->mx.x + 1);
+ rl->line[rl->n++] = fresh;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_read_drop_last - Take the last line away from the lines read so far: the
+ * file ended on a line break, so the line begun after it holds nothing.
+ * @rl: the lines read.
+ */
+static void e_read_drop_last(E_READ_LINES *rl)
+{
+ rl->n--;
+ FREE(rl->line[rl->n].s);
+}
+
+/**
+ * e_read_wrap_line - Break the line being read where it grew past the width
+ * of the buffer: at the last blank or hyphen, the rest starting the next
+ * line.
+ * @rl: the lines read; @j: the line being read; @i: the column it reached.
+ *
+ * Return: the column the reading goes on at in the new line, or -1 when
+ * there was no memory for it and the line is as it was.
+ */
+static int e_read_wrap_line(E_READ_LINES *rl, int j, int i)
+{
+ unsigned char *cur;
+ int ii, k;
+
+ if (e_read_push(rl) != E_BUFFER_OK)
+  return(-1);
+ cur = rl->line[j].s;
+ for (ii = i-1; cur[ii] != ' ' && cur[ii] != '-' && ii > 0; ii--)
+  ;
+ if (ii <= 1)
+  ii = i - 1;
+ for (k = ii+1; k <= i; k++)
+ {
+  if (cur[k] != '\0')
+   rl->line[j+1].s[k-ii-1] = cur[k];
+  else
+   rl->line[j+1].s[k-ii-1] = ' ';
+ }
+ cur[ii+1] = '\0';
+ i = i - ii - 1;
+ if (i < 0)
+  i = 0;
+ return(i);
+}
+
+/**
+ * e_read_measure - Count the characters and the bytes of a finished line.
+ * @l: the line.
+ */
+static void e_read_measure(STRING *l)
+{
+ l->len = e_str_len(l->s);
+ l->nrc = e_str_nrc(l->s);
+}
+
+/**
+ * e_read_lines - Read a file into the lines it makes, as wide as @b is.
+ * @i: the column the first line starts at, with its first @i bytes already
+ * in @rl; @y: the row of @b the text goes to; @fp: the file; @type: its kind
+ * (a carriage return makes it DOS, a backspace sequence makes a manual page's
+ * bold); @end: where the text ends, as a row of @b once it is in.
+ *
+ * Lines break at the file's line breaks and, when they grow past the buffer's
+ * width, at the last blank or hyphen.  The buffer is not touched.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
+ */
+static int e_read_lines(int i, int y, FILE *fp, E_READ_LINES *rl, char *type,
+                        POINT *end)
+{
+ int j = rl->n - 1, n = 1, hb = 0;
+ BUFFER *b = rl->b;
  signed char cc, c = 0;
 
- WpeMouseChangeShape(WpeWorkingShape);
- if (i == 0) e_new_line(j, b);
  while (n == 1)
  {
   for (; i < b->mx.x; i++)
@@ -84,7 +187,8 @@ POINT e_readin(int i, int j, FILE *fp, BUFFER *b, char *type)
    {
     if (!hb)
     {
-     *(b->bf[j].s+i-1) = HBB;
+     if (i > 0)
+      *(rl->line[j].s+i-1) = HBB;
      hb = 1;
     }
     else i--;
@@ -95,7 +199,7 @@ POINT e_readin(int i, int j, FILE *fp, BUFFER *b, char *type)
     n = fread(&cc, sizeof(char), 1, fp);
     if (cc != HBS)
     {
-     *(b->bf[j].s+i) = HED;
+     *(rl->line[j].s+i) = HED;
      i++;
      hb = 2;
     }
@@ -103,61 +207,127 @@ POINT e_readin(int i, int j, FILE *fp, BUFFER *b, char *type)
    }
    if (n != 1)
    {
-    *(b->bf[j].s+i) = '\0';
+    *(rl->line[j].s+i) = '\0';
     break;
    }
-   *(b->bf[j].s+i) = c;
+   *(rl->line[j].s+i) = c;
    if (c == WPE_WR) break;
   }
   if (n != 1)
   {
-   if (i == 0 && j > 0)
-   {
-    FREE(b->bf[j].s);
-    for (k = j; k < b->mxlines; k++) b->bf[k] = b->bf[k+1];
-    (b->mxlines)--;
-   }
+   if (i == 0 && y + j > 0)
+    e_read_drop_last(rl);
    else
    {
-    *(b->bf[j].s+i) = WPE_WR;
-    *(b->bf[j].s+i+1) = '\0';
+    *(rl->line[j].s+i) = WPE_WR;
+    *(rl->line[j].s+i+1) = '\0';
     j++;
    }
   }
   else if (i >= b->mx.x)
   {
-   for (ii = i-1; *(b->bf[j].s+ii) != ' ' && *(b->bf[j].s+ii) != '-' && ii > 0; ii--);
-   if (ii <= 1) ii = i - 1;
-   e_new_line(j+1, b);
-   for (k = ii+1; k <= i; k++)
-   {
-    if (*(b->bf[j].s+k) != '\0') *(b->bf[j+1].s+k-ii-1) = *(b->bf[j].s+k);
-    else *(b->bf[j+1].s+k-ii-1) = ' ';
-   }
-   i = i - ii - 1;
-   *(b->bf[j].s+ii+1) = '\0';
+   i = e_read_wrap_line(rl, j, i);
+   if (i < 0)
+    return(E_BUFFER_NOMEM);
    j++;
-   if (i < 0) i = 0;
   }
   else if (c == WPE_WR)
   {
-   *(b->bf[j].s+i) = WPE_WR;
-   *(b->bf[j].s+i+1) = '\0';
-   e_new_line(++j, b);
+   *(rl->line[j].s+i) = WPE_WR;
+   *(rl->line[j].s+i+1) = '\0';
+   if (e_read_push(rl) != E_BUFFER_OK)
+    return(E_BUFFER_NOMEM);
+   j++;
    i = 0;
   }
   else
   {
-   *(b->bf[j].s+i) = ' ';
+   *(rl->line[j].s+i) = ' ';
    i++;
-   *(b->bf[j].s+i) = '\0';
+   *(rl->line[j].s+i) = '\0';
   }
-  b->bf[j-1].len = e_str_len(b->bf[j-1].s);
-  b->bf[j-1].nrc = e_str_nrc(b->bf[j-1].s);
+  if (j > 0)
+   e_read_measure(rl->line + j - 1);
  }
- pkt.x = i;  pkt.y = j;
+ end->x = i;
+ end->y = y + j;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_read_head_line - Start the first line of a file with the front of the
+ * line it is put into.
+ * @rl: the lines read, one empty line so far; @y, @x: the line of the buffer
+ * and the column the file goes in at.
+ */
+static void e_read_head_line(E_READ_LINES *rl, int y, int x)
+{
+ memcpy(rl->line[0].s, rl->b->bf[y].s, (size_t)x);
+}
+
+/**
+ * e_read_tail_line - Make a line of the part of line @y of @b from column
+ * @x on, its line break included: what follows a file put in the middle of a
+ * line.
+ * @rl: the lines read.
+ *
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
+ */
+static int e_read_tail_line(E_READ_LINES *rl, int y, int x)
+{
+ STRING *tail;
+
+ if (e_read_push(rl) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ tail = rl->line + rl->n - 1;
+ strcpy((char *)tail->s, (char *)rl->b->bf[y].s + x);
+ e_read_measure(tail);
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_read_file_into - Put the lines of a file into a buffer at a place.
+ * @fp: the file; @b: the buffer; @x, @y: the column and the line of the
+ * cursor, where the file goes in; @type: the kind of the file (see
+ * e_read_lines); @end: where the file's text ends in the buffer.
+ *
+ * Opened at its first line, a file arrives whole.  Put in the middle of a
+ * line (Block > Read), it splits that line, and the lines of the file stand
+ * between the two halves.  The window's undo takes the insert back in one
+ * step, its modified mark shows it, and the breakpoints below it move down.
+ * A refusal for want of memory leaves the buffer as it was.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
+ */
+int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end)
+{
+ E_READ_LINES rl;
+ int r, n_del = 0;
+
+ rl.line = NULL;
+ rl.n = rl.cap = 0;
+ rl.b = b;
+ if (x > b->bf[y].len)
+  x = b->bf[y].len;
+ WpeMouseChangeShape(WpeWorkingShape);
+ if (e_read_push(&rl) == E_BUFFER_OK)
+  e_read_head_line(&rl, y, x);
+ if (rl.n == 0 ||
+     e_read_lines(x, y, fp, &rl, type, end) != E_BUFFER_OK ||
+     (x > 0 && e_read_tail_line(&rl, y, x) != E_BUFFER_OK))
+ {
+  e_buffer_lines_free(rl.line, rl.n);
+  WpeMouseRestoreShape();
+  return(E_BUFFER_NOMEM);
+ }
+ if (x > 0)
+  n_del = 1;
+ r = e_buffer_splice(b, y, n_del, rl.line, rl.n, NULL, 0, E_BUFFER_STEP_NEW);
+ if (r == E_BUFFER_OK)
+  FREE(rl.line);                /* the lines are the buffer's now */
+ else
+  e_buffer_lines_free(rl.line, rl.n);
  WpeMouseRestoreShape();
- return(pkt);
+ return(r);
 }
 
 /*   Open new edit window   */
@@ -837,6 +1007,21 @@ int e_i_fclose(IFILE *fp)
 }
 #endif
 
+/**
+ * e_help_add_row - Add a row of text to the Help or Info window being filled.
+ * @b: the window's buffer; @text: the row, its line break included.
+ *
+ * Without memory the window keeps the rows it has and the status line says
+ * so.  Return: 0, or -1 when memory ran out.
+ */
+static int e_help_add_row(BUFFER *b, const char *text)
+{
+ if (e_buffer_append_text(b, text, 0) == E_BUFFER_OK)
+  return(0);
+ wpe_buffer_say_nomem(b, "the help text");
+ return(-1);
+}
+
 int e_read_help(char *str, FENSTER *f, int sw)
 {
  IFILE *fp;
@@ -852,6 +1037,7 @@ int e_read_help(char *str, FENSTER *f, int sw)
  if ((f->b = (BUFFER *) MALLOC(sizeof(BUFFER))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
  e_buffer_init(f->b, f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
+ e_buffer_mark_view(f->b);
  if (f->b->mxlines != 1)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
  f->b->fb = f->fb;
@@ -897,10 +1083,8 @@ int e_read_help(char *str, FENSTER *f, int sw)
  {
   for(i = 0; tstr[i]; i++)
   if (tstr[i] == HFE)  {  e_i_fclose(fp);  return(0);  }
-  e_new_line(f->b->mxlines, f->b);
-  strcpy(f->b->bf[f->b->mxlines-1].s, tstr);
-  f->b->bf[f->b->mxlines-1].len = e_str_len(f->b->bf[f->b->mxlines-1].s);
-  f->b->bf[f->b->mxlines-1].nrc = e_str_nrc(f->b->bf[f->b->mxlines-1].s);
+  if (e_help_add_row(f->b, tstr) != 0)
+   break;
  }
  e_i_fclose(fp);
  return(2);
@@ -1377,6 +1561,7 @@ int e_read_info(char *str, FENSTER *f, char *file)
    if( (f->b = (BUFFER *) MALLOC(sizeof(BUFFER))) == NULL)
    e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    e_buffer_init(f->b, f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
+   e_buffer_mark_view(f->b);
    if (f->b->mxlines != 1)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    f->b->fb = f->fb;
@@ -1421,10 +1606,8 @@ int e_read_info(char *str, FENSTER *f, char *file)
             bsw = e_mk_info_button(ptmp+5);
       }
       e_mk_info_mrk(tstr);
-      e_new_line(f->b->mxlines, f->b);
-      strcpy(f->b->bf[f->b->mxlines-1].s, tstr);
-      f->b->bf[f->b->mxlines-1].len = e_str_len(f->b->bf[f->b->mxlines-1].s);
-      f->b->bf[f->b->mxlines-1].nrc = e_str_nrc(f->b->bf[f->b->mxlines-1].s);
+      if (e_help_add_row(f->b, tstr) != 0)
+         break;
    }
    e_i_fclose(fp);
    return(2);

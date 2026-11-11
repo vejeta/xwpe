@@ -75,22 +75,9 @@ we_ai_ws.o write 1 keep a regular file the model named, opened at the place the 
 
 # the text: every line a window adds or removes goes through its owner
 # (we_buffer.c).  What is left are the callers each later pass moves onto it.
-# the views and the file reader: Messages, Watches, Stack, Help, Info, the
-# man page, the File Manager's insert
-we_debug.o e_build_drop_last_row 1 P11d the build's waiting line
-we_debug.o e_del_line 1 P11d the Stack listing's shrink
-we_debug.o e_new_line 5 P11d Messages, Watches and Stack rows
-we_debug.o e_p_red_buffer 3 P11d Watches and Stack refresh
-we_debug.o print_to_end_of_buffer 6 P11d Messages and Watches text
-we_debug.o mxlines_write 3 P11d the Watches clear, the Stack fill
-we_fl_fkt.o e_new_line 5 P11d the file reader
-we_fl_fkt.o mxlines_write 1 P11d the reader's end of file
-we_fl_unix.o e_brk_recalc 1 P11d the File Manager's insert
-we_fl_unix.o e_del_line 1 P11d the man page
-we_fl_unix.o e_new_line 1 P11d the File Manager's insert
-we_prog.o e_new_line 6 P11d Messages and the named output windows
-we_prog.o mxlines_write 2 P11d the build's last row, a cleared view
-we_edit.o mxlines_write 1 P11d Messages starts with no line
+# the two functions the assistant's pane still writes its rows with
+we_prog.o e_new_line 2 P11e print_to_end_of_buffer and e_p_red_buffer, for the pane
+we_prog.o mxlines_write 1 P11e e_p_red_buffer, for the pane
 # the assistant's pane: its rows go in and out with their roles
 we_ai_ui.o e_new_line 8 P11e the pane's rows
 we_ai_ui.o e_p_red_buffer 1 P11e the pane cleared

@@ -1705,6 +1705,85 @@ int e_buffer_append_text(BUFFER *b, const char *text, int skip_blank)
  return(r);
 }
 
+/* How many non-empty lines `text` holds, split on '\n'. */
+static int buffer_count_rows(const char *text)
+{
+ const char *p = text, *nl;
+ int n = 0;
+
+ while (*p)
+ {
+  nl = strchr(p, '\n');
+  if (nl == NULL)
+   return(n + 1);
+  if (nl > p)
+   n++;
+  p = nl + 1;
+ }
+ return(n);
+}
+
+/* One row holding `len` bytes of `src` whole, ended with a line break.  It
+   has room for at least the buffer's width, as every line has, and for the
+   whole text when that is wider. */
+static int buffer_row_whole(BUFFER *b, const char *src, int len, STRING *out)
+{
+ size_t room = (size_t)len + 2;
+
+ if (room < (size_t)b->mx.x + 1)
+  room = (size_t)b->mx.x + 1;
+ out->s = buffer_malloc(room);
+ if (out->s == NULL)
+  return(E_BUFFER_NOMEM);
+ memcpy(out->s, src, (size_t)len);
+ out->s[len] = WPE_WR;
+ out->s[len + 1] = '\0';
+ buffer_line_measure(out);
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_buffer_append_rows - Add text after the last line, one row for each of
+ * its lines however wide, the empty ones left out.
+ * @text: lines split on '\n'.
+ *
+ * A compiler's line in Messages stays one row, as it always did: the error
+ * walk reads the file name and the line number from one row, and a long
+ * path cut onto the next row would name no file to jump to.
+ * Return: as e_buffer_splice; without memory nothing changes.
+ */
+int e_buffer_append_rows(BUFFER *b, const char *text)
+{
+ const char *p = text ? text : "", *nl;
+ STRING *lines;
+ int n = buffer_count_rows(p), k = 0, len, r;
+
+ if (n == 0)
+  return(E_BUFFER_OK);
+ lines = buffer_malloc((size_t)n * sizeof(STRING));
+ if (lines == NULL)
+  return(E_BUFFER_NOMEM);
+ while (*p && k < n)
+ {
+  nl = strchr(p, '\n');
+  len = nl ? (int)(nl - p) : (int)strlen(p);
+  if (len > 0 && buffer_row_whole(b, p, len, &lines[k++]) != E_BUFFER_OK)
+  {
+   e_buffer_lines_free(lines, k - 1);
+   return(E_BUFFER_NOMEM);
+  }
+  if (nl == NULL)
+   break;
+  p = nl + 1;
+ }
+ r = e_buffer_splice(b, b->mxlines, 0, lines, k, NULL, 0, E_BUFFER_STEP_NEW);
+ if (r != E_BUFFER_OK)
+  e_buffer_lines_free(lines, k);
+ else
+  free(lines);
+ return(r);
+}
+
 /**
  * e_buffer_clear - Leave the buffer with one empty line.
  * Return: as e_buffer_splice.

@@ -9,6 +9,7 @@
 #include "edit.h"
 #include "WeExpArr.h"
 #include "we_ai.h"       /* AI assistant entry point (guarded by WPE_AI) */
+#include "we_buffer.h"
 
 #ifdef PROG
 
@@ -572,6 +573,56 @@ static void e_p_make_link(ECNT *cn)
  e_build_chain_end(f, 0, NULL);
 }
 
+/**
+ * e_view_add_row - Put an empty row at the foot of a view the editor writes.
+ * @b: the buffer of Messages or of an output window.
+ *
+ * What the user reads grows a row at a time as a build or a program prints.
+ * Nothing in it is the user's to undo, and without memory the view stays as
+ * it was and the status line says so.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
+ */
+int e_view_add_row(BUFFER *b)
+{
+ int r = e_buffer_insert_blank(b, b->mxlines, E_BUFFER_STEP_NEW);
+
+ if (r != E_BUFFER_OK)
+  wpe_buffer_say_nomem(b, "a row of output");
+ return(r);
+}
+
+/**
+ * e_view_append - Add text at the foot of a view the editor writes.
+ * @b: the buffer of Messages or of an output window; @text: one or more
+ * lines, the empty ones left out, each one row however wide.
+ *
+ * What a build or a program prints reaches the window row by row, each
+ * line whole, so Alt-T and Enter on a compiler's row find the file it
+ * names however long its path; without memory the view stays as it was
+ * and the status line says so.
+ */
+void e_view_append(BUFFER *b, const char *text)
+{
+ if (e_buffer_append_rows(b, text) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the output");
+}
+
+/**
+ * e_view_append_wrapped - Add text at the foot of a view, wider lines
+ * wrapped onto the next rows.
+ * @b: the buffer of Messages or of a named output window; @text: one or
+ * more lines, the empty ones left out.
+ *
+ * What the editor itself says there (a debugger's or a language server's
+ * news) is read, not walked, so it wraps to stay inside the window; without
+ * memory the view stays as it was and the status line says so.
+ */
+static void e_view_append_wrapped(BUFFER *b, const char *text)
+{
+ if (e_buffer_append_text(b, text, 1) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the output");
+}
+
 /* Fold one raw output byte from the running program into the Messages buffer:
    newline opens a new line, CR is ignored, backspace/DEL deletes one (possibly
    multi-byte UTF-8) character off the current line, and any other printable
@@ -582,7 +633,7 @@ static void e_run_pty_apply_byte(BUFFER *b, unsigned char c)
  int len;
 
  if (c == '\n')
-  e_new_line(b->mxlines, b);
+  e_view_add_row(b);
  else if (c == '\r')
   ;
  else if (c == '\b' || c == 127)
@@ -903,8 +954,8 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
  if (pty_master < 0)
   return -1;
 
- print_to_end_of_buffer(b, "--- Run output (type in Messages, Ctrl-C to stop) ---", 0);
- e_new_line(b->mxlines, b);
+ e_view_append(b, "--- Run output (type in Messages, Ctrl-C to stop) ---");
+ e_view_add_row(b);
  b->b.y = b->mxlines - 1;
  if (!WpeIsXwin())
   e_mouse_tracking_disable();
@@ -957,7 +1008,7 @@ static struct {
 static void e_run_text_flush(void)
 {
  e_run_text.line[e_run_text.len] = '\0';
- print_to_end_of_buffer(e_run_text.b, e_run_text.line, 0);
+ e_view_append(e_run_text.b, e_run_text.line);
  e_run_text.len = 0;
 }
 
@@ -1086,7 +1137,7 @@ static int e_run_without_pty(char *cmd, BUFFER *b)
  int out_fd;
  struct sigaction old_int;
 
- print_to_end_of_buffer(b, "--- Run output ---", 0);
+ e_view_append(b, "--- Run output ---");
  e_run_text.b = b;
  e_run_text.len = 0;
  out_fd = e_run_start_text(cmd);
@@ -1213,7 +1264,7 @@ static int e_run_program(ECNT *cn)
  b = mf->b;
 
  if (b->bf[b->mxlines-1].len != 0)
-  e_new_line(b->mxlines, b);
+  e_view_add_row(b);
  /* Run the program IN ITS OWN directory: the exe is named relative ("./prog",
     "a.out") and, more importantly, the program itself should see its own
     directory as CWD so it finds/writes its data files there, not wherever wpe
@@ -1229,9 +1280,9 @@ static int e_run_program(ECNT *cn)
 #endif
  e_repaint_desk(cn->f[cn->mxedt]);
 
- print_to_end_of_buffer(b, "--- End output ---", 0);
+ e_view_append(b, "--- End output ---");
  sprintf(estr, e_p_msg[ERR_RETCODE], ret);
- print_to_end_of_buffer(b, estr, b->mx.x);
+ e_view_append(b, estr);
 
  b->b.y = b->mxlines-1;
  e_cursor(mf, 1);
@@ -1663,7 +1714,7 @@ static void e_p_pump_complete_lines(char *acc, int *acclen, int last, BUFFER *b)
  char first_kept = acc[last + 1];
 
  acc[last + 1] = '\0';
- print_to_end_of_buffer(b, acc, 0);
+ e_view_append(b, acc);
  acc[last + 1] = first_kept;
  memmove(acc, acc + last + 1, keep + 1);
  *acclen = keep;
@@ -1865,18 +1916,8 @@ FENSTER *e_build_messages(ECNT *cn)
  */
 void e_build_drop_last_row(BUFFER *b)
 {
- int last = b->mxlines - 1;
-
- if (last < 0)
-  return;
- if (last == 0)
- {
-  b->bf[0].s[0] = '\0';
-  b->bf[0].len = b->bf[0].nrc = 0;
-  return;
- }
- FREE(b->bf[last].s);
- b->mxlines--;
+ if (b->mxlines > 0)
+  e_buffer_delete_lines(b, b->mxlines - 1, 1, E_BUFFER_STEP_NEW);
 }
 
 /**
@@ -1913,7 +1954,7 @@ static void e_build_wait_line_put(void)
  if (!mf || g_build.wait_row)
   return;
  snprintf(line, sizeof line, E_BUILD_WAIT_FMT, (long)(time(NULL) - g_build.start));
- print_to_end_of_buffer(mf->b, line, 0);
+ e_view_append(mf->b, line);
  g_build.wait_row = 1;
 }
 
@@ -2353,9 +2394,9 @@ static void e_build_watch_child(void)
 static void e_build_flush_fragments(BUFFER *b)
 {
  if (g_build.eacclen > 0)
-  print_to_end_of_buffer(b, g_build.eacc, 0);
+  e_view_append(b, g_build.eacc);
  if (g_build.wacclen > 0)
-  print_to_end_of_buffer(b, g_build.wacc, 0);
+  e_view_append(b, g_build.wacc);
  if (g_build.eacc)
   FREE(g_build.eacc);
  if (g_build.wacc)
@@ -2448,20 +2489,20 @@ static int e_build_step_verdict(FENSTER *mf, int ret)
 
  if (g_build.cancelled)
  {
-  print_to_end_of_buffer(b, E_BUILD_CANCELLED_LINE, 0);
+  e_view_append(b, E_BUILD_CANCELLED_LINE);
   g_build_chain_cancelled = 1;
   g_build_chain_list = E_LIST_NO_JUMP;
   return(WPE_ESC);
  }
  if (g_build.runaway)
-  print_to_end_of_buffer(b, E_BUILD_RUNAWAY_LINE, 0);
+  e_view_append(b, E_BUILD_RUNAWAY_LINE);
  if (b->mxlines - g_build.is > 2)
   list = e_make_error_list(mf);
  g_build_chain_list = list;
  g_build_chain_exit = ret;
  if (ret || list)
   return(-1);
- print_to_end_of_buffer(b, E_BUILD_SUCCESS_LINE, b->mx.x);
+ e_view_append(b, E_BUILD_SUCCESS_LINE);
  return(0);
 }
 
@@ -2715,7 +2756,7 @@ static void e_build_print_count(BUFFER *b, int result)
  if (result && errors == 0)
   snprintf(line + strlen(line), sizeof line - strlen(line),
            "; the build failed (exit status %d)", g_build_chain_exit);
- print_to_end_of_buffer(b, line, 0);
+ e_view_append(b, line);
  snprintf(g_build_count_line, sizeof g_build_count_line, "%s", line);
 }
 
@@ -2799,7 +2840,7 @@ static void e_build_report_up_to_date(ECNT *cn, int result)
  n = strlen(E_BUILD_UP_TO_DATE_FMT) + strlen(g_build_up_to_date) + 1;
  line = MALLOC(n);
  snprintf(line, n, E_BUILD_UP_TO_DATE_FMT, g_build_up_to_date);
- print_to_end_of_buffer(mf->b, line, 0);
+ e_view_append(mf->b, line);
  FREE(line);
  e_messages_scroll_to_bottom(mf);
  e_build_return_to_source(cn);
@@ -5097,7 +5138,7 @@ static int e_p_message_now(char *str, FENSTER *f, int sw)
 /* s - content of window */
  s = cn->f[i]->s;
 
- print_to_end_of_buffer(b, str, b->mx.x);
+ e_view_append_wrapped(b, str);
 
  b->b.y = b->mxlines-1;
  e_messages_scroll_to_bottom(f);
@@ -5141,10 +5182,11 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
   if (e_edit(cn, winname))
    return(-1);
   i = cn->mxedt;
+  e_buffer_mark_view(cn->f[i]->b);
  }
  wf = cn->f[i];
  b = wf->b;
- print_to_end_of_buffer(b, str, b->mx.x);
+ e_view_append_wrapped(b, str);
  b->b.y = b->mxlines - 1;
  e_messages_scroll_to_bottom(wf);
  if (sw)
@@ -6837,8 +6879,8 @@ int e_new_message(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
- if (e_p_m_buffer)
-  e_p_red_buffer(e_p_m_buffer);
+ if (e_p_m_buffer && e_buffer_clear(e_p_m_buffer) != E_BUFFER_OK)
+  wpe_buffer_say_nomem(e_p_m_buffer, "the new build's messages");
  for (i = cn->mxedt; i > 0; i--)
   if (cn->f[i] && cn->f[i]->datnam &&
       !strcmp(cn->f[i]->datnam, "Messages"))
@@ -6870,9 +6912,8 @@ int e_p_show_messages(FENSTER *f)
   return(-1);
  }
  f = f->ed->f[f->ed->mxedt];
- if (f->b->mxlines == 0)
+ if (f->b->mxlines == 1 && f->b->bf[0].len == 0)
  {
-  e_new_line(0, f->b);
   e_ins_nchar(f->b, f->s, "No Messages", 0, 0, 11);
   e_schirm(f, 1);
  }

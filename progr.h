@@ -56,6 +56,9 @@ void e_status_say_until_key(FENSTER *f, const char *text);
 /* Messages as a background task (a build, a starting debugger) uses it. */
 FENSTER *e_build_messages(ECNT *cn);
 void e_build_drop_last_row(BUFFER *b);
+/* Rows of a view the editor writes: Messages and the output windows. */
+int e_view_add_row(BUFFER *b);
+void e_view_append(BUFFER *b, const char *text);
 void e_messages_show_tail(ECNT *cn);
 /* we_child.c: the editor's children, started, watched and ended in one
    place; their ends come back from the fd loop, nobody waits for them. */

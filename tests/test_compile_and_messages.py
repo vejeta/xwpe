@@ -908,6 +908,37 @@ def test_alt_t_opens_the_second_file_of_a_build_run_in_another_directory(tmp_pat
         "Alt-T went to %s:%d instead of sub/u.c:3" % (title, line)
 
 
+ABSOLUTE_TWO_FILES_MAKEFILE = "all:\n\tgcc -c $(CURDIR)/t.c $(CURDIR)/u.c\n"
+
+
+# @scenario SC-compile-24
+def test_alt_t_reaches_a_file_named_by_a_path_wider_than_the_window(tmp_path):
+    """make compiles t.c and u.c by their full paths, more than 200
+    characters under a directory with a dash in its name: each compiler
+    row stays one row in Messages, so Alt-T after the first jump opens
+    u.c on its line instead of finding no file in a path cut in two."""
+    need("gcc")
+    deep = tmp_path / "x-y"
+    while len(str(deep / "t.c")) <= LONG_PATH_LENGTH:
+        deep = deep / "a_directory_name_of_some_length"
+    deep.mkdir(parents=True)
+    (deep / "Makefile").write_text(ABSOLUTE_TWO_FILES_MAKEFILE)
+    (deep / "u.c").write_text(U_UNDEF_AT_2_C)
+    with WpeSession(str(deep), UNDEF_AT_3_C, filename="t.c", rows=40, cols=WIDE) as w:
+        w.key(ALT_A, delay=BUILD_WAIT)
+        assert wait_screen(w, "2 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+            screen_text(w)
+        first = (active_title(w), active_position(w)[0])
+        w.key(ALT_T, delay=1.5)
+        title = active_title(w)
+        line, _ = active_position(w)
+        status = hint_row(w)
+        assert w.alive()
+    assert first == ("t.c", 3), "the first jump went to %s:%d" % first
+    assert title.endswith("u.c") and line == 3, \
+        "Alt-T went to %s:%d instead of u.c:3 (%s)" % (title, line, status.strip())
+
+
 PROJECT_A = "int helper(void);\nint main(void)\n{\n    return helper();\n}\n"
 PROJECT_B = "int helper(void)\n{\n    return 0;\n}\n"
 PROJECT_PRJ = ("CMP=\tgcc\nCMPFLAGS=\t-g\nLDFLAGS=\t\nEXENAME=\tp\n"

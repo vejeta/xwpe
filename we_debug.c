@@ -48,7 +48,6 @@
 
 int e_d_delbreak(FENSTER *f);
 int e_d_error(char *s);
-int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
 /* The error stream's line reader: the descriptor is non-blocking from the
    start (e_d_set_nonblock), so it takes what has come and never waits. */
@@ -1121,7 +1120,7 @@ static void e_d_messages_append_char(FENSTER *mf, int c)
   return;
  if (c == '\n' || last < 0)
  {
-  e_new_line(b->mxlines, b);
+  e_view_add_row(b);
   b->b.y = b->mxlines - 1;
   b->b.x = 0;
   return;
@@ -4500,6 +4499,83 @@ static int e_d_watch_refused(FENSTER *f)
  return(1);
 }
 
+/**
+ * e_d_view_is_empty - Does a listing window show nothing yet?
+ * @b: the buffer of the Watches or Stack window.
+ *
+ * A buffer always holds a line, so a listing with no rows is one empty line.
+ * Return: 1 when that is all there is, else 0.
+ */
+static int e_d_view_is_empty(BUFFER *b)
+{
+ return(b->mxlines == 1 && b->bf[0].len == 0);
+}
+
+/**
+ * e_d_view_clear - Empty a listing window before its rows are written again.
+ * @b: the buffer of the Watches or Stack window.
+ *
+ * The window shows the new listing from its first row, and nothing the user
+ * can undo is made of it.  Without memory the old rows stay, and the status
+ * line says so.
+ */
+static void e_d_view_clear(BUFFER *b)
+{
+ if (e_buffer_clear(b) != E_BUFFER_OK)
+  wpe_buffer_say_nomem(b, "the listing");
+}
+
+/**
+ * e_d_view_list - Add rows to a listing window.
+ * @b: the buffer of the Watches or Stack window; @text: the rows, one per
+ * line, wider ones wrapped.
+ *
+ * The first row written into an emptied window takes the place of its empty
+ * line, so the listing starts at the window's top.
+ * Return: the row the text starts at, or -1 when memory ran out and the
+ * window is as it was.
+ */
+static int e_d_view_list(BUFFER *b, const char *text)
+{
+ int was_empty = e_d_view_is_empty(b);
+ int first = was_empty ? 0 : b->mxlines;
+ int before = b->mxlines;
+
+ if (e_buffer_append_text(b, text, 1) != E_BUFFER_OK)
+ {
+  wpe_buffer_say_nomem(b, "the listing");
+  return(-1);
+ }
+ if (was_empty && b->mxlines > before)
+  e_buffer_delete_lines(b, 0, 1, E_BUFFER_STEP_NEW);
+ return(first);
+}
+
+/**
+ * e_d_view_close - End a listing with the empty line the windows show below
+ * their rows.
+ * @b: the buffer of the Watches or Stack window.
+ */
+static void e_d_view_close(BUFFER *b)
+{
+ if (!e_d_view_is_empty(b))
+  e_view_add_row(b);
+}
+
+/**
+ * e_d_watch_put_line - Write the text of watch @l into the Watches window
+ * and remember the row it starts at, so a key on that row finds the watch.
+ * @b: the Watches buffer; @l: the watch's number; @line: "name: value".
+ */
+static void e_d_watch_put_line(BUFFER *b, int l, const char *line)
+{
+ int row = e_d_view_list(b, line);
+
+ if (row < 0)
+  row = b->mxlines;             /* nothing written: the row it would have taken */
+ e_d_nrwtchs[l] = row;
+}
+
 #define E_D_WATCH_LATER " (at the next stop)"
 
 /* The Watches window was last drawn with the words above, not with values. */
@@ -4531,8 +4607,7 @@ static void e_d_watch_put_waiting(BUFFER *b, int l)
  char *line = WpeMalloc(strlen(e_d_swtchs[l]) + sizeof(E_D_WATCH_LATER) + 2);
 
  sprintf(line, "%s:%s", e_d_swtchs[l], E_D_WATCH_LATER);
- e_d_nrwtchs[l] = b->mxlines;
- print_to_end_of_buffer(b, line, b->mx.x);
+ e_d_watch_put_line(b, l, line);
  WpeFree(line);
  e_d_watches_shown_waiting = 1;
  e_ds_set_watch(&e_d_session, l, e_d_swtchs[l]);
@@ -4558,8 +4633,7 @@ static void e_d_watch_put_value(BUFFER *b, int l, const char *answer)
  e_ds_watch_value(e_deb_type, answer, &text);
  line = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(text) + 4);
  sprintf(line, "%s: %s", e_d_swtchs[l], text);
- e_d_nrwtchs[l] = b->mxlines;
- print_to_end_of_buffer(b, line, b->mx.x);
+ e_d_watch_put_line(b, l, line);
  WpeFree(line);
  e_ds_answer_borrow(&a, answer, 0);
  e_ds_set_watch(&e_d_session, l, e_d_swtchs[l]);
@@ -4637,9 +4711,7 @@ static int e_d_watches_window_take(ECNT *cn)
  */
 static void e_d_watches_buffer_clear(BUFFER *b)
 {
- e_p_red_buffer(b);
- FREE(b->bf[0].s);
- b->mxlines = 0;
+ e_d_view_clear(b);
  e_d_watches_shown_waiting = 0;
 }
 
@@ -4650,7 +4722,7 @@ static void e_d_watches_buffer_clear(BUFFER *b)
  */
 static void e_d_watches_show_end(ECNT *cn, int iw, BUFFER *b, int sw)
 {
- e_new_line(b->mxlines, b);
+ e_d_view_close(b);
  fk_cursor(1);
  if (sw && iw != cn->mxedt)
   e_switch_window(cn->edt[iw], cn->f[cn->mxedt]);
@@ -4906,8 +4978,8 @@ static void e_d_stack_put_row(FENSTER *f, char *str, int *pi, int *pj)
  e_d_stack_rows_keep(str, i);
  do
  {
-  if (i >= b->mxlines)
-   e_new_line(i, b);
+  if (i >= b->mxlines && e_view_add_row(b) != E_BUFFER_OK)
+   return;                      /* no memory: the rows so far stay whole */
   if ((i > 0 && j == 0 && *(b->bf[i-1].s+b->bf[i-1].len-1) == '\\') ||
     (e_deb_type == DEB_GDB && j == 0 && (k > 0 || str[k] != '#')))
   {
@@ -4967,11 +5039,9 @@ static void e_d_stack_put_row(FENSTER *f, char *str, int *pi, int *pj)
 static void e_d_stack_show_end(ECNT *cn, int is, int rows, int sw)
 {
  BUFFER *b = cn->f[is]->b;
- SCHIRM *s = cn->f[is]->s;
- int i;
 
- for (i = rows; i < b->mxlines; i++)
-  e_del_line(i, b, s);
+ if (rows < b->mxlines)
+  e_buffer_delete_lines(b, rows, b->mxlines - rows, E_BUFFER_STEP_NEW);
  if (sw && is != cn->mxedt)
   e_switch_window(cn->edt[is], cn->f[cn->mxedt]);
  e_rep_win_tree(cn);
@@ -5332,31 +5402,6 @@ int e_d_reinit_brks(FENSTER * f,char * prj)
    return 0;
 }
 
-
-/**
- * e_brk_recalc - The File Manager's insert moved @len lines at @start of
- * window @f by hand (negative: deleted): move the breakpoints of that file
- * with them.
- *
- * The debugger's list moves, and a running session is told, through the
- * path every line change of the buffer owner takes (wpe_buffer_lines_moved);
- * the margin is then rebuilt from that list and drawn again, so the user
- * sees each breakpoint on its code as soon as the paste or the delete is
- * shown.  Return: 0, or 1 when there was nothing to move.
- */
-int e_brk_recalc(FENSTER *f, int start, int len)
-{
- if (len == 0 || f == NULL || f->ed == NULL || f->datnam == NULL)
-  return 1;
- if (len < 0)
-  wpe_buffer_lines_moved(f->b, start, -len, 0, NULL, 0, NULL, 0);
- else
-  wpe_buffer_lines_moved(f->b, start, 0, len, NULL, 0, NULL, 0);
- e_brk_schirm(f);
- e_schirm(f, 1);
- return 0;
-}
-/*****************************************/
 
 /**
  * e_d_breakpoints_changed - Have the open project keep the new breakpoints.
@@ -6187,14 +6232,39 @@ static int e_d_brk_lines_shifted(const char *file, int from, int delta)
 }
 
 /**
+ * e_d_brk_margin_row_drop - Take row @row (0-based) off the margin of the
+ * window that shows @b.
+ *
+ * The margin and the debugger's list must name the same lines: a margin row
+ * the list lacks would show a breakpoint the program never stops on.
+ */
+static void e_d_brk_margin_row_drop(BUFFER *b, int row)
+{
+ int *brp;
+ int i, k;
+
+ if (b->f == NULL || b->f->s == NULL || b->f->s->brp == NULL)
+  return;
+ brp = b->f->s->brp;
+ for (i = 1, k = 1; i <= brp[0]; i++)
+  if (brp[i] != row)
+   brp[k++] = brp[i];
+ brp[0] = k - 1;
+}
+
+/**
  * e_d_brk_lines_added - Give the list an entry for each row in @rows
  * (0-based) of @file that has none: a breakpoint brought back by Undo.
+ * @b: the buffer whose window shows those rows.
  *
  * While a session runs, a breakpoint the debugger still has on that line
- * (its removal not told yet) is taken over instead of set twice.
- * Return: how many were added; one whose name could not be copied is not.
+ * (its removal not told yet) is taken over instead of set twice.  When the
+ * list has no memory for an entry, that row leaves the margin too, so the
+ * margin never shows a breakpoint the list lacks.
+ * Return: how many were added.
  */
-static int e_d_brk_lines_added(const char *file, const int *rows, int nrows)
+static int e_d_brk_lines_added(BUFFER *b, const char *file, const int *rows,
+                               int nrows)
 {
  int k, i, added = 0;
 
@@ -6204,7 +6274,10 @@ static int e_d_brk_lines_added(const char *file, const int *rows, int nrows)
    continue;
   i = e_d_brk_list_add(file, rows[k] + 1);
   if (i < 0)
+  {
+   e_d_brk_margin_row_drop(b, rows[k]);
    continue;
+  }
   if (e_d_swtch)
    e_d_brk_gone_revive(i);
   added++;
@@ -6255,6 +6328,10 @@ static void e_d_brk_route(ECNT *cn)
  * e_d_lines_kept_in_place - How many of the lines a change took out were
  * replaced by lines put in their place.
  * @n_del, @n_ins: the lines that went and came.
+ *
+ * A replaced line keeps its breakpoint; only the lines beyond that count lose
+ * theirs or gain new ones.
+ * Return: the smaller of the two.
  */
 static int e_d_lines_kept_in_place(int n_del, int n_ins)
 {
@@ -6293,7 +6370,7 @@ void wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
  touched = e_d_brk_lines_dropped(file, y + changed, y + n_del, rows_removed,
                                  n_removed);
  touched += e_d_brk_lines_shifted(file, y + n_del, n_ins - n_del);
- touched += e_d_brk_lines_added(file, rows_added, n_added);
+ touched += e_d_brk_lines_added(b, file, rows_added, n_added);
  if (touched == 0 || b->f->ed == NULL)
   return;
  e_d_breakpoints_changed(b->f->ed);
@@ -9220,8 +9297,7 @@ static void e_d_dap_watch_put(BUFFER *b, int l, const char *val)
  line = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(E_D_DAP_WATCH_SEP) +
                   strlen(val) + 1);
  sprintf(line, "%s" E_D_DAP_WATCH_SEP "%s", e_d_swtchs[l], val);
- e_d_nrwtchs[l] = b->mxlines;
- print_to_end_of_buffer(b, line, b->mx.x);
+ e_d_watch_put_line(b, l, line);
  WpeFree(line);
 }
 
@@ -9302,10 +9378,7 @@ static int e_d_dap_watches_fill(FENSTER *f, char **values, int nvalues,
  }
  f = cn->f[iw];
  b = cn->f[iw]->b;
- e_p_red_buffer(b);
- FREE(b->bf[0].s);
- b->mxlines = 0;
- e_d_watches_shown_waiting = 0;
+ e_d_watches_buffer_clear(b);
  for (l = 0; l < e_d_nwtchs; l++)
  {
   if (e_d_watches_wait())
@@ -9313,7 +9386,7 @@ static int e_d_dap_watches_fill(FENSTER *f, char **values, int nvalues,
   else
    e_d_dap_watch_put(b, l, e_d_dap_value_at(values, nvalues, l));
  }
- e_new_line(b->mxlines, b);
+ e_d_view_close(b);
  fk_cursor(1);
  if (sw && iw != cn->mxedt)
   e_switch_window(cn->edt[iw], cn->f[cn->mxedt]);
@@ -9732,8 +9805,8 @@ static void e_d_start_wait_line_drop(void)
  if (!e_d_start.wait_row)
   return;
  e_d_start.wait_row = 0;
- if (mf)
-  e_build_drop_last_row(mf->b);
+ if (mf && mf->b->mxlines > 0)
+  e_buffer_delete_lines(mf->b, mf->b->mxlines - 1, 1, E_BUFFER_STEP_NEW);
 }
 
 /**
@@ -9789,7 +9862,7 @@ static void e_d_start_wait_line_put(void)
  if (!mf || e_d_start.wait_row)
   return;
  e_d_start_wait_text(line, sizeof line, (long)(time(NULL) - e_d_start.start));
- print_to_end_of_buffer(mf->b, line, 0);
+ e_view_append(mf->b, line);
  e_d_start.wait_row = 1;
 }
 
@@ -14536,15 +14609,13 @@ static void e_d_stack_window_fill(BUFFER *b)
  char row[E_D_FRAME_ROW_MAX];
  int i;
 
- e_p_red_buffer(b);
- FREE(b->bf[0].s);
- b->mxlines = 0;
+ e_d_view_clear(b);
  for (i = 0; i < e_d_nframes; i++)
  {
   e_d_frame_row(&e_d_frames[i], i, row, sizeof row);
-  print_to_end_of_buffer(b, row, b->mx.x);
+  e_d_view_list(b, row);
  }
- e_new_line(b->mxlines, b);
+ e_d_view_close(b);
 }
 
 /**

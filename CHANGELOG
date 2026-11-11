@@ -263,6 +263,14 @@ Changes
   the block's start, copies the marked text (it wrote stray bytes into the
   file).
 
+* A file read into a window with Block > Read (Ctrl-K R) is one Ctrl-U and
+  marks the window modified (Ctrl-U took back what you had typed before,
+  and the insert stayed), and the breakpoints below move down with their
+  lines.  Edit > Undo in the Stack and Watches windows says there is
+  nothing to undo (it put back a row of an earlier listing), and a stack
+  that loses two or more frames leaves no row of the old listing in the
+  Stack window (every other row stayed).
+
 * A breakpoint moved by an edit during a debugging session moves in the
   debugger too.  Enter above a breakpoint at a stop used to move the mark
   while gdb, pdb or the debug adapter kept the old line, so Ctrl-G R

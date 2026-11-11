@@ -802,6 +802,40 @@ static void case_append_text(void)
  fixture_free();
 }
 
+/* A compiler's line wider than the window stays one row, so the error walk
+   reads its whole path; memory refused at any allocation changes nothing. */
+static void case_append_rows(void)
+{
+ char wide[3 * WIDTH + 1], text[3 * WIDTH + 16], want[3 * WIDTH + 32];
+ int k, r = E_BUFFER_NOMEM;
+
+ memset(wide, 'p', sizeof wide - 1);
+ wide[WIDTH] = '-';
+ wide[2 * WIDTH] = ' ';
+ wide[sizeof wide - 1] = '\0';
+ snprintf(text, sizeof text, "a\n\n%s\nb", wide);
+ snprintf(want, sizeof want, "L0\na\n%s\nb\n", wide);
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ e_buffer_mark_view(&buf);
+ chk("24 taken", e_buffer_append_rows(&buf, text), E_BUFFER_OK);
+ chk_str("24 one row per line, the wide one whole", text_of(), want);
+ chk("24 the wide row's length", buf.bf[2].len, 3 * WIDTH);
+ chk("24 a view keeps no undo", list_len(buf.ud), 0);
+ fixture_free();
+ for (k = 1; k <= 8 && r == E_BUFFER_NOMEM; k++) {
+  fixture(1, E_BUFFER_HISTORY_FULL);
+  e_buffer_mark_view(&buf);
+  e_buffer_test_fail_allocs(k);
+  r = e_buffer_append_rows(&buf, text);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_NOMEM)
+   chk_str("24 a refused append changes nothing", text_of(), "L0\n");
+  fixture_free();
+ }
+ chk("24 an append with memory works", r, E_BUFFER_OK);
+ chk("24 after at least one refusal", k > 2, 1);
+}
+
 static void case_many_appends(void)
 {
  STRING l;
@@ -868,6 +902,7 @@ int main(void)
  case_refused_undo_keeps_the_cursor();
  case_the_undo_bound();
  case_append_text();
+ case_append_rows();
  case_many_appends();
  case_depth_guard();
  if (fails) {

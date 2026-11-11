@@ -194,6 +194,27 @@ void e_line_make_hard_empty(STRING *l)
 }
 
 /**
+ * e_edit_read_file - Read the file of a new window into its fresh buffer.
+ * @f: the new window; @fp: its file.
+ *
+ * Reading a file is no edit: the lines go in with no undo step, no modified
+ * mark, and with the breakpoints the debugger keeps for a file of that name
+ * left on the lines they were set on instead of moving down with the new
+ * ones.  Without memory the window opens empty and the status line says so.
+ */
+static void e_edit_read_file(FENSTER *f, FILE *fp)
+{
+ BUFFER *b = f->b;
+ int history = b->history;
+ POINT end;
+
+ b->history = E_BUFFER_NO_HISTORY;
+ if (e_read_file_into(fp, b, 0, 0, &f->dtmd, &end) != E_BUFFER_OK)
+  wpe_buffer_say_nomem(b, "reading the file");
+ b->history = history;
+}
+
+/**
  * e_edit_drop_fresh_line - A file was read into a fresh buffer: take away
  * the empty line the buffer started with, which the reader pushed to the end.
  * @f: the new window.
@@ -503,6 +524,8 @@ int e_edit(ECNT *cn, char *filename)
     the window paints and takes clicks on as many entries as its bar has. */
  if (ftype == 0 && !e_give_debug_bar(f))
   e_use_editor_bar(f, f->blst);
+ if (ftype != 0)
+  e_buffer_mark_view(f->b);       /* Help, Messages, Watches and Stack */
  if (ftype != 1)
   fp = fopen(complete_fname, "rb");
  if (fp != NULL && access(complete_fname, 2) != 0)
@@ -530,7 +553,7 @@ int e_edit(ECNT *cn, char *filename)
 
  if (fp != NULL && ftype != 1)
  {
-  e_readin(0, 0, fp, f->b, &f->dtmd);
+  e_edit_read_file(f, fp);
   e_edit_drop_fresh_line(f);
   if (fclose(fp) != 0)
    e_error(e_msg[ERR_FCLOSE], 0, cn->fb);
@@ -566,8 +589,7 @@ int e_edit(ECNT *cn, char *filename)
   else
   {
    e_p_m_buffer = f->b;
-   FREE(f->b->bf[0].s);
-   f->b->mxlines = 0;
+   e_buffer_clear(f->b);          /* a stale Messages file read above is not shown */
   }
  }
 #ifdef DEBUGGER

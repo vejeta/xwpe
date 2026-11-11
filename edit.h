@@ -638,7 +638,7 @@ char *e_lib_file(const char *name); /* <libdir>/<name>, or <name>_eng (build-tre
 
 /*   we_fl_fkt.c   */
 char *e_mkfilename(char *dr, char *fn);
-POINT e_readin(int i, int j, FILE *fp, BUFFER *b, char *sw);
+int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end);
 int e_new(FENSTER *f);
 int e_m_save(FENSTER *f);
 int e_save(FENSTER *f);
@@ -1012,7 +1012,6 @@ int e_test_command(char *str);
 
 /**** functions for breakpoints resyncing, reloading etc ****/
 int e_brk_schirm(FENSTER *f);
-int e_brk_recalc(FENSTER *f,int start,int len);
 int e_d_reinit_brks(FENSTER *f,char * prj);
 
 /**** for reloading watches ****/

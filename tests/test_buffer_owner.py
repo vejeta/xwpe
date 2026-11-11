@@ -19,11 +19,13 @@ import pytest
 
 from wpe_driver import WpeSession, ALT, WPE_BIN
 import test_ai_edit_hook_contracts as hook_contracts
+import test_debugger_integration as dbg
 
 CTRL_G = "\x07"          # the debugger's prefix; Ctrl-G B toggles a breakpoint
 CTRL_U = "\x15"          # Undo
 CTRL_R = "\x12"          # Redo
 CTRL_Y = "\x19"          # delete the line
+CTRL_W = "\x17"          # close the window
 CTRL_K = "\x0b"          # the block prefix: B begin, K end, C copy
 CTRL_C = "\x03"          # Edit > Copy: the block to the clipboard
 CTRL_V = "\x16"          # Edit > Paste: the clipboard at the cursor
@@ -781,4 +783,237 @@ def test_a_replacement_that_wraps_its_line_moves_the_breakpoint_below_it(tmp_pat
         assert "baz(a);" in _line_text(s, BAZ_ROW + 1), "Ctrl-U did not take the replacement back"
         assert s.breakpoint_lines(drain=0.3) == [BAZ_ROW + 1], \
             "after Ctrl-U the breakpoint is on line %s" % s.breakpoint_lines()
+        assert s.alive(), "wpe died"
+
+
+# ---- the views and the file reader ------------------------------------------
+
+CTRL_G_RUN = (CTRL_G, "r")       # Debug > Run: start, or continue
+CTRL_G_STACK = (CTRL_G, "k")     # Debug > Stack
+CTRL_G_WATCH = (CTRL_G, "w")     # Debug > Watches: add a watch
+F8 = "\033[19~"                  # step over
+NO_MORE_UNDO = "No more Undo"    # the box Edit > Undo shows with nothing to undo
+
+# Three calls deep, so the Stack window lists three frames at the first stop and
+# one at the second.  Lines are 1-based; a breakpoint goes on 3 and on 12.
+STACK_SEED = ("int leaf(int v)\n"
+              "{\n"
+              "  return v + 1;\n"
+              "}\n"
+              "int mid(int v)\n"
+              "{\n"
+              "  return leaf(v) * 2;\n"
+              "}\n"
+              "int main(void)\n"
+              "{\n"
+              "  int x = mid(3);\n"
+              "  x = x + 1;\n"
+              "  return x;\n"
+              "}\n")
+STACK_IN_LEAF = 3
+STACK_IN_MAIN = 12
+STACK_COLS = 100
+STACK_ROWS = 34
+# The Stack window takes the right third of the screen.
+STACK_LEFT_COL = STACK_COLS * 2 // 3 + 1
+
+
+def _need_gdb():
+    if not dbg.shutil.which("gcc") or not dbg.shutil.which("gdb"):
+        pytest.skip("no gcc or gdb")
+
+
+def _stack_session(tmp_path):
+    return WpeSession(str(tmp_path), STACK_SEED, filename="p.c", wait=1.5,
+                      cols=STACK_COLS, rows=STACK_ROWS)
+
+
+def _run_to_the_leaf(s):
+    """Breakpoints on the leaf's return and on the line after the call, then
+    Run: the debugger stops in the leaf, three frames deep."""
+    _down(s, STACK_IN_LEAF - 1)
+    s.key(CTRL_G, "b", delay=0.4)
+    _down(s, STACK_IN_MAIN - STACK_IN_LEAF)
+    s.key(CTRL_G, "b", delay=0.4)
+    s.key(*CTRL_G_RUN, delay=1.0)
+    assert dbg._wait_for(s, lambda: dbg._mark_line(s) == STACK_IN_LEAF,
+                         dbg.START_TIMEOUT_S), \
+        "Run should stop in the leaf:\n" + dbg._screen(s)
+
+
+def _open_the_stack(s):
+    s.key(*CTRL_G_STACK, delay=0.8)
+    assert dbg._wait_for(s, lambda: " Stack " in dbg._screen(s), dbg.STEP_TIMEOUT_S), \
+        "Ctrl-G K should open the Stack window:\n" + dbg._screen(s)
+
+
+def _continue_to_main(s):
+    """Continue to the second breakpoint: the stack is one frame now."""
+    s.key(*CTRL_G_RUN, delay=0.5)
+    assert dbg._wait_for(s, lambda: dbg._mark_line(s) == STACK_IN_MAIN,
+                         dbg.STEP_TIMEOUT_S), \
+        "Run should continue to main:\n" + dbg._screen(s)
+
+
+def _stack_window_text(s):
+    """The text of the screen's right third, where the Stack window is."""
+    return "\n".join(row[STACK_LEFT_COL:] for row in s.display(drain=0.3))
+
+
+def _stack_window_body(s):
+    """The rows of the Stack window between its title and its bottom border."""
+    rows = [row[STACK_LEFT_COL:] for row in s.display(drain=0.3)]
+    title = next(i for i, row in enumerate(rows) if " Stack " in row)
+    body = []
+    for row in rows[title + 1:]:
+        if row.startswith("q"):
+            break
+        body.append(row.rstrip())
+    return "\n".join(body)
+
+
+# @scenario SC-buffer-02
+def test_the_stack_window_has_no_undo_after_three_refreshes(tmp_path):
+    """The Stack window is rewritten at every stop, and what the debugger
+    printed is nothing the user did: Edit > Undo in it says there is
+    nothing to undo, where it used to put back a row of an earlier listing."""
+    _need_gdb()
+    with _stack_session(tmp_path) as s:
+        _run_to_the_leaf(s)
+        _open_the_stack(s)                  # refresh 1: three frames
+        _continue_to_main(s)                # refresh 2: one frame
+        s.key(F8, delay=0.5)                # refresh 3
+        dbg._wait_for(s, lambda: dbg._mark_line(s) == STACK_IN_MAIN + 1,
+                      dbg.STEP_TIMEOUT_S)
+        s.key(*CTRL_G_STACK, delay=0.8)     # the Stack window on top
+        s.menu(ALT.EDIT, "u")
+        shown = "\n".join(s.display(drain=0.8))
+        assert NO_MORE_UNDO in shown, \
+            "Edit > Undo in the Stack window changed it instead of saying " \
+            "there is nothing to undo:\n" + shown
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-06
+def test_a_stack_shrinking_by_two_leaves_no_stale_row(tmp_path):
+    """The stack goes from three frames to one: the Stack window shows the
+    one frame and no row of the deeper listing."""
+    _need_gdb()
+    with _stack_session(tmp_path) as s:
+        _run_to_the_leaf(s)
+        _open_the_stack(s)
+        shown = _stack_window_text(s)
+        assert "#2" in shown, "the three-frame listing is not shown:\n" + shown
+        _continue_to_main(s)
+        s.key(*CTRL_G_STACK, delay=0.8)
+        rewritten = _stack_window_body(s)
+        assert "#0" in rewritten and "main" in rewritten, \
+            "the Stack window does not show the frame of main:\n" + rewritten
+        s.key(CTRL_W, delay=0.6)                    # close it, list again in a new one
+        _open_the_stack(s)
+        fresh = _stack_window_body(s)
+        assert rewritten == fresh, \
+            "the rewritten Stack window keeps a row of the deeper listing; " \
+            "a window opened now shows:\n%s\nand the old one shows:\n%s" % (fresh, rewritten)
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-02
+def test_the_watches_window_has_no_undo_after_a_refresh(tmp_path):
+    """The Watches window is rewritten at every stop: Edit > Undo in it says
+    there is nothing to undo."""
+    _need_gdb()
+    with _stack_session(tmp_path) as s:
+        _run_to_the_leaf(s)
+        s.key(*CTRL_G_WATCH, delay=0.8)
+        s.key("v", delay=0.1)
+        s.key(ENTER, delay=0.5)
+        assert dbg._wait_for(s, lambda: dbg._watch_value(s, "v") == 3,
+                             dbg.STEP_TIMEOUT_S), \
+            "the Watches window should show v:\n" + dbg._screen(s)
+        s.key(F8, delay=0.5)                # the watch is read again at the stop
+        dbg._wait_for(s, lambda: dbg._mark_line(s) == STACK_IN_LEAF + 1,
+                      dbg.STEP_TIMEOUT_S)
+        s.menu(ALT.EDIT, "u")
+        shown = "\n".join(s.display(drain=0.8))
+        assert NO_MORE_UNDO in shown, \
+            "Edit > Undo in the Watches window did not say there is nothing " \
+            "to undo:\n" + shown
+        assert s.alive(), "wpe died"
+
+
+INSERT_SEED = "aaa\nbbb\nccc\nddd\n"
+INSERT_FILE = "ins.txt"
+INSERT_TEXT = "X\nY\n"
+
+
+def _read_a_file_into_the_window(s, name):
+    """Block > Read: the File Manager takes the file's name and puts the file
+    at the cursor."""
+    s.key(CTRL_K, "r", delay=1.0)
+    s.key(name, delay=0.4)
+    s.key(ENTER, delay=1.0)
+
+
+# @scenario SC-buffer-01
+def test_a_file_inserted_from_the_file_manager_is_one_undo_and_marks_the_window(tmp_path):
+    """Block > Read inside a line: the file's lines go between the two halves
+    of the line, the window reads as modified, and one Ctrl-U takes the
+    insert back and nothing the user typed before it."""
+    (tmp_path / INSERT_FILE).write_text(INSERT_TEXT)
+    with WpeSession(str(tmp_path), INSERT_SEED) as s:
+        s.key("zz", delay=0.3)                       # the user's own line
+        _saved(s)
+        _down(s, 1)                                  # "bb|b": the column stays 2
+        _read_a_file_into_the_window(s, INSERT_FILE)
+        disp = s.display()
+        rows = [disp[2 + i][1:-1].rstrip() for i in range(5)]   # inside the borders
+        assert rows == ["zzaaa", "bbX", "Y", "b", "ccc"], \
+            "the file was not inserted inside the line:\n" + "\n".join(disp)
+        status = _status_row(disp)
+        assert disp[status][MODIFIED_MARK_COL] == MODIFIED_MARK, \
+            "the window does not read as modified after the insert:\n%r" % disp[status]
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == "zz" + INSERT_SEED, \
+            "one Ctrl-U did not take the insert back and keep the typing: %r" % s.text()
+        s.key(CTRL_R, delay=0.8)
+        assert _saved(s) == "zzaaa\nbbX\nY\nb\nccc\nddd\n", \
+            "Ctrl-R did not insert the file again: %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+# Build output at the rate a noisy compiler makes it: one warning per
+# directive, three lines of output each.
+RATE_WARNINGS = 3400
+RATE_SEED = "#warning w\n" * RATE_WARNINGS + "int main(void) { return 0; }\n"
+RATE_COLS = 120
+RATE_POLL_S = 0.02
+F9 = "\033[20~"                                    # Make
+# Seconds from the key to the build's count line, the compiler's own run
+# included.  Six runs before the lines went through the buffer owner took
+# 0.05 to 0.06 s; the budget leaves room for a loaded machine and still
+# fails a path that costs time in proportion to the lines already there.
+RATE_BUDGET_S = 2.0
+
+
+# @scenario SC-buffer-06
+def test_messages_output_rate_is_unchanged(tmp_path):
+    """A build that prints about 10000 lines reaches Messages in the time it
+    took before the lines went through the buffer owner."""
+    if not dbg.shutil.which("gcc"):
+        pytest.skip("no gcc")
+    with WpeSession(str(tmp_path), RATE_SEED, filename="p.c", cols=RATE_COLS) as s:
+        done = "%d warnings" % RATE_WARNINGS
+        start = time.time()
+        s.key(F9, delay=0.02)
+        while time.time() - start < RATE_BUDGET_S * 2:
+            s._drain(RATE_POLL_S)
+            if done in "\n".join(s.display(drain=0)):
+                break
+        took = time.time() - start
+        print("messages rate: %d warnings in %.2f s" % (RATE_WARNINGS, took))
+        assert done in "\n".join(s.display(drain=0.3)), \
+            "the build's count line never reached Messages in %.0f s" % took
+        assert took < RATE_BUDGET_S, \
+            "10000 lines of build output took %.1f s, budget %.1f s" % (took, RATE_BUDGET_S)
         assert s.alive(), "wpe died"
