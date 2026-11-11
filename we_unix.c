@@ -128,12 +128,9 @@ int (*e_u_system)(const char *exe);
 int (*e_u_d_switch_out)(int sw);
 int (*e_u_switch_screen)(int sw);
 int (*e_u_deb_out)(struct FNST *f);
-int (*e_u_cp_X_to_buffer)(struct FNST *f);
-int (*e_u_copy_X_buffer)(struct FNST *f);
-int (*e_u_paste_X_buffer)(struct FNST *f);
 int (*e_u_key_take)(int want);
 int (*e_u_palette_rgb)(int idx, unsigned char rgb[3]) = e_palette_rgb_unknown;
-void (*e_u_serve_display)(void);
+void (*e_u_serve_display)(void) = WpeNullFunction;
 void (*e_u_focus_editor)(void) = WpeNullFunction;
 void (*e_u_raise_editor)(void) = WpeNullFunction;
 int (*e_u_ini_size)(void);
@@ -353,8 +350,7 @@ static int e_capture_quiet_fd(void)
  */
 static void e_capture_serve_display(void)
 {
- if (e_u_serve_display)
-  (*e_u_serve_display)();
+ (*e_u_serve_display)();
 }
 
 /**

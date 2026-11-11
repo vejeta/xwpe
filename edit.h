@@ -437,6 +437,7 @@ int e_put_wide_cell(int sx, int sy, int wc, int cw, int frb, int has_room);
 int e_edt_del(FENSTER *f);
 int e_edt_copy(FENSTER *f);
 int e_edt_einf(FENSTER *f);
+void e_clip_pull_os_into_buffer(FENSTER *w0);
 int e_blck_move(FENSTER *f);
 void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f);
 int e_blck_copy(FENSTER *f);
@@ -875,9 +876,6 @@ extern void (*WpeMouseRestoreShape)(void);
 extern int (*e_u_d_switch_out)(int sw);
 extern int (*e_u_switch_screen)(int sw);
 extern int (*e_u_deb_out)(FENSTER *f);
-extern int (*e_u_cp_X_to_buffer)(FENSTER *f);
-extern int (*e_u_copy_X_buffer)(FENSTER *f);
-extern int (*e_u_paste_X_buffer)(FENSTER *f);
 /* The colour the display paints for palette index 0..15, as the user sees
    it: fills rgb[0..2] with red, green and blue (0..255) and returns 1.  The
    User Screen maps a program's colours onto the nearest of these sixteen.

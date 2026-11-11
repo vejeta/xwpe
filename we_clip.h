@@ -59,10 +59,41 @@ extern void (*e_clip_os_set)(const char *utf8, int len);
 /* e_clip_os_get - fetch the OS clipboard for Paste.  Returns a malloc'd,
  * NUL-terminated UTF-8 string (caller frees) and sets *len to its byte length,
  * or NULL to mean "use xwpe's own internal clipboard" -- which is what the
- * caller does when no external app owns the selection, when WE are the owner
- * (so the internal copy is authoritative), or in a terminal (OSC 52 read is
- * unreliable, so console Paste stays internal + the emulator's own paste).
- * The X11 front-end installs the real reader; the default returns NULL. */
+ * caller does when e_clip_paste_order finds nothing to read (the editor owns
+ * CLIPBOARD, or no other application offers a selection), or in a terminal
+ * (OSC 52 read is unreliable, so console Paste stays internal + the
+ * emulator's own paste).  The X11 and Wayland front-ends install the real
+ * readers; the default returns NULL. */
 extern char *(*e_clip_os_get)(int *len);
+
+/* The reader of a display that cannot read the system's selection: returns
+ * NULL, so Paste uses the editor's own clipboard.  The terminal names it in
+ * its fills. */
+char *e_clip_os_get_none(int *len);
+
+/* The two system selections a paste can read. */
+#define E_CLIP_SEL_CLIPBOARD 1   /* the Ctrl-C / Ctrl-V selection */
+#define E_CLIP_SEL_PRIMARY   2   /* the select-to-copy selection */
+
+/**
+ * e_clip_paste_order - Choose which system selection a paste reads, and in
+ * which order.
+ * @own_clipboard: the editor owns CLIPBOARD.
+ * @other_clipboard: another application owns CLIPBOARD.
+ * @other_primary: another application owns PRIMARY.
+ * @order: receives the selections to try, first to last.
+ *
+ * Ctrl-V and Alt-Insert paste the newest thing the user copied: the text of
+ * another application's Ctrl-C, even when the editor still owns PRIMARY from
+ * an earlier copy.  While the editor owns CLIPBOARD its own clipboard is the
+ * newest, and another application's PRIMARY never wins over it.  With nobody
+ * owning CLIPBOARD, another application's PRIMARY is read.  The same rule
+ * serves X11 and Wayland.
+ *
+ * Return: how many entries of @order (0 to 2) are filled; 0 means the paste
+ * uses the editor's own clipboard.
+ */
+int e_clip_paste_order(int own_clipboard, int other_clipboard,
+                       int other_primary, int order[2]);
 
 #endif /* WE_CLIP_H */

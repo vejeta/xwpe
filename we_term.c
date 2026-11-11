@@ -247,36 +247,6 @@ char *tgoto();
 
 int WpeGpmMouseInit(void);
 
-/**
- * e_t_copy_X_buffer - Alt-Insert in a terminal: paste.
- * @f: the window the key was pressed in.
- *
- * Under X, Alt-Insert pastes the X selection.  A terminal cannot read the
- * system's selection, so the editor's own clipboard is pasted, as
- * Shift-Insert does; the key works instead of doing nothing.
- * Return: 0.
- */
-static int e_t_copy_X_buffer(FENSTER *f)
-{
- e_edt_einf(f);
- return(0);
-}
-
-/**
- * e_t_paste_X_buffer - Alt-Delete in a terminal: copy the marked text.
- * @f: the window the key was pressed in.
- *
- * Under X, Alt-Delete copies the marked block to the X selection.  In a
- * terminal the copy goes to the editor's clipboard and, where the terminal
- * accepts it, to the system clipboard (OSC 52), the same as Ctrl-Insert.
- * Return: 0.
- */
-static int e_t_paste_X_buffer(FENSTER *f)
-{
- e_edt_copy(f);
- return(0);
-}
-
 int WpeDllInit(int *argc, char **argv)
 {
  fk_u_cursor = fk_t_cursor;
@@ -297,8 +267,8 @@ int WpeDllInit(int *argc, char **argv)
  e_u_raise_editor = WpeNullFunction;   /* the terminal has no window to raise */
  fk_u_putchar = fk_t_putchar;
  e_clip_os_set = e_clip_t_os_set;   /* ^C / ^Ins -> OS clipboard via OSC 52 */
- e_u_copy_X_buffer = e_t_copy_X_buffer;
- e_u_paste_X_buffer = e_t_paste_X_buffer;
+ e_clip_os_get = e_clip_os_get_none;   /* a terminal cannot read the system's selection: Paste uses the editor's clipboard */
+ e_u_serve_display = WpeNullFunction;   /* the console has no expose or resize event to answer while a command runs */
 #ifdef HAVE_LIBGPM
  if (WpeGpmMouseInit() == 0)
  {

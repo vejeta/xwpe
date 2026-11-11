@@ -207,10 +207,18 @@ class XwpeSession:
             _xdo("key", "--window", self.win, "--clearmodifiers", _to_keycodes(k))
             _sleep(delay)
 
-    def click(self, px, py, delay=0.5):
+    def click(self, px, py, delay=0.5, button=1, hold=None):
+        """Click at (px,py) with `button` (1 left, 2 middle, 3 right).  `hold`
+        names a modifier key (an xdotool key name such as "alt") kept down
+        for the click, so a test can drive Alt-click."""
         _xdo("mousemove", "--window", self.win, str(px), str(py))
         _sleep(0.2)
-        _xdo("click", "1")
+        if hold:
+            _xdo("keydown", hold)
+            _sleep(0.1)
+        _xdo("click", str(button))
+        if hold:
+            _xdo("keyup", hold)
         _sleep(delay)
 
     def drag(self, x1, y1, x2, y2, steps=12, delay=0.6):

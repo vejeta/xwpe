@@ -106,10 +106,6 @@ Delete marked text without copying.
 Undo the last change.
 @item R -- Redo
 Redo the last undone change.
-@item L -- Load XBuffer
-Copy the X selection buffer into xwpe's clipboard (X11 only).
-@item W -- Write to XBuffer
-Copy xwpe's clipboard to the X selection buffer (X11 only).
 @end table
 
 @subsection Search menu (@kbd{Alt-S})

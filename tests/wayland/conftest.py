@@ -266,13 +266,21 @@ class WaylandSession:
         wait_frame_quiet(self.dump, floor=delay)
         return self
 
-    def click(self, px, py, delay=0.5):
+    def click(self, px, py, delay=0.5, button=1, hold=None):
+        """Click at (px,py) with `button` (1 left, 2 middle, 3 right).  `hold`
+        names a modifier key (an xdotool key name such as "alt") kept down
+        for the click, so a test can drive Alt-click."""
         d = {**os.environ, "DISPLAY": DISPLAY}
         _xdo("mousemove", "--window", self.wid, str(px), str(py), env=d)
         _sleep(0.15)
         _xdo("mousemove", "--window", self.wid, str(px + 1), str(py), env=d)  # real motion
         _sleep(0.1)
-        _xdo("click", "1", env=d)
+        if hold:
+            _xdo("keydown", hold, env=d)
+            _sleep(0.1)
+        _xdo("click", str(button), env=d)
+        if hold:
+            _xdo("keyup", hold, env=d)
         wait_frame_quiet(self.dump, floor=delay)
         return self
 

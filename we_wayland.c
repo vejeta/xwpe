@@ -1229,42 +1229,65 @@ static char *clip_pipe_drain(int read_fd, int *len)
  return buf;
 }
 
-/* e_clip_w_get - Paste (e_clip_os_get): read the external owner's text.  Tries
-   the CLIPBOARD selection first (the ^C/^V selection of GUI apps), then the
-   PRIMARY selection (middle-click / select-to-copy), matching the X11 reader.
-   Returns NULL while WE own a selection (the editor's internal clipboard is
-   then authoritative) or when nothing is offered.  Caller frees the result. */
-static char *e_clip_w_get(int *len)
+/* e_clip_w_read_clipboard - the text another application offers on CLIPBOARD,
+   malloc'd, or NULL.  Caller frees. */
+static char *e_clip_w_read_clipboard(int *len)
 {
  int   fds[2];
+ char *res;
+
+ if (pipe(fds) != 0)
+  return NULL;
+ wl_data_offer_receive(g_clip_offer, WL_CLIP_MIME, fds[1]);
+ close(fds[1]);
+ wl_display_flush(WpeWl.display);   /* let the owner start writing */
+ res = clip_pipe_drain(fds[0], len);
+ close(fds[0]);
+ return res;
+}
+
+/* e_clip_w_read_primary - the text another application offers on PRIMARY,
+   malloc'd, or NULL.  Caller frees. */
+static char *e_clip_w_read_primary(int *len)
+{
+ int   fds[2];
+ char *res;
+
+ if (pipe(fds) != 0)
+  return NULL;
+ zwp_primary_selection_offer_v1_receive(g_pclip_offer, WL_CLIP_MIME, fds[1]);
+ close(fds[1]);
+ wl_display_flush(WpeWl.display);
+ res = clip_pipe_drain(fds[0], len);
+ close(fds[0]);
+ return res;
+}
+
+/* e_clip_w_get - Paste (e_clip_os_get): read the external owner's text.  The
+   selection read follows e_clip_paste_order, as on X11: another application's
+   CLIPBOARD (the ^C/^V selection of GUI apps), then its PRIMARY (middle-click
+   / select-to-copy).  Returns NULL while WE own CLIPBOARD (the editor's
+   internal clipboard is then the newest) or when nothing is offered.  Caller
+   frees the result. */
+static char *e_clip_w_get(int *len)
+{
+ int   order[2];
+ int   count, oi;
  char *res;
 
  if (len)
   *len = 0;
  if (!WpeWl.display)
   return NULL;
-
- if (!g_clip_we_own && g_clip_offer)
+ count = e_clip_paste_order(g_clip_we_own,
+                            !g_clip_we_own && g_clip_offer != NULL,
+                            !g_pclip_we_own && g_pclip_offer != NULL, order);
+ for (oi = 0; oi < count; oi++)
  {
-  if (pipe(fds) != 0)
-   return NULL;
-  wl_data_offer_receive(g_clip_offer, WL_CLIP_MIME, fds[1]);
-  close(fds[1]);
-  wl_display_flush(WpeWl.display);   /* let the owner start writing */
-  res = clip_pipe_drain(fds[0], len);
-  close(fds[0]);
-  if (res)
-   return res;
- }
- if (!g_pclip_we_own && g_pclip_offer)
- {
-  if (pipe(fds) != 0)
-   return NULL;
-  zwp_primary_selection_offer_v1_receive(g_pclip_offer, WL_CLIP_MIME, fds[1]);
-  close(fds[1]);
-  wl_display_flush(WpeWl.display);
-  res = clip_pipe_drain(fds[0], len);
-  close(fds[0]);
+  if (order[oi] == E_CLIP_SEL_CLIPBOARD)
+   res = e_clip_w_read_clipboard(len);
+  else
+   res = e_clip_w_read_primary(len);
   if (res)
    return res;
  }

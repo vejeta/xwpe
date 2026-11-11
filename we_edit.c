@@ -1241,18 +1241,14 @@ int e_tst_fkt(int c, ECNT *e)
    break;
   case PASTE:
   case ShiftEin:    /*  shift Einf  */
+  case AltEin:      /*  alt Einf: the same paste, whichever display  */
   case CtrlV:
    e_edt_einf(f);
-   break;
-  case AltEin:      /*  every display sets these two: the terminal's paste and copy  */
-   e_copy_X_buffer(f);
-   break;
-  case AltDel:
-   e_paste_X_buffer(f);
    break;
   case COPY:
   case CtrlEin:    /*  ctrl Einf  */
 /*               case 401:    */
+  case AltDel:     /*  alt Del: the same copy, whichever display  */
   case CtrlC:
    e_edt_copy(f);
    break;

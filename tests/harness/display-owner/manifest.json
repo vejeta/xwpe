@@ -50,6 +50,142 @@
    "needs": ["weston", "gcc"]
   },
   {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_alt_delete_copies_and_alt_insert_pastes_in_a_terminal",
+   "status": "covered",
+   "needs": []
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_selection_keys.py::test_alt_insert_pastes_and_alt_delete_copies_in_the_editor",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_selection_keys.py::test_alt_insert_after_copying_whole_lines_does_not_join_the_next_line",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_clipboard.py::test_alt_delete_owns_primary_and_clipboard",
+   "status": "new",
+   "needs": ["xclip"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_clipboard.py::test_alt_delete_of_whole_lines_exports_them_without_the_last_newline",
+   "status": "new",
+   "needs": ["xclip"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_clipboard.py::test_alt_insert_pastes_an_external_selection",
+   "status": "new",
+   "needs": ["xclip"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_selection_keys.py::test_alt_insert_pastes_and_alt_delete_copies_in_the_editor",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_selection_keys.py::test_alt_insert_after_copying_whole_lines_does_not_join_the_next_line",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_clipboard.py::test_alt_delete_owns_the_wayland_selection",
+   "status": "new",
+   "needs": ["wl-clipboard"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_clipboard.py::test_alt_insert_pastes_an_external_selection",
+   "status": "new",
+   "needs": ["wl-clipboard"]
+  },
+  {
+   "id": "SC-display-02",
+   "requirement": "Alt-Insert pastes and Alt-Delete copies on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_clipboard.py::test_paste_ignores_another_clients_primary_while_the_editor_owns_the_clipboard",
+   "status": "new",
+   "needs": ["wl-clipboard", "primary selection"]
+  },
+  {
+   "id": "SC-display-03",
+   "requirement": "A dialog's text field takes the selection on Alt-Insert and on an Alt middle click on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_selection_keys.py::test_alt_insert_in_a_dialog_field_pastes_the_clipboard",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-display-03",
+   "requirement": "A dialog's text field takes the selection on Alt-Insert and on an Alt middle click on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_selection_keys.py::test_alt_click_in_a_dialog_field_pastes_the_clipboard",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-display-03",
+   "requirement": "A dialog's text field takes the selection on Alt-Insert and on an Alt middle click on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_clipboard.py::test_alt_insert_in_a_field_takes_an_external_selection_whole",
+   "status": "new",
+   "needs": ["xclip"]
+  },
+  {
+   "id": "SC-display-03",
+   "requirement": "A dialog's text field takes the selection on Alt-Insert and on an Alt middle click on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_selection_keys.py::test_alt_insert_in_a_dialog_field_pastes_the_clipboard",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-display-03",
+   "requirement": "A dialog's text field takes the selection on Alt-Insert and on an Alt middle click on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_selection_keys.py::test_alt_click_in_a_dialog_field_pastes_the_clipboard",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-display-03",
+   "requirement": "A dialog's text field takes the selection on Alt-Insert and on an Alt middle click on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_clipboard.py::test_alt_insert_in_a_field_takes_an_external_selection_whole",
+   "status": "new",
+   "needs": ["wl-clipboard"]
+  },
+  {
    "id": "SC-display-05",
    "requirement": "The X11 palette is the one the server allocated",
    "layer": "x11",

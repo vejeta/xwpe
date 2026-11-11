@@ -192,6 +192,28 @@ count_words() {
     END { print n + 0 }' "$2"
 }
 
+# count the places a name is assigned (not compared): name, stripped source.
+count_assign() {
+  awk -v re="(^|[^A-Za-z0-9_])($1)[ \t]*=[^=]" '
+    { s = $0; while (match(s, re)) { n++; s = substr(s, RSTART + RLENGTH) } }
+    END { print n + 0 }' "$2"
+}
+
+# the names of the function pointers a header declares with extern, one per
+# line: "extern int (*name)(...);".
+declared_slots() {
+  awk '
+    /^[ \t]*extern[ \t]/ {
+      s = $0
+      while (match(s, /\(\*[A-Za-z_0-9]+\)[ \t]*\(/)) {
+        n = substr(s, RSTART + 2, RLENGTH - 2)
+        sub(/\).*/, "", n)
+        print n
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }' "$1"
+}
+
 # a call of the import, as the source writes it: a function of the getch
 # family is mostly used through ncurses macros and the editor's fk_getch.
 call_pattern() {
@@ -369,8 +391,16 @@ canary_import we_render_cairo.o e_x_palette_rgb16 "the Cairo renderer reads the 
 # start and to raise it at a stop; it names no display's function.
 canary_import we_debug.o e_u_focus_editor "a debug start gives the keyboard back some other way"
 canary_import we_debug.o e_u_raise_editor "a debug stop raises the editor some other way"
+# Alt-Insert, Alt-Delete and a dialog field's Alt-paste go through the one
+# clipboard path (Paste and Copy), which every display fills; the editor
+# keys and the field name those functions and no display's copy of them.
+canary_import we_edit.o e_edt_einf "Alt-Insert pastes some other way than Paste"
+canary_import we_edit.o e_edt_copy "Alt-Delete copies some other way than Copy"
+canary_import we_e_aus.o e_clip_pull_os_into_buffer "a field pastes the selection some other way"
 DELETED_DISPLAY_SYMBOLS="e_x_clear_area e_x_vterm_user_screen e_x_vterm_load_palette
-  e_x_change e_d_x_focus_to_editor e_x_reclaim_focus"
+  e_x_change e_d_x_focus_to_editor e_x_reclaim_focus
+  e_x_cp_X_to_buffer e_x_copy_X_buffer e_x_paste_X_buffer
+  e_t_copy_X_buffer e_t_paste_X_buffer"
 for obj in $OBJECTS; do
   [ -f "$obj" ] || continue
   defined_names "$obj" > "$WORK/defined"
@@ -381,6 +411,64 @@ for obj in $OBJECTS; do
   "$NMTOOL" -u "$obj" 2>/dev/null | normalise | grep -qx XQueryColor &&
     problem "deleted symbol: $(basename "$obj") imports XQueryColor (the editor's colours come from the display's palette)"
 done
+# The fill scan: every display assigns every slot of the display table, with
+# an implementation or a named function that does nothing, so no slot is
+# empty when shared code calls it.  A slot one kind of display reads is an
+# exception with its kind: "graphical" ones must be assigned by X11 and
+# Wayland, "console" ones by the terminal, "none" by no display.  A slot the
+# headers declare and no table lists is a problem too: a new service needs
+# its fills before it is used.
+FILLS=$(echo fk_u_locate fk_u_cursor fk_u_putchar u_bioskey e_frb_u_menue \
+  e_s_u_clr e_n_u_clr e_pr_u_col_kasten fk_mouse fk_u_grab_pointer \
+  fk_u_drag_next e_u_refresh e_u_getch e_u_sys_ini e_u_sys_end \
+  WpeMouseChangeShape WpeMouseRestoreShape e_u_d_switch_out \
+  e_u_switch_screen e_u_deb_out e_u_system e_u_key_take WpeDisplayEnd \
+  e_clip_os_set e_u_focus_editor e_u_raise_editor e_u_palette_rgb \
+  e_u_serve_display e_clip_os_get)
+# "kind  slot  reason"
+cat > "$WORK/fillexcept" <<'EOF'
+graphical e_u_ini_size read under WpeIsXwin (we_opt.c) and by the X11 backend
+graphical e_u_setlastpic read under WpeIsXwin (we_wind.c) and by the X11 backend
+console e_u_s_sys_ini read under !WpeIsXwin (we_fl_unix.c) and from e_system (we_prog.c)
+console e_u_s_sys_end read under !WpeIsXwin (we_fl_unix.c) and from e_system (we_prog.c)
+none e_paste_end_hook not a display slot: the hook the paste owner sets
+EOF
+fill_check() {   # source file, slot
+  if [ -f "$SRCDIR/$1" ]; then
+    [ -f "$WORK/stripped/$1" ] || strip_c "$SRCDIR/$1" > "$WORK/stripped/$1"
+    [ "$(count_assign "$2" "$WORK/stripped/$1")" -gt 0 ] ||
+      problem "fill: $1 does not assign $2"
+  else
+    problem "canary: $1 not found under $SRCDIR (the fill scan is blind)"
+  fi
+}
+for slot in $FILLS; do
+  for display in we_term.c we_xterm.c we_wayland.c; do
+    fill_check $display $slot
+  done
+done
+while read -r kind slot reason; do
+  case $kind in
+    graphical) for display in we_xterm.c we_wayland.c; do fill_check $display $slot; done ;;
+    console) fill_check we_term.c $slot ;;
+  esac
+done < "$WORK/fillexcept"
+: > "$WORK/declared"
+for header in edit.h we_clip.h; do
+  if [ -f "$SRCDIR/$header" ]; then
+    strip_c "$SRCDIR/$header" > "$WORK/stripped/$header"
+    declared_slots "$WORK/stripped/$header" >> "$WORK/declared"
+  else
+    problem "canary: $header not found under $SRCDIR (the fill scan is blind)"
+  fi
+done
+[ "$(wc -l < "$WORK/declared" | tr -d ' ')" -ge 20 ] ||
+  problem "canary: fewer than 20 function-pointer slots found in edit.h and we_clip.h (the slot scan is blind)"
+while read -r slot; do
+  case " $FILLS " in *" $slot "*) continue ;; esac
+  grep -qE "^[a-z]+ $slot " "$WORK/fillexcept" && continue
+  problem "fill: $slot is declared as a slot but is in no table (dead, or a new service without its fills)"
+done < "$WORK/declared"
 # The call-form branch of the source scan must see the writer's own write(.
 if fdloop=$(stripped_source we_fdloop.o); then
   [ "$(count_uses write "$fdloop")" -gt 0 ] ||
@@ -411,6 +499,7 @@ sort -u "$WORK/found" -o "$WORK/found"
 
 if [ $LIST -eq 1 ]; then
   cat "$WORK/found"
+  awk '{ print "# " $0 }' "$WORK/problems"   # a comment line in an allow file
   exit 0
 fi
 

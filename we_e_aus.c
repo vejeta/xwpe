@@ -444,6 +444,24 @@ int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs)
 }
 
 /**
+ * e_field_clipboard_len - The length of the text an Alt-paste puts in a field.
+ * @fetch_selection: 1 to take what another application copied first, 0 to
+ *     use the editor's clipboard as it is.
+ *
+ * Alt-Insert and an Alt middle click paste the system's selection when
+ * another application owns it, so the length is read after the editor's
+ * clipboard has been refilled with it; a length read before would cut the
+ * pasted text or run past it.  Return: the bytes of the first line of the
+ * editor's clipboard, which is what a one-line field takes.
+ */
+static int e_field_clipboard_len(int fetch_selection)
+{
+ if (fetch_selection)
+  e_clip_pull_os_into_buffer(WpeEditor->f[0]);
+ return(WpeEditor->f[0]->b->bf[0].len);
+}
+
+/**
  * e_field_take_pasted_break - Keep a pasted line break in a field that hands
  * multi-line pastes over.
  * @tmp, @l, @jc, @max: the field's text, length, caret and room.
@@ -536,11 +554,11 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
     jc = e_mouse.x-x-1 < l ? e_mouse.x-x-1 : l;
     if (c == -2)
     {
-     int len = WpeEditor->f[0]->b->bf[0].len;
-#ifndef NO_XWINDOWS
+     int len;
      if (bioskey() & 8)
-     e_cp_X_to_buffer(WpeEditor->f[WpeEditor->mxedt]);
-#endif
+      len = e_field_clipboard_len(1);
+     else
+      len = e_field_clipboard_len(0);
      while (e_mshit())
       ;
      if (first == 1)
@@ -576,11 +594,11 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
   else if (c == AltJ || c == F9) sond = !sond;
   else if (c == PASTE || c == ShiftEin || c == CtrlV || c == AltEin)
   {
-   int len = WpeEditor->f[0]->b->bf[0].len;
-#ifndef NO_XWINDOWS
-   if (WpeIsXwin() && c == AltEin)
-    e_cp_X_to_buffer(WpeEditor->f[WpeEditor->mxedt]);
-#endif
+   int len;
+   if (c == AltEin)
+    len = e_field_clipboard_len(1);
+   else
+    len = e_field_clipboard_len(0);
    if (first == 1)
    {
     tmp[0] = '\0';

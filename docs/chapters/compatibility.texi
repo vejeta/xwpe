@@ -77,8 +77,29 @@ and quitting on a key no menu names surprised users.
 @cindex Alt-Delete, in a terminal
 The original read Esc then Delete in a terminal as Shift-Delete and cut
 the marked block.  It is now @kbd{Alt-Delete} on every display, which
-copies the block (to the X selection under X, to the buffer in a
-terminal) and leaves it in the file.
+copies the block (to the system selection on X11 and Wayland, to the
+editor's clipboard in a terminal) and leaves it in the file.
+
+@item Alt-Insert and Alt-Delete under X
+@cindex Alt-Insert, under X
+The original had a paste and a copy of their own for the X selection.
+They now run Paste and Copy, so they behave as @kbd{Ctrl-V} and
+@kbd{Ctrl-Insert} do on every display, with five differences under X:
+@kbd{Alt-Insert} pastes the editor's clipboard when no application owns
+the selection (it pasted nothing); after whole lines were copied it pastes
+them as whole lines (it joined the last one to the next line); a window
+closed to changes, such as the clipboard viewer, refuses it before
+anything changes; a block that ends at the start of a line is copied
+without that last line break, as @kbd{Ctrl-Insert} copies it; and
+@kbd{Alt-Delete} in the clipboard viewer copies nothing, as
+@kbd{Ctrl-Insert} there (it gave the viewer's text to the X selection
+again).  @kbd{Ctrl-V} and @kbd{Alt-Insert} take the newest copy on X11 and
+Wayland: another application's @kbd{Ctrl-C} text wins over the editor's
+own clipboard when it came later, and the editor's clipboard wins over
+another application's primary selection.  The editor used to paste its own
+text for as long as it still owned the primary selection.  The reason
+is one clipboard path for every display, so no display has a copy of its
+own to get wrong.
 @end table
 
 @section What arrives while a box is open

@@ -327,13 +327,18 @@ int e_edt_copy(FENSTER *f)
  return(0);
 }
 
-/* e_clip_pull_os_into_buffer - before a Paste, replace the internal clipboard
-   (window 0) with the OS clipboard when an external app owns it, so ^V / Shift-
-   Ins pastes what was last copied in ANY app (the merged-clipboard model).  A
-   no-op when xwpe owns the selection -- the internal copy is then authoritative
-   -- or in a terminal, where e_clip_os_get returns NULL (console paste from
-   another app is the emulator's own paste). */
-static void e_clip_pull_os_into_buffer(FENSTER *w0)
+/**
+ * e_clip_pull_os_into_buffer - Before a paste, take what another application
+ * copied into the editor's clipboard.
+ * @w0: window 0, the editor's clipboard.
+ *
+ * Ctrl-V, Shift-Insert, Alt-Insert and a dialog field's Alt-paste then paste
+ * what was last copied in any application (the merged-clipboard model).  Does
+ * nothing when the editor owns the selection, because its own clipboard is the
+ * newer copy, and in a terminal, which cannot read the system's selection:
+ * the editor's clipboard is pasted there.
+ */
+void e_clip_pull_os_into_buffer(FENSTER *w0)
 {
  char *text;
  int len = 0;

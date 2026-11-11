@@ -20,16 +20,37 @@ static void e_clip_os_noop(const char *utf8, int len)
 
 void (*e_clip_os_set)(const char *utf8, int len) = e_clip_os_noop;
 
-/* Default OS-clipboard reader: nothing to offer -> Paste uses xwpe's internal
- * clipboard.  The X11 front-end installs a real reader; the terminal leaves
- * this (OSC 52 read is unreliable, so console Paste stays internal). */
-static char *e_clip_os_get_none(int *len)
+/**
+ * e_clip_os_get_none - The OS-clipboard reader of a display that cannot read
+ * the system's selection.
+ * @len: left alone.
+ *
+ * A terminal cannot ask the system for its selection (reading OSC 52 back is
+ * unreliable), so Paste, Alt-Insert and a field's Alt-paste use the editor's
+ * own clipboard there.  The graphical displays install a real reader.
+ * Return: NULL, always.
+ */
+char *e_clip_os_get_none(int *len)
 {
  (void)len;
  return NULL;
 }
 
 char *(*e_clip_os_get)(int *len) = e_clip_os_get_none;
+
+int e_clip_paste_order(int own_clipboard, int other_clipboard,
+                       int other_primary, int order[2])
+{
+ int n = 0;
+
+ if (own_clipboard)
+  return 0;
+ if (other_clipboard)
+  order[n++] = E_CLIP_SEL_CLIPBOARD;
+ if (other_primary)
+  order[n++] = E_CLIP_SEL_PRIMARY;
+ return n;
+}
 
 static const char e_b64_tab[] =
  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

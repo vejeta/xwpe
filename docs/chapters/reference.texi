@@ -292,8 +292,8 @@ These commands operate on the clipboard (kill-buffer).  (Documented since v1.4.)
 @item @kbd{Alt-Y} @tab Show Buffer: browse the paste/kill buffer (Edit @result{} Show Buffer) @tab
 @item @kbd{Ctrl-U} @tab Undo last change @tab
 @item @kbd{Ctrl-R} @tab Redo (undo the last undo) @tab
-@item @kbd{Alt-Delete} @tab Copy marked text to X selection buffer (in a terminal: copy, as @kbd{Ctrl-C}) @tab
-@item @kbd{Alt-Insert} @tab Paste from X selection buffer (in a terminal: paste the buffer, as @kbd{Ctrl-V}) @tab
+@item @kbd{Alt-Delete} @tab Copy marked text to the system selection on X11 and Wayland, to the editor's clipboard in a terminal (as @kbd{Ctrl-C}) @tab
+@item @kbd{Alt-Insert} @tab Paste what another application copied on X11 and Wayland, else the editor's clipboard (as @kbd{Ctrl-V}) @tab
 @end multitable
 
 @subsection Read and save

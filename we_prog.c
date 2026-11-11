@@ -4771,8 +4771,7 @@ static int e_shell_start(const char *cmd)
  */
 static void e_shell_serve_display(void)
 {
- if (e_u_serve_display)
-  (*e_u_serve_display)();
+ (*e_u_serve_display)();
 }
 
 /**

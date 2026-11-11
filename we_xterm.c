@@ -38,9 +38,6 @@ int e_x_sys_end(void);
 int fk_x_putchar(int c);
 int x_bioskey(void);
 int e_x_system(const char *exe);
-int e_x_cp_X_to_buffer(FENSTER *f);
-int e_x_copy_X_buffer(FENSTER *f);
-int e_x_paste_X_buffer(FENSTER *f);
 static void e_clip_x_set(const char *utf8, int len);
 static char *e_clip_x_get(int *len);
 static void e_x_serve_display(void);
@@ -157,9 +154,6 @@ int WpeDllInit(int *argc, char **argv)
  fk_mouse = fk_x_mouse;
  fk_u_grab_pointer = fk_x_grab_pointer;
  fk_u_drag_next = fk_x_drag_next;
- e_u_cp_X_to_buffer = e_x_cp_X_to_buffer;
- e_u_copy_X_buffer = e_x_copy_X_buffer;
- e_u_paste_X_buffer = e_x_paste_X_buffer;
  e_clip_os_set = e_clip_x_set;   /* ^C / ^Ins -> PRIMARY + CLIPBOARD (UTF-8) */
  e_clip_os_get = e_clip_x_get;   /* ^V <- the OS selection when another app owns it */
  e_u_key_take = e_x_key_take;
@@ -2226,102 +2220,6 @@ static int e_clip_x_wait_notify(XEvent *ev)
  return XCheckTypedEvent(WpeXInfo.display, SelectionNotify, ev);
 }
 
-int e_x_cp_X_to_buffer(FENSTER *f)
-{
- BUFFER *b0 = f->ed->f[0]->b;
- SCHIRM *s0 = f->ed->f[0]->s;
- int i, j, k, n;
- unsigned char *str;
- XEvent report;
- Atom type;
- int format;
- long nitems, bytes_left;
-
- for (i = 1; i < b0->mxlines; i++)
-  FREE(b0->bf[i].s);
- b0->mxlines = 1;
- *(b0->bf[0].s) = WPE_WR;
- *(b0->bf[0].s+1) = '\0';
- b0->bf[0].len = 0;
-#if SELECTION
- if (WpeXInfo.selection)
- {
-  str = WpeStrdup(WpeXInfo.selection);
-  n = strlen(str);
- }
- else
- {
-  /* Pull the OS clipboard: try CLIPBOARD first (the ^C/^V selection of GTK/Qt
-     apps), then PRIMARY (middle-click), each as UTF8_STRING.  Event-driven --
-     no busy-loop -- and AnyPropertyType so we accept whatever the owner sends. */
-  Atom sels[2];
-  int si, done = 0;
-
-  sels[0] = WpeXInfo.clipboard_atom;
-  sels[1] = WpeXInfo.selection_atom;
-  str = NULL;
-  for (si = 0; si < 2 && !done; si++)
-  {
-   if (XGetSelectionOwner(WpeXInfo.display, sels[si]) == None)
-    continue;
-   XConvertSelection(WpeXInfo.display, sels[si], WpeXInfo.utf8_atom,
-     WpeXInfo.property_atom, WpeXInfo.window, CurrentTime);
-   XFlush(WpeXInfo.display);
-   if (!e_clip_x_wait_notify(&report) || report.xselection.property == None)
-    continue;
-   if (XGetWindowProperty(WpeXInfo.display, WpeXInfo.window,
-       WpeXInfo.property_atom, 0, 1000000, True, AnyPropertyType,
-       &type, &format, &nitems, &bytes_left, &str) == Success
-       && type != None && nitems > 0 && str)
-    done = 1;
-   else if (str)
-   {
-    XFree(str);
-    str = NULL;
-   }
-  }
-  if (!done || !str)
-   return 0;
-  n = (int)nitems;
- }
-#else
- str = XFetchBytes(WpeXInfo.display, &n);
-#endif
- for (i = k = 0; i < n; i++, k++)
- {
-  for (j = 0; i < n && str[i] != '\n' && j < b0->mx.x-1; j++, i++)
-   b0->bf[k].s[j] = str[i];
-  if (i < n)
-  {
-   e_new_line(k+1, b0);
-   if (str[i] == '\n')
-   {
-    b0->bf[k].s[j] = WPE_WR;
-    b0->bf[k].nrc = j+1;
-   }
-   else
-    b0->bf[k].nrc = j;
-   b0->bf[k].s[j+1] = '\0';
-   b0->bf[k].len = j;
-  }
-  else
-  {
-   b0->bf[k].s[j] = '\0';
-   b0->bf[k].nrc = b0->bf[k].len = j;
-  }
- }
- s0->mark_begin.x = s0->mark_begin.y = 0;
- s0->mark_end.y = b0->mxlines-1;
- s0->mark_end.x = b0->bf[b0->mxlines-1].len;
-#if SELECTION
- if (WpeXInfo.selection)
-  WpeFree(str);
- else
-#endif
-  XFree(str);
- return 0;
-}
-
 /* e_clip_x_set - X11 OS-clipboard writer (the e_clip_os_set backend).
    Caches the UTF-8 bytes and takes ownership of BOTH the PRIMARY (middle-click
    paste) and CLIPBOARD (^C/^V in GTK/Qt apps) selections, so a plain Copy in
@@ -2348,24 +2246,29 @@ static void e_clip_x_set(const char *utf8, int len)
 }
 
 /* e_clip_x_get - X11 OS-clipboard reader (the e_clip_os_get backend).
-   Returns NULL when we ourselves own the selection (so Paste uses xwpe's own
-   internal clipboard, no round-trip) or when nobody owns it.  Otherwise fetches
-   the external owner's text -- CLIPBOARD first, then PRIMARY -- as UTF8_STRING,
-   event-driven, and returns it malloc'd + NUL-terminated (caller frees). */
+   Which selection is read follows e_clip_paste_order: the newest copy, that
+   is CLIPBOARD (another application's, or the editor's own, which gives NULL
+   so Paste uses xwpe's internal clipboard, no round-trip), else another
+   application's PRIMARY.  The text is fetched as UTF8_STRING, event-driven,
+   and returned malloc'd + NUL-terminated (caller frees). */
 static char *e_clip_x_get(int *len)
 {
  Atom sels[2];
- int si;
+ int order[2];
+ int count, si;
+ Window own_clip = XGetSelectionOwner(WpeXInfo.display,
+                                      WpeXInfo.clipboard_atom);
+ Window own_prim = XGetSelectionOwner(WpeXInfo.display,
+                                      WpeXInfo.selection_atom);
 
- if (XGetSelectionOwner(WpeXInfo.display, WpeXInfo.clipboard_atom)
-       == WpeXInfo.window ||
-     XGetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom)
-       == WpeXInfo.window)
-  return NULL;
-
- sels[0] = WpeXInfo.clipboard_atom;
- sels[1] = WpeXInfo.selection_atom;
- for (si = 0; si < 2; si++)
+ count = e_clip_paste_order(own_clip == WpeXInfo.window,
+                            own_clip != None && own_clip != WpeXInfo.window,
+                            own_prim != None && own_prim != WpeXInfo.window,
+                            order);
+ for (si = 0; si < count; si++)
+  sels[si] = order[si] == E_CLIP_SEL_CLIPBOARD ? WpeXInfo.clipboard_atom
+                                               : WpeXInfo.selection_atom;
+ for (si = 0; si < count; si++)
  {
   XEvent ev;
   Atom type;
@@ -2373,8 +2276,6 @@ static char *e_clip_x_get(int *len)
   unsigned long nitems, bytes_left;
   unsigned char *prop = NULL;
 
-  if (XGetSelectionOwner(WpeXInfo.display, sels[si]) == None)
-   continue;
   XConvertSelection(WpeXInfo.display, sels[si], WpeXInfo.utf8_atom,
                     WpeXInfo.property_atom, WpeXInfo.window, CurrentTime);
   XFlush(WpeXInfo.display);
@@ -2399,72 +2300,6 @@ static char *e_clip_x_get(int *len)
    XFree(prop);
  }
  return NULL;
-}
-
-int e_x_copy_X_buffer(FENSTER *f)
-{
- e_cp_X_to_buffer(f);
- e_edt_einf(f);
- return(0);
-}
-
-int e_x_paste_X_buffer(FENSTER *f)
-{
- BUFFER *b0 = f->ed->f[0]->b;
- SCHIRM *s0 = f->ed->f[0]->s;
- int i, j, n;
-
- e_edt_copy(f);
-#if SELECTION
- if (WpeXInfo.selection)
- {
-  WpeFree(WpeXInfo.selection);
-  WpeXInfo.selection = NULL;
- }
-#endif
- if ((s0->mark_end.y == 0 && s0->mark_end.x == 0) ||
-   s0->mark_end.y < s0->mark_begin.y)
-  return(0);
- if (s0->mark_end.y == s0->mark_begin.y)
- {
-  if (s0->mark_end.x < s0->mark_begin.x)
-   return(0);
-  n = s0->mark_end.x - s0->mark_begin.x;
-#if SELECTION
-  WpeXInfo.selection = WpeMalloc(n + 1);
-  strncpy(WpeXInfo.selection, b0->bf[s0->mark_begin.y].s+s0->mark_begin.x,
-    n);
-  WpeXInfo.selection[n] = 0;
-  XSetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom,
-    WpeXInfo.window, CurrentTime);
-#else
-  XStoreBytes(WpeXInfo.display, b0->bf[s0->mark_begin.y].s+s0->mark_begin.x,
-    n);
-#endif
-  return(0);
- }
- WpeXInfo.selection = WpeMalloc(b0->bf[s0->mark_begin.y].nrc * sizeof(char));
- for (n = 0, j = s0->mark_begin.x; j < b0->bf[s0->mark_begin.y].nrc; j++, n++)
-  WpeXInfo.selection[n] = b0->bf[s0->mark_begin.y].s[j];
- for (i = s0->mark_begin.y+1; i < s0->mark_end.y; i++)
- {
-  WpeXInfo.selection = WpeRealloc(WpeXInfo.selection, (n + b0->bf[i].nrc)*sizeof(char));
-  for (j = 0; j < b0->bf[i].nrc; j++, n++)
-   WpeXInfo.selection[n] = b0->bf[i].s[j];
- }
- WpeXInfo.selection = WpeRealloc(WpeXInfo.selection, (n + s0->mark_end.x + 1)*sizeof(char));
- for (j = 0; j < s0->mark_end.x; j++, n++)
-  WpeXInfo.selection[n] = b0->bf[i].s[j];
- WpeXInfo.selection[n] = 0;
-#if SELECTION
- XSetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom,
-   WpeXInfo.window, CurrentTime);
-#else
- XStoreBytes(WpeXInfo.display, WpeXInfo.selection, n);
- WpeFree(WpeXInfo.selection);
- WpeXInfo.selection = NULL;
-#endif
- return(0);
 }
 
 #endif

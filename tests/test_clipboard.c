@@ -58,6 +58,35 @@ static void test_osc52_cap(void)
  free(s);
 }
 
+static void chk_order(int own_c, int other_c, int other_p,
+                      int n_want, int first_want, int second_want)
+{
+ int order[2] = { 0, 0 };
+ int n = e_clip_paste_order(own_c, other_c, other_p, order);
+
+ if (n != n_want || (n > 0 && order[0] != first_want) ||
+     (n > 1 && order[1] != second_want))
+ {
+  printf("FAIL: paste order own=%d otherC=%d otherP=%d gave %d (%d,%d)\n",
+         own_c, other_c, other_p, n, order[0], order[1]);
+  fails++;
+ }
+}
+
+static void test_paste_order(void)
+{
+ /* the editor owns CLIPBOARD: its own text, whatever PRIMARY holds */
+ chk_order(1, 0, 0, 0, 0, 0);
+ chk_order(1, 0, 1, 0, 0, 0);
+ /* a browser took CLIPBOARD, the editor still owns PRIMARY */
+ chk_order(0, 1, 0, 1, E_CLIP_SEL_CLIPBOARD, 0);
+ /* another application owns both: CLIPBOARD first */
+ chk_order(0, 1, 1, 2, E_CLIP_SEL_CLIPBOARD, E_CLIP_SEL_PRIMARY);
+ /* nobody owns CLIPBOARD: another application's PRIMARY, else nothing */
+ chk_order(0, 0, 1, 1, E_CLIP_SEL_PRIMARY, 0);
+ chk_order(0, 0, 0, 0, 0, 0);
+}
+
 int main(void)
 {
  /* RFC 4648 section 10 test vectors. */
@@ -73,6 +102,7 @@ int main(void)
 
  test_osc52_framing();
  test_osc52_cap();
+ test_paste_order();
 
  if (fails)
  {

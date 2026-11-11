@@ -233,6 +233,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Alt-Insert and Alt-Delete work on Wayland, in the editor and in a
+  dialog's text field (Alt-Insert, or an Alt middle click): the editor ended
+  there when they were pressed.  On every display they now run Paste and
+  Copy.  Under X this changes five things: Alt-Insert pastes the editor's
+  clipboard when no application owns the selection, pastes whole lines as
+  whole lines, and is refused in the clipboard viewer or a locked window
+  before anything changes; Alt-Delete copies a block that ends at the start
+  of a line without its last line break, as Ctrl-Insert does, and copies
+  nothing in the clipboard viewer, as Ctrl-Insert there.  A field's
+  Alt-paste takes an application's selection in full (it cut or overran it
+  at the length of the old clipboard).  On X11 and Wayland, Ctrl-V and
+  Alt-Insert now paste the newest copy: text copied in a browser after the
+  editor's own copy (under X the editor pasted its old text while it still
+  owned PRIMARY), while another application's PRIMARY never wins over the
+  editor's own clipboard (on Wayland it did).
+
 * The User Screen (Alt-F5) works on Wayland: it ended the editor there,
   because it read its colours from an X display the Wayland window does
   not have.  It now shows the program's colours in the palette the editor
