@@ -32,6 +32,84 @@ void e_buffer_test_fail_allocs(int n)
  buffer_fail_from = n;
 }
 
+/* The test fault armed at startup and not yet fired, and from which
+   allocation of its action on memory is refused. */
+static int buffer_fault_armed = E_BUFFER_FAULT_NONE;
+static int buffer_fault_n = 0;
+
+/* The names $XWPE_TEST_FAULT gives the points, indexed by E_BUFFER_FAULT_*. */
+static const char *const buffer_fault_names[] = {
+ "none", "block-move", "undo", "redo", "block-copy", "read"
+};
+#define BUFFER_FAULT_POINTS ((int)(sizeof buffer_fault_names / sizeof buffer_fault_names[0]))
+
+/**
+ * e_buffer_test_fault_point - The fault point a test names.
+ * @name: "block-move", "undo", "redo", "block-copy" or "read".
+ *
+ * Lets a test of the running editor say which action runs out of memory.
+ * Return: E_BUFFER_FAULT_*, or E_BUFFER_FAULT_NONE for a name it does not
+ * know.
+ */
+int e_buffer_test_fault_point(const char *name)
+{
+ int p;
+
+ for (p = E_BUFFER_FAULT_NONE + 1; p < BUFFER_FAULT_POINTS; p++)
+  if (strcmp(name, buffer_fault_names[p]) == 0)
+   return(p);
+ return(E_BUFFER_FAULT_NONE);
+}
+
+/**
+ * e_buffer_test_fault_arm - Arm one fault point: the first action that
+ * enters @point has every owner allocation from its @n-th on refused.
+ *
+ * Only the startup of a test run arms one, so a test can prove that an
+ * action refused for want of memory leaves the user's text as it was.
+ */
+void e_buffer_test_fault_arm(int point, int n)
+{
+ if (point <= E_BUFFER_FAULT_NONE || point >= BUFFER_FAULT_POINTS || n < 1)
+  return;
+ buffer_fault_armed = point;
+ buffer_fault_n = n;
+}
+
+/**
+ * e_buffer_test_fault_enter - An action that a test may starve of memory
+ * begins.
+ * @point: which one (E_BUFFER_FAULT_*).
+ *
+ * When the fault is armed for @point it fires now, once: memory is refused
+ * from the armed allocation on, and the trace says so, so a test that named
+ * the point wrongly cannot pass by accident.  An action entered again from
+ * inside itself does not fire it a second time.
+ * Return: E_BUFFER_FAULT_FIRED for the frame that fired it, else 0; the
+ * caller hands it to e_buffer_test_fault_leave.
+ */
+int e_buffer_test_fault_enter(int point)
+{
+ if (point == E_BUFFER_FAULT_NONE || point != buffer_fault_armed)
+  return(0);
+ buffer_fail_from = buffer_fault_n;
+ buffer_fault_armed = E_BUFFER_FAULT_NONE;
+ wpe_buffer_trace("buffer fault %s armed n=%d", buffer_fault_names[point], buffer_fault_n);
+ return(E_BUFFER_FAULT_FIRED);
+}
+
+/**
+ * e_buffer_test_fault_leave - The action a fault was fired in ends: memory
+ * is back.
+ * @token: what e_buffer_test_fault_enter returned; only the frame that
+ * fired the fault ends it.
+ */
+void e_buffer_test_fault_leave(int token)
+{
+ if (token == E_BUFFER_FAULT_FIRED)
+  buffer_fail_from = 0;
+}
+
 static int buffer_alloc_refused(void)
 {
  if (buffer_fail_from == 0)
@@ -1967,6 +2045,14 @@ static void buffer_replay_refused(BUFFER *b, int replaying)
   wpe_buffer_say_nomem(b, "Redo");
 }
 
+/* The test fault point of an Undo or a Redo. */
+static int buffer_replay_fault_point(int replaying)
+{
+ if (replaying == E_BUFFER_REPLAY_UNDO)
+  return(E_BUFFER_FAULT_UNDO);
+ return(E_BUFFER_FAULT_REDO);
+}
+
 /* One step back (Undo) or forward (Redo).  A record is taken off its list
    only after its replay succeeded: a replay refused for want of memory
    leaves it, the user's lines and the cursor where they were. */
@@ -1974,10 +2060,11 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
 {
  Undo *rec;
  POINT cursor;
- int more, r = E_BUFFER_OK;
+ int more, r = E_BUFFER_OK, fault;
 
  if (*list == NULL)
   return(E_BUFFER_NOTHING);
+ fault = e_buffer_test_fault_enter(buffer_replay_fault_point(replaying));
  b->replaying = replaying;
  e_buffer_step_begin(b);
  do
@@ -1992,7 +2079,6 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
   if (r != E_BUFFER_OK)
   {
    b->b = cursor;
-   buffer_replay_refused(b, replaying);
    break;
   }
   *list = rec->next;
@@ -2002,6 +2088,9 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
  } while (more && *list != NULL);
  e_buffer_step_end(b);
  b->replaying = E_BUFFER_REPLAY_NONE;
+ e_buffer_test_fault_leave(fault);
+ if (r != E_BUFFER_OK)
+  buffer_replay_refused(b, replaying);
  return(r);
 }
 

@@ -572,6 +572,7 @@ int main(int argc, char **argv)
  fb = e_ini_farbe();
  WpeEditor = cn;
  cn->fb = fb;
+ wpe_buffer_fault_from_env();
 
  info_file = e_info_search_path(INFO_DIR);   /* our infodir first, then the system dirs */
  e_read_help_str();

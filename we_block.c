@@ -150,14 +150,14 @@ static BUFFER *e_blk_shell_new(BUFFER *b)
 }
 
 /**
- * e_blk_delete_into_shell - Delete the marked block of window @f by moving
+ * e_blk_delete_into_shell_now - Delete the marked block of window @f by moving
  * its lines into a shell its undo record keeps.
  *
  * One Ctrl-U moves the lines back, with their breakpoints, and marks them
  * as the block again.  Return: 0, or -1 when nothing was deleted (memory
  * ran out, or the block could not move).
  */
-static int e_blk_delete_into_shell(FENSTER *f)
+static int e_blk_delete_into_shell_now(FENSTER *f)
 {
  BUFFER *b = f->b;
  BUFFER *bn;
@@ -179,6 +179,21 @@ static int e_blk_delete_into_shell(FENSTER *f)
  }
  e_buffer_record_push(b, rec);
  return(0);
+}
+
+/**
+ * e_blk_delete_into_shell - A block delete, as one action a test can starve
+ * of memory: its record, its shell and its move all count.
+ * Return: as e_blk_delete_into_shell_now.
+ */
+static int e_blk_delete_into_shell(FENSTER *f)
+{
+ int r, fault;
+
+ fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_BLOCK_MOVE);
+ r = e_blk_delete_into_shell_now(f);
+ e_buffer_test_fault_leave(fault);
+ return(r);
 }
 
 /*	delete block */
@@ -1190,10 +1205,12 @@ int e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
  */
 int e_move_block_covered(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
 {
- int r;
+ int r, fault;
 
  e_blk_cover_begin(bv, bz);
+ fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_BLOCK_MOVE);
  r = e_move_block(x, y, bv, bz, f);
+ e_buffer_test_fault_leave(fault);
  e_blk_cover_end(bv, bz);
  return(r);
 }
@@ -1318,6 +1335,19 @@ static int e_blk_copy_chars(int x, int y, BUFFER *bs, BUFFER *bd, const WpeBlock
 }
 
 /**
+ * e_blk_copy_fault_point - The test fault point of a copy into @bd: a copy
+ * or a paste into the user's text is one; a copy into the clipboard, a view
+ * the editor writes, is not, so a test can fill the clipboard and then
+ * starve the paste.
+ */
+static int e_blk_copy_fault_point(BUFFER *bd)
+{
+ if (bd->history == E_BUFFER_NO_HISTORY)
+  return(E_BUFFER_FAULT_NONE);
+ return(E_BUFFER_FAULT_BLOCK_COPY);
+}
+
+/**
  * e_copy_block - Copy the block @buffer_src's window marks to (@x, @y) of
  * @buffer_dst.
  * @f: the window the user works in.
@@ -1330,15 +1360,17 @@ int e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
   FENSTER *f)
 {
  WpeBlock k;
- int r;
+ int r, fault;
 
  e_blk_of(buffer_src->f->s, &k);
  if (e_blk_is_empty(&k))
   return(E_BLOCK_NOT_MOVED);
+ fault = e_buffer_test_fault_enter(e_blk_copy_fault_point(buffer_dst));
  if (k.kay == k.key)
   r = e_blk_copy_chars(x, y, buffer_src, buffer_dst, &k);
  else
   r = e_blk_copy_lines(x, y, buffer_src, buffer_dst, &k);
+ e_buffer_test_fault_leave(fault);
  if (r != E_BLOCK_MOVED)
   return(r);
  e_cursor(f, 1);

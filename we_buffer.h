@@ -103,4 +103,21 @@ void   wpe_buffer_trace(const char *fmt, ...);
 int    e_str_len(unsigned char *s);
 void   e_buffer_test_fail_allocs(int n);
 
+/* Tests only: memory refused inside one action of the running editor.  A
+   point is armed once at startup ($XWPE_TEST_FAULT, "<name>:<n>"); the first
+   action that enters it has every owner allocation from its n-th on refused,
+   until it leaves; then memory is back and the point never fires again. */
+#define E_BUFFER_FAULT_NONE        0
+#define E_BUFFER_FAULT_BLOCK_MOVE  1   /* "block-move": a block move or delete */
+#define E_BUFFER_FAULT_UNDO        2   /* "undo": one Ctrl-U */
+#define E_BUFFER_FAULT_REDO        3   /* "redo": one Ctrl-R */
+#define E_BUFFER_FAULT_BLOCK_COPY  4   /* "block-copy": a block copy or paste */
+#define E_BUFFER_FAULT_READ        5   /* "read": reading a file into a window */
+#define E_BUFFER_FAULT_FIRED       1   /* the token of the action that fired it */
+
+int    e_buffer_test_fault_point(const char *name);
+void   e_buffer_test_fault_arm(int point, int n);
+int    e_buffer_test_fault_enter(int point);
+void   e_buffer_test_fault_leave(int token);
+
 #endif

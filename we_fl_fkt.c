@@ -286,7 +286,7 @@ static int e_read_tail_line(E_READ_LINES *rl, int y, int x)
 }
 
 /**
- * e_read_file_into - Put the lines of a file into a buffer at a place.
+ * e_read_file_into_now - Put the lines of a file into a buffer at a place.
  * @fp: the file; @b: the buffer; @x, @y: the column and the line of the
  * cursor, where the file goes in; @type: the kind of the file (see
  * e_read_lines); @end: where the file's text ends in the buffer.
@@ -298,7 +298,7 @@ static int e_read_tail_line(E_READ_LINES *rl, int y, int x)
  * A refusal for want of memory leaves the buffer as it was.
  * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
  */
-int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end)
+static int e_read_file_into_now(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end)
 {
  E_READ_LINES rl;
  int r, n_del = 0;
@@ -308,7 +308,6 @@ int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end)
  rl.b = b;
  if (x > b->bf[y].len)
   x = b->bf[y].len;
- WpeMouseChangeShape(WpeWorkingShape);
  if (e_read_push(&rl) == E_BUFFER_OK)
   e_read_head_line(&rl, y, x);
  if (rl.n == 0 ||
@@ -316,7 +315,6 @@ int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end)
      (x > 0 && e_read_tail_line(&rl, y, x) != E_BUFFER_OK))
  {
   e_buffer_lines_free(rl.line, rl.n);
-  WpeMouseRestoreShape();
   return(E_BUFFER_NOMEM);
  }
  if (x > 0)
@@ -326,6 +324,22 @@ int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end)
   FREE(rl.line);                /* the lines are the buffer's now */
  else
   e_buffer_lines_free(rl.line, rl.n);
+ return(r);
+}
+
+/**
+ * e_read_file_into - Read a file into a buffer at a place, as one action a
+ * test can starve of memory (the "read" fault point).
+ * Arguments and return as e_read_file_into_now.
+ */
+int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end)
+{
+ int r, fault;
+
+ WpeMouseChangeShape(WpeWorkingShape);
+ fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_READ);
+ r = e_read_file_into_now(fp, b, x, y, type, end);
+ e_buffer_test_fault_leave(fault);
  WpeMouseRestoreShape();
  return(r);
 }

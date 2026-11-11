@@ -639,6 +639,7 @@ char *e_lib_file(const char *name); /* <libdir>/<name>, or <name>_eng (build-tre
 /*   we_fl_fkt.c   */
 char *e_mkfilename(char *dr, char *fn);
 int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end);
+void wpe_buffer_fault_from_env(void);
 int e_new(FENSTER *f);
 int e_m_save(FENSTER *f);
 int e_save(FENSTER *f);

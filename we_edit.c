@@ -3224,3 +3224,32 @@ void wpe_buffer_trace(const char *fmt, ...)
  fclose(tf);
 }
 
+/* The longest point name $XWPE_TEST_FAULT may carry, its end included. */
+#define E_BUFFER_FAULT_NAME_MAX 32
+
+/**
+ * wpe_buffer_fault_from_env - Arm the test fault $XWPE_TEST_FAULT names.
+ *
+ * Read once at startup.  "block-move:4" refuses memory to the first block
+ * move or delete from its fourth allocation on, "undo:1" to the first
+ * Ctrl-U, and so on (we_buffer.h), so a test of the running editor can show
+ * that a change refused for want of memory leaves the user's text, marks
+ * and undo as they were.  Unset, or a value it cannot read, arms nothing.
+ */
+void wpe_buffer_fault_from_env(void)
+{
+ const char *spec = getenv("XWPE_TEST_FAULT");
+ const char *colon;
+ char name[E_BUFFER_FAULT_NAME_MAX];
+ size_t len;
+
+ if (spec == NULL || (colon = strchr(spec, ':')) == NULL)
+  return;
+ len = (size_t)(colon - spec);
+ if (len >= sizeof name)
+  return;
+ memcpy(name, spec, len);
+ name[len] = '\0';
+ e_buffer_test_fault_arm(e_buffer_test_fault_point(name), atoi(colon + 1));
+}
+

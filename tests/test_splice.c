@@ -48,6 +48,7 @@ static int moved_calls, moved_y, moved_del, moved_ins;
 static int moved_removed[MAX_ROWS], moved_nremoved, moved_added[MAX_ROWS], moved_nadded;
 static int nomem_calls;
 static int leak_traced;
+static int fault_traced;
 
 void wpe_buffer_syntax_changed(BUFFER *b, int y)
 {
@@ -94,6 +95,8 @@ void wpe_buffer_trace(const char *fmt, ...)
 {
  if (strstr(fmt, "depth leak") != NULL)
   leak_traced++;
+ if (strstr(fmt, "buffer fault") != NULL)
+  fault_traced++;
 }
 
 static void hooks_reset(void)
@@ -875,6 +878,53 @@ static void case_depth_guard(void)
  fixture_free();
 }
 
+/* Whether one line can be made now, the line freed again. */
+static int a_line_can_be_made(void)
+{
+ STRING l;
+
+ if (e_buffer_line_new(&buf, &l) != E_BUFFER_OK)
+  return(0);
+ free(l.s);
+ return(1);
+}
+
+/* The fault a test of the running editor arms fires in the first action
+   that enters its point, from the armed allocation on, for that action
+   only, and once: memory is back when the action ends, a nested entry of
+   the same point keeps it, and no later action meets it again. */
+static void case_the_fault_hook_fires_once(void)
+{
+ int outer, inner;
+
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ fault_traced = 0;
+ chk("25 a name it knows", e_buffer_test_fault_point("block-move"), E_BUFFER_FAULT_BLOCK_MOVE);
+ chk("25 a name it does not know", e_buffer_test_fault_point("blockmove"), E_BUFFER_FAULT_NONE);
+ e_buffer_test_fault_arm(E_BUFFER_FAULT_BLOCK_MOVE, 2);
+ outer = e_buffer_test_fault_enter(E_BUFFER_FAULT_UNDO);
+ chk("25 another point does not fire it", outer, 0);
+ chk("25 ... and memory is there", a_line_can_be_made(), 1);
+ e_buffer_test_fault_leave(outer);
+ outer = e_buffer_test_fault_enter(E_BUFFER_FAULT_BLOCK_MOVE);
+ chk("25 its point fires it", outer, E_BUFFER_FAULT_FIRED);
+ chk("25 and the trace says so", fault_traced, 1);
+ chk("25 the allocations before the armed one are made", a_line_can_be_made(), 1);
+ chk("25 the armed one is refused", a_line_can_be_made(), 0);
+ inner = e_buffer_test_fault_enter(E_BUFFER_FAULT_BLOCK_MOVE);
+ chk("25 a nested entry does not fire it again", inner, 0);
+ e_buffer_test_fault_leave(inner);
+ chk("25 a nested leave keeps it", a_line_can_be_made(), 0);
+ e_buffer_test_fault_leave(outer);
+ chk("25 the action's end gives memory back", a_line_can_be_made(), 1);
+ outer = e_buffer_test_fault_enter(E_BUFFER_FAULT_BLOCK_MOVE);
+ chk("25 it fires once", outer, 0);
+ chk("25 ... and the next action has memory", a_line_can_be_made(), 1);
+ e_buffer_test_fault_leave(outer);
+ chk("25 traced once", fault_traced, 1);
+ fixture_free();
+}
+
 int main(void)
 {
  case_insert_above_a_mark();
@@ -905,6 +955,7 @@ int main(void)
  case_append_rows();
  case_many_appends();
  case_depth_guard();
+ case_the_fault_hook_fires_once();
  if (fails) {
   printf("test_splice: %d failure(s)\n", fails);
   return(1);
