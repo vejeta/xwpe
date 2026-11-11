@@ -119,6 +119,43 @@ no such callbacks, and here none draws while a box or a run has the screen.
 A box drawn over is a box you can no longer read.
 @end table
 
+@section Undo and breakpoints
+
+@table @asis
+@item Enter with auto-indent
+@cindex undo, auto-indent
+The original needed two @kbd{Ctrl-U} for one @key{Return} with
+auto-indent (the indent, then the line break), and its Redo indented the
+line a second time.  It is now one step each way, because one key is one
+action.
+
+@item Undo of Ctrl-Y
+The original marked the restored line as a block and left the cursor at
+its start.  Undo now puts the cursor and the block back where they were
+before the deletion, so a block the deletion did not touch survives.
+
+@item The block's end on a deleted line
+When the line holding the end of the block was deleted, the original moved
+the end to the end of the line above.  It now goes to the start of the line
+that took the deleted line's place (to the end of the file when the last
+line went), as the block's beginning always did, so both ends of a block
+follow the same rule.
+
+@item Ctrl-Y on the only line
+The original cleared the only line of a file without recording it, so
+@kbd{Ctrl-U} could not bring it back.  It is now undoable like any other
+deleted line.
+
+@item Breakpoints on deleted or joined lines
+@cindex breakpoints, undo
+The original removed the breakpoint of a deleted line (@kbd{Ctrl-Y}, or
+@key{Backspace} joining it to the line above) for good, and kept a
+breakpoint on its line number when lines were added above it by a wrapped
+line or by a tool's rewrite of the file.  The breakpoint now comes back
+with Undo, and stays on its code when lines move, so the program stops
+where the margin shows.
+@end table
+
 @section Short commands
 
 @table @asis

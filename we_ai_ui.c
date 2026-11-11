@@ -13,6 +13,7 @@
 #include "WeExpArr.h"
 #include "progr.h"
 #include "we_fdloop.h"
+#include "we_buffer.h"
 #include "we_ai.h"
 #include "we_ai_path.h"
 #include "we_ai_host.h"
@@ -4086,6 +4087,7 @@ static void ai_compose_show_seed(FENSTER *w, const char *seed)
 {
  BUFFER *b = w->b;
  e_buffer_set_text(b, seed);
+ e_buffer_history_drop(b);                   /* the seed is not the user's to undo */
  b->b.y = b->mxlines - 1;                    /* caret after the text */
  b->b.x = b->bf[b->b.y].len;
  e_firstl(w, 1);
@@ -5338,7 +5340,8 @@ static int ai_hook_run_on_file(FENSTER *f, const char *path, const char *shown)
  * @f: the window the pane belongs to; @path: the file, as the agent named it.
  *
  * The file is already on disk, so the hook works on it in place, and the open
- * window then takes the hook's result inside the undo step the write took: a
+ * window then takes the hook's result inside the undo step the caller opened
+ * around the write: a
  * write and its reformatting are one change to the user, and one Ctrl-U puts
  * back the text from before the write.  A failed hook leaves the buffer
  * showing the agent's text.  A no-op without a hook.
@@ -5382,12 +5385,15 @@ static void ai_hook_after_accept(FENSTER *f)
  * spine is in we_edit.c), so an Edit, a completion or a multi-file change
  * reverts with a single Ctrl-U exactly like a code action.  With a post-edit
  * hook set, its reformatting lands inside that same step and the file on disk
- * stays as it was until the user saves.
+ * stays as it was until the user saves.  The step is opened here, so it holds
+ * the change and the hook's rewrite and nothing the user did before them.
  */
 static void e_ai_apply_text(FENSTER *f, const char *newtext)
 {
+ e_buffer_step_begin(f->b);
  e_replace_buffer_undoable(f, newtext);
  ai_hook_after_accept(f);
+ e_buffer_step_end(f->b);
 }
 
 /* Reply bytes a fence may be wrapped in: blanks and line breaks around the
@@ -11251,12 +11257,23 @@ static void ai_agent_report_undo_hint(FENSTER *f, const char *path)
  * The open window reloads as one undo step, the post-edit hook (if any)
  * reformats inside that same step, and the pane says what Ctrl-U will do, so
  * a write and its reformatting read as one change the user can take back with
- * one key.  A file that is not open is only written and run through the hook.
+ * one key, and that key takes back nothing the user typed before the write.
+ * A file that is not open is only written and run through the hook.
  */
 static void ai_agent_show_written(FENSTER *f, const char *path)
 {
- int shown = wpe_ai_reload_open_window(f, path);
+ BUFFER *b = wpe_ai_open_window_buffer(f, path);
+ int shown;
+
+ if (b == NULL)
+ {
+  ai_run_edit_hook(f, path);
+  return;
+ }
+ e_buffer_step_begin(b);
+ shown = wpe_ai_reload_open_window(f, path);
  ai_run_edit_hook(f, path);
+ e_buffer_step_end(b);
  if (shown) ai_agent_report_undo_hint(f, path);
 }
 

@@ -55,6 +55,18 @@ search and replace, and the file manager.
 @item Insert special character @tab @kbd{Alt-J} @tab
 @end multitable
 
+@kbd{Ctrl-U} undoes and @kbd{Ctrl-R} redoes one action at a time: an
+@key{Return} with the indent it brought, a deleted line, a replacement, an
+accepted assistant Edit together with the post-edit hook's reformatting.
+Undo of a deleted line puts back the line, its breakpoint, the cursor and
+the block as they were before the deletion; the only line of a file is
+undoable too.  Breakpoints stay on their code when lines are added or
+removed above them as you type (@key{Return}, a wrapped line, @kbd{Ctrl-Y},
+@key{Backspace} joining two lines) or by a tool's rewrite of the file, and
+a breakpoint on a line that was deleted or joined to the one
+above comes back with Undo.  The colours of a window always are those of
+its text, after a tool's rewrite too.
+
 @section Block operations
 
 @cindex blocks

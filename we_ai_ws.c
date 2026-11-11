@@ -12,6 +12,7 @@
 #include "edit.h"
 #include "WeExpArr.h"
 #include "progr.h"
+#include "we_buffer.h"
 #include "we_ai.h"
 #include "we_ai_path.h"
 
@@ -1754,12 +1755,31 @@ int wpe_ai_reload_open_window(FENSTER *f, const char *path)
 }
 
 /**
- * wpe_ai_window_take_file - Replace a window's text with a file's, no new undo step.
+ * wpe_ai_open_window_buffer - The buffer of the window showing a file.
+ * @f: any window of the editor; @path: the file, as the tool named it.
+ *
+ * The same lookup as wpe_ai_reload_open_window.  A caller that reloads the
+ * file and then runs the post-edit hook on it opens one undo step on this
+ * buffer around both, so the user takes back the write and its reformatting
+ * with one Ctrl-U and nothing typed before them.  Return: the buffer, or
+ * NULL when the file is not open.
+ */
+BUFFER *wpe_ai_open_window_buffer(FENSTER *f, const char *path)
+{
+ char abs[1200];
+ const char *full = ws_absolute_path(path, abs, sizeof abs);
+ FENSTER *w = ws_find_window(f, full);
+ if (!w) return NULL;
+ return w->b;
+}
+
+/**
+ * wpe_ai_window_take_file - Replace a window's text with a file's, no step of its own.
  * @w: the open window; @path: the file whose text the window takes.
  *
- * For the post-edit hook: its reformatting joins the undo step the change
- * already took, so the user undoes change and reformat with one Ctrl-U instead
- * of seeing a half-undone file after the first.  Return: 1 when taken.
+ * For the post-edit hook: the caller has opened the undo step the change and
+ * its reformatting share, so the user undoes both with one Ctrl-U instead of
+ * seeing a half-undone file after the first.  Return: 1 when taken.
  */
 int wpe_ai_window_take_file(FENSTER *w, const char *path)
 {
@@ -1775,7 +1795,8 @@ int wpe_ai_window_take_file(FENSTER *w, const char *path)
  * @f: any window of the editor; @path: the file, as the tool named it.
  *
  * The same lookup as wpe_ai_reload_open_window, but the buffer is refreshed
- * within the undo step that reload took.  Return: 1 when refreshed.
+ * within the undo step its caller opened around the reload and the hook.
+ * Return: 1 when refreshed.
  */
 int wpe_ai_refresh_open_window(FENSTER *f, const char *path)
 {

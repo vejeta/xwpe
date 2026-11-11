@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "makro.h"
+#include "we_buffer.h"
 #include "we_ai.h"
 #include "we_child.h"
 #include "we_fdloop.h"
@@ -850,16 +851,10 @@ int e_read_help(char *str, FENSTER *f, int sw)
  e_close_buffer(f->b);
  if ((f->b = (BUFFER *) MALLOC(sizeof(BUFFER))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- if ((f->b->bf = (STRING *) MALLOC(MAXLINES*sizeof(STRING))) == NULL)
+ e_buffer_init(f->b, f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
+ if (f->b->mxlines != 1)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- f->b->f = f;
- f->b->b = e_set_pnt(0, 0);
- f->b->mx = e_set_pnt(f->ed->maxcol, MAXLINES);
- f->b->mxlines = 0;
  f->b->fb = f->fb;
- f->b->cn = f->ed;
- f->b->ud = NULL;
- e_new_line(0, f->b);
  if (str && str[0])
  {
   while ((ptmp = e_i_fgets(tstr, 256, fp)) && !WpeStrcstr(tstr, str))
@@ -1381,16 +1376,10 @@ int e_read_info(char *str, FENSTER *f, char *file)
    e_close_buffer(f->b);
    if( (f->b = (BUFFER *) MALLOC(sizeof(BUFFER))) == NULL)
    e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-   if( (f->b->bf = (STRING *) MALLOC(MAXLINES*sizeof(STRING))) == NULL)
-   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-   f->b->f = f;
-   f->b->b = e_set_pnt(0, 0);
-   f->b->mx = e_set_pnt(f->ed->maxcol, MAXLINES);
-   f->b->mxlines = 0;
+   e_buffer_init(f->b, f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
+   if (f->b->mxlines != 1)
+    e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    f->b->fb = f->fb;
-   f->b->cn = f->ed;
-   f->b->ud = NULL;
-   e_new_line(0, f->b);
    while((ptmp = e_i_fgets(tstr, 256, fp)) != NULL)
    {  if(!strncmp(tstr, "Indirect:", 9)) fp = e_info_jump(str, &path, fp);
       else if(!strncmp(tstr, "File:", 5) && strstr(tstr, fstr)) break;

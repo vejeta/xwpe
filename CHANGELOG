@@ -233,6 +233,18 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Undo and breakpoints follow the text.  A breakpoint stays on its code
+  when lines are added above it by a wrapped line or an accepted assistant
+  Edit (it stayed on its line number, under other code), and comes back
+  with Ctrl-U after its line was deleted with Ctrl-Y or joined with
+  Backspace (it was lost).  Enter with auto-indent is one Ctrl-U and one
+  Ctrl-R (it took two, and Redo indented twice).  Ctrl-Y on the only line
+  of a file is undoable.  Save then Ctrl-U of a Ctrl-Y marks the window
+  modified, so quitting asks.  After an accepted Edit the colours are
+  those of the new text (comments kept the old rows' colours), and a block
+  marked past the end of a file a tool shortened is cut to the file
+  instead of reading freed memory.
+
 * Alt-Insert and Alt-Delete work on Wayland, in the editor and in a
   dialog's text field (Alt-Insert, or an Alt middle click): the editor ended
   there when they were pressed.  On every display they now run Paste and

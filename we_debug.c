@@ -15,6 +15,7 @@
 #include "we_debprompt.h"
 #include "we_debpath.h"
 #include "we_debsess.h"
+#include "we_buffer.h"
 
 #ifdef DEBUGGER
 
@@ -5329,60 +5330,26 @@ int e_d_reinit_brks(FENSTER * f,char * prj)
 }
 
 
-/**** Recalculate breakpoints , because of line/block
-    deleting/adding ****/
+/**
+ * e_brk_recalc - The block code moved @len lines at @start of window @f by
+ * hand (negative: deleted): move the breakpoints of that file with them.
+ *
+ * The debugger's list moves through the same path every line change of the
+ * buffer owner takes, and the margin is then rebuilt from that list and
+ * drawn again, so the user sees each breakpoint on its code as soon as the
+ * paste or the delete is shown.  Return: 0, or 1 when there was nothing to
+ * move.
+ */
 int e_brk_recalc(FENSTER *f, int start, int len)
 {
- ECNT *cn = f->ed;
- BUFFER *b;
- int n, rend, count, yline;
- int *br_lines;
-
- if ((len == 0) || (cn == NULL))
+ if (len == 0 || f == NULL || f->ed == NULL || f->datnam == NULL)
   return 1;
- b = cn->f[cn->mxedt]->b;
-
- rend = start - 1 + abs(len);
- yline = b->b.y;
-
-/**** deleting removed breakpoints ****/
  if (len < 0)
- {
-  for (n = 0; n < e_d_nbrpts; n++)
-   if ((!strcmp(f->datnam, e_d_sbrpts[n])) &&
-     (e_d_ybrpts[n] <= (rend + 1)) && (e_d_ybrpts[n] >= (start + 1))) 
-   {
-    b->b.y = e_d_ybrpts[n] - 1;
-    e_make_breakpoint(f, 0);
-   }
- }
-
-/**** scanning for breakpoints to move ****/
- for (count = 0, n = 0; n < e_d_nbrpts; n++)
-  if ((!strcmp(f->datnam, e_d_sbrpts[n])) && (e_d_ybrpts[n] >= (start + 1)))
-   count++;
- if (count == 0)
-  return 1;
- br_lines = (int*)malloc(sizeof(int) * count);
- for (n = 0, count = 0; n < e_d_nbrpts; n++)
-  if ((!strcmp(f->datnam, e_d_sbrpts[n])) && (e_d_ybrpts[n] >= (start + 1))) 
-  {
-   br_lines[count++] = e_d_ybrpts[n];
-  }
-
-/**** moving breakpoints ****/
- for(n = 0; n < count; n++) 
- {
-  b->b.y = br_lines[n] - 1;
-  e_make_breakpoint(f, 0);
- }
- for(n = 0; n < count; n++) 
- {
-  b->b.y = br_lines[n] + len - 1;
-  e_make_breakpoint(f, 0);
- }
- b->b.y = yline;
- free(br_lines);
+  wpe_buffer_lines_moved(f->b, start, -len, 0, NULL, 0, NULL, 0);
+ else
+  wpe_buffer_lines_moved(f->b, start, 0, len, NULL, 0, NULL, 0);
+ e_brk_schirm(f);
+ e_schirm(f, 1);
  return 0;
 }
 /*****************************************/
@@ -6083,6 +6050,105 @@ static int e_d_brk_toggle_on(FENSTER *f, int line)
   return(-1);
  e_d_brk_say_refusal(f, e_d_nbrpts - 1);
  return(0);
+}
+
+/**
+ * e_d_brk_lines_dropped - Take out of the list the entries of @file on the
+ * lines a change removed: rows [@lo, @hi) and the rows in @rows, 0-based.
+ * Return: how many went.
+ */
+static int e_d_brk_lines_dropped(const char *file, int lo, int hi,
+                                 const int *rows, int nrows)
+{
+ int i, k, row, gone = 0, hit;
+
+ for (i = e_d_nbrpts - 1; i >= 0; i--)
+ {
+  if (strcmp(e_d_sbrpts[i], file))
+   continue;
+  row = e_d_ybrpts[i] - 1;
+  hit = (row >= lo && row < hi);
+  for (k = 0; k < nrows && !hit; k++)
+   hit = (rows[k] == row);
+  if (!hit)
+   continue;
+  e_d_brk_list_drop(i);
+  gone++;
+ }
+ return(gone);
+}
+
+/**
+ * e_d_brk_lines_shifted - Move the entries of @file at or below row @from
+ * by @delta lines.  Return: how many moved.
+ */
+static int e_d_brk_lines_shifted(const char *file, int from, int delta)
+{
+ int i, moved = 0;
+
+ if (delta == 0)
+  return(0);
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (!strcmp(e_d_sbrpts[i], file) && e_d_ybrpts[i] - 1 >= from)
+  {
+   e_d_ybrpts[i] += delta;
+   moved++;
+  }
+ return(moved);
+}
+
+/**
+ * e_d_brk_lines_added - Give the list an entry for each row in @rows
+ * (0-based) of @file that has none: a breakpoint brought back by Undo.
+ * Return: how many were added.
+ */
+static int e_d_brk_lines_added(const char *file, const int *rows, int nrows)
+{
+ int k, added = 0;
+
+ for (k = 0; k < nrows; k++)
+ {
+  if (e_d_brk_index_of(file, rows[k] + 1) >= 0)
+   continue;
+  e_d_brk_grow();
+  e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(file) + 1);
+  strcpy(e_d_sbrpts[e_d_nbrpts - 1], file);
+  e_d_ybrpts[e_d_nbrpts - 1] = rows[k] + 1;
+  e_d_nrbrpts[e_d_nbrpts - 1] = 0;
+  added++;
+ }
+ return(added);
+}
+
+/**
+ * wpe_buffer_lines_moved - The lines of a window's file moved: keep the
+ * debugger's list of that file's breakpoints on their code.
+ * @b: the buffer; @y: the first line of the change; @n_del, @n_ins: lines
+ * that went and came; @rows_removed: rows (before) whose breakpoint left
+ * with their line; @rows_added: rows (after) that got one back.
+ *
+ * Entries on removed lines go, entries below move by the difference, and a
+ * breakpoint Undo brought back is listed again, so the next run stops on
+ * the line the margin shows and the project keeps it.  Only the list is
+ * changed here: the margin is the buffer owner's, and nothing is painted,
+ * refused or asked.  A buffer with no window or no file name has no list.
+ */
+void wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
+                            const int *rows_removed, int n_removed,
+                            const int *rows_added, int n_added)
+{
+ const char *file;
+ int changed = n_del < n_ins ? n_del : n_ins, touched;
+
+ if (b == NULL || b->f == NULL || (file = b->f->datnam) == NULL)
+  return;
+ if (e_d_nbrpts == 0 && n_added == 0)
+  return;
+ touched = e_d_brk_lines_dropped(file, y + changed, y + n_del, rows_removed, n_removed);
+ touched += e_d_brk_lines_shifted(file, y + n_del, n_ins - n_del);
+ touched += e_d_brk_lines_added(file, rows_added, n_added);
+ if (touched > 0 && b->f->ed != NULL)
+  e_d_breakpoints_changed(b->f->ed);
 }
 
 int e_make_breakpoint(FENSTER *f, int sw)

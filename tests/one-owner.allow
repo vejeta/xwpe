@@ -72,3 +72,42 @@ we_ai_http.o write 1 keep a server's socket, not a child: written from the loop'
 we_wayland.o write 1 P9o the clipboard pipe
 we_ai.o fdopen 1 keep the API key file, not a child
 we_ai_ws.o write 1 keep a regular file the model named, opened at the place the scope judged (wpe_path_open_write): no child, no pipe
+
+# the text: every line a window adds or removes goes through its owner
+# (we_buffer.c).  What is left are the callers each later pass moves onto it.
+# the whole-buffer callers (an accepted Edit, a language server's edit, the
+# assistant's file reloads, the clipboard pull): one replace_all each
+we_ai_ui.o e_buffer_set_text 1 P11b the composer's seed
+we_ai_ui.o e_replace_buffer_undoable 1 P11b an accepted Edit
+we_ai_ws.o e_add_undo 1 P11b a reload's step, now taken by the swap itself
+we_ai_ws.o e_buffer_set_text 1 P11b a reload and the hook's rewrite
+we_block.o e_buffer_set_text 1 P11b the clipboard pull
+we_debug.o e_replace_buffer_undoable 1 P11b a language server's edit
+# the block code: copy, move, delete and paste splice and detach
+we_block.o e_new_line 1 P11c the block's split line
+we_block.o e_add_undo 5 P11c the block kinds and Replace
+we_block.o e_brk_recalc 2 P11c a paste and a block delete move the breakpoints by hand
+we_block.o mxlines_write 4 P11c the gap, the compaction, the clipboard clear, the dead e_blck_clear
+we_block.o bf_alloc 1 P11c the table growth of a copy
+we_block.o e_undo_sw 9 P11c the covers of copy, move, paste and Replace
+# the views and the file reader: Messages, Watches, Stack, Help, Info, the
+# man page, the File Manager's insert
+we_debug.o e_build_drop_last_row 1 P11d the build's waiting line
+we_debug.o e_del_line 1 P11d the Stack listing's shrink
+we_debug.o e_new_line 5 P11d Messages, Watches and Stack rows
+we_debug.o e_p_red_buffer 3 P11d Watches and Stack refresh
+we_debug.o print_to_end_of_buffer 6 P11d Messages and Watches text
+we_debug.o mxlines_write 3 P11d the Watches clear, the Stack fill
+we_fl_fkt.o e_new_line 5 P11d the file reader
+we_fl_fkt.o mxlines_write 1 P11d the reader's end of file
+we_fl_unix.o e_brk_recalc 1 P11d the File Manager's insert
+we_fl_unix.o e_del_line 1 P11d the man page
+we_fl_unix.o e_new_line 1 P11d the File Manager's insert
+we_prog.o e_new_line 6 P11d Messages and the named output windows
+we_prog.o mxlines_write 2 P11d the build's last row, a cleared view
+we_edit.o mxlines_write 1 P11d Messages starts with no line
+# the assistant's pane: its rows go in and out with their roles
+we_ai_ui.o e_new_line 8 P11e the pane's rows
+we_ai_ui.o e_p_red_buffer 1 P11e the pane cleared
+we_ai_ui.o print_to_end_of_buffer 1 P11e the pane's transcript
+we_ai_ui.o mxlines_write 3 P11e the pane's dropped rows

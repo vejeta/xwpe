@@ -9,11 +9,14 @@
 #include "edit.h"
 #include "makro.h"
 #include "we_fdloop.h"
+#include "we_buffer.h"
 
 #include<sys/types.h> /*  included for digital station  */
 #include<sys/stat.h>
+#include<stdarg.h>
 
-int e_undo_sw = 0, e_redo_sw = 0;
+/* Room for the status line that says a change was refused for memory. */
+#define E_BUFFER_SAY_MAX 160
 
 int e_codepoint_to_utf8(int cp, unsigned char *out);
 
@@ -174,6 +177,40 @@ BUFFER *e_p_w_buffer = NULL;
 #endif
 #endif
 
+/**
+ * e_line_make_hard_empty - Turn an empty line into an empty line that ends
+ * with a line break.
+ * @l: a line of a fresh buffer.
+ *
+ * A new file and the clipboard start with one such line, so the first key
+ * typed and the file written both see a line, as they always did.
+ */
+static void e_line_make_hard_empty(STRING *l)
+{
+ l->s[0] = WPE_WR;
+ l->s[1] = '\0';
+ l->len = 0;
+ l->nrc = 1;
+}
+
+/**
+ * e_edit_drop_fresh_line - A file was read into a fresh buffer: take away
+ * the empty line the buffer started with, which the reader pushed to the end.
+ * @f: the new window.
+ *
+ * The window then holds exactly the file's lines, reads unmodified and has
+ * nothing to undo.
+ */
+static void e_edit_drop_fresh_line(FENSTER *f)
+{
+ BUFFER *b = f->b;
+
+ if (b->mxlines > 1 && b->bf[b->mxlines - 1].s[0] == '\0')
+  e_buffer_delete_lines(b, b->mxlines - 1, 1, E_BUFFER_STEP_COVERED);
+ e_buffer_history_drop(b);
+ f->save = 0;
+}
+
 /* open edit window */
 int e_edit(ECNT *cn, char *filename)
 {
@@ -269,7 +306,11 @@ int e_edit(ECNT *cn, char *filename)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
  if ((f->s = (SCHIRM*)MALLOC(sizeof(SCHIRM))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- if ((f->b->bf = (STRING *) MALLOC(MAXLINES*sizeof(STRING))) == NULL)
+#ifdef DEBUGGER
+ f->s->brp = NULL;
+#endif
+ e_buffer_init(f->b, cn, f, cn->maxcol, E_BUFFER_HISTORY_FULL);
+ if (f->b->mxlines != 1)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
 #ifdef PROG
  for (i = cn->mxedt-1;
@@ -339,15 +380,7 @@ int e_edit(ECNT *cn, char *filename)
  f->hlp_str = e_hlp_str[0];
  f->blst = eblst;
  f->nblst = 7;
- f->b->f = f;
- f->b->b = e_set_pnt(0, 0);
- f->b->cl = f->b->clsv = 0;
- f->b->mx = e_set_pnt(cn->maxcol, MAXLINES);
- f->b->mxlines = 0;
  f->b->fb = f->fb;
- f->b->cn = cn;
- f->b->ud = NULL;
- f->b->rd = NULL;
  f->fd.dirct = NULL;
  if (WpeIsProg())
   e_add_synt_tl(filename, f);
@@ -373,8 +406,6 @@ int e_edit(ECNT *cn, char *filename)
  f->s->fe = e_set_pnt(0, 0);
  f->s->fb = f->fb;
 #ifdef DEBUGGER
- f->s->brp = MALLOC(sizeof(int));
- f->s->brp[0] = 0;
  f->s->da.y = -1;
 #endif
  f->dirct = path;
@@ -389,11 +420,8 @@ int e_edit(ECNT *cn, char *filename)
 #ifdef UNIX
   f->filemode = 0600;
 #endif
-  e_new_line(0,f->b);
-  *(f->b->bf[0].s) = WPE_WR;
-  *(f->b->bf[0].s+1) = '\0';
-  f->b->bf[0].len = 0;
-  f->b->bf[0].nrc = 1;
+  e_buffer_mark_view(f->b);
+  e_line_make_hard_empty(&f->b->bf[0]);
   return(0);
  }
  if (strcmp(file,"") == 0)
@@ -503,6 +531,7 @@ int e_edit(ECNT *cn, char *filename)
  if (fp != NULL && ftype != 1)
  {
   e_readin(0, 0, fp, f->b, &f->dtmd);
+  e_edit_drop_fresh_line(f);
   if (fclose(fp) != 0)
    e_error(e_msg[ERR_FCLOSE], 0, cn->fb);
   if (cn->dtmd == DTMD_HELP)
@@ -524,13 +553,7 @@ int e_edit(ECNT *cn, char *filename)
 #endif
  }
  else
- {
-  e_new_line(0,f->b);
-  *(f->b->bf[0].s) = WPE_WR;
-  *(f->b->bf[0].s+1) = '\0';
-  f->b->bf[0].len = 0;
-  f->b->bf[0].nrc = 1;
- }
+  e_line_make_hard_empty(&f->b->bf[0]);
 #ifdef PROG
  if (ftype == 2)
  {
@@ -726,6 +749,7 @@ int e_eingabe(ECNT *e)
     continue;                     /* what was shown closed the last window */
    f = e->f[e->mxedt];            /* or put another one on top */
    if (f->save > f->ed->maxchg) e_autosave(f);
+   e_buffer_depth_check(f->b);
    c = e_getch();
    /* A build ending while the editor waited for this key may have put
       another window on top (the jump to its first error): the key belongs
@@ -1501,7 +1525,11 @@ int e_ctrl_o(FENSTER *f)
    }
    break;
   case 'E':     /*   for help file: create end mark  */
-   e_new_line(b->b.y, b);
+   if (e_buffer_insert_blank(b, b->b.y, E_BUFFER_STEP_NEW) != E_BUFFER_OK)
+   {
+    wpe_buffer_say_nomem(b, "a new line");
+    break;
+   }
    cc = HFE;
    e_ins_nchar(b, s, &cc, 0, b->b.y, 1);
    e_schirm(f, 1);
@@ -1956,42 +1984,84 @@ int e_blk(int anz, int xa, int ya, int col)
  return(anz);
 }
 
-/*       insert Carriage Return     */
+/**
+ * e_char_count_change - Count @n changed characters toward the window's
+ * modified mark.
+ * @b: the buffer written.
+ *
+ * The mark lands on the window that owns the buffer, never on the one on
+ * top, and a view the editor writes (Messages, a man page) never reads as
+ * modified.
+ */
+static void e_char_count_change(BUFFER *b, int n)
+{
+ if (b->f != NULL && b->history == E_BUFFER_HISTORY_FULL)
+  b->f->save += n;
+}
+
+/**
+ * e_line_end_soft_line - Enter at the end of a soft-wrapped line: the line
+ * gets its own line break and the continuation below becomes a line of its
+ * own, with no new line inserted.
+ */
+static void e_line_end_soft_line(BUFFER *b, int y, int x)
+{
+ b->bf[y].s[x] = WPE_WR;
+ b->bf[y].s[x+1] = '\0';
+ b->bf[y].len = e_str_len(b->bf[y].s);
+ b->bf[y].nrc = e_str_nrc(b->bf[y].s);
+ sc_txt_4(y, b, 0);
+}
+
+/**
+ * e_car_ret_split - Break the line at the cursor, without auto-indent.
+ * @b: the buffer; @s: its screen.
+ *
+ * The line break the user typed, and what Undo of a joined line puts back:
+ * the line keeps its breakpoint and the text behind the cursor moves down
+ * with its marks.  Undo never indents again, so Redo of an undone Enter
+ * gives the same text.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM when the
+ * line could not be split (nothing changed, the status row says so).
+ */
+int e_car_ret_split(BUFFER *b, SCHIRM *s)
+{
+ int x = b->b.x, y = b->b.y, len = b->bf[y].len, r;
+
+ if (x == len && b->bf[y].s[len] == '\0')
+  e_line_end_soft_line(b, y, x);
+ else
+ {
+  r = e_buffer_split_line(b, y, x, E_BUFFER_STEP_COVERED, E_BUFFER_HEAD_WR);
+  if (r != E_BUFFER_OK)
+  {
+   wpe_buffer_say_nomem(b, "a line break");
+   return(r);
+  }
+ }
+ e_add_undo('a', b, x, y, 1);
+ e_char_count_change(b, 1);
+ if (y < b->mxlines - 1)
+ {
+  b->b.y = y + 1;
+  b->b.x = 0;
+ }
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_car_ret - Enter: break the line at the cursor, then auto-indent.
+ * @b: the buffer; @s: its screen.
+ *
+ * The break and its indent are one action: one Ctrl-U takes both back.
+ * Return: the cursor's new line.
+ */
 int e_car_ret(BUFFER *b, SCHIRM *s)
 {
-   int len, i;
-   len = b->bf[b->b.y].len;
-   e_add_undo('a', b, b->b.x, b->b.y, 1);
-   (b->f->save)++;
-   if(b->b.x != len || *(b->bf[b->b.y].s+len) != '\0')
-   {  e_new_line(b->b.y+1, b);
-      for(i=0; i <= len - b->b.x; i++)
-              *(b->bf[b->b.y+1].s + i) = *(b->bf[b->b.y].s+b->b.x+i);
-      *(b->bf[b->b.y+1].s+i)='\0';
-      b->bf[b->b.y+1].len = e_str_len(b->bf[b->b.y+1].s);
-      b->bf[b->b.y+1].nrc = e_str_nrc(b->bf[b->b.y+1].s);
-      if(s->mark_begin.y > b->b.y) (s->mark_begin.y)++;
-      else if(s->mark_begin.y == b->b.y && s->mark_begin.x > b->b.x)
-      {  (s->mark_begin.y)++;  (s->mark_begin.x) -= (b->b.x);  }
-      if(s->mark_end.y > b->b.y) (s->mark_end.y)++;
-      else if(s->mark_end.y == b->b.y && s->mark_end.x > b->b.x)
-      {  (s->mark_end.y)++;  (s->mark_end.x) -= (b->b.x);  }
-   }
-   *(b->bf[b->b.y].s+b->b.x) = WPE_WR;
-   *(b->bf[b->b.y].s+b->b.x+1) = '\0';
-   b->bf[b->b.y].len = e_str_len(b->bf[b->b.y].s);
-   b->bf[b->b.y].nrc = e_str_nrc(b->bf[b->b.y].s);
-   sc_txt_3(b->b.y, b, 1);
-/***************************/   
-   if(b->b.x>0) e_brk_recalc(b->f,b->b.y+1,1);
-   else e_brk_recalc(b->f,b->b.y,1);
-/***************************/   
-   if (b->b.y < b->mxlines - 1)
-   {  (b->b.y)++;
-      b->b.x = 0;
-   }
-   if(b->f->flg & 1) e_car_a_ind(b, s);
-   return(b->b.y);
+ e_buffer_step_begin(b);
+ if (e_car_ret_split(b, s) == E_BUFFER_OK && (b->f->flg & 1))
+  e_car_a_ind(b, s);
+ e_buffer_step_end(b);
+ return(b->b.y);
 }
 
 /*   cursor placement */
@@ -2138,52 +2208,53 @@ void e_cursor(FENSTER *f, int sw)
  fk_locate(f->a.x+b->b.x-s->c.x+j+1, f->a.y+b->b.y-s->c.y+1);
 }
 
-/*   delete one line */
+/**
+ * e_del_line - Delete line @yd (Ctrl-Y, Backspace on an empty line).
+ * @b: the buffer; @s: its screen (the owner keeps the window's own marks).
+ *
+ * One Ctrl-U brings the line back with its breakpoint, the cursor and the
+ * block where they were; the only line of a file is undoable too.
+ * Return: the number of lines left.
+ */
 int e_del_line(int yd, BUFFER *b, SCHIRM *s)
 {
- int i;
-
- if (b->mxlines == 1)
- {
-  *(b->bf[0].s) = '\0';
-  b->bf[0].nrc = b->bf[0].len = 0;
- }
- else
- {
-  e_add_undo('l', b, 0, yd, 1);
-  (b->mxlines)--;
-  for (i = yd; i < b->mxlines; i++)
-   b->bf[i] = b->bf[i+1];
-  if (s->mark_begin.y > yd)
-   (s->mark_begin.y)--;
-  else if (s->mark_begin.y == yd)
-   (s->mark_begin.x) = 0;
-  if (s->mark_end.y > yd)
-   (s->mark_end.y)--;
-  else if (s->mark_end.y == yd)
-  {
-   (s->mark_end.y)--;
-   s->mark_end.x = b->bf[yd-1].len;
-  }
- }
- sc_txt_3(yd, b, -1);
- if (b->f)
-  (b->f->save) += 10;
-/*******************************/   
- e_brk_recalc(b->f,yd,-1);
-/*******************************/   
+ if (e_buffer_delete_lines(b, yd, 1, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the line deletion");
  return(b->mxlines);
 }
+
+/**
+ * e_new_line - Put an empty line at @yd of @b, and nothing else.
+ *
+ * The file reader, the views the editor writes and the block code add their
+ * lines this way until they splice: no mark, breakpoint, colour or undo
+ * moves.  None of them can go on without the line, so running out of memory
+ * here ends the editor through the low-memory error, which offers to save
+ * the user's files first, as it always did.  Return: the number of lines.
+ */
+int e_new_line(int yd, BUFFER *b)
+{
+ if (e_buffer_insert_raw(b, yd) != E_BUFFER_OK)
+  e_error(e_msg[ERR_LOWMEM], 1, b->fb);
+ return(b->mxlines);
+}
+
+/**
+ * e_char_record - Compose and keep the record of a character change.
+ * Return: the record as kept (the cover's pocket), or NULL when covered,
+ * on a view, or out of memory.
+ */
+static Undo *e_char_record(int sw, BUFFER *b, int x, int y, int n);
 
 /*   delete N chars from buffer */
 int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
 {
- FENSTER *f = WpeEditor->f[WpeEditor->mxedt];
+ Undo *rec;
  int len, i, j;
 
- (f->save) += n;
- e_add_undo('r', b, x, y, n);
- e_undo_sw++;
+ e_char_count_change(b, n);
+ rec = e_char_record('r', b, x, y, n);
+ e_buffer_cover_begin(b, rec);
  len = b->bf[y].len;
  if (*(b->bf[y].s+len) == WPE_WR) len++;
  for (j = x; j <= len - n; ++j) *(b->bf[y].s+j) = *(b->bf[y].s+j+n)
@@ -2218,21 +2289,74 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
   b->bf[y].len = e_str_len(b->bf[y].s);
   b->bf[y].nrc = e_str_nrc(b->bf[y].s);
  }
- e_undo_sw--;
+ e_buffer_cover_end(b);
  sc_txt_4(y, b, 0);
  return(x+n);
+}
+
+/**
+ * e_ins_wrap_mark - A block mark on a line that just wrapped: behind the
+ * break it moves to the new line, at or after the insertion it moves right.
+ */
+static void e_ins_wrap_mark(POINT *p, int ya, int xa, int n, int i)
+{
+ if (p->y != ya)
+  return;
+ if (p->x > i)
+ {
+  p->y++;
+  p->x -= i + 1;
+ }
+ else if (p->x >= xa)
+  p->x += n;
+}
+
+/**
+ * e_ins_wrap_tail_down - Typing past the margin of a full line: its tail,
+ * behind column @i, goes to a new line below it.
+ *
+ * The breakpoints and marks below move down with their lines, so a wrapped
+ * paragraph never leaves a breakpoint on the wrong code.  Return: 1 when
+ * the tail moved; 0 when no line could be added, and then the line keeps
+ * its bytes up to its width and the status row says why the wrap waits.
+ */
+static int e_ins_wrap_tail_down(BUFFER *b, SCHIRM *sch, int ya, int xa, int n, int i)
+{
+ int j;
+
+ if (e_buffer_insert_blank(b, ya+1, E_BUFFER_STEP_COVERED) != E_BUFFER_OK)
+ {
+  wpe_buffer_say_nomem(b, "the line wrap");
+  return(0);
+ }
+ e_ins_wrap_mark(&sch->mark_begin, ya, xa, n, i);
+ e_ins_wrap_mark(&sch->mark_end, ya, xa, n, i);
+ /* Copy the wrapped tail into the fresh next line, bounded to mx.x-1 columns
+    so the WPE_WR terminator and the following '\0' both land inside its
+    mx.x+1 byte buffer.  The trailing '\0' is essential: e_str_nrc is strlen
+    (NOT WPE_WR-aware, unlike e_str_len), so without it strlen runs past the
+    WPE_WR into adjacent memory when the tail fills the line -- a heap
+    overflow when editing a very long unbroken run. */
+ for (j = i+1; *(b->bf[ya].s+j) != WPE_WR && *(b->bf[ya].s+j) != '\0'
+      && (j-i-1) < b->mx.x - 1; j++)
+  *(b->bf[ya+1].s+j-i-1) = *(b->bf[ya].s+j);
+ *(b->bf[ya+1].s+j-i-1) = WPE_WR;
+ *(b->bf[ya+1].s+j-i) = '\0';
+ b->bf[ya+1].len = e_str_len(b->bf[ya+1].s);
+ b->bf[ya+1].nrc = e_str_nrc(b->bf[ya+1].s);
+ return(1);
 }
 
 /*   insert N chars in buffer */
 int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n)
 {
- FENSTER *f = WpeEditor->f[WpeEditor->mxedt];
- int i, j;
+ Undo *rec;
+ int i, j, wrapped = 1;
 
- (f->save) += n;
- e_add_undo('a', b, xa, ya, n);
- e_undo_sw++;
+ e_char_count_change(b, n);
+ rec = e_char_record('a', b, xa, ya, n);
+ e_buffer_cover_begin(b, rec);
  /* Defensive normalisation: each line buffer is e_new_line()-allocated at
     b->mx.x+1 bytes, so b->mx.x is the last valid index.  Some callers (the
     block move/copy paths in we_block.c, which reshuffle line buffers by
@@ -2271,47 +2395,7 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   if (i < 0)                           /* few columns) wraps -- never the whole */
    i = 0;                              /* line, which fed a runaway recursion   */
   if (*(b->bf[ya].s+b->bf[ya].len) == WPE_WR || ya == b->mxlines)
-  {
-   e_new_line(ya+1, b);
-   if (sch->mark_begin.y > ya)
-    (sch->mark_begin.y)++;
-   else if(sch->mark_begin.y == ya)
-   {
-    if (sch->mark_begin.x > i)
-    {
-     (sch->mark_begin.y)++;
-     (sch->mark_begin.x) -= (i+1);
-    }
-    else if (sch->mark_begin.x >= xa)
-     sch->mark_begin.x += n;
-   }
-   if (sch->mark_end.y > ya)
-    (sch->mark_end.y)++;
-   else if(sch->mark_end.y == ya)
-   {
-    if(sch->mark_end.x > i)
-    {
-     (sch->mark_end.y)++;
-     (sch->mark_end.x) -= (i+1);
-    }
-    else if(sch->mark_end.x >= xa)
-     sch->mark_end.x += n;
-   }
-   /* Copy the wrapped tail into the fresh next line, bounded to mx.x-1 columns
-      so the WPE_WR terminator and the following '\0' both land inside its
-      mx.x+1 byte buffer.  The trailing '\0' is essential: e_str_nrc is strlen
-      (NOT WPE_WR-aware, unlike e_str_len), so without it strlen runs past the
-      WPE_WR into adjacent memory when the tail fills the line -- a heap
-      overflow when editing a very long unbroken run. */
-   for (j = i+1; *(b->bf[ya].s+j) != WPE_WR && *(b->bf[ya].s+j) != '\0'
-        && (j-i-1) < b->mx.x - 1; j++)
-    *(b->bf[ya+1].s+j-i-1) = *(b->bf[ya].s+j);
-   *(b->bf[ya+1].s+j-i-1) = WPE_WR;
-   *(b->bf[ya+1].s+j-i) = '\0';
-   b->bf[ya+1].len = e_str_len(b->bf[ya+1].s);
-   b->bf[ya+1].nrc = e_str_nrc(b->bf[ya+1].s);
-   sc_txt_4(ya, b, 1);
-  }
+   wrapped = e_ins_wrap_tail_down(b, sch, ya, xa, n, i);
   else
   {
    e_ins_nchar(b, sch, b->bf[ya].s+i+1, 0, ya+1, b->bf[ya].len-i-1);
@@ -2339,10 +2423,13 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
 /*	 if(*(b->bf[ya].s+i) == ' ') *(b->bf[ya].s+i) = '\0';
          else
 */
-  *(b->bf[ya].s+i+1) = '\0';
-  b->bf[ya].len = e_str_len(b->bf[ya].s);
-  b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
-  if (xa > b->bf[ya].len)
+  if (wrapped)
+  {
+   *(b->bf[ya].s+i+1) = '\0';
+   b->bf[ya].len = e_str_len(b->bf[ya].s);
+   b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
+  }
+  if (wrapped && xa > b->bf[ya].len)
   {
    xa -= (b->bf[ya].len);
    ya++;
@@ -2382,36 +2469,9 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
  b->b.y = ya;
  b->bf[ya].len = e_str_len(b->bf[ya].s);
  b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
- e_undo_sw--;
+ e_buffer_cover_end(b);
  sc_txt_4(ya, b, 0);
  return(xa+n);
-}
-
-/*   insert new line */
-int e_new_line(int yd, BUFFER *b)
-{
- int i;
-
- if (b->mxlines > b->mx.y-2)
- {
-  b->mx.y += MAXLINES;
-  if ((b->bf = REALLOC(b->bf, b->mx.y * sizeof(STRING))) == NULL)
-   e_error(e_msg[ERR_LOWMEM], 1, b->fb);
-  if (b->f->c_sw)
-   b->f->c_sw = REALLOC(b->f->c_sw , b->mx.y * sizeof(int));
- }
- for (i = b->mxlines-1; i >= yd; i--)
- {
-  b->bf[i+1] = b->bf[i];
- }
- (b->mxlines)++;
- b->bf[yd].s = MALLOC(b->mx.x+1);
- if (b->bf[yd].s == NULL)
-  e_error(e_msg[ERR_LOWMEM], 1, b->fb);
- *(b->bf[yd].s) = '\0';
- b->bf[yd].len = 0;
- b->bf[yd].nrc = 0;
- return(b->mxlines);
 }
 
 int e_codepoint_to_utf8(int cp, unsigned char *out)
@@ -2471,7 +2531,7 @@ int e_put_char(int c, BUFFER *b, SCHIRM *s)
  else
  {
   e_add_undo('p', b, b->b.x, b->b.y, 1);
-  (b->f->save)++;
+  e_char_count_change(b, 1);
   *(b->bf[b->b.y].s+b->b.x) = c;
  }
  (b->b.x)++;
@@ -2694,98 +2754,82 @@ int e_autosave(FENSTER *f)
  return(0);
 }
 
-Undo *e_remove_undo(Undo *ud, int sw)
+/**
+ * e_undo_text_copy - The @n characters a record must put back, copied.
+ * Return: the copy, or NULL when memory ran out.
+ */
+static char *e_undo_text_copy(BUFFER *b, int x, int y, int n)
 {
- if (ud == NULL)
-  return(ud);
- ud->next = e_remove_undo(ud->next, sw + 1);
- if (sw > WpeEditor->numundo)
- {
-  if(ud->type == 'l')
-   FREE(ud->u.pt);
-  else if (ud->type == 'B')
-   FREE(ud->u.pt);             /* the malloc'd whole-buffer text snapshot */
-  else if (ud->type == 'd')
-  {
-   BUFFER *b = (BUFFER*) ud->u.pt;
-   int i;
+ char *str = MALLOC(n > 0 ? n : 1);
+ int i;
 
-   FREE(b->f->s);
-   FREE(b->f);
-   if (b->bf != NULL)
-   {
-    for (i = 0; i < b->mxlines; i++)
-    {
-     if (b->bf[i].s != NULL)
-      FREE( b->bf[i].s );
-     b->bf[i].s = NULL;
-    }
-    FREE(b->bf);
-   }
-   FREE(b);
-  }
-  FREE(ud);
-  ud = NULL;
- }
- return(ud);
+ if (str == NULL)
+  return(NULL);
+ for (i = 0; i < n; i++)
+  str[i] = b->bf[y].s[x+i];
+ return(str);
 }
 
-int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
+/**
+ * e_undo_shell_new - The private buffer a block delete moves its lines into.
+ * @b: the buffer the block leaves.
+ *
+ * Its own breakpoint rows keep the block's breakpoints until Undo brings
+ * the lines back; it has no file name, so the debugger is never told of it,
+ * and every splice into it runs covered, so it records nothing.
+ * Return: the shell, or NULL when memory ran out.
+ */
+static BUFFER *e_undo_shell_new(BUFFER *b)
 {
- Undo *next;
+ BUFFER *bn = MALLOC(sizeof(BUFFER));
+ SCHIRM *sn = MALLOC(sizeof(SCHIRM));
+ FENSTER *fn = MALLOC(sizeof(FENSTER));
 
- if (e_undo_sw) return(0);
- if (!e_redo_sw && b->rd)
-  b->rd = e_remove_undo(b->rd, WpeEditor->numundo+1);
- if ((next = MALLOC(sizeof(Undo))) == NULL)
+ if (bn == NULL || sn == NULL || fn == NULL)
  {
-  e_error(e_msg[ERR_LOWMEM], 0, b->fb);
-  return(-1);
+  FREE(bn);  FREE(sn);  FREE(fn);
+  return(NULL);
  }
- next->type = sw;
+ memset(sn, 0, sizeof(SCHIRM));
+ memset(fn, 0, sizeof(FENSTER));
+ fn->s = sn;
+ fn->b = bn;
+ fn->ed = NULL;            /* no editor: the block code recalculates no breakpoint */
+ e_buffer_init(bn, b->cn, fn, b->cn->maxcol, E_BUFFER_HISTORY_FULL);
+ if (bn->mxlines != 1)
+ {
+  e_buffer_shell_free(bn);
+  return(NULL);
+ }
+ sn->fb = bn->fb = b->fb;
+ e_line_make_hard_empty(&bn->bf[0]);
+ return(bn);
+}
+
+/**
+ * e_undo_record_compose - Fill a character or block record of kind @sw.
+ * Return: 0, or -1 when memory ran out (the record is then incomplete).
+ */
+static int e_undo_record_compose(Undo *next, int sw, BUFFER *b, int x, int y, int n)
+{
  next->b.x = x;
  next->b.y = y;
  next->a.x = n;
- if (e_redo_sw == 1) next->next = b->rd;
- else next->next = b->ud;
- if (sw == 'a') ;
- else if (sw == 'p') next->u.c = b->bf[y].s[x];
+ if (sw == 'p')
+  next->u.c = b->bf[y].s[x];
  else if (sw == 'r' || sw == 's')
  {
-  char *str = MALLOC(n);
-  int i;
-
-  if (str == NULL)
-  {
-   e_error(e_msg[ERR_LOWMEM], 0, b->fb);
-   FREE(next);
+  if ((next->u.pt = e_undo_text_copy(b, x, y, n)) == NULL)
    return(-1);
-  }
-  for (i = 0; i < n; i++)
-   str[i] = b->bf[y].s[x+i];
-  next->u.pt = str;
   /* For type 's' (search/replace undo), a.y must store the length
      of the OTHER string -- the one that will be re-inserted when this
      undo entry is later undone/redone.  Kruse's original code read
      this from b->f->fd.rn (the global replace-string length), but
      that value can change between operations, causing Redo to use
      a wrong length and crash with SIGSEGV.
-     Fix: during undo/redo (e_redo_sw != 0), the caller in e_make_rudo
-     passes the correct length.  We store it via a global since
-     e_add_undo's signature doesn't have a parameter for it. */
+     Fix: during undo/redo, the replay sets b->f->fd.rn to the correct
+     length before it records its inverse. */
   next->a.y = b->f->fd.rn;
-
- }
- else if (sw == 'l') next->u.pt = b->bf[y].s;
- else if (sw == 'B')
- {
-  /* Whole-buffer replace (e.g. an LSP code action / rename / format): snapshot
-     the ENTIRE current buffer as text so Undo can restore it in one step.  The
-     replay in e_make_rudo is symmetric -- it snapshots the then-current content
-     as the inverse, so Redo works too. */
-  next->u.pt = e_buffer_to_text(b);
-  if (next->u.pt == NULL)
-  {  FREE(next);  return(-1);  }
  }
  else if (sw == 'c' || sw == 'v')
  {
@@ -2794,234 +2838,103 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
   next->a = s->mark_begin;
   next->e = s->mark_end;
  }
- else if (sw == 'd')
- {
-  BUFFER *bn = MALLOC(sizeof(BUFFER));
-  SCHIRM *sn = MALLOC(sizeof(SCHIRM));
-  FENSTER *fn = MALLOC(sizeof(FENSTER));
-  FENSTER *f = b->cn->f[b->cn->mxedt];
-
-  bn->bf = (STRING *) MALLOC(MAXLINES*sizeof(STRING));
-  if (bn == NULL || sn == 0 || bn->bf == NULL)
-   return(e_error(e_msg[ERR_LOWMEM], 0, b->fb));
-  fn->b = bn;
-  fn->c_sw = NULL;
-  fn->c_st = NULL;
-  fn->ed = NULL; /* Quick fix so that breakpoints aren't recalculated */
-  fn->fd.dirct = NULL;
-  bn->f = fn;
-  bn->f->s = sn;
-  bn->b = e_set_pnt(0, 0);
-  bn->mx = e_set_pnt(b->cn->maxcol, MAXLINES);
-  bn->mxlines = 0;
-  sn->fb = bn->fb = b->fb;
-  bn->cn = b->cn;
-  bn->ud = NULL;
-  bn->rd = NULL;
-  sn->c = sn->ks = sn->mark_begin = sn->mark_end = sn->fa = sn->fe = e_set_pnt(0, 0);
-  e_new_line(0 ,bn);
-  *(bn->bf[0].s) = WPE_WR;
-  *(bn->bf[0].s+1) = '\0';
-  bn->bf[0].len = 0;
-  bn->bf[0].nrc = 1;
-  next->u.pt = bn;
-  e_undo_sw = 1;
-  e_move_block(0, 0, b, bn, f);
-  e_undo_sw = 0;
- }
- if (e_redo_sw == 1) b->rd = next;
- else
- {
-  next->next = e_remove_undo(b->ud, 1);
-  b->ud = next;
- }
  return(0);
 }
 
-/* e_buffer_to_text - serialize the whole buffer to a malloc'd, '\n'-joined
-   string: EXACTLY one '\n' per line, matching the on-disk save format (b->bf[y]
-   stores `len` content bytes then the WPE_WR terminator).  Caller frees.  Used to
-   snapshot a buffer for whole-buffer Undo (type 'B').  Doubling the delimiter
-   would corrupt the round-trip, so keep it to one. */
-char *e_buffer_to_text(BUFFER *b)
+/**
+ * e_undo_block_delete_compose - Move the marked block into a shell the
+ * record keeps, which is how a block delete happens.
+ * Return: 0, or -1 when memory ran out (nothing was deleted).
+ */
+static int e_undo_block_delete_compose(Undo *next, BUFFER *b)
 {
- size_t cap = 1, used = 0;
- char *out;
- int y;
+ FENSTER *f = b->cn->f[b->cn->mxedt];
+ BUFFER *bn = e_undo_shell_new(b);
 
- for (y = 0; y < b->mxlines; y++)
-  cap += (b->bf[y].s ? (size_t)b->bf[y].len : 0) + 1;
- if ((out = malloc(cap)) == NULL)
+ if (bn == NULL)
+  return(-1);
+ next->u.pt = bn;
+ e_buffer_cover_begin(b, NULL);
+ e_buffer_cover_begin(bn, NULL);
+ e_move_block(0, 0, b, bn, f);
+ e_buffer_cover_end(bn);
+ e_buffer_cover_end(b);
+ return(0);
+}
+
+static Undo *e_char_record(int sw, BUFFER *b, int x, int y, int n)
+{
+ Undo *next;
+
+ if (e_buffer_covered(b))
   return(NULL);
- for (y = 0; y < b->mxlines; y++)
+ if ((next = e_buffer_record_new(sw)) == NULL)
  {
-  int len = b->bf[y].s ? b->bf[y].len : 0;
-  if (len > 0)
-  {  memcpy(out + used, b->bf[y].s, (size_t)len);  used += (size_t)len;  }
-  out[used++] = '\n';
+  wpe_buffer_say_nomem(b, "the undo record");
+  return(NULL);
  }
- out[used] = '\0';
- return(out);
-}
-
-/* e_buffer_append_line - append ONE line, verbatim, to the end of the buffer,
-   INCLUDING an empty line.  This is the difference from print_to_end_of_buffer,
-   which deliberately DROPS blank lines (right for compiler-output appends, wrong
-   for a whole-buffer rebuild): dropping them is what collapsed the user's empty
-   lines when an LSP code action / format / rename rewrote the file, and -- since
-   whole-buffer Undo rebuilds through this same path -- is why the blank lines
-   did not come back on Ctrl-U.  `str` is a single line with no embedded newline.
-   An empty `str` yields xwpe's canonical empty line (len 0, nrc 0), exactly what
-   e_new_line produces. */
-static void e_buffer_append_line(BUFFER *b, const char *str)
-{
- int len = (int)strlen(str);
- int maxc = b->mx.x - 1;             /* last column an insert may write into */
- int start = 0;
-
- /* xwpe is a WordPerfect-style editor: every PHYSICAL line lives in an
-    e_new_line()-allocated mx.x+1 buffer and holds at most mx.x-1 columns of
-    content -- the file reader (e_readin) SOFT-WRAPS any longer logical line at
-    the margin.  A soft-wrapped continuation ends WITHOUT the WPE_WR terminator
-    (so e_write rejoins the pieces on save, preserving the content); only the
-    logical line's final piece carries WPE_WR.  This rebuild path must obey the
-    same invariant: storing a whole over-long line in one content-sized buffer
-    left the insert/auto-wrap machinery (e_ins_nchar, which writes at index
-    mx.x) reading and writing past the line -- a heap overflow that crashed on
-    the next keystroke over a line an AI/LSP/Undo rewrite had produced. */
- if (maxc < 1)
-  maxc = 1;
- do
+ if (e_undo_record_compose(next, sw, b, x, y, n) != 0 ||
+     (sw == 'd' && e_undo_block_delete_compose(next, b) != 0))
  {
-  int seg = len - start;
-  int hard = 1;
-  int k;
-
-  if (seg > maxc)                    /* break this piece at a word boundary */
-  {
-   int cut = maxc;                   /* at most maxc chars, so [seg]+[seg+1] fit */
-   int brk = cut;
-   while (brk > 0 && str[start + brk - 1] != ' ' && str[start + brk - 1] != '-')
-    brk--;                           /* brk = chars up to & including a boundary */
-   if (brk > 0)
-    cut = brk;                       /* break just after the space/dash */
-   else                              /* no boundary in reach: hard-cut the run, */
-    while (cut > 1 &&                /* but never in the middle of a UTF-8 char */
-           ((unsigned char)str[start + cut] & 0xC0) == 0x80)
-     cut--;
-   seg = cut;
-   hard = 0;                         /* soft wrap: continuation, no WPE_WR */
-  }
-  e_new_line(b->mxlines, b);         /* mx.x+1 bytes, so [seg]+[seg+1] fit */
-  k = b->mxlines - 1;
-  memcpy(b->bf[k].s, str + start, seg);
-  if (hard)
-   b->bf[k].s[seg] = WPE_WR;         /* logical line end: e_write emits '\n' */
-  else
-   b->bf[k].s[seg] = '\0';           /* soft wrap: e_write rejoins on save */
-  b->bf[k].s[seg + 1] = '\0';
-  b->bf[k].len = e_str_len((unsigned char *)b->bf[k].s);
-  b->bf[k].nrc = e_str_nrc((unsigned char *)b->bf[k].s);
-  start += seg;
- } while (start < len);
+  e_buffer_record_free(next);
+  wpe_buffer_say_nomem(b, "the undo record");
+  return(NULL);
+ }
+ return(e_buffer_record_push(b, next));
 }
 
-/* e_buffer_set_text - replace the WHOLE buffer content with `text` (lines split
-   on '\n').  Does NOT touch the cursor, the view, or the undo stack -- the caller
-   owns those.  The inverse of e_buffer_to_text; used by whole-buffer Undo and by
-   the LSP edit-apply path (e_lsp_replace_buffer).  Each split line is appended
-   verbatim via e_buffer_append_line, so empty lines survive the round trip.
-   The result has the shape the file reader (e_readin) gives the same bytes:
-   "a\nb\n" is two lines, with no empty line after them.  An extra empty last
-   line would be sent to the next Edit as a line the file does not have, and
-   would become a real blank line once Undo rebuilt the buffer from it. */
+/**
+ * e_add_undo - Record a character or block change of kind @sw for Ctrl-U.
+ * @b: the buffer; @x, @y, @n: where and how much.
+ *
+ * 'a' 'r' 's' 'p' are the character kinds, 'c' 'v' 'd' the block kinds
+ * ('d' moves the marked block into the record).  A whole-buffer swap ('B')
+ * needs no record of its own any more: the swap records exactly the lines
+ * it changes.  Nothing is recorded under a cover.
+ * Return: 0, or -1 when memory ran out.
+ */
+int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
+{
+ if (sw == 'B' || e_buffer_covered(b))
+  return(0);
+ if (e_char_record(sw, b, x, y, n) == NULL && b->history == E_BUFFER_HISTORY_FULL)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_buffer_set_text - Make the buffer hold @text, lines split on '\n'.
+ * @b: the buffer; @text: the whole new content.
+ *
+ * Only the lines that differ change, as one undoable change (inside the
+ * caller's step when it opened one): the user's breakpoints, block and
+ * colours on the lines a tool did not touch stay where they were, and the
+ * file has the shape the reader gives the same bytes ("a\nb\n" is two
+ * lines).  On a view nothing is recorded.  The caller places the cursor.
+ */
 void e_buffer_set_text(BUFFER *b, const char *text)
 {
- char *copy = strdup(text ? text : ""), *p, *nl;
-
- if (!copy)
-  return;
- e_p_red_buffer(b);
- FREE(b->bf[0].s);
- b->mxlines = 0;
- p = copy;
- for (;;)
- {
-  nl = strchr(p, '\n');
-  if (nl)
-   *nl = '\0';
-  e_buffer_append_line(b, p);
-  if (!nl)
-   break;
-  p = nl + 1;
-  if (!*p)
-   break;                 /* a trailing '\n' just terminates the last line */
- }
- if (b->mxlines == 0)
-  e_new_line(0, b);       /* a buffer always holds one line */
- free(copy);
+ if (e_buffer_replace_all(b, text, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the new text");
 }
 
 /* e_replace_buffer_undoable - swap the whole buffer for `newtext` as ONE undoable
    step, keeping the cursor where the user was working and repainting now.  This
    is the shared spine of every "the tool rewrote the file" action -- an LSP code
    action / rename / format (via e_lsp_replace_buffer, which then notifies the
-   server) and an accepted AI edit (via e_ai_apply_text).  One 'B' undo snapshot
-   means a single Ctrl-U reverts the whole change; the cursor is clamped to the
-   rebuilt buffer so the edited spot stays on screen instead of snapping to the
-   top.  Callers that have a language server attached notify it afterwards. */
+   server) and an accepted AI edit (via e_ai_apply_text).  Only the lines that
+   differ change, so the breakpoints, the block and the colours of the lines the
+   tool left alone stay on them, and a single Ctrl-U reverts the whole change;
+   the cursor is clamped to the rebuilt buffer so the edited spot stays on screen
+   instead of snapping to the top.  Callers that have a language server
+   attached notify it afterwards. */
 void e_replace_buffer_undoable(FENSTER *f, const char *newtext)
 {
- BUFFER *b = f->b;
- int cx = b->b.x, cy = b->b.y, llen;
-
- e_add_undo('B', b, b->b.x, b->b.y, 0);   /* snapshot OLD buffer for Ctrl-U */
- e_buffer_set_text(b, newtext);
- if (cy >= b->mxlines)
-  cy = b->mxlines > 0 ? b->mxlines - 1 : 0;
- if (cy < 0)
-  cy = 0;
- llen = b->bf[cy].s ? b->bf[cy].len : 0;
- if (cx > llen)
-  cx = llen;
- if (cx < 0)
-  cx = 0;
- b->b.x = cx;
- b->b.y = cy;
- f->save++;                         /* mark the window modified */
+ e_buffer_set_text(f->b, newtext);
  e_firstl(f, 1);                    /* re-open the view over the new buffer */
  e_schirm(f, 1);
  e_rep_win_tree(f->ed);             /* full repaint */
  e_refresh();                       /* flush to the terminal now, not next key */
-}
-
-/**
- * e_rudo_whole_buffer - Undo or redo a 'B' step: swap the whole text back.
- * @f: the window; @b, @s: its buffer and screen; @ud: the 'B' entry being replayed.
- *
- * What the user gains: one Ctrl-U reverts a tool's rewrite of the file (an
- * accepted assistant edit, a language-server action) as one step, and the
- * window then shows it is modified like after any other undo: the status row
- * carries its mark and quitting asks whether to save.  That last part was
- * missing: the ordinary undo branches change the text through e_ins_nchar and
- * e_del_nchar, which count the change in f->save, while this branch rebuilds
- * the buffer directly, so after Save then Ctrl-U the window read as clean, the
- * editor quit without a question and the reverted text was lost.  The inverse
- * snapshot is recorded FIRST, onto the opposite list (e_redo_sw routes it), so
- * Undo and Redo stay symmetric.
- */
-static void e_rudo_whole_buffer(FENSTER *f, BUFFER *b, SCHIRM *s, Undo *ud)
-{
- e_add_undo('B', b, ud->b.x, ud->b.y, 0);
- e_buffer_set_text(b, (char *)ud->u.pt);
- FREE(ud->u.pt);
- if (b->b.y >= b->mxlines) b->b.y = (b->mxlines > 0) ? b->mxlines - 1 : 0;
- if (b->b.y < 0) b->b.y = 0;
- if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
- if (b->b.x < 0) b->b.x = 0;
- s->mark_begin = s->mark_end = b->b;
- f->save++;                         /* the text differs from the disk again */
- e_firstl(f, 1);
 }
 
 int e_make_undo(FENSTER *f)
@@ -3054,12 +2967,133 @@ static int e_undo_waits_for_the_assistant(FENSTER *f)
 }
 #endif
 
+/**
+ * e_rudo_text_back - Put back the characters a record removed, a line
+ * break as a line break (never auto-indented again), and mark them.
+ * @b, @s: the buffer and its screen; @rec: an 'r' or 's' record.
+ */
+static void e_rudo_text_back(BUFFER *b, SCHIRM *s, Undo *rec)
+{
+ unsigned char *text = (unsigned char *) rec->u.pt;
+ int n = rec->a.x;
+
+ if (text[0] == '\n' && n == 1)
+  e_car_ret_split(b, s);
+ else if (text[n - 1] == '\n')
+ {
+  e_ins_nchar(b, s, text, rec->b.x, rec->b.y, n - 1);
+  e_car_ret_split(b, s);
+ }
+ else
+  e_ins_nchar(b, s, text, rec->b.x, rec->b.y, n);
+ s->mark_begin = rec->b;
+ s->mark_end.y = rec->b.y;
+ s->mark_end.x = rec->b.x + n;
+}
+
+/**
+ * e_rudo_replace_back - Undo or redo one replacement of Search > Replace.
+ *
+ * The inverse is recorded first, then the swap of the two strings runs
+ * covered, so one Ctrl-R gives the replacement back.
+ */
+static void e_rudo_replace_back(BUFFER *b, SCHIRM *s, Undo *rec)
+{
+ /* Set b->f->fd.rn to the length of the string being re-inserted
+    (rec->a.x).  e_add_undo reads b->f->fd.rn to store as a.y in
+    the reverse entry, so the next undo/redo knows the correct
+    length of the OTHER string.  Kruse's original code assumed
+    b->f->fd.rn was always current, but it was never synced from
+    f->ed->fd.rn (the global search/replace state), causing a.y
+    to contain uninitialized garbage (e.g. 189 instead of 5). */
+ b->f->fd.rn = rec->a.x;
+ e_add_undo('s', b, rec->b.x, rec->b.y, rec->a.y);
+ e_buffer_cover_begin(b, NULL);
+ e_del_nchar(b, s, rec->b.x, rec->b.y, rec->a.y);
+ e_rudo_text_back(b, s, rec);
+ e_buffer_cover_end(b);
+}
+
+/**
+ * e_rudo_block_back - Undo a block delete: the lines come back from the
+ * record's shell, and the block is marked as it was.
+ */
+static void e_rudo_block_back(BUFFER *b, SCHIRM *s, Undo *rec)
+{
+ BUFFER *bn = (BUFFER *) rec->u.pt;
+ FENSTER *f = b->f;
+
+ s->mark_begin = bn->f->s->mark_begin;
+ s->mark_end = bn->f->s->mark_end;
+ e_buffer_cover_begin(b, NULL);
+ e_buffer_cover_begin(bn, NULL);
+ e_move_block(rec->b.x, rec->b.y, bn, b, f);
+ e_buffer_cover_end(bn);
+ e_buffer_cover_end(b);
+ e_buffer_shell_free(bn);
+ rec->u.pt = NULL;
+ e_add_undo('c', b, rec->b.x, rec->b.y, 0);
+}
+
+/**
+ * e_rudo_block_copy_back - Undo a block copy: the copied block, marked as
+ * the record saw it, is deleted again (which records the way back).
+ */
+static void e_rudo_block_copy_back(BUFFER *b, SCHIRM *s, Undo *rec)
+{
+ b->b = rec->a;
+ s->mark_begin = rec->a;
+ s->mark_end = rec->e;
+ e_blck_del(b->f);
+}
+
+/**
+ * e_rudo_block_move_again - Undo or redo a block move: the block, marked as
+ * the record saw it, moves back to where the record's cursor is.
+ */
+static void e_rudo_block_move_again(BUFFER *b, SCHIRM *s, Undo *rec)
+{
+ b->b = rec->b;
+ s->mark_begin = rec->a;
+ s->mark_end = rec->e;
+ e_blck_move(b->f);
+}
+
+/**
+ * wpe_buffer_replay_kind - Replay a character or block record for Undo or
+ * Redo; its inverse goes to the other list through the primitives' own
+ * records.
+ * @b: the buffer; @s: its screen; @rec: the record ('a' 'r' 's' 'p' 'c' 'v' 'd').
+ *
+ * The block kinds run uncovered: their operations take their own covers and
+ * push their record after them, so Redo finds it.  An overwrite ('p') puts
+ * the old character back and records nothing, as it always did.
+ * Return: E_BUFFER_OK.
+ */
+int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
+{
+ if (rec->type == 'r')
+  e_rudo_text_back(b, s, rec);
+ else if (rec->type == 's')
+  e_rudo_replace_back(b, s, rec);
+ else if (rec->type == 'a')
+  e_del_nchar(b, s, rec->b.x, rec->b.y, rec->a.x);
+ else if (rec->type == 'p')
+  b->bf[rec->b.y].s[rec->b.x] = rec->u.c;
+ else if (rec->type == 'c')
+  e_rudo_block_copy_back(b, s, rec);
+ else if (rec->type == 'v')
+  e_rudo_block_move_again(b, s, rec);
+ else if (rec->type == 'd')
+  e_rudo_block_back(b, s, rec);
+ return(E_BUFFER_OK);
+}
+
 int e_make_rudo(FENSTER *f, int sw)
 {
  BUFFER *b;
  SCHIRM *s;
- Undo *ud;
- int i;
+ int i, r;
 
  for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--);
  if (i <= 0) return(0);
@@ -3070,99 +3104,15 @@ int e_make_rudo(FENSTER *f, int sw)
   return(0);
 #endif
  b = f->b;  s = f->s;
- if (!sw) ud = b->ud;
- else ud = b->rd;
- if (ud == NULL)
+ if (!sw)
+  r = e_buffer_undo(b, s);
+ else
+  r = e_buffer_redo(b, s);
+ if (r == E_BUFFER_NOTHING)
  {
   e_error((!sw ? e_msg[ERR_UNDO] : e_msg[ERR_REDO]), 0, b->fb);
   return(-1);
  }
- f = f->ed->f[f->ed->mxedt];
- if (!sw) e_redo_sw = 1;
- else e_redo_sw = 2;
- b->b = ud->b;
- if (ud->type == 'r' || ud->type == 's')
- {
-  if (ud->type == 's')
-  {
-   /* Set b->f->fd.rn to the length of the string being re-inserted
-      (ud->a.x).  e_add_undo reads b->f->fd.rn to store as a.y in
-      the reverse entry, so the next undo/redo knows the correct
-      length of the OTHER string.  Kruse's original code assumed
-      b->f->fd.rn was always current, but it was never synced from
-      f->ed->fd.rn (the global search/replace state), causing a.y
-      to contain uninitialized garbage (e.g. 189 instead of 5). */
-   b->f->fd.rn = ud->a.x;
-   e_add_undo('s', b, ud->b.x, ud->b.y, ud->a.y);
-   e_undo_sw = 1;
-   e_del_nchar(b, s, ud->b.x, ud->b.y, ud->a.y);
-  }
-  if (*((char*)ud->u.pt) == '\n' && ud->a.x == 1) e_car_ret(b, s);
-  else if (*((char*)ud->u.pt + ud->a.x - 1) == '\n')
-  {
-   e_ins_nchar(b, s, ((char *)ud->u.pt), ud->b.x, ud->b.y, ud->a.x-1);
-   e_car_ret(b, s);
-  }
-  else e_ins_nchar(b, s, ((char *)ud->u.pt), ud->b.x, ud->b.y, ud->a.x);
-  e_undo_sw = 0;
-  s->mark_begin = ud->b;
-  s->mark_end.y = ud->b.y;
-  s->mark_end.x = ud->b.x + ud->a.x;
-  FREE(ud->u.pt);
- }
- else if (ud->type == 'l')
- {
-  for(i = b->mxlines; i > ud->b.y; i--) b->bf[i] = b->bf[i-1];
-  (b->mxlines)++;
-  b->bf[b->b.y].s = ud->u.pt;
-  b->bf[b->b.y].len = e_str_len(b->bf[b->b.y].s);
-  b->bf[b->b.y].nrc = e_str_nrc(b->bf[b->b.y].s);
-  s->mark_begin = ud->b;
-  s->mark_end.y = ud->b.y + 1;
-  s->mark_end.x = 0;
-  e_add_undo('y', b, 0, b->b.y, 0);
- }
- else if (ud->type == 'y')
-  e_del_line(b->b.y, b, s);
- else if (ud->type == 'a')
-  e_del_nchar(b, s, ud->b.x, ud->b.y, ud->a.x);
- else if (ud->type == 'p')
-  b->bf[ud->b.y].s[ud->b.x] = ud->u.c;
- else if (ud->type == 'c')
- {
-  b->b = s->mark_begin = ud->a;
-  s->mark_end = ud->e;
-/*	e_blck_clear(b, s);   */
-  e_blck_del(f);
- }
- else if (ud->type == 'v')
- {
-  b->b = ud->b;
-  s->mark_begin = ud->a;
-  s->mark_end = ud->e;
-  e_blck_move(f);
- }
- else if (ud->type == 'd')
- {
-  BUFFER *bn = (BUFFER*)ud->u.pt;
-  e_undo_sw = 1;
-  s->mark_begin = bn->f->s->mark_begin;
-  s->mark_end = bn->f->s->mark_end;
-  e_move_block(ud->b.x, ud->b.y, bn, b, f);
-  e_undo_sw = 0;
-  FREE(bn->f->s);
-  FREE(bn->f);
-  FREE(bn->bf[0].s);
-  FREE(bn->bf);
-  FREE(ud->u.pt);
-  e_add_undo('c', b, ud->b.x, ud->b.y, 0);
- }
- else if (ud->type == 'B')
-  e_rudo_whole_buffer(f, b, s, ud);
- if (!sw) b->ud = ud->next;
- else b->rd = ud->next;
- e_redo_sw = 0;
- FREE(ud);
  e_schirm(f, 1);
  e_cursor(f, 1);
 #ifdef DEBUGGER
@@ -3183,5 +3133,83 @@ char *e_make_postf(char *out, char *name, char *pf)
  strcpy(out, name);
  strcat(out, pf);
  return(out);
+}
+
+/* ---- the editor's side of the buffer owner (we_buffer.h) ---- */
+
+/**
+ * e_syntax_state_after - The syntax state line @i of a window leaves the
+ * next line in.
+ */
+static int e_syntax_state_after(BUFFER *b, int i)
+{
+ int *c_sw = b->f->c_sw;
+ struct wpeSyntaxRule *st = b->f->c_st;
+
+ if (st->continue_column >= 0 && isspace(b->bf[i+1].s[st->continue_column]))
+  return(0);
+ return(e_scfbol(b->bf[i].len, c_sw[i], b->bf[i].s, st));
+}
+
+/**
+ * wpe_buffer_syntax_changed - Recompute the colours of a window from line @y.
+ * @b: the buffer whose lines changed.
+ *
+ * Every line the change touched is recomputed, then on to the first line
+ * whose starting state did not change: after a tool rewrote the file, its
+ * colours are the ones the same text has when opened fresh.
+ */
+void wpe_buffer_syntax_changed(BUFFER *b, int y)
+{
+ int i, out, until;
+
+ if (b->f == NULL || b->f->c_sw == NULL || b->f->c_st == NULL || y >= b->mxlines)
+  return;
+ if (y < 0)
+  y = 0;
+ until = b->syn_hi;
+ if (b->f->c_st->continue_column >= 0 && y > 0)
+  b->f->c_sw[y] = e_syntax_state_after(b, y - 1);
+ for (i = y; i < b->mxlines - 1; i++)
+ {
+  out = e_syntax_state_after(b, i);
+  if (out == b->f->c_sw[i+1] && i + 1 > until)
+   break;
+  b->f->c_sw[i+1] = out;
+ }
+}
+
+/**
+ * wpe_buffer_say_nomem - Say on the status row that a change was refused
+ * for want of memory; the text is as it was.
+ * @what: the change, in the user's words.
+ */
+void wpe_buffer_say_nomem(BUFFER *b, const char *what)
+{
+ char line[E_BUFFER_SAY_MAX];
+
+ snprintf(line, sizeof line, "Out of memory: %s was not made, the text is unchanged", what);
+ wpe_buffer_trace("buffer nomem %s", what);
+ if (WpeEditor != NULL && WpeEditor->mxedt > 0)
+  e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
+}
+
+/**
+ * wpe_buffer_trace - Write one line about the buffer owner to the file
+ * $XWPE_UI_TRACE names, so a test can count the records of one action.
+ */
+void wpe_buffer_trace(const char *fmt, ...)
+{
+ const char *path = getenv("XWPE_UI_TRACE");
+ FILE *tf;
+ va_list ap;
+
+ if (!path || !(tf = fopen(path, "a")))
+  return;
+ va_start(ap, fmt);
+ vfprintf(tf, fmt, ap);
+ va_end(ap);
+ fputc('\n', tf);
+ fclose(tf);
 }
 

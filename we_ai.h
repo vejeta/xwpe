@@ -529,16 +529,21 @@ void  wpe_ai_messages_run_output_begins(struct FNST *f);
  * change is visible immediately, as one undo step.  Returns 1 when a window
  * showed the file, 0 when the path is not open (nothing happens). */
 int   wpe_ai_reload_open_window(struct FNST *f, const char *path);
-/* Refresh an open window from disk WITHOUT a new undo step: for the post-edit
- * hook's rewrite, which belongs to the undo step the write already took, so
- * one Ctrl-U reverts write and reformat together.  Returns 1 when refreshed. */
+/* Refresh an open window from disk inside the caller's undo step: for the
+ * post-edit hook's rewrite, which shares the step its caller opened around
+ * the write, so one Ctrl-U reverts write and reformat together.  Returns 1
+ * when refreshed. */
 int   wpe_ai_refresh_open_window(struct FNST *f, const char *path);
 /* The window's buffer written to a temporary copy beside its file (same
  * directory and extension), for a hook that must not touch the file itself
  * before the user saves.  Fills `tmp` with the copy's path; 1 on success. */
 int   wpe_ai_window_hook_copy(struct FNST *w, char *tmp, size_t sz);
-/* Replace the window's buffer with a file's text, without a new undo step. */
+/* Replace the window's buffer with a file's text, inside the caller's undo
+ * step (it takes none of its own). */
 int   wpe_ai_window_take_file(struct FNST *w, const char *path);
+/* The buffer of the window showing `path`, or NULL when it is not open: the
+ * caller opens one undo step on it around a reload and its hook. */
+struct BFF *wpe_ai_open_window_buffer(struct FNST *f, const char *path);
 /* Sessions tied to the workspace (claudecli session id and/or a transcript). */
 void  wpe_ai_session_load(struct FNST *f);
 void  wpe_ai_session_save(struct FNST *f);

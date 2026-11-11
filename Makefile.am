@@ -57,6 +57,7 @@ we_SOURCES = \
   we_child.c \
   we_e_aus.c \
   we_edit.c \
+  we_buffer.c \
   we_fl_fkt.c \
   we_fl_unix.c \
   we_hfkt.c \
@@ -202,6 +203,7 @@ noinst_HEADERS = \
   we_wayland.h \
   we_fdloop.h \
   we_paint.h \
+  we_buffer.h \
   we_trace.h \
   we_vterm.h \
   we_dap_proto.h \
@@ -307,7 +309,14 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice
+
+# The text's owner: we_buffer.c alone (the editor's side of its seam is
+# stubbed by the test).  Marks and breakpoints move with their lines, Undo
+# and Redo give back exactly the text in one key per action, a refused
+# allocation changes nothing, a view keeps no undo.
+test_splice_SOURCES = tests/test_splice.c we_buffer.c
+test_splice_CFLAGS = $(XWPE_STDFLAG)
 
 # The screen's owner: we_paint.c with the fd loop only (the desk is given
 # through hooks the test sets).  A paint asked for under a box waits, the
@@ -527,7 +536,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap test_paint
+  test_child test_childsig test_keymap test_paint test_splice
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)

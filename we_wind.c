@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_buffer.h"
 #include <wchar.h>
 #ifdef WPE_AI
 #include "we_ai.h"
@@ -1268,7 +1269,7 @@ int e_close_buffer(BUFFER *b)
 
  if (b != NULL)
  {
-  e_remove_undo(b->ud, b->cn->numundo + 1);
+  e_buffer_history_drop(b);
   if (b->bf != NULL)
   {
    for (i = 0; i < b->mxlines; i++)
@@ -1385,6 +1386,8 @@ int e_close_window(FENSTER *f)
   }
   if (strcmp(f->datnam, "Messages") && strcmp(f->datnam, "Watches"))
    e_close_buffer(f->b);
+  else
+   f->b->f = NULL;              /* kept for the next window: no window to keep in step */
   if (f->dtmd == DTMD_HELP && f->ins == 8)
    e_help_free(f);
   if (f->datnam != NULL)

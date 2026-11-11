@@ -69,6 +69,7 @@ XPending|XEventsQueued|XCheckWindowEvent|XCheckIfEvent|XFlush we_xterm.o WeXterm
 wl_display_dispatch|wl_display_dispatch_queue|wl_display_roundtrip|wl_display_dispatch_pending|wl_display_prepare_read|wl_display_read_events we_wayland.o
 fork|vfork|forkpty|openpty|posix_spawn|posix_spawnp|popen|pclose|system|execv|execvp|execve|execl|execlp|execle|setsid|setpgid|setpgrp|waitpid|wait|wait3|wait4|pidfd_open|killpg|kill we_child.o
 WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o
+e_new_line|e_del_line|e_buffer_set_text|e_replace_buffer_undoable|e_rudo_whole_buffer|e_p_red_buffer|print_to_end_of_buffer|e_build_drop_last_row|e_brk_recalc|e_add_undo|e_remove_undo we_buffer.o we_edit.o
 EOF
 
 # The display's connection has one owner: the X11 backend.  Any other name
@@ -124,7 +125,20 @@ g_lsp_modal_depth we_paint.c
 g_lsp_ui_suspended we_paint.c
 wpe_chrome_suppress we_paint.c
 e_x_ we_xterm.c WeXterm.c we_render_cairo.c
+mxlines_write we_buffer.c
+bf_alloc we_buffer.c
+e_undo_sw we_buffer.c we_edit.c
+e_redo_sw we_buffer.c we_edit.c
 EOF
+
+# The text a window shows has one owner (we_buffer.c): every line the editor
+# adds or removes goes through its splice, which keeps the window's undo,
+# modified mark, block marks, breakpoint rows and colours in step.  The
+# symbol rule above names the old line primitives and undo functions; the
+# source rules name a direct write of a buffer's line count (mxlines_write),
+# a direct allocation of its line table (bf_alloc), and the global covers of
+# the old undo (e_undo_sw, e_redo_sw).  A new helper that adds lines some
+# other way writes mxlines or reallocates bf, and is seen here.
 
 # The screen has one owner (we_paint.c): a box, a menu or a prefix that
 # reads keys says so to it, and content from outside the user's keys is
@@ -183,6 +197,12 @@ strip_c() {
 # count the places a word is used: symbol-regex, stripped source.
 count_uses() {
   awk -v re="(^|[^A-Za-z0-9_])($1)[ \t]*[(]" '
+    { s = $0; while (match(s, re)) { n++; s = substr(s, RSTART + RLENGTH) } }
+    END { print n + 0 }' "$2"
+}
+# count the places a whole regex matches: regex, stripped source.
+count_uses_re() {
+  awk -v re="$1" '
     { s = $0; while (match(s, re)) { n++; s = substr(s, RSTART + RLENGTH) } }
     END { print n + 0 }' "$2"
 }
@@ -397,6 +417,30 @@ canary_import we_debug.o e_u_raise_editor "a debug stop raises the editor some o
 canary_import we_edit.o e_edt_einf "Alt-Insert pastes some other way than Paste"
 canary_import we_edit.o e_edt_copy "Alt-Delete copies some other way than Copy"
 canary_import we_e_aus.o e_clip_pull_os_into_buffer "a field pastes the selection some other way"
+# The text's owner: Enter and the line wrap add their lines through it, and
+# the character and block kinds record through it.  The owner itself is
+# pure by its imports: an editor symbol in it is a display, a dialog or the
+# debugger pulled into the one file the C test links alone.
+canary_import we_edit.o e_buffer_split_line "Enter adds lines some other way"
+canary_import we_edit.o e_buffer_insert_blank "the line wrap adds lines some other way"
+canary_import we_edit.o e_buffer_record_push "the char kinds record some other way"
+canary_import we_edit.o e_buffer_undo "Undo replays some other way"
+BUFFER_OWNER_SEEN=0
+for obj in $OBJECTS; do
+  [ "$(basename "$obj")" = we_buffer.o ] || continue
+  [ -f "$obj" ] || continue
+  BUFFER_OWNER_SEEN=1
+  "$NMTOOL" -u "$obj" 2>/dev/null | normalise > "$WORK/owner"
+  for sym in e_error e_schirm e_refresh WpeEditor e_sc_nw_txt e_sc_txt e_brk_recalc \
+             e_make_breakpoint e_getch e_switch_window e_set_pnt; do
+    grep -qx "$sym" "$WORK/owner" &&
+      problem "we_buffer.o imports $sym (the buffer owner is no longer pure)"
+  done
+  grep -qx malloc "$WORK/owner" ||
+    problem "canary: malloc not seen in we_buffer.o (the purity scan is blind)"
+done
+[ $BUFFER_OWNER_SEEN -eq 1 ] ||
+  problem "canary: we_buffer.o is not among the objects (the text's owner is not built)"
 DELETED_DISPLAY_SYMBOLS="e_x_clear_area e_x_vterm_user_screen e_x_vterm_load_palette
   e_x_change e_d_x_focus_to_editor e_x_reclaim_focus
   e_x_cp_X_to_buffer e_x_copy_X_buffer e_x_paste_X_buffer
@@ -489,6 +533,8 @@ for obj in $OBJECTS; do
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
       wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F|e_getch) n=$(count_uses "$word" "$file") ;;
       XK_|XKB_KEY_|e_x_) n=$(count_words "$word[A-Za-z0-9_]+" "$file") ;;
+      mxlines_write) n=$(count_uses_re 'mxlines[ \t]*[)]?[ \t]*([+][+]|--|[+]=|-=|=[^=])|([+][+]|--)[ \t]*[(]?[A-Za-z0-9_>.-]*mxlines' "$file") ;;
+      bf_alloc) n=$(count_uses_re 'bf[ \t]*=[ \t]*([(][ \t]*STRING[ \t]*[*][ \t]*[)][ \t]*)?(MALLOC|malloc|REALLOC|realloc|calloc)[ \t]*[(]|(REALLOC|realloc)[ \t]*[(][^,]*bf[ \t]*,' "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac
     [ "$n" -gt 0 ] && echo "$base $word $n" >> "$WORK/found"

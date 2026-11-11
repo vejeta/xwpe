@@ -187,15 +187,7 @@ int e_num_kst(char *s, int num, int max, FENSTER *f, int n, int sw)
  return(num);
 }
 
-/*   determine string length */
-int e_str_len(unsigned char *s)
-{
- int i;
-
- for (i = 0; *(s+i) != '\0' && *(s+i) != WPE_WR; i++)
-  ;
- return (i);
-}
+/*   e_str_len (the length of a line) lives with the lines, in we_buffer.c */
 
 #if 0
 /*   determine number of chars in a string */

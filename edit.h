@@ -201,6 +201,13 @@ typedef struct undo {
   void *pt;
  } u;
  struct undo *next;
+ int flags;            /* E_UNDO_MORE, E_UNDO_EMPTIED (we_buffer.h) */
+ int span;             /* a line record: the first line of the span */
+ struct STR *old;      /* a line record: the lines that stood there before */
+ int n_old, n_new;     /* a line record: how many stood there, how many stand now */
+ int *brk;             /* breakpoint rows of removed lines, relative to the span
+                          (a line record) or to b.y (a char record's pocket) */
+ int nbrk;
 }  Undo;
 
 typedef struct STR {
@@ -220,6 +227,13 @@ typedef struct BFF {
  struct CNT *cn;
  struct FNST *f;
  FARBE *fb;
+ int history;          /* E_BUFFER_HISTORY_FULL or E_BUFFER_NO_HISTORY (a view) */
+ int covered;          /* cover depth: splices inside record nothing */
+ int step_depth;       /* step depth: records inside are one Ctrl-U */
+ int step_pushed;      /* records pushed in the open step */
+ int replaying;        /* the list a replay's inverses go to (E_BUFFER_REPLAY_*) */
+ Undo *pocket;         /* the outermost cover's record: rows a covered deletion removes */
+ int syn_lo, syn_hi;   /* rows whose syntax state waits for depth 0; -1 when none */
 } BUFFER;
 
 typedef struct SCHRM {
@@ -498,6 +512,7 @@ int e_ctrl_o(FENSTER *f);
 int e_tst_dfkt(FENSTER *f, int c);
 int e_blk(int anz, int xa, int ya, int col);
 int e_car_ret(BUFFER *b, SCHIRM *s);
+int e_car_ret_split(BUFFER *b, SCHIRM *s);
 void e_cursor_pos_only(FENSTER *f);
 void e_cursor(FENSTER *f, int sw);
 int e_del_line(int yd, BUFFER *b, SCHIRM *s);
@@ -514,11 +529,10 @@ int e_lst_zeichen(int x, int y, int n, int sw, int frb, int max, int iold,
   int new);
 void e_mouse_bar(int x, int y, int n, int sw, int frb);
 int e_chr_sp(int x, BUFFER *b, FENSTER *f);
-Undo *e_remove_undo(Undo *ud, int sw);
 int e_add_undo(int sw, BUFFER *b, int x, int y, int n);
 int e_make_undo(FENSTER *f);
 int e_make_redo(FENSTER *f);
-char *e_buffer_to_text(BUFFER *b);
+char *e_buffer_to_text(BUFFER *b);   /* we_buffer.c */
 void e_buffer_set_text(BUFFER *b, const char *text);
 void e_replace_buffer_undoable(FENSTER *f, const char *newtext);
 int e_make_rudo(FENSTER *f, int sw);

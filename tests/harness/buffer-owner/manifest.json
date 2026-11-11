@@ -1,0 +1,159 @@
+{
+ "capability": "buffer-owner",
+ "scenarios": [
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_enter_with_auto_indent_is_one_undo_and_redo_indents_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_ctrl_y_on_the_only_line_is_undone_by_ctrl_u",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_replacement_undone_and_redone_gives_each_text_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_hook_after_a_write_that_changes_nothing_keeps_the_users_typing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-02",
+   "requirement": "The dirty mark lands on the written window, on Undo too",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_save_then_ctrl_u_of_a_ctrl_y_marks_the_window_modified",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-02",
+   "requirement": "The dirty mark lands on the written window, on Undo too",
+   "layer": "ncurses",
+   "test": "tests/test_ai_edit_blocked_contracts.py::test_save_then_undo_marks_the_window_modified_and_quit_asks",
+   "status": "covered"
+  },
+  {
+   "id": "SC-buffer-02",
+   "requirement": "The dirty mark lands on the written window, on Undo too",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-03",
+   "requirement": "Marks move with their lines and never point past the text",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_marks_after_a_rename_are_inside_the_file",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-03",
+   "requirement": "Marks move with their lines and never point past the text",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_breakpoint_below_an_accepted_edit_moves_with_its_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_undo_of_a_swap_brings_the_breakpoint_back_to_its_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_wrapped_line_moves_the_breakpoint_below_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_deleted_line_with_a_breakpoint_undone_has_it_again",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_line_joined_by_backspace_undone_has_its_breakpoint_again",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_paste_whose_last_line_wraps_undone_leaves_the_breakpoints_on_their_lines",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_the_margin_shows_the_breakpoints_a_paste_moved_at_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-05",
+   "requirement": "Syntax state follows the text",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_colours_after_a_whole_buffer_swap_are_the_new_texts",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-05",
+   "requirement": "Syntax state follows the text",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-06",
+   "requirement": "A view says so with a flag",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-07",
+   "requirement": "One owner of the text",
+   "layer": "c-unit",
+   "test": "tests/check-one-owner.sh",
+   "status": "new"
+  }
+ ]
+}
