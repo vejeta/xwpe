@@ -1790,6 +1790,34 @@ static void e_w_serve_display(void)
   wl_pump_once(0);
 }
 
+/**
+ * e_w_focus_editor - Nothing to do after a debug start: a Wayland client
+ * cannot take the keyboard.
+ *
+ * The compositor alone decides which window has the keyboard.  A client can
+ * only ask, through xdg-activation-v1 with a token tied to a recent input
+ * event, and the compositor may refuse.  So the editor stays as the
+ * compositor left it, and the user clicks into it if the debugger's terminal
+ * has the keyboard.
+ */
+static void e_w_focus_editor(void)
+{
+ WPE_TRACE("wayland", "focus_editor: a client cannot take the keyboard, nothing to do\n");
+}
+
+/**
+ * e_w_raise_editor - Nothing to do after a debug stop: a Wayland client
+ * cannot raise its window.
+ *
+ * Stacking and the keyboard belong to the compositor, which a client can
+ * only ask through xdg-activation-v1 (and the compositor may refuse).  The
+ * stop is still shown in the editor's window.
+ */
+static void e_w_raise_editor(void)
+{
+ WPE_TRACE("wayland", "raise_editor: a client cannot raise its window, nothing to do\n");
+}
+
 /* Pump Wayland events once: block in the shared poll loop first when `block`,
    then read-and-dispatch if the wl fd has data, else dispatch what is buffered
    (never blocking on the wl fd when the poll woke for another descriptor). */
@@ -2056,6 +2084,8 @@ int WpeWaylandInit(int *argc, char **argv)
  e_u_key_take      = e_w_key_take;
  e_u_palette_rgb   = wpe_render_wayland_palette_rgb;
  e_u_serve_display = e_w_serve_display;
+ e_u_focus_editor  = e_w_focus_editor;
+ e_u_raise_editor  = e_w_raise_editor;
  e_u_ini_size      = e_w_ini_size;
  e_u_setlastpic    = e_setlastpic;
  WpeMouseChangeShape  = (void (*)(WpeMouseShape))WpeNullFunction;

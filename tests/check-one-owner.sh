@@ -365,8 +365,12 @@ done
 # would read the default colormap and miss a private one.
 canary_import we_vterm.o e_u_palette_rgb "the User Screen reads the palette some other way"
 canary_import we_render_cairo.o e_x_palette_rgb16 "the Cairo renderer reads the colours some other way"
+# The debugger asks the display table to give the editor the keyboard at a
+# start and to raise it at a stop; it names no display's function.
+canary_import we_debug.o e_u_focus_editor "a debug start gives the keyboard back some other way"
+canary_import we_debug.o e_u_raise_editor "a debug stop raises the editor some other way"
 DELETED_DISPLAY_SYMBOLS="e_x_clear_area e_x_vterm_user_screen e_x_vterm_load_palette
-  e_x_change"
+  e_x_change e_d_x_focus_to_editor e_x_reclaim_focus"
 for obj in $OBJECTS; do
   [ -f "$obj" ] || continue
   defined_names "$obj" > "$WORK/defined"

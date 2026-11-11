@@ -886,6 +886,18 @@ extern int (*e_u_paste_X_buffer)(FENSTER *f);
 extern int (*e_u_palette_rgb)(int idx, unsigned char rgb[3]);
 int e_palette_rgb_unknown(int idx, unsigned char rgb[3]);
 extern void (*e_u_serve_display)(void);
+/* Give the editor's window the keyboard and leave the stacking alone: after
+   a debug start the user types into the editor while the debugger's own
+   terminal stays in view.  The terminal already has the keyboard. */
+extern void (*e_u_focus_editor)(void);
+/* Bring the editor's window to the front and give it the keyboard: a debug
+   stop the user has to see.  The terminal has nothing to raise. */
+extern void (*e_u_raise_editor)(void);
+/* The terminal emulator a graphical editor opens for a program run outside
+   it and for the external debugger window; a build may name another. */
+#ifndef XTERM_CMD
+#define XTERM_CMD "xterm"
+#endif
 int e_shell_run(const char *cmd);
 int e_t_system(const char *exe);
 int e_t_keyboard_fd(void);

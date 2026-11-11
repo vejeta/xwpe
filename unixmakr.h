@@ -116,6 +116,8 @@ extern SCREENCELL *altschirm;
 #define e_copy_X_buffer(f) (*e_u_copy_X_buffer)(f)
 #define e_paste_X_buffer(f) (*e_u_paste_X_buffer)(f)
 #define e_palette_rgb(idx, rgb) (*e_u_palette_rgb)(idx, rgb)
+#define e_focus_editor() (*e_u_focus_editor)()
+#define e_raise_editor() (*e_u_raise_editor)()
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   bioskey - Get the status of shift, alt, and control keys.

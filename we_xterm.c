@@ -44,6 +44,8 @@ int e_x_paste_X_buffer(FENSTER *f);
 static void e_clip_x_set(const char *utf8, int len);
 static char *e_clip_x_get(int *len);
 static void e_x_serve_display(void);
+static void e_x_focus_editor(void);
+static void e_x_raise_editor(void);
 int e_x_repaint_desk(FENSTER *f);
 void e_setlastpic(PIC *pic);
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
@@ -163,6 +165,8 @@ int WpeDllInit(int *argc, char **argv)
  e_u_key_take = e_x_key_take;
  e_u_palette_rgb = e_x_palette_rgb;
  e_u_serve_display = e_x_serve_display;
+ e_u_focus_editor = e_x_focus_editor;
+ e_u_raise_editor = e_x_raise_editor;
  e_u_ini_size = e_ini_size;
  e_u_setlastpic = e_setlastpic;
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
@@ -2007,17 +2011,28 @@ static void e_x_send_active_window(Time ts)
 }
 
 /**
- * e_x_reclaim_focus - Bring the editor's X window back to the front and
- * give it the keyboard, when a debug stop brought the user's attention
- * elsewhere.  The native Wayland editor has no X connection, so there it
- * does nothing.
+ * e_x_focus_editor - Give the editor's X window the keyboard.
+ *
+ * After a debug session starts the user types into the editor, not into a
+ * window the debugger came up behind.  The stacking stays as it is, so the
+ * debugger's own terminal stays in view.
  */
-void e_x_reclaim_focus(void)
+static void e_x_focus_editor(void)
+{
+ XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
+   RevertToParent, CurrentTime);
+ XFlush(WpeXInfo.display);
+}
+
+/**
+ * e_x_raise_editor - Bring the editor's X window back to the front and
+ * give it the keyboard, when a debug stop brought the user's attention
+ * elsewhere.
+ */
+static void e_x_raise_editor(void)
 {
  Time ts;
 
- if (WpeXInfo.display == NULL)
-  return;
  ts = e_x_get_server_time();
 
  XRaiseWindow(WpeXInfo.display, WpeXInfo.window);

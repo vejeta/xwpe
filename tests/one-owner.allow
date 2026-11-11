@@ -16,12 +16,7 @@ we_ai.o poll 1 P9s2 the bounded wait of the hook, checkpoint and review commands
 
 # the debugger
 we_debug.o usleep 1 P9o the external xterm settle
-we_debug.o XFlush 1 P9o e_d_x_focus_to_editor, the focus taken back after the start and the external xterm settle; no read
 we_debug.o STDIN_FILENO 1 keep ttyname_r names the editor's own terminal; no read
-we_debug.o e_x_ 1 P12b the X11 backend's focus function named from the debugger
-we_debug.o e_x_reclaim_focus 1 P12b the window raised and activated at a debug stop
-we_debug.o WpeXInfo 4 P12b the connection named from the debugger
-we_debug.o XSetInputFocus 1 P12b the keyboard focus given back after the start
 
 # the display's connection: only the X11 backend names it.  Wayland shares
 # three schirm-only functions of that file, none of which touches Xlib.

@@ -134,6 +134,8 @@ int (*e_u_paste_X_buffer)(struct FNST *f);
 int (*e_u_key_take)(int want);
 int (*e_u_palette_rgb)(int idx, unsigned char rgb[3]) = e_palette_rgb_unknown;
 void (*e_u_serve_display)(void);
+void (*e_u_focus_editor)(void) = WpeNullFunction;
+void (*e_u_raise_editor)(void) = WpeNullFunction;
 int (*e_u_ini_size)(void);
 int (*e_u_s_sys_end)(void);
 int (*e_u_s_sys_ini)(void);

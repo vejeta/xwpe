@@ -16,10 +16,6 @@
 #include "we_debpath.h"
 #include "we_debsess.h"
 
-#ifndef NO_XWINDOWS
-#include "WeXterm.h"
-#endif
-
 #ifdef DEBUGGER
 
 #include <fcntl.h>
@@ -7008,23 +7004,6 @@ static void e_d_script_terminal_raw(void)
 }
 
 /**
- * e_d_x_focus_to_editor - Give the editor's X window the keyboard.
- *
- * After a debug session starts the user types into the editor, not into a
- * window the debugger came up behind.  The native Wayland editor has no X
- * connection (and nothing to focus), so there it does nothing; asking Xlib
- * with no connection would end the editor.
- */
-static void e_d_x_focus_to_editor(void)
-{
- if (WpeXInfo.display == NULL)
-  return;
- XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
-   RevertToParent, CurrentTime);
- XFlush(WpeXInfo.display);
-}
-
-/**
  * e_d_script_connect - Open the helper script's named pipes and the
  * program's terminal it names, once the script runs.
  * @f: the source window.
@@ -7077,7 +7056,7 @@ static int e_d_script_connect(FENSTER *f)
     cannot be exercised in the headless test harness.  Until then this is a
     single named, bounded settle, not an open-coded magic number. */
  usleep(DEB_XTERM_SETTLE_MS * 1000);
- e_d_x_focus_to_editor();
+ e_focus_editor();
  return(0);
 }
 #endif
@@ -11073,10 +11052,7 @@ static void e_d_set_nonblock(int fd)
  */
 static void e_d_start_take_focus(void)
 {
-#ifndef NO_XWINDOWS
- if (WpeIsXwin())
-  e_d_x_focus_to_editor();
-#endif
+ e_focus_editor();
 }
 
 /**
@@ -15910,10 +15886,7 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  e_cursor(f, 1);
  e_d_show_stop_position(f);
  e_d_pty_flush_to_messages(f);
-#ifndef NO_XWINDOWS
- if (WpeIsXwin())
-  e_x_reclaim_focus();
-#endif
+ e_raise_editor();
  return(0);
 }
 

@@ -293,6 +293,8 @@ int WpeDllInit(int *argc, char **argv)
  e_u_sys_end = e_t_sys_end;
  e_u_system = e_t_system;
  e_u_palette_rgb = e_palette_rgb_unknown;   /* the terminal's colours are the user's own */
+ e_u_focus_editor = WpeNullFunction;   /* the terminal already has the keyboard */
+ e_u_raise_editor = WpeNullFunction;   /* the terminal has no window to raise */
  fk_u_putchar = fk_t_putchar;
  e_clip_os_set = e_clip_t_os_set;   /* ^C / ^Ins -> OS clipboard via OSC 52 */
  e_u_copy_X_buffer = e_t_copy_X_buffer;
