@@ -123,6 +123,27 @@
   {
    "id": "SC-buffer-04",
    "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_debugger_integration.py::test_enter_above_a_breakpoint_at_a_stop_moves_it_in_gdb",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_debugger_integration.py::test_a_breakpoint_moved_while_gdb_answers_is_told_after_the_answer",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_debugger_integration.py::test_enter_above_a_breakpoint_at_a_stop_moves_it_under_each_debugger",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
    "layer": "c-unit",
    "test": "test_splice",
    "status": "new"

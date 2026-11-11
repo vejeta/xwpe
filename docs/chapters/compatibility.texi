@@ -153,7 +153,9 @@ The original removed the breakpoint of a deleted line (@kbd{Ctrl-Y}, or
 breakpoint on its line number when lines were added above it by a wrapped
 line or by a tool's rewrite of the file.  The breakpoint now comes back
 with Undo, and stays on its code when lines move, so the program stops
-where the margin shows.
+where the margin shows.  During a debugging session the debugger is told
+of the move too, at once at a stop and after its answer while it is
+answering, so a key that moves a breakpoint is never refused for it.
 @end table
 
 @section Short commands

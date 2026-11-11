@@ -215,6 +215,16 @@ program then runs to its end.  Your breakpoints outlive the session:
 after @kbd{Ctrl-G Q}, or a program that ran to its end, the next
 @kbd{Ctrl-G R} stops on them again.
 
+@cindex breakpoints, moved by an edit
+A breakpoint moves with its line when you add or delete lines above it
+(@key{Return}, @kbd{Ctrl-Y}, a paste, Undo, a tool's rewrite), and in a
+session the debugger is told as if you had removed it and set it on the
+new line: at a stop at once, while the debugger answers a command as soon
+as that answer is in, and while the program runs as for @kbd{Ctrl-G B}.
+The next @kbd{Ctrl-G R} then stops on the line the margin shows.  The
+line numbers are those of the edited text: until you build again they
+can name different code in the program the debugger runs.
+
 @cindex breakpoints, while the program runs
 @cindex breakpoints, hollow
 @cindex breakpoints, refused

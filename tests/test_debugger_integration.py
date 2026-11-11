@@ -54,6 +54,7 @@ GDB_INTERFACE_ENV = "XWPE_GDB_INTERFACE"
 GDB_INTERFACES = ("cli", "mi")
 GDB_LINE_ONLY = "cli"
 GDB_STAND_IN_ROWS = frozenset((
+    "test_a_breakpoint_moved_while_gdb_answers_is_told_after_the_answer",
     "test_an_interrupt_answered_at_gdbs_prompt_is_taken_back",
     "test_an_interrupt_gdb_reports_at_the_next_resume_is_not_shown",
     "test_gdb_answer_after_a_cancel_is_not_taken_for_the_next",
@@ -9716,6 +9717,167 @@ def test_gdb_keys_reach_the_editor_while_it_answers(tmp_path):
                          STEP_TIMEOUT_S), \
             "once gdb answers the stop should be marked (mark on %s):\n%s" \
             % (_mark_line(w), _screen(w))
+
+
+# ---- a breakpoint below a line the user adds moves in the debugger too ----
+#
+# At a stop the user presses Enter at the start of a line above one of his
+# breakpoints: the mark moves down with its code, and the debugger is told,
+# so the program stops on the line the margin shows, not on the old one.
+# GDB_STEPS_PROG: stopped on line 3, a breakpoint on line 6, Enter on line 4
+# moves it to line 7.  tests/stubs/gdb with nothing to hold only passes the
+# commands on and logs them, so the row reads what gdb was told.
+
+MOVE_STOP_LINE = GDB_STEPS_BREAK_LINE
+MOVE_BRK_LINE = 6
+MOVE_ENTER_LINE = 4
+MOVE_NEW_LINE = MOVE_BRK_LINE + 1
+GDB_LOGGING_STUB = ""             # XWPE_STUB_STALL that holds nothing
+# "b p.c:7" on gdb's line interface, -break-insert "p.c:7" on its machine
+# interface.
+MOVED_BREAK_RE = re.compile(r'^CMD (b|-break-insert) "?p\.c:%d"?$'
+                            % MOVE_NEW_LINE, re.M)
+
+
+def _stub_log_from(tmp_path, start):
+    """What the stub logged after the first @start characters."""
+    return _gdb_stub_log(tmp_path)[start:]
+
+
+def _enter_above_the_breakpoint(w, line, brk_line, new_line):
+    """Enter at the start of @line: the margin then marks @new_line, not
+    @brk_line."""
+    _go_to_line(w, line)
+    w.key("\r", delay=0.6)
+    assert _wait_for(w, lambda: new_line in _breakpoint_lines(w)
+                     + _unconfirmed_lines(w), STEP_TIMEOUT_S), \
+        "the breakpoint should move down to line %d with its code:\n%s" \
+        % (new_line, _screen(w))
+    assert brk_line not in _breakpoint_lines(w) + _unconfirmed_lines(w), \
+        "line %d should have no breakpoint left:\n%s" % (brk_line, _screen(w))
+
+
+def _two_breakpoints_and_run(w, stop_line, brk_line):
+    """Breakpoints on @stop_line and @brk_line, then Ctrl-G R."""
+    _go_to_line(w, brk_line)
+    w.key(CTRL_G, "b", delay=0.4)
+    _go_to_line(w, stop_line)
+    w.key(CTRL_G, "b", delay=0.4)
+    w.key(CTRL_G, "r", delay=1.0)
+
+
+def _stopped_on_the_first(w, stop_line, brk_line, start_s):
+    """Breakpoints on @stop_line and @brk_line; the session stops on the
+    first."""
+    _two_breakpoints_and_run(w, stop_line, brk_line)
+    assert _wait_for(w, lambda: _mark_line(w) == stop_line, start_s), \
+        "Ctrl-G R should stop on line %d:\n%s" % (stop_line, _screen(w))
+
+
+def _continue_stops_on(w, line, timeout):
+    """Ctrl-G R from a stop: the program stops on @line."""
+    w.key(CTRL_G, "r", delay=0.5)
+    assert _wait_for(w, lambda: _mark_line(w) == line, timeout), \
+        "Ctrl-G R should stop on the moved breakpoint, line %d (mark on " \
+        "%s):\n%s" % (line, _mark_line(w), _screen(w))
+
+
+# @scenario SC-buffer-04
+def test_enter_above_a_breakpoint_at_a_stop_moves_it_in_gdb(tmp_path):
+    """Stopped under gdb, Enter above a breakpoint moves it down with its
+    line: gdb is told to drop the old one and set the new line, and the
+    next Ctrl-G R stops there.  The breakpoint used to move in the margin
+    only, and the program stopped on the old line."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_STEPS_PROG, filename="p.c", wait=1.5,
+                    env_extra=_gdb_stub_env(GDB_LOGGING_STUB)) as w:
+        _stopped_on_the_first(w, MOVE_STOP_LINE, MOVE_BRK_LINE,
+                              START_TIMEOUT_S)
+        before = len(_gdb_stub_log(tmp_path))
+        _enter_above_the_breakpoint(w, MOVE_ENTER_LINE, MOVE_BRK_LINE,
+                                    MOVE_NEW_LINE)
+        assert _wait_for(w, lambda: MOVED_BREAK_RE.search(
+                             _stub_log_from(tmp_path, before)),
+                         STEP_TIMEOUT_S), \
+            "gdb should be told of the breakpoint on line %d (told:\n%s):\n%s" \
+            % (MOVE_NEW_LINE, _stub_log_from(tmp_path, before), _screen(w))
+        _continue_stops_on(w, MOVE_NEW_LINE, STEP_TIMEOUT_S)
+
+
+# @scenario SC-buffer-04
+def test_a_breakpoint_moved_while_gdb_answers_is_told_after_the_answer(
+        tmp_path):
+    """Enter above a breakpoint while gdb has not answered `where` at a stop:
+    the line moves at once, nothing is sent to gdb out of turn, and once gdb
+    answers it is told of the moved breakpoint, so Ctrl-G R stops on the new
+    line.  The change is kept for after the answer, never refused or
+    lost."""
+    _need("gcc", "gdb")
+    with WpeSession(str(tmp_path), GDB_STEPS_PROG, filename="p.c", wait=1.5,
+                    env_extra=_gdb_stub_env("where")) as w:
+        _two_breakpoints_and_run(w, MOVE_STOP_LINE, MOVE_BRK_LINE)
+        _gdb_stub_holds(w, tmp_path, "where")
+        w.key(ALT_1, delay=0.5)       # the run left Messages on top
+        _enter_above_the_breakpoint(w, MOVE_ENTER_LINE, MOVE_BRK_LINE,
+                                    MOVE_NEW_LINE)
+        assert "RELEASE" not in _gdb_stub_log(tmp_path), \
+            "nothing should reach gdb while it answers `where`:\n%s" \
+            % _gdb_stub_log(tmp_path)
+        _gdb_stub_release(tmp_path)
+        assert _wait_for(w, lambda: _mark_line(w) == MOVE_STOP_LINE,
+                         STEP_TIMEOUT_S), \
+            "once gdb answers the stop should be marked:\n%s" % _screen(w)
+        assert _wait_for(w, lambda: MOVED_BREAK_RE.search(
+                             _gdb_stub_log(tmp_path)), STEP_TIMEOUT_S), \
+            "gdb should be told of the moved breakpoint after its answer " \
+            "(stub log:\n%s):\n%s" % (_gdb_stub_log(tmp_path), _screen(w))
+        log = _gdb_stub_log(tmp_path)
+        released = log.find("RELEASE by the test")
+        assert 0 <= released < MOVED_BREAK_RE.search(log).start(), \
+            "the moved breakpoint went to gdb before its answer:\n%s" % log
+        _continue_stops_on(w, MOVE_NEW_LINE, STEP_TIMEOUT_S)
+
+
+# The same under a debugger that names a breakpoint by its line (pdb) and
+# under a debug adapter, given a file's breakpoints as a whole (dlv): stopped
+# on "stop", a breakpoint on "brk", Enter at the start of "enter" moves it
+# one line down.
+PY_MOVE_PROG = (
+    "x = 1\n"
+    "x = x + 1\n"
+    "x = x + 1\n"
+    "x = x + 1\n"
+    "x = x + 1\n"
+    "x = x + 1\n"
+    "print(x)\n"
+)
+MOVE_CASES = {
+    "pdb": {"file": "p.py", "prog": PY_MOVE_PROG, "stop": 2, "enter": 3,
+            "brk": 5, "need": ("python3",), "start_s": START_TIMEOUT_S,
+            "wait": 1.5, "gomod": False},
+    "dlv": {"file": "main.go", "prog": GOTO_GO, "stop": 11, "enter": 12,
+            "brk": 13, "need": ("dlv", "go"), "start_s": GOTO_TIMEOUT_S,
+            "wait": 2.0, "gomod": True},
+}
+
+
+# @scenario SC-buffer-04
+@pytest.mark.parametrize("debugger", sorted(MOVE_CASES))
+def test_enter_above_a_breakpoint_at_a_stop_moves_it_under_each_debugger(
+        tmp_path, debugger):
+    """As under gdb: pdb is told to clear the old line and break on the new
+    one, the adapter is given the file's moved list, and Ctrl-G R stops on
+    the new line, not the old one."""
+    case = MOVE_CASES[debugger]
+    _need(*case["need"])
+    if case["gomod"]:
+        (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
+    with WpeSession(str(tmp_path), case["prog"], filename=case["file"],
+                    wait=case["wait"]) as w:
+        _stopped_on_the_first(w, case["stop"], case["brk"], case["start_s"])
+        _enter_above_the_breakpoint(w, case["enter"], case["brk"],
+                                    case["brk"] + 1)
+        _continue_stops_on(w, case["brk"] + 1, case["start_s"])
 
 
 # ---- a debugger that stops reading its input: the editor keeps its keys ----

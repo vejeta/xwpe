@@ -245,6 +245,14 @@ Changes
   marked past the end of a file a tool shortened is cut to the file
   instead of reading freed memory.
 
+* A breakpoint moved by an edit during a debugging session moves in the
+  debugger too.  Enter above a breakpoint at a stop used to move the mark
+  while gdb, pdb or the debug adapter kept the old line, so Ctrl-G R
+  stopped on a line the margin no longer marked; now the debugger is told
+  at once, or after the answer it is giving, under every debugger.  The
+  line numbers are those of the edited text: until the program is built
+  again they can name different code in it.
+
 * Alt-Insert and Alt-Delete work on Wayland, in the editor and in a
   dialog's text field (Alt-Insert, or an Alt middle click): the editor ended
   there when they were pressed.  On every display they now run Paste and

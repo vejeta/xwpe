@@ -1364,6 +1364,9 @@ static int  e_d_dap_watches_ask(ECNT *cn, int sw);
 static void e_d_dap_close_begin(e_dap_session *s, e_bsp_session *bsp);
 static void e_d_dap_adapter_ended(e_dap_session *s, void *data);
 static void e_d_act_schedule(void);               /* the kept keys (below) */
+static int  e_d_ga_answering(void);               /* the engine answers */
+static void e_d_brk_owe_sync(void);               /* tell after the answer */
+static int  e_d_dap_brk_sync_at_stop(ECNT *cn);   /* an adapter, at a stop */
 static int  e_d_gdb_run_to_line(FENSTER *f, int line);   /* gdb's (below) */
 static int  e_d_goto_cursor_line(FENSTER *f, int line);  /* Go to cursor's */
 
@@ -5334,11 +5337,11 @@ int e_d_reinit_brks(FENSTER * f,char * prj)
  * e_brk_recalc - The block code moved @len lines at @start of window @f by
  * hand (negative: deleted): move the breakpoints of that file with them.
  *
- * The debugger's list moves through the same path every line change of the
- * buffer owner takes, and the margin is then rebuilt from that list and
- * drawn again, so the user sees each breakpoint on its code as soon as the
- * paste or the delete is shown.  Return: 0, or 1 when there was nothing to
- * move.
+ * The debugger's list moves, and a running session is told, through the
+ * path every line change of the buffer owner takes (wpe_buffer_lines_moved);
+ * the margin is then rebuilt from that list and drawn again, so the user
+ * sees each breakpoint on its code as soon as the paste or the delete is
+ * shown.  Return: 0, or 1 when there was nothing to move.
  */
 int e_brk_recalc(FENSTER *f, int start, int len)
 {
@@ -5985,6 +5988,31 @@ int e_mk_brk_main(FENSTER *f, int sw)
 }
 
 /**
+ * e_d_brk_list_add - Give the list a new entry for @line of @file, not told
+ * to any debugger yet.
+ * @file: the window's file name; @line: 1-based.
+ *
+ * The list half of setting a breakpoint, shared by the user's toggle and by
+ * a breakpoint Undo brings back with its line.  When the name cannot be
+ * copied the list is left as it was, so no entry without a file is ever
+ * taken for the editor's own start breakpoint.
+ * Return: the new entry's index, or -1 when memory ran out.
+ */
+static int e_d_brk_list_add(const char *file, int line)
+{
+ char *name = MALLOC(strlen(file) + 1);
+
+ if (name == NULL)
+  return(-1);
+ strcpy(name, file);
+ e_d_brk_grow();
+ e_d_sbrpts[e_d_nbrpts - 1] = name;
+ e_d_ybrpts[e_d_nbrpts - 1] = line;
+ e_d_nrbrpts[e_d_nbrpts - 1] = 0;
+ return(e_d_nbrpts - 1);
+}
+
+/**
  * e_d_brk_toggle_off - The user removed the breakpoint on @line of window
  * @f's file: take it out of the list and, while a session runs, out of the
  * debugger.
@@ -6031,11 +6059,11 @@ static int e_d_brk_toggle_off(FENSTER *f, int line)
  */
 static int e_d_brk_toggle_on(FENSTER *f, int line)
 {
- e_d_brk_grow();
- e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(f->datnam) + 1);
- strcpy(e_d_sbrpts[e_d_nbrpts - 1], f->datnam);
- e_d_ybrpts[e_d_nbrpts - 1] = line;
- e_d_nrbrpts[e_d_nbrpts - 1] = 0;
+ if (e_d_brk_list_add(f->datnam, line) < 0)
+ {
+  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+  return(-1);
+ }
  if (!e_d_swtch)
   return(0);
  if (e_d_brk_must_wait())
@@ -6050,6 +6078,21 @@ static int e_d_brk_toggle_on(FENSTER *f, int line)
   return(-1);
  e_d_brk_say_refusal(f, e_d_nbrpts - 1);
  return(0);
+}
+
+/**
+ * e_d_brk_line_gone - The line of list entry @i went: take it out of the
+ * list and, while a session runs, keep it as a removal for the debugger.
+ *
+ * The removal half of the user's toggle: the debugger is told when it can
+ * take a command (e_d_brk_route), so the program no longer stops on code
+ * the user deleted.  An entry the debugger never had needs no removal.
+ */
+static void e_d_brk_line_gone(int i)
+{
+ if (e_d_swtch)
+  e_d_brk_gone_add(i);
+ e_d_brk_list_drop(i);
 }
 
 /**
@@ -6072,15 +6115,58 @@ static int e_d_brk_lines_dropped(const char *file, int lo, int hi,
    hit = (rows[k] == row);
   if (!hit)
    continue;
-  e_d_brk_list_drop(i);
+  e_d_brk_line_gone(i);
   gone++;
  }
  return(gone);
 }
 
 /**
+ * e_d_brk_line_moved - The line of list entry @i moved by @delta.
+ *
+ * gdb numbers what it set and the other debuggers name a breakpoint by its
+ * line, so to every one of them a moved line is a removal and a new
+ * breakpoint: while a session runs the old one is kept as a removal and
+ * the entry is not told on its new line yet, as the two toggles leave
+ * them.  The entry keeps its place in the list, so the index a stop keeps
+ * of the editor's own start breakpoint stays good.  Without a session only
+ * the line changes.
+ */
+static void e_d_brk_line_moved(int i, int delta)
+{
+ if (e_d_swtch)
+  e_d_brk_gone_add(i);
+ e_d_ybrpts[i] += delta;
+ if (!e_d_swtch)
+  return;
+ e_d_nrbrpts[i] = 0;
+ e_d_brk_set_state(i, E_D_BRK_PENDING, NULL);
+}
+
+/**
+ * e_d_brk_revive_moved - Give each entry of @file on row @from (0-based) or
+ * below that the debugger was not told of yet the breakpoint the debugger
+ * still has on that same line.
+ *
+ * Two breakpoints a line apart, pushed down one line, leave the lower one's
+ * old line under the upper one: the debugger keeps that breakpoint, and
+ * only the line that is really new is sent, as when the user sets again a
+ * mark he had just taken off.
+ */
+static void e_d_brk_revive_moved(const char *file, int from)
+{
+ int i;
+
+ for (i = 0; i < e_d_nbrpts; i++)
+  if (!strcmp(e_d_sbrpts[i], file) && e_d_ybrpts[i] - 1 >= from &&
+      e_d_brk_unsent(i))
+   e_d_brk_gone_revive(i);
+}
+
+/**
  * e_d_brk_lines_shifted - Move the entries of @file at or below row @from
- * by @delta lines.  Return: how many moved.
+ * by @delta lines, telling a running session of each.
+ * Return: how many moved.
  */
 static int e_d_brk_lines_shifted(const char *file, int from, int delta)
 {
@@ -6091,64 +6177,126 @@ static int e_d_brk_lines_shifted(const char *file, int from, int delta)
  for (i = 0; i < e_d_nbrpts; i++)
   if (!strcmp(e_d_sbrpts[i], file) && e_d_ybrpts[i] - 1 >= from)
   {
-   e_d_ybrpts[i] += delta;
+   e_d_brk_line_moved(i, delta);
    moved++;
   }
+ if (moved > 0 && e_d_swtch)
+  e_d_brk_revive_moved(file, from + delta);
  return(moved);
 }
 
 /**
  * e_d_brk_lines_added - Give the list an entry for each row in @rows
  * (0-based) of @file that has none: a breakpoint brought back by Undo.
- * Return: how many were added.
+ *
+ * While a session runs, a breakpoint the debugger still has on that line
+ * (its removal not told yet) is taken over instead of set twice.
+ * Return: how many were added; one whose name could not be copied is not.
  */
 static int e_d_brk_lines_added(const char *file, const int *rows, int nrows)
 {
- int k, added = 0;
+ int k, i, added = 0;
 
  for (k = 0; k < nrows; k++)
  {
   if (e_d_brk_index_of(file, rows[k] + 1) >= 0)
    continue;
-  e_d_brk_grow();
-  e_d_sbrpts[e_d_nbrpts - 1] = MALLOC(strlen(file) + 1);
-  strcpy(e_d_sbrpts[e_d_nbrpts - 1], file);
-  e_d_ybrpts[e_d_nbrpts - 1] = rows[k] + 1;
-  e_d_nrbrpts[e_d_nbrpts - 1] = 0;
+  i = e_d_brk_list_add(file, rows[k] + 1);
+  if (i < 0)
+   continue;
+  if (e_d_swtch)
+   e_d_brk_gone_revive(i);
   added++;
  }
  return(added);
 }
 
 /**
+ * e_d_brk_route - Tell the debugger of the breakpoints a line change moved,
+ * the way it can take them now.
+ * @cn: the editor.
+ *
+ * The one place a moved, deleted or restored breakpoint reaches a running
+ * session, so the program stops on the line the margin shows under every
+ * debugger.  While the program runs the change goes the way the toggles'
+ * does then; while the debugger answers it is kept and told once the answer
+ * is in, never refused and never lost; at a stop it is told at once.  With
+ * no session there is nothing to tell: the next start sets the list.
+ */
+static void e_d_brk_route(ECNT *cn)
+{
+ if (!e_d_swtch || !e_d_brk_changed_while_running())
+  return;
+ if (e_d_brk_must_wait())
+ {
+  e_d_run_breakpoints_changed(cn);
+  return;
+ }
+ if (e_d_ga_answering())
+ {
+  e_d_brk_owe_sync();
+  return;
+ }
+ if (e_d_ga_at_stop())
+ {
+  e_d_ga_brk_sync(cn);
+  return;
+ }
+ if (e_deb_type == DEB_DAP && e_d_dap_active() && !e_d_run_going())
+ {
+  e_d_dap_brk_sync_at_stop(cn);
+  return;
+ }
+ e_d_brk_owe_sync();
+}
+
+/**
+ * e_d_lines_kept_in_place - How many of the lines a change took out were
+ * replaced by lines put in their place.
+ * @n_del, @n_ins: the lines that went and came.
+ */
+static int e_d_lines_kept_in_place(int n_del, int n_ins)
+{
+ if (n_del < n_ins)
+  return(n_del);
+ return(n_ins);
+}
+
+/**
  * wpe_buffer_lines_moved - The lines of a window's file moved: keep the
- * debugger's list of that file's breakpoints on their code.
+ * breakpoints of that file on their code, in the list and in the debugger.
  * @b: the buffer; @y: the first line of the change; @n_del, @n_ins: lines
  * that went and came; @rows_removed: rows (before) whose breakpoint left
  * with their line; @rows_added: rows (after) that got one back.
  *
  * Entries on removed lines go, entries below move by the difference, and a
  * breakpoint Undo brought back is listed again, so the next run stops on
- * the line the margin shows and the project keeps it.  Only the list is
- * changed here: the margin is the buffer owner's, and nothing is painted,
- * refused or asked.  A buffer with no window or no file name has no list.
+ * the line the margin shows and the project keeps it.  A running session
+ * is told through e_d_brk_route.  Nothing is painted, refused or asked
+ * here: the margin is the buffer owner's.  A buffer with no window or no
+ * file name has no list.
  */
 void wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
                             const int *rows_removed, int n_removed,
                             const int *rows_added, int n_added)
 {
  const char *file;
- int changed = n_del < n_ins ? n_del : n_ins, touched;
+ int changed, touched;
 
- if (b == NULL || b->f == NULL || (file = b->f->datnam) == NULL)
+ if (b == NULL || b->f == NULL || b->f->datnam == NULL)
   return;
  if (e_d_nbrpts == 0 && n_added == 0)
   return;
- touched = e_d_brk_lines_dropped(file, y + changed, y + n_del, rows_removed, n_removed);
+ file = b->f->datnam;
+ changed = e_d_lines_kept_in_place(n_del, n_ins);
+ touched = e_d_brk_lines_dropped(file, y + changed, y + n_del, rows_removed,
+                                 n_removed);
  touched += e_d_brk_lines_shifted(file, y + n_del, n_ins - n_del);
  touched += e_d_brk_lines_added(file, rows_added, n_added);
- if (touched > 0 && b->f->ed != NULL)
-  e_d_breakpoints_changed(b->f->ed);
+ if (touched == 0 || b->f->ed == NULL)
+  return;
+ e_d_breakpoints_changed(b->f->ed);
+ e_d_brk_route(b->f->ed);
 }
 
 int e_make_breakpoint(FENSTER *f, int sw)
@@ -15441,6 +15589,25 @@ static int e_d_dap_sync_live(ECNT *cn)
 }
 
 /**
+ * e_d_dap_brk_sync_at_stop - Give the debug adapter, at a stop, the files
+ * whose breakpoints a line change moved.
+ * @cn: the editor.
+ *
+ * Each such file's list goes as a whole, as while the program runs; its
+ * answer is read on the fd loop, as the answer to a toggle at a stop is,
+ * so a mark the adapter refuses says why.
+ * Return: 0, or -1 when the adapter could not take it (the entries stay
+ * marked as not told).
+ */
+static int e_d_dap_brk_sync_at_stop(ECNT *cn)
+{
+ int ret = e_d_dap_sync_live(cn);
+
+ e_d_dr_watch();
+ return(ret);
+}
+
+/**
  * e_d_dap_clear_every_file - Give the adapter an empty breakpoint list for
  * each file the user's list names.
  * @cn: the editor.
@@ -16232,6 +16399,8 @@ static struct
  ECNT *cn;
  E_D_ACT act[E_D_GA_ACT_MAX];
  int nact;
+ int brk_owed;               /* a line change moved breakpoints while the
+                                debugger answered: tell it once it is done */
  int act_timer;
  e_d_wait_line kept;         /* a waiting line asked for under a box */
 } e_d_ga;
@@ -16826,6 +16995,7 @@ static void e_d_ga_begin(ECNT *cn)
  e_d_ga.act_timer = E_D_GA_NO_TIMER;
  e_d_ga.chain = E_D_GA_NONE;
  e_d_ga.nact = 0;
+ e_d_ga.brk_owed = 0;
  e_d_ga.owed = 0;
  e_d_gs_settle_forget();
  e_d_ga.pause_asked = 0;
@@ -16865,6 +17035,7 @@ static void e_d_ga_forget(void)
   return;
  e_d_ga.live = 0;
  e_d_ga_actions_drop();
+ e_d_ga.brk_owed = 0;
  e_d_req_cancel(&e_d_ga.rq, &e_d_ga.io, E_D_REQ_GONE);
  e_d_ga_unwatch_answer();
  e_d_ga_unwatch_errors();
@@ -18102,12 +18273,15 @@ int e_d_dap_all_closed(void)
 static void e_d_act_on_timer(void *data);   /* (below) */
 
 /**
- * e_d_act_schedule - Run the next kept key once gdb is done, from the
- * editor's loop rather than from inside an answer.
+ * e_d_act_schedule - Run the next kept key, and tell the breakpoints kept
+ * meanwhile, once gdb is done, from the editor's loop rather than from
+ * inside an answer.
  */
 static void e_d_act_schedule(void)
 {
- if (e_d_ga.nact == 0 || e_d_ga.act_timer != E_D_GA_NO_TIMER)
+ if (e_d_ga.nact == 0 && !e_d_ga.brk_owed)
+  return;
+ if (e_d_ga.act_timer != E_D_GA_NO_TIMER)
   return;
  e_d_ga.act_timer = wpe_timer_add(0, 0, e_d_act_on_timer, NULL);
  if (e_d_ga.act_timer <= 0)
@@ -18127,6 +18301,35 @@ static void e_d_act_push(int kind, FENSTER *f, int line)
  a->line = line;
  snprintf(a->file, sizeof a->file, "%s", f->datnam ? f->datnam : "");
  snprintf(a->dirct, sizeof a->dirct, "%s", f->dirct ? f->dirct : "");
+}
+
+/**
+ * e_d_brk_owe_sync - Breakpoints a line change moved wait for the debugger
+ * to finish its answer: tell it of them once it has.
+ *
+ * Sending now would be answered out of turn, and refusing the change would
+ * leave the debugger stopping on the old line.  The end of the answer runs
+ * the kept work (e_d_act_schedule), and the breakpoints go first, before a
+ * key kept meanwhile runs the program on.
+ */
+static void e_d_brk_owe_sync(void)
+{
+ e_d_ga.brk_owed = 1;
+}
+
+/**
+ * e_d_brk_pay_sync - The debugger is done answering: tell it of the
+ * breakpoints owed to it.
+ *
+ * Return: 1 when they were owed.
+ */
+static int e_d_brk_pay_sync(void)
+{
+ if (!e_d_ga.brk_owed)
+  return(0);
+ e_d_ga.brk_owed = 0;
+ e_d_brk_route(WpeEditor);
+ return(1);
 }
 
 /**
@@ -18208,7 +18411,8 @@ static void e_d_act_run(const E_D_ACT *a)
 }
 
 /**
- * e_d_act_on_timer - The loop is free: run the oldest kept key.
+ * e_d_act_on_timer - The loop is free: tell the debugger of the breakpoints
+ * owed to it, then run the oldest kept key.
  * @data: unused.
  *
  * Only once gdb is done and the program is stopped; a key that started a
@@ -18223,9 +18427,14 @@ static void e_d_act_on_timer(void *data)
  if ((!e_d_ga.live && !e_d_dap_active()) || !e_d_session_runs())
  {
   e_d_ga.nact = 0;
+  e_d_ga.brk_owed = 0;
   return;
  }
- if (e_d_ga.nact == 0 || e_d_ga_answering() || e_d_run_going())
+ if (e_d_ga_answering())
+  return;
+ if (e_d_brk_pay_sync() && e_d_ga_answering())
+  return;                       /* the keys wait for that answer in turn */
+ if (e_d_ga.nact == 0 || e_d_run_going())
   return;
  e_d_act_pop(&a);
  e_d_act_run(&a);
