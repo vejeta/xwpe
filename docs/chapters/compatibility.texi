@@ -92,6 +92,9 @@ dialog could be open when output or a stop arrived.  xwpe keeps the
 keyboard meanwhile, so a box, the menu bar, a prefix such as
 @kbd{Ctrl-G} or the User Screen can be open when they arrive; what
 arrives then is kept and drawn when it closes (@pxref{Interface tour}).
+The same holds for the program a run starts and for what the loop brings
+(the build's output, a reply, a language server's news): the original had
+no such callbacks, and here none draws while a box or a run has the screen.
 A box drawn over is a box you can no longer read.
 @end table
 

@@ -463,3 +463,15 @@ window, drag a scrollbar, or look at the User Screen (@kbd{Alt-F5}).  A
 stop that comes while @kbd{Ctrl-G} waits for its letter is shown after
 the command: the letter is taken for the program as you saw it, still
 running.
+
+@cindex run, what waits for it
+The program you start with @kbd{Ctrl-F9} keeps the screen too, while it
+runs in Messages: an assistant reply that lands meanwhile does not open its
+review over the program, which would take your typing for the box's keys.
+It is shown when the program ends.  The build's output, the assistant's
+waiting line, what a language server found (the @samp{LSP: 1 error(s)}
+line and the marks on the source) and a message that the server stopped
+are kept the same way while a dialog or a dropdown is open, and drawn
+when it closes, not at your next key.  A status line you were meant to
+read stays until you press a key, however many keys the menu bar or the
+size and move command reads first.

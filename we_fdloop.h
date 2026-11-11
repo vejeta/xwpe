@@ -45,6 +45,13 @@ void wpe_fd_refusal(const char *what, int fd, char *line, size_t sz);
 int  wpe_timer_add(long interval_ms, int repeat, wpe_timer_callback cb, void *data);
 void wpe_timer_del(int id);
 
+/* What runs before and after every callback the loop serves, a descriptor's
+   or a timer's: the screen's owner notes that a callback is running and,
+   when the outermost one has returned, shows what it asked to draw.  One
+   place for all of them, so no registration can escape it. */
+typedef void (*wpe_loop_hook)(void);
+void wpe_loop_hooks_set(wpe_loop_hook before, wpe_loop_hook after);
+
 /* What wpe_fd_readable_now says about a descriptor. */
 #define WPE_FD_NOT_READABLE 0
 #define WPE_FD_READABLE     1

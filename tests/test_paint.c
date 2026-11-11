@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <unistd.h>
 
 #include "../we_paint.h"
@@ -322,7 +323,23 @@ static void test_a_box_reads_its_key_owning_the_screen(void)
 	chk("the key", c, KEY_ON_THE_BOX);
 	chk("read with the box owning the screen", depth_seen_by_read, 1);
 	chk("the owner gives the screen back", wpe_paint_modal_depth(), 0);
-	chk("the desk was told a box opened", boxes_opened, 1);
+	chk("reading the next key is not a box opening", boxes_opened, 0);
+}
+
+/* A status line kept until the next key is the desk's to drop when a box
+   opens; a menu bar or a Size/Move loop that reads key after key must not
+   make it forget the line at each read. */
+static void test_a_box_opening_tells_the_desk_but_a_key_read_does_not(void)
+{
+	reset();
+	boxes_opened = 0;
+	wpe_paint_modal_enter("a dialog");
+	chk("a box opening: the desk is told", boxes_opened, 1);
+	wpe_paint_modal_leave();
+	wpe_paint_modal_getch();
+	wpe_paint_modal_getch();
+	wpe_paint_modal_getch();
+	chk("three key reads: the desk is not told again", boxes_opened, 1);
 }
 
 static void test_depth_past_the_bound_is_traced_and_stays_balanced(void)
@@ -393,6 +410,152 @@ static void test_a_key_taken_without_waiting_is_the_displays(void)
 	chk("no box opened", boxes_opened, 0);
 }
 
+/* ---- callbacks of the loop ---- */
+
+#define NO_WAIT_MS 0
+
+static int in_callback_inside = -1;
+static int callback_verdict = -1;
+static int callback_pipe[2];
+
+/* Make @callback run once on the loop, as a descriptor's callback. */
+static void run_fd_callback(wpe_fd_callback callback)
+{
+	char byte = 'x';
+
+	if (pipe(callback_pipe) != 0)
+		return;
+	if (write(callback_pipe[1], &byte, 1) != 1)
+		return;
+	wpe_fd_add(callback_pipe[0], POLLIN, callback, NULL);
+	wpe_fd_poll(NO_WAIT_MS);
+	wpe_fd_del(callback_pipe[0]);
+	close(callback_pipe[0]);
+	close(callback_pipe[1]);
+}
+
+/* Take what woke the descriptor, as a callback must. */
+static void take_the_byte(int fd)
+{
+	char byte;
+
+	if (read(fd, &byte, 1) != 1)
+		return;
+}
+
+static void callback_asks_to_paint(int fd, void *data)
+{
+	(void)data;
+	take_the_byte(fd);
+	in_callback_inside = wpe_paint_in_callback();
+	callback_verdict = wpe_paint_request(paint_letter, (void *)&A, "A");
+}
+
+static void test_a_callback_that_asks_while_idle_is_drawn_at_once(void)
+{
+	reset();
+	in_callback_inside = -1;
+	run_fd_callback(callback_asks_to_paint);
+	chk("inside the callback the owner says so", in_callback_inside, 1);
+	chk("outside it, not", wpe_paint_in_callback(), 0);
+	chk("idle: drawn now", callback_verdict, WPE_PAINT_NOW);
+	chk_str("once", order, "A");
+}
+
+static void callback_asks_under_a_box(int fd, void *data)
+{
+	(void)data;
+	take_the_byte(fd);
+	wpe_paint_modal_enter("a dialog");
+	callback_verdict = wpe_paint_request(paint_letter, (void *)&A, "A");
+}
+
+static void test_a_callback_under_a_box_draws_nothing_when_it_returns(void)
+{
+	reset();
+	run_fd_callback(callback_asks_under_a_box);
+	chk("kept", callback_verdict, WPE_PAINT_DEFERRED);
+	chk_str("the box still owns the screen: nothing drawn", order, "");
+	wpe_paint_modal_leave();
+	wpe_paint_replay_if_idle();
+	chk_str("drawn by the key loop when the box closes", order, "A");
+}
+
+/* A callback that finds the screen taken (a File Manager on top), asks, and
+   gives the screen back before it returns: the capture a callback runs and
+   the dialog it closes. */
+static void callback_asks_then_the_screen_is_back(int fd, void *data)
+{
+	(void)data;
+	take_the_byte(fd);
+	text_on_top = 0;
+	wpe_paint_request(paint_letter, (void *)&A, "A");
+	text_on_top = 1;
+}
+
+static void test_what_a_callback_kept_is_drawn_when_it_returns_idle(void)
+{
+	reset();
+	run_fd_callback(callback_asks_then_the_screen_is_back);
+	chk_str("drawn at the end of the callback, not at the next key", order, "A");
+}
+
+static void inner_callback_asks(int fd, void *data)
+{
+	(void)data;
+	take_the_byte(fd);
+	wpe_paint_request(paint_letter, (void *)&B, "B");
+	log_letter('i');
+}
+
+/* A callback that polls the loop (a dialog it opens does): the callback that
+   runs inside it is not the outermost, so nothing is drawn until the outer
+   one has returned. */
+static void callback_that_polls_inside(int fd, void *data)
+{
+	int inner[2];
+	char byte = 'y';
+
+	(void)data;
+	take_the_byte(fd);
+	text_on_top = 0;
+	if (pipe(inner) != 0)
+		return;
+	if (write(inner[1], &byte, 1) != 1)
+		return;
+	wpe_fd_add(inner[0], POLLIN, inner_callback_asks, NULL);
+	wpe_fd_poll(NO_WAIT_MS);
+	wpe_fd_del(inner[0]);
+	close(inner[0]);
+	close(inner[1]);
+	log_letter('o');
+	text_on_top = 1;
+}
+
+static void test_only_the_outermost_callback_draws_what_was_kept(void)
+{
+	reset();
+	run_fd_callback(callback_that_polls_inside);
+	chk_str("the inner one drew nothing; the outer drew B after its own work",
+	        order, "ioB");
+}
+
+static void timer_asks_then_the_screen_is_back(void *data)
+{
+	(void)data;
+	text_on_top = 0;
+	wpe_paint_request(paint_letter, (void *)&C, "C");
+	text_on_top = 1;
+}
+
+static void test_a_timer_is_a_callback_too(void)
+{
+	reset();
+	wpe_timer_add(NO_WAIT_MS, 0, timer_asks_then_the_screen_is_back, NULL);
+	wpe_fd_poll(NO_WAIT_MS);
+	chk_str("a timer's paint is drawn when it returns", order, "C");
+}
+
 int main(void)
 {
 	test_nothing_is_idle_before_the_desk_is_known();
@@ -413,6 +576,12 @@ int main(void)
 	test_the_overlay_switch();
 	test_a_paint_that_asks_for_itself_cannot_hold_the_key_loop();
 	test_a_key_taken_without_waiting_is_the_displays();
+	test_a_box_opening_tells_the_desk_but_a_key_read_does_not();
+	test_a_callback_that_asks_while_idle_is_drawn_at_once();
+	test_a_callback_under_a_box_draws_nothing_when_it_returns();
+	test_what_a_callback_kept_is_drawn_when_it_returns_idle();
+	test_only_the_outermost_callback_draws_what_was_kept();
+	test_a_timer_is_a_callback_too();
 	if (fails) {
 		printf("test_paint: %d failure(s)\n", fails);
 		return 1;

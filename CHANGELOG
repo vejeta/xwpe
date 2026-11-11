@@ -233,6 +233,18 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Output, replies and messages arriving from the background no longer
+  draw over a box or a running program (status lines still do; that is
+  next).  An assistant reply that landed while a Ctrl-F9 program
+  ran opened its review over the program; it now waits until the program
+  ends.  The build's output, the assistant's waiting line and what a
+  language server says wait for a dialog or a dropdown and are drawn when
+  it closes: the "LSP: 1 error(s)" line and the message that the server
+  stopped were lost when they came under one.  Output kept behind a
+  dialog is drawn as soon as the editor is free, even when the dialog was
+  closed by something that ran on the loop, not at your next key.  The
+  Wayland editor shows a build streaming under a dialog the same way.
+
 * No debugged program is left running after its session.  An adapter that
   names its program (gdb does) and leaves it running after Quit has it
   ended by the editor: two seconds, then SIGKILL, to that process alone,

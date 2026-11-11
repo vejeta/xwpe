@@ -68,6 +68,39 @@ typedef struct {
 static wpe_fd_entry fd_table[WPE_FD_MAX];
 static int fd_count = 0;
 
+/* Run before and after every callback served; NULL until the screen's owner
+   sets them. */
+static wpe_loop_hook loop_before_callback = NULL;
+static wpe_loop_hook loop_after_callback = NULL;
+
+/**
+ * wpe_loop_hooks_set - Name what runs before and after every callback.
+ * @before, @after: the screen's owner's two calls, or NULL for none.
+ *
+ * A descriptor's callback and a timer's both pass through the two, so a
+ * reply, a build's output or a spinner's tick that asks to be drawn is
+ * drawn under the owner's rule whoever registered it.
+ */
+void wpe_loop_hooks_set(wpe_loop_hook before, wpe_loop_hook after)
+{
+ loop_before_callback = before;
+ loop_after_callback = after;
+}
+
+/** wpe_loop_before - Run the hook that opens a callback, if one is set. */
+static void wpe_loop_before(void)
+{
+ if (loop_before_callback)
+  loop_before_callback();
+}
+
+/** wpe_loop_after - Run the hook that closes a callback, if one is set. */
+static void wpe_loop_after(void)
+{
+ if (loop_after_callback)
+  loop_after_callback();
+}
+
 /* Descriptors with bytes waiting for their child to read them: at most one
    per watched descriptor, and a child's input is one of those. */
 #define WPE_FD_WRITERS_MAX WPE_FD_MAX
@@ -267,10 +300,12 @@ static void wpe_fd_run_callback(wpe_fd_entry *e)
  e->pending = 0;
  e->busy = 1;
  wpe_loop_work++;
+ wpe_loop_before();
  e->callback(e->fd, e->data);
  /* The slot may hold another registration now; it is not running (its
     callback could only have run inside this one, and has returned). */
  e->busy = 0;
+ wpe_loop_after();
 }
 
 /**
@@ -1066,7 +1101,9 @@ static void wpe_timer_fire(wpe_timer_entry *t, int64_t now)
  else
   t->id = WPE_TIMER_NONE;
  wpe_loop_work++;
+ wpe_loop_before();
  cb(data);
+ wpe_loop_after();
 }
 
 /**

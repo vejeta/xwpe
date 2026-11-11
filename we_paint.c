@@ -27,9 +27,13 @@ static int           paint_desk_known = 0;
 static int           paint_depth = 0;
 static int           paint_running = 0;
 static int           paint_chrome_off = 0;
+static int           paint_callbacks = 0;
 static WpePaintEntry paint_queue[WPE_PAINT_DEFER_MAX];
 static int           paint_queued = 0;
 static const char   *paint_lost_what = NULL;
+
+static void wpe_paint_callback_enter(void);
+static void wpe_paint_callback_leave(void);
 
 /**
  * wpe_paint_trace - Write one line to the file $XWPE_UI_TRACE names.
@@ -95,6 +99,7 @@ void wpe_paint_desk_set(const WpePaintDesk *desk)
 {
  paint_desk = *desk;
  paint_desk_known = 1;
+ wpe_loop_hooks_set(wpe_paint_callback_enter, wpe_paint_callback_leave);
 }
 
 /**
@@ -127,6 +132,20 @@ int wpe_paint_idle(void)
 }
 
 /**
+ * wpe_paint_depth_up - One box more owns the screen.
+ * @what: names it in the trace.
+ */
+static void wpe_paint_depth_up(const char *what)
+{
+ paint_depth++;
+ if (paint_depth > WPE_PAINT_DEPTH_MAX)
+  wpe_paint_trace("modal depth over %d at %s", WPE_PAINT_DEPTH_MAX,
+                  wpe_paint_label(what));
+ wpe_paint_trace("modal enter depth=%d %s", paint_depth,
+                 wpe_paint_label(what));
+}
+
+/**
  * wpe_paint_modal_enter - A box, a menu or a prefix takes the screen.
  * @what: names it in the trace.
  *
@@ -137,12 +156,7 @@ void wpe_paint_modal_enter(const char *what)
 {
  if (paint_desk_known && paint_desk.box_opens)
   paint_desk.box_opens();
- paint_depth++;
- if (paint_depth > WPE_PAINT_DEPTH_MAX)
-  wpe_paint_trace("modal depth over %d at %s", WPE_PAINT_DEPTH_MAX,
-                  wpe_paint_label(what));
- wpe_paint_trace("modal enter depth=%d %s", paint_depth,
-                 wpe_paint_label(what));
+ wpe_paint_depth_up(what);
 }
 
 /**
@@ -178,14 +192,17 @@ int wpe_paint_modal_depth(void)
  * wpe_paint_modal_getch - Read one key for a box that is on the screen.
  *
  * The one way a box reads a key: while the key is awaited, output, replies
- * and answers wait instead of drawing under the box.
+ * and answers wait instead of drawing under the box.  Reading the next key
+ * is not a new box opening, so a status line kept for the user to read
+ * stays until that key is pressed, however many keys the menu bar or the
+ * Size/Move loop reads.
  * Return: the key.
  */
 int wpe_paint_modal_getch(void)
 {
  int c = 0;
 
- wpe_paint_modal_enter("a key read by a box");
+ wpe_paint_depth_up("a key read by a box");
  if (paint_desk_known && paint_desk.read_key)
   c = paint_desk.read_key();
  wpe_paint_modal_leave();
@@ -367,6 +384,48 @@ void wpe_paint_replay_if_idle(void)
  paint_running = 1;
  wpe_paint_drain();
  paint_running = 0;
+}
+
+/**
+ * wpe_paint_callback_enter - The loop starts a callback (a descriptor's or a
+ * timer's).
+ *
+ * Until the matching leave, wpe_paint_in_callback says so, and the paints the
+ * callback asks for while a box, a run or a command has the screen are kept.
+ */
+static void wpe_paint_callback_enter(void)
+{
+ paint_callbacks++;
+}
+
+/**
+ * wpe_paint_callback_leave - A callback of the loop has returned.
+ *
+ * When it was the outermost one and the editor is idle, what it (or an
+ * earlier one) asked to draw while the screen was not the editor's is shown
+ * now: the user sees the build's end or the reply the moment it can be
+ * drawn, not at the next key.  A callback that ran inside a box's own key
+ * wait leaves the paints kept: the key loop shows them when the box closes.
+ */
+static void wpe_paint_callback_leave(void)
+{
+ if (paint_callbacks > 0)
+  paint_callbacks--;
+ if (paint_callbacks > 0)
+  return;
+ wpe_paint_replay_if_idle();
+}
+
+/**
+ * wpe_paint_in_callback - Is a callback of the loop running?
+ *
+ * A message said from a callback while a box owns the screen waits for the
+ * box; the same message said from the user's own key is drawn at once.
+ * Return: non-zero inside a callback.
+ */
+int wpe_paint_in_callback(void)
+{
+ return paint_callbacks > 0;
 }
 
 /**

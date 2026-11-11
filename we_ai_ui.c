@@ -1350,6 +1350,28 @@ static FENSTER *ai_caret_window(FENSTER *act)
  return act;
 }
 
+/* What the screen's owner calls the pane's repaint in its trace. */
+#define AI_PANE_PAINT_WHAT "the assistant's pane"
+
+/**
+ * ai_pane_paint_replay - Draw the pane that a box kept from being drawn.
+ * @data: unused.
+ *
+ * The owner runs this once the box is closed.  The pane may have been
+ * closed meanwhile; then there is nothing to draw.
+ */
+static void ai_pane_paint_replay(void *data)
+{
+ FENSTER *wf;
+
+ (void)data;
+ if (!WpeEditor)
+  return;
+ wf = ai_pane_existing(WpeEditor);
+ if (wf)
+  ai_pane_paint(wf);
+}
+
 /**
  * ai_pane_paint - Repaint the pane and keep the caret in view.
  * @wf: the pane.
@@ -1368,11 +1390,14 @@ static void ai_pane_paint(FENSTER *wf)
  /* A menu or dialog is up on top of us (it owns the screen for its whole
     lifetime): do NOT repaint under it, or a streaming token / the working
     spinner draws over the box and corrupts it.  The buffer already holds the
-    new text; the next paint once the box closes shows it. */
+    new text; the owner draws the pane once the box closes. */
  if (wpe_paint_modal_depth() > 0)
+ {
+  wpe_paint_request(ai_pane_paint_replay, NULL, AI_PANE_PAINT_WHAT);
   return;
+ }
 
- ai_pane_reflow(wf);                  /* the rows at the pane's present width */
+ ai_pane_reflow(wf);                 /* the rows at the pane's present width */
  ai_pane_place_view(wf, pane_focused);
  e_schirm(wf, 0);
  e_cursor(caret, 0);

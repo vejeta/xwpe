@@ -849,6 +849,10 @@ static void e_run_serve_key(int pty_master)
   e_pty_send_key(pty_master, c);
 }
 
+/* What the screen's owner calls the program's run in its trace: while it
+   runs, Messages and the keyboard are the program's. */
+#define E_RUN_OWNS_SCREEN "the program's run"
+
 /**
  * e_run_loop - Show the program's output in Messages and pass it the user's
  * typing until it ends.
@@ -862,16 +866,22 @@ static void e_run_serve_key(int pty_master)
  */
 static int e_run_loop(int pty_master, BUFFER *b, FENSTER *mf)
 {
+ int code;
+
+ wpe_paint_modal_enter(E_RUN_OWNS_SCREEN);
  for (;;)
  {
   e_run_drain_pty(pty_master, b, mf);
   if (e_run_prog.ended)
-   return(e_run_status_code(e_run_prog.status));
+   break;
   wpe_fd_poll(WPE_FD_POLL_MS);
   if (e_run_prog.ended)
    continue;
   e_run_serve_key(pty_master);
  }
+ wpe_paint_modal_leave();
+ code = e_run_status_code(e_run_prog.status);
+ return(code);
 }
 
 /**
@@ -1018,6 +1028,7 @@ static void e_run_text_serve_key(void)
  */
 static void e_run_text_loop(void)
 {
+ wpe_paint_modal_enter(E_RUN_OWNS_SCREEN);
  while (!e_run_prog.ended)
  {
   wpe_fd_poll(WPE_FD_POLL_MS);
@@ -1025,6 +1036,7 @@ static void e_run_text_loop(void)
    break;
   e_run_text_serve_key();
  }
+ wpe_paint_modal_leave();
 }
 
 /**
@@ -1904,21 +1916,34 @@ static void e_build_wait_line_put(void)
  g_build.wait_row = 1;
 }
 
+/* What the screen's owner calls the Messages rows kept behind a box in its
+   trace. */
+#define E_MESSAGES_TAIL_WHAT "the Messages rows"
+
+static void e_messages_show_tail_replay(void *cn);
+
 /**
- * e_messages_show_tail - Show the latest Messages rows, when nothing is in
- * the way.
+ * e_messages_show_tail - Show the latest Messages rows, now or when nothing
+ * is in the way.
  * @cn: the desktop.
  *
  * Messages follows a background task's output (a build, a starting
  * debugger) to its last row; the cursor goes back to the window the user
- * is typing in, so typing while the task runs is undisturbed.
+ * is typing in, so typing while the task runs is undisturbed.  Under a box,
+ * a menu or a run the rows wait and are drawn when the editor is its own
+ * again.
  */
 void e_messages_show_tail(ECNT *cn)
 {
  FENSTER *mf = e_build_messages(cn);
 
- if (!mf || !wpe_paint_idle())
+ if (!mf)
   return;
+ if (!wpe_paint_idle())
+ {
+  wpe_paint_request(e_messages_show_tail_replay, cn, E_MESSAGES_TAIL_WHAT);
+  return;
+ }
  mf->b->b.y = mf->b->mxlines - 1;
  mf->b->b.x = 0;
  e_messages_scroll_to_bottom(mf);
@@ -1931,11 +1956,38 @@ void e_messages_show_tail(ECNT *cn)
 }
 
 /**
- * e_build_paint - Show the build's latest Messages rows.
+ * e_messages_show_tail_replay - The screen's owner's turn for Messages rows
+ * that waited behind a box.
+ * @cn: the desktop.
+ */
+static void e_messages_show_tail_replay(void *cn)
+{
+ e_messages_show_tail((ECNT *)cn);
+}
+
+/* What the screen's owner calls the build's Messages rows in its trace. */
+#define E_BUILD_PAINT_WHAT "the build's output"
+
+/**
+ * e_build_paint_rows - Draw the build's latest Messages rows.
+ * @data: unused.
+ */
+static void e_build_paint_rows(void *data)
+{
+ (void)data;
+ e_messages_show_tail(g_build.cn);
+}
+
+/**
+ * e_build_paint - Show the build's latest Messages rows, or when the editor
+ * is its own again.
+ *
+ * Under a dialog, a menu or a run the rows wait; the key loop draws them
+ * once, with everything the build wrote meanwhile.
  */
 static void e_build_paint(void)
 {
- e_messages_show_tail(g_build.cn);
+ wpe_paint_request(e_build_paint_rows, NULL, E_BUILD_PAINT_WHAT);
 }
 
 /**
@@ -4906,7 +4958,117 @@ void e_messages_scroll_to_bottom(FENSTER *f)
  if (s->c.y < 0) s->c.y = 0;
 }
 
+/* Lines said from a callback while a box owns the screen, kept for when it
+   closes: how many, and how long a kept line may be (a longer one is cut). */
+#define E_PMSG_HELD_MAX  32
+#define E_PMSG_LINE_MAX  1024
+#define E_PMSG_HELD_WHAT "a message for Messages"
+
+static struct {
+ char *line[E_PMSG_HELD_MAX];
+ int   sw[E_PMSG_HELD_MAX];
+ ECNT *cn;
+ int   count;
+ int   lost;
+} e_pmsg_held;
+
+static int e_p_message_now(char *str, FENSTER *f, int sw);
+
+/**
+ * e_p_message_replay - Put the lines kept behind a box into Messages, in the
+ * order they were said.
+ * @data: unused.
+ *
+ * The screen's owner runs this once no box owns the screen.  Lines that did
+ * not fit the keeping are counted and named in one last line, so the user
+ * knows the list is not whole.
+ */
+static void e_p_message_replay(void *data)
+{
+ ECNT *cn = e_pmsg_held.cn;
+ FENSTER *top;
+ char tail[E_PMSG_LINE_MAX];
+ int i, count = e_pmsg_held.count, lost = e_pmsg_held.lost;
+ char *lines[E_PMSG_HELD_MAX];
+ int sw[E_PMSG_HELD_MAX];
+
+ (void)data;
+ if (!cn || cn->mxedt < 1)
+  return;
+ for (i = 0; i < count; i++)
+ {
+  lines[i] = e_pmsg_held.line[i];
+  sw[i] = e_pmsg_held.sw[i];
+ }
+ e_pmsg_held.count = 0;
+ e_pmsg_held.lost = 0;
+ top = cn->f[cn->mxedt];
+ for (i = 0; i < count; i++)
+ {
+  e_p_message_now(lines[i], top, sw[i]);
+  FREE(lines[i]);
+ }
+ if (lost > 0)
+ {
+  snprintf(tail, sizeof tail, "(%d more messages were not shown)", lost);
+  e_p_message_now(tail, top, 0);
+ }
+}
+
+/**
+ * e_p_message_hold - Keep a line said from a callback until no box owns the
+ * screen.
+ * @str: the line; @f: a window of the desktop; @sw: as e_d_p_message.
+ *
+ * What a language server or a debugger tells while a dialog or a menu is up
+ * is not lost and not drawn under it: it is in Messages when the box
+ * closes.  A full keeping drops the newest lines and counts them.
+ * Return: 0.
+ */
+static int e_p_message_hold(char *str, FENSTER *f, int sw)
+{
+ char *copy;
+ size_t room = strlen(str) + 1;
+
+ if (e_pmsg_held.count >= E_PMSG_HELD_MAX)
+ {
+  e_pmsg_held.lost++;
+  return(0);
+ }
+ if (room > E_PMSG_LINE_MAX)
+  room = E_PMSG_LINE_MAX;
+ copy = MALLOC(room);
+ snprintf(copy, room, "%s", str);
+ e_pmsg_held.cn = f->ed;
+ e_pmsg_held.line[e_pmsg_held.count] = copy;
+ e_pmsg_held.sw[e_pmsg_held.count] = sw;
+ e_pmsg_held.count++;
+ wpe_paint_request(e_p_message_replay, NULL, E_PMSG_HELD_WHAT);
+ return(0);
+}
+
+/**
+ * e_d_p_message - Add a line to Messages, raising it if it is not open.
+ * @str: the line; @f: a window of the desktop; @sw: 1 to bring Messages
+ * forward, 0 to write in the background.
+ *
+ * Said from the user's own key it is drawn at once.  Said from a callback
+ * (a language server's news, a debugger's word) while a box, a menu or a
+ * run owns the screen, it waits for the screen's owner, in order.
+ * Return: 0, or -1 when Messages could not be opened.
+ */
 int e_d_p_message(char *str, FENSTER *f, int sw)
+{
+ if (str[0] == '\0' || str[0] == '\n')
+  return(0);
+ if (wpe_paint_in_callback() && !wpe_paint_idle())
+  return(e_p_message_hold(str, f, sw));
+ if (e_pmsg_held.count > 0 && wpe_paint_idle())
+  e_p_message_replay(NULL);
+ return(e_p_message_now(str, f, sw));
+}
+
+static int e_p_message_now(char *str, FENSTER *f, int sw)
 {
  ECNT *cn = f->ed;
  BUFFER *b;

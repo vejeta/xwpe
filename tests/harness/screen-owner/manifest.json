@@ -200,6 +200,57 @@
    "status": "new"
   },
   {
+   "id": "SC-screen-05",
+   "requirement": "A timer is a callback too",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_callbacks.py::test_a_spinner_ticking_under_a_box_resumes_after_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-05",
+   "requirement": "A timer is a callback too",
+   "layer": "c-unit",
+   "test": "test_paint",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_callbacks.py::test_lsp_diagnostics_under_a_dropdown_show_when_it_closes",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_callbacks.py::test_a_language_server_that_ends_under_a_dropdown_says_so_when_it_closes",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "x11",
+   "test": "tests/x11/test_screen_owner_callbacks.py::test_a_build_streaming_under_a_dialog_paints_nothing_under_it_and_shows_when_it_closes",
+   "status": "new"
+  },
+  {
+   "id": "SC-screen-01",
+   "requirement": "Nothing paints under a box",
+   "layer": "wayland",
+   "test": "tests/wayland/test_screen_owner_callbacks.py::test_a_build_streaming_under_a_dialog_paints_nothing_under_it_and_shows_when_it_closes",
+   "status": "new",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner_callbacks.py::test_a_reply_that_lands_during_a_run_is_shown_when_the_run_ends",
+   "status": "new",
+   "needs": ["gcc"]
+  },
+  {
    "id": "SC-screen-06",
    "requirement": "One owner of the screen",
    "layer": "c-unit",

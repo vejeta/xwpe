@@ -61,6 +61,7 @@ int  wpe_paint_take_key(int want);
 WpePaintVerdict wpe_paint_request(WpePaintReplay fn, void *data,
                                   const char *what);
 void wpe_paint_replay_if_idle(void);
+int  wpe_paint_in_callback(void);
 
 void wpe_paint_chrome_suppress(int on);
 int  wpe_paint_chrome_suppressed(void);

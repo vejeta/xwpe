@@ -107,9 +107,6 @@ KEY_F we_keymap.c
 XK_ we_keymap.c
 XKB_KEY_ we_keymap.c
 e_getch we_paint.c
-e_fd_watch we_paint.c we_hfkt.c we_term.c we_xterm.c we_wayland.c
-wpe_fd_add we_fdloop.c we_paint.c we_unix.c we_hfkt.c we_child.c
-wpe_timer_add we_fdloop.c we_paint.c we_wayland.c we_child.c
 wpe_modal_active we_paint.c
 g_lsp_modal_depth we_paint.c
 g_lsp_ui_suspended we_paint.c
@@ -120,12 +117,11 @@ EOF
 # reads keys says so to it, and content from outside the user's keys is
 # drawn only when it says the editor is idle.  A key loop of its own is an
 # e_getch( call (a call form: the macro reads through the display's table);
-# a callback registered around the owner is an e_fd_watch(, wpe_fd_add( or
-# wpe_timer_add( call; a second flag of "a box is up" is one of the old
-# names.  The displays keep their wake sources (descriptors with no
-# callback) and Wayland its key repeat; e_fd_watch itself is we_hfkt.c's;
-# the children's owner (we_child.c) keeps its pipes, timers and wake pipe,
-# and reports each end to the code that asked.
+# a second flag of "a box is up" is one of the old names.  Callbacks need no
+# rule of their own: the loop (we_fdloop.c) runs every descriptor's and every
+# timer's callback between the two hooks the owner sets, so whoever
+# registers one, it is bracketed; the canary below sees the owner stop
+# setting them.
 
 # The key table owns the names a platform gives its keys: curses' KEY_F(n)
 # (a call form), X's XK_* and xkbcommon's XKB_KEY_* (prefix forms: every
@@ -281,6 +277,7 @@ canary_import() {
   done
 }
 canary_import we_edit.o wpe_paint_replay_if_idle "what came behind a box is shown some other way"
+canary_import we_paint.o wpe_loop_hooks_set "the loop's callbacks are not bracketed by the owner"
 for engine in we_opt.o we_menue.o we_wind.o we_ai_ui.o; do
   canary_import $engine wpe_paint_modal_enter "a box owns the screen without telling its owner"
 done
@@ -311,7 +308,7 @@ for obj in $OBJECTS; do
     case $word in
       'read(0') n=$(count_uses "read[ \t]*[(][ \t]*0[ \t]*," "$file") ;;
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
-      wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F|e_getch|e_fd_watch|wpe_fd_add|wpe_timer_add) n=$(count_uses "$word" "$file") ;;
+      wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F|e_getch) n=$(count_uses "$word" "$file") ;;
       XK_|XKB_KEY_) n=$(count_words "$word[A-Za-z0-9_]+" "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac

@@ -69,22 +69,6 @@ we_fl_fkt.o e_getch 2 P10d the file pickers
 we_unix.o e_getch 2 P10d the colour menu
 we_ai_ui.o e_getch 6 P10d the assistant's boxes
 we_ai_ws.o e_getch 2 P10d the changeset review
-# the screen: callbacks and timers registered around the owner; each is
-# bracketed by it in P10c, and the language server's snapshot of "a box is
-# up" becomes requests there.
-we_debug.o e_fd_watch 12 P10c the debugger's and the language server's descriptors
-we_debug.o wpe_timer_add 9 P10c the debugger's and the language server's timers
-we_debug.o g_lsp_ui_suspended 9 P10c the language server's paints, held by its own snapshot
-we_prog.o e_fd_watch 3 P10c the build's output
-we_prog.o wpe_timer_add 1 P10c the build's heartbeat
-we_ai_ui.o e_fd_watch 2 P10c the assistant's stream and the hosted engine
-we_ai_ui.o wpe_timer_add 2 P10c the spinner and the host deadline
-we_ai.o wpe_fd_add 1 P10c the assistant's command output
-we_ai.o wpe_timer_add 2 P10c the assistant's command deadline
-we_ai_http.o wpe_fd_add 4 P10c the model server's socket
-we_ai_http.o wpe_timer_add 2 P10c the model server's deadlines
-we_lsp.o wpe_fd_add 1 P10c the language server's session
-we_lsp.o wpe_timer_add 1 P10c the language server's session
 
 # writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
 we_ai.o write 1 keep the test backend's temporary file, not a child

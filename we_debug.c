@@ -25555,14 +25555,25 @@ static e_lsp_session *g_lsp = NULL;        /* the live server session, or NULL *
 static char           g_lsp_file[1024] = "";  /* full path g_lsp is opened for */
 static FENSTER       *g_lsp_fenster = NULL;
 static FENSTER       *g_lsp_pending_ws = NULL; /* worksheet to focus once ready */
-static int            g_lsp_ui_suspended = 0;  /* the screen was not the editor's when
-                                                  this read began (wpe_paint_idle):
-                                                  its paints wait, and its stale
-                                                  flags ask again later */
+/**
+ * e_lsp_screen_busy - Is the screen not the editor's to draw on?
+ *
+ * True while a box, a menu, a run or a command owns it.  The server's news
+ * is still read then; what it would draw waits for the screen's owner, and
+ * what the server owes the editor (the readiness line, the overlays that
+ * went stale) is asked again when the screen is back.
+ */
+static int e_lsp_screen_busy(void)
+{
+ return(!wpe_paint_idle());
+}
+
 static int            g_lsp_quiet = 0;     /* suppress per-diagnostic Messages
                                               output (live polls show a summary) */
-static int            g_lsp_last_err = -1; /* last reported diagnostic totals,  */
-static int            g_lsp_last_warn = -1;/* so the live status is not spammed  */
+static int            g_lsp_last_err = -1; /* diagnostic totals the server last */
+static int            g_lsp_last_warn = -1;/* published                          */
+static int            g_lsp_said_err = -1; /* totals the "LSP: N error(s)" line */
+static int            g_lsp_said_warn = -1;/* last told, so it is not spammed    */
 static int            g_lsp_doctor_announced = 0; /* "Doctor updated" shown once?  */
 static char          *g_lsp_doctor_last = NULL; /* last Doctor body shown, for   */
                                            /* dedup; reset per session so a       */
@@ -26315,38 +26326,61 @@ static void e_lsp_on_diag(const char *path, int line, int ch,
 
 static void e_lsp_ui_trace(const char *fmt, ...);   /* XWPE_UI_TRACE diag (below) */
 
+/* What the screen's owner calls the server's problems in its trace. */
+#define E_LSP_DIAG_WHAT "the language server's problems"
+
+/**
+ * e_lsp_diag_show - Draw the server's problems: the marks on the source
+ * window and the "LSP: N error(s)" line.
+ * @data: unused.
+ *
+ * The marks are redrawn every time, since the positions may have moved when
+ * the totals did not; the line is said only when the totals changed.  Run by
+ * the screen's owner, at once when the editor is idle and otherwise when a
+ * box, a menu or a run has given the screen back, so what the server found
+ * while the user was in a dropdown shows when it closes.
+ */
+static void e_lsp_diag_show(void *data)
+{
+ char buf[120];
+ (void)data;
+
+ if (!g_lsp_fenster)
+  return;
+ if (DTMD_ISTEXT(g_lsp_fenster->dtmd))
+ {
+  e_schirm(g_lsp_fenster, 1);       /* redraw text so marks appear/clear */
+  e_cursor(g_lsp_fenster, 0);       /* keep the caret where it was */
+ }
+ if (g_lsp_last_err == g_lsp_said_err && g_lsp_last_warn == g_lsp_said_warn)
+  return;                           /* totals unchanged -- skip the status line */
+ g_lsp_said_err = g_lsp_last_err;
+ g_lsp_said_warn = g_lsp_last_warn;
+ if (g_lsp_said_err == 0 && g_lsp_said_warn == 0)
+  snprintf(buf, sizeof(buf), "LSP: no problems.");
+ else
+  snprintf(buf, sizeof(buf), "LSP: %d error(s), %d warning(s).",
+           g_lsp_said_err, g_lsp_said_warn);
+ e_d_p_message(buf, g_lsp_fenster, 0);   /* sw=0: do NOT steal focus from the
+                                            editor -- the user keeps typing */
+}
+
 /* End of a publishDiagnostics batch: swap the freshly-collected marks in
    (atomic replace -- even when the totals are unchanged the positions may have
-   moved), repaint the source window so the marks update live, and update the
-   non-spammy "N errors, M warnings" status line. */
+   moved), then draw them and the non-spammy "N errors, M warnings" line, now
+   or when the screen is the editor's again. */
 static void e_lsp_on_diag_summary(const char *path, int errors, int warnings,
                                   void *ud)
 {
- char buf[120];
  (void)path; (void)ud;
 
  memcpy(g_diag_active, g_diag_pending,
         (size_t)g_diag_npending * sizeof(g_diag_active[0]));
  g_diag_nactive = g_diag_npending;
  g_diag_npending = 0;
- if (!g_lsp_ui_suspended && g_lsp_fenster && DTMD_ISTEXT(g_lsp_fenster->dtmd))
- {
-  e_schirm(g_lsp_fenster, 1);       /* redraw text so marks appear/clear */
-  e_cursor(g_lsp_fenster, 0);       /* keep the caret where it was */
- }
-
- if (errors == g_lsp_last_err && warnings == g_lsp_last_warn)
-  return;                           /* totals unchanged -- skip the status line */
  g_lsp_last_err = errors;
  g_lsp_last_warn = warnings;
- if (!g_lsp_fenster || g_lsp_ui_suspended)
-  return;                           /* modal up: keep the totals, defer the line */
- if (errors == 0 && warnings == 0)
-  snprintf(buf, sizeof(buf), "LSP: no problems.");
- else
-  snprintf(buf, sizeof(buf), "LSP: %d error(s), %d warning(s).", errors, warnings);
- e_d_p_message(buf, g_lsp_fenster, 0);   /* sw=0: do NOT steal focus from the
-                                            editor -- the user keeps typing */
+ wpe_paint_request(e_lsp_diag_show, NULL, E_LSP_DIAG_WHAT);
 }
 
 /* Strip Metals' leading status icon/spinner (a UTF-8 glyph and spaces) so the
@@ -26377,7 +26411,7 @@ static void e_lsp_on_status(const char *text, int hide, void *ud)
  {  g_lsp_busy = 0;  return;  }
  clean = e_lsp_status_clean(text);
  g_lsp_busy = (clean && clean[0]) ? 1 : 0;
- if (!g_lsp_busy || !g_lsp_fenster || g_lsp_ui_suspended)
+ if (!g_lsp_busy || !g_lsp_fenster || e_lsp_screen_busy())
   return;                                 /* modal up: track busy, defer the note */
  if (!e_lsp_doc_is_new(&g_lsp_status_last, clean))
   return;                                 /* same as the last note: do not repeat */
@@ -26403,7 +26437,7 @@ static void e_lsp_on_show_text(const char *title, const char *body, void *ud)
 
  if (!home || !body)
   return;
- if (g_lsp_ui_suspended)
+ if (e_lsp_screen_busy())
   return;                                /* modal up: do NOT consume the dedup --
                                             Metals re-pushes, so the next push
                                             renders it once the editor is back */
@@ -26701,6 +26735,78 @@ static void e_lsp_reap_if_dead(FENSTER *f)
   e_d_p_message(E_LSP_EXITED_LINE, f, 0);
 }
 
+/* What the screen's owner calls the server's later news in its trace. */
+#define E_LSP_NEWS_WHAT "the language server's news"
+
+/**
+ * e_lsp_settle_ready - Move to the steady state once the first diagnostics
+ * have landed, when the screen is the editor's.
+ *
+ * Says "Language server ready.", focuses a worksheet that waited for the
+ * server, and stops polling a server nothing is owed by, so an idle server
+ * never delays a key.  With a box up it does nothing: e_lsp_catch_up asks
+ * again when the box has closed.
+ */
+static void e_lsp_settle_ready(void)
+{
+ if (!e_lsp_started(g_lsp) || g_lsp_last_err < 0 || g_lsp_ready_done ||
+     e_lsp_screen_busy())
+  return;
+ /* first diagnostics summary arrived -> steady state. */
+ g_lsp_ready_done = 1;
+ if (g_lsp_fenster)
+  e_d_p_message("Language server ready.", g_lsp_fenster, 0);
+ if (g_lsp_pending_ws)
+ {
+  /* a worksheet was opened while the server booted for the project file:
+     focus it now so it evaluates (keeps the fd registered for its results). */
+  e_lsp_focus_worksheet(g_lsp_pending_ws);
+  g_lsp_pending_ws = NULL;
+ }
+ else if (e_lsp_is_worksheet(g_lsp_fenster))
+  g_inlay_stale = 1;            /* worksheet: pull the first evaluation results */
+ else if (g_inlay_on || g_sem_on)
+  ;                             /* an overlay is live: keep polling so a later server
+                                   push (inlayHint/semanticTokens refresh, once indexed)
+                                   reaches us and repaints -- it stays quiet when idle */
+ else if (e_lsp_requests_owed(g_lsp))
+  ;                             /* an answer is owed: it is read here */
+ else
+  e_lsp_fd_unregister();        /* stop polling so an idle server never delays a key */
+}
+
+/**
+ * e_lsp_settle_overlays - Ask the server again for the inlay hints and the
+ * semantic colours that went stale, when the screen is the editor's.
+ */
+static void e_lsp_settle_overlays(void)
+{
+ if (e_lsp_screen_busy())
+  return;                                 /* modal up: keep the stale flag, ask later */
+ if (g_inlay_on)
+  e_lsp_inlay_refresh_pending(g_lsp_fenster);
+ if (g_sem_on)
+  e_lsp_sem_refresh_pending(g_lsp_fenster);
+}
+
+/**
+ * e_lsp_catch_up - Do what the server's news asked for while a box owned
+ * the screen.
+ * @data: unused.
+ *
+ * The screen's owner runs this once the editor is idle: the readiness line,
+ * the worksheet and the overlays that had to wait are handled then, with no
+ * further word from the server needed.
+ */
+static void e_lsp_catch_up(void *data)
+{
+ (void)data;
+ if (!g_lsp)
+  return;
+ e_lsp_settle_ready();
+ e_lsp_settle_overlays();
+}
+
 /* fd-loop callback: drain the server, finish the handshake, hand it the
    document once ready, and leave the poll set once the first diagnostics land. */
 static void e_lsp_on_fd_readable(int fd, void *data)
@@ -26714,9 +26820,8 @@ static void e_lsp_on_fd_readable(int fd, void *data)
     same fd poll through its own input loop.  Drain the socket as usual, but
     defer every visible paint until the screen is the editor's again, so a
     background Metals message / Doctor / inlay redraw never corrupts the box.
-    Deferred work re-fires on a later poll because g_lsp_ready_done stays unset
-    and the inlay snapshot stays stale. */
- g_lsp_ui_suspended = !wpe_paint_idle();
+    What the news owes (the readiness line, a stale overlay) is asked again
+    by e_lsp_catch_up once the screen is back. */
  was_started = e_lsp_started(g_lsp);
  qsave = g_lsp_quiet;
  g_lsp_quiet = 1;                          /* startup: show the summary, not each line */
@@ -26739,31 +26844,7 @@ static void e_lsp_on_fd_readable(int fd, void *data)
    e_lsp_synced_set(text ? text : strdup(""));
   }
  }
- if (e_lsp_started(g_lsp) && g_lsp_last_err >= 0 && !g_lsp_ready_done &&
-     !g_lsp_ui_suspended)
- {
-  /* first diagnostics summary arrived -> steady state. */
-  g_lsp_ready_done = 1;
-  if (g_lsp_fenster)
-   e_d_p_message("Language server ready.", g_lsp_fenster, 0);
-  if (g_lsp_pending_ws)
-  {
-   /* a worksheet was opened while the server booted for the project file:
-      focus it now so it evaluates (keeps the fd registered for its results). */
-   e_lsp_focus_worksheet(g_lsp_pending_ws);
-   g_lsp_pending_ws = NULL;
-  }
-  else if (e_lsp_is_worksheet(g_lsp_fenster))
-   g_inlay_stale = 1;            /* worksheet: pull the first evaluation results */
-  else if (g_inlay_on || g_sem_on)
-   ;                             /* an overlay is live: keep polling so a later server
-                                    push (inlayHint/semanticTokens refresh, once indexed)
-                                    reaches us and repaints -- it stays quiet when idle */
-  else if (e_lsp_requests_owed(g_lsp))
-   ;                             /* an answer is owed: it is read here */
-  else
-   e_lsp_fd_unregister();        /* stop polling so an idle server never delays a key */
- }
+ e_lsp_settle_ready();
  /* worksheet REPL: the fd stays registered, so as Metals compiles and EVALUATES
     (the results trickle in after the types -- a second, slower pass -- and Metals
     does not always send inlayHint/refresh), each diagnostics batch it publishes
@@ -26781,11 +26862,10 @@ static void e_lsp_on_fd_readable(int fd, void *data)
  if (g_sem_on && handled > 0 && g_lsp_ready_done)
   g_sem_stale = 1;
  e_lsp_overlay_deliver();                 /* an overlay answer read just now */
- if (g_inlay_on && !g_lsp_ui_suspended)   /* modal up: keep the stale flag, ask later */
-  e_lsp_inlay_refresh_pending(g_lsp_fenster);
- if (g_sem_on && !g_lsp_ui_suspended)     /* same deal for semantic colours */
-  e_lsp_sem_refresh_pending(g_lsp_fenster);
+ e_lsp_settle_overlays();
  e_lsp_ask_deliver();                     /* an Alt-Q answer read just now */
+ if (e_lsp_screen_busy())
+  wpe_paint_request(e_lsp_catch_up, NULL, E_LSP_NEWS_WHAT);
 }
 
 /**
@@ -27962,6 +28042,7 @@ static int e_lsp_ensure(FENSTER *f)
  g_lsp_ready_done = 0;                     /* fresh session: re-announce "ready" once */
  g_lsp_pending_ws = NULL;
  g_lsp_last_err = g_lsp_last_warn = -1;   /* fresh session: force first report */
+ g_lsp_said_err = g_lsp_said_warn = -1;
  free(g_lsp_doctor_last);  g_lsp_doctor_last = NULL;   /* fresh session: re-show Doctor */
  g_lsp_doctor_announced = 0;
  free(g_lsp_status_last);  g_lsp_status_last = NULL;   /* fresh session: clean status   */
