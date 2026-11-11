@@ -3,9 +3,8 @@
 The three displays share one key table (we_keymap.c).  These rows drive the
 graphical reader with real key events: a chord the Debug menu shows acts, and
 a key the terminal gives a meaning gives it here too.  The Wayland twin runs
-this body under its own fixture (tests/wayland/test_keymap.py); the keys that
-need a debug session skip there (the headless compositor cannot start one,
-see test_menu_debug.py) and are covered by the compositor-free selftest
+this body under its own fixture (tests/wayland/test_keymap.py); the key
+decoder is also covered by the compositor-free selftest
 (tests/test_wayland_keysym.py).
 """
 import os
@@ -112,10 +111,7 @@ def test_f11_does_not_quit_the_editor(xwpe):
                          indirect=True)
 def test_ctrl_f2_asks_to_quit_the_debugger_and_yes_ends_it(xwpe):
     """Graphical twin of the terminal row: the ^F2 Quit chord the Debug menu shows asks
-    whether to quit while the program runs, and Yes ends gdb.  Skips under
-    the headless compositor, which cannot start a session."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
+    whether to quit while the program runs, and Yes ends gdb."""
     for _ in range(BREAK_LINE - 1):
         xwpe.key("Down", delay=0.1)
     xwpe.key("ctrl+g", "b")

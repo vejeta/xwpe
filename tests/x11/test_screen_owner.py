@@ -6,10 +6,8 @@ time; while the Find dialog is up not one pixel of the window changes, the
 editor's trace (XWPE_UI_TRACE) says the output waited, and once Esc closes
 the dialog the output scrolls on in Messages.
 
-The Wayland twin (tests/wayland/test_screen_owner.py) runs the same body and
-skips, as the other debugger rows there do: the headless compositor harness
-cannot start a debug session.  Its live check is a line in
-WAYLAND-TESTING.txt.
+The Wayland twin (tests/wayland/test_screen_owner.py) runs the same body.  Its
+live check is a line in WAYLAND-TESTING.txt.
 """
 import os
 import shutil
@@ -78,8 +76,6 @@ def _screen_moves(xwpe):
 def test_program_output_under_a_dialog_paints_nothing_under_it_and_shows_when_it_closes(xwpe):
     """While the Find dialog is up the window does not change at all; the
     trace shows the output waited and was drawn once the dialog closed."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     for _ in range(UNREACHED_LINE - 1):
         xwpe.key("Down", delay=0.1)
     xwpe.key("ctrl+g", "b")

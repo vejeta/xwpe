@@ -3,9 +3,8 @@
 The test body is the X11 module's, run here under this directory's
 native-wl_surface `xwpe` fixture (conftest.py): the keys typed while a debug
 adapter answers at a stop must reach the editor through the Wayland event
-loop as they do through X11's.  The row needs a debug session and skips here
-while the headless compositor harness cannot start one, as the other debugger
-rows do.  Single source of truth -- see run_x11_module."""
+loop as they do through X11's.  Single source of truth -- see
+run_x11_module."""
 from conftest import run_x11_module
 
 run_x11_module(__name__, "test_dap_answer_wait")

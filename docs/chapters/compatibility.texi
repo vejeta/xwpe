@@ -48,6 +48,20 @@ killed only if it is still there two seconds later, so the debugger ends
 its program and leaves no core file.
 @end table
 
+@section Where the program under the debugger writes
+
+@table @asis
+@item The program's terminal
+@cindex debugger, terminal of the program
+The original terminal editor refused a session unless its own input was
+a terminal, and sent the program's output there, over the editor's
+screen.  xwpe gives the program a
+pseudoterminal of its own and reads its output through it, so a session
+starts even when the editor has no terminal, as when it is started from a
+desktop launcher.  The editor's terminal is used only when no
+pseudoterminal could be opened.
+@end table
+
 @section Keys
 
 @table @asis

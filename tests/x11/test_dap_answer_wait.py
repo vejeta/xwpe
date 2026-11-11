@@ -8,8 +8,7 @@ file and File > Save writes it, all before dlv has answered.  The terminal
 rows of the same scenario are in tests/test_debugger_integration.py.
 
 The Wayland twin (tests/wayland/test_dap_answer_wait.py) runs the same
-body; it skips there, as the other rows that need a debug session do (the
-headless compositor harness cannot start one).
+body.
 """
 import os
 import shutil
@@ -102,8 +101,6 @@ def test_dlv_keys_reach_the_editor_while_it_answers(xwpe):
     text and File > Save typed meanwhile all reach the editor: the file on
     disk gets the text before dlv answers.  Once it is let go the stop's
     green bar is still drawn."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     home = os.path.dirname(xwpe.srcfile)
     with open(os.path.join(home, "go.mod"), "w") as fh:
         fh.write(GO_MOD)

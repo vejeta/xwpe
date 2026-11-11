@@ -86,8 +86,6 @@ def _assert_untouched(xwpe, what):
 def _need_gdb(xwpe):
     if not shutil.which("gdb") or not shutil.which("gcc"):
         pytest.skip("no gdb or gcc")
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
 
 
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": C_PROG}],

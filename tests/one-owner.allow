@@ -16,7 +16,7 @@ we_ai.o poll 1 P9s2 the bounded wait of the hook, checkpoint and review commands
 
 # the debugger
 we_debug.o usleep 1 P9o the external xterm settle
-we_debug.o XFlush 2 P9o the focus taken back after the start and the external xterm settle; no read
+we_debug.o XFlush 1 P9o e_d_x_focus_to_editor, the focus taken back after the start and the external xterm settle; no read
 we_debug.o STDIN_FILENO 1 keep ttyname_r names the editor's own terminal; no read
 
 # the editor's end: after the save it runs the loop, bounded, until a

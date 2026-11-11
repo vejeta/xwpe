@@ -6587,11 +6587,11 @@ static int e_d_jdb_vm_fork(int port)
  *
  * The program under gdb and the legacy debuggers writes there when no pty
  * could be opened, and a session whose terminal is unknown is refused
- * ("tty error").  Asked of the kernel directly: running a separate program
- * for the name raced the editor's child-exit handler, which can make the
- * read of its answer fail, so a debug start failed at random.  When the
- * editor has no terminal (started from a desktop), the name is the text
- * "not a tty", and any other failure gives the system's reason, so the
+ * ("No terminal for the program").  Asked of the kernel directly: running
+ * a separate program for the name raced the editor's child-exit handler,
+ * which can make the read of its answer fail, so a debug start failed at
+ * random.  When the editor has no terminal (started from a desktop), the
+ * text says so, and any other failure gives the system's reason, so the
  * refusal message says why.
  */
 static void e_d_own_tty_name(void)
@@ -6601,9 +6601,33 @@ static void e_d_own_tty_name(void)
  if (err == 0)
   return;
  if (err == ENOTTY)
-  strcpy(e_d_tty, "not a tty");
+  strcpy(e_d_tty, "the editor has no terminal and no pty could be opened");
  else
   snprintf(e_d_tty, sizeof e_d_tty, "%s", strerror(err));
+}
+
+/**
+ * e_d_program_tty_name - Record in e_d_tty the terminal the debugged
+ * program writes to.
+ *
+ * Debugging works from a desktop launcher or any other start without a
+ * terminal on the editor's input, as long as the program has a pty to
+ * write to: the program's own pty is its terminal, and its output reaches
+ * the editor through the pty's master.  Only when no pty could be opened is
+ * the editor's own terminal the program's, as it always was.  When there
+ * is neither, e_d_tty holds the reason and the session is refused with it.
+ * A pty name too long for e_d_tty is not cut short into the name of some
+ * other file: the editor's own terminal is used instead.
+ */
+static void e_d_program_tty_name(void)
+{
+ if (e_d_pty_slave_name[0] == DIRC &&
+     strlen(e_d_pty_slave_name) < sizeof e_d_tty)
+ {
+  snprintf(e_d_tty, sizeof e_d_tty, "%s", e_d_pty_slave_name);
+  return;
+ }
+ e_d_own_tty_name();
 }
 
 /* The directory the debugger runs in (the child changes into it before it
@@ -6774,7 +6798,7 @@ static int e_d_start_on_pipes(FENSTER *f, char **argv)
  /* jdb's program gets the slave from the editor, later. */
  if (e_d_debugger_keeps_pty_slave())
   e_d_pty_slave_close();
- e_d_own_tty_name();
+ e_d_program_tty_name();
  return(0);
 }
 
@@ -6982,6 +7006,23 @@ static void e_d_script_terminal_raw(void)
 }
 
 /**
+ * e_d_x_focus_to_editor - Give the editor's X window the keyboard.
+ *
+ * After a debug session starts the user types into the editor, not into a
+ * window the debugger came up behind.  The native Wayland editor has no X
+ * connection (and nothing to focus), so there it does nothing; asking Xlib
+ * with no connection would end the editor.
+ */
+static void e_d_x_focus_to_editor(void)
+{
+ if (WpeXInfo.display == NULL)
+  return;
+ XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
+   RevertToParent, CurrentTime);
+ XFlush(WpeXInfo.display);
+}
+
+/**
  * e_d_script_connect - Open the helper script's named pipes and the
  * program's terminal it names, once the script runs.
  * @f: the source window.
@@ -7034,9 +7075,7 @@ static int e_d_script_connect(FENSTER *f)
     cannot be exercised in the headless test harness.  Until then this is a
     single named, bounded settle, not an open-coded magic number. */
  usleep(DEB_XTERM_SETTLE_MS * 1000);
- XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
-   RevertToParent, CurrentTime);
- XFlush(WpeXInfo.display);
+ e_d_x_focus_to_editor();
  return(0);
 }
 #endif
@@ -10939,11 +10978,7 @@ static void e_d_start_take_focus(void)
 {
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
- {
-  XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
-    RevertToParent, CurrentTime);
-  XFlush(WpeXInfo.display);
- }
+  e_d_x_focus_to_editor();
 #endif
 }
 
@@ -11503,7 +11538,7 @@ int e_deb_run(FENSTER *f)
   {
    jdb_trace("e_deb_run: tty check FAILED, quitting\n");
    e_d_quit(f);
-   sprintf(eing, "tty error: %s", e_d_tty);
+   snprintf(eing, sizeof eing, "No terminal for the program: %s", e_d_tty);
    return(e_d_error(eing));
   }
  }

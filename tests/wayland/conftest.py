@@ -239,12 +239,6 @@ class WaylandSession:
     helper API as the X11 suite's XwpeSession (key/click/type/menu/save/
     screenshot/saved_text), so test bodies can be shared."""
 
-    # A debug session needs the editor to name its terminal (ttyname of
-    # stdin), and the headless harness gives it none: a test body that needs
-    # a running debugger skips here and is a manual check in
-    # WAYLAND-TESTING.txt.  The X11 session leaves this attribute unset.
-    can_debug = False
-
     def __init__(self, proc, env, wid, dump):
         self.proc = proc
         self.env = env
@@ -439,7 +433,18 @@ def xwpe(wlserver, tmp_path, request):
            "XWPE_WL_HEIGHT": "768",
            "XWPE_WL_DUMP": dump,
            "HOME": str(tmp_path)}
-    env.update(getattr(request, "param", None) or {})   # optional per-test env (e.g. AI)
+    param = dict(getattr(request, "param", None) or {})
+    # XWPE_TEST_SOURCE: a test that needs its own program in t.c, not env.
+    source = param.pop("XWPE_TEST_SOURCE", None)
+    if source is not None:
+        src.write_text(source)
+    # XWPE_TEST_FILE: the name the program is edited under, for a language
+    # whose debugger is chosen by it (P.java for jdb).
+    name = param.pop("XWPE_TEST_FILE", None)
+    if name is not None:
+        src = tmp_path / name
+        src.write_text(source or "")
+    env.update(param)   # optional per-test env (e.g. AI)
     proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
                   stderr=_logfile("xwpe-%s.log" % request.node.name))
     # Wait for the weston X window (the xdotool target) and the first frame dump.

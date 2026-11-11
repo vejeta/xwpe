@@ -192,6 +192,7 @@ SIZE_ENV_VARS = ("LINES", "COLUMNS")
 # sys.stdin.fileno(): under pytest sys.stdin is a capture stub whose fileno()
 # raises, and an exception in the pre-exec step aborts the spawn.
 CHILD_TTY_FD = 0
+CHILD_OUTPUT_FD = 1
 
 
 def set_pty_size(master_fd, cols, rows):
@@ -215,8 +216,13 @@ def adopt_pty_as_controlling_tty():
     slave) and the exec.  TIOCSCTTY exists on Linux, the BSDs and macOS; the
     guard only keeps the harness importable elsewhere."""
     os.setsid()
-    if hasattr(termios, "TIOCSCTTY"):
+    if not hasattr(termios, "TIOCSCTTY"):
+        return
+    try:
         fcntl.ioctl(CHILD_TTY_FD, termios.TIOCSCTTY, 0)
+    except OSError:
+        # Input is not the pty (a desktop-style start): the screen is.
+        fcntl.ioctl(CHILD_OUTPUT_FD, termios.TIOCSCTTY, 0)
 
 
 def strip_size_env(env):
@@ -607,7 +613,12 @@ class WpeSession:
                     pass
 
     def __init__(self, workdir, seed, filename="t.c", cols=COLS, rows=ROWS,
-                 wait=1.3, env_extra=None, real_login=False):
+                 wait=1.3, env_extra=None, real_login=False,
+                 stdin_is_terminal=True):
+        """``stdin_is_terminal=False`` feeds the editor's keys through a
+        pipe while its screen stays on the pty, as under a desktop
+        launcher: the editor's input is then not a terminal, so it has no
+        terminal of its own to name."""
         self.workdir = workdir
         self.path = os.path.join(workdir, filename)
         with open(self.path, "w") as fh:
@@ -672,11 +683,17 @@ class WpeSession:
             _xd = os.path.join(workdir, ".xwpe")
             os.makedirs(_xd, exist_ok=True)
             shutil.copyfile(_synt, os.path.join(_xd, "syntax_def"))
+        self.input_fd = self.master_fd
+        stdin_arg = slave_fd
+        if not stdin_is_terminal:
+            stdin_arg, self.input_fd = os.pipe()
         self.proc = subprocess.Popen(
-            [WPE_BIN, filename], stdin=slave_fd, stdout=slave_fd,
+            [WPE_BIN, filename], stdin=stdin_arg, stdout=slave_fd,
             stderr=slave_fd, cwd=workdir, env=env,
             preexec_fn=adopt_pty_as_controlling_tty)
         os.close(slave_fd)
+        if not stdin_is_terminal:
+            os.close(stdin_arg)
         self._drain(wait)
 
     # -- context manager -----------------------------------------------------
@@ -741,7 +758,7 @@ class WpeSession:
         macos_key_route); on Linux every key is sent verbatim."""
         for k in keys:
             for stroke in macos_key_route(k):
-                os.write(self.master_fd, stroke.encode())
+                os.write(self.input_fd, stroke.encode())
                 self._drain(delay)
         return self
 
@@ -755,14 +772,14 @@ class WpeSession:
         told = False
         last_progress = time.time()
         deadline = time.time() + PASTE_TIMEOUT_S * WAIT_SCALE
-        os.set_blocking(self.master_fd, False)
+        os.set_blocking(self.input_fd, False)
         try:
             while done < len(data) and time.time() < deadline:
-                _, writable, _ = select.select([], [self.master_fd], [],
+                _, writable, _ = select.select([], [self.input_fd], [],
                                                PASTE_POLL_S)
                 if writable:
                     try:
-                        done += os.write(self.master_fd,
+                        done += os.write(self.input_fd,
                                          data[done:done + PASTE_CHUNK])
                         last_progress = time.time()
                     except BlockingIOError:
@@ -772,7 +789,7 @@ class WpeSession:
                     told = True
                 self._drain(PASTE_POLL_S)
         finally:
-            os.set_blocking(self.master_fd, True)
+            os.set_blocking(self.input_fd, True)
         if not told:
             when_stalled()
         return done
@@ -912,5 +929,10 @@ class WpeSession:
             os.close(self.master_fd)
         except Exception:
             pass
+        if self.input_fd != self.master_fd:
+            try:
+                os.close(self.input_fd)
+            except Exception:
+                pass
         self.proc.wait()
         return code

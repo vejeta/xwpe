@@ -10,8 +10,7 @@ into the file and File > Save writes it, all before gdb has answered.  The
 terminal rows of the same scenario are in tests/test_debugger_integration.py.
 
 The Wayland twin (tests/wayland/test_debug_answer_wait.py) runs the same
-body; it skips there, as the other rows that need a debug session do (the
-headless compositor harness cannot start one).
+body.
 """
 import os
 import shutil
@@ -104,8 +103,6 @@ def test_gdb_keys_reach_the_editor_while_it_answers(xwpe):
     text and File > Save typed meanwhile all reach the editor: the file on
     disk gets the text and no "k", before gdb answers.  Once it answers the
     stop's green bar is drawn."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     home = os.path.dirname(xwpe.srcfile)
     _go_to_line(xwpe, BREAK_LINE)
     xwpe.key("ctrl+g", "b", delay=0.6)
@@ -152,8 +149,6 @@ def test_gdb_keys_typed_during_the_start_are_kept_or_refused(xwpe):
     typed meanwhile reaches the editor and is kept: once the start has
     stopped on the breakpoint it steps.  Ctrl-G K is refused, never asked
     of gdb."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     home = os.path.dirname(xwpe.srcfile)
     _go_to_line(xwpe, STEPS_BREAK_LINE)
     xwpe.key("ctrl+g", "b", delay=0.6)
@@ -223,8 +218,6 @@ def test_pdb_keys_reach_the_editor_while_it_answers(xwpe):
     asked for the stack.  Once it answers, F8 steps.  (gdb's row holds
     the stop's own question; pdb's stop needs none for its mark, so the
     held answer is the one to a breakpoint set at the stop.)"""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     home = os.path.dirname(xwpe.srcfile)
     _go_to_line(xwpe, PDB_BREAK_LINE)
     xwpe.key("ctrl+g", "b", delay=0.6)
@@ -308,8 +301,6 @@ def test_jdb_keys_reach_the_editor_while_it_answers(xwpe):
     text and File > Save typed meanwhile all reach the editor: the file on
     disk gets the text and no "k", before jdb answers, and jdb is never
     asked for the stack.  Once it answers, F8 steps."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     home = os.path.dirname(xwpe.srcfile)
     _go_to_line(xwpe, JDB_BREAK_LINE)
     xwpe.key("ctrl+g", "b", delay=0.6)
@@ -388,8 +379,6 @@ def test_a68g_keys_reach_the_editor_while_it_answers(xwpe):
     text and File > Save typed meanwhile all reach the editor: the file on
     disk gets the text and no "k", before a68g answers, and a68g is never
     asked for the stack.  Once it answers, F8 steps."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     home = os.path.dirname(xwpe.srcfile)
     _go_to_line(xwpe, A68G_BREAK_LINE)
     xwpe.key("ctrl+g", "b", delay=0.6)
@@ -491,8 +480,6 @@ def test_dbx_keys_reach_the_editor_while_it_answers(dbx_stub, xwpe):
     text and File > Save typed meanwhile all reach the editor: the file on
     disk gets the text and no "k", before dbx answers, and dbx is never
     asked for the stack.  Once it answers, F8 steps."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     home = os.path.dirname(xwpe.srcfile)
     _go_to_line(xwpe, DBX_BREAK_LINE)
     xwpe.key("ctrl+g", "b", delay=0.6)

@@ -57,8 +57,6 @@ def _gone(pid):
 def test_the_editors_exit_ends_the_debugger_and_its_program(dbx_stub, xwpe):
     """SIGTERM to xwpe at a stop under dbx: xwpe ends, dbx goes, and dbx
     was sent no signal that dumps core."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
     home = os.path.dirname(xwpe.srcfile)
     _go_to_line(xwpe, DBX_BREAK_LINE)
     xwpe.key("ctrl+g", "b", delay=0.6)

@@ -109,10 +109,7 @@ def test_a_breakpoint_set_while_running_stops_the_program_there(xwpe):
     """A breakpoint set on the loop gdb's program runs is applied at once:
     gdb is interrupted, told and let run on, and the program stops on the
     line at its next pass, without a Pause: the counter stops and the stop
-    line's green bar is drawn.  The Wayland twin skips: the headless
-    compositor harness cannot start a debug session."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
+    line's green bar is drawn."""
     xwpe.key("ctrl+g", "r", delay=2.0)          # to the start of main
     xwpe.key("ctrl+g", "r", delay=1.0)          # run on
     assert _wait(lambda: _ticks_move(xwpe), RUN_TIMEOUT_S), \

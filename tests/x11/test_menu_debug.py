@@ -77,10 +77,8 @@ def _run_until_blocked(xwpe):
     _sleep(1.0)
 
 
-# Wayland cannot drive a debug session headless here (the editor cannot
-# create /dev/tty under the compositor test harness, old binary included), so
-# this is the graphical twin of the terminal test and the Wayland row stays a
-# manual check in WAYLAND-TESTING.txt.
+# The graphical twin of the terminal test; the Wayland twin runs this body
+# too, and WAYLAND-TESTING.txt keeps the same check on a real desktop.
 @pytest.mark.skipif(not __import__("shutil").which("gdb")
                     or not __import__("shutil").which("gcc"),
                     reason="no gdb or gcc")
@@ -170,11 +168,8 @@ def test_ctrl_break_pauses(xwpe, keystroke):
     The graphical key reader must hand the editor the key as Ctrl-Break,
     which no menu or terminal test reaches.
 
-    The Wayland twin skips: the headless compositor harness cannot start a
-    debug session.  Its key decoder is covered by the keysym selftest
-    (tests/test_wayland_keysym.py) and by WAYLAND-TESTING.txt."""
-    if not getattr(xwpe, "can_debug", True):
-        pytest.skip("no debug session under the headless compositor harness")
+    The Wayland twin runs this body; its key decoder is also covered by the
+    keysym selftest (tests/test_wayland_keysym.py)."""
     xwpe.key("ctrl+g", "r", delay=2.0)          # to the start of main
     xwpe.key("ctrl+g", "r", delay=1.0)          # run on
     assert _wait(lambda: _ticks_move(xwpe), RUN_TIMEOUT_S), \

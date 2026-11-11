@@ -76,15 +76,16 @@ things the emulated pipeline does not cover:
       drag/resize via the title bar behave like the X11 build.
   [ ] Debugger: while gdb runs a program that waits for input, Debug > Quit
       (Alt-D, Q) from the menu ends gdb, F8 says the program is running, and
-      a typed line reaches the program.  A headless run cannot drive a debug
-      session (the editor cannot create /dev/tty); the X11 twin is
-      tests/x11/test_menu_debug.py.
+      a typed line reaches the program.  The headless twins run it
+      (tests/wayland/test_menu_debug.py); the check here is the same on a
+      real desktop, where the editor is started from a launcher with no
+      terminal on its input.
   [ ] Debugger Pause: while gdb runs a program that does not stop (a loop,
       a sleep), Ctrl-Break (Ctrl+Pause on a PC keyboard) stops it, the line
       it was on is marked and the status row says "Paused".  The key
-      translation is asserted by tests/test_wayland_keysym.py; the session
-      itself needs a real compositor (the X11 twin is test_ctrl_break_pauses
-      in tests/x11/test_menu_debug.py).
+      translation is asserted by tests/test_wayland_keysym.py and the session
+      by test_ctrl_break_pauses in tests/wayland/test_menu_debug.py; the
+      check here is the key on a real keyboard and compositor.
   [ ] Output under a dialog: while gdb runs a program that prints all the
       time, Search > Find opens its dialog; nothing in the window changes
       while it is up, and once Esc closes it Messages scrolls on with what

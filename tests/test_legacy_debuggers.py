@@ -165,7 +165,7 @@ def _stub_env(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
 
 def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
              continue_dies=False, interrupt_at=0, stall="", stall_nth=1,
-             extra=None):
+             extra=None, stdin_is_terminal=True):
     """A session on p.c with @backend forced through the options file.
 
     The options file is how a user picks a backend the dialog of this build
@@ -180,7 +180,7 @@ def _session(tmp_path, backend, continue_runs_on=False, continue_delay_s=0,
     if extra:
         env.update(extra)
     return WpeSession(str(tmp_path), C_PROG, filename=C_SOURCE, wait=1.5,
-                      env_extra=env)
+                      env_extra=env, stdin_is_terminal=stdin_is_terminal)
 
 
 def _commands(tmp_path, backend):

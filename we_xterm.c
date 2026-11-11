@@ -1990,9 +1990,19 @@ static void e_x_send_active_window(Time ts)
    False, SubstructureNotifyMask | SubstructureRedirectMask, &ev);
 }
 
+/**
+ * e_x_reclaim_focus - Bring the editor's X window back to the front and
+ * give it the keyboard, when a debug stop brought the user's attention
+ * elsewhere.  The native Wayland editor has no X connection, so there it
+ * does nothing.
+ */
 void e_x_reclaim_focus(void)
 {
- Time ts = e_x_get_server_time();
+ Time ts;
+
+ if (WpeXInfo.display == NULL)
+  return;
+ ts = e_x_get_server_time();
 
  XRaiseWindow(WpeXInfo.display, WpeXInfo.window);
  e_x_send_active_window(ts);

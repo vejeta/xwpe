@@ -650,6 +650,12 @@ produces it has been @emph{executed}.  If the cursor is on the
 @code{printf} line, that line has not run yet.  Press @key{F8} once
 more to step past it, then @kbd{Ctrl-G P} to see the output.
 
+This needs no terminal on the editor's own input: @command{xwpe} started
+from a desktop launcher debugs as well.  The program's pty is its
+terminal, and the editor's own terminal is used only when no pty could
+be opened.  With neither, the session is refused with the message
+@samp{No terminal for the program}.
+
 After each step, xwpe sends @code{call (void)fflush(0)} to gdb to
 flush the program's stdout buffer.  This ensures output is available
 immediately, even if the program uses buffered I/O.

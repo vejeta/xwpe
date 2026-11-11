@@ -233,6 +233,16 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Debugging works when the editor was not started from a terminal.  With
+  the native Wayland display, starting a debugger ended the editor.  In the
+  terminal editor with its input not a terminal, gdb, sdb, dbx and xdb were
+  refused with "tty error: not a tty" although the program's own
+  pseudoterminal was open.  The program now writes to that
+  pseudoterminal, and the editor's own terminal is used only when none
+  could be opened.  When there is neither, the message says so.  sdb, dbx
+  and xdb now send the program's output to Messages through that
+  pseudoterminal, as gdb does, instead of over the editor's screen.
+
 * The review after an assistant run lists only what the run changed, and
   r removes only what the run created.  In a git workspace, files you
   already had untracked (notes, build output) were listed as new files and
