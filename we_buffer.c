@@ -16,9 +16,6 @@
 
 #include "we_buffer.h"
 
-/* The cover the block code still spells as a global (see we_buffer.h). */
-int e_undo_sw = 0;
-
 /* tests only: 0, or how many allocations from now the first refusal is */
 static int buffer_fail_from = 0;
 
@@ -88,17 +85,7 @@ static int buffer_keeps_history(BUFFER *b)
 
 static int buffer_covered_now(BUFFER *b)
 {
- return(b->covered > 0 || e_undo_sw > 0);
-}
-
-/* The block code still adds its own lines by hand under e_undo_sw and then
-   moves the breakpoints by the size of the block (e_brk_recalc).  A line an
-   insertion adds meanwhile (the wrap of a pasted line) is left to it as
-   well, as it always was: counting it here too would move the breakpoints
-   below twice, and the paste's Undo would leave them a line off. */
-static int buffer_rows_left_to_block_code(int n_del, int n_ins)
-{
- return(e_undo_sw > 0 && n_del == 0 && n_ins > 0);
+ return(b->covered > 0);
 }
 
 /**
@@ -704,7 +691,7 @@ static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int
                                  int no_changed, STRING *out, int *brk_out, int *nbrk_out,
                                  Undo *pocket, BufferSpliceMem *m)
 {
- int changed, old_mxlines, i, delta, rows_move;
+ int changed, old_mxlines, i, delta;
 
  if (m->need_canon)
  {
@@ -729,9 +716,7 @@ static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int
  }
  if (out != NULL && nbrk_out != NULL)
   *nbrk_out = 0;
- rows_move = !buffer_rows_left_to_block_code(n_del, n_ins);
- if (rows_move)
-  buffer_brp_move(b, y, n_del, n_ins, changed, brk, nbrk, m, pocket, brk_out, nbrk_out);
+ buffer_brp_move(b, y, n_del, n_ins, changed, brk, nbrk, m, pocket, brk_out, nbrk_out);
  for (i = 0; i < n_del; i++)
  {
   if (m->rec != NULL)
@@ -754,7 +739,7 @@ static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int
  buffer_marks_move(b, y, n_del, n_ins, changed);
  if (buffer_keeps_history(b))
   b->f->save += E_BUFFER_SAVE_PER_LINE * (n_del + n_ins);
- if (buffer_keeps_history(b) && rows_move)
+ if (buffer_keeps_history(b))
   wpe_buffer_lines_moved(b, y, n_del, n_ins, m->removed, m->nremoved, m->added, m->nadded);
  if (m->rec != NULL)
  {
@@ -1447,12 +1432,12 @@ static int buffer_diff_one_hunk(BufferDiff *d, int na, int nb)
 }
 
 /* A finer cut is worth its search: the buffer keeps breakpoints, colours and
-   undo, and no block operation is moving its own rows (e_undo_sw), which
-   would leave the rows below an inserted hunk where they were, so the hunks
-   after it could not be measured where they stand before any of them lands. */
+   undo.  Every splice, covered or not, moves the rows below it, so a hunk
+   measured where it stands before any of them lands meets exactly the rows
+   it measured, inside a block operation's cover too. */
 static int buffer_swap_cuts_finely(BUFFER *b)
 {
- return(buffer_keeps_history(b) && e_undo_sw == 0);
+ return(buffer_keeps_history(b));
 }
 
 /**
@@ -1462,8 +1447,8 @@ static int buffer_swap_cuts_finely(BUFFER *b)
  *
  * A buffer that keeps no breakpoints, colours or undo (a view, or one whose
  * window has closed) has nothing a finer cut would keep, so it takes the
- * whole middle as one hunk and pays for no search; so does a swap made in
- * the middle of a block operation.  Return: 1, or 0 when memory ran out.
+ * whole middle as one hunk and pays for no search.  Return: 1, or 0 when
+ * memory ran out.
  */
 static int buffer_cut_middle(BUFFER *b, BufferDiff *d, int head, int na,
                              const STRING *new_lines, int nb)
@@ -1755,8 +1740,8 @@ int e_buffer_set_line(BUFFER *b, int y, const char *text, int n)
 /**
  * e_buffer_insert_raw - Put an empty line at yd, and nothing else.
  *
- * What e_new_line does for the file reader, the views the editor writes
- * and the block code until they splice: no mark, breakpoint, colour or undo
+ * What e_new_line does for the file reader and the views the editor writes
+ * until they splice: no mark, breakpoint, colour or undo
  * moves, exactly as before.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM with
  * nothing changed (the caller decides what a refusal means).
  */

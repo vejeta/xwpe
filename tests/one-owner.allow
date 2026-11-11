@@ -75,13 +75,6 @@ we_ai_ws.o write 1 keep a regular file the model named, opened at the place the 
 
 # the text: every line a window adds or removes goes through its owner
 # (we_buffer.c).  What is left are the callers each later pass moves onto it.
-# the block code: copy, move, delete and paste splice and detach
-we_block.o e_new_line 1 P11c the block's split line
-we_block.o e_add_undo 5 P11c the block kinds and Replace
-we_block.o e_brk_recalc 2 P11c a paste and a block delete move the breakpoints by hand
-we_block.o mxlines_write 4 P11c the gap, the compaction, the clipboard clear, the dead e_blck_clear
-we_block.o bf_alloc 1 P11c the table growth of a copy
-we_block.o e_undo_sw 9 P11c the covers of copy, move, paste and Replace
 # the views and the file reader: Messages, Watches, Stack, Help, Info, the
 # man page, the File Manager's insert
 we_debug.o e_build_drop_last_row 1 P11d the build's waiting line

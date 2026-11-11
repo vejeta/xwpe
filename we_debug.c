@@ -5334,8 +5334,9 @@ int e_d_reinit_brks(FENSTER * f,char * prj)
 
 
 /**
- * e_brk_recalc - The block code moved @len lines at @start of window @f by
- * hand (negative: deleted): move the breakpoints of that file with them.
+ * e_brk_recalc - The File Manager's insert moved @len lines at @start of
+ * window @f by hand (negative: deleted): move the breakpoints of that file
+ * with them.
  *
  * The debugger's list moves, and a running session is told, through the
  * path every line change of the buffer owner takes (wpe_buffer_lines_moved);

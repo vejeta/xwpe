@@ -217,7 +217,8 @@ after @kbd{Ctrl-G Q}, or a program that ran to its end, the next
 
 @cindex breakpoints, moved by an edit
 A breakpoint moves with its line when you add or delete lines above it
-(@key{Return}, @kbd{Ctrl-Y}, a paste, Undo, a tool's rewrite), and in a
+(@key{Return}, @kbd{Ctrl-Y}, a paste, a block copy, move or delete, Undo,
+a tool's rewrite), and in a
 session the debugger is told as if you had removed it and set it on the
 new line: at a stop at once, while the debugger answers a command as soon
 as that answer is in, and while the program runs as for @kbd{Ctrl-G B}.

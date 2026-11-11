@@ -251,6 +251,18 @@ Changes
   whole change.  A rewrite that adds or removes over two thousand lines
   keeps them on their line numbers.
 
+* Block copy, move, paste and delete keep breakpoints on their code.  A
+  block copied or pasted above a breakpoint pushes it down with its code,
+  a moved line takes its breakpoint along (a block that starts at column 0
+  and is dropped at the start of a line takes its first line's too), and
+  Ctrl-U of a block delete brings the breakpoints of its lines back (they
+  stayed on their line numbers, under other code, and a deleted block's
+  were lost); Ctrl-R of a paste moves them down again.  A Search > Replace that makes its line wrap moves the
+  breakpoint below it down too.  Change Case (Ctrl-K D) is one Ctrl-U (it
+  could not be undone).  A block copied onto its own first line, before
+  the block's start, copies the marked text (it wrote stray bytes into the
+  file).
+
 * A breakpoint moved by an edit during a debugging session moves in the
   debugger too.  Enter above a breakpoint at a stop used to move the mark
   while gdb, pdb or the debug adapter kept the old line, so Ctrl-G R

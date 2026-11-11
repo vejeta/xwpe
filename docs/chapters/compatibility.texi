@@ -157,6 +157,30 @@ where the margin shows.  During a debugging session the debugger is told
 of the move too, at once at a stop and after its answer while it is
 answering, so a key that moves a breakpoint is never refused for it.
 
+@item Block copy, move and delete
+@cindex breakpoints, block operations
+@cindex undo, block operations
+The original left every breakpoint on its line number when a block was
+copied, moved or pasted above it, and dropped the breakpoints of a deleted
+block for good; a Search > Replace that made its line wrap left the
+breakpoint below on the wrapped tail.  Now a breakpoint stays on its code:
+lines a copy or a paste adds push it down, a moved line takes its
+breakpoint along (a block that starts at column 0 owns its first line, so
+that line's breakpoint moves too when the block is dropped at the start of
+a line), and Undo and Redo of a block delete bring the breakpoints of its
+lines back and take them away again.  A copy carries no breakpoint.  As in
+the original, a breakpoint on a line whose text is merged into another
+line goes, and Undo does not bring that one back: the last line of a
+block that ends inside a line, when the block is deleted or moved, and
+the first line of a block that starts at column 0, when it is dropped
+inside a line.
+
+@item Change Case
+@cindex undo, change case
+The original changed the case of a block (@kbd{Ctrl-K D}) without
+recording it, so @kbd{Ctrl-U} could not take it back.  It is now one undo
+step, with the breakpoints and the block left where they were.
+
 @item Formats, renames and accepted Edits
 @cindex breakpoints, format
 @cindex undo, format

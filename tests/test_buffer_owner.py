@@ -549,3 +549,236 @@ def test_the_margin_shows_the_breakpoints_a_paste_moved_at_once(tmp_path):
             "the breakpoint is on line %s, its code on %d" % (
                 s.breakpoint_lines(), BAZ_ROW + 3)
         assert s.alive(), "wpe died"
+
+
+# SEED's rows (0-based) the block rows below use.
+INT_A_ROW = 2
+BAR_ROW = 4
+RETURN_ROW = 6
+
+
+def _breakpoints_at(s, rows):
+    """From the top of the file, put a breakpoint on each 0-based row of
+    @rows, coming back to the top after each."""
+    for row in rows:
+        _toggle_breakpoint_at(s, row)
+        _go_top(s, row)
+    want = [row + 1 for row in rows]
+    assert s.breakpoint_lines() == want, \
+        "the breakpoints were not set: %s" % s.breakpoint_lines()
+
+
+def _mark_whole_lines(s, first, past):
+    """From the top of the file, mark rows @first up to (not including)
+    @past as a block of whole lines, and come back to the top."""
+    _down(s, first)
+    s.key(CTRL_K, "b", delay=0.3)
+    _down(s, past - first)
+    s.key(CTRL_K, "k", delay=0.3)
+    _go_top(s, past)
+
+
+def _breakpoints_after(s, key, delay=0.8):
+    """Press @key and return the breakpoint lines the margin then shows, once
+    drawn at once and once after the window is drawn again (both must agree)."""
+    s.key(key, delay=delay)
+    shown = s.breakpoint_lines(drain=0.3)
+    _forced_repaint(s)
+    again = s.breakpoint_lines(drain=0.3)
+    assert shown == again, \
+        "the margin showed %s, the window drawn again %s" % (shown, again)
+    return shown
+
+
+# @scenario SC-buffer-04
+def test_block_copy_above_a_breakpoint_moves_it(tmp_path):
+    """Two whole lines copied above two breakpoints (one of them on a copied
+    line): both stay on their code, two lines further down; the copy carries
+    no breakpoint; Ctrl-U and Ctrl-R move them back and forth with it."""
+    with WpeSession(str(tmp_path), SEED) as s:
+        _breakpoints_at(s, [FOO_ROW, BAZ_ROW])
+        _mark_whole_lines(s, BAR_ROW, RETURN_ROW)    # "  bar(a);" and "  baz(a);"
+        _down(s, INT_A_ROW)
+        assert _breakpoints_after(s, CTRL_K + "c") == [FOO_ROW + 3, BAZ_ROW + 3], \
+            "after the copy the breakpoints are on lines %s, their code on %s" % (
+                s.breakpoint_lines(), [FOO_ROW + 3, BAZ_ROW + 3])
+        assert "bar(a);" in _line_text(s, INT_A_ROW + 1), "the block was not copied"
+        assert _breakpoints_after(s, CTRL_U) == [FOO_ROW + 1, BAZ_ROW + 1], \
+            "after Ctrl-U the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert "int a = 1;" in _line_text(s, INT_A_ROW + 1), "Ctrl-U did not take the copy back"
+        assert _breakpoints_after(s, CTRL_R) == [FOO_ROW + 3, BAZ_ROW + 3], \
+            "after Ctrl-R the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-04
+def test_block_move_above_a_breakpoint_moves_it(tmp_path):
+    """A block of whole lines whose first line has a breakpoint, moved above
+    another breakpoint: each breakpoint travels with its code, and Ctrl-U and
+    Ctrl-R move them back and forth with the block."""
+    with WpeSession(str(tmp_path), SEED) as s:
+        _breakpoints_at(s, [FOO_ROW, BAR_ROW])
+        _mark_whole_lines(s, BAR_ROW, RETURN_ROW)    # "  bar(a);" and "  baz(a);"
+        _down(s, INT_A_ROW)
+        moved = [INT_A_ROW + 1, FOO_ROW + 3]         # bar on row 2, foo on row 5
+        assert _breakpoints_after(s, CTRL_K + "v") == moved, \
+            "after the move the breakpoints are on lines %s, their code on %s" % (
+                s.breakpoint_lines(), moved)
+        assert "bar(a);" in _line_text(s, INT_A_ROW + 1), "the block did not move"
+        assert "foo(a);" in _line_text(s, FOO_ROW + 3), "the block did not move"
+        assert _breakpoints_after(s, CTRL_U) == [FOO_ROW + 1, BAR_ROW + 1], \
+            "after Ctrl-U the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert "bar(a);" in _line_text(s, BAR_ROW + 1), "Ctrl-U did not move the block back"
+        assert _breakpoints_after(s, CTRL_R) == moved, \
+            "after Ctrl-R the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-04
+def test_a_deleted_block_undone_has_its_breakpoint_again(tmp_path):
+    """A block of whole lines with a breakpoint on its first and on its
+    second line is deleted: they go with it, the one above stays; Ctrl-U
+    brings both back on their code, Ctrl-R takes them again."""
+    with WpeSession(str(tmp_path), SEED) as s:
+        _breakpoints_at(s, [FOO_ROW, BAR_ROW, BAZ_ROW])
+        _mark_whole_lines(s, BAR_ROW, RETURN_ROW)    # "  bar(a);" and "  baz(a);"
+        assert _breakpoints_after(s, CTRL_K + "y") == [FOO_ROW + 1], \
+            "after the delete the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert "return 0;" in _line_text(s, BAR_ROW + 1), "the block was not deleted"
+        assert _breakpoints_after(s, CTRL_U) == [FOO_ROW + 1, BAR_ROW + 1, BAZ_ROW + 1], \
+            "after Ctrl-U the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert "baz(a);" in _line_text(s, BAZ_ROW + 1), "Ctrl-U did not bring the block back"
+        assert _breakpoints_after(s, CTRL_R) == [FOO_ROW + 1], \
+            "after Ctrl-R the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-04
+def test_a_block_delete_that_joins_two_lines_keeps_the_breakpoint_below_on_its_line(tmp_path):
+    """A block from inside one line to inside a line two below is deleted, so
+    the two ends join: the breakpoint below moves up with its line, and
+    Ctrl-U puts it back where it was."""
+    with WpeSession(str(tmp_path), SEED) as s:
+        _breakpoints_at(s, [FOO_ROW, RETURN_ROW])
+        _down(s, FOO_ROW)
+        s.key(RIGHT, RIGHT, RIGHT, RIGHT, delay=0.2)   # "  fo|o(a);"
+        s.key(CTRL_K, "b", delay=0.3)
+        _down(s, BAZ_ROW - FOO_ROW)                    # "  ba|z(a);"
+        s.key(CTRL_K, "k", delay=0.3)
+        assert _breakpoints_after(s, CTRL_K + "y") == [FOO_ROW + 1, RETURN_ROW - 1], \
+            "after the delete the breakpoints are on lines %s, their code on %s" % (
+                s.breakpoint_lines(), [FOO_ROW + 1, RETURN_ROW - 1])
+        assert "  foz(a);" in _line_text(s, FOO_ROW + 1), "the two ends did not join"
+        assert _breakpoints_after(s, CTRL_U) == [FOO_ROW + 1, RETURN_ROW + 1], \
+            "after Ctrl-U the breakpoints are on lines %s" % s.breakpoint_lines()
+        assert "bar(a);" in _line_text(s, BAR_ROW + 1), "Ctrl-U did not bring the block back"
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-04
+def test_redo_of_a_paste_moves_the_breakpoint_below_it_again(tmp_path):
+    """Two lines pasted above a breakpoint, Ctrl-U, Ctrl-R: after each key
+    the breakpoint is on its own code."""
+    with WpeSession(str(tmp_path), SEED) as s:
+        _toggle_breakpoint_at(s, BAZ_ROW)
+        _go_top(s, BAZ_ROW)
+        _copy_block_to_clipboard(s, 2, 0)            # "int main(void)\n{\n"
+        _down(s, 1)
+        s.key(HOME, delay=0.2)                       # column 0 of "  foo(a);"
+        assert _breakpoints_after(s, CTRL_V) == [BAZ_ROW + 3], \
+            "after the paste the breakpoint is on line %s" % s.breakpoint_lines()
+        assert _breakpoints_after(s, CTRL_U) == [BAZ_ROW + 1], \
+            "after Ctrl-U the breakpoint is on line %s" % s.breakpoint_lines()
+        assert "baz(a);" in _line_text(s, BAZ_ROW + 1), "Ctrl-U did not take the paste back"
+        assert _breakpoints_after(s, CTRL_R) == [BAZ_ROW + 3], \
+            "after Ctrl-R the breakpoint is on line %s, its code on %d" % (
+                s.breakpoint_lines(), BAZ_ROW + 3)
+        assert "baz(a);" in _line_text(s, BAZ_ROW + 3), "Ctrl-R did not paste again"
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+def test_a_block_copied_onto_its_own_first_line_copies_the_marked_text(tmp_path):
+    """A block over three lines copied to its own first line, before the
+    block's start: the file holds the marked text twice (no stray bytes),
+    and Ctrl-U and Ctrl-R give each text back."""
+    block = "int a = 1;\n  foo(a);\n  b"                    # (2,2) to (3,4)
+    want = SEED.replace("  int a = 1;\n", " " + block + " int a = 1;\n", 1)
+    with WpeSession(str(tmp_path), SEED) as s:
+        _down(s, INT_A_ROW)
+        s.key(RIGHT, RIGHT, delay=0.2)               # "  |int a = 1;"
+        s.key(CTRL_K, "b", delay=0.3)
+        _down(s, BAR_ROW - INT_A_ROW)                # the column stays 2
+        s.key(RIGHT, delay=0.2)                      # "  b|ar(a);"
+        s.key(CTRL_K, "k", delay=0.3)
+        _go_top(s, BAR_ROW)
+        _down(s, INT_A_ROW)
+        s.key(RIGHT, delay=0.2)                      # " | int a = 1;"
+        s.key(CTRL_K, "c", delay=0.8)
+        assert _saved(s) == want, "the copy is not the marked text: %r" % s.text()
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == SEED, "Ctrl-U did not take the copy back: %r" % s.text()
+        s.key(CTRL_R, delay=0.8)
+        assert _saved(s) == want, "Ctrl-R did not copy again: %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+def _change_case_to_upper(s):
+    """Ctrl-K D, Upcase, OK."""
+    s.key(CTRL_K, "d", delay=0.6)
+    s.key("\033u", delay=0.3)                    # Alt-U: Upcase
+    s.key(ENTER, delay=0.6)
+
+
+# @scenario SC-buffer-01
+def test_a_case_change_is_one_undo(tmp_path):
+    """A block over two lines turned to upper case: one Ctrl-U gives back
+    the old text with the block and the breakpoint where they were, one
+    Ctrl-R the upper case again."""
+    upper = SEED.replace("  bar(a);", "  BAR(A);").replace("  baz(a);", "  BAZ(a);")
+    with WpeSession(str(tmp_path), SEED) as s:
+        _breakpoints_at(s, [BAZ_ROW])
+        _down(s, BAR_ROW)
+        s.key(RIGHT, RIGHT, delay=0.2)               # "  |bar(a);"
+        s.key(CTRL_K, "b", delay=0.3)
+        _down(s, 1)
+        s.key(RIGHT, RIGHT, RIGHT, delay=0.2)        # "  baz|(a);"
+        s.key(CTRL_K, "k", delay=0.3)
+        _change_case_to_upper(s)
+        assert _saved(s) == upper, "the case change did not apply: %r" % s.text()
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == SEED, "one Ctrl-U did not take the case change back: %r" % s.text()
+        assert s.breakpoint_lines(drain=0.3) == [BAZ_ROW + 1], \
+            "after Ctrl-U the breakpoint is on line %s" % s.breakpoint_lines()
+        s.key(CTRL_R, delay=0.8)
+        assert _saved(s) == upper, "one Ctrl-R did not give the upper case back: %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-04
+def test_a_replacement_that_wraps_its_line_moves_the_breakpoint_below_it(tmp_path):
+    """Search > Replace makes a line that fills the window's width longer, so
+    its tail wraps onto a new line: the breakpoint on the line below moves
+    down with it, and Ctrl-U takes it back up."""
+    words = " ".join("word%02d" % i for i in range(15))
+    long_row = ("  bar(a); /* " + words + " */")[:117]
+    seed = SEED.replace("  bar(a);", long_row, 1)
+    with WpeSession(str(tmp_path), seed) as s:
+        _breakpoints_at(s, [BAZ_ROW])
+        s.menu(ALT.SEARCH, "r")              # Replace dialog, Find field active
+        s.key("word07")
+        s.key("\033n")
+        s.key("word07word07")                # Alt-N: New Text, longer
+        s.key("\033p")                       # no prompt per replacement
+        s.key("\033a")                       # Change All
+        s.key(ENTER, delay=0.6)              # the "Replaced" note
+        s.key(PAGE_UP, delay=0.4)            # the file's first line at the top again
+        assert "baz(a);" in _line_text(s, BAZ_ROW + 2), \
+            "the replacement did not wrap the line:\n" + "\n".join(s.display()[1:10])
+        assert s.breakpoint_lines(drain=0.3) == [BAZ_ROW + 2], \
+            "the breakpoint stayed on the wrapped tail: %s" % s.breakpoint_lines()
+        s.key(CTRL_U, delay=0.8)
+        assert "baz(a);" in _line_text(s, BAZ_ROW + 1), "Ctrl-U did not take the replacement back"
+        assert s.breakpoint_lines(drain=0.3) == [BAZ_ROW + 1], \
+            "after Ctrl-U the breakpoint is on line %s" % s.breakpoint_lines()
+        assert s.alive(), "wpe died"

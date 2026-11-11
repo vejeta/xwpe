@@ -19,6 +19,20 @@
    "id": "SC-buffer-01",
    "requirement": "Every change is undoable, and a tool's rewrite is one step",
    "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_case_change_is_one_undo",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_copied_onto_its_own_first_line_copies_the_marked_text",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
    "test": "tests/test_buffer_owner.py::test_a_replacement_undone_and_redone_gives_each_text_back",
    "status": "new"
   },
@@ -153,6 +167,55 @@
    "requirement": "Breakpoints move with their lines, and come back with Undo",
    "layer": "ncurses",
    "test": "tests/test_buffer_owner.py::test_a_format_that_adds_a_line_keeps_the_breakpoints_on_their_code",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_block_copy_above_a_breakpoint_moves_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_block_move_above_a_breakpoint_moves_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_deleted_block_undone_has_its_breakpoint_again",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_delete_that_joins_two_lines_keeps_the_breakpoint_below_on_its_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_redo_of_a_paste_moves_the_breakpoint_below_it_again",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_replacement_that_wraps_its_line_moves_the_breakpoint_below_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints move with their lines, and come back with Undo",
+   "layer": "asan",
+   "test": "tests/test_block_asan.py",
    "status": "new"
   },
   {

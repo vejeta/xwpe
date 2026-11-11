@@ -185,7 +185,7 @@ BUFFER *e_p_w_buffer = NULL;
  * A new file and the clipboard start with one such line, so the first key
  * typed and the file written both see a line, as they always did.
  */
-static void e_line_make_hard_empty(STRING *l)
+void e_line_make_hard_empty(STRING *l)
 {
  l->s[0] = WPE_WR;
  l->s[1] = '\0';
@@ -2226,8 +2226,8 @@ int e_del_line(int yd, BUFFER *b, SCHIRM *s)
 /**
  * e_new_line - Put an empty line at @yd of @b, and nothing else.
  *
- * The file reader, the views the editor writes and the block code add their
- * lines this way until they splice: no mark, breakpoint, colour or undo
+ * The file reader and the views the editor writes add their lines this way
+ * until they splice: no mark, breakpoint, colour or undo
  * moves.  None of them can go on without the line, so running out of memory
  * here ends the editor through the low-memory error, which offers to save
  * the user's files first, as it always did.  Return: the number of lines.
@@ -2771,43 +2771,7 @@ static char *e_undo_text_copy(BUFFER *b, int x, int y, int n)
 }
 
 /**
- * e_undo_shell_new - The private buffer a block delete moves its lines into.
- * @b: the buffer the block leaves.
- *
- * Its own breakpoint rows keep the block's breakpoints until Undo brings
- * the lines back; it has no file name, so the debugger is never told of it,
- * and every splice into it runs covered, so it records nothing.
- * Return: the shell, or NULL when memory ran out.
- */
-static BUFFER *e_undo_shell_new(BUFFER *b)
-{
- BUFFER *bn = MALLOC(sizeof(BUFFER));
- SCHIRM *sn = MALLOC(sizeof(SCHIRM));
- FENSTER *fn = MALLOC(sizeof(FENSTER));
-
- if (bn == NULL || sn == NULL || fn == NULL)
- {
-  FREE(bn);  FREE(sn);  FREE(fn);
-  return(NULL);
- }
- memset(sn, 0, sizeof(SCHIRM));
- memset(fn, 0, sizeof(FENSTER));
- fn->s = sn;
- fn->b = bn;
- fn->ed = NULL;            /* no editor: the block code recalculates no breakpoint */
- e_buffer_init(bn, b->cn, fn, b->cn->maxcol, E_BUFFER_HISTORY_FULL);
- if (bn->mxlines != 1)
- {
-  e_buffer_shell_free(bn);
-  return(NULL);
- }
- sn->fb = bn->fb = b->fb;
- e_line_make_hard_empty(&bn->bf[0]);
- return(bn);
-}
-
-/**
- * e_undo_record_compose - Fill a character or block record of kind @sw.
+ * e_undo_record_compose - Fill a character record of kind @sw.
  * Return: 0, or -1 when memory ran out (the record is then incomplete).
  */
 static int e_undo_record_compose(Undo *next, int sw, BUFFER *b, int x, int y, int n)
@@ -2831,34 +2795,6 @@ static int e_undo_record_compose(Undo *next, int sw, BUFFER *b, int x, int y, in
      length before it records its inverse. */
   next->a.y = b->f->fd.rn;
  }
- else if (sw == 'c' || sw == 'v')
- {
-  SCHIRM *s = b->cn->f[b->cn->mxedt]->s;
-
-  next->a = s->mark_begin;
-  next->e = s->mark_end;
- }
- return(0);
-}
-
-/**
- * e_undo_block_delete_compose - Move the marked block into a shell the
- * record keeps, which is how a block delete happens.
- * Return: 0, or -1 when memory ran out (nothing was deleted).
- */
-static int e_undo_block_delete_compose(Undo *next, BUFFER *b)
-{
- FENSTER *f = b->cn->f[b->cn->mxedt];
- BUFFER *bn = e_undo_shell_new(b);
-
- if (bn == NULL)
-  return(-1);
- next->u.pt = bn;
- e_buffer_cover_begin(b, NULL);
- e_buffer_cover_begin(bn, NULL);
- e_move_block(0, 0, b, bn, f);
- e_buffer_cover_end(bn);
- e_buffer_cover_end(b);
  return(0);
 }
 
@@ -2873,8 +2809,7 @@ static Undo *e_char_record(int sw, BUFFER *b, int x, int y, int n)
   wpe_buffer_say_nomem(b, "the undo record");
   return(NULL);
  }
- if (e_undo_record_compose(next, sw, b, x, y, n) != 0 ||
-     (sw == 'd' && e_undo_block_delete_compose(next, b) != 0))
+ if (e_undo_record_compose(next, sw, b, x, y, n) != 0)
  {
   e_buffer_record_free(next);
   wpe_buffer_say_nomem(b, "the undo record");
@@ -2884,13 +2819,13 @@ static Undo *e_char_record(int sw, BUFFER *b, int x, int y, int n)
 }
 
 /**
- * e_add_undo - Record a character or block change of kind @sw for Ctrl-U.
+ * e_add_undo - Record a character change of kind @sw for Ctrl-U.
  * @b: the buffer; @x, @y, @n: where and how much.
  *
- * 'a' 'r' 's' 'p' are the character kinds, 'c' 'v' 'd' the block kinds
- * ('d' moves the marked block into the record).  A whole-buffer swap ('B')
- * needs no record of its own any more: the swap records exactly the lines
- * it changes.  Nothing is recorded under a cover.
+ * 'a' 'r' 's' 'p' are the character kinds; the block kinds 'c' 'v' 'd' are
+ * composed by the block code (we_block.c).  A whole-buffer swap ('B') needs
+ * no record of its own: the swap records exactly the lines it changes.
+ * Nothing is recorded under a cover.
  * Return: 0, or -1 when memory ran out.
  */
 int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
@@ -2900,6 +2835,30 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
  if (e_char_record(sw, b, x, y, n) == NULL && b->history == E_BUFFER_HISTORY_FULL)
   return(-1);
  return(0);
+}
+
+/**
+ * e_replace_occurrence - Replace @sn characters at (@x, @y) by the @rn
+ * bytes of @text, as one Ctrl-U: what Search > Replace does with each
+ * occurrence it changes.
+ * @b, @s: the buffer and its screen.
+ *
+ * The record is kept first, then the two halves of the swap run covered
+ * with it as their pocket.  A replacement that makes its line wrap moves
+ * the breakpoints below it down with their code, as typing does, and Undo
+ * moves them back.
+ */
+void e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
+                          unsigned char *text, int rn)
+{
+ Undo *rec;
+
+ b->f->fd.rn = rn;     /* the record keeps the replacement's length */
+ rec = e_char_record('s', b, x, y, sn);
+ e_buffer_cover_begin(b, rec);
+ e_del_nchar(b, s, x, y, sn);
+ e_ins_nchar(b, s, text, x, y, rn);
+ e_buffer_cover_end(b);
 }
 
 /* What the screen's owner calls the paint of a window's new text. */
@@ -3030,22 +2989,38 @@ static void e_rudo_replace_back(BUFFER *b, SCHIRM *s, Undo *rec)
 /**
  * e_rudo_block_back - Undo a block delete: the lines come back from the
  * record's shell, and the block is marked as it was.
+ *
+ * When memory runs out the lines stay in the shell and the record stays on
+ * its list, so the next Ctrl-U can still bring them back.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the text and the marks as
+ * they were.
  */
-static void e_rudo_block_back(BUFFER *b, SCHIRM *s, Undo *rec)
+static int e_rudo_block_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
  BUFFER *bn = (BUFFER *) rec->u.pt;
+ SCHIRM *sn = bn->f->s;
  FENSTER *f = b->f;
+ POINT mark_begin = s->mark_begin;
+ POINT mark_end = s->mark_end;
+ POINT shell_begin = sn->mark_begin;
+ POINT shell_end = sn->mark_end;
 
- s->mark_begin = bn->f->s->mark_begin;
- s->mark_end = bn->f->s->mark_end;
- e_buffer_cover_begin(b, NULL);
- e_buffer_cover_begin(bn, NULL);
- e_move_block(rec->b.x, rec->b.y, bn, b, f);
- e_buffer_cover_end(bn);
- e_buffer_cover_end(b);
+ s->mark_begin = shell_begin;
+ s->mark_end = shell_end;
+ if (e_move_block_covered(rec->b.x, rec->b.y, bn, b, f) != E_BLOCK_MOVED)
+ {
+  /* the lines went back into the shell, which moved its marks: the shell's
+     block is its whole text again for the next try */
+  sn->mark_begin = shell_begin;
+  sn->mark_end = shell_end;
+  s->mark_begin = mark_begin;
+  s->mark_end = mark_end;
+  return(E_BUFFER_NOMEM);
+ }
  e_buffer_shell_free(bn);
  rec->u.pt = NULL;
- e_add_undo('c', b, rec->b.x, rec->b.y, 0);
+ e_block_record_push('c', b, rec->b.x, rec->b.y);
+ return(E_BUFFER_OK);
 }
 
 /**
@@ -3081,7 +3056,8 @@ static void e_rudo_block_move_again(BUFFER *b, SCHIRM *s, Undo *rec)
  * The block kinds run uncovered: their operations take their own covers and
  * push their record after them, so Redo finds it.  An overwrite ('p') puts
  * the old character back and records nothing, as it always did.
- * Return: E_BUFFER_OK.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when a block delete's lines could
+ * not come back (its record keeps them for the next try).
  */
 int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
 {
@@ -3098,7 +3074,7 @@ int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
  else if (rec->type == 'v')
   e_rudo_block_move_again(b, s, rec);
  else if (rec->type == 'd')
-  e_rudo_block_back(b, s, rec);
+  return(e_rudo_block_back(b, s, rec));
  return(E_BUFFER_OK);
 }
 

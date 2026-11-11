@@ -504,9 +504,10 @@ static void case_a_refused_swap_changes_nothing(void)
  chk("11 and some swap went through", whole > 0, 1);
 }
 
-/* A swap made while a block operation moves its own rows (e_undo_sw): the
-   rows below an inserted line stay put meanwhile, so the swap is one hunk,
-   measured where it stands; the breakpoint stays on its line. */
+/* A swap made inside a block operation's cover: every covered splice moves
+   the rows below it, so the swap is cut into its two hunks (a line put in
+   above, a line taken out), each measured where it stands, and the
+   breakpoint stays on its line; nothing is recorded under the cover. */
 static void case_a_swap_inside_a_block_operation(void)
 {
  int rows[1] = {4};
@@ -514,12 +515,13 @@ static void case_a_swap_inside_a_block_operation(void)
 
  fixture(6, E_BUFFER_HISTORY_FULL);
  brp_set(1, rows);
- e_undo_sw = 1;
+ e_buffer_cover_begin(&buf, NULL);
  r = e_buffer_replace_all(&buf, "X\nL0\nL1\nL2\nL4\nL5\n", E_BUFFER_STEP_NEW);
- e_undo_sw = 0;
+ e_buffer_cover_end(&buf);
  chk("11 a swap inside a block operation", r, E_BUFFER_OK);
  chk_str("11 its text", text_of(), "X\nL0\nL1\nL2\nL4\nL5\n");
- chk("11 one hunk", moved_calls, 1);
+ chk("11 two hunks", moved_calls, 2);
+ chk("11 nothing recorded under the cover", list_len(buf.ud), 0);
  chk("11 the breakpoint stays on L4", brp_has(4) && scr.brp[0] == 1, 1);
  fixture_free();
 }

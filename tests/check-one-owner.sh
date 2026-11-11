@@ -127,7 +127,7 @@ wpe_chrome_suppress we_paint.c
 e_x_ we_xterm.c WeXterm.c we_render_cairo.c
 mxlines_write we_buffer.c
 bf_alloc we_buffer.c
-e_undo_sw we_buffer.c we_edit.c
+e_undo_sw
 e_redo_sw we_buffer.c we_edit.c
 EOF
 
@@ -137,8 +137,10 @@ EOF
 # symbol rule above names the old line primitives and undo functions; the
 # source rules name a direct write of a buffer's line count (mxlines_write),
 # a direct allocation of its line table (bf_alloc), and the global covers of
-# the old undo (e_undo_sw, e_redo_sw).  A new helper that adds lines some
-# other way writes mxlines or reallocates bf, and is seen here.
+# the old undo (e_undo_sw, e_redo_sw): a cover is the owner's, per buffer
+# (e_buffer_cover_begin), so the global one is allowed nowhere.  A new
+# helper that adds lines some other way writes mxlines or reallocates bf,
+# and is seen here.
 
 # The screen has one owner (we_paint.c): a box, a menu or a prefix that
 # reads keys says so to it, and content from outside the user's keys is
@@ -425,6 +427,8 @@ canary_import we_edit.o e_buffer_split_line "Enter adds lines some other way"
 canary_import we_edit.o e_buffer_insert_blank "the line wrap adds lines some other way"
 canary_import we_edit.o e_buffer_record_push "the char kinds record some other way"
 canary_import we_edit.o e_buffer_undo "Undo replays some other way"
+canary_import we_block.o e_buffer_detach_lines "the block code moves lines some other way"
+canary_import we_block.o e_buffer_record_push "the block kinds record some other way"
 BUFFER_OWNER_SEEN=0
 for obj in $OBJECTS; do
   [ "$(basename "$obj")" = we_buffer.o ] || continue

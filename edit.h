@@ -453,10 +453,21 @@ int e_edt_copy(FENSTER *f);
 int e_edt_einf(FENSTER *f);
 void e_clip_pull_os_into_buffer(FENSTER *w0);
 int e_blck_move(FENSTER *f);
-void e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f);
+/* what e_move_block and e_copy_block return */
+#define E_BLOCK_MOVED        0    /* the block landed */
+#define E_BLOCK_NOT_MOVED  (-1)   /* nothing to move, refused, or no memory */
+int e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f);
+int e_move_block_covered(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f);
+void e_block_record_push(int kind, BUFFER *b, int x, int y);
 int e_blck_copy(FENSTER *f);
-void e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
+int e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
   FENSTER *f);
+/* the modes of Change Case (Ctrl-K D), in the order its dialog lists them */
+#define E_CASE_DOWN   0   /* every character down */
+#define E_CASE_UP     1   /* every character up */
+#define E_CASE_WORDS  2   /* the first character of each word up */
+#define E_CASE_LINE   3   /* the first character of each line up */
+int e_blck_changecase(FENSTER *f, int mode);
 int e_blck_begin(FENSTER *f);
 int e_blck_end(FENSTER *f);
 int e_blck_hide(FENSTER *f);
@@ -520,6 +531,9 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n);
 int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n);
 int e_new_line(int yd, BUFFER *b);
+void e_line_make_hard_empty(STRING *l);
+void e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
+  unsigned char *text, int rn);
 int e_put_char(int c, BUFFER *b, SCHIRM *s);
 int e_su_lblk(int xa, char *s);
 int e_su_rblk(int xa, char *s);

@@ -102,8 +102,4 @@ void   wpe_buffer_trace(const char *fmt, ...);
 int    e_str_len(unsigned char *s);
 void   e_buffer_test_fail_allocs(int n);
 
-/* The cover the block code still spells as a global until its own pass:
-   while it is set no splice and no record is kept on any buffer. */
-extern int e_undo_sw;
-
 #endif
