@@ -1428,7 +1428,8 @@ int e_recover(ECNT *cn)
  files = e_find_files("*.ESV", 1);
  for (i = 0; i < files->anz; i++)
  {
-  e_edit(cn, files->name[i]);
+  if (e_edit(cn, files->name[i]) != 0)
+   continue;                    /* not opened: no window of it to recover into */
   f = cn->f[cn->mxedt];
   f->datnam[strlen(f->datnam)-4] = '\0';
   if (!strcmp(f->datnam, BUFFER_NAME))

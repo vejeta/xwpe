@@ -17,7 +17,9 @@
 
 /* Room for the status line that says a change was refused for memory. */
 #define E_BUFFER_SAY_MAX 160
+#define E_BUFFER_SAY_FMT "Out of memory: %s was not made, the text is unchanged"
 
+static void e_say_nomem_until_key(const char *what);
 int e_codepoint_to_utf8(int cp, unsigned char *out);
 
 /* The byte a terminal reads for Backspace when nobody said otherwise. */
@@ -200,18 +202,86 @@ void e_line_make_hard_empty(STRING *l)
  * Reading a file is no edit: the lines go in with no undo step, no modified
  * mark, and with the breakpoints the debugger keeps for a file of that name
  * left on the lines they were set on instead of moving down with the new
- * ones.  Without memory the window opens empty and the status line says so.
+ * ones.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the buffer as fresh as
+ * it was.
  */
-static void e_edit_read_file(FENSTER *f, FILE *fp)
+static int e_edit_read_file(FENSTER *f, FILE *fp)
 {
  BUFFER *b = f->b;
- int history = b->history;
+ int history = b->history, r;
  POINT end;
 
  b->history = E_BUFFER_NO_HISTORY;
- if (e_read_file_into(fp, b, 0, 0, &f->dtmd, &end) != E_BUFFER_OK)
-  wpe_buffer_say_nomem(b, "reading the file");
+ r = e_read_file_into(fp, b, 0, 0, &f->dtmd, &end);
  b->history = history;
+ return(r);
+}
+
+/**
+ * e_edit_drop_window - Take back a window that is being opened, before it
+ * was ever drawn: its buffer, its screen and its names are freed and the
+ * desk is as it was.
+ * @cn: the editor; @f: the window, the newest on the desk.
+ *
+ * A file that could not be read for want of memory must not open as an
+ * empty window under its own name: saving that window would empty the file
+ * on disk.  Nothing else is touched (an emergency save of the file stays).
+ */
+static void e_edit_drop_window(ECNT *cn, FENSTER *f)
+{
+ e_close_buffer(f->b);
+ if (f->c_sw != NULL)
+  FREE(f->c_sw);
+#ifdef DEBUGGER
+ if (f->s->brp != NULL)
+  FREE(f->s->brp);
+#endif
+ FREE(f->s);
+ if (f->datnam != NULL)
+  FREE(f->datnam);
+ if (f->dirct != NULL)
+  FREE(f->dirct);
+ (cn->mxedt)--;
+ cn->curedt = cn->edt[cn->mxedt];
+ FREE(f);
+}
+
+/**
+ * e_edit_refuse_file - The file of a window being opened could not be read
+ * for want of memory: the window is not opened and the status row says so.
+ * @cn: the editor; @f: the window; @fp: its file, closed here.
+ */
+static void e_edit_refuse_file(ECNT *cn, FENSTER *f, FILE *fp)
+{
+ fclose(fp);
+ e_edit_drop_window(cn, f);
+ e_say_nomem_until_key("opening the file");
+}
+
+/* What e_edit opens: a file the user edits, or one of the views below. */
+#define E_EDIT_A_FILE 0
+
+/**
+ * e_edit_read_refused - The read of a window being opened was refused for
+ * want of memory: decide whether the window opens.
+ * @cn: the editor; @f: the window; @fp: its file; @ftype: E_EDIT_A_FILE, or
+ * the view (Help, Messages, Watches, Stack) it is.
+ *
+ * A file the user edits does not open, so it cannot be saved over as an
+ * empty window.  A view the editor writes itself (Messages, Watches, Stack)
+ * opens empty, as before: its old file is not the user's text, and the
+ * build and the debugger go on writing into it.  The status row says so.
+ * Return: 1 when the window was dropped (e_edit returns -1), else 0.
+ */
+static int e_edit_read_refused(ECNT *cn, FENSTER *f, FILE *fp, int ftype)
+{
+ if (ftype == E_EDIT_A_FILE)
+ {
+  e_edit_refuse_file(cn, f, fp);
+  return(1);
+ }
+ wpe_buffer_say_nomem(f->b, "reading the file");
+ return(0);
 }
 
 /**
@@ -551,9 +621,11 @@ int e_edit(ECNT *cn, char *filename)
 #endif
  FREE(complete_fname);
 
+ if (fp != NULL && ftype != 1 && e_edit_read_file(f, fp) != E_BUFFER_OK &&
+     e_edit_read_refused(cn, f, fp, ftype))
+  return(-1);
  if (fp != NULL && ftype != 1)
  {
-  e_edit_read_file(f, fp);
   e_edit_drop_fresh_line(f);
   if (fclose(fp) != 0)
    e_error(e_msg[ERR_FCLOSE], 0, cn->fb);
@@ -3009,6 +3081,22 @@ static void e_rudo_replace_back(BUFFER *b, SCHIRM *s, Undo *rec)
 }
 
 /**
+ * e_rudo_block_refusal - What Undo makes of a block delete whose lines
+ * could not come back: the record keeps them for the next try either way.
+ * @r: what the move returned; @rec: the record.
+ * Return: E_BUFFER_NOMEM for want of memory (Undo says so), or
+ * E_BUFFER_RANGE when the block could not land there (written to the
+ * trace; nothing to say about memory).
+ */
+static int e_rudo_block_refusal(int r, Undo *rec)
+{
+ if (r == E_BLOCK_NOMEM)
+  return(E_BUFFER_NOMEM);
+ wpe_buffer_trace("buffer replay %c not moved", rec->type);
+ return(E_BUFFER_RANGE);
+}
+
+/**
  * e_rudo_block_back - Undo a block delete: the lines come back from the
  * record's shell, and the block is marked as it was.
  *
@@ -3021,52 +3109,109 @@ static int e_rudo_block_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
  BUFFER *bn = (BUFFER *) rec->u.pt;
  SCHIRM *sn = bn->f->s;
- FENSTER *f = b->f;
  POINT mark_begin = s->mark_begin;
  POINT mark_end = s->mark_end;
- POINT shell_begin = sn->mark_begin;
- POINT shell_end = sn->mark_end;
+ Undo *way_back = NULL;
+ int r;
 
- s->mark_begin = shell_begin;
- s->mark_end = shell_end;
- if (e_move_block_covered(rec->b.x, rec->b.y, bn, b, f) != E_BLOCK_MOVED)
+ s->mark_begin = sn->mark_begin;
+ s->mark_end = sn->mark_end;
+ r = e_move_block_covered(rec->b.x, rec->b.y, bn, b, b->f, 'c', &way_back);
+ if (r != E_BLOCK_MOVED)
  {
-  /* the lines went back into the shell, which moved its marks: the shell's
-     block is its whole text again for the next try */
-  sn->mark_begin = shell_begin;
-  sn->mark_end = shell_end;
   s->mark_begin = mark_begin;
   s->mark_end = mark_end;
-  return(E_BUFFER_NOMEM);
+  return(e_rudo_block_refusal(r, rec));
  }
  e_buffer_shell_free(bn);
  rec->u.pt = NULL;
- e_block_record_push('c', b, rec->b.x, rec->b.y);
+ e_block_record_keep(way_back, b, rec->b.x, rec->b.y);
+ return(E_BUFFER_OK);
+}
+
+/* What the user had before a block replay set the record's block and
+   cursor: put back when the replay is refused. */
+typedef struct
+{
+ POINT cursor, mark_begin, mark_end;
+} WpeReplayView;
+
+/**
+ * e_rudo_view_keep - Remember the cursor and the block before a block
+ * replay sets the record's.
+ */
+static WpeReplayView e_rudo_view_keep(BUFFER *b, SCHIRM *s)
+{
+ WpeReplayView v;
+
+ v.cursor = b->b;
+ v.mark_begin = s->mark_begin;
+ v.mark_end = s->mark_end;
+ return(v);
+}
+
+/**
+ * e_rudo_view_back - A refused block replay changed nothing: the cursor
+ * and the block are put back as the user had them.
+ */
+static void e_rudo_view_back(BUFFER *b, SCHIRM *s, const WpeReplayView *v)
+{
+ b->b = v->cursor;
+ s->mark_begin = v->mark_begin;
+ s->mark_end = v->mark_end;
+}
+
+/**
+ * e_rudo_block_replayed - What a copy or move replay tells Undo, from what
+ * the block operation returned.
+ * @r: E_BLOCK_*; @rec: the record; @v: the view before the replay.
+ *
+ * Refused for want of memory, the record stays for the next try and the
+ * view is as it was.  A block that did not move for its own reasons is
+ * written to the trace and the record is done, as it always was.
+ */
+static int e_rudo_block_replayed(int r, BUFFER *b, SCHIRM *s, Undo *rec,
+                                 const WpeReplayView *v)
+{
+ if (r == E_BLOCK_NOMEM)
+ {
+  e_rudo_view_back(b, s, v);
+  return(E_BUFFER_NOMEM);
+ }
+ if (r != E_BLOCK_MOVED)
+  wpe_buffer_trace("buffer replay %c not moved", rec->type);
  return(E_BUFFER_OK);
 }
 
 /**
  * e_rudo_block_copy_back - Undo a block copy: the copied block, marked as
  * the record saw it, is deleted again (which records the way back).
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the text, the block and the
+ * record as they were.
  */
-static void e_rudo_block_copy_back(BUFFER *b, SCHIRM *s, Undo *rec)
+static int e_rudo_block_copy_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
+ WpeReplayView v = e_rudo_view_keep(b, s);
+
  b->b = rec->a;
  s->mark_begin = rec->a;
  s->mark_end = rec->e;
- e_blck_del(b->f);
+ return(e_rudo_block_replayed(e_block_delete_marked(b->f), b, s, rec, &v));
 }
 
 /**
  * e_rudo_block_move_again - Undo or redo a block move: the block, marked as
  * the record saw it, moves back to where the record's cursor is.
+ * Return: as e_rudo_block_copy_back.
  */
-static void e_rudo_block_move_again(BUFFER *b, SCHIRM *s, Undo *rec)
+static int e_rudo_block_move_again(BUFFER *b, SCHIRM *s, Undo *rec)
 {
+ WpeReplayView v = e_rudo_view_keep(b, s);
+
  b->b = rec->b;
  s->mark_begin = rec->a;
  s->mark_end = rec->e;
- e_blck_move(b->f);
+ return(e_rudo_block_replayed(e_block_move_marked(b->f), b, s, rec, &v));
 }
 
 /**
@@ -3078,8 +3223,10 @@ static void e_rudo_block_move_again(BUFFER *b, SCHIRM *s, Undo *rec)
  * The block kinds run uncovered: their operations take their own covers and
  * push their record after them, so Redo finds it.  An overwrite ('p') puts
  * the old character back and records nothing, as it always did.
- * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when a block delete's lines could
- * not come back (its record keeps them for the next try).
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when a block operation was refused
+ * for want of memory (the text is as it was and the record stays for the
+ * next try); E_BUFFER_RANGE when a deleted block could not land (its record
+ * keeps the lines).
  */
 int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
 {
@@ -3092,9 +3239,9 @@ int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
  else if (rec->type == 'p')
   b->bf[rec->b.y].s[rec->b.x] = rec->u.c;
  else if (rec->type == 'c')
-  e_rudo_block_copy_back(b, s, rec);
+  return(e_rudo_block_copy_back(b, s, rec));
  else if (rec->type == 'v')
-  e_rudo_block_move_again(b, s, rec);
+  return(e_rudo_block_move_again(b, s, rec));
  else if (rec->type == 'd')
   return(e_rudo_block_back(b, s, rec));
  return(E_BUFFER_OK);
@@ -3199,10 +3346,29 @@ void wpe_buffer_say_nomem(BUFFER *b, const char *what)
 {
  char line[E_BUFFER_SAY_MAX];
 
- snprintf(line, sizeof line, "Out of memory: %s was not made, the text is unchanged", what);
+ snprintf(line, sizeof line, E_BUFFER_SAY_FMT, what);
  wpe_buffer_trace("buffer nomem %s", what);
- if (WpeEditor != NULL && WpeEditor->mxedt > 0)
+ if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
   e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
+}
+
+/**
+ * e_say_nomem_until_key - As wpe_buffer_say_nomem, with the line kept on
+ * the status row until the user presses a key.
+ * @what: the action, in the user's words.
+ *
+ * For a refusal the editor goes on drawing over: a file named on the
+ * command line that could not be opened is followed at once by the File
+ * Manager, which would put its key hints back before the line was read.
+ */
+static void e_say_nomem_until_key(const char *what)
+{
+ char line[E_BUFFER_SAY_MAX];
+
+ snprintf(line, sizeof line, E_BUFFER_SAY_FMT, what);
+ wpe_buffer_trace("buffer nomem %s", what);
+ if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
+  e_status_say_until_key(WpeEditor->f[WpeEditor->mxedt], line);
 }
 
 /**

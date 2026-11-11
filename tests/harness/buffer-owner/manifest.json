@@ -287,6 +287,97 @@
    "layer": "c-unit",
    "test": "tests/check-one-owner.sh",
    "status": "new"
+  },
+  {
+   "id": "SC-buffer-04",
+   "requirement": "Breakpoints stay on their code",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_moved_to_the_start_of_a_line_leaves_its_breakpoint_on_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_moved_inside_its_own_line_is_undone_and_redone",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_move_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_move_fault_sweep_ends_in_a_whole_move",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_delete_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_block_move_refused_for_memory_keeps_its_record",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_block_copy_refused_for_memory_keeps_its_record",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_file_that_cannot_be_read_for_memory_is_not_opened",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_manual_page_that_cannot_be_read_for_memory_leaves_the_users_window",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_file_opened_from_the_file_manager_without_memory_leaves_the_users_window",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_dropped_into_a_full_line_is_undone",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_of_two_lines_dropped_into_a_full_line_is_undone",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
   }
  ]
 }

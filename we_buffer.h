@@ -73,6 +73,86 @@ STRING *e_buffer_lines_from_text(const char *text, int mx_x, int *n);
 void   e_buffer_lines_free(STRING *lines, int n);
 int    e_buffer_insert_raw(BUFFER *b, int yd);
 
+/* ---- a change made of several splices, whole or not at all ----
+
+   A block move takes lines out of one place and puts them, and the parts of
+   two lines, somewhere else, maybe in another buffer.  Every splice of it is
+   prepared first (all the memory it needs is taken, nothing moves); only
+   when all of them could be prepared do they commit, and a commit cannot
+   fail.  So a move refused for want of memory leaves both buffers, their
+   marks, breakpoints and undo exactly as they were.  The coordinates of an
+   item are those its splice meets when it commits, after the items before
+   it. */
+
+/* What one splice needs from memory, taken before anything moves. */
+typedef struct {
+ STRING canon;        /* the canonical empty line of a buffer emptied */
+ int need_canon;
+ Undo *rec;           /* the line record, when this splice records */
+ int *removed;        /* rows of removed lines, absolute, before */
+ int *added;          /* rows set from brk[], absolute, after */
+ int nremoved, nadded;
+} BufferSpliceMem;
+
+#define E_BUFFER_TXN_MAX       6   /* items: a block move needs at most five */
+#define E_BUFFER_TXN_SPLICES  (2 * E_BUFFER_TXN_MAX)   /* a move item is two */
+#define E_BUFFER_TXN_BUFFERS   2   /* the buffer a block leaves and the one it reaches */
+
+/* One splice of a transaction, prepared and waiting to commit. */
+typedef struct {
+ BUFFER *b;
+ int y, n_del, n_ins;
+ STRING *lines;       /* what it puts in: the transaction's until commit */
+ WpeBufferStep step;
+ Undo *pocket;        /* where its removed rows go under a char record's cover */
+ int detach;          /* a move's first half: the lines go to out[], not freed */
+ STRING *out;         /* a detach: the lines taken out */
+ int *brk_out;        /* ... and their breakpoint rows, relative to y */
+ int nbrk_out;
+ int landed_from;     /* a move's second half: the detach it lands, else -1 */
+ BufferSpliceMem m;
+} WpeBufferTxnSplice;
+
+/* A buffer a transaction changes: its line count as the items so far leave
+   it, and the breakpoint and pocket rows they may add. */
+typedef struct {
+ BUFFER *b;
+ int lines;
+ Undo *pocket;
+ int brp_rows, pocket_rows;
+} WpeBufferTxnBuffer;
+
+typedef struct {
+ WpeBufferTxnSplice sp[E_BUFFER_TXN_SPLICES];
+ int nsp, items;
+ WpeBufferTxnBuffer buf[E_BUFFER_TXN_BUFFERS];
+ int nbuf;
+ Undo *rec;           /* the record of the operation, reserved with the rest */
+ int refused;         /* E_BUFFER_OK, or why an item was refused */
+} WpeBufferTxn;
+
+/* A run of bytes: one piece of a line a transaction builds. */
+typedef struct {
+ const unsigned char *s;
+ int n;
+} WpeBufferPart;
+
+void   e_buffer_txn_begin(WpeBufferTxn *t);
+int    e_buffer_txn_splice(WpeBufferTxn *t, BUFFER *b, int y, int n_del, STRING *lines,
+                           int n_ins, WpeBufferStep step);
+int    e_buffer_txn_splice_parts(WpeBufferTxn *t, BUFFER *b, int y, int n_del,
+                                 const WpeBufferPart *parts, int nparts, WpeBufferStep step);
+int    e_buffer_txn_move_lines(WpeBufferTxn *t, BUFFER *from, int y_from, int n,
+                               BUFFER *to, int y_to);
+int    e_buffer_txn_delete_lines(WpeBufferTxn *t, BUFFER *b, int y, int n, WpeBufferStep step);
+int    e_buffer_txn_copy_lines(WpeBufferTxn *t, BUFFER *to, int y, BUFFER *src, int from,
+                               int n, WpeBufferStep step);
+Undo  *e_buffer_txn_record(WpeBufferTxn *t, int kind);
+int    e_buffer_txn_commit(WpeBufferTxn *t);
+void   e_buffer_txn_abort(WpeBufferTxn *t);
+STRING *e_buffer_lines_from_parts(int mx_x, const WpeBufferPart *parts, int nparts, int *n);
+STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst);
+
 void   e_buffer_cover_begin(BUFFER *b, Undo *pocket);
 void   e_buffer_cover_end(BUFFER *b);
 int    e_buffer_covered(BUFFER *b);

@@ -427,7 +427,7 @@ canary_import we_edit.o e_buffer_split_line "Enter adds lines some other way"
 canary_import we_edit.o e_buffer_insert_blank "the line wrap adds lines some other way"
 canary_import we_edit.o e_buffer_record_push "the char kinds record some other way"
 canary_import we_edit.o e_buffer_undo "Undo replays some other way"
-canary_import we_block.o e_buffer_detach_lines "the block code moves lines some other way"
+canary_import we_block.o e_buffer_txn_commit "the block code moves lines some other way"
 canary_import we_block.o e_buffer_record_push "the block kinds record some other way"
 BUFFER_OWNER_SEEN=0
 for obj in $OBJECTS; do

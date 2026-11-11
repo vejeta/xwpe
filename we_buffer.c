@@ -539,16 +539,6 @@ Undo *e_buffer_record_push(BUFFER *b, Undo *rec)
 
 /* ---- the splice ---- */
 
-/* What one splice needs from memory, taken before anything moves. */
-typedef struct {
- STRING canon;        /* the canonical empty line of a buffer emptied */
- int need_canon;
- Undo *rec;           /* the line record, when this splice records */
- int *removed;        /* rows of removed lines, absolute, before */
- int *added;          /* rows set from brk[], absolute, after */
- int nremoved, nadded;
-} BufferSpliceMem;
-
 static void buffer_splice_mem_free(BufferSpliceMem *m)
 {
  free(m->canon.s);
@@ -560,6 +550,7 @@ static void buffer_splice_mem_free(BufferSpliceMem *m)
  }
  free(m->removed);
  free(m->added);
+ memset(m, 0, sizeof(*m));
 }
 
 /* (a) the table and the syntax states grow together: mx.y and c_sw change
@@ -669,22 +660,23 @@ static Undo *buffer_line_record_new(int n_del, int rows_out)
  return(rec);
 }
 
-/* Take every allocation the splice needs; nothing moves yet.  pocket_room:
-   the pocket to make room in for the rows the splice removes, or NULL when
-   the caller made that room already. */
-static int buffer_splice_prepare(BUFFER *b, int y, int n_del, int n_ins, int nbrk,
-                                 int records, int detach, Undo *pocket_room,
-                                 BufferSpliceMem *m)
+/* Take the memory of one splice of n_del lines over n_ins, the buffer
+   holding lines_now lines when it commits: the table's growth, the
+   canonical line of a buffer emptied, the record, and room for rows_out
+   removed and nbrk added breakpoint rows.  Nothing moves.  The margin and
+   the pocket are not reserved here: they are reallocated to a size counted
+   from now, so a change of several splices reserves them once. */
+static int buffer_splice_take(BUFFER *b, int lines_now, int n_del, int n_ins, int nbrk,
+                              int rows_out, int records, int detach, BufferSpliceMem *m)
 {
  int *brp = buffer_brp(b);
- int rows_out = brp_count_in(brp, y, y + n_del);
  int n_total = n_ins;
 
  memset(m, 0, sizeof(*m));
- m->need_canon = (b->mxlines - n_del + n_ins == 0);
+ m->need_canon = (lines_now - n_del + n_ins == 0);
  if (m->need_canon)
   n_total = 1;
- if (buffer_grow(b, b->mxlines - n_del + n_total) != E_BUFFER_OK)
+ if (buffer_grow(b, lines_now - n_del + n_total) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
  if (m->need_canon && e_buffer_line_new(b, &m->canon) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
@@ -701,8 +693,27 @@ static int buffer_splice_prepare(BUFFER *b, int y, int n_del, int n_ins, int nbr
  if (brp != NULL)
   m->added = buffer_array(nbrk, sizeof(int));
  if ((rows_out > 0 && m->removed == NULL) ||
-     (nbrk > 0 && brp != NULL && m->added == NULL) ||
-     buffer_brp_reserve(b, nbrk) != E_BUFFER_OK ||
+     (nbrk > 0 && brp != NULL && m->added == NULL))
+ {
+  buffer_splice_mem_free(m);
+  return(E_BUFFER_NOMEM);
+ }
+ return(E_BUFFER_OK);
+}
+
+/* Take every allocation the splice needs; nothing moves yet.  pocket_room:
+   the pocket to make room in for the rows the splice removes, or NULL when
+   the caller made that room already. */
+static int buffer_splice_prepare(BUFFER *b, int y, int n_del, int n_ins, int nbrk,
+                                 int records, int detach, Undo *pocket_room,
+                                 BufferSpliceMem *m)
+{
+ int rows_out = brp_count_in(buffer_brp(b), y, y + n_del);
+
+ if (buffer_splice_take(b, b->mxlines, n_del, n_ins, nbrk, rows_out, records, detach, m)
+     != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ if (buffer_brp_reserve(b, nbrk) != E_BUFFER_OK ||
      buffer_pocket_reserve(pocket_room, rows_out) != E_BUFFER_OK)
  {
   buffer_splice_mem_free(m);
@@ -1078,9 +1089,10 @@ static int buffer_wrap_cut(const char *str, int maxc)
 }
 
 /* Append one logical line to lines[*n], soft-wrapped as the file reader
-   wraps it: every piece but the last ends without a line break. */
+   wraps it: every piece but the last ends without a line break, the last
+   with last_term (WPE_WR, or '\0' for a line that goes on in the next). */
 static int buffer_lines_push(STRING **lines, int *n, int *cap, int mx_x,
-                             const char *str, int len)
+                             const char *str, int len, int last_term)
 {
  int maxc = mx_x - 1, start = 0;
 
@@ -1108,7 +1120,9 @@ static int buffer_lines_push(STRING **lines, int *n, int *cap, int mx_x,
   if ((l->s = buffer_malloc((size_t)mx_x + 1)) == NULL)
    return(E_BUFFER_NOMEM);
   memcpy(l->s, str + start, (size_t)seg);
-  l->s[seg] = hard ? WPE_WR : '\0';
+  l->s[seg] = '\0';
+  if (hard)
+   l->s[seg] = (unsigned char) last_term;
   l->s[seg + 1] = '\0';
   buffer_line_measure(l);
   (*n)++;
@@ -1137,8 +1151,8 @@ STRING *e_buffer_lines_from_text(const char *text, int mx_x, int *n)
  while (*p)
  {
   nl = strchr(p, '\n');
-  if (buffer_lines_push(&lines, n, &cap, mx_x, p, nl ? (int)(nl - p) : (int)strlen(p))
-      != E_BUFFER_OK)
+  if (buffer_lines_push(&lines, n, &cap, mx_x, p, nl ? (int)(nl - p) : (int)strlen(p),
+                        WPE_WR) != E_BUFFER_OK)
   {
    e_buffer_lines_free(lines, *n);
    *n = -1;
@@ -1149,6 +1163,511 @@ STRING *e_buffer_lines_from_text(const char *text, int mx_x, int *n)
   p = nl + 1;
  }
  return(lines);
+}
+
+/**
+ * e_buffer_lines_from_parts - Join runs of bytes into one line of a buffer
+ * @mx_x wide, soft-wrapped as the file reader wraps it.
+ * @parts: the runs, in order; @nparts: how many; @n: receives the number of
+ * lines.
+ *
+ * A block move builds the lines where two texts meet (the part of a line
+ * before the cursor and the block's first line, the block's last line and
+ * the rest of the line) from the bytes as they stand before anything
+ * moves.  A line break that ends the last run ends the last line; without
+ * one the last line goes on in the next, as a soft-wrapped line does.
+ * Return: the lines, the caller's until a splice adopts them, or NULL with
+ * *n < 0 when memory ran out.
+ */
+STRING *e_buffer_lines_from_parts(int mx_x, const WpeBufferPart *parts, int nparts, int *n)
+{
+ STRING *lines = NULL;
+ char *joined;
+ int cap = 0, total = 0, used = 0, i, term = '\0';
+
+ *n = 0;
+ for (i = 0; i < nparts; i++)
+  if (parts[i].n > 0)
+   total += parts[i].n;
+ if ((joined = buffer_malloc((size_t)total + 1)) == NULL)
+ {
+  *n = -1;
+  return(NULL);
+ }
+ for (i = 0; i < nparts; i++)
+  if (parts[i].n > 0)
+  {
+   memcpy(joined + used, parts[i].s, (size_t)parts[i].n);
+   used += parts[i].n;
+  }
+ if (used > 0 && (unsigned char) joined[used - 1] == WPE_WR)
+ {
+  term = WPE_WR;
+  used--;
+ }
+ if (buffer_lines_push(&lines, n, &cap, mx_x, joined, used, term) != E_BUFFER_OK)
+ {
+  e_buffer_lines_free(lines, *n);
+  lines = NULL;
+  *n = -1;
+ }
+ free(joined);
+ return(lines);
+}
+
+/**
+ * e_buffer_lines_copy - Copies of @n lines of @src from row @from, as lines
+ * of @dst (clamped to its width, the line break kept when it fits).
+ *
+ * Block Copy and Paste put copies of the block's whole lines in, so the copy
+ * does not change with later edits of the original and carries none of its
+ * breakpoints.  Return: the lines, the caller's until a splice adopts them,
+ * or NULL when memory ran out (or for n <= 0).
+ */
+STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst)
+{
+ STRING *out = buffer_array(n, sizeof(STRING));
+ int i, bytes;
+
+ if (out == NULL)
+  return(NULL);
+ for (i = 0; i < n; i++)
+ {
+  if (e_buffer_line_new(dst, &out[i]) != E_BUFFER_OK)
+  {
+   e_buffer_lines_free(out, i);
+   return(NULL);
+  }
+  bytes = src->bf[from + i].nrc;
+  if (bytes > dst->mx.x)
+   bytes = dst->mx.x;
+  if (bytes < 0)
+   bytes = 0;
+  memcpy(out[i].s, src->bf[from + i].s, (size_t)bytes);
+  out[i].s[bytes] = '\0';
+  buffer_line_measure(&out[i]);
+ }
+ return(out);
+}
+
+/* ---- a change of several splices, whole or not at all ---- */
+
+/* The second half of a move lands what its first half took out: no line of
+   its own until then. */
+#define BUFFER_TXN_NOT_LANDED (-1)
+
+/**
+ * e_buffer_txn_begin - Start a change of several splices.
+ * @t: on the caller's stack, for one change.
+ */
+void e_buffer_txn_begin(WpeBufferTxn *t)
+{
+ memset(t, 0, sizeof(*t));
+ t->refused = E_BUFFER_OK;
+}
+
+/* The first refusal is the one the change reports: later items are not
+   prepared at all. */
+static int buffer_txn_refuse(WpeBufferTxn *t, int why)
+{
+ if (t->refused == E_BUFFER_OK)
+  t->refused = why;
+ return(t->refused);
+}
+
+/* The transaction's view of buffer b: its line count as the items so far
+   leave it.  Return: the entry, or NULL when the change already touches as
+   many buffers as a transaction holds. */
+static WpeBufferTxnBuffer *buffer_txn_buffer(WpeBufferTxn *t, BUFFER *b)
+{
+ WpeBufferTxnBuffer *e;
+ int i;
+
+ for (i = 0; i < t->nbuf; i++)
+  if (t->buf[i].b == b)
+   return(&t->buf[i]);
+ if (t->nbuf == E_BUFFER_TXN_BUFFERS)
+  return(NULL);
+ e = &t->buf[t->nbuf++];
+ memset(e, 0, sizeof(*e));
+ e->b = b;
+ e->lines = b->mxlines;
+ return(e);
+}
+
+/* Room for one more item, and the buffer it changes.  Return: the entry,
+   or NULL with the change refused. */
+static WpeBufferTxnBuffer *buffer_txn_room(WpeBufferTxn *t, BUFFER *b)
+{
+ WpeBufferTxnBuffer *e;
+
+ if (t->items >= E_BUFFER_TXN_MAX)
+ {
+  buffer_txn_refuse(t, E_BUFFER_RANGE);
+  return(NULL);
+ }
+ e = buffer_txn_buffer(t, b);
+ if (e == NULL)
+  buffer_txn_refuse(t, E_BUFFER_RANGE);
+ return(e);
+}
+
+/* Is a splice of n_del lines at y a place in a buffer of `lines` lines? */
+static int buffer_txn_in_range(int lines, int y, int n_del, int n_ins)
+{
+ if (y < 0 || n_del < 0 || n_ins < 0 || y > lines)
+  return(0);
+ return(!(y == lines && n_del > 0));
+}
+
+/* The rows a splice of n_del lines may take off the margin: all of them,
+   since the items before it decide which lines stand there. */
+static int buffer_txn_rows_bound(BUFFER *b, int n_del)
+{
+ if (buffer_brp(b) == NULL)
+  return(0);
+ return(n_del);
+}
+
+/* Prepare one splice of the change in the next free slot: its memory is
+   taken, its buffer's count moves on.  Return: E_BUFFER_OK or
+   E_BUFFER_NOMEM (nothing kept). */
+static int buffer_txn_take(WpeBufferTxn *t, WpeBufferTxnBuffer *e, WpeBufferTxnSplice *sp,
+                           int nbrk)
+{
+ int records = 0, rows = buffer_txn_rows_bound(sp->b, sp->n_del);
+
+ if (!sp->detach)
+  records = buffer_splice_records(sp->b, sp->step);
+ sp->pocket = NULL;
+ if (!sp->detach)
+  sp->pocket = buffer_splice_pocket(sp->b, records);
+ if (buffer_splice_take(sp->b, e->lines, sp->n_del, sp->n_ins, nbrk, rows, records,
+                        sp->detach, &sp->m) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ e->lines += sp->n_ins - sp->n_del;
+ if (sp->m.need_canon)
+  e->lines++;
+ if (buffer_brp(sp->b) != NULL)
+  e->brp_rows += nbrk;
+ if (sp->pocket != NULL)
+ {
+  e->pocket = sp->pocket;
+  e->pocket_rows += rows;
+ }
+ t->nsp++;
+ return(E_BUFFER_OK);
+}
+
+/* The next free splice slot, set up for a splice of b at y. */
+static WpeBufferTxnSplice *buffer_txn_slot(WpeBufferTxn *t, BUFFER *b, int y, int n_del,
+                                           int n_ins, WpeBufferStep step)
+{
+ WpeBufferTxnSplice *sp = &t->sp[t->nsp];
+
+ memset(sp, 0, sizeof(*sp));
+ sp->b = b;
+ sp->y = y;
+ sp->n_del = n_del;
+ sp->n_ins = n_ins;
+ sp->step = step;
+ sp->landed_from = BUFFER_TXN_NOT_LANDED;
+ return(sp);
+}
+
+/**
+ * e_buffer_txn_splice - Add a splice to the change: at line @y, @n_del lines
+ * go and @lines[0..@n_ins) come.
+ * @t: the change; @b: the buffer; @step: how it counts for Ctrl-U (a block
+ * operation passes E_BUFFER_STEP_COVERED: its own record replays it).
+ *
+ * @y is where the splice meets the buffer once the items before it have
+ * committed.  The lines (array and strings) are the transaction's from now
+ * on, whatever this returns: committed they are the buffer's, refused or
+ * aborted they are freed.  Return: E_BUFFER_OK, E_BUFFER_NOMEM or
+ * E_BUFFER_RANGE (the change is then refused as a whole).
+ */
+int e_buffer_txn_splice(WpeBufferTxn *t, BUFFER *b, int y, int n_del, STRING *lines,
+                        int n_ins, WpeBufferStep step)
+{
+ WpeBufferTxnBuffer *e;
+ WpeBufferTxnSplice *sp;
+
+ if (t->refused != E_BUFFER_OK || (e = buffer_txn_room(t, b)) == NULL)
+ {
+  e_buffer_lines_free(lines, n_ins);
+  return(t->refused);
+ }
+ if (!buffer_txn_in_range(e->lines, y, n_del, n_ins))
+ {
+  e_buffer_lines_free(lines, n_ins);
+  return(buffer_txn_refuse(t, E_BUFFER_RANGE));
+ }
+ if (n_del > e->lines - y)
+  n_del = e->lines - y;
+ if (n_del == 0 && n_ins == 0)
+ {
+  free(lines);
+  return(E_BUFFER_OK);
+ }
+ sp = buffer_txn_slot(t, b, y, n_del, n_ins, step);
+ sp->lines = lines;
+ if (buffer_txn_take(t, e, sp, 0) != E_BUFFER_OK)
+ {
+  e_buffer_lines_free(lines, n_ins);
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ }
+ t->items++;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_buffer_txn_splice_parts - Add a splice whose new lines are the runs of
+ * bytes @parts joined (and soft-wrapped at the buffer's width).
+ *
+ * The bytes are copied now, so they may be read from lines a later item
+ * changes.  Return: how many lines it puts in (one or more), or
+ * E_BUFFER_NOMEM / E_BUFFER_RANGE as e_buffer_txn_splice.
+ */
+int e_buffer_txn_splice_parts(WpeBufferTxn *t, BUFFER *b, int y, int n_del,
+                              const WpeBufferPart *parts, int nparts, WpeBufferStep step)
+{
+ STRING *lines;
+ int n, r;
+
+ if (t->refused != E_BUFFER_OK)
+  return(t->refused);
+ lines = e_buffer_lines_from_parts(b->mx.x, parts, nparts, &n);
+ if (n < 0)
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ r = e_buffer_txn_splice(t, b, y, n_del, lines, n, step);
+ if (r != E_BUFFER_OK)
+  return(r);
+ return(n);
+}
+
+/**
+ * e_buffer_txn_copy_lines - Add copies of @n lines of @src from row @from,
+ * put in at row @y of @to.
+ *
+ * A copy carries no breakpoint.  Return: as e_buffer_txn_splice.
+ */
+int e_buffer_txn_copy_lines(WpeBufferTxn *t, BUFFER *to, int y, BUFFER *src, int from,
+                            int n, WpeBufferStep step)
+{
+ STRING *lines;
+
+ if (t->refused != E_BUFFER_OK || n <= 0)
+  return(t->refused);
+ if ((lines = e_buffer_lines_copy(src, from, n, to)) == NULL)
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ return(e_buffer_txn_splice(t, to, y, 0, lines, n, step));
+}
+
+/**
+ * e_buffer_txn_delete_lines - Add the deletion of @n lines at @y.
+ * Return: as e_buffer_txn_splice.
+ */
+int e_buffer_txn_delete_lines(WpeBufferTxn *t, BUFFER *b, int y, int n, WpeBufferStep step)
+{
+ return(e_buffer_txn_splice(t, b, y, n, NULL, 0, step));
+}
+
+/* The first half of a move: n lines of `from` at y leave with their
+   breakpoint rows, into the slot's own hands. */
+static int buffer_txn_detach(WpeBufferTxn *t, WpeBufferTxnBuffer *e, BUFFER *from, int y, int n)
+{
+ WpeBufferTxnSplice *sp = buffer_txn_slot(t, from, y, n, 0, E_BUFFER_STEP_COVERED);
+
+ sp->detach = 1;
+ sp->out = buffer_array(n, sizeof(STRING));
+ if (sp->out == NULL)
+  return(E_BUFFER_NOMEM);
+ if (buffer_brp(from) != NULL && (sp->brk_out = buffer_array(n, sizeof(int))) == NULL)
+ {
+  free(sp->out);
+  return(E_BUFFER_NOMEM);
+ }
+ if (buffer_txn_take(t, e, sp, 0) != E_BUFFER_OK)
+ {
+  free(sp->out);
+  free(sp->brk_out);
+  return(E_BUFFER_NOMEM);
+ }
+ return(E_BUFFER_OK);
+}
+
+/* The second half of a move: the lines the detach in slot `half` took out
+   land at y of `to`, each with its breakpoint. */
+static int buffer_txn_land(WpeBufferTxn *t, WpeBufferTxnBuffer *e, BUFFER *to, int y, int n,
+                           int half)
+{
+ WpeBufferTxnSplice *sp = buffer_txn_slot(t, to, y, 0, n, E_BUFFER_STEP_COVERED);
+
+ sp->landed_from = half;
+ return(buffer_txn_take(t, e, sp, n));
+}
+
+/* Undo the preparation of the slot just taken: its memory goes back. */
+static void buffer_txn_untake(WpeBufferTxn *t, WpeBufferTxnBuffer *e)
+{
+ WpeBufferTxnSplice *sp = &t->sp[--t->nsp];
+
+ e->lines -= sp->n_ins - sp->n_del;
+ if (sp->m.need_canon)
+  e->lines--;
+ buffer_splice_mem_free(&sp->m);
+ free(sp->out);
+ free(sp->brk_out);
+}
+
+/**
+ * e_buffer_txn_move_lines - Add a move of @n whole lines from row @y_from of
+ * @from to row @y_to of @to (the same buffer or another).
+ *
+ * Each line changes hands once, with its breakpoint: none is copied, none
+ * freed, so none can be lost or freed twice.  @y_to is a row of @to once the
+ * lines have left @from.  Return: as e_buffer_txn_splice.
+ */
+int e_buffer_txn_move_lines(WpeBufferTxn *t, BUFFER *from, int y_from, int n,
+                            BUFFER *to, int y_to)
+{
+ WpeBufferTxnBuffer *ef, *et;
+ int half;
+
+ if (t->refused != E_BUFFER_OK || n <= 0)
+  return(t->refused);
+ if ((ef = buffer_txn_room(t, from)) == NULL)
+  return(t->refused);
+ if (y_from < 0 || y_from >= ef->lines)
+  return(buffer_txn_refuse(t, E_BUFFER_RANGE));
+ if (n > ef->lines - y_from)
+  n = ef->lines - y_from;
+ half = t->nsp;
+ if (buffer_txn_detach(t, ef, from, y_from, n) != E_BUFFER_OK)
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ if ((et = buffer_txn_buffer(t, to)) == NULL || !buffer_txn_in_range(et->lines, y_to, 0, n))
+ {
+  buffer_txn_untake(t, ef);
+  return(buffer_txn_refuse(t, E_BUFFER_RANGE));
+ }
+ if (buffer_txn_land(t, et, to, y_to, n, half) != E_BUFFER_OK)
+ {
+  buffer_txn_untake(t, ef);
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ }
+ t->items++;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_buffer_txn_record - The undo record of the operation, reserved with
+ * the rest of the change.
+ * @kind: 'c', 'v', 'd' and the like.
+ *
+ * An operation that could not be undone is not made: the record is taken
+ * before anything moves.  After a commit it is the caller's to fill and to
+ * push (e_buffer_record_push, which takes no memory); a refused or aborted
+ * change frees it.  Return: the record, or NULL with the change refused.
+ */
+Undo *e_buffer_txn_record(WpeBufferTxn *t, int kind)
+{
+ if (t->refused != E_BUFFER_OK)
+  return(NULL);
+ if (t->rec == NULL && (t->rec = e_buffer_record_new(kind)) == NULL)
+  buffer_txn_refuse(t, E_BUFFER_NOMEM);
+ return(t->rec);
+}
+
+/**
+ * e_buffer_txn_abort - Give back everything the change took: both buffers,
+ * their marks, breakpoints and undo are as they were.
+ */
+void e_buffer_txn_abort(WpeBufferTxn *t)
+{
+ WpeBufferTxnSplice *sp;
+ int i;
+
+ for (i = 0; i < t->nsp; i++)
+ {
+  sp = &t->sp[i];
+  buffer_splice_mem_free(&sp->m);
+  free(sp->out);
+  free(sp->brk_out);
+  if (!sp->detach && sp->landed_from == BUFFER_TXN_NOT_LANDED)
+   e_buffer_lines_free(sp->lines, sp->n_ins);
+ }
+ e_buffer_record_free(t->rec);
+ t->rec = NULL;
+ t->nsp = t->items = 0;
+}
+
+/* Room on each buffer's margin and pocket for every row the items may add,
+   reserved once per buffer with the sum. */
+static int buffer_txn_reserve_rows(WpeBufferTxn *t)
+{
+ int i;
+
+ for (i = 0; i < t->nbuf; i++)
+  if (buffer_brp_reserve(t->buf[i].b, t->buf[i].brp_rows) != E_BUFFER_OK ||
+      buffer_pocket_reserve(t->buf[i].pocket, t->buf[i].pocket_rows) != E_BUFFER_OK)
+   return(E_BUFFER_NOMEM);
+ return(E_BUFFER_OK);
+}
+
+/* Commit one prepared splice: it cannot fail. */
+static void buffer_txn_commit_one(WpeBufferTxn *t, WpeBufferTxnSplice *sp)
+{
+ WpeBufferTxnSplice *src;
+
+ if (sp->detach)
+ {
+  buffer_splice_commit(sp->b, sp->y, sp->n_del, NULL, 0, NULL, 0, E_BUFFER_STEP_COVERED, 1,
+                       sp->out, sp->brk_out, &sp->nbrk_out, NULL, &sp->m);
+  return;
+ }
+ if (sp->landed_from == BUFFER_TXN_NOT_LANDED)
+ {
+  buffer_splice_commit(sp->b, sp->y, sp->n_del, sp->lines, sp->n_ins, NULL, 0, sp->step, 0,
+                       NULL, NULL, NULL, sp->pocket, &sp->m);
+  free(sp->lines);
+  return;
+ }
+ src = &t->sp[sp->landed_from];
+ buffer_splice_commit(sp->b, sp->y, 0, src->out, sp->n_ins, src->brk_out, src->nbrk_out,
+                      sp->step, 0, NULL, NULL, NULL, NULL, &sp->m);
+ free(src->out);
+ free(src->brk_out);
+ src->out = NULL;
+ src->brk_out = NULL;
+}
+
+/**
+ * e_buffer_txn_commit - Make the change: every item, in order, or none.
+ *
+ * The last memory (room on the margins for the breakpoints that arrive) is
+ * taken first; then every splice commits, and a commit cannot fail.  A
+ * change refused at any point, here or while its items were added, is
+ * given back whole (e_buffer_txn_abort).  After success the record from
+ * e_buffer_txn_record is the caller's.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM or E_BUFFER_RANGE.
+ */
+int e_buffer_txn_commit(WpeBufferTxn *t)
+{
+ int i;
+
+ if (t->refused == E_BUFFER_OK && buffer_txn_reserve_rows(t) != E_BUFFER_OK)
+  buffer_txn_refuse(t, E_BUFFER_NOMEM);
+ if (t->refused != E_BUFFER_OK)
+ {
+  e_buffer_txn_abort(t);
+  return(t->refused);
+ }
+ for (i = 0; i < t->nsp; i++)
+  buffer_txn_commit_one(t, &t->sp[i]);
+ t->nsp = t->items = 0;
+ t->rec = NULL;
+ return(E_BUFFER_OK);
 }
 
 /* ---- the diff of a whole-buffer swap ---- */
@@ -2089,7 +2608,7 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
  e_buffer_step_end(b);
  b->replaying = E_BUFFER_REPLAY_NONE;
  e_buffer_test_fault_leave(fault);
- if (r != E_BUFFER_OK)
+ if (r == E_BUFFER_NOMEM)
   buffer_replay_refused(b, replaying);
  return(r);
 }

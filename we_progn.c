@@ -1279,7 +1279,11 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
   if (!strcmp(filename, file)) break;
  }
  if (j > 0) e_switch_window(f->ed->edt[j], f->ed->f[f->ed->mxedt]);
- else e_edit(f->ed, file);
+ else if (e_edit(f->ed, file) != 0)
+ {
+  WpeMouseRestoreShape();          /* the definition's file did not open */
+  return(-1);
+ }
  f = f->ed->f[f->ed->mxedt];
  for (i = num, j = x+1-(len = strlen(name)); i >= 0; )
  {

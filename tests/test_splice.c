@@ -878,6 +878,133 @@ static void case_depth_guard(void)
  fixture_free();
 }
 
+/* A run of the bytes of a C string, for e_buffer_lines_from_parts. */
+static WpeBufferPart part_of(const char *s)
+{
+ WpeBufferPart p;
+
+ p.s = (const unsigned char *) s;
+ p.n = (int) strlen(s);
+ return(p);
+}
+
+/* The lines a block move builds where two texts meet: wrapped where the
+   file reader wraps, the last ending as the second run ends. */
+static void case_lines_from_parts(void)
+{
+ static const char long_text[] =
+  "one two three four five six seven eight nine ten eleven twelve thirteen "
+  "fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one";
+ WpeBufferPart parts[2];
+ STRING *joined, *whole;
+ char head[96];
+ int nj, nw, i, same = 1;
+
+ parts[0] = part_of("abc");
+ parts[1] = part_of("def\n");
+ joined = e_buffer_lines_from_parts(WIDTH, parts, 2, &nj);
+ chk("26 one line", nj, 1);
+ chk_str("26 ends with the second run's line break", (char *) joined[0].s, "abc" "def\n");
+ chk("26 measured", joined[0].len * 10 + joined[0].nrc, 6 * 10 + 7);
+ e_buffer_lines_free(joined, nj);
+ parts[1] = part_of("def");
+ joined = e_buffer_lines_from_parts(WIDTH, parts, 2, &nj);
+ chk_str("26 a run with no line break leaves the line open", (char *) joined[0].s, "abcdef");
+ chk("26 ... measured", joined[0].len * 10 + joined[0].nrc, 6 * 10 + 6);
+ e_buffer_lines_free(joined, nj);
+ joined = e_buffer_lines_from_parts(WIDTH, parts, 0, &nj);
+ chk("26 no runs make one empty line", nj == 1 && joined[0].len == 0, 1);
+ e_buffer_lines_free(joined, nj);
+ snprintf(head, sizeof head, "%.70s", long_text);
+ parts[0] = part_of(head);
+ parts[1] = part_of(long_text + 70);
+ joined = e_buffer_lines_from_parts(WIDTH, parts, 2, &nj);
+ whole = e_buffer_lines_from_text(long_text, WIDTH, &nw);
+ chk("26 a wide join wraps into as many lines as the reader's split", nj, nw);
+ for (i = 0; i < nj && i < nw; i++)
+  if (strcmp((char *) joined[i].s, (char *) whole[i].s) != 0 && i < nw - 1)
+   same = 0;
+ chk("26 ... at the same columns", same, 1);
+ chk("26 the last piece is open: the run had no line break", joined[nj - 1].nrc,
+     joined[nj - 1].len);
+ e_buffer_lines_free(joined, nj);
+ e_buffer_lines_free(whole, nw);
+}
+
+/* The text of the move fixture after the block (1,2)-(1,4) went to (1,6). */
+#define MOVE_BEFORE "L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\n"
+#define MOVE_AFTER  "L0\nL1\nL4\nL5\nL2\nL3\nL6\nL7\n"
+/* What the move below takes from the owner: the record, four for the line
+   that moves whole, three or four for each line built, the margin's room,
+   and the table's growth for the line that stands there for a moment
+   before the two ends join (the fixture's table holds MAXLINES - 2). */
+#define MOVE_ALLOCATIONS 18
+
+/* A block move as the block code builds it for a block from inside one
+   line to inside another, dropped inside a line below it in the same
+   buffer: the middle line moves whole with its breakpoint, the line the
+   block is dropped into takes the block's first part, the block's last
+   part takes the rest of that line, and the block's two ends join. */
+static int a_move_of_the_block(void)
+{
+ WpeBufferTxn t;
+ WpeBufferPart parts[2];
+ Undo *rec;
+
+ e_buffer_txn_begin(&t);
+ rec = e_buffer_txn_record(&t, 'v');
+ e_buffer_txn_move_lines(&t, &buf, 3, 1, &buf, 6);
+ parts[0] = part_of("L");
+ parts[1] = part_of("2\n");
+ e_buffer_txn_splice_parts(&t, &buf, 5, 1, parts, 2, E_BUFFER_STEP_COVERED);
+ parts[1] = part_of("6\n");
+ e_buffer_txn_splice_parts(&t, &buf, 7, 0, parts, 2, E_BUFFER_STEP_COVERED);
+ parts[1] = part_of("4\n");
+ e_buffer_txn_splice_parts(&t, &buf, 2, 2, parts, 2, E_BUFFER_STEP_COVERED);
+ if (e_buffer_txn_commit(&t) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ e_buffer_record_push(&buf, rec);
+ return(E_BUFFER_OK);
+}
+
+/* Memory refused at every allocation of a block move in turn: the move is
+   made whole, or the text, breakpoints, marks, modified mark and both undo
+   lists are as they were and nobody was told of a line that moved. */
+static void case_a_refused_move_changes_nothing(void)
+{
+ int rows[2] = {3, 4};
+ int n, r, bad = 0, refused = 0, whole_from = 0;
+
+ for (n = 1; n <= MOVE_ALLOCATIONS + 1; n++) {
+  fixture(8, E_BUFFER_HISTORY_FULL);
+  brp_set(2, rows);
+  scr.mark_begin = pnt(1, 2);
+  scr.mark_end = pnt(1, 4);
+  e_buffer_cover_begin(&buf, NULL);
+  e_buffer_test_fail_allocs(n);
+  r = a_move_of_the_block();
+  e_buffer_test_fail_allocs(0);
+  e_buffer_cover_end(&buf);
+  if (r == E_BUFFER_OK) {
+   if (whole_from == 0)
+    whole_from = n;
+   if (strcmp(text_of(), MOVE_AFTER) != 0 || scr.brp[0] != 1 || !brp_has(5))
+    bad++;
+  } else {
+   refused++;
+   if (strcmp(text_of(), MOVE_BEFORE) != 0 || scr.brp[0] != 2 || !brp_has(3) || !brp_has(4) ||
+       scr.mark_begin.x != 1 || scr.mark_begin.y != 2 || scr.mark_end.x != 1 ||
+       scr.mark_end.y != 4 || win.save != 0 || buf.ud != NULL || buf.rd != NULL ||
+       moved_calls != 0)
+    bad++;
+  }
+  fixture_free();
+ }
+ chk("27 a refused move is whole or changes nothing", bad, 0);
+ chk("27 every cut before the last allocation refuses it", refused, MOVE_ALLOCATIONS);
+ chk("27 the move takes this many allocations", whole_from - 1, MOVE_ALLOCATIONS);
+}
+
 /* Whether one line can be made now, the line freed again. */
 static int a_line_can_be_made(void)
 {
@@ -956,6 +1083,8 @@ int main(void)
  case_many_appends();
  case_depth_guard();
  case_the_fault_hook_fires_once();
+ case_lines_from_parts();
+ case_a_refused_move_changes_nothing();
  if (fails) {
   printf("test_splice: %d failure(s)\n", fails);
   return(1);

@@ -1255,11 +1255,13 @@ static int e_run_program(ECNT *cn)
 
  for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, "Messages"); i--)
   ;
- if (i <= 0)
+ if (i <= 0 && e_edit(cn, "Messages") != 0)
  {
-  e_edit(cn, "Messages");
-  i = cn->mxedt;
+  WpeMouseRestoreShape();       /* no Messages: the output has nowhere to go */
+  return(0);
  }
+ if (i <= 0)
+  i = cn->mxedt;
  mf = cn->f[i];
  b = mf->b;
 

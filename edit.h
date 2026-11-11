@@ -453,15 +453,16 @@ int e_edt_copy(FENSTER *f);
 int e_edt_einf(FENSTER *f);
 void e_clip_pull_os_into_buffer(FENSTER *w0);
 int e_blck_move(FENSTER *f);
-/* what e_move_block and e_copy_block return */
+/* what a block move, copy or delete returns */
 #define E_BLOCK_MOVED        0    /* the block landed */
-#define E_BLOCK_NOT_MOVED  (-1)   /* nothing to move, refused, or no memory */
-int e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f);
-int e_move_block_covered(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f);
-void e_block_record_push(int kind, BUFFER *b, int x, int y);
+#define E_BLOCK_NOT_MOVED  (-1)   /* nothing to move, or refused where it was dropped */
+#define E_BLOCK_NOMEM      (-2)   /* refused for want of memory: nothing changed */
+int e_move_block_covered(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f, int kind,
+                         Undo **rec);
+int e_block_move_marked(FENSTER *f);
+int e_block_delete_marked(FENSTER *f);
+void e_block_record_keep(Undo *rec, BUFFER *b, int x, int y);
 int e_blck_copy(FENSTER *f);
-int e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
-  FENSTER *f);
 /* the modes of Change Case (Ctrl-K D), in the order its dialog lists them */
 #define E_CASE_DOWN   0   /* every character down */
 #define E_CASE_UP     1   /* every character up */

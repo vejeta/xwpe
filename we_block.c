@@ -18,28 +18,53 @@ typedef struct
  int kax, kay, kex, key;
 } WpeBlock;
 
-/* The two partial lines of a block, taken as bytes before anything moves:
-   the first line from the block's start on, its line break included, and
-   the last line before the block's end. */
-typedef struct
-{
- unsigned char *first;
- int nfirst;
- unsigned char *last;
- int nlast;
-} WpeBlockEnds;
+/* What a block move or copy does to the lines, which decides where the
+   block is marked afterwards. */
+#define E_BLK_SHAPE_LINES        0   /* a block of several lines lands at the cursor */
+#define E_BLK_SHAPE_CHARS        1   /* a block inside one line lands at the cursor */
+#define E_BLK_SHAPE_REORDER      2   /* ... at another place of its own line */
+#define E_BLK_SHAPE_SHIFT_LEFT   3   /* the text before the block goes after it */
+#define E_BLK_SHAPE_SHIFT_RIGHT  4   /* the text after the block goes before it */
 
-/* Whole lines a block move took out of their buffer, with the breakpoint
-   rows they carried (relative to the first of them), still in hand until
-   they land. */
+/* A splice of the operation, as it meets its buffer when it commits. */
 typedef struct
 {
- STRING *lines;
- int *rows;
- int n, nrows;
- int at;                /* the row they were taken from */
- int first_in_hand;     /* lines[0] is merged into a line, not landed whole */
-} WpeBlockLines;
+ BUFFER *b;
+ int y, n_del, n_ins;
+} WpeBlockSplice;
+
+/* A block move or copy being prepared: the change that makes it whole or
+   not at all, its splices so far (each moves the rows below it, so the next
+   is placed by where its line stands then), and where the block lands. */
+typedef struct
+{
+ WpeBufferTxn t;
+ WpeBlockSplice done[E_BUFFER_TXN_SPLICES];
+ int ndone;
+ WpeBlock k;            /* the block, where it is now */
+ BUFFER *bv, *bz;       /* the buffer it leaves (or is copied from), the one it reaches */
+ int x, y;              /* the cursor in bz: its column on the line, its line */
+ int shape;             /* E_BLK_SHAPE_* */
+ int landed;            /* the row the block's start lands on ... */
+ int landed_after;      /* ... as of this many splices */
+ int mark_x;            /* the column the landed block starts at */
+ int n;                 /* a block inside one line: its width */
+ int wrapped;           /* the lines the shifted line became */
+ Undo *rec;             /* the undo record taken with the operation, or NULL */
+ int left_row;          /* a move: the row the block's old start stands on now */
+ int end_row;           /* the row the line holding the block's end starts on ... */
+ int end_after;         /* ... as of this many splices */
+} WpeBlockOp;
+
+/* A move whose old place is not given (a shift keeps its own rule). */
+#define E_BLK_NO_ROW (-1)
+
+static int e_blk_move_covered(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f, int kind,
+                              Undo **rec, int *left_row);
+static void e_blk_end_at_line_front(WpeBlockOp *op);
+
+static int e_copy_block_covered(int x, int y, BUFFER *bs, BUFFER *bd, FENSTER *f, int kind,
+                                Undo **rec);
 
 /**
  * e_blk_of - The block a window has marked.
@@ -88,28 +113,43 @@ static void e_blk_cover_end(BUFFER *bv, BUFFER *bz)
 }
 
 /**
- * e_block_record_push - Keep a block copy ('c') or move ('v') for Ctrl-U.
- * @kind: 'c' or 'v'; @b: the buffer; @x, @y: the cursor the record replays
- * from.
+ * e_block_record_keep - Keep the record of a block copy ('c') or move ('v')
+ * for Ctrl-U.
+ * @rec: the record the operation reserved before it moved anything; @b:
+ * the buffer; @x, @y: the cursor the record replays from.
  *
  * The record keeps the block as the window marks it now, so Undo finds the
- * copied or moved lines where they landed.  A refused record is said on the
- * status row; the operation itself stays done.
+ * copied or moved lines where they landed.  It was taken with the rest of
+ * the operation's memory, so an operation that is made can always be
+ * undone.
  */
-void e_block_record_push(int kind, BUFFER *b, int x, int y)
+void e_block_record_keep(Undo *rec, BUFFER *b, int x, int y)
 {
- Undo *rec = e_buffer_record_new(kind);
-
  if (rec == NULL)
- {
-  wpe_buffer_say_nomem(b, "the undo record");
   return;
- }
  rec->b.x = x;
  rec->b.y = y;
  rec->a = b->f->s->mark_begin;
  rec->e = b->f->s->mark_end;
  e_buffer_record_push(b, rec);
+}
+
+/**
+ * e_blk_text_window - The text window on top, brought to the front: the
+ * window a block command acts on.
+ * @f: the window the command came from.
+ * Return: the window, or NULL when no text window is open.
+ */
+static FENSTER *e_blk_text_window(FENSTER *f)
+{
+ int i;
+
+ for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
+  ;
+ if (i <= 0)
+  return(NULL);
+ e_switch_window(f->ed->edt[i], f);
+ return(f->ed->f[f->ed->mxedt]);
 }
 
 /**
@@ -154,31 +194,35 @@ static BUFFER *e_blk_shell_new(BUFFER *b)
  * its lines into a shell its undo record keeps.
  *
  * One Ctrl-U moves the lines back, with their breakpoints, and marks them
- * as the block again.  Return: 0, or -1 when nothing was deleted (memory
- * ran out, or the block could not move).
+ * as the block again.  The record and the shell are taken before anything
+ * moves, so a delete that could not be undone is not made.
+ * Return: E_BLOCK_MOVED, E_BLOCK_NOT_MOVED, or E_BLOCK_NOMEM with the text
+ * as it was.
  */
 static int e_blk_delete_into_shell_now(FENSTER *f)
 {
  BUFFER *b = f->b;
  BUFFER *bn;
  Undo *rec = e_buffer_record_new('d');
+ int r;
 
  if (rec == NULL)
-  return(-1);
+  return(E_BLOCK_NOMEM);
  if ((bn = e_blk_shell_new(b)) == NULL)
  {
   e_buffer_record_free(rec);
-  return(-1);
+  return(E_BLOCK_NOMEM);
  }
  rec->b = f->s->mark_begin;
  rec->u.pt = bn;
- if (e_move_block_covered(0, 0, b, bn, f) != E_BLOCK_MOVED)
+ r = e_move_block_covered(0, 0, b, bn, f, 0, NULL);
+ if (r != E_BLOCK_MOVED)
  {
   e_buffer_record_free(rec);
-  return(-1);
+  return(r);
  }
  e_buffer_record_push(b, rec);
- return(0);
+ return(E_BLOCK_MOVED);
 }
 
 /**
@@ -196,42 +240,67 @@ static int e_blk_delete_into_shell(FENSTER *f)
  return(r);
 }
 
-/*	delete block */
-int e_blck_del(FENSTER *f)
+/**
+ * e_blk_marks_empty - Does the window mark no block?
+ * Return: 1 when its block holds no character.
+ */
+static int e_blk_marks_empty(SCHIRM *s)
 {
- BUFFER *b;
- SCHIRM *s;
- int i;
+ WpeBlock k;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
-  return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
- b = f->b;  s = f->s;
- if ((s->mark_end.y < s->mark_begin.y) ||
-   ((s->mark_begin.y == s->mark_end.y) && (s->mark_end.x <= s->mark_begin.x)))
- {
-  return(0);
- }
- if (e_window_text_locked(f))
-  return(WPE_ESC);
- if (s->mark_begin.y == s->mark_end.y)
- {
-  e_del_nchar(b, s, s->mark_begin.x, s->mark_begin.y,
-    s->mark_end.x - s->mark_begin.x);
-  b->b.x = s->mark_end.x = s->mark_begin.x;
- }
+ e_blk_of(s, &k);
+ return(e_blk_is_empty(&k));
+}
+
+/**
+ * e_blk_delete_in_line - Delete a block inside one line: its characters go,
+ * the cursor stays where the block began.
+ */
+static void e_blk_delete_in_line(BUFFER *b, SCHIRM *s)
+{
+ e_del_nchar(b, s, s->mark_begin.x, s->mark_begin.y, s->mark_end.x - s->mark_begin.x);
+ b->b.x = s->mark_end.x = s->mark_begin.x;
+}
+
+/**
+ * e_block_delete_marked - Delete the block window @f marks.
+ *
+ * Block > Delete, Edit > Cut, and the Undo of a block copy all delete this
+ * way.  A block over several lines goes into its undo record whole, or,
+ * when memory runs out, stays where it was with the window as it was.
+ * Return: E_BLOCK_MOVED, E_BLOCK_NOT_MOVED (no block, or the window is
+ * closed to changes) or E_BLOCK_NOMEM; it says nothing itself.
+ */
+int e_block_delete_marked(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+ int r = E_BLOCK_MOVED, in_line;
+
+ if (e_blk_marks_empty(s) || e_window_text_locked(f))
+  return(E_BLOCK_NOT_MOVED);
+ in_line = (s->mark_begin.y == s->mark_end.y);
+ if (in_line)
+  e_blk_delete_in_line(b, s);
  else
- {
-  if (e_blk_delete_into_shell(f) != 0)
-   wpe_buffer_say_nomem(b, "the block deletion");
+  r = e_blk_delete_into_shell(f);
+ if (r == E_BLOCK_MOVED && !in_line)
   f->save = b->cn->maxchg + 1;
- }
  sc_txt_1(f);
  e_cursor(f, 1);
  e_schirm(f, 1);
+ return(r);
+}
+
+/*	delete block */
+int e_blck_del(FENSTER *f)
+{
+ if ((f = e_blk_text_window(f)) == NULL || e_blk_marks_empty(f->s))
+  return(0);
+ if (e_window_text_locked(f))
+  return(WPE_ESC);
+ if (e_block_delete_marked(f) == E_BLOCK_NOMEM)
+  wpe_buffer_say_nomem(f->b, "the block deletion");
  return(0);
 }
 
@@ -464,12 +533,12 @@ int e_edt_copy(FENSTER *f)
  {
   return(0);
  }
- if (e_clip_clear(b0) != 0)
+ if (e_clip_clear(b0) != 0 ||
+     e_copy_block_covered(0, 0, b, b0, f, 0, NULL) == E_BLOCK_NOMEM)
  {
   wpe_buffer_say_nomem(b0, "the copy");
   return(0);
  }
- e_copy_block(0, 0, b, b0, f);
  f->save = save;
  /* Export to the OS clipboard from the SOURCE selection, not the clip buffer:
     e_buffer_to_text splits a wrapped long line at every buffer segment, so the
@@ -520,6 +589,7 @@ int e_edt_einf(FENSTER *f)
 {
  BUFFER *b;
  BUFFER *b0 = f->ed->f[0]->b;
+ Undo *rec = NULL;
  int i;
 
  /* A window closed to text changes (the clipboard/Show Buffer viewer, a locked
@@ -543,46 +613,75 @@ int e_edt_einf(FENSTER *f)
  b = f->b;
  if (e_window_text_locked(f))
   return(0);
- e_blk_cover_begin(b0, b);
- i = e_copy_block(b->b.x, b->b.y, b0, b, f);
- e_blk_cover_end(b0, b);
+ i = e_copy_block_covered(b->b.x, b->b.y, b0, b, f, 'c', &rec);
+ if (i == E_BLOCK_NOMEM)
+  wpe_buffer_say_nomem(b, "the paste");
  if (i != E_BLOCK_MOVED)
   return(0);
- e_block_record_push('c', b, b->b.x, b->b.y);
+ e_block_record_keep(rec, b, b->b.x, b->b.y);
  sc_txt_2(f);
  f->save = b->cn->maxchg + 1;
  return(0);
 }
 
+/**
+ * e_blk_move_undo_point - Where the Undo of a block move puts the cursor to
+ * move the block back: the block's old start, seen from where it lands.
+ * @b, @s: the buffer and the window's screen before the move.
+ */
+static POINT e_blk_move_undo_point(BUFFER *b, SCHIRM *s)
+{
+ POINT ka;
+
+ ka.x = s->mark_begin.x;
+ if (b->b.y > s->mark_begin.y)
+ {
+  ka.y = s->mark_begin.y;
+  return(ka);
+ }
+ ka.y = s->mark_end.y;
+ if (b->b.y != s->mark_begin.y || b->b.x >= s->mark_begin.x)
+  return(ka);
+ if (s->mark_begin.y == s->mark_end.y)
+  ka.x = s->mark_end.x;          /* inside one line: back to where it ended */
+ else
+  ka.x = s->mark_end.x + s->mark_begin.x - b->b.x;
+ return(ka);
+}
+
+/**
+ * e_block_move_marked - Move the block window @f marks to its cursor.
+ *
+ * Block > Move and the Undo and Redo of a move all move this way.  The move
+ * and its undo record are taken whole, or, when memory runs out, not at
+ * all: the text, the block, the breakpoints and Undo are as they were.
+ * Return: E_BLOCK_MOVED, E_BLOCK_NOT_MOVED or E_BLOCK_NOMEM; it says
+ * nothing itself.
+ */
+int e_block_move_marked(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ POINT ka = e_blk_move_undo_point(b, f->s);
+ Undo *rec = NULL;
+ int r, left_row;
+
+ r = e_blk_move_covered(b->b.x, b->b.y, b, b, f, 'v', &rec, &left_row);
+ if (r != E_BLOCK_MOVED)
+  return(r);
+ if (left_row != E_BLK_NO_ROW)
+  ka.y = left_row;               /* rows the move added or wrapped above it count */
+ e_block_record_keep(rec, b, ka.x, ka.y);
+ f->save = b->cn->maxchg + 1;
+ return(E_BLOCK_MOVED);
+}
+
 /*   move block within window */
 int e_blck_move(FENSTER *f)
 {
- BUFFER *b;
- int i;
- POINT ka;
-
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ if ((f = e_blk_text_window(f)) == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
- b = f->b;
- ka.x = f->ed->f[f->ed->mxedt]->s->mark_begin.x;
- if (b->b.y > f->ed->f[f->ed->mxedt]->s->mark_begin.y)
-  ka.y = f->ed->f[f->ed->mxedt]->s->mark_begin.y;
- else
- {
-  ka.y = f->ed->f[f->ed->mxedt]->s->mark_end.y;
-  if (b->b.y == f->ed->f[f->ed->mxedt]->s->mark_begin.y &&
-    b->b.x < f->ed->f[f->ed->mxedt]->s->mark_begin.x)
-   ka.x = f->ed->f[f->ed->mxedt]->s->mark_end.x +
-     f->ed->f[f->ed->mxedt]->s->mark_begin.x - b->b.x;
- }
- if (e_move_block_covered(b->b.x, b->b.y, b, b, f) != E_BLOCK_MOVED)
-  return(0);
- e_block_record_push('v', b, ka.x, ka.y);
- f->save = b->cn->maxchg + 1;
+ if (e_block_move_marked(f) == E_BLOCK_NOMEM)
+  wpe_buffer_say_nomem(f->b, "the block move");
  return(0);
 }
 
@@ -598,6 +697,920 @@ static int e_blk_line_bytes(BUFFER *b, int y)
   n++;
  return(n);
 }
+
+
+/**
+ * e_blk_lands_on_itself - Would a block land inside itself?  A move or copy
+ * of a block of more than one line to a row of the block in the same
+ * buffer changes nothing the user could want, so it is refused.
+ */
+static int e_blk_lands_on_itself(BUFFER *bv, BUFFER *bz, int y, const WpeBlock *k)
+{
+ return(bv == bz && y >= k->kay && y <= k->key);
+}
+
+/**
+ * e_blk_column_on_line - The column (@x, @y) of @b stands for: a cursor
+ * past the end of its line lands the block at the end of that line.
+ * Return: the column, or -1 when @y is not a line of @b.
+ */
+static int e_blk_column_on_line(BUFFER *b, int x, int y)
+{
+ if (y < 0 || y >= b->mxlines)
+  return(-1);
+ if (x > b->bf[y].len)
+  return(b->bf[y].len);
+ if (x < 0)
+  return(0);
+ return(x);
+}
+
+/* ---- a block operation as one change: prepared whole, then made ---- */
+
+/**
+ * e_blk_op_begin - Start preparing a block move or copy.
+ * @op: on the caller's stack; @s: the screen whose marks are the block;
+ * @bv: the buffer the block leaves or is copied from; @bz: the buffer it
+ * reaches; @kind: the undo record to reserve with it ('c', 'v'), or 0.
+ */
+static void e_blk_op_begin(WpeBlockOp *op, SCHIRM *s, BUFFER *bv, BUFFER *bz, int kind)
+{
+ memset(op, 0, sizeof(*op));
+ e_buffer_txn_begin(&op->t);
+ e_blk_of(s, &op->k);
+ op->bv = bv;
+ op->bz = bz;
+ if (kind != 0)
+  op->rec = e_buffer_txn_record(&op->t, kind);
+}
+
+/**
+ * e_blk_op_state - How the preparation stands: every splice prepared, or
+ * the operation refused.
+ * Return: E_BLOCK_MOVED (ready to make), E_BLOCK_NOMEM, or
+ * E_BLOCK_NOT_MOVED for a splice that did not fit the text.
+ */
+static int e_blk_op_state(const WpeBlockOp *op)
+{
+ if (op->t.refused == E_BUFFER_NOMEM)
+  return(E_BLOCK_NOMEM);
+ if (op->t.refused != E_BUFFER_OK)
+  return(E_BLOCK_NOT_MOVED);
+ return(E_BLOCK_MOVED);
+}
+
+/**
+ * e_blk_op_make - Make a prepared operation, or give back what a refused
+ * one took.
+ * @prepared: what the preparation returned.
+ * Return: E_BLOCK_MOVED when the text changed; otherwise the refusal, with
+ * both buffers exactly as they were.
+ */
+static int e_blk_op_make(WpeBlockOp *op, int prepared)
+{
+ int r;
+
+ if (prepared != E_BLOCK_MOVED)
+ {
+  e_buffer_txn_abort(&op->t);
+  return(prepared);
+ }
+ r = e_buffer_txn_commit(&op->t);
+ if (r == E_BUFFER_NOMEM)
+  return(E_BLOCK_NOMEM);
+ if (r != E_BUFFER_OK)
+  return(E_BLOCK_NOT_MOVED);
+ return(E_BLOCK_MOVED);
+}
+
+/**
+ * e_blk_note - Remember a splice of the operation: the ones after it are
+ * placed by where their lines stand once it has committed.
+ */
+static void e_blk_note(WpeBlockOp *op, BUFFER *b, int y, int n_del, int n_ins)
+{
+ WpeBlockSplice *d;
+
+ if (op->ndone >= E_BUFFER_TXN_SPLICES)
+  return;
+ d = &op->done[op->ndone++];
+ d->b = b;
+ d->y = y;
+ d->n_del = n_del;
+ d->n_ins = n_ins;
+}
+
+/**
+ * e_blk_row_since - Where a row of @b stands once the splices noted from
+ * the @from-th on have committed.
+ * @row: the row as it stood before them.
+ */
+static int e_blk_row_since(const WpeBlockOp *op, BUFFER *b, int row, int from)
+{
+ const WpeBlockSplice *d;
+ int i;
+
+ for (i = from; i < op->ndone; i++)
+ {
+  d = &op->done[i];
+  if (d->b == b && row >= d->y + d->n_del)
+   row += d->n_ins - d->n_del;
+ }
+ return(row);
+}
+
+/**
+ * e_blk_row_now - Where line @row of @b, as the user sees it now, stands
+ * when the next splice commits.  Lines put in at exactly its place go
+ * above it.
+ */
+static int e_blk_row_now(const WpeBlockOp *op, BUFFER *b, int row)
+{
+ return(e_blk_row_since(op, b, row, 0));
+}
+
+/**
+ * e_blk_set_landed - The block's start lands on row @y as the splices
+ * noted so far leave the buffer; later ones may still move it.
+ */
+static void e_blk_set_landed(WpeBlockOp *op, int y)
+{
+ op->landed = y;
+ op->landed_after = op->ndone;
+}
+
+/**
+ * e_blk_landed_row - The row the block's start stands on once every splice
+ * has committed: where the block is marked after the operation.
+ */
+static int e_blk_landed_row(const WpeBlockOp *op)
+{
+ return(e_blk_row_since(op, op->bz, op->landed, op->landed_after));
+}
+
+/**
+ * e_blk_set_end - The line that holds the block's end, once landed, starts
+ * on row @y as the splices noted so far leave the buffer.
+ */
+static void e_blk_set_end(WpeBlockOp *op, int y)
+{
+ op->end_row = y;
+ op->end_after = op->ndone;
+}
+
+/**
+ * e_blk_end_row - The row the line holding the block's end starts on once
+ * every splice has committed.
+ */
+static int e_blk_end_row(const WpeBlockOp *op)
+{
+ return(e_blk_row_since(op, op->bz, op->end_row, op->end_after));
+}
+
+/**
+ * e_blk_set_end_at_line - The block's end lands in front of line @row of
+ * the buffer it reaches (as the user sees it now), which no splice
+ * rewrites: a block that ends at column 0.
+ */
+static void e_blk_set_end_at_line(WpeBlockOp *op, int row)
+{
+ e_blk_set_end(op, e_blk_row_now(op, op->bz, row));
+}
+
+/* The end of a line, its line break included, as the end of a run. */
+#define WPE_BLK_TO_END (-1)
+/* The soft-wrapped rows one rebuilt line takes in with it, at most, and the
+   parts such a line is built from (three runs and those rows).  The parts
+   live on the stack, so the count is bounded; 64 rows is a line of about
+   7600 characters in a window of 120 columns, longer than any line typed or
+   read.  A longer line keeps its rows past the 64th as they are: the last
+   row taken in has no line break, so the rebuilt line goes on into them and
+   the file written is the same. */
+#define WPE_BLK_PARAGRAPH_MAX 64
+#define WPE_BLK_PARTS_MAX (3 + WPE_BLK_PARAGRAPH_MAX)
+
+/**
+ * e_blk_part - A run of the bytes of line @y of @b, from column @from up to
+ * @upto (WPE_BLK_TO_END: to the end, its line break included).
+ *
+ * Runs are read where the lines stand before anything moves, so a block
+ * moved or copied onto one of its own lines carries exactly the text the
+ * user marked.
+ */
+static WpeBufferPart e_blk_part(BUFFER *b, int y, int from, int upto)
+{
+ WpeBufferPart p;
+ int end = e_blk_line_bytes(b, y);
+
+ if (upto != WPE_BLK_TO_END && upto < end)
+  end = upto;
+ if (from > end)
+  from = end;
+ if (from < 0)
+  from = 0;
+ p.s = b->bf[y].s + from;
+ p.n = end - from;
+ return(p);
+}
+
+/**
+ * e_blk_put_parts_at - Add a splice at row @y as it will stand: @n_del
+ * lines go, the runs @parts joined come (soft-wrapped at the width).
+ * Return: how many lines it puts in, or a negative E_BUFFER_* refusal.
+ */
+static int e_blk_put_parts_at(WpeBlockOp *op, BUFFER *b, int y, int n_del,
+                              const WpeBufferPart *parts, int nparts)
+{
+ int k = e_buffer_txn_splice_parts(&op->t, b, y, n_del, parts, nparts,
+                                   E_BUFFER_STEP_COVERED);
+
+ if (k >= 0)
+  e_blk_note(op, b, y, n_del, k);
+ return(k);
+}
+
+/**
+ * e_blk_put_parts - As e_blk_put_parts_at, at the place line @row (as the
+ * user sees it now) will stand.
+ * Return: the row it splices at.
+ */
+static int e_blk_put_parts(WpeBlockOp *op, BUFFER *b, int row, int n_del,
+                           const WpeBufferPart *parts, int nparts)
+{
+ int y = e_blk_row_now(op, b, row);
+
+ e_blk_put_parts_at(op, b, y, n_del, parts, nparts);
+ return(y);
+}
+
+/**
+ * e_blk_row_goes_on - Does row @r of @b continue the line of the row above
+ * it (a soft-wrapped row), and may it be rewritten with that line?  Not
+ * when it holds the block, or the place the block is dropped at.
+ */
+static int e_blk_row_goes_on(const WpeBlockOp *op, BUFFER *b, int r)
+{
+ if (r <= 0 || r >= b->mxlines || b->bf[r - 1].s[b->bf[r - 1].len] != '\0')
+  return(0);
+ if (b == op->bv && r >= op->k.kay && r <= op->k.key)
+  return(0);
+ return(!(b == op->bz && r == op->y));
+}
+
+/**
+ * e_blk_take_paragraph - Add to @parts the rows that go on from row @row
+ * (a soft-wrapped line), so the splice rewrites the whole line and wraps it
+ * as the file reader would: Undo of a paste that made a full line wrap
+ * gives that line back on its one row.
+ * @nparts: how many parts there are; grows.
+ * Return: how many rows were added (the splice takes them out too).
+ */
+static int e_blk_take_paragraph(const WpeBlockOp *op, BUFFER *b, int row,
+                                WpeBufferPart *parts, int *nparts)
+{
+ int r = row + 1, taken = 0;
+
+ while (taken < WPE_BLK_PARAGRAPH_MAX && e_blk_row_goes_on(op, b, r))
+ {
+  parts[(*nparts)++] = e_blk_part(b, r, 0, WPE_BLK_TO_END);
+  r++;
+  taken++;
+ }
+ return(taken);
+}
+
+/**
+ * e_blk_put_line - As e_blk_put_parts, for a line whose last part runs to
+ * the end of row @tail_row of @b: the rows its soft-wrapped line goes on to
+ * are rewritten with it.
+ * @parts: room for WPE_BLK_PARTS_MAX parts.
+ * Return: the row it splices at.
+ */
+static int e_blk_put_line(WpeBlockOp *op, BUFFER *b, int row, int n_del,
+                          WpeBufferPart *parts, int nparts, int tail_row)
+{
+ int more = e_blk_take_paragraph(op, b, tail_row, parts, &nparts);
+
+ return(e_blk_put_parts(op, b, row, n_del + more, parts, nparts));
+}
+
+/**
+ * e_blk_move_whole - Add the move of @n whole lines of the block's buffer
+ * from @row_from to above line @row_to of the buffer it reaches (rows as
+ * the user sees them now), each with its breakpoint.
+ * Return: the row the first of them lands on, or -1 when there are none.
+ */
+static int e_blk_move_whole(WpeBlockOp *op, int row_from, int n, int row_to)
+{
+ int y_from = e_blk_row_now(op, op->bv, row_from), y_to;
+
+ if (n <= 0)
+  return(-1);
+ e_blk_note(op, op->bv, y_from, n, 0);
+ y_to = e_blk_row_now(op, op->bz, row_to);
+ e_buffer_txn_move_lines(&op->t, op->bv, y_from, n, op->bz, y_to);
+ e_blk_note(op, op->bz, y_to, 0, n);
+ return(y_to);
+}
+
+/**
+ * e_blk_cut_source - Add the splices that take a moved block's partial
+ * lines out of the buffer it leaves, joining what is left of its first and
+ * last line (the lines between have gone already).
+ *
+ * The joined line keeps the breakpoint of the block's first line.  A block
+ * that starts at column 0 takes its first line away whole.
+ */
+static void e_blk_cut_source(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+ int y;
+
+ if (k->kax > 0)
+ {
+  parts[0] = e_blk_part(op->bv, k->kay, 0, k->kax);
+  parts[1] = e_blk_part(op->bv, k->key, k->kex, WPE_BLK_TO_END);
+  e_blk_put_line(op, op->bv, k->kay, 2, parts, 2, k->key);
+  return;
+ }
+ y = e_blk_row_now(op, op->bv, k->kay);
+ e_buffer_txn_delete_lines(&op->t, op->bv, y, 1, E_BUFFER_STEP_COVERED);
+ e_blk_note(op, op->bv, y, 1, 0);
+ if (k->kex == 0)
+  return;
+ parts[0] = e_blk_part(op->bv, k->key, k->kex, WPE_BLK_TO_END);
+ e_blk_put_line(op, op->bv, k->key, 1, parts, 1, k->key);
+}
+
+/**
+ * e_blk_move_starting_whole - A block that starts at column 0, dropped at
+ * column 0: its whole lines go above the cursor's line with their
+ * breakpoints, and its last line's part joins the front of that line.
+ */
+static void e_blk_move_starting_whole(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+
+ e_blk_set_landed(op, e_blk_move_whole(op, k->kay, k->key - k->kay, op->y));
+ e_blk_end_at_line_front(op);
+ if (k->kex == 0)
+  return;
+ parts[0] = e_blk_part(op->bv, k->key, k->kex, WPE_BLK_TO_END);
+ e_blk_put_line(op, op->bv, k->key, 1, parts, 1, k->key);
+}
+
+/**
+ * e_blk_end_at_line_front - Add the block's last line's part in front of the
+ * cursor's line, which keeps its breakpoint (nothing to add for a block
+ * that ends at column 0), and note the line holding the block's end.
+ */
+static void e_blk_end_at_line_front(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+
+ if (k->kex == 0)
+ {
+  e_blk_set_end_at_line(op, op->y);
+  return;
+ }
+ parts[0] = e_blk_part(op->bv, k->key, 0, k->kex);
+ parts[1] = e_blk_part(op->bz, op->y, 0, WPE_BLK_TO_END);
+ e_blk_set_end(op, e_blk_put_line(op, op->bz, op->y, 1, parts, 2, op->y));
+}
+
+/**
+ * e_blk_end_into_line - Add the block's last line's part, followed by the
+ * rest of the line it was dropped into, below the lines already landed,
+ * and note the line holding the block's end.
+ */
+static void e_blk_end_into_line(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+
+ parts[0] = e_blk_part(op->bv, k->key, 0, k->kex);
+ parts[1] = e_blk_part(op->bz, op->y, op->x, WPE_BLK_TO_END);
+ e_blk_set_end(op, e_blk_put_line(op, op->bz, op->y + 1, 0, parts, 2, op->y));
+}
+
+/**
+ * e_blk_move_to_line_start - A block that starts inside a line, dropped at
+ * column 0: its first line's part goes above the cursor's line, then the
+ * lines between, and its last line's part joins the front of the cursor's
+ * line, which keeps its breakpoint.
+ */
+static void e_blk_move_to_line_start(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+ int at;
+
+ at = e_blk_move_whole(op, k->kay + 1, k->key - k->kay - 1, op->y);
+ if (at < 0)
+  at = e_blk_row_now(op, op->bz, op->y);
+ parts[0] = e_blk_part(op->bv, k->kay, k->kax, WPE_BLK_TO_END);
+ e_blk_put_parts_at(op, op->bz, at, 0, parts, 1);
+ e_blk_set_landed(op, at);
+ e_blk_end_at_line_front(op);
+ e_blk_cut_source(op);
+}
+
+/**
+ * e_blk_move_into_line - A block dropped inside a line: the line keeps its
+ * front and its breakpoint and takes the block's first line, the lines
+ * between follow with their breakpoints, and the block's last line takes
+ * the rest of the line.
+ */
+static void e_blk_move_into_line(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+
+ e_blk_move_whole(op, k->kay + 1, k->key - k->kay - 1, op->y + 1);
+ parts[0] = e_blk_part(op->bz, op->y, 0, op->x);
+ parts[1] = e_blk_part(op->bv, k->kay, k->kax, WPE_BLK_TO_END);
+ e_blk_set_landed(op, e_blk_put_parts(op, op->bz, op->y, 1, parts, 2));
+ e_blk_end_into_line(op);
+ e_blk_cut_source(op);
+}
+
+/**
+ * e_blk_plan_lines_move - Prepare the move of a block of several lines to
+ * the cursor, by where the block starts and where it is dropped.
+ */
+static void e_blk_plan_lines_move(WpeBlockOp *op)
+{
+ op->shape = E_BLK_SHAPE_LINES;
+ op->mark_x = op->x;
+ if (op->k.kax == 0 && op->x == 0)
+  e_blk_move_starting_whole(op);
+ else if (op->x == 0)
+  e_blk_move_to_line_start(op);
+ else
+  e_blk_move_into_line(op);
+}
+
+/**
+ * e_blk_plan_reorder - Prepare the move of a block inside one line to
+ * another place of that same line: one line rewritten.
+ */
+static void e_blk_plan_reorder(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+
+ op->shape = E_BLK_SHAPE_REORDER;
+ op->mark_x = op->x;
+ parts[0] = e_blk_part(op->bv, k->kay, 0, op->x);
+ parts[1] = e_blk_part(op->bv, k->kay, k->kax, k->kex);
+ parts[2] = e_blk_part(op->bv, k->kay, op->x, k->kax);
+ parts[3] = e_blk_part(op->bv, k->kay, k->kex, WPE_BLK_TO_END);
+ if (op->x > k->kex)
+ {
+  op->mark_x = op->x - op->n;
+  parts[0] = e_blk_part(op->bv, k->kay, 0, k->kax);
+  parts[1] = e_blk_part(op->bv, k->kay, k->kex, op->x);
+  parts[2] = e_blk_part(op->bv, k->kay, k->kax, k->kex);
+  parts[3] = e_blk_part(op->bv, k->kay, op->x, WPE_BLK_TO_END);
+ }
+ e_blk_set_landed(op, e_blk_put_line(op, op->bv, k->kay, 1, parts, 4, k->kay));
+}
+
+/**
+ * e_blk_plan_chars_move - Prepare the move of a block inside one line to
+ * the cursor on another line (or in another buffer): the characters go in
+ * at the cursor and out of their line.
+ */
+static void e_blk_plan_chars_move(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+
+ op->n = k->kex - k->kax;
+ if (op->bv == op->bz && op->y == k->kay)
+ {
+  e_blk_plan_reorder(op);
+  return;
+ }
+ op->shape = E_BLK_SHAPE_CHARS;
+ op->mark_x = op->x;
+ parts[0] = e_blk_part(op->bz, op->y, 0, op->x);
+ parts[1] = e_blk_part(op->bv, k->kay, k->kax, k->kex);
+ parts[2] = e_blk_part(op->bz, op->y, op->x, WPE_BLK_TO_END);
+ e_blk_set_landed(op, e_blk_put_line(op, op->bz, op->y, 1, parts, 3, op->y));
+ parts[0] = e_blk_part(op->bv, k->kay, 0, k->kax);
+ parts[1] = e_blk_part(op->bv, k->kay, k->kex, WPE_BLK_TO_END);
+ e_blk_put_line(op, op->bv, k->kay, 1, parts, 2, k->kay);
+}
+
+/**
+ * e_blk_plan_shift_left - The cursor is on the block's first line, before
+ * the block: the text between them goes to the block's end, so the block
+ * now starts at the cursor.
+ */
+static void e_blk_plan_shift_left(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+
+ op->shape = E_BLK_SHAPE_SHIFT_LEFT;
+ parts[0] = e_blk_part(op->bv, k->kay, 0, op->x);
+ parts[1] = e_blk_part(op->bv, k->kay, k->kax, WPE_BLK_TO_END);
+ e_blk_put_parts(op, op->bv, k->kay, 1, parts, 2);
+ parts[0] = e_blk_part(op->bv, k->key, 0, k->kex);
+ parts[1] = e_blk_part(op->bv, k->kay, op->x, k->kax);
+ parts[2] = e_blk_part(op->bv, k->key, k->kex, WPE_BLK_TO_END);
+ e_blk_put_line(op, op->bv, k->key, 1, parts, 3, k->key);
+}
+
+/**
+ * e_blk_plan_shift_right - The cursor is on the block's last line, after
+ * the block: the text between them goes to the block's start, so the block
+ * now ends at the cursor.
+ */
+static void e_blk_plan_shift_right(WpeBlockOp *op)
+{
+ const WpeBlock *k = &op->k;
+ WpeBufferPart parts[WPE_BLK_PARTS_MAX];
+
+ op->shape = E_BLK_SHAPE_SHIFT_RIGHT;
+ op->n = op->x - k->kex;
+ parts[0] = e_blk_part(op->bv, k->key, 0, k->kex);
+ parts[1] = e_blk_part(op->bv, k->key, op->x, WPE_BLK_TO_END);
+ e_blk_put_line(op, op->bv, k->key, 1, parts, 2, k->key);
+ parts[0] = e_blk_part(op->bv, k->kay, 0, k->kax);
+ parts[1] = e_blk_part(op->bv, k->key, k->kex, op->x);
+ parts[2] = e_blk_part(op->bv, k->kay, k->kax, WPE_BLK_TO_END);
+ op->wrapped = e_blk_put_parts_at(op, op->bv, e_blk_row_now(op, op->bv, k->kay), 1, parts, 3);
+}
+
+/**
+ * e_blk_cursor_inside - Is the cursor inside the block it would move?  The
+ * block cannot be moved into itself.
+ */
+static int e_blk_cursor_inside(const WpeBlockOp *op, int x, int y)
+{
+ const WpeBlock *k = &op->k;
+
+ return(op->bv == op->bz && y >= k->kay && y <= k->key && x >= k->kax && x <= k->kex);
+}
+
+/**
+ * e_blk_plan_move - Prepare a block move by the place it is dropped at.
+ * @x: the cursor's column as the user placed it (past the end of the line
+ * is allowed); op->x is that column on the line.
+ * Return: E_BLOCK_MOVED when it was planned, E_BLOCK_NOT_MOVED when a
+ * block of several lines would land on one of its own lines.
+ */
+static int e_blk_plan_move(WpeBlockOp *op, int x)
+{
+ const WpeBlock *k = &op->k;
+ int same = (op->bv == op->bz);
+
+ if (k->kay == k->key)
+  e_blk_plan_chars_move(op);
+ else if (same && op->y == k->kay && x < k->kax)
+  e_blk_plan_shift_left(op);
+ else if (same && op->y == k->key && op->x > k->kex)
+  e_blk_plan_shift_right(op);
+ else if (e_blk_lands_on_itself(op->bv, op->bz, op->y, k))
+  return(E_BLOCK_NOT_MOVED);
+ else
+  e_blk_plan_lines_move(op);
+ return(E_BLOCK_MOVED);
+}
+
+/**
+ * e_move_block_prepare - Check a block move and prepare every splice of it;
+ * nothing moves yet.
+ * @x, @y: the cursor in @bz; @bv: the buffer the block leaves; @bz: the one
+ * it reaches; @f: the window the user works in (its marks are the block);
+ * @kind: the undo record to reserve with the move ('v', 'c'), or 0.
+ * Return: E_BLOCK_MOVED (ready to make), E_BLOCK_NOT_MOVED (nothing to move,
+ * the window is closed to changes, the cursor is inside the block) or
+ * E_BLOCK_NOMEM.
+ */
+static int e_move_block_prepare(WpeBlockOp *op, int x, int y, BUFFER *bv, BUFFER *bz,
+                                FENSTER *f, int kind)
+{
+ e_blk_op_begin(op, f->ed->f[f->ed->mxedt]->s, bv, bz, kind);
+ if (e_blk_is_empty(&op->k) || e_window_text_locked(f) || e_blk_cursor_inside(op, x, y))
+  return(E_BLOCK_NOT_MOVED);
+ op->y = y;
+ op->x = e_blk_column_on_line(bz, x, y);
+ if (op->x < 0)
+  return(E_BLOCK_NOT_MOVED);
+ if (e_blk_plan_move(op, x) != E_BLOCK_MOVED)
+  return(E_BLOCK_NOT_MOVED);
+ return(e_blk_op_state(op));
+}
+
+/**
+ * e_blk_mark_source_left - The block has left its buffer: that buffer's
+ * marks close up where the block began, and so does its cursor.
+ */
+static void e_blk_mark_source_left(WpeBlockOp *op)
+{
+ SCHIRM *sv = op->bv->f->s;
+
+ sv->mark_begin.x = sv->mark_end.x = op->bv->b.x = op->k.kax;
+ sv->mark_begin.y = sv->mark_end.y = op->bv->b.y = op->k.kay;
+}
+
+/* Which end of a block a column on a wrapped line is for: a column at the
+   very end of a soft-wrapped row is the start of the next row for the
+   block's start, and stays at the end of the row for the block's end. */
+#define E_BLK_AT_START 0
+#define E_BLK_AT_END   1
+
+/**
+ * e_blk_past_row - Does column @x of a line lie beyond a soft-wrapped row
+ * of @len characters, for the end @which of a block?
+ */
+static int e_blk_past_row(int len, int x, int which)
+{
+ if (x > len)
+  return(1);
+ return(x == len && which == E_BLK_AT_START);
+}
+
+/**
+ * e_blk_point_on_rows - Where column @x of the line that starts on row @y
+ * of @b stands on the screen, once the line has wrapped onto the rows
+ * below it.
+ * @which: E_BLK_AT_START or E_BLK_AT_END.
+ *
+ * A block dropped near the end of a line as wide as the window makes the
+ * line wrap before the block, so the block is marked on the row it is on:
+ * Ctrl-U then takes back the copy, never the user's own characters.
+ */
+static POINT e_blk_point_on_rows(BUFFER *b, int y, int x, int which)
+{
+ POINT p;
+
+ while (y + 1 < b->mxlines && b->bf[y].s[b->bf[y].len] == '\0' &&
+        e_blk_past_row(b->bf[y].len, x, which))
+ {
+  x -= b->bf[y].len;
+  y++;
+ }
+ p.x = x;
+ p.y = y;
+ return(p);
+}
+
+/**
+ * e_blk_mark_chars_landed - Mark a block of @op->n characters where it
+ * landed in a line, on the rows the line wrapped onto, the cursor at its
+ * end.
+ */
+static void e_blk_mark_chars_landed(WpeBlockOp *op)
+{
+ SCHIRM *sz = op->bz->f->s;
+ int y = e_blk_landed_row(op);
+
+ sz->mark_begin = e_blk_point_on_rows(op->bz, y, op->mark_x, E_BLK_AT_START);
+ sz->mark_end = e_blk_point_on_rows(op->bz, y, op->mark_x + op->n, E_BLK_AT_END);
+ op->bz->b = sz->mark_end;
+}
+
+/**
+ * e_blk_mark_lines_landed - Mark a block of several lines where it landed,
+ * its start in the line it starts in and its end in the line that holds
+ * it, on the rows those lines wrapped onto; the cursor at its end.
+ *
+ * The undo record keeps these marks, so a block dropped into a line as
+ * wide as the window is taken back exactly, wrap and all.
+ */
+static void e_blk_mark_lines_landed(WpeBlockOp *op)
+{
+ SCHIRM *sz = op->bz->f->s;
+
+ sz->mark_begin = e_blk_point_on_rows(op->bz, e_blk_landed_row(op), op->mark_x,
+                                      E_BLK_AT_START);
+ sz->mark_end = e_blk_point_on_rows(op->bz, e_blk_end_row(op), op->k.kex, E_BLK_AT_END);
+ op->bz->b = sz->mark_end;
+}
+
+/**
+ * e_blk_mark_lines_moved - A block of several lines moved: its old place
+ * closes up, and it is marked where it landed with the cursor at its end.
+ */
+static void e_blk_mark_lines_moved(WpeBlockOp *op)
+{
+ e_blk_mark_source_left(op);
+ e_blk_mark_lines_landed(op);
+}
+
+/**
+ * e_blk_mark_chars_moved - A block inside one line moved: its old place
+ * closes up, and it is marked where it landed.
+ */
+static void e_blk_mark_chars_moved(WpeBlockOp *op)
+{
+ e_blk_mark_source_left(op);
+ e_blk_mark_chars_landed(op);
+}
+
+/**
+ * e_blk_mark_shifted_left - After the text before the block went behind
+ * it: the block starts at the cursor, and the cursor stays there.
+ */
+static void e_blk_mark_shifted_left(WpeBlockOp *op)
+{
+ SCHIRM *sv = op->bv->f->s;
+
+ op->bv->b.x = sv->mark_begin.x = op->x;
+ op->bv->b.y = sv->mark_begin.y = op->k.kay;
+ sv->mark_end.x = op->k.kex;
+ sv->mark_end.y = op->k.key;
+}
+
+/**
+ * e_blk_mark_shifted_right - After the text behind the block went before
+ * it: the block ends where the cursor was, and the cursor is at its end.
+ */
+static void e_blk_mark_shifted_right(WpeBlockOp *op)
+{
+ SCHIRM *sv = op->bv->f->s;
+
+ sv->mark_begin.x = op->k.kax + op->n;
+ sv->mark_begin.y = op->k.kay;
+ sv->mark_end.x = op->k.kex;
+ sv->mark_end.y = op->k.key + op->wrapped - 1;
+ op->bv->b = sv->mark_end;
+}
+
+/**
+ * e_blk_mark_moved - Mark the block where a move put it, by the shape of
+ * the move.
+ */
+static void e_blk_mark_moved(WpeBlockOp *op)
+{
+ if (op->shape == E_BLK_SHAPE_SHIFT_LEFT)
+  e_blk_mark_shifted_left(op);
+ else if (op->shape == E_BLK_SHAPE_SHIFT_RIGHT)
+  e_blk_mark_shifted_right(op);
+ else if (op->shape == E_BLK_SHAPE_LINES)
+  e_blk_mark_lines_moved(op);
+ else
+  e_blk_mark_chars_moved(op);
+}
+
+/**
+ * e_blk_give_record - Hand the caller the undo record of an operation that
+ * was made (it fills and pushes it); a refused one freed it already.
+ * @r: what the operation returned; @rec: where the caller wants it, or NULL.
+ */
+static void e_blk_give_record(const WpeBlockOp *op, int r, Undo **rec)
+{
+ if (rec == NULL)
+  return;
+ *rec = NULL;
+ if (r == E_BLOCK_MOVED)
+  *rec = op->rec;
+}
+
+/**
+ * e_blk_note_left_row - Remember the row the block's old start stands on
+ * once every splice of the move has committed, for the move's Undo.
+ *
+ * Lines the move added or a line it made wrap above the old place push it
+ * down; counting them is what lets Ctrl-U put the block back where it was.
+ * The two shifts keep their own rule (E_BLK_NO_ROW).
+ */
+static void e_blk_note_left_row(WpeBlockOp *op)
+{
+ op->left_row = E_BLK_NO_ROW;
+ if (op->shape == E_BLK_SHAPE_SHIFT_LEFT || op->shape == E_BLK_SHAPE_SHIFT_RIGHT)
+  return;
+ op->left_row = e_blk_row_now(op, op->bv, op->k.kay);
+}
+
+/**
+ * e_blk_give_left_row - Hand the caller the row of the move's old place.
+ * @r: what the move returned; @left_row: where the caller wants it, or NULL.
+ */
+static void e_blk_give_left_row(const WpeBlockOp *op, int r, int *left_row)
+{
+ if (left_row == NULL)
+  return;
+ *left_row = E_BLK_NO_ROW;
+ if (r == E_BLOCK_MOVED)
+  *left_row = op->left_row;
+}
+
+/**
+ * e_blk_show_moved - Show a move that was made: the block marked where it
+ * landed, the colours of both buffers recomputed, the window drawn.
+ */
+static void e_blk_show_moved(WpeBlockOp *op, FENSTER *f)
+{
+ e_blk_note_left_row(op);
+ e_blk_mark_moved(op);
+ f->save = f->ed->maxchg + 1;
+ sc_txt_1(op->bv->f);
+ sc_txt_1(op->bz->f);
+ e_cursor(f, 1);
+ e_schirm(f, 1);
+}
+
+/**
+ * e_move_block_covered - Move the block the user's window marks from @bv
+ * to (@x, @y) of @bz, as one action for Undo.
+ * @f: the window the user works in (its marks are the block); @kind: the
+ * undo record to take with the move ('v' for Block Move, 'c' for the way
+ * back of a block delete), or 0; @rec: receives that record when the move
+ * was made, for the caller to fill and push (NULL with @kind 0).
+ *
+ * Block Move (Ctrl-K V), a block delete into its undo record and that
+ * record's Undo all move lines this way.  The steps are left out of Undo on
+ * both buffers; the one record replays the whole move, so one Ctrl-U takes
+ * it back and the breakpoints return with their lines.  Every splice and
+ * the record are prepared before anything moves: a move refused for want
+ * of memory leaves both buffers, their marks, breakpoints and Undo exactly
+ * as they were.  Nothing is said here; the caller names the action.
+ * Return: E_BLOCK_MOVED, E_BLOCK_NOT_MOVED (nothing to move, the window is
+ * closed to changes, the cursor is inside the block) or E_BLOCK_NOMEM.
+ */
+int e_move_block_covered(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f, int kind,
+                         Undo **rec)
+{
+ return(e_blk_move_covered(x, y, bv, bz, f, kind, rec, NULL));
+}
+
+/**
+ * e_blk_move_covered - e_move_block_covered, also saying where the block's
+ * old start stands once it has moved.
+ * @left_row: receives that row, or E_BLK_NO_ROW (a shift, or no move);
+ * NULL when not wanted.
+ * Return: as e_move_block_covered.
+ */
+static int e_blk_move_covered(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f, int kind,
+                              Undo **rec, int *left_row)
+{
+ WpeBlockOp op;
+ int r, fault;
+
+ e_blk_cover_begin(bv, bz);
+ fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_BLOCK_MOVE);
+ r = e_blk_op_make(&op, e_move_block_prepare(&op, x, y, bv, bz, f, kind));
+ if (r == E_BLOCK_MOVED)
+  e_blk_show_moved(&op, f);
+ e_buffer_test_fault_leave(fault);
+ e_blk_cover_end(bv, bz);
+ e_blk_give_record(&op, r, rec);
+ e_blk_give_left_row(&op, r, left_row);
+ return(r);
+}
+
+/*   copy block within window   */
+int e_blck_copy(FENSTER *f)
+{
+ BUFFER *b;
+ Undo *rec = NULL;
+ int i;
+
+ for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
+  ;
+ if (i <= 0)
+  return(0);
+ e_switch_window(f->ed->edt[i], f);
+ f = f->ed->f[f->ed->mxedt];
+ b = f->b;
+ /* Block-Copy (Ctrl-K C / Block menu) duplicates the block at the cursor, which
+    would edit the buffer -- impossible in a window closed to text changes (a
+    read-only tool pane such as the AI chat / Messages output, or a window
+    waiting for an assistant reply).  Rather than do nothing, treat it there as
+    a clipboard copy, so the instinctive "Copy" pulls the selected text out
+    like Edit > Copy does. */
+ if (e_window_text_locked(f)) return(e_edt_copy(f));
+ i = e_copy_block_covered(b->b.x, b->b.y, b, b, f, 'c', &rec);
+ if (i == E_BLOCK_NOMEM)
+  wpe_buffer_say_nomem(b, "the block copy");
+ if (i != E_BLOCK_MOVED)
+  return(0);
+ e_block_record_keep(rec, b, b->b.x, b->b.y);
+ sc_txt_2(f);
+ f->save = b->cn->maxchg + 1;
+ return(0);
+}
+
+/* The two partial lines of a block, taken as bytes before anything moves:
+   the first line from the block's start on, its line break included, and
+   the last line before the block's end. */
+typedef struct
+{
+ unsigned char *first;
+ int nfirst;
+ unsigned char *last;
+ int nlast;
+} WpeBlockEnds;
+
+static int e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst, FENSTER *f);
 
 /**
  * e_blk_bytes_dup - A copy of @n bytes of @src (at least one byte is
@@ -629,26 +1642,20 @@ static void e_blk_ends_free(WpeBlockEnds *e)
 
 /**
  * e_blk_ends_take - Copy the two partial lines of block @k of buffer @b.
- * @with_first: 0 when the first line goes whole (a move of a block that
- * starts at column 0), so only the last line's bytes are wanted.
  *
- * Taken before any line moves, so a block copied or moved onto one of its
- * own lines still carries exactly the text the user marked.
+ * Taken before any line moves, so a block copied onto one of its own lines
+ * still carries exactly the text the user marked.
  * Return: 0, or -1 when memory ran out (nothing is held).
  */
-static int e_blk_ends_take(BUFFER *b, const WpeBlock *k, int with_first, WpeBlockEnds *e)
+static int e_blk_ends_take(BUFFER *b, const WpeBlock *k, WpeBlockEnds *e)
 {
  e->first = e->last = NULL;
- e->nfirst = 0;
  e->nlast = k->kex;
- if (with_first)
- {
-  e->nfirst = e_blk_line_bytes(b, k->kay) - k->kax;
-  if (e->nfirst < 0)
-   e->nfirst = 0;
-  if ((e->first = e_blk_bytes_dup(b->bf[k->kay].s + k->kax, e->nfirst)) == NULL)
-   return(-1);
- }
+ e->nfirst = e_blk_line_bytes(b, k->kay) - k->kax;
+ if (e->nfirst < 0)
+  e->nfirst = 0;
+ if ((e->first = e_blk_bytes_dup(b->bf[k->kay].s + k->kax, e->nfirst)) == NULL)
+  return(-1);
  if ((e->last = e_blk_bytes_dup(b->bf[k->key].s, e->nlast)) == NULL)
  {
   e_blk_ends_free(e);
@@ -658,76 +1665,26 @@ static int e_blk_ends_take(BUFFER *b, const WpeBlock *k, int with_first, WpeBloc
 }
 
 /**
- * e_blk_line_dup - A copy of a line, as a new line of buffer @dst.
- * @src: the line; @out: receives the copy.
- *
- * Block Copy duplicates the block's whole lines, so the copy does not
- * change with later edits of the original.  The copy is clamped to the
- * width of @dst, line break included.  Return: E_BUFFER_OK or
- * E_BUFFER_NOMEM.
- */
-static int e_blk_line_dup(BUFFER *dst, const STRING *src, STRING *out)
-{
- int n = src->nrc;
-
- if (e_buffer_line_new(dst, out) != E_BUFFER_OK)
-  return(E_BUFFER_NOMEM);
- if (n > dst->mx.x)
-  n = dst->mx.x;
- if (n < 0)
-  n = 0;
- memcpy(out->s, src->s, (size_t)n);
- out->s[n] = '\0';
- out->len = e_str_len(out->s);
- out->nrc = e_str_nrc(out->s);
- return(E_BUFFER_OK);
-}
-
-/**
- * e_blk_lines_dup - Copies of @n lines of @src from row @from, as lines of
- * @dst.  Return: the array (the caller splices or frees it), or NULL when
- * memory ran out.
- */
-static STRING *e_blk_lines_dup(BUFFER *src, int from, int n, BUFFER *dst)
-{
- STRING *out = MALLOC(n * sizeof(STRING));
- int i;
-
- if (out == NULL)
-  return(NULL);
- for (i = 0; i < n; i++)
-  if (e_blk_line_dup(dst, &src->bf[from + i], &out[i]) != E_BUFFER_OK)
-  {
-   e_buffer_lines_free(out, i);
-   return(NULL);
-  }
- return(out);
-}
-
-/**
  * e_blk_ends_land - Write the two partial lines of a block where it lands.
  * @b, @s: the destination buffer and its screen; @x, @y: where the block
- * starts; @ylast: the row the block's last line ends on; @first: the bytes
- * of the first line (NULL when it landed whole); @nfirst: how many;
- * @last, @nlast: the bytes of the last line.
+ * starts; @ylast: the row the block's last line ends on.
  *
  * The last line's bytes go in front of the rest of the line the block was
  * dropped into, the first line's after the part before the cursor; a line
  * that grows past the window's width wraps as typing would wrap it.
  */
 static void e_blk_ends_land(BUFFER *b, SCHIRM *s, int x, int y, int ylast,
-                            unsigned char *first, int nfirst,
-                            unsigned char *last, int nlast)
+                            const WpeBlockEnds *e)
 {
- if (nlast > 0)
-  e_ins_nchar(b, s, last, 0, ylast, nlast);
- if (first != NULL && nfirst > 0)
-  e_ins_nchar(b, s, first, x, y, nfirst);
+ if (e->nlast > 0)
+  e_ins_nchar(b, s, e->last, 0, ylast, e->nlast);
+ if (e->nfirst > 0)
+  e_ins_nchar(b, s, e->first, x, y, e->nfirst);
 }
 
 /**
- * e_blk_marks_landed - Mark the block where it landed and put the cursor at
- * its end.
+ * e_blk_marks_landed - Mark the copied block where it landed and put the
+ * cursor at its end.
  * @b, @s: the destination; @x, @y: where it starts; @k: its old place (for
  * its size).
  */
@@ -740,510 +1697,25 @@ static void e_blk_marks_landed(BUFFER *b, SCHIRM *s, int x, int y, const WpeBloc
 }
 
 /**
- * e_blk_lines_free - Free what a move holds of the lines it took out: the
- * arrays, and the first line when it was merged into another line rather
- * than landed whole (its bytes were copied there).
+ * e_copy_block_covered - Copy the block @bs's window marks to (@x, @y) of
+ * @bd, as one action for Undo.
+ * @f: the window the user works in; @kind: the undo record to keep ('c'),
+ * or 0; @rec: receives it when the copy was made (NULL with @kind 0).
+ * Return: E_BLOCK_MOVED, E_BLOCK_NOT_MOVED or E_BLOCK_NOMEM.
  */
-static void e_blk_lines_free(WpeBlockLines *dl)
-{
- if (dl->lines != NULL && dl->first_in_hand)
-  FREE(dl->lines[0].s);
- dl->first_in_hand = 0;
- FREE(dl->lines);
- FREE(dl->rows);
- dl->lines = NULL;
- dl->rows = NULL;
-}
-
-/**
- * e_blk_detach - Take the whole lines of block @k out of @bv, with their
- * breakpoints, without freeing them.
- *
- * Those are the lines between the first and the last, and the first too
- * when the block starts at column 0: then the first line belongs to the
- * block whole, and its breakpoint travels with it.  Nothing is freed, so no
- * line can be freed twice, and the rows leave the margin with their lines.
- * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with nothing taken.
- */
-static int e_blk_detach(BUFFER *bv, const WpeBlock *k, int whole_first, WpeBlockLines *dl)
+static int e_copy_block_covered(int x, int y, BUFFER *bs, BUFFER *bd, FENSTER *f, int kind,
+                                Undo **rec)
 {
  int r;
 
- memset(dl, 0, sizeof(*dl));
- if (whole_first)
-  dl->at = k->kay;
- else
-  dl->at = k->kay + 1;
- dl->n = k->key - dl->at;
- if (dl->n <= 0)
- {
-  dl->n = 0;
-  return(E_BUFFER_OK);
- }
- dl->lines = MALLOC(dl->n * sizeof(STRING));
- dl->rows = MALLOC(dl->n * sizeof(int));
- if (dl->lines == NULL || dl->rows == NULL)
- {
-  e_blk_lines_free(dl);
-  return(E_BUFFER_NOMEM);
- }
- r = e_buffer_detach_lines(bv, dl->at, dl->n, dl->lines, dl->rows, &dl->nrows);
- if (r != E_BUFFER_OK)
-  e_blk_lines_free(dl);
+ e_blk_cover_begin(bs, bd);
+ r = e_copy_block(x, y, bs, bd, f);
+ e_blk_cover_end(bs, bd);
+ if (rec != NULL)
+  *rec = NULL;
+ if (rec != NULL && kind != 0 && r == E_BLOCK_MOVED)
+  *rec = e_buffer_record_new(kind);
  return(r);
-}
-
-/**
- * e_blk_rows_after_first - The breakpoint rows of the lines after the first,
- * counted from the second: the first line is merged into another line, not
- * landed whole.
- * @dl: the lines; @out: room for dl->nrows rows.  Return: how many.
- */
-static int e_blk_rows_after_first(const WpeBlockLines *dl, int *out)
-{
- int i, k = 0;
-
- for (i = 0; i < dl->nrows; i++)
-  if (dl->rows[i] >= 1)
-   out[k++] = dl->rows[i] - 1;
- return(k);
-}
-
-/**
- * e_blk_land_whole - Land every taken line whole at row @y of @bz, above
- * the line there, each with its breakpoint.
- * Return: as e_buffer_splice; on success no line is left in hand.
- */
-static int e_blk_land_whole(BUFFER *bz, int y, WpeBlockLines *dl)
-{
- int r = e_buffer_splice(bz, y, 0, dl->lines, dl->n, dl->rows, dl->nrows,
-                         E_BUFFER_STEP_COVERED);
-
- if (r == E_BUFFER_OK)
-  dl->n = 0;
- return(r);
-}
-
-/**
- * e_blk_land_between - Land the taken lines at row @y of @bz, between the
- * halves of a line just cut there; with @whole_first the first of them is
- * kept in hand, to be merged into the line before the cut.
- * Return: as e_buffer_splice; on success only that first line is in hand.
- */
-static int e_blk_land_between(BUFFER *bz, int y, int whole_first, WpeBlockLines *dl)
-{
- STRING *mids = dl->lines;
- int *rows = dl->rows, nrows = dl->nrows, n = dl->n, r;
-
- if (whole_first)
- {
-  mids++;
-  n--;
-  if (nrows > 0 && (rows = MALLOC(nrows * sizeof(int))) == NULL)
-   return(E_BUFFER_NOMEM);
-  nrows = e_blk_rows_after_first(dl, rows);
- }
- r = E_BUFFER_OK;
- if (n > 0)
-  r = e_buffer_splice(bz, y, 0, mids, n, rows, nrows, E_BUFFER_STEP_COVERED);
- if (rows != dl->rows)
-  FREE(rows);
- if (r != E_BUFFER_OK)
-  return(r);
- dl->first_in_hand = whole_first;
- dl->n = 0;
- return(E_BUFFER_OK);
-}
-
-/**
- * e_blk_land_lines - Put the whole lines of a moved block into @bz at
- * (@x, @y), before its partial lines are written.
- * @landed: receives how many rows were added above the line the block was
- * dropped into (that line is then row @y + *@landed).
- *
- * At column 0 a block whose first line is whole lands as whole lines above
- * the line at the cursor, each with its breakpoint.  Otherwise the line at
- * the cursor is cut in two and the lines between go between the halves.
- * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with every taken line still in
- * hand (*@landed then says how many rows the cut added).
- */
-static int e_blk_land_lines(BUFFER *bz, int x, int y, int whole_first,
-                            WpeBlockLines *dl, int *landed)
-{
- int n = dl->n;
-
- *landed = 0;
- if (whole_first && x == 0)
- {
-  if (n > 0 && e_blk_land_whole(bz, y, dl) != E_BUFFER_OK)
-   return(E_BUFFER_NOMEM);
-  *landed = n;
-  return(E_BUFFER_OK);
- }
- if (e_buffer_split_line(bz, y, x, E_BUFFER_STEP_COVERED, E_BUFFER_HEAD_OPEN) != E_BUFFER_OK)
-  return(E_BUFFER_NOMEM);
- *landed = 1;
- if (n == 0)
-  return(E_BUFFER_OK);
- if (e_blk_land_between(bz, y + 1, whole_first, dl) != E_BUFFER_OK)
-  return(E_BUFFER_NOMEM);
- *landed += n;
- if (whole_first)
-  (*landed)--;
- return(E_BUFFER_OK);
-}
-
-/**
- * e_blk_lines_put_back - A move that could not land its lines returns them
- * to where they were taken from, with their breakpoints.
- * @at: their row now (moved by what the failed landing added above it).
- *
- * The user's text is then what it was: a line the landing may have cut at
- * the cursor is written to the file as the one line it was.  Only when even
- * that is refused are the lines lost, and the status row says so.
- */
-static void e_blk_lines_put_back(BUFFER *bv, WpeBlockLines *dl, int at)
-{
- if (dl->n > 0 && e_buffer_splice(bv, at, 0, dl->lines, dl->n, dl->rows, dl->nrows,
-                                  E_BUFFER_STEP_COVERED) == E_BUFFER_OK)
-  dl->n = 0;
- if (dl->n > 0)
- {
-  e_buffer_lines_free(dl->lines, dl->n);
-  dl->lines = NULL;
-  dl->n = 0;
- }
- e_blk_lines_free(dl);
-}
-
-/**
- * e_blk_dup_chars - Copy a run of characters out of a line into a new buffer.
- * @b: The text buffer to read from.
- * @y: The line to read.
- * @x: The first column to copy.
- * @n: How many characters to copy.
- *
- * The single-line block Move cases lift the marked characters out of one
- * line so they can be re-inserted elsewhere on the same or another line.
- * Returns a freshly allocated maxcol-sized buffer holding the @n characters
- * (the caller frees it), or NULL on out-of-memory.
- */
-static unsigned char *e_blk_dup_chars(BUFFER *b, int y, int x, int n)
-{
- unsigned char *out;
- int i;
-
- if ((out = MALLOC(b->cn->maxcol * sizeof(char))) == NULL)
-  return NULL;
- for (i = 0; i < n; i++)
-  out[i] = b->bf[y].s[x + i];
- return out;
-}
-
-/**
- * e_blk_nomem - Say on the status row that a block operation was refused
- * for want of memory.
- * @b: the buffer it was to change; @what: the operation, as the user names
- * it.  Return: E_BLOCK_NOT_MOVED.
- */
-static int e_blk_nomem(BUFFER *b, const char *what)
-{
- wpe_buffer_say_nomem(b, what);
- return(E_BLOCK_NOT_MOVED);
-}
-
-/**
- * e_blk_row_after_landing - Where row @row of a block's own buffer is once
- * the landing added @landed rows, which moved it down when the block landed
- * @above it.
- */
-static int e_blk_row_after_landing(int row, int above, int landed)
-{
- if (above)
-  return(row + landed);
- return(row);
-}
-
-/**
- * e_blk_first_of_moved - The bytes of a moved block's first line that are
- * still to be written where it landed.
- * @first, @nfirst: receive them; NULL when the first line landed whole.
- *
- * A block that starts at column 0 took its first line whole: dropped at
- * column 0 it landed whole with its breakpoint, dropped inside a line its
- * text is merged there.  Otherwise the first line's part from the block's
- * start on is written after the cursor.
- */
-static void e_blk_first_of_moved(const WpeBlockLines *dl, WpeBlockEnds *e,
-                                 unsigned char **first, int *nfirst)
-{
- if (dl->first_in_hand)
- {
-  *first = dl->lines[0].s;
-  *nfirst = dl->lines[0].nrc;
-  return;
- }
- *first = e->first;
- *nfirst = e->nfirst;
-}
-
-/**
- * e_blk_lands_on_itself - Would a block land inside itself?  A move or copy
- * of a block of more than one line to a row of the block in the same
- * buffer changes nothing the user could want, so it is refused.
- */
-static int e_blk_lands_on_itself(BUFFER *bv, BUFFER *bz, int y, const WpeBlock *k)
-{
- return(bv == bz && y >= k->kay && y <= k->key);
-}
-
-/**
- * e_blk_column_on_line - The column (@x, @y) of @b stands for: a cursor
- * past the end of its line lands the block at the end of that line.
- * Return: the column, or -1 when @y is not a line of @b.
- */
-static int e_blk_column_on_line(BUFFER *b, int x, int y)
-{
- if (y < 0 || y >= b->mxlines)
-  return(-1);
- if (x > b->bf[y].len)
-  return(b->bf[y].len);
- if (x < 0)
-  return(0);
- return(x);
-}
-
-/**
- * e_blk_ends_cut - Take the two partial lines of a moved block out of the
- * buffer it leaves, joining what is left of the first and the last line.
- * @bv, @sv: the buffer and its screen; @k: the block; @whole_first: its
- * first line was taken whole; @shift: how far the landing moved the
- * block's rows down (it landed above them in the same buffer).
- */
-static void e_blk_ends_cut(BUFFER *bv, SCHIRM *sv, const WpeBlock *k, int whole_first,
-                           int shift, const WpeBlockEnds *e)
-{
- int first = k->kay + shift;
-
- if (e->nlast > 0 && whole_first)
-  e_del_nchar(bv, sv, 0, first, e->nlast);
- else if (e->nlast > 0)
-  e_del_nchar(bv, sv, 0, first + 1, e->nlast);
- if (!whole_first)
-  e_del_nchar(bv, sv, k->kax, first, e->nfirst);
-}
-
-/**
- * e_blk_move_lines - Move a block of more than one line to (@x, @y) of
- * @bz: whole lines first taken out, then landed, then the partial lines.
- * @k: the block.
- *
- * Each line of the block changes hands once, so none is freed twice, and a
- * breakpoint on a line that moves whole moves with it; Ctrl-U and Ctrl-R
- * bring it back and forth with its code.  The cursor of a move inside one
- * buffer is outside the block (the caller checked).
- * Return: E_BLOCK_MOVED, or E_BLOCK_NOT_MOVED when memory ran out (the
- * status row says so; the user's text is as it was).
- */
-static int e_blk_move_lines(int x, int y, BUFFER *bv, BUFFER *bz, const WpeBlock *k)
-{
- SCHIRM *sv = bv->f->s;
- SCHIRM *sz = bz->f->s;
- int same = (bv == bz), whole_first = (k->kax == 0), below, landed, before;
- WpeBlockEnds ends;
- WpeBlockLines dl;
- unsigned char *first;
- int nfirst;
-
- below = same && y > k->key;
- if (e_blk_ends_take(bv, k, !whole_first, &ends) != 0)
-  return(e_blk_nomem(bz, "the block move"));
- if (e_blk_detach(bv, k, whole_first, &dl) != E_BUFFER_OK)
- {
-  e_blk_ends_free(&ends);
-  return(e_blk_nomem(bz, "the block move"));
- }
- if (below)
-  y -= dl.n;
- if (e_blk_land_lines(bz, x, y, whole_first, &dl, &landed) != E_BUFFER_OK)
- {
-  e_blk_lines_put_back(bv, &dl, e_blk_row_after_landing(dl.at, same && !below, landed));
-  e_blk_ends_free(&ends);
-  return(e_blk_nomem(bz, "the block move"));
- }
- before = bv->mxlines;
- e_blk_ends_cut(bv, sv, k, whole_first, e_blk_row_after_landing(0, same && !below, landed),
-                &ends);
- if (below)
-  y -= before - bv->mxlines;
- e_blk_first_of_moved(&dl, &ends, &first, &nfirst);
- e_blk_ends_land(bz, sz, x, y, y + landed, first, nfirst, ends.last, ends.nlast);
- e_blk_lines_free(&dl);
- e_blk_ends_free(&ends);
- sv->mark_begin.x = sv->mark_end.x = bv->b.x = k->kax;
- sv->mark_begin.y = sv->mark_end.y = bv->b.y = k->kay;
- e_blk_marks_landed(bz, sz, x, y, k);
- return(E_BLOCK_MOVED);
-}
-
-/**
- * e_move_block - Move the block the user's window marks from @bv to
- * (@x, @y) of @bz.
- * @f: the window the user works in (its marks are the block).
- *
- * Block Move (Ctrl-K V), a block delete into its undo record and that
- * record's Undo all move lines this way.  Return: E_BLOCK_MOVED, or
- * E_BLOCK_NOT_MOVED when there was nothing to move, the window is closed to
- * changes, the cursor is inside the block, or memory ran out.
- */
-int e_move_block(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
-{
- SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
- SCHIRM *sv = bv->f->s;
- SCHIRM *sz = bz->f->s;
- int n;
- int kax = s->mark_begin.x, kay = s->mark_begin.y, kex = s->mark_end.x, key = s->mark_end.y;
- WpeBlock k;
- unsigned char *cstr;
-
- e_blk_of(s, &k);
- if (e_blk_is_empty(&k))
-  return(E_BLOCK_NOT_MOVED);
- if (e_window_text_locked(f))
- {
-  return(E_BLOCK_NOT_MOVED);
- }
- if (bv == bz && y >= kay && y <= key && x >= kax && x <= kex)
- {
-  return(E_BLOCK_NOT_MOVED);
- }
- if (kay == key)
- {
-  n = kex - kax;
-  bz->b.x = x; bz->b.y = y;
-  if ((cstr = e_blk_dup_chars(bv, key, kax, n)) == NULL)
-  {
-   e_error(e_msg[ERR_LOWMEM], 0, bz->fb);
-   return(E_BLOCK_NOT_MOVED);
-  }
-  e_ins_nchar(bz, sz, cstr, x, y, n);
-  bv->b.x = kax;  bv->b.y = kay+bz->b.y-y;
-  e_del_nchar(bv, sv, sv->mark_begin.x, sv->mark_begin.y, n);
-  if (bv == bz && kay == y && x > kex)
-   x -= n;
-  sz->mark_begin.x = x;   sz->mark_end.x = bz->b.x = x + n;
-  sz->mark_begin.y = sz->mark_end.y = bz->b.y = y;
-  e_cursor(f, 1);
-  e_schirm(f, 1);
-  FREE(cstr);
-  return(E_BLOCK_MOVED);
- }
-
- if (bv == bz && y == kay && x < kax )
- {
-  n = kax - x;
-  bv->b.x = x; bv->b.y = y;
-  if ((cstr = e_blk_dup_chars(bv, y, x, n)) == NULL)
-  {
-   e_error(e_msg[ERR_LOWMEM], 0, bz->fb);
-   return(E_BLOCK_NOT_MOVED);
-  }
-  e_del_nchar(bv, sv, x, y, n);
-  bz->b.x = kex; bz->b.y = key;
-  e_ins_nchar(bz, sz, cstr, kex, key, n);
-  bv->b.x = sv->mark_begin.x = x;  bv->b.y = sv->mark_begin.y = y;
-  sv->mark_end.x = kex;  sv->mark_end.y = key;
-  e_cursor(f, 1);
-  e_schirm(f, 1);
-  FREE(cstr);
-  return(E_BLOCK_MOVED);
- }
-
- if (bv == bz && y == key && x > kex )
- {
-  n = x - kex;
-  bv->b.x = kex; bv->b.y = y;
-  if ((cstr = e_blk_dup_chars(bv, y, kex, n)) == NULL)
-  {
-   e_error(e_msg[ERR_LOWMEM], 0, bz->fb);
-   return(E_BLOCK_NOT_MOVED);
-  }
-  e_del_nchar(bv, sv, kex, y, n);
-  bz->b.x = kex; bz->b.y = key;
-  e_ins_nchar(bz, sz, cstr, kax, kay, n);
-
-  bv->b.x = sv->mark_end.x;  bv->b.y = sv->mark_end.y;
-  e_cursor(f, 1);
-  e_schirm(f, 1);
-  FREE(cstr);
-  return(E_BLOCK_MOVED);
- }
-
- if (e_blk_lands_on_itself(bv, bz, y, &k))
-  return(E_BLOCK_NOT_MOVED);
- x = e_blk_column_on_line(bz, x, y);
- if (x < 0)
-  return(E_BLOCK_NOT_MOVED);
- if (e_blk_move_lines(x, y, bv, bz, &k) != E_BLOCK_MOVED)
-  return(E_BLOCK_NOT_MOVED);
- f->save = f->ed->maxchg + 1;
- sc_txt_1(bv->f);
- sc_txt_1(bz->f);
- e_cursor(f, 1);
- e_schirm(f, 1);
- return(E_BLOCK_MOVED);
-}
-
-/**
- * e_move_block_covered - Move a block as one action for Undo.
- * @x, @y, @bv, @bz, @f: as e_move_block.
- *
- * The steps of the move are left out of Undo on both buffers; the caller
- * pushes the one record that replays the whole move, so one Ctrl-U takes it
- * back and the breakpoints return with their lines.
- * Return: as e_move_block.
- */
-int e_move_block_covered(int x, int y, BUFFER *bv, BUFFER *bz, FENSTER *f)
-{
- int r, fault;
-
- e_blk_cover_begin(bv, bz);
- fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_BLOCK_MOVE);
- r = e_move_block(x, y, bv, bz, f);
- e_buffer_test_fault_leave(fault);
- e_blk_cover_end(bv, bz);
- return(r);
-}
-
-/*   copy block within window   */
-int e_blck_copy(FENSTER *f)
-{
- BUFFER *b;
- int i;
-
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
-  return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
- b = f->b;
- /* Block-Copy (Ctrl-K C / Block menu) duplicates the block at the cursor, which
-    would edit the buffer -- impossible in a window closed to text changes (a
-    read-only tool pane such as the AI chat / Messages output, or a window
-    waiting for an assistant reply).  Rather than do nothing, treat it there as
-    a clipboard copy, so the instinctive "Copy" pulls the selected text out
-    like Edit > Copy does. */
- if (e_window_text_locked(f)) return(e_edt_copy(f));
- f->save = 1;
- e_blk_cover_begin(b, b);
- i = e_copy_block(b->b.x, b->b.y, b, b, f);
- e_blk_cover_end(b, b);
- if (i == E_BLOCK_MOVED)
-  e_block_record_push('c', b, b->b.x, b->b.y);
- sc_txt_2(f);
- f->save = b->cn->maxchg + 1;
- return(0);
 }
 
 /**
@@ -1283,22 +1755,22 @@ static int e_blk_copy_lines(int x, int y, BUFFER *bs, BUFFER *bd, const WpeBlock
  x = e_blk_column_on_line(bd, x, y);
  if (x < 0)
   return(E_BLOCK_NOT_MOVED);
- if (e_blk_ends_take(bs, k, 1, &ends) != 0)
-  return(e_blk_nomem(bd, "the block copy"));
- if (n > 0 && (mids = e_blk_lines_dup(bs, k->kay + 1, n, bd)) == NULL)
+ if (e_blk_ends_take(bs, k, &ends) != 0)
+  return(E_BLOCK_NOMEM);
+ if (n > 0 && (mids = e_buffer_lines_copy(bs, k->kay + 1, n, bd)) == NULL)
  {
   e_blk_ends_free(&ends);
-  return(e_blk_nomem(bd, "the block copy"));
+  return(E_BLOCK_NOMEM);
  }
  if (e_buffer_split_line(bd, y, x, E_BUFFER_STEP_COVERED, E_BUFFER_HEAD_OPEN) != E_BUFFER_OK ||
      (n > 0 && e_buffer_splice(bd, y + 1, 0, mids, n, NULL, 0, E_BUFFER_STEP_COVERED) != E_BUFFER_OK))
  {
   e_buffer_lines_free(mids, n);
   e_blk_ends_free(&ends);
-  return(e_blk_nomem(bd, "the block copy"));
+  return(E_BLOCK_NOMEM);
  }
  FREE(mids);
- e_blk_ends_land(bd, s_dst, x, y, y + 1 + n, ends.first, ends.nfirst, ends.last, ends.nlast);
+ e_blk_ends_land(bd, s_dst, x, y, y + 1 + n, &ends);
  e_blk_ends_free(&ends);
  e_blk_marks_landed(bd, s_dst, x, y, k);
  return(E_BLOCK_MOVED);
@@ -1321,10 +1793,7 @@ static int e_blk_copy_chars(int x, int y, BUFFER *bs, BUFFER *bd, const WpeBlock
  if (bs == bd && y == k->kay && x >= k->kax && x < k->kex)
   return(E_BLOCK_NOT_MOVED);
  if ((cstr = e_blk_bytes_dup(bs->bf[k->key].s + k->kax, n)) == NULL)
- {
-  e_error(e_msg[ERR_LOWMEM], 0, bd->fb);
-  return(E_BLOCK_NOT_MOVED);
- }
+  return(E_BLOCK_NOMEM);
  bd->b.x = x; bd->b.y = y;
  e_ins_nchar(bd, s_dst, cstr, x, y, n);
  s_dst->mark_begin.x = x;
@@ -1356,7 +1825,7 @@ static int e_blk_copy_fault_point(BUFFER *bd)
  * Return: E_BLOCK_MOVED, or E_BLOCK_NOT_MOVED when there was nothing to
  * copy, the cursor is inside the block, or memory ran out.
  */
-int e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
+static int e_copy_block(int x, int y, BUFFER *buffer_src, BUFFER *buffer_dst,
   FENSTER *f)
 {
  WpeBlock k;

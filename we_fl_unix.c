@@ -3770,7 +3770,7 @@ int e_ed_man(char *str, FENSTER * f)
 {
   char            tstr[_POSIX_PATH_MAX];
   char            cc, hstr[E_MAN_WORD_MAX], nstr[E_MAN_SECT_MAX];
-  int             mdsv = f->ed->dtmd, bg, i, j = 0;
+  int             mdsv = f->ed->dtmd, bg, i, j = 0, opened;
   BUFFER         *b;
 
   if(!str)
@@ -3799,8 +3799,13 @@ int e_ed_man(char *str, FENSTER * f)
     }
     chmod(tstr, 0400);
     f->ed->dtmd = DTMD_HELP;
-    e_edit(f->ed, tstr);
+    opened = e_edit(f->ed, tstr);
     f->ed->dtmd = mdsv;
+    if(opened != 0)
+    {
+      e_man_give_up(tstr);       /* no page window: the user's window is untouched */
+      return(0);
+    }
     f = f->ed->f[f->ed->mxedt];
     b = f->b;
     e_buffer_mark_view(b);
@@ -4221,11 +4226,8 @@ int e_data_eingabe(ECNT * cn)
     {
       if(f->ins == 1)
         e_ed_man(fw->df->name[fw->nf], f);
-      else if(f->ins == 2)
-      {
-        e_edit(f->ed, fw->df->name[fw->nf]);
-        e_rep_search(f->ed->f[f->ed->mxedt]);
-      }
+      else if(f->ins == 2 && e_edit(f->ed, fw->df->name[fw->nf]) == 0)
+        e_rep_search(f->ed->f[f->ed->mxedt]);   /* only in the window just opened */
       else if(f->ins == 3)
       {
         e_edit(f->ed, fw->df->name[fw->nf]);
