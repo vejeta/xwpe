@@ -848,7 +848,6 @@ int e_ini_schirm(int argc, char **argv);
 
 extern int (*fk_u_locate)(int x, int y);
 extern int (*fk_u_cursor)(int x);
-extern int (*e_u_initscr)(int argc, char *argv[]);
 extern int (*fk_u_putchar)(int c);
 extern int (*u_bioskey)(void);
 extern int (*e_frb_u_menue)(int sw, int xa, int ya, FENSTER *f, int md);
@@ -879,7 +878,13 @@ extern int (*e_u_deb_out)(FENSTER *f);
 extern int (*e_u_cp_X_to_buffer)(FENSTER *f);
 extern int (*e_u_copy_X_buffer)(FENSTER *f);
 extern int (*e_u_paste_X_buffer)(FENSTER *f);
-extern int (*e_u_change)(PIC *pic);
+/* The colour the display paints for palette index 0..15, as the user sees
+   it: fills rgb[0..2] with red, green and blue (0..255) and returns 1.  The
+   User Screen maps a program's colours onto the nearest of these sixteen.
+   Returns 0 when the display has no fixed palette (a terminal paints with
+   the colours the user configured in it), so the caller keeps its own. */
+extern int (*e_u_palette_rgb)(int idx, unsigned char rgb[3]);
+int e_palette_rgb_unknown(int idx, unsigned char rgb[3]);
 extern void (*e_u_serve_display)(void);
 int e_shell_run(const char *cmd);
 int e_t_system(const char *exe);

@@ -222,8 +222,9 @@ keys are bound to something else.
 @item @kbd{Ctrl-G P} @tab Program output: focus the Messages panel with the
 program's captured output (both backends).
 @item @kbd{Alt-F5} @tab User Screen: replay the program's own full screen --
-for programs that paint (ANSI colour, cursor positioning).  Console (wpe) now;
-xwpe (X11) via the integrated terminal in a later release.
+for programs that paint (ANSI colour, cursor positioning).  The console
+(wpe) hands the terminal back; xwpe (X11 and Wayland) paints it in its own
+window.
 @item @kbd{Ctrl-G O} @tab Debugger options (select gdb/jdb/sdb/dbx).
 @end multitable
 

@@ -641,9 +641,11 @@ Borland @dfn{User Screen} on @kbd{Alt-F5} replays the program's own
 full screen verbatim, then returns to the editor on any key.  Pressed
 while the program runs, it shows what the program has printed so far,
 without waiting for it to stop printing.  This works
-in the console (@command{wpe}) today; in @command{xwpe} (X11) it arrives
-with the integrated terminal in a later release (until then @kbd{Alt-F5}
-focuses the Messages panel).
+in the console (@command{wpe}) and in @command{xwpe} on X11 and on
+Wayland.  @command{xwpe} has no terminal to hand back, so it interprets
+the program's output with an embedded terminal and paints the result in
+its own window, in the colours the editor itself shows (a build without
+the terminal library focuses the Messages panel instead).
 
 @strong{Important}: the output appears only after the line that
 produces it has been @emph{executed}.  If the cursor is on the

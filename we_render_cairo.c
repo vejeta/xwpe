@@ -56,15 +56,13 @@ static void cairo_init_colors(void)
 {
  int i;
 #ifndef NO_XWINDOWS
- Colormap cmap = DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
  for (i = 0; i < 16; i++)
  {
-  XColor xc;
-  xc.pixel = WpeXInfo.colors[i];
-  XQueryColor(WpeXInfo.display, cmap, &xc);
-  cairo_colors[i][0] = xc.red   / 65535.0;
-  cairo_colors[i][1] = xc.green / 65535.0;
-  cairo_colors[i][2] = xc.blue  / 65535.0;
+  unsigned short rgb[3];
+  e_x_palette_rgb16(i, rgb);
+  cairo_colors[i][0] = rgb[0] / 65535.0;
+  cairo_colors[i][1] = rgb[1] / 65535.0;
+  cairo_colors[i][2] = rgb[2] / 65535.0;
  }
 #else
  for (i = 0; i < 16; i++)

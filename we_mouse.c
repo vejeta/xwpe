@@ -9,9 +9,6 @@
 #include "edit.h"
 #include "we_render.h"
 #include "we_mousedrain.h"
-#ifndef NO_XWINDOWS
-#include "WeXterm.h"
-#endif
 
 #if  MOUSE
 

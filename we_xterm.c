@@ -43,7 +43,6 @@ int e_x_copy_X_buffer(FENSTER *f);
 int e_x_paste_X_buffer(FENSTER *f);
 static void e_clip_x_set(const char *utf8, int len);
 static char *e_clip_x_get(int *len);
-int e_x_change(PIC *pic);
 static void e_x_serve_display(void);
 int e_x_repaint_desk(FENSTER *f);
 void e_setlastpic(PIC *pic);
@@ -125,7 +124,7 @@ static void e_x_display_end(void)
  if (WpeXInfo.xftfont)
  {
   Visual *vis = DefaultVisual(WpeXInfo.display, WpeXInfo.screen);
-  Colormap cmap = DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
+  Colormap cmap = e_x_palette_colormap();   /* where the colours were made */
   int i;
   for (i = 0; i < 16; i++)
    XftColorFree(WpeXInfo.display, vis, cmap, &WpeXInfo.xftcolors[i]);
@@ -162,7 +161,7 @@ int WpeDllInit(int *argc, char **argv)
  e_clip_os_set = e_clip_x_set;   /* ^C / ^Ins -> PRIMARY + CLIPBOARD (UTF-8) */
  e_clip_os_get = e_clip_x_get;   /* ^V <- the OS selection when another app owns it */
  e_u_key_take = e_x_key_take;
- e_u_change = e_x_change;
+ e_u_palette_rgb = e_x_palette_rgb;
  e_u_serve_display = e_x_serve_display;
  e_u_ini_size = e_ini_size;
  e_u_setlastpic = e_setlastpic;
@@ -1150,10 +1149,10 @@ int e_x_refresh()
    return(0);
 }
 
-/* Common prefix of the two ConfigureNotify handlers (e_x_change and e_x_getch):
-   drain the queued configures down to the final size, and -- only if the cell
-   grid actually changed -- update MAXSCOL/MAXSLNS and reallocate the Xft draw /
-   back buffer.  Returns 1 with the new pixel size (*pw,*ph) and the old grid
+/* Common prefix of the two ConfigureNotify handlers (e_x_answer_configure and
+   e_x_getch): drain the queued configures down to the final size, and -- only
+   if the cell grid actually changed -- update MAXSCOL/MAXSLNS and reallocate
+   the Xft draw / back buffer.  Returns 1 with the new pixel size (*pw,*ph) and the old grid
    (*old_scol,*old_slns) when it resized, 0 otherwise.  The caller does the
    repaint tail, which differs between the two sites (e_x_getch also invalidates
    the last-view pic and returns WPE_RESIZE), so only this identical prefix is
@@ -1302,51 +1301,6 @@ static void e_x_serve_display(void)
   else if (report.type == ConfigureNotify)
    e_x_answer_configure(&report);
  }
-}
-
-int e_x_change(PIC *pic)
-{
- XEvent report;
- KeySym keysym;
- unsigned char buffer[BUFSIZE];
- int charcount;
- unsigned int key_b;
- XSizeHints size_hints;
-
- while (XCheckMaskEvent(WpeXInfo.display, KeyPressMask | ButtonPressMask |
-		ExposureMask | StructureNotifyMask, &report) == True)
- {
-  switch(report.type)
-  {
-   case Expose:
-    e_x_answer_expose(&report);
-    break;
-   case ConfigureNotify:
-    e_x_answer_configure(&report);
-    break;
-   case KeyPress:
-    charcount = e_XLookupString(&report.xkey, buffer, BUFSIZE, &keysym, NULL);
-    if (charcount == 1 && *buffer == CtrlC) return(CtrlC);
-    break;
-   case ButtonPress:
-    if (!pic)
-     break;
-    key_b = report.xbutton.state;
-    if (report.xbutton.button == 1)
-    {
-     e_mouse.k = (key_b & ShiftMask) ? 3 : 0 +
-		         (key_b & ControlMask) ? 4 : 0 +
-		         (key_b & WpeXInfo.altmask) ? 8 : 0;
-     e_mouse.x = report.xbutton.x/WpeXInfo.font_width;
-     e_mouse.y = report.xbutton.y/WpeXInfo.font_height;
-     if (e_mouse.x > (pic->e.x + pic->a.x - 10)/2 &&
-       e_mouse.x < (pic->e.x + pic->a.x + 6)/2 )
-      return(CtrlC);
-    }
-    break;
-  }
- }
- return(0);
 }
 
 typedef struct {
@@ -2071,31 +2025,6 @@ void e_x_reclaim_focus(void)
  XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
    RevertToParent, ts);
  XFlush(WpeXInfo.display);
-}
-
-/**
- * Clears the pixel area to remove stale XDrawLine segments from
- * NEWSTYLE borders after popup/menu close.
- */
-void e_x_clear_area(int xa, int ya, int w, int h)
-{
-#ifdef HAVE_XFT
- if (WpeXInfo.xftfont)
- {
-  int px = WpeXInfo.font_width * xa;
-  int py = WpeXInfo.font_height * ya;
-  int pw = WpeXInfo.font_width * w;
-  int ph = WpeXInfo.font_height * h;
-  /* Disabled: Pixmap clearing causes visible flash during window move.
-     The altschirm invalidation in e_invalidate_area is sufficient. */
- }
- else
-#endif
- {
-  XClearArea(WpeXInfo.display, WpeXInfo.window,
-    WpeXInfo.font_width * xa, WpeXInfo.font_height * ya,
-    WpeXInfo.font_width * w, WpeXInfo.font_height * h, False);
- }
 }
 
 int fk_x_putchar(int c)

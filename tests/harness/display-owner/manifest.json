@@ -1,0 +1,68 @@
+{
+ "capability": "display-owner",
+ "scenarios": [
+  {
+   "id": "SC-display-01",
+   "requirement": "The User Screen shows the program's colours on every graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_user_screen.py::test_user_screen_renders_program_colours",
+   "status": "covered",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-display-01",
+   "requirement": "The User Screen shows the program's colours on every graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_user_screen.py::test_user_screen_key_returns_to_editor",
+   "status": "covered",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-display-01",
+   "requirement": "The User Screen shows the program's colours on every graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_user_screen.py::test_user_screen_has_no_scrollbar_bleed",
+   "status": "covered",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-display-01",
+   "requirement": "The User Screen shows the program's colours on every graphical display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_user_screen.py::test_user_screen_renders_program_colours",
+   "status": "new",
+   "needs": ["weston", "gcc"]
+  },
+  {
+   "id": "SC-display-01",
+   "requirement": "The User Screen shows the program's colours on every graphical display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_user_screen.py::test_user_screen_key_returns_to_editor",
+   "status": "new",
+   "needs": ["weston", "gcc"]
+  },
+  {
+   "id": "SC-display-01",
+   "requirement": "The User Screen shows the program's colours on every graphical display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_user_screen.py::test_user_screen_has_no_scrollbar_bleed",
+   "status": "new",
+   "needs": ["weston", "gcc"]
+  },
+  {
+   "id": "SC-display-05",
+   "requirement": "The X11 palette is the one the server allocated",
+   "layer": "x11",
+   "test": "tests/x11/test_user_screen.py::test_user_screen_renders_program_colours",
+   "status": "covered",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-display-06",
+   "requirement": "One display per service",
+   "layer": "c-unit",
+   "test": "tests/check-one-owner.sh",
+   "status": "new"
+  }
+ ]
+}

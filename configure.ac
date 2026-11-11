@@ -200,7 +200,8 @@ AC_SUBST([WAYLAND_PROTOCOLS_DIR])
 
 # --- Optional: libvterm (embedded VT terminal for the xwpe Alt-F5 User Screen) ---
 # Pure C ANSI/CSI parser + cell grid; the panel is rendered with the existing
-# Cairo/Xft backend, so it is only useful when X11 is present.  Without it the
+# Cairo/Xft backend, so it is only useful on a graphical display (X11 or
+# Wayland; a Wayland build also links the X11 objects).  Without it the
 # Alt-F5 User Screen falls back to focusing the Messages panel (1.6.3 behaviour).
 have_vterm=no
 AS_IF([test "x$have_x11" = xyes && test "x$with_libx11_compat" = xno], [

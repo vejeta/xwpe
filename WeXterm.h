@@ -84,6 +84,16 @@ int e_x_refit_font_for_dpi(void);
    new cell size; keeps WM_NORMAL_HINTS accurate on a real X server. */
 void e_x_publish_size_hints(void);
 
+/* The 16 palette colours as the X server allocated them, for the renderers
+   that paint with the editor's own colours.  e_x_palette_rgb16 gives the
+   server's 16-bit channels; e_x_palette_rgb is the display table's slot
+   (e_u_palette_rgb): 8-bit channels, 1 when idx is a palette index. */
+void e_x_palette_rgb16(int idx, unsigned short rgb[3]);
+int e_x_palette_rgb(int idx, unsigned char rgb[3]);
+/* The colormap those colours live in: the default one, or the private one
+   the pcmap resource asked for. */
+Colormap e_x_palette_colormap(void);
+
 #ifdef __cplusplus
 }
 #endif

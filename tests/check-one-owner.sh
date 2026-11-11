@@ -68,6 +68,19 @@ XNextEvent|XPeekEvent|XWindowEvent|XMaskEvent|XIfEvent|XCheckMaskEvent|XCheckTyp
 XPending|XEventsQueued|XCheckWindowEvent|XCheckIfEvent|XFlush we_xterm.o WeXterm.o
 wl_display_dispatch|wl_display_dispatch_queue|wl_display_roundtrip|wl_display_dispatch_pending|wl_display_prepare_read|wl_display_read_events we_wayland.o
 fork|vfork|forkpty|openpty|posix_spawn|posix_spawnp|popen|pclose|system|execv|execvp|execve|execl|execlp|execle|setsid|setpgid|setpgrp|waitpid|wait|wait3|wait4|pidfd_open|killpg|kill we_child.o
+WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o
+EOF
+
+# The display's connection has one owner: the X11 backend.  Any other name
+# that starts like an Xlib, Xft or Xrm call, a cairo-xlib call or one of the
+# backend's own functions is a symbol only that backend may import; what
+# shared code needs from the display it asks the display table for
+# (edit.h), which every display fills.  "name-prefix-regex  objects allowed
+# to import it".  An exact rule above wins for a name it already lists.
+cat > "$WORK/prefixrules" <<'EOF'
+X[A-Za-z] we_xterm.o WeXterm.o we_render_cairo.o
+cairo_xlib_ we_render_cairo.o
+e_x_ we_xterm.o WeXterm.o we_render_cairo.o
 EOF
 
 # The source scan: "word-regex  source files allowed to contain it".
@@ -110,6 +123,7 @@ wpe_modal_active we_paint.c
 g_lsp_modal_depth we_paint.c
 g_lsp_ui_suspended we_paint.c
 wpe_chrome_suppress we_paint.c
+e_x_ we_xterm.c WeXterm.c we_render_cairo.c
 EOF
 
 # The screen has one owner (we_paint.c): a box, a menu or a prefix that
@@ -219,12 +233,29 @@ for obj in $OBJECTS; do
       pat=$(call_pattern "$sym")
       count=1
       if file=$(stripped_source "$base"); then
-        count=$(count_uses "$pat" "$file")
+        case $sym in
+          WpeXInfo) count=$(count_words "$pat" "$file") ;;   # data: uses, not calls
+          *) count=$(count_uses "$pat" "$file") ;;
+        esac
         [ "$count" -gt 0 ] || count=1   # reached through a macro: at least one
       fi
       echo "$base $sym $count" >> "$WORK/found"
     done
   done < "$WORK/rules"
+  # the names a prefix rule covers, but not those an exact rule listed
+  while read -r prefix allowed; do
+    for sym in $(grep -E "^($prefix)" "$WORK/syms"); do
+      grep -qx "$base $sym" "$WORK/imports" && continue
+      echo "$base $sym" >> "$WORK/imports"
+      case " $allowed " in *" $base "*) continue ;; esac
+      count=1
+      if file=$(stripped_source "$base"); then
+        count=$(count_uses "$sym" "$file")
+        [ "$count" -gt 0 ] || count=1   # a function pointer's value, not a call
+      fi
+      echo "$base $sym $count" >> "$WORK/found"
+    done
+  done < "$WORK/prefixrules"
 done
 
 # --- the canary: a scanner that sees nothing must fail, not pass
@@ -236,6 +267,8 @@ grep -qx "we_child.o fork" "$WORK/imports" ||
   problem "canary: fork not seen in we_child.o (LTO objects, wrong nm, or an empty object list)"
 grep -qx "we_unix.o waitpid" "$WORK/imports" ||
   problem "canary: waitpid not seen in we_unix.o (LTO objects, wrong nm, or an empty object list)"
+grep -qx "WeXterm.o XOpenDisplay" "$WORK/imports" ||
+  problem "canary: XOpenDisplay not seen in WeXterm.o (the prefix scan of the X11 connection is blind)"
 
 # Every child talker must send through the loop's writer: one that does not
 # import wpe_fd_write is talking to its child some other way.  And it must
@@ -326,6 +359,24 @@ done
 for taker in we_prog.o we_unix.o; do
   canary_import $taker wpe_paint_take_key "a key is taken without waiting some other way"
 done
+# The display's colours: the User Screen asks the display table for the
+# palette, and the Cairo renderer reads the colours the X server allocated.
+# Neither asks the server again, so no object imports XQueryColor, which
+# would read the default colormap and miss a private one.
+canary_import we_vterm.o e_u_palette_rgb "the User Screen reads the palette some other way"
+canary_import we_render_cairo.o e_x_palette_rgb16 "the Cairo renderer reads the colours some other way"
+DELETED_DISPLAY_SYMBOLS="e_x_clear_area e_x_vterm_user_screen e_x_vterm_load_palette
+  e_x_change"
+for obj in $OBJECTS; do
+  [ -f "$obj" ] || continue
+  defined_names "$obj" > "$WORK/defined"
+  for sym in $DELETED_DISPLAY_SYMBOLS; do
+    grep -qx "$sym" "$WORK/defined" &&
+      problem "deleted symbol: $(basename "$obj") defines $sym again (shared code asks the display table, edit.h)"
+  done
+  "$NMTOOL" -u "$obj" 2>/dev/null | normalise | grep -qx XQueryColor &&
+    problem "deleted symbol: $(basename "$obj") imports XQueryColor (the editor's colours come from the display's palette)"
+done
 # The call-form branch of the source scan must see the writer's own write(.
 if fdloop=$(stripped_source we_fdloop.o); then
   [ "$(count_uses write "$fdloop")" -gt 0 ] ||
@@ -345,7 +396,7 @@ for obj in $OBJECTS; do
       'read(0') n=$(count_uses "read[ \t]*[(][ \t]*0[ \t]*," "$file") ;;
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
       wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F|e_getch) n=$(count_uses "$word" "$file") ;;
-      XK_|XKB_KEY_) n=$(count_words "$word[A-Za-z0-9_]+" "$file") ;;
+      XK_|XKB_KEY_|e_x_) n=$(count_words "$word[A-Za-z0-9_]+" "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac
     [ "$n" -gt 0 ] && echo "$base $word $n" >> "$WORK/found"

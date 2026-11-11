@@ -111,7 +111,6 @@ void (*WpeMouseRestoreShape)(void);
 void (*WpeDisplayEnd)(void);
 int (*fk_u_locate)(int x, int y);
 int (*fk_u_cursor)(int x);
-int (*e_u_initscr)(int argc, char *argv[]);
 int (*fk_u_putchar)(int c);
 int (*u_bioskey)(void);
 int (*e_frb_u_menue)(int sw, int xa, int ya, FENSTER *f, int md);
@@ -126,8 +125,6 @@ int (*e_u_getch)(void);
 int (*e_u_sys_ini)(void);
 int (*e_u_sys_end)(void);
 int (*e_u_system)(const char *exe);
-int (*e_make_urect)(int xa, int ya, int xe, int ye, int sw);
-int (*e_make_urect_abs)(int xa, int ya, int xe, int ye, int sw);
 int (*e_u_d_switch_out)(int sw);
 int (*e_u_switch_screen)(int sw);
 int (*e_u_deb_out)(struct FNST *f);
@@ -135,10 +132,9 @@ int (*e_u_cp_X_to_buffer)(struct FNST *f);
 int (*e_u_copy_X_buffer)(struct FNST *f);
 int (*e_u_paste_X_buffer)(struct FNST *f);
 int (*e_u_key_take)(int want);
-int (*e_u_change)(PIC *pic);
+int (*e_u_palette_rgb)(int idx, unsigned char rgb[3]) = e_palette_rgb_unknown;
 void (*e_u_serve_display)(void);
 int (*e_u_ini_size)(void);
-int (*e_get_pic_urect)(int xa, int ya, int xe, int ye, struct PICSTR *pic);
 int (*e_u_s_sys_end)(void);
 int (*e_u_s_sys_ini)(void);
 void (*e_u_setlastpic)(PIC *pic);
@@ -172,6 +168,21 @@ void WpeNullFunction(void)
 int WpeZeroFunction(void)
 {
  return(0);
+}
+
+/**
+ * e_palette_rgb_unknown - The palette of a display that has none of its own.
+ *
+ * A terminal paints with the colours the user configured in it, which the
+ * editor cannot read, so the User Screen keeps the colours it would have
+ * chosen anyway instead of matching them against a palette it would have to
+ * invent.  Answers 0, "no fixed palette", for every index.
+ */
+int e_palette_rgb_unknown(int idx, unsigned char rgb[3])
+{
+ (void)idx;
+ (void)rgb;
+ return 0;
 }
 
 #if !defined(NO_XWINDOWS)

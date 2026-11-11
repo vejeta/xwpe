@@ -233,6 +233,14 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The User Screen (Alt-F5) works on Wayland: it ended the editor there,
+  because it read its colours from an X display the Wayland window does
+  not have.  It now shows the program's colours in the palette the editor
+  itself paints with, on X11 and on Wayland.  On X11 with the pcmap
+  resource (a private colormap) the Cairo and Xft glyph colours were read
+  from the wrong colormap; they now come from the colours the server
+  allocated.
+
 * Every box now reads its keys through the editor's one screen owner:
   dialogs and their text fields, dropdowns, error boxes, pickers, the
   colour menu, the About and System Info boxes and the assistant's

@@ -475,7 +475,6 @@ void e_invalidate_area(int xa, int ya, int xe, int ye)
  if (WpeIsXwin())
  {
   extern char *extbyte, *altextbyte;
-  extern void e_x_clear_area(int, int, int, int);
   int had_borders = 0;
   for (j = ya; j <= ye; ++j)
    for (i = xa; i <= xe; ++i)

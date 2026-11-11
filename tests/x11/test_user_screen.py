@@ -1,9 +1,12 @@
-"""Alt-F5 "User Screen" tests for xwpe (X11/Xft) -- the embedded VT terminal.
+"""Alt-F5 "User Screen" tests for xwpe (X11 and Wayland) -- the embedded VT
+terminal.
 
 The console backend (wpe) hands the real terminal back to the program for the
-Borland Alt-F5 User Screen.  The X11 backend (xwpe) has no terminal to drop to,
-so it INTERPRETS the captured program output with libvterm and paints the
-resulting cell grid inside the xwpe window (e_x_vterm_user_screen, we_vterm.c).
+Borland Alt-F5 User Screen.  The graphical backends (xwpe) have no terminal to
+drop to, so they INTERPRET the captured program output with libvterm and paint
+the resulting cell grid inside the xwpe window (e_vterm_user_screen,
+we_vterm.c).  The Wayland twin (tests/wayland/test_user_screen.py) runs this
+same body under its own fixture.
 
 Flow exercised here: open a program that PAINTS its screen (paint.c -- ANSI
 colour + cursor addressing), Ctrl-F9 to build+run (which captures the output),
@@ -16,19 +19,21 @@ Requires libvterm (HAVE_VTERM); without it Alt-F5 falls back to the Messages
 panel and this test is skipped.
 """
 import os
-import shutil
 import subprocess
 import time
 
 import pytest
 
-from conftest import (
-    DISPLAY, XWPE_BIN, HERE,
-    _spawn, _find_xwpe_window, _force_window_geometry,
-    XwpeSession, changed_pixels,
-)
+from conftest import XWPE_BIN, HERE, changed_pixels
 
 SAMPLE = os.path.normpath(os.path.join(HERE, "..", "inputs", "paint.c"))
+
+
+def _paint_source():
+    """The text of the program that paints its screen (tests/inputs/paint.c)."""
+    assert os.path.exists(SAMPLE), "missing sample %s" % SAMPLE
+    with open(SAMPLE, encoding="utf-8") as fh:
+        return fh.read()
 
 
 def _has_vterm():
@@ -48,8 +53,13 @@ def _has_vterm():
     return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _has_vterm(), reason="xwpe not built with libvterm (HAVE_VTERM)")
+pytestmark = [
+    pytest.mark.skipif(
+        not _has_vterm(), reason="xwpe not built with libvterm (HAVE_VTERM)"),
+    # Every row edits the ANSI-painting sample instead of the fixture's t.c.
+    pytest.mark.parametrize(
+        "xwpe", [{"XWPE_TEST_SOURCE": _paint_source()}], indirect=True),
+]
 
 
 def _count_hue(img, hue, step=2):
@@ -73,45 +83,10 @@ def _count_hue(img, hue, step=2):
     return n
 
 
-@pytest.fixture
-def paint_xwpe(xserver, tmp_path):
-    """Launch xwpe editing a copy of the ANSI-painting sample (paint.c)."""
-    assert os.path.exists(SAMPLE), "missing sample %s" % SAMPLE
-    src = tmp_path / "paint.c"
-    shutil.copyfile(SAMPLE, src)
-    # altMask override -- see the main xwpe fixture for the full rationale.
-    # Without this the macOS xwpe build defaults Alt to Mod4 while Xvfb delivers
-    # Alt_L on Mod1, so Alt+F5 reaches the editor as a bare F5 (Zoom) and the
-    # User Screen never opens.
-    (tmp_path / ".Xdefaults").write_text("xwpe.altMask: mod1\n")
-    # XWPE_LSP_NO_EAGER: mirror the main xwpe fixture -- a language server
-    # popping a Messages window mid-test would change the screen pixels we
-    # diff for the User Screen.
-    proc = _spawn([XWPE_BIN, str(src)],
-                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
-                       "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10",
-                       "XWPE_BACKEND": "x11"},   # force X11 on a Wayland host
-                  cwd=str(tmp_path))
-    win = _find_xwpe_window()
-    assert win, "xwpe window did not appear"
-    _force_window_geometry(win)
-    time.sleep(1.0)
-    session = XwpeSession(proc, win)
-    session.srcfile = str(src)
-    session.focus()
-    yield session
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except Exception:
-        proc.kill()
-
-
 def _run_program(sess):
-    """Ctrl-F9: build + run paint.c, capturing its output.  Wait for the
-    executable to land on disk so the run has actually happened."""
-    d = os.path.dirname(sess.srcfile)
-    exe = os.path.join(d, "paint.e")
+    """Ctrl-F9: build + run the painting program, capturing its output.  Wait
+    for the executable to land on disk so the run has actually happened."""
+    exe = os.path.splitext(sess.srcfile)[0] + ".e"
     sess.key("ctrl+F9")
     deadline = time.time() + 25.0
     while time.time() < deadline:
@@ -119,13 +94,13 @@ def _run_program(sess):
         if os.path.exists(exe):
             break
         time.sleep(0.25)
-    assert os.path.exists(exe), "Ctrl-F9 should build+run paint.c (no paint.e)"
+    assert os.path.exists(exe), "Ctrl-F9 should build+run the program (no %s)" % exe
     time.sleep(1.5)   # let the pty drain into e_d_prog_output
 
 
-def test_user_screen_renders_program_colours(paint_xwpe):
+def test_user_screen_renders_program_colours(xwpe):
     """Alt-F5 paints the program's ANSI screen (red + green) via libvterm."""
-    sess = paint_xwpe
+    sess = xwpe
     _run_program(sess)
 
     before = sess.screenshot()
@@ -147,9 +122,9 @@ def test_user_screen_renders_program_colours(paint_xwpe):
         "(red=%d green=%d)" % (red, green)
 
 
-def test_user_screen_key_returns_to_editor(paint_xwpe):
+def test_user_screen_key_returns_to_editor(xwpe):
     """A keypress dismisses the User Screen and restores the editor."""
-    sess = paint_xwpe
+    sess = xwpe
     _run_program(sess)
 
     editor = sess.screenshot()
@@ -184,7 +159,7 @@ def _nonblack_in_band(img, y0, y1, floor=90, step=2):
     return n
 
 
-def test_user_screen_has_no_scrollbar_bleed(paint_xwpe):
+def test_user_screen_has_no_scrollbar_bleed(xwpe):
     """The User Screen owns the whole window: the editor's and Messages' fluid
     scrollbars (drawn by wpe_render_chrome on every refresh) must NOT bleed on
     top of the program's painted screen.  paint.c only draws its demo in the
@@ -192,7 +167,7 @@ def test_user_screen_has_no_scrollbar_bleed(paint_xwpe):
     prompt -- is blank black.  A bled scrollbar (mid-screen horizontal thumb,
     right-edge vertical tracks, bottom Messages bar) lights up that band with
     hundreds-to-thousands of non-black pixels; suppressed, it is ~zero."""
-    sess = paint_xwpe
+    sess = xwpe
     _run_program(sess)
     sess.key("alt+F5")
     time.sleep(1.0)

@@ -361,6 +361,106 @@ int e_x_refit_font_for_dpi(void)
 #endif
 }
 
+/* The 16 palette colours the way the X server allocated them: the 16-bit
+   channels XAllocColor returned for each (the colour actually used, which on a
+   TrueColor visual is the requested one rounded to the visual's depth), and the
+   colormap the pixels live in.  Filled once, by WpeXColorGet.  Everything that
+   needs the editor's colours as RGB (the Cairo renderer, the Xft glyph colours,
+   the User Screen) reads these, so none of them asks the server again and none
+   can ask the wrong colormap when the pcmap resource gives the editor a private
+   one. */
+#define X_PALETTE_SIZE 16
+static unsigned short x_palette_rgb16[X_PALETTE_SIZE][3];
+static Colormap x_palette_cmap = None;
+
+/**
+ * x_palette_record - Remember the RGB the server gave palette entry @idx.
+ * @idx: palette index, 0..15
+ * @color: the XColor XAllocColor filled in
+ */
+static void x_palette_record(int idx, const XColor *color)
+{
+ x_palette_rgb16[idx][0] = color->red;
+ x_palette_rgb16[idx][1] = color->green;
+ x_palette_rgb16[idx][2] = color->blue;
+}
+
+/**
+ * x_palette_record_mono - Remember the colour of a pixel on a one-bit display.
+ * @idx: palette index, 0..15
+ * @pixel: the pixel the editor uses for that entry
+ *
+ * A one-bit screen has no colour cells to allocate: a pixel is black or white,
+ * so the entry is the white of the screen when its pixel is the screen's white
+ * and black otherwise.
+ */
+static void x_palette_record_mono(int idx, unsigned long pixel)
+{
+ XColor color;
+ unsigned short level = 0;
+
+ if (pixel == WhitePixel(WpeXInfo.display, WpeXInfo.screen))
+  level = 0xffff;
+ color.red = color.green = color.blue = level;
+ x_palette_record(idx, &color);
+}
+
+/**
+ * e_x_palette_colormap - The colormap the editor's 16 colours live in.
+ *
+ * The screen's default colormap, or the private one the pcmap resource gave
+ * the editor.  A colour built for a glyph must be made in the same colormap as
+ * the pixels it is drawn next to, or on a palette-indexed display it comes out
+ * as the wrong colour; and it must be given back to that same colormap when
+ * the editor ends.
+ */
+Colormap e_x_palette_colormap(void)
+{
+ if (x_palette_cmap != None)
+  return x_palette_cmap;
+ return DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
+}
+
+/**
+ * e_x_palette_rgb16 - The colour the X server gave palette entry @idx.
+ * @idx: palette index, 0..15
+ * @rgb: receives red, green and blue as the server's 16-bit channels
+ *
+ * For the renderers of the X11 backend (Cairo, Xft): they paint the editor's
+ * colours exactly as the server allocated them.  An index out of range gives
+ * black.
+ */
+void e_x_palette_rgb16(int idx, unsigned short rgb[3])
+{
+ int ch;
+
+ for (ch = 0; ch < 3; ch++)
+  rgb[ch] = (idx >= 0 && idx < X_PALETTE_SIZE) ? x_palette_rgb16[idx][ch] : 0;
+}
+
+/**
+ * e_x_palette_rgb - The X11 display's answer to "what colour is entry @idx".
+ * @idx: palette index, 0..15
+ * @rgb: receives red, green and blue, 8 bits each
+ *
+ * Fills the display table's palette slot (e_u_palette_rgb), so the User Screen
+ * matches a program's colours against the ones the editor really shows.
+ *
+ * Return: 1 for a palette index, 0 for any other number.
+ */
+int e_x_palette_rgb(int idx, unsigned char rgb[3])
+{
+ unsigned short wide[3];
+ int ch;
+
+ if (idx < 0 || idx >= X_PALETTE_SIZE)
+  return 0;
+ e_x_palette_rgb16(idx, wide);
+ for (ch = 0; ch < 3; ch++)
+  rgb[ch] = wide[ch] >> 8;
+ return 1;
+}
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeXColorGet - Get color settings from the X resources.
 
@@ -413,6 +513,8 @@ void WpeXColorGet(XrmDatabase xresdb, XrmQuark *name_list,
   e_X_sw_color();
   WpeXInfo.colors[0] = BlackPixel(WpeXInfo.display, WpeXInfo.screen);
   WpeXInfo.colors[1] = WhitePixel(WpeXInfo.display, WpeXInfo.screen);
+  for (loop = 0; loop < X_PALETTE_SIZE; loop++)
+   x_palette_record_mono(loop, WpeXInfo.colors[loop]);
   return ;
  }
  /* Check for private colormap option */
@@ -426,6 +528,7 @@ void WpeXColorGet(XrmDatabase xresdb, XrmQuark *name_list,
    cmap = XCreateColormap(WpeXInfo.display,
      RootWindowOfScreen(xscreen), visual, AllocNone);
    XSetWindowColormap(WpeXInfo.display, WpeXInfo.window, cmap);
+   x_palette_cmap = cmap;
   }
  }
  for(loop = 0; loop < 16; loop++)
@@ -444,6 +547,7 @@ void WpeXColorGet(XrmDatabase xresdb, XrmQuark *name_list,
    exit(1);
   }
   WpeXInfo.colors[loop] = exact_def.pixel;
+  x_palette_record(loop, &exact_def);
  }
  return ;
 }
@@ -745,18 +849,17 @@ void WpeXInit(int *argc, char **argv)
  /* Initialize XftColor array from the allocated X11 colors */
  if (WpeXInfo.xftfont)
  {
-  Colormap cmap = DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
+  Colormap cmap = e_x_palette_colormap();
   int ci;
-  for (ci = 0; ci < 16; ci++)
+  for (ci = 0; ci < X_PALETTE_SIZE; ci++)
   {
-   XColor xc;
-   xc.pixel = WpeXInfo.colors[ci];
-   XQueryColor(WpeXInfo.display, cmap, &xc);
+   unsigned short wide[3];
+   e_x_palette_rgb16(ci, wide);
    {
     XRenderColor rc;
-    rc.red = xc.red;
-    rc.green = xc.green;
-    rc.blue = xc.blue;
+    rc.red = wide[0];
+    rc.green = wide[1];
+    rc.blue = wide[2];
     rc.alpha = 0xffff;
     XftColorAllocValue(WpeXInfo.display,
       DefaultVisual(WpeXInfo.display, WpeXInfo.screen),

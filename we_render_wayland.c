@@ -8,7 +8,7 @@
  * differ (wl_surface attach/commit instead of XCopyArea).
  *
  * It is intentionally self-contained rather than sharing we_render_cairo.c's
- * statics: that file is X11-coupled (cairo-xlib, XQueryColor, XCopyArea) and is
+ * statics: that file is X11-coupled (cairo-xlib, XCopyArea) and is
  * the long-verified desktop path, so the Wayland bring-up keeps it untouched.
  * Once both backends are covered by tests, the common Cairo core (primitives +
  * Pango font + fluid-scrollbar chrome) is a clean follow-up extraction.
@@ -59,6 +59,29 @@ static const unsigned char wl_palette_rgb[16][3] = {
  {   0, 245, 255 },  /* 14 Turquoise1       */
  { 255, 255, 255 }   /* 15 White            */
 };
+
+/**
+ * wpe_render_wayland_palette_rgb - The colour the Wayland window shows for
+ * palette entry @idx.
+ * @idx: palette index, 0..15
+ * @rgb: receives red, green and blue, 8 bits each
+ *
+ * Fills the display table's palette slot (e_u_palette_rgb), so the User
+ * Screen matches a program's colours against the sixteen the editor really
+ * paints with: an ANSI red shows as the editor's red.
+ *
+ * Return: 1 for a palette index, 0 for any other number.
+ */
+int wpe_render_wayland_palette_rgb(int idx, unsigned char rgb[3])
+{
+ int ch;
+
+ if (idx < 0 || idx >= 16)
+  return 0;
+ for (ch = 0; ch < 3; ch++)
+  rgb[ch] = wl_palette_rgb[idx][ch];
+ return 1;
+}
 
 static void wl_render_init_colors(void)
 {

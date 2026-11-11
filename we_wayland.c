@@ -1777,10 +1777,6 @@ static int e_w_ini_size(void)
  return 0;
 }
 
-/* Window-picture save/restore is unnecessary in the recompositing SCREENCELL
-   model (the X11 backend uses a pixmap; we repaint from the window stack). */
-static int e_w_change(PIC *pic) { (void)pic; return 0; }
-
 /**
  * e_w_serve_display - Read and dispatch the compositor's events while the
  * editor waits for something else (a command run in a window of its own),
@@ -2058,7 +2054,7 @@ int WpeWaylandInit(int *argc, char **argv)
  fk_u_grab_pointer = fk_w_grab_pointer;
  fk_u_drag_next    = fk_w_drag_next;
  e_u_key_take      = e_w_key_take;
- e_u_change        = e_w_change;
+ e_u_palette_rgb   = wpe_render_wayland_palette_rgb;
  e_u_serve_display = e_w_serve_display;
  e_u_ini_size      = e_w_ini_size;
  e_u_setlastpic    = e_setlastpic;

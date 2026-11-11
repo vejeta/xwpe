@@ -98,5 +98,10 @@ int wpe_render_wayland_init(void);
    can be sized to a cell grid before the wl_shm buffer is allocated. */
 int wpe_render_wayland_probe_cell(int *cw, int *ch);
 
+/* Implemented in we_render_wayland.c: the colour the Wayland renderer paints
+   palette entry idx (0..15) with, 8 bits per channel.  The display's palette
+   slot (e_u_palette_rgb).  Returns 1, or 0 for an index out of range. */
+int wpe_render_wayland_palette_rgb(int idx, unsigned char rgb[3]);
+
 #endif /* HAVE_WAYLAND */
 #endif /* WE_WAYLAND_H */

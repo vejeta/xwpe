@@ -107,7 +107,6 @@ extern SCREENCELL *altschirm;
 #define fk_locate(x, y) (*fk_u_locate)(x, y)
 #define fk_cursor(x) (*fk_u_cursor)(x)
 #define e_refresh() (*e_u_refresh)()
-#define e_initscr(argc, argv) (*e_u_initscr)(argc, argv)
 #define e_getch() (*e_u_getch)()
 #define fk_putchar(c) (*fk_u_putchar)(c)
 #define e_d_switch_out(c) (*e_u_d_switch_out)(c)
@@ -116,6 +115,7 @@ extern SCREENCELL *altschirm;
 #define e_cp_X_to_buffer(f) (*e_u_cp_X_to_buffer)(f)
 #define e_copy_X_buffer(f) (*e_u_copy_X_buffer)(f)
 #define e_paste_X_buffer(f) (*e_u_paste_X_buffer)(f)
+#define e_palette_rgb(idx, rgb) (*e_u_palette_rgb)(idx, rgb)
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   bioskey - Get the status of shift, alt, and control keys.
