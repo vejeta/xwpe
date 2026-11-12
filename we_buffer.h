@@ -68,6 +68,7 @@ int    e_buffer_append_text(BUFFER *b, const char *text, int skip_blank);
 int    e_buffer_append_rows(BUFFER *b, const char *text);
 int    e_buffer_clear(BUFFER *b);
 int    e_buffer_set_line(BUFFER *b, int y, const char *text, int n);
+int    e_buffer_set_line_ended(BUFFER *b, int y, const char *text, int n, int term);
 char  *e_buffer_to_text(BUFFER *b);
 STRING *e_buffer_lines_from_text(const char *text, int mx_x, int *n);
 void   e_buffer_lines_free(STRING *lines, int n);

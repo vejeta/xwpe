@@ -88,6 +88,20 @@
   {
    "id": "SC-buffer-03",
    "requirement": "Marks move with their lines and never point past the text",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_a_mark_in_the_pane_survives_a_narrowing_resize",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-03",
+   "requirement": "Marks move with their lines and never point past the text",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_a_mark_on_the_prompt_rows_survives_the_prompt_shrinking",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-03",
+   "requirement": "Marks move with their lines and never point past the text",
    "layer": "c-unit",
    "test": "test_splice",
    "status": "new"
@@ -286,6 +300,13 @@
    "requirement": "One owner of the text",
    "layer": "c-unit",
    "test": "tests/check-one-owner.sh",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-07",
+   "requirement": "One owner of the text",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_roles_and_rows_stay_in_step_through_a_reflow",
    "status": "new"
   },
   {

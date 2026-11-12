@@ -1579,3 +1579,146 @@ def test_a_file_that_cannot_be_read_for_memory_is_not_opened(tmp_path):
             "the file on disk was changed after a refused read: %r" % s.text()
         assert "buffer nomem opening the file" in _ui_trace(tmp_path), \
             "the refusal was not said:\n" + _ui_trace(tmp_path)
+
+
+# ---- the assistant's pane: rows, roles and marks behind the owner ----
+
+PANE_REPLY = " ".join("w%02d" % i for i in range(19))   # two rows at 80 columns
+PANE_ROWS = 30
+
+
+def _pane_env(tmp_path, reply):
+    env = _ai_env(tmp_path, reply)
+    env["XWPE_UI_TRACE"] = str(tmp_path / "ui.trace")
+    return env
+
+
+def _open_the_chat_and_ask(s, question="q", last_word="w18"):
+    s.key(ALT.AI)
+    s.key("a", delay=0.8)
+    s.key(question)
+    s.key(ENTER, delay=1.5)
+    assert last_word in "\n".join(s.display()), \
+        "the reply did not land in the pane:\n" + "\n".join(s.display())
+
+
+def _drag_mark(s, row, col, to_row, to_col):
+    """Mark from screen (row, col) to (to_row, to_col), 0-based, with the mouse:
+    the arrows belong to the chat's input."""
+    s.key("\033[<0;%d;%dM" % (col + 1, row + 1), delay=0.2)
+    s.key("\033[<32;%d;%dM" % (to_col + 1, to_row + 1), delay=0.2)
+    s.key("\033[<0;%d;%dm" % (to_col + 1, to_row + 1), delay=0.3)
+
+
+def _pane_trace_steps(trace):
+    """The trace's pane rows markers and the splices between them, as
+    [(rows, roles, splices_that_changed_the_row_count, net_rows)] one entry
+    per marker after the first."""
+    steps = []
+    running = None
+    grown = 0
+    net = 0
+    for line in trace.splitlines():
+        if line.startswith("pane rows="):
+            rows, roles = [int(x.split("=")[1]) for x in line.split()[1:3]]
+            if running is not None:
+                steps.append((rows, roles, grown, running + net))
+            running = rows
+            grown = 0
+            net = 0
+        elif line.startswith("buffer splice ") and running is not None:
+            parts = dict(p.split("=") for p in line.split()[2:] if "=" in p)
+            delta = int(parts["ins"]) - int(parts["del"])
+            net += delta
+            if delta != 0:
+                grown += 1
+    return steps
+
+
+# @scenario SC-buffer-03
+@needs_ai
+def test_a_mark_in_the_pane_survives_a_narrowing_resize(tmp_path):
+    """A block marked on the reply, then the pane narrowed and widened again:
+    the editor lives (under the sanitizer build a mark left past the rows is
+    a read of freed memory), a copy takes only text that is in the pane, and
+    the pane still reads whole."""
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=_pane_env(tmp_path, PANE_REPLY), filename="t.c") as s:
+        _open_the_chat_and_ask(s)
+        disp = s.display()
+        first = next(i for i, r in enumerate(disp) if "AI: w00" in r)
+        _drag_mark(s, first, 2, first + 1, 30)
+        for cols in (40, 80, 120, 40):
+            s.resize(cols, PANE_ROWS, delay=0.8)
+            s._drain(0.5)
+            assert s.alive(), "the editor died at %d columns" % cols
+        s.key(CTRL_C, delay=0.6)
+        assert s.alive(), "the editor died copying the marked block"
+        payload = s.osc52_payload()
+        words = set(PANE_REPLY.split()) | {"AI:", "You:", "q", ">"}
+        assert payload is None or set(payload.split()) <= words, \
+            "the copy holds text that is not in the pane: %r" % payload
+        pane = "\n".join(s.display(drain=0))
+    for w in PANE_REPLY.split():
+        assert w in pane, "%s is gone from the narrowed pane:\n%s" % (w, pane)
+
+
+# @scenario SC-buffer-03
+@needs_ai
+def test_a_mark_on_the_prompt_rows_survives_the_prompt_shrinking(tmp_path):
+    """Marked across three prompt rows, then two Backspaces and the row that
+    held the end of the mark is gone: the mark moves up onto the rows that
+    remain, so the copy takes what is left of it (and not freed memory, which
+    the sanitizer build reports as a heap-use-after-free)."""
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=_pane_env(tmp_path, "r"), filename="t.c") as s:
+        s.key(ALT.AI)
+        s.key("a", delay=0.8)
+        s.key("aa")
+        s.key("\n", delay=0.3)
+        s.key("bb")
+        s.key("\n", delay=0.3)
+        s.key("cc", delay=0.4)
+        disp = s.display()
+        top = next(i for i, r in enumerate(disp) if r.startswith("x> aa"))
+        _drag_mark(s, top, 2, top + 2, 7)
+        for _ in range(4):
+            s.key(BACKSPACE, delay=0.3)
+        assert s.alive(), "the editor died while the prompt shrank"
+        s.key(CTRL_C, delay=0.6)
+        assert s.alive(), "the editor died copying the marked block"
+        payload = s.osc52_payload()
+    assert payload is not None and "aa" in payload, \
+        "the rows that remain of the mark were not copied: %r" % payload
+    assert set(payload) <= set(" ab\n>"), \
+        "the copy holds more than the prompt rows: %r" % payload
+
+
+# @scenario SC-buffer-07
+@needs_ai
+def test_roles_and_rows_stay_in_step_through_a_reflow(tmp_path):
+    """The reply is laid out again at four widths.  After every change of the
+    row count the pane says how many rows and how many roles it has (the two
+    are equal), and each change of the count is exactly one splice of the
+    buffer's owner that adds up to the count the pane reports."""
+    with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
+                    env_extra=_pane_env(tmp_path, PANE_REPLY), filename="t.c") as s:
+        _open_the_chat_and_ask(s)
+        for cols in (40, 80, 120, 40, 80):
+            s.resize(cols, PANE_ROWS, delay=0.8)
+            s._drain(0.5)
+            s.display()
+        trace = _ui_trace(tmp_path)
+    steps = _pane_trace_steps(trace)
+    assert len(steps) >= 4, "the pane reported too few row changes:\n" + trace
+    for rows, roles, changes, expected in steps:
+        assert rows == roles, \
+            "the roles table (%d) is not as long as the buffer (%d):\n%s" \
+            % (roles, rows, trace)
+        assert changes == 1, \
+            "a row change took %d splices of the owner:\n%s" % (changes, trace)
+        assert rows == expected, \
+            "the splices add up to %d rows, the pane says %d:\n%s" \
+            % (expected, rows, trace)
+    counts = [rows for rows, _, _, _ in steps]
+    assert max(counts) > min(counts), "no resize changed the row count: %r" % counts

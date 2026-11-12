@@ -78,8 +78,3 @@ we_ai_ws.o write 1 keep a regular file the model named, opened at the place the 
 # the two functions the assistant's pane still writes its rows with
 we_prog.o e_new_line 2 P11e print_to_end_of_buffer and e_p_red_buffer, for the pane
 we_prog.o mxlines_write 1 P11e e_p_red_buffer, for the pane
-# the assistant's pane: its rows go in and out with their roles
-we_ai_ui.o e_new_line 8 P11e the pane's rows
-we_ai_ui.o e_p_red_buffer 1 P11e the pane cleared
-we_ai_ui.o print_to_end_of_buffer 1 P11e the pane's transcript
-we_ai_ui.o mxlines_write 3 P11e the pane's dropped rows

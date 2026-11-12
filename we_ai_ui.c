@@ -210,14 +210,15 @@ static void ai_roles_sync(BUFFER *b)
 }
 
 /**
- * ai_roles_insert - A line was inserted at `at`: record who wrote it.
- * @b: the pane buffer, already holding the new line.
- * @at: the index of the new line.
+ * ai_roles_insert - `n` lines were inserted at `at`: record who wrote them.
+ * @b: the pane buffer, already holding the new lines.
+ * @at: the index of the first new line.
+ * @n: how many.
  * @role: the writer.
  */
-static void ai_roles_insert(BUFFER *b, int at, int role)
+static void ai_roles_insert(BUFFER *b, int at, int n, int role)
 {
- int before = b->mxlines - 1;
+ int before = b->mxlines - n, i;
  if (before < 0) before = 0;
  if (!ai_roles_reserve(b->mxlines)) return;
  while (g_ai_roles_n < before)
@@ -225,9 +226,30 @@ static void ai_roles_insert(BUFFER *b, int at, int role)
  g_ai_roles_n = before;
  if (at < 0) at = 0;
  if (at > g_ai_roles_n) at = g_ai_roles_n;
- memmove(g_ai_roles + at + 1, g_ai_roles + at, (size_t)(g_ai_roles_n - at));
- g_ai_roles[at] = (unsigned char)role;
- g_ai_roles_n++;
+ memmove(g_ai_roles + at + n, g_ai_roles + at, (size_t)(g_ai_roles_n - at));
+ for (i = 0; i < n; i++)
+  g_ai_roles[at + i] = (unsigned char)role;
+ g_ai_roles_n += n;
+}
+
+/**
+ * ai_roles_remove - `n` lines were removed at `at`: their roles go with them.
+ * @b: the pane buffer, already without the lines.
+ * @at: the index of the first removed line.
+ * @n: how many.
+ *
+ * A buffer emptied by the removal keeps the one empty row the owner leaves,
+ * which the table covers as the assistant's, like every row it did not see.
+ */
+static void ai_roles_remove(BUFFER *b, int at, int n)
+{
+ if (at >= 0 && at < g_ai_roles_n) {
+  if (n > g_ai_roles_n - at) n = g_ai_roles_n - at;
+  if (g_ai_roles_n - at - n > 0)
+   memmove(g_ai_roles + at, g_ai_roles + at + n, (size_t)(g_ai_roles_n - at - n));
+  g_ai_roles_n -= n;
+ }
+ ai_roles_sync(b);
 }
 
 /**
@@ -1104,6 +1126,10 @@ static FENSTER *ai_pane_win(FENSTER *f)
   if (e_edit(cn, AI_PANE_NAME))
    return NULL;
   i = cn->mxedt;
+  /* The pane is a view the assistant writes, like Messages: its rows carry no
+     Undo history and no modified mark, while the user's block marks stay so
+     a copy from the pane works. */
+  e_buffer_mark_view(cn->f[i]->b);
   /* Mark it a tool/output pane like Messages (ins == 8, backs no file): it is
      never offered for saving on quit and wears the gear marker, not the padlock.
      The chat input still works -- e_ai_chat_key consumes those keys before the
@@ -1440,18 +1466,106 @@ static void ai_pane_scroll(FENSTER *wf, int delta)
 }
 
 /**
+ * ai_pane_rows_nomem - The pane could not get the memory for its rows.
+ * @b: the pane buffer.
+ *
+ * The rows are the transcript the user is reading and the prompt they are
+ * typing in; the pane cannot go on without them, so this ends the editor
+ * through the low-memory error, which offers to save the user's files first.
+ */
+static void ai_pane_rows_nomem(BUFFER *b)
+{
+ e_error(e_msg[ERR_LOWMEM], 1, b->fb);
+}
+
+/**
+ * ai_pane_trace_rows - Note in the trace how many rows and roles the pane has.
+ * @b: the pane buffer.
+ *
+ * One line after every change of the row count, so a test can see that the
+ * roles table is as long as the buffer at each step, not only at the end.
+ */
+static void ai_pane_trace_rows(BUFFER *b)
+{
+ wpe_buffer_trace("pane rows=%d roles=%d", b->mxlines, g_ai_roles_n);
+}
+
+/**
+ * ai_pane_rows_insert - Open `n` empty rows at `y` of the pane, written by `role`.
+ * @b: the pane buffer.
+ * @y: where the first new row goes; past the end means the end.
+ * @n: how many rows.
+ * @role: who writes them (enum ai_role).
+ *
+ * The one way the pane gains rows: the buffer's owner makes them in one step
+ * and the table of who wrote each row grows in the same function, so a row
+ * never reaches the screen without its colour.  The user's block marks and the
+ * cursor follow the rows they were on.
+ */
+static void ai_pane_rows_insert(BUFFER *b, int y, int n, int role)
+{
+ STRING *lines;
+ int i, r;
+ if (n <= 0) return;
+ if (y < 0) y = 0;
+ if (y > b->mxlines) y = b->mxlines;
+ lines = malloc((size_t)n * sizeof(STRING));
+ if (!lines) {
+  ai_pane_rows_nomem(b);
+  return;
+ }
+ for (i = 0; i < n; i++)
+  if (e_buffer_line_new(b, &lines[i]) != E_BUFFER_OK) {
+   e_buffer_lines_free(lines, i);
+   ai_pane_rows_nomem(b);
+   return;
+  }
+ r = e_buffer_splice(b, y, 0, lines, n, NULL, 0, E_BUFFER_STEP_NEW);
+ if (r != E_BUFFER_OK) {
+  e_buffer_lines_free(lines, n);
+  ai_pane_rows_nomem(b);
+  return;
+ }
+ free(lines);
+ ai_roles_insert(b, y, n, role);
+ ai_pane_trace_rows(b);
+}
+
+/**
+ * ai_pane_rows_drop - Take `n` rows from `y` out of the pane.
+ * @b: the pane buffer.
+ * @y: the first row to go.
+ * @n: how many; fewer when the buffer ends sooner.
+ *
+ * The one way the pane loses rows: the table of who wrote each row loses the
+ * same ones in the same function, and a block the user marked on or under the
+ * rows moves up onto text that still exists instead of pointing past the
+ * end.  A pane left without any row keeps one empty row.
+ */
+static void ai_pane_rows_drop(BUFFER *b, int y, int n)
+{
+ if (y < 0 || y >= b->mxlines || n <= 0) return;
+ if (n > b->mxlines - y) n = b->mxlines - y;
+ if (e_buffer_delete_lines(b, y, n, E_BUFFER_STEP_NEW) != E_BUFFER_OK) {
+  ai_pane_rows_nomem(b);
+  return;
+ }
+ ai_roles_remove(b, y, n);
+ ai_pane_trace_rows(b);
+}
+
+/**
  * ai_pane_set_row_bytes - Overwrite pane row `y` with the first `n` bytes of
  * `text`, as a whole line (no new row added).
  * @b: the pane buffer, holding row `y`.
+ *
+ * The row ends with a line break, as every finished row of the pane does; a
+ * wrapped line's rows lose theirs afterwards (ai_pane_mark_continuation).
  */
 static void ai_pane_set_row_bytes(BUFFER *b, int y, const char *text, size_t n)
 {
- b->bf[y].s = REALLOC(b->bf[y].s, n + 2);
- memcpy(b->bf[y].s, text, n);
- b->bf[y].s[n] = '\n';
- b->bf[y].s[n + 1] = '\0';
- b->bf[y].len = (int)n;
- b->bf[y].nrc = (int)n + 1;
+ if (e_buffer_set_line_ended(b, y, text, (int)n, WPE_WR) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the assistant's row");
 }
 
 /**
@@ -1465,10 +1579,6 @@ static void ai_pane_set_row_bytes(BUFFER *b, int y, const char *text, size_t n)
 static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
 {
  BUFFER *b = wf->b;
- if (b->mxlines == 0) {
-  e_new_line(0, b);
-  ai_roles_sync(b);
- }
  if (y < 0) y = 0;
  if (y >= b->mxlines) y = b->mxlines - 1;
  ai_pane_set_row_bytes(b, y, text, strlen(text));
@@ -1532,9 +1642,7 @@ static int ai_input_line_count(void)
  */
 static void ai_input_drop_last_row(BUFFER *b)
 {
- int y = b->mxlines - 1;
- FREE(b->bf[y].s);
- b->mxlines--;
+ ai_pane_rows_drop(b, b->mxlines - 1, 1);
  g_ai_input_rows--;
 }
 
@@ -1548,10 +1656,8 @@ static void ai_input_drop_last_row(BUFFER *b)
  */
 static void ai_input_fit_rows(BUFFER *b, int want)
 {
- if (b->mxlines == 0)
-  e_new_line(0, b);
  while (g_ai_input_rows < want) {
-  e_new_line(b->mxlines, b);
+  ai_pane_rows_insert(b, b->mxlines, 1, AI_ROLE_ASSISTANT);
   g_ai_input_rows++;
  }
  while (g_ai_input_rows > want && g_ai_input_rows > 1)
@@ -1640,8 +1746,39 @@ static void ai_pane_commit(FENSTER *wf)
   at = b->mxlines - g_ai_input_rows;
  else
   at = b->mxlines;
- e_new_line(at, b);
- ai_roles_insert(b, at, AI_ROLE_ASSISTANT);   /* the stream line is the reply's */
+ ai_pane_rows_insert(b, at, 1, AI_ROLE_ASSISTANT);   /* the stream line is the reply's */
+}
+
+/**
+ * ai_pane_append_lines - Add the lines of `text` at the end of the pane.
+ * @b: the pane buffer.
+ * @text: lines separated by '\n'; the empty ones are left out.
+ * @role: who wrote them (enum ai_role).
+ *
+ * A note the assistant writes outside a chat (a task dropped with its
+ * window) lands under the transcript as its own rows, each in its writer's
+ * colour from the first paint, and is wrapped to the pane's width when the
+ * pane next paints.
+ */
+static void ai_pane_append_lines(BUFFER *b, const char *text, int role)
+{
+ const char *p = text;
+ while (*p) {
+  const char *nl = strchr(p, '\n');
+  int len;
+  if (nl)
+   len = (int)(nl - p);
+  else
+   len = (int)strlen(p);
+  if (len > 0) {
+   int at = b->mxlines;
+   ai_pane_rows_insert(b, at, 1, role);
+   ai_pane_set_row_bytes(b, at, p, (size_t)len);
+  }
+  if (!nl)
+   break;
+  p = nl + 1;
+ }
 }
 
 /**
@@ -1659,15 +1796,12 @@ static void ai_tr_line(FENSTER *wf, const char *str, int role)
  int at;
  ai_pane_note_unwrapped(str);
  if (!g_ai_chat_focus) {
-  at = b->mxlines;
-  print_to_end_of_buffer(b, (char *)str, b->mx.x);
-  ai_roles_set_appended(b, at, role);
+  ai_pane_append_lines(b, str, role);
   return;
  }
  at = b->mxlines - g_ai_input_rows;      /* first input-region line */
  if (at < 0) at = 0;
- e_new_line(at, b);                      /* insert a blank line before the region */
- ai_roles_insert(b, at, role);
+ ai_pane_rows_insert(b, at, 1, role);    /* a blank row before the region */
  ai_pane_set_line(wf, at, str);
 }
 
@@ -1852,26 +1986,6 @@ static int ai_wrap_rows(const char *text, int width)
 }
 
 /**
- * ai_pane_drop_row - Remove row `y` from the pane and from the role table.
- * @b: the pane buffer.
- */
-static void ai_pane_drop_row(BUFFER *b, int y)
-{
- int after = b->mxlines - y - 1;
- if (y < 0 || y >= b->mxlines) return;
- FREE(b->bf[y].s);
- if (after > 0)
-  memmove(b->bf + y, b->bf + y + 1, (size_t)after * sizeof(STRING));
- b->mxlines--;
- if (y < g_ai_roles_n) {
-  if (g_ai_roles_n - y - 1 > 0)
-   memmove(g_ai_roles + y, g_ai_roles + y + 1, (size_t)(g_ai_roles_n - y - 1));
-  g_ai_roles_n--;
- }
- ai_roles_sync(b);
-}
-
-/**
  * ai_pane_rewrap_line - Lay the logical line at row `y0` out again at `width`.
  * @wf: the pane.
  * @y0: the first row of the line.
@@ -1890,15 +2004,10 @@ static int ai_pane_rewrap_line(FENSTER *wf, int y0, int limit, int width)
  if (!text) return old_rows;
  role = ai_role_of(y0);
  new_rows = ai_wrap_rows(text, width);
- while (old_rows < new_rows) {
-  e_new_line(y0 + old_rows, b);
-  ai_roles_insert(b, y0 + old_rows, role);
-  old_rows++;
- }
- while (old_rows > new_rows) {
-  ai_pane_drop_row(b, y0 + old_rows - 1);
-  old_rows--;
- }
+ if (old_rows < new_rows)
+  ai_pane_rows_insert(b, y0 + old_rows, new_rows - old_rows, role);
+ if (old_rows > new_rows)
+  ai_pane_rows_drop(b, y0 + new_rows, old_rows - new_rows);
  p = text;
  for (y = y0; y < y0 + new_rows; y++) {
   int cut;
@@ -4893,7 +5002,6 @@ static void e_ai_chat_arm(FENSTER *f)
  g_ai_scroll_lock = 0;
  ai_input_clear();
  g_ai_input_rows = 0;
- if (wf->b->mxlines == 0) e_new_line(0, wf->b);
  ai_roles_sync(wf->b);
  /* The header when the setup changed (or was never shown), the hints once per
     pane: whatever another action wrote to the pane before this arm. */
@@ -7218,7 +7326,7 @@ static void ai_spin_end(ai_spin *sp, ECNT *cn)
   ai_pane_set_last(wf, "");
   return;
  }
- ai_pane_drop_row(wf->b, ai_stream_y(wf));
+ ai_pane_rows_drop(wf->b, ai_stream_y(wf), 1);
  if (wf->b->b.y >= wf->b->mxlines)
   wf->b->b.y = wf->b->mxlines - 1;
  ai_pane_paint(wf);
@@ -10977,7 +11085,10 @@ static void ai_messages_empty_for_run(FENSTER *f)
  g_ai_plan_row = -1;
  g_ai_plan_rows = 0;
  if (!m) return;
- e_p_red_buffer(m->b);
+ if (e_buffer_clear(m->b) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(m->b, "the run's rows");
+ else
+  e_line_make_hard_empty(&m->b->bf[0]);     /* the one row a compile leaves */
  m->b->b.x = 0;
  m->b->b.y = 0;
  e_messages_scroll_to_bottom(m);
@@ -11051,15 +11162,8 @@ static void ai_plan_erase_drawn(BUFFER *b)
  if (g_ai_plan_row < 0 || g_ai_plan_rows <= 0 || end > b->mxlines) return;
  for (i = g_ai_plan_row; i < end; i++)
   if (!ai_plan_row_is_ours(b, i, i == g_ai_plan_row)) return;
- for (i = g_ai_plan_row; i < end; i++)
-  if (b->bf[i].s) { FREE(b->bf[i].s); b->bf[i].s = NULL; }
- for (i = g_ai_plan_row; i + g_ai_plan_rows < b->mxlines; i++)
-  b->bf[i] = b->bf[i + g_ai_plan_rows];          /* the rows below move up */
- for (i = b->mxlines - g_ai_plan_rows; i < b->mxlines; i++)
-  b->bf[i].s = NULL;                             /* no second owner of a moved row */
- b->mxlines -= g_ai_plan_rows;
- if (b->mxlines == 0) e_new_line(0, b);         /* a buffer always holds one line */
- if (b->b.y >= b->mxlines) b->b.y = b->mxlines - 1;
+ if (e_buffer_delete_lines(b, g_ai_plan_row, g_ai_plan_rows, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the checklist's rows");
 }
 
 /**

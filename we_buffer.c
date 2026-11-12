@@ -2323,7 +2323,7 @@ static int buffer_count_rows(const char *text)
 /* One row holding `len` bytes of `src` whole, ended with a line break.  It
    has room for at least the buffer's width, as every line has, and for the
    whole text when that is wider. */
-static int buffer_row_whole(BUFFER *b, const char *src, int len, STRING *out)
+static int buffer_row_ended(BUFFER *b, const char *src, int len, int term, STRING *out)
 {
  size_t room = (size_t)len + 2;
 
@@ -2333,10 +2333,15 @@ static int buffer_row_whole(BUFFER *b, const char *src, int len, STRING *out)
  if (out->s == NULL)
   return(E_BUFFER_NOMEM);
  memcpy(out->s, src, (size_t)len);
- out->s[len] = WPE_WR;
+ out->s[len] = (unsigned char) term;
  out->s[len + 1] = '\0';
  buffer_line_measure(out);
  return(E_BUFFER_OK);
+}
+
+static int buffer_row_whole(BUFFER *b, const char *src, int len, STRING *out)
+{
+ return(buffer_row_ended(b, src, len, WPE_WR, out));
 }
 
 /**
@@ -2391,26 +2396,41 @@ int e_buffer_clear(BUFFER *b)
 }
 
 /**
- * e_buffer_set_line - Replace the bytes of row y, keeping its line break.
- * @text: the new bytes; @n: how many (clamped to the buffer's width).
+ * e_buffer_set_line_ended - Replace the bytes of row y and say how it ends.
+ * @text: the new bytes, without a line break; @n: how many, all kept even when
+ * the row is wider than the buffer (the assistant's pane writes a long status
+ * whole and wraps it when it paints); @term: WPE_WR for a row that ends with a
+ * line break, '\0' for one that goes on in the row below (a wrapped line).
  *
  * A changed row: its breakpoint and the marks on it stay.  Recorded unless
  * covered or on a view.  Return: as e_buffer_splice.
  */
-int e_buffer_set_line(BUFFER *b, int y, const char *text, int n)
+int e_buffer_set_line_ended(BUFFER *b, int y, const char *text, int n, int term)
 {
  STRING line;
  int r;
 
  if (y < 0 || y >= b->mxlines || n < 0)
   return(E_BUFFER_RANGE);
- if (buffer_line_from_bytes(b, (const unsigned char *) text, n,
-                            b->bf[y].s[b->bf[y].len], &line) != E_BUFFER_OK)
+ if (buffer_row_ended(b, text, n, term, &line) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
  r = e_buffer_splice(b, y, 1, &line, 1, NULL, 0, E_BUFFER_STEP_NEW);
  if (r != E_BUFFER_OK)
   free(line.s);
  return(r);
+}
+
+/**
+ * e_buffer_set_line - Replace the bytes of row y, keeping its line break.
+ * @text: the new bytes; @n: how many, all kept.
+ *
+ * Return: as e_buffer_set_line_ended.
+ */
+int e_buffer_set_line(BUFFER *b, int y, const char *text, int n)
+{
+ if (y < 0 || y >= b->mxlines || n < 0)
+  return(E_BUFFER_RANGE);
+ return(e_buffer_set_line_ended(b, y, text, n, b->bf[y].s[b->bf[y].len]));
 }
 
 /**
