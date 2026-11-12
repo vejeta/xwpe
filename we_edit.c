@@ -146,6 +146,7 @@ int e_tab_a_ind();
 int e_help_next();
 int e_codepoint_to_utf8(int cp, unsigned char *out);
 int e_utf8_charlen(unsigned char c);
+int e_utf8_seq_len(const unsigned char *s, int avail);
 int e_utf8_to_codepoint(unsigned char *buf, int len);
 int e_utf8_visual_len(unsigned char *s, int bytes);
 
@@ -2985,6 +2986,30 @@ int e_utf8_charlen(unsigned char c)
  return 1;
 }
 
+/**
+ * e_utf8_seq_len - Bytes of the character that starts at @s, when only @avail
+ * bytes of the string may be read.
+ * @s: the first byte of the character; @avail: the bytes it may read, or
+ * E_UTF8_UNBOUNDED for a string that ends in a NUL byte.
+ *
+ * A text that ends inside a character (a file, a field or a paste cut after
+ * the first byte of an `€`) never makes a caller read or step past its end:
+ * a lead byte that is not followed by all its continuation bytes is one byte
+ * long, and is drawn as the replacement glyph.
+ * Return: 1 to 4.
+ */
+int e_utf8_seq_len(const unsigned char *s, int avail)
+{
+ int n = e_utf8_charlen(s[0]), i;
+
+ if (n > avail)
+  return(1);
+ for (i = 1; i < n; i++)
+  if ((s[i] & 0xC0) != 0x80)
+   return(1);
+ return(n);
+}
+
 int e_utf8_to_codepoint(unsigned char *buf, int len)
 {
  if (len >= 2 && (buf[0] & 0xE0) == 0xC0)
@@ -3004,7 +3029,7 @@ int e_utf8_visual_len(unsigned char *s, int bytes)
  while (pos < bytes && s[pos])
  {
   vcols++;
-  pos += e_utf8_charlen(s[pos]);
+  pos += e_utf8_seq_len(s + pos, bytes - pos);
  }
  return vcols;
 }
@@ -3015,11 +3040,7 @@ int e_utf8_visual_len(unsigned char *s, int bytes)
  */
 static int e_char_bytes_at(BUFFER *b, int x, int y)
 {
- int k = e_utf8_charlen(b->bf[y].s[x]), left = b->bf[y].len - x;
-
- if (k > left)
-  return(left);
- return(k);
+ return(e_utf8_seq_len((unsigned char *)b->bf[y].s + x, b->bf[y].len - x));
 }
 
 /**

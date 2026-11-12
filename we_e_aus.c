@@ -9,16 +9,33 @@
 #include "progr.h"
 
 extern int e_utf8_charlen(unsigned char c);
+extern int e_utf8_seq_len(const unsigned char *s, int avail);
 extern int e_utf8_to_codepoint(unsigned char *buf, int len);
 
+/** Passed as the readable length of a string that ends in a NUL byte. */
+#define E_UTF8_UNBOUNDED INT_MAX
+/** Drawn for a byte that starts no whole UTF-8 character. */
+#define E_UTF8_REPLACEMENT 0xFFFD
+
+/**
+ * e_utf8_decode_at - The character of the NUL-ended string @s at @pos.
+ * @codepoint: receives what to draw for it.
+ *
+ * A lead byte whose continuation bytes are missing, or a stray continuation
+ * byte, is one byte drawn as the replacement glyph, so a field that ends in
+ * half a character is drawn and never read past its end.
+ * Return: the bytes the character takes.
+ */
 static int e_utf8_decode_at(unsigned char *s, int pos, int *codepoint)
 {
- int len = e_utf8_charlen(s[pos]);
+ int len = e_utf8_seq_len(s + pos, E_UTF8_UNBOUNDED);
 
- if (len == 1)
+ if (len > 1)
+  *codepoint = e_utf8_to_codepoint(s + pos, len);
+ else if (s[pos] < 0x80)
   *codepoint = s[pos];
  else
-  *codepoint = e_utf8_to_codepoint(s + pos, len);
+  *codepoint = E_UTF8_REPLACEMENT;
  return len;
 }
 
@@ -34,7 +51,7 @@ static int e_utf8_prev(unsigned char *s, int pos)
 static int e_utf8_next(unsigned char *s, int pos, int len)
 {
  if (pos >= len) return len;
- return pos + e_utf8_charlen(s[pos]);
+ return pos + e_utf8_seq_len(s + pos, len - pos);
 }
 
 static int e_utf8_visual_width(unsigned char *s, int from, int to)
@@ -47,7 +64,7 @@ static int e_utf8_visual_width(unsigned char *s, int from, int to)
    w += 2;
   else
    w++;
-  pos += e_utf8_charlen(s[pos]);
+  pos += e_utf8_seq_len(s + pos, to - pos);
  }
  return w;
 }
@@ -549,7 +566,7 @@ static int e_field_paste_fit(const unsigned char *text, int len, int room)
   return(len);
  while (used < len)
  {
-  int clen = e_utf8_charlen(text[used]);
+  int clen = e_utf8_seq_len(text + used, len - used);
 
   if (used + clen > room)
    break;
@@ -728,7 +745,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
   {
    if (jc < l)
    {
-    int clen = e_utf8_charlen(tmp[jc]);
+    int clen = e_utf8_seq_len(tmp + jc, l - jc);
     for (i = jc; i <= l - clen; i++)
      tmp[i] = tmp[i+clen];
     l -= clen;

@@ -299,6 +299,17 @@ typed over an @samp{é} or a @samp{€} it left the rest of that character
 behind as bytes that are no text.  It now replaces the whole character
 under the cursor, and @kbd{Ctrl-U} gives that character back whole.
 
+@item Text that is not UTF-8
+@cindex Latin-1 text
+@cindex UTF-8, bytes that are no character
+The original showed every byte as one Latin-1 character.  Text is now
+UTF-8, so an @samp{é} written in Latin-1, or the first byte of a
+character cut in two, is shown as @samp{?} in a window and as the
+replacement mark @samp{�} in a dialog field.  Such a byte counts as one
+byte: the cursor steps over it, a letter
+typed over it in overwrite mode replaces it alone, and saving writes it
+back as it was.
+
 @item The block Undo marks around a line break
 @cindex undo, block marks
 The original's @kbd{Ctrl-U} of a deletion that took a line break marked

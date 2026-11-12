@@ -243,6 +243,14 @@ Changes
 * Pasting into a dialog field that is nearly full now stops before the
   last whole character that fits, instead of cutting a character in half.
 
+* A dialog field, a line or a paste that ends in half of a character no
+  longer makes the editor read past the end of the text and crash.  The
+  half character counts as one byte and is drawn as a replacement mark.
+  A letter typed in overwrite mode over a Latin-1 letter such as an é no
+  longer deletes the two letters after it, and a dialog field shows each
+  Latin-1 letter as one replacement mark instead of a wrong character
+  that hid the letters after it.
+
 * In the programming mode (wpe, xwpe) Alt-G is the assistant; Go to Line
   is in the Search menu.  The manual pages, the help file and the manual now
   say so.
