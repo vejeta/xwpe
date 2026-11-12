@@ -46,7 +46,11 @@ minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @option{-pcmap} @tab Use a private colourmap (X11 only).  For a
 palette (8-bit) display whose shared colourmap other programs have filled:
 the editor's 16 colours then get cells of their own.  With or without it,
-the editor paints a palette display in its own 16 colours.
+the editor paints a palette display in its own 16 colours.  Without it,
+when the shared colourmap is full the editor takes, for each colour it
+cannot get, the nearest colour already there if one is close, and
+otherwise moves to a private colourmap by itself and says so once on the
+terminal it was started from; it never stops for want of colours.
 @end multitable
 
 @section Key cheatsheet

@@ -332,6 +332,18 @@ Changes
   terminal.  True-colour displays of 15 bits or more draw exactly as
   before.
 
+* A full colormap on an 8-bit X display no longer ends the editor.  It
+  stopped at start with "all colorcells allocated" when other programs
+  had taken every free colour.  Now each colour it cannot get becomes
+  the nearest colour already on the display, when one is close; when
+  none is, the editor switches to a private colormap by itself (as
+  with -pcmap) and says so once on stderr.  A mistyped colour in the X
+  resources costs only that colour: the built-in one is used and the
+  name is reported.  If memory runs out for the picture of a window,
+  the editor keeps running, says so once, and draws again after the
+  next resize.  The XWPE_X_DUMP frame dump now records an 8-bit
+  window in the colours it shows.
+
 * Every box now reads its keys through the editor's one screen owner:
   dialogs and their text fields, dropdowns, error boxes, pickers, the
   colour menu, the About and System Info boxes and the assistant's

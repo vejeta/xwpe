@@ -33,10 +33,35 @@ import conftest  # noqa: E402
 SCREEN_8_BIT = "1024x768x8"
 TRACE = "ui.trace"
 CAPTURE = "window.xwd"
+FRAME = "frame.ppm"
 SOURCE = "t.c"
+FILLER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "colormap_filler.py")
 # The editor's desk colour, Dark Slate Blue, and how far a channel may be off.
 DESK_RGB = (72, 61, 139)
 DESK_TOLERANCE = 6
+# How far the desk may be off when the editor took the nearest cell of a
+# full colormap instead of its own colour.
+DESK_NEAR_TOLERANCE = 32
+ALLOC_LINE = re.compile(r"^palette alloc idx=(\d+) level=(\d+)$", re.M)
+LEVEL_EXACT, LEVEL_NEAREST, LEVEL_PRIVATE = 1, 2, 3
+PALETTE_SIZE = 16
+# Red3, the first of the editor's colours a bare 8-bit server holds nothing
+# close to.
+FIRST_FAR_ENTRY = 1
+COLORMAP_LINE = re.compile(r"Colormap:\s*(0x[0-9a-f]+)")
+ROUTE_LINE = "palette route="
+REFUSED_LINE = "palette image refused"
+MADE_LINE = "palette image made"
+UNKNOWN_COLOUR = "No Such Colour"
+PRESENT_WORD = "palette present"
+OUT_OF_MEMORY = "out of memory for a"
+# The test fault that refuses the indexed route's second picture memory:
+# the one the first resize asks for, which the window gets right after it
+# is mapped, and which is followed by a refresh.
+FAULT_RESIZE_IMAGE = "palette-image:2"
+# The size the row resizes the window to, in pixels.
+RESIZED_W, RESIZED_H = "720", "520"
 # A pixel counts as black when every channel is below this.
 BLACK_BELOW = 16
 DESK_MIN_SHARE = 0.25
@@ -144,19 +169,19 @@ def _capture(owner, display, tmp_path, request, window):
     return conftest.xwd_to_image(path.read_bytes())
 
 
-def _is_desk(rgb):
-    return all(abs(c - d) <= DESK_TOLERANCE for c, d in zip(rgb, DESK_RGB))
+def _is_desk(rgb, tolerance=DESK_TOLERANCE):
+    return all(abs(c - d) <= tolerance for c, d in zip(rgb, DESK_RGB))
 
 
 def _is_black(rgb):
     return all(c < BLACK_BELOW for c in rgb)
 
 
-def _shares(image):
+def _shares(image, desk_tolerance=DESK_TOLERANCE):
     """The share of desk pixels and of black pixels in image."""
     raw = image.tobytes()
     pixels = [tuple(raw[i:i + 3]) for i in range(0, len(raw), 3)]
-    desk = sum(1 for rgb in pixels if _is_desk(rgb))
+    desk = sum(1 for rgb in pixels if _is_desk(rgb, desk_tolerance))
     black = sum(1 for rgb in pixels if _is_black(rgb))
     return desk / len(pixels), black / len(pixels)
 
@@ -168,23 +193,68 @@ def _trace(tmp_path):
         return ""
 
 
-def _start_editor(owner, display, tmp_path, request, options):
+def _start_editor(owner, display, tmp_path, request, options, extra_env=None):
     """The editor on the row's display, tracing to TRACE."""
     src = tmp_path / SOURCE
     src.write_text("int main(void){return 0;}\n")
+    env = {"XWPE_UI_TRACE": str(tmp_path / TRACE)}
+    env.update(extra_env or {})
     return owner_api.Editor.start(
         owner, conftest.XWPE_BIN, options + [str(src)], "x11", display,
-        str(tmp_path), str(tmp_path),
-        extra_env={"XWPE_UI_TRACE": str(tmp_path / TRACE)},
+        str(tmp_path), str(tmp_path), extra_env=env,
         label=request.node.nodeid, request=request)
 
 
-def _wait_picture_settled(editor, tmp_path, what):
-    """Wait until the editor has painted and then stopped painting."""
-    frame = os.path.join(str(tmp_path), "frame.ppm")
-    last = {}
-    wait_for(lambda: _frame_settled(frame, last), what, FRAME_S,
+def _start_filler(owner, display, tmp_path, request, mode):
+    """The colormap filler on the row's display, once the colormap is full.
+
+    It keeps its cells until the row ends it."""
+    filler = owner_api.Client.start(
+        owner, [sys.executable, "-I", FILLER, mode], display, str(tmp_path),
+        str(tmp_path), label=request.node.nodeid, request=request)
+    wait_for(lambda: "filler:" in filler.log_text() or not filler.running(),
+             "the filler to fill the default colormap", CLIENT_S,
+             state_fn=filler.log_text)
+    assert filler.running() and "filler:" in filler.log_text(), \
+        "the filler did not fill the colormap: %r" % filler.log_text()
+    return filler
+
+
+def _wait_started_or_ended(editor, tmp_path):
+    """Wait until the editor has chosen its colours, or has ended."""
+    wait_for(lambda: ROUTE_LINE in _trace(tmp_path) or not editor.running(),
+             "the editor to allocate its colours or end", WINDOW_S,
              state_fn=editor.log_text)
+
+
+def _alloc_levels(trace):
+    """The level each palette entry got its cell at, by entry."""
+    return {int(m.group(1)): int(m.group(2)) for m in ALLOC_LINE.finditer(trace)}
+
+
+def _colormap_of(owner, display, tmp_path, request, target):
+    """The colormap xwininfo reports for a window (or "-root")."""
+    argv = ["xwininfo", "-root"] if target == "-root" else \
+        ["xwininfo", "-id", target]
+    info = _run_client(owner, display, tmp_path, request, argv,
+                       "xwininfo to report a colormap")
+    found = COLORMAP_LINE.search(info.log_text())
+    assert found, "no colormap in %r" % info.log_text()
+    return found.group(1)
+
+
+def _assert_alive_after_start(editor, tmp_path):
+    _wait_started_or_ended(editor, tmp_path)
+    assert editor.running(), "the editor ended: %s" % editor.log_text()
+
+
+def _wait_picture_settled(editor, tmp_path, what):
+    """Wait until the editor has painted and then stopped painting, or has
+    ended (the row's own assertion then reports how it ended)."""
+    frame = os.path.join(str(tmp_path), FRAME)
+    last = {}
+    wait_for(lambda: _frame_settled(frame, last) or not editor.running(),
+             what, FRAME_S, state_fn=editor.log_text)
 
 
 def _presented_bytes(trace):
@@ -249,3 +319,170 @@ def test_a_typed_character_sends_a_few_cells_on_an_8_bit_display(
     assert editor.running(), "the editor ended: %s" % editor.log_text()
     assert sent < KEYSTROKE_MAX_BYTES, \
         "one typed character sent %d bytes to the window" % sent
+
+
+# @scenario SC-display-07
+def test_a_full_default_colormap_does_not_end_the_editor(
+        gui_owner, tmp_path, request):
+    """Another program holds every free cell of the default colormap
+    writable, as a busy 8-bit desktop does.  The original editor ended
+    with "all colorcells allocated".  Black is still there to share, but
+    nothing near Red3 is, so the editor moves to a colormap of its own
+    once, at Red3, and allocates Red3 and every later colour exactly
+    there; the desk is its own Dark Slate Blue."""
+    display = _start_8_bit_display(gui_owner, tmp_path, request)
+    _start_filler(gui_owner, display, tmp_path, request, "full")
+    editor = _start_editor(gui_owner, display, tmp_path, request, [])
+    _assert_alive_after_start(editor, tmp_path)
+    window = _editor_window(gui_owner, display, tmp_path, request)
+    _wait_picture_settled(editor, tmp_path,
+                          "the editor to finish painting its first picture")
+    desk, black = _shares(_capture(gui_owner, display, tmp_path, request,
+                                   window))
+    levels = _alloc_levels(_trace(tmp_path))
+    window_cmap = _colormap_of(gui_owner, display, tmp_path, request, window)
+    root_cmap = _colormap_of(gui_owner, display, tmp_path, request, "-root")
+
+    assert editor.running(), "the editor ended: %s" % editor.log_text()
+    assert sorted(levels) == list(range(PALETTE_SIZE)), levels
+    assert [i for i, lv in levels.items() if lv == LEVEL_PRIVATE] == \
+        [FIRST_FAR_ENTRY], levels
+    assert all(lv == LEVEL_EXACT for i, lv in levels.items()
+               if i != FIRST_FAR_ENTRY), levels
+    assert window_cmap != root_cmap, \
+        "the window kept the full default colormap %s" % root_cmap
+    assert desk >= DESK_MIN_SHARE, \
+        "too little of the window is the desk colour: desk %.1f%%, black %.1f%%" \
+        % (100 * desk, 100 * black)
+    assert editor.log_text().count("using a private one") == 1, \
+        editor.log_text()
+
+
+# @scenario SC-display-07
+def test_a_full_colormap_of_near_colours_keeps_the_default_one(
+        gui_owner, tmp_path, request):
+    """The default colormap is full, but holds, for each of the editor's
+    colours it lacks, one colour a little off it.  The editor takes those
+    nearest cells and stays in the screen's colormap, so no colormap
+    flash: the desk is within a small distance of Dark Slate Blue."""
+    display = _start_8_bit_display(gui_owner, tmp_path, request)
+    _start_filler(gui_owner, display, tmp_path, request, "near")
+    editor = _start_editor(gui_owner, display, tmp_path, request, [])
+    _assert_alive_after_start(editor, tmp_path)
+    window = _editor_window(gui_owner, display, tmp_path, request)
+    _wait_picture_settled(editor, tmp_path,
+                          "the editor to finish painting its first picture")
+    desk, black = _shares(_capture(gui_owner, display, tmp_path, request,
+                                   window), DESK_NEAR_TOLERANCE)
+    levels = _alloc_levels(_trace(tmp_path))
+    window_cmap = _colormap_of(gui_owner, display, tmp_path, request, window)
+    root_cmap = _colormap_of(gui_owner, display, tmp_path, request, "-root")
+
+    assert editor.running(), "the editor ended: %s" % editor.log_text()
+    assert sorted(levels) == list(range(PALETTE_SIZE)), levels
+    assert LEVEL_PRIVATE not in levels.values(), levels
+    assert LEVEL_NEAREST in levels.values(), levels
+    assert window_cmap == root_cmap, \
+        "the window left the default colormap: %s, root %s" \
+        % (window_cmap, root_cmap)
+    assert desk >= DESK_MIN_SHARE, \
+        "too little of the window is near the desk colour: desk %.1f%%, " \
+        "black %.1f%%" % (100 * desk, 100 * black)
+
+
+# @scenario SC-display-05
+@pytest.mark.parametrize("options", [["-pcmap"], []],
+                         ids=["pcmap_on", "pcmap_off"])
+def test_the_frame_dump_on_an_8_bit_display_is_what_the_window_shows(
+        gui_owner, tmp_path, request, options):
+    """The editor's own frame dump (XWPE_X_DUMP), which the graphical rows
+    read, decodes a palette window through the window's colormap: it is
+    pixel for pixel what xwd captures of the window."""
+    from PIL import Image
+
+    display = _start_8_bit_display(gui_owner, tmp_path, request)
+    editor = _start_editor(gui_owner, display, tmp_path, request, options)
+    window = _editor_window(gui_owner, display, tmp_path, request)
+    _wait_picture_settled(editor, tmp_path,
+                          "the editor to finish painting its first picture")
+    captured = _capture(gui_owner, display, tmp_path, request, window)
+    dumped = Image.open(str(tmp_path / FRAME)).convert("RGB")
+    a, b = captured.tobytes(), dumped.tobytes()
+    differing = sum(1 for i in range(0, min(len(a), len(b)), 3)
+                    if a[i:i + 3] != b[i:i + 3])
+
+    assert editor.running(), "the editor ended: %s" % editor.log_text()
+    assert dumped.size == captured.size, (dumped.size, captured.size)
+    assert differing == 0, "%d of %d pixels differ between the dump and xwd" \
+        % (differing, len(a) // 3)
+
+
+# @scenario SC-display-05
+def test_a_window_without_picture_memory_stays_alive_and_draws_after_a_resize(
+        gui_owner, tmp_path, request):
+    """When there is no memory for the picture the indexed route sends, the
+    editor keeps running, draws nothing, says so once on stderr, and the
+    next resize makes the picture again and draws it."""
+    display = _start_8_bit_display(gui_owner, tmp_path, request)
+    editor = _start_editor(gui_owner, display, tmp_path, request, [],
+                           {"XWPE_TEST_FAULT": FAULT_RESIZE_IMAGE})
+    _assert_alive_after_start(editor, tmp_path)
+    window = _editor_window(gui_owner, display, tmp_path, request)
+    wait_for(lambda: REFUSED_LINE in _trace(tmp_path) or not editor.running(),
+             "the editor to report the refused picture memory", FRAME_S,
+             state_fn=editor.log_text)
+    _wait_picture_settled(editor, tmp_path,
+                          "the editor to finish its first refresh")
+    assert editor.running(), "the editor ended: %s" % editor.log_text()
+    _run_client(gui_owner, display, tmp_path, request,
+                ["xdotool", "windowsize", window, RESIZED_W, RESIZED_H],
+                "xdotool to resize the editor's window")
+    wait_for(lambda: PRESENT_WORD in _after_refusal(_trace(tmp_path))
+             or not editor.running(),
+             "the editor to draw after a resize", FRAME_S,
+             state_fn=lambda: _trace(tmp_path))
+    _wait_picture_settled(editor, tmp_path,
+                          "the editor to finish painting after the resize")
+    without_memory, _, with_memory = \
+        _after_refusal(_trace(tmp_path)).partition(MADE_LINE)
+    desk, black = _shares(_capture(gui_owner, display, tmp_path, request,
+                                   window))
+
+    assert editor.running(), "the editor ended: %s" % editor.log_text()
+    assert editor.log_text().count(OUT_OF_MEMORY) == 1, editor.log_text()
+    assert PRESENT_WORD not in without_memory, \
+        "the editor drew without picture memory: %r" % without_memory
+    assert PRESENT_WORD in with_memory, \
+        "the editor did not draw once a resize gave it memory: %r" % with_memory
+    assert desk >= DESK_MIN_SHARE, \
+        "the window was not drawn after the resize: desk %.1f%%, black %.1f%%" \
+        % (100 * desk, 100 * black)
+
+
+# @scenario SC-display-07
+def test_an_unknown_colour_name_costs_only_that_colour(
+        gui_owner, tmp_path, request):
+    """A colour resource the server does not know (here the desk's,
+    color5) is reported on stderr and replaced by the built-in colour; the
+    original ended the editor with "unable to find color"."""
+    (tmp_path / ".Xdefaults").write_text("xwpe.color5: %s\n" % UNKNOWN_COLOUR)
+    display = _start_8_bit_display(gui_owner, tmp_path, request)
+    editor = _start_editor(gui_owner, display, tmp_path, request, [])
+    _assert_alive_after_start(editor, tmp_path)
+    window = _editor_window(gui_owner, display, tmp_path, request)
+    _wait_picture_settled(editor, tmp_path,
+                          "the editor to finish painting its first picture")
+    desk, black = _shares(_capture(gui_owner, display, tmp_path, request,
+                                   window))
+
+    assert editor.running(), "the editor ended: %s" % editor.log_text()
+    assert editor.log_text().count(UNKNOWN_COLOUR) == 1, editor.log_text()
+    assert desk >= DESK_MIN_SHARE, \
+        "the desk is not the built-in colour: desk %.1f%%, black %.1f%%" \
+        % (100 * desk, 100 * black)
+
+
+def _after_refusal(trace):
+    """The trace from the refused picture memory on ("" before it)."""
+    _, found, rest = trace.partition(REFUSED_LINE)
+    return found + rest

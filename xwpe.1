@@ -161,7 +161,11 @@ Start \fIxwpe\fP as icon.
 .IP "\fB-pcmap\fP"
 Use a private colormap, for a palette (8-bit) display whose shared
 colormap other programs have filled.  With or without it, \fIxwpe\fP
-paints a palette display in its own 16 colors.
+paints a palette display in its own 16 colors.  Without it, when the
+shared colormap is full, \fIxwpe\fP takes the nearest color already
+there for each color it cannot get, if one is close, and otherwise
+switches to a private colormap by itself and says so once on standard
+error; it never exits for want of colors.
 
 
 .SH INITIALISATION FILES

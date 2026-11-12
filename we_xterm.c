@@ -945,6 +945,175 @@ static unsigned char wpe_x_chan(unsigned long px, unsigned long mask)
  return (unsigned char)(px & 0xffUL);
 }
 
+/* The largest colormap a dump reads to decode a palette window; a colormap
+   with more cells than this belongs to no palette display. */
+#define WPE_X_DUMP_CELLS_MAX 4096
+/* The 16-bit channels XQueryColors gives, cut to the 8 bits a PPM holds. */
+#define WPE_X_DUMP_CHANNEL_SHIFT 8
+
+/**
+ * wpe_x_dump_mask_shift - The lowest bit a channel mask covers.
+ * @mask: a visual's red, green or blue mask
+ *
+ * Return: the bit number, 0 for an empty mask.
+ */
+static int wpe_x_dump_mask_shift(unsigned long mask)
+{
+ int shift = 0;
+
+ if (!mask)
+  return 0;
+ while (!(mask & 1UL))
+ {
+  mask >>= 1;
+  shift++;
+ }
+ return shift;
+}
+
+/**
+ * wpe_x_dump_uses_colormap - Whether a window's pixels go through its colormap.
+ * @visual: the window's visual
+ *
+ * On a true-colour window a pixel holds its colour in its bits; on every
+ * other visual (a palette, grey or fixed-colour one, or DirectColor, whose
+ * channels index the colormap) only the colormap says what colour it is.
+ *
+ * Return: nonzero when the colormap must be read to decode a pixel.
+ */
+static int wpe_x_dump_uses_colormap(const Visual *visual)
+{
+ if (visual->class == TrueColor)
+  return 0;
+ return visual->map_entries > 0 && visual->map_entries <= WPE_X_DUMP_CELLS_MAX;
+}
+
+/**
+ * wpe_x_dump_cell_pixel - The pixel whose colour is colormap entry @i.
+ * @visual: the window's visual
+ * @i: the entry
+ *
+ * On DirectColor the same entry number in all three channels, so one query
+ * gives the red, green and blue entry @i at once.
+ *
+ * Return: the pixel to ask the colormap for.
+ */
+static unsigned long wpe_x_dump_cell_pixel(const Visual *visual, int i)
+{
+ unsigned long n = (unsigned long)i;
+
+ if (visual->class != DirectColor)
+  return n;
+ return ((n << wpe_x_dump_mask_shift(visual->red_mask)) & visual->red_mask)
+        | ((n << wpe_x_dump_mask_shift(visual->green_mask)) & visual->green_mask)
+        | ((n << wpe_x_dump_mask_shift(visual->blue_mask)) & visual->blue_mask);
+}
+
+/**
+ * wpe_x_dump_read_colormap - The colours of a window's colormap, as 8 bits.
+ * @cmap: the window's colormap
+ * @visual: the window's visual
+ *
+ * Read once per dump, so a palette window is dumped in the colours it
+ * really shows through its own colormap, also when that colormap is a
+ * private one the screen has not installed.
+ *
+ * Return: visual->map_entries rows of red, green and blue, to be freed by
+ * the caller; NULL when there is no memory.
+ */
+static unsigned char (*wpe_x_dump_read_colormap(Colormap cmap,
+                                                Visual *visual))[3]
+{
+ int n = visual->map_entries, i;
+ XColor *cells = calloc((size_t)n, sizeof *cells);
+ unsigned char (*rgb)[3] = calloc((size_t)n, sizeof *rgb);
+
+ if (!cells || !rgb)
+ {
+  free(cells);
+  free(rgb);
+  return NULL;
+ }
+ for (i = 0; i < n; i++)
+ {
+  cells[i].pixel = wpe_x_dump_cell_pixel(visual, i);
+  cells[i].flags = DoRed | DoGreen | DoBlue;
+ }
+ XQueryColors(WpeXInfo.display, cmap, cells, n);
+ for (i = 0; i < n; i++)
+ {
+  rgb[i][0] = cells[i].red >> WPE_X_DUMP_CHANNEL_SHIFT;
+  rgb[i][1] = cells[i].green >> WPE_X_DUMP_CHANNEL_SHIFT;
+  rgb[i][2] = cells[i].blue >> WPE_X_DUMP_CHANNEL_SHIFT;
+ }
+ free(cells);
+ return rgb;
+}
+
+/**
+ * wpe_x_dump_channel_cell - The colormap entry one channel of a pixel names.
+ * @px: the pixel
+ * @mask: that channel's mask
+ * @n: how many entries the colormap has
+ *
+ * Return: the entry, or -1 when it lies outside the colormap.
+ */
+static int wpe_x_dump_channel_cell(unsigned long px, unsigned long mask, int n)
+{
+ unsigned long cell = (px & mask) >> wpe_x_dump_mask_shift(mask);
+
+ if (cell >= (unsigned long)n)
+  return -1;
+ return (int)cell;
+}
+
+/**
+ * wpe_x_dump_colormap_rgb - Decode a pixel through the window's colormap.
+ * @visual: the window's visual
+ * @cmap_rgb: the colormap's colours, from wpe_x_dump_read_colormap
+ * @px: the pixel
+ * @rgb: receives red, green and blue
+ *
+ * A pixel outside the colormap shows as black.
+ */
+static void wpe_x_dump_colormap_rgb(const Visual *visual,
+                                    unsigned char (*cmap_rgb)[3],
+                                    unsigned long px, unsigned char rgb[3])
+{
+ int n = visual->map_entries, r, g, b;
+
+ rgb[0] = rgb[1] = rgb[2] = 0;
+ if (visual->class != DirectColor)
+ {
+  if (px < (unsigned long)n)
+   memcpy(rgb, cmap_rgb[px], 3);
+  return;
+ }
+ r = wpe_x_dump_channel_cell(px, visual->red_mask, n);
+ g = wpe_x_dump_channel_cell(px, visual->green_mask, n);
+ b = wpe_x_dump_channel_cell(px, visual->blue_mask, n);
+ if (r >= 0)
+  rgb[0] = cmap_rgb[r][0];
+ if (g >= 0)
+  rgb[1] = cmap_rgb[g][1];
+ if (b >= 0)
+  rgb[2] = cmap_rgb[b][2];
+}
+
+/**
+ * wpe_x_dump_mask_rgb - Decode a true-colour pixel by its channel masks.
+ * @img: the image the pixel comes from
+ * @px: the pixel
+ * @rgb: receives red, green and blue
+ */
+static void wpe_x_dump_mask_rgb(const XImage *img, unsigned long px,
+                                unsigned char rgb[3])
+{
+ rgb[0] = wpe_x_chan(px, img->red_mask);
+ rgb[1] = wpe_x_chan(px, img->green_mask);
+ rgb[2] = wpe_x_chan(px, img->blue_mask);
+}
+
 /* XGetImage raises a fatal Xlib error (BadMatch) if the window is not fully
    viewable -- e.g. a window manager placed it partly off-screen.  A debug
    screenshot must never kill the editor, so trap the error here and let the
@@ -963,6 +1132,8 @@ static int wpe_x_dump_errh(Display *dpy, XErrorEvent *ev)
    window (not the back-buffer Pixmap): a Pixmap carries no visual, so XGetImage
    leaves its RGB masks zero and every pixel decodes to black.  Captured at the
    window's actual size (a WM may have resized it) and only when it is viewable.
+   On any visual but TrueColor the pixels are decoded through the window's own
+   colormap, so a palette display dumps the colours the window shows.
    Written to a temp file and renamed atomically by the caller. */
 static int wpe_x_dump_ppm(const char *path)
 {
@@ -972,6 +1143,7 @@ static int wpe_x_dump_ppm(const char *path)
  XImage *img;
  FILE *fp;
  int x, y;
+ unsigned char (*cmap_rgb)[3] = NULL;
 
  if (!WpeXInfo.window
      || !XGetWindowAttributes(WpeXInfo.display, WpeXInfo.window, &wa)
@@ -1005,20 +1177,27 @@ static int wpe_x_dump_ppm(const char *path)
    XDestroyImage(img);
   return -1;
  }
+ if (wpe_x_dump_uses_colormap(wa.visual))
+ {
+  cmap_rgb = wpe_x_dump_read_colormap(wa.colormap, wa.visual);
+  if (!cmap_rgb) { XDestroyImage(img); return -1; }
+ }
  fp = fopen(path, "wb");
- if (!fp) { XDestroyImage(img); return -1; }
+ if (!fp) { free(cmap_rgb); XDestroyImage(img); return -1; }
  fprintf(fp, "P6\n%d %d\n255\n", w, h);
  for (y = 0; y < h; y++)
   for (x = 0; x < w; x++)
   {
    unsigned long px = XGetPixel(img, x, y);
    unsigned char rgb[3];
-   rgb[0] = wpe_x_chan(px, img->red_mask);
-   rgb[1] = wpe_x_chan(px, img->green_mask);
-   rgb[2] = wpe_x_chan(px, img->blue_mask);
+   if (cmap_rgb)
+    wpe_x_dump_colormap_rgb(wa.visual, cmap_rgb, px, rgb);
+   else
+    wpe_x_dump_mask_rgb(img, px, rgb);
    fwrite(rgb, 1, 3, fp);
   }
  fclose(fp);
+ free(cmap_rgb);
  XDestroyImage(img);
  return 0;
 }

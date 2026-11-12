@@ -916,6 +916,44 @@ static int cr_ix_send(cairo_region_t *changed)
 }
 
 /**
+ * cr_ix_surface_ok - Whether cairo's picture of the window is there.
+ *
+ * Return: nonzero when the image surface was made and is usable.
+ */
+static int cr_ix_surface_ok(void)
+{
+ if (cr_surface == NULL)
+  return 0;
+ return cairo_surface_status(cr_surface) == CAIRO_STATUS_SUCCESS;
+}
+
+/**
+ * cr_ix_ready - Whether the indexed route has what a present needs.
+ *
+ * Both the picture cairo paints on and the image it is sent with; either
+ * may be missing after memory ran out, and a present then draws nothing
+ * instead of crashing the editor.
+ *
+ * Return: nonzero when a present can go ahead.
+ */
+static int cr_ix_ready(void)
+{
+ return cr_ix_image != NULL && cr_ix_surface_ok();
+}
+
+/**
+ * cr_ix_drop_dirty - Forget what was painted since the last present.
+ *
+ * When a refresh cannot be sent: the next resize repaints and sends the
+ * whole window anyway.
+ */
+static void cr_ix_drop_dirty(void)
+{
+ cairo_region_destroy(cr_ix_dirty);
+ cr_ix_dirty = cairo_region_create();
+}
+
+/**
  * cr_ix_touch - Remember that a primitive painted a rectangle.
  * @x: left edge, in pixels
  * @y: top edge, in pixels
@@ -955,7 +993,7 @@ static void cr_ix_present(int x, int y, int w, int h)
  r.y = y;
  r.width = w;
  r.height = h;
- if (!cr_ix_clip_rect(&r))
+ if (!cr_ix_ready() || !cr_ix_clip_rect(&r))
   return;
  cairo_surface_flush(cr_surface);
  changed = cairo_region_create();
@@ -993,6 +1031,11 @@ static void cr_ix_present_all(void)
  n = cairo_region_num_rectangles(cr_ix_dirty);
  if (n == 0)
   return;
+ if (!cr_ix_ready())
+ {
+  cr_ix_drop_dirty();
+  return;
+ }
  cr_ix_bytes = 0;
  cairo_surface_flush(cr_surface);
  changed = cairo_region_create();
@@ -1026,6 +1069,8 @@ static void cr_ix_blit(int sx, int sy, int dx, int dy, int w, int h)
  unsigned char *data;
  int stride, row, first, last, step;
 
+ if (!cr_ix_surface_ok())
+  return;
  cairo_surface_flush(cr_surface);
  data = cairo_image_surface_get_data(cr_surface);
  stride = cairo_image_surface_get_stride(cr_surface);
@@ -1062,6 +1107,85 @@ static void cr_ix_fill_backbuf(int pixel_w, int pixel_h)
    0, 0, pixel_w, pixel_h);
 }
 
+/* The test fault $XWPE_TEST_FAULT names for the indexed route,
+   "palette-image:<n>": the n-th picture memory the route asks for is
+   refused, as on a machine out of memory. */
+#define CR_IX_FAULT_NAME "palette-image"
+#define CR_IX_FAULT_UNREAD (-1)
+#define CR_IX_FAULT_NONE 0
+static int cr_ix_fault_n = CR_IX_FAULT_UNREAD;
+/* How many times the route has asked for picture memory. */
+static int cr_ix_image_asks;
+
+/**
+ * cr_ix_fault_from_env - Read which picture memory a test refuses.
+ *
+ * Read once, at the first request.  A test of the running editor arms it to
+ * show that a window whose picture memory is refused stays alive, draws
+ * nothing, says so once, and draws again after the next resize.  Unset, or
+ * naming another fault point, arms nothing.
+ *
+ * Return: the request to refuse, counting from 1, or CR_IX_FAULT_NONE.
+ */
+static int cr_ix_fault_from_env(void)
+{
+ const char *spec;
+ size_t len = strlen(CR_IX_FAULT_NAME);
+
+ if (cr_ix_fault_n != CR_IX_FAULT_UNREAD)
+  return cr_ix_fault_n;
+ cr_ix_fault_n = CR_IX_FAULT_NONE;
+ spec = getenv("XWPE_TEST_FAULT");
+ if (spec && strncmp(spec, CR_IX_FAULT_NAME, len) == 0 && spec[len] == ':')
+  cr_ix_fault_n = atoi(spec + len + 1);
+ return cr_ix_fault_n;
+}
+
+/**
+ * cr_ix_image_memory - The memory for the picture the presents send.
+ * @bytes_per_line: one row, as the server pads it
+ * @pixel_h: rows
+ *
+ * Return: zeroed memory, or NULL when there is none (or a test refused it).
+ */
+static char *cr_ix_image_memory(int bytes_per_line, int pixel_h)
+{
+ cr_ix_image_asks++;
+ if (cr_ix_image_asks == cr_ix_fault_from_env())
+  return NULL;
+ return calloc((size_t)bytes_per_line, (size_t)pixel_h);
+}
+
+/**
+ * cr_ix_image_refused - Say once that a window size got no picture memory.
+ * @pixel_w: width, in pixels
+ * @pixel_h: height, in pixels
+ *
+ * The user sees a window that stays as it was; this line on stderr tells
+ * why, and that a smaller window (or another resize) draws again.
+ */
+static void cr_ix_image_refused(int pixel_w, int pixel_h)
+{
+ fprintf(stderr, "xwpe: out of memory for a %dx%d window picture, "
+         "not drawing until the window is resized\n", pixel_w, pixel_h);
+ wpe_ui_trace("palette image refused w=%d h=%d", pixel_w, pixel_h);
+}
+
+/**
+ * cr_ix_image_made_trace - Say in $XWPE_UI_TRACE that a window size got its
+ * picture memory.
+ * @pixel_w: width, in pixels
+ * @pixel_h: height, in pixels
+ *
+ * Read with the refusal line: someone whose window stayed empty sees from
+ * which resize on it is drawn again.  Nothing is written when the variable
+ * is not set.
+ */
+static void cr_ix_image_made_trace(int pixel_w, int pixel_h)
+{
+ wpe_ui_trace("palette image made w=%d h=%d", pixel_w, pixel_h);
+}
+
 /**
  * cr_ix_make_image - Make the XImage the presents are sent with.
  * @pixel_w: width, in pixels
@@ -1070,17 +1194,35 @@ static void cr_ix_fill_backbuf(int pixel_w, int pixel_h)
  * The server's own pixel size and byte order, so the mapped pixels go out
  * as they are on any depth and on any machine.  It starts in palette
  * entry 0, like the back buffer, because it always holds what the back
- * buffer holds: that is how a refresh knows which pixels changed.
+ * buffer holds: that is how a refresh knows which pixels changed.  When
+ * there is no memory for it the editor keeps running and draws nothing
+ * until the next resize makes the image again.
+ *
+ * Return: nonzero when the image is there.
  */
-static void cr_ix_make_image(int pixel_w, int pixel_h)
+static int cr_ix_make_image(int pixel_w, int pixel_h)
 {
  Display *dpy = WpeXInfo.display;
 
  cr_ix_image = XCreateImage(dpy, DefaultVisual(dpy, WpeXInfo.screen),
    DefaultDepth(dpy, WpeXInfo.screen), ZPixmap, 0, NULL,
    pixel_w, pixel_h, CR_IX_PAD_BITS, 0);
- cr_ix_image->data = calloc((size_t)cr_ix_image->bytes_per_line, pixel_h);
+ if (cr_ix_image == NULL)
+ {
+  cr_ix_image_refused(pixel_w, pixel_h);
+  return 0;
+ }
+ cr_ix_image->data = cr_ix_image_memory(cr_ix_image->bytes_per_line, pixel_h);
+ if (cr_ix_image->data == NULL)
+ {
+  XDestroyImage(cr_ix_image);
+  cr_ix_image = NULL;
+  cr_ix_image_refused(pixel_w, pixel_h);
+  return 0;
+ }
  XAddPixel(cr_ix_image, (long)e_x_palette_pixel(0));
+ cr_ix_image_made_trace(pixel_w, pixel_h);
+ return 1;
 }
 
 /**

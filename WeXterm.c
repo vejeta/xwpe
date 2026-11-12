@@ -594,6 +594,507 @@ static void x_render_route_choose(Visual *visual, int depth)
  x_render_route_trace(visual, depth);
 }
 
+/* How a palette entry got its colour cell, as the trace names it.  Exact:
+   the colour itself (a free cell, or a read-only cell that already holds
+   it).  Nearest: an existing cell of a full colormap close to it.  Private:
+   the default colormap was full and held nothing close, so the editor moved
+   to a colormap of its own and allocated the colour exactly there.  Black:
+   not even that worked, and the entry shows as the screen's black. */
+#define X_PALETTE_LEVEL_EXACT   1
+#define X_PALETTE_LEVEL_NEAREST 2
+#define X_PALETTE_LEVEL_PRIVATE 3
+#define X_PALETTE_LEVEL_BLACK   4
+
+/* How far, per channel of 0..255, an existing cell may be from the colour an
+   entry asks for and still be taken for it: close enough to read as the same
+   colour, far enough that the cell does not belong to some other colour. */
+#define X_PALETTE_NEAREST_MAX 32
+/* The largest colormap whose cells are read to find the nearest one; a
+   colormap with more cells than this is not a palette worth searching. */
+#define X_PALETTE_QUERY_MAX 4096
+/* The 16-bit channels XQueryColors gives, cut to the 8 bits compared. */
+#define X_PALETTE_CHANNEL_SHIFT 8
+
+/* The cells of the colormap the nearest colour is searched in, read once
+   with XQueryColors, and which of them were tried and refused (a writable
+   cell of another client cannot be shared). */
+static XColor *x_palette_cells;
+static char *x_palette_tried;
+static int x_palette_ncells;
+/* The colour each entry asked for (before the server rounded it) and how
+   many entries have a cell so far, so two different colours never end up
+   in one cell. */
+static XColor x_palette_requested[X_PALETTE_SIZE];
+static int x_palette_assigned;
+
+/**
+ * x_palette_resource_names - Read the colour names the X resources set.
+ * @xresdb: X resource database
+ * @name_list: name quark list (second element set here)
+ * @class_list: class quark list (second element set here)
+ * @names: receives, per entry, the name to allocate: the resource
+ *         (Xwpe.color1 .. Xwpe.color16) when set, else the built-in one
+ *
+ * A user who changed a colour in ~/.Xdefaults sees it; the built-in names
+ * stay at hand for when the user's name is not a colour.
+ */
+static void x_palette_resource_names(XrmDatabase xresdb, XrmQuark *name_list,
+                                     XrmQuark *class_list,
+                                     char *names[X_PALETTE_SIZE])
+{
+ XrmRepresentation return_value;
+ XrmValue xval;
+ char color_name[8];
+ int loop;
+
+ memset(color_name, 0, sizeof color_name);
+ strcpy(color_name, "color");
+ for (loop = 0; loop < X_PALETTE_SIZE; loop++)
+ {
+  names[loop] = WpeXColorNames[loop];
+  /* color names start at 1 not 0 */
+  if (loop < 9)
+   color_name[5] = loop + '1';
+  else
+  {
+   color_name[5] = '1';
+   color_name[6] = loop - 9 + '0';
+  }
+  name_list[1] = XrmStringToQuark(color_name);
+  class_list[1] = XrmStringToQuark(color_name);
+  if (XrmQGetResource(xresdb, name_list, class_list, &return_value, &xval))
+   names[loop] = (char *)xval.addr;
+ }
+}
+
+/**
+ * x_palette_choose_colormap - The colormap the editor allocates in first.
+ * @xresdb: X resource database
+ * @name_list: name quark list (second element set here)
+ * @class_list: class quark list (second element set here)
+ * @visual: the window's visual
+ *
+ * The screen's default colormap, so the editor's colours show without a
+ * colormap flash; or, when the user asked for one with -pcmap (the pcmap
+ * resource "on"), a private colormap set on the window.
+ *
+ * Return: the colormap.
+ */
+static Colormap x_palette_choose_colormap(XrmDatabase xresdb,
+                                          XrmQuark *name_list,
+                                          XrmQuark *class_list, Visual *visual)
+{
+ XrmRepresentation return_value;
+ XrmValue xval;
+ Screen *xscreen;
+ Colormap cmap;
+
+ name_list[1] = XrmStringToQuark("pcmap");
+ class_list[1] = XrmStringToQuark("Pcmap");
+ if (!XrmQGetResource(xresdb, name_list, class_list, &return_value, &xval))
+  return DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
+ if (WpeStrccmp((char *)xval.addr, "on") != 0)
+  return DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
+ xscreen = DefaultScreenOfDisplay(WpeXInfo.display);
+ cmap = XCreateColormap(WpeXInfo.display, RootWindowOfScreen(xscreen),
+   visual, AllocNone);
+ XSetWindowColormap(WpeXInfo.display, WpeXInfo.window, cmap);
+ x_palette_cmap = cmap;
+ return cmap;
+}
+
+/**
+ * x_palette_parse - Turn an entry's colour name into the colour it asks for.
+ * @idx: palette index, 0..15
+ * @name: the name the resources gave it
+ * @cmap: the colormap the name is looked up for
+ * @color: receives the colour
+ *
+ * A mistyped colour in the user's resources costs that one colour, not the
+ * editor: it is said once on stderr and the built-in colour is used.  Only
+ * when the built-in name is unknown too (a server without a colour
+ * database) does the editor give up.
+ */
+static void x_palette_parse(int idx, const char *name, Colormap cmap,
+                            XColor *color)
+{
+ if (XParseColor(WpeXInfo.display, cmap, name, color))
+  return;
+ fprintf(stderr, "xwpe: unknown colour \"%s\" for color%d, using \"%s\"\n",
+         name, idx + 1, WpeXColorNames[idx]);
+ if (XParseColor(WpeXInfo.display, cmap, WpeXColorNames[idx], color))
+  return;
+ fprintf(stderr, "xwpe: unable to find color \"%s\", exiting ...\n",
+         WpeXColorNames[idx]);
+ exit(1);
+}
+
+/**
+ * x_palette_alloc_exact - Allocate the colour an entry asks for.
+ * @cmap: the colormap
+ * @color: the colour; on success it holds the pixel and the colour the
+ *         server really gave
+ *
+ * Level 1: a free cell, or a read-only cell that already holds this colour
+ * (black and white, and on many servers a small colour cube, are always
+ * there), so it works on a full colormap for those colours too.
+ *
+ * Return: nonzero when the colour was allocated.
+ */
+static int x_palette_alloc_exact(Colormap cmap, XColor *color)
+{
+ return XAllocColor(WpeXInfo.display, cmap, color) != 0;
+}
+
+/**
+ * x_palette_forget_cells - Drop the cells read from a colormap.
+ *
+ * When the editor moves to another colormap, whose cells are other ones.
+ */
+static void x_palette_forget_cells(void)
+{
+ free(x_palette_cells);
+ free(x_palette_tried);
+ x_palette_cells = NULL;
+ x_palette_tried = NULL;
+ x_palette_ncells = 0;
+}
+
+/**
+ * x_palette_searchable - Whether a visual's cells can be searched by pixel.
+ * @visual: the window's visual
+ *
+ * On a palette or grey display with writable cells a pixel is an index into
+ * the colormap, so its cells can be read one by one and shared.  Fixed
+ * displays never run out of cells, and on a DirectColor display a pixel is
+ * three indexes, so neither is searched.
+ */
+static int x_palette_searchable(Visual *visual)
+{
+ if (visual->class != PseudoColor && visual->class != GrayScale)
+  return 0;
+ return visual->map_entries > 0 && visual->map_entries <= X_PALETTE_QUERY_MAX;
+}
+
+/**
+ * x_palette_read_cells - Read every cell of a colormap, once.
+ * @cmap: the colormap
+ * @visual: the window's visual
+ *
+ * The first entry that finds the colormap full pays for one XQueryColors;
+ * the entries after it search the same answer.
+ *
+ * Return: nonzero when the cells are at hand.
+ */
+static int x_palette_read_cells(Colormap cmap, Visual *visual)
+{
+ int i, n;
+
+ if (x_palette_cells)
+  return 1;
+ if (!x_palette_searchable(visual))
+  return 0;
+ n = visual->map_entries;
+ x_palette_cells = calloc((size_t)n, sizeof *x_palette_cells);
+ x_palette_tried = calloc((size_t)n, 1);
+ if (!x_palette_cells || !x_palette_tried)
+ {
+  x_palette_forget_cells();
+  return 0;
+ }
+ for (i = 0; i < n; i++)
+ {
+  x_palette_cells[i].pixel = (unsigned long)i;
+  x_palette_cells[i].flags = DoRed | DoGreen | DoBlue;
+ }
+ XQueryColors(WpeXInfo.display, cmap, x_palette_cells, n);
+ x_palette_ncells = n;
+ return 1;
+}
+
+/**
+ * x_palette_channel - A 16-bit channel cut to 8 bits.
+ * @c: the channel as the server gives it
+ *
+ * Return: 0..255.
+ */
+static int x_palette_channel(unsigned short c)
+{
+ return c >> X_PALETTE_CHANNEL_SHIFT;
+}
+
+/**
+ * x_palette_same_rgb - Whether two colours are the same colour.
+ * @a: one colour
+ * @b: the other
+ *
+ * Return: nonzero when red, green and blue all match.
+ */
+static int x_palette_same_rgb(const XColor *a, const XColor *b)
+{
+ return a->red == b->red && a->green == b->green && a->blue == b->blue;
+}
+
+/**
+ * x_palette_cell_taken_by_other - Whether a cell already shows another entry.
+ * @pixel: the cell
+ * @want: the colour the entry being allocated asks for
+ *
+ * Two entries that ask for different colours must never share one cell:
+ * the text in one would vanish into the background of the other.  Two that
+ * ask for the same colour may.
+ *
+ * Return: nonzero when an entry with a different colour has this cell.
+ */
+static int x_palette_cell_taken_by_other(unsigned long pixel, const XColor *want)
+{
+ int j;
+
+ for (j = 0; j < x_palette_assigned; j++)
+  if ((unsigned long)WpeXInfo.colors[j] == pixel
+      && !x_palette_same_rgb(&x_palette_requested[j], want))
+   return 1;
+ return 0;
+}
+
+/**
+ * x_palette_near_enough - Whether a cell is close enough to stand for a colour.
+ * @cell: the cell's colour
+ * @want: the colour asked for
+ *
+ * Return: nonzero when every channel is within X_PALETTE_NEAREST_MAX.
+ */
+static int x_palette_near_enough(const XColor *cell, const XColor *want)
+{
+ return abs(x_palette_channel(cell->red) - x_palette_channel(want->red))
+          <= X_PALETTE_NEAREST_MAX
+        && abs(x_palette_channel(cell->green) - x_palette_channel(want->green))
+          <= X_PALETTE_NEAREST_MAX
+        && abs(x_palette_channel(cell->blue) - x_palette_channel(want->blue))
+          <= X_PALETTE_NEAREST_MAX;
+}
+
+/**
+ * x_palette_distance - How far a cell's colour is from the one asked for.
+ * @cell: the cell's colour
+ * @want: the colour asked for
+ *
+ * Return: the squared distance over the three 8-bit channels.
+ */
+static long x_palette_distance(const XColor *cell, const XColor *want)
+{
+ long dr = x_palette_channel(cell->red) - x_palette_channel(want->red);
+ long dg = x_palette_channel(cell->green) - x_palette_channel(want->green);
+ long db = x_palette_channel(cell->blue) - x_palette_channel(want->blue);
+
+ return dr * dr + dg * dg + db * db;
+}
+
+/**
+ * x_palette_nearest_cell - The closest cell not tried yet.
+ * @want: the colour asked for
+ *
+ * Return: the index into the cells read, or -1 when none is near enough.
+ */
+static int x_palette_nearest_cell(const XColor *want)
+{
+ long best_distance = -1, d;
+ int best = -1, i;
+
+ for (i = 0; i < x_palette_ncells; i++)
+ {
+  if (x_palette_tried[i] || !x_palette_near_enough(&x_palette_cells[i], want))
+   continue;
+  if (x_palette_cell_taken_by_other(x_palette_cells[i].pixel, want))
+   continue;
+  d = x_palette_distance(&x_palette_cells[i], want);
+  if (best < 0 || d < best_distance)
+  {
+   best = i;
+   best_distance = d;
+  }
+ }
+ return best;
+}
+
+/**
+ * x_palette_share_cell - Take a read-only share of an existing cell.
+ * @cmap: the colormap
+ * @cell: the cell's colour
+ * @want: the colour the entry asked for
+ * @color: receives the pixel and colour on success
+ *
+ * Asking the server for exactly the colour a cell holds gives a share of a
+ * read-only cell with that colour.  A writable cell of another client
+ * cannot be shared, and the server then has no cell to give.
+ *
+ * Return: nonzero when the entry got a cell.
+ */
+static int x_palette_share_cell(Colormap cmap, const XColor *cell,
+                                const XColor *want, XColor *color)
+{
+ XColor got = *cell;
+ unsigned long pixel;
+
+ got.flags = DoRed | DoGreen | DoBlue;
+ if (!XAllocColor(WpeXInfo.display, cmap, &got))
+  return 0;
+ if (x_palette_cell_taken_by_other(got.pixel, want))
+ {
+  pixel = got.pixel;
+  XFreeColors(WpeXInfo.display, cmap, &pixel, 1, 0);
+  return 0;
+ }
+ *color = got;
+ return 1;
+}
+
+/**
+ * x_palette_alloc_nearest - Take the nearest existing cell of a full colormap.
+ * @cmap: the colormap
+ * @visual: the window's visual
+ * @want: the colour the entry asked for
+ * @color: receives the pixel and colour on success
+ *
+ * Level 2, as xterm and rxvt do: when another program filled the colormap,
+ * the editor shows a colour very close to its own instead of ending, and
+ * stays in the screen's colormap, so no colormap flash.
+ *
+ * Return: nonzero when the entry got a cell.
+ */
+static int x_palette_alloc_nearest(Colormap cmap, Visual *visual,
+                                   const XColor *want, XColor *color)
+{
+ int i;
+
+ if (!x_palette_read_cells(cmap, visual))
+  return 0;
+ while ((i = x_palette_nearest_cell(want)) >= 0)
+ {
+  if (x_palette_share_cell(cmap, &x_palette_cells[i], want, color))
+   return 1;
+  x_palette_tried[i] = 1;
+ }
+ return 0;
+}
+
+/**
+ * x_palette_go_private - Move the editor to a colormap of its own.
+ * @cmap: the full colormap the editor was allocating in
+ *
+ * Level 3: the default colormap holds nothing close to a colour the editor
+ * needs.  The cells the editor already has move with it, at the same
+ * pixels, and the rest of the new colormap is free for the colours still to
+ * come.  The user is told once, because the editor's colours then show only
+ * while its window has the colormap installed, as with -pcmap.
+ *
+ * Return: the new colormap.
+ */
+static Colormap x_palette_go_private(Colormap cmap)
+{
+ Colormap private_cmap;
+
+ private_cmap = XCopyColormapAndFree(WpeXInfo.display, cmap);
+ XSetWindowColormap(WpeXInfo.display, WpeXInfo.window, private_cmap);
+ x_palette_cmap = private_cmap;
+ x_palette_forget_cells();
+ fprintf(stderr,
+         "xwpe: the default colormap is full, using a private one (as -pcmap)\n");
+ return private_cmap;
+}
+
+/**
+ * x_palette_alloc_black - The last way an entry gets a pixel.
+ * @idx: palette index, 0..15
+ * @color: receives the screen's black
+ *
+ * Reached only when a private colormap is full too.  The editor keeps
+ * running with that entry shown as black and says which colour it lost.
+ */
+static void x_palette_alloc_black(int idx, XColor *color)
+{
+ fprintf(stderr, "xwpe: no colour cell for \"%s\", showing it as black\n",
+         WpeXColorNames[idx]);
+ color->pixel = BlackPixel(WpeXInfo.display, WpeXInfo.screen);
+ color->red = color->green = color->blue = 0;
+}
+
+/**
+ * x_palette_alloc - Give a palette entry a colour cell, whatever is free.
+ * @idx: palette index, 0..15
+ * @cmap: the colormap; changed when the editor moves to a private one
+ * @visual: the window's visual
+ * @color: the colour asked for; receives the pixel and the colour given
+ *
+ * Tries the levels in order: the exact colour, the nearest existing cell,
+ * a private colormap and the exact colour there.  A full colormap never
+ * ends the editor.
+ *
+ * Return: the X_PALETTE_LEVEL_* that gave the cell.
+ */
+static int x_palette_alloc(int idx, Colormap *cmap, Visual *visual,
+                           XColor *color)
+{
+ XColor want = *color;
+
+ if (x_palette_alloc_exact(*cmap, color))
+  return X_PALETTE_LEVEL_EXACT;
+ if (x_palette_alloc_nearest(*cmap, visual, &want, color))
+  return X_PALETTE_LEVEL_NEAREST;
+ if (x_palette_cmap == None)
+ {
+  *cmap = x_palette_go_private(*cmap);
+  *color = want;
+  if (x_palette_alloc_exact(*cmap, color))
+   return X_PALETTE_LEVEL_PRIVATE;
+ }
+ *color = want;
+ if (x_palette_alloc_nearest(*cmap, visual, &want, color))
+  return X_PALETTE_LEVEL_NEAREST;
+ x_palette_alloc_black(idx, color);
+ return X_PALETTE_LEVEL_BLACK;
+}
+
+/**
+ * x_palette_alloc_trace - Say in $XWPE_UI_TRACE how an entry got its cell.
+ * @idx: palette index, 0..15
+ * @level: the X_PALETTE_LEVEL_* that gave it
+ *
+ * Someone whose colours look slightly off reads here which entries took a
+ * nearby colour and whether the editor moved to a private colormap.
+ * Nothing is written when the variable is not set.
+ */
+static void x_palette_alloc_trace(int idx, int level)
+{
+ wpe_ui_trace("palette alloc idx=%d level=%d", idx, level);
+}
+
+/**
+ * x_palette_alloc_all - Give all 16 entries their cells.
+ * @names: the colour name of each entry
+ * @cmap: the colormap to start in
+ * @visual: the window's visual
+ */
+static void x_palette_alloc_all(char *names[X_PALETTE_SIZE], Colormap cmap,
+                                Visual *visual)
+{
+ XColor color;
+ int loop, level;
+
+ x_palette_assigned = 0;
+ for (loop = 0; loop < X_PALETTE_SIZE; loop++)
+ {
+  x_palette_parse(loop, names[loop], cmap, &color);
+  x_palette_requested[loop] = color;
+  level = x_palette_alloc(loop, &cmap, visual, &color);
+  WpeXInfo.colors[loop] = color.pixel;
+  x_palette_record(loop, &color);
+  x_palette_assigned = loop + 1;
+  x_palette_alloc_trace(loop, level);
+ }
+ x_palette_forget_cells();
+}
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeXColorGet - Get color settings from the X resources.
 
@@ -605,37 +1106,12 @@ static void x_render_route_choose(Visual *visual, int depth)
 void WpeXColorGet(XrmDatabase xresdb, XrmQuark *name_list,
                   XrmQuark *class_list)
 {
- XrmRepresentation return_value;
- XrmValue xval;
+ char *names[X_PALETTE_SIZE];
  Colormap cmap;
- XColor exact_def;
  Visual *visual;
  int loop, depth;
- char color_name[8];
- char color_class[8];
- Screen *xscreen;
 
- memset(color_name, 0, 8);
- memset(color_class, 0, 8);
- strcpy(color_name, "color");
- strcpy(color_class, "Color");
- for (loop = 0; loop < 16; loop++)
- {
-  /* color names start at 1 not 0 */
-  color_name[5] = color_class[5] = (loop < 9)? loop + '1': '1';
-  if (loop > 8)
-  {
-   color_name[6] = color_class[6] = loop - 9 + '0';
-  }
-  name_list[1] = XrmStringToQuark(color_name);
-  class_list[1] = XrmStringToQuark(color_name);
-  if (XrmQGetResource(xresdb, name_list, class_list, &return_value, &xval))
-  {
-   WpeXColorNames[loop] = (char *)xval.addr;
-  }
- }
-
- cmap = DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
+ x_palette_resource_names(xresdb, name_list, class_list, names);
  depth = DisplayPlanes(WpeXInfo.display, WpeXInfo.screen);
  visual = DefaultVisual(WpeXInfo.display, WpeXInfo.screen);
 
@@ -651,38 +1127,8 @@ void WpeXColorGet(XrmDatabase xresdb, XrmQuark *name_list,
   x_render_route_choose(visual, depth);
   return ;
  }
- /* Check for private colormap option */
- name_list[1] = XrmStringToQuark("pcmap");
- class_list[1] = XrmStringToQuark("Pcmap");
- if (XrmQGetResource(xresdb, name_list, class_list, &return_value, &xval))
- {
-  if (WpeStrccmp((char *)xval.addr, "on") == 0)
-  {
-   xscreen = DefaultScreenOfDisplay(WpeXInfo.display);
-   cmap = XCreateColormap(WpeXInfo.display,
-     RootWindowOfScreen(xscreen), visual, AllocNone);
-   XSetWindowColormap(WpeXInfo.display, WpeXInfo.window, cmap);
-   x_palette_cmap = cmap;
-  }
- }
- for(loop = 0; loop < 16; loop++)
- {
-  if (!XParseColor(WpeXInfo.display, cmap, WpeXColorNames[loop], &exact_def))
-  {
-   /* Should try a default color then bail if need be */
-   fprintf(stderr, "xwpe: unable to find color \"%s\", exiting ...\n",
-           WpeXColorNames[loop]);
-   exit(1);
-  }
-  if (!XAllocColor(WpeXInfo.display, cmap, &exact_def))
-  {
-   /* Should try to find closest color */
-   fprintf(stderr, "Xwpe: all colorcells allocated, exiting ...\n");
-   exit(1);
-  }
-  WpeXInfo.colors[loop] = exact_def.pixel;
-  x_palette_record(loop, &exact_def);
- }
+ cmap = x_palette_choose_colormap(xresdb, name_list, class_list, visual);
+ x_palette_alloc_all(names, cmap, visual);
  x_render_route_choose(visual, depth);
  return ;
 }

@@ -248,6 +248,46 @@
    "needs": ["Xvfb", "xwd", "xdotool"]
   },
   {
+   "id": "SC-display-05",
+   "requirement": "The X11 palette is the one the server allocated, and the picture is painted with those pixels on every visual class",
+   "layer": "x11",
+   "test": "tests/x11/test_palette_display.py::test_the_frame_dump_on_an_8_bit_display_is_what_the_window_shows",
+   "status": "new",
+   "needs": ["Xvfb", "xwd", "xdotool"]
+  },
+  {
+   "id": "SC-display-05",
+   "requirement": "The X11 palette is the one the server allocated, and the picture is painted with those pixels on every visual class",
+   "layer": "x11",
+   "test": "tests/x11/test_palette_display.py::test_a_window_without_picture_memory_stays_alive_and_draws_after_a_resize",
+   "status": "new",
+   "needs": ["Xvfb", "xwd", "xdotool"]
+  },
+  {
+   "id": "SC-display-07",
+   "requirement": "A full default colormap never ends the editor: it takes the nearest colours within a small distance, else a private colormap, and says so",
+   "layer": "x11",
+   "test": "tests/x11/test_palette_display.py::test_a_full_default_colormap_does_not_end_the_editor",
+   "status": "new",
+   "needs": ["Xvfb", "xwd", "xdotool", "xwininfo"]
+  },
+  {
+   "id": "SC-display-07",
+   "requirement": "A full default colormap never ends the editor: it takes the nearest colours within a small distance, else a private colormap, and says so",
+   "layer": "x11",
+   "test": "tests/x11/test_palette_display.py::test_a_full_colormap_of_near_colours_keeps_the_default_one",
+   "status": "new",
+   "needs": ["Xvfb", "xwd", "xdotool", "xwininfo"]
+  },
+  {
+   "id": "SC-display-07",
+   "requirement": "A full default colormap never ends the editor: it takes the nearest colours within a small distance, else a private colormap, and says so",
+   "layer": "x11",
+   "test": "tests/x11/test_palette_display.py::test_an_unknown_colour_name_costs_only_that_colour",
+   "status": "new",
+   "needs": ["Xvfb", "xwd", "xdotool"]
+  },
+  {
    "id": "SC-display-06",
    "requirement": "One display per service",
    "layer": "c-unit",

@@ -262,3 +262,24 @@ not take your @key{Esc}: it stays for what you were doing.  In a terminal
 the keyboard waits for the editor until the command ends.  A command that
 hung used to leave no way out but killing the editor.
 @end table
+
+@section Colours on an X display
+
+@table @asis
+@item A full colormap
+@cindex colormap, full
+@cindex -pcmap
+The original stopped at start with ``all colorcells allocated'' on a
+palette (8-bit) display whose shared colormap other programs had filled,
+unless it was started with @option{-pcmap}.  It now takes, for each
+colour it cannot get, the nearest colour already in the colormap when one
+is close enough to read as the same; when none is, it switches to a
+private colormap by itself, as @option{-pcmap} does, and says so once on
+stderr.  The reason: running with nearly the right colours is better than
+not running.
+
+@item A colour name the server does not know
+The original stopped at start when an X resource named a colour the
+server does not know.  It now reports the name on stderr and uses the
+built-in colour for that entry, so one typing mistake costs one colour.
+@end table
