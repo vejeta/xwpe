@@ -285,6 +285,8 @@ def _rows_with_history(s):
 
 # @scenario SC-ai-agent-23
 def test_claudecli_text_only_under_auto_with_tip(tmp_path):
+    if not _host_build():
+        pytest.skip("built without --enable-ai-agent-host")
     rows, argv, facts = _claudecli_agent(tmp_path, "auto")
     text = "\n".join(rows)
     assert "--disallowedTools" in argv and "Bash" in argv and "Write" in argv, argv

@@ -959,6 +959,11 @@ static int ws_git_tracks_workspace(const char *q)
  * image of the user's uncommitted edits at all: HEAD in its place would list
  * them as the run's and `r` would throw them away.  So a failure is a failure,
  * and the caller takes the snapshot copies instead.
+ *
+ * The index is refreshed first: a file whose timestamp changed but whose
+ * content did not (saved again, touched, rewritten by a checkout) makes the
+ * first `git stash create` after it exit 1 with nothing printed, which would
+ * pass for a failure and silently turn the review's commit key off.
  * Return: 0 with ck_ref set, -1 when git could not save the worktree.
  */
 static int ws_git_stash_ref(const char *q)
@@ -966,7 +971,9 @@ static int ws_git_stash_ref(const char *q)
  char cmd[1400], *out;
  int status = 0;
  size_t l;
- if (ws_format_whole(cmd, sizeof cmd, "cd %s && git stash create 2>/dev/null", q) != 0) return -1;
+ if (ws_format_whole(cmd, sizeof cmd,
+                     "cd %s && { git update-index -q --refresh 2>/dev/null; git stash create 2>/dev/null; }",
+                     q) != 0) return -1;
  out = wpe_ai_run_capture_status(cmd, &status);
  if (status != 0 || !out) { free(out); return -1; }
  l = strlen(out);

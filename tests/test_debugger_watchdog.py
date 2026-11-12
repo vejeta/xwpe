@@ -17,7 +17,7 @@ import signal
 import time
 
 import procinfo
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, WAIT_SCALE
 
 A68 = (
     "PROC factorial = (INT n) INT:\n"
@@ -171,7 +171,10 @@ def _drive_the_flood(tmp_path, env_extra):
         # Give the watchdog time to trip, then confirm xwpe is NOT spinning:
         # sample CPU over a 1s window once it should have recovered.
         responsive = False
-        for _ in range(20):
+        # The watchdog trips after a fixed number of lines, so the time it
+        # takes grows with the build's speed (about 1 s plain, about 17 s
+        # under the sanitizer): the window scales like every other wait.
+        for _ in range(int(20 * WAIT_SCALE)):
             c0 = _cpu_ticks(pid)
             time.sleep(1.0)
             c1 = _cpu_ticks(pid)
