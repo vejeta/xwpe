@@ -379,14 +379,31 @@ once, and a path a folder value hands to a program is never read as an
 option or a response file.  Run and Make still run the folder's own
 program, @code{Arguments} and @file{Makefile}, as they always did.
 
-Not covered yet, and planned: where a folder's @code{EXENAME},
-@code{Exedir}, @code{Executable} or @code{LIBNAME} puts the build's
-output (it can be outside the folder, for example
-@file{~/.local/bin}); a folder's @code{IncludePath} widening what the
-assistant may read; and a debug session reading the folder's own
-debugger start-up files (@file{.pdbrc}, @file{.perldb},
+Not covered yet, and planned: a folder's @code{IncludePath} widening
+what the assistant may read; and a debug session reading the folder's
+own debugger start-up files (@file{.pdbrc}, @file{.perldb},
 @file{jdb.ini}, @file{.gdbinit}-style files) and running its program,
 as Run and Make do.
+
+@item Where a build writes, and the objects it removes
+@cindex Exedir, outside the folder
+@cindex EXENAME, outside the folder
+The original wrote the program and the objects wherever a folder's
+@code{Exedir} or a project file's @code{EXENAME} and @code{LIBNAME}
+said, @file{~/.local/bin} included, removed a stale object there before
+compiling it, and filled @samp{$(@var{NAME})} in a project file from any
+variable of the environment.  Now F9 asks once when a folder's value
+puts a build's output, or the project file itself, outside the folder of
+the file that set it (links followed, and never counting the home folder
+as that folder: a project kept there builds beside itself only its own
+objects and program, new or made by an earlier build), never removes an object a
+folder's value put outside that folder (your own @code{Exedir}'s objects
+are removed as before), and takes
+only @code{HOME}, @code{USER}, @code{LOGNAME}, @code{PWD} and
+@code{TMPDIR} from the environment for a project's
+@samp{$(@var{NAME})}.  The reason: a cloned folder could otherwise write
+or delete any file you can, or put a key you hold on a compiler's
+command line, on your first F9.
 @end table
 
 @section Colours on an X display

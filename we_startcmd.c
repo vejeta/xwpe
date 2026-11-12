@@ -2,8 +2,9 @@
  *
  * See we_startcmd.h.  The owner of one decision: may the command a start-folder xwperc or a
  * project file names be run, or must the user be asked first?  It keeps the
- * texts the user counts as his own, and the answers he gave, one per folder
- * and key, in $XDG_STATE_HOME/xwpe/start-commands.  The store sits in the
+ * texts the user counts as his own, and the answers he gave, one per folder,
+ * key and text, in $XDG_STATE_HOME/xwpe/start-commands.  The start plan's
+ * owner (we_startplan.c) keeps its answers here too.  The store sits in the
  * user's state folder because anything inside a project, which a clone or
  * the assistant can write, could otherwise approve itself.
  */
@@ -297,8 +298,13 @@ static void startcmd_chop(char *line)
 /**
  * startcmd_parse_stream - Read the store's lines.
  * @fp: the open store; @s: receives its records.
+ *
+ * A version-1 store holds answers about single commands, which version 2
+ * no longer asks about: it is read as an empty store, so each folder asks
+ * once more and the next answer writes the store anew as version 2.  Any
+ * other first line is a store this version does not know, and fails closed.
  * Return: WPE_STARTCMD_STORE_OK, or WPE_STARTCMD_STORE_BAD when the first
- * line is not this version's or any line does not parse.
+ * line is neither version's or any line does not parse.
  */
 static int startcmd_parse_stream(FILE *fp, startcmd_store *s)
 {
@@ -308,8 +314,9 @@ static int startcmd_parse_stream(FILE *fp, startcmd_store *s)
  while (state == WPE_STARTCMD_STORE_OK && getline(&line, &room, fp) >= 0) {
   startcmd_chop(line);
   if (first) {
-   if (strcmp(line, WPE_STARTCMD_STORE_MAGIC) != 0) state = WPE_STARTCMD_STORE_BAD;
    first = 0;
+   if (strcmp(line, WPE_STARTCMD_STORE_MAGIC_V1) == 0) break;   /* read as empty */
+   if (strcmp(line, WPE_STARTCMD_STORE_MAGIC) != 0) state = WPE_STARTCMD_STORE_BAD;
    continue;
   }
   if (!line[0]) continue;
@@ -371,14 +378,16 @@ static int startcmd_store_load(startcmd_store *s)
 }
 
 /**
- * startcmd_store_find - The record for a folder and key.
+ * startcmd_store_find - The record for a folder, key and text.
  * Return: its index, or -1.
  */
-static int startcmd_store_find(const startcmd_store *s, const char *folder, const char *key)
+static int startcmd_store_find(const startcmd_store *s, const char *folder, const char *key,
+                               const char *text)
 {
  int i;
  for (i = 0; i < s->n; i++)
-  if (strcmp(s->rec[i].folder, folder) == 0 && strcmp(s->rec[i].key, key) == 0)
+  if (strcmp(s->rec[i].folder, folder) == 0 && strcmp(s->rec[i].key, key) == 0 &&
+      strcmp(s->rec[i].command, text) == 0)
    return i;
  return -1;
 }
@@ -404,8 +413,8 @@ int wpe_startcmd_check(const char *folder, const char *key, const char *text)
  if (wpe_startcmd_resolve_folder(folder, real, sizeof real) < 0) return WPE_STARTCMD_ASK;
  startcmd_store_state = startcmd_store_load(&s);
  if (startcmd_store_state != WPE_STARTCMD_STORE_OK) return WPE_STARTCMD_ASK;
- i = startcmd_store_find(&s, real, key);
- if (i >= 0 && strcmp(s.rec[i].command, text) == 0) {
+ i = startcmd_store_find(&s, real, key, text);
+ if (i >= 0) {
   if (s.rec[i].answer == WPE_STARTCMD_YES) verdict = WPE_STARTCMD_RUN;
   else verdict = WPE_STARTCMD_USE_OWN;
  }
@@ -518,34 +527,53 @@ static int startcmd_store_save(const startcmd_store *s)
  return rc;
 }
 
+/** startcmd_store_drop - Take one record out of the store. */
+static void startcmd_store_drop(startcmd_store *s, int i)
+{
+ free(s->rec[i].key);
+ free(s->rec[i].folder);
+ free(s->rec[i].command);
+ memmove(&s->rec[i], &s->rec[i + 1], (size_t)(s->n - i - 1) * sizeof s->rec[0]);
+ s->n--;
+}
+
 /**
- * startcmd_store_put - Set the answer for a folder and key, newest last.
+ * startcmd_folder_oldest - The oldest record of a folder, when it has too many.
+ * Return: its index, or -1 while the folder has at most
+ * WPE_STARTCMD_MAX_PER_FOLDER records.
+ */
+static int startcmd_folder_oldest(const startcmd_store *s, const char *folder)
+{
+ int i, n = 0, first = -1;
+ for (i = 0; i < s->n; i++) {
+  if (strcmp(s->rec[i].folder, folder) != 0) continue;
+  if (first < 0) first = i;
+  n++;
+ }
+ if (n > WPE_STARTCMD_MAX_PER_FOLDER) return first;
+ return -1;
+}
+
+/**
+ * startcmd_store_put - Set the answer for a folder, key and text, newest last.
  * @s: the store; the rest as wpe_startcmd_remember.
  *
- * One record per folder and key: a new answer replaces the old one, so a
- * command that changed and was answered again leaves one line.  Past
- * WPE_STARTCMD_MAX_RECORDS the oldest answers are dropped.
+ * One record per folder, key and text: an answer for the same text replaces
+ * the old one, and another text of the same key is a record of its own, so
+ * two plans answered for in one folder (two programs debugged, files in two
+ * subfolders) both stay answered and never push each other out.  Past
+ * WPE_STARTCMD_MAX_PER_FOLDER records in one folder, or
+ * WPE_STARTCMD_MAX_RECORDS in all, the oldest answers are dropped.
  * Return: 0, or -1 out of memory.
  */
 static int startcmd_store_put(startcmd_store *s, const char *folder, const char *key,
                               const char *text, int answer)
 {
- int i = startcmd_store_find(s, folder, key);
- if (i >= 0) {
-  free(s->rec[i].key);
-  free(s->rec[i].folder);
-  free(s->rec[i].command);
-  memmove(&s->rec[i], &s->rec[i + 1], (size_t)(s->n - i - 1) * sizeof s->rec[0]);
-  s->n--;
- }
+ int i = startcmd_store_find(s, folder, key, text);
+ if (i >= 0) startcmd_store_drop(s, i);
  if (startcmd_store_add(s, answer, key, folder, text) < 0) return -1;
- while (s->n > WPE_STARTCMD_MAX_RECORDS) {
-  free(s->rec[0].key);
-  free(s->rec[0].folder);
-  free(s->rec[0].command);
-  memmove(&s->rec[0], &s->rec[1], (size_t)(s->n - 1) * sizeof s->rec[0]);
-  s->n--;
- }
+ while ((i = startcmd_folder_oldest(s, folder)) >= 0) startcmd_store_drop(s, i);
+ while (s->n > WPE_STARTCMD_MAX_RECORDS) startcmd_store_drop(s, 0);
  return 0;
 }
 

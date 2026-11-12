@@ -65,13 +65,20 @@ def folder_compiler(tmp_path):
     return tmp_path
 
 
+# The plan F9 judges for t.c in that folder, as the store keeps it
+# (version 2: the build's effect, its lines escaped onto one).
+PLAN_TEXT = ("xwpe-start 2\\nkind build\\ncwd %(cwd)s\\nargv ./fake-cc\\nargv -g"
+             "\\nargv -c\\nargv -o")
+
+
 @pytest.fixture
 def remembered_compiler(folder_compiler):
-    """... and the user said Run it for that very command in this folder."""
+    """... and the user said Run it for that very plan in this folder."""
     store = folder_compiler / ".local" / "state" / "xwpe" / "start-commands"
     store.parent.mkdir(parents=True)
-    store.write_text("xwpe-start-commands 1\nyes\tCompiler/C\t%s\t./fake-cc -g\n"
-                     % os.path.realpath(str(folder_compiler)))
+    real = os.path.realpath(str(folder_compiler))
+    store.write_text("xwpe-start-commands 2\nyes\tbuild/C\t%s\t%s\n"
+                     % (real, PLAN_TEXT % {"cwd": real}))
     return folder_compiler
 
 
@@ -85,16 +92,18 @@ def folder_print_escape(tmp_path):
 # @scenario SC-compile-28
 @pytest.mark.parametrize("xwpe", [SESSION], indirect=True)
 def test_startcmd_compiler_asks(folder_compiler, xwpe):
-    """F9: the box is drawn, naming the folder's command; Esc runs nothing."""
+    """F9: the box is drawn, naming the folder's command; Esc runs nothing.
+    (The answer's key names the action, build/C: F9's compile and link are
+    one plan.)"""
     _sleep(SETTLE_S)
     before = xwpe.screenshot()
     xwpe.key("F9", delay=0.4)
-    asked = "startcmd ask Compiler/C ./fake-cc -g"
+    asked = "startcmd ask build/C ./fake-cc -g"
     assert _wait(lambda: asked in _trace(folder_compiler), ASK_WAIT_S), _trace(folder_compiler)
     _sleep(SETTLE_S)
     drawn = changed_pixels(before, xwpe.screenshot())
     xwpe.key("Escape", delay=0.4)
-    assert _wait(lambda: "startcmd answer Compiler/C cancel" in _trace(folder_compiler),
+    assert _wait(lambda: "startcmd answer build/C cancel" in _trace(folder_compiler),
                  ASK_WAIT_S), _trace(folder_compiler)
     assert drawn >= BOX_PX_MIN, "the question was not drawn (%d pixels changed)" % drawn
     assert not (folder_compiler / "ran-fake").exists(), "the folder's compiler ran after Esc"
@@ -110,7 +119,7 @@ def test_startcmd_remembered(remembered_compiler, xwpe):
         "the remembered command did not run:\n" + _trace(remembered_compiler)
     said = _trace(remembered_compiler)
     assert "startcmd ask" not in said, said
-    assert "startcmd run Compiler/C" in said, said
+    assert "startcmd run build/C" in said, said
 
 
 # @scenario SC-compile-28

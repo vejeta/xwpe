@@ -678,9 +678,7 @@ in a file the repository's config includes (@code{[include]},
 @code{[includeIf]}), is not followed, and neither is a repository whose
 top is above the workspace; the hooks folder those name is protected
 only if it is @file{.git}, @file{.husky} or another name above.  Also not
-covered yet, and planned: a folder's @code{EXENAME}, @code{Exedir},
-@code{Executable} or @code{LIBNAME} can put a build's output outside
-the folder (for example @file{~/.local/bin}); a folder's
+covered yet, and planned: a folder's
 @code{IncludePath} widens what the assistant may read; and a debug
 session reads the folder's own debugger start-up files (@file{.pdbrc},
 @file{.perldb}, @file{jdb.ini}, @file{.gdbinit}-style files) and runs

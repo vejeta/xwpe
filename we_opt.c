@@ -11,6 +11,7 @@
 #include "we_ai.h"        /* AI backend config keys (guarded by WPE_AI) */
 #include "we_testdump.h"
 #include "we_startcmd.h"
+#include "we_startplan.h"
 #include "we_paint.h"
 #include <ctype.h>
 #include <limits.h>
@@ -116,6 +117,20 @@ static int e_opt_own_nlang;
 
 /* The debugger the start-folder xwperc names, or E_OPT_DEBUGGER_UNSET. */
 static int e_opt_named_deb = E_OPT_DEBUGGER_UNSET;
+
+/* The [Programming] keys a start plan compares with the user's own: where
+   the build writes, what Run and Make are handed, which project is built,
+   where headers are looked for.  His own value, or the built-in one, is
+   kept for each while a start-folder xwperc sets the one in force. */
+static const char *const e_opt_own_prog_keys[] = {
+ "Exedir", "Arguments", "Project", "IncludePath", NULL
+};
+#define E_OPT_OWN_PROG_KEYS 4
+static char *e_opt_own_prog[E_OPT_OWN_PROG_KEYS];
+
+/* The answers' key of one value the user counts as his: "own/<scope>/<key>",
+   the scope being a language or "Programming". */
+#define E_OPT_OWN_FIELD_FMT "own/%s/%s"
 
 /* What the status line says when the user's own config could not take the
    keys a save moved out of the start-folder xwperc. */
@@ -1756,6 +1771,188 @@ static void e_opt_note_own_lang(const struct e_s_prog *p)
 }
 
 /**
+ * e_opt_own_field_key - The answers' key of one value the user counts as his.
+ * @scope: a language's name, or E_OPT_SCOPE_PROGRAMMING; @key: the key;
+ * @out/@sz: receive "own/<scope>/<key>".
+ */
+void e_opt_own_field_key(const char *scope, const char *key, char *out, size_t sz)
+{
+ snprintf(out, sz, E_OPT_OWN_FIELD_FMT, scope, key);
+}
+
+/**
+ * e_opt_note_own_field - Count one value as the user's own for its key.
+ * @scope/@key: as e_opt_own_field_key; @value: the value.
+ */
+static void e_opt_note_own_field(const char *scope, const char *key, const char *value)
+{
+ char field[WPE_STARTCMD_KEY_MAX];
+
+ if (!value)
+  return;
+ e_opt_own_field_key(scope, key, field, sizeof field);
+ wpe_startcmd_note_own(field, value);
+}
+
+/**
+ * e_opt_note_own_lang_fields - Count each value of a language's line as his.
+ * @p: the entry.
+ *
+ * A start plan asks about each value a folder sets on its own: a folder that
+ * sets only the compiler's options is asked about the options, and a folder
+ * whose compiler is his is not asked about the compiler.
+ */
+static void e_opt_note_own_lang_fields(const struct e_s_prog *p)
+{
+ e_opt_note_own_field(p->language, "Compiler", p->compiler);
+ e_opt_note_own_field(p->language, "CompilerOptions", p->comp_str);
+ e_opt_note_own_field(p->language, "Libraries", p->libraries);
+ e_opt_note_own_field(p->language, "Executable", p->exe_name);
+}
+
+/**
+ * e_opt_own_prog_index - The place of a [Programming] key a plan compares.
+ * Return: its index in e_opt_own_prog_keys, or -1.
+ */
+static int e_opt_own_prog_index(const char *key)
+{
+ int i;
+
+ for (i = 0; e_opt_own_prog_keys[i]; i++)
+  if (WpeStrccmp(e_opt_own_prog_keys[i], key) == 0)
+   return(i);
+ return(-1);
+}
+
+/**
+ * e_opt_own_prog_set - Keep the user's own value of a [Programming] key.
+ * @key: the key; @value: his value.
+ */
+static void e_opt_own_prog_set(const char *key, const char *value)
+{
+ int i = e_opt_own_prog_index(key);
+
+ if (i < 0)
+  return;
+ if (e_opt_own_prog[i]) FREE(e_opt_own_prog[i]);
+ if (!value)
+  value = "";
+ e_opt_own_prog[i] = WpeStrdup(value);
+}
+
+/**
+ * e_opt_own_prog_from_defaults - Start the [Programming] keys a plan compares
+ * from the built-in values, each counted as the user's own.
+ */
+static void e_opt_own_prog_from_defaults(void)
+{
+ e_opt_own_prog_set("Exedir", e_prog.exedir);
+ e_opt_own_prog_set("Arguments", e_prog.arguments);
+ e_opt_own_prog_set("Project", e_prog.project);
+ e_opt_own_prog_set("IncludePath", e_prog.sys_include);
+}
+
+/** e_opt_note_own_prog - Count the user's own [Programming] values as his. */
+static void e_opt_note_own_prog(void)
+{
+ int i;
+
+ for (i = 0; e_opt_own_prog_keys[i]; i++)
+  e_opt_note_own_field(E_OPT_SCOPE_PROGRAMMING, e_opt_own_prog_keys[i], e_opt_own_prog[i]);
+}
+
+/**
+ * e_opt_own_value - The user's own value of a [Programming] key.
+ * @key: "Exedir", "Arguments", "Project" or "IncludePath".
+ *
+ * "Use mine" starts the action with these.
+ * Return: his own value (or the built-in one) while a start-folder xwperc
+ * sets the one in force, else the one in force, which is his; "" for a key
+ * this list does not hold.
+ */
+const char *e_opt_own_value(const char *key)
+{
+ int i = e_opt_own_prog_index(key);
+
+ if (i < 0)
+  return("");
+ if (e_opt_folder_dir && e_opt_own_prog[i])
+  return(e_opt_own_prog[i]);
+ if (WpeStrccmp(key, "Exedir") == 0) return(e_prog.exedir ? e_prog.exedir : "");
+ if (WpeStrccmp(key, "Arguments") == 0) return(e_prog.arguments ? e_prog.arguments : "");
+ if (WpeStrccmp(key, "Project") == 0) return(e_prog.project ? e_prog.project : "");
+ return(e_prog.sys_include ? e_prog.sys_include : "");
+}
+
+/**
+ * e_opt_value_from - Where a value in force came from, for a start plan.
+ * @scope/@key: as e_opt_own_field_key; @value: the value in force.
+ *
+ * A value counts as the folder's only when a start-folder xwperc gives the
+ * options, the value is not empty, and it is neither the user's own, nor
+ * the built-in one, nor one he typed in Options this session: a saved
+ * config in a folder that repeats the defaults asks nothing.
+ * Return: WPE_FROM_FOLDER or WPE_FROM_USER.
+ */
+int e_opt_value_from(const char *scope, const char *key, const char *value)
+{
+ if (!e_opt_folder_dir || !value || !*value)
+  return(WPE_FROM_USER);
+ if (e_opt_field_is_his(scope, key, value, e_opt_folder_dir))
+  return(WPE_FROM_USER);
+ return(WPE_FROM_FOLDER);
+}
+
+/**
+ * e_opt_field_is_his - Is a value one the user counts as his own?
+ * @scope/@key: as e_opt_own_field_key; @value: the value; @folder: the
+ * folder whose file holds it, or NULL.
+ * Return: 1 for his own value, the built-in one, one he typed this
+ * session, or one he typed in that folder before (kept in the store).
+ */
+int e_opt_field_is_his(const char *scope, const char *key, const char *value,
+                       const char *folder)
+{
+ char field[WPE_STARTCMD_KEY_MAX];
+
+ if (!value)
+  return(0);
+ e_opt_own_field_key(scope, key, field, sizeof field);
+ if (wpe_startcmd_is_own(field, value))
+  return(1);
+ return(folder && wpe_startcmd_check(folder, field, value) == WPE_STARTCMD_RUN);
+}
+
+/**
+ * e_opt_value_typed_in - A value the user set is his own, in a folder.
+ * @scope/@key: as e_opt_own_field_key; @value: what he set; @folder: the
+ * folder whose file will hold it, or NULL.
+ *
+ * Counted as his for this session and, kept in the store for that folder,
+ * after the next start too, when the folder's file holds what he wrote.
+ */
+void e_opt_value_typed_in(const char *scope, const char *key, const char *value,
+                          const char *folder)
+{
+ char field[WPE_STARTCMD_KEY_MAX];
+
+ e_opt_note_own_field(scope, key, value);
+ if (!folder || !value || !*value)
+  return;
+ e_opt_own_field_key(scope, key, field, sizeof field);
+ wpe_startcmd_remember(folder, field, value, WPE_STARTCMD_YES);
+}
+
+/**
+ * e_opt_value_typed - A value the user set in Options is his own from now on.
+ * @scope/@key: as e_opt_own_field_key; @value: what he set.
+ */
+void e_opt_value_typed(const char *scope, const char *key, const char *value)
+{
+ e_opt_value_typed_in(scope, key, value, e_opt_folder_dir);
+}
+
+/**
  * e_opt_own_from_defaults - Start the user's own program keys from the
  * built-in ones.
  * @cn: the editor, before any option file is read.
@@ -1786,7 +1983,10 @@ static void e_opt_own_from_defaults(ECNT *cn)
   e_opt_own_set(&p->libraries, e_prog.comp[i]->libraries);
   e_opt_own_set(&p->exe_name, e_prog.comp[i]->exe_name);
   e_opt_note_own_lang(p);
+  e_opt_note_own_lang_fields(p);
  }
+ e_opt_own_prog_from_defaults();
+ e_opt_note_own_prog();
 }
 
 /**
@@ -1847,6 +2047,8 @@ static void e_opt_capture_own(const char *section, const char *option, const cha
  else if (strncmp(section, OPT_SECTION_PROGRAMMING, strlen(OPT_SECTION_PROGRAMMING)) == 0 &&
           WpeStrccmp("Debugger", option) == 0)
   e_opt_own_deb = atoi(value);
+ else if (strncmp(section, OPT_SECTION_PROGRAMMING, strlen(OPT_SECTION_PROGRAMMING)) == 0)
+  e_opt_own_prog_set(option, value);
 }
 
 /**
@@ -1876,7 +2078,11 @@ static void e_opt_note_own_values(void)
  wpe_startcmd_note_own(WPE_STARTCMD_KEY_PRINT, e_opt_own_print);
  wpe_startcmd_note_own(WPE_STARTCMD_KEY_DEBUGGER, e_deb_type_name(e_opt_own_deb));
  for (i = 0; i < e_opt_own_nlang; i++)
+ {
   e_opt_note_own_lang(e_opt_own_lang[i]);
+  e_opt_note_own_lang_fields(e_opt_own_lang[i]);
+ }
+ e_opt_note_own_prog();
 }
 
 /**

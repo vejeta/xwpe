@@ -805,6 +805,16 @@ const char *e_opt_launch_dir(void);
 const char *e_opt_own_print_cmd(ECNT *cn);
 struct e_s_prog *e_opt_own_language(const char *language);
 int e_opt_own_debugger(void);
+/* Where a value in force came from, for a start plan (we_startplan.h). */
+#define E_OPT_SCOPE_PROGRAMMING "Programming"
+void e_opt_own_field_key(const char *scope, const char *key, char *out, size_t sz);
+int e_opt_value_from(const char *scope, const char *key, const char *value);
+void e_opt_value_typed(const char *scope, const char *key, const char *value);
+void e_opt_value_typed_in(const char *scope, const char *key, const char *value,
+                          const char *folder);
+int e_opt_field_is_his(const char *scope, const char *key, const char *value,
+                       const char *folder);
+const char *e_opt_own_value(const char *key);
 int e_opt_named_debugger(void);
 void e_opt_debugger_chosen(int type);
 /* The debugger a type starts, as the user knows it ("gdb", "pdb"). */
@@ -860,6 +870,17 @@ typedef struct {
 #define E_STARTCMD_XWPERC_WHO "This folder's xwperc"
 int e_startcmd_approve(FENSTER *f, const E_STARTCMD *c);
 void e_startcmd_typed(const char *folder, const char *key, const char *text);
+/* A start plan about to run (we_startplan.h): the box shows it, the store
+   remembers the answer. */
+struct WpeStartPlan;
+typedef struct {
+ const char *who;      /* the box's subject: "This folder's xwperc"            */
+ const char *what;     /* what the plan starts: "C compiler", "project's build" */
+ const char *shown;    /* the folder's command line, as the box shows it        */
+ const char *own;      /* the user's own, as the box names it, or NULL          */
+} E_STARTPLAN_SHOW;
+int e_startplan_approve(FENSTER *f, struct WpeStartPlan *plan, const E_STARTPLAN_SHOW *show);
+void e_startplan_say_not_removed(FENSTER *f, struct WpeStartPlan *plan, const char *path);
 void e_firstl(FENSTER *f, int sw);
 int e_pr_filetype(FENSTER *f);
 PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw);

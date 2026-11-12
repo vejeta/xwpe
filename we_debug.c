@@ -17,6 +17,7 @@
 #include "we_debsess.h"
 #include "we_buffer.h"
 #include "we_startcmd.h"
+#include "we_startplan.h"
 
 #ifdef DEBUGGER
 
@@ -27298,13 +27299,16 @@ static int e_jdk_major(const char *java_bin)
 {
  char banner[E_JDK_PROBE_MAX];
  char *argv[3];
- int status, ran;
+ WpeStartPlan *plan;
+ int status = 0, ran;
 
  argv[0] = (char *)java_bin;
  argv[1] = "-version";
  argv[2] = NULL;
- ran = wpe_child_probe(argv, banner, sizeof banner, E_JDK_PROBE_MS, &status,
-                       E_JDK_PROBE_WHAT);
+ plan = wpe_startplan_fixed(WPE_START_PROBE, E_JDK_PROBE_WHAT, argv);
+ ran = wpe_startplan_probe(plan, banner, sizeof banner, E_JDK_PROBE_MS, &status,
+                           E_JDK_PROBE_WHAT);
+ wpe_startplan_free(plan);
  if (ran != WPE_CAPTURE_ENDED)
   return(-1);
  return(e_jdk_major_from_banner(banner));

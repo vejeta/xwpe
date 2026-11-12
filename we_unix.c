@@ -46,6 +46,7 @@ void wpe_render_cairo_start_threads(void);
 #include "progr.h"
 #include "we_fdloop.h"
 #include "we_dap.h"
+#include "we_startplan.h"
 
 #ifdef NOSYMLINKS
 #define lstat(x,y)  stat(x,y)
@@ -317,6 +318,18 @@ static void wpe_child_say_on_status_row(const char *line)
 }
 
 /**
+ * wpe_start_trace - Where the children's and the start plans' trace lines go.
+ * @line: the line.
+ *
+ * With XWPE_UI_TRACE set, a test reads which starts came from a start plan,
+ * which were judged how, and which removal outside a folder was dropped.
+ */
+static void wpe_start_trace(const char *line)
+{
+ wpe_ui_trace("%s", line);
+}
+
+/**
  * e_ini_children - Make the editor ready to start programs and to be told
  * when they end.
  *
@@ -329,6 +342,8 @@ static void e_ini_children(void)
 {
  WpeChildWakeOpen();
  wpe_child_say_set(wpe_child_say_on_status_row);
+ wpe_child_trace_set(wpe_start_trace);
+ wpe_startplan_trace_set(wpe_start_trace);
  wpe_fd_write_say_set(wpe_child_say_on_status_row);
  wpe_child_sigchld_install(WpeSignalChild);
 }

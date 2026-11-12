@@ -1,0 +1,97 @@
+# The functions of the start sites that still build a start, or name a
+# folder's program keys, outside the start plan.  Checked by
+# tests/check-start-plan.sh.
+#
+#   file|function|count|pass|reason
+#
+# "count" is the number of matching lines' matches in the function; it may
+# only fall.  "pass" is the pass that moves the function into a plan:
+#   P0c-2   the debuggers, the build server, the debug adapters
+#   P0c-3   Run, Make, scripts, the shell, install lines, File > Execute,
+#           the language servers, and the short commands (print, man)
+#   P0c-4   the assistant's read grants (IncludePath)
+#   plan    converted: the function hands its words and paths to the build's
+#           plan (wpe_startplan_start takes only words the judged plan
+#           holds; wpe_startplan_remove removes only what it allows), or it
+#           reads an output's time for the editor's own up-to-date test
+#   keep    not a start: a dialog that edits a value, a default, the
+#           project file being written, the editor's own header reading,
+#           a definition, a display table's slot
+#
+# On the tree this pass started from (1a9be21) the same scan found 62
+# functions with 164 matches and no start plan at all; the check fails
+# there (e_p_link_operands, among others, is no listed function).
+
+# --- the F9 path: compile, link, project build (converted) ---
+we_prog.c|e_comp_start|6|plan|the compile's words through e_exec_planned, its stale object through e_build_remove_stale
+we_prog.c|e_p_make_link|6|plan|the link's words through e_exec_planned
+we_prog.c|e_prj_setup|6|plan|the project's compile and link words, judged by e_prj_approve, started through e_exec_planned
+we_prog.c|e_prj_compile_file|5|plan|a project file's compile through e_exec_planned, its stale object through e_build_remove_stale
+we_prog.c|e_make_library|3|plan|ar through e_exec_planned
+we_prog.c|e_prj_insert|2|plan|hands the library and object to e_make_library
+we_prog.c|e_prj_link_arg|2|plan|an object onto the link line, a path of the plan
+we_prog.c|e_prj_finish|1|plan|LDFLAGS onto the link line, words of the plan
+we_prog.c|e_prj_object_name|4|plan|the object's path through e_prj_object_of, as the plan names it
+we_prog.c|e_prj_object_base|3|plan|reads the object's name for the library test
+we_prog.c|e_prj_inserted_after_compile|3|plan|reads the object's name for the library test
+we_prog.c|e_prj_is_program_object|3|plan|reads the object's name for the library test
+we_prog.c|e_prj_object_current|1|plan|the editor's own up-to-date test of an object
+we_prog.c|e_p_make_note_program_current|1|plan|the "nothing to build" line names the program
+we_prog.c|e_build_plan_approve|1|plan|the build's plan reads the output folder
+we_prog.c|e_prj_approve|1|plan|the project's plan reads the output folder
+we_prog.c|e_build_take_own_exedir|5|plan|"Use mine" puts the user's own output folder in force
+we_prog.c|e_prog_take_own|3|plan|"Use mine" puts the user's own compile line in force
+
+# --- Run, Make, scripts, the shell, install lines (P0c-3) ---
+we_prog.c|e_run_program|8|P0c-3|Run's shell line joins Exedir, the program and Arguments
+we_prog.c|e_run_start|3|P0c-3|Run's child spec
+we_prog.c|e_run_start_text|3|P0c-3|Run's child spec, without a terminal
+we_prog.c|e_run_sh|6|P0c-3|a script's shell line with Arguments
+we_prog.c|e_exec_make|2|P0c-3|make with Arguments
+we_prog.c|e_build_spec|1|P0c-3|Make's child spec
+we_prog.c|e_exec_inf|1|P0c-3|starts Make's child
+we_prog.c|e_shell_run|1|P0c-3|the shell's child spec
+we_prog.c|e_shell_start|2|P0c-3|the shell's child spec
+we_prog.c|e_system|2|P0c-3|a script on the console
+we_prog.c|e_install_lines_run|1|P0c-3|a project's install lines through the shell
+we_fl_unix.c|WpeShell|1|P0c-3|File > Shell
+we_fl_unix.c|WpeHandleFileManager|1|P0c-3|the file manager's Execute hands a file name to the shell
+we_term.c|e_t_system|1|P0c-3|the console's shell entry
+we_xterm.c|e_x_system|1|P0c-3|the graphical editors' shell entry
+we_lsp.c|lsp_spawn|3|P0c-3|a language server's child spec
+
+# --- the debuggers, the build server, the debug adapters (P0c-2) ---
+we_debug.c|e_d_compile_begin|2|P0c-2|the compile for debug
+we_debug.c|e_d_dap_end_at_exit|1|P0c-2|a debug adapter's program name
+we_debug.c|e_d_debugger_spec|1|P0c-2|the debugger's child spec
+we_debug.c|e_d_debugger_start|1|P0c-2|the debugger's command line
+we_debug.c|e_deb_run|6|P0c-2|Arguments into the debugger's run command
+we_debug.c|e_d_jdb_vm_fork|3|P0c-2|jdb's program
+we_debug.c|e_d_pick_start_arg|3|P0c-2|the program the debugger is handed
+we_debug.c|e_d_start_in_script|1|P0c-2|the graphical editors' debugger script
+we_debug.c|e_d_start_on_pipes|1|P0c-2|the debugger on pipes
+we_debug.c|e_scala_setup_begin|2|P0c-2|scala-cli setup-ide
+we_debug.c|e_start_debug|1|P0c-2|the program the debugger is handed
+we_bsp.c|bsp_spawn|3|P0c-2|the build server's command line
+we_dap.c|dap_adapter_spec|1|P0c-2|a debug adapter's child spec
+we_dap.c|dap_spawn|1|P0c-2|a debug adapter's child spec
+we_dap.c|dap_spawn_stdio|1|P0c-2|a debug adapter's child spec
+
+# --- the assistant's read grants (P0c-4) ---
+we_ai_ws.c|ws_collect_read_grants|1|P0c-4|a folder's IncludePath widens the assistant's reads
+
+# --- not starts ---
+we_prog.c|e_add_arg|1|keep|the definition
+we_prog.c|e_make_arg|1|keep|the definition
+we_prog.c|e_ini_prog|9|keep|the built-in defaults
+we_prog.c|e_arguments|8|keep|the Arguments dialog edits the value
+we_prog.c|e_make_prj_opt|8|keep|Project-Options edits the values
+we_prog.c|e_project_options|4|keep|Project-Options edits the values
+we_prog.c|e_run_c_options|4|keep|the Compiler dialog edits the values
+we_prog.c|e_prog_fields_of|1|keep|the Compiler dialog compares the values
+we_prog.c|e_prog_note_typed_compile|1|keep|a value the user typed counts as his
+we_prog.c|e_wrt_prj_fl|1|keep|the project file being written
+we_progn.c|e_program_opt|12|keep|Programming-Options edits the values
+we_progn.c|e_find_def|1|keep|the editor reads headers along IncludePath for its own header tracking
+we_term.c|WpeDllInit|1|keep|the console fills its shell slot
+we_xterm.c|WpeDllInit|1|keep|the graphical editors fill their shell slot

@@ -370,6 +370,12 @@ int e_program_opt(FENSTER *f)
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
+  /* Only a value he changed is his: OK on a folder's value cut to the
+     field's room approves nothing. */
+  if (!e_prog.exedir || strcmp(e_prog.exedir, o->wstr[0]->txt) != 0)
+   e_opt_value_typed(E_OPT_SCOPE_PROGRAMMING, "Exedir", o->wstr[0]->txt);
+  if (!e_prog.sys_include || strcmp(e_prog.sys_include, o->wstr[1]->txt) != 0)
+   e_opt_value_typed(E_OPT_SCOPE_PROGRAMMING, "IncludePath", o->wstr[1]->txt);
   if (e_prog.exedir)
    FREE(e_prog.exedir);
   e_prog.exedir = WpeStrdup(o->wstr[0]->txt);

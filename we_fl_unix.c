@@ -11,6 +11,7 @@
 #include "we_buffer.h"
 #include "we_child.h"
 #include "we_startcmd.h"
+#include "we_startplan.h"
 
 #ifdef UNIX
 
@@ -3290,6 +3291,34 @@ int WpeShell(FENSTER * f)
    the file given as $2: the editor's own words never enter the text. */
 #define E_PRINT_SCRIPT_FMT "cd \"$1\" && %s \"$2\""
 
+/* The word of the print command line that holds the print command. */
+#define E_PRINT_SCRIPT_WORD 2
+
+/**
+ * e_print_plan - The plan of a print, each word labelled by whose it is.
+ * @argv: the print command line; @cmd: the print command in force.
+ *
+ * The shell and its arguments are the editor's; the print command is the
+ * user's own, or the folder's when a start-folder xwperc named it.  A
+ * folder's print command reaches here only after the print question was
+ * answered with Run it (e_print_approve), and that answer is the plan's.
+ * Return: the plan (the caller frees it), or NULL out of memory.
+ */
+static WpeStartPlan *e_print_plan(char *const argv[], const char *cmd)
+{
+ WpeStartPlan *plan = wpe_startplan_fixed(WPE_START_PRINT, WPE_STARTCMD_KEY_PRINT, argv);
+ int from = WPE_FROM_USER;
+
+ if (!plan)
+  return(NULL);
+ if (e_opt_start_folder() && !wpe_startcmd_is_own(WPE_STARTCMD_KEY_PRINT, cmd))
+  from = WPE_FROM_FOLDER;
+ wpe_startplan_relabel(plan, E_PRINT_SCRIPT_WORD, WPE_WORD_TEXT, from);
+ if (from == WPE_FROM_FOLDER)
+  wpe_startplan_answered(plan, WPE_PLAN_RUN);
+ return(plan);
+}
+
 /**
  * e_print_run - Run the user's print command on a file.
  * @dir: where the file is; @cmd: the print command from the options, shell
@@ -3309,7 +3338,8 @@ static int e_print_run(const char *dir, const char *cmd, const char *file)
  char out[E_PRINT_OUT_MAX];
  char *script, *argv[7];
  size_t size = strlen(E_PRINT_SCRIPT_FMT) + strlen(cmd) + 1;
- int status, ran;
+ WpeStartPlan *plan;
+ int status = 0, ran;
 
  if (!(script = MALLOC(size)))
   return(E_PRINT_FAILED);
@@ -3321,8 +3351,9 @@ static int e_print_run(const char *dir, const char *cmd, const char *file)
  argv[4] = (char *)dir;        /* $1 */
  argv[5] = (char *)file;       /* $2 */
  argv[6] = NULL;
- ran = wpe_child_capture(argv, out, sizeof out, E_PRINT_MS, &status,
-                         E_PRINT_WHAT);
+ plan = e_print_plan(argv, cmd);
+ ran = wpe_startplan_capture(plan, out, sizeof out, E_PRINT_MS, &status, E_PRINT_WHAT);
+ wpe_startplan_free(plan);
  FREE(script);
  if (ran == WPE_CAPTURE_CANCELLED)
   return(E_PRINT_STOPPED);
@@ -3758,6 +3789,23 @@ static void e_man_outfile(char *tstr, size_t size, const char *str)
 }
 
 /**
+ * e_man_run_plan - Run man's command line through its start plan.
+ * @argv: man's command line; @tstr: the file the page goes to; @status:
+ * receives its status.
+ * Return: as wpe_startplan_run_to_file.
+ */
+static int e_man_run_plan(char *const argv[], const char *tstr, int *status)
+{
+ WpeStartPlan *plan = wpe_startplan_fixed(WPE_START_MAN, E_MAN_WHAT, argv);
+ int ran;
+
+ *status = 0;
+ ran = wpe_startplan_run_to_file(plan, tstr, E_MAN_MS, status, E_MAN_WHAT);
+ wpe_startplan_free(plan);
+ return(ran);
+}
+
+/**
  * e_man_run - Write the manual page into @tstr.
  * @nstr: the section, or ""; @hstr: the page's name; @tstr: the file.
  *
@@ -3790,7 +3838,7 @@ static int e_man_run(const char *nstr, const char *hstr, const char *tstr)
 #endif
     argv[n++] = (char *)hstr;
     argv[n] = NULL;
-    ran = wpe_child_run_to_file(argv, tstr, E_MAN_MS, &status, E_MAN_WHAT);
+    ran = e_man_run_plan(argv, tstr, &status);
     if(ran == WPE_CAPTURE_CANCELLED)
       return(E_MAN_STOPPED);
     if(ran == WPE_CAPTURE_ENDED)

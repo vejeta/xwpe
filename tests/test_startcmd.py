@@ -31,7 +31,7 @@ ENTER = "\r"
 
 BOX_TITLE = "Command from ./xwperc"
 OWN_LINE = "Your own setting: gcc -g"
-STORE_MAGIC = "xwpe-start-commands 1"
+STORE_MAGIC = "xwpe-start-commands 2"
 SEED = "int main(void){return 0;}\n"
 BOX_WAIT = 12              # the box is up by then
 BUILD_WAIT = 20            # gcc has built t.c by then
@@ -154,25 +154,33 @@ def test_startcmd_compiler_asks(tmp_path):
 @needs_gcc
 def test_startcmd_use_mine(tmp_path):
     """Use mine builds with the user's own gcc, the folder's program never
-    runs, and the store keeps "no" for this folder and command."""
+    runs, and the store keeps "no" for this folder and the build's plan.
+
+    The store is version 2: the record's key is the action and language
+    (build/C) and its text the build's whole plan (escaped onto one line),
+    in which the folder's compiler is a word."""
     folder = Folder(tmp_path, "[Language/C]\nCompiler : ./fake-cc\n")
     _compile_and_answer(folder, USE_MINE)
     assert _wait(lambda: (folder.ws / "t.e").exists(), BUILD_WAIT), \
         "the user's own compiler did not build the program"
     assert not folder.marker.exists(), "the folder's compiler ran after Use mine"
     real = os.path.realpath(str(folder.ws))
-    assert folder.records() == ["no\tCompiler/C\t%s\t./fake-cc -g" % real], folder.records()
+    records = folder.records()
+    assert len(records) == 1, records
+    assert records[0].startswith("no\tbuild/C\t%s\t" % real), records
+    assert "\\nargv ./fake-cc\\n" in records[0], records
     assert "using your own C compiler" in folder.traced(), folder.traced()
 
 
 # @scenario SC-compile-28
 def test_startcmd_focus_starts_on_use_mine(tmp_path):
     """Enter on the question takes the focused button, and that is Use mine:
-    the folder's program does not run."""
+    the folder's program does not run.  (The answer's key names the action,
+    build/C, since F9's compile and link are one plan.)"""
     folder = Folder(tmp_path, "[Language/C]\nCompiler : ./fake-cc\n")
     _compile_and_answer(folder, ENTER)
     assert not folder.marker.exists(), "Enter ran the folder's compiler"
-    assert "startcmd answer Compiler/C own" in folder.traced(), folder.traced()
+    assert "startcmd answer build/C own" in folder.traced(), folder.traced()
 
 
 # @scenario SC-compile-28
@@ -361,7 +369,8 @@ def _wait_alive(s, seconds):
 @needs_gcc
 def test_startcmd_project_use_mine(tmp_path):
     """The project's ./fake-cc, Use mine: the project builds with the user's
-    own gcc, the project's compiler never runs, the store keeps "no"."""
+    own gcc, the project's compiler never runs, the store keeps "no" (under
+    the version-2 key of the project's build, project/demo.prj)."""
     folder = Folder(tmp_path)
     (folder.ws / "demo.prj").write_text(PROJECT)
     with folder.session(filename="main.c") as s:
@@ -372,7 +381,7 @@ def test_startcmd_project_use_mine(tmp_path):
         assert _wait(lambda: (folder.ws / "demo").exists(), BUILD_WAIT), \
             "the user's own compiler did not build the project:\n" + _screen(s)
     assert not folder.marker.exists(), "the project's compiler ran after Use mine"
-    assert any(r.startswith("no\tProject/demo.prj\t") for r in folder.records()), folder.records()
+    assert any(r.startswith("no\tproject/demo.prj\t") for r in folder.records()), folder.records()
 
 
 RSP_WRAPPER = "-wrapper /bin/sh,-c,touch\\ %s main.c\n"
@@ -540,12 +549,15 @@ def _print_and_answer(folder, answer):
 
 # @scenario SC-compile-28
 def test_startcmd_print_run_it(tmp_path):
-    """Run it on the folder's print command runs it and remembers yes."""
+    """Run it on the folder's print command runs it and remembers yes.  The
+    print's start plan names the command as the folder's (its judge alone
+    would ask: verdict 4), and the answer to the print question runs it."""
     folder = Folder(tmp_path)
     (folder.ws / "xwperc").write_text("[General]\nPrintCmd : %s\n" % folder.fake)
     _print_and_answer(folder, RUN_IT)
     assert _wait(folder.marker.exists, BUILD_WAIT), "Run it did not print"
     assert any(r.startswith("yes\tPrintCmd\t") for r in folder.records()), folder.records()
+    assert "startplan judge print/PrintCmd 4" in folder.traced(), folder.traced()
 
 
 # @scenario SC-compile-28

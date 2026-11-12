@@ -154,7 +154,7 @@ def _project(tmp_path):
     # asked about first (tests/test_startcmd.py), these rows test the start.
     store = tmp_path / ".local" / "state" / "xwpe" / "start-commands"
     store.parent.mkdir(parents=True)
-    store.write_text("xwpe-start-commands 1\nyes\tBSP/stub.json\t%s\t%s\n"
+    store.write_text("xwpe-start-commands 2\nyes\tBSP/stub.json\t%s\t%s\n"
                      % (os.path.realpath(str(tmp_path)), server))
     return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", ""))}
 

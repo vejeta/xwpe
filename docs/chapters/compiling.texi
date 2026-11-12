@@ -219,10 +219,14 @@ Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A}) are not asked about: they run
 the folder's own program, with the folder's @code{Arguments}, and its
 @file{Makefile}, which is the folder's code by design.  The output
 folder (@code{Exedir}) and every file name a build hands over are passed
-as paths, never as options.  The box shows the command line, not the
-output folder: where a folder's @code{Exedir}, @code{Executable},
-@code{EXENAME} or @code{LIBNAME} puts the build's output is not asked
-about yet.  @xref{Folder commands}.
+as paths, never as options.  The question is about the whole build: when
+a folder's @code{Exedir} or @code{Executable}, or a project's
+@code{EXENAME} or @code{LIBNAME}, puts the object or the program outside
+the folder of the file that set it (through a link too), the box lists
+it under @samp{Writes outside this folder}, even when the compiler line
+is your own.  An object a folder's value put outside its folder is
+never removed before it is compiled again; one your own @code{Exedir}
+puts elsewhere is, as before.  @xref{Folder commands}.
 
 @section Language support
 

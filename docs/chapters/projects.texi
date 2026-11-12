@@ -46,7 +46,11 @@ your own C compiler line shows them and asks @samp{Run it},
 answer is kept for that folder and line.  Lines you set in
 @samp{Project-Options} are yours.  The @code{install:} lines, which go
 to the shell at @kbd{Alt-L}, are shown and asked about the same way.
-@xref{Folder commands}.
+The build is asked about once, whatever the number of @code{FILES}, and
+also when @code{EXENAME} or @code{LIBNAME} (or the @code{Project} key of
+the folder you start in) points outside the project's folder, for
+example @code{EXENAME = $(HOME)/.local/bin/git}; a project that builds
+inside its own folder asks nothing.  @xref{Folder commands}.
 
 A word of @code{FILES} or @code{LIBNAME} always names a file: one that
 starts with @samp{-} or @samp{@@} is passed as @file{./-name} or
@@ -74,6 +78,12 @@ You can define custom variables and reference them:
 SRCDIR = src
 FILES = $(SRCDIR)/main.c $(SRCDIR)/utils.c
 @end example
+
+A @code{$(name)} is looked up among the project's own variables first.
+From the environment a project file may take only @code{HOME},
+@code{USER}, @code{LOGNAME}, @code{PWD} and @code{TMPDIR}; any other
+variable you have set stays as written, so a key or a token never
+reaches the compiler's command line.
 
 @section The install target
 

@@ -11,6 +11,8 @@
 #include "we_testdump.h"
 #include "we_paint.h"
 #include "we_startcmd.h"
+#include "we_startplan.h"
+#include <stdarg.h>
 #include <wchar.h>
 #ifdef WPE_AI
 #include "we_ai.h"
@@ -880,39 +882,120 @@ static int e_startcmd_add_command(W_OPTSTR *o, int y, char **rows, int nrows,
 }
 
 /**
- * e_startcmd_add_buttons - Run it (when the whole command is shown), Use
- * mine, Cancel; the focus starts on Use mine.
- * @o: the box; @y: the buttons' row; @offer_run: 1 to offer Run it.
+ * e_startcmd_add_buttons - Run it (when everything is shown), Use mine (when
+ * the user has his own), Cancel; the focus starts on Use mine, else on
+ * Cancel, never on Run it.
+ * @o: the box; @y: the buttons' row; @offer_run: 1 to offer Run it;
+ * @offer_mine: 1 to offer Use mine.
  */
-static void e_startcmd_add_buttons(W_OPTSTR *o, int y, int offer_run)
+static void e_startcmd_add_buttons(W_OPTSTR *o, int y, int offer_run, int offer_mine)
 {
  int w = o->xe - o->xa;
 
  if (offer_run)
   e_add_bttstr(4, y, 0, E_STARTCMD_RUN_KEY, "Run it", NULL, o);
- e_add_bttstr(w / 2 - 5, y, 0, E_STARTCMD_MINE_KEY, "Use mine", NULL, o);
+ if (offer_mine)
+  e_add_bttstr(w / 2 - 5, y, 0, E_STARTCMD_MINE_KEY, "Use mine", NULL, o);
  e_add_bttstr(w - 11, y, -1, WPE_ESC, "Cancel", NULL, o);
- o->crsw = E_STARTCMD_MINE_KEY;      /* Enter on no button */
- o->bgsw = E_STARTCMD_MINE_KEY;      /* the focus as the box opens */
+ if (offer_mine)
+ {
+  o->crsw = E_STARTCMD_MINE_KEY;      /* Enter on no button */
+  o->bgsw = E_STARTCMD_MINE_KEY;      /* the focus as the box opens */
+  return;
+ }
+ o->crsw = WPE_ESC;
+ o->bgsw = WPE_ESC;
+}
+
+/* What the box shows: the shared form of a folder's command and of a plan. */
+typedef struct {
+ const char *source;   /* the title's file: "./xwperc", "demo.prj"             */
+ const char *head;     /* "This folder's xwperc sets the C compiler to:"       */
+ const char *text;     /* the command, shown whole in rows                     */
+ const char *own;      /* the user's own, or NULL                              */
+ const char *folder;   /* the folder the answer is kept for                    */
+ const char *key;      /* the trace's key                                      */
+ char **extra;         /* the plan's lines below the command, or NULL          */
+ const int *extra_end; /* per line: 1 to keep its end when cut (a path)       */
+ int nextra;
+ int offer_mine;       /* the user has a plan of his own "Use mine" can start  */
+} e_startcmd_view;
+
+/* A row between the plan's lines and the user's own setting. */
+#define E_STARTCMD_EXTRA_GAP 1
+/* The fewest rows the command keeps when the plan's lines are many. */
+#define E_STARTCMD_CMD_MIN_ROWS 2
+#define E_STARTCMD_MORE_FMT "... %d more lines (not all of the plan fits)"
+
+/**
+ * e_startcmd_extra_rows - How many of the plan's lines the screen can show.
+ * @v: the view; @avail: the rows left for the command and the lines.
+ * Return: the lines shown (all, or as many as leave the command its rows);
+ * fewer than all withholds Run it, as a command that does not fit does.
+ */
+static int e_startcmd_extra_rows(const e_startcmd_view *v, int avail)
+{
+ int fit;
+
+ if (v->nextra == 0)
+  return(0);
+ fit = avail - E_STARTCMD_CMD_MIN_ROWS - E_STARTCMD_EXTRA_GAP;
+ if (fit < 1)
+  fit = 1;
+ if (v->nextra <= fit)
+  return(v->nextra);
+ return(fit);
 }
 
 /**
- * e_startcmd_ask - Show a folder's command and ask whether to run it.
- * @f: the window the command was asked from; @c: the command.
+ * e_startcmd_add_extra - The plan's lines: where each folder value came
+ * from, what lies outside the folder, what was not removed.
+ * @o: the box; @y: the first row; @v: the view; @shown: how many fit;
+ * @width: the room.
+ */
+static void e_startcmd_add_extra(W_OPTSTR *o, int y, const e_startcmd_view *v, int shown,
+                                 int width)
+{
+ char line[E_STARTCMD_LINE_MAX];
+ char *printable;
+ int i, keep_end;
+
+ for (i = 0; i < shown; i++)
+ {
+  if (shown < v->nextra && i == shown - 1)
+  {
+   snprintf(line, sizeof line, E_STARTCMD_MORE_FMT, v->nextra - i);
+   e_startcmd_add_line(o, y + i, line, width, 0);
+   break;
+  }
+  if (!(printable = e_startcmd_shown(v->extra[i])))
+   continue;
+  keep_end = 0;
+  if (v->extra_end)
+   keep_end = v->extra_end[i];
+  e_startcmd_add_line(o, y + i, printable, width, keep_end);
+  FREE(printable);
+ }
+}
+
+/**
+ * e_startcmd_show - Show a folder's command, or a start plan, and ask.
+ * @f: the window it was asked from; @v: what to show.
  *
  * The command is shown whole, every control byte written out, so what the
- * user approves is what runs; when it does not fit on the screen, Run it is
- * not offered at all.
+ * user approves is what runs; a plan's lines follow it.  When the command
+ * or the lines do not fit on the screen, Run it is not offered at all.
  * Return: WPE_STARTCMD_RUN, WPE_STARTCMD_USE_OWN or WPE_STARTCMD_CANCEL.
  */
-static int e_startcmd_ask(FENSTER *f, const E_STARTCMD *c)
+static int e_startcmd_show(FENSTER *f, const e_startcmd_view *v)
 {
  W_OPTSTR *o;
  char title[E_STARTCMD_LINE_MAX], line[E_STARTCMD_LINE_MAX];
  char *shown, **rows = NULL;
- int width, text_w, nrows, room, shown_rows, whole, y, ret;
+ int width, text_w, nrows, room, shown_rows, whole, y, ret, nextra, extra_rows;
+ E_STARTCMD c;
 
- if (!(shown = e_startcmd_shown(c->text)))
+ if (!(shown = e_startcmd_shown(v->text)))
   return(WPE_STARTCMD_CANCEL);
  if (!(o = e_init_opt_kst(f)))
  {
@@ -925,6 +1008,9 @@ static int e_startcmd_ask(FENSTER *f, const E_STARTCMD *c)
  text_w = width - 2 * E_STARTCMD_MARGIN;
  nrows = e_startcmd_rows(shown, text_w - E_STARTCMD_INDENT, &rows);
  room = MAXSLNS - E_STARTCMD_SCREEN_ROWS - E_STARTCMD_FIXED_ROWS;
+ nextra = e_startcmd_extra_rows(v, room);
+ extra_rows = nextra ? nextra + E_STARTCMD_EXTRA_GAP : 0;
+ room -= extra_rows;
  if (room < 1)
   room = 1;
  shown_rows = nrows < room ? nrows : room;
@@ -932,31 +1018,58 @@ static int e_startcmd_ask(FENSTER *f, const E_STARTCMD *c)
   shown_rows = 1;
  o->xa = (MAXSCOL - width) / 2;
  o->xe = o->xa + width;
- o->ya = (MAXSLNS - shown_rows - E_STARTCMD_FIXED_ROWS) / 2;
+ o->ya = (MAXSLNS - shown_rows - extra_rows - E_STARTCMD_FIXED_ROWS) / 2;
  if (o->ya < 1)
   o->ya = 1;
- o->ye = o->ya + shown_rows + E_STARTCMD_FIXED_ROWS - 1;
+ o->ye = o->ya + shown_rows + extra_rows + E_STARTCMD_FIXED_ROWS - 1;
  o->bgsw = 0;
- snprintf(title, sizeof title, E_STARTCMD_TITLE_FMT, c->source);
+ snprintf(title, sizeof title, E_STARTCMD_TITLE_FMT, v->source);
  o->name = title;
- snprintf(line, sizeof line, E_STARTCMD_HEAD_FMT, c->who, c->what);
- e_startcmd_add_line(o, 2, line, text_w, 0);
- whole = e_startcmd_add_command(o, 4, rows, nrows, room, c, text_w);
+ e_startcmd_add_line(o, 2, v->head, text_w, 0);
+ c.text = v->text;
+ c.source = v->source;
+ whole = e_startcmd_add_command(o, 4, rows, nrows, room, &c, text_w);
+ if (nextra < v->nextra)
+  whole = 0;
  y = 4 + shown_rows + 1;
- e_startcmd_add_own(o, y, c->own, text_w);
- snprintf(line, sizeof line, E_STARTCMD_FOLDER_FMT, c->folder);
+ e_startcmd_add_extra(o, y, v, nextra, text_w);
+ y += extra_rows;
+ e_startcmd_add_own(o, y, v->own, text_w);
+ snprintf(line, sizeof line, E_STARTCMD_FOLDER_FMT, v->folder);
  e_startcmd_add_line(o, y + 1, line, text_w, 1);
- e_startcmd_add_buttons(o, o->ye - o->ya - 2, whole);
- wpe_ui_trace("startcmd ask %s %s%s", c->key, shown, whole ? "" : " (too long)");
+ e_startcmd_add_buttons(o, o->ye - o->ya - 2, whole, v->offer_mine);
+ wpe_ui_trace("startcmd ask %s %s%s", v->key, shown, whole ? "" : " (too long)");
  ret = e_opt_kst_message(o);
  freeostr(o);
  e_startcmd_free_rows(rows, nrows);
  FREE(shown);
  if (ret == E_STARTCMD_RUN_KEY && whole)
   return(WPE_STARTCMD_RUN);
- if (ret == E_STARTCMD_MINE_KEY)
+ if (ret == E_STARTCMD_MINE_KEY && v->offer_mine)
   return(WPE_STARTCMD_USE_OWN);
  return(WPE_STARTCMD_CANCEL);
+}
+
+/**
+ * e_startcmd_ask - Show a folder's command and ask whether to run it.
+ * @f: the window the command was asked from; @c: the command.
+ * Return: as e_startcmd_show.
+ */
+static int e_startcmd_ask(FENSTER *f, const E_STARTCMD *c)
+{
+ e_startcmd_view v;
+ char head[E_STARTCMD_LINE_MAX];
+
+ snprintf(head, sizeof head, E_STARTCMD_HEAD_FMT, c->who, c->what);
+ memset(&v, 0, sizeof v);
+ v.source = c->source;
+ v.head = head;
+ v.text = c->text;
+ v.own = c->own;
+ v.folder = c->folder;
+ v.key = c->key;
+ v.offer_mine = 1;
+ return(e_startcmd_show(f, &v));
 }
 
 /**
@@ -1087,6 +1200,300 @@ void e_startcmd_typed(const char *folder, const char *key, const char *text)
  wpe_startcmd_note_own(key, text);
  if (folder && *text)
   wpe_startcmd_remember(folder, key, text, WPE_STARTCMD_YES);
+}
+
+/* The plan's lines in the box, and what the status row says about it. */
+#define E_STARTPLAN_FROM_FMT     "From %s: %s = %s"
+#define E_STARTPLAN_FROM_EXP_FMT "From %s: %s = %s -> %s"
+#define E_STARTPLAN_WRITES       "Writes outside this folder:"
+#define E_STARTPLAN_READS        "Reads outside this folder:"
+#define E_STARTPLAN_PATH_FMT     "  %s"
+#define E_STARTPLAN_DROPPED_FMT  "not removed: %s (outside this folder)"
+#define E_STARTPLAN_INSIDE_FMT   "%d files from %s, all inside this folder"
+#define E_STARTPLAN_REFUSED_FMT  "%s's %s was not run: %s"
+#define E_STARTPLAN_LINES_MAX    (WPE_STARTPLAN_WORDS_MAX + 8)
+
+/* The lines a plan adds below its command, as they are collected. */
+typedef struct {
+ char **line;
+ int *keep_end;        /* 1 for a path: a cut keeps its end, where its file is */
+ int n;
+} e_startplan_lines;
+
+/* How a line of the plan is cut when it is wider than the box. */
+#define E_STARTPLAN_KEEP_START 0
+#define E_STARTPLAN_KEEP_END   1
+
+/**
+ * e_startplan_line_add - Append one line of the plan's part of the box.
+ * @l: the lines; @keep_end: E_STARTPLAN_KEEP_*; @fmt: its format, and its
+ * arguments.
+ *
+ * Each line also goes to the trace whole, so a test reads a long path the
+ * box had to cut.
+ */
+static void e_startplan_line_add(e_startplan_lines *l, int keep_end, const char *fmt, ...)
+{
+ char text[E_STARTCMD_LINE_MAX];
+ char **grown;
+ int *grown_end;
+ va_list ap;
+
+ if (l->n >= E_STARTPLAN_LINES_MAX)
+  return;
+ va_start(ap, fmt);
+ vsnprintf(text, sizeof text, fmt, ap);
+ va_end(ap);
+ if (!(grown = REALLOC(l->line, (l->n + 1) * sizeof(char *))))
+  return;
+ l->line = grown;
+ if (!(grown_end = REALLOC(l->keep_end, (l->n + 1) * sizeof(int))))
+  return;
+ l->keep_end = grown_end;
+ if ((l->line[l->n] = WpeStrdup(text)) == NULL)
+  return;
+ l->keep_end[l->n] = keep_end;
+ l->n++;
+ wpe_ui_trace("startplan line %s", text);
+}
+
+/** e_startplan_lines_free - Free the plan's lines. */
+static void e_startplan_lines_free(e_startplan_lines *l)
+{
+ int i;
+
+ for (i = 0; i < l->n; i++)
+  FREE(l->line[i]);
+ if (l->line)
+  FREE(l->line);
+ if (l->keep_end)
+  FREE(l->keep_end);
+ l->line = NULL;
+ l->keep_end = NULL;
+ l->n = 0;
+}
+
+/**
+ * e_startplan_lines_values - "From <file>: KEY = value" for each value a
+ * folder file set, its expansion beside it.
+ */
+static void e_startplan_lines_values(e_startplan_lines *l, const WpeStartPlan *p)
+{
+ int i;
+
+ for (i = 0; i < p->nvalue; i++)
+ {
+  const WpeStartValue *v = &p->value[i];
+  if (v->expanded)
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_FROM_EXP_FMT, v->file, v->key,
+                        v->raw, v->expanded);
+  else
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_FROM_FMT, v->file, v->key, v->raw);
+ }
+}
+
+/**
+ * e_startplan_lines_outside - Each path a folder value puts outside its
+ * folder, under the heading of what the start does with it.
+ * @l: the lines; @p: the plan; @role: WPE_PATH_WRITE or WPE_PATH_INPUT;
+ * @heading: the line above them.
+ */
+static void e_startplan_lines_outside(e_startplan_lines *l, const WpeStartPlan *p, int role,
+                                      const char *heading)
+{
+ int i, said = 0;
+
+ for (i = 0; i < p->npath; i++)
+ {
+  const WpeStartPath *s = &p->path[i];
+  if (s->role != role || s->from != WPE_FROM_FOLDER || s->inside)
+   continue;
+  if (!said)
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "%s", heading);
+  said = 1;
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_END, E_STARTPLAN_PATH_FMT, s->resolved);
+ }
+}
+
+/** e_startplan_lines_dropped - A line for each removal outside, not done. */
+static void e_startplan_lines_dropped(e_startplan_lines *l, const WpeStartPlan *p)
+{
+ int i;
+
+ for (i = 0; i < p->npath; i++)
+  if (p->path[i].dropped)
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_END, E_STARTPLAN_DROPPED_FMT, p->path[i].resolved);
+}
+
+/**
+ * e_startplan_lines_of - Everything the box says about a plan below its command.
+ * @l: receives the lines; @p: the plan, judged.
+ *
+ * The values a folder set and where they came from, what the start writes
+ * and reads outside the folder, what it will not remove, and how many of
+ * the folder's own files it builds: the user sees the whole start, not
+ * only the program's name.
+ */
+static void e_startplan_lines_of(e_startplan_lines *l, const WpeStartPlan *p)
+{
+ int outside, dropped, inside;
+
+ e_startplan_lines_values(l, p);
+ e_startplan_lines_outside(l, p, WPE_PATH_WRITE, E_STARTPLAN_WRITES);
+ e_startplan_lines_outside(l, p, WPE_PATH_INPUT, E_STARTPLAN_READS);
+ e_startplan_lines_dropped(l, p);
+ wpe_startplan_counts(p, &outside, &dropped, &inside);
+ if (inside > 0 && p->file)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_INSIDE_FMT, inside, p->file);
+}
+
+/**
+ * e_startplan_cmd_of - The P0b view of a plan, for the status lines.
+ * @c: filled in; @p: the plan; @show: what the site says about it;
+ * @key: the plan's key.
+ */
+static void e_startplan_cmd_of(E_STARTCMD *c, const WpeStartPlan *p,
+                               const E_STARTPLAN_SHOW *show, const char *key)
+{
+ c->folder = p->folder;
+ c->source = p->file ? p->file : "";
+ c->who = show->who;
+ c->key = key;
+ c->what = show->what;
+ c->text = show->shown;
+ c->own = show->own;
+}
+
+/**
+ * e_startplan_ask - Show a plan and ask whether to run it.
+ * @f: the window; @p: the plan, judged; @show: its command and the user's
+ * own; @key: the plan's key.
+ * Return: WPE_STARTCMD_RUN, WPE_STARTCMD_USE_OWN or WPE_STARTCMD_CANCEL.
+ */
+static int e_startplan_ask(FENSTER *f, WpeStartPlan *p, const E_STARTPLAN_SHOW *show,
+                           const char *key)
+{
+ e_startplan_lines l = { NULL, NULL, 0 };
+ e_startcmd_view v;
+ char head[E_STARTCMD_LINE_MAX];
+ int ret;
+
+ e_startplan_lines_of(&l, p);
+ snprintf(head, sizeof head, E_STARTCMD_HEAD_FMT, show->who, show->what);
+ memset(&v, 0, sizeof v);
+ v.source = p->file ? p->file : "";
+ v.head = head;
+ v.text = show->shown;
+ v.own = show->own;
+ v.folder = p->folder ? p->folder : "";
+ v.key = key;
+ v.extra = l.line;
+ v.extra_end = l.keep_end;
+ v.nextra = l.n;
+ v.offer_mine = wpe_startplan_own_usable(p);
+ ret = e_startcmd_show(f, &v);
+ e_startplan_lines_free(&l);
+ return(ret);
+}
+
+/**
+ * e_startplan_say_refused - A plan a rule refused: nothing runs, and why.
+ */
+static void e_startplan_say_refused(FENSTER *f, const WpeStartPlan *p,
+                                    const E_STARTPLAN_SHOW *show)
+{
+ char line[E_STARTCMD_STATUS_MAX];
+ const char *file = "", *why = "";
+
+ if (p->file)
+  file = p->file;
+ if (p->refused)
+  why = p->refused;
+ snprintf(line, sizeof line, E_STARTPLAN_REFUSED_FMT, file, show->what, why);
+ e_startcmd_say(f, line);
+}
+
+/**
+ * e_startplan_approve - Judge the plan of a user action, and ask when a
+ * folder decided something the user has not seen.
+ * @f: the window the key was pressed in; @plan: the action's plan, whole;
+ * @show: the folder's command line and the user's own, as the box shows them.
+ *
+ * Called once per action (F9, Alt-C, a project build) before its first
+ * child starts.  A plan in which no folder chose anything runs; the user's
+ * own plan, or one he said yes to in this folder, runs; one he answered
+ * "Use mine" for starts his own; any other is shown, with every value a
+ * folder file set, every path it puts outside the folder and every removal
+ * that will not be done, and the answer is kept for that folder and that
+ * very plan.  A plan a rule refused runs nothing.
+ * Return: WPE_STARTCMD_RUN, WPE_STARTCMD_USE_OWN or WPE_STARTCMD_CANCEL;
+ * the plan's verdict says the same for wpe_startplan_start.
+ */
+int e_startplan_approve(FENSTER *f, struct WpeStartPlan *plan, const E_STARTPLAN_SHOW *show)
+{
+ char key[WPE_STARTPLAN_KEY_MAX];
+ E_STARTCMD c;
+ int verdict;
+
+ if (!plan || !show || wpe_startplan_key(plan, key, sizeof key) < 0)
+  return(WPE_STARTCMD_CANCEL);
+ verdict = wpe_startplan_judge(plan);
+ e_startplan_cmd_of(&c, plan, show, key);
+ if (verdict == WPE_PLAN_REFUSED)
+ {
+  e_startplan_say_refused(f, plan, show);
+  return(WPE_STARTCMD_CANCEL);
+ }
+ if (verdict == WPE_PLAN_CLEAN)
+  return(WPE_STARTCMD_RUN);
+ if (verdict == WPE_PLAN_RUN)
+ {
+  wpe_ui_trace("startcmd run %s", key);
+  return(WPE_STARTCMD_RUN);
+ }
+ if (verdict == WPE_PLAN_USE_OWN)
+ {
+  wpe_ui_trace("startcmd remembered %s own", key);
+  e_startcmd_say_answer(f, &c, WPE_STARTCMD_USE_OWN, 1);
+  return(WPE_STARTCMD_USE_OWN);
+ }
+ e_startcmd_say_store_bad(f);
+ verdict = e_startplan_ask(f, plan, show, key);
+ wpe_ui_trace("startcmd answer %s %s", key, e_startcmd_answer_word(verdict));
+ if (verdict == WPE_STARTCMD_CANCEL)
+ {
+  plan->verdict = WPE_PLAN_CANCEL;
+  e_startcmd_say_answer(f, &c, verdict, 0);
+  return(verdict);
+ }
+ if (verdict == WPE_STARTCMD_RUN)
+  plan->verdict = WPE_PLAN_RUN;
+ else
+  plan->verdict = WPE_PLAN_USE_OWN;
+ e_startcmd_say_answer(f, &c, verdict, wpe_startplan_remember(plan, plan->verdict) == 0);
+ return(verdict);
+}
+
+/**
+ * e_startplan_say_not_removed - Say that a build output outside the folder
+ * was left in place.
+ * @f: the window; @plan: the plan; @path: the output, as the build names it.
+ *
+ * The original removed a stale object wherever Exedir pointed before it
+ * compiled; a removal outside the folder is no longer done, and the status
+ * row says so instead of leaving the user to wonder.
+ */
+void e_startplan_say_not_removed(FENSTER *f, struct WpeStartPlan *plan, const char *path)
+{
+ char line[E_STARTCMD_STATUS_MAX];
+ const char *shown = path;
+ int i;
+
+ for (i = 0; plan && i < plan->npath; i++)
+  if (plan->path[i].role == WPE_PATH_REMOVE && strcmp(plan->path[i].path, path) == 0)
+   shown = plan->path[i].resolved;
+ snprintf(line, sizeof line, E_STARTPLAN_DROPPED_FMT, shown);
+ e_startcmd_say(f, line);
 }
 
 /*         First opening of a window                 */

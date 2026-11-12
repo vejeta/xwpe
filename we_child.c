@@ -111,6 +111,46 @@ void wpe_child_say_set(void (*say)(const char *line))
  wpe_child_say_hook = say;
 }
 
+static void (*wpe_child_trace_hook)(const char *line);
+
+/* The trace line of a user start that came from no start plan. */
+#define WPE_CHILD_UNPLANNED_FMT "child unplanned %s"
+
+/**
+ * wpe_child_trace_set - Where the owner's trace lines go.
+ * @trace: the editor's trace, or NULL (the C tests).
+ *
+ * Lets a test see which starts do not come from a start plan yet, while
+ * the sites are converted one pass at a time.
+ */
+void wpe_child_trace_set(void (*trace)(const char *line))
+{
+ wpe_child_trace_hook = trace;
+}
+
+/**
+ * wpe_child_note_unplanned - Trace a user start that has no start plan.
+ * @spec: the start.
+ *
+ * Every program the editor starts for the user is to come from a start plan
+ * (we_startplan.c), which shows and asks about what a folder decided.  The
+ * sites move to it one pass at a time; until the last one has, a start
+ * without a plan still runs and leaves this trace line, so a test can tell
+ * the converted sites from the rest.
+ */
+static void wpe_child_note_unplanned(const WpeChildSpec *spec)
+{
+ char line[WPE_CHILD_LINE_MAX];
+ const char *what = spec->what;
+
+ if (spec->plan || spec->origin == WPE_CHILD_ORIGIN_AI || !wpe_child_trace_hook)
+  return;
+ if (!what)
+  what = WPE_CHILD_UNNAMED;
+ snprintf(line, sizeof line, WPE_CHILD_UNPLANNED_FMT, what);
+ wpe_child_trace_hook(line);
+}
+
 /**
  * wpe_child_say - Tell the user something about a child, naming it.
  * @fmt: a format with one %s for what the child is; @what: that.
@@ -1208,6 +1248,7 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
  pid_t pid;
 
  wpe_child_reset(c);
+ wpe_child_note_unplanned(spec);
  WpeChildSignalBlock(&saved);
  if (!wpe_child_room())
   return(wpe_child_refuse(spec, &saved));
@@ -1913,11 +1954,14 @@ static WpeCaptureServe wpe_capture_display_server(void)
  * output (the version of a Java is written on its stderr), or its output
  * into a file.
  */
-static void wpe_capture_spec(WpeChildSpec *spec, char *const argv[],
-                             const char *path, const char *what)
+static void wpe_capture_spec(WpeChildSpec *spec, const struct WpeStartPlan *plan,
+                             char *const argv[], const char *path, const char *what)
 {
  memset(spec, 0, sizeof *spec);
  spec->argv = argv;
+ spec->plan = plan;
+ if (plan)
+  spec->origin = WPE_CHILD_ORIGIN_USER;
  spec->io = WPE_CHILD_IO_PIPES;
  spec->group = WPE_CHILD_OWN_SESSION;
  spec->stdin_null = 1;
@@ -2068,9 +2112,9 @@ static void wpe_capture_finish(WpeCapture *cap)
  * @path: where its output goes as a file, or NULL to read it into @out.
  * Return: WPE_CAPTURE_*; the rest as wpe_child_capture.
  */
-static int wpe_capture_run(char *const argv[], const char *path, char *out,
-                           size_t max, long deadline_ms, int *status,
-                           const char *what, int deaf)
+static int wpe_capture_run(const struct WpeStartPlan *plan, char *const argv[],
+                           const char *path, char *out, size_t max, long deadline_ms,
+                           int *status, const char *what, int deaf)
 {
  WpeCapture cap, *outer = wpe_capture_now;
  WpeChildSpec spec;
@@ -2083,7 +2127,7 @@ static int wpe_capture_run(char *const argv[], const char *path, char *out,
  cap.status = WPE_CAPTURE_STATUS_LOST;
  if (out && max)
   out[0] = '\0';
- wpe_capture_spec(&spec, argv, path, what);
+ wpe_capture_spec(&spec, plan, argv, path, what);
  cap.what = spec.what;
  if (wpe_capture_begin(&cap, &spec) < 0)
   return(WPE_CAPTURE_NOT_STARTED);
@@ -2118,7 +2162,20 @@ static int wpe_capture_run(char *const argv[], const char *path, char *out,
 int wpe_child_capture(char *const argv[], char *out, size_t max,
                       long deadline_ms, int *status, const char *what)
 {
- return(wpe_capture_run(argv, NULL, out, max, deadline_ms, status, what,
+ return(wpe_capture_run(NULL, argv, NULL, out, max, deadline_ms, status, what,
+                        WPE_CAPTURE_ASKS_ESC));
+}
+
+/**
+ * wpe_child_capture_plan - wpe_child_capture for a command a start plan
+ * describes.
+ * @plan: the plan, which the child's spec carries; the rest as there.
+ * Return: as wpe_child_capture.
+ */
+int wpe_child_capture_plan(const struct WpeStartPlan *plan, char *const argv[], char *out,
+                           size_t max, long deadline_ms, int *status, const char *what)
+{
+ return(wpe_capture_run(plan, argv, NULL, out, max, deadline_ms, status, what,
                         WPE_CAPTURE_ASKS_ESC));
 }
 
@@ -2136,7 +2193,19 @@ int wpe_child_capture(char *const argv[], char *out, size_t max,
 int wpe_child_probe(char *const argv[], char *out, size_t max,
                     long deadline_ms, int *status, const char *what)
 {
- return(wpe_capture_run(argv, NULL, out, max, deadline_ms, status, what,
+ return(wpe_capture_run(NULL, argv, NULL, out, max, deadline_ms, status, what,
+                        WPE_CAPTURE_IGNORES_ESC));
+}
+
+/**
+ * wpe_child_probe_plan - wpe_child_probe for a command a start plan describes.
+ * @plan: the plan, which the child's spec carries; the rest as there.
+ * Return: as wpe_child_probe.
+ */
+int wpe_child_probe_plan(const struct WpeStartPlan *plan, char *const argv[], char *out,
+                         size_t max, long deadline_ms, int *status, const char *what)
+{
+ return(wpe_capture_run(plan, argv, NULL, out, max, deadline_ms, status, what,
                         WPE_CAPTURE_IGNORES_ESC));
 }
 
@@ -2154,7 +2223,21 @@ int wpe_child_probe(char *const argv[], char *out, size_t max,
 int wpe_child_run_to_file(char *const argv[], const char *path,
                           long deadline_ms, int *status, const char *what)
 {
- return(wpe_capture_run(argv, path, NULL, 0, deadline_ms, status, what,
+ return(wpe_capture_run(NULL, argv, path, NULL, 0, deadline_ms, status, what,
+                        WPE_CAPTURE_ASKS_ESC));
+}
+
+/**
+ * wpe_child_run_to_file_plan - wpe_child_run_to_file for a command a start
+ * plan describes.
+ * @plan: the plan, which the child's spec carries; the rest as there.
+ * Return: as wpe_child_run_to_file.
+ */
+int wpe_child_run_to_file_plan(const struct WpeStartPlan *plan, char *const argv[],
+                               const char *path, long deadline_ms, int *status,
+                               const char *what)
+{
+ return(wpe_capture_run(plan, argv, path, NULL, 0, deadline_ms, status, what,
                         WPE_CAPTURE_ASKS_ESC));
 }
 

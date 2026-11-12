@@ -15,6 +15,8 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+struct WpeStartPlan;
+
 /* At most sixteen at once: the debugger or an adapter, jdb's program, four
    adapters closing, the build, two language servers (one ending), the build
    server and its setup, the AI host, its tool command and the CLI, a Run and
@@ -105,7 +107,23 @@ typedef struct {
  int echo_argv;                  /* the command line first on stdout (the build's Messages) */
  const char *exec_failed;        /* written before argv when exec fails, or NULL */
  const char *what;               /* "the build": every line the user reads names it */
+ const struct WpeStartPlan *plan; /* what the editor decided this child is (we_startplan.c),
+                                    or NULL for a start not converted yet */
+ int origin;                     /* WPE_CHILD_ORIGIN_*: who asked for the child */
 } WpeChildSpec;
+
+/* Who asked for a child.  0 is "not said", so a site that forgot the field
+   never picks a side. */
+#define WPE_CHILD_ORIGIN_UNSET 0
+#define WPE_CHILD_ORIGIN_USER  1   /* a key the user pressed: its start plan is the control */
+#define WPE_CHILD_ORIGIN_AI    2   /* the assistant: the containment profile is the control */
+
+/* A user start that does not come from a start plan.  Until the last site is
+   converted it is only traced ("child unplanned <what>"); then it is refused
+   with this text. */
+#define WPE_CHILD_REFUSE_UNPLANNED_TEXT \
+ "not started: a program the editor starts must come from a start plan"
+void wpe_child_trace_set(void (*trace)(const char *line));
 
 typedef struct {
  int pid;                        /* 0 once ended and reported */
@@ -155,6 +173,15 @@ int  wpe_child_probe(char *const argv[], char *out, size_t max,
                      long deadline_ms, int *status, const char *what);
 int  wpe_child_run_to_file(char *const argv[], const char *path,
                            long deadline_ms, int *status, const char *what);
+/* The same, for a command a start plan describes (we_startplan.c calls
+   these): the plan travels in the child's spec. */
+int  wpe_child_capture_plan(const struct WpeStartPlan *plan, char *const argv[], char *out,
+                            size_t max, long deadline_ms, int *status, const char *what);
+int  wpe_child_probe_plan(const struct WpeStartPlan *plan, char *const argv[], char *out,
+                          size_t max, long deadline_ms, int *status, const char *what);
+int  wpe_child_run_to_file_plan(const struct WpeStartPlan *plan, char *const argv[],
+                                const char *path, long deadline_ms, int *status,
+                                const char *what);
 int  wpe_capture_succeeded(int result, int status);
 void wpe_child_capture_display_set(int (*quiet_fd)(void), void (*serve)(void),
                                    int (*cancel_asked)(void));

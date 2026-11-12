@@ -70,7 +70,15 @@ wl_display_dispatch|wl_display_dispatch_queue|wl_display_roundtrip|wl_display_di
 fork|vfork|forkpty|openpty|posix_spawn|posix_spawnp|popen|pclose|system|execv|execvp|execve|execl|execlp|execle|setsid|setpgid|setpgrp|waitpid|wait|wait3|wait4|pidfd_open|killpg|kill we_child.o
 WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o
 e_add_undo we_buffer.o we_edit.o
+wpe_child_start we_child.o we_startplan.o
+wpe_child_capture|wpe_child_probe|wpe_child_run_to_file|wpe_child_capture_plan|wpe_child_probe_plan|wpe_child_run_to_file_plan we_child.o we_startplan.o
 EOF
+
+# A program the editor starts for the user comes from a start plan
+# (we_startplan.c), which shows and asks about what a folder decided: only
+# the plan's owner starts a child, and the short commands' calls are its
+# too once they take plans.  The sites not converted yet are counted lines
+# of the allow file, each with the pass that converts it.
 
 # The display's connection has one owner: the X11 backend.  Any other name
 # that starts like an Xlib, Xft or Xrm call, a cairo-xlib call or one of the

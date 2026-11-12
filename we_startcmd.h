@@ -23,13 +23,19 @@
 #define WPE_STARTCMD_NO  0
 #define WPE_STARTCMD_YES 1
 
-/* The most answers the store keeps; the oldest go first. */
-#define WPE_STARTCMD_MAX_RECORDS 512
+/* The most answers the store keeps, in all and for one folder; the oldest
+   go first. */
+#define WPE_STARTCMD_MAX_RECORDS    512
+#define WPE_STARTCMD_MAX_PER_FOLDER 64
 
-/* The store, below the state folder, and its first line. */
+/* The store, below the state folder, and its first line.  Version 2 keeps
+   one answer per folder, key and text: two plans answered for in one
+   folder both stay answered. */
 #define WPE_STARTCMD_STATE_SUBDIR "xwpe"
 #define WPE_STARTCMD_STORE_NAME   "start-commands"
-#define WPE_STARTCMD_STORE_MAGIC  "xwpe-start-commands 1"
+#define WPE_STARTCMD_STORE_MAGIC  "xwpe-start-commands 2"
+/* The first line of a version-1 store, read as an empty store. */
+#define WPE_STARTCMD_STORE_MAGIC_V1 "xwpe-start-commands 1"
 
 /* The state folder when $XDG_STATE_HOME is not set, below $HOME. */
 #define WPE_STARTCMD_STATE_DEFAULT ".local/state"

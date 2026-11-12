@@ -128,8 +128,46 @@ have no command of yours to run instead: @samp{Use mine} runs nothing.  A comman
 too long for the screen is shown in part with its length, and
 @samp{Run it} is not offered: read it in the file first.
 
-An answer holds for that folder, that key and that exact command; when
-the folder's file changes the command, xwpe asks again.  A command you
+For a build (@kbd{F9}, @kbd{Alt-C}, and a project's build) the question
+is about the whole build at once, not only the compiler: where the
+object and the program are written (@code{Exedir}, @code{Executable},
+a project's @code{EXENAME} and @code{LIBNAME}, with every link in the
+path followed), and which project file is read (@code{Project}).  Below
+the command the box says which values came from which file
+(@samp{From p.prj: EXENAME = $(HOME)/.local/bin/git -> /home/u/.local/bin/git}),
+lists under @samp{Writes outside this folder:} and @samp{Reads outside
+this folder:} every path one of them puts outside the folder of the file
+that set it, and counts the project's own files (@samp{31 files from
+p.prj, all inside this folder}).  Your home folder, and the folders
+above it, are never ``this folder'': a project kept in your home folder
+itself builds beside its own file only what is plainly its own, the
+objects of its @code{FILES} and a program or library, each when it is
+not there yet or a compile or link made it before (an ELF file, or an
+@command{ar} archive for a library named @file{*.a}).  Writing over any
+other file there (@file{~/notes.txt}, a text named like an object, a
+script, a downloaded @file{.deb}), into a
+subfolder such as @file{~/.local/bin}, or a dot file is asked about.  A
+build whose values are all yours, or the
+folder's but inside its folder (an old project with @code{EXENAME} and
+@code{Exedir} inside it), asks nothing; a project of many files is asked
+about once per build, never once per file.  @samp{Use mine} is offered
+only when your own setting would not write outside the folder either.
+
+xwpe removes a stale object before it compiles it again, as it always
+did, but not where a folder's value put it outside its folder: an object
+that a folder's @code{Exedir} puts elsewhere is left in place (the
+compiler writes it anyway) and the status line says @samp{not removed:
+@var{path} (outside this folder)}.  An object your own @code{Exedir} puts
+elsewhere is removed and rebuilt as before.
+In a project file, @samp{$(@var{NAME})} takes the project's own
+variables first and, from the environment, only @code{HOME},
+@code{USER}, @code{LOGNAME}, @code{PWD} and @code{TMPDIR}; any other
+variable set in the environment (a key or a token) stays as written and
+the box shows its name, never its value.
+
+An answer holds for that folder, that key and that exact command or
+build; when the folder's file changes either, xwpe asks again, and two
+answers in one folder (two builds, files in two subfolders) both stay.  A command you
 type yourself in @samp{Options} (Editor's print command, Compiler,
 Debugger, Project-Options) counts as yours and is not asked about: only
 a field you changed counts, the fields you left alone must already hold
@@ -141,10 +179,16 @@ default @file{~/.local/state/xwpe/start-commands}), never in the
 project, so a clone cannot approve its own commands; the folder is made
 readable by you alone.  It is a text
 file, one answer per line (@samp{yes} or @samp{no}, the key, the
-folder, the command); delete a folder's lines to be asked again.  A
+folder, the command or the build's plan); delete a folder's lines to be
+asked again.  It keeps at most 64 answers per folder and 512 in all,
+the oldest going first.  A
 file xwpe cannot read is left as it is and every command is asked
 about, and the status line says @samp{could not read the remembered
-commands: asking again}.
+commands: asking again}.  The file's format changed in version 1.7.0
+(its first line says @samp{xwpe-start-commands 2}).  A file of the
+earlier format (@samp{xwpe-start-commands 1}) is read as empty, so each
+folder asks once more, and your next answer writes it anew in the new
+format; a file of any other format is still left as it is.
 
 What is asked about is the programs that compile, link, print, install,
 debug and serve a build.  Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A})
@@ -153,12 +197,9 @@ the program the build made, with the @code{Arguments} the folder's file
 sets (through the shell for a script), and the folder's
 @file{Makefile}.  Open a folder you do not trust without running it.
 
-Not covered yet, and planned: where a folder's @code{EXENAME},
-@code{Exedir}, @code{Executable} or @code{LIBNAME} puts the build's
-output (it can be outside the folder, for example
-@file{~/.local/bin}); a folder's @code{IncludePath} widening what the
-assistant may read; and a debug session reading the folder's own
-debugger start-up files (@file{.pdbrc}, @file{.perldb},
+Not covered yet, and planned: a folder's @code{IncludePath} widening
+what the assistant may read; and a debug session reading the folder's
+own debugger start-up files (@file{.pdbrc}, @file{.perldb},
 @file{jdb.ini}, @file{.gdbinit}-style files) and running its program,
 as Run and Make do.
 

@@ -8,6 +8,7 @@
 #include "we_render.h"
 #include "edit.h"
 #include "we_child.h"
+#include "we_startplan.h"
 #include <cairo.h>
 #include <cairo-xlib.h>
 #include <cairo-ft.h>
@@ -1447,10 +1448,12 @@ static int cr_query_desktop_font(char *fontname, size_t size)
 {
  char *argv[] = { "gsettings", "get", "org.gnome.desktop.interface",
                   "monospace-font-name", NULL };
- int status, ran;
+ WpeStartPlan *plan = wpe_startplan_fixed(WPE_START_PROBE, CR_FONT_QUERY_WHAT, argv);
+ int status = 0, ran;
 
- ran = wpe_child_probe(argv, fontname, size, CR_FONT_QUERY_MS, &status,
-                       CR_FONT_QUERY_WHAT);
+ ran = wpe_startplan_probe(plan, fontname, size, CR_FONT_QUERY_MS, &status,
+                           CR_FONT_QUERY_WHAT);
+ wpe_startplan_free(plan);
  return(wpe_capture_succeeded(ran, status) && fontname[0] != '\0');
 }
 

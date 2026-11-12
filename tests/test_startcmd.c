@@ -4,8 +4,11 @@
  * A fresh temporary directory holds the state folder ($XDG_STATE_HOME) and
  * the project folders.  The cases: a command the user answered for runs and
  * a changed one asks again; "Use mine" is remembered as such; escapes in a
- * command survive the store; one record per folder and key; the cap drops
- * the oldest; a store that is missing, of another version, holds a bad line
+ * command survive the store; one record per folder, key and text (store
+ * version 2: two texts answered for in one folder both stay answered); the
+ * cap, in all and per folder, drops the oldest; a version-1 store reads as
+ * empty and is rewritten as version 2; a store that is missing,
+ * of an unknown version, holds a bad line
  * or is a link asks and is never written over; a folder reached through a
  * link is the same folder; the user's own texts run; the printable form of
  * a command writes every control byte out.
@@ -151,8 +154,11 @@ static void case_round_trip(void)
  expect_int("another key asks", wpe_startcmd_check(proj, "Compiler/C", "./fake-lpr"), WPE_STARTCMD_ASK);
  expect_int("remember no", wpe_startcmd_remember(proj, "PrintCmd", "./fake-lpr -x", WPE_STARTCMD_NO), 0);
  expect_int("remembered no uses own", wpe_startcmd_check(proj, "PrintCmd", "./fake-lpr -x"), WPE_STARTCMD_USE_OWN);
- expect_int("the old answer is replaced", wpe_startcmd_check(proj, "PrintCmd", "./fake-lpr"), WPE_STARTCMD_ASK);
- expect_int("one record per folder and key", store_lines(), 2);
+ expect_int("another text's answer is kept", wpe_startcmd_check(proj, "PrintCmd", "./fake-lpr"), WPE_STARTCMD_RUN);
+ expect_int("one record per folder, key and text", store_lines(), 3);
+ expect_int("a new answer for the same text", wpe_startcmd_remember(proj, "PrintCmd", "./fake-lpr", WPE_STARTCMD_NO), 0);
+ expect_int("replaces the old one", wpe_startcmd_check(proj, "PrintCmd", "./fake-lpr"), WPE_STARTCMD_USE_OWN);
+ expect_int("and adds no line", store_lines(), 3);
 }
 
 static void case_modes(void)
@@ -169,7 +175,7 @@ static void case_escapes(void)
  const char *odd = "cc\t-DX=\"a\\b\"\n-o\rout";
  expect_int("remember escapes", wpe_startcmd_remember(proj, "Compiler/C", odd, WPE_STARTCMD_YES), 0);
  expect_int("escapes come back whole", wpe_startcmd_check(proj, "Compiler/C", odd), WPE_STARTCMD_RUN);
- expect_int("escapes stay one line", store_lines(), 3);
+ expect_int("escapes stay one line", store_lines(), 4);
 }
 
 static void case_alias(void)
@@ -215,9 +221,20 @@ static void expect_fails_closed(const char *name)
 static void case_fails_closed(void)
 {
  char text[PATH_ROOM], victim[PATH_ROOM];
- snprintf(text, sizeof text, "xwpe-start-commands 2\nyes\tPrintCmd\t%s\tlpr\n", proj);
+ snprintf(text, sizeof text, "xwpe-start-commands 3\nyes\tPrintCmd\t%s\tlpr\n", proj);
  write_file(store, text);
  expect_fails_closed("another version asks and is kept");
+ /* A version-1 store's answers are about single commands, which version 2
+    no longer asks about: it reads as empty (its yes does not count), and
+    the next answer writes the store anew as version 2. */
+ snprintf(text, sizeof text, "xwpe-start-commands 1\nyes\tPrintCmd\t%s\tlpr\n", proj);
+ write_file(store, text);
+ expect_int("a version-1 store's yes does not count", wpe_startcmd_check(proj, "PrintCmd", "lpr"), WPE_STARTCMD_ASK);
+ expect_int("a version-1 store reads as empty", wpe_startcmd_last_store_state(), WPE_STARTCMD_STORE_OK);
+ expect_int("the next answer is kept", wpe_startcmd_remember(proj, "PrintCmd", "lpr", WPE_STARTCMD_YES), 0);
+ expect_int("in a version-2 store", wpe_startcmd_check(proj, "PrintCmd", "lpr"), WPE_STARTCMD_RUN);
+ expect_int("which holds that one answer", store_lines(), 2);
+ drop_store();
  snprintf(text, sizeof text, "%s\nyes\tPrintCmd\t%s\tlpr\nmaybe\tPrintCmd\t%s\tlpr\n",
           WPE_STARTCMD_STORE_MAGIC, proj, proj);
  write_file(store, text);
@@ -299,6 +316,32 @@ static void case_cap(void)
  }
 }
 
+/* One folder answers for more texts than it may keep: its oldest go first,
+   and another folder's answer is never pushed out by them. */
+static void case_folder_cap(void)
+{
+ char text[TEXT_ROOM], other[PATH_ROOM];
+ int i, total = WPE_STARTCMD_MAX_PER_FOLDER + CAP_EXTRA;
+ drop_store();
+ under_base(other, sizeof other, "other");
+ make_dir(other);
+ expect_int("another folder's answer", wpe_startcmd_remember(other, "build/C", "x", WPE_STARTCMD_YES), 0);
+ for (i = 0; i < total; i++) {
+  snprintf(text, sizeof text, "text %d", i);
+  if (wpe_startcmd_remember(proj, "build/C", text, WPE_STARTCMD_YES) != 0) {
+   fail("folder cap", "a remember failed");
+   break;
+  }
+ }
+ expect_int("a folder keeps its cap", store_lines(), WPE_STARTCMD_MAX_PER_FOLDER + 2);
+ expect_int("its oldest text went first", wpe_startcmd_check(proj, "build/C", "text 0"), WPE_STARTCMD_ASK);
+ snprintf(text, sizeof text, "text %d", total - 1);
+ expect_int("its newest text stays", wpe_startcmd_check(proj, "build/C", text), WPE_STARTCMD_RUN);
+ expect_int("the other folder's stays", wpe_startcmd_check(other, "build/C", "x"), WPE_STARTCMD_RUN);
+ drop_store();
+ rmdir(other);
+}
+
 /* Remove exactly what setup and the cases made. */
 static void teardown(void)
 {
@@ -325,6 +368,7 @@ int main(void)
  case_no_home();
  case_dir_mode();
  case_cap();
+ case_folder_cap();
  case_fifo();
  teardown();
  if (failures) { printf("%d failure(s)\n", failures); return 1; }

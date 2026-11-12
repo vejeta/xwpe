@@ -284,12 +284,31 @@ Changes
   into another file of your choosing writes every key there.  A long
   option-file path or compiler line no longer corrupts memory when the
   dialog that shows it opens.
-  Not covered yet, and planned: where a folder's EXENAME, Exedir,
-  Executable or LIBNAME puts the build's output (it can be outside the
-  folder, for example ~/.local/bin); a folder's IncludePath widening what
-  the assistant may read; and a debug session reading the folder's own
+  Not covered yet, and planned: a folder's IncludePath widening what the
+  assistant may read; and a debug session reading the folder's own
   debugger start-up files (.pdbrc, .perldb, jdb.ini, .gdbinit-style
   files) and running its program, as Run and Make do.
+
+* F9 now asks about the whole build when a folder decides where it
+  writes, not only about the compiler.  When a project file's EXENAME or
+  LIBNAME, or the xwperc of the folder you start in setting Exedir,
+  Executable or Project, puts the program, the objects or the project
+  file outside that file's own folder (through a link too), the question
+  says so under "Writes outside this folder" or "Reads outside this
+  folder", lists each value with the file it came from and what $(HOME)
+  became, and counts the project's own files.  A project is asked about
+  once per build, never once per file, and an old project that builds
+  inside its own folder asks nothing.  Your home folder never counts as
+  "this folder", so a project there cannot write ~/.local/bin or over
+  ~/notes.txt unasked; beside itself it still builds its objects and
+  its program when they are new or a compile or link made them before.  A stale object a folder's
+  Exedir put outside the folder is no longer removed before the compile;
+  the status line says so (your own Exedir works as before).  $(NAME) in
+  a project file takes, from the environment, only HOME, USER, LOGNAME,
+  PWD and TMPDIR, so a key or a token you have set never reaches a
+  compiler's command line.  The remembered answers file changed format:
+  an old one is read as empty and rewritten, so each folder asks once
+  more.
 
 * A project folder can no longer make the assistant run code behind your
   back.  An xwperc in the folder the editor starts in still sets tabs,

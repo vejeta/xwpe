@@ -68,6 +68,7 @@ we_SOURCES = \
   we_mouse.c \
   we_opt.c \
   we_startcmd.c \
+  we_startplan.c \
   we_wind.c \
   we_prog.c \
   we_progn.c \
@@ -204,6 +205,7 @@ noinst_HEADERS = \
   we_childsig.h \
   we_child.h \
   we_startcmd.h \
+  we_startplan.h \
   we_wayland.h \
   we_fdloop.h \
   we_paint.h \
@@ -314,7 +316,17 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice edit_driver test_startcmd
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice edit_driver test_startcmd test_startplan
+
+# The owner of the start plan: we_startplan.c with the store (we_startcmd.c)
+# and the children's owner it starts through.  The operand rule on every
+# role, a folder value refused as an option, links followed out of the
+# folder, a removal outside dropped and a write outside asked, the home
+# folder never a root, a plan equal in effect to the user's own, one
+# record per plan, the cover check of a step, and mutants of the rules.
+test_startplan_SOURCES = tests/test_startplan.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c
+test_startplan_CFLAGS = $(XWPE_STDFLAG)
+test_startplan_LDADD = $(UTIL_LIBS)
 
 # The owner of the question about a folder's commands: we_startcmd.c alone.
 # The store's round trip (escapes, a changed command, one record per folder
@@ -554,7 +566,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap test_paint test_splice test_startcmd
+  test_child test_childsig test_keymap test_paint test_splice test_startcmd test_startplan
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -562,10 +574,12 @@ TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipbo
 # its own.  Offenders still to go are in tests/one-owner.allow.
 TESTS += tests/check-one-owner.sh
 
-# One owner of the paths a build hands to a program: every line that does
-# (and every use of Exedir) is listed in tests/argv-operands.allow with the
-# function that built its path, e_build_operand in the end.
-TESTS += tests/check-argv-operands.sh
+# One owner of what the editor decides about a program it starts: the
+# start plan (we_startplan.c).  Every line of the start sites that builds a
+# command line, a working folder or a shell line, or names a folder's
+# program keys, is counted per function in tests/start-plan.allow, with
+# the pass that moves it into a plan; the counts may only fall.
+TESTS += tests/check-start-plan.sh
 AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
 
@@ -633,8 +647,8 @@ EXTRA_DIST = \
   tests/run-tests.sh \
   tests/check-one-owner.sh \
   tests/one-owner.allow \
-  tests/check-argv-operands.sh \
-  tests/argv-operands.allow \
+  tests/check-start-plan.sh \
+  tests/start-plan.allow \
   tests/stubs/a68g/a68g \
   tests/stubs/gdb \
   tests/stubs/full-pipe/lldb-dap \

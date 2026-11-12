@@ -89,9 +89,8 @@ char *e_prog_command_text(const struct e_s_prog *p);
 /* Ask before a compile line a start-folder xwperc names runs: 0 to go on. */
 int e_prog_approve_compile(FENSTER *f);
 char *e_find_var(char *var);
-/* The one join of a directory and a name into a build argv's path operand
-   ("./" in front of one that would start with '-' or '@'): 0, or -1. */
-int e_build_operand(char *out, size_t n, const char *dir, const char *name);
+/* A project variable as its file writes it, before expansion ("" if unset). */
+const char *e_find_var_raw(const char *var);
 const char *e_get_start_symbol(void);
 int e_run_options(FENSTER *f);
 int e_run_c_options(FENSTER *f);

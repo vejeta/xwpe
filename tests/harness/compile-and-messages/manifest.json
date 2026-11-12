@@ -94,6 +94,24 @@
   {"id": "SC-compile-28", "requirement": "A folder's commands run after a yes", "layer": "ncurses", "test": "tests/test_startcmd.py::test_startcmd_bsp_asks", "status": "new"},
   {"id": "SC-compile-28", "requirement": "A folder's commands run after a yes", "layer": "asan", "test": "tests/test_startcmd.py::test_save_options_shows_a_long_option_file_path_whole", "status": "new"},
   {"id": "SC-compile-28", "requirement": "A folder's commands run after a yes", "layer": "asan", "test": "tests/test_startcmd.py::test_run_of_a_script_with_long_arguments", "status": "new"},
-  {"id": "SC-compile-28", "requirement": "A folder's commands run after a yes", "layer": "asan", "test": "tests/test_startcmd.py::test_project_with_a_long_program_name_builds", "status": "new", "needs": ["gcc"]}
+  {"id": "SC-compile-28", "requirement": "A folder's commands run after a yes", "layer": "asan", "test": "tests/test_startcmd.py::test_project_with_a_long_program_name_builds", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_exename_outside_the_folder_asks", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_exedir_outside_never_removes", "status": "new"},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_exedir_link_out_of_the_folder", "status": "new"},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_dangling_link_out_of_the_folder_asks", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_project_outside_the_start_folder_asks", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_project_build_asks_once", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_1995_project_inside_its_folder_does_not_ask", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_exename_outside_asks_when_started_in_home", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_dropped_remove_is_said", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_folder_value_never_expands_a_key", "status": "new"},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_box_lists_folder_values", "status": "new"},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_make_is_not_planned_yet_and_says_so", "status": "new", "needs": ["make"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_saved_config_in_folder_is_silent", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_users_own_exedir_outside_removes_as_before", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_project_in_home_overwriting_a_text_asks", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_project_in_home_builds_and_rebuilds_its_program", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "ncurses", "test": "tests/test_startplan.py::test_startplan_project_in_home_over_a_script_asks", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-compile-29", "requirement": "A start plan is shown before a folder's values run", "layer": "c-unit", "test": "test_startplan", "status": "new"}
  ]
 }

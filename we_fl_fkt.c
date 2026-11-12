@@ -11,6 +11,7 @@
 #include "we_buffer.h"
 #include "we_ai.h"
 #include "we_child.h"
+#include "we_startplan.h"
 #include "we_fdloop.h"
 #include <ftw.h>
 #ifdef UNIX
@@ -835,11 +836,13 @@ static int e_unpack_was_stopped;
 static int e_unpack_to_file(const char *src, const char *dest)
 {
  char *argv[] = { "gunzip", "-c", "--", NULL, NULL };
- int status, ran;
+ WpeStartPlan *plan;
+ int status = 0, ran;
 
  argv[3] = (char *)src;
- ran = wpe_child_run_to_file(argv, dest, E_UNPACK_MS, &status,
-                             E_UNPACK_WHAT);
+ plan = wpe_startplan_fixed(WPE_START_UNPACK, E_UNPACK_WHAT, argv);
+ ran = wpe_startplan_run_to_file(plan, dest, E_UNPACK_MS, &status, E_UNPACK_WHAT);
+ wpe_startplan_free(plan);
  e_unpack_was_stopped = (ran == WPE_CAPTURE_CANCELLED);
  if (wpe_capture_succeeded(ran, status))
   return(1);
