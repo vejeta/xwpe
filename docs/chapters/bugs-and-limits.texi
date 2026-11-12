@@ -237,6 +237,16 @@ also runs a script named after the program beside it
 (@file{@var{program}-gdb.gdb}, @file{-gdb.py}), which the box does not
 list and @samp{Use mine} does not skip.  The debugger is found on
 your @env{PATH}, as your shell finds it.
+
+@item Run, Make and the language servers run the folder's own code
+Run and Make show and ask about the @code{Arguments} a folder sets, but
+what the program, the @file{Makefile} or a project's install lines then
+do is the folder's code, which no box vets.  @command{rust-analyzer} and
+Metals ask once per folder because they run its build; clangd, pyright,
+pylsp and gopls start without a question, though gopls may fetch the Go
+toolchain a @file{go.mod} names and pyright may use the interpreter a
+@file{pyrightconfig.json} names.  Programs and servers are found on your
+@env{PATH}, as your shell finds them.
 @end table
 
 @section Debian BTS history

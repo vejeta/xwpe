@@ -604,6 +604,30 @@ More generally, the bottom button row repacks itself to the width of its labels,
 so a longer server name (e.g.@: @samp{pyright}) still leaves every button -- up
 to and including @samp{Alt-X Quit} -- whole on screen.
 
+@section Servers that run the folder's build
+
+@cindex language server, asked before it starts
+@cindex rust-analyzer, build scripts
+@cindex Metals, build import
+Some servers run code of the folder they serve as soon as they start:
+@command{rust-analyzer} runs the crate's build scripts (@file{build.rs})
+and proc macros, and Metals imports the build (sbt, Mill or the build
+server), which runs it.  A folder you cloned decides what that code is.
+So before such a server starts for a folder the first time, from an
+@kbd{Alt-Q} key or from opening the file, xwpe shows a box headed
+@samp{Opening this file starts its language server:}, with the server's
+name and what it runs, and asks @samp{Run it} or @samp{Cancel}.  The
+answer is kept for that folder (@pxref{Folder commands}), so the next
+start there asks nothing.  @samp{Cancel} starts no server, and opening
+another file of that folder does not ask again in this session until you
+press an @kbd{Alt-Q} key.
+
+clangd, pyright, pylsp and gopls only read the files, and start without
+a question.  @command{gopls} can still fetch the Go toolchain a
+@file{go.mod} names, and a @file{pyrightconfig.json} can name the
+project's own interpreter: those are the folder's settings for the
+server, which xwpe does not read.
+
 @section Other languages
 
 LSP is one protocol for every language: adding a server is a descriptor entry,

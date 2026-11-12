@@ -145,6 +145,30 @@ static const char *startplan_debug_kind_name(int kind)
 }
 
 /**
+ * startplan_user_kind_name - The name of a start the user asks for by a key
+ * of the Run menu, File > Shell or opening a file.
+ * @kind: WPE_START_*.
+ * Return: "run", "script", "make", "shell", "install", "lsp", or the
+ * debug session's name for any other kind.
+ */
+static const char *startplan_user_kind_name(int kind)
+{
+ if (kind == WPE_START_RUN)
+  return "run";
+ if (kind == WPE_START_SCRIPT)
+  return "script";
+ if (kind == WPE_START_MAKE)
+  return "make";
+ if (kind == WPE_START_SHELL)
+  return "shell";
+ if (kind == WPE_START_INSTALL)
+  return "install";
+ if (kind == WPE_START_LANGUAGE_SERVER)
+  return "lsp";
+ return startplan_debug_kind_name(kind);
+}
+
+/**
  * wpe_startplan_kind_name - The name of a kind, as the store's key names it.
  * Return: "build", "project", ..., or "start" for a kind this owner does
  * not know.
@@ -163,7 +187,7 @@ const char *wpe_startplan_kind_name(int kind)
   return "unpack";
  if (kind == WPE_START_PROBE)
   return "probe";
- return startplan_debug_kind_name(kind);
+ return startplan_user_kind_name(kind);
 }
 
 /**
@@ -1080,12 +1104,16 @@ static int plan_path_runs_at_start(const WpeStartPath *s)
  * own or empty, which the sites mark as his.  A start-up file the tool will
  * run from the folder counts, and so does a folder's value the editor will
  * write to the tool's input (a folder's Arguments in the debugger's run).
+ * A program that runs the folder's own code as it starts (a language server
+ * that runs build scripts) counts too: the box is its only notice.
  * Return: 1 when the plan must be compared with the store.
  */
 static int plan_from_folder(const WpeStartPlan *p)
 {
  int i;
 
+ if (p->runs_code)
+  return 1;
  for (i = 0; i < p->nword; i++)
   if (p->word[i].from == WPE_FROM_FOLDER && p->word[i].role != WPE_WORD_OPERAND)
    return 1;
@@ -1227,6 +1255,8 @@ static char *startplan_build_text(const WpeStartPlan *p)
  startplan_put_reads(p, &b);
  for (i = 0; i < p->ninput; i++)
   startplan_put(&b, "then ", p->input[i].text);
+ if (p->runs_code)
+  startplan_put(&b, "runs ", p->runs_code);
  if (b.bad)
  {
   free(b.s);
@@ -1641,6 +1671,108 @@ int wpe_startplan_start_words(WpeStartPlan *p, const WpeStartIo *io, WpeChild *c
  rc = wpe_startplan_start(p, argv, io, c, ended, data);
  free(argv);
  return rc;
+}
+
+/**
+ * wpe_startplan_shell - Begin a plan's command line as a shell line.
+ * @p: the plan; @script: the line the shell runs; @from: whose it is
+ * (WPE_FROM_USER for the user's own text or one the editor wrote,
+ * WPE_FROM_FOLDER for a project's install line); @source: for the box.
+ *
+ * The plan's words become "/bin/sh -c <script> sh", and every file name or
+ * folder value the line works on is added after them with
+ * wpe_startplan_word: the shell hands them to the line as "$1", "$2" ...,
+ * so a file named "a;touch x.c" is only ever that file's name, never shell
+ * text.  The script itself holds only the editor's own words and the
+ * user's own text, or is the folder's whole line, which the box shows.
+ * Return: 0, or -1 out of memory.
+ */
+int wpe_startplan_shell(WpeStartPlan *p, const char *script, int from, const char *source)
+{
+ if (!p || !script)
+  return -1;
+ if (wpe_startplan_word(p, WPE_STARTPLAN_SHELL, WPE_WORD_PROGRAM, WPE_FROM_EDITOR, NULL) < 0 ||
+     wpe_startplan_word(p, WPE_STARTPLAN_SHELL_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL) < 0 ||
+     wpe_startplan_word(p, script, WPE_WORD_TEXT, from, source) < 0)
+  return -1;
+ return wpe_startplan_word(p, WPE_STARTPLAN_SHELL_NAME, WPE_WORD_TEXT, WPE_FROM_EDITOR, NULL);
+}
+
+/**
+ * wpe_startplan_carry - Name the editor's own program that carries the
+ * plan's command to where the user watches it.
+ * @p: the plan, answered; @carrier: the carrier's command line, NULL-ended
+ * (the terminal the graphical editors open, and the helper script that
+ * waits for Return in it); @from: WPE_FROM_EDITOR or WPE_FROM_USER (the
+ * user's own shell).
+ *
+ * The carrier's words go to the plan that runs, in front of its command
+ * when wpe_startplan_start_carried starts it; they are neither shown nor
+ * remembered, and a folder's value may never be one.
+ * Return: 0, or -1 when nothing may run or out of memory.
+ */
+int wpe_startplan_carry(WpeStartPlan *p, char *const carrier[], int from)
+{
+ WpeStartPlan *run = wpe_startplan_running(p);
+ int i;
+
+ if (!run || !carrier || from == WPE_FROM_FOLDER)
+  return -1;
+ for (i = 0; carrier[i]; i++)
+  if (wpe_startplan_word(run, carrier[i], WPE_WORD_CARRIER, from, NULL) < 0)
+   return -1;
+ return 0;
+}
+
+/**
+ * wpe_startplan_start_carried - Start a plan's command inside its carrier.
+ * @p: the plan, judged, answered and carried; @io/@c/@ended/@data: as
+ * wpe_startplan_start.
+ *
+ * The child is the carrier's command line followed by the plan's own
+ * words, in the order they were added: on the graphical editors a File >
+ * Shell command or an executed file runs in a terminal of its own that
+ * waits for Return when it ends.
+ * Return: 0, or -1 with nothing started.
+ */
+int wpe_startplan_start_carried(WpeStartPlan *p, const WpeStartIo *io, WpeChild *c,
+                                WpeChildEndedFn ended, void *data)
+{
+ const WpeStartPlan *run;
+ char **argv;
+ int i, n = 0, rc;
+
+ if (!p || !io)
+  return -1;
+ if (!(run = startplan_running(p)))
+  return startplan_refuse(p, WPE_STARTPLAN_REFUSE_JUDGE, NULL);
+ if (!(argv = calloc((size_t)run->nword + 1, sizeof *argv)))
+  return -1;
+ for (i = 0; i < run->nword; i++)
+  if (run->word[i].role == WPE_WORD_CARRIER)
+   argv[n++] = run->word[i].text;
+ for (i = 0; i < run->nword; i++)
+  if (run->word[i].role != WPE_WORD_CARRIER)
+   argv[n++] = run->word[i].text;
+ rc = wpe_startplan_start(p, argv, io, c, ended, data);
+ free(argv);
+ return rc;
+}
+
+/**
+ * wpe_startplan_runs_code - Say what of the folder's own code the program
+ * runs on its own as it starts.
+ * @p: the plan; @what: the sentence the box shows ("rust-analyzer runs this
+ * folder's build scripts and proc macros"), a constant.
+ *
+ * Opening a file in a cloned folder would otherwise run that folder's build
+ * code with no notice at all: the plan now asks once per folder, and the
+ * answer is kept.
+ */
+void wpe_startplan_runs_code(WpeStartPlan *p, const char *what)
+{
+ if (p)
+  p->runs_code = what;
 }
 
 /**

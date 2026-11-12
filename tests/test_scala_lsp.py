@@ -42,7 +42,8 @@ def _text(w):
 def test_scala_lsp_diagnostics_ready(tmp_path):
     """Alt-Q E starts the language server for the .scala file and reports it
     ready (build imported, file compiled) -- the bridge wired end to end."""
-    with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0) as w:
+    with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0,
+                    answer_server_start=True) as w:
         w.key(ALT_Q, delay=0.4)            # LSP prefix
         w.key("e", delay=90.0)             # start Metals + import + compile (slow)
         time.sleep(3.0)

@@ -578,6 +578,7 @@ static int ai_capture_spawn(struct wpe_ai_capture *c, const char *cmd)
  spec.side_pty_slave = WPE_CHILD_NO_FD;
  spec.tty_fd = WPE_CHILD_NO_FD;
  spec.what = AI_CAPTURE_WHAT;
+ spec.origin = WPE_CHILD_ORIGIN_AI;
  if (wpe_child_start(&spec, &c->child, ai_capture_on_ended, c) != 0) return -1;
  c->leader = c->child.pid;
  c->out_open = 1;
@@ -2268,6 +2269,7 @@ static int ai_claudecli_spawn(struct wpe_ai_stream *st, char **argv)
  spec.side_pty_slave = WPE_CHILD_NO_FD;
  spec.tty_fd = WPE_CHILD_NO_FD;
  spec.what = AI_CLI_WHAT;
+ spec.origin = WPE_CHILD_ORIGIN_AI;
  return wpe_child_start(&spec, &st->child, ai_claudecli_on_ended, st);
 }
 

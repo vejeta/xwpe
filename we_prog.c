@@ -874,31 +874,31 @@ static int e_run_status_code(int ws)
  return(128 + WTERMSIG(ws));
 }
 
+/* What every line about the program Run started calls it. */
+#define E_RUN_WHAT "the program"
+
 /**
  * e_run_start - Start the user's program on a terminal of its own.
- * @cmd: the command line, run by the shell.
+ * @plan: Run's start plan, judged and answered.
  *
  * The program leads a session with the terminal as its controlling one, so
  * it reads what the user types in Messages and Ctrl-C reaches all of it.
  * Return: the editor's end of the terminal, non-blocking, or -1 when the
  * program could not be started.
  */
-static int e_run_start(char *cmd)
+static int e_run_start(WpeStartPlan *plan)
 {
- char *argv[] = { "/bin/sh", "-c", NULL, NULL };
- WpeChildSpec spec;
+ WpeStartIo io;
 
- argv[2] = cmd;
- memset(&spec, 0, sizeof spec);
- spec.argv = argv;
- spec.io = WPE_CHILD_IO_PTY;
- spec.group = WPE_CHILD_OWN_SESSION;
- spec.side_pty_slave = WPE_CHILD_NO_FD;
- spec.tty_fd = WPE_CHILD_NO_FD;
- spec.what = "the program";
+ memset(&io, 0, sizeof io);
+ io.io = WPE_CHILD_IO_PTY;
+ io.group = WPE_CHILD_OWN_SESSION;
+ io.side_pty_slave = WPE_CHILD_NO_FD;
+ io.tty_fd = WPE_CHILD_NO_FD;
+ io.what = E_RUN_WHAT;
  e_run_prog.ended = 0;
  e_run_prog.status = 0;
- if (wpe_child_start(&spec, &e_run_prog.child, e_run_on_end, NULL) != 0)
+ if (wpe_startplan_start_words(plan, &io, &e_run_prog.child, e_run_on_end, NULL) != 0)
   return(-1);
  return(e_run_prog.child.pty_fd);
 }
@@ -986,19 +986,19 @@ static int e_run_loop(int pty_master, BUFFER *b, FENSTER *mf)
 
 /**
  * e_run_with_pty - Run the user's program with its output in Messages.
- * @cmd: the command line; @b, @mf: Messages.
+ * @plan: Run's start plan; @b, @mf: Messages.
  *
  * Return: the program's exit code, or -1 when it could not be started on a
  * terminal (the caller then runs it another way).
  */
-static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
+static int e_run_with_pty(WpeStartPlan *plan, BUFFER *b, FENSTER *mf)
 {
  int pty_master, ret;
  struct sigaction old_int;
 
  /* Start a fresh capture so the Alt-F5 User Screen shows only this run. */
  e_d_prog_output_reset();
- pty_master = e_run_start(cmd);
+ pty_master = e_run_start(plan);
  if (pty_master < 0)
   return -1;
 
@@ -1021,18 +1021,6 @@ static int e_run_with_pty(char *cmd, BUFFER *b, FENSTER *mf)
  if (!WpeIsXwin())
   e_mouse_tracking_enable();
  return ret;
-}
-
-/* e_strlcat - append src to dst within a cap-byte buffer, never overrunning
-   and always NUL-terminating (BSD strlcat semantics).  Used to assemble the
-   run/make command line safely from project paths, exe names and arguments,
-   any of which can be long. */
-static void e_strlcat(char *dst, const char *src, size_t cap)
-{
- size_t dl = strlen(dst);
- if (dl + 1 >= cap)
-  return;
- snprintf(dst + dl, cap - dl, "%s", src);
 }
 
 /* The source Ctrl-F9 was pressed on, kept by value: the program runs after
@@ -1141,29 +1129,26 @@ static void e_run_text_loop(void)
 
 /**
  * e_run_start_text - Start the user's program with its output on a pipe and
- * no input.
- * @cmd: the command line, run by the shell, its errors with its output.
+ * no input, its errors with its output.
+ * @plan: Run's start plan, judged and answered.
  * Return: the editor's end of the pipe, non-blocking, or -1 when the program
  * could not be started.
  */
-static int e_run_start_text(char *cmd)
+static int e_run_start_text(WpeStartPlan *plan)
 {
- char *argv[] = { "/bin/sh", "-c", NULL, NULL };
- WpeChildSpec spec;
+ WpeStartIo io;
 
- argv[2] = cmd;
- memset(&spec, 0, sizeof spec);
- spec.argv = argv;
- spec.io = WPE_CHILD_IO_PIPES;
- spec.group = WPE_CHILD_OWN_SESSION;
- spec.stdin_null = 1;
- spec.stderr_to_stdout = 1;
- spec.side_pty_slave = WPE_CHILD_NO_FD;
- spec.tty_fd = WPE_CHILD_NO_FD;
- spec.what = "the program";
+ memset(&io, 0, sizeof io);
+ io.io = WPE_CHILD_IO_PIPES;
+ io.group = WPE_CHILD_OWN_SESSION;
+ io.stdin_null = 1;
+ io.stderr_to_stdout = 1;
+ io.side_pty_slave = WPE_CHILD_NO_FD;
+ io.tty_fd = WPE_CHILD_NO_FD;
+ io.what = E_RUN_WHAT;
  e_run_prog.ended = 0;
  e_run_prog.status = 0;
- if (wpe_child_start(&spec, &e_run_prog.child, e_run_on_end, NULL) != 0)
+ if (wpe_startplan_start_words(plan, &io, &e_run_prog.child, e_run_on_end, NULL) != 0)
   return(-1);
  return(e_run_prog.child.out_fd);
 }
@@ -1171,7 +1156,7 @@ static int e_run_start_text(char *cmd)
 /**
  * e_run_without_pty - Run the program when no terminal could be made for it:
  * its output goes to Messages line by line, with no input.
- * @cmd: the command line; @b: Messages.
+ * @plan: Run's start plan; @b: Messages.
  *
  * The program is a child of the editor's owner and its output is read on the
  * loop as it is written, so a program that runs for a while shows its lines
@@ -1180,7 +1165,7 @@ static int e_run_start_text(char *cmd)
  * the reaper.
  * Return: the program's exit code, or -1 when it could not be started.
  */
-static int e_run_without_pty(char *cmd, BUFFER *b)
+static int e_run_without_pty(WpeStartPlan *plan, BUFFER *b)
 {
  int out_fd;
  struct sigaction old_int;
@@ -1188,7 +1173,7 @@ static int e_run_without_pty(char *cmd, BUFFER *b)
  e_view_append(b, "--- Run output ---");
  e_run_text.b = b;
  e_run_text.len = 0;
- out_fd = e_run_start_text(cmd);
+ out_fd = e_run_start_text(plan);
  if (out_fd < 0)
   return(-1);
  if (e_fd_watch(out_fd, POLLIN, e_run_text_on_readable, NULL,
@@ -1247,19 +1232,323 @@ int e_run(FENSTER *f)
  return(e_p_make_then(f, e_run_after_make, NULL));
 }
 
+/* Run's shell line.  The program, or the file an interpreter runs, is its
+   "$1"; the user's own Arguments follow as his own shell text (a "< input"
+   of his keeps working), a folder's follow as "$2", "$3" ... words, never as
+   shell text. */
+#define E_RUN_LINE_ALL     "\"$@\""
+#define E_RUN_LINE_FIRST   "\"$1\""
+#define E_RUN_PROGRAM_EXT  ".e"      /* the program a single file's link makes */
+#define E_RUN_PROJECT_PROG "a.out"   /* a project's program with no EXENAME    */
+#define E_RUN_HERE         "."       /* the program's folder when Exedir is empty */
+#define E_RUN_NAME         "program" /* the key's name when no language is known */
+#define E_RUN_WHAT_ASKED   "program to run"
+#define E_RUN_SRC_WINDOW   "the window's file"
+#define E_ARGS_KEY         "Arguments"
+#define E_ARGS_SOURCE      "./xwperc: Arguments"
+#define E_RUN_INTERP_SOURCE "./xwperc: Compiler"
+#define E_RUN_PROG_SOURCE  "./xwperc: Exedir, Executable"
+
+static char *e_prog_text_add(char *text, const char *part);
+
+/* The values one Run takes, and whose they are. */
+typedef struct {
+ const char *language;
+ const char *interp;     /* the interpreter of a file run as it is, or NULL  */
+ const char *exedir;     /* the folder the program was built into          */
+ const char *exe_name;   /* its name (Executable), or NULL for the default */
+ const char *args;       /* Arguments                                      */
+ int own;                /* 1: the user's own plan, every value his        */
+} e_run_values;
+
+/**
+ * e_run_from - Whose a value of a Run is.
+ * @v: the values; @scope/@key: the key, as e_opt_value_from names it;
+ * @value: the value.
+ * Return: WPE_FROM_USER for every value of his own plan; else as
+ * e_opt_value_from.
+ */
+static int e_run_from(const e_run_values *v, const char *scope, const char *key,
+                      const char *value)
+{
+ if (v->own || !scope)
+  return(WPE_FROM_USER);
+ return(e_opt_value_from(scope, key, value));
+}
+
+/**
+ * e_run_values_of - The values a Run takes from a language's entry.
+ * @v: filled in; @p: the entry, or NULL; @exedir/@args: the output folder
+ * and the Arguments; @own: 1 when they are the user's own.
+ */
+static void e_run_values_of(e_run_values *v, const struct e_s_prog *p, const char *exedir,
+                            const char *args, int own)
+{
+ memset(v, 0, sizeof *v);
+ v->language = e_s_prog.language;
+ if (p && (e_s_prog.comp_sw & 1))
+  v->interp = p->compiler;
+ if (p)
+  v->exe_name = p->exe_name;
+ v->exedir = exedir;
+ v->args = args;
+ v->own = own;
+}
+
+/**
+ * e_run_program_path - The program Run starts, as a path.
+ * @f: the source window; @v: the values; @out/@sz: receive it.
+ *
+ * Exedir and Executable, or the source's own name with ".e", or a.out for
+ * a project: always with a folder in front, so the shell never looks the
+ * name up on PATH, and through the operand rule, so a name starting with
+ * '-' is only ever that file.
+ * Return: 0, or -1 when it does not fit.
+ */
+static int e_run_program_path(FENSTER *f, const e_run_values *v, char *out, size_t sz)
+{
+ char name[WPE_BUILD_PATH_MAX];
+ const char *dir = v->exedir;
+
+ if (v->exe_name && v->exe_name[0] == DIRC)
+  return(wpe_startplan_operand(out, sz, NULL, v->exe_name));
+ if (v->exe_name && v->exe_name[0])
+  snprintf(name, sizeof name, "%s", v->exe_name);
+ else if (e__project)
+  snprintf(name, sizeof name, "%s", E_RUN_PROJECT_PROG);
+ else
+ {
+  snprintf(name, sizeof name, "%s", f->datnam);
+  WpeStringCutChar(name, '.');
+  if (strlen(name) + strlen(E_RUN_PROGRAM_EXT) >= sizeof name)
+   return(-1);
+  strcat(name, E_RUN_PROGRAM_EXT);
+ }
+ if (!dir || !*dir)
+  dir = E_RUN_HERE;
+ return(wpe_startplan_operand(out, sz, dir, name));
+}
+
+/**
+ * e_run_line - The shell line of a Run.
+ * @v: the values; @args_as_text: 1 when the user's own Arguments follow as
+ * his shell text.
+ * Return: the malloc'd line, or NULL out of memory.
+ */
+static char *e_run_line(const e_run_values *v, int args_as_text)
+{
+ const char *first = E_RUN_LINE_ALL;
+ size_t size;
+ char *line;
+
+ if (args_as_text)
+  first = E_RUN_LINE_FIRST;
+ size = strlen(first) + 1;
+ if (v->interp)
+  size += strlen(v->interp) + 1;
+ if (args_as_text)
+  size += strlen(v->args) + 1;
+ if (!(line = MALLOC(size)))
+  return(NULL);
+ line[0] = '\0';
+ if (v->interp)
+ {
+  strcat(line, v->interp);
+  strcat(line, " ");
+ }
+ strcat(line, first);
+ if (args_as_text)
+ {
+  strcat(line, " ");
+  strcat(line, v->args);
+ }
+ return(line);
+}
+
+/**
+ * e_run_plan_first - The program, or the file the interpreter runs: "$1".
+ * @plan: the plan; @f: the source window; @v: the values.
+ *
+ * A folder's Exedir or Executable that chose the program is the folder's,
+ * and asks when it puts the program outside the folder.
+ * Return: 0, or -1 when the path does not fit.
+ */
+static int e_run_plan_first(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
+{
+ char path[WPE_BUILD_PATH_MAX];
+ int from_dir, from_exe, from = WPE_FROM_USER;
+
+ if (v->interp)
+ {
+  if (wpe_startplan_operand(path, sizeof path, e_run_src_dirct, e_run_src_datnam))
+   return(-1);
+  wpe_startplan_word(plan, path, WPE_WORD_OPERAND, WPE_FROM_USER, E_RUN_SRC_WINDOW);
+  wpe_startplan_path(plan, path, WPE_PATH_INPUT, WPE_FROM_USER, E_RUN_SRC_WINDOW, NULL);
+  return(0);
+ }
+ if (e_run_program_path(f, v, path, sizeof path))
+  return(-1);
+ from_dir = e_run_from(v, E_OPT_SCOPE_PROGRAMMING, "Exedir", v->exedir);
+ from_exe = e_run_from(v, v->language, "Executable", v->exe_name);
+ if (from_dir == WPE_FROM_FOLDER || from_exe == WPE_FROM_FOLDER)
+  from = WPE_FROM_FOLDER;
+ wpe_startplan_word(plan, path, WPE_WORD_OPERAND, from, E_RUN_PROG_SOURCE);
+ wpe_startplan_path(plan, path, WPE_PATH_INPUT, from, E_RUN_PROG_SOURCE, NULL);
+ if (from_dir == WPE_FROM_FOLDER)
+  wpe_startplan_value(plan, E_STARTCMD_XWPERC, "Exedir", v->exedir, NULL);
+ if (from_exe == WPE_FROM_FOLDER)
+  wpe_startplan_value(plan, E_STARTCMD_XWPERC, "Executable", v->exe_name, NULL);
+ return(0);
+}
+
+/**
+ * e_args_plan_words - A folder's Arguments, as words of a plan.
+ * @plan: the plan; @args: the value; @role: what the words are to the
+ * program (text for Run, options or text for make).
+ *
+ * Cut at each blank as the build cuts a value, said in the box as "From
+ * ./xwperc: Arguments = ...", and asked about.
+ */
+static void e_args_plan_words(WpeStartPlan *plan, const char *args, int role)
+{
+ wpe_startplan_words(plan, args, role, WPE_FROM_FOLDER, E_ARGS_SOURCE);
+ wpe_startplan_value(plan, E_STARTCMD_XWPERC, E_ARGS_KEY, args, NULL);
+}
+
+/**
+ * e_run_plan_make - The plan of a Run (Ctrl-F9).
+ * @f: the source window; @v: the values, the folder's or the user's own.
+ *
+ * The program runs in the source's folder, as "$1" of a shell line built
+ * from the editor's own words and the user's own text only: the program's
+ * path and a folder's Arguments are words of the plan, never shell text.
+ * Return: the plan, or NULL when a path does not fit or out of memory.
+ */
+static WpeStartPlan *e_run_plan_make(FENSTER *f, const e_run_values *v)
+{
+ const char *name = v->language ? v->language : E_RUN_NAME;
+ WpeStartPlan *plan = wpe_startplan_new(WPE_START_RUN, name);
+ int from_args = e_run_from(v, E_OPT_SCOPE_PROGRAMMING, E_ARGS_KEY, v->args);
+ int from_interp = WPE_FROM_USER;
+ int args_as_text = v->args && v->args[0] && from_args == WPE_FROM_USER;
+ char *line, *dir;
+
+ if (!plan)
+  return(NULL);
+ if (e_opt_start_folder())
+  wpe_startplan_set_file(plan, E_STARTCMD_XWPERC, e_opt_start_folder());
+ dir = e_build_dir(f);
+ wpe_startplan_set_cwd(plan, dir ? dir : E_RUN_HERE);
+ if (dir)
+  FREE(dir);
+ if (v->interp)
+  from_interp = e_run_from(v, v->language, "Compiler", v->interp);
+ line = e_run_line(v, args_as_text);
+ wpe_startplan_shell(plan, line ? line : "", from_interp, E_RUN_INTERP_SOURCE);
+ if (line)
+  FREE(line);
+ if (from_interp == WPE_FROM_FOLDER)
+  wpe_startplan_value(plan, E_STARTCMD_XWPERC, "Compiler", v->interp, NULL);
+ if (e_run_plan_first(plan, f, v))
+ {
+  wpe_startplan_free(plan);
+  return(NULL);
+ }
+ if (!args_as_text && v->args && v->args[0])
+  e_args_plan_words(plan, v->args, WPE_WORD_TEXT);
+ plan->honest = 1;
+ return(plan);
+}
+
+/**
+ * e_run_shown - A Run as the box shows it: the interpreter, the program
+ * and its arguments, as the user wrote them.
+ * @f: the source window; @v: the values.
+ * Return: the malloc'd text, or NULL.
+ */
+static char *e_run_shown(FENSTER *f, const e_run_values *v)
+{
+ char path[WPE_BUILD_PATH_MAX];
+ char *text = NULL;
+
+ if (v->interp)
+ {
+  text = e_prog_text_add(text, v->interp);
+  if (wpe_startplan_operand(path, sizeof path, e_run_src_dirct, e_run_src_datnam) == 0)
+   text = e_prog_text_add(text, path);
+ }
+ else if (e_run_program_path(f, v, path, sizeof path) == 0)
+  text = e_prog_text_add(text, path);
+ text = e_prog_text_add(text, v->args);
+ if (!text)
+  text = WpeStrdup("");
+ return(text);
+}
+
+/**
+ * e_run_plan_approve - Judge Run's plan, and ask when a start-folder xwperc
+ * chose its program, its interpreter or its Arguments.
+ * @f: the source window; e_s_prog holds its language's entry.
+ *
+ * Run runs the folder's own program, which the box says; what it asks
+ * about is what the editor puts on the program's line from a folder file.
+ * "Use mine" runs the program with the user's own values.
+ * Return: the answered plan (the caller frees it), or NULL when nothing runs.
+ */
+static WpeStartPlan *e_run_plan_approve(FENSTER *f)
+{
+ struct e_s_prog *own = NULL;
+ char *shown, *own_shown = NULL;
+ E_STARTPLAN_SHOW show;
+ e_run_values v;
+ WpeStartPlan *plan;
+ int verdict;
+
+ e_run_values_of(&v, &e_s_prog, e_prog.exedir, e_prog.arguments, 0);
+ if (!(plan = e_run_plan_make(f, &v)))
+  return(NULL);
+ shown = e_run_shown(f, &v);
+ if (e_opt_start_folder())
+ {
+  if (e_s_prog.language)
+   own = e_opt_own_language(e_s_prog.language);
+  e_run_values_of(&v, own, e_opt_own_value("Exedir"), e_opt_own_value(E_ARGS_KEY), 1);
+  if (own || !(e_s_prog.comp_sw & 1))   /* an interpreter only the folder names: none of his */
+  {
+   wpe_startplan_set_own(plan, e_run_plan_make(f, &v));
+   own_shown = e_run_shown(f, &v);
+  }
+ }
+ show.who = E_STARTCMD_XWPERC_WHO;
+ show.what = E_RUN_WHAT_ASKED;
+ show.shown = shown ? shown : "";
+ show.own = own_shown;
+ verdict = e_startplan_approve(f, plan, &show);
+ if (shown) FREE(shown);
+ if (own_shown) FREE(own_shown);
+ if (verdict == WPE_STARTCMD_CANCEL || !wpe_startplan_running(plan))
+ {
+  wpe_startplan_free(plan);
+  return(NULL);
+ }
+ return(plan);
+}
+
 /**
  * e_run_program - Run the program that was just built, with its output in
  * Messages and on the user screen (Alt-F5).
  * @cn: the desktop.
+ *
+ * The program runs in its own folder (the source's), so it finds and writes
+ * its data files there, not wherever the editor was started.
  */
 static int e_run_program(ECNT *cn)
 {
  BUFFER *b;
  FENSTER *mf, *f;
  char estr[256];
- char *src_dirct = e_run_src_dirct, *src_datnam = e_run_src_datnam;
- char cwd_saved[1024];
- int len, ret, i, cwd_chg = 0;
+ WpeStartPlan *plan;
+ int ret, i;
 
  WpeMouseChangeShape(WpeWorkingShape);
  f = e_p_source_window(cn);
@@ -1267,44 +1556,16 @@ static int e_run_program(ECNT *cn)
  if (e_d_swtch > 0)
   e_d_quit(f);
 #endif
- estr[0] = '\0';
- if (e_s_prog.comp_sw & 1)
+ if (!(plan = e_run_plan_approve(f)))
  {
-  snprintf(estr, sizeof(estr), "%s %s%s", e_s_prog.compiler, src_dirct, src_datnam);
+  WpeMouseRestoreShape();
+  return(0);
  }
- else
- {
-  if ((!e_s_prog.exe_name) || (e_s_prog.exe_name[0]!=DIRC))
-  {
-   e_strlcat(estr, e_prog.exedir, sizeof(estr));
-   len = strlen(estr) - 1;
-   if (len >= 0 && estr[len] != DIRC)
-   {
-    char dc[2] = { DIRC, '\0' };
-    e_strlcat(estr, dc, sizeof(estr));
-   }
-  }
-  if (e_s_prog.exe_name && e_s_prog.exe_name[0])
-  {
-   e_strlcat(estr, e_s_prog.exe_name, sizeof(estr));
-  }
-  else if (!e__project)
-  {
-   e_strlcat(estr, f->datnam, sizeof(estr));
-   WpeStringCutChar(estr, '.');
-   e_strlcat(estr, ".e", sizeof(estr));
-  }
-  else
-   e_strlcat(estr, "a.out", sizeof(estr));
- }
- e_strlcat(estr, " ", sizeof(estr));
- if (e_prog.arguments)
-  e_strlcat(estr, e_prog.arguments, sizeof(estr));
-
  for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, "Messages"); i--)
   ;
  if (i <= 0 && e_edit(cn, "Messages") != 0)
  {
+  wpe_startplan_free(plan);
   WpeMouseRestoreShape();       /* no Messages: the output has nowhere to go */
   return(0);
  }
@@ -1315,16 +1576,10 @@ static int e_run_program(ECNT *cn)
 
  if (b->bf[b->mxlines-1].len != 0)
   e_view_add_row(b);
- /* Run the program IN ITS OWN directory: the exe is named relative ("./prog",
-    "a.out") and, more importantly, the program itself should see its own
-    directory as CWD so it finds/writes its data files there, not wherever wpe
-    was launched from. */
- cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
- ret = e_run_with_pty(estr, b, mf);
+ ret = e_run_with_pty(plan, b, mf);
  if (ret < 0)
-  ret = e_run_without_pty(estr, b);
- if (cwd_chg)
-  e_build_popd(cwd_saved);
+  ret = e_run_without_pty(plan, b);
+ wpe_startplan_free(plan);
 #ifdef NCURSES
  clearok(stdscr, TRUE);
 #endif
@@ -2051,29 +2306,6 @@ static WpeChild e_build_child;     /* the step's process, while it runs */
 static void e_build_child_ended(WpeChild *c, int status, int how, void *data);
 
 /**
- * e_build_spec - How the children's owner runs one command of a build.
- * @spec: filled in; @argv: the command.
- *
- * Its own process group, so Esc ends make together with the compiler it
- * started; stdin from /dev/null, so the command can never take the terminal
- * from the editor; stdout and stderr in one pipe, so the lines reach
- * Messages in the order the build wrote them (a make's echoed command before
- * the compiler's errors), the command line first.
- */
-static void e_build_spec(WpeChildSpec *spec, char **argv)
-{
- memset(spec, 0, sizeof *spec);
- spec->argv = argv;
- spec->io = WPE_CHILD_IO_PIPES;
- spec->group = WPE_CHILD_OWN_GROUP;
- spec->stdin_null = 1;
- spec->stderr_to_stdout = 1;
- spec->echo_argv = 1;
- spec->exec_failed = e_p_msg[ERR_IN_COMMAND];
- spec->what = E_BUILD_WHAT;
-}
-
-/**
  * e_build_forget_previous - A step's process whose end was never reported
  * (a step given up on) is let go before the next one starts, so the new
  * step's end is never taken for the old one's.
@@ -2129,8 +2361,15 @@ static int e_build_step_started(FENSTER *f, int rc)
 }
 
 /**
- * e_build_io - How the children's owner runs one step of a planned build.
- * @io: filled in.  The same shape as e_build_spec gives Make.
+ * e_build_io - How the children's owner runs one step of a planned build
+ * (a compile, the link, ar, ranlib, make).
+ * @io: filled in.
+ *
+ * Its own process group, so Esc ends make together with the compiler it
+ * started; stdin from /dev/null, so the command can never take the terminal
+ * from the editor; stdout and stderr in one pipe, so the lines reach
+ * Messages in the order the build wrote them (a make's echoed command before
+ * the compiler's errors), the command line first.
  */
 static void e_build_io(WpeStartIo *io)
 {
@@ -2162,17 +2401,6 @@ static int e_exec_planned(FENSTER *f, char **argv)
  e_build_io(&io);
  return(e_build_step_started(f, wpe_startplan_start(e_build_plan, argv, &io, &e_build_child,
                                                     e_build_child_ended, NULL)));
-}
-
-int e_exec_inf(FENSTER *f, char **argv, int n)
-{
- WpeChildSpec spec;
-
- (void)n;
- e_build_step_prepare(f);
- e_build_spec(&spec, argv);
- return(e_build_step_started(f, wpe_child_start(&spec, &e_build_child, e_build_child_ended,
-                                                NULL)));
 }
 
 int e_print_arg(FILE *fp, char *s, char **argv, int n)
@@ -3105,7 +3333,7 @@ static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
 }
 
 /**
- * e_p_exec - Run the child e_exec_inf started as one step of a build.
+ * e_p_exec - Run the child e_exec_planned started as one step of a build.
  * @f: the window the build belongs to; @pic: an old status box, or NULL;
  * @cont: what runs when the step has ended (NULL for nothing);
  * @data: handed to @cont.
@@ -5409,7 +5637,6 @@ static struct {
  int status;
 } e_shell;
 
-#define E_SHELL_PROGRAM "/bin/sh"
 #define E_SHELL_WHAT    "the command"
 /* What e_shell_run returns when the command could not be run. */
 #define E_SHELL_FAILED  (-1)
@@ -5437,28 +5664,37 @@ static int e_shell_has_ended(void)
 }
 
 /**
- * e_shell_start - Start the shell on the command, in the editor's own
+ * e_shell_io - How a command the user watches runs: in the editor's own
  * terminal or window group, with the signals a shell run from a terminal
  * has.
- * @cmd: the command line.
+ * @io: filled in.
+ */
+static void e_shell_io(WpeStartIo *io)
+{
+ memset(io, 0, sizeof *io);
+ io->io = WPE_CHILD_IO_INHERIT;
+ io->group = WPE_CHILD_EDITORS_GROUP;
+ io->side_pty_slave = WPE_CHILD_NO_FD;
+ io->tty_fd = WPE_CHILD_NO_FD;
+ io->what = E_SHELL_WHAT;
+}
+
+/**
+ * e_shell_start - Start a command the user watches, through its plan.
+ * @plan: the plan, judged and answered; @argv: the one step to run (an
+ * install line), or NULL for the plan's own words behind its carrier.
  * Return: 0, or -1 when it could not be started.
  */
-static int e_shell_start(const char *cmd)
+static int e_shell_start(WpeStartPlan *plan, char *const argv[])
 {
- char *argv[] = { E_SHELL_PROGRAM, "-c", NULL, NULL };
- WpeChildSpec spec;
+ WpeStartIo io;
 
- argv[2] = (char *)cmd;   /* exec does not change its arguments */
- memset(&spec, 0, sizeof spec);
- spec.argv = argv;
- spec.io = WPE_CHILD_IO_INHERIT;
- spec.group = WPE_CHILD_EDITORS_GROUP;
- spec.side_pty_slave = WPE_CHILD_NO_FD;
- spec.tty_fd = WPE_CHILD_NO_FD;
- spec.what = E_SHELL_WHAT;
+ e_shell_io(&io);
  e_shell.ended = 0;
  e_shell.status = 0;
- return(wpe_child_start(&spec, &e_shell.child, e_shell_on_end, NULL));
+ if (argv)
+  return(wpe_startplan_start(plan, argv, &io, &e_shell.child, e_shell_on_end, NULL));
+ return(wpe_startplan_start_carried(plan, &io, &e_shell.child, e_shell_on_end, NULL));
 }
 
 /**
@@ -5504,9 +5740,11 @@ static void e_shell_wait(void)
 }
 
 /**
- * e_shell_run - Run a shell command and wait for it, like system(), but on
- * the editor's loop and with the command's signals at their defaults.
- * @cmd: the command line.
+ * e_shell_run - Run a command the user watches and wait for it, like
+ * system(), but on the editor's loop, from its start plan, and with the
+ * command's signals at their defaults.
+ * @plan: the command's plan, judged and answered; @argv: the one step to
+ * run, or NULL for the plan's own words.
  *
  * system() hands the command the editor's ignored SIGINT and SIGPIPE, which
  * a shell can never undo: a script or program run from the editor then could
@@ -5514,9 +5752,11 @@ static void e_shell_wait(void)
  * wait is the loop's, not a call that blocks the editor: the build's output,
  * the servers and the window's repaints are served meanwhile.  Ctrl-C and
  * Ctrl-backslash typed for the command are the command's, not the editor's.
- * Return: the wait status, or -1 when the shell could not be started.
+ * No text is ever handed to a shell here: a file name goes to the command as
+ * a word of its plan.
+ * Return: the wait status, or -1 when the command could not be started.
  */
-int e_shell_run(const char *cmd)
+int e_shell_run(struct WpeStartPlan *plan, char *const argv[])
 {
  struct sigaction ign, old_int, old_quit;
  int started;
@@ -5526,7 +5766,7 @@ int e_shell_run(const char *cmd)
  sigemptyset(&ign.sa_mask);
  sigaction(SIGINT, &ign, &old_int);
  sigaction(SIGQUIT, &ign, &old_quit);
- started = e_shell_start(cmd);
+ started = e_shell_start(plan, argv);
  if (started == 0)
   e_shell_wait();
  sigaction(SIGINT, &old_int, NULL);
@@ -5541,25 +5781,29 @@ int e_shell_run(const char *cmd)
  return(e_shell.status);
 }
 
-int e_system(char *estr, ECNT *cn)
+/**
+ * e_system - Run a command the user watches on the console, the editor's
+ * screen stepped aside, and wait for Return when it ends.
+ * @plan: the command's start plan, judged and answered; @cn: the desktop.
+ * Return: the command's wait status, or -1 when it could not be started.
+ */
+int e_system(struct WpeStartPlan *plan, ECNT *cn)
 {
 #if MOUSE
  int g[4];
 #endif
  int ret;
  PIC *outp;
- FENSTER *f;
 
 #if  MOUSE
  g[0] = 2;
  fk_mouse(g);
 #endif
- f = cn->f[cn->mxedt-1];
  outp = e_open_view(0,0,MAXSCOL-1,MAXSLNS-1,cn->fb->ws,1);
  fk_locate(0,0);
  fk_cursor(1);
  (*e_u_s_sys_ini)();
- ret = e_shell_run(estr);
+ ret = e_shell_run(plan, NULL);
  if (!WpeIsXwin())
  {
   printf("%s",e_msg[ERR_HITCR]);
@@ -5931,20 +6175,136 @@ int e_messages_return(FENSTER *f)
  return(1);
 }
 
+/* What Execute Make starts, and what its plan and question call it. */
+#define E_MAKE_PROGRAM    "make"
+#define E_MAKE_WHAT_ASKED "make arguments"
+
+/**
+ * e_make_plan_make - The plan of Execute Make.
+ * @f: the active window; @args: the Arguments make gets; @own: 1 when they
+ * are the user's own.
+ *
+ * make runs in the active file's folder (the project's, when one is open)
+ * and runs the folder's Makefile, which the box says.  The user's own
+ * Arguments are options of his; a folder's are its text, shown and asked
+ * about once.
+ * Return: the plan, or NULL out of memory.
+ */
+static WpeStartPlan *e_make_plan_make(FENSTER *f, const char *args, int own)
+{
+ WpeStartPlan *plan = wpe_startplan_new(WPE_START_MAKE, E_MAKE_PROGRAM);
+ int from = WPE_FROM_USER;
+ char *dir;
+
+ if (!plan)
+  return(NULL);
+ if (e_opt_start_folder())
+  wpe_startplan_set_file(plan, E_STARTCMD_XWPERC, e_opt_start_folder());
+ dir = e_build_dir(f);
+ wpe_startplan_set_cwd(plan, dir ? dir : E_RUN_HERE);
+ if (dir)
+  FREE(dir);
+ wpe_startplan_word(plan, E_MAKE_PROGRAM, WPE_WORD_PROGRAM, WPE_FROM_EDITOR, NULL);
+ if (!own)
+  from = e_opt_value_from(E_OPT_SCOPE_PROGRAMMING, E_ARGS_KEY, args);
+ if (from == WPE_FROM_FOLDER)
+  e_args_plan_words(plan, args, WPE_WORD_TEXT);
+ else
+  wpe_startplan_words(plan, args, WPE_WORD_OPTION, WPE_FROM_USER, E_ARGS_SOURCE);
+ plan->honest = 1;
+ return(plan);
+}
+
+/**
+ * e_make_shown - make and its Arguments, as the box shows them.
+ * @args: the Arguments.
+ * Return: the malloc'd text.
+ */
+static char *e_make_shown(const char *args)
+{
+ char *text = e_prog_text_add(NULL, E_MAKE_PROGRAM);
+
+ text = e_prog_text_add(text, args);
+ if (!text)
+  text = WpeStrdup(E_MAKE_PROGRAM);
+ return(text);
+}
+
+/**
+ * e_make_plan_approve - Judge Execute Make's plan, and ask when a
+ * start-folder xwperc set the Arguments make gets.
+ * @f: the active window.
+ *
+ * The plan becomes the build's plan, so make starts through it like every
+ * step of a build.  "Use mine" runs make with the user's own Arguments.
+ * Return: 0 to run make, -1 when nothing runs.
+ */
+static int e_make_plan_approve(FENSTER *f)
+{
+ const char *own_args = e_opt_own_value(E_ARGS_KEY);
+ char *shown, *own_shown = NULL;
+ E_STARTPLAN_SHOW show;
+ int verdict;
+
+ e_build_plan_drop();
+ if (!(e_build_plan = e_make_plan_make(f, e_prog.arguments, 0)))
+  return(-1);
+ if (e_opt_start_folder())
+ {
+  wpe_startplan_set_own(e_build_plan, e_make_plan_make(f, own_args, 1));
+  own_shown = e_make_shown(own_args);
+ }
+ shown = e_make_shown(e_prog.arguments);
+ show.who = E_STARTCMD_XWPERC_WHO;
+ show.what = E_MAKE_WHAT_ASKED;
+ show.shown = shown ? shown : "";
+ show.own = own_shown;
+ verdict = e_startplan_approve(f, e_build_plan, &show);
+ if (shown) FREE(shown);
+ if (own_shown) FREE(own_shown);
+ if (verdict == WPE_STARTCMD_CANCEL || !wpe_startplan_running(e_build_plan))
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_make_start - Start make through the build's plan, with the words of
+ * the plan that runs (the user's own after "Use mine").
+ * @f: Messages.
+ * Return: 1 when it runs, 0 when it did not start.
+ */
+static int e_make_start(FENSTER *f)
+{
+ char **argv = wpe_startplan_argv(e_build_plan);
+ int file;
+
+ if (!argv)
+  return(0);
+ file = e_exec_planned(f, argv);
+ free(argv);
+ return(file);
+}
+
 int e_exec_make(FENSTER *f)
 {
  ECNT *cn = f->ed;
- char **arg = NULL;
  char saved_cwd[1024];
- int i, file, argc, cwd_changed;
+ int i, file, cwd_changed;
 
  if (e_build_chain_begin(f, NULL, NULL))
   return(-1);
+ if (e_make_plan_approve(f))
+ {
+  e_build_chain_end(f, WPE_ESC, NULL);
+  return(WPE_ESC);
+ }
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
  /* Capture the active file's directory BEFORE e_new_message makes Messages the
-    top window -- after that cn->f[cn->mxedt]->dirct is the Messages dir. */
+    top window -- after that cn->f[cn->mxedt]->dirct is the Messages dir.  make
+    itself runs in the plan's folder, the same one; the editor's own folder
+    follows it so Messages finds the files make names. */
  cwd_changed = e_build_pushd(f, saved_cwd, sizeof(saved_cwd));
  for (i = cn->mxedt; i > 0; i--)
   if (cn->f[i] && cn->f[i]->datnam &&
@@ -5968,20 +6328,8 @@ int e_exec_make(FENSTER *f)
  e_p_set_compiled_source(NULL);
  if (e_s_prog.compiler)
   FREE(e_s_prog.compiler);
- e_s_prog.compiler = MALLOC(5*sizeof(char));
- strcpy(e_s_prog.compiler, "make");
- argc = e_make_arg(&arg, e_prog.arguments);
- if (argc == 0)
- {
-  arg[1] = NULL;
-  argc = 2;
- }
- else
- {
-  for (i = 1; i < argc; i++)
-   arg[i] = arg[i+1];
- }
- if ((file = e_exec_inf(f, arg, argc)) == 0)
+ e_s_prog.compiler = WpeStrdup(E_MAKE_PROGRAM);
+ if ((file = e_make_start(f)) == 0)
  {
   e_sys_end();
   if (cwd_changed)
@@ -5991,7 +6339,6 @@ int e_exec_make(FENSTER *f)
   return(WPE_ESC);
  }
  e_sys_end();
- e_free_arg(arg, argc - 1);
  e_p_exec(f, NULL, e_build_chain_end, NULL);
  if (cwd_changed)
   e_build_popd(saved_cwd);
@@ -5999,58 +6346,143 @@ int e_exec_make(FENSTER *f)
  return(0);
 }
 
-/* How a shell script is started from its own folder, with the Run arguments. */
-#define E_RUN_SH_FMT "./%s %s"
+/* What a shell script's Run is called in its key and its question. */
+#define E_RUN_SH_SUFFIX     ".sh"
+#define E_RUN_SH_SUFFIX_LEN 3
+#define E_RUN_SH_NAME       "sh"
+#define E_RUN_SH_WHAT_ASKED "script's arguments"
 
+/**
+ * e_run_sh_plan_make - The plan of Run on a shell script.
+ * @f: the script's window; @args: the Arguments; @own: 1 when they are the
+ * user's own.
+ *
+ * The script runs in its own folder as "./name.sh", the "$1" of a shell
+ * line, so a script named "a';touch x;'.sh" is only ever that file; the
+ * user's own Arguments follow as his shell text, a folder's as words, shown
+ * and asked about once.
+ * Return: the plan, or NULL when the name does not fit or out of memory.
+ */
+static WpeStartPlan *e_run_sh_plan_make(FENSTER *f, const char *args, int own)
+{
+ WpeStartPlan *plan = wpe_startplan_new(WPE_START_SCRIPT, E_RUN_SH_NAME);
+ e_run_values v;
+ char path[WPE_BUILD_PATH_MAX];
+ int from = WPE_FROM_USER, args_as_text;
+ char *line;
+
+ if (!plan)
+  return(NULL);
+ if (e_opt_start_folder())
+  wpe_startplan_set_file(plan, E_STARTCMD_XWPERC, e_opt_start_folder());
+ wpe_startplan_set_cwd(plan, f->dirct && f->dirct[0] ? f->dirct : E_RUN_HERE);
+ if (!own)
+  from = e_opt_value_from(E_OPT_SCOPE_PROGRAMMING, E_ARGS_KEY, args);
+ args_as_text = args && args[0] && from == WPE_FROM_USER;
+ memset(&v, 0, sizeof v);
+ v.args = args;
+ line = e_run_line(&v, args_as_text);
+ wpe_startplan_shell(plan, line ? line : "", WPE_FROM_USER, NULL);
+ if (line)
+  FREE(line);
+ if (wpe_startplan_operand(path, sizeof path, E_RUN_HERE, f->datnam))
+ {
+  wpe_startplan_free(plan);
+  return(NULL);
+ }
+ wpe_startplan_word(plan, path, WPE_WORD_OPERAND, WPE_FROM_USER, E_RUN_SRC_WINDOW);
+ wpe_startplan_path(plan, path, WPE_PATH_INPUT, WPE_FROM_USER, E_RUN_SRC_WINDOW, NULL);
+ if (!args_as_text && args && args[0])
+  e_args_plan_words(plan, args, WPE_WORD_TEXT);
+ plan->honest = 1;
+ return(plan);
+}
+
+/**
+ * e_run_sh_plan_approve - Judge the plan of Run on a shell script, and ask
+ * when a start-folder xwperc set its Arguments.
+ * @f: the script's window.
+ * Return: the answered plan (the caller frees it), or NULL when nothing runs.
+ */
+static WpeStartPlan *e_run_sh_plan_approve(FENSTER *f)
+{
+ const char *own_args = e_opt_own_value(E_ARGS_KEY);
+ char *shown, *own_shown = NULL;
+ E_STARTPLAN_SHOW show;
+ WpeStartPlan *plan;
+ int verdict;
+
+ if (!(plan = e_run_sh_plan_make(f, e_prog.arguments, 0)))
+  return(NULL);
+ shown = e_prog_text_add(e_prog_text_add(NULL, f->datnam), e_prog.arguments);
+ if (e_opt_start_folder())
+ {
+  wpe_startplan_set_own(plan, e_run_sh_plan_make(f, own_args, 1));
+  own_shown = e_prog_text_add(e_prog_text_add(NULL, f->datnam), own_args);
+ }
+ show.who = E_STARTCMD_XWPERC_WHO;
+ show.what = E_RUN_SH_WHAT_ASKED;
+ show.shown = shown ? shown : "";
+ show.own = own_shown;
+ verdict = e_startplan_approve(f, plan, &show);
+ if (shown) FREE(shown);
+ if (own_shown) FREE(own_shown);
+ if (verdict == WPE_STARTCMD_CANCEL || !wpe_startplan_running(plan))
+ {
+  wpe_startplan_free(plan);
+  return(NULL);
+ }
+ return(plan);
+}
+
+/**
+ * e_run_sh_make_runnable - Make the script executable on disk.
+ * @f: the script's window.
+ *
+ * The window's executable bit reaches the disk only on save, so a freshly
+ * opened unmodified script would not run as "./name.sh".
+ */
+static void e_run_sh_make_runnable(FENSTER *f)
+{
+ char *full = e_mkfilename(f->dirct, f->datnam);
+ struct stat sb;
+
+ if (!full)
+  return;
+ if (!stat(full, &sb))
+  chmod(full, sb.st_mode | S_IXUSR);
+ FREE(full);
+}
+
+/**
+ * e_run_sh - Ctrl-F9 on a shell script: run it, in its own folder, where
+ * the user watches it.
+ * @f: the window.
+ * Return: 1 when the window is no script (Run goes on to build), else 0.
+ */
 int e_run_sh(FENSTER *f)
 {
- int ret, len = strlen(f->datnam), cwd_chg = 0;
- size_t size;
- char *estr;
- char cwd_saved[1024];
+ int len = strlen(f->datnam);
+ WpeStartPlan *plan;
 
- if (strcmp(f->datnam+len-3, ".sh"))
+ if (len < E_RUN_SH_SUFFIX_LEN || strcmp(f->datnam + len - E_RUN_SH_SUFFIX_LEN, E_RUN_SH_SUFFIX))
   return(1);
 
  WpeMouseChangeShape(WpeWorkingShape);
  f->filemode |= 0100;
  if (f->save)
   e_save(f);
- /* Run the script in its own directory, not wherever wpe was launched from,
-    and invoke it as "./name.sh" so the shell finds it there ("." is not
-    normally on PATH, so a bare "name.sh" would fail even in the right dir). */
- cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
- /* Make the script executable on disk: the in-memory filemode |= 0100 above
-    only reaches disk on save, so a freshly-opened unmodified .sh would be
-    non-executable and "./name.sh" would fail with EACCES. */
- { struct stat _sb;
-   if (!stat(f->datnam, &_sb))
-    chmod(f->datnam, _sb.st_mode | S_IXUSR); }
- /* The script and the Run arguments, whatever their length: the arguments
-    come from the options, which a folder's xwperc can make long. */
- size = strlen(f->datnam) + strlen(E_RUN_SH_FMT) + 1;
- if (e_prog.arguments)
-  size += strlen(e_prog.arguments);
- if (!(estr = MALLOC(size)))
+ e_run_sh_make_runnable(f);
+ if ((plan = e_run_sh_plan_approve(f)) != NULL)
  {
-  if (cwd_chg)
-   e_build_popd(cwd_saved);
-  WpeMouseRestoreShape();
-  return(0);
- }
- snprintf(estr, size, E_RUN_SH_FMT, f->datnam,
-          e_prog.arguments ? e_prog.arguments : "");
 #ifndef NO_XWINDOWS
- if (WpeIsXwin())
- {
-  ret = (*e_u_system)(estr);
- }
- else
+  if (WpeIsXwin())
+   (*e_u_system)(plan);
+  else
 #endif
- ret = e_system(estr, f->ed);
- FREE(estr);
- if (cwd_chg)
-  e_build_popd(cwd_saved);
+   e_system(plan, f->ed);
+  wpe_startplan_free(plan);
+ }
  WpeMouseRestoreShape();
  return(0);
 }
@@ -6346,7 +6778,6 @@ typedef struct {
 
 /* What the question calls a project's install lines, and their key. */
 #define E_INSTALL_WHAT "install commands"
-#define E_INSTALL_KEY  "Install/"
 #define E_INSTALL_WHO  "The project file"
 
 
@@ -6405,6 +6836,38 @@ static char *e_install_text(const e_install_list *l)
  return(text);
 }
 
+/* Where the plan says an install line came from. */
+#define E_INSTALL_SOURCE "install:"
+
+/**
+ * e_install_plan_make - The plan of a project's install lines.
+ * @l: the lines, expanded as they will run.
+ *
+ * One plan for every line, so Alt-L asks once.  Each line is the project
+ * file's own shell text, run by "/bin/sh -c" in the editor's folder, as
+ * the original did; the box shows them whole, and that nothing the lines
+ * then do is vetted.
+ * Return: the plan, or NULL out of memory.
+ */
+static WpeStartPlan *e_install_plan_make(const e_install_list *l)
+{
+ WpeStartPlan *plan = wpe_startplan_new(WPE_START_INSTALL, e_prj_file_name());
+ char folder[WPE_BUILD_PATH_MAX];
+ int i;
+
+ if (!plan)
+  return(NULL);
+ e_prj_folder(folder, sizeof folder);
+ wpe_startplan_set_file(plan, e_prj_file_name(), folder);
+ wpe_startplan_set_cwd(plan, E_RUN_HERE);
+ wpe_startplan_word(plan, WPE_STARTPLAN_SHELL, WPE_WORD_PROGRAM, WPE_FROM_EDITOR, NULL);
+ wpe_startplan_word(plan, WPE_STARTPLAN_SHELL_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
+ for (i = 0; i < l->n; i++)
+  wpe_startplan_word(plan, l->line[i], WPE_WORD_TEXT, WPE_FROM_FOLDER, E_INSTALL_SOURCE);
+ plan->honest = 1;
+ return(plan);
+}
+
 /**
  * e_install_approve - Ask before a project file's install lines run.
  * @f: a window; @l: the lines, expanded as they will run.
@@ -6412,32 +6875,35 @@ static char *e_install_text(const e_install_list *l)
  * They go to the shell, so a project file from a clone could run anything
  * at Alt-L.  They are shown first, once per folder and text, as a folder's
  * compiler is; there is no command of the user's own to run instead, so
- * "Use mine" installs nothing.
- * Return: 0 to run them, -1 to run nothing.
+ * "Use mine" is not offered.
+ * Return: the answered plan (the caller frees it), or NULL to run nothing.
  */
-static int e_install_approve(FENSTER *f, const e_install_list *l)
+static WpeStartPlan *e_install_approve(FENSTER *f, const e_install_list *l)
 {
- char key[WPE_STARTCMD_KEY_MAX], folder[WPE_BUILD_PATH_MAX];
  char *text = e_install_text(l);
- E_STARTCMD c;
+ E_STARTPLAN_SHOW show;
+ WpeStartPlan *plan;
  int verdict;
 
  if (!text)
-  return(-1);
- snprintf(key, sizeof key, "%s%s", E_INSTALL_KEY, e_prj_file_name());
- e_prj_folder(folder, sizeof folder);
- c.folder = folder;
- c.source = e_prj_file_name();
- c.who = E_INSTALL_WHO;
- c.key = key;
- c.what = E_INSTALL_WHAT;
- c.text = text;
- c.own = NULL;
- verdict = e_startcmd_approve(f, &c);
+  return(NULL);
+ if (!(plan = e_install_plan_make(l)))
+ {
+  FREE(text);
+  return(NULL);
+ }
+ show.who = E_INSTALL_WHO;
+ show.what = E_INSTALL_WHAT;
+ show.shown = text;
+ show.own = NULL;
+ verdict = e_startplan_approve(f, plan, &show);
  FREE(text);
- if (verdict == WPE_STARTCMD_RUN)
-  return(0);
- return(-1);
+ if (verdict != WPE_STARTCMD_RUN || !wpe_startplan_running(plan))
+ {
+  wpe_startplan_free(plan);
+  return(NULL);
+ }
+ return(plan);
 }
 
 /**
@@ -6446,17 +6912,21 @@ static int e_install_approve(FENSTER *f, const e_install_list *l)
  */
 static int e_install_lines_run(FENSTER *f, const e_install_list *l)
 {
+ char *argv[] = { WPE_STARTPLAN_SHELL, WPE_STARTPLAN_SHELL_OPT, NULL, NULL };
+ WpeStartPlan *plan;
  int i;
 
  if (l->n == 0)
   return(0);
- if (e_install_approve(f, l))
+ if (!(plan = e_install_approve(f, l)))
   return(WPE_ESC);
  for (i = 0; i < l->n; i++)
  {
   e_d_p_message(l->line[i], f, 1);
-  e_shell_run(l->line[i]);
+  argv[2] = l->line[i];
+  e_shell_run(plan, argv);
  }
+ wpe_startplan_free(plan);
  return(0);
 }
 

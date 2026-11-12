@@ -49,7 +49,8 @@ def test_scala_lsp_go_to_definition(tmp_path):
     # pin a JDK the Scala compiler supports (system default may be too new)
     (tmp_path / "project.scala").write_text("//> using jvm temurin:21\n")
 
-    with WpeSession(str(tmp_path), PROG, filename="Demo.scala", wait=2.0) as w:
+    with WpeSession(str(tmp_path), PROG, filename="Demo.scala", wait=2.0,
+                    answer_server_start=True) as w:
         w.key(ALT_Q, delay=0.4)
         w.key("e", delay=150.0)        # start Metals (cold) + first compile
         w._drain(3.0)

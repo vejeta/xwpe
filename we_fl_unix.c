@@ -97,6 +97,8 @@ static void e_fm_centered_geometry(FENSTER *f)
    and taken (then cleared) by WpeCreateFileManager; NULL: "File-Manager". */
 static char *WpeSaveAsTitleNext = NULL;
 
+static int e_execute_file(const char *name);
+
 int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
 {
   extern char    *e_hlp_str[];
@@ -1247,7 +1249,7 @@ int WpeHandleFileManager(ECNT * cn)
             printf(e_msg[ERR_EXEC], filen);
             fflush(stdout);
           }
-          if ((*e_u_system)(filen))
+          if (e_execute_file(filen))
           {
             if(!WpeIsXwin())
               e_sys_end();
@@ -3247,9 +3249,81 @@ int WpeDirDelOptions(FENSTER * f)
   return(ret);
 }
 
+/* The key names of File > Shell and of the file manager's Execute. */
+#define E_SHELL_PLAN_NAME   "shell"
+#define E_EXECUTE_PLAN_NAME "execute"
+#define E_EXECUTE_SOURCE    "the file manager's file"
+#define E_EXECUTE_HERE      "."
+#define E_EXECUTE_PATH_MAX  512   /* "./" and a name of the file manager's */
+
+/**
+ * e_shell_plan - The plan of File > Shell: the user's own shell, in the
+ * editor's folder.
+ * Return: the judged plan (the caller frees it), or NULL out of memory.
+ */
+static WpeStartPlan *e_shell_plan(void)
+{
+  WpeStartPlan *plan = wpe_startplan_new(WPE_START_SHELL, E_SHELL_PLAN_NAME);
+
+  if (!plan)
+    return(NULL);
+  wpe_startplan_set_cwd(plan, E_EXECUTE_HERE);
+  wpe_startplan_word(plan, user_shell, WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+  wpe_startplan_judge(plan);
+  return(plan);
+}
+
+/**
+ * e_execute_plan - The plan of Execute in the file manager.
+ * @name: the file's name, as the user picked or typed it.
+ *
+ * The file runs as a program of its own, "./<name>", with no shell between:
+ * a file named "a';touch x;'.c" runs that file (or fails to), and nothing
+ * else.  The user chose it, so it starts without a question; the box would
+ * say only that it runs the folder's own program.
+ * Return: the judged plan (the caller frees it), or NULL when the name
+ * does not fit or out of memory.
+ */
+static WpeStartPlan *e_execute_plan(const char *name)
+{
+  WpeStartPlan *plan = wpe_startplan_new(WPE_START_SHELL, E_EXECUTE_PLAN_NAME);
+  char path[E_EXECUTE_PATH_MAX];
+
+  if (!plan)
+    return(NULL);
+  if (wpe_startplan_operand(path, sizeof path, E_EXECUTE_HERE, name))
+  {
+    wpe_startplan_free(plan);
+    return(NULL);
+  }
+  wpe_startplan_set_cwd(plan, E_EXECUTE_HERE);
+  wpe_startplan_word(plan, path, WPE_WORD_OPERAND, WPE_FROM_USER, E_EXECUTE_SOURCE);
+  wpe_startplan_path(plan, path, WPE_PATH_INPUT, WPE_FROM_USER, E_EXECUTE_SOURCE, NULL);
+  plan->honest = 1;
+  wpe_startplan_judge(plan);
+  return(plan);
+}
+
+/**
+ * e_execute_file - Execute the file the file manager names.
+ * @name: its name.
+ * Return: the command's wait status, or -1 when it could not be started.
+ */
+static int e_execute_file(const char *name)
+{
+  WpeStartPlan *plan = e_execute_plan(name);
+  int ret = -1;
+
+  if (plan)
+    ret = (*e_u_system)(plan);
+  wpe_startplan_free(plan);
+  return(ret);
+}
+
 int WpeShell(FENSTER * f)
 {
   PIC            *outp = NULL;
+  WpeStartPlan   *plan;
   int             g[4];
 
   if (!WpeIsXwin())
@@ -3263,7 +3337,9 @@ int WpeShell(FENSTER * f)
 #endif
     (*e_u_s_sys_ini) ();
   }
-  (*e_u_system) (user_shell);
+  if ((plan = e_shell_plan()) != NULL)
+    (*e_u_system) (plan);
+  wpe_startplan_free(plan);
   if(!WpeIsXwin())
   {
     (*e_u_s_sys_end) ();

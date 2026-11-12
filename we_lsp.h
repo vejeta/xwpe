@@ -149,6 +149,16 @@ e_lsp_session *e_lsp_open(char *const argv[], const char *root_dir,
 e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
                                 const char *lang, const e_lsp_host *host);
 
+/* Asked, when set, before a server process starts: @argv its command line,
+ * @cwd the project it runs in.  It returns the start plan the user answered
+ * for (we_startplan.h), whose words the server is started with, or NULL,
+ * and then nothing starts.  The editor sets it (a server that runs the
+ * folder's build code asks once per folder); a test may leave it unset, and
+ * the command then runs as given, from a plan of its fixed words. */
+struct WpeStartPlan;
+typedef struct WpeStartPlan *(*e_lsp_plan_fn)(char *const argv[], const char *cwd);
+void e_lsp_set_planner(e_lsp_plan_fn fn);
+
 /* The server's stdout fd (register it with the editor's fd-loop), or -1. */
 int e_lsp_fd(e_lsp_session *s);
 

@@ -129,26 +129,41 @@ void wpe_child_trace_set(void (*trace)(const char *line))
 }
 
 /**
- * wpe_child_note_unplanned - Trace a user start that has no start plan.
+ * wpe_child_unplanned - Is this a start the editor must refuse, because it
+ * did not come from a start plan?
  * @spec: the start.
  *
- * Every program the editor starts for the user is to come from a start plan
- * (we_startplan.c), which shows and asks about what a folder decided.  The
- * sites move to it one pass at a time; until the last one has, a start
- * without a plan still runs and leaves this trace line, so a test can tell
- * the converted sites from the rest.
+ * Every program the editor starts for the user comes from a start plan
+ * (we_startplan.c), which shows and asks about what a folder decided; a
+ * start without one would be a program whose command line nobody judged,
+ * so it is refused, said on the status row and traced.  The assistant's
+ * children are held by their own control instead and say so in @origin.
+ * The owner's own unit test, which exercises the mechanics with hand-built
+ * specs, is compiled with WPE_CHILD_MECHANICS_TEST and is the only build in
+ * which such a start runs.
+ * Return: 1 when it must be refused.
  */
-static void wpe_child_note_unplanned(const WpeChildSpec *spec)
+static int wpe_child_unplanned(const WpeChildSpec *spec)
 {
  char line[WPE_CHILD_LINE_MAX];
  const char *what = spec->what;
 
- if (spec->plan || spec->origin == WPE_CHILD_ORIGIN_AI || !wpe_child_trace_hook)
-  return;
+ if (spec->plan || spec->origin == WPE_CHILD_ORIGIN_AI)
+  return(0);
  if (!what)
   what = WPE_CHILD_UNNAMED;
- snprintf(line, sizeof line, WPE_CHILD_UNPLANNED_FMT, what);
- wpe_child_trace_hook(line);
+ if (wpe_child_trace_hook)
+ {
+  snprintf(line, sizeof line, WPE_CHILD_UNPLANNED_FMT, what);
+  wpe_child_trace_hook(line);
+ }
+#ifdef WPE_CHILD_MECHANICS_TEST
+ return(0);
+#else
+ if (wpe_child_say_hook)
+  wpe_child_say_hook(WPE_CHILD_REFUSE_UNPLANNED_TEXT);
+ return(1);
+#endif
 }
 
 /**
@@ -1248,7 +1263,11 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
  pid_t pid;
 
  wpe_child_reset(c);
- wpe_child_note_unplanned(spec);
+ if (wpe_child_unplanned(spec))
+ {
+  errno = EPERM;
+  return(-1);
+ }
  WpeChildSignalBlock(&saved);
  if (!wpe_child_room())
   return(wpe_child_refuse(spec, &saved));

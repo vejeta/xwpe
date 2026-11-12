@@ -38,7 +38,8 @@ pytestmark = pytest.mark.skipif(
 
 def test_scala_lsp_completion_popup(tmp_path):
     """Alt-Q C on the `println` line shows the completion popup with candidates."""
-    with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0) as w:
+    with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0,
+                    answer_server_start=True) as w:
         w.key(ALT_Q, delay=0.4)
         w.key("e", delay=90.0)             # start Metals + import + compile
         time.sleep(2.0)

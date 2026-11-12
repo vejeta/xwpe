@@ -191,17 +191,22 @@ folder asks once more, and your next answer writes it anew in the new
 format; a file of any other format is still left as it is.
 
 What is asked about is the programs that compile, link, print, install,
-debug and serve a build.  A debug session's start is asked about too
+debug and serve a build, and what Run and Make hand the program.  A debug session's start is asked about too
 when the folder decides something about it: a start-up file the
 debugger runs from the folder (@file{.pdbrc}, @file{jdb.ini},
 @file{.gdbinit}), shown with its lines, and the @code{Arguments} the
 folder's file puts on the debugger's run command (@pxref{Debugger
-start-up files}).  Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A})
-still run the folder's own code without a question, as they always did:
-the program the build made, with the @code{Arguments} the folder's file
-sets (through the shell for a script), and the folder's
-@file{Makefile}.  A debug session runs the folder's program as well.
-Open a folder you do not trust without running it.
+start-up files}).  Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A}) ask the
+same way when the folder's file sets @code{Arguments}: the box shows
+them, says that Run runs the folder's own program and Make its own
+@file{Makefile}, and after @samp{Run it} the program and @command{make}
+get them as separate words, never as shell text.  Your own
+@code{Arguments} stay your shell text (a @samp{< input} of yours keeps
+working) and ask nothing.  A language server that runs the folder's
+build code when a file opens (@command{rust-analyzer}, Metals) asks
+once per folder too (@pxref{Language servers}).  What the program, the
+@file{Makefile} or the build then does is the folder's own code, which
+no box vets.  Open a folder you do not trust without running it.
 
 Not covered yet, and planned: a folder's @code{IncludePath} widening
 what the assistant may read.

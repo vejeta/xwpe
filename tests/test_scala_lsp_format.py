@@ -37,7 +37,8 @@ def test_scala_lsp_format_buffer(tmp_path):
     # a scalafmt config so Metals actually formats (no prompt, deterministic)
     (tmp_path / ".scalafmt.conf").write_text(
         'version = "3.8.1"\nrunner.dialect = scala3\n')
-    with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0) as w:
+    with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0,
+                    answer_server_start=True) as w:
         # Boot Metals FIRST: Alt-Q F (or any Alt-Q action) is rejected with
         # "still starting" while the async handshake is in flight, so the
         # format request must follow a completed e_lsp_ensure.  Alt-Q E waits

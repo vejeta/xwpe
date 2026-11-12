@@ -118,6 +118,23 @@ grep -q '^#fn we_prog.c e_comp_start$' "$WORK/functions" ||
 grep -q '^we_prog.c e_add_arg ' "$WORK/found" ||
   problem "canary: the definition of e_add_arg not counted in we_prog.c (the pattern scan is blind)"
 
+# The refusal of a start with no plan is off only in the children's owner's
+# own unit test, whose specs are built by hand: a build of the editor, or any
+# other program, that names the switch has the refusal off.
+MECHANICS=WPE_CHILD_MECHANICS_TEST
+for f in "$SRCDIR"/*.c "$SRCDIR"/*.h "$SRCDIR/configure.ac"; do
+  [ -f "$f" ] || continue
+  case ${f##*/} in we_child.c) continue ;; esac
+  if grep -q "$MECHANICS" "$f"; then
+    problem "$MECHANICS named in ${f##*/}: only test_child may build with unplanned starts allowed"
+  fi
+done
+if [ -f "$SRCDIR/Makefile.am" ]; then
+  grep -n "$MECHANICS" "$SRCDIR/Makefile.am" | grep -v -e ':test_child_CFLAGS[ \t]*=' -e '^[0-9]*:#' | while IFS= read -r hit; do
+    echo "$MECHANICS named in Makefile.am:${hit%%:*} outside test_child_CFLAGS"
+  done >> "$WORK/problems"
+fi
+
 if [ $LIST -eq 1 ]; then
   awk '{ print $1 "|" $2 "|" $3 "|PASS|reason" }' "$WORK/found"
   awk '{ print "# " $0 }' "$WORK/problems"

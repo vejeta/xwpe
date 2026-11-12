@@ -27501,11 +27501,20 @@ typedef struct {
  const char *missing;    /* shown when the binary is not installed */
  int shares_daemon;      /* E_LSP_SHARES_DAEMON: it may start the build server
                             other editors share (e_lsp_host.server_shares_daemon) */
+ const char *runs_code;  /* what of the folder's own code the server runs as it
+                            starts, said in the box that asks once per folder;
+                            NULL for a server that only reads the files */
 } e_lsp_server;
 
 /* Metals may start Bloop, which other editors and the Scala debugger use:
    ending Metals must leave it running. */
 #define E_LSP_SHARES_DAEMON 1
+
+/* The servers that run the folder's build code when a file is opened. */
+#define E_LSP_RUNS_CARGO \
+ "rust-analyzer runs this folder's build scripts (build.rs) and proc macros."
+#define E_LSP_RUNS_SCALA \
+ "Metals runs this folder's build (sbt, Mill or the build server) to import it."
 
 static char *const E_LSP_ARGV_METALS[]  = { "metals", NULL };
 static char *const E_LSP_ARGV_CLANGD[]  = { "clangd", NULL };
@@ -27519,7 +27528,7 @@ static char *const E_LSP_ARGV_RUSTA[]   = { "rust-analyzer", NULL };
 
 static const e_lsp_server e_lsp_servers[] = {
  { "scala",  E_LSP_ARGV_METALS,  "Metals", "Metals not in PATH (cs install metals).",
-   E_LSP_SHARES_DAEMON },
+   E_LSP_SHARES_DAEMON, E_LSP_RUNS_SCALA },
  { "c",      E_LSP_ARGV_CLANGD,  "clangd", "clangd not in PATH (apt install clangd)." },
  { "cpp",    E_LSP_ARGV_CLANGD,  "clangd", "clangd not in PATH (apt install clangd)." },
  { "python", E_LSP_ARGV_PYRIGHT, "pyright", E_LSP_PY_MISSING },   /* preferred */
@@ -27528,7 +27537,8 @@ static const e_lsp_server e_lsp_servers[] = {
    "gopls not in PATH (apt install gopls, or go install golang.org/x/tools/gopls@latest)." },
  { "rust",   E_LSP_ARGV_RUSTA,   "rust",   /* bar label kept short: "rust-analyzer"
                                               would not fit the 80-col button row */
-   "rust-analyzer not in PATH (apt install rust-analyzer, or rustup component add rust-analyzer)." },
+   "rust-analyzer not in PATH (apt install rust-analyzer, or rustup component add rust-analyzer).",
+   0, E_LSP_RUNS_CARGO },
 };
 
 /* e_lsp_server_for - the server descriptor for a language.  When a language lists
@@ -29284,13 +29294,143 @@ static int e_lsp_scala_setup_needed(const char *lang, const char *path)
  return(1);
 }
 
+/* How the box and the store name a language server's start. */
+#define E_LSP_PLAN_FILE "this folder"
+#define E_LSP_PLAN_HEAD "Opening this file starts its language server:"
+#define E_LSP_PLAN_WHAT "language server"
+#define E_LSP_ROOT_MAX  1024
+
+/* The answered plan of the server about to start, handed to the protocol
+   engine's planner once (e_lsp_planner); NULL between starts. */
+static WpeStartPlan *g_lsp_planned;
+
+/* The folder whose server the user declined this session: opening another
+   of its files does not ask again until he asks for an action. */
+static char g_lsp_declined[E_LSP_ROOT_MAX];
+
+/**
+ * e_lsp_planner - The protocol engine asks for the plan of the server it is
+ * about to start: the one the user answered for in e_lsp_plan_approve.
+ * @argv/@cwd: the server's command line and project.
+ * Return: the plan (the engine frees it), or NULL when none was answered
+ * for that command, and then nothing starts.
+ */
+static WpeStartPlan *e_lsp_planner(char *const argv[], const char *cwd)
+{
+ WpeStartPlan *plan = g_lsp_planned;
+
+ (void)cwd;
+ g_lsp_planned = NULL;
+ if (!plan || !argv || !argv[0] || plan->nword < 1 || strcmp(plan->word[0].text, argv[0]))
+ {
+  wpe_startplan_free(plan);
+  return(NULL);
+ }
+ return(plan);
+}
+
+/**
+ * e_lsp_root_dir - The project a file's language server runs in: the
+ * file's own folder, without its trailing separator.
+ * @f: the file's window; @dir/@sz: receive it.
+ */
+static void e_lsp_root_dir(FENSTER *f, char *dir, size_t sz)
+{
+ int dl;
+
+ snprintf(dir, sz, "%s", f->dirct ? f->dirct : ".");
+ dl = strlen(dir);
+ while (dl > 1 && dir[dl - 1] == DIRC)
+  dir[--dl] = '\0';
+}
+
+/**
+ * e_lsp_plan_make - The plan of a language server's start.
+ * @srv: its descriptor; @dir: the project.
+ *
+ * The server's words are the editor's own (its descriptor's); what a folder
+ * decides is whether opening a file there runs its build code, which the
+ * descriptor says (rust-analyzer, Metals) and the box shows.
+ * Return: the plan, or NULL out of memory.
+ */
+static WpeStartPlan *e_lsp_plan_make(const e_lsp_server *srv, const char *dir)
+{
+ WpeStartPlan *plan = wpe_startplan_new(WPE_START_LANGUAGE_SERVER, srv->argv[0]);
+ int i, role = WPE_WORD_PROGRAM;
+
+ if (!plan)
+  return(NULL);
+ wpe_startplan_set_cwd(plan, dir);
+ wpe_startplan_set_file(plan, E_LSP_PLAN_FILE, dir);
+ for (i = 0; srv->argv[i]; i++)
+ {
+  wpe_startplan_word(plan, srv->argv[i], role, WPE_FROM_EDITOR, NULL);
+  role = WPE_WORD_OPTION;
+ }
+ if (srv->runs_code)
+  wpe_startplan_runs_code(plan, srv->runs_code);
+ return(plan);
+}
+
+/**
+ * e_lsp_plan_approve - Judge a language server's start, and ask once per
+ * folder when the server runs the folder's build code.
+ * @f: the file's window; @srv: the server; @dir: the project.
+ *
+ * A server that only reads the files starts without a question.  One that
+ * runs build scripts or a build (rust-analyzer, Metals) is shown first,
+ * with what it runs; the answer is kept for that folder.  Cancel starts
+ * nothing, and opening another file of the folder does not ask again this
+ * session.
+ * Return: 0 to start it (the plan waits for the engine), -1 when nothing
+ * starts.
+ */
+static int e_lsp_plan_approve(FENSTER *f, const e_lsp_server *srv, const char *dir)
+{
+ WpeStartPlan *plan = e_lsp_plan_make(srv, dir);
+ E_STARTPLAN_SHOW show;
+ int verdict;
+
+ if (!plan)
+  return(-1);
+ show.who = E_LSP_PLAN_FILE;
+ show.what = E_LSP_PLAN_WHAT;
+ show.shown = srv->argv[0];
+ show.own = NULL;
+ verdict = e_startplan_approve_headed(f, plan, &show, E_LSP_PLAN_HEAD);
+ if (verdict == WPE_STARTCMD_CANCEL || !wpe_startplan_running(plan))
+ {
+  snprintf(g_lsp_declined, sizeof g_lsp_declined, "%s", dir);
+  wpe_startplan_free(plan);
+  return(-1);
+ }
+ g_lsp_declined[0] = '\0';
+ wpe_startplan_free(g_lsp_planned);
+ g_lsp_planned = plan;
+ e_lsp_set_planner(e_lsp_planner);
+ return(0);
+}
+
+/**
+ * e_lsp_declined_here - Did the user decline the server of this file's
+ * folder this session?  Opening a file does not ask him again then.
+ * @f: the file's window.
+ * Return: 1 when he did.
+ */
+static int e_lsp_declined_here(FENSTER *f)
+{
+ char dir[E_LSP_ROOT_MAX];
+
+ e_lsp_root_dir(f, dir, sizeof dir);
+ return(g_lsp_declined[0] && strcmp(g_lsp_declined, dir) == 0);
+}
+
 static int e_lsp_ensure(FENSTER *f)
 {
  const char *lang = e_lsp_lang_for(f);
  static e_lsp_host host;
  const e_lsp_server *srv = e_lsp_server_for(lang);
- char dir[1024], path[1200];
- int dl;
+ char dir[E_LSP_ROOT_MAX], path[1200];
 
  if (!lang || !srv)
  {  e_error("Language server: unsupported file type.", 0, f->fb);  return(-1);  }
@@ -29317,10 +29457,9 @@ static int e_lsp_ensure(FENSTER *f)
  if (e_test_command((char *)srv->argv[0]))
  {  e_error((char *)srv->missing, 0, f->fb);  return(-1);  }
 
- snprintf(dir, sizeof(dir), "%s", f->dirct ? f->dirct : ".");
- dl = strlen(dir);
- while (dl > 1 && dir[dl - 1] == DIRC)
-  dir[--dl] = '\0';
+ e_lsp_root_dir(f, dir, sizeof dir);
+ if (e_lsp_plan_approve(f, srv, dir))
+  return(-1);
  g_lsp_fenster = f;
  strncpy(g_lsp_file, path, sizeof(g_lsp_file) - 1);
  g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
@@ -31009,6 +31148,8 @@ void e_lsp_open_eager(FENSTER *f)
   return;
  }
  if (e_test_command((char *)srv->argv[0]))  /* server not installed -> stay light */
+  return;
+ if (e_lsp_declined_here(f))              /* he said no for this folder already */
   return;
  g_lsp_eager_start = 1;                   /* nobody waits for it: no waiting line */
  e_lsp_ensure(f);                         /* async: spawns + returns, ready later */

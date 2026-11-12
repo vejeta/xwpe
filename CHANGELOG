@@ -283,8 +283,8 @@ Changes
   Cancel (Enter is Use mine).  The answer is kept for that folder and
   command in ~/.local/state/xwpe/start-commands, so you are asked once;
   a changed command asks again; this covers compile, link, print,
-  install, debugger and build-server starts, while Run and Make still
-  run the folder's own program, Arguments and Makefile.  What you type
+  install, debugger and build-server starts, and Run, Make and the
+  language servers (see below).  What you type
   yourself in Options counts as yours.  An Exedir, FILES or LIBNAME
   value that starts with - or @ is now always a path, never a compiler
   option or response file, and a file whose name holds a quote or a ;
@@ -314,6 +314,23 @@ Changes
   debugger as a file, and a value with a line break (a project file's
   watch or breakpoint, Arguments, a file name), or with pdb's ";;", is
   never sent to a debugger, where the rest would run as a command.
+
+* Run, Make, Execute and the language servers now start the way the
+  build does: what a folder decides is shown first.  When the xwperc of
+  the folder you start in sets Arguments, Ctrl-F9 and Alt-A show them,
+  and that Run runs the folder's own program and Make its own Makefile,
+  and ask once per folder; after Run it the program and make get them as
+  words, never as shell text, so "; touch x" in them is an argument and
+  nothing more.  Your own Arguments stay your shell text, as before.  A
+  file named "a;touch x;.c" or "it's.c" now runs at Ctrl-F9, and runs
+  alone, and File > Execute runs the file you picked as ./name with no
+  shell in between, on the console and in the graphical editors' xterm.
+  A project's install lines are one question for all of them.  Opening a
+  Rust or Scala file in a folder now asks once before rust-analyzer or
+  Metals starts, since they run that folder's build scripts or build;
+  clangd, pyright, pylsp and gopls only read the files and start as
+  before.  Cancel starts no server, and opening another file of that
+  folder does not ask again until you ask for a server action.
 
 * F9 now asks about the whole build when a folder decides where it
   writes, not only about the compiler.  When a project file's EXENAME or

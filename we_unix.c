@@ -127,7 +127,7 @@ int (*e_u_refresh)(void);
 int (*e_u_getch)(void);
 int (*e_u_sys_ini)(void);
 int (*e_u_sys_end)(void);
-int (*e_u_system)(const char *exe);
+int (*e_u_system)(struct WpeStartPlan *plan);
 int (*e_u_d_switch_out)(int sw);
 int (*e_u_switch_screen)(int sw);
 int (*e_u_deb_out)(struct FNST *f);

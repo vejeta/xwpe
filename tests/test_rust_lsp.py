@@ -51,7 +51,8 @@ def test_rust_lsp_bridge(tmp_path):
     (src / "main.rs").write_text(PROG)
 
     # open the file from inside the crate (filename relative to workdir=tmp_path)
-    with WpeSession(str(tmp_path), PROG, filename="src/main.rs", wait=2.0) as w:
+    with WpeSession(str(tmp_path), PROG, filename="src/main.rs", wait=2.0,
+                    answer_server_start=True) as w:
         time.sleep(1.0)
         w._drain(1.0)
         # extension -> language -> server: the bar advertises the rust server.

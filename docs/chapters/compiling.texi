@@ -37,8 +37,10 @@ most common command, and the bottom row of a source window names it
 (@samp{F9 Build}).
 
 @item Ctrl-F9 (Run)
-Build the executable and then run it.  Program arguments can be set
-via @samp{Run @result{} Arguments} (@kbd{Alt-R A}).
+Build the executable and then run it, in the source's own folder.
+Program arguments can be set via @samp{Run @result{} Arguments}
+(@kbd{Alt-R A}); they are shell text of yours, so @samp{< input.txt}
+works.
 
 For interpreted languages (Python, Perl), @kbd{Ctrl-F9} runs the
 script directly via the interpreter (e.g.@: @code{python3 file.py}).
@@ -215,9 +217,16 @@ program, its options, the linker options and the output name) and asks
 @samp{Run it}, @samp{Use mine} or @samp{Cancel}; the answer is kept for
 that folder and line.  A project file's @code{CMP}, @code{CMPFLAGS} and
 @code{LDFLAGS} are asked about the same way, against your own C line.
-Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A}) are not asked about: they run
-the folder's own program, with the folder's @code{Arguments}, and its
-@file{Makefile}, which is the folder's code by design.  The output
+Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A}) run the folder's own
+program and its @file{Makefile}, which is the folder's code by design;
+when the folder's @file{xwperc} sets @code{Arguments}, or chooses which
+program Run starts with an @code{Exedir} outside the folder, they show
+it and ask once, and say that they run the folder's own program or
+@file{Makefile}.  After @samp{Run it} a folder's @code{Arguments} reach
+the program and @command{make} as separate words, never as shell text;
+your own stay your shell text.  The program and every file name Run
+hands over are words too, so a source named @file{a;touch x;.c} or
+@file{it's.c} is built and run as that one file.  The output
 folder (@code{Exedir}) and every file name a build hands over are passed
 as paths, never as options.  The question is about the whole build: when
 a folder's @code{Exedir} or @code{Executable}, or a project's

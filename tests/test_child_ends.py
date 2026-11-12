@@ -428,7 +428,8 @@ def test_the_build_server_metals_started_outlives_metals_and_the_editor(
     daemon = 0
     try:
         with WpeSession(str(tmp_path), SCALA_SEED, filename="A.scala",
-                        wait=1.5, env_extra=_metals_daemon_env(tmp_path)) as w:
+                        wait=1.5, env_extra=_metals_daemon_env(tmp_path),
+                        answer_server_start=True) as w:
             w.key(ALT_Q, delay=0.4)
             w.key("e", delay=0.3)
             assert _wait_for(w, lambda: _read_pid(str(tmp_path /
@@ -483,7 +484,8 @@ def test_keys_reach_the_editor_while_scala_cli_setup_ide_runs(tmp_path):
     started = []
     try:
         with WpeSession(str(tmp_path), SCALA_SEED, filename="A.scala",
-                        wait=1.5, env_extra=_scala_setup_env(tmp_path)) as w:
+                        wait=1.5, env_extra=_scala_setup_env(tmp_path),
+                        answer_server_start=True) as w:
             w.key(ALT_Q, delay=0.4)
             w.key("e", delay=0.3)
             assert _wait_for(w, lambda: _read_pid(str(tmp_path / "setup.pid")),
@@ -516,7 +518,8 @@ def test_esc_cancels_scala_cli_setup_ide_and_nothing_starts_after(tmp_path):
     started = []
     try:
         with WpeSession(str(tmp_path), SCALA_SEED, filename="A.scala",
-                        wait=1.5, env_extra=_scala_setup_env(tmp_path)) as w:
+                        wait=1.5, env_extra=_scala_setup_env(tmp_path),
+                        answer_server_start=True) as w:
             w.key(ALT_Q, delay=0.4)
             w.key("e", delay=0.3)
             assert _wait_for(w, lambda: _read_pid(str(tmp_path / "setup.pid")),

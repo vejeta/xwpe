@@ -13,6 +13,7 @@
 #include "we_childsig.h"
 #include "we_clip.h"
 #include "we_keymap.h"
+#include "we_startplan.h"
 #include <X11/Xatom.h>
 #include <poll.h>
 
@@ -37,7 +38,7 @@ int e_x_sys_ini(void);
 int e_x_sys_end(void);
 int fk_x_putchar(int c);
 int x_bioskey(void);
-int e_x_system(const char *exe);
+int e_x_system(struct WpeStartPlan *plan);
 static void e_clip_x_set(const char *utf8, int len);
 static char *e_clip_x_get(int *len);
 static void e_x_serve_display(void);
@@ -2217,33 +2218,56 @@ int x_bioskey()
  return(e_mouse.k);
 }
 
-int e_x_system(const char *exe)
+/* The helper script the terminal runs: the plan's command, each of its
+   words as given, then a wait for Return so the user reads its output. */
+#define E_X_SYSTEM_SCRIPT "\"$@\"\necho type \\<Return\\> to continue\nread i\n"
+#define E_X_SYSTEM_NAME   "we_sys_tmp"
+#define E_X_SYSTEM_PATH_MAX 1024
+
+/**
+ * e_x_system_script - Write the helper script the terminal runs.
+ * @file/@sz: receive its path, in the editor's own temporary folder.
+ * Return: 0, or -1 when it could not be written.
+ */
+static int e_x_system_script(char *file, size_t sz)
 {
  FILE *fp;
- int ret;
- char file[80];
- char *string;
 
- sprintf(file, "%s/we_sys_tmp", e_tmp_dir);
- string = MALLOC(strlen(XTERM_CMD) + strlen(exe) + strlen(file) +
-   strlen(user_shell) + 40);
- if (!(fp = fopen(file, "w+")))
- {
-  FREE(string);
+ if (snprintf(file, sz, "%s/%s", e_tmp_dir, E_X_SYSTEM_NAME) >= (int)sz)
   return(-1);
- }
- fputs("$*\necho type \\<Return\\> to continue\nread i\n", fp);
+ if (!(fp = fopen(file, "w+")))
+  return(-1);
+ fputs(E_X_SYSTEM_SCRIPT, fp);
  fclose(fp);
  chmod(file, 0700);
- if (exe[0] == '/')
-  sprintf(string, "%s -geometry 80x25-0-0 +sb -e %s %s %s", XTERM_CMD,
-    user_shell, file, exe);
- else
-  sprintf(string, "%s -geometry 80x25-0-0 +sb -e %s %s ./%s", XTERM_CMD,
-    user_shell, file, exe);
- ret = e_shell_run(string);
+ return(0);
+}
+
+/**
+ * e_x_system - Run a command the user watches in a terminal of its own
+ * (File > Shell, Execute a file, a script run with Ctrl-F9).
+ * @plan: the command's start plan, judged and answered.
+ *
+ * The terminal and the helper script that waits for Return are the
+ * editor's own carriers; the command's words follow them one by one, as
+ * the plan holds them, so a file named with a quote or a ';' reaches the
+ * terminal as that one file's name and is never read as shell text.
+ * Return: the terminal's wait status, or -1 when it could not be started.
+ */
+int e_x_system(struct WpeStartPlan *plan)
+{
+ char file[E_X_SYSTEM_PATH_MAX];
+ char *carrier[] = { XTERM_CMD, "-geometry", "80x25-0-0", "+sb", "-e", NULL, NULL, NULL };
+ int ret;
+
+ if (e_x_system_script(file, sizeof file) < 0)
+  return(-1);
+ carrier[5] = user_shell;
+ carrier[6] = file;
+ ret = -1;
+ if (wpe_startplan_carry(plan, carrier, WPE_FROM_USER) == 0)
+  ret = e_shell_run(plan, NULL);
  remove(file);
- FREE(string);
  return(ret);
 }
 

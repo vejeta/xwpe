@@ -451,10 +451,30 @@ reason: the commands a folder's files name for a compile, a link, a
 print, an install, a debugger start or a build-server start now ask
 once, and a path a folder value hands to a program is never read as an
 option or a response file.  Run and Make still run the folder's own
-program, @code{Arguments} and @file{Makefile}, as they always did.
+program and @file{Makefile}; the next entry covers their
+@code{Arguments}.
 
 Not covered yet, and planned: a folder's @code{IncludePath} widening
 what the assistant may read.
+
+@item Run, Make, Execute and the language servers
+@cindex Run, folder Arguments
+@cindex Execute, file names
+The original joined the program's path, the source's name and the
+@code{Arguments} into one shell line for Run, handed the selected file's
+name to the shell for File > Execute, and gave @command{make} the
+folder's @code{Arguments} unasked; a file named @file{a;touch x;.c} also
+ran @samp{touch x}, a name with a quote ran nothing, and a folder's
+@samp{; touch x} in @code{Arguments} ran.  Now the program and every
+file name reach the shell as separate words, Execute runs the file as
+@file{./}@var{name} with no shell, a folder's @code{Arguments} are shown
+and asked about once per folder and then reach the program and
+@command{make} as words, and your own @code{Arguments} stay your shell
+text as before.  The language servers are newer than the original;
+@command{rust-analyzer} and Metals, which run the folder's build when a
+file opens, ask once per folder before they start.  The reason: what a
+folder decides about a program the editor starts is shown before it
+runs, and no file name is ever read as a command.
 
 @item A debug session's start-up files and the values it sends the debugger
 @cindex debugger, start-up files of a folder

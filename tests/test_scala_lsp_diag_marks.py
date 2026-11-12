@@ -32,7 +32,8 @@ pytestmark = pytest.mark.skipif(
 
 def test_scala_lsp_inline_diag_marks(tmp_path):
     """Typing a parse error makes the editor paint the offending cells red."""
-    with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0) as w:
+    with WpeSession(str(tmp_path), PROG, filename="Factorial.scala", wait=2.0,
+                    answer_server_start=True) as w:
         w.key(ALT_Q, delay=0.4)
         w.key("e", delay=150.0)            # start Metals (cold) -> "LSP: no problems"
         w._drain(2.0)

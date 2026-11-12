@@ -771,6 +771,114 @@ static void case_carrier(void)
  wpe_startplan_free(p);
 }
 
+/* A start with no plan is refused, whatever it would run; only the
+   assistant's children, which say so, start without one. */
+static void case_unplanned_refused(void)
+{
+ char mark[PATH_ROOM], script[PATH_ROOM];
+ char *argv[] = { "/bin/sh", "-c", NULL, NULL };
+ char *ok[] = { "true", NULL };
+ WpeChildSpec spec;
+ WpeChild c;
+ int rc;
+
+ snprintf(mark, sizeof mark, "%s/unplanned", proj);
+ snprintf(script, sizeof script, "touch '%s'", mark);
+ argv[2] = script;
+ memset(&spec, 0, sizeof spec);
+ spec.argv = argv;
+ spec.io = WPE_CHILD_IO_PIPES;
+ spec.stdin_null = 1;
+ spec.what = "a test command";
+ spec.origin = WPE_CHILD_ORIGIN_USER;
+ errno = 0;
+ rc = wpe_child_start(&spec, &c, NULL, NULL);
+ expect_int("a user start with no plan is refused", rc, -1);
+ expect_int("with EPERM", errno, EPERM);
+ if (rc == 0)
+  wpe_child_forget(&c);
+ spec.origin = WPE_CHILD_ORIGIN_UNSET;
+ expect_int("so is a start that says no origin", wpe_child_start(&spec, &c, NULL, NULL), -1);
+ expect_int("and nothing ran", access(mark, F_OK), -1);
+
+ spec.argv = ok;
+ spec.origin = WPE_CHILD_ORIGIN_AI;
+ rc = wpe_child_start(&spec, &c, NULL, NULL);
+ expect_int("the assistant's child starts, held by its own control", rc, 0);
+ if (rc == 0)
+ {
+  wpe_child_end(&c, SIGKILL);
+  wpe_child_forget(&c);
+ }
+}
+
+/* A shell line's file names are its "$1" ...: never part of its text. */
+static void case_shell_positional(void)
+{
+ char name[PATH_ROOM], mark[PATH_ROOM], out[TEXT_ROOM], **argv;
+ int status = 0;
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_RUN, "C");
+
+ snprintf(mark, sizeof mark, "%s/pwned", proj);
+ snprintf(name, sizeof name, "./a';touch %s;'.c", mark);
+ wpe_startplan_set_file(p, "./xwperc", proj);
+ wpe_startplan_set_cwd(p, proj);
+ wpe_startplan_shell(p, "printf '%s|' \"$@\"", WPE_FROM_USER, NULL);
+ wpe_startplan_word(p, name, WPE_WORD_OPERAND, WPE_FROM_USER, NULL);
+ expect_int("a shell line of the editor's words on the user's file runs", wpe_startplan_judge(p),
+            WPE_PLAN_CLEAN);
+ argv = wpe_startplan_argv(p);
+ expect_str("the shell", argv ? argv[0] : NULL, WPE_STARTPLAN_SHELL);
+ expect_str("its line holds no file name", argv ? argv[2] : NULL, "printf '%s|' \"$@\"");
+ expect_str("$0 is the editor's", argv ? argv[3] : NULL, WPE_STARTPLAN_SHELL_NAME);
+ expect_str("the file is $1, as it is", argv ? argv[4] : NULL, name);
+ free(argv);
+ expect_int("the file name is not part of the plan's text",
+            strstr(wpe_startplan_text(p), "touch") != NULL, 0);
+ wpe_startplan_capture(p, out, sizeof out, SHORT_DEADLINE_MS, &status, "printf");
+ expect_has("the command gets the name as one word", out, "touch");
+ expect_int("and nothing in the name ran", access(mark, F_OK), -1);
+ wpe_startplan_word(p, ";touch\tx", WPE_WORD_TEXT, WPE_FROM_FOLDER, "./xwperc: Arguments");
+ expect_int("a folder's Arguments as words ask", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ expect_has("and are in the text", wpe_startplan_text(p), "argv ;touch\tx");
+ wpe_startplan_free(p);
+}
+
+/* A server that runs the folder's build code asks once per folder. */
+static void case_runs_code(void)
+{
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_LANGUAGE_SERVER, "rust-analyzer");
+
+ wpe_startplan_set_file(p, "this folder", proj);
+ wpe_startplan_set_cwd(p, proj);
+ wpe_startplan_word(p, "rust-analyzer", WPE_WORD_PROGRAM, WPE_FROM_EDITOR, NULL);
+ expect_int("a server that only reads files starts without a question",
+            wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ wpe_startplan_runs_code(p, "it runs build scripts");
+ expect_int("one that runs the folder's build code asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ expect_has("and says so in its text", wpe_startplan_text(p), "runs it runs build scripts");
+ expect_int("the answer is kept", wpe_startplan_remember(p, WPE_PLAN_RUN), 0);
+ expect_int("and the next start runs", wpe_startplan_judge(p), WPE_PLAN_RUN);
+ wpe_startplan_free(p);
+}
+
+/* The editor's terminal carries a command; a folder's value never does. */
+static void case_carry(void)
+{
+ char *carrier[] = { "xterm", "-e", NULL };
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_SHELL, "shell");
+
+ wpe_startplan_set_cwd(p, proj);
+ wpe_startplan_word(p, "/bin/true", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ expect_int("a planned shell nobody judged has nothing to carry",
+            wpe_startplan_carry(p, carrier, WPE_FROM_EDITOR), -1);
+ wpe_startplan_judge(p);
+ expect_int("a folder's value never carries", wpe_startplan_carry(p, carrier, WPE_FROM_FOLDER), -1);
+ expect_int("the editor's terminal does", wpe_startplan_carry(p, carrier, WPE_FROM_EDITOR), 0);
+ expect_int("and is not part of the text", strstr(wpe_startplan_text(p), "xterm") != NULL, 0);
+ wpe_startplan_free(p);
+}
+
 /* Remove exactly what setup and the cases made. */
 static void teardown(void)
 {
@@ -814,6 +922,10 @@ int main(void)
  case_startup_rows();
  case_input();
  case_carrier();
+ case_unplanned_refused();
+ case_shell_positional();
+ case_runs_code();
+ case_carry();
  teardown();
  if (failures) { printf("%d failure(s)\n", failures); return 1; }
  printf("test_startplan: all cases passed\n");

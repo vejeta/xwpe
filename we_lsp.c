@@ -14,6 +14,7 @@
 
 #include "we_lsp.h"
 #include "we_child.h"
+#include "we_startplan.h"        /* the server starts through its start plan */
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 #include "we_fdloop.h"           /* wpe_fd_readable_now */
 
@@ -1114,33 +1115,70 @@ static void lsp_dispatch(e_lsp_session *s, struct json_object *m)
 
 /* ---- spawn + handshake ------------------------------------------------- */
 
+/* Asked before a server process starts (e_lsp_set_planner). */
+static e_lsp_plan_fn lsp_planner;
+
+/**
+ * e_lsp_set_planner - Who plans, shows and asks about a server's start.
+ * @fn: the editor's planner, or NULL (the C tests).
+ */
+void e_lsp_set_planner(e_lsp_plan_fn fn)
+{
+ lsp_planner = fn;
+}
+
+/**
+ * lsp_plan_of - The answered start plan of a server's command line.
+ * @argv: the command; @cwd: the project.
+ *
+ * The editor's planner says whether the server runs the folder's build
+ * code and asks; with no planner (a C test) the test's command runs as
+ * given.
+ * Return: the plan (freed by the caller), or NULL when nothing may start.
+ */
+static WpeStartPlan *lsp_plan_of(char *const argv[], const char *cwd)
+{
+ WpeStartPlan *plan;
+
+ if (lsp_planner)
+  return lsp_planner(argv, cwd);
+ plan = wpe_startplan_fixed(WPE_START_LANGUAGE_SERVER, argv[0], argv);
+ if (plan && cwd)
+  wpe_startplan_set_cwd(plan, cwd);
+ return plan;
+}
+
 /**
  * lsp_spawn - Start the language server for a session.
  * @s: the session; @argv: the server's command line; @cwd: the project.
  *
- * In a session of its own, so a Ctrl-C typed for a script run from the
- * editor spares it; its stderr goes nowhere, since servers are chatty there
- * and the editor's screen would show it; a server that writes to a closed
- * pipe ends, as from a shell.  The editor follows its end, so closing the
- * session later never signals a number another process has by then.  Its
- * end reaches its whole group (an indexer it started goes with it), except
- * for a server whose group may hold a shared build server
- * (e_lsp_host.server_shares_daemon), which is signalled alone.
+ * Through its start plan, in the project.  In a session of its own, so a
+ * Ctrl-C typed for a script run from the editor spares it; its stderr goes
+ * nowhere, since servers are chatty there and the editor's screen would
+ * show it; a server that writes to a closed pipe ends, as from a shell.
+ * The editor follows its end, so closing the session later never signals a
+ * number another process has by then.  Its end reaches its whole group (an
+ * indexer it started goes with it), except for a server whose group may
+ * hold a shared build server (e_lsp_host.server_shares_daemon), which is
+ * signalled alone.
  * Return: 0, or -1 when it could not be started.
  */
 static int lsp_spawn(e_lsp_session *s, char *const argv[], const char *cwd)
 {
- WpeChildSpec spec;
+ WpeStartPlan *plan = lsp_plan_of(argv, cwd);
+ WpeStartIo io;
+ int rc = -1;
 
- memset(&spec, 0, sizeof spec);
- spec.argv = argv;
- spec.cwd = cwd;
- spec.io = WPE_CHILD_IO_PIPES;
- spec.group = WPE_CHILD_OWN_SESSION;
- spec.stderr_to_null = 1;
- spec.signal_leader_only = s->host.server_shares_daemon;
- spec.what = LSP_SERVER_WHAT;
- if (wpe_child_start(&spec, &s->server, NULL, NULL) != 0)
+ memset(&io, 0, sizeof io);
+ io.io = WPE_CHILD_IO_PIPES;
+ io.group = WPE_CHILD_OWN_SESSION;
+ io.stderr_to_null = 1;
+ io.signal_leader_only = s->host.server_shares_daemon;
+ io.what = LSP_SERVER_WHAT;
+ if (plan && wpe_startplan_running(plan))
+  rc = wpe_startplan_start_words(plan, &io, &s->server, NULL, NULL);
+ wpe_startplan_free(plan);
+ if (rc != 0)
   return -1;
  s->in_fd = s->server.in_fd;
  s->out_fd = s->server.out_fd;

@@ -892,6 +892,8 @@ typedef struct {
  const char *own;      /* the user's own, as the box names it, or NULL          */
 } E_STARTPLAN_SHOW;
 int e_startplan_approve(FENSTER *f, struct WpeStartPlan *plan, const E_STARTPLAN_SHOW *show);
+int e_startplan_approve_headed(FENSTER *f, struct WpeStartPlan *plan,
+                               const E_STARTPLAN_SHOW *show, const char *heading);
 void e_startplan_say_not_removed(FENSTER *f, struct WpeStartPlan *plan, const char *path);
 void e_firstl(FENSTER *f, int sw);
 int e_pr_filetype(FENSTER *f);
@@ -1002,14 +1004,17 @@ extern void (*e_u_raise_editor)(void);
 #ifndef XTERM_CMD
 #define XTERM_CMD "xterm"
 #endif
-int e_shell_run(const char *cmd);
-int e_t_system(const char *exe);
+/* A command the user watches run (File > Shell, Execute, a script, an
+   install line): its start plan, judged and answered, and the words of the
+   one step to run, or NULL for the plan's own words. */
+int e_shell_run(struct WpeStartPlan *plan, char *const argv[]);
+int e_t_system(struct WpeStartPlan *plan);
 int e_t_keyboard_fd(void);
 extern int (*e_u_ini_size)(void);
 extern int (*e_u_s_sys_end)(void);
 extern int (*e_u_s_sys_ini)(void);
 extern void (*e_u_setlastpic)(PIC *pic);
-extern int (*e_u_system)(const char *exe);
+extern int (*e_u_system)(struct WpeStartPlan *plan);
 /* The key the user typed, taken without waiting: the first one for
    WPE_PAINT_ANY_KEY, else only @want, the others left queued.  0 for none. */
 extern int (*e_u_key_take)(int want);

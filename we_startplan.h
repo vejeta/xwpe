@@ -69,6 +69,13 @@
 #define WPE_START_SETUP_IDE    10   /* scala-cli setup-ide, for a Scala session       */
 #define WPE_START_BUILD_SERVER 11   /* the build server a project's .bsp file names   */
 #define WPE_START_DEBUG_ADAPTER 12  /* a debug adapter (dlv, gdb, lldb-dap)           */
+#define WPE_START_RUN          13   /* Run (Ctrl-F9): the program just built, or the
+                                       interpreter on the file                        */
+#define WPE_START_SCRIPT       14   /* Run on a shell script: the script itself       */
+#define WPE_START_MAKE         15   /* Execute Make: make in the file's folder        */
+#define WPE_START_SHELL        16   /* File > Shell, and Execute in the file manager  */
+#define WPE_START_INSTALL      17   /* a project's install lines                      */
+#define WPE_START_LANGUAGE_SERVER 18 /* a language server, for the file's folder      */
 
 /* What the judge, and then the user, decided. */
 #define WPE_PLAN_UNJUDGED 0
@@ -96,6 +103,9 @@
    line; the line's file names follow as its $1, $2 ... never as its text. */
 #define WPE_STARTPLAN_SHELL     "/bin/sh"
 #define WPE_STARTPLAN_SHELL_OPT "-c"
+
+/* The name a planned shell line gets as its $0: the editor's, never shown. */
+#define WPE_STARTPLAN_SHELL_NAME "sh"
 
 /* The canonical text's first line. */
 #define WPE_STARTPLAN_TEXT_MAGIC "xwpe-start 2"
@@ -180,6 +190,9 @@ typedef struct WpeStartPlan {
                                 the start, built from values ("r <Arguments>")      */
  int honest;                 /* the start runs the folder's own program: the box says
                                 so, since what that program does is not vetted     */
+ const char *runs_code;      /* what of the folder's own code the program runs on its
+                                own as it starts (a language server's build scripts),
+                                said in the box; the plan then asks once per folder */
  int list_inside;            /* the inside operands are part of the text (a project) */
  struct WpeStartPlan *own;   /* what "Use mine" starts instead, or NULL               */
  int verdict;                /* WPE_PLAN_*                                            */
@@ -235,5 +248,10 @@ WpeStartPlan *wpe_startplan_running(WpeStartPlan *p);
 char **wpe_startplan_argv(WpeStartPlan *p);
 int wpe_startplan_start_words(WpeStartPlan *p, const WpeStartIo *io, WpeChild *c,
                               WpeChildEndedFn ended, void *data);
+int wpe_startplan_shell(WpeStartPlan *p, const char *script, int from, const char *source);
+int wpe_startplan_carry(WpeStartPlan *p, char *const carrier[], int from);
+int wpe_startplan_start_carried(WpeStartPlan *p, const WpeStartIo *io, WpeChild *c,
+                                WpeChildEndedFn ended, void *data);
+void wpe_startplan_runs_code(WpeStartPlan *p, const char *what);
 
 #endif

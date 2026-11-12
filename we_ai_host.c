@@ -225,6 +225,7 @@ static int host_spawn(wpe_host *h, char **argv, const char *cwd)
  spec.side_pty_slave = WPE_CHILD_NO_FD;
  spec.tty_fd = WPE_CHILD_NO_FD;
  spec.what = HOST_WHAT;
+ spec.origin = WPE_CHILD_ORIGIN_AI;
  return wpe_child_start(&spec, &h->child, host_on_ended, h);
 }
 

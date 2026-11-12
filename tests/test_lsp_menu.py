@@ -34,6 +34,7 @@ import pytest
 import pyte
 
 from test_utf8_border import SafeScreen
+from wpe_driver import SERVER_START_HEADING, SERVER_START_RUN_IT
 
 WPE_BIN = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "..", "wpe")
 COLS, ROWS = 80, 30
@@ -55,7 +56,13 @@ class _Wpe:
         """files: list of (name, body); all are created and opened together.
         eager=False disables the LSP eager-start-on-open so the no-server tests
         (and the Alt-Q-driven ones) keep their old behaviour; the dedicated
-        eager test passes eager=True."""
+        eager test passes eager=True.
+
+        Metals runs the folder's build, so the editor asks once per folder
+        before it starts it; these rows test the menu and the server, not
+        that box, so the session answers it with Run it as the user would
+        (wpe_driver.SERVER_START_HEADING)."""
+        self._server_box_answered = False
         for name, body in files:
             with open(os.path.join(workdir, name), "w") as fh:
                 fh.write(body)
@@ -85,6 +92,16 @@ class _Wpe:
                 if not data:
                     break
                 self.stream.feed(data.decode("utf-8", "replace"))
+                self._answer_server_box()
+
+    def _answer_server_box(self):
+        """Run it, once, while the language server's start box is up."""
+        if SERVER_START_HEADING not in "\n".join(self.screen.display):
+            self._server_box_answered = False
+            return
+        if not self._server_box_answered:
+            self._server_box_answered = True
+            os.write(self.master_fd, SERVER_START_RUN_IT.encode())
 
     def key(self, s, delay=0.4):
         os.write(self.master_fd, s.encode())

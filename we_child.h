@@ -118,9 +118,9 @@ typedef struct {
 #define WPE_CHILD_ORIGIN_USER  1   /* a key the user pressed: its start plan is the control */
 #define WPE_CHILD_ORIGIN_AI    2   /* the assistant: the containment profile is the control */
 
-/* A user start that does not come from a start plan.  Until the last site is
-   converted it is only traced ("child unplanned <what>"); then it is refused
-   with this text. */
+/* A start that does not come from a start plan and is not the assistant's:
+   refused (EPERM), traced ("child unplanned <what>") and said with this
+   text. */
 #define WPE_CHILD_REFUSE_UNPLANNED_TEXT \
  "not started: a program the editor starts must come from a start plan"
 void wpe_child_trace_set(void (*trace)(const char *line));

@@ -99,6 +99,11 @@ SETTLE_S = float(os.environ.get("XWPE_TEST_SETTLE_MS", "0") or 0) / 1000.0
 DRAIN_POLL_S = 0.1
 COLS, ROWS = 80, 30
 
+# The box the editor shows before a language server that runs the folder's
+# build code starts, and its Run it key (see WpeSession answer_server_start).
+SERVER_START_HEADING = "Opening this file starts its language server:"
+SERVER_START_RUN_IT = "\033r"
+
 # Pasting more than a pty holds.  The text goes in chunks, each written only
 # when the editor's terminal takes it, so a blocked editor blocks the paste
 # instead of the test.  The paste is "stalled" once the editor has taken
@@ -622,11 +627,18 @@ class WpeSession:
 
     def __init__(self, workdir, seed, filename="t.c", cols=COLS, rows=ROWS,
                  wait=1.3, env_extra=None, real_login=False,
-                 stdin_is_terminal=True):
+                 stdin_is_terminal=True, answer_server_start=False):
         """``stdin_is_terminal=False`` feeds the editor's keys through a
         pipe while its screen stays on the pty, as under a desktop
         launcher: the editor's input is then not a terminal, so it has no
-        terminal of its own to name."""
+        terminal of its own to name.
+
+        ``answer_server_start=True`` is for the rows that test what a real
+        language server does (rust-analyzer, Metals): such a server runs the
+        folder's build code, so the editor asks once per folder before it
+        starts it, and these rows answer that box with Run it, as the user
+        would once.  The box itself is tested by test_startplan_run.py."""
+        self.answer_server_start = answer_server_start
         self.workdir = workdir
         self.path = os.path.join(workdir, filename)
         with open(self.path, "w") as fh:
@@ -704,6 +716,20 @@ class WpeSession:
             os.close(stdin_arg)
         self._drain(wait)
 
+    def _answer_server_box(self):
+        """Run it, when the language server's start box is up and this
+        session was made to answer it (see answer_server_start).  Called
+        from _drain as the screen changes, so a key sent with a long delay
+        (a server's cold start) is answered at once, not after the delay."""
+        if not getattr(self, "answer_server_start", False):
+            return
+        if SERVER_START_HEADING not in "\n".join(self.screen.display):
+            self._server_box_answered = False
+            return
+        if not getattr(self, "_server_box_answered", False):
+            self._server_box_answered = True     # once per box, until it closes
+            os.write(self.input_fd, SERVER_START_RUN_IT.encode())
+
     # -- context manager -----------------------------------------------------
     def __enter__(self):
         return self
@@ -741,6 +767,7 @@ class WpeSession:
                 self.raw.extend(data)
                 self.stream.feed(data.decode("utf-8", "replace"))
                 last_output = time.time()
+                self._answer_server_box()
 
     def osc52_payload(self):
         """Decode the most recent OSC 52 "set clipboard" sequence wpe emitted

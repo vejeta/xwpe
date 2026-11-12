@@ -6,8 +6,6 @@
 #
 # "count" is the number of matching lines' matches in the function; it may
 # only fall.  "pass" is the pass that moves the function into a plan:
-#   P0c-3   Run, Make, scripts, the shell, install lines, File > Execute,
-#           the language servers, and the short commands (print, man)
 #   P0c-4   the assistant's read grants (IncludePath)
 #   plan    converted: the function hands its words and paths to its
 #           action's plan (wpe_startplan_start takes only words the judged plan
@@ -26,7 +24,7 @@ we_prog.c|e_comp_start|6|plan|the compile's words through e_exec_planned, its st
 we_prog.c|e_p_make_link|6|plan|the link's words through e_exec_planned
 we_prog.c|e_prj_setup|6|plan|the project's compile and link words, judged by e_prj_approve, started through e_exec_planned
 we_prog.c|e_prj_compile_file|5|plan|a project file's compile through e_exec_planned, its stale object through e_build_remove_stale
-we_prog.c|e_make_library|3|plan|ar through e_exec_planned
+we_prog.c|e_make_library|2|plan|ar through e_exec_planned
 we_prog.c|e_prj_insert|2|plan|hands the library and object to e_make_library
 we_prog.c|e_prj_link_arg|2|plan|an object onto the link line, a path of the plan
 we_prog.c|e_prj_finish|1|plan|LDFLAGS onto the link line, words of the plan
@@ -41,23 +39,18 @@ we_prog.c|e_prj_approve|1|plan|the project's plan reads the output folder
 we_prog.c|e_build_take_own_exedir|5|plan|"Use mine" puts the user's own output folder in force
 we_prog.c|e_prog_take_own|3|plan|"Use mine" puts the user's own compile line in force
 
-# --- Run, Make, scripts, the shell, install lines (P0c-3) ---
-we_prog.c|e_run_program|8|P0c-3|Run's shell line joins Exedir, the program and Arguments
-we_prog.c|e_run_start|3|P0c-3|Run's child spec
-we_prog.c|e_run_start_text|3|P0c-3|Run's child spec, without a terminal
-we_prog.c|e_run_sh|6|P0c-3|a script's shell line with Arguments
-we_prog.c|e_exec_make|2|P0c-3|make with Arguments
-we_prog.c|e_build_spec|1|P0c-3|Make's child spec
-we_prog.c|e_exec_inf|1|P0c-3|starts Make's child
-we_prog.c|e_shell_run|1|P0c-3|the shell's child spec
-we_prog.c|e_shell_start|2|P0c-3|the shell's child spec
-we_prog.c|e_system|2|P0c-3|a script on the console
-we_prog.c|e_install_lines_run|1|P0c-3|a project's install lines through the shell
-we_fl_unix.c|WpeShell|1|P0c-3|File > Shell
-we_fl_unix.c|WpeHandleFileManager|1|P0c-3|the file manager's Execute hands a file name to the shell
-we_term.c|e_t_system|1|P0c-3|the console's shell entry
-we_xterm.c|e_x_system|1|P0c-3|the graphical editors' shell entry
-we_lsp.c|lsp_spawn|3|P0c-3|a language server's child spec
+# --- Run, Make, scripts, the shell, install lines (converted) ---
+we_prog.c|e_run_plan_approve|2|plan|hands Exedir and Arguments to Run's plan, which takes them as words, never shell text
+we_prog.c|e_run_sh|2|plan|starts the script's answered plan through the shell entries
+we_prog.c|e_run_sh_plan_approve|2|plan|hands Arguments to the script's plan, as words
+we_prog.c|e_make_plan_approve|2|plan|hands Arguments to make's plan
+we_prog.c|e_shell_run|1|plan|the definition: starts a plan's words, never a shell text of its own
+we_prog.c|e_system|2|plan|the definition: a planned command on the console
+we_prog.c|e_install_lines_run|1|plan|each install line, a word of the plan the user answered for
+we_fl_unix.c|WpeShell|1|plan|File > Shell: the user's own shell, from its plan
+we_fl_unix.c|e_execute_file|1|plan|Execute: the file as "./name", from its plan, no shell
+we_term.c|e_t_system|1|plan|the console's entry: a planned command
+we_xterm.c|e_x_system|1|plan|the graphical editors' entry: a planned command behind its terminal
 
 # --- the debuggers (converted) ---
 we_debug.c|e_d_arguments|1|plan|reads Arguments once for the debugger's start plan and its run command

@@ -1366,6 +1366,7 @@ void e_startcmd_typed(const char *folder, const char *key, const char *text)
 #define E_STARTPLAN_RUNS_LINE_FMT "    %s"
 #define E_STARTPLAN_THEN_FMT     "Then runs: %s"
 #define E_STARTPLAN_HONEST       "This runs the folder's own program."
+#define E_STARTPLAN_HONEST_MAKE  "This runs the folder's own Makefile."
 #define E_STARTPLAN_LINES_MAX    (WPE_STARTPLAN_WORDS_MAX + 8)
 
 /* The lines a plan adds below its command, as they are collected. */
@@ -1571,6 +1572,18 @@ static void e_startplan_lines_input(e_startplan_lines *l, const WpeStartPlan *p)
 }
 
 /**
+ * e_startplan_honest_line - What the box says a start runs of the folder's
+ * own: its Makefile for Execute Make, its program for every other.
+ * @p: the plan.
+ */
+static const char *e_startplan_honest_line(const WpeStartPlan *p)
+{
+ if (p->kind == WPE_START_MAKE)
+  return(E_STARTPLAN_HONEST_MAKE);
+ return(E_STARTPLAN_HONEST);
+}
+
+/**
  * e_startplan_lines_of - Everything the box says about a plan below its command.
  * @l: receives the lines; @p: the plan, judged.
  *
@@ -1593,8 +1606,10 @@ static void e_startplan_lines_of(e_startplan_lines *l, const WpeStartPlan *p)
   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_INSIDE_FMT, inside, p->file);
  e_startplan_lines_runs(l, p);
  e_startplan_lines_input(l, p);
+ if (p->runs_code)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "%s", p->runs_code);
  if (p->honest)
-  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "%s", E_STARTPLAN_HONEST);
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "%s", e_startplan_honest_line(p));
 }
 
 /**
@@ -1617,11 +1632,12 @@ static void e_startplan_cmd_of(E_STARTCMD *c, const WpeStartPlan *p,
 /**
  * e_startplan_ask - Show a plan and ask whether to run it.
  * @f: the window; @p: the plan, judged; @show: its command and the user's
- * own; @key: the plan's key.
+ * own; @key: the plan's key; @heading: the sentence above the command, or
+ * NULL for "<who> sets the <what> to:".
  * Return: WPE_STARTCMD_RUN, WPE_STARTCMD_USE_OWN or WPE_STARTCMD_CANCEL.
  */
 static int e_startplan_ask(FENSTER *f, WpeStartPlan *p, const E_STARTPLAN_SHOW *show,
-                           const char *key)
+                           const char *key, const char *heading)
 {
  e_startplan_lines l = { NULL, NULL, 0 };
  e_startcmd_view v;
@@ -1629,7 +1645,10 @@ static int e_startplan_ask(FENSTER *f, WpeStartPlan *p, const E_STARTPLAN_SHOW *
  int ret;
 
  e_startplan_lines_of(&l, p);
- snprintf(head, sizeof head, E_STARTCMD_HEAD_FMT, show->who, show->what);
+ if (heading)
+  snprintf(head, sizeof head, "%s", heading);
+ else
+  snprintf(head, sizeof head, E_STARTCMD_HEAD_FMT, show->who, show->what);
  memset(&v, 0, sizeof v);
  v.source = p->file ? p->file : "";
  v.head = head;
@@ -1682,6 +1701,20 @@ static void e_startplan_say_refused(FENSTER *f, const WpeStartPlan *p,
  */
 int e_startplan_approve(FENSTER *f, struct WpeStartPlan *plan, const E_STARTPLAN_SHOW *show)
 {
+ return(e_startplan_approve_headed(f, plan, show, NULL));
+}
+
+/**
+ * e_startplan_approve_headed - e_startplan_approve, with the box's own
+ * sentence above the command.
+ * @f/@plan/@show: as e_startplan_approve; @heading: the sentence ("Opening
+ * this file starts its language server:"), or NULL for "<who> sets the
+ * <what> to:", which fits a value a folder file set.
+ * Return: as e_startplan_approve.
+ */
+int e_startplan_approve_headed(FENSTER *f, struct WpeStartPlan *plan,
+                               const E_STARTPLAN_SHOW *show, const char *heading)
+{
  char key[WPE_STARTPLAN_KEY_MAX];
  E_STARTCMD c;
  int verdict;
@@ -1709,7 +1742,7 @@ int e_startplan_approve(FENSTER *f, struct WpeStartPlan *plan, const E_STARTPLAN
   return(WPE_STARTCMD_USE_OWN);
  }
  e_startcmd_say_store_bad(f);
- verdict = e_startplan_ask(f, plan, show, key);
+ verdict = e_startplan_ask(f, plan, show, key, heading);
  wpe_ui_trace("startcmd answer %s %s", key, e_startcmd_answer_word(verdict));
  if (verdict == WPE_STARTCMD_CANCEL)
  {

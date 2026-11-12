@@ -2478,17 +2478,17 @@ int e_t_keyboard_fd(void)
 }
 
 /**
- * e_t_system - Run a shell command on the terminal the editor stepped aside
- * from (File > Shell, Execute a file, a script run with Ctrl-F9).
- * @exe: the command line.
+ * e_t_system - Run a command on the terminal the editor stepped aside from
+ * (File > Shell, Execute a file, a script run with Ctrl-F9).
+ * @plan: the command's start plan, judged and answered.
  *
  * The command has the keyboard until it ends, and the editor keeps serving
  * its other work meanwhile instead of waiting inside the system.
  * Return: the command's wait status, or -1 when it could not be started.
  */
-int e_t_system(const char *exe)
+int e_t_system(struct WpeStartPlan *plan)
 {
- return(e_shell_run(exe));
+ return(e_shell_run(plan, NULL));
 }
 
 /**

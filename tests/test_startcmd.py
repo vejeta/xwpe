@@ -715,12 +715,17 @@ def test_a_long_project_path_walks_the_project_code(tmp_path):
 # @scenario SC-compile-28
 def test_run_of_a_script_with_long_arguments(tmp_path):
     """Run on a shell script with Run arguments longer than the old command
-    buffer: the script runs and the editor lives."""
+    buffer: the script runs and the editor lives.  The arguments come from
+    the folder's xwperc, so Run first shows them and asks (a folder's
+    Arguments are asked about once per folder); Run it answers."""
     folder = Folder(tmp_path, "[Programming]\nArguments : %s\n" % ("a" * 300))
     out = folder.ws / "ran.txt"
     script = "#!/bin/sh\necho ran > %s\n" % out
     with folder.session(filename="t.sh", seed=script) as s:
         s.key("\033[20;5~", delay=1.0)        # Ctrl-F9: Run
+        assert wait_screen(s, "Command from ./xwperc", tmo=BUILD_WAIT), \
+            "no question before the folder's long Arguments:\n" + _screen(s)
+        s.key(RUN_IT, delay=1.0)
         assert _wait(out.exists, BUILD_WAIT), "the script did not run:\n" + _screen(s)
         assert _wait_alive(s, 0.5), "the editor died running the script"
 

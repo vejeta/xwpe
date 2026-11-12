@@ -479,17 +479,19 @@ ALT_A = "\033a"            # Run > Execute Make
 
 # @scenario SC-compile-29
 @pytest.mark.skipif(not tool_usable("make", "--version"), reason="make not usable")
-def test_startplan_make_is_not_planned_yet_and_says_so(tmp_path):
-    """Execute Make has no start plan yet (a later pass gives it one): it
-    still runs, and the children's owner traces it as an unplanned start,
-    which is how the sites still to convert are told apart."""
+def test_startplan_make_starts_from_its_plan(tmp_path):
+    """Execute Make starts from a start plan of its own: it runs, its plan
+    is judged, and the children's owner has no unplanned start to trace
+    (it would refuse one).  This row asserted the opposite while Make was
+    the last site still to convert."""
     folder = Folder(tmp_path)
     (folder.ws / "Makefile").write_text("all:\n\ttouch made\n")
     with folder.session() as s:
         s.key(ALT_A, delay=0.8)
         made = _wait(lambda: (folder.ws / "made").exists(), BUILD_WAIT)
     assert made, "make did not run"
-    assert "child unplanned the build" in folder.traced(), folder.traced()
+    assert "startplan judge make/make" in folder.traced(), folder.traced()
+    assert "child unplanned" not in folder.traced(), folder.traced()
 
 
 # @scenario SC-compile-29
