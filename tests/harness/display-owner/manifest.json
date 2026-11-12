@@ -199,6 +199,158 @@
    "layer": "c-unit",
    "test": "tests/check-one-owner.sh",
    "status": "new"
+  },
+  {
+   "id": "SC-harness-owner-01",
+   "requirement": "Ending a graphical row's editor ends, reaps and names what it left behind, and the row errors",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_end_names_and_ends_a_grandchild_left_in_its_own_session",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-02",
+   "requirement": "The sweep never ends a process the row started itself",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_process_the_row_started_itself_is_not_swept",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-03",
+   "requirement": "A daemon a row declares is ended without an error",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_declared_daemon_is_ended_without_an_error",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-04",
+   "requirement": "An editor is started only on a display or socket the owner started",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_an_editor_is_refused_a_display_the_owner_did_not_start",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-05",
+   "requirement": "A wait that runs out names its event, its deadline and the scale",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_wait_for_names_the_event_and_the_scale",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-06",
+   "requirement": "An editor gets a whitelisted environment pinned to the owner's display",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_the_editor_gets_the_whitelist_and_the_owners_display",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-07",
+   "requirement": "Importing or collecting the owner changes nothing about the pytest process",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_the_subreaper_is_set_only_while_an_owner_is_begun",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-08",
+   "requirement": "The owner launches only from the thread the death signal follows",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_launching_off_the_main_thread_is_refused",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-09",
+   "requirement": "Load processes are owned and ended by their pid",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_load_processes_are_owned_busy_and_ended_by_their_pid",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-10",
+   "requirement": "A Wayland editor gets the owner's socket and runtime folder, and the owner's X display for any fallback",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_wayland_editor_gets_the_owners_socket_and_x_display",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-11",
+   "requirement": "A process the row starts while its editor is being ended is not swept",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_process_started_during_the_editors_end_is_not_swept",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-12",
+   "requirement": "A reused session id never makes a row's own process a leftover of an ended editor",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_reused_session_id_does_not_make_a_row_process_a_leftover",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-13",
+   "requirement": "A reused pid never makes a row's own process a leftover of an ended editor",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_reused_pid_does_not_make_a_row_process_a_leftover",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-14",
+   "requirement": "A row's own variables cannot point an editor off the owner's displays",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_extra_env_cannot_point_an_editor_off_the_owners_displays",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-15",
+   "requirement": "A row's own variables cannot point a service at the machine's session",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_extra_env_cannot_point_a_service_at_the_machines_session",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-16",
+   "requirement": "A Wayland socket given as a path is refused",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_wayland_socket_given_as_a_path_is_refused",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-17",
+   "requirement": "A launch whose death signal cannot be set starts nothing and says why",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_launch_whose_death_signal_is_refused_starts_nothing",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-18",
+   "requirement": "A row cannot hand a process the machine's home folder or an open compositor connection",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_row_cannot_hand_a_process_the_machines_home_or_compositor",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-19",
+   "requirement": "What an editor that ended on its own left in its session is still swept",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_an_editor_that_ended_on_its_own_is_still_swept",
+   "status": "new",
+   "needs": ["pidfd"]
   }
  ]
 }
