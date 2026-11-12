@@ -241,6 +241,45 @@ when the stack lost two or more frames.  The window now shows the new
 listing and nothing else.
 @end table
 
+@section Editing keys
+
+@table @asis
+@item Ctrl-T at the end of the text
+@cindex Ctrl-T, end of the text
+The original deleted the last line break of the file when @kbd{Ctrl-T}
+was pressed at the end of the text, and a second @kbd{Ctrl-T} put the
+cursor at the start of the last line.  As in Turbo Pascal and Borland C++,
+@kbd{Ctrl-T} there now deletes nothing and the cursor stays: there is no
+word and no line to its right.
+
+@item A blank typed at the right margin
+The original kept a blank typed at the margin at the end of its row and
+wrapped what followed.  The blank now starts the next row with what is
+typed after it, so @kbd{Ctrl-U} takes back exactly what was typed, in one
+place.  The file written is the same.
+
+@item The tenth marker
+@cindex markers, ten
+The original kept markers 0 to 8 and let marker 9 share its place with the
+search highlight, so it moved whenever another marker was set.  There are
+now ten markers, 0 to 9, each with a place of its own, as the Borland
+editors have ten bookmarks.
+
+@item Commands in a read-only window
+@cindex read-only window, commands
+The original let the block and line commands change a file opened
+read-only and the clipboard viewer: @kbd{Ctrl-K I} indented it,
+@kbd{Ctrl-O E} added a line, Search > Replace replaced.  Those commands
+are now refused there and the status row says so, because the window
+says it cannot be changed.
+
+@item Ctrl-O E
+The original put the help file's end-of-page mark on an empty row without
+a line break, so the screen showed it on a line of its own while the file
+written ran it into the start of the next line.  The mark now has a line of
+its own in the file too, and one @kbd{Ctrl-U} takes that line back.
+@end table
+
 @section Short commands
 
 @table @asis

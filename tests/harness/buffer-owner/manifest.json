@@ -413,6 +413,48 @@
    "layer": "c-unit",
    "test": "test_splice",
    "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_typing_past_the_margin_gives_the_line_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_redo_of_a_deletion_at_the_margin_gives_the_text_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_replacement_that_wraps_gives_the_line_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_overwrite_typing_can_be_redone",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_typing_on_a_last_row_without_a_line_break_wraps_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_paste_into_a_narrower_window_keeps_every_byte",
+   "status": "new"
   }
  ]
 }

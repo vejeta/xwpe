@@ -35,6 +35,8 @@ import pytest
 from test_utf8_border import SafeScreen
 
 ASAN_BIN = os.path.join(os.path.dirname(__file__), '..', 'we-asan')
+# The same build under the name that turns the programming layer on.
+WPE_ASAN_BIN = os.path.join(os.path.dirname(__file__), '..', 'wpe-asan')
 
 CK = '\x0b'          # Ctrl-K prefix
 CU = '\x15'          # Ctrl-U (Undo)
@@ -52,13 +54,15 @@ pytestmark = pytest.mark.skipif(
     reason='we-asan (AddressSanitizer build) not present; see module docstring')
 
 
-def run_asan(workdir, seed, keys, wait=1.3, key_delay=0.4, settle=0.8):
+def run_asan(workdir, seed, keys, wait=1.3, key_delay=0.4, settle=0.8,
+             binary=ASAN_BIN, filename='t.c'):
     """Run we-asan, send keys, return (asan_report_text_or_None, exit_code).
 
     ASan writes its report to <workdir>/asan.<pid> (log_path) so the TUI
-    clobbering stderr does not lose it.
+    clobbering stderr does not lose it.  @binary: the sanitizer build, or
+    its programming-mode name ``wpe-asan``.
     """
-    with open(os.path.join(workdir, 't.c'), 'w') as fh:
+    with open(os.path.join(workdir, filename), 'w') as fh:
         fh.write(seed)
     log_prefix = os.path.join(workdir, 'asan')
 
@@ -76,7 +80,7 @@ def run_asan(workdir, seed, keys, wait=1.3, key_delay=0.4, settle=0.8):
         'detect_leaks=0:abort_on_error=1:log_path=%s' % log_prefix)
 
     proc = subprocess.Popen(
-        [ASAN_BIN, 't.c'],
+        [binary, filename],
         stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
         cwd=workdir, env=env, preexec_fn=os.setsid)
     os.close(slave_fd)
@@ -168,3 +172,31 @@ def test_block_move_after_undo_no_overflow(tmp_path):
          CU,                                                  # undo the copy
          HOME, CK, 'b', DOWN, DOWN, CK, 'k', DOWN, DOWN, CK, 'v'])  # move block
     assert_no_asan(report, 'block copy, Undo, then block Move')
+
+
+END = '\033OF'
+CY = '\x19'          # Ctrl-Y: delete the line
+# A line with no blank: the file reader fills its first row to the full width
+# without a line break and puts the rest on the next row.
+FULL_SOFT_SEED = 'a' * 119 + 'tail\n'
+
+
+@pytest.mark.skipif(not os.path.exists(WPE_ASAN_BIN), reason='wpe-asan not present')
+@pytest.mark.parametrize('where', [HOME, END], ids=['home', 'end'])
+def test_typing_on_a_full_last_row_without_a_line_break_no_overflow(tmp_path, where):
+    # The second row of the wrapped line deleted, so the full first row,
+    # which ends without a line break, is the last: a character typed at its
+    # start or its end wraps it, and the wrap must stay inside the lines.
+    report, _ = run_asan(
+        str(tmp_path), FULL_SOFT_SEED,
+        [DOWN, CY, where, 'Z'], binary=WPE_ASAN_BIN, filename='t.txt')
+    assert_no_asan(report, 'typing on a full last row without a line break')
+
+
+@pytest.mark.skipif(not os.path.exists(WPE_ASAN_BIN), reason='wpe-asan not present')
+def test_typing_at_the_end_of_a_full_row_without_a_line_break_no_overflow(tmp_path):
+    # The same full row while the rest of its line is still below it.
+    report, _ = run_asan(
+        str(tmp_path), FULL_SOFT_SEED,
+        [END, 'Z'], binary=WPE_ASAN_BIN, filename='t.txt')
+    assert_no_asan(report, 'typing at the end of a full row without a line break')

@@ -987,14 +987,16 @@ static int e_blk_put_line(WpeBlockOp *op, BUFFER *b, int row, int n_del,
  */
 static int e_blk_move_whole(WpeBlockOp *op, int row_from, int n, int row_to)
 {
- int y_from = e_blk_row_now(op, op->bv, row_from), y_to;
+ int y_from = e_blk_row_now(op, op->bv, row_from), y_to, landed;
 
  if (n <= 0)
   return(-1);
  e_blk_note(op, op->bv, y_from, n, 0);
  y_to = e_blk_row_now(op, op->bz, row_to);
- e_buffer_txn_move_lines(&op->t, op->bv, y_from, n, op->bz, y_to);
- e_blk_note(op, op->bz, y_to, 0, n);
+ landed = e_buffer_txn_move_lines(&op->t, op->bv, y_from, n, op->bz, y_to);
+ if (landed < 0)
+  landed = n;                    /* refused: nothing commits, the count is never used */
+ e_blk_note(op, op->bz, y_to, 0, landed);
  return(y_to);
 }
 
@@ -1608,14 +1610,15 @@ static int e_blk_copy_lands_inside(const WpeBlockOp *op, int x, int y)
  */
 static void e_blk_copy_middle(WpeBlockOp *op, int row_to)
 {
- int m = op->k.key - op->k.kay - 1, y;
+ int m = op->k.key - op->k.kay - 1, y, landed;
 
  if (m <= 0)
   return;
  y = e_blk_row_now(op, op->bz, row_to);
- if (e_buffer_txn_copy_lines(&op->t, op->bz, y, op->bv, op->k.kay + 1, m,
-                             E_BUFFER_STEP_COVERED) == E_BUFFER_OK)
-  e_blk_note(op, op->bz, y, 0, m);
+ landed = e_buffer_txn_copy_lines(&op->t, op->bz, y, op->bv, op->k.kay + 1, m,
+                                  E_BUFFER_STEP_COVERED);
+ if (landed >= 0)
+  e_blk_note(op, op->bz, y, 0, landed);
 }
 
 /**
@@ -1990,7 +1993,7 @@ int e_blck_changecase(FENSTER *f, int mode)
  BUFFER *b;
  SCHIRM *screen;
  STRING *lines;
- int i, n;
+ int i, n, r;
 
  for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
   ;
@@ -2007,11 +2010,12 @@ int e_blck_changecase(FENSTER *f, int mode)
   wpe_buffer_say_nomem(b, "the case change");
   return(0);
  }
- if (e_buffer_splice(b, screen->mark_begin.y, n, lines, n, NULL, 0,
-                     E_BUFFER_STEP_NEW) != E_BUFFER_OK)
+ r = e_buffer_splice(b, screen->mark_begin.y, n, lines, n, NULL, 0, E_BUFFER_STEP_NEW);
+ if (r != E_BUFFER_OK)
  {
   e_buffer_lines_free(lines, n);
-  wpe_buffer_say_nomem(b, "the case change");
+  if (r == E_BUFFER_NOMEM)
+   wpe_buffer_say_nomem(b, "the case change");
   return(0);
  }
  FREE(lines);
@@ -2120,8 +2124,8 @@ int e_blck_to_right(FENSTER *f)
  for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
    i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
  {
-  for (j = 0; b->bf[i].len && isspace(b->bf[i].s[j]); j++)
-   ;
+  for (j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++)
+   ;                              /* a row of blanks stops at its end, before its line break */
   e_ins_nchar(b, s, tstr, j, i, n);
   if (i == s->mark_begin.y)
    s->mark_begin.x = 0;
@@ -2348,7 +2352,7 @@ int e_replace(FENSTER *f)
  SCHIRM *s;
  BUFFER *b;
  FIND *fd = &(f->ed->fd);
- int i, ret, c, ym, rep=0, found=0;
+ int i, ret, c, ym, rep=0, found=0, refused=0;
  char strTemp[80];
  W_OPTSTR *o = e_init_opt_kst(f);
 
@@ -2436,17 +2440,27 @@ int e_replace(FENSTER *f)
     break;
    if (c == 'Y')
    {
-    rep++;
-    e_replace_occurrence(b, s, s->fa.x, b->b.y, fd->sn,
-                         (unsigned char *)fd->replace, fd->rn);
-    s->fe.x = s->fa.x + fd->rn;
+    if (e_replace_occurrence(b, s, s->fa.x, b->b.y, fd->sn,
+                             (unsigned char *)fd->replace, fd->rn))
+    {
+     rep++;
+     s->fe.x = s->fa.x + fd->rn;
+    }
+    else
+    {
+     refused++;
+     s->fe.x = s->fa.x + fd->sn;  /* still there: search on behind it, never at it again */
+    }
     b->b.x = !(fd->sw & 4) ? s->fe.x : s->fa.x;
     e_schirm(f, 1);
    }
   }
   if (found)
   {
-   sprintf(strTemp, "Found %d\nReplaced %d", found, rep);
+   if (refused)
+    sprintf(strTemp, "Found %d\nReplaced %d\n%s", found, rep, E_SAY_READ_ONLY);
+   else
+    sprintf(strTemp, "Found %d\nReplaced %d", found, rep);
    e_message(0, strTemp, f);
   }
   else

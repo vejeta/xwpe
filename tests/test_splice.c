@@ -90,6 +90,15 @@ void wpe_buffer_say_nomem(BUFFER *b, const char *what)
  nomem_calls++;
 }
 
+static int read_only_calls;
+
+/* As the editor's: the status row says a read-only window kept its text. */
+void wpe_buffer_say_read_only(BUFFER *b)
+{
+ (void) b;
+ read_only_calls++;
+}
+
 int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
 {
  (void) b;
@@ -1627,10 +1636,11 @@ static void case_a_rewrite_reports_rows_removed_and_added(void)
 /* The replay of an 'r' record whose text lands on the last row of a file
    when that row is full and ends soft (what Ctrl-Y on the hard row under a
    wrapped one leaves).  e_ins_nchar sends the overflow of a soft row down
-   into the row below unless the row is the last (we_edit.c: `ya ==
-   b->mxlines`, which a row of the buffer never is), so it reads bf[mxlines],
-   past the lines.  This case reports what the owner leaves there; the
-   primitive's test is the editor's. */
+   into the row below unless the row is the last, which then gets a row of
+   its own for its tail (we_edit.c, `ya == b->mxlines - 1`; it once tested
+   `ya == b->mxlines`, never true, and read bf[mxlines], past the lines).
+   This case reports what the owner leaves there; the primitive's rows are
+   the editor's (test_buffer_owner.py, test_block_asan.py). */
 static void case_a_char_replay_on_a_full_soft_last_row(void)
 {
  WpeBufferTxn t;
@@ -1651,8 +1661,8 @@ static void case_a_char_replay_on_a_full_soft_last_row(void)
      e_buffer_shell_fill(shell, &t, &buf, last - 1, 2), E_BUFFER_OK);
  reaches = (shell->bf[shell->mxlines - 1].s[shell->bf[shell->mxlines - 1].len] == '\0' &&
             shell->mxlines < shell->mx.y);
- printf("NOTE 34: an 'r' replay on the full soft last row reaches bf[mxlines] "
-        "(the row past the last): %s\n", reaches ? "yes" : "no");
+ printf("NOTE 34: an 'r' replay on the shell meets a full soft last row with "
+        "nothing below it: %s\n", reaches ? "yes" : "no");
  chk("34 the shell's last row ends soft too, nothing below it", reaches, 1);
  e_buffer_shell_free(shell);
  fixture_free();
@@ -1877,6 +1887,103 @@ static void case_the_view_reads_two_items_on_one_row(void)
  fixture_free();
 }
 
+/* ---- text between buffers of different widths ---- */
+
+#define NARROW 20
+/* A line wider than NARROW and narrower than WIDTH, with blanks to wrap at. */
+#define WIDE_TEXT "aaaa bbbb cccc dddd eeee ffff gggg hhhh"
+
+/* The text rows y0.. of b hold, as a file would be written: a row that ends
+   without a line break goes on in the next one. */
+static const char *rows_text(BUFFER *b, int y0, int n)
+{
+ static char out[512];
+ size_t used = 0;
+ int y;
+
+ out[0] = '\0';
+ for (y = y0; y < y0 + n && y < b->mxlines && used + b->bf[y].len + 2 < sizeof out; y++) {
+  memcpy(out + used, b->bf[y].s, (size_t) b->bf[y].len);
+  used += (size_t) b->bf[y].len;
+  if (b->bf[y].s[b->bf[y].len] == WPE_WR)
+   out[used++] = '\n';
+  out[used] = '\0';
+ }
+ return(out);
+}
+
+/* Does every row of b fit its width (a byte left for the line break)? */
+static int rows_fit(BUFFER *b)
+{
+ int y;
+
+ for (y = 0; y < b->mxlines; y++)
+  if (b->bf[y].len > b->mx.x - 1)
+   return(0);
+ return(1);
+}
+
+/* A narrow buffer: a shell NARROW wide, as a window opened after Max.
+   Columns was lowered. */
+static BUFFER *narrow_buffer(void)
+{
+ BUFFER *nb = e_buffer_shell_new(&buf, NARROW);
+
+ if (nb == NULL)
+  exit(2);
+ return(nb);
+}
+
+/* A copy into a buffer narrower than the line: every byte and the line break
+   arrive, on rows of the narrow width (a paste into a window opened after
+   Max. Columns was lowered once dropped the bytes past it). */
+static void case_a_copy_into_a_narrower_buffer_keeps_every_byte(void)
+{
+ WpeBufferTxn t;
+ BUFFER *nb;
+
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ e_buffer_set_line(&buf, 1, WIDE_TEXT, (int) strlen(WIDE_TEXT));
+ nb = narrow_buffer();
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_copy_lines(&t, nb, 0, &buf, 1, 1, E_BUFFER_STEP_COVERED);
+ chk("39 the copy is made", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("39 it took more than one row", nb->mxlines > 2, 1);
+ chk("39 every row fits the narrow width", rows_fit(nb), 1);
+ chk_str("39 every byte and the line break", rows_text(nb, 0, nb->mxlines - 1), WIDE_TEXT "\n");
+ chk_str("39 the original is as it was", rows_text(&buf, 1, 1), WIDE_TEXT "\n");
+ e_buffer_shell_free(nb);
+ fixture_free();
+}
+
+/* A move into a buffer narrower than the line: the line is built again at
+   the narrow width, with its breakpoint, and leaves the wide buffer (a line
+   kept at the wide width would be written past by the first character typed
+   into it). */
+static void case_a_move_into_a_narrower_buffer_builds_its_line_again(void)
+{
+ WpeBufferTxn t;
+ BUFFER *nb;
+ int rows[1] = {1};
+
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ e_buffer_set_line(&buf, 1, WIDE_TEXT, (int) strlen(WIDE_TEXT));
+ brp_set(1, rows);
+ nb = narrow_buffer();
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_move_lines(&t, &buf, 1, 1, nb, 0);
+ chk("40 the move is made", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk_str("40 the line left", text_of(), "L0\nL2\n");
+ chk("40 its breakpoint left with it", scr.brp[0], 0);
+ chk("40 it took more than one row", nb->mxlines > 2, 1);
+ chk("40 every row fits the narrow width", rows_fit(nb), 1);
+ chk_str("40 every byte and the line break", rows_text(nb, 0, nb->mxlines - 1), WIDE_TEXT "\n");
+ chk("40 the breakpoint is on its first row",
+     nb->f->s->brp != NULL && nb->f->s->brp[0] == 1 && nb->f->s->brp[1] == 0, 1);
+ e_buffer_shell_free(nb);
+ fixture_free();
+}
+
 int main(void)
 {
  case_insert_above_a_mark();
@@ -1923,6 +2030,8 @@ int main(void)
  case_a_shell_of_one_row_keeps_its_breakpoint();
  case_two_rewrites_in_one_transaction();
  case_the_view_reads_two_items_on_one_row();
+ case_a_copy_into_a_narrower_buffer_keeps_every_byte();
+ case_a_move_into_a_narrower_buffer_builds_its_line_again();
  if (fails) {
   printf("test_splice: %d failure(s)\n", fails);
   return(1);

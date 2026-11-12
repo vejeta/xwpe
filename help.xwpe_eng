@@ -642,7 +642,7 @@
 
           Marker-Commands:
 
-          Ctrl K n       Set the marker no. n ( n = 1 - 9 )
+          Ctrl K n       Set the marker no. n ( n = 0 - 9 )
           Ctrl O n       Jump to the marker no. n
 
 

@@ -18,6 +18,8 @@
 #define E_BUFFER_NOMEM         (-1)  /* nothing changed: lines, marks, lists as they were */
 #define E_BUFFER_RANGE         (-2)  /* y past the end, or a negative count: nothing changed */
 #define E_BUFFER_NOTHING       (-3)  /* Undo or Redo with an empty list */
+#define E_BUFFER_LOCKED        (-4)  /* the window is closed to the user's changes:
+                                        nothing changed, the status row says so */
 #define E_BUFFER_SAVE_PER_LINE  10   /* what a line counts toward f->save */
 
 /* The most edits (lines taken out plus lines put in) the diff of a
@@ -177,7 +179,7 @@ Undo  *e_buffer_txn_record(WpeBufferTxn *t, int kind);
 int    e_buffer_txn_commit(WpeBufferTxn *t);
 void   e_buffer_txn_abort(WpeBufferTxn *t);
 STRING *e_buffer_lines_from_parts(int mx_x, const WpeBufferPart *parts, int nparts, int *n);
-STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst);
+STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst, int *n_out);
 
 /* ---- a shell: a private buffer the owner makes ----
 
@@ -207,6 +209,10 @@ int    e_buffer_undo(BUFFER *b, SCHIRM *s);
 int    e_buffer_redo(BUFFER *b, SCHIRM *s);
 void   e_buffer_history_drop(BUFFER *b);
 void   e_buffer_mark_view(BUFFER *b);
+/* Is @b closed to the changes the user's commands make (a file opened
+   read-only, the clipboard while its viewer is in front)?  Says so on the
+   status row.  Every character primitive and every recorded splice asks. */
+int    e_buffer_change_refused(BUFFER *b);
 
 /* The editor's side: a link seam, defined in we_edit.c and we_debug.c and
    stubbed by the C test.  A link seam cannot be unset, and the first file is
@@ -216,6 +222,7 @@ void   wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
                               const int *rows_removed, int n_removed,
                               const int *rows_added, int n_added);
 void   wpe_buffer_say_nomem(BUFFER *b, const char *what);
+void   wpe_buffer_say_read_only(BUFFER *b);
 int    wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec);
 /* Run the character primitive that replays @rec ('a' 'r' 's' 'p') on a
    shell whose row 0 is row @y0 of the buffer the record belongs to; a

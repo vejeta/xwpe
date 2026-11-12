@@ -210,7 +210,7 @@ keys are bound to something else.
 @item @kbd{Ctrl-O N} @tab Show next definition (C only).
 @item @kbd{Ctrl-O K} @tab Find matching bracket (C only).
 @item @kbd{Ctrl-O B} @tab Beautify C source.
-@item @kbd{Ctrl-O 1}--@kbd{9} @tab Jump to marker 1--9.
+@item @kbd{Ctrl-O 0}--@kbd{9} @tab Jump to marker 0--9.
 @end multitable
 
 @subsection Ctrl-G chords (debug commands)
@@ -397,8 +397,8 @@ key it cannot honour.
 
 @multitable @columnfractions .20 .80
 @headitem Key @tab Action
-@item @kbd{Ctrl-K @var{n}} @tab Set marker number @var{n} (1--9).
-@item @kbd{Ctrl-O @var{n}} @tab Jump to marker number @var{n} (1--9).
+@item @kbd{Ctrl-K @var{n}} @tab Set marker number @var{n} (0--9).
+@item @kbd{Ctrl-O @var{n}} @tab Jump to marker number @var{n} (0--9).
 @end multitable
 
 @section Common User Access (CUA) keybindings

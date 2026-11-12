@@ -55,10 +55,17 @@ search and replace, and the file manager.
 @item Insert special character @tab @kbd{Alt-J} @tab
 @end multitable
 
+@kbd{Ctrl-T} at the end of a line joins the next line to it; at the end
+of the text there is nothing to its right, so it deletes nothing, and
+@kbd{Ctrl-Right} stays there, as in the Borland editors.
+
 @kbd{Ctrl-U} undoes and @kbd{Ctrl-R} redoes one action at a time: an
 @key{Return} with the indent it brought, a deleted line, a replacement, an
 accepted assistant Edit together with the post-edit hook's reformatting,
-a block copied, moved, pasted or deleted, a Change Case.
+a block copied, moved, pasted or deleted, a Change Case, a character typed
+over another in overwrite mode, the end-of-page mark of @kbd{Ctrl-O E}.
+What was typed past the right margin moves to the next row with its word,
+and @kbd{Ctrl-U} takes back exactly that there.
 Undo of a deleted line puts back the line, its breakpoint, the cursor and
 the block as they were before the deletion; the only line of a file is
 undoable too.  Breakpoints stay on their code when lines are added or
@@ -72,6 +79,16 @@ and its Undo or Redo, that runs out of memory is not made at all: the text,
 the block, the breakpoints and Undo stay as they were, and the status row
 says so.  The assistant's pane, when it cannot get a row, does the same:
 it keeps what it shows and the status row says so.
+
+@cindex read-only window
+A file opened read-only (its title shows a padlock) and the clipboard
+viewer (@kbd{Alt-Y}) keep their text through every command.  Typing and the
+block Delete, Move and Paste do nothing there; the block commands
+@kbd{Ctrl-K I}, @kbd{U}, @kbd{D} and @kbd{F}, the line commands
+@kbd{Ctrl-O B}, @kbd{L}, @kbd{U}, @kbd{M}, @kbd{H} and @kbd{E}, and
+Search > Replace are refused and the status row says @samp{Read-only
+window: the text is unchanged}.  Copy still works, so their text can be
+taken elsewhere.
 
 @section Block operations
 
@@ -179,9 +196,11 @@ xwpe uses @command{egrep}-compatible regular expressions:
 @cindex markers
 @cindex bookmarks
 
-xwpe supports 9 position markers (numbered 1--9).  Set a marker with
-@kbd{Ctrl-K @var{n}} where @var{n} is 1--9.  Jump to a marker with
-@kbd{Ctrl-O @var{n}}.  (Documented since v1.4.)
+xwpe supports ten position markers, numbered 0--9, as the Borland
+editors have ten bookmarks.  Set a marker with @kbd{Ctrl-K @var{n}} where
+@var{n} is 0--9.  Jump to a marker with @kbd{Ctrl-O @var{n}}.  Each marker
+keeps its own place: setting one never moves another.  (Documented since
+v1.4, as 1--9.)
 
 @section File manager
 

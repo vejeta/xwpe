@@ -179,6 +179,49 @@ int e_buffer_covered(BUFFER *b)
  return(buffer_covered_now(b));
 }
 
+/* The clipboard (window 0) shown in front, in its viewer.  Behind other
+   windows it is the editor's to fill: every Copy does. */
+static int buffer_is_clipboard_in_front(BUFFER *b)
+{
+ ECNT *cn = b->f->ed;
+
+ if (cn == NULL || cn->mxedt < 1)
+  return(0);
+ return(b->f == cn->f[0] && cn->f[cn->mxedt] == b->f);
+}
+
+/* A buffer the user's commands may not change: a file opened read-only, or
+   the clipboard in its viewer.  The editor's own views (Help, Messages, the
+   panes) are written by the editor, never by a command, and stay open to it. */
+static int buffer_closed_to_user(BUFFER *b)
+{
+ if (b->shell || b->f == NULL || b->f->ins != WPE_INS_READONLY)
+  return(0);
+ if (b->history == E_BUFFER_HISTORY_FULL)
+  return(1);
+ return(buffer_is_clipboard_in_front(b));
+}
+
+/**
+ * e_buffer_change_refused - Must a change of the user's to @b be refused?
+ * @b: the buffer the change is about to touch.
+ *
+ * A file opened read-only and the clipboard viewer keep their text through
+ * every command, a block command, a line command, a replacement or a
+ * formatter alike: the one place every character primitive and every
+ * recorded splice asks, so no command can get past it.  The status row
+ * says why nothing happened.
+ * Return: 1 when the change must not be made, 0 when it may.
+ */
+int e_buffer_change_refused(BUFFER *b)
+{
+ if (!buffer_closed_to_user(b))
+  return(0);
+ wpe_buffer_trace("buffer read-only refused");
+ wpe_buffer_say_read_only(b);
+ return(1);
+}
+
 static int *buffer_brp(BUFFER *b)
 {
 #ifdef DEBUGGER
@@ -1105,13 +1148,27 @@ static int buffer_splice(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
  * The one way the number of lines of a buffer changes.  The user's block,
  * breakpoints, colours and modified mark follow the lines, and Ctrl-U gives
  * back exactly what was there.  A buffer is never left without a line: the
- * owner adds an empty one.  Return: E_BUFFER_OK, E_BUFFER_NOMEM (nothing
- * changed, the lines stay the caller's) or E_BUFFER_RANGE.
+ * owner adds an empty one.  A change of its own (a new step) to a window the
+ * user cannot change is refused, and the status row says why.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM (nothing changed, the lines stay the
+ * caller's), E_BUFFER_LOCKED (the same) or E_BUFFER_RANGE.
  */
 int e_buffer_splice(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
                     const int *brk, int nbrk, WpeBufferStep step)
 {
+ if (step == E_BUFFER_STEP_NEW && e_buffer_change_refused(b))
+  return(E_BUFFER_LOCKED);
  return(buffer_splice(b, y, n_del, lines, n_ins, brk, nbrk, step, 0, NULL, NULL, NULL));
+}
+
+/* A splice the editor makes on its own account through the calls below that
+   take whole texts (its views, the clipboard a Copy fills, a tool's rewrite):
+   not a command of the user's, so never refused for a window the user
+   cannot change. */
+static int buffer_editor_splice(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
+                                WpeBufferStep step)
+{
+ return(buffer_splice(b, y, n_del, lines, n_ins, NULL, 0, step, 0, NULL, NULL, NULL));
 }
 
 /**
@@ -1428,16 +1485,83 @@ STRING *e_buffer_lines_from_parts(int mx_x, const WpeBufferPart *parts, int npar
  return(lines);
 }
 
+/* Does a row end its line of text (a line break), or does the line go on in
+   the row below (a soft-wrapped row)? */
+static int buffer_row_ends_line(const STRING *row)
+{
+ return(row->len >= 0 && row->s[row->len] == WPE_WR);
+}
+
+/* The bytes of a row before its end. */
+static int buffer_row_bytes(const STRING *row)
+{
+ if (row->s == NULL || row->len < 0)
+  return(0);
+ return(row->len);
+}
+
 /**
- * e_buffer_lines_copy - Copies of @n lines of @src from row @from, as lines
- * of @dst (clamped to its width, the line break kept when it fits).
+ * buffer_rows_rewrapped - @n rows as lines of a buffer @mx_x wide.
+ * @rows: the rows, in order; @has_row: for each, whether it carries a
+ * breakpoint (NULL: none do); @n_out: receives the number of lines;
+ * @brk: room for @n rows, receives the line each marked line of text
+ * starts on (NULL when @has_row is); @nbrk: receives how many.
  *
- * Block Copy and Paste put copies of the block's whole lines in, so the copy
- * does not change with later edits of the original and carries none of its
- * breakpoints.  Return: the lines, the caller's until a splice adopts them,
- * or NULL when memory ran out (or for n <= 0).
+ * Each line of text, its soft-wrapped rows joined, is wrapped again at the
+ * new width as the file reader would wrap it, so text that goes into a
+ * window of another width keeps every byte and every line break.  The last
+ * row keeps its own end: without a line break it goes on in the row that
+ * follows it.  Return: the lines, or NULL with *n_out < 0 when memory ran
+ * out.
  */
-STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst)
+static STRING *buffer_rows_rewrapped(const STRING *const *rows, const int *has_row, int n,
+                                     int mx_x, int *n_out, int *brk, int *nbrk)
+{
+ STRING *lines = NULL;
+ char *joined;
+ int cap = 0, total = 0, used = 0, marked = 0, first, term, i;
+
+ *n_out = 0;
+ if (nbrk != NULL)
+  *nbrk = 0;
+ for (i = 0; i < n; i++)
+  total += buffer_row_bytes(rows[i]);
+ if ((joined = buffer_malloc((size_t)total + 1)) == NULL)
+ {
+  *n_out = -1;
+  return(NULL);
+ }
+ for (i = 0; i < n; i++)
+ {
+  memcpy(joined + used, rows[i]->s, (size_t)buffer_row_bytes(rows[i]));
+  used += buffer_row_bytes(rows[i]);
+  if (has_row != NULL && has_row[i])
+   marked = 1;
+  if (!buffer_row_ends_line(rows[i]) && i < n - 1)
+   continue;
+  term = '\0';
+  if (buffer_row_ends_line(rows[i]))
+   term = WPE_WR;
+  first = *n_out;
+  if (buffer_lines_push(&lines, n_out, &cap, mx_x, joined, used, term) != E_BUFFER_OK)
+  {
+   e_buffer_lines_free(lines, *n_out);
+   free(joined);
+   *n_out = -1;
+   return(NULL);
+  }
+  if (marked && brk != NULL)
+   brk[(*nbrk)++] = first;
+  used = 0;
+  marked = 0;
+ }
+ free(joined);
+ return(lines);
+}
+
+/* Copies of n rows of src from row `from`, each as it is: the buffer they
+   go to is as wide as src. */
+static STRING *buffer_lines_copy_as_they_are(BUFFER *src, int from, int n, BUFFER *dst)
 {
  STRING *out = buffer_array(n, sizeof(STRING));
  int i, bytes;
@@ -1460,6 +1584,46 @@ STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst)
   out[i].s[bytes] = '\0';
   buffer_line_measure(&out[i]);
  }
+ return(out);
+}
+
+/**
+ * e_buffer_lines_copy - Copies of @n lines of @src from row @from, as lines
+ * of @dst.
+ * @n_out: receives how many lines the copy has.
+ *
+ * Block Copy and Paste put copies of the block's whole lines in, so the copy
+ * does not change with later edits of the original and carries none of its
+ * breakpoints.  Into a window of another width (Max. Columns changed between
+ * the two windows' opening) each line of text is wrapped again at the new
+ * width, so the paste keeps every byte and every line break; it may then
+ * take more rows than it had.  Return: the lines, the caller's until a
+ * splice adopts them, or NULL when memory ran out (or for n <= 0).
+ */
+STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst, int *n_out)
+{
+ const STRING **rows;
+ STRING *out;
+ int i;
+
+ *n_out = 0;
+ if (n <= 0)
+  return(NULL);
+ if (src->mx.x == dst->mx.x)
+ {
+  out = buffer_lines_copy_as_they_are(src, from, n, dst);
+  if (out != NULL)
+   *n_out = n;
+  return(out);
+ }
+ if ((rows = buffer_array(n, sizeof(STRING *))) == NULL)
+  return(NULL);
+ for (i = 0; i < n; i++)
+  rows[i] = &src->bf[from + i];
+ out = buffer_rows_rewrapped(rows, NULL, n, dst->mx.x, n_out, NULL, NULL);
+ free((void *) rows);
+ if (*n_out < 0)
+  *n_out = 0;
  return(out);
 }
 
@@ -1703,18 +1867,25 @@ int e_buffer_txn_splice_parts(WpeBufferTxn *t, BUFFER *b, int y, int n_del,
  * e_buffer_txn_copy_lines - Add copies of @n lines of @src from row @from,
  * put in at row @y of @to.
  *
- * A copy carries no breakpoint.  Return: as e_buffer_txn_splice.
+ * A copy carries no breakpoint.  Into a buffer of another width the copy is
+ * wrapped again at that width (e_buffer_lines_copy).  Return: how many lines
+ * it puts in (@n, or more when wrapped again), or E_BUFFER_NOMEM /
+ * E_BUFFER_RANGE as e_buffer_txn_splice.
  */
 int e_buffer_txn_copy_lines(WpeBufferTxn *t, BUFFER *to, int y, BUFFER *src, int from,
                             int n, WpeBufferStep step)
 {
  STRING *lines;
+ int k, r;
 
  if (t->refused != E_BUFFER_OK || n <= 0)
   return(t->refused);
- if ((lines = e_buffer_lines_copy(src, from, n, to)) == NULL)
+ if ((lines = e_buffer_lines_copy(src, from, n, to, &k)) == NULL)
   return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
- return(e_buffer_txn_splice(t, to, y, 0, lines, n, step));
+ r = e_buffer_txn_splice(t, to, y, 0, lines, k, step);
+ if (r != E_BUFFER_OK)
+  return(r);
+ return(k);
 }
 
 /**
@@ -1778,13 +1949,100 @@ static void buffer_txn_untake(WpeBufferTxn *t, WpeBufferTxnBuffer *e)
  free(sp->brk_out);
 }
 
+static int buffer_txn_view(WpeBufferTxn *t, BUFFER *b, int y, const STRING **line,
+                           int *has_row);
+
+/* The n lines that stand at row y of b once the items so far commit, built
+   again as lines mx_x wide, with the line each breakpoint goes to in brk
+   (room for n).  Return: the lines, or NULL with *n_out < 0 for no memory
+   and *n_out == 0 for a row the view cannot read. */
+static STRING *buffer_txn_rows_rebuilt(WpeBufferTxn *t, BUFFER *b, int y, int n, int mx_x,
+                                       int *n_out, int *brk, int *nbrk)
+{
+ const STRING **rows = buffer_array(n, sizeof(STRING *));
+ int *has_row = buffer_array(n, sizeof(int));
+ STRING *lines = NULL;
+ int i;
+
+ *n_out = -1;
+ if (rows != NULL && has_row != NULL)
+ {
+  for (i = 0; i < n; i++)
+   if (buffer_txn_view(t, b, y + i, &rows[i], &has_row[i]) != E_BUFFER_OK)
+    break;
+  *n_out = 0;
+  if (i == n)
+   lines = buffer_rows_rewrapped(rows, has_row, n, mx_x, n_out, brk, nbrk);
+ }
+ free((void *) rows);
+ free(has_row);
+ return(lines);
+}
+
+/* Give back what a rebuilt move took before its landing could be added:
+   the detach just prepared and the rebuilt lines.  Return: the refusal. */
+static int buffer_txn_rebuilt_drop(WpeBufferTxn *t, WpeBufferTxnBuffer *ef, STRING *lines,
+                                   int k, int *brk, int why)
+{
+ buffer_txn_untake(t, ef);
+ e_buffer_lines_free(lines, k);
+ free(brk);
+ return(buffer_txn_refuse(t, why));
+}
+
+/* A move between buffers of different widths: the lines leave @from as a
+   detach does (their breakpoints with them) and copies built at @to's width
+   land, each line of text carrying the breakpoint one of its rows had; the
+   originals are freed when the copies land. */
+static int buffer_txn_move_rebuilt(WpeBufferTxn *t, WpeBufferTxnBuffer *ef, BUFFER *from,
+                                   int y_from, int n, BUFFER *to, int y_to)
+{
+ WpeBufferTxnBuffer *et;
+ WpeBufferTxnSplice *sp;
+ STRING *lines;
+ int *brk, nbrk = 0, k, half = t->nsp;
+
+ if ((brk = buffer_array(n, sizeof(int))) == NULL)
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ lines = buffer_txn_rows_rebuilt(t, from, y_from, n, to->mx.x, &k, brk, &nbrk);
+ if (lines == NULL)
+ {
+  free(brk);
+  if (k < 0)
+   return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+  return(buffer_txn_refuse(t, E_BUFFER_RANGE));
+ }
+ if (buffer_txn_detach(t, ef, from, y_from, n) != E_BUFFER_OK)
+ {
+  e_buffer_lines_free(lines, k);
+  free(brk);
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ }
+ et = buffer_txn_buffer(t, to);
+ if (et == NULL || !buffer_txn_in_range(et->lines, y_to, 0, k))
+  return(buffer_txn_rebuilt_drop(t, ef, lines, k, brk, E_BUFFER_RANGE));
+ if ((sp = buffer_txn_slot(t, to, y_to, 0, k, E_BUFFER_STEP_COVERED)) == NULL)
+  return(buffer_txn_rebuilt_drop(t, ef, lines, k, brk, E_BUFFER_NOMEM));
+ sp->landed_from = half;
+ sp->lines = lines;
+ sp->brk = brk;
+ sp->nbrk = nbrk;
+ if (buffer_txn_take(t, et, sp, nbrk) != E_BUFFER_OK)
+  return(buffer_txn_rebuilt_drop(t, ef, lines, k, brk, E_BUFFER_NOMEM));
+ return(k);
+}
+
 /**
  * e_buffer_txn_move_lines - Add a move of @n whole lines from row @y_from of
  * @from to row @y_to of @to (the same buffer or another).
  *
  * Each line changes hands once, with its breakpoint: none is copied, none
- * freed, so none can be lost or freed twice.  @y_to is a row of @to once the
- * lines have left @from.  Return: as e_buffer_txn_splice.
+ * freed, so none can be lost or freed twice.  Into a buffer of another width
+ * the lines are built again at that width instead (their breakpoints go with
+ * them), since a line is as wide as the buffer that holds it.  @y_to is a
+ * row of @to once the lines have left @from.  Return: how many lines land
+ * (@n, or more when built again), or E_BUFFER_NOMEM / E_BUFFER_RANGE as
+ * e_buffer_txn_splice.
  */
 int e_buffer_txn_move_lines(WpeBufferTxn *t, BUFFER *from, int y_from, int n,
                             BUFFER *to, int y_to)
@@ -1800,6 +2058,8 @@ int e_buffer_txn_move_lines(WpeBufferTxn *t, BUFFER *from, int y_from, int n,
   return(buffer_txn_refuse(t, E_BUFFER_RANGE));
  if (n > ef->lines - y_from)
   n = ef->lines - y_from;
+ if (from->mx.x != to->mx.x)
+  return(buffer_txn_move_rebuilt(t, ef, from, y_from, n, to, y_to));
  half = t->nsp;
  if (buffer_txn_detach(t, ef, from, y_from, n) != E_BUFFER_OK)
   return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
@@ -1813,7 +2073,7 @@ int e_buffer_txn_move_lines(WpeBufferTxn *t, BUFFER *from, int y_from, int n,
   buffer_txn_untake(t, ef);
   return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
  }
- return(E_BUFFER_OK);
+ return(n);
 }
 
 /* ---- the items a step of Undo or Redo is made of ---- */
@@ -1833,6 +2093,14 @@ static void buffer_txn_item_free(WpeBufferTxnSplice *sp)
   e_buffer_shell_free(sp->shell);
   sp->shell = NULL;
   free((void *) sp->brk);
+  sp->brk = NULL;
+  return;
+ }
+ if (sp->landed_from != BUFFER_TXN_NOT_LANDED && sp->lines != NULL)
+ {
+  e_buffer_lines_free(sp->lines, sp->n_ins);     /* a rebuilt move's own lines */
+  free((void *) sp->brk);
+  sp->lines = NULL;
   sp->brk = NULL;
   return;
  }
@@ -2424,6 +2692,23 @@ static int buffer_txn_reserve_rows(WpeBufferTxn *t)
  return(E_BUFFER_OK);
 }
 
+/* The landing of a move between buffers of different widths: the lines
+   built at the new width go in with their breakpoints, and the originals the
+   detach took out are freed.  It cannot fail. */
+static void buffer_txn_commit_rebuilt(WpeBufferTxnSplice *sp, WpeBufferTxnSplice *src)
+{
+ buffer_splice_commit(sp->b, sp->y, 0, sp->lines, sp->n_ins, sp->brk, sp->nbrk, sp->step, 0,
+                      NULL, NULL, NULL, NULL, BUFFER_ROWS_POSITIONAL, &sp->m);
+ free(sp->lines);
+ free((void *) sp->brk);
+ sp->lines = NULL;
+ sp->brk = NULL;
+ e_buffer_lines_free(src->out, src->n_del);
+ free(src->brk_out);
+ src->out = NULL;
+ src->brk_out = NULL;
+}
+
 /* Commit one prepared splice: it cannot fail. */
 static void buffer_txn_commit_one(WpeBufferTxn *t, WpeBufferTxnSplice *sp)
 {
@@ -2454,6 +2739,11 @@ static void buffer_txn_commit_one(WpeBufferTxn *t, WpeBufferTxnSplice *sp)
   return;
  }
  src = &t->sp[sp->landed_from];
+ if (sp->lines != NULL)
+ {
+  buffer_txn_commit_rebuilt(sp, src);
+  return;
+ }
  buffer_splice_commit(sp->b, sp->y, 0, src->out, sp->n_ins, src->brk_out, src->nbrk_out,
                       sp->step, 0, NULL, NULL, NULL, NULL, BUFFER_ROWS_POSITIONAL, &sp->m);
  free(src->out);
@@ -3063,7 +3353,7 @@ int e_buffer_replace_all(BUFFER *b, const char *text, WpeBufferStep step)
  {
   if (b->mxlines == 1 && b->bf[0].len == 0)
    return(E_BUFFER_OK);         /* empty text over the one empty line */
-  return(e_buffer_splice(b, 0, b->mxlines, NULL, 0, NULL, 0, step));
+  return(buffer_editor_splice(b, 0, b->mxlines, NULL, 0, step));
  }
  used = buffer_malloc((size_t)n);
  if (used == NULL)
@@ -3114,7 +3404,7 @@ int e_buffer_append_text(BUFFER *b, const char *text, int skip_blank)
   }
   lines[k++] = lines[i];
  }
- r = e_buffer_splice(b, b->mxlines, 0, lines, k, NULL, 0, E_BUFFER_STEP_NEW);
+ r = buffer_editor_splice(b, b->mxlines, 0, lines, k, E_BUFFER_STEP_NEW);
  if (r != E_BUFFER_OK)
   for (i = 0; i < k; i++)
    free(lines[i].s);
@@ -3198,7 +3488,7 @@ int e_buffer_append_rows(BUFFER *b, const char *text)
    break;
   p = nl + 1;
  }
- r = e_buffer_splice(b, b->mxlines, 0, lines, k, NULL, 0, E_BUFFER_STEP_NEW);
+ r = buffer_editor_splice(b, b->mxlines, 0, lines, k, E_BUFFER_STEP_NEW);
  if (r != E_BUFFER_OK)
   e_buffer_lines_free(lines, k);
  else
@@ -3212,7 +3502,7 @@ int e_buffer_append_rows(BUFFER *b, const char *text)
  */
 int e_buffer_clear(BUFFER *b)
 {
- return(e_buffer_splice(b, 0, b->mxlines, NULL, 0, NULL, 0, E_BUFFER_STEP_NEW));
+ return(buffer_editor_splice(b, 0, b->mxlines, NULL, 0, E_BUFFER_STEP_NEW));
 }
 
 /**
@@ -3234,7 +3524,7 @@ int e_buffer_set_line_ended(BUFFER *b, int y, const char *text, int n, int term)
   return(E_BUFFER_RANGE);
  if (buffer_row_ended(b, text, n, term, &line) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
- r = e_buffer_splice(b, y, 1, &line, 1, NULL, 0, E_BUFFER_STEP_NEW);
+ r = buffer_editor_splice(b, y, 1, &line, 1, E_BUFFER_STEP_NEW);
  if (r != E_BUFFER_OK)
   free(line.s);
  return(r);

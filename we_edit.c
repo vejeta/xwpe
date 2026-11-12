@@ -502,7 +502,7 @@ int e_edit(ECNT *cn, char *filename)
  f->s->da.y = -1;
 #endif
  f->dirct = path;
- for (i = 0; i < 9; i++)
+ for (i = 0; i < E_MARKERS; i++)
   f->s->pt[i] = e_set_pnt(-1, -1);
  if (cn->mxedt == 0)    /*  Clipboard  */
  {
@@ -1079,6 +1079,48 @@ weiter:
  return(c);
 }
 
+/**
+ * e_at_end_of_text - Is the cursor at the end of the last line?
+ * @b: the buffer.
+ *
+ * Nothing stands to the right of it, so a key that works on what follows
+ * the cursor (Ctrl-T, Ctrl-Right) has nothing to work on there, as in the
+ * Borland editors.
+ */
+static int e_at_end_of_text(BUFFER *b)
+{
+ return(b->b.y >= b->mxlines - 1 && b->b.x >= b->bf[b->b.y].len);
+}
+
+/**
+ * e_delete_word_right - Ctrl-T: delete from the cursor to the start of the
+ * next word; at the end of a line, the line break, which joins the next line
+ * to it.
+ * @b, @s: the buffer and its screen.
+ *
+ * At the end of the text there is neither, and nothing is deleted: the last
+ * line keeps its line break and the cursor stays where it is.
+ */
+static void e_delete_word_right(BUFFER *b, SCHIRM *s)
+{
+ int next;
+
+ if (e_at_end_of_text(b))
+  return;
+ if (b->b.x < b->bf[b->b.y].len)
+ {
+  next = e_su_lblk(b->b.x, (char *)b->bf[b->b.y].s);
+  e_del_nchar(b, s, b->b.x, b->b.y, next - b->b.x);
+ }
+ else if (b->bf[b->b.y].s[b->b.x] == WPE_WR)
+  e_del_nchar(b, s, b->b.x, b->b.y, 1);
+ else
+ {
+  b->b.x = 0;
+  b->b.y++;
+ }
+}
+
 /*              Interpretation of cursor keys
                      ( Primitive editor )                    */
 int e_tst_cur(int c, ECNT *e)
@@ -1150,7 +1192,7 @@ int e_tst_cur(int c, ECNT *e)
 	 break;
       case CCRI:
       case CCRI+512:
-	 if(b->b.x >= b->bf[b->b.y].len && b->b.y < b->mxlines)
+	 if(b->b.x >= b->bf[b->b.y].len && b->b.y < b->mxlines - 1)
 	 {  b->b.x = 0; b->b.y++;  }
 	 else if( b->b.x < b->bf[b->b.y].len )
 	 b->b.x = e_su_lblk(b->b.x, b->bf[b->b.y].s);
@@ -1232,14 +1274,7 @@ int e_tst_cur(int c, ECNT *e)
 	 break;
       case CtrlT:
 	 if(e_window_text_locked(f)) break;
-	 if( b->b.x < b->bf[b->b.y].len )
-	 {  c = e_su_lblk(b->b.x, b->bf[b->b.y].s);
-	    e_del_nchar(b, s, b->b.x, b->b.y, c-b->b.x);
-	 }
-	 else if(*(b->bf[b->b.y].s+b->b.x) == WPE_WR)
-	 e_del_nchar(b, s, b->b.x, b->b.y, 1);
-	 else if(b->b.x >= b->bf[b->b.y].len && b->b.y < b->mxlines)
-	 {  b->b.x = 0; (b->b.y)++;  }
+	 e_delete_word_right(b, s);
 	 e_schirm(f, 1);
 	 break;
       case CtrlZ:
@@ -1549,6 +1584,77 @@ int e_ctrl_k(FENSTER *f)
  return 0;
 }
 
+/* The bytes of the line Ctrl-O E puts in: the end-of-page mark, then the
+   line break. */
+#define E_HELP_PAGE_END_BYTES 2
+
+/**
+ * e_help_page_end_insert - Ctrl-O E: put the help file's end-of-page mark on
+ * a line of its own above the cursor's line.
+ * @b: the buffer.
+ *
+ * The new line ends with a line break, so the mark never runs into the
+ * user's line; one Ctrl-U takes the whole line away and one Ctrl-R brings it
+ * back, and the user's lines stay as they were.
+ * Return: E_BUFFER_OK, or the owner's refusal, said on the status row.
+ */
+static int e_help_page_end_insert(BUFFER *b)
+{
+ STRING line;
+ int r;
+
+ if (e_buffer_line_new(b, &line) != E_BUFFER_OK)
+ {
+  wpe_buffer_say_nomem(b, "a new line");
+  return(E_BUFFER_NOMEM);
+ }
+ line.s[0] = HFE;
+ line.s[1] = WPE_WR;
+ line.s[E_HELP_PAGE_END_BYTES] = '\0';
+ line.len = 1;
+ line.nrc = E_HELP_PAGE_END_BYTES;
+ r = e_buffer_splice(b, b->b.y, 0, &line, 1, NULL, 0, E_BUFFER_STEP_NEW);
+ if (r != E_BUFFER_OK)
+ {
+  free(line.s);
+  if (r == E_BUFFER_NOMEM)
+   wpe_buffer_say_nomem(b, "a new line");
+  return(r);
+ }
+ b->b.x = line.len;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_is_help_mark - Is @c one of the control bytes a help file marks its
+ * buttons, headlines, highlights and page ends with?
+ */
+static int e_is_help_mark(unsigned char c)
+{
+ return(c == HBG || c == HED || c == HHD || c == HBB || c == HFE || c == HFB);
+}
+
+/**
+ * e_help_marks_delete - Ctrl-O L: delete the help file's marks from the
+ * cursor's line, so a line copied from a help page reads as plain text.
+ * @b, @s: the buffer and its screen.
+ *
+ * Stops at the first mark that could not be deleted (a window the user
+ * cannot change), so a refusal never turns into a loop.
+ */
+static void e_help_marks_delete(BUFFER *b, SCHIRM *s)
+{
+ int i = 0;
+
+ while (i < b->bf[b->b.y].len)
+ {
+  if (!e_is_help_mark(b->bf[b->b.y].s[i]))
+   i++;
+  else if (e_del_nchar(b, s, i, b->b.y, 1) == E_CHAR_REFUSED)
+   return;
+ }
+}
+
 /**
  * e_ctrl_o - Ctrl-O: read the editing command's letter and run it.
  * @f: the window the prefix was pressed in.
@@ -1639,25 +1745,11 @@ int e_ctrl_o(FENSTER *f)
    }
    break;
   case 'E':     /*   for help file: create end mark  */
-   if (e_buffer_insert_blank(b, b->b.y, E_BUFFER_STEP_NEW) != E_BUFFER_OK)
-   {
-    wpe_buffer_say_nomem(b, "a new line");
-    break;
-   }
-   cc = HFE;
-   e_ins_nchar(b, s, &cc, 0, b->b.y, 1);
+   e_help_page_end_insert(b);
    e_schirm(f, 1);
    break;
   case 'L':     /*   for help file: delete "help" special chars  */
-   for (i = 0; i < b->bf[b->b.y].len; i++)
-    if (b->bf[b->b.y].s[i] == HBG || b->bf[b->b.y].s[i] == HED ||
-      b->bf[b->b.y].s[i] == HHD || b->bf[b->b.y].s[i] == HBB ||
-      b->bf[b->b.y].s[i] == HFE || b->bf[b->b.y].s[i] == HFB ||
-      b->bf[b->b.y].s[i] == HFE)
-    {
-     e_del_nchar(b, s, i, b->b.y, 1);
-     i--;
-    }
+   e_help_marks_delete(b, s);
    e_schirm(f, 1);
    break;
   case 'C':     /*   for help file: check help file   */
@@ -2135,12 +2227,15 @@ static void e_line_end_soft_line(BUFFER *b, int y, int x)
  * the line keeps its breakpoint and the text behind the cursor moves down
  * with its marks.  Undo never indents again, so Redo of an undone Enter
  * gives the same text.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM when the
- * line could not be split (nothing changed, the status row says so).
+ * line could not be split, E_BUFFER_LOCKED in a window the user cannot
+ * change (nothing changed either way, the status row says so).
  */
 int e_car_ret_split(BUFFER *b, SCHIRM *s)
 {
  int x = b->b.x, y = b->b.y, len = b->bf[y].len, r;
 
+ if (e_buffer_change_refused(b))
+  return(E_BUFFER_LOCKED);
  if (x == len && b->bf[y].s[len] == '\0')
   e_line_end_soft_line(b, y, x);
  else
@@ -2350,6 +2445,8 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
  Undo *rec;
  int len, i, j;
 
+ if (e_buffer_change_refused(b))
+  return(E_CHAR_REFUSED);
  e_char_count_change(b, n);
  rec = e_char_record('r', b, x, y, n);
  e_buffer_cover_begin(b, rec);
@@ -2414,13 +2511,16 @@ static void e_ins_wrap_mark(POINT *p, int ya, int xa, int n, int i)
  * behind column @i, goes to a new line below it.
  *
  * The breakpoints and marks below move down with their lines, so a wrapped
- * paragraph never leaves a breakpoint on the wrong code.  Return: 1 when
- * the tail moved; 0 when no line could be added, and then the line keeps
- * its bytes up to its width and the status row says why the wrap waits.
+ * paragraph never leaves a breakpoint on the wrong code.  The new line ends
+ * as the full one did: with its line break, or without one when it was the
+ * last row of a text that ends without a line break, so the file written
+ * keeps its bytes.  Return: 1 when the tail moved; 0 when no line could be
+ * added, and then the line keeps its bytes up to its width and the status
+ * row says why the wrap waits.
  */
 static int e_ins_wrap_tail_down(BUFFER *b, SCHIRM *sch, int ya, int xa, int n, int i)
 {
- int j;
+ int j, hard = (b->bf[ya].s[b->bf[ya].len] == WPE_WR);
 
  if (e_buffer_insert_blank(b, ya+1, E_BUFFER_STEP_COVERED) != E_BUFFER_OK)
  {
@@ -2438,11 +2538,58 @@ static int e_ins_wrap_tail_down(BUFFER *b, SCHIRM *sch, int ya, int xa, int n, i
  for (j = i+1; *(b->bf[ya].s+j) != WPE_WR && *(b->bf[ya].s+j) != '\0'
       && (j-i-1) < b->mx.x - 1; j++)
   *(b->bf[ya+1].s+j-i-1) = *(b->bf[ya].s+j);
- *(b->bf[ya+1].s+j-i-1) = WPE_WR;
- *(b->bf[ya+1].s+j-i) = '\0';
+ if (hard)
+ {
+  *(b->bf[ya+1].s+j-i-1) = WPE_WR;
+  *(b->bf[ya+1].s+j-i) = '\0';
+ }
+ else
+  *(b->bf[ya+1].s+j-i-1) = '\0';
  b->bf[ya+1].len = e_str_len(b->bf[ya+1].s);
  b->bf[ya+1].nrc = e_str_nrc(b->bf[ya+1].s);
  return(1);
+}
+
+/**
+ * e_ins_wrap_cut - Where a line typing made too wide is cut.
+ * @i: the column of the last blank or hyphen in reach (the row keeps up to
+ * it); @xa0: where the typed run starts; @in_place: how many of its bytes
+ * were already written at the end of the row.
+ *
+ * Never inside the run just typed: when the cut would keep part of it on
+ * the row, the whole run goes to the next row instead (a blank typed at the
+ * margin starts the next row), so Ctrl-U can take back exactly what was
+ * typed, in one place.
+ * Return: the column the row keeps up to.
+ */
+static int e_ins_wrap_cut(int i, int xa0, int in_place)
+{
+ if (in_place > 0 && i >= xa0 && xa0 > 0)
+  return(xa0 - 1);
+ return(i);
+}
+
+/**
+ * e_char_record_place - Keep a character record where the bytes it is about
+ * stand once their line has wrapped.
+ * @rec: the record (NULL under a cover: the caller's record replays it);
+ * @x, @y: where the run starts now.
+ *
+ * Typing or a replacement past the margin moves the new text to the next
+ * row with the word it belongs to; Ctrl-U takes back that text there and
+ * nothing else, and Ctrl-R puts it in again at the same place.  The rows of
+ * breakpoints the record keeps stay on the lines they belong to.
+ */
+static void e_char_record_place(Undo *rec, int x, int y)
+{
+ int i;
+
+ if (rec == NULL)
+  return;
+ for (i = 0; i < rec->nbrk; i++)
+  rec->brk[i] -= y - rec->b.y;
+ rec->b.x = x;
+ rec->b.y = y;
 }
 
 /*   insert N chars in buffer */
@@ -2450,8 +2597,10 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n)
 {
  Undo *rec;
- int i, j, wrapped = 1;
+ int i, j, wrapped = 1, xa0 = xa, in_place = 0;
 
+ if (e_buffer_change_refused(b))
+  return(E_CHAR_REFUSED);
  e_char_count_change(b, n);
  rec = e_char_record('a', b, xa, ya, n);
  e_buffer_cover_begin(b, rec);
@@ -2482,7 +2631,11 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
     *(b->bf[ya].s + xa + 1) = *(b->bf[ya].s + xa);
     *(b->bf[ya].s + xa) = *s;
    }
-   *(b->bf[ya].s + xa + 1) = '\0';
+   in_place = xa - xa0;
+   /* A row the file reader filled to the full width already has its zero
+      at mx.x, the last byte of its buffer: nothing to write past it. */
+   if (xa + 1 <= b->mx.x)
+    *(b->bf[ya].s + xa + 1) = '\0';
    i = b->mx.x;
    b->bf[ya].len = e_str_len(b->bf[ya].s);
    b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
@@ -2492,7 +2645,10 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
    i = b->bf[ya].len - 2;              /* near the end so only a short tail (a */
   if (i < 0)                           /* few columns) wraps -- never the whole */
    i = 0;                              /* line, which fed a runaway recursion   */
-  if (*(b->bf[ya].s+b->bf[ya].len) == WPE_WR || ya == b->mxlines)
+  i = e_ins_wrap_cut(i, xa0, in_place);
+  /* A row that ends the line, or the last row of the text, has no row below
+     to take its tail: the tail gets a line of its own. */
+  if (*(b->bf[ya].s+b->bf[ya].len) == WPE_WR || ya == b->mxlines - 1)
    wrapped = e_ins_wrap_tail_down(b, sch, ya, xa, n, i);
   else
   {
@@ -2538,6 +2694,7 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
    if (sch->mark_end.y == ya && sch->mark_end.x >= xa)
     sch->mark_end.x += n;
   }
+  e_char_record_place(rec, xa - in_place, ya);
  }
  else
  {
@@ -2624,6 +2781,8 @@ int e_put_char(int c, BUFFER *b, SCHIRM *s)
 {
  unsigned char cc = c;
 
+ if (e_buffer_change_refused(b))
+  return(E_CHAR_REFUSED);
  if (b->b.x == b->bf[b->b.y].len)
   e_ins_nchar(b, s, &cc, b->b.x, b->b.y, 1);
  else
@@ -2929,19 +3088,25 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
  * The record is kept first, then the two halves of the swap run covered
  * with it as their pocket.  A replacement that makes its line wrap moves
  * the breakpoints below it down with their code, as typing does, and Undo
- * moves them back.
+ * moves them back; the record follows the replacement to the row it
+ * wrapped onto, so Ctrl-U puts the old text back where the new one is.
+ * Return: 1 when the occurrence was replaced, 0 when the window refused it.
  */
-void e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
-                          unsigned char *text, int rn)
+int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
+                         unsigned char *text, int rn)
 {
  Undo *rec;
 
+ if (e_buffer_change_refused(b))
+  return(0);
  b->f->fd.rn = rn;     /* the record keeps the replacement's length */
  rec = e_char_record('s', b, x, y, sn);
  e_buffer_cover_begin(b, rec);
  e_del_nchar(b, s, x, y, sn);
  e_ins_nchar(b, s, text, x, y, rn);
+ e_char_record_place(rec, b->b.x - rn, b->b.y);
  e_buffer_cover_end(b);
+ return(1);
 }
 
 /* What the screen's owner calls the paint of a window's new text. */
@@ -3023,6 +3188,18 @@ static int e_undo_waits_for_the_assistant(FENSTER *f)
 #endif
 
 /**
+ * e_record_text_ends_line - Does the text an 'r' or 's' record keeps end
+ * with a line break?  Putting it back then breaks the line, and the cursor
+ * is no longer behind the text.
+ */
+static int e_record_text_ends_line(const Undo *rec)
+{
+ const unsigned char *text = (const unsigned char *) rec->u.pt;
+
+ return(rec->a.x > 0 && text[rec->a.x - 1] == '\n');
+}
+
+/**
  * e_rudo_text_back - Put back the characters a record removed, a line
  * break as a line break (never auto-indented again), and mark them.
  * @b, @s: the buffer and its screen; @rec: an 'r' or 's' record.
@@ -3050,10 +3227,13 @@ static void e_rudo_text_back(BUFFER *b, SCHIRM *s, Undo *rec)
  * e_rudo_replace_back - Undo or redo one replacement of Search > Replace.
  *
  * The inverse is recorded first, then the swap of the two strings runs
- * covered, so one Ctrl-R gives the replacement back.
+ * covered, so one Ctrl-R gives the replacement back; when the text put back
+ * makes its line wrap, the inverse follows it to the row it went to.
  */
 static void e_rudo_replace_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
+ Undo *inv;
+
  /* Set b->f->fd.rn to the length of the string being re-inserted
     (rec->a.x).  e_add_undo reads b->f->fd.rn to store as a.y in
     the reverse entry, so the next undo/redo knows the correct
@@ -3062,10 +3242,12 @@ static void e_rudo_replace_back(BUFFER *b, SCHIRM *s, Undo *rec)
     f->ed->fd.rn (the global search/replace state), causing a.y
     to contain uninitialized garbage (e.g. 189 instead of 5). */
  b->f->fd.rn = rec->a.x;
- e_add_undo('s', b, rec->b.x, rec->b.y, rec->a.y);
+ inv = e_char_record('s', b, rec->b.x, rec->b.y, rec->a.y);
  e_buffer_cover_begin(b, NULL);
  e_del_nchar(b, s, rec->b.x, rec->b.y, rec->a.y);
  e_rudo_text_back(b, s, rec);
+ if (!e_record_text_ends_line(rec))
+  e_char_record_place(inv, b->b.x - rec->a.x, b->b.y);
  e_buffer_cover_end(b);
 }
 
@@ -3204,6 +3386,19 @@ static int e_rudo_block_move_again(BUFFER *b, SCHIRM *s, Undo *rec)
 }
 
 /**
+ * e_overwrite_back - Undo or Redo one character typed over another.
+ * @b: the buffer; @rec: the 'p' record, which keeps the character to write.
+ *
+ * The character that stands there now is kept first, on the other list, so
+ * Ctrl-U of overwrite typing is followed by a Ctrl-R that types it again.
+ */
+static void e_overwrite_back(BUFFER *b, const Undo *rec)
+{
+ e_add_undo('p', b, rec->b.x, rec->b.y, 1);
+ b->bf[rec->b.y].s[rec->b.x] = rec->u.c;
+}
+
+/**
  * wpe_buffer_replay_kind - Replay a character or block record for Undo or
  * Redo; its inverse goes to the other list through the primitives' own
  * records.
@@ -3211,7 +3406,8 @@ static int e_rudo_block_move_again(BUFFER *b, SCHIRM *s, Undo *rec)
  *
  * The block kinds run uncovered: their operations take their own covers and
  * push their record after them, so Redo finds it.  An overwrite ('p') puts
- * the old character back and records nothing, as it always did.
+ * the other character back and records the one it replaces, so Redo of an
+ * undone overwrite types it over again.
  * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when a block operation was refused
  * for want of memory (the text is as it was and the record stays for the
  * next try); E_BUFFER_RANGE when a deleted block could not land (its record
@@ -3226,7 +3422,7 @@ int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
  else if (rec->type == 'a')
   e_del_nchar(b, s, rec->b.x, rec->b.y, rec->a.x);
  else if (rec->type == 'p')
-  b->bf[rec->b.y].s[rec->b.x] = rec->u.c;
+  e_overwrite_back(b, rec);
  else if (rec->type == 'c')
   return(e_rudo_block_copy_back(b, s, rec));
  else if (rec->type == 'v')
@@ -3261,7 +3457,7 @@ void wpe_buffer_replay_on_shell(BUFFER *shell, SCHIRM *s, const Undo *rec, int y
  else if (at.type == 'a')
   e_del_nchar(shell, s, at.b.x, at.b.y, at.a.x);
  else if (at.type == 'p')
-  shell->bf[at.b.y].s[at.b.x] = at.u.c;
+  e_overwrite_back(shell, &at);
 }
 
 int e_make_rudo(FENSTER *f, int sw)
@@ -3352,6 +3548,22 @@ void wpe_buffer_syntax_changed(BUFFER *b, int y)
    break;
   b->f->c_sw[i+1] = out;
  }
+}
+
+/**
+ * wpe_buffer_say_read_only - Say on the status row that a command was not
+ * made because its window is closed to changes (a file opened read-only,
+ * the clipboard viewer); the text is as it was.
+ * @b: the buffer the command would have changed.
+ *
+ * The line stays until the next key, so the redraw that follows the
+ * command does not take it away before the user has read it.
+ */
+void wpe_buffer_say_read_only(BUFFER *b)
+{
+ (void) b;
+ if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
+  e_status_say_until_key(WpeEditor->f[WpeEditor->mxedt], E_SAY_READ_ONLY);
 }
 
 /**

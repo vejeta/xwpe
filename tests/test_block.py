@@ -178,3 +178,21 @@ def test_chord_unindent_removes_leading_space(tmp_path):
     lines = text.splitlines()
     assert lines and all(not ln.startswith(' ') for ln in lines), \
         '^K U should unindent every block line, got %r' % text
+
+
+def test_chord_indent_indents_a_row_of_only_blanks_too(tmp_path):
+    """^K X then ^K I over a block with a row of only blanks: that row is
+    indented by as much as the others, and its line break stays where it
+    was (the row is not skipped, and nothing lands past its end)."""
+    text, code = run_block(
+        str(tmp_path), 'one\n   \nthree\n',
+        [*CHORD_MARK_WHOLE, *CHORD_INDENT])
+    assert code is None, 'wpe died during ^K I indent (exit=%r)' % code
+    lines = text.split('\n')
+    indent = len(lines[0]) - len(lines[0].lstrip(' '))
+    assert indent > 0 and lines[0].lstrip(' ') == 'one', \
+        '^K I did not indent the first line: %r' % text
+    assert lines[1] == ' ' * (3 + indent), \
+        '^K I did not indent the row of blanks by %d: %r' % (indent, text)
+    assert lines[2] == ' ' * indent + 'three' and lines[3:] == [''], \
+        '^K I changed the lines after the row of blanks: %r' % text

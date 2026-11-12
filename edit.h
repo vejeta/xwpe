@@ -54,6 +54,8 @@ extern int e_input_was_char;
 
 #define MAXLINES 10
 #define MAXCOLUM 120
+/* Markers a window keeps: Ctrl-K 0..9 sets one, Ctrl-O 0..9 goes back to it. */
+#define E_MARKERS 10
 
 #define WPE_NOBACKUP 1
 #define WPE_BACKUP   0
@@ -242,7 +244,7 @@ typedef struct SCHRM {
  POINT mark_begin;
  POINT mark_end;
  POINT ks;
- POINT pt[9];
+ POINT pt[E_MARKERS];
  POINT fa;
  POINT fe;
  POINT a;
@@ -529,11 +531,16 @@ int e_car_ret(BUFFER *b, SCHIRM *s);
 int e_car_ret_split(BUFFER *b, SCHIRM *s);
 void e_cursor_pos_only(FENSTER *f);
 void e_cursor(FENSTER *f, int sw);
+/* What a character primitive returns when the buffer's owner refused the
+   change (a window the user cannot change): nothing was changed. */
+#define E_CHAR_REFUSED (-1)
+/* What the user is told when a command meets such a window. */
+#define E_SAY_READ_ONLY "Read-only window: the text is unchanged"
 int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n);
 int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n);
 void e_line_make_hard_empty(STRING *l);
-void e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
+int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
   unsigned char *text, int rn);
 int e_put_char(int c, BUFFER *b, SCHIRM *s);
 int e_su_lblk(int xa, char *s);

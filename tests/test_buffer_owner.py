@@ -1753,3 +1753,156 @@ def test_roles_and_rows_stay_in_step_through_a_reflow(tmp_path):
             % (expected, rows, trace)
     counts = [rows for rows, _, _, _ in steps]
     assert max(counts) > min(counts), "no resize changed the row count: %r" % counts
+
+
+END = "\033OF"
+TAB = "\t"
+INSERT_KEY = "\033[2~"   # Insert: typing overwrites
+# A text file (no auto-indent, so Tab is typed as a character) whose first
+# line fills the width: one more character makes it wrap.
+MARGIN_SEED = LONG_ROW + "\nnext line\n"
+# One character wider than LONG_ROW: the widest line a row holds, so the
+# Undo of a deletion at its end has to wrap it.
+WIDEST_ROW = LONG_ROW + "R"
+WIDEST_SEED = WIDEST_ROW + "\nnext line\n"
+
+
+def _assert_undo_and_redo_on_disk(s, seed, edited, what):
+    """The file holds @edited; Ctrl-U gives @seed back, Ctrl-R @edited."""
+    assert _saved(s) == edited, "%s gave %r" % (what, s.text())
+    s.key(CTRL_U, delay=0.8)
+    assert _saved(s) == seed, "Ctrl-U of %s gave %r" % (what, s.text())
+    s.key(CTRL_R, delay=0.8)
+    assert _saved(s) == edited, "Ctrl-R of %s gave %r" % (what, s.text())
+
+
+# @scenario SC-buffer-01
+@pytest.mark.parametrize("typed", ["Z", TAB, " "], ids=["char", "tab", "space"])
+def test_an_undo_of_typing_past_the_margin_gives_the_line_back(tmp_path, typed):
+    """A character typed at the end of a line as wide as the window makes
+    the line wrap onto the next row: Ctrl-U takes that character away and
+    nothing else, Ctrl-R types it again."""
+    edited = MARGIN_SEED.replace("Q\n", "Q" + typed + "\n", 1)
+    with WpeSession(str(tmp_path), MARGIN_SEED, filename="t.txt") as s:
+        s.key(END, delay=0.3)
+        s.key(typed, delay=0.5)
+        _assert_undo_and_redo_on_disk(s, MARGIN_SEED, edited, "typing %r at the margin" % typed)
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+def test_a_redo_of_a_deletion_at_the_margin_gives_the_text_back(tmp_path):
+    """The last character of the widest line deleted: Ctrl-U puts it back,
+    which wraps the line, and Ctrl-R deletes that character again."""
+    edited = WIDEST_SEED.replace("R\n", "\n", 1)
+    with WpeSession(str(tmp_path), WIDEST_SEED, filename="t.txt") as s:
+        s.key(END, delay=0.3)
+        s.key(BACKSPACE, delay=0.5)
+        _assert_undo_and_redo_on_disk(s, WIDEST_SEED, edited, "the deletion at the margin")
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+def test_an_undo_of_a_replacement_that_wraps_gives_the_line_back(tmp_path):
+    """Search > Replace makes the word near the end of a full line longer, so
+    the line wraps before it: Ctrl-U gives the line back as it was, Ctrl-R
+    the replacement again."""
+    seed = LONG_ROW[:108] + " foo end\nnext line\n"
+    edited = seed.replace(" foo ", " foofoofoofoo ", 1)
+    with WpeSession(str(tmp_path), seed, filename="t.txt") as s:
+        s.menu(ALT.SEARCH, "r")
+        s.key("foo")
+        s.key("\033n")
+        s.key("foofoofoofoo")
+        s.key("\033p")                       # no prompt per replacement
+        s.key("\033a")                       # Change All
+        s.key(ENTER)                         # the "Replaced" note
+        _assert_undo_and_redo_on_disk(s, seed, edited, "the replacement")
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+def test_an_undo_of_overwrite_typing_can_be_redone(tmp_path):
+    """Insert switches typing to overwrite; a character typed over another
+    is taken back by Ctrl-U and typed over it again by Ctrl-R."""
+    seed = "abc\n"
+    with WpeSession(str(tmp_path), seed, filename="t.txt") as s:
+        s.key(INSERT_KEY, delay=0.4)
+        s.key("q", delay=0.4)
+        _assert_undo_and_redo_on_disk(s, seed, "qbc\n", "overwriting a with q")
+        assert s.alive(), "wpe died"
+
+
+# A line with no blank to wrap at: the file reader fills its first row to the
+# full width, without a line break, and the next row holds the rest.
+SOFT_ROW = "a" * 119
+SOFT_SEED = SOFT_ROW + "tail\n"
+
+
+def _make_the_soft_row_the_last(s):
+    """Delete the second row of the wrapped line: its first row, which ends
+    without a line break, is the last row of the text."""
+    s.key(DOWN, delay=0.3)
+    s.key(CTRL_Y, delay=0.6)
+
+
+# @scenario SC-buffer-01
+@pytest.mark.parametrize("where", ["home", "end"])
+def test_typing_on_a_last_row_without_a_line_break_wraps_it(tmp_path, where):
+    """The rest of a wrapped line deleted with Ctrl-Y, a character typed at
+    the start or the end of the full row left, which then has to wrap: the
+    character is where it was typed and the text keeps every byte."""
+    with WpeSession(str(tmp_path), SOFT_SEED, filename="t.txt") as s:
+        _make_the_soft_row_the_last(s)
+        before = _saved(s)
+        assert before.startswith(SOFT_ROW) and "ail" not in before, \
+            "Ctrl-Y did not delete the second row: %r" % before
+        if where == "home":
+            want = "Z" + before
+            s.key(HOME, delay=0.2)
+        else:
+            want = before + "Z"
+            s.key(END, delay=0.2)
+        s.key("Z", delay=0.6)
+        assert s.alive(), "wpe died typing on the last row"
+        assert _saved(s) == want, "typing on the last row gave %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+def test_a_paste_into_a_narrower_window_keeps_every_byte(tmp_path):
+    """Three lines copied from a window as wide as Max. Columns was, pasted
+    into a new window opened after Max. Columns was lowered to 40: the
+    line wider than 40 is wrapped onto rows of the new width and keeps
+    every byte and its line break; Ctrl-U takes the paste back, Ctrl-R
+    pastes it again."""
+    long_line = "x" * 50 + " " + "y" * 49 + "Z"
+    seed = "first\n" + long_line + "\nthird\nfourth\n"
+    pasted = "first\n" + long_line + "\nthird\n"
+    with WpeSession(str(tmp_path), seed, filename="t.txt") as s:
+        s.key(CTRL_K, "b", delay=0.3)
+        _down(s, 3)
+        s.key(CTRL_K, "k", delay=0.3)
+        s.key(CTRL_C, delay=0.8)
+        for k in SET_MAX_COLUMNS_40:
+            s.key(k, delay=0.3)
+        s.key(ALT.FILE, "n", delay=1.0)              # File > New: 40 wide
+        s.key(CTRL_V, delay=1.0)
+        s.key(ALT.FILE, "a", delay=0.8)              # Save As
+        s.key("out.txt", ENTER, delay=1.0)
+        out = os.path.join(str(tmp_path), "out.txt")
+
+        def saved_out():
+            s.key(F2, delay=0.8)
+            with open(out) as fh:
+                return fh.read()
+
+        assert saved_out().startswith(pasted), \
+            "the paste lost bytes: %r" % saved_out()
+        s.key(CTRL_U, delay=0.8)
+        assert pasted not in saved_out() and "first" not in saved_out(), \
+            "Ctrl-U did not take the paste back: %r" % saved_out()
+        s.key(CTRL_R, delay=0.8)
+        assert saved_out().startswith(pasted), \
+            "Ctrl-R did not paste every byte again: %r" % saved_out()
+        assert s.alive(), "wpe died"

@@ -309,6 +309,33 @@ Changes
   that loses two or more frames leaves no row of the old listing in the
   Stack window (every other row stayed).
 
+* Typing at the right margin.  Ctrl-U of a character, a Tab or a
+  replacement that made its line wrap takes back just that, and Ctrl-R puts
+  it in again (Ctrl-U deleted a blank of the line and left what was typed,
+  and Ctrl-R typed it twice); a blank typed at the margin now starts the
+  next row.  Ctrl-R of a deletion undone at the margin deletes the same
+  character again.  Typing on a full row that has no line break, such as
+  the last row left after Ctrl-Y under a wrapped line, keeps every byte (it
+  dropped one, or wrote past the end of the line).  A paste into a window
+  opened after Max. Columns was lowered keeps every byte and line break of a
+  wider line, wrapped at the new width (it cut the line there).
+
+* A file opened read-only and the clipboard viewer (Alt-Y) keep their
+  text: Ctrl-K I, U, D and F, Ctrl-O B, L, U, M, H and E and Search >
+  Replace are refused there and the status row says the window is
+  read-only (they indented, changed or added to the text, and in the viewer
+  the clipboard).
+
+* Smaller editing fixes.  Ctrl-U of a character typed in overwrite mode
+  can be redone with Ctrl-R (Redo did nothing).  Ctrl-T at the end of the
+  text deletes nothing, as in the Borland editors (it deleted the last line
+  break), and Ctrl-Right stays there.  The ten markers Ctrl-K 0-9 and
+  Ctrl-O 0-9 each keep their own place (marker 9 moved whenever another
+  was set).  Ctrl-K I indents a row of only blanks too (it was skipped).
+  Ctrl-O E puts the help file's end-of-page mark on a line of its own,
+  undone and redone with one key (in the file written it ran into the next
+  line).
+
 * A breakpoint moved by an edit during a debugging session moves in the
   debugger too.  Enter above a breakpoint at a stop used to move the mark
   while gdb, pdb or the debug adapter kept the old line, so Ctrl-G R
