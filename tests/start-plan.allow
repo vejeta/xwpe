@@ -55,7 +55,7 @@ we_xterm.c|e_x_system|1|plan|the graphical editors' entry: a planned command beh
 # --- the debuggers (converted) ---
 we_debug.c|e_d_arguments|1|plan|reads Arguments once for the debugger's start plan and its run command
 we_debug.c|e_d_pick_start_arg|1|plan|the program's name, handed to the debugger's plan as its operand with its origin
-we_debug.c|e_start_debug|1|plan|a project's program, handed to the debugger's plan as its operand
+we_debug.c|e_d_start_planned|1|plan|a project's program, handed to the debugger's plan as its operand
 
 # --- the assistant's read grants (P0c-4) ---
 we_ai_ws.c|ws_collect_read_grants|1|P0c-4|a folder's IncludePath widens the assistant's reads

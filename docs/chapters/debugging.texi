@@ -733,9 +733,11 @@ Algol 68, and the DAP client for @file{.go} (Delve), @file{.rs} (gdb) and
 
 When an @file{xwperc} in the folder you started in names a debugger
 other than yours (@code{Debugger}), the first session of a file whose
-type does not pick one asks before it starts it: @samp{Run it} starts
-the folder's, @samp{Use mine} yours, @samp{Cancel} none, and the answer
-is kept for that folder.  A Scala project's @file{.bsp/@var{name}.json}
+type does not pick one asks before it starts it, in the same one box as
+the rest of the start (@samp{From ./xwperc: Debugger = pdb}, with the
+files that debugger would run): @samp{Run it} starts the folder's,
+@samp{Use mine} yours, @samp{Cancel} none, and the answer is kept for
+that folder.  A Scala project's @file{.bsp/@var{name}.json}
 is asked about the same way before its build server starts
 (@file{scala-cli.json} is read first, by name); only the very file and
 command xwpe's own @command{scala-cli setup-ide} wrote in this session
@@ -768,6 +770,14 @@ there is no @samp{Use mine}.
 @tab Only if your gdb settings allow auto-load from this folder (the
 auto-load safe-path).  The box says so; @samp{Use mine} starts gdb told
 to leave the file alone (@code{set auto-load local-gdbinit off}).
+@item gdb @tab @file{@var{program}-gdb.gdb}, @file{-gdb.py},
+@file{-gdb.scm} beside the program
+@tab Under the same setting, when gdb loads the program (the
+@file{.scm} one only in a gdb built with Guile).  @samp{Use mine} starts
+gdb told to leave them alone (@code{set auto-load gdb-scripts off},
+@code{python-scripts off}, and @code{guile-scripts off} when gdb has
+Guile), which also leaves off the scripts, pretty-printers among them,
+that your system's libraries bring.
 @item lldb-dap @tab @file{.lldbinit}
 @tab Only if your @file{~/.lldbinit} sets @code{target.load-cwd-lldbinit}.
 @item dbx @tab @file{.dbxinit} @tab Always.

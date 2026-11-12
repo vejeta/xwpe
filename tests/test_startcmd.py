@@ -314,7 +314,9 @@ def test_startcmd_escape_shown(tmp_path):
 @needs_gcc
 def test_startcmd_debugger_asks(tmp_path):
     """The folder's xwperc names pdb as the debugger for a C file: Ctrl-G R
-    builds, then asks, naming pdb against the user's gdb."""
+    builds, then asks, naming pdb against the user's gdb.  (The debugger is
+    asked about in the debug start's own box, whose head names the session
+    and whose answer is kept under that start's key, debug/pdb.)"""
     folder = Folder(tmp_path, "[Programming]\nDebugger : 5\n")
     with folder.session() as s:
         s.key(CTRL_G, "r", delay=1.0)
@@ -323,9 +325,9 @@ def test_startcmd_debugger_asks(tmp_path):
         box = _screen(s)
         s.key(ESC, delay=0.8)
         s._drain(SETTLE)
-    assert "sets the debugger to" in box and "pdb" in box, box
+    assert "sets the debug session (pdb) to" in box and "pdb" in box, box
     assert "Your own setting: gdb" in box, box
-    assert "startcmd answer Debugger cancel" in folder.traced(), folder.traced()
+    assert "startcmd answer debug/pdb cancel" in folder.traced(), folder.traced()
 
 
 PROJECT = "CMP=\t./fake-cc\nCMPFLAGS=\t-g\nEXENAME=\tdemo\nFILES=\tmain.c\n"

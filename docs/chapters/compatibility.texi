@@ -480,7 +480,8 @@ runs, and no file name is ever read as a command.
 @cindex debugger, start-up files of a folder
 The original started the debugger in the program's folder, where pdb,
 jdb and (under your auto-load setting) gdb run that folder's
-@file{.pdbrc}, @file{jdb.ini} or @file{.gdbinit} unseen; handed it a
+@file{.pdbrc}, @file{jdb.ini} or @file{.gdbinit}, and gdb a script
+beside the program (@file{@var{program}-gdb.py}), unseen; handed it a
 program named like an option as an option (a file @file{-command=x.c}
 made gdb read commands from @file{x.e}); and wrote the folder's
 @code{Arguments}, and a project file's watches and breakpoints, into the

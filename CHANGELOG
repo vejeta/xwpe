@@ -305,10 +305,15 @@ Changes
 * Starting a debugger in a folder now shows what the folder makes it
   run.  When the program's folder holds a file the debugger runs at its
   start (.pdbrc for pdb, jdb.ini or .jdbrc for jdb, .gdbinit for gdb
-  when your gdb settings allow it, .lldbinit for lldb-dap), Ctrl-G R shows
-  its lines first and asks; Use mine starts gdb without the folder's
-  .gdbinit.  The answer is kept for that folder and that text, and a
-  changed file asks again.  Arguments set by the xwperc of the folder you
+  when your gdb settings allow it, .lldbinit for lldb-dap), or a script
+  gdb loads from beside the program under the same settings
+  (<program>-gdb.py, -gdb.gdb, -gdb.scm), Ctrl-G R shows its lines first
+  and asks; Use mine starts gdb without the folder's .gdbinit and those
+  scripts.  The answer is kept for that folder and that text, and a
+  changed file asks again.  A debugger named by the xwperc of the folder
+  you started in is asked about in that same one box, not in a box of
+  its own before it, and Use mine there starts your own debugger.
+  Arguments set by the xwperc of the folder you
   started in are shown as the run command they make before the debugger
   runs them.  A program named like an option (-command=x.c) reaches the
   debugger as a file, and a value with a line break (a project file's

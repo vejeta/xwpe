@@ -195,6 +195,7 @@ static void e_d_prog_output_append(char *data, int len);
 static void e_d_prog_output_append_line(char *data, int len);
 static int  e_d_start_forget(void);       /* the start watcher (see e_run_debug) */
 static int  e_d_start_refused(FENSTER *f);
+static void e_d_debugger_commit(void);
 static int  e_d_refuse_while_running(FENSTER *f);   /* the program runs */
 static int  e_d_watch_refused(FENSTER *f);   /* a debugger without watches */
 static const char *e_d_start_label(void);
@@ -6553,17 +6554,46 @@ static void e_d_fd_nonblocking(int fd)
 #define E_D_PDB_MODULE          "pdb"
 #define E_D_GDB_LOCAL_INIT_OPT  "-iex"
 #define E_D_GDB_LOCAL_INIT_OFF  "set auto-load local-gdbinit off"
+#define E_D_GDB_SCRIPTS_OFF     "set auto-load gdb-scripts off"
+#define E_D_GDB_PYTHON_OFF      "set auto-load python-scripts off"
+#define E_D_GDB_GUILE_OFF       "set auto-load guile-scripts off"
 #define E_D_GDB_OWN_TEXT        "gdb without the folder's ./.gdbinit"
+#define E_D_GDB_OWN_SCRIPTS_TEXT "gdb without the scripts beside the program"
+#define E_D_GDB_OWN_BOTH_TEXT   "gdb without the folder's ./.gdbinit and the program's scripts"
+#define E_D_GDB_LOCAL_INIT_SHOWN "./.gdbinit"
+/* What "Use mine" tells gdb to leave alone (e_d_plan_gdb_skips). */
+#define E_D_SKIP_LOCAL_INIT     1   /* the working folder's ./.gdbinit          */
+#define E_D_SKIP_SCRIPTS        2   /* the scripts named after the program      */
+/* How gdb says it was built with Guile (gdb --configuration). */
+#define E_D_GDB_CONFIG_OPT      "--configuration"
+#define E_D_GDB_GUILE_WORD      "--with-guile"
+#define E_D_GDB_CONFIG_WHAT     "gdb --configuration"
+#define E_D_GDB_CONFIG_MAX      8192
+#define E_D_GDB_CONFIG_MS       5000
+#define E_D_GDB_GUILE_UNKNOWN   (-1)
+/* The key and file the folder's own choice of debugger is shown under. */
+#define E_D_PLAN_KEY_DEBUGGER   "Debugger"
 /* The run command that carries the program's Arguments, by debugger. */
 #define E_D_RUN_WORD            "r"
 #define E_D_DBX_RUN_WORD        "run"
 #define E_D_RUN_LINE_FMT        "%s %s"
 /* Returned by e_exec_deb when the user cancelled the start in the box. */
 #define E_D_EXEC_CANCELLED      (-1)
+/* Returned by e_exec_deb when the user chose his own debugger over the
+   one a folder named: e_start_debug plans his instead. */
+#define E_D_EXEC_USE_OWN        (-3)
+/* Returned by e_exec_deb when the debugger that would start is not on PATH. */
+#define E_D_EXEC_NOT_FOUND      (-4)
+#define E_D_NOT_IN_PATH_FMT     "Debugger '%s' not in Path"
 
 /* Where the word the debugger is started on came from (WPE_FROM_*), set by
    e_start_debug before e_exec_deb plans the start. */
 static int e_d_prog_origin = WPE_FROM_USER;
+
+/* Where the choice of debugger came from (WPE_FROM_*): WPE_FROM_FOLDER when
+   the start folder's xwperc names one the user has not answered for, so
+   the start's box shows it and "Use mine" starts his own. */
+static int e_d_deb_origin = WPE_FROM_USER;
 
 /**
  * e_d_plan_word - Add one word of the debugger's command line to its plan.
@@ -6576,6 +6606,24 @@ static int e_d_plan_word(WpeStartPlan *p, const char *word, int role, int from)
 }
 
 /**
+ * e_d_plan_debugger_word - The debugger's own name, first on its command
+ * line, and the line that says a folder chose it.
+ * @p: the plan.
+ *
+ * When the start folder's xwperc named this debugger and the user has not
+ * answered for it, the box shows "From ./xwperc: Debugger = <name>" with
+ * the rest of the start, so one box asks about the debugger and what it
+ * runs.
+ */
+static void e_d_plan_debugger_word(WpeStartPlan *p)
+{
+ e_d_plan_word(p, e_debugger, WPE_WORD_PROGRAM, e_d_deb_origin);
+ if (e_d_deb_origin == WPE_FROM_FOLDER)
+  wpe_startplan_value(p, E_STARTCMD_XWPERC, E_D_PLAN_KEY_DEBUGGER,
+                      e_deb_type_name(e_deb_type), NULL);
+}
+
+/**
  * e_d_plan_jdb_words - jdb's command line: listen on loopback for the VM.
  * @p: the plan.
  *
@@ -6584,7 +6632,7 @@ static int e_d_plan_word(WpeStartPlan *p, const char *word, int role, int from)
  */
 static void e_d_plan_jdb_words(WpeStartPlan *p)
 {
- e_d_plan_word(p, e_debugger, WPE_WORD_PROGRAM, WPE_FROM_USER);
+ e_d_plan_debugger_word(p);
  e_d_plan_word(p, E_D_JDB_LOCALE_LANG, WPE_WORD_OPTION, WPE_FROM_EDITOR);
  e_d_plan_word(p, E_D_JDB_LOCALE_COUNTRY, WPE_WORD_OPTION, WPE_FROM_EDITOR);
  e_d_plan_word(p, E_D_JDB_CONNECT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
@@ -6592,29 +6640,86 @@ static void e_d_plan_jdb_words(WpeStartPlan *p)
 }
 
 /**
+ * e_d_gdb_has_guile - Was the gdb on PATH built with Guile?
+ *
+ * Asked of gdb itself once per editor run, and only when a folder holds a
+ * script beside the program: a gdb without Guile refuses the setting that
+ * turns Guile scripts off, and runs none anyway.
+ * Return: 1 when it has Guile, 0 when not or when gdb could not tell.
+ */
+static int e_d_gdb_has_guile(void)
+{
+ static int known = E_D_GDB_GUILE_UNKNOWN;
+ char config[E_D_GDB_CONFIG_MAX];
+ char *argv[3];
+ WpeStartPlan *plan;
+ int status = 0;
+
+ if (known != E_D_GDB_GUILE_UNKNOWN)
+  return(known);
+ argv[0] = e_debugger;
+ argv[1] = E_D_GDB_CONFIG_OPT;
+ argv[2] = NULL;
+ config[0] = '\0';
+ known = 0;
+ plan = wpe_startplan_fixed(WPE_START_PROBE, E_D_GDB_CONFIG_WHAT, argv);
+ if (wpe_startplan_probe(plan, config, sizeof config, E_D_GDB_CONFIG_MS, &status,
+                         E_D_GDB_CONFIG_WHAT) == WPE_CAPTURE_ENDED &&
+     strstr(config, E_D_GDB_GUILE_WORD))
+  known = 1;
+ wpe_startplan_free(plan);
+ return(known);
+}
+
+/**
+ * e_d_plan_gdb_skip_words - The switches of "Use mine" that keep gdb from
+ * running the folder's files at its start.
+ * @p: the plan; @skips: E_D_SKIP_* of the files the folder holds.
+ *
+ * Each is read before gdb looks at the folder (-iex), so the session the
+ * user chose starts without them.  Only what the folder holds is turned
+ * off: the pretty-printers a system's own scripts bring stay on unless the
+ * program has a script of its own beside it.
+ */
+static void e_d_plan_gdb_skip_words(WpeStartPlan *p, int skips)
+{
+ if (skips & E_D_SKIP_LOCAL_INIT)
+ {
+  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ }
+ if (!(skips & E_D_SKIP_SCRIPTS))
+  return;
+ e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_word(p, E_D_GDB_SCRIPTS_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_word(p, E_D_GDB_PYTHON_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ if (!e_d_gdb_has_guile())
+  return;
+ e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_word(p, E_D_GDB_GUILE_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+}
+
+/**
  * e_d_plan_words - The command line the selected debugger is started with,
  * the same in the terminal and in the graphical editor.
  * @p: the plan; @operand: the program (for pdb and a68g the source) as a
- * path that never reads as an option; @own: 1 for "Use mine" when the
- * folder has its own ./.gdbinit.
+ * path that never reads as an option; @skips: for "Use mine", E_D_SKIP_*
+ * of the files gdb is told to leave alone, else 0.
  *
- * The debugger's name and its switches are the editor's (a debugger a
- * folder named was asked about before, e_d_approve_debugger); the program
- * is the word e_start_debug chose, from wherever it came.
+ * The debugger's name is the one the start folder named or the user's own
+ * (e_d_debugger_wanted) and its switches are the editor's; the program is
+ * the word e_start_debug chose, from wherever it came.
  */
-static void e_d_plan_words(WpeStartPlan *p, const char *operand, int own)
+static void e_d_plan_words(WpeStartPlan *p, const char *operand, int skips)
 {
  if (e_deb_type == DEB_JDB)
  {
   e_d_plan_jdb_words(p);
   return;
  }
- e_d_plan_word(p, e_debugger, WPE_WORD_PROGRAM, WPE_FROM_USER);
- if (own)
- {
-  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
-  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- }
+ e_d_plan_debugger_word(p);
+ e_d_plan_gdb_skip_words(p, skips);
  if (e_deb_type == DEB_PDB)
  {
   e_d_plan_word(p, E_D_PDB_MODULE_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
@@ -6716,8 +6821,9 @@ static void e_d_plan_project_file(WpeStartPlan *p)
  * @p: the plan; @args_from: where the Arguments came from.
  *
  * The project file when it named the program, the start folder's xwperc
- * when it set the program or its Arguments, else the start-up file the
- * working folder holds: the answer is kept for that file's folder.
+ * when it chose the debugger, set the program or its Arguments, else the
+ * start-up file the working folder holds: the answer is kept for that
+ * file's folder.
  */
 static void e_d_plan_file(WpeStartPlan *p, int args_from)
 {
@@ -6725,8 +6831,8 @@ static void e_d_plan_file(WpeStartPlan *p, int args_from)
 
  if (e__project && e_d_prog_origin == WPE_FROM_FOLDER)
   e_d_plan_project_file(p);
- else if ((e_d_prog_origin == WPE_FROM_FOLDER || args_from == WPE_FROM_FOLDER) &&
-          e_opt_start_folder())
+ else if ((e_d_prog_origin == WPE_FROM_FOLDER || args_from == WPE_FROM_FOLDER ||
+           e_d_deb_origin == WPE_FROM_FOLDER) && e_opt_start_folder())
   wpe_startplan_set_file(p, E_STARTCMD_XWPERC, e_opt_start_folder());
  else if (reads && p->cwd)
   wpe_startplan_set_file(p, reads->path, p->cwd);
@@ -6735,15 +6841,17 @@ static void e_d_plan_file(WpeStartPlan *p, int args_from)
 /**
  * e_d_plan_make - The plan of the session's debugger start.
  * @f: the source window; @operand: the program as the debugger gets it;
- * @own: 1 for the user's own plan ("Use mine": gdb leaves ./.gdbinit alone).
+ * @skips: 0 for the plan the folder makes; for the user's own plan ("Use
+ * mine"), E_D_SKIP_* of the files gdb is told to leave alone.
  *
  * The debugger runs in the program's folder.  What it runs from that folder
- * on its own (./.pdbrc, ./jdb.ini, ./.gdbinit) is listed with its text, the
- * run command with the program's Arguments is part of it, and the box says
- * the session runs the folder's own program.
+ * on its own (./.pdbrc, ./jdb.ini, ./.gdbinit) and from beside the program
+ * (gdb's <program>-gdb.py) is listed with its text, the run command with
+ * the program's Arguments is part of it, and the box says the session runs
+ * the folder's own program.
  * Return: the plan, or NULL out of memory.
  */
-static WpeStartPlan *e_d_plan_make(FENSTER *f, const char *operand, int own)
+static WpeStartPlan *e_d_plan_make(FENSTER *f, const char *operand, int skips)
 {
  WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, e_deb_type_name(e_deb_type));
  char *dir;
@@ -6756,12 +6864,31 @@ static WpeStartPlan *e_d_plan_make(FENSTER *f, const char *operand, int own)
   wpe_startplan_set_cwd(p, dir);
   FREE(dir);
  }
- e_d_plan_words(p, operand, own);
- if (!own)
-  wpe_startplan_tool_reads(p, e_deb_type_name(e_deb_type));
+ e_d_plan_words(p, operand, skips);
+ if (!skips)
+  wpe_startplan_tool_reads_of(p, e_deb_type_name(e_deb_type), operand);
  args_from = e_d_plan_arguments(p);
  e_d_plan_file(p, args_from);
  p->honest = 1;
+ return(p);
+}
+
+/**
+ * e_d_plan_own_debugger - The user's own debugger, as "Use mine" names it
+ * when the start folder chose another one.
+ * @own: the user's own debugger.
+ *
+ * Only its name: "Use mine" plans his debugger's start whole once he has
+ * chosen it (e_start_debug), with the program word that debugger takes.
+ * Return: the plan, or NULL out of memory.
+ */
+static WpeStartPlan *e_d_plan_own_debugger(int own)
+{
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, e_deb_type_name(e_deb_type));
+
+ if (!p)
+  return(NULL);
+ e_d_plan_word(p, e_deb_type_name(own), WPE_WORD_PROGRAM, WPE_FROM_USER);
  return(p);
 }
 
@@ -6791,13 +6918,51 @@ static char *e_d_plan_shown(const WpeStartPlan *p)
 }
 
 /**
+ * e_d_plan_gdb_skips - What gdb can be told to leave alone of the files
+ * the plan lists.
+ * @p: the plan.
+ * Return: E_D_SKIP_* of each kind of start-up file listed: the working
+ * folder's ./.gdbinit, and the scripts named after the program.
+ */
+static int e_d_plan_gdb_skips(const WpeStartPlan *p)
+{
+ int i, skips = 0;
+
+ for (i = 0; i < p->npath; i++)
+ {
+  if (p->path[i].role != WPE_PATH_READS)
+   continue;
+  if (strcmp(p->path[i].path, E_D_GDB_LOCAL_INIT_SHOWN) == 0)
+   skips |= E_D_SKIP_LOCAL_INIT;
+  else
+   skips |= E_D_SKIP_SCRIPTS;
+ }
+ return(skips);
+}
+
+/**
+ * e_d_plan_gdb_own_text - How the box names gdb's start without the
+ * folder's files.
+ * @skips: E_D_SKIP_* of what it leaves alone.
+ */
+static const char *e_d_plan_gdb_own_text(int skips)
+{
+ if (skips == E_D_SKIP_LOCAL_INIT)
+  return(E_D_GDB_OWN_TEXT);
+ if (skips == E_D_SKIP_SCRIPTS)
+  return(E_D_GDB_OWN_SCRIPTS_TEXT);
+ return(E_D_GDB_OWN_BOTH_TEXT);
+}
+
+/**
  * e_d_plan_offers_own - Is there a start of the user's own to offer?
  * @p: the plan.
  *
- * Only for gdb, and only when the folder holds a ./.gdbinit: gdb can be
- * told to leave it alone.  pdb has no switch for ./.pdbrc, and jdb's
- * ./jdb.ini cannot be turned off either, so the box offers Run it and
- * Cancel only.
+ * Only for gdb, and only when the folder holds a ./.gdbinit or a script
+ * beside the program: gdb can be told to leave them alone.  pdb has no
+ * switch for ./.pdbrc, and jdb's ./jdb.ini cannot be turned off either, so
+ * the box offers Run it and Cancel only.  (A debugger the folder chose is
+ * offered against the user's own in e_d_plan_approved.)
  * Return: 1 when "Use mine" can be offered.
  */
 static int e_d_plan_offers_own(const WpeStartPlan *p)
@@ -6806,41 +6971,74 @@ static int e_d_plan_offers_own(const WpeStartPlan *p)
 }
 
 /**
+ * e_d_plan_set_own - Give the plan the start "Use mine" makes, and name it
+ * for the box.
+ * @f: the source window; @p: the plan; @operand: the program; @show: its
+ * own text is set.
+ * Return: 1 when "Use mine" is the user's own debugger in place of the
+ * one the folder chose, else 0.
+ */
+static int e_d_plan_set_own(FENSTER *f, WpeStartPlan *p, const char *operand,
+                            E_STARTPLAN_SHOW *show)
+{
+ int skips;
+
+ show->own = NULL;
+ if (e_d_deb_origin == WPE_FROM_FOLDER)
+ {
+  wpe_startplan_set_own(p, e_d_plan_own_debugger(e_opt_own_debugger()));
+  show->own = e_deb_type_name(e_opt_own_debugger());
+  return(1);
+ }
+ if (!e_d_plan_offers_own(p))
+  return(0);
+ skips = e_d_plan_gdb_skips(p);
+ wpe_startplan_set_own(p, e_d_plan_make(f, operand, skips));
+ show->own = e_d_plan_gdb_own_text(skips);
+ return(0);
+}
+
+/**
  * e_d_plan_approved - Plan the session's debugger start and ask when the
  * folder decided something about it.
  * @f: the source window; @prog: the program, or the source for pdb and
- * a68g, or jdb's main class.
+ * a68g, or jdb's main class; @use_own_debugger: set to 1 when the user
+ * answered "Use mine" to a debugger the folder chose.
  *
- * A file named like an option ("-x.c" builds "-x.e") reaches the debugger
- * as "./-x.e", a file, never as gdb's "-x" reading commands from ".e".
+ * One box per start: the debugger a folder chose, the files it runs from
+ * the folder and the Arguments it is handed are shown together.  A file
+ * named like an option ("-x.c" builds "-x.e") reaches the debugger as
+ * "./-x.e", a file, never as gdb's "-x" reading commands from ".e".
  * Return: the plan answered for (the caller frees it), or NULL when the
- * user cancelled or it was refused (the status row says why).
+ * user cancelled, chose his own debugger, or it was refused (the status
+ * row says why).
  */
-static WpeStartPlan *e_d_plan_approved(FENSTER *f, const char *prog)
+static WpeStartPlan *e_d_plan_approved(FENSTER *f, const char *prog, int *use_own_debugger)
 {
  char operand[PATH_MAX + 2], what[E_D_PLAN_WHAT_MAX];
  E_STARTPLAN_SHOW show;
  WpeStartPlan *p;
  char *shown;
- int verdict;
+ int verdict, swaps;
 
+ *use_own_debugger = 0;
  operand[0] = '\0';
  if (prog && prog[0] && wpe_startplan_operand(operand, sizeof operand, NULL, prog))
   return(NULL);
  if (!(p = e_d_plan_make(f, operand, 0)))
   return(NULL);
- if (e_d_plan_offers_own(p))
-  wpe_startplan_set_own(p, e_d_plan_make(f, operand, 1));
+ swaps = e_d_plan_set_own(f, p, operand, &show);
  shown = e_d_plan_shown(p);
  snprintf(what, sizeof what, E_D_PLAN_WHAT_FMT, e_deb_type_name(e_deb_type));
  show.who = E_D_PLAN_WHO;
  show.what = what;
  show.shown = shown ? shown : "";
- show.own = p->own ? E_D_GDB_OWN_TEXT : NULL;
  verdict = e_startplan_approve(f, p, &show);
  if (shown)
   FREE(shown);
- if (verdict == WPE_STARTCMD_CANCEL)
+ if (verdict == WPE_STARTCMD_USE_OWN && swaps)
+  *use_own_debugger = 1;
+ if (verdict == WPE_STARTCMD_CANCEL || *use_own_debugger)
  {
   wpe_startplan_free(p);
   return(NULL);
@@ -7592,6 +7790,25 @@ static int e_d_start_in_script(FENSTER *f, WpeStartPlan *plan)
 #endif
 
 /**
+ * e_d_debugger_missing - Is the debugger about to start missing from PATH?
+ * @f: the source window.
+ *
+ * Asked of the debugger that will start, after the box: "Use mine" may
+ * start the user's own where the folder's one is not installed.
+ * Return: 1 when it is not on PATH (said in a box), else 0.
+ */
+static int e_d_debugger_missing(FENSTER *f)
+{
+ char line[PATH_MAX];
+
+ if (!e_test_command(e_debugger))
+  return(0);
+ snprintf(line, sizeof line, E_D_NOT_IN_PATH_FMT, e_debugger);
+ e_error(line, 0, f->fb);
+ return(1);
+}
+
+/**
  * e_d_debugger_launch - Start the session's debugger, the way this
  * display runs it.
  * @f: the source window; @plan: its answered plan.
@@ -7612,21 +7829,35 @@ static int e_d_debugger_launch(FENSTER *f, WpeStartPlan *plan)
  * a68g, or jdb's main class.
  *
  * The start is planned first (e_d_plan_approved): when the folder decided
- * something about it (a start-up file the debugger runs, the Arguments its
- * run command carries, a program outside the folder), the user sees it and
- * chooses before anything starts.
+ * something about it (the debugger itself, a start-up file the debugger
+ * runs, the Arguments its run command carries, a program outside the
+ * folder), the user sees it and chooses before anything starts.  Only the
+ * debugger that will start is then looked for on PATH and chosen for
+ * good (e_d_debugger_commit).
  * Return: 1 when it runs, 0 when it could not be started, E_D_EXEC_CANCELLED
- * when the user said no (the status row says so).
+ * when the user said no (the status row says so), E_D_EXEC_USE_OWN when
+ * he chose his own debugger over the folder's, E_D_EXEC_NOT_FOUND when the
+ * debugger is not on PATH (said in a box).
  */
 int e_exec_deb(FENSTER *f, char *prog)
 {
  WpeStartPlan *plan;
- int ret;
+ int ret, use_own_debugger;
 
  if (e_d_swtch)
   return(1);
- if (!(plan = e_d_plan_approved(f, prog)))
+ if (!(plan = e_d_plan_approved(f, prog, &use_own_debugger)))
+ {
+  if (use_own_debugger)
+   return(E_D_EXEC_USE_OWN);
   return(E_D_EXEC_CANCELLED);
+ }
+ if (e_d_debugger_missing(f))
+ {
+  wpe_startplan_free(plan);
+  return(E_D_EXEC_NOT_FOUND);
+ }
+ e_d_debugger_commit();
  e_d_swtch = 1;
  e_d_cut_reset();
  if (e_deb_type == DEB_JDB)
@@ -11857,6 +12088,25 @@ static char *e_d_gdbmi_pick(void)
  return(E_D_GDBMI_SWITCH);
 }
 
+/**
+ * e_d_gdbmi_wanted - The switch the next gdb session would start with,
+ * looked at without choosing it.
+ *
+ * The same answer e_d_gdbmi_pick gives, without what picking does (the
+ * interface state reset, a pending fall-back to the line interface used
+ * up): the start's box shows gdb's command line before the user says
+ * whether gdb or his own debugger starts, or nothing at all.
+ * Return: the switch, or NULL for the line interface.
+ */
+static char *e_d_gdbmi_wanted(void)
+{
+ const char *want = getenv(E_D_GDBMI_ENV);
+
+ if (e_d_mi.force_cli || !want || strcmp(want, E_D_GDBMI_WORD_MI) != 0)
+  return(NULL);
+ return(E_D_GDBMI_SWITCH);
+}
+
 /** Message shown when the source's path is too long to hand to a debugger. */
 #define E_D_PATH_TOO_LONG_LINE "Debugger not started: the file path is too long"
 
@@ -11922,7 +12172,6 @@ static const char *const e_d_type_names[] = {
  "gdb", "sdb", "dbx", "xdb", "jdb", "pdb", "a68g", "dap"
 };
 #define E_D_TYPE_NAMES ((int)(sizeof e_d_type_names / sizeof e_d_type_names[0]))
-#define E_D_WHAT_DEBUGGER "debugger"
 
 /**
  * e_deb_type_name - The debugger a type starts, as the user knows it.
@@ -11947,56 +12196,185 @@ static int e_d_ends_with(const char *name, const char *suffix)
 }
 
 /**
- * e_d_debugger_by_extension - Does the file's own kind choose the debugger?
- * @name: the file to debug.
+ * e_d_folder_debugger - The debugger to plan when the start folder's
+ * xwperc may name one.
  *
- * Java, Python and Algol 68 sources get their own debugger whatever the
- * options say, so the debugger a folder names does not run for them.
- * Return: 1 for such a file.
+ * A debugger the user counts as his (his own, one he picked in Options, one
+ * he said Run it to in that folder before) is planned as his; one he
+ * answered "Use mine" for starts his own without a question; any other the
+ * folder names is planned as the folder's choice, which the start's one box
+ * shows with the rest of the start.
+ * Return: the debugger's type; e_d_deb_origin says where it came from.
  */
-static int e_d_debugger_by_extension(const char *name)
+static int e_d_folder_debugger(void)
 {
- return(e_d_ends_with(name, ".java") || e_d_ends_with(name, ".py") ||
-        e_d_ends_with(name, ".a68") || e_d_ends_with(name, ".alg"));
+ int named = e_opt_named_debugger(), verdict;
+ const char *folder = e_opt_start_folder();
+
+ e_d_deb_origin = WPE_FROM_USER;
+ if (named == E_OPT_DEBUGGER_UNSET || !folder)
+  return(e_deb_type);
+ verdict = wpe_startcmd_check(folder, WPE_STARTCMD_KEY_DEBUGGER, e_deb_type_name(named));
+ if (verdict == WPE_STARTCMD_RUN)
+  return(named);
+ if (verdict == WPE_STARTCMD_USE_OWN)
+  return(e_opt_own_debugger());
+ e_d_deb_origin = WPE_FROM_FOLDER;
+ return(named);
 }
 
 /**
- * e_d_approve_debugger - Ask before the debugger a start-folder xwperc names starts.
+ * e_d_debugger_of_kind - The debugger the file's own kind picks.
  * @f: the source window.
  *
- * Only when the folder's file names a debugger other than the user's own,
- * and the file's kind does not choose one anyway.  "Use mine" starts his.
- * Return: 0 to go on (e_deb_type is the one to start), -1 when cancelled.
+ * gdb cannot debug Java bytecode or Python scripts: a .java file gets jdb,
+ * a .py file pdb, whatever the options say.  The switch is said on the
+ * status row, not in a box: the user asked to run, and a box would make him
+ * dismiss it before the very command he pressed does anything.  Algol 68
+ * has two toolchains: ga68 (a GCC front-end, so gdb debugs the built
+ * program) and a68g (the interpreter, with its own --monitor on the
+ * source); the debugger follows the configured compiler, silently.
+ * Return: its type, or E_OPT_DEBUGGER_UNSET when the kind picks none.
  */
-static int e_d_approve_debugger(FENSTER *f)
+static int e_d_debugger_of_kind(FENSTER *f)
 {
- int named = e_opt_named_debugger(), own = e_opt_own_debugger(), verdict;
- E_STARTCMD c;
+ if (e_d_ends_with(e_d_file, ".java"))
+ {
+  if (e_deb_type != DEB_JDB)
+   e_d_pending_status = E_D_SWITCH_JDB_LINE;
+  return(DEB_JDB);
+ }
+ if (e_d_ends_with(e_d_file, ".py"))
+ {
+  if (e_deb_type != DEB_PDB)
+   e_d_pending_status = E_D_SWITCH_PDB_LINE;
+  return(DEB_PDB);
+ }
+ if (e_d_ends_with(e_d_file, ".a68") || e_d_ends_with(e_d_file, ".alg"))
+ {
+  /* e_algol68_use_ga68_in sniffs the file's full path (dir + name), so a
+     source outside the current directory is still detected correctly. */
+  if (e_algol68_use_ga68_in(f->dirct, e_d_file))
+   return(DEB_GDB);
+  return(DEB_A68G);
+ }
+ return(E_OPT_DEBUGGER_UNSET);
+}
 
- if (named == E_OPT_DEBUGGER_UNSET || e_d_debugger_by_extension(e_d_file))
-  return(0);
- c.folder = e_opt_start_folder();
- c.source = E_STARTCMD_XWPERC;
- c.who = E_STARTCMD_XWPERC_WHO;
- c.key = WPE_STARTCMD_KEY_DEBUGGER;
- c.what = E_D_WHAT_DEBUGGER;
- c.text = e_deb_type_name(named);
- c.own = e_deb_type_name(own);
- verdict = e_startcmd_approve(f, &c);
- if (verdict == WPE_STARTCMD_CANCEL)
-  return(-1);
- if (verdict == WPE_STARTCMD_USE_OWN)
-  e_deb_type = own;
- else
-  e_deb_type = named;
- return(0);
+/**
+ * e_d_debugger_wanted - The debugger this start plans first.
+ * @f: the source window.
+ *
+ * The file's kind decides when it can (a folder's choice does not run for
+ * a Java, Python or Algol 68 file); otherwise the start folder's choice or
+ * the user's own (e_d_folder_debugger).
+ * Return: the debugger's type.
+ */
+static int e_d_debugger_wanted(FENSTER *f)
+{
+ int kind = e_d_debugger_of_kind(f);
+
+ if (kind == E_OPT_DEBUGGER_UNSET)
+  return(e_d_folder_debugger());
+ e_d_deb_origin = WPE_FROM_USER;
+ return(kind);
+}
+
+/* Each debugger's program and its switch, by type; a type the editor does
+   not know starts gdb, whose switch is the interface it speaks. */
+typedef struct {
+ int type;
+ char *program;
+ char *swtch;
+} E_D_DEBUGGER_PROGRAM;
+
+static E_D_DEBUGGER_PROGRAM e_d_debugger_programs[] = {
+ { DEB_SDB,  "sdb",     NULL },
+ { DEB_DBX,  "dbx",     "-i" },
+ { DEB_XDB,  "xdb",     "-L" },
+ { DEB_JDB,  "jdb",     NULL },
+ { DEB_PDB,  "python3", NULL },
+ { DEB_A68G, "a68g",    "--monitor" },
+};
+#define E_D_DEBUGGER_PROGRAMS \
+ ((int)(sizeof e_d_debugger_programs / sizeof e_d_debugger_programs[0]))
+#define E_D_GDB_PROGRAM "gdb"
+
+/**
+ * e_d_select_debugger - Make @type the debugger this start plans.
+ * @type: an e_deb_type value.
+ *
+ * Sets the debugger in force and the program and switch its plan shows.
+ * gdb's interface is only looked at here (e_d_gdbmi_wanted): choosing it
+ * uses up a pending fall-back and resets the interface state, so that is
+ * done for the debugger that starts, once its start is approved
+ * (e_d_debugger_commit).  A "Use mine" that starts the user's own debugger
+ * in place of the folder's selects again.
+ */
+static void e_d_select_debugger(int type)
+{
+ int i;
+
+ e_deb_type = type;
+ for (i = 0; i < E_D_DEBUGGER_PROGRAMS; i++)
+  if (e_d_debugger_programs[i].type == type)
+  {
+   e_debugger = e_d_debugger_programs[i].program;
+   e_deb_swtch = e_d_debugger_programs[i].swtch;
+   return;
+  }
+ e_debugger = E_D_GDB_PROGRAM;
+ e_deb_swtch = e_d_gdbmi_wanted();
+}
+
+/**
+ * e_d_debugger_commit - Choose for good the debugger whose start the user
+ * approved.
+ *
+ * For gdb that is the interface it speaks (e_d_gdbmi_pick), the same
+ * switch its plan showed: a pending fall-back to the line interface is used
+ * up only by the gdb that actually starts.
+ */
+static void e_d_debugger_commit(void)
+{
+ if (strcmp(e_debugger, E_D_GDB_PROGRAM) == 0)
+  e_deb_swtch = e_d_gdbmi_pick();
+}
+
+/**
+ * e_d_start_planned - Plan and start one debugger on the file to debug.
+ * @cn: the editor's windows; @f: the source window; @type: the debugger.
+ *
+ * Selects it, picks the word it is started on (the project's program, the
+ * built program, or for pdb and a68g the source), and starts it through
+ * its plan.
+ * Return: as e_exec_deb.
+ */
+static int e_d_start_planned(ECNT *cn, FENSTER *f, int type)
+{
+ char estr[PATH_MAX];
+
+ e_d_select_debugger(type);
+ jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
+           e_d_file, e_deb_type, e_s_prog.comp_sw);
+ if (e__project)
+ {
+  e_d_prog_origin = WPE_FROM_FOLDER;
+  return(e_exec_deb(f, e_s_prog.exe_name));
+ }
+ if (e_d_pick_start_arg(cn, f, estr, sizeof(estr)))
+ {
+  e_error(E_D_PATH_TOO_LONG_LINE, 0, f->fb);
+  return(E_D_EXEC_CANCELLED);
+ }
+ jdb_trace("e_start_debug: launching '%s %s'\n", e_debugger, estr);
+ return(e_exec_deb(f, estr));
 }
 
 int e_start_debug(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int i, file;
- char estr[PATH_MAX];
 
  e_d_pending_status = NULL;
  efildes[0] = efildes[1] = -1;
@@ -12056,73 +12434,18 @@ int e_start_debug(FENSTER *f)
  e_d_out_clear();
  if (!e_d_file_sendable(f))
   return(-1);
- if (e_d_approve_debugger(f))
-  return(-1);
- /* Auto-select debugger by file extension.
-    gdb cannot debug Java bytecode or Python scripts.  The switch is said on
-    the status row, not in a box: the user asked to run, and a box would make
-    him dismiss it before the very command he pressed does anything. */
- { int _l = strlen(e_d_file);
-   if (_l > 5 && !strcmp(e_d_file + _l - 5, ".java"))
-   {
-    if (e_deb_type != DEB_JDB)
-     e_d_pending_status = E_D_SWITCH_JDB_LINE;
-    e_deb_type = DEB_JDB;
-   }
-   else if (_l > 3 && !strcmp(e_d_file + _l - 3, ".py"))
-   {
-    if (e_deb_type != DEB_PDB)
-     e_d_pending_status = E_D_SWITCH_PDB_LINE;
-    e_deb_type = DEB_PDB;
-   }
-   else if ((_l > 4 && !strcmp(e_d_file + _l - 4, ".a68")) ||
-            (_l > 4 && !strcmp(e_d_file + _l - 4, ".alg")))
-   {
-    /* Two Algol 68 toolchains: ga68 (a GCC front-end -> native binary, so
-       gdb debugs the compiled .e, breaking at __algol68_main) and a68g (the
-       Genie interpreter -> its own --monitor on the source).  Follow the
-       configured compiler so the debugger matches what built the program.
-       Auto-selected silently -- no modal notice, which would block the very
-       Ctrl-G R the user just pressed.  e_algol68_use_ga68_in sniffs the file's
-       full path (dir + name), so a source outside the current directory is
-       still detected correctly. */
-    e_deb_type = e_algol68_use_ga68_in(f->dirct, e_d_file) ? DEB_GDB : DEB_A68G;
-   }
- }
- jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
-           e_d_file, e_deb_type, e_s_prog.comp_sw);
- if (e_deb_type == DEB_SDB) {  e_debugger = "sdb";  e_deb_swtch = NULL;  }
- else if (e_deb_type == DEB_DBX) {  e_debugger = "dbx";  e_deb_swtch = "-i";  }
- else if (e_deb_type == DEB_XDB) {  e_debugger = "xdb";  e_deb_swtch = "-L";  }
- else if (e_deb_type == DEB_JDB) {  e_debugger = "jdb";  e_deb_swtch = NULL;  }
- else if (e_deb_type == DEB_PDB) {  e_debugger = "python3";  e_deb_swtch = NULL;  }
- else if (e_deb_type == DEB_A68G) {  e_debugger = "a68g";  e_deb_swtch = "--monitor";  }
- else {  e_debugger = "gdb";  e_deb_swtch = e_d_gdbmi_pick();  }
- if (e_test_command(e_debugger))
- {
-  snprintf(estr, sizeof(estr), "Debugger \'%s\' not in Path", e_debugger);
-  e_error(estr, 0, f->fb);
-  return(-1);
- }
  /* Note: e_sys_ini()/e_sys_end() were here originally but they cause
     screen flicker (rmcup/smcup) which is unnecessary for the gdb fork.
     The pty handles program output; no screen switching needed. */
- if (e__project)
+ file = e_d_start_planned(cn, f, e_d_debugger_wanted(f));
+ if (file == E_D_EXEC_USE_OWN)
  {
-  e_d_prog_origin = WPE_FROM_FOLDER;
-  file = e_exec_deb(f, e_s_prog.exe_name);
+  /* "Use mine" on the debugger the folder named: the user's own is planned
+     whole, with the word it is started on, and starts in its place. */
+  e_d_deb_origin = WPE_FROM_USER;
+  file = e_d_start_planned(cn, f, e_opt_own_debugger());
  }
- else
- {
-  if (e_d_pick_start_arg(cn, f, estr, sizeof(estr)))
-  {
-   e_error(E_D_PATH_TOO_LONG_LINE, 0, f->fb);
-   return(-1);
-  }
-  jdb_trace("e_start_debug: launching '%s %s'\n", e_debugger, estr);
-  file = e_exec_deb(f, estr);
- }
- if (file == E_D_EXEC_CANCELLED)
+ if (file == E_D_EXEC_CANCELLED || file == E_D_EXEC_NOT_FOUND || file == E_D_EXEC_USE_OWN)
   return(-1);
  if (file == 0)
  {

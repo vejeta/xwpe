@@ -240,6 +240,7 @@ int wpe_startplan_run_to_file(WpeStartPlan *p, const char *path, long deadline_m
 int wpe_startplan_env_name_allowed(const char *name);
 void wpe_startplan_trace_set(void (*trace)(const char *line));
 int wpe_startplan_tool_reads(WpeStartPlan *p, const char *tool);
+int wpe_startplan_tool_reads_of(WpeStartPlan *p, const char *tool, const char *program);
 int wpe_startplan_tool_reads_known(const char *tool);
 int wpe_startplan_input(WpeStartPlan *p, const char *text, int from, const char *source);
 int wpe_startplan_line_ok(const char *value);

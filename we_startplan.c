@@ -2020,6 +2020,12 @@ int wpe_startplan_reads_too_long(const WpeStartPlan *p)
    - gdb: gdb manual, "Init File in the Current Directory" -- ./.gdbinit is
      read only when the auto-load safe-path admits the folder; the -iex
      "set auto-load local-gdbinit off" of "Use mine" skips it (measured).
+     gdb manual, "Auto-loading extensions" ("objfile-gdb.ext file") -- a
+     script named after the program, <program>-gdb.gdb, -gdb.py or
+     -gdb.scm, beside it (its real path first, then the name it was given)
+     runs under the same safe-path rule; "set auto-load gdb-scripts off",
+     "python-scripts off" and "guile-scripts off" skip them (measured on
+     gdb 18.1, which has no Guile and refuses the last setting).
    - lldb: lldb(1) -- ./.lldbinit only with target.load-cwd-lldbinit true;
      lldb-dap reads init files the same way (to be measured on lldb-dap).
    - dbx: IBM AIX 7.2, "Customizing the dbx debugging environment" --
@@ -2036,20 +2042,30 @@ typedef struct {
                                 of the user's the editor cannot see                 */
  int enabled;                /* 0: a tool the editor does not start                 */
  const char *note;           /* the box's sentence for a conditional file           */
+ int of_program;             /* 1: file is a suffix to the program's own name, and
+                                the script lies beside the program               */
 } startplan_startup_file;
 
+/* The box's sentences for the files gdb runs only under the user's settings. */
+#define STARTPLAN_GDB_AUTOLOAD_NOTE \
+ "gdb runs it only if your gdb settings allow auto-load from this folder"
+#define STARTPLAN_GDB_GUILE_NOTE \
+ "gdb runs it only if it has Guile and your gdb settings allow auto-load from this folder"
+
 static const startplan_startup_file startplan_startup_files[] = {
- { "pdb",  ".pdbrc",    0, 1, 1, NULL },
- { "jdb",  "jdb.ini",   0, 1, 1, NULL },
- { "jdb",  ".jdbrc",    1, 1, 1, NULL },
- { "gdb",  ".gdbinit",  0, 0, 1,
-   "gdb runs it only if your gdb settings allow auto-load from this folder" },
+ { "pdb",  ".pdbrc",    0, 1, 1, NULL, 0 },
+ { "jdb",  "jdb.ini",   0, 1, 1, NULL, 0 },
+ { "jdb",  ".jdbrc",    1, 1, 1, NULL, 0 },
+ { "gdb",  ".gdbinit",  0, 0, 1, STARTPLAN_GDB_AUTOLOAD_NOTE, 0 },
+ { "gdb",  "-gdb.gdb",  0, 0, 1, STARTPLAN_GDB_AUTOLOAD_NOTE, 1 },
+ { "gdb",  "-gdb.py",   0, 0, 1, STARTPLAN_GDB_AUTOLOAD_NOTE, 1 },
+ { "gdb",  "-gdb.scm",  0, 0, 1, STARTPLAN_GDB_GUILE_NOTE, 1 },
  { "lldb", ".lldbinit", 0, 0, 1,
-   "lldb runs it only if your ~/.lldbinit says load-cwd-lldbinit" },
- { "dbx",  ".dbxinit",  0, 1, 1, NULL },
- { "xdb",  ".xdbrc",    0, 1, 1, NULL },
- { "perl", ".perldb",   0, 1, 0, NULL },
- { NULL,   NULL,        0, 0, 0, NULL }
+   "lldb runs it only if your ~/.lldbinit says load-cwd-lldbinit", 0 },
+ { "dbx",  ".dbxinit",  0, 1, 1, NULL, 0 },
+ { "xdb",  ".xdbrc",    0, 1, 1, NULL, 0 },
+ { "perl", ".perldb",   0, 1, 0, NULL, 0 },
+ { NULL,   NULL,        0, 0, 0, NULL, 0 }
 };
 
 /**
@@ -2137,25 +2153,24 @@ static void startplan_read_startup(WpeStartPath *s, const char *full)
 }
 
 /**
- * startplan_add_startup - List one start-up file the working folder holds.
- * @p: the plan; @row: the table's row.
- * Return: 1 when the folder holds it (listed, or the user's own),
- * 0 when it does not, -1 out of memory.
+ * startplan_add_startup_at - List one start-up file, when it exists.
+ * @p: the plan; @row: the table's row; @full: the file's path; @given: the
+ * path the box shows; @name: its name, to tell the user's own by; @st:
+ * receives the file's identity.
+ * Return: 1 when the file exists (listed, or the user's own), 0 when it
+ * does not, -1 out of memory.
  */
-static int startplan_add_startup(WpeStartPlan *p, const startplan_startup_file *row)
+static int startplan_add_startup_at(WpeStartPlan *p, const startplan_startup_file *row,
+                                    const char *full, const char *given, const char *name,
+                                    struct stat *st)
 {
- char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX];
- struct stat st;
  WpeStartPath *s;
 
- if (snprintf(full, sizeof full, "%s%c%s", p->cwd, STARTPLAN_SEP, row->file) >= (int)sizeof full)
+ if (stat(full, st) != 0)
   return 0;
- if (stat(full, &st) != 0)
-  return 0;
- if (startplan_is_users_startup(row->file, &st))
+ if (startplan_is_users_startup(name, st))
   return 1;
- snprintf(given, sizeof given, ".%c%s", STARTPLAN_SEP, row->file);
- if (wpe_startplan_path(p, given, WPE_PATH_READS, WPE_FROM_FOLDER, row->file, p->cwd) < 0)
+ if (wpe_startplan_path(p, given, WPE_PATH_READS, WPE_FROM_FOLDER, name, p->cwd) < 0)
   return -1;
  s = &p->path[p->npath - 1];
  s->note = row->note;
@@ -2165,17 +2180,151 @@ static int startplan_add_startup(WpeStartPlan *p, const startplan_startup_file *
 }
 
 /**
+ * startplan_add_startup - List one start-up file the working folder holds.
+ * @p: the plan; @row: the table's row.
+ * Return: 1 when the folder holds it (listed, or the user's own),
+ * 0 when it does not, -1 out of memory.
+ */
+static int startplan_add_startup(WpeStartPlan *p, const startplan_startup_file *row)
+{
+ char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX];
+ struct stat st;
+
+ if (snprintf(full, sizeof full, "%s%c%s", p->cwd, STARTPLAN_SEP, row->file) >= (int)sizeof full)
+  return 0;
+ snprintf(given, sizeof given, ".%c%s", STARTPLAN_SEP, row->file);
+ return startplan_add_startup_at(p, row, full, given, row->file, &st);
+}
+
+/**
+ * startplan_last_name - The last component of a path.
+ */
+static const char *startplan_last_name(const char *path)
+{
+ const char *slash = strrchr(path, STARTPLAN_SEP);
+
+ if (slash)
+  return slash + 1;
+ return path;
+}
+
+/**
+ * startplan_program_paths - Where a program's own script would lie, as the
+ * working folder names the program and as the box shows it.
+ * @p: the plan, its working folder set; @program: the program as the tool
+ * gets it; @suffix: the script's ending; @full/@given: receive the paths.
+ * Return: 0, or -1 when they do not fit.
+ */
+static int startplan_program_paths(const WpeStartPlan *p, const char *program, const char *suffix,
+                                   char *full, char *given, size_t sz)
+{
+ int n, m;
+
+ if (program[0] == STARTPLAN_SEP)
+ {
+  n = snprintf(full, sz, "%s%s", program, suffix);
+  m = snprintf(given, sz, "%s%s", program, suffix);
+ }
+ else if (strncmp(program, "." STARTPLAN_SEP_TEXT, 2) == 0)
+ {
+  n = snprintf(full, sz, "%s%c%s%s", p->cwd, STARTPLAN_SEP, program + 2, suffix);
+  m = snprintf(given, sz, "%s%s", program, suffix);
+ }
+ else
+ {
+  n = snprintf(full, sz, "%s%c%s%s", p->cwd, STARTPLAN_SEP, program, suffix);
+  m = snprintf(given, sz, ".%c%s%s", STARTPLAN_SEP, program, suffix);
+ }
+ if (n < 0 || m < 0 || (size_t)n >= sz || (size_t)m >= sz)
+  return -1;
+ return 0;
+}
+
+/**
+ * startplan_program_real - The script beside the program's real file, when
+ * the program is reached through a link.
+ * @full: the script as the program was named; @suffix: its ending; @out:
+ * receives the script beside the program's real path.
+ * Return: 1 when that is another path, else 0.
+ */
+static int startplan_program_real(const char *full, const char *suffix, char *out, size_t sz)
+{
+ char program[WPE_STARTPLAN_PATH_MAX], real[PATH_MAX];
+ size_t len = strlen(full) - strlen(suffix);
+ int n;
+
+ if (len >= sizeof program)
+  return 0;
+ memcpy(program, full, len);
+ program[len] = '\0';
+ if (!realpath(program, real) || strcmp(real, program) == 0)
+  return 0;
+ n = snprintf(out, sz, "%s%s", real, suffix);
+ return n >= 0 && (size_t)n < sz;
+}
+
+/**
+ * startplan_add_program_startup - List a script named after the program
+ * that the tool runs from beside it (gdb's <program>-gdb.py).
+ * @p: the plan; @row: the table's row; @program: the program as the tool
+ * gets it, or NULL.
+ *
+ * gdb looks beside the program's real file first, then beside the name it
+ * was given, so a program reached through a link has two places; the same
+ * file in both is listed once.
+ * Return: 1 when one was found, 0 when none, -1 out of memory.
+ */
+static int startplan_add_program_startup(WpeStartPlan *p, const startplan_startup_file *row,
+                                         const char *program)
+{
+ char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX];
+ char real[WPE_STARTPLAN_PATH_MAX];
+ struct stat st, real_st;
+ int rc, rc_real;
+
+ if (!program || !*program)
+  return 0;
+ if (startplan_program_paths(p, program, row->file, full, given, sizeof given) < 0)
+  return 0;
+ rc = startplan_add_startup_at(p, row, full, given, startplan_last_name(full), &st);
+ if (rc < 0 || !startplan_program_real(full, row->file, real, sizeof real))
+  return rc;
+ if (stat(real, &real_st) == 0 && rc > 0 &&
+     real_st.st_dev == st.st_dev && real_st.st_ino == st.st_ino)
+  return rc;
+ rc_real = startplan_add_startup_at(p, row, real, real, startplan_last_name(real), &real_st);
+ if (rc_real < 0)
+  return -1;
+ return rc || rc_real;
+}
+
+/**
  * wpe_startplan_tool_reads - Rule 7: list what the tool runs from its folder.
  * @p: the plan, its working folder set; @tool: "gdb", "pdb", "jdb", "lldb",
  * "dbx", "xdb".
  *
- * Each start-up file of the tool the working folder holds becomes a path
- * the tool reads, with its text: the plan then asks, the box shows the
- * file's lines, and a changed file asks again.  A file that is the user's
- * own (the folder is his home) is not listed.
+ * As wpe_startplan_tool_reads_of with no program known.
  * Return: the number of files listed, or -1 out of memory.
  */
 int wpe_startplan_tool_reads(WpeStartPlan *p, const char *tool)
+{
+ return wpe_startplan_tool_reads_of(p, tool, NULL);
+}
+
+/**
+ * wpe_startplan_tool_reads_of - Rule 7: list what the tool runs from its
+ * folder and from beside the program it is started on.
+ * @p: the plan, its working folder set; @tool: "gdb", "pdb", "jdb", "lldb",
+ * "dbx", "xdb"; @program: the program as the tool gets it, or NULL.
+ *
+ * Each start-up file of the tool the working folder holds, and each script
+ * named after the program that lies beside it (gdb's <program>-gdb.py),
+ * becomes a path the tool reads, with its text: the plan then asks, the
+ * box shows the file's lines, and a changed file asks again.  A file that
+ * is the user's own (the folder is his home) is not listed.
+ * Return: the number of files listed, or -1 out of memory.
+ */
+int wpe_startplan_tool_reads_of(WpeStartPlan *p, const char *tool, const char *program)
 {
  const startplan_startup_file *row;
  int found = 0, before = 0, had, rc;
@@ -2189,7 +2338,10 @@ int wpe_startplan_tool_reads(WpeStartPlan *p, const char *tool)
   if (row->alternative && before)
    continue;
   had = p->npath;
-  rc = startplan_add_startup(p, row);
+  if (row->of_program)
+   rc = startplan_add_program_startup(p, row, program);
+  else
+   rc = startplan_add_startup(p, row);
   if (rc < 0)
    return -1;
   before = rc;

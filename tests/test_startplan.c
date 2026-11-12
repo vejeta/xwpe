@@ -716,6 +716,62 @@ static void case_startup_rows(void)
  unlink(perldb);
 }
 
+/* gdb's plan in proj with its start-up files listed for @program. */
+static WpeStartPlan *gdb_plan_of(const char *program)
+{
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, "gdb");
+ if (!p) { fail("plan", "out of memory"); exit(1); }
+ wpe_startplan_set_cwd(p, proj);
+ wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ wpe_startplan_tool_reads_of(p, "gdb", program);
+ return p;
+}
+
+static void case_startup_program_scripts(void)
+{
+ char py[PATH_ROOM], sub[PATH_ROOM], real[PATH_ROOM], script[PATH_ROOM], link[PATH_ROOM];
+ WpeStartPlan *p;
+
+ file_in(py, sizeof py, proj, "t.e-gdb.py");
+ write_file(py, "open('ran','w').close()\n");
+ p = debugger_plan(proj, "gdb");
+ expect_int("with no program known, no script named after it is listed", p->npath, 0);
+ wpe_startplan_free(p);
+ p = gdb_plan_of("t.e");
+ expect_int("gdb's t.e-gdb.py beside the program is listed", p->npath, 1);
+ expect_str("as the box shows it", p->npath ? p->path[0].path : "", "./t.e-gdb.py");
+ expect_int("as a file gdb runs", p->npath ? p->path[0].role : -1, WPE_PATH_READS);
+ expect_has("with the condition gdb runs it under", p->npath && p->path[0].note ?
+            p->path[0].note : "", "auto-load");
+ expect_int("so the plan asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ wpe_startplan_free(p);
+ p = gdb_plan_of("./t.e");
+ expect_str("a program given as ./t.e names the same script",
+            p->npath ? p->path[0].path : "", "./t.e-gdb.py");
+ wpe_startplan_free(p);
+ p = gdb_plan_of("u.e");
+ expect_int("another program's script is not this one's", p->npath, 0);
+ wpe_startplan_free(p);
+ unlink(py);
+
+ file_in(sub, sizeof sub, proj, "sub");
+ mkdir(sub, 0700);
+ file_in(real, sizeof real, sub, "real.e");
+ write_file(real, "");
+ file_in(script, sizeof script, sub, "real.e-gdb.gdb");
+ write_file(script, "shell true\n");
+ file_in(link, sizeof link, proj, "link.e");
+ if (symlink(real, link) != 0) { perror(link); exit(2); }
+ p = gdb_plan_of("link.e");
+ expect_int("a program reached through a link has its real file's script listed", p->npath, 1);
+ expect_has("by the real path", p->npath ? p->path[0].path : "", "sub/real.e-gdb.gdb");
+ wpe_startplan_free(p);
+ unlink(link);
+ unlink(script);
+ unlink(real);
+ rmdir(sub);
+}
+
 static void case_input(void)
 {
  WpeStartPlan *p;
@@ -920,6 +976,7 @@ int main(void)
  case_startup_nul();
  case_startup_at_the_limit();
  case_startup_rows();
+ case_startup_program_scripts();
  case_input();
  case_carrier();
  case_unplanned_refused();
