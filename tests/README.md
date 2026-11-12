@@ -286,7 +286,7 @@ path (`e_prog_switch` / `e_tst_dfkt` for the terminal, `we_xterm.c` for X11)
 where mapping bugs hide (an item can work from the menu while its accelerator is
 dead).  `test_*_via_<key>` / `test_chord_*` functions cover Save F2, Open F3, Find F4,
 Make F9, Run ^F9/Alt-U, Help F1, Cut/Copy/Paste/Undo/Redo, Show Buffer Alt-Y,
-Go to Line Alt-G, Toggle Breakpoint ^G B, Zoom/Next/List/Close, and the WordStar
+Go to Line (Search menu), Toggle Breakpoint ^G B, Zoom/Next/List/Close, and the WordStar
 Block chords ^K X/^K Y/^K I/^K U.  Function-key accelerators work in the X11
 suite only because of the keycode injection above (xdotool #491).
 

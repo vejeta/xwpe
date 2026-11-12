@@ -659,7 +659,8 @@
           Ctrl-F4
           Ctrl L         Repeat the last search or replace
 
-          Alt G          Goto line
+          Alt G          Goto line (plain editor, we; in wpe and xwpe
+                         Alt G is the assistant: use Search, Go to Line)
 
 
 

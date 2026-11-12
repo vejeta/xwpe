@@ -533,6 +533,32 @@ static int e_field_clipboard_len(int fetch_selection)
 }
 
 /**
+ * e_field_paste_fit - How many bytes of the clipboard line a field has room for.
+ * @text: the pasted line; @len: its bytes; @room: the free bytes in the field.
+ *
+ * A paste that does not fit stops before the first character that would run
+ * past the field's end, so the field never ends in the first bytes of a
+ * character and the text it hands over stays valid UTF-8.
+ * Return: the bytes to paste, at most @len and @room, ending between characters.
+ */
+static int e_field_paste_fit(const unsigned char *text, int len, int room)
+{
+ int used = 0;
+
+ if (len <= room)
+  return(len);
+ while (used < len)
+ {
+  int clen = e_utf8_charlen(text[used]);
+
+  if (used + clen > room)
+   break;
+  used += clen;
+ }
+ return(used);
+}
+
+/**
  * e_field_take_pasted_break - Keep a pasted line break in a field that hands
  * multi-line pastes over.
  * @tmp, @l, @jc, @max: the field's text, length, caret and room.
@@ -638,7 +664,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
       l = 0;
       jc = 0;
      }
-     if (len + l > max) len = max - l;
+     len = e_field_paste_fit(WpeEditor->f[0]->b->bf[0].s, len, max - l);
      for (i = l; i >= jc; i--)
       tmp[i+len] = tmp[i];
      for (i = jc; i < jc + len; i++)
@@ -678,7 +704,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
     l = 0;
     jc = 0;
    }
-   if (len + l > max) len = max - l;
+   len = e_field_paste_fit(WpeEditor->f[0]->b->bf[0].s, len, max - l);
    for (i = l; i >= jc; i--)
     tmp[i+len] = tmp[i];
    for (i = jc; i < jc + len; i++)

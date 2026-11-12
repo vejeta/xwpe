@@ -118,7 +118,9 @@ Search and replace.
 @item S -- Search again
 Repeat the last search.
 @item G -- Go to Line
-Jump to a specific line number.
+Jump to a specific line number.  In the programming mode (@command{wpe},
+@command{xwpe}) @kbd{Alt-G} is the assistant, so Go to Line is reached here,
+from the Search menu; only @command{we} also has it on @kbd{Alt-G}.
 @end table
 
 @subsection Block menu (@kbd{Alt-B})

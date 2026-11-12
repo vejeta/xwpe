@@ -59,21 +59,24 @@ def test_replace_all_changes_every_occurrence(xwpe):
 
 
 # --- shortcut path (#159): Search accelerators in the X11 input path ---
-# Alt-G (Go to Line) and F4 (Find) are both asserted here.  F4 is a bare
+# Go to Line (through the Search menu: Alt-G is the assistant's prefix under
+# xwpe) and F4 (Find) are both asserted here.  F4 is a bare
 # function key: it reaches xwpe only because conftest injects function keys BY
 # KEYCODE (xdotool bug #491 would otherwise deliver Alt-F4) -- see the README
 # "Function keys are injected by keycode" note.
 
-def test_goto_line_via_alt_g(xwpe):
-    """Alt-G (advertised) opens Go to Line; line 3 then typing edits line 3."""
-    xwpe.key("alt+g")                    # Go to Line
+def test_goto_line_via_the_search_menu_letter(xwpe):
+    """Alt-S then the item's letter G opens Go to Line; line 3 then typing
+    edits line 3.  Alt-G is the assistant's prefix under xwpe."""
+    xwpe.key("alt+s")                    # Search menu
+    xwpe.key("g")                        # Go to Line
     xwpe.type("3"); xwpe.key("Return")
     xwpe.type("X")
     xwpe.save()
-    assert xwpe.proc.poll() is None, "xwpe died on Alt-G"
+    assert xwpe.proc.poll() is None, "xwpe died on Search > Go to Line"
     lines = xwpe.saved_text().splitlines()
     assert len(lines) >= 3 and lines[2].startswith("X"), \
-        "Alt-G then 3 should put the cursor on line 3, got %r" % xwpe.saved_text()
+        "Search > Go to Line 3 should put the cursor on line 3, got %r" % xwpe.saved_text()
 
 
 def test_find_via_f4(xwpe):

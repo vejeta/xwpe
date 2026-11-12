@@ -240,6 +240,13 @@ Changes
   such characters puts the cursor between letters, and Go to line ignores
   them instead of dropping the digits typed before.
 
+* Pasting into a dialog field that is nearly full now stops before the
+  last whole character that fits, instead of cutting a character in half.
+
+* In the programming mode (wpe, xwpe) Alt-G is the assistant; Go to Line
+  is in the Search menu.  The manual pages, the help file and the manual now
+  say so.
+
 * Backspace in the empty last line of a file no longer ends the editor
   when the file has only one other line, and in longer files the cursor
   now goes to the end of the line above as it should; before, what you

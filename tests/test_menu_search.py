@@ -67,7 +67,7 @@ def test_replace_all_changes_every_occurrence(tmp_path):
 # --- shortcut path (#159): Search accelerators, advertised in we_menue.c ---
 
 F4 = "\033OS"            # kf4  -> Find
-GOTO = "\033g"           # Alt-G -> Go to Line
+GOTO = "\033g"           # Alt-G: Go to Line in `we`, the assistant in `wpe`
 SEARCH_AGAIN = "\x0c"    # ^L   -> Search again
 
 
