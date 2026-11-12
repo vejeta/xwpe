@@ -15,27 +15,60 @@ resources (for the X11 binaries).
 @cindex xwperc
 @cindex initialization file
 
-On startup, xwpe reads its options from a personal configuration file.
-The search order is:
+On startup, xwpe reads its options from one file.  The search order is:
 
 @enumerate
 @item
-Personal file: @file{$HOME/.xwpe/xwperc} (or @file{$HOME/.wpe/wperc}
-for @command{wpe}).
+An @file{xwperc} in the folder xwpe is started in, if there is one
+(with the limits described in @ref{Folder xwperc}).
+@item
+Your own file: @file{$XDG_CONFIG_HOME/xwpe/xwperc}, by default
+@file{~/.config/xwpe/xwperc}.  An older @file{~/.xwpe/xwperc} is copied
+there the first time.
 @item
 System-wide file: @file{/usr/local/lib/xwpe/xwperc} (or the path set
 by @code{LIBRARY_DIR} at compile time; on Debian this is
 @file{/usr/lib/xwpe/xwperc}).
 @item
-Built-in defaults (if neither file exists).
+Built-in defaults (if no file exists).
 @end enumerate
 
-The options file is a text file with @code{name = value} entries.
+The options file is a text file with @code{name : value} entries.
 It is normally written by xwpe itself when you choose
 @samp{Options @result{} Save Options} (@kbd{Alt-O S}).
 
 @strong{Warning}: if you hand-edit @file{xwperc}, any comments you add
 will be erased the next time xwpe saves the options.
+
+@subsection A folder's own xwperc
+@anchor{Folder xwperc}
+
+@cindex xwperc, in a project folder
+@cindex AIEditHook, from a project folder
+
+An @file{xwperc} in the start folder can come with a project you
+cloned, and the assistant can write one.  It still sets the tab width,
+the colours, the compilers and every other ordinary key.  It cannot set
+the keys that start a program, choose a command line, choose what the
+assistant reads, where its requests go and which certificates it
+trusts, or set the permission dial and the web switch:
+
+@code{AIBackend}, @code{AIEndpoint}, @code{AIProvider},
+@code{AIProviderName}, @code{AICAFile}, @code{AISearchURL},
+@code{AIEditHook}, @code{AIHostCommand}, @code{AIHostAdapter},
+@code{AIAgentEngine}, @code{AIReadRoots}, @code{AIPolicy}, @code{AIWeb}.
+
+These keys are read from your own file (@file{~/.config/xwpe/xwperc})
+and from the @env{XWPE_AI_*} environment variables, in every folder.
+When a folder's file names one of them, the status line says so at
+start, for example
+@samp{./xwperc may not set (only your own config may): AIEditHook},
+and the key has no effect.  When the options are saved in such a folder
+(@samp{Save Options}, @samp{Ok} in @samp{Options}, @samp{AI}, or
+@kbd{Alt-G y}), these keys go to your own file and the rest to the
+folder's file, so your hook or engine command never lands in a project
+you may share.  A file you name with @option{-sf} is your own and is
+read whole.
 
 @subsection Command-line overrides
 

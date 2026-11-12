@@ -478,11 +478,17 @@ int   wpe_ai_path_landing(struct FNST *f, const char *path, char *real, size_t s
 /* The one scope judge: where does a path land for a read (access
  * WPE_SCOPE_READ) or a write (WPE_SCOPE_WRITE), as WPE_SCOPE_INSIDE (the
  * workspace), WPE_SCOPE_GRANTED (outside, but a directory the user allowed
- * for reads) or WPE_SCOPE_OUTSIDE.  @real receives the place the path really
- * leads to when that is not the place it names; may be NULL.  Constants are
- * in we_ai_path.h. */
+ * for reads) or WPE_SCOPE_OUTSIDE, and for a write inside the workspace to a
+ * file that changes how git, the editor or the engine runs code,
+ * WPE_SCOPE_PROTECTED.  @real receives the place the path really leads to
+ * when that is not the place it names; may be NULL.  Constants are in
+ * we_ai_path.h. */
 int   wpe_ai_scope_judge(struct FNST *f, const char *path, int access,
                          char *real, size_t sz);
+/* 1 when a write to @path lands inside the workspace on such a protected
+ * file (.git, xwperc, .xwpe-ai.md, AGENTS.md, CLAUDE.md, QWEN.md, .claude,
+ * .mcp.json, .qwen, or the user's own config folder). */
+int   wpe_ai_path_protected(struct FNST *f, const char *path);
 /* The workspace's folder, absolute and malloc'd (NULL when it cannot be
  * formed): the root wpe_ai_scope_judge compares against. */
 char *wpe_ai_workspace_dir(struct FNST *f);

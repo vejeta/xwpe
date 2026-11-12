@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -195,6 +196,181 @@ static int path_under_a_grant(const char *const *grants, int ngrants, const char
  return 0;
 }
 
+/* The names directly under the workspace whose content another program runs
+   or obeys: git's own folder (hooks, and a config whose fsmonitor, sshCommand
+   or filter drivers run commands), the editor's start-folder config, the
+   instructions the assistant folds into its prompt, the instructions the
+   hosted engines read at a project's top (CLAUDE.md, QWEN.md), and their
+   project settings (hooks, MCP servers, helper commands). */
+static const char *const path_protected_names[] = {
+ ".git", "xwperc", ".xwpe-ai.md", "AGENTS.md", "CLAUDE.md", "QWEN.md", ".claude", ".mcp.json",
+ ".qwen", NULL
+};
+
+/* git's folder: protected at any depth, since a repository nested in the
+   workspace runs its own hooks and config as soon as git is used there. */
+#define PATH_GIT_NAME ".git"
+
+/* How a .git file (a worktree, a submodule) names the real git folder. */
+#define PATH_GITDIR_PREFIX "gitdir:"
+
+/**
+ * path_component_matches - Does one path component spell @name?
+ * @comp/@len: the component, not terminated; @name: the name.
+ *
+ * The match ignores case, so a ".GIT" or "Xwperc" on a filesystem that folds
+ * case (macOS, Windows shares) is the same file to this check as to the
+ * program that reads it.
+ * Return: 1 when it matches.
+ */
+static int path_component_matches(const char *comp, size_t len, const char *name)
+{
+ return strlen(name) == len && strncasecmp(comp, name, len) == 0;
+}
+
+/**
+ * path_first_component - The first component of a path relative to a folder.
+ * @rel: the relative text; @len: receives the component's length.
+ * Return: where the component starts.
+ */
+static const char *path_first_component(const char *rel, size_t *len)
+{
+ const char *end = strchr(rel, '/');
+ if (end) *len = (size_t)(end - rel);
+ else *len = strlen(rel);
+ return rel;
+}
+
+/**
+ * path_names_a_protected_top - Is the first component one of the protected names?
+ * @rel: the path relative to the workspace.
+ * Return: 1 when the file is, or lies below, one of path_protected_names.
+ */
+static int path_names_a_protected_top(const char *rel)
+{
+ size_t len;
+ const char *comp = path_first_component(rel, &len);
+ int i;
+ for (i = 0; path_protected_names[i]; i++)
+  if (path_component_matches(comp, len, path_protected_names[i])) return 1;
+ return 0;
+}
+
+/**
+ * path_passes_a_git_folder - Does any component of the path name git's folder?
+ * @rel: the path relative to the workspace.
+ * Return: 1 when some component is ".git".
+ */
+static int path_passes_a_git_folder(const char *rel)
+{
+ const char *p = rel, *end;
+ size_t len;
+ while (*p) {
+  end = strchr(p, '/');
+  if (end) len = (size_t)(end - p);
+  else len = strlen(p);
+  if (path_component_matches(p, len, PATH_GIT_NAME)) return 1;
+  if (!end) break;
+  p = end + 1;
+ }
+ return 0;
+}
+
+/**
+ * path_trim_line_end - Cut the newline and spaces that end a line read from a file.
+ * @s: the line, changed in place.
+ */
+static void path_trim_line_end(char *s)
+{
+ size_t n = strlen(s);
+ while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ' || s[n - 1] == '\t'))
+  s[--n] = '\0';
+}
+
+/**
+ * path_gitdir_of_workspace - Where a .git file at the workspace's top sends git.
+ * @rroot: the resolved workspace; @out/@sz: receive the resolved git folder.
+ *
+ * A worktree or a submodule has a ".git" file holding "gitdir: <folder>"
+ * instead of the folder itself; the hooks and the config git runs are there.
+ * Return: 1 when the workspace has such a file and the folder it names could
+ * be followed, else 0.
+ */
+static int path_gitdir_of_workspace(const char *rroot, char *out, size_t sz)
+{
+ char file[WPE_PATH_RESOLVED_MAX], line[WPE_GITDIR_LINE_MAX], target[WPE_PATH_RESOLVED_MAX];
+ const char *named;
+ struct stat st;
+ FILE *fp;
+ if (path_join(file, sizeof file, rroot, PATH_GIT_NAME) < 0) return 0;
+ if (lstat(file, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+ fp = fopen(file, "r");
+ if (!fp) return 0;
+ line[0] = '\0';
+ if (!fgets(line, sizeof line, fp)) line[0] = '\0';
+ fclose(fp);
+ if (strncmp(line, PATH_GITDIR_PREFIX, strlen(PATH_GITDIR_PREFIX)) != 0) return 0;
+ path_trim_line_end(line);
+ named = line + strlen(PATH_GITDIR_PREFIX);
+ while (*named == ' ' || *named == '\t') named++;
+ if (!*named) return 0;
+ if (named[0] == '/') snprintf(target, sizeof target, "%s", named);
+ else if (path_join(target, sizeof target, rroot, named) < 0) return 0;
+ return wpe_path_resolve(target, out, sz) == WPE_PATH_RESOLVED;
+}
+
+/**
+ * wpe_path_is_protected - Is a place under the workspace one whose content runs code?
+ * @rroot: the workspace, resolved; @rpath: the file, resolved.
+ *
+ * What the user gains: an assistant allowed to edit the project freely
+ * still cannot, without a question, plant a git hook, a git config that runs
+ * a command on the next "git status", a start-folder xwperc that names a
+ * program, new instructions for itself, or hosted-engine settings that run
+ * a helper on the next session.  Those files are inside the workspace, so
+ * the plain inside/outside answer let them through under edits and auto;
+ * each such write now asks, and says why.
+ * Return: 1 when @rpath is one of path_protected_names at the workspace's
+ * top or below one, has a ".git" component at any depth, or lies in the
+ * folder a top-level .git file names; 0 otherwise, and for a path that is
+ * not under @rroot at all.
+ */
+int wpe_path_is_protected(const char *rroot, const char *rpath)
+{
+ char gitdir[WPE_PATH_RESOLVED_MAX];
+ const char *rel;
+ size_t n;
+ if (!rroot || !rpath || !path_is_under(rroot, rpath)) return 0;
+ n = strlen(rroot);
+ if (n <= 1) n = 0;
+ rel = rpath + n;
+ while (*rel == '/') rel++;
+ if (!*rel) return 0;                        /* the workspace folder itself */
+ if (path_names_a_protected_top(rel)) return 1;
+ if (path_passes_a_git_folder(rel)) return 1;
+ if (path_gitdir_of_workspace(rroot, gitdir, sizeof gitdir) && path_is_under(gitdir, rpath))
+  return 1;
+ return 0;
+}
+
+/**
+ * wpe_path_lies_in - Is a resolved path a folder, or below it, once the folder is followed?
+ * @dir: the folder, absolute, as written; @rpath: a path wpe_path_resolve gave.
+ *
+ * Lets a caller protect a folder it knows by name (the user's own config
+ * folder) with the same link-following comparison the scope uses, so a link
+ * to that folder is caught like the folder itself.
+ * Return: 1 when @rpath lies in @dir; 0 otherwise, and for a folder that
+ * cannot be followed or is the root "/".
+ */
+int wpe_path_lies_in(const char *dir, const char *rpath)
+{
+ char rdir[WPE_PATH_RESOLVED_MAX];
+ if (!dir || !rpath || wpe_path_resolve(dir, rdir, sizeof rdir) != WPE_PATH_RESOLVED) return 0;
+ if (strlen(rdir) <= 1) return 0;
+ return path_is_under(rdir, rpath);
+}
+
 /**
  * wpe_scope_classify - Where does this path land: in the workspace, in a grant, or beyond?
  * @root: the workspace's directory, absolute; @grants/@ngrants: directories the
@@ -208,11 +384,15 @@ static int path_under_a_grant(const char *const *grants, int ngrants, const char
  * Both sides are followed (a project reached through a linked home directory
  * still compares like with like), and a path that cannot be followed, a loop,
  * counts as outside: the safe answer is to ask.  A grant widens reads only: a
- * write beyond the workspace stays outside whatever was granted.
+ * write beyond the workspace stays outside whatever was granted.  A write
+ * inside it to a file that changes how git, the editor or the engine runs
+ * code (wpe_path_is_protected) is told apart, so it can ask at every dial;
+ * a read of the same file stays an ordinary read inside.
  *
- * Return: WPE_SCOPE_INSIDE, WPE_SCOPE_GRANTED or WPE_SCOPE_OUTSIDE.  A path
- * is inside when it cannot be told (no root, a root that cannot be followed,
- * or the root "/", below which nothing is outside).
+ * Return: WPE_SCOPE_INSIDE, WPE_SCOPE_GRANTED, WPE_SCOPE_OUTSIDE or, for a
+ * write only, WPE_SCOPE_PROTECTED.  A path is inside when it cannot be told
+ * (no root, a root that cannot be followed, or the root "/", below which
+ * nothing is outside).
  */
 int wpe_scope_classify(const char *root, const char *const *grants, int ngrants,
                        const char *path, int access, char *real, size_t sz)
@@ -224,6 +404,7 @@ int wpe_scope_classify(const char *root, const char *const *grants, int ngrants,
  if (strlen(rroot) <= 1) return WPE_SCOPE_INSIDE;
  if (wpe_path_resolve(path, rpath, sizeof rpath) != WPE_PATH_RESOLVED) return WPE_SCOPE_OUTSIDE;
  if (real && strlen(rpath) < sz) memcpy(real, rpath, strlen(rpath) + 1);
+ if (access == WPE_SCOPE_WRITE && wpe_path_is_protected(rroot, rpath)) return WPE_SCOPE_PROTECTED;
  if (path_is_under(rroot, rpath)) return WPE_SCOPE_INSIDE;
  if (access == WPE_SCOPE_READ && path_under_a_grant(grants, ngrants, rpath))
   return WPE_SCOPE_GRANTED;

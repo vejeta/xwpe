@@ -404,7 +404,8 @@ out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
 - **ask** -- every file write and every command needs a `y`/`n`.
 - **edits** -- writes apply automatically; commands still ask.
 - **auto** -- runs unattended inside the workspace (reads and writes beyond it
-  still ask, see below); a checkpoint is taken first and every change is
+  still ask, and so do writes to the files inside it that run code, see
+  below); a checkpoint is taken first and every change is
   listed in the end-of-run changeset (keep all / revert all / file-by-file /
   commit). The review holds only what the run changed: untracked or ignored
   files you had before the run are never listed as new and `r` never removes
@@ -450,6 +451,18 @@ project that leads out counts as outside) and judges where a path really lands:
   a row of its own when a link is on the way, and the pane names the file again
   once it is written. The file is opened at that place, so a link made after
   the question makes the write fail instead of landing elsewhere.
+- A write to a file inside the workspace that git, the editor or the hosted
+  engine runs or obeys also asks at every dial, *auto* included: `.git` and
+  everything below it (hooks, and a config that can name a command), at any
+  depth and also where a worktree's `.git` file points, and at the top of the
+  workspace `xwperc`, `.xwpe-ai.md`, `AGENTS.md`, `CLAUDE.md`, `QWEN.md`,
+  `.claude/`, `.mcp.json` and `.qwen/`, and your own config folder
+  (`~/.config/xwpe/`, `~/.xwpe/`) when the workspace holds it, as it does when
+  you edit a file in your home folder. The box shows the diff under
+  `! changes how git, the editor or the engine runs code: <path>`, and `n`
+  leaves the file as it was. The hosted engine's writes there ask the same way,
+  and the Multi-file dialog marks such a file with the same words. Reading them
+  asks nothing.
 - `read_file`, `list_dir`, `grep` and `glob` run unasked inside the workspace,
   below the project's `System-Include-Path` directories, below the roots in
   `AIReadRoots` (xwperc, colon separated, written by hand, never added by the
@@ -539,6 +552,21 @@ fixed setup:
 | `XWPE_AI_PROJECT_INSTRUCTIONS` | where the project instructions file is folded in: `agent` (default), `all` or `off` (`AIProjectInstructions`) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS_MAX` | bytes of the project instructions file the prompt carries (`AIProjectInstructionsMax`, default 4095, at most 65536) |
 | `XWPE_AI_TRACE=path` | append a diagnostic trace (prompt built, tool run, ...) |
+
+**An `xwperc` in the start folder.** The editor reads an `xwperc` it finds in
+the folder it is started in, and a project you cloned, or the assistant, can
+put one there. That file still sets the ordinary keys (tab width, colours,
+compilers), but not the ones that start a program, decide what the assistant
+reads, where its requests go, the dial or the web switch: `AIBackend`,
+`AIEndpoint`, `AIProvider`, `AIProviderName`, `AICAFile`, `AISearchURL`,
+`AIEditHook`, `AIHostCommand`, `AIHostAdapter`, `AIAgentEngine`, `AIReadRoots`,
+`AIPolicy` and `AIWeb`. Those come from your own `~/.config/xwpe/xwperc` and
+the `XWPE_AI_*` variables, in every folder. When the folder's file names one,
+the status line says so at start:
+`./xwperc may not set (only your own config may): AIEditHook`. Saving the
+options in such a folder (Options > AI Ok, `Alt-G y`, Save Options) writes
+these keys to your own file and the rest to the folder's file, so your hook or
+engine command never lands in a project you may share.
 
 **Post-edit hook.** `AIEditHook` in the `[Programming]` section of `xwperc`
 (e.g. `clang-format -i`) runs on every file the assistant wrote, patched or

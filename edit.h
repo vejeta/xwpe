@@ -781,6 +781,11 @@ void e_pr_ed_beispiel(int xa, int ya, FENSTER *f, int sw, int md);
 int e_opt_save(FENSTER *f);
 int e_save_opt(FENSTER *f);
 int e_opt_read(ECNT *cn);
+/* The user's own config (malloc'd, taken), read for the keys a start-folder
+   xwperc may not set; NULL when the options come from the user's own file. */
+void e_opt_use_user_file(char *path);
+/* Say on the status line which keys the start-folder xwperc could not set. */
+void e_opt_say_ignored_keys(ECNT *cn);
 /* The longest text e_add_arguments hands back (its field's capacity).  A
    caller's buffer must hold E_ARG_FIELD_MAX + 1 bytes, or a long entry runs
    past it. */

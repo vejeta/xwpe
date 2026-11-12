@@ -1385,6 +1385,69 @@
    "layer": "ncurses",
    "test": "tests/test_ai_read_scope.py::test_apply_patch_in_a_granted_folder_skips_the_read_box_and_shows_the_write_box",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-104",
+   "requirement": "Settings a project folder cannot set",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_a_start_folder_xwperc_cannot_set_the_post_edit_hook",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-104",
+   "requirement": "Settings a project folder cannot set",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_the_users_own_hook_still_runs_in_a_folder_with_its_own_xwperc",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-104",
+   "requirement": "Settings a project folder cannot set",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_a_start_folder_xwperc_still_sets_ordinary_keys",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-104",
+   "requirement": "Settings a project folder cannot set",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_a_dial_change_in_a_folder_with_its_own_xwperc_goes_to_the_users_file",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-105",
+   "requirement": "Files that run code ask at every dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_under_auto_a_write_that_runs_code_asks_and_n_leaves_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-105",
+   "requirement": "Files that run code ask at every dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_under_auto_a_write_to_the_folders_xwperc_lands_after_yes",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-105",
+   "requirement": "Files that run code ask at every dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_a_multi_file_proposal_for_a_git_hook_is_marked_in_the_approval_box",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-105",
+   "requirement": "Files that run code ask at every dial",
+   "layer": "c-unit",
+   "test": "test_ai_scope",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-106",
+   "requirement": "Files that run code ask at every dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_a_hosted_write_to_a_git_hook_asks_under_auto",
+   "status": "new"
   }
  ]
 }

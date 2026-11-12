@@ -10,7 +10,8 @@
  * through a link covers the place the link leads, that the root "/" is never
  * a grant, and that a search's count
  * of links leading out and the opener of a written file follow links as the
- * scope does.
+ * scope does.  A write to a file git, the editor or a hosted engine runs or
+ * obeys (.git, xwperc, .claude, ...) is told apart as protected.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -66,10 +67,23 @@ static void make_link(const char *rel, const char *target)
  if (symlink(target, p) != 0) { perror(p); exit(2); }
 }
 
+/* A .git file, as a worktree or a submodule has, holding @text. */
+static void make_gitdir_file(const char *rel, const char *text)
+{
+ char p[PATH_ROOM];
+ FILE *fp;
+ under_base(p, sizeof p, rel);
+ fp = fopen(p, "w");
+ if (!fp) { perror(p); exit(2); }
+ fputs(text, fp);
+ fclose(fp);
+}
+
 static const char *name_of(int where)
 {
  if (where == WPE_SCOPE_INSIDE) return "inside";
  if (where == WPE_SCOPE_GRANTED) return "granted";
+ if (where == WPE_SCOPE_PROTECTED) return "protected";
  return "outside";
 }
 
@@ -85,6 +99,19 @@ static void expect(const char *name, const char *rel, int access, const char *g0
  if (g0) { under_base(grant0, sizeof grant0, g0); grants[n++] = grant0; }
  if (g1) { under_base(grant1, sizeof grant1, g1); grants[n++] = grant1; }
  got = wpe_scope_classify(ws, grants, n, path, access, NULL, 0);
+ if (got == want) return;
+ snprintf(msg, sizeof msg, "judged %s, wanted %s", name_of(got), name_of(want));
+ fail(name, msg);
+}
+
+/* One case in another workspace @wsrel below base: the path @rel lands at @want. */
+static void expect_in(const char *name, const char *wsrel, const char *rel, int access, int want)
+{
+ char root[PATH_ROOM], path[PATH_ROOM], msg[200];
+ int got;
+ under_base(root, sizeof root, wsrel);
+ under_base(path, sizeof path, rel);
+ got = wpe_scope_classify(root, NULL, 0, path, access, NULL, 0);
  if (got == want) return;
  snprintf(msg, sizeof msg, "judged %s, wanted %s", name_of(got), name_of(want));
  fail(name, msg);
@@ -112,6 +139,14 @@ static void build_tree(void)
  make_link("grantlink", "out");                 /* a way to name out         */
  snprintf(abs, sizeof abs, "%s/inc", base);
  make_link("out/inner", abs);                   /* in out, leading elsewhere */
+ /* Files that git, the editor or a hosted engine run or obey. */
+ make_dir("ws/.git"); make_dir("ws/.git/hooks"); make_dir("ws/.claude");
+ make_dir("ws/sub/.git"); make_dir("ws/.github");
+ make_file("ws/.git/config"); make_file("ws/xwperc"); make_file("ws/sub/.git/config");
+ make_link("ws/hooklink", ".git/hooks");        /* a link into git's folder  */
+ /* A worktree: its .git is a file naming the real git folder. */
+ make_dir("wt"); make_dir("wt/inner"); make_dir("wt/inner/gd"); make_dir("wt/inner/gd/hooks");
+ make_gitdir_file("wt/.git", "gitdir: inner/gd\n");
 }
 
 static void remove_tree(void)
@@ -119,12 +154,13 @@ static void remove_tree(void)
  char p[PATH_ROOM];
  int i;
  static const char *links[] = { "ws/vendor", "ws/inlink", "ws/fileout", "ws/dang",
-   "ws/sub/deepout", "ws/loopa", "ws/loopb", "grantlink", "out/inner", NULL };
+   "ws/sub/deepout", "ws/loopa", "ws/loopb", "grantlink", "out/inner", "ws/hooklink", NULL };
  static const char *files[] = { "ws/inside.txt", "ws2/x.txt", "out/f.txt", "inc/h.h",
    "inc2/h.h", "elsewhere/e.txt", "out/deep/d.txt", "out/new.txt", "ws/written.txt",
-   "ws/made.txt", NULL };
- static const char *dirs[] = { "ws/sub", "ws", "ws2", "out/deep", "out", "inc", "inc2",
-   "elsewhere", NULL };
+   "ws/made.txt", "ws/.git/config", "ws/xwperc", "ws/sub/.git/config", "wt/.git", NULL };
+ static const char *dirs[] = { "ws/.git/hooks", "ws/.git", "ws/.claude", "ws/sub/.git",
+   "ws/.github", "ws/sub", "ws", "ws2", "out/deep", "out", "inc", "inc2",
+   "elsewhere", "wt/inner/gd/hooks", "wt/inner/gd", "wt/inner", "wt", NULL };
  for (i = 0; links[i]; i++) { under_base(p, sizeof p, links[i]); unlink(p); }
  for (i = 0; files[i]; i++) { under_base(p, sizeof p, files[i]); unlink(p); }
  for (i = 0; dirs[i]; i++) { under_base(p, sizeof p, dirs[i]); rmdir(p); }
@@ -192,6 +228,59 @@ static void classify_cases(void)
  root_grant_cases();
 }
 
+/* One case of wpe_path_lies_in: is the resolved @rel inside the folder @dirrel? */
+static void expect_lies_in(const char *name, const char *dirrel, const char *rel, int want)
+{
+ char dir[PATH_ROOM], path[PATH_ROOM], rpath[PATH_ROOM];
+ under_base(dir, sizeof dir, dirrel);
+ under_base(path, sizeof path, rel);
+ if (wpe_path_resolve(path, rpath, sizeof rpath) != WPE_PATH_RESOLVED) { fail(name, "unresolved"); return; }
+ if (wpe_path_lies_in(dir, rpath) == want) return;
+ fail(name, want ? "not found in the folder" : "found in the folder");
+}
+
+/* The user's own config folder is protected by name, through the same
+   link-following comparison as the workspace. */
+static void lies_in_cases(void)
+{
+ expect_lies_in("a file in the folder", "ws/.git", "ws/.git/config", 1);
+ expect_lies_in("a file reached through a link to the folder", "ws/.git", "ws/hooklink/x", 1);
+ expect_lies_in("a file beside the folder", "ws/.git", "ws/inside.txt", 0);
+ expect_lies_in("a folder that only starts the same", "ws/.git", "ws/.github/x", 0);
+}
+
+/* Writes to the files git, the editor or a hosted engine run or obey ask at
+   every dial, so they are told apart from ordinary files inside; a read of
+   the same files stays an ordinary read. */
+/* @scenario SC-ai-agent-105 */
+static void protected_cases(void)
+{
+ expect("a git hook, written", "ws/.git/hooks/pre-commit", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("git's config, written", "ws/.git/config", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("git's folder itself, written", "ws/.git", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("git's config, read", "ws/.git/config", WPE_SCOPE_READ, NULL, NULL, WPE_SCOPE_INSIDE);
+ expect("the folder's xwperc, written", "ws/xwperc", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("the project instructions, written", "ws/.xwpe-ai.md", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("AGENTS.md, written", "ws/AGENTS.md", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("CLAUDE.md, written", "ws/CLAUDE.md", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("QWEN.md, written", "ws/QWEN.md", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("a CLAUDE.md below the top", "ws/sub/CLAUDE.md", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_INSIDE);
+ expect("the engine's settings, written", "ws/.claude/settings.json", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("the MCP servers, written", "ws/.mcp.json", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("a Qwen setting, written", "ws/.qwen/settings.json", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("git's folder in another case", "ws/.GIT/hooks/x", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("a nested repository's config", "ws/sub/.git/config", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("a link into git's folder", "ws/hooklink/post-checkout", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("a folder only named like git's", "ws/.github/workflow.yml", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_INSIDE);
+ expect("an xwperc below the top", "ws/sub/xwperc", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_INSIDE);
+ expect("an ordinary file, written", "ws/inside.txt", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_INSIDE);
+ expect_in("a worktree's git folder named by its .git file", "wt", "wt/inner/gd/hooks/pre-commit",
+           WPE_SCOPE_WRITE, WPE_SCOPE_PROTECTED);
+ expect_in("a worktree's .git file itself", "wt", "wt/.git", WPE_SCOPE_WRITE, WPE_SCOPE_PROTECTED);
+ expect_in("a worktree's ordinary file", "wt", "wt/inner/x.c", WPE_SCOPE_WRITE, WPE_SCOPE_INSIDE);
+ lies_in_cases();
+}
+
 /* The links below ws that lead out or cannot be followed: vendor, fileout,
    dang, loopa and loopb among ws's own entries, and one level down
    sub/deepout.  inlink stays inside and is not counted. */
@@ -250,6 +339,7 @@ int main(void)
 {
  build_tree();
  classify_cases();
+ protected_cases();
  scan_cases();
  open_cases();
  remove_tree();

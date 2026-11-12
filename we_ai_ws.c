@@ -1668,6 +1668,51 @@ char *wpe_ai_workspace_dir(FENSTER *f)
  return out;
 }
 
+/* The folder below the config home that holds the user's own xwperc. */
+#define WS_CONFIG_SUBDIR "xwpe"
+/* The config home when $XDG_CONFIG_HOME is not set, below $HOME. */
+#define WS_CONFIG_HOME_DEFAULT ".config"
+
+/**
+ * ws_in_user_config - Does a resolved path lie in the user's own config folder?
+ * @rpath: the place a write would really land.
+ *
+ * The user's own xwperc is the one file trusted with the hook, the engine
+ * command, the endpoints and the dial, and the same folder holds the API key
+ * files.  When the workspace is the home folder (a note edited in ~), that
+ * folder is inside it, so without this check an assistant under auto could
+ * plant a hook there that then runs in every project.  Both the XDG folder
+ * and the legacy ~/.xwpe are covered, as the editor reads either.
+ * Return: 1 when @rpath lies in one of them.
+ */
+static int ws_in_user_config(const char *rpath)
+{
+ const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
+ char dir[WPE_PATH_RESOLVED_MAX];
+ if (xdg && *xdg) {
+  snprintf(dir, sizeof dir, "%s/%s", xdg, WS_CONFIG_SUBDIR);
+  if (wpe_path_lies_in(dir, rpath)) return 1;
+ }
+ if (!home || !*home) return 0;
+ snprintf(dir, sizeof dir, "%s/%s/%s", home, WS_CONFIG_HOME_DEFAULT, WS_CONFIG_SUBDIR);
+ if (wpe_path_lies_in(dir, rpath)) return 1;
+ snprintf(dir, sizeof dir, "%s/%s", home, XWPE_HOME);
+ return wpe_path_lies_in(dir, rpath);
+}
+
+/**
+ * ws_protect_user_config - Mark a write inside the workspace that lands in the user's own config.
+ * @where: the scope's answer; @access: the access judged; @rpath: where the
+ * write really lands, or an empty string when it could not be told.
+ * Return: WPE_SCOPE_PROTECTED for such a write, else @where unchanged.
+ */
+static int ws_protect_user_config(int where, int access, const char *rpath)
+{
+ if (access != WPE_SCOPE_WRITE || where != WPE_SCOPE_INSIDE || !rpath[0]) return where;
+ if (ws_in_user_config(rpath)) return WPE_SCOPE_PROTECTED;
+ return where;
+}
+
 /**
  * wpe_ai_scope_judge - Where does a path land for a read or a write: inside, granted or outside?
  * @f: any window of the editor; @path: the file, as the model named it;
@@ -1685,7 +1730,10 @@ char *wpe_ai_workspace_dir(FENSTER *f)
  * user wrote into xwperc and the folders granted in this session; a write is
  * never widened by any of them.
  *
- * Return: WPE_SCOPE_INSIDE, WPE_SCOPE_GRANTED or WPE_SCOPE_OUTSIDE.  A path
+ * Return: WPE_SCOPE_INSIDE, WPE_SCOPE_GRANTED or WPE_SCOPE_OUTSIDE, and
+ * WPE_SCOPE_PROTECTED for a write inside the workspace to a file that
+ * changes how git, the editor or the engine runs code, the user's own config
+ * folder included (ws_protect_user_config).  A path
  * that cannot be made absolute (too long, no working directory) is outside:
  * the tool would still be attempted, so the safe answer is to ask.  With no
  * root, or the root "/", nothing is outside.
@@ -1708,6 +1756,7 @@ int wpe_ai_scope_judge(FENSTER *f, const char *path, int access, char *real, siz
  where = wpe_scope_classify(rp, (const char *const *)grants, ngrants, pp, access,
                             resolved, sizeof resolved);
  wpe_ai_free_list(grants, ngrants);
+ where = ws_protect_user_config(where, access, resolved);
  lexical = ws_absolute_path(path, lexbuf, sizeof lexbuf);
  if (real && sz && resolved[0] && lexical && strcmp(resolved, lexical) != 0)
   snprintf(real, sz, "%s", resolved);
@@ -1728,6 +1777,20 @@ int wpe_ai_scope_judge(FENSTER *f, const char *path, int access, char *real, siz
 int wpe_ai_path_landing(FENSTER *f, const char *path, char *real, size_t sz)
 {
  return wpe_ai_scope_judge(f, path, WPE_SCOPE_WRITE, real, sz) == WPE_SCOPE_OUTSIDE;
+}
+
+/**
+ * wpe_ai_path_protected - Would writing this path change how git, the editor or the engine runs code?
+ * @f: any window of the editor; @path: the file, as the model named it.
+ *
+ * A Multi-file proposal for ".git/hooks/pre-commit" is marked with this so
+ * the user sees, before approving, that the file is one another program
+ * will run or obey.
+ * Return: 1 when the write lands on a protected file inside the workspace.
+ */
+int wpe_ai_path_protected(FENSTER *f, const char *path)
+{
+ return wpe_ai_scope_judge(f, path, WPE_SCOPE_WRITE, NULL, 0) == WPE_SCOPE_PROTECTED;
 }
 
 /**

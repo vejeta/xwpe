@@ -233,6 +233,20 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A project folder can no longer make the assistant run code behind your
+  back.  An xwperc in the folder the editor starts in still sets tabs,
+  colours and compilers, but no longer the post-edit hook, the hosted
+  engine's command, the backend and its endpoints, the CA file, the search
+  URL, the extra read folders, the permission dial or the web switch: those
+  come from your own ~/.config/xwpe/xwperc (it was not read at all in such
+  a folder) and the XWPE_AI_* variables, and the status line names any key
+  the folder's file tried to set.  Saving the options there puts those keys
+  in your own file, never in the project's.  A write by the assistant to a git hook,
+  git's config, xwperc, .xwpe-ai.md, AGENTS.md, CLAUDE.md, QWEN.md,
+  .claude/, .mcp.json, .qwen/ or your own ~/.config/xwpe/ (when you work
+  in your home folder) now asks even under auto, with the reason in the
+  box; before, it was written without a question.
+
 * Undo and breakpoints follow the text.  A breakpoint stays on its code
   when lines are added above it by a wrapped line or an accepted assistant
   Edit (it stayed on its line number, under other code), and comes back

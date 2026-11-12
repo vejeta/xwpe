@@ -47,6 +47,55 @@ WpeOptionSection WpeSectionRead[] = {
  {OPT_SECTION_LANGUAGE, WpeReadLanguage}
 };
 
+/* How e_opt_read_file takes the keys of one file. */
+#define E_OPT_READ_ALL       0   /* every key: the user's own file, or one named by -sf */
+#define E_OPT_READ_SHARED    1   /* a start-folder xwperc: every key but the user-only ones */
+#define E_OPT_READ_USER_ONLY 2   /* the user's own file, for the user-only keys only        */
+
+/* One key a start-folder xwperc may not set. */
+typedef struct {
+ const char *section;
+ const char *key;
+} e_opt_user_only;
+
+/* The keys that start a program, choose a command line, name a file or a
+   folder the assistant reads, choose where the assistant's requests go and
+   which certificates it trusts, or set the permission dial and the web
+   switch.  A project folder anyone can clone (or the assistant itself can
+   write) must not choose them, so they are honoured only from the user's
+   own config file and from the environment.  Keys added later with the same
+   reach belong here too. */
+static const e_opt_user_only e_opt_user_only_keys[] = {
+ {OPT_SECTION_PROGRAMMING, "AIBackend"},
+ {OPT_SECTION_PROGRAMMING, "AIEndpoint"},
+ {OPT_SECTION_PROGRAMMING, "AIProvider"},
+ {OPT_SECTION_PROGRAMMING, "AIProviderName"},
+ {OPT_SECTION_PROGRAMMING, "AICAFile"},
+ {OPT_SECTION_PROGRAMMING, "AISearchURL"},
+ {OPT_SECTION_PROGRAMMING, "AIEditHook"},
+ {OPT_SECTION_PROGRAMMING, "AIHostCommand"},
+ {OPT_SECTION_PROGRAMMING, "AIHostAdapter"},
+ {OPT_SECTION_PROGRAMMING, "AIAgentEngine"},
+ {OPT_SECTION_PROGRAMMING, "AIReadRoots"},
+ {OPT_SECTION_PROGRAMMING, "AIPolicy"},
+ {OPT_SECTION_PROGRAMMING, "AIWeb"},
+ {NULL, NULL}
+};
+
+/* Room for the names of the keys a start-folder xwperc tried to set. */
+#define E_OPT_IGNORED_MAX 400
+
+/* The user-only keys the start-folder xwperc named, for the status line. */
+static char e_opt_ignored_keys[E_OPT_IGNORED_MAX];
+
+/* The user's own config file, when the options come from a start-folder
+   xwperc; NULL when they come from the user's own file already. */
+static char *e_opt_user_file;
+
+/* What the status line says when a start-folder xwperc named user-only keys. */
+#define E_OPT_IGNORED_FMT "./xwperc may not set (only your own config may): %s"
+#define E_OPT_IGNORED_LINE_MAX (E_OPT_IGNORED_MAX + 80)
+
 /* Draws an information box and returns the background it saved, or NULL. */
 typedef PIC *(*e_opt_box_draw)(FENSTER *f);
 
@@ -1345,6 +1394,8 @@ int WpeWriteLanguage(ECNT *cn, char *section, FILE *opt_file)
  return 0;
 }
 
+static void e_opt_move_user_only_keys(ECNT *cn);
+
 /*   save options    */
 int e_save_opt(FENSTER *f)
 {
@@ -1398,12 +1449,331 @@ int e_save_opt(FENSTER *f)
  }
  FREE(str_line);
  fclose(fp);
+ e_opt_move_user_only_keys(cn);
  return 0;
 }
 
-int e_opt_read(ECNT *cn)
+/**
+ * e_opt_key_is_user_only - Is this a key only the user's own config may set?
+ * @section: the section the key is in; @option: the key's name.
+ * Return: 1 when the key is in e_opt_user_only_keys.
+ */
+static int e_opt_key_is_user_only(const char *section, const char *option)
 {
- FILE *fp;
+ int i;
+ if (!section || !option) return 0;
+ for (i = 0; e_opt_user_only_keys[i].key; i++)
+ {
+  if (strncmp(e_opt_user_only_keys[i].section, section,
+              strlen(e_opt_user_only_keys[i].section)) != 0)
+   continue;
+  if (WpeStrccmp(e_opt_user_only_keys[i].key, option) == 0)
+   return 1;
+ }
+ return 0;
+}
+
+/**
+ * e_opt_note_ignored_key - Remember a user-only key the start-folder xwperc set.
+ * @option: the key's name, as the file wrote it.
+ *
+ * Each name is kept once, in the order the file names them, so the status
+ * line the user reads lists every key that did not take effect, and no key
+ * twice.
+ */
+static void e_opt_note_ignored_key(const char *option)
+{
+ size_t used = strlen(e_opt_ignored_keys), len = strlen(option);
+ const char *p = e_opt_ignored_keys;
+ while ((p = strstr(p, option)) != NULL)
+ {
+  if ((p == e_opt_ignored_keys || p[-1] == ' ') && (p[len] == '\0' || p[len] == ' '))
+   return;
+  p += len;
+ }
+ if (used + len + 2 >= sizeof e_opt_ignored_keys) return;
+ if (used) strcat(e_opt_ignored_keys, " ");
+ strcat(e_opt_ignored_keys, option);
+}
+
+/**
+ * e_opt_line_applies - Does this key of this file take effect?
+ * @section/@option: the key; @mode: how the file is read (E_OPT_READ_*).
+ *
+ * A start-folder xwperc keeps every ordinary key (tabs, colours, the
+ * compiler of a language) and loses the user-only ones, which are noted for
+ * the status line; the user's own file, read after it, gives only those.
+ * Return: 1 when the key is to be applied.
+ */
+static int e_opt_line_applies(const char *section, const char *option, int mode)
+{
+ int user_only;
+ if (mode == E_OPT_READ_ALL) return 1;
+ user_only = e_opt_key_is_user_only(section, option);
+ if (mode == E_OPT_READ_USER_ONLY) return user_only;
+ if (user_only) e_opt_note_ignored_key(option);
+ return !user_only;
+}
+
+/**
+ * e_opt_same_file - Are two names the same file on disk?
+ * @a/@b: the names.
+ * Return: 1 when both exist and are one file.
+ */
+static int e_opt_same_file(const char *a, const char *b)
+{
+ struct stat sa, sb;
+ if (!a || !b || stat(a, &sa) != 0 || stat(b, &sb) != 0) return 0;
+ return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+
+/**
+ * e_opt_use_user_file - Name the user's own config, read after a start-folder xwperc.
+ * @path: the user's own config file (malloc'd, taken), or NULL.
+ *
+ * Called when the editor found an xwperc in the folder it was started in and
+ * reads its options from there: that file sets everything it names except
+ * the user-only keys, and those come from @path, so the user's own hook,
+ * engine, dial and endpoints follow him into every folder.  When the start
+ * folder is the folder of the user's own file, the two are one file and it
+ * is read whole.
+ */
+void e_opt_use_user_file(char *path)
+{
+ if (e_opt_user_file) FREE(e_opt_user_file);
+ e_opt_user_file = path;
+}
+
+/* The lines of an option file, as read, without their newlines. */
+typedef struct {
+ char **line;
+ int n;
+} e_opt_lines;
+
+/* How much a line buffer grows at a time while one long line is read. */
+#define E_OPT_LINE_CHUNK 256
+
+/**
+ * e_opt_read_line - Read one line of any length, without its newline.
+ * @fp: the file.
+ * Return: the malloc'd line, or NULL at the end of the file.
+ */
+static char *e_opt_read_line(FILE *fp)
+{
+ size_t room = E_OPT_LINE_CHUNK, used = 0;
+ char *buf = malloc(room), *grown;
+ if (!buf) return NULL;
+ buf[0] = '\0';
+ while (fgets(buf + used, (int)(room - used), fp))
+ {
+  used += strlen(buf + used);
+  if (used > 0 && buf[used - 1] == '\n') { buf[used - 1] = '\0'; return buf; }
+  grown = realloc(buf, room + E_OPT_LINE_CHUNK);
+  if (!grown) break;
+  buf = grown;
+  room += E_OPT_LINE_CHUNK;
+ }
+ if (used > 0) return buf;
+ free(buf);
+ return NULL;
+}
+
+/**
+ * e_opt_lines_add - Append a line, taking it.
+ * @l: the lines; @text: a malloc'd line.
+ * Return: 0, or -1 out of memory (the line is then freed).
+ */
+static int e_opt_lines_add(e_opt_lines *l, char *text)
+{
+ char **grown = realloc(l->line, (size_t)(l->n + 1) * sizeof *grown);
+ if (!grown) { free(text); return -1; }
+ l->line = grown;
+ l->line[l->n++] = text;
+ return 0;
+}
+
+/**
+ * e_opt_lines_add_copy - Append a copy of a line.
+ * @l: the lines; @text: the line.
+ * Return: 0, or -1 out of memory.
+ */
+static int e_opt_lines_add_copy(e_opt_lines *l, const char *text)
+{
+ char *copy = malloc(strlen(text) + 1);
+ if (!copy) return -1;
+ strcpy(copy, text);
+ return e_opt_lines_add(l, copy);
+}
+
+/** e_opt_lines_free - Free every line and the list. */
+static void e_opt_lines_free(e_opt_lines *l)
+{
+ int i;
+ for (i = 0; i < l->n; i++) free(l->line[i]);
+ free(l->line);
+ l->line = NULL;
+ l->n = 0;
+}
+
+/**
+ * e_opt_lines_load - Read a whole option file.
+ * @path: the file; @l: receives its lines (empty when it does not exist).
+ * Return: 0, or -1 when it exists but could not be read whole.
+ */
+static int e_opt_lines_load(const char *path, e_opt_lines *l)
+{
+ FILE *fp = fopen(path, "r");
+ char *text;
+ l->line = NULL;
+ l->n = 0;
+ if (!fp) return 0;
+ while ((text = e_opt_read_line(fp)) != NULL)
+  if (e_opt_lines_add(l, text) < 0) { fclose(fp); return -1; }
+ fclose(fp);
+ return 0;
+}
+
+/**
+ * e_opt_lines_store - Write lines to a file, each with its newline.
+ * @path: the file; @l: the lines.
+ * Return: 0, or -1 when the file could not be written.
+ */
+static int e_opt_lines_store(const char *path, const e_opt_lines *l)
+{
+ FILE *fp = fopen(path, "w");
+ int i;
+ if (!fp) return -1;
+ for (i = 0; i < l->n; i++) fprintf(fp, "%s\n", l->line[i]);
+ if (fclose(fp) != 0) return -1;
+ return 0;
+}
+
+/**
+ * e_opt_line_section - The section a "[name]" line opens.
+ * @text: the line; @out/@sz: receive the name.
+ * Return: 1 when the line is a section header.
+ */
+static int e_opt_line_section(const char *text, char *out, size_t sz)
+{
+ const char *end;
+ while (isspace((unsigned char)*text)) text++;
+ if (*text != '[') return 0;
+ end = strchr(text, ']');
+ if (!end) return 0;
+ snprintf(out, sz, "%.*s", (int)(end - text - 1), text + 1);
+ return 1;
+}
+
+/**
+ * e_opt_line_is_user_only - Is this "key : value" line one of the user-only keys?
+ * @text: the line; @section: the section it is in.
+ */
+static int e_opt_line_is_user_only(const char *text, const char *section)
+{
+ char key[E_OPT_IGNORED_MAX];
+ const char *colon, *end;
+ while (isspace((unsigned char)*text)) text++;
+ colon = strchr(text, ':');
+ if (!colon || colon == text) return 0;
+ for (end = colon; end > text && isspace((unsigned char)end[-1]); end--)
+  ;
+ snprintf(key, sizeof key, "%.*s", (int)(end - text), text);
+ return e_opt_key_is_user_only(section, key);
+}
+
+/* The section the user-only keys are written in. */
+#define E_OPT_USER_ONLY_SECTION OPT_SECTION_PROGRAMMING
+
+/**
+ * e_opt_split_saved - Part a saved file into the folder's keys and the user's own.
+ * @saved: the lines e_save_opt wrote; @kept: receives every line but the
+ * user-only keys; @mine: receives the user-only lines.
+ * Return: 0, or -1 out of memory.
+ */
+static int e_opt_split_saved(const e_opt_lines *saved, e_opt_lines *kept, e_opt_lines *mine)
+{
+ char section[E_OPT_IGNORED_MAX] = "";
+ int i, rc = 0;
+ for (i = 0; i < saved->n && rc == 0; i++)
+ {
+  const char *text = saved->line[i];
+  e_opt_line_section(text, section, sizeof section);
+  if (e_opt_line_is_user_only(text, section))
+   rc = e_opt_lines_add_copy(mine, text);
+  else
+   rc = e_opt_lines_add_copy(kept, text);
+ }
+ return rc;
+}
+
+/**
+ * e_opt_merge_user_only - The user's own file with its user-only keys replaced.
+ * @own: the user's file as it is; @mine: the user-only lines now in force;
+ * @out: receives the new file.
+ *
+ * Every other line of the user's file stays as he left it.  The user-only
+ * lines go right below its [Programming] header, which is added at the end
+ * when the file has none.
+ * Return: 0, or -1 out of memory.
+ */
+static int e_opt_merge_user_only(const e_opt_lines *own, const e_opt_lines *mine, e_opt_lines *out)
+{
+ char section[E_OPT_IGNORED_MAX] = "", header[E_OPT_IGNORED_MAX];
+ int i, j, placed = 0, rc = 0;
+ for (i = 0; i < own->n && rc == 0; i++)
+ {
+  const char *text = own->line[i];
+  int opens = e_opt_line_section(text, section, sizeof section);
+  if (!opens && e_opt_line_is_user_only(text, section)) continue;
+  rc = e_opt_lines_add_copy(out, text);
+  if (!opens || placed || strcmp(section, E_OPT_USER_ONLY_SECTION) != 0) continue;
+  for (j = 0; j < mine->n && rc == 0; j++) rc = e_opt_lines_add_copy(out, mine->line[j]);
+  placed = 1;
+ }
+ if (placed || rc != 0 || mine->n == 0) return rc;
+ snprintf(header, sizeof header, "[%s]", E_OPT_USER_ONLY_SECTION);
+ rc = e_opt_lines_add_copy(out, header);
+ for (j = 0; j < mine->n && rc == 0; j++) rc = e_opt_lines_add_copy(out, mine->line[j]);
+ return rc;
+}
+
+/**
+ * e_opt_move_user_only_keys - After a save into a start-folder xwperc, put the user-only keys in the user's own file.
+ * @cn: the editor.
+ *
+ * Saving the options (Options > Save, Ok in Options > AI, Alt-G y) writes
+ * every key to the file the options came from.  When that is a project's
+ * xwperc, the user's own hook, engine command, endpoints and dial would land
+ * in a file he may commit and push, and would not apply there anyway.  So
+ * they are taken out of it and written into the user's own file, where the
+ * next start in any folder reads them; the rest of his file is kept.
+ */
+static void e_opt_move_user_only_keys(ECNT *cn)
+{
+ e_opt_lines saved = {NULL, 0}, kept = {NULL, 0}, mine = {NULL, 0};
+ e_opt_lines own = {NULL, 0}, merged = {NULL, 0};
+ if (!e_opt_user_file || e_opt_same_file(e_opt_user_file, cn->optfile)) return;
+ if (e_opt_lines_load(cn->optfile, &saved) == 0 &&
+     e_opt_split_saved(&saved, &kept, &mine) == 0 &&
+     e_opt_lines_load(e_opt_user_file, &own) == 0 &&
+     e_opt_merge_user_only(&own, &mine, &merged) == 0 &&
+     e_opt_lines_store(e_opt_user_file, &merged) == 0)
+  e_opt_lines_store(cn->optfile, &kept);   /* only once the user's own file holds them */
+ e_opt_lines_free(&own);
+ e_opt_lines_free(&saved);
+ e_opt_lines_free(&kept);
+ e_opt_lines_free(&mine);
+ e_opt_lines_free(&merged);
+}
+
+/**
+ * e_opt_read_stream - Take the options of one open file.
+ * @cn: the editor; @fp: the file; @mode: which keys to take (E_OPT_READ_*).
+ * Return: 0, or ERR_READ_OPF for a line that is not "key : value" or a
+ * section header that does not close.
+ */
+static int e_opt_read_stream(ECNT *cn, FILE *fp, int mode)
+{
  char *str_line;
  char *section;
  char *option;
@@ -1412,14 +1782,6 @@ int e_opt_read(ECNT *cn)
  int sz;
  int i;
 
- fp = fopen(cn->optfile, "r");
- if (fp == NULL)
- {
-  char *file = e_mkfilename((char *)e_lib_dir(), OPTION_FILE);
-  fp = fopen(file, "r");
-  FREE(file);
- }
- if (fp == NULL) return(0);
  sz = 256;
  str_line = (char *)WpeMalloc(256 * sizeof(char));
  section = NULL;
@@ -1479,15 +1841,98 @@ int e_opt_read(ECNT *cn)
         (strncmp(WpeSectionRead[i].section, section, strlen(WpeSectionRead[i].section)) != 0);
       i++)
      ;
-    if (i < OPTION_SECTIONS)
-     (*WpeSectionRead[i].function)(cn, section, option, value);
-    else
+    if (i >= OPTION_SECTIONS)
      return ERR_READ_OPF;
+    if (e_opt_line_applies(section, option, mode))
+     (*WpeSectionRead[i].function)(cn, section, option, value);
    }
   }
  }
- fclose(fp);
  return 0;
+}
+
+/**
+ * e_opt_open_options - Open the file the options come from.
+ * @cn: the editor.
+ * Return: the editor's option file, else the copy installed with the
+ * editor, else NULL.
+ */
+static FILE *e_opt_open_options(ECNT *cn)
+{
+ FILE *fp = fopen(cn->optfile, "r");
+ char *file;
+ if (fp != NULL) return fp;
+ file = e_mkfilename((char *)e_lib_dir(), OPTION_FILE);
+ fp = fopen(file, "r");
+ FREE(file);
+ return fp;
+}
+
+/**
+ * e_opt_read_user_only - Take the user-only keys from the user's own config.
+ * @cn: the editor.
+ *
+ * After a start-folder xwperc: the hook, the engine, the dial, the web
+ * switch and the endpoints the user set for himself keep applying in that
+ * folder.  A missing file leaves them at their defaults.
+ */
+static void e_opt_read_user_only(ECNT *cn)
+{
+ FILE *fp = fopen(e_opt_user_file, "r");
+ if (fp == NULL) return;
+ e_opt_read_stream(cn, fp, E_OPT_READ_USER_ONLY);
+ fclose(fp);
+}
+
+/**
+ * e_opt_read - Read the options the editor starts with.
+ * @cn: the editor.
+ *
+ * From the user's own config file, or one named with -sf, every key is
+ * taken.  From an xwperc in the folder the editor was started in (a project
+ * the user cloned, a folder the assistant can write), every key is taken
+ * except the user-only ones (e_opt_user_only_keys), which come from the
+ * user's own file instead; the ones it named are said once on the status
+ * line (e_opt_say_ignored_keys).
+ * Return: 0, or ERR_READ_OPF when the file the options come from is malformed.
+ */
+int e_opt_read(ECNT *cn)
+{
+ FILE *fp;
+ int mode = E_OPT_READ_ALL, err;
+
+ e_opt_ignored_keys[0] = '\0';
+ if (e_opt_user_file && e_opt_same_file(e_opt_user_file, cn->optfile))
+  e_opt_use_user_file(NULL);
+ if (e_opt_user_file) mode = E_OPT_READ_SHARED;
+ fp = e_opt_open_options(cn);
+ if (fp == NULL) err = 0;
+ else
+ {
+  err = e_opt_read_stream(cn, fp, mode);
+  fclose(fp);
+ }
+ if (e_opt_user_file) e_opt_read_user_only(cn);
+ return err;
+}
+
+/**
+ * e_opt_say_ignored_keys - Tell the user which keys of the start-folder xwperc did not apply.
+ * @cn: the editor.
+ *
+ * A project's xwperc that tries to set a hook, an engine command, the dial
+ * or an endpoint has no effect, and the user would otherwise not know why
+ * the setting he sees in the file is not the one in force.  The line stays
+ * on the bottom row until the next key.
+ */
+void e_opt_say_ignored_keys(ECNT *cn)
+{
+ char line[E_OPT_IGNORED_LINE_MAX];
+ if (!e_opt_ignored_keys[0] || !cn || !cn->fb) return;
+ snprintf(line, sizeof line, E_OPT_IGNORED_FMT, e_opt_ignored_keys);
+ e_status_hold(line);
+ e_status_paint(cn->fb, line);
+ e_refresh();
 }
 
 /*  window for entering a text line */

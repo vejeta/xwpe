@@ -589,12 +589,15 @@ every write or command asks you @kbd{y}/@kbd{n}.
 writes go through automatically; commands still ask.
 @item @code{auto}
 everything inside the workspace runs unattended; you review the result
-afterwards.  Reads and writes beyond the workspace still ask.
+afterwards.  Reads and writes beyond the workspace still ask, and so do writes
+to the files inside it that run code (below).
 @end table
 
 The dial decides how much you are asked about work @emph{inside} the
 workspace.  It never widens the workspace: a read or a write beyond it asks at
-every position, @code{auto} included.
+every position, @code{auto} included.  The same holds for a write to a file
+inside the workspace that git, the editor or the hosted engine runs or obeys
+(see @ref{AI workspace scope}).
 
 Set the dial from the @samp{AI} menu, with @kbd{Alt-G y}, or with @code{AIPolicy}
 / @env{XWPE_AI_POLICY}.  @code{edits} and @code{auto} always take a checkpoint
@@ -647,6 +650,22 @@ the place the file really goes has a row of its own in the box
 inside the project asks nothing extra.  The file is opened at that place, so a
 link made after the question was asked makes the write fail instead of landing
 somewhere you were not shown.
+
+@item Files that run code
+@cindex AI, protected files
+Some files inside the workspace are run or obeyed later by another program:
+@file{.git} and everything below it (hooks, and a config that can name a
+command), at any depth and also where a @file{.git} file of a worktree points;
+and, at the top of the workspace, @file{xwperc}, @file{.xwpe-ai.md},
+@file{AGENTS.md}, @file{CLAUDE.md}, @file{QWEN.md}, @file{.claude/},
+@file{.mcp.json} and @file{.qwen/}; and your own config folder
+(@file{~/.config/xwpe/}, @file{~/.xwpe/}) when the workspace holds it, as it
+does when you edit a file in your home folder.  A
+@code{write_file} or @code{apply_patch} there asks at every dial, @code{auto}
+included: the box shows the diff under @samp{! changes how git, the editor or
+the engine runs code: @var{path}}, and @kbd{n} leaves the file as it was.  The
+hosted engine's writes there ask the same way, and the Multi-file dialog marks
+such a file with the same words.  Reading these files asks nothing.
 
 @item Reads
 @code{read_file}, @code{list_dir}, @code{grep} and @code{glob} run unasked
@@ -962,7 +981,18 @@ These keys live in the @code{[Programming]} section of @file{xwperc}
 (@pxref{Configuration}), now kept under @file{$XDG_CONFIG_HOME/xwpe/} (default
 @file{~/.config/xwpe/}, migrated from the legacy @file{~/.xwpe/} on first run).
 Changing the AI working mode -- the backend, model or permission level -- saves
-itself immediately, so it sticks across sessions without @samp{Save Options}:
+itself immediately, so it sticks across sessions without @samp{Save Options}.
+
+@cindex AI, xwperc in a project folder
+An @file{xwperc} in the folder the editor is started in cannot set the keys
+that start a program, decide what the assistant reads, where its requests go,
+the dial or the web switch: @code{AIBackend}, @code{AIEndpoint},
+@code{AIProvider}, @code{AIProviderName}, @code{AICAFile}, @code{AISearchURL},
+@code{AIEditHook}, @code{AIHostCommand}, @code{AIHostAdapter},
+@code{AIAgentEngine}, @code{AIReadRoots}, @code{AIPolicy} and @code{AIWeb}.  They
+come from your own file and the @env{XWPE_AI_*} variables in every folder, and
+the status line names any the folder's file tried to set
+(@pxref{Folder xwperc}).
 
 @cindex AI, project instructions
 @cindex AGENTS.md

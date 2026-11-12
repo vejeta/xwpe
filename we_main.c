@@ -621,6 +621,7 @@ int main(int argc, char **argv)
   {
    fclose(f);
    cn->optfile = e_mkfilename(cn->dirct, OPTION_FILE);
+   e_opt_use_user_file(e_xdg_config_file());   /* the keys a project may not set */
   }
   else
   {
@@ -649,6 +650,7 @@ int main(int argc, char **argv)
 #endif
  /* this error comes from reading the options file */
  if (err > 0) e_error(e_msg[err], 0, cn->fb);
+ e_opt_say_ignored_keys(cn);
  if (WpeIsProg()) WpeSyntaxReadFile(cn);
 #ifdef UNIX
  for (i = 1; i < argc; i++)

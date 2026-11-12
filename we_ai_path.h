@@ -27,6 +27,12 @@
 #define WPE_SCOPE_INSIDE  0   /* under the workspace root                       */
 #define WPE_SCOPE_GRANTED 1   /* outside it, under a directory granted for reads */
 #define WPE_SCOPE_OUTSIDE 2   /* anywhere else, or a path that cannot be told   */
+#define WPE_SCOPE_PROTECTED 3 /* a write under the workspace to a file that
+                                 changes how git, the editor or the engine runs
+                                 code (.git, xwperc, .claude, ...)              */
+
+/* Room for the "gitdir:" line of a .git file. */
+#define WPE_GITDIR_LINE_MAX 4096
 
 /* The most entries one look for links that lead out may visit. */
 #define WPE_SCAN_ENTRY_MAX 20000
@@ -40,6 +46,8 @@ int wpe_path_resolve(const char *path, char *out, size_t sz);
 int wpe_scope_classify(const char *root, const char *const *grants, int ngrants,
                        const char *path, int access, char *real, size_t sz);
 int wpe_path_lands_outside(const char *root, const char *path, char *real, size_t sz);
+int wpe_path_is_protected(const char *rroot, const char *rpath);
+int wpe_path_lies_in(const char *dir, const char *rpath);
 int wpe_path_open_write(const char *path);
 int wpe_path_count_outward_links(const char *start, int max_depth, int *truncated);
 

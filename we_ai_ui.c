@@ -6614,6 +6614,15 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
    agent's write box so the user learns one sign. */
 #define AI_PLAN_OUTSIDE_MARK "!"
 #define AI_PLAN_OUTSIDE_WORD "outside the workspace"
+/* The same mark, for a file inside the workspace that git, the editor or the
+   hosted engine runs or obeys (a hook, git's config, xwperc, the project
+   instructions, the engine's project settings): the words say why it asks. */
+#define AI_PROTECTED_WORD "changes how git, the editor or the engine runs code"
+
+/* What a write box marks on its first row. */
+#define AI_WRITE_MARK_NONE      0   /* an ordinary file inside the workspace */
+#define AI_WRITE_MARK_OUTSIDE   1   /* beyond the workspace                  */
+#define AI_WRITE_MARK_PROTECTED 2   /* inside, but a file that runs code     */
 
 /* The Multi-file edit (Alt-G f) has one name wherever the user meets it: the
    menu row, the prompt, every pane line and the approval box's title all say
@@ -6645,29 +6654,43 @@ static void ai_landing_clause(FENSTER *f, const char *path, char *clause, size_t
  if (real[0]) snprintf(clause, sz, " (lands at %s)", real);
 }
 
-/* A write box for a file outside the workspace carries two more rows: the mark,
-   and the real place when a link makes it differ from the name. */
+/* A marked write box carries two more rows: the mark, and the real place when
+   a link makes it differ from the name. */
 #define AI_DIFF_OUTSIDE_ROWS 2
 
 /**
- * ai_diff_add_outside_row - Put the outside-the-workspace mark at the top of a write box.
+ * ai_write_mark_word - The words a marked write box opens with.
+ * @mark: AI_WRITE_MARK_OUTSIDE or AI_WRITE_MARK_PROTECTED.
+ * Return: "outside the workspace", or why a protected file asks.
+ */
+static const char *ai_write_mark_word(int mark)
+{
+ if (mark == AI_WRITE_MARK_PROTECTED) return AI_PROTECTED_WORD;
+ return AI_PLAN_OUTSIDE_WORD;
+}
+
+/**
+ * ai_diff_add_mark_row - Put the box's mark at the top of a write box.
  * @rt/@ra: the box rows and their colours; @nrows: how many so far, advanced
- * by one; @path: the file, as the model named it; @attr: the deletion colour.
+ * by one; @path: the file, as the model named it; @attr: the deletion colour;
+ * @mark: AI_WRITE_MARK_OUTSIDE or AI_WRITE_MARK_PROTECTED.
  *
  * The first thing the user reads in the box is "! outside the workspace:
- * <path>" in the colour of a deletion, so a write that reaches beyond the
- * project is seen as such before the diff below it is judged.  The word
- * comes before the path so it stays on screen when the path is too long for
- * the box.  When a link on the path leads elsewhere, the place the bytes will
- * really go has a row of its own below it, so a long path never pushes it off
- * the edge of the box.
+ * <path>", or "! changes how git, the editor or the engine runs code:
+ * <path>", in the colour of a deletion, so a write that reaches beyond the
+ * project, or one that plants something another program will run, is seen
+ * as such before the diff below it is judged.  The words come before the
+ * path so they stay on screen when the path is too long for the box.  When a
+ * link on the path leads elsewhere, the place the bytes will really go has a
+ * row of its own below it, so a long path never pushes it off the edge of
+ * the box.
  */
-static void ai_diff_add_outside_row(FENSTER *f, char **rt, int *ra, int *nrows,
-                                    const char *path, int attr)
+static void ai_diff_add_mark_row(FENSTER *f, char **rt, int *ra, int *nrows,
+                                 const char *path, int attr, int mark)
 {
  char row[1400], clause[AI_LANDING_CLAUSE_MAX];
  ai_landing_clause(f, path, clause, sizeof clause);
- snprintf(row, sizeof row, "%s %s: %s", AI_PLAN_OUTSIDE_MARK, AI_PLAN_OUTSIDE_WORD, path);
+ snprintf(row, sizeof row, "%s %s: %s", AI_PLAN_OUTSIDE_MARK, ai_write_mark_word(mark), path);
  rt[*nrows] = strdup(row);
  ra[*nrows] = attr;
  (*nrows)++;
@@ -6760,12 +6783,14 @@ static void ai_diff_emit_context(ai_diff_rows *rows, const wpe_ai_seg *seg,
    context) and ask a single allow/deny.  So the user SEES the change before it
    lands, instead of approving a blind "write_file x (N bytes)".  Returns 1 to
    allow, 0 to deny.  Long unchanged runs collapse to a few context lines.
-   `outside` != 0 says the file lies outside the workspace: the box then opens
-   even for an unchanged file and its first row carries the mark. */
+   `mark` other than AI_WRITE_MARK_NONE says the file lies outside the
+   workspace, or is a protected file inside it: the box then opens even for an
+   unchanged file and its first row carries the mark and the reason. */
 static int ai_diff_confirm_write(FENSTER *f, const char *path,
                                  const char *oldtext, const char *newtext,
-                                 int outside)
+                                 int mark)
 {
+ int marked = (mark != AI_WRITE_MARK_NONE);
  int red = f->fb->db.fb, green = f->fb->dy.fb, ctx = f->fb->nt.fb;
  wpe_ai_seg *segs;
  int nseg = wpe_ai_diff_segments(oldtext ? oldtext : "", newtext ? newtext : "", &segs);
@@ -6778,12 +6803,12 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
 
  for (i = 0; i < nseg; i++)            /* upper bound on the rows we may emit */
   cap += segs[i].an + segs[i].bn + 1;
- if (cap <= 0 && !outside) { wpe_ai_segs_free(segs, nseg); return 1; }   /* no change -> allow */
- if (outside) cap += AI_DIFF_OUTSIDE_ROWS;
+ if (cap <= 0 && !marked) { wpe_ai_segs_free(segs, nseg); return 1; }   /* no change -> allow */
+ if (marked) cap += AI_DIFF_OUTSIDE_ROWS;
  rt = malloc((size_t)cap * sizeof *rt);
  ra = malloc((size_t)cap * sizeof *ra);
  if (!rt || !ra) { free(rt); free(ra); wpe_ai_segs_free(segs, nseg); return 1; }
- if (outside) ai_diff_add_outside_row(f, rt, ra, &nrows, path, red);
+ if (marked) ai_diff_add_mark_row(f, rt, ra, &nrows, path, red, mark);
 
  rows.text = rt; rows.attr = ra; rows.n = nrows; rows.cap = cap;
  nl = 1;                                         /* running new-file line number */
@@ -11424,18 +11449,18 @@ static void ai_agent_show_written(FENSTER *f, const char *path)
 /**
  * ai_agent_confirm_write - Show the agent's write as a diff and take a y/n.
  * @f: the window the pane belongs to; @path: the file, as the agent named it;
- * @content: the text the agent wants in it; @outside: 1 when the file lies
- * outside the workspace, so the box carries the mark.
+ * @content: the text the agent wants in it; @mark: AI_WRITE_MARK_OUTSIDE or
+ * AI_WRITE_MARK_PROTECTED for the box's mark, AI_WRITE_MARK_NONE for none.
  *
  * The user sees what would change before it lands, instead of approving a
  * blind "write x (N bytes)", and the trace records the answer either way.
  * Return: 1 to allow, 0 to deny.
  */
 static int ai_agent_confirm_write(FENSTER *f, const char *path,
-                                  const char *content, int outside)
+                                  const char *content, int mark)
 {
  char *old = ai_slurp_file(path);
- int allow = ai_diff_confirm_write(f, path, old ? old : "", content, outside);
+ int allow = ai_diff_confirm_write(f, path, old ? old : "", content, mark);
  wpe_ai_trace("agent write confirm %s -> %s", path, allow ? "allow" : "deny");
  free(old);
  return allow;
@@ -11453,7 +11478,7 @@ static int ai_agent_confirm_write(FENSTER *f, const char *path,
 static int ai_agent_approve_write(FENSTER *f, const char *path, const char *content)
 {
  char what[720];
- if (e_ai_policy == WPE_AI_POLICY_ASK) return ai_agent_confirm_write(f, path, content, 0);
+ if (e_ai_policy == WPE_AI_POLICY_ASK) return ai_agent_confirm_write(f, path, content, AI_WRITE_MARK_NONE);
  snprintf(what, sizeof what, "write %s (%zu bytes)", path, strlen(content));
  return ai_agent_approve(f, what, 0);
 }
@@ -11471,7 +11496,38 @@ static int ai_agent_approve_write(FENSTER *f, const char *path, const char *cont
 static int ai_agent_ask_outside_write(FENSTER *f, const char *path, const char *content)
 {
  wpe_ai_trace("agent write outside workspace %s", path);
- return ai_agent_confirm_write(f, path, content, 1);
+ return ai_agent_confirm_write(f, path, content, AI_WRITE_MARK_OUTSIDE);
+}
+
+/**
+ * ai_agent_ask_protected_write - Ask about a write to a file that runs code, whatever the dial.
+ * @f: the window the pane belongs to; @path: the file, as the agent named it;
+ * @content: its new text.
+ *
+ * A git hook, git's config, a start-folder xwperc, the project instructions
+ * or the hosted engine's project settings sit inside the workspace, but what
+ * is written there is run or obeyed later by git, the editor or the engine,
+ * outside anything the review shows.  So under edits and auto too the user
+ * sees the diff in the marked box, with the reason, and decides.
+ * Return: 1 to allow, 0 to deny.
+ */
+static int ai_agent_ask_protected_write(FENSTER *f, const char *path, const char *content)
+{
+ wpe_ai_trace("agent write protected %s", path);
+ return ai_agent_confirm_write(f, path, content, AI_WRITE_MARK_PROTECTED);
+}
+
+/**
+ * ai_agent_decide_write - Ask or let the dial decide a write, by where it lands.
+ * @f: the window the pane belongs to; @where: the scope's answer for the
+ * write; @path: the file; @content: its new text.
+ * Return: 1 to allow, 0 to deny.
+ */
+static int ai_agent_decide_write(FENSTER *f, int where, const char *path, const char *content)
+{
+ if (where == WPE_SCOPE_OUTSIDE) return ai_agent_ask_outside_write(f, path, content);
+ if (where == WPE_SCOPE_PROTECTED) return ai_agent_ask_protected_write(f, path, content);
+ return ai_agent_approve_write(f, path, content);
 }
 
 /**
@@ -11560,7 +11616,9 @@ static void ai_agent_ensure_checkpoint(ai_async_op *op)
  * Shared by write_file and apply_patch so both go through the same review: a
  * file inside the workspace follows the permission dial (ai_agent_approve_write),
  * a file outside it always asks with the marked box (ai_agent_ask_outside_write)
- * and is reported as outside once written.  Before the dial is consulted the
+ * and is reported as outside once written, and a file inside it that runs
+ * code (.git, xwperc, the project instructions, the engine's settings) always
+ * asks too (ai_agent_ask_protected_write).  Before the dial is consulted the
  * run's checkpoint is taken if the dial now calls for one and none exists yet
  * (ai_agent_ensure_checkpoint), so a dial raised mid-run still ends in a
  * review.  A refusal is recorded by ai_agent_deny, as for a command.  Runs the
@@ -11571,16 +11629,15 @@ static char *ai_agent_commit_write(ai_async_op *op, const char *tool, const char
                                    const char *content)
 {
  FENSTER *f = op->f;
- int outside, allow;
+ int where, allow;
  if (!content) return strdup("(no content)");
  ai_agent_ensure_checkpoint(op);
- outside = wpe_ai_path_outside_workspace(f, path);
- if (outside) allow = ai_agent_ask_outside_write(f, path, content);
- else allow = ai_agent_approve_write(f, path, content);
+ where = wpe_ai_scope_judge(f, path, WPE_SCOPE_WRITE, NULL, 0);
+ allow = ai_agent_decide_write(f, where, path, content);
  if (!allow) return ai_agent_deny(f, tool, path);
  if (!ai_agent_write_file(path, content)) return ai_agent_report_write_failed(f, path);
  ai_agent_show_written(f, path);
- if (outside) ai_agent_report_outside(f, path);
+ if (where == WPE_SCOPE_OUTSIDE) ai_agent_report_outside(f, path);
  return strdup("(written)");
 }
 
@@ -13622,24 +13679,28 @@ static void ai_row_append(char *row, size_t sz, const char *text)
  * under that name yet.  A file the plan would write outside the workspace
  * carries the gutter mark and the words "outside the workspace", in the
  * colour of a deletion, so the user sees before approving that the model is
- * reaching beyond the tree.  It is not refused: the model may be right that
- * the file belongs there, but the user must see it.
+ * reaching beyond the tree.  A file inside it that runs code (a git hook,
+ * xwperc, the project instructions, the engine's settings) carries the same
+ * mark and says so.  Neither is refused: the model may be right that the
+ * file belongs there, but the user must see it.
  */
 static void ai_plan_row(FENSTER *f, const ai_proposal *p, char *row, size_t sz, int *attr)
 {
- int plus, minus, exists, outside;
+ int plus, minus, exists, where, marked;
  char counts[64], clause[AI_LANDING_CLAUSE_MAX];
  exists = ai_plan_count_change(f, p, &plus, &minus);
- outside = wpe_ai_path_outside_workspace(f, p->path);
+ where = wpe_ai_scope_judge(f, p->path, WPE_SCOPE_WRITE, NULL, 0);
+ marked = (where == WPE_SCOPE_OUTSIDE || where == WPE_SCOPE_PROTECTED);
  ai_landing_clause(f, p->path, clause, sizeof clause);
  snprintf(counts, sizeof counts, "  (+%d -%d)", plus, minus);
- if (outside) snprintf(row, sz, "%s %s", AI_PLAN_OUTSIDE_MARK, p->path);
+ if (marked) snprintf(row, sz, "%s %s", AI_PLAN_OUTSIDE_MARK, p->path);
  else snprintf(row, sz, "  %s", p->path);
  ai_row_append(row, sz, counts);
  if (!exists) ai_row_append(row, sz, "  [new file]");
- if (outside) ai_row_append(row, sz, "  " AI_PLAN_OUTSIDE_WORD);
- if (outside) ai_row_append(row, sz, clause);
- if (outside) *attr = f->fb->db.fb;      /* the deletion colour: look twice   */
+ if (where == WPE_SCOPE_OUTSIDE) ai_row_append(row, sz, "  " AI_PLAN_OUTSIDE_WORD);
+ if (where == WPE_SCOPE_PROTECTED) ai_row_append(row, sz, "  " AI_PROTECTED_WORD);
+ if (marked) ai_row_append(row, sz, clause);
+ if (marked) *attr = f->fb->db.fb;       /* the deletion colour: look twice   */
  else *attr = f->fb->dy.fb;             /* green: a proposed change          */
 }
 
@@ -14343,29 +14404,46 @@ static int host_tool_judged_as_write(enum host_tool_class cls, const char *path)
 }
 
 /**
- * host_ask_outside_write - Ask about a hosted write beyond the workspace, whatever the dial.
- * @f: the window the pane belongs to; @name: the CLI's tool; @path: the file.
+ * host_trace_marked_write - Record the answer to a marked hosted write.
+ * @name: the CLI's tool; @path: the file; @mark: the box's mark; @allow: the answer.
+ */
+static void host_trace_marked_write(const char *name, const char *path, int mark, int allow)
+{
+ const char *answer = "deny";
+ if (allow) answer = "allow";
+ if (mark == AI_WRITE_MARK_PROTECTED)
+  wpe_ai_trace("host write protected %s %s -> %s", name, path, answer);
+ else
+  wpe_ai_trace("host write outside workspace %s %s -> %s", name, path, answer);
+}
+
+/**
+ * host_ask_marked_write - Ask about a hosted write the dial may not decide alone.
+ * @f: the window the pane belongs to; @name: the CLI's tool; @path: the file;
+ * @mark: AI_WRITE_MARK_OUTSIDE for a file beyond the workspace,
+ * AI_WRITE_MARK_PROTECTED for a file inside it that runs code.
  *
- * The same marked box the editor's own write gives: "! outside the workspace:
- * <path>", the real place on its own row when a link makes it differ, and the
- * key line.  The CLI's request carries edits, not the whole new file, so the
- * box has no diff; its title names the tool.  The CLI edits the file itself
- * after the yes, so the pane records the answer here.
+ * The same marked box the editor's own write gives: "! outside the
+ * workspace: <path>" or "! changes how git, the editor or the engine runs
+ * code: <path>", the real place on its own row when a link makes it differ,
+ * and the key line.  The CLI's request carries edits, not the whole new
+ * file, so the box has no diff; its title names the tool.  The CLI edits the
+ * file itself after the yes, so the pane records the answer here.
  * Return: 1 to allow, 0 to deny.
  */
-static int host_ask_outside_write(FENSTER *f, const char *name, const char *path)
+static int host_ask_marked_write(FENSTER *f, const char *name, const char *path, int mark)
 {
  char *rt[AI_DIFF_OUTSIDE_ROWS];
  int ra[AI_DIFF_OUTSIDE_ROWS], n = 0, key, i, allow;
  char title[80], line[AI_SCOPE_ROW_MAX];
- ai_diff_add_outside_row(f, rt, ra, &n, path, f->fb->db.fb);
+ ai_diff_add_mark_row(f, rt, ra, &n, path, f->fb->db.fb, mark);
  snprintf(title, sizeof title, " %.20s %.48s ? ", name, path);
  key = ai_diff_box_show(f, rt, ra, n, title, " y allow  n / Esc deny ", "YN", -1);
  for (i = 0; i < n; i++) free(rt[i]);
  allow = (key == 13 || key == 'Y');
- wpe_ai_trace("host write outside workspace %s %s -> %s", name, path, allow ? "allow" : "deny");
+ host_trace_marked_write(name, path, mark, allow);
  if (!allow) return 0;
- snprintf(line, sizeof line, "[agent] %s %s, %s", name, path, AI_PLAN_OUTSIDE_WORD);
+ snprintf(line, sizeof line, "[agent] %s %s, %s", name, path, ai_write_mark_word(mark));
  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
  return 1;
 }
@@ -14376,10 +14454,11 @@ static int host_ask_outside_write(FENSTER *f, const char *name, const char *path
  * @path: the path its request carried, or NULL.
  *
  * The scope is the same one the editor's own tools answer to: inside it, the
- * dial decides as it always did; beyond it, the user is asked at every dial,
- * auto included.  A read asks with the read box and a write with the marked
- * write box.  A command, and a tool the editor does not know that names no
- * path, is not judged here.
+ * dial decides as it always did; beyond it, and for a write to a file inside
+ * it that runs code (.git, xwperc, .claude, ...), the user is asked at every
+ * dial, auto included.  A read asks with the read box and a write with the
+ * marked write box.  A command, and a tool the editor does not know that
+ * names no path, is not judged here.
  * Return: HOST_SCOPE_DIAL, HOST_SCOPE_ALLOW or HOST_SCOPE_DENY.
  */
 static enum host_scope_answer host_scope_decide(FENSTER *f, const char *name,
@@ -14388,6 +14467,7 @@ static enum host_scope_answer host_scope_decide(FENSTER *f, const char *name,
  char folder[AI_LANDING_PLACE_MAX], abs[WPE_PATH_RESOLVED_MAX];
  const char *target;
  enum ai_scope_verdict verdict;
+ int where;
  if (cls != HOST_TOOL_CLASS_READ && !host_tool_judged_as_write(cls, path)) return HOST_SCOPE_DIAL;
  target = ai_host_scope_path(name, path, abs, sizeof abs);
  if (!target) {
@@ -14395,9 +14475,12 @@ static enum host_scope_answer host_scope_decide(FENSTER *f, const char *name,
   return HOST_SCOPE_DENY;
  }
  if (host_tool_judged_as_write(cls, path)) {
-  if (wpe_ai_scope_judge(f, target, WPE_SCOPE_WRITE, NULL, 0) != WPE_SCOPE_OUTSIDE)
-   return HOST_SCOPE_DIAL;
-  return host_ask_outside_write(f, name, target) ? HOST_SCOPE_ALLOW : HOST_SCOPE_DENY;
+  where = wpe_ai_scope_judge(f, target, WPE_SCOPE_WRITE, NULL, 0);
+  if (where == WPE_SCOPE_OUTSIDE)
+   return host_ask_marked_write(f, name, target, AI_WRITE_MARK_OUTSIDE) ? HOST_SCOPE_ALLOW : HOST_SCOPE_DENY;
+  if (where == WPE_SCOPE_PROTECTED)
+   return host_ask_marked_write(f, name, target, AI_WRITE_MARK_PROTECTED) ? HOST_SCOPE_ALLOW : HOST_SCOPE_DENY;
+  return HOST_SCOPE_DIAL;
  }
  verdict = ai_scope_ask_read(f, name, target, folder, sizeof folder);
  if (verdict == AI_SCOPE_INSIDE_SCOPE) return HOST_SCOPE_DIAL;
