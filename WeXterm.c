@@ -499,6 +499,89 @@ int e_x_palette_rgb(int idx, unsigned char rgb[3])
  return 1;
 }
 
+/**
+ * e_x_palette_pixel - The pixel the X server gave palette entry @idx.
+ * @idx: palette index, 0..15
+ *
+ * For a renderer that turns its own picture into the editor's pixels: every
+ * colour on the window is then one the editor allocated, in the colormap the
+ * window uses, so a palette display shows the editor's colours and not
+ * whatever happens to sit in other cells.  Any number outside the palette
+ * gives entry 0's pixel.
+ *
+ * Return: the pixel value.
+ */
+unsigned long e_x_palette_pixel(int idx)
+{
+ if (idx < 0 || idx >= X_PALETTE_SIZE)
+  return (unsigned long)WpeXInfo.colors[0];
+ return (unsigned long)WpeXInfo.colors[idx];
+}
+
+/* How the painted picture reaches the window.  Decided by WpeXColorGet once
+   the colours are allocated, read by the renderer when it makes its surface. */
+static EXRenderRoute x_render_route = E_X_RENDER_DIRECT;
+
+/**
+ * e_x_render_route - How the painted picture reaches the window.
+ *
+ * The renderer asks this when it starts, so it paints in the way the
+ * display's visual can show the editor's colours.
+ *
+ * Return: the route WpeXColorGet chose.
+ */
+EXRenderRoute e_x_render_route(void)
+{
+ return x_render_route;
+}
+
+/**
+ * x_render_route_name - The word the trace uses for a route.
+ * @route: a route
+ *
+ * Return: "direct" or "indexed".
+ */
+static const char *x_render_route_name(EXRenderRoute route)
+{
+ if (route == E_X_RENDER_INDEXED)
+  return "indexed";
+ return "direct";
+}
+
+/**
+ * x_render_route_trace - Say in $XWPE_UI_TRACE which route the display got.
+ * @visual: the window's visual
+ * @depth: the screen's depth
+ *
+ * Someone chasing wrong colours on an unusual display, or a test, reads here
+ * the route, the visual class and the colormap the editor paints with; the
+ * picture alone cannot tell them apart on a true-colour display.  Nothing is
+ * written when the variable is not set.
+ */
+static void x_render_route_trace(Visual *visual, int depth)
+{
+ Colormap cmap = e_x_palette_colormap();
+
+ wpe_ui_trace("palette route=%s class=%d depth=%d cmap=%lu private=%d",
+              x_render_route_name(x_render_route), visual->class, depth,
+              (unsigned long)cmap, x_palette_cmap != None);
+}
+
+/**
+ * x_render_route_choose - Decide how the picture reaches the window.
+ * @visual: the window's visual
+ * @depth: the screen's depth
+ *
+ * Called once the colours are allocated, before the renderer starts.  Every
+ * visual takes the direct route for now: cairo paints into the back buffer
+ * and the back buffer is copied to the window, as the editor always did.
+ */
+static void x_render_route_choose(Visual *visual, int depth)
+{
+ x_render_route = E_X_RENDER_DIRECT;
+ x_render_route_trace(visual, depth);
+}
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeXColorGet - Get color settings from the X resources.
 
@@ -553,6 +636,7 @@ void WpeXColorGet(XrmDatabase xresdb, XrmQuark *name_list,
   WpeXInfo.colors[1] = WhitePixel(WpeXInfo.display, WpeXInfo.screen);
   for (loop = 0; loop < X_PALETTE_SIZE; loop++)
    x_palette_record_mono(loop, WpeXInfo.colors[loop]);
+  x_render_route_choose(visual, depth);
   return ;
  }
  /* Check for private colormap option */
@@ -587,6 +671,7 @@ void WpeXColorGet(XrmDatabase xresdb, XrmQuark *name_list,
   WpeXInfo.colors[loop] = exact_def.pixel;
   x_palette_record(loop, &exact_def);
  }
+ x_render_route_choose(visual, depth);
  return ;
 }
 

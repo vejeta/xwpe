@@ -90,6 +90,19 @@ int e_x_palette_rgb(int idx, unsigned char rgb[3]);
 /* The colormap those colours live in: the default one, or the private one
    the pcmap resource asked for. */
 Colormap e_x_palette_colormap(void);
+/* The pixel the X server gave palette entry idx, 0..15; entry 0's pixel for
+   any other number. */
+unsigned long e_x_palette_pixel(int idx);
+
+/* How the painted picture reaches the window, decided once from the display's
+   visual when the colours are allocated. */
+typedef enum EXRenderRoute {
+ /* cairo paints into the back buffer through the server's colour masks */
+ E_X_RENDER_DIRECT,
+ /* cairo paints into memory and each pixel becomes one of the 16 allocated */
+ E_X_RENDER_INDEXED
+} EXRenderRoute;
+EXRenderRoute e_x_render_route(void);
 #ifdef HAVE_XFT
 /* The glyph surface for the back buffer, made in that same colormap. */
 XftDraw *e_x_xftdraw_create(void);

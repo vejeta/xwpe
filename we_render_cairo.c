@@ -39,6 +39,122 @@ static FT_Face cr_ft_ftface;   /* owned by us: cairo references but never frees 
    indices 16+slot, so a foreground index >= 16 paints a slot's exact RGB. */
 static double cairo_colors[16 + LSP_SEM_TC_MAX][3];
 
+/* Where the painted picture goes and how it reaches the window.  The drawing
+   primitives always paint with cairo onto cr_surface; a sink owns that
+   surface, records which part of it changed, and puts the changed part on the
+   window.  The display's visual decides which sink the editor uses, so a
+   display whose colours are not plain red/green/blue masks can get a sink
+   that turns every painted colour into one of the editor's own pixels. */
+struct cr_sink {
+ /* Make cr_surface and cr for a back buffer of this size. */
+ void (*init)(int pixel_w, int pixel_h);
+ /* Remake them at a new size, keeping what was already painted. */
+ void (*resize)(int pixel_w, int pixel_h);
+ /* A primitive painted this rectangle of cr_surface. */
+ void (*touch)(int x, int y, int w, int h);
+ /* Put this rectangle of the painted picture on the window. */
+ void (*present)(int x, int y, int w, int h);
+ /* Put everything painted since the last time on the window. */
+ void (*present_all)(void);
+ /* Move a rectangle of the picture inside the back buffer. */
+ void (*blit)(int sx, int sy, int dx, int dy, int w, int h);
+ /* Give back cr and cr_surface. */
+ void (*cleanup)(void);
+ /* How cairo smooths the edges of shapes and glyphs on this sink. */
+ cairo_antialias_t antialias;
+};
+
+static const struct cr_sink cr_sink_direct;
+static const struct cr_sink *cr_sink = &cr_sink_direct;
+
+/**
+ * cr_touch - Tell the sink that a primitive painted a rectangle.
+ * @x: left edge, in pixels
+ * @y: top edge, in pixels
+ * @w: width, in pixels
+ * @h: height, in pixels
+ *
+ * Every drawing primitive ends here, so a sink that only sends the changed
+ * part of the picture to the window knows what changed, and a keystroke costs
+ * the few cells it repainted rather than the whole window.
+ */
+static void cr_touch(int x, int y, int w, int h)
+{
+ cr_sink->touch(x, y, w, h);
+}
+
+/**
+ * cr_touch_line - Tell the sink that a straight line was painted.
+ * @x1: start column, in pixels
+ * @y1: start row, in pixels
+ * @x2: end column, in pixels
+ * @y2: end row, in pixels
+ * @width: the line's width, in pixels
+ *
+ * The rectangle covers both ends and the line's width on every side, so the
+ * whole line reaches the window, smoothed edges included.
+ */
+static void cr_touch_line(int x1, int y1, int x2, int y2, int width)
+{
+ int left = x1, top = y1, right = x2, bottom = y2;
+
+ if (x2 < x1)
+ {
+  left = x2;
+  right = x1;
+ }
+ if (y2 < y1)
+ {
+  top = y2;
+  bottom = y1;
+ }
+ cr_touch(left - width, top - width,
+          right - left + 2 * width + 1, bottom - top + 2 * width + 1);
+}
+
+/**
+ * cr_touch_arrow - Tell the sink that a scrollbar arrow was painted.
+ * @cx: the arrow's centre column, in pixels
+ * @cy: the arrow's centre row, in pixels
+ * @sz: the arrow's half size, in pixels
+ *
+ * The rectangle is the square every arrow direction fits in, so a scrollbar
+ * arrow appears on the window in full the moment its window is repainted.
+ */
+static void cr_touch_arrow(int cx, int cy, int sz)
+{
+ cr_touch(cx - sz, cy - sz, 2 * sz + 1, 2 * sz + 1);
+}
+
+/**
+ * cr_apply_antialias - Set the edge smoothing the current sink wants on cr.
+ *
+ * Called right after every cairo_create, at start-up and after a resize, so
+ * the new context draws exactly like the one it replaces.  On a display that
+ * shows real red/green/blue the edges stay smoothed with grey levels, as the
+ * editor always drew them.  A sink that can only show the editor's 16 colours
+ * turns smoothing off, for shapes and for text, so every glyph is drawn in
+ * its own colour and stays sharp instead of collecting stray in-between
+ * colours that have no matching cell; the font options go on the context
+ * before the font is measured, so the cell size matches the sharp glyphs.
+ */
+static void cr_apply_antialias(void)
+{
+ cairo_font_options_t *opts;
+
+ cairo_set_antialias(cr, cr_sink->antialias);
+ if (cr_sink->antialias != CAIRO_ANTIALIAS_NONE)
+  return;
+
+ opts = cairo_font_options_create();
+ cairo_font_options_set_antialias(opts, CAIRO_ANTIALIAS_NONE);
+ cairo_font_options_set_hint_style(opts, CAIRO_HINT_STYLE_FULL);
+ cairo_set_font_options(cr, opts);
+ cairo_font_options_destroy(opts);
+ if (pg_layout)
+  pango_cairo_update_layout(cr, pg_layout);
+}
+
 static void cairo_init_sem_truecolors(void)
 {
  int s, r, g, b;
@@ -77,6 +193,7 @@ static void cr_draw_rect(int x, int y, int w, int h, int color_idx)
    cairo_colors[color_idx][1], cairo_colors[color_idx][2]);
  cairo_rectangle(cr, x, y, w, h);
  cairo_fill(cr);
+ cr_touch(x, y, w, h);
 }
 
 /* Fast single-glyph path used only while a scrollbar drag is in flight, where
@@ -122,6 +239,7 @@ static void cr_draw_text(int x, int y, const char *utf8, int u8len,
   cr_draw_text_ft(x, y, utf8, u8len, fg_idx);
  else
   cr_draw_text_pango(x, y, utf8, u8len, fg_idx);
+ cr_touch(x, y, WpeRender.font_width * cell_width, WpeRender.font_height);
 }
 
 static void cr_draw_line(int x1, int y1, int x2, int y2,
@@ -133,6 +251,7 @@ static void cr_draw_line(int x1, int y1, int x2, int y2,
  cairo_move_to(cr, x1 + 0.5, y1 + 0.5);
  cairo_line_to(cr, x2 + 0.5, y2 + 0.5);
  cairo_stroke(cr);
+ cr_touch_line(x1, y1, x2, y2, width);
 }
 
 static void cr_clear_rect(int x, int y, int w, int h, int color_idx)
@@ -144,15 +263,51 @@ static void cr_draw_acs(int sc, int px, int py, int fg_idx, int bg_idx)
 {
  wpe_glyph_acs(cr, sc, px, py, WpeRender.font_width, WpeRender.font_height,
                cairo_colors[fg_idx], cairo_colors[bg_idx]);
+ cr_touch(px, py, WpeRender.font_width, WpeRender.font_height);
 }
 
 static void cr_draw_lock(int px, int py, int cw, int fg_idx, int bg_idx)
 {
  wpe_glyph_lock(cr, px, py, WpeRender.font_width * cw, WpeRender.font_height,
                 cairo_colors[fg_idx], cairo_colors[bg_idx]);
+ cr_touch(px, py, WpeRender.font_width * cw, WpeRender.font_height);
 }
 
-static void cr_flush(int x, int y, int w, int h)
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
+  The direct sink: cairo paints straight into the back buffer pixmap through
+  the X server, and presenting copies the back buffer to the window.  Right
+  for a display whose pixels are red, green and blue masks.
+\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+/**
+ * cr_direct_touch - Nothing to record on the direct sink.
+ * @x: left edge, in pixels
+ * @y: top edge, in pixels
+ * @w: width, in pixels
+ * @h: height, in pixels
+ *
+ * Cairo already painted into the back buffer and the whole of it is copied
+ * at the end of each refresh, so a changed rectangle needs no bookkeeping.
+ */
+static void cr_direct_touch(int x, int y, int w, int h)
+{
+ (void)x;
+ (void)y;
+ (void)w;
+ (void)h;
+}
+
+/**
+ * cr_direct_present - Copy a rectangle of the back buffer to the window.
+ * @x: left edge, in pixels
+ * @y: top edge, in pixels
+ * @w: width, in pixels
+ * @h: height, in pixels
+ *
+ * What the user sees after a refresh: the frame the editor finished
+ * painting, put on the window in one copy so it never shows half drawn.
+ */
+static void cr_direct_present(int x, int y, int w, int h)
 {
 #ifndef NO_XWINDOWS
  cairo_surface_flush(cr_surface);
@@ -161,16 +316,32 @@ static void cr_flush(int x, int y, int w, int h)
 #endif
 }
 
-static void cr_flush_all(void)
+/**
+ * cr_direct_present_all - Copy the whole editor area to the window.
+ *
+ * The end of every refresh, so all the cells repainted in it appear at once.
+ */
+static void cr_direct_present_all(void)
 {
 #ifndef NO_XWINDOWS
  extern int MAXSLNS, MAXSCOL;
- cr_flush(0, 0, WpeRender.font_width * MAXSCOL,
+ cr_direct_present(0, 0, WpeRender.font_width * MAXSCOL,
    WpeRender.font_height * MAXSLNS);
 #endif
 }
 
-static void cr_blit(int sx, int sy, int dx, int dy, int w, int h)
+/**
+ * cr_direct_blit - Move a rectangle inside the back buffer.
+ * @sx: source left edge, in pixels
+ * @sy: source top edge, in pixels
+ * @dx: destination left edge, in pixels
+ * @dy: destination top edge, in pixels
+ * @w: width, in pixels
+ * @h: height, in pixels
+ *
+ * Lets a scroll move the text already painted instead of painting it again.
+ */
+static void cr_direct_blit(int sx, int sy, int dx, int dy, int w, int h)
 {
 #ifndef NO_XWINDOWS
  cairo_surface_flush(cr_surface);
@@ -180,7 +351,15 @@ static void cr_blit(int sx, int sy, int dx, int dy, int w, int h)
 #endif
 }
 
-static void cr_resize(int pixel_w, int pixel_h)
+/**
+ * cr_direct_resize - Remake the back buffer and cairo context at a new size.
+ * @pixel_w: new width, in pixels
+ * @pixel_h: new height, in pixels
+ *
+ * After the user resizes the window, what was painted stays in place while
+ * the editor lays the screen out again, and the new area starts black.
+ */
+static void cr_direct_resize(int pixel_w, int pixel_h)
 {
 #ifndef NO_XWINDOWS
  static int prev_w = 0, prev_h = 0;
@@ -215,11 +394,97 @@ static void cr_resize(int pixel_w, int pixel_h)
    DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
    pixel_w, pixel_h);
  cr = cairo_create(cr_surface);
- cairo_set_antialias(cr, CAIRO_ANTIALIAS_GRAY);
+ cr_apply_antialias();
 
  if (old_buf)
   XFreePixmap(WpeXInfo.display, old_buf);
 #endif
+}
+
+/**
+ * cr_direct_cleanup - Give back the cairo context and surface.
+ *
+ * When the editor closes its window, so nothing still points at the back
+ * buffer.
+ */
+static void cr_direct_cleanup(void)
+{
+ if (cr)
+ {
+  cairo_destroy(cr);
+  cr = NULL;
+ }
+ if (cr_surface)
+ {
+  cairo_surface_destroy(cr_surface);
+  cr_surface = NULL;
+ }
+}
+
+/**
+ * cr_direct_init - Wrap the back buffer in a cairo surface and context.
+ * @pixel_w: width of the back buffer, in pixels
+ * @pixel_h: height of the back buffer, in pixels
+ *
+ * At start-up, so the first frame the user sees is painted straight into
+ * the back buffer.
+ */
+static void cr_direct_init(int pixel_w, int pixel_h)
+{
+ cr_surface = cairo_xlib_surface_create(WpeXInfo.display,
+   WpeXInfo.backbuf,
+   DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+   pixel_w, pixel_h);
+ cr = cairo_create(cr_surface);
+ cr_apply_antialias();
+}
+
+static const struct cr_sink cr_sink_direct = {
+ cr_direct_init,
+ cr_direct_resize,
+ cr_direct_touch,
+ cr_direct_present,
+ cr_direct_present_all,
+ cr_direct_blit,
+ cr_direct_cleanup,
+ CAIRO_ANTIALIAS_GRAY
+};
+
+#ifndef NO_XWINDOWS
+/**
+ * cr_sink_for_route - The sink for the way the X11 backend presents.
+ * @route: what e_x_render_route() decided for the display
+ *
+ * Every route has the direct sink for now: the editor paints through cairo
+ * into the back buffer and copies it to the window, as it always did.
+ *
+ * Return: the sink the renderer uses from start-up on.
+ */
+static const struct cr_sink *cr_sink_for_route(EXRenderRoute route)
+{
+ (void)route;
+ return &cr_sink_direct;
+}
+#endif
+
+static void cr_flush(int x, int y, int w, int h)
+{
+ cr_sink->present(x, y, w, h);
+}
+
+static void cr_flush_all(void)
+{
+ cr_sink->present_all();
+}
+
+static void cr_blit(int sx, int sy, int dx, int dy, int w, int h)
+{
+ cr_sink->blit(sx, sy, dx, dy, w, h);
+}
+
+static void cr_resize(int pixel_w, int pixel_h)
+{
+ cr_sink->resize(pixel_w, pixel_h);
 }
 
 static void cr_cleanup(void)
@@ -234,16 +499,7 @@ static void cr_cleanup(void)
   g_object_unref(pg_layout);
   pg_layout = NULL;
  }
- if (cr)
- {
-  cairo_destroy(cr);
-  cr = NULL;
- }
- if (cr_surface)
- {
-  cairo_surface_destroy(cr_surface);
-  cr_surface = NULL;
- }
+ cr_sink->cleanup();
  /* Tear the font stack down in dependency order: the scaled font references
     the cairo FT font face, which references the FreeType FT_Face that cairo
     does not own -- so we FT_Done it ourselves, last. */
@@ -264,14 +520,20 @@ static void cr_cleanup(void)
  }
 }
 
+/**
+ * cr_init_surface - Choose the sink for this display and make its surface.
+ * @pixel_w: width of the back buffer, in pixels
+ * @pixel_h: height of the back buffer, in pixels
+ *
+ * At start-up, before the font is measured, so the cell size comes from the
+ * surface the editor will really paint on.
+ */
 static void cr_init_surface(int pixel_w, int pixel_h)
 {
- cr_surface = cairo_xlib_surface_create(WpeXInfo.display,
-   WpeXInfo.backbuf,
-   DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-   pixel_w, pixel_h);
- cr = cairo_create(cr_surface);
- cairo_set_antialias(cr, CAIRO_ANTIALIAS_GRAY);
+#ifndef NO_XWINDOWS
+ cr_sink = cr_sink_for_route(e_x_render_route());
+#endif
+ cr_sink->init(pixel_w, pixel_h);
 }
 
 /* Point size baked into the desktop monospace-font-name (e.g. the 13 in
@@ -488,6 +750,7 @@ static void cr_chrome_arrow_up(int cx, int cy, int sz, int ci)
  cairo_line_to(cr, cx + sz, cy + sz / 2);
  cairo_close_path(cr);
  cairo_fill(cr);
+ cr_touch_arrow(cx, cy, sz);
 }
 
 static void cr_chrome_arrow_down(int cx, int cy, int sz, int ci)
@@ -499,6 +762,7 @@ static void cr_chrome_arrow_down(int cx, int cy, int sz, int ci)
  cairo_line_to(cr, cx + sz, cy - sz / 2);
  cairo_close_path(cr);
  cairo_fill(cr);
+ cr_touch_arrow(cx, cy, sz);
 }
 
 static void cr_chrome_track(int x, int y, int w, int h, int ci)
@@ -507,6 +771,7 @@ static void cr_chrome_track(int x, int y, int w, int h, int ci)
    cairo_colors[ci][1] * 0.5, cairo_colors[ci][2] * 0.5);
  cairo_rectangle(cr, x, y, w, h);
  cairo_fill(cr);
+ cr_touch(x, y, w, h);
 }
 
 static void cr_chrome_thumb(int x, int y, int w, int h, int ci)
@@ -515,6 +780,7 @@ static void cr_chrome_thumb(int x, int y, int w, int h, int ci)
    cairo_colors[ci][1], cairo_colors[ci][2]);
  cairo_rectangle(cr, x, y, w, h);
  cairo_fill(cr);
+ cr_touch(x, y, w, h);
 }
 
 /* Thumb offset+length within a track, from the scroll position.  Shared by the
@@ -598,6 +864,7 @@ static void cr_chrome_arrow_left(int cx, int cy, int sz, int ci)
  cairo_line_to(cr, cx + sz / 2, cy + sz);
  cairo_close_path(cr);
  cairo_fill(cr);
+ cr_touch_arrow(cx, cy, sz);
 }
 
 static void cr_chrome_arrow_right(int cx, int cy, int sz, int ci)
@@ -609,6 +876,7 @@ static void cr_chrome_arrow_right(int cx, int cy, int sz, int ci)
  cairo_line_to(cr, cx - sz / 2, cy + sz);
  cairo_close_path(cr);
  cairo_fill(cr);
+ cr_touch_arrow(cx, cy, sz);
 }
 
 static void cr_chrome_hscrollbar(FENSTER *f, int ci_bg, int ci_fg)
