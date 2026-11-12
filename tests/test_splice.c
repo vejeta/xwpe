@@ -99,11 +99,28 @@ void wpe_buffer_say_read_only(BUFFER *b)
  read_only_calls++;
 }
 
+static int replay_calls;        /* character records the editor's side replayed */
+static int replay_row_missing;  /* ... handed a row the text does not have */
+static int stub_marks_past;     /* the replay sets the block past the text, as
+                                   a record of a longer text would */
+
+/* As the editor's character primitives: a replay works on the row its
+   record names, so that row must be one of the text.  Counted here rather
+   than read, so a row past the text fails the case instead of reading the
+   line a splice freed. */
 int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
 {
- (void) b;
- (void) s;
- (void) rec;
+ if (rec->type == 'a' || rec->type == 'r' || rec->type == 's' || rec->type == 'p') {
+  replay_calls++;
+  if (rec->b.y < 0 || rec->b.y >= b->mxlines)
+   replay_row_missing++;
+ }
+ if (stub_marks_past && s != NULL) {
+  s->mark_begin.x = 0;
+  s->mark_begin.y = b->mxlines + 2;
+  s->mark_end.x = 7;
+  s->mark_end.y = b->mxlines + 3;
+ }
  return(E_BUFFER_OK);
 }
 
@@ -191,6 +208,7 @@ static void hooks_reset(void)
  moved_nremoved = moved_nadded = 0;
  overrun_traced = move_view_traced = 0;
  stub_refuses = stub_overruns = 0;
+ replay_calls = replay_row_missing = stub_marks_past = 0;
 }
 
 /* ---- the fixture: a window with a buffer of numbered lines ---- */
@@ -1984,6 +2002,94 @@ static void case_a_move_into_a_narrower_buffer_builds_its_line_again(void)
  fixture_free();
 }
 
+/* The record of a deletion (as e_del_nchar keeps it, with the deletion
+   covered by it) on row @y of the fixture: its text is the row's. */
+static Undo *a_deletion_record(int y)
+{
+ Undo *rec = e_buffer_record_push(&buf, e_buffer_record_new('r'));
+
+ rec->b = pnt(0, y);
+ rec->a.x = buf.bf[y].len;
+ if (e_buffer_record_text(rec, buf.bf[y].s, buf.bf[y].len) != E_BUFFER_OK)
+  exit(2);
+ return(rec);
+}
+
+/* A character record of @kind on the list, naming (0, @y). */
+static Undo *a_char_record_at(int kind, int y)
+{
+ Undo *rec = e_buffer_record_push(&buf, e_buffer_record_new(kind));
+
+ rec->b = pnt(0, y);
+ rec->a.x = 1;
+ if (kind == 'r' && e_buffer_record_text(rec, (const unsigned char *) "x", 1) != E_BUFFER_OK)
+  exit(2);
+ return(rec);
+}
+
+/* A character record names the row its text goes back to, and the
+   deletion it records may take that row: Ctrl-T on the only word of the
+   last line.  After that splice the record names the row just past the
+   text and never further; Undo hands its replay a row of the text (the
+   owner opens it again, empty, and the parked breakpoint comes back on
+   it), never the line the splice freed.  A record naming any row further
+   out, or one that takes text from the row past the text, is refused and
+   nothing is replayed. */
+static void case_a_record_never_names_a_freed_row(void)
+{
+ Undo *rec;
+ int row = 3;
+
+ fixture(4, E_BUFFER_HISTORY_FULL);
+ brp_set(1, &row);
+ rec = a_deletion_record(3);
+ e_buffer_cover_begin(&buf, rec);
+ e_buffer_delete_lines(&buf, 3, 1, E_BUFFER_STEP_NEW);
+ e_buffer_cover_end(&buf);
+ chk("row past: the last row went", buf.mxlines, 3);
+ chk("row past: the record names the row just past the text", rec->b.y, buf.mxlines);
+ chk("row past: the record holds the breakpoint", rec->nbrk == 1 && rec->brk[0] == 0, 1);
+ replay_calls = replay_row_missing = 0;
+ chk("row past: Undo", e_buffer_undo(&buf, &scr), E_BUFFER_OK);
+ chk("row past: the replay ran once", replay_calls, 1);
+ chk("row past: on a row of the text", replay_row_missing, 0);
+ chk("row past: the row is there again", buf.mxlines, 4);
+ chk("row past: empty, for the replay to fill", buf.bf[3].len * 10 + buf.bf[3].s[0], 0);
+ chk("row past: its breakpoint is back on it", brp_has(3), 1);
+ chk("row past: the record is used up", list_len(buf.ud), 0);
+ fixture_free();
+
+ fixture(4, E_BUFFER_HISTORY_FULL);
+ a_char_record_at('r', 6);
+ chk("row further out: Undo refused", e_buffer_undo(&buf, &scr), E_BUFFER_RANGE);
+ chk("row further out: nothing replayed", replay_calls, 0);
+ chk("row further out: the text as it was", buf.mxlines, 4);
+ chk("row further out: the record stays", list_len(buf.ud), 1);
+ fixture_free();
+
+ fixture(4, E_BUFFER_HISTORY_FULL);
+ a_char_record_at('a', 4);
+ chk("text taken from past the text: Undo refused", e_buffer_undo(&buf, &scr), E_BUFFER_RANGE);
+ chk("text taken from past the text: nothing replayed", replay_calls, 0);
+ chk("text taken from past the text: the text as it was", buf.mxlines, 4);
+ fixture_free();
+}
+
+/* A replay that sets the block from a record of a longer text leaves it
+   past the end; the owner pulls it back, so the next block command meets
+   rows the text has. */
+static void case_marks_stand_in_the_text_after_an_undo(void)
+{
+ fixture(4, E_BUFFER_HISTORY_FULL);
+ a_char_record_at('r', 1);
+ stub_marks_past = 1;
+ chk("marks: Undo", e_buffer_undo(&buf, &scr), E_BUFFER_OK);
+ chk("marks: the block begins on a row of the text", scr.mark_begin.y < buf.mxlines, 1);
+ chk("marks: and ends on one", scr.mark_end.y, buf.mxlines - 1);
+ chk("marks: at the end of the text", scr.mark_end.x, buf.bf[buf.mxlines - 1].len);
+ fixture_free();
+}
+
 int main(void)
 {
  case_insert_above_a_mark();
@@ -2032,6 +2138,8 @@ int main(void)
  case_the_view_reads_two_items_on_one_row();
  case_a_copy_into_a_narrower_buffer_keeps_every_byte();
  case_a_move_into_a_narrower_buffer_builds_its_line_again();
+ case_a_record_never_names_a_freed_row();
+ case_marks_stand_in_the_text_after_an_undo();
  if (fails) {
   printf("test_splice: %d failure(s)\n", fails);
   return(1);

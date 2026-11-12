@@ -46,8 +46,6 @@ POINT_AT_END = 1
 
 # The option dialog's fields, by the name an action gives them.
 OPTION_FIELDS = ("maxcol", "tabn", "maxchg", "numundo", "autoindent_col")
-# The shift's blank string is Tabstops / 2 blanks and one end mark byte.
-UNINDENT_STRING_END = 1
 # Enough Change All replacements to say the editor looped; the real loop
 # ends when no occurrence is left.
 REPLACE_LIMIT = 5000
@@ -115,7 +113,7 @@ _r("block_undo_marks", model.SOURCE_CODE, "probe of the copy and paste Undo, 202
 _r("block_move_breakpoints", model.SOURCE_CHAPTER, COMPAT + ":149-158",
    "A move carries the breakpoints of its lines; the model does not follow "
    "them and takes the editor's rows.", (model.F_BREAKPOINTS,))
-_r("block_locked", model.SOURCE_CHAPTER, COMPAT + ":268-274; " + EDITOR + ":83-91",
+_r("block_locked", model.SOURCE_CHAPTER, COMPAT + ":276-282; " + EDITOR + ":86-94",
    "In a read-only window Ctrl-K I, U, D, F, Ctrl-O B, L, U, M, H, E and "
    "Replace are refused and the status row says the text is unchanged; the "
    "block Delete, Move and Paste do nothing; Copy still works, so Cut copies "
@@ -130,11 +128,10 @@ _r("indent_width", model.SOURCE_CODE, "we_block.c:2058, 2106",
    (model.F_TEXT, model.F_MARKS, model.F_CURSOR))
 _r("indent_one_step", model.SOURCE_DECISION, DECIDED,
    "Ctrl-K I and Ctrl-K U are one Ctrl-U for the whole block.", (model.F_STEPS,))
-_r("unindent_reads_past", model.SOURCE_CODE, "we_block.c:2096",
-   "When tabs in the indent are worth more than Tabstops / 2 columns twice "
-   "over, the blanks put back are read past the end of the editor's blank "
-   "string: the model does not predict them.", (model.F_TEXT, model.F_CURSOR,
-                                               model.F_MARKS, model.F_SAVE))
+_r("unindent_puts_back_blanks", model.SOURCE_CODE, "we_block.c:2058-2077, 2122",
+   "When the last thing a shift to the left takes is a tab worth more "
+   "columns than the shift, the columns beyond it come back as blanks: "
+   "the row moves exactly Tabstops / 2 to the left.", (model.F_TEXT,))
 _r("indent_blank_row", model.SOURCE_CODE, "we_block.c:2127",
    "The blanks of a shift go after the row's own leading blanks and never "
    "past its end: a row of only blanks gets them after its last one.",
@@ -147,10 +144,10 @@ _r("help_markers_detail", model.SOURCE_CODE, "we_edit.c:1717-1746",
    "Only a block inside one row gets them: the marker byte goes in front, "
    "the end byte after, and the cursor ends just past the marker byte.",
    (model.F_TEXT, model.F_CURSOR))
-_r("help_end_line", model.SOURCE_CHAPTER, COMPAT + ":276-281",
+_r("help_end_line", model.SOURCE_CHAPTER, COMPAT + ":284-289",
    "Ctrl-O E puts the end-of-page mark on a line of its own in the file, "
    "above the cursor's line.", (model.F_TEXT, model.F_CURSOR))
-_r("help_end_one_step", model.SOURCE_CHAPTER, COMPAT + ":276-281",
+_r("help_end_one_step", model.SOURCE_CHAPTER, COMPAT + ":284-289",
    "One Ctrl-U takes that line back.", (model.F_STEPS,))
 _r("help_markers_one_step", model.SOURCE_DECISION, DECIDED,
    "Ctrl-O U, M and H are one Ctrl-U each.", (model.F_STEPS,))
@@ -164,7 +161,7 @@ _r("clip_paste", model.SOURCE_CODE, "we_block.c:573-610",
 _r("clip_cut", model.SOURCE_MANUAL, HELP + ":320",
    "Cut is Copy followed by deleting the block.", (model.F_TEXT, model.F_CLIP))
 # -- markers
-_r("marker_keys", model.SOURCE_MANUAL, HELP + ":645-646; " + EDITOR + ":196-203",
+_r("marker_keys", model.SOURCE_MANUAL, HELP + ":645-646; " + EDITOR + ":204-211",
    "Ctrl-K n sets marker n and Ctrl-O n jumps to it, n from 0 to 9; each "
    "marker keeps its own place.", (model.F_MARKERS,))
 _r("marker_place", model.SOURCE_CODE, "we_edit.c:1578-1582, 1768-1770",
@@ -700,6 +697,19 @@ def _block_rows(st):
     return out
 
 
+def _block_rows_as_they_go(st, rows):
+    """The rows a shift to the left visits, as the editor's loop reads them
+    (we_block.c e_blck_to_left): from the first row that starts in the
+    block, up to the row holding its end read again after every row.  A
+    soft row of blanks the shift empties goes, and the block's end moves up
+    with the rows below it, so the rows are never counted in advance."""
+    (kay, kax) = st.mb
+    i = kay if kax == 0 else kay + 1
+    while i < rows.nlines and (i < st.me[0] or (i == st.me[0] and st.me[1] > 0)):
+        yield i
+        i += 1
+
+
 def _say_read_only(st):
     """A command that tried to change a locked window was refused: the status
     row says the text is unchanged."""
@@ -740,19 +750,11 @@ def _tab_stops_before(rows, i, l, tabn):
     return nn
 
 
-def _put_back_columns(st, rows, tstr, want, x, y):
+def _put_back_columns(st, rows, want, x, y):
     """The columns a tab took beyond what the shift removes are put back as
-    blanks.  The editor reads them from a string that holds Tabstops / 2
-    blanks, its end mark and one more byte: up to the end mark the bytes are
-    known (blanks, then a NUL), beyond it the editor reads past what it
-    allocated, so the model puts the known bytes in and takes the editor's
-    word for the row."""
-    known = len(tstr) + UNINDENT_STRING_END
-    padded = (tstr + bytes(UNINDENT_STRING_END))[:min(want, known)]
-    rows.ins_nchar(padded + bytes(want - len(padded)), x, y)
-    if want > known:
-        st.fired.append("unindent_reads_past")
-        st.resync_fields.update((model.F_TEXT, model.F_CURSOR, model.F_MARKS, model.F_SAVE))
+    blanks, @want of them (at most one tab's width less one)."""
+    st.fired.append("unindent_puts_back_blanks")
+    rows.ins_nchar(b" " * want, x, y)
 
 
 def _unindent_scan(rows, i, tabn, n):
@@ -788,14 +790,13 @@ def _block_unindent(st, action):
     st.fired.extend(["indent_keys", "indent_width", "indent_one_step"])
     before = Snapshot(st)
     rows = Rows(st)
-    tstr = b" " * n
-    for i in _block_rows(st):
+    for i in _block_rows_as_they_go(st, rows):
         j, k, l = _unindent_scan(rows, i, tabn, n)
         if l > 0:
             keep = st.mb[1]
             rows.del_nchar(j - l, i, l)
             if k > n:
-                _put_back_columns(st, rows, tstr, k - n, j - l, i)
+                _put_back_columns(st, rows, k - n, j - l, i)
             st.mb = (st.mb[0], keep)
     rows.commit()
     _commit(st, before, action)

@@ -359,23 +359,25 @@ def test_a_row_of_only_blanks_is_indented_after_its_own_blanks():
 
 
 # @scenario SC-edit-model-23
-def test_a_shift_left_that_reads_past_its_blank_string_is_the_editors_to_say():
-    """A tab worth more than twice Tabstops / 2 columns makes the editor read
-    more blanks than its string holds.  Up to the string's end mark the bytes
-    are known and the model predicts them; beyond it the model predicts
-    nothing and takes the editor's row."""
-    # "\t " : a blank, then a tab at column 0 worth 8: k = 9, put back 5 = n + 1
+def test_a_shift_left_over_a_tab_puts_back_the_columns_beyond_it_as_blanks():
+    """When the last thing a shift to the left takes is a tab worth more
+    columns than the shift, the columns beyond it come back as blanks, so
+    the row moves exactly Tabstops / 2 to the left; the model predicts every
+    byte and takes nothing from the editor."""
+    # a blank after a tab at column 0 worth 8: k = 9, put back 5 = n + 1
     near = _mark(_state([("H", b"\t x")]), (0, 0), (0, 3))
     near.mb, near.me = (0, 0), (0, 3)
     st = _do(_at(near, 0, 0), "block_unindent")
-    assert "unindent_reads_past" not in st.fired
+    assert [d for _e, d in _rows(st)] == [b" " * 5 + b"x"]
+    assert "unindent_puts_back_blanks" in st.fired
     assert st.resync_fields == set()
-    # three blanks after a tab: k = 11, put back 7 = n + 3: beyond the string
+    # three blanks after a tab: k = 11, put back 7 = n + 3
     far = _mark(_state([("H", b"\t   x")]), (0, 0), (0, 4))
     far.mb, far.me = (0, 0), (0, 4)
     st = _do(_at(far, 0, 0), "block_unindent")
-    assert "unindent_reads_past" in st.fired
-    assert {model.F_TEXT, model.F_CURSOR} <= st.resync_fields
+    assert [d for _e, d in _rows(st)] == [b" " * 7 + b"x"]
+    assert "unindent_puts_back_blanks" in st.fired
+    assert st.resync_fields == set()
 
 
 # @scenario SC-edit-model-23

@@ -204,7 +204,7 @@ _rule("tab_one_step", SOURCE_DECISION, DECIDED_ONE_STEP,
 _rule("backspace_char", SOURCE_MANUAL, HELP + ":592-593",
       "Backspace deletes the character before the cursor (a whole UTF-8 "
       "character).", (F_TEXT, F_CURSOR))
-_rule("backspace_joins", SOURCE_MANUAL, EDITOR + ":66",
+_rule("backspace_joins", SOURCE_MANUAL, EDITOR + ":68",
       "Backspace at the start of a line joins it to the line above.", (F_TEXT,))
 _rule("backspace_cursor_rows", SOURCE_CODE, "we_edit.c:961-990",
       "After a join or an empty line's deletion the cursor is at the end of "
@@ -229,7 +229,7 @@ _rule("reflow_after_delete", SOURCE_CODE, "we_edit.c:2366-2384",
       (F_TEXT, F_CURSOR, F_MARKS))
 _rule("ctrl_t_word", SOURCE_MANUAL, HELP + ":611",
       "Ctrl-T kills the next word after the cursor.", (F_TEXT,))
-_rule("end_of_text_stays", SOURCE_CHAPTER, COMPAT + ":247-253; " + EDITOR + ":58-60",
+_rule("end_of_text_stays", SOURCE_CHAPTER, COMPAT + ":247-253; " + EDITOR + ":58-62",
       "At the end of the text there is no word and no line to the right: "
       "Ctrl-T deletes nothing and Ctrl-Right leaves the cursor where it is.",
       (F_TEXT, F_CURSOR))
@@ -249,6 +249,10 @@ _rule("ctrl_y_cursor", SOURCE_CODE, "we_edit.c:1250-1255",
       (F_CURSOR,))
 _rule("only_line_emptied", SOURCE_CODE, "we_buffer.c:991-996",
       "Deleting the only line leaves one empty soft row.", (F_TEXT,))
+_rule("open_row_past_text", SOURCE_CODE, "we_buffer.c e_buffer_open_row; we_edit.c e_char_row_missing",
+      "Text put at the row just past the text (where a deletion of the last "
+      "row left it) goes on a new empty soft last row; nothing put there "
+      "changes nothing.", (F_TEXT,))
 # -- the line owner
 _rule("owner_marks_rows", SOURCE_CHAPTER, COMPAT + ":137-142",
       "A mark on a deleted row goes to the start of the row that took its "
@@ -272,7 +276,7 @@ _rule("cursor_clamped", SOURCE_CODE, "we_edit.c:2250-2252",
 _rule("anchor_after_key", SOURCE_CODE, "we_edit.c:1073",
       "The Shift-marking anchor is the cursor after every key, before the "
       "clamp.", (F_ANCHOR,))
-_rule("shift_marks", SOURCE_MANUAL, HELP + ":623-624; " + EDITOR + ":87",
+_rule("shift_marks", SOURCE_MANUAL, HELP + ":623-624; " + EDITOR + ":90",
       "Shift with a cursor key marks a block.", (F_MARKS,))
 _rule("shift_marks_detail", SOURCE_CODE, "we_edit.c:1269-1285",
       "The block grows from the anchor: an end at the anchor follows the "
@@ -282,7 +286,7 @@ _rule("insert_toggle", SOURCE_MANUAL, HELP + ":602-603",
       "Insert and Alt-I switch insert and overwrite mode.", (F_MODE,))
 _rule("alt_j_toggle", SOURCE_MANUAL, HELP + ":605",
       "Alt-J switches the special-character insert mode.", (F_MODE,))
-_rule("locked_keeps_text", SOURCE_MANUAL, EDITOR + ":83-91",
+_rule("locked_keeps_text", SOURCE_MANUAL, EDITOR + ":86-94",
       "A file opened read-only keeps its text through every command: typing "
       "and the block Delete, Move and Paste do nothing there.", (F_TEXT,))
 _rule("locked_refuses_modes", SOURCE_CODE, "we_edit.c:1240-1258",
@@ -304,11 +308,11 @@ _rule("autosave_threshold", SOURCE_CODE, "we_edit.c:847, 2828-2853",
       "Before the next key, a count above Max. Changes autosaves and sets the "
       "count to 1, also with Autosave off.", (F_SAVE, F_AUTOSAVE))
 # -- undo
-_rule("undo_text", SOURCE_MANUAL, HELP + ":683; " + EDITOR + ":58-69",
+_rule("undo_text", SOURCE_MANUAL, HELP + ":683; " + EDITOR + ":58-71",
       "Ctrl-U undoes the last change: the text as it was.", (F_TEXT, F_BREAKPOINTS))
 _rule("redo_text", SOURCE_MANUAL, HELP + ":686",
       "Ctrl-R undoes the last undo.", (F_TEXT, F_BREAKPOINTS))
-_rule("undo_line_cursor", SOURCE_MANUAL, EDITOR + ":62-63",
+_rule("undo_line_cursor", SOURCE_MANUAL, EDITOR + ":64-65",
       "Undo of a deleted line puts the cursor and the block back as they "
       "were.", (F_CURSOR, F_MARKS))
 _rule("undo_cursor_snapshot", SOURCE_DESIGN, "this model: Undo as a snapshot",
@@ -784,6 +788,11 @@ class Rows:
         """e_ins_nchar: insert the bytes @s at (ya, xa), wrapping."""
         s = bytes(s)
         n = len(s)
+        if ya >= self.nlines:
+            if n == 0 or ya > self.nlines:
+                return
+            self.st.fired.append("open_row_past_text")
+            self.insert_blank(ya)
         sp = 0
         mx = self.mx
         self.count(n)

@@ -82,33 +82,16 @@ def test_the_prelude_of_a_row_is_run_before_the_walk_and_counted(tmp_path):
 
 
 # @scenario SC-edit-model-39
-def test_a_crash_is_filed_under_a_known_one_only_where_that_crash_is():
-    """The editor ending is named by the state it had when the key came (its
-    own last dump): Ctrl-K V with a block mark on a row the text no longer
-    has.  Any other ending, Backspace in the empty last row included (fixed),
-    or one the editor was still alive for, is a new loss."""
-    H = model.HARD
-
-    def session(rows, y, x, mb=(0, 0), me=(0, 0), ended=True):
-        win = _editor_window(rows, ud=0, rd=0)
-        win.y, win.x, win.cursor, win.mb, win.me = y, x, (y, x), mb, me
-        return types.SimpleNamespace(last=types.SimpleNamespace(win=win),
-                                     ended_within=lambda _s: ended)
-
-    crash = lockstep.Walk.known_crash_of
-    two = [(H, b"a"), (H, b"")]
-    assert crash("backspace", session(two, 1, 0)) is None
-    assert crash("block_move", session(two, 1, 0, mb=(2, 2), me=(2, 6))) == \
-        lockstep.KNOWN_CRASH_MOVE
-    assert crash("block_move", session(two, 1, 0, mb=(2, 2), me=(2, 6),
-                                       ended=False)) is None
-    assert crash("block_move", session(two, 1, 0, mb=(0, 0), me=(1, 0))) is None
-    assert crash("block_copy", session(two, 1, 0, mb=(2, 2), me=(2, 6))) is None
+def test_every_crash_is_a_new_loss():
+    """No crash of the editor is known any more: Ctrl-K V after an Undo that
+    left the block past the text (fixed: Undo keeps the marks in the text)
+    and Backspace in the empty last row (fixed) are new losses like any
+    other, and so is a Ctrl-K V the walk would once have excused."""
     walk_ = lockstep.Walk("unused", "old", 1, 0)
-    walk_.lost = [(1, "backspace", "no answer"),
-                  (2, "block_move", "no answer [%s]" % lockstep.KNOWN_CRASH_MOVE),
-                  (3, "enter", "no answer")]
+    for i, name in enumerate(("backspace", "block_move", "enter"), 1):
+        walk_.lose(i, name, "no answer", None, None)
     assert walk_.new_losses() == [(1, "backspace", "no answer"),
+                                  (2, "block_move", "no answer"),
                                   (3, "enter", "no answer")]
 
 

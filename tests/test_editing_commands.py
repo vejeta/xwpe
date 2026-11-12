@@ -320,3 +320,91 @@ def test_ctrl_o_e_is_one_undo_and_one_redo(tmp_path):
         s.key(F2, delay=0.8)
         assert s.text() == HELP_SEED, "a second Ctrl-U took the user's text: %r" % s.text()
         assert s.alive(), "wpe died"
+
+
+CTRL_Z = "\x1a"          # delete to the end of the row
+# A last line with no line break, one word long: Ctrl-T on it deletes the
+# whole row.
+LAST_WORD_SEED = "a\n-"
+
+
+def _saved(s):
+    s.key(F2, delay=0.8)
+    return s.text()
+
+
+# @scenario SC-buffer-01
+def test_undo_of_ctrl_t_on_the_last_row_puts_the_row_back(tmp_path):
+    """Ctrl-T on the only word of the last line takes the line with it;
+    Ctrl-U gives the word back on its own line, Ctrl-R takes it again, and
+    a second Ctrl-U gives it back once more.  (The file is compared with
+    the one the editor writes before any change, since saving ends the
+    last line with a line break.)"""
+    with WpeSession(str(tmp_path), LAST_WORD_SEED, filename="t.txt") as s:
+        original = _saved(s)
+        s.key(DOWN, HOME, delay=0.3)
+        s.key(CTRL_T, delay=0.5)
+        assert _saved(s) == "a\n", "Ctrl-T gave %r" % s.text()
+        s.key(CTRL_U, delay=0.6)
+        assert _saved(s) == original, "Ctrl-U gave %r" % s.text()
+        s.key(CTRL_R, delay=0.6)
+        assert _saved(s) == "a\n", "Ctrl-R gave %r" % s.text()
+        s.key(CTRL_U, delay=0.6)
+        assert _saved(s) == original, "the second Ctrl-U gave %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+def test_ctrl_z_at_the_end_of_a_row_is_no_undo_step(tmp_path):
+    """Ctrl-Z at the end of a row has nothing to delete and is no step of
+    its own: the Ctrl-U after it takes back the X typed before it, and
+    Ctrl-R types it again."""
+    seed = "abc\ndef\n"
+    with WpeSession(str(tmp_path), seed, filename="t.txt") as s:
+        s.key("X", delay=0.4)
+        s.key(END, delay=0.3)
+        s.key(CTRL_Z, delay=0.5)
+        assert _saved(s) == "Xabc\ndef\n", "Ctrl-Z at the end gave %r" % s.text()
+        s.key(CTRL_U, delay=0.6)
+        assert _saved(s) == seed, "Ctrl-U after Ctrl-Z gave %r" % s.text()
+        s.key(CTRL_R, delay=0.6)
+        assert _saved(s) == "Xabc\ndef\n", "Ctrl-R gave %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+# A tab and three blanks: 11 columns of indent with Tabstops 8.
+TAB_INDENT_SEED = "\t   x\n"
+# Ctrl-K U takes Tabstops / 2 = 4 columns: 7 are left, as blanks.
+TAB_INDENT_LEFT = " " * 7 + "x\n"
+
+
+# @scenario SC-buffer-01
+def test_unindent_of_a_tab_and_blanks_leaves_the_columns_as_blanks(tmp_path):
+    """Ctrl-K U on a line indented by a tab and three blanks moves it four
+    columns left: the tab goes and the columns it held beyond the four come
+    back as blanks.  Ctrl-U gives the tab back and Ctrl-R shifts again (the
+    shift is still two Ctrl-U today, the deletion and the blanks, until it
+    becomes one step: either count is accepted, never a third)."""
+    with WpeSession(str(tmp_path), TAB_INDENT_SEED, filename="t.txt") as s:
+        s.key(CTRL_K, "l", delay=0.4)
+        s.key(CTRL_K, "u", delay=0.5)
+        assert _saved(s) == TAB_INDENT_LEFT, "Ctrl-K U gave %r" % s.text()
+        assert _replayed_until(s, CTRL_U, TAB_INDENT_SEED) == TAB_INDENT_SEED, \
+            "Ctrl-U gave %r" % s.text()
+        assert _replayed_until(s, CTRL_R, TAB_INDENT_LEFT) == TAB_INDENT_LEFT, \
+            "Ctrl-R gave %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+# The most Ctrl-U (or Ctrl-R) one shift of Ctrl-K U takes today.
+SHIFT_STEPS_MAX = 2
+
+
+def _replayed_until(s, key, want):
+    """Press @key until the saved file reads @want, at most SHIFT_STEPS_MAX
+    times; the file as last saved."""
+    for _ in range(SHIFT_STEPS_MAX):
+        s.key(key, delay=0.6)
+        if _saved(s) == want:
+            break
+    return s.text()

@@ -57,7 +57,9 @@ search and replace, and the file manager.
 
 @kbd{Ctrl-T} at the end of a line joins the next line to it; at the end
 of the text there is nothing to its right, so it deletes nothing, and
-@kbd{Ctrl-Right} stays there, as in the Borland editors.
+@kbd{Ctrl-Right} stays there, as in the Borland editors.  @kbd{Ctrl-O Y}
+(and @kbd{Ctrl-Z}) at the end of a line deletes nothing either, and is no
+undo step: the next @kbd{Ctrl-U} takes back what you did before it.
 
 @kbd{Ctrl-U} undoes and @kbd{Ctrl-R} redoes one action at a time: an
 @key{Return} with the indent it brought, a deleted line, a replacement, an
@@ -68,7 +70,8 @@ What was typed past the right margin moves to the next row with its word,
 and @kbd{Ctrl-U} takes back exactly that there.
 Undo of a deleted line puts back the line, its breakpoint, the cursor and
 the block as they were before the deletion; the only line of a file is
-undoable too.  Breakpoints stay on their code when lines are added or
+undoable too, and so is a last line that went because its only word was
+deleted.  After any Undo or Redo the block lies inside the text.  Breakpoints stay on their code when lines are added or
 removed above them as you type (@key{Return}, a wrapped line, @kbd{Ctrl-Y},
 @key{Backspace} joining two lines), by a block operation (a moved line
 takes its breakpoint along) or by a tool's rewrite of the file, and
@@ -126,6 +129,11 @@ Or use @kbd{Ctrl-K B} to set the start and @kbd{Ctrl-K K} to set the end.
 @item Indent block @tab @kbd{Alt-B I} @tab @kbd{Ctrl-K I}
 @item Unindent block @tab @kbd{Alt-B T} @tab @kbd{Ctrl-K U}
 @end multitable
+
+Indent and unindent move each line of the block half a Tabstop.  When
+the last thing an unindent takes is a tab worth more columns than that,
+the columns beyond come back as blanks, so the line moves exactly half a
+Tabstop.
 
 Cut, copy, and paste use the Edit menu:
 

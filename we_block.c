@@ -2054,13 +2054,35 @@ int e_changecase_dialog(FENSTER *f)
  return 0;
 }
 
+/**
+ * e_unindent_blanks - The blanks Ctrl-K U may put back on one row.
+ * @tabn: the tab width (Tabstops).
+ *
+ * A shift to the left takes Tabstops / 2 columns; when the last thing it
+ * takes is a tab, the tab may have held up to one tab's width more than
+ * that, and those columns come back as blanks so the line moves exactly
+ * Tabstops / 2 to the left.  The string holds a whole tab's width of
+ * blanks, so they are always blanks and never what lies past it.
+ * Return: the string (the caller frees it), or NULL when memory ran out.
+ */
+static char *e_unindent_blanks(int tabn)
+{
+ char *blanks = MALLOC((tabn + 1) * sizeof(char));
+
+ if (blanks == NULL)
+  return(NULL);
+ memset(blanks, ' ', tabn);
+ blanks[tabn] = '\0';
+ return(blanks);
+}
+
 /*   unindent block   */
 int e_blck_to_left(FENSTER *f)
 {
  BUFFER *b;
  SCHIRM *s;
  int n = f->ed->tabn/2, i, j, k, l, m, nn;
- char *tstr = MALLOC((n+2)*sizeof(char));
+ char *tstr;
 
  for(i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--);
  if(i <= 0) return(0);
@@ -2068,8 +2090,12 @@ int e_blck_to_left(FENSTER *f)
  f = f->ed->f[f->ed->mxedt];
  b = f->b;
  s = f->s;
- for(i = 0; i <= n; i++) tstr[i] = ' ';
- tstr[n] = '\0';
+ tstr = e_unindent_blanks(f->ed->tabn);
+ if (tstr == NULL)
+ {
+  wpe_buffer_say_nomem(b, "the shift to the left");
+  return(0);
+ }
  for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
    i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
  {

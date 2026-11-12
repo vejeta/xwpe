@@ -1199,6 +1199,35 @@ int e_buffer_delete_lines(BUFFER *b, int y, int n, WpeBufferStep step)
  return(e_buffer_splice(b, y, n, NULL, 0, NULL, 0, step));
 }
 
+/**
+ * e_buffer_open_row - Give a character change a row at @y to write in.
+ * @b: the buffer; @y: the row the change, or the record it replays, names.
+ *
+ * A character record names the row its text goes back to.  When the
+ * deletion it records emptied the last row of the text, that row went with
+ * it, and the record (or the change still running under its cover) names
+ * the row just past the text.  The owner opens that row again, empty and
+ * with no line break, before anything is written there: Undo of Ctrl-T on
+ * the last word of a file puts the word back on its own line, instead of
+ * into memory the row no longer has.  A row inside the text needs nothing.
+ * The new row has no record of its own: the record of the change that
+ * fills it takes it away again.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM (nothing changed), or E_BUFFER_RANGE
+ * for any row further out, which no record can rightly name (traced,
+ * nothing written).
+ */
+int e_buffer_open_row(BUFFER *b, int y)
+{
+ if (y >= 0 && y < b->mxlines)
+  return(E_BUFFER_OK);
+ if (y != b->mxlines || y == 0)
+ {
+  wpe_buffer_trace("buffer change past the text y=%d lines=%d", y, b->mxlines);
+  return(E_BUFFER_RANGE);
+ }
+ return(e_buffer_insert_blank(b, y, E_BUFFER_STEP_COVERED));
+}
+
 /* A copy of `n` bytes of `src` as a line of the buffer, with `term` as the
    byte after them (WPE_WR or '\0'). */
 static int buffer_line_from_bytes(BUFFER *b, const unsigned char *src, int n, int term,
@@ -3707,6 +3736,84 @@ static int buffer_replay_fault_point(int replaying)
  return(E_BUFFER_FAULT_REDO);
 }
 
+/* Does a replay of this kind put text back where its record names ('r' the
+   characters a deletion took, 's' the other half of a replacement)? */
+static int buffer_record_puts_text_back(int kind)
+{
+ return(kind == 'r' || kind == 's');
+}
+
+/**
+ * buffer_replay_row - Make the row a character record names ready for its
+ * replay.
+ * @b: the buffer; @rec: the record about to be replayed.
+ *
+ * Text that goes back to the row a deletion of the last row took gets that
+ * row again (e_buffer_open_row), so Undo and Redo of such a deletion bring
+ * the line back.  A record that takes text away ('a') or writes over it
+ * ('p') always names a row of the text; one that does not is refused and
+ * traced, never replayed into memory the text no longer has.  Line and
+ * block records keep their own lines and check their own ranges.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM or E_BUFFER_RANGE (nothing changed).
+ */
+static int buffer_replay_row(BUFFER *b, const Undo *rec)
+{
+ if (!buffer_record_is_char(rec->type))
+  return(E_BUFFER_OK);
+ if (buffer_record_puts_text_back(rec->type))
+  return(e_buffer_open_row(b, rec->b.y));
+ if (rec->b.y >= 0 && rec->b.y < b->mxlines)
+  return(E_BUFFER_OK);
+ wpe_buffer_trace("buffer replay %c names a row past the text y=%d lines=%d",
+                  rec->type, rec->b.y, b->mxlines);
+ return(E_BUFFER_RANGE);
+}
+
+/* The furthest column a mark may stand at on row @y: the end of its text,
+   or just past its line break (the block then holds the break). */
+static int buffer_mark_limit(BUFFER *b, int y)
+{
+ if (b->bf[y].s[b->bf[y].len] == WPE_WR)
+  return(b->bf[y].len + 1);
+ return(b->bf[y].len);
+}
+
+/* Pull one mark that is set back inside the text: a row past the end goes
+   to the end of the last row, a column past its row to the row's end. */
+static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
+{
+ if (p->y < 0)
+  return;
+ if (p->y >= b->mxlines)
+ {
+  p->y = b->mxlines - 1;
+  p->x = b->bf[p->y].len;
+ }
+ if (p->x > buffer_mark_limit(b, p->y))
+  p->x = buffer_mark_limit(b, p->y);
+ if (p->x < 0)
+  p->x = 0;
+}
+
+/**
+ * buffer_marks_inside - Every mark set stands in the text after an Undo or
+ * a Redo.
+ * @b: the buffer just replayed.
+ *
+ * A replay sets the block from its record.  When the text it rebuilt is
+ * shorter than the record remembers, a mark past the end would make the
+ * next block command (Ctrl-K V, Ctrl-K Y) work on rows the text no longer
+ * has; it is pulled back to the end of the text instead.
+ */
+static void buffer_marks_inside(BUFFER *b)
+{
+ POINT *m[BUFFER_MARKS_MAX];
+ int i, n = buffer_marks(b, m);
+
+ for (i = 0; i < n; i++)
+  buffer_mark_pull_inside(b, m[i]);
+}
+
 /* One step back (Undo) or forward (Redo).  A record is taken off its list
    only after its replay succeeded: a replay refused for want of memory
    leaves it, the user's lines and the cursor where they were. */
@@ -3731,6 +3838,9 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
   }
   rows_before = buffer_brp_count(b);
   cursor = b->b;
+  r = buffer_replay_row(b, rec);
+  if (r != E_BUFFER_OK)
+   break;
   b->b = rec->b;
   if (rec->type == E_UNDO_LINES)
    r = buffer_replay_lines(b, rec);
@@ -3746,6 +3856,7 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
   more = (rec->flags & E_UNDO_MORE) != 0;
   e_buffer_record_free(rec);
  } while (more && *list != NULL);
+ buffer_marks_inside(b);
  e_buffer_step_end(b);
  b->replaying = E_BUFFER_REPLAY_NONE;
  e_buffer_test_fault_leave(fault);

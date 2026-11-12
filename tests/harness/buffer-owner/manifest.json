@@ -455,6 +455,48 @@
    "layer": "ncurses",
    "test": "tests/test_buffer_owner.py::test_a_paste_into_a_narrower_window_keeps_every_byte",
    "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_editing_commands.py::test_undo_of_ctrl_t_on_the_last_row_puts_the_row_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_editing_commands.py::test_ctrl_z_at_the_end_of_a_row_is_no_undo_step",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_editing_commands.py::test_unindent_of_a_tab_and_blanks_leaves_the_columns_as_blanks",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "asan",
+   "test": "tests/test_block_asan.py::test_undo_of_a_ctrl_t_that_emptied_the_last_row_no_use_after_free",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "asan",
+   "test": "tests/test_block_asan.py::test_undo_after_ctrl_z_at_the_end_of_a_row_no_overread",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "asan",
+   "test": "tests/test_block_asan.py::test_unindent_of_a_tab_and_blanks_no_overread",
+   "status": "new"
   }
  ]
 }

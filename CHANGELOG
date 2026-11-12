@@ -342,7 +342,17 @@ Changes
   was set).  Ctrl-K I indents a row of only blanks too (it was skipped).
   Ctrl-O E puts the help file's end-of-page mark on a line of its own,
   undone and redone with one key (in the file written it ran into the next
-  line).
+  line).  Ctrl-U and Ctrl-R of a deletion that took the last line of a
+  file with it, such as Ctrl-T on the only word of the last line, or the
+  Undo of a paste there, bring the line back and take it
+  again (they wrote into memory the line no longer had, and a Ctrl-K V
+  after them could end the editor); after any Ctrl-U or Ctrl-R the block
+  is inside the text.  Ctrl-Z (and Ctrl-O Y) at the end of a line deletes
+  nothing and is no Undo step, so the next Ctrl-U takes back what you did
+  before it (it took back nothing and could read outside its record).
+  Ctrl-K U on a line indented with a tab and blanks moves it half a
+  Tabstop to the left and fills what the tab held beyond that with blanks
+  (it put stray bytes into the line).
 
 * A breakpoint moved by an edit during a debugging session moves in the
   debugger too.  Enter above a breakpoint at a stop used to move the mark

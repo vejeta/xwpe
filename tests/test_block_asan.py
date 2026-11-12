@@ -200,3 +200,44 @@ def test_typing_at_the_end_of_a_full_row_without_a_line_break_no_overflow(tmp_pa
         str(tmp_path), FULL_SOFT_SEED,
         [END, 'Z'], binary=WPE_ASAN_BIN, filename='t.txt')
     assert_no_asan(report, 'typing at the end of a full row without a line break')
+
+
+CT = '\x14'          # Ctrl-T: delete the word right of the cursor
+CZ = '\x1a'          # Ctrl-Z: delete to the end of the row
+CR_ = '\x12'         # Ctrl-R (Redo)
+
+
+# @scenario SC-buffer-01
+@pytest.mark.skipif(not os.path.exists(WPE_ASAN_BIN), reason='wpe-asan not present')
+def test_undo_of_a_ctrl_t_that_emptied_the_last_row_no_use_after_free(tmp_path):
+    # Ctrl-T deletes the only word of the last row and its line break, so
+    # the row itself goes.  Ctrl-U must put the word back on a
+    # row of the text, never into the row that was freed; Ctrl-K V then
+    # moves a block whose marks are inside the text.
+    report, _ = run_asan(
+        str(tmp_path), 'a\n-',
+        [DOWN, HOME, CT, CU, CK, 'v', CR_, CU], binary=WPE_ASAN_BIN,
+        filename='t.txt')
+    assert_no_asan(report, 'Ctrl-T on the last row, Ctrl-U, Ctrl-K V')
+
+
+# @scenario SC-buffer-01
+@pytest.mark.skipif(not os.path.exists(WPE_ASAN_BIN), reason='wpe-asan not present')
+def test_undo_after_ctrl_z_at_the_end_of_a_row_no_overread(tmp_path):
+    # Ctrl-Z at the end of a row has nothing to delete; the Ctrl-U that
+    # follows must not read a record of nothing.
+    report, _ = run_asan(
+        str(tmp_path), 'abc\ndef\n',
+        [END, CZ, CU, CR_], binary=WPE_ASAN_BIN, filename='t.txt')
+    assert_no_asan(report, 'Ctrl-Z at the end of a row, Ctrl-U')
+
+
+# @scenario SC-buffer-01
+@pytest.mark.skipif(not os.path.exists(WPE_ASAN_BIN), reason='wpe-asan not present')
+def test_unindent_of_a_tab_and_blanks_no_overread(tmp_path):
+    # A line indented by a tab and three blanks, marked with Ctrl-K L and
+    # unindented with Ctrl-K U: the new indent is built inside its own room.
+    report, _ = run_asan(
+        str(tmp_path), '\t   x\n',
+        [CK, 'l', CK, 'u', CU, CR_], binary=WPE_ASAN_BIN, filename='t.txt')
+    assert_no_asan(report, 'Ctrl-K L, Ctrl-K U on a tab and three blanks')

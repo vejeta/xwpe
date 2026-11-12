@@ -252,6 +252,14 @@ cursor at the start of the last line.  As in Turbo Pascal and Borland C++,
 @kbd{Ctrl-T} there now deletes nothing and the cursor stays: there is no
 word and no line to its right.
 
+@item Ctrl-Z at the end of a line
+@cindex Ctrl-Z, end of a line
+The original recorded an undo step of nothing for @kbd{Ctrl-Z} or
+@kbd{Ctrl-O Y} at the end of a line, so the next @kbd{Ctrl-U} took back
+nothing, and on an empty last row it deleted the row.  It now deletes
+nothing and records nothing there, as the Borland editors do, so
+@kbd{Ctrl-U} takes back the change before it.
+
 @item A blank typed at the right margin
 The original kept a blank typed at the margin at the end of its row and
 wrapped what followed.  The blank now starts the next row with what is

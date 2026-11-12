@@ -1125,6 +1125,24 @@ static void e_delete_word_right(BUFFER *b, SCHIRM *s)
  }
 }
 
+/**
+ * e_delete_to_end_of_row - Ctrl-Z and Ctrl-O Y: delete from the cursor to
+ * the end of its row.
+ * @b, @s: the buffer and its screen.
+ *
+ * At the end of a row there is nothing to delete, and nothing happens: no
+ * Undo step is kept, so the next Ctrl-U takes back the change before it,
+ * as in the Borland editors.
+ */
+static void e_delete_to_end_of_row(BUFFER *b, SCHIRM *s)
+{
+ int n = b->bf[b->b.y].len - b->b.x;
+
+ if (n <= 0)
+  return;
+ e_del_nchar(b, s, b->b.x, b->b.y, n);
+}
+
 /*              Interpretation of cursor keys
                      ( Primitive editor )                    */
 int e_tst_cur(int c, ECNT *e)
@@ -1283,7 +1301,7 @@ int e_tst_cur(int c, ECNT *e)
 	 break;
       case CtrlZ:
 	 if(e_window_text_locked(f)) break;
-	 e_del_nchar(b, s, b->b.x, b->b.y, b->bf[b->b.y].len-b->b.x);
+	 e_delete_to_end_of_row(b, s);
 	 e_schirm(f, 1);
 	 break;
       case DGZ:
@@ -1679,7 +1697,7 @@ int e_ctrl_o(FENSTER *f)
  {
   case 'Y':     /*  delete end of line    */
    if (e_window_text_locked(f)) break;
-   e_del_nchar(b, s, b->b.x, b->b.y, b->bf[b->b.y].len-b->b.x);
+   e_delete_to_end_of_row(b, s);
    e_schirm(f, 1);
    e_cursor(f, 1);
    break;
@@ -2210,6 +2228,32 @@ static void e_char_count_change(BUFFER *b, int n)
 }
 
 /**
+ * e_char_row_missing - Is there no row at @y for @n bytes to go into?
+ * @b: the buffer; @what: what the status row names if memory runs out.
+ *
+ * A deletion that emptied the last row of the text took the row with it,
+ * and the change that puts text back there (Undo of Ctrl-T on the last
+ * word, the replacement Search > Replace writes where it deleted) names
+ * the row it was on.  The owner opens that row again, so the text goes
+ * back on a line of its own and never into memory the row no longer has.
+ * Nothing to put there needs no row.
+ * Return: 1 when the change must not go on (nothing was written).
+ */
+static int e_char_row_missing(BUFFER *b, int y, int n, const char *what)
+{
+ int r;
+
+ if (y < b->mxlines)
+  return(0);
+ if (n <= 0)
+  return(1);
+ r = e_buffer_open_row(b, y);
+ if (r == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, what);
+ return(r != E_BUFFER_OK);
+}
+
+/**
  * e_line_end_soft_line - Enter at the end of a soft-wrapped line: the line
  * gets its own line break and the continuation below becomes a line of its
  * own, with no new line inserted.
@@ -2236,10 +2280,13 @@ static void e_line_end_soft_line(BUFFER *b, int y, int x)
  */
 int e_car_ret_split(BUFFER *b, SCHIRM *s)
 {
- int x = b->b.x, y = b->b.y, len = b->bf[y].len, r;
+ int x = b->b.x, y = b->b.y, len, r;
 
  if (e_buffer_change_refused(b))
   return(E_BUFFER_LOCKED);
+ if (e_char_row_missing(b, y, 1, "a line break"))
+  return(E_BUFFER_RANGE);
+ len = b->bf[y].len;
  if (x == len && b->bf[y].s[len] == '\0')
   e_line_end_soft_line(b, y, x);
  else
@@ -2604,6 +2651,8 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
  int i, j, wrapped = 1, xa0 = xa, in_place = 0;
 
  if (e_buffer_change_refused(b))
+  return(E_CHAR_REFUSED);
+ if (e_char_row_missing(b, ya, n, "the text put back"))
   return(E_CHAR_REFUSED);
  e_char_count_change(b, n);
  rec = e_char_record('a', b, xa, ya, n);
@@ -3215,6 +3264,8 @@ static void e_rudo_text_back(BUFFER *b, SCHIRM *s, Undo *rec)
  unsigned char *text = (unsigned char *) rec->u.pt;
  int n = rec->a.x;
 
+ if (n <= 0)
+  return;                 /* a record of no characters puts nothing back */
  if (text[0] == '\n' && n == 1)
   e_car_ret_split(b, s);
  else if (text[n - 1] == '\n')

@@ -112,11 +112,6 @@ KNOWN_UTF8_BACKSPACE = ("known bug, fix pending: Backspace with auto-indent dele
 # (model.undo_unmodelled_step); the tag names the push itself.
 STEP_ACTIONS = ("tab", "backspace", "block_indent", "block_unindent", "help_button",
                 "help_highlight", "help_header", "replace_all")
-# How long a crashed editor may take to be gone (it writes its core first).
-CRASH_REAP_S = 15
-KNOWN_CRASH_MOVE = ("new bug, not fixed: Ctrl-K V with the block's marks left outside the "
-                    "text (after an Undo) ends the editor with SIGSEGV")
-KNOWN_CRASHES = ("Ctrl-K V with the block's marks",)
 
 
 def expected_tag(action, field, before, pred, editor_w):
@@ -300,7 +295,6 @@ class Walk:
         self.state = None
         self.key_name = None
         self.prev_status = None
-        self.known_crashes = 0
         # the levels the session had when its prelude was done; None until
         # then (a row whose prelude broke off never got there)
         self.start_observed = None
@@ -393,33 +387,14 @@ class Walk:
         return True
 
     def lose(self, i, name, message, st, s):
-        """Record that the editor stopped answering at step @i: a crash the
-        walk knows (Ctrl-K V with the block's marks outside the text) is
-        named, any other loss is the walk's to report as new."""
-        tag = self.known_crash_of(name, s)
-        if tag is not None:
-            message += " [%s]" % tag
-            self.known_crashes += 1
+        """Record that the editor stopped answering at step @i.  No crash is
+        known: every loss is the walk's to report as new."""
         self.lost.append((i, name, message))
 
-    @staticmethod
-    def known_crash_of(name, s):
-        """The name of the known crash the editor ended in, or None.  It is
-        read from the editor's own last dump (the state the key met, not the
-        model's idea of it): Ctrl-K V with a block mark on a row the text no
-        longer has."""
-        w = s.last.win
-        if w is None:
-            return None
-        if name == "block_move" and any(cls == "marks" for cls, _d in selfcheck.check_inside(w)):
-            tag = KNOWN_CRASH_MOVE
-        else:
-            return None
-        return tag if s.ended_within(CRASH_REAP_S) else None
-
     def new_losses(self):
-        """The losses no known bug explains."""
-        return [x for x in self.lost if not any(t in x[2] for t in KNOWN_CRASHES)]
+        """The losses no known bug explains: all of them, since none is
+        known."""
+        return list(self.lost)
 
     def back_to_text(self, s):
         """Esc until the editor reads keys in the file's window again; the

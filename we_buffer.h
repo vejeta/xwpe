@@ -63,6 +63,7 @@ int    e_buffer_splice(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
                        const int *brk, int nbrk, WpeBufferStep step);
 int    e_buffer_insert_blank(BUFFER *b, int y, WpeBufferStep step);
 int    e_buffer_delete_lines(BUFFER *b, int y, int n, WpeBufferStep step);
+int    e_buffer_open_row(BUFFER *b, int y);
 int    e_buffer_split_line(BUFFER *b, int y, int x, WpeBufferStep step, int head_term);
 int    e_buffer_detach_lines(BUFFER *b, int y, int n, STRING *out, int *brk_out, int *nbrk);
 int    e_buffer_replace_all(BUFFER *b, const char *text, WpeBufferStep step);
