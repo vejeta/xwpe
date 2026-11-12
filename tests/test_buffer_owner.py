@@ -664,6 +664,7 @@ WIDE_LINE = " ".join("w%03d" % i for i in range(17))
 WIDE_SEED = WIDE_LINE + "\nsecond line\nthird line\n"
 
 
+# @scenario SC-buffer-09
 def test_a_block_delete_undone_after_max_columns_lowered_keeps_its_lines(tmp_path):
     """Max. Columns lowered after the file was opened, a block from column 3
     of a wide line to the next line deleted and undone: the wide line comes
@@ -2267,4 +2268,324 @@ def test_a_replacement_longer_than_a_row_keeps_every_byte(tmp_path, width, n, wi
         refused = [line for line in s.trace_since_last() if ROW_WIDER in line]
         assert s.disk() == REPLACE_SEED.encode("utf-8"), "saved %r" % s.disk()
         assert not refused, refused
+        assert s.alive(), "wpe died"
+
+
+# ---- an Undo or a Redo refused for want of memory -------------------------
+#
+# One Ctrl-U or Ctrl-R is made whole or not at all, however many records the
+# action took.  Refused at any of its allocations, the text, the breakpoints
+# and both lists are as they were and the status row says so; the next
+# Ctrl-U or Ctrl-R (the fault fires once) makes it.
+
+UNDO_FAULT_ROWS = range(1, 9)
+UNDO_SWEEP_MAX = 64
+# baz(a); joined onto bar(a); by Backspace at its start.
+JOINED = SEED.replace("  bar(a);\n  baz(a);", "  bar(a);  baz(a);", 1)
+WHOLE = "whole"
+NOTHING = "nothing"
+
+
+def _assert_replay_said_nothing(work, what):
+    """A replay that was made says nothing about memory."""
+    assert ("buffer nomem %s" % what) not in _ui_trace(work), \
+        "%s was made and still said it ran out of memory" % what
+
+
+def _replay_whole_or_nothing(s, work, key, what, before, after):
+    """Press @key (Ctrl-U or Ctrl-R, @what "Undo" or "Redo") with its fault
+    armed: the file is @after and nothing was said (whole), or it is still
+    @before and the status row says the action was not made (nothing).
+    Return: WHOLE or NOTHING."""
+    point = what.lower()
+    s.key(key, delay=0.8)
+    _assert_fault_fired(work, point)
+    said = _said_out_of_memory(s, work, what)
+    got = _saved(s)
+    if got == after:
+        _assert_replay_said_nothing(work, what)
+        return WHOLE
+    assert got == before, "a refused %s changed the text: %r" % (what, got)
+    assert said, "the status row does not say %s was refused:\n%s" % (
+        what, "\n".join(s.display()))
+    return NOTHING
+
+
+def _undo_whole_or_nothing(s, work, seed, edited, what):
+    """Ctrl-U of an edit that left @edited, with memory refused once: whole,
+    one Ctrl-R gives @edited back; refused, the record is still there, so
+    the next Ctrl-U gives @seed and Ctrl-R @edited."""
+    outcome = _replay_whole_or_nothing(s, work, CTRL_U, "Undo", edited, seed)
+    if outcome == WHOLE:
+        s.key(CTRL_R, delay=0.8)
+        assert _saved(s) == edited, "Ctrl-R after a whole Ctrl-U of %s gave %r" % (what, s.text())
+    else:
+        _assert_undo_and_redo_on_disk(s, seed, edited, what)
+    assert s.alive(), "wpe died"
+    return outcome
+
+
+def _join_with_breakpoint(s):
+    """A breakpoint on baz(a);, then Backspace at its start: the line joins
+    bar(a); and its breakpoint goes with it into the record."""
+    _toggle_breakpoint_at(s, BAZ_ROW)
+    s.key(BACKSPACE, delay=0.6)
+    assert _saved(s) == JOINED, "Backspace did not join the lines: %r" % s.text()
+    assert s.breakpoint_lines(drain=0.3) == [], "a breakpoint stayed on the joined line"
+
+
+def _join_undone_with_fault(work, n):
+    """The join's Ctrl-U with memory refused at its n-th allocation.
+    Return: WHOLE or NOTHING, each checked with its breakpoint."""
+    with WpeSession(str(work), SEED, env_extra=_fault_env(work, "undo:%d" % n)) as s:
+        _join_with_breakpoint(s)
+        outcome = _replay_whole_or_nothing(s, work, CTRL_U, "Undo", JOINED, SEED)
+        if outcome == WHOLE:
+            assert s.breakpoint_lines(drain=0.3) == [BAZ_ROW + 1], \
+                "the line came back without its breakpoint: %s" % s.breakpoint_lines()
+            s.key(CTRL_R, delay=0.8)
+            assert _saved(s) == JOINED, "Ctrl-R did not join the lines again: %r" % s.text()
+            return outcome
+        assert s.breakpoint_lines(drain=0.3) == [], \
+            "a refused Undo put the breakpoint on %s" % s.breakpoint_lines()
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == SEED, "the next Ctrl-U did not split the lines: %r" % s.text()
+        assert s.breakpoint_lines(drain=0.3) == [BAZ_ROW + 1], \
+            "the next Ctrl-U left the breakpoint on %s" % s.breakpoint_lines()
+        assert s.alive(), "wpe died at n=%d" % n
+        return outcome
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", UNDO_FAULT_ROWS)
+def test_an_undo_of_a_backspace_join_refused_for_memory_keeps_the_breakpoint_parked(tmp_path, n):
+    """Ctrl-U of a line Backspace joined to the one above, refused at its
+    n-th allocation: the line stays joined, no breakpoint lands on a line
+    the user never marked, the status row says so, and the next Ctrl-U
+    splits the line with its breakpoint back on it.  (An Undo once used up
+    its record, left the line joined and put the breakpoint on bar.)"""
+    _join_undone_with_fault(tmp_path, n)
+
+
+def _join_undone_in(tmp_path, n):
+    work = tmp_path / ("n%02d" % n)
+    work.mkdir()
+    return _join_undone_with_fault(work, n)
+
+
+# @scenario SC-buffer-08
+def test_an_undo_of_a_backspace_join_fault_sweep_ends_in_a_whole_undo(tmp_path):
+    """Memory cut at the first allocation of the join's Undo, then the
+    second, and on: every refused Undo changed nothing, the first one is
+    refused, and once the cut comes after its last allocation it is whole."""
+    outcomes = {}
+    first = 1
+    with concurrent.futures.ThreadPoolExecutor(FAULT_SWEEP_BATCH) as pool:
+        while first <= UNDO_SWEEP_MAX and WHOLE not in outcomes.values():
+            last = min(first + FAULT_SWEEP_BATCH, UNDO_SWEEP_MAX + 1)
+            cuts = range(first, last)
+            outcomes.update(zip(cuts, pool.map(lambda n: _join_undone_in(tmp_path, n), cuts)))
+            first = last
+    whole = [n for n in sorted(outcomes) if outcomes[n] == WHOLE]
+    assert outcomes[1] == NOTHING, "the first allocation refused still made the Undo"
+    assert whole, "no cut up to %d allocations let the Undo through" % UNDO_SWEEP_MAX
+    assert all(outcomes[n] == NOTHING for n in outcomes if n < whole[0]), \
+        "a cut before the Undo's last allocation let it through: %s" % outcomes
+    print("join undo: whole from allocation %d on" % whole[0])
+
+
+# Enter before foo(); in a C file: the line breaks and the new line is
+# indented, two records of one step.
+INDENT_SEED = "int main()\n{\n  foo();\n}\n"
+INDENT_AFTER = "int main()\n{\n  \n  foo();\n}\n"
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", range(1, 13))
+def test_an_undo_of_enter_with_auto_indent_refused_for_memory_keeps_both_records(tmp_path, n):
+    """Ctrl-U of an Enter that auto-indented, refused at its n-th
+    allocation: neither the indent nor the line break is taken back (an
+    Undo once took the indent and said the text was unchanged); the next
+    Ctrl-U takes both, and one Ctrl-R gives both again."""
+    with WpeSession(str(tmp_path), INDENT_SEED,
+                    env_extra=_fault_env(tmp_path, "undo:%d" % n)) as s:
+        _down(s, 2)
+        s.key(RIGHT, RIGHT, delay=0.2)
+        s.key(ENTER, delay=0.6)
+        _undo_whole_or_nothing(s, tmp_path, INDENT_SEED, INDENT_AFTER, "Enter")
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", UNDO_FAULT_ROWS)
+def test_a_redo_of_a_backspace_join_refused_for_memory_keeps_its_record(tmp_path, n):
+    """Ctrl-R of an undone join, refused at its n-th allocation: the lines
+    stay apart with the breakpoint on baz and the status row says so; the
+    next Ctrl-R joins them, and Ctrl-U splits them again."""
+    with WpeSession(str(tmp_path), SEED, env_extra=_fault_env(tmp_path, "redo:%d" % n)) as s:
+        _join_with_breakpoint(s)
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == SEED, "Ctrl-U did not split the lines: %r" % s.text()
+        outcome = _replay_whole_or_nothing(s, tmp_path, CTRL_R, "Redo", SEED, JOINED)
+        if outcome == NOTHING:
+            assert s.breakpoint_lines(drain=0.3) == [BAZ_ROW + 1], \
+                "a refused Redo moved the breakpoint to %s" % s.breakpoint_lines()
+            s.key(CTRL_R, delay=0.8)
+            assert _saved(s) == JOINED, "the next Ctrl-R did not join the lines: %r" % s.text()
+        assert s.breakpoint_lines(drain=0.3) == [], "a breakpoint stayed on the joined line"
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == SEED, "Ctrl-U after the Redo gave %r" % s.text()
+        assert s.breakpoint_lines(drain=0.3) == [BAZ_ROW + 1], \
+            "after Ctrl-U the breakpoint is on %s" % s.breakpoint_lines()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", UNDO_FAULT_ROWS)
+def test_an_undo_of_a_replacement_refused_for_memory_keeps_its_record(tmp_path, n):
+    """Ctrl-U of a word Search > Replace changed, refused at its n-th
+    allocation: the new word stays and the status row says so; the next
+    Ctrl-U gives the old word back and Ctrl-R the new one."""
+    seed, edited = "foo 1\nbar\n", "ZZZ 1\nbar\n"
+    with WpeSession(str(tmp_path), seed, env_extra=_fault_env(tmp_path, "undo:%d" % n)) as s:
+        s.menu(ALT.SEARCH, "r")
+        s.key("foo")
+        s.key("\033n")
+        s.key("ZZZ")
+        s.key("\033p")                       # no prompt per replacement
+        s.key("\033a")                       # Change All
+        s.key(ENTER)                         # the "Replaced" note
+        assert _saved(s) == edited, "Replace did not replace: %r" % s.text()
+        _undo_whole_or_nothing(s, tmp_path, seed, edited, "the replacement")
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", UNDO_FAULT_ROWS)
+def test_an_undo_of_typing_past_the_margin_refused_for_memory_changes_nothing(tmp_path, n):
+    """Ctrl-U of a character typed at the end of a line as wide as the
+    window, which wrapped it, refused at its n-th allocation: the character
+    stays and the status row says so (an Undo once took it with nothing
+    said and lost its Redo); the next Ctrl-U takes it away, Ctrl-R types it
+    again."""
+    edited = MARGIN_SEED.replace("Q\n", "QZ\n", 1)
+    with WpeSession(str(tmp_path), MARGIN_SEED, filename="t.txt",
+                    env_extra=_fault_env(tmp_path, "undo:%d" % n)) as s:
+        s.key(END, delay=0.3)
+        s.key("Z", delay=0.5)
+        assert _saved(s) == edited, "typing at the margin gave %r" % s.text()
+        _undo_whole_or_nothing(s, tmp_path, MARGIN_SEED, edited, "typing at the margin")
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", UNDO_FAULT_ROWS)
+def test_an_undo_of_overwrite_typing_refused_for_memory_changes_nothing(tmp_path, n):
+    """Ctrl-U of a character typed over another, refused at its n-th
+    allocation (the record its Ctrl-R needs is memory too): the typed
+    character stays and the status row says so, never an Undo made without
+    its Redo; the next Ctrl-U gives the old character back, Ctrl-R types
+    over it again."""
+    seed, edited = "abc\n", "qbc\n"
+    with WpeSession(str(tmp_path), seed, filename="t.txt",
+                    env_extra=_fault_env(tmp_path, "undo:%d" % n)) as s:
+        s.key(INSERT_KEY, delay=0.4)
+        s.key("q", delay=0.4)
+        assert _saved(s) == edited, "overwriting a with q gave %r" % s.text()
+        _undo_whole_or_nothing(s, tmp_path, seed, edited, "overwriting a with q")
+
+
+def _session_with_options(tmp_path, seed, general, filename="t.c", env_extra=None):
+    """A session whose options file sets the [General] lines @general."""
+    conf = tmp_path / ".config" / "xwpe"
+    conf.mkdir(parents=True, exist_ok=True)
+    (conf / "xwperc").write_text("[General]\n" + "\n".join(general) + "\n")
+    return WpeSession(str(tmp_path), seed, filename=filename, env_extra=env_extra)
+
+
+# @scenario SC-buffer-01
+def test_a_redo_of_an_auto_indented_enter_with_num_undo_0_keeps_both_records(tmp_path):
+    """Num. Undo 0 keeps one action to undo: Enter with auto-indent is two
+    records of that one action, so one Ctrl-U takes both back, one Ctrl-R
+    gives both, and Ctrl-U takes both back again (the replay keeps every
+    record of the step, whatever Num. Undo is)."""
+    seed = "int main(void)\n{\n    foo();\n}\n"
+    after = "int main(void)\n{\n    foo();\n    \n}\n"
+    with _session_with_options(tmp_path, seed, ["NumUndo : 0"]) as s:
+        _down(s, 2)
+        s.key(END, delay=0.2)
+        s.key(ENTER, delay=0.6)
+        _assert_undo_and_redo_on_disk(s, seed, after, "Enter with auto-indent")
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == seed, "the second Ctrl-U after Redo gave %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+def _autosave_text(tmp_path):
+    p = tmp_path / "t.txt.ASV"
+    if not p.exists():
+        return None
+    return p.read_text()
+
+
+# @scenario SC-buffer-02
+def test_an_autosave_after_undo_counts_characters(tmp_path):
+    """Autosave after 2 changes: three characters typed are saved; one
+    Ctrl-U is one changed character, not two lines' worth, so the autosave
+    file still holds the three; after the second Ctrl-U it holds one."""
+    with _session_with_options(tmp_path, "abc\n", ["Autosave : 2", "MaxChanges : 2"],
+                               filename="t.txt") as s:
+        s.key(END, delay=0.2)
+        for ch in "123":
+            s.key(ch, delay=0.2)
+        s._drain(0.5)
+        assert _autosave_text(tmp_path) == "abc123\n", \
+            "typing three characters autosaved %r" % _autosave_text(tmp_path)
+        s.key(CTRL_U, delay=0.8)
+        assert _autosave_text(tmp_path) == "abc123\n", \
+            "one Ctrl-U autosaved at once: %r" % _autosave_text(tmp_path)
+        s.key(CTRL_U, delay=0.8)
+        assert _autosave_text(tmp_path) == "abc1\n", \
+            "the second Ctrl-U autosaved %r" % _autosave_text(tmp_path)
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-03
+def test_an_undo_of_a_join_marks_the_line_break_as_the_block(tmp_path):
+    """Backspace at the start of a line joins it; Ctrl-U splits it again and
+    marks what it put back, the line break; Ctrl-K Y deletes that block,
+    which joins the lines again."""
+    seed = "first\nsecond\nthird\n"
+    with WpeSession(str(tmp_path), seed, filename="t.txt") as s:
+        s.key(DOWN, HOME, delay=0.2)
+        s.key(BACKSPACE, delay=0.5)
+        assert _saved(s) == "firstsecond\nthird\n", "Backspace did not join: %r" % s.text()
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == seed, "Ctrl-U did not split the line: %r" % s.text()
+        s.key(CTRL_K, "y", delay=0.8)
+        assert _saved(s) == "firstsecond\nthird\n", \
+            "Ctrl-K Y after the Undo did not delete the line break: %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+# The block style of the options file: WordStar keys, or the default.
+WORDSTAR_GENERAL = ["Options2 : 156"]
+CTRL_HOME = "\033[1;5H"
+
+
+# @scenario SC-buffer-03
+@pytest.mark.parametrize("general", [WORDSTAR_GENERAL, []], ids=["wordstar", "modern"])
+def test_an_undo_of_a_deletion_marks_the_text_again_after_ctrl_k_h(tmp_path, general):
+    """The block hidden with Ctrl-K H, the last character of the first line
+    deleted, Ctrl-U: the character is back and marked, so Ctrl-K Y deletes
+    it again."""
+    seed = "one\ntwo\nthree\nfour\nfive\n"
+    with _session_with_options(tmp_path, seed, general, filename="t.txt") as s:
+        s.key(DOWN, CTRL_K, "b", DOWN, DOWN, CTRL_K, "k", delay=0.3)
+        s.key(CTRL_K, "h", delay=0.3)
+        s.key(CTRL_HOME, END, delay=0.3)
+        s.key(BACKSPACE, delay=0.5)
+        assert _saved(s) == seed.replace("one", "on", 1), "Backspace gave %r" % s.text()
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == seed, "Ctrl-U did not put the character back: %r" % s.text()
+        s.key(CTRL_K, "y", delay=0.8)
+        assert _saved(s) == seed.replace("one", "on", 1), \
+            "Ctrl-K Y after the Undo did not delete the character put back: %r" % s.text()
         assert s.alive(), "wpe died"

@@ -187,9 +187,10 @@ away characters of yours beside it; it is now marked on the rows it is on.
 @cindex out of memory, block operations
 The original stopped a block move, copy, paste or delete that ran out of
 memory with a low-memory box that offered to save.  Now such an
-operation, its @kbd{Ctrl-U} and its @kbd{Ctrl-R}
-are made whole or not at all: refused, the text, the block, the
-breakpoints and Undo are as they were, and the status row says
+operation, and the @kbd{Ctrl-U} or @kbd{Ctrl-R} of any change, several
+records at once included, are made whole or not at all: refused, the
+text, the block, the breakpoints and both Undo and Redo are as they were,
+and the status row says
 @samp{Out of memory: the block move was not made, the text is
 unchanged}.  A file that cannot be read for want of memory is not opened,
 so it cannot be saved over as an empty window.

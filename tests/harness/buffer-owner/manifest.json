@@ -651,6 +651,104 @@
    "layer": "ncurses",
    "test": "tests/test_lsp_on_the_loop.py::test_a_completion_longer_than_a_row_keeps_every_byte",
    "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_block_delete_undone_after_max_columns_lowered_keeps_its_lines",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_backspace_join_refused_for_memory_keeps_the_breakpoint_parked",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_backspace_join_refused_for_memory_keeps_the_breakpoint_parked",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_backspace_join_fault_sweep_ends_in_a_whole_undo",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_enter_with_auto_indent_refused_for_memory_keeps_both_records",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_enter_with_auto_indent_refused_for_memory_keeps_both_records",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_redo_of_a_backspace_join_refused_for_memory_keeps_its_record",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_replacement_refused_for_memory_keeps_its_record",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_typing_past_the_margin_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_overwrite_typing_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "config-file",
+   "test": "tests/test_buffer_owner.py::test_a_redo_of_an_auto_indented_enter_with_num_undo_0_keeps_both_records",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-02",
+   "requirement": "The dirty mark lands on the written window, on Undo too",
+   "layer": "config-file",
+   "test": "tests/test_buffer_owner.py::test_an_autosave_after_undo_counts_characters",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-03",
+   "requirement": "Marks move with their lines and never point past the text",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_join_marks_the_line_break_as_the_block",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-03",
+   "requirement": "Marks move with their lines and never point past the text",
+   "layer": "config-file",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_deletion_marks_the_text_again_after_ctrl_k_h",
+   "status": "new"
   }
  ]
 }

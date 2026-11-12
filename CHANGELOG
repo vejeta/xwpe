@@ -369,9 +369,11 @@ Changes
   file).  Ctrl-U of a block moved inside its own line puts it back where it
   was, and Ctrl-U of a block copied or moved into a line as wide as the
   window takes back that block and nothing else (it could delete your own
-  characters next to it).  An Undo that cannot make room for a deleted
-  line's breakpoint for want of memory is refused before it changes
-  anything, instead of giving the line back without it.  When the
+  characters next to it).  Ctrl-U and Ctrl-R of any change are made whole
+  or not at all when memory runs out (an Undo of a joined line could use
+  up its record, leave the line joined and put the breakpoint on a line
+  you never marked; an Undo of a two-part step could make one part and
+  say the text was unchanged).  When the
   assistant's pane cannot get a row
   for want of memory the status row says so and the pane stays as it was
   (it ended the editor through the low-memory box).

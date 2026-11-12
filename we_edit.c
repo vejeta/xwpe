@@ -3703,15 +3703,14 @@ static void e_overwrite_back(BUFFER *b, const Undo *rec)
 }
 
 /**
- * wpe_buffer_replay_kind - Replay a character or block record for Undo or
- * Redo; its inverse goes to the other list through the primitives' own
- * records.
- * @b: the buffer; @s: its screen; @rec: the record ('a' 'r' 's' 'p' 'c' 'v' 'd').
+ * wpe_buffer_replay_kind - Replay a block record for Undo or Redo; its
+ * inverse goes to the other list through the block operation's own record.
+ * @b: the buffer; @s: its screen; @rec: the record ('c' 'v' 'd').
  *
  * The block kinds run uncovered: their operations take their own covers and
- * push their record after them, so Redo finds it.  An overwrite ('p') puts
- * the other character back and records the one it replaces, so Redo of an
- * undone overwrite types it over again.
+ * push their record after them, so Redo finds it.  The character kinds are
+ * replayed on a shell instead (wpe_buffer_replay_on_shell), so the step
+ * they belong to is made whole or not at all.
  * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when a block operation was refused
  * for want of memory (the text is as it was and the record stays for the
  * next try); E_BUFFER_RANGE when a deleted block could not land (its record
@@ -3719,15 +3718,7 @@ static void e_overwrite_back(BUFFER *b, const Undo *rec)
  */
 int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
 {
- if (rec->type == 'r')
-  e_rudo_text_back(b, s, rec);
- else if (rec->type == 's')
-  e_rudo_replace_back(b, s, rec);
- else if (rec->type == 'a')
-  e_del_nchar(b, s, rec->b.x, rec->b.y, rec->a.x);
- else if (rec->type == 'p')
-  e_overwrite_back(b, rec);
- else if (rec->type == 'c')
+ if (rec->type == 'c')
   return(e_rudo_block_copy_back(b, s, rec));
  else if (rec->type == 'v')
   return(e_rudo_block_move_again(b, s, rec));
@@ -3746,7 +3737,11 @@ int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
  * and wraps exactly as typing did; on the shell, a refusal for want of
  * memory counts there (wpe_buffer_say_nomem) and the user's text is never
  * touched.  The inverses the primitives record stay on the shell's list
- * until the owner moves them onto the buffer's.
+ * until the owner moves them onto the buffer's.  An overwrite ('p') puts
+ * the other character back and records the one it replaces, so Redo of an
+ * undone overwrite types it over again; that record is memory too, so the
+ * Undo of overwrite typing is refused whole when it cannot be had, never
+ * made without its Redo.
  */
 void wpe_buffer_replay_on_shell(BUFFER *shell, SCHIRM *s, const Undo *rec, int y0)
 {

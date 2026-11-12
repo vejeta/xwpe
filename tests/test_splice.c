@@ -52,6 +52,7 @@ static int fault_traced;
 static int overrun_traced;
 static int move_view_traced;
 static int row_wider_traced;
+static int block_in_step_traced;
 
 void wpe_buffer_syntax_changed(BUFFER *b, int y)
 {
@@ -102,26 +103,28 @@ void wpe_buffer_say_read_only(BUFFER *b)
 
 static int replay_calls;        /* character records the editor's side replayed */
 static int replay_row_missing;  /* ... handed a row the text does not have */
+static int block_calls;         /* block records the editor's side replayed */
 static int stub_marks_past;     /* the replay sets the block past the text, as
                                    a record of a longer text would */
 
-/* As the editor's character primitives: a replay works on the row its
-   record names, so that row must be one of the text.  Counted here rather
-   than read, so a row past the text fails the case instead of reading the
-   line a splice freed. */
+/* The block a replay sets past the end of the text it works on. */
+static void stub_marks_past_the_text(BUFFER *b, SCHIRM *s)
+{
+ if (!stub_marks_past || s == NULL)
+  return;
+ s->mark_begin.x = 0;
+ s->mark_begin.y = b->mxlines + 2;
+ s->mark_end.x = 7;
+ s->mark_end.y = b->mxlines + 3;
+}
+
+/* As the editor's block replays: only the block kinds come here, the
+   character kinds are replayed on a shell. */
 int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
 {
- if (rec->type == 'a' || rec->type == 'r' || rec->type == 's' || rec->type == 'p') {
-  replay_calls++;
-  if (rec->b.y < 0 || rec->b.y >= b->mxlines)
-   replay_row_missing++;
- }
- if (stub_marks_past && s != NULL) {
-  s->mark_begin.x = 0;
-  s->mark_begin.y = b->mxlines + 2;
-  s->mark_end.x = 7;
-  s->mark_end.y = b->mxlines + 3;
- }
+ if (rec->type == 'c' || rec->type == 'v' || rec->type == 'd')
+  block_calls++;
+ stub_marks_past_the_text(b, s);
  return(E_BUFFER_OK);
 }
 
@@ -129,8 +132,12 @@ int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
 
    'a' (the Undo of a typed line break) joins: the line below the record's
    goes, its breakpoint parked in the 'r' inverse, as e_del_nchar does.
-   'r' (the Undo of a join) splits the line again, recording an 'a'.  Each
-   records its inverse first, as the primitives do. */
+   'r' (the Undo of a join) splits the line again, recording an 'a'; an 'r'
+   whose text holds no line break puts the text back in its row.  Each
+   records its inverse first, as the primitives do.  A replay works on the
+   row its record names, so that row must be one of the shell's: counted
+   here rather than read, so a row past the text fails the case instead of
+   reading a line a splice freed. */
 
 static int stub_refuses;      /* the primitive is refused for memory on the shell */
 static int stub_overruns;     /* the join takes the shell's last row: past its span */
@@ -178,17 +185,53 @@ static void stub_split(BUFFER *shell, int x, int y)
   wpe_buffer_say_nomem(shell, "a line break");
 }
 
+/* The bytes of an 'r' record without a line break, back at its place. */
+static void stub_put_back(BUFFER *shell, const Undo *rec, int y)
+{
+ STRING *l = &shell->bf[y];
+ Undo *inv = stub_record(shell, 'a', rec->b.x, y);
+ int n = rec->a.x;
+
+ if (inv == NULL) {
+  wpe_buffer_say_nomem(shell, "the undo record");
+  return;
+ }
+ inv->a.x = n;
+ memmove(l->s + rec->b.x + n, l->s + rec->b.x, (size_t)(l->nrc - rec->b.x + 1));
+ memcpy(l->s + rec->b.x, rec->u.pt, (size_t) n);
+ l->len += n;
+ l->nrc += n;
+}
+
+/* Does an 'r' record's text end with a line break?  The join records the
+   cases build on their own stack keep no text: theirs is the line break. */
+static int stub_text_breaks(const Undo *rec)
+{
+ if (rec->u.pt == NULL)
+  return(1);
+ return(rec->a.x > 0 && ((const char *) rec->u.pt)[rec->a.x - 1] == '\n');
+}
+
 void wpe_buffer_replay_on_shell(BUFFER *shell, SCHIRM *s, const Undo *rec, int y0)
 {
- (void) s;
+ int y = rec->b.y - y0;
+
  if (stub_refuses) {
   wpe_buffer_say_nomem(shell, "the stub");
   return;
  }
+ replay_calls++;
+ if (y < 0 || y >= shell->mxlines) {
+  replay_row_missing++;
+  return;
+ }
  if (rec->type == 'a')
-  stub_join(shell, rec->b.x, rec->b.y - y0);
+  stub_join(shell, rec->b.x, y);
+ else if (rec->type == 'r' && stub_text_breaks(rec))
+  stub_split(shell, rec->b.x, y);
  else if (rec->type == 'r')
-  stub_split(shell, rec->b.x, rec->b.y - y0);
+  stub_put_back(shell, rec, y);
+ stub_marks_past_the_text(shell, s);
 }
 
 void wpe_buffer_trace(const char *fmt, ...)
@@ -203,15 +246,17 @@ void wpe_buffer_trace(const char *fmt, ...)
   move_view_traced++;
  if (strstr(fmt, "row wider") != NULL)
   row_wider_traced++;
+ if (strstr(fmt, "holds a block record") != NULL)
+  block_in_step_traced++;
 }
 
 static void hooks_reset(void)
 {
  syntax_calls = moved_calls = nomem_calls = 0;
  moved_nremoved = moved_nadded = 0;
- overrun_traced = move_view_traced = row_wider_traced = 0;
+ overrun_traced = move_view_traced = row_wider_traced = block_in_step_traced = 0;
  stub_refuses = stub_overruns = 0;
- replay_calls = replay_row_missing = stub_marks_past = 0;
+ replay_calls = replay_row_missing = stub_marks_past = block_calls = 0;
 }
 
 /* ---- the fixture: a window with a buffer of numbered lines ---- */
@@ -894,17 +939,27 @@ static void case_refused_undo_keeps_the_cursor(void)
    of its allocations in turn: the Undo is refused whole, with the breakpoint
    still parked in the record, or it succeeds and the breakpoint is back on
    its line.  Never an Undo that succeeds and loses the breakpoint. */
+/* What the Undo of case 24 takes, measured: the shell (6), the fill over
+   the record's row, the line below and a guard on each side (the lines
+   array and four lines), the split on the shell (the 'a' inverse, the new
+   line and its splice), the rewrite item (the rows the replay keeps, the
+   transaction's copy of them, its removed and added rows) and the room on
+   the window's margin. */
+#define POCKET_UNDO_ALLOCATIONS 19
+
 static void case_a_refused_undo_keeps_a_pocketed_breakpoint(void)
 {
  int k, r = E_BUFFER_NOMEM, row = 5;
  Undo *rec;
 
- for (k = 1; k <= 4 && r == E_BUFFER_NOMEM; k++) {
+ for (k = 1; k <= POCKET_UNDO_ALLOCATIONS + 1 && r == E_BUFFER_NOMEM; k++) {
   fixture(8, E_BUFFER_HISTORY_FULL);
   brp_set(1, &row);
   rec = e_buffer_record_push(&buf, e_buffer_record_new('r'));
-  rec->b = pnt(3, 4);
-  rec->u.pt = malloc(1);
+  rec->b = pnt(2, 4);
+  rec->a.x = 1;
+  if (e_buffer_record_text(rec, (const unsigned char *) "\n", 1) != E_BUFFER_OK)
+   exit(2);
   e_buffer_cover_begin(&buf, rec);
   e_buffer_delete_lines(&buf, 5, 1, E_BUFFER_STEP_NEW);
   e_buffer_cover_end(&buf);
@@ -921,6 +976,7 @@ static void case_a_refused_undo_keeps_a_pocketed_breakpoint(void)
  }
  chk("24 an Undo with memory works", r, E_BUFFER_OK);
  chk("24 after at least one refusal", k > 2, 1);
+ chk("24 the Undo takes this many allocations", k - 2, POCKET_UNDO_ALLOCATIONS);
 }
 
 /* A row of a view may be wider than the buffer and is kept whole, with the
@@ -2057,8 +2113,8 @@ static Undo *a_char_record_at(int kind, int y)
    deletion it records may take that row: Ctrl-T on the only word of the
    last line.  After that splice the record names the row just past the
    text and never further; Undo hands its replay a row of the text (the
-   owner opens it again, empty, and the parked breakpoint comes back on
-   it), never the line the splice freed.  A record naming any row further
+   owner opens it again on the replay's shell, the text goes back on it and
+   the parked breakpoint with it), never the line the splice freed.  A record naming any row further
    out, or one that takes text from the row past the text, is refused and
    nothing is replayed. */
 static void case_a_record_never_names_a_freed_row(void)
@@ -2080,7 +2136,7 @@ static void case_a_record_never_names_a_freed_row(void)
  chk("row past: the replay ran once", replay_calls, 1);
  chk("row past: on a row of the text", replay_row_missing, 0);
  chk("row past: the row is there again", buf.mxlines, 4);
- chk("row past: empty, for the replay to fill", buf.bf[3].len * 10 + buf.bf[3].s[0], 0);
+ chk_str("row past: with the text the replay put back", text_of(), "L0\nL1\nL2\nL3\n");
  chk("row past: its breakpoint is back on it", brp_has(3), 1);
  chk("row past: the record is used up", list_len(buf.ud), 0);
  fixture_free();
@@ -2113,6 +2169,172 @@ static void case_marks_stand_in_the_text_after_an_undo(void)
  chk("marks: the block begins on a row of the text", scr.mark_begin.y < buf.mxlines, 1);
  chk("marks: and ends on one", scr.mark_end.y, buf.mxlines - 1);
  chk("marks: at the end of the text", scr.mark_end.x, buf.bf[buf.mxlines - 1].len);
+ fixture_free();
+}
+
+/* ---- Undo and Redo: one step, one change ---- */
+
+/* A join as Backspace at the start of row @y + 1 makes it, played by the
+   owner's calls: the 'r' record of the line break at (@x, @y) goes on the
+   list, and the line below goes under its cover, its breakpoint parked in
+   the record.  (The stub's Undo of it splits row @y at @x again.) */
+static Undo *a_join_made(int x, int y)
+{
+ Undo *rec = e_buffer_record_push(&buf, e_buffer_record_new('r'));
+
+ rec->b = pnt(x, y);
+ rec->a.x = 1;
+ if (e_buffer_record_text(rec, (const unsigned char *) "\n", 1) != E_BUFFER_OK)
+  exit(2);
+ e_buffer_cover_begin(&buf, rec);
+ e_buffer_delete_lines(&buf, y + 1, 1, E_BUFFER_STEP_NEW);
+ e_buffer_cover_end(&buf);
+ return(rec);
+}
+
+/* What the Undo of one join takes: as case 24's. */
+#define JOIN_UNDO_ALLOCATIONS POCKET_UNDO_ALLOCATIONS
+
+/* Undo of a joined line whose breakpoint the join parked in its record,
+   with memory refused at each allocation in turn: refused, the line stays
+   joined, the record keeps the breakpoint, Redo has nothing and the cursor
+   is where the user had it (an Undo once used up its record, left the line
+   joined and put the breakpoint on a line the user never marked); whole,
+   the line is back with its breakpoint and Redo has the join again. */
+static void case_a_refused_undo_of_a_join_keeps_the_breakpoint_parked(void)
+{
+ char before[4096];
+ int k, r, row = 4, bad = 0, whole_from = 0;
+ Undo *rec;
+
+ for (k = 1; k <= SWEEP_LIMIT && whole_from == 0; k++) {
+  fixture(8, E_BUFFER_HISTORY_FULL);
+  brp_set(1, &row);
+  rec = a_join_made(2, 3);
+  buf.b = pnt(1, 6);
+  snprintf(before, sizeof before, "%s", text_of());
+  e_buffer_test_fail_allocs(k);
+  r = e_buffer_undo(&buf, &scr);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   whole_from = k;
+   if (!(buf.mxlines == 8 && scr.brp[0] == 1 && brp_has(4) && buf.ud == NULL &&
+         buf.rd != NULL && buf.rd->type == 'a' && buf.rd->b.y == 3 && buf.rd->next == NULL))
+    bad++;
+  } else if (r != E_BUFFER_NOMEM || strcmp(text_of(), before) != 0 || buf.mxlines != 7 ||
+             scr.brp[0] != 0 || buf.ud != rec || rec->nbrk != 1 || rec->brk[0] != 1 ||
+             buf.rd != NULL || buf.b.x != 1 || buf.b.y != 6 || nomem_calls != 1)
+   bad++;
+  fixture_free();
+ }
+ chk("47 an Undo of a join is whole or changes nothing", bad, 0);
+ chk("47 ... and is made once memory suffices", whole_from - 1, JOIN_UNDO_ALLOCATIONS);
+
+ fixture(8, E_BUFFER_HISTORY_FULL);           /* memory short for the primitive alone */
+ brp_set(1, &row);
+ rec = a_join_made(2, 3);
+ snprintf(before, sizeof before, "%s", text_of());
+ stub_refuses = 1;
+ r = e_buffer_undo(&buf, &scr);
+ stub_refuses = 0;
+ chk("47 a primitive refused on its shell refuses the Undo", r, E_BUFFER_NOMEM);
+ chk("47 ... which changes nothing", strcmp(text_of(), before) == 0 && buf.ud == rec &&
+     rec->nbrk == 1 && buf.rd == NULL && scr.brp[0] == 0, 1);
+ chk("47 ... and says so once", nomem_calls, 1);
+ fixture_free();
+}
+
+/* A step of two joins (two Backspaces kept as one action), its Undo refused
+   at each allocation in turn: refused, neither line comes back (an Undo
+   once made the first and said the text was unchanged); whole, both are
+   back with their breakpoints and Redo has both joins, one step. */
+#define TWO_JOINS_ALLOCATIONS (2 * POCKET_UNDO_ALLOCATIONS - 1)
+
+static void case_a_refused_undo_of_a_two_record_step_changes_nothing(void)
+{
+ char before[4096];
+ int k, r, rows[2] = {2, 5}, bad = 0, whole_from = 0, redone = 0;
+
+ for (k = 1; k <= SWEEP_LIMIT && whole_from == 0; k++) {
+  fixture(8, E_BUFFER_HISTORY_FULL);
+  brp_set(2, rows);
+  e_buffer_step_begin(&buf);
+  a_join_made(2, 1);
+  a_join_made(2, 3);
+  e_buffer_step_end(&buf);
+  snprintf(before, sizeof before, "%s", text_of());
+  e_buffer_test_fail_allocs(k);
+  r = e_buffer_undo(&buf, &scr);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   whole_from = k;
+   if (!(buf.mxlines == 8 && scr.brp[0] == 2 && brp_has(2) && brp_has(5) && buf.ud == NULL &&
+         list_len(buf.rd) == 2 && (buf.rd->flags & E_UNDO_MORE) != 0 &&
+         (buf.rd->next->flags & E_UNDO_MORE) == 0))
+    bad++;
+   redone = (e_buffer_redo(&buf, &scr) == E_BUFFER_OK && buf.mxlines == 6 &&
+             scr.brp[0] == 0 && buf.rd == NULL && list_len(buf.ud) == 2);
+  } else if (r != E_BUFFER_NOMEM || strcmp(text_of(), before) != 0 || buf.mxlines != 6 ||
+             scr.brp[0] != 0 || list_len(buf.ud) != 2 || buf.rd != NULL || nomem_calls != 1)
+   bad++;
+  fixture_free();
+ }
+ chk("48 an Undo of a step of two joins is whole or changes nothing", bad, 0);
+ chk("48 ... and is made once memory suffices", whole_from - 1, TWO_JOINS_ALLOCATIONS);
+ chk("48 one Redo makes both joins again", redone, 1);
+}
+
+/* Case 7's step of three line records, its Undo refused at each allocation
+   in turn: all three come back, or none. */
+static void case_a_step_of_line_records_is_one_transaction(void)
+{
+ char before[4096], after[4096];
+ int k, r, bad = 0, whole_from = 0;
+
+ for (k = 1; k <= SWEEP_LIMIT && whole_from == 0; k++) {
+  fixture(8, E_BUFFER_HISTORY_FULL);
+  snprintf(before, sizeof before, "%s", text_of());
+  e_buffer_step_begin(&buf);
+  e_buffer_delete_lines(&buf, 1, 1, E_BUFFER_STEP_NEW);
+  e_buffer_insert_blank(&buf, 4, E_BUFFER_STEP_NEW);
+  e_buffer_delete_lines(&buf, 6, 1, E_BUFFER_STEP_NEW);
+  e_buffer_step_end(&buf);
+  snprintf(after, sizeof after, "%s", text_of());
+  e_buffer_test_fail_allocs(k);
+  r = e_buffer_undo(&buf, &scr);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   whole_from = k;
+   if (strcmp(text_of(), before) != 0 || buf.ud != NULL || list_len(buf.rd) != 3)
+    bad++;
+  } else if (r != E_BUFFER_NOMEM || strcmp(text_of(), after) != 0 || list_len(buf.ud) != 3 ||
+             buf.rd != NULL)
+   bad++;
+  fixture_free();
+ }
+ chk("49 a step of line records is undone whole or not at all", bad, 0);
+ chk("49 ... and once memory suffices", whole_from > 1, 1);
+}
+
+/* A block record inside a step (no command makes one; a hook could): the
+   step ends before it, traced, and the block record is a step of its own. */
+static void case_a_block_record_is_alone_in_its_step(void)
+{
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ e_buffer_step_begin(&buf);
+ e_buffer_record_push(&buf, e_buffer_record_new('c'));
+ e_buffer_delete_lines(&buf, 2, 1, E_BUFFER_STEP_NEW);
+ e_buffer_step_end(&buf);
+ chk("50 the line record is in the block's step",
+     (buf.ud->flags & E_UNDO_MORE) != 0 && buf.ud->next->type == 'c', 1);
+ chk("50 Undo", e_buffer_undo(&buf, &scr), E_BUFFER_OK);
+ chk("50 takes the line record back", buf.mxlines, 8);
+ chk("50 ... alone, traced", block_in_step_traced, 1);
+ chk("50 the block record stays", list_len(buf.ud) == 1 && buf.ud->type == 'c', 1);
+ chk("50 not replayed yet", block_calls, 0);
+ chk("50 the next Undo", e_buffer_undo(&buf, &scr), E_BUFFER_OK);
+ chk("50 replays the block record", block_calls, 1);
+ chk("50 nothing left", buf.ud == NULL, 1);
  fixture_free();
 }
 
@@ -2418,6 +2640,10 @@ int main(void)
  case_a_move_into_a_narrower_buffer_builds_its_line_again();
  case_a_record_never_names_a_freed_row();
  case_marks_stand_in_the_text_after_an_undo();
+ case_a_refused_undo_of_a_join_keeps_the_breakpoint_parked();
+ case_a_refused_undo_of_a_two_record_step_changes_nothing();
+ case_a_step_of_line_records_is_one_transaction();
+ case_a_block_record_is_alone_in_its_step();
  case_text_cut_into_rows_fits_the_width();
  case_every_row_a_maker_makes_fits_the_width();
  case_a_row_that_does_not_fit_is_refused();
