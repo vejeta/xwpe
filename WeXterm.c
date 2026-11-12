@@ -421,6 +421,44 @@ Colormap e_x_palette_colormap(void)
  return DefaultColormap(WpeXInfo.display, WpeXInfo.screen);
 }
 
+#ifdef HAVE_XFT
+/**
+ * e_x_xftdraw_trace - Say in $XWPE_UI_TRACE which colormap a glyph surface got.
+ * @cmap: the colormap the new XftDraw was made with
+ *
+ * A test (or someone chasing wrong glyph colours under the pcmap resource)
+ * reads here whether the text is painted in the colormap the palette lives in.
+ * On a true-colour display the two colormaps paint the same pixels, so this
+ * line is the only place the choice can be seen.  Nothing is written when the
+ * variable is not set.
+ */
+static void e_x_xftdraw_trace(Colormap cmap)
+{
+ wpe_ui_trace("xftdraw colormap=%lu private=%d", (unsigned long)cmap,
+              cmap != DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+}
+
+/**
+ * e_x_xftdraw_create - Make the glyph surface for the back buffer.
+ *
+ * Every place that rebuilds the text surface (start, resize, font change)
+ * calls this, so the editor's text is always painted in the colormap the 16
+ * colours were allocated in.  With the pcmap resource on, that is the private
+ * colormap, and text made in the screen's default one would come out in the
+ * wrong colours on a palette display.
+ *
+ * Return: the new XftDraw, to be given back with XftDrawDestroy.
+ */
+XftDraw *e_x_xftdraw_create(void)
+{
+ Colormap cmap = e_x_palette_colormap();
+
+ e_x_xftdraw_trace(cmap);
+ return XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+                      DefaultVisual(WpeXInfo.display, WpeXInfo.screen), cmap);
+}
+#endif
+
 /**
  * e_x_palette_rgb16 - The colour the X server gave palette entry @idx.
  * @idx: palette index, 0..15
@@ -927,9 +965,7 @@ void WpeXInit(int *argc, char **argv)
   WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
     size_hints.width, size_hints.height,
     DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-  WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-    DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-    DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+  WpeXInfo.xftdraw = e_x_xftdraw_create();
   /* Clear the back buffer to black */
   XSetForeground(WpeXInfo.display, WpeXInfo.gc,
     BlackPixel(WpeXInfo.display, WpeXInfo.screen));
@@ -967,9 +1003,7 @@ void WpeXInit(int *argc, char **argv)
     if (WpeXInfo.xftdraw)
      XftDrawDestroy(WpeXInfo.xftdraw);
     WpeRender.resize(size_hints.width, size_hints.height);
-    WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-      DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-      DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+    WpeXInfo.xftdraw = e_x_xftdraw_create();
    }
   }
 #endif

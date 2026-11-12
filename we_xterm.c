@@ -535,9 +535,7 @@ int e_ini_size()
    if (WpeXInfo.xftdraw)
     XftDrawDestroy(WpeXInfo.xftdraw);
    WpeRender.resize(new_w, new_h);
-   WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-     DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-     DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+   WpeXInfo.xftdraw = e_x_xftdraw_create();
   }
   else
   {
@@ -548,9 +546,7 @@ int e_ini_size()
    WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
      new_w, new_h,
      DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-   WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-     DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-     DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+   WpeXInfo.xftdraw = e_x_xftdraw_create();
    XSetForeground(WpeXInfo.display, WpeXInfo.gc,
      BlackPixel(WpeXInfo.display, WpeXInfo.screen));
    XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
@@ -1197,9 +1193,7 @@ static int e_x_apply_configure(XEvent *report, int *pw, int *ph,
    XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
      0, 0, w, h);
   }
-  WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-    DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-    DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+  WpeXInfo.xftdraw = e_x_xftdraw_create();
  }
 #endif
  *pw = w;
@@ -1511,9 +1505,7 @@ static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
      XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
        0, 0, snap_w, snap_h);
     }
-    WpeXInfo.xftdraw = XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
-      DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-      DefaultColormap(WpeXInfo.display, WpeXInfo.screen));
+    WpeXInfo.xftdraw = e_x_xftdraw_create();
    }
 #endif
    e_forget_box_view_on_resize(WpeEditor);

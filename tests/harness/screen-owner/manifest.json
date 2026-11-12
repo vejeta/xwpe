@@ -74,6 +74,22 @@
   {
    "id": "SC-screen-02",
    "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_stop_under_the_file_manager_is_shown_when_it_closes",
+   "status": "new",
+   "needs": ["gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
+   "layer": "ncurses",
+   "test": "tests/test_screen_owner.py::test_stop_under_the_window_list_is_shown_when_it_closes",
+   "status": "new",
+   "needs": ["gdb", "gcc"]
+  },
+  {
+   "id": "SC-screen-02",
+   "requirement": "What arrived behind the screen's owner is shown when the editor is back",
    "layer": "x11",
    "test": "tests/x11/test_screen_owner.py::test_stop_under_the_user_screen_waits_for_the_key",
    "status": "new",

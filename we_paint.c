@@ -35,14 +35,19 @@ static const char   *paint_lost_what = NULL;
 static void wpe_paint_callback_enter(void);
 static void wpe_paint_callback_leave(void);
 
+/* The screen owner's own lines go through the editor's one trace writer. */
+#define wpe_paint_trace wpe_ui_trace
+
 /**
- * wpe_paint_trace - Write one line to the file $XWPE_UI_TRACE names.
+ * wpe_ui_trace - Write one line to the file $XWPE_UI_TRACE names.
+ * @fmt: printf format of the line, without the newline.
  *
  * A test, or a user chasing a screen that did not change, reads there which
- * box held the screen and which paint waited for it.  Nothing is written
+ * box held the screen, which paint waited for it, or which colormap the text
+ * was drawn in.  It is written on every build.  Nothing is opened or written
  * when the variable is not set.
  */
-static void wpe_paint_trace(const char *fmt, ...)
+void wpe_ui_trace(const char *fmt, ...)
 {
  const char *path = getenv("XWPE_UI_TRACE");
  FILE *tf;

@@ -90,6 +90,10 @@ int e_x_palette_rgb(int idx, unsigned char rgb[3]);
 /* The colormap those colours live in: the default one, or the private one
    the pcmap resource asked for. */
 Colormap e_x_palette_colormap(void);
+#ifdef HAVE_XFT
+/* The glyph surface for the back buffer, made in that same colormap. */
+XftDraw *e_x_xftdraw_create(void);
+#endif
 
 #ifdef __cplusplus
 }

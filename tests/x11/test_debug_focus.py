@@ -95,6 +95,7 @@ def _wait_blocked(xwpe):
     _sleep(1.0)
 
 
+# @scenario SC-display-04
 @needs_tools
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": BLOCKED_PROG}],
                          indirect=True)
@@ -119,6 +120,7 @@ def test_a_debug_start_gives_the_editor_the_keyboard_and_leaves_the_stacking(xwp
         logo.wait(timeout=5)
 
 
+# @scenario SC-display-04
 @needs_tools
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": BLOCKED_PROG}],
                          indirect=True)

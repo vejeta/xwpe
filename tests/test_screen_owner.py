@@ -352,6 +352,60 @@ def test_stop_under_a_ctrl_g_prefix_acts_on_the_current_window(tmp_path):
         assert w.alive(), "wpe died after the prefix"
 
 
+F3 = "\033OR"
+ALT_0 = "\0330"               # the Window list
+FILE_MANAGER_FIELD = "Name"
+WINDOW_LIST_TITLE = "Windows"
+
+
+# @scenario SC-screen-02
+def test_stop_under_the_file_manager_is_shown_when_it_closes(tmp_path):
+    """The File Manager (F3) is open while the program sleeps before its
+    second stop.  The stop comes while it is up: nothing is drawn under it,
+    the trace says the stop waited, and once Esc closes it the mark is on
+    the second stop's line."""
+    _need("gcc", "gdb")
+    trace = tmp_path / TRACE
+    with WpeSession(str(tmp_path), STOP_PROG, filename="s.c", wait=1.5,
+                    env_extra={"XWPE_UI_TRACE": str(trace)}) as w:
+        _two_breakpoints_and_run_on(w, tmp_path)
+        w.key(F3, delay=0.5)
+        assert FILE_MANAGER_FIELD in _screen(w), \
+            "the File Manager should be open:\n%s" % _screen(w)
+        _nothing_drawn_until_the_stop_waits(w, trace, "the File Manager")
+        w.key(ESC, delay=0.6)
+        assert _wait_for(w, lambda: w.mark_line() == SECOND_STOP_LINE,
+                         OUTPUT_TIMEOUT_S), \
+            "once the File Manager closes the stop on line %d should " \
+            "show:\n%s" % (SECOND_STOP_LINE, _screen(w))
+        assert REPLAYED_STOP in _read(str(trace)), _read(str(trace))
+        assert w.alive(), "wpe died closing the File Manager"
+
+
+# @scenario SC-screen-02
+def test_stop_under_the_window_list_is_shown_when_it_closes(tmp_path):
+    """The Window list (Alt-0) is open while the program sleeps before its
+    second stop.  The stop comes while it is up: nothing is drawn under it,
+    the trace says the stop waited, and once Esc closes it the mark is on
+    the second stop's line."""
+    _need("gcc", "gdb")
+    trace = tmp_path / TRACE
+    with WpeSession(str(tmp_path), STOP_PROG, filename="s.c", wait=1.5,
+                    env_extra={"XWPE_UI_TRACE": str(trace)}) as w:
+        _two_breakpoints_and_run_on(w, tmp_path)
+        w.key(ALT_0, delay=0.8)
+        assert WINDOW_LIST_TITLE in _screen(w), \
+            "the Window list should be open:\n%s" % _screen(w)
+        _nothing_drawn_until_the_stop_waits(w, trace, "the Window list")
+        w.key(ESC, delay=0.6)
+        assert _wait_for(w, lambda: w.mark_line() == SECOND_STOP_LINE,
+                         OUTPUT_TIMEOUT_S), \
+            "once the Window list closes the stop on line %d should " \
+            "show:\n%s" % (SECOND_STOP_LINE, _screen(w))
+        assert REPLAYED_STOP in _read(str(trace)), _read(str(trace))
+        assert w.alive(), "wpe died closing the Window list"
+
+
 # A make that names an error in the file after a pause.
 SLOW_ERROR_MAKEFILE = (
     "all:\n"

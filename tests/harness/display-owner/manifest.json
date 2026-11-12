@@ -186,6 +186,44 @@
    "needs": ["wl-clipboard"]
   },
   {
+   "id": "SC-display-04",
+   "requirement": "A debug start and a debug stop act on focus and stacking on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_debug_focus.py::test_a_debug_start_gives_the_editor_the_keyboard_and_leaves_the_stacking",
+   "status": "covered",
+   "needs": ["gdb", "gcc", "xlogo", "xdotool"]
+  },
+  {
+   "id": "SC-display-04",
+   "requirement": "A debug start and a debug stop act on focus and stacking on every display",
+   "layer": "x11",
+   "test": "tests/x11/test_debug_focus.py::test_a_debug_stop_brings_the_editor_window_to_the_front",
+   "status": "covered",
+   "needs": ["gdb", "gcc", "xlogo", "xdotool"]
+  },
+  {
+   "id": "SC-display-04",
+   "requirement": "A debug start and a debug stop act on focus and stacking on every display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_debug_focus_trace.py::test_a_debug_start_and_stop_say_the_compositor_decides",
+   "status": "new",
+   "needs": ["weston", "gdb", "gcc"]
+  },
+  {
+   "id": "SC-display-05",
+   "requirement": "The X11 palette is the one the server allocated",
+   "layer": "x11",
+   "test": "tests/x11/test_pcmap.py::test_text_is_painted_in_the_private_colormap",
+   "status": "new"
+  },
+  {
+   "id": "SC-display-05",
+   "requirement": "The X11 palette is the one the server allocated",
+   "layer": "x11",
+   "test": "tests/x11/test_pcmap.py::test_text_is_painted_in_the_default_colormap_without_pcmap",
+   "status": "new"
+  },
+  {
    "id": "SC-display-05",
    "requirement": "The X11 palette is the one the server allocated",
    "layer": "x11",

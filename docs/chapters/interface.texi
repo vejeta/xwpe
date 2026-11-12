@@ -483,7 +483,12 @@ key.
 
 @cindex resize, while a box is open
 If the terminal or the window changes size while a box is open, the
-windows are laid out for the new size and the box is drawn again over
-them, on the terminal, under X11 and under Wayland alike; when it closes
-you see the windows as they are now, not what was behind the box before.
-A dropdown that no longer fits under the menu bar closes.
+windows are laid out for the new size and, for the dropdowns, the About
+and System Info boxes, error boxes and dialogs, the box is drawn again
+over them; when it closes you see the windows as they are now, not what
+was behind the box before.  A dropdown that no longer fits under the
+menu bar closes.  The pickers are not laid out again yet.  A resize
+closes the language server popups (hover, signature help and the
+problem shown at a jump), the reason box of the model picker and the
+User Screen, and ends the wait for Enter after a command on the
+terminal.

@@ -1825,7 +1825,7 @@ static void e_w_serve_display(void)
  */
 static void e_w_focus_editor(void)
 {
- WPE_TRACE("wayland", "focus_editor: a client cannot take the keyboard, nothing to do\n");
+ wpe_ui_trace("focus_editor: a client cannot take the keyboard, nothing to do");
 }
 
 /**
@@ -1838,7 +1838,7 @@ static void e_w_focus_editor(void)
  */
 static void e_w_raise_editor(void)
 {
- WPE_TRACE("wayland", "raise_editor: a client cannot raise its window, nothing to do\n");
+ wpe_ui_trace("raise_editor: a client cannot raise its window, nothing to do");
 }
 
 /* Pump Wayland events once: block in the shared poll loop first when `block`,

@@ -52,6 +52,11 @@ void wpe_paint_desk_set(const WpePaintDesk *desk);
 
 int  wpe_paint_idle(void);
 void wpe_paint_trace_say(const char *line);
+void wpe_ui_trace(const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 1, 2)))
+#endif
+    ;
 void wpe_paint_modal_enter(const char *what);
 void wpe_paint_modal_leave(void);
 int  wpe_paint_modal_depth(void);
