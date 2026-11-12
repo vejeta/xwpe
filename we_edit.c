@@ -2834,22 +2834,6 @@ int e_autosave(FENSTER *f)
 }
 
 /**
- * e_undo_text_copy - The @n characters a record must put back, copied.
- * Return: the copy, or NULL when memory ran out.
- */
-static char *e_undo_text_copy(BUFFER *b, int x, int y, int n)
-{
- char *str = MALLOC(n > 0 ? n : 1);
- int i;
-
- if (str == NULL)
-  return(NULL);
- for (i = 0; i < n; i++)
-  str[i] = b->bf[y].s[x+i];
- return(str);
-}
-
-/**
  * e_undo_record_compose - Fill a character record of kind @sw.
  * Return: 0, or -1 when memory ran out (the record is then incomplete).
  */
@@ -2862,7 +2846,7 @@ static int e_undo_record_compose(Undo *next, int sw, BUFFER *b, int x, int y, in
   next->u.c = b->bf[y].s[x];
  else if (sw == 'r' || sw == 's')
  {
-  if ((next->u.pt = e_undo_text_copy(b, x, y, n)) == NULL)
+  if (e_buffer_record_text(next, b->bf[y].s + x, n) != E_BUFFER_OK)
    return(-1);
   /* For type 's' (search/replace undo), a.y must store the length
      of the OTHER string -- the one that will be re-inserted when this
@@ -3232,6 +3216,34 @@ int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
  return(E_BUFFER_OK);
 }
 
+/**
+ * wpe_buffer_replay_on_shell - Replay character record @rec on a shell
+ * whose row 0 is row @y0 of the buffer the record belongs to.
+ * @shell: the shell, filled with copies of the rows the replay may touch;
+ * @s: its screen; @rec: an 'a' 'r' 's' or 'p' record, read only.
+ *
+ * The same primitive that made the change replays it, so an Undo joins
+ * and wraps exactly as typing did; on the shell, a refusal for want of
+ * memory counts there (wpe_buffer_say_nomem) and the user's text is never
+ * touched.  The inverses the primitives record stay on the shell's list
+ * until the owner moves them onto the buffer's.
+ */
+void wpe_buffer_replay_on_shell(BUFFER *shell, SCHIRM *s, const Undo *rec, int y0)
+{
+ Undo at = *rec;
+
+ at.b.y -= y0;
+ at.next = NULL;
+ if (at.type == 'r')
+  e_rudo_text_back(shell, s, &at);
+ else if (at.type == 's')
+  e_rudo_replace_back(shell, s, &at);
+ else if (at.type == 'a')
+  e_del_nchar(shell, s, at.b.x, at.b.y, at.a.x);
+ else if (at.type == 'p')
+  shell->bf[at.b.y].s[at.b.x] = at.u.c;
+}
+
 int e_make_rudo(FENSTER *f, int sw)
 {
  BUFFER *b;
@@ -3331,6 +3343,12 @@ void wpe_buffer_say_nomem(BUFFER *b, const char *what)
 {
  char line[E_BUFFER_SAY_MAX];
 
+ if (e_buffer_is_shell(b))
+ {
+  e_buffer_shell_refused(b);
+  wpe_buffer_trace("buffer shell nomem %s", what);
+  return;
+ }
  snprintf(line, sizeof line, E_BUFFER_SAY_FMT, what);
  wpe_buffer_trace("buffer nomem %s", what);
  if (WpeEditor != NULL && WpeEditor->mxedt >= 0)

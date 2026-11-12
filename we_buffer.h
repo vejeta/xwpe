@@ -98,9 +98,14 @@ typedef struct {
  int nremoved, nadded;
 } BufferSpliceMem;
 
-#define E_BUFFER_TXN_MAX       6   /* items: a block move needs at most five */
-#define E_BUFFER_TXN_SPLICES  (2 * E_BUFFER_TXN_MAX)   /* a move item is two */
+#define E_BUFFER_TXN_SPLICES  12   /* splices held in the transaction itself; more
+                                      (one per hunk of a format's Undo) take memory */
 #define E_BUFFER_TXN_BUFFERS   2   /* the buffer a block leaves and the one it reaches */
+
+/* WpeBufferTxnSplice.kind: how a splice of a transaction commits. */
+#define E_BUFFER_ITEM_SPLICE   0   /* lines the caller built (or a move's halves) */
+#define E_BUFFER_ITEM_REPLAY   1   /* the lines of a line record, put back by Undo or Redo */
+#define E_BUFFER_ITEM_REWRITE  2   /* the lines a shell holds after a replay ran on it */
 
 /* One splice of a transaction, prepared and waiting to commit. */
 typedef struct {
@@ -114,6 +119,15 @@ typedef struct {
  int *brk_out;        /* ... and their breakpoint rows, relative to y */
  int nbrk_out;
  int landed_from;     /* a move's second half: the detach it lands, else -1 */
+ int kind;            /* E_BUFFER_ITEM_* */
+ int no_changed;      /* no row of the span is a changed row that keeps its breakpoint */
+ const int *brk;      /* rows the new lines carry, relative to y: a replay's are its
+                         record's, a rewrite's its own copy */
+ int nbrk;
+ Undo *rec;           /* a replay: the record whose lines come back */
+ int lines_kept;      /* the lines are the record's: an abort leaves them to it */
+ BUFFER *shell;       /* a rewrite: the shell whose lines it adopts */
+ int g_top, g_bot;    /* ... the shell's guard rows above and below the span (0 or 1) */
  BufferSpliceMem m;
 } WpeBufferTxnSplice;
 
@@ -126,9 +140,12 @@ typedef struct {
  int brp_rows, pocket_rows;
 } WpeBufferTxnBuffer;
 
+/* A transaction lives on its caller's stack and is never copied: sp points
+   into it until it grows past its inline slots. */
 typedef struct {
- WpeBufferTxnSplice sp[E_BUFFER_TXN_SPLICES];
- int nsp, items;
+ WpeBufferTxnSplice *sp;   /* sp_inline, or the heap once more were needed */
+ int nsp, cap;
+ WpeBufferTxnSplice sp_inline[E_BUFFER_TXN_SPLICES];
  WpeBufferTxnBuffer buf[E_BUFFER_TXN_BUFFERS];
  int nbuf;
  Undo *rec;           /* the record of the operation, reserved with the rest */
@@ -151,11 +168,28 @@ int    e_buffer_txn_move_lines(WpeBufferTxn *t, BUFFER *from, int y_from, int n,
 int    e_buffer_txn_delete_lines(WpeBufferTxn *t, BUFFER *b, int y, int n, WpeBufferStep step);
 int    e_buffer_txn_copy_lines(WpeBufferTxn *t, BUFFER *to, int y, BUFFER *src, int from,
                                int n, WpeBufferStep step);
+int    e_buffer_txn_replay_lines(WpeBufferTxn *t, BUFFER *b, Undo *rec);
+int    e_buffer_txn_rewrite(WpeBufferTxn *t, BUFFER *b, int y, int n_del, BUFFER *shell,
+                            int g_top, int g_bot, const int *brk, int nbrk);
+int    e_buffer_txn_line(WpeBufferTxn *t, BUFFER *b, int y, const STRING **line,
+                         int *has_row);
 Undo  *e_buffer_txn_record(WpeBufferTxn *t, int kind);
 int    e_buffer_txn_commit(WpeBufferTxn *t);
 void   e_buffer_txn_abort(WpeBufferTxn *t);
 STRING *e_buffer_lines_from_parts(int mx_x, const WpeBufferPart *parts, int nparts, int *n);
 STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst);
+
+/* ---- a shell: a private buffer the owner makes ----
+
+   A block delete keeps its lines in one until Undo brings them back; a
+   character Undo replays the primitive on one holding copies of the rows it
+   may touch, so a replay refused for memory costs the user nothing.  A
+   shell has a window and a screen of its own (for its breakpoint rows and
+   marks) but no file name, so no debugger is ever told of it. */
+BUFFER *e_buffer_shell_new(BUFFER *like, int width);
+int    e_buffer_shell_fill(BUFFER *shell, WpeBufferTxn *t, BUFFER *b, int y0, int n);
+int    e_buffer_is_shell(BUFFER *b);
+void   e_buffer_shell_refused(BUFFER *b);
 
 void   e_buffer_cover_begin(BUFFER *b, Undo *pocket);
 void   e_buffer_cover_end(BUFFER *b);
@@ -165,6 +199,7 @@ void   e_buffer_step_end(BUFFER *b);
 int    e_buffer_depth_check(BUFFER *b);
 
 Undo  *e_buffer_record_new(int kind);
+int    e_buffer_record_text(Undo *rec, const unsigned char *src, int n);
 Undo  *e_buffer_record_push(BUFFER *b, Undo *rec);
 void   e_buffer_record_free(Undo *rec);
 void   e_buffer_shell_free(BUFFER *shell);
@@ -182,6 +217,10 @@ void   wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
                               const int *rows_added, int n_added);
 void   wpe_buffer_say_nomem(BUFFER *b, const char *what);
 int    wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec);
+/* Run the character primitive that replays @rec ('a' 'r' 's' 'p') on a
+   shell whose row 0 is row @y0 of the buffer the record belongs to; a
+   refusal inside counts on the shell (e_buffer_shell_refused). */
+void   wpe_buffer_replay_on_shell(BUFFER *shell, SCHIRM *s, const Undo *rec, int y0);
 void   wpe_buffer_trace(const char *fmt, ...);
 
 int    e_str_len(unsigned char *s);

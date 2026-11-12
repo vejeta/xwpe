@@ -432,6 +432,8 @@ canary_import we_edit.o e_buffer_record_push "the char kinds record some other w
 canary_import we_edit.o e_buffer_undo "Undo replays some other way"
 canary_import we_block.o e_buffer_txn_commit "the block code moves lines some other way"
 canary_import we_block.o e_buffer_record_push "the block kinds record some other way"
+canary_import we_block.o e_buffer_shell_new "a block delete makes its shell some other way"
+canary_import we_edit.o e_buffer_record_text "a char record copies its text some other way"
 BUFFER_OWNER_SEEN=0
 for obj in $OBJECTS; do
   [ "$(basename "$obj")" = we_buffer.o ] || continue

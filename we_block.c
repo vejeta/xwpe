@@ -159,32 +159,17 @@ static FENSTER *e_blk_text_window(FENSTER *f)
  * The shell keeps breakpoint rows of its own, so the breakpoints of the
  * deleted lines wait in it until Undo brings the lines back; it has no file
  * name, so no debugger is ever told of it, and every splice into it runs
- * covered, so it records nothing.
+ * covered, so it records nothing.  It is as wide as @b, not as Max. Columns
+ * is now: Undo gives its lines back to @b, and a line narrower than @b's
+ * width would overflow at the first character typed into it.
  * Return: the shell, or NULL when memory ran out.
  */
 static BUFFER *e_blk_shell_new(BUFFER *b)
 {
- BUFFER *bn = MALLOC(sizeof(BUFFER));
- SCHIRM *sn = MALLOC(sizeof(SCHIRM));
- FENSTER *fn = MALLOC(sizeof(FENSTER));
+ BUFFER *bn = e_buffer_shell_new(b, b->mx.x);
 
- if (bn == NULL || sn == NULL || fn == NULL)
- {
-  FREE(bn);  FREE(sn);  FREE(fn);
+ if (bn == NULL)
   return(NULL);
- }
- memset(sn, 0, sizeof(SCHIRM));
- memset(fn, 0, sizeof(FENSTER));
- fn->s = sn;
- fn->b = bn;
- fn->ed = NULL;
- e_buffer_init(bn, b->cn, fn, b->cn->maxcol, E_BUFFER_HISTORY_FULL);
- if (bn->mxlines != 1)
- {
-  e_buffer_shell_free(bn);
-  return(NULL);
- }
- sn->fb = bn->fb = b->fb;
  e_line_make_hard_empty(&bn->bf[0]);
  return(bn);
 }

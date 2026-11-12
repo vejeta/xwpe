@@ -656,6 +656,37 @@ def test_a_deleted_block_undone_has_its_breakpoint_again(tmp_path):
         assert s.alive(), "wpe died"
 
 
+# Options > Editor > Max. Columns set to 40 (the field holds three digits).
+SET_MAX_COLUMNS_40 = (ALT.OPTIONS, "e", "\033m", BACKSPACE, BACKSPACE, BACKSPACE, "4", "0", ENTER)
+# One line wider than 40 columns and narrower than the window the file opened in.
+WIDE_LINE = " ".join("w%03d" % i for i in range(17))
+WIDE_SEED = WIDE_LINE + "\nsecond line\nthird line\n"
+
+
+def test_a_block_delete_undone_after_max_columns_lowered_keeps_its_lines(tmp_path):
+    """Max. Columns lowered after the file was opened, a block from column 3
+    of a wide line to the next line deleted and undone: the wide line comes
+    back as the one row it was, not cut at the new Max. Columns into rows
+    narrower than the window (where the first character typed would write
+    past the line)."""
+    assert len(WIDE_LINE) == 84
+    with WpeSession(str(tmp_path), WIDE_SEED) as s:
+        for k in SET_MAX_COLUMNS_40:
+            s.key(k, delay=0.3)
+        s.key(RIGHT, RIGHT, RIGHT, delay=0.2)
+        s.key(CTRL_K, "b", delay=0.3)
+        s.key(DOWN, delay=0.2)
+        s.key(CTRL_K, "k", delay=0.3)
+        s.key(CTRL_K, "y", delay=0.8)
+        assert "w00ond line" in _line_text(s, 1), \
+            "the block was not deleted:\n" + "\n".join(s.display())
+        s.key(CTRL_U, delay=0.8)
+        assert "second line" in _line_text(s, 2), \
+            "after Ctrl-U the wide line takes more than one row:\n" + "\n".join(s.display())
+        assert _saved(s) == WIDE_SEED, "Ctrl-U did not give the text back"
+        assert s.alive(), "wpe died"
+
+
 # @scenario SC-buffer-04
 def test_a_block_delete_that_joins_two_lines_keeps_the_breakpoint_below_on_its_line(tmp_path):
     """A block from inside one line to inside a line two below is deleted, so

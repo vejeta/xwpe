@@ -49,6 +49,8 @@ static int moved_removed[MAX_ROWS], moved_nremoved, moved_added[MAX_ROWS], moved
 static int nomem_calls;
 static int leak_traced;
 static int fault_traced;
+static int overrun_traced;
+static int move_view_traced;
 
 void wpe_buffer_syntax_changed(BUFFER *b, int y)
 {
@@ -63,7 +65,8 @@ void wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
 {
  int i;
 
- (void) b;
+ if (b->f == NULL || b->f->datnam == NULL)   /* as the editor's: no file, no list */
+  return;
  moved_calls++;
  moved_y = y;
  moved_del = n_del;
@@ -76,10 +79,14 @@ void wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
   moved_added[i] = rows_added[i];
 }
 
+/* As the editor's: a refusal inside a shell counts there and says nothing. */
 void wpe_buffer_say_nomem(BUFFER *b, const char *what)
 {
- (void) b;
  (void) what;
+ if (e_buffer_is_shell(b)) {
+  e_buffer_shell_refused(b);
+  return;
+ }
  nomem_calls++;
 }
 
@@ -91,18 +98,90 @@ int wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec)
  return(E_BUFFER_OK);
 }
 
+/* ---- the editor's character primitives on a shell, played by a stub ----
+
+   'a' (the Undo of a typed line break) joins: the line below the record's
+   goes, its breakpoint parked in the 'r' inverse, as e_del_nchar does.
+   'r' (the Undo of a join) splits the line again, recording an 'a'.  Each
+   records its inverse first, as the primitives do. */
+
+static int stub_refuses;      /* the primitive is refused for memory on the shell */
+static int stub_overruns;     /* the join takes the shell's last row: past its span */
+
+static Undo *stub_record(BUFFER *shell, int kind, int x, int y)
+{
+ Undo *inv = e_buffer_record_new(kind);
+
+ if (inv == NULL)
+  return(NULL);
+ inv->b.x = x;
+ inv->b.y = y;
+ inv->a.x = 1;
+ if (kind == 'r' && e_buffer_record_text(inv, (const unsigned char *) "\n", 1) != E_BUFFER_OK) {
+  e_buffer_record_free(inv);
+  return(NULL);
+ }
+ return(e_buffer_record_push(shell, inv));
+}
+
+static void stub_join(BUFFER *shell, int x, int y)
+{
+ Undo *inv = stub_record(shell, 'r', x, y);
+ int gone = y + 1;
+
+ if (inv == NULL) {
+  wpe_buffer_say_nomem(shell, "the undo record");
+  return;
+ }
+ if (stub_overruns)
+  gone = shell->mxlines - 1;
+ e_buffer_cover_begin(shell, inv);
+ if (e_buffer_delete_lines(shell, gone, 1, E_BUFFER_STEP_NEW) != E_BUFFER_OK)
+  wpe_buffer_say_nomem(shell, "the line deletion");
+ e_buffer_cover_end(shell);
+}
+
+static void stub_split(BUFFER *shell, int x, int y)
+{
+ if (stub_record(shell, 'a', x, y) == NULL) {
+  wpe_buffer_say_nomem(shell, "the undo record");
+  return;
+ }
+ if (e_buffer_split_line(shell, y, x, E_BUFFER_STEP_COVERED, E_BUFFER_HEAD_WR) != E_BUFFER_OK)
+  wpe_buffer_say_nomem(shell, "a line break");
+}
+
+void wpe_buffer_replay_on_shell(BUFFER *shell, SCHIRM *s, const Undo *rec, int y0)
+{
+ (void) s;
+ if (stub_refuses) {
+  wpe_buffer_say_nomem(shell, "the stub");
+  return;
+ }
+ if (rec->type == 'a')
+  stub_join(shell, rec->b.x, rec->b.y - y0);
+ else if (rec->type == 'r')
+  stub_split(shell, rec->b.x, rec->b.y - y0);
+}
+
 void wpe_buffer_trace(const char *fmt, ...)
 {
  if (strstr(fmt, "depth leak") != NULL)
   leak_traced++;
  if (strstr(fmt, "buffer fault") != NULL)
   fault_traced++;
+ if (strstr(fmt, "span overrun") != NULL)
+  overrun_traced++;
+ if (strstr(fmt, "view meets a move") != NULL)
+  move_view_traced++;
 }
 
 static void hooks_reset(void)
 {
  syntax_calls = moved_calls = nomem_calls = 0;
  moved_nremoved = moved_nadded = 0;
+ overrun_traced = move_view_traced = 0;
+ stub_refuses = stub_overruns = 0;
 }
 
 /* ---- the fixture: a window with a buffer of numbered lines ---- */
@@ -1112,6 +1191,692 @@ static void case_the_fault_hook_fires_once(void)
  fixture_free();
 }
 
+/* ---- a step of Undo as one transaction: the pieces ---- */
+
+/* A copy of a line's text without its line break, for a comparison. */
+static const char *line_text(const STRING *l)
+{
+ static char out[WIDTH + 2];
+
+ snprintf(out, sizeof out, "%.*s", l->len, (const char *) l->s);
+ return(out);
+}
+
+/* A fresh array of one line of the fixture's width, holding text. */
+static STRING *one_line(const char *text)
+{
+ STRING *l = malloc(sizeof(STRING));
+
+ if (l == NULL)
+  exit(2);
+ *l = line_of(&buf, text);
+ return(l);
+}
+
+/* What the view says of every row, and whether the buffer says the same
+   once the change is made: the view is what the next record's replay
+   reads before anything is made. */
+#define VIEW_ROWS 16
+static int view_texts(WpeBufferTxn *t, char texts[][WIDTH + 2], int *rows, int n)
+{
+ const STRING *l;
+ int y, row;
+
+ for (y = 0; y < n; y++) {
+  if (e_buffer_txn_line(t, &buf, y, &l, &row) != E_BUFFER_OK)
+   return(y);
+  snprintf(texts[y], WIDTH + 2, "%s", line_text(l));
+  rows[y] = row;
+ }
+ return(n);
+}
+
+static int view_matches_buffer(char texts[][WIDTH + 2], const int *rows, int n)
+{
+ int y, bad = 0;
+
+ if (n != buf.mxlines)
+  return(0);
+ for (y = 0; y < n; y++)
+  if (strcmp(texts[y], line_text(&buf.bf[y])) != 0 || rows[y] != brp_has(y))
+   bad++;
+ return(bad == 0);
+}
+
+/* The view reads lines the items so far would put in, with the breakpoints
+   they would leave, before anything is made: a changed row keeps the one
+   below it, an inserted row has none, a replayed line has the record's. */
+static void case_the_view_reads_pending_lines(void)
+{
+ char texts[VIEW_ROWS][WIDTH + 2];
+ int rows[2] = {2, 5}, got[VIEW_ROWS], n, row;
+ STRING *two;
+ const STRING *l;
+ WpeBufferTxn t;
+ Undo *rec;
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ brp_set(2, rows);
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_splice(&t, &buf, 3, 1, one_line("x3"), 1, E_BUFFER_STEP_COVERED);
+ two = malloc(2 * sizeof(STRING));
+ two[0] = line_of(&buf, "n1a");
+ two[1] = line_of(&buf, "n1b");
+ e_buffer_txn_splice(&t, &buf, 1, 0, two, 2, E_BUFFER_STEP_COVERED);
+ e_buffer_txn_splice(&t, &buf, 7, 1, one_line("x5"), 1, E_BUFFER_STEP_COVERED);
+ n = view_texts(&t, texts, got, VIEW_ROWS);
+ chk("28 the view has the lines the items leave", n, 10);
+ chk_str("28 an inserted line", texts[1], "n1a");
+ chk("28 ... has no breakpoint", got[1], 0);
+ chk_str("28 a line below it, moved down", texts[4], "L2");
+ chk("28 ... with its breakpoint", got[4], 1);
+ chk_str("28 a changed line", texts[5], "x3");
+ chk_str("28 a changed line over a breakpoint", texts[7], "x5");
+ chk("28 ... keeps it", got[7], 1);
+ chk("28 a row past the end is refused", e_buffer_txn_line(&t, &buf, 10, &l, &row), E_BUFFER_RANGE);
+ chk_str("28 nothing is made yet", text_of(), "L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\n");
+ chk("28 the change is made", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("28 as the view said", view_matches_buffer(texts, got, n), 1);
+ fixture_free();
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ row = 4;
+ brp_set(1, &row);
+ e_buffer_delete_lines(&buf, 4, 1, E_BUFFER_STEP_NEW);
+ rec = buf.ud;
+ e_buffer_txn_begin(&t);
+ chk("28 a replay item", e_buffer_txn_replay_lines(&t, &buf, rec), E_BUFFER_OK);
+ n = view_texts(&t, texts, got, VIEW_ROWS);
+ chk_str("28 the view reads the record's line", texts[4], "L4");
+ chk("28 ... with the breakpoint it parked", got[4], 1);
+ e_buffer_txn_abort(&t);
+ chk("28 an abort leaves the record its line", rec->n_old == 1 && rec->old != NULL, 1);
+ chk_str("28 ... and the text as it was", text_of(), "L0\nL1\nL2\nL3\nL5\nL6\nL7\n");
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_replay_lines(&t, &buf, rec);
+ chk("28 a replay item commits", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("28 as the view said", view_matches_buffer(texts, got, n), 1);
+ chk("28 its inverse is on the list", buf.ud != rec && buf.ud->type == E_UNDO_LINES &&
+     buf.ud->n_old == 0 && buf.ud->n_new == 1, 1);
+ fixture_free();
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_move_lines(&t, &buf, 1, 1, &buf, 4);
+ chk("28 the view does not read through a move",
+     e_buffer_txn_line(&t, &buf, 5, &l, &row), E_BUFFER_RANGE);
+ chk("28 ... and says so", move_view_traced, 1);
+ e_buffer_txn_abort(&t);
+ fixture_free();
+}
+
+/* Splices held in a transaction itself, and the ones past them that take
+   memory: one each for the first growth, then one each item. */
+#define GROW_ITEMS        (E_BUFFER_TXN_SPLICES + 8)
+#define GROW_ALLOCATIONS  (GROW_ITEMS + 1)
+
+/* A change of more splices than a transaction holds inline (a format's
+   Undo has one per hunk) grows, and is still whole or not at all. */
+static void case_a_transaction_grows_past_its_inline_slots(void)
+{
+ STRING *lines[GROW_ITEMS];
+ char name[16], want[GROW_ITEMS * 8 + 64];
+ WpeBufferTxn t;
+ int n, i, r, bad = 0, refused = 0, whole_from = 0, inline_held = 0;
+
+ for (n = 1; n <= GROW_ALLOCATIONS + 1; n++) {
+  fixture(GROW_ITEMS + 2, E_BUFFER_HISTORY_FULL);
+  for (i = 0; i < GROW_ITEMS; i++) {
+   snprintf(name, sizeof name, "X%d", i);
+   lines[i] = one_line(name);
+  }
+  e_buffer_test_fail_allocs(n);
+  e_buffer_txn_begin(&t);
+  for (i = 0; i < GROW_ITEMS; i++) {
+   e_buffer_txn_splice(&t, &buf, i, 1, lines[i], 1, E_BUFFER_STEP_COVERED);
+   if (i == E_BUFFER_TXN_SPLICES - 1 && t.sp == t.sp_inline)
+    inline_held++;
+  }
+  r = e_buffer_txn_commit(&t);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   if (whole_from == 0)
+    whole_from = n;
+   want[0] = '\0';
+   for (i = 0; i < GROW_ITEMS; i++)
+    snprintf(want + strlen(want), sizeof want - strlen(want), "X%d\n", i);
+   snprintf(want + strlen(want), sizeof want - strlen(want), "L%d\nL%d\n", GROW_ITEMS,
+            GROW_ITEMS + 1);
+   if (strcmp(text_of(), want) != 0)
+    bad++;
+  } else {
+   refused++;
+   if (buf.bf[0].s[0] != 'L' || buf.bf[GROW_ITEMS - 1].s[0] != 'L' || moved_calls != 0)
+    bad++;
+  }
+  chk("29 the transaction is back on its inline slots", t.sp == t.sp_inline, 1);
+  fixture_free();
+ }
+ chk("29 a grown change is whole or changes nothing", bad, 0);
+ chk("29 every cut before the last allocation refuses it", refused, GROW_ALLOCATIONS);
+ chk("29 the change takes this many allocations", whole_from - 1, GROW_ALLOCATIONS);
+ chk("29 the inline slots hold a block move's splices without memory",
+     inline_held, GROW_ALLOCATIONS + 1);
+}
+
+/* The pieces of a shell, all the owner's: the buffer, its window, its
+   screen, its margin, its table and its one line. */
+#define SHELL_ALLOCATIONS 6
+
+/* A shell is made of the owner's memory, so a test that starves the owner
+   reaches it, and a record's text is too. */
+static void case_a_shell_is_an_owner_allocation(void)
+{
+ BUFFER *shell = NULL;
+ Undo *rec;
+ int n;
+
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ for (n = 1; n <= SHELL_ALLOCATIONS + 1; n++) {
+  e_buffer_test_fail_allocs(n);
+  shell = e_buffer_shell_new(&buf, WIDTH);
+  e_buffer_test_fail_allocs(0);
+  if (shell != NULL)
+   break;
+ }
+ chk("30 a shell takes this many allocations", n - 1, SHELL_ALLOCATIONS);
+ chk("30 it is one", shell != NULL && e_buffer_is_shell(shell), 1);
+ chk("30 the window's buffer is not", e_buffer_is_shell(&buf), 0);
+ if (shell != NULL) {
+  chk("30 one empty line", shell->mxlines == 1 && shell->bf[0].len == 0, 1);
+  chk("30 as wide as asked", shell->mx.x, WIDTH);
+  chk("30 a margin of its own, empty", shell->f->s->brp != NULL && shell->f->s->brp[0] == 0, 1);
+  chk("30 no file name: no debugger hears of it", shell->f->datnam == NULL, 1);
+  chk("30 no editor window", shell->f->ed == NULL, 1);
+  chk("30 nothing refused yet", shell->refusals, 0);
+  e_buffer_shell_free(shell);
+ }
+ rec = e_buffer_record_new('r');
+ e_buffer_test_fail_allocs(1);
+ chk("30 a record's text is the owner's memory",
+     e_buffer_record_text(rec, (const unsigned char *) "ab", 2), E_BUFFER_NOMEM);
+ e_buffer_test_fail_allocs(0);
+ chk("30 ... and copied when there is memory",
+     e_buffer_record_text(rec, (const unsigned char *) "ab", 2) == E_BUFFER_OK &&
+     memcmp(rec->u.pt, "ab", 2) == 0, 1);
+ e_buffer_record_free(rec);
+ fixture_free();
+}
+
+/* A change refused inside a shell is counted there and said nowhere: the
+   step it belongs to is refused whole and says so once. */
+static void case_a_shell_counts_its_refusals(void)
+{
+ BUFFER *shell;
+ STRING l;
+ int zero = 0;
+ Undo rec;
+
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ shell = e_buffer_shell_new(&buf, WIDTH);
+ l = line_of(shell, "s");
+ e_buffer_test_fail_allocs(1);
+ chk("31 a splice refused in a shell",
+     e_buffer_splice(shell, 0, 0, &l, 1, &zero, 1, E_BUFFER_STEP_COVERED), E_BUFFER_NOMEM);
+ e_buffer_test_fail_allocs(0);
+ free(l.s);
+ chk("31 counts there", shell->refusals, 1);
+ memset(&rec, 0, sizeof rec);
+ rec.type = 'a';
+ stub_refuses = 1;
+ wpe_buffer_replay_on_shell(shell, shell->f->s, &rec, 0);
+ stub_refuses = 0;
+ chk("31 a primitive refused on a shell counts there", shell->refusals, 2);
+ chk("31 and is not said", nomem_calls, 0);
+ e_buffer_shell_refused(&buf);
+ chk("31 the window's buffer counts nothing", buf.refusals, 0);
+ e_buffer_shell_free(shell);
+ fixture_free();
+}
+
+/* The Undo of a typed line break at the end of L3 as the owner's replay
+   will build it: rows 3 and 4 are the span (L3 and the line that joins it),
+   L2 and L5 its guards. */
+#define JOIN_Y0       3
+#define JOIN_SPAN     2
+#define JOIN_GUARD    1
+#define JOIN_BEFORE   "L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\n"
+#define JOIN_AFTER    "L0\nL1\nL2\nL3\nL5\nL6\nL7\n"
+
+/* The rows of the shell's span that carry a breakpoint, relative to the
+   span: what the rewrite item takes as brk[]. */
+static int shell_span_rows(BUFFER *shell, int g_top, int n_ins, int *out)
+{
+ int i, rel, n = 0;
+
+ for (i = 1; i <= shell->f->s->brp[0]; i++) {
+  rel = shell->f->s->brp[i] - g_top;
+  if (rel >= 0 && rel < n_ins && n < MAX_ROWS)
+   out[n++] = rel;
+ }
+ return(n);
+}
+
+/* A shell over the join's span and guards, the primitive played on it in a
+   step of its own, one rewrite item, the commit.  Return: what the change
+   returned. */
+static int a_join_replayed_on_a_shell(const Undo *rec)
+{
+ WpeBufferTxn t;
+ BUFFER *shell;
+ int rows[MAX_ROWS], nrows, top = JOIN_Y0 - JOIN_GUARD, n_ins, r;
+
+ e_buffer_txn_begin(&t);
+ if ((shell = e_buffer_shell_new(&buf, buf.mx.x)) == NULL)
+  return(E_BUFFER_NOMEM);
+ if ((r = e_buffer_shell_fill(shell, &t, &buf, top, JOIN_SPAN + 2 * JOIN_GUARD)) != E_BUFFER_OK) {
+  e_buffer_shell_free(shell);
+  return(r);
+ }
+ shell->b = pnt(rec->b.x, rec->b.y - top);
+ e_buffer_step_begin(shell);
+ wpe_buffer_replay_on_shell(shell, shell->f->s, rec, top);
+ e_buffer_step_end(shell);
+ if (shell->refusals > 0) {
+  e_buffer_shell_free(shell);
+  return(E_BUFFER_NOMEM);
+ }
+ n_ins = shell->mxlines - 2 * JOIN_GUARD;
+ nrows = shell_span_rows(shell, JOIN_GUARD, n_ins, rows);
+ r = e_buffer_txn_rewrite(&t, &buf, JOIN_Y0, JOIN_SPAN, shell, JOIN_GUARD, JOIN_GUARD, rows,
+                          nrows);
+ if (r != E_BUFFER_OK) {
+  e_buffer_txn_abort(&t);
+  return(r);
+ }
+ return(e_buffer_txn_commit(&t));
+}
+
+/* The 'a' record of a line break typed at the end of L3. */
+static Undo a_line_break_record(void)
+{
+ Undo rec;
+
+ memset(&rec, 0, sizeof rec);
+ rec.type = 'a';
+ rec.b = pnt(2, JOIN_Y0);
+ rec.a.x = 1;
+ return(rec);
+}
+
+/* What the owner of a join takes: the shell (6), the fill (the lines and
+   rows arrays, four lines, the splice's added rows and room on the shell's
+   margin: 8), the primitive on the shell (the 'r' inverse and its text,
+   the deletion's removed rows, the pocket's room: 4), the rewrite item (its
+   rows, removed, added: 3) and the room on the window's margin (1). */
+#define JOIN_ALLOCATIONS 22
+
+static int join_is_whole(void)
+{
+ Undo *u = buf.ud;
+
+ return(strcmp(text_of(), JOIN_AFTER) == 0 && scr.brp[0] == 2 && brp_has(3) && brp_has(4) &&
+        u != NULL && u->next == NULL && u->type == 'r' && u->b.x == 2 && u->b.y == JOIN_Y0 &&
+        (u->flags & E_UNDO_MORE) == 0 && u->nbrk == 1 && u->brk[0] == 1 &&
+        ((char *) u->u.pt)[0] == '\n' && buf.rd == NULL && buf.b.x == 2 && buf.b.y == JOIN_Y0 &&
+        scr.mark_begin.x == 1 && scr.mark_begin.y == 5 && moved_calls == 1 &&
+        moved_del == JOIN_SPAN && moved_ins == 1 && moved_nremoved == 0 && moved_nadded == 0);
+}
+
+static int join_changed_nothing(void)
+{
+ return(strcmp(text_of(), JOIN_BEFORE) == 0 && scr.brp[0] == 3 && brp_has(3) && brp_has(4) &&
+        brp_has(5) && buf.ud == NULL && buf.rd == NULL && buf.b.x == 0 && buf.b.y == 7 &&
+        scr.mark_begin.x == 1 && scr.mark_begin.y == 6 && moved_calls == 0 && win.save == 0);
+}
+
+static void join_fixture(void)
+{
+ int rows[3] = {3, 4, 5};
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ brp_set(3, rows);
+ scr.mark_begin = pnt(1, 6);
+ buf.b = pnt(0, 7);
+}
+
+/* A rewrite item built by hand as the owner's replay will build it, with
+   memory refused at each allocation in turn: the join is made whole, its
+   inverse on the list with the parked breakpoint, or nothing changed. */
+static void case_a_rewrite_item_is_whole_or_nothing(void)
+{
+ Undo rec = a_line_break_record();
+ int n, r, bad = 0, refused = 0, whole_from = 0;
+
+ for (n = 1; n <= JOIN_ALLOCATIONS + 1; n++) {
+  join_fixture();
+  e_buffer_test_fail_allocs(n);
+  r = a_join_replayed_on_a_shell(&rec);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   if (whole_from == 0)
+    whole_from = n;
+   if (!join_is_whole())
+    bad++;
+  } else {
+   refused++;
+   if (r != E_BUFFER_NOMEM || !join_changed_nothing())
+    bad++;
+  }
+  fixture_free();
+ }
+ chk("32 a rewrite is whole or changes nothing", bad, 0);
+ chk("32 every cut before the last allocation refuses it", refused, JOIN_ALLOCATIONS);
+ chk("32 the join takes this many allocations", whole_from - 1, JOIN_ALLOCATIONS);
+
+ join_fixture();
+ stub_overruns = 1;
+ r = a_join_replayed_on_a_shell(&rec);
+ stub_overruns = 0;
+ chk("32 a replay that reached a guard is refused", r, E_BUFFER_RANGE);
+ chk("32 ... traced", overrun_traced, 1);
+ chk("32 ... and changes nothing", join_changed_nothing(), 1);
+ fixture_free();
+}
+
+/* The rows a rewrite tells the debugger of: a row of a changed line that
+   loses its breakpoint is removed, a row that gains one is added, and a
+   line split at column 0 that took its breakpoint down is both. */
+static void case_a_rewrite_reports_rows_removed_and_added(void)
+{
+ WpeBufferTxn t;
+ BUFFER *shell;
+ int row = 3, one = 1;
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ brp_set(1, &row);
+ e_buffer_txn_begin(&t);
+ shell = e_buffer_shell_new(&buf, WIDTH);
+ e_buffer_shell_fill(shell, &t, &buf, 2, 4);
+ chk("33 the fill copies the rows", shell->f->s->brp[0] == 1 && shell->f->s->brp[1] == 1, 1);
+ e_buffer_txn_rewrite(&t, &buf, 3, 2, shell, 1, 1, &one, 1);
+ chk("33 a rewrite moving a row commits", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("33 the row moved", scr.brp[0] == 1 && brp_has(4), 1);
+ chk("33 its old row is removed", moved_nremoved == 1 && moved_removed[0] == 3, 1);
+ chk("33 its new row is added", moved_nadded == 1 && moved_added[0] == 4, 1);
+ chk_str("33 the text is the shell's", text_of(), "L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\n");
+ fixture_free();
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ brp_set(1, &row);
+ e_buffer_txn_begin(&t);
+ shell = e_buffer_shell_new(&buf, WIDTH);
+ e_buffer_shell_fill(shell, &t, &buf, 2, 3);
+ e_buffer_insert_blank(shell, 1, E_BUFFER_STEP_COVERED);
+ e_buffer_txn_rewrite(&t, &buf, 3, 1, shell, 1, 1, &one, 1);
+ hooks_reset();
+ chk("33 a split at column 0 commits", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk_str("33 an empty line above", text_of(), "L0\nL1\nL2\n\nL3\nL4\nL5\nL6\nL7\n");
+ chk("33 the breakpoint went down with its line", scr.brp[0] == 1 && brp_has(4), 1);
+ chk("33 removed at its old row", moved_nremoved == 1 && moved_removed[0] == 3, 1);
+ chk("33 added at the new one", moved_nadded == 1 && moved_added[0] == 4, 1);
+ chk("33 the debugger hears one line in, one out", moved_del * 10 + moved_ins, 12);
+ fixture_free();
+}
+
+/* The replay of an 'r' record whose text lands on the last row of a file
+   when that row is full and ends soft (what Ctrl-Y on the hard row under a
+   wrapped one leaves).  e_ins_nchar sends the overflow of a soft row down
+   into the row below unless the row is the last (we_edit.c: `ya ==
+   b->mxlines`, which a row of the buffer never is), so it reads bf[mxlines],
+   past the lines.  This case reports what the owner leaves there; the
+   primitive's test is the editor's. */
+static void case_a_char_replay_on_a_full_soft_last_row(void)
+{
+ WpeBufferTxn t;
+ BUFFER *shell;
+ int last, reaches;
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ memset(buf.bf[6].s, 'x', WIDTH - 1);
+ buf.bf[6].s[WIDTH - 1] = '\0';
+ buf.bf[6].len = buf.bf[6].nrc = WIDTH - 1;
+ e_buffer_delete_lines(&buf, 7, 1, E_BUFFER_STEP_NEW);
+ last = buf.mxlines - 1;
+ chk("34 the last row ends soft", buf.bf[last].s[buf.bf[last].len], '\0');
+ chk("34 ... and is full", buf.bf[last].len + 1 >= buf.mx.x - 1, 1);
+ e_buffer_txn_begin(&t);
+ shell = e_buffer_shell_new(&buf, WIDTH);
+ chk("34 a shell over the span to the last row, a guard above",
+     e_buffer_shell_fill(shell, &t, &buf, last - 1, 2), E_BUFFER_OK);
+ reaches = (shell->bf[shell->mxlines - 1].s[shell->bf[shell->mxlines - 1].len] == '\0' &&
+            shell->mxlines < shell->mx.y);
+ printf("NOTE 34: an 'r' replay on the full soft last row reaches bf[mxlines] "
+        "(the row past the last): %s\n", reaches ? "yes" : "no");
+ chk("34 the shell's last row ends soft too, nothing below it", reaches, 1);
+ e_buffer_shell_free(shell);
+ fixture_free();
+}
+
+/* Undo of a join's record of kind 'r' at (@x, @y): the stub splits the line
+   there again and records the 'a' that joins it. */
+static Undo a_join_record(int x, int y)
+{
+ Undo rec;
+
+ memset(&rec, 0, sizeof rec);
+ rec.type = 'r';
+ rec.b = pnt(x, y);
+ rec.a.x = 1;
+ return(rec);
+}
+
+/* One record replayed on a shell over rows [@y, @y + @n_del) of the
+   fixture with @g_top and @g_bot guard rows, added to @t as one rewrite
+   item, as the owner's replay will do it.  Return: what adding it
+   returned; on a refusal the shell is gone and @t is left to its caller. */
+static int a_record_replayed_into(WpeBufferTxn *t, const Undo *rec, int y, int n_del,
+                                  int g_top, int g_bot)
+{
+ BUFFER *shell;
+ int rows[MAX_ROWS], nrows, top = y - g_top, r;
+
+ if ((shell = e_buffer_shell_new(&buf, buf.mx.x)) == NULL)
+  return(E_BUFFER_NOMEM);
+ if ((r = e_buffer_shell_fill(shell, t, &buf, top, n_del + g_top + g_bot)) != E_BUFFER_OK) {
+  e_buffer_shell_free(shell);
+  return(r);
+ }
+ shell->b = pnt(rec->b.x, rec->b.y - top);
+ e_buffer_step_begin(shell);
+ wpe_buffer_replay_on_shell(shell, shell->f->s, rec, top);
+ e_buffer_step_end(shell);
+ if (shell->refusals > 0) {
+  e_buffer_shell_free(shell);
+  return(E_BUFFER_NOMEM);
+ }
+ nrows = shell_span_rows(shell, g_top, shell->mxlines - g_top - g_bot, rows);
+ return(e_buffer_txn_rewrite(t, &buf, y, n_del, shell, g_top, g_bot, rows, nrows));
+}
+
+/* The most allocations the whole-or-nothing loops below try. */
+#define SWEEP_LIMIT 80
+
+/* The undo of a join on the file's last row: a shell with a guard above
+   and none below, the line split again with its breakpoint on the head. */
+#define LAST_BEFORE "L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\n"
+#define LAST_AFTER  "L0\nL1\nL2\nL3\nL4\nL5\nL6\nL\n7\n"
+
+static int last_row_changed_nothing(void)
+{
+ return(strcmp(text_of(), LAST_BEFORE) == 0 && scr.brp[0] == 1 && brp_has(7) &&
+        buf.ud == NULL && buf.rd == NULL && moved_calls == 0 && buf.b.x == 0 && buf.b.y == 2);
+}
+
+static int last_row_is_whole(void)
+{
+ Undo *u = buf.ud;
+
+ return(strcmp(text_of(), LAST_AFTER) == 0 && scr.brp[0] == 1 && brp_has(7) &&
+        u != NULL && u->next == NULL && u->type == 'a' && u->b.x == 1 && u->b.y == 7 &&
+        buf.rd == NULL && moved_calls == 1 && moved_del == 1 && moved_ins == 2 &&
+        moved_nremoved == 0 && moved_nadded == 0);
+}
+
+static void case_a_rewrite_on_the_last_row(void)
+{
+ Undo rec = a_join_record(1, 7);
+ WpeBufferTxn t;
+ int n, r, row = 7, bad = 0, whole_from = 0;
+
+ for (n = 1; n <= SWEEP_LIMIT && whole_from == 0; n++) {
+  fixture(8, E_BUFFER_HISTORY_FULL);
+  brp_set(1, &row);
+  buf.b = pnt(0, 2);
+  e_buffer_test_fail_allocs(n);
+  e_buffer_txn_begin(&t);
+  r = a_record_replayed_into(&t, &rec, 7, 1, 1, 0);
+  if (r == E_BUFFER_OK)
+   r = e_buffer_txn_commit(&t);
+  else
+   e_buffer_txn_abort(&t);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   whole_from = n;
+   if (!last_row_is_whole())
+    bad++;
+  } else if (r != E_BUFFER_NOMEM || !last_row_changed_nothing())
+   bad++;
+  fixture_free();
+ }
+ chk("35 a rewrite on the last row is whole or changes nothing", bad, 0);
+ chk("35 ... and is made once memory suffices", whole_from > 1, 1);
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ brp_set(1, &row);
+ e_buffer_txn_begin(&t);
+ rec = a_join_record(1, 7);
+ chk("35 a guard below the last row is refused",
+     a_record_replayed_into(&t, &rec, 7, 1, 1, 1), E_BUFFER_RANGE);
+ e_buffer_txn_abort(&t);
+ chk("35 ... and changes nothing", strcmp(text_of(), LAST_BEFORE) == 0 && buf.ud == NULL, 1);
+ fixture_free();
+}
+
+/* A shell of one row holding a line just like the one a fresh shell starts
+   with: the fill must not take the two for the same and drop the row's
+   breakpoint. */
+static void case_a_shell_of_one_row_keeps_its_breakpoint(void)
+{
+ WpeBufferTxn t;
+ BUFFER *shell;
+ int row = 1, zero = 0;
+
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ free(buf.bf[1].s);
+ e_buffer_line_new(&buf, &buf.bf[1]);
+ brp_set(1, &row);
+ e_buffer_txn_begin(&t);
+ shell = e_buffer_shell_new(&buf, buf.mx.x);
+ chk("36 a shell of one row is filled", e_buffer_shell_fill(shell, &t, &buf, 1, 1), E_BUFFER_OK);
+ chk("36 ... with the row's breakpoint",
+     shell->mxlines == 1 && shell->f->s->brp[0] == 1 && shell->f->s->brp[1] == 0, 1);
+ chk("36 the rewrite of it is taken",
+     e_buffer_txn_rewrite(&t, &buf, 1, 1, shell, 0, 0, &zero, 1), E_BUFFER_OK);
+ chk("36 ... and made", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("36 the breakpoint is where it was", scr.brp[0] == 1 && brp_has(1), 1);
+ chk("36 the debugger hears of no row", moved_nremoved + moved_nadded, 0);
+ chk("36 three lines still", buf.mxlines, 3);
+ fixture_free();
+}
+
+/* Two records of one step, each on its shell: the second reads what the
+   first leaves (the join's line, split again), and the step is made whole
+   or not at all. */
+#define TWO_BEFORE JOIN_BEFORE
+#define TWO_AFTER  "L0\nL1\nL2\nL\n3\nL5\nL6\nL7\n"
+
+static int two_rewrites_changed_nothing(void)
+{
+ return(strcmp(text_of(), TWO_BEFORE) == 0 && scr.brp[0] == 3 && brp_has(3) && brp_has(4) &&
+        brp_has(5) && buf.ud == NULL && buf.rd == NULL && moved_calls == 0);
+}
+
+static int two_rewrites_are_whole(void)
+{
+ Undo *u = buf.ud;
+
+ return(strcmp(text_of(), TWO_AFTER) == 0 && scr.brp[0] == 2 && brp_has(3) && brp_has(5) &&
+        u != NULL && u->type == 'a' && u->b.x == 1 && u->b.y == 3 && u->next != NULL &&
+        u->next->type == 'r' && u->next->b.y == JOIN_Y0 && u->next->nbrk == 1 &&
+        u->next->brk[0] == 1 && u->next->next == NULL && buf.rd == NULL && moved_calls == 2);
+}
+
+/* The two items; the view is read before the commit.  Return: the commit's
+   result, or the first refusal (the change then aborted). */
+static int two_rewrites(char texts[][WIDTH + 2], int *rows, int *n)
+{
+ Undo join = a_line_break_record(), split = a_join_record(1, JOIN_Y0);
+ WpeBufferTxn t;
+ int r;
+
+ e_buffer_txn_begin(&t);
+ r = a_record_replayed_into(&t, &join, JOIN_Y0, JOIN_SPAN, JOIN_GUARD, JOIN_GUARD);
+ if (r == E_BUFFER_OK)
+  r = a_record_replayed_into(&t, &split, JOIN_Y0, 1, JOIN_GUARD, JOIN_GUARD);
+ if (r != E_BUFFER_OK) {
+  e_buffer_txn_abort(&t);
+  return(r);
+ }
+ *n = view_texts(&t, texts, rows, VIEW_ROWS);
+ return(e_buffer_txn_commit(&t));
+}
+
+static void case_two_rewrites_in_one_transaction(void)
+{
+ char texts[VIEW_ROWS][WIDTH + 2];
+ int got[VIEW_ROWS], n = 0, k, r, bad = 0, whole_from = 0, view_ok = 0;
+
+ for (k = 1; k <= SWEEP_LIMIT && whole_from == 0; k++) {
+  join_fixture();
+  e_buffer_test_fail_allocs(k);
+  r = two_rewrites(texts, got, &n);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   whole_from = k;
+   if (!two_rewrites_are_whole())
+    bad++;
+   view_ok = view_matches_buffer(texts, got, n);
+  } else if (r != E_BUFFER_NOMEM || !two_rewrites_changed_nothing())
+   bad++;
+  fixture_free();
+ }
+ chk("37 two rewrites are whole or change nothing", bad, 0);
+ chk("37 ... and are made once memory suffices", whole_from > 1, 1);
+ chk("37 the view read through both before the commit", view_ok, 1);
+}
+
+/* Two items over the same row: the view gives the newer line, with the
+   breakpoint the row had before either. */
+static void case_the_view_reads_two_items_on_one_row(void)
+{
+ char texts[VIEW_ROWS][WIDTH + 2];
+ int row = 3, got[VIEW_ROWS], n;
+ WpeBufferTxn t;
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ brp_set(1, &row);
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_splice(&t, &buf, 3, 1, one_line("x3"), 1, E_BUFFER_STEP_COVERED);
+ e_buffer_txn_splice(&t, &buf, 3, 1, one_line("y3"), 1, E_BUFFER_STEP_COVERED);
+ n = view_texts(&t, texts, got, VIEW_ROWS);
+ chk_str("38 the newer line", texts[3], "y3");
+ chk("38 ... with the row's breakpoint", got[3], 1);
+ chk("38 the change is made", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("38 as the view said", view_matches_buffer(texts, got, n), 1);
+ fixture_free();
+}
+
 int main(void)
 {
  case_insert_above_a_mark();
@@ -1147,6 +1912,17 @@ int main(void)
  case_the_fault_hook_fires_once();
  case_lines_from_parts();
  case_a_refused_move_changes_nothing();
+ case_the_view_reads_pending_lines();
+ case_a_transaction_grows_past_its_inline_slots();
+ case_a_shell_is_an_owner_allocation();
+ case_a_shell_counts_its_refusals();
+ case_a_rewrite_item_is_whole_or_nothing();
+ case_a_rewrite_reports_rows_removed_and_added();
+ case_a_char_replay_on_a_full_soft_last_row();
+ case_a_rewrite_on_the_last_row();
+ case_a_shell_of_one_row_keeps_its_breakpoint();
+ case_two_rewrites_in_one_transaction();
+ case_the_view_reads_two_items_on_one_row();
  if (fails) {
   printf("test_splice: %d failure(s)\n", fails);
   return(1);

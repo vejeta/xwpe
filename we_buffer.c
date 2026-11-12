@@ -397,8 +397,130 @@ Undo *e_buffer_record_new(int kind)
 }
 
 /**
- * e_buffer_shell_free - Free the private buffer a block delete keeps its
- * lines in.
+ * e_buffer_record_text - Keep in a character record the @n bytes it must
+ * put back.
+ * @rec: an 'r' or 's' record; @src: the bytes, read now.
+ *
+ * Undo of a deletion or a replacement types these bytes again.  The copy is
+ * the owner's memory, so a test that starves the owner reaches it too.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the record unchanged.
+ */
+int e_buffer_record_text(Undo *rec, const unsigned char *src, int n)
+{
+ unsigned char *copy;
+
+ if (n < 0)
+  n = 0;
+ if ((copy = buffer_malloc((size_t)n)) == NULL)
+  return(E_BUFFER_NOMEM);
+ if (n > 0)
+  memcpy(copy, src, (size_t)n);
+ rec->u.pt = copy;
+ return(E_BUFFER_OK);
+}
+
+/* The window and screen a shell has of its own; the buffer itself comes
+   from e_buffer_init.  Return: E_BUFFER_OK or E_BUFFER_NOMEM (nothing
+   kept). */
+static int buffer_shell_window(BUFFER *shell)
+{
+ FENSTER *fn = buffer_malloc(sizeof(FENSTER));
+ SCHIRM *sn;
+
+ if (fn == NULL)
+  return(E_BUFFER_NOMEM);
+ if ((sn = buffer_malloc(sizeof(SCHIRM))) == NULL)
+ {
+  free(fn);
+  return(E_BUFFER_NOMEM);
+ }
+ memset(fn, 0, sizeof(FENSTER));
+ memset(sn, 0, sizeof(SCHIRM));
+ fn->s = sn;
+ fn->b = shell;
+ fn->ed = NULL;
+ shell->f = fn;
+ return(E_BUFFER_OK);
+}
+
+/* Did e_buffer_init give the shell all it needs: its line and, with the
+   debugger, its margin? */
+static int buffer_shell_complete(BUFFER *shell)
+{
+ if (shell->mxlines != 1)
+  return(0);
+#ifdef DEBUGGER
+ if (shell->f->s->brp == NULL)
+  return(0);
+#endif
+ return(1);
+}
+
+/**
+ * e_buffer_shell_new - A private buffer like @like, @width bytes wide, with
+ * one empty line.
+ * @like: the buffer whose lines the shell holds for a while (its editor
+ * and colours); @width: the width of the shell's lines.
+ *
+ * A block delete moves the block's lines into a shell its Undo record
+ * keeps, so the breakpoints of those lines wait in it until Undo brings
+ * them back.  A character Undo replays its primitive on a shell holding
+ * copies of the rows it may touch: refused there for want of memory, the
+ * user's text was never touched.  Every piece is the owner's memory, so a
+ * test that starves the owner reaches it.
+ * Return: the shell, or NULL when memory ran out.
+ */
+BUFFER *e_buffer_shell_new(BUFFER *like, int width)
+{
+ BUFFER *shell = buffer_malloc(sizeof(BUFFER));
+
+ if (shell == NULL)
+  return(NULL);
+ memset(shell, 0, sizeof(BUFFER));
+ if (buffer_shell_window(shell) != E_BUFFER_OK)
+ {
+  free(shell);
+  return(NULL);
+ }
+ e_buffer_init(shell, like->cn, shell->f, width, E_BUFFER_HISTORY_FULL);
+ shell->shell = 1;
+ if (!buffer_shell_complete(shell))
+ {
+  e_buffer_shell_free(shell);
+  return(NULL);
+ }
+ shell->fb = like->fb;
+ shell->f->s->fb = like->fb;
+ return(shell);
+}
+
+/**
+ * e_buffer_is_shell - Is @b a shell the owner made?
+ *
+ * A refusal inside a shell is counted there, not said on the status row:
+ * the change it belongs to is refused whole and says so once.
+ */
+int e_buffer_is_shell(BUFFER *b)
+{
+ return(b != NULL && b->shell);
+}
+
+/**
+ * e_buffer_shell_refused - A change inside shell @b was refused for want of
+ * memory.
+ *
+ * The replay that ran on the shell is then refused whole, so the user's
+ * text, breakpoints and both Undo lists stay as they were.
+ */
+void e_buffer_shell_refused(BUFFER *b)
+{
+ if (e_buffer_is_shell(b))
+  b->refusals++;
+}
+
+/**
+ * e_buffer_shell_free - Free a shell: its lines, its window and screen, and
+ * whatever Undo records were pushed in it.
  * @shell: the buffer, with its window and screen.
  */
 void e_buffer_shell_free(BUFFER *shell)
@@ -407,6 +529,7 @@ void e_buffer_shell_free(BUFFER *shell)
 
  if (shell == NULL)
   return;
+ e_buffer_history_drop(shell);
  if (shell->f != NULL)
  {
   if (shell->f->s != NULL)
@@ -769,6 +892,69 @@ static void buffer_brp_move(BUFFER *b, int y, int n_del, int n_ins, int changed,
  }
 }
 
+/* How a splice moves the breakpoint margin. */
+#define BUFFER_ROWS_POSITIONAL 0   /* changed rows keep theirs: buffer_brp_move */
+#define BUFFER_ROWS_REWRITE    1   /* the span's rows are brk[] alone: buffer_brp_rewrite */
+
+/* Does brk[] (relative to the span) set row rel of a span of n_ins lines?
+   Only its first k entries are looked at. */
+static int buffer_brk_holds(const int *brk, int k, int rel, int n_ins)
+{
+ int i;
+
+ if (rel < 0 || rel >= n_ins)
+  return(0);
+ for (i = 0; i < k && brk != NULL; i++)
+  if (brk[i] == rel)
+   return(1);
+ return(0);
+}
+
+/* The margin after a rewrite: the span's new lines were made from copies,
+   so no row of the old span stays by position; the rows the new lines
+   carry, brk[] relative to y, arrive, and the rows below move.  For the
+   debugger, which drops [y+k, y+n_del) itself and moves the rows below
+   (k the lines kept in place), m->removed holds the rows in [y, y+k) that
+   lose their breakpoint and m->added the rows of the span that hold one
+   now and either lie past y+k or held none before. */
+static void buffer_brp_rewrite(BUFFER *b, int y, int n_del, int n_ins, const int *brk,
+                               int nbrk, BufferSpliceMem *m)
+{
+ int *brp = buffer_brp(b);
+ int i, k, row, kept = n_del < n_ins ? n_del : n_ins;
+
+ if (brp == NULL)
+  return;
+ for (i = 0; i < nbrk && brk != NULL; i++)
+ {
+  if (brk[i] < 0 || brk[i] >= n_ins || buffer_brk_holds(brk, i, brk[i], n_ins))
+   continue;
+  if (brk[i] >= kept || !brp_has(brp, y + brk[i]))
+   m->added[m->nadded++] = y + brk[i];
+ }
+ for (i = 1, k = 1; i <= brp[0]; i++)
+ {
+  row = brp[i];
+  if (row >= y && row < y + n_del)
+  {
+   if (row < y + kept && !buffer_brk_holds(brk, nbrk, row - y, n_ins))
+    m->removed[m->nremoved++] = row;
+   continue;
+  }
+  if (row >= y + n_del)
+   row += n_ins - n_del;
+  brp[k++] = row;
+ }
+ brp[0] = k - 1;
+ for (i = 0; i < nbrk && brk != NULL; i++)
+ {
+  row = y + brk[i];
+  if (brk[i] < 0 || brk[i] >= n_ins || brp_has(brp, row))
+   continue;
+  brp[++brp[0]] = row;
+ }
+}
+
 static const char *buffer_step_name(WpeBufferStep step)
 {
  if (step == E_BUFFER_STEP_NEW)
@@ -780,12 +966,12 @@ static const char *buffer_step_name(WpeBufferStep step)
 
 /* The second half of a splice, with its memory taken: it cannot fail, so a
    change made of several splices whose memory was all taken first is made
-   whole or not at all.  Arguments as buffer_splice; m: what
-   buffer_splice_prepare took, used up and freed here. */
+   whole or not at all.  Arguments as buffer_splice; rows: BUFFER_ROWS_*;
+   m: what buffer_splice_prepare took, used up and freed here. */
 static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
                                  const int *brk, int nbrk, WpeBufferStep step,
                                  int no_changed, STRING *out, int *brk_out, int *nbrk_out,
-                                 Undo *pocket, BufferSpliceMem *m)
+                                 Undo *pocket, int rows, BufferSpliceMem *m)
 {
  int changed, old_mxlines, i, delta;
 
@@ -812,7 +998,10 @@ static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int
  }
  if (out != NULL && nbrk_out != NULL)
   *nbrk_out = 0;
- buffer_brp_move(b, y, n_del, n_ins, changed, brk, nbrk, m, pocket, brk_out, nbrk_out);
+ if (rows == BUFFER_ROWS_REWRITE)
+  buffer_brp_rewrite(b, y, n_del, n_ins, brk, nbrk, m);
+ else
+  buffer_brp_move(b, y, n_del, n_ins, changed, brk, nbrk, m, pocket, brk_out, nbrk_out);
  for (i = 0; i < n_del; i++)
  {
   if (m->rec != NULL)
@@ -883,9 +1072,12 @@ static int buffer_splice(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
  records = buffer_splice_records(b, step);
  pocket = buffer_splice_pocket(b, records);
  if (buffer_splice_prepare(b, y, n_del, n_ins, nbrk, records, out != NULL, pocket, &m) != E_BUFFER_OK)
+ {
+  e_buffer_shell_refused(b);
   return(E_BUFFER_NOMEM);
+ }
  buffer_splice_commit(b, y, n_del, lines, n_ins, brk, nbrk, step, no_changed, out,
-                      brk_out, nbrk_out, pocket, &m);
+                      brk_out, nbrk_out, pocket, BUFFER_ROWS_POSITIONAL, &m);
  return(E_BUFFER_OK);
 }
 
@@ -1270,7 +1462,43 @@ STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst)
 void e_buffer_txn_begin(WpeBufferTxn *t)
 {
  memset(t, 0, sizeof(*t));
+ t->sp = t->sp_inline;
+ t->cap = E_BUFFER_TXN_SPLICES;
  t->refused = E_BUFFER_OK;
+}
+
+/* The change is over (made or given back): slots it took memory for go
+   back, and the inline ones serve again. */
+static void buffer_txn_release(WpeBufferTxn *t)
+{
+ if (t->sp != t->sp_inline)
+  free(t->sp);
+ t->sp = t->sp_inline;
+ t->cap = E_BUFFER_TXN_SPLICES;
+ t->nsp = 0;
+}
+
+/* Room for one more slot: past the inline ones the slots move to memory of
+   their own, twice as many each time.  Return: E_BUFFER_OK or
+   E_BUFFER_NOMEM (the slots as they were). */
+static int buffer_txn_grow(WpeBufferTxn *t)
+{
+ WpeBufferTxnSplice *more;
+ int cap = t->cap * 2;
+
+ if (t->nsp < t->cap)
+  return(E_BUFFER_OK);
+ if (t->sp == t->sp_inline)
+ {
+  if ((more = buffer_malloc((size_t)cap * sizeof(WpeBufferTxnSplice))) == NULL)
+   return(E_BUFFER_NOMEM);
+  memcpy(more, t->sp_inline, (size_t)t->nsp * sizeof(WpeBufferTxnSplice));
+ }
+ else if ((more = buffer_realloc(t->sp, (size_t)cap * sizeof(WpeBufferTxnSplice))) == NULL)
+  return(E_BUFFER_NOMEM);
+ t->sp = more;
+ t->cap = cap;
+ return(E_BUFFER_OK);
 }
 
 /* The first refusal is the one the change reports: later items are not
@@ -1302,17 +1530,12 @@ static WpeBufferTxnBuffer *buffer_txn_buffer(WpeBufferTxn *t, BUFFER *b)
  return(e);
 }
 
-/* Room for one more item, and the buffer it changes.  Return: the entry,
-   or NULL with the change refused. */
+/* The buffer one more item changes.  Return: the entry, or NULL with the
+   change refused. */
 static WpeBufferTxnBuffer *buffer_txn_room(WpeBufferTxn *t, BUFFER *b)
 {
  WpeBufferTxnBuffer *e;
 
- if (t->items >= E_BUFFER_TXN_MAX)
- {
-  buffer_txn_refuse(t, E_BUFFER_RANGE);
-  return(NULL);
- }
  e = buffer_txn_buffer(t, b);
  if (e == NULL)
   buffer_txn_refuse(t, E_BUFFER_RANGE);
@@ -1347,7 +1570,7 @@ static int buffer_txn_take(WpeBufferTxn *t, WpeBufferTxnBuffer *e, WpeBufferTxnS
  if (!sp->detach)
   records = buffer_splice_records(sp->b, sp->step);
  sp->pocket = NULL;
- if (!sp->detach)
+ if (!sp->detach && sp->kind != E_BUFFER_ITEM_REWRITE)
   sp->pocket = buffer_splice_pocket(sp->b, records);
  if (buffer_splice_take(sp->b, e->lines, sp->n_del, sp->n_ins, nbrk, rows, records,
                         sp->detach, &sp->m) != E_BUFFER_OK)
@@ -1366,12 +1589,17 @@ static int buffer_txn_take(WpeBufferTxn *t, WpeBufferTxnBuffer *e, WpeBufferTxnS
  return(E_BUFFER_OK);
 }
 
-/* The next free splice slot, set up for a splice of b at y. */
+/* The next free splice slot, set up for a splice of b at y.  It counts
+   only once buffer_txn_take prepared it.  Return: the slot, or NULL when
+   no memory was left for one more. */
 static WpeBufferTxnSplice *buffer_txn_slot(WpeBufferTxn *t, BUFFER *b, int y, int n_del,
                                            int n_ins, WpeBufferStep step)
 {
- WpeBufferTxnSplice *sp = &t->sp[t->nsp];
+ WpeBufferTxnSplice *sp;
 
+ if (buffer_txn_grow(t) != E_BUFFER_OK)
+  return(NULL);
+ sp = &t->sp[t->nsp];
  memset(sp, 0, sizeof(*sp));
  sp->b = b;
  sp->y = y;
@@ -1379,6 +1607,7 @@ static WpeBufferTxnSplice *buffer_txn_slot(WpeBufferTxn *t, BUFFER *b, int y, in
  sp->n_ins = n_ins;
  sp->step = step;
  sp->landed_from = BUFFER_TXN_NOT_LANDED;
+ sp->kind = E_BUFFER_ITEM_SPLICE;
  return(sp);
 }
 
@@ -1417,14 +1646,17 @@ int e_buffer_txn_splice(WpeBufferTxn *t, BUFFER *b, int y, int n_del, STRING *li
   free(lines);
   return(E_BUFFER_OK);
  }
- sp = buffer_txn_slot(t, b, y, n_del, n_ins, step);
+ if ((sp = buffer_txn_slot(t, b, y, n_del, n_ins, step)) == NULL)
+ {
+  e_buffer_lines_free(lines, n_ins);
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ }
  sp->lines = lines;
  if (buffer_txn_take(t, e, sp, 0) != E_BUFFER_OK)
  {
   e_buffer_lines_free(lines, n_ins);
   return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
  }
- t->items++;
  return(E_BUFFER_OK);
 }
 
@@ -1486,6 +1718,8 @@ static int buffer_txn_detach(WpeBufferTxn *t, WpeBufferTxnBuffer *e, BUFFER *fro
 {
  WpeBufferTxnSplice *sp = buffer_txn_slot(t, from, y, n, 0, E_BUFFER_STEP_COVERED);
 
+ if (sp == NULL)
+  return(E_BUFFER_NOMEM);
  sp->detach = 1;
  sp->out = buffer_array(n, sizeof(STRING));
  if (sp->out == NULL)
@@ -1511,6 +1745,8 @@ static int buffer_txn_land(WpeBufferTxn *t, WpeBufferTxnBuffer *e, BUFFER *to, i
 {
  WpeBufferTxnSplice *sp = buffer_txn_slot(t, to, y, 0, n, E_BUFFER_STEP_COVERED);
 
+ if (sp == NULL)
+  return(E_BUFFER_NOMEM);
  sp->landed_from = half;
  return(buffer_txn_take(t, e, sp, n));
 }
@@ -1563,7 +1799,567 @@ int e_buffer_txn_move_lines(WpeBufferTxn *t, BUFFER *from, int y_from, int n,
   buffer_txn_untake(t, ef);
   return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
  }
- t->items++;
+ return(E_BUFFER_OK);
+}
+
+/* ---- the items a step of Undo or Redo is made of ---- */
+
+/* Free what a prepared item holds that nobody adopted: its memory, the
+   lines it would have put in (unless they are a record's or a move's), and
+   a rewrite's shell and its copy of the rows. */
+static void buffer_txn_item_free(WpeBufferTxnSplice *sp)
+{
+ buffer_splice_mem_free(&sp->m);
+ free(sp->out);
+ free(sp->brk_out);
+ sp->out = NULL;
+ sp->brk_out = NULL;
+ if (sp->kind == E_BUFFER_ITEM_REWRITE)
+ {
+  e_buffer_shell_free(sp->shell);
+  sp->shell = NULL;
+  free((void *) sp->brk);
+  sp->brk = NULL;
+  return;
+ }
+ if (sp->lines_kept || sp->detach || sp->landed_from != BUFFER_TXN_NOT_LANDED)
+  return;
+ e_buffer_lines_free(sp->lines, sp->n_ins);
+}
+
+/* Is a slot one half of a move?  Its lines are known only once the detach
+   committed, so the view cannot see through it. */
+static int buffer_txn_is_move(const WpeBufferTxnSplice *sp)
+{
+ return(sp->detach || sp->landed_from != BUFFER_TXN_NOT_LANDED);
+}
+
+/* How many lines an item leaves in its span: the canonical empty line of a
+   buffer it empties counts as one. */
+static int buffer_txn_item_lines(const WpeBufferTxnSplice *sp)
+{
+ if (sp->m.need_canon)
+  return(1);
+ return(sp->n_ins);
+}
+
+/* How many rows at the top of an item's span are changed rows, which keep
+   the breakpoint the line there had: none for a rewrite (its rows are its
+   brk[] alone), an emptied buffer, or a replay of one. */
+static int buffer_txn_item_changed(const WpeBufferTxnSplice *sp)
+{
+ if (sp->kind == E_BUFFER_ITEM_REWRITE || sp->no_changed || sp->m.need_canon)
+  return(0);
+ if (sp->n_del < sp->n_ins)
+  return(sp->n_del);
+ return(sp->n_ins);
+}
+
+/* Line rel of an item's span once it commits. */
+static const STRING *buffer_txn_item_line(const WpeBufferTxnSplice *sp, int rel)
+{
+ if (sp->m.need_canon)
+  return(&sp->m.canon);
+ return(&sp->lines[rel]);
+}
+
+/* Does an item set a breakpoint row on line rel of its span? */
+static int buffer_txn_item_row(const WpeBufferTxnSplice *sp, int rel)
+{
+ if (sp->m.need_canon || buffer_brp(sp->b) == NULL)
+  return(0);
+ return(buffer_brk_holds(sp->brk, sp->nbrk, rel, sp->n_ins));
+}
+
+/* The line count of b as the items so far leave it. */
+static int buffer_txn_lines_now(WpeBufferTxn *t, BUFFER *b)
+{
+ int i;
+
+ for (i = 0; i < t->nbuf; i++)
+  if (t->buf[i].b == b)
+   return(t->buf[i].lines);
+ return(b->mxlines);
+}
+
+/* The line at row y of b once every item prepared so far commits, and
+   whether a breakpoint stands on it then.  Walks the items of b from the
+   newest down, each moving y to where the line stood before it; a changed
+   row keeps the breakpoint of the line below it in that walk.  Return:
+   E_BUFFER_OK, or E_BUFFER_RANGE for a row past the end or behind a move. */
+static int buffer_txn_view(WpeBufferTxn *t, BUFFER *b, int y, const STRING **line,
+                           int *has_row)
+{
+ const STRING *found = NULL;
+ WpeBufferTxnSplice *sp;
+ int i, rel, row = 0, *brp;
+
+ if (y < 0 || y >= buffer_txn_lines_now(t, b))
+  return(E_BUFFER_RANGE);
+ for (i = t->nsp - 1; i >= 0; i--)
+ {
+  sp = &t->sp[i];
+  if (sp->b != b || y < sp->y)
+   continue;
+  if (buffer_txn_is_move(sp))
+  {
+   wpe_buffer_trace("buffer txn view meets a move");
+   return(E_BUFFER_RANGE);
+  }
+  if (y >= sp->y + buffer_txn_item_lines(sp))
+  {
+   y += sp->n_del - buffer_txn_item_lines(sp);
+   continue;
+  }
+  rel = y - sp->y;
+  if (found == NULL)
+   found = buffer_txn_item_line(sp, rel);
+  if (buffer_txn_item_row(sp, rel))
+   row = 1;
+  if (rel >= buffer_txn_item_changed(sp))
+  {
+   *line = found;
+   *has_row = row;
+   return(E_BUFFER_OK);
+  }
+ }
+ if (y < 0 || y >= b->mxlines)
+  return(E_BUFFER_RANGE);
+ if (found == NULL)
+  found = &b->bf[y];
+ brp = buffer_brp(b);
+ if (brp != NULL && brp_has(brp, y))
+  row = 1;
+ *line = found;
+ *has_row = row;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_buffer_txn_line - The line at row @y of @b once the items of @t so far
+ * commit, and whether a breakpoint stands on it then.
+ * @line: receives the line, to be read at once: a later item's preparation
+ * may move the buffer's table; @has_row: receives 1 or 0.
+ *
+ * The second record of an Undo step (the join of an Enter with
+ * auto-indent) is replayed against what the first leaves, before anything
+ * is made, so the step is made whole or not at all.
+ * Return: E_BUFFER_OK, or E_BUFFER_RANGE for a row past the end or behind a
+ * block move's item.
+ */
+int e_buffer_txn_line(WpeBufferTxn *t, BUFFER *b, int y, const STRING **line, int *has_row)
+{
+ return(buffer_txn_view(t, b, y, line, has_row));
+}
+
+/**
+ * e_buffer_txn_replay_lines - Add the replay of line record @rec: the lines
+ * it keeps come back in place of the ones that stand there now.
+ * @t: the step's change; @b: the buffer; @rec: an E_UNDO_LINES record.
+ *
+ * Its inverse, for the other list, is taken now with the rest; the record's
+ * lines stay the record's until the commit, so a step refused for memory
+ * leaves the record whole for the next try.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM or E_BUFFER_RANGE.
+ */
+int e_buffer_txn_replay_lines(WpeBufferTxn *t, BUFFER *b, Undo *rec)
+{
+ WpeBufferTxnBuffer *e;
+ WpeBufferTxnSplice *sp;
+ int n_del = rec->n_new;
+
+ if (t->refused != E_BUFFER_OK || (e = buffer_txn_room(t, b)) == NULL)
+  return(t->refused);
+ if (rec->type != E_UNDO_LINES || !buffer_txn_in_range(e->lines, rec->span, rec->n_new,
+                                                        rec->n_old))
+  return(buffer_txn_refuse(t, E_BUFFER_RANGE));
+ if (n_del > e->lines - rec->span)
+  n_del = e->lines - rec->span;
+ if ((sp = buffer_txn_slot(t, b, rec->span, n_del, rec->n_old, E_BUFFER_STEP_REPLAY)) == NULL)
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ sp->kind = E_BUFFER_ITEM_REPLAY;
+ sp->rec = rec;
+ sp->lines = rec->old;
+ sp->lines_kept = 1;
+ sp->brk = rec->brk;
+ sp->nbrk = rec->nbrk;
+ sp->no_changed = (rec->flags & E_UNDO_EMPTIED) != 0;
+ if (buffer_txn_take(t, e, sp, rec->nbrk) != E_BUFFER_OK)
+  return(buffer_txn_refuse(t, E_BUFFER_NOMEM));
+ return(E_BUFFER_OK);
+}
+
+/* The bytes a copy of line l keeps: through its terminating zero, never
+   past a line of the buffer's width. */
+static size_t buffer_line_kept_bytes(BUFFER *b, const STRING *l)
+{
+ int n = l->nrc + 1;
+
+ if (n > b->mx.x + 1)
+  n = b->mx.x + 1;
+ if (n < 1)
+  n = 1;
+ return((size_t)n);
+}
+
+/* Do two lines hold the same bytes, through the terminating zero? */
+static int buffer_lines_same_bytes(BUFFER *b, const STRING *l, const STRING *c)
+{
+ if (l->len != c->len || l->nrc != c->nrc)
+  return(0);
+ return(memcmp(l->s, c->s, buffer_line_kept_bytes(b, l)) == 0);
+}
+
+/* Is a char record ('a' 'r' 's' 'p') one a shell's inverse may be? */
+static int buffer_record_is_char(int kind)
+{
+ return(kind == 'a' || kind == 'r' || kind == 's' || kind == 'p');
+}
+
+/* Did the replay on a shell record only char kinds?  Another kind would
+   replay against the user's buffer as something it is not. */
+static int buffer_shell_records_replayable(BUFFER *shell)
+{
+ Undo *rec;
+
+ for (rec = shell->ud; rec != NULL; rec = rec->next)
+  if (!buffer_record_is_char(rec->type))
+  {
+   wpe_buffer_trace("buffer shell recorded %c", rec->type);
+   return(0);
+  }
+ return(1);
+}
+
+/* Did the replay stay inside its span?  A shell holds one row above the
+   span and one below (when they exist) as guards: a primitive that touched
+   one went past the rows the span rule allows. */
+static int buffer_txn_guards_hold(WpeBufferTxn *t, BUFFER *b, int y, int n_del,
+                                  BUFFER *shell, int g_top, int g_bot)
+{
+ const STRING *l;
+ int row;
+
+ if (g_top && (buffer_txn_view(t, b, y - 1, &l, &row) != E_BUFFER_OK ||
+               !buffer_lines_same_bytes(shell, l, &shell->bf[0])))
+  return(0);
+ if (g_bot && (buffer_txn_view(t, b, y + n_del, &l, &row) != E_BUFFER_OK ||
+               !buffer_lines_same_bytes(shell, l, &shell->bf[shell->mxlines - 1])))
+  return(0);
+ return(1);
+}
+
+/* Can a shell's rows replace rows [y, y + n_del) of a buffer of `lines`
+   lines?  The shell must be as wide (its lines are adopted), its guards
+   must have rows to guard, and the replay must have stayed inside its
+   span and recorded only char kinds.  Return: E_BUFFER_OK or
+   E_BUFFER_RANGE, traced. */
+static int buffer_txn_rewrite_check(WpeBufferTxn *t, BUFFER *b, int lines, int y, int n_del,
+                                    BUFFER *shell, int g_top, int g_bot)
+{
+ if (shell == NULL || shell->mx.x != b->mx.x || g_top < 0 || g_top > 1 || g_bot < 0 ||
+     g_bot > 1 || shell->mxlines - g_top - g_bot < 0 || (g_top && y == 0) ||
+     (g_bot && y + n_del >= lines))
+ {
+  wpe_buffer_trace("buffer rewrite does not fit y=%d del=%d", y, n_del);
+  return(E_BUFFER_RANGE);
+ }
+ if (!buffer_txn_guards_hold(t, b, y, n_del, shell, g_top, g_bot))
+ {
+  wpe_buffer_trace("buffer replay span overrun");
+  return(E_BUFFER_RANGE);
+ }
+ if (!buffer_shell_records_replayable(shell))
+  return(E_BUFFER_RANGE);
+ return(E_BUFFER_OK);
+}
+
+/* The rows of a rewrite, the transaction's own copy.  Return: E_BUFFER_OK
+   (NULL for none) or E_BUFFER_NOMEM. */
+static int buffer_rows_copy(const int *brk, int nbrk, int **out)
+{
+ *out = NULL;
+ if (nbrk <= 0 || brk == NULL)
+  return(E_BUFFER_OK);
+ if ((*out = buffer_array(nbrk, sizeof(int))) == NULL)
+  return(E_BUFFER_NOMEM);
+ memcpy(*out, brk, (size_t)nbrk * sizeof(int));
+ return(E_BUFFER_OK);
+}
+
+/* Refuse a rewrite before its slot counted: the shell and the copy of its
+   rows go. */
+static int buffer_txn_rewrite_refused(WpeBufferTxn *t, BUFFER *shell, int *rows, int why)
+{
+ e_buffer_shell_free(shell);
+ free(rows);
+ return(buffer_txn_refuse(t, why));
+}
+
+/**
+ * e_buffer_txn_rewrite - Add a rewrite: rows [@y, @y + @n_del) of @b become
+ * the rows shell @shell holds between its guards.
+ * @shell: a shell filled from @b (e_buffer_shell_fill) with the span plus
+ * @g_top guard rows above and @g_bot below (0 or 1 each), on which a
+ * replay ran; taken by the transaction whatever this returns; @brk: the
+ * breakpoint rows the new lines carry, relative to @y; @nbrk: how many.
+ *
+ * The replay of a character record runs its primitive on a copy, so it
+ * joins and wraps exactly as typing does; only when every record of the
+ * step could be replayed that way does the user's text change, all at once,
+ * with the inverses the replay recorded going to the other list.  A replay
+ * that reached past its span (a guard changed) or recorded something other
+ * than a character change is refused.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM or E_BUFFER_RANGE.
+ */
+int e_buffer_txn_rewrite(WpeBufferTxn *t, BUFFER *b, int y, int n_del, BUFFER *shell,
+                         int g_top, int g_bot, const int *brk, int nbrk)
+{
+ WpeBufferTxnBuffer *e;
+ WpeBufferTxnSplice *sp;
+ int *rows = NULL, r;
+
+ if (t->refused != E_BUFFER_OK || (e = buffer_txn_room(t, b)) == NULL)
+  return(buffer_txn_rewrite_refused(t, shell, NULL, t->refused));
+ if (!buffer_txn_in_range(e->lines, y, n_del, 0))
+  return(buffer_txn_rewrite_refused(t, shell, NULL, E_BUFFER_RANGE));
+ if (n_del > e->lines - y)
+  n_del = e->lines - y;
+ r = buffer_txn_rewrite_check(t, b, e->lines, y, n_del, shell, g_top, g_bot);
+ if (r != E_BUFFER_OK)
+  return(buffer_txn_rewrite_refused(t, shell, NULL, r));
+ if (buffer_rows_copy(brk, nbrk, &rows) != E_BUFFER_OK)
+  return(buffer_txn_rewrite_refused(t, shell, NULL, E_BUFFER_NOMEM));
+ sp = buffer_txn_slot(t, b, y, n_del, shell->mxlines - g_top - g_bot, E_BUFFER_STEP_COVERED);
+ if (sp == NULL)
+  return(buffer_txn_rewrite_refused(t, shell, rows, E_BUFFER_NOMEM));
+ sp->kind = E_BUFFER_ITEM_REWRITE;
+ sp->shell = shell;
+ sp->g_top = g_top;
+ sp->g_bot = g_bot;
+ sp->lines = shell->bf + g_top;
+ sp->no_changed = 1;
+ sp->brk = rows;
+ sp->nbrk = (rows != NULL) ? nbrk : 0;
+ if (buffer_txn_take(t, e, sp, sp->nbrk) != E_BUFFER_OK)
+  return(buffer_txn_rewrite_refused(t, shell, rows, E_BUFFER_NOMEM));
+ return(E_BUFFER_OK);
+}
+
+/* After a replay: the cursor and the block go back to where the record
+   saw them, inside the text. */
+static void buffer_replay_view_back(BUFFER *b, Undo *rec)
+{
+ b->b = rec->b;
+ buffer_point_clamp(b, &b->b);
+ if (b->f != NULL && b->f->s != NULL)
+ {
+  b->f->s->mark_begin = rec->a;
+  b->f->s->mark_end = rec->e;
+  buffer_point_clamp(b, &b->f->s->mark_begin);
+  buffer_point_clamp(b, &b->f->s->mark_end);
+ }
+}
+
+/* Commit a replay item: the record's lines are the buffer's, its inverse
+   is on the other list, the cursor and the block are where it saw them. */
+static void buffer_txn_commit_replay(WpeBufferTxnSplice *sp)
+{
+ BUFFER *b = sp->b;
+ Undo *rec = sp->rec;
+
+ b->b = rec->b;
+ buffer_splice_commit(b, sp->y, sp->n_del, sp->lines, sp->n_ins, sp->brk, sp->nbrk,
+                      E_BUFFER_STEP_REPLAY, sp->no_changed, NULL, NULL, NULL, sp->pocket,
+                      BUFFER_ROWS_POSITIONAL, &sp->m);
+ free(rec->old);
+ rec->old = NULL;
+ rec->n_old = 0;
+ buffer_replay_view_back(b, rec);
+}
+
+/* The shell gave its span's lines away: the guards (and the span, when the
+   buffer took its canonical line instead) are freed, and it holds none. */
+static void buffer_shell_lines_given(BUFFER *shell, int g_top, int n_span, int adopted)
+{
+ int i;
+
+ for (i = 0; i < shell->mxlines; i++)
+  if (!adopted || i < g_top || i >= g_top + n_span)
+   free(shell->bf[i].s);
+ shell->mxlines = 0;
+}
+
+/* The inverses a replay pushed in its shell move onto the user's buffer,
+   oldest first, each its own record of the step the buffer is in, on the
+   row of the buffer: row 0 of the shell is row @off. */
+static void buffer_shell_records_move(BUFFER *shell, BUFFER *b, int off)
+{
+ Undo *rec, *next, *oldest = NULL;
+
+ for (rec = shell->ud; rec != NULL; rec = next)
+ {
+  next = rec->next;
+  rec->next = oldest;
+  oldest = rec;
+ }
+ shell->ud = NULL;
+ for (rec = oldest; rec != NULL; rec = next)
+ {
+  next = rec->next;
+  rec->next = NULL;
+  rec->flags &= ~E_UNDO_MORE;
+  rec->b.y += off;
+  e_buffer_record_push(b, rec);
+ }
+}
+
+/* The marks the replay set or kept in its shell, and its cursor, are the
+   buffer's now, on its rows; a mark the shell does not hold stays where
+   the commit moved it. */
+static void buffer_shell_marks_back(BUFFER *shell, BUFFER *b, int off)
+{
+ POINT *in[BUFFER_MARKS_MAX], *out[BUFFER_MARKS_MAX];
+ int n_in = buffer_marks(shell, in), n_out = buffer_marks(b, out), i;
+
+ for (i = 0; i < n_in && i < n_out; i++)
+ {
+  if (in[i]->y < 0)
+   continue;
+  out[i]->x = in[i]->x;
+  out[i]->y = in[i]->y + off;
+  buffer_point_clamp(b, out[i]);
+ }
+ b->b.x = shell->b.x;
+ b->b.y = shell->b.y + off;
+ buffer_point_clamp(b, &b->b);
+}
+
+/* Commit a rewrite item: the shell's span lines are the buffer's with the
+   rows the replay left them, its inverses on the buffer's list, its marks
+   and cursor the window's; then the shell is freed. */
+static void buffer_txn_commit_rewrite(WpeBufferTxnSplice *sp)
+{
+ BUFFER *b = sp->b, *shell = sp->shell;
+ int off = sp->y - sp->g_top, adopted = !sp->m.need_canon;
+
+ buffer_splice_commit(b, sp->y, sp->n_del, sp->lines, sp->n_ins, sp->brk, sp->nbrk,
+                      E_BUFFER_STEP_COVERED, 1, NULL, NULL, NULL, NULL, BUFFER_ROWS_REWRITE,
+                      &sp->m);
+ buffer_shell_lines_given(shell, sp->g_top, sp->n_ins, adopted);
+ buffer_shell_records_move(shell, b, off);
+ buffer_shell_marks_back(shell, b, off);
+ e_buffer_shell_free(shell);
+ sp->shell = NULL;
+ free((void *) sp->brk);
+ sp->brk = NULL;
+}
+
+/* A copy of line l as a line of the shell: its bytes through the
+   terminating zero, its length and count kept, so a guard can be compared
+   byte for byte afterwards.  A line wider than the shell is cut and
+   measured again, and then no longer matches. */
+static int buffer_line_copy(BUFFER *shell, const STRING *l, STRING *out)
+{
+ size_t n = buffer_line_kept_bytes(shell, l);
+
+ if (e_buffer_line_new(shell, out) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ memcpy(out->s, l->s, n);
+ out->len = l->len;
+ out->nrc = l->nrc;
+ if ((int)n <= l->nrc)
+ {
+  out->s[n - 1] = '\0';
+  buffer_line_measure(out);
+ }
+ return(E_BUFFER_OK);
+}
+
+/* How many of rows [y0, y0 + n) of b carry a breakpoint once the items of
+   t commit.  Return: the count, or -1 for a row the view cannot read. */
+static int buffer_view_rows(WpeBufferTxn *t, BUFFER *b, int y0, int n)
+{
+ const STRING *l;
+ int i, row, count = 0;
+
+ for (i = 0; i < n; i++)
+ {
+  if (buffer_txn_view(t, b, y0 + i, &l, &row) != E_BUFFER_OK)
+   return(-1);
+  count += row;
+ }
+ return(count);
+}
+
+/* The shell's block marks and last find are unset: a replay that leaves
+   one unset leaves the user's where it was. */
+static void buffer_shell_marks_unset(BUFFER *shell)
+{
+ POINT *m[BUFFER_MARKS_MAX];
+ int i, n = buffer_marks(shell, m);
+
+ for (i = 0; i < n; i++)
+ {
+  m[i]->x = -1;
+  m[i]->y = -1;
+ }
+}
+
+/**
+ * e_buffer_shell_fill - Fill a fresh shell with copies of rows [@y0, @y0 + @n)
+ * of @b as the items of @t leave them, with their breakpoint rows.
+ * @shell: from e_buffer_shell_new, holding its one empty line; @t: the
+ * change being prepared (no items: the buffer as it stands).
+ *
+ * A character Undo then replays its primitive on the copies, so a replay
+ * refused for want of memory changes nothing the user has.  Every byte of
+ * each line is copied, through its terminating zero, so a row the replay
+ * did not touch compares equal afterwards.  The shell's marks start unset.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM (the shell as it was) or
+ * E_BUFFER_RANGE.
+ */
+int e_buffer_shell_fill(BUFFER *shell, WpeBufferTxn *t, BUFFER *b, int y0, int n)
+{
+ const STRING *l;
+ STRING *lines;
+ int *rows = NULL, nrows, i, row, r;
+
+ if (!e_buffer_is_shell(shell) || n < 1)
+  return(E_BUFFER_RANGE);
+ if ((nrows = buffer_view_rows(t, b, y0, n)) < 0)
+  return(E_BUFFER_RANGE);
+ if (buffer_brp(shell) == NULL)
+  nrows = 0;
+ if ((lines = buffer_array(n, sizeof(STRING))) == NULL)
+  return(E_BUFFER_NOMEM);
+ if (nrows > 0 && (rows = buffer_array(nrows, sizeof(int))) == NULL)
+ {
+  free(lines);
+  return(E_BUFFER_NOMEM);
+ }
+ for (i = 0, nrows = 0; i < n; i++)
+ {
+  buffer_txn_view(t, b, y0 + i, &l, &row);
+  if (buffer_line_copy(shell, l, &lines[i]) != E_BUFFER_OK)
+  {
+   e_buffer_lines_free(lines, i);
+   free(rows);
+   return(E_BUFFER_NOMEM);
+  }
+  if (row && rows != NULL)
+   rows[nrows++] = i;
+ }
+ r = buffer_splice(shell, 0, shell->mxlines, lines, n, rows, nrows, E_BUFFER_STEP_COVERED, 1,
+                   NULL, NULL, NULL);
+ free(rows);
+ if (r != E_BUFFER_OK)
+ {
+  e_buffer_lines_free(lines, n);
+  return(r);
+ }
+ free(lines);
+ buffer_shell_marks_unset(shell);
  return(E_BUFFER_OK);
 }
 
@@ -1592,21 +2388,13 @@ Undo *e_buffer_txn_record(WpeBufferTxn *t, int kind)
  */
 void e_buffer_txn_abort(WpeBufferTxn *t)
 {
- WpeBufferTxnSplice *sp;
  int i;
 
  for (i = 0; i < t->nsp; i++)
- {
-  sp = &t->sp[i];
-  buffer_splice_mem_free(&sp->m);
-  free(sp->out);
-  free(sp->brk_out);
-  if (!sp->detach && sp->landed_from == BUFFER_TXN_NOT_LANDED)
-   e_buffer_lines_free(sp->lines, sp->n_ins);
- }
+  buffer_txn_item_free(&t->sp[i]);
  e_buffer_record_free(t->rec);
  t->rec = NULL;
- t->nsp = t->items = 0;
+ buffer_txn_release(t);
 }
 
 /* Room on each buffer's margin and pocket for every row the items may add,
@@ -1627,22 +2415,33 @@ static void buffer_txn_commit_one(WpeBufferTxn *t, WpeBufferTxnSplice *sp)
 {
  WpeBufferTxnSplice *src;
 
+ if (sp->kind == E_BUFFER_ITEM_REPLAY)
+ {
+  buffer_txn_commit_replay(sp);
+  return;
+ }
+ if (sp->kind == E_BUFFER_ITEM_REWRITE)
+ {
+  buffer_txn_commit_rewrite(sp);
+  return;
+ }
  if (sp->detach)
  {
   buffer_splice_commit(sp->b, sp->y, sp->n_del, NULL, 0, NULL, 0, E_BUFFER_STEP_COVERED, 1,
-                       sp->out, sp->brk_out, &sp->nbrk_out, NULL, &sp->m);
+                       sp->out, sp->brk_out, &sp->nbrk_out, NULL, BUFFER_ROWS_POSITIONAL,
+                       &sp->m);
   return;
  }
  if (sp->landed_from == BUFFER_TXN_NOT_LANDED)
  {
   buffer_splice_commit(sp->b, sp->y, sp->n_del, sp->lines, sp->n_ins, NULL, 0, sp->step, 0,
-                       NULL, NULL, NULL, sp->pocket, &sp->m);
+                       NULL, NULL, NULL, sp->pocket, BUFFER_ROWS_POSITIONAL, &sp->m);
   free(sp->lines);
   return;
  }
  src = &t->sp[sp->landed_from];
  buffer_splice_commit(sp->b, sp->y, 0, src->out, sp->n_ins, src->brk_out, src->nbrk_out,
-                      sp->step, 0, NULL, NULL, NULL, NULL, &sp->m);
+                      sp->step, 0, NULL, NULL, NULL, NULL, BUFFER_ROWS_POSITIONAL, &sp->m);
  free(src->out);
  free(src->brk_out);
  src->out = NULL;
@@ -1672,7 +2471,7 @@ int e_buffer_txn_commit(WpeBufferTxn *t)
  }
  for (i = 0; i < t->nsp; i++)
   buffer_txn_commit_one(t, &t->sp[i]);
- t->nsp = t->items = 0;
+ buffer_txn_release(t);
  t->rec = NULL;
  return(E_BUFFER_OK);
 }
@@ -2189,7 +2988,7 @@ static int buffer_swap_hunks(BUFFER *b, STRING *lines, char *used, int head,
   {
    buffer_splice_commit(b, head + hk->old_at + offset, hk->n_del,
                         lines + head + hk->new_at, hk->n_ins, NULL, 0, step, 0,
-                        NULL, NULL, NULL, pocket, &hm[h].m);
+                        NULL, NULL, NULL, pocket, BUFFER_ROWS_POSITIONAL, &hm[h].m);
    for (i = 0; i < hk->n_ins; i++)
     used[head + hk->new_at + i] = 1;
   }
@@ -2583,15 +3382,7 @@ static int buffer_replay_lines(BUFFER *b, Undo *rec)
  free(rec->old);
  rec->old = NULL;
  rec->n_old = 0;
- b->b = rec->b;
- buffer_point_clamp(b, &b->b);
- if (b->f != NULL && b->f->s != NULL)
- {
-  b->f->s->mark_begin = rec->a;
-  b->f->s->mark_end = rec->e;
-  buffer_point_clamp(b, &b->f->s->mark_begin);
-  buffer_point_clamp(b, &b->f->s->mark_end);
- }
+ buffer_replay_view_back(b, rec);
  return(E_BUFFER_OK);
 }
 

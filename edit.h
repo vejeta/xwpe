@@ -234,6 +234,8 @@ typedef struct BFF {
  int replaying;        /* the list a replay's inverses go to (E_BUFFER_REPLAY_*) */
  Undo *pocket;         /* the outermost cover's record: rows a covered deletion removes */
  int syn_lo, syn_hi;   /* rows whose syntax state waits for depth 0; -1 when none */
+ int shell;            /* 1: a private copy the owner made (e_buffer_shell_new) */
+ int refusals;         /* a shell: how many changes in it were refused for memory */
 } BUFFER;
 
 typedef struct SCHRM {
