@@ -233,6 +233,15 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Shift and Ctrl with the cursor keys now work in the terminal under
+  xterm, GNOME Terminal, tmux and the others that call themselves
+  xterm-256color or tmux-256color.  Shift-Left/Right/Up/Down and
+  Shift-Home/End mark a block, Ctrl-Left/Right move by word, Ctrl-PgUp/PgDn
+  go to the start or end of the file and Ctrl-Home/End to the top or bottom
+  of the window, as the manual says; before, they did nothing there (the
+  Alt-Ctrl-A/E/P/N alternatives always worked).  Ctrl-Delete, Ctrl-Insert
+  and Shift-Insert on a marked block work there too.
+
 * A project folder can no longer make the assistant run code behind your
   back.  An xwperc in the folder the editor starts in still sets tabs,
   colours and compilers, but no longer the post-edit hook, the hosted

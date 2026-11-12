@@ -3,10 +3,10 @@
 Two key styles today (Options > Editor > Keys): the old Turbo C style and
 CUA.  For the key loop's own actions they differ only in Save: F2 in the
 old style, Alt-F2 under CUA (we_edit.c e_tst_fkt, where CUA's F2 opens the
-file manager).  The manual's primary key is used where the terminal
-decodes it; where it does not (the file ends on Ctrl-PgUp/PgDn, the window
-ends on Ctrl-Home/End), the manual's alternative is used and the primary
-key is a separate action, so a key the terminal drops shows as a finding.
+file manager).  For the file ends (Ctrl-PgUp/PgDn) and the window ends
+(Ctrl-Home/End) the manual's alternative is used and the primary key is a
+separate action of the same effect, so a terminal that drops the primary
+key shows as a finding.
 No assistant key and no programming-layer key is here.
 """
 from .oracle import (BACKSPACE, CTRL_END, CTRL_HOME, CTRL_LEFT, CTRL_PGDN,
@@ -50,8 +50,8 @@ _OLD = {
     "redo": [ctrl("r")],
 }
 
-# The manual's primary keys for the file and window ends, which this
-# terminal does not decode: actions of their own, same effect.
+# The manual's primary keys for the file and window ends: actions of their
+# own, same effect as the alternatives above.
 PRIMARY_ALIASES = {
     "file_start_primary": ("file_start", [CTRL_PGUP]),
     "file_end_primary": ("file_end", [CTRL_PGDN]),

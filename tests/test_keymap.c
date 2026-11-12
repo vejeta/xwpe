@@ -331,8 +331,66 @@ static void test_raw_tails_give_the_cursor_and_editing_keys(void)
 	chk("CSI 21~ is F10", via_csi("21~"), F10);
 }
 
+/* A terminfo name through the whole decode. */
+static int via_name(const char *name)
+{
+	WpeBaseKey base;
+	unsigned mods;
+
+	if (!wpe_key_from_terminfo_name(name, 0, &base, &mods))
+		return 0;
+	return wpe_key_code(base, mods);
+}
+
+/* xterm's Shift cursor keys, which curses folds into KEY_SRIGHT and the
+   rest, mark a block like the raw "ESC [ 1;2C" does. */
+static void test_shifted_curses_cursor_keys_mark_a_block(void)
+{
+#ifdef NCURSES
+	chk("KEY_SRIGHT", via_curses(KEY_SRIGHT, 0), CRI + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SLEFT", via_curses(KEY_SLEFT, 0), CLE + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SR is Shift-Up", via_curses(KEY_SR, 0), CUP + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SF is Shift-Down", via_curses(KEY_SF, 0), CDO + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SHOME", via_curses(KEY_SHOME, 0), POS1 + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SEND", via_curses(KEY_SEND, 0), ENDE + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SPREVIOUS", via_curses(KEY_SPREVIOUS, 0), BUP + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SNEXT", via_curses(KEY_SNEXT, 0), BDO + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SDC is Shift-Delete", via_curses(KEY_SDC, 0), ShiftDel);
+	chk("KEY_SIC", via_curses(KEY_SIC, 0), EINFG + WPE_KEY_SHIFT_OFFSET);
+	chk("KEY_SRIGHT and its raw tail agree", via_curses(KEY_SRIGHT, 0), via_csi("1;2C"));
+#endif
+}
+
+/* The Ctrl and Alt cursor keys ncurses knows only by name give the same
+   key as their raw sequences. */
+static void test_terminfo_names_give_the_modified_cursor_keys(void)
+{
+	chk("kRIT5 is Ctrl-Right", via_name("kRIT5"), CCRI);
+	chk("kLFT5 is Ctrl-Left", via_name("kLFT5"), CCLE);
+	chk("kHOM5 is Ctrl-Home", via_name("kHOM5"), CPS1);
+	chk("kEND5 is Ctrl-End", via_name("kEND5"), CEND);
+	chk("kPRV5 is Ctrl-PgUp", via_name("kPRV5"), CBUP);
+	chk("kNXT5 is Ctrl-PgDn", via_name("kNXT5"), CBDO);
+	chk("kDC5 is Ctrl-Delete", via_name("kDC5"), CENTF);
+	chk("kIC5 is Ctrl-Insert", via_name("kIC5"), CEINFG);
+	chk("kRIT3 is Alt-Right", via_name("kRIT3"), CCRI);
+	chk("kRIT6 is Ctrl-Shift-Right", via_name("kRIT6"), CCRI + WPE_KEY_SHIFT_OFFSET);
+	chk("kUP is Shift-Up", via_name("kUP"), CUP + WPE_KEY_SHIFT_OFFSET);
+	chk("kNXT5 and its raw tail agree", via_name("kNXT5"), via_csi("6;5~"));
+	chk("kEND5 and its raw tail agree", via_name("kEND5"), via_csi("1;5F"));
+	chk("kUP5 is unbound, not a letter", via_name("kUP5"), 0);
+	chk("kxIN is not a key", via_name("kxIN"), 0);
+	chk("kRIT1 is not a modifier", via_name("kRIT1"), 0);
+	chk("kRITx is not a key", via_name("kRITx"), 0);
+	chk("kRIT99 is past the modifiers", via_name("kRIT99"), 0);
+	chk("an empty name", via_name(""), 0);
+	chk("no name", wpe_key_from_terminfo_name(NULL, 0, NULL, NULL), 0);
+}
+
 int main(void)
 {
+	test_shifted_curses_cursor_keys_mark_a_block();
+	test_terminfo_names_give_the_modified_cursor_keys();
 	test_every_bound_pair_has_exactly_one_row();
 	test_curses_f_key_blocks_give_plain_shift_ctrl_alt();
 	test_keysym_numbers_serve_x11_and_wayland_alike();

@@ -1738,6 +1738,29 @@ static unsigned e_t_console_mods(void)
 }
 
 /**
+ * e_t_curses_named_key - The editor key for a code curses made up for a
+ * terminfo capability of its own.
+ * @ch: the code (KEY_MAX or above: ncurses numbers these keys from
+ *   KEY_MAX itself, so the first of them is KEY_MAX).
+ * @extra_mods: modifiers the caller knows (WPE_MOD_ALT after an ESC).
+ *
+ * Under TERM=xterm-256color, Ctrl-Right, Ctrl-PgDn and the other Ctrl and
+ * Alt cursor keys arrive as codes ncurses numbers when it opens the
+ * terminal; only their names (kRIT5, kNXT5) say which key they are, so
+ * the name is what goes to the key table.
+ * Return: the key code, or 0 when the key is not bound.
+ */
+static int e_t_curses_named_key(int ch, unsigned extra_mods)
+{
+ WpeBaseKey base;
+ unsigned mods;
+
+ if (!wpe_key_from_terminfo_name(keyname(ch), e_t_console_mods(), &base, &mods))
+  return(0);
+ return(wpe_key_code(base, mods | extra_mods));
+}
+
+/**
  * e_t_curses_key - The editor key for a key curses delivered.
  * @ch: the curses key code (above KEY_CODE_YES).
  * @extra_mods: modifiers the caller knows (WPE_MOD_ALT after an ESC).
@@ -1752,6 +1775,8 @@ static int e_t_curses_key(int ch, unsigned extra_mods)
  WpeBaseKey base;
  unsigned mods;
 
+ if (ch >= KEY_MAX)
+  return(e_t_curses_named_key(ch, extra_mods));
  if (!wpe_key_from_curses(ch, e_t_console_mods(), &base, &mods))
   return(0);
  return(wpe_key_code(base, mods | extra_mods));

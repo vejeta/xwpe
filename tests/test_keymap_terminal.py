@@ -18,11 +18,13 @@ and tests/wayland/test_keymap.py; the table itself is test_keymap in
 `make check`.
 """
 import os
+import subprocess
 import time
 
 import pytest
 
 from wpe_driver import WpeSession, incoherence, wait_screen
+from edit_model.oracle import EditSession
 from test_debugger_integration import (
     C_AFTER_PRINT_LINE, C_BREAK_LINE, STEP_TIMEOUT_S, _c_session, _children,
     _mark_line, _move_down, _need, _screen, _start_c_session, _wait_for)
@@ -252,3 +254,172 @@ def test_alt_delete_copies_and_alt_insert_pastes_in_a_terminal(tmp_path, term):
         assert first == "abcabc", \
             "Alt-Delete should copy the block and Alt-Insert paste it, " \
             "the first line is %r" % first
+
+
+# ---- Shift and Ctrl with the cursor keys -----------------------------------
+#
+# xterm sends Shift-Right as "ESC [ 1;2C" and Ctrl-Right as "ESC [ 1;5C".
+# Under xterm-256color and tmux-256color curses folds the first into
+# KEY_SRIGHT and the second into a code it numbers itself and names kRIT5;
+# screen-256color and linux name neither, so the bytes arrive raw.  Every
+# spelling must give the same key.  (On a real Linux console the keys send
+# the plain sequences and the shift state comes from an ioctl, which a pty
+# cannot answer, so that path is test_keymap's console rows.)
+
+MOD_TERMS = ["xterm-256color", "tmux-256color", "screen-256color", "linux"]
+
+MOD_SHIFT_RIGHT = "\x1b[1;2C"
+MOD_SHIFT_END = "\x1b[1;2F"
+MOD_CTRL_RIGHT = "\x1b[1;5C"
+MOD_CTRL_LEFT = "\x1b[1;5D"
+MOD_CTRL_PGUP = "\x1b[5;5~"
+MOD_CTRL_PGDN = "\x1b[6;5~"
+MOD_CTRL_HOME = "\x1b[1;5H"
+MOD_CTRL_END = "\x1b[1;5F"
+MOD_CTRL_DEL = "\x1b[3;5~"
+MOD_CTRL_INS = "\x1b[2;5~"
+MOD_SHIFT_INS = "\x1b[2;2~"
+MOD_END = "\x1b[4~"             # End in both spellings (folded or raw)
+MOD_F2 = "\x1bOQ"
+MOD_CTRL_K = "\x0b"
+
+# Longer than the 30-row window, so its last row is not the file's.
+MOD_LONG_LINES = 60
+MOD_LONG_SEED = "".join("line %02d\n" % i for i in range(MOD_LONG_LINES))
+
+
+def _mod_session(tmp_path, seed, term):
+    return EditSession(str(tmp_path), seed, filename="t.txt",
+                       env_extra={"TERM": term})
+
+
+def _mod_saved_lines(s):
+    """Save with F2 and return the file's lines as written to disk."""
+    s.send([MOD_F2])
+    return s.disk().decode("utf-8").splitlines()
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("term", MOD_TERMS)
+@pytest.mark.parametrize("delete", [[MOD_CTRL_K, "y"], [MOD_CTRL_DEL]],
+                         ids=["ctrl-k-y", "ctrl-del"])
+def test_shift_right_marks_a_block_under_every_terminfo(tmp_path, term, delete):
+    """Shift-Right twice marks the first two characters, and Ctrl-K Y or
+    Ctrl-Del deletes them: "abcdef" is "cdef" on disk.  Under
+    xterm-256color Shift-Right did nothing, so nothing was deleted."""
+    with _mod_session(tmp_path, "abcdef\nsecond\n", term) as s:
+        s.send([MOD_SHIFT_RIGHT, MOD_SHIFT_RIGHT])
+        s.send(delete)
+        lines = _mod_saved_lines(s)
+    assert lines[0] == "cdef", \
+        "Shift-Right twice then %r should delete 'ab', line 1 is %r" \
+        % (delete, lines[0])
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("term", MOD_TERMS)
+def test_ctrl_insert_copies_and_shift_insert_pastes_under_every_terminfo(tmp_path, term):
+    """Shift-Right twice marks "ab", Ctrl-Insert copies it, and Shift-Insert
+    at the end of the line pastes it: "abcdefab" on disk."""
+    with _mod_session(tmp_path, "abcdef\nsecond\n", term) as s:
+        s.send([MOD_SHIFT_RIGHT, MOD_SHIFT_RIGHT])
+        s.send([MOD_CTRL_INS])
+        s.send([MOD_END, MOD_SHIFT_INS])
+        lines = _mod_saved_lines(s)
+    assert lines[0] == "abcdefab", \
+        "Ctrl-Insert then Shift-Insert should copy 'ab' to the end, " \
+        "line 1 is %r" % lines[0]
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("term", MOD_TERMS)
+def test_shift_end_marks_to_the_end_of_the_line_under_every_terminfo(tmp_path, term):
+    """Shift-End marks from the cursor to the end of the line, and Ctrl-K Y
+    deletes it: the first line is empty on disk, the second untouched."""
+    with _mod_session(tmp_path, "abcdef\nsecond\n", term) as s:
+        s.send([MOD_SHIFT_END])
+        s.send([MOD_CTRL_K, "y"])
+        lines = _mod_saved_lines(s)
+    assert lines[:2] == ["", "second"], \
+        "Shift-End then Ctrl-K Y should empty line 1, the file is %r" % lines
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("term", MOD_TERMS)
+def test_ctrl_right_and_ctrl_left_move_by_a_word_under_every_terminfo(tmp_path, term):
+    """Ctrl-Right goes to the next word and Ctrl-Left back: an X typed after
+    Ctrl-Right twice and Ctrl-Left once lands before "def"."""
+    with _mod_session(tmp_path, "abc def ghi\n", term) as s:
+        s.send([MOD_CTRL_RIGHT, MOD_CTRL_RIGHT, MOD_CTRL_LEFT])
+        s.send(["X"])
+        lines = _mod_saved_lines(s)
+    assert lines[0] == "abc Xdef ghi", \
+        "Ctrl-Right twice and Ctrl-Left should put the cursor on 'def', " \
+        "line 1 is %r" % lines[0]
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("term", MOD_TERMS)
+def test_ctrl_pgdn_and_ctrl_pgup_go_to_the_ends_of_the_file(tmp_path, term):
+    """Ctrl-PgDn goes to the last line of the file, Ctrl-PgUp to the first:
+    an E typed after the first and an S after the second land there."""
+    with _mod_session(tmp_path, MOD_LONG_SEED, term) as s:
+        s.send([MOD_CTRL_PGDN])
+        s.send(["E"])
+        s.send([MOD_CTRL_PGUP])
+        s.send(["S"])
+        lines = _mod_saved_lines(s)
+    assert "S" in lines[0], "Ctrl-PgUp: line 1 is %r" % lines[0]
+    assert "E" in lines[-1], "Ctrl-PgDn: the last line is %r" % lines[-1]
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("term", MOD_TERMS)
+def test_ctrl_end_and_ctrl_home_go_to_the_ends_of_the_window(tmp_path, term):
+    """Ctrl-End goes to the last row of the window, not of the file, and
+    Ctrl-Home back to the first: in a file longer than the window an E typed
+    after Ctrl-End lands on a line between the first and the last, and an S
+    after Ctrl-Home on the first."""
+    with _mod_session(tmp_path, MOD_LONG_SEED, term) as s:
+        s.send([MOD_CTRL_END])
+        s.send(["E"])
+        s.send([MOD_CTRL_HOME])
+        s.send(["S"])
+        lines = _mod_saved_lines(s)
+    marked = [i for i, line in enumerate(lines) if "E" in line]
+    assert "S" in lines[0], "Ctrl-Home: line 1 is %r" % lines[0]
+    assert len(marked) == 1 and 0 < marked[0] < MOD_LONG_LINES - 1, \
+        "Ctrl-End should go to the window's last row, E is on lines %r" % marked
+
+
+# rxvt-unicode spells the keys its own way: Shift-Right "ESC [ c" (kRIT,
+# folded into KEY_SRIGHT) and Ctrl-Delete "ESC [ 3 ^" (kDC5).  ncurses
+# numbers the keys only an extended capability names from KEY_MAX itself,
+# and kDC5 is the first of them in this entry, so it arrives as exactly
+# KEY_MAX.
+RXVT_TERM = "rxvt-unicode-256color"
+RXVT_SHIFT_RIGHT = "\x1b[c"
+RXVT_CTRL_DEL = "\x1b[3^"
+
+
+def _has_terminfo(term):
+    """True when this machine has a terminfo entry for ``term``."""
+    found = subprocess.run(["infocmp", term], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+    return found.returncode == 0
+
+
+# @scenario SC-debug-62
+def test_ctrl_delete_deletes_a_block_under_rxvt(tmp_path):
+    """Shift-Right twice then Ctrl-Delete as rxvt-unicode sends them delete
+    the first two characters: "abcdef" is "cdef" on disk.  Ctrl-Delete is
+    the key ncurses numbers KEY_MAX there, which the decoder missed."""
+    if not _has_terminfo(RXVT_TERM):
+        pytest.skip("no %s terminfo entry here" % RXVT_TERM)
+    with _mod_session(tmp_path, "abcdef\nsecond\n", RXVT_TERM) as s:
+        s.send([RXVT_SHIFT_RIGHT, RXVT_SHIFT_RIGHT])
+        s.send([RXVT_CTRL_DEL])
+        lines = _mod_saved_lines(s)
+    assert lines[0] == "cdef", \
+        "Shift-Right twice then Ctrl-Delete under %s should delete 'ab', " \
+        "line 1 is %r" % (RXVT_TERM, lines[0])

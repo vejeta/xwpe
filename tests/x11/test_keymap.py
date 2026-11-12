@@ -90,6 +90,37 @@ def test_alt_right_moves_by_a_word_as_it_does_in_the_terminal(xwpe):
         "Alt-Right should move the cursor a word right, the first line is %r" % first
 
 
+WORDS_SOURCE = "abcdef ghi\nsecond\n"
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": WORDS_SOURCE}],
+                         indirect=True)
+def test_shift_right_marks_a_block_as_it_does_in_the_terminal(xwpe):
+    """Shift-Right twice marks the first two characters and Ctrl-K Y
+    deletes them, as in the terminal: "abcdef" is "cdef" on disk."""
+    xwpe.key("shift+Right", "shift+Right")
+    xwpe.key("ctrl+k", "y")
+    xwpe.save()
+    first = xwpe.saved_text().splitlines()[0]
+    assert first == "cdef ghi", \
+        "Shift-Right twice then Ctrl-K Y should delete 'ab', line 1 is %r" % first
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": WORDS_SOURCE}],
+                         indirect=True)
+def test_ctrl_right_moves_by_a_word_as_it_does_in_the_terminal(xwpe):
+    """Ctrl-Right goes to the next word, as in the terminal: an X typed
+    after it lands before "ghi"."""
+    xwpe.key("ctrl+Right")
+    xwpe.type("X")
+    xwpe.save()
+    first = xwpe.saved_text().splitlines()[0]
+    assert first == "abcdef Xghi", \
+        "Ctrl-Right should move the cursor a word right, line 1 is %r" % first
+
+
 # @scenario SC-debug-62
 def test_f11_does_not_quit_the_editor(xwpe):
     """F11 sends the same symbol as the Sun Stop key, which the graphical

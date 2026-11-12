@@ -110,4 +110,21 @@ int wpe_key_from_keysym(unsigned long keysym, unsigned *mods,
 int wpe_key_from_csi(const char *tail, size_t n, WpeBaseKey *base,
                      unsigned *mods);
 
+/**
+ * wpe_key_from_terminfo_name - A key curses knows only by its terminfo name.
+ * @name: what curses' keyname() says for a code from KEY_MAX up: "kRIT5"
+ *   (Ctrl-Right), "kNXT5" (Ctrl-PgDn), "kHOM6" (Ctrl-Shift-Home).
+ * @console_mods: the shift and control the Linux console reports, as for
+ *   wpe_key_from_curses().
+ * @base: out, the key.
+ * @mods: out, the modifiers the name's digit stands for (xterm's
+ *   parameter: 2 Shift, 3 Alt, 5 Ctrl, ...), joined with @console_mods.
+ *
+ * Under TERM=xterm-256color or tmux-256color, Ctrl-Right and Ctrl-PgDn
+ * arrive this way; without it they did nothing in the terminal.
+ * Return: 1 when the name is a cursor or editing key, 0 otherwise.
+ */
+int wpe_key_from_terminfo_name(const char *name, unsigned console_mods,
+                               WpeBaseKey *base, unsigned *mods);
+
 #endif /* WE_KEYMAP_H */

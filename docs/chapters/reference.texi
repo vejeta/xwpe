@@ -91,6 +91,11 @@ key does the same thing on all three.  A terminal sends a Ctrl or Alt
 function key as an escape sequence, and xwpe reads it whether or not the
 terminal's terminfo entry names it: @kbd{Ctrl-F8} is
 @code{ESC [ 19;5~} under xterm and under @env{TERM=linux} alike.  The
+same holds for @kbd{Shift} and @kbd{Ctrl} with the cursor keys:
+@kbd{Shift-Right} (@code{ESC [ 1;2C}) marks a block and
+@kbd{Ctrl-Right} (@code{ESC [ 1;5C}) moves a word under
+@env{TERM=xterm-256color}, @env{TERM=tmux-256color},
+@env{TERM=screen-256color} and @env{TERM=linux} alike.  The
 Linux console has no Ctrl or Alt function keys and sends
 @kbd{Shift-F1} to @kbd{Shift-F10} as @key{F11} to @key{F20}; xwpe reads
 the shift state the console reports and takes them as Shift-@key{F1} to

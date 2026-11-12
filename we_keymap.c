@@ -182,6 +182,51 @@ static int wpe_curses_function_key(int n, unsigned console_mods,
  return(1);
 }
 
+/** One curses key code: the key it names and the modifiers it carries. */
+typedef struct {
+ int ch;
+ WpeBaseKey base;
+ unsigned mods;
+} WpeCursesRow;
+
+/* The cursor and editing keys curses names, plain and shifted.  terminfo's
+   kLFT, kRIT, kri, kind, kHOM, kEND, kPRV, kNXT, kDC and kIC are the
+   shifted keys (xterm sends "ESC [ 1;2C" for Shift-Right, which curses
+   folds into KEY_SRIGHT), so Shift and a cursor key marks a block whatever
+   the terminfo entry folds. */
+static const WpeCursesRow wpe_curses_rows[] = {
+ { KEY_UP,        WPE_KEY_UP,        WPE_MOD_NONE  },
+ { KEY_DOWN,      WPE_KEY_DOWN,      WPE_MOD_NONE  },
+ { KEY_LEFT,      WPE_KEY_LEFT,      WPE_MOD_NONE  },
+ { KEY_RIGHT,     WPE_KEY_RIGHT,     WPE_MOD_NONE  },
+ { KEY_HOME,      WPE_KEY_HOME,      WPE_MOD_NONE  },
+ { KEY_END,       WPE_KEY_END,       WPE_MOD_NONE  },
+ { KEY_LL,        WPE_KEY_END,       WPE_MOD_NONE  },
+ { KEY_PPAGE,     WPE_KEY_PGUP,      WPE_MOD_NONE  },
+ { KEY_NPAGE,     WPE_KEY_PGDN,      WPE_MOD_NONE  },
+ { KEY_IC,        WPE_KEY_INSERT,    WPE_MOD_NONE  },
+ { KEY_DC,        WPE_KEY_DELETE,    WPE_MOD_NONE  },
+ { KEY_BACKSPACE, WPE_KEY_BACKSPACE, WPE_MOD_NONE  },
+ { KEY_HELP,      WPE_KEY_HELP,      WPE_MOD_NONE  },
+ { KEY_BTAB,      WPE_KEY_TAB,       WPE_MOD_SHIFT },
+ { KEY_PREVIOUS,  WPE_KEY_UP,        WPE_MOD_SHIFT },
+ { KEY_NEXT,      WPE_KEY_DOWN,      WPE_MOD_SHIFT },
+ { KEY_SR,        WPE_KEY_UP,        WPE_MOD_SHIFT },
+ { KEY_SF,        WPE_KEY_DOWN,      WPE_MOD_SHIFT },
+ { KEY_SLEFT,     WPE_KEY_LEFT,      WPE_MOD_SHIFT },
+ { KEY_SRIGHT,    WPE_KEY_RIGHT,     WPE_MOD_SHIFT },
+ { KEY_SHOME,     WPE_KEY_HOME,      WPE_MOD_SHIFT },
+ { KEY_SEND,      WPE_KEY_END,       WPE_MOD_SHIFT },
+ { KEY_SPREVIOUS, WPE_KEY_PGUP,      WPE_MOD_SHIFT },
+ { KEY_SNEXT,     WPE_KEY_PGDN,      WPE_MOD_SHIFT },
+ { KEY_SIC,       WPE_KEY_INSERT,    WPE_MOD_SHIFT },
+ { KEY_SDC,       WPE_KEY_DELETE,    WPE_MOD_SHIFT },
+#ifdef KEY_BREAK
+ { KEY_BREAK,     WPE_KEY_BREAK,     WPE_MOD_NONE  },   /* where a terminal sends it */
+#endif
+ { 0,             WPE_KEY_NONE,      WPE_MOD_NONE  }
+};
+
 /**
  * wpe_curses_named_key - A curses cursor or editing key as a key.
  * @ch: the KEY_* code.
@@ -191,30 +236,16 @@ static int wpe_curses_function_key(int n, unsigned console_mods,
  */
 static int wpe_curses_named_key(int ch, WpeBaseKey *base, unsigned *mods)
 {
- *mods = WPE_MOD_NONE;
- switch (ch)
- {
-  case KEY_UP:        *base = WPE_KEY_UP; return(1);
-  case KEY_DOWN:      *base = WPE_KEY_DOWN; return(1);
-  case KEY_LEFT:      *base = WPE_KEY_LEFT; return(1);
-  case KEY_RIGHT:     *base = WPE_KEY_RIGHT; return(1);
-  case KEY_HOME:      *base = WPE_KEY_HOME; return(1);
-  case KEY_END:       *base = WPE_KEY_END; return(1);
-  case KEY_LL:        *base = WPE_KEY_END; return(1);
-  case KEY_PPAGE:     *base = WPE_KEY_PGUP; return(1);
-  case KEY_NPAGE:     *base = WPE_KEY_PGDN; return(1);
-  case KEY_IC:        *base = WPE_KEY_INSERT; return(1);
-  case KEY_DC:        *base = WPE_KEY_DELETE; return(1);
-  case KEY_BACKSPACE: *base = WPE_KEY_BACKSPACE; return(1);
-  case KEY_HELP:      *base = WPE_KEY_HELP; return(1);
-  case KEY_BTAB:      *base = WPE_KEY_TAB; *mods = WPE_MOD_SHIFT; return(1);
-  case KEY_PREVIOUS:  *base = WPE_KEY_UP; *mods = WPE_MOD_SHIFT; return(1);
-  case KEY_NEXT:      *base = WPE_KEY_DOWN; *mods = WPE_MOD_SHIFT; return(1);
-#ifdef KEY_BREAK
-  case KEY_BREAK:     *base = WPE_KEY_BREAK; return(1);   /* where a terminal sends it */
-#endif
-  default:            return(0);
- }
+ const WpeCursesRow *row;
+
+ for (row = wpe_curses_rows; row->base != WPE_KEY_NONE; row++)
+  if (row->ch == ch)
+  {
+   *base = row->base;
+   *mods = row->mods;
+   return(1);
+  }
+ return(0);
 }
 
 int wpe_key_from_curses(int ch, unsigned console_mods, WpeBaseKey *base,
@@ -491,5 +522,101 @@ int wpe_key_from_csi(const char *tail, size_t n, WpeBaseKey *base, unsigned *mod
  if (!wpe_csi_letter_key(final_byte, base, mods))
   return(0);
  *mods |= wpe_csi_modifier_bits(second);
+ return(1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* terminfo's names for modified keys                                        */
+/* ------------------------------------------------------------------------ */
+
+/* ncurses gives a key that only an extended terminfo capability names
+   (xterm's kRIT5 for Ctrl-Right, kNXT5 for Ctrl-PgDn) a number it picks
+   when the terminal is opened, so the number says nothing; the name does.
+   The name is a stem for the key and a digit that is xterm's modifier
+   parameter (user_caps(5): 2 Shift, 3 Alt, 5 Ctrl, 6 Ctrl+Shift, ...). */
+
+/** A terminfo stem and the key it names. */
+typedef struct {
+ const char *stem;
+ WpeBaseKey base;
+} WpeTerminfoStem;
+
+static const WpeTerminfoStem wpe_terminfo_stems[] = {
+ { "kUP",  WPE_KEY_UP },     { "kDN",  WPE_KEY_DOWN },
+ { "kLFT", WPE_KEY_LEFT },   { "kRIT", WPE_KEY_RIGHT },
+ { "kHOM", WPE_KEY_HOME },   { "kEND", WPE_KEY_END },
+ { "kPRV", WPE_KEY_PGUP },   { "kNXT", WPE_KEY_PGDN },
+ { "kIC",  WPE_KEY_INSERT }, { "kDC",  WPE_KEY_DELETE },
+ { NULL,   WPE_KEY_NONE }
+};
+
+/* A stem with no digit after it is the shifted key (kUP is Shift-Up). */
+#define WPE_TERMINFO_SHIFT_PARAM 2
+/* The longest stem in the table above. */
+#define WPE_TERMINFO_STEM_MAX 4
+
+/**
+ * wpe_terminfo_stem_key - The key a terminfo name's stem names.
+ * @name: the whole name ("kRIT5"); @len: how many leading bytes are the
+ *   stem (everything before the digits).
+ * Return: the key, or WPE_KEY_NONE when the stem is not one of them.
+ */
+static WpeBaseKey wpe_terminfo_stem_key(const char *name, size_t len)
+{
+ const WpeTerminfoStem *row;
+ size_t i;
+
+ for (row = wpe_terminfo_stems; row->stem != NULL; row++)
+ {
+  for (i = 0; i < len && row->stem[i] == name[i]; i++)
+   ;
+  if (i == len && row->stem[len] == '\0')
+   return(row->base);
+ }
+ return(WPE_KEY_NONE);
+}
+
+/**
+ * wpe_terminfo_digits_param - The modifier parameter a name ends with.
+ * @digits: the bytes after the stem.
+ * Return: the number, WPE_TERMINFO_SHIFT_PARAM when there are none, or -1
+ * when anything but digits follows the stem.
+ */
+static int wpe_terminfo_digits_param(const char *digits)
+{
+ int value = 0;
+
+ if (*digits == '\0')
+  return(WPE_TERMINFO_SHIFT_PARAM);
+ for (; *digits != '\0'; digits++)
+ {
+  if (*digits < '0' || *digits > '9')
+   return(-1);
+  value = wpe_csi_add_digit(value, *digits - '0');
+ }
+ return(value);
+}
+
+int wpe_key_from_terminfo_name(const char *name, unsigned console_mods,
+                               WpeBaseKey *base, unsigned *mods)
+{
+ size_t stem_len = 0;
+ int param;
+ WpeBaseKey key;
+
+ if (name == NULL)
+  return(0);
+ while (name[stem_len] != '\0' && !(name[stem_len] >= '0' && name[stem_len] <= '9'))
+  stem_len++;
+ if (stem_len == 0 || stem_len > WPE_TERMINFO_STEM_MAX)
+  return(0);
+ key = wpe_terminfo_stem_key(name, stem_len);
+ if (key == WPE_KEY_NONE)
+  return(0);
+ param = wpe_terminfo_digits_param(name + stem_len);
+ if (param < WPE_TERMINFO_SHIFT_PARAM || param > WPE_CSI_MOD_PARAM_MAX)
+  return(0);
+ *base = key;
+ *mods = wpe_csi_modifier_bits(param) | console_mods;
  return(1);
 }
