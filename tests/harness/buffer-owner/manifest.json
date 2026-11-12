@@ -770,6 +770,41 @@
    "layer": "config-file",
    "test": "tests/test_buffer_owner.py::test_an_undo_of_a_deletion_marks_the_text_again_after_ctrl_k_h",
    "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "config-file",
+   "test": "tests/test_buffer_owner.py::test_one_ctrl_u_and_one_ctrl_r_per_action",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "config-file",
+   "test": "tests/test_buffer_owner.py::test_a_change_all_of_fifty_hits_is_one_ctrl_u_under_num_undo_5",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_ctrl_k_i_over_thirty_lines_is_one_ctrl_u",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "config-file",
+   "test": "tests/test_buffer_owner.py::test_num_undo_counts_actions_not_their_pieces",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_a_backspace_in_an_indent_fault_sweep_ends_in_a_whole_undo",
+   "status": "new"
   }
  ]
 }

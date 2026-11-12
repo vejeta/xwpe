@@ -326,7 +326,8 @@ Number of characters per tab stop.
 @item Alt-X
 Number of changes before an auto-save (if enabled).
 @item Alt-N
-Number of undo steps saved.
+Number of undo steps saved.  A step is one action, however many lines or
+replacements it changed (a Change All, a @kbd{Ctrl-K I} over a block).
 @item Alt-I
 Number of columns for auto-indent step.
 @end table

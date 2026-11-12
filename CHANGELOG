@@ -362,6 +362,14 @@ Changes
   marked past the end of a file a tool shortened is cut to the file
   instead of reading freed memory.
 
+* One Ctrl-U and one Ctrl-R per action.  Tab with auto-indent (it took
+  two), Backspace that re-indents a line (up to three), Ctrl-K I and
+  Ctrl-K U (one per line of the block), Ctrl-O U, M and H (two) and
+  Search > Replace's Change All (one per replacement) are each taken back
+  and made again whole by one key.  The number of undo steps counts
+  actions, so it no longer cuts a Change All or a block indent in the
+  middle (with a small number most of it could not be undone).
+
 * A format, a rename or an accepted Edit that adds, removes or re-indents
   lines keeps every breakpoint on its own code (a format that added a line
   left them one line off, under other code), and one Ctrl-U gives back the

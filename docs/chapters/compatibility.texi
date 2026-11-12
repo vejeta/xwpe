@@ -129,6 +129,45 @@ auto-indent (the indent, then the line break), and its Redo indented the
 line a second time.  It is now one step each way, because one key is one
 action.
 
+@item Tab with auto-indent
+@cindex undo, Tab
+The original needed two @kbd{Ctrl-U} for one @key{Tab} with auto-indent:
+the first put the indent away and left the blanks behind the cursor
+erased, the second gave the blanks back.  One @kbd{Ctrl-U} now gives the
+line back as it was and one @kbd{Ctrl-R} indents it again, because one key
+is one action.
+
+@item Backspace in an indent
+@cindex undo, Backspace
+The original needed up to three @kbd{Ctrl-U} for one @key{Backspace} that
+re-indented a line with auto-indent (its tabs turned into blanks, the
+blanks put in, the indent shortened).  One @kbd{Ctrl-U} now gives the line
+back as it was, because one key is one action.
+
+@item Ctrl-K I and Ctrl-K U
+@cindex undo, block indent
+The original took a block's indent or unindent back one line per
+@kbd{Ctrl-U}, so a block of thirty lines needed thirty, and a small Num.@:
+Undo kept only the last few lines.  One @kbd{Ctrl-U} now gives the whole
+block back and one @kbd{Ctrl-R} shifts it again, because one command is
+one action.
+
+@item Ctrl-O U, M and H
+@cindex undo, help file marks
+The original needed two @kbd{Ctrl-U} to take a help file's button,
+highlight or headline marks away (the end mark, then the start mark).  One
+@kbd{Ctrl-U} now takes both away and one @kbd{Ctrl-R} puts both back,
+because one command is one action.
+
+@item Change All
+@cindex undo, Change All
+The original took Search > Replace's Change All back one replacement per
+@kbd{Ctrl-U}, and Num.@: Undo kept only the last few of them, so the
+others could not be taken back at all.  One @kbd{Ctrl-U} now gives
+back every replacement the command made, and one @kbd{Ctrl-R} makes them
+all again, because one command is one action.  Num.@: Undo counts
+actions, never their pieces.
+
 @item Undo of Ctrl-Y
 The original marked the restored line as a block and left the cursor at
 its start.  Undo now puts the cursor and the block back where they were

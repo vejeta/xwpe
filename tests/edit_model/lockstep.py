@@ -11,7 +11,7 @@ Every difference is a disagreement, classed by where the model's prediction
 came from (``model.classify``): ``editor`` when only the manual, the
 compatibility chapter or the user's decision predicted the field,
 ``unspecified`` when the code or the design did.  A disagreement already
-known (being fixed elsewhere, or decided) carries its tag.  After a
+known (being fixed elsewhere, or an open question) carries its tag.  After a
 disagreement the model takes the editor's state and the walk goes on, so
 one difference does not hide the next.  Nothing is fixed here.
 
@@ -104,31 +104,23 @@ def _key_did_nothing(action, field, before, w):
     return w.cursor == (before.y, before.x)
 
 
-# Disagreements already known, by the name a report gives them.
-KNOWN_STEPS = ("decided, not built yet: one Ctrl-U per Tab or Backspace in an "
-               "indent, Ctrl-K I/U, Ctrl-O U/M/H and Change All")
+# Disagreements already known, by the name a report gives them.  Every action
+# is one step now (Tab and Backspace with auto-indent, Ctrl-K I/U, Ctrl-O
+# U/M/H and Change All included): a step count that differs is new.
 KNOWN_UNDO_CURSOR = "open question: where Ctrl-U and Ctrl-R leave the cursor"
 KNOWN_UTF8_BACKSPACE = ("known bug, fix pending: Backspace with auto-indent deletes one "
                         "byte of a UTF-8 character")
-# What the editor pushes as several steps today, where the user's decision is
-# one.  Ctrl-U or Ctrl-R on those steps is the walk's to take from the editor
-# (model.undo_unmodelled_step); the tag names the push itself.
-STEP_ACTIONS = ("tab", "backspace", "block_indent", "block_unindent", "help_button",
-                "help_highlight", "help_header", "replace_all")
 
 
 def expected_tag(action, field, before, pred, editor_w):
-    """The known name of a disagreement (a bug whose fix is pending, or a
-    decision not built yet), or None for a new one.  A cursor or a mark
-    outside the text is never excused by a known bug: that check reads the
-    editor's dump alone, and the open question about where Undo leaves the
-    cursor is not offered for a cursor that is not in the text."""
+    """The known name of a disagreement (a bug whose fix is pending, or an
+    open question), or None for a new one.  A cursor or a mark outside the
+    text is never excused by a known bug: that check reads the editor's dump
+    alone, and the open question about where Undo leaves the cursor is not
+    offered for a cursor that is not in the text."""
     name = action.name
     if field == FIELD_INSIDE:
         return None
-    if field == model.F_STEPS and name in STEP_ACTIONS:
-        if editor_w.ud - before.ud > 1:
-            return KNOWN_STEPS
     if name in ("undo", "redo") and field in (model.F_CURSOR, model.F_ANCHOR) \
             and not _cursor_outside(editor_w):
         return KNOWN_UNDO_CURSOR

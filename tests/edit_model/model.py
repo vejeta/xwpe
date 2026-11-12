@@ -1323,12 +1323,13 @@ def _edit(st, action):
     rows = Rows(st)
     name = action.name
     line_record = False
+    recorded = False            # a step even when the text comes out the same
     if name == "type":
         _type(st, rows, action.arg)
     elif name == "enter":
         _enter(st, rows)
     elif name == "tab":
-        _tab(st, rows)
+        recorded = _tab(st, rows)
     elif name == "backspace":
         line_record = _backspace(st, rows)
     elif name == "delete":
@@ -1341,7 +1342,7 @@ def _edit(st, action):
         line_record = True
         _delete_line(st, rows)
     rows.commit()
-    if [(r.end, r.data) for r in before.rows] != st.lines():
+    if recorded or [(r.end, r.data) for r in before.rows] != st.lines():
         _push_step(st, before, action, line_record)
 
 
@@ -1432,13 +1433,16 @@ def _char_of_x(s, want, tabn):
 
 
 def _tab(st, rows):
+    """Tab.  Returns True when it is one step whatever the text becomes:
+    with auto-indent the blanks erased and the indent put in are recorded
+    even when they leave the row as it was (three blanks for three)."""
     if not st.flg & FLG_AUTOINDENT:
         st.fired.append("tab_literal")
         if st.ins & INS_INSERT:
             rows.ins_nchar(b"\t", st.x, st.y)
         else:
             rows.put_char(TAB)
-        return
+        return False
     st.fired.extend(["tab_autoindent", "tab_autoindent_manual", "tab_one_step"])
     tabn = st.options.tabn
     line = st.y
@@ -1478,6 +1482,7 @@ def _tab(st, rows):
         else:
             ins = b"\t"
     rows.ins_nchar(ins, st.x, st.y)
+    return True
 
 
 def _back_over_char(data, x):

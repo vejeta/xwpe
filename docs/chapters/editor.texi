@@ -62,10 +62,15 @@ of the text there is nothing to its right, so it deletes nothing, and
 undo step: the next @kbd{Ctrl-U} takes back what you did before it.
 
 @kbd{Ctrl-U} undoes and @kbd{Ctrl-R} redoes one action at a time: an
-@key{Return} with the indent it brought, a deleted line, a replacement, an
-accepted assistant Edit together with the post-edit hook's reformatting,
-a block copied, moved, pasted or deleted, a Change Case, a character typed
-over another in overwrite mode, the end-of-page mark of @kbd{Ctrl-O E}.
+@key{Return} or a @key{Tab} with the indent it brought, a @key{Backspace}
+that re-indented a line, a deleted line, a replacement, every replacement
+of one Change All, an accepted assistant Edit together with the post-edit
+hook's reformatting, a block copied, moved, pasted, deleted, indented or
+unindented (@kbd{Ctrl-K I}, @kbd{Ctrl-K U}), a Change Case, a character
+typed over another in overwrite mode, the help file marks of
+@kbd{Ctrl-O U}, @kbd{M} and @kbd{H}, the end-of-page mark of
+@kbd{Ctrl-O E}.  The number of undo steps
+(@samp{Options @result{} Editor}) counts these actions, never their pieces.
 What was typed past the right margin moves to the next row with its word,
 and @kbd{Ctrl-U} takes back exactly that there.
 Undo of a deleted line puts back the line, its breakpoint, the cursor and

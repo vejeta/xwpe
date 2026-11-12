@@ -50,6 +50,13 @@ def _utf8(data):
     return True
 
 
+def _auto_indent_tab(st, act):
+    """Is @act a Tab with auto-indent in an unlocked window, which the
+    editor records as one step whatever the row becomes?"""
+    return act.name == "tab" and bool(st.flg & model.FLG_AUTOINDENT) and \
+        st.ins != model.INS_READONLY
+
+
 def _action(rng, pool):
     name = rng.choice(pool)
     if name == "type":
@@ -135,14 +142,15 @@ def test_every_action_has_its_keys_in_each_key_style(style):
 def test_undo_and_redo_give_back_the_text_around_each_action(seed):
     """After any action, Ctrl-U gives the rows, line identities and
     breakpoints from before it and Ctrl-R those after it, and one action
-    that changed the text is exactly one undo step."""
+    that changed the text is exactly one undo step.  A Tab with auto-indent
+    is one step even when the blanks it put in are those it erased."""
     rng = random.Random(seed)
     st = _state()
     st = model.apply(st, model.Action("toggle_breakpoint"))
     for _ in range(WALK_LEN):
         act = _action(rng, EDITS + MOVES)
         after = model.apply(st, act)
-        changed = after.lines() != st.lines()
+        changed = after.lines() != st.lines() or _auto_indent_tab(st, act)
         if changed:
             assert after.ud == min(st.ud + 1, st.options.numundo + 1), act
             back = model.apply(after, model.Action("undo"))

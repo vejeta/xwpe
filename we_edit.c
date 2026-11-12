@@ -1681,6 +1681,40 @@ static void e_help_marks_delete(BUFFER *b, SCHIRM *s)
 }
 
 /**
+ * e_help_mark_block_fits - Can Ctrl-O U, M or H mark the block?  Only a
+ * block inside one row, at least one character long, is a button, a
+ * highlight or a headline.
+ */
+static int e_help_mark_block_fits(SCHIRM *s)
+{
+ if (s->mark_begin.y != s->mark_end.y || s->mark_begin.y < 0)
+  return(0);
+ return(s->mark_begin.x < s->mark_end.x);
+}
+
+/**
+ * e_help_mark_block - Ctrl-O U, M and H: make the block a button, a
+ * highlight or a headline of a help file.
+ * @f: the window; @b, @s: its buffer and screen; @start: the help mark
+ * that opens it (HBG, HBB or HHD).
+ *
+ * The end mark goes behind the block and @start in front of it, as one
+ * action: one Ctrl-U takes both marks away, one Ctrl-R puts both back.
+ */
+static void e_help_mark_block(FENSTER *f, BUFFER *b, SCHIRM *s, unsigned char start)
+{
+ unsigned char end = HED;
+
+ if (!e_help_mark_block_fits(s))
+  return;
+ e_buffer_step_begin(b);
+ e_ins_nchar(b, s, &end, s->mark_end.x, s->mark_end.y, 1);
+ e_ins_nchar(b, s, &start, s->mark_begin.x, s->mark_end.y, 1);
+ e_buffer_step_end(b);
+ e_schirm(f, 1);
+}
+
+/**
  * e_ctrl_o - Ctrl-O: read the editing command's letter and run it.
  * @f: the window the prefix was pressed in.
  *
@@ -1692,7 +1726,6 @@ int e_ctrl_o(FENSTER *f)
  BUFFER *b = f->ed->f[f->ed->mxedt]->b;
  SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
  int i, c;
- unsigned char cc;
 
  c = e_prefix_read_letter();
  if (c < 32) c = c + 'A' - 1;
@@ -1740,34 +1773,13 @@ int e_ctrl_o(FENSTER *f)
    break;
 #endif
   case 'U':     /*   for help file: create button */
-   if (s->mark_begin.y == s->mark_end.y && s->mark_begin.y >= 0 && s->mark_begin.x < s->mark_end.x)
-   {
-    cc = HED;
-    e_ins_nchar(b, s, &cc, s->mark_end.x, s->mark_end.y, 1);
-    cc = HBG;
-    e_ins_nchar(b, s, &cc, s->mark_begin.x, s->mark_end.y, 1);
-    e_schirm(f, 1);
-   }
+   e_help_mark_block(f, b, s, HBG);
    break;
   case 'M':     /*   for help file: Mark-Line  */
-   if (s->mark_begin.y == s->mark_end.y && s->mark_begin.y >= 0 && s->mark_begin.x < s->mark_end.x)
-   {
-    cc = HED;
-    e_ins_nchar(b, s, &cc, s->mark_end.x, s->mark_end.y, 1);
-    cc = HBB;
-    e_ins_nchar(b, s, &cc, s->mark_begin.x, s->mark_end.y, 1);
-    e_schirm(f, 1);
-   }
+   e_help_mark_block(f, b, s, HBB);
    break;
   case 'H':     /*   for help file: create Header  */
-   if (s->mark_begin.y == s->mark_end.y && s->mark_begin.y >= 0 && s->mark_begin.x < s->mark_end.x)
-   {
-    cc = HED;
-    e_ins_nchar(b, s, &cc, s->mark_end.x, s->mark_end.y, 1);
-    cc = HHD;
-    e_ins_nchar(b, s, &cc, s->mark_begin.x, s->mark_end.y, 1);
-    e_schirm(f, 1);
-   }
+   e_help_mark_block(f, b, s, HHD);
    break;
   case 'E':     /*   for help file: create end mark  */
    e_help_page_end_insert(b);
@@ -2009,7 +2021,15 @@ int GetCharNumOfX(BUFFER *b, int line, int char_x)
 }
 /****************************************/
 
-/* New version of auto-indent */
+/**
+ * e_tab_a_ind - Tab with auto-indent: indent the line like the ones above.
+ * @b: the buffer; @s: its screen.
+ *
+ * Erasing the blanks behind the cursor and putting the indent in are one
+ * action: one Ctrl-U gives the line back as it was before the Tab, one
+ * Ctrl-R indents it again.
+ * Return: the cursor's column.
+ */
 int e_tab_a_ind(BUFFER *b, SCHIRM *s)
 {
  int a_indent = b->cn->autoindent;
@@ -2017,6 +2037,8 @@ int e_tab_a_ind(BUFFER *b, SCHIRM *s)
  char *str;
  int do_auto_indent = 0;
  int first_nospace_k;
+
+ e_buffer_step_begin(b);
 
  /* If at the right of current pos there are only space chars, tab up to
     first nospace position (auto-indent pos) of previous lines. 
@@ -2125,13 +2147,25 @@ int e_tab_a_ind(BUFFER *b, SCHIRM *s)
 
  e_ins_nchar(b, s, str, b->b.x, b->b.y, char_to_ins);
  FREE(str);
+ e_buffer_step_end(b);
  return(b->b.x);
 }
 
+/**
+ * e_del_a_ind - Backspace with auto-indent.
+ * @b: the buffer; @s: its screen.
+ *
+ * Inside the indent the line is re-indented like the last line that
+ * started before the cursor: its tabs become blanks and the blanks past
+ * that line's indent go.  Those pieces are one action: one Ctrl-U gives the
+ * line back as it was before the Backspace, one Ctrl-R deletes again.
+ * Return: how many characters the last deletion took.
+ */
 int e_del_a_ind(BUFFER *b, SCHIRM *s)
 {
  int i = 1, j = -1, k;
 
+ e_buffer_step_begin(b);
  if (b->b.y > 0)
  {
   for (i = 0;
@@ -2175,6 +2209,7 @@ int e_del_a_ind(BUFFER *b, SCHIRM *s)
  if (j < 0)
   i = 1;
  e_del_nchar(b, s, b->b.x, b->b.y, i);
+ e_buffer_step_end(b);
  return(i);
 }
 

@@ -3863,8 +3863,14 @@ void e_buffer_cover_end(BUFFER *b)
 /**
  * e_buffer_step_begin - Every record pushed until step_end is one Ctrl-U.
  *
- * Enter with auto-indent, a tool's rewrite with its hook, and every Undo or
- * Redo of such a step are one action for the user.  Nests.
+ * The bracket of one user action that changes the text in several pieces:
+ * Enter and Tab with auto-indent, Backspace in an indent, Ctrl-K I and U,
+ * Ctrl-O U, M and H, Change All, a tool's rewrite with its hook, and every
+ * Undo or Redo of such a step.  A command opens it before its first change
+ * and closes it after its last.  One Ctrl-U or Ctrl-R replays the whole
+ * step, whole or not at all, and Num. Undo counts steps, never pieces, so
+ * the list is never cut inside one.  Nests: an action that calls another
+ * bracketed one stays one step.
  */
 void e_buffer_step_begin(BUFFER *b)
 {

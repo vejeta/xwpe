@@ -96,22 +96,70 @@ def test_every_crash_is_a_new_loss():
 
 
 # @scenario SC-edit-model-39
-def test_an_undo_after_a_change_all_the_editor_pushed_in_pieces_is_not_a_new_finding(tmp_path):
-    """Change All is one Ctrl-U by the user's decision and one per hit in the
-    editor today.  The walk files the pushes under that decision, then the
-    Ctrl-U and Ctrl-R that follow act on steps the model holds no snapshot of:
-    the editor's answer is taken and no new disagreement appears."""
+def test_a_change_all_is_one_step_and_its_undo_and_redo_agree_with_the_model(tmp_path):
+    """Change All pushes one step, as the user decided: the model and the
+    editor agree on the step count, one Ctrl-U gives the text before it and
+    one Ctrl-R the text after it.  Only the block after the replay may
+    differ (see the next test)."""
     w = lockstep.Walk(str(tmp_path), "old", 1, 4)
-    w.drawer.queue = [("replace_all", (b"a", b"Q")), ("undo", None), ("undo", None),
-                      ("redo", None)]
+    w.drawer.queue = [("replace_all", (b"a", b"Q")), ("undo", None), ("redo", None),
+                      ("undo", None)]
     w.run()
     assert w.steps_run == 4 and not w.lost
-    first = [x for x in w.disagreements if x["step"] == 0]
-    assert first and all(x["field"] in (model.F_STEPS, "box") or x["expected"] for x in first), first
-    steps = [x for x in first if x["field"] == model.F_STEPS]
-    assert steps and all(x["expected"] == lockstep.KNOWN_STEPS for x in steps), steps
-    later = [x for x in w.disagreements if x["step"] > 0 and not x["expected"]]
-    assert later == [], later
+    steps = [x for x in w.disagreements if x["field"] == model.F_STEPS]
+    assert steps == [], steps
+    text = [x for x in w.disagreements if x["field"] == model.F_TEXT]
+    assert text == [], text
+    new = [x for x in w.disagreements if not x["expected"] and x["field"] != model.F_MARKS]
+    assert new == [], new
+
+
+def _steps(*names):
+    return [(n, None) for n in names]
+
+
+# The walk's seed file (lockstep.SEED, a .c file: auto-indent on), each
+# action of the user's one-step decision brought where it changes the text
+# in several pieces, then Ctrl-U, Ctrl-R and Ctrl-U again.
+_MARK_ROWS_0_TO_3 = _steps("block_begin", "down", "down", "down", "block_end")
+_MARK_INT_IN_MAIN = _steps("down", "home", "block_begin", "right", "right", "right",
+                           "block_end")
+ONE_STEP_WALKS = {
+    "enter": _steps("down", "down", "down", "end", "enter"),
+    # the row of three blanks: they go, then the indent comes, two pieces
+    "tab": _steps(*(["down"] * 11 + ["home", "tab"])),
+    "backspace": _steps("down", "down", "down", "down", "down", "home", "right", "right",
+                        "backspace"),
+    "block_indent": _MARK_ROWS_0_TO_3 + _steps("block_indent"),
+    "block_unindent": _steps("down", "down", "down", "home", "block_begin", "down", "down",
+                             "block_end", "block_unindent"),
+    "help_button": _MARK_INT_IN_MAIN + _steps("help_button"),
+    "help_highlight": _MARK_INT_IN_MAIN + _steps("help_highlight"),
+    "help_header": _MARK_INT_IN_MAIN + _steps("help_header"),
+    "replace_all": [("replace_all", (b"a", b"Q"))],
+}
+
+
+# @scenario SC-edit-model-39
+@pytest.mark.parametrize("name", sorted(ONE_STEP_WALKS))
+def test_each_decided_action_is_one_step_the_model_agrees_with(tmp_path, name):
+    """Enter and Tab with auto-indent, Backspace in an indent, Ctrl-K I and
+    U, Ctrl-O U, M and H and Change All: the editor pushes one step for the
+    action, as the model does, and its Ctrl-U, Ctrl-R and Ctrl-U give the
+    texts the model predicts; no disagreement on the step count or the
+    text.  Where the block lies after the Undo or Redo of a step of several
+    pieces is not decided (the model marks the whole span, the editor what
+    the oldest piece touched): that stays a finding of its own, on the
+    marks alone."""
+    queue = ONE_STEP_WALKS[name] + _steps("undo", "redo", "undo")
+    w = lockstep.Walk(str(tmp_path), "old", 1, len(queue))
+    w.drawer.queue = list(queue)
+    w.run()
+    assert w.steps_run == len(queue) and not w.lost, (w.steps_run, w.lost)
+    wrong = [x for x in w.disagreements if x["field"] in (model.F_STEPS, model.F_TEXT)]
+    assert wrong == [], wrong
+    new = [x for x in w.disagreements if not x["expected"] and x["field"] != model.F_MARKS]
+    assert new == [], new
 
 
 # @scenario SC-edit-model-39
@@ -241,12 +289,12 @@ def test_a_known_bug_tag_names_only_what_that_bug_does():
         lockstep.KNOWN_UNDO_CURSOR
     assert tag(undo, model.F_CURSOR, before, before, _dump(rows, 1, 9)) is None
     assert tag(undo, model.F_CURSOR, before, before, _dump(rows, 7, 0)) is None
-    # a Tab that pushed several steps is the decision not built yet; one that
-    # pushed one step is not
-    tab = model.Action("tab", None)
-    assert tag(tab, model.F_STEPS, before, before, _dump(rows, 0, 0, ud=3)) == \
-        lockstep.KNOWN_STEPS
-    assert tag(tab, model.F_STEPS, before, before, _dump(rows, 0, 0, ud=1)) is None
+    # every action is one step: a Tab, a Ctrl-K I or a Change All that
+    # pushed several steps is a new finding
+    for name in ("tab", "backspace", "block_indent", "block_unindent", "help_button",
+                 "help_highlight", "help_header", "replace_all"):
+        act = model.Action(name, None)
+        assert tag(act, model.F_STEPS, before, before, _dump(rows, 0, 0, ud=3)) is None, name
     # typing into a soft row: the soft-wrap bug is fixed and keeps no tag, so
     # a byte lost there is a new finding
     before = _state([(S, b"abc"), (H, b"def")], 0, 3)

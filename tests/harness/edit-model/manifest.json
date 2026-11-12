@@ -283,6 +283,20 @@
    "status": "new"
   },
   {
+   "id": "SC-edit-model-39",
+   "requirement": "A disagreement is filed under a known bug only when the editor did what that bug does",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_lockstep.py::test_a_change_all_is_one_step_and_its_undo_and_redo_agree_with_the_model",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-39",
+   "requirement": "A disagreement is filed under a known bug only when the editor did what that bug does",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_lockstep.py::test_each_decided_action_is_one_step_the_model_agrees_with",
+   "status": "new"
+  },
+  {
    "id": "SC-edit-model-40",
    "requirement": "Backspace in the empty last row of a text of three rows puts the cursor at the end of the row above",
    "layer": "ncurses",

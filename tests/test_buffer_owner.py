@@ -2203,14 +2203,13 @@ def _assert_rows_whole(w, want, what):
 def test_change_all_goes_on_behind_a_replacement_that_wrapped(tmp_path):
     """At Max. Columns 20, Change All of `b` in a line where the first
     replacement makes the row wrap: every occurrence is replaced, once, and
-    Ctrl-U gives the line back (one Ctrl-U per replacement: Change All as
-    one step is decided but not built yet)."""
+    one Ctrl-U gives the line back (Change All is one action)."""
     seed = "x" * 14 + " b b b\nnext\n"
     edited = seed.replace("b", "yyyyyy")
     with EditSession(str(tmp_path), seed, filename="t.txt", xwperc=REPLACE_RC % NARROW) as s:
         d = _back_to_the_text(s, s.send(_replace_keys("b", "yyyyyy", True)))
         _assert_rows_whole(d.win, edited, "Change All")
-        _assert_rows_whole(s.send([CTRL_U] * seed.count("b")).win, seed, "Ctrl-U")
+        _assert_rows_whole(s.send([CTRL_U]).win, seed, "Ctrl-U")
         assert s.alive(), "wpe died"
 
 
@@ -2656,3 +2655,206 @@ def test_an_undo_of_a_deletion_marks_the_text_again_after_ctrl_k_h(tmp_path, gen
         assert _saved(s) == seed.replace("one", "on", 1), \
             "Ctrl-K Y after the Undo did not delete the character put back: %r" % s.text()
         assert s.alive(), "wpe died"
+
+
+# ---- one Ctrl-U and one Ctrl-R per user action ----
+# The original took Tab with auto-indent, Backspace in an indent, Ctrl-K I
+# and U, Ctrl-O U, M and H and Change All back one piece at a time.
+
+CTRL_O = "\x0f"          # the editing prefix: U button, M highlight, H headline
+# Tab behind the "a": the blanks after it go and the line is indented up to
+# foo(); above it, two records.
+TAB_SEED = "int main()\n{\n    foo();\na      \n}\n"
+TAB_AFTER = "int main()\n{\n    foo();\na   \n}\n"
+TAB_ROW = 3
+# Backspace behind two tabs: the tabs become blanks, then the indent goes
+# back to foo();'s, three records.
+INDENT_TABS_SEED = "int main()\n{\n    foo();\n\t\tbar();\n}\n"
+INDENT_TABS_AFTER = "int main()\n{\n    foo();\n    bar();\n}\n"
+INDENT_TABS_ROW = 3
+INDENT_TABS_COL = 2
+SHIFT_PLAIN = "one\ntwo\nthree\nfour\n"
+SHIFT_INDENTED = "    one\n    two\n    three\nfour\n"   # Tabstops 8: 4 blanks
+SHIFT_ROWS = 3
+HELP_SEED = "see the topic here\nnext\n"
+HELP_MARKED = (4, 7)                     # "the"
+HELP_END = "\x05"                        # the mark that ends a button, highlight or headline
+HELP_STARTS = {"u": "\x01", "m": "\x0f", "h": "\x02"}
+REPLACE_ALL_SEED = "foo 1\nfoo 2\nfoo 3\n"
+NUM_UNDO_LEVELS = [["NumUndo : 0"], ["NumUndo : 1"], []]
+NUM_UNDO_IDS = ["num-undo-0", "num-undo-1", "num-undo-default"]
+
+
+def _tab_behind_the_a(s):
+    _down(s, TAB_ROW)
+    s.key(HOME, RIGHT, delay=0.2)
+    s.key(TAB, delay=0.6)
+
+
+def _backspace_behind_the_tabs(s):
+    _down(s, INDENT_TABS_ROW)
+    s.key(HOME, delay=0.1)
+    for _ in range(INDENT_TABS_COL):
+        s.key(RIGHT, delay=0.1)
+    s.key(BACKSPACE, delay=0.6)
+
+
+def _mark_whole_rows_from_the_top(s, n):
+    """Mark the first @n lines whole: from the start of the file to the
+    start of line @n + 1."""
+    s.key(HOME, delay=0.1)
+    s.key(CTRL_K, "b", delay=0.3)
+    _down(s, n)
+    s.key(HOME, delay=0.1)
+    s.key(CTRL_K, "k", delay=0.3)
+
+
+def _shift_block(letter, n):
+    def do(s):
+        _mark_whole_rows_from_the_top(s, n)
+        s.key(CTRL_K, letter, delay=0.8)
+    return do
+
+
+def _help_mark(letter):
+    def do(s):
+        _mark_in_line(s, 0, *HELP_MARKED)
+        s.key(CTRL_O, letter, delay=0.8)
+    return do
+
+
+def _help_marked(letter):
+    b, e = HELP_MARKED
+    return HELP_SEED[:b] + HELP_STARTS[letter] + HELP_SEED[b:e] + HELP_END + HELP_SEED[e:]
+
+
+def _change_all(search, text):
+    def do(s):
+        s.menu(ALT.SEARCH, "r")
+        s.key(search)
+        s.key(ALT_N)
+        s.key(text)
+        s.key(ALT_P)                         # no prompt per replacement
+        s.key(ALT_A, delay=1.0)              # Change All
+        s.key(ENTER, delay=0.6)              # the "Replaced" note
+    return do
+
+
+# name: (file, seed, the text after the action, the keys of the action)
+ONE_STEP_ACTIONS = {
+    "tab-auto-indent": ("t.c", TAB_SEED, TAB_AFTER, _tab_behind_the_a),
+    "backspace-in-indent": ("t.c", INDENT_TABS_SEED, INDENT_TABS_AFTER,
+                            _backspace_behind_the_tabs),
+    "ctrl-k-i": ("t.txt", SHIFT_PLAIN, SHIFT_INDENTED, _shift_block("i", SHIFT_ROWS)),
+    "ctrl-k-u": ("t.txt", SHIFT_INDENTED, SHIFT_PLAIN, _shift_block("u", SHIFT_ROWS)),
+    "ctrl-o-u": ("t.txt", HELP_SEED, _help_marked("u"), _help_mark("u")),
+    "ctrl-o-m": ("t.txt", HELP_SEED, _help_marked("m"), _help_mark("m")),
+    "ctrl-o-h": ("t.txt", HELP_SEED, _help_marked("h"), _help_mark("h")),
+    "change-all": ("t.txt", REPLACE_ALL_SEED, REPLACE_ALL_SEED.replace("foo", "ZZZ"),
+                   _change_all("foo", "ZZZ")),
+}
+
+
+# @scenario SC-buffer-01
+@pytest.mark.parametrize("general", NUM_UNDO_LEVELS, ids=NUM_UNDO_IDS)
+@pytest.mark.parametrize("action", sorted(ONE_STEP_ACTIONS))
+def test_one_ctrl_u_and_one_ctrl_r_per_action(tmp_path, action, general):
+    """Each of these actions changes the text in several pieces; one Ctrl-U
+    gives back the whole text from before it and one Ctrl-R the whole text
+    after it, whatever Num. Undo is (the original took it back one piece at
+    a time, and Num. Undo 0 kept only the last piece)."""
+    filename, seed, edited, do = ONE_STEP_ACTIONS[action]
+    with _session_with_options(tmp_path, seed, general, filename=filename) as s:
+        do(s)
+        _assert_undo_and_redo_on_disk(s, seed, edited, action)
+        assert s.alive(), "wpe died"
+
+
+CHANGE_ALL_HITS = 50
+CHANGE_ALL_SEED = "".join("foo %d\n" % i for i in range(CHANGE_ALL_HITS))
+
+
+# @scenario SC-buffer-01
+def test_a_change_all_of_fifty_hits_is_one_ctrl_u_under_num_undo_5(tmp_path):
+    """Change All replaces 50 words with Num. Undo 5: one Ctrl-U gives all
+    50 back and one Ctrl-R replaces all 50 again (Num. Undo once cut the
+    action after its last six replacements)."""
+    edited = CHANGE_ALL_SEED.replace("foo", "ZZZ")
+    with _session_with_options(tmp_path, CHANGE_ALL_SEED, ["NumUndo : 5"],
+                               filename="t.txt") as s:
+        _change_all("foo", "ZZZ")(s)
+        _assert_undo_and_redo_on_disk(s, CHANGE_ALL_SEED, edited, "Change All of 50")
+        assert s.alive(), "wpe died"
+
+
+SHIFT_LONG_ROWS = 30
+SHIFT_LONG_SEED = "".join("line %02d\n" % i for i in range(SHIFT_LONG_ROWS)) + "end\n"
+
+
+# @scenario SC-buffer-01
+def test_a_ctrl_k_i_over_thirty_lines_is_one_ctrl_u(tmp_path):
+    """Ctrl-K I over a block of 30 lines indents them all; one Ctrl-U takes
+    all 30 back and one Ctrl-R indents all 30 again."""
+    edited = "".join("    line %02d\n" % i for i in range(SHIFT_LONG_ROWS)) + "end\n"
+    with WpeSession(str(tmp_path), SHIFT_LONG_SEED, filename="t.txt") as s:
+        _shift_block("i", SHIFT_LONG_ROWS)(s)
+        _assert_undo_and_redo_on_disk(s, SHIFT_LONG_SEED, edited, "Ctrl-K I over 30 lines")
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+def test_num_undo_counts_actions_not_their_pieces(tmp_path):
+    """Num. Undo 1 keeps two actions: two Ctrl-K I over three lines are six
+    pieces, and two Ctrl-U still give back the text from before both."""
+    once = SHIFT_INDENTED
+    twice = "        one\n        two\n        three\nfour\n"
+    with _session_with_options(tmp_path, SHIFT_PLAIN, ["NumUndo : 1"], filename="t.txt") as s:
+        _shift_block("i", SHIFT_ROWS)(s)
+        s.key(CTRL_K, "i", delay=0.8)
+        assert _saved(s) == twice, "two Ctrl-K I gave %r" % s.text()
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == once, "the first Ctrl-U gave %r" % s.text()
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == SHIFT_PLAIN, "the second Ctrl-U gave %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+def _indent_backspace_undone_with_fault(work, n):
+    """The Ctrl-U of a Backspace in a tab indent with memory refused at its
+    n-th allocation.  Return: WHOLE or NOTHING."""
+    with WpeSession(str(work), INDENT_TABS_SEED,
+                    env_extra=_fault_env(work, "undo:%d" % n)) as s:
+        _backspace_behind_the_tabs(s)
+        assert _saved(s) == INDENT_TABS_AFTER, "Backspace in the indent gave %r" % s.text()
+        return _undo_whole_or_nothing(s, work, INDENT_TABS_SEED, INDENT_TABS_AFTER,
+                                      "Backspace in an indent")
+
+
+def _indent_backspace_undone_in(tmp_path, n):
+    work = tmp_path / ("n%02d" % n)
+    work.mkdir()
+    return _indent_backspace_undone_with_fault(work, n)
+
+
+# @scenario SC-buffer-08
+def test_an_undo_of_a_backspace_in_an_indent_fault_sweep_ends_in_a_whole_undo(tmp_path):
+    """Memory cut at the first allocation of the Undo of a Backspace that
+    re-indented a line (three pieces of one action), then the second, and
+    on: every refused Undo changed nothing and said so, and once the cut
+    comes after its last allocation the whole action is taken back and one
+    Ctrl-R gives it again."""
+    outcomes = {}
+    first = 1
+    with concurrent.futures.ThreadPoolExecutor(FAULT_SWEEP_BATCH) as pool:
+        while first <= UNDO_SWEEP_MAX and WHOLE not in outcomes.values():
+            last = min(first + FAULT_SWEEP_BATCH, UNDO_SWEEP_MAX + 1)
+            cuts = range(first, last)
+            outcomes.update(zip(cuts, pool.map(
+                lambda n: _indent_backspace_undone_in(tmp_path, n), cuts)))
+            first = last
+    whole = [n for n in sorted(outcomes) if outcomes[n] == WHOLE]
+    assert outcomes[1] == NOTHING, "the first allocation refused still made the Undo"
+    assert whole, "no cut up to %d allocations let the Undo through" % UNDO_SWEEP_MAX
+    assert all(outcomes[n] == NOTHING for n in outcomes if n < whole[0]), \
+        "a cut before the Undo's last allocation let it through: %s" % outcomes
+    print("indent backspace undo: whole from allocation %d on" % whole[0])

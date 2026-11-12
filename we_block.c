@@ -2102,7 +2102,16 @@ static char *e_unindent_blanks(int tabn)
  return(blanks);
 }
 
-/*   unindent block   */
+/**
+ * e_blck_to_left - Ctrl-K U: move every line of the block Tabstops / 2
+ * columns to the left.
+ * @f: the window the command came from.
+ *
+ * The lines are one action: one Ctrl-U gives the whole block back as it
+ * was, one Ctrl-R shifts it again, however many lines it holds and whatever
+ * Num. Undo is.
+ * Return: 0.
+ */
 int e_blck_to_left(FENSTER *f)
 {
  BUFFER *b;
@@ -2122,6 +2131,7 @@ int e_blck_to_left(FENSTER *f)
   wpe_buffer_say_nomem(b, "the shift to the left");
   return(0);
  }
+ e_buffer_step_begin(b);
  for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
    i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
  {
@@ -2149,12 +2159,22 @@ int e_blck_to_left(FENSTER *f)
    s->mark_begin.x = nn;
   }
  }
+ e_buffer_step_end(b);
  FREE(tstr);
  e_schirm(f, 1);
  return(0);
 }
 
-/*   indent block   */
+/**
+ * e_blck_to_right - Ctrl-K I: move every line of the block Tabstops / 2
+ * columns to the right.
+ * @f: the window the command came from.
+ *
+ * The lines are one action: one Ctrl-U gives the whole block back as it
+ * was, one Ctrl-R shifts it again, however many lines it holds and whatever
+ * Num. Undo is.
+ * Return: 0.
+ */
 int e_blck_to_right(FENSTER *f)
 {
  BUFFER *b;
@@ -2173,6 +2193,7 @@ int e_blck_to_right(FENSTER *f)
  for (i = 0; i < n; i++)
   tstr[i] = ' ';
  tstr[n] = '\0';
+ e_buffer_step_begin(b);
  for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
    i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
  {
@@ -2182,6 +2203,7 @@ int e_blck_to_right(FENSTER *f)
   if (i == s->mark_begin.y)
    s->mark_begin.x = 0;
  }
+ e_buffer_step_end(b);
  FREE(tstr);
  e_schirm(f, 1);
  return(0);
@@ -2499,6 +2521,7 @@ int e_replace(FENSTER *f)
  freeostr(o);
  if (ret != WPE_ESC)
  {
+  e_buffer_step_begin(b);      /* every replacement of Change All is one Ctrl-U */
   while (e_rep_search(f) && ((ret == AltA) || (!found)))
   {
    found++;
@@ -2537,6 +2560,7 @@ int e_replace(FENSTER *f)
     e_schirm(f, 1);
    }
   }
+  e_buffer_step_end(b);
   if (found)
   {
    if (refused)
