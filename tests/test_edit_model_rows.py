@@ -44,6 +44,18 @@ def test_backspace_with_auto_indent_deletes_a_whole_character(tmp_path):
     assert w.lines[1] == ("H", b"caf")
 
 
+# @scenario SC-edit-model-46
+def test_backspace_with_auto_indent_after_the_first_character_takes_only_that_character(tmp_path):
+    """In a C file, Backspace with the cursor right after the first
+    character that follows the indent deletes that character only; the
+    manual re-indents only in front of the first visible character."""
+    with EditSession(str(tmp_path), "int x;\n  x\n", filename="t.c") as s:
+        assert s.last.win.flg & 1, "auto-indent is not on for a C file"
+        s.send([DOWN, END])
+        w = s.send([BACKSPACE]).win
+    assert w.lines[1] == ("H", b"  ") and w.cursor == (1, 2), (w.lines, w.cursor)
+
+
 # @scenario SC-edit-model-32
 def test_backspace_in_the_empty_last_row_of_two_rows_joins_it_to_the_row_above(tmp_path):
     """A file of one line, Ctrl-End, Return, Backspace: the new empty row goes

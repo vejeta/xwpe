@@ -1043,6 +1043,8 @@ int e_t_refresh()
      int fb = e_t_chrome_ascii(c);
      if (fb)
       c = fb;
+     else if (wcwidth((wchar_t)c) < 0)
+      c = '?';   /* text the terminal cannot show: a mark, never a blank */
     }
     /* Sanitise: reject values that xwpe cannot have produced.
        Valid: 0-12 (sp_chr border/scrollbar chars), 32-127 (ASCII),

@@ -382,7 +382,17 @@ Changes
   bytes after it, or the character before it, two glyphs at once.
   Backspace in a C file (auto-indent on) after an é or a € deleted only its
   first byte and left the rest as broken text; it now takes the whole
-  character.
+  character.  Bytes of the right shape that are no UTF-8 (an overlong
+  form, a surrogate, a lead byte above F4) are one glyph as well: the
+  window draws one mark for them, the cursor moves one cell and a click
+  lands at their start, as the keys do.  The assistant's input row steps
+  by the same rule.  On a terminal that is not UTF-8 (the C locale) text
+  the terminal cannot show is one ? per glyph, never a blank.
+
+* Backspace in a C file (auto-indent on) right after the first character
+  that follows the indent deletes that character only; it re-indented the
+  line and took the indent with it.  It re-indents only when the cursor
+  is among the leading blanks, as the manual says.
 
 * A format, a rename or an accepted Edit that adds, removes or re-indents
   lines keeps every breakpoint on its own code (a format that added a line

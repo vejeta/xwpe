@@ -4657,28 +4657,26 @@ static void e_ai_chat_send(FENSTER *f, const char *text)
 /**
  * ai_in_prev - Byte index of the character before @p in the input.
  *
- * Steps over a whole multibyte character, so Left and Backspace never land
- * inside one.
+ * Steps over the glyph the editor's own Left and Backspace step over: a
+ * whole multibyte character, or one byte of text that is no character.
  */
 static int ai_in_prev(int p)
 {
  if (p <= 0) return 0;
- p--;
- while (p > 0 && ai_utf8_continues(g_ai_input[p])) p--;
- return p;
+ return e_utf8_char_before((const unsigned char *)g_ai_input, p,
+                           g_ai_input_len);
 }
 /**
  * ai_in_next - Byte index of the character after @p in the input.
  *
- * Steps over a whole multibyte character, so Right and Delete never land
- * inside one.
+ * Steps over the glyph the editor's own Right and Delete step over, the same
+ * one ai_in_prev steps back over.
  */
 static int ai_in_next(int p)
 {
  if (p >= g_ai_input_len) return g_ai_input_len;
- p++;
- while (p < g_ai_input_len && ai_utf8_continues(g_ai_input[p])) p++;
- return p;
+ return p + e_utf8_seq_len((const unsigned char *)g_ai_input + p,
+                           g_ai_input_len - p);
 }
 /**
  * ai_in_bol - Start of the input line holding byte @p.

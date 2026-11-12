@@ -2900,12 +2900,10 @@ void e_pr_line(int y, FENSTER *f)
   else if (ch < ' ')
   { j++; i++; }
   else if (ch >= 0xC0 && ch < 0xFE)
-  { /* UTF-8 lead byte: decode and account for wide chars */
-   wchar_t wc = 0;
-   mbstate_t mbs = {0};
-   int nb = mbrtowc(&wc, b->bf[y].s + i, b->bf[y].len - i, &mbs);
-   if (nb > 1) { int cw = wcwidth(wc); if (cw > 1) j += cw - 1; i += nb; }
-   else i++;
+  { /* UTF-8 lead byte: one glyph, as the keys step over it */
+   int cp, cw, nb = e_utf8_glyph_at(b->bf[y].s + i, b->bf[y].len - i, &cp, &cw);
+   j += cw - 1;
+   i += nb;
   }
   else
    i++;
@@ -3030,23 +3028,20 @@ void e_pr_line(int y, FENSTER *f)
    unsigned char uc = (unsigned char) *(b->bf[y].s + i);
    if (uc >= 0xC0 && uc < 0xFE)
    {
-    /* UTF-8 lead byte: decode full character */
-    wchar_t wc = 0;
-    mbstate_t mbs = {0};
-    int nb = mbrtowc(&wc, b->bf[y].s + i, b->bf[y].len - i, &mbs);
-    if (nb > 1)
+    /* UTF-8 lead byte: one glyph, the bytes the keys step over */
+    int wc, cw;
+    int nb = e_utf8_glyph_at(b->bf[y].s + i, b->bf[y].len - i, &wc, &cw);
+    if (wc != 0)
     {
-     int cw = wcwidth(wc);
      int sx = f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1;
      int sy = y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1;
-     if (cw < 1) cw = 1;
-     j += e_put_wide_cell(sx, sy, (int)wc, cw, frb,
+     j += e_put_wide_cell(sx, sy, wc, cw, frb,
                           j + 1 < COL_NUM_ON_SCREEN_RIGHT);
-     i += nb - 1;  /* skip continuation bytes (loop does i++) */
     }
     else
      e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
        y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, '?', frb);
+    i += nb - 1;  /* skip the rest of the glyph (loop does i++) */
    }
    else
     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,

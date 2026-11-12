@@ -29,10 +29,11 @@ extern int e_utf8_to_codepoint(unsigned char *buf, int len);
  */
 static int e_utf8_decode_at(unsigned char *s, int pos, int *codepoint)
 {
- int len = e_utf8_seq_len(s + pos, E_UTF8_UNBOUNDED);
+ int cp, cols;
+ int len = e_utf8_glyph_at(s + pos, E_UTF8_UNBOUNDED, &cp, &cols);
 
- if (len > 1)
-  *codepoint = e_utf8_to_codepoint(s + pos, len);
+ if (cp != 0)
+  *codepoint = cp;
  else if (s[pos] < 0x80)
   *codepoint = s[pos];
  else

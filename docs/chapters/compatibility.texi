@@ -137,6 +137,14 @@ erased, the second gave the blanks back.  One @kbd{Ctrl-U} now gives the
 line back as it was and one @kbd{Ctrl-R} indents it again, because one key
 is one action.
 
+@item Backspace after the first character of a line
+@cindex Backspace, auto-indent
+The original with auto-indent on re-indented the line when @key{Backspace}
+was pressed right after the first visible character, so the character
+went together with the indent.  @key{Backspace} now takes that character
+alone, and re-indents only when the cursor is among the leading blanks, as
+the manual says.
+
 @item Backspace in an indent
 @cindex undo, Backspace
 The original needed up to three @kbd{Ctrl-U} for one @key{Backspace} that
@@ -358,7 +366,11 @@ byte: the cursor steps over it, @key{Left}, @key{Backspace} and
 @key{Delete} take it alone, in a window and in a dialog field, a letter
 typed over it in overwrite mode replaces it alone, and saving writes it
 back as it was.  Going back takes what going forward takes, so a key
-never takes two glyphs the screen shows apart.
+never takes two glyphs the screen shows apart.  Bytes of the right shape
+that are still no UTF-8 (an overlong form such as @samp{C0 80}, a
+surrogate, a lead byte above @samp{F4}) are one glyph too, shown the same
+way, so the cursor, the mouse and the keys agree on where it starts and
+ends.
 
 @item The block Undo marks around a line break
 @cindex undo, block marks

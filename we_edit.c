@@ -148,6 +148,8 @@ int e_codepoint_to_utf8(int cp, unsigned char *out);
 int e_utf8_charlen(unsigned char c);
 int e_utf8_seq_len(const unsigned char *s, int avail);
 int e_utf8_char_before(const unsigned char *s, int pos, int len);
+int e_utf8_glyph_at(const unsigned char *s, int avail, int *codepoint,
+                    int *cols);
 int e_utf8_to_codepoint(unsigned char *buf, int len);
 int e_utf8_visual_len(unsigned char *s, int bytes);
 static int e_char_bytes_at(BUFFER *b, int x, int y);
@@ -160,25 +162,18 @@ static int e_char_start_before(BUFFER *b, int x, int y);
 #define UTF8_IS_LEAD(c) ((c) >= 0xC0 && (c) < 0xFE)
 
 /* Walk one UTF-8 character starting at s[i] (line length `len`) while computing
-   the screen column.  Decodes the character, adds its (display width - byte
-   count) to *j -- a multi-byte sequence is one b->b.x step per byte but only
-   wcwidth() columns wide -- and returns the number of EXTRA (continuation)
-   bytes so the caller's loop can skip them.  0 for a 1-byte/invalid sequence.
-   Folds three identical inline copies that computed cursor screen columns. */
+   the screen column.  Takes the glyph the keys step over (e_utf8_glyph_at),
+   adds its (display width - byte count) to *j -- a multi-byte glyph is one
+   b->b.x step per byte but only its columns wide, one column for bytes that
+   are not a character -- and returns the number of EXTRA (continuation)
+   bytes so the caller's loop can skip them.  0 for a 1-byte glyph. */
 static int e_utf8_visual_step(unsigned char *s, int i, int len, int *j)
 {
- wchar_t wc = 0;
- mbstate_t mbs = {0};
- int nb = mbrtowc(&wc, (char *)(s + i), len - i, &mbs);
+ int codepoint, cols;
+ int nb = e_utf8_glyph_at(s + i, len - i, &codepoint, &cols);
 
- if (nb > 1)
- {
-  int cw = wcwidth(wc);
-  if (cw < 1) cw = 1;
-  *j += cw - nb;
-  return nb - 1;
- }
- return 0;
+ *j += cols - nb;
+ return nb - 1;
 }
 
 #ifdef PROG
@@ -2132,14 +2127,30 @@ int e_tab_a_ind(BUFFER *b, SCHIRM *s)
 }
 
 /**
+ * e_char_is_blank_at - Is the character at (@x, @y) a blank or a tab?
+ *
+ * A byte of text that is not ASCII is never a blank, so Backspace with
+ * auto-indent over a Latin-1 letter or half of a cut character takes just
+ * that byte.
+ */
+static int e_char_is_blank_at(BUFFER *b, int x, int y)
+{
+ if (e_char_bytes_at(b, x, y) != E_CHAR_ONE_BYTE)
+  return(0);
+ return(isspace(b->bf[y].s[x]) != 0);
+}
+
+/**
  * e_del_a_ind - Backspace with auto-indent.
  * @b: the buffer; @s: its screen.
  *
- * Inside the indent the line is re-indented like the last line that
- * started before the cursor: its tabs become blanks and the blanks past
- * that line's indent go.  Those pieces are one action: one Ctrl-U gives the
- * line back as it was before the Backspace, one Ctrl-R deletes again.
- * Elsewhere, and over a character of several bytes, Backspace takes the
+ * Inside the indent, with the cursor among the leading blanks, the line is
+ * re-indented like the last line that started before the cursor: its tabs
+ * become blanks and the blanks past that line's indent go.  Those pieces
+ * are one action: one Ctrl-U gives the line back as it was before the
+ * Backspace, one Ctrl-R deletes again.
+ * Elsewhere, and over a character that is not a blank (the first letter
+ * after the indent, a character of several bytes), Backspace takes the
  * whole character at the cursor, as it does without auto-indent.
  * Return: how many bytes the last deletion took.
  */
@@ -2153,7 +2164,7 @@ int e_del_a_ind(BUFFER *b, SCHIRM *s)
   for (i = 0;
     i < b->bf[b->b.y].len && i < b->b.x && isspace(b->bf[b->b.y].s[i]); i++)
    ;
-  if (i == b->b.x && e_char_bytes_at(b, b->b.x, b->b.y) == E_CHAR_ONE_BYTE)
+  if (i == b->b.x && e_char_is_blank_at(b, b->b.x, b->b.y))
   {
    for (j = 0, i = 0; j <= b->b.x; j++)
    {
@@ -3024,6 +3035,69 @@ int e_utf8_seq_len(const unsigned char *s, int avail)
  for (i = 1; i < n; i++)
   if ((s[i] & 0xC0) != 0x80)
    return(1);
+ return(n);
+}
+
+/* The smallest code point each sequence length may carry (a shorter form of
+   it is an overlong encoding), the surrogates, and the last code point. */
+#define E_UTF8_MIN_2_BYTES   0x80
+#define E_UTF8_MIN_3_BYTES   0x800
+#define E_UTF8_MIN_4_BYTES   0x10000
+#define E_UTF8_SURROGATE_LO  0xD800
+#define E_UTF8_SURROGATE_HI  0xDFFF
+#define E_UTF8_LAST_CODEPOINT 0x10FFFF
+
+/**
+ * e_utf8_scalar_is_valid - Is @cp, decoded from @n bytes, a character UTF-8
+ * allows in that many bytes?
+ *
+ * Bytes of the right shape can still be no character: an overlong form
+ * (C0 80), a surrogate (ED A0 80) or a lead above F4.  They are not shown
+ * as a character.
+ */
+static int e_utf8_scalar_is_valid(int cp, int n)
+{
+ if (n == 2)
+  return(cp >= E_UTF8_MIN_2_BYTES);
+ if (n == 3)
+  return(cp >= E_UTF8_MIN_3_BYTES &&
+         (cp < E_UTF8_SURROGATE_LO || cp > E_UTF8_SURROGATE_HI));
+ return(cp >= E_UTF8_MIN_4_BYTES && cp <= E_UTF8_LAST_CODEPOINT);
+}
+
+/**
+ * e_utf8_glyph_at - The glyph that starts at @s: its bytes, what to draw for
+ * it and how many columns it takes.
+ * @s: the first byte; @avail: the bytes that may be read.
+ * @codepoint: receives the character, or 0 when the bytes are no character
+ * the terminal can show (a stray byte, a cut sequence, or bytes of a good
+ * shape that are invalid as UTF-8: an overlong form, a surrogate, a lead
+ * above F4); the caller then draws its replacement.
+ * @cols: receives the columns the glyph takes, at least 1.
+ *
+ * The one place that decides what a glyph is, for the keys, the screen, the
+ * cursor and the mouse alike: the bytes are one glyph exactly when
+ * e_utf8_seq_len says so, so a key step, a drawn cell and a clicked cell
+ * always cover the same bytes, whatever the file holds.
+ * Return: the bytes of the glyph, 1 to 4.
+ */
+int e_utf8_glyph_at(const unsigned char *s, int avail, int *codepoint,
+                    int *cols)
+{
+ int n = e_utf8_seq_len(s, avail);
+ int cp, w;
+
+ *codepoint = 0;
+ *cols = 1;
+ if (n < 2)
+  return(n);
+ cp = e_utf8_to_codepoint((unsigned char *)s, n);
+ if (!e_utf8_scalar_is_valid(cp, n))
+  return(n);
+ *codepoint = cp;
+ w = wcwidth((wchar_t)cp);
+ if (w > 1)
+  *cols = w;
  return(n);
 }
 

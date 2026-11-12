@@ -691,9 +691,7 @@ static void e_run_pty_apply_byte(BUFFER *b, unsigned char c)
   len = b->bf[line].len;
   if (len > 0)
   {
-   len--;
-   while (len > 0 && ((unsigned char)b->bf[line].s[len] & 0xC0) == 0x80)
-    len--;
+   len = e_utf8_char_before(b->bf[line].s, len, len);
    b->bf[line].s[len] = '\0';
    b->bf[line].len = len;
   }

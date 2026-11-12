@@ -544,10 +544,9 @@ void e_pr_c_line(int y, FENSTER *f)
    j++;
   else if (uc >= 0xC0 && uc < 0xFE)
   {
-   wchar_t wc = 0;
-   mbstate_t mbs = {0};
-   int nb = mbrtowc(&wc, b->bf[y].s + i, b->bf[y].len - i, &mbs);
-   if (nb > 1) { int cw = wcwidth(wc); if (cw > 1) j += cw - 1; i += nb - 1; }
+   int cp, cw, nb = e_utf8_glyph_at(b->bf[y].s + i, b->bf[y].len - i, &cp, &cw);
+   j += cw - 1;
+   i += nb - 1;
   }
 #endif
  }
@@ -615,23 +614,20 @@ void e_pr_c_line(int y, FENSTER *f)
    unsigned char uc = (unsigned char) *(b->bf[y].s + i);
    if (uc >= 0xC0 && uc < 0xFE)
    {
-    /* UTF-8 lead byte: decode full character */
-    wchar_t wc = 0;
-    mbstate_t mbs = {0};
-    int nb = mbrtowc(&wc, b->bf[y].s + i, b->bf[y].len - i, &mbs);
-    if (nb > 1)
+    /* UTF-8 lead byte: one glyph, the bytes the keys step over */
+    int wc, cw;
+    int nb = e_utf8_glyph_at(b->bf[y].s + i, b->bf[y].len - i, &wc, &cw);
+    if (wc != 0)
     {
-     int cw = wcwidth(wc);
      int sx = f->a.x - s->c.x + j + 1;
      int sy = y - s->c.y + f->a.y + 1;
-     if (cw < 1) cw = 1;
-     j += e_put_wide_cell(sx, sy, (int)wc, cw, frb,
+     j += e_put_wide_cell(sx, sy, wc, cw, frb,
                           j + 1 < NUM_COLS_ON_SCREEN + s->c.x - 1);
-     i += nb - 1;
     }
     else
      e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
        '?', frb);
+    i += nb - 1;
    }
    else
     e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,

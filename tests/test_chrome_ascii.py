@@ -66,3 +66,58 @@ def test_utf8_console_keeps_unicode_buttons():
         assert w.alive(), "wpe died in the UTF-8 locale"
         assert UNICODE_BUTTONS & set(row), \
             "UTF-8 title bar should keep the Unicode close/zoom boxes, row=%r" % row
+
+
+# Text the terminal cannot show is a mark, never a blank: in the C locale an
+# accented letter, a CJK character and an emoji each show as one '?'.
+TEXT = "café 日 \U0001F600"
+C_ENV = {"LC_ALL": "C", "LANG": "C", "LC_CTYPE": "C"}
+U_ENV = {"LC_ALL": UTF8_LOCALE, "LANG": UTF8_LOCALE}
+END = "\033[F"
+
+
+def _row_of(rows, needle):
+    """The screen row holding @needle and the column it starts at."""
+    for y, r in enumerate(rows):
+        if needle in r:
+            return y, r.index(needle)
+    raise AssertionError("%r not on screen:\n%s" % (needle, "\n".join(rows)))
+
+
+# @scenario SC-edit-model-52
+def test_c_locale_window_shows_a_mark_for_each_glyph(tmp_path):
+    with WpeSession(str(tmp_path), TEXT + "\n", filename="t.txt",
+                    env_extra=C_ENV) as w:
+        rows = w.display()
+        y, x = _row_of(rows, "caf?")
+        assert rows[y][x:x + 8] == "caf? ? ?", rows[y]
+        w.key(END, delay=0.3)
+        w.display()
+        assert (w.screen.cursor.y, w.screen.cursor.x) == (y, x + 8)
+
+
+# @scenario SC-edit-model-52
+def test_utf8_locale_window_still_shows_the_text(tmp_path):
+    with WpeSession(str(tmp_path), TEXT + "\n", filename="t.txt",
+                    env_extra=U_ENV) as w:
+        rows = w.display()
+        y, x = _row_of(rows, "café 日")
+        assert "\U0001F600" in rows[y], rows[y]
+        w.key(END, delay=0.3)
+        w.display()
+        assert (w.screen.cursor.y, w.screen.cursor.x) == (y, x + 10)
+
+
+# @scenario SC-edit-model-52
+def test_c_locale_dialog_field_shows_a_mark_for_each_glyph(tmp_path):
+    with WpeSession(str(tmp_path), TEXT + "\nfoo\n", filename="t.txt",
+                    env_extra=C_ENV) as w:
+        w.key("\033[H", "\x0b", "b", END, "\x0b", "k", delay=0.3)
+        w.key("\x03", delay=0.5)
+        w.key("\033[B", "\033[H", delay=0.3)
+        w.menu("\033s", "r")
+        w.key("foo")
+        w.key("\033n")
+        w.key("\x16", delay=0.5)
+        rows = [r for r in w.display() if "New Text:" in r]
+        assert rows and "caf? ? ?" in rows[0], rows
