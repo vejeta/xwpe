@@ -64,6 +64,27 @@ static int e_dialog_encode_char(int c, unsigned char *out)
  return e_codepoint_to_utf8(c, out);
 }
 
+/** Codes below this are always typed text; from here up a key is text only
+ *  when the backend says it decoded a character. */
+#define E_FIELD_TEXT_LIMIT 0xff
+
+/**
+ * e_field_key_is_wide_text - Is this key a typed character above Latin-1?
+ * @c: the key the backend returned.
+ *
+ * A typed euro sign (3 bytes in UTF-8) or a musical clef (4 bytes) arrives as
+ * a code above 255, and so does an editor key such as F1 or Alt-N.  The
+ * backend flags which one it decoded, so a field keeps the text typed so far
+ * and inserts the character instead of treating it as a command that leaves
+ * the field, or as a cursor key whose code it happens to share.
+ * Return: non-zero when @c is a character to insert.
+ */
+static int e_field_key_is_wide_text(int c)
+{
+ return (c >= E_FIELD_TEXT_LIMIT && e_input_was_char);
+}
+
+
 /*
    draw entire screen with uniform chars and color */
 void e_cls(int frb, int chr)
@@ -329,6 +350,54 @@ static int e_field_insert(unsigned char *tmp, int *l, int *jc,
  return(1);
 }
 
+/**
+ * e_field_type_wide_char - Put a typed character above Latin-1 into a field.
+ * @tmp, @l, @jc, @max: the field's text, length, caret and room.
+ * @c: the character's codepoint.
+ * @first: 1 when nothing was typed in the field yet; the character then
+ *     replaces the text the field opened with, as a first letter does.
+ */
+static void e_field_type_wide_char(unsigned char *tmp, int *l, int *jc,
+                                   int max, int c, int first)
+{
+ unsigned char u8[4];
+ int u8len = e_dialog_encode_char(c, u8);
+
+ if (first == 1)
+ {
+  tmp[0] = '\0';
+  *l = 0;
+  *jc = 0;
+ }
+ e_field_insert(tmp, l, jc, u8, u8len, max);
+}
+
+/**
+ * e_field_byte_at_column - Where the caret goes when a field is clicked.
+ * @s: the field's text; @from: the byte the visible part starts at;
+ * @len: the text's length; @col: the clicked column, 0 at the first letter.
+ *
+ * A letter such as the euro sign takes one column but three bytes, so the
+ * column clicked is walked letter by letter: the caret lands before the
+ * letter under the pointer, never inside its bytes, and what is typed next
+ * goes there instead of breaking that letter.
+ * Return: the byte offset of the caret, at most @len.
+ */
+static int e_field_byte_at_column(unsigned char *s, int from, int len, int col)
+{
+ int pos = from;
+ int w = 0;
+
+ while (pos < len && w < col)
+ {
+  int next = e_utf8_next(s, pos, len);
+
+  w += e_utf8_visual_width(s, pos, next);
+  pos = next;
+ }
+ return pos;
+}
+
 int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
 {
 #if  MOUSE
@@ -372,6 +441,8 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
    }
   }
 #endif
+  if (e_field_key_is_wide_text(c))
+   continue;           /* a number takes digits only; other letters are dropped */
   if (c == 332) {  if(jc < max-1) jc++;  }
   else if (c == 330) {  if(jc > max-nnum) jc--;  }
   else if (c == 326) jc = max-nnum;
@@ -551,7 +622,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
   {
    if (e_mouse.y == y && e_mouse.x > x && e_mouse.x < x+n)
    {
-    jc = e_mouse.x-x-1 < l ? e_mouse.x-x-1 : l;
+    jc = e_field_byte_at_column(tmp, ja, l, e_mouse.x - x - 1);
     if (c == -2)
     {
      int len;
@@ -585,7 +656,9 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
    }
   }
 #endif
-  if (c == CRI || (!sond && c == CtrlF)) {  if(jc < l) jc = e_utf8_next(tmp, jc, l);  }
+  if (e_field_key_is_wide_text(c))
+   e_field_type_wide_char(tmp, &l, &jc, max, c, first);
+  else if (c == CRI || (!sond && c == CtrlF)) {  if(jc < l) jc = e_utf8_next(tmp, jc, l);  }
   else if (c == CLE || (!sond && c == CtrlB)) {  if(jc > 0) jc = e_utf8_prev(tmp, jc);  }
   else if (c == CCLE && jc > 0) jc = e_su_rblk(jc, tmp);
   else if (c == CCRI && jc < l) jc = e_su_lblk(jc, tmp);
@@ -657,7 +730,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
   }
   else if (first == 1 &&
     ((c != WPE_CR && c != CtrlP && c != CtrlN && c != WPE_TAB &&
-    c != WPE_BTAB) || sond) && c > 0 && c < 0xff)
+    c != WPE_BTAB) || sond) && c > 0 && c < E_FIELD_TEXT_LIMIT)
   {
    int u8len = e_dialog_encode_char(c, tmp);
    tmp[u8len] = '\0';
@@ -665,7 +738,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
    jc = u8len;
   }
   else if (((c != WPE_CR && c != WPE_TAB && c != WPE_BTAB && c != CtrlP &&
-    c != CtrlN ) || sond) && c > 0 && c < 0xff)
+    c != CtrlN ) || sond) && c > 0 && c < E_FIELD_TEXT_LIMIT)
   {
    unsigned char u8[4];
    int u8len = e_dialog_encode_char(c, u8);

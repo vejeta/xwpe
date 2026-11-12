@@ -233,6 +233,13 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Typing a character such as the euro sign or a musical clef into a
+  dialog field (Find, Replace, Go to line, file names, Options) no longer
+  wipes what you had typed before it, and Left, Right, Backspace and Delete
+  move over such a character as one letter.  A click in a field holding
+  such characters puts the cursor between letters, and Go to line ignores
+  them instead of dropping the digits typed before.
+
 * Backspace in the empty last line of a file no longer ends the editor
   when the file has only one other line, and in longer files the cursor
   now goes to the end of the line above as it should; before, what you
