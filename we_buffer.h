@@ -224,6 +224,9 @@ void   e_buffer_record_free(Undo *rec);
 void   e_buffer_shell_free(BUFFER *shell);
 int    e_buffer_undo(BUFFER *b, SCHIRM *s);
 int    e_buffer_redo(BUFFER *b, SCHIRM *s);
+/* Make the character change record @rec describes, whole or not at all
+   (E_BUFFER_OK, E_BUFFER_NOMEM or E_BUFFER_RANGE, nothing changed). */
+int    e_buffer_apply_chars(BUFFER *b, SCHIRM *s, const Undo *rec);
 void   e_buffer_history_drop(BUFFER *b);
 void   e_buffer_mark_view(BUFFER *b);
 /* Is @b closed to the changes the user's commands make (a file opened

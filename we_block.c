@@ -238,13 +238,45 @@ static int e_blk_marks_empty(SCHIRM *s)
 }
 
 /**
- * e_blk_delete_in_line - Delete a block inside one line: its characters go,
- * the cursor stays where the block began.
+ * e_blk_delete_in_line_now - Delete a block inside one line: its characters
+ * go, the cursor stays where the block began.
+ *
+ * The deletion and its Undo record are made together by the buffer owner or
+ * not at all, so a delete that could not be undone is not made.
+ * Return: E_BLOCK_MOVED, or E_BLOCK_NOMEM with the text as it was.
  */
-static void e_blk_delete_in_line(BUFFER *b, SCHIRM *s)
+static int e_blk_delete_in_line_now(BUFFER *b, SCHIRM *s)
 {
- e_del_nchar(b, s, s->mark_begin.x, s->mark_begin.y, s->mark_end.x - s->mark_begin.x);
+ Undo as_if;
+ int row = b->b.y, r;
+
+ memset(&as_if, 0, sizeof(as_if));
+ as_if.type = 'a';
+ as_if.b = s->mark_begin;
+ as_if.a.x = s->mark_end.x - s->mark_begin.x;
+ r = e_buffer_apply_chars(b, s, &as_if);
+ if (r == E_BUFFER_NOMEM)
+  return(E_BLOCK_NOMEM);
+ if (r != E_BUFFER_OK)
+  return(E_BLOCK_NOT_MOVED);
+ b->b.y = row;
  b->b.x = s->mark_end.x = s->mark_begin.x;
+ return(E_BLOCK_MOVED);
+}
+
+/**
+ * e_blk_delete_in_line - A delete inside one line, as one action a test can
+ * starve of memory.
+ * Return: as e_blk_delete_in_line_now.
+ */
+static int e_blk_delete_in_line(BUFFER *b, SCHIRM *s)
+{
+ int r, fault;
+
+ fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_BLOCK_MOVE);
+ r = e_blk_delete_in_line_now(b, s);
+ e_buffer_test_fault_leave(fault);
+ return(r);
 }
 
 /**
@@ -266,7 +298,7 @@ int e_block_delete_marked(FENSTER *f)
   return(E_BLOCK_NOT_MOVED);
  in_line = (s->mark_begin.y == s->mark_end.y);
  if (in_line)
-  e_blk_delete_in_line(b, s);
+  r = e_blk_delete_in_line(b, s);
  else
   r = e_blk_delete_into_shell(f);
  if (r == E_BLOCK_MOVED && !in_line)

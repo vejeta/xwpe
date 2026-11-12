@@ -2439,6 +2439,73 @@ def test_a_redo_of_a_backspace_join_refused_for_memory_keeps_its_record(tmp_path
         assert s.alive(), "wpe died"
 
 
+IN_LINE_DELETED = SEED.replace("  bar(a);\n", "  r(a);\n", 1)
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", UNDO_FAULT_ROWS)
+def test_an_in_line_block_delete_refused_for_memory_changes_nothing(tmp_path, n):
+    """Ctrl-K Y over "ba" of "  bar(a);", refused at its n-th allocation:
+    the line, the block and the status row say it was not made (it was once
+    made with no Ctrl-U to take it back); with memory the same Ctrl-K Y
+    deletes it, Ctrl-U gives the characters back and Ctrl-R deletes them
+    again."""
+    with WpeSession(str(tmp_path), SEED, env_extra=_fault_env(tmp_path, "block-move:%d" % n)) as s:
+        _mark_in_line(s, BAR_ROW, 2, 4)
+        s.key(CTRL_K, "y", delay=0.8)
+        _assert_fault_fired(tmp_path, "block-move")
+        if _saved(s) == IN_LINE_DELETED:
+            _assert_undo_and_redo_on_disk(s, SEED, IN_LINE_DELETED, "the in-line delete")
+            return
+        assert s.text() == SEED, "a refused delete changed the text: %r" % s.text()
+        assert _said_out_of_memory(s, tmp_path, "the block deletion"), \
+            "the status row does not say the delete was refused:\n" + "\n".join(s.display())
+        s.key(CTRL_K, "y", delay=0.8)
+        _assert_undo_and_redo_on_disk(s, SEED, IN_LINE_DELETED, "the delete after the refusal")
+        assert s.alive(), "wpe died"
+
+
+def _with_ba_at(text, row, col):
+    """@text with "ba" put in at column @col of 0-based @row."""
+    lines = text.split("\n")
+    lines[row] = lines[row][:col] + "ba" + lines[row][col:]
+    return "\n".join(lines)
+
+
+IN_LINE_COPIED = _with_ba_at(SEED, BAR_ROW, 8)
+
+
+# @scenario SC-buffer-08
+@pytest.mark.parametrize("n", UNDO_FAULT_ROWS)
+def test_an_undo_of_an_in_line_block_copy_refused_for_memory_keeps_its_record(tmp_path, n):
+    """"ba" of "  bar(a);" copied before its ";", then Ctrl-U refused at its
+    n-th allocation: the copy stays and the status row says so (the copy was
+    once taken away with no Ctrl-R to bring it back); the next Ctrl-U takes
+    it back and Ctrl-R copies it again."""
+    with WpeSession(str(tmp_path), SEED, env_extra=_fault_env(tmp_path, "undo:%d" % n)) as s:
+        _mark_in_line(s, BAR_ROW, 2, 4)
+        _down(s, BAR_ROW)
+        s.key(HOME, delay=0.1)
+        for _ in range(8):
+            s.key(RIGHT, delay=0.05)
+        s.key(CTRL_K, "c", delay=0.8)
+        assert _saved(s) == IN_LINE_COPIED, "the block was not copied: %r" % s.text()
+        s.key(CTRL_U, delay=0.8)
+        _assert_fault_fired(tmp_path, "undo")
+        if _saved(s) == SEED:
+            s.key(CTRL_R, delay=0.8)
+            assert _saved(s) == IN_LINE_COPIED, "Ctrl-R of the copy gave %r" % s.text()
+            return
+        assert s.text() == IN_LINE_COPIED, "a refused Ctrl-U changed the text: %r" % s.text()
+        assert _said_out_of_memory(s, tmp_path, "Undo"), \
+            "the status row does not say Undo was refused:\n" + "\n".join(s.display())
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == SEED, "the Ctrl-U after the refusal gave %r" % s.text()
+        s.key(CTRL_R, delay=0.8)
+        assert _saved(s) == IN_LINE_COPIED, "Ctrl-R of the copy gave %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
 # @scenario SC-buffer-08
 @pytest.mark.parametrize("n", UNDO_FAULT_ROWS)
 def test_an_undo_of_a_replacement_refused_for_memory_keeps_its_record(tmp_path, n):

@@ -705,6 +705,27 @@
    "id": "SC-buffer-08",
    "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
    "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_in_line_block_delete_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_an_in_line_block_delete_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_undo_of_an_in_line_block_copy_refused_for_memory_keeps_its_record",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-08",
+   "requirement": "A change refused for want of memory leaves text, marks, breakpoints and undo as they were",
+   "layer": "ncurses",
    "test": "tests/test_buffer_owner.py::test_an_undo_of_a_replacement_refused_for_memory_keeps_its_record",
    "status": "new"
   },

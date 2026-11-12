@@ -2316,6 +2316,58 @@ static void case_a_step_of_line_records_is_one_transaction(void)
  chk("49 ... and once memory suffices", whole_from > 1, 1);
 }
 
+/* A character change run through the owner's entry (what a block deleted
+   inside a line goes through), memory refused at each allocation in turn:
+   refused, the text, the breakpoint and both lists are as they were and the
+   cursor stays; whole, the line is joined, its breakpoint is parked in the
+   one record the change leaves on the Undo list, and Redo has nothing. */
+static void case_a_character_change_through_the_owner_is_whole_or_nothing(void)
+{
+ char before[4096];
+ int k, r, row = 4, bad = 0, whole_from = 0;
+ Undo as_if;
+
+ memset(&as_if, 0, sizeof(as_if));
+ as_if.type = 'a';
+ as_if.b = pnt(2, 3);
+ as_if.a.x = 1;
+ for (k = 1; k <= SWEEP_LIMIT && whole_from == 0; k++) {
+  fixture(8, E_BUFFER_HISTORY_FULL);
+  brp_set(1, &row);
+  buf.b = pnt(1, 6);
+  snprintf(before, sizeof before, "%s", text_of());
+  e_buffer_test_fail_allocs(k);
+  r = e_buffer_apply_chars(&buf, &scr, &as_if);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   whole_from = k;
+   if (!(buf.mxlines == 7 && scr.brp[0] == 0 && list_len(buf.ud) == 1 &&
+         buf.ud->type == 'r' && buf.ud->nbrk == 1 && buf.rd == NULL))
+    bad++;
+  } else if (r != E_BUFFER_NOMEM || strcmp(text_of(), before) != 0 || buf.mxlines != 8 ||
+             scr.brp[0] != 1 || !brp_has(4) || buf.ud != NULL || buf.rd != NULL ||
+             buf.b.x != 1 || buf.b.y != 6)
+   bad++;
+  fixture_free();
+ }
+ chk("51 a character change through the owner is whole or changes nothing", bad, 0);
+ chk("51 ... and is made once memory suffices", whole_from > 1, 1);
+
+ fixture(8, E_BUFFER_HISTORY_FULL);              /* refused on the shell alone */
+ snprintf(before, sizeof before, "%s", text_of());
+ stub_refuses = 1;
+ r = e_buffer_apply_chars(&buf, &scr, &as_if);
+ stub_refuses = 0;
+ chk("51 a primitive refused on its shell refuses the change", r, E_BUFFER_NOMEM);
+ chk("51 ... which changes nothing", strcmp(text_of(), before) == 0 && buf.ud == NULL, 1);
+ as_if.b = pnt(0, 20);
+ replay_calls = 0;
+ chk("51 a row past the text is refused", e_buffer_apply_chars(&buf, &scr, &as_if),
+     E_BUFFER_RANGE);
+ chk("51 ... without running the primitive", replay_calls, 0);
+ fixture_free();
+}
+
 /* A block record inside a step (no command makes one; a hook could): the
    step ends before it, traced, and the block record is a step of its own. */
 static void case_a_block_record_is_alone_in_its_step(void)
@@ -2644,6 +2696,7 @@ int main(void)
  case_a_refused_undo_of_a_two_record_step_changes_nothing();
  case_a_step_of_line_records_is_one_transaction();
  case_a_block_record_is_alone_in_its_step();
+ case_a_character_change_through_the_owner_is_whole_or_nothing();
  case_text_cut_into_rows_fits_the_width();
  case_every_row_a_maker_makes_fits_the_width();
  case_a_row_that_does_not_fit_is_refused();

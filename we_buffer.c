@@ -4367,6 +4367,41 @@ static int buffer_replay_step(BUFFER *b, Undo *top, int *taken)
 }
 
 /**
+ * e_buffer_apply_chars - Make the character change that record @rec
+ * describes, as one change that is whole or not made at all.
+ * @b: the buffer; @s: its screen (the marks are read from the window of @b);
+ * @rec: an 'a' 'r' 's' or 'p' record, read only, as its Undo would run it
+ * ('a': @rec->a.x characters leave from @rec->b).
+ *
+ * The primitive that types or deletes runs on a shell holding copies of the
+ * rows it can touch; the shell's lines replace the user's rows only when
+ * everything it needs was had, and its Undo record goes on the buffer's list
+ * with them.  So a deletion inside a line (Block > Delete, Edit > Cut) that
+ * runs out of memory leaves the text, the block and the breakpoints as they
+ * were, never made without a Ctrl-U to take it back.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM (nothing changed) or E_BUFFER_RANGE
+ * (@rec names text the buffer does not have; nothing changed).
+ */
+int e_buffer_apply_chars(BUFFER *b, SCHIRM *s, const Undo *rec)
+{
+ WpeBufferTxn t;
+ BufferRunView v;
+ int r;
+
+ (void) s;
+ e_buffer_txn_begin(&t);
+ e_buffer_step_begin(b);
+ buffer_run_view_start(b, &v);
+ r = buffer_replay_chars_prepare(&t, b, rec, &v);
+ if (r == E_BUFFER_OK)
+  r = e_buffer_txn_commit(&t);
+ else
+  e_buffer_txn_abort(&t);
+ e_buffer_step_end(b);
+ return(r);
+}
+
+/**
  * buffer_replay_block - Replay block record @rec ('c' 'v' 'd'), a step of
  * its own, through the block operation itself.
  *
