@@ -1,0 +1,9 @@
+{
+  "files": [
+    {"type": "absent", "pattern": "compute_total", "globs": ["*.c", "*.h", "Makefile"]},
+    {"type": "present_in_each", "pattern": "sum_lines", "paths": ["items.h", "items.c", "main.c"]},
+    {"type": "unchanged", "paths": ["Makefile"]}
+  ],
+  "build": "make -B -f Makefile",
+  "test": "make -B -f Makefile test"
+}

@@ -1,0 +1,9 @@
+{
+  "files": [
+    {"type": "unchanged", "paths": ["check.c", "Makefile", "stats.h"]},
+    {"type": "changed", "paths": ["stats.c"]}
+  ],
+  "build": "make -B -f Makefile",
+  "test": "make -B -f Makefile test",
+  "hidden": {"source": "hidden/edges.c", "link": ["stats.c"], "include": ["stats.h"]}
+}

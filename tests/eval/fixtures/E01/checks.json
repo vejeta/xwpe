@@ -1,0 +1,8 @@
+{
+  "files": [
+    {"type": "unchanged", "paths": ["calc.h", "main.c", "driver.c", "front.c", "parser.c", "Makefile", "TASK.md"]}
+  ],
+  "answer": {"regex": "build_unit[`*()\\s]*>[`*\\s]*front_end[`*()\\s]*>[`*\\s]*parse_body(?![`*()\\s]*>[`*\\s]*(?!parse_stmt\\b)\\w)"},
+  "build": "make -B -f Makefile",
+  "test": "make -B -f Makefile test"
+}

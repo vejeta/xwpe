@@ -1,0 +1,7 @@
+TOOL apply_patch items.h
+<<<<<<< SEARCH
+long compute_total(const struct line *lines, int n);
+=======
+long sum_lines(const struct line *lines, int n);
+>>>>>>> REPLACE
+@@END@@TURN@@TOOL run_command make -B test
