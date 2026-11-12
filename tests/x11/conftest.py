@@ -291,24 +291,33 @@ class XwpeSession:
 
     def screenshot(self):
         """Return the root window as a Pillow Image (RGB)."""
-        from PIL import Image
-        import io
         xwd = subprocess.run(["xwd", "-root", "-silent"],
                              env={**os.environ, "DISPLAY": DISPLAY},
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        if _CONV_BIN == "convert":
-            png = subprocess.run(["convert", "xwd:-", "png:-"],
-                                 input=xwd.stdout, stdout=subprocess.PIPE,
-                                 stderr=subprocess.DEVNULL).stdout
-        else:
-            # IM7 magick lost the xwd decode delegate, so route through netpbm.
-            pnm = subprocess.run(["xwdtopnm"], input=xwd.stdout,
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.DEVNULL).stdout
-            png = subprocess.run(["magick", "ppm:-", "png:-"], input=pnm,
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.DEVNULL).stdout
-        return Image.open(io.BytesIO(png)).convert("RGB")
+        return xwd_to_image(xwd.stdout)
+
+
+def xwd_to_image(xwd_bytes):
+    """Decode an xwd capture into a Pillow Image (RGB).
+
+    The capture carries the colormap of the window it was taken from, so on
+    a palette display the pixels decode to the colours that colormap holds,
+    whichever colormap the screen happens to have installed."""
+    from PIL import Image
+    import io
+    if _CONV_BIN == "convert":
+        png = subprocess.run(["convert", "xwd:-", "png:-"],
+                             input=xwd_bytes, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL).stdout
+    else:
+        # IM7 magick lost the xwd decode delegate, so route through netpbm.
+        pnm = subprocess.run(["xwdtopnm"], input=xwd_bytes,
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL).stdout
+        png = subprocess.run(["magick", "ppm:-", "png:-"], input=pnm,
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL).stdout
+    return Image.open(io.BytesIO(png)).convert("RGB")
 
 
 @pytest.fixture(scope="session")

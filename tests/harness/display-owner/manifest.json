@@ -211,25 +211,41 @@
   },
   {
    "id": "SC-display-05",
-   "requirement": "The X11 palette is the one the server allocated",
+   "requirement": "The X11 palette is the one the server allocated, and the picture is painted with those pixels on every visual class",
    "layer": "x11",
    "test": "tests/x11/test_pcmap.py::test_text_is_painted_in_the_private_colormap",
    "status": "new"
   },
   {
    "id": "SC-display-05",
-   "requirement": "The X11 palette is the one the server allocated",
+   "requirement": "The X11 palette is the one the server allocated, and the picture is painted with those pixels on every visual class",
    "layer": "x11",
    "test": "tests/x11/test_pcmap.py::test_text_is_painted_in_the_default_colormap_without_pcmap",
    "status": "new"
   },
   {
    "id": "SC-display-05",
-   "requirement": "The X11 palette is the one the server allocated",
+   "requirement": "The X11 palette is the one the server allocated, and the picture is painted with those pixels on every visual class",
    "layer": "x11",
    "test": "tests/x11/test_user_screen.py::test_user_screen_renders_program_colours",
    "status": "covered",
    "needs": ["gcc"]
+  },
+  {
+   "id": "SC-display-05",
+   "requirement": "The X11 palette is the one the server allocated, and the picture is painted with those pixels on every visual class",
+   "layer": "x11",
+   "test": "tests/x11/test_palette_display.py::test_the_editor_paints_its_own_colours_on_an_8_bit_display",
+   "status": "new",
+   "needs": ["Xvfb", "xwd", "xdotool"]
+  },
+  {
+   "id": "SC-display-05",
+   "requirement": "The X11 palette is the one the server allocated, and the picture is painted with those pixels on every visual class",
+   "layer": "x11",
+   "test": "tests/x11/test_palette_display.py::test_a_typed_character_sends_a_few_cells_on_an_8_bit_display",
+   "status": "new",
+   "needs": ["Xvfb", "xwd", "xdotool"]
   },
   {
    "id": "SC-display-06",

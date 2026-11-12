@@ -567,18 +567,30 @@ static void x_render_route_trace(Visual *visual, int depth)
               (unsigned long)cmap, x_palette_cmap != None);
 }
 
+/* The shallowest true-colour display whose red, green and blue masks give
+   the editor's colours closely enough to paint them straight through the
+   server (15-bit and 16-bit displays and up). */
+#define X_RENDER_DIRECT_MIN_DEPTH 15
+
 /**
  * x_render_route_choose - Decide how the picture reaches the window.
  * @visual: the window's visual
  * @depth: the screen's depth
  *
- * Called once the colours are allocated, before the renderer starts.  Every
- * visual takes the direct route for now: cairo paints into the back buffer
+ * Called once the colours are allocated, before the renderer starts.  On a
+ * true-colour display of 15 bits or more cairo paints into the back buffer
  * and the back buffer is copied to the window, as the editor always did.
+ * Every other display (a palette, a grey or fixed-colour display, a
+ * DirectColor one, a shallow true-colour one) gets the indexed route: cairo
+ * paints in memory and each pixel becomes one of the 16 the editor
+ * allocated, so the user sees the editor's own colours there too.
  */
 static void x_render_route_choose(Visual *visual, int depth)
 {
- x_render_route = E_X_RENDER_DIRECT;
+ if (visual->class == TrueColor && depth >= X_RENDER_DIRECT_MIN_DEPTH)
+  x_render_route = E_X_RENDER_DIRECT;
+ else
+  x_render_route = E_X_RENDER_INDEXED;
  x_render_route_trace(visual, depth);
 }
 

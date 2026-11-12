@@ -198,6 +198,7 @@ noinst_HEADERS = \
   we_keymap.h \
   we_render.h \
   we_render_glyphs.h \
+  we_palette.h \
   we_childsig.h \
   we_child.h \
   we_wayland.h \

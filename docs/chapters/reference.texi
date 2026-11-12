@@ -43,7 +43,10 @@ default: @code{8x13}).
 @item @option{-geometry @var{g}} @tab Set window size/position (X11 only;
 minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
 @item @option{-iconic} @tab Start minimised (X11 only).
-@item @option{-pcmap} @tab Use a private colourmap (X11 only).
+@item @option{-pcmap} @tab Use a private colourmap (X11 only).  For a
+palette (8-bit) display whose shared colourmap other programs have filled:
+the editor's 16 colours then get cells of their own.  With or without it,
+the editor paints a palette display in its own 16 colours.
 @end multitable
 
 @section Key cheatsheet

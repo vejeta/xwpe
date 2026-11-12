@@ -16,8 +16,11 @@
 #include <pango/pangocairo.h>
 #include <X11/Xlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <math.h>
 #include "we_render_glyphs.h"    /* wpe_glyph_acs / wpe_glyph_lock (shared with Wayland) */
+#include "we_palette.h"          /* wpe_palette_nearest (shared with the User Screen) */
 
 #include <fontconfig/fontconfig.h>
 
@@ -62,6 +65,9 @@ struct cr_sink {
  void (*cleanup)(void);
  /* How cairo smooths the edges of shapes and glyphs on this sink. */
  cairo_antialias_t antialias;
+ /* Nonzero when the sink sends only what was touched to the window, so a
+    glyph's ink outside its cell must be reported too. */
+ int tracks_damage;
 };
 
 static const struct cr_sink cr_sink_direct;
@@ -127,6 +133,49 @@ static void cr_touch_arrow(int cx, int cy, int sz)
 }
 
 /**
+ * cr_touch_ink - Tell the sink that glyph ink covered a rectangle.
+ * @x: left edge, in pixels, possibly fractional
+ * @y: top edge, in pixels, possibly fractional
+ * @w: width, in pixels
+ * @h: height, in pixels
+ *
+ * The rectangle is widened to whole pixels, so the last column of a glyph
+ * that ends half way through a pixel still reaches the window.  A glyph
+ * with no ink (a space) reports nothing.
+ */
+static void cr_touch_ink(double x, double y, double w, double h)
+{
+ int left, top, right, bottom;
+
+ if (w <= 0 || h <= 0)
+  return;
+ left = (int)floor(x);
+ top = (int)floor(y);
+ right = (int)ceil(x + w);
+ bottom = (int)ceil(y + h);
+ cr_touch(left, top, right - left, bottom - top);
+}
+
+static void cr_touch_glyph_ink(cairo_glyph_t *glyph);
+
+/**
+ * cr_sink_font_options - Make glyph options sharp when the sink wants it.
+ * @opts: font options about to be used for the editor's glyphs
+ *
+ * Both fonts the editor draws with (the Pango text font and the one used
+ * while a scrollbar is dragged) take their options through here, so on a
+ * display that can only show the editor's 16 colours every glyph is drawn
+ * without in-between colours, and on any other display nothing changes.
+ */
+static void cr_sink_font_options(cairo_font_options_t *opts)
+{
+ if (cr_sink->antialias != CAIRO_ANTIALIAS_NONE)
+  return;
+ cairo_font_options_set_antialias(opts, CAIRO_ANTIALIAS_NONE);
+ cairo_font_options_set_hint_style(opts, CAIRO_HINT_STYLE_FULL);
+}
+
+/**
  * cr_apply_antialias - Set the edge smoothing the current sink wants on cr.
  *
  * Called right after every cairo_create, at start-up and after a resize, so
@@ -147,8 +196,7 @@ static void cr_apply_antialias(void)
   return;
 
  opts = cairo_font_options_create();
- cairo_font_options_set_antialias(opts, CAIRO_ANTIALIAS_NONE);
- cairo_font_options_set_hint_style(opts, CAIRO_HINT_STYLE_FULL);
+ cr_sink_font_options(opts);
  cairo_set_font_options(cr, opts);
  cairo_font_options_destroy(opts);
  if (pg_layout)
@@ -215,6 +263,45 @@ static void cr_draw_text_ft(int x, int y, const char *utf8, int u8len,
  cairo_set_source_rgb(cr, cairo_colors[fg_idx][0],
    cairo_colors[fg_idx][1], cairo_colors[fg_idx][2]);
  cairo_show_glyphs(cr, &glyph, 1);
+ cr_touch_glyph_ink(&glyph);
+}
+
+/**
+ * cr_touch_glyph_ink - Report the ink of a glyph drawn while dragging.
+ * @glyph: the glyph just shown with cr_scaled
+ *
+ * A glyph may reach past its cell; on a sink that sends only what was
+ * touched, its whole ink then still reaches the window.
+ */
+static void cr_touch_glyph_ink(cairo_glyph_t *glyph)
+{
+ cairo_text_extents_t ext;
+
+ if (!cr_sink->tracks_damage)
+  return;
+ cairo_scaled_font_glyph_extents(cr_scaled, glyph, 1, &ext);
+ cr_touch_ink(glyph->x + ext.x_bearing, glyph->y + ext.y_bearing,
+              ext.width, ext.height);
+}
+
+/**
+ * cr_touch_layout_ink - Report the ink of the text the layout just drew.
+ * @x: where the layout was drawn, left edge in pixels
+ * @y: where the layout was drawn, top edge in pixels
+ *
+ * A fallback glyph wider than its cells, an overhang or a combining mark
+ * can paint outside the cell box; on a sink that sends only what was
+ * touched, that ink must reach the window too, or it shows up only after
+ * the next full repaint.
+ */
+static void cr_touch_layout_ink(int x, int y)
+{
+ PangoRectangle ink;
+
+ if (!cr_sink->tracks_damage)
+  return;
+ pango_layout_get_pixel_extents(pg_layout, &ink, NULL);
+ cr_touch_ink(x + ink.x, y + ink.y, ink.width, ink.height);
 }
 
 static void cr_draw_text_pango(int x, int y, const char *utf8, int u8len,
@@ -225,6 +312,7 @@ static void cr_draw_text_pango(int x, int y, const char *utf8, int u8len,
  cairo_move_to(cr, x, y);
  pango_layout_set_text(pg_layout, utf8, u8len);
  pango_cairo_show_layout(cr, pg_layout);
+ cr_touch_layout_ink(x, y);
 }
 
 static void cr_draw_text(int x, int y, const char *utf8, int u8len,
@@ -447,22 +535,680 @@ static const struct cr_sink cr_sink_direct = {
  cr_direct_present_all,
  cr_direct_blit,
  cr_direct_cleanup,
- CAIRO_ANTIALIAS_GRAY
+ CAIRO_ANTIALIAS_GRAY,
+ 0
 };
 
 #ifndef NO_XWINDOWS
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
+  The indexed sink: cairo paints into an image in memory, and presenting a
+  rectangle turns each of its pixels into one of the 16 pixels the editor
+  allocated, puts the result into the back buffer and copies it to the
+  window.  Right for a display whose pixels are indexes into a colormap (a
+  palette display), where cairo would otherwise pick pixels from cells the
+  editor never allocated.
+\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+/* Above this many rectangles a refresh presents the box around them all,
+   which costs fewer requests than many small ones. */
+#define CR_DIRTY_MAX_RECTS 16
+/* The remembered nearest entries: one per 15-bit colour (5 bits a
+   channel); CR_IX_UNFILLED marks a colour not looked up yet. */
+#define CR_IX_MEMO_SIZE (1 << 15)
+#define CR_IX_UNFILLED 0xFF
+#define CR_RGB24_MASK 0xFFFFFFu
+/* Bits of a channel the memo keeps, and of an 8-bit channel. */
+#define CR_IX_MEMO_BITS 5
+#define CR_CHANNEL_BITS 8
+/* A display whose pixels are one byte each: the mapping writes bytes. */
+#define CR_IX_BYTE_PIXEL_BITS 8
+/* The scanline unit the XImage is made with, in bits. */
+#define CR_IX_PAD_BITS 32
+
+/* The image XPutImage sends, as wide as the surface. */
+static XImage *cr_ix_image;
+/* What was painted since the last present, in surface pixels. */
+static cairo_region_t *cr_ix_dirty;
+/* Each palette entry as cairo writes it into the image (0x00RRGGBB), and
+   as 8-bit channels for the nearest-colour search. */
+static unsigned long cr_ix_rgb24[WPE_PALETTE_SIZE];
+static unsigned char cr_ix_pal[WPE_PALETTE_SIZE][3];
+/* The pixel the server gave each entry. */
+static unsigned long cr_ix_pixel[WPE_PALETTE_SIZE];
+/* The nearest entry of every 15-bit colour looked up so far. */
+static unsigned char cr_ix_memo[CR_IX_MEMO_SIZE];
+/* The last colour mapped and its entry: runs of one colour are the rule. */
+static unsigned long cr_ix_last_rgb24;
+static int cr_ix_last_idx = -1;
+/* Bytes handed to XPutImage since the last present_all, for the trace. */
+static unsigned long cr_ix_bytes;
+
+/**
+ * cr_ix_load_palette - Learn the editor's 16 colours and their pixels.
+ *
+ * At start-up, before the first frame, so every colour cairo paints in can
+ * be turned into the pixel of the same palette entry.
+ */
+static void cr_ix_load_palette(void)
+{
+ int i;
+
+ for (i = 0; i < WPE_PALETTE_SIZE; i++)
+ {
+  unsigned short rgb[3];
+
+  e_x_palette_rgb16(i, rgb);
+  cr_ix_pal[i][0] = rgb[0] >> CR_CHANNEL_BITS;
+  cr_ix_pal[i][1] = rgb[1] >> CR_CHANNEL_BITS;
+  cr_ix_pal[i][2] = rgb[2] >> CR_CHANNEL_BITS;
+  cr_ix_rgb24[i] = ((unsigned long)cr_ix_pal[i][0] << 16)
+                   | ((unsigned long)cr_ix_pal[i][1] << 8)
+                   | (unsigned long)cr_ix_pal[i][2];
+  cr_ix_pixel[i] = e_x_palette_pixel(i);
+ }
+ memset(cr_ix_memo, CR_IX_UNFILLED, sizeof(cr_ix_memo));
+ cr_ix_last_idx = -1;
+}
+
+/**
+ * cr_ix_exact_index - The palette entry painted in exactly this colour.
+ * @rgb24: a pixel of the image, 0x00RRGGBB
+ *
+ * Text, boxes and backgrounds are painted in palette colours, so nearly
+ * every pixel is found here and keeps its own entry, also when two entries
+ * are close to each other (light grey and white).
+ *
+ * Return: the entry, or -1 when no entry has this colour.
+ */
+static int cr_ix_exact_index(unsigned long rgb24)
+{
+ int i;
+
+ for (i = 0; i < WPE_PALETTE_SIZE; i++)
+  if (cr_ix_rgb24[i] == rgb24)
+   return i;
+ return -1;
+}
+
+/**
+ * cr_ix_channel_widen - A memo channel back to 8 bits.
+ * @c5: a channel cut to CR_IX_MEMO_BITS bits
+ *
+ * Return: the 8-bit channel at the same place in the range.
+ */
+static int cr_ix_channel_widen(int c5)
+{
+ return (c5 << (CR_CHANNEL_BITS - CR_IX_MEMO_BITS))
+        | (c5 >> (2 * CR_IX_MEMO_BITS - CR_CHANNEL_BITS));
+}
+
+/**
+ * cr_ix_nearest_index - The palette entry nearest to a colour no entry has.
+ * @rgb24: a pixel of the image, 0x00RRGGBB
+ *
+ * For the colours that are not in the palette (a semantic-token colour, the
+ * dimmed scrollbar track): they show as the nearest of the editor's 16, by
+ * the rule the User Screen uses.  The answer is remembered per 15-bit
+ * colour, so a frame full of them costs one search per colour.
+ *
+ * Return: the entry.
+ */
+static int cr_ix_nearest_index(unsigned long rgb24)
+{
+ int r5 = (rgb24 >> (16 + CR_CHANNEL_BITS - CR_IX_MEMO_BITS)) & 0x1F;
+ int g5 = (rgb24 >> (8 + CR_CHANNEL_BITS - CR_IX_MEMO_BITS)) & 0x1F;
+ int b5 = (rgb24 >> (CR_CHANNEL_BITS - CR_IX_MEMO_BITS)) & 0x1F;
+ int key = (r5 << (2 * CR_IX_MEMO_BITS)) | (g5 << CR_IX_MEMO_BITS) | b5;
+
+ if (cr_ix_memo[key] == CR_IX_UNFILLED)
+  cr_ix_memo[key] = (unsigned char)wpe_palette_nearest(cr_ix_pal,
+                      cr_ix_channel_widen(r5), cr_ix_channel_widen(g5),
+                      cr_ix_channel_widen(b5));
+ return cr_ix_memo[key];
+}
+
+/**
+ * cr_pixel_index - The palette entry a pixel of the image is shown as.
+ * @rgb24: a pixel of the image, 0x00RRGGBB
+ *
+ * Return: the entry, 0..WPE_PALETTE_SIZE-1.
+ */
+static int cr_pixel_index(unsigned long rgb24)
+{
+ int idx;
+
+ if (cr_ix_last_idx >= 0 && rgb24 == cr_ix_last_rgb24)
+  return cr_ix_last_idx;
+ idx = cr_ix_exact_index(rgb24);
+ if (idx < 0)
+  idx = cr_ix_nearest_index(rgb24);
+ cr_ix_last_rgb24 = rgb24;
+ cr_ix_last_idx = idx;
+ return idx;
+}
+
+/**
+ * cr_ix_surface_rect - The surface's own rectangle.
+ * @r: receives it
+ */
+static void cr_ix_surface_rect(cairo_rectangle_int_t *r)
+{
+ r->x = 0;
+ r->y = 0;
+ r->width = cairo_image_surface_get_width(cr_surface);
+ r->height = cairo_image_surface_get_height(cr_surface);
+}
+
+/**
+ * cr_ix_clip_rect - Cut a rectangle to the part inside the surface.
+ * @r: the rectangle, cut in place
+ *
+ * A shape may be drawn partly outside the window (an arrow at the edge,
+ * a glyph's overhang); only its visible part is ever mapped and sent.
+ *
+ * Return: nonzero when something of it is left.
+ */
+static int cr_ix_clip_rect(cairo_rectangle_int_t *r)
+{
+ cairo_rectangle_int_t all;
+ int right, bottom;
+
+ cr_ix_surface_rect(&all);
+ right = r->x + r->width;
+ bottom = r->y + r->height;
+ if (r->x < 0)
+  r->x = 0;
+ if (r->y < 0)
+  r->y = 0;
+ if (right > all.width)
+  right = all.width;
+ if (bottom > all.height)
+  bottom = all.height;
+ r->width = right - r->x;
+ r->height = bottom - r->y;
+ return r->width > 0 && r->height > 0;
+}
+
+/**
+ * cr_ix_mapped_pixel - The editor's pixel for a pixel of the image.
+ * @rgb: a pixel of the image surface
+ *
+ * Return: the pixel the server gave the palette entry it is shown as.
+ */
+static unsigned long cr_ix_mapped_pixel(uint32_t rgb)
+{
+ return cr_ix_pixel[cr_pixel_index(rgb & CR_RGB24_MASK)];
+}
+
+/**
+ * cr_ix_span_widen - Take one more changed column into a span.
+ * @col: the column that changed
+ * @lo: first changed column so far
+ * @hi: one past the last changed column so far
+ */
+static void cr_ix_span_widen(int col, int *lo, int *hi)
+{
+ if (col < *lo)
+  *lo = col;
+ if (col + 1 > *hi)
+  *hi = col + 1;
+}
+
+/**
+ * cr_ix_map_row - Turn one row of a rectangle into the editor's pixels.
+ * @row: the row, in surface pixels
+ * @x: left edge, in pixels
+ * @w: width, in pixels
+ * @lo: widened to the first column whose pixel changed
+ * @hi: widened to one past the last column whose pixel changed
+ *
+ * Writes into cr_ix_image, which always holds what the back buffer holds:
+ * a byte per pixel on an 8-bit display, which is nearly every palette
+ * display, and XPutPixel on any other depth.  A cell the editor repainted
+ * in the colours it already had changes no pixel, and is not sent.
+ */
+static void cr_ix_map_row(int row, int x, int w, int *lo, int *hi)
+{
+ const unsigned char *data = cairo_image_surface_get_data(cr_surface);
+ int stride = cairo_image_surface_get_stride(cr_surface);
+ const uint32_t *src = (const uint32_t *)(data + (size_t)row * stride);
+ unsigned long pixel;
+ int col;
+
+ if (cr_ix_image->bits_per_pixel == CR_IX_BYTE_PIXEL_BITS)
+ {
+  unsigned char *dst = (unsigned char *)cr_ix_image->data
+                       + (size_t)row * cr_ix_image->bytes_per_line;
+  for (col = x; col < x + w; col++)
+  {
+   pixel = cr_ix_mapped_pixel(src[col]);
+   if (dst[col] != (unsigned char)pixel)
+   {
+    dst[col] = (unsigned char)pixel;
+    cr_ix_span_widen(col, lo, hi);
+   }
+  }
+  return;
+ }
+ for (col = x; col < x + w; col++)
+ {
+  pixel = cr_ix_mapped_pixel(src[col]);
+  if (XGetPixel(cr_ix_image, col, row) != pixel)
+  {
+   XPutPixel(cr_ix_image, col, row, pixel);
+   cr_ix_span_widen(col, lo, hi);
+  }
+ }
+}
+
+/**
+ * cr_ix_band_end - Where the text row holding a pixel row ends.
+ * @top: a pixel row
+ * @limit: the row the caller stops at
+ *
+ * Changes are collected per text row, so the cells one refresh changed
+ * come out as a few rectangles even when they lie far apart.
+ *
+ * Return: the first pixel row past that text row, at most @limit.
+ */
+static int cr_ix_band_end(int top, int limit)
+{
+ int band_h = WpeRender.font_height;
+ int end;
+
+ if (band_h <= 0)
+  return limit;
+ end = (top / band_h + 1) * band_h;
+ if (end > limit)
+  end = limit;
+ return end;
+}
+
+/**
+ * cr_ix_map_rect - Map a painted rectangle and collect what changed.
+ * @r: the rectangle, inside the surface
+ * @changed: receives, per text row, the box of the pixels that changed
+ */
+static void cr_ix_map_rect(const cairo_rectangle_int_t *r,
+                           cairo_region_t *changed)
+{
+ cairo_rectangle_int_t band;
+ int top, bottom, row, lo, hi;
+
+ for (top = r->y; top < r->y + r->height; top = bottom)
+ {
+  bottom = cr_ix_band_end(top, r->y + r->height);
+  lo = r->x + r->width;
+  hi = r->x;
+  for (row = top; row < bottom; row++)
+   cr_ix_map_row(row, r->x, r->width, &lo, &hi);
+  if (hi <= lo)
+   continue;
+  band.x = lo;
+  band.y = top;
+  band.width = hi - lo;
+  band.height = bottom - top;
+  cairo_region_union_rectangle(changed, &band);
+ }
+}
+
+/**
+ * cr_ix_put_bytes - The pixel bytes XPutImage sends for a rectangle.
+ * @r: the rectangle
+ *
+ * Each row goes out padded to the 32-bit unit the image was made with;
+ * the trace adds these up so a slow refresh can be told by its size.
+ *
+ * Return: the byte count.
+ */
+static unsigned long cr_ix_put_bytes(const cairo_rectangle_int_t *r)
+{
+ unsigned long row_bits = (unsigned long)r->width * cr_ix_image->bits_per_pixel;
+ unsigned long row_bytes = (row_bits + CR_IX_PAD_BITS - 1) / CR_IX_PAD_BITS
+                           * (CR_IX_PAD_BITS / CR_CHANNEL_BITS);
+
+ return row_bytes * (unsigned long)r->height;
+}
+
+/**
+ * cr_ix_put_rect - Send one rectangle of the mapped picture to the window.
+ * @r: the rectangle, inside the surface
+ *
+ * Puts it into the back buffer (which Expose copies from) and copies it to
+ * the window.
+ */
+static void cr_ix_put_rect(const cairo_rectangle_int_t *r)
+{
+ XPutImage(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc, cr_ix_image,
+   r->x, r->y, r->x, r->y, r->width, r->height);
+ XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+   WpeXInfo.gc, r->x, r->y, r->width, r->height, r->x, r->y);
+ cr_ix_bytes += cr_ix_put_bytes(r);
+}
+
+/**
+ * cr_ix_send - Send the changed part of the picture to the window.
+ * @changed: what changed since it was last sent
+ *
+ * Each changed rectangle goes on its own; when a refresh changed many
+ * scattered pieces, the box around them goes in one request instead.
+ *
+ * Return: how many rectangles changed.
+ */
+static int cr_ix_send(cairo_region_t *changed)
+{
+ cairo_rectangle_int_t r;
+ int i, n;
+
+ n = cairo_region_num_rectangles(changed);
+ if (n > CR_DIRTY_MAX_RECTS)
+ {
+  cairo_region_get_extents(changed, &r);
+  cr_ix_put_rect(&r);
+  return n;
+ }
+ for (i = 0; i < n; i++)
+ {
+  cairo_region_get_rectangle(changed, i, &r);
+  cr_ix_put_rect(&r);
+ }
+ return n;
+}
+
+/**
+ * cr_ix_touch - Remember that a primitive painted a rectangle.
+ * @x: left edge, in pixels
+ * @y: top edge, in pixels
+ * @w: width, in pixels
+ * @h: height, in pixels
+ *
+ * Only the rectangles painted are looked at at the end of a refresh, and
+ * of those only the pixels that changed are sent, so typing one character
+ * over a slow link to an X terminal sends a few cells, not the whole
+ * window.
+ */
+static void cr_ix_touch(int x, int y, int w, int h)
+{
+ cairo_rectangle_int_t r;
+
+ r.x = x;
+ r.y = y;
+ r.width = w;
+ r.height = h;
+ if (cr_ix_clip_rect(&r))
+  cairo_region_union_rectangle(cr_ix_dirty, &r);
+}
+
+/**
+ * cr_ix_present - Send a rectangle of the picture to the window now.
+ * @x: left edge, in pixels
+ * @y: top edge, in pixels
+ * @w: width, in pixels
+ * @h: height, in pixels
+ */
+static void cr_ix_present(int x, int y, int w, int h)
+{
+ cairo_rectangle_int_t r;
+ cairo_region_t *changed;
+
+ r.x = x;
+ r.y = y;
+ r.width = w;
+ r.height = h;
+ if (!cr_ix_clip_rect(&r))
+  return;
+ cairo_surface_flush(cr_surface);
+ changed = cairo_region_create();
+ cr_ix_map_rect(&r, changed);
+ cr_ix_send(changed);
+ cairo_region_destroy(changed);
+ cairo_region_subtract_rectangle(cr_ix_dirty, &r);
+}
+
+/**
+ * cr_ix_present_trace - Say in $XWPE_UI_TRACE what a refresh sent.
+ * @rects: how many rectangles it sent
+ *
+ * Someone wondering why typing is slow on a remote palette display reads
+ * here how many bytes each refresh put on the wire.  Nothing is written
+ * when the variable is not set.
+ */
+static void cr_ix_present_trace(int rects)
+{
+ wpe_ui_trace("palette present rects=%d bytes=%lu", rects, cr_ix_bytes);
+}
+
+/**
+ * cr_ix_present_all - Send what changed since the last refresh.
+ *
+ * The end of every refresh: everything painted is mapped to the editor's
+ * pixels, and what came out different from the window is sent.
+ */
+static void cr_ix_present_all(void)
+{
+ cairo_rectangle_int_t r;
+ cairo_region_t *changed;
+ int i, n;
+
+ n = cairo_region_num_rectangles(cr_ix_dirty);
+ if (n == 0)
+  return;
+ cr_ix_bytes = 0;
+ cairo_surface_flush(cr_surface);
+ changed = cairo_region_create();
+ for (i = 0; i < n; i++)
+ {
+  cairo_region_get_rectangle(cr_ix_dirty, i, &r);
+  cr_ix_map_rect(&r, changed);
+ }
+ n = cr_ix_send(changed);
+ if (n > 0)
+  cr_ix_present_trace(n);
+ cairo_region_destroy(changed);
+ cairo_region_destroy(cr_ix_dirty);
+ cr_ix_dirty = cairo_region_create();
+}
+
+/**
+ * cr_ix_blit - Move a rectangle inside the painted picture.
+ * @sx: source left edge, in pixels
+ * @sy: source top edge, in pixels
+ * @dx: destination left edge, in pixels
+ * @dy: destination top edge, in pixels
+ * @w: width, in pixels
+ * @h: height, in pixels
+ *
+ * Lets a scroll move the text already painted instead of painting it
+ * again; the moved rectangle reaches the window with the next refresh.
+ */
+static void cr_ix_blit(int sx, int sy, int dx, int dy, int w, int h)
+{
+ unsigned char *data;
+ int stride, row, first, last, step;
+
+ cairo_surface_flush(cr_surface);
+ data = cairo_image_surface_get_data(cr_surface);
+ stride = cairo_image_surface_get_stride(cr_surface);
+ first = 0;
+ last = h;
+ step = 1;
+ if (dy > sy)
+ {
+  first = h - 1;
+  last = -1;
+  step = -1;
+ }
+ for (row = first; row != last; row += step)
+  memmove(data + (size_t)(dy + row) * stride + (size_t)dx * sizeof(uint32_t),
+          data + (size_t)(sy + row) * stride + (size_t)sx * sizeof(uint32_t),
+          (size_t)w * sizeof(uint32_t));
+ cairo_surface_mark_dirty_rectangle(cr_surface, dx, dy, w, h);
+ cr_ix_touch(dx, dy, w, h);
+}
+
+/**
+ * cr_ix_fill_backbuf - Paint the back buffer in palette entry 0.
+ * @pixel_w: width, in pixels
+ * @pixel_h: height, in pixels
+ *
+ * A new back buffer starts in a colour the editor allocated, so whatever
+ * the window shows before the first frame is the editor's own black, also
+ * in a private colormap where the screen's black pixel may be no colour.
+ */
+static void cr_ix_fill_backbuf(int pixel_w, int pixel_h)
+{
+ XSetForeground(WpeXInfo.display, WpeXInfo.gc, e_x_palette_pixel(0));
+ XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
+   0, 0, pixel_w, pixel_h);
+}
+
+/**
+ * cr_ix_make_image - Make the XImage the presents are sent with.
+ * @pixel_w: width, in pixels
+ * @pixel_h: height, in pixels
+ *
+ * The server's own pixel size and byte order, so the mapped pixels go out
+ * as they are on any depth and on any machine.  It starts in palette
+ * entry 0, like the back buffer, because it always holds what the back
+ * buffer holds: that is how a refresh knows which pixels changed.
+ */
+static void cr_ix_make_image(int pixel_w, int pixel_h)
+{
+ Display *dpy = WpeXInfo.display;
+
+ cr_ix_image = XCreateImage(dpy, DefaultVisual(dpy, WpeXInfo.screen),
+   DefaultDepth(dpy, WpeXInfo.screen), ZPixmap, 0, NULL,
+   pixel_w, pixel_h, CR_IX_PAD_BITS, 0);
+ cr_ix_image->data = calloc((size_t)cr_ix_image->bytes_per_line, pixel_h);
+ XAddPixel(cr_ix_image, (long)e_x_palette_pixel(0));
+}
+
+/**
+ * cr_ix_make_surface - Make the image surface and context cairo paints on.
+ * @pixel_w: width, in pixels
+ * @pixel_h: height, in pixels
+ *
+ * The surface starts in palette entry 0, the colour the back buffer starts
+ * in, so the two agree before anything is painted.
+ */
+static void cr_ix_make_surface(int pixel_w, int pixel_h)
+{
+ cr_surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24,
+   pixel_w, pixel_h);
+ cr = cairo_create(cr_surface);
+ cairo_set_source_rgb(cr, cairo_colors[0][0], cairo_colors[0][1],
+   cairo_colors[0][2]);
+ cairo_paint(cr);
+ cr_apply_antialias();
+}
+
+/**
+ * cr_ix_init - Make the image, surface and context of the indexed sink.
+ * @pixel_w: width of the back buffer, in pixels
+ * @pixel_h: height of the back buffer, in pixels
+ *
+ * At start-up on a palette display, before the font is measured, so the
+ * glyphs are measured as the sharp ones the editor will draw.
+ */
+static void cr_ix_init(int pixel_w, int pixel_h)
+{
+ cr_ix_load_palette();
+ cr_ix_fill_backbuf(pixel_w, pixel_h);
+ cr_ix_make_image(pixel_w, pixel_h);
+ cr_ix_make_surface(pixel_w, pixel_h);
+ cr_ix_dirty = cairo_region_create();
+}
+
+/**
+ * cr_ix_resize - Remake everything at a new size, keeping the picture.
+ * @pixel_w: new width, in pixels
+ * @pixel_h: new height, in pixels
+ *
+ * After the user resizes the window, what was painted stays in place, the
+ * new area starts in the editor's black, and the whole new picture is put
+ * in the back buffer and on the window at once, before the callers copy
+ * the back buffer to the window and lay the screen out again.
+ */
+static void cr_ix_resize(int pixel_w, int pixel_h)
+{
+ cairo_surface_t *old_surface = cr_surface;
+ Pixmap old_buf = WpeXInfo.backbuf;
+ cairo_rectangle_int_t all;
+
+ WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
+   pixel_w, pixel_h,
+   DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
+ cr_ix_fill_backbuf(pixel_w, pixel_h);
+ if (old_buf)
+  XFreePixmap(WpeXInfo.display, old_buf);
+
+ if (cr_ix_image)
+  XDestroyImage(cr_ix_image);
+ cr_ix_make_image(pixel_w, pixel_h);
+
+ if (cr)
+  cairo_destroy(cr);
+ cr_ix_make_surface(pixel_w, pixel_h);
+ if (old_surface)
+ {
+  cairo_set_source_surface(cr, old_surface, 0, 0);
+  cairo_paint(cr);
+  cairo_surface_destroy(old_surface);
+ }
+
+ cr_ix_surface_rect(&all);
+ cairo_region_destroy(cr_ix_dirty);
+ cr_ix_dirty = cairo_region_create_rectangle(&all);
+ cr_ix_present_all();
+}
+
+/**
+ * cr_ix_cleanup - Give back the context, surface, image and region.
+ *
+ * When the editor closes its window.
+ */
+static void cr_ix_cleanup(void)
+{
+ cr_direct_cleanup();
+ if (cr_ix_image)
+ {
+  XDestroyImage(cr_ix_image);
+  cr_ix_image = NULL;
+ }
+ if (cr_ix_dirty)
+ {
+  cairo_region_destroy(cr_ix_dirty);
+  cr_ix_dirty = NULL;
+ }
+}
+
+static const struct cr_sink cr_sink_indexed = {
+ cr_ix_init,
+ cr_ix_resize,
+ cr_ix_touch,
+ cr_ix_present,
+ cr_ix_present_all,
+ cr_ix_blit,
+ cr_ix_cleanup,
+ CAIRO_ANTIALIAS_NONE,
+ 1
+};
+
 /**
  * cr_sink_for_route - The sink for the way the X11 backend presents.
  * @route: what e_x_render_route() decided for the display
  *
- * Every route has the direct sink for now: the editor paints through cairo
- * into the back buffer and copies it to the window, as it always did.
+ * A true-colour display gets the direct sink, which paints through cairo
+ * into the back buffer as the editor always did; every other display gets
+ * the indexed sink, so the window shows the 16 colours the editor
+ * allocated and nothing else.
  *
  * Return: the sink the renderer uses from start-up on.
  */
 static const struct cr_sink *cr_sink_for_route(EXRenderRoute route)
 {
- (void)route;
+ if (route == E_X_RENDER_INDEXED)
+  return &cr_sink_indexed;
  return &cr_sink_direct;
 }
 #endif
@@ -676,6 +1422,7 @@ static void cr_init_ft_font(void)
  cairo_matrix_init_identity(&ctm);
  opts = cairo_font_options_create();
  cairo_surface_get_font_options(cr_surface, opts);
+ cr_sink_font_options(opts);
 
  for (sz = WpeXInfo.font_height; sz > 4; sz -= 0.5)
  {

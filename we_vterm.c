@@ -21,6 +21,7 @@
 #ifdef HAVE_VTERM
 
 #include <vterm.h>
+#include "we_palette.h"
 
 extern char *e_d_prog_output;
 extern int e_d_prog_output_len;
@@ -35,7 +36,7 @@ extern void e_d_pty_drain(void);
 #define VT_ATTR(bg, fg) ((bg) * 16 + (fg))
 
 /* Entries of the editor's palette. */
-#define VT_PALETTE_SIZE 16
+#define VT_PALETTE_SIZE WPE_PALETTE_SIZE
 
 /* ------------------------------------------------------------------ colours */
 
@@ -62,20 +63,12 @@ static void e_vt_load_palette(void)
  vt_pal_ready = 1;
 }
 
-/* e_vt_nearest - Index of the palette entry closest to (r,g,b). */
+/* e_vt_nearest - Index of the palette entry closest to (r,g,b), by the same
+   rule the X11 renderer uses for colours it has no cell for on a palette
+   display. */
 static int e_vt_nearest(int r, int g, int b)
 {
- int best = 0, best_d = 1 << 30, i;
-
- for (i = 0; i < VT_PALETTE_SIZE; i++)
- {
-  int dr = r - vt_pal[i][0];
-  int dg = g - vt_pal[i][1];
-  int db = b - vt_pal[i][2];
-  int d = dr * dr + dg * dg + db * db;
-  if (d < best_d) { best_d = d; best = i; }
- }
- return best;
+ return wpe_palette_nearest(vt_pal, r, g, b);
 }
 
 /* e_vt_fg - Foreground palette index for a cell colour.  A default

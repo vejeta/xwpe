@@ -317,8 +317,20 @@ Changes
   resource (a private colormap) the Cairo and Xft glyph colours were read
   from the wrong colormap; they now come from the colours the server
   allocated.  The editor's own text (Xft) now uses the window's own
-  colormap, the private one under pcmap.  Palette displays do not show
-  the right colours with pcmap yet.
+  colormap, the private one under pcmap.
+
+* On an 8-bit palette X display the editor shows its own colours.  It
+  painted with colours the X server picked from its own table: with
+  -pcmap the window was almost all black, and without it the blue desk
+  came out a different blue.  Now every pixel of the window is one of
+  the 16 colours the editor allocated, with or without -pcmap, and
+  colours outside those 16 (semantic-token colours, the dimmed
+  scrollbar track) show as the nearest of them.  Text is drawn without
+  smoothing there, so letters stay sharp in those 16 colours.  A typed
+  character sends only the cells that changed to the display (under
+  5 KB at 1024x768), so typing stays quick over a slow link to an X
+  terminal.  True-colour displays of 15 bits or more draw exactly as
+  before.
 
 * Every box now reads its keys through the editor's one screen owner:
   dialogs and their text fields, dropdowns, error boxes, pickers, the
