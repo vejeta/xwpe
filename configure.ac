@@ -61,6 +61,10 @@ PKG_CHECK_MODULES([NCURSESW], [ncursesw], [],
 ace_save_LIBS="$LIBS"
 LIBS="$NCURSESW_LIBS $LIBS"
 AC_CHECK_FUNCS([init_extended_pair])
+# keybound() (an ncurses extension) gives the bytes behind a key code, so a
+# modified key that terminfo files under another key's capability (st's
+# Ctrl-End is ked) is decoded by its bytes; without it those keys do nothing.
+AC_CHECK_FUNCS([keybound])
 LIBS="$ace_save_LIBS"
 
 # --- json-c: wire format for the DAP debug client (Go/Rust/Scala) ---

@@ -240,7 +240,9 @@ Changes
   go to the start or end of the file and Ctrl-Home/End to the top or bottom
   of the window, as the manual says; before, they did nothing there (the
   Alt-Ctrl-A/E/P/N alternatives always worked).  Ctrl-Delete, Ctrl-Insert
-  and Shift-Insert on a marked block work there too.
+  and Shift-Insert on a marked block work there too.  The same keys now
+  work in st, where Ctrl-End, Ctrl-Insert and Ctrl-Delete did nothing,
+  and in rxvt-unicode, where Ctrl-End did nothing.
 
 * A project folder can no longer make the assistant run code behind your
   back.  An xwperc in the folder the editor starts in still sets tabs,

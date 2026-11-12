@@ -98,17 +98,37 @@ int wpe_key_from_keysym(unsigned long keysym, unsigned *mods,
 
 /**
  * wpe_key_from_csi - The tail of an escape sequence as a key.
- * @tail: the bytes after ESC and the introducer ('[' or 'O'), up to and
- *   including the final byte: "A", "1;5P", "3~", "15;2~", "Z".
+ * @intro: the introducer after ESC, '[' or 'O'.  Only rxvt's lower-case
+ *   arrows depend on it: "ESC [ a" is Shift-Up, "ESC O a" Ctrl-Up.
+ * @tail: the bytes after ESC and the introducer, up to and including the
+ *   final byte: "A", "1;5P", "3~", "15;2~", "Z", rxvt's "8^" and "c".
  * @n: how many bytes.
  * @base: out, the key.
  * @mods: out, the modifiers of the xterm parameter (m-1: shift 1, alt 2,
- *   ctrl 4), so a Ctrl-F9 that arrives raw is read like one curses folded.
+ *   ctrl 4) or of rxvt's final byte ('$' Shift, '^' Ctrl, '@' both), so a
+ *   Ctrl-F9 that arrives raw is read like one curses folded.
  *
  * Return: 1 when the sequence is a key the table knows, 0 otherwise.
  */
-int wpe_key_from_csi(const char *tail, size_t n, WpeBaseKey *base,
+int wpe_key_from_csi(int intro, const char *tail, size_t n, WpeBaseKey *base,
                      unsigned *mods);
+
+/**
+ * wpe_key_from_sequence - A whole escape sequence as a key.
+ * @seq: the bytes a terminal sends for the key, ESC included: what
+ *   ncurses' keybound() says a key code stands for ("\033[1;5F").
+ * @n: how many bytes.
+ * @base: out, the key; @mods: out, its modifiers, as wpe_key_from_csi().
+ *
+ * Some terminfo entries give a modified key's bytes to a standard
+ * capability that names another key (st's Ctrl-End is ked, KEY_EOS;
+ * rxvt's is kel, KEY_EOL), so the code curses delivers cannot be trusted
+ * for them, but the bytes behind it can.  Without this those keys did
+ * nothing in the terminal.
+ * Return: 1 when the bytes are a key the table knows, 0 otherwise.
+ */
+int wpe_key_from_sequence(const char *seq, size_t n, WpeBaseKey *base,
+                          unsigned *mods);
 
 /**
  * wpe_key_from_terminfo_name - A key curses knows only by its terminfo name.

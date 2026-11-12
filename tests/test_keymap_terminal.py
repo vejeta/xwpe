@@ -268,6 +268,13 @@ def test_alt_delete_copies_and_alt_insert_pastes_in_a_terminal(tmp_path, term):
 
 MOD_TERMS = ["xterm-256color", "tmux-256color", "screen-256color", "linux"]
 
+# st sends xterm's bytes, but its terminfo gives some of them to standard
+# capabilities that are other keys by name: Ctrl-End is ked (KEY_EOS),
+# Ctrl-Insert kil1 (KEY_IL), Ctrl-Delete kclr (KEY_CLEAR), and Shift-End is
+# kel (KEY_EOL).  The rows run under it too, when this machine has the entry.
+ST_TERM = "st-256color"
+MOD_TERMS_ST = MOD_TERMS + [ST_TERM]
+
 MOD_SHIFT_RIGHT = "\x1b[1;2C"
 MOD_SHIFT_END = "\x1b[1;2F"
 MOD_CTRL_RIGHT = "\x1b[1;5C"
@@ -289,6 +296,7 @@ MOD_LONG_SEED = "".join("line %02d\n" % i for i in range(MOD_LONG_LINES))
 
 
 def _mod_session(tmp_path, seed, term):
+    _need_terminfo(term)
     return EditSession(str(tmp_path), seed, filename="t.txt",
                        env_extra={"TERM": term})
 
@@ -300,7 +308,7 @@ def _mod_saved_lines(s):
 
 
 # @scenario SC-debug-62
-@pytest.mark.parametrize("term", MOD_TERMS)
+@pytest.mark.parametrize("term", MOD_TERMS_ST)
 @pytest.mark.parametrize("delete", [[MOD_CTRL_K, "y"], [MOD_CTRL_DEL]],
                          ids=["ctrl-k-y", "ctrl-del"])
 def test_shift_right_marks_a_block_under_every_terminfo(tmp_path, term, delete):
@@ -317,7 +325,7 @@ def test_shift_right_marks_a_block_under_every_terminfo(tmp_path, term, delete):
 
 
 # @scenario SC-debug-62
-@pytest.mark.parametrize("term", MOD_TERMS)
+@pytest.mark.parametrize("term", MOD_TERMS_ST)
 def test_ctrl_insert_copies_and_shift_insert_pastes_under_every_terminfo(tmp_path, term):
     """Shift-Right twice marks "ab", Ctrl-Insert copies it, and Shift-Insert
     at the end of the line pastes it: "abcdefab" on disk."""
@@ -332,7 +340,7 @@ def test_ctrl_insert_copies_and_shift_insert_pastes_under_every_terminfo(tmp_pat
 
 
 # @scenario SC-debug-62
-@pytest.mark.parametrize("term", MOD_TERMS)
+@pytest.mark.parametrize("term", MOD_TERMS_ST)
 def test_shift_end_marks_to_the_end_of_the_line_under_every_terminfo(tmp_path, term):
     """Shift-End marks from the cursor to the end of the line, and Ctrl-K Y
     deletes it: the first line is empty on disk, the second untouched."""
@@ -345,7 +353,7 @@ def test_shift_end_marks_to_the_end_of_the_line_under_every_terminfo(tmp_path, t
 
 
 # @scenario SC-debug-62
-@pytest.mark.parametrize("term", MOD_TERMS)
+@pytest.mark.parametrize("term", MOD_TERMS_ST)
 def test_ctrl_right_and_ctrl_left_move_by_a_word_under_every_terminfo(tmp_path, term):
     """Ctrl-Right goes to the next word and Ctrl-Left back: an X typed after
     Ctrl-Right twice and Ctrl-Left once lands before "def"."""
@@ -359,7 +367,7 @@ def test_ctrl_right_and_ctrl_left_move_by_a_word_under_every_terminfo(tmp_path, 
 
 
 # @scenario SC-debug-62
-@pytest.mark.parametrize("term", MOD_TERMS)
+@pytest.mark.parametrize("term", MOD_TERMS_ST)
 def test_ctrl_pgdn_and_ctrl_pgup_go_to_the_ends_of_the_file(tmp_path, term):
     """Ctrl-PgDn goes to the last line of the file, Ctrl-PgUp to the first:
     an E typed after the first and an S after the second land there."""
@@ -374,7 +382,7 @@ def test_ctrl_pgdn_and_ctrl_pgup_go_to_the_ends_of_the_file(tmp_path, term):
 
 
 # @scenario SC-debug-62
-@pytest.mark.parametrize("term", MOD_TERMS)
+@pytest.mark.parametrize("term", MOD_TERMS_ST)
 def test_ctrl_end_and_ctrl_home_go_to_the_ends_of_the_window(tmp_path, term):
     """Ctrl-End goes to the last row of the window, not of the file, and
     Ctrl-Home back to the first: in a file longer than the window an E typed
@@ -409,6 +417,12 @@ def _has_terminfo(term):
     return found.returncode == 0
 
 
+def _need_terminfo(term):
+    """Skip the row when this machine has no terminfo entry for ``term``."""
+    if not _has_terminfo(term):
+        pytest.skip("no %s terminfo entry here" % term)
+
+
 # @scenario SC-debug-62
 def test_ctrl_delete_deletes_a_block_under_rxvt(tmp_path):
     """Shift-Right twice then Ctrl-Delete as rxvt-unicode sends them delete
@@ -423,3 +437,70 @@ def test_ctrl_delete_deletes_a_block_under_rxvt(tmp_path):
     assert lines[0] == "cdef", \
         "Shift-Right twice then Ctrl-Delete under %s should delete 'ab', " \
         "line 1 is %r" % (RXVT_TERM, lines[0])
+
+
+# rxvt's other spellings: the "ESC [ n ~" keys end in "$" with Shift, "^"
+# with Ctrl and "@" with both, and the arrows are lower-case letters,
+# "ESC [ a" with Shift and "ESC O a" with Ctrl.  Its terminfo gives Ctrl-End
+# ("ESC [ 8 ^", kEND5) to kel as well, so curses delivers KEY_EOL for it.
+RXVT_CTRL_END = "\x1b[8^"
+RXVT_CTRL_HOME = "\x1b[7^"
+RXVT_SHIFT_UP = "\x1b[a"
+RXVT_SHIFT_DOWN = "\x1b[b"
+RXVT_SHIFT_LEFT = "\x1b[d"
+RXVT_CTRL_RIGHT = "\x1bOc"
+RXVT_CTRL_LEFT = "\x1bOd"
+RXVT_DOWN = "\x1b[B"
+RXVT_END = "\x1b[8~"
+
+
+# @scenario SC-debug-62
+def test_ctrl_end_and_ctrl_home_go_to_the_ends_of_the_window_under_rxvt(tmp_path):
+    """Ctrl-End and Ctrl-Home as rxvt-unicode sends them go to the last and
+    the first row of the window: an E typed after Ctrl-End lands between the
+    first and the last line of a file longer than the window, an S after
+    Ctrl-Home on the first.  Ctrl-End arrived as KEY_EOL and did nothing."""
+    with _mod_session(tmp_path, MOD_LONG_SEED, RXVT_TERM) as s:
+        s.send([RXVT_CTRL_END])
+        s.send(["E"])
+        s.send([RXVT_CTRL_HOME])
+        s.send(["S"])
+        lines = _mod_saved_lines(s)
+    marked = [i for i, line in enumerate(lines) if "E" in line]
+    assert "S" in lines[0], "Ctrl-Home: line 1 is %r" % lines[0]
+    assert len(marked) == 1 and 0 < marked[0] < MOD_LONG_LINES - 1, \
+        "Ctrl-End should go to the window's last row, E is on lines %r" % marked
+
+
+# @scenario SC-debug-62
+@pytest.mark.parametrize("keys, first_lines", [
+    ([RXVT_SHIFT_DOWN], ["second", "third"]),
+    ([RXVT_DOWN, RXVT_DOWN, RXVT_SHIFT_UP], ["abcdef", "third"]),
+    ([RXVT_END, RXVT_SHIFT_LEFT, RXVT_SHIFT_LEFT], ["abcd", "second"]),
+], ids=["shift-down", "shift-up", "shift-left"])
+def test_shift_arrows_mark_a_block_under_rxvt(tmp_path, keys, first_lines):
+    """Shift and an arrow as rxvt-unicode sends it marks a block, and
+    Ctrl-K Y deletes it: Shift-Down from the start marks the first line,
+    Shift-Up from the third the second, Shift-Left twice from the end the
+    last two characters."""
+    with _mod_session(tmp_path, "abcdef\nsecond\nthird\n", RXVT_TERM) as s:
+        s.send(keys)
+        s.send([MOD_CTRL_K, "y"])
+        lines = _mod_saved_lines(s)
+    assert lines[:2] == first_lines, \
+        "%r then Ctrl-K Y should leave %r, the file is %r" \
+        % (keys, first_lines, lines)
+
+
+# @scenario SC-debug-62
+def test_ctrl_right_and_ctrl_left_move_by_a_word_under_rxvt(tmp_path):
+    """Ctrl-Right and Ctrl-Left as rxvt-unicode sends them ("ESC O c",
+    "ESC O d") move by a word: an X typed after Ctrl-Right twice and
+    Ctrl-Left once lands before "def"."""
+    with _mod_session(tmp_path, "abc def ghi\n", RXVT_TERM) as s:
+        s.send([RXVT_CTRL_RIGHT, RXVT_CTRL_RIGHT, RXVT_CTRL_LEFT])
+        s.send(["X"])
+        lines = _mod_saved_lines(s)
+    assert lines[0] == "abc Xdef ghi", \
+        "Ctrl-Right twice and Ctrl-Left should put the cursor on 'def', " \
+        "line 1 is %r" % lines[0]

@@ -501,10 +501,118 @@ static int wpe_csi_parse_numbers(const char *tail, size_t n, int *first,
  return((int)i);
 }
 
-int wpe_key_from_csi(const char *tail, size_t n, WpeBaseKey *base, unsigned *mods)
+/** A final byte that ends a numbered key and the modifiers it stands for. */
+typedef struct {
+ int final_byte;
+ unsigned mods;
+} WpeCsiNumberEnding;
+
+/* xterm ends every numbered key ("ESC [ 8 ~") with '~' and puts the
+   modifiers in a parameter; rxvt says them with the final byte instead:
+   "ESC [ 8 $" is Shift-End, "ESC [ 8 ^" Ctrl-End, "ESC [ 8 @" both. */
+static const WpeCsiNumberEnding wpe_csi_number_endings[] = {
+ { '~', WPE_MOD_NONE },
+ { '$', WPE_MOD_SHIFT },
+ { '^', WPE_MOD_CTRL },
+ { '@', WPE_MOD_CTRL | WPE_MOD_SHIFT },
+ { 0,   WPE_MOD_NONE }
+};
+
+/**
+ * wpe_csi_number_ending - Does this final byte end a numbered key?
+ * @final_byte: the sequence's last byte.
+ * @mods: out, the modifiers the byte itself says (rxvt), set only on a
+ *   match.
+ *
+ * Lets rxvt's Shift, Ctrl and Ctrl-Shift Home, End, page, Insert and
+ * Delete keys reach the same table rows as xterm's.
+ * Return: 1 when it ends one, 0 otherwise.
+ */
+static int wpe_csi_number_ending(int final_byte, unsigned *mods)
+{
+ const WpeCsiNumberEnding *row;
+
+ for (row = wpe_csi_number_endings; row->final_byte != 0; row++)
+  if (row->final_byte == final_byte)
+  {
+   *mods = row->mods;
+   return(1);
+  }
+ return(0);
+}
+
+/** One of rxvt's arrows: the introducer and lower-case letter it sends. */
+typedef struct {
+ int intro;
+ int letter;
+ WpeBaseKey base;
+ unsigned mods;
+} WpeCsiRxvtArrow;
+
+/* rxvt sends a modified arrow as a lower-case final letter with no
+   parameter: after '[' it is Shift, after 'O' Ctrl. */
+static const WpeCsiRxvtArrow wpe_csi_rxvt_arrows[] = {
+ { '[', 'a', WPE_KEY_UP,    WPE_MOD_SHIFT },
+ { '[', 'b', WPE_KEY_DOWN,  WPE_MOD_SHIFT },
+ { '[', 'c', WPE_KEY_RIGHT, WPE_MOD_SHIFT },
+ { '[', 'd', WPE_KEY_LEFT,  WPE_MOD_SHIFT },
+ { 'O', 'a', WPE_KEY_UP,    WPE_MOD_CTRL  },
+ { 'O', 'b', WPE_KEY_DOWN,  WPE_MOD_CTRL  },
+ { 'O', 'c', WPE_KEY_RIGHT, WPE_MOD_CTRL  },
+ { 'O', 'd', WPE_KEY_LEFT,  WPE_MOD_CTRL  },
+ { 0,   0,   WPE_KEY_NONE,  WPE_MOD_NONE  }
+};
+
+/**
+ * wpe_csi_rxvt_arrow_key - The arrow an rxvt lower-case letter names.
+ * @intro: '[' or 'O'; @letter: the final byte.
+ * @base: out; @mods: out, set only on a match.
+ *
+ * Shift and Ctrl with the arrows mark a block and move by a word under
+ * rxvt too, also where its bytes reach the editor unfolded.
+ * Return: 1 when the pair is one of rxvt's arrows, 0 otherwise.
+ */
+static int wpe_csi_rxvt_arrow_key(int intro, int letter, WpeBaseKey *base,
+                                  unsigned *mods)
+{
+ const WpeCsiRxvtArrow *row;
+
+ for (row = wpe_csi_rxvt_arrows; row->base != WPE_KEY_NONE; row++)
+  if (row->intro == intro && row->letter == letter)
+  {
+   *base = row->base;
+   *mods = row->mods;
+   return(1);
+  }
+ return(0);
+}
+
+/**
+ * wpe_csi_numbered_key - A numbered key with its final byte's modifiers.
+ * @number: the parameter before the final byte; @param: the xterm
+ *   modifier parameter after the ';' (0 when there was none).
+ * @ending_mods: what the final byte said (rxvt).
+ * @base: out; @mods: out.
+ * Return: 1 when the number names a key, 0 otherwise.
+ */
+static int wpe_csi_numbered_key(int number, int param, unsigned ending_mods,
+                                WpeBaseKey *base, unsigned *mods)
+{
+ if (!wpe_csi_number_key(number, base))
+  return(0);
+ *mods = ending_mods | wpe_csi_modifier_bits(param);
+ return(1);
+}
+
+/* The final byte is the whole tail: no parameter came before it. */
+#define WPE_CSI_FINAL_ONLY 0
+
+int wpe_key_from_csi(int intro, const char *tail, size_t n, WpeBaseKey *base,
+                     unsigned *mods)
 {
  int first, second, last;
  int final_byte;
+ unsigned ending_mods;
 
  if (n == 0)
   return(0);
@@ -512,17 +620,32 @@ int wpe_key_from_csi(const char *tail, size_t n, WpeBaseKey *base, unsigned *mod
  if (last < 0 || second > WPE_CSI_MOD_PARAM_MAX)
   return(0);
  final_byte = (unsigned char)tail[last];
- if (final_byte == '~')
- {
-  if (!wpe_csi_number_key(first, base))
-   return(0);
-  *mods = wpe_csi_modifier_bits(second);
+ if (wpe_csi_number_ending(final_byte, &ending_mods))
+  return(wpe_csi_numbered_key(first, second, ending_mods, base, mods));
+ if (last == WPE_CSI_FINAL_ONLY &&
+     wpe_csi_rxvt_arrow_key(intro, final_byte, base, mods))
   return(1);
- }
  if (!wpe_csi_letter_key(final_byte, base, mods))
   return(0);
  *mods |= wpe_csi_modifier_bits(second);
  return(1);
+}
+
+/* ESC and the introducer come before a sequence's tail. */
+#define WPE_SEQ_ESC  0x1b
+#define WPE_SEQ_HEAD 2
+
+int wpe_key_from_sequence(const char *seq, size_t n, WpeBaseKey *base,
+                          unsigned *mods)
+{
+ if (seq == NULL || n <= WPE_SEQ_HEAD)
+  return(0);
+ if (seq[0] != WPE_SEQ_ESC)
+  return(0);
+ if (seq[1] != '[' && seq[1] != 'O')
+  return(0);
+ return(wpe_key_from_csi(seq[1], seq + WPE_SEQ_HEAD, n - WPE_SEQ_HEAD, base,
+                         mods));
 }
 
 /* ------------------------------------------------------------------------ */

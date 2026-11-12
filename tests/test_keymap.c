@@ -65,13 +65,25 @@ static int via_curses(int ch, unsigned console_mods)
 #endif
 }
 
-/* An escape sequence tail through the whole decode. */
+/* An escape sequence tail after "ESC [" through the whole decode. */
 static int via_csi(const char *tail)
 {
 	WpeBaseKey base;
 	unsigned mods;
 
-	if (!wpe_key_from_csi(tail, strlen(tail), &base, &mods))
+	if (!wpe_key_from_csi('[', tail, strlen(tail), &base, &mods))
+		return 0;
+	return wpe_key_code(base, mods);
+}
+
+/* A whole sequence, ESC included, as keybound() gives it, through the
+   whole decode. */
+static int via_seq(const char *seq)
+{
+	WpeBaseKey base;
+	unsigned mods;
+
+	if (!wpe_key_from_sequence(seq, strlen(seq), &base, &mods))
 		return 0;
 	return wpe_key_code(base, mods);
 }
@@ -387,8 +399,49 @@ static void test_terminfo_names_give_the_modified_cursor_keys(void)
 	chk("no name", wpe_key_from_terminfo_name(NULL, 0, NULL, NULL), 0);
 }
 
+/* The bytes st's and rxvt's terminfo bind to standard capabilities that
+   name other keys (ked, kil1, kclr, kel) give the key that sends them. */
+static void test_bound_sequences_give_the_key_that_sends_them(void)
+{
+	chk("st ked is Ctrl-End", via_seq("\033[1;5F"), CEND);
+	chk("st kil1 is Ctrl-Insert", via_seq("\033[2;5~"), CEINFG);
+	chk("st kclr is Ctrl-Delete", via_seq("\033[3;5~"), CENTF);
+	chk("st kel is Shift-End", via_seq("\033[1;2F"), ENDE + WPE_KEY_SHIFT_OFFSET);
+	chk("st krmir is Shift-Insert", via_seq("\033[2;2~"), EINFG + WPE_KEY_SHIFT_OFFSET);
+	chk("st ka1 is Home", via_seq("\033[1~"), POS1);
+	chk("rxvt kel is Ctrl-End", via_seq("\033[8^"), CEND);
+	chk("rxvt kEND is Shift-End", via_seq("\033[8$"), ENDE + WPE_KEY_SHIFT_OFFSET);
+	chk("rxvt kEND6 is Ctrl-Shift-End", via_seq("\033[8@"), CEND + WPE_KEY_SHIFT_OFFSET);
+	chk("rxvt kDC5 is Ctrl-Delete", via_seq("\033[3^"), CENTF);
+	chk("rxvt kIC5 is Ctrl-Insert", via_seq("\033[2^"), CEINFG);
+	chk("rxvt kNXT5 is Ctrl-PgDn", via_seq("\033[6^"), CBDO);
+	chk("rxvt kHOM5 is Ctrl-Home", via_seq("\033[7^"), CPS1);
+	chk("rxvt kUP is Shift-Up", via_seq("\033[a"), CUP + WPE_KEY_SHIFT_OFFSET);
+	chk("rxvt kDN is Shift-Down", via_seq("\033[b"), CDO + WPE_KEY_SHIFT_OFFSET);
+	chk("rxvt kRIT is Shift-Right", via_seq("\033[c"), CRI + WPE_KEY_SHIFT_OFFSET);
+	chk("rxvt kLFT is Shift-Left", via_seq("\033[d"), CLE + WPE_KEY_SHIFT_OFFSET);
+	chk("rxvt kRIT5 is Ctrl-Right", via_seq("\033Oc"), CCRI);
+	chk("rxvt kLFT5 is Ctrl-Left", via_seq("\033Od"), CCLE);
+	chk("rxvt kUP5 is unbound, not a letter", via_seq("\033Oa"), 0);
+	chk("rxvt and xterm Ctrl-End agree", via_seq("\033[8^"), via_name("kEND5"));
+	chk("rxvt and xterm Shift-Right agree", via_seq("\033[c"), via_csi("1;2C"));
+	chk("an SS3 arrow is plain", via_seq("\033OC"), CRI);
+	chk("a lower-case letter with a parameter is no key", via_seq("\033[1;5c"), 0);
+	chk("a lower-case letter past the arrows is no key", via_seq("\033[e"), 0);
+	chk("rxvt's ending on a number no key has", via_seq("\033[9^"), 0);
+	chk("the mouse report is no key", via_seq("\033[M"), 0);
+	chk("the keypad centre is no key", via_seq("\033Ou"), 0);
+	chk("no ESC is no key", via_seq("[1;5F"), 0);
+	chk("another introducer is no key", via_seq("\033X1;5F"), 0);
+	chk("ESC and the introducer alone", via_seq("\033["), 0);
+	chk("ESC alone", via_seq("\033"), 0);
+	chk("an empty sequence", via_seq(""), 0);
+	chk("no sequence", wpe_key_from_sequence(NULL, 0, NULL, NULL), 0);
+}
+
 int main(void)
 {
+	test_bound_sequences_give_the_key_that_sends_them();
 	test_shifted_curses_cursor_keys_mark_a_block();
 	test_terminfo_names_give_the_modified_cursor_keys();
 	test_every_bound_pair_has_exactly_one_row();

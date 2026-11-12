@@ -1668,6 +1668,7 @@ static int e_t_csi_paste_marker(const char *tail, size_t n)
 
 /**
  * e_t_csi_tail_key - The editor key an escape sequence's tail stands for.
+ * @intro: the introducer, '[' or 'O'.
  * @tail: the tail; @n: its length.
  *
  * Gives the same answer for "ESC [ 1;5P" as for the KEY_F(25) ncurses
@@ -1675,12 +1676,12 @@ static int e_t_csi_paste_marker(const char *tail, size_t n)
  * of the terminal knows it.
  * Return: the key code, or 0 when the tail is not a bound key.
  */
-static int e_t_csi_tail_key(const char *tail, size_t n)
+static int e_t_csi_tail_key(int intro, const char *tail, size_t n)
 {
  WpeBaseKey base;
  unsigned mods;
 
- if (!wpe_key_from_csi(tail, n, &base, &mods))
+ if (!wpe_key_from_csi(intro, tail, n, &base, &mods))
   return(0);
  return(wpe_key_code(base, mods));
 }
@@ -1700,7 +1701,6 @@ static int e_t_csi_key(int intro)
  size_t n;
  int c, marker;
 
- (void)intro;
  timeout(ESC_ALT_DELAY_MS);
  c = fk_getch();
  timeout(-1);
@@ -1714,7 +1714,7 @@ static int e_t_csi_key(int intro)
  marker = e_t_csi_paste_marker(tail, n);
  if (marker != 0)
   return(marker);
- return(e_t_csi_tail_key(tail, n));
+ return(e_t_csi_tail_key(intro, tail, n));
 }
 
 /**
@@ -1738,26 +1738,94 @@ static unsigned e_t_console_mods(void)
 }
 
 /**
- * e_t_curses_named_key - The editor key for a code curses made up for a
- * terminfo capability of its own.
+ * e_t_curses_named_key - Decode a code curses made up for a terminfo
+ * capability of its own.
  * @ch: the code (KEY_MAX or above: ncurses numbers these keys from
  *   KEY_MAX itself, so the first of them is KEY_MAX).
- * @extra_mods: modifiers the caller knows (WPE_MOD_ALT after an ESC).
+ * @base: out, the key; @mods: out, its modifiers.
  *
  * Under TERM=xterm-256color, Ctrl-Right, Ctrl-PgDn and the other Ctrl and
  * Alt cursor keys arrive as codes ncurses numbers when it opens the
  * terminal; only their names (kRIT5, kNXT5) say which key they are, so
  * the name is what goes to the key table.
- * Return: the key code, or 0 when the key is not bound.
+ * Return: 1 when the name is a key the table knows, 0 otherwise.
  */
-static int e_t_curses_named_key(int ch, unsigned extra_mods)
+static int e_t_curses_named_key(int ch, WpeBaseKey *base, unsigned *mods)
 {
- WpeBaseKey base;
- unsigned mods;
+ return(wpe_key_from_terminfo_name(keyname(ch), e_t_console_mods(), base,
+                                   mods));
+}
 
- if (!wpe_key_from_terminfo_name(keyname(ch), e_t_console_mods(), &base, &mods))
+/**
+ * e_t_curses_bound_key - Decode a key code by the bytes terminfo bound to it.
+ * @ch: a code the key table does not know.
+ * @base: out, the key; @mods: out, its modifiers.
+ *
+ * Some terminfo entries give a modified key's bytes to a standard
+ * capability that names another key: under st, Ctrl-End is ked (KEY_EOS),
+ * Ctrl-Insert kil1 (KEY_IL) and Ctrl-Delete kclr (KEY_CLEAR); under rxvt,
+ * Ctrl-End is kel (KEY_EOL), which st gives to Shift-End.  The code cannot
+ * say which key was pressed, but the bytes curses matched can, and they
+ * are read as if they had arrived raw.  Where curses has no keybound()
+ * those keys stay unknown, as before.
+ * Return: 1 when the bytes are a key the table knows, 0 otherwise.
+ */
+static int e_t_curses_bound_key(int ch, WpeBaseKey *base, unsigned *mods)
+{
+#ifdef HAVE_KEYBOUND
+ char *seq = keybound(ch, 0);
+ int found;
+
+ if (seq == NULL)
   return(0);
- return(wpe_key_code(base, mods | extra_mods));
+ found = wpe_key_from_sequence(seq, strlen(seq), base, mods);
+ free(seq);
+ if (found)
+  *mods |= e_t_console_mods();
+ return(found);
+#else
+ (void)ch; (void)base; (void)mods;
+ return(0);
+#endif
+}
+
+/**
+ * e_t_curses_table_key - Decode a standard curses key code by the table.
+ * @ch: a code below KEY_MAX.
+ * @base: out, the key; @mods: out, its modifiers.
+ *
+ * The layout of terminfo's function keys and the modifiers a console
+ * reports are the key table's business, not this file's.
+ * Return: 1 when the table knows the code, 0 otherwise.
+ */
+static int e_t_curses_table_key(int ch, WpeBaseKey *base, unsigned *mods)
+{
+ return(wpe_key_from_curses(ch, e_t_console_mods(), base, mods));
+}
+
+/**
+ * e_t_curses_decode - Decode any key curses delivered.
+ * @ch: the curses key code (above KEY_CODE_YES).
+ * @base: out, the key; @mods: out, its modifiers.
+ *
+ * The code's name or the table decide first; the bytes bound to the code
+ * decide only for a code neither knows, so a terminal whose terminfo
+ * spells every key the usual way decodes exactly as it did.
+ * Return: 1 for a key, 0 for a code that is no key.
+ */
+static int e_t_curses_decode(int ch, WpeBaseKey *base, unsigned *mods)
+{
+ if (ch >= KEY_MAX)
+ {
+  if (e_t_curses_named_key(ch, base, mods))
+   return(1);
+ }
+ else
+ {
+  if (e_t_curses_table_key(ch, base, mods))
+   return(1);
+ }
+ return(e_t_curses_bound_key(ch, base, mods));
 }
 
 /**
@@ -1765,9 +1833,7 @@ static int e_t_curses_named_key(int ch, unsigned extra_mods)
  * @ch: the curses key code (above KEY_CODE_YES).
  * @extra_mods: modifiers the caller knows (WPE_MOD_ALT after an ESC).
  *
- * The one call between curses' words for a key and the editor's code: the
- * layout of terminfo's function keys and the modifiers a console reports
- * are the key table's business, not this file's.
+ * The one call between curses' words for a key and the editor's code.
  * Return: the key code, or 0 when the key is not bound.
  */
 static int e_t_curses_key(int ch, unsigned extra_mods)
@@ -1775,9 +1841,7 @@ static int e_t_curses_key(int ch, unsigned extra_mods)
  WpeBaseKey base;
  unsigned mods;
 
- if (ch >= KEY_MAX)
-  return(e_t_curses_named_key(ch, extra_mods));
- if (!wpe_key_from_curses(ch, e_t_console_mods(), &base, &mods))
+ if (!e_t_curses_decode(ch, &base, &mods))
   return(0);
  return(wpe_key_code(base, mods | extra_mods));
 }
