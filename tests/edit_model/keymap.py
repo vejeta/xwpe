@@ -9,11 +9,11 @@ separate action of the same effect, so a terminal that drops the primary
 key shows as a finding.
 No assistant key and no programming-layer key is here.
 """
-from .oracle import (BACKSPACE, CTRL_END, CTRL_HOME, CTRL_LEFT, CTRL_PGDN,
-                     CTRL_PGUP, CTRL_RIGHT, DELETE, DOWN, END, ENTER, ESC, F2,
-                     HOME, INSERT, LEFT, PGDN, PGUP, RIGHT, SHIFT_DOWN, SHIFT_END,
-                     SHIFT_HOME, SHIFT_LEFT, SHIFT_RIGHT, SHIFT_UP, TAB, UP, alt,
-                     ctrl)
+from .oracle import (BACKSPACE, CTRL_DEL, CTRL_END, CTRL_HOME, CTRL_INS,
+                     CTRL_LEFT, CTRL_PGDN, CTRL_PGUP, CTRL_RIGHT, DELETE, DOWN,
+                     END, ENTER, ESC, F2, HOME, INSERT, LEFT, PGDN, PGUP, RIGHT,
+                     SHIFT_DEL, SHIFT_DOWN, SHIFT_END, SHIFT_HOME, SHIFT_INS,
+                     SHIFT_LEFT, SHIFT_RIGHT, SHIFT_UP, TAB, UP, alt, ctrl)
 
 STYLE_OLD = "old"
 STYLE_CUA = "cua"
@@ -60,15 +60,94 @@ PRIMARY_ALIASES = {
 }
 
 
+CK = ctrl("k")
+CO = ctrl("o")
+
+# Block, clipboard and help-marker keys; the Ctrl-K and Ctrl-O prefixes read
+# the same in both key styles.
+_BLOCKS = {
+    "block_begin": [CK, "b"], "block_end": [CK, "k"], "block_hide": [CK, "h"],
+    "block_goto_begin": [CK, "a"], "block_goto_end": [CK, "z"],
+    "block_line": [CK, "l"], "block_all": [CK, "x"],
+    "block_copy": [CK, "c"], "block_move": [CK, "v"], "block_delete": [CK, "y"],
+    "block_indent": [CK, "i"], "block_unindent": [CK, "u"],
+    "help_button": [CO, "u"], "help_highlight": [CO, "m"], "help_header": [CO, "h"],
+    "edit_copy": [ctrl("c")], "edit_cut": [ctrl("x")], "edit_paste": [ctrl("v")],
+}
+_OLD.update(_BLOCKS)
+
+# The clipboard keys the manual names that this terminal does not decode
+# (Ctrl-Ins, Shift-Del, Shift-Ins), and the one it decodes as Alt-Ins: actions
+# of their own with the same effect as the Ctrl forms.
+CLIPBOARD_ALIASES = {
+    "edit_copy_ctrl_ins": ("edit_copy", [CTRL_INS]),
+    "edit_cut_shift_del": ("edit_cut", [SHIFT_DEL]),
+    "edit_paste_shift_ins": ("edit_paste", [SHIFT_INS]),
+    "edit_paste_alt_ins": ("edit_paste", [ESC + INSERT]),
+    "block_delete_ctrl_del": ("block_delete", [CTRL_DEL]),
+}
+PRIMARY_ALIASES.update(CLIPBOARD_ALIASES)
+
+# The actions the terminal's key decoder drops, so a disagreement where the
+# editor did nothing at all belongs to that bug (one entry, not one per key).
+DECODER_DROPS = ("word_left", "word_right", "file_start_primary", "file_end_primary",
+                 "window_top_primary", "window_bottom_primary",
+                 "edit_copy_ctrl_ins", "edit_cut_shift_del", "edit_paste_shift_ins",
+                 "block_delete_ctrl_del")
+
+# In a number field of the option dialog Backspace does nothing and typed
+# digits are added to the old ones; Ctrl-U empties the field first.
+FIELD_CLEAR = ctrl("u")
+
+# The option dialog's number fields: the accelerator and how many digits.
+OPTION_FIELD_KEYS = {
+    "maxcol": ("m", 3), "tabn": ("t", 2), "maxchg": ("x", 3),
+    "numundo": ("n", 2), "autoindent_col": ("i", 2),
+}
+# The Replace dialog: Alt-S R opens it; Alt-N moves to New Text; Alt-P turns
+# off the prompt; Alt-G picks Global; Alt-A is Change All.
+REPLACE_PRELUDE = [alt("s"), "r"]
+
+
+def is_decoder_drop(action_name):
+    """Is the key of @action_name one the terminal's decoder drops?"""
+    return action_name.startswith("shift_") or action_name in DECODER_DROPS
+
+
+def _text_keys(data):
+    return [chr(c) for c in data]
+
+
 def keys_for(style, action_name, arg=None):
-    """The keys that make @action_name in @style (@arg: the bytes typed)."""
+    """The keys that make @action_name in @style (@arg: the bytes typed, the
+    (search, replacement) of a replace, (field, value) of an option, or the
+    marker's number)."""
     if action_name == "type":
         return [arg.decode("utf-8")] if arg[0] > 0x1F else [chr(arg[0])]
     if action_name in PRIMARY_ALIASES:
         return list(PRIMARY_ALIASES[action_name][1])
     if style == STYLE_CUA and action_name == "save":
         return [ALT_F2]
+    if action_name == "replace_all":
+        search, repl = arg
+        return (REPLACE_PRELUDE + _text_keys(search) + [alt("n")] + _text_keys(repl)
+                + [alt("p"), alt("g"), alt("a")])
+    if action_name == "option_set":
+        field, value = arg
+        letter, digits = OPTION_FIELD_KEYS[field]
+        return ([alt("o"), "e", alt(letter), FIELD_CLEAR]
+                + [c for c in str(value)] + [ENTER])
+    if action_name == "marker_set":
+        return [CK, str(arg)]
+    if action_name == "marker_goto":
+        return [CO, str(arg)]
     return list(_OLD[action_name])
+
+
+def sample_arg(action_name):
+    """An argument that makes @action_name's keys, for a table check."""
+    return {"type": b"x", "replace_all": (b"a", b"b"), "option_set": ("tabn", 4),
+            "marker_set": 1, "marker_goto": 1}.get(action_name)
 
 
 def model_action(action_name):

@@ -47,12 +47,27 @@ def expand_tabs(data, tabn):
     return "".join(out)
 
 
-def render_window(lines, view, tabn):
+ENDMARK = "$"
+# What Show Endmark puts after a row that goes on in the next one (a soft
+# wrap, or the last row of a file with no final line break): unixkeys.h PNL.
+SOFT_ENDMARK = "\\"
+
+
+def _endmark_of(end):
+    """The mark Show Endmark draws after a row that ends with @end."""
+    if end == HARD:
+        return ENDMARK
+    return SOFT_ENDMARK
+
+
+def render_window(lines, view, tabn, endmark=False):
     """The text rows a window shows, top to bottom, as ``{screen row: text}``.
 
     @view is the dump's ``(c.y, c.x, a.y, a.x, e.y, e.x)``: the first row and
     column shown and the window's corners.  Rows a byte past ASCII makes
-    uncertain are left out; trailing blanks are not significant.
+    uncertain are left out; trailing blanks are not significant.  With
+    @endmark (Options > Show Endmark) a row that ends with a line break
+    shows ``$`` after its last character, and any other row ``\\``.
     """
     cy, cx, ay, ax, ey, ex = view
     width = ex - ax - 1
@@ -65,17 +80,19 @@ def render_window(lines, view, tabn):
         text = expand_tabs(lines[li][1], tabn)
         if text is None:
             continue
+        if endmark:
+            text += _endmark_of(lines[li][0])
         shown[sy] = text[cx:cx + width].rstrip()
     return shown
 
 
-def screen_disagreements(lines, view, tabn, display):
+def screen_disagreements(lines, view, tabn, display, endmark=False):
     """The screen rows that differ from what @lines render to: [(row, want,
     got)]."""
     cy, cx, ay, ax, ey, ex = view
     width = ex - ax - 1
     out = []
-    for sy, want in sorted(render_window(lines, view, tabn).items()):
+    for sy, want in sorted(render_window(lines, view, tabn, endmark).items()):
         if sy >= len(display):
             continue
         got = display[sy][ax + 1:ax + 1 + width].rstrip()

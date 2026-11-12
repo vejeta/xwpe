@@ -208,13 +208,24 @@ def model_against_trace(script, trace_steps):
     return out
 
 
+TMP_FLAG = "--tmp"
+
+
 def main(argv):
+    """``record|model <script> [--tmp <dir>]``: the session of a recording
+    lives in a directory made under <dir> (the system's when not given) and
+    is removed when the command ends."""
+    tmp = None
+    if len(argv) == 4 and argv[2] == TMP_FLAG:
+        tmp = argv[3]
+        argv = argv[:2]
     if len(argv) != 2 or argv[0] not in ("record", "model"):
         print(__doc__)
         return 2
     script = Script(argv[1])
     if argv[0] == "record":
-        steps = record(script, tempfile.mkdtemp())
+        with tempfile.TemporaryDirectory(dir=tmp) as base:
+            steps = record(script, base)
         problems = [(i, f) for i, (_l, _d, fs) in enumerate(steps) for f in fs]
         for i, f in problems:
             print("SELF-CHECK step %d: %s" % (i, f), file=sys.stderr)

@@ -42,6 +42,14 @@ Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
     check                            drift guard: every manifest id resolves,
                                      every tests/**/test_ai_*.py is mapped or
                                      listed in tests/harness/UNMAPPED.txt
+    coverage edit-model <run.json|dir>
+                                     the edit model's coverage matrix of one
+                                     run (a coverage file, or the directory
+                                     EDIT_MODEL_OUT collected): the actions
+                                     against the option levels they never
+                                     met, the levels not built yet, the
+                                     disagreements by class; exit 1 while a
+                                     cell is empty
 
 Verdicts are PASS, FAIL, BLOCKED (manifest says so) or MISSING (the test did
 not run).  A skipped test counts as FAIL unless its scenario is ``blocked``,
@@ -342,7 +350,45 @@ def cmd_check():
     return 1 if problems else 0
 
 
+def edit_model_runs(source):
+    """The files of an edit-model run: one coverage file, or every JSON file
+    of a directory (one per case)."""
+    if os.path.isdir(source):
+        return sorted(os.path.join(source, n) for n in os.listdir(source) if n.endswith(".json"))
+    return [source]
+
+
+def cmd_coverage(capability, source):
+    """Print the coverage matrix and the disagreement classes of an
+    edit-model run; the exit status is 1 while some action never met some
+    level of some factor."""
+    if capability != "edit-model":
+        sys.stderr.write("coverage is written for edit-model only\n")
+        return 2
+    sys.path.insert(0, os.path.join(TOP, "tests"))
+    from edit_model import walk
+    cov = walk.Coverage()
+    classes = {}
+    cases = 0
+    for path in edit_model_runs(source):
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        cases += 1
+        cov.merge(walk.Coverage.from_json(data.get("coverage", data)))
+        for x in data.get("walk", {}).get("disagreements", []):
+            key = (x.get("cls"), "known" if x.get("expected") else "new")
+            classes[key] = classes.get(key, 0) + 1
+    text, holes = walk.report(cov)
+    print("cases %d" % cases)
+    print(text)
+    for (cls, kind), n in sorted(classes.items()):
+        print("disagreements  %-12s %-6s %d" % (cls, kind, n))
+    return 1 if holes else 0
+
+
 def main(argv):
+    if len(argv) >= 3 and argv[0] == "coverage":
+        return cmd_coverage(argv[1], argv[2])
     if len(argv) >= 3 and argv[0] == "files":
         return cmd_files(argv[1], argv[2]) or 0
     if len(argv) >= 4 and argv[0] == "report":

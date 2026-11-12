@@ -164,9 +164,11 @@ if python3 -c "import pyte, pytest" 2>/dev/null; then
 else
   VENV="$here/.venv"
   if [ ! -x "$VENV/bin/python" ]; then
-    echo "== bootstrapping tests/.venv (pyte + pytest) =="
+    echo "== bootstrapping tests/.venv (pyte + pytest + hypothesis) =="
     python3 -m venv "$VENV"
-    "$VENV/bin/pip" install --quiet pyte==0.8.1 pytest
+    # hypothesis is for the edit model's stateful machine; without it
+    # (python3-hypothesis on Debian) that one test skips, nothing else does.
+    "$VENV/bin/pip" install --quiet pyte==0.8.1 pytest hypothesis
   fi
   PY="$VENV/bin/python"
 fi

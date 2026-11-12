@@ -47,3 +47,16 @@ def test_backspace_with_auto_indent_deletes_a_whole_character(tmp_path):
         s.send([DOWN, END])
         w = s.send([BACKSPACE]).win
     assert w.lines[1] == ("H", b"caf")
+
+
+# @scenario SC-edit-model-32
+@incoherence("Backspace in the empty last row of a text of two rows ends the "
+             "editor with SIGSEGV (found by the option-array walks, 2026-11-12)")
+def test_backspace_in_the_empty_last_row_of_two_rows_joins_it_to_the_row_above(tmp_path):
+    """A file of one line, Ctrl-End, Return, Backspace: the new empty row goes
+    and the cursor is at the end of the line, as it is with three rows."""
+    with EditSession(str(tmp_path), "a\n", filename="t.txt") as s:
+        s.send([ESC + ctrl("e"), "\r"])
+        assert s.last.win.lines == [("H", b"a"), ("H", b"")]
+        w = s.send([BACKSPACE]).win
+    assert w.lines == [("H", b"a")] and w.cursor == (0, 1)

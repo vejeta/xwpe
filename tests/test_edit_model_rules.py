@@ -85,7 +85,7 @@ def test_every_action_has_its_keys_in_each_key_style(style):
     for name in model.ACTIONS:
         if name in ("type", "toggle_breakpoint"):
             continue
-        assert keymap.keys_for(style, name), name
+        assert keymap.keys_for(style, name, keymap.sample_arg(name)), name
     assert keymap.keys_for(keymap.STYLE_CUA, "save") != keymap.keys_for(keymap.STYLE_OLD, "save")
 
 
@@ -180,3 +180,15 @@ def test_render_disk_and_logical_lines_read_the_rows_as_the_file():
     assert render.render_disk(rows) == b"one two\n\nx"
     assert render.logical_lines(rows) == [b"one two", b"", b"x"]
     assert render.show_rows(rows, cursor=(1, 1)) == ["one ~", "t|wo$", "$", "x~"]
+
+
+# @scenario SC-edit-model-16
+def test_show_endmark_marks_a_soft_row_as_well_as_a_hard_one():
+    """With Show Endmark a row that ends with a line break shows ``$`` after
+    its text and a row that goes on in the next one shows ``\\``, as the
+    window draws them; without it neither shows."""
+    rows = [("S", b"one "), ("H", b"two"), ("S", b"x")]
+    view = (0, 0, 1, 0, 5, 41)
+    assert render.render_window(rows, view, 8, endmark=True) == \
+        {2: "one \\", 3: "two$", 4: "x\\"}
+    assert render.render_window(rows, view, 8) == {2: "one", 3: "two", 4: "x"}

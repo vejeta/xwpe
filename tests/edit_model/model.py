@@ -33,8 +33,10 @@ ends either with a line break (``H``, hard) or soft-wrapped into the next row
 owner's insert and delete) are modelled at that level so a wrap or a reflow
 lands where the editor's does; the user-level rules are written over them.
 
-Not modelled here: blocks and the clipboard, Search, the option dialog,
-multiple windows, the mouse; those keys are not actions of this model.
+Blocks, the clipboard, Search > Replace and the option dialog are in
+``blocks.py``, which registers its rules here.  Not modelled: Find and Search
+again, Go to Line, a second window, the mouse, and the files Ctrl-K R and W
+read and write; those keys are not actions of this model.
 """
 import unicodedata
 
@@ -67,6 +69,10 @@ FLG_AUTOINDENT = 1
 
 # The option defaults (we_main.c) and the undo list's one extra step.
 DEFAULT_TABN = 8
+DEFAULT_MAXCOL = 120
+# The markers a window has (edit.h, POINT pt[9]); Ctrl-K 9 and Ctrl-O 9 name
+# a tenth that is not there, a known bug the walks stay clear of.
+MARKER_COUNT = 9
 DEFAULT_AUTOINDENT_COL = 3
 DEFAULT_NUMUNDO = 10
 DEFAULT_MAXCHG = 999
@@ -98,11 +104,14 @@ F_BREAKPOINTS = "breakpoints"
 F_DISK = "disk"
 F_AUTOSAVE = "autosave"
 F_BOX = "box"            # a message box the action opens, by its text
+F_CLIP = "clipboard"     # the text of the clipboard window
+F_MARKERS = "markers"    # the ten markers Ctrl-K 0..9 set
 FIELDS = (F_TEXT, F_CURSOR, F_MARKS, F_ANCHOR, F_MODE, F_SAVE, F_STEPS,
-          F_BREAKPOINTS, F_DISK, F_AUTOSAVE, F_BOX)
+          F_BREAKPOINTS, F_DISK, F_AUTOSAVE, F_BOX, F_CLIP, F_MARKERS)
 
 BOX_NO_UNDO = "No more Undo"
 BOX_NO_REDO = "No more Redo"
+BOX_SAVE_FAILED = "File failed to save"
 
 
 class Rule:
@@ -174,6 +183,12 @@ _rule("tab_literal", SOURCE_CODE, "we_edit.c:937",
 _rule("tab_autoindent", SOURCE_CODE, "we_edit.c:1896-2011",
       "With auto-indent Tab inserts spaces up to the previous indent, or "
       "Auto Ind. Col. past it, or a tab; trailing blanks are erased.",
+      (F_TEXT, F_CURSOR))
+_rule("tab_autoindent_manual", SOURCE_MANUAL, HELP + ":2045-2053",
+      "With auto-indent, Tab in front of the first visible character indents "
+      "the line like the previous one; behind that column it indents N "
+      "characters more than the previous line, N being the Tabstops number; "
+      "behind that position, or between visible characters, it inserts a tab.",
       (F_TEXT, F_CURSOR))
 _rule("tab_one_step", SOURCE_DECISION, DECIDED_ONE_STEP,
       "Tab with auto-indent is one Ctrl-U.", (F_STEPS,))
@@ -262,6 +277,9 @@ _rule("save_writes_file", SOURCE_MANUAL, HELP + ":699",
       "F2 saves the file (Alt-F2 in the CUA key style).", (F_DISK,))
 _rule("save_format", SOURCE_CODE, "we_edit.c e_write",
       "The file is the rows, with a line break after each hard row.", (F_DISK,))
+_rule("save_fails_read_only", SOURCE_CODE, "probe of F2 in a 0444 file, 2026-11-12",
+      "Saving a window that is closed to changes writes nothing and shows the "
+      "box File failed to save.", (F_DISK, F_BOX))
 _rule("modified_count", SOURCE_CODE, "we_edit.c:2110-2114; we_buffer.c:1039",
       "Each changed character counts 1, each line 10; Save sets 0.", (F_SAVE,))
 _rule("autosave_asv", SOURCE_MANUAL, HELP + ":1547-1553",
@@ -300,6 +318,17 @@ _rule("undo_empty_says_so", SOURCE_CODE, "we_main.c:71, 81",
       "No more Redo.", (F_BOX,))
 
 
+# Where a manual rule and the code say different things.  The model follows
+# the code (so the editor and the model agree) and the user decides which
+# is right; ``goldens/APPROVAL.md`` lists each under "To decide".
+CONFLICTS = {
+    "tab_autoindent": ("help.xwpe_eng:2045-2053 says Tab behind the first "
+                       "visible character indents N more than the line above, "
+                       "N being Tabstops; we_edit.c uses Auto Ind. Col. "
+                       "instead (3 by default, Tabstops is 8)."),
+}
+
+
 def rule_counts():
     """How many rules each source backs, for the report."""
     out = dict((s, 0) for s in SOURCES)
@@ -315,13 +344,16 @@ class Options:
 
     def __init__(self, tabn=DEFAULT_TABN, autoindent_col=DEFAULT_AUTOINDENT_COL,
                  numundo=DEFAULT_NUMUNDO, maxchg=DEFAULT_MAXCHG, autosave=False,
-                 cua=False):
+                 cua=False, maxcol=DEFAULT_MAXCOL, wordstar=False, endmark=False):
         self.tabn = tabn
         self.autoindent_col = autoindent_col
         self.numundo = numundo
         self.maxchg = maxchg
         self.autosave = autosave
         self.cua = cua
+        self.maxcol = maxcol          # the width a window opened now gets
+        self.wordstar = wordstar      # Ctrl-K B keeps the block's end
+        self.endmark = endmark        # a hard row shows $ after its text
 
     @classmethod
     def from_xwperc(cls, text):
@@ -348,11 +380,17 @@ class Options:
                 o.autosave = (v & 2) != 0
             elif key == "Options2":
                 o.cua = (v & CUA_STYLE_BIT) != 0
+                o.wordstar = (v & WORDSTAR_BIT) != 0
+                o.endmark = (v & ENDMARK_BIT) != 0
+            elif key == "MaxColumn":
+                o.maxcol = v
         return o
 
 
-# Options2's bit for the CUA key style (ED_CUA_STYLE, edit.h).
+# Options2's bits for the CUA key style and the WordStar block mode (options.h).
 CUA_STYLE_BIT = 1
+ENDMARK_BIT = 2
+WORDSTAR_BIT = 4
 
 
 # ---- state ---------------------------------------------------------------------
@@ -383,6 +421,7 @@ class Step:
         self.action = action
         self.line_record = line_record
         self.ins = ins          # the mode the action was typed in
+        self.undo_marks = None  # (begin, end) Undo leaves, when the action says
 
 
 class Snapshot:
@@ -425,6 +464,10 @@ class State:
         self.options = Options()
         self.box = None         # the message box the last action opened
         self.fired = []         # rule names the last action used
+        self.clip = [(HARD, b"")]   # the clipboard window's rows, (end, bytes)
+        self.clip_width = DEFAULT_MAXCOL   # the clipboard window's width
+        self.pt = [(-1, -1)] * MARKER_COUNT   # the markers, (row, column); (-1, -1) unset
+        self.resync_fields = set()  # fields the last action does not predict
 
     # -- reading ---------------------------------------------------------------
     @property
@@ -449,14 +492,35 @@ class State:
         s.undo = list(self.undo)
         s.redo = list(self.redo)
         s.brp = set(self.brp)
+        s.pt = list(self.pt)
+        s.options = Options.__new__(Options)
+        s.options.__dict__.update(self.options.__dict__)
         s.fired = []
+        s.resync_fields = set()
         return s
 
 
-def state_from_window(w, options=None):
-    """The model's state for a dump window (oracle.Window), as at start."""
+def clipboard_rows(w0):
+    """The rows the clipboard window (dump window 0) holds, as (end, bytes)."""
+    if w0 is None:
+        return [(HARD, b"")]
+    return list(w0.lines)
+
+
+def _dump_marker(p):
+    """A dump's marker ``(x, y)`` as the model's (row, column)."""
+    return (p[1], p[0]) if p[0] >= 0 else (-1, -1)
+
+
+def state_from_window(w, options=None, clip=None):
+    """The model's state for a dump window (oracle.Window), as at start;
+    @clip is the clipboard window of the same dump, if any."""
     st = State()
     st.options = options or Options()
+    st.clip = clipboard_rows(clip)
+    if clip is not None:
+        st.clip_width = clip.mx
+    st.pt = [_dump_marker(p) for p in w.pt]
     st.rows = []
     for end, data in w.lines:
         st.rows.append(Row(data, end, st.next_ident))
@@ -472,12 +536,16 @@ def state_from_window(w, options=None):
     return st
 
 
-def resync(st, w, vertical=False):
+def resync(st, w, vertical=False, clip=None):
     """Take the editor's word for the fields the model got wrong, keeping
     line identities where the rows still match (common head and tail) and
     the undo steps the model holds (they were agreed when pushed).  Unless
     the key was Up or Down (@vertical), the column those keys keep is the
-    editor's cursor column, as the key loop sets it after every other key."""
+    editor's cursor column, as the key loop sets it after every other key.
+    @clip is the clipboard window of the same dump."""
+    if clip is not None:
+        st.clip = clipboard_rows(clip)
+    st.pt = [_dump_marker(p) for p in w.pt]
     old = st.rows
     new = list(w.lines)
     head = 0
@@ -990,6 +1058,8 @@ def apply(state, action):
         _redo(st)
     elif name == "toggle_breakpoint":
         _toggle_breakpoint(st)
+    elif name in blocks.BLOCK_ACTIONS:
+        blocks.apply_action(st, action)
     _after_key(st, name, pre)
     return st
 
@@ -1274,7 +1344,7 @@ def _tab(st, rows):
         else:
             rows.put_char(TAB)
         return
-    st.fired.extend(["tab_autoindent", "tab_one_step"])
+    st.fired.extend(["tab_autoindent", "tab_autoindent_manual", "tab_one_step"])
     tabn = st.options.tabn
     line = st.y
     s = rows.content(line)
@@ -1544,7 +1614,10 @@ def _undo(st):
     st.redo.append(step)
     _restore(st, step.before)
     st.save_known = False
-    if step.line_record:
+    if step.undo_marks is not None:
+        st.fired.extend(["undo_cursor_snapshot", "block_undo_marks"])
+        st.mb, st.me = step.undo_marks
+    elif step.line_record:
         st.fired.append("undo_line_cursor")
         st.mb, st.me = step.before.mb, step.before.me
     else:
@@ -1572,7 +1645,7 @@ def _redo(st):
     _restore(st, step.after)
     st.save_known = False
     st.fired.extend(["undo_cursor_snapshot", "undo_marks_span"])
-    if step.line_record:
+    if step.undo_marks is not None or step.line_record:
         st.mb, st.me = step.after.mb, step.after.me
     else:
         _marks_on_inserted(st, step.before.rows, step.after.rows,
@@ -1582,6 +1655,11 @@ def _redo(st):
 # -- save and breakpoints
 
 def _save(st):
+    if _locked(st):
+        st.fired.append("save_fails_read_only")
+        st.box = BOX_SAVE_FAILED
+        st.resync_fields.add(F_DISK)
+        return
     st.fired.extend(["save_writes_file", "save_format", "modified_count"])
     st.disk = render_disk(st)
     st.save = 0
@@ -1620,3 +1698,10 @@ def classify(fired, field):
     if rules and all(r.source in SPECIFYING_SOURCES for r in rules):
         return "editor", rules
     return "unspecified", rules
+
+
+# The blocks, the clipboard, Replace and the option dialog: their rules
+# register themselves in RULES, their actions join the model's.
+from . import blocks  # noqa: E402
+
+ACTIONS = ACTIONS + blocks.BLOCK_ACTIONS

@@ -298,3 +298,55 @@ def test_a_dump_never_lands_on_the_terminal(tmp_path, fd):
         shown = "\n".join(s.display())
         assert s.text() == "k" + SEED
     assert "ctx=" not in shown, "a dump was drawn on the screen"
+
+
+# @scenario SC-edit-model-28
+def test_a_second_refusal_in_a_row_is_not_reported_as_silent():
+    """Check 2's "says so" with the idle status row: after one refusal the
+    row keeps its words, so the next refusal leaves it unchanged and is not
+    a silent key.  A session that never changed its row is still caught."""
+    locked = _window(ROWS, ro=1)
+    same = _window(ROWS, ro=1)
+    assert selfcheck.check_says_so("type_ascii", locked, same, STATUS_SAID,
+                                   STATUS_SAID, STATUS_IDLE) == []
+    assert selfcheck.check_says_so("type_ascii", locked, same, STATUS_IDLE,
+                                   STATUS_IDLE, STATUS_IDLE)[0][0] == "says-so"
+    assert selfcheck.check_says_so("type_ascii", locked, same, STATUS_SAID,
+                                   STATUS_SAID)[0][0] == "says-so", "no idle row: as before"
+
+
+# @scenario SC-edit-model-28
+def test_the_undo_probe_compares_the_marks_by_the_kind_of_record():
+    """Check 1 with marks (R3): an undo of a deletion marks the text it
+    brings back, a copy's undo leaves both marks where the copy began, every
+    other record gives the marks back as they were; a dump with other marks
+    is reported."""
+    before = _window([("H", b"abcd")], mb="0,1", me="0,1")
+    after = _window([("H", b"ad")], mb="0,1", me="0,1")
+    want = selfcheck.expected_marks("undo", "a", before, after)
+    assert want == ((0, 1), (0, 3)), "the two bytes the undo brought back"
+    other = _window([("H", b"abcd")], mb="0,0", me="0,0")
+    found = selfcheck.compare_windows("after Ctrl-U", before, other, want)
+    assert [c for c, _d in found] == ["marks"]
+    assert selfcheck.compare_windows("after Ctrl-U", before,
+                                     _window([("H", b"abcd")], mb="0,1", me="0,3"), want) == []
+    copy_before = _window([("H", b"one"), ("H", b"two")], mb="0,0", me="0,0")
+    copy_after = _window([("H", b"one"), ("H", b"one"), ("H", b"two")], mb="1,0", me="2,0")
+    assert selfcheck.expected_marks("undo", "c", copy_before, copy_after) == ((1, 0), (1, 0))
+    assert selfcheck.expected_marks("redo", "c", copy_after, copy_before) == ((1, 0), (2, 0))
+    assert selfcheck.expected_marks("undo", "R", copy_before, copy_after) == ((0, 0), (0, 0))
+    assert selfcheck.record_kinds(["buffer record kind=a more=0 replay=none",
+                                   "buffer record kind=r more=0 replay=undo"]) == ["a"]
+
+
+# @scenario SC-edit-model-28
+def test_the_utf8_check_reports_a_byte_the_key_left_alone_in_a_character():
+    """The soft rule: text that was valid UTF-8 stays valid.  A Backspace
+    that deletes one byte of a two-byte letter breaks it and is reported;
+    ASCII typing, a key on text that was not valid already, and a whole
+    character removed are not."""
+    good = [("H", "café".encode())]
+    assert selfcheck.check_utf8_stays_valid(good, [("H", "cafe".encode())]) == []
+    assert selfcheck.check_utf8_stays_valid(good, [("H", b"caf\xc3")])[0][0] == "encoding"
+    assert selfcheck.check_utf8_stays_valid(good, [("H", b"caf")]) == []
+    assert selfcheck.check_utf8_stays_valid([("H", b"caf\xe9")], [("H", b"caf\xe9x")]) == []

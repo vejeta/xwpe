@@ -71,3 +71,25 @@ Ctrl-U, so it does not show that.
 
 To decide: after the only line went, the row left has no line break, so
 saving now writes `x` with no newline at the end of the file.
+
+## tab_autoindent (the manual and the code disagree)
+
+This is not a golden. The model has a rule from the manual and a rule from
+the code for the same key, and they say different things.
+
+Manual (Automatic Indentation, help.xwpe_eng lines 2045 to 2053): with
+auto-indent on, Tab in front of the first visible character indents the
+line like the line above. Behind that column it indents the line N
+characters more than the line above, and N is the number set for
+Tabstops (8 by default). Behind that, or between visible characters, it
+puts in a tab.
+
+Editor: the same in front of the first visible character, but the "N
+more" is the number set for Auto Ind. Col. (3 by default), not Tabstops.
+So with the defaults the manual gives 8 more columns and the editor 3.
+
+To decide: which one is right. If the manual, Tab indents by Tabstops and
+the code changes. If the editor, the manual's sentence is wrong and gets
+corrected. Until you decide the model follows the editor, and its rule is
+marked as coming from the code, so an agreement with the editor on this
+key proves nothing.

@@ -312,7 +312,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice edit_driver
 
 # The text's owner: we_buffer.c alone (the editor's side of its seam is
 # stubbed by the test).  Marks and breakpoints move with their lines, Undo
@@ -320,6 +320,11 @@ check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop te
 # allocation changes nothing, a view keeps no undo.
 test_splice_SOURCES = tests/test_splice.c we_buffer.c
 test_splice_CFLAGS = $(XWPE_STDFLAG)
+
+# The same owner behind a line protocol, for the edit model's walks
+# (tests/edit_model/cdriver.py).  Built by `make check`, not run by it.
+edit_driver_SOURCES = tests/edit_driver.c we_buffer.c
+edit_driver_CFLAGS = $(XWPE_STDFLAG)
 
 # The screen's owner: we_paint.c with the fd loop only (the desk is given
 # through hooks the test sets).  A paint asked for under a box waits, the

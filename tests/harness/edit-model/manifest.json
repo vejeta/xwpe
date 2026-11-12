@@ -126,6 +126,154 @@
    "layer": "ncurses",
    "test": "tests/test_edit_model_rows.py::test_backspace_with_auto_indent_deletes_a_whole_character",
    "status": "new"
+  },
+  {
+   "id": "SC-edit-model-19",
+   "requirement": "Every block, clipboard, Replace, option and marker rule names its source, and each action has keys in both key styles",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_every_block_rule_names_its_source_and_where_it_is_written",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-20",
+   "requirement": "In the model a block copy marks the copy, counts as one undo step and leaves the marks where it began after Ctrl-U",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_copy_puts_the_block_at_the_cursor_marks_the_copy_and_is_one_undo",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-21",
+   "requirement": "In the model copy, cut and paste go through the clipboard window and a locked window refuses every change but copy",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_copy_cut_and_paste_through_the_clipboard_window",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-22",
+   "requirement": "In the model a copy keeps the rows between the block's ends as they are and wraps the lines at its ends as the file reader does",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_a_copy_keeps_the_rows_between_its_ends_as_they_are",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-23",
+   "requirement": "In the model Ctrl-K I and Ctrl-K U shift by half the Tabstops and are one undo step for all rows",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_indent_and_unindent_shift_by_half_the_tabstops_one_undo_for_all_rows",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-24",
+   "requirement": "In the model Change All replaces every match ignoring case, says how many, and is one undo step whatever Num. Undo is",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_change_all_replaces_every_match_ignoring_case_and_says_how_many",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-25",
+   "requirement": "In the model the option dialog changes the numbers and not the width of an open window",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_the_option_dialog_changes_the_numbers_and_not_the_width_of_an_open_window",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-26",
+   "requirement": "The manual's rule for Tab with auto-indent is in the model and its conflict with the code is on the user's list",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_a_tab_with_auto_indent_has_a_manual_rule_that_the_code_contradicts",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-27",
+   "requirement": "After any block action in the model Ctrl-U gives the text back as one step and the marks stay inside the text",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_blocks.py::test_after_any_block_action_undo_gives_the_text_back_as_one_step",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-28",
+   "requirement": "A second refusal in a row is not reported as silent; the undo probe compares marks by record kind; the UTF-8 rule is checked",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_a_second_refusal_in_a_row_is_not_reported_as_silent",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-29",
+   "requirement": "The option array covers every pair of factors and every triple inside its strength-3 groups, and the generator gives it again",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_covering.py::test_the_checked_in_array_covers_every_pair_and_every_triple_of_its_groups",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-30",
+   "requirement": "A walk is the same walk for the same seed",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_covering.py::test_a_walk_is_the_same_walk_for_the_same_seed",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-31",
+   "requirement": "The coverage report lists the levels an action never met and the levels not built yet",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_covering.py::test_the_coverage_report_lists_the_levels_an_action_never_met",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-32",
+   "requirement": "Backspace in the empty last row of a text of two rows joins it to the row above and does not end the editor",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rows.py::test_backspace_in_the_empty_last_row_of_two_rows_joins_it_to_the_row_above",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-33",
+   "requirement": "A seeded walk on a row of the option array lists its disagreements with the editor by class",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_lockstep.py::test_a_walk_on_a_row_of_the_array_lists_its_disagreements_by_class",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-34",
+   "requirement": "The buffer owner behind the line driver agrees with its model over the first steps of a seeded walk",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_cdriver.py::test_the_owner_agrees_with_its_model_over_the_first_steps",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-35",
+   "requirement": "A refused allocation leaves the text whole or the operation made, at each allocation in turn",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_cdriver.py::test_a_refused_allocation_leaves_the_text_whole_or_the_operation_made",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-36",
+   "requirement": "Rows moved carry their breakpoints and a copy carries none",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_cdriver.py::test_a_move_carries_the_breakpoints_of_its_rows_and_a_copy_carries_none",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-37",
+   "requirement": "Rows moved into a narrower buffer are wrapped to its width",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_cdriver.py::test_rows_moved_into_a_narrower_buffer_are_wrapped_to_its_width",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-38",
+   "requirement": "The Hypothesis machine over the model runs with fixed settings",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_machine.py::test_the_machine_is_configured_for_the_gate",
+   "status": "new",
+   "needs": ["hypothesis"]
+  },
+  {
+   "id": "SC-edit-model-39",
+   "requirement": "A disagreement is filed under a known bug only when the editor did what that bug does",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_lockstep.py::test_a_known_bug_tag_names_only_what_that_bug_does",
+   "status": "new"
   }
  ]
 }

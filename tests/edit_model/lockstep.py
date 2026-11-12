@@ -20,8 +20,10 @@ Run as a script::
     tests/.venv/bin/python tests/edit_model/lockstep.py --style old --seed 1 --steps 50
 """
 import argparse
+import json
 import os
 import random
+import shutil
 import sys
 import tempfile
 
@@ -29,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if os.path.dirname(HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(HERE))
 
-from edit_model import keymap, model  # noqa: E402
+from edit_model import keymap, model, option_row, selfcheck, walk  # noqa: E402
 from edit_model.oracle import (ESC, ChannelMiscount, ChannelTimeout,  # noqa: E402
                                EditSession)
 from edit_model.render import render_disk, screen_disagreements  # noqa: E402
@@ -38,7 +40,7 @@ FILENAME = "t.c"
 DEFAULT_STEPS = 50
 # A row this long is two bytes short of the default width of 120, so the
 # next characters typed into it wrap.
-NEAR_WIDTH_ROW = " ".join("w%03d" % i for i in range(23)) + "xy"
+NEAR_WIDTH_ROW = option_row.NEAR_WIDTH_ROW
 SEED = ("#include <stdio.h>\n"
         "int main(void)\n"
         "{\n"
@@ -52,11 +54,10 @@ SEED = ("#include <stdio.h>\n"
         "   \n"
         "one-two three\n"
         "last line")
-
-# What a walk draws, and how often.  Typing and the deletions most; the
-# moves that put the cursor at the hot spots (row ends, the long row, the
-# text's ends) next; the keys this terminal may not decode least.
-WALK_WEIGHTS = {
+# What the walk of one key style (no row of the array) draws: the key loop's
+# own edits and moves, the modes, Save, Undo and Redo.  Blocks and the rest
+# are the array's walks (walk.WEIGHTS).
+LEGACY_WEIGHTS = {
     "type": 24, "enter": 7, "tab": 4, "backspace": 9, "delete": 7,
     "delete_word": 3, "kill_to_eol": 2, "delete_line": 2,
     "left": 3, "right": 3, "up": 4, "down": 5, "home": 3, "end": 5,
@@ -67,13 +68,8 @@ WALK_WEIGHTS = {
     "insert_toggle": 1, "literal_toggle": 1,
     "undo": 6, "redo": 3, "save": 2,
 }
-# What "type" draws: letters, a blank and a dash (the wrap points), braces
-# and a hash (auto-indent's quirks), a multibyte letter.
-TYPED = [b"x", b"q", b"a", b"Z", b" ", b" ", b"-", b"{", b"}", b"#", "é".encode()]
-# In Alt-J's mode only these: printable letters, control keys that then go
-# into the text, and Alt-J again (often, to leave).
-LITERAL_TYPED = [b"x", b"q", b"\x14", b"\x19", b"\x1a"]
-LITERAL_LEAVE_P = 0.4
+# The keys of the programming layer that only the breakpoint prelude uses.
+PRELUDE_ONLY = {"toggle_breakpoint": option_row.BREAKPOINT_KEYS}
 
 CLASS_EDITOR = "editor"
 CLASS_MODEL = "model"
@@ -115,14 +111,39 @@ def _key_did_nothing(action, field, before, w):
 # Disagreements already known, by the name a report gives them.
 KNOWN_OVERWRITE_REDO = "known bug, fix pending: Ctrl-R after undoing overwrite typing"
 KNOWN_END_OF_TEXT = "known bug, fix pending: Ctrl-T / Ctrl-Right at the end of the text"
-KNOWN_STEPS = "decided, not built yet: one Ctrl-U per Tab or Backspace in an indent"
+KNOWN_STEPS = ("decided, not built yet: one Ctrl-U per Tab or Backspace in an "
+               "indent, Ctrl-K I/U, Ctrl-O U/M/H and Change All")
 KNOWN_UNDO_CURSOR = "open question: where Ctrl-U and Ctrl-R leave the cursor"
+KNOWN_DECODER = ("known bug, fix pending: the terminal's key decoder drops Shift+cursor, "
+                 "Ctrl+cursor, Ctrl-Ins and Shift-Del/Ins")
+KNOWN_LOCK = "known bug, fix pending: a block command or Replace changes a locked window"
+KNOWN_MARKER_9 = "known bug, fix pending: Ctrl-K 9"
+KNOWN_SOFT_WRAP = "known bug, fix pending: typing into a soft-wrapped row loses a byte"
+KNOWN_UTF8_BACKSPACE = ("known bug, fix pending: Backspace with auto-indent deletes one "
+                        "byte of a UTF-8 character")
+STEP_ACTIONS = ("tab", "backspace", "block_indent", "block_unindent", "help_button",
+                "help_highlight", "help_header", "replace_all")
+LOCKED_CHANGERS = ("block_indent", "block_unindent", "help_button", "help_highlight",
+                   "help_header", "replace_all")
+MARKER_9 = 9
+KNOWN_CRASH = ("new bug, not fixed: Backspace in the empty last row of a two-row text "
+               "ends the editor with SIGSEGV")
 
 
-def expected_tag(action, field, before, pred, editor_w):
+def _same_as_before(before, w):
+    """Did the editor leave text, cursor, marks and undo depths alone?"""
+    return (list(w.lines) == before.lines() and w.cursor == (before.y, before.x)
+            and (w.mb, w.me) == (before.mb, before.me) and w.ud == before.ud)
+
+
+def expected_tag(action, field, before, pred, editor_w, key_name=None):
     """The known name of a disagreement (a bug whose fix is pending, or a
-    decision not built yet), or None for a new one."""
+    decision not built yet), or None for a new one.  A cursor or a mark
+    outside the text is never excused by a known bug: that check reads the
+    editor's dump alone, so no tag written for a model field may hide it."""
     name = action.name
+    if field == FIELD_INSIDE:
+        return None
     # Undoing overwrite typing gives the text back but leaves nothing to
     # redo: only the undo depths carry the known bug, so a wrong text or
     # count after that Ctrl-U still shows as new.
@@ -133,12 +154,48 @@ def expected_tag(action, field, before, pred, editor_w):
         return KNOWN_OVERWRITE_REDO
     if name in ("delete_word", "word_right") and _at_end_of_text(before):
         return KNOWN_END_OF_TEXT
-    if field == model.F_STEPS and name in ("tab", "backspace"):
+    if field == model.F_STEPS and name in STEP_ACTIONS:
         if editor_w.ud - before.ud > 1:
             return KNOWN_STEPS
     if name in ("undo", "redo") and field in (model.F_CURSOR, model.F_ANCHOR):
         return KNOWN_UNDO_CURSOR
+    if key_name is not None and keymap.is_decoder_drop(key_name) \
+            and _same_as_before(before, editor_w):
+        return KNOWN_DECODER
+    if before.ins == model.INS_READONLY and name in LOCKED_CHANGERS \
+            and _text_or_steps_changed(before, editor_w):
+        return KNOWN_LOCK
+    if name == "marker_set" and action.arg == MARKER_9:
+        return KNOWN_MARKER_9
+    if name == "type" and before.rows[before.y].end == model.SOFT \
+            and field in (model.F_TEXT, FIELD_TYPED_KEPT, model.F_CURSOR,
+                          model.F_SAVE, model.F_MARKS) \
+            and _bytes_lost(pred, editor_w):
+        return KNOWN_SOFT_WRAP
+    if name == "backspace" and before.flg & model.FLG_AUTOINDENT \
+            and _multibyte_just_before_cursor(before):
+        return KNOWN_UTF8_BACKSPACE
     return None
+
+
+def _text_or_steps_changed(before, w):
+    """Did the editor change the text or push an undo step (what the lock
+    bug does), rather than misbehave in some other way?"""
+    return list(w.lines) != before.lines() or w.ud != before.ud
+
+
+def _bytes_lost(pred, w):
+    """Does the editor hold fewer bytes than the model predicted (what the
+    soft-wrap typing bug does), rather than different ones?"""
+    return sum(len(d) for _e, d in w.lines) < sum(len(r.data) for r in pred.rows)
+
+
+def _multibyte_just_before_cursor(before):
+    """Is the character Backspace takes a multibyte one (the auto-indent
+    Backspace bug), not merely one somewhere earlier on the row?"""
+    if not 0 <= before.y < len(before.rows) or before.x <= 0:
+        return False
+    return before.rows[before.y].data[before.x - 1] >= 0x80
 
 
 def logical_offset(lines, y, x):
@@ -171,12 +228,19 @@ def _around(text, off):
     return text[max(0, off - AROUND):off + AROUND]
 
 
-def compare(pred, d, session, action, check_screen):
-    """[(field, model's value, editor's value)] for one action."""
+FIELD_UTF8 = "utf8-valid"
+FIELD_INSIDE = "inside"
+
+
+def compare(pred, d, session, action, check_screen, filename=FILENAME):
+    """[(field, model's value, editor's value)] for one action; the fields
+    the action says it does not predict are left out."""
     w = d.win
     out = []
 
     def differ(field, mine, theirs):
+        if field in pred.resync_fields:
+            return
         if mine != theirs:
             out.append((field, mine, theirs))
 
@@ -188,101 +252,161 @@ def compare(pred, d, session, action, check_screen):
     if pred.save_known:
         differ(model.F_SAVE, pred.save, w.save)
     differ(model.F_STEPS, (pred.ud, pred.rd), (w.ud, w.rd))
-    differ(model.F_BREAKPOINTS, pred.brp_rows(), list(w.brp))
-    differ(model.F_AUTOSAVE, pred.autosaved, bool(d.autosaved))
+    # the breakpoints are a set of rows: the editor keeps them in the order
+    # they were set or given back, which says nothing about where they are
+    differ(model.F_BREAKPOINTS, pred.brp_rows(), sorted(w.brp))
+    differ(model.F_CLIP, list(pred.clip), model.clipboard_rows(d.windows.get(0)))
+    differ(model.F_MARKERS, list(pred.pt), [model._dump_marker(p) for p in w.pt])
+    if pred.save_known:         # Undo and Redo add the replayed characters to the count
+        differ(model.F_AUTOSAVE, pred.autosaved, bool(d.autosaved))
     if d.autosaved and pred.autosaved:
-        differ(model.F_AUTOSAVE, pred.asv, session.disk(FILENAME + ".ASV"))
+        differ(model.F_AUTOSAVE, pred.asv, session.disk(filename + ".ASV"))
     if action.name == "save":
         differ(model.F_DISK, pred.disk, session.disk())
     if check_screen:
-        bad = screen_disagreements(w.lines, w.view, pred.options.tabn, session.display())
+        bad = screen_disagreements(w.lines, w.view, pred.options.tabn, session.display(),
+                                   pred.options.endmark)
         if bad:
             out.append(("screen", "the dump's rows", bad[:2]))
     return out
 
 
+def model_free_checks(before, w):
+    """What the editor's own dumps alone can say about one step, with no
+    model: the cursor and the marks inside the text, and the soft rule that
+    text which was valid UTF-8 stays valid.  [(field, wanted, got)]."""
+    out = []
+    for cls, detail in selfcheck.check_inside(w):
+        out.append((FIELD_INSIDE, "inside the text", detail))
+    for cls, detail in selfcheck.check_utf8_stays_valid(before.lines(), list(w.lines)):
+        out.append((FIELD_UTF8, "valid UTF-8", detail))
+    return out
+
+
 class Walk:
-    """One seeded lockstep walk under one key style."""
+    """One seeded lockstep walk: under one key style, or on one row of the
+    option array (``row``), which fixes the options, the file and the
+    prelude that brings the session to the row's state."""
 
     def __init__(self, base, style, seed, n_steps=DEFAULT_STEPS, seed_text=SEED,
-                 binary=None):
+                 binary=None, row=None, weights=None, coverage=None):
         self.base = base
-        self.style = style
+        self.row = row
+        self.style = row.style if row is not None else style
         self.seed = seed
         self.n_steps = n_steps
-        self.seed_text = seed_text
+        self.seed_text = row.seed_text if row is not None else seed_text
+        self.filename = row.filename if row is not None else FILENAME
         self.binary = binary
-        self.rng = random.Random("%s-%d" % (style, seed))
+        if row is None:
+            # the walk of one key style keeps the draws it had before the
+            # array: the same seed is the same walk
+            self.rng = random.Random("%s-%d" % (self.style, seed))
+            weights = weights or LEGACY_WEIGHTS
+        else:
+            self.rng = random.Random("%s-%s-%d" % (row.name, self.style, seed))
+        self.drawer = walk.Drawer(self.rng, weights)
+        self.coverage = coverage if coverage is not None else walk.Coverage()
+        self.levels = row.levels() if row is not None else {}
         self.disagreements = []
         self.lost = []
         self.history = []
         self.steps_run = 0
         self.state = None
-        self.kinds = sorted(WALK_WEIGHTS)
-        self.weights = [WALK_WEIGHTS[k] for k in self.kinds]
+        self.key_name = None
+        self.known_crashes = 0
 
-    def draw(self, st):
-        """(keymap action, typed bytes or None) for the next step."""
-        if st.ins & model.INS_LITERAL:
-            if self.rng.random() < LITERAL_LEAVE_P:
-                return "literal_toggle", None
-            return "type", self.rng.choice(LITERAL_TYPED)
-        name = self.rng.choices(self.kinds, self.weights)[0]
-        if name == "type":
-            return name, self.rng.choice(TYPED)
-        return name, None
+    def keys_of(self, name, arg):
+        if name in PRELUDE_ONLY:
+            return list(PRELUDE_ONLY[name])
+        return keymap.keys_for(self.style, name, arg)
 
     def run(self):
-        rc = keymap.xwperc_for(self.style)
+        rc = self.row.xwperc() if self.row is not None else keymap.xwperc_for(self.style)
+        mode = self.row.file_mode if self.row is not None else None
         wd = tempfile.mkdtemp(dir=self.base)
-        with EditSession(wd, self.seed_text, filename=FILENAME, xwperc=rc,
-                         binary=self.binary) as s:
-            st = model.state_from_window(s.last.win, model.Options.from_xwperc(rc))
-            for i in range(self.n_steps):
-                if not self.step(s, st, i):
-                    break
-                st = self.state
+        try:
+            with EditSession(wd, self.seed_text, filename=self.filename, xwperc=rc,
+                             binary=self.binary, file_mode=mode) as s:
+                st = model.state_from_window(s.last.win, model.Options.from_xwperc(rc),
+                                             clip=s.last.windows.get(0))
+                self.state = st
+                prelude = self.row.prelude() if self.row is not None else []
+                i = 0
+                for name, arg in prelude:
+                    if not self.step(s, self.state, i, (name, arg)):
+                        return self
+                    i += 1
+                for _ in range(self.n_steps):
+                    if not self.step(s, self.state, i):
+                        break
+                    i += 1
+        finally:
+            shutil.rmtree(wd, ignore_errors=True)
         return self
 
-    def step(self, s, st, i):
-        name, arg = self.draw(st)
-        action = model.Action(keymap.model_action(name), arg)
-        keys = keymap.keys_for(self.style, name, arg)
+    def step(self, s, st, i, forced=None):
+        name, arg = forced if forced is not None else self.drawer.next(st)
+        self.key_name = name
+        action = model.Action(keymap.model_action(name) if name not in PRELUDE_ONLY
+                              else "toggle_breakpoint", arg)
+        keys = self.keys_of(name, arg)
         st.view = s.last.win.view
         pred = model.apply(st, action)
-        self.history.append(name if arg is None else "type %r" % arg)
+        self.history.append(name if arg is None else "%s %r" % (name, arg))
+        self.coverage.add(name, self.levels)
         try:
             d = s.send(keys)
         except (ChannelTimeout, ChannelMiscount) as e:
-            self.lost.append((i, name, str(e)))
+            self.lose(i, name, str(e), st, s)
             return False
         self.steps_run += 1
         box = None
-        if d.ctx != "edit" or d.win is None or d.win.name != FILENAME:
+        if d.ctx != "edit" or d.win is None or d.win.name != self.filename:
             box = box_text(s.display())
             ctx = d.ctx
             d = self.back_to_text(s)
             if d is None:
-                self.lost.append((i, name, "ctx=%s after the action: %s" % (ctx, box)))
+                self.lose(i, name, "ctx=%s after the action: %s" % (ctx, box), st, s)
                 return False
         if pred.box != _box_named(box, pred.box):
             self.note(i, action, model.F_BOX, pred.box, box, st, pred, d.win)
         found = check_typed_bytes_kept(st, action, d.win)
-        found += compare(pred, d, s, action, i % SCREEN_EVERY == 0)
+        found += compare(pred, d, s, action, i % SCREEN_EVERY == 0, self.filename)
+        found += model_free_checks(st, d.win)
         for field, mine, theirs in found:
             self.note(i, action, field, mine, theirs, st, pred, d.win)
-        if any(x["step"] == i for x in self.disagreements):
+        if pred.resync_fields or any(x["step"] == i for x in self.disagreements):
             base = action.name.replace("shift_", "")
-            model.resync(pred, d.win, vertical=base in ("up", "down"))
+            model.resync(pred, d.win, vertical=base in ("up", "down"),
+                         clip=d.windows.get(0))
         self.state = pred
         return True
+
+    def lose(self, i, name, message, st, s):
+        """Record that the editor stopped answering at step @i: a crash the
+        walk knows (Backspace in the empty last row of a two-row text) is
+        named, any other loss is the walk's to report as new."""
+        if self.is_known_crash(name, st, s):
+            message += " [%s]" % KNOWN_CRASH
+            self.known_crashes += 1
+        self.lost.append((i, name, message))
+
+    @staticmethod
+    def is_known_crash(name, st, s):
+        return (name == "backspace" and not s.alive() and len(st.rows) == 2
+                and st.rows[1].data == b"" and (st.y, st.x) == (1, 0))
+
+    def new_losses(self):
+        """The losses no known bug explains."""
+        return [x for x in self.lost if KNOWN_CRASH not in x[2]]
 
     def back_to_text(self, s):
         """Esc until the editor reads keys in the file's window again; the
         dump of that moment, or None."""
         for _ in range(LEAVE_ESC_MAX):
             d = s.send([ESC])
-            if d.ctx == "edit" and d.win is not None and d.win.name == FILENAME:
+            if d.ctx == "edit" and d.win is not None and d.win.name == self.filename:
                 return d
         return None
 
@@ -291,6 +415,8 @@ class Walk:
             cls, rules = CLASS_EDITOR, []
         elif field == FIELD_TYPED_KEPT:
             cls, rules = CLASS_EDITOR, [model.RULES["type_insert"]]
+        elif field in (FIELD_UTF8, FIELD_INSIDE):
+            cls, rules = CLASS_UNSPECIFIED, []
         elif field == "context":
             cls, rules = model.classify(pred.fired, model.F_TEXT)
         elif _key_did_nothing(action, field, before, w):
@@ -301,9 +427,30 @@ class Walk:
             style=self.style, seed=self.seed, step=i, action=repr(action),
             field=field, model=mine, editor=theirs, cls=cls,
             rules=["%s (%s, %s)" % (r.name, r.source, r.ref) for r in rules],
-            expected=expected_tag(action, field, before, pred, w),
+            expected=expected_tag(action, field, before, pred, w, self.key_name),
             cursor_before=(before.y, before.x),
+            row=self.row.name if self.row is not None else "-",
             keys=list(self.history[-8:])))
+
+    def result(self):
+        """The walk as plain data, for a run's report file."""
+        return {"row": self.row.name if self.row is not None else "-",
+                "style": self.style, "seed": self.seed, "steps": self.steps_run,
+                "lost": [list(x) for x in self.lost],
+                "disagreements": [dict((k, _jsonable(v)) for k, v in x.items())
+                                  for x in self.disagreements]}
+
+
+def _jsonable(v):
+    if isinstance(v, bytes):
+        return v.decode("latin-1")
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    if isinstance(v, dict):
+        return dict((str(k), _jsonable(x)) for k, x in v.items())
+    if isinstance(v, (int, float, str, bool)) or v is None:
+        return v
+    return repr(v)
 
 
 def summarize(walks):
@@ -323,15 +470,28 @@ def summarize(walks):
                                                   ("expected: " + exp) if exp else "NEW"))
         out.append("    model  %s" % _short(first["model"]))
         out.append("    editor %s" % _short(first["editor"]))
-        out.append("    keys   %s  (cursor before %s; %s seed %d step %d)"
+        out.append("    keys   %s  (cursor before %s; row %s %s seed %d step %d)"
                    % (" ; ".join(first["keys"]), first["cursor_before"],
-                      first["style"], first["seed"], first["step"]))
+                      first.get("row", "-"), first["style"], first["seed"], first["step"]))
         if first["rules"]:
             out.append("    rules  %s" % "; ".join(first["rules"]))
     for w in walks:
         for lost in w.lost:
             out.append("LOST %s seed %d step %d %s: %s" % ((w.style, w.seed) + lost))
     return "\n".join(out)
+
+
+def summary_counts(walks):
+    """{class: n} over the disagreements of @walks that are not expected,
+    and {tag: n} of the expected ones, for a report's header."""
+    new, known = {}, {}
+    for w in walks:
+        for x in w.disagreements:
+            if x["expected"]:
+                known[x["expected"]] = known.get(x["expected"], 0) + 1
+            else:
+                new[x["cls"]] = new.get(x["cls"], 0) + 1
+    return new, known
 
 
 def box_text(disp):
@@ -382,16 +542,33 @@ def main(argv):
     ap.add_argument("--style", action="append", choices=keymap.STYLES, default=None)
     ap.add_argument("--seed", type=int, action="append", default=None)
     ap.add_argument("--steps", type=int, default=DEFAULT_STEPS)
-    ap.add_argument("--tmp", default=None)
+    ap.add_argument("--row", action="append", default=None,
+                    help="a row of option_rows.tsv by name; with it --style is ignored")
+    ap.add_argument("--tmp", default=None,
+                    help="where the sessions live; they are removed when the run ends")
+    ap.add_argument("--coverage-out", default=None,
+                    help="write the coverage of the run as JSON to this path")
     args = ap.parse_args(argv)
-    base = tempfile.mkdtemp(dir=args.tmp)
+    from edit_model import covering
+    cov = walk.Coverage()
     walks = []
-    for style in args.style or list(keymap.STYLES):
-        for seed in args.seed or [1]:
-            walks.append(Walk(base, style, seed, args.steps).run())
+    with tempfile.TemporaryDirectory(dir=args.tmp) as base:
+        if args.row:
+            table = dict((r.name, r) for r in covering.load())
+            for name in args.row:
+                for seed in args.seed or [1]:
+                    walks.append(Walk(base, None, seed, args.steps, row=table[name],
+                                      coverage=cov).run())
+        else:
+            for style in args.style or list(keymap.STYLES):
+                for seed in args.seed or [1]:
+                    walks.append(Walk(base, style, seed, args.steps, coverage=cov).run())
     print(summarize(walks))
     print("steps %d, disagreements %d" % (sum(w.steps_run for w in walks),
                                           sum(len(w.disagreements) for w in walks)))
+    if args.coverage_out:
+        with open(args.coverage_out, "w", encoding="utf-8") as fh:
+            json.dump(cov.to_json(), fh)
     return 0
 
 
