@@ -271,7 +271,12 @@ Changes
   file).  Ctrl-U of a block moved inside its own line puts it back where it
   was, and Ctrl-U of a block copied or moved into a line as wide as the
   window takes back that block and nothing else (it could delete your own
-  characters next to it).
+  characters next to it).  An Undo that cannot make room for a deleted
+  line's breakpoint for want of memory is refused before it changes
+  anything, instead of giving the line back without it.  When the
+  assistant's pane cannot get a row
+  for want of memory the status row says so and the pane stays as it was
+  (it ended the editor through the low-memory box).
 
 * A file read into a window with Block > Read (Ctrl-K R) is one Ctrl-U and
   marks the window modified (Ctrl-U took back what you had typed before,
@@ -357,6 +362,12 @@ Changes
   could be opened.  When there is neither, the message says so.  sdb, dbx
   and xdb now send the program's output to Messages through that
   pseudoterminal, as gdb does, instead of over the editor's screen.
+
+* In a git workspace whose files were saved again unchanged, touched, or
+  rewritten by a checkout, the assistant's run now takes its git
+  checkpoint, and the review after it offers c to commit again (it fell
+  back to snapshot copies without saying so, and the commit key was not
+  offered).
 
 * The review after an assistant run lists only what the run changed, and
   r removes only what the run created.  In a git workspace, files you

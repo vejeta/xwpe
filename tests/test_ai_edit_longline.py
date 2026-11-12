@@ -3,7 +3,7 @@
 xwpe is a WordPerfect-style editor: every physical line lives in an mx.x+1 byte
 buffer and holds at most mx.x-1 columns, because the file reader soft-wraps
 anything longer at the margin.  The whole-buffer rebuild path
-(e_buffer_set_text / e_buffer_append_line, used by an AI/LSP/Undo apply) used to
+(e_buffer_replace_all, used by an AI/LSP/Undo apply) used to
 store an over-long line verbatim in a content-sized buffer; the first keystroke
 on it then drove the insert/auto-wrap machinery to write past the line and
 corrupt the heap -- a hard SIGSEGV.  The rebuild path now soft-wraps like the

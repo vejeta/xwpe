@@ -74,7 +74,4 @@ we_ai.o fdopen 1 keep the API key file, not a child
 we_ai_ws.o write 1 keep a regular file the model named, opened at the place the scope judged (wpe_path_open_write): no child, no pipe
 
 # the text: every line a window adds or removes goes through its owner
-# (we_buffer.c).  What is left are the callers each later pass moves onto it.
-# the two functions the assistant's pane still writes its rows with
-we_prog.o e_new_line 2 P11e print_to_end_of_buffer and e_p_red_buffer, for the pane
-we_prog.o mxlines_write 1 P11e e_p_red_buffer, for the pane
+# (we_buffer.c), and the check allows no line for its names.

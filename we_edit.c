@@ -20,6 +20,7 @@
 #define E_BUFFER_SAY_FMT "Out of memory: %s was not made, the text is unchanged"
 
 static void e_say_nomem_until_key(const char *what);
+static int e_del_line(int yd, BUFFER *b, SCHIRM *s);
 int e_codepoint_to_utf8(int cp, unsigned char *out);
 
 /* The byte a terminal reads for Backspace when nobody said otherwise. */
@@ -2310,26 +2311,10 @@ void e_cursor(FENSTER *f, int sw)
  * block where they were; the only line of a file is undoable too.
  * Return: the number of lines left.
  */
-int e_del_line(int yd, BUFFER *b, SCHIRM *s)
+static int e_del_line(int yd, BUFFER *b, SCHIRM *s)
 {
  if (e_buffer_delete_lines(b, yd, 1, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(b, "the line deletion");
- return(b->mxlines);
-}
-
-/**
- * e_new_line - Put an empty line at @yd of @b, and nothing else.
- *
- * The file reader and the views the editor writes add their lines this way
- * until they splice: no mark, breakpoint, colour or undo
- * moves.  None of them can go on without the line, so running out of memory
- * here ends the editor through the low-memory error, which offers to save
- * the user's files first, as it always did.  Return: the number of lines.
- */
-int e_new_line(int yd, BUFFER *b)
-{
- if (e_buffer_insert_raw(b, yd) != E_BUFFER_OK)
-  e_error(e_msg[ERR_LOWMEM], 1, b->fb);
  return(b->mxlines);
 }
 
@@ -2451,7 +2436,7 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
  e_char_count_change(b, n);
  rec = e_char_record('a', b, xa, ya, n);
  e_buffer_cover_begin(b, rec);
- /* Defensive normalisation: each line buffer is e_new_line()-allocated at
+ /* Defensive normalisation: each line buffer is e_buffer_line_new()-allocated at
     b->mx.x+1 bytes, so b->mx.x is the last valid index.  Some callers (the
     block move/copy paths in we_block.c, which reshuffle line buffers by
     raw struct aliasing) can leave bf[ya].len smaller than the real

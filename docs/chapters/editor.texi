@@ -70,7 +70,8 @@ the one above comes back with Undo.  The colours of a window always are those of
 its text, after a tool's rewrite too.  A block move, copy, paste or delete,
 and its Undo or Redo, that runs out of memory is not made at all: the text,
 the block, the breakpoints and Undo stay as they were, and the status row
-says so.
+says so.  The assistant's pane, when it cannot get a row, does the same:
+it keeps what it shows and the status row says so.
 
 @section Block operations
 

@@ -69,7 +69,7 @@ XPending|XEventsQueued|XCheckWindowEvent|XCheckIfEvent|XFlush we_xterm.o WeXterm
 wl_display_dispatch|wl_display_dispatch_queue|wl_display_roundtrip|wl_display_dispatch_pending|wl_display_prepare_read|wl_display_read_events we_wayland.o
 fork|vfork|forkpty|openpty|posix_spawn|posix_spawnp|popen|pclose|system|execv|execvp|execve|execl|execlp|execle|setsid|setpgid|setpgrp|waitpid|wait|wait3|wait4|pidfd_open|killpg|kill we_child.o
 WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o
-e_new_line|e_del_line|e_buffer_set_text|e_replace_buffer_undoable|e_rudo_whole_buffer|e_p_red_buffer|print_to_end_of_buffer|e_build_drop_last_row|e_brk_recalc|e_add_undo|e_remove_undo we_buffer.o we_edit.o
+e_add_undo we_buffer.o we_edit.o
 EOF
 
 # The display's connection has one owner: the X11 backend.  Any other name
@@ -128,19 +128,22 @@ e_x_ we_xterm.c WeXterm.c we_render_cairo.c
 mxlines_write we_buffer.c
 bf_alloc we_buffer.c
 e_undo_sw
-e_redo_sw we_buffer.c we_edit.c
+e_redo_sw
 EOF
 
 # The text a window shows has one owner (we_buffer.c): every line the editor
 # adds or removes goes through its splice, which keeps the window's undo,
 # modified mark, block marks, breakpoint rows and colours in step.  The
-# symbol rule above names the old line primitives and undo functions; the
-# source rules name a direct write of a buffer's line count (mxlines_write),
-# a direct allocation of its line table (bf_alloc), and the global covers of
-# the old undo (e_undo_sw, e_redo_sw): a cover is the owner's, per buffer
-# (e_buffer_cover_begin), so the global one is allowed nowhere.  A new
-# helper that adds lines some other way writes mxlines or reallocates bf,
-# and is seen here.
+# symbol rule above names the one undo recorder the editor's char kinds
+# still call; the old line primitives and undo functions are in the
+# deleted-symbol list further down.  The source rules name a direct write of
+# a buffer's line count (mxlines_write), a direct allocation of its line
+# table (bf_alloc), and the global covers of the old undo (e_undo_sw,
+# e_redo_sw): a cover is the owner's, per buffer (e_buffer_cover_begin), so
+# the global one is allowed nowhere.  A new helper that adds lines some other
+# way writes mxlines or reallocates bf, and is seen here.  This section is
+# strict in every mode: no line of the allow file may stand for it unless
+# it is a permanent exception with its reason.
 
 # The screen has one owner (we_paint.c): a box, a menu or a prefix that
 # reads keys says so to it, and content from outside the user's keys is
@@ -445,6 +448,30 @@ for obj in $OBJECTS; do
 done
 [ $BUFFER_OWNER_SEEN -eq 1 ] ||
   problem "canary: we_buffer.o is not among the objects (the text's owner is not built)"
+# Gone for good: the line primitives, the whole-buffer rebuilds, the output
+# appenders and the global undo covers the text's owner replaced.  No object
+# of the editor defines one again (`nm -g --defined-only`): a function that
+# adds or removes lines on its own beside the owner has come back.  A name
+# may stay as a file's own static function; it is not exported.
+DELETED_BUFFER_SYMBOLS="e_new_line e_del_line e_buffer_set_text
+  e_buffer_insert_raw e_replace_buffer_undoable e_rudo_whole_buffer
+  e_p_red_buffer print_to_end_of_buffer e_build_drop_last_row e_brk_recalc
+  e_remove_undo e_undo_sw e_redo_sw"
+for obj in $OBJECTS; do
+  [ -f "$obj" ] || continue
+  defined_names "$obj" > "$WORK/defined"
+  for sym in $DELETED_BUFFER_SYMBOLS; do
+    grep -qx "$sym" "$WORK/defined" &&
+      problem "deleted symbol: $(basename "$obj") defines $sym again (the text has one owner, we_buffer.c)"
+  done
+done
+# The canary of that rule: a scanner that lists no definitions sees nothing.
+for obj in $OBJECTS; do
+  [ "$(basename "$obj")" = we_buffer.o ] || continue
+  [ -f "$obj" ] || continue
+  defined_names "$obj" | grep -qx e_buffer_splice ||
+    problem "canary: e_buffer_splice not seen defined in we_buffer.o (the deleted-symbol scan of the text is blind)"
+done
 DELETED_DISPLAY_SYMBOLS="e_x_clear_area e_x_vterm_user_screen e_x_vterm_load_palette
   e_x_change e_d_x_focus_to_editor e_x_reclaim_focus
   e_x_cp_X_to_buffer e_x_copy_X_buffer e_x_paste_X_buffer
@@ -578,6 +605,17 @@ SCREEN_WORDS="e_getch wpe_modal_active g_lsp_modal_depth g_lsp_ui_suspended wpe_
 awk -v words=" $SCREEN_WORDS " '
   $4 != "keep" && index(words, " " $2 " ") {
     print "the screen section is strict: the allow line \"" $1 " " $2 "\" (" $4 ") may only be a keep line"
+  }' "$WORK/allowed" >> "$WORK/problems"
+
+# The text's section is strict in every mode as well: every name of the
+# owner's rules and deleted list is allowed only as a permanent exception.
+BUFFER_WORDS="e_new_line e_del_line e_buffer_set_text e_buffer_insert_raw
+  e_replace_buffer_undoable e_rudo_whole_buffer e_p_red_buffer
+  print_to_end_of_buffer e_build_drop_last_row e_brk_recalc e_add_undo
+  e_remove_undo e_undo_sw e_redo_sw mxlines_write bf_alloc"
+awk -v words=" $(echo $BUFFER_WORDS) " '
+  $4 != "keep" && index(words, " " $2 " ") {
+    print "the text section is strict: the allow line \"" $1 " " $2 "\" (" $4 ") may only be a keep line"
   }' "$WORK/allowed" >> "$WORK/problems"
 
 # In strict mode only permanent exceptions stand.

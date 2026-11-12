@@ -781,6 +781,66 @@ static void case_refused_undo_keeps_the_cursor(void)
  chk("22 after at least one refusal", k > 2, 1);
 }
 
+/* Undo of a covered deletion whose lines held a breakpoint, refused at each
+   of its allocations in turn: the Undo is refused whole, with the breakpoint
+   still parked in the record, or it succeeds and the breakpoint is back on
+   its line.  Never an Undo that succeeds and loses the breakpoint. */
+static void case_a_refused_undo_keeps_a_pocketed_breakpoint(void)
+{
+ int k, r = E_BUFFER_NOMEM, row = 5;
+ Undo *rec;
+
+ for (k = 1; k <= 4 && r == E_BUFFER_NOMEM; k++) {
+  fixture(8, E_BUFFER_HISTORY_FULL);
+  brp_set(1, &row);
+  rec = e_buffer_record_push(&buf, e_buffer_record_new('r'));
+  rec->b = pnt(3, 4);
+  rec->u.pt = malloc(1);
+  e_buffer_cover_begin(&buf, rec);
+  e_buffer_delete_lines(&buf, 5, 1, E_BUFFER_STEP_NEW);
+  e_buffer_cover_end(&buf);
+  e_buffer_test_fail_allocs(k);
+  r = e_buffer_undo(&buf, &scr);
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_NOMEM) {
+   chk("24 a refused Undo keeps its record", list_len(buf.ud), 1);
+   chk("24 and the breakpoint stays parked", scr.brp[0] == 0 && rec->nbrk == 1, 1);
+  } else {
+   chk("24 an Undo that succeeds brings the breakpoint back", brp_has(5), 1);
+  }
+  fixture_free();
+ }
+ chk("24 an Undo with memory works", r, E_BUFFER_OK);
+ chk("24 after at least one refusal", k > 2, 1);
+}
+
+/* A row of a view may be wider than the buffer and is kept whole, with the
+   line break it had; a row set as the open end of a wrapped line has none. */
+static void case_a_view_row_may_exceed_the_width(void)
+{
+ char wide[2 * WIDTH + 1];
+
+ memset(wide, 'x', sizeof wide - 1);
+ wide[sizeof wide - 1] = '\0';
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ e_buffer_mark_view(&buf);
+ chk("25 a wide row is taken", e_buffer_set_line(&buf, 0, wide, 2 * WIDTH), E_BUFFER_OK);
+ chk("25 whole", buf.bf[0].len, 2 * WIDTH);
+ chk("25 bytes kept", memcmp(buf.bf[0].s, wide, 2 * WIDTH), 0);
+ chk("25 with its line break", buf.bf[0].s[2 * WIDTH], WPE_WR);
+ chk("25 the width is the buffer's still", buf.mx.x, WIDTH);
+ chk("25 an open end is taken",
+     e_buffer_set_line_ended(&buf, 1, "ab", 2, '\0'), E_BUFFER_OK);
+ chk("25 open: its length", buf.bf[1].len, 2);
+ chk("25 open: no line break", buf.bf[1].s[2], '\0');
+ chk("25 open: counted without one", buf.bf[1].nrc, 2);
+ chk("25 a closed end is taken",
+     e_buffer_set_line_ended(&buf, 1, "ab", 2, WPE_WR), E_BUFFER_OK);
+ chk("25 closed: counted with one", buf.bf[1].nrc, 3);
+ chk("25 a view records nothing", list_len(buf.ud), 0);
+ fixture_free();
+}
+
 /* The user's number of undo steps counts the actions before the newest,
    as the original did: a setting of NUMUNDO undoes NUMUNDO + 1 actions. */
 static void case_the_undo_bound(void)
@@ -1077,6 +1137,8 @@ int main(void)
  case_zero_splice();
  case_emptied_buffer();
  case_refused_undo_keeps_the_cursor();
+ case_a_refused_undo_keeps_a_pocketed_breakpoint();
+ case_a_view_row_may_exceed_the_width();
  case_the_undo_bound();
  case_append_text();
  case_append_rows();

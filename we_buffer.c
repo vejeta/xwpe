@@ -513,6 +513,14 @@ static void buffer_record_link(BUFFER *b, Undo *rec)
   buffer_list_trim(b->ud, buffer_undo_steps_kept(b));
 }
 
+/* 1 when the record goes on into the one pushed next, as the trace says it. */
+static int buffer_record_more(const Undo *rec)
+{
+ if (rec->flags & E_UNDO_MORE)
+  return(1);
+ return(0);
+}
+
 /**
  * e_buffer_record_push - Keep the record of a change for Ctrl-U.
  * @b: the buffer; @rec: a record the caller composed.
@@ -532,8 +540,7 @@ Undo *e_buffer_record_push(BUFFER *b, Undo *rec)
   return(NULL);
  }
  buffer_record_link(b, rec);
- wpe_buffer_trace("buffer record kind=%c more=%d", rec->type,
-                  (rec->flags & E_UNDO_MORE) ? 1 : 0);
+ wpe_buffer_trace("buffer record kind=%c more=%d", rec->type, buffer_record_more(rec));
  return(rec);
 }
 
@@ -834,7 +841,7 @@ static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int
  {
   buffer_record_link(b, m->rec);
   wpe_buffer_trace("buffer record kind=R n_old=%d n_new=%d more=%d", m->rec->n_old,
-                   m->rec->n_new, (m->rec->flags & E_UNDO_MORE) ? 1 : 0);
+                   m->rec->n_new, buffer_record_more(m->rec));
   m->rec = NULL;
  }
  wpe_buffer_trace("buffer splice y=%d del=%d ins=%d step=%s covered=%d", y, n_del,
@@ -2433,28 +2440,6 @@ int e_buffer_set_line(BUFFER *b, int y, const char *text, int n)
  return(e_buffer_set_line_ended(b, y, text, n, b->bf[y].s[b->bf[y].len]));
 }
 
-/**
- * e_buffer_insert_raw - Put an empty line at yd, and nothing else.
- *
- * What e_new_line does for the file reader and the views the editor writes
- * until they splice: no mark, breakpoint, colour or undo
- * moves, exactly as before.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM with
- * nothing changed (the caller decides what a refusal means).
- */
-int e_buffer_insert_raw(BUFFER *b, int yd)
-{
- STRING line;
-
- if (buffer_grow(b, b->mxlines + 1) != E_BUFFER_OK ||
-     e_buffer_line_new(b, &line) != E_BUFFER_OK)
-  return(E_BUFFER_NOMEM);
- if (b->mxlines > yd)
-  memmove(b->bf + yd + 1, b->bf + yd, (size_t)(b->mxlines - yd) * sizeof(STRING));
- b->bf[yd] = line;
- b->mxlines++;
- return(E_BUFFER_OK);
-}
-
 /* ---- covers and steps ---- */
 
 /**
@@ -2528,15 +2513,50 @@ int e_buffer_depth_check(BUFFER *b)
 
 /* ---- Undo and Redo ---- */
 
+/* How many breakpoint rows the margin holds now: none without one. */
+static int buffer_brp_count(BUFFER *b)
+{
+ int *brp = buffer_brp(b);
+
+ if (brp == NULL)
+  return(0);
+ return(brp[0]);
+}
+
+/**
+ * buffer_pocket_prepare - Make room for the breakpoints a record parked,
+ * before the record is replayed.
+ *
+ * An Undo that brings back lines a covered deletion removed also brings
+ * back their breakpoints.  The room is asked for first, so that when memory
+ * is short the Undo is refused whole, the text, the breakpoints and the
+ * record as they were, instead of giving back the lines without them.
+ * Return: E_BUFFER_OK or E_BUFFER_NOMEM.
+ */
+static int buffer_pocket_prepare(BUFFER *b, Undo *rec)
+{
+ if (rec->type == E_UNDO_LINES || rec->nbrk == 0)
+  return(E_BUFFER_OK);
+ return(buffer_brp_reserve(b, rec->nbrk));
+}
+
 /* Put the rows a covered deletion parked in a char record's pocket back on
-   their lines, after the record's replay rebuilt them. */
-static void buffer_pocket_restore(BUFFER *b, Undo *rec)
+   their lines, after the record's replay rebuilt them.  @rows_before is how
+   many the margin held when buffer_pocket_prepare made the room: the room
+   stands unless the replay itself added rows to the margin, and then it is
+   asked for again; a refusal then is said on the status row, never silent. */
+static void buffer_pocket_restore(BUFFER *b, Undo *rec, int rows_before)
 {
  int *brp, i, row;
 
  if (rec->type == E_UNDO_LINES || rec->nbrk == 0)
   return;
- if (buffer_brp_reserve(b, rec->nbrk) != E_BUFFER_OK || (brp = buffer_brp(b)) == NULL)
+ if (buffer_brp_count(b) > rows_before && buffer_brp_reserve(b, rec->nbrk) != E_BUFFER_OK)
+ {
+  wpe_buffer_say_nomem(b, "the breakpoints of Undo");
+  return;
+ }
+ if ((brp = buffer_brp(b)) == NULL)
   return;
  for (i = 0; i < rec->nbrk; i++)
  {
@@ -2599,7 +2619,7 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
 {
  Undo *rec;
  POINT cursor;
- int more, r = E_BUFFER_OK, fault;
+ int more, r = E_BUFFER_OK, fault, rows_before;
 
  if (*list == NULL)
   return(E_BUFFER_NOTHING);
@@ -2609,6 +2629,12 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
  do
  {
   rec = *list;
+  if (buffer_pocket_prepare(b, rec) != E_BUFFER_OK)
+  {
+   r = E_BUFFER_NOMEM;
+   break;
+  }
+  rows_before = buffer_brp_count(b);
   cursor = b->b;
   b->b = rec->b;
   if (rec->type == E_UNDO_LINES)
@@ -2621,7 +2647,7 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
    break;
   }
   *list = rec->next;
-  buffer_pocket_restore(b, rec);
+  buffer_pocket_restore(b, rec, rows_before);
   more = (rec->flags & E_UNDO_MORE) != 0;
   e_buffer_record_free(rec);
  } while (more && *list != NULL);

@@ -55,7 +55,6 @@ void e_status_say(FENSTER *f, const char *text);
 void e_status_say_until_key(FENSTER *f, const char *text);
 /* Messages as a background task (a build, a starting debugger) uses it. */
 FENSTER *e_build_messages(ECNT *cn);
-void e_build_drop_last_row(BUFFER *b);
 /* Rows of a view the editor writes: Messages and the output windows. */
 int e_view_add_row(BUFFER *b);
 void e_view_append(BUFFER *b, const char *text);
@@ -121,7 +120,6 @@ int e_project_name(FENSTER *f);
 int e_wrt_prj_fl(FENSTER *f);
 int e_p_update_prj_fl(FENSTER *f);
 int freedfN(struct dirfile **df, int n);
-int e_p_red_buffer(BUFFER *b);
 int e_read_var(FENSTER *f);
 
 /*   we_progn.c  */

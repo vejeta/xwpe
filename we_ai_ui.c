@@ -1469,13 +1469,15 @@ static void ai_pane_scroll(FENSTER *wf, int delta)
  * ai_pane_rows_nomem - The pane could not get the memory for its rows.
  * @b: the pane buffer.
  *
- * The rows are the transcript the user is reading and the prompt they are
- * typing in; the pane cannot go on without them, so this ends the editor
- * through the low-memory error, which offers to save the user's files first.
+ * The transcript and the prompt stay as they were and the status row says
+ * the assistant's rows were refused, as it does for any other change the
+ * editor cannot make for want of memory; the user keeps the editor and
+ * their files.  Return: E_BUFFER_NOMEM, for the caller to stop on.
  */
-static void ai_pane_rows_nomem(BUFFER *b)
+static int ai_pane_rows_nomem(BUFFER *b)
 {
- e_error(e_msg[ERR_LOWMEM], 1, b->fb);
+ wpe_buffer_say_nomem(b, "the assistant's row");
+ return(E_BUFFER_NOMEM);
 }
 
 /**
@@ -1500,35 +1502,35 @@ static void ai_pane_trace_rows(BUFFER *b)
  * The one way the pane gains rows: the buffer's owner makes them in one step
  * and the table of who wrote each row grows in the same function, so a row
  * never reaches the screen without its colour.  The user's block marks and the
- * cursor follow the rows they were on.
+ * cursor follow the rows they were on.  When memory is short nothing is
+ * added and the status row says so.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when no row was added: the caller
+ * must not write into rows it did not get.
  */
-static void ai_pane_rows_insert(BUFFER *b, int y, int n, int role)
+static int ai_pane_rows_insert(BUFFER *b, int y, int n, int role)
 {
  STRING *lines;
  int i, r;
- if (n <= 0) return;
+ if (n <= 0) return(E_BUFFER_OK);
  if (y < 0) y = 0;
  if (y > b->mxlines) y = b->mxlines;
  lines = malloc((size_t)n * sizeof(STRING));
- if (!lines) {
-  ai_pane_rows_nomem(b);
-  return;
- }
+ if (!lines)
+  return(ai_pane_rows_nomem(b));
  for (i = 0; i < n; i++)
   if (e_buffer_line_new(b, &lines[i]) != E_BUFFER_OK) {
    e_buffer_lines_free(lines, i);
-   ai_pane_rows_nomem(b);
-   return;
+   return(ai_pane_rows_nomem(b));
   }
  r = e_buffer_splice(b, y, 0, lines, n, NULL, 0, E_BUFFER_STEP_NEW);
  if (r != E_BUFFER_OK) {
   e_buffer_lines_free(lines, n);
-  ai_pane_rows_nomem(b);
-  return;
+  return(ai_pane_rows_nomem(b));
  }
  free(lines);
  ai_roles_insert(b, y, n, role);
  ai_pane_trace_rows(b);
+ return(E_BUFFER_OK);
 }
 
 /**
@@ -1540,18 +1542,19 @@ static void ai_pane_rows_insert(BUFFER *b, int y, int n, int role)
  * The one way the pane loses rows: the table of who wrote each row loses the
  * same ones in the same function, and a block the user marked on or under the
  * rows moves up onto text that still exists instead of pointing past the
- * end.  A pane left without any row keeps one empty row.
+ * end.  A pane left without any row keeps one empty row.  When memory is
+ * short nothing is taken and the status row says so.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when the rows are all still there.
  */
-static void ai_pane_rows_drop(BUFFER *b, int y, int n)
+static int ai_pane_rows_drop(BUFFER *b, int y, int n)
 {
- if (y < 0 || y >= b->mxlines || n <= 0) return;
+ if (y < 0 || y >= b->mxlines || n <= 0) return(E_BUFFER_OK);
  if (n > b->mxlines - y) n = b->mxlines - y;
- if (e_buffer_delete_lines(b, y, n, E_BUFFER_STEP_NEW) != E_BUFFER_OK) {
-  ai_pane_rows_nomem(b);
-  return;
- }
+ if (e_buffer_delete_lines(b, y, n, E_BUFFER_STEP_NEW) != E_BUFFER_OK)
+  return(ai_pane_rows_nomem(b));
  ai_roles_remove(b, y, n);
  ai_pane_trace_rows(b);
+ return(E_BUFFER_OK);
 }
 
 /**
@@ -1639,11 +1642,16 @@ static int ai_input_line_count(void)
 /**
  * ai_input_drop_last_row - Take the pane's last row out of the input region.
  * @b: the pane buffer, whose last row belongs to the input region.
+ *
+ * The region counts the row as gone only when the pane lost it.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the row still there.
  */
-static void ai_input_drop_last_row(BUFFER *b)
+static int ai_input_drop_last_row(BUFFER *b)
 {
- ai_pane_rows_drop(b, b->mxlines - 1, 1);
+ if (ai_pane_rows_drop(b, b->mxlines - 1, 1) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
  g_ai_input_rows--;
+ return(E_BUFFER_OK);
 }
 
 /**
@@ -1652,17 +1660,24 @@ static void ai_input_drop_last_row(BUFFER *b)
  *
  * The region grows and shrinks at the end of the pane as line breaks are
  * typed and deleted, never below its one "> " row, and the rows are recorded
- * as plain text so they never take a transcript colour.
+ * as plain text so they never take a transcript colour.  The region counts
+ * only the rows the pane really gave it: when memory runs out it stops at
+ * the rows it has, and the status row says so.
+ * Return: E_BUFFER_OK when the region has @want rows, else E_BUFFER_NOMEM.
  */
-static void ai_input_fit_rows(BUFFER *b, int want)
+static int ai_input_fit_rows(BUFFER *b, int want)
 {
- while (g_ai_input_rows < want) {
-  ai_pane_rows_insert(b, b->mxlines, 1, AI_ROLE_ASSISTANT);
-  g_ai_input_rows++;
+ int r = E_BUFFER_OK;
+
+ while (r == E_BUFFER_OK && g_ai_input_rows < want) {
+  r = ai_pane_rows_insert(b, b->mxlines, 1, AI_ROLE_ASSISTANT);
+  if (r == E_BUFFER_OK)
+   g_ai_input_rows++;
  }
- while (g_ai_input_rows > want && g_ai_input_rows > 1)
-  ai_input_drop_last_row(b);
+ while (r == E_BUFFER_OK && g_ai_input_rows > want && g_ai_input_rows > 1)
+  r = ai_input_drop_last_row(b);
  ai_roles_sync(b);
+ return(r);
 }
 
 /* Room in a rendered input row beyond the prompt text: the prefix, the
@@ -1710,7 +1725,8 @@ static void ai_input_render(FENSTER *wf)
  const char *p = g_ai_input;
  int i;
 
- ai_input_fit_rows(b, want);
+ if (ai_input_fit_rows(b, want) != E_BUFFER_OK)
+  return;                     /* the status row says the rows were refused */
  for (i = 0; i < want; i++) {
   const char *nl = strchr(p, '\n');
   int seglen;
@@ -1732,8 +1748,11 @@ static void ai_input_render(FENSTER *wf)
  *
  * The new line goes BEFORE the input region when the chat owns the bottom
  * rows, so the reply keeps reading down towards the "> " row.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when memory is short: the finished
+ * line is still the stream line, and writing the next one now would replace
+ * it, so the caller leaves the next text where it is.
  */
-static void ai_pane_commit(FENSTER *wf)
+static int ai_pane_commit(FENSTER *wf)
 {
  BUFFER *b = wf->b;
  int at;
@@ -1741,12 +1760,12 @@ static void ai_pane_commit(FENSTER *wf)
     stream line (a spinner, an edit's status) takes that row rather than
     opening a second one under it, so the pane does not start with a blank. */
  if (ai_pane_row_is_free(b, 0))
-  return;
+  return(E_BUFFER_OK);
  if (g_ai_chat_focus && b->mxlines > g_ai_input_rows)
   at = b->mxlines - g_ai_input_rows;
  else
   at = b->mxlines;
- ai_pane_rows_insert(b, at, 1, AI_ROLE_ASSISTANT);   /* the stream line is the reply's */
+ return(ai_pane_rows_insert(b, at, 1, AI_ROLE_ASSISTANT));   /* the stream line is the reply's */
 }
 
 /**
@@ -1758,7 +1777,8 @@ static void ai_pane_commit(FENSTER *wf)
  * A note the assistant writes outside a chat (a task dropped with its
  * window) lands under the transcript as its own rows, each in its writer's
  * colour from the first paint, and is wrapped to the pane's width when the
- * pane next paints.
+ * pane next paints.  When memory runs out the lines already added stay, the
+ * rest are left out and the status row says so.
  */
 static void ai_pane_append_lines(BUFFER *b, const char *text, int role)
 {
@@ -1772,7 +1792,8 @@ static void ai_pane_append_lines(BUFFER *b, const char *text, int role)
    len = (int)strlen(p);
   if (len > 0) {
    int at = b->mxlines;
-   ai_pane_rows_insert(b, at, 1, role);
+   if (ai_pane_rows_insert(b, at, 1, role) != E_BUFFER_OK)
+    return;
    ai_pane_set_row_bytes(b, at, p, (size_t)len);
   }
   if (!nl)
@@ -1801,7 +1822,8 @@ static void ai_tr_line(FENSTER *wf, const char *str, int role)
  }
  at = b->mxlines - g_ai_input_rows;      /* first input-region line */
  if (at < 0) at = 0;
- ai_pane_rows_insert(b, at, 1, role);    /* a blank row before the region */
+ if (ai_pane_rows_insert(b, at, 1, role) != E_BUFFER_OK)
+  return;                                /* no row: the line is left out, not written over another */
  ai_pane_set_line(wf, at, str);
 }
 
@@ -1840,10 +1862,14 @@ static void ai_stream_wrap(ai_chat_session *s, FENSTER *wf)
  for (k = (int)s->plen - 1; k > 0; k--)
   if (s->pending[k] == ' ') { brk = k + 1; break; }   /* the space stays on the row */
  { char saved = s->pending[brk];         /* emit pending[0..brk) as one line */
+   int r;
    s->pending[brk] = '\0';
    ai_pane_set_last(wf, s->pending);
-   ai_pane_commit(wf);
-   s->pending[brk] = saved; }
+   r = ai_pane_commit(wf);
+   s->pending[brk] = saved;
+   if (r != E_BUFFER_OK)
+    return;                              /* no fresh row: the text stays pending, none is lost */
+ }
  /* The fresh row goes on with the same line: recorded so a later change of
     width joins the reply back and wraps it again whole. */
  ai_pane_mark_continuation(wf->b, ai_stream_y(wf));
@@ -2004,10 +2030,16 @@ static int ai_pane_rewrap_line(FENSTER *wf, int y0, int limit, int width)
  if (!text) return old_rows;
  role = ai_role_of(y0);
  new_rows = ai_wrap_rows(text, width);
- if (old_rows < new_rows)
-  ai_pane_rows_insert(b, y0 + old_rows, new_rows - old_rows, role);
- if (old_rows > new_rows)
-  ai_pane_rows_drop(b, y0 + new_rows, old_rows - new_rows);
+ if (old_rows < new_rows &&
+     ai_pane_rows_insert(b, y0 + old_rows, new_rows - old_rows, role) != E_BUFFER_OK) {
+  free(text);                      /* the line stays laid out as it was */
+  return old_rows;
+ }
+ if (old_rows > new_rows &&
+     ai_pane_rows_drop(b, y0 + new_rows, old_rows - new_rows) != E_BUFFER_OK) {
+  free(text);
+  return old_rows;
+ }
  p = text;
  for (y = y0; y < y0 + new_rows; y++) {
   int cut;
@@ -2355,8 +2387,7 @@ static ai_spin ai_spin_begin(FENSTER *f, const char *label)
  ai_spin sp;
  FENSTER *wf = ai_pane_win(f);
  sp.f = f; sp.label = label; sp.i = 0; sp.open = 0;
- if (wf) {
-  ai_pane_commit(wf);
+ if (wf && ai_pane_commit(wf) == E_BUFFER_OK) {
   ai_pane_set_last_as(wf, label, AI_ROLE_MACHINERY);
   sp.open = 1;
  }
@@ -2538,7 +2569,8 @@ static void ai_chat_open_reply_line(ai_chat_session *s, FENSTER *wf)
 {
  if (s->started)
   return;
- ai_pane_commit(wf);
+ if (ai_pane_commit(wf) != E_BUFFER_OK)
+  return;                       /* tried again with the next byte of the reply */
  s->started = 1;
 }
 
@@ -2564,7 +2596,8 @@ static void ai_chat_end_hidden_tool_line(ai_chat_session *s, FENSTER *wf, size_t
 static void ai_chat_commit_stream_line(ai_chat_session *s, FENSTER *wf)
 {
  ai_pane_set_last(wf, ai_chat_pending_text(s));
- ai_pane_commit(wf);
+ if (ai_pane_commit(wf) != E_BUFFER_OK)
+  return;                       /* no fresh row: the line stays pending, none is lost */
  ai_chat_pending_reset(s);
 }
 
@@ -4913,7 +4946,8 @@ static void ai_input_clear(void)
 static void ai_input_drop_rows(BUFFER *b)
 {
  while (g_ai_input_rows > 0 && b->mxlines > 0)
-  ai_input_drop_last_row(b);
+  if (ai_input_drop_last_row(b) != E_BUFFER_OK)
+   break;                       /* the rows stay, and the status row says why */
  ai_roles_sync(b);
 }
 
@@ -7326,7 +7360,10 @@ static void ai_spin_end(ai_spin *sp, ECNT *cn)
   ai_pane_set_last(wf, "");
   return;
  }
- ai_pane_rows_drop(wf->b, ai_stream_y(wf), 1);
+ if (ai_pane_rows_drop(wf->b, ai_stream_y(wf), 1) != E_BUFFER_OK) {
+  ai_pane_set_last(wf, "");     /* the row stays: empty it, as a lone row is */
+  return;
+ }
  if (wf->b->b.y >= wf->b->mxlines)
   wf->b->b.y = wf->b->mxlines - 1;
  ai_pane_paint(wf);
@@ -7533,7 +7570,7 @@ static void ai_pane_open_spinner_line(FENSTER *f)
 {
  FENSTER *wf = ai_pane_win(f);
  if (wf)
-  ai_pane_commit(wf);
+  ai_pane_commit(wf);   /* refused for memory: the status row says so, the stream line stays */
 }
 
 /**
@@ -8014,8 +8051,7 @@ static void ai_chat_wait_begin(ai_chat_session *s)
   ai_pane_set_last_role(wf, AI_ROLE_ASSISTANT);   /* the "AI:" line is the reply's */
   s->op->start = time(NULL);
   s->op->paused = 0;
- } else {
-  ai_pane_commit(wf);
+ } else if (ai_pane_commit(wf) == E_BUFFER_OK) {
   ai_pane_set_last(wf, AI_CHAT_WAIT_LABEL);
  }
  s->started = 1;

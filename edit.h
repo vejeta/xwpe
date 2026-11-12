@@ -527,11 +527,9 @@ int e_car_ret(BUFFER *b, SCHIRM *s);
 int e_car_ret_split(BUFFER *b, SCHIRM *s);
 void e_cursor_pos_only(FENSTER *f);
 void e_cursor(FENSTER *f, int sw);
-int e_del_line(int yd, BUFFER *b, SCHIRM *s);
 int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n);
 int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n);
-int e_new_line(int yd, BUFFER *b);
 void e_line_make_hard_empty(STRING *l);
 void e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
   unsigned char *text, int rn);

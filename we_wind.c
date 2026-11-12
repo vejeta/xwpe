@@ -1395,10 +1395,9 @@ int e_close_window(FENSTER *f)
   if (f->dirct != NULL)
    FREE(f->dirct);
   /* c_sw -- the per-line syntax-continuation state array (e_sc_txt), grown by
-     e_new_line as the file is read.  It is freed and rebuilt on re-highlight
-     (we_progn.c, we_fl_unix.c) but was never freed at window close, so each
-     editor window leaked it (valgrind: definitely lost at e_new_line
-     we_edit.c:2038). */
+     the buffer's owner as the file is read.  It is freed and rebuilt on
+     re-highlight (we_progn.c, we_fl_unix.c) but was never freed at window
+     close, so each editor window leaked it. */
   if (f->c_sw != NULL)
   {
    FREE(f->c_sw);

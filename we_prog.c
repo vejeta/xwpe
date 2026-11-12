@@ -46,7 +46,6 @@ int e_make_library(char *library, char *ofile, FENSTER *f,
                    e_build_cont done, void *data);
 int e_p_exec(FENSTER *f, PIC *pic, e_build_cont done, void *data);
 struct dirfile **e_make_prj_opt(FENSTER *f);
-int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit);
 
 int wfildes[2], efildes[2];
 char *wfile = NULL, *efile = NULL;
@@ -1916,7 +1915,7 @@ FENSTER *e_build_messages(ECNT *cn)
  * e_build_drop_last_row - Take the last row out of the Messages buffer.
  * @b: the Messages buffer.
  */
-void e_build_drop_last_row(BUFFER *b)
+static void e_build_drop_last_row(BUFFER *b)
 {
  if (b->mxlines > 0)
   e_buffer_delete_lines(b, b->mxlines - 1, 1, E_BUFFER_STEP_NEW);
@@ -4919,75 +4918,6 @@ int e_system(char *estr, ECNT *cn)
  return(ret);
 }
 
-/* arranges string str into buffer b and eventually wrappes string around
- wrap_limit columns */
-int print_to_end_of_buffer(BUFFER * b,char * str,int wrap_limit)
-{
- int i,k,j;
-
- k = 0;
- do
- {
-  if (wrap_limit != 0)
-   for (j = 0;
-     ((j < wrap_limit) && (!((str[j + k] == '\n') || (str[j + k] == '\0'))));
-     j++)
-    ;
-  else
-   for (j = 0; (!((str[j + k] == '\n') || (str[j + k] == '\0'))); j++)
-    ;
-  /* Skip blank lines but continue processing */
-  if (j == 0)
-  {
-   if (str[k] == '\n')
-    k++;
-   else
-    break;
-   continue;
-  }
-
-/* b->mxlines - count of lines in b
-   so add one more line at the end of buffer */
-  e_new_line(b->mxlines, b);
-  i = b->mxlines-1;
-
-/* copy char from string (str) to buffer */
-
-  if (str[j + k]!='\0')
-   b->bf[i].s = REALLOC(b->bf[i].s, j + 2);
-  else
-   b->bf[i].s = REALLOC(b->bf[i].s, j + 1);
-  strncpy(b->bf[i].s,str + k,j);
-
-/* if this is not end of string, then we created substring
- if *(b->bf[i].s+j) is not '\0' then it is soft break is not written to file */
-
-  if (str[j + k]!='\0')
-  {
-   *(b->bf[i].s + j) = '\n';
-   *(b->bf[i].s + j + 1) = '\0';
-  }
-  else
-  {
-   *(b->bf[i].s + j) = '\0';
-  }
-/* update len of line in buffer */
-  b->bf[i].len = j;
-  b->bf[i].nrc = j + 1;
-
-  if (str[j + k]=='\n')
-  {
-   j++;
-  }
-
-  k += j;
-
-/* loop until end of string
- } while (str[k] != '\n' && str[k] != '\0');*/
- } while (str[k] != '\0');
-
- return 0;
-}
 
 void e_messages_scroll_to_bottom(FENSTER *f)
 {
@@ -6845,24 +6775,6 @@ int e_p_mess_win(char *header, int argc, char **argv, PIC **pic, FENSTER *f)
  }
  e_d_p_message(tmp, f, 1);
  FREE(tmp);
- return(0);
-}
-
-/* After this function b has exactly 1 line allocated (b->mxlines==1).
-   This line is initialized to the string WPE_WR,0 */
-int e_p_red_buffer(BUFFER *b)
-{
- int i;
-
- for (i = 1; i < b->mxlines; i++)
-  if (b->bf[i].s != NULL)
-   FREE( b->bf[i].s );
- if (b->mxlines==0) e_new_line(0,b);
- b->bf[0].s[0] = WPE_WR;
- b->bf[0].s[1] = '\0';
- b->bf[0].len = 0;
- b->bf[0].nrc = 1;
- b->mxlines = 1;
  return(0);
 }
 

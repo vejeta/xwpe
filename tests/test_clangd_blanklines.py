@@ -1,9 +1,9 @@
 """Regression: an LSP edit must NOT collapse the file's blank lines (wpe).
 
 Applying a code action / format / rename rebuilds the whole editor buffer via
-e_lsp_replace_buffer -> e_buffer_set_text.  That rebuild used to delegate each
-split line to print_to_end_of_buffer, which DELIBERATELY drops blank lines (the
-right thing for compiler-output appends, the wrong thing for a buffer rebuild):
+e_lsp_replace_buffer -> e_buffer_replace_all.  That rebuild used to delegate
+each split line to an output appender, which DELIBERATELY dropped blank lines
+(the right thing for compiler-output appends, the wrong thing for a rebuild):
 every empty line in the user's file vanished, and because whole-buffer Undo
 rebuilds through the same path, Ctrl-U did not bring them back.
 
@@ -19,7 +19,7 @@ Alt-Q A on Scala); clangd's format is just the cheapest deterministic trigger.
 Self-skips when clangd is absent OR when the Alt-Q format did not actually
 rewrite the buffer in this environment (so it asserts only when the rebuild path
 really ran -- it never goes spuriously red).  The buffer-rebuild logic itself is
-proven independently by the e_buffer_set_text round-trip red-green.
+proven independently by the e_buffer_replace_all round-trip red-green.
 """
 import shutil
 import time
