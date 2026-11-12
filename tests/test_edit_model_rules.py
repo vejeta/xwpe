@@ -1,0 +1,182 @@
+"""The editing model on its own: every rule names its source, and the
+model keeps the promises the rest of the harness relies on.
+
+No editor runs here.  Seeded walks over the model alone check that Undo
+gives back the text from before an action and Redo the text after it,
+that one action is one undo step, that the cursor and the marks stay
+inside the text, that a wrap keeps every byte, and that a breakpoint
+stays on its line through splits and joins and comes back with Undo.
+"""
+import random
+
+import pytest
+
+pytest.importorskip("pyte")   # the key tables share the session's key names
+
+from edit_model import keymap, model, render  # noqa: E402
+
+WIDTH = 120
+NARROW = 20
+WALKS = 40
+WALK_LEN = 60
+# Rows the model walks over: a long row, a tab, an indent, a multibyte
+# character, an empty row.
+ROWS = [("H", b"int main(void)"), ("H", b"{"), ("H", b"\tif (a) {"),
+        ("H", b"    int a = 1;"), ("H", b""), ("H", "café au lait".encode()),
+        ("H", b" ".join(b"w%03d" % i for i in range(23)) + b"xy"), ("H", b"last")]
+EDITS = ["type", "enter", "tab", "backspace", "delete", "delete_word",
+         "kill_to_eol", "delete_line"]
+MOVES = ["left", "right", "up", "down", "home", "end", "file_start", "file_end",
+         "page_up", "page_down", "word_left", "word_right"]
+TYPED = [b"x", b" ", b"-", b"{", "é".encode()]
+
+
+def _state(lines=ROWS, y=0, x=0, flg=model.FLG_AUTOINDENT, width=WIDTH):
+    st = model.State()
+    for end, data in lines:
+        st.rows.append(model.Row(data, end, st.next_ident))
+        st.next_ident += 1
+    st.y, st.x, st.flg, st.width = y, x, flg, width
+    st.mb = st.me = (len(lines) - 1, 0)
+    return st
+
+
+def _action(rng, pool):
+    name = rng.choice(pool)
+    if name == "type":
+        return model.Action(name, rng.choice(TYPED))
+    return model.Action(name)
+
+
+def _inside(st):
+    rows = st.rows
+    y, x = st.y, st.x
+    bad = []
+    if not (0 <= y < len(rows) and 0 <= x <= len(rows[y].data)):
+        bad.append("cursor %s" % ((y, x),))
+    for name, (my, mx) in (("mb", st.mb), ("me", st.me)):
+        if not (0 <= my < len(rows)):
+            bad.append("%s row %d" % (name, my))
+        elif not (0 <= mx <= len(rows[my].data) + 1):
+            bad.append("%s %s" % (name, (my, mx)))
+    return bad
+
+
+# @scenario SC-edit-model-14
+def test_every_rule_names_its_source_and_where_it_is_written():
+    """Each rule says whether the manual, the compatibility chapter, the
+    user's decision, an approved golden, the model's own design or the
+    code backs it, and where; the counts per source are what a report
+    quotes."""
+    for r in model.RULES.values():
+        assert r.source in model.SOURCES, r
+        assert r.ref and r.says and r.fields, r
+        assert set(r.fields) <= set(model.FIELDS), r
+    counts = model.rule_counts()
+    assert sum(counts.values()) == len(model.RULES)
+    assert counts[model.SOURCE_MANUAL] > 0 and counts[model.SOURCE_CODE] > 0
+
+
+# @scenario SC-edit-model-14
+@pytest.mark.parametrize("style", keymap.STYLES)
+def test_every_action_has_its_keys_in_each_key_style(style):
+    """No action of the model is left without keys: a walk can draw any of
+    them under either key style."""
+    for name in model.ACTIONS:
+        if name in ("type", "toggle_breakpoint"):
+            continue
+        assert keymap.keys_for(style, name), name
+    assert keymap.keys_for(keymap.STYLE_CUA, "save") != keymap.keys_for(keymap.STYLE_OLD, "save")
+
+
+# @scenario SC-edit-model-15
+@pytest.mark.parametrize("seed", range(WALKS))
+def test_undo_and_redo_give_back_the_text_around_each_action(seed):
+    """After any action, Ctrl-U gives the rows, line identities and
+    breakpoints from before it and Ctrl-R those after it, and one action
+    that changed the text is exactly one undo step."""
+    rng = random.Random(seed)
+    st = _state()
+    st = model.apply(st, model.Action("toggle_breakpoint"))
+    for _ in range(WALK_LEN):
+        act = _action(rng, EDITS + MOVES)
+        after = model.apply(st, act)
+        changed = after.lines() != st.lines()
+        if changed:
+            assert after.ud == min(st.ud + 1, st.options.numundo + 1), act
+            back = model.apply(after, model.Action("undo"))
+            assert [(r.data, r.end, r.ident) for r in back.rows] == \
+                [(r.data, r.end, r.ident) for r in st.rows], act
+            assert back.brp_rows() == st.brp_rows(), act
+            again = model.apply(back, model.Action("redo"))
+            assert again.lines() == after.lines(), act
+            assert again.brp_rows() == after.brp_rows(), act
+        else:
+            assert after.ud == st.ud, act
+        assert _inside(after) == [], (act, _inside(after))
+        st = after
+
+
+# @scenario SC-edit-model-15
+@pytest.mark.parametrize("seed", range(WALKS))
+def test_typing_keeps_every_byte_except_where_a_soft_row_wraps(seed):
+    """Typing anywhere in a window narrower than its lines wraps them, and
+    the text, read with soft rows joined, is the old text with the typed
+    byte in it.  The one exception is typing into a soft-wrapped row: there
+    the editor's code drops bytes (a typed one, or one of the text) and the
+    model, which follows the code to keep the rows in step, drops the same
+    ones; the lockstep's check of the manual's promise reports them on the
+    editor (test_edit_model_rows.py holds the shortest case)."""
+    rng = random.Random(seed)
+    lines = [("S", b"one two three four "), ("H", b"five six"),
+             ("S", b"seven-eight nine "), ("H", b"ten")]
+    st = _state(lines, flg=0, width=NARROW)
+    st = model.apply(st, model.Action("file_end"))
+    for _ in range(WALK_LEN // 2):
+        mv = model.Action(rng.choice(["left", "right", "up", "down", "home", "end"]))
+        st = model.apply(st, mv)
+        before = render.render_disk(st.lines())
+        rows = st.lines()
+        offset = sum(len(d) + (1 if e == "H" else 0) for e, d in rows[:st.y]) + st.x
+        soft = st.rows[st.y].end == model.SOFT
+        st = model.apply(st, model.Action("type", b"a"))
+        text = render.render_disk(st.lines())
+        if not soft:
+            assert text == before[:offset] + b"a" + before[offset:], (before, text)
+        assert all(len(d) <= NARROW for _e, d in st.lines())
+
+
+# @scenario SC-edit-model-16
+def test_a_breakpoint_stays_on_its_line_through_a_split_and_a_join():
+    """A breakpoint on a line moves down with it when Return splits the
+    line at column 0, stays with the first half of a split elsewhere, and
+    comes back with Undo when a join takes its line away."""
+    st = _state([("H", b"alpha"), ("H", b"beta"), ("H", b"gamma")], flg=0)
+    st = model.apply(st, model.Action("down"))
+    st = model.apply(st, model.Action("toggle_breakpoint"))
+    assert st.brp_rows() == [1]
+    st = model.apply(st, model.Action("enter"))            # split at column 0
+    assert st.brp_rows() == [2], "the line moved down with its breakpoint"
+    st = model.apply(st, model.Action("right"))
+    st = model.apply(st, model.Action("enter"))            # split inside "beta"
+    assert st.brp_rows() == [2] and st.lines()[2] == ("H", b"b")
+    st = model.apply(st, model.Action("up"))
+    st = model.apply(st, model.Action("up"))
+    st = model.apply(st, model.Action("type", b"z"))       # the blank line is "z" now
+    st = model.apply(st, model.Action("down"))
+    st = model.apply(st, model.Action("home"))
+    st = model.apply(st, model.Action("backspace"))        # join "b" to "z" above
+    assert st.lines()[1] == ("H", b"zb")
+    assert st.brp_rows() == [], "the joined line's breakpoint goes"
+    st = model.apply(st, model.Action("undo"))
+    assert st.brp_rows() == [2], "and comes back with Undo"
+
+
+# @scenario SC-edit-model-16
+def test_render_disk_and_logical_lines_read_the_rows_as_the_file():
+    """The file a Save writes is each row with a line break after a hard
+    one; soft rows join into one line."""
+    rows = [("S", b"one "), ("H", b"two"), ("H", b""), ("S", b"x")]
+    assert render.render_disk(rows) == b"one two\n\nx"
+    assert render.logical_lines(rows) == [b"one two", b"", b"x"]
+    assert render.show_rows(rows, cursor=(1, 1)) == ["one ~", "t|wo$", "$", "x~"]

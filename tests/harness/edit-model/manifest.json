@@ -63,6 +63,69 @@
    "layer": "ncurses",
    "test": "tests/test_edit_model_channel.py::test_a_dump_never_lands_on_the_terminal",
    "status": "new"
+  },
+  {
+   "id": "SC-edit-model-10",
+   "requirement": "Every golden has its recorded trace and its section in the approval list",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_golden.py::test_every_golden_has_its_trace_and_its_entry_for_approval",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-11",
+   "requirement": "The editor replays each approved golden exactly",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_golden.py::test_the_editor_replays_each_approved_golden_exactly",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-12",
+   "requirement": "The model agrees with each approved golden",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_golden.py::test_the_model_agrees_with_each_approved_golden",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-13",
+   "requirement": "A lockstep walk per key style lists every disagreement with its class",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_golden.py::test_a_lockstep_walk_lists_every_disagreement_with_its_class",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-14",
+   "requirement": "Every model rule names its source and every action has its keys",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rules.py::test_every_rule_names_its_source_and_where_it_is_written",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-15",
+   "requirement": "In the model Undo and Redo give back the text around each action and typing keeps bytes",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rules.py::test_undo_and_redo_give_back_the_text_around_each_action",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-16",
+   "requirement": "In the model a breakpoint stays on its line through splits and joins",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rules.py::test_a_breakpoint_stays_on_its_line_through_a_split_and_a_join",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-17",
+   "requirement": "A character typed at the end of a full wrapped row is kept",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rows.py::test_a_character_typed_at_the_end_of_a_full_wrapped_row_is_kept",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-18",
+   "requirement": "Backspace with auto-indent deletes a whole UTF-8 character",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rows.py::test_backspace_with_auto_indent_deletes_a_whole_character",
+   "status": "new"
   }
  ]
 }

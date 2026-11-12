@@ -11,7 +11,7 @@ editor cannot hide here.  The checks (numbered as the design numbers them):
    gives back the dump after it.  Walks run this undo probe after an
    operation with a given probability.
 2. In a locked window a change is refused: the lines, the modified count
-   and the undo lists stay as they were.
+   and the undo lists stay as they were, and the status row says so.
 3. The cursor and the block marks are inside the text.
 4. Breakpoint rows are inside the text, with no row twice.
 5. The window's modified mark shows exactly when the count is above 0, and
@@ -192,6 +192,89 @@ def check_screen(w, disp, tabn=DEFAULT_TABN):
     return bad
 
 
+def check_lock(kind, before, after):
+    """Check 2's first half: a key in a locked window changes no row and
+    pushes no undo step (Undo and Redo themselves are refused elsewhere)."""
+    if not before.ro or kind in UNDO_KINDS + REDO_KINDS:
+        return []
+    if _rows(before) != _rows(after) or after.ud != before.ud:
+        return [("lock", "a locked window changed: %d -> %d rows, ud %d -> %d"
+                 % (len(before.lines), len(after.lines), before.ud, after.ud))]
+    return []
+
+
+# Kinds that change text: in a locked window each must be refused, and the
+# refusal must say so on the status row.
+TEXT_CHANGING_KINDS = (
+    "type_ascii", "type_space", "type_utf8", "enter", "tab", "backspace",
+    "delete", "ctrl_t_delete_word", "ctrl_z_delete_to_eol",
+    "ctrl_y_delete_line", "ctrl_k_c", "ctrl_k_v", "ctrl_k_y", "ctrl_k_i",
+    "ctrl_k_u", "ctrl_o_y", "ctrl_o_t", "ctrl_o_e", "ctrl_o_u", "ctrl_o_m",
+    "ctrl_o_h", "cut", "paste", "ctrl_del_delete", "undo", "redo")
+
+
+def status_row(disp):
+    """The bottom row of the screen, where the editor says what it did not
+    do."""
+    return disp[-1].rstrip() if disp else ""
+
+
+def check_says_so(kind, before, after, status_before, status_after):
+    """Check 2's second half: a change the editor refused in a locked window
+    is named on the status row, so the key does not vanish in silence.  A
+    refusal is a text-changing key after which the rows are as they were."""
+    if not before.ro or kind not in TEXT_CHANGING_KINDS:
+        return []
+    if _rows(before) != _rows(after):
+        return []
+    if status_after == status_before:
+        return [("says-so", "%s refused in a locked window and the status row "
+                 "still reads %r" % (kind, status_after[:40]))]
+    return []
+
+
+def check_disk(kind, disk, after):
+    """Check 7's second half: after Save, the file is the dump's text."""
+    if kind != "save":
+        return []
+    if disk != after.disk():
+        return [("disk", "Save wrote %r, the dump holds %r"
+                 % (disk[-60:] if disk else disk, after.disk()[-60:]))]
+    return []
+
+
+def check_autosave(autosaved, asv, after):
+    """Check 5's second half: an autosave's .ASV file holds the dump's text."""
+    if autosaved and asv != after.disk():
+        return [("autosave", ".ASV differs from the dump")]
+    return []
+
+
+def check_no_step(before, after, n_steps):
+    """Check 6, the undo probe's guard: a change that pushed no undo step
+    cannot be undone."""
+    if n_steps <= 0 and _rows(before) != _rows(after):
+        return [("no-step", "the text changed and no undo step was pushed")]
+    return []
+
+
+def compare_windows(when, want, got):
+    """Check 1: the dump an undo probe gets back against the one it should
+    (text, breakpoint rows, cursor), and the result inside the text."""
+    if got is None:
+        return [("text", "%s no text window" % when)]
+    bad = []
+    if _rows(want) != _rows(got):
+        bad.append(("text", "%s: %s" % (when, _row_diff(_rows(want), _rows(got)))))
+    if want.brp != got.brp:
+        bad.append(("breakpoints", "%s: rows %s, expected %s" % (when, got.brp, want.brp)))
+    if want.cursor != got.cursor:
+        bad.append(("cursor", "%s: cursor %s, expected %s" % (when, got.cursor, want.cursor)))
+    for cls, detail in check_inside(got):
+        bad.append((cls, "%s: %s" % (when, detail)))
+    return bad
+
+
 def check_trace(kind, before, after, trace, n_keys=1):
     """Check 6 for one operation of @n_keys keys: the undo lists against
     the records."""
@@ -244,6 +327,7 @@ class Walk:
         self.history = []          # the kinds sent so far, for a reproduction
         self.probes = 0
         self.last_fresh = 0
+        self.status_before = ""
         self.session = None
         kinds = sorted(WALK_WEIGHTS)
         self.kinds = kinds
@@ -290,6 +374,7 @@ class Walk:
     def step(self, i):
         s = self.session
         before = s.last.win
+        self.status_before = status_row(s.display())
         kind = self.draw(before)
         try:
             after_dump = self.send(KEYS[kind])
@@ -328,19 +413,14 @@ class Walk:
         for cls, detail in bad:
             self.note(i, kind, cls, detail)
         self.last_fresh = fresh
-        if before.ro and kind not in UNDO_KINDS + REDO_KINDS and \
-                (_rows(before) != _rows(after) or after.ud != before.ud):
-            self.note(i, kind, "lock", "a locked window changed: %d -> %d rows, ud %d -> %d"
-                      % (len(before.lines), len(after.lines), before.ud, after.ud))
+        found = check_lock(kind, before, after)
+        found += check_says_so(kind, before, after, self.status_before, status_row(disp))
         if kind == "save":
-            disk = s.disk()
-            if disk != after.disk():
-                self.note(i, kind, "disk", "Save wrote %r, the dump holds %r"
-                          % (disk[-60:] if disk else disk, after.disk()[-60:]))
+            found += check_disk(kind, s.disk(), after)
         if s.last.autosaved:
-            asv = s.disk(FILENAME + ".ASV")
-            if asv != after.disk():
-                self.note(i, kind, "autosave", ".ASV differs from the dump")
+            found += check_autosave(True, s.disk(FILENAME + ".ASV"), after)
+        for cls, detail in found:
+            self.note(i, kind, cls, detail)
 
     def undo_probe(self, i, kind, before, after):
         """Check 1: Ctrl-U as many times as the op pushed steps (its fresh
@@ -349,10 +429,9 @@ class Walk:
         if after.ro or kind in UNDO_KINDS + REDO_KINDS or literal_mode(after):
             return
         n = min(self.last_fresh, after.ud)
-        changed = _rows(before) != _rows(after)
         if n <= 0:
-            if changed:
-                self.note(i, kind, "no-step", "the text changed and no undo step was pushed")
+            for cls, detail in check_no_step(before, after, n):
+                self.note(i, kind, cls, detail)
             return
         if self.last_fresh > after.ud:
             return                  # the bound dropped steps of this very op
@@ -369,17 +448,8 @@ class Walk:
             self.start()
 
     def compare(self, i, kind, when, want, got):
-        if got is None:
-            self.note(i, kind, "text", "%s no text window" % when)
-            return
-        if _rows(want) != _rows(got):
-            self.note(i, kind, "text", "%s: %s" % (when, _row_diff(_rows(want), _rows(got))))
-        if want.brp != got.brp:
-            self.note(i, kind, "breakpoints", "%s: rows %s, expected %s" % (when, got.brp, want.brp))
-        if want.cursor != got.cursor:
-            self.note(i, kind, "cursor", "%s: cursor %s, expected %s" % (when, got.cursor, want.cursor))
-        for cls, detail in check_inside(got):
-            self.note(i, kind, cls, "%s: %s" % (when, detail))
+        for cls, detail in compare_windows(when, want, got):
+            self.note(i, kind, cls, detail)
 
     def run(self):
         self.start()

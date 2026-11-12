@@ -1,0 +1,13 @@
+# Ctrl-Y deletes the whole line the cursor is on, down to the only line.
+# Manual: help.xwpe_eng 614; the only line is undoable too:
+# compatibility.texi 144-147.
+file t.txt
+seed b"one\ntwo two\nthree\n"
+rc none
+down
+right
+right
+delete_line
+delete_line
+delete_line
+type b"x"

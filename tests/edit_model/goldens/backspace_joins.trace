@@ -1,0 +1,60 @@
+step 0 start
+W 1 t.txt ro=0 mx=120 y=0 x=0 mb=4,4 me=4,4 ks=0,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H one|
+L 1 H two|
+L 1 H |
+L 1 H three four|
+L 1 H five|
+step 1 down
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=4,4 me=4,4 ks=1,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H one|
+L 1 H two|
+L 1 H |
+L 1 H three four|
+L 1 H five|
+step 2 backspace
+W 1 t.txt ro=0 mx=120 y=0 x=3 mb=3,4 me=3,4 ks=0,3 ins=1 flg=0 save=15 view=0,0,1,0,20,79 brp=- ud=1 rd=0
+L 1 H onetwo|
+L 1 H |
+L 1 H three four|
+L 1 H five|
+step 3 down
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=3,4 me=3,4 ks=1,0 ins=1 flg=0 save=15 view=0,0,1,0,20,79 brp=- ud=1 rd=0
+L 1 H onetwo|
+L 1 H |
+L 1 H three four|
+L 1 H five|
+step 4 backspace
+W 1 t.txt ro=0 mx=120 y=0 x=6 mb=2,4 me=2,4 ks=0,6 ins=1 flg=0 save=25 view=0,0,1,0,20,79 brp=- ud=2 rd=0
+L 1 H onetwo|
+L 1 H three four|
+L 1 H five|
+step 5 backspace
+W 1 t.txt ro=0 mx=120 y=0 x=5 mb=2,4 me=2,4 ks=0,5 ins=1 flg=0 save=26 view=0,0,1,0,20,79 brp=- ud=3 rd=0
+L 1 H onetw|
+L 1 H three four|
+L 1 H five|
+step 6 end
+W 1 t.txt ro=0 mx=120 y=0 x=5 mb=2,4 me=2,4 ks=0,5 ins=1 flg=0 save=26 view=0,0,1,0,20,79 brp=- ud=3 rd=0
+L 1 H onetw|
+L 1 H three four|
+L 1 H five|
+step 7 backspace
+W 1 t.txt ro=0 mx=120 y=0 x=4 mb=2,4 me=2,4 ks=0,4 ins=1 flg=0 save=27 view=0,0,1,0,20,79 brp=- ud=4 rd=0
+L 1 H onet|
+L 1 H three four|
+L 1 H five|
+step 8 down
+W 1 t.txt ro=0 mx=120 y=1 x=4 mb=2,4 me=2,4 ks=1,4 ins=1 flg=0 save=27 view=0,0,1,0,20,79 brp=- ud=4 rd=0
+L 1 H onet|
+L 1 H three four|
+L 1 H five|
+step 9 home
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=2,4 me=2,4 ks=1,0 ins=1 flg=0 save=27 view=0,0,1,0,20,79 brp=- ud=4 rd=0
+L 1 H onet|
+L 1 H three four|
+L 1 H five|
+step 10 backspace
+W 1 t.txt ro=0 mx=120 y=0 x=4 mb=1,4 me=1,4 ks=0,4 ins=1 flg=0 save=49 view=0,0,1,0,20,79 brp=- ud=5 rd=0
+L 1 H onetthree four|
+L 1 H five|

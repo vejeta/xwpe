@@ -1,0 +1,3 @@
+# Goldens the user has approved, one per line:
+#   <name> <sha256 of name.trace> <date> <decision id>
+# A golden not listed here is not a source: its rows skip.

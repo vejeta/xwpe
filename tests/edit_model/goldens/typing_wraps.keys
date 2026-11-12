@@ -1,0 +1,15 @@
+# Typing at and past Max. Columns (120): the line wraps at a word.
+# Manual: help.xwpe_eng 1578-1580, "After this number of columns a word
+# wrap is performed."  No Undo here: an Undo at the margin is a known bug.
+file t.txt
+seed b"w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 w022xy\nnext\n"
+rc none
+end
+type b"Z"
+type b"Q"
+type b"R"
+home
+type b"A"
+down
+end
+type b"!"

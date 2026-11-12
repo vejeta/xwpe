@@ -1,0 +1,19 @@
+# Return with auto-indent in a C file: the new line starts where the line
+# above starts.  Manual: help.xwpe_eng 2041-2043; one Ctrl-U per Return:
+# compatibility.texi 125-130.
+file t.c
+seed b"int main(void)\n{\n    int a = 1;\n}\n"
+rc none
+down
+down
+end
+enter
+type b"b"
+enter
+home
+enter
+up
+end
+left
+left
+enter

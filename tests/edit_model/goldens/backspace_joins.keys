@@ -1,0 +1,16 @@
+# Backspace at the start of a line joins it to the line above; on an empty
+# line it removes the line.  A plain text file (no auto-indent).
+# Manual: help.xwpe_eng 592-593; editor.texi 66.
+file t.txt
+seed b"one\ntwo\n\nthree four\nfive\n"
+rc none
+down
+backspace
+down
+backspace
+backspace
+end
+backspace
+down
+home
+backspace

@@ -165,6 +165,100 @@ def test_the_self_checks_refuse_a_dump_that_breaks_them(tmp_path):
     assert selfcheck.check_screen(_window(rows), shown) == []
 
 
+ROWS = [("H", b"one"), ("H", b"two")]
+OTHER_ROWS = [("H", b"one"), ("H", b"tw0")]
+STATUS_IDLE = "F1 Help  F2 Save"
+STATUS_SAID = "The window is read-only"
+
+
+def _undo_probe_cases():
+    """(name, want, got, the class the comparison must report or None)."""
+    sound = _window(ROWS, y=1, x=2, brp="1")
+    return [
+        ("same dump", sound, _window(ROWS, y=1, x=2, brp="1"), None),
+        ("other text", sound, _window(OTHER_ROWS, y=1, x=2, brp="1"), "text"),
+        ("lost row", sound, _window(ROWS[:1], y=0, x=2), "text"),
+        ("breakpoint moved", sound, _window(ROWS, y=1, x=2, brp="0"), "breakpoints"),
+        ("cursor moved", sound, _window(ROWS, y=0, x=2, brp="1"), "cursor"),
+        ("no window", sound, None, "text"),
+    ]
+
+
+# @scenario SC-edit-model-06
+@pytest.mark.parametrize("case", _undo_probe_cases(), ids=lambda c: c[0])
+def test_the_undo_probe_comparison_refuses_a_dump_that_breaks_it(case):
+    """The undo probe's comparison (check 1) reports a Ctrl-U that did not
+    give back the dump from before: other text, a lost row, a breakpoint on
+    another row, the cursor elsewhere, no window at all; and nothing when
+    the dump is the one expected."""
+    _name, want, got, cls = case
+    found = [c for c, _d in selfcheck.compare_windows("after Ctrl-U", want, got)]
+    if cls is None:
+        assert found == []
+    else:
+        assert cls in found, found
+
+
+# @scenario SC-edit-model-06
+def test_the_lock_check_refuses_a_locked_window_that_changed():
+    """Check 2: in a locked window a key that changed a row, or pushed an
+    undo step, is reported; the same change in an open window, and Ctrl-U
+    in a locked one, are not."""
+    locked = _window(ROWS, ro=1, ud=0)
+    assert selfcheck.check_lock("type_ascii", locked, _window(ROWS, ro=1)) == []
+    assert selfcheck.check_lock("type_ascii", locked,
+                                _window(OTHER_ROWS, ro=1))[0][0] == "lock"
+    assert selfcheck.check_lock("ctrl_k_i", locked, _window(ROWS, ro=1, ud=1))[0][0] == "lock"
+    assert selfcheck.check_lock("type_ascii", _window(ROWS), _window(OTHER_ROWS)) == []
+    assert selfcheck.check_lock("undo", locked, _window(OTHER_ROWS, ro=1)) == []
+
+
+# @scenario SC-edit-model-06
+def test_the_refusal_check_wants_the_status_row_to_say_so():
+    """Check 2's "says so": a text-changing key refused in a locked window
+    with the status row unchanged is reported; a refusal the status row
+    names, a key that is not a change, and an open window are not."""
+    locked = _window(ROWS, ro=1)
+    same = _window(ROWS, ro=1)
+    assert selfcheck.check_says_so("type_ascii", locked, same, STATUS_IDLE,
+                                   STATUS_IDLE)[0][0] == "says-so"
+    assert selfcheck.check_says_so("ctrl_y_delete_line", locked, same, STATUS_IDLE,
+                                   STATUS_IDLE)[0][0] == "says-so"
+    assert selfcheck.check_says_so("type_ascii", locked, same, STATUS_IDLE,
+                                   STATUS_SAID) == []
+    assert selfcheck.check_says_so("left", locked, same, STATUS_IDLE, STATUS_IDLE) == []
+    assert selfcheck.check_says_so("type_ascii", _window(ROWS), _window(ROWS),
+                                   STATUS_IDLE, STATUS_IDLE) == []
+    assert selfcheck.status_row(["", "  " + STATUS_IDLE + "   "]) == "  " + STATUS_IDLE
+
+
+# @scenario SC-edit-model-06
+def test_the_disk_and_autosave_checks_refuse_a_file_that_differs():
+    """Checks 5 and 7 on disk: after Save the file must be the dump's text
+    and after an autosave the .ASV file must be; a file one byte off, or
+    missing, is reported."""
+    w = _window(ROWS)
+    right = b"one\ntwo\n"
+    assert selfcheck.check_disk("save", right, w) == []
+    assert selfcheck.check_disk("save", b"one\ntw0\n", w)[0][0] == "disk"
+    assert selfcheck.check_disk("save", None, w)[0][0] == "disk"
+    assert selfcheck.check_disk("type_ascii", b"stale", w) == []
+    assert selfcheck.check_autosave(True, right, w) == []
+    assert selfcheck.check_autosave(True, b"one\ntwo", w)[0][0] == "autosave"
+    assert selfcheck.check_autosave(True, None, w)[0][0] == "autosave"
+    assert selfcheck.check_autosave(False, None, w) == []
+
+
+# @scenario SC-edit-model-06
+def test_the_no_step_check_refuses_a_change_with_no_undo_step():
+    """The undo probe's guard: text that changed while no undo step was
+    pushed is reported, since Ctrl-U cannot give it back."""
+    before, after = _window(ROWS), _window(OTHER_ROWS)
+    assert selfcheck.check_no_step(before, after, 0)[0][0] == "no-step"
+    assert selfcheck.check_no_step(before, after, 1) == []
+    assert selfcheck.check_no_step(before, _window(ROWS), 0) == []
+
+
 # @scenario SC-edit-model-07
 def test_a_seeded_walk_with_the_undo_probe_is_answered_to_the_end(tmp_path):
     """A seeded walk of 40 operations with the undo probe: the editor

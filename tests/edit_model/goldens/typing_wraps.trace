@@ -1,0 +1,46 @@
+step 0 start
+W 1 t.txt ro=0 mx=120 y=0 x=0 mb=1,4 me=1,4 ks=0,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 w022xy|
+L 1 H next|
+step 1 end
+W 1 t.txt ro=0 mx=120 y=0 x=116 mb=1,4 me=1,4 ks=0,116 ins=1 flg=0 save=0 view=0,77,1,0,20,79 brp=- ud=0 rd=0
+L 1 H w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 w022xy|
+L 1 H next|
+step 2 type b'Z'
+W 1 t.txt ro=0 mx=120 y=0 x=117 mb=1,4 me=1,4 ks=0,117 ins=1 flg=0 save=1 view=0,77,1,0,20,79 brp=- ud=1 rd=0
+L 1 H w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 w022xyZ|
+L 1 H next|
+step 3 type b'Q'
+W 1 t.txt ro=0 mx=120 y=0 x=118 mb=1,4 me=1,4 ks=0,118 ins=1 flg=0 save=2 view=0,77,1,0,20,79 brp=- ud=2 rd=0
+L 1 H w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 w022xyZQ|
+L 1 H next|
+step 4 type b'R'
+W 1 t.txt ro=0 mx=120 y=1 x=9 mb=2,4 me=2,4 ks=1,9 ins=1 flg=0 save=13 view=0,0,1,0,20,79 brp=- ud=3 rd=0
+L 1 S w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 |
+L 1 H w022xyZQR|
+L 1 H next|
+step 5 home
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=2,4 me=2,4 ks=1,0 ins=1 flg=0 save=13 view=0,0,1,0,20,79 brp=- ud=3 rd=0
+L 1 S w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 |
+L 1 H w022xyZQR|
+L 1 H next|
+step 6 type b'A'
+W 1 t.txt ro=0 mx=120 y=1 x=1 mb=2,4 me=2,4 ks=1,1 ins=1 flg=0 save=14 view=0,0,1,0,20,79 brp=- ud=4 rd=0
+L 1 S w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 |
+L 1 H Aw022xyZQR|
+L 1 H next|
+step 7 down
+W 1 t.txt ro=0 mx=120 y=2 x=1 mb=2,4 me=2,4 ks=2,1 ins=1 flg=0 save=14 view=0,0,1,0,20,79 brp=- ud=4 rd=0
+L 1 S w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 |
+L 1 H Aw022xyZQR|
+L 1 H next|
+step 8 end
+W 1 t.txt ro=0 mx=120 y=2 x=4 mb=2,4 me=2,4 ks=2,4 ins=1 flg=0 save=14 view=0,0,1,0,20,79 brp=- ud=4 rd=0
+L 1 S w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 |
+L 1 H Aw022xyZQR|
+L 1 H next|
+step 9 type b'!'
+W 1 t.txt ro=0 mx=120 y=2 x=5 mb=2,5 me=2,5 ks=2,5 ins=1 flg=0 save=15 view=0,0,1,0,20,79 brp=- ud=5 rd=0
+L 1 S w000 w001 w002 w003 w004 w005 w006 w007 w008 w009 w010 w011 w012 w013 w014 w015 w016 w017 w018 w019 w020 w021 |
+L 1 H Aw022xyZQR|
+L 1 H next!|
