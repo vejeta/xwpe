@@ -76,6 +76,32 @@ def missing(rows, factors=None, groups=None):
     return need
 
 
+def verified_rows(results):
+    """The rows of a run whose every walk started with the labels the row
+    names, as ({row name: levels}, [names of the rows that did not]).
+    @results are the walks' ``result()`` dicts; a walk that never reached the
+    end of its prelude counts against its row."""
+    seen, bad = {}, set()
+    for r in results:
+        name = r.get("row")
+        if name in (None, "-"):
+            continue
+        seen[name] = r.get("levels") or {}
+        start = r.get("start") or {}
+        if not start.get("checked") or start.get("mismatch"):
+            bad.add(name)
+    return dict((n, lv) for n, lv in seen.items() if n not in bad), sorted(bad)
+
+
+def effective_missing(results, factors=None, groups=None):
+    """The required tuples no *verified* row covers, measured against what
+    the sessions really started with, and the names of the rows that did not
+    get their labels.  A row not run, or run without reaching the check,
+    covers nothing."""
+    ok, bad = verified_rows(results)
+    return missing(list(ok.values()), factors, groups), bad
+
+
 def _score(row, f, level, index):
     """How many uncovered tuples would be completed by setting @f to @level
     in @row (the other members already set)."""

@@ -22,7 +22,8 @@ and W belong to the File Manager), and a beautify.
 BLOCK_MARKS = ("block_begin", "block_end", "block_hide", "block_goto_begin",
                "block_goto_end", "block_line", "block_all")
 BLOCK_EDITS = ("block_copy", "block_move", "block_delete", "block_indent",
-               "block_unindent", "help_button", "help_highlight", "help_header")
+               "block_unindent", "help_button", "help_highlight", "help_header",
+               "help_end")
 CLIPBOARD = ("edit_copy", "edit_cut", "edit_paste")
 MARKERS = ("marker_set", "marker_goto")
 DIALOGS = ("replace_all", "option_set")
@@ -37,6 +38,7 @@ HELP_END = 0x05
 HELP_BUTTON = 0x01
 HELP_HIGHLIGHT = 0x0F
 HELP_HEADER = 0x02
+HELP_PAGE_END = 0x06
 
 # Where Ctrl-K B puts the block's start when the mode keeps its end.
 POINT_AT_START = 0
@@ -44,6 +46,8 @@ POINT_AT_END = 1
 
 # The option dialog's fields, by the name an action gives them.
 OPTION_FIELDS = ("maxcol", "tabn", "maxchg", "numundo", "autoindent_col")
+# The shift's blank string is Tabstops / 2 blanks and one end mark byte.
+UNINDENT_STRING_END = 1
 # Enough Change All replacements to say the editor looped; the real loop
 # ends when no occurrence is left.
 REPLACE_LIMIT = 5000
@@ -51,6 +55,7 @@ REPLACE_LIMIT = 5000
 MSG_NOT_FOUND = "String NOT found"
 
 BOX_FOUND = "Found %d Replaced %d"
+BOX_FOUND_REFUSED = "Found %d Replaced 0 " + model.STATUS_READ_ONLY
 
 SPECIFIC = model.SPECIFYING_SOURCES
 
@@ -102,7 +107,7 @@ _r("block_in_line_delete", model.SOURCE_CODE, "we_block.c:244-248",
 _r("block_save_count", model.SOURCE_CODE, "we_block.c:272, 583, 608, 659",
    "A copy, a move, a paste and a block over several rows set the modified "
    "count to Max. Changes + 1.", (model.F_SAVE,))
-_r("block_one_step", model.SOURCE_DECISION, DECIDED,
+_r("block_one_step", model.SOURCE_DESIGN, model.DESIGN_ONE_STEP,
    "A block copy, move, delete or paste is one Ctrl-U.", (model.F_STEPS,))
 _r("block_undo_marks", model.SOURCE_CODE, "probe of the copy and paste Undo, 2026-11-12",
    "Undo of a copy or a paste leaves both marks at the start of the text it "
@@ -110,9 +115,11 @@ _r("block_undo_marks", model.SOURCE_CODE, "probe of the copy and paste Undo, 202
 _r("block_move_breakpoints", model.SOURCE_CHAPTER, COMPAT + ":149-158",
    "A move carries the breakpoints of its lines; the model does not follow "
    "them and takes the editor's rows.", (model.F_BREAKPOINTS,))
-_r("block_locked", model.SOURCE_DESIGN, "REVIEW R5",
-   "In a locked window every text-changing block command is refused; Copy to "
-   "the clipboard works; Cut copies and refuses the delete.", (model.F_TEXT,))
+_r("block_locked", model.SOURCE_CHAPTER, COMPAT + ":268-274; " + EDITOR + ":83-91",
+   "In a read-only window Ctrl-K I, U, D, F, Ctrl-O B, L, U, M, H, E and "
+   "Replace are refused and the status row says the text is unchanged; the "
+   "block Delete, Move and Paste do nothing; Copy still works, so Cut copies "
+   "and leaves the text.", (model.F_TEXT, model.F_STATUS))
 # -- indent
 _r("indent_keys", model.SOURCE_MANUAL, HELP + ":362,638-639",
    "Ctrl-K I shifts the block to the right, Ctrl-K U to the left.",
@@ -123,13 +130,28 @@ _r("indent_width", model.SOURCE_CODE, "we_block.c:2058, 2106",
    (model.F_TEXT, model.F_MARKS, model.F_CURSOR))
 _r("indent_one_step", model.SOURCE_DECISION, DECIDED,
    "Ctrl-K I and Ctrl-K U are one Ctrl-U for the whole block.", (model.F_STEPS,))
-_r("indent_blank_row", model.SOURCE_CODE, "we_block.c:2123",
-   "A row of only blanks is not indented: the scan for its first visible "
-   "character runs past the row's end.", (model.F_TEXT,))
+_r("unindent_reads_past", model.SOURCE_CODE, "we_block.c:2096",
+   "When tabs in the indent are worth more than Tabstops / 2 columns twice "
+   "over, the blanks put back are read past the end of the editor's blank "
+   "string: the model does not predict them.", (model.F_TEXT, model.F_CURSOR,
+                                               model.F_MARKS, model.F_SAVE))
+_r("indent_blank_row", model.SOURCE_CODE, "we_block.c:2127",
+   "The blanks of a shift go after the row's own leading blanks and never "
+   "past its end: a row of only blanks gets them after its last one.",
+   (model.F_TEXT,))
 # -- help-file markers
-_r("help_markers", model.SOURCE_MANUAL, HELP + ":815-821",
-   "Ctrl-O U, M and H put a button, highlight or header marker around the "
-   "text marked inside one row.", (model.F_TEXT, model.F_CURSOR))
+_r("help_markers", model.SOURCE_MANUAL, HELP + ":817-821",
+   "Ctrl-O U, M and H insert a button, a highlight marker or a header around "
+   "the text block.", (model.F_TEXT,))
+_r("help_markers_detail", model.SOURCE_CODE, "we_edit.c:1717-1746",
+   "Only a block inside one row gets them: the marker byte goes in front, "
+   "the end byte after, and the cursor ends just past the marker byte.",
+   (model.F_TEXT, model.F_CURSOR))
+_r("help_end_line", model.SOURCE_CHAPTER, COMPAT + ":276-281",
+   "Ctrl-O E puts the end-of-page mark on a line of its own in the file, "
+   "above the cursor's line.", (model.F_TEXT, model.F_CURSOR))
+_r("help_end_one_step", model.SOURCE_CHAPTER, COMPAT + ":276-281",
+   "One Ctrl-U takes that line back.", (model.F_STEPS,))
 _r("help_markers_one_step", model.SOURCE_DECISION, DECIDED,
    "Ctrl-O U, M and H are one Ctrl-U each.", (model.F_STEPS,))
 # -- clipboard
@@ -142,9 +164,12 @@ _r("clip_paste", model.SOURCE_CODE, "we_block.c:573-610",
 _r("clip_cut", model.SOURCE_MANUAL, HELP + ":320",
    "Cut is Copy followed by deleting the block.", (model.F_TEXT, model.F_CLIP))
 # -- markers
-_r("marker_keys", model.SOURCE_MANUAL, HELP + ":645-646",
-   "Ctrl-K n sets marker n at the cursor, Ctrl-O n jumps to it.",
-   (model.F_MARKERS, model.F_CURSOR))
+_r("marker_keys", model.SOURCE_MANUAL, HELP + ":645-646; " + EDITOR + ":196-203",
+   "Ctrl-K n sets marker n and Ctrl-O n jumps to it, n from 0 to 9; each "
+   "marker keeps its own place.", (model.F_MARKERS,))
+_r("marker_place", model.SOURCE_CODE, "we_edit.c:1578-1582, 1768-1770",
+   "A marker is the cursor's place when it is set; a jump to a marker never "
+   "set goes to the start of the text.", (model.F_MARKERS, model.F_CURSOR))
 # -- replace
 _r("replace_all_text", model.SOURCE_MANUAL, HELP + ":657, 1213-1219",
    "Change All replaces the string everywhere, from the start of the text.",
@@ -314,8 +339,15 @@ def splice_text(st, a, b, ins):
 
 # ---- the block -----------------------------------------------------------------
 
+def _marks_in_text(st):
+    """Are both marks on rows the text has?  An editor whose marks left the
+    text (a finding of its own, filed by the inside check) leaves the model
+    no block to work on."""
+    return 0 <= st.mb[0] < len(st.rows) and 0 <= st.me[0] < len(st.rows)
+
+
 def _block_empty(st):
-    return st.me <= st.mb
+    return st.me <= st.mb or not _marks_in_text(st)
 
 
 def _block_span(st):
@@ -340,7 +372,8 @@ def _commit(st, before, action, undo_marks=None):
     if [(r.end, r.data) for r in before.rows] != st.lines():
         model._push_step(st, before, action, False)
         st.undo[-1].undo_marks = undo_marks
-        st.fired.append("block_one_step")
+        if not any(r in st.fired for r in model.ONE_STEP_RULES):
+            st.fired.append("block_one_step")
 
 
 def _mark_actions(st, name):
@@ -642,13 +675,13 @@ def _is_blank(c):
 
 
 def _first_visible_c(rows, i):
-    """The C loop ``for (j = 0; len && isspace(s[j]); j++)``: on a hard row
-    of only blanks it runs onto the line break and stops one past it."""
+    """Where a shift puts the blanks in row @i: after the row's own leading
+    blanks, and never past the row's end (a row of only blanks gets them
+    after its last blank, an empty row at column 0)."""
     buf = rows.bufs[i]
-    if rows.str_len(i) == 0:
-        return 0
+    ln = rows.str_len(i)
     j = 0
-    while j < len(buf) and buf[j] != NUL and _is_blank(buf[j]):
+    while j < ln and _is_blank(buf[j]):
         j += 1
     return j
 
@@ -667,11 +700,20 @@ def _block_rows(st):
     return out
 
 
+def _say_read_only(st):
+    """A command that tried to change a locked window was refused: the status
+    row says the text is unchanged."""
+    st.fired.append("block_locked")
+    st.status = model.STATUS_READ_ONLY
+
+
 def _block_indent(st, action):
     if model._locked(st):
         st.fired.append("block_locked")
+        if _block_rows(st):
+            _say_read_only(st)
         return
-    st.fired.extend(["indent_keys", "indent_width", "indent_blank_row"])
+    st.fired.extend(["indent_keys", "indent_width", "indent_blank_row", "indent_one_step"])
     before = Snapshot(st)
     n = st.options.tabn // 2
     rows = Rows(st)
@@ -698,56 +740,97 @@ def _tab_stops_before(rows, i, l, tabn):
     return nn
 
 
+def _put_back_columns(st, rows, tstr, want, x, y):
+    """The columns a tab took beyond what the shift removes are put back as
+    blanks.  The editor reads them from a string that holds Tabstops / 2
+    blanks, its end mark and one more byte: up to the end mark the bytes are
+    known (blanks, then a NUL), beyond it the editor reads past what it
+    allocated, so the model puts the known bytes in and takes the editor's
+    word for the row."""
+    known = len(tstr) + UNINDENT_STRING_END
+    padded = (tstr + bytes(UNINDENT_STRING_END))[:min(want, known)]
+    rows.ins_nchar(padded + bytes(want - len(padded)), x, y)
+    if want > known:
+        st.fired.append("unindent_reads_past")
+        st.resync_fields.update((model.F_TEXT, model.F_CURSOR, model.F_MARKS, model.F_SAVE))
+
+
+def _unindent_scan(rows, i, tabn, n):
+    """How a shift to the left reads row @i: the width of its leading blanks
+    ``j``, the columns ``k`` taken from their end back to Tabstops / 2, and
+    the number of bytes ``l`` that come out."""
+    ln = rows.str_len(i)
+    j = 0
+    buf = rows.bufs[i]
+    while j < ln and _is_blank(buf[j]):
+        j += 1
+    k = 0
+    l = j - 1
+    while l >= 0 and k < n:
+        if buf[l] == SPACE:
+            k += 1
+        elif buf[l] == TAB:
+            nn = _tab_stops_before(rows, i, l, tabn)
+            k += tabn - (nn % tabn)
+        l -= 1
+    return j, k, j - l - 1
+
+
 def _block_unindent(st, action):
-    if model._locked(st):
-        st.fired.append("block_locked")
-        return
-    st.fired.extend(["indent_keys", "indent_width"])
-    before = Snapshot(st)
     tabn = st.options.tabn
     n = tabn // 2
+    if model._locked(st):
+        st.fired.append("block_locked")
+        rows = Rows(st)
+        if any(_unindent_scan(rows, i, tabn, n)[2] > 0 for i in _block_rows(st)):
+            _say_read_only(st)
+        return
+    st.fired.extend(["indent_keys", "indent_width", "indent_one_step"])
+    before = Snapshot(st)
     rows = Rows(st)
     tstr = b" " * n
     for i in _block_rows(st):
-        ln = rows.str_len(i)
-        j = 0
-        buf = rows.bufs[i]
-        while j < ln and _is_blank(buf[j]):
-            j += 1
-        k = 0
-        l = j - 1
-        while l >= 0 and k < n:
-            if buf[l] == SPACE:
-                k += 1
-            elif buf[l] == TAB:
-                nn = _tab_stops_before(rows, i, l, tabn)
-                k += tabn - (nn % tabn)
-            l -= 1
-        l = j - l - 1
+        j, k, l = _unindent_scan(rows, i, tabn, n)
         if l > 0:
             keep = st.mb[1]
             rows.del_nchar(j - l, i, l)
             if k > n:
-                # the C call reads k - n bytes of a string n blanks long
-                rows.ins_nchar((tstr + bytes(k - n))[:k - n], j - l, i)
+                _put_back_columns(st, rows, tstr, k - n, j - l, i)
             st.mb = (st.mb[0], keep)
     rows.commit()
     _commit(st, before, action)
 
 
 def _help_marker(st, action, marker):
-    if model._locked(st):
-        st.fired.append("block_locked")
-        return
     (kay, kax), (key, kex) = st.mb, st.me
-    if not (kay == key and kay >= 0 and kax < kex):
+    if not (kay == key and kay >= 0 and kax < kex) or not _marks_in_text(st):
         return
-    st.fired.extend(["help_markers", "help_markers_one_step"])
+    if model._locked(st):
+        _say_read_only(st)
+        return
+    st.fired.extend(["help_markers", "help_markers_detail", "help_markers_one_step"])
     before = Snapshot(st)
     rows = Rows(st)
     rows.ins_nchar(bytes([HELP_END]), kex, key)
     rows.ins_nchar(bytes([marker]), kax, key)
     rows.commit()
+    _commit(st, before, action)
+
+
+def _help_end(st, action):
+    """Ctrl-O E: the end-of-page mark on a new row of its own above the
+    cursor's row, the cursor just after the mark."""
+    if model._locked(st):
+        _say_read_only(st)
+        return
+    st.fired.extend(["help_end_line", "help_end_one_step"])
+    before = Snapshot(st)
+    rows = Rows(st)
+    y = st.y
+    rows.insert_blank(y)
+    rows.bufs[y] = rows._buf(bytes([HELP_PAGE_END]), True)
+    rows.commit()
+    st.x = 1
     _commit(st, before, action)
 
 
@@ -804,10 +887,30 @@ def _rep_search(st, rows, search):
         ret = -1
 
 
+def _replace_all_refused(st, search):
+    """Change All in a read-only window: every occurrence is found, none is
+    replaced, and the box and the status row say the text is unchanged."""
+    st.fired.extend(["block_locked", "replace_all_text", "replace_scan", "replace_message"])
+    rows = Rows(st)
+    st.y = st.x = 0
+    found = 0
+    while found < REPLACE_LIMIT:
+        hit = _rep_search(st, rows, search)
+        if hit is None:
+            break
+        found += 1
+        st.x = hit[0] + len(search)
+    if found:
+        st.box = BOX_FOUND_REFUSED % found
+        st.status = model.STATUS_READ_ONLY
+    else:
+        st.box = MSG_NOT_FOUND
+
+
 def _replace_all(st, action):
     search, repl = action.arg
     if model._locked(st):
-        st.fired.append("block_locked")
+        _replace_all_refused(st, search)
         return
     st.fired.extend(["replace_all_text", "replace_scan", "replace_by_primitives",
                      "replace_one_step", "replace_message"])
@@ -854,8 +957,8 @@ def _option_set(st, action):
 
 def _marker(st, name, n):
     if n >= model.MARKER_COUNT:
-        return                      # Ctrl-K 9 writes past the array: a known bug
-    st.fired.append("marker_keys")
+        return                      # a marker the editor does not have: no key names it
+    st.fired.extend(["marker_keys", "marker_place"])
     if name == "marker_set":
         st.pt[n] = (st.y, st.x)
     else:
@@ -885,6 +988,8 @@ def apply_action(st, action):
         _help_marker(st, action, HELP_HIGHLIGHT)
     elif name == "help_header":
         _help_marker(st, action, HELP_HEADER)
+    elif name == "help_end":
+        _help_end(st, action)
     elif name == "edit_copy":
         _clip_copy(st)
     elif name == "edit_cut":

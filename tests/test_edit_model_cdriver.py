@@ -14,7 +14,6 @@ import pytest
 pytest.importorskip("pyte")
 
 from edit_model import cdriver  # noqa: E402
-from wpe_driver import incoherence  # noqa: E402
 
 STEPS = int(os.environ.get("EDIT_MODEL_C_STEPS", "3000"))
 AGREE_STEPS = 1500
@@ -25,7 +24,8 @@ WIDTHS = (20, 40)
 def binary(tmp_path_factory):
     path = cdriver.build(str(tmp_path_factory.mktemp("edit_driver")))
     if path is None:
-        pytest.skip("no C compiler: edit_driver was not built")
+        pytest.skip("edit_driver is older than its sources and could not be "
+                    "compiled again (no C compiler)")
     return path
 
 
@@ -43,6 +43,29 @@ def test_strings_survive_the_driver_protocol():
     data = b"a b\n\\ \x00\xff caf\xc3\xa9"
     assert " " not in cdriver.esc(data)
     assert cdriver.unesc(cdriver.esc(data)) == data
+
+
+# @scenario SC-edit-model-34
+def test_a_driver_older_than_its_sources_is_never_used(tmp_path, monkeypatch):
+    """A binary made before the owner changed describes an owner that no
+    longer exists: it counts as current only when it is at least as new as
+    every source it is made of, and a stale one is replaced by a driver
+    compiled again, never returned."""
+    old = tmp_path / "edit_driver"
+    old.write_bytes(b"")
+    os.utime(old, (0, 0))
+    assert not cdriver.is_current(str(old))
+    new = tmp_path / "newer"
+    new.write_bytes(b"")
+    future = os.path.getmtime(os.path.join(cdriver.TOP, "we_buffer.c")) + 100
+    os.utime(new, (future, future))
+    assert cdriver.is_current(str(new))
+    assert not cdriver.is_current(str(tmp_path / "missing"))
+    monkeypatch.setattr(cdriver, "is_current", lambda _path: False)
+    rebuilt = cdriver.build(str(tmp_path))
+    if rebuilt is None:
+        pytest.skip("no C compiler to build the driver again")
+    assert os.path.dirname(rebuilt) == str(tmp_path)
 
 
 # @scenario SC-edit-model-34
@@ -152,9 +175,6 @@ def test_a_move_carries_the_breakpoints_of_its_rows_and_a_copy_carries_none(drv)
 
 
 # @scenario SC-edit-model-37
-@incoherence("a row moved into a window of another width keeps its length: a 60 byte "
-             "row sits in a buffer 30 wide, where the first character typed into it "
-             "cuts its tail off (the audit's O3 and O4, class wrap and width)")
 def test_rows_moved_into_a_narrower_buffer_are_wrapped_to_its_width(drv):
     """A line of 60 bytes moved to a buffer 30 wide arrives wrapped at that
     width with every byte and its line break, as a line read from a file."""

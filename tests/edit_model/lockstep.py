@@ -83,14 +83,6 @@ class Disagreement(dict):
     """One field where the editor and the model differ after one action."""
 
 
-def _is_overwrite_step(step):
-    return step is not None and step.action.name == "type" and not (step.ins & model.INS_INSERT)
-
-
-def _at_end_of_text(st):
-    return st.y == len(st.rows) - 1 and st.x >= len(st.rows[-1].data)
-
-
 # The manual's rule a move breaks when its key does nothing at all.
 _MOVE_RULE = {model.F_CURSOR: "cursor_keys", model.F_ANCHOR: "cursor_keys",
               model.F_MARKS: "shift_marks"}
@@ -109,62 +101,39 @@ def _key_did_nothing(action, field, before, w):
 
 
 # Disagreements already known, by the name a report gives them.
-KNOWN_OVERWRITE_REDO = "known bug, fix pending: Ctrl-R after undoing overwrite typing"
-KNOWN_END_OF_TEXT = "known bug, fix pending: Ctrl-T / Ctrl-Right at the end of the text"
 KNOWN_STEPS = ("decided, not built yet: one Ctrl-U per Tab or Backspace in an "
                "indent, Ctrl-K I/U, Ctrl-O U/M/H and Change All")
 KNOWN_UNDO_CURSOR = "open question: where Ctrl-U and Ctrl-R leave the cursor"
-KNOWN_DECODER = ("known bug, fix pending: the terminal's key decoder drops Shift+cursor, "
-                 "Ctrl+cursor, Ctrl-Ins and Shift-Del/Ins")
-KNOWN_LOCK = "known bug, fix pending: a block command or Replace changes a locked window"
-KNOWN_MARKER_9 = "known bug, fix pending: Ctrl-K 9"
 KNOWN_SOFT_WRAP = "known bug, fix pending: typing into a soft-wrapped row loses a byte"
 KNOWN_UTF8_BACKSPACE = ("known bug, fix pending: Backspace with auto-indent deletes one "
                         "byte of a UTF-8 character")
+# What the editor pushes as several steps today, where the user's decision is
+# one.  Ctrl-U or Ctrl-R on those steps is the walk's to take from the editor
+# (model.undo_unmodelled_step); the tag names the push itself.
 STEP_ACTIONS = ("tab", "backspace", "block_indent", "block_unindent", "help_button",
                 "help_highlight", "help_header", "replace_all")
-LOCKED_CHANGERS = ("block_indent", "block_unindent", "help_button", "help_highlight",
-                   "help_header", "replace_all")
-MARKER_9 = 9
+# How long a crashed editor may take to be gone (it writes its core first).
+CRASH_REAP_S = 15
+KNOWN_CRASH_MOVE = ("new bug, not fixed: Ctrl-K V with the block's marks left outside the "
+                    "text (after an Undo) ends the editor with SIGSEGV")
+KNOWN_CRASHES = ("Ctrl-K V with the block's marks",)
 
 
-def _same_as_before(before, w):
-    """Did the editor leave text, cursor, marks and undo depths alone?"""
-    return (list(w.lines) == before.lines() and w.cursor == (before.y, before.x)
-            and (w.mb, w.me) == (before.mb, before.me) and w.ud == before.ud)
-
-
-def expected_tag(action, field, before, pred, editor_w, key_name=None):
+def expected_tag(action, field, before, pred, editor_w):
     """The known name of a disagreement (a bug whose fix is pending, or a
     decision not built yet), or None for a new one.  A cursor or a mark
     outside the text is never excused by a known bug: that check reads the
-    editor's dump alone, so no tag written for a model field may hide it."""
+    editor's dump alone, and the open question about where Undo leaves the
+    cursor is not offered for a cursor that is not in the text."""
     name = action.name
     if field == FIELD_INSIDE:
         return None
-    # Undoing overwrite typing gives the text back but leaves nothing to
-    # redo: only the undo depths carry the known bug, so a wrong text or
-    # count after that Ctrl-U still shows as new.
-    if name == "undo" and field == model.F_STEPS \
-            and _is_overwrite_step(before.undo[-1] if before.undo else None):
-        return KNOWN_OVERWRITE_REDO
-    if name == "redo" and _is_overwrite_step(before.redo[-1] if before.redo else None):
-        return KNOWN_OVERWRITE_REDO
-    if name in ("delete_word", "word_right") and _at_end_of_text(before):
-        return KNOWN_END_OF_TEXT
     if field == model.F_STEPS and name in STEP_ACTIONS:
         if editor_w.ud - before.ud > 1:
             return KNOWN_STEPS
-    if name in ("undo", "redo") and field in (model.F_CURSOR, model.F_ANCHOR):
+    if name in ("undo", "redo") and field in (model.F_CURSOR, model.F_ANCHOR) \
+            and not _cursor_outside(editor_w):
         return KNOWN_UNDO_CURSOR
-    if key_name is not None and keymap.is_decoder_drop(key_name) \
-            and _same_as_before(before, editor_w):
-        return KNOWN_DECODER
-    if before.ins == model.INS_READONLY and name in LOCKED_CHANGERS \
-            and _text_or_steps_changed(before, editor_w):
-        return KNOWN_LOCK
-    if name == "marker_set" and action.arg == MARKER_9:
-        return KNOWN_MARKER_9
     if name == "type" and before.rows[before.y].end == model.SOFT \
             and field in (model.F_TEXT, FIELD_TYPED_KEPT, model.F_CURSOR,
                           model.F_SAVE, model.F_MARKS) \
@@ -176,10 +145,9 @@ def expected_tag(action, field, before, pred, editor_w, key_name=None):
     return None
 
 
-def _text_or_steps_changed(before, w):
-    """Did the editor change the text or push an undo step (what the lock
-    bug does), rather than misbehave in some other way?"""
-    return list(w.lines) != before.lines() or w.ud != before.ud
+def _cursor_outside(w):
+    """Is the editor's cursor outside the editor's own text?"""
+    return any(cls == "cursor" for cls, _detail in selfcheck.check_inside(w))
 
 
 def _bytes_lost(pred, w):
@@ -269,6 +237,25 @@ def compare(pred, d, session, action, check_screen, filename=FILENAME):
     return out
 
 
+def status_row(display):
+    """The words on the status row, the last row of the screen."""
+    return display[-1].strip() if display else ""
+
+
+def status_disagreements(pred, status, previous):
+    """The status row against the model: a refusal says so, and a status row
+    that says the text is unchanged after a key the model did not refuse is a
+    finding too (unless the previous key left it there, which the next key
+    that redraws the row clears).  [(field, wanted, got)]."""
+    if pred.status is not None:
+        if pred.status not in status:
+            return [(model.F_STATUS, pred.status, status)]
+        return []
+    if previous is None and model.STATUS_READ_ONLY in status:
+        return [(model.F_STATUS, "no refusal said", status)]
+    return []
+
+
 def model_free_checks(before, w):
     """What the editor's own dumps alone can say about one step, with no
     model: the cursor and the marks inside the text, and the soft rule that
@@ -312,6 +299,12 @@ class Walk:
         self.steps_run = 0
         self.state = None
         self.key_name = None
+        self.prev_status = None
+        self.known_crashes = 0
+        # the levels the session had when its prelude was done; None until
+        # then (a row whose prelude broke off never got there)
+        self.start_observed = None
+        self.start_mismatch = None
 
     def keys_of(self, name, arg):
         if name in PRELUDE_ONLY:
@@ -334,6 +327,8 @@ class Walk:
                     if not self.step(s, self.state, i, (name, arg)):
                         return self
                     i += 1
+                if self.row is not None:
+                    self.check_row_start(s)
                 for _ in range(self.n_steps):
                     if not self.step(s, self.state, i):
                         break
@@ -342,9 +337,20 @@ class Walk:
             shutil.rmtree(wd, ignore_errors=True)
         return self
 
+    def check_row_start(self, s):
+        """Read the levels the session really has now that the prelude is done
+        (from the editor's dump and screen) and keep what differs from the
+        row's labels: a row that did not get its label tests another state
+        than the array says it does."""
+        d = s.last
+        if d.win is None:
+            self.start_mismatch = [("window", "the file's window", d.ctx)]
+            return
+        self.start_observed = option_row.observed_levels(d.win, d.windows.get(0), s.display())
+        self.start_mismatch = option_row.start_mismatches(self.row, self.start_observed)
+
     def step(self, s, st, i, forced=None):
         name, arg = forced if forced is not None else self.drawer.next(st)
-        self.key_name = name
         action = model.Action(keymap.model_action(name) if name not in PRELUDE_ONLY
                               else "toggle_breakpoint", arg)
         keys = self.keys_of(name, arg)
@@ -359,6 +365,7 @@ class Walk:
             return False
         self.steps_run += 1
         box = None
+        status = status_row(s.display())
         if d.ctx != "edit" or d.win is None or d.win.name != self.filename:
             box = box_text(s.display())
             ctx = d.ctx
@@ -371,22 +378,48 @@ class Walk:
         found = check_typed_bytes_kept(st, action, d.win)
         found += compare(pred, d, s, action, i % SCREEN_EVERY == 0, self.filename)
         found += model_free_checks(st, d.win)
+        found += status_disagreements(pred, status, self.prev_status)
+        self.prev_status = pred.status
         for field, mine, theirs in found:
             self.note(i, action, field, mine, theirs, st, pred, d.win)
-        if pred.resync_fields or any(x["step"] == i for x in self.disagreements):
+        here = [x["field"] for x in self.disagreements if x["step"] == i]
+        if pred.resync_fields or here:
             base = action.name.replace("shift_", "")
+            rebase = (model.F_TEXT in pred.resync_fields or model.F_TEXT in here
+                      or model.F_STEPS in here)
             model.resync(pred, d.win, vertical=base in ("up", "down"),
-                         clip=d.windows.get(0))
+                         clip=d.windows.get(0), rebase_steps=rebase)
         self.state = pred
         return True
 
     def lose(self, i, name, message, st, s):
-        """Record that the editor stopped answering at step @i."""
+        """Record that the editor stopped answering at step @i: a crash the
+        walk knows (Ctrl-K V with the block's marks outside the text) is
+        named, any other loss is the walk's to report as new."""
+        tag = self.known_crash_of(name, s)
+        if tag is not None:
+            message += " [%s]" % tag
+            self.known_crashes += 1
         self.lost.append((i, name, message))
 
+    @staticmethod
+    def known_crash_of(name, s):
+        """The name of the known crash the editor ended in, or None.  It is
+        read from the editor's own last dump (the state the key met, not the
+        model's idea of it): Ctrl-K V with a block mark on a row the text no
+        longer has."""
+        w = s.last.win
+        if w is None:
+            return None
+        if name == "block_move" and any(cls == "marks" for cls, _d in selfcheck.check_inside(w)):
+            tag = KNOWN_CRASH_MOVE
+        else:
+            return None
+        return tag if s.ended_within(CRASH_REAP_S) else None
+
     def new_losses(self):
-        """The losses of the walk: every one is new."""
-        return list(self.lost)
+        """The losses no known bug explains."""
+        return [x for x in self.lost if not any(t in x[2] for t in KNOWN_CRASHES)]
 
     def back_to_text(self, s):
         """Esc until the editor reads keys in the file's window again; the
@@ -414,7 +447,7 @@ class Walk:
             style=self.style, seed=self.seed, step=i, action=repr(action),
             field=field, model=mine, editor=theirs, cls=cls,
             rules=["%s (%s, %s)" % (r.name, r.source, r.ref) for r in rules],
-            expected=expected_tag(action, field, before, pred, w, self.key_name),
+            expected=expected_tag(action, field, before, pred, w),
             cursor_before=(before.y, before.x),
             row=self.row.name if self.row is not None else "-",
             keys=list(self.history[-8:])))
@@ -422,6 +455,10 @@ class Walk:
     def result(self):
         """The walk as plain data, for a run's report file."""
         return {"row": self.row.name if self.row is not None else "-",
+                "levels": self.levels,
+                "start": {"checked": self.start_mismatch is not None,
+                          "mismatch": _jsonable(self.start_mismatch or []),
+                          "observed": _jsonable(self.start_observed or {})},
                 "style": self.style, "seed": self.seed, "steps": self.steps_run,
                 "lost": [list(x) for x in self.lost],
                 "disagreements": [dict((k, _jsonable(v)) for k, v in x.items())

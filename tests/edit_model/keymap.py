@@ -72,13 +72,14 @@ _BLOCKS = {
     "block_copy": [CK, "c"], "block_move": [CK, "v"], "block_delete": [CK, "y"],
     "block_indent": [CK, "i"], "block_unindent": [CK, "u"],
     "help_button": [CO, "u"], "help_highlight": [CO, "m"], "help_header": [CO, "h"],
+    "help_end": [CO, "e"],
     "edit_copy": [ctrl("c")], "edit_cut": [ctrl("x")], "edit_paste": [ctrl("v")],
 }
 _OLD.update(_BLOCKS)
 
-# The clipboard keys the manual names that this terminal does not decode
-# (Ctrl-Ins, Shift-Del, Shift-Ins), and the one it decodes as Alt-Ins: actions
-# of their own with the same effect as the Ctrl forms.
+# The clipboard keys the manual names beside the Ctrl forms (Ctrl-Ins,
+# Shift-Del, Shift-Ins, Alt-Ins, Ctrl-Del): actions of their own with the same
+# effect, so a terminal that drops one shows as a finding.
 CLIPBOARD_ALIASES = {
     "edit_copy_ctrl_ins": ("edit_copy", [CTRL_INS]),
     "edit_cut_shift_del": ("edit_cut", [SHIFT_DEL]),
@@ -87,13 +88,6 @@ CLIPBOARD_ALIASES = {
     "block_delete_ctrl_del": ("block_delete", [CTRL_DEL]),
 }
 PRIMARY_ALIASES.update(CLIPBOARD_ALIASES)
-
-# The actions the terminal's key decoder drops, so a disagreement where the
-# editor did nothing at all belongs to that bug (one entry, not one per key).
-DECODER_DROPS = ("word_left", "word_right", "file_start_primary", "file_end_primary",
-                 "window_top_primary", "window_bottom_primary",
-                 "edit_copy_ctrl_ins", "edit_cut_shift_del", "edit_paste_shift_ins",
-                 "block_delete_ctrl_del")
 
 # In a number field of the option dialog Backspace does nothing and typed
 # digits are added to the old ones; Ctrl-U empties the field first.
@@ -107,11 +101,6 @@ OPTION_FIELD_KEYS = {
 # The Replace dialog: Alt-S R opens it; Alt-N moves to New Text; Alt-P turns
 # off the prompt; Alt-G picks Global; Alt-A is Change All.
 REPLACE_PRELUDE = [alt("s"), "r"]
-
-
-def is_decoder_drop(action_name):
-    """Is the key of @action_name one the terminal's decoder drops?"""
-    return action_name.startswith("shift_") or action_name in DECODER_DROPS
 
 
 def _text_keys(data):

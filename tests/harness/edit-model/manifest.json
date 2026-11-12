@@ -288,6 +288,34 @@
    "layer": "ncurses",
    "test": "tests/test_edit_model_rows.py::test_undo_brings_back_the_empty_last_row_a_backspace_removed",
    "status": "new"
+  },
+  {
+   "id": "SC-edit-model-42",
+   "requirement": "A combination of option levels no session can have is ruled out of the array",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_covering.py::test_a_combination_no_session_can_have_is_ruled_out",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-43",
+   "requirement": "The levels of a started session are read from the editor's dump and screen and checked against the row's labels",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_covering.py::test_the_levels_of_a_started_session_are_read_from_what_the_editor_shows",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-44",
+   "requirement": "A row whose session did not start with its labels covers no tuple of the array",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_covering.py::test_a_row_that_did_not_get_its_labels_covers_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-45",
+   "requirement": "Every row of the array starts its session with the levels it names",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_lockstep.py::test_every_row_of_the_array_starts_with_its_labels",
+   "status": "new"
   }
  ]
 }

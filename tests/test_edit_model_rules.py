@@ -78,6 +78,38 @@ def test_every_rule_names_its_source_and_where_it_is_written():
 
 
 # @scenario SC-edit-model-14
+def test_a_rules_place_is_the_kind_of_text_its_source_names():
+    """A rule is labelled by where it was learned: a manual rule points into
+    the help text or the editor chapter, a chapter rule into the
+    compatibility chapter, a decision at the user's word, a design rule at
+    the design, a code rule at a C file or a probe.  The one-step rule of the
+    block commands is the design's, the user's decision is the five actions
+    it named, and the marker and help-marker rules cite the manual alone."""
+    for r in model.RULES.values():
+        if r.source == model.SOURCE_MANUAL:
+            assert "help.xwpe_eng" in r.ref or "editor.texi" in r.ref, r
+        elif r.source == model.SOURCE_CHAPTER:
+            assert "compatibility.texi" in r.ref, r
+        elif r.source == model.SOURCE_DECISION:
+            assert r.ref == model.DECIDED_ONE_STEP, r
+        elif r.source == model.SOURCE_DESIGN:
+            assert "DESIGN" in r.ref or "this model" in r.ref or "REVIEW" in r.ref, r
+        elif r.source == model.SOURCE_CODE:
+            assert ".c" in r.ref or "probe" in r.ref \
+                or "replay" in r.ref or "record" in r.ref, r
+    decided = sorted(r.name for r in model.RULES.values() if r.source == model.SOURCE_DECISION)
+    assert decided == ["backspace_indent_one_step", "help_markers_one_step",
+                       "indent_one_step", "replace_one_step", "tab_one_step"]
+    assert model.RULES["block_one_step"].source == model.SOURCE_DESIGN
+    assert model.RULES["one_step_per_action"].source == model.SOURCE_DESIGN
+    for name in ("marker_keys", "help_markers"):
+        assert model.RULES[name].source == model.SOURCE_MANUAL
+        assert "we_" not in model.RULES[name].ref, name
+    for name in ("end_of_text_stays", "block_locked", "help_end_line"):
+        assert model.RULES[name].source == model.SOURCE_CHAPTER, name
+
+
+# @scenario SC-edit-model-14
 @pytest.mark.parametrize("style", keymap.STYLES)
 def test_every_action_has_its_keys_in_each_key_style(style):
     """No action of the model is left without keys: a walk can draw any of

@@ -76,15 +76,13 @@ def test_every_block_rule_names_its_source_and_where_it_is_written():
 # @scenario SC-edit-model-19
 def test_every_block_action_has_keys_in_both_key_styles():
     """Each block, clipboard, replace, option and marker action is made by
-    keys in the old and in the CUA style, and the keys that this terminal
-    does not decode are listed as such."""
+    keys in the old and in the CUA style, and every clipboard alias stands
+    for a block action."""
     for style in keymap.STYLES:
         for name in blocks.BLOCK_ACTIONS:
             assert keymap.keys_for(style, name, keymap.sample_arg(name)), name
     for alias in keymap.CLIPBOARD_ALIASES:
         assert keymap.model_action(alias) in blocks.BLOCK_ACTIONS
-    assert keymap.is_decoder_drop("shift_left") and keymap.is_decoder_drop("edit_copy_ctrl_ins")
-    assert not keymap.is_decoder_drop("block_copy")
 
 
 # @scenario SC-edit-model-19
@@ -236,6 +234,61 @@ def test_a_locked_window_refuses_every_text_change_but_copy_works():
     assert _rows(_do(full, A("replace_all", (b"a", b"Q")))) == _rows(st)
 
 
+# @scenario SC-edit-model-21
+def test_a_refused_command_in_a_locked_window_says_so_on_the_status_row():
+    """Ctrl-K I and U, Ctrl-O U, M, H and E, and Change All are refused in a
+    read-only window and the status row says the text is unchanged; the
+    block Delete, Move, Paste and Copy, typing and Undo say nothing."""
+    say = model.STATUS_READ_ONLY
+    st = _mark(_state([("H", b"  alpha one"), ("H", b"beta")]), (0, 0), (1, 0))
+    st.ins = model.INS_READONLY
+    assert _do(st, "block_indent").status == say
+    assert _do(st, "block_unindent").status == say
+    inner = _mark(_state(), (0, 2), (0, 5))
+    inner.ins = model.INS_READONLY
+    for name in ("help_button", "help_highlight", "help_header", "help_end"):
+        assert _do(inner, name).status == say, name
+    assert _do(inner, A("replace_all", (b"a", b"Q"))).status == say
+    for name in ("block_delete", "block_move", "edit_paste", "block_copy", "undo"):
+        assert _do(inner, name).status is None, name
+    typed = _do(inner, A("type", b"x"))
+    assert typed.status is None and _rows(typed) == _rows(inner)
+    # nothing to attempt, nothing said: a shift left of rows with no indent,
+    # and a block that is not inside one row
+    flush = _mark(_state(), (0, 0), (1, 0))
+    flush.ins = model.INS_READONLY
+    assert _do(flush, "block_unindent").status is None
+    assert _do(flush, "help_button").status is None
+    # a writable window never says it
+    free = _mark(_state(), (0, 0), (1, 0))
+    assert _do(free, "block_indent").status is None
+
+
+# @scenario SC-edit-model-21
+def test_change_all_in_a_locked_window_finds_but_replaces_nothing():
+    """The box says how many were found and that none was replaced, with the
+    read-only words; a string not there is not found as in any window."""
+    st = _state()
+    st.ins = model.INS_READONLY
+    done = _do(st, A("replace_all", (b"a", b"Q")))
+    assert _rows(done) == _rows(st) and done.ud == 0
+    assert done.box == "Found 6 Replaced 0 " + model.STATUS_READ_ONLY
+    assert _do(st, A("replace_all", (b"zzz", b"Q"))).box == blocks.MSG_NOT_FOUND
+
+
+# @scenario SC-edit-model-23
+def test_ctrl_o_e_puts_the_end_of_page_mark_on_a_row_of_its_own_in_one_step():
+    """Above the cursor's row, a hard row holding the mark; the cursor just
+    after the mark on the new row; one Ctrl-U takes the row away."""
+    st = _at(_state(), 1, 3)
+    done = _do(st, "help_end")
+    assert _rows(done)[:3] == [("H", b"alpha one"), ("H", bytes([blocks.HELP_PAGE_END])),
+                               ("H", b"beta two")]
+    assert (done.y, done.x) == (1, 1) and done.ud == 1
+    assert _rows(_do(done, "undo")) == _rows(st)
+    assert "help_end_line" in done.fired and "help_end_one_step" in done.fired
+
+
 # @scenario SC-edit-model-22
 def test_a_copy_keeps_the_rows_between_its_ends_as_they_are():
     """The rows a block holds between its first and last line are copied
@@ -294,14 +347,35 @@ def test_indent_and_unindent_shift_by_half_the_tabstops_one_undo_for_all_rows():
 
 
 # @scenario SC-edit-model-23
-def test_a_row_of_only_blanks_is_not_indented():
-    """The scan for the first visible character runs past the end of a
-    row of blanks, so the row is left as it was (a finding of the editor's
-    code, kept as the model's code rule)."""
-    st = _mark(_state([("H", b"one"), ("H", b"   "), ("H", b"three")]), (0, 0), (2, 5))
+def test_a_row_of_only_blanks_is_indented_after_its_own_blanks():
+    """The scan for the first visible character stops at the end of a row of
+    blanks (the editor fixed the read past its end), so the row gets the
+    blanks after its own, and an empty row gets them at column 0."""
+    st = _mark(_state([("H", b"one"), ("H", b"   "), ("H", b""), ("H", b"three")]),
+               (0, 0), (3, 5))
     done = _do(st, "block_indent")
-    assert [d for _e, d in _rows(done)][0] == b"    one"
-    assert [d for _e, d in _rows(done)][2] == b"    three"
+    assert [d for _e, d in _rows(done)] == [b"    one", b"       ", b"    ", b"    three"]
+    assert "indent_blank_row" in done.fired and done.ud == 1
+
+
+# @scenario SC-edit-model-23
+def test_a_shift_left_that_reads_past_its_blank_string_is_the_editors_to_say():
+    """A tab worth more than twice Tabstops / 2 columns makes the editor read
+    more blanks than its string holds.  Up to the string's end mark the bytes
+    are known and the model predicts them; beyond it the model predicts
+    nothing and takes the editor's row."""
+    # "\t " : a blank, then a tab at column 0 worth 8: k = 9, put back 5 = n + 1
+    near = _mark(_state([("H", b"\t x")]), (0, 0), (0, 3))
+    near.mb, near.me = (0, 0), (0, 3)
+    st = _do(_at(near, 0, 0), "block_unindent")
+    assert "unindent_reads_past" not in st.fired
+    assert st.resync_fields == set()
+    # three blanks after a tab: k = 11, put back 7 = n + 3: beyond the string
+    far = _mark(_state([("H", b"\t   x")]), (0, 0), (0, 4))
+    far.mb, far.me = (0, 0), (0, 4)
+    st = _do(_at(far, 0, 0), "block_unindent")
+    assert "unindent_reads_past" in st.fired
+    assert {model.F_TEXT, model.F_CURSOR} <= st.resync_fields
 
 
 # @scenario SC-edit-model-23
@@ -363,7 +437,8 @@ def test_the_markers_remember_a_place_and_an_unset_one_goes_to_the_start():
     far = _do(_at(st, 3, 2), A("marker_goto", 5))
     assert (far.y, far.x) == (0, 0)
     ninth = _do(_at(st, 3, 2), A("marker_set", 9))
-    assert ninth.pt == st.pt, "Ctrl-K 9 is past the array: not modelled"
+    assert len(ninth.pt) == 10 and ninth.pt[9] == (3, 2), "there are ten markers, 0 to 9"
+    assert ninth.pt[:9] == st.pt[:9], "setting marker 9 moves no other marker"
 
 
 # @scenario SC-edit-model-26

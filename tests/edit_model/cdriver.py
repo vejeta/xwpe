@@ -46,11 +46,27 @@ WORDS = [b"alpha", b"be", b"gamma-delta", b"x", b"epsilon", b"zeta", b"w00000000
 BUILD_TIMEOUT = 120
 
 
+# What the driver is made of: when any of these is newer than a binary, that
+# binary describes an owner that no longer exists.
+DRIVER_SOURCES = ("tests/edit_driver.c", "we_buffer.c", "we_buffer.h", "edit.h")
+
+
+def is_current(binary):
+    """Is @binary at least as new as every source the driver is made of?
+    A walk run against an older one would test the owner of the past."""
+    try:
+        made = os.path.getmtime(binary)
+        return all(os.path.getmtime(os.path.join(TOP, s)) <= made for s in DRIVER_SOURCES)
+    except OSError:
+        return False
+
+
 def build(dest_dir):
-    """The driver's binary: the one ``make check`` built beside the sources,
-    else one compiled into @dest_dir; None when there is no compiler."""
+    """The driver's binary: the one ``make check`` built beside the sources
+    when it is newer than the sources, else one compiled into @dest_dir now;
+    None when there is no compiler.  An old binary is never returned."""
     built = os.path.join(TOP, "edit_driver")
-    if os.path.exists(built):
+    if os.path.exists(built) and is_current(built):
         return built
     out = os.path.join(dest_dir, "edit_driver")
     cmd = ["gcc", "-std=gnu17", "-I", TOP, "-o", out,

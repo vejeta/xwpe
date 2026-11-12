@@ -1,13 +1,21 @@
 """The option array's factors, and one row of it as a session.
 
 A row picks one level of every factor: the key style, the block mode, the
-insert mode, the auto-indent mode, the options dialog's numbers, autosave,
-the kind of file, the breakpoints, what the clipboard holds, Alt-J, whether
-Max. Columns changes after the window opened, and whether the file is
-read-only.  ``Row.xwperc()`` is the options file it starts with,
-``Row.prelude()`` the actions that bring a started session to the row's
-state (the dialog, the breakpoints, the clipboard), and ``Row.levels()`` the
-labels the coverage report counts under.
+insert mode, the auto-indent mode, the window's width (and whether Max.
+Columns changes after the window opened), the options dialog's numbers,
+autosave, the kind of file, the breakpoints, what the clipboard holds,
+Alt-J, and whether the file is read-only.  ``Row.xwperc()`` is the options
+file it starts with, ``Row.prelude()`` the actions that bring a started
+session to the row's state (the dialog, the breakpoints, the clipboard), and
+``Row.levels()`` the labels the coverage report counts under.
+
+A label is a promise about the session the row starts, and the array is only
+worth its size if the promise is kept.  ``Row.constraints`` below are the
+combinations no session can have (the clipboard is filled from the file, a
+locked window refuses Insert and Alt-J, auto-indent from the file's kind
+needs a source file), and ``observed_levels`` / ``start_mismatches`` read the
+levels a started session really has from the editor's dump and the screen,
+so a row that did not get its label says so at its start.
 
 The levels the editor's harness cannot drive yet are in ``PENDING``: a
 second window, the Show Buffer viewer, CRLF files.  They are not in any row
@@ -22,7 +30,10 @@ FACTORS = {
     "block": ("modern", "wordstar"),
     "ins": ("insert", "overwrite"),
     "autoindent": ("source", "always", "never"),
-    "maxcol": ("118", "40"),
+    # Max. Columns: the width the window opens with (118, 40), or the width
+    # it opens with and the one the dialog sets afterwards (lowered: 118 then
+    # 40, raised: 60 then 118).  One factor, so no level overrides another.
+    "width": ("118", "40", "lowered", "raised"),
     "tabn": ("8", "4", "1"),
     "numundo": ("10", "2", "0"),
     "autosave": ("off", "changes"),
@@ -31,7 +42,6 @@ FACTORS = {
     "breakpoints": ("none", "two"),
     "clipboard": ("empty", "oneline", "multiline"),
     "alt_j": ("off", "on"),
-    "width_change": ("none", "lowered", "raised"),
     "window": ("file", "readonly"),
     "windows": ("one",),
 }
@@ -44,7 +54,7 @@ PENDING = {
 # Factors whose combinations are covered three at a time; every other pair
 # of factors is covered two at a time.
 STRENGTH_3 = (("keys", "block", "ins", "autoindent"),
-              ("width_change", "file", "clipboard", "windows"))
+              ("width", "file", "clipboard", "windows"))
 
 # Max. Columns when the window opens before the dialog changes it.
 WIDTH_RAISED_START = 60
@@ -132,12 +142,13 @@ class Row:
         return READONLY_MODE if self.lv["window"] == "readonly" else None
 
     def start_width(self):
-        wc = self.lv["width_change"]
+        """The width the window opens with (the options file's Max. Columns)."""
+        wc = self.lv["width"]
         if wc == "raised":
             return WIDTH_RAISED_START
         if wc == "lowered":
             return LOWERED_START
-        return int(self.lv["maxcol"])
+        return int(wc)
 
     def options2(self):
         v = OPTIONS2_BASE
@@ -171,7 +182,7 @@ class Row:
         row's state.  The breakpoints are keys of the programming layer, so
         they are the pseudo-action ``toggle_breakpoint`` (rows.BREAKPOINT_KEYS)."""
         out = []
-        wc = self.lv["width_change"]
+        wc = self.lv["width"]
         if wc == "lowered":
             out.append(("option_set", ("maxcol", WIDTH_LOWERED_TO)))
         elif wc == "raised":
@@ -210,9 +221,155 @@ class Row:
         return "Row(%s)" % self.name
 
 
+def _is_source(file_level):
+    return file_level.endswith(".c")
+
+
+def _has_a_row_to_copy(file_level):
+    return file_level.startswith(("mixed", "oneline"))
+
+
+def _has_rows_to_copy(file_level):
+    return file_level.startswith("mixed")
+
+
+# Each constraint: (name, the two factors it relates, the test of a pair of
+# levels that cannot be had together).  Every one is a fact about the editor
+# or the prelude, not a convenience.
+CONSTRAINTS = (
+    # the editor sets breakpoints in C files, on rows that exist
+    ("breakpoints need the mixed C file", ("breakpoints", "file"),
+     lambda b, f: b == "two" and f != BREAKPOINT_FILE),
+    # the clipboard is filled by copying a block of the file
+    ("a one-line clipboard needs a line to copy", ("clipboard", "file"),
+     lambda c, f: c == "oneline" and not _has_a_row_to_copy(f)),
+    ("a multi-line clipboard needs several lines to copy", ("clipboard", "file"),
+     lambda c, f: c == "multiline" and not _has_rows_to_copy(f)),
+    # a locked window refuses Insert and Alt-J, so neither mode can be set
+    ("a locked window cannot be put in overwrite mode", ("window", "ins"),
+     lambda w, i: w == "readonly" and i != "insert"),
+    ("a locked window cannot be put in Alt-J's mode", ("window", "alt_j"),
+     lambda w, a: w == "readonly" and a != "off"),
+    # auto-indent by the file's kind is on for source files only: for a text
+    # file it is the same session as "never", so the level would be a label
+    ("auto-indent by the file's kind needs a source file", ("autoindent", "file"),
+     lambda a, f: a == "source" and not _is_source(f)),
+)
+
+
 def violates(levels):
     """Does a (possibly partial) assignment break a constraint of the array?
-    Two breakpoints need two rows to sit on, and the editor sets them in C
-    files only: the mixed C file is the one file that has both."""
-    return (levels.get("breakpoints") == "two"
-            and "file" in levels and levels["file"] != BREAKPOINT_FILE)
+    See ``CONSTRAINTS``: each says why a pair of levels cannot be had in one
+    session."""
+    for _name, (f1, f2), test in CONSTRAINTS:
+        if f1 in levels and f2 in levels and test(levels[f1], levels[f2]):
+            return True
+    return False
+
+
+# ---- what a started session really has -----------------------------------------------
+
+# A hard row shows ``$`` after its text with Show Endmark, a row that goes on
+# in the next one ``\``: the first row of every file shows one or the other.
+ENDMARK_CHARS = ("$", "\\")
+# The first text row of the window is the row after its title row.
+FIRST_TEXT_ROW_OFFSET = 1
+# The mixed file's row with a tab at its start, and what follows the tab.
+TAB_ROW = 4
+TAB_ROW_TEXT = "if (a) {"
+
+
+def _file_kind(lines):
+    """empty / oneline / mixed, from the window's rows."""
+    if all(not data for _end, data in lines):
+        return "empty"
+    return "oneline" if len(lines) == 1 else "mixed"
+
+
+def _clipboard_kind(rows):
+    """empty / oneline / multiline, from the clipboard window's rows."""
+    filled = [data for _end, data in rows if data]
+    if not filled:
+        return "empty"
+    return "oneline" if len(rows) == 1 else "multiline"
+
+
+def observed_levels(win, clip, display, tabn_screen=True):
+    """The levels of every factor a started session shows, read from the
+    editor's own dump of the file window (@win), of window 0 (@clip) and the
+    screen (@display): {factor: level}.  Auto-indent is "on" or "off", the
+    others in the array's own words.  A factor the dump and the screen cannot
+    show (the key style, the block mode, Num. Undo, Autosave, and Tabstops
+    on a file with no tab) is not in the answer."""
+    out = {}
+    out["ins"] = "insert" if (win.ins & 1 or win.ins == INS_LOCKED) else "overwrite"
+    out["alt_j"] = "on" if win.ins & 2 else "off"
+    out["autoindent"] = "on" if win.flg & 1 else "off"
+    out["window"] = "readonly" if win.ro else "file"
+    out["width"] = win.mx
+    out["file"] = _file_kind(win.lines) + "." + win.name.rsplit(".", 1)[-1]
+    out["breakpoints"] = "two" if len(win.brp) == 2 else ("none" if not win.brp else "other")
+    out["clipboard"] = _clipboard_kind(list(clip.lines) if clip is not None else [])
+    cy, cx, ay, ax, ey, ex = win.view
+    first = display[ay + FIRST_TEXT_ROW_OFFSET][ax + 1:ex].rstrip() if display else ""
+    out["endmark"] = "on" if first.endswith(ENDMARK_CHARS) else "off"
+    if tabn_screen and win.lines and len(win.lines) > TAB_ROW and display \
+            and win.lines[TAB_ROW][1].startswith(b"\t"):
+        row = display[ay + FIRST_TEXT_ROW_OFFSET + TAB_ROW][ax + 1:ex]
+        at = row.find(TAB_ROW_TEXT)
+        if at >= 0:
+            out["tabn"] = at
+    return out
+
+
+# The window's mode word for a window closed to changes.
+INS_LOCKED = 8
+
+
+def expected_levels(row):
+    """What ``observed_levels`` must read at the start of @row's session."""
+    lv = row.lv
+    want = {"ins": lv["ins"], "alt_j": lv["alt_j"], "window": lv["window"],
+            "width": row.start_width(), "file": lv["file"],
+            "breakpoints": lv["breakpoints"], "clipboard": lv["clipboard"],
+            "endmark": lv["endmark"]}
+    if lv["autoindent"] == "never":
+        want["autoindent"] = "off"
+    else:
+        want["autoindent"] = "on"
+    if lv["file"].startswith("mixed"):
+        want["tabn"] = int(lv["tabn"])
+    return want
+
+
+# What the start check cannot read back from the editor's dump or screen, so
+# a row counts as having it on its label's word: (factor, which part).  The
+# coverage report prints this list beside the effective cover, so a reader
+# knows which tuples rest on a label and not on a session.
+TRUSTED_LEVELS = (
+    ("keys", "the key style"),
+    ("block", "the block mode"),
+    ("numundo", "Num. Undo"),
+    ("autosave", "Autosave"),
+    ("autoindent", "source against always (both read as on)"),
+    ("tabn", "Tabstops on a file with no tab at a row's start"),
+    ("width", "lowered and raised: the Max. Columns the dialog sets after the "
+              "window opened"),
+)
+
+
+def trusted_text():
+    """The levels taken on the row's word, as one line of the coverage
+    report."""
+    return "; ".join("%s (%s)" % (f, what) for f, what in TRUSTED_LEVELS)
+
+
+def start_mismatches(row, observed):
+    """[(factor, wanted, observed)] where a started session did not get its
+    row's label."""
+    out = []
+    for f, want in sorted(expected_levels(row).items()):
+        got = observed.get(f)
+        if got != want:
+            out.append((f, want, got))
+    return out

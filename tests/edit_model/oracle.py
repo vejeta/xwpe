@@ -391,6 +391,16 @@ class EditSession:
     def alive(self):
         return self.proc.poll() is None
 
+    def ended_within(self, seconds):
+        """Has the editor ended, allowing @seconds for a crash to finish (a
+        process that dumps core stays until the dump is written, which takes
+        long on a loaded machine)?"""
+        try:
+            self.proc.wait(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
     def close(self):
         if self.proc.poll() is None:
             self.proc.terminate()

@@ -70,9 +70,8 @@ FLG_AUTOINDENT = 1
 # The option defaults (we_main.c) and the undo list's one extra step.
 DEFAULT_TABN = 8
 DEFAULT_MAXCOL = 120
-# The markers a window has (edit.h, POINT pt[9]); Ctrl-K 9 and Ctrl-O 9 name
-# a tenth that is not there, a known bug the walks stay clear of.
-MARKER_COUNT = 9
+# The markers a window has, 0 to 9 (edit.h, E_MARKERS).
+MARKER_COUNT = 10
 DEFAULT_AUTOINDENT_COL = 3
 DEFAULT_NUMUNDO = 10
 DEFAULT_MAXCHG = 999
@@ -106,12 +105,15 @@ F_AUTOSAVE = "autosave"
 F_BOX = "box"            # a message box the action opens, by its text
 F_CLIP = "clipboard"     # the text of the clipboard window
 F_MARKERS = "markers"    # the ten markers Ctrl-K 0..9 set
+F_STATUS = "status"      # what the status row says after the key
 FIELDS = (F_TEXT, F_CURSOR, F_MARKS, F_ANCHOR, F_MODE, F_SAVE, F_STEPS,
-          F_BREAKPOINTS, F_DISK, F_AUTOSAVE, F_BOX, F_CLIP, F_MARKERS)
+          F_BREAKPOINTS, F_DISK, F_AUTOSAVE, F_BOX, F_CLIP, F_MARKERS, F_STATUS)
 
 BOX_NO_UNDO = "No more Undo"
 BOX_NO_REDO = "No more Redo"
 BOX_SAVE_FAILED = "File failed to save"
+# What the status row says when a command meets a window closed to changes.
+STATUS_READ_ONLY = "Read-only window: the text is unchanged"
 
 
 class Rule:
@@ -140,6 +142,12 @@ HELP = "help.xwpe_eng"
 EDITOR = "docs/chapters/editor.texi"
 COMPAT = "docs/chapters/compatibility.texi"
 DECIDED_ONE_STEP = "user's decision 2026-11-12: one Ctrl-U per user action"
+DESIGN_ONE_STEP = "DESIGN-edit-model.md 1.4 rule 2: one user action is one step"
+# The rules that say, each for its own action, how many steps it is: where
+# one of them fired the general design rule is not offered beside it.
+ONE_STEP_RULES = ("enter_one_step", "tab_one_step", "backspace_indent_one_step",
+                  "indent_one_step", "help_markers_one_step", "help_end_one_step",
+                  "replace_one_step")
 
 # -- characters
 _rule("type_insert", SOURCE_MANUAL, HELP + ":602-603",
@@ -221,6 +229,10 @@ _rule("reflow_after_delete", SOURCE_CODE, "we_edit.c:2366-2384",
       (F_TEXT, F_CURSOR, F_MARKS))
 _rule("ctrl_t_word", SOURCE_MANUAL, HELP + ":611",
       "Ctrl-T kills the next word after the cursor.", (F_TEXT,))
+_rule("end_of_text_stays", SOURCE_CHAPTER, COMPAT + ":247-253; " + EDITOR + ":58-60",
+      "At the end of the text there is no word and no line to the right: "
+      "Ctrl-T deletes nothing and Ctrl-Right leaves the cursor where it is.",
+      (F_TEXT, F_CURSOR))
 _rule("ctrl_t_extent", SOURCE_CODE, "we_edit.c:1233-1244, 2640-2651",
       "Ctrl-T deletes to the start of the next word, line break included; at "
       "the end of a soft row it moves to the next row.", (F_TEXT, F_CURSOR))
@@ -270,8 +282,11 @@ _rule("insert_toggle", SOURCE_MANUAL, HELP + ":602-603",
       "Insert and Alt-I switch insert and overwrite mode.", (F_MODE,))
 _rule("alt_j_toggle", SOURCE_MANUAL, HELP + ":605",
       "Alt-J switches the special-character insert mode.", (F_MODE,))
-_rule("locked_refuses", SOURCE_CODE, "we_wind.c:855-869",
-      "A locked window refuses every change.", (F_TEXT, F_MODE))
+_rule("locked_keeps_text", SOURCE_MANUAL, EDITOR + ":83-91",
+      "A file opened read-only keeps its text through every command: typing "
+      "and the block Delete, Move and Paste do nothing there.", (F_TEXT,))
+_rule("locked_refuses_modes", SOURCE_CODE, "we_edit.c:1240-1258",
+      "Insert and Alt-J do nothing in a locked window.", (F_MODE,))
 # -- save and autosave
 _rule("save_writes_file", SOURCE_MANUAL, HELP + ":699",
       "F2 saves the file (Alt-F2 in the CUA key style).", (F_DISK,))
@@ -303,8 +318,8 @@ _rule("undo_marks_span", SOURCE_CODE, "we_buffer.c replay of 'a' and 'r' records
       "Undo of a deletion marks the text it brings back (a line break as "
       "len+1); Redo of an insertion marks it; else the marks from before.",
       (F_MARKS,))
-_rule("one_step_per_action", SOURCE_DECISION, DECIDED_ONE_STEP,
-      "One user action is one undo step.", (F_STEPS,))
+_rule("one_step_per_action", SOURCE_DESIGN, DESIGN_ONE_STEP,
+      "One user action is one undo step, where no text says otherwise.", (F_STEPS,))
 _rule("undo_bound", SOURCE_MANUAL, HELP + ":1589-1591",
       "Num. Undo steps are kept for Undo.", (F_STEPS,))
 _rule("undo_bound_extra", SOURCE_CODE, "we_buffer.c:608",
@@ -313,6 +328,10 @@ _rule("fresh_change_clears_redo", SOURCE_CODE, "we_buffer.c record push",
       "A fresh change empties the redo list.", (F_STEPS,))
 _rule("undo_count_unpredicted", SOURCE_CODE, "we_undo replay",
       "The modified count after Undo/Redo is read back, not predicted.", (F_SAVE,))
+_rule("undo_unmodelled_step", SOURCE_DESIGN, "this model: steps it cannot replay",
+      "Undo or Redo of a step the model holds no snapshot of: the editor's "
+      "answer is taken, not predicted.",
+      (F_TEXT, F_CURSOR, F_MARKS, F_BREAKPOINTS, F_SAVE))
 _rule("undo_empty_says_so", SOURCE_CODE, "we_main.c:71, 81",
       "Undo or Redo with nothing left shows the error box No more Undo / "
       "No more Redo.", (F_BOX,))
@@ -463,6 +482,7 @@ class State:
         self.view = (0, 0, 1, 0, 20, 79)
         self.options = Options()
         self.box = None         # the message box the last action opened
+        self.status = None      # what the last action left on the status row
         self.fired = []         # rule names the last action used
         self.clip = [(HARD, b"")]   # the clipboard window's rows, (end, bytes)
         self.clip_width = DEFAULT_MAXCOL   # the clipboard window's width
@@ -536,15 +556,21 @@ def state_from_window(w, options=None, clip=None):
     return st
 
 
-def resync(st, w, vertical=False, clip=None):
+def resync(st, w, vertical=False, clip=None, rebase_steps=False):
     """Take the editor's word for the fields the model got wrong, keeping
     line identities where the rows still match (common head and tail) and
     the undo steps the model holds (they were agreed when pushed).  Unless
     the key was Up or Down (@vertical), the column those keys keep is the
     editor's cursor column, as the key loop sets it after every other key.
+    When the text or the steps disagreed (@rebase_steps) the steps the model
+    holds were recorded from its own wrong prediction, so every step becomes
+    one the model cannot replay and the depths are the editor's.
     @clip is the clipboard window of the same dump."""
     if clip is not None:
         st.clip = clipboard_rows(clip)
+    if rebase_steps:
+        st.undo, st.redo = [], []
+        st.opaque_undo, st.opaque_redo = w.ud, w.rd
     st.pt = [_dump_marker(p) for p in w.pt]
     old = st.rows
     new = list(w.lines)
@@ -1040,6 +1066,7 @@ def apply(state, action):
     st = state.copy()
     st.autosaved = False
     st.box = None
+    st.status = None
     name = action.name
     pre = (st.y, st.x)
     if name in MOVES or name in SHIFT_MOVES:
@@ -1094,7 +1121,7 @@ def _locked(st):
 
 def _toggle_mode(st, bit, rule):
     if _locked(st):
-        st.fired.append("locked_refuses")
+        st.fired.append("locked_refuses_modes")
         return
     st.fired.append(rule)
     st.ins ^= bit
@@ -1161,6 +1188,8 @@ def _move(st, name):
             y += 1
         elif x < len(data):
             x = su_lblk(x, cstr)
+        else:
+            st.fired.append("end_of_text_stays")
     elif base == "home":
         x = 0
     elif base == "end":
@@ -1219,7 +1248,7 @@ def _shift_marks(st):
 
 def _edit(st, action):
     if _locked(st):
-        st.fired.append("locked_refuses")
+        st.fired.append("locked_keeps_text")
         return
     before = Snapshot(st)
     rows = Rows(st)
@@ -1487,7 +1516,7 @@ def _delete_word(st, rows):
     y, x = st.y, st.x
     data = rows.content(y)
     if y == rows.nlines - 1 and x >= len(data):
-        st.fired.append("ctrl_t_word")      # no next word at the end of the text
+        st.fired.append("end_of_text_stays")
         return
     st.fired.extend(["ctrl_t_word", "ctrl_t_extent"])
     if x < len(data):
@@ -1524,8 +1553,10 @@ def _undo_limit(st):
 
 
 def _push_step(st, before, action, line_record):
-    st.fired.extend(["one_step_per_action", "undo_bound", "undo_bound_extra",
-                     "fresh_change_clears_redo", "line_identity"])
+    if not any(r in st.fired for r in ONE_STEP_RULES):
+        st.fired.append("one_step_per_action")
+    st.fired.extend(["undo_bound", "undo_bound_extra", "fresh_change_clears_redo",
+                     "line_identity"])
     st.undo.append(Step(before, Snapshot(st), action, line_record, st.ins))
     st.redo = []
     st.opaque_redo = 0
@@ -1596,16 +1627,26 @@ def _marks_on_inserted(st, short_rows, long_rows, fallback):
     st.me = _offset_point(long_rows, starts, sp[1], ends_break)
 
 
+def _unmodelled_step(st):
+    """Ctrl-U or Ctrl-R on a step the model holds no snapshot of (the editor
+    pushed more steps for an action than the user's decision allows, or the
+    model's own record was taken from a wrong prediction): what it did is the
+    editor's to say."""
+    st.fired.append("undo_unmodelled_step")
+    st.resync_fields.update((F_TEXT, F_CURSOR, F_MARKS, F_BREAKPOINTS, F_SAVE))
+    st.save_known = False
+
+
 def _undo(st):
     if _locked(st):
-        st.fired.append("locked_refuses")
+        st.fired.append("locked_keeps_text")
         return
     st.fired.extend(["undo_text", "undo_count_unpredicted"])
     if not st.undo:
         if st.opaque_undo:
             st.opaque_undo -= 1
             st.opaque_redo += 1
-            st.save_known = False
+            _unmodelled_step(st)
         else:
             st.fired.append("undo_empty_says_so")
             st.box = BOX_NO_UNDO
@@ -1628,14 +1669,14 @@ def _undo(st):
 
 def _redo(st):
     if _locked(st):
-        st.fired.append("locked_refuses")
+        st.fired.append("locked_keeps_text")
         return
     st.fired.extend(["redo_text", "undo_count_unpredicted"])
     if not st.redo:
         if st.opaque_redo:
             st.opaque_redo -= 1
             st.opaque_undo += 1
-            st.save_known = False
+            _unmodelled_step(st)
         else:
             st.fired.append("undo_empty_says_so")
             st.box = BOX_NO_REDO

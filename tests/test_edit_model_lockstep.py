@@ -23,7 +23,7 @@ import pytest
 
 pytest.importorskip("pyte")
 
-from edit_model import covering, lockstep, model, walk  # noqa: E402
+from edit_model import covering, lockstep, model, option_row, walk  # noqa: E402
 
 ROWS = covering.load()
 N_ROWS, N_WALKS, N_STEPS = walk.budget()
@@ -59,10 +59,11 @@ def test_a_walk_on_a_row_of_the_array_lists_its_disagreements_by_class(
             print(text)
     _leave("%s-s%d" % (row.name, seed), w, cov)
     assert not w.new_losses(), w.new_losses()
+    assert w.start_mismatch == [], ("the row did not get its labels", w.start_mismatch)
     for x in w.disagreements:
         assert x["cls"] in CLASSES, x
         if x["cls"] == lockstep.CLASS_EDITOR:
-            assert x["rules"] or x["field"] in ("screen", "typed-kept", "box"), x
+            assert x["rules"] or x["field"] in ("screen", "typed-kept", "box", "status"), x
     assert w.steps_run >= 1
 
 
@@ -80,6 +81,149 @@ def test_the_prelude_of_a_row_is_run_before_the_walk_and_counted(tmp_path):
     assert [x for x in w.disagreements if x["field"] in ("breakpoints", "clipboard")] == []
 
 
+# @scenario SC-edit-model-39
+def test_a_crash_is_filed_under_a_known_one_only_where_that_crash_is():
+    """The editor ending is named by the state it had when the key came (its
+    own last dump): Ctrl-K V with a block mark on a row the text no longer
+    has.  Any other ending, Backspace in the empty last row included (fixed),
+    or one the editor was still alive for, is a new loss."""
+    H = model.HARD
+
+    def session(rows, y, x, mb=(0, 0), me=(0, 0), ended=True):
+        win = _editor_window(rows, ud=0, rd=0)
+        win.y, win.x, win.cursor, win.mb, win.me = y, x, (y, x), mb, me
+        return types.SimpleNamespace(last=types.SimpleNamespace(win=win),
+                                     ended_within=lambda _s: ended)
+
+    crash = lockstep.Walk.known_crash_of
+    two = [(H, b"a"), (H, b"")]
+    assert crash("backspace", session(two, 1, 0)) is None
+    assert crash("block_move", session(two, 1, 0, mb=(2, 2), me=(2, 6))) == \
+        lockstep.KNOWN_CRASH_MOVE
+    assert crash("block_move", session(two, 1, 0, mb=(2, 2), me=(2, 6),
+                                       ended=False)) is None
+    assert crash("block_move", session(two, 1, 0, mb=(0, 0), me=(1, 0))) is None
+    assert crash("block_copy", session(two, 1, 0, mb=(2, 2), me=(2, 6))) is None
+    walk_ = lockstep.Walk("unused", "old", 1, 0)
+    walk_.lost = [(1, "backspace", "no answer"),
+                  (2, "block_move", "no answer [%s]" % lockstep.KNOWN_CRASH_MOVE),
+                  (3, "enter", "no answer")]
+    assert walk_.new_losses() == [(1, "backspace", "no answer"),
+                                  (3, "enter", "no answer")]
+
+
+# @scenario SC-edit-model-39
+def test_an_undo_after_a_change_all_the_editor_pushed_in_pieces_is_not_a_new_finding(tmp_path):
+    """Change All is one Ctrl-U by the user's decision and one per hit in the
+    editor today.  The walk files the pushes under that decision, then the
+    Ctrl-U and Ctrl-R that follow act on steps the model holds no snapshot of:
+    the editor's answer is taken and no new disagreement appears."""
+    w = lockstep.Walk(str(tmp_path), "old", 1, 4)
+    w.drawer.queue = [("replace_all", (b"a", b"Q")), ("undo", None), ("undo", None),
+                      ("redo", None)]
+    w.run()
+    assert w.steps_run == 4 and not w.lost
+    first = [x for x in w.disagreements if x["step"] == 0]
+    assert first and all(x["field"] in (model.F_STEPS, "box") or x["expected"] for x in first), first
+    steps = [x for x in first if x["field"] == model.F_STEPS]
+    assert steps and all(x["expected"] == lockstep.KNOWN_STEPS for x in steps), steps
+    later = [x for x in w.disagreements if x["step"] > 0 and not x["expected"]]
+    assert later == [], later
+
+
+# @scenario SC-edit-model-39
+def test_the_status_row_is_compared_with_what_the_model_refused():
+    """A refusal the model predicts must show on the status row; a status
+    row that says the text is unchanged after a key the model did not refuse
+    is a finding, unless the previous key left it there."""
+    st = _state([(model.HARD, b"one")], 0, 0)
+    seen = " Read-only window: the text is unchanged"
+    other = " F1 Help F2 Save F3 Files"
+    st.status = model.STATUS_READ_ONLY
+    assert lockstep.status_disagreements(st, seen, None) == []
+    assert lockstep.status_disagreements(st, other, None) == \
+        [(model.F_STATUS, model.STATUS_READ_ONLY, other)]
+    st.status = None
+    assert lockstep.status_disagreements(st, other, None) == []
+    assert lockstep.status_disagreements(st, seen, None) == \
+        [(model.F_STATUS, "no refusal said", seen)]
+    assert lockstep.status_disagreements(st, seen, model.STATUS_READ_ONLY) == []
+
+
+def _editor_window(rows, ud, rd):
+    """An editor dump window of @rows with no block, the cursor at the start."""
+    return types.SimpleNamespace(
+        lines=list(rows), y=0, x=0, mb=(0, 0), me=(0, 0), ks=(0, 0), ins=model.INS_INSERT,
+        flg=0, save=0, view=(0, 0, 0, 0, 29, 79), pt=[(-1, -1)] * model.MARKER_COUNT, brp=[],
+        ud=ud, rd=rd, cursor=(0, 0))
+
+
+# @scenario SC-edit-model-39
+def test_a_resync_after_a_text_disagreement_takes_the_editors_undo_depth():
+    """Steps the model recorded from a wrong prediction must not be replayed:
+    after a text or steps disagreement every step is one the model cannot
+    replay and the depths are the editor's; otherwise the model keeps its
+    steps, which were agreed when pushed."""
+    H = model.HARD
+    base = _state([(H, b"one")], 0, 3)
+    base.width = 120
+    st = model.apply(base, model.Action("type", b"x"))
+    assert len(st.undo) == 1
+    w = _editor_window([(H, b"onexy")], ud=3, rd=1)
+    keep = model.apply(base, model.Action("type", b"x"))
+    model.resync(keep, w)
+    assert len(keep.undo) == 1 and (keep.ud, keep.rd) == (3, 1)
+    model.resync(st, w, rebase_steps=True)
+    assert st.undo == [] and st.redo == [] and (st.opaque_undo, st.opaque_redo) == (3, 1)
+    assert (st.ud, st.rd) == (3, 1)
+
+
+# @scenario SC-edit-model-39
+def test_undo_of_a_step_the_model_holds_no_snapshot_of_is_the_editors_to_say():
+    """After a rebase every step is opaque: Ctrl-U moves one step from the
+    undo count to the redo count, predicts no text, and says why."""
+    H = model.HARD
+    st = _state([(H, b"one")], 0, 0)
+    st.opaque_undo, st.opaque_redo = 2, 0
+    done = model.apply(st, model.Action("undo"))
+    assert (done.ud, done.rd) == (1, 1)
+    assert "undo_unmodelled_step" in done.fired
+    assert {model.F_TEXT, model.F_CURSOR, model.F_MARKS} <= done.resync_fields
+    back = model.apply(done, model.Action("redo"))
+    assert (back.ud, back.rd) == (2, 0) and "undo_unmodelled_step" in back.fired
+
+
+# @scenario SC-edit-model-45
+def test_a_row_that_asks_for_what_the_editor_refuses_is_caught_at_its_start(tmp_path):
+    """The old array's rows that got other levels than their labels would have
+    been caught here: a read-only window asked to be in overwrite mode and in
+    Alt-J's mode, a clipboard asked to hold a line of an empty file, and
+    auto-indent by the file's kind asked of a text file."""
+    levels = dict(zip(option_row.FACTORS, (
+        "old", "modern", "overwrite", "source", "118", "8", "10", "off", "off",
+        "empty.txt", "none", "oneline", "on", "readonly", "one")))
+    bad = option_row.Row(levels, "bad")
+    assert option_row.violates(levels)
+    w = lockstep.Walk(str(tmp_path), None, 1, 0, row=bad, coverage=walk.Coverage()).run()
+    got = dict((f, (want, seen)) for f, want, seen in w.start_mismatch)
+    assert got["ins"] == ("overwrite", "insert")
+    assert got["alt_j"] == ("on", "off")
+    assert got["clipboard"] == ("oneline", "empty")
+    assert got["autoindent"] == ("on", "off")
+
+
+# @scenario SC-edit-model-45
+@pytest.mark.parametrize("row", ROWS, ids=[r.name for r in ROWS])
+def test_every_row_of_the_array_starts_with_its_labels(tmp_path, row):
+    """The session a row starts (its options file, its file, its prelude) has
+    the levels the row names, read back from the editor's own dump and screen:
+    the insert and Alt-J modes, auto-indent, the window's width, a read-only
+    window, the breakpoints, what the clipboard holds, the file's kind, Show
+    Endmark and, where the file has a tab, Tabstops."""
+    w = lockstep.Walk(str(tmp_path), None, 1, 0, row=row, coverage=walk.Coverage()).run()
+    assert w.start_mismatch == [], (row.name, w.start_mismatch, w.start_observed)
+
+
 def _state(rows, y, x, ins=model.INS_INSERT, flg=0):
     """A model state holding @rows ((end, bytes)) with the cursor at (@y, @x)."""
     st = model.State()
@@ -90,8 +234,8 @@ def _state(rows, y, x, ins=model.INS_INSERT, flg=0):
 
 def _dump(rows, y, x, ud=0):
     """An editor dump window with @rows, the cursor at (@y, @x), no block."""
-    return types.SimpleNamespace(lines=list(rows), cursor=(y, x), mb=(0, 0), me=(0, 0),
-                                 ud=ud)
+    return types.SimpleNamespace(lines=list(rows), cursor=(y, x), y=y, x=x, mb=(0, 0),
+                                 me=(0, 0), ud=ud, brp=[])
 
 
 # @scenario SC-edit-model-39
@@ -101,13 +245,25 @@ def test_a_known_bug_tag_names_only_what_that_bug_does():
     cursor outside the text is never excused."""
     H, S = model.HARD, model.SOFT
     tag = lockstep.expected_tag
-    # a locked window where Ctrl-K I changed nothing: not the lock bug
+    # a locked window where Ctrl-K I changed the text is a new finding: the
+    # lock bug is fixed and keeps no tag
     rows = [(H, b"one"), (H, b"two")]
     before = _state(rows, 0, 0, ins=model.INS_READONLY)
     act = model.Action("block_indent", None)
-    assert tag(act, model.F_MARKS, before, before, _dump(rows, 0, 0)) is None
     assert tag(act, model.F_TEXT, before, before,
-               _dump([(H, b"    one"), (H, b"two")], 0, 0, ud=1)) == lockstep.KNOWN_LOCK
+               _dump([(H, b"    one"), (H, b"two")], 0, 0, ud=1)) is None
+    # the Undo cursor question is not offered for a cursor outside the text
+    undo = model.Action("undo", None)
+    assert tag(undo, model.F_CURSOR, before, before, _dump(rows, 1, 2)) == \
+        lockstep.KNOWN_UNDO_CURSOR
+    assert tag(undo, model.F_CURSOR, before, before, _dump(rows, 1, 9)) is None
+    assert tag(undo, model.F_CURSOR, before, before, _dump(rows, 7, 0)) is None
+    # a Tab that pushed several steps is the decision not built yet; one that
+    # pushed one step is not
+    tab = model.Action("tab", None)
+    assert tag(tab, model.F_STEPS, before, before, _dump(rows, 0, 0, ud=3)) == \
+        lockstep.KNOWN_STEPS
+    assert tag(tab, model.F_STEPS, before, before, _dump(rows, 0, 0, ud=1)) is None
     # typing into a soft row that keeps every byte: not the soft-wrap bug
     before = _state([(S, b"abc"), (H, b"def")], 0, 3)
     pred = _state([(S, b"abcx"), (H, b"def")], 0, 4)
@@ -123,8 +279,8 @@ def test_a_known_bug_tag_names_only_what_that_bug_does():
     before = _state(row, 0, 5, flg=model.FLG_AUTOINDENT)
     assert tag(act, model.F_TEXT, before, before, _dump(row, 0, 0)) == \
         lockstep.KNOWN_UTF8_BACKSPACE
-    # a cursor outside the text at the end-of-text Ctrl-T: always new
+    # a cursor outside the text is never excused by any tag
     before = _state([(H, b"one")], 0, 3)
     act = model.Action("delete_word", None)
-    assert tag(act, model.F_TEXT, before, before, _dump([], 0, 0)) == lockstep.KNOWN_END_OF_TEXT
+    assert tag(act, model.F_TEXT, before, before, _dump([], 0, 0)) is None
     assert tag(act, lockstep.FIELD_INSIDE, before, before, _dump([], 0, 0)) is None

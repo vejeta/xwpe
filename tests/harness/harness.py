@@ -47,9 +47,11 @@ Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
                                      run (a coverage file, or the directory
                                      EDIT_MODEL_OUT collected): the actions
                                      against the option levels they never
-                                     met, the levels not built yet, the
+                                     met, the option tuples no row whose
+                                     sessions started with its labels
+                                     covers, the levels not built yet, the
                                      disagreements by class; exit 1 while a
-                                     cell is empty
+                                     cell or a tuple is empty
 
 Verdicts are PASS, FAIL, BLOCKED (manifest says so) or MISSING (the test did
 not run).  A skipped test counts as FAIL unless its scenario is ``blocked``,
@@ -366,24 +368,35 @@ def cmd_coverage(capability, source):
         sys.stderr.write("coverage is written for edit-model only\n")
         return 2
     sys.path.insert(0, os.path.join(TOP, "tests"))
-    from edit_model import walk
+    from edit_model import covering, option_row, walk
     cov = walk.Coverage()
     classes = {}
+    walks = []
     cases = 0
     for path in edit_model_runs(source):
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         cases += 1
         cov.merge(walk.Coverage.from_json(data.get("coverage", data)))
+        if "walk" in data:
+            walks.append(data["walk"])
         for x in data.get("walk", {}).get("disagreements", []):
             key = (x.get("cls"), "known" if x.get("expected") else "new")
             classes[key] = classes.get(key, 0) + 1
     text, holes = walk.report(cov)
     print("cases %d" % cases)
     print(text)
+    uncovered, bad_rows = covering.effective_missing(walks)
+    print("effective tuples (rows whose sessions started with their labels): "
+          "%d uncovered of %d required" % (len(uncovered), len(covering.required())))
+    print("taken on the row's label, not read back: %s" % option_row.trusted_text())
+    if bad_rows:
+        print("rows that did not get their labels: %s" % " ".join(bad_rows))
+    for tup in sorted(uncovered)[:5]:
+        print("  uncovered  %s" % " ".join("%s=%s" % fl for fl in tup))
     for (cls, kind), n in sorted(classes.items()):
         print("disagreements  %-12s %-6s %d" % (cls, kind, n))
-    return 1 if holes else 0
+    return 1 if (holes or uncovered or bad_rows) else 0
 
 
 def main(argv):
