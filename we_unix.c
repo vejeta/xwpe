@@ -6,6 +6,8 @@
 /* GNU General Public License, see the file COPYING.      */
 
 #include "model.h"		/* exchange for D.S.  */
+#include "edit.h"
+#include "we_buffer.h"
 
 #ifdef XWPE_DLL
 #include <dlfcn.h>
@@ -905,7 +907,7 @@ static int e_err_save_window(FENSTER *f)
  sprintf(esv, "%s%s", f->datnam, E_ESV_SUFFIX);
  FREE(f->datnam);
  f->datnam = esv;
- if (e_write(0, 0, f->b->mx.x, f->b->mxlines - 1, f, WPE_NOBACKUP) == WPE_ESC)
+ if (e_write(0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1, f, WPE_NOBACKUP) == WPE_ESC)
   return(-1);
  return(0);
 }

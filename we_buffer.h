@@ -35,6 +35,15 @@
 #define E_BUFFER_NO_HISTORY      1   /* a view the editor writes: no record, no dirty
                                         count, no breakpoint rows; marks still kept */
 
+/* The room of a row of a buffer W wide: W bytes of text, the line break,
+   the terminating zero.  Every row the owner makes has it. */
+#define E_BUFFER_ROW_BYTES(w)   ((w) + 2)
+/* The most bytes of text a row of a file holds: Max. Columns. */
+#define E_BUFFER_ROW_TEXT_MAX(b) ((b)->mx.x)
+/* The column past a full row's line break: a whole-file write passes it as
+   its end column, so the break after a row of Max. Columns bytes is written. */
+#define E_BUFFER_ROW_END(b)     ((b)->mx.x + 1)
+
 /* what ends the head of a split line */
 #define E_BUFFER_HEAD_OPEN       0   /* unterminated: the block code inserts the rest */
 #define E_BUFFER_HEAD_WR         1   /* ends with the line break (Enter) */
@@ -72,13 +81,20 @@ int    e_buffer_append_rows(BUFFER *b, const char *text);
 int    e_buffer_clear(BUFFER *b);
 /* A row set with either of these keeps all @n bytes, even past the buffer's
    width: they are for views (the assistant's pane wraps a long row when it
-   paints).  A row of a file must stay inside the width, because the first
-   character typed into a wider row cuts its tail off. */
+   paints).  On a buffer that is not a view a row wider than the width is
+   refused with E_BUFFER_RANGE and nothing changes. */
 int    e_buffer_set_line(BUFFER *b, int y, const char *text, int n);
 int    e_buffer_set_line_ended(BUFFER *b, int y, const char *text, int n, int term);
 char  *e_buffer_to_text(BUFFER *b);
 STRING *e_buffer_lines_from_text(const char *text, int mx_x, int *n);
 void   e_buffer_lines_free(STRING *lines, int n);
+int    e_buffer_rows_push(STRING **lines, int *n, int *cap, int mx_x,
+                          const unsigned char *str, int len, int term);
+int    e_buffer_wrap_cut(const unsigned char *row, int maxc);
+int    e_buffer_bytes_reserve(unsigned char **bytes, int *cap, int need);
+int    e_buffer_line_copy(BUFFER *b, const STRING *src, STRING *out);
+int    e_buffer_rows_check(BUFFER *b);
+void   e_buffer_marks_inside(BUFFER *b);
 
 /* ---- a change made of several splices, whole or not at all ----
 

@@ -311,7 +311,7 @@ def _stub_pid(tmp_path):
         return 0
 
 
-def _server_env(tmp_path, hold, apply_edit=False, chatty=False):
+def _server_env(tmp_path, hold, apply_edit=False, chatty=False, completed=COMPLETED):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     _write_executable(str(bindir / "clangd"),
@@ -321,7 +321,7 @@ def _server_env(tmp_path, hold, apply_edit=False, chatty=False):
                                      "release": STUB_RELEASE,
                                      "hover": HOVER_TEXT,
                                      "defline": DEF_LINE,
-                                     "completed": COMPLETED,
+                                     "completed": completed,
                                      "mark": FORMAT_MARK,
                                      "sig": SIG_TEXT, "caller": CALLER,
                                      "callee": CALLEE, "super": SUPER,
@@ -543,6 +543,38 @@ def test_completion_list_shows_when_answered(tmp_path):
             assert w.alive(), "the editor ended"
     finally:
         _release_the_stub(tmp_path)
+        _end_the_stub(tmp_path)
+
+
+# A completion longer than a row of the default Max. Columns (120).
+LONG_COMPLETED = "zzlong" + "q" * 124
+CTRL_U = "\x15"
+
+
+# @scenario SC-buffer-09
+def test_a_completion_longer_than_a_row_keeps_every_byte(tmp_path):
+    """Alt-Q C, Enter on a candidate longer than Max. Columns: the text goes
+    in whole over more than one row, and Ctrl-U takes it out again."""
+    method = "textDocument/completion"
+    try:
+        with WpeSession(str(tmp_path), SEED, filename="a.c", wait=1.5,
+                        env_extra=_server_env(tmp_path, [],
+                                              completed=LONG_COMPLETED)) as w:
+            assert _started(w, tmp_path), \
+                "Alt-Q E should start the server:\n%s" % _screen(w)
+            assert _ask(w, tmp_path, "c", method), \
+                "Alt-Q C should ask for completions:\n%s" % _screen(w)
+            assert _wait_for(w, lambda: "zzlong" in _screen(w), SAID_S), \
+                "the list should show:\n%s" % _screen(w)
+            w.key(ENTER, delay=0.6)
+            w.save()
+            assert w.text() == LONG_COMPLETED + SEED, \
+                "Enter should insert the whole candidate:\n%r" % w.text()
+            w.key(CTRL_U, delay=0.6)
+            w.save()
+            assert w.text() == SEED, "Ctrl-U should take it out:\n%r" % w.text()
+            assert w.alive(), "the editor ended"
+    finally:
         _end_the_stub(tmp_path)
 
 

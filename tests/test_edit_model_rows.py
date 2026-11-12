@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("pyte")
 
-from edit_model.oracle import BACKSPACE, DOWN, END, ESC, UP, ctrl  # noqa: E402
+from edit_model.oracle import BACKSPACE, DOWN, END, ESC, HOME, RIGHT, ctrl  # noqa: E402
 from edit_model.oracle import EditSession  # noqa: E402
 from edit_model.render import render_disk  # noqa: E402
 from wpe_driver import incoherence  # noqa: E402
@@ -16,19 +16,17 @@ from wpe_driver import incoherence  # noqa: E402
 NARROW_RC = "[General]\nMaxColumn : 20\n"
 # Two lines that the file reader wraps at Max. Columns 20 into soft rows.
 WRAPPED = "one two three four five six\nseven-eight nine ten\n"
-FILE_END = ESC + ctrl("e")
 
 
 # @scenario SC-edit-model-17
-@incoherence("a character typed at the end of a soft-wrapped row as wide as "
-             "the window disappears (help.xwpe_eng 602: insert mode inserts)")
 def test_a_character_typed_at_the_end_of_a_full_wrapped_row_is_kept(tmp_path):
     """At Max. Columns 20, typing into the first row makes it exactly as
     wide as the window; End and one more character: the character is in
     the text afterwards, wherever the row wraps."""
     with EditSession(str(tmp_path), WRAPPED, filename="t.txt", xwperc=NARROW_RC) as s:
         assert s.last.win.mx == 20
-        s.send([FILE_END, UP, UP, UP])
+        s.send([HOME, RIGHT, RIGHT, RIGHT])
+        assert s.last.win.cursor == (0, 3), s.last.win.cursor
         s.send(["a"])
         s.send([END])
         w = s.send(["b"]).win

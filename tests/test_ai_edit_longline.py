@@ -1,8 +1,8 @@
 """Editing a long line an AI rewrite applied must not crash the editor.
 
-xwpe is a WordPerfect-style editor: every physical line lives in an mx.x+1 byte
-buffer and holds at most mx.x-1 columns, because the file reader soft-wraps
-anything longer at the margin.  The whole-buffer rebuild path
+xwpe is a WordPerfect-style editor: every physical line lives in an mx.x+2 byte
+buffer and holds at most mx.x bytes and its line break, because the file
+reader soft-wraps anything longer at the margin.  The whole-buffer rebuild path
 (e_buffer_replace_all, used by an AI/LSP/Undo apply) used to
 store an over-long line verbatim in a content-sized buffer; the first keystroke
 on it then drove the insert/auto-wrap machinery to write past the line and
@@ -62,10 +62,10 @@ def test_typing_on_applied_long_line_does_not_crash(tmp_path):
 
 def test_typing_on_unbroken_run_does_not_crash(tmp_path):
     # The pathological shape: a very long line with NO space or dash to wrap at
-    # (a URL, a base64 blob).  Editing near its start makes the auto-wrap machine
-    # hand its own recursion a chunk bigger than one line holds; every write is
-    # now bounded to the line buffer and the line is always terminated, so it
-    # clamps instead of running off the end.  Hammer it and require survival.
+    # (a URL, a base64 blob).  Editing near its start makes every row of the
+    # run wrap into the next one.  The editor must survive it and keep every
+    # byte: what was typed stands together in the saved file and the run
+    # around it is whole.
     unbroken = "A1b2C3d4" * 40                         # 320 cols, no break point
     env = {
         "XWPE_AI_ENABLE": "1",
@@ -87,6 +87,12 @@ def test_typing_on_unbroken_run_does_not_crash(tmp_path):
         s.key("Z", "Z", "Z", delay=0.3)
         s._drain(0.5)
         assert s.alive(), "editor crashed typing on an unbroken long run"
+        s.save()
+        disk = s.text()
+    # Every byte typed is in the file, together, and the run is whole around it.
+    assert "Xy ZZZ" in disk, "the typed text did not reach the file:\n" + repr(disk)
+    assert disk.replace("Xy ZZZ", "", 1) == unbroken + "\ntail\n", \
+        "typing on the unbroken run lost or moved bytes:\n" + repr(disk)
 
 
 def test_applied_long_line_saves_back_rejoined(tmp_path):

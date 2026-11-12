@@ -138,13 +138,33 @@ def check_inside(w):
     for name, (y, x) in (("mark_begin", w.mb), ("mark_end", w.me)):
         if w.mb == w.me:
             break
-        if not _pos_ok(y, x, rows, True):
+        # a mark is never past its row's end: just after a line break is
+        # the start of the next row (the owner keeps it there after a key)
+        if not _pos_ok(y, x, rows, False):
             bad.append(("marks", "%s (%d,%d) outside the text" % (name, y, x)))
     for r in w.brp:
         if r < 0 or r >= len(rows):
             bad.append(("breakpoints", "breakpoint row %d outside %d rows" % (r, len(rows))))
     if len(set(w.brp)) != len(w.brp):
         bad.append(("breakpoints", "a breakpoint row twice: %s" % w.brp))
+    return bad
+
+
+# The dump's rows= when the editor's own check found every row in shape.
+ROWS_FIT = -1
+
+
+def check_rows_fit(w):
+    """Check 3b on one window: no row holds more than Max. Columns bytes
+    (help.xwpe_eng 1578-1580: after that many columns a word wrap is
+    performed), and the editor's own check of its rows agrees."""
+    bad = []
+    for y, (end, data) in enumerate(_rows(w)):
+        if len(data) > w.mx:
+            bad.append(("rows", "row %d holds %d bytes, Max. Columns is %d"
+                        % (y, len(data), w.mx)))
+    if getattr(w, "rows", ROWS_FIT) != ROWS_FIT:
+        bad.append(("rows", "the editor found row %d out of shape" % w.rows))
     return bad
 
 
@@ -330,7 +350,7 @@ def expected_marks(direction, kind, want, other):
         if sp is None:
             return None
         text, starts = model._text_offsets(st.rows)
-        pt = model._offset_point(st.rows, starts, sp[0], False)
+        pt = model._offset_point(st.rows, starts, sp[0])
         return (pt, pt)
     if kind == COPY_KIND:
         return mine
@@ -488,6 +508,8 @@ class Walk:
         s = self.session
         disp = s.display()
         for cls, detail in check_inside(after):
+            self.note(i, kind, cls, detail)
+        for cls, detail in check_rows_fit(after):
             self.note(i, kind, cls, detail)
         for cls, detail in check_modified_mark(after, disp):
             self.note(i, kind, cls, detail)

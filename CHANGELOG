@@ -362,6 +362,39 @@ Changes
   opened after Max. Columns was lowered keeps every byte and line break of a
   wider line, wrapped at the new width (it cut the line there).
 
+* A line exactly as long as Max. Columns is one row with its line break
+  (it showed as a full row with an empty row under it).  Enter at the end
+  of a full row that has no line break keeps every byte (Save lost the
+  line break, and the editor wrote past the end of the line).  A long line
+  read from a file is no longer cut inside a character outside ASCII, and
+  a manual page with bold text at the right margin no longer writes past
+  the end of its line.  A line copied from Messages or the assistant's
+  pane that is wider than the window keeps every byte when pasted (it lost
+  its tail).  Max. Columns counts bytes.  A file whose last line is a
+  multiple of Max. Columns long and has no final line break gains one when
+  saved, as other files already do.
+
+* Typing wraps after Max. Columns, as the manual says: a row takes all of
+  Max. Columns and the next character typed wraps it (a 120-column row
+  took 118).  A character typed where a row has to wrap is never lost and
+  the wrap never cuts a character outside ASCII in two, also in a long
+  line with no blank.  Backspace that joins a line which exactly fills the rest of
+  the row above takes the whole line (it joined nothing and left the
+  line on a row of its own).
+  After Ctrl-U gives back a deleted line break, Ctrl-K C or Ctrl-K V of
+  the block it marks no longer loses a line.
+
+* Search > Replace with New Text longer than Max. Columns, and a
+  completion that long, put the whole text in over several rows and Ctrl-U
+  takes it out (the old text was deleted, nothing went in, and Ctrl-U then
+  deleted other lines).  Change All goes on behind a replacement that made
+  its line wrap (it skipped occurrences or could read past the line).
+
+* In overwrite mode a character typed over `é` or `€` replaces the whole
+  character (it left broken bytes behind), and a character typed at the end
+  of a line no longer moves the place a Shift key selects from past it, so
+  Ctrl-O H, U or M on such a block no longer writes a byte Save loses.
+
 * A file opened read-only and the clipboard viewer (Alt-Y) keep their
   text: Ctrl-K I, U, D and F, Ctrl-O B, L, U, M, H and E and Search >
   Replace are refused there and the status row says the window is

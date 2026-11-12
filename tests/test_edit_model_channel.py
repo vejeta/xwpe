@@ -142,7 +142,8 @@ def test_the_self_checks_refuse_a_dump_that_breaks_them(tmp_path):
     assert selfcheck.check_inside(_window(rows, y=2, x=0))[0][0] == "cursor"
     assert selfcheck.check_inside(_window(rows, x=4))[0][0] == "cursor"
     assert selfcheck.check_inside(_window(rows, mb="0,0", me="5,0"))[0][0] == "marks"
-    assert selfcheck.check_inside(_window(rows, mb="0,0", me="1,4")) == []
+    assert selfcheck.check_inside(_window(rows, mb="0,0", me="1,3")) == []
+    assert selfcheck.check_inside(_window(rows, mb="0,0", me="1,4"))[0][0] == "marks"
     assert selfcheck.check_inside(_window(rows, brp="1,1"))[0][0] == "breakpoints"
     assert selfcheck.check_inside(_window(rows, brp="2"))[0][0] == "breakpoints"
     disp = [" " * 80 for _ in range(30)]

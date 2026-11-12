@@ -57,7 +57,9 @@ def test_a_driver_older_than_its_sources_is_never_used(tmp_path, monkeypatch):
     assert not cdriver.is_current(str(old))
     new = tmp_path / "newer"
     new.write_bytes(b"")
-    future = os.path.getmtime(os.path.join(cdriver.TOP, "we_buffer.c")) + 100
+    newest = max(os.path.getmtime(os.path.join(cdriver.TOP, s))
+                 for s in cdriver.DRIVER_SOURCES)
+    future = newest + 100
     os.utime(new, (future, future))
     assert cdriver.is_current(str(new))
     assert not cdriver.is_current(str(tmp_path / "missing"))

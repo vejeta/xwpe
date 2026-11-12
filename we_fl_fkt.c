@@ -51,238 +51,222 @@ char *e_mkfilename(char *dr, char *fn)
  return(fl);
 }
 
-/* How many lines the table of a file being read holds before it first grows. */
-#define E_READ_FIRST_CAP 64
-
-/* The lines a file makes while it is read: a table that grows, whose lines
-   have the width of the buffer they are for. */
+/* The rows a file makes while it is read, and the line of the file being
+   read.  The reader only collects a line's bytes; the buffer's owner cuts
+   each line into rows of the buffer's width (e_buffer_rows_push), as it
+   does for a paste or a block moved. */
 typedef struct
 {
- STRING *line;
+ STRING *line;           /* the rows made so far */
  int n, cap;
  BUFFER *b;
+ unsigned char *cur;     /* the bytes of the line being read */
+ int cur_n, cur_cap;
 } E_READ_LINES;
 
-/**
- * e_read_push - Add an empty line at the end of the lines read so far.
- * @rl: the lines read.
- *
- * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the lines as they were.
- */
-static int e_read_push(E_READ_LINES *rl)
-{
- STRING *tmp;
- STRING fresh;
+/* What the help filter of a manual page is in the middle of. */
+#define E_READ_BOLD_NONE   0   /* plain text */
+#define E_READ_BOLD_OPEN   1   /* a backspace sequence started a bold run */
+#define E_READ_BOLD_PEEKED 2   /* the byte after the run is read: it comes next */
 
- if (rl->n == rl->cap)
- {
-  tmp = REALLOC(rl->line, (rl->cap * 2 + E_READ_FIRST_CAP) * sizeof(STRING));
-  if (tmp == NULL)
-   return(E_BUFFER_NOMEM);
-  rl->line = tmp;
-  rl->cap = rl->cap * 2 + E_READ_FIRST_CAP;
- }
- if (e_buffer_line_new(rl->b, &fresh) != E_BUFFER_OK)
+/**
+ * e_read_put - Add one byte to the line being read.
+ * @rl: the rows and the line read so far; @c: the byte.
+ *
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the line as it was.
+ */
+static int e_read_put(E_READ_LINES *rl, unsigned char c)
+{
+ if (e_buffer_bytes_reserve(&rl->cur, &rl->cur_cap, rl->cur_n + 1) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
- memset(fresh.s, 0, (size_t)rl->b->mx.x + 1);
- rl->line[rl->n++] = fresh;
+ rl->cur[rl->cur_n++] = c;
  return(E_BUFFER_OK);
 }
 
 /**
- * e_read_drop_last - Take the last line away from the lines read so far: the
- * file ended on a line break, so the line begun after it holds nothing.
- * @rl: the lines read.
- */
-static void e_read_drop_last(E_READ_LINES *rl)
-{
- rl->n--;
- FREE(rl->line[rl->n].s);
-}
-
-/**
- * e_read_wrap_line - Break the line being read where it grew past the width
- * of the buffer: at the last blank or hyphen, the rest starting the next
- * line.
- * @rl: the lines read; @j: the line being read; @i: the column it reached.
+ * e_read_line_end - The line being read is complete: the owner makes its
+ * rows, and the next line starts empty.
+ * @rl: the rows and the line read so far; @term: WPE_WR for a line that
+ * ends with a line break, '\0' for one that does not.
  *
- * Return: the column the reading goes on at in the new line, or -1 when
- * there was no memory for it and the line is as it was.
- */
-static int e_read_wrap_line(E_READ_LINES *rl, int j, int i)
-{
- unsigned char *cur;
- int ii, k;
-
- if (e_read_push(rl) != E_BUFFER_OK)
-  return(-1);
- cur = rl->line[j].s;
- for (ii = i-1; cur[ii] != ' ' && cur[ii] != '-' && ii > 0; ii--)
-  ;
- if (ii <= 1)
-  ii = i - 1;
- for (k = ii+1; k <= i; k++)
- {
-  if (cur[k] != '\0')
-   rl->line[j+1].s[k-ii-1] = cur[k];
-  else
-   rl->line[j+1].s[k-ii-1] = ' ';
- }
- cur[ii+1] = '\0';
- i = i - ii - 1;
- if (i < 0)
-  i = 0;
- return(i);
-}
-
-/**
- * e_read_measure - Count the characters and the bytes of a finished line.
- * @l: the line.
- */
-static void e_read_measure(STRING *l)
-{
- l->len = e_str_len(l->s);
- l->nrc = e_str_nrc(l->s);
-}
-
-/**
- * e_read_lines - Read a file into the lines it makes, as wide as @b is.
- * @i: the column the first line starts at, with its first @i bytes already
- * in @rl; @y: the row of @b the text goes to; @fp: the file; @type: its kind
- * (a carriage return makes it DOS, a backspace sequence makes a manual page's
- * bold); @end: where the text ends, as a row of @b once it is in.
- *
- * Lines break at the file's line breaks and, when they grow past the buffer's
- * width, at the last blank or hyphen.  The buffer is not touched.
+ * A line of exactly Max. Columns bytes is one row with its line break; a
+ * longer one is cut after the last blank or dash that fits.
  * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
  */
-static int e_read_lines(int i, int y, FILE *fp, E_READ_LINES *rl, char *type,
-                        POINT *end)
+static int e_read_line_end(E_READ_LINES *rl, int term)
 {
- int j = rl->n - 1, n = 1, hb = 0;
- BUFFER *b = rl->b;
- signed char cc, c = 0;
+ int r = e_buffer_rows_push(&rl->line, &rl->n, &rl->cap, rl->b->mx.x, rl->cur, rl->cur_n,
+                            term);
 
- while (n == 1)
+ rl->cur_n = 0;
+ return(r);
+}
+
+/**
+ * e_read_bold_start - A manual page's backspace sequence makes the byte
+ * before it the start of a bold run.
+ * @rl: the line being read.
+ */
+static void e_read_bold_start(E_READ_LINES *rl)
+{
+ if (rl->cur_n > 0)
+  rl->cur[rl->cur_n - 1] = HBB;
+}
+
+/**
+ * e_read_overstrike - A second backspace in a bold run: the byte after it
+ * takes the place of the one before it.
+ * @rl: the line being read.
+ */
+static void e_read_overstrike(E_READ_LINES *rl)
+{
+ if (rl->cur_n > 0)
+  rl->cur_n--;
+}
+
+/**
+ * e_read_file_end - The file ended: its last line, unless the file ended on
+ * a line break, becomes rows, and @end says where its text ends.
+ * @rl: the rows and the line read so far; @y: the row of the buffer the text
+ * goes to; @end: receives the end, as a row of the buffer once the text is
+ * in (the row after the file's last, at column 0 after a final line break).
+ *
+ * A last line without a line break gets one, as the editor has always
+ * written a file; an empty file read at the top of a window is one empty
+ * line.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
+ */
+static int e_read_file_end(E_READ_LINES *rl, int y, POINT *end)
+{
+ int ended_on_break = (rl->cur_n == 0 && y + rl->n > 0);
+
+ if (!ended_on_break && e_read_line_end(rl, WPE_WR) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ end->x = 0;
+ if (!ended_on_break)
+  end->x = rl->line[rl->n - 1].len;
+ end->y = y + rl->n;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_read_help_byte - Filter one byte of a manual page through its backspace
+ * sequences: "x\bx" makes a bold run, which the window shows highlighted.
+ * @fp: the file; @n: what the read of @c gave (1, or 0 at the file's
+ * end); @c: the byte just read, replaced by the byte the line gets next;
+ * @cc: the byte read ahead; @hb: the filter's state (E_READ_BOLD_*); @rl:
+ * the line being read.
+ *
+ * Return: 1 while the file goes on, 0 at its end (fread's count), -1 when
+ * memory ran out.
+ */
+static int e_read_help_byte(FILE *fp, int n, signed char *c, signed char *cc, int *hb,
+                            E_READ_LINES *rl)
+{
+ if (*c == CtrlH)
  {
-  for (; i < b->mx.x; i++)
+  if (*hb == E_READ_BOLD_NONE)
   {
-   if (hb != 2)
-    n = fread(&c, sizeof(char), 1, fp);
-   else
-   {
-    c = cc;
-    hb = 0;
-   }
-   if (n == 1 && c == WPE_CR)
-   {
-    if (DTMD_NORMAL == *type)
-    {
-     *type = DTMD_MSDOS;
-    }
-    i--;
-    continue;
-   }
-   if ((DTMD_HELP == *type) && (c == CtrlH))
-   {
-    if (!hb)
-    {
-     if (i > 0)
-      *(rl->line[j].s+i-1) = HBB;
-     hb = 1;
-    }
-    else i--;
-    n = fread(&c, sizeof(char), 1, fp);
-   }
-   else if ((DTMD_HELP == *type) && (hb == 1))
-   {
-    n = fread(&cc, sizeof(char), 1, fp);
-    if (cc != HBS)
-    {
-     *(rl->line[j].s+i) = HED;
-     i++;
-     hb = 2;
-    }
-    else n = fread(&c, sizeof(char), 1, fp);
-   }
-   if (n != 1)
-   {
-    *(rl->line[j].s+i) = '\0';
-    break;
-   }
-   *(rl->line[j].s+i) = c;
-   if (c == WPE_WR) break;
-  }
-  if (n != 1)
-  {
-   if (i == 0 && y + j > 0)
-    e_read_drop_last(rl);
-   else
-   {
-    *(rl->line[j].s+i) = WPE_WR;
-    *(rl->line[j].s+i+1) = '\0';
-    j++;
-   }
-  }
-  else if (i >= b->mx.x)
-  {
-   i = e_read_wrap_line(rl, j, i);
-   if (i < 0)
-    return(E_BUFFER_NOMEM);
-   j++;
-  }
-  else if (c == WPE_WR)
-  {
-   *(rl->line[j].s+i) = WPE_WR;
-   *(rl->line[j].s+i+1) = '\0';
-   if (e_read_push(rl) != E_BUFFER_OK)
-    return(E_BUFFER_NOMEM);
-   j++;
-   i = 0;
+   e_read_bold_start(rl);
+   *hb = E_READ_BOLD_OPEN;
   }
   else
-  {
-   *(rl->line[j].s+i) = ' ';
-   i++;
-   *(rl->line[j].s+i) = '\0';
-  }
-  if (j > 0)
-   e_read_measure(rl->line + j - 1);
+   e_read_overstrike(rl);
+  return((int)fread(c, sizeof(char), 1, fp));
  }
- end->x = i;
- end->y = y + j;
- return(E_BUFFER_OK);
+ if (*hb != E_READ_BOLD_OPEN)
+  return(n);
+ n = (int)fread(cc, sizeof(char), 1, fp);
+ if (*cc != HBS)
+ {
+  if (e_read_put(rl, HED) != E_BUFFER_OK)
+   return(-1);
+  *hb = E_READ_BOLD_PEEKED;
+  return(n);
+ }
+ return((int)fread(c, sizeof(char), 1, fp));
+}
+
+/**
+ * e_read_lines - Read a file into the rows it makes, as wide as @b is.
+ * @y: the row of @b the text goes to; @fp: the file; @rl: the rows, with
+ * the line read so far (the front of the row the file goes into); @type:
+ * its kind (a carriage return makes it DOS, a backspace sequence makes a
+ * manual page's bold); @end: where the text ends, as a row of @b once it is
+ * in.
+ *
+ * Lines break at the file's line breaks, and the owner cuts a line wider
+ * than the buffer at the last blank or dash that fits.  The buffer is not
+ * touched.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
+ */
+static int e_read_lines(int y, FILE *fp, E_READ_LINES *rl, char *type, POINT *end)
+{
+ int n = 1, hb = E_READ_BOLD_NONE, r = E_BUFFER_OK;
+ signed char cc = 0, c = 0;
+
+ for (;;)
+ {
+  if (hb != E_READ_BOLD_PEEKED)
+   n = (int)fread(&c, sizeof(char), 1, fp);
+  else
+  {
+   c = cc;
+   hb = E_READ_BOLD_NONE;
+  }
+  if (n == 1 && c == WPE_CR)
+  {
+   if (DTMD_NORMAL == *type)
+    *type = DTMD_MSDOS;
+   continue;
+  }
+  if (DTMD_HELP == *type)
+   n = e_read_help_byte(fp, n, &c, &cc, &hb, rl);
+  if (n < 0)
+   return(E_BUFFER_NOMEM);
+  if (n != 1)
+   break;
+  if (c == WPE_WR)
+   r = e_read_line_end(rl, WPE_WR);
+  else
+   r = e_read_put(rl, (unsigned char) c);
+  if (r != E_BUFFER_OK)
+   return(r);
+ }
+ return(e_read_file_end(rl, y, end));
 }
 
 /**
  * e_read_head_line - Start the first line of a file with the front of the
  * line it is put into.
- * @rl: the lines read, one empty line so far; @y, @x: the line of the buffer
- * and the column the file goes in at.
+ * @rl: the rows and the line read, empty so far; @y, @x: the line of the
+ * buffer and the column the file goes in at.
+ *
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
  */
-static void e_read_head_line(E_READ_LINES *rl, int y, int x)
+static int e_read_head_line(E_READ_LINES *rl, int y, int x)
 {
- memcpy(rl->line[0].s, rl->b->bf[y].s, (size_t)x);
+ if (x == 0)
+  return(E_BUFFER_OK);          /* the file starts its line: no front to keep */
+ if (e_buffer_bytes_reserve(&rl->cur, &rl->cur_cap, x) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ memcpy(rl->cur, rl->b->bf[y].s, (size_t)x);
+ rl->cur_n = x;
+ return(E_BUFFER_OK);
 }
 
 /**
- * e_read_tail_line - Make a line of the part of line @y of @b from column
- * @x on, its line break included: what follows a file put in the middle of a
- * line.
- * @rl: the lines read.
+ * e_read_tail_line - Make a row of the part of line @y of @b from column
+ * @x on, ending as that row ends: what follows a file put in the middle of
+ * a line.
+ * @rl: the rows read.
  *
  * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
  */
 static int e_read_tail_line(E_READ_LINES *rl, int y, int x)
 {
- STRING *tail;
+ STRING *row = &rl->b->bf[y];
 
- if (e_read_push(rl) != E_BUFFER_OK)
-  return(E_BUFFER_NOMEM);
- tail = rl->line + rl->n - 1;
- strcpy((char *)tail->s, (char *)rl->b->bf[y].s + x);
- e_read_measure(tail);
- return(E_BUFFER_OK);
+ return(e_buffer_rows_push(&rl->line, &rl->n, &rl->cap, rl->b->mx.x, row->s + x,
+                           row->len - x, row->s[row->len]));
 }
 
 /**
@@ -303,20 +287,19 @@ static int e_read_file_into_now(FILE *fp, BUFFER *b, int x, int y, char *type, P
  E_READ_LINES rl;
  int r, n_del = 0;
 
- rl.line = NULL;
- rl.n = rl.cap = 0;
+ memset(&rl, 0, sizeof(rl));
  rl.b = b;
  if (x > b->bf[y].len)
   x = b->bf[y].len;
- if (e_read_push(&rl) == E_BUFFER_OK)
-  e_read_head_line(&rl, y, x);
- if (rl.n == 0 ||
-     e_read_lines(x, y, fp, &rl, type, end) != E_BUFFER_OK ||
+ if (e_read_head_line(&rl, y, x) != E_BUFFER_OK ||
+     e_read_lines(y, fp, &rl, type, end) != E_BUFFER_OK ||
      (x > 0 && e_read_tail_line(&rl, y, x) != E_BUFFER_OK))
  {
+  free(rl.cur);
   e_buffer_lines_free(rl.line, rl.n);
   return(E_BUFFER_NOMEM);
  }
+ free(rl.cur);
  if (x > 0)
   n_del = 1;
  r = e_buffer_splice(b, y, n_del, rl.line, rl.n, NULL, 0, E_BUFFER_STEP_NEW);
@@ -380,7 +363,7 @@ int e_save(FENSTER *f)
   return(0);
  WpeMouseChangeShape(WpeWorkingShape);
  b = f->ed->f[ret]->b;
- ret = e_write(0, 0, b->mx.x, b->mxlines-1, f, WPE_BACKUP);
+ ret = e_write(0, 0, E_BUFFER_ROW_END(b), b->mxlines-1, f, WPE_BACKUP);
  if (ret != WPE_ESC)
   f->save = 0;
  WpeMouseRestoreShape();
@@ -504,7 +487,7 @@ int e_write(int xa, int ya, int xe, int ye, FENSTER *f, int backup)
  for (j = ya; j < ye && j < b->mxlines; j++)
  {
   if (b->bf[j].s != NULL)
-   for (; i <= b->bf[j].len && i < b->mx.x && *(b->bf[j].s+i)!= '\0' ; i++)
+   for (; i <= b->bf[j].len && i <= b->mx.x && *(b->bf[j].s+i)!= '\0' ; i++)
    {
     if (*(b->bf[j].s+i) == WPE_WR)
     {
@@ -521,7 +504,7 @@ int e_write(int xa, int ya, int xe, int ye, FENSTER *f, int backup)
   i = 0;
  }
  if (b->bf[j].s != NULL)
-  for (i = 0; i < xe && *(b->bf[j].s+i)!= '\0' && i <= b->bf[j].len && i < b->mx.x ; i++)
+  for (i = 0; i < xe && *(b->bf[j].s+i)!= '\0' && i <= b->bf[j].len && i <= b->mx.x ; i++)
   {
    if (*(b->bf[j].s+i) == WPE_WR)
    {

@@ -71,8 +71,9 @@ class Script:
 
 
 # Fields of the W line a golden leaves out: the markers Ctrl-K 1-9 set,
-# which no golden script touches.
-OMITTED_FIELDS = ("pt=",)
+# which no golden script touches, and the row-width check, which the
+# lockstep reads from the dump instead.
+OMITTED_FIELDS = ("pt=", "rows=")
 EMPTY_MARKERS = "pt=" + "/".join(["-1,-1"] * 9)
 
 
@@ -110,6 +111,7 @@ def record(script, workdir):
                 found.append(("context", "ctx=%s" % d.ctx))
             else:
                 found += selfcheck.check_inside(w)
+                found += selfcheck.check_rows_fit(w)
                 found += selfcheck.check_modified_mark(w, s.display())
                 found += selfcheck.check_screen(w, s.display())
                 bad, _fresh = selfcheck.check_trace(name, before, w, trace)

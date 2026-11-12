@@ -107,6 +107,13 @@
    "status": "new"
   },
   {
+   "id": "SC-edit-model-15",
+   "requirement": "In the model Undo and Redo give back the text around each action and typing keeps bytes",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rules.py::test_typing_keeps_every_byte_and_every_row_within_the_width",
+   "status": "new"
+  },
+  {
    "id": "SC-edit-model-16",
    "requirement": "In the model a breakpoint stays on its line through splits and joins",
    "layer": "ncurses",

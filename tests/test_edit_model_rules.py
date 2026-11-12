@@ -41,6 +41,15 @@ def _state(lines=ROWS, y=0, x=0, flg=model.FLG_AUTOINDENT, width=WIDTH):
     return st
 
 
+def _utf8(data):
+    """Is @data valid UTF-8?  A wrap never cuts a character that was whole."""
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def _action(rng, pool):
     name = rng.choice(pool)
     if name == "type":
@@ -151,31 +160,30 @@ def test_undo_and_redo_give_back_the_text_around_each_action(seed):
 
 # @scenario SC-edit-model-15
 @pytest.mark.parametrize("seed", range(WALKS))
-def test_typing_keeps_every_byte_except_where_a_soft_row_wraps(seed):
-    """Typing anywhere in a window narrower than its lines wraps them, and
-    the text, read with soft rows joined, is the old text with the typed
-    byte in it.  The one exception is typing into a soft-wrapped row: there
-    the editor's code drops bytes (a typed one, or one of the text) and the
-    model, which follows the code to keep the rows in step, drops the same
-    ones; the lockstep's check of the manual's promise reports them on the
-    editor (test_edit_model_rows.py holds the shortest case)."""
+def test_typing_keeps_every_byte_and_every_row_within_the_width(seed):
+    """Typing anywhere in a window narrower than its lines wraps them, soft
+    rows and full rows included: the text, read with soft rows joined, is
+    the old text with the typed bytes at the cursor, every row holds at most
+    Max. Columns bytes (help.xwpe_eng 1578-1580) and no character is cut."""
     rng = random.Random(seed)
     lines = [("S", b"one two three four "), ("H", b"five six"),
-             ("S", b"seven-eight nine "), ("H", b"ten")]
+             ("S", b"seven-eight nine "), ("H", b"ten"),
+             ("S", b"x" * NARROW), ("H", b"y" * NARROW), ("H", b"a " + b"z" * 18)]
     st = _state(lines, flg=0, width=NARROW)
     st = model.apply(st, model.Action("file_end"))
-    for _ in range(WALK_LEN // 2):
+    for _ in range(WALK_LEN * 4):
         mv = model.Action(rng.choice(["left", "right", "up", "down", "home", "end"]))
         st = model.apply(st, mv)
         before = render.render_disk(st.lines())
         rows = st.lines()
         offset = sum(len(d) + (1 if e == "H" else 0) for e, d in rows[:st.y]) + st.x
-        soft = st.rows[st.y].end == model.SOFT
-        st = model.apply(st, model.Action("type", b"a"))
+        typed = rng.choice(TYPED + ["€".encode()])
+        st = model.apply(st, model.Action("type", typed))
         text = render.render_disk(st.lines())
-        if not soft:
-            assert text == before[:offset] + b"a" + before[offset:], (before, text)
-        assert all(len(d) <= NARROW for _e, d in st.lines())
+        assert text == before[:offset] + typed + before[offset:], (before, text)
+        assert all(len(d) <= NARROW for _e, d in st.lines()), st.lines()
+        if _utf8(text):
+            assert all(_utf8(d) for _e, d in st.lines()), st.lines()
 
 
 # @scenario SC-edit-model-16

@@ -29307,8 +29307,9 @@ static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a)
   b->b.x -= prefix;
   e_del_nchar(b, s, b->b.x, b->b.y, prefix);
  }
+ /* the insert leaves the cursor behind the completion, on the row it
+    wrapped to when it is longer than the room left */
  e_ins_nchar(b, s, (char *)ins, b->b.x, b->b.y, inslen);
- b->b.x += inslen;
  e_schirm(f, 1);
 }
 

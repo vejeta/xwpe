@@ -134,6 +134,9 @@ class Window:
         self.brp = [] if kv["brp"] == "-" else [int(v) for v in kv["brp"].split(",")]
         self.ud = int(kv["ud"])
         self.rd = int(kv["rd"])
+        # the first row wider than Max. Columns or not ended as a row ends;
+        # -1 for none (an editor without the field says none)
+        self.rows = int(kv.get("rows", "-1"))
         self.lines = []          # [(end 'H'|'S', bytes)]
 
     @property

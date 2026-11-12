@@ -11,20 +11,26 @@ dropped or re-recorded.
 
 Manual: "After this number of columns a word wrap is performed."
 
-- A line of 116 characters, cursor at its end. Typing `Z`, `Q`: they go
-  in, no wrap yet (118 characters).
-- Typing `R`: the line wraps at the last blank. The first row keeps
-  `w000 ... w021 ` (with its blank) and wraps on; `w022xyZQR` becomes the
-  next row, cursor after the `R`. The file still has one line there.
-- Home, typing `A` at the start of that second row: `Aw022xyZQR`.
+Re-recorded on 2026-11-12, because typing now wraps where the manual
+says. The old recording wrapped at the 119th character; this one types
+two more characters so that it still reaches the margin.
+
+- A line of 116 characters, cursor at its end. Typing `Z`, `Q`, `R`, `S`:
+  they go in, no wrap yet. The line is now 120 characters, as many as
+  Max. Columns, and it is still one row.
+- Typing `T`, the 121st character: the line wraps at the last blank. The
+  first row keeps `w000 ... w021 ` (with its blank) and wraps on;
+  `w022xyZQRST` becomes the next row, cursor after the `T`. The file
+  still has one line there.
+- Home, typing `A` at the start of that second row: `Aw022xyZQRST`.
 - On the next line `next`, typing `!` at its end: `next!`.
+
+What changed from the old recording: a row now holds all 120 characters
+of Max. Columns, and the wrap comes with the next character typed. Before,
+a row took only 118 and the 119th wrapped it.
 
 To decide: the blank where the line wrapped stays at the end of the first
 row (it is still in the file, between `w021` and `w022`).
-
-To decide: the wrap comes before the line reaches Max. Columns. At 120 a
-row holds at most 118 characters: the `R` that would make it 119 wraps
-it, where the manual's words suggest a wrap only past 120.
 
 ## enter_autoindent (C file, auto-indent on)
 

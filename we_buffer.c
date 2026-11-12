@@ -233,21 +233,68 @@ static int *buffer_brp(BUFFER *b)
 
 /* ---- lines ---- */
 
+/* How much a byte buffer of the owner grows by at least, so a long line of
+   a file being read is not copied once per byte. */
+#define BUFFER_BYTES_STEP 128
+
+/**
+ * buffer_row_alloc - The memory of one empty row of a buffer @mx_x wide.
+ * @out: receives the row.
+ *
+ * The one place a row of the owner gets its room: Max. Columns bytes of
+ * text, the line break after them and the terminating zero, all zero from
+ * the start.  So a line exactly as long as Max. Columns is one row with its
+ * line break, and no byte past a row's end is ever read as text.
+ * Return: E_BUFFER_OK or E_BUFFER_NOMEM.
+ */
+static int buffer_row_alloc(int mx_x, STRING *out)
+{
+ size_t room = (size_t)E_BUFFER_ROW_BYTES(mx_x);
+
+ out->s = buffer_malloc(room);
+ if (out->s == NULL)
+  return(E_BUFFER_NOMEM);
+ memset(out->s, 0, room);
+ out->len = 0;
+ out->nrc = 0;
+ return(E_BUFFER_OK);
+}
+
 /**
  * e_buffer_line_new - Make one empty line the buffer can hold.
  * @b: the buffer (its width); @out: receives the line.
  *
- * Every line has room for the buffer's width, so typing into it never
- * outruns its memory.  Return: E_BUFFER_OK or E_BUFFER_NOMEM.
+ * Every line has room for the buffer's width and its line break, so typing
+ * into it never outruns its memory.  Return: E_BUFFER_OK or E_BUFFER_NOMEM.
  */
 int e_buffer_line_new(BUFFER *b, STRING *out)
 {
- out->s = buffer_malloc((size_t)b->mx.x + 1);
- if (out->s == NULL)
+ return(buffer_row_alloc(b->mx.x, out));
+}
+
+/**
+ * e_buffer_bytes_reserve - Make room for @need bytes in a byte buffer the
+ * owner's memory holds.
+ * @bytes: the buffer (NULL for none yet); @cap: its room, updated.
+ *
+ * The file reader collects one line of the file here before the owner
+ * wraps it into rows, so a test that starves the owner while a file is
+ * read reaches this memory too.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the buffer as it was.
+ */
+int e_buffer_bytes_reserve(unsigned char **bytes, int *cap, int need)
+{
+ unsigned char *more;
+ int room = *cap;
+
+ if (need <= room)
+  return(E_BUFFER_OK);
+ while (room < need)
+  room = room * 2 + BUFFER_BYTES_STEP;
+ if ((more = buffer_realloc(*bytes, (size_t)room)) == NULL)
   return(E_BUFFER_NOMEM);
- out->s[0] = '\0';
- out->len = 0;
- out->nrc = 0;
+ *bytes = more;
+ *cap = room;
  return(E_BUFFER_OK);
 }
 
@@ -276,6 +323,78 @@ static int buffer_lines_equal(const STRING *a, const STRING *b)
 {
  return(a->len == b->len && a->s[a->len] == b->s[b->len] &&
         memcmp(a->s, b->s, (size_t)a->len) == 0);
+}
+
+/* ---- the width of a row ---- */
+
+/* Does the row width rule hold in @b?  It does in a file's buffer and in a
+   shell; a view the editor writes (Messages, Help, the panes) keeps a
+   compiler's long line as one row. */
+static int buffer_rows_bounded(const BUFFER *b)
+{
+ return(b->shell || !b->view);
+}
+
+/**
+ * buffer_row_fits - Does row @l keep the shape every row of @b has?
+ *
+ * At most Max. Columns bytes of text, ended by the line break or by the
+ * zero (a row whose line goes on below), the zero right after the break,
+ * and nothing but zero in the last byte of its room.  A row that keeps it
+ * is saved with every byte and typed into without reaching past its
+ * memory.  Return: 1 when it fits.
+ */
+static int buffer_row_fits(const BUFFER *b, const STRING *l)
+{
+ int hard;
+
+ if (l->s == NULL || l->len < 0 || l->len > E_BUFFER_ROW_TEXT_MAX(b))
+  return(0);
+ if (l->s[l->len] != WPE_WR && l->s[l->len] != '\0')
+  return(0);
+ hard = (l->s[l->len] == WPE_WR);
+ if (l->nrc != l->len + hard || l->s[l->nrc] != '\0')
+  return(0);
+ return(l->s[E_BUFFER_ROW_BYTES(b->mx.x) - 1] == '\0');
+}
+
+/* Can every one of @n lines go into @b?  The first that cannot is traced,
+   so a refused change names the row that was too wide.  @y: the row the
+   first line would take.  Return: 1, or 0 for a refusal. */
+static int buffer_lines_fit(const BUFFER *b, int y, const STRING *lines, int n)
+{
+ int i;
+
+ if (!buffer_rows_bounded(b) || lines == NULL)
+  return(1);
+ for (i = 0; i < n; i++)
+  if (!buffer_row_fits(b, &lines[i]))
+  {
+   wpe_buffer_trace("buffer row wider than the window y=%d len=%d nrc=%d width=%d",
+                    y + i, lines[i].len, lines[i].nrc, b->mx.x);
+   return(0);
+  }
+ return(1);
+}
+
+/**
+ * e_buffer_rows_check - The first row of @b that does not keep the row
+ * shape, or -1.
+ *
+ * The test dump writes it after every key, so a primitive that wrote a row
+ * past Max. Columns in place, where no splice sees it, shows at once.  A
+ * view is never checked.
+ */
+int e_buffer_rows_check(BUFFER *b)
+{
+ int y;
+
+ if (!buffer_rows_bounded(b))
+  return(-1);
+ for (y = 0; y < b->mxlines; y++)
+  if (!buffer_row_fits(b, &b->bf[y]))
+   return(y);
+ return(-1);
 }
 
 /* ---- the debugger's margin: brp[0] is the count, brp[1..] the rows ---- */
@@ -1126,6 +1245,8 @@ static int buffer_splice(BUFFER *b, int y, int n_del, STRING *lines, int n_ins,
    return(E_BUFFER_OK);
   }
  }
+ if (!buffer_lines_fit(b, y, lines, n_ins))
+  return(E_BUFFER_RANGE);
  records = buffer_splice_records(b, step);
  pocket = buffer_splice_pocket(b, records);
  if (buffer_splice_prepare(b, y, n_del, n_ins, nbrk, records, out != NULL, pocket, &m) != E_BUFFER_OK)
@@ -1229,14 +1350,14 @@ int e_buffer_open_row(BUFFER *b, int y)
 }
 
 /* A copy of `n` bytes of `src` as a line of the buffer, with `term` as the
-   byte after them (WPE_WR or '\0'). */
+   byte after them (WPE_WR or '\0'): at most a row's text, Max. Columns. */
 static int buffer_line_from_bytes(BUFFER *b, const unsigned char *src, int n, int term,
                                   STRING *out)
 {
  if (e_buffer_line_new(b, out) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
- if (n > b->mx.x - 1)
-  n = b->mx.x - 1;
+ if (n > E_BUFFER_ROW_TEXT_MAX(b))
+  n = E_BUFFER_ROW_TEXT_MAX(b);
  if (n < 0)
   n = 0;
  memcpy(out->s, src, (size_t)n);
@@ -1244,6 +1365,35 @@ static int buffer_line_from_bytes(BUFFER *b, const unsigned char *src, int n, in
  out->s[n + (term ? 1 : 0)] = '\0';
  buffer_line_measure(out);
  return(E_BUFFER_OK);
+}
+
+/* Is (y, x) the end of a row whose line goes on in the row below, or ends
+   the text without a line break? */
+static int buffer_at_soft_end(BUFFER *b, int y, int x)
+{
+ return(x == b->bf[y].len && b->bf[y].s[x] != WPE_WR);
+}
+
+/**
+ * buffer_split_soft_end - Enter at the end of a row without a line break:
+ * the row gets its break and the row below, the rest of its line, becomes a
+ * line of its own; no row is added.
+ * @b: the buffer; @y: the row; @step: how it counts.
+ *
+ * A row of exactly Max. Columns bytes takes the break inside its own room,
+ * so every byte stays.  Return: as e_buffer_splice.
+ */
+static int buffer_split_soft_end(BUFFER *b, int y, WpeBufferStep step)
+{
+ STRING head;
+ int r;
+
+ if (buffer_line_from_bytes(b, b->bf[y].s, b->bf[y].len, WPE_WR, &head) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ r = e_buffer_splice(b, y, 1, &head, 1, NULL, 0, step);
+ if (r != E_BUFFER_OK)
+  free(head.s);
+ return(r);
 }
 
 /**
@@ -1254,7 +1404,9 @@ static int buffer_line_from_bytes(BUFFER *b, const unsigned char *src, int n, in
  *
  * The line keeps its breakpoint; marks behind the column move with the tail.
  * At column 0 the empty line goes above and the whole line, its breakpoint
- * and its marks move down one.  Return: as e_buffer_splice.
+ * and its marks move down one.  Enter at the end of a row without a line
+ * break gives the row its break and adds no row: the row below already is
+ * the rest of the line.  Return: as e_buffer_splice.
  */
 int e_buffer_split_line(BUFFER *b, int y, int x, WpeBufferStep step, int head_term)
 {
@@ -1268,6 +1420,8 @@ int e_buffer_split_line(BUFFER *b, int y, int x, WpeBufferStep step, int head_te
  len = b->bf[y].len;
  if (x > len)
   x = len;
+ if (head_term == E_BUFFER_HEAD_WR && buffer_at_soft_end(b, y, x))
+  return(buffer_split_soft_end(b, y, step));
  if (x == 0)
  {
   if (buffer_line_from_bytes(b, (const unsigned char *) "", 0, term, &pair[0]) != E_BUFFER_OK)
@@ -1285,8 +1439,8 @@ int e_buffer_split_line(BUFFER *b, int y, int x, WpeBufferStep step, int head_te
   return(E_BUFFER_NOMEM);
  }
  tail_n = (int)strlen((char *) b->bf[y].s + x);
- if (tail_n > b->mx.x)
-  tail_n = b->mx.x;
+ if (tail_n > E_BUFFER_ROW_TEXT_MAX(b) + 1)       /* the text and its line break */
+  tail_n = E_BUFFER_ROW_TEXT_MAX(b) + 1;
  memcpy(pair[1].s, b->bf[y].s + x, (size_t)tail_n);
  pair[1].s[tail_n] = '\0';
  buffer_line_measure(&pair[1]);
@@ -1387,13 +1541,29 @@ static int buffer_wrap_cut(const char *str, int maxc)
  return(cut);
 }
 
-/* Append one logical line to lines[*n], soft-wrapped as the file reader
-   wraps it: every piece but the last ends without a line break, the last
-   with last_term (WPE_WR, or '\0' for a line that goes on in the next). */
+/**
+ * e_buffer_wrap_cut - Where a row that must hold at most @maxc bytes is
+ * cut: just after its last blank or dash in reach, else before @maxc, never
+ * inside a UTF-8 character.  @row holds more than @maxc bytes.
+ *
+ * The one wrap rule: typing past Max. Columns cuts a row where reading,
+ * pasting and rewrapping a file cut it, so the user sees the same rows
+ * however the text got there.
+ * Return: the bytes the row keeps, at least 1 when @maxc is.
+ */
+int e_buffer_wrap_cut(const unsigned char *row, int maxc)
+{
+ return(buffer_wrap_cut((const char *) row, maxc));
+}
+
+/* Append one logical line to lines[*n], soft-wrapped at Max. Columns: every
+   piece but the last ends without a line break, the last with last_term
+   (WPE_WR, or '\0' for a line that goes on in the next).  A piece is at most
+   mx_x bytes, so a line exactly mx_x long is one row with its break. */
 static int buffer_lines_push(STRING **lines, int *n, int *cap, int mx_x,
                              const char *str, int len, int last_term)
 {
- int maxc = mx_x - 1, start = 0;
+ int maxc = mx_x, start = 0;
 
  if (maxc < 1)
   maxc = 1;
@@ -1416,18 +1586,36 @@ static int buffer_lines_push(STRING **lines, int *n, int *cap, int mx_x,
    *cap = *cap * 2 + 8;
   }
   l = &(*lines)[*n];
-  if ((l->s = buffer_malloc((size_t)mx_x + 1)) == NULL)
+  if (buffer_row_alloc(mx_x, l) != E_BUFFER_OK)
    return(E_BUFFER_NOMEM);
-  memcpy(l->s, str + start, (size_t)seg);
-  l->s[seg] = '\0';
+  if (seg > 0)                  /* an empty line may come with no bytes at all */
+   memcpy(l->s, str + start, (size_t)seg);
   if (hard)
    l->s[seg] = (unsigned char) last_term;
-  l->s[seg + 1] = '\0';
   buffer_line_measure(l);
   (*n)++;
   start += seg;
  } while (start < len);
  return(E_BUFFER_OK);
+}
+
+/**
+ * e_buffer_rows_push - Append one line of text to @lines as the rows of a
+ * buffer @mx_x wide.
+ * @lines, @n, @cap: the rows so far, their count and room, all updated;
+ * @str, @len: the line's bytes, without its line break; @term: WPE_WR for
+ * a line that ends with a break, '\0' for one that does not.
+ *
+ * The one wrap rule of the editor: a file read, a paste, a block moved and
+ * a tool's rewrite all cut a long line into rows here, after the last blank
+ * or dash that fits in Max. Columns, else at Max. Columns and never inside
+ * a UTF-8 character.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM with the rows
+ * pushed so far left in @lines for the caller to free.
+ */
+int e_buffer_rows_push(STRING **lines, int *n, int *cap, int mx_x,
+                       const unsigned char *str, int len, int term)
+{
+ return(buffer_lines_push(lines, n, cap, mx_x, (const char *) str, len, term));
 }
 
 /**
@@ -1589,31 +1777,50 @@ static STRING *buffer_rows_rewrapped(const STRING *const *rows, const int *has_r
 }
 
 /* Copies of n rows of src from row `from`, each as it is: the buffer they
-   go to is as wide as src. */
+   go to is as wide as src and every one of them fits its rows
+   (buffer_rows_copy_whole). */
 static STRING *buffer_lines_copy_as_they_are(BUFFER *src, int from, int n, BUFFER *dst)
 {
  STRING *out = buffer_array(n, sizeof(STRING));
- int i, bytes;
+ int i;
 
  if (out == NULL)
   return(NULL);
  for (i = 0; i < n; i++)
  {
-  if (e_buffer_line_new(dst, &out[i]) != E_BUFFER_OK)
+  if (e_buffer_line_copy(dst, &src->bf[from + i], &out[i]) != E_BUFFER_OK)
   {
    e_buffer_lines_free(out, i);
    return(NULL);
   }
-  bytes = src->bf[from + i].nrc;
-  if (bytes > dst->mx.x)
-   bytes = dst->mx.x;
-  if (bytes < 0)
-   bytes = 0;
-  memcpy(out[i].s, src->bf[from + i].s, (size_t)bytes);
-  out[i].s[bytes] = '\0';
   buffer_line_measure(&out[i]);
  }
  return(out);
+}
+
+/* Does a row hold at most @width bytes of text, ended by its line break or
+   by the zero of a row whose line goes on below? */
+static int buffer_row_within(const STRING *row, int width)
+{
+ if (row->s == NULL || row->len < 0 || row->len > width)
+  return(0);
+ return(row->s[row->len] == WPE_WR || row->s[row->len] == '\0');
+}
+
+/* Can n rows of src from row `from` go into dst as they are?  Only when
+   both are as wide and every row already fits a row of dst: a row of
+   Messages or of the assistant's pane may be wider than the window, and is
+   wrapped again instead of losing its tail. */
+static int buffer_rows_copy_whole(BUFFER *src, int from, int n, BUFFER *dst)
+{
+ int i;
+
+ if (src->mx.x != dst->mx.x)
+  return(0);
+ for (i = 0; i < n; i++)
+  if (!buffer_row_within(&src->bf[from + i], dst->mx.x))
+   return(0);
+ return(1);
 }
 
 /**
@@ -1624,10 +1831,12 @@ static STRING *buffer_lines_copy_as_they_are(BUFFER *src, int from, int n, BUFFE
  * Block Copy and Paste put copies of the block's whole lines in, so the copy
  * does not change with later edits of the original and carries none of its
  * breakpoints.  Into a window of another width (Max. Columns changed between
- * the two windows' opening) each line of text is wrapped again at the new
- * width, so the paste keeps every byte and every line break; it may then
- * take more rows than it had.  Return: the lines, the caller's until a
- * splice adopts them, or NULL when memory ran out (or for n <= 0).
+ * the two windows' opening), or from a row wider than the window (a long
+ * line of Messages or of the assistant's pane), each line of text is
+ * wrapped again at the new width, so the paste keeps every byte and every
+ * line break; it may then take more rows than it had.  Return: the lines,
+ * the caller's until a splice adopts them, or NULL when memory ran out (or
+ * for n <= 0).
  */
 STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst, int *n_out)
 {
@@ -1638,7 +1847,7 @@ STRING *e_buffer_lines_copy(BUFFER *src, int from, int n, BUFFER *dst, int *n_ou
  *n_out = 0;
  if (n <= 0)
   return(NULL);
- if (src->mx.x == dst->mx.x)
+ if (buffer_rows_copy_whole(src, from, n, dst))
  {
   out = buffer_lines_copy_as_they_are(src, from, n, dst);
   if (out != NULL)
@@ -1841,7 +2050,7 @@ int e_buffer_txn_splice(WpeBufferTxn *t, BUFFER *b, int y, int n_del, STRING *li
   e_buffer_lines_free(lines, n_ins);
   return(t->refused);
  }
- if (!buffer_txn_in_range(e->lines, y, n_del, n_ins))
+ if (!buffer_txn_in_range(e->lines, y, n_del, n_ins) || !buffer_lines_fit(b, y, lines, n_ins))
  {
   e_buffer_lines_free(lines, n_ins);
   return(buffer_txn_refuse(t, E_BUFFER_RANGE));
@@ -2061,6 +2270,16 @@ static int buffer_txn_move_rebuilt(WpeBufferTxn *t, WpeBufferTxnBuffer *ef, BUFF
  return(k);
 }
 
+/* Must a move build its lines again at the width of @to instead of handing
+   them over?  When the widths differ, and when they leave a view, whose
+   rows may be wider than the window, for a buffer whose rows may not. */
+static int buffer_move_rebuilds(const BUFFER *from, const BUFFER *to)
+{
+ if (from->mx.x != to->mx.x)
+  return(1);
+ return(!buffer_rows_bounded(from) && buffer_rows_bounded(to));
+}
+
 /**
  * e_buffer_txn_move_lines - Add a move of @n whole lines from row @y_from of
  * @from to row @y_to of @to (the same buffer or another).
@@ -2087,7 +2306,7 @@ int e_buffer_txn_move_lines(WpeBufferTxn *t, BUFFER *from, int y_from, int n,
   return(buffer_txn_refuse(t, E_BUFFER_RANGE));
  if (n > ef->lines - y_from)
   n = ef->lines - y_from;
- if (from->mx.x != to->mx.x)
+ if (buffer_move_rebuilds(from, to))
   return(buffer_txn_move_rebuilt(t, ef, from, y_from, n, to, y_to));
  half = t->nsp;
  if (buffer_txn_detach(t, ef, from, y_from, n) != E_BUFFER_OK)
@@ -2282,7 +2501,8 @@ int e_buffer_txn_replay_lines(WpeBufferTxn *t, BUFFER *b, Undo *rec)
  if (t->refused != E_BUFFER_OK || (e = buffer_txn_room(t, b)) == NULL)
   return(t->refused);
  if (rec->type != E_UNDO_LINES || !buffer_txn_in_range(e->lines, rec->span, rec->n_new,
-                                                        rec->n_old))
+                                                        rec->n_old) ||
+     !buffer_lines_fit(b, rec->span, rec->old, rec->n_old))
   return(buffer_txn_refuse(t, E_BUFFER_RANGE));
  if (n_del > e->lines - rec->span)
   n_del = e->lines - rec->span;
@@ -2301,13 +2521,13 @@ int e_buffer_txn_replay_lines(WpeBufferTxn *t, BUFFER *b, Undo *rec)
 }
 
 /* The bytes a copy of line l keeps: through its terminating zero, never
-   past a line of the buffer's width. */
+   past the room of a row of the buffer's width. */
 static size_t buffer_line_kept_bytes(BUFFER *b, const STRING *l)
 {
  int n = l->nrc + 1;
 
- if (n > b->mx.x + 1)
-  n = b->mx.x + 1;
+ if (n > E_BUFFER_ROW_BYTES(b->mx.x))
+  n = E_BUFFER_ROW_BYTES(b->mx.x);
  if (n < 1)
   n = 1;
  return((size_t)n);
@@ -2381,6 +2601,8 @@ static int buffer_txn_rewrite_check(WpeBufferTxn *t, BUFFER *b, int lines, int y
   return(E_BUFFER_RANGE);
  }
  if (!buffer_shell_records_replayable(shell))
+  return(E_BUFFER_RANGE);
+ if (!buffer_lines_fit(b, y, shell->bf + g_top, shell->mxlines - g_top - g_bot))
   return(E_BUFFER_RANGE);
  return(E_BUFFER_OK);
 }
@@ -2566,20 +2788,26 @@ static void buffer_txn_commit_rewrite(WpeBufferTxnSplice *sp)
  sp->brk = NULL;
 }
 
-/* A copy of line l as a line of the shell: its bytes through the
-   terminating zero, its length and count kept, so a guard can be compared
-   byte for byte afterwards.  A line wider than the shell is cut and
-   measured again, and then no longer matches. */
-static int buffer_line_copy(BUFFER *shell, const STRING *l, STRING *out)
+/**
+ * e_buffer_line_copy - A copy of line @src as a row of @b.
+ * @out: receives the copy, the caller's until a splice adopts it.
+ *
+ * Its bytes through the terminating zero, its length and count kept, so a
+ * shell's guard row can be compared byte for byte afterwards, and a case
+ * change or a block copy starts from exactly the row the user sees.  A line
+ * wider than a row of @b is cut and measured again, and then no longer
+ * matches.  Return: E_BUFFER_OK or E_BUFFER_NOMEM.
+ */
+int e_buffer_line_copy(BUFFER *b, const STRING *src, STRING *out)
 {
- size_t n = buffer_line_kept_bytes(shell, l);
+ size_t n = buffer_line_kept_bytes(b, src);
 
- if (e_buffer_line_new(shell, out) != E_BUFFER_OK)
+ if (e_buffer_line_new(b, out) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
- memcpy(out->s, l->s, n);
- out->len = l->len;
- out->nrc = l->nrc;
- if ((int)n <= l->nrc)
+ memcpy(out->s, src->s, n);
+ out->len = src->len;
+ out->nrc = src->nrc;
+ if ((int)n <= src->nrc)
  {
   out->s[n - 1] = '\0';
   buffer_line_measure(out);
@@ -2652,7 +2880,7 @@ int e_buffer_shell_fill(BUFFER *shell, WpeBufferTxn *t, BUFFER *b, int y0, int n
  for (i = 0, nrows = 0; i < n; i++)
  {
   buffer_txn_view(t, b, y0 + i, &l, &row);
-  if (buffer_line_copy(shell, l, &lines[i]) != E_BUFFER_OK)
+  if (e_buffer_line_copy(shell, l, &lines[i]) != E_BUFFER_OK)
   {
    e_buffer_lines_free(lines, i);
    free(rows);
@@ -3384,6 +3612,11 @@ int e_buffer_replace_all(BUFFER *b, const char *text, WpeBufferStep step)
    return(E_BUFFER_OK);         /* empty text over the one empty line */
   return(buffer_editor_splice(b, 0, b->mxlines, NULL, 0, step));
  }
+ if (!buffer_lines_fit(b, 0, lines, n))
+ {
+  e_buffer_lines_free(lines, n);
+  return(E_BUFFER_RANGE);
+ }
  used = buffer_malloc((size_t)n);
  if (used == NULL)
  {
@@ -3460,20 +3693,20 @@ static int buffer_count_rows(const char *text)
 }
 
 /* One row holding `len` bytes of `src` whole, ended with a line break.  It
-   has room for at least the buffer's width, as every line has, and for the
-   whole text when that is wider. */
+   has the room of every row of the buffer, and room for the whole text when
+   that is wider (a view's long line). */
 static int buffer_row_ended(BUFFER *b, const char *src, int len, int term, STRING *out)
 {
  size_t room = (size_t)len + 2;
 
- if (room < (size_t)b->mx.x + 1)
-  room = (size_t)b->mx.x + 1;
+ if (room < (size_t)E_BUFFER_ROW_BYTES(b->mx.x))
+  room = (size_t)E_BUFFER_ROW_BYTES(b->mx.x);
  out->s = buffer_malloc(room);
  if (out->s == NULL)
   return(E_BUFFER_NOMEM);
+ memset(out->s, 0, room);
  memcpy(out->s, src, (size_t)len);
  out->s[len] = (unsigned char) term;
- out->s[len + 1] = '\0';
  buffer_line_measure(out);
  return(E_BUFFER_OK);
 }
@@ -3769,17 +4002,24 @@ static int buffer_replay_row(BUFFER *b, const Undo *rec)
  return(E_BUFFER_RANGE);
 }
 
-/* The furthest column a mark may stand at on row @y: the end of its text,
-   or just past its line break (the block then holds the break). */
-static int buffer_mark_limit(BUFFER *b, int y)
+/* A mark past the end of row @p->y: just after a line break is the start
+   of the next row, so a block that holds the break ends there; past the
+   last row of the text, or past a row without a break, the row's end. */
+static void buffer_mark_past_row_end(BUFFER *b, POINT *p)
 {
- if (b->bf[y].s[b->bf[y].len] == WPE_WR)
-  return(b->bf[y].len + 1);
- return(b->bf[y].len);
+ if (b->bf[p->y].s[b->bf[p->y].len] == WPE_WR && p->y < b->mxlines - 1)
+ {
+  p->y++;
+  p->x = 0;
+  return;
+ }
+ p->x = b->bf[p->y].len;
 }
 
 /* Pull one mark that is set back inside the text: a row past the end goes
-   to the end of the last row, a column past its row to the row's end. */
+   to the end of the last row, a column past its row as above.  A mark is
+   never past its row's end, so the block commands read every block the
+   same way. */
 static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
 {
  if (p->y < 0)
@@ -3789,8 +4029,8 @@ static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
   p->y = b->mxlines - 1;
   p->x = b->bf[p->y].len;
  }
- if (p->x > buffer_mark_limit(b, p->y))
-  p->x = buffer_mark_limit(b, p->y);
+ if (p->x > b->bf[p->y].len)
+  buffer_mark_past_row_end(b, p);
  if (p->x < 0)
   p->x = 0;
 }
@@ -3812,6 +4052,24 @@ static void buffer_marks_inside(BUFFER *b)
 
  for (i = 0; i < n; i++)
   buffer_mark_pull_inside(b, m[i]);
+}
+
+/**
+ * e_buffer_marks_inside - Every mark of the window, and the anchor a Shift
+ * key selects from, stands inside the text, never past the end of its row.
+ * @b: the buffer of the window the next key goes to.
+ *
+ * Called before each key is read.  A key that changed the text in place
+ * (Backspace, a typed character in overwrite mode) does not move the anchor
+ * the previous key left; a Shift key would then make a block that ends past
+ * a line break, and Ctrl-O H, U or M would write a byte behind the break,
+ * which Save loses.  Just after a line break is the start of the next row.
+ */
+void e_buffer_marks_inside(BUFFER *b)
+{
+ buffer_marks_inside(b);
+ if (b->f != NULL && b->f->s != NULL)
+  buffer_mark_pull_inside(b, &b->f->s->ks);
 }
 
 /* One step back (Undo) or forward (Redo).  A record is taken off its list
@@ -3901,9 +4159,15 @@ void e_buffer_history_drop(BUFFER *b)
  *
  * Messages, Help, the clipboard and the like: no undo, no modified mark, no
  * breakpoint rows; the user's marks are still kept so a copy from them works.
+ * Its rows may be wider than Max. Columns, so a compiler's line stays one
+ * row.  The rows Messages grows for a running program's output have no room
+ * past their text: the editor runs a character primitive on a view only on
+ * rows the file reader or e_buffer_line_new made (a manual page's buttons,
+ * the "No Messages" row), and the key loop types into no view.
  */
 void e_buffer_mark_view(BUFFER *b)
 {
+ b->view = 1;
  b->history = E_BUFFER_NO_HISTORY;
  e_buffer_history_drop(b);
 }

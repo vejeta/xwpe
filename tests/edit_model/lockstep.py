@@ -38,9 +38,12 @@ from edit_model.render import render_disk, screen_disagreements  # noqa: E402
 
 FILENAME = "t.c"
 DEFAULT_STEPS = 50
-# A row this long is two bytes short of the default width of 120, so the
-# next characters typed into it wrap.
+# A row this long (116 bytes) is four bytes short of the default width of
+# 120, so the fifth character typed at its end wraps.
 NEAR_WIDTH_ROW = option_row.NEAR_WIDTH_ROW
+# A row exactly as wide as the default width: typing, Enter and Backspace at
+# its end meet a full row and its line break.
+FULL_WIDTH_ROW = "x" * 120
 SEED = ("#include <stdio.h>\n"
         "int main(void)\n"
         "{\n"
@@ -50,6 +53,7 @@ SEED = ("#include <stdio.h>\n"
         "\t}\n"
         "}\n"
         + NEAR_WIDTH_ROW + "\n"
+        + FULL_WIDTH_ROW + "\n"
         "café au lait\n"
         "   \n"
         "one-two three\n"
@@ -104,7 +108,6 @@ def _key_did_nothing(action, field, before, w):
 KNOWN_STEPS = ("decided, not built yet: one Ctrl-U per Tab or Backspace in an "
                "indent, Ctrl-K I/U, Ctrl-O U/M/H and Change All")
 KNOWN_UNDO_CURSOR = "open question: where Ctrl-U and Ctrl-R leave the cursor"
-KNOWN_SOFT_WRAP = "known bug, fix pending: typing into a soft-wrapped row loses a byte"
 KNOWN_UTF8_BACKSPACE = ("known bug, fix pending: Backspace with auto-indent deletes one "
                         "byte of a UTF-8 character")
 # What the editor pushes as several steps today, where the user's decision is
@@ -129,11 +132,6 @@ def expected_tag(action, field, before, pred, editor_w):
     if name in ("undo", "redo") and field in (model.F_CURSOR, model.F_ANCHOR) \
             and not _cursor_outside(editor_w):
         return KNOWN_UNDO_CURSOR
-    if name == "type" and before.rows[before.y].end == model.SOFT \
-            and field in (model.F_TEXT, FIELD_TYPED_KEPT, model.F_CURSOR,
-                          model.F_SAVE, model.F_MARKS) \
-            and _bytes_lost(pred, editor_w):
-        return KNOWN_SOFT_WRAP
     if name == "backspace" and before.flg & model.FLG_AUTOINDENT \
             and _multibyte_just_before_cursor(before):
         return KNOWN_UTF8_BACKSPACE
@@ -143,12 +141,6 @@ def expected_tag(action, field, before, pred, editor_w):
 def _cursor_outside(w):
     """Is the editor's cursor outside the editor's own text?"""
     return any(cls == "cursor" for cls, _detail in selfcheck.check_inside(w))
-
-
-def _bytes_lost(pred, w):
-    """Does the editor hold fewer bytes than the model predicted (what the
-    soft-wrap typing bug does), rather than different ones?"""
-    return sum(len(d) for _e, d in w.lines) < sum(len(r.data) for r in pred.rows)
 
 
 def _multibyte_just_before_cursor(before):
@@ -191,6 +183,7 @@ def _around(text, off):
 
 FIELD_UTF8 = "utf8-valid"
 FIELD_INSIDE = "inside"
+FIELD_ROW_WIDTH = "row-width"
 
 
 def compare(pred, d, session, action, check_screen, filename=FILENAME):
@@ -260,6 +253,8 @@ def model_free_checks(before, w):
         out.append((FIELD_INSIDE, "inside the text", detail))
     for cls, detail in selfcheck.check_utf8_stays_valid(before.lines(), list(w.lines)):
         out.append((FIELD_UTF8, "valid UTF-8", detail))
+    for cls, detail in selfcheck.check_rows_fit(w):
+        out.append((FIELD_ROW_WIDTH, "rows within Max. Columns", detail))
     return out
 
 
@@ -412,6 +407,8 @@ class Walk:
             cls, rules = CLASS_EDITOR, [model.RULES["type_insert"]]
         elif field in (FIELD_UTF8, FIELD_INSIDE):
             cls, rules = CLASS_UNSPECIFIED, []
+        elif field == FIELD_ROW_WIDTH:
+            cls, rules = CLASS_EDITOR, [model.RULES["wrap_at_max_columns"]]
         elif field == "context":
             cls, rules = model.classify(pred.fired, model.F_TEXT)
         elif _key_did_nothing(action, field, before, w):

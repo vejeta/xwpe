@@ -17,6 +17,8 @@ import os
 import pytest
 
 from wpe_driver import WpeSession, ALT
+from edit_model.oracle import EditSession
+from edit_model import keymap
 
 CTRL_K = "\x0b"
 CTRL_O = "\x0f"
@@ -40,6 +42,8 @@ HOME = "\033OH"
 END = "\033OF"
 ENTER = "\r"
 F2 = "\033OQ"
+F2_KEY = F2              # Save
+INSERT_KEY = "\033[2~"   # Insert: typing overwrites
 F3 = "\033OR"            # File > Open: the File Manager
 HFE = "\x06"             # the help file's end-of-page mark (Ctrl-F)
 HBG = "\x01"             # the help file's button start (Ctrl-A)
@@ -352,6 +356,95 @@ def test_undo_of_ctrl_t_on_the_last_row_puts_the_row_back(tmp_path):
         s.key(CTRL_U, delay=0.6)
         assert _saved(s) == original, "the second Ctrl-U gave %r" % s.text()
         assert s.alive(), "wpe died"
+
+
+# A line Ctrl-T takes whole, its line break with it.
+DASH_LINE_SEED = "a\nb\n-\nz\n"
+
+
+# @scenario SC-buffer-01
+@pytest.mark.parametrize("block_key", ["c", "v"], ids=["copy", "move"])
+def test_a_block_marked_by_undo_of_a_line_break_copies_and_undoes_whole(tmp_path, block_key):
+    """Ctrl-T on a line of one character takes it and its line break;
+    Ctrl-U gives both back and marks them.  Ctrl-K C (or Ctrl-K V) of that
+    block two lines up, then Ctrl-U: the file is as it was, no line lost."""
+    with WpeSession(str(tmp_path), DASH_LINE_SEED, filename="t.txt") as s:
+        s.key(DOWN, DOWN, HOME, delay=0.3)
+        s.key(CTRL_T, delay=0.5)
+        assert _saved(s) == "a\nb\nz\n", "Ctrl-T gave %r" % s.text()
+        s.key(CTRL_U, delay=0.6)
+        assert _saved(s) == DASH_LINE_SEED, "Ctrl-U gave %r" % s.text()
+        s.key(UP, UP, delay=0.3)
+        s.key(CTRL_K, block_key, delay=0.6)
+        s.key(CTRL_U, delay=0.6)
+        assert _saved(s) == DASH_LINE_SEED, \
+            "Ctrl-U of Ctrl-K %s gave %r" % (block_key.upper(), s.text())
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-01
+def test_undo_of_a_line_break_marks_up_to_the_start_of_the_next_row(tmp_path):
+    """The block Ctrl-U marks around a line it gave back ends at the start
+    of the next row, never past the end of the line's own row."""
+    with EditSession(str(tmp_path), DASH_LINE_SEED, filename="t.txt") as s:
+        s.send([DOWN, DOWN, HOME, CTRL_T])
+        w = s.send([CTRL_U]).win
+    assert w.lines == [("H", b"a"), ("H", b"b"), ("H", b"-"), ("H", b"z")], w.lines
+    assert (w.mb, w.me) == ((2, 0), (3, 0)), "the block is %r to %r" % (w.mb, w.me)
+
+
+def _action_keys(name):
+    """The keys of a named action under the default key style."""
+    return keymap.keys_for(keymap.STYLE_OLD, name, None)
+
+
+def _marks_inside_rows(w):
+    """No block mark past the end of its row."""
+    for y, x in (w.mb, w.me):
+        if 0 <= y < len(w.lines):
+            assert x <= len(w.lines[y][1]), "mark (%d,%d) past %r" % (y, x, w.lines)
+
+
+# @scenario SC-buffer-01
+@pytest.mark.parametrize("marker", ["help_header", "help_button", "help_highlight"])
+def test_a_shift_block_after_overwrite_at_a_line_end_stays_in_its_row(tmp_path, marker):
+    """In overwrite mode a character typed at the end of a line goes in; a
+    Shift selection from there and Ctrl-O H, U or M on it: every mark stays
+    inside its row, the rows keep their shape, and the file saved holds
+    every byte the window shows."""
+    with EditSession(str(tmp_path), "a\n\n", filename="t.txt") as s:
+        s.send([INSERT_KEY, DOWN, " "])
+        w = s.send(_action_keys("shift_end")).win
+        _marks_inside_rows(w)
+        w = s.send(_action_keys(marker)).win
+        _marks_inside_rows(w)
+        assert w.rows == -1, "Ctrl-O left row %d out of shape: %r" % (w.rows, w.lines)
+        shown = w.disk()
+        s.send([F2_KEY])
+        assert s.disk() == shown, "saved %r, the window showed %r" % (s.disk(), shown)
+
+
+# Overwrite mode: a typed character replaces the one under the cursor.
+WIDE_SEEDS = [("e-acute", "aéb\n", "azb\n"), ("euro", "a€b\n", "azb\n"),
+              ("ascii", "axb\n", "azb\n")]
+
+
+# @scenario SC-buffer-01
+@pytest.mark.parametrize("name,seed,edited", WIDE_SEEDS, ids=[c[0] for c in WIDE_SEEDS])
+def test_overwrite_replaces_a_whole_character(tmp_path, name, seed, edited):
+    """In overwrite mode a letter typed over `é` or `€` replaces the whole
+    character, so the line stays valid UTF-8; Ctrl-U gives the character
+    back whole, Ctrl-R types over it again."""
+    with EditSession(str(tmp_path), seed, filename="t.txt") as s:
+        s.send([INSERT_KEY, RIGHT])
+        w = s.send(["z"]).win
+        assert w.disk() == edited.encode("utf-8"), "typed over: %r" % w.disk()
+        assert w.cursor == (0, 2), w.cursor
+        assert s.send([CTRL_U]).win.disk() == seed.encode("utf-8")
+        assert s.send([CTRL_R]).win.disk() == edited.encode("utf-8")
+        assert s.send([CTRL_U]).win.disk() == seed.encode("utf-8")
+        s.send([F2_KEY])
+        assert s.disk() == seed.encode("utf-8"), "saved %r" % s.disk()
 
 
 # @scenario SC-buffer-01

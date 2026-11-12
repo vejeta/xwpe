@@ -238,6 +238,8 @@ typedef struct BFF {
  int syn_lo, syn_hi;   /* rows whose syntax state waits for depth 0; -1 when none */
  int shell;            /* 1: a private copy the owner made (e_buffer_shell_new) */
  int refusals;         /* a shell: how many changes in it were refused for memory */
+ int view;             /* 1: a view the editor writes (e_buffer_mark_view): its rows
+                          may be wider than mx.x, and no row-width check applies */
 } BUFFER;
 
 typedef struct SCHRM {
@@ -542,6 +544,7 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
 void e_line_make_hard_empty(STRING *l);
 int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
   unsigned char *text, int rn);
+void e_ins_point_at(BUFFER *b, int y, int off, POINT *p);
 int e_put_char(int c, BUFFER *b, SCHIRM *s);
 int e_su_lblk(int xa, char *s);
 int e_su_rblk(int xa, char *s);

@@ -302,15 +302,16 @@ def test_a_copy_keeps_the_rows_between_its_ends_as_they_are():
     assert _rows(done)[3:6] == [("H", b"top")] + long_line
     again = _state([("H", b"top")] + long_line + [("H", b"end")], width=60)
     wide = _do(_at(_mark(again, (1, 0), (2, 56)), 0, 0), "block_copy")
-    assert wide.lines()[0][0] == model.SOFT and len(wide.lines()[0][1]) <= 59, \
-        "the line at an end is wrapped again, one word earlier"
+    assert wide.lines()[0][0] == model.SOFT and len(wide.lines()[0][1]) <= 60, \
+        "the line at an end is wrapped again at the width"
 
 
 # @scenario SC-edit-model-22
 @pytest.mark.parametrize("piece,width,want", [
-    (b"aaa bbb ccc", 8, [(b"aaa ", "S"), (b"bbb ccc", "H")]),
-    (b"aaa-bbb-ccc", 8, [(b"aaa-", "S"), (b"bbb-ccc", "H")]),
-    (b"abcdefghijkl", 8, [(b"abcdefg", "S"), (b"hijkl", "H")]),
+    (b"aaa bbb ccc", 8, [(b"aaa bbb ", "S"), (b"ccc", "H")]),
+    (b"aaa-bbb-ccc", 8, [(b"aaa-bbb-", "S"), (b"ccc", "H")]),
+    (b"abcdefghijkl", 8, [(b"abcdefgh", "S"), (b"ijkl", "H")]),
+    (b"abcdefgh", 8, [(b"abcdefgh", "H")]),
     (b"", 8, [(b"", "H")]),
     (b"short", 8, [(b"short", "H")]),
 ])

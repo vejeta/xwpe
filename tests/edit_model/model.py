@@ -161,11 +161,8 @@ _rule("overwrite_at_end_inserts", SOURCE_CODE, "we_edit.c:2627",
 _rule("type_multibyte_inserts", SOURCE_CODE, "we_edit.c:942-947",
       "A character past ASCII is inserted, in overwrite mode too.", (F_TEXT, F_CURSOR))
 _rule("wrap_at_max_columns", SOURCE_MANUAL, HELP + ":1578-1580",
-      "Typing past Max. Columns wraps the line at a word.", (F_TEXT,))
-_rule("wrap_typing_point", SOURCE_CODE, "we_edit.c:2470-2496",
-      "The wrap happens when length + inserted >= width - 1, at the last blank "
-      "or dash; a hard row pushes its tail down as a new row, a soft row into "
-      "the next row.", (F_TEXT, F_CURSOR, F_MARKS))
+      "Typing past Max. Columns wraps the line at a word: a row holds Max. "
+      "Columns bytes and the next byte typed wraps it.", (F_TEXT,))
 _rule("literal_mode_inserts_controls", SOURCE_CODE, "we_edit.c:937-938",
       "In Alt-J's mode a control key goes into the text as its byte.",
       (F_TEXT, F_CURSOR))
@@ -319,8 +316,9 @@ _rule("undo_cursor_snapshot", SOURCE_DESIGN, "this model: Undo as a snapshot",
       "Undo puts the cursor where it was before the change, Redo where it was "
       "after.", (F_CURSOR,))
 _rule("undo_marks_span", SOURCE_CODE, "we_buffer.c replay of 'a' and 'r' records",
-      "Undo of a deletion marks the text it brings back (a line break as "
-      "len+1); Redo of an insertion marks it; else the marks from before.",
+      "Undo of a deletion marks the text it brings back (a line break it "
+      "brings back ends the block at the start of the next row, never past "
+      "a row's end); Redo of an insertion marks it; else the marks from before.",
       (F_MARKS,))
 _rule("one_step_per_action", SOURCE_DESIGN, DESIGN_ONE_STEP,
       "One user action is one undo step, where no text says otherwise.", (F_STEPS,))
@@ -757,6 +755,12 @@ class Rows:
         n = self.str_len(y)
         if x > n:
             x = n
+        if x == n and not self.hard(y):
+            # buffer_split_soft_end: the row takes its break, no row is added
+            self.bufs[y] = self._buf(self.content(y), True)
+            self._splice_marks(y, 1, 1, 1)
+            self.count(2 * SAVE_PER_LINE)
+            return
         if x == 0:
             self.bufs.insert(y, self._buf(b"", True))
             self.ids.insert(y, self.new_ident())
@@ -766,7 +770,7 @@ class Rows:
         src = self.cstr(y)
         head = self._buf(src[:x], True)
         tail = bytearray(self.mx + 2)
-        t = src[x:x + self.mx]
+        t = src[x:x + self.mx + 1]          # a full row's text and its break
         tail[:len(t)] = t
         m = self.marks()
         moved = [None, None]
@@ -785,7 +789,9 @@ class Rows:
 
     # -- the character primitives -------------------------------------------------
     def ins_nchar(self, s, xa, ya):
-        """e_ins_nchar: insert the bytes @s at (ya, xa), wrapping."""
+        """e_ins_nchar: insert the bytes @s at (ya, xa), wrapping the row at
+        Max. Columns.  The run is never split; a run wider than a row, or a
+        row already wider than one, is refused and nothing changes."""
         s = bytes(s)
         n = len(s)
         if ya >= self.nlines:
@@ -793,108 +799,120 @@ class Rows:
                 return
             self.st.fired.append("open_row_past_text")
             self.insert_blank(ya)
-        sp = 0
-        mx = self.mx
+        if self.str_len(ya) > self.mx:
+            return
+        if n > self.mx:
+            self._ins_long(s, xa, ya)
+            return self.st.x
         self.count(n)
-        buf = self.bufs[ya]
-        buf[mx] = NUL
-        ln = self.str_len(ya)
-        wrapped = True
-        if ln + n >= mx - 1:
+        if self.str_len(ya) + n > self.mx:
             self.st.fired.append("wrap_at_max_columns")
-            self.st.fired.append("wrap_typing_point")
-            if xa < ln:
-                i = mx - n - 1
-                if i >= ln - 1:
-                    i = ln - 1
-            else:
-                while xa < mx - 1 and n > 0:
-                    buf[xa + 1] = buf[xa]
-                    buf[xa] = s[sp]
-                    xa += 1
-                    sp += 1
-                    n -= 1
-                buf[xa + 1] = NUL
-                i = mx
-                ln = self.str_len(ya)
-            while i > 0 and buf[i] != SPACE and buf[i] != DASH:
-                i -= 1
-            if i <= 0:
-                i = ln - 2
-            if i < 0:
-                i = 0
-            if buf[ln] == WR or ya + 1 >= self.nlines:
-                wrapped = self._wrap_tail_down(ya, xa, n, i)
-            else:
-                tail = bytes(buf[i + 1:ln])
-                save_cursor = (self.st.y, self.st.x)
-                self.ins_nchar(tail, 0, ya + 1)
-                self.st.y, self.st.x = save_cursor
-                m = self.marks()
-                for p in m:
-                    if p[0] == ya:
-                        if p[1] > i:
-                            p[0] += 1
-                            p[1] -= i + 1
-                        elif p[1] >= xa:
-                            p[1] += n
-                self.set_marks(m)
-            buf = self.bufs[ya]
-            if wrapped:
-                buf[i + 1:] = bytes(len(buf) - i - 1)
-                ln = self.str_len(ya)
-            if wrapped and xa > ln:
-                xa -= ln
-                ya += 1
-                m = self.marks()
-                for p in m:
-                    if p[0] == ya and p[1] >= xa:
-                        p[1] += n
-                self.set_marks(m)
+            self._ins_wrapped(s, xa, ya)
         else:
-            m = self.marks()
-            for p in m:
-                if p[0] == ya and p[1] >= xa:
-                    p[1] += n
-            self.set_marks(m)
+            self._ins_here(s, xa, ya)
+        return self.st.x
+
+    def _point_at(self, y, off):
+        """e_ins_point_at: (row, col) @off bytes into the line from row @y."""
+        while y < self.nlines - 1 and off > self.str_len(y) and not self.hard(y):
+            off -= self.str_len(y)
+            y += 1
+        return [y, min(off, self.str_len(y))]
+
+    def _ins_long(self, s, xa, ya):
+        """e_ins_long_run: a run longer than a row; the row is built again
+        from the text around it, wrapped by the owner, as one line record
+        (the modified count of that record is the owner's, not predicted)."""
+        self.st.fired.append("wrap_at_max_columns")
+        hard = self.hard(ya)
+        data = self.content(ya)
+        text = data[:xa] + s + data[xa:]
+        rows = blocks.wrap_reader(text, self.mx, hard)
+        m = self.marks()
+        behind = [p[1] if (p[0] == ya and p[1] >= xa) else None for p in m]
+        self.bufs[ya:ya + 1] = [self._buf(d, e == HARD) for d, e in rows]
+        self.ids[ya:ya + 1] = [self.ids[ya]] + [self.new_ident() for _ in rows[1:]]
+        self._splice_marks(ya, 1, len(rows), 1)
+        m = self.marks()
+        for k in range(2):
+            if behind[k] is not None:
+                m[k] = self._point_at(ya, behind[k] + len(s))
+        self.set_marks(m)
+        self.st.y, self.st.x = self._point_at(ya, xa + len(s))
+        self.st.save_known = False
+
+    def _ins_here(self, s, xa, ya):
+        """e_ins_run_here: the run into a row with room for it."""
+        n = len(s)
+        m = self.marks()
+        for p in m:
+            if p[0] == ya and p[1] >= xa:
+                p[1] += n
+        self.set_marks(m)
         self.st.fired.append("primitive_marks")
         buf = self.bufs[ya]
         ln = self.str_len(ya)
-        for j in range(ln, xa - 1, -1):
-            if j + n <= mx:
-                buf[j + n] = buf[j]
-        for j in range(n):
-            if xa + j <= mx:
-                buf[xa + j] = s[sp + j]
-        if buf[ln] == WR:
-            buf[ln + 1] = NUL
-        buf[mx] = NUL
+        end = ln + 1 if buf[ln] == WR else ln
+        for j in range(end, xa - 1, -1):
+            buf[j + n] = buf[j]
+        buf[xa:xa + n] = s
         self.st.x = xa + n
         self.st.y = ya
-        return xa + n
 
-    def _wrap_tail_down(self, ya, xa, n, i):
-        """Typing past the margin of a hard row: its tail goes to a new row."""
-        self.insert_blank(ya + 1)
+    def _wrap_point(self, xa, ya, n):
+        """e_ins_wrap_point: after the last blank or dash that leaves room for
+        the run, else the owner's cut, but never before the cursor."""
+        buf = self.bufs[ya]
+        room = self.mx - n
+        if room < 1:
+            return xa
+        c = blocks.wrap_cut(buf, room)
+        if c > 0 and buf[c - 1] in (SPACE, DASH):
+            return c
+        if c <= xa or (buf[c] & UTF8_CONT_MASK) == UTF8_CONT:
+            return xa
+        return c
+
+    def _ins_wrapped(self, s, xa, ya):
+        """e_ins_wrapped_run: cut the row, move its tail down, then put the
+        run in on this row or, at or after the cut, on the row below."""
+        c = self._wrap_point(xa, ya, len(s))
+        self._cut_row(ya, c)
+        if xa < c or c == 0:
+            self._ins_here(s, xa, ya)
+        else:
+            self.ins_nchar(s, xa - c, ya + 1)
+
+    def _cut_row(self, ya, c):
+        """e_ins_cut_row: the bytes behind @c go below, to a new row when the
+        row ends its line or the text or moves whole, else into the start of
+        the next row; their marks go with them, and the row ends soft at @c."""
+        ln = self.str_len(ya)
+        buf = self.bufs[ya]
+        if c == 0 or ya + 1 >= self.nlines or buf[ln] == WR:
+            self._wrap_tail_down(ya, c)
+        elif ln > c:
+            self.ins_nchar(bytes(buf[c:ln]), 0, ya + 1)
         m = self.marks()
         for p in m:
-            if p[0] != ya:
-                continue
-            if p[1] > i:
+            if p[0] == ya and p[1] >= c:
                 p[0] += 1
-                p[1] -= i + 1
-            elif p[1] >= xa:
-                p[1] += n
+                p[1] -= c
         self.set_marks(m)
+        buf = self.bufs[ya]
+        buf[c:] = bytes(len(buf) - c)
+
+    def _wrap_tail_down(self, ya, c):
+        """e_ins_wrap_tail_down: the bytes behind @c to a new row below, which
+        ends as the wrapped row did."""
+        self.insert_blank(ya + 1)
         src = self.bufs[ya]
+        ln = self.str_len(ya)
         dst = self.bufs[ya + 1]
-        j = i + 1
-        while j < len(src) and src[j] != WR and src[j] != NUL and (j - i - 1) < self.mx - 1:
-            dst[j - i - 1] = src[j]
-            j += 1
-        dst[j - i - 1] = WR
-        dst[j - i] = NUL
-        return True
+        tail = bytes(src[c:ln])
+        dst[:len(tail)] = tail
+        if src[ln] == WR:
+            dst[len(tail)] = WR
 
     def del_nchar(self, x, y, n):
         """e_del_nchar: delete @n bytes at (y, x), reflowing a soft row."""
@@ -917,7 +935,7 @@ class Rows:
             nxt = self.bufs[y + 1]
             nlen = self.str_len(y + 1)
             room = self.mx + n - ln
-            if room > nlen:
+            if room >= nlen:
                 i = nlen
             else:
                 i = su_rblk(room, self.cstr(y + 1))
@@ -939,12 +957,35 @@ class Rows:
                 self.del_nchar(0, y + 1, i)
         return x + n
 
+    def _char_bytes_at(self, x, y):
+        """e_char_bytes_at: the bytes of the character at (y, x)."""
+        data = self.content(y)
+        lead = data[x]
+        if lead < 0x80:
+            k = 1
+        elif (lead & 0xE0) == 0xC0:
+            k = 2
+        elif (lead & 0xF0) == 0xE0:
+            k = 3
+        elif (lead & 0xF8) == 0xF0:
+            k = 4
+        else:
+            k = 1
+        return min(k, len(data) - x)
+
     def put_char(self, c):
-        """e_put_char: overwrite the byte at the cursor (insert at the end)."""
+        """e_put_char: overwrite the character at the cursor, whole (insert
+        at the end, the cursor then behind what went in)."""
         y, x = self.st.y, self.st.x
         if x == self.str_len(y):
             self.st.fired.append("overwrite_at_end_inserts")
             self.ins_nchar(bytes([c]), x, y)
+            return
+        if self._char_bytes_at(x, y) > 1:
+            # e_put_char_over_wide: the whole character goes, as a replace
+            self.del_nchar(x, y, self._char_bytes_at(x, y))
+            self.ins_nchar(bytes([c]), x, y)
+            self.st.x -= 1
         else:
             self.count(SAVE_PER_CHAR)
             self.bufs[y][x] = c
@@ -1100,11 +1141,30 @@ def apply(state, action):
     return st
 
 
+def _mark_inside(rows, p):
+    """e_buffer_marks_inside before each key: a mark is never past its row's
+    end; just after a line break is the start of the next row, past the
+    last row's end is that end."""
+    y, x = p
+    if y < 0 or not rows:
+        return p
+    if y >= len(rows):
+        y = len(rows) - 1
+        x = len(rows[y].data)
+    if x > len(rows[y].data):
+        if rows[y].end == HARD and y < len(rows) - 1:
+            return (y + 1, 0)
+        return (y, len(rows[y].data))
+    return (y, max(x, 0))
+
+
 def _after_key(st, name, pre):
     """What the key loop does after every key: the anchor, the clamp, the
     column memory, and the autosave check before the next key."""
     st.ks = (st.y, st.x)
     st.fired.append("anchor_after_key")
+    st.mb = _mark_inside(st.rows, st.mb)
+    st.me = _mark_inside(st.rows, st.me)
     if 0 <= st.y < len(st.rows):
         ln = len(st.rows[st.y].data)
         if st.x > ln:
@@ -1308,10 +1368,7 @@ def _enter(st, rows):
     ln = rows.str_len(y)
     if x == ln and not rows.hard(y):
         st.fired.append("enter_soft_end_hardens")
-        rows.bufs[y][x] = WR
-        rows.bufs[y][x + 1] = NUL
-    else:
-        rows.split_line(y, x)
+    rows.split_line(y, x)
     rows.count(SAVE_PER_CHAR)
     if y < rows.nlines - 1:
         st.y, st.x = y + 1, 0
@@ -1593,16 +1650,13 @@ def _text_offsets(rows):
     return bytes(out), starts
 
 
-def _offset_point(rows, starts, off, is_end_of_break):
-    """(row, col) of a text offset; an offset just past a hard break that
-    ends a span is reported as len+1 on the break's row, as the editor marks
-    a restored line break."""
+def _offset_point(rows, starts, off):
+    """(row, col) of a text offset.  A mark is never past its row's end:
+    just past a line break is the start of the next row, and past the last
+    row's break is that row's end."""
     for i in range(len(rows) - 1, -1, -1):
         if starts[i] <= off:
-            col = off - starts[i]
-            if is_end_of_break and col == 0 and i > 0 and rows[i - 1].end == HARD:
-                return (i - 1, len(rows[i - 1].data) + 1)
-            return (i, col)
+            return (i, min(off - starts[i], len(rows[i].data)))
     return (0, 0)
 
 
@@ -1630,10 +1684,9 @@ def _marks_on_inserted(st, short_rows, long_rows, fallback):
     if sp is None:
         st.mb, st.me = fallback
         return
-    text, starts = _text_offsets(long_rows)
-    ends_break = sp[1] > sp[0] and text[sp[1] - 1:sp[1]] == b"\n"
-    st.mb = _offset_point(long_rows, starts, sp[0], False)
-    st.me = _offset_point(long_rows, starts, sp[1], ends_break)
+    _text, starts = _text_offsets(long_rows)
+    st.mb = _offset_point(long_rows, starts, sp[0])
+    st.me = _offset_point(long_rows, starts, sp[1])
 
 
 def _unmodelled_step(st):

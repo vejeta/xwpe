@@ -643,6 +643,7 @@ int e_edit(ECNT *cn, char *filename)
    }
    if (!strcmp(f->datnam, "Messages"))
    {
+    e_buffer_mark_view(f->b);    /* compiler lines appended later stay one row each */
     e_make_error_list(f);
     f->ins = 8;
    }
@@ -846,6 +847,7 @@ int e_eingabe(ECNT *e)
    f = e->f[e->mxedt];            /* or put another one on top */
    if (f->save > f->ed->maxchg) e_autosave(f);
    e_buffer_depth_check(f->b);
+   e_buffer_marks_inside(f->b);   /* no mark or Shift anchor past a row's end */
    c = e_getch();
    /* A build ending while the editor waited for this key may have put
       another window on top (the jump to its first error): the key belongs
@@ -2254,49 +2256,31 @@ static int e_char_row_missing(BUFFER *b, int y, int n, const char *what)
 }
 
 /**
- * e_line_end_soft_line - Enter at the end of a soft-wrapped line: the line
- * gets its own line break and the continuation below becomes a line of its
- * own, with no new line inserted.
- */
-static void e_line_end_soft_line(BUFFER *b, int y, int x)
-{
- b->bf[y].s[x] = WPE_WR;
- b->bf[y].s[x+1] = '\0';
- b->bf[y].len = e_str_len(b->bf[y].s);
- b->bf[y].nrc = e_str_nrc(b->bf[y].s);
- sc_txt_4(y, b, 0);
-}
-
-/**
  * e_car_ret_split - Break the line at the cursor, without auto-indent.
  * @b: the buffer; @s: its screen.
  *
  * The line break the user typed, and what Undo of a joined line puts back:
  * the line keeps its breakpoint and the text behind the cursor moves down
- * with its marks.  Undo never indents again, so Redo of an undone Enter
- * gives the same text.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM when the
- * line could not be split, E_BUFFER_LOCKED in a window the user cannot
- * change (nothing changed either way, the status row says so).
+ * with its marks.  At the end of a row without a line break the row gets
+ * its break and the row below becomes a line of its own, a full row of
+ * Max. Columns bytes included.  Undo never indents again, so Redo of an
+ * undone Enter gives the same text.  Return: E_BUFFER_OK, or E_BUFFER_NOMEM
+ * when the line could not be split, E_BUFFER_LOCKED in a window the user
+ * cannot change (nothing changed either way, the status row says so).
  */
 int e_car_ret_split(BUFFER *b, SCHIRM *s)
 {
- int x = b->b.x, y = b->b.y, len, r;
+ int x = b->b.x, y = b->b.y, r;
 
  if (e_buffer_change_refused(b))
   return(E_BUFFER_LOCKED);
  if (e_char_row_missing(b, y, 1, "a line break"))
   return(E_BUFFER_RANGE);
- len = b->bf[y].len;
- if (x == len && b->bf[y].s[len] == '\0')
-  e_line_end_soft_line(b, y, x);
- else
+ r = e_buffer_split_line(b, y, x, E_BUFFER_STEP_COVERED, E_BUFFER_HEAD_WR);
+ if (r != E_BUFFER_OK)
  {
-  r = e_buffer_split_line(b, y, x, E_BUFFER_STEP_COVERED, E_BUFFER_HEAD_WR);
-  if (r != E_BUFFER_OK)
-  {
-   wpe_buffer_say_nomem(b, "a line break");
-   return(r);
-  }
+  wpe_buffer_say_nomem(b, "a line break");
+  return(r);
  }
  e_add_undo('a', b, x, y, 1);
  e_char_count_change(b, 1);
@@ -2513,7 +2497,9 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
  if (len <= n) e_del_line(y, b, s);
  else if (y < b->mxlines - 1 && *(b->bf[y].s+len-n-1) != WPE_WR )
  {
-  if (b->mx.x+n-len > b->bf[y+1].len)
+  /* A next row that fits the room left, exactly filling it included, comes
+     up whole with its line break; a longer one only up to its last word. */
+  if (b->mx.x+n-len >= b->bf[y+1].len)
    i = b->bf[y+1].len;
   else
    i = e_su_rblk(b->mx.x+n-len, b->bf[y+1].s);
@@ -2540,84 +2526,177 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
  return(x+n);
 }
 
+/* A wrap that keeps nothing on its row: the run takes the row by itself and
+   what the row held goes to a new row below it. */
+#define E_INS_CUT_NONE 0
+/* The fewest bytes a row must keep beside a run for a cut to be looked for. */
+#define E_INS_ROOM_MIN 1
+
 /**
- * e_ins_wrap_mark - A block mark on a line that just wrapped: behind the
- * break it moves to the new line, at or after the insertion it moves right.
+ * e_ins_mark_follows_cut - A block mark on a row that wraps at column @c:
+ * a mark on the text that moved goes with it to the start of the row below.
  */
-static void e_ins_wrap_mark(POINT *p, int ya, int xa, int n, int i)
+static void e_ins_mark_follows_cut(POINT *p, int ya, int c)
 {
- if (p->y != ya)
+ if (p->y != ya || p->x < c)
   return;
- if (p->x > i)
- {
-  p->y++;
-  p->x -= i + 1;
- }
- else if (p->x >= xa)
+ p->y++;
+ p->x -= c;
+}
+
+/**
+ * e_ins_mark_follows_run - A block mark at or after the place @n bytes go
+ * in on row @ya moves right with the text behind it.
+ */
+static void e_ins_mark_follows_run(POINT *p, int ya, int xa, int n)
+{
+ if (p->y == ya && p->x >= xa)
   p->x += n;
 }
 
 /**
- * e_ins_wrap_tail_down - Typing past the margin of a full line: its tail,
- * behind column @i, goes to a new line below it.
+ * e_ins_wrap_tail_down - Typing past the margin of a row: the text behind
+ * column @c goes to a new row below it.
  *
- * The breakpoints and marks below move down with their lines, so a wrapped
- * paragraph never leaves a breakpoint on the wrong code.  The new line ends
- * as the full one did: with its line break, or without one when it was the
- * last row of a text that ends without a line break, so the file written
- * keeps its bytes.  Return: 1 when the tail moved; 0 when no line could be
- * added, and then the line keeps its bytes up to its width and the status
- * row says why the wrap waits.
+ * The breakpoints and marks below move down with their rows, so a wrapped
+ * paragraph never leaves a breakpoint on the wrong code.  The new row ends
+ * as the wrapped one did: with its line break, or without one when it was
+ * the last row of a text that ends without a line break or the line goes
+ * on below, so the file written keeps its bytes.
+ * Return: E_BUFFER_OK, or E_BUFFER_NOMEM when no row could be added (the
+ * text is unchanged and the status row says why).
  */
-static int e_ins_wrap_tail_down(BUFFER *b, SCHIRM *sch, int ya, int xa, int n, int i)
+static int e_ins_wrap_tail_down(BUFFER *b, int ya, int c)
 {
- int j, hard = (b->bf[ya].s[b->bf[ya].len] == WPE_WR);
+ STRING *row, *below;
+ int tail, hard;
 
- if (e_buffer_insert_blank(b, ya+1, E_BUFFER_STEP_COVERED) != E_BUFFER_OK)
+ if (e_buffer_insert_blank(b, ya + 1, E_BUFFER_STEP_COVERED) != E_BUFFER_OK)
  {
   wpe_buffer_say_nomem(b, "the line wrap");
-  return(0);
+  return(E_BUFFER_NOMEM);
  }
- e_ins_wrap_mark(&sch->mark_begin, ya, xa, n, i);
- e_ins_wrap_mark(&sch->mark_end, ya, xa, n, i);
- /* Copy the wrapped tail into the fresh next line, bounded to mx.x-1 columns
-    so the WPE_WR terminator and the following '\0' both land inside its
-    mx.x+1 byte buffer.  The trailing '\0' is essential: e_str_nrc is strlen
-    (NOT WPE_WR-aware, unlike e_str_len), so without it strlen runs past the
-    WPE_WR into adjacent memory when the tail fills the line -- a heap
-    overflow when editing a very long unbroken run. */
- for (j = i+1; *(b->bf[ya].s+j) != WPE_WR && *(b->bf[ya].s+j) != '\0'
-      && (j-i-1) < b->mx.x - 1; j++)
-  *(b->bf[ya+1].s+j-i-1) = *(b->bf[ya].s+j);
+ row = &b->bf[ya];
+ below = &b->bf[ya + 1];
+ hard = (row->s[row->len] == WPE_WR);
+ tail = row->len - c;
+ memcpy(below->s, row->s + c, (size_t) tail);
+ below->s[tail] = '\0';
  if (hard)
  {
-  *(b->bf[ya+1].s+j-i-1) = WPE_WR;
-  *(b->bf[ya+1].s+j-i) = '\0';
+  below->s[tail] = WPE_WR;
+  below->s[tail + 1] = '\0';
  }
- else
-  *(b->bf[ya+1].s+j-i-1) = '\0';
- b->bf[ya+1].len = e_str_len(b->bf[ya+1].s);
- b->bf[ya+1].nrc = e_str_nrc(b->bf[ya+1].s);
- return(1);
+ below->len = e_str_len(below->s);
+ below->nrc = e_str_nrc(below->s);
+ return(E_BUFFER_OK);
 }
 
 /**
- * e_ins_wrap_cut - Where a line typing made too wide is cut.
- * @i: the column of the last blank or hyphen in reach (the row keeps up to
- * it); @xa0: where the typed run starts; @in_place: how many of its bytes
- * were already written at the end of the row.
- *
- * Never inside the run just typed: when the cut would keep part of it on
- * the row, the whole run goes to the next row instead (a blank typed at the
- * margin starts the next row), so Ctrl-U can take back exactly what was
- * typed, in one place.
- * Return: the column the row keeps up to.
+ * e_ins_tail_needs_new_row - Must the text a wrap moves get a row of its
+ * own?  It must when the row ends its line or the text, so nothing else
+ * can take it, and when the whole row moves to make room for the run.
  */
-static int e_ins_wrap_cut(int i, int xa0, int in_place)
+static int e_ins_tail_needs_new_row(BUFFER *b, int ya, int c)
 {
- if (in_place > 0 && i >= xa0 && xa0 > 0)
-  return(xa0 - 1);
- return(i);
+ if (c == E_INS_CUT_NONE || ya == b->mxlines - 1)
+  return(1);
+ return(b->bf[ya].s[b->bf[ya].len] == WPE_WR);
+}
+
+/**
+ * e_ins_cut_row - Wrap row @ya at column @c: the text behind @c goes to the
+ * row below, through a new row or into the start of the next row of the
+ * same line, and row @ya ends there without a line break.
+ * @b, @sch: the buffer and its screen.
+ *
+ * The moved text keeps its marks, so a block the user marked stays on the
+ * same characters when typing pushes them down.
+ * Return: E_BUFFER_OK, or a refusal with the text unchanged.
+ */
+static int e_ins_cut_row(BUFFER *b, SCHIRM *sch, int ya, int c)
+{
+ int tail = b->bf[ya].len - c;
+
+ if (e_ins_tail_needs_new_row(b, ya, c))
+ {
+  if (e_ins_wrap_tail_down(b, ya, c) != E_BUFFER_OK)
+   return(E_BUFFER_NOMEM);
+ }
+ else if (tail > 0)
+ {
+  if (e_ins_nchar(b, sch, b->bf[ya].s + c, 0, ya + 1, tail) == E_CHAR_REFUSED)
+   return(E_BUFFER_RANGE);
+ }
+ e_ins_mark_follows_cut(&sch->mark_begin, ya, c);
+ e_ins_mark_follows_cut(&sch->mark_end, ya, c);
+ b->bf[ya].s[c] = '\0';
+ b->bf[ya].len = e_str_len(b->bf[ya].s);
+ b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_ins_cut_at_blank - Does the cut at @c come after a blank or a dash, the
+ * places a word wrap prefers?
+ */
+static int e_ins_cut_at_blank(const unsigned char *row, int c)
+{
+ if (c <= 0)
+  return(0);
+ return(row[c - 1] == ' ' || row[c - 1] == '-');
+}
+
+/* The top bits of a byte that continues a UTF-8 character, and their mask. */
+#define E_INS_UTF8_CONT      0x80
+#define E_INS_UTF8_CONT_MASK 0xC0
+
+/**
+ * e_ins_cut_inside_char - Would a cut at @c split a UTF-8 character?  The
+ * owner's cut keeps at least one byte, so with no room for a whole first
+ * character it can fall inside one.
+ */
+static int e_ins_cut_inside_char(const unsigned char *row, int c)
+{
+ return((row[c] & E_INS_UTF8_CONT_MASK) == E_INS_UTF8_CONT);
+}
+
+/**
+ * e_ins_wrap_point - Where a row that @n bytes typed at @xa would make
+ * wider than Max. Columns is cut.
+ * @b: the buffer; @ya: the row.
+ *
+ * The owner's rule for every row: after the last blank or dash that leaves
+ * room for the run, else at the last character that does, never inside a
+ * UTF-8 character.  A word being typed goes down with its start; an
+ * unbroken run is never cut before the cursor, it is cut at the cursor and
+ * what is typed starts the next row.
+ * Return: the column the row keeps up to; the run stays on the row when it
+ * starts before it.
+ */
+static int e_ins_wrap_point(BUFFER *b, int ya, int xa, int n)
+{
+ const unsigned char *row = b->bf[ya].s;
+ int room = E_BUFFER_ROW_TEXT_MAX(b) - n, c;
+
+ if (room < E_INS_ROOM_MIN)
+  return(xa);
+ c = e_buffer_wrap_cut(row, room);
+ if (e_ins_cut_at_blank(row, c))
+  return(c);
+ if (c <= xa || e_ins_cut_inside_char(row, c))
+  return(xa);
+ return(c);
+}
+
+/**
+ * e_ins_run_stays - Does a run typed at @xa stay on the row cut at @c?  It
+ * does when it starts before the cut, and when the whole row moved down to
+ * make room for it.
+ */
+static int e_ins_run_stays(int xa, int c)
+{
+ return(xa < c || c == E_INS_CUT_NONE);
 }
 
 /**
@@ -2643,143 +2722,244 @@ static void e_char_record_place(Undo *rec, int x, int y)
  rec->b.y = y;
 }
 
-/*   insert N chars in buffer */
+/**
+ * e_ins_refused_wide - Refuse a change that would leave a row wider than
+ * Max. Columns, before any byte moves.
+ * @what: the bytes the row would have held.
+ *
+ * Typing wraps a row before it would overflow, so this never refuses a key;
+ * when it does, the text is as it was and the trace names the row, so a test
+ * sees the refusal instead of a corrupted heap or a lost byte.
+ * Return: 1 (refused).
+ */
+static int e_ins_refused_wide(BUFFER *b, int ya, int n)
+{
+ wpe_buffer_trace("buffer row wider than the window y=%d len=%d n=%d width=%d",
+                  ya, b->bf[ya].len, n, b->mx.x);
+ return(1);
+}
+
+/**
+ * e_ins_run_is_long - Is a run of @n bytes longer than any row can hold?
+ * Then it goes in over several rows (e_ins_long_run).
+ */
+static int e_ins_run_is_long(BUFFER *b, int n)
+{
+ return(n > E_BUFFER_ROW_TEXT_MAX(b));
+}
+
+/**
+ * e_ins_run_refused - Can @n bytes not go into row @ya at all?  A row
+ * already wider than Max. Columns (a view's compiler line) has no room for
+ * one more byte.  A run longer than a row always goes in (e_ins_long_run),
+ * except under another change's cover, whose record could not give it back:
+ * no caller puts one there.
+ * Return: 1 when refused (traced, the text unchanged).
+ */
+static int e_ins_run_refused(BUFFER *b, int ya, int n)
+{
+ if (b->bf[ya].len > E_BUFFER_ROW_TEXT_MAX(b))
+  return(e_ins_refused_wide(b, ya, n));
+ if (e_ins_run_is_long(b, n) && e_buffer_covered(b))
+  return(e_ins_refused_wide(b, ya, n));
+ return(0);
+}
+
+/* The pieces a long run is joined from: the row before it, the run, the
+   rest of the row with its line break. */
+#define E_INS_LONG_PARTS 3
+/* A block mark the long run does not move: not behind it on its row. */
+#define E_INS_MARK_BEFORE (-1)
+
+/**
+ * e_ins_point_at - The row and column @off bytes into the line that starts
+ * at row @y, its soft rows followed: where a run's end or a mark lands
+ * after the line was wrapped again, and where a replacement that wrapped
+ * now starts, so Replace searching back goes on from there.
+ */
+void e_ins_point_at(BUFFER *b, int y, int off, POINT *p)
+{
+ while (y < b->mxlines - 1 && off > b->bf[y].len
+        && b->bf[y].s[b->bf[y].len] != WPE_WR)
+ {
+  off -= b->bf[y].len;
+  y++;
+ }
+ if (off > b->bf[y].len)
+  off = b->bf[y].len;
+ p->y = y;
+ p->x = off;
+}
+
+/**
+ * e_ins_long_run - Put in a run longer than a row (a replacement or a
+ * completion wider than Max. Columns): the row is built again from the text
+ * before the run, the run and the rest of the row, wrapped by the owner over
+ * as many rows as it needs and never inside a UTF-8 character.
+ * @b, @sch: the buffer and its screen.
+ *
+ * The change is one line record of its own, so Ctrl-U gives the row back
+ * exactly and Ctrl-R puts every byte in again.  The cursor ends behind the
+ * run and a block mark behind the insertion stays on its character.
+ * Return: the column behind the run, or E_CHAR_REFUSED when memory ran out
+ * (nothing changed, the status row says so).
+ */
+static int e_ins_long_run(BUFFER *b, SCHIRM *sch, const unsigned char *s,
+                          int xa, int ya, int n)
+{
+ STRING *row = &b->bf[ya], *lines;
+ WpeBufferPart parts[E_INS_LONG_PARTS];
+ POINT *marks[2];
+ int behind[2], i, k;
+
+ parts[0].s = row->s;
+ parts[0].n = xa;
+ parts[1].s = s;
+ parts[1].n = n;
+ parts[2].s = row->s + xa;
+ parts[2].n = row->len - xa + (row->s[row->len] == WPE_WR);
+ lines = e_buffer_lines_from_parts(E_BUFFER_ROW_TEXT_MAX(b), parts, E_INS_LONG_PARTS, &k);
+ if (k < 0)
+ {
+  wpe_buffer_say_nomem(b, "the text put in");
+  return(E_CHAR_REFUSED);
+ }
+ marks[0] = &sch->mark_begin;
+ marks[1] = &sch->mark_end;
+ for (i = 0; i < 2; i++)
+ {
+  behind[i] = E_INS_MARK_BEFORE;
+  if (marks[i]->y == ya && marks[i]->x >= xa)
+   behind[i] = marks[i]->x;
+ }
+ if (e_buffer_splice(b, ya, 1, lines, k, NULL, 0, E_BUFFER_STEP_NEW) != E_BUFFER_OK)
+ {
+  e_buffer_lines_free(lines, k);
+  wpe_buffer_say_nomem(b, "the text put in");
+  return(E_CHAR_REFUSED);
+ }
+ FREE(lines);
+ for (i = 0; i < 2; i++)
+  if (behind[i] != E_INS_MARK_BEFORE)
+   e_ins_point_at(b, ya, behind[i] + n, marks[i]);
+ e_ins_point_at(b, ya, xa + n, &b->b);
+ sc_txt_4(ya, b, 0);
+ return(b->b.x);
+}
+
+/**
+ * e_ins_row_overflows - Would @n more bytes make row @ya wider than Max.
+ * Columns?  Then it wraps first.
+ */
+static int e_ins_row_overflows(BUFFER *b, int ya, int n)
+{
+ return(b->bf[ya].len + n > E_BUFFER_ROW_TEXT_MAX(b));
+}
+
+/**
+ * e_ins_bytes_at - Put @n bytes of @s into row @ya at column @xa, the rest
+ * of the row, its line break and its zero moved right by @n.
+ *
+ * The bytes the user typed land where the cursor was and the row stays a
+ * row: its line break and the zero after it move with its text, so its
+ * length and byte count are right when measured again.  The row has room
+ * (e_ins_row_overflows is false).
+ */
+static void e_ins_bytes_at(BUFFER *b, int ya, int xa, const unsigned char *s, int n)
+{
+ unsigned char *row = b->bf[ya].s;
+ int j, end = b->bf[ya].len;
+
+ if (row[end] == WPE_WR)
+  end++;
+ for (j = end; j >= xa; --j)
+  row[j + n] = row[j];
+ for (j = 0; j < n; ++j)
+  row[xa + j] = s[j];
+}
+
+/**
+ * e_ins_run_here - Put the @n bytes of @s into row @ya at @xa, which has
+ * room for them, and leave the cursor behind them.
+ *
+ * The block marks behind the insertion move right with their text.
+ */
+static void e_ins_run_here(BUFFER *b, SCHIRM *sch, const unsigned char *s,
+                           int xa, int ya, int n)
+{
+ if (e_ins_row_overflows(b, ya, n) && e_ins_refused_wide(b, ya, n))
+  return;
+ e_ins_mark_follows_run(&sch->mark_begin, ya, xa, n);
+ e_ins_mark_follows_run(&sch->mark_end, ya, xa, n);
+ e_ins_bytes_at(b, ya, xa, s, n);
+ b->b.x = xa + n;
+ b->b.y = ya;
+ b->bf[ya].len = e_str_len(b->bf[ya].s);
+ b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
+}
+
+/**
+ * e_ins_wrapped_run - Put a run that does not fit on row @ya in, wrapping
+ * the row first.
+ * @rec: the run's record (NULL under a cover).
+ *
+ * The row is cut at its wrap point and its tail goes down; the run then
+ * goes in on this row, or, when it starts at or after the cut, on the row
+ * below through the same wrapping insert, which may wrap that row in turn.
+ * The run is never split, so what the user typed stands together in one
+ * row and Ctrl-U takes it back there and nothing else; the record follows
+ * it to the row it went to.
+ */
+static void e_ins_wrapped_run(BUFFER *b, SCHIRM *sch, unsigned char *s,
+                              int xa, int ya, int n, Undo *rec)
+{
+ int c = e_ins_wrap_point(b, ya, xa, n);
+
+ if (e_ins_cut_row(b, sch, ya, c) != E_BUFFER_OK)
+  return;
+ if (e_ins_run_stays(xa, c))
+ {
+  e_ins_run_here(b, sch, s, xa, ya, n);
+  return;
+ }
+ if (e_ins_nchar(b, sch, s, xa - c, ya + 1, n) != E_CHAR_REFUSED)
+  e_char_record_place(rec, b->b.x - n, b->b.y);
+}
+
+/**
+ * e_ins_nchar - Insert the @n bytes of @s at (@xa, @ya), wrapping the row at
+ * Max. Columns as the manual says.
+ * @b, @sch: the buffer and its screen.
+ *
+ * Typing, the indent of Enter and Tab, a replacement and Undo of a deletion
+ * all come here: every byte goes in, every row stays within Max. Columns
+ * and no UTF-8 character is cut.  A run longer than a row goes in over as
+ * many rows as it needs, as one line record (e_ins_long_run).
+ * Return: the column behind the run, or E_CHAR_REFUSED (nothing changed).
+ */
 int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n)
 {
  Undo *rec;
- int i, j, wrapped = 1, xa0 = xa, in_place = 0;
 
  if (e_buffer_change_refused(b))
   return(E_CHAR_REFUSED);
  if (e_char_row_missing(b, ya, n, "the text put back"))
   return(E_CHAR_REFUSED);
+ if (e_ins_run_refused(b, ya, n))
+  return(E_CHAR_REFUSED);
+ if (e_ins_run_is_long(b, n))
+  return(e_ins_long_run(b, sch, s, xa, ya, n));
  e_char_count_change(b, n);
  rec = e_char_record('a', b, xa, ya, n);
  e_buffer_cover_begin(b, rec);
- /* Defensive normalisation: each line buffer is e_buffer_line_new()-allocated at
-    b->mx.x+1 bytes, so b->mx.x is the last valid index.  Some callers (the
-    block move/copy paths in we_block.c, which reshuffle line buffers by
-    raw struct aliasing) can leave bf[ya].len smaller than the real
-    content and the buffer without a NUL within bounds.  e_ins_nchar then
-    trusts the stale len, the capacity check below is fooled, and the
-    e_str_len() calls run strlen past the buffer (ASan heap-buffer-overflow,
-    Ctrl-K V).  Pin a terminator at the capacity limit and recompute the
-    length so everything downstream operates on a valid, bounded line. */
- b->bf[ya].s[b->mx.x] = '\0';
- b->bf[ya].len = e_str_len(b->bf[ya].s);
- b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
- if (b->bf[ya].len+n >= b->mx.x-1)
- {
-  if (xa < b->bf[ya].len)
-  {
-   i = b->mx.x-n-1;
-   if (i >= b->bf[ya].len-1)
-    i = b->bf[ya].len-1;
-  }
-  else
-  {
-   for (; xa < b->mx.x-1; xa++, s++, n--)
-   {
-    *(b->bf[ya].s + xa + 1) = *(b->bf[ya].s + xa);
-    *(b->bf[ya].s + xa) = *s;
-   }
-   in_place = xa - xa0;
-   /* A row the file reader filled to the full width already has its zero
-      at mx.x, the last byte of its buffer: nothing to write past it. */
-   if (xa + 1 <= b->mx.x)
-    *(b->bf[ya].s + xa + 1) = '\0';
-   i = b->mx.x;
-   b->bf[ya].len = e_str_len(b->bf[ya].s);
-   b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
-  }
-  for (; i > 0 && *(b->bf[ya].s+i) != ' ' && *(b->bf[ya].s+i) != '-'; i--);
-  if (i <= 0)                          /* no word boundary within reach: break */
-   i = b->bf[ya].len - 2;              /* near the end so only a short tail (a */
-  if (i < 0)                           /* few columns) wraps -- never the whole */
-   i = 0;                              /* line, which fed a runaway recursion   */
-  i = e_ins_wrap_cut(i, xa0, in_place);
-  /* A row that ends the line, or the last row of the text, has no row below
-     to take its tail: the tail gets a line of its own. */
-  if (*(b->bf[ya].s+b->bf[ya].len) == WPE_WR || ya == b->mxlines - 1)
-   wrapped = e_ins_wrap_tail_down(b, sch, ya, xa, n, i);
-  else
-  {
-   e_ins_nchar(b, sch, b->bf[ya].s+i+1, 0, ya+1, b->bf[ya].len-i-1);
-   if (sch->mark_begin.y == ya)
-   {
-    if (sch->mark_begin.x > i)
-    {
-     (sch->mark_begin.y)++;
-     (sch->mark_begin.x) -= (i+1);
-    }
-    else if (sch->mark_begin.x >= xa)
-     sch->mark_begin.x += n;
-   }
-   if (sch->mark_end.y == ya)
-   {
-    if (sch->mark_end.x > i)
-    {
-     (sch->mark_end.y)++;
-     (sch->mark_end.x) -= (i+1);
-    }
-    else if (sch->mark_end.x >= xa)
-     sch->mark_end.x += n;
-   }
-  }
-/*	 if(*(b->bf[ya].s+i) == ' ') *(b->bf[ya].s+i) = '\0';
-         else
-*/
-  if (wrapped)
-  {
-   *(b->bf[ya].s+i+1) = '\0';
-   b->bf[ya].len = e_str_len(b->bf[ya].s);
-   b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
-  }
-  if (wrapped && xa > b->bf[ya].len)
-  {
-   xa -= (b->bf[ya].len);
-   ya++;
-   b->bf[ya].len = e_str_len(b->bf[ya].s);
-   b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
-   if (sch->mark_begin.y == ya && sch->mark_begin.x >= xa)
-    sch->mark_begin.x += n;
-   if (sch->mark_end.y == ya && sch->mark_end.x >= xa)
-    sch->mark_end.x += n;
-  }
-  e_char_record_place(rec, xa - in_place, ya);
- }
+ if (e_ins_row_overflows(b, ya, n))
+  e_ins_wrapped_run(b, sch, s, xa, ya, n, rec);
  else
- {
-  if (sch->mark_begin.y == ya && sch->mark_begin.x >= xa)
-   sch->mark_begin.x += n;
-  if(sch->mark_end.y == ya && sch->mark_end.x >= xa)
-   sch->mark_end.x += n;
- }
- /* Insert s at xa, shifting the tail right by n.  Bound every write to the
-    mx.x+1 line buffer: the wrap logic above keeps a normal keystroke inside the
-    line, but a pathological caller (a huge unbroken run the wrap recursion hands
-    down, or a large block/undo insert) can present an n that would not fit --
-    clamp rather than run off the end and corrupt the heap. */
- for (j = b->bf[ya].len; j >= xa; --j)
-  if (j + n <= b->mx.x)
-   *(b->bf[ya].s+j+n) = *(b->bf[ya].s+j);
- for (j = 0; j < n && xa + j <= b->mx.x; ++j)
-  *(b->bf[ya].s+xa+j) = *(s+j);
- if (b->bf[ya].s[b->bf[ya].len] == WPE_WR)
-  b->bf[ya].s[b->bf[ya].len+1] = '\0';
- /* If the clamp above dropped this line's terminator (a pathological over-long
-    insert), pin one at the buffer's last valid index so the length recomputes
-    below -- e_str_nrc is strlen -- cannot read past the mx.x+1 buffer.  A
-    well-formed line already ends within bounds, so this is a no-op for it. */
- b->bf[ya].s[b->mx.x] = '\0';
- b->b.x = xa + n;
- b->b.y = ya;
- b->bf[ya].len = e_str_len(b->bf[ya].s);
- b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
+  e_ins_run_here(b, sch, s, xa, ya, n);
  e_buffer_cover_end(b);
  sc_txt_4(ya, b, 0);
- return(xa+n);
+ return(b->b.x);
 }
 
 int e_codepoint_to_utf8(int cp, unsigned char *out)
@@ -2829,15 +3009,53 @@ int e_utf8_visual_len(unsigned char *s, int bytes)
  return vcols;
 }
 
+/**
+ * e_char_bytes_at - How many bytes the character at (@x, @y) takes: one for
+ * ASCII or a byte that starts no UTF-8 character, never past the row's end.
+ */
+static int e_char_bytes_at(BUFFER *b, int x, int y)
+{
+ int k = e_utf8_charlen(b->bf[y].s[x]), left = b->bf[y].len - x;
+
+ if (k > left)
+  return(left);
+ return(k);
+}
+
+/**
+ * e_put_char_over_wide - Overwrite a character of several bytes (an `é`,
+ * a `€`) with the one byte typed.
+ * @b, @s: the buffer and its screen; @cc: the byte; @k: the bytes replaced.
+ *
+ * The whole character goes, so the row stays valid UTF-8, and the record
+ * keeps every byte it replaced: Ctrl-U gives the character back whole and
+ * Ctrl-R types over it again.  The cursor is left on the byte typed, as for
+ * any overwrite, for the caller to step past.
+ */
+static void e_put_char_over_wide(BUFFER *b, SCHIRM *s, unsigned char cc, int k)
+{
+ e_replace_occurrence(b, s, b->b.x, b->b.y, k, &cc, 1);
+ b->b.x--;
+}
+
 /*     Overwriting of a character       */
 int e_put_char(int c, BUFFER *b, SCHIRM *s)
 {
  unsigned char cc = c;
+ int k;
 
  if (e_buffer_change_refused(b))
   return(E_CHAR_REFUSED);
  if (b->b.x == b->bf[b->b.y].len)
+ {
+  /* the insert leaves the cursor behind the character, on the row a
+     wrap took it to: it is not stepped again */
   e_ins_nchar(b, s, &cc, b->b.x, b->b.y, 1);
+  return(b->b.x);
+ }
+ k = e_char_bytes_at(b, b->b.x, b->b.y);
+ if (k > 1)
+  e_put_char_over_wide(b, s, cc, k);
  else
  {
   e_add_undo('p', b, b->b.x, b->b.y, 1);
@@ -3057,7 +3275,7 @@ int e_autosave(FENSTER *f)
   f->datnam = str;
   /*e_save(f);*/
   WpeMouseChangeShape(WpeWorkingShape);
-  e_write(0, 0, f->b->mx.x, f->b->mxlines-1, f, WPE_NOBACKUP);
+  e_write(0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines-1, f, WPE_NOBACKUP);
   WpeMouseRestoreShape();
   wpe_test_dump_note_autosave();
   f->datnam = tmp;
@@ -3135,6 +3353,27 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
 }
 
 /**
+ * e_replace_long - Replace @sn characters at (@x, @y) by @rn bytes, more
+ * than a row holds, as one Ctrl-U.
+ * @b, @s: the buffer and its screen; @text: the replacement.
+ *
+ * The deletion keeps its own record and the long run its line record, both
+ * in one step: one Ctrl-U takes the replacement out and gives the old text
+ * back, one Ctrl-R puts it in again, every byte.  Nothing is deleted that
+ * the insert could then refuse: a long run always goes in.
+ * Return: 1 (the window was already asked).
+ */
+static int e_replace_long(BUFFER *b, SCHIRM *s, int x, int y, int sn,
+                          unsigned char *text, int rn)
+{
+ e_buffer_step_begin(b);
+ e_del_nchar(b, s, x, y, sn);
+ e_ins_nchar(b, s, text, x, y, rn);
+ e_buffer_step_end(b);
+ return(1);
+}
+
+/**
  * e_replace_occurrence - Replace @sn characters at (@x, @y) by the @rn
  * bytes of @text, as one Ctrl-U: what Search > Replace does with each
  * occurrence it changes.
@@ -3145,6 +3384,7 @@ int e_add_undo(int sw, BUFFER *b, int x, int y, int n)
  * the breakpoints below it down with their code, as typing does, and Undo
  * moves them back; the record follows the replacement to the row it
  * wrapped onto, so Ctrl-U puts the old text back where the new one is.
+ * A replacement longer than a row takes several rows: e_replace_long.
  * Return: 1 when the occurrence was replaced, 0 when the window refused it.
  */
 int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
@@ -3154,6 +3394,8 @@ int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
 
  if (e_buffer_change_refused(b))
   return(0);
+ if (e_ins_run_is_long(b, rn))
+  return(e_replace_long(b, s, x, y, sn, text, rn));
  b->f->fd.rn = rn;     /* the record keeps the replacement's length */
  rec = e_char_record('s', b, x, y, sn);
  e_buffer_cover_begin(b, rec);
@@ -3258,26 +3500,31 @@ static int e_record_text_ends_line(const Undo *rec)
  * e_rudo_text_back - Put back the characters a record removed, a line
  * break as a line break (never auto-indented again), and mark them.
  * @b, @s: the buffer and its screen; @rec: an 'r' or 's' record.
+ *
+ * The block is the text as it now stands: where the characters went in,
+ * on the row a wrap took them to, up to the cursor behind them, which is
+ * the start of the next row when a line break came back.  So Ctrl-K C or
+ * Ctrl-K V right after the Undo copies exactly that text.
  */
 static void e_rudo_text_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
  unsigned char *text = (unsigned char *) rec->u.pt;
- int n = rec->a.x;
+ int n = rec->a.x, chars = n;
+ POINT begin = rec->b;
 
  if (n <= 0)
   return;                 /* a record of no characters puts nothing back */
- if (text[0] == '\n' && n == 1)
-  e_car_ret_split(b, s);
- else if (text[n - 1] == '\n')
+ if (e_record_text_ends_line(rec))
+  chars = n - 1;
+ if (chars > 0 && e_ins_nchar(b, s, text, rec->b.x, rec->b.y, chars) != E_CHAR_REFUSED)
  {
-  e_ins_nchar(b, s, text, rec->b.x, rec->b.y, n - 1);
-  e_car_ret_split(b, s);
+  begin.y = b->b.y;
+  begin.x = b->b.x - chars;
  }
- else
-  e_ins_nchar(b, s, text, rec->b.x, rec->b.y, n);
- s->mark_begin = rec->b;
- s->mark_end.y = rec->b.y;
- s->mark_end.x = rec->b.x + n;
+ if (chars < n)
+  e_car_ret_split(b, s);
+ s->mark_begin = begin;
+ s->mark_end = b->b;
 }
 
 /**

@@ -256,8 +256,9 @@ def wrap_cut(piece, maxc):
 
 def wrap_reader(piece, width, terminated):
     """The rows the file reader makes of one logical line: every row but the
-    last soft, the last hard when the line ends with a break."""
-    maxc = max(1, width - 1)
+    last soft, the last hard when the line ends with a break.  A row holds
+    up to Max. Columns bytes, so a line exactly that long is one row."""
+    maxc = max(1, width)
     out = []
     start = 0
     while True:
@@ -919,7 +920,7 @@ def _replace_all(st, action):
     rows = Rows(st)
     st.y = st.x = 0
     found = 0
-    sn, rn = len(search), len(repl)
+    sn = len(search)
     while found < REPLACE_LIMIT:
         hit = _rep_search(st, rows, search)
         if hit is None:
@@ -927,8 +928,7 @@ def _replace_all(st, action):
         found += 1
         x, y = hit
         rows.del_nchar(x, y, sn)
-        rows.ins_nchar(repl, x, y)
-        st.x = x + rn
+        rows.ins_nchar(repl, x, y)   # the search goes on behind it, where it ends
     rows.commit()
     if found:
         st.box = BOX_FOUND % (found, found)

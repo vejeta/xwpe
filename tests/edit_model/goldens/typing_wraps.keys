@@ -8,6 +8,8 @@ end
 type b"Z"
 type b"Q"
 type b"R"
+type b"S"
+type b"T"
 home
 type b"A"
 down

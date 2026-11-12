@@ -31,7 +31,9 @@
  * A string <s> has no blanks: \n is a line break, \xHH a byte, \\ a backslash.
  * Each command prints  R <name> rc=<owner's return code>  then
  *   L <i> <H|S> <row>   B <rows|->   M <y>,<x> <y>,<x>   U ud=<n> rd=<n> save=<n>
- * and, once buffer 2 is open, the same L lines as  L2.  The last line is E.
+ *   K rows=<first row wider than the width or not ended as a row ends, or -1>
+ * and, once buffer 2 is open, the same L and K lines as  L2  and  K2.  The
+ * last line is E.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -235,8 +237,12 @@ static void print_state(const char *name, int rc)
         first.scr.mark_end.y, first.scr.mark_end.x);
  printf("U ud=%d rd=%d save=%d\n", list_len(first.buf.ud), list_len(first.buf.rd),
         first.win.save);
+ printf("K rows=%d\n", e_buffer_rows_check(&first.buf));
  if (second.open)
+ {
   print_rows("L2", &second);
+  printf("K2 rows=%d\n", e_buffer_rows_check(&second.buf));
+ }
  printf("E\n");
  fflush(stdout);
 }

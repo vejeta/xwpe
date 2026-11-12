@@ -198,7 +198,8 @@ so it cannot be saved over as an empty window.
 A line that a block move, copy, paste or delete makes, together with the
 rows its soft-wrapped line goes on to, is wrapped where the file reader
 wraps a long line, at the last blank or dash that fits; the original
-wrapped it as typing does, a word earlier.  The file written is the same.
+wrapped it as its typing did, a word earlier.  The file written is the
+same.
 
 @item Change Case
 @cindex undo, change case
@@ -265,6 +266,49 @@ The original kept a blank typed at the margin at the end of its row and
 wrapped what followed.  The blank now starts the next row with what is
 typed after it, so @kbd{Ctrl-U} takes back exactly what was typed, in one
 place.  The file written is the same.
+
+@item Rows as wide as Max. Columns
+@cindex Max. Columns, row width
+@cindex word wrap, typing
+The original wrapped typed text two columns before Max.@: Columns, could
+lose a character typed where a row had to wrap or cut one outside ASCII
+in two, showed a line exactly Max.@: Columns long as a full row with an
+empty row below it, and could cut a long line inside a character outside
+ASCII when it read a file.  A row now holds Max.@: Columns bytes, the line
+break after them, and typing wraps at the next byte, as the manual says:
+the row is cut after the last blank or dash that leaves room, else before
+the margin, never inside a character, and what you type goes in whole,
+on the row below when the cut falls at or before it.  A line read from a
+file is cut the same way; a blank in the first two columns counts too.
+@key{Backspace} that joins a line which exactly fills what the row above
+has left takes the whole line and its line break.  Max.@: Columns counts
+bytes: a character outside ASCII takes two to four.  A file whose last
+line is a multiple of Max.@: Columns long and has no final line break
+gains one when saved, as every other file without one already does.  One
+part of the editor now decides how wide a row is, by the manual's own
+rule.  A replacement (Search > Replace) or a completion longer than
+Max.@: Columns goes in whole over as many rows as it needs, and
+@kbd{Ctrl-U} takes it out again; the replace that follows goes on behind
+it, also when it wrapped.
+
+@item Overwrite over a character outside ASCII
+@cindex overwrite, multibyte characters
+The original wrote a character typed in overwrite mode over one byte, so
+typed over an @samp{é} or a @samp{€} it left the rest of that character
+behind as bytes that are no text.  It now replaces the whole character
+under the cursor, and @kbd{Ctrl-U} gives that character back whole.
+
+@item The block Undo marks around a line break
+@cindex undo, block marks
+The original's @kbd{Ctrl-U} of a deletion that took a line break marked
+the text it gave back up to a column past the end of its row, and a
+@kbd{Ctrl-K C} or @kbd{Ctrl-K V} of that block followed by @kbd{Ctrl-U}
+could lose a line.  The block now ends at the start of the next row, the place
+just after the line break, and after any key no mark, and no place a
+Shift key selects from, is past the end of its row.  So a Shift selection
+made after typing at the end of a line in overwrite mode no longer lets
+@kbd{Ctrl-O H}, @kbd{U} or @kbd{M} put a byte behind the line break,
+where Save lost it.
 
 @item The tenth marker
 @cindex markers, ten

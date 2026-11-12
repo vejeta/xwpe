@@ -1944,16 +1944,10 @@ static unsigned char e_case_of(const unsigned char *s, int x, int mode)
  */
 static int e_case_line_changed(BUFFER *b, SCHIRM *screen, int y, int mode, STRING *out)
 {
- int x, x_begin = 0, x_end = b->bf[y].len, n = b->bf[y].nrc;
+ int x, x_begin = 0, x_end = b->bf[y].len;
 
- if (e_buffer_line_new(b, out) != E_BUFFER_OK)
+ if (e_buffer_line_copy(b, &b->bf[y], out) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
- if (n > b->mx.x)
-  n = b->mx.x;
- memcpy(out->s, b->bf[y].s, (size_t)n);
- out->s[n] = '\0';
- out->len = e_str_len(out->s);
- out->nrc = e_str_nrc(out->s);
  if (y == screen->mark_begin.y)
   x_begin = screen->mark_begin.x;
  if (y == screen->mark_end.y)
@@ -2373,12 +2367,38 @@ int e_find(FENSTER *f)
   The result window is either 'String NOT Found' or the number of
   occurrences found and the number actually replaced.
 */
+/* fd->sw: the search runs back from the cursor (Back from Cursor). */
+#define E_FIND_BACKWARDS 4
+
+/**
+ * e_rep_search_on_after - Where Search > Replace looks next after it
+ * replaced the occurrence found on row @y: behind the new text, on the row
+ * where it ends (a replacement that wrapped ends on a row below), or, when
+ * searching backwards, before where it starts now.
+ * @b, @s: the buffer and its screen; @backwards: nonzero to search back.
+ *
+ * The next occurrence is then never looked for inside the new text, nor
+ * past the end of a row the replacement made shorter.  A wrap may have
+ * moved the text just before the replacement to the row below with it; a
+ * backward search starts behind that text, so no occurrence in it is
+ * skipped.
+ */
+static void e_rep_search_on_after(BUFFER *b, SCHIRM *s, int backwards, int y)
+{
+ if (backwards)
+ {
+  e_ins_point_at(b, y, s->fa.x, &b->b);
+  return;
+ }
+ s->fe = b->b;
+}
+
 int e_replace(FENSTER *f)
 {
  SCHIRM *s;
  BUFFER *b;
  FIND *fd = &(f->ed->fd);
- int i, ret, c, ym, rep=0, found=0, refused=0;
+ int i, ret, c, ym, rep=0, found=0, refused=0, found_y;
  char strTemp[80];
  W_OPTSTR *o = e_init_opt_kst(f);
 
@@ -2466,18 +2486,22 @@ int e_replace(FENSTER *f)
     break;
    if (c == 'Y')
    {
-    if (e_replace_occurrence(b, s, s->fa.x, b->b.y, fd->sn,
+    found_y = b->b.y;
+    if (e_replace_occurrence(b, s, s->fa.x, found_y, fd->sn,
                              (unsigned char *)fd->replace, fd->rn))
     {
      rep++;
-     s->fe.x = s->fa.x + fd->rn;
+     e_rep_search_on_after(b, s, fd->sw & E_FIND_BACKWARDS, found_y);
     }
     else
     {
      refused++;
      s->fe.x = s->fa.x + fd->sn;  /* still there: search on behind it, never at it again */
+     if (fd->sw & E_FIND_BACKWARDS)
+      b->b.x = s->fa.x;
+     else
+      b->b.x = s->fe.x;
     }
-    b->b.x = !(fd->sw & 4) ? s->fe.x : s->fa.x;
     e_schirm(f, 1);
    }
   }

@@ -38,6 +38,7 @@ RC_OK = 0
 RC_NOMEM = -1
 RC_RANGE = -2
 RC_NOTHING = -3
+ROWS_FIT = -1        # the driver's K line: no row wider than the width
 UNDO_EXTRA = 1
 DEFAULT_WIDTH = 20
 DEFAULT_NUMUNDO = 10
@@ -123,9 +124,16 @@ class Result:
         self.brp = []
         self.marks = ((0, 0), (0, 0))
         self.ud = self.rd = self.save = 0
+        self.rows_check = self.rows_check2 = ROWS_FIT
         for ln in lines:
             tag, _, rest = ln.partition(" ")
-            if tag == "R":
+            if tag in ("K", "K2"):
+                n = int(rest.split("rows=")[1])
+                if tag == "K":
+                    self.rows_check = n
+                else:
+                    self.rows_check2 = n
+            elif tag == "R":
                 self.rc = int(rest.split("rc=")[1])
             elif tag in ("L", "L2"):
                 _i, end, data = (rest.split(" ", 2) + [""])[:3]
@@ -260,9 +268,11 @@ class OwnerModel:
     def op_splice(self, y, n_del, text):
         if y < 0 or y > len(self.rows) or n_del < 0 or y + n_del > len(self.rows):
             return RC_RANGE
-        before = self.snap()
         new = self.wrap(text, self.width)
         old = self.rows[y:y + n_del]
+        if [(e, d) for d, e in new] == [(r[0], r[1]) for r in old]:
+            return RC_OK            # the same rows again: nothing changes, nothing to undo
+        before = self.snap()
         # a row put where a row stood is that row changed: it keeps its
         # identity, so its breakpoint and the marks in it stay
         built = [[e, d, old[k][2] if k < len(old) else self.new_id()]
@@ -304,7 +314,12 @@ class OwnerModel:
         before = self.snap()
         end, data, ident = self.rows[y]
         x = min(x, len(data))
-        if x == 0:
+        if end == SOFT and x == len(data):
+            # Enter at the end of a row without a break: the row takes one,
+            # and the row below already is the rest of its line
+            self.rows[y] = [HARD, data, ident]
+            self.move_marks(y, 1, 1)
+        elif x == 0:
             self.rows.insert(y, [HARD, b"", self.new_id()])
             self.move_marks(y, 0, 1)
         else:
@@ -382,6 +397,8 @@ class OwnerModel:
 def differences(model, res):
     """[(field, model's value, driver's value)] for one result."""
     out = []
+    if (res.rows_check, res.rows_check2) != (ROWS_FIT, ROWS_FIT):
+        out.append(("row width", (ROWS_FIT, ROWS_FIT), (res.rows_check, res.rows_check2)))
     if model.lines() != res.rows:
         out.append(("text", model.lines(), res.rows))
     if sorted(model.brp_rows()) != sorted(res.brp):

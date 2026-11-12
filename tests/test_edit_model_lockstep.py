@@ -247,13 +247,14 @@ def test_a_known_bug_tag_names_only_what_that_bug_does():
     assert tag(tab, model.F_STEPS, before, before, _dump(rows, 0, 0, ud=3)) == \
         lockstep.KNOWN_STEPS
     assert tag(tab, model.F_STEPS, before, before, _dump(rows, 0, 0, ud=1)) is None
-    # typing into a soft row that keeps every byte: not the soft-wrap bug
+    # typing into a soft row: the soft-wrap bug is fixed and keeps no tag, so
+    # a byte lost there is a new finding
     before = _state([(S, b"abc"), (H, b"def")], 0, 3)
     pred = _state([(S, b"abcx"), (H, b"def")], 0, 4)
     act = model.Action("type", b"x")
     assert tag(act, model.F_TEXT, before, pred, _dump([(S, b"abc"), (H, b"xdef")], 1, 1)) is None
     assert tag(act, model.F_TEXT, before, pred,
-               _dump([(S, b"abc"), (H, b"def")], 0, 3)) == lockstep.KNOWN_SOFT_WRAP
+               _dump([(S, b"abc"), (H, b"def")], 0, 3)) is None
     # Backspace over an ASCII letter on a row with an accent earlier on it
     row = [(H, "café xy".encode())]
     act = model.Action("backspace", None)

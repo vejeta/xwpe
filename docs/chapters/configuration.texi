@@ -273,7 +273,10 @@ above.
 
 @table @kbd
 @item Alt-M
-Maximum number of columns per row (word-wrap column).
+Maximum number of columns per row (word-wrap column).  A row holds up to
+this many bytes and its line break; what is typed past it wraps to the
+next row at the last blank or dash.  A character outside ASCII takes two
+to four bytes.
 @item Alt-T
 Number of characters per tab stop.
 @item Alt-X

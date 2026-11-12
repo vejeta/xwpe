@@ -612,6 +612,26 @@ int e_view_add_row(BUFFER *b)
  return(r);
 }
 
+/* What the status row says when a line of output was refused because the
+   window it was for is not a view and holds no row wider than its width. */
+#define E_VIEW_SAY_TOO_WIDE "A line of output is wider than the window and was not shown"
+
+/**
+ * e_view_say_refused - Say on the status row why output did not reach a
+ * window, when it did not.
+ * @b: the window's buffer; @r: what the owner answered.
+ *
+ * Output never goes missing in silence: for want of memory the status row
+ * says so, and a line refused for its width says that instead.
+ */
+static void e_view_say_refused(BUFFER *b, int r)
+{
+ if (r == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the output");
+ else if (r == E_BUFFER_RANGE && WpeEditor != NULL && WpeEditor->mxedt >= 0)
+  e_status_say(WpeEditor->f[WpeEditor->mxedt], E_VIEW_SAY_TOO_WIDE);
+}
+
 /**
  * e_view_append - Add text at the foot of a view the editor writes.
  * @b: the buffer of Messages or of an output window; @text: one or more
@@ -624,8 +644,7 @@ int e_view_add_row(BUFFER *b)
  */
 void e_view_append(BUFFER *b, const char *text)
 {
- if (e_buffer_append_rows(b, text) == E_BUFFER_NOMEM)
-  wpe_buffer_say_nomem(b, "the output");
+ e_view_say_refused(b, e_buffer_append_rows(b, text));
 }
 
 /**
@@ -640,8 +659,7 @@ void e_view_append(BUFFER *b, const char *text)
  */
 static void e_view_append_wrapped(BUFFER *b, const char *text)
 {
- if (e_buffer_append_text(b, text, 1) == E_BUFFER_NOMEM)
-  wpe_buffer_say_nomem(b, "the output");
+ e_view_say_refused(b, e_buffer_append_text(b, text, 1));
 }
 
 /* Fold one raw output byte from the running program into the Messages buffer:

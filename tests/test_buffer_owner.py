@@ -19,6 +19,7 @@ import time
 import pytest
 
 from wpe_driver import WpeSession, ALT, WPE_BIN
+from edit_model.oracle import EditSession
 import test_ai_edit_hook_contracts as hook_contracts
 import test_debugger_integration as dbg
 
@@ -1905,4 +1906,365 @@ def test_a_paste_into_a_narrower_window_keeps_every_byte(tmp_path):
         s.key(CTRL_R, delay=0.8)
         assert saved_out().startswith(pasted), \
             "Ctrl-R did not paste every byte again: %r" % saved_out()
+        assert s.alive(), "wpe died"
+
+
+# ---- a row holds Max. Columns bytes, and its line break ----
+
+ROW_WIDTH = 120                          # Max. Columns, as a fresh editor has it
+NARROW_RC = "[General]\nMaxColumn : 20\n"
+NARROW = 20
+ROWS_FIT = -1                            # the dump's rows=: no row past the width
+E_ACUTE = "é"                       # two bytes in UTF-8
+
+
+def _assert_rows_fit(w, what):
+    """Every row of window @w holds at most Max. Columns bytes, and the
+    editor's own check after the key agrees."""
+    wide = [(end, len(data)) for end, data in w.lines if len(data) > w.mx]
+    assert not wide, "%s left rows wider than %d: %r" % (what, w.mx, wide)
+    assert w.rows == ROWS_FIT, "%s: the editor found row %d past the width" % (what, w.rows)
+
+
+# @scenario SC-buffer-09
+@pytest.mark.parametrize("where", ["middle", "last"])
+def test_enter_at_the_end_of_a_full_row_without_a_line_break_keeps_every_byte(tmp_path, where):
+    """A line wider than the window: its first row is full and has no line
+    break.  End and Enter there give that row its break and keep every
+    byte, whether the rest of the line follows below or the row is the last
+    of the text."""
+    with WpeSession(str(tmp_path), SOFT_SEED, filename="t.txt") as s:
+        want = SOFT_ROW + "t\nail\n"
+        if where == "last":
+            _make_the_soft_row_the_last(s)
+            want = SOFT_ROW + "t\n"
+        s.key(END, delay=0.3)
+        s.key(ENTER, delay=0.6)
+        assert s.alive(), "wpe died at Enter on a full row"
+        assert _saved(s) == want, "Enter on a full row gave %r" % s.text()
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-09
+def test_a_line_exactly_max_columns_long_is_one_row(tmp_path):
+    """At Max. Columns 20 a line of exactly 20 characters is one row with its
+    line break, not a full row and an empty one under it; saved, the file
+    is as it was."""
+    seed = b"x" * NARROW + b"\ny\n"
+    with EditSession(str(tmp_path), seed, filename="t.txt", xwperc=NARROW_RC) as s:
+        w = s.last.win
+        assert w.mx == NARROW
+        assert w.lines == [("H", b"x" * NARROW), ("H", b"y")], w.lines
+        _assert_rows_fit(w, "reading the file")
+        s.send([F2])
+        assert s.disk() == seed, "saved as %r" % s.disk()
+
+
+# @scenario SC-buffer-09
+def test_a_line_one_byte_over_max_columns_wraps_its_last_byte(tmp_path):
+    """At Max. Columns 20 a line of 21 characters without a blank fills one
+    row and puts its last character on the next."""
+    seed = b"x" * (NARROW + 1) + b"\n"
+    with EditSession(str(tmp_path), seed, filename="t.txt", xwperc=NARROW_RC) as s:
+        w = s.last.win
+        assert w.lines == [("S", b"x" * NARROW), ("H", b"x")], w.lines
+        _assert_rows_fit(w, "reading the file")
+
+
+# @scenario SC-buffer-09
+def test_a_multibyte_character_at_the_margin_is_not_split(tmp_path):
+    """At Max. Columns 20 a line whose last two-byte character would straddle
+    the margin is cut before that character: every row is valid UTF-8, and
+    the file is saved as it was."""
+    seed = ("a" + E_ACUTE * 10 + "\n").encode("utf-8")
+    with EditSession(str(tmp_path), seed, filename="t.txt", xwperc=NARROW_RC) as s:
+        w = s.last.win
+        for end, data in w.lines:
+            data.decode("utf-8")           # raises on a split character
+        _assert_rows_fit(w, "reading the file")
+        s.send([F2])
+        assert s.disk() == seed, "saved as %r" % s.disk()
+
+
+# @scenario SC-buffer-09
+def test_typing_at_the_start_of_a_full_row_keeps_its_line_break(tmp_path):
+    """A line exactly as long as the window, a character typed at its start:
+    the line wraps and keeps its line break, so it does not run into the
+    line below."""
+    seed = b"x" * ROW_WIDTH + b"\ny\n"
+    with EditSession(str(tmp_path), seed, filename="t.txt") as s:
+        w = s.send(["z"]).win
+        _assert_rows_fit(w, "typing at the start of a full row")
+        s.send([F2])
+        assert s.disk() == b"z" + b"x" * ROW_WIDTH + b"\ny\n", "saved as %r" % s.disk()
+
+
+MAN_HELP_TOPIC = (ALT_HELP, "t")         # Help > Topic Search: man on the word
+
+
+def _a_fake_man(tmp_path, page):
+    """A directory holding a `man` that prints @page whatever it is asked."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    man = bindir / "man"
+    man.write_bytes(b"#!/bin/sh\nprintf '%s'\n" % page)
+    man.chmod(0o755)
+    return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", ""))}
+
+
+# @scenario SC-buffer-09
+def test_a_manual_page_with_bold_at_the_margin_stays_inside_its_rows(tmp_path):
+    """A manual page whose first line runs to the margin with no blank, a
+    bold character ending two columns short of it and one more character
+    after it: the page opens, the editor goes on answering, and no row of
+    the page is wider than the window."""
+    page = b"a" * (ROW_WIDTH - 3) + b"b\\bbc\\n"
+    with EditSession(str(tmp_path), "printf\n", filename="t.txt",
+                     env_extra=_a_fake_man(tmp_path, page)) as s:
+        w = s.send(list(MAN_HELP_TOPIC)).win
+        assert s.alive(), "wpe died reading the page"
+        assert w is not None and w.name != "t.txt", "no page window opened"
+        wide = [len(data) for end, data in w.lines if len(data) > w.mx]
+        assert not wide, "the page has rows wider than %d: %r" % (w.mx, wide)
+
+
+# ---- typing at the margin keeps every byte ----
+
+EURO = "€"                               # three bytes in UTF-8
+ROW_WIDER = "row wider"                  # the owner's trace of a row it refused
+
+
+def _keys_typed(text):
+    """@text as keys, one character each."""
+    return list(text)
+
+
+def _rights(n):
+    return [RIGHT] * n
+
+
+def _assert_typed_text_on_disk(s, keys, want, what):
+    """Type @keys, save: the file is @want, valid UTF-8, every row inside the
+    width, and the owner refused nothing."""
+    s.trace_since_last()
+    w = s.send(keys).win
+    _assert_rows_fit(w, what)
+    for end, data in w.lines:
+        data.decode("utf-8")               # raises on a split character
+    s.send([F2])
+    refused = [line for line in s.trace_since_last() if ROW_WIDER in line]
+    assert s.disk() == want, "%s saved %r" % (what, s.disk())
+    assert not refused, "%s: the owner refused a row: %r" % (what, refused)
+
+
+# The verifier's probes: a character typed where a row has to wrap, at the
+# end of a row that ends at a blank, in the middle of an unbroken run, and a
+# three-byte character typed into a full row.  Each keeps every byte.
+TYPING_PROBES = [
+    ("blank-at-margin-hard", NARROW_RC, "x" * 19 + " \nnext\n", [END, "z"],
+     "x" * 19 + " z\nnext\n"),
+    ("blank-at-margin-soft", NARROW_RC, "a" * 19 + " bbb\n", [END, "z"],
+     "a" * 19 + " zbbb\n"),
+    ("into-a-full-row-below", NARROW_RC, "a" * 19 + " " + "x" * 20 + "\n", [END, "z"],
+     "a" * 19 + " z" + "x" * 20 + "\n"),
+    ("three-bytes-into-a-full-row", NARROW_RC, "a " + "x" * 18 + "\n",
+     [HOME] + _rights(5) + [EURO], "a xxx" + EURO + "x" * 15 + "\n"),
+    ("three-bytes-at-120", None, "a " + "x" * 118 + "\n",
+     _rights(50) + [EURO], "a " + "x" * 48 + EURO + "x" * 70 + "\n"),
+    ("unbroken-run", None, "A1b2C3d4" * 40 + "\n",
+     [HOME] + _keys_typed("Xy ZZZ"), "Xy ZZZ" + "A1b2C3d4" * 40 + "\n"),
+    ("into-a-full-row-below-at-120", None, "a" * 119 + " " + "x" * 120 + "\n", [END, "z"],
+     "a" * 119 + " z" + "x" * 120 + "\n"),
+    ("three-bytes-before-a-line-at-120", None, "a " + "x" * 118 + "\nnext\n",
+     [HOME] + _rights(50) + [EURO], "a " + "x" * 48 + EURO + "x" * 70 + "\nnext\n"),
+]
+
+
+# @scenario SC-buffer-09
+@pytest.mark.parametrize("name,rc,seed,keys,want", TYPING_PROBES,
+                         ids=[p[0] for p in TYPING_PROBES])
+def test_typing_where_a_row_must_wrap_keeps_every_byte(tmp_path, name, rc, seed, keys, want):
+    """A character typed where its row has to wrap goes in where it was
+    typed: the file saved holds every byte typed, no character is split,
+    and no row is wider than Max. Columns."""
+    with EditSession(str(tmp_path), seed, filename="t.txt", xwperc=rc) as s:
+        _assert_typed_text_on_disk(s, keys, want.encode("utf-8"), name)
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-09
+def test_typing_wraps_after_max_columns_not_before(tmp_path):
+    """At Max. Columns 20, twenty characters typed on an empty line stay on
+    one row; the twenty-first wraps onto the next row and the file holds
+    all twenty-one."""
+    with EditSession(str(tmp_path), "\n", filename="t.txt", xwperc=NARROW_RC) as s:
+        w = s.send(_keys_typed("a" * NARROW)).win
+        assert w.lines == [("H", b"a" * NARROW)], w.lines
+        _assert_typed_text_on_disk(s, ["a"], b"a" * (NARROW + 1) + b"\n",
+                                   "the character after Max. Columns")
+        assert s.last.win.lines == [("S", b"a" * NARROW), ("H", b"a")], s.last.win.lines
+
+
+# @scenario SC-buffer-09
+def test_backspace_joining_a_line_that_exactly_fills_the_row_takes_its_break(tmp_path):
+    """At Max. Columns 20, Backspace at the start of a line whose text exactly
+    fills what the row above has left joins the whole line, its line break
+    with it, and leaves no empty row behind."""
+    seed = "abcde\n" + "x" * 15 + "\ntail\n"
+    with EditSession(str(tmp_path), seed, filename="t.txt", xwperc=NARROW_RC) as s:
+        w = s.send([DOWN, HOME, BACKSPACE]).win
+        assert w.lines == [("H", b"abcde" + b"x" * 15), ("H", b"tail")], w.lines
+        _assert_rows_fit(w, "the join")
+
+
+UNDO_CASES = [
+    ("enter-at-a-full-soft-row", None, SOFT_SEED, [END, ENTER], SOFT_ROW + "t\nail\n",
+     [("S", SOFT_ROW.encode() + b"t"), ("H", b"ail")],
+     [("H", SOFT_ROW.encode() + b"t"), ("H", b"ail")]),
+    ("typing-after-max-columns", NARROW_RC, "a" * NARROW + "\n", [END, "a"],
+     "a" * (NARROW + 1) + "\n",
+     [("H", b"a" * NARROW)],
+     [("S", b"a" * NARROW), ("H", b"a")]),
+]
+
+
+def _assert_saved(s, want, rows, what):
+    """Save: the file is @want and, when @rows is given, the window's rows
+    are @rows."""
+    w = s.send([F2]).win
+    assert s.disk() == want.encode("utf-8"), "%s saved %r" % (what, s.disk())
+    if rows is not None:
+        assert w.lines == rows, "%s left the rows %r" % (what, w.lines)
+
+
+# @scenario SC-buffer-09
+@pytest.mark.parametrize("name,rc,seed,keys,edited,seed_rows,edited_rows", UNDO_CASES,
+                         ids=[c[0] for c in UNDO_CASES])
+def test_undo_and_redo_at_a_full_row_give_each_text_back(tmp_path, name, rc, seed, keys,
+                                                         edited, seed_rows, edited_rows):
+    """Enter at the end of a full row without a line break, and a character
+    typed after Max. Columns: Ctrl-U gives the file back as it was, Ctrl-R
+    the edited text and its rows again.  (The row a wrap added may stay,
+    empty, after Ctrl-U: the file is the same.)"""
+    with EditSession(str(tmp_path), seed, filename="t.txt", xwperc=rc) as s:
+        assert s.last.win.lines == seed_rows, s.last.win.lines
+        s.send(keys)
+        _assert_saved(s, edited, edited_rows, name)
+        s.send([CTRL_U])
+        _assert_saved(s, seed, None, "Ctrl-U of " + name)
+        s.send([CTRL_R])
+        _assert_saved(s, edited, edited_rows, "Ctrl-R of " + name)
+        _assert_rows_fit(s.last.win, name)
+
+
+# ---- a replacement longer than a row ----
+
+ALT_S, ALT_N, ALT_P, ALT_A = "\033s", "\033n", "\033p", "\033a"
+REPLACE_SEED = "int a = 1;\nint b = 2;\nint c = 3;\nreturn 0;\n"
+REPLACE_RC = "[General]\nMaxColumn : %d\nNumUndo : 20\n"
+REPLACE_TEXT_MAX = 128                   # the bytes New Text takes
+LEAVE_ESC_MAX = 4
+
+
+def _long_text(width, n, wide):
+    """@n bytes of `x`, with the character @wide (or none) straddling the
+    margin of a row @width wide."""
+    if not wide:
+        return "x" * n
+    rest = n - (width - 1) - len(wide.encode("utf-8"))
+    return "x" * (width - 1) + wide + "x" * rest
+
+
+def _replace_keys(search, text, change_all):
+    keys = [ALT_S, "r"] + list(search) + [ALT_N] + list(text) + [ALT_P]
+    if change_all:
+        return keys + [ALT_A]
+    return keys + [ENTER]
+
+
+def _back_to_the_text(s, d):
+    for _ in range(LEAVE_ESC_MAX):
+        if d.ctx == "edit":
+            return d
+        d = s.send([ESC])
+    return d
+
+
+def _assert_rows_whole(w, want, what):
+    """The window holds @want, every row valid UTF-8 and within the width."""
+    assert w.disk() == want.encode("utf-8"), "%s: %r" % (what, w.disk())
+    for end, data in w.lines:
+        data.decode("utf-8")
+    _assert_rows_fit(w, what)
+
+
+# @scenario SC-buffer-09
+def test_change_all_goes_on_behind_a_replacement_that_wrapped(tmp_path):
+    """At Max. Columns 20, Change All of `b` in a line where the first
+    replacement makes the row wrap: every occurrence is replaced, once, and
+    Ctrl-U gives the line back (one Ctrl-U per replacement: Change All as
+    one step is decided but not built yet)."""
+    seed = "x" * 14 + " b b b\nnext\n"
+    edited = seed.replace("b", "yyyyyy")
+    with EditSession(str(tmp_path), seed, filename="t.txt", xwperc=REPLACE_RC % NARROW) as s:
+        d = _back_to_the_text(s, s.send(_replace_keys("b", "yyyyyy", True)))
+        _assert_rows_whole(d.win, edited, "Change All")
+        _assert_rows_whole(s.send([CTRL_U] * seed.count("b")).win, seed, "Ctrl-U")
+        assert s.alive(), "wpe died"
+
+
+ALT_B = "\033b"                          # Replace: Back from Cursor
+CTRL_END = "\033[1;5F"                   # the end of the text
+# A row exactly Max. Columns 20 wide: the last replacement wraps it after
+# the blank before the occurrence next to it, which goes down with it.
+BACKWARD_SEED = "ab ab ab ab ab ab ab\n"
+
+
+# @scenario SC-buffer-09
+def test_change_all_backwards_replaces_what_a_wrap_moved_down(tmp_path):
+    """At Max. Columns 20, Change All back from the end of a full row: the
+    first replacement wraps the row and takes the occurrence before it to
+    the row below; that occurrence is replaced too, none is skipped."""
+    edited = BACKWARD_SEED.replace("ab", "abab")
+    with EditSession(str(tmp_path), BACKWARD_SEED, filename="t.txt",
+                     xwperc=REPLACE_RC % NARROW) as s:
+        s.send([CTRL_END])
+        keys = [ALT_S, "r", "a", "b", ALT_N, "a", "b", "a", "b", ALT_P, ALT_B, ALT_A]
+        d = _back_to_the_text(s, s.send(keys))
+        _assert_rows_whole(d.win, edited, "Change All back")
+        assert s.alive(), "wpe died"
+
+
+# New Text takes characters up to Latin-1 from the keyboard (a character
+# above it, like EURO, empties the field), so the multibyte case is E_ACUTE.
+LONG_REPLACEMENTS = [(w, n, wide, all_)
+                     for w in (NARROW, ROW_WIDTH)
+                     for n in (w + 5, 2 * w + 3) if n <= REPLACE_TEXT_MAX
+                     for wide in ("", E_ACUTE)
+                     for all_ in (True, False)]
+
+
+# @scenario SC-buffer-09
+@pytest.mark.parametrize("width,n,wide,change_all", LONG_REPLACEMENTS,
+                         ids=["w%d-n%d-%s-%s" % (w, n, len(c.encode()), "all" if a else "one")
+                              for w, n, c, a in LONG_REPLACEMENTS])
+def test_a_replacement_longer_than_a_row_keeps_every_byte(tmp_path, width, n, wide, change_all):
+    """Search > Replace of a word by New Text longer than Max. Columns: the
+    text goes in over as many rows as it needs, no character cut, and
+    Ctrl-U, Ctrl-R, Ctrl-U give each text back; the file saved is the one
+    the user had."""
+    text = _long_text(width, n, wide)
+    edited = REPLACE_SEED.replace("b", text, 1)
+    with EditSession(str(tmp_path), REPLACE_SEED, filename="t.txt",
+                     xwperc=REPLACE_RC % width) as s:
+        s.trace_since_last()
+        d = _back_to_the_text(s, s.send(_replace_keys("b", text, change_all)))
+        _assert_rows_whole(d.win, edited, "the replacement")
+        _assert_rows_whole(s.send([CTRL_U]).win, REPLACE_SEED, "Ctrl-U")
+        _assert_rows_whole(s.send([CTRL_R]).win, edited, "Ctrl-R")
+        _assert_rows_whole(s.send([CTRL_U]).win, REPLACE_SEED, "the second Ctrl-U")
+        s.send([F2])
+        refused = [line for line in s.trace_since_last() if ROW_WIDER in line]
+        assert s.disk() == REPLACE_SEED.encode("utf-8"), "saved %r" % s.disk()
+        assert not refused, refused
         assert s.alive(), "wpe died"

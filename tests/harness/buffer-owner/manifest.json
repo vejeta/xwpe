@@ -497,6 +497,160 @@
    "layer": "asan",
    "test": "tests/test_block_asan.py::test_unindent_of_a_tab_and_blanks_no_overread",
    "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_enter_at_the_end_of_a_full_row_without_a_line_break_keeps_every_byte",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_enter_at_the_end_of_a_full_row_without_a_line_break_keeps_every_byte",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_line_exactly_max_columns_long_is_one_row",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_line_one_byte_over_max_columns_wraps_its_last_byte",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_multibyte_character_at_the_margin_is_not_split",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_typing_at_the_start_of_a_full_row_keeps_its_line_break",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_a_manual_page_with_bold_at_the_margin_stays_inside_its_rows",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_manual_page_with_bold_at_the_margin_stays_inside_its_rows",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_typing_where_a_row_must_wrap_keeps_every_byte",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_typing_where_a_row_must_wrap_keeps_every_byte",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_typing_wraps_after_max_columns_not_before",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_backspace_joining_a_line_that_exactly_fills_the_row_takes_its_break",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_undo_and_redo_at_a_full_row_give_each_text_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_editing_commands.py::test_a_block_marked_by_undo_of_a_line_break_copies_and_undoes_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_editing_commands.py::test_undo_of_a_line_break_marks_up_to_the_start_of_the_next_row",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_editing_commands.py::test_a_shift_block_after_overwrite_at_a_line_end_stays_in_its_row",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-01",
+   "requirement": "Every change is undoable, and a tool's rewrite is one step",
+   "layer": "ncurses",
+   "test": "tests/test_editing_commands.py::test_overwrite_replaces_a_whole_character",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_replacement_longer_than_a_row_keeps_every_byte",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_a_replacement_longer_than_a_row_keeps_every_byte",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_change_all_goes_on_behind_a_replacement_that_wrapped",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-09",
+   "requirement": "A row is never wider than Max. Columns, and a row of exactly Max. Columns holds its line break",
+   "layer": "ncurses",
+   "test": "tests/test_lsp_on_the_loop.py::test_a_completion_longer_than_a_row_keeps_every_byte",
+   "status": "new"
   }
  ]
 }

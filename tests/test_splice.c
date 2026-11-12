@@ -51,6 +51,7 @@ static int leak_traced;
 static int fault_traced;
 static int overrun_traced;
 static int move_view_traced;
+static int row_wider_traced;
 
 void wpe_buffer_syntax_changed(BUFFER *b, int y)
 {
@@ -200,13 +201,15 @@ void wpe_buffer_trace(const char *fmt, ...)
   overrun_traced++;
  if (strstr(fmt, "view meets a move") != NULL)
   move_view_traced++;
+ if (strstr(fmt, "row wider") != NULL)
+  row_wider_traced++;
 }
 
 static void hooks_reset(void)
 {
  syntax_calls = moved_calls = nomem_calls = 0;
  moved_nremoved = moved_nadded = 0;
- overrun_traced = move_view_traced = 0;
+ overrun_traced = move_view_traced = row_wider_traced = 0;
  stub_refuses = stub_overruns = 0;
  replay_calls = replay_row_missing = stub_marks_past = 0;
 }
@@ -1930,13 +1933,36 @@ static const char *rows_text(BUFFER *b, int y0, int n)
  return(out);
 }
 
-/* Does every row of b fit its width (a byte left for the line break)? */
+/* The shape every row of a file has, written from the rule and not from
+   the owner: at most Max. Columns (b->mx.x) bytes of text; then the line
+   break or the zero of a row whose line goes on below; the zero right after
+   the break; the last byte of the row's room (Max. Columns + 2 bytes) zero.
+   A row of exactly Max. Columns bytes is one row with its break, which the
+   old rule (a byte always left free) did not allow. */
+static int row_obeys(const BUFFER *b, const STRING *l)
+{
+ int hard;
+
+ if (l->s == NULL || l->len < 0 || l->len > b->mx.x)
+  return(0);
+ if (l->s[l->len] == WPE_WR)
+  hard = 1;
+ else if (l->s[l->len] == '\0')
+  hard = 0;
+ else
+  return(0);
+ if (l->nrc != l->len + hard || l->s[l->nrc] != '\0')
+  return(0);
+ return(l->s[b->mx.x + 1] == '\0');
+}
+
+/* Does every row of b keep the row shape (row_obeys)? */
 static int rows_fit(BUFFER *b)
 {
  int y;
 
  for (y = 0; y < b->mxlines; y++)
-  if (b->bf[y].len > b->mx.x - 1)
+  if (!row_obeys(b, &b->bf[y]))
    return(0);
  return(1);
 }
@@ -2090,6 +2116,258 @@ static void case_marks_stand_in_the_text_after_an_undo(void)
  fixture_free();
 }
 
+/* ---- the width of a row ---- */
+
+#define HALF_WIDTH (WIDTH / 2)
+#define SPLIT_TEXT_MAX (4 * WIDTH + 8)
+
+/* @n bytes of @c, then @tail: a line built for a row-width case. */
+static const char *repeated(int c, int n, const char *tail)
+{
+ static char out[SPLIT_TEXT_MAX];
+
+ memset(out, c, (size_t) n);
+ snprintf(out + n, sizeof out - (size_t) n, "%s", tail);
+ return(out);
+}
+
+/* The buffer holds @text now; every row keeps the row shape, by the rule
+   and by the owner's own check, and the text saved is @text again.
+   @what: the case's name; @rows: the rows the text must take. */
+static void chk_text_rows(const char *what, const char *text, int rows)
+{
+ char name[128];
+
+ snprintf(name, sizeof name, "%s: taken", what);
+ chk(name, e_buffer_replace_all(&buf, text, E_BUFFER_STEP_NEW), E_BUFFER_OK);
+ snprintf(name, sizeof name, "%s: rows", what);
+ chk(name, buf.mxlines, rows);
+ snprintf(name, sizeof name, "%s: every row fits", what);
+ chk(name, rows_fit(&buf), 1);
+ snprintf(name, sizeof name, "%s: the owner agrees", what);
+ chk(name, e_buffer_rows_check(&buf), -1);
+ snprintf(name, sizeof name, "%s: every byte", what);
+ chk_str(name, rows_text(&buf, 0, buf.mxlines), text);
+}
+
+/* Lines read or pasted, as the one wrap rule cuts them. */
+static void case_text_cut_into_rows_fits_the_width(void)
+{
+ char astride[WIDTH + 8];
+
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ chk_text_rows("41 a line one short of Max. Columns", repeated('x', WIDTH - 1, "\n"), 1);
+ chk_text_rows("41 a line of Max. Columns is one row", repeated('x', WIDTH, "\n"), 1);
+ chk("41 ... with its line break", buf.bf[0].s[WIDTH], WPE_WR);
+ chk_text_rows("41 one byte over wraps that byte", repeated('x', WIDTH + 1, "\n"), 2);
+ chk("41 ... the first row full", buf.bf[0].len, WIDTH);
+ chk_text_rows("41 two full rows", repeated('x', 2 * WIDTH, "\n"), 2);
+ chk_text_rows("41 a blank to wrap at",
+               repeated('a', WIDTH - 10, " bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"), 2);
+ chk("41 ... cut after the blank", buf.bf[0].len, WIDTH - 9);
+ memset(astride, 'x', WIDTH - 1);
+ snprintf(astride + WIDTH - 1, sizeof astride - (WIDTH - 1), "\xc3\xa9y\n");
+ chk_text_rows("41 a two-byte character astride the margin", astride, 2);
+ chk("41 ... the character whole on the second row", buf.bf[1].s[0], 0xc3);
+ fixture_free();
+}
+
+/* The other makers of rows: parts joined, Enter, a copy, a shell. */
+static void case_every_row_a_maker_makes_fits_the_width(void)
+{
+ WpeBufferPart parts[2];
+ STRING *lines;
+ BUFFER *other;
+ WpeBufferTxn t;
+ int n, x, xs[4] = {0, 1, WIDTH - 1, WIDTH}, i;
+ char joined[WIDTH + 2];
+
+ memset(joined, 'j', WIDTH);
+ joined[WIDTH] = WPE_WR;
+ parts[0].s = (const unsigned char *) joined;
+ parts[0].n = HALF_WIDTH;
+ parts[1].s = (const unsigned char *) joined + HALF_WIDTH;
+ parts[1].n = WIDTH - HALF_WIDTH + 1;
+ lines = e_buffer_lines_from_parts(WIDTH, parts, 2, &n);
+ chk("42 parts joined to exactly Max. Columns are one row", n, 1);
+ if (n == 1) {
+  chk("42 ... of Max. Columns", lines[0].len, WIDTH);
+  chk("42 ... with its break", lines[0].s[WIDTH], WPE_WR);
+ }
+ e_buffer_lines_free(lines, n);
+
+ for (i = 0; i < 4; i++) {
+  x = xs[i];
+  fixture(1, E_BUFFER_HISTORY_FULL);
+  e_buffer_replace_all(&buf, repeated('s', 2 * WIDTH, "\n"), E_BUFFER_STEP_NEW);
+  chk("42 a split of a full soft row is made",
+      e_buffer_split_line(&buf, 0, x, E_BUFFER_STEP_NEW, E_BUFFER_HEAD_WR), E_BUFFER_OK);
+  chk("42 ... every row fits", rows_fit(&buf), 1);
+  chk("42 ... the owner agrees", e_buffer_rows_check(&buf), -1);
+  fixture_free();
+  fixture(1, E_BUFFER_HISTORY_FULL);
+  e_buffer_replace_all(&buf, repeated('h', WIDTH, "\ntail\n"), E_BUFFER_STEP_NEW);
+  chk("42 a split of a full hard row is made",
+      e_buffer_split_line(&buf, 0, x, E_BUFFER_STEP_NEW, E_BUFFER_HEAD_WR), E_BUFFER_OK);
+  chk("42 ... every row fits", rows_fit(&buf), 1);
+  chk("42 ... the line break went with the tail", buf.mxlines, 3);
+  fixture_free();
+ }
+
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ e_buffer_replace_all(&buf, repeated('c', WIDTH, "\n"), E_BUFFER_STEP_NEW);
+ other = e_buffer_shell_new(&buf, WIDTH);
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_copy_lines(&t, other, 0, &buf, 0, 1, E_BUFFER_STEP_COVERED);
+ chk("42 a full row copied into the same width", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("42 ... every row fits", rows_fit(other), 1);
+ chk_str("42 ... every byte and the break", rows_text(other, 0, 1), repeated('c', WIDTH, "\n"));
+ e_buffer_shell_free(other);
+ other = e_buffer_shell_new(&buf, HALF_WIDTH);
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_copy_lines(&t, other, 0, &buf, 0, 1, E_BUFFER_STEP_COVERED);
+ chk("42 a full row copied into half the width", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("42 ... every row fits", rows_fit(other), 1);
+ chk_str("42 ... every byte and the break", rows_text(other, 0, 2), repeated('c', WIDTH, "\n"));
+ e_buffer_shell_free(other);
+ other = e_buffer_shell_new(&buf, WIDTH);
+ e_buffer_txn_begin(&t);
+ chk("42 a shell filled over a full row",
+     e_buffer_shell_fill(other, &t, &buf, 0, 1), E_BUFFER_OK);
+ e_buffer_txn_abort(&t);
+ chk("42 ... every row fits", rows_fit(other), 1);
+ e_buffer_shell_free(other);
+ chk("42 a row one byte too wide is refused",
+     e_buffer_set_line_ended(&buf, 0, repeated('w', WIDTH + 1, ""), WIDTH + 1, WPE_WR),
+     E_BUFFER_RANGE);
+ chk_str("42 ... the text unchanged", text_of(), repeated('c', WIDTH, "\n"));
+ e_buffer_mark_view(&buf);
+ chk("42 ... a view takes it",
+     e_buffer_set_line_ended(&buf, 0, repeated('w', WIDTH + 1, ""), WIDTH + 1, WPE_WR),
+     E_BUFFER_OK);
+ fixture_free();
+}
+
+/* A row the owner did not make, one byte past Max. Columns: refused whole,
+   and the trace names it, so the check has teeth. */
+static STRING *a_row_one_byte_too_wide(void)
+{
+ STRING *wide = malloc(sizeof(STRING));
+
+ if (wide == NULL || (wide->s = calloc(WIDTH + 4, 1)) == NULL)
+  exit(2);
+ memset(wide->s, 'w', WIDTH + 1);
+ wide->s[WIDTH + 1] = WPE_WR;
+ wide->len = WIDTH + 1;
+ wide->nrc = WIDTH + 2;
+ return(wide);
+}
+
+static void case_a_row_that_does_not_fit_is_refused(void)
+{
+ STRING *wide;
+ WpeBufferTxn t;
+ int lines, r;
+
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ wide = a_row_one_byte_too_wide();
+ lines = buf.mxlines;
+ r = e_buffer_splice(&buf, 1, 0, wide, 1, NULL, 0, E_BUFFER_STEP_NEW);
+ chk("43 a row too wide is refused", r, E_BUFFER_RANGE);
+ if (r != E_BUFFER_OK)
+  free(wide->s);
+ free(wide);
+ chk("43 ... no line added", buf.mxlines, lines);
+ chk_str("43 ... the text as it was", text_of(), "L0\nL1\nL2\n");
+ chk("43 ... nothing to undo", list_len(buf.ud), 0);
+ chk("43 ... the trace says why", row_wider_traced, 1);
+ fixture_free();
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ e_buffer_txn_begin(&t);
+ wide = a_row_one_byte_too_wide();
+ chk("43 a transaction refuses it too",
+     e_buffer_txn_splice(&t, &buf, 1, 1, wide, 1, E_BUFFER_STEP_COVERED), E_BUFFER_RANGE);
+ chk("43 ... and is refused whole", e_buffer_txn_commit(&t), E_BUFFER_RANGE);
+ chk_str("43 ... the text as it was", text_of(), "L0\nL1\nL2\n");
+ fixture_free();
+}
+
+/* Enter at the end of a full row without a line break: the row takes the
+   break inside its own room, and the row below is the rest of the line. */
+static void case_enter_at_the_end_of_a_full_soft_row_gives_it_its_break(void)
+{
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ e_buffer_replace_all(&buf, repeated('a', WIDTH, "tail\n"), E_BUFFER_STEP_NEW);
+ chk("44 a full soft row and its rest", buf.mxlines, 2);
+ chk("44 Enter at its end",
+     e_buffer_split_line(&buf, 0, WIDTH, E_BUFFER_STEP_NEW, E_BUFFER_HEAD_WR), E_BUFFER_OK);
+ chk("44 ... no row added", buf.mxlines, 2);
+ chk("44 ... the row hard", buf.bf[0].s[WIDTH], WPE_WR);
+ chk("44 ... every byte on it", buf.bf[0].len, WIDTH);
+ chk("44 ... counted with its break", buf.bf[0].nrc, WIDTH + 1);
+ chk("44 ... the zero after the break", buf.bf[0].s[WIDTH + 1], '\0');
+ chk_str("44 ... the text", text_of(), repeated('a', WIDTH, "\ntail\n"));
+ fixture_free();
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ e_buffer_replace_all(&buf, repeated('a', WIDTH, "\n"), E_BUFFER_STEP_NEW);
+ chk("44 Enter at the end of a full hard row",
+     e_buffer_split_line(&buf, 0, WIDTH, E_BUFFER_STEP_NEW, E_BUFFER_HEAD_WR), E_BUFFER_OK);
+ chk("44 ... a row added", buf.mxlines, 2);
+ chk("44 ... empty", buf.bf[1].len, 0);
+ chk("44 ... and hard", buf.bf[1].s[0], WPE_WR);
+ chk("44 ... every row fits", rows_fit(&buf), 1);
+ fixture_free();
+}
+
+/* A row of a view wider than the window, copied into a file's buffer of
+   the same width: wrapped again, every byte and the break kept. */
+static void case_a_wide_view_row_copied_into_a_file_keeps_every_byte(void)
+{
+ WpeBufferTxn t;
+ BUFFER *file;
+ const char *wide = repeated('v', 2 * WIDTH, "");
+ char want[2 * WIDTH + 2];
+
+ snprintf(want, sizeof want, "%s\n", wide);
+ fixture(2, E_BUFFER_HISTORY_FULL);
+ e_buffer_mark_view(&buf);
+ chk("45 a view holds a row twice the width",
+     e_buffer_set_line(&buf, 0, wide, 2 * WIDTH), E_BUFFER_OK);
+ file = e_buffer_shell_new(&buf, WIDTH);
+ e_buffer_txn_begin(&t);
+ e_buffer_txn_copy_lines(&t, file, 0, &buf, 0, 1, E_BUFFER_STEP_COVERED);
+ chk("45 the copy is made", e_buffer_txn_commit(&t), E_BUFFER_OK);
+ chk("45 ... every row fits", rows_fit(file), 1);
+ chk("45 ... the owner agrees", e_buffer_rows_check(file), -1);
+ chk_str("45 ... every byte and the break", rows_text(file, 0, file->mxlines - 1), want);
+ e_buffer_shell_free(file);
+ fixture_free();
+}
+
+/* The owner's check and the rule above say the same of a good buffer and
+   of a bad one. */
+static void case_the_owners_check_agrees_with_the_rule(void)
+{
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ chk("46 a good buffer: the rule", rows_fit(&buf), 1);
+ chk("46 a good buffer: the owner", e_buffer_rows_check(&buf), -1);
+ memset(buf.bf[1].s, 'z', WIDTH + 1);
+ buf.bf[1].s[WIDTH + 1] = '\0';
+ buf.bf[1].len = WIDTH + 1;
+ buf.bf[1].nrc = WIDTH + 1;
+ chk("46 a row past the width: the rule", row_obeys(&buf, &buf.bf[1]), 0);
+ chk("46 a row past the width: the owner", e_buffer_rows_check(&buf), 1);
+ buf.bf[1].s[2] = WPE_WR;
+ buf.bf[1].s[3] = 'z';
+ buf.bf[1].len = 2;
+ buf.bf[1].nrc = 3;
+ chk("46 bytes after the break: the rule", row_obeys(&buf, &buf.bf[1]), 0);
+ chk("46 bytes after the break: the owner", e_buffer_rows_check(&buf), 1);
+ e_buffer_mark_view(&buf);
+ chk("46 a view is not checked", e_buffer_rows_check(&buf), -1);
+ fixture_free();
+}
+
 int main(void)
 {
  case_insert_above_a_mark();
@@ -2140,6 +2418,12 @@ int main(void)
  case_a_move_into_a_narrower_buffer_builds_its_line_again();
  case_a_record_never_names_a_freed_row();
  case_marks_stand_in_the_text_after_an_undo();
+ case_text_cut_into_rows_fits_the_width();
+ case_every_row_a_maker_makes_fits_the_width();
+ case_a_row_that_does_not_fit_is_refused();
+ case_enter_at_the_end_of_a_full_soft_row_gives_it_its_break();
+ case_a_wide_view_row_copied_into_a_file_keeps_every_byte();
+ case_the_owners_check_agrees_with_the_rule();
  if (fails) {
   printf("test_splice: %d failure(s)\n", fails);
   return(1);
