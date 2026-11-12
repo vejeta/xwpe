@@ -147,8 +147,14 @@ int e_help_next();
 int e_codepoint_to_utf8(int cp, unsigned char *out);
 int e_utf8_charlen(unsigned char c);
 int e_utf8_seq_len(const unsigned char *s, int avail);
+int e_utf8_char_before(const unsigned char *s, int pos, int len);
 int e_utf8_to_codepoint(unsigned char *buf, int len);
 int e_utf8_visual_len(unsigned char *s, int bytes);
+static int e_char_bytes_at(BUFFER *b, int x, int y);
+static int e_char_start_before(BUFFER *b, int x, int y);
+
+/* What e_char_bytes_at gives for ASCII or a byte that starts no character. */
+#define E_CHAR_ONE_BYTE 1
 
 /* True for a UTF-8 lead byte (start of a 2..4 byte sequence). */
 #define UTF8_IS_LEAD(c) ((c) >= 0xC0 && (c) < 0xFE)
@@ -978,12 +984,8 @@ int e_eingabe(ECNT *e)
     {
      if (b->b.x > 0)
      {
-      /* Move back over UTF-8 continuation bytes */
       int old_x = b->b.x;
-      b->b.x--;
-      while (b->b.x > 0 &&
-             ((unsigned char)b->bf[b->b.y].s[b->b.x] & 0xC0) == 0x80)
-       b->b.x--;
+      b->b.x = e_char_start_before(b, old_x, b->b.y);
       if (f->flg & 1) e_del_a_ind(b, s);
       else e_del_nchar(b, s, b->b.x, b->b.y, old_x - b->b.x);
      }
@@ -1013,18 +1015,7 @@ int e_eingabe(ECNT *e)
    if (*(b->bf[b->b.y].s + b->b.x) != '\0' &&
      (b->b.y < b->mxlines-1 || *(b->bf[b->b.y].s + b->b.x) != WPE_WR))
    {
-    /* Determine number of bytes in the character at cursor */
-    unsigned char uc = (unsigned char)b->bf[b->b.y].s[b->b.x];
-    int del_n = 1;
-    if (uc >= 0xC0 && uc < 0xFE)
-    {
-     int pos = b->b.x + 1;
-     while (pos < b->bf[b->b.y].len &&
-            ((unsigned char)b->bf[b->b.y].s[pos] & 0xC0) == 0x80)
-      pos++;
-     del_n = pos - b->b.x;
-    }
-    e_del_nchar(b, s, b->b.x, b->b.y, del_n);
+    e_del_nchar(b, s, b->b.x, b->b.y, e_char_bytes_at(b, b->b.x, b->b.y));
     e_schirm(f, 1);
    }
   }
@@ -1170,10 +1161,9 @@ int e_tst_cur(int c, ECNT *e)
       case CtrlB:
       case CLE:
       case CLE+512:
-	 (b->b.x)--;
-	 /* Skip UTF-8 continuation bytes (10xxxxxx) when moving left */
-	 while (b->b.x > 0 &&
-	        ((unsigned char)b->bf[b->b.y].s[b->b.x] & 0xC0) == 0x80)
+	 if (b->b.x > 0 && b->b.x <= b->bf[b->b.y].len)
+	  b->b.x = e_char_start_before(b, b->b.x, b->b.y);
+	 else
 	  (b->b.x)--;
 	 if(b->b.x < 0)
 	 {  if(b->b.y > 0)
@@ -1185,17 +1175,7 @@ int e_tst_cur(int c, ECNT *e)
       case CRI:
       case CRI+512:
 	 if (b->b.x < b->bf[b->b.y].len)
-	 {
-	  /* Skip entire UTF-8 sequence when moving right */
-	  unsigned char uc = (unsigned char)b->bf[b->b.y].s[b->b.x];
-	  (b->b.x)++;
-	  if (uc >= 0xC0 && uc < 0xFE)
-	  {
-	   while (b->b.x < b->bf[b->b.y].len &&
-	          ((unsigned char)b->bf[b->b.y].s[b->b.x] & 0xC0) == 0x80)
-	    (b->b.x)++;
-	  }
-	 }
+	  b->b.x += e_char_bytes_at(b, b->b.x, b->b.y);
 	 else
 	 {
 	  (b->b.x)++;
@@ -2159,7 +2139,9 @@ int e_tab_a_ind(BUFFER *b, SCHIRM *s)
  * started before the cursor: its tabs become blanks and the blanks past
  * that line's indent go.  Those pieces are one action: one Ctrl-U gives the
  * line back as it was before the Backspace, one Ctrl-R deletes again.
- * Return: how many characters the last deletion took.
+ * Elsewhere, and over a character of several bytes, Backspace takes the
+ * whole character at the cursor, as it does without auto-indent.
+ * Return: how many bytes the last deletion took.
  */
 int e_del_a_ind(BUFFER *b, SCHIRM *s)
 {
@@ -2171,7 +2153,7 @@ int e_del_a_ind(BUFFER *b, SCHIRM *s)
   for (i = 0;
     i < b->bf[b->b.y].len && i < b->b.x && isspace(b->bf[b->b.y].s[i]); i++)
    ;
-  if (i == b->b.x)
+  if (i == b->b.x && e_char_bytes_at(b, b->b.x, b->b.y) == E_CHAR_ONE_BYTE)
   {
    for (j = 0, i = 0; j <= b->b.x; j++)
    {
@@ -2207,7 +2189,7 @@ int e_del_a_ind(BUFFER *b, SCHIRM *s)
   }
  }
  if (j < 0)
-  i = 1;
+  i = e_char_bytes_at(b, b->b.x, b->b.y);
  e_del_nchar(b, s, b->b.x, b->b.y, i);
  e_buffer_step_end(b);
  return(i);
@@ -3045,6 +3027,42 @@ int e_utf8_seq_len(const unsigned char *s, int avail)
  return(n);
 }
 
+/* The most bytes one UTF-8 character takes. */
+#define E_UTF8_MAX_BYTES 4
+
+/* Is @c a continuation byte (10xxxxxx), never the start of a character? */
+static int e_utf8_is_continuation(unsigned char c)
+{
+ return((c & 0xC0) == 0x80);
+}
+
+/**
+ * e_utf8_char_before - Where the character that ends just before @pos
+ * starts, read by the same rule as e_utf8_seq_len.
+ * @s: the text; @pos: a character boundary, 1 or more; @len: the bytes of
+ * @s that may be read.
+ *
+ * Left and Backspace step over exactly what Right and Delete step over
+ * and what the screen draws as one glyph: a whole character, or one byte
+ * of a cut one (a lead byte without all its continuation bytes, a stray
+ * continuation byte, a Latin-1 letter).  Every byte that is not a
+ * continuation starts a character, so the walk looks back at most to the
+ * lead byte the character could have.
+ * Return: the first byte of that character, from 0 to @pos - 1.
+ */
+int e_utf8_char_before(const unsigned char *s, int pos, int len)
+{
+ int lead = pos - 1;
+
+ while (lead > 0 && pos - lead < E_UTF8_MAX_BYTES && e_utf8_is_continuation(s[lead]))
+  lead--;
+ if (e_utf8_is_continuation(s[lead]))
+  return(pos - 1);
+ if (lead + e_utf8_seq_len(s + lead, len - lead) < pos)
+  return(pos - 1);
+ return(lead);
+}
+
 int e_utf8_to_codepoint(unsigned char *buf, int len)
 {
  if (len >= 2 && (buf[0] & 0xE0) == 0xC0)
@@ -3076,6 +3094,16 @@ int e_utf8_visual_len(unsigned char *s, int bytes)
 static int e_char_bytes_at(BUFFER *b, int x, int y)
 {
  return(e_utf8_seq_len((unsigned char *)b->bf[y].s + x, b->bf[y].len - x));
+}
+
+/**
+ * e_char_start_before - Where the character before (@x, @y) starts, @x 1
+ * or more: Left and Backspace take what Right and Delete take, the glyph
+ * the user sees, never a byte more or less.
+ */
+static int e_char_start_before(BUFFER *b, int x, int y)
+{
+ return(e_utf8_char_before((unsigned char *)b->bf[y].s, x, b->bf[y].len));
 }
 
 /**

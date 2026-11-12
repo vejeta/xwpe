@@ -370,6 +370,20 @@ Changes
   actions, so it no longer cuts a Change All or a block indent in the
   middle (with a small number most of it could not be undone).
 
+* After Ctrl-U or Ctrl-R of such an action the block marks all the text
+  it brought back, from the first byte to the last (it marked only the
+  piece replayed last); when it brought back no single run of text, the
+  block is the one you had before the action (Ctrl-U) or the one it left
+  (Ctrl-R).
+
+* Left, Backspace and Delete take one glyph as the screen shows it, in the
+  editor and in dialog fields.  Over the first byte of a cut character, a
+  stray continuation byte or a Latin-1 letter they took that byte and the
+  bytes after it, or the character before it, two glyphs at once.
+  Backspace in a C file (auto-indent on) after an é or a € deleted only its
+  first byte and left the rest as broken text; it now takes the whole
+  character.
+
 * A format, a rename or an accepted Edit that adds, removes or re-indents
   lines keeps every breakpoint on its own code (a format that added a line
   left them one line off, under other code), and one Ctrl-U gives back the

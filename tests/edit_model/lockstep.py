@@ -106,41 +106,29 @@ def _key_did_nothing(action, field, before, w):
 
 # Disagreements already known, by the name a report gives them.  Every action
 # is one step now (Tab and Backspace with auto-indent, Ctrl-K I/U, Ctrl-O
-# U/M/H and Change All included): a step count that differs is new.
+# U/M/H and Change All included): a step count that differs is new.  Backspace
+# with auto-indent takes a whole character: a byte it loses is new.
 KNOWN_UNDO_CURSOR = "open question: where Ctrl-U and Ctrl-R leave the cursor"
-KNOWN_UTF8_BACKSPACE = ("known bug, fix pending: Backspace with auto-indent deletes one "
-                        "byte of a UTF-8 character")
 
 
 def expected_tag(action, field, before, pred, editor_w):
-    """The known name of a disagreement (a bug whose fix is pending, or an
-    open question), or None for a new one.  A cursor or a mark outside the
-    text is never excused by a known bug: that check reads the editor's dump
-    alone, and the open question about where Undo leaves the cursor is not
-    offered for a cursor that is not in the text."""
+    """The known name of a disagreement (an open question), or None for a
+    new one.  A cursor or a mark outside the text is never excused: that
+    check reads the editor's dump alone, and the open question about where
+    Undo leaves the cursor is not offered for a cursor that is not in the
+    text."""
     name = action.name
     if field == FIELD_INSIDE:
         return None
     if name in ("undo", "redo") and field in (model.F_CURSOR, model.F_ANCHOR) \
             and not _cursor_outside(editor_w):
         return KNOWN_UNDO_CURSOR
-    if name == "backspace" and before.flg & model.FLG_AUTOINDENT \
-            and _multibyte_just_before_cursor(before):
-        return KNOWN_UTF8_BACKSPACE
     return None
 
 
 def _cursor_outside(w):
     """Is the editor's cursor outside the editor's own text?"""
     return any(cls == "cursor" for cls, _detail in selfcheck.check_inside(w))
-
-
-def _multibyte_just_before_cursor(before):
-    """Is the character Backspace takes a multibyte one (the auto-indent
-    Backspace bug), not merely one somewhere earlier on the row?"""
-    if not 0 <= before.y < len(before.rows) or before.x <= 0:
-        return False
-    return before.rows[before.y].data[before.x - 1] >= 0x80
 
 
 def logical_offset(lines, y, x):

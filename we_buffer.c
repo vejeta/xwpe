@@ -425,6 +425,12 @@ static int brp_count_in(const int *brp, int lo, int hi)
 
 #define BUFFER_MARKS_MAX 4
 
+/* The marks of a window, by their place in what buffer_marks() gives. */
+#define BUFFER_MARK_BEGIN 0
+#define BUFFER_MARK_END   1
+/* The block: its begin and its end. */
+#define BUFFER_BLOCK_MARKS WPE_BLOCK_ENDS
+
 /* The marks a splice keeps in step: the block and the last find.  A mark
    with a negative line is unset.  The debugger's current-line mark is not
    one: its end column means "to the end of the line" and the next stop
@@ -494,6 +500,86 @@ static void buffer_marks_move(BUFFER *b, int y, int n_del, int n_ins, int change
   buffer_point_clamp(b, m[i]);
  }
  buffer_point_clamp(b, &b->b);
+}
+
+/**
+ * buffer_block_get - The window's block, begin and end, into @blk.
+ *
+ * Used to remember the block a user's action started from, so its Undo can
+ * give it back.  Return: 1, or 0 for a buffer without a window (@blk is
+ * then left unset).
+ */
+static int buffer_block_get(BUFFER *b, POINT *blk)
+{
+ POINT *m[BUFFER_MARKS_MAX];
+ int i;
+
+ for (i = 0; i < BUFFER_BLOCK_MARKS; i++)
+ {
+  blk[i].x = -1;
+  blk[i].y = -1;
+ }
+ if (buffer_marks(b, m) < BUFFER_BLOCK_MARKS)
+  return(0);
+ blk[0] = *m[BUFFER_MARK_BEGIN];
+ blk[1] = *m[BUFFER_MARK_END];
+ return(1);
+}
+
+static void buffer_mark_pull_inside(BUFFER *b, POINT *p);
+
+/**
+ * buffer_block_set - Mark @blk as the window's block, pulled inside the
+ * text: where a Ctrl-U or Ctrl-R of a step of several pieces leaves it.
+ */
+static void buffer_block_set(BUFFER *b, const POINT *blk)
+{
+ POINT *m[BUFFER_MARKS_MAX];
+
+ if (buffer_marks(b, m) < BUFFER_BLOCK_MARKS)
+  return;
+ *m[BUFFER_MARK_BEGIN] = blk[0];
+ *m[BUFFER_MARK_END] = blk[1];
+ buffer_mark_pull_inside(b, m[BUFFER_MARK_BEGIN]);
+ buffer_mark_pull_inside(b, m[BUFFER_MARK_END]);
+}
+
+/**
+ * buffer_step_block_keep - Keep on @rec, the newest record of a step of
+ * several pieces just closed, the block before the step began and the
+ * block it left.
+ *
+ * So the Undo of an Enter with auto-indent, a Ctrl-K I or a Change All
+ * gives the user back the block they had, and its Redo the block the
+ * action left, whatever they marked in between.
+ */
+static void buffer_step_block_keep(BUFFER *b, Undo *rec)
+{
+ if (!buffer_block_get(b, rec->blk_after))
+  return;
+ rec->blk_before[0] = b->step_blk[0];
+ rec->blk_before[1] = b->step_blk[1];
+ rec->flags |= E_UNDO_STEP_BLOCK;
+}
+
+/**
+ * buffer_step_block_pass - The step a replay pushed onto the other list
+ * (newest record @to) is the same action as the one it replayed (newest
+ * record @from): it keeps the same block before and after, so Ctrl-U and
+ * Ctrl-R in turn keep giving the same blocks.
+ */
+static void buffer_step_block_pass(const Undo *from, Undo *to)
+{
+ int i;
+
+ if (to == NULL || !(from->flags & E_UNDO_STEP_BLOCK))
+  return;
+ for (i = 0; i < BUFFER_BLOCK_MARKS; i++)
+ {
+  to->blk_before[i] = from->blk_before[i];
+  to->blk_after[i] = from->blk_after[i];
+ }
+ to->flags |= E_UNDO_STEP_BLOCK;
 }
 
 /* ---- syntax state ---- */
@@ -2757,13 +2843,11 @@ static void buffer_shell_records_move(BUFFER *shell, BUFFER *b, int off)
  {
   next = rec->next;
   rec->next = NULL;
-  rec->flags &= ~E_UNDO_MORE;
+  rec->flags &= ~(E_UNDO_MORE | E_UNDO_STEP_BLOCK);
   rec->b.y += off;
   e_buffer_record_push(b, rec);
  }
 }
-
-static void buffer_mark_pull_inside(BUFFER *b, POINT *p);
 
 /* The marks the replay set or kept in its shell, and its cursor, are the
    buffer's now, on its rows; a mark the shell does not hold stays where
@@ -3875,17 +3959,37 @@ void e_buffer_cover_end(BUFFER *b)
 void e_buffer_step_begin(BUFFER *b)
 {
  if (b->step_depth == 0)
+ {
   b->step_pushed = 0;
+  buffer_block_get(b, b->step_blk);
+ }
  b->step_depth++;
+}
+
+/* Does a step just closed on @b hold several pieces of the user's own
+   action?  A replay's step and a shell's are not the user's: a replay
+   carries the block of the step it replays, and a shell's records join
+   a replay. */
+static int buffer_step_closed_grouped(const BUFFER *b)
+{
+ return(b->step_depth == 0 && b->step_pushed > 1 && !b->shell &&
+        b->replaying == E_BUFFER_REPLAY_NONE && b->ud != NULL);
 }
 
 /**
  * e_buffer_step_end - Close a step.
+ *
+ * A step of several pieces keeps, on its newest record, the block as it
+ * was before the action and as the action left it: a Ctrl-U of the step
+ * that brings no text back gives the user the block they had, and a
+ * Ctrl-R the block the action left.
  */
 void e_buffer_step_end(BUFFER *b)
 {
  if (b->step_depth > 0)
   b->step_depth--;
+ if (buffer_step_closed_grouped(b))
+  buffer_step_block_keep(b, b->ud);
  buffer_syntax_flush(b);
 }
 
@@ -3940,10 +4044,6 @@ static int buffer_record_is_block(int kind)
 {
  return(kind == 'c' || kind == 'v' || kind == 'd');
 }
-
-/* The marks of a window, by their place in what buffer_marks() gives. */
-#define BUFFER_MARK_BEGIN 0
-#define BUFFER_MARK_END   1
 
 /* The cursor and the marks of the window as the records of a step prepared
    so far leave them: what the next record of the step is replayed against,
@@ -4331,6 +4431,248 @@ static int buffer_step_goes_on(const Undo *rec)
  return(0);
 }
 
+/* One side of a step's replay, read as one text: the rows as they stand
+   (t NULL) or as the prepared items @t leave them, up to row @end. */
+typedef struct
+{
+ WpeBufferTxn *t;
+ BUFFER *b;
+ int end;
+} BufferTextSide;
+
+/* The rows the prepared items of @t on @b can change: from row @top, up to
+   @tail rows before the end of the text on either side; @lines_after: the
+   row count once they commit.  No item changes a row above the highest
+   one any item starts at, nor one below the fewest rows any item leaves
+   under it. */
+static void buffer_txn_changed_rows(WpeBufferTxn *t, BUFFER *b, int *top, int *tail,
+                                    int *lines_after)
+{
+ const WpeBufferTxnSplice *sp;
+ int i, lines = b->mxlines, under;
+
+ *top = lines;
+ *tail = lines;
+ for (i = 0; i < t->nsp; i++)
+ {
+  sp = &t->sp[i];
+  if (sp->b != b)
+   continue;
+  if (sp->y < *top)
+   *top = sp->y;
+  under = lines - sp->y - sp->n_del;
+  if (under < *tail)
+   *tail = under;
+  lines += buffer_txn_item_lines(sp) - sp->n_del;
+ }
+ *lines_after = lines;
+}
+
+/* Row @y of side @sd.  Return: E_BUFFER_OK or E_BUFFER_RANGE. */
+static int buffer_side_row(const BufferTextSide *sd, int y, const STRING **l)
+{
+ int has_row;
+
+ if (sd->t == NULL)
+ {
+  *l = &sd->b->bf[y];
+  return(E_BUFFER_OK);
+ }
+ return(buffer_txn_view(sd->t, sd->b, y, l, &has_row));
+}
+
+/* The bytes row @l adds to the text: its own and its line break, if any. */
+static int buffer_row_text_bytes(const STRING *l)
+{
+ if (l->s[l->len] == WPE_WR)
+  return(l->len + 1);
+ return(l->len);
+}
+
+/* Byte @p of side @sd: the row's byte, or its line break just past it. */
+static int buffer_side_byte(const BufferTextSide *sd, const POINT *p, int *c)
+{
+ const STRING *l;
+
+ if (buffer_side_row(sd, p->y, &l) != E_BUFFER_OK)
+  return(E_BUFFER_RANGE);
+ if (p->x < l->len)
+  *c = l->s[p->x];
+ else
+  *c = '\n';
+ return(E_BUFFER_OK);
+}
+
+/* Settle @p on a byte side @sd has: a place past a row's last byte is the
+   start of the next row, and past the last row compared is @sd->end. */
+static int buffer_side_settle(const BufferTextSide *sd, POINT *p)
+{
+ const STRING *l;
+
+ while (p->y < sd->end)
+ {
+  if (buffer_side_row(sd, p->y, &l) != E_BUFFER_OK)
+   return(E_BUFFER_RANGE);
+  if (p->x < buffer_row_text_bytes(l))
+   return(E_BUFFER_OK);
+  p->y++;
+  p->x = 0;
+ }
+ p->x = 0;
+ return(E_BUFFER_OK);
+}
+
+/* Step @p back to the byte before it on side @sd.  The caller knows there
+   is one. */
+static int buffer_side_back(const BufferTextSide *sd, POINT *p)
+{
+ const STRING *l;
+
+ if (p->x > 0)
+ {
+  p->x--;
+  return(E_BUFFER_OK);
+ }
+ do
+ {
+  if (--p->y < 0 || buffer_side_row(sd, p->y, &l) != E_BUFFER_OK)
+   return(E_BUFFER_RANGE);
+ } while (buffer_row_text_bytes(l) == 0);
+ p->x = buffer_row_text_bytes(l) - 1;
+ return(E_BUFFER_OK);
+}
+
+/* Is settled place @a before settled place @b? */
+static int buffer_point_before(const POINT *a, const POINT *b)
+{
+ return(a->y < b->y || (a->y == b->y && a->x < b->x));
+}
+
+/* Walk both sides from @pa and @pb while their bytes agree; each stops on
+   the first byte that differs or at the end of its side. */
+static int buffer_sides_prefix(const BufferTextSide *a, const BufferTextSide *b, POINT *pa,
+                               POINT *pb)
+{
+ int ca, cb;
+
+ for (;;)
+ {
+  if (buffer_side_settle(a, pa) != E_BUFFER_OK || buffer_side_settle(b, pb) != E_BUFFER_OK)
+   return(E_BUFFER_RANGE);
+  if (pa->y >= a->end || pb->y >= b->end)
+   return(E_BUFFER_OK);
+  if (buffer_side_byte(a, pa, &ca) != E_BUFFER_OK || buffer_side_byte(b, pb, &cb) != E_BUFFER_OK)
+   return(E_BUFFER_RANGE);
+  if (ca != cb)
+   return(E_BUFFER_OK);
+  pa->x++;
+  pb->x++;
+ }
+}
+
+/* Walk both sides back from their ends while their bytes agree, never
+   before where the common start stopped (@pa, @pb): @ea and @eb receive the
+   first byte of the common end on each side. */
+static int buffer_sides_suffix(const BufferTextSide *a, const BufferTextSide *b,
+                               const POINT *pa, const POINT *pb, POINT *ea, POINT *eb)
+{
+ POINT na, nb;
+ int ca, cb;
+
+ ea->x = eb->x = 0;
+ ea->y = a->end;
+ eb->y = b->end;
+ while (buffer_point_before(pa, ea) && buffer_point_before(pb, eb))
+ {
+  na = *ea;
+  nb = *eb;
+  if (buffer_side_back(a, &na) != E_BUFFER_OK || buffer_side_back(b, &nb) != E_BUFFER_OK)
+   return(E_BUFFER_RANGE);
+  if (buffer_side_byte(a, &na, &ca) != E_BUFFER_OK ||
+      buffer_side_byte(b, &nb, &cb) != E_BUFFER_OK)
+   return(E_BUFFER_RANGE);
+  if (ca != cb)
+   return(E_BUFFER_OK);
+  *ea = na;
+  *eb = nb;
+ }
+ return(E_BUFFER_OK);
+}
+
+/**
+ * buffer_step_inserted_span - Where the text a prepared step replay @t
+ * makes holds bytes the text before it lacks, when they are one run.
+ * @blk: receives the run's begin and end, on the rows the replay leaves.
+ *
+ * An Undo of a step that deleted text in several pieces (Backspace in an
+ * indent, Ctrl-K U) and a Redo of one that inserted it (Enter with
+ * auto-indent, Ctrl-O U) mark exactly what came back, from its first byte
+ * to its last, as the Undo of a single deletion does.  Read before the
+ * replay commits, while the rows before it are still there.
+ * Return: 1 with @blk set; 0 when the change is not one run of new bytes.
+ */
+static int buffer_step_inserted_span(WpeBufferTxn *t, BUFFER *b, POINT *blk)
+{
+ BufferTextSide before, after;
+ POINT pa, pb, ea, eb;
+ int top, tail, lines_after;
+
+ buffer_txn_changed_rows(t, b, &top, &tail, &lines_after);
+ before.t = NULL;
+ before.b = b;
+ before.end = b->mxlines - tail;
+ after.t = t;
+ after.b = b;
+ after.end = lines_after - tail;
+ pa.x = pb.x = 0;
+ pa.y = pb.y = top;
+ if (buffer_sides_prefix(&before, &after, &pa, &pb) != E_BUFFER_OK ||
+     buffer_sides_suffix(&before, &after, &pa, &pb, &ea, &eb) != E_BUFFER_OK)
+  return(0);
+ if (buffer_point_before(&pa, &ea) || !buffer_point_before(&pb, &eb))
+  return(0);
+ blk[0] = pb;
+ blk[1] = eb;
+ return(1);
+}
+
+/**
+ * buffer_step_block_after_replay - Where the block stands after a Ctrl-U
+ * or Ctrl-R of a step of several pieces (newest record @top).
+ * @inserted: the run of text the replay brought, or NULL when it brought
+ * no single run.
+ *
+ * The block covers the whole run that came back, from its first byte to
+ * its last, never only the piece replayed last.  A replay that brought no
+ * single run gives the block the user had before the action (Undo) or the
+ * one the action left (Redo).
+ */
+static void buffer_step_block_after_replay(BUFFER *b, const Undo *top, const POINT *inserted)
+{
+ if (inserted != NULL)
+ {
+  buffer_block_set(b, inserted);
+  return;
+ }
+ if (!(top->flags & E_UNDO_STEP_BLOCK))
+ {
+  wpe_buffer_trace("buffer step without its block");
+  return;
+ }
+ if (b->replaying == E_BUFFER_REPLAY_UNDO)
+  buffer_block_set(b, top->blk_before);
+ else
+  buffer_block_set(b, top->blk_after);
+}
+
+/* The newest record a replay just pushed onto the other list. */
+static Undo *buffer_replay_pushed_head(BUFFER *b)
+{
+ if (b->replaying == E_BUFFER_REPLAY_UNDO)
+  return(b->rd);
+ return(b->ud);
+}
+
 /**
  * buffer_replay_step - Replay the step of character and line records that
  * starts at @top as one change.
@@ -4341,7 +4683,9 @@ static int buffer_step_goes_on(const Undo *rec)
  * indent's deletion); then the room on the margin is taken once, and only
  * then is anything made.  So a Ctrl-U or Ctrl-R refused for want of memory
  * leaves the text, the block, the breakpoints and both lists as they were,
- * never one part of the step made and the other not.
+ * never one part of the step made and the other not.  The block of a step
+ * of several pieces then covers what the whole step brought back
+ * (buffer_step_block_after_replay).
  * Return: E_BUFFER_OK, E_BUFFER_NOMEM or E_BUFFER_RANGE.
  */
 static int buffer_replay_step(BUFFER *b, Undo *top, int *taken)
@@ -4349,7 +4693,8 @@ static int buffer_replay_step(BUFFER *b, Undo *top, int *taken)
  WpeBufferTxn t;
  BufferRunView v;
  Undo *rec = top;
- int r;
+ POINT span[BUFFER_BLOCK_MARKS];
+ int r, inserted = 0;
 
  *taken = 0;
  e_buffer_txn_begin(&t);
@@ -4366,9 +4711,21 @@ static int buffer_replay_step(BUFFER *b, Undo *top, int *taken)
    break;
   rec = rec->next;
  }
+ if (*taken > 1)
+  inserted = buffer_step_inserted_span(&t, b, span);
  r = e_buffer_txn_commit(&t);
  if (r != E_BUFFER_OK)
+ {
   *taken = 0;
+  return(r);
+ }
+ buffer_step_block_pass(top, buffer_replay_pushed_head(b));
+ if (*taken <= 1)
+  return(r);
+ if (inserted)
+  buffer_step_block_after_replay(b, top, span);
+ else
+  buffer_step_block_after_replay(b, top, NULL);
  return(r);
 }
 

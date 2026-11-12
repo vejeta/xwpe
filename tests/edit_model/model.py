@@ -53,6 +53,8 @@ UTF8_CONT_MASK = 0xC0
 UTF8_CONT = 0x80
 UTF8_LEAD_MIN = 0xC0
 UTF8_LEAD_END = 0xFE
+# The bytes a lead byte announces: (mask, value, length) per kind of lead.
+UTF8_LEADS = ((0xE0, 0xC0, 2), (0xF0, 0xE0, 3), (0xF8, 0xF0, 4))
 ASCII_MAX = 0x7F
 CONTROL_MAX = 0x1F   # bytes below a space show as two columns (^X)
 
@@ -958,20 +960,8 @@ class Rows:
         return x + n
 
     def _char_bytes_at(self, x, y):
-        """e_char_bytes_at: the bytes of the character at (y, x)."""
-        data = self.content(y)
-        lead = data[x]
-        if lead < 0x80:
-            k = 1
-        elif (lead & 0xE0) == 0xC0:
-            k = 2
-        elif (lead & 0xF0) == 0xE0:
-            k = 3
-        elif (lead & 0xF8) == 0xF0:
-            k = 4
-        else:
-            k = 1
-        return min(k, len(data) - x)
+        """e_char_bytes_at: the bytes of the glyph at (y, x)."""
+        return utf8_seq_len(self.content(y), x)
 
     def put_char(self, c):
         """e_put_char: overwrite the character at the cursor, whole (insert
@@ -1021,6 +1011,35 @@ def su_rblk(xa, s):
     while xa > 0 and _isalnum1(s[xa]):
         xa -= 1
     return 0 if xa == 0 else xa + 1
+
+
+# ---- characters --------------------------------------------------------------------
+
+def utf8_seq_len(data, x):
+    """The bytes of the glyph at data[x]: a whole UTF-8 character, or one
+    byte for anything else (a lead byte without all its continuation bytes
+    before the row ends, a stray continuation byte, a Latin-1 letter)."""
+    lead = data[x]
+    n = 1
+    for mask, value, length in UTF8_LEADS:
+        if (lead & mask) == value:
+            n = length
+    if n > len(data) - x:
+        return 1
+    if any((data[x + i] & UTF8_CONT_MASK) != UTF8_CONT for i in range(1, n)):
+        return 1
+    return n
+
+
+def utf8_char_before(data, x):
+    """Where the glyph that ends at @x (1 or more) starts: the row read
+    forward glyph by glyph (utf8_seq_len) from its start, so Left and
+    Backspace take exactly what Right and Delete take."""
+    start = pos = 0
+    while pos < x:
+        start = pos
+        pos += utf8_seq_len(data, pos)
+    return start
 
 
 # ---- columns -----------------------------------------------------------------------
@@ -1221,8 +1240,9 @@ def _move(st, name):
             y += 1
         x = byte_at_col(rows[y].data, st.clsv, tabn)
     elif base == "left":
-        x -= 1
-        while x > 0 and (data[x] & UTF8_CONT_MASK) == UTF8_CONT:
+        if 0 < x <= len(data):
+            x = utf8_char_before(data, x)
+        else:
             x -= 1
         if x < 0:
             if y > 0:
@@ -1232,11 +1252,7 @@ def _move(st, name):
                 x = 0
     elif base == "right":
         if x < len(data):
-            c = data[x]
-            x += 1
-            if UTF8_LEAD_MIN <= c < UTF8_LEAD_END:
-                while x < len(data) and (data[x] & UTF8_CONT_MASK) == UTF8_CONT:
-                    x += 1
+            x += utf8_seq_len(data, x)
         else:
             x += 1
         if x > len(data):
@@ -1486,11 +1502,8 @@ def _tab(st, rows):
 
 
 def _back_over_char(data, x):
-    """The byte where the character before @x starts."""
-    x -= 1
-    while x > 0 and (data[x] & UTF8_CONT_MASK) == UTF8_CONT:
-        x -= 1
-    return x
+    """The byte where the glyph before @x starts."""
+    return utf8_char_before(data, x)
 
 
 def _backspace(st, rows):
@@ -1575,11 +1588,8 @@ def _delete(st, rows):
         return
     data = rows.content(y)
     n = 1
-    if x < len(data) and UTF8_LEAD_MIN <= data[x] < UTF8_LEAD_END:
-        pos = x + 1
-        while pos < len(data) and (data[pos] & UTF8_CONT_MASK) == UTF8_CONT:
-            pos += 1
-        n = pos - x
+    if x < len(data):
+        n = utf8_seq_len(data, x)
     rows.del_nchar(x, y, n)
 
 

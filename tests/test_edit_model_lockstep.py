@@ -99,8 +99,8 @@ def test_every_crash_is_a_new_loss():
 def test_a_change_all_is_one_step_and_its_undo_and_redo_agree_with_the_model(tmp_path):
     """Change All pushes one step, as the user decided: the model and the
     editor agree on the step count, one Ctrl-U gives the text before it and
-    one Ctrl-R the text after it.  Only the block after the replay may
-    differ (see the next test)."""
+    one Ctrl-R the text after it, and the block after each covers the
+    whole span the step changed, as the model predicts."""
     w = lockstep.Walk(str(tmp_path), "old", 1, 4)
     w.drawer.queue = [("replace_all", (b"a", b"Q")), ("undo", None), ("redo", None),
                       ("undo", None)]
@@ -110,7 +110,9 @@ def test_a_change_all_is_one_step_and_its_undo_and_redo_agree_with_the_model(tmp
     assert steps == [], steps
     text = [x for x in w.disagreements if x["field"] == model.F_TEXT]
     assert text == [], text
-    new = [x for x in w.disagreements if not x["expected"] and x["field"] != model.F_MARKS]
+    marks = [x for x in w.disagreements if x["field"] == model.F_MARKS]
+    assert marks == [], marks
+    new = [x for x in w.disagreements if not x["expected"]]
     assert new == [], new
 
 
@@ -146,19 +148,18 @@ def test_each_decided_action_is_one_step_the_model_agrees_with(tmp_path, name):
     """Enter and Tab with auto-indent, Backspace in an indent, Ctrl-K I and
     U, Ctrl-O U, M and H and Change All: the editor pushes one step for the
     action, as the model does, and its Ctrl-U, Ctrl-R and Ctrl-U give the
-    texts the model predicts; no disagreement on the step count or the
-    text.  Where the block lies after the Undo or Redo of a step of several
-    pieces is not decided (the model marks the whole span, the editor what
-    the oldest piece touched): that stays a finding of its own, on the
-    marks alone."""
+    texts the model predicts; no disagreement on the step count, the text
+    or the block, which after the Undo or Redo of a step of several pieces
+    covers the whole span the step changed."""
     queue = ONE_STEP_WALKS[name] + _steps("undo", "redo", "undo")
     w = lockstep.Walk(str(tmp_path), "old", 1, len(queue))
     w.drawer.queue = list(queue)
     w.run()
     assert w.steps_run == len(queue) and not w.lost, (w.steps_run, w.lost)
-    wrong = [x for x in w.disagreements if x["field"] in (model.F_STEPS, model.F_TEXT)]
+    wrong = [x for x in w.disagreements
+             if x["field"] in (model.F_STEPS, model.F_TEXT, model.F_MARKS)]
     assert wrong == [], wrong
-    new = [x for x in w.disagreements if not x["expected"] and x["field"] != model.F_MARKS]
+    new = [x for x in w.disagreements if not x["expected"]]
     assert new == [], new
 
 
@@ -303,14 +304,15 @@ def test_a_known_bug_tag_names_only_what_that_bug_does():
     assert tag(act, model.F_TEXT, before, pred, _dump([(S, b"abc"), (H, b"xdef")], 1, 1)) is None
     assert tag(act, model.F_TEXT, before, pred,
                _dump([(S, b"abc"), (H, b"def")], 0, 3)) is None
-    # Backspace over an ASCII letter on a row with an accent earlier on it
+    # Backspace with auto-indent over an ASCII letter or over an accented
+    # one: the byte bug is fixed and keeps no tag, so a byte lost is new
     row = [(H, "café xy".encode())]
     act = model.Action("backspace", None)
     before = _state(row, 0, len(row[0][1]), flg=model.FLG_AUTOINDENT)
     assert tag(act, model.F_TEXT, before, before, _dump(row, 0, 0)) is None
     before = _state(row, 0, 5, flg=model.FLG_AUTOINDENT)
-    assert tag(act, model.F_TEXT, before, before, _dump(row, 0, 0)) == \
-        lockstep.KNOWN_UTF8_BACKSPACE
+    assert tag(act, model.F_TEXT, before, before, _dump(row, 0, 0)) is None
+    assert not hasattr(lockstep, "KNOWN_UTF8_BACKSPACE")
     # a cursor outside the text is never excused by any tag
     before = _state([(H, b"one")], 0, 3)
     act = model.Action("delete_word", None)

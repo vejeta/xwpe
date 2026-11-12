@@ -195,6 +195,9 @@ typedef struct frb {
 #define OPT_AI_EXAMPLE_ATTENTION_ROW (OPT_EXAMPLE_TOP_ROW + OPT_AI_EXAMPLE_ATTENTION_LINE)
 #define OPT_AI_EXAMPLE_ERROR_ROW     (OPT_EXAMPLE_TOP_ROW + OPT_AI_EXAMPLE_ERROR_LINE)
 
+/* A block's two ends, its begin and its end. */
+#define WPE_BLOCK_ENDS 2
+
 typedef struct undo {
  int type;
  POINT b, a, e;
@@ -210,6 +213,10 @@ typedef struct undo {
  int *brk;             /* breakpoint rows of removed lines, relative to the span
                           (a line record) or to b.y (a char record's pocket) */
  int nbrk;
+ POINT blk_before[WPE_BLOCK_ENDS]; /* the newest record of a step of several
+                          pieces: the block before the user's action and after
+                          it, begin and end (E_UNDO_STEP_BLOCK) */
+ POINT blk_after[WPE_BLOCK_ENDS];
 }  Undo;
 
 typedef struct STR {
@@ -233,6 +240,7 @@ typedef struct BFF {
  int covered;          /* cover depth: splices inside record nothing */
  int step_depth;       /* step depth: records inside are one Ctrl-U */
  int step_pushed;      /* records pushed in the open step */
+ POINT step_blk[WPE_BLOCK_ENDS]; /* the block when the open step began */
  int replaying;        /* the list a replay's inverses go to (E_BUFFER_REPLAY_*) */
  Undo *pocket;         /* the outermost cover's record: rows a covered deletion removes */
  int syn_lo, syn_hi;   /* rows whose syntax state waits for depth 0; -1 when none */

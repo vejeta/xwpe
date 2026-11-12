@@ -10,6 +10,7 @@
 
 extern int e_utf8_charlen(unsigned char c);
 extern int e_utf8_seq_len(const unsigned char *s, int avail);
+extern int e_utf8_char_before(const unsigned char *s, int pos, int len);
 extern int e_utf8_to_codepoint(unsigned char *buf, int len);
 
 /** Passed as the readable length of a string that ends in a NUL byte. */
@@ -39,13 +40,15 @@ static int e_utf8_decode_at(unsigned char *s, int pos, int *codepoint)
  return len;
 }
 
-static int e_utf8_prev(unsigned char *s, int pos)
+/**
+ * e_utf8_prev - Where the character before @pos of a field of @len bytes
+ * starts: Left and Backspace in a dialog field take the glyph the field
+ * draws, by the same rule as Right and Delete.
+ */
+static int e_utf8_prev(unsigned char *s, int pos, int len)
 {
  if (pos <= 0) return 0;
- pos--;
- while (pos > 0 && (s[pos] & 0xC0) == 0x80)
-  pos--;
- return pos;
+ return e_utf8_char_before(s, pos, len);
 }
 
 static int e_utf8_next(unsigned char *s, int pos, int len)
@@ -702,7 +705,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
   if (e_field_key_is_wide_text(c))
    e_field_type_wide_char(tmp, &l, &jc, max, c, first);
   else if (c == CRI || (!sond && c == CtrlF)) {  if(jc < l) jc = e_utf8_next(tmp, jc, l);  }
-  else if (c == CLE || (!sond && c == CtrlB)) {  if(jc > 0) jc = e_utf8_prev(tmp, jc);  }
+  else if (c == CLE || (!sond && c == CtrlB)) {  if(jc > 0) jc = e_utf8_prev(tmp, jc, l);  }
   else if (c == CCLE && jc > 0) jc = e_su_rblk(jc, tmp);
   else if (c == CCRI && jc < l) jc = e_su_lblk(jc, tmp);
   else if (c == POS1 || (!sond && c == CtrlA)) jc = 0;
@@ -733,7 +736,7 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
   {
    if (jc > 0)
    {
-    int prev = e_utf8_prev(tmp, jc);
+    int prev = e_utf8_prev(tmp, jc, l);
     int clen = jc - prev;
     for (i = prev; i <= l - clen; i++)
      tmp[i] = tmp[i+clen];

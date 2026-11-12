@@ -57,6 +57,7 @@
 #define E_UNDO_LINES           'R'
 #define E_UNDO_MORE              1   /* the record below this one belongs to the same step */
 #define E_UNDO_EMPTIED           2   /* the canonical empty line is no changed row */
+#define E_UNDO_STEP_BLOCK        4   /* blk_before and blk_after hold the step's block */
 
 /* how a splice counts for Ctrl-U */
 typedef enum {

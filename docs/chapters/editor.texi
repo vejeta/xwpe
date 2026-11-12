@@ -61,6 +61,10 @@ of the text there is nothing to its right, so it deletes nothing, and
 (and @kbd{Ctrl-Z}) at the end of a line deletes nothing either, and is no
 undo step: the next @kbd{Ctrl-U} takes back what you did before it.
 
+@key{Left}, @key{Right}, @key{Backspace} and @key{Delete} take one
+character as the screen shows it, in a window and in a dialog field: a
+whole UTF-8 character, or one byte that starts no character.
+
 @kbd{Ctrl-U} undoes and @kbd{Ctrl-R} redoes one action at a time: an
 @key{Return} or a @key{Tab} with the indent it brought, a @key{Backspace}
 that re-indented a line, a deleted line, a replacement, every replacement
@@ -76,7 +80,11 @@ and @kbd{Ctrl-U} takes back exactly that there.
 Undo of a deleted line puts back the line, its breakpoint, the cursor and
 the block as they were before the deletion; the only line of a file is
 undoable too, and so is a last line that went because its only word was
-deleted.  After any Undo or Redo the block lies inside the text.  Breakpoints stay on their code when lines are added or
+deleted.  After any Undo or Redo the block lies inside the text.  After
+the Undo or Redo of an action of several pieces the block marks all the
+text it brought back; when it brought back no single run of text, the
+block is the one you had before the action (Undo) or the one it left
+(Redo).  Breakpoints stay on their code when lines are added or
 removed above them as you type (@key{Return}, a wrapped line, @kbd{Ctrl-Y},
 @key{Backspace} joining two lines), by a block operation (a moved line
 takes its breakpoint along) or by a tool's rewrite of the file, and

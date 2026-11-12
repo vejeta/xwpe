@@ -168,6 +168,15 @@ back every replacement the command made, and one @kbd{Ctrl-R} makes them
 all again, because one command is one action.  Num.@: Undo counts
 actions, never their pieces.
 
+@item The block after Undo of an action of several pieces
+@cindex undo, block marks
+The original's @kbd{Ctrl-U} of each piece of such an action marked what
+that piece gave back.  One @kbd{Ctrl-U} or @kbd{Ctrl-R} of the whole action
+now marks all the text it brought, from its first byte to its last; when
+it brought no single run of text, @kbd{Ctrl-U} gives back the block you
+had before the action and @kbd{Ctrl-R} the block the action left, because
+the block should show what the key did, never only its last piece.
+
 @item Undo of Ctrl-Y
 The original marked the restored line as a block and left the cursor at
 its start.  Undo now puts the cursor and the block back where they were
@@ -345,9 +354,11 @@ The original showed every byte as one Latin-1 character.  Text is now
 UTF-8, so an @samp{é} written in Latin-1, or the first byte of a
 character cut in two, is shown as @samp{?} in a window and as the
 replacement mark @samp{�} in a dialog field.  Such a byte counts as one
-byte: the cursor steps over it, a letter
+byte: the cursor steps over it, @key{Left}, @key{Backspace} and
+@key{Delete} take it alone, in a window and in a dialog field, a letter
 typed over it in overwrite mode replaces it alone, and saving writes it
-back as it was.
+back as it was.  Going back takes what going forward takes, so a key
+never takes two glyphs the screen shows apart.
 
 @item The block Undo marks around a line break
 @cindex undo, block marks
