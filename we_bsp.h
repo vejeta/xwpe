@@ -44,13 +44,15 @@ typedef void (*e_bsp_started_fn)(int ok, void *ctx);
 
 /* Asked, when set, before the server a project's .bsp/<file>.json names is
  * started: @rootdir the project, @file the connection file's name, @argv
- * the command it names.  0 starts it; anything else starts nothing and the
- * start fails with E_BSP_NOT_APPROVED.  The editor sets it (a project
- * folder's command runs only after the user's yes); a test may leave it
- * unset. */
-typedef int (*e_bsp_approve_fn)(const char *rootdir, const char *file,
-                                char *const *argv);
-void e_bsp_set_approver(e_bsp_approve_fn fn);
+ * the command it names.  It returns the start plan the user answered for
+ * (we_startplan.h), whose words the server is started with, or NULL, and
+ * then nothing starts and the start fails with E_BSP_NOT_APPROVED.  The
+ * editor sets it (a project folder's command runs only after the user's
+ * yes); a test may leave it unset, and the command then runs as named. */
+struct WpeStartPlan;
+typedef struct WpeStartPlan *(*e_bsp_plan_fn)(const char *rootdir, const char *file,
+                                               char *const *argv);
+void e_bsp_set_planner(e_bsp_plan_fn fn);
 /* The connection file a start would read (scala-cli.json by name first)
  * and the command it names; free with e_bsp_free_argv.  NULL if none. */
 char **e_bsp_connection_argv(const char *workdir, char *file, size_t filesz);

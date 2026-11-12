@@ -191,17 +191,20 @@ folder asks once more, and your next answer writes it anew in the new
 format; a file of any other format is still left as it is.
 
 What is asked about is the programs that compile, link, print, install,
-debug and serve a build.  Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A})
+debug and serve a build.  A debug session's start is asked about too
+when the folder decides something about it: a start-up file the
+debugger runs from the folder (@file{.pdbrc}, @file{jdb.ini},
+@file{.gdbinit}), shown with its lines, and the @code{Arguments} the
+folder's file puts on the debugger's run command (@pxref{Debugger
+start-up files}).  Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A})
 still run the folder's own code without a question, as they always did:
 the program the build made, with the @code{Arguments} the folder's file
 sets (through the shell for a script), and the folder's
-@file{Makefile}.  Open a folder you do not trust without running it.
+@file{Makefile}.  A debug session runs the folder's program as well.
+Open a folder you do not trust without running it.
 
 Not covered yet, and planned: a folder's @code{IncludePath} widening
-what the assistant may read; and a debug session reading the folder's
-own debugger start-up files (@file{.pdbrc}, @file{.perldb},
-@file{jdb.ini}, @file{.gdbinit}-style files) and running its program,
-as Run and Make do.
+what the assistant may read.
 
 A path the folder's file or project file sets (@code{Exedir}, the
 object and program names, @code{FILES}, @code{LIBNAME}) always reaches

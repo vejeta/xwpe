@@ -742,6 +742,56 @@ command xwpe's own @command{scala-cli setup-ide} wrote in this session
 start without a question.
 @xref{Folder commands}.
 
+@cindex debugger, start-up files
+@cindex .pdbrc, .gdbinit, jdb.ini
+@anchor{Debugger start-up files}
+A debugger runs some files of the folder it starts in on its own,
+before xwpe sends it anything.  When the folder of the program you
+debug holds one, the start shows it first, with its lines, under
+@samp{Runs at start:}, and asks @samp{Run it} or @samp{Cancel}; the
+answer is kept for that folder and that text, and a changed file asks
+again.  A line wider than the box is wrapped, never cut.  A file the
+box cannot show whole (over 16 kB, or holding a NUL byte, past which
+the box would show nothing while the debugger reads on) is shown in
+part and not offered to run.  The same file in your home folder is yours and
+is not asked about, nor is the folder's file when the folder is your
+home folder.
+
+@multitable @columnfractions .18 .30 .52
+@headitem Debugger @tab File in the folder @tab When it runs it
+@item pdb @tab @file{.pdbrc}
+@tab Always, after @file{~/.pdbrc}.  pdb has no switch to skip it, so
+there is no @samp{Use mine}.
+@item jdb @tab @file{jdb.ini}, else @file{.jdbrc}
+@tab Always, as well as the one in your home folder.
+@item gdb (also as a Rust adapter) @tab @file{.gdbinit}
+@tab Only if your gdb settings allow auto-load from this folder (the
+auto-load safe-path).  The box says so; @samp{Use mine} starts gdb told
+to leave the file alone (@code{set auto-load local-gdbinit off}).
+@item lldb-dap @tab @file{.lldbinit}
+@tab Only if your @file{~/.lldbinit} sets @code{target.load-cwd-lldbinit}.
+@item dbx @tab @file{.dbxinit} @tab Always.
+@item xdb @tab @file{.xdbrc} @tab Always.
+@end multitable
+
+@noindent
+sdb, a68g and dlv read nothing known from their folder.  What the
+debugged program itself does is not checked: the box says @samp{This
+runs the folder's own program.}  A Python session also imports the
+folder's own modules, a @file{pdb.py} of the folder included.
+
+The program's @code{Arguments} go on the debugger's run command
+(@samp{r @var{arguments}}), and gdb starts the program through a shell.
+When the @file{xwperc} of the folder you started in sets them, the box
+shows the run command they make under @samp{Then runs:} first.  A file
+named like an option (@file{-command=x.c} builds @file{-command=x.e})
+reaches the debugger as @file{./-command=x.e}, a program.  A value with
+a line break (a project file's watch or breakpoint, Arguments, a file
+name) is never written to a debugger, where the rest of the line would
+be a command of its own; the status row says @samp{not sent: a watch
+with a line break}.  Nor is one holding @samp{;;}, where pdb ends a
+command and starts the next one.
+
 @quotation Note
 Debugging @emph{runs} your program; for IDE features that @emph{understand}
 it -- completion, hover, go-to-definition and compiler diagnostics over the

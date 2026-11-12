@@ -6351,8 +6351,6 @@ typedef struct {
 #define E_INSTALL_KEY  "Install/"
 #define E_INSTALL_WHO  "The project file"
 
-static const char *e_prj_file_name(void);
-static void e_prj_folder(char *out, size_t sz);
 
 /**
  * e_install_add - Append an install line, taking it.
@@ -6714,8 +6712,11 @@ static struct dirfile *e_prj_var(char *name)
 /**
  * e_prj_folder - The folder that holds the open project file.
  * @out/@sz: receive it.
+ *
+ * The build's and the debugger's start plans keep the user's answer for
+ * this folder.
  */
-static void e_prj_folder(char *out, size_t sz)
+void e_prj_folder(char *out, size_t sz)
 {
  char *slash;
 
@@ -6727,9 +6728,10 @@ static void e_prj_folder(char *out, size_t sz)
 }
 
 /**
- * e_prj_file_name - The open project file's name, without its folder.
+ * e_prj_file_name - The open project file's name, without its folder, as
+ * the box's title names it.
  */
-static const char *e_prj_file_name(void)
+const char *e_prj_file_name(void)
 {
  const char *slash = strrchr(e_prog.project, DIRC);
 

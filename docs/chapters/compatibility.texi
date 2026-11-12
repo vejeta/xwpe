@@ -392,10 +392,22 @@ option or a response file.  Run and Make still run the folder's own
 program, @code{Arguments} and @file{Makefile}, as they always did.
 
 Not covered yet, and planned: a folder's @code{IncludePath} widening
-what the assistant may read; and a debug session reading the folder's
-own debugger start-up files (@file{.pdbrc}, @file{.perldb},
-@file{jdb.ini}, @file{.gdbinit}-style files) and running its program,
-as Run and Make do.
+what the assistant may read.
+
+@item A debug session's start-up files and the values it sends the debugger
+@cindex debugger, start-up files of a folder
+The original started the debugger in the program's folder, where pdb,
+jdb and (under your auto-load setting) gdb run that folder's
+@file{.pdbrc}, @file{jdb.ini} or @file{.gdbinit} unseen; handed it a
+program named like an option as an option (a file @file{-command=x.c}
+made gdb read commands from @file{x.e}); and wrote the folder's
+@code{Arguments}, and a project file's watches and breakpoints, into the
+debugger's commands as they were, a line break included.  Now the start
+shows such a file with its lines, and a folder's @code{Arguments} as the
+run command they make, and asks once per folder and text; the program
+is always a file; and a value with a line break, or with pdb's
+@samp{;;}, is never sent (@pxref{Debugger start-up files}).  The reason: a debugger reads these
+files and lines as its own commands, @code{shell} included.
 
 @item Where a build writes, and the objects it removes
 @cindex Exedir, outside the folder

@@ -224,6 +224,19 @@ and the @kbd{Ctrl-G} debug prefix (@kbd{Ctrl-G S} steps like @key{F8},
 @kbd{Ctrl-G R} runs/continues, @kbd{Ctrl-G P} shows program output).
 The @kbd{Alt-} keys themselves need Option-as-Meta enabled in the
 terminal (@pxref{Installation}).
+
+@item A debug session runs the folder's own code
+The start shows the files a debugger runs from the folder and the
+Arguments a folder sets (@pxref{Debugger start-up files}), but not what
+the debugged program then does: Python's pdb imports the folder's own
+modules first, a @file{pdb.py} or @file{sitecustomize.py} there
+included.  Whether gdb runs @file{./.gdbinit} and lldb-dap
+@file{./.lldbinit} depends on your own init files, which xwpe does not
+read; the box says so and asks either way.  Under the same setting gdb
+also runs a script named after the program beside it
+(@file{@var{program}-gdb.gdb}, @file{-gdb.py}), which the box does not
+list and @samp{Use mine} does not skip.  The debugger is found on
+your @env{PATH}, as your shell finds it.
 @end table
 
 @section Debian BTS history

@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 
 #include "we_child.h"
+#include "we_startplan.h"
 #include "we_dap.h"
 #include "we_dap_proto.h"
 #include "we_fdloop.h"
@@ -1941,23 +1942,71 @@ static void dap_adapter_ended(WpeChild *c, int status, int how, void *data)
   s->end_fn(s, s->end_data);
 }
 
+/* Asked before an adapter process starts (e_dap_set_planner). */
+static e_dap_plan_fn dap_planner;
+
 /**
- * dap_adapter_spec - What every adapter the editor starts has in common.
- * @spec: filled in; @argv, @cwd: the command and its directory.
+ * e_dap_set_planner - Who plans, shows and asks about an adapter's start.
+ * @fn: the editor's planner, or NULL (the C tests).
+ */
+void e_dap_set_planner(e_dap_plan_fn fn)
+{
+ dap_planner = fn;
+}
+
+/**
+ * dap_plan_of - The answered start plan of an adapter's command line.
+ * @argv: the command; @cwd: its directory.
+ *
+ * The editor's planner lists what the adapter reads from its folder and
+ * asks; with no planner (a C test) the test's command runs as given.
+ * Return: the plan (freed by the caller), or NULL when nothing may start.
+ */
+static WpeStartPlan *dap_plan_of(char *const argv[], const char *cwd)
+{
+ WpeStartPlan *plan;
+
+ if (dap_planner)
+  return dap_planner(argv, cwd);
+ plan = wpe_startplan_fixed(WPE_START_DEBUG_ADAPTER, argv[0], argv);
+ if (plan && cwd)
+  wpe_startplan_set_cwd(plan, cwd);
+ return plan;
+}
+
+/**
+ * dap_adapter_io - What every adapter the editor starts has in common.
+ * @io: filled in.
  *
  * A session of its own, so a Ctrl-C typed in the editor never ends an
  * adapter that does not catch it, and the system ends it if the editor is
  * killed outright.
  */
-static void dap_adapter_spec(WpeChildSpec *spec, char *const argv[],
-                             const char *cwd)
+static void dap_adapter_io(WpeStartIo *io)
 {
- memset(spec, 0, sizeof *spec);
- spec->argv = argv;
- spec->cwd = cwd;
- spec->group = WPE_CHILD_OWN_SESSION;
- spec->die_with_editor = 1;
- spec->what = E_DAP_ADAPTER_WHAT;
+ memset(io, 0, sizeof *io);
+ io->group = WPE_CHILD_OWN_SESSION;
+ io->die_with_editor = 1;
+ io->tty_fd = WPE_CHILD_NO_FD;
+ io->side_pty_slave = WPE_CHILD_NO_FD;
+ io->what = E_DAP_ADAPTER_WHAT;
+}
+
+/**
+ * dap_adapter_start - Start an adapter through its answered plan.
+ * @s: the session; @argv, @cwd: the command and its directory; @io: how.
+ * Return: 0, or -1 when nothing was started.
+ */
+static int dap_adapter_start(e_dap_session *s, char *const argv[], const char *cwd,
+                             const WpeStartIo *io)
+{
+ WpeStartPlan *plan = dap_plan_of(argv, cwd);
+ int rc = -1;
+
+ if (plan && wpe_startplan_running(plan))
+  rc = wpe_startplan_start_words(plan, io, &s->adapter, dap_adapter_ended, s);
+ wpe_startplan_free(plan);
+ return rc;
 }
 
 /**
@@ -1976,7 +2025,7 @@ static void dap_adapter_spec(WpeChildSpec *spec, char *const argv[],
 static int dap_spawn(e_dap_session *s, char *const argv[], int port,
                      const char *cwd)
 {
- WpeChildSpec spec;
+ WpeStartIo io;
  int argc = 0, i, rc;
  char addr[64];
  char **av;
@@ -1991,10 +2040,10 @@ static int dap_spawn(e_dap_session *s, char *const argv[], int port,
  snprintf(addr, sizeof(addr), "--client-addr=127.0.0.1:%d", port);
  av[argc] = addr;
  av[argc + 1] = NULL;
- dap_adapter_spec(&spec, av, cwd);
- spec.io = WPE_CHILD_IO_PTY;
- spec.pty_raw = 1;
- rc = wpe_child_start(&spec, &s->adapter, dap_adapter_ended, s);
+ dap_adapter_io(&io);
+ io.io = WPE_CHILD_IO_PTY;
+ io.pty_raw = 1;
+ rc = dap_adapter_start(s, av, cwd, &io);
  free(av);
  if (rc != 0)
   return -1;
@@ -2013,12 +2062,12 @@ static int dap_spawn(e_dap_session *s, char *const argv[], int port,
 static int dap_spawn_stdio(e_dap_session *s, char *const argv[],
                            const char *cwd)
 {
- WpeChildSpec spec;
+ WpeStartIo io;
 
- dap_adapter_spec(&spec, argv, cwd);
- spec.io = WPE_CHILD_IO_PIPES;
- spec.stderr_inherit = 1;
- if (wpe_child_start(&spec, &s->adapter, dap_adapter_ended, s) != 0)
+ dap_adapter_io(&io);
+ io.io = WPE_CHILD_IO_PIPES;
+ io.stderr_inherit = 1;
+ if (dap_adapter_start(s, argv, cwd, &io) != 0)
   return -1;
  s->in_fd = s->adapter.in_fd;
  s->out_fd = s->adapter.out_fd;

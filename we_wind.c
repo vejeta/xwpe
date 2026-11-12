@@ -708,6 +708,12 @@ int e_message(int sw, char *str, FENSTER *f)
 #define E_STARTCMD_LINE_MAX     1024 /* a sentence of the box             */
 #define E_STARTCMD_STATUS_MAX   512  /* a status line about the answer    */
 
+/* How a line below the command is cut when it is wider than the box. */
+#define E_STARTCMD_EXTRA_START  0    /* keep its start                     */
+#define E_STARTCMD_EXTRA_END    1    /* keep its end, where a path's file is */
+#define E_STARTCMD_EXTRA_WHOLE  2    /* a command that runs: cut, Run it is
+                                        not offered                        */
+
 /* What the status row says after each answer. */
 #define E_STARTCMD_RAN_FMT      "running %s's %s (remembered for this folder)"
 #define E_STARTCMD_MINE_FMT     "using your own %s (%s); %s's was not run"
@@ -916,9 +922,10 @@ typedef struct {
  const char *folder;   /* the folder the answer is kept for                    */
  const char *key;      /* the trace's key                                      */
  char **extra;         /* the plan's lines below the command, or NULL          */
- const int *extra_end; /* per line: 1 to keep its end when cut (a path)       */
+ const int *extra_end; /* per line: E_STARTCMD_EXTRA_*, how it is cut        */
  int nextra;
  int offer_mine;       /* the user has a plan of his own "Use mine" can start  */
+ int withhold_run;     /* something the plan runs is not shown whole            */
 } e_startcmd_view;
 
 /* A row between the plan's lines and the user's own setting. */
@@ -950,15 +957,15 @@ static int e_startcmd_extra_rows(const e_startcmd_view *v, int avail)
 /**
  * e_startcmd_add_extra - The plan's lines: where each folder value came
  * from, what lies outside the folder, what was not removed.
- * @o: the box; @y: the first row; @v: the view; @shown: how many fit;
+ * @o: the box; @y: the first row; @v: the view, its lines already box rows
+ * in their printable form (e_startcmd_wrap_extra); @shown: how many fit;
  * @width: the room.
  */
 static void e_startcmd_add_extra(W_OPTSTR *o, int y, const e_startcmd_view *v, int shown,
                                  int width)
 {
  char line[E_STARTCMD_LINE_MAX];
- char *printable;
- int i, keep_end;
+ int i;
 
  for (i = 0; i < shown; i++)
  {
@@ -968,26 +975,149 @@ static void e_startcmd_add_extra(W_OPTSTR *o, int y, const e_startcmd_view *v, i
    e_startcmd_add_line(o, y + i, line, width, 0);
    break;
   }
-  if (!(printable = e_startcmd_shown(v->extra[i])))
-   continue;
-  keep_end = 0;
-  if (v->extra_end)
-   keep_end = v->extra_end[i];
-  e_startcmd_add_line(o, y + i, printable, width, keep_end);
-  FREE(printable);
+  if (v->extra_end && v->extra_end[i] == E_STARTCMD_EXTRA_END)
+   e_startcmd_add_line(o, y + i, v->extra[i], width, 1);
+  else
+   e_startcmd_add_line(o, y + i, v->extra[i], width, 0);
  }
 }
 
 /**
- * e_startcmd_show - Show a folder's command, or a start plan, and ask.
- * @f: the window it was asked from; @v: what to show.
- *
- * The command is shown whole, every control byte written out, so what the
- * user approves is what runs; a plan's lines follow it.  When the command
- * or the lines do not fit on the screen, Run it is not offered at all.
- * Return: WPE_STARTCMD_RUN, WPE_STARTCMD_USE_OWN or WPE_STARTCMD_CANCEL.
+ * e_startcmd_extra_push - Append one box row to the wrapped lines.
+ * @w: the view being filled; @row: the row, taken (freed on failure);
+ * @keep: its E_STARTCMD_EXTRA_*.
+ * Return: 0, or -1 out of memory.
  */
-static int e_startcmd_show(FENSTER *f, const e_startcmd_view *v)
+static int e_startcmd_extra_push(e_startcmd_view *w, char *row, int keep)
+{
+ char **grown;
+ int *grown_keep;
+
+ if (!(grown = REALLOC(w->extra, (w->nextra + 1) * sizeof(char *))))
+ {
+  FREE(row);
+  return(-1);
+ }
+ w->extra = grown;
+ if (!(grown_keep = REALLOC((int *)w->extra_end, (w->nextra + 1) * sizeof(int))))
+ {
+  FREE(row);
+  return(-1);
+ }
+ w->extra_end = grown_keep;
+ w->extra[w->nextra] = row;
+ grown_keep[w->nextra] = keep;
+ w->nextra++;
+ return(0);
+}
+
+/**
+ * e_startcmd_extra_push_wrapped - Append a line the user must read whole,
+ * cut into rows of the box's width, each row but the last ending with the
+ * wrap mark.
+ * @w: the view being filled; @shown: the line in its printable form;
+ * @width: characters per row.
+ * Return: 0, or -1 out of memory.
+ */
+static int e_startcmd_extra_push_wrapped(e_startcmd_view *w, const char *shown, int width)
+{
+ char **rows;
+ int i, n = e_startcmd_rows(shown, width, &rows), rc = 0;
+
+ if (n == 0 && *shown)
+  return(-1);
+ for (i = 0; i < n; i++)
+ {
+  if (rc == 0)
+   rc = e_startcmd_extra_push(w, rows[i], E_STARTCMD_EXTRA_START);
+  else
+   FREE(rows[i]);
+ }
+ if (rows)
+  FREE(rows);
+ return(rc);
+}
+
+/**
+ * e_startcmd_wrap_extra - The plan's lines as the rows the box draws.
+ * @v: the view as built; @width: characters per row; @w: receives @v with
+ * its lines replaced by rows in their printable form.
+ *
+ * A line of a file the tool runs at its start (E_STARTCMD_EXTRA_WHOLE) is
+ * wrapped like the command, never cut: a command past the box's edge
+ * would otherwise run with the user having seen only its harmless start.
+ * When the wrapped rows do not all fit, Run it is withheld as for any plan
+ * that does not fit.  Other lines stay one row each, cut at the box's edge.
+ * Return: 0, or -1 out of memory (the rows made so far are in @w).
+ */
+static int e_startcmd_wrap_extra(const e_startcmd_view *v, int width, e_startcmd_view *w)
+{
+ char *shown;
+ int i, keep;
+
+ *w = *v;
+ w->extra = NULL;
+ w->extra_end = NULL;
+ w->nextra = 0;
+ for (i = 0; i < v->nextra; i++)
+ {
+  if (!(shown = e_startcmd_shown(v->extra[i])))
+   return(-1);
+  keep = E_STARTCMD_EXTRA_START;
+  if (v->extra_end)
+   keep = v->extra_end[i];
+  if (keep == E_STARTCMD_EXTRA_WHOLE)
+  {
+   if (e_startcmd_extra_push_wrapped(w, shown, width) < 0)
+   {
+    FREE(shown);
+    return(-1);
+   }
+   FREE(shown);
+  }
+  else if (e_startcmd_extra_push(w, shown, keep) < 0)
+   return(-1);
+ }
+ return(0);
+}
+
+/**
+ * e_startcmd_wrap_free - Free the rows e_startcmd_wrap_extra made.
+ */
+static void e_startcmd_wrap_free(e_startcmd_view *w)
+{
+ int i;
+
+ for (i = 0; i < w->nextra; i++)
+  FREE(w->extra[i]);
+ if (w->extra)
+  FREE(w->extra);
+ if (w->extra_end)
+  FREE((int *)w->extra_end);
+ w->extra = NULL;
+ w->extra_end = NULL;
+ w->nextra = 0;
+}
+
+/**
+ * e_startcmd_box_width - How wide the box is on this screen.
+ */
+static int e_startcmd_box_width(void)
+{
+ int width = MAXSCOL - 4;
+
+ if (width > E_STARTCMD_BOX_MAX_W)
+  width = E_STARTCMD_BOX_MAX_W;
+ return(width);
+}
+
+/**
+ * e_startcmd_show_rows - Draw the box and ask, the plan's lines already rows.
+ * @f: the window it was asked from; @v: what to show, as
+ * e_startcmd_wrap_extra made it.
+ * Return: as e_startcmd_show.
+ */
+static int e_startcmd_show_rows(FENSTER *f, const e_startcmd_view *v)
 {
  W_OPTSTR *o;
  char title[E_STARTCMD_LINE_MAX], line[E_STARTCMD_LINE_MAX];
@@ -1002,9 +1132,7 @@ static int e_startcmd_show(FENSTER *f, const e_startcmd_view *v)
   FREE(shown);
   return(WPE_STARTCMD_CANCEL);
  }
- width = MAXSCOL - 4;
- if (width > E_STARTCMD_BOX_MAX_W)
-  width = E_STARTCMD_BOX_MAX_W;
+ width = e_startcmd_box_width();
  text_w = width - 2 * E_STARTCMD_MARGIN;
  nrows = e_startcmd_rows(shown, text_w - E_STARTCMD_INDENT, &rows);
  room = MAXSLNS - E_STARTCMD_SCREEN_ROWS - E_STARTCMD_FIXED_ROWS;
@@ -1029,7 +1157,7 @@ static int e_startcmd_show(FENSTER *f, const e_startcmd_view *v)
  c.text = v->text;
  c.source = v->source;
  whole = e_startcmd_add_command(o, 4, rows, nrows, room, &c, text_w);
- if (nextra < v->nextra)
+ if (nextra < v->nextra || v->withhold_run)
   whole = 0;
  y = 4 + shown_rows + 1;
  e_startcmd_add_extra(o, y, v, nextra, text_w);
@@ -1048,6 +1176,28 @@ static int e_startcmd_show(FENSTER *f, const e_startcmd_view *v)
  if (ret == E_STARTCMD_MINE_KEY && v->offer_mine)
   return(WPE_STARTCMD_USE_OWN);
  return(WPE_STARTCMD_CANCEL);
+}
+
+/**
+ * e_startcmd_show - Show a folder's command, or a start plan, and ask.
+ * @f: the window it was asked from; @v: what to show.
+ *
+ * The command is shown whole, every control byte written out, so what the
+ * user approves is what runs; a plan's lines follow it, and the lines of a
+ * file the tool runs at its start are wrapped like the command, never cut.
+ * When the command or the lines do not fit on the screen, Run it is not
+ * offered at all.
+ * Return: WPE_STARTCMD_RUN, WPE_STARTCMD_USE_OWN or WPE_STARTCMD_CANCEL.
+ */
+static int e_startcmd_show(FENSTER *f, const e_startcmd_view *v)
+{
+ e_startcmd_view w;
+ int ret = WPE_STARTCMD_CANCEL;
+
+ if (e_startcmd_wrap_extra(v, e_startcmd_box_width() - 2 * E_STARTCMD_MARGIN, &w) == 0)
+  ret = e_startcmd_show_rows(f, &w);
+ e_startcmd_wrap_free(&w);
+ return(ret);
 }
 
 /**
@@ -1211,18 +1361,24 @@ void e_startcmd_typed(const char *folder, const char *key, const char *text)
 #define E_STARTPLAN_DROPPED_FMT  "not removed: %s (outside this folder)"
 #define E_STARTPLAN_INSIDE_FMT   "%d files from %s, all inside this folder"
 #define E_STARTPLAN_REFUSED_FMT  "%s's %s was not run: %s"
+#define E_STARTPLAN_RUNS_FMT     "Runs at start: %s (%d line%s)"
+#define E_STARTPLAN_RUNS_LONG_FMT "Runs at start: %s (%ld bytes, cannot be shown whole)"
+#define E_STARTPLAN_RUNS_LINE_FMT "    %s"
+#define E_STARTPLAN_THEN_FMT     "Then runs: %s"
+#define E_STARTPLAN_HONEST       "This runs the folder's own program."
 #define E_STARTPLAN_LINES_MAX    (WPE_STARTPLAN_WORDS_MAX + 8)
 
 /* The lines a plan adds below its command, as they are collected. */
 typedef struct {
  char **line;
- int *keep_end;        /* 1 for a path: a cut keeps its end, where its file is */
+ int *keep_end;        /* E_STARTPLAN_KEEP_*: how the box cuts each line        */
  int n;
 } e_startplan_lines;
 
 /* How a line of the plan is cut when it is wider than the box. */
-#define E_STARTPLAN_KEEP_START 0
-#define E_STARTPLAN_KEEP_END   1
+#define E_STARTPLAN_KEEP_START E_STARTCMD_EXTRA_START
+#define E_STARTPLAN_KEEP_END   E_STARTCMD_EXTRA_END
+#define E_STARTPLAN_KEEP_WHOLE E_STARTCMD_EXTRA_WHOLE
 
 /**
  * e_startplan_line_add - Append one line of the plan's part of the box.
@@ -1326,13 +1482,103 @@ static void e_startplan_lines_dropped(e_startplan_lines *l, const WpeStartPlan *
 }
 
 /**
+ * e_startplan_text_lines - How many lines a start-up file's text has.
+ * @text: the text; a last line without its line end counts.
+ */
+static int e_startplan_text_lines(const char *text)
+{
+ int n = 0;
+
+ for (; text && *text; text++)
+  if (*text == '\n' || !text[1])
+   n++;
+ return(n);
+}
+
+/**
+ * e_startplan_lines_file_text - A start-up file's lines, each indented,
+ * every control byte written out when the box shows it.
+ * @l: the lines; @text: the file's text.
+ *
+ * Each line must be read whole: one wider than the box (a harmless command,
+ * blanks, then another one past the edge) makes the box withhold Run it.
+ * The box is never wider than a line can be kept here.
+ */
+static void e_startplan_lines_file_text(e_startplan_lines *l, const char *text)
+{
+ char line[E_STARTCMD_LINE_MAX];
+ const char *end;
+ size_t len;
+
+ while (text && *text)
+ {
+  end = strchr(text, '\n');
+  len = end ? (size_t)(end - text) : strlen(text);
+  if (len >= sizeof line)
+   len = sizeof line - 1;
+  memcpy(line, text, len);
+  line[len] = '\0';
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_WHOLE, E_STARTPLAN_RUNS_LINE_FMT, line);
+  if (!end)
+   break;
+  text = end + 1;
+ }
+}
+
+/**
+ * e_startplan_lines_runs - Each file the tool runs from the folder at its
+ * start (./.pdbrc, ./jdb.ini, ./.gdbinit), with its lines.
+ * @l: the lines; @p: the plan.
+ *
+ * Starting a debugger in a cloned folder used to run whatever commands the
+ * folder's start-up file held, unseen: the user now reads them first, and
+ * the condition under which the tool runs one when it does not always.
+ */
+static void e_startplan_lines_runs(e_startplan_lines *l, const WpeStartPlan *p)
+{
+ int i, n;
+
+ for (i = 0; i < p->npath; i++)
+ {
+  const WpeStartPath *s = &p->path[i];
+  if (s->role != WPE_PATH_READS)
+   continue;
+  n = e_startplan_text_lines(s->content);
+  if (s->too_long)
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_RUNS_LONG_FMT, s->path,
+                        s->length);
+  else if (n == 1)
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_RUNS_FMT, s->path, n, "");
+  else
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_RUNS_FMT, s->path, n, "s");
+  if (s->note)
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "  %s", s->note);
+  e_startplan_lines_file_text(l, s->content);
+ }
+}
+
+/**
+ * e_startplan_lines_input - What the editor will write to the tool once it
+ * runs, built from a value ("Then runs: r --verbose").
+ * @l: the lines; @p: the plan.
+ */
+static void e_startplan_lines_input(e_startplan_lines *l, const WpeStartPlan *p)
+{
+ int i;
+
+ for (i = 0; i < p->ninput; i++)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_THEN_FMT, p->input[i].text);
+}
+
+/**
  * e_startplan_lines_of - Everything the box says about a plan below its command.
  * @l: receives the lines; @p: the plan, judged.
  *
  * The values a folder set and where they came from, what the start writes
- * and reads outside the folder, what it will not remove, and how many of
- * the folder's own files it builds: the user sees the whole start, not
- * only the program's name.
+ * and reads outside the folder, what it will not remove, how many of the
+ * folder's own files it builds, the files the tool runs from the folder at
+ * its start and what the editor then writes to it: the user sees the whole
+ * start, not only the program's name.
  */
 static void e_startplan_lines_of(e_startplan_lines *l, const WpeStartPlan *p)
 {
@@ -1345,6 +1591,10 @@ static void e_startplan_lines_of(e_startplan_lines *l, const WpeStartPlan *p)
  wpe_startplan_counts(p, &outside, &dropped, &inside);
  if (inside > 0 && p->file)
   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_INSIDE_FMT, inside, p->file);
+ e_startplan_lines_runs(l, p);
+ e_startplan_lines_input(l, p);
+ if (p->honest)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "%s", E_STARTPLAN_HONEST);
 }
 
 /**
@@ -1391,6 +1641,7 @@ static int e_startplan_ask(FENSTER *f, WpeStartPlan *p, const E_STARTPLAN_SHOW *
  v.extra_end = l.keep_end;
  v.nextra = l.n;
  v.offer_mine = wpe_startplan_own_usable(p);
+ v.withhold_run = wpe_startplan_reads_too_long(p);
  ret = e_startcmd_show(f, &v);
  e_startplan_lines_free(&l);
  return(ret);

@@ -122,8 +122,32 @@ static int startplan_grow(void **arr, int n, size_t size)
 }
 
 /**
+ * startplan_debug_kind_name - The name of a debug session's kind of start.
+ * @kind: WPE_START_*.
+ * Return: "debug", "debuggee", "debug-compile", "setup-ide", "bsp",
+ * "adapter", or "start" for a kind this owner does not know.
+ */
+static const char *startplan_debug_kind_name(int kind)
+{
+ if (kind == WPE_START_DEBUGGER)
+  return "debug";
+ if (kind == WPE_START_DEBUGGEE)
+  return "debuggee";
+ if (kind == WPE_START_DEBUG_COMPILE)
+  return "debug-compile";
+ if (kind == WPE_START_SETUP_IDE)
+  return "setup-ide";
+ if (kind == WPE_START_BUILD_SERVER)
+  return "bsp";
+ if (kind == WPE_START_DEBUG_ADAPTER)
+  return "adapter";
+ return "start";
+}
+
+/**
  * wpe_startplan_kind_name - The name of a kind, as the store's key names it.
- * Return: "build", "project", or "start" for a kind this owner does not know.
+ * Return: "build", "project", ..., or "start" for a kind this owner does
+ * not know.
  */
 const char *wpe_startplan_kind_name(int kind)
 {
@@ -139,7 +163,7 @@ const char *wpe_startplan_kind_name(int kind)
   return "unpack";
  if (kind == WPE_START_PROBE)
   return "probe";
- return "start";
+ return startplan_debug_kind_name(kind);
 }
 
 /**
@@ -190,7 +214,14 @@ void wpe_startplan_free(WpeStartPlan *p)
   free(p->path[i].path);
   free(p->path[i].root);
   free(p->path[i].source);
+  free(p->path[i].content);
  }
+ for (i = 0; i < p->ninput; i++)
+ {
+  free(p->input[i].text);
+  free(p->input[i].source);
+ }
+ free(p->input);
  for (i = 0; i < p->nvalue; i++)
  {
   free(p->value[i].file);
@@ -905,10 +936,59 @@ static int plan_option_origin(WpeStartPlan *p)
  int i;
 
  for (i = 0; i < p->nword; i++)
-  if (p->word[i].role == WPE_WORD_OPTION && p->word[i].from == WPE_FROM_FOLDER)
+ {
+  if (p->word[i].from != WPE_FROM_FOLDER)
+   continue;
+  if (p->word[i].role == WPE_WORD_OPTION)
+   p->refused = WPE_STARTPLAN_REFUSE_OPTION;
+  else if (p->word[i].role == WPE_WORD_CARRIER)
+   p->refused = WPE_STARTPLAN_REFUSE_CARRIER;
+  else
+   continue;
+  p->verdict = WPE_PLAN_REFUSED;
+  return -1;
+ }
+ return 0;
+}
+
+/**
+ * wpe_startplan_line_ok - May this value go into a command the editor
+ * writes to a tool's input?
+ * @value: a value (a program's arguments, a file name, a watch expression).
+ *
+ * A debugger reads its input a line at a time, so a value holding a line
+ * break (or any other control character) would end the editor's command
+ * and start one of the value's own: a watch "x" followed by "shell rm ..."
+ * on the next line.  Such a value is never sent.
+ * Return: 1 when it holds no control character.
+ */
+int wpe_startplan_line_ok(const char *value)
+{
+ const unsigned char *s = (const unsigned char *)value;
+
+ if (!s)
+  return 1;
+ for (; *s; s++)
+  if (*s < ' ' || *s == 0x7f)
+   return 0;
+ return 1;
+}
+
+/**
+ * plan_input_lines - Rule 2b: no value the editor writes to the tool's
+ * input after the start may hold a line break.
+ * @p: the plan.
+ * Return: 0, or -1 with the plan refused.
+ */
+static int plan_input_lines(WpeStartPlan *p)
+{
+ int i;
+
+ for (i = 0; i < p->ninput; i++)
+  if (!wpe_startplan_line_ok(p->input[i].text))
   {
    p->verdict = WPE_PLAN_REFUSED;
-   p->refused = WPE_STARTPLAN_REFUSE_OPTION;
+   p->refused = WPE_STARTPLAN_REFUSE_INPUT;
    return -1;
   }
  return 0;
@@ -981,13 +1061,25 @@ static int plan_path_asks(const WpeStartPath *s)
 }
 
 /**
+ * plan_path_runs_at_start - Rule 7: is this a file the tool runs from its
+ * folder on its own?
+ * Return: 1 for a start-up file the folder holds (wpe_startplan_tool_reads).
+ */
+static int plan_path_runs_at_start(const WpeStartPath *s)
+{
+ return s->role == WPE_PATH_READS && s->from == WPE_FROM_FOLDER;
+}
+
+/**
  * plan_from_folder - Rule 8: did a folder choose anything the user must see?
  * @p: the plan.
  *
  * A folder's program, option text or a path it puts outside counts; a path
  * a folder puts inside its own folder does not (a project names its own
  * files and its program inside it), nor does a value equal to the user's
- * own or empty, which the sites mark as his.
+ * own or empty, which the sites mark as his.  A start-up file the tool will
+ * run from the folder counts, and so does a folder's value the editor will
+ * write to the tool's input (a folder's Arguments in the debugger's run).
  * Return: 1 when the plan must be compared with the store.
  */
 static int plan_from_folder(const WpeStartPlan *p)
@@ -998,7 +1090,10 @@ static int plan_from_folder(const WpeStartPlan *p)
   if (p->word[i].from == WPE_FROM_FOLDER && p->word[i].role != WPE_WORD_OPERAND)
    return 1;
  for (i = 0; i < p->npath; i++)
-  if (plan_path_asks(&p->path[i]))
+  if (plan_path_asks(&p->path[i]) || plan_path_runs_at_start(&p->path[i]))
+   return 1;
+ for (i = 0; i < p->ninput; i++)
+  if (p->input[i].from == WPE_FROM_FOLDER)
    return 1;
  return 0;
 }
@@ -1069,6 +1164,29 @@ static void startplan_put_inside(const WpeStartPlan *p, startplan_buf *b)
  free(list);
 }
 
+/**
+ * startplan_put_reads - Each start-up file the tool runs, with its text.
+ * @p: the plan; @b: the text.
+ *
+ * The file's size and its text are part of the plan's effect: a changed
+ * .pdbrc is a changed plan, and asks again.
+ */
+static void startplan_put_reads(const WpeStartPlan *p, startplan_buf *b)
+{
+ char head[WPE_STARTPLAN_PATH_MAX + 32];
+ int i;
+
+ for (i = 0; i < p->npath; i++)
+ {
+  const WpeStartPath *s = &p->path[i];
+  if (s->role != WPE_PATH_READS)
+   continue;
+  snprintf(head, sizeof head, "%s %ld", s->resolved, s->length);
+  startplan_put(b, "reads ", head);
+  startplan_put(b, startplan_or_empty(s->content), NULL);
+ }
+}
+
 /** startplan_path_word - The canonical text's word for an outside path. */
 static const char *startplan_path_word(int role)
 {
@@ -1099,12 +1217,16 @@ static char *startplan_build_text(const WpeStartPlan *p)
  startplan_put(&b, "kind ", wpe_startplan_kind_name(p->kind));
  startplan_put(&b, "cwd ", startplan_or_empty(p->cwd));
  for (i = 0; i < p->nword; i++)
-  if (p->word[i].role != WPE_WORD_OPERAND)
+  if (p->word[i].role != WPE_WORD_OPERAND && p->word[i].role != WPE_WORD_CARRIER)
    startplan_put(&b, "argv ", p->word[i].text);
  for (i = 0; i < p->npath; i++)
-  if (!p->path[i].inside && p->path[i].role != WPE_PATH_REMOVE)
+  if (!p->path[i].inside && p->path[i].role != WPE_PATH_REMOVE &&
+      p->path[i].role != WPE_PATH_READS)
    startplan_put(&b, startplan_path_word(p->path[i].role), p->path[i].resolved);
  startplan_put_inside(p, &b);
+ startplan_put_reads(p, &b);
+ for (i = 0; i < p->ninput; i++)
+  startplan_put(&b, "then ", p->input[i].text);
  if (b.bad)
  {
   free(b.s);
@@ -1134,6 +1256,8 @@ const char *wpe_startplan_text(WpeStartPlan *p)
 static int startplan_judge_paths(WpeStartPlan *p)
 {
  if (plan_option_origin(p) < 0)
+  return -1;
+ if (plan_input_lines(p) < 0)
   return -1;
  plan_resolve_paths(p);
  plan_remove_inside_only(p);
@@ -1307,11 +1431,53 @@ static char *startplan_holds(const WpeStartPlan *p, const char *word)
  */
 static const WpeStartPlan *startplan_running(const WpeStartPlan *p)
 {
+ return wpe_startplan_running((WpeStartPlan *)p);
+}
+
+/**
+ * wpe_startplan_running - The plan that runs for a judged and answered plan.
+ * @p: the plan.
+ *
+ * A site whose child is carried by a program of the editor's own (the
+ * graphical editors' debugger script) adds the carrier's words to this one.
+ * Return: the user's own after "Use mine", @p after a yes or when clean,
+ * NULL when nothing may run.
+ */
+WpeStartPlan *wpe_startplan_running(WpeStartPlan *p)
+{
+ if (!p)
+  return NULL;
  if (p->verdict == WPE_PLAN_USE_OWN)
   return p->own;
  if (p->verdict == WPE_PLAN_RUN || p->verdict == WPE_PLAN_CLEAN)
   return p;
  return NULL;
+}
+
+/**
+ * wpe_startplan_argv - The command line of a plan whose words are in order.
+ * @p: the plan, answered.
+ *
+ * For the starts that build their plan word by word in the order the
+ * program gets them (a debugger, an adapter, a build server): the words of
+ * the plan that runs, its carriers left out.
+ * Return: a malloc'd NULL-ended list of the plan's own words (free the list,
+ * not the words), or NULL when nothing may run or out of memory.
+ */
+char **wpe_startplan_argv(WpeStartPlan *p)
+{
+ const WpeStartPlan *run = startplan_running(p);
+ char **argv;
+ int i, n = 0;
+
+ if (!run || run->nword == 0)
+  return NULL;
+ if (!(argv = calloc((size_t)run->nword + 1, sizeof *argv)))
+  return NULL;
+ for (i = 0; i < run->nword; i++)
+  if (run->word[i].role != WPE_WORD_CARRIER)
+   argv[n++] = run->word[i].text;
+ return argv;
 }
 
 /**
@@ -1438,6 +1604,42 @@ int wpe_startplan_start(WpeStartPlan *p, char *const argv[], const WpeStartIo *i
  spec.cwd = p->cwd;
  rc = wpe_child_start(&spec, c, ended, data);
  free(words);
+ return rc;
+}
+
+/**
+ * wpe_startplan_start_words - Start the child of a plan whose words are
+ * its command line, in order.
+ * @p: the plan, judged and answered; @io/@c/@ended/@data: as
+ * wpe_startplan_start.
+ *
+ * A debugger, its program, an adapter, a build server: the child gets
+ * exactly the words the user was shown (his own after "Use mine").  When
+ * the site added carrier words (the graphical editors' helper script, which
+ * holds those very words), the child is the carrier.
+ * Return: 0, or -1 with nothing started.
+ */
+int wpe_startplan_start_words(WpeStartPlan *p, const WpeStartIo *io, WpeChild *c,
+                              WpeChildEndedFn ended, void *data)
+{
+ const WpeStartPlan *run;
+ char **argv;
+ int i, n = 0, rc;
+
+ if (!p || !io)
+  return -1;
+ if (!(run = startplan_running(p)))
+  return startplan_refuse(p, WPE_STARTPLAN_REFUSE_JUDGE, NULL);
+ if (!(argv = calloc((size_t)run->nword + 1, sizeof *argv)))
+  return -1;
+ for (i = 0; i < run->nword; i++)
+  if (run->word[i].role == WPE_WORD_CARRIER)
+   argv[n++] = run->word[i].text;
+ if (n == 0)
+  for (i = 0; i < run->nword; i++)
+   argv[n++] = run->word[i].text;
+ rc = wpe_startplan_start(p, argv, io, c, ended, data);
+ free(argv);
  return rc;
 }
 
@@ -1620,6 +1822,262 @@ int wpe_startplan_env_name_allowed(const char *name)
    return 0;
  for (i = 0; startplan_env_allowed[i]; i++)
   if (strcmp(name, startplan_env_allowed[i]) == 0)
+   return 1;
+ return 0;
+}
+
+/**
+ * wpe_startplan_input - Add a value the editor will write to the tool's
+ * input once it runs.
+ * @p: the plan; @text: the command as it will be written, without its line
+ * end ("r --verbose"); @from: WPE_FROM_*; @source: where the value came
+ * from, for the box.
+ *
+ * A debugger's run command carries the program's Arguments: a folder's
+ * Arguments are shown ("Then runs: r ...") and asked about like a word of
+ * the command line, and no such value may hold a line break (rule 2b).
+ * Return: 0, or -1 out of memory or past the plan's size.
+ */
+int wpe_startplan_input(WpeStartPlan *p, const char *text, int from, const char *source)
+{
+ WpeStartWord *w;
+
+ if (!p || !text || startplan_grow((void **)&p->input, p->ninput, sizeof *p->input) < 0)
+  return -1;
+ w = &p->input[p->ninput];
+ w->text = startplan_dup(text);
+ w->source = startplan_dup(startplan_or_empty(source));
+ w->role = WPE_WORD_TEXT;
+ w->from = from;
+ if (!w->text || !w->source)
+ {
+  free(w->text);
+  free(w->source);
+  return -1;
+ }
+ p->ninput++;
+ return 0;
+}
+
+/**
+ * wpe_startplan_reads_too_long - Does the plan run a start-up file the box
+ * cannot show whole?
+ * @p: the plan.
+ * Return: 1 when one is too long (or not a plain file): Run it is not offered.
+ */
+int wpe_startplan_reads_too_long(const WpeStartPlan *p)
+{
+ int i;
+
+ for (i = 0; p && i < p->npath; i++)
+  if (p->path[i].role == WPE_PATH_READS && p->path[i].too_long)
+   return 1;
+ return 0;
+}
+
+/* What a tool reads and runs from the folder it starts in, on its own,
+   before the editor sends it anything.  One row per file; a measured
+   correction is one row.
+   - pdb: https://docs.python.org/3/library/pdb.html -- ".pdbrc" in the home
+     folder and in the current folder, the home one first, each line run as
+     if typed; there is no switch that turns it off (only Pdb(readrc=False)).
+   - jdb: OpenJDK test/jdk/com/sun/jdi/JdbReadTwiceTest.sh -- "jdb.ini",
+     else ".jdbrc", in user.home and in the working folder, both read, the
+     same file through a link once.  Measured with JDK 25: the working
+     folder's jdb.ini is read ("Reading commands from ...").
+   - gdb: gdb manual, "Init File in the Current Directory" -- ./.gdbinit is
+     read only when the auto-load safe-path admits the folder; the -iex
+     "set auto-load local-gdbinit off" of "Use mine" skips it (measured).
+   - lldb: lldb(1) -- ./.lldbinit only with target.load-cwd-lldbinit true;
+     lldb-dap reads init files the same way (to be measured on lldb-dap).
+   - dbx: IBM AIX 7.2, "Customizing the dbx debugging environment" --
+     .dbxinit in the home and the current folder.  To be measured on AIX.
+   - xdb: .xdbrc in the current folder (HP-UX manual).  To be measured.
+   - sdb, a68g --monitor, dlv: nothing known in the working folder.
+   - perl -d: .perldb; no perl debugger is started by the editor, so the
+     row is off until one is. */
+typedef struct {
+ const char *tool;           /* the tool, as the site names it                      */
+ const char *file;           /* the file it reads in its working folder             */
+ int alternative;            /* read only when the row before found no file          */
+ int always;                 /* 1: runs it at every start; 0: only under a setting
+                                of the user's the editor cannot see                 */
+ int enabled;                /* 0: a tool the editor does not start                 */
+ const char *note;           /* the box's sentence for a conditional file           */
+} startplan_startup_file;
+
+static const startplan_startup_file startplan_startup_files[] = {
+ { "pdb",  ".pdbrc",    0, 1, 1, NULL },
+ { "jdb",  "jdb.ini",   0, 1, 1, NULL },
+ { "jdb",  ".jdbrc",    1, 1, 1, NULL },
+ { "gdb",  ".gdbinit",  0, 0, 1,
+   "gdb runs it only if your gdb settings allow auto-load from this folder" },
+ { "lldb", ".lldbinit", 0, 0, 1,
+   "lldb runs it only if your ~/.lldbinit says load-cwd-lldbinit" },
+ { "dbx",  ".dbxinit",  0, 1, 1, NULL },
+ { "xdb",  ".xdbrc",    0, 1, 1, NULL },
+ { "perl", ".perldb",   0, 1, 0, NULL },
+ { NULL,   NULL,        0, 0, 0, NULL }
+};
+
+/**
+ * startplan_same_file_as_in - Is @st the file of that name in @dir?
+ * @dir: a folder, or NULL; @name: the start-up file's name; @st: the file.
+ * Return: 1 when @dir/@name is that very file (links followed).
+ */
+static int startplan_same_file_as_in(const char *dir, const char *name, const struct stat *st)
+{
+ char path[WPE_STARTPLAN_PATH_MAX];
+ struct stat other;
+
+ if (!dir || !*dir)
+  return 0;
+ if (snprintf(path, sizeof path, "%s%c%s", dir, STARTPLAN_SEP, name) >= (int)sizeof path)
+  return 0;
+ if (stat(path, &other) != 0)
+  return 0;
+ return other.st_dev == st->st_dev && other.st_ino == st->st_ino;
+}
+
+/**
+ * startplan_is_users_startup - Is the folder's start-up file the user's own?
+ * @name: the file's name; @st: the file in the working folder.
+ *
+ * Started in the home folder, ./.pdbrc is ~/.pdbrc: the user's own, which
+ * the box does not list.  Java's home is the user database's, whatever
+ * $HOME says, so both are compared.
+ * Return: 1 when it is the user's.
+ */
+static int startplan_is_users_startup(const char *name, const struct stat *st)
+{
+ struct passwd *pw = getpwuid(getuid());
+
+ if (startplan_same_file_as_in(getenv("HOME"), name, st))
+  return 1;
+ return pw && startplan_same_file_as_in(pw->pw_dir, name, st);
+}
+
+/**
+ * startplan_read_whole - Is the start-up file's text all the box can show?
+ * @content: what was read; @got: its bytes, or -1; @size: the file's size.
+ *
+ * The box shows the text up to its first NUL; the tool reads past it.
+ * Return: 1 when the whole file was read and holds no NUL byte.
+ */
+static int startplan_read_whole(const char *content, ssize_t got, off_t size)
+{
+ if (got < 0 || size > WPE_STARTPLAN_READS_MAX || (off_t)got != size)
+  return 0;
+ return memchr(content, '\0', (size_t)got) == NULL;
+}
+
+/**
+ * startplan_read_startup - Take a start-up file's text into its path.
+ * @s: the path, its length set; @full: the file's path.
+ *
+ * At most WPE_STARTPLAN_READS_MAX bytes; a longer file, one that is not
+ * a plain file (a pipe would hold the tool forever), or one with a NUL
+ * byte in it is marked too long, so the box shows it in part and does not
+ * offer to run it.  The box shows text up to its first NUL, while the tool
+ * reads every line after it: a folder could hide its real commands behind
+ * one harmless line.
+ */
+static void startplan_read_startup(WpeStartPath *s, const char *full)
+{
+ struct stat st;
+ ssize_t got;
+ int fd;
+
+ s->too_long = 1;
+ if (!(s->content = calloc(1, WPE_STARTPLAN_READS_MAX + 1)))
+  return;
+ if ((fd = open(full, O_RDONLY | O_NONBLOCK)) < 0)
+  return;
+ if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+ {
+  s->length = (long)st.st_size;
+  got = read(fd, s->content, WPE_STARTPLAN_READS_MAX);
+  if (got >= 0)
+   s->content[got] = '\0';
+  s->too_long = !startplan_read_whole(s->content, got, st.st_size);
+ }
+ close(fd);
+}
+
+/**
+ * startplan_add_startup - List one start-up file the working folder holds.
+ * @p: the plan; @row: the table's row.
+ * Return: 1 when the folder holds it (listed, or the user's own),
+ * 0 when it does not, -1 out of memory.
+ */
+static int startplan_add_startup(WpeStartPlan *p, const startplan_startup_file *row)
+{
+ char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX];
+ struct stat st;
+ WpeStartPath *s;
+
+ if (snprintf(full, sizeof full, "%s%c%s", p->cwd, STARTPLAN_SEP, row->file) >= (int)sizeof full)
+  return 0;
+ if (stat(full, &st) != 0)
+  return 0;
+ if (startplan_is_users_startup(row->file, &st))
+  return 1;
+ snprintf(given, sizeof given, ".%c%s", STARTPLAN_SEP, row->file);
+ if (wpe_startplan_path(p, given, WPE_PATH_READS, WPE_FROM_FOLDER, row->file, p->cwd) < 0)
+  return -1;
+ s = &p->path[p->npath - 1];
+ s->note = row->note;
+ startplan_read_startup(s, full);
+ startplan_trace("startplan reads %s %ld", full, s->length);
+ return 1;
+}
+
+/**
+ * wpe_startplan_tool_reads - Rule 7: list what the tool runs from its folder.
+ * @p: the plan, its working folder set; @tool: "gdb", "pdb", "jdb", "lldb",
+ * "dbx", "xdb".
+ *
+ * Each start-up file of the tool the working folder holds becomes a path
+ * the tool reads, with its text: the plan then asks, the box shows the
+ * file's lines, and a changed file asks again.  A file that is the user's
+ * own (the folder is his home) is not listed.
+ * Return: the number of files listed, or -1 out of memory.
+ */
+int wpe_startplan_tool_reads(WpeStartPlan *p, const char *tool)
+{
+ const startplan_startup_file *row;
+ int found = 0, before = 0, had, rc;
+
+ if (!p || !tool || !p->cwd)
+  return 0;
+ for (row = startplan_startup_files; row->tool; row++)
+ {
+  if (!row->enabled || strcmp(row->tool, tool) != 0)
+   continue;
+  if (row->alternative && before)
+   continue;
+  had = p->npath;
+  rc = startplan_add_startup(p, row);
+  if (rc < 0)
+   return -1;
+  before = rc;
+  if (p->npath > had)
+   found++;
+ }
+ return found;
+}
+
+/**
+ * wpe_startplan_tool_reads_known - Does the table know what this tool runs?
+ * @tool: the tool's name.
+ * Return: 1 when one of its rows is on.
+ */
+int wpe_startplan_tool_reads_known(const char *tool)
+{
+ const startplan_startup_file *row;
+
+ for (row = startplan_startup_files; tool && row->tool; row++)
+  if (row->enabled && strcmp(row->tool, tool) == 0)
    return 1;
  return 0;
 }

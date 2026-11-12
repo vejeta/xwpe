@@ -6,12 +6,11 @@
 #
 # "count" is the number of matching lines' matches in the function; it may
 # only fall.  "pass" is the pass that moves the function into a plan:
-#   P0c-2   the debuggers, the build server, the debug adapters
 #   P0c-3   Run, Make, scripts, the shell, install lines, File > Execute,
 #           the language servers, and the short commands (print, man)
 #   P0c-4   the assistant's read grants (IncludePath)
-#   plan    converted: the function hands its words and paths to the build's
-#           plan (wpe_startplan_start takes only words the judged plan
+#   plan    converted: the function hands its words and paths to its
+#           action's plan (wpe_startplan_start takes only words the judged plan
 #           holds; wpe_startplan_remove removes only what it allows), or it
 #           reads an output's time for the editor's own up-to-date test
 #   keep    not a start: a dialog that edits a value, a default, the
@@ -60,22 +59,10 @@ we_term.c|e_t_system|1|P0c-3|the console's shell entry
 we_xterm.c|e_x_system|1|P0c-3|the graphical editors' shell entry
 we_lsp.c|lsp_spawn|3|P0c-3|a language server's child spec
 
-# --- the debuggers, the build server, the debug adapters (P0c-2) ---
-we_debug.c|e_d_compile_begin|2|P0c-2|the compile for debug
-we_debug.c|e_d_dap_end_at_exit|1|P0c-2|a debug adapter's program name
-we_debug.c|e_d_debugger_spec|1|P0c-2|the debugger's child spec
-we_debug.c|e_d_debugger_start|1|P0c-2|the debugger's command line
-we_debug.c|e_deb_run|6|P0c-2|Arguments into the debugger's run command
-we_debug.c|e_d_jdb_vm_fork|3|P0c-2|jdb's program
-we_debug.c|e_d_pick_start_arg|3|P0c-2|the program the debugger is handed
-we_debug.c|e_d_start_in_script|1|P0c-2|the graphical editors' debugger script
-we_debug.c|e_d_start_on_pipes|1|P0c-2|the debugger on pipes
-we_debug.c|e_scala_setup_begin|2|P0c-2|scala-cli setup-ide
-we_debug.c|e_start_debug|1|P0c-2|the program the debugger is handed
-we_bsp.c|bsp_spawn|3|P0c-2|the build server's command line
-we_dap.c|dap_adapter_spec|1|P0c-2|a debug adapter's child spec
-we_dap.c|dap_spawn|1|P0c-2|a debug adapter's child spec
-we_dap.c|dap_spawn_stdio|1|P0c-2|a debug adapter's child spec
+# --- the debuggers (converted) ---
+we_debug.c|e_d_arguments|1|plan|reads Arguments once for the debugger's start plan and its run command
+we_debug.c|e_d_pick_start_arg|1|plan|the program's name, handed to the debugger's plan as its operand with its origin
+we_debug.c|e_start_debug|1|plan|a project's program, handed to the debugger's plan as its operand
 
 # --- the assistant's read grants (P0c-4) ---
 we_ai_ws.c|ws_collect_read_grants|1|P0c-4|a folder's IncludePath widens the assistant's reads

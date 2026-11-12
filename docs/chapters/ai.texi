@@ -679,10 +679,7 @@ in a file the repository's config includes (@code{[include]},
 top is above the workspace; the hooks folder those name is protected
 only if it is @file{.git}, @file{.husky} or another name above.  Also not
 covered yet, and planned: a folder's
-@code{IncludePath} widens what the assistant may read; and a debug
-session reads the folder's own debugger start-up files (@file{.pdbrc},
-@file{.perldb}, @file{jdb.ini}, @file{.gdbinit}-style files) and runs
-its program, as Run and Make do.
+@code{IncludePath} widens what the assistant may read.
 
 @item Reads
 @code{read_file}, @code{list_dir}, @code{grep} and @code{glob} run unasked

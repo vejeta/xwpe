@@ -33,6 +33,10 @@
 #define WPE_WORD_OPERAND 2  /* a path, joined by wpe_startplan_operand                 */
 #define WPE_WORD_TEXT    3  /* a folder's text the tool reads as it likes (options
                                from a folder): shown whole, asked about              */
+#define WPE_WORD_CARRIER 4  /* the editor's own program that carries the plan's
+                               command to where it runs (the graphical editors'
+                               helper script, the terminal it opens): never a
+                               folder's, neither shown nor remembered               */
 
 /* What the start does to a path, by the editor's own hand. */
 #define WPE_PATH_WRITE  1   /* the tool is told to write it ("-o")                     */
@@ -57,6 +61,14 @@
 #define WPE_START_UNPACK  5   /* gunzip of a compressed help file                     */
 #define WPE_START_PROBE   6   /* a question the editor asks a tool (a Java's version,
                                  the desktop's font)                                  */
+#define WPE_START_DEBUGGER      7   /* a debugger on the program (gdb, pdb, jdb, dbx,
+                                       xdb, sdb, a68g --monitor)                      */
+#define WPE_START_DEBUGGEE      8   /* the program a debug session runs, started by the
+                                       editor itself (jdb's VM)                       */
+#define WPE_START_DEBUG_COMPILE 9   /* the compile of a program for its debug session */
+#define WPE_START_SETUP_IDE    10   /* scala-cli setup-ide, for a Scala session       */
+#define WPE_START_BUILD_SERVER 11   /* the build server a project's .bsp file names   */
+#define WPE_START_DEBUG_ADAPTER 12  /* a debug adapter (dlv, gdb, lldb-dap)           */
 
 /* What the judge, and then the user, decided. */
 #define WPE_PLAN_UNJUDGED 0
@@ -77,6 +89,13 @@
 #define WPE_STARTPLAN_KEY_MAX   256
 #define WPE_STARTPLAN_WORDS_MAX 1024     /* a project with many FILES               */
 #define WPE_STARTPLAN_TEXT_MAX  65536    /* past it the plan cannot be remembered   */
+#define WPE_STARTPLAN_READS_MAX 16384    /* of one start-up file: past it the file is
+                                            shown in part and Run it is not offered */
+
+/* The shell a planned shell line runs in, and the switch that hands it the
+   line; the line's file names follow as its $1, $2 ... never as its text. */
+#define WPE_STARTPLAN_SHELL     "/bin/sh"
+#define WPE_STARTPLAN_SHELL_OPT "-c"
 
 /* The canonical text's first line. */
 #define WPE_STARTPLAN_TEXT_MAGIC "xwpe-start 2"
@@ -85,6 +104,8 @@
 #define WPE_STARTPLAN_REFUSE_OPTION "a folder value cannot be an option"
 #define WPE_STARTPLAN_REFUSE_WORD   "a word the plan did not show"
 #define WPE_STARTPLAN_REFUSE_JUDGE  "the plan was not approved"
+#define WPE_STARTPLAN_REFUSE_INPUT  "not sent: a value with a line break"
+#define WPE_STARTPLAN_REFUSE_CARRIER "a folder value cannot carry a command"
 
 /* One word of a command line. */
 typedef struct {
@@ -106,6 +127,11 @@ typedef struct {
  int dropped;                /* a removal outside: never done                         */
  int output;                 /* WPE_OUTPUT_*: what the build makes of it              */
  char *source;               /* "p.prj: EXENAME", for the box                          */
+ char *content;              /* WPE_PATH_READS: the file's text (at most
+                                WPE_STARTPLAN_READS_MAX bytes), shown and remembered  */
+ long length;                /* WPE_PATH_READS: the file's whole size in bytes        */
+ int too_long;               /* WPE_PATH_READS: not shown whole, so not run unseen   */
+ const char *note;           /* WPE_PATH_READS: when the tool runs it, for the box    */
 } WpeStartPath;
 
 /* One value a folder file set, as the box lists it. */
@@ -150,6 +176,10 @@ typedef struct WpeStartPlan {
  WpeStartWord *word;  int nword;
  WpeStartPath *path;  int npath;
  WpeStartValue *value; int nvalue;
+ WpeStartWord *input; int ninput; /* what the editor writes to the tool's input after
+                                the start, built from values ("r <Arguments>")      */
+ int honest;                 /* the start runs the folder's own program: the box says
+                                so, since what that program does is not vetted     */
  int list_inside;            /* the inside operands are part of the text (a project) */
  struct WpeStartPlan *own;   /* what "Use mine" starts instead, or NULL               */
  int verdict;                /* WPE_PLAN_*                                            */
@@ -196,5 +226,14 @@ int wpe_startplan_run_to_file(WpeStartPlan *p, const char *path, long deadline_m
                               int *status, const char *what);
 int wpe_startplan_env_name_allowed(const char *name);
 void wpe_startplan_trace_set(void (*trace)(const char *line));
+int wpe_startplan_tool_reads(WpeStartPlan *p, const char *tool);
+int wpe_startplan_tool_reads_known(const char *tool);
+int wpe_startplan_input(WpeStartPlan *p, const char *text, int from, const char *source);
+int wpe_startplan_line_ok(const char *value);
+int wpe_startplan_reads_too_long(const WpeStartPlan *p);
+WpeStartPlan *wpe_startplan_running(WpeStartPlan *p);
+char **wpe_startplan_argv(WpeStartPlan *p);
+int wpe_startplan_start_words(WpeStartPlan *p, const WpeStartIo *io, WpeChild *c,
+                              WpeChildEndedFn ended, void *data);
 
 #endif

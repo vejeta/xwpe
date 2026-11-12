@@ -540,6 +540,237 @@ static void case_short_command(void)
  wpe_child_trace_set(NULL);
 }
 
+/* The size of a start-up file the box cannot show whole. */
+#define LONG_STARTUP_BYTES (WPE_STARTPLAN_READS_MAX + 4096)
+
+/* A debugger's plan in @dir, its start-up files listed for @tool. */
+static WpeStartPlan *debugger_plan(const char *dir, const char *tool)
+{
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, tool);
+ if (!p) { fail("plan", "out of memory"); exit(1); }
+ wpe_startplan_set_cwd(p, dir);
+ wpe_startplan_set_file(p, "./xwperc", dir);
+ wpe_startplan_word(p, tool, WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ wpe_startplan_tool_reads(p, tool);
+ return p;
+}
+
+/* The path of @name in @dir. */
+static void file_in(char *out, size_t sz, const char *dir, const char *name)
+{
+ snprintf(out, sz, "%s/%s", dir, name);
+}
+
+static void case_startup_listed(void)
+{
+ char rc[PATH_ROOM], want[PATH_ROOM];
+ WpeStartPlan *p;
+
+ file_in(rc, sizeof rc, proj, ".pdbrc");
+ write_file(rc, "!open('ran','w').close()\n");
+ p = debugger_plan(proj, "pdb");
+ expect_int("pdb's .pdbrc in the working folder is listed", p->npath, 1);
+ expect_int("as a file pdb runs", p->npath ? p->path[0].role : -1, WPE_PATH_READS);
+ expect_int("so the plan asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ snprintf(want, sizeof want, "reads %s %d\n!open('ran','w').close()\n", rc, 25);
+ expect_has("its text is part of the plan's text", wpe_startplan_text(p), want);
+ expect_int("a short one is shown whole", wpe_startplan_reads_too_long(p), 0);
+ expect_int("the plan is remembered", wpe_startplan_remember(p, WPE_PLAN_RUN), 0);
+ wpe_startplan_free(p);
+
+ p = debugger_plan(proj, "pdb");
+ expect_int("the same .pdbrc runs once answered", wpe_startplan_judge(p), WPE_PLAN_RUN);
+ wpe_startplan_free(p);
+ write_file(rc, "!open('ran2','w').close()\n");
+ p = debugger_plan(proj, "pdb");
+ expect_int("a changed .pdbrc asks again", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ wpe_startplan_free(p);
+
+ p = debugger_plan(proj, "gdb");
+ expect_int("gdb reads no .pdbrc", p->npath, 0);
+ expect_int("and a plan of the user's own words runs", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ wpe_startplan_free(p);
+ unlink(rc);
+}
+
+static void case_startup_users_own(void)
+{
+ char rc[PATH_ROOM];
+ WpeStartPlan *p;
+
+ file_in(rc, sizeof rc, home, ".pdbrc");
+ write_file(rc, "p 1\n");
+ p = debugger_plan(proj, "pdb");
+ expect_int("a .pdbrc in the home folder only is the user's, not listed", p->npath, 0);
+ wpe_startplan_free(p);
+ p = debugger_plan(home, "pdb");
+ expect_int("started in the home folder, ./.pdbrc is ~/.pdbrc: not listed", p->npath, 0);
+ expect_int("and nothing is asked", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ wpe_startplan_free(p);
+ unlink(rc);
+}
+
+static void case_startup_long(void)
+{
+ char rc[PATH_ROOM], *text = malloc(LONG_STARTUP_BYTES + 1);
+ WpeStartPlan *p;
+
+ if (!text) { fail("long .pdbrc", "out of memory"); return; }
+ memset(text, 'p', LONG_STARTUP_BYTES);
+ text[LONG_STARTUP_BYTES] = '\0';
+ file_in(rc, sizeof rc, proj, ".pdbrc");
+ write_file(rc, text);
+ free(text);
+ p = debugger_plan(proj, "pdb");
+ expect_int("a 20 kB .pdbrc is listed", p->npath, 1);
+ expect_int("but not shown whole: Run it is withheld", wpe_startplan_reads_too_long(p), 1);
+ expect_int("its whole size is said", p->npath ? (int)p->path[0].length : -1,
+            LONG_STARTUP_BYTES);
+ wpe_startplan_free(p);
+ unlink(rc);
+}
+
+/* A .pdbrc whose harmless first line ends in a NUL byte: the box shows
+   text only up to it, pdb reads on, so it is not shown whole. */
+static const char NUL_STARTUP[] = "p 1\0\n!open('ran','w').close()\n";
+
+static void write_bytes(const char *path, const char *bytes, size_t n)
+{
+ FILE *fp = fopen(path, "wb");
+ if (!fp) { perror(path); exit(2); }
+ fwrite(bytes, 1, n, fp);
+ fclose(fp);
+}
+
+static void case_startup_nul(void)
+{
+ char rc[PATH_ROOM];
+ WpeStartPlan *p;
+
+ file_in(rc, sizeof rc, proj, ".pdbrc");
+ write_bytes(rc, NUL_STARTUP, sizeof NUL_STARTUP - 1);
+ p = debugger_plan(proj, "pdb");
+ expect_int("a .pdbrc with a NUL is listed", p->npath, 1);
+ expect_int("but not shown whole: Run it is withheld", wpe_startplan_reads_too_long(p), 1);
+ wpe_startplan_free(p);
+ unlink(rc);
+}
+
+/* At the limit a file is shown whole; one byte past it, it is not. */
+static void case_startup_at_the_limit(void)
+{
+ char rc[PATH_ROOM], *text = malloc(WPE_STARTPLAN_READS_MAX + 2);
+ WpeStartPlan *p;
+
+ if (!text) { fail(".pdbrc at the limit", "out of memory"); return; }
+ memset(text, 'p', WPE_STARTPLAN_READS_MAX + 1);
+ text[WPE_STARTPLAN_READS_MAX] = '\0';
+ file_in(rc, sizeof rc, proj, ".pdbrc");
+ write_file(rc, text);
+ p = debugger_plan(proj, "pdb");
+ expect_int("a .pdbrc of exactly the limit is shown whole", wpe_startplan_reads_too_long(p), 0);
+ wpe_startplan_free(p);
+ text[WPE_STARTPLAN_READS_MAX] = 'p';
+ text[WPE_STARTPLAN_READS_MAX + 1] = '\0';
+ write_file(rc, text);
+ p = debugger_plan(proj, "pdb");
+ expect_int("one byte past the limit it is not", wpe_startplan_reads_too_long(p), 1);
+ wpe_startplan_free(p);
+ free(text);
+ unlink(rc);
+}
+
+static void case_startup_rows(void)
+{
+ char ini[PATH_ROOM], jdbrc[PATH_ROOM], gdbinit[PATH_ROOM], perldb[PATH_ROOM];
+ WpeStartPlan *p;
+
+ file_in(ini, sizeof ini, proj, "jdb.ini");
+ file_in(jdbrc, sizeof jdbrc, proj, ".jdbrc");
+ file_in(gdbinit, sizeof gdbinit, proj, ".gdbinit");
+ file_in(perldb, sizeof perldb, proj, ".perldb");
+ write_file(jdbrc, "run\n");
+ p = debugger_plan(proj, "jdb");
+ expect_int("jdb's .jdbrc is listed when there is no jdb.ini", p->npath, 1);
+ wpe_startplan_free(p);
+ write_file(ini, "run\n");
+ p = debugger_plan(proj, "jdb");
+ expect_int("jdb.ini wins over .jdbrc in one folder", p->npath, 1);
+ expect_has("and it is jdb.ini", p->npath ? p->path[0].path : "", "jdb.ini");
+ wpe_startplan_free(p);
+ write_file(gdbinit, "shell true\n");
+ p = debugger_plan(proj, "gdb");
+ expect_int("gdb's ./.gdbinit is listed", p->npath, 1);
+ expect_has("with the condition gdb runs it under", p->npath && p->path[0].note ?
+            p->path[0].note : "", "auto-load");
+ wpe_startplan_free(p);
+ write_file(perldb, "1;\n");
+ p = debugger_plan(proj, "perl");
+ expect_int("no perl debugger is started: its row is off", p->npath, 0);
+ expect_int("and the table does not claim it", wpe_startplan_tool_reads_known("perl"), 0);
+ wpe_startplan_free(p);
+ expect_int("sdb reads nothing known", wpe_startplan_tool_reads_known("sdb"), 0);
+ unlink(ini);
+ unlink(jdbrc);
+ unlink(gdbinit);
+ unlink(perldb);
+}
+
+static void case_input(void)
+{
+ WpeStartPlan *p;
+
+ expect_int("a plain value may be sent", wpe_startplan_line_ok("x ; touch ran"), 1);
+ expect_int("a line break may not", wpe_startplan_line_ok("x\nshell touch ran"), 0);
+ expect_int("nor a carriage return", wpe_startplan_line_ok("x\rshell"), 0);
+ expect_int("nor a delete", wpe_startplan_line_ok("x\177"), 0);
+
+ p = debugger_plan(proj, "gdb");
+ wpe_startplan_input(p, "r x\nshell touch ran", WPE_FROM_FOLDER, "./xwperc: Arguments");
+ expect_int("a run command with a line break is refused", wpe_startplan_judge(p),
+            WPE_PLAN_REFUSED);
+ expect_str("and says why", p->refused, WPE_STARTPLAN_REFUSE_INPUT);
+ wpe_startplan_free(p);
+
+ p = debugger_plan(proj, "gdb");
+ wpe_startplan_input(p, "r x ; touch ran", WPE_FROM_FOLDER, "./xwperc: Arguments");
+ wpe_startplan_set_file(p, "./xwperc", proj);
+ expect_int("a folder's Arguments in the run command ask", wpe_startplan_judge(p),
+            WPE_PLAN_ASK);
+ expect_has("and are part of the plan", wpe_startplan_text(p), "then r x ; touch ran");
+ wpe_startplan_free(p);
+
+ p = debugger_plan(proj, "gdb");
+ wpe_startplan_input(p, "r -v", WPE_FROM_USER, NULL);
+ expect_int("the user's own Arguments do not", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ wpe_startplan_free(p);
+}
+
+static void case_carrier(void)
+{
+ char **argv;
+ WpeStartPlan *p = debugger_plan(proj, "gdb");
+
+ wpe_startplan_word(p, "prog", WPE_WORD_OPERAND, WPE_FROM_USER, NULL);
+ wpe_startplan_judge(p);
+ wpe_startplan_word(p, "/tmp/we_sys", WPE_WORD_CARRIER, WPE_FROM_EDITOR, NULL);
+ argv = wpe_startplan_argv(p);
+ expect_str("the command line leaves the carrier out", argv ? argv[0] : NULL, "gdb");
+ expect_str("and keeps the words in order", argv ? argv[1] : NULL, "prog");
+ expect_int("and ends there", argv && argv[1] ? argv[2] == NULL : 0, 1);
+ free(argv);
+ wpe_startplan_judge(p);
+ expect_int("the carrier is not part of the plan's text",
+            strstr(wpe_startplan_text(p), "we_sys") != NULL, 0);
+ wpe_startplan_free(p);
+
+ p = debugger_plan(proj, "gdb");
+ wpe_startplan_word(p, "./run-me", WPE_WORD_CARRIER, WPE_FROM_FOLDER, NULL);
+ expect_int("a folder's value never carries a command", wpe_startplan_judge(p),
+            WPE_PLAN_REFUSED);
+ wpe_startplan_free(p);
+}
+
 /* Remove exactly what setup and the cases made. */
 static void teardown(void)
 {
@@ -575,6 +806,14 @@ int main(void)
  case_env();
  case_inside_list();
  case_short_command();
+ case_startup_listed();
+ case_startup_users_own();
+ case_startup_long();
+ case_startup_nul();
+ case_startup_at_the_limit();
+ case_startup_rows();
+ case_input();
+ case_carrier();
  teardown();
  if (failures) { printf("%d failure(s)\n", failures); return 1; }
  printf("test_startplan: all cases passed\n");

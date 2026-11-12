@@ -4289,6 +4289,66 @@ int e_d_quit(FENSTER *f)
  return(0);
 }
 
+/* What the status row says when a value with a line break was not sent to
+   the debugger, and what it names. */
+#define E_D_NOT_SENT_FMT     "not sent: %s with a line break"
+#define E_D_NOT_SENT_SEP_FMT "not sent: %s with " E_D_PDB_SEPARATOR " in it"
+#define E_D_NOT_SENT_FILE    "a file name"
+#define E_D_NOT_SENT_WATCH   "a watch"
+#define E_D_NOT_SENT_ARGS    "the Arguments"
+/* pdb splits a line it reads at this mark and runs each part as a command
+   (Python's pdb documentation, "Debugger Commands"). */
+#define E_D_PDB_SEPARATOR    ";;"
+
+/**
+ * e_d_has_separator - Does a value hold the mark pdb splits commands at?
+ * @value: the value, or NULL.
+ * Return: 1 when it does: written to pdb, its rest would be a command.
+ */
+static int e_d_has_separator(const char *value)
+{
+ return(value && strstr(value, E_D_PDB_SEPARATOR) != NULL);
+}
+
+/**
+ * e_d_sendable - May a value go into a command the debugger reads?
+ * @f: the window, for the status row; @value: the value (a file name, a
+ * watch, the program's Arguments); @what: what the line calls it.
+ *
+ * The debugger reads its commands a line at a time: a value holding a line
+ * break would end the editor's command and start one of its own ("x" on one
+ * line, "shell rm ..." on the next).  pdb also ends a command at ";;", so a
+ * file named "a;;!...py" in a breakpoint ran its Python.  Such a value is
+ * never sent; the status row says so until the next key.
+ * Return: 1 when it may be sent.
+ */
+static int e_d_sendable(FENSTER *f, const char *value, const char *what)
+{
+ char line[E_D_LINE_MAX];
+
+ if (wpe_startplan_line_ok(value) && !e_d_has_separator(value))
+  return(1);
+ if (wpe_startplan_line_ok(value))
+  snprintf(line, sizeof line, E_D_NOT_SENT_SEP_FMT, what);
+ else
+  snprintf(line, sizeof line, E_D_NOT_SENT_FMT, what);
+ wpe_ui_trace("debug %s", line);
+ e_status_say_until_key(f, line);
+ return(0);
+}
+
+/**
+ * e_d_file_sendable - May breakpoints in window @f's file be sent?
+ * @f: the window.
+ * Return: 1 when neither its name nor its folder holds a line break.
+ */
+static int e_d_file_sendable(FENSTER *f)
+{
+ if (!e_d_sendable(f, f->datnam, E_D_NOT_SENT_FILE))
+  return(0);
+ return(e_d_sendable(f, f->dirct, E_D_NOT_SENT_FILE));
+}
+
 /*    Watches   */
 int e_d_add_watch(char *str, FENSTER *f)
 {
@@ -4369,7 +4429,7 @@ int e_make_watches(FENSTER *f)
   snprintf(str, sizeof str, "%s", f->ed->wdf->name[0]);
  else
   str[0] = '\0';
- if (e_d_add_watch(str, f))
+ if (e_d_add_watch(str, f) && e_d_sendable(f, str, E_D_NOT_SENT_WATCH))
  {
   e_d_nwtchs++;
   if (e_d_nwtchs == 1)
@@ -4417,7 +4477,7 @@ int e_edit_watches(FENSTER *f)
  if (l == e_d_nwtchs && b->bf[b->b.y].len == 0)
   return(e_make_watches(f));
  snprintf(str, sizeof str, "%s", e_d_swtchs[l - 1]);
- if (e_d_add_watch(str, f))
+ if (e_d_add_watch(str, f) && e_d_sendable(f, str, E_D_NOT_SENT_WATCH))
  {
   e_d_swtchs[l - 1] = REALLOC(e_d_swtchs[l - 1], strlen(str) + 1);
   strcpy(e_d_swtchs[l - 1], str);
@@ -4857,16 +4917,22 @@ int e_d_reinit_watches(FENSTER * f,char * prj)
   q=e+1;
   r++;
  } 
- e_d_nwtchs=r;
- e_d_swtchs = (char **) MALLOC(e_d_nwtchs * sizeof(char *));
- e_d_nrwtchs =(int *) MALLOC(e_d_nwtchs * sizeof(int));   
+ e_d_swtchs = (char **) MALLOC(r * sizeof(char *));
+ e_d_nrwtchs =(int *) MALLOC(r * sizeof(int));
 
- for(e=0,q=0;e<r;e++)
+ /* A watch the project file gives with a line break in it would reach the
+    debugger as a command of its own: it is not taken. */
+ for(e=0,q=0,y=0;e<r;e++)
  {
-  e_d_swtchs[e] = MALLOC(strlen(prj2+q)+1);
-  strcpy(e_d_swtchs[e], prj2+q); 
+  if (e_d_sendable(f, prj2+q, E_D_NOT_SENT_WATCH))
+  {
+   e_d_swtchs[y] = MALLOC(strlen(prj2+q)+1);
+   strcpy(e_d_swtchs[y], prj2+q);
+   y++;
+  }
   q+=strlen(prj2+q)+1;
- } 
+ }
+ e_d_nwtchs=y;
  FREE(prj2);
  e_d_p_watches(f, 1);   
  return 0;
@@ -5377,7 +5443,9 @@ int e_d_reinit_brks(FENSTER * f,char * prj)
        {
          p++;
          line=atoi(p);
-         if(line>0) {
+         /* a file name with a line break would reach the debugger as a
+            command of its own: that breakpoint is not taken */
+         if(line>0 && e_d_sendable(f, name, E_D_NOT_SENT_FILE)) {
 /**** hopefully we have filename and line number ****/
 
 	   e_d_ybrpts[e_d_nbrpts]=line;
@@ -6394,6 +6462,8 @@ int e_make_breakpoint(FENSTER *f, int sw)
  {
   if (!e_check_c_file(f->datnam) && !e_d_dap_source_ext(f->datnam))
    return(e_error(e_p_msg[ERR_NO_CFILE], 0, f->fb));
+  if (!e_d_file_sendable(f))
+   return(0);
   e_d_breakpoints_changed(cn);      /* the line's breakpoint goes or comes */
   for(i = 0; i < s->brp[0] && s->brp[i+1] != b->b.y; i++)
    ;
@@ -6458,10 +6528,6 @@ static void e_d_fd_nonblocking(int fd)
  fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 }
 
-/* Room for the longest command line a debugger is started with (jdb's five
-   words) and the NULL that ends it. */
-#define E_D_ARGV_MAX 8
-
 /* How jdb is started: it waits on loopback, on a port the system picks, for
    the program's VM to connect to it, and the editor starts that VM itself
    on the session's pty.  Never a VM that listens: whoever reached its port
@@ -6473,48 +6539,313 @@ static void e_d_fd_nonblocking(int fd)
 #define E_D_JDB_LISTEN_SPEC \
  "com.sun.jdi.SocketListen:localAddress=127.0.0.1,port=0"
 
+/* How the debugger's start is planned and shown (we_startplan.c): the box
+   names the session, and "Use mine" for a folder with its own ./.gdbinit is
+   gdb told, before it looks there, to leave that file alone. */
+#define E_D_PLAN_WHO            "This folder"
+#define E_D_PLAN_WHAT_FMT       "debug session (%s)"
+#define E_D_PLAN_WHAT_MAX       64
+#define E_D_PLAN_SOURCE_PROG    "the program the debugger is started on"
+#define E_D_PLAN_SOURCE_ARGS    "./xwperc: Arguments"
+#define E_D_PLAN_KEY_ARGS       "Arguments"
+#define E_D_PLAN_KEY_EXE        "Executable"
+#define E_D_PDB_MODULE_OPT      "-m"
+#define E_D_PDB_MODULE          "pdb"
+#define E_D_GDB_LOCAL_INIT_OPT  "-iex"
+#define E_D_GDB_LOCAL_INIT_OFF  "set auto-load local-gdbinit off"
+#define E_D_GDB_OWN_TEXT        "gdb without the folder's ./.gdbinit"
+/* The run command that carries the program's Arguments, by debugger. */
+#define E_D_RUN_WORD            "r"
+#define E_D_DBX_RUN_WORD        "run"
+#define E_D_RUN_LINE_FMT        "%s %s"
+/* Returned by e_exec_deb when the user cancelled the start in the box. */
+#define E_D_EXEC_CANCELLED      (-1)
+
+/* Where the word the debugger is started on came from (WPE_FROM_*), set by
+   e_start_debug before e_exec_deb plans the start. */
+static int e_d_prog_origin = WPE_FROM_USER;
+
 /**
- * e_d_jdb_argv - jdb's command line: listen on loopback for the VM.
- * @argv: receives the words, NULL-terminated.
+ * e_d_plan_word - Add one word of the debugger's command line to its plan.
+ * @p: the plan; @word: the word; @role: WPE_WORD_*; @from: WPE_FROM_*.
+ * Return: 0, or -1 out of memory.
+ */
+static int e_d_plan_word(WpeStartPlan *p, const char *word, int role, int from)
+{
+ return(wpe_startplan_word(p, word, role, from, NULL));
+}
+
+/**
+ * e_d_plan_jdb_words - jdb's command line: listen on loopback for the VM.
+ * @p: the plan.
  *
  * The program is not on it: the editor starts the VM with the main class
  * once jdb says where it listens.
  */
-static void e_d_jdb_argv(char **argv)
+static void e_d_plan_jdb_words(WpeStartPlan *p)
 {
- argv[0] = e_debugger;
- argv[1] = E_D_JDB_LOCALE_LANG;
- argv[2] = E_D_JDB_LOCALE_COUNTRY;
- argv[3] = E_D_JDB_CONNECT;
- argv[4] = E_D_JDB_LISTEN_SPEC;
- argv[5] = NULL;
+ e_d_plan_word(p, e_debugger, WPE_WORD_PROGRAM, WPE_FROM_USER);
+ e_d_plan_word(p, E_D_JDB_LOCALE_LANG, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_word(p, E_D_JDB_LOCALE_COUNTRY, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_word(p, E_D_JDB_CONNECT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_word(p, E_D_JDB_LISTEN_SPEC, WPE_WORD_OPTION, WPE_FROM_EDITOR);
 }
 
 /**
- * e_d_debugger_argv - The command line the selected debugger is started
- * with, the same in the terminal and in the graphical editor.
- * @prog: the program, or the source for pdb and a68g;
- * @argv: receives the words, NULL-terminated (E_D_ARGV_MAX entries).
+ * e_d_plan_words - The command line the selected debugger is started with,
+ * the same in the terminal and in the graphical editor.
+ * @p: the plan; @operand: the program (for pdb and a68g the source) as a
+ * path that never reads as an option; @own: 1 for "Use mine" when the
+ * folder has its own ./.gdbinit.
+ *
+ * The debugger's name and its switches are the editor's (a debugger a
+ * folder named was asked about before, e_d_approve_debugger); the program
+ * is the word e_start_debug chose, from wherever it came.
  */
-static void e_d_debugger_argv(char *prog, char **argv)
+static void e_d_plan_words(WpeStartPlan *p, const char *operand, int own)
 {
- int n = 0;
-
  if (e_deb_type == DEB_JDB)
  {
-  e_d_jdb_argv(argv);
+  e_d_plan_jdb_words(p);
   return;
  }
- argv[n++] = e_debugger;
+ e_d_plan_word(p, e_debugger, WPE_WORD_PROGRAM, WPE_FROM_USER);
+ if (own)
+ {
+  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ }
  if (e_deb_type == DEB_PDB)
  {
-  argv[n++] = "-m";
-  argv[n++] = "pdb";
+  e_d_plan_word(p, E_D_PDB_MODULE_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+  e_d_plan_word(p, E_D_PDB_MODULE, WPE_WORD_OPTION, WPE_FROM_EDITOR);
  }
  else if (e_deb_swtch)
-  argv[n++] = e_deb_swtch;
- argv[n++] = prog;
- argv[n] = NULL;
+  e_d_plan_word(p, e_deb_swtch, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ if (!operand[0])
+  return;                   /* a project without EXENAME: the debugger alone */
+ e_d_plan_word(p, operand, WPE_WORD_OPERAND, e_d_prog_origin);
+ wpe_startplan_path(p, operand, WPE_PATH_INPUT, e_d_prog_origin, E_D_PLAN_SOURCE_PROG,
+                    NULL);
+}
+
+/**
+ * e_d_run_takes_arguments - Does this debugger's run command carry the
+ * program's Arguments (e_deb_run)?
+ * Return: 1 for gdb, dbx, xdb and sdb; pdb, jdb and a68g run without them.
+ */
+static int e_d_run_takes_arguments(void)
+{
+ return(e_deb_type != DEB_PDB && e_deb_type != DEB_JDB && e_deb_type != DEB_A68G);
+}
+
+/**
+ * e_d_run_word - The command that starts the program under this debugger.
+ */
+static const char *e_d_run_word(void)
+{
+ if (e_deb_type == DEB_DBX)
+  return(E_D_DBX_RUN_WORD);
+ return(E_D_RUN_WORD);
+}
+
+/**
+ * e_d_arguments - The program's Arguments, the one place the debugger reads
+ * them.
+ * Return: the Arguments, or NULL when there are none.
+ */
+static const char *e_d_arguments(void)
+{
+ const char *args = e_prog.arguments;
+
+ if (!args || !args[0])
+  return(NULL);
+ return(args);
+}
+
+/**
+ * e_d_plan_arguments - The run command with the program's Arguments, as
+ * the plan's input: a folder's Arguments are shown and asked about, and no
+ * Arguments with a line break are ever sent.
+ * @p: the plan.
+ * Return: the Arguments' origin, WPE_FROM_*.
+ */
+static int e_d_plan_arguments(WpeStartPlan *p)
+{
+ const char *args = e_d_arguments();
+ char line[E_D_LINE_MAX];
+ int from;
+
+ if (!e_d_run_takes_arguments() || !args)
+  return(WPE_FROM_USER);
+ from = e_opt_value_from(E_OPT_SCOPE_PROGRAMMING, E_D_PLAN_KEY_ARGS, args);
+ snprintf(line, sizeof line, E_D_RUN_LINE_FMT, e_d_run_word(), args);
+ wpe_startplan_input(p, line, from, E_D_PLAN_SOURCE_ARGS);
+ if (from == WPE_FROM_FOLDER)
+  wpe_startplan_value(p, E_STARTCMD_XWPERC, E_D_PLAN_KEY_ARGS, args, NULL);
+ return(from);
+}
+
+/**
+ * e_d_plan_reads_first - The first start-up file the plan lists, or NULL.
+ */
+static const WpeStartPath *e_d_plan_reads_first(const WpeStartPlan *p)
+{
+ int i;
+
+ for (i = 0; i < p->npath; i++)
+  if (p->path[i].role == WPE_PATH_READS)
+   return(&p->path[i]);
+ return(NULL);
+}
+
+/**
+ * e_d_plan_project_file - Name the open project file as the plan's file.
+ * @p: the plan.
+ */
+static void e_d_plan_project_file(WpeStartPlan *p)
+{
+ char folder[PATH_MAX];
+
+ e_prj_folder(folder, sizeof folder);
+ wpe_startplan_set_file(p, e_prj_file_name(), folder);
+}
+
+/**
+ * e_d_plan_file - Name the folder file the box and the answer are about.
+ * @p: the plan; @args_from: where the Arguments came from.
+ *
+ * The project file when it named the program, the start folder's xwperc
+ * when it set the program or its Arguments, else the start-up file the
+ * working folder holds: the answer is kept for that file's folder.
+ */
+static void e_d_plan_file(WpeStartPlan *p, int args_from)
+{
+ const WpeStartPath *reads = e_d_plan_reads_first(p);
+
+ if (e__project && e_d_prog_origin == WPE_FROM_FOLDER)
+  e_d_plan_project_file(p);
+ else if ((e_d_prog_origin == WPE_FROM_FOLDER || args_from == WPE_FROM_FOLDER) &&
+          e_opt_start_folder())
+  wpe_startplan_set_file(p, E_STARTCMD_XWPERC, e_opt_start_folder());
+ else if (reads && p->cwd)
+  wpe_startplan_set_file(p, reads->path, p->cwd);
+}
+
+/**
+ * e_d_plan_make - The plan of the session's debugger start.
+ * @f: the source window; @operand: the program as the debugger gets it;
+ * @own: 1 for the user's own plan ("Use mine": gdb leaves ./.gdbinit alone).
+ *
+ * The debugger runs in the program's folder.  What it runs from that folder
+ * on its own (./.pdbrc, ./jdb.ini, ./.gdbinit) is listed with its text, the
+ * run command with the program's Arguments is part of it, and the box says
+ * the session runs the folder's own program.
+ * Return: the plan, or NULL out of memory.
+ */
+static WpeStartPlan *e_d_plan_make(FENSTER *f, const char *operand, int own)
+{
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, e_deb_type_name(e_deb_type));
+ char *dir;
+ int args_from;
+
+ if (!p)
+  return(NULL);
+ if ((dir = e_build_dir(f)) != NULL)
+ {
+  wpe_startplan_set_cwd(p, dir);
+  FREE(dir);
+ }
+ e_d_plan_words(p, operand, own);
+ if (!own)
+  wpe_startplan_tool_reads(p, e_deb_type_name(e_deb_type));
+ args_from = e_d_plan_arguments(p);
+ e_d_plan_file(p, args_from);
+ p->honest = 1;
+ return(p);
+}
+
+/**
+ * e_d_plan_shown - The debugger's command line as the box shows it.
+ * @p: the plan.
+ * Return: the words joined by blanks, malloc'd, or NULL out of memory.
+ */
+static char *e_d_plan_shown(const WpeStartPlan *p)
+{
+ size_t need = 1;
+ char *text;
+ int i;
+
+ for (i = 0; i < p->nword; i++)
+  need += strlen(p->word[i].text) + 1;
+ if (!(text = MALLOC(need)))
+  return(NULL);
+ text[0] = '\0';
+ for (i = 0; i < p->nword; i++)
+ {
+  if (i > 0)
+   strcat(text, " ");
+  strcat(text, p->word[i].text);
+ }
+ return(text);
+}
+
+/**
+ * e_d_plan_offers_own - Is there a start of the user's own to offer?
+ * @p: the plan.
+ *
+ * Only for gdb, and only when the folder holds a ./.gdbinit: gdb can be
+ * told to leave it alone.  pdb has no switch for ./.pdbrc, and jdb's
+ * ./jdb.ini cannot be turned off either, so the box offers Run it and
+ * Cancel only.
+ * Return: 1 when "Use mine" can be offered.
+ */
+static int e_d_plan_offers_own(const WpeStartPlan *p)
+{
+ return(e_deb_type == DEB_GDB && e_d_plan_reads_first(p) != NULL);
+}
+
+/**
+ * e_d_plan_approved - Plan the session's debugger start and ask when the
+ * folder decided something about it.
+ * @f: the source window; @prog: the program, or the source for pdb and
+ * a68g, or jdb's main class.
+ *
+ * A file named like an option ("-x.c" builds "-x.e") reaches the debugger
+ * as "./-x.e", a file, never as gdb's "-x" reading commands from ".e".
+ * Return: the plan answered for (the caller frees it), or NULL when the
+ * user cancelled or it was refused (the status row says why).
+ */
+static WpeStartPlan *e_d_plan_approved(FENSTER *f, const char *prog)
+{
+ char operand[PATH_MAX + 2], what[E_D_PLAN_WHAT_MAX];
+ E_STARTPLAN_SHOW show;
+ WpeStartPlan *p;
+ char *shown;
+ int verdict;
+
+ operand[0] = '\0';
+ if (prog && prog[0] && wpe_startplan_operand(operand, sizeof operand, NULL, prog))
+  return(NULL);
+ if (!(p = e_d_plan_make(f, operand, 0)))
+  return(NULL);
+ if (e_d_plan_offers_own(p))
+  wpe_startplan_set_own(p, e_d_plan_make(f, operand, 1));
+ shown = e_d_plan_shown(p);
+ snprintf(what, sizeof what, E_D_PLAN_WHAT_FMT, e_deb_type_name(e_deb_type));
+ show.who = E_D_PLAN_WHO;
+ show.what = what;
+ show.shown = shown ? shown : "";
+ show.own = p->own ? E_D_GDB_OWN_TEXT : NULL;
+ verdict = e_startplan_approve(f, p, &show);
+ if (shown)
+  FREE(shown);
+ if (verdict == WPE_STARTCMD_CANCEL)
+ {
+  wpe_startplan_free(p);
+  return(NULL);
+ }
+ return(p);
 }
 
 #ifndef NO_XWINDOWS
@@ -6627,7 +6958,6 @@ static void e_d_pty_slave_close(void)
 #define E_D_JDB_AGENT_FMT \
  "-agentlib:jdwp=transport=dt_socket,server=n,suspend=y,address=127.0.0.1:%d"
 #define E_D_JDB_AGENT_MAX 128
-#define E_D_JDB_VM_ARGC   3
 
 /* The VM of the session. */
 typedef struct {
@@ -6834,6 +7164,35 @@ static int e_d_jdb_vm_await_end(void)
 }
 
 /**
+ * e_d_jdb_vm_plan - The plan of the Java program's VM.
+ * @agent: the agent option that dials jdb's port.
+ *
+ * The java beside jdb (the user's), the editor's agent option, and the
+ * class of the file the user debugs; it runs in the build's folder and runs
+ * the folder's own program, which the plan says.  A class named like an
+ * option is no class java could run, and is never handed to it.
+ * Return: the judged plan (the caller frees it), or NULL when nothing may
+ * start.
+ */
+static WpeStartPlan *e_d_jdb_vm_plan(const char *agent)
+{
+ WpeStartPlan *p;
+
+ if (e_d_jdb_vm.main_class[0] == '-' || e_d_jdb_vm.main_class[0] == '@')
+  return(NULL);
+ if (!(p = wpe_startplan_new(WPE_START_DEBUGGEE, E_D_JDB_JAVA)))
+  return(NULL);
+ if (e_d_jdb_vm.dir[0])
+  wpe_startplan_set_cwd(p, e_d_jdb_vm.dir);
+ wpe_startplan_word(p, e_d_jdb_vm.java, WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ wpe_startplan_word(p, agent, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
+ wpe_startplan_word(p, e_d_jdb_vm.main_class, WPE_WORD_TEXT, WPE_FROM_USER, NULL);
+ p->honest = 1;
+ wpe_startplan_judge(p);
+ return(p);
+}
+
+/**
  * e_d_jdb_vm_fork - Start the Java program's VM, which connects to jdb.
  * @port: the loopback port jdb listens on.
  *
@@ -6848,26 +7207,25 @@ static int e_d_jdb_vm_await_end(void)
  */
 static int e_d_jdb_vm_fork(int port)
 {
- char agent[E_D_JDB_AGENT_MAX], *argv[E_D_JDB_VM_ARGC + 1];
- WpeChildSpec spec;
+ char agent[E_D_JDB_AGENT_MAX];
+ WpeStartPlan *plan;
+ WpeStartIo io;
+ int rc;
 
  snprintf(agent, sizeof agent, E_D_JDB_AGENT_FMT, port);
- argv[0] = e_d_jdb_vm.java;
- argv[1] = agent;
- argv[2] = e_d_jdb_vm.main_class;
- argv[3] = NULL;
- memset(&spec, 0, sizeof spec);
- spec.argv = argv;
- spec.io = WPE_CHILD_IO_TTY_PATH;
- spec.group = WPE_CHILD_OWN_SESSION;
- spec.tty_fd = e_d_pty_slave;
- spec.tty_path = e_d_tty;
- spec.say_failed = 1;
- spec.side_pty_slave = WPE_CHILD_NO_FD;
- spec.what = e_d_jdb_vm.main_class;
- if (e_d_jdb_vm.dir[0])
-  spec.cwd = e_d_jdb_vm.dir;
- if (wpe_child_start(&spec, &e_d_jdb_vm.child, e_d_jdb_vm_on_end, NULL) != 0)
+ if (!(plan = e_d_jdb_vm_plan(agent)))
+  return(-1);
+ memset(&io, 0, sizeof io);
+ io.io = WPE_CHILD_IO_TTY_PATH;
+ io.group = WPE_CHILD_OWN_SESSION;
+ io.tty_fd = e_d_pty_slave;
+ io.tty_path = e_d_tty;
+ io.say_failed = 1;
+ io.side_pty_slave = WPE_CHILD_NO_FD;
+ io.what = e_d_jdb_vm.main_class;
+ rc = wpe_startplan_start_words(plan, &io, &e_d_jdb_vm.child, e_d_jdb_vm_on_end, NULL);
+ wpe_startplan_free(plan);
+ if (rc != 0)
   return(-1);
  e_d_jdb_vm.launched = 1;
  e_d_pty_slave_close();
@@ -6976,21 +7334,20 @@ static void e_d_debugger_dir_note(FENSTER *f, const char *prog)
 }
 
 /**
- * e_d_debugger_spec - What every debugger start has in common.
- * @spec: receives it; @argv: the command; @dir: where it runs.
+ * e_d_debugger_io - What every debugger start has in common.
+ * @io: receives it.
  *
- * The debugger runs in the program's directory, as the language servers
- * and adapters do: gdb finds a relatively named program ("prog.e") there and
- * resolves source and breakpoint paths right.
+ * The debugger runs in the program's directory (the plan's working
+ * folder), as the language servers and adapters do: gdb finds a relatively
+ * named program ("prog.e") there and resolves source and breakpoint paths
+ * right.
  */
-static void e_d_debugger_spec(WpeChildSpec *spec, char **argv, const char *dir)
+static void e_d_debugger_io(WpeStartIo *io)
 {
- memset(spec, 0, sizeof *spec);
- spec->argv = argv;
- spec->cwd = dir;
- spec->side_pty_slave = WPE_CHILD_NO_FD;
- spec->tty_fd = WPE_CHILD_NO_FD;
- spec->what = e_debugger;
+ memset(io, 0, sizeof *io);
+ io->side_pty_slave = WPE_CHILD_NO_FD;
+ io->tty_fd = WPE_CHILD_NO_FD;
+ io->what = e_debugger;
 }
 
 /**
@@ -7028,13 +7385,13 @@ static void e_d_debugger_let_go(void);           /* (below) */
 /**
  * e_d_debugger_start - Start the debugger of a new session, its end
  * watched from before its fork.
- * @spec: how.
+ * @plan: its answered plan; @io: how.
  * Return: 0, or -1 when it could not be started.
  */
-static int e_d_debugger_start(const WpeChildSpec *spec)
+static int e_d_debugger_start(WpeStartPlan *plan, const WpeStartIo *io)
 {
  e_d_debugger_let_go();
- if (wpe_child_start(spec, &e_d_dbg.child, e_d_on_debugger_ended, NULL) != 0)
+ if (wpe_startplan_start_words(plan, io, &e_d_dbg.child, e_d_on_debugger_ended, NULL) != 0)
   return(-1);
  e_d_dbg.live = 1;
  e_d_dbg.asked_end = 0;
@@ -7059,24 +7416,22 @@ static int e_d_debugger_start(const WpeChildSpec *spec)
  * editor's.  The hangup that would end it when the editor's terminal closes
  * no longer reaches it, so the system is asked to end it when the editor
  * dies by SIGKILL; otherwise a program stuck in a loop would go on running.
+ * @plan: the debugger's answered plan.
  * Return: 0, or -1 when it could not be started (said in a box).
  */
-static int e_d_start_on_pipes(FENSTER *f, char **argv)
+static int e_d_start_on_pipes(FENSTER *f, WpeStartPlan *plan)
 {
- WpeChildSpec spec;
- char *dir = e_build_dir(f);
+ WpeStartIo io;
  int ret;
 
- e_d_debugger_spec(&spec, argv, dir);
- spec.io = WPE_CHILD_IO_PIPES_AND_PTY;
- spec.group = WPE_CHILD_OWN_SESSION;
- spec.die_with_editor = 1;
- spec.stderr_nonblocking = e_d_child_errors_nonblocking();
- spec.side_pty_slave = e_d_debugger_side_pty();
- spec.exec_failed = e_p_msg[ERR_IN_COMMAND];
- ret = e_d_debugger_start(&spec);
- if (dir)
-  FREE(dir);
+ e_d_debugger_io(&io);
+ io.io = WPE_CHILD_IO_PIPES_AND_PTY;
+ io.group = WPE_CHILD_OWN_SESSION;
+ io.die_with_editor = 1;
+ io.stderr_nonblocking = e_d_child_errors_nonblocking();
+ io.side_pty_slave = e_d_debugger_side_pty();
+ io.exec_failed = e_p_msg[ERR_IN_COMMAND];
+ ret = e_d_debugger_start(plan, &io);
  if (ret != 0)
  {
   e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
@@ -7096,10 +7451,9 @@ static int e_d_start_on_pipes(FENSTER *f, char **argv)
 
 #ifndef NO_XWINDOWS
 /* The graphical editors' debugger runs in a helper script, on five named
-   pipes; without a pty the script runs in an xterm of its own, whose
-   command line has these words. */
+   pipes; without a pty the script runs in an xterm of its own
+   (e_d_script_carrier). */
 #define E_D_FIFO_N     5
-#define E_D_XTERM_ARGC 10
 
 /**
  * e_d_fifos_make - The named pipes the helper script and the editor talk on.
@@ -7157,31 +7511,31 @@ static int e_d_script_write(char *file, size_t n, char **argv)
 }
 
 /**
- * e_d_script_argv - How the helper script is run: by itself when the
- * program has the pty, else in an xterm that is the program's terminal.
- * @argv: room for E_D_XTERM_ARGC + 1 words; @file: the script.
+ * e_d_script_carrier - Name the editor's own programs that carry the
+ * debugger's command: the helper script by itself when the program has the
+ * pty, else in an xterm that is the program's terminal.
+ * @plan: the plan that runs; @file: the script.
+ *
+ * The script holds exactly the plan's words (e_d_script_write); the carrier
+ * is the editor's, never a folder's, and is neither shown nor remembered.
+ * Return: 0, or -1 out of memory.
  */
-static void e_d_script_argv(char **argv, char *file)
+static int e_d_script_carrier(WpeStartPlan *plan, char *file)
 {
- int i = 0;
+ static const char *const xterm_words[] = {
+  XTERM_CMD, "+sb", "-geometry", "80x25-0-0", "-T", "xwpe-output", "-e", NULL
+ };
+ int i, rc = 0;
 
- if (e_d_pty_master >= 0)
+ if (e_d_pty_master < 0)
  {
-  argv[i++] = file;
-  argv[i] = NULL;
-  return;
+  for (i = 0; xterm_words[i]; i++)
+   rc |= wpe_startplan_word(plan, xterm_words[i], WPE_WORD_CARRIER, WPE_FROM_EDITOR, NULL);
+  rc |= wpe_startplan_word(plan, user_shell, WPE_WORD_CARRIER, WPE_FROM_USER, NULL);
+  rc |= wpe_startplan_word(plan, "-c", WPE_WORD_CARRIER, WPE_FROM_EDITOR, NULL);
  }
- argv[i++] = XTERM_CMD;
- argv[i++] = "+sb";
- argv[i++] = "-geometry";
- argv[i++] = "80x25-0-0";
- argv[i++] = "-T";
- argv[i++] = "xwpe-output";
- argv[i++] = "-e";
- argv[i++] = user_shell;
- argv[i++] = "-c";
- argv[i++] = file;
- argv[i] = NULL;
+ rc |= wpe_startplan_word(plan, file, WPE_WORD_CARRIER, WPE_FROM_EDITOR, NULL);
+ return(rc);
 }
 
 static int e_d_script_connect(FENSTER *f);   /* (below) */
@@ -7189,37 +7543,42 @@ static int e_d_script_connect(FENSTER *f);   /* (below) */
 /**
  * e_d_start_in_script - Start the graphical editors' debugger, in its
  * helper script on the named pipes.
- * @f: the source window; @argv: the debugger's command.
+ * @f: the source window; @plan: the debugger's answered plan.
  *
  * The script stays in the editor's group: when the debugger ends, it asks
- * on the terminal the editor came from for a Return, as it always did.
+ * on the terminal the editor came from for a Return, as it always did.  It
+ * holds exactly the words of the plan the user answered for.
  * Return: 0, or -1 when it could not be started (said in a box).
  */
-static int e_d_start_in_script(FENSTER *f, char **argv)
+static int e_d_start_in_script(FENSTER *f, WpeStartPlan *plan)
 {
- char file[PATH_MAX], *script[E_D_XTERM_ARGC + 1], *dir;
- WpeChildSpec spec;
- int ret;
+ char file[PATH_MAX], **argv = wpe_startplan_argv(plan);
+ WpeStartIo io;
+ int ret, wrote;
 
- if (e_d_fifos_make() < 0)
- {
-  e_error(e_d_msg[ERR_CANTPIPE], 0, f->fb);
-  return(-1);
- }
- if (e_d_script_write(file, sizeof file, argv) < 0)
+ if (!argv)
  {
   e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
   return(-1);
  }
- e_d_script_argv(script, file);
- dir = e_build_dir(f);
- e_d_debugger_spec(&spec, script, dir);
- spec.io = WPE_CHILD_IO_INHERIT_AND_PTY;
- spec.group = WPE_CHILD_EDITORS_GROUP;
- spec.side_pty_slave = e_d_debugger_side_pty();
- ret = e_d_debugger_start(&spec);
- if (dir)
-  FREE(dir);
+ if (e_d_fifos_make() < 0)
+ {
+  FREE(argv);
+  e_error(e_d_msg[ERR_CANTPIPE], 0, f->fb);
+  return(-1);
+ }
+ wrote = e_d_script_write(file, sizeof file, argv);
+ FREE(argv);
+ if (wrote < 0 || e_d_script_carrier(wpe_startplan_running(plan), file) != 0)
+ {
+  e_error(e_p_msg[ERR_PROCESS], 0, f->fb);
+  return(-1);
+ }
+ e_d_debugger_io(&io);
+ io.io = WPE_CHILD_IO_INHERIT_AND_PTY;
+ io.group = WPE_CHILD_EDITORS_GROUP;
+ io.side_pty_slave = e_d_debugger_side_pty();
+ ret = e_d_debugger_start(plan, &io);
  if (ret != 0)
  {
   remove(file);
@@ -7235,27 +7594,41 @@ static int e_d_start_in_script(FENSTER *f, char **argv)
 /**
  * e_d_debugger_launch - Start the session's debugger, the way this
  * display runs it.
- * @f: the source window; @argv: its command.
+ * @f: the source window; @plan: its answered plan.
  * Return: 0, or -1 when it could not be started.
  */
-static int e_d_debugger_launch(FENSTER *f, char **argv)
+static int e_d_debugger_launch(FENSTER *f, WpeStartPlan *plan)
 {
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
-  return(e_d_start_in_script(f, argv));
+  return(e_d_start_in_script(f, plan));
 #endif
- return(e_d_start_on_pipes(f, argv));
+ return(e_d_start_on_pipes(f, plan));
 }
 
+/**
+ * e_exec_deb - Start the session's debugger on @prog.
+ * @f: the source window; @prog: the program, or the source for pdb and
+ * a68g, or jdb's main class.
+ *
+ * The start is planned first (e_d_plan_approved): when the folder decided
+ * something about it (a start-up file the debugger runs, the Arguments its
+ * run command carries, a program outside the folder), the user sees it and
+ * chooses before anything starts.
+ * Return: 1 when it runs, 0 when it could not be started, E_D_EXEC_CANCELLED
+ * when the user said no (the status row says so).
+ */
 int e_exec_deb(FENSTER *f, char *prog)
 {
- char *argv[E_D_ARGV_MAX];
+ WpeStartPlan *plan;
+ int ret;
 
  if (e_d_swtch)
   return(1);
+ if (!(plan = e_d_plan_approved(f, prog)))
+  return(E_D_EXEC_CANCELLED);
  e_d_swtch = 1;
  e_d_cut_reset();
- e_d_debugger_argv(prog, argv);
  if (e_deb_type == DEB_JDB)
   e_d_jdb_vm_prepare(f, prog);
  /* Mark the pipe fds closed up front so e_d_exec_fail() can tell which ones
@@ -7269,7 +7642,9 @@ int e_exec_deb(FENSTER *f, char *prog)
  e_d_prog_output_cap = 0;
  e_d_pty_open();
  e_d_debugger_pid_forget();
- if (e_d_debugger_launch(f, argv) < 0)
+ ret = e_d_debugger_launch(f, plan);
+ wpe_startplan_free(plan);
+ if (ret < 0)
  {
   e_d_exec_fail();
   return(0);
@@ -7816,7 +8191,6 @@ void e_d_dap_end_at_exit(void)
  */
 
 #define E_D_COMPILE_WHAT           "the compiler"
-#define E_D_COMPILE_SHELL          "/bin/sh"
 #define E_D_COMPILE_LINE           "Compiling for debug... (Esc cancels)"
 #define E_D_COMPILE_CANCELLED_LINE "compile for debug cancelled"
 #define E_D_COMPILE_FAILED_LINE    "Compilation failed -- see Messages."
@@ -8007,32 +8381,54 @@ static void e_d_compile_deliver_held(void)
  * @f: the source window.
  * Return: 0, or -1 when it could not be started (said in a box).
  */
-static int e_d_compile_begin(FENSTER *f)
+/**
+ * e_d_compile_plan - The plan of the compile for debug of the file
+ * e_d_compile_command named.
+ *
+ * The shell runs the editor's script, the compiler line the user answered
+ * for (e_prog_approve_compile), and the three paths as its $1, $2 and $3:
+ * a file name is one word, never shell text.
+ * Return: the judged plan (the caller frees it), or NULL out of memory.
+ */
+static WpeStartPlan *e_d_compile_plan(void)
 {
  char *argv[E_D_COMPILE_ARGC + 1];
- WpeChildSpec spec;
 
- if (e_d_compile_command(f) < 0)
-  return(-1);
- argv[0] = E_D_COMPILE_SHELL;
- argv[1] = "-c";
+ argv[0] = WPE_STARTPLAN_SHELL;
+ argv[1] = WPE_STARTPLAN_SHELL_OPT;
  argv[2] = e_d_compile.cmd;
  argv[3] = E_D_COMPILE_SCRIPT_NAME;
  argv[4] = e_d_compile.binary;
  argv[5] = e_d_compile.src;
  argv[6] = e_d_compile.errf;
  argv[7] = NULL;
- memset(&spec, 0, sizeof spec);
- spec.argv = argv;
- spec.io = WPE_CHILD_IO_PIPES;
- spec.group = WPE_CHILD_OWN_SESSION;
- spec.stdin_null = 1;
- spec.stdout_to_null = 1;
- spec.stderr_to_null = 1;
- spec.what = E_D_COMPILE_WHAT;
+ return(wpe_startplan_fixed(WPE_START_DEBUG_COMPILE, e_s_prog.language, argv));
+}
+
+static int e_d_compile_begin(FENSTER *f)
+{
+ WpeStartPlan *plan;
+ WpeStartIo io;
+ int rc;
+
+ if (e_d_compile_command(f) < 0)
+  return(-1);
+ memset(&io, 0, sizeof io);
+ io.io = WPE_CHILD_IO_PIPES;
+ io.group = WPE_CHILD_OWN_SESSION;
+ io.stdin_null = 1;
+ io.stdout_to_null = 1;
+ io.stderr_to_null = 1;
+ io.tty_fd = WPE_CHILD_NO_FD;
+ io.side_pty_slave = WPE_CHILD_NO_FD;
+ io.what = E_D_COMPILE_WHAT;
  e_d_compile.held = 0;
- if (wpe_child_start(&spec, &e_d_compile.child, e_d_compile_on_ended,
-                     NULL) != 0)
+ plan = e_d_compile_plan();
+ rc = -1;
+ if (plan)
+  rc = wpe_startplan_start_words(plan, &io, &e_d_compile.child, e_d_compile_on_ended, NULL);
+ wpe_startplan_free(plan);
+ if (rc != 0)
  {
   e_error(E_D_COMPILE_FAILED_LINE, 0, f->fb);
   return(-1);
@@ -8210,6 +8606,31 @@ static void e_scala_setup_deliver_held(void)
 }
 
 /**
+ * e_scala_setup_plan - The plan of `scala-cli setup-ide <project>`.
+ * @dir: the project, the folder of the file the user debugs or opened.
+ *
+ * Every word is the editor's; the project is a path that never reads as an
+ * option.  It builds the folder's own project, which the plan says.
+ * Return: the judged plan (the caller frees it), or NULL.
+ */
+static WpeStartPlan *e_scala_setup_plan(const char *dir)
+{
+ char operand[E_SCALA_SETUP_DIR_MAX + 2];
+ char *argv[E_SCALA_SETUP_ARGC + 1];
+ WpeStartPlan *p;
+
+ if (wpe_startplan_operand(operand, sizeof operand, NULL, dir))
+  return(NULL);
+ argv[0] = E_SCALA_SETUP_PROGRAM;
+ argv[1] = E_SCALA_SETUP_VERB;
+ argv[2] = operand;
+ argv[3] = NULL;
+ if ((p = wpe_startplan_fixed(WPE_START_SETUP_IDE, E_SCALA_SETUP_PROGRAM, argv)) != NULL)
+  p->honest = 1;
+ return(p);
+}
+
+/**
  * e_scala_setup_begin - Run `scala-cli setup-ide @dir` without waiting.
  * @su: the setup; @dir: the project; @done: what goes on once it has ended.
  *
@@ -8221,25 +8642,27 @@ static void e_scala_setup_deliver_held(void)
 static int e_scala_setup_begin(E_SCALA_SETUP *su, const char *dir,
                                e_scala_setup_done_fn done)
 {
- char *argv[E_SCALA_SETUP_ARGC + 1];
- WpeChildSpec spec;
+ WpeStartPlan *plan;
+ WpeStartIo io;
+ int rc;
 
  snprintf(su->dir, sizeof su->dir, "%s", dir);
- argv[0] = E_SCALA_SETUP_PROGRAM;
- argv[1] = E_SCALA_SETUP_VERB;
- argv[2] = su->dir;
- argv[3] = NULL;
- memset(&spec, 0, sizeof spec);
- spec.argv = argv;
- spec.io = WPE_CHILD_IO_PIPES;
- spec.group = WPE_CHILD_OWN_SESSION;
- spec.stdin_null = 1;
- spec.stdout_to_null = 1;
- spec.stderr_to_null = 1;
- spec.what = E_SCALA_SETUP_WHAT;
+ if (!(plan = e_scala_setup_plan(su->dir)))
+  return(-1);
+ memset(&io, 0, sizeof io);
+ io.io = WPE_CHILD_IO_PIPES;
+ io.group = WPE_CHILD_OWN_SESSION;
+ io.stdin_null = 1;
+ io.stdout_to_null = 1;
+ io.stderr_to_null = 1;
+ io.tty_fd = WPE_CHILD_NO_FD;
+ io.side_pty_slave = WPE_CHILD_NO_FD;
+ io.what = E_SCALA_SETUP_WHAT;
  su->done = done;
  su->held = 0;
- if (wpe_child_start(&spec, &su->child, e_scala_setup_on_ended, su) != 0)
+ rc = wpe_startplan_start_words(plan, &io, &su->child, e_scala_setup_on_ended, su);
+ wpe_startplan_free(plan);
+ if (rc != 0)
   return(-1);
  su->running = 1;
  return(0);
@@ -8281,6 +8704,98 @@ static void e_scala_setup_end_at_exit(void)
  e_scala_setup_drop(&e_scala_setup_dap);
 }
 
+/* The user cancelled the adapter's start in the box: the start says nothing
+   more (the status row already did). */
+static int e_d_dap_plan_cancelled;
+
+/**
+ * e_d_dap_tool - The tool whose start-up files an adapter reads.
+ * @program: the adapter's program.
+ * Return: "gdb" for gdb speaking DAP, "lldb" for lldb-dap, else the
+ * program's own name (dlv reads nothing from its folder).
+ */
+static const char *e_d_dap_tool(const char *program)
+{
+ const char *base = strrchr(program, DIRC);
+
+ base = base ? base + 1 : program;
+ if (strncmp(base, "lldb", 4) == 0)
+  return("lldb");
+ return(base);
+}
+
+/**
+ * e_d_dap_plan_make - The plan of a debug adapter's start.
+ * @argv: its command line, the editor's; @cwd: the program's folder;
+ * @own: 1 for "Use mine": gdb leaves the folder's ./.gdbinit alone.
+ * Return: the plan, or NULL out of memory.
+ */
+static WpeStartPlan *e_d_dap_plan_make(char *const argv[], const char *cwd, int own)
+{
+ const char *tool = e_d_dap_tool(argv[0]);
+ const WpeStartPath *reads;
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUG_ADAPTER, tool);
+ int i;
+
+ if (!p)
+  return(NULL);
+ if (cwd)
+  wpe_startplan_set_cwd(p, cwd);
+ wpe_startplan_word(p, argv[0], WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ if (own)
+ {
+  wpe_startplan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
+  wpe_startplan_word(p, E_D_GDB_LOCAL_INIT_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
+ }
+ for (i = 1; argv[i]; i++)
+  wpe_startplan_word(p, argv[i], WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
+ if (!own)
+  wpe_startplan_tool_reads(p, tool);
+ if ((reads = e_d_plan_reads_first(p)) != NULL && p->cwd)
+  wpe_startplan_set_file(p, reads->path, p->cwd);
+ p->honest = 1;
+ return(p);
+}
+
+/**
+ * e_d_dap_plan - Plan an adapter's start, and ask when it runs a start-up
+ * file the program's folder holds (we_dap.c calls it).
+ * @argv: the adapter's command line; @cwd: where it runs.
+ *
+ * gdb speaking DAP reads ./.gdbinit as gdb does, and lldb-dap ./.lldbinit:
+ * a folder holding one is shown first, and "Use mine" starts gdb told to
+ * leave it alone.  dlv reads nothing from its folder, and its start asks
+ * nothing.
+ * Return: the plan answered for (we_dap.c frees it), or NULL to start nothing.
+ */
+static WpeStartPlan *e_d_dap_plan(char *const argv[], const char *cwd)
+{
+ char what[E_D_PLAN_WHAT_MAX];
+ E_STARTPLAN_SHOW show;
+ WpeStartPlan *p = e_d_dap_plan_make(argv, cwd, 0);
+ char *shown;
+ int verdict;
+
+ if (!p)
+  return(NULL);
+ if (strcmp(e_d_dap_tool(argv[0]), "gdb") == 0 && e_d_plan_reads_first(p))
+  wpe_startplan_set_own(p, e_d_dap_plan_make(argv, cwd, 1));
+ shown = e_d_plan_shown(p);
+ snprintf(what, sizeof what, E_D_PLAN_WHAT_FMT, e_d_dap_tool(argv[0]));
+ show.who = E_D_PLAN_WHO;
+ show.what = what;
+ show.shown = shown ? shown : "";
+ show.own = p->own ? E_D_GDB_OWN_TEXT : NULL;
+ verdict = e_startplan_approve(WpeEditor->f[WpeEditor->mxedt], p, &show);
+ if (shown)
+  FREE(shown);
+ if (verdict != WPE_STARTCMD_CANCEL)
+  return(p);
+ e_d_dap_plan_cancelled = 1;
+ wpe_startplan_free(p);
+ return(NULL);
+}
+
 /**
  * e_d_dap_spawn - Start the adapter process of a language whose adapter is
  * the editor's own child (dlv, gdb, lldb-dap), with its end watched.
@@ -8299,6 +8814,8 @@ static e_dap_session *e_d_dap_spawn(char *const *adapter,
 {
  e_dap_session *s;
 
+ e_d_dap_plan_cancelled = 0;
+ e_dap_set_planner(e_d_dap_plan);
  if (lang->stdio)
   s = e_dap_start_stdio(adapter, program, lang->entry_func, dir, &g_dap_host);
  else
@@ -8664,7 +9181,6 @@ static void e_d_bsp_deliver_held(void)
 
 /* What the question calls a project's build server, and its key. */
 #define E_D_BSP_WHAT   "build server"
-#define E_D_BSP_KEY    "BSP/"
 #define E_D_BSP_WHO    "This folder's .bsp file"
 #define E_D_BSP_SOURCE ".bsp/%s"
 #define E_D_BSP_SOURCE_MAX 512
@@ -8787,44 +9303,70 @@ static int e_d_bsp_made_here(const char *rootdir, const char *file, const char *
 }
 
 /**
- * e_d_bsp_approve - Ask before the build server a project's .bsp file names starts.
+ * e_d_bsp_plan_make - The plan of the build server a project's .bsp file names.
+ * @rootdir: the project; @file: the connection file's name; @argv: its
+ * command; @from: WPE_FROM_FOLDER for a file that came with the folder,
+ * WPE_FROM_USER for the one the editor's own setup-ide just wrote.
+ * Return: the plan, or NULL out of memory.
+ */
+static WpeStartPlan *e_d_bsp_plan_make(const char *rootdir, const char *file,
+                                       char *const *argv, int from)
+{
+ char source[E_D_BSP_SOURCE_MAX];
+ WpeStartPlan *p = wpe_startplan_new(WPE_START_BUILD_SERVER, file);
+ int i;
+
+ if (!p)
+  return(NULL);
+ snprintf(source, sizeof source, E_D_BSP_SOURCE, file);
+ wpe_startplan_set_file(p, source, rootdir);
+ wpe_startplan_set_cwd(p, rootdir);
+ wpe_startplan_word(p, argv[0], WPE_WORD_PROGRAM, from, source);
+ for (i = 1; argv[i]; i++)
+  wpe_startplan_word(p, argv[i], WPE_WORD_TEXT, from, source);
+ p->honest = 1;
+ return(p);
+}
+
+/**
+ * e_d_bsp_plan - Plan, show and ask about the build server a project's .bsp
+ * file names, before it starts (we_bsp.c calls it).
  * @rootdir: the project; @file: the connection file's name; @argv: its command.
  *
  * A cloned Scala project carries its own .bsp/<name>.json, whose argv the
  * editor starts at the first debug session: it is shown first, once per
- * folder and command, as a folder's compiler is.  There is no build server
- * of the user's own to start instead, so "Use mine" starts nothing.
- * Return: 0 to start it, -1 to start nothing.
+ * folder and command, as a folder's compiler is.  The very file and command
+ * the editor's own setup-ide wrote at the user's key are his and start
+ * without a question.  There is no build server of the user's own to start
+ * instead, so "Use mine" is not offered.
+ * Return: the plan answered for (we_bsp.c frees it), or NULL to start nothing.
  */
-static int e_d_bsp_approve(const char *rootdir, const char *file, char *const *argv)
+static WpeStartPlan *e_d_bsp_plan(const char *rootdir, const char *file, char *const *argv)
 {
- char key[WPE_STARTCMD_KEY_MAX], source[E_D_BSP_SOURCE_MAX];
  char *text = e_d_bsp_command_text(argv);
- E_STARTCMD c;
- int verdict;
+ E_STARTPLAN_SHOW show;
+ WpeStartPlan *p;
+ int from = WPE_FROM_FOLDER, verdict;
 
  if (!text)
-  return(-1);
- snprintf(key, sizeof key, "%s%s", E_D_BSP_KEY, file);
+  return(NULL);
  if (e_d_bsp_made_here(rootdir, file, text))
+  from = WPE_FROM_USER;
+ if (!(p = e_d_bsp_plan_make(rootdir, file, argv, from)))
  {
-  wpe_startcmd_remember(rootdir, key, text, WPE_STARTCMD_YES);
   FREE(text);
-  return(0);
+  return(NULL);
  }
- snprintf(source, sizeof source, E_D_BSP_SOURCE, file);
- c.folder = rootdir;
- c.source = source;
- c.who = E_D_BSP_WHO;
- c.key = key;
- c.what = E_D_BSP_WHAT;
- c.text = text;
- c.own = NULL;
- verdict = e_startcmd_approve(WpeEditor->f[WpeEditor->mxedt], &c);
+ show.who = E_D_BSP_WHO;
+ show.what = E_D_BSP_WHAT;
+ show.shown = text;
+ show.own = NULL;
+ verdict = e_startplan_approve(WpeEditor->f[WpeEditor->mxedt], p, &show);
  FREE(text);
  if (verdict == WPE_STARTCMD_RUN)
-  return(0);
- return(-1);
+  return(p);
+ wpe_startplan_free(p);
+ return(NULL);
 }
 
 /**
@@ -8847,7 +9389,7 @@ static int e_d_bsp_begin(FENSTER *f, const char *dir)
  for (i = 0; i < E_D_TIMERS; i++)
   e_d_bsp.timer[i] = E_D_BSP_NO_TIMER;
  e_d_bsp.held = e_d_bsp.ready = e_d_bsp.ok = 0;
- e_bsp_set_approver(e_d_bsp_approve);
+ e_bsp_set_planner(e_d_bsp_plan);
  e_d_bsp.b = e_bsp_start_async(dir, &e_d_bsp.io, e_d_bsp_done, NULL,
                                err, sizeof err);
  if (!e_d_bsp.b)
@@ -8997,6 +9539,8 @@ static int e_d_dap_start(FENSTER *f)
  }
  else
   g_dap = e_d_dap_spawn(adapter, lang, program, dir);
+ if (!g_dap && !lang->bsp && e_d_dap_plan_cancelled)
+  return(-1);
  if (!g_dap)
  {
   e_error(E_D_DAP_START_FAILED_LINE, 0, f->fb);
@@ -11351,10 +11895,15 @@ static int e_d_exe_name_of(char *out, size_t n, const char *datnam)
  */
 static int e_d_pick_start_arg(ECNT *cn, FENSTER *f, char *estr, size_t n)
 {
+ const char *exe = e_s_prog.exe_name;
  int _fi;
 
- if (e_s_prog.exe_name && e_s_prog.exe_name[0])
-  return(e_d_copy_arg(estr, n, e_s_prog.exe_name));
+ e_d_prog_origin = WPE_FROM_USER;
+ if (exe && exe[0])
+ {
+  e_d_prog_origin = e_opt_value_from(e_s_prog.language, E_D_PLAN_KEY_EXE, exe);
+  return(e_d_copy_arg(estr, n, exe));
+ }
  if (e_deb_type != DEB_PDB && e_deb_type != DEB_A68G)
   return(e_d_exe_name_of(estr, n, f->datnam));
  /* pdb/a68g: debug the source file (.py/.a68) with full path.
@@ -11505,6 +12054,8 @@ int e_start_debug(FENSTER *f)
   f = cn->f[cn->mxedt-1];
  }
  e_d_out_clear();
+ if (!e_d_file_sendable(f))
+  return(-1);
  if (e_d_approve_debugger(f))
   return(-1);
  /* Auto-select debugger by file extension.
@@ -11556,11 +12107,12 @@ int e_start_debug(FENSTER *f)
  /* Note: e_sys_ini()/e_sys_end() were here originally but they cause
     screen flicker (rmcup/smcup) which is unnecessary for the gdb fork.
     The pty handles program output; no screen switching needed. */
- if (e__project && (file = e_exec_deb(f, e_s_prog.exe_name )) == 0)
+ if (e__project)
  {
-  return(-2);
+  e_d_prog_origin = WPE_FROM_FOLDER;
+  file = e_exec_deb(f, e_s_prog.exe_name);
  }
- else if (!e__project)
+ else
  {
   if (e_d_pick_start_arg(cn, f, estr, sizeof(estr)))
   {
@@ -11568,11 +12120,14 @@ int e_start_debug(FENSTER *f)
    return(-1);
   }
   jdb_trace("e_start_debug: launching '%s %s'\n", e_debugger, estr);
-  if ((file = e_exec_deb(f, estr)) == 0)
-  {
-   jdb_trace("e_start_debug: e_exec_deb failed\n");
-   return(-2);
-  }
+  file = e_exec_deb(f, estr);
+ }
+ if (file == E_D_EXEC_CANCELLED)
+  return(-1);
+ if (file == 0)
+ {
+  jdb_trace("e_start_debug: e_exec_deb failed\n");
+  return(-2);
  }
  jdb_trace("e_start_debug: debugger launched OK, e_d_swtch=%d\n", e_d_swtch);
  e_d_p_message(e_d_msg[ERR_STARTDEBUG], f, 1);
@@ -12118,10 +12673,31 @@ static int e_d_run_hand_over_continue(FENSTER *f, const E_D_RUN_OPS *ops,
  return(ret);
 }
 
+/**
+ * e_d_run_arguments - The program's Arguments for the debugger's run command.
+ * @f: the window, for the status row; @args: receives them, or NULL for none.
+ *
+ * Arguments a start-folder xwperc set were shown in the session's start
+ * plan and answered for; Arguments with a line break are never sent, since
+ * the rest of the line would reach the debugger as a command of its own.
+ * Return: 0, or -1 when they may not be sent (said on the status row).
+ */
+static int e_d_run_arguments(FENSTER *f, const char **args)
+{
+ *args = e_d_arguments();
+ if (*args && !e_d_sendable(f, *args, E_D_NOT_SENT_ARGS))
+ {
+  *args = NULL;
+  return(-1);
+ }
+ return(0);
+}
+
 int e_deb_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
  char eing[E_D_LINE_MAX + 128];
+ const char *args;
  int ret, prsw = 0, main_brk = 0;
 
  if (e_d_act_deferred(E_D_ACT_RUN, f, 0))
@@ -12148,6 +12724,9 @@ int e_deb_run(FENSTER *f)
     program end) through the bridge; the pipe/pty machinery below is gdb-only. */
  if (e_deb_type == DEB_DAP)
   return(e_d_dap_run(f));
+ args = NULL;
+ if (e_d_swtch < 3 && e_d_run_takes_arguments() && e_d_run_arguments(f, &args) < 0)
+  return(0);
  /* Interpreted debuggers (jdb, pdb) don't need tty redirect */
  jdb_trace("e_deb_run: tty check, e_deb_type=%d, e_d_tty='%s'\n",
            e_deb_type, e_d_tty);
@@ -12174,8 +12753,8 @@ int e_deb_run(FENSTER *f)
  {
   if (e_d_swtch < 3)
   {
-   if (e_prog.arguments)
-    snprintf(eing, sizeof eing, "run %s > %s\n", e_prog.arguments, e_d_tty);
+   if (args)
+    snprintf(eing, sizeof eing, "run %s > %s\n", args, e_d_tty);
    else
     sprintf(eing, "run > %s\n", e_d_tty);
   }
@@ -12215,15 +12794,15 @@ int e_deb_run(FENSTER *f)
    }
    else if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
    {
-    if (e_prog.arguments)
-     snprintf(eing, sizeof eing, "r %s\n", e_prog.arguments);
+    if (args)
+     snprintf(eing, sizeof eing, "r %s\n", args);
     else
      strcpy(eing, "r\n");
    }
    else
    {
-    if (e_prog.arguments)
-     snprintf(eing, sizeof eing, "r %s > %s\n", e_prog.arguments, e_d_tty);
+    if (args)
+     snprintf(eing, sizeof eing, "r %s > %s\n", args, e_d_tty);
     else
      sprintf(eing, "r > %s\n", e_d_tty);
    }
@@ -16289,6 +16868,8 @@ int e_d_goto_func(FENSTER *f, int flag)
      e_d_act_deferred(E_D_ACT_GOTO, top, top->b->b.y + 1))
   return(0);
  if (flag == E_D_GOTO_FINISH && e_d_act_deferred(E_D_ACT_FINISH, top, 0))
+  return(0);
+ if (flag == E_D_GOTO_CURSOR && !e_d_file_sendable(top))
   return(0);
  if (flag == E_D_GOTO_CURSOR)
   e_d_goto_take_target(top);

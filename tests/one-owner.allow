@@ -65,11 +65,10 @@ we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_c
 # the only importer of wpe_child_start once every site is converted.  The
 # F9 path (compile, link, project build) is, and so are the short commands
 # (print, man, gunzip, the JDK and font probes), which run through
-# wpe_startplan_capture and its kin; these are not yet.
+# wpe_startplan_capture and its kin, and the debug session's starts (the
+# debugger, jdb's program, the compile for debug, scala-cli setup-ide, the
+# build server, the debug adapters); these are not yet.
 we_prog.o wpe_child_start 4 P0c-3 Run (twice), the shell and Make
-we_debug.o wpe_child_start 4 P0c-2 the debugger, jdb's program, the compile for debug, scala-cli setup-ide
-we_bsp.o wpe_child_start 1 P0c-2 the build server
-we_dap.o wpe_child_start 2 P0c-2 the debug adapters
 we_lsp.o wpe_child_start 1 P0c-3 a language server
 we_ai.o wpe_child_start 2 P1 the assistant's tool command and CLI: AI origin, held by the containment profile
 we_ai_host.o wpe_child_start 1 P1 the hosted engine: AI origin, held by the containment profile

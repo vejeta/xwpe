@@ -16,6 +16,7 @@
 
 #include "we_bsp.h"
 #include "we_child.h"
+#include "we_startplan.h"        /* the server starts through its start plan */
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 #include "we_fdloop.h"           /* wpe_fd_write: the server's input, queued */
 
@@ -399,12 +400,37 @@ void e_bsp_request_timer(e_bsp_session *b, int which)
 
 /* ---- BSP connection descriptor (.bsp/<name>.json) ---------------------- */
 
-/* Asked before a connection file's command starts (e_bsp_set_approver). */
-static e_bsp_approve_fn bsp_approver;
+/* Asked before a connection file's command starts (e_bsp_set_planner). */
+static e_bsp_plan_fn bsp_planner;
 
-void e_bsp_set_approver(e_bsp_approve_fn fn)
+/**
+ * e_bsp_set_planner - Who plans, shows and asks about a build server's start.
+ * @fn: the editor's planner, or NULL (the C tests).
+ */
+void e_bsp_set_planner(e_bsp_plan_fn fn)
 {
- bsp_approver = fn;
+ bsp_planner = fn;
+}
+
+/**
+ * bsp_plan_of - The answered start plan of the server a .bsp file names.
+ * @rootdir: the project; @file: the connection file; @argv: its command.
+ *
+ * The editor's planner shows a folder's command and asks; with no planner
+ * (a C test) the command is the test's own and runs as named, in the
+ * project.
+ * Return: the plan (freed by the caller), or NULL when nothing may start.
+ */
+static WpeStartPlan *bsp_plan_of(const char *rootdir, const char *file, char **argv)
+{
+ WpeStartPlan *plan;
+
+ if (bsp_planner)
+  return bsp_planner(rootdir, file, argv);
+ plan = wpe_startplan_fixed(WPE_START_BUILD_SERVER, file, argv);
+ if (plan)
+  wpe_startplan_set_cwd(plan, rootdir);
+ return plan;
 }
 
 /* Read the first ".json" file in workdir/.bsp and return its "argv" array as a
@@ -520,7 +546,8 @@ void e_bsp_free_argv(char **argv)
 /**
  * bsp_spawn - Start the BSP server's launcher (argv from the connection
  * file) on two pipes, in the project's directory.
- * @b: the session; @argv: the command line; @workdir: the project.
+ * @b: the session; @plan: the answered plan of its command line, its
+ * working folder the project.
  *
  * Its stderr goes nowhere: scala-cli and Bloop are chatty there ("Starting
  * compilation server", compile progress), which would bleed onto the
@@ -529,19 +556,19 @@ void e_bsp_free_argv(char **argv)
  * language server go on using it.
  * Return: 0, or -1 when it could not be started.
  */
-static int bsp_spawn(e_bsp_session *b, char **argv, const char *workdir)
+static int bsp_spawn(e_bsp_session *b, WpeStartPlan *plan)
 {
- WpeChildSpec spec;
+ WpeStartIo io;
 
- memset(&spec, 0, sizeof spec);
- spec.argv = argv;
- spec.cwd = workdir;
- spec.io = WPE_CHILD_IO_PIPES;
- spec.group = WPE_CHILD_OWN_SESSION;
- spec.stderr_to_null = 1;
- spec.signal_leader_only = 1;
- spec.what = BSP_LAUNCHER_WHAT;
- if (wpe_child_start(&spec, &b->launcher, NULL, NULL) != 0)
+ memset(&io, 0, sizeof io);
+ io.io = WPE_CHILD_IO_PIPES;
+ io.group = WPE_CHILD_OWN_SESSION;
+ io.stderr_to_null = 1;
+ io.signal_leader_only = 1;
+ io.tty_fd = WPE_CHILD_NO_FD;
+ io.side_pty_slave = WPE_CHILD_NO_FD;
+ io.what = BSP_LAUNCHER_WHAT;
+ if (wpe_startplan_start_words(plan, &io, &b->launcher, NULL, NULL) != 0)
   return -1;
  b->in_fd = b->launcher.in_fd;
  b->out_fd = b->launcher.out_fd;
@@ -855,6 +882,7 @@ static void bsp_start_finished(int ok, void *ctx)
 static e_bsp_session *bsp_session_spawn(const char *rootdir, char *errbuf, size_t errsz)
 {
  e_bsp_session *b;
+ WpeStartPlan *plan = NULL;
  char file[PATH_MAX];
  char **argv;
 
@@ -866,28 +894,31 @@ static e_bsp_session *bsp_session_spawn(const char *rootdir, char *errbuf, size_
    snprintf(errbuf, errsz, "no .bsp connection file in %s", rootdir);
   return NULL;
  }
- if (!argv[0] || (bsp_approver && bsp_approver(rootdir, file, argv) != 0))
+ if (argv[0])
+  plan = bsp_plan_of(rootdir, file, argv);
+ bsp_free_argv(argv);
+ if (!plan || !wpe_startplan_running(plan))
  {
-  bsp_free_argv(argv);
+  wpe_startplan_free(plan);
   if (errbuf)
    snprintf(errbuf, errsz, "%s", E_BSP_NOT_APPROVED);
   return NULL;
  }
  b = calloc(1, sizeof(*b));
  if (!b)
- {  bsp_free_argv(argv);  return NULL;  }
+ {  wpe_startplan_free(plan);  return NULL;  }
  e_dap_reader_init(&b->rd);
  b->in_fd = b->out_fd = -1;
  b->out_id = BSP_NO_ID;
  snprintf(b->rootdir, sizeof b->rootdir, "%s", rootdir);
- if (bsp_spawn(b, argv, rootdir) != 0)
+ if (bsp_spawn(b, plan) != 0)
  {
-  bsp_free_argv(argv);
+  wpe_startplan_free(plan);
   if (errbuf) snprintf(errbuf, errsz, "could not start the BSP server");
   e_bsp_close(b);
   return NULL;
  }
- bsp_free_argv(argv);
+ wpe_startplan_free(plan);
  return b;
 }
 

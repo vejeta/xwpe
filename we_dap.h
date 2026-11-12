@@ -113,6 +113,15 @@ e_dap_session *e_dap_open_tcp(const char *host, int port, const char *program,
 #define E_DAP_START_WAITING 0
 #define E_DAP_START_READY   1
 #define E_DAP_START_FAILED  (-1)
+/* Asked, when set, before an adapter process starts: @argv its command line
+ * (dlv's --client-addr included), @cwd where it runs.  It returns the start
+ * plan the user answered for (we_startplan.h), whose words the adapter is
+ * started with, or NULL, and then nothing starts.  The editor sets it (gdb
+ * and lldb-dap read a start-up file from the folder they run in); a test
+ * may leave it unset, and the command then runs as given. */
+struct WpeStartPlan;
+typedef struct WpeStartPlan *(*e_dap_plan_fn)(char *const argv[], const char *cwd);
+void e_dap_set_planner(e_dap_plan_fn fn);
 e_dap_session *e_dap_start(char *const argv[], const char *program,
                            const char *entry_func, const char *cwd,
                            const e_dap_host *host);
