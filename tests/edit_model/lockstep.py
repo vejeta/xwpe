@@ -126,8 +126,6 @@ STEP_ACTIONS = ("tab", "backspace", "block_indent", "block_unindent", "help_butt
 LOCKED_CHANGERS = ("block_indent", "block_unindent", "help_button", "help_highlight",
                    "help_header", "replace_all")
 MARKER_9 = 9
-KNOWN_CRASH = ("new bug, not fixed: Backspace in the empty last row of a two-row text "
-               "ends the editor with SIGSEGV")
 
 
 def _same_as_before(before, w):
@@ -314,7 +312,6 @@ class Walk:
         self.steps_run = 0
         self.state = None
         self.key_name = None
-        self.known_crashes = 0
 
     def keys_of(self, name, arg):
         if name in PRELUDE_ONLY:
@@ -384,22 +381,12 @@ class Walk:
         return True
 
     def lose(self, i, name, message, st, s):
-        """Record that the editor stopped answering at step @i: a crash the
-        walk knows (Backspace in the empty last row of a two-row text) is
-        named, any other loss is the walk's to report as new."""
-        if self.is_known_crash(name, st, s):
-            message += " [%s]" % KNOWN_CRASH
-            self.known_crashes += 1
+        """Record that the editor stopped answering at step @i."""
         self.lost.append((i, name, message))
 
-    @staticmethod
-    def is_known_crash(name, st, s):
-        return (name == "backspace" and not s.alive() and len(st.rows) == 2
-                and st.rows[1].data == b"" and (st.y, st.x) == (1, 0))
-
     def new_losses(self):
-        """The losses no known bug explains."""
-        return [x for x in self.lost if KNOWN_CRASH not in x[2]]
+        """The losses of the walk: every one is new."""
+        return list(self.lost)
 
     def back_to_text(self, s):
         """Esc until the editor reads keys in the file's window again; the

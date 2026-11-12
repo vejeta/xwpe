@@ -274,6 +274,20 @@
    "layer": "ncurses",
    "test": "tests/test_edit_model_lockstep.py::test_a_known_bug_tag_names_only_what_that_bug_does",
    "status": "new"
+  },
+  {
+   "id": "SC-edit-model-40",
+   "requirement": "Backspace in the empty last row of a text of three rows puts the cursor at the end of the row above",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rows.py::test_backspace_in_the_empty_last_row_of_three_rows_types_at_the_end_of_the_row_above",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-41",
+   "requirement": "Undo brings back the empty last row that Backspace removed",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_rows.py::test_undo_brings_back_the_empty_last_row_a_backspace_removed",
+   "status": "new"
   }
  ]
 }

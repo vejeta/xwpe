@@ -962,8 +962,12 @@ int e_eingabe(ECNT *e)
    {
     if (b->bf[b->b.y].len == 0)
     {
+     /* The deletion already moved the cursor off a deleted last row, so
+        the row above is named, not stepped to. */
+     int row_above = b->b.y - 1;
      e_del_line(b->b.y, b, s);
-     b->b.y--;
+     if (row_above < 0) row_above = 0;
+     b->b.y = row_above;
      b->b.x = b->bf[b->b.y].len;
      if (*(b->bf[b->b.y].s+b->b.x) == '\0') b->b.x--;
     }
@@ -2800,6 +2804,8 @@ int e_su_lblk(int xa, char *s)
 {
  int len = strlen(s);
 
+ if (len == 0)
+  return(0);
  if (xa >= len)
   xa = len - 1;
  for (; xa < len  && isalnum1(s[xa]); xa++)

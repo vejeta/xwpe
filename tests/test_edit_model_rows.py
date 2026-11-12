@@ -50,8 +50,6 @@ def test_backspace_with_auto_indent_deletes_a_whole_character(tmp_path):
 
 
 # @scenario SC-edit-model-32
-@incoherence("Backspace in the empty last row of a text of two rows ends the "
-             "editor with SIGSEGV (found by the option-array walks, 2026-11-12)")
 def test_backspace_in_the_empty_last_row_of_two_rows_joins_it_to_the_row_above(tmp_path):
     """A file of one line, Ctrl-End, Return, Backspace: the new empty row goes
     and the cursor is at the end of the line, as it is with three rows."""
@@ -60,3 +58,29 @@ def test_backspace_in_the_empty_last_row_of_two_rows_joins_it_to_the_row_above(t
         assert s.last.win.lines == [("H", b"a"), ("H", b"")]
         w = s.send([BACKSPACE]).win
     assert w.lines == [("H", b"a")] and w.cursor == (0, 1)
+
+
+# @scenario SC-edit-model-40
+def test_backspace_in_the_empty_last_row_of_three_rows_types_at_the_end_of_the_row_above(tmp_path):
+    """Two lines, Ctrl-End, Return, Backspace, then a character: the empty
+    row goes and the character lands at the end of the second line, not the
+    first."""
+    with EditSession(str(tmp_path), "first\nsecond\n", filename="t.txt") as s:
+        s.send([ESC + ctrl("e"), "\r"])
+        w = s.send([BACKSPACE]).win
+        assert w.lines == [("H", b"first"), ("H", b"second")] and w.cursor == (1, 6)
+        w = s.send(["Z"]).win
+    assert w.disk() == b"first\nsecondZ\n"
+
+
+# @scenario SC-edit-model-41
+@pytest.mark.parametrize("seed", ["a\n", "first\nsecond\n"])
+def test_undo_brings_back_the_empty_last_row_a_backspace_removed(tmp_path, seed):
+    """After Backspace in the empty last row, Ctrl-U gives the empty row
+    back, with the cursor on it, and the editor keeps answering."""
+    with EditSession(str(tmp_path), seed, filename="t.txt") as s:
+        s.send([ESC + ctrl("e"), "\r"])
+        rows = list(s.last.win.lines)
+        s.send([BACKSPACE])
+        w = s.send([ctrl("u")]).win
+    assert w.lines == rows and w.cursor[0] == len(rows) - 1

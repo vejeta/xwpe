@@ -233,6 +233,12 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Backspace in the empty last line of a file no longer ends the editor
+  when the file has only one other line, and in longer files the cursor
+  now goes to the end of the line above as it should; before, what you
+  typed next landed one line too high.  Ctrl-T in an empty dialog field
+  no longer reads outside its text.
+
 * Shift and Ctrl with the cursor keys now work in the terminal under
   xterm, GNOME Terminal, tmux and the others that call themselves
   xterm-256color or tmux-256color.  Shift-Left/Right/Up/Down and

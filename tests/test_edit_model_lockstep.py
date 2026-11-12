@@ -52,8 +52,8 @@ def test_a_walk_on_a_row_of_the_array_lists_its_disagreements_by_class(
     w = lockstep.Walk(str(tmp_path), None, seed, N_STEPS, row=row, coverage=cov).run()
     new, known = lockstep.summary_counts([w])
     with capsys.disabled():
-        print("\n[%s seed %d] steps %d, new %s, expected %s, known crashes %d"
-              % (row.name, seed, w.steps_run, new, sum(known.values()), w.known_crashes))
+        print("\n[%s seed %d] steps %d, new %s, expected %s"
+              % (row.name, seed, w.steps_run, new, sum(known.values())))
         text = lockstep.summarize([w])
         if text:
             print(text)
