@@ -806,6 +806,7 @@ int e_opt_move(W_OPTSTR *o);
 int e_get_sw_cmp(int xin, int yin, int x, int y, int xmin, int ymin, int c);
 int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o);
 int e_opt_kst(W_OPTSTR *o);
+int e_opt_kst_message(W_OPTSTR *o);
 int e_edt_options(FENSTER *f);
 int e_read_colors(FENSTER *f);
 int e_ad_colors_md(FENSTER *f, int md);

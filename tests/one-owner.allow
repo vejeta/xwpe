@@ -66,6 +66,13 @@ we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_c
 # we_edit.c; the check allows no other line for the screen's names.
 we_edit.o e_getch 2 keep the main loop's read and the owner's key hook (e_paint_read_key)
 
+# the test's state channel: only with XWPE_TEST_DUMP_FD set, the display's
+# key reader and its look at the keyboard are wrapped so the editor writes
+# its state to the test's pipe before it waits for a key.
+we_testdump.o e_u_key_take 3 keep the wrapper of the look at the keyboard, installed for a test only
+we_testdump.o STDIN_FILENO 1 keep FIONREAD asks whether a key is pending; no read
+we_testdump.o write 1 keep the test's dump pipe, not a child
+
 # writers: bytes for a child go through wpe_fd_write (we_fdloop.c).
 we_ai.o write 1 keep the test backend's temporary file, not a child
 we_ai_http.o write 1 keep a server's socket, not a child: written from the loop's wake-ups, a TLS write retried with the same buffer

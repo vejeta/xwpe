@@ -15,6 +15,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_ai.h"      /* AI assistant config init (guarded by WPE_AI) */
+#include "we_testdump.h"
 
 #ifdef UNIX
 #include <sys/types.h>
@@ -573,6 +574,7 @@ int main(int argc, char **argv)
  WpeEditor = cn;
  cn->fb = fb;
  wpe_buffer_fault_from_env();
+ wpe_test_dump_from_env();
 
  info_file = e_info_search_path(INFO_DIR);   /* our infodir first, then the system dirs */
  e_read_help_str();

@@ -10,6 +10,7 @@
 #include "makro.h"
 #include "we_fdloop.h"
 #include "we_buffer.h"
+#include "we_testdump.h"
 
 #include<sys/types.h> /*  included for digital station  */
 #include<sys/stat.h>
@@ -1422,6 +1423,24 @@ int e_tst_fkt(int c, ECNT *e)
 }
 
 /**
+ * e_prefix_read_letter - Read the letter that follows a prefix key.
+ *
+ * Ctrl-K and Ctrl-O read their command's letter here, so a test watching
+ * the editor's state knows the key it sends next is that letter and not
+ * text to type.
+ * Return: the key, upper case.
+ */
+static int e_prefix_read_letter(void)
+{
+ int c;
+
+ wpe_test_ctx_enter(WPE_TEST_CTX_PREFIX, NULL);
+ c = e_toupper(wpe_paint_modal_getch());
+ wpe_test_ctx_leave();
+ return(c);
+}
+
+/**
  * e_ctrl_k - Ctrl-K: read the block command's letter and run it.
  * @f: the window the prefix was pressed in.
  *
@@ -1435,7 +1454,7 @@ int e_ctrl_k(FENSTER *f)
  SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
  int c;
 
- c = e_toupper(wpe_paint_modal_getch());
+ c = e_prefix_read_letter();
  if (c < 32)
   c = c + 'A' - 1;
  switch (c)
@@ -1544,7 +1563,7 @@ int e_ctrl_o(FENSTER *f)
  int i, c;
  unsigned char cc;
 
- c = e_toupper(wpe_paint_modal_getch());
+ c = e_prefix_read_letter();
  if (c < 32) c = c + 'A' - 1;
  switch(c)
  {
@@ -2826,6 +2845,7 @@ int e_autosave(FENSTER *f)
   WpeMouseChangeShape(WpeWorkingShape);
   e_write(0, 0, f->b->mx.x, f->b->mxlines-1, f, WPE_NOBACKUP);
   WpeMouseRestoreShape();
+  wpe_test_dump_note_autosave();
   f->datnam = tmp;
   f->save = 1;
   FREE(str);

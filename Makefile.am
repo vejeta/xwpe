@@ -88,6 +88,7 @@ we_SOURCES = \
   we_render_cairo.c \
   we_fdloop.c \
   we_paint.c \
+  we_testdump.c \
   we_trace.c \
   we_vterm.c \
   we_dap_proto.c \
@@ -204,6 +205,7 @@ noinst_HEADERS = \
   we_wayland.h \
   we_fdloop.h \
   we_paint.h \
+  we_testdump.h \
   we_buffer.h \
   we_trace.h \
   we_vterm.h \

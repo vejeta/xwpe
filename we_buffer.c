@@ -636,6 +636,18 @@ static void buffer_record_link(BUFFER *b, Undo *rec)
   buffer_list_trim(b->ud, buffer_undo_steps_kept(b));
 }
 
+/* Which list a record was pushed for, as the trace says it: a fresh change
+   ("none"), or the inverse a Ctrl-U ("undo") or a Ctrl-R ("redo") left, so
+   a test counts the user's own steps apart from what a replay pushes. */
+static const char *buffer_replay_name(const BUFFER *b)
+{
+ if (b->replaying == E_BUFFER_REPLAY_UNDO)
+  return("undo");
+ if (b->replaying == E_BUFFER_REPLAY_REDO)
+  return("redo");
+ return("none");
+}
+
 /* 1 when the record goes on into the one pushed next, as the trace says it. */
 static int buffer_record_more(const Undo *rec)
 {
@@ -663,7 +675,8 @@ Undo *e_buffer_record_push(BUFFER *b, Undo *rec)
   return(NULL);
  }
  buffer_record_link(b, rec);
- wpe_buffer_trace("buffer record kind=%c more=%d", rec->type, buffer_record_more(rec));
+ wpe_buffer_trace("buffer record kind=%c more=%d replay=%s", rec->type,
+                  buffer_record_more(rec), buffer_replay_name(b));
  return(rec);
 }
 
@@ -1029,8 +1042,9 @@ static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int
  if (m->rec != NULL)
  {
   buffer_record_link(b, m->rec);
-  wpe_buffer_trace("buffer record kind=R n_old=%d n_new=%d more=%d", m->rec->n_old,
-                   m->rec->n_new, buffer_record_more(m->rec));
+  wpe_buffer_trace("buffer record kind=R n_old=%d n_new=%d more=%d replay=%s",
+                   m->rec->n_old, m->rec->n_new, buffer_record_more(m->rec),
+                   buffer_replay_name(b));
   m->rec = NULL;
  }
  wpe_buffer_trace("buffer splice y=%d del=%d ins=%d step=%s covered=%d", y, n_del,

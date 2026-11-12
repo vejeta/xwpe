@@ -1,0 +1,68 @@
+{
+ "capability": "edit-model",
+ "scenarios": [
+  {
+   "id": "SC-edit-model-01",
+   "requirement": "The state channel answers every kind of operation wherever the keys land",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_every_kind_of_operation_is_answered_wherever_the_keys_land",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-02",
+   "requirement": "The dump names where the next key is read and counts the keys taken",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_the_dump_names_where_the_next_key_is_read",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-03",
+   "requirement": "The dump holds the text, cursor, modified count and undo lists the screen and disk show",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_the_dump_holds_the_text_cursor_and_undo_lists",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-04",
+   "requirement": "An autosave is reported with the text it wrote",
+   "layer": "config-file",
+   "test": "tests/test_edit_model_channel.py::test_an_autosave_is_reported_with_the_text_it_wrote",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-05",
+   "requirement": "Each undo record says whether a fresh change, a Ctrl-U or a Ctrl-R pushed it",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_the_trace_tells_a_fresh_change_from_a_replay",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-06",
+   "requirement": "The model-free self-checks fail on a dump that breaks them",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_the_self_checks_refuse_a_dump_that_breaks_them",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-07",
+   "requirement": "A seeded walk with the undo probe is answered to its end",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_a_seeded_walk_with_the_undo_probe_is_answered_to_the_end",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-08",
+   "requirement": "Without the variable the editor writes no dump and behaves as before",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_without_the_variable_the_editor_writes_no_dump",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-09",
+   "requirement": "A descriptor naming the terminal gets no dump, so a dump is never drawn",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_a_dump_never_lands_on_the_terminal",
+   "status": "new"
+  }
+ ]
+}

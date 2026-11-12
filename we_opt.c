@@ -9,6 +9,7 @@
 #include "edit.h"
 #include "WeExpArr.h"
 #include "we_ai.h"        /* AI backend config keys (guarded by WPE_AI) */
+#include "we_testdump.h"
 #include <ctype.h>
 #include <limits.h>
 #include <sys/types.h>
@@ -100,7 +101,9 @@ static int e_opt_box_show(e_opt_box_draw draw, FENSTER *f)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
   return(WPE_ESC);
  }
+ wpe_test_ctx_enter(WPE_TEST_CTX_MESSAGE, NULL);
  e_opt_box_wait_key(&pic, draw, f);
+ wpe_test_ctx_leave();
  if (pic != NULL)
   e_close_view(pic, 1);
  return(0);
@@ -2854,11 +2857,37 @@ e_opt_kst_restart:
    a server update arriving mid-dialog waits for it to close instead of drawing
    under it.  This box pushes no window onto the editor stack, so it tells the
    screen's owner (we_paint.c) instead. */
+static int e_opt_kst_as(W_OPTSTR *o, WpeTestCtx kind);
+
 int e_opt_kst(W_OPTSTR *o)
+{
+   return(e_opt_kst_as(o, WPE_TEST_CTX_DIALOG));
+}
+
+/**
+ * e_opt_kst_message - Run a message box built on the dialog engine.
+ * @o: the box.
+ *
+ * The same box as a dialog for the user; a test watching the editor's state
+ * is told the keys now answer a message (Ok, Yes, No) and not a dialog.
+ * Return: as e_opt_kst.
+ */
+int e_opt_kst_message(W_OPTSTR *o)
+{
+   return(e_opt_kst_as(o, WPE_TEST_CTX_MESSAGE));
+}
+
+/**
+ * e_opt_kst_as - Run the box @o; its keys are read for @kind.
+ * Return: as e_opt_kst.
+ */
+static int e_opt_kst_as(W_OPTSTR *o, WpeTestCtx kind)
 {
    int ret;
    wpe_paint_modal_enter("a dialog");
+   wpe_test_ctx_enter(kind, o->name);
    ret = e_opt_kst_run(o);
+   wpe_test_ctx_leave();
    wpe_paint_modal_leave();
    return(ret);
 }

@@ -412,6 +412,29 @@ Three mechanisms prevent crashes and artifacts:
 | `we_menue.c` | Menu system |
 | `we_opt.c` | Options dialogs |
 | `WeSyntax.c` | Syntax highlighting engine |
+| `we_testdump.c` | The state channel tests read (`XWPE_TEST_DUMP_FD`) |
+
+## The state channel for tests (`XWPE_TEST_DUMP_FD`)
+
+With `XWPE_TEST_DUMP_FD` naming a descriptor open for writing, the editor
+writes its state there each time it is about to block for a key: the keys
+taken so far, where the next key is read (`edit`, `prefix`, `menu`,
+`dialog:<title>`, `message`, `filemanager`), every text window's lines,
+cursor, marks, modified count and undo depth, and the search strings,
+ended by `E <seq>`.  The format is in `we_testdump.h`.  A test then knows
+the editor has taken its keys without a fixed wait, and reads the text
+without saving.  Unset, nothing is installed.
+
+`tests/edit_model/oracle.py` is the session that reads it,
+`tests/edit_model/probe.py` checks that every kind of operation is
+answered wherever its keys land, and `tests/edit_model/selfcheck.py` runs
+seeded walks with checks of the editor against itself (Ctrl-U gives the
+text before an operation back, marks and breakpoints stay inside the text,
+the screen and the saved file are the dump's):
+
+```sh
+tests/.venv/bin/python tests/edit_model/selfcheck.py --seed 1 --ops 100
+```
 
 ## CHECKHEADER: automatic header dependency tracking
 

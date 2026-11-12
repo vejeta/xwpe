@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_menurows.h"
+#include "we_testdump.h"
 
 int             e_p_show_messages(FENSTER *f);
 int             e_p_show_watches(FENSTER *f);
@@ -29,6 +30,23 @@ int             e_hp_prev(FENSTER *f);
 int             e_hp_next(FENSTER *f);
 
 /**
+ * WpeMenuGetch - Read one key for the menu bar or a dropdown.
+ *
+ * A test watching the editor's state learns from here that the key it
+ * sends next picks a menu item, not text.
+ * Return: the key, as wpe_paint_modal_getch gives it.
+ */
+static int WpeMenuGetch(void)
+{
+  int c;
+
+  wpe_test_ctx_enter(WPE_TEST_CTX_MENU, NULL);
+  c = wpe_paint_modal_getch();
+  wpe_test_ctx_leave();
+  return c;
+}
+
+/**
  * WpeMainmenuReadKey - Read the next key, or click, for the menu bar.
  *
  * While the bar waits for the user it owns the screen: a stop, a build's
@@ -38,7 +56,7 @@ int             e_hp_next(FENSTER *f);
  */
 static int WpeMainmenuReadKey(void)
 {
-  int c = wpe_paint_modal_getch();
+  int c = WpeMenuGetch();
 
 #if MOUSE
   if (c == -1)
@@ -808,13 +826,13 @@ static int WpeHandleSubmenu_run(int xa, int ya, int xe, int ye, int nm, int pref
 #if MOUSE
     if(c != MBKEY)
     {
-      if((c = e_toupper(wpe_paint_modal_getch())) == -1)
+      if((c = e_toupper(WpeMenuGetch())) == -1)
         c = e_m2_mouse(xa, ya, xe, ye, fopt);
     }
     else
       c = WPE_CR;  /* mouse released at a proper place, submenu item accepted */
 #else
-    c = e_toupper(wpe_paint_modal_getch());
+    c = e_toupper(WpeMenuGetch());
 #endif
 
     if(c == WPE_RESIZE)

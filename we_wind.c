@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_buffer.h"
+#include "we_testdump.h"
 #include <wchar.h>
 #ifdef WPE_AI
 #include "we_ai.h"
@@ -638,7 +639,9 @@ int e_error(char *text, int sw, FARBE *f)
   return(sw);
 #endif
  wpe_paint_modal_enter("an error box");
+ wpe_test_ctx_enter(WPE_TEST_CTX_MESSAGE, NULL);
  ret = e_error_run(text, sw, f);
+ wpe_test_ctx_leave();
  wpe_paint_modal_leave();
  return(ret);
 }
@@ -680,7 +683,7 @@ int e_message(int sw, char *str, FENSTER *f)
   e_add_bttstr((o->xe-o->xa-2)/2, o->ye-o->ya-2, 0, AltN, "No", NULL, o);
   e_add_bttstr(o->xe-o->xa-9, o->ye-o->ya-2, -1, WPE_ESC, "Cancel", NULL, o);
  }
- ret = e_opt_kst(o);
+ ret = e_opt_kst_message(o);
  freeostr(o);
  return(ret == WPE_ESC ? WPE_ESC : (ret == AltN ? 'N' : 'Y'));
 }
