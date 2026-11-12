@@ -39,6 +39,20 @@ only modified or uncompiled files, and tracks @code{#include} changes for C.
 @item @code{LIBNAME} @tab Library file for object archive (auto-linked if set).
 @end multitable
 
+A project file comes with its folder, a clone included.  The first
+build whose @code{CMP}, @code{CMPFLAGS} and @code{LDFLAGS} differ from
+your own C compiler line shows them and asks @samp{Run it},
+@samp{Use mine} (build with your own C line) or @samp{Cancel}; the
+answer is kept for that folder and line.  Lines you set in
+@samp{Project-Options} are yours.  The @code{install:} lines, which go
+to the shell at @kbd{Alt-L}, are shown and asked about the same way.
+@xref{Folder commands}.
+
+A word of @code{FILES} or @code{LIBNAME} always names a file: one that
+starts with @samp{-} or @samp{@@} is passed as @file{./-name} or
+@file{./@@name}, so the compiler, @command{ar} and @command{ranlib}
+never read it as an option or as a file of more options.
+
 @subsection Example project file
 
 @example

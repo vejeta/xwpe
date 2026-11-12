@@ -16,6 +16,7 @@
 #include "we_debpath.h"
 #include "we_debsess.h"
 #include "we_buffer.h"
+#include "we_startcmd.h"
 
 #ifdef DEBUGGER
 
@@ -7818,7 +7819,12 @@ void e_d_dap_end_at_exit(void)
 #define E_D_COMPILE_LINE           "Compiling for debug... (Esc cancels)"
 #define E_D_COMPILE_CANCELLED_LINE "compile for debug cancelled"
 #define E_D_COMPILE_FAILED_LINE    "Compilation failed -- see Messages."
-#define E_D_COMPILE_ARGC           3
+#define E_D_COMPILE_ARGC           7
+/* The compiler and its options, then the binary, the source and the error
+   file as the script's $1, $2 and $3: a file name is handed over as one
+   word, never read by the shell, whatever quotes or ';' it holds. */
+#define E_D_COMPILE_SCRIPT_FMT     "%s %s -o \"$1\" \"$2\" 2>\"$3\""
+#define E_D_COMPILE_SCRIPT_NAME    "sh"
 #define E_D_COMPILE_PATH_MAX       1024
 #define E_D_COMPILE_CMD_MAX        (4 * E_D_COMPILE_PATH_MAX)
 #define E_D_COMPILE_ERR_LINE_MAX   512
@@ -7844,7 +7850,9 @@ static struct {
  *
  * The compiler and its flags come from the file's Options entry; the
  * binary is written next to the source, the errors into a file read once
- * the compiler has ended.
+ * the compiler has ended.  The three paths go to the shell as arguments
+ * (e_d_compile_begin), so a file a cloned folder names with a quote or a
+ * ';' in it is compiled as that file and never runs a command.
  * Return: 0, or -1 when the compiler is not on PATH (said in a box).
  */
 static int e_d_compile_command(FENSTER *f)
@@ -7853,6 +7861,8 @@ static int e_d_compile_command(FENSTER *f)
  const char *cc = E_D_COMPILE_DEFAULT_CC, *flags = E_D_COMPILE_DEFAULT_FLAGS;
 
  e_check_c_file_w(f);                 /* set e_s_prog to this file's compiler */
+ if (e_prog_approve_compile(f))
+  return(-1);
  if (e_s_prog.compiler && e_s_prog.compiler[0])
   cc = e_s_prog.compiler;
  if (e_s_prog.comp_str && e_s_prog.comp_str[0])
@@ -7871,8 +7881,8 @@ static int e_d_compile_command(FENSTER *f)
           f->datnam);
  snprintf(e_d_compile.errf, sizeof e_d_compile.errf, "%s%s.dbgerr",
           f->dirct, stem);
- snprintf(e_d_compile.cmd, sizeof e_d_compile.cmd, "%s %s -o '%s' '%s' 2>'%s'",
-          cc, flags, e_d_compile.binary, e_d_compile.src, e_d_compile.errf);
+ snprintf(e_d_compile.cmd, sizeof e_d_compile.cmd, E_D_COMPILE_SCRIPT_FMT,
+          cc, flags);
  return(0);
 }
 
@@ -8006,7 +8016,11 @@ static int e_d_compile_begin(FENSTER *f)
  argv[0] = E_D_COMPILE_SHELL;
  argv[1] = "-c";
  argv[2] = e_d_compile.cmd;
- argv[3] = NULL;
+ argv[3] = E_D_COMPILE_SCRIPT_NAME;
+ argv[4] = e_d_compile.binary;
+ argv[5] = e_d_compile.src;
+ argv[6] = e_d_compile.errf;
+ argv[7] = NULL;
  memset(&spec, 0, sizeof spec);
  spec.argv = argv;
  spec.io = WPE_CHILD_IO_PIPES;
@@ -8647,6 +8661,171 @@ static void e_d_bsp_deliver_held(void)
  e_d_bsp_after();
 }
 
+/* What the question calls a project's build server, and its key. */
+#define E_D_BSP_WHAT   "build server"
+#define E_D_BSP_KEY    "BSP/"
+#define E_D_BSP_WHO    "This folder's .bsp file"
+#define E_D_BSP_SOURCE ".bsp/%s"
+#define E_D_BSP_SOURCE_MAX 512
+
+/**
+ * e_d_bsp_word_needs_quotes - Would a word read as two, or as nothing?
+ */
+static int e_d_bsp_word_needs_quotes(const char *word)
+{
+ return(!*word || strpbrk(word, " \t'\"") != NULL);
+}
+
+/**
+ * e_d_bsp_command_text - A connection file's argv as one command line.
+ * @argv: the words.
+ *
+ * A word with a blank or a quote in it is shown in single quotes, so the
+ * user sees where each word ends, as the program will receive them.
+ * Return: the malloc'd text, or NULL out of memory.
+ */
+static char *e_d_bsp_command_text(char *const *argv)
+{
+ size_t size = 1;
+ char *text, *w;
+ const char *r;
+ int i;
+
+ for (i = 0; argv[i]; i++)
+  size += 4 * strlen(argv[i]) + 3;
+ if (!(text = MALLOC(size)))
+  return(NULL);
+ w = text;
+ for (i = 0; argv[i]; i++)
+ {
+  if (i)
+   *w++ = ' ';
+  if (!e_d_bsp_word_needs_quotes(argv[i]))
+  {
+   strcpy(w, argv[i]);
+   w += strlen(argv[i]);
+   continue;
+  }
+  *w++ = '\'';
+  for (r = argv[i]; *r; r++)
+  {
+   if (*r == '\'')
+   {
+    memcpy(w, "'\\''", 4);
+    w += 4;
+   }
+   else
+    *w++ = *r;
+  }
+  *w++ = '\'';
+ }
+ *w = '\0';
+ return(text);
+}
+
+/* What the editor's own `scala-cli setup-ide` wrote in this session: the
+   project, the connection file's name and the command it names; empty
+   when it wrote nothing. */
+static char e_d_bsp_made_dir[PATH_MAX];
+static char e_d_bsp_made_file[PATH_MAX];
+static char *e_d_bsp_made_text;
+
+static char *e_d_bsp_command_text(char *const *argv);
+
+/** e_d_bsp_forget_made - Forget what setup-ide wrote. */
+static void e_d_bsp_forget_made(void)
+{
+ e_d_bsp_made_dir[0] = e_d_bsp_made_file[0] = '\0';
+ if (e_d_bsp_made_text)
+  FREE(e_d_bsp_made_text);
+ e_d_bsp_made_text = NULL;
+}
+
+/**
+ * e_d_bsp_note_made_here - The editor's setup-ide just wrote a project's .bsp file.
+ * @dir: the project.
+ *
+ * The connection file `scala-cli setup-ide` writes at the user's Ctrl-G R
+ * names scala-cli's own server: it came from the user's tool, not with the
+ * folder.  The file it wrote and the command in it are noted right away, so
+ * only that very pair is spared the question; another .json beside it, or
+ * a command changed since, is asked about like any folder's.
+ */
+static void e_d_bsp_note_made_here(const char *dir)
+{
+ char **argv;
+
+ e_d_bsp_forget_made();
+ if (!dir || !realpath(dir, e_d_bsp_made_dir))
+ {
+  e_d_bsp_made_dir[0] = '\0';
+  return;
+ }
+ argv = e_bsp_connection_argv(e_d_bsp_made_dir, e_d_bsp_made_file,
+                              sizeof e_d_bsp_made_file);
+ if (argv)
+  e_d_bsp_made_text = e_d_bsp_command_text(argv);
+ e_bsp_free_argv(argv);
+ if (!e_d_bsp_made_text)
+  e_d_bsp_forget_made();
+}
+
+/**
+ * e_d_bsp_made_here - Is this the very file and command setup-ide wrote?
+ * @rootdir: the project; @file: the connection file; @text: its command.
+ */
+static int e_d_bsp_made_here(const char *rootdir, const char *file, const char *text)
+{
+ char real[PATH_MAX];
+
+ if (!e_d_bsp_made_text || !realpath(rootdir, real))
+  return(0);
+ return(strcmp(real, e_d_bsp_made_dir) == 0 &&
+        strcmp(file, e_d_bsp_made_file) == 0 &&
+        strcmp(text, e_d_bsp_made_text) == 0);
+}
+
+/**
+ * e_d_bsp_approve - Ask before the build server a project's .bsp file names starts.
+ * @rootdir: the project; @file: the connection file's name; @argv: its command.
+ *
+ * A cloned Scala project carries its own .bsp/<name>.json, whose argv the
+ * editor starts at the first debug session: it is shown first, once per
+ * folder and command, as a folder's compiler is.  There is no build server
+ * of the user's own to start instead, so "Use mine" starts nothing.
+ * Return: 0 to start it, -1 to start nothing.
+ */
+static int e_d_bsp_approve(const char *rootdir, const char *file, char *const *argv)
+{
+ char key[WPE_STARTCMD_KEY_MAX], source[E_D_BSP_SOURCE_MAX];
+ char *text = e_d_bsp_command_text(argv);
+ E_STARTCMD c;
+ int verdict;
+
+ if (!text)
+  return(-1);
+ snprintf(key, sizeof key, "%s%s", E_D_BSP_KEY, file);
+ if (e_d_bsp_made_here(rootdir, file, text))
+ {
+  wpe_startcmd_remember(rootdir, key, text, WPE_STARTCMD_YES);
+  FREE(text);
+  return(0);
+ }
+ snprintf(source, sizeof source, E_D_BSP_SOURCE, file);
+ c.folder = rootdir;
+ c.source = source;
+ c.who = E_D_BSP_WHO;
+ c.key = key;
+ c.what = E_D_BSP_WHAT;
+ c.text = text;
+ c.own = NULL;
+ verdict = e_startcmd_approve(WpeEditor->f[WpeEditor->mxedt], &c);
+ FREE(text);
+ if (verdict == WPE_STARTCMD_RUN)
+  return(0);
+ return(-1);
+}
+
 /**
  * e_d_bsp_begin - Start the build server, without waiting for its answers.
  * @f: the source window; @dir: the project.
@@ -8667,6 +8846,7 @@ static int e_d_bsp_begin(FENSTER *f, const char *dir)
  for (i = 0; i < E_D_TIMERS; i++)
   e_d_bsp.timer[i] = E_D_BSP_NO_TIMER;
  e_d_bsp.held = e_d_bsp.ready = e_d_bsp.ok = 0;
+ e_bsp_set_approver(e_d_bsp_approve);
  e_d_bsp.b = e_bsp_start_async(dir, &e_d_bsp.io, e_d_bsp_done, NULL,
                                err, sizeof err);
  if (!e_d_bsp.b)
@@ -9473,7 +9653,8 @@ static void e_d_scala_setup_done(int ok, const char *dir)
 {
  FENSTER *top = WpeEditor->f[WpeEditor->mxedt];
 
- (void)dir;
+ if (ok)
+  e_d_bsp_note_made_here(dir);
  if (e_d_swtch || e_d_start_busy())
  {
   e_d_resume_cmd = NULL;
@@ -11185,6 +11366,82 @@ static int e_d_pick_start_arg(ECNT *cn, FENSTER *f, char *estr, size_t n)
  return(e_d_copy_arg(estr, n, e_d_file));
 }
 
+/* The debuggers by type, as the user knows them; a type the editor does not
+   know starts gdb (e_start_debug's last branch), so it is called gdb. */
+static const char *const e_d_type_names[] = {
+ "gdb", "sdb", "dbx", "xdb", "jdb", "pdb", "a68g", "dap"
+};
+#define E_D_TYPE_NAMES ((int)(sizeof e_d_type_names / sizeof e_d_type_names[0]))
+#define E_D_WHAT_DEBUGGER "debugger"
+
+/**
+ * e_deb_type_name - The debugger a type starts, as the user knows it.
+ * @type: an e_deb_type value.
+ * Return: "gdb", "pdb", ...; gdb for a type the editor does not know.
+ */
+const char *e_deb_type_name(int type)
+{
+ if (type < 0 || type >= E_D_TYPE_NAMES)
+  return(e_d_type_names[DEB_GDB]);
+ return(e_d_type_names[type]);
+}
+
+/**
+ * e_d_ends_with - Does a file name end with a suffix?
+ */
+static int e_d_ends_with(const char *name, const char *suffix)
+{
+ size_t n = strlen(name), s = strlen(suffix);
+
+ return(n > s && strcmp(name + n - s, suffix) == 0);
+}
+
+/**
+ * e_d_debugger_by_extension - Does the file's own kind choose the debugger?
+ * @name: the file to debug.
+ *
+ * Java, Python and Algol 68 sources get their own debugger whatever the
+ * options say, so the debugger a folder names does not run for them.
+ * Return: 1 for such a file.
+ */
+static int e_d_debugger_by_extension(const char *name)
+{
+ return(e_d_ends_with(name, ".java") || e_d_ends_with(name, ".py") ||
+        e_d_ends_with(name, ".a68") || e_d_ends_with(name, ".alg"));
+}
+
+/**
+ * e_d_approve_debugger - Ask before the debugger a start-folder xwperc names starts.
+ * @f: the source window.
+ *
+ * Only when the folder's file names a debugger other than the user's own,
+ * and the file's kind does not choose one anyway.  "Use mine" starts his.
+ * Return: 0 to go on (e_deb_type is the one to start), -1 when cancelled.
+ */
+static int e_d_approve_debugger(FENSTER *f)
+{
+ int named = e_opt_named_debugger(), own = e_opt_own_debugger(), verdict;
+ E_STARTCMD c;
+
+ if (named == E_OPT_DEBUGGER_UNSET || e_d_debugger_by_extension(e_d_file))
+  return(0);
+ c.folder = e_opt_start_folder();
+ c.source = E_STARTCMD_XWPERC;
+ c.who = E_STARTCMD_XWPERC_WHO;
+ c.key = WPE_STARTCMD_KEY_DEBUGGER;
+ c.what = E_D_WHAT_DEBUGGER;
+ c.text = e_deb_type_name(named);
+ c.own = e_deb_type_name(own);
+ verdict = e_startcmd_approve(f, &c);
+ if (verdict == WPE_STARTCMD_CANCEL)
+  return(-1);
+ if (verdict == WPE_STARTCMD_USE_OWN)
+  e_deb_type = own;
+ else
+  e_deb_type = named;
+ return(0);
+}
+
 int e_start_debug(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -11247,6 +11504,8 @@ int e_start_debug(FENSTER *f)
   f = cn->f[cn->mxedt-1];
  }
  e_d_out_clear();
+ if (e_d_approve_debugger(f))
+  return(-1);
  /* Auto-select debugger by file extension.
     gdb cannot debug Java bytecode or Python scripts.  The switch is said on
     the status row, not in a box: the user asked to run, and a box would make
@@ -25881,7 +26140,7 @@ static int e_d_dialog_type_of(int sel)
 
 int e_deb_options(FENSTER *f)
 {
- int ret;
+ int ret, shown;
  W_OPTSTR *o = e_init_opt_kst(f);
 
  if (!o) return(-1);
@@ -25904,6 +26163,7 @@ int e_deb_options(FENSTER *f)
     /* full path (dir + name) so a source outside the current dir is detected */
     e_deb_type = e_algol68_use_ga68_in(cn2->f[cn2->mxedt]->dirct, _fn)
                  ? DEB_GDB : DEB_A68G;
+   shown = e_deb_type;                  /* the debugger the box opens with */
    int _sel = e_d_dialog_radio_of();
  e_add_pswstr(0, 5, 3, 0, AltG, 0, "Gdb    ", o);
  e_add_pswstr(0, 5, 4, 0, AltS, 0, "Sdb    ", o);
@@ -25937,6 +26197,8 @@ int e_deb_options(FENSTER *f)
  if (ret != WPE_ESC)
  {
   e_deb_type = e_d_dialog_type_of(o->pstr[0]->num);
+  if (e_deb_type != shown)
+   e_opt_debugger_chosen(e_deb_type);    /* only a debugger he picked is his */
   e_deb_mode = o->pstr[1]->num;
   e_dap_adapter = o->pstr[2]->num;    /* 0=Auto, 1=gdb, 2=lldb-dap */
  }

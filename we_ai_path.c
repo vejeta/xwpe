@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -204,8 +205,23 @@ static int path_under_a_grant(const char *const *grants, int ngrants, const char
    project settings (hooks, MCP servers, helper commands). */
 static const char *const path_protected_names[] = {
  ".git", "xwperc", ".xwpe-ai.md", "AGENTS.md", "CLAUDE.md", "QWEN.md", ".claude", ".mcp.json",
- ".qwen", NULL
+ ".qwen",
+ /* What makes git or a commit framework run a program: husky's hook
+    folder, pre-commit's and lefthook's configs, the submodules git fetches
+    and the attributes that pick a filter driver. */
+ ".husky", ".pre-commit-config.yaml", "lefthook.yml", "lefthook.yaml", ".lefthook.yml",
+ ".lefthook.yaml", "lefthook-local.yml", "lefthook-local.yaml", ".gitmodules", NULL
 };
+
+/* git reads an attributes file in every folder, and one can send a file
+   through a filter driver, so it is protected at any depth. */
+#define PATH_GITATTRIBUTES_NAME ".gitattributes"
+
+/* The git config key that moves the hooks out of .git, and where it is. */
+#define PATH_GIT_CONFIG_NAME     "config"
+#define PATH_GIT_COMMONDIR_NAME  "commondir"
+#define PATH_GIT_CORE_SECTION    "core"
+#define PATH_GIT_HOOKS_PATH_KEY  "hookspath"
 
 /* git's folder: protected at any depth, since a repository nested in the
    workspace runs its own hooks and config as soon as git is used there. */
@@ -257,11 +273,11 @@ static int path_names_a_protected_top(const char *rel)
 }
 
 /**
- * path_passes_a_git_folder - Does any component of the path name git's folder?
- * @rel: the path relative to the workspace.
- * Return: 1 when some component is ".git".
+ * path_has_component - Does any component of the path spell @name?
+ * @rel: the path relative to the workspace; @name: the name.
+ * Return: 1 when some component is @name.
  */
-static int path_passes_a_git_folder(const char *rel)
+static int path_has_component(const char *rel, const char *name)
 {
  const char *p = rel, *end;
  size_t len;
@@ -269,11 +285,21 @@ static int path_passes_a_git_folder(const char *rel)
   end = strchr(p, '/');
   if (end) len = (size_t)(end - p);
   else len = strlen(p);
-  if (path_component_matches(p, len, PATH_GIT_NAME)) return 1;
+  if (path_component_matches(p, len, name)) return 1;
   if (!end) break;
   p = end + 1;
  }
  return 0;
+}
+
+/**
+ * path_passes_a_git_folder - Does any component of the path name git's folder?
+ * @rel: the path relative to the workspace.
+ * Return: 1 when some component is ".git".
+ */
+static int path_passes_a_git_folder(const char *rel)
+{
+ return path_has_component(rel, PATH_GIT_NAME);
 }
 
 /**
@@ -320,6 +346,170 @@ static int path_gitdir_of_workspace(const char *rroot, char *out, size_t sz)
 }
 
 /**
+ * path_git_folder - The git folder of a repository whose top is the workspace.
+ * @rroot: the resolved workspace; @out/@sz: receive the resolved git folder.
+ * Return: 1 when the workspace has a .git folder, or a .git file that leads
+ * to one, else 0.
+ */
+static int path_git_folder(const char *rroot, char *out, size_t sz)
+{
+ char dir[WPE_PATH_RESOLVED_MAX];
+ struct stat st;
+ if (path_join(dir, sizeof dir, rroot, PATH_GIT_NAME) < 0) return 0;
+ if (lstat(dir, &st) == 0 && S_ISDIR(st.st_mode))
+  return wpe_path_resolve(dir, out, sz) == WPE_PATH_RESOLVED;
+ return path_gitdir_of_workspace(rroot, out, sz);
+}
+
+/**
+ * path_trim - Cut the spaces around a text, in place.
+ * Return: where the text now starts.
+ */
+static char *path_trim(char *s)
+{
+ while (*s == ' ' || *s == '\t') s++;
+ path_trim_line_end(s);
+ return s;
+}
+
+/**
+ * path_config_value - The value of a "key = value" line of a git config.
+ * @line: the line, changed in place.
+ *
+ * A value in double quotes loses them; a ';' or '#' outside quotes starts
+ * a comment, as git reads it.
+ * Return: the value.
+ */
+static char *path_config_value(char *line)
+{
+ char *v = path_trim(line), *r, *w;
+ int quoted = 0;
+ for (r = w = v; *r; r++) {
+  if (*r == '"') { quoted = !quoted; continue; }
+  if (!quoted && (*r == ';' || *r == '#')) break;
+  *w++ = *r;
+ }
+ *w = '\0';
+ return path_trim(v);
+}
+
+/**
+ * path_config_section - The section a "[name]" or "[name "sub"]" line opens.
+ * @line: the line; @out/@sz: receive the text between the brackets, so a
+ * subsection ("core "x"", "core.x") is never taken for the section itself.
+ * Return: 1 when the line is a section header.
+ */
+static int path_config_section(const char *line, char *out, size_t sz)
+{
+ const char *p = line, *end;
+ size_t n;
+ while (*p == ' ' || *p == '\t') p++;
+ if (*p != '[') return 0;
+ p++;
+ for (end = p; *end && *end != ']'; end++)
+  ;
+ n = (size_t)(end - p);
+ if (n >= sz) n = sz - 1;
+ memcpy(out, p, n);
+ out[n] = '\0';
+ return 1;
+}
+
+/**
+ * path_config_hooks_path - The core.hooksPath one git config file sets.
+ * @file: the config file; @out/@sz: receive the value as written (the
+ * last one wins, as for git); left as it is when the file sets none.
+ *
+ * The file is only read: no git runs, so no hook and no config command can
+ * run while the editor looks.
+ */
+static void path_config_hooks_path(const char *file, char *out, size_t sz)
+{
+ char line[WPE_GITDIR_LINE_MAX], section[WPE_GITDIR_LINE_MAX] = "", *eq, *key;
+ FILE *fp = fopen(file, "r");
+ if (!fp) return;
+ while (fgets(line, sizeof line, fp)) {
+  if (path_config_section(line, section, sizeof section)) continue;
+  if (strcasecmp(section, PATH_GIT_CORE_SECTION) != 0) continue;
+  eq = strchr(line, '=');
+  if (!eq) continue;
+  *eq = '\0';
+  key = path_trim(line);
+  if (strcasecmp(key, PATH_GIT_HOOKS_PATH_KEY) != 0) continue;
+  snprintf(out, sz, "%s", path_config_value(eq + 1));
+ }
+ fclose(fp);
+}
+
+/**
+ * path_git_common_folder - The folder a worktree's git folder shares its config with.
+ * @gitdir: the resolved git folder; @out/@sz: receive the common folder.
+ * Return: 1 when @gitdir has a "commondir" file that could be followed.
+ */
+static int path_git_common_folder(const char *gitdir, char *out, size_t sz)
+{
+ char file[WPE_PATH_RESOLVED_MAX], line[WPE_GITDIR_LINE_MAX], target[WPE_PATH_RESOLVED_MAX];
+ const char *named;
+ FILE *fp;
+ if (path_join(file, sizeof file, gitdir, PATH_GIT_COMMONDIR_NAME) < 0) return 0;
+ fp = fopen(file, "r");
+ if (!fp) return 0;
+ line[0] = '\0';
+ if (!fgets(line, sizeof line, fp)) line[0] = '\0';
+ fclose(fp);
+ named = path_trim(line);
+ if (!*named) return 0;
+ if (named[0] == '/') snprintf(target, sizeof target, "%s", named);
+ else if (path_join(target, sizeof target, gitdir, named) < 0) return 0;
+ return wpe_path_resolve(target, out, sz) == WPE_PATH_RESOLVED;
+}
+
+/**
+ * path_hooks_folder - The folder git runs the workspace repository's hooks from
+ * when core.hooksPath moves them out of .git (husky's .husky, lefthook).
+ * @rroot: the resolved workspace; @gitdir: its resolved git folder;
+ * @out/@sz: receive the resolved folder.
+ *
+ * The worktree's own config wins over the shared one, as for git.  A
+ * relative value is taken from the workspace's top, "~/" from $HOME.
+ * Return: 1 when a hooks folder is named and could be followed.
+ */
+static int path_hooks_folder(const char *rroot, const char *gitdir, char *out, size_t sz)
+{
+ char file[WPE_PATH_RESOLVED_MAX], common[WPE_PATH_RESOLVED_MAX];
+ char value[WPE_GITDIR_LINE_MAX] = "", target[WPE_PATH_RESOLVED_MAX];
+ const char *home = getenv("HOME");
+ if (path_git_common_folder(gitdir, common, sizeof common) &&
+     path_join(file, sizeof file, common, PATH_GIT_CONFIG_NAME) == 0)
+  path_config_hooks_path(file, value, sizeof value);
+ if (path_join(file, sizeof file, gitdir, PATH_GIT_CONFIG_NAME) == 0)
+  path_config_hooks_path(file, value, sizeof value);
+ if (!value[0]) return 0;
+ if (value[0] == '/') snprintf(target, sizeof target, "%s", value);
+ else if (value[0] == '~' && value[1] == '/' && home && *home) {
+  if (path_join(target, sizeof target, home, value + 2) < 0) return 0;
+ } else if (path_join(target, sizeof target, rroot, value) < 0) return 0;
+ return wpe_path_resolve(target, out, sz) == WPE_PATH_RESOLVED;
+}
+
+/**
+ * path_in_git_machinery - Does a write land where git finds what it runs?
+ * @rroot: the resolved workspace; @rpath: the resolved file.
+ * Return: 1 for the folder a top-level .git file names, or the folder
+ * core.hooksPath names.
+ */
+static int path_in_git_machinery(const char *rroot, const char *rpath)
+{
+ char gitdir[WPE_PATH_RESOLVED_MAX], hooks[WPE_PATH_RESOLVED_MAX];
+ if (!path_git_folder(rroot, gitdir, sizeof gitdir)) return 0;
+ if (path_is_under(gitdir, rpath)) return 1;
+ if (path_hooks_folder(rroot, gitdir, hooks, sizeof hooks) && strlen(hooks) > 1 &&
+     path_is_under(hooks, rpath))
+  return 1;
+ return 0;
+}
+
+/**
  * wpe_path_is_protected - Is a place under the workspace one whose content runs code?
  * @rroot: the workspace, resolved; @rpath: the file, resolved.
  *
@@ -331,13 +521,13 @@ static int path_gitdir_of_workspace(const char *rroot, char *out, size_t sz)
  * the plain inside/outside answer let them through under edits and auto;
  * each such write now asks, and says why.
  * Return: 1 when @rpath is one of path_protected_names at the workspace's
- * top or below one, has a ".git" component at any depth, or lies in the
- * folder a top-level .git file names; 0 otherwise, and for a path that is
- * not under @rroot at all.
+ * top or below one, has a ".git" or ".gitattributes" component at any
+ * depth, lies in the folder a top-level .git file names, or in the folder
+ * the repository's core.hooksPath names (read from its config file, no git
+ * run); 0 otherwise, and for a path that is not under @rroot at all.
  */
 int wpe_path_is_protected(const char *rroot, const char *rpath)
 {
- char gitdir[WPE_PATH_RESOLVED_MAX];
  const char *rel;
  size_t n;
  if (!rroot || !rpath || !path_is_under(rroot, rpath)) return 0;
@@ -348,9 +538,8 @@ int wpe_path_is_protected(const char *rroot, const char *rpath)
  if (!*rel) return 0;                        /* the workspace folder itself */
  if (path_names_a_protected_top(rel)) return 1;
  if (path_passes_a_git_folder(rel)) return 1;
- if (path_gitdir_of_workspace(rroot, gitdir, sizeof gitdir) && path_is_under(gitdir, rpath))
-  return 1;
- return 0;
+ if (path_has_component(rel, PATH_GITATTRIBUTES_NAME)) return 1;
+ return path_in_git_machinery(rroot, rpath);
 }
 
 /**

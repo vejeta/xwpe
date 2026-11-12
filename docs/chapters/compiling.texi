@@ -208,6 +208,22 @@ Settings per language:
 @code{Other} uses a custom interpreter string that you define.
 @end itemize
 
+When an @file{xwperc} in the folder you started in sets a language's
+compiler line, and it is not yours or the built-in one, the first
+@key{F9}, @kbd{Alt-C} or debug build shows the whole line (the
+program, its options, the linker options and the output name) and asks
+@samp{Run it}, @samp{Use mine} or @samp{Cancel}; the answer is kept for
+that folder and line.  A project file's @code{CMP}, @code{CMPFLAGS} and
+@code{LDFLAGS} are asked about the same way, against your own C line.
+Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A}) are not asked about: they run
+the folder's own program, with the folder's @code{Arguments}, and its
+@file{Makefile}, which is the folder's code by design.  The output
+folder (@code{Exedir}) and every file name a build hands over are passed
+as paths, never as options.  The box shows the command line, not the
+output folder: where a folder's @code{Exedir}, @code{Executable},
+@code{EXENAME} or @code{LIBNAME} puts the build's output is not asked
+about yet.  @xref{Folder commands}.
+
 @section Language support
 
 @cindex language support

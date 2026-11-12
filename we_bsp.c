@@ -399,35 +399,71 @@ void e_bsp_request_timer(e_bsp_session *b, int which)
 
 /* ---- BSP connection descriptor (.bsp/<name>.json) ---------------------- */
 
+/* Asked before a connection file's command starts (e_bsp_set_approver). */
+static e_bsp_approve_fn bsp_approver;
+
+void e_bsp_set_approver(e_bsp_approve_fn fn)
+{
+ bsp_approver = fn;
+}
+
 /* Read the first ".json" file in workdir/.bsp and return its "argv" array as a
-   NULL-terminated, malloc'd char* vector (each string malloc'd).  NULL if none. */
-static char **bsp_read_connection_argv(const char *workdir)
+   NULL-terminated, malloc'd char* vector (each string malloc'd).  NULL if none.
+   @file/@filesz receive the connection file's name. */
+/* The connection file scala-cli writes, read by name before any other. */
+#define BSP_SCALA_CLI_FILE "scala-cli.json"
+#define BSP_JSON_SUFFIX    ".json"
+
+/**
+ * bsp_connection_file - Which connection file of a project's .bsp is read.
+ * @dir: the project's .bsp folder; @file/@filesz: receive the file's name.
+ *
+ * scala-cli's own file by name when it is there; else the first ".json" by
+ * name, so the choice never depends on the order the folder lists them in.
+ * Return: 1 when one was found.
+ */
+static int bsp_connection_file(const char *dir, char *file, size_t filesz)
 {
  char path[PATH_MAX];
  DIR *d;
  struct dirent *de;
+ struct stat st;
+ size_t l;
+
+ file[0] = '\0';
+ snprintf(path, sizeof(path), "%s/%s", dir, BSP_SCALA_CLI_FILE);
+ if (stat(path, &st) == 0 && S_ISREG(st.st_mode))
+ {
+  snprintf(file, filesz, "%s", BSP_SCALA_CLI_FILE);
+  return 1;
+ }
+ d = opendir(dir);
+ if (!d)
+  return 0;
+ while ((de = readdir(d)))
+ {
+  l = strlen(de->d_name);
+  if (l <= strlen(BSP_JSON_SUFFIX) || strcmp(de->d_name + l - strlen(BSP_JSON_SUFFIX), BSP_JSON_SUFFIX))
+   continue;
+  if (!file[0] || strcmp(de->d_name, file) < 0)
+   snprintf(file, filesz, "%s", de->d_name);
+ }
+ closedir(d);
+ return file[0] != '\0';
+}
+
+static char **bsp_read_connection_argv(const char *workdir, char *file, size_t filesz)
+{
+ char path[PATH_MAX];
  char jsonpath[PATH_MAX];
  struct json_object *root, *argv;
  char **av = NULL;
  int n, i;
 
  snprintf(path, sizeof(path), "%s/.bsp", workdir);
- d = opendir(path);
- if (!d)
+ if (!bsp_connection_file(path, file, filesz))
   return NULL;
- jsonpath[0] = '\0';
- while ((de = readdir(d)))
- {
-  size_t l = strlen(de->d_name);
-  if (l > 5 && !strcmp(de->d_name + l - 5, ".json"))
-  {
-   snprintf(jsonpath, sizeof(jsonpath), "%s/%s", path, de->d_name);
-   break;
-  }
- }
- closedir(d);
- if (!jsonpath[0])
-  return NULL;
+ snprintf(jsonpath, sizeof(jsonpath), "%s/%s", path, file);
  root = json_object_from_file(jsonpath);
  if (!root)
   return NULL;
@@ -438,7 +474,12 @@ static char **bsp_read_connection_argv(const char *workdir)
  av = calloc(n + 1, sizeof(char *));
  if (av)
   for (i = 0; i < n; i++)
-   av[i] = strdup(json_object_get_string(json_object_array_get_idx(argv, i)));
+  {
+   const char *word = json_object_get_string(json_object_array_get_idx(argv, i));
+   if (!word)
+    word = "";                            /* a null entry is an empty word */
+   av[i] = strdup(word);
+  }
  json_object_put(root);
  return av;
 }
@@ -451,6 +492,29 @@ static void bsp_free_argv(char **av)
  for (i = 0; av[i]; i++)
   free(av[i]);
  free(av);
+}
+
+/**
+ * e_bsp_connection_argv - The command a project's .bsp connection file names.
+ * @workdir: the project; @file/@filesz: receive the connection file's name.
+ *
+ * The same file and words the start would use, so the editor can note
+ * exactly what its own `scala-cli setup-ide` just wrote.
+ * Return: the malloc'd argv (free with e_bsp_free_argv), or NULL.
+ */
+char **e_bsp_connection_argv(const char *workdir, char *file, size_t filesz)
+{
+ char rootdir[PATH_MAX];
+
+ if (!realpath(workdir, rootdir))
+  snprintf(rootdir, sizeof(rootdir), "%s", workdir);
+ return bsp_read_connection_argv(rootdir, file, filesz);
+}
+
+/** e_bsp_free_argv - Free what e_bsp_connection_argv gave. */
+void e_bsp_free_argv(char **argv)
+{
+ bsp_free_argv(argv);
 }
 
 /**
@@ -578,12 +642,12 @@ static int bsp_parse_uri(const char *uri, char *host, size_t hsz, int *port)
  */
 int e_bsp_needs_setup(const char *workdir)
 {
- char rootdir[PATH_MAX];
+ char rootdir[PATH_MAX], file[PATH_MAX];
  char **argv;
 
  if (!realpath(workdir, rootdir))
   snprintf(rootdir, sizeof(rootdir), "%s", workdir);
- argv = bsp_read_connection_argv(rootdir);
+ argv = bsp_read_connection_argv(rootdir, file, sizeof file);
  if (!argv)
   return 1;
  bsp_free_argv(argv);
@@ -791,12 +855,22 @@ static void bsp_start_finished(int ok, void *ctx)
 static e_bsp_session *bsp_session_spawn(const char *rootdir, char *errbuf, size_t errsz)
 {
  e_bsp_session *b;
- char **argv = bsp_read_connection_argv(rootdir);
+ char file[PATH_MAX];
+ char **argv;
 
+ file[0] = '\0';
+ argv = bsp_read_connection_argv(rootdir, file, sizeof file);
  if (!argv)
  {
   if (errbuf)
    snprintf(errbuf, errsz, "no .bsp connection file in %s", rootdir);
+  return NULL;
+ }
+ if (!argv[0] || (bsp_approver && bsp_approver(rootdir, file, argv) != 0))
+ {
+  bsp_free_argv(argv);
+  if (errbuf)
+   snprintf(errbuf, errsz, "%s", E_BSP_NOT_APPROVED);
   return NULL;
  }
  b = calloc(1, sizeof(*b));

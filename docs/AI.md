@@ -456,7 +456,13 @@ project that leads out counts as outside) and judges where a path really lands:
   everything below it (hooks, and a config that can name a command), at any
   depth and also where a worktree's `.git` file points, and at the top of the
   workspace `xwperc`, `.xwpe-ai.md`, `AGENTS.md`, `CLAUDE.md`, `QWEN.md`,
-  `.claude/`, `.mcp.json` and `.qwen/`, and your own config folder
+  `.claude/`, `.mcp.json` and `.qwen/`; the same names in the folder the
+  editor was started in when that is a folder below the workspace; what makes
+  git or a commit framework run a program: `.husky/`,
+  `.pre-commit-config.yaml`, `lefthook.yml` (and its `.yaml`, dotted and
+  `-local` forms), `.gitmodules`, a `.gitattributes` at any depth, and the
+  folder the repository's `core.hooksPath` names (read from its config, no
+  git run); and your own config folder
   (`~/.config/xwpe/`, `~/.xwpe/`) when the workspace holds it, as it does when
   you edit a file in your home folder. The box shows the diff under
   `! changes how git, the editor or the engine runs code: <path>`, and `n`
@@ -566,7 +572,14 @@ the status line says so at start:
 `./xwperc may not set (only your own config may): AIEditHook`. Saving the
 options in such a folder (Options > AI Ok, `Alt-G y`, Save Options) writes
 these keys to your own file and the rest to the folder's file, so your hook or
-engine command never lands in a project you may share.
+engine command never lands in a project you may share; they leave the folder's
+file even when your own cannot be written, and the status line says so. The
+print command, compilers and debugger that file sets (and a `.prj`'s compiler
+line and install lines, and a Scala project's `.bsp` build server) still run,
+but the first time one differs from yours the editor shows it and asks Run it
+/ Use mine / Cancel, remembering the answer in
+`~/.local/state/xwpe/start-commands`; see "Commands a folder names are asked
+about first" in the manual.
 
 **Post-edit hook.** `AIEditHook` in the `[Programming]` section of `xwperc`
 (e.g. `clang-format -i`) runs on every file the assistant wrote, patched or

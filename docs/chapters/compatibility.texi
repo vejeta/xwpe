@@ -310,6 +310,41 @@ the keyboard waits for the editor until the command ends.  A command that
 hung used to leave no way out but killing the editor.
 @end table
 
+@section Commands a project folder names
+
+@table @asis
+@item The print command, compilers and debugger of a folder's xwperc or a project file
+@cindex xwperc, commands from a project folder
+@cindex project file, commands from
+The original read an @file{xwperc} in the folder it was started in as
+the whole configuration, and ran its print command, compiler lines and
+debugger, and a project file's @code{CMP}, @code{CMPFLAGS},
+@code{LDFLAGS} and @code{install:} lines, with no question (a Scala
+project's @file{.bsp} build server is newer than the original, and is
+treated the same way).  An @code{Exedir}, @code{FILES} or @code{LIBNAME}
+value starting with @samp{-} or @samp{@@} was handed to the compiler as
+an option or a response file; it is now passed as @file{./}@var{path}.
+Now the first time such a command is about to run (a compile, a link, a
+print, an install, a debugger start or a build server start) and
+differs from your own setting, xwpe shows it and asks @samp{Run it},
+@samp{Use mine} or @samp{Cancel}, and remembers the answer for that
+folder and command in your state folder (@pxref{Folder commands}).  The
+reason: the commands a folder's files name for a compile, a link, a
+print, an install, a debugger start or a build-server start now ask
+once, and a path a folder value hands to a program is never read as an
+option or a response file.  Run and Make still run the folder's own
+program, @code{Arguments} and @file{Makefile}, as they always did.
+
+Not covered yet, and planned: where a folder's @code{EXENAME},
+@code{Exedir}, @code{Executable} or @code{LIBNAME} puts the build's
+output (it can be outside the folder, for example
+@file{~/.local/bin}); a folder's @code{IncludePath} widening what the
+assistant may read; and a debug session reading the folder's own
+debugger start-up files (@file{.pdbrc}, @file{.perldb},
+@file{jdb.ini}, @file{.gdbinit}-style files) and running its program,
+as Run and Make do.
+@end table
+
 @section Colours on an X display
 
 @table @asis

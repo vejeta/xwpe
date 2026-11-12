@@ -209,7 +209,11 @@ def test_a_missing_compiler_is_named_and_nothing_hangs(tmp_path):
     """The C compiler points at a binary that does not exist: F9 shows the
     command it tried, names the binary in the error row, and the editor
     goes on taking keys."""
-    (tmp_path / "xwperc").write_text("[Language C]\nCompiler : nosuch_cc_for_test\n")
+    # The user's own config (HOME is the session's folder): a start-folder
+    # xwperc's compiler would first be asked about (tests/test_startcmd.py).
+    cfg = tmp_path / ".config" / "xwpe"
+    cfg.mkdir(parents=True)
+    (cfg / "xwperc").write_text("[Language C]\nCompiler : nosuch_cc_for_test\n")
     with session(tmp_path, "int main(void){return 0;}\n", "t.c") as w:
         w.key(F9, delay=BUILD_WAIT)
         assert wait_screen(w, "Error at Command", tmo=FIND_TIMEOUT), screen_text(w)

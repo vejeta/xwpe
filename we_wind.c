@@ -9,6 +9,8 @@
 #include "edit.h"
 #include "we_buffer.h"
 #include "we_testdump.h"
+#include "we_paint.h"
+#include "we_startcmd.h"
 #include <wchar.h>
 #ifdef WPE_AI
 #include "we_ai.h"
@@ -686,6 +688,405 @@ int e_message(int sw, char *str, FENSTER *f)
  ret = e_opt_kst_message(o);
  freeostr(o);
  return(ret == WPE_ESC ? WPE_ESC : (ret == AltN ? 'N' : 'Y'));
+}
+
+/* The question a folder's command gets: its frame, and the room it takes. */
+#define E_STARTCMD_TITLE_FMT    "Command from %s"
+#define E_STARTCMD_HEAD_FMT     "%s sets the %s to:"
+#define E_STARTCMD_OWN_FMT      "Your own setting: %s"
+#define E_STARTCMD_OWN_NONE     "Your own setting: (none)"
+#define E_STARTCMD_FOLDER_FMT   "Folder: %s"
+#define E_STARTCMD_LONG_FMT     "the command is %lu characters; read it in %s"
+#define E_STARTCMD_CUT_MARK     "..."
+#define E_STARTCMD_BOX_MAX_W    76   /* the widest the box gets            */
+#define E_STARTCMD_MARGIN       3    /* columns from the frame to the text */
+#define E_STARTCMD_INDENT       2    /* the command's own indent           */
+#define E_STARTCMD_FIXED_ROWS   11   /* frame, sentences, blanks, buttons  */
+#define E_STARTCMD_SCREEN_ROWS  2    /* the menu bar and the status row    */
+#define E_STARTCMD_LINE_MAX     1024 /* a sentence of the box             */
+#define E_STARTCMD_STATUS_MAX   512  /* a status line about the answer    */
+
+/* What the status row says after each answer. */
+#define E_STARTCMD_RAN_FMT      "running %s's %s (remembered for this folder)"
+#define E_STARTCMD_MINE_FMT     "using your own %s (%s); %s's was not run"
+#define E_STARTCMD_CANCEL_FMT   "%s's %s was not run"
+#define E_STARTCMD_STORE_BAD    "could not read the remembered commands: asking again"
+#define E_STARTCMD_NOT_KEPT     "could not remember the answer: the next run asks again"
+
+/* The question's buttons, and what each one answers. */
+#define E_STARTCMD_RUN_KEY  AltR
+#define E_STARTCMD_MINE_KEY AltU
+
+/* The store could not be read: said once a session. */
+static int e_startcmd_store_said;
+
+/* What ends a row of the command when the command goes on below it. */
+#define E_STARTCMD_WRAP_MARK "\\"
+#define E_STARTCMD_WRAP_ROOM 1
+
+/**
+ * e_startcmd_rows - Cut a shown command into rows of the box's width.
+ * @shown: the command in its printable form; @width: characters per row;
+ * @rows: receives the malloc'd rows (the caller frees each and the list).
+ *
+ * The cut is by characters, not words, so every byte of the command is on
+ * screen in the order it runs, a long option included.  A row the command
+ * goes on after ends with E_STARTCMD_WRAP_MARK, so a blank right at the
+ * cut is seen before the mark and not lost at the row's end (the printable
+ * form doubles every backslash of the command, so a single one is never
+ * part of it).
+ * Return: the number of rows, 0 out of memory.
+ */
+static int e_startcmd_rows(const char *shown, int width, char ***rows)
+{
+ const char *p = shown;
+ int n = 0, chars, len, room = width - E_STARTCMD_WRAP_ROOM;
+ size_t take;
+ char **grown;
+
+ *rows = NULL;
+ if (room < 1)
+  room = 1;
+ while (*p)
+ {
+  const char *start = p;
+  for (chars = 0; *p && chars < room; chars++)
+  {
+   len = mblen(p, MB_CUR_MAX);
+   if (len < 1) len = 1;
+   p += len;
+  }
+  if (!(grown = REALLOC(*rows, (n + 1) * sizeof(char *))))
+   return(n);
+  *rows = grown;
+  take = p - start;
+  if (!((*rows)[n] = MALLOC(take + E_STARTCMD_WRAP_ROOM + 1)))
+   return(n);
+  memcpy((*rows)[n], start, take);
+  (*rows)[n][take] = '\0';
+  if (*p)
+   strcat((*rows)[n], E_STARTCMD_WRAP_MARK);
+  n++;
+ }
+ return(n);
+}
+
+/** e_startcmd_free_rows - Free what e_startcmd_rows made. */
+static void e_startcmd_free_rows(char **rows, int n)
+{
+ int i;
+
+ for (i = 0; i < n; i++)
+  FREE(rows[i]);
+ if (rows)
+  FREE(rows);
+}
+
+/**
+ * e_startcmd_fit - A sentence cut to the box's width.
+ * @text: the sentence; @width: the room; @out/@sz: receive it.
+ * @keep_end: 1 to keep the end (a folder), 0 to keep the start.
+ */
+static void e_startcmd_fit(const char *text, int width, char *out, size_t sz,
+                           int keep_end)
+{
+ int len = (int)strlen(text), mark = (int)strlen(E_STARTCMD_CUT_MARK);
+
+ if (len <= width || width <= mark)
+  snprintf(out, sz, "%s", text);
+ else if (keep_end)
+  snprintf(out, sz, "%s%s", E_STARTCMD_CUT_MARK, text + len - (width - mark));
+ else
+  snprintf(out, sz, "%.*s%s", width - mark, text, E_STARTCMD_CUT_MARK);
+}
+
+/**
+ * e_startcmd_shown - The printable form of a command, malloc'd.
+ * @text: the command.
+ * Return: the form (escapes written out), or NULL out of memory.
+ */
+static char *e_startcmd_shown(const char *text)
+{
+ size_t need = wpe_startcmd_printable(text, NULL, 0) + 1;
+ char *shown = MALLOC(need);
+
+ if (shown)
+  wpe_startcmd_printable(text, shown, need);
+ return(shown);
+}
+
+/**
+ * e_startcmd_add_line - Put one sentence in the box, cut to its width.
+ * @o: the box; @y: its row; @text: the sentence; @width: the room;
+ * @keep_end: as e_startcmd_fit.
+ */
+static void e_startcmd_add_line(W_OPTSTR *o, int y, const char *text, int width,
+                                int keep_end)
+{
+ char line[E_STARTCMD_LINE_MAX];
+
+ e_startcmd_fit(text, width, line, sizeof line, keep_end);
+ e_add_txtstr(E_STARTCMD_MARGIN, y, line, o);
+}
+
+/**
+ * e_startcmd_add_own - The user's own setting, as the box names it.
+ * @o: the box; @y: its row; @own: the user's own command, or NULL;
+ * @width: the room.
+ */
+static void e_startcmd_add_own(W_OPTSTR *o, int y, const char *own, int width)
+{
+ char line[E_STARTCMD_LINE_MAX];
+ char *shown;
+
+ if (!own || !*own)
+ {
+  e_startcmd_add_line(o, y, E_STARTCMD_OWN_NONE, width, 0);
+  return;
+ }
+ shown = e_startcmd_shown(own);
+ if (!shown)
+  return;
+ snprintf(line, sizeof line, E_STARTCMD_OWN_FMT, shown);
+ FREE(shown);
+ e_startcmd_add_line(o, y, line, width, 0);
+}
+
+/**
+ * e_startcmd_add_command - The command's rows, or as many as fit.
+ * @o: the box; @y: the first row; @rows/@nrows: the cut command;
+ * @room: the rows the screen leaves; @c: the command; @width: the room.
+ * Return: 1 when the whole command is shown, 0 when it was cut and the
+ * last row says so.
+ */
+static int e_startcmd_add_command(W_OPTSTR *o, int y, char **rows, int nrows,
+                                  int room, const E_STARTCMD *c, int width)
+{
+ char line[E_STARTCMD_LINE_MAX];
+ int i;
+
+ if (nrows <= room)
+ {
+  for (i = 0; i < nrows; i++)
+   e_add_txtstr(E_STARTCMD_MARGIN + E_STARTCMD_INDENT, y + i, rows[i], o);
+  return(1);
+ }
+ for (i = 0; i < room - 1; i++)
+  e_add_txtstr(E_STARTCMD_MARGIN + E_STARTCMD_INDENT, y + i, rows[i], o);
+ snprintf(line, sizeof line, E_STARTCMD_LONG_FMT,
+          (unsigned long)strlen(c->text), c->source);
+ e_startcmd_add_line(o, y + room - 1, line, width, 0);
+ return(0);
+}
+
+/**
+ * e_startcmd_add_buttons - Run it (when the whole command is shown), Use
+ * mine, Cancel; the focus starts on Use mine.
+ * @o: the box; @y: the buttons' row; @offer_run: 1 to offer Run it.
+ */
+static void e_startcmd_add_buttons(W_OPTSTR *o, int y, int offer_run)
+{
+ int w = o->xe - o->xa;
+
+ if (offer_run)
+  e_add_bttstr(4, y, 0, E_STARTCMD_RUN_KEY, "Run it", NULL, o);
+ e_add_bttstr(w / 2 - 5, y, 0, E_STARTCMD_MINE_KEY, "Use mine", NULL, o);
+ e_add_bttstr(w - 11, y, -1, WPE_ESC, "Cancel", NULL, o);
+ o->crsw = E_STARTCMD_MINE_KEY;      /* Enter on no button */
+ o->bgsw = E_STARTCMD_MINE_KEY;      /* the focus as the box opens */
+}
+
+/**
+ * e_startcmd_ask - Show a folder's command and ask whether to run it.
+ * @f: the window the command was asked from; @c: the command.
+ *
+ * The command is shown whole, every control byte written out, so what the
+ * user approves is what runs; when it does not fit on the screen, Run it is
+ * not offered at all.
+ * Return: WPE_STARTCMD_RUN, WPE_STARTCMD_USE_OWN or WPE_STARTCMD_CANCEL.
+ */
+static int e_startcmd_ask(FENSTER *f, const E_STARTCMD *c)
+{
+ W_OPTSTR *o;
+ char title[E_STARTCMD_LINE_MAX], line[E_STARTCMD_LINE_MAX];
+ char *shown, **rows = NULL;
+ int width, text_w, nrows, room, shown_rows, whole, y, ret;
+
+ if (!(shown = e_startcmd_shown(c->text)))
+  return(WPE_STARTCMD_CANCEL);
+ if (!(o = e_init_opt_kst(f)))
+ {
+  FREE(shown);
+  return(WPE_STARTCMD_CANCEL);
+ }
+ width = MAXSCOL - 4;
+ if (width > E_STARTCMD_BOX_MAX_W)
+  width = E_STARTCMD_BOX_MAX_W;
+ text_w = width - 2 * E_STARTCMD_MARGIN;
+ nrows = e_startcmd_rows(shown, text_w - E_STARTCMD_INDENT, &rows);
+ room = MAXSLNS - E_STARTCMD_SCREEN_ROWS - E_STARTCMD_FIXED_ROWS;
+ if (room < 1)
+  room = 1;
+ shown_rows = nrows < room ? nrows : room;
+ if (shown_rows < 1)
+  shown_rows = 1;
+ o->xa = (MAXSCOL - width) / 2;
+ o->xe = o->xa + width;
+ o->ya = (MAXSLNS - shown_rows - E_STARTCMD_FIXED_ROWS) / 2;
+ if (o->ya < 1)
+  o->ya = 1;
+ o->ye = o->ya + shown_rows + E_STARTCMD_FIXED_ROWS - 1;
+ o->bgsw = 0;
+ snprintf(title, sizeof title, E_STARTCMD_TITLE_FMT, c->source);
+ o->name = title;
+ snprintf(line, sizeof line, E_STARTCMD_HEAD_FMT, c->who, c->what);
+ e_startcmd_add_line(o, 2, line, text_w, 0);
+ whole = e_startcmd_add_command(o, 4, rows, nrows, room, c, text_w);
+ y = 4 + shown_rows + 1;
+ e_startcmd_add_own(o, y, c->own, text_w);
+ snprintf(line, sizeof line, E_STARTCMD_FOLDER_FMT, c->folder);
+ e_startcmd_add_line(o, y + 1, line, text_w, 1);
+ e_startcmd_add_buttons(o, o->ye - o->ya - 2, whole);
+ wpe_ui_trace("startcmd ask %s %s%s", c->key, shown, whole ? "" : " (too long)");
+ ret = e_opt_kst_message(o);
+ freeostr(o);
+ e_startcmd_free_rows(rows, nrows);
+ FREE(shown);
+ if (ret == E_STARTCMD_RUN_KEY && whole)
+  return(WPE_STARTCMD_RUN);
+ if (ret == E_STARTCMD_MINE_KEY)
+  return(WPE_STARTCMD_USE_OWN);
+ return(WPE_STARTCMD_CANCEL);
+}
+
+/**
+ * e_startcmd_say - Put a line about the answer on the status row.
+ * @f: the window; @text: the line.
+ */
+static void e_startcmd_say(FENSTER *f, const char *text)
+{
+ wpe_paint_trace_say(text);
+ e_status_hold(text);
+ e_status_paint(f->ed->fb, text);
+ e_refresh();
+}
+
+/**
+ * e_startcmd_say_answer - Tell the user which command now runs, and why.
+ * @f: the window; @c: the command; @verdict: the answer;
+ * @remembered: 1 when the answer was just kept for this folder.
+ */
+static void e_startcmd_say_answer(FENSTER *f, const E_STARTCMD *c, int verdict,
+                                  int remembered)
+{
+ char line[E_STARTCMD_STATUS_MAX], own[E_STARTCMD_STATUS_MAX];
+
+ own[0] = '\0';
+ if (c->own)
+  wpe_startcmd_printable(c->own, own, sizeof own);
+ if (verdict != WPE_STARTCMD_CANCEL && !remembered)
+  snprintf(line, sizeof line, "%s", E_STARTCMD_NOT_KEPT);
+ else if (verdict == WPE_STARTCMD_RUN)
+  snprintf(line, sizeof line, E_STARTCMD_RAN_FMT, c->source, c->what);
+ else if (verdict == WPE_STARTCMD_USE_OWN)
+  snprintf(line, sizeof line, E_STARTCMD_MINE_FMT, c->what, own, c->source);
+ else
+  snprintf(line, sizeof line, E_STARTCMD_CANCEL_FMT, c->source, c->what);
+ e_startcmd_say(f, line);
+}
+
+/** e_startcmd_answer_word - The trace's word for an answer. */
+static const char *e_startcmd_answer_word(int verdict)
+{
+ if (verdict == WPE_STARTCMD_RUN)
+  return("run");
+ if (verdict == WPE_STARTCMD_USE_OWN)
+  return("own");
+ return("cancel");
+}
+
+/**
+ * e_startcmd_say_store_bad - Say once that the remembered answers could not
+ * be read, so the user knows why a folder he answered for asks again.
+ * @f: the window.
+ */
+static void e_startcmd_say_store_bad(FENSTER *f)
+{
+ if (e_startcmd_store_said)
+  return;
+ if (wpe_startcmd_last_store_state() != WPE_STARTCMD_STORE_BAD)
+  return;
+ e_startcmd_store_said = 1;
+ e_startcmd_say(f, E_STARTCMD_STORE_BAD);
+}
+
+/**
+ * e_startcmd_approve - Ask before running a command a project folder names.
+ * @f: the window the command was asked from; @c: the command, the folder
+ * and the file that named it, and the user's own command.
+ *
+ * Called by every site that starts a program a start-folder xwperc or a
+ * project file can name (the print command, a language's compile and link
+ * line, the debugger), just before it starts the child.  A cloned project
+ * could otherwise run a program of its own on the user's first F9: the user
+ * now sees the command and chooses.  His own command, the built-in default
+ * and a command he answered for in this folder run without a question; a
+ * changed command asks again.  The answer is kept in his state folder.
+ * Return: WPE_STARTCMD_RUN (start the folder's command),
+ * WPE_STARTCMD_USE_OWN (start @c->own instead) or WPE_STARTCMD_CANCEL
+ * (start nothing).
+ */
+int e_startcmd_approve(FENSTER *f, const E_STARTCMD *c)
+{
+ int verdict, answer, kept;
+
+ if (!c || !c->folder || !c->text)
+  return(WPE_STARTCMD_RUN);
+ verdict = wpe_startcmd_check(c->folder, c->key, c->text);
+ if (verdict == WPE_STARTCMD_RUN)
+ {
+  wpe_ui_trace("startcmd run %s", c->key);
+  return(verdict);
+ }
+ if (verdict == WPE_STARTCMD_USE_OWN)
+ {
+  wpe_ui_trace("startcmd remembered %s own", c->key);
+  e_startcmd_say_answer(f, c, verdict, 1);
+  return(verdict);
+ }
+ e_startcmd_say_store_bad(f);
+ verdict = e_startcmd_ask(f, c);
+ wpe_ui_trace("startcmd answer %s %s", c->key, e_startcmd_answer_word(verdict));
+ if (verdict == WPE_STARTCMD_CANCEL)
+ {
+  e_startcmd_say_answer(f, c, verdict, 0);
+  return(verdict);
+ }
+ if (verdict == WPE_STARTCMD_RUN)
+  answer = WPE_STARTCMD_YES;
+ else
+  answer = WPE_STARTCMD_NO;
+ kept = wpe_startcmd_remember(c->folder, c->key, c->text, answer) == 0;
+ e_startcmd_say_answer(f, c, verdict, kept);
+ return(verdict);
+}
+
+/**
+ * e_startcmd_typed - A command the user set in Options counts as his own.
+ * @folder: the folder whose file the options came from, or NULL;
+ * @key: the key; @text: the command he set.
+ *
+ * Saving the Programming, Print or Debugger options with a command the
+ * user typed records a yes for it, in this folder: he is not asked about
+ * what he has just written himself, now or after the next start.
+ */
+void e_startcmd_typed(const char *folder, const char *key, const char *text)
+{
+ if (!key || !text)
+  return;
+ wpe_startcmd_note_own(key, text);
+ if (folder && *text)
+  wpe_startcmd_remember(folder, key, text, WPE_STARTCMD_YES);
 }
 
 /*         First opening of a window                 */

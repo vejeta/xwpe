@@ -10,6 +10,7 @@
 #include "WeExpArr.h"
 #include "we_ai.h"       /* AI assistant entry point (guarded by WPE_AI) */
 #include "we_buffer.h"
+#include "we_startcmd.h"
 
 #ifdef PROG
 
@@ -477,6 +478,39 @@ static void e_p_make_note_program_current(const char *estr)
   e_build_note_up_to_date(estr);
 }
 
+static void e_build_path_too_long(FENSTER *f, const char *what);
+
+/* What a single-file build calls its program and its object. */
+#define E_P_PROGRAM_SUFFIX ".e"
+#define E_P_OBJECT_SUFFIX  ".o"
+#define E_P_CLASS_SUFFIX   ".class"
+
+/**
+ * e_p_link_operands - The program and the object file of F9's link step.
+ * @estr/@ostr: receive them; @sz: the room of each; @stem: the source's
+ * name without its extension.
+ *
+ * Both go through e_build_operand, so an Exedir a folder sets ("@r") makes
+ * a path ("./@r/t.o") and never a response file the linker reads.
+ * Return: 0, or -1 when one does not fit.
+ */
+static int e_p_link_operands(char *estr, char *ostr, size_t sz, const char *stem)
+{
+ char name[WPE_BUILD_PATH_MAX];
+
+ if (e_s_prog.exe_name && e_s_prog.exe_name[0])
+  snprintf(name, sizeof name, "%s", e_s_prog.exe_name);
+ else
+  snprintf(name, sizeof name, "%s%s", stem, E_P_PROGRAM_SUFFIX);
+ if (e_build_operand(estr, sz, e_prog.exedir, name))
+  return(-1);
+ if (e_s_prog.comp_sw & 1)
+  snprintf(name, sizeof name, "%s%s", stem, E_P_CLASS_SUFFIX);
+ else
+  snprintf(name, sizeof name, "%s%s", stem, E_P_OBJECT_SUFFIX);
+ return(e_build_operand(ostr, sz, e_prog.exedir, name));
+}
+
 /**
  * e_p_make_link - The link step of F9, once the compile succeeded.
  * @cn: the desktop.
@@ -487,9 +521,9 @@ static void e_p_make_note_program_current(const char *estr)
 static void e_p_make_link(ECNT *cn)
 {
  FENSTER *f;
- char ostr[128], estr[128], mstr[80];
+ char ostr[WPE_BUILD_PATH_MAX], estr[WPE_BUILD_PATH_MAX], mstr[80];
  char cwd_saved[1024];
- int len, file = -1, cwd_chg = 0;
+ int file = -1, cwd_chg = 0;
  struct stat cbuf[1], obuf[1];
  int linkRequest = 1; /* assume linking has to be done */
 
@@ -506,27 +540,15 @@ static void e_p_make_link(ECNT *cn)
   strcpy(e_arg[1], "-o");
   snprintf(mstr, sizeof(mstr), "%s", f->datnam);
   WpeStringCutChar(mstr, '.');
-  len = strlen(e_prog.exedir) - 1;
-  if (e_s_prog.exe_name && e_s_prog.exe_name[0])
+  if (e_p_link_operands(estr, ostr, sizeof estr, mstr))
   {
-   if (e_prog.exedir[len] == DIRC)
-    snprintf(estr, sizeof(estr), "%s%s", e_prog.exedir, e_s_prog.exe_name);
-   else
-    snprintf(estr, sizeof(estr), "%s%c%s", e_prog.exedir, DIRC, e_s_prog.exe_name);
+   e_free_arg(e_arg, e_argc);
+   if (cwd_chg)
+    e_build_popd(cwd_saved);
+   e_build_path_too_long(f, "program");
+   e_build_chain_end(f, -1, NULL);
+   return;
   }
-  else
-  {
-   if (e_prog.exedir[len] == DIRC)
-    snprintf(estr, sizeof(estr), "%s%s.e", e_prog.exedir, mstr);
-   else
-    snprintf(estr, sizeof(estr), "%s%c%s.e", e_prog.exedir, DIRC, mstr);
-  }
-  if (e_prog.exedir[len] == DIRC)
-   snprintf(ostr, sizeof(ostr), (e_s_prog.comp_sw & 1) ? "%s%s.class" : "%s%s.o",
-            e_prog.exedir, mstr);
-  else
-   snprintf(ostr, sizeof(ostr), (e_s_prog.comp_sw & 1) ? "%s%c%s.class" : "%s%c%s.o",
-            e_prog.exedir, DIRC, mstr);
   e_argc = e_add_arg(&e_arg, estr, 2, e_argc);
   e_argc = e_add_arg(&e_arg, ostr, 3, e_argc);
   stat(ostr, cbuf);
@@ -1354,31 +1376,61 @@ static void e_build_note_up_to_date(const char *target)
    A build path is a path, so it is sized like one (WPE_BUILD_PATH_MAX, at
    the top of this file). */
 
+/* What a path operand gets in front when it would read as an option ("-x")
+   or a response file ("@file") to the program it is handed to. */
+#define E_OPERAND_PREFIX "./"
+
 /**
- * e_build_path - Join a directory and a file name into a build command's path.
+ * e_operand_needs_prefix - Would a program take this word for something else?
+ * @word: a path about to be handed to a program.
+ * Return: 1 when it starts with '-' (an option) or '@' (a response file,
+ * whose contents gcc, ar and ranlib read as more options).
+ */
+static int e_operand_needs_prefix(const char *word)
+{
+ return(word[0] == '-' || word[0] == '@');
+}
+
+/**
+ * e_build_operand - The one way a path reaches a compiler's, linker's or
+ * librarian's argv.
  * @out: where the path goes; @n: its size.
- * @dir: the directory, with or without a trailing separator.
+ * @dir: the directory, with or without a trailing separator, or NULL (or
+ * "") for a word that is a path already (a project's FILES or LIBNAME).
  * @name: the file name.
  *
- * Both the source handed to the compiler and the object file it writes are
- * built this way, and both used to be formatted inline with the separator
- * decided twice.  A path that does not fit is refused here rather than cut,
- * because a cut path reaches the compiler as a different file and the error it
- * produces then points at the wrong thing.
+ * Every path built from a value a folder or a project file sets (Exedir,
+ * the object and program names, FILES, LIBNAME) is joined here, so the
+ * rule holds at every site at once: a path that would start with '-' or
+ * '@' gets "./" in front, and is only ever the file it names, never an
+ * option or a response file the compiler reads more options out of.  A
+ * path that does not fit is refused rather than cut, because a cut path
+ * reaches the compiler as a different file.  tests/check-argv-operands.sh
+ * fails when a build argv gains a path joined anywhere else.
  *
  * Return: 0, or -1 when the result would not fit, which the caller reports.
  */
-static int e_build_path(char *out, size_t n, const char *dir, const char *name)
+int e_build_operand(char *out, size_t n, const char *dir, const char *name)
 {
  size_t len = dir ? strlen(dir) : 0;
+ const char *prefix = "";
+ const char *first;
  int wrote;
 
- if (!out || !n || !dir || !name)
+ if (!out || !n || !name)
   return (-1);
- if (len > 0 && dir[len - 1] == DIRC)
-  wrote = snprintf(out, n, "%s%s", dir, name);
+ if (len > 0)
+  first = dir;
  else
-  wrote = snprintf(out, n, "%s%c%s", dir, DIRC, name);
+  first = name;
+ if (e_operand_needs_prefix(first))
+  prefix = E_OPERAND_PREFIX;
+ if (len == 0)
+  wrote = snprintf(out, n, "%s%s", prefix, name);
+ else if (dir[len - 1] == DIRC)
+  wrote = snprintf(out, n, "%s%s%s", prefix, dir, name);
+ else
+  wrote = snprintf(out, n, "%s%s%c%s", prefix, dir, DIRC, name);
  if (wrote < 0 || (size_t)wrote >= n)
   return (-1);
  return (0);
@@ -1400,6 +1452,143 @@ static void e_build_path_too_long(FENSTER *f, const char *what)
           "The %s path is longer than %d characters.\nCompile from a shorter path.",
           what, WPE_BUILD_PATH_MAX - 1);
  e_message(0, msg, f);
+}
+
+/* The option that names the program a link writes, in a shown command. */
+#define E_PROG_OUTPUT_OPTION "-o"
+/* Room for what the question calls a language's compiler. */
+#define E_PROG_WHAT_MAX 160
+#define E_PROG_WHAT_FMT "%s compiler"
+
+/**
+ * e_prog_text_add - Append one part of a command, a space before it.
+ * @text: the command so far (malloc'd, may be NULL); @part: the part.
+ * Return: the longer command; an empty part leaves it as it is.
+ */
+static char *e_prog_text_add(char *text, const char *part)
+{
+ size_t had, len;
+ char *grown;
+
+ if (!part || !*part)
+  return(text);
+ had = text ? strlen(text) : 0;
+ len = strlen(part);
+ if (!(grown = REALLOC(text, had + len + 2)))
+  return(text);
+ if (had)
+  grown[had++] = ' ';
+ memcpy(grown + had, part, len + 1);
+ return(grown);
+}
+
+/**
+ * e_prog_command_text - A language's compile and link line, as one text.
+ * @p: the language's entry.
+ *
+ * The program, its options, the link's libraries and the program the link
+ * writes, in the order the build hands them over; the source file is left
+ * out.  The options are part of it because they can load code into the
+ * compiler (-fplugin, -B) as surely as the program name can name one.
+ * Return: the malloc'd text, or NULL when the entry names nothing.
+ */
+char *e_prog_command_text(const struct e_s_prog *p)
+{
+ char *text = NULL;
+
+ if (!p)
+  return(NULL);
+ text = e_prog_text_add(text, p->compiler);
+ text = e_prog_text_add(text, p->comp_str);
+ text = e_prog_text_add(text, p->libraries);
+ if (p->exe_name && p->exe_name[0])
+ {
+  text = e_prog_text_add(text, E_PROG_OUTPUT_OPTION);
+  text = e_prog_text_add(text, p->exe_name);
+ }
+ if (!text)
+  text = WpeStrdup("");
+ return(text);
+}
+
+/**
+ * e_prog_take_own - Put the user's own compile line in force for a language.
+ * @own: his entry.
+ *
+ * After "Use mine" (or a remembered one) his line replaces the folder's in
+ * the language's entry, so every later compile, link and run of this
+ * session uses it, whichever path copies the entry.
+ */
+static void e_prog_take_own(const struct e_s_prog *own)
+{
+ int i;
+
+ for (i = 0; i < e_prog.num; i++)
+ {
+  struct e_s_prog *p = e_prog.comp[i];
+  if (p == own || WpeStrccmp(p->language, own->language) != 0)
+   continue;
+  if (p->compiler) FREE(p->compiler);
+  if (p->comp_str) FREE(p->comp_str);
+  if (p->libraries) FREE(p->libraries);
+  if (p->exe_name) FREE(p->exe_name);
+  p->compiler = WpeStrdup(own->compiler);
+  p->comp_str = WpeStrdup(own->comp_str);
+  p->libraries = WpeStrdup(own->libraries);
+  p->exe_name = WpeStrdup(own->exe_name);
+ }
+ if (e_s_prog.compiler) FREE(e_s_prog.compiler);
+ if (e_s_prog.comp_str) FREE(e_s_prog.comp_str);
+ if (e_s_prog.libraries) FREE(e_s_prog.libraries);
+ if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
+ e_s_prog.compiler = WpeStrdup(own->compiler);
+ e_s_prog.comp_str = WpeStrdup(own->comp_str);
+ e_s_prog.libraries = WpeStrdup(own->libraries);
+ e_s_prog.exe_name = WpeStrdup(own->exe_name);
+}
+
+/**
+ * e_prog_approve_compile - Ask before the compile line a start-folder xwperc names runs.
+ * @f: the window the build was asked from; e_s_prog holds the language's
+ * entry for the file about to be compiled.
+ *
+ * The user's own line, the built-in one and a line answered for in this
+ * folder run as they are; any other line is shown first.  "Use mine" puts
+ * the user's own line in force.
+ * Return: 0 to go on with e_s_prog, -1 when the user cancelled.
+ */
+int e_prog_approve_compile(FENSTER *f)
+{
+ char key[WPE_STARTCMD_KEY_MAX], what[E_PROG_WHAT_MAX];
+ struct e_s_prog *own;
+ char *text, *own_text;
+ E_STARTCMD c;
+ int verdict;
+
+ if (!e_opt_start_folder() || !e_s_prog.language)
+  return(0);
+ own = e_opt_own_language(e_s_prog.language);
+ text = e_prog_command_text(&e_s_prog);
+ own_text = e_prog_command_text(own);
+ snprintf(key, sizeof key, "%s%s", WPE_STARTCMD_KEY_COMPILER, e_s_prog.language);
+ snprintf(what, sizeof what, E_PROG_WHAT_FMT, e_s_prog.language);
+ c.folder = e_opt_start_folder();
+ c.source = E_STARTCMD_XWPERC;
+ c.who = E_STARTCMD_XWPERC_WHO;
+ c.key = key;
+ c.what = what;
+ c.text = text;
+ c.own = own_text;
+ verdict = e_startcmd_approve(f, &c);
+ if (verdict == WPE_STARTCMD_USE_OWN && own)
+  e_prog_take_own(own);
+ if (text) FREE(text);
+ if (own_text) FREE(own_text);
+ if (verdict == WPE_STARTCMD_CANCEL)
+  return(-1);
+ if (verdict == WPE_STARTCMD_USE_OWN && !own)
+  return(-1);              /* a language only the folder knows: none of his to run */
+ return(0);
 }
 
 /**
@@ -1451,6 +1640,8 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
   e_save(cn->f[i]);
  f = cn->f[i];
  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ if (e_prog_approve_compile(f))
+  return(WPE_ESC);
  argc = e_make_arg(&arg, e_s_prog.comp_str);
  if (!(e_s_prog.comp_sw & 1))
  {
@@ -1469,7 +1660,7 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
  /* The unconditional strcpy that stood here wrote f->datnam into fstr and was
     then overwritten by the join below, so it did nothing except risk its own
     overflow on a long name. */
- if (e_build_path(fstr, sizeof(fstr), f->dirct, f->datnam))
+ if (e_build_operand(fstr, sizeof(fstr), f->dirct, f->datnam))
  {
   e_build_path_too_long(f, "source");
   if (arg) FREE(arg);
@@ -1477,7 +1668,7 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
  }
  argc = e_add_arg(&arg, fstr, argc, argc);
  e_p_set_compiled_source(fstr);
- if (e_build_path(ostr, sizeof(ostr), e_prog.exedir, f->datnam))
+ if (e_build_operand(ostr, sizeof(ostr), e_prog.exedir, f->datnam))
  {
   e_build_path_too_long(f, "object");
   if (arg) FREE(arg);
@@ -3561,14 +3752,15 @@ int e_line_read(int n, char *s, int max)
 
 int e_arguments(FENSTER *f)
 {
- char str[80];
+ char str[E_ARG_FIELD_MAX + 1];  /* the dialog's field writes back this much */
 
  if (!e_prog.arguments)
  {
   e_prog.arguments = MALLOC(1);
   e_prog.arguments[0] = '\0';
  }
- strcpy(str, e_prog.arguments);
+ /* An xwperc can make the arguments longer than the field: show what fits. */
+ snprintf(str, sizeof str, "%s", e_prog.arguments);
  if (e_add_arguments(str, "Arguments", f, 0 , AltA, NULL))
  {
   e_prog.arguments = REALLOC(e_prog.arguments, strlen(str) + 1);
@@ -3766,7 +3958,8 @@ char *e_cat_string(char *p, char *str)
 int e_make_arg(char ***arg, char *str)
 {
  int i, j;
- char tmp[128], *p = tmp;
+ const char *p = str;     /* read in place: options, libraries and Run arguments
+                             come from an xwperc and have no length limit */
 
  if (!(*arg))
   *arg = (char **) MALLOC(4*sizeof(char *));
@@ -3780,7 +3973,6 @@ int e_make_arg(char ***arg, char *str)
   (*arg)[2] = NULL;
   return(2);
  }
- strcpy(tmp, str);
  for (j = 2, i = 0; p[i] != '\0'; j++)
  {
   for (; p[i] != '\0' && p[i] != ' '; i++)
@@ -4195,9 +4387,13 @@ int e_prj_ob_svas(FENSTER *f)
  return(e_project_name(f) ? 0 : AltS);
 }
 
+static char *e_prj_line_text(char *cmp, char *flags, char *ldflags);
+static void e_prj_note_typed(int his);
+static int e_prj_fields_are_his(W_OPTSTR *o);
+
 int e_project_options(FENSTER *f)
 {
- int ret;
+ int ret, his;
  W_OPTSTR *o = e_init_opt_kst(f);
  char *messagestring;
 
@@ -4234,12 +4430,14 @@ int e_project_options(FENSTER *f)
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
+  his = e_prj_fields_are_his(o);
   if (e_s_prog.compiler) FREE(e_s_prog.compiler);
   e_s_prog.compiler = WpeStrdup(o->wstr[0]->txt);
   if (e_s_prog.comp_str) FREE(e_s_prog.comp_str);
   e_s_prog.comp_str = WpeStrdup(o->wstr[1]->txt);
   if (e_s_prog.libraries) FREE(e_s_prog.libraries);
   e_s_prog.libraries = WpeStrdup(o->wstr[2]->txt);
+  e_prj_note_typed(his);
   if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
   e_s_prog.exe_name = WpeStrdup(o->wstr[3]->txt);
   if (e_s_prog.start_symbol) FREE(e_s_prog.start_symbol);
@@ -4257,13 +4455,122 @@ int e_project_options(FENSTER *f)
  return(0);
 }
 
+/* The room of the dialogs' command fields (e_add_wrstr's wmx). */
+#define E_PROG_FIELD_ROOM     128
+#define E_PROG_PRJ_FIELD_ROOM 256
+/* The fields a compile line is made of: compiler, options, libraries,
+   program; a project's line has the first three. */
+#define E_PROG_LINE_FIELDS 4
+#define E_PRJ_LINE_FIELDS  3
+
+/* One command field of a dialog: as it opened, as the user left it, the
+   user's own value for it (or NULL) and the field's room. */
+typedef struct {
+ const char *before;
+ const char *after;
+ const char *own;
+ size_t room;
+} e_prog_field;
+
+/**
+ * e_prog_fields_are_his - Did the user write this command line himself?
+ * @fld/@n: the line's fields.
+ *
+ * Only then does OK count it as his own.  A field he left alone counts only
+ * when it already held his own value; a field whose value was cut to fit the
+ * dialog never counts, so a folder's command that does not fit is never
+ * approved through the dialog; and at least one field must have changed.
+ * Return: 1 when the line is his.
+ */
+static int e_prog_fields_are_his(const e_prog_field *fld, int n)
+{
+ int i, changed = 0;
+
+ for (i = 0; i < n; i++)
+ {
+  const char *before = fld[i].before ? fld[i].before : "";
+  if (strlen(before) > fld[i].room)
+   return(0);
+  if (strcmp(before, fld[i].after) != 0)
+   changed = 1;
+  else if (!fld[i].own || strcmp(before, fld[i].own) != 0)
+   return(0);
+ }
+ return(changed);
+}
+
+/**
+ * e_prog_fields_of - The compile-line fields of the Compiler dialog.
+ * @fld: receives four fields; @o: the dialog, after OK; @own: the user's
+ * own entry for the language, or NULL.
+ */
+static void e_prog_fields_of(e_prog_field fld[4], W_OPTSTR *o, const struct e_s_prog *own)
+{
+ fld[0].before = e_s_prog.compiler;  fld[0].after = o->wstr[1]->txt;
+ fld[1].before = e_s_prog.comp_str;  fld[1].after = o->wstr[2]->txt;
+ fld[2].before = e_s_prog.libraries; fld[2].after = o->wstr[3]->txt;
+ fld[3].before = e_s_prog.exe_name;  fld[3].after = o->wstr[4]->txt;
+ fld[0].own = own ? own->compiler : NULL;
+ fld[1].own = own ? own->comp_str : NULL;
+ fld[2].own = own ? own->libraries : NULL;
+ fld[3].own = own ? own->exe_name : NULL;
+ fld[0].room = fld[1].room = fld[2].room = fld[3].room = E_PROG_FIELD_ROOM;
+}
+
+/**
+ * e_prog_note_typed_compile - A compile line the user set in Options is his own.
+ * @his: e_prog_fields_are_his for the dialog's fields.
+ *
+ * When he wrote it, the line in e_s_prog now is what he typed: building
+ * does not ask about it in this folder, now or after the next start.
+ */
+static void e_prog_note_typed_compile(int his)
+{
+ char key[WPE_STARTCMD_KEY_MAX];
+ char *after;
+
+ if (!his || !e_s_prog.language)
+  return;
+ after = e_prog_command_text(&e_s_prog);
+ snprintf(key, sizeof key, "%s%s", WPE_STARTCMD_KEY_COMPILER, e_s_prog.language);
+ if (after)
+  e_startcmd_typed(e_opt_start_folder(), key, after);
+ if (after) FREE(after);
+}
+
+/**
+ * e_prog_postfix_list - A language's file extensions as one line, for its field.
+ * @out/@sz: receive them, space separated, as many as fit.
+ */
+static void e_prog_postfix_list(char *out, size_t sz)
+{
+ int i, j = WpeExpArrayGetSize(e_s_prog.filepostfix);
+ size_t used = 0;
+
+ out[0] = '\0';
+ for (i = 0; i < j; i++)
+ {
+  size_t len = strlen(e_s_prog.filepostfix[i]);
+  if (i)
+   len++;
+  if (used + len >= sz)
+   break;
+  if (i)
+   snprintf(out + used, sz - used, " %s", e_s_prog.filepostfix[i]);
+  else
+   snprintf(out + used, sz - used, "%s", e_s_prog.filepostfix[i]);
+  used += len;
+ }
+}
+
 int e_run_c_options(FENSTER *f)
 {
- int i, j, ret;
+ int i, j, ret, his;
  W_OPTSTR *o = e_init_opt_kst(f);
- char filepostfix[128];
+ char filepostfix[E_PROG_FIELD_ROOM + 1];
  char *newpostfix;
  char *messagestring;
+ e_prog_field fld[E_PROG_LINE_FIELDS];
 
  if (!o)
   return(-1);
@@ -4280,16 +4587,8 @@ int e_run_c_options(FENSTER *f)
  e_add_wrstr(4, 6, 22, 6, 36, 128, 3, AltP, "ComPiler-Options:", e_s_prog.comp_str, NULL, o);
  e_add_wrstr(4, 8, 22, 8, 36, 128, 0, AltL, "Loader-Options:", e_s_prog.libraries, NULL, o);
  e_add_wrstr(4, 10, 22, 10, 36, 128, 0, AltE, "Executable:", e_s_prog.exe_name, NULL, o);
- filepostfix[0] = 0;
- if ((j = WpeExpArrayGetSize(e_s_prog.filepostfix)))
- {
-  strcpy(filepostfix, e_s_prog.filepostfix[0]);
-  for (i = 1; i < j; i++)
-  {
-   strcat(filepostfix, " ");
-   strcat(filepostfix, e_s_prog.filepostfix[i]);
-  }
- }
+ j = WpeExpArrayGetSize(e_s_prog.filepostfix);
+ e_prog_postfix_list(filepostfix, sizeof filepostfix);
  e_add_wrstr(4, 12, 22, 12, 36, 128, 0, AltF, "File-Postfix:", filepostfix, NULL, o);
  { const char *sym = e_s_prog.start_symbol ? e_s_prog.start_symbol : "main";
    e_add_wrstr(4, 14, 22, 14, 36, 128, 7, AltY, "Start sYmbol:", (char *)sym, NULL, o);
@@ -4304,6 +4603,8 @@ int e_run_c_options(FENSTER *f)
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
+  e_prog_fields_of(fld, o, e_opt_own_language(e_s_prog.language));
+  his = e_prog_fields_are_his(fld, E_PROG_LINE_FIELDS);
   if (e_s_prog.language) FREE(e_s_prog.language);
   e_s_prog.language = WpeStrdup(o->wstr[0]->txt);
   if (e_s_prog.compiler) FREE(e_s_prog.compiler);
@@ -4335,6 +4636,7 @@ int e_run_c_options(FENSTER *f)
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
   e_s_prog.intstr = WpeValueToString(o->wstr[7]->txt);
   e_s_prog.comp_sw = o->pstr[0]->num;
+  e_prog_note_typed_compile(his);
  }
  freeostr(o);
  return(0);
@@ -4421,14 +4723,15 @@ int e_run_options(FENSTER *f)
 
 int e_project_name(FENSTER *f)
 {
- char str[80];
+ char str[E_ARG_FIELD_MAX + 1];  /* the dialog's field writes back this much */
 
  if (!e_prog.project)
  {
   e_prog.project = MALLOC(1);
   e_prog.project[0] = '\0';
  }
- strcpy(str, e_prog.project);
+ /* An xwperc can name a project longer than the field: show what fits. */
+ snprintf(str, sizeof str, "%s", e_prog.project);
  if (e_add_arguments(str, "Project", f, 0, AltP, NULL))
  {
   e_prog.project = REALLOC(e_prog.project, strlen(str) + 1);
@@ -5341,10 +5644,14 @@ int e_exec_make(FENSTER *f)
  return(0);
 }
 
+/* How a shell script is started from its own folder, with the Run arguments. */
+#define E_RUN_SH_FMT "./%s %s"
+
 int e_run_sh(FENSTER *f)
 {
  int ret, len = strlen(f->datnam), cwd_chg = 0;
- char estr[128];
+ size_t size;
+ char *estr;
  char cwd_saved[1024];
 
  if (strcmp(f->datnam+len-3, ".sh"))
@@ -5364,9 +5671,20 @@ int e_run_sh(FENSTER *f)
  { struct stat _sb;
    if (!stat(f->datnam, &_sb))
     chmod(f->datnam, _sb.st_mode | S_IXUSR); }
- snprintf(estr, sizeof(estr), "./%s ", f->datnam);
+ /* The script and the Run arguments, whatever their length: the arguments
+    come from the options, which a folder's xwperc can make long. */
+ size = strlen(f->datnam) + strlen(E_RUN_SH_FMT) + 1;
  if (e_prog.arguments)
-  strcat(estr, e_prog.arguments);
+  size += strlen(e_prog.arguments);
+ if (!(estr = MALLOC(size)))
+ {
+  if (cwd_chg)
+   e_build_popd(cwd_saved);
+  WpeMouseRestoreShape();
+  return(0);
+ }
+ snprintf(estr, size, E_RUN_SH_FMT, f->datnam,
+          e_prog.arguments ? e_prog.arguments : "");
 #ifndef NO_XWINDOWS
  if (WpeIsXwin())
  {
@@ -5375,6 +5693,7 @@ int e_run_sh(FENSTER *f)
  else
 #endif
  ret = e_system(estr, f->ed);
+ FREE(estr);
  if (cwd_chg)
   e_build_popd(cwd_saved);
  WpeMouseRestoreShape();
@@ -5591,6 +5910,162 @@ int e_install(FENSTER *f)
 }
 
 /**
+ * e_prj_say_open_failed - Say that the open project file could not be opened.
+ * @f: the window the box belongs to.
+ *
+ * The message names the project's path whatever its length: a folder's
+ * Project key can make it far longer than a line buffer.
+ */
+static void e_prj_say_open_failed(FENSTER *f)
+{
+ size_t size = strlen(e_msg[ERR_FOPEN]) + strlen(e_prog.project) + 1;
+ char *text = MALLOC(size);
+
+ if (!text)
+  return;
+ snprintf(text, size, e_msg[ERR_FOPEN], e_prog.project);
+ e_error(text, 0, f->fb);
+ FREE(text);
+}
+
+/**
+ * e_prj_default_exe - The program a project without EXENAME builds.
+ * Return: the project's path without its extension, malloc'd.
+ */
+static char *e_prj_default_exe(void)
+{
+ char *exe = WpeStrdup(e_prog.project);
+
+ if (exe)
+  WpeStringCutChar(exe, '.');
+ return(exe);
+}
+
+/* The "install:" lines of a project, each expanded, in order. */
+typedef struct {
+ char **line;
+ int n;
+} e_install_list;
+
+/* What the question calls a project's install lines, and their key. */
+#define E_INSTALL_WHAT "install commands"
+#define E_INSTALL_KEY  "Install/"
+#define E_INSTALL_WHO  "The project file"
+
+static const char *e_prj_file_name(void);
+static void e_prj_folder(char *out, size_t sz);
+
+/**
+ * e_install_add - Append an install line, taking it.
+ * Return: 0, or -1 out of memory (the line is then freed).
+ */
+static int e_install_add(e_install_list *l, char *text)
+{
+ char **grown = REALLOC(l->line, (l->n + 1) * sizeof(char *));
+
+ if (!grown)
+ {
+  FREE(text);
+  return(-1);
+ }
+ l->line = grown;
+ l->line[l->n++] = text;
+ return(0);
+}
+
+/** e_install_free - Free the install lines. */
+static void e_install_free(e_install_list *l)
+{
+ int i;
+
+ for (i = 0; i < l->n; i++)
+  FREE(l->line[i]);
+ if (l->line)
+  FREE(l->line);
+ l->line = NULL;
+ l->n = 0;
+}
+
+/**
+ * e_install_text - Every install line as one text, a newline between them.
+ * Return: the malloc'd text.
+ */
+static char *e_install_text(const e_install_list *l)
+{
+ size_t size = 1;
+ char *text;
+ int i;
+
+ for (i = 0; i < l->n; i++)
+  size += strlen(l->line[i]) + 1;
+ if (!(text = MALLOC(size)))
+  return(NULL);
+ text[0] = '\0';
+ for (i = 0; i < l->n; i++)
+ {
+  if (i)
+   strcat(text, "\n");
+  strcat(text, l->line[i]);
+ }
+ return(text);
+}
+
+/**
+ * e_install_approve - Ask before a project file's install lines run.
+ * @f: a window; @l: the lines, expanded as they will run.
+ *
+ * They go to the shell, so a project file from a clone could run anything
+ * at Alt-L.  They are shown first, once per folder and text, as a folder's
+ * compiler is; there is no command of the user's own to run instead, so
+ * "Use mine" installs nothing.
+ * Return: 0 to run them, -1 to run nothing.
+ */
+static int e_install_approve(FENSTER *f, const e_install_list *l)
+{
+ char key[WPE_STARTCMD_KEY_MAX], folder[WPE_BUILD_PATH_MAX];
+ char *text = e_install_text(l);
+ E_STARTCMD c;
+ int verdict;
+
+ if (!text)
+  return(-1);
+ snprintf(key, sizeof key, "%s%s", E_INSTALL_KEY, e_prj_file_name());
+ e_prj_folder(folder, sizeof folder);
+ c.folder = folder;
+ c.source = e_prj_file_name();
+ c.who = E_INSTALL_WHO;
+ c.key = key;
+ c.what = E_INSTALL_WHAT;
+ c.text = text;
+ c.own = NULL;
+ verdict = e_startcmd_approve(f, &c);
+ FREE(text);
+ if (verdict == WPE_STARTCMD_RUN)
+  return(0);
+ return(-1);
+}
+
+/**
+ * e_install_lines_run - Run the install lines, once the user agreed.
+ * Return: 0, or WPE_ESC when nothing ran.
+ */
+static int e_install_lines_run(FENSTER *f, const e_install_list *l)
+{
+ int i;
+
+ if (l->n == 0)
+  return(0);
+ if (e_install_approve(f, l))
+  return(WPE_ESC);
+ for (i = 0; i < l->n; i++)
+ {
+  e_d_p_message(l->line[i], f, 1);
+  e_shell_run(l->line[i]);
+ }
+ return(0);
+}
+
+/**
  * e_install_run - Run the "install:" commands of the open project.
  * @f: a window of the desktop.
  */
@@ -5598,13 +6073,13 @@ static int e_install_run(FENSTER *f)
 {
  char *tp, *sp, *string, *tmp, text[256];
  FILE *fp;
- int i, j;
+ int i, j, ret;
+ e_install_list lines = {NULL, 0};
 
  if (!e__project) return(0);
  if ((fp = fopen(e_prog.project, "r")) == NULL)
  {
-  sprintf(text, e_msg[ERR_FOPEN], e_prog.project);
-  e_error(text, 0, f->fb);
+  e_prj_say_open_failed(f);
   return(WPE_ESC);
  }
  while ((tp = fgets(text, 256, fp)))
@@ -5640,6 +6115,7 @@ static int e_install_run(FENSTER *f)
   if (!(string = MALLOC(strlen(sp) + 1)))
   {
    fclose(fp);
+   e_install_free(&lines);
    e_error(e_msg[ERR_LOWMEM], 0, f->fb);
    return(-1);
   }
@@ -5653,6 +6129,7 @@ static int e_install_run(FENSTER *f)
     {
      fclose(fp);
      FREE(tmp);
+     e_install_free(&lines);
      e_error(e_msg[ERR_LOWMEM], 0, f->fb);
      return(-1);
     }
@@ -5663,12 +6140,18 @@ static int e_install_run(FENSTER *f)
    p_v_n++;
   string = e_expand_var(string, f);
   if (p_v_n) p_v_n--;
-  e_d_p_message(string, f, 1);
-  e_shell_run(string);
-  FREE(string);
+  if (e_install_add(&lines, string))
+  {
+   fclose(fp);
+   e_install_free(&lines);
+   e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+   return(-1);
+  }
  }
  fclose(fp);
- return(0);
+ ret = e_install_lines_run(f, &lines);
+ e_install_free(&lines);
+ return(ret);
 }
 
 struct dirfile *e_p_get_args(char *string)
@@ -5750,7 +6233,7 @@ static struct {
  struct dirfile *df;       /* the project's FILES                        */
  int k;                    /* the file being built                       */
  int libsw, exlib, sccs;
- char ofile[128];
+ char ofile[WPE_BUILD_PATH_MAX];
  struct stat lbuf, obuf;
  enum e_prj_phase phase;
  e_build_cont done;
@@ -5758,6 +6241,240 @@ static struct {
 } g_prj;
 
 static void e_prj_run(void);
+
+/* The project variables that name what a project build runs. */
+#define E_PRJ_VAR_CMP      "CMP"
+#define E_PRJ_VAR_CMPFLAGS "CMPFLAGS"
+#define E_PRJ_VAR_LDFLAGS  "LDFLAGS"
+/* The language whose compile line "Use mine" runs for a project. */
+#define E_PRJ_OWN_LANGUAGE "C"
+#define E_PRJ_WHO          "The project file"
+#define E_PRJ_WHAT         "compiler"
+
+/* The user's own C compile line, while he answered "Use mine" for the
+   project being built; NULL while the project's own line runs. */
+static struct e_s_prog *e_prj_own;
+
+/**
+ * e_prj_text_add_words - Append a project variable's words to a command.
+ * @text: the command so far (malloc'd, may be NULL); @df: the words, freed.
+ * Return: the longer command.
+ */
+static char *e_prj_text_add_words(char *text, struct dirfile *df)
+{
+ int k;
+
+ if (!df)
+  return(text);
+ for (k = 0; k < df->anz; k++)
+  text = e_prog_text_add(text, df->name[k]);
+ freedf(df);
+ return(text);
+}
+
+/**
+ * e_prj_line_text - A project's compile and link line from its three parts.
+ * @cmp/@flags/@ldflags: the program, its options and the link's options.
+ *
+ * Each part is taken word by word, the project's variables filled in, as
+ * the build itself reads them; the program's output name is left out, as
+ * every project names one.
+ * Return: the malloc'd text.
+ */
+static char *e_prj_line_text(char *cmp, char *flags, char *ldflags)
+{
+ char *text = NULL;
+
+ if (cmp) text = e_prj_text_add_words(text, e_p_get_args(cmp));
+ if (flags) text = e_prj_text_add_words(text, e_p_get_args(flags));
+ if (ldflags) text = e_prj_text_add_words(text, e_p_get_args(ldflags));
+ if (!text)
+  text = WpeStrdup("");
+ return(text);
+}
+
+/**
+ * e_prj_var - A variable of the project as the build uses it.
+ * @name: the variable.
+ *
+ * After "Use mine" the project's program, options and link options are the
+ * user's own C line; every other variable is the project's.
+ * Return: its words (freed by the caller), or NULL when it is not set.
+ */
+static struct dirfile *e_prj_var(char *name)
+{
+ if (e_prj_own && strcmp(name, E_PRJ_VAR_CMP) == 0)
+  return(e_p_get_args(e_prj_own->compiler));
+ if (e_prj_own && strcmp(name, E_PRJ_VAR_CMPFLAGS) == 0)
+  return(e_p_get_args(e_prj_own->comp_str));
+ if (e_prj_own && strcmp(name, E_PRJ_VAR_LDFLAGS) == 0)
+  return(e_p_get_args(e_prj_own->libraries));
+ return(e_p_get_var(name));
+}
+
+/**
+ * e_prj_folder - The folder that holds the open project file.
+ * @out/@sz: receive it.
+ */
+static void e_prj_folder(char *out, size_t sz)
+{
+ char *slash;
+
+ snprintf(out, sz, "%s", e_prog.project);
+ slash = strrchr(out, DIRC);
+ if (slash == out) slash[1] = '\0';
+ else if (slash) *slash = '\0';
+ else snprintf(out, sz, ".");
+}
+
+/**
+ * e_prj_file_name - The open project file's name, without its folder.
+ */
+static const char *e_prj_file_name(void)
+{
+ const char *slash = strrchr(e_prog.project, DIRC);
+
+ if (slash)
+  return(slash + 1);
+ return(e_prog.project);
+}
+
+/**
+ * e_prj_approve - Ask before the compile line a project file names runs.
+ * @f: the window the build was asked from; the project's variables are read.
+ *
+ * A project file comes with the folder it sits in, a clone included, and
+ * its CMP, CMPFLAGS and LDFLAGS are run on the first build.  A line equal
+ * to the user's own C line runs as it is; any other is shown first, once
+ * per folder and line.  "Use mine" builds with his own C line instead.
+ * Return: 0 to build, -1 when the user cancelled.
+ */
+static int e_prj_approve(FENSTER *f)
+{
+ char key[WPE_STARTCMD_KEY_MAX], folder[WPE_BUILD_PATH_MAX];
+ struct e_s_prog *own = e_opt_own_language(E_PRJ_OWN_LANGUAGE);
+ char *text, *own_text = NULL, *bare;
+ E_STARTCMD c;
+ int verdict;
+
+ e_prj_own = NULL;
+ if (!e_prog.project || !e_prog.project[0])
+  return(0);
+ text = e_prj_line_text(e_find_var(E_PRJ_VAR_CMP), e_find_var(E_PRJ_VAR_CMPFLAGS),
+                        e_find_var(E_PRJ_VAR_LDFLAGS));
+ snprintf(key, sizeof key, "%s%s", WPE_STARTCMD_KEY_PROJECT, e_prj_file_name());
+ if (own)
+ {
+  own_text = e_prj_line_text(own->compiler, own->comp_str, own->libraries);
+  wpe_startcmd_note_own(key, own_text);
+  bare = e_prj_line_text(own->compiler, NULL, NULL);
+  wpe_startcmd_note_own(key, bare);      /* his compiler with no options at all */
+  FREE(bare);
+ }
+ e_prj_folder(folder, sizeof folder);
+ c.folder = folder;
+ c.source = e_prj_file_name();
+ c.who = E_PRJ_WHO;
+ c.key = key;
+ c.what = E_PRJ_WHAT;
+ c.text = text;
+ c.own = own_text;
+ verdict = e_startcmd_approve(f, &c);
+ if (verdict == WPE_STARTCMD_USE_OWN)
+  e_prj_own = own;
+ FREE(text);
+ if (own_text) FREE(own_text);
+ if (verdict == WPE_STARTCMD_CANCEL)
+  return(-1);
+ if (verdict == WPE_STARTCMD_USE_OWN && !own)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_prj_fields_are_his - Did the user write the project's line in Project-Options?
+ * @o: the dialog, after OK; e_s_prog still holds the line it opened with.
+ * Return: as e_prog_fields_are_his, against his own C line.
+ */
+static int e_prj_fields_are_his(W_OPTSTR *o)
+{
+ struct e_s_prog *own = e_opt_own_language(E_PRJ_OWN_LANGUAGE);
+ e_prog_field fld[E_PRJ_LINE_FIELDS];
+
+ fld[0].before = e_s_prog.compiler;  fld[0].after = o->wstr[0]->txt;
+ fld[1].before = e_s_prog.comp_str;  fld[1].after = o->wstr[1]->txt;
+ fld[2].before = e_s_prog.libraries; fld[2].after = o->wstr[2]->txt;
+ fld[0].room = E_PROG_FIELD_ROOM;
+ fld[1].room = fld[2].room = E_PROG_PRJ_FIELD_ROOM;
+ fld[0].own = fld[1].own = fld[2].own = NULL;
+ if (own)
+ {
+  fld[0].own = own->compiler;
+  fld[1].own = own->comp_str;
+  fld[2].own = own->libraries;
+ }
+ return(e_prog_fields_are_his(fld, E_PRJ_LINE_FIELDS));
+}
+
+/**
+ * e_prj_note_typed - The project line the user set in Project-Options is his own.
+ * @his: e_prj_fields_are_his for the dialog.
+ */
+static void e_prj_note_typed(int his)
+{
+ char key[WPE_STARTCMD_KEY_MAX], folder[WPE_BUILD_PATH_MAX];
+ char *after;
+
+ if (!his || !e_prog.project || !e_prog.project[0])
+  return;
+ after = e_prj_line_text(e_s_prog.compiler, e_s_prog.comp_str, e_s_prog.libraries);
+ snprintf(key, sizeof key, "%s%s", WPE_STARTCMD_KEY_PROJECT, e_prj_file_name());
+ e_prj_folder(folder, sizeof folder);
+ e_startcmd_typed(folder, key, after);
+ FREE(after);
+}
+
+/**
+ * e_prj_files_as_paths - Make every FILES word one that names a file.
+ * @df: the project's FILES, changed in place, each through e_build_operand.
+ * Return: 0, or -1 out of memory.
+ */
+static int e_prj_files_as_paths(struct dirfile *df)
+{
+ size_t len;
+ char *named;
+ int k;
+
+ for (k = 0; k < df->anz; k++)
+ {
+  len = strlen(E_OPERAND_PREFIX) + strlen(df->name[k]) + 1;
+  if (!(named = MALLOC(len)))
+   return(-1);
+  if (e_build_operand(named, len, NULL, df->name[k]))
+  {
+   FREE(named);
+   return(-1);
+  }
+  FREE(df->name[k]);
+  df->name[k] = named;
+ }
+ return(0);
+}
+
+/**
+ * e_prj_program_path - The program a project build writes.
+ * @out/@sz: receive it, in the program folder; @df: EXENAME's words, or NULL.
+ * Return: 0, or -1 when the path does not fit (the build then stops and
+ * says so, instead of writing past the buffer).
+ */
+static int e_prj_program_path(char *out, size_t sz, struct dirfile *df)
+{
+ const char *name = "a.out";
+
+ if (df && df->anz > 0 && df->name[0][0])
+  name = df->name[0];
+ return(e_build_operand(out, sz, e_prog.exedir, name));
+}
 
 /**
  * e_prj_setup - Read the project and prepare its compile command.
@@ -5769,8 +6486,8 @@ static int e_prj_setup(FENSTER *f)
  ECNT *cn = f->ed;
  struct dirfile *df = NULL;
  char **arg;
- int i, j, k, elen, argc, exlib = 0;
- char ofile[128];
+ int i, j, k, argc, exlib = 0;
+ char ofile[WPE_BUILD_PATH_MAX];
  struct stat lbuf[1];
 
  last_time = (M_TIME) 0;
@@ -5789,10 +6506,11 @@ static int e_prj_setup(FENSTER *f)
  if (i > 0) e_p_update_prj_fl(f);
  if (e_read_var(f))
  {
-  sprintf(ofile, e_msg[ERR_FOPEN], e_prog.project);
-  e_error(ofile, 0, f->fb);
+  e_prj_say_open_failed(f);
   return(-1);
  }
+ if (e_prj_approve(f))
+  return(WPE_ESC);
  e_arg = (char **) MALLOC(e_argc*sizeof(char *));
  arg = (char **) MALLOC(argc*sizeof(char *));
  /* MALLOC leaves slot 0 uninitialised.  The CMP/FILES lookups below can bail
@@ -5802,7 +6520,7 @@ static int e_prj_setup(FENSTER *f)
     slot 0 on their first iteration, so this only matters on the early exits. */
  if (e_arg) e_arg[0] = NULL;
  if (arg) arg[0] = NULL;
- df = e_p_get_var("CMP");
+ df = e_prj_var(E_PRJ_VAR_CMP);
  if (!df)
  {
   e_error(e_p_msg[ERR_NOTHING], 0, f->fb);
@@ -5826,7 +6544,7 @@ static int e_prj_setup(FENSTER *f)
  strcpy(arg[1], "-c");
  e_arg[1] = MALLOC(3);
  strcpy(e_arg[1], "-o");
- df = e_p_get_var("CMPFLAGS");
+ df = e_prj_var(E_PRJ_VAR_CMPFLAGS);
  if (df)
  {
   for (k = 0; k < df->anz; k++, e_argc++, argc++)
@@ -5844,27 +6562,27 @@ static int e_prj_setup(FENSTER *f)
   freedf(df);
  }
  df = e_p_get_var("EXENAME");
- elen = strlen(e_prog.exedir)-1;
- if (e_prog.exedir[elen] == '/')
-  sprintf(ofile, "%s%s", e_prog.exedir,
-    (df && df->anz > 0 && df->name[0][0]) ? df->name[0] : "a.out");
- else
-  sprintf(ofile, "%s/%s", e_prog.exedir,
-    (df && df->anz > 0 && df->name[0][0]) ? df->name[0] : "a.out");
+ if (e_prj_program_path(ofile, sizeof ofile, df))
+ {
+  if (df) freedf(df);
+  e_build_path_too_long(f, "program");
+  e_free_arg(arg, argc);  e_free_arg(e_arg, e_argc);
+  return(-1);
+ }
  if (df) freedf(df);
  if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
  e_s_prog.exe_name = WpeStrdup(ofile);
  e_argc = e_add_arg(&e_arg, e_s_prog.exe_name, 2, e_argc);
  df = e_p_get_var("LIBNAME");
- if (df)
+ library[0] = '\0';
+ if (df && df->anz > 0)
  {
-  snprintf(library, sizeof(library), "%s", df->name[0]);
+  if (e_build_operand(library, sizeof(library), NULL, df->name[0]))
+   library[0] = '\0';               /* a name that does not fit is no library */
   if (access(library, 0)) exlib = 1;
   else stat(library, lbuf);
-  freedf(df);
  }
- else
-  library[0] = '\0';
+ if (df) freedf(df);
  df = e_p_get_var("CMPSWTCH");
  if (df)
  {
@@ -5898,6 +6616,13 @@ static int e_prj_setup(FENSTER *f)
  if (!df)
  {
   e_error(e_p_msg[ERR_NOTHING], 0, cn->fb);
+  e_free_arg(arg, argc);  e_free_arg(e_arg, e_argc);
+  return(-1);
+ }
+ if (e_prj_files_as_paths(df))
+ {
+  freedf(df);
+  e_error(e_msg[ERR_LOWMEM], 0, cn->fb);
   e_free_arg(arg, argc);  e_free_arg(e_arg, e_argc);
   return(-1);
  }
@@ -5965,18 +6690,21 @@ static void e_prj_step_done(FENSTER *f, int result, void *data)
  */
 static void e_prj_object_name(int k)
 {
- struct dirfile *df = g_prj.df;
- int j, elen = strlen(e_prog.exedir)-1;
+ const char *base = strrchr(g_prj.df->name[k], DIRC);
+ char name[WPE_BUILD_PATH_MAX], *dot;
 
- for (j = strlen(df->name[k])-1; j >= 0 && df->name[k][j] != DIRC; j--)
-  ;
- if (e_prog.exedir[elen] == '/')
-  sprintf(g_prj.ofile, "%s%s ", e_prog.exedir, df->name[k]+j+1);
- else sprintf(g_prj.ofile, "%s/%s ", e_prog.exedir, df->name[k]+j+1);
- for (j = strlen(g_prj.ofile); j > 0 && g_prj.ofile[j] != '.'; j--)
-  ;
- g_prj.ofile[j+1] = 'o';
- g_prj.ofile[j+2] = '\0';
+ if (base)
+  base++;
+ else
+  base = g_prj.df->name[k];
+ snprintf(name, sizeof name, "%s", base);
+ dot = strrchr(name, '.');
+ if (dot)
+  *dot = '\0';
+ if (strlen(name) + strlen(E_P_OBJECT_SUFFIX) < sizeof name)
+  strcat(name, E_P_OBJECT_SUFFIX);
+ if (e_build_operand(g_prj.ofile, sizeof g_prj.ofile, e_prog.exedir, name))
+  g_prj.ofile[0] = '\0';
 }
 
 /**
@@ -6217,7 +6945,7 @@ static int e_prj_finish(void)
   e_argc = e_add_arg(&e_arg, library, e_argc, e_argc);
  freedf(g_prj.df);
  g_prj.df = NULL;
- df = e_p_get_var("LDFLAGS");
+ df = e_prj_var(E_PRJ_VAR_LDFLAGS);
  if (df)
  {
   FREE(e_s_prog.libraries);
@@ -6387,9 +7115,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
   e_s_prog.libraries = WpeStrdup("");
   if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
   /* Project my_prog.prj defaults to an executable of my_prog BD */
-  strcpy(text, e_prog.project);
-  e_s_prog.exe_name = WpeStrdup(WpeStringCutChar(text, '.'));
-  /*e_s_prog.exe_name = WpeStrdup("a.out");*/
+  e_s_prog.exe_name = e_prj_default_exe();
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
   e_s_prog.intstr = WpeStrdup(cc_intstr);
   strcpy(library, "");
@@ -6484,9 +7210,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  if (!e_s_prog.exe_name)
  {
   /* Project my_prog.prj defaults to an executable of my_prog BD */
-  strcpy(text, e_prog.project);
-  e_s_prog.exe_name = WpeStrdup(WpeStringCutChar(text, '.'));
-  /*e_s_prog.exe_name = WpeStrdup("a.out");*/
+  e_s_prog.exe_name = e_prj_default_exe();
  }
  if (!e_s_prog.intstr)
   e_s_prog.intstr = WpeStrdup(cc_intstr);
@@ -6497,8 +7221,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  }
  if ((fp = fopen(e_prog.project, "r")) == NULL)
  {
-  sprintf(text, e_msg[ERR_FOPEN], e_prog.project);
-  e_error(text, 0, f->fb);
+  e_prj_say_open_failed(f);
   return(e_p_df);
  }
  while ((tp = fgets(text, 256, fp)))
@@ -6589,17 +7312,19 @@ int e_wrt_prj_fl(FENSTER *f)
 {
  int i, len;
  FILE *fp;
- char text[256];
+ char *path;
 
  i = e_find_project_window(f->ed);
  if (i == 0 || e_prog.project[0] == DIRC)
-  strcpy(text, e_prog.project);
+  path = WpeStrdup(e_prog.project);
  else
-  sprintf(text, "%s/%s", f->ed->f[i]->dirct, e_prog.project);
- if ((fp = fopen(text, "w")) == NULL)
+  path = e_mkfilename(f->ed->f[i]->dirct, e_prog.project);
+ fp = path ? fopen(path, "w") : NULL;
+ if (path)
+  FREE(path);
+ if (fp == NULL)
  {
-  sprintf(text, e_msg[ERR_FOPEN], e_prog.project);
-  e_error(text, 0, f->fb);
+  e_prj_say_open_failed(f);
   return(-1);
  }
  fprintf(fp, "#\n# xwpe - project-file: %s\n", e_prog.project);

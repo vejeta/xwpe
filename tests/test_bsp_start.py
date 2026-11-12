@@ -149,6 +149,13 @@ def _project(tmp_path):
     with open(str(bsp / "stub.json"), "w") as fh:
         json.dump({"name": "stub", "argv": [server], "version": "1",
                    "bspVersion": "2.1.1", "languages": ["scala"]}, fh)
+    # The user already said Run it for this folder's build server (the
+    # session's HOME is tmp_path): a .bsp file that came with a folder is
+    # asked about first (tests/test_startcmd.py), these rows test the start.
+    store = tmp_path / ".local" / "state" / "xwpe" / "start-commands"
+    store.parent.mkdir(parents=True)
+    store.write_text("xwpe-start-commands 1\nyes\tBSP/stub.json\t%s\t%s\n"
+                     % (os.path.realpath(str(tmp_path)), server))
     return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", ""))}
 
 

@@ -485,10 +485,6 @@ int   wpe_ai_path_landing(struct FNST *f, const char *path, char *real, size_t s
  * we_ai_path.h. */
 int   wpe_ai_scope_judge(struct FNST *f, const char *path, int access,
                          char *real, size_t sz);
-/* 1 when a write to @path lands inside the workspace on such a protected
- * file (.git, xwperc, .xwpe-ai.md, AGENTS.md, CLAUDE.md, QWEN.md, .claude,
- * .mcp.json, .qwen, or the user's own config folder). */
-int   wpe_ai_path_protected(struct FNST *f, const char *path);
 /* The workspace's folder, absolute and malloc'd (NULL when it cannot be
  * formed): the root wpe_ai_scope_judge compares against. */
 char *wpe_ai_workspace_dir(struct FNST *f);

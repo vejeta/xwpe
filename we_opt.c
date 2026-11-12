@@ -10,6 +10,8 @@
 #include "WeExpArr.h"
 #include "we_ai.h"        /* AI backend config keys (guarded by WPE_AI) */
 #include "we_testdump.h"
+#include "we_startcmd.h"
+#include "we_paint.h"
 #include <ctype.h>
 #include <limits.h>
 #include <sys/types.h>
@@ -95,6 +97,29 @@ static char *e_opt_user_file;
 /* What the status line says when a start-folder xwperc named user-only keys. */
 #define E_OPT_IGNORED_FMT "./xwperc may not set (only your own config may): %s"
 #define E_OPT_IGNORED_LINE_MAX (E_OPT_IGNORED_MAX + 80)
+
+/* The room of the print command's field in Options > Editor. */
+#define E_OPT_PRINT_FIELD_ROOM 128
+
+/* The start-folder xwperc the options come from, and the folder that holds
+   it; NULL when the options come from the user's own file. */
+static char *e_opt_folder_file;
+static char *e_opt_folder_dir;
+
+/* The program keys as the user's own config, or the built-in default, sets
+   them, kept while a start-folder xwperc sets the ones in force: "Use mine"
+   runs these. */
+static char *e_opt_own_print;
+static int e_opt_own_deb = E_OPT_DEBUGGER_UNSET;
+static struct e_s_prog **e_opt_own_lang;
+static int e_opt_own_nlang;
+
+/* The debugger the start-folder xwperc names, or E_OPT_DEBUGGER_UNSET. */
+static int e_opt_named_deb = E_OPT_DEBUGGER_UNSET;
+
+/* What the status line says when the user's own config could not take the
+   keys a save moved out of the start-folder xwperc. */
+#define E_OPT_MOVE_FAILED_FMT "could not write your own config %s: its assistant settings were not saved"
 
 /* Draws an information box and returns the background it saved, or NULL. */
 typedef PIC *(*e_opt_box_draw)(FENSTER *f);
@@ -805,12 +830,44 @@ void e_pr_ed_beispiel(int xa, int ya, FENSTER *f, int sw, int md)
 }
 
 /*   Save - Options - Menu   */
+/* What Save Options asks when the option file's path is longer than its field. */
+#define E_OPT_SAVE_LONG_FMT "Save the options to\n%s\n?"
+
+/**
+ * e_opt_save_to_long_path - Save Options when the field cannot hold the path.
+ * @f: the window.
+ *
+ * The name field holds E_ARG_FIELD_MAX bytes; a deeper option file (a
+ * project folder far down the tree) would be cut there, and Enter would
+ * then save to a file the user never named.  Instead the whole path is
+ * shown, read-only, and Yes saves there.
+ * Return: as e_opt_save.
+ */
+static int e_opt_save_to_long_path(FENSTER *f)
+{
+ size_t size = strlen(E_OPT_SAVE_LONG_FMT) + strlen(f->ed->optfile) + 1;
+ char *ask = MALLOC(size);
+ int answer;
+
+ if (!ask)
+  return(0);
+ snprintf(ask, size, E_OPT_SAVE_LONG_FMT, f->ed->optfile);
+ answer = e_message(1, ask, f);
+ FREE(ask);
+ if (answer != 'Y')
+  return(0);
+ e_save_opt(f);
+ return(1);
+}
+
 int e_opt_save(FENSTER *f)
 {
  int ret;
- char tmp[256];
+ char tmp[E_ARG_FIELD_MAX + 1];
 
- strcpy(tmp, f->ed->optfile);
+ if (strlen(f->ed->optfile) > E_ARG_FIELD_MAX)
+  return(e_opt_save_to_long_path(f));
+ snprintf(tmp, sizeof tmp, "%s", f->ed->optfile);
  ret = e_add_arguments(tmp, "Save Option File", f, 0, AltS, NULL);
  if (ret)
  {
@@ -1544,6 +1601,352 @@ void e_opt_use_user_file(char *path)
  e_opt_user_file = path;
 }
 
+/**
+ * e_opt_forget_folder - The options no longer come from a start-folder xwperc.
+ */
+static void e_opt_forget_folder(void)
+{
+ if (e_opt_folder_file) FREE(e_opt_folder_file);
+ if (e_opt_folder_dir) FREE(e_opt_folder_dir);
+ e_opt_folder_file = NULL;
+ e_opt_folder_dir = NULL;
+}
+
+/**
+ * e_opt_note_folder - Remember which start-folder xwperc the options come from.
+ * @cn: the editor, whose option file is that xwperc.
+ *
+ * Its folder is the one the answers about its commands are kept for, and
+ * only a save into that very file moves the user's own keys out of it.
+ */
+static void e_opt_note_folder(ECNT *cn)
+{
+ char *slash;
+
+ e_opt_forget_folder();
+ e_opt_folder_file = WpeStrdup(cn->optfile);
+ e_opt_folder_dir = WpeStrdup(cn->optfile);
+ slash = strrchr(e_opt_folder_dir, DIRC);
+ if (slash == e_opt_folder_dir) slash[1] = '\0';
+ else if (slash) *slash = '\0';
+ else strcpy(e_opt_folder_dir, ".");
+}
+
+/* The folder the editor was started in, as it was at start. */
+static char *e_opt_launch;
+
+/**
+ * e_opt_note_launch_dir - Remember the folder the editor was started in.
+ * @dir: that folder.
+ *
+ * The editor reads ./xwperc there and the assistant its instructions; the
+ * working folder changes for a while during each build, so the judge of
+ * the assistant's writes asks this one instead.
+ */
+void e_opt_note_launch_dir(const char *dir)
+{
+ if (e_opt_launch) FREE(e_opt_launch);
+ e_opt_launch = dir ? WpeStrdup(dir) : NULL;
+}
+
+/**
+ * e_opt_launch_dir - The folder the editor was started in, or NULL.
+ */
+const char *e_opt_launch_dir(void)
+{
+ return(e_opt_launch);
+}
+
+/**
+ * e_opt_start_folder - The folder whose xwperc the options come from.
+ *
+ * The run sites of the program keys ask about that folder's commands; when
+ * the options come from the user's own file there is nothing to ask.
+ * Return: the folder, or NULL.
+ */
+const char *e_opt_start_folder(void)
+{
+ return(e_opt_folder_dir);
+}
+
+/** e_opt_own_free_lang - Free the user's own language entries. */
+static void e_opt_own_free_lang(void)
+{
+ int i;
+
+ for (i = 0; i < e_opt_own_nlang; i++)
+ {
+  struct e_s_prog *p = e_opt_own_lang[i];
+  if (p->language) FREE(p->language);
+  if (p->compiler) FREE(p->compiler);
+  if (p->comp_str) FREE(p->comp_str);
+  if (p->libraries) FREE(p->libraries);
+  if (p->exe_name) FREE(p->exe_name);
+  FREE(p);
+ }
+ if (e_opt_own_lang) FREE(e_opt_own_lang);
+ e_opt_own_lang = NULL;
+ e_opt_own_nlang = 0;
+}
+
+/**
+ * e_opt_own_find_lang - The user's own entry for a language.
+ * @language: its name; @create: 1 to add an empty one when there is none.
+ * Return: the entry, or NULL.
+ */
+static struct e_s_prog *e_opt_own_find_lang(const char *language, int create)
+{
+ struct e_s_prog *p, **grown;
+ int i;
+
+ for (i = 0; i < e_opt_own_nlang; i++)
+  if (WpeStrccmp(e_opt_own_lang[i]->language, language) == 0)
+   return(e_opt_own_lang[i]);
+ if (!create)
+  return(NULL);
+ if (!(p = calloc(1, sizeof *p)))
+  return(NULL);
+ if (!(grown = realloc(e_opt_own_lang, (e_opt_own_nlang + 1) * sizeof *grown)))
+ {
+  free(p);
+  return(NULL);
+ }
+ e_opt_own_lang = grown;
+ p->language = WpeStrdup(language);
+ p->compiler = WpeStrdup("");
+ p->comp_str = WpeStrdup("");
+ p->libraries = WpeStrdup("");
+ p->exe_name = WpeStrdup("");
+ e_opt_own_lang[e_opt_own_nlang++] = p;
+ return(p);
+}
+
+/**
+ * e_opt_own_set - Replace one field of an own entry.
+ * @field: the field; @value: its new text.
+ */
+static void e_opt_own_set(char **field, const char *value)
+{
+ if (*field) FREE(*field);
+ *field = WpeStrdup(value);
+}
+
+/**
+ * e_opt_compiler_key - The answers' key for a language's compile line.
+ * @language: its name; @out/@sz: receive "Compiler/<language>".
+ */
+static void e_opt_compiler_key(const char *language, char *out, size_t sz)
+{
+ snprintf(out, sz, "%s%s", WPE_STARTCMD_KEY_COMPILER, language);
+}
+
+/**
+ * e_opt_note_own_lang - Count a language's compile line as the user's own.
+ * @p: the entry.
+ */
+static void e_opt_note_own_lang(const struct e_s_prog *p)
+{
+ char key[WPE_STARTCMD_KEY_MAX];
+ char *text = e_prog_command_text(p);
+
+ e_opt_compiler_key(p->language, key, sizeof key);
+ if (text)
+  wpe_startcmd_note_own(key, text);
+ if (text) FREE(text);
+}
+
+/**
+ * e_opt_own_from_defaults - Start the user's own program keys from the
+ * built-in ones.
+ * @cn: the editor, before any option file is read.
+ *
+ * A start-folder xwperc replaces the whole config, so what the user's own
+ * file does not name is the built-in default; that default also runs
+ * without a question, as it is the editor's own.
+ */
+static void e_opt_own_from_defaults(ECNT *cn)
+{
+ int i;
+
+ wpe_startcmd_reset();
+ e_opt_own_free_lang();
+ if (e_opt_own_print) FREE(e_opt_own_print);
+ e_opt_own_print = WpeStrdup(cn->print_cmd ? cn->print_cmd : "");
+ e_opt_own_deb = e_deb_type;
+ e_opt_named_deb = E_OPT_DEBUGGER_UNSET;
+ wpe_startcmd_note_own(WPE_STARTCMD_KEY_PRINT, e_opt_own_print);
+ wpe_startcmd_note_own(WPE_STARTCMD_KEY_DEBUGGER, e_deb_type_name(e_opt_own_deb));
+ for (i = 0; i < e_prog.num; i++)
+ {
+  struct e_s_prog *p = e_opt_own_find_lang(e_prog.comp[i]->language, 1);
+  if (!p)
+   continue;
+  e_opt_own_set(&p->compiler, e_prog.comp[i]->compiler);
+  e_opt_own_set(&p->comp_str, e_prog.comp[i]->comp_str);
+  e_opt_own_set(&p->libraries, e_prog.comp[i]->libraries);
+  e_opt_own_set(&p->exe_name, e_prog.comp[i]->exe_name);
+  e_opt_note_own_lang(p);
+ }
+}
+
+/**
+ * e_opt_language_of - The language a "[Language/<name>]" section is about.
+ * @section: the section's name.
+ * Return: the name, or NULL for another section.
+ */
+static const char *e_opt_language_of(const char *section)
+{
+ size_t n = strlen(OPT_SECTION_LANGUAGE);
+
+ if (strncmp(section, OPT_SECTION_LANGUAGE, n) != 0 || !section[n])
+  return(NULL);
+ return(section + n + 1);
+}
+
+/**
+ * e_opt_capture_own_lang - Keep one compile-line key of the user's own file.
+ * @language: the section's language; @option/@value: the key.
+ */
+static void e_opt_capture_own_lang(const char *language, const char *option,
+                                   const char *value)
+{
+ struct e_s_prog *p;
+
+ if (WpeStrccmp("Compiler", option) != 0 && WpeStrccmp("CompilerOptions", option) != 0 &&
+     WpeStrccmp("Libraries", option) != 0 && WpeStrccmp("Executable", option) != 0)
+  return;
+ if (!(p = e_opt_own_find_lang(language, 1)))
+  return;
+ if (WpeStrccmp("Compiler", option) == 0)
+  e_opt_own_set(&p->compiler, value);
+ else if (WpeStrccmp("CompilerOptions", option) == 0)
+  e_opt_own_set(&p->comp_str, value);
+ else if (WpeStrccmp("Libraries", option) == 0)
+  e_opt_own_set(&p->libraries, value);
+ else
+  e_opt_own_set(&p->exe_name, value);
+}
+
+/**
+ * e_opt_capture_own - Keep a program key of the user's own file, unapplied.
+ * @section/@option/@value: the key.
+ *
+ * Read after a start-folder xwperc: the folder's print command, compile
+ * lines and debugger stay in force, and the user's own values are kept to
+ * compare them with and to run when he answers "Use mine".
+ */
+static void e_opt_capture_own(const char *section, const char *option, const char *value)
+{
+ const char *language = e_opt_language_of(section);
+
+ if (language)
+  e_opt_capture_own_lang(language, option, value);
+ else if (strncmp(section, OPT_SECTION_GENERAL, strlen(OPT_SECTION_GENERAL)) == 0 &&
+          WpeStrccmp("PrintCmd", option) == 0)
+  e_opt_own_set(&e_opt_own_print, value);
+ else if (strncmp(section, OPT_SECTION_PROGRAMMING, strlen(OPT_SECTION_PROGRAMMING)) == 0 &&
+          WpeStrccmp("Debugger", option) == 0)
+  e_opt_own_deb = atoi(value);
+}
+
+/**
+ * e_opt_note_named - Remember the debugger a start-folder xwperc names.
+ * @section/@option/@value: a key of that file.
+ *
+ * The debugger in force also changes by itself (a .py file picks pdb), so
+ * the question is about the one the folder named, not the one in force.
+ */
+static void e_opt_note_named(const char *section, const char *option, const char *value)
+{
+ if (strncmp(section, OPT_SECTION_PROGRAMMING, strlen(OPT_SECTION_PROGRAMMING)) == 0 &&
+     WpeStrccmp("Debugger", option) == 0)
+  e_opt_named_deb = atoi(value);
+}
+
+/**
+ * e_opt_note_own_values - Count what the user's own file sets as his own.
+ *
+ * Called once his file has been read for the keys a folder may not set,
+ * so a folder whose commands are his runs them without a question.
+ */
+static void e_opt_note_own_values(void)
+{
+ int i;
+
+ wpe_startcmd_note_own(WPE_STARTCMD_KEY_PRINT, e_opt_own_print);
+ wpe_startcmd_note_own(WPE_STARTCMD_KEY_DEBUGGER, e_deb_type_name(e_opt_own_deb));
+ for (i = 0; i < e_opt_own_nlang; i++)
+  e_opt_note_own_lang(e_opt_own_lang[i]);
+}
+
+/**
+ * e_opt_own_print_cmd - The user's own print command.
+ * @cn: the editor.
+ * Return: his own (or the default) while a start-folder xwperc sets the
+ * one in force, else the one in force, which is his.
+ */
+const char *e_opt_own_print_cmd(ECNT *cn)
+{
+ if (e_opt_folder_dir && e_opt_own_print)
+  return(e_opt_own_print);
+ return(cn->print_cmd);
+}
+
+/**
+ * e_opt_own_language - The user's own entry for a language.
+ * @language: its name.
+ * Return: his own (or the default) while a start-folder xwperc sets the
+ * one in force, else the entry in force, which is his; NULL when the
+ * language is unknown.
+ */
+struct e_s_prog *e_opt_own_language(const char *language)
+{
+ int i;
+
+ if (e_opt_folder_dir)
+  return(e_opt_own_find_lang(language, 0));
+ for (i = 0; i < e_prog.num; i++)
+  if (WpeStrccmp(e_prog.comp[i]->language, language) == 0)
+   return(e_prog.comp[i]);
+ return(NULL);
+}
+
+/**
+ * e_opt_own_debugger - The debugger the user's own config names.
+ * Return: its type (the default when his file names none).
+ */
+int e_opt_own_debugger(void)
+{
+ if (e_opt_own_deb == E_OPT_DEBUGGER_UNSET)
+  return(e_deb_type);
+ return(e_opt_own_deb);
+}
+
+/**
+ * e_opt_named_debugger - The debugger the start-folder xwperc names.
+ * Return: its type, or E_OPT_DEBUGGER_UNSET when no start-folder file
+ * names one or the user chose one since in Options.
+ */
+int e_opt_named_debugger(void)
+{
+ if (!e_opt_folder_dir)
+  return(E_OPT_DEBUGGER_UNSET);
+ return(e_opt_named_deb);
+}
+
+/**
+ * e_opt_debugger_chosen - The user picked a debugger in Options.
+ * @type: the one he picked.
+ *
+ * It is his own from now on: no question about it, in this session or,
+ * once the folder's file holds it, after the next start.
+ */
+void e_opt_debugger_chosen(int type)
+{
+ e_opt_named_deb = E_OPT_DEBUGGER_UNSET;
+ e_startcmd_typed(e_opt_folder_dir, WPE_STARTCMD_KEY_DEBUGGER, e_deb_type_name(type));
+}
+
 /* The lines of an option file, as read, without their newlines. */
 typedef struct {
  char **line;
@@ -1738,6 +2141,26 @@ static int e_opt_merge_user_only(const e_opt_lines *own, const e_opt_lines *mine
 }
 
 /**
+ * e_opt_say_move_failed - Say that the user's own config could not take his keys.
+ * @cn: the editor.
+ *
+ * His hook, engine, endpoints and dial still apply until he quits, but
+ * they are in no file, so he knows to save them again once his file can be
+ * written.
+ */
+static void e_opt_say_move_failed(ECNT *cn)
+{
+ char line[E_OPT_IGNORED_LINE_MAX + PATH_MAX];
+
+ if (!cn || !cn->fb) return;
+ snprintf(line, sizeof line, E_OPT_MOVE_FAILED_FMT, e_opt_user_file);
+ wpe_paint_trace_say(line);
+ e_status_hold(line);
+ e_status_paint(cn->fb, line);
+ e_refresh();
+}
+
+/**
  * e_opt_move_user_only_keys - After a save into a start-folder xwperc, put the user-only keys in the user's own file.
  * @cn: the editor.
  *
@@ -1746,19 +2169,28 @@ static int e_opt_merge_user_only(const e_opt_lines *own, const e_opt_lines *mine
  * xwperc, the user's own hook, engine command, endpoints and dial would land
  * in a file he may commit and push, and would not apply there anyway.  So
  * they are taken out of it and written into the user's own file, where the
- * next start in any folder reads them; the rest of his file is kept.
+ * next start in any folder reads them; the rest of his file is kept.  They
+ * leave the project's file even when his own cannot be written, so they
+ * never reach a file he may push; the status line then says they were not
+ * saved.  A Save As to any other file writes every key, as asked.
  */
 static void e_opt_move_user_only_keys(ECNT *cn)
 {
  e_opt_lines saved = {NULL, 0}, kept = {NULL, 0}, mine = {NULL, 0};
  e_opt_lines own = {NULL, 0}, merged = {NULL, 0};
- if (!e_opt_user_file || e_opt_same_file(e_opt_user_file, cn->optfile)) return;
+ int stored;
+ if (!e_opt_user_file || !e_opt_folder_file) return;
+ if (!e_opt_same_file(e_opt_folder_file, cn->optfile)) return;
  if (e_opt_lines_load(cn->optfile, &saved) == 0 &&
-     e_opt_split_saved(&saved, &kept, &mine) == 0 &&
-     e_opt_lines_load(e_opt_user_file, &own) == 0 &&
-     e_opt_merge_user_only(&own, &mine, &merged) == 0 &&
-     e_opt_lines_store(e_opt_user_file, &merged) == 0)
-  e_opt_lines_store(cn->optfile, &kept);   /* only once the user's own file holds them */
+     e_opt_split_saved(&saved, &kept, &mine) == 0)
+ {
+  stored = e_opt_lines_load(e_opt_user_file, &own) == 0 &&
+           e_opt_merge_user_only(&own, &mine, &merged) == 0 &&
+           e_opt_lines_store(e_opt_user_file, &merged) == 0;
+  e_opt_lines_store(cn->optfile, &kept);
+  if (!stored && mine.n > 0)
+   e_opt_say_move_failed(cn);
+ }
  e_opt_lines_free(&own);
  e_opt_lines_free(&saved);
  e_opt_lines_free(&kept);
@@ -1843,8 +2275,12 @@ static int e_opt_read_stream(ECNT *cn, FILE *fp, int mode)
      ;
     if (i >= OPTION_SECTIONS)
      return ERR_READ_OPF;
+    if (mode == E_OPT_READ_SHARED)
+     e_opt_note_named(section, option, value);
     if (e_opt_line_applies(section, option, mode))
      (*WpeSectionRead[i].function)(cn, section, option, value);
+    else if (mode == E_OPT_READ_USER_ONLY)
+     e_opt_capture_own(section, option, value);
    }
   }
  }
@@ -1904,7 +2340,13 @@ int e_opt_read(ECNT *cn)
  e_opt_ignored_keys[0] = '\0';
  if (e_opt_user_file && e_opt_same_file(e_opt_user_file, cn->optfile))
   e_opt_use_user_file(NULL);
- if (e_opt_user_file) mode = E_OPT_READ_SHARED;
+ e_opt_forget_folder();
+ if (e_opt_user_file)
+ {
+  mode = E_OPT_READ_SHARED;
+  e_opt_note_folder(cn);
+  e_opt_own_from_defaults(cn);
+ }
  fp = e_opt_open_options(cn);
  if (fp == NULL) err = 0;
  else
@@ -1912,7 +2354,11 @@ int e_opt_read(ECNT *cn)
   err = e_opt_read_stream(cn, fp, mode);
   fclose(fp);
  }
- if (e_opt_user_file) e_opt_read_user_only(cn);
+ if (e_opt_user_file)
+ {
+  e_opt_read_user_only(cn);
+  e_opt_note_own_values();
+ }
  return err;
 }
 
@@ -2003,7 +2449,9 @@ W_O_WRSTR **e_add_wrstr(int xt, int yt, int xw, int yw, int nw, int wmx,
  o->wstr[o->wn-1]->lines_key = 0;
  o->wstr[o->wn-1]->df = df;
  strcpy(o->wstr[o->wn-1]->header, header);
- strcpy(o->wstr[o->wn-1]->txt, txt);
+ /* The field holds wmx bytes: a longer value (a deep option file's path, a
+    compiler line an xwperc made long) is cut to that, never copied past it. */
+ snprintf(o->wstr[o->wn-1]->txt, wmx + 1, "%s", txt);
  return(o->wstr);
 }
 
@@ -3337,6 +3785,26 @@ static int e_opt_kst_as(W_OPTSTR *o, WpeTestCtx kind)
    return(ret);
 }
 
+/**
+ * e_opt_take_print_cmd - The print command the user set in Options.
+ * @cn: the editor; @text: the field's text.
+ *
+ * A command he typed there is his own: printing does not ask about it.  A
+ * field he left alone is not typed, and neither is a folder's command too
+ * long for the field: it was cut to fit, so it is never approved here.
+ */
+static void e_opt_take_print_cmd(ECNT *cn, const char *text)
+{
+ int typed = cn->print_cmd && strlen(cn->print_cmd) <= E_OPT_PRINT_FIELD_ROOM &&
+             strcmp(cn->print_cmd, text) != 0;
+
+ if (cn->print_cmd)
+  WpeFree(cn->print_cmd);
+ cn->print_cmd = WpeStrdup(text);
+ if (typed)
+  e_startcmd_typed(e_opt_folder_dir, WPE_STARTCMD_KEY_PRINT, text);
+}
+
 int e_edt_options(FENSTER *f)
 {
  int i, ret, edopt = f->ed->edopt;
@@ -3370,7 +3838,7 @@ int e_edt_options(FENSTER *f)
  e_add_pswstr(1, 26, 13, 2, AltV,
    (f->ed->edopt & ED_ALWAYS_AUTO_INDENT ? 1 : f->ed->edopt & ED_SOURCE_AUTO_INDENT ? 0 : 2),
    "NeVer           ", o);
- e_add_wrstr(3, 14, 3, 15, 44, 128, 1, AltR, "PRint Command:",
+ e_add_wrstr(3, 14, 3, 15, 44, E_OPT_PRINT_FIELD_ROOM, 1, AltR, "PRint Command:",
    f->ed->print_cmd, NULL, o);
  e_add_bttstr(12, 17, 1, AltO, " Ok ", NULL, o);
  e_add_bttstr(31, 17, -1, WPE_ESC, "Cancel", NULL, o);
@@ -3389,9 +3857,7 @@ int e_edt_options(FENSTER *f)
     (o->sstr[3]->num ? ED_OLD_TILE_METHOD : 0) +
     (o->sstr[0]->num ? ED_SHOW_ENDMARKS : 0) +
     (o->sstr[4]->num ? ED_BLOCK_WORDSTAR : 0);
-  if (f->ed->print_cmd)
-   WpeFree(f->ed->print_cmd);
-  f->ed->print_cmd = WpeStrdup(o->wstr[0]->txt);
+  e_opt_take_print_cmd(f->ed, o->wstr[0]->txt);
   if (edopt != f->ed->edopt)
   {
    e_switch_blst(f->ed);

@@ -66,8 +66,12 @@ def _write_executable(path, text):
 
 
 def _options(tmp_path, text):
-    """The option file the editor reads from its working folder."""
-    with open(str(tmp_path / "xwperc"), "w") as fh:
+    """The user's own option file (the session's HOME is its folder).  A
+    print command in an xwperc of the start folder would first be shown and
+    asked about (tests/test_startcmd.py); these rows test the user's own."""
+    cfg = tmp_path / ".config" / "xwpe"
+    cfg.mkdir(parents=True, exist_ok=True)
+    with open(str(cfg / "xwperc"), "w") as fh:
         fh.write(text)
 
 

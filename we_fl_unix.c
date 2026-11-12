@@ -10,6 +10,7 @@
 #include "we_ai.h"
 #include "we_buffer.h"
 #include "we_child.h"
+#include "we_startcmd.h"
 
 #ifdef UNIX
 
@@ -3328,6 +3329,52 @@ static int e_print_run(const char *dir, const char *cmd, const char *file)
  return(wpe_capture_succeeded(ran, status) ? E_PRINT_DONE : E_PRINT_FAILED);
 }
 
+/* What the question calls the print command. */
+#define E_PRINT_WHAT_ASKED "print command"
+
+/**
+ * e_print_approve - Ask before the print command a start-folder xwperc names runs.
+ * @f: the window being printed.
+ *
+ * Printing hands the file to a shell command, so a cloned folder's xwperc
+ * could run anything at the user's first print; it is shown first unless
+ * it is his own, the default, or answered for in this folder.  "Use mine"
+ * puts his own command in force.
+ * Return: 0 to print with f->ed->print_cmd, -1 to print nothing.
+ */
+static int e_print_approve(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ char *own = WpeStrdup(e_opt_own_print_cmd(cn));
+ E_STARTCMD c;
+ int verdict;
+
+ c.folder = e_opt_start_folder();
+ c.source = E_STARTCMD_XWPERC;
+ c.who = E_STARTCMD_XWPERC_WHO;
+ c.key = WPE_STARTCMD_KEY_PRINT;
+ c.what = E_PRINT_WHAT_ASKED;
+ c.text = cn->print_cmd;
+ c.own = own;
+ verdict = e_startcmd_approve(f, &c);
+ if (verdict == WPE_STARTCMD_USE_OWN)
+ {
+  WpeFree(cn->print_cmd);
+  cn->print_cmd = own;
+  own = NULL;
+ }
+ if (own)
+  WpeFree(own);
+ if (verdict == WPE_STARTCMD_CANCEL)
+  return(-1);
+ if (strcmp(cn->print_cmd, "") == 0)
+ {
+  e_error(e_msg[ERR_NOPRINT], 0, f->fb);
+  return(-1);
+ }
+ return(0);
+}
+
 int WpePrintFile(FENSTER *f)
 {
  char           *str, *dp;
@@ -3352,6 +3399,8 @@ int WpePrintFile(FENSTER *f)
  c = e_message(1, str, f);
  FREE(str);
  if (c != 'Y')
+  return(0);
+ if (e_print_approve(f))
   return(0);
 
  dp = f->dirct;

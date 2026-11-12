@@ -1714,6 +1714,32 @@ static int ws_protect_user_config(int where, int access, const char *rpath)
 }
 
 /**
+ * ws_protect_start_folder - Mark a write inside the workspace that lands on a
+ * protected file of the folder the editor was started in.
+ * @where: the scope's answer; @access: the access judged; @rpath: where the
+ * write really lands, or an empty string when it could not be told.
+ *
+ * The editor reads ./xwperc, and the assistant ./.xwpe-ai.md and
+ * ./AGENTS.md, from its working folder, which can be a folder below the
+ * workspace (started in proj/src, editing proj/t.c).  Those files are
+ * protected there as at the workspace's top, so an assistant under auto
+ * cannot plant a compiler or new instructions for the next start.  The
+ * folder is the one recorded at start (e_opt_launch_dir), not the working
+ * folder of the moment, which a build changes while it runs.
+ * Return: WPE_SCOPE_PROTECTED for such a write, else @where unchanged.
+ */
+static int ws_protect_start_folder(int where, int access, const char *rpath)
+{
+ const char *start = e_opt_launch_dir();
+ char rcwd[WPE_PATH_RESOLVED_MAX];
+ if (access != WPE_SCOPE_WRITE || where != WPE_SCOPE_INSIDE || !rpath[0]) return where;
+ if (!start || !*start) return where;
+ if (wpe_path_resolve(start, rcwd, sizeof rcwd) != WPE_PATH_RESOLVED) return where;
+ if (wpe_path_is_protected(rcwd, rpath)) return WPE_SCOPE_PROTECTED;
+ return where;
+}
+
+/**
  * wpe_ai_scope_judge - Where does a path land for a read or a write: inside, granted or outside?
  * @f: any window of the editor; @path: the file, as the model named it;
  * @access: WPE_SCOPE_READ or WPE_SCOPE_WRITE; @real/@sz: receive the place the
@@ -1733,7 +1759,8 @@ static int ws_protect_user_config(int where, int access, const char *rpath)
  * Return: WPE_SCOPE_INSIDE, WPE_SCOPE_GRANTED or WPE_SCOPE_OUTSIDE, and
  * WPE_SCOPE_PROTECTED for a write inside the workspace to a file that
  * changes how git, the editor or the engine runs code, the user's own config
- * folder included (ws_protect_user_config).  A path
+ * folder (ws_protect_user_config) and the protected files of the folder the
+ * editor was started in (ws_protect_start_folder) included.  A path
  * that cannot be made absolute (too long, no working directory) is outside:
  * the tool would still be attempted, so the safe answer is to ask.  With no
  * root, or the root "/", nothing is outside.
@@ -1757,6 +1784,7 @@ int wpe_ai_scope_judge(FENSTER *f, const char *path, int access, char *real, siz
                             resolved, sizeof resolved);
  wpe_ai_free_list(grants, ngrants);
  where = ws_protect_user_config(where, access, resolved);
+ where = ws_protect_start_folder(where, access, resolved);
  lexical = ws_absolute_path(path, lexbuf, sizeof lexbuf);
  if (real && sz && resolved[0] && lexical && strcmp(resolved, lexical) != 0)
   snprintf(real, sz, "%s", resolved);
@@ -1777,20 +1805,6 @@ int wpe_ai_scope_judge(FENSTER *f, const char *path, int access, char *real, siz
 int wpe_ai_path_landing(FENSTER *f, const char *path, char *real, size_t sz)
 {
  return wpe_ai_scope_judge(f, path, WPE_SCOPE_WRITE, real, sz) == WPE_SCOPE_OUTSIDE;
-}
-
-/**
- * wpe_ai_path_protected - Would writing this path change how git, the editor or the engine runs code?
- * @f: any window of the editor; @path: the file, as the model named it.
- *
- * A Multi-file proposal for ".git/hooks/pre-commit" is marked with this so
- * the user sees, before approving, that the file is one another program
- * will run or obey.
- * Return: 1 when the write lands on a protected file inside the workspace.
- */
-int wpe_ai_path_protected(FENSTER *f, const char *path)
-{
- return wpe_ai_scope_judge(f, path, WPE_SCOPE_WRITE, NULL, 0) == WPE_SCOPE_PROTECTED;
 }
 
 /**

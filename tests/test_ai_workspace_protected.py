@@ -132,6 +132,65 @@ def test_a_dial_change_in_a_folder_with_its_own_xwperc_goes_to_the_users_file(tm
     assert "Autosave : 7" in own, "the user's other keys were not kept:\n" + own
 
 
+# @scenario SC-ai-agent-104
+def test_a_save_leaves_the_users_keys_out_of_the_folders_file_when_his_own_cannot_be_written(tmp_path):
+    """The user's own config cannot be written (read-only).  Alt-G y saves
+    the options: the dial and his hook still leave the project's xwperc,
+    and the status line says they were not saved."""
+    marker = tmp_path / "ownhook"
+    ws, home = _project(tmp_path, "[General]\nTab : 3\n")
+    _user_config(home, "[Programming]\nAIEditHook : touch %s\n" % marker)
+    own = home / ".config" / "xwpe" / "xwperc"
+    own.chmod(0o400)
+    env = _env(tmp_path, "DONE ok", "ask")
+    del env["XWPE_AI_POLICY"]
+    env["HOME"] = str(home)
+    env["XWPE_UI_TRACE"] = str(tmp_path / "ui.trace")
+    try:
+        with WpeSession(str(ws), SEED, env_extra=env, filename="t.c") as s:
+            s.key(ALT.AI); s.key("y", delay=0.8)
+            s.key("\033[B", delay=0.6)
+    finally:
+        own.chmod(0o600)
+    folder = (ws / "xwperc").read_text()
+    assert "AIEditHook" not in folder and "AIPolicy" not in folder, \
+        "the user's own keys stayed in the project's xwperc:\n" + folder
+    assert "Tab : 3" in folder, "the folder's own key was lost:\n" + folder
+    said = (tmp_path / "ui.trace").read_text()
+    assert "could not write your own config" in said, said
+
+
+# @scenario SC-ai-agent-104
+def test_save_options_as_a_third_file_writes_every_key_and_leaves_the_users_file(tmp_path):
+    """Options > Save Options into a file of the user's choosing, while the
+    options come from the folder's xwperc: that file gets every key, his
+    hook included, and his own config is not rewritten."""
+    marker = tmp_path / "ownhook"
+    ws, home = _project(tmp_path, "[General]\nTab : 3\n")
+    _user_config(home, "[Programming]\nAIEditHook : touch %s\n" % marker)
+    own = home / ".config" / "xwpe" / "xwperc"
+    before = own.read_text()
+    if len(str(ws / "xwperc")) > SAVE_FIELD_ROOM:
+        pytest.skip("the folder's xwperc path is longer than the Save field "
+                    "(%d bytes): Save Options then shows it whole and offers "
+                    "no other name (tests/test_startcmd.py)" % len(str(ws / "xwperc")))
+    third = ws / "third.rc"
+    env = {"HOME": str(home)}
+    with WpeSession(str(ws), SEED, env_extra=env, filename="t.c") as s:
+        s.key(ALT.OPTIONS); s.key("s", delay=0.8)
+        s.key("\033[F", delay=0.4)                       # End of the field
+        s.key("\x7f" * (len(str(ws / "xwperc")) + 8), delay=0.8)
+        s.key(third.name, delay=0.6)
+        typed = "\n".join(s.display())
+        s.key("\r", delay=1.0)
+    assert third.exists(), "Save Options did not write the file named:\n" + typed
+    saved = third.read_text()
+    assert "AIEditHook : touch %s" % marker in saved, \
+        "the file the user saved to lost his hook:\n" + saved
+    assert "Tab : 3" in saved, saved
+    assert own.read_text() == before, "the user's own config was rewritten by a Save As elsewhere"
+
+
 def _x_column(ws, home, seed):
     """The screen column of the X in `seed`'s first line, as the editor shows it."""
     with WpeSession(str(ws), seed, env_extra={"HOME": str(home)}, filename="t.c") as s:
@@ -191,6 +250,107 @@ def test_under_auto_a_write_that_runs_code_asks_and_n_leaves_nothing(tmp_path, r
     assert " Write " in box, "no write box under auto for %s:\n%s" % (rel, box)
     assert PROTECTED_WORD in box, "the box does not say why it asks:\n" + box
     assert "agent write protected %s" % target in txt, txt
+    assert not target.exists(), "a refused write to %s landed" % rel
+
+
+def _agent_write_from(tmp_path, start, filename, target, answer):
+    """Start the editor in `start` on `filename`, have the agent write
+    `target` under auto and answer the write box with `answer`.  HOME is a
+    folder of its own.  Returns (the box screen or "", the trace)."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    reply = "TOOL write_file %s\nplanted\n@@END@@TURN@@DONE wrote it" % target
+    env = _env(tmp_path, reply, "auto")
+    env["HOME"] = str(home)
+    with WpeSession(str(start), SEED, env_extra=env, filename=filename) as s:
+        s.key(ALT.AI); s.key("g")
+        s.key("write the file"); s.key("\r", delay=1.0)
+        boxed = _wait_for(s, " Write ", timeout=8)
+        box = "\n".join(s.display()) if boxed else ""
+        if boxed:
+            s.key(answer, delay=0.8)
+        s._drain(1.5)
+        txt = _wait_run_done(tmp_path)
+    return box, txt
+
+
+# @scenario SC-ai-agent-105
+def test_a_protected_name_in_the_start_folder_below_the_workspace_asks(tmp_path):
+    """Started in proj/src, editing proj/t.c: the workspace is proj, and the
+    editor reads ./xwperc and the assistant ./.xwpe-ai.md from proj/src.  An
+    auto write of proj/src/.xwpe-ai.md asks, as it would at proj's top."""
+    proj = tmp_path / "proj"
+    src = proj / "src"
+    src.mkdir(parents=True)
+    target = src / ".xwpe-ai.md"
+    box, txt = _agent_write_from(tmp_path, src, "../t.c", target, "n")
+    assert " Write " in box, "no write box for the start folder's instructions:\n" + box
+    assert PROTECTED_WORD in box, "the box does not say why it asks:\n" + box
+    assert not target.exists(), "a refused write to the start folder's instructions landed"
+
+
+F3 = "\033OR"              # the File-Manager
+SAVE_FIELD_ROOM = 128      # the name field of Options > Save Options
+
+
+def _editor_cwd(s):
+    """The working folder of the editor this session started."""
+    return os.readlink("/proc/%d/cwd" % s.proc.pid)
+
+
+# @scenario SC-ai-agent-105
+@pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="needs /proc to see the editor's folder")
+def test_the_start_folder_stays_protected_after_the_file_manager_moves_the_editor(tmp_path):
+    """Started in proj/src, the user opens proj/u.c through the File-Manager,
+    which moves the editor's working folder to proj.  The start folder's
+    instructions file, read from proj/src at start, still asks under auto."""
+    proj = tmp_path / "proj"
+    src = proj / "src"
+    src.mkdir(parents=True)
+    (proj / "u.c").write_text(SEED)
+    home = tmp_path / "home"
+    home.mkdir()
+    target = src / ".xwpe-ai.md"
+    reply = "TOOL write_file %s\nplanted\n@@END@@TURN@@DONE wrote it" % target
+    env = _env(tmp_path, reply, "auto")
+    env["HOME"] = str(home)
+    with WpeSession(str(src), SEED, env_extra=env, filename="../t.c") as s:
+        s.key(F3, delay=1.0)
+        s.key("../u.c", delay=0.6)
+        s.key("\r", delay=1.2)                     # the manager moves to proj
+        s.key("\r", delay=1.2)                     # and opens u.c there
+        moved = _editor_cwd(s)
+        opened = "\n".join(s.display())
+        assert " u.c q" in opened, "u.c did not open:\n" + opened
+        s.key(ALT.AI); s.key("g")
+        s.key("write the file"); s.key("\r", delay=1.0)
+        boxed = _wait_for(s, " Write ", timeout=8)
+        box = "\n".join(s.display()) if boxed else ""
+        if boxed:
+            s.key("n", delay=0.8)
+        s._drain(1.5)
+        _wait_run_done(tmp_path)
+    assert os.path.realpath(moved) == os.path.realpath(str(proj)), \
+        "the File-Manager did not move the editor (it is in %s): the row proves nothing" % moved
+    assert PROTECTED_WORD in box, "the start folder's instructions were written unasked:\n" + box
+    assert not target.exists(), "a refused write to the start folder's instructions landed"
+
+
+# @scenario SC-ai-agent-105
+@pytest.mark.parametrize("rel", [".husky/pre-commit", ".pre-commit-config.yaml",
+                                 "tools/hooks/pre-commit"])
+def test_under_auto_a_hook_a_commit_framework_runs_asks(tmp_path, rel):
+    """husky's hook folder, pre-commit's config, and the folder the
+    repository's core.hooksPath names (read from .git/config, no git run)
+    make git run a program on the next commit: each auto write asks."""
+    ws = tmp_path / "ws"
+    (ws / ".git").mkdir(parents=True)
+    (ws / ".git" / "config").write_text("[core]\n\thooksPath = tools/hooks\n")
+    target = ws / rel
+    box, txt = _agent_write_from(tmp_path, ws, "t.c", target, "n")
+    assert " Write " in box, "no write box under auto for %s:\n%s" % (rel, box)
+    assert PROTECTED_WORD in box, "the box does not say why it asks:\n" + box
     assert not target.exists(), "a refused write to %s landed" % rel
 
 

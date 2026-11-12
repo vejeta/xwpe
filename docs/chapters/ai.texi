@@ -658,7 +658,14 @@ Some files inside the workspace are run or obeyed later by another program:
 command), at any depth and also where a @file{.git} file of a worktree points;
 and, at the top of the workspace, @file{xwperc}, @file{.xwpe-ai.md},
 @file{AGENTS.md}, @file{CLAUDE.md}, @file{QWEN.md}, @file{.claude/},
-@file{.mcp.json} and @file{.qwen/}; and your own config folder
+@file{.mcp.json} and @file{.qwen/}, and the same names in the folder the
+editor was started in when that is below the workspace; what makes git or
+a commit framework run a program: @file{.husky/},
+@file{.pre-commit-config.yaml}, @file{lefthook.yml} (and its @file{.yaml},
+dotted and @file{-local} forms), @file{.gitmodules}, a
+@file{.gitattributes} at any depth, and the folder the repository's
+@code{core.hooksPath} names (read from its config, no git run); and your
+own config folder
 (@file{~/.config/xwpe/}, @file{~/.xwpe/}) when the workspace holds it, as it
 does when you edit a file in your home folder.  A
 @code{write_file} or @code{apply_patch} there asks at every dial, @code{auto}
@@ -666,6 +673,18 @@ included: the box shows the diff under @samp{! changes how git, the editor or
 the engine runs code: @var{path}}, and @kbd{n} leaves the file as it was.  The
 hosted engine's writes there ask the same way, and the Multi-file dialog marks
 such a file with the same words.  Reading these files asks nothing.
+Not covered: a @code{core.hooksPath} set in your global git config, or
+in a file the repository's config includes (@code{[include]},
+@code{[includeIf]}), is not followed, and neither is a repository whose
+top is above the workspace; the hooks folder those name is protected
+only if it is @file{.git}, @file{.husky} or another name above.  Also not
+covered yet, and planned: a folder's @code{EXENAME}, @code{Exedir},
+@code{Executable} or @code{LIBNAME} can put a build's output outside
+the folder (for example @file{~/.local/bin}); a folder's
+@code{IncludePath} widens what the assistant may read; and a debug
+session reads the folder's own debugger start-up files (@file{.pdbrc},
+@file{.perldb}, @file{jdb.ini}, @file{.gdbinit}-style files) and runs
+its program, as Run and Make do.
 
 @item Reads
 @code{read_file}, @code{list_dir}, @code{grep} and @code{glob} run unasked
@@ -992,7 +1011,8 @@ the dial or the web switch: @code{AIBackend}, @code{AIEndpoint},
 @code{AIAgentEngine}, @code{AIReadRoots}, @code{AIPolicy} and @code{AIWeb}.  They
 come from your own file and the @env{XWPE_AI_*} variables in every folder, and
 the status line names any the folder's file tried to set
-(@pxref{Folder xwperc}).
+(@pxref{Folder xwperc}).  The print command, compilers and debugger it sets
+are asked about before they first run (@pxref{Folder commands}).
 
 @cindex AI, project instructions
 @cindex AGENTS.md

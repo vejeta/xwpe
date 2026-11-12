@@ -322,14 +322,40 @@ def xwd_to_image(xwd_bytes):
 
 @pytest.fixture(scope="session")
 def xserver():
-    """Start Xvfb + matchbox once for the whole test session."""
+    """Start Xvfb + matchbox once for the whole test session.
+
+    A display whose lock file exists belongs to someone else (another run,
+    another session): it is never taken over and its lock never removed;
+    the run stops and says which display to change.  Both servers are
+    started inside the try whose finally ends them, by their own process
+    objects, so a failed start leaves nothing running."""
     lock = "/tmp/.X%s-lock" % DISPLAY.lstrip(":")
     if os.path.exists(lock):
+        pytest.exit("X display %s is in use (%s exists): set XWPE_TEST_DISPLAY "
+                    "to a free display" % (DISPLAY, lock), returncode=2)
+    started = []
+    try:
+        yield from _xserver_run(started)
+    finally:
+        _end_servers(started)
+
+
+def _end_servers(procs):
+    """End the servers this run started, the last started first."""
+    for proc in reversed(procs):
+        proc.terminate()
         try:
-            os.unlink(lock)
-        except OSError:
-            pass
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def _xserver_run(started):
+    """Start Xvfb and the window manager, noting each in @started; yield
+    the display while the session runs."""
     xvfb = _spawn(["Xvfb", DISPLAY, "-screen", "0", SCREEN])
+    started.append(xvfb)
     _sleep(2.0)
     if _WM_BIN == "matchbox-window-manager":
         # Use an empty kbdconfig: matchbox's default grabs <Alt>n/p/c/d/m, <Alt>Tab
@@ -350,10 +376,9 @@ def xserver():
             fh.write("NoTitle\nRandomPlacement\nNoGrabServer\n")
         wm = _spawn([_WM_BIN, "-f", twmrc],
                     env={**os.environ, "DISPLAY": DISPLAY})
+    started.append(wm)
     _sleep(1.5)
     yield DISPLAY
-    wm.terminate()
-    xvfb.terminate()
 
 
 @pytest.fixture

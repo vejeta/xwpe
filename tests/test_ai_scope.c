@@ -278,7 +278,51 @@ static void protected_cases(void)
            WPE_SCOPE_WRITE, WPE_SCOPE_PROTECTED);
  expect_in("a worktree's .git file itself", "wt", "wt/.git", WPE_SCOPE_WRITE, WPE_SCOPE_PROTECTED);
  expect_in("a worktree's ordinary file", "wt", "wt/inner/x.c", WPE_SCOPE_WRITE, WPE_SCOPE_INSIDE);
+ expect("pre-commit's config", "ws/.pre-commit-config.yaml", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("lefthook's config", "ws/lefthook.yml", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("husky's hook folder", "ws/.husky/pre-commit", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("the submodules git fetches", "ws/.gitmodules", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("an attributes file below the top", "ws/sub/.gitattributes", WPE_SCOPE_WRITE, NULL, NULL, WPE_SCOPE_PROTECTED);
+ expect("a pre-commit config below the top", "ws/sub/.pre-commit-config.yaml", WPE_SCOPE_WRITE, NULL, NULL,
+        WPE_SCOPE_INSIDE);
  lies_in_cases();
+}
+
+/* Repositories whose config moves the hooks out of .git (core.hooksPath). */
+static void build_hooks_trees(void)
+{
+ make_dir("hk"); make_dir("hk/.git"); make_dir("hk/tools"); make_dir("hk/tools/hooks");
+ make_gitdir_file("hk/.git/config",
+                  "[core]\n\tbare = false\n[core \"x\"]\n[Core]\n\thooksPath = \"tools/hooks\" ; moved\n");
+ make_dir("hw"); make_dir("hw/gd"); make_dir("hw/common"); make_dir("hw/common/hk");
+ make_gitdir_file("hw/.git", "gitdir: gd\n");
+ make_gitdir_file("hw/gd/commondir", "../common\n");
+ make_gitdir_file("hw/common/config", "[core]\nhookspath=common/hk\n");
+}
+
+static void remove_hooks_trees(void)
+{
+ char p[PATH_ROOM];
+ int i;
+ static const char *files[] = { "hk/.git/config", "hw/.git", "hw/gd/commondir", "hw/common/config", NULL };
+ static const char *dirs[] = { "hk/tools/hooks", "hk/tools", "hk/.git", "hk", "hw/common/hk",
+   "hw/common", "hw/gd", "hw", NULL };
+ for (i = 0; files[i]; i++) { under_base(p, sizeof p, files[i]); unlink(p); }
+ for (i = 0; dirs[i]; i++) { under_base(p, sizeof p, dirs[i]); rmdir(p); }
+}
+
+/* The folder core.hooksPath names is protected as git's own folder is,
+   read from the config without running git. */
+static void hooks_path_cases(void)
+{
+ build_hooks_trees();
+ expect_in("the folder core.hooksPath names", "hk", "hk/tools/hooks/pre-commit",
+           WPE_SCOPE_WRITE, WPE_SCOPE_PROTECTED);
+ expect_in("a file beside that folder", "hk", "hk/tools/build.sh", WPE_SCOPE_WRITE, WPE_SCOPE_INSIDE);
+ expect_in("a worktree's shared hooksPath", "hw", "hw/common/hk/pre-push",
+           WPE_SCOPE_WRITE, WPE_SCOPE_PROTECTED);
+ expect_in("a worktree's ordinary file", "hw", "hw/common/notes.txt", WPE_SCOPE_WRITE, WPE_SCOPE_INSIDE);
+ remove_hooks_trees();
 }
 
 /* The links below ws that lead out or cannot be followed: vendor, fileout,
@@ -340,6 +384,7 @@ int main(void)
  build_tree();
  classify_cases();
  protected_cases();
+ hooks_path_cases();
  scan_cases();
  open_cases();
  remove_tree();

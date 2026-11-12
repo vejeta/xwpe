@@ -250,6 +250,40 @@ Changes
   work in st, where Ctrl-End, Ctrl-Insert and Ctrl-Delete did nothing,
   and in rxvt-unicode, where Ctrl-End did nothing.
 
+* The commands a folder's files name for a compile, a link, a print, an
+  install, a debugger start or a build-server start now ask once, and a
+  path a folder value hands to a program is never read as an option or
+  a response file.  When the xwperc of the folder you start in, or a
+  project file, names a print command, a compiler line, a debugger or
+  install commands, or a Scala project's .bsp file names a build server,
+  and it is not yours, the editor shows the whole command first (hidden
+  and reordering characters written out) and asks Run it, Use mine or
+  Cancel (Enter is Use mine).  The answer is kept for that folder and
+  command in ~/.local/state/xwpe/start-commands, so you are asked once;
+  a changed command asks again; this covers compile, link, print,
+  install, debugger and build-server starts, while Run and Make still
+  run the folder's own program, Arguments and Makefile.  What you type
+  yourself in Options counts as yours.  An Exedir, FILES or LIBNAME
+  value that starts with - or @ is now always a path, never a compiler
+  option or response file, and a file whose name holds a quote or a ;
+  is compiled for debug as that file, never run as a command.  Long
+  option-file paths, Run arguments and project program names no longer
+  overflow the editor's buffers.  The assistant's writes also ask now for the
+  start folder's xwperc and instructions when you started in a
+  subfolder, and for husky, pre-commit and lefthook hooks, .gitmodules,
+  .gitattributes and the folder core.hooksPath names.  Saving the
+  options in a project folder no longer leaves your assistant settings
+  in its xwperc when your own file cannot be written, and Save Options
+  into another file of your choosing writes every key there.  A long
+  option-file path or compiler line no longer corrupts memory when the
+  dialog that shows it opens.
+  Not covered yet, and planned: where a folder's EXENAME, Exedir,
+  Executable or LIBNAME puts the build's output (it can be outside the
+  folder, for example ~/.local/bin); a folder's IncludePath widening what
+  the assistant may read; and a debug session reading the folder's own
+  debugger start-up files (.pdbrc, .perldb, jdb.ini, .gdbinit-style
+  files) and running its program, as Run and Make do.
+
 * A project folder can no longer make the assistant run code behind your
   back.  An xwperc in the folder the editor starts in still sets tabs,
   colours and compilers, but no longer the post-edit hook, the hosted

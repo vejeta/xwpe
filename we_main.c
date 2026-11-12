@@ -614,6 +614,7 @@ int main(int argc, char **argv)
 #ifdef PROG
  e_ini_prog(cn);
 #endif
+ e_opt_note_launch_dir(cn->dirct);   /* where ./xwperc and the instructions are read */
  if (sd != 0)
  {
   FILE *f = fopen(OPTION_FILE, "r");

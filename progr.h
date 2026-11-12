@@ -84,6 +84,14 @@ char *e_cat_string(char *p, char *str);
 int e_make_arg(char ***arg, char *str);
 int e_ini_prog(ECNT *cn);
 int e_copy_prog(struct e_s_prog *out, struct e_s_prog *in);
+/* A language's compile and link line as the question shows it (malloc'd). */
+char *e_prog_command_text(const struct e_s_prog *p);
+/* Ask before a compile line a start-folder xwperc names runs: 0 to go on. */
+int e_prog_approve_compile(FENSTER *f);
+char *e_find_var(char *var);
+/* The one join of a directory and a name into a build argv's path operand
+   ("./" in front of one that would start with '-' or '@'): 0, or -1. */
+int e_build_operand(char *out, size_t n, const char *dir, const char *name);
 const char *e_get_start_symbol(void);
 int e_run_options(FENSTER *f);
 int e_run_c_options(FENSTER *f);

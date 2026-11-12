@@ -1448,6 +1448,41 @@
    "layer": "ncurses",
    "test": "tests/test_ai_workspace_protected.py::test_a_hosted_write_to_a_git_hook_asks_under_auto",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-105",
+   "requirement": "Files that run code ask at every dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_a_protected_name_in_the_start_folder_below_the_workspace_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-105",
+   "requirement": "Files that run code ask at every dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_the_start_folder_stays_protected_after_the_file_manager_moves_the_editor",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-105",
+   "requirement": "Files that run code ask at every dial",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_under_auto_a_hook_a_commit_framework_runs_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-104",
+   "requirement": "Settings a project folder cannot set",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_a_save_leaves_the_users_keys_out_of_the_folders_file_when_his_own_cannot_be_written",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-104",
+   "requirement": "Settings a project folder cannot set",
+   "layer": "ncurses",
+   "test": "tests/test_ai_workspace_protected.py::test_save_options_as_a_third_file_writes_every_key_and_leaves_the_users_file",
+   "status": "new"
   }
  ]
 }

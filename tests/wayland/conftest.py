@@ -28,6 +28,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -80,7 +81,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 XWPE_BIN = os.environ.get("XWPE_BIN") or os.path.normpath(os.path.join(HERE, "..", "..", "xwpe"))
 TREE = os.path.normpath(os.path.join(HERE, "..", ".."))
 DISPLAY = os.environ.get("XWPE_TEST_WL_DISPLAY", ":91")
-WL_SOCKET = "wl-xwpe-test"
+# The compositor's socket is this run's own: a name made of this process's
+# id, in a short runtime folder made for the run and removed after it, so a
+# run never unlinks or connects to a socket another run (or the desktop)
+# started, and the path stays inside the 108 bytes a socket name may have.
+WL_SOCKET = "wl-%d" % os.getpid()
+WL_RUNTIME_PARENT = "/tmp"
+WL_RUNTIME_PREFIX = "xwpe-wl-"
 SCREEN = "1024x768x24"
 
 import hashlib
@@ -371,22 +378,41 @@ class WaylandSession:
 
 @pytest.fixture(scope="session")
 def wlserver():
-    """Start Xvfb + weston (x11-backend) once for the whole test session."""
+    """Start Xvfb + weston (x11-backend) once for the whole test session.
+
+    A display whose lock file exists belongs to someone else: it is never
+    taken over and its lock never removed.  Every server and the runtime
+    folder are made inside the try whose finally ends and removes them."""
     lock = "/tmp/.X%s-lock" % DISPLAY.lstrip(":")
     if os.path.exists(lock):
-        try:
-            os.unlink(lock)
-        except OSError:
-            pass
-    xvfb = _spawn(["Xvfb", DISPLAY, "-screen", "0", SCREEN])
-    _sleep(2.0)
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
+        pytest.exit("X display %s is in use (%s exists): set XWPE_TEST_WL_DISPLAY "
+                    "to a free display" % (DISPLAY, lock), returncode=2)
+    started = []
+    runtime = None
+    try:
+        xvfb = _spawn(["Xvfb", DISPLAY, "-screen", "0", SCREEN])
+        started.append(xvfb)
+        _sleep(2.0)
+        runtime = tempfile.mkdtemp(prefix=WL_RUNTIME_PREFIX, dir=WL_RUNTIME_PARENT)
+        yield from _wlserver_run(runtime, started)
+    finally:
+        # The servers this run started, by their own process objects, the
+        # last first, and the runtime folder it made, by its exact path.
+        for proc in reversed(started):
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        if runtime:
+            shutil.rmtree(runtime, ignore_errors=True)
+
+
+def _wlserver_run(runtime, started):
+    """Start weston on @runtime, noting it in @started; yield the runtime
+    folder while the session runs."""
     sockpath = os.path.join(runtime, WL_SOCKET)
-    for p in (sockpath, sockpath + ".lock"):
-        try:
-            os.unlink(p)
-        except OSError:
-            pass
     # kiosk-shell fullscreens the single client at the output's (0,0) with no
     # panel, so the xwpe surface origin == the weston window origin: an xdotool
     # click relative to that window lands on the matching surface cell.  (The
@@ -398,6 +424,7 @@ def wlserver():
          "--width=1024", "--height=768", "--socket=" + WL_SOCKET, "--idle-time=0"],
         env={**os.environ, "DISPLAY": DISPLAY, "XDG_RUNTIME_DIR": runtime},
         stderr=_logfile("weston.log"))
+    started.append(weston)
     # Wait for the wl socket to appear.
     for _ in range(60):
         if os.path.exists(sockpath):
@@ -406,8 +433,6 @@ def wlserver():
     assert os.path.exists(sockpath), "weston wl socket did not appear"
     _sleep(1.0)
     yield runtime
-    weston.terminate()
-    xvfb.terminate()
 
 
 @pytest.fixture

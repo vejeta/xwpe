@@ -67,8 +67,106 @@ and the key has no effect.  When the options are saved in such a folder
 (@samp{Save Options}, @samp{Ok} in @samp{Options}, @samp{AI}, or
 @kbd{Alt-G y}), these keys go to your own file and the rest to the
 folder's file, so your hook or engine command never lands in a project
-you may share.  A file you name with @option{-sf} is your own and is
-read whole.
+you may share.  They leave the folder's file even when your own file
+cannot be written; the status line then says they were not saved.
+@samp{Save Options} into any other file you name writes every key there.
+When the option file's path is longer than the name field (128
+characters), @samp{Save Options} shows the whole path and asks before
+saving there, instead of offering a cut name.  A file you name with
+@option{-sf} is your own and is read whole.
+
+@subsection Commands a folder names are asked about first
+@anchor{Folder commands}
+
+@cindex xwperc, commands from a project folder
+@cindex project file, commands from
+@cindex start-commands
+
+A folder's @file{xwperc} may still set the print command
+(@code{PrintCmd}), a language's compiler line (@code{Compiler},
+@code{CompilerOptions}, @code{Libraries}, @code{Executable} under
+@samp{[Language/@var{name}]}) and the debugger (@code{Debugger}); a
+project file (@file{.prj}) its @code{CMP}, @code{CMPFLAGS} and
+@code{LDFLAGS} and its @code{install:} lines; and a Scala project's
+@file{.bsp/@var{name}.json} the build server a debug session starts
+(@file{scala-cli.json} is read by name first; only the very file and
+command xwpe's own @command{scala-cli setup-ide} wrote in this session
+are spared the question).  The first time such a command is about to run and it
+is not your own (the one your own file sets, or the built-in one),
+xwpe shows it whole and asks:
+
+@example
++------------- Command from ./xwperc -------------+
+|  This folder's xwperc sets the C compiler to:   |
+|                                                 |
+|    ./tools/cc-wrapper -O2 -fplugin=./x.so       |
+|                                                 |
+|  Your own setting: gcc -g                       |
+|  Folder: /home/u/src/project                    |
+|                                                 |
+|   Run it          Use mine           Cancel     |
++-------------------------------------------------+
+@end example
+
+@table @samp
+@item Run it
+(@kbd{Alt-R}) runs the folder's command, and remembers that.
+@item Use mine
+(@kbd{Alt-U}, and @key{Enter}, as the focus starts there) runs your own
+command instead, and remembers that.
+@item Cancel
+(@key{Esc}) runs nothing and remembers nothing: the next run asks
+again.
+@end table
+
+Control characters in the command are written out (@samp{\x1b},
+@samp{\n}, @samp{\t}), and so are the characters that reorder or hide
+text (bidirectional controls, zero-width characters, the byte order
+mark, as @samp{‮}), so it cannot paint over the question or read
+in another order than it runs.  The build server and the install lines
+have no command of yours to run instead: @samp{Use mine} runs nothing.  A command
+too long for the screen is shown in part with its length, and
+@samp{Run it} is not offered: read it in the file first.
+
+An answer holds for that folder, that key and that exact command; when
+the folder's file changes the command, xwpe asks again.  A command you
+type yourself in @samp{Options} (Editor's print command, Compiler,
+Debugger, Project-Options) counts as yours and is not asked about: only
+a field you changed counts, the fields you left alone must already hold
+your own values, and a folder's value too long for its field is never
+approved through the dialog.
+
+The answers are kept in @file{$XDG_STATE_HOME/xwpe/start-commands} (by
+default @file{~/.local/state/xwpe/start-commands}), never in the
+project, so a clone cannot approve its own commands; the folder is made
+readable by you alone.  It is a text
+file, one answer per line (@samp{yes} or @samp{no}, the key, the
+folder, the command); delete a folder's lines to be asked again.  A
+file xwpe cannot read is left as it is and every command is asked
+about, and the status line says @samp{could not read the remembered
+commands: asking again}.
+
+What is asked about is the programs that compile, link, print, install,
+debug and serve a build.  Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A})
+still run the folder's own code without a question, as they always did:
+the program the build made, with the @code{Arguments} the folder's file
+sets (through the shell for a script), and the folder's
+@file{Makefile}.  Open a folder you do not trust without running it.
+
+Not covered yet, and planned: where a folder's @code{EXENAME},
+@code{Exedir}, @code{Executable} or @code{LIBNAME} puts the build's
+output (it can be outside the folder, for example
+@file{~/.local/bin}); a folder's @code{IncludePath} widening what the
+assistant may read; and a debug session reading the folder's own
+debugger start-up files (@file{.pdbrc}, @file{.perldb},
+@file{jdb.ini}, @file{.gdbinit}-style files) and running its program,
+as Run and Make do.
+
+A path the folder's file or project file sets (@code{Exedir}, the
+object and program names, @code{FILES}, @code{LIBNAME}) always reaches
+the compiler, the linker and @command{ar} as a file: one that would
+start with @samp{-} or @samp{@@} gets @file{./} in front, so it is never
+read as an option or as a file of more options.
 
 @subsection Command-line overrides
 

@@ -42,6 +42,21 @@ typedef struct e_bsp_session e_bsp_session;
  * started. */
 typedef void (*e_bsp_started_fn)(int ok, void *ctx);
 
+/* Asked, when set, before the server a project's .bsp/<file>.json names is
+ * started: @rootdir the project, @file the connection file's name, @argv
+ * the command it names.  0 starts it; anything else starts nothing and the
+ * start fails with E_BSP_NOT_APPROVED.  The editor sets it (a project
+ * folder's command runs only after the user's yes); a test may leave it
+ * unset. */
+typedef int (*e_bsp_approve_fn)(const char *rootdir, const char *file,
+                                char *const *argv);
+void e_bsp_set_approver(e_bsp_approve_fn fn);
+/* The connection file a start would read (scala-cli.json by name first)
+ * and the command it names; free with e_bsp_free_argv.  NULL if none. */
+char **e_bsp_connection_argv(const char *workdir, char *file, size_t filesz);
+void e_bsp_free_argv(char **argv);
+#define E_BSP_NOT_APPROVED "the build server's command was not approved"
+
 e_bsp_session *e_bsp_start_async(const char *workdir, const E_D_REQ_IO *io,
                                  e_bsp_started_fn done, void *ctx,
                                  char *errbuf, size_t errsz);

@@ -793,6 +793,19 @@ int e_opt_read(ECNT *cn);
 void e_opt_use_user_file(char *path);
 /* Say on the status line which keys the start-folder xwperc could not set. */
 void e_opt_say_ignored_keys(ECNT *cn);
+/* The program keys a start-folder xwperc sets, against the user's own. */
+#define E_OPT_DEBUGGER_UNSET (-1)
+struct e_s_prog;
+const char *e_opt_start_folder(void);
+void e_opt_note_launch_dir(const char *dir);
+const char *e_opt_launch_dir(void);
+const char *e_opt_own_print_cmd(ECNT *cn);
+struct e_s_prog *e_opt_own_language(const char *language);
+int e_opt_own_debugger(void);
+int e_opt_named_debugger(void);
+void e_opt_debugger_chosen(int type);
+/* The debugger a type starts, as the user knows it ("gdb", "pdb"). */
+const char *e_deb_type_name(int type);
 /* The longest text e_add_arguments hands back (its field's capacity).  A
    caller's buffer must hold E_ARG_FIELD_MAX + 1 bytes, or a long entry runs
    past it. */
@@ -829,6 +842,21 @@ void e_pr_x_col_kasten(int xa, int ya, int x, int y, FENSTER *f, int sw);
 int e_window_text_locked(FENSTER *f);
 int e_error(char *text, int sw, FARBE *f);
 int e_message(int sw, char *str, FENSTER *f);
+/* A command a start-folder xwperc or a project file names, about to run. */
+typedef struct {
+ const char *folder;   /* the folder that holds that file                   */
+ const char *source;   /* the file as the user knows it: "./xwperc", "p.prj" */
+ const char *who;      /* the box's subject: "This folder's xwperc"         */
+ const char *key;      /* the remembered answer's key (we_startcmd.h)        */
+ const char *what;     /* what the command is: "C compiler", "debugger"      */
+ const char *text;     /* the command as it would run                        */
+ const char *own;      /* the user's own command, run by "Use mine"          */
+} E_STARTCMD;
+/* How the question names a start-folder xwperc. */
+#define E_STARTCMD_XWPERC     "./xwperc"
+#define E_STARTCMD_XWPERC_WHO "This folder's xwperc"
+int e_startcmd_approve(FENSTER *f, const E_STARTCMD *c);
+void e_startcmd_typed(const char *folder, const char *key, const char *text);
 void e_firstl(FENSTER *f, int sw);
 int e_pr_filetype(FENSTER *f);
 PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw);
