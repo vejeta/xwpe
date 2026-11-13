@@ -54,6 +54,7 @@ static int move_view_traced;
 static int row_wider_traced;
 static int block_in_step_traced;
 static int rows_past_traced;     /* an action named rows the text does not have */
+static int inside_traced;        /* a change named a place inside a character */
 static int shell_record_traced;  /* a record kept on a shell */
 static int user_record_traced;   /* a record kept on the user's list */
 
@@ -266,6 +267,8 @@ void wpe_buffer_trace(const char *fmt, ...)
   block_in_step_traced++;
  if (strstr(fmt, "names rows past") != NULL)
   rows_past_traced++;
+ if (strstr(fmt, "position inside a character") != NULL)
+  inside_traced++;
  if (strstr(fmt, "buffer shell record kind=") != NULL)
   shell_record_traced++;
  if (strstr(fmt, "buffer record kind=") != NULL)
@@ -278,6 +281,7 @@ static void hooks_reset(void)
  moved_nremoved = moved_nadded = 0;
  overrun_traced = move_view_traced = row_wider_traced = block_in_step_traced = 0;
  rows_past_traced = shell_record_traced = user_record_traced = read_only_calls = 0;
+ inside_traced = 0;
  shape_calls = 0;
  stub_refuses = stub_overruns = 0;
  replay_calls = replay_row_missing = stub_marks_past = block_calls = 0;
@@ -3314,8 +3318,114 @@ static void case_the_named_positions_are_places(void)
  fixture_free();
 }
 
+/* @scenario SC-edit-model-53
+   Every text primitive refuses a start or an end between the bytes of a
+   character, says why in the trace, and leaves the text as it was. */
+static void case_a_change_inside_a_glyph_is_refused(void)
+{
+ Undo as_if;
+ char before[256];
+ int x, n, want, bad = 0, traced, kept;
+
+ pos_fixture(SHAPES, SHAPES_LEN);
+ for (x = 0; x <= SHAPES_LEN; x++)
+  for (n = 0; x + n <= SHAPES_LEN; n++) {
+   want = pos_obeys(&buf, 0, x) && pos_obeys(&buf, 0, x + n);
+   if (e_buffer_change_fits(&buf, 0, x, n, "sweep") != want)
+    bad++;
+  }
+ chk("70 a change fits exactly when both its ends are places, for every x and n", bad, 0);
+ chk("70 ... and no change past the row's end fits",
+     e_buffer_change_fits(&buf, 0, 2, SHAPES_LEN, "past"), 0);
+ chk("70 ... nor a row that is not there", e_buffer_change_fits(&buf, 5, 0, 0, "row"), 0);
+ fixture_free();
+
+ pos_fixture("a" "\xC3\xA9" "b", 4);
+ buf.bf[0].s[4] = WPE_WR;
+ chk("70 the row's line break is one more byte a delete may take",
+     e_buffer_change_fits(&buf, 0, 3, 2, "break"), 1);
+ chk("70 ... but not two", e_buffer_change_fits(&buf, 0, 3, 3, "break"), 0);
+ fixture_free();
+
+ pos_fixture("a" "\xC3\xA9" "b", 4);
+ snprintf(before, sizeof before, "%s", text_of());
+ hooks_reset();
+ chk("70 a split between the bytes of a character is refused",
+     e_buffer_split_line(&buf, 0, 2, E_BUFFER_STEP_NEW, E_BUFFER_HEAD_WR), E_BUFFER_RANGE);
+ chk("70 ... traced", inside_traced, 1);
+ chk("70 ... and the text is as it was", strcmp(text_of(), before) == 0, 1);
+ chk("70 ... on one row", buf.mxlines, 1);
+ chk("70 a split before the character is made",
+     e_buffer_split_line(&buf, 0, 1, E_BUFFER_STEP_NEW, E_BUFFER_HEAD_WR), E_BUFFER_OK);
+ chk("70 ... with no refusal traced", inside_traced, 1);
+ fixture_free();
+
+ pos_fixture("a" "\xC3\xA9" "b", 4);
+ memset(&as_if, 0, sizeof as_if);
+ as_if.type = 'a';
+ as_if.b = pnt(2, 0);
+ as_if.a.x = 1;
+ snprintf(before, sizeof before, "%s", text_of());
+ kept = list_len(buf.ud);
+ hooks_reset();
+ chk("70 an Undo that deletes from inside a character is refused",
+     e_buffer_apply_chars(&buf, &scr, &as_if), E_BUFFER_RANGE);
+ traced = inside_traced;
+ chk("70 ... traced", traced, 1);
+ chk("70 ... without running the primitive", replay_calls, 0);
+ chk("70 ... and the text is as it was", strcmp(text_of(), before) == 0, 1);
+ chk("70 ... with no record kept", list_len(buf.ud), kept);
+ as_if.b = pnt(1, 0);
+ as_if.a.x = 1;
+ chk("70 ... also when it ends inside one",
+     e_buffer_apply_chars(&buf, &scr, &as_if), E_BUFFER_RANGE);
+ as_if.type = 's';
+ as_if.b = pnt(0, 0);
+ as_if.a.x = 1;
+ as_if.a.y = 2;
+ hooks_reset();
+ chk("70 an Undo of a replace whose text ends inside a character is refused",
+     e_buffer_apply_chars(&buf, &scr, &as_if), E_BUFFER_RANGE);
+ chk("70 ... without running the primitive", replay_calls, 0);
+ chk("70 ... and the text is as it was", strcmp(text_of(), before) == 0, 1);
+ fixture_free();
+}
+
+/* @scenario SC-edit-model-53
+   The find mark follows the text it marks: bytes put in before it push it
+   right, bytes taken out pull it left, and a row put in above moves its row,
+   so the highlight and Search Again stay on the hit after an edit. */
+static void case_the_find_mark_follows_an_edit(void)
+{
+ STRING l;
+
+ pos_fixture("abcdefgh", 8);
+ e_buffer_find_set(&buf, 0, 4, 6);
+ memmove(buf.bf[0].s + 2, buf.bf[0].s, 9);
+ buf.bf[0].len = 10;
+ e_buffer_text_inserted(&buf, 0, 1, 2);
+ chk("71 an insert before the hit moves its start", scr.fa.x, 6);
+ chk("71 ... and its end", scr.fe.x, 8);
+ memmove(buf.bf[0].s, buf.bf[0].s + 1, 10);
+ buf.bf[0].len = 9;
+ e_buffer_text_removed(&buf, 0, 0, 1);
+ chk("71 a delete before the hit pulls its start back", scr.fa.x, 5);
+ chk("71 ... and its end", scr.fe.x, 7);
+ e_buffer_text_inserted(&buf, 0, 8, 1);
+ chk("71 an insert behind the hit leaves its start", scr.fa.x, 5);
+ chk("71 ... and its end", scr.fe.x, 7);
+ l = line_of(&buf, "new");
+ chk("71 a row put in above", e_buffer_splice(&buf, 0, 0, &l, 1, NULL, 0, E_BUFFER_STEP_COVERED),
+     E_BUFFER_OK);
+ chk("71 moves the hit's row down", scr.fa.y == 1 && scr.fe.y == 1, 1);
+ chk("71 ... and keeps its columns", scr.fa.x == 5 && scr.fe.x == 7, 1);
+ fixture_free();
+}
+
 int main(void)
 {
+ case_the_find_mark_follows_an_edit();
+ case_a_change_inside_a_glyph_is_refused();
  case_a_position_is_a_glyph_start();
  case_a_position_in_an_empty_or_unset_place();
  case_a_display_column_lands_on_a_glyph();

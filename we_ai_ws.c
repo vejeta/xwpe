@@ -1331,7 +1331,7 @@ static void ws_window_take_text(FENSTER *w, const char *text)
 {
  if (e_buffer_replace_all(w->b, text, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(w->b, "the new text");
- if (w->b->b.y >= w->b->mxlines) w->b->b.y = w->b->mxlines ? w->b->mxlines - 1 : 0;
+ e_buffer_cursor_set(w->b, w->b->b.y, w->b->b.x);
  w->save++;
 }
 

@@ -21,6 +21,7 @@
 #define E_BUFFER_SAY_FMT "Out of memory: %s was not made, the text is unchanged"
 /* The same for a change refused because its rows would not fit a line. */
 #define E_BUFFER_SAY_SHAPE_FMT "Rows too wide: %s was not made, the text is unchanged"
+#define E_BUFFER_SAY_PARTIAL "Not replaced: the match is part of a character"
 
 static void e_say_nomem_until_key(const char *what);
 static int e_del_line(int yd, BUFFER *b, SCHIRM *s);
@@ -2830,6 +2831,8 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
 
  if (e_buffer_change_refused(b))
   return(E_CHAR_REFUSED);
+ if (!e_buffer_change_fits(b, y, x, n, "delete"))
+  return(E_CHAR_REFUSED);
  e_char_count_change(b, n);
  rec = e_char_record('r', b, x, y, n);
  e_buffer_cover_begin(b, rec);
@@ -3299,6 +3302,8 @@ int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   return(E_CHAR_REFUSED);
  if (e_char_row_missing(b, ya, n, "the text put back"))
   return(E_CHAR_REFUSED);
+ if (!e_buffer_change_fits(b, ya, xa, 0, "insert"))
+  return(E_CHAR_REFUSED);
  if (e_ins_run_refused(b, ya, n))
   return(E_CHAR_REFUSED);
  if (e_ins_run_is_long(b, n))
@@ -3382,6 +3387,8 @@ int e_put_char(int c, BUFFER *b, SCHIRM *s)
  int k;
 
  if (e_buffer_change_refused(b))
+  return(E_CHAR_REFUSED);
+ if (!e_buffer_change_fits(b, b->b.y, b->b.x, 0, "overwrite"))
   return(E_CHAR_REFUSED);
  if (b->b.x == b->bf[b->b.y].len)
  {
@@ -3759,6 +3766,11 @@ int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
 
  if (e_buffer_change_refused(b))
   return(0);
+ if (!e_buffer_change_fits(b, y, x, sn, "replace"))
+ {
+  wpe_buffer_say_partial(b);
+  return(0);
+ }
  if (e_ins_run_is_long(b, rn))
   return(e_replace_long(b, s, x, y, sn, text, rn));
  b->f->fd.rn = rn;     /* the record keeps the replacement's length */
@@ -4258,6 +4270,23 @@ void wpe_buffer_say_shape(BUFFER *b, const char *what)
  wpe_buffer_trace("buffer shape %s", what);
  if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
   e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
+}
+
+/**
+ * wpe_buffer_say_partial - Say on the status row that a replacement was
+ * skipped because the match covers only part of a character.
+ *
+ * A regular expression such as "." can match one byte of an accented
+ * letter; replacing it would leave bytes that are no text, so the hit is
+ * left as it is.  Without the line the user would see the hit stepped over
+ * and not know why it was not replaced.  Replace All goes on to the next hit.
+ */
+void wpe_buffer_say_partial(BUFFER *b)
+{
+ (void) b;
+ wpe_buffer_trace("buffer replace refused: the match is part of a character");
+ if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
+  e_status_say(WpeEditor->f[WpeEditor->mxedt], E_BUFFER_SAY_PARTIAL);
 }
 
 /**

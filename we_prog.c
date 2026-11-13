@@ -725,8 +725,7 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
   for (k = 0; k < n; k++)
    e_run_pty_apply_byte(b, (unsigned char)buf[k]);
  }
- b->b.y = b->mxlines - 1;
- b->b.x = b->bf[b->b.y].len;
+ e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
  e_cursor(mf, 1);
  e_schirm(mf, 1);
  e_refresh();
@@ -1004,7 +1003,7 @@ static int e_run_with_pty(WpeStartPlan *plan, BUFFER *b, FENSTER *mf)
 
  e_view_append(b, "--- Run output (type in Messages, Ctrl-C to stop) ---");
  e_view_add_row(b);
- b->b.y = b->mxlines - 1;
+ e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
  if (!WpeIsXwin())
   e_mouse_tracking_disable();
  fk_cursor(1);
@@ -1589,7 +1588,7 @@ static int e_run_program(ECNT *cn)
  sprintf(estr, e_p_msg[ERR_RETCODE], ret);
  e_view_append(b, estr);
 
- b->b.y = b->mxlines-1;
+ e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
  e_cursor(mf, 1);
  e_schirm(mf, 1);
  e_refresh();
@@ -2746,8 +2745,7 @@ void e_messages_show_tail(ECNT *cn)
   wpe_paint_request(e_messages_show_tail_replay, cn, E_MESSAGES_TAIL_WHAT);
   return;
  }
- mf->b->b.y = mf->b->mxlines - 1;
- mf->b->b.x = 0;
+ e_buffer_cursor_set(mf->b, mf->b->mxlines - 1, 0);
  e_messages_scroll_to_bottom(mf);
  e_schirm(mf, 0);
  if (mf != cn->f[cn->mxedt])
@@ -3302,7 +3300,7 @@ static void e_build_step_end(void)
  if (g_build.pid > 0)
   g_build_chain_ran = 1;
  result = e_build_step_verdict(mf, e_build_exit_code());
- mf->b->b.y = mf->b->mxlines - 1;
+ e_buffer_cursor_set(mf->b, mf->b->mxlines - 1, mf->b->b.x);
  g_build.active = 0;
  e_build_continue(cont, cn->f[cn->mxedt], result, data);
  if (cwd_chg)
@@ -3531,7 +3529,7 @@ static void e_build_tally(FENSTER *mf, int result)
  e_make_error_list(mf);
  e_build_mark_warnings(mf->b);
  e_build_print_count(mf->b, result);
- mf->b->b.y = mf->b->mxlines - 1;
+ e_buffer_cursor_set(mf->b, mf->b->mxlines - 1, mf->b->b.x);
  e_messages_scroll_to_bottom(mf);
 }
 
@@ -3727,8 +3725,7 @@ static void e_err_show_row_in_messages(ECNT *cn, int n)
  if (!mf || row < 0 || row >= mf->b->mxlines)
   return;
  visible_h = mf->e.y - mf->a.y - 1;
- mf->b->b.y = row;
- mf->b->b.x = 0;
+ e_buffer_cursor_set(mf->b, row, 0);
  if (row < mf->s->c.y || row >= mf->s->c.y + visible_h)
   mf->s->c.y = row - E_ERR_ROW_CONTEXT;
  if (mf->s->c.y < 0)
@@ -3800,7 +3797,7 @@ int e_show_error(int n, FENSTER *f)
 {
  ECNT *cn = f->ed;
  BUFFER *b = cn->f[cn->mxedt]->b;
- int i, j, bg = 0;
+ int i, bg = 0;
  char *filename;
  unsigned char *cp;
 
@@ -3872,21 +3869,13 @@ int e_show_error(int n, FENSTER *f)
  else if (filename != f->datnam)
   FREE(filename);
  b = cn->f[cn->mxedt]->b;
- b->b.y = err_li[n].line > b->mxlines ? b->mxlines - 1 : err_li[n].line - 1;
+ /* a line past the end of the file lands on its last row: the owner clamps */
+ e_buffer_cursor_set(b, err_li[n].line - 1, 0);
  if (!err_li[n].srch)
  {
-  int col = e_err_column_index(n);
-
-  for(i = j = 0; i + j < col && i < b->bf[b->b.y].len; i++)
-  {
-   if (*(b->bf[b->b.y].s + i) == WPE_TAB)
-    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
-#ifdef UNIX
-   else if (*(b->bf[b->b.y].s + i) < ' ')
-    j++;
-#endif
-  }
-  b->b.x = i;
+  /* the compiler's column is a screen column: the owner walks tabs,
+     control and wide characters and lands on the character that has it */
+  e_buffer_cursor_set_col(b, b->b.y, e_err_column_index(n));
  }
  else
  {
@@ -3897,14 +3886,14 @@ int e_show_error(int n, FENSTER *f)
    for (i--; i >= 0 && isspace(b->bf[b->b.y].s[i]); i--);
    if (i < 0 && b->b.y > 0)
    {
-    (b->b.y)--;
+    e_buffer_cursor_set(b, b->b.y - 1, 0);
     i = b->bf[b->b.y].len+1;
    }
    else
     i++;
   }
 /*      else if(err_li[n].x < -1) i++;    */
-  b->b.x = i +  err_li[n].x;
+  e_buffer_cursor_set(b, b->b.y, i + err_li[n].x);
  }
  e_schirm(cn->f[cn->mxedt], 1);
  e_cursor(cn->f[cn->mxedt], 1);
@@ -5974,7 +5963,7 @@ static int e_p_message_now(char *str, FENSTER *f, int sw)
 
  e_view_append_wrapped(b, str);
 
- b->b.y = b->mxlines-1;
+ e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
  e_messages_scroll_to_bottom(f);
 
  if (sw)
@@ -6021,7 +6010,7 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
  wf = cn->f[i];
  b = wf->b;
  e_view_append_wrapped(b, str);
- b->b.y = b->mxlines - 1;
+ e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
  e_messages_scroll_to_bottom(wf);
  if (sw)
   e_rep_win_tree(cn);
@@ -6121,10 +6110,7 @@ static int e_msg_car_mouse(FENSTER *f)
  BUFFER *b = f->b;
  int row = e_msg_row_at_mouse(f);
 
- b->b.y = row;
- b->b.x = e_mouse.x - f->a.x + f->s->c.x - 1;
- if (b->b.x < 0)
-  b->b.x = 0;
+ e_buffer_cursor_set_col(b, row, e_mouse.x - f->a.x + f->s->c.x - 1);
  if (e_msg_press(f, row))
   return(WPE_CR);
  return(0);
@@ -6142,8 +6128,8 @@ int e_d_car_mouse(FENSTER *f)
   return(WPE_CR);
  else
  {
-  b->b.y = e_mouse.y-f->a.y+s->c.y-1;
-  b->b.x = e_mouse.x-f->a.x+s->c.x-1;
+  e_buffer_cursor_set_col(b, e_mouse.y-f->a.y+s->c.y-1,
+                          e_mouse.x-f->a.x+s->c.x-1);
  }
  return(0);
 }
@@ -8747,12 +8733,11 @@ int e_p_show_program_output(FENSTER *f)
  if (mf->b->mxlines > 0)
  {
   int last = mf->b->mxlines - 1;
-  mf->b->b.y = last;
   /* Sit at the stream write position -- the end of the last line, like a
      tailing terminal -- so output continues (and interactive input goes)
      right after the last character, not on top of it.  For a line ending
      in a newline the last line is empty, so this is column 0. */
-  mf->b->b.x = mf->b->bf[last].len;
+  e_buffer_cursor_set(mf->b, last, mf->b->bf[last].len);
  }
  e_messages_scroll_to_bottom(mf);
  e_schirm(mf, 1);

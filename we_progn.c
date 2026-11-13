@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "WeExpArr.h"
+#include "we_buffer.h"
 
 #undef TESTSDEF
 
@@ -1299,11 +1300,10 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
  if (i >= 0)
  {  num = i;  x = j;  }
  else len = 0;
- f->s->fa.y = f->s->fe.y = f->b->b.y = num;
- f->s->fe.x = f->b->b.x = x + len;
- f->s->fa.x = x;
+ e_buffer_find_set(f->b, num, x, x + len);
+ e_buffer_cursor_from(f->b, E_BUFFER_MARK_FIND_E);
  e_cursor(f, 1);
- f->s->fa.y = num;
+ e_buffer_find_mark_restore(f->b, num);
  e_schirm(f, 1);
  WpeMouseRestoreShape();
  return(num);
@@ -1444,7 +1444,7 @@ int e_nxt_brk(FENSTER *f)
      brk--;
      if (!brk)
      {
-      f->b->b.y = i;  f->b->b.x = j;  return(0);
+      e_buffer_cursor_set(f->b, i, j);  return(0);
      }
     }
    }
@@ -1557,8 +1557,7 @@ int e_nxt_brk(FENSTER *f)
       brk++;
       if (!brk)
       {
-       f->b->b.y = i;
-       f->b->b.x = j;
+       e_buffer_cursor_set(f->b, i, j);
        return(0);
       }
      }
@@ -1566,8 +1565,7 @@ int e_nxt_brk(FENSTER *f)
       brk--;
      else if (i == 0 && j == 0)
      {
-      f->b->b.y = i;
-      f->b->b.x = j;
+      e_buffer_cursor_set(f->b, i, j);
       return(0);
      }
     }
@@ -1578,8 +1576,7 @@ int e_nxt_brk(FENSTER *f)
       brk++;
       if (!brk)
       {
-       f->b->b.y = i;
-       f->b->b.x = j;
+       e_buffer_cursor_set(f->b, i, j);
        return(0);
       }
      }
@@ -1874,7 +1871,7 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
      FREE(tstr);  FREE(bstr);  FREE(nvek);
      FREE(ifvekb);  FREE(ifvekr);
      FREE(vkcs);  FREE(vkcb);
-     b->b = sb;  s->mark_begin = sa;  s->mark_end = se;
+     e_buffer_block_set(b, &sa, &se);  e_buffer_cursor_set(b, sb.y, sb.x);
      e_schirm(f, 1);
      WpeMouseRestoreShape();
      return(0);
@@ -1957,8 +1954,8 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
  FREE(nvek);  FREE(tstr);  FREE(bstr);
  FREE(ifvekb);  FREE(ifvekr);
  FREE(vkcs);  FREE(vkcb);
- s->mark_begin = sa;  s->mark_end = se;
- b->b = sb;
+ e_buffer_block_set(b, &sa, &se);
+ e_buffer_cursor_set(b, sb.y, sb.x);
  e_schirm(f, 1);
  WpeMouseRestoreShape();
  return(0);

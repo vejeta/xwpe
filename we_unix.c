@@ -1439,7 +1439,6 @@ int e_recover(ECNT *cn)
  struct dirfile *files;
  FENSTER *f = NULL;
  BUFFER *b;
- SCHIRM *s;
  int i;
 
  files = e_find_files("*.ESV", 1);
@@ -1451,10 +1450,9 @@ int e_recover(ECNT *cn)
   f->datnam[strlen(f->datnam)-4] = '\0';
   if (!strcmp(f->datnam, BUFFER_NAME))
   {
-   s = cn->f[cn->mxedt]->s;
    b = cn->f[cn->mxedt]->b;
-   s->mark_end.y = b->mxlines - 1;
-   s->mark_end.x = b->bf[b->mxlines-1].len;
+   e_buffer_mark_set(b, E_BUFFER_MARK_END, b->mxlines - 1,
+                     b->bf[b->mxlines-1].len);
    e_edt_copy(f);
    e_close_window(f);
   }

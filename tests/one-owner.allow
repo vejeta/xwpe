@@ -94,18 +94,5 @@ we_ai_ws.o write 1 keep a regular file the model named, opened at the place the 
 # (we_buffer.c), and the check allows no line for its names.
 
 # the positions: the cursor, the block, the find mark, the anchor and the
-# markers are written only through the owner's calls (we_buffer.c).  These
-# are the writes still made in place, counted per object and rule; the
-# count may only fall, and the pass that converts the last of them deletes
-# the lines and makes the section strict.
-we_ai_ui.o pos_field 17 P11k-B
-we_ai_ui.o pos_whole 2 P11k-B
-we_ai_ws.o pos_field 1 P11k-B
-we_debug.o pos_field 16 P11k-B
-we_fl_fkt.o pos_field 14 P11k-B
-we_fl_unix.o pos_field 2 P11k-B
-we_fl_unix.o pos_whole 2 P11k-B
-we_progn.o pos_field 15 P11k-B
-we_progn.o pos_whole 6 P11k-B
-we_prog.o pos_field 23 P11k-B
-we_unix.o pos_field 2 P11k-B
+# markers are written only through the owner's calls (we_buffer.c), and the
+# check allows no line for its names.

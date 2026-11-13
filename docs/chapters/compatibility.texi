@@ -383,7 +383,11 @@ Latin-1 file), the cursor stands before that character.  The reason: a
 character of several bytes is one place, and a position that is not a
 place is how a file stops being text.  Latin-1 bytes that happen to form a
 UTF-8 character (@samp{Ã} followed by a no-break space) are one character
-to the cursor, as they are to the screen.
+to the cursor, as they are to the screen.  The places the editor jumps to
+on its own (a compiler's column, a click in Messages, a bracket match)
+land on a character too, and a Replace whose regular expression matches
+only part of a character leaves that match as it is and says so on the
+status row.
 
 @item A Shift selection that goes back past its start
 @cindex Shift selection, back past its start

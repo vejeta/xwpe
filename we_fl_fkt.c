@@ -1120,7 +1120,7 @@ int e_help_ret(FENSTER *f)
 	 }
          if(ud_help->sw) e_read_info(str, f, ud_help->file);
 	 else e_read_help(str, f, 0);
-	 b = f->b; b->b.x = b->b.y = 0;
+	 b = f->b; e_buffer_cursor_set(b, 0, 0);
 	 e_cursor(f, 1);
 	 e_schirm(f, 1);
 	 return(0);
@@ -1143,7 +1143,7 @@ int e_help_ret(FENSTER *f)
 	    ud_help = next;
 	 }
          e_read_info("Top", f, ud_help->file);
-	 b = f->b; b->b.x = b->b.y = 0;
+	 b = f->b; e_buffer_cursor_set(b, 0, 0);
 	 e_cursor(f, 1);
 	 e_schirm(f, 1);
 	 return(0);
@@ -1179,8 +1179,7 @@ int e_help_last(FENSTER *f)
   else
    e_read_help(last->next->str, f, 0);
  }
- f->b->b.x = last->x;  
- f->b->b.y = last->y;
+ e_buffer_cursor_set(f->b, last->y, last->x);
  e_cursor(f, 1);
  e_schirm(f, 1);
  ud_help = last->next;
@@ -1208,7 +1207,7 @@ int e_help_next(FENSTER *f, int sw)
       else
          return(e_error(sw ? "No Next Page" : "No Previous Page", 0, f->fb));
       e_read_info(last->str, f, last->file);
-      f->b->b.x = f->b->b.y = 0;
+      e_buffer_cursor_set(f->b, 0, 0);
       e_cursor(f, 1);
       e_schirm(f, 1);
       return(0);
@@ -1224,7 +1223,7 @@ int e_help_next(FENSTER *f, int sw)
 	    last->next = ud_help;
 	    ud_help = last;
 	    e_read_help(ud_help->next ? ud_help->next->str : NULL, f, 1);
-            f->b->b.x = f->b->b.y = 0;
+            e_buffer_cursor_set(f->b, 0, 0);
             e_cursor(f, 1);
             e_schirm(f, 1);
             return(0);
@@ -1274,7 +1273,7 @@ int e_help_comp(FENSTER *f)
     if (str[k-i-1] != HED)
     {
      e_error("Error in Switch!", 0, f->fb);
-     b->b.x = k;  b->b.y = j;
+     e_buffer_cursor_set(b, j, k);
      e_cursor(f, 1);
      return(2);
     }
@@ -1298,7 +1297,7 @@ int e_help_comp(FENSTER *f)
     if (str[k-i-1] != HED)
     {
      e_error("Error in Header!", 0, f->fb);
-     b->b.x = k;  b->b.y = j;
+     e_buffer_cursor_set(b, j, k);
      e_cursor(f, 1);
      return(2);
     }

@@ -449,6 +449,12 @@ Changes
   Ctrl-K Y do the same: after deleting a block inside one row the cursor
   goes to where the block was, on that row (it kept its own row, whatever
   row that was), and a search hit is stepped over as a whole character.
+  The same holds for the places the editor jumps to by itself: a
+  compiler's error column, a click in Messages, a bracket match, the
+  reformatter's restored cursor and the language server's jumps.  A
+  Replace whose regular expression matches only part of a character does
+  not change that match and says so on the status row ("Not replaced: the
+  match is part of a character"); Replace All goes on to the next one.
 
 * A Shift selection that goes back past the place it started from
   (Shift-End, then Shift-Home) selects the text between that place and the

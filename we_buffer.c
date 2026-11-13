@@ -531,6 +531,44 @@ int e_buffer_cursor_fits(const BUFFER *b)
 }
 
 /**
+ * e_buffer_change_fits - May a change take @n bytes out of row @y at column
+ * @x, or put bytes in there?  Every text primitive asks before it moves a
+ * byte.
+ * @b: the buffer; @y, @x: where the change starts; @n: the bytes it takes
+ * out (0 for an insertion); @what: the change, for the trace.
+ *
+ * Both ends must be places: the start, and the byte after the last one taken
+ * (the row's line break counts as one byte).  A change that starts or ends
+ * between the bytes of a character would leave bytes that are no text, so it
+ * is refused with the reason traced, and the text stays as it was.  Every
+ * writer goes through the owner, so a user reaches the refusal only through
+ * a match of a regular expression that covers part of a character.
+ * Return: 1 when the change may go ahead, 0 when it is refused.
+ */
+int e_buffer_change_fits(const BUFFER *b, int y, int x, int n, const char *what)
+{
+ POINT at, to;
+ int ok;
+
+ at.y = y;
+ at.x = x;
+ ok = e_buffer_pos_fits(b, &at);
+ if (ok && n > 0)
+ {
+  ok = b->mxlines > 0;
+  to.y = y;
+  to.x = x + n;
+  if (ok)
+   ok = e_buffer_pos_fits(b, &to) ||
+        (to.x == b->bf[y].len + 1 && b->bf[y].s[b->bf[y].len] == WPE_WR);
+ }
+ if (!ok)
+  wpe_buffer_trace("buffer position inside a character y=%d x=%d n=%d what=%s",
+                   y, x, n, what);
+ return(ok);
+}
+
+/**
  * e_buffer_pos_set - The one write of a position: put @p at row @y, column
  * @x, brought to the nearest place of the text.
  * @b: the buffer; @p: the position to write; @y, @x: where it was asked to go.
@@ -2464,6 +2502,8 @@ int e_buffer_split_line(BUFFER *b, int y, int x, WpeBufferStep step, int head_te
  len = b->bf[y].len;
  if (x > len)
   x = len;
+ if (!e_buffer_change_fits(b, y, x, 0, "split"))
+  return(E_BUFFER_RANGE);
  if (head_term == E_BUFFER_HEAD_WR && buffer_at_soft_end(b, y, x))
   return(buffer_split_soft_end(b, y, step));
  if (x == 0)
@@ -5314,6 +5354,32 @@ static int buffer_replay_rows(BUFFER *shell, const Undo *rec, int g_top, int rec
 }
 
 /**
+ * buffer_replay_lands_on_glyphs - Does character record @rec name a place of
+ * the shell's rows: its column a glyph start, and for an inserted run ('a')
+ * or a replacement put back ('s') the end of the bytes Undo takes out one
+ * too?
+ * @shell: the rows the replay will run on, whose first row is the text's row
+ * @top.
+ *
+ * A record put back over text that changed under it (a shell run, an
+ * assistant edit) could name a column inside a character; replaying it would
+ * cut that character, so the Undo is refused and the text stays.  A
+ * replacement's delete refused half way would leave both texts in the row,
+ * so its end is asked before anything runs.
+ * Return: 1 when the replay may run.
+ */
+static int buffer_replay_lands_on_glyphs(const BUFFER *shell, const Undo *rec, int top)
+{
+ int n = 0;
+
+ if (rec->type == 'a')
+  n = rec->a.x;
+ else if (rec->type == 's')
+  n = rec->a.y;
+ return(e_buffer_change_fits(shell, rec->b.y - top, rec->b.x, n, "replay"));
+}
+
+/**
  * buffer_replay_on_a_shell - Run the primitive of character record @rec on
  * a shell holding copies of rows [@top, @top + @n) of @b, as the items of
  * @t so far leave them.
@@ -5338,6 +5404,8 @@ static int buffer_replay_on_a_shell(WpeBufferTxn *t, BUFFER *b, const Undo *rec,
  r = e_buffer_shell_fill(shell, t, b, top, n);
  if (r == E_BUFFER_OK && span->opens)
   r = e_buffer_open_row(shell, rec->b.y - top);
+ if (r == E_BUFFER_OK && !buffer_replay_lands_on_glyphs(shell, rec, top))
+  r = E_BUFFER_RANGE;
  if (r != E_BUFFER_OK)
  {
   e_buffer_shell_free(shell);

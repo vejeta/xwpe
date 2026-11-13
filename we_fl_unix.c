@@ -1328,8 +1328,8 @@ int WpeHandleFileManager(ECNT * cn)
             if(e_read_file_into(fp, be, be->b.x, be->b.y, &dtmd, &mark_end) == E_BUFFER_OK)
             {
               /* the inserted text is the block */
-              se->mark_begin = be->b;
-              se->mark_end = mark_end;
+              e_buffer_mark_from(be, E_BUFFER_MARK_BEGIN, E_BUFFER_POS_CURSOR);
+              e_buffer_mark_set(be, E_BUFFER_MARK_END, mark_end.y, mark_end.x);
             }
             else
               wpe_buffer_say_nomem(be, "the insert");
@@ -4048,7 +4048,7 @@ int e_ed_man(char *str, FENSTER * f)
         bg = j;
       }
     }
-  b->b.x = b->b.y = 0;
+  e_buffer_cursor_set(b, 0, 0);
   chmod(tstr, 0600);
   remove(tstr);
   WpeMouseRestoreShape();

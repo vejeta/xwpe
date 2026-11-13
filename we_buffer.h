@@ -134,6 +134,7 @@ void   e_buffer_find_view_keep(BUFFER *b, WpeFindView *v);
 void   e_buffer_find_view_back(BUFFER *b, const WpeFindView *v);
 int    e_buffer_pos_fits(const BUFFER *b, const POINT *p);
 int    e_buffer_cursor_fits(const BUFFER *b);
+int    e_buffer_change_fits(const BUFFER *b, int y, int x, int n, const char *what);
 int    e_buffer_first_misplaced(BUFFER *b);
 void   e_buffer_pos_set(BUFFER *b, POINT *p, int y, int x);
 void   e_buffer_pos_set_col(BUFFER *b, POINT *p, int y, int col);
@@ -350,6 +351,7 @@ void   wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
                               const int *rows_added, int n_added);
 void   wpe_buffer_say_nomem(BUFFER *b, const char *what);
 void   wpe_buffer_say_shape(BUFFER *b, const char *what);
+void   wpe_buffer_say_partial(BUFFER *b);
 void   wpe_buffer_say_read_only(BUFFER *b);
 int    wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec);
 /* Run the character primitive that replays @rec ('a' 'r' 's' 'p') on a

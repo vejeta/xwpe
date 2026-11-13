@@ -477,6 +477,83 @@
    "layer": "ncurses",
    "test": "tests/test_edit_model_utf8_positions.py::test_delete_that_fuses_stray_bytes_leaves_the_cursor_before_the_character",
    "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "Every text primitive refuses a start or an end between the bytes of a character, and traces why",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A compiler's column after accented letters puts the cursor on the blamed token",
+   "layer": "ncurses",
+   "test": "tests/test_position_writers.py::test_the_compiler_column_after_accented_letters_lands_on_the_token",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A click in Messages lands on the character clicked, not between the bytes of a quote before it",
+   "layer": "ncurses",
+   "test": "tests/test_position_writers.py::test_a_click_in_messages_after_quotes_lands_on_the_character_clicked",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A bracket match over accented letters lands on the bracket",
+   "layer": "ncurses",
+   "test": "tests/test_position_writers.py::test_bracket_match_over_accented_letters_lands_on_the_bracket",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "The reformatter puts the cursor back on a character of the re-indented row",
+   "layer": "ncurses",
+   "test": "tests/test_position_writers.py::test_the_reformatter_puts_the_cursor_back_on_a_character",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "An assistant edit that covers the cursor leaves it on a character",
+   "layer": "ncurses",
+   "test": "tests/test_position_writers.py::test_an_assistant_edit_that_covers_the_cursor_leaves_it_on_a_character",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A Shift click behind the block moves the block's end",
+   "layer": "x11",
+   "test": "tests/x11/test_position_mouse.py::test_shift_click_behind_the_block_moves_its_end",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A Shift click before the block moves the block's begin",
+   "layer": "x11",
+   "test": "tests/x11/test_position_mouse.py::test_shift_click_before_the_block_moves_its_begin",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A Shift click inside the block, the cursor on its end, moves the end",
+   "layer": "x11",
+   "test": "tests/x11/test_position_mouse.py::test_shift_click_inside_the_block_from_its_end_moves_the_end",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A Shift click inside the block, the cursor on its begin, moves the begin side",
+   "layer": "x11",
+   "test": "tests/x11/test_position_mouse.py::test_shift_click_inside_the_block_from_its_begin_moves_the_begin_side",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A scrollbar drag keeps a cursor whose displayed column is still in view",
+   "layer": "x11",
+   "test": "tests/x11/test_position_mouse.py::test_a_scrollbar_drag_keeps_a_cursor_that_is_still_in_view",
+   "status": "new"
   }
  ]
 }

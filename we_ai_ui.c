@@ -1273,8 +1273,7 @@ static int ai_pane_keeps_browsed_view(void)
  */
 static void ai_pane_hold_browsed_view(FENSTER *wf, int pane_focused)
 {
- wf->b->b.y = wf->s->c.y;
- wf->b->b.x = 0;
+ e_buffer_cursor_set(wf->b, wf->s->c.y, 0);
  if (pane_focused)
   e_cursor(wf, 0);
 }
@@ -1299,8 +1298,7 @@ static void ai_pane_caret_to_input(FENSTER *wf)
 {
  int cy, cx;
  ai_input_caret(wf, &cy, &cx);
- wf->b->b.y = cy;
- wf->b->b.x = cx;
+ e_buffer_cursor_set(wf->b, cy, cx);
 }
 
 /**
@@ -1313,10 +1311,10 @@ static void ai_pane_caret_to_input(FENSTER *wf)
 static void ai_pane_caret_to_end(FENSTER *wf)
 {
  int y = wf->b->mxlines - 1;
- wf->b->b.y = y;
- wf->b->b.x = 0;
  if (y >= 0 && wf->b->bf[y].s)
-  wf->b->b.x = wf->b->bf[y].len;
+  e_buffer_cursor_set(wf->b, y, wf->b->bf[y].len);
+ else
+  e_buffer_cursor_set(wf->b, y, 0);
 }
 
 /**
@@ -1460,8 +1458,7 @@ static void ai_pane_scroll(FENSTER *wf, int delta)
   return;
  }
  g_ai_scroll_lock = 1;
- b->b.y = s->c.y;
- b->b.x = 0;
+ e_buffer_cursor_set(b, s->c.y, 0);
  ai_pane_paint(wf);
 }
 
@@ -2072,15 +2069,14 @@ static void ai_pane_view_after_reflow(FENSTER *wf, int held, int top_line,
  BUFFER *b = wf->b;
  SCHIRM *s = wf->s;
  if (rows_changed) {
-  s->mark_begin = e_set_pnt(0, 0);
-  s->mark_end = e_set_pnt(0, 0);
+  e_buffer_mark_set(b, E_BUFFER_MARK_BEGIN, 0, 0);
+  e_buffer_mark_set(b, E_BUFFER_MARK_END, 0, 0);
  }
  s->c.x = 0;                 /* every row fits the width: no sideways scroll */
  if (held) {
   s->c.y = ai_pane_row_of_logical_line(b, top_line);
  } else {
-  b->b.y = b->mxlines - 1;
-  b->b.x = 0;
+  e_buffer_cursor_set(b, b->mxlines - 1, 0);
  }
  ai_pane_place_view(wf, ai_pane_is_focused(wf));
 }
@@ -4231,8 +4227,8 @@ static void ai_compose_show_seed(FENSTER *w, const char *seed)
  if (e_buffer_replace_all(b, seed, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(b, "the composer's text");
  e_buffer_history_drop(b);                   /* the seed is not the user's to undo */
- b->b.y = b->mxlines - 1;                    /* caret after the text */
- b->b.x = b->bf[b->b.y].len;
+ /* caret after the text */
+ e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
  e_firstl(w, 1);
  e_zlsplt(w);
  e_brk_schirm(w);
@@ -6512,7 +6508,7 @@ static void ai_scroll_line_into_view(FENSTER *f, int line)
  int y = line - 1;
  if (y > b->mxlines - 1) y = b->mxlines - 1;
  if (y < 0) y = 0;
- b->b.y = y;
+ e_buffer_cursor_set(b, y, b->b.x);
  e_cursor(f, 1);
  e_zlsplt(f);
 }
@@ -7387,8 +7383,7 @@ static void ai_spin_end(ai_spin *sp, ECNT *cn)
   ai_pane_set_last(wf, "");     /* the row stays: empty it, as a lone row is */
   return;
  }
- if (wf->b->b.y >= wf->b->mxlines)
-  wf->b->b.y = wf->b->mxlines - 1;
+ e_buffer_cursor_set(wf->b, wf->b->b.y, wf->b->b.x);
  ai_pane_paint(wf);
 }
 
@@ -11148,8 +11143,7 @@ static void ai_messages_empty_for_run(FENSTER *f)
   wpe_buffer_say_nomem(m->b, "the run's rows");
  else
   e_line_make_hard_empty(&m->b->bf[0]);     /* the one row a compile leaves */
- m->b->b.x = 0;
- m->b->b.y = 0;
+ e_buffer_cursor_set(m->b, 0, 0);
  e_messages_scroll_to_bottom(m);
  e_rep_win_tree(f->ed);
 }

@@ -1099,7 +1099,7 @@ static void e_d_messages_erase_char(BUFFER *b, int last)
  {
   b->bf[last].len = len - 1;
   b->bf[last].s[len - 1] = '\0';
-  b->b.x = len - 1;
+  e_buffer_cursor_set(b, last, len - 1);
  }
 }
 
@@ -1113,7 +1113,7 @@ static void e_d_messages_insert_char(BUFFER *b, int last, int c)
   b->bf[last].s[len] = c;
   b->bf[last].s[len + 1] = '\0';
   b->bf[last].len = len + 1;
-  b->b.x = len + 1;
+  e_buffer_cursor_set(b, last, len + 1);
  }
 }
 
@@ -1127,8 +1127,7 @@ static void e_d_messages_append_char(FENSTER *mf, int c)
  if (c == '\n' || last < 0)
  {
   e_view_add_row(b);
-  b->b.y = b->mxlines - 1;
-  b->b.x = 0;
+  e_buffer_cursor_set(b, b->mxlines - 1, 0);
   return;
  }
  if (c == '\b' || c == 0x7F)
@@ -1136,7 +1135,7 @@ static void e_d_messages_append_char(FENSTER *mf, int c)
   e_d_messages_erase_char(b, last);
   return;
  }
- b->b.y = last;
+ e_buffer_cursor_set(b, last, b->b.x);
  e_d_messages_insert_char(b, last, c);
 }
 
@@ -14972,8 +14971,9 @@ static void e_d_a68g_goto(FENSTER *f, int line)
  s = f->s;
  if (line >= 1 && line <= b->mxlines)
  {
-  s->da.y = b->b.y = line - 1;
-  s->da.x = b->b.x = 0;
+  s->da.y = line - 1;
+  s->da.x = 0;
+  e_buffer_cursor_set(b, line - 1, 0);
   s->de.x = MAXSCOL;
  }
  e_d_swtch = 3;
@@ -17647,8 +17647,9 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  f = cn->f[cn->mxedt];
  b = cn->f[cn->mxedt]->b;
  s = cn->f[cn->mxedt]->s;
- s->da.y = b->b.y = line - 1;
- s->da.x = b->b.x = 0;
+ s->da.y = line - 1;
+ s->da.x = 0;
+ e_buffer_cursor_set(b, line - 1, 0);
  s->de.x = MAXSCOL;
  e_schirm(f, 1);
  e_cursor(f, 1);
@@ -30658,8 +30659,10 @@ static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a)
  inslen = strlen(ins);
  if (prefix > 0)
  {
-  b->b.x -= prefix;
-  e_del_nchar(b, s, b->b.x, b->b.y, prefix);
+  int typed_at = b->b.x;
+
+  e_buffer_cursor_set(b, b->b.y, typed_at - prefix);
+  e_del_nchar(b, s, b->b.x, b->b.y, typed_at - b->b.x);
  }
  /* the insert leaves the cursor behind the completion, on the row it
     wrapped to when it is longer than the room left */
@@ -30767,8 +30770,7 @@ static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
   int c;
   if (idx < 0)
    break;
-  b->b.y = g_diag_active[idx].line;
-  b->b.x = g_diag_active[idx].c0;
+  e_buffer_cursor_set(b, g_diag_active[idx].line, g_diag_active[idx].c0);
   e_cursor(f, 0);                                /* clamp + scroll the view to it  */
   e_schirm(f, 1);
   e_refresh();
@@ -31032,10 +31034,8 @@ static void e_lsp_selection_show(FENSTER *f, const e_lsp_ask_t *a)
   return;
  }
  r = &a->rows[chosen].range;
- s->mark_begin.y = r->start_line;
- s->mark_begin.x = r->start_char;
- s->mark_end.y = r->end_line;
- s->mark_end.x = r->end_char;
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_BEGIN, r->start_line, r->start_char);
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_END, r->end_line, r->end_char);
  e_schirm(f, 1);
  e_cursor(f, 0);
 }

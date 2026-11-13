@@ -742,6 +742,24 @@ static int e_blk_column_on_line(BUFFER *b, int x, int y)
 /* ---- a block operation as one change: prepared whole, then made ---- */
 
 /**
+ * e_blk_marks_on_glyphs - Do both ends of the marked block stand on a place
+ * of @b: the first byte of a character, or a row's end?
+ * @b: the buffer the block is in; @k: the block.
+ *
+ * The marks are written only through the owner, so they do; the question is
+ * the guard that keeps a block move or copy from cutting a character if one
+ * day a writer does not.  A block that is not set is not asked.
+ * Return: 1 when the block may be taken, 0 when it may not.
+ */
+static int e_blk_marks_on_glyphs(const BUFFER *b, const WpeBlock *k)
+{
+ if (k->kay < 0 || k->key < 0)
+  return(1);
+ return(e_buffer_change_fits(b, k->kay, k->kax, 0, "block begin") &&
+        e_buffer_change_fits(b, k->key, k->kex, 0, "block end"));
+}
+
+/**
  * e_blk_op_begin - Start preparing a block move or copy.
  * @op: on the caller's stack; @s: the screen whose marks are the block;
  * @bv: the buffer the block leaves or is copied from; @bz: the buffer it
@@ -752,6 +770,8 @@ static void e_blk_op_begin(WpeBlockOp *op, SCHIRM *s, BUFFER *bv, BUFFER *bz, in
  memset(op, 0, sizeof(*op));
  e_buffer_txn_begin(&op->t);
  e_blk_of(s, &op->k);
+ if (!e_blk_marks_on_glyphs(bv, &op->k))
+  op->t.refused = E_BUFFER_RANGE;
  op->bv = bv;
  op->bz = bz;
  if (kind != 0)

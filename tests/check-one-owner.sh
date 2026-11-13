@@ -258,8 +258,8 @@ POS_IDENT='([A-Za-z0-9_]|[A-Za-z0-9_]*([A-Za-eg-z0-9_][A-Za-z0-9_]|f[A-Zac-z0-9_
 POS_NAMES="pos_field pos_prefix pos_whole pos_address"
 pos_rule_re() {
   case $1 in
-    pos_field) printf '%s\n' '(->|[.])(b|mark_begin|mark_end|ks|fa|fe)[.](x|y)[ \t]*[)]?[ \t]*([+][+]|--|[+]=|-=|=[^=])' ;;
-    pos_prefix) printf '%s\n' '([+][+]|--)[ \t]*[(]?[A-Za-z0-9_>.-]*(->|[.])(b|mark_begin|mark_end|ks|fa|fe)[.](x|y)' ;;
+    pos_field) printf '%s\n' '(->|[.])(b|mark_begin|mark_end|ks|fa|fe|pt[[][^]]*[]])[.](x|y)[ \t]*[)]?[ \t]*([+][+]|--|[+]=|-=|=[^=])' ;;
+    pos_prefix) printf '%s\n' '([+][+]|--)[ \t]*[(]?[A-Za-z0-9_>.-]*(->|[.])(b|mark_begin|mark_end|ks|fa|fe|pt[[][^]]*[]])[.](x|y)' ;;
     pos_whole) printf '%s\n' "(->|[.])(mark_begin|mark_end|ks)[ \\t]*=[^=]|(^|[^A-Za-z0-9_])([A-Za-z0-9_>.-]*(->|[.]))?$POS_IDENT(->|[.])(fa|fe)[ \\t]*=[^=]|->pt[[][^]]*[]][ \\t]*=[^=]|(^|[^A-Za-z0-9_])(b|[A-Za-z0-9_>.-]*->b[a-z]?)->b[ \\t]*=[^=]" ;;
     pos_address) printf '%s\n' "&[A-Za-z0-9_>.-]*(->|[.])(mark_begin|mark_end|ks)([^A-Za-z0-9_.[]|\$)|&([A-Za-z0-9_>.-]*(->|[.]))?$POS_IDENT(->|[.])(fa|fe)([^A-Za-z0-9_.[]|\$)|&(b|[A-Za-z0-9_>.-]*->b[a-z]?)->b([^A-Za-z0-9_.[]|\$)|&[A-Za-z0-9_>.-]*->pt[[]" ;;
   esac
@@ -320,7 +320,12 @@ cat > "$WORK/posfixture" <<'EOF'
 + h(&f->s->fe);
 + k(&s->pt[n]);
 + sch->fa = e_set_pnt(0, 0);
++ s->pt[0].x = 1;
++ s->pt[n].y += 2;
++ ++s->pt[1].x;
 - if (b->b.x == 1)
+- x = s->pt[2].x;
+- if (s->pt[0].y == 1)
 - x = s->mark_begin.x;
 - f->b = MALLOC(n);
 - c->b = 4;
@@ -724,7 +729,8 @@ awk -v words=" $SCREEN_WORDS " '
 BUFFER_WORDS="e_new_line e_del_line e_buffer_set_text e_buffer_insert_raw
   e_replace_buffer_undoable e_rudo_whole_buffer e_p_red_buffer
   print_to_end_of_buffer e_build_drop_last_row e_brk_recalc e_add_undo
-  e_remove_undo e_undo_sw e_redo_sw mxlines_write bf_alloc"
+  e_remove_undo e_undo_sw e_redo_sw mxlines_write bf_alloc
+  pos_field pos_prefix pos_whole pos_address"
 awk -v words=" $(echo $BUFFER_WORDS) " '
   $4 != "keep" && index(words, " " $2 " ") {
     print "the text section is strict: the allow line \"" $1 " " $2 "\" (" $4 ") may only be a keep line"
