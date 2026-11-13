@@ -228,11 +228,12 @@ terminal (@pxref{Installation}).
 @item A debug session runs the folder's own code
 The start shows the files a debugger runs from the folder and the
 Arguments a folder sets (@pxref{Debugger start-up files}), but not what
-the debugged program then does: Python's pdb imports the folder's own
-modules first, a @file{pdb.py} or @file{sitecustomize.py} there
-included.  gdb starts in an empty folder of its own and loads the
+the debugged program then does: the Python program you debug imports the
+folder's own modules, a @file{sitecustomize.py} there included.  gdb, pdb and
+jdb start in an empty folder of their own.  gdb loads the
 folder's @file{.gdbinit} and the scripts beside or inside the program only
-when the box showed them and you chose @samp{Run it}; what the box cannot
+when the box showed them and you chose @samp{Run it}, and pdb and jdb their
+@file{.pdbrc} and @file{jdb.ini} the same way; what the box cannot
 list, such as the script of a shared library the program loads, is never
 run, and gdb's warning for it is not shown.  What your own @file{~/.gdbinit} widens
 about gdb's auto-load trust does not apply inside xwpe.  The listing
@@ -241,8 +242,8 @@ file; a program in another format, one with more than 65279 sections
 (ELF's extended numbering), or one whose headers are damaged is shown
 without that part of the list, which now costs a line in the box and
 never a script run unseen.  Whether lldb-dap runs @file{./.lldbinit}, and
-the debuggers other than gdb in general, still start in the folder and
-depend on their own settings; the box says so and asks either way.  The
+the debuggers other than gdb, pdb and jdb in general, still start in the
+folder and depend on their own settings; the box says so and asks either way.  The
 debugger is found on your @env{PATH}, as your shell finds it.
 
 @item Run, Make and the language servers run the folder's own code

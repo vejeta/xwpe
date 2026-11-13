@@ -192,11 +192,10 @@ format; a file of any other format is still left as it is.
 
 What is asked about is the programs that compile, link, print, install,
 debug and serve a build, and what Run and Make hand the program.  A debug session's start is asked about too
-when the folder decides something about it: a start-up file the
-debugger runs from the folder (@file{.pdbrc}, @file{jdb.ini}), or that
-gdb would load from the folder (@file{.gdbinit}), from beside the program
-(@file{@var{program}-gdb.py}) or from inside it, shown with its lines
-(for gdb, what @samp{Run it} would load), the debugger the
+when the folder decides something about it: a start-up file of the
+folder (@file{.pdbrc}, @file{jdb.ini}, @file{.gdbinit}), from beside the
+program (@file{@var{program}-gdb.py}) or from inside it, shown with its
+lines (for gdb, pdb and jdb, what @samp{Run it} would load), the debugger the
 folder's file names, in the same box, and the @code{Arguments} the
 folder's file puts on the debugger's run command (@pxref{Debugger
 start-up files}).  Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A}) ask the

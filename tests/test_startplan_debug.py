@@ -120,7 +120,8 @@ def _debug_box(s, title):
 def test_startplan_pdbrc_in_the_folder_is_shown(tmp_path):
     """The folder holds a .pdbrc that writes a file: Ctrl-G R on t.py shows
     it, line by line, before pdb starts; Esc starts nothing and pdb never
-    runs it.  pdb has no switch to skip it, so Use mine is not offered."""
+    runs it.  pdb starts apart from the folder (tests/test_startplan_pdb_jdb_apart.py),
+    so the box offers Use mine and names the file as what Run it loads."""
     folder = Folder(tmp_path)
     (folder.ws / ".pdbrc").write_text("!open('%s','w').close()\n" % folder.ran)
     with folder.session("t.py", SEED_PY) as s:
@@ -128,10 +129,10 @@ def test_startplan_pdbrc_in_the_folder_is_shown(tmp_path):
         s.key(ESC, delay=0.8)
         s._drain(SETTLE)
     lines = _plan_lines(folder)
-    assert "Runs at start: ./.pdbrc (1 line)" in lines, lines
+    assert "With Run it: ./.pdbrc (1 line)" in lines, lines
     assert "    !open('%s','w').close()" % folder.ran in lines, lines
     assert "This runs the folder's own program." in lines, lines
-    assert "Use mine" not in box, box
+    assert "Your own setting: pdb with none of the folder's files" in box, box
     assert not folder.ran.exists(), "pdb ran the folder's .pdbrc after Esc"
 
 
@@ -176,15 +177,14 @@ def test_startplan_changed_startup_file_asks_again(tmp_path):
         _debug_box(s, "Command from ./.pdbrc")
         s.key(ESC, delay=0.8)
         s._drain(SETTLE)
-    assert "Runs at start: ./.pdbrc (2 lines)" in _plan_lines(folder), _plan_lines(folder)
+    assert "With Run it: ./.pdbrc (2 lines)" in _plan_lines(folder), _plan_lines(folder)
 
 
 # @scenario SC-compile-29
 @needs_jdb
 def test_startplan_jdb_ini_in_the_folder_is_shown(tmp_path):
-    """The working folder holds a jdb.ini: jdb reads it at its start (in
-    addition to the one in the user's home), so Ctrl-G R on T.java names it
-    with its lines before jdb starts; Esc starts nothing."""
+    """The working folder holds a jdb.ini: Ctrl-G R on T.java names it with
+    its lines before jdb starts, as what Run it loads; Esc starts nothing."""
     folder = Folder(tmp_path)
     (folder.ws / "jdb.ini").write_text("version\n")
     with folder.session("T.java", SEED_JAVA) as s:
@@ -192,7 +192,7 @@ def test_startplan_jdb_ini_in_the_folder_is_shown(tmp_path):
         s.key(ESC, delay=0.8)
         s._drain(SETTLE)
     lines = _plan_lines(folder)
-    assert "Runs at start: ./jdb.ini (1 line)" in lines, lines
+    assert "With Run it: ./jdb.ini (1 line)" in lines, lines
     assert "    version" in lines, lines
 
 
@@ -267,7 +267,7 @@ def test_startplan_folder_debugger_and_its_startup_file_ask_once(tmp_path):
         alive = s.proc.poll() is None
     lines = _plan_lines(folder)
     assert "From ./xwperc: Debugger = pdb" in lines, lines
-    assert "Runs at start: ./.pdbrc (1 line)" in lines, lines
+    assert "With Run it: ./.pdbrc (1 line)" in lines, lines
     assert _asks(folder) == 1, folder.traced()
     assert alive, "the editor died starting the folder's debugger"
 
@@ -572,6 +572,14 @@ def _own_line_joined(rows):
     return "".join(out)
 
 
+def _run_it_button(box):
+    """Is Run it one of the box's buttons?  The box's text also says "With Run
+    it:" over the files Run it loads, so only the row of buttons, the one that
+    holds Cancel, answers."""
+    buttons = [r for r in box.splitlines() if "Cancel" in r]
+    return bool(buttons) and "Run it" in buttons[-1]
+
+
 def _run_it_after_box(folder, title):
     """Ctrl-G R on t.py, Alt-R on the box titled @title; returns whether Run
     it was offered and whether the folder's command then ran."""
@@ -579,7 +587,7 @@ def _run_it_after_box(folder, title):
         box = _debug_box(s, title)
         s.key(RUN_IT, delay=0.8)
         ran = _wait(folder.ran.exists, RAN_WAIT)
-    return "Run it" in box, ran
+    return _run_it_button(box), ran
 
 
 # @scenario SC-compile-29
@@ -594,7 +602,7 @@ def test_startplan_a_nul_in_a_startup_file_hides_nothing(tmp_path):
         b"p 1\x00\n!open('%s','w').close()\n" % str(folder.ran).encode())
     offered, ran = _run_it_after_box(folder, "Command from ./.pdbrc")
     lines = _plan_lines(folder)
-    assert any(l.startswith("Runs at start: ./.pdbrc (") and "cannot be shown whole" in l
+    assert any(l.startswith("With Run it: ./.pdbrc (") and "cannot be shown whole" in l
                for l in lines), lines
     assert not offered, "Run it was offered on a .pdbrc the box could not show whole"
     assert not ran, "pdb ran the line the NUL hid"
@@ -615,8 +623,8 @@ def test_startplan_a_startup_line_wider_than_the_box_is_shown_whole(tmp_path):
         rows = s.display()
         s.key(ESC, delay=0.8)
         s._drain(SETTLE)
-    shown = _box_rows_joined(rows, "Runs at start: ./.pdbrc", "This runs the folder")
-    assert "Run it" in box, box
+    shown = _box_rows_joined(rows, "With Run it: ./.pdbrc", "This runs the folder")
+    assert _run_it_button(box), box
     assert "    " + line in shown, "the start-up line was cut:\n" + box
     assert not folder.ran.exists(), "pdb ran the folder's .pdbrc after Esc"
 

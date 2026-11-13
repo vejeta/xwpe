@@ -753,7 +753,7 @@ the start shows it first, with its lines, and asks @samp{Run it} or
 @samp{Cancel}, with @samp{Use mine} where there is a start without it; the
 answer is kept for that folder and that text, and a changed file asks
 again.  A debugger that starts in the folder (all but gdb's two
-interfaces) shows the file under @samp{Runs at start:}.  A line wider
+interfaces, pdb and jdb) shows the file under @samp{Runs at start:}.  A line wider
 than the box is wrapped, never cut.  A file the box cannot show whole
 (over 16 kB, or holding a NUL byte, past which the box would show
 nothing while the debugger reads on) is shown in part and not offered
@@ -791,13 +791,35 @@ a file an absolute name to keep it.  A file whose path holds a colon or a
 @samp{$}, or is too long for one of gdb's commands, cannot be given to
 gdb's auto-load list, and is not offered to @samp{Run it}; the box says so.
 
+@cindex pdb, jdb, started apart from the folder
+pdb and jdb are started the same way, in an empty folder of their own.
+pdb's first input line is a @code{chdir} into the program's folder, so
+the program runs there and imports the modules beside it, while a
+@file{pdb.py} of the folder cannot replace the debugger.  @samp{Run it}
+sends the folder's @file{.pdbrc} to pdb line by line after that move (a
+line cut at @samp{;;} is sent as its commands), and sends jdb
+@code{read @var{file}} for the folder's @file{jdb.ini}, else
+@file{.jdbrc}; @samp{Use mine} sends neither.  Your own @file{~/.pdbrc}
+and the @file{jdb.ini} in your home folder still run.  jdb reads the file
+once the program's VM has connected, the moment it read it before, and
+is given the program's folder as its source path.  A @file{.pdbrc}
+with a @code{commands} block, which pdb answers with a prompt of its own,
+and a file whose path holds a blank, which jdb's one-word @code{read}
+cannot take, are not offered to @samp{Run it}; the box says so.  A
+@file{~/.pdbrc} that continues the program runs it before the move, in
+pdb's own folder.  A folder with one name too long for a pdb command
+(about 225 bytes, each byte outside ASCII written as four) cannot be
+debugged with pdb; the start says so.  If pdb refuses the move, or jdb cannot open the file
+@samp{Run it} loads, the start stops and says so.
+
 @multitable @columnfractions .18 .30 .52
 @headitem Debugger @tab File in the folder @tab When it runs it
 @item pdb @tab @file{.pdbrc}
-@tab Always, after @file{~/.pdbrc}.  pdb has no switch to skip it, so
-there is no @samp{Use mine}.
+@tab Only when you choose @samp{Run it}, sent by xwpe line by line.
+@samp{Use mine} loads none.
 @item jdb @tab @file{jdb.ini}, else @file{.jdbrc}
-@tab Always, as well as the one in your home folder.
+@tab Only when you choose @samp{Run it}, loaded by xwpe's @code{read}.
+@samp{Use mine} loads none.
 @item gdb (line and MI interface) @tab @file{.gdbinit}, @file{@var{program}-gdb.gdb},
 @file{-gdb.py}, @file{-gdb.scm} beside the program, and the scripts inside the program
 (its @code{.debug_gdb_scripts} section, listed as
@@ -816,8 +838,8 @@ auto-load safe-path).  The box says so, and offers no @samp{Use mine} yet.
 @noindent
 sdb, a68g and dlv read nothing known from their folder.  What the
 debugged program itself does is not checked: the box says @samp{This
-runs the folder's own program.}  A Python session also imports the
-folder's own modules, a @file{pdb.py} of the folder included.
+runs the folder's own program.}  A Python program you debug still
+imports the folder's own modules.
 
 The program's @code{Arguments} go on the debugger's run command
 (@samp{r @var{arguments}}), and gdb starts the program through a shell.

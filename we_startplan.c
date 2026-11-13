@@ -2076,10 +2076,13 @@ int wpe_startplan_reads_too_long(const WpeStartPlan *p)
    - pdb: https://docs.python.org/3/library/pdb.html -- ".pdbrc" in the home
      folder and in the current folder, the home one first, each line run as
      if typed; there is no switch that turns it off (only Pdb(readrc=False)).
+     Measured with Python 3.14: ./.pdbrc is read once, when the debugger is
+     built, from the folder it starts in, and not again on restart.
    - jdb: OpenJDK test/jdk/com/sun/jdi/JdbReadTwiceTest.sh -- "jdb.ini",
      else ".jdbrc", in user.home and in the working folder, both read, the
      same file through a link once.  Measured with JDK 25: the working
-     folder's jdb.ini is read ("Reading commands from ...").
+     folder's jdb.ini is read ("Reading commands from ...").  Measured with
+     JDK 26: its read command takes one word and an absolute path.
    - gdb: gdb manual, "Init File in the Current Directory" -- ./.gdbinit is
      read only when the auto-load safe-path admits the folder, and only from
      the folder gdb starts in (measured).
@@ -2090,10 +2093,10 @@ int wpe_startplan_reads_too_long(const WpeStartPlan *p)
      gdb manual, "The .debug_gdb_scripts section" -- scripts carried inside
      the program, under the same safe-path rule (measured on gdb 18.1: a
      file entry is looked up in gdb's working folder).
-     gdb's console and MI rows start apart (startplan_debugger_rows), so for
-     them these rows only say what the box shows and what Run it loads; the
-     notes below stay for gdb as a Rust adapter, which still starts in the
-     folder.
+     The rows of gdb (console and MI), pdb and jdb start apart
+     (startplan_debugger_rows), so for them these rows only say what the box
+     shows and what Run it loads; the notes below stay for gdb as a Rust
+     adapter, which still starts in the folder.
    - lldb: lldb(1) -- ./.lldbinit only with target.load-cwd-lldbinit true;
      lldb-dap reads init files the same way (to be measured on lldb-dap).
    - dbx: IBM AIX 7.2, "Customizing the dbx debugging environment" --
@@ -3011,6 +3014,13 @@ int wpe_startplan_tool_reads_known(const char *tool)
 #define STARTPLAN_SAFE_PATH_REFUSED ":$*?["
 /* pdb cuts an input line at ";;" into two commands. */
 #define STARTPLAN_PDB_SEPARATOR     ';'
+/* pdb's move: a statement that binds no name in the program's module. */
+#define STARTPLAN_PDB_CHDIR_FMT     "!__import__('os').chdir(%s)"
+/* The .pdbrc line that opens a block pdb answers with its own prompt, the one
+   that defines an alias, and what cuts a line into commands. */
+#define STARTPLAN_PDB_COMMANDS      "commands"
+#define STARTPLAN_PDB_ALIAS         "alias"
+#define STARTPLAN_PDB_SPLIT         ";;"
 
 struct startplan_row {
  const char *key;            /* e_d_type_names[]: "gdb", "pdb", "jdb", ..., or "dap"   */
@@ -3036,9 +3046,9 @@ static const startplan_row startplan_debugger_rows[] = {
    STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
  { "xdb",  "",         0, 0, "unmeasured", STARTPLAN_CHAN_NONE, NULL,
    STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
- { "jdb",  "",         0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_INPUT,
+ { "jdb",  "",         1, 1, "", STARTPLAN_CHAN_INPUT,
    NULL, STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_JDB },
- { "pdb",  "",         0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_INPUT,
+ { "pdb",  "",         1, 1, "", STARTPLAN_CHAN_INPUT,
    NULL, STARTPLAN_MOVE_PDB, STARTPLAN_LOAD_PDB },
  { "a68g", "",         0, 0, "is the program", STARTPLAN_CHAN_NONE, NULL,
    STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
@@ -3524,7 +3534,8 @@ static int startplan_lines_pin(const startplan_row *row, startplan_lines *l)
 }
 
 /**
- * startplan_cd_text - The command that changes gdb's folder, in the words of
+ * startplan_cd_text - The command that changes the debugger's folder (gdb's
+ * cd, MI's -environment-cd, pdb's os.chdir), in the words of
  * the row's interface.
  * @row: the row; @path: an absolute folder; @relative: 1 to write it "./..."
  * (a piece of a folder reached in several steps); @out/@n: receive it.
@@ -3548,6 +3559,17 @@ static int startplan_cd_text(const startplan_row *row, const char *path, int rel
   }
   wrote = snprintf(out, n, "-environment-cd %s", arg);
  }
+ else if (row->move == STARTPLAN_MOVE_PDB)
+ {
+  if (wpe_startplan_python_bytes(arg, sizeof arg, path) < 0)
+   return -1;
+  if (relative)                      /* b'/name' becomes b'./name' */
+  {
+   memmove(arg + 3, arg + 2, strlen(arg + 2) + 1);
+   arg[2] = '.';
+  }
+  wrote = snprintf(out, n, STARTPLAN_PDB_CHDIR_FMT, arg);
+ }
  else
  {
   if (wpe_startplan_gdb_arg(arg, sizeof arg, path, WPE_GDB_ARG_RAW) < 0)
@@ -3560,7 +3582,7 @@ static int startplan_cd_text(const startplan_row *row, const char *path, int rel
 }
 
 /**
- * startplan_cd_add - Add one command that changes gdb's folder.
+ * startplan_cd_add - Add one command that changes the debugger's folder.
  * Return: 0, or -1 as startplan_cd_text.
  */
 static int startplan_cd_add(const startplan_row *row, const char *path, int relative,
@@ -3574,7 +3596,7 @@ static int startplan_cd_add(const startplan_row *row, const char *path, int rela
 }
 
 /**
- * startplan_lines_cd - The commands that give gdb the program's folder.
+ * startplan_lines_cd - The commands that give gdb or pdb the program's folder.
  * @row: the row; @folder: the program's folder, resolved; @l: the lines.
  *
  * One cd when the folder fits a command.  A deeper folder is reached in
@@ -3643,10 +3665,7 @@ static int startplan_lines_move(const startplan_row *row, const char *folder, st
  case STARTPLAN_MOVE_LLDB_DAP:
   return startplan_lines_add(l, STARTPLAN_LK_CWD, folder, NULL);
  case STARTPLAN_MOVE_PDB:
-  if (wpe_startplan_python_bytes(arg, sizeof arg, folder) < 0)
-   return -1;
-  snprintf(cmd, sizeof cmd, "!__import__('os').chdir(%s)", arg);
-  return startplan_lines_add(l, STARTPLAN_LK_INPUT, cmd, NULL);
+  return startplan_lines_cd(row, folder, l);
  default:
   return 0;
  }
@@ -4258,15 +4277,108 @@ static int startplan_load_gdb(WpeStartPlan *p, const startplan_row *row, const W
 }
 
 /**
+ * startplan_pdbrc_line_sendable - Can this .pdbrc line be sent to pdb on its own?
+ * @line: one line of the file.
+ *
+ * pdb answers "commands" with a prompt of its own and reads the lines of the
+ * block until "end", which the editor's one-request-per-line reading would
+ * wait for until it gave up; a line longer than a command is never sent.
+ * Return: 1 when it can.
+ */
+static int startplan_pdbrc_line_sendable(const char *line)
+{
+ const char *word = line + strspn(line, " \t");
+ size_t n = strlen(STARTPLAN_PDB_COMMANDS);
+
+ if (strlen(line) > STARTPLAN_COMMAND_MAX)
+  return 0;
+ return !(strncmp(word, STARTPLAN_PDB_COMMANDS, n) == 0 &&
+          (word[n] == '\0' || word[n] == ' ' || word[n] == '\t'));
+}
+
+/**
+ * startplan_pdbrc_add - Add one command of a .pdbrc to the plan's input.
+ * @p: the plan; @command: the command, no ";;" in it unless it is an alias.
+ * @in: how many load lines were added so far.
+ * Return: 0, or -1 when it cannot be sent (p->load_refused says which kind)
+ * or does not fit.
+ */
+static int startplan_pdbrc_add(WpeStartPlan *p, const char *command, int *in)
+{
+ if (!startplan_pdbrc_line_sendable(command))
+ {
+  p->load_refused = WPE_STARTPLAN_LOAD_REFUSED_PDBRC;
+  return -1;
+ }
+ if (!wpe_startplan_line_ok(command))
+  return -1;
+ return startplan_insert(&p->input, &p->ninput, p->load_at + (*in)++, command, WPE_WORD_TEXT,
+                         WPE_FROM_EDITOR);
+}
+
+/**
+ * startplan_pdbrc_is_alias - Is this the line that defines an alias?
+ * @line: one line of the file.
+ *
+ * pdb leaves an alias's ";;" for the alias's own expansion.
+ */
+static int startplan_pdbrc_is_alias(const char *line)
+{
+ const char *word = line + strspn(line, " \t");
+ size_t n = strlen(STARTPLAN_PDB_ALIAS);
+
+ return strncmp(word, STARTPLAN_PDB_ALIAS, n) == 0 &&
+        (word[n] == '\0' || word[n] == ' ' || word[n] == '\t');
+}
+
+/**
+ * startplan_pdbrc_line - Add the commands of one .pdbrc line.
+ * @p: the plan; @line: the line; @in: how many load lines were added so far.
+ *
+ * pdb runs the parts of a line cut at ";;" one after the other, so each part
+ * is sent as a command of its own, which also keeps a long line under the
+ * most a command may be.  The first part is trimmed at its end and the rest
+ * at its start, as pdb does; a ";;" at the very start of the line, an alias
+ * and an empty part are left whole or dropped as pdb leaves them.
+ * Return: 0, or -1 as startplan_pdbrc_add.
+ */
+static int startplan_pdbrc_line(WpeStartPlan *p, const char *line, int *in)
+{
+ char part[STARTPLAN_LINE_MAX];
+ const char *marker;
+ size_t len;
+
+ while (line && *line)
+ {
+  marker = strstr(line, STARTPLAN_PDB_SPLIT);
+  if (!marker || marker == line || startplan_pdbrc_is_alias(line))
+   return startplan_pdbrc_add(p, line, in);
+  len = (size_t)(marker - line);
+  while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
+   len--;
+  memcpy(part, line, len);
+  part[len] = '\0';
+  if (startplan_pdbrc_add(p, part, in) < 0)
+   return -1;
+  line = marker + strlen(STARTPLAN_PDB_SPLIT);
+  line += strspn(line, " \t");
+ }
+ return 0;
+}
+
+/**
  * startplan_load_pdb - Send a .pdbrc's lines one by one: pdb has no source.
  * @p: the plan; @s: the listed .pdbrc.
  *
- * Blank lines and comments are left out, as pdb leaves them.
- * Return: 0, or -1 when a line holds a control character.
+ * Blank lines and comments are left out, as pdb leaves them, also when they
+ * are indented: typed at pdb's prompt, a line of blanks would repeat the
+ * command before it.  A line pdb cannot be given alone makes Run it
+ * unavailable, and p->load_refused says which kind.
+ * Return: 0, or -1 when a line holds a control character or cannot be sent.
  */
 static int startplan_load_pdb(WpeStartPlan *p, const WpeStartPath *s, int *in)
 {
- const char *line = s->content, *end;
+ const char *line = s->content, *end, *first;
  char one[STARTPLAN_LINE_MAX];
  size_t len;
 
@@ -4279,11 +4391,10 @@ static int startplan_load_pdb(WpeStartPlan *p, const WpeStartPath *s, int *in)
   memcpy(one, line, len);
   one[len] = '\0';
   line = end ? end + 1 : NULL;
-  if (one[0] == '\0' || one[0] == STARTPLAN_PDBRC_COMMENT)
+  first = one + strspn(one, " \t");
+  if (first[0] == '\0' || first[0] == STARTPLAN_PDBRC_COMMENT)
    continue;
-  if (!wpe_startplan_line_ok(one) ||
-      startplan_insert(&p->input, &p->ninput, p->load_at + (*in)++, one, WPE_WORD_TEXT,
-                       WPE_FROM_EDITOR) < 0)
+  if (startplan_pdbrc_line(p, one, in) < 0)
    return -1;
  }
  return 0;
@@ -4354,7 +4465,8 @@ int wpe_startplan_load_lines(WpeStartPlan *p)
    continue;
   if (startplan_load_one(p, row, &p->path[i], &in, &word) < 0)
   {
-   p->load_refused = WPE_STARTPLAN_LOAD_REFUSED;
+   if (!p->load_refused)
+    p->load_refused = WPE_STARTPLAN_LOAD_REFUSED;
    return -1;
   }
  }

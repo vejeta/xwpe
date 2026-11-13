@@ -6494,12 +6494,13 @@ int e_make_breakpoint(FENSTER *f, int sw)
 
 /* ---- The debugger's own folder, and the commands that contain it ---------
  *
- * A debugger that starts apart (gdb) runs in an empty folder the editor made
- * for this session, so it finds no init file of the program's folder.  Its
- * first commands then come from the editor, one request each, before the
- * debugger is set up: the pin of its auto-load trust, the move to the
- * program's folder, the history rule, what Run it loads, and the program.
- * The folder ends with the session.
+ * A debugger that starts apart (gdb, pdb, jdb) runs in an empty folder the
+ * editor made for this session, so it finds no init file of the program's
+ * folder.  Its first commands then come from the editor, one request each,
+ * before the debugger is set up: for gdb the pin of its auto-load trust, the
+ * move to the program's folder, the history rule, what Run it loads, and the
+ * program; for pdb the move and the .pdbrc's lines; for jdb the read of the
+ * start-up file.  The folder ends with the session.
  */
 
 #define E_D_CONTAIN_LINES_MAX  64
@@ -6514,9 +6515,17 @@ int e_make_breakpoint(FENSTER *f, int sw)
 #define E_D_CL_HIST_TODO 1
 #define E_D_CL_HIST_FIX  2
 #define E_D_CONTAIN_TOO_LONG_LINE "Debugger not started: the file path is too long"
+/* What pdb and jdb say when the editor's first command is refused, and what the
+   user reads then: the session ends, since going on would leave the debugger
+   in the editor's empty folder. */
+#define E_D_CL_PDB_ERROR_MARK  "***"
+#define E_D_CL_JDB_NO_OPEN     "Could not open:"
+#define E_D_CL_PDB_REFUSED_LINE "Debugger stopped: pdb could not change to the program's folder"
+#define E_D_CL_JDB_REFUSED_LINE "Debugger stopped: jdb could not read the start-up file"
 
 static struct
 {
+ int refused;                             /* the first command was refused        */
  char dir[PATH_MAX];                      /* this session's own folder, or ""     */
  int n;                                   /* lines to send                        */
  int move_end;                            /* the first line after pin and move    */
@@ -6615,8 +6624,8 @@ static int e_d_cl_history_needs_fix(const E_D_ANSWER *ans)
 }
 
 /**
- * e_d_cl_cmd - The next command that contains gdb: the plan's lines in order,
- * with the history rule between the move and what is loaded.
+ * e_d_cl_cmd - The next command that contains the debugger: the plan's lines
+ * in order, with gdb's history rule between the move and what is loaded.
  * @cmd, @n: the command; @ctx: unused.
  * Return: 1 with a command, 0 when every line has been sent.
  */
@@ -6645,8 +6654,53 @@ static int e_d_cl_cmd(char *cmd, size_t n, void *ctx)
 }
 
 /**
- * e_d_cl_answered - gdb answered one of the containing commands: go on to
- * the next, whatever it said (its own warnings reach Messages).
+ * e_d_cl_answer_begins - Does the debugger's answer begin with @mark?
+ * @ans: the answer; @mark: the words a refusal starts with.
+ */
+static int e_d_cl_answer_begins(const E_D_ANSWER *ans, const char *mark)
+{
+ const char *text = ans->text;
+
+ if (!text)
+  return(0);
+ text += strspn(text, " \t\r\n");
+ return(strncmp(text, mark, strlen(mark)) == 0);
+}
+
+/**
+ * e_d_cl_first_refused - Did pdb or jdb refuse the editor's first command?
+ * @ans: the answer to it.
+ *
+ * The first command is pdb's move into the program's folder or jdb's read of
+ * the start-up file Run it loads.  pdb says "*** <error>" and jdb says
+ * "Could not open: <file>".  A debugger that went on in its empty folder
+ * would debug a program whose relative files it cannot find, so the start
+ * stops instead (e_d_cl_stop_session).
+ * Return: 1 when it was refused.
+ */
+static int e_d_cl_first_refused(const E_D_ANSWER *ans)
+{
+ if (e_deb_type == DEB_PDB)
+  return(e_d_cl_answer_begins(ans, E_D_CL_PDB_ERROR_MARK));
+ if (e_deb_type == DEB_JDB)
+  return(e_d_cl_answer_begins(ans, E_D_CL_JDB_NO_OPEN));
+ return(0);
+}
+
+/**
+ * e_d_cl_refused_line - What the user reads when the first command was refused.
+ */
+static const char *e_d_cl_refused_line(void)
+{
+ if (e_deb_type == DEB_PDB)
+  return(E_D_CL_PDB_REFUSED_LINE);
+ return(E_D_CL_JDB_REFUSED_LINE);
+}
+
+/**
+ * e_d_cl_answered - The debugger answered one of the containing commands: go
+ * on to the next, whatever it said (its own warnings reach Messages), except
+ * that pdb's or jdb's refusal of the first one stops the start.
  */
 static int e_d_cl_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 {
@@ -6656,10 +6710,50 @@ static int e_d_cl_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
   e_d_cl.history = e_d_cl_history_needs_fix(ans) ? E_D_CL_HIST_FIX : E_D_CL_HIST_DONE;
  else if (e_d_cl.sent == E_D_CL_FIX)
   e_d_cl.history = E_D_CL_HIST_DONE;
+ else if (e_d_cl.sent == E_D_CL_LINE && e_d_cl.next == 0 && e_d_cl_first_refused(ans))
+ {
+  e_d_cl.refused = 1;
+  e_d_cl.sent = E_D_CL_IDLE;
+  return(E_D_STEP_STOP);
+ }
  else if (e_d_cl.sent == E_D_CL_LINE)
   e_d_cl.next++;
  e_d_cl.sent = E_D_CL_IDLE;
  return(E_D_STEP_AGAIN);
+}
+
+/**
+ * e_d_cl_stop_on_timer - Say why the start stopped, then end the session.
+ * @data: the line to say.
+ *
+ * Run from the loop and not from the answer's callback, as the restart of a
+ * gdb found too old for MI is, so no descriptor is closed under the call
+ * that is reading it.
+ */
+static void e_d_cl_stop_on_timer(void *data)
+{
+ ECNT *cn = WpeEditor;
+ FENSTER *f = cn->f[cn->mxedt];
+
+ e_error((char *)data, 0, f->fb);
+ e_d_quit(f);
+}
+
+/**
+ * e_d_cl_stop_session - The first command was refused: end the session and
+ * say why, instead of debugging from the editor's empty folder.
+ * Return: 1 when the session is being ended, 0 when nothing was refused.
+ */
+static int e_d_cl_stop_session(void)
+{
+ const char *line = e_d_cl_refused_line();
+
+ if (!e_d_cl.refused)
+  return(0);
+ e_d_cl.refused = 0;
+ if (wpe_timer_add(0, 0, e_d_cl_stop_on_timer, (void *)line) <= 0)
+  e_d_cl_stop_on_timer((void *)line);
+ return(1);
 }
 
 /*   start Debugger   */
@@ -6712,6 +6806,7 @@ static void e_d_fd_nonblocking(int fd)
 #define E_D_JDB_LOCALE_LANG    "-J-Duser.language=en"
 #define E_D_JDB_LOCALE_COUNTRY "-J-Duser.country=US"
 #define E_D_JDB_CONNECT        "-connect"
+#define E_D_JDB_SOURCEPATH     "-sourcepath"
 #define E_D_JDB_LISTEN_SPEC \
  "com.sun.jdi.SocketListen:localAddress=127.0.0.1,port=0"
 
@@ -6785,6 +6880,24 @@ static void e_d_plan_debugger_word(WpeStartPlan *p)
 }
 
 /**
+ * e_d_plan_jdb_source_words - Where jdb finds the program's sources.
+ * @p: the plan, contained.
+ *
+ * jdb looks for sources in its own folder by default.  Started apart, that
+ * folder is the editor's empty one, so the program's folder is named as
+ * jdb's source path: a stop then shows its source line in jdb's output as
+ * it did when jdb started in the program's folder.  jdb only reads the
+ * source text from there, never runs it.
+ */
+static void e_d_plan_jdb_source_words(WpeStartPlan *p)
+{
+ if (!wpe_startplan_is_apart(p) || !p->program_dir)
+  return;
+ e_d_plan_word(p, E_D_JDB_SOURCEPATH, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_word(p, p->program_dir, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+}
+
+/**
  * e_d_plan_jdb_words - jdb's command line: listen on loopback for the VM.
  * @p: the plan.
  *
@@ -6796,8 +6909,26 @@ static void e_d_plan_jdb_words(WpeStartPlan *p)
  e_d_plan_debugger_word(p);
  e_d_plan_word(p, E_D_JDB_LOCALE_LANG, WPE_WORD_OPTION, WPE_FROM_EDITOR);
  e_d_plan_word(p, E_D_JDB_LOCALE_COUNTRY, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ e_d_plan_jdb_source_words(p);
  e_d_plan_word(p, E_D_JDB_CONNECT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
  e_d_plan_word(p, E_D_JDB_LISTEN_SPEC, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+}
+
+/**
+ * e_d_plan_apart_operand - The program word of a debugger that starts apart.
+ * @p: the plan, contained.
+ *
+ * gdb has none: the editor loads its program by its own command once it is
+ * up.  pdb runs the script it is given, so the script's absolute path, which
+ * contain made from the program's folder, is its operand: the debugger's
+ * own folder is not the program's.
+ */
+static void e_d_plan_apart_operand(WpeStartPlan *p)
+{
+ const char *script = wpe_startplan_program_path(p);
+
+ if (e_deb_type == DEB_PDB && script)
+  e_d_plan_word(p, script, WPE_WORD_OPERAND, e_d_prog_origin);
 }
 
 /**
@@ -6809,8 +6940,8 @@ static void e_d_plan_jdb_words(WpeStartPlan *p)
  * The debugger's name is the one the start folder named or the user's own
  * (e_d_debugger_wanted) and its switches are the editor's; the program is
  * the word e_start_debug chose, from wherever it came.  A debugger that
- * starts apart gets no program word: the editor loads the program by its
- * own command once the debugger is up (e_d_plan_contain).
+ * starts apart gets the program from the owner (e_d_plan_contain), as an
+ * absolute path.
  */
 static void e_d_plan_words(WpeStartPlan *p, const char *operand)
 {
@@ -6827,8 +6958,13 @@ static void e_d_plan_words(WpeStartPlan *p, const char *operand)
  }
  else if (e_deb_swtch)
   e_d_plan_word(p, e_deb_swtch, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- if (!operand[0] || wpe_startplan_is_apart(p))
-  return;                   /* a project without EXENAME, or a program the editor loads */
+ if (!operand[0])
+  return;                   /* a project without EXENAME */
+ if (wpe_startplan_is_apart(p))
+ {
+  e_d_plan_apart_operand(p);
+  return;
+ }
  e_d_plan_word(p, operand, WPE_WORD_OPERAND, e_d_prog_origin);
  wpe_startplan_path(p, operand, WPE_PATH_INPUT, e_d_prog_origin, E_D_PLAN_SOURCE_PROG,
                     NULL);
@@ -6962,14 +7098,19 @@ static const char *e_d_variant_of(int type)
  * A debugger that starts apart gets an empty folder of its own, so it reads
  * no init file from the program's folder; the program's folder is given to it
  * afterwards by the editor's own command.  A build folder the window does not
- * know means the editor's own folder.
+ * know means the editor's own folder.  jdb's operand is a main class, not a
+ * path, so no program is given to the owner for it: the VM the editor starts
+ * for jdb runs in the program's folder by its own plan.
  */
 static void e_d_plan_contain(FENSTER *f, WpeStartPlan *p, int type, const char *operand)
 {
  char *dir = e_build_dir(f);
 
  wpe_startplan_program_origin(p, e_d_prog_origin, E_D_PLAN_SOURCE_PROG);
- wpe_startplan_contain(p, e_deb_type_name(type), e_d_variant_of(type), dir, operand);
+ if (type == DEB_JDB)
+  wpe_startplan_contain(p, e_deb_type_name(type), e_d_variant_of(type), dir, NULL);
+ else
+  wpe_startplan_contain(p, e_deb_type_name(type), e_d_variant_of(type), dir, operand);
  if (dir)
   FREE(dir);
 }
@@ -7033,6 +7174,20 @@ static WpeStartPlan *e_d_plan_own_debugger(FENSTER *f, int own)
 }
 
 /**
+ * e_d_plan_word_shown - Does the box name this word of the command line?
+ * @p: the plan; @i: the word's index.
+ *
+ * The program of a debugger that starts apart is named on a line of its own
+ * ("Debugs:"), so it is left out of the command, whether the debugger takes
+ * it as a word (pdb) or the editor loads it (gdb).
+ * Return: 1 when the word is part of the command shown.
+ */
+static int e_d_plan_word_shown(const WpeStartPlan *p, int i)
+{
+ return(!(wpe_startplan_is_apart(p) && p->word[i].role == WPE_WORD_OPERAND));
+}
+
+/**
  * e_d_plan_shown - The debugger's command line as the box shows it.
  * @p: the plan.
  * Return: the words joined by blanks, malloc'd, or NULL out of memory.
@@ -7050,7 +7205,9 @@ static char *e_d_plan_shown(const WpeStartPlan *p)
  text[0] = '\0';
  for (i = 0; i < p->nword; i++)
  {
-  if (i > 0)
+  if (!e_d_plan_word_shown(p, i))
+   continue;
+  if (text[0])
    strcat(text, " ");
   strcat(text, p->word[i].text);
  }
@@ -7600,9 +7757,9 @@ static void e_d_program_tty_name(void)
  e_d_own_tty_name();
 }
 
-/* The directory the debugger runs in (the child changes into it before it
-   execs the debugger) when it is also the directory of the program it was
-   given, or "".  Paths relative to it name one file to pdb whichever
+/* The directory pdb is in once the editor has moved it into the program's
+   folder (its first input line), when the program it was given lies in that
+   folder, or "".  Paths relative to it name one file to pdb whichever
    command carries them. */
 static char e_d_debugger_dir[PATH_MAX];
 
@@ -7627,9 +7784,8 @@ static int e_d_dir_holds_file(const char *dir, const char *path)
 }
 
 /**
- * e_d_debugger_dir_note - Remember the directory the debugger was started
- * in, as the child changes into it, when the program it was given lies in
- * it.
+ * e_d_debugger_dir_note - Remember the directory pdb is moved into, when the
+ * program it was given lies in it.
  * @f: the window the session was started from; @prog: the program, for
  * pdb its script.
  *
@@ -7657,10 +7813,11 @@ static void e_d_debugger_dir_note(FENSTER *f, const char *prog)
  * e_d_debugger_io - What every debugger start has in common.
  * @io: receives it.
  *
- * The debugger runs in the program's directory (the plan's working
- * folder), as the language servers and adapters do: gdb finds a relatively
- * named program ("prog.e") there and resolves source and breakpoint paths
- * right.
+ * The debugger runs in the plan's working folder: the program's directory
+ * for the debuggers that read their start-up files themselves, as the
+ * language servers and adapters do, and an empty folder of the editor's own
+ * for gdb, pdb and jdb, which the editor moves into the program's directory
+ * by its first commands, so source and breakpoint paths resolve there.
  */
 static void e_d_debugger_io(WpeStartIo *io)
 {
@@ -21458,6 +21615,8 @@ static void e_d_gu_set_up_finished(int ok, void *ctx)
   e_d_ga.set_up_owed = 1;
   return;
  }
+ if (e_d_cl_stop_session())
+  return;
  if (e_d_gm_fell_back(go))
   return;
  e_d_ga.set_up_owed = 0;
@@ -22667,11 +22826,13 @@ static int e_d_pdb_sync_on_loop(ECNT *cn)
 
 /* ---- commands of the user's at a stop, the set-up and the resumes ---- */
 
-/* The settings pdb needs none of; every breakpoint of the user's.  A
-   set-up given up on and asked again first clears a line pdb may have set
-   unanswered. */
+/* The editor's own lines first (the move into the program's folder, then the
+   folder's .pdbrc when Run it loaded it), then every breakpoint of the
+   user's.  A set-up given up on and asked again first clears a line pdb may
+   have set unanswered. */
 static const E_D_STEP e_d_pdb_set_up_steps[] =
 {
+ { e_d_cl_cmd,        e_d_cl_answered },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
  { e_d_gb_add_cmd,    e_d_gu_add_answered },
  { NULL, NULL }
@@ -23917,10 +24078,12 @@ static void e_d_gj_pause_instead(ECNT *cn)
 
 /* ---- commands of the user's at a stop, the set-up and the resumes ---- */
 
-/* Every breakpoint of the user's; a set-up given up on and asked again
-   first clears a line jdb may have set unanswered. */
+/* The start-up file Run it loads (jdb's read), then every breakpoint of the
+   user's; a set-up given up on and asked again first clears a line jdb may
+   have set unanswered. */
 static const E_D_STEP e_d_jdb_set_up_steps[] =
 {
+ { e_d_cl_cmd,        e_d_cl_answered },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
  { e_d_gb_add_cmd,    e_d_gu_add_answered },
  { NULL, NULL }

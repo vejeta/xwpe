@@ -130,6 +130,8 @@
 /* Why Run it is not offered for a plan whose start-up files cannot be sent
    to the debugger by the editor's own command. */
 #define WPE_STARTPLAN_LOAD_REFUSED "a start-up file whose path the debugger cannot be given safely"
+#define WPE_STARTPLAN_LOAD_REFUSED_PDBRC \
+ "a .pdbrc line that pdb cannot be given one at a time (a commands block or a very long line)"
 
 /* One word of a command line. */
 typedef struct {

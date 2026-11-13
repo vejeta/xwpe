@@ -518,7 +518,7 @@ runs, and no file name is ever read as a command.
 @item A debug session's start-up files and the values it sends the debugger
 @cindex debugger, start-up files of a folder
 The original started the debugger in the program's folder, where pdb,
-jdb and (under your auto-load setting) gdb run that folder's
+jdb and (under your auto-load setting) gdb ran that folder's
 @file{.pdbrc}, @file{jdb.ini} or @file{.gdbinit}, and gdb a script
 beside the program (@file{@var{program}-gdb.py}), unseen; handed it a
 program named like an option as an option (a file @file{-command=x.c}
@@ -533,7 +533,9 @@ in an empty folder of its own and moves to the program's folder after its
 start-up, and gdb's auto-load trust inside xwpe is gdb's own default, not
 what your @file{~/.gdbinit} set: a script of the folder, of the program or
 of a library the program loads runs only when the box showed it and you chose
-@samp{Run it}.  The reason: a debugger reads these
+@samp{Run it}.  pdb and jdb start in an empty folder too: the folder's
+@file{.pdbrc} and @file{jdb.ini} are sent by xwpe after @samp{Run it}, a
+@file{pdb.py} of the folder cannot replace pdb.  The reason: a debugger reads these
 files and lines as its own commands, @code{shell} included, and a list
 of what it reads is always one place behind.
 

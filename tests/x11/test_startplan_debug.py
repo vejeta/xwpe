@@ -127,7 +127,7 @@ def test_startplan_folder_debugger_and_its_startup_file_ask_once(folder_debugger
     _sleep(RAN_WAIT_S)
     said = _trace(folder_debugger)
     assert "startplan line From ./xwperc: Debugger = pdb" in said, said
-    assert "startplan line Runs at start: ./.pdbrc (1 line)" in said, said
+    assert "startplan line With Run it: ./.pdbrc (1 line)" in said, said
     assert said.count("startcmd ask ") == 1, said
     assert drawn >= BOX_PX_MIN, "the question was not drawn (%d pixels changed)" % drawn
     assert not (folder_debugger / "ran").exists(), "the folder's .pdbrc ran after Escape"
@@ -292,3 +292,73 @@ def test_startplan_a_library_script_is_not_run_by_a_clean_start(library_script, 
     assert (library_script / HOME_RAN).exists(), "the user's own ~/.gdbinit did not run:\n" + said
     assert not (library_script / "ran").exists(), "gdb ran the library's script"
     assert xwpe.proc.poll() is None, "xwpe died starting gdb"
+
+
+# A Python program edited in the subfolder, whose folder holds a .pdbrc that
+# touches tmp_path/ran.  pdb is started apart, through the graphical editor's
+# helper script, like gdb.
+PY_SESSION = dict(SESSION, XWPE_TEST_FILE="sub/t.py", XWPE_TEST_SOURCE="x = 1\nprint(x)\n")
+
+
+@pytest.fixture
+def pdb_startup_file(tmp_path):
+    """The program's folder holds a .pdbrc that touches tmp_path/ran.  The
+    canary: pdb started directly there, with the session's HOME, runs it."""
+    _subfolder(tmp_path)
+    sub = tmp_path / "sub"
+    (sub / ".pdbrc").write_text("!open(%r, 'w').close()\n" % str(tmp_path / "ran"))
+    (sub / "canary.py").write_text("x = 1\n")
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path), "TERM": "dumb"}
+    subprocess.run(["python3", "-m", "pdb", "canary.py"], cwd=str(sub), env=env, input=b"q\n",
+                   timeout=CANARY_S, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    fired = (tmp_path / "ran").exists()
+    if fired:
+        (tmp_path / "ran").unlink()
+    (sub / "canary.py").unlink()
+    if not fired:
+        pytest.skip("canary: pdb started directly in the folder did not run its .pdbrc: "
+                    "this route's probe is dead here")
+    return tmp_path
+
+
+# @scenario SC-debug-119
+@pytest.mark.skipif(not shutil.which("python3"), reason="python3 not on PATH")
+@pytest.mark.parametrize("xwpe", [PY_SESSION], indirect=True)
+def test_startplan_pdbrc_use_mine_stops_it(pdb_startup_file, xwpe):
+    """Ctrl-G R lists the folder's .pdbrc; Use mine starts pdb, through the
+    graphical editor's own helper, apart from the folder: the session starts
+    and the file never runs."""
+    _sleep(SETTLE_S)
+    xwpe.key("ctrl+g", "r", delay=0.6)
+    assert _wait(lambda: "startcmd ask debug/pdb" in _trace(pdb_startup_file), ASK_WAIT_S), \
+        _trace(pdb_startup_file)
+    _sleep(SETTLE_S)
+    xwpe.key("alt+u", delay=0.4)
+    assert _wait(lambda: "startcmd answer debug/pdb own" in _trace(pdb_startup_file),
+                 ASK_WAIT_S), _trace(pdb_startup_file)
+    _sleep(RAN_WAIT_S)
+    said = _trace(pdb_startup_file)
+    assert "startplan line With Run it: ./.pdbrc (1 line)" in said, said
+    assert "startplan contain pdb apart=1" in said, said
+    assert not (pdb_startup_file / "ran").exists(), "pdb ran the folder's .pdbrc after Use mine"
+    assert xwpe.proc.poll() is None, "xwpe died starting pdb"
+
+
+# @scenario SC-debug-119
+@pytest.mark.skipif(not shutil.which("python3"), reason="python3 not on PATH")
+@pytest.mark.parametrize("xwpe", [PY_SESSION], indirect=True)
+def test_startplan_pdbrc_run_it_loads_it(pdb_startup_file, xwpe):
+    """Run it on that box: pdb starts apart through the helper script, the
+    editor moves it into the program's folder, and sends the .pdbrc's line."""
+    _sleep(SETTLE_S)
+    xwpe.key("ctrl+g", "r", delay=0.6)
+    assert _wait(lambda: "startcmd ask debug/pdb" in _trace(pdb_startup_file), ASK_WAIT_S), \
+        _trace(pdb_startup_file)
+    _sleep(SETTLE_S)
+    xwpe.key("alt+r", delay=0.4)
+    assert _wait(lambda: (pdb_startup_file / "ran").exists(), ASK_WAIT_S), \
+        "Run it did not load the folder's .pdbrc:\n" + _trace(pdb_startup_file)
+    said = _trace(pdb_startup_file)
+    assert "startplan send !__import__('os').chdir(b'" in said, said
+    assert "startplan contain pdb apart=1" in said, said
+    assert xwpe.proc.poll() is None, "xwpe died starting pdb"

@@ -319,7 +319,14 @@ Changes
   colon or a $, or is too long for one of gdb's commands, Run it is not
   offered.  A debug session's history file stays in the program's
   folder; a log your ~/.gdbinit writes by a relative name lands in gdb's
-  own folder and goes when the editor ends.  An answer remembered for a gdb start
+  own folder and goes when the editor ends.  pdb and jdb start the same
+  way: pdb is moved into the program's folder by its first input line
+  and a pdb.py of the folder cannot replace it, Run it sends the
+  .pdbrc to pdb line by line and jdb "read jdb.ini" when its VM has
+  connected, as jdb read it before, and Use mine sends neither; a .pdbrc with a commands block
+  and a file whose path holds a blank (for jdb) are not offered to Run
+  it, and a move or a read the debugger refuses stops the start and says
+  so.  An answer remembered for a gdb, pdb or jdb start
   asks once more, and gdb as a Rust adapter has no Use mine until its
   own start moves apart too.  The line saying what Use mine starts is
   wrapped like the lines above it instead of being cut at the edge of
