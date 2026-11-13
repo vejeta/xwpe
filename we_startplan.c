@@ -236,10 +236,15 @@ void wpe_startplan_free(WpeStartPlan *p)
  }
  for (i = 0; i < p->npath; i++)
  {
+  int a;
+
   free(p->path[i].path);
   free(p->path[i].root);
   free(p->path[i].source);
   free(p->path[i].content);
+  for (a = 0; a < p->path[i].nadmit; a++)
+   free(p->path[i].admit[a]);
+  free(p->path[i].admit);
  }
  for (i = 0; i < p->ninput; i++)
  {
@@ -247,6 +252,15 @@ void wpe_startplan_free(WpeStartPlan *p)
   free(p->input[i].source);
  }
  free(p->input);
+ for (i = 0; i < p->ninit; i++)
+ {
+  free(p->init[i].text);
+  free(p->init[i].source);
+ }
+ free(p->init);
+ free(p->program_dir);
+ free(p->debug_dir);
+ free(p->launch_cwd);
  for (i = 0; i < p->nvalue; i++)
  {
   free(p->value[i].file);
@@ -310,6 +324,20 @@ int wpe_startplan_set_file(WpeStartPlan *p, const char *file, const char *folder
  p->file = startplan_dup(file);
  p->folder = startplan_realpath_dup(folder);
  return p->folder ? 0 : -1;
+}
+
+/**
+ * startplan_base - The folder a relative path of the plan means, and the
+ * start-up files are listed from: the program's folder when the debugger
+ * starts apart from it, else the working folder.
+ * @p: the plan.
+ * Return: the folder, or NULL when the plan has none.
+ */
+static const char *startplan_base(const WpeStartPlan *p)
+{
+ if (p->program_dir)
+  return p->program_dir;
+ return p->cwd;
 }
 
 /**
@@ -938,7 +966,7 @@ static const char *startplan_root_of(const WpeStartPlan *p, const WpeStartPath *
   return s->root;
  if (s->from == WPE_FROM_FOLDER)
   return p->folder;
- return p->cwd;
+ return startplan_base(p);
 }
 
 /**
@@ -1017,6 +1045,8 @@ int wpe_startplan_line_ok(const char *value)
  return 1;
 }
 
+static int plan_debugger_apart(WpeStartPlan *p);
+
 /**
  * plan_input_lines - Rule 2b: no value the editor writes to the tool's
  * input after the start may hold a line break.
@@ -1050,7 +1080,7 @@ static void plan_resolve_paths(WpeStartPlan *p)
  for (i = 0; i < p->npath; i++)
  {
   WpeStartPath *s = &p->path[i];
-  if (wpe_startplan_resolve(s->path, p->cwd, s->resolved, sizeof s->resolved) < 0)
+  if (wpe_startplan_resolve(s->path, startplan_base(p), s->resolved, sizeof s->resolved) < 0)
   {
    snprintf(s->resolved, sizeof s->resolved, "%s", s->path);
    s->inside = 0;
@@ -1262,7 +1292,7 @@ static char *startplan_build_text(const WpeStartPlan *p)
 
  startplan_put(&b, WPE_STARTPLAN_TEXT_MAGIC, NULL);
  startplan_put(&b, "kind ", wpe_startplan_kind_name(p->kind));
- startplan_put(&b, "cwd ", startplan_or_empty(p->cwd));
+ startplan_put(&b, "cwd ", startplan_or_empty(startplan_base(p)));
  for (i = 0; i < p->nword; i++)
   if (p->word[i].role != WPE_WORD_OPERAND && p->word[i].role != WPE_WORD_CARRIER)
    startplan_put(&b, "argv ", p->word[i].text);
@@ -1274,6 +1304,8 @@ static char *startplan_build_text(const WpeStartPlan *p)
  startplan_put_reads(p, &b);
  for (i = 0; i < p->ninput; i++)
   startplan_put(&b, "then ", p->input[i].text);
+ for (i = 0; i < p->ninit; i++)
+  startplan_put(&b, "init ", p->init[i].text);
  if (p->runs_code)
   startplan_put(&b, "runs ", p->runs_code);
  if (b.bad)
@@ -1305,6 +1337,8 @@ const char *wpe_startplan_text(WpeStartPlan *p)
 static int startplan_judge_paths(WpeStartPlan *p)
 {
  if (plan_option_origin(p) < 0)
+  return -1;
+ if (plan_debugger_apart(p) < 0)
   return -1;
  if (plan_input_lines(p) < 0)
   return -1;
@@ -1588,6 +1622,8 @@ static void startplan_spec(WpeChildSpec *spec, const WpeStartIo *io, char *const
  spec->what = io->what;
 }
 
+static const char *startplan_apart_breach(const WpeStartPlan *p);
+
 /**
  * startplan_refuse - Say why a step of a planned action did not start.
  * @p: the plan; @why: the reason; @word: the word, or NULL.
@@ -1641,6 +1677,8 @@ int wpe_startplan_start(WpeStartPlan *p, char *const argv[], const WpeStartIo *i
   return -1;
  if (!(run = startplan_running(p)))
   return startplan_refuse(p, WPE_STARTPLAN_REFUSE_JUDGE, NULL);
+ if (startplan_apart_breach(run))
+  return startplan_refuse(p, startplan_apart_breach(run), NULL);
  if (!wpe_startplan_covers(run, argv, &bad))
   return startplan_refuse(p, WPE_STARTPLAN_REFUSE_WORD, bad);
  for (n = 0; argv[n]; n++)
@@ -2200,7 +2238,7 @@ static int startplan_add_startup_at(WpeStartPlan *p, const startplan_startup_fil
   return 0;
  if (startplan_is_users_startup(name, st))
   return 1;
- if (wpe_startplan_path(p, given, WPE_PATH_READS, WPE_FROM_FOLDER, name, p->cwd) < 0)
+ if (wpe_startplan_path(p, given, WPE_PATH_READS, WPE_FROM_FOLDER, name, startplan_base(p)) < 0)
   return -1;
  s = &p->path[p->npath - 1];
  s->note = row->note;
@@ -2220,7 +2258,8 @@ static int startplan_add_startup(WpeStartPlan *p, const startplan_startup_file *
  char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX];
  struct stat st;
 
- if (snprintf(full, sizeof full, "%s%c%s", p->cwd, STARTPLAN_SEP, row->file) >= (int)sizeof full)
+ if (snprintf(full, sizeof full, "%s%c%s", startplan_base(p), STARTPLAN_SEP, row->file) >=
+     (int)sizeof full)
   return 0;
  snprintf(given, sizeof given, ".%c%s", STARTPLAN_SEP, row->file);
  return startplan_add_startup_at(p, row, full, given, row->file, &st);
@@ -2257,12 +2296,12 @@ static int startplan_program_paths(const WpeStartPlan *p, const char *program, c
  }
  else if (strncmp(program, "." STARTPLAN_SEP_TEXT, 2) == 0)
  {
-  n = snprintf(full, sz, "%s%c%s%s", p->cwd, STARTPLAN_SEP, program + 2, suffix);
+  n = snprintf(full, sz, "%s%c%s%s", startplan_base(p), STARTPLAN_SEP, program + 2, suffix);
   m = snprintf(given, sz, "%s%s", program, suffix);
  }
  else
  {
-  n = snprintf(full, sz, "%s%c%s%s", p->cwd, STARTPLAN_SEP, program, suffix);
+  n = snprintf(full, sz, "%s%c%s%s", startplan_base(p), STARTPLAN_SEP, program, suffix);
   m = snprintf(given, sz, ".%c%s%s", STARTPLAN_SEP, program, suffix);
  }
  if (n < 0 || m < 0 || (size_t)n >= sz || (size_t)m >= sz)
@@ -2650,6 +2689,30 @@ static void startplan_embedded_put(WpeStartPath *s, const char *text, size_t n)
 }
 
 /**
+ * startplan_admit_add - Note a path gdb will check against its safe-path for
+ * the scripts a program carries.
+ * @s: the path; @what: the path to admit.
+ *
+ * Kept once.  A path that cannot be kept is left out: Run it then has one
+ * script fewer to admit, and gdb refuses that script with its own warning.
+ */
+static void startplan_admit_add(WpeStartPath *s, const char *what)
+{
+ char **grown;
+ int i;
+
+ for (i = 0; i < s->nadmit; i++)
+  if (strcmp(s->admit[i], what) == 0)
+   return;
+ if (!(grown = realloc(s->admit, (size_t)(s->nadmit + 1) * sizeof *grown)))
+  return;
+ s->admit = grown;
+ if (!(s->admit[s->nadmit] = startplan_dup(what)))
+  return;
+ s->nadmit++;
+}
+
+/**
  * startplan_embedded_file - Add the text of the script file an entry names.
  * @s: the path; @cwd: the folder gdb runs in; @name: the file's name.
  *
@@ -2661,6 +2724,7 @@ static void startplan_embedded_file(WpeStartPath *s, const char *cwd, const char
 {
  char full[WPE_STARTPLAN_PATH_MAX];
  WpeStartPath file;
+ char real[PATH_MAX];
 
  if (name[0] == STARTPLAN_SEP)
   snprintf(full, sizeof full, "%s", name);
@@ -2675,6 +2739,8 @@ static void startplan_embedded_file(WpeStartPath *s, const char *cwd, const char
   startplan_embedded_put(s, "(not found)", strlen("(not found)"));
   return;
  }
+ if (realpath(full, real))
+  startplan_admit_add(s, real);
  startplan_read_startup(&file, full);
  if (file.too_long)
   s->too_long = 1;
@@ -2690,7 +2756,7 @@ static void startplan_embedded_file(WpeStartPath *s, const char *cwd, const char
  * Return: where the next one starts, or @n when the rest cannot be read
  * (the path is then marked too long).
  */
-static size_t startplan_embedded_entry(WpeStartPath *s, const char *cwd,
+static size_t startplan_embedded_entry(WpeStartPath *s, const char *cwd, const char *program,
                                        const unsigned char *raw, size_t n, size_t at)
 {
  int kind = raw[at++];
@@ -2707,25 +2773,28 @@ static size_t startplan_embedded_entry(WpeStartPath *s, const char *cwd,
  startplan_embedded_put(s, text, len);
  if (startplan_script_is_file(kind))
   startplan_embedded_file(s, cwd, text);
+ else
+  startplan_admit_add(s, program);
  return at + len + 1;
 }
 
 /**
  * startplan_embedded_text - What the box shows of the scripts inside a program.
  * @s: the path, its content allocated and empty; @cwd: gdb's working folder;
+ * @program: the program's real path, which gdb checks for a text entry;
  * @raw/@n: the section as it is in the file.
  *
  * A file entry is its name, then the file's lines; a text entry is the
  * script itself, whose first line is its name.  Every entry gdb would run
  * is shown, so a text entry cannot hide a file entry behind it.
  */
-static void startplan_embedded_text(WpeStartPath *s, const char *cwd, const unsigned char *raw,
-                                    size_t n)
+static void startplan_embedded_text(WpeStartPath *s, const char *cwd, const char *program,
+                                    const unsigned char *raw, size_t n)
 {
  size_t at = 0;
 
  while (at < n && !s->too_long)
-  at = startplan_embedded_entry(s, cwd, raw, n, at);
+  at = startplan_embedded_entry(s, cwd, program, raw, n, at);
 }
 
 /**
@@ -2742,6 +2811,7 @@ static int startplan_add_embedded_startup(WpeStartPlan *p, const startplan_start
                                           const char *program)
 {
  char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX], shown[WPE_STARTPLAN_PATH_MAX];
+ char real[PATH_MAX];
  unsigned char raw[WPE_STARTPLAN_READS_MAX];
  WpeStartPath *s;
  size_t size = 0;
@@ -2754,11 +2824,13 @@ static int startplan_add_embedded_startup(WpeStartPlan *p, const startplan_start
   return 0;
  if (snprintf(shown, sizeof shown, "%s (%s)", given, row->file) >= (int)sizeof shown)
   return 0;
- if (wpe_startplan_path(p, shown, WPE_PATH_READS, WPE_FROM_FOLDER, row->file, p->cwd) < 0)
+ if (wpe_startplan_path(p, shown, WPE_PATH_READS, WPE_FROM_FOLDER, row->file, startplan_base(p)) < 0)
   return -1;
  s = &p->path[p->npath - 1];
  s->note = row->note;
  s->embedded = 1;
+ if (!realpath(full, real))
+  snprintf(real, sizeof real, "%s", full);
  s->length = (long)size;
  if (!(s->content = calloc(1, WPE_STARTPLAN_READS_MAX + 1)))
  {
@@ -2768,7 +2840,7 @@ static int startplan_add_embedded_startup(WpeStartPlan *p, const startplan_start
  if (size > sizeof raw)
   s->too_long = 1;
  else
-  startplan_embedded_text(s, p->cwd, raw, size);
+  startplan_embedded_text(s, startplan_base(p), real, raw, size);
  startplan_trace("startplan reads %s %ld", shown, s->length);
  return 1;
 }
@@ -2804,7 +2876,7 @@ int wpe_startplan_tool_reads_of(WpeStartPlan *p, const char *tool, const char *p
  const startplan_startup_file *row;
  int found = 0, before = 0, had, rc;
 
- if (!p || !tool || !p->cwd)
+ if (!p || !tool || !startplan_base(p))
   return 0;
  for (row = startplan_startup_files; row->tool; row++)
  {
@@ -2841,4 +2913,1120 @@ int wpe_startplan_tool_reads_known(const char *tool)
   if (row->enabled && strcmp(row->tool, tool) == 0)
    return 1;
  return 0;
+}
+
+/* ---- A debugger starts apart from the program's folder ----------------
+ *
+ * A debugger the editor starts runs nothing from the program's folder before
+ * the editor's first word.  Its process starts in a folder of the editor's own
+ * that is empty, so the init file of the working folder that every debugger
+ * reads finds nothing; the program's folder is given to it afterwards by the
+ * editor's own command, and where the debugger loads scripts by the objfile
+ * the editor pins the debugger's own trust setting to its default before any
+ * objfile is loaded.  What the folder holds is listed with its text, and
+ * Run it loads exactly those files by the editor's own command.
+ *
+ * The rows below are data, one per debugger.  A row marked apart starts in
+ * the empty folder; the others keep today's start, each with its reason.
+ */
+
+/* The folder the owner makes for one debug start. */
+#define STARTPLAN_DEBUG_DIR_NAME   "xwpe_debug_XXXXXX"
+#define STARTPLAN_DEBUG_DIRS_MAX   32
+#define STARTPLAN_DEFAULT_BASE     "/tmp"
+#define STARTPLAN_TMPDIR_ENV       "TMPDIR"
+
+/* One line the editor writes for a start, and where it goes. */
+#define STARTPLAN_LK_INPUT  0   /* a line to the debugger's input                       */
+#define STARTPLAN_LK_WORD   1   /* a word of the debugger's command line                */
+#define STARTPLAN_LK_INIT   2   /* an adapter's launch init command                     */
+#define STARTPLAN_LK_CWD    3   /* the folder an adapter's launch request names         */
+#define STARTPLAN_LINES_MAX 8
+#define STARTPLAN_LINE_MAX  (WPE_STARTPLAN_PATH_MAX + 256)
+
+/* How a row's lines reach its debugger. */
+#define STARTPLAN_CHAN_NONE   0
+#define STARTPLAN_CHAN_INPUT  1   /* gdb's console or MI, pdb, jdb: the input          */
+#define STARTPLAN_CHAN_WORD   2   /* gdb speaking DAP: -iex and -ix words              */
+#define STARTPLAN_CHAN_LAUNCH 3   /* lldb-dap: initCommands and the launch cwd         */
+
+/* How a row gives the program's folder, and how it loads one accepted file. */
+#define STARTPLAN_MOVE_NONE      0
+#define STARTPLAN_MOVE_GDB       1   /* cd                                             */
+#define STARTPLAN_MOVE_MI        2   /* -environment-cd                                */
+#define STARTPLAN_MOVE_GDB_DAP   3   /* -iex "cd ..." and the launch cwd               */
+#define STARTPLAN_MOVE_LLDB_DAP  4   /* the launch cwd only: lldb never leaves its folder */
+#define STARTPLAN_MOVE_PDB       5   /* os.chdir as pdb's first input                  */
+
+#define STARTPLAN_LOAD_NONE      0
+#define STARTPLAN_LOAD_GDB       1   /* add-auto-load-safe-path, source, then file     */
+#define STARTPLAN_LOAD_MI        2   /* the same through -interpreter-exec console     */
+#define STARTPLAN_LOAD_GDB_DAP   3   /* -iex add-auto-load-safe-path, -ix              */
+#define STARTPLAN_LOAD_LLDB_DAP  4   /* command source in initCommands                 */
+#define STARTPLAN_LOAD_PDB       5   /* the .pdbrc's lines, one by one                 */
+#define STARTPLAN_LOAD_JDB       6   /* read                                           */
+
+/* gdb's own default for where it may auto-load from; the folder is not in it. */
+#define STARTPLAN_GDB_SAFE_PATH     "auto-load safe-path $debugdir:$datadir/auto-load"
+#define STARTPLAN_GDB_PIN           "set " STARTPLAN_GDB_SAFE_PATH
+#define STARTPLAN_MI_PIN            "-gdb-set " STARTPLAN_GDB_SAFE_PATH
+#define STARTPLAN_LLDB_PIN          "settings set target.load-script-from-symbol-file false"
+#define STARTPLAN_IEX               "-iex"
+#define STARTPLAN_IX                "-ix"
+#define STARTPLAN_GDBINIT           ".gdbinit"
+#define STARTPLAN_LLDBINIT          ".lldbinit"
+#define STARTPLAN_PDBRC_COMMENT     '#'
+/* What add-auto-load-safe-path reads as a list separator, a variable or a
+   wildcard: a path holding one cannot be admitted alone. */
+#define STARTPLAN_SAFE_PATH_REFUSED ":$*?["
+/* pdb cuts an input line at ";;" into two commands. */
+#define STARTPLAN_PDB_SEPARATOR     ';'
+
+struct startplan_row {
+ const char *key;            /* e_d_type_names[]: "gdb", "pdb", "jdb", ..., or "dap"   */
+ const char *variant;        /* "" or "mi" for gdb; the adapter's program for "dap"    */
+ int apart;                  /* 1: the debugger starts in the empty folder (shipped)   */
+ int designed;               /* what the design says once every pass has run           */
+ const char *reason;         /* why it does not start apart (when apart is 0)          */
+ int channel;                /* STARTPLAN_CHAN_*                                       */
+ const char *pin;            /* the line that pins the debugger's trust, or NULL       */
+ int move;                   /* STARTPLAN_MOVE_*                                       */
+ int load;                   /* STARTPLAN_LOAD_*                                       */
+};
+typedef struct startplan_row startplan_row;
+
+static const startplan_row startplan_debugger_rows[] = {
+ { "gdb",  "",         0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_INPUT,
+   STARTPLAN_GDB_PIN, STARTPLAN_MOVE_GDB, STARTPLAN_LOAD_GDB },
+ { "gdb",  "mi",       0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_INPUT,
+   STARTPLAN_MI_PIN, STARTPLAN_MOVE_MI, STARTPLAN_LOAD_MI },
+ { "sdb",  "",         0, 0, "no cd", STARTPLAN_CHAN_NONE, NULL,
+   STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
+ { "dbx",  "",         0, 0, "unmeasured", STARTPLAN_CHAN_NONE, NULL,
+   STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
+ { "xdb",  "",         0, 0, "unmeasured", STARTPLAN_CHAN_NONE, NULL,
+   STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
+ { "jdb",  "",         0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_INPUT,
+   NULL, STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_JDB },
+ { "pdb",  "",         0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_INPUT,
+   NULL, STARTPLAN_MOVE_PDB, STARTPLAN_LOAD_PDB },
+ { "a68g", "",         0, 0, "is the program", STARTPLAN_CHAN_NONE, NULL,
+   STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
+ { "dap",  "gdb",      0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_WORD,
+   STARTPLAN_GDB_PIN, STARTPLAN_MOVE_GDB_DAP, STARTPLAN_LOAD_GDB_DAP },
+ { "dap",  "lldb-dap", 0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_LAUNCH,
+   STARTPLAN_LLDB_PIN, STARTPLAN_MOVE_LLDB_DAP, STARTPLAN_LOAD_LLDB_DAP },
+ { "dap",  "dlv",      0, 0, "builds the folder", STARTPLAN_CHAN_NONE, NULL,
+   STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
+ { "dap",  "scala-cli", 0, 0, "build server, honest rule", STARTPLAN_CHAN_NONE, NULL,
+   STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
+ { NULL,   NULL,       0, 0, NULL, STARTPLAN_CHAN_NONE, NULL,
+   STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE }
+};
+
+static char *startplan_debug_dirs[STARTPLAN_DEBUG_DIRS_MAX];
+static char *startplan_debug_base;
+static int startplan_designed;
+
+/**
+ * wpe_startplan_rows_designed - Make every row start as the design says.
+ * @on: 1 for the designed rows, 0 for the shipped ones.
+ *
+ * For the unit test and for the pass that measures a debugger before its row
+ * is switched on: the editor never calls it, so no debugger starts apart
+ * until its row says so.
+ */
+void wpe_startplan_rows_designed(int on)
+{
+ startplan_designed = on;
+}
+
+/**
+ * wpe_startplan_row_info - Read one row of the table.
+ * @index: 0 for the first; @variant/@apart/@designed/@reason: receive its
+ * fields (each may be NULL).
+ * Return: the row's key, or NULL past the last row.
+ */
+const char *wpe_startplan_row_info(int index, const char **variant, int *apart, int *designed,
+                                   const char **reason)
+{
+ const startplan_row *row = &startplan_debugger_rows[0];
+ int i;
+
+ for (i = 0; i < index; i++)
+ {
+  if (!row->key)
+   return NULL;
+  row++;
+ }
+ if (!row->key)
+  return NULL;
+ if (variant)
+  *variant = row->variant;
+ if (apart)
+  *apart = row->apart;
+ if (designed)
+  *designed = row->designed;
+ if (reason)
+  *reason = row->reason;
+ return row->key;
+}
+
+/**
+ * startplan_row_apart - Does this row start its debugger apart now?
+ * Return: 1 when it does.
+ */
+static int startplan_row_apart(const startplan_row *row)
+{
+ if (startplan_designed)
+  return row->designed;
+ return row->apart;
+}
+
+/**
+ * startplan_row_find - The row of a debugger.
+ * @key: "gdb", "pdb", ..., "dap"; @variant: "", "mi", or the adapter's
+ * program; NULL means "".
+ * Return: the row, or NULL when the table does not know it.
+ */
+static const startplan_row *startplan_row_find(const char *key, const char *variant)
+{
+ const startplan_row *row;
+
+ if (!variant)
+  variant = "";
+ for (row = startplan_debugger_rows; row->key; row++)
+  if (strcmp(row->key, key) == 0 && strcmp(row->variant, variant) == 0)
+   return row;
+ return NULL;
+}
+
+/**
+ * startplan_row_of - The row a plan was made for.
+ * @p: the plan.
+ *
+ * The row contain() chose, else the one the plan's kind and name name; NULL
+ * for a plan of any other kind or a name the table does not know.
+ */
+static const startplan_row *startplan_row_of(const WpeStartPlan *p)
+{
+ if (p->row)
+  return p->row;
+ if (p->kind == WPE_START_DEBUGGER)
+  return startplan_row_find(p->name, "");
+ if (p->kind == WPE_START_DEBUG_ADAPTER)
+ {
+  if (strcmp(p->name, "lldb") == 0)
+   return startplan_row_find("dap", "lldb-dap");
+  return startplan_row_find("dap", p->name);
+ }
+ return NULL;
+}
+
+/**
+ * wpe_startplan_debug_base_set - Where the debug folders are made.
+ * @base: the editor's own temporary folder, or NULL for $TMPDIR, else /tmp.
+ */
+void wpe_startplan_debug_base_set(const char *base)
+{
+ free(startplan_debug_base);
+ startplan_debug_base = startplan_dup(base);
+}
+
+/**
+ * startplan_debug_base - The folder a debug folder is made in.
+ * @base: what the caller named, or NULL.
+ */
+static const char *startplan_debug_base_of(const char *base)
+{
+ const char *tmp;
+
+ if (base && *base)
+  return base;
+ if (startplan_debug_base)
+  return startplan_debug_base;
+ tmp = getenv(STARTPLAN_TMPDIR_ENV);
+ if (tmp && *tmp)
+  return tmp;
+ return STARTPLAN_DEFAULT_BASE;
+}
+
+/** startplan_debug_dir_keep - Remember a folder the owner made. Return: 0, or -1 when full. */
+static int startplan_debug_dir_keep(const char *dir)
+{
+ int i;
+
+ for (i = 0; i < STARTPLAN_DEBUG_DIRS_MAX; i++)
+  if (!startplan_debug_dirs[i])
+  {
+   startplan_debug_dirs[i] = startplan_dup(dir);
+   return startplan_debug_dirs[i] ? 0 : -1;
+  }
+ return -1;
+}
+
+/** startplan_is_debug_dir - Is this a folder the owner made and not yet ended? */
+static int startplan_is_debug_dir(const char *dir)
+{
+ int i;
+
+ for (i = 0; dir && i < STARTPLAN_DEBUG_DIRS_MAX; i++)
+  if (startplan_debug_dirs[i] && strcmp(startplan_debug_dirs[i], dir) == 0)
+   return 1;
+ return 0;
+}
+
+/**
+ * wpe_startplan_debug_dir_new - Make the empty folder one debug start runs in.
+ * @base: the editor's temporary folder (the C tests pass their own), or NULL.
+ *
+ * A fresh folder per start, mode 0700, empty: a debugger that reads an init
+ * file from its working folder finds nothing there.  Its path is resolved,
+ * and the owner remembers it, so a plan can be judged to run in a folder the
+ * owner made.
+ * Return: the folder's resolved path (free it), or NULL.
+ */
+char *wpe_startplan_debug_dir_new(const char *base)
+{
+ char tmpl[WPE_STARTPLAN_PATH_MAX], real[PATH_MAX];
+
+ if (snprintf(tmpl, sizeof tmpl, "%s%c%s", startplan_debug_base_of(base), STARTPLAN_SEP,
+              STARTPLAN_DEBUG_DIR_NAME) >= (int)sizeof tmpl)
+  return NULL;
+ if (!mkdtemp(tmpl))
+  return NULL;
+ if (!realpath(tmpl, real) || startplan_debug_dir_keep(real) < 0)
+ {
+  rmdir(tmpl);
+  return NULL;
+ }
+ return startplan_dup(real);
+}
+
+/**
+ * wpe_startplan_debug_dir_end - Remove the folder of a debug start, by its
+ * exact path, when the session ends.
+ * @dir: what wpe_startplan_debug_dir_new returned.
+ * Return: 0 when removed, -1 when it is not one the owner made or is not empty.
+ */
+int wpe_startplan_debug_dir_end(const char *dir)
+{
+ int i;
+
+ for (i = 0; dir && i < STARTPLAN_DEBUG_DIRS_MAX; i++)
+  if (startplan_debug_dirs[i] && strcmp(startplan_debug_dirs[i], dir) == 0)
+  {
+   if (rmdir(dir) != 0)
+    return -1;
+   free(startplan_debug_dirs[i]);
+   startplan_debug_dirs[i] = NULL;
+   return 0;
+  }
+ return -1;
+}
+
+/**
+ * startplan_path_ok - May this path go into a command the editor writes?
+ * @path: a resolved path; @trailing_blank_ok: 1 when a blank at its end is
+ * kept (inside quotes).
+ *
+ * It must be absolute, so no debugger reads it as an option or as a name
+ * looked up elsewhere, and hold no control character, so it cannot end the
+ * command and start another.  A debugger that trims the end of a line (gdb)
+ * would read a path with a blank at its end as another file.
+ * Return: 1 when it may.
+ */
+static int startplan_path_ok(const char *path, int trailing_blank_ok)
+{
+ size_t n;
+
+ if (!path || path[0] != STARTPLAN_SEP || !wpe_startplan_line_ok(path))
+  return 0;
+ n = strlen(path);
+ if (!trailing_blank_ok && path[n - 1] == ' ')
+  return 0;
+ return 1;
+}
+
+/** startplan_copy_text - Copy a text into out; -1 when it does not fit. */
+static int startplan_copy_text(char *out, size_t n, const char *text)
+{
+ if (strlen(text) >= n)
+  return -1;
+ memcpy(out, text, strlen(text) + 1);
+ return 0;
+}
+
+/**
+ * wpe_startplan_gdb_arg - A path as gdb's cd, source or file reads it.
+ * @out/@n: receive it; @path: resolved and absolute; @form: WPE_GDB_ARG_RAW
+ * for the commands that take the rest of the line as it is (cd, source),
+ * WPE_GDB_ARG_SPLIT for the ones gdb splits into words (file), where a blank,
+ * a quote or a backslash needs a backslash in front.
+ *
+ * Measured on gdb 18.1: cd and source take "a b" as it is and keep a
+ * backslash as a backslash; file takes "a\ b" and refuses "a b".
+ * Return: 0, or -1 for a path gdb cannot be given safely (a control
+ * character, a blank at its end, not absolute) or one that does not fit.
+ */
+int wpe_startplan_gdb_arg(char *out, size_t n, const char *path, int form)
+{
+ size_t at = 0;
+
+ if (!out || !n || !startplan_path_ok(path, 0))
+  return -1;
+ if (form == WPE_GDB_ARG_RAW)
+  return startplan_copy_text(out, n, path);
+ for (; *path; path++)
+ {
+  if (at + 3 > n)
+   return -1;
+  if (*path == ' ' || *path == '\'' || *path == '"' || *path == '\\')
+   out[at++] = '\\';
+  out[at++] = *path;
+ }
+ out[at] = '\0';
+ return 0;
+}
+
+/**
+ * wpe_startplan_gdb_safe_path_arg - A path as add-auto-load-safe-path reads it.
+ * @out/@n: receive it; @path: resolved and absolute.
+ *
+ * The setting is a list of paths cut at each ':' and expanded at each '$', so
+ * a path holding one would admit its first part whole, or a variable's
+ * value: refused.  gdb also matches each entry as a wildcard pattern, so a
+ * folder named with '*', '?' or '[' would admit the same file in other
+ * folders: refused too.  Otherwise as the rest of the line.
+ * Return: 0, or -1 as wpe_startplan_gdb_arg, or for ':', '$' and a wildcard.
+ */
+int wpe_startplan_gdb_safe_path_arg(char *out, size_t n, const char *path)
+{
+ if (!path || strpbrk(path, STARTPLAN_SAFE_PATH_REFUSED))
+  return -1;
+ return wpe_startplan_gdb_arg(out, n, path, WPE_GDB_ARG_RAW);
+}
+
+/**
+ * startplan_mi_quote - Text as an MI c-string, with its escapes.
+ * @out/@n: receive it with its quotes; @text: no control character.
+ * Return: 0, or -1 when it does not fit or holds a control character.
+ */
+static int startplan_mi_quote(char *out, size_t n, const char *text)
+{
+ size_t at = 0;
+
+ if (!out || !text || !wpe_startplan_line_ok(text) || n < 3)
+  return -1;
+ out[at++] = '"';
+ for (; *text; text++)
+ {
+  if (at + 4 > n)
+   return -1;
+  if (*text == '"' || *text == '\\')
+   out[at++] = '\\';
+  out[at++] = *text;
+ }
+ out[at++] = '"';
+ out[at] = '\0';
+ return 0;
+}
+
+/**
+ * wpe_startplan_mi_cstring - A path as the MI commands -environment-cd and
+ * -file-exec-and-symbols read it.
+ * @out/@n: receive it with its quotes; @path: resolved and absolute.
+ *
+ * Measured on gdb 18.1: -environment-cd trims a blank at the end even inside
+ * the quotes, so such a path would name another folder: refused.
+ * Return: 0, or -1 for a path that is not absolute, holds a control
+ * character, ends in a blank or does not fit.
+ */
+int wpe_startplan_mi_cstring(char *out, size_t n, const char *path)
+{
+ if (!startplan_path_ok(path, 0))
+  return -1;
+ return startplan_mi_quote(out, n, path);
+}
+
+/**
+ * wpe_startplan_lldb_source_arg - A path as lldb's "command source" reads it.
+ * @out/@n: receive it in double quotes; @path: resolved and absolute.
+ * Return: 0, or -1 for a path that is not absolute, holds a control
+ * character or does not fit.
+ */
+int wpe_startplan_lldb_source_arg(char *out, size_t n, const char *path)
+{
+ if (!startplan_path_ok(path, 1))
+  return -1;
+ return startplan_mi_quote(out, n, path);
+}
+
+/**
+ * wpe_startplan_jdb_read_arg - A path as jdb's read command takes it.
+ * @out/@n: receive it; @path: resolved and absolute.
+ *
+ * jdb's read takes one word, so a path with a blank cannot be given.
+ * Return: 0, or -1 for a path with a blank, a control character, or that is
+ * not absolute.
+ */
+int wpe_startplan_jdb_read_arg(char *out, size_t n, const char *path)
+{
+ if (!startplan_path_ok(path, 0) || strchr(path, ' '))
+  return -1;
+ return startplan_copy_text(out, n, path);
+}
+
+/**
+ * wpe_startplan_python_bytes - A path as a Python bytes literal, in pure ASCII.
+ * @out/@n: receive it, b'...'; @path: resolved and absolute.
+ *
+ * Every byte over 0x7e, every control byte and ';' are written as \xNN, and
+ * the quote and the backslash are escaped, so the literal holds the path's
+ * bytes exactly whatever the locale, and pdb, which cuts a line at ";;", gets
+ * it whole; a line break is refused (the literal is one input line).
+ * Return: 0, or -1 for a path that is not absolute, holds a line break or does
+ * not fit.
+ */
+int wpe_startplan_python_bytes(char *out, size_t n, const char *path)
+{
+ static const char hex[] = "0123456789abcdef";
+ size_t at = 0;
+ const unsigned char *s = (const unsigned char *)path;
+
+ if (!out || !path || path[0] != STARTPLAN_SEP || n < 4)
+  return -1;
+ out[at++] = 'b';
+ out[at++] = '\'';
+ for (; *s; s++)
+ {
+  if (*s == '\n' || *s == '\r' || at + 6 > n)
+   return -1;
+  if (*s == '\'' || *s == '\\')
+  {
+   out[at++] = '\\';
+   out[at++] = (char)*s;
+  }
+  else if (*s < ' ' || *s > '~' || *s == STARTPLAN_PDB_SEPARATOR)
+  {
+   out[at++] = '\\';
+   out[at++] = 'x';
+   out[at++] = hex[*s >> 4];
+   out[at++] = hex[*s & 15];
+  }
+  else
+   out[at++] = (char)*s;
+ }
+ out[at++] = '\'';
+ out[at] = '\0';
+ return 0;
+}
+
+/* The lines the editor writes for one start, in order. */
+typedef struct {
+ int kind[STARTPLAN_LINES_MAX];
+ char text[STARTPLAN_LINES_MAX][STARTPLAN_LINE_MAX];
+ int n;
+} startplan_lines;
+
+/**
+ * startplan_lines_add - Add one line.
+ * @l: the lines; @kind: STARTPLAN_LK_*; @head/@arg: the text is head then arg.
+ * Return: 0, or -1 when there is no room.
+ */
+static int startplan_lines_add(startplan_lines *l, int kind, const char *head, const char *arg)
+{
+ int wrote;
+
+ if (l->n >= STARTPLAN_LINES_MAX)
+  return -1;
+ wrote = snprintf(l->text[l->n], STARTPLAN_LINE_MAX, "%s%s", head, arg ? arg : "");
+ if (wrote < 0 || wrote >= STARTPLAN_LINE_MAX)
+  return -1;
+ l->kind[l->n++] = kind;
+ return 0;
+}
+
+/**
+ * startplan_lines_gdb_word - Add the pair of words that hand gdb a command
+ * at start-up (-iex "<command>").
+ * Return: 0, or -1.
+ */
+static int startplan_lines_gdb_word(startplan_lines *l, const char *option, const char *command)
+{
+ if (startplan_lines_add(l, STARTPLAN_LK_WORD, option, NULL) < 0)
+  return -1;
+ return startplan_lines_add(l, STARTPLAN_LK_WORD, command, NULL);
+}
+
+/**
+ * startplan_lines_pin - The row's pin line, in the channel it travels.
+ * Return: 0, or -1.
+ */
+static int startplan_lines_pin(const startplan_row *row, startplan_lines *l)
+{
+ if (!row->pin)
+  return 0;
+ if (row->channel == STARTPLAN_CHAN_WORD)
+  return startplan_lines_gdb_word(l, STARTPLAN_IEX, row->pin);
+ if (row->channel == STARTPLAN_CHAN_LAUNCH)
+  return startplan_lines_add(l, STARTPLAN_LK_INIT, row->pin, NULL);
+ return startplan_lines_add(l, STARTPLAN_LK_INPUT, row->pin, NULL);
+}
+
+/**
+ * startplan_lines_move - The row's lines that give the program's folder.
+ * @row: the row; @folder: the program's folder, resolved; @l: the lines.
+ * Return: 0, or -1 when the folder cannot be given safely.
+ */
+static int startplan_lines_move(const startplan_row *row, const char *folder, startplan_lines *l)
+{
+ char arg[STARTPLAN_LINE_MAX], cmd[STARTPLAN_LINE_MAX];
+
+ switch (row->move)
+ {
+ case STARTPLAN_MOVE_GDB:
+  if (wpe_startplan_gdb_arg(arg, sizeof arg, folder, WPE_GDB_ARG_RAW) < 0)
+   return -1;
+  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "cd ", arg);
+ case STARTPLAN_MOVE_MI:
+  if (wpe_startplan_mi_cstring(arg, sizeof arg, folder) < 0)
+   return -1;
+  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "-environment-cd ", arg);
+ case STARTPLAN_MOVE_GDB_DAP:
+  if (wpe_startplan_gdb_arg(arg, sizeof arg, folder, WPE_GDB_ARG_RAW) < 0)
+   return -1;
+  snprintf(cmd, sizeof cmd, "cd %s", arg);
+  if (startplan_lines_gdb_word(l, STARTPLAN_IEX, cmd) < 0)
+   return -1;
+  return startplan_lines_add(l, STARTPLAN_LK_CWD, folder, NULL);
+ case STARTPLAN_MOVE_LLDB_DAP:
+  return startplan_lines_add(l, STARTPLAN_LK_CWD, folder, NULL);
+ case STARTPLAN_MOVE_PDB:
+  if (wpe_startplan_python_bytes(arg, sizeof arg, folder) < 0)
+   return -1;
+  snprintf(cmd, sizeof cmd, "!__import__('os').chdir(%s)", arg);
+  return startplan_lines_add(l, STARTPLAN_LK_INPUT, cmd, NULL);
+ default:
+  return 0;
+ }
+}
+
+/**
+ * startplan_lines_of - The containment lines of a row: the pin, then the move.
+ * @row: the row; @folder: the program's folder; @l: receives the lines.
+ * Return: 0, or -1 when a path cannot be given safely.
+ */
+static int startplan_lines_of(const startplan_row *row, const char *folder, startplan_lines *l)
+{
+ l->n = 0;
+ if (startplan_lines_pin(row, l) < 0)
+  return -1;
+ return startplan_lines_move(row, folder, l);
+}
+
+/**
+ * startplan_insert - Put a word at a place in one of the plan's lists.
+ * @list/@n: the list and its length; @at: where; @text/@from: the word.
+ * Return: 0, or -1 out of memory or past the plan's size.
+ */
+static int startplan_insert(WpeStartWord **list, int *n, int at, const char *text, int role,
+                            int from)
+{
+ WpeStartWord *w;
+
+ if (at < 0 || at > *n || startplan_grow((void **)list, *n, sizeof **list) < 0)
+  return -1;
+ memmove(*list + at + 1, *list + at, (size_t)(*n - at) * sizeof **list);
+ w = &(*list)[at];
+ w->text = startplan_dup(text);
+ w->source = startplan_dup("");
+ w->role = role;
+ w->from = from;
+ if (!w->text || !w->source)
+ {
+  free(w->text);
+  free(w->source);
+  memmove(*list + at, *list + at + 1, (size_t)(*n - at) * sizeof **list);
+  return -1;
+ }
+ (*n)++;
+ return 0;
+}
+
+/**
+ * startplan_apply_line - Put one line into the plan at the end of its list.
+ * @p: the plan; @kind: STARTPLAN_LK_*; @text: the line.
+ * Return: 0, or -1.
+ */
+static int startplan_apply_line(WpeStartPlan *p, int kind, const char *text)
+{
+ if (kind == STARTPLAN_LK_INPUT)
+  return startplan_insert(&p->input, &p->ninput, p->ninput, text, WPE_WORD_TEXT, WPE_FROM_EDITOR);
+ if (kind == STARTPLAN_LK_WORD)
+  return startplan_insert(&p->word, &p->nword, p->nword, text, WPE_WORD_OPTION, WPE_FROM_EDITOR);
+ if (kind == STARTPLAN_LK_INIT)
+  return startplan_insert(&p->init, &p->ninit, p->ninit, text, WPE_WORD_TEXT, WPE_FROM_EDITOR);
+ free(p->launch_cwd);
+ p->launch_cwd = startplan_dup(text);
+ return p->launch_cwd ? 0 : -1;
+}
+
+/**
+ * startplan_apply_lines - Put the lines into the plan, in order.
+ * Return: 0, or -1.
+ */
+static int startplan_apply_lines(WpeStartPlan *p, const startplan_lines *l)
+{
+ int i;
+
+ for (i = 0; i < l->n; i++)
+  if (startplan_apply_line(p, l->kind[i], l->text[i]) < 0)
+   return -1;
+ return 0;
+}
+
+/**
+ * startplan_program_load - The line that loads the program, for the debuggers
+ * that load it by a command (gdb's file, MI's -file-exec-and-symbols).
+ * @row: the row; @program: the program, absolute; @l: receives the line.
+ * Return: 0, or -1 when the program's path cannot be given safely.
+ */
+static int startplan_program_load(const startplan_row *row, const char *program,
+                                  startplan_lines *l)
+{
+ char arg[STARTPLAN_LINE_MAX];
+
+ l->n = 0;
+ if (row->load == STARTPLAN_LOAD_GDB)
+ {
+  if (wpe_startplan_gdb_arg(arg, sizeof arg, program, WPE_GDB_ARG_SPLIT) < 0)
+   return -1;
+  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "file ", arg);
+ }
+ if (row->load == STARTPLAN_LOAD_MI)
+ {
+  if (wpe_startplan_mi_cstring(arg, sizeof arg, program) < 0)
+   return -1;
+  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "-file-exec-and-symbols ", arg);
+ }
+ return 0;
+}
+
+/**
+ * startplan_add_program - Add the program as an absolute path of the plan.
+ * @p: the plan; @program: as the site names it; @out: receives it absolute.
+ *
+ * Rooted in the program's folder, so it is inside it, whatever the debugger's
+ * own working folder is.
+ * Return: 0, or -1.
+ */
+static int startplan_add_program(WpeStartPlan *p, const char *program, char *out, size_t sz)
+{
+ if (wpe_startplan_resolve(program, p->program_dir, out, sz) < 0)
+  return -1;
+ return wpe_startplan_path(p, out, WPE_PATH_INPUT, WPE_FROM_USER, "the program", p->program_dir);
+}
+
+/**
+ * startplan_contain_apart - The lines of a debugger that starts apart.
+ * @p: the plan, its program folder set; @row: its row; @program: or NULL.
+ * Return: 0, or -1 with p->contain_refused saying why.
+ */
+static int startplan_contain_apart(WpeStartPlan *p, const startplan_row *row, const char *program)
+{
+ startplan_lines lines;
+ char absolute[WPE_STARTPLAN_PATH_MAX];
+
+ if (startplan_lines_of(row, p->program_dir, &lines) < 0)
+ {
+  p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_PATH;
+  return -1;
+ }
+ if (startplan_apply_lines(p, &lines) < 0)
+  return -1;
+ p->load_at = p->ninput;
+ p->load_word_at = p->nword;
+ if (!program || !*program)
+  return 0;
+ if (startplan_add_program(p, program, absolute, sizeof absolute) < 0 ||
+     startplan_program_load(row, absolute, &lines) < 0)
+ {
+  p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_PATH;
+  return -1;
+ }
+ return startplan_apply_lines(p, &lines);
+}
+
+/**
+ * wpe_startplan_contain - The one call a debugger site makes to start apart.
+ * @p: the plan of a debugger or an adapter; @key: the debugger as the editor
+ * names it ("gdb", "pdb", ..., "dap"); @program_tool: "" or "mi" for gdb, the
+ * adapter's program for "dap", else NULL; @folder: the program's folder, or
+ * NULL for the editor's own; @program: the program, or NULL.
+ *
+ * For a row that starts apart: the plan's working folder becomes a fresh empty
+ * folder, the program's folder is kept as program_dir (what is listed and what
+ * the canonical text names), and the plan gets the row's pin and move lines in
+ * that order, then the program's load.  For any other row both folders are the
+ * program's and nothing is added: today's start.  A debugger the table does
+ * not know is refused.
+ * Return: 0, or -1 with the plan refused when it is judged.
+ */
+int wpe_startplan_contain(WpeStartPlan *p, const char *key, const char *program_tool,
+                          const char *folder, const char *program)
+{
+ const startplan_row *row;
+ char here[PATH_MAX], real[PATH_MAX];
+ int apart;
+
+ if (!p || !key)
+  return -1;
+ if (!(row = startplan_row_find(key, program_tool)))
+ {
+  p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_UNKNOWN;
+  return -1;
+ }
+ if (!folder || !*folder)
+  folder = getcwd(here, sizeof here);
+ if (!folder || !realpath(folder, real))
+  return -1;
+ free(p->program_dir);
+ p->program_dir = startplan_dup(real);
+ p->row = row;
+ p->contain_refused = NULL;
+ apart = startplan_row_apart(row);
+ if (!p->program_dir)
+  return -1;
+ if (!apart)
+ {
+  startplan_trace("startplan contain %s apart=0 dir=%s", key, real);
+  return wpe_startplan_set_cwd(p, real);
+ }
+ if (p->debug_dir)
+  wpe_startplan_debug_dir_end(p->debug_dir);
+ free(p->debug_dir);
+ if (!(p->debug_dir = wpe_startplan_debug_dir_new(NULL)) ||
+     wpe_startplan_set_cwd(p, p->debug_dir) < 0)
+  return -1;
+ startplan_trace("startplan contain %s apart=1 dir=%s", key, p->debug_dir);
+ return startplan_contain_apart(p, row, program);
+}
+
+/**
+ * startplan_lines_present - Does the plan hold these lines, in order?
+ * @p: the plan; @l: the lines.
+ * Return: 1 when every line is there, each kind in the order it was made.
+ */
+static int startplan_lines_present(const WpeStartPlan *p, const startplan_lines *l)
+{
+ int in = 0, word = 0, init = 0, i;
+
+ for (i = 0; i < l->n; i++)
+ {
+  const char *text = l->text[i];
+
+  if (l->kind[i] == STARTPLAN_LK_INPUT)
+  {
+   while (in < p->ninput && strcmp(p->input[in].text, text) != 0)
+    in++;
+   if (in++ >= p->ninput)
+    return 0;
+  }
+  else if (l->kind[i] == STARTPLAN_LK_WORD)
+  {
+   while (word < p->nword && strcmp(p->word[word].text, text) != 0)
+    word++;
+   if (word++ >= p->nword)
+    return 0;
+  }
+  else if (l->kind[i] == STARTPLAN_LK_INIT)
+  {
+   while (init < p->ninit && strcmp(p->init[init].text, text) != 0)
+    init++;
+   if (init++ >= p->ninit)
+    return 0;
+  }
+  else if (!p->launch_cwd || strcmp(p->launch_cwd, text) != 0)
+   return 0;
+ }
+ return 1;
+}
+
+/**
+ * startplan_apart_breach - Does this plan start a debugger the way its row
+ * forbids?
+ * @p: the plan.
+ *
+ * A row that starts apart needs the plan's working folder to be one the owner
+ * made, and every pin and move line of the row in the plan, in order.  Nothing
+ * here reads what was listed: containment does not depend on the listing.
+ * Return: the reason, or NULL when the plan is fine (every row that does not
+ * start apart, and every plan that is not a debugger's).
+ */
+static const char *startplan_apart_breach(const WpeStartPlan *p)
+{
+ const startplan_row *row;
+ startplan_lines lines;
+
+ if (p->contain_refused)
+  return p->contain_refused;
+ if (p->kind != WPE_START_DEBUGGER && p->kind != WPE_START_DEBUG_ADAPTER)
+  return NULL;
+ row = startplan_row_of(p);
+ if (!row || !startplan_row_apart(row))
+  return NULL;
+ if (!p->cwd || !startplan_is_debug_dir(p->cwd))
+  return WPE_STARTPLAN_REFUSE_DEBUG_CWD;
+ if (startplan_lines_of(row, startplan_base(p), &lines) < 0 || !startplan_lines_present(p, &lines))
+  return WPE_STARTPLAN_REFUSE_DEBUG_PIN;
+ return NULL;
+}
+
+/**
+ * plan_debugger_apart - Rule 11: a debugger that starts apart does.
+ * @p: the plan.
+ * Return: 0, or -1 with the plan refused.
+ */
+static int plan_debugger_apart(WpeStartPlan *p)
+{
+ const char *why = startplan_apart_breach(p);
+
+ if (!why)
+  return 0;
+ p->verdict = WPE_PLAN_REFUSED;
+ p->refused = why;
+ return -1;
+}
+
+/**
+ * startplan_named - Is this path a file of that name?
+ */
+static int startplan_named(const char *path, const char *name)
+{
+ return strcmp(startplan_last_name(path), name) == 0;
+}
+
+/**
+ * startplan_load_at - Put one load line at the next place of its list.
+ * @p: the plan; @l: the line made; @in/@word: where the next input and word go.
+ * Return: 0, or -1.
+ */
+static int startplan_load_at(WpeStartPlan *p, const startplan_lines *l, int *in, int *word)
+{
+ int i, rc;
+
+ for (i = 0; i < l->n; i++)
+ {
+  if (l->kind[i] == STARTPLAN_LK_INPUT)
+   rc = startplan_insert(&p->input, &p->ninput, p->load_at + (*in)++, l->text[i], WPE_WORD_TEXT,
+                         WPE_FROM_EDITOR);
+  else if (l->kind[i] == STARTPLAN_LK_WORD)
+   rc = startplan_insert(&p->word, &p->nword, p->load_word_at + (*word)++, l->text[i],
+                         WPE_WORD_OPTION, WPE_FROM_EDITOR);
+  else
+   rc = startplan_apply_line(p, l->kind[i], l->text[i]);
+  if (rc < 0)
+   return -1;
+ }
+ return 0;
+}
+
+/**
+ * startplan_gdb_admit - The lines that let gdb load a script, in the form the
+ * row's channel carries them.
+ * @row: the row; @path: the script's path, or the program's; @l: receives them.
+ * Return: 0, or -1 when the path cannot be given safely.
+ */
+static int startplan_gdb_admit(const startplan_row *row, const char *path, startplan_lines *l)
+{
+ char arg[STARTPLAN_LINE_MAX], cmd[STARTPLAN_LINE_MAX], quoted[STARTPLAN_LINE_MAX];
+
+ if (wpe_startplan_gdb_safe_path_arg(arg, sizeof arg, path) < 0)
+  return -1;
+ snprintf(cmd, sizeof cmd, "add-auto-load-safe-path %s", arg);
+ if (row->load == STARTPLAN_LOAD_GDB_DAP)
+  return startplan_lines_gdb_word(l, STARTPLAN_IEX, cmd);
+ if (row->load == STARTPLAN_LOAD_MI)
+ {
+  if (startplan_mi_quote(quoted, sizeof quoted, cmd) < 0)
+   return -1;
+  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "-interpreter-exec console ", quoted);
+ }
+ return startplan_lines_add(l, STARTPLAN_LK_INPUT, cmd, NULL);
+}
+
+/**
+ * startplan_gdb_source - The line that makes gdb run the folder's .gdbinit.
+ * @row: the row; @path: the file; @l: receives it.
+ *
+ * A .gdbinit runs before the program loads, as in stock gdb.
+ * Return: 0, or -1 when the path cannot be given safely.
+ */
+static int startplan_gdb_source(const startplan_row *row, const char *path, startplan_lines *l)
+{
+ char arg[STARTPLAN_LINE_MAX], cmd[STARTPLAN_LINE_MAX], quoted[STARTPLAN_LINE_MAX];
+
+ if (wpe_startplan_gdb_arg(arg, sizeof arg, path, WPE_GDB_ARG_RAW) < 0)
+  return -1;
+ if (row->load == STARTPLAN_LOAD_GDB_DAP)
+ {
+  if (startplan_lines_add(l, STARTPLAN_LK_WORD, STARTPLAN_IX, NULL) < 0)
+   return -1;
+  return startplan_lines_add(l, STARTPLAN_LK_WORD, arg, NULL);
+ }
+ snprintf(cmd, sizeof cmd, "source %s", arg);
+ if (row->load == STARTPLAN_LOAD_MI)
+ {
+  if (startplan_mi_quote(quoted, sizeof quoted, cmd) < 0)
+   return -1;
+  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "-interpreter-exec console ", quoted);
+ }
+ return startplan_lines_add(l, STARTPLAN_LK_INPUT, cmd, NULL);
+}
+
+/**
+ * startplan_load_gdb - What Run it loads of one file for a gdb row.
+ * @p: the plan; @row: its row; @s: the listed path; @in/@word: positions.
+ *
+ * A script the program carries is admitted by the paths gdb will check for it;
+ * a script beside the program by its own path; a .gdbinit is admitted and then
+ * run.
+ * Return: 0, or -1 when a path cannot be given safely.
+ */
+static int startplan_load_gdb(WpeStartPlan *p, const startplan_row *row, const WpeStartPath *s,
+                              int *in, int *word)
+{
+ startplan_lines lines;
+ char real[WPE_STARTPLAN_PATH_MAX];
+ int i;
+
+ if (s->embedded)
+ {
+  for (i = 0; i < s->nadmit; i++)
+  {
+   lines.n = 0;
+   if (startplan_gdb_admit(row, s->admit[i], &lines) < 0 ||
+       startplan_load_at(p, &lines, in, word) < 0)
+    return -1;
+  }
+  return 0;
+ }
+ if (wpe_startplan_resolve(s->path, startplan_base(p), real, sizeof real) < 0)
+  return -1;
+ lines.n = 0;
+ if (startplan_gdb_admit(row, real, &lines) < 0 || startplan_load_at(p, &lines, in, word) < 0)
+  return -1;
+ if (!startplan_named(real, STARTPLAN_GDBINIT))
+  return 0;
+ lines.n = 0;
+ if (startplan_gdb_source(row, real, &lines) < 0)
+  return -1;
+ return startplan_load_at(p, &lines, in, word);
+}
+
+/**
+ * startplan_load_pdb - Send a .pdbrc's lines one by one: pdb has no source.
+ * @p: the plan; @s: the listed .pdbrc.
+ *
+ * Blank lines and comments are left out, as pdb leaves them.
+ * Return: 0, or -1 when a line holds a control character.
+ */
+static int startplan_load_pdb(WpeStartPlan *p, const WpeStartPath *s, int *in)
+{
+ const char *line = s->content, *end;
+ char one[STARTPLAN_LINE_MAX];
+ size_t len;
+
+ while (line && *line)
+ {
+  end = strchr(line, '\n');
+  len = end ? (size_t)(end - line) : strlen(line);
+  if (len >= sizeof one)
+   return -1;
+  memcpy(one, line, len);
+  one[len] = '\0';
+  line = end ? end + 1 : NULL;
+  if (one[0] == '\0' || one[0] == STARTPLAN_PDBRC_COMMENT)
+   continue;
+  if (!wpe_startplan_line_ok(one) ||
+      startplan_insert(&p->input, &p->ninput, p->load_at + (*in)++, one, WPE_WORD_TEXT,
+                       WPE_FROM_EDITOR) < 0)
+   return -1;
+ }
+ return 0;
+}
+
+/**
+ * startplan_load_one - What Run it loads of one listed file.
+ * @p: the plan; @row: its row; @s: the path; @in/@word: positions.
+ * Return: 0, or -1 when its path cannot be given safely.
+ */
+static int startplan_load_one(WpeStartPlan *p, const startplan_row *row, const WpeStartPath *s,
+                              int *in, int *word)
+{
+ startplan_lines lines;
+ char real[WPE_STARTPLAN_PATH_MAX], arg[STARTPLAN_LINE_MAX];
+
+ if (row->load == STARTPLAN_LOAD_PDB)
+  return startplan_load_pdb(p, s, in);
+ if (row->load == STARTPLAN_LOAD_GDB || row->load == STARTPLAN_LOAD_MI ||
+     row->load == STARTPLAN_LOAD_GDB_DAP)
+  return startplan_load_gdb(p, row, s, in, word);
+ if (wpe_startplan_resolve(s->path, startplan_base(p), real, sizeof real) < 0)
+  return -1;
+ lines.n = 0;
+ if (row->load == STARTPLAN_LOAD_LLDB_DAP)
+ {
+  if (wpe_startplan_lldb_source_arg(arg, sizeof arg, real) < 0)
+   return -1;
+  if (startplan_lines_add(&lines, STARTPLAN_LK_INIT, "command source ", arg) < 0)
+   return -1;
+ }
+ else if (row->load == STARTPLAN_LOAD_JDB)
+ {
+  if (wpe_startplan_jdb_read_arg(arg, sizeof arg, real) < 0)
+   return -1;
+  if (startplan_lines_add(&lines, STARTPLAN_LK_INPUT, "read ", arg) < 0)
+   return -1;
+ }
+ return startplan_load_at(p, &lines, in, word);
+}
+
+/**
+ * wpe_startplan_load_lines - Add what Run it does: load the listed files by
+ * the editor's own command.
+ * @p: the plan the box showed, its start-up files listed.
+ *
+ * Each listed file's lines go after the move and before the program's load,
+ * so a .gdbinit runs before the program loads as in stock gdb.  The user's own
+ * plan ("Use mine") is the same plan without this call.  Called once; for a
+ * row that does not start apart it adds nothing, since that debugger still
+ * reads the files itself.
+ * Return: the number of lines added, or -1 when a listed file's path cannot
+ * be given to the debugger safely: Run it is then not offered, and
+ * p->load_refused says why.
+ */
+int wpe_startplan_load_lines(WpeStartPlan *p)
+{
+ const startplan_row *row;
+ int before, i, in = 0, word = 0;
+
+ if (!p || !(row = p->row) || p->loaded || !startplan_row_apart(row))
+  return 0;
+ p->loaded = 1;
+ before = p->ninput + p->nword + p->ninit;
+ for (i = 0; i < p->npath; i++)
+ {
+  if (p->path[i].role != WPE_PATH_READS)
+   continue;
+  if (startplan_load_one(p, row, &p->path[i], &in, &word) < 0)
+  {
+   p->load_refused = WPE_STARTPLAN_LOAD_REFUSED;
+   return -1;
+  }
+ }
+ free(p->text);
+ p->text = NULL;
+ return p->ninput + p->nword + p->ninit - before;
 }

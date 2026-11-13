@@ -6865,7 +6865,7 @@ static WpeStartPlan *e_d_plan_make(FENSTER *f, const char *operand, int skips)
   return(NULL);
  if ((dir = e_build_dir(f)) != NULL)
  {
-  wpe_startplan_set_cwd(p, dir);
+  wpe_startplan_contain(p, e_deb_type_name(e_deb_type), NULL, dir, NULL);
   FREE(dir);
  }
  e_d_plan_words(p, operand, skips);
@@ -8965,6 +8965,28 @@ static const char *e_d_dap_tool(const char *program)
  return(base);
 }
 
+/* The start plan's key for every debug adapter; the adapter's own program
+   tells its row apart. */
+#define E_D_DAP_ROW_KEY "dap"
+
+/**
+ * e_d_dap_row_program - The adapter's program, as the start plan's table
+ * names it.
+ * @program: the adapter's argv[0].
+ * Return: "lldb-dap" for lldb's adapter, else the program's own name ("gdb",
+ * "dlv", "scala-cli"), so the plan finds the row that says how that adapter
+ * starts.
+ */
+static const char *e_d_dap_row_program(const char *program)
+{
+ const char *base = strrchr(program, DIRC);
+
+ base = base ? base + 1 : program;
+ if (strncmp(base, "lldb", 4) == 0)
+  return("lldb-dap");
+ return(base);
+}
+
 /**
  * e_d_dap_plan_make - The plan of a debug adapter's start.
  * @argv: its command line, the editor's; @cwd: the program's folder;
@@ -8981,7 +9003,7 @@ static WpeStartPlan *e_d_dap_plan_make(char *const argv[], const char *cwd, int 
  if (!p)
   return(NULL);
  if (cwd)
-  wpe_startplan_set_cwd(p, cwd);
+  wpe_startplan_contain(p, E_D_DAP_ROW_KEY, e_d_dap_row_program(argv[0]), cwd, NULL);
  wpe_startplan_word(p, argv[0], WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
  if (own)
  {

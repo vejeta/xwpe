@@ -57,6 +57,16 @@ we_debug.c|e_d_arguments|1|plan|reads Arguments once for the debugger's start pl
 we_debug.c|e_d_pick_start_arg|1|plan|the program's name, handed to the debugger's plan as its operand with its origin
 we_debug.c|e_d_start_planned|1|plan|a project's program, handed to the debugger's plan as its operand
 
+# --- the working folder of a plan that is not a debugger's start (wpe_startplan_set_cwd) ---
+# A debugger or an adapter gets its folder from wpe_startplan_contain.  These
+# four are not that start: a jdb VM is the program's own child, a build server
+# and a language server are not debuggers, and the last is the plan of a C test
+# that has no planner.
+we_debug.c|e_d_jdb_vm_plan|1|keep|the program's own child (jdb's VM) runs in the program's folder
+we_debug.c|e_d_bsp_plan_make|1|keep|the build server is not a debugger
+we_debug.c|e_lsp_plan_make|1|keep|the language server is not a debugger
+we_dap.c|dap_plan_of|1|keep|the fixed plan of a C test with no planner
+
 # --- the assistant's read grants (P0c-4) ---
 we_ai_ws.c|ws_collect_read_grants|1|P0c-4|a folder's IncludePath widens the assistant's reads
 

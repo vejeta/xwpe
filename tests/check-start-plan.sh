@@ -10,7 +10,22 @@
 # program's name) to a program by itself, is how a folder's value reached a
 # program unseen, one site after another.
 #
-#   check-start-plan.sh [--allow FILE] [--srcdir DIR] [--list]
+#   check-start-plan.sh [--allow FILE] [--srcdir DIR] [--list] [--contain]
+#
+# The debugger rows (always on): every debugger the editor names
+# (e_d_type_names[] in we_debug.c, "dap" apart) and every adapter program
+# (DAP_ARGV_*) has a row in startplan_debugger_rows[] of we_startplan.c, so a
+# debugger added without saying how it starts apart, or why it does not,
+# fails.  A debugger plan's working folder is set only by the owner's
+# wpe_startplan_contain: wpe_startplan_set_cwd is counted per function in
+# we_debug.c and we_dap.c, like the lines above, so a debugger plan cannot
+# pick its own folder by a new call.
+#
+# --contain adds the rule that no debugger switch against a folder's files
+# lives outside the owner: the settings that turned off what gdb auto-loads,
+# and the -iex and -ix switches, appear in we_startplan.c only.  It stays out
+# of "make check" until the gdb rows start apart and the switches are gone
+# from we_debug.c and we_dap.c; until then it is red by design.
 #
 # The source scan: in the files that start programs, every line that builds
 # a start (the patterns below) is counted per function.  tests/start-plan.allow
@@ -32,12 +47,14 @@ HERE=$(dirname "$0")
 ALLOW=
 LIST=0
 BAD=1
+CONTAIN=0
 
 while [ $# -gt 0 ]; do
   case $1 in
     --allow) shift; ALLOW=$1 ;;
     --srcdir) shift; SRCDIR=$1 ;;
     --list) LIST=1 ;;
+    --contain) CONTAIN=1 ;;
     *) echo "check-start-plan: unknown argument $1" >&2; exit $BAD ;;
   esac
   shift
@@ -54,6 +71,12 @@ FILES="we_prog.c we_debug.c we_bsp.c we_fl_unix.c we_lsp.c we_dap.c we_progn.c
 # program keys handed on, a build output's path, the shell entries.
 PATTERN='WpeChildSpec|[.]argv[ \t]*=[^=]|[.]cwd[ \t]*=[^=]|"/bin/sh"|e_add_arg[ \t]*[(]|e_make_arg[ \t]*[(]|e_make_library[ \t]*[(]|e_prog[.]exedir|e_prog[.]arguments|e_prog[.]sys_include|e_s_prog[.]exe_name|g_prj[.]ofile|e_u_system|e_system[ \t]*[(]|e_shell_run[ \t]*[(]'
 
+# A debugger plan's working folder is the owner's to set (wpe_startplan_contain);
+# the call that sets one by hand is counted where the debuggers are planned.
+CWD_PATTERN='wpe_startplan_set_cwd[ \t]*[(]'
+CWD_FILES="we_debug.c we_dap.c"
+ROWS_FILE=we_startplan.c
+
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/start-plan.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 : > "$WORK/found"
@@ -61,12 +84,13 @@ trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
 problem() { echo "$*" >> "$WORK/problems"; }
 
-# count_by_function FILE - "file function count" for each function whose
-# lines match PATTERN, comments blanked, string literals kept (a shell's
-# path is a literal).  A function starts at a line in column 0 that names
-# an identifier followed by "(" and does not end with ";" (a prototype).
+# count_by_function FILE PATH [PATTERN] - "file function count" for each
+# function whose lines match PATTERN (the build patterns when not given),
+# comments blanked, string literals kept (a shell's path is a literal).  A
+# function starts at a line in column 0 that names an identifier followed by
+# "(" and does not end with ";" (a prototype).
 count_by_function() {
-  awk -v file="$1" -v re="$PATTERN" '
+  awk -v file="$1" -v re="${3:-$PATTERN}" '
     BEGIN { incom = 0; fn = "(file scope)" }
     {
       line = $0; out = ""; n = length(line); i = 1; instr = 0
@@ -102,7 +126,10 @@ for f in $FILES; do
     problem "canary: $f not found under $SRCDIR (the scan is blind)"
     continue
   fi
-  count_by_function "$f" "$SRCDIR/$f" >> "$WORK/scan"
+  case " $CWD_FILES " in
+    *" $f "*) count_by_function "$f" "$SRCDIR/$f" "$PATTERN|$CWD_PATTERN" >> "$WORK/scan" ;;
+    *) count_by_function "$f" "$SRCDIR/$f" >> "$WORK/scan" ;;
+  esac
   # A folder value made an option, on one line: never allowed.
   grep -n 'WPE_WORD_OPTION' "$SRCDIR/$f" | grep 'WPE_FROM_FOLDER' | while IFS= read -r hit; do
     echo "a folder value made an option: $f:${hit%%:*}"
@@ -117,6 +144,78 @@ grep -q '^#fn we_prog.c e_comp_start$' "$WORK/functions" ||
   problem "canary: e_comp_start not seen as a function of we_prog.c (the function scan is blind)"
 grep -q '^we_prog.c e_add_arg ' "$WORK/found" ||
   problem "canary: the definition of e_add_arg not counted in we_prog.c (the pattern scan is blind)"
+
+# The debugger rows: every debugger and every adapter the editor can start
+# has a row in the owner's table, which says how it starts apart from the
+# program's folder or why it does not.  The names are read from the sources
+# that start them, so a debugger added there without a row fails here.
+check_debugger_rows() {
+  [ -f "$SRCDIR/we_debug.c" ] && [ -f "$SRCDIR/$ROWS_FILE" ] || {
+    problem "canary: we_debug.c or $ROWS_FILE not found under $SRCDIR (the debugger rows scan is blind)"
+    return
+  }
+  awk '
+    /e_d_type_names\[\][ \t]*=/ { on = 1 }
+    on {
+      s = $0
+      while (match(s, /"[A-Za-z0-9_-]+"/)) {
+        print substr(s, RSTART + 1, RLENGTH - 2)
+        s = substr(s, RSTART + RLENGTH)
+      }
+      if ($0 ~ /};/) exit
+    }' "$SRCDIR/we_debug.c" > "$WORK/debuggers"
+  awk '
+    /DAP_ARGV_[A-Z_]*\[\][ \t]*=[ \t]*[{]/ {
+      if (match($0, /[{][ \t]*"[^"]+"/)) {
+        t = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", t); sub(/".*/, "", t); print t
+      }
+    }' "$SRCDIR/we_debug.c" > "$WORK/adapters"
+  # Only the rows table itself counts: the start-up file table above it in
+  # the same file also opens its rows with a debugger's name.
+  awk '
+    /startplan_debugger_rows\[\][ \t]*=/ { on = 1; next }
+    on && /^};/ { exit }
+    on { print }' "$SRCDIR/$ROWS_FILE" > "$WORK/rows"
+  grep -qx gdb "$WORK/debuggers" ||
+    problem "canary: e_d_type_names[] names no gdb in we_debug.c (the debugger rows scan is blind)"
+  grep -qx dlv "$WORK/adapters" ||
+    problem "canary: no DAP_ARGV_* names dlv in we_debug.c (the adapter rows scan is blind)"
+  grep -q '{ "gdb", *"",' "$WORK/rows" ||
+    problem "canary: startplan_debugger_rows of $ROWS_FILE has no gdb row (the debugger rows scan is blind)"
+  while IFS= read -r name; do
+    [ "$name" = dap ] && continue
+    grep -q "{ \"$name\", *\"\"," "$WORK/rows" ||
+      problem "debugger $name has no row in startplan_debugger_rows of $ROWS_FILE"
+  done < "$WORK/debuggers"
+  while IFS= read -r name; do
+    grep -q "{ \"dap\", *\"$name\"," "$WORK/rows" ||
+      problem "adapter $name has no row in startplan_debugger_rows of $ROWS_FILE"
+  done < "$WORK/adapters"
+}
+check_debugger_rows
+
+# --contain: no switch against a folder's files outside the owner.  The
+# settings that turned off what gdb auto-loads and gdb's probe for Guile are
+# gone from the debugger sites, and -iex/-ix are words the owner builds.
+check_contain() {
+  for f in we_debug.c we_dap.c; do
+    [ -f "$SRCDIR/$f" ] || continue
+    for pat in 'set auto-load local-gdbinit' 'gdb-scripts off' 'python-scripts off' \
+               'guile-scripts off' '--configuration'; do
+      grep -n -e "$pat" "$SRCDIR/$f" | while IFS= read -r hit; do
+        echo "a switch against a folder's files outside the owner: $f:${hit%%:*} ($pat)"
+      done >> "$WORK/problems"
+    done
+  done
+  for f in "$SRCDIR"/*.c "$SRCDIR"/*.h; do
+    [ -f "$f" ] || continue
+    case ${f##*/} in we_startplan.c) continue ;; esac
+    grep -n -e '"-iex"' -e '"-ix"' "$f" | while IFS= read -r hit; do
+      echo "-iex or -ix outside the owner: ${f##*/}:${hit%%:*}"
+    done >> "$WORK/problems"
+  done
+}
+[ $CONTAIN -eq 1 ] && check_contain
 
 # The refusal of a start with no plan is off only in the children's owner's
 # own unit test, whose specs are built by hand: a build of the editor, or any

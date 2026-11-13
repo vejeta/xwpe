@@ -119,6 +119,17 @@
 #define WPE_STARTPLAN_REFUSE_JUDGE  "the plan was not approved"
 #define WPE_STARTPLAN_REFUSE_INPUT  "not sent: a value with a line break"
 #define WPE_STARTPLAN_REFUSE_CARRIER "a folder value cannot carry a command"
+#define WPE_STARTPLAN_REFUSE_DEBUG_CWD \
+ "a debugger may not start in the program's folder"
+#define WPE_STARTPLAN_REFUSE_DEBUG_PIN \
+ "a debugger start without its containment lines"
+#define WPE_STARTPLAN_REFUSE_DEBUG_UNKNOWN "a debugger the plan does not know"
+#define WPE_STARTPLAN_REFUSE_DEBUG_PATH \
+ "a folder or program the debugger cannot be given safely"
+
+/* Why Run it is not offered for a plan whose start-up files cannot be sent
+   to the debugger by the editor's own command. */
+#define WPE_STARTPLAN_LOAD_REFUSED "a start-up file whose path the debugger cannot be given safely"
 
 /* One word of a command line. */
 typedef struct {
@@ -148,7 +159,13 @@ typedef struct {
  int embedded;               /* WPE_PATH_READS: not a file of its own: the scripts the
                                 program carries inside itself (gdb's
                                 .debug_gdb_scripts); content is what they hold       */
+ char **admit;               /* embedded: the paths gdb checks against its safe-path
+                                for these scripts (a file entry's resolved script,
+                                the program for a text entry)                         */
+ int nadmit;
 } WpeStartPath;
+
+struct startplan_row;        /* one debugger's containment, in we_startplan.c         */
 
 /* One value a folder file set, as the box lists it. */
 typedef struct {
@@ -188,7 +205,20 @@ typedef struct WpeStartPlan {
  char *name;                 /* the key's second part: "C", "demo.prj"               */
  char *file;                 /* the folder file that supplied values, or NULL        */
  char *folder;               /* that file's folder, resolved: the store's folder     */
- char *cwd;                  /* the working folder, resolved                         */
+ char *cwd;                  /* the working folder, resolved: where the process
+                                starts, nothing else                                 */
+ char *program_dir;          /* the program's folder, resolved: what is listed from,
+                                what relative paths mean, what the canonical text
+                                names; NULL means cwd                                */
+ char *debug_dir;            /* the folder the owner made for this start, or NULL    */
+ const struct startplan_row *row; /* the debugger row contain() chose, or NULL      */
+ const char *contain_refused; /* contain() could not make this start: why           */
+ int load_at;                /* where Run it's lines go in input                     */
+ int load_word_at;           /* and in word                                          */
+ int loaded;                 /* load_lines has run                                   */
+ const char *load_refused;   /* why Run it is not offered, or NULL                   */
+ char *launch_cwd;           /* the program's folder for an adapter's launch request */
+ WpeStartWord *init; int ninit; /* an adapter's launch init commands                 */
  WpeStartWord *word;  int nword;
  WpeStartPath *path;  int npath;
  WpeStartValue *value; int nvalue;
@@ -263,5 +293,28 @@ int wpe_startplan_carry(WpeStartPlan *p, char *const carrier[], int from);
 int wpe_startplan_start_carried(WpeStartPlan *p, const WpeStartIo *io, WpeChild *c,
                                 WpeChildEndedFn ended, void *data);
 void wpe_startplan_runs_code(WpeStartPlan *p, const char *what);
+
+/* The debugger's own empty folder, and the one call a debugger site makes. */
+void wpe_startplan_debug_base_set(const char *base);
+char *wpe_startplan_debug_dir_new(const char *base);
+int wpe_startplan_debug_dir_end(const char *dir);
+int wpe_startplan_contain(WpeStartPlan *p, const char *key, const char *program_tool,
+                          const char *folder, const char *program);
+int wpe_startplan_load_lines(WpeStartPlan *p);
+void wpe_startplan_rows_designed(int on);
+const char *wpe_startplan_row_info(int index, const char **variant, int *apart, int *designed,
+                                   const char **reason);
+
+/* How a path reaches each debugger's command: a resolved absolute path in, the
+   text to put after the command word out; -1 when the debugger cannot be given
+   that path safely (the reason is the form's, not a message). */
+#define WPE_GDB_ARG_RAW   0   /* the rest of the line: cd, source, add-auto-load-safe-path */
+#define WPE_GDB_ARG_SPLIT 1   /* split by gdb's argument splitter: file                    */
+int wpe_startplan_gdb_arg(char *out, size_t n, const char *path, int form);
+int wpe_startplan_gdb_safe_path_arg(char *out, size_t n, const char *path);
+int wpe_startplan_mi_cstring(char *out, size_t n, const char *path);
+int wpe_startplan_lldb_source_arg(char *out, size_t n, const char *path);
+int wpe_startplan_jdb_read_arg(char *out, size_t n, const char *path);
+int wpe_startplan_python_bytes(char *out, size_t n, const char *path);
 
 #endif
