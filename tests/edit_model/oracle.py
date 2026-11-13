@@ -141,6 +141,11 @@ class Window:
         # start, 4 find end, 5 anchor) that is not a place of the text; -1
         # for none (an editor without the field says none)
         self.pos = int(kv.get("pos", "-1"))
+        # the file's line-ending style (lf or crlf) and whether it ended on
+        # a line break (1) or not (0); an editor without the fields says
+        # an LF file that did
+        self.eol = kv.get("eol", "lf")
+        self.final = int(kv.get("final", "1"))
         self.lines = []          # [(end 'H'|'S', bytes)]
 
     @property
@@ -251,10 +256,12 @@ class EditSession:
         self.workdir = workdir
         self.path = os.path.join(workdir, filename)
         self.trace_path = os.path.join(workdir, "ui.trace")
+        # seed None: the file does not exist, as when the user names a new file
         if isinstance(seed, str):
             seed = seed.encode("utf-8")
-        with open(self.path, "wb") as fh:
-            fh.write(seed)
+        if seed is not None:
+            with open(self.path, "wb") as fh:
+                fh.write(seed)
         if file_mode is not None:
             os.chmod(self.path, file_mode)
         if xwperc is not None:

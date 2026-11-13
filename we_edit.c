@@ -10,6 +10,7 @@
 #include "makro.h"
 #include "we_fdloop.h"
 #include "we_buffer.h"
+#include "we_lineend.h"
 #include "we_testdump.h"
 
 #include<sys/types.h> /*  included for digital station  */
@@ -353,10 +354,13 @@ static int e_edit_read_file(FENSTER *f, FILE *fp)
  BUFFER *b = f->b;
  int history = b->history, r;
  POINT end;
+ WpeEolInfo info;
 
  b->history = E_BUFFER_NO_HISTORY;
- r = e_read_file_into(fp, b, 0, 0, &f->dtmd, &end);
+ r = e_read_file_into(fp, b, 0, 0, f->dtmd == DTMD_HELP, &info, &end);
  b->history = history;
+ if (r == E_BUFFER_OK)
+  e_eol_buffer_adopt(b, f->ed, &info);
  return(r);
 }
 
@@ -792,7 +796,11 @@ int e_edit(ECNT *cn, char *filename)
 #endif
  }
  else
+ {
   e_line_make_hard_empty(&f->b->bf[0]);
+  if (ftype == E_EDIT_A_FILE)
+   e_eol_buffer_fresh(f->b, cn);        /* a new file takes the default style */
+ }
 #ifdef PROG
  if (ftype == 2)
  {

@@ -1,0 +1,173 @@
+{
+ "capability": "line-endings",
+ "scenarios": [
+  {
+   "id": "SC-line-endings-01",
+   "requirement": "A CRLF file is saved CRLF",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_crlf_file_is_saved_crlf",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-02",
+   "requirement": "A mixed file keeps each line as it was, and the lines the user did not touch are not rewritten",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_mixed_file_keeps_each_line_as_it_was",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-03",
+   "requirement": "A carriage return that is not part of a CR LF break is text, shown ^M and written back",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_lone_carriage_return_is_text",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-04",
+   "requirement": "The dump names the buffer's line-ending style",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_the_dump_names_a_crlf_files_style",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-05",
+   "requirement": "The dump says whether the file ended on a line break",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_file_without_a_final_break_is_known_and_saved_with_one",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-06",
+   "requirement": "A 0-byte file takes the default style of the options file's Data key",
+   "layer": "config-file",
+   "test": "tests/test_line_endings.py::test_a_zero_byte_file_takes_the_default_style",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-07",
+   "requirement": "A new file takes the default style",
+   "layer": "config-file",
+   "test": "tests/test_line_endings.py::test_a_new_file_takes_the_default_style",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-08",
+   "requirement": "A file that has line breaks keeps its own style against the default",
+   "layer": "config-file",
+   "test": "tests/test_line_endings.py::test_a_file_that_has_breaks_keeps_its_own_style_against_the_default",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-09",
+   "requirement": "A file read in takes the buffer's style",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_file_read_into_an_lf_file_takes_the_buffers_style",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-10",
+   "requirement": "A mixed file read in keeps the carriage return of its CR LF line",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_mixed_file_read_in_keeps_the_carriage_return_of_its_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-11",
+   "requirement": "An autosave of a CRLF file is CRLF",
+   "layer": "config-file",
+   "test": "tests/test_line_endings.py::test_an_autosave_of_a_crlf_file_is_crlf",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-12",
+   "requirement": "An emergency save of a CRLF file is CRLF",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_an_emergency_save_of_a_crlf_file_is_crlf",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-13",
+   "requirement": "A long CRLF line is written back as one line",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_long_crlf_line_is_written_back_as_one_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-14",
+   "requirement": "A NUL byte does not merge two lines",
+   "layer": "asan",
+   "test": "tests/test_line_endings.py::test_a_nul_byte_does_not_merge_lines",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-15",
+   "requirement": "A Data value of an options file in the folder never breaks the editor",
+   "layer": "asan",
+   "test": "tests/test_line_endings.py::test_a_data_value_in_a_folders_options_does_not_break_the_editor",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-16",
+   "requirement": "The Data key is written back as the original wrote it",
+   "layer": "config-file",
+   "test": "tests/test_line_endings.py::test_the_data_key_is_written_back_as_the_original_wrote_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-17",
+   "requirement": "Bytes to rows and rows to bytes round-trip in both styles, and text the buffer made goes back as it was",
+   "layer": "c-unit",
+   "test": "test_lineend",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-19",
+   "requirement": "A CRLF, a mixed and a lone-CR file are saved as read, in the X11 window",
+   "layer": "x11",
+   "test": "tests/x11/test_line_endings.py::test_a_crlf_file_is_saved_crlf",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-19",
+   "requirement": "A CRLF, a mixed and a lone-CR file are saved as read, in the X11 window",
+   "layer": "x11",
+   "test": "tests/x11/test_line_endings.py::test_a_mixed_file_keeps_each_line_as_it_was",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-19",
+   "requirement": "A CRLF, a mixed and a lone-CR file are saved as read, in the X11 window",
+   "layer": "x11",
+   "test": "tests/x11/test_line_endings.py::test_a_lone_carriage_return_is_kept_as_text",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-20",
+   "requirement": "The same three files are saved as read, in the Wayland window",
+   "layer": "wayland",
+   "test": "tests/wayland/test_line_endings.py::test_a_crlf_file_is_saved_crlf",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-20",
+   "requirement": "The same three files are saved as read, in the Wayland window",
+   "layer": "wayland",
+   "test": "tests/wayland/test_line_endings.py::test_a_mixed_file_keeps_each_line_as_it_was",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-20",
+   "requirement": "The same three files are saved as read, in the Wayland window",
+   "layer": "wayland",
+   "test": "tests/wayland/test_line_endings.py::test_a_lone_carriage_return_is_kept_as_text",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-18",
+   "requirement": "One owner of a file's line endings",
+   "layer": "c-unit",
+   "test": "tests/check-line-ends.sh",
+   "status": "new"
+  }
+ ]
+}

@@ -270,12 +270,13 @@ contains the following fields.  (Documented since v1.4.)
 
 @subsubheading Data
 
-@table @kbd
-@item Alt-A
-The next file loaded will be treated as an ASCII (text) file.
-@item Alt-B
-The next file loaded will be a binary file.
-@end table
+The original dialog had two radio buttons here, @kbd{Alt-A} for an ASCII
+(text) file and @kbd{Alt-B} for a binary one.  This dialog no longer has
+them.  What is left of the choice is the @samp{Data} key of the options file
+(@file{xwperc}): @samp{Data : 109}, the original's MS-DOS file, makes new
+files, and files with no line break, break their lines with CR LF; any other
+value means LF.  A file that has line breaks keeps its own style whatever the
+key says (@pxref{Compatibility}).
 
 @subsubheading Display
 

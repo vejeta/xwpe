@@ -471,8 +471,9 @@ code, so a long preamble cannot disguise a one-line refusal.
 
 A reply with CRLF line endings is read as LF before anything is compared, so
 only the lines the model really changed are shown and no carriage return reaches
-the buffer; a file that is itself CRLF is the editor's business as always
-(carriage returns stripped on load and written back on save).
+the buffer; a file that is itself CRLF keeps its line endings, and a carriage
+return that is not part of a line break stays in its line as text
+(@pxref{Compatibility}).
 
 The model's rewrite is shown as a @dfn{diff} you review hunk by hunk in a popup
 inside the file window.  Before the popup opens, the file scrolls so the hunk's

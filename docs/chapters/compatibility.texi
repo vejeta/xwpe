@@ -511,6 +511,36 @@ The original put the help file's end-of-page mark on an empty row without
 a line break, so the screen showed it on a line of its own while the file
 written ran it into the start of the next line.  The mark now has a line of
 its own in the file too, and one @kbd{Ctrl-U} takes that line back.
+
+@item Line endings of a saved file
+@cindex line endings
+@cindex CR LF
+@cindex carriage return
+The original took a file with any carriage return in it for a DOS file,
+dropped every carriage return and wrote the whole file with CR LF.  A file
+that had one CR LF line among LF lines came back with every line changed,
+and a carriage return inside a line was lost.  A file is now CRLF only when
+every line break in it is CR LF; any other file is LF, and each carriage
+return in it is a byte of the text, shown as @samp{^M} and written back
+where it was.  A file with no line break at all (empty, or one line) takes
+the style of the new files, which the @samp{Data} key of the options file
+sets.  Saving must not change lines you did not edit.
+
+@item A NUL byte in a file
+@cindex NUL byte
+The original wrote nothing of a line after a NUL byte in it, line break
+included, so the line ran into the next one when saved.  A line cannot hold
+a NUL byte: it is left out when the file is read, and the rest of the line
+and its line break are kept.
+
+@item The @samp{Data} key of the options file
+@cindex options file, Data
+The original read the number after @samp{Data} into the kind of every new
+window, so a value that was not a text file's kind (70, say, in a
+@file{xwperc} of a folder you cloned) made the editor fail at start or open
+windows that took no keys.  The key now only says how new files break their
+lines (109, the original's MS-DOS file, is CR LF; anything else is LF) and is
+written back as 109 or 110.
 @end table
 
 @section Short commands

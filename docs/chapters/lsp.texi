@@ -659,3 +659,11 @@ again.  After 5 seconds with nothing taken the status row says
 server that closes its input, or lets several megabytes pile up behind it,
 is ended, and Messages says @samp{Language server stopped reading its
 input; it was ended. Alt-Q restarts it.}
+
+@cindex language server, carriage returns
+The server is sent one line per row of the window, each row ending in a line
+feed.  A carriage return that is a byte of your text (a lone one in a file,
+shown as @samp{^M}) is sent as it is, and the protocol counts it as a line
+break of its own, so the server sees one line more than the window has from
+that row down and its positions there are off by one line.  Files whose
+carriage returns all come before a line feed are not affected.

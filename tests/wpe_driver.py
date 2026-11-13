@@ -663,8 +663,14 @@ class WpeSession:
         self.answer_server_start = answer_server_start
         self.workdir = workdir
         self.path = os.path.join(workdir, filename)
-        with open(self.path, "w") as fh:
-            fh.write(seed)
+        # A bytes seed is written as it is (a row about line endings or a
+        # NUL must say which bytes the editor opens); a str is text, as ever.
+        if isinstance(seed, bytes):
+            with open(self.path, "wb") as fh:
+                fh.write(seed)
+        else:
+            with open(self.path, "w") as fh:
+                fh.write(seed)
         self.screen = SafeScreen(cols, rows)
         self.stream = _RepStream(self.screen)   # Stream + REP (CSI Pn b) handler
         self.raw = bytearray()                  # every byte wpe emits, pre-parse
@@ -879,6 +885,13 @@ class WpeSession:
     def text(self):
         """The file as written to disk (call save() first)."""
         with open(self.path) as fh:
+            return fh.read()
+
+    def disk(self):
+        """The file's bytes as written to disk (call save() first).  text()
+        reads in text mode and turns CR LF into LF, so a test about line
+        endings reads the bytes with this."""
+        with open(self.path, "rb") as fh:
             return fh.read()
 
     def display(self, drain=0.6):

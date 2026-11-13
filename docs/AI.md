@@ -71,7 +71,8 @@ the model works):
   `[AI edit] the model's commentary (not part of the file):` instead of landing
   in the source. A reply with CRLF line endings is read as LF before the
   comparison, so only the real changes show and no carriage return reaches the
-  buffer (a CRLF file itself is handled by the editor as always). Otherwise the
+  buffer (a CRLF file keeps its line endings, and a carriage return that is not
+  part of a line break stays in its line as text). Otherwise the
   proposed change appears in a **colored diff popup** inside the file window,
   one hunk at a time: the file first scrolls to the hunk's first line and puts
   the cursor on it (column kept), as Search and Goto Line do, and the popup

@@ -696,8 +696,7 @@ int WpeHandleFileManager(ECNT * cn)
   PIC            *outp = NULL;
   FILE           *fp;
   struct stat     buf;
-  char            dtmd;
-  int             open_prj = 0;       /* 1 = open selected .prj after FM closes */
+  int             open_prj = 0;      /* 1 = open selected .prj after FM closes */
   int             new_prj = 0;        /* 1 = create (New Project) vs open existing */
   char            prj_path[WPE_PATHMAX];
 
@@ -1324,8 +1323,8 @@ int WpeHandleFileManager(ECNT * cn)
             be = fe->b;
             se = fe->s;
             f = cn->f[cn->mxedt];
-            dtmd = fe->dtmd;
-            if(e_read_file_into(fp, be, be->b.x, be->b.y, &dtmd, &mark_end) == E_BUFFER_OK)
+            /* the buffer's style stands: the file's own is not kept */
+            if(e_read_file_into(fp, be, be->b.x, be->b.y, 0, NULL, &mark_end) == E_BUFFER_OK)
             {
               /* the inserted text is the block */
               e_buffer_mark_from(be, E_BUFFER_MARK_BEGIN, E_BUFFER_POS_CURSOR);

@@ -9,6 +9,7 @@
 #include "edit.h"
 #include "WeExpArr.h"
 #include "we_ai.h"        /* AI backend config keys (guarded by WPE_AI) */
+#include "we_lineend.h"
 #include "we_testdump.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
@@ -943,7 +944,7 @@ char *WpeValueToString(const char *value)
 int WpeReadGeneral(ECNT *cn, char *section, char *option, char *value)
 {
  if (WpeStrccmp("Data", option) == 0)
-  cn->dtmd = atoi(value);
+  e_eol_set_default(cn, atoi(value));
  else if (WpeStrccmp("Autosave", option) == 0)
   cn->autosv = atoi(value);
  else if (WpeStrccmp("MaxColumn", option) == 0)
@@ -974,7 +975,7 @@ int WpeReadGeneral(ECNT *cn, char *section, char *option, char *value)
 int WpeWriteGeneral(ECNT *cn, char *section, FILE *opt_file)
 {
  fprintf(opt_file, "Version : %s\n", VERSION);
- fprintf(opt_file, "Data : %d\n", cn->dtmd);
+ fprintf(opt_file, "Data : %d\n", e_eol_data_key(cn));
  fprintf(opt_file, "Autosave : %d\n", cn->autosv);
  fprintf(opt_file, "MaxColumn : %d\n", cn->maxcol);
  fprintf(opt_file, "Tab : %d\n", cn->tabn);

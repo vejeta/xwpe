@@ -58,6 +58,7 @@ we_SOURCES = \
   we_e_aus.c \
   we_edit.c \
   we_buffer.c \
+  we_lineend.c \
   we_fl_fkt.c \
   we_fl_unix.c \
   we_hfkt.c \
@@ -211,6 +212,7 @@ noinst_HEADERS = \
   we_paint.h \
   we_testdump.h \
   we_buffer.h \
+  we_lineend.h \
   we_utf8.h \
   we_trace.h \
   we_vterm.h \
@@ -317,7 +319,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice edit_driver test_startcmd test_startplan
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice test_lineend edit_driver test_startcmd test_startplan
 
 # The owner of the start plan: we_startplan.c with the store (we_startcmd.c)
 # and the children's owner it starts through.  The operand rule on every
@@ -345,6 +347,12 @@ test_startcmd_CFLAGS = $(XWPE_STDFLAG)
 # allocation changes nothing, a view keeps no undo.
 test_splice_SOURCES = tests/test_splice.c we_buffer.c
 test_splice_CFLAGS = $(XWPE_STDFLAG)
+
+# The owner of a file's line endings: we_lineend.c on the buffer's owner.
+# A file's bytes become rows and rows become bytes, in both styles, and
+# what the buffer made goes back into it as it was.
+test_lineend_SOURCES = tests/test_lineend.c we_buffer.c we_lineend.c
+test_lineend_CFLAGS = $(XWPE_STDFLAG)
 
 # The same owner behind a line protocol, for the edit model's walks
 # (tests/edit_model/cdriver.py).  Built by `make check`, not run by it.
@@ -574,7 +582,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap test_paint test_splice test_startcmd test_startplan
+  test_child test_childsig test_keymap test_paint test_splice test_lineend test_startcmd test_startplan
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -588,6 +596,11 @@ TESTS += tests/check-one-owner.sh
 # program keys, is counted per function in tests/start-plan.allow, with
 # the pass that moves it into a plan; the counts may only fall.
 TESTS += tests/check-start-plan.sh
+
+# One owner of a file's line endings (we_lineend.c): no second reader or
+# writer of the bytes of a line break.  Offenders still to go are in
+# tests/line-ends.allow.
+TESTS += tests/check-line-ends.sh
 
 # One owner of how long a command to a debugger may be: the request engine
 # (we_debreq.h).  tests/check-debug-command.sh fails when a site sizes a
@@ -663,6 +676,9 @@ EXTRA_DIST = \
   tests/one-owner.allow \
   tests/check-start-plan.sh \
   tests/start-plan.allow \
+  tests/check-line-ends.sh \
+  tests/line-ends.allow \
+  tests/test_lineend.c \
   tests/check-debug-command.sh \
   tests/debug-command.allow \
   tests/stubs/a68g/a68g \

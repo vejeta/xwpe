@@ -233,6 +233,17 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A file keeps its line endings when you save it.  A CRLF file is saved
+  CRLF, and a file that mixes CR LF and LF lines no longer has every line
+  rewritten: only the lines you changed differ.  A carriage return that is
+  not part of a CR LF break stays in its line, shown as ^M, instead of being
+  deleted.  A file with no line break takes the style of new files.  A line
+  with a NUL byte in it no longer runs into the next line when saved (the
+  NUL byte itself is left out).  The Data key of the options file only says
+  how new files break their lines (109 is CR LF, as before); a value that
+  is not a text file's kind, such as 70 in a folder's options file, no longer
+  crashes the editor or leaves windows that take no keys.
+
 * In a terminal, the editor now asks for xterm's modifyOtherKeys and the
   kitty keyboard protocol, and gives them back when it ends, is stopped,
   crashes or hands the terminal to a program.  Esc acts at once,

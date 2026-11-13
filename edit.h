@@ -248,6 +248,8 @@ typedef struct BFF {
  int refusals;         /* a shell: how many changes in it were refused for memory */
  int view;             /* 1: a view the editor writes (e_buffer_mark_view): its rows
                           may be wider than mx.x, and no row-width check applies */
+ int eol;              /* the file's line-ending style (E_EOL_LF, E_EOL_CRLF); zero is LF */
+ int final_break;      /* E_FINAL_BREAK_HAD: the file ended on a line break; zero: it did not */
 } BUFFER;
 
 typedef struct SCHRM {
@@ -341,7 +343,8 @@ typedef struct CNT {
  FIND fd;
  FARBE *fb;
  FENSTER *f[MAXEDT + 1];
- char dtmd, autosv; 
+ char dtmd, autosv;
+ int eol_default;     /* line-ending style of a new file (E_EOL_*): xwperc's Data key */
 } ECNT;
 
 
@@ -666,7 +669,9 @@ char *e_lib_file(const char *name); /* <libdir>/<name>, or <name>_eng (build-tre
 
 /*   we_fl_fkt.c   */
 char *e_mkfilename(char *dr, char *fn);
-int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, char *type, POINT *end);
+struct WpeEolInfo;
+int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, int manpage,
+                     struct WpeEolInfo *info, POINT *end);
 void wpe_buffer_fault_from_env(void);
 int e_new(FENSTER *f);
 int e_m_save(FENSTER *f);

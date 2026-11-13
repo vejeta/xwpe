@@ -11,6 +11,7 @@
 
 #include "edit.h"
 #include "we_buffer.h"
+#include "we_lineend.h"
 #include "we_testdump.h"
 #include "we_ai.h"
 #include <errno.h>
@@ -340,8 +341,9 @@ static void dump_window_head(DumpBuf *d, int n, FENSTER *f)
  dump_markers(d, s);
  dump_printf(d, " brp=");
  dump_breakpoints(d, f);
- dump_printf(d, " ud=%d rd=%d rows=%d pos=%d\n", dump_steps(b->ud), dump_steps(b->rd),
+ dump_printf(d, " ud=%d rd=%d rows=%d pos=%d", dump_steps(b->ud), dump_steps(b->rd),
              e_buffer_rows_check(b), e_buffer_first_misplaced(b));
+ dump_printf(d, " eol=%s final=%d\n", e_eol_name(b), b->final_break);
 }
 
 /**

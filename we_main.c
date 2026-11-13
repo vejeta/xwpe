@@ -15,6 +15,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_ai.h"      /* AI assistant config init (guarded by WPE_AI) */
+#include "we_lineend.h"
 #include "we_testdump.h"
 #include "we_startplan.h"   /* where the debugger's own folders are made */
 
@@ -414,6 +415,7 @@ void ECNT_Init(ECNT *cn)
 
  /*   standard adjustments    */
  cn->dtmd = DTMD_NORMAL;
+ cn->eol_default = E_EOL_LF;
  cn->autosv = 0;
  cn->maxchg = 999;
  cn->numundo = 10;
