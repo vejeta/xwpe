@@ -86,22 +86,54 @@ typedef struct
 #define E_D_REQ_CANCEL_FMT   "%s did not answer `%s`: Debug > Quit ends the session"
 #define E_D_REQ_TIMEOUT_FMT  "%s did not answer `%s` within %d s: Debug > Quit ends the session"
 
-/* How a request ended. */
+/* What the status row says when a command could not be given to the debugger
+   at all, and how every such sentence ends.  The sentence of a request's end
+   is written by e_d_req_end_words and by nobody else: an owner of a step
+   uses the @reason of the record for a mark and the @words for a row. */
+#define E_D_REQ_QUIT_TAIL          ": Debug > Quit ends the session"
+#define E_D_REQ_NOT_SENT_FMT       "%s was not given %s: %s"     /* debugger, `cmd`, reason */
+#define E_D_REQ_OTHER_PROMPT_FMT   "%s answered %s with its %s prompt, not its own"
+#define E_D_REQ_REFUSED_FMT        "%s refused %s: %s"
+#define E_D_REQ_BUSY_FMT           "%s is still answering `%s`"  /* + E_D_REQ_QUIT_TAIL */
+#define E_D_REQ_AT_PROMPT_FMT      "%s is at another prompt after `%s`"   /* + E_D_REQ_QUIT_TAIL */
+/* The reasons of E_D_SEND_*. */
+#define E_D_REQ_TOO_LONG_REASON    "the command is longer than %s takes"
+#define E_D_REQ_FULL_REASON        "eight commands are already waiting"
+#define E_D_REQ_RESYNC_REASON      "%s still owes an old answer"
+#define E_D_REQ_GONE_REASON        "the session is over"
+#define E_D_REQ_FAILED_REASON      "%s does not take input"
+#define E_D_REQ_STRANDED_REASON    "%s is at another prompt"
+#define E_D_REQ_UNKNOWN_REASON     "the command was not taken"
+#define E_D_REQ_REASON_MAX         160    /* the reason alone, for a mark */
+#define E_D_REQ_CMD_SHOWN          64     /* bytes of a command a sentence shows before "..." */
+
+/* How a request ended.  The engine sets the first five; E_D_REQ_OTHER_PROMPT
+   and E_D_REQ_REFUSED are set by the step that read a DONE answer and found
+   the debugger at another prompt, or its refusal in it, so that one function
+   writes the words of every end. */
 typedef enum
 {
- E_D_REQ_DONE,        /* the debugger answered */
- E_D_REQ_TIMED_OUT,   /* it did not, within the deadline */
- E_D_REQ_CANCELLED,   /* the user cancelled */
- E_D_REQ_GONE         /* the debugger or the session is gone */
+ E_D_REQ_DONE,          /* the debugger answered, with its own prompt */
+ E_D_REQ_TIMED_OUT,     /* it did not, within the deadline */
+ E_D_REQ_CANCELLED,     /* the user cancelled */
+ E_D_REQ_GONE,          /* the debugger or the session is gone */
+ E_D_REQ_NOT_SENT,      /* refused before it went out: .code says why */
+ E_D_REQ_OTHER_PROMPT,  /* answered by a prompt that is not the debugger's own */
+ E_D_REQ_REFUSED        /* answered, and the answer is a refusal (a step's verdict) */
 } E_D_REQ_END;
 
-/* What e_d_req_send says. */
+/* What e_d_req_send says, and what each refusal means for whoever sends
+   again: E_D_SEND_TOO_LONG is final for that command (the same command is
+   refused the same way for ever); E_D_SEND_FULL and E_D_SEND_RESYNC are
+   transient (the queue drains, the resync ends); E_D_SEND_GONE and
+   E_D_SEND_STRANDED end the session (nothing is taken until Debug > Quit). */
 #define E_D_SEND_OK       0
 #define E_D_SEND_FULL    (-1)   /* E_D_REQ_QUEUE_MAX requests are waiting */
 #define E_D_SEND_RESYNC  (-2)   /* the debugger still owes an old answer */
 #define E_D_SEND_GONE    (-3)   /* the session is over */
 #define E_D_SEND_FAILED  (-4)   /* the transport would not take the command */
 #define E_D_SEND_TOO_LONG (-5)  /* the command does not fit E_D_REQ_CMD_MAX */
+#define E_D_SEND_STRANDED (-6)  /* the debugger is at another prompt and nobody speaks it */
 
 /* The three timers the engine asks the loop for. */
 #define E_D_TIMER_QUIET     0   /* shows the waiting line */
@@ -188,6 +220,8 @@ typedef struct
  char resync_marker[E_D_REQ_MARKER_MAX];   /* its own numbered echo */
  int closing;                    /* the queue is being ended */
  int gone;                       /* the session is over */
+ int stranded;                   /* the debugger is at a prompt nobody speaks:
+                                    every sender is refused (E_D_SEND_STRANDED) */
  int waiting_shown;
  E_D_ANSWER ans;                 /* what has come for the one in flight */
  char *tail;                     /* the line that has no end yet */
@@ -315,6 +349,15 @@ void e_d_req_cancel(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, E_D_REQ_END why);
 int e_d_req_pending(const E_D_REQ_QUEUE *rq);
 
 /**
+ * e_d_req_stranded - Is the debugger at a prompt that nobody speaks?
+ * Return: 1 when every sender is refused until the session ends, else 0.
+ *
+ * The one query every writer to the debugger's input asks, so a resume does
+ * not vanish into a block the debugger is reading as text.
+ */
+int e_d_req_stranded(const E_D_REQ_QUEUE *rq);
+
+/**
  * e_d_req_marker_in - Where a numbered settle marker stands in an answer.
  * @text: the answer, or NULL; @marker: the marker with its number.
  *
@@ -334,33 +377,115 @@ void e_d_req_busy_message(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 
 /* ---- chains of steps ---- */
 
-/* One step: @command builds what to send (0 when there is nothing, the step
-   is skipped); @answered reads the answer and says E_D_STEP_*.  A table of
-   steps ends with a step whose two functions are NULL. */
+/* How one step ended, for the step's owner and for the chain's. */
+typedef struct
+{
+ E_D_REQ_END how;
+ int code;                        /* E_D_SEND_* when how is E_D_REQ_NOT_SENT */
+ const char *cmd;                 /* the step's command, as built ("" for none) */
+ const char *where;               /* the file the command is a line of, or NULL */
+ const char *prompt;              /* the other prompt's name, or "" */
+ const E_D_ANSWER *ans;           /* what came, or NULL */
+ char reason[E_D_REQ_REASON_MAX]; /* the reason alone: "the command is longer than dbx takes" */
+ char words[E_D_REQ_MSG_MAX];     /* the sentence: debugger, command, reason; no leave advice */
+} E_D_STEP_END;
+
+/* What a step's owner says when its request did not end E_D_REQ_DONE.
+   E_D_STEP_NEXT or E_D_STEP_AGAIN: the step took the outcome (a breakpoint
+   marked refused with @end->reason) and the chain goes on; E_D_STEP_STOP: the
+   chain ends with ok 0 and this record as its last.  A NULL @failed in the
+   table is E_D_STEP_STOP.  A request that was given up on (E_D_REQ_TIMED_OUT,
+   E_D_REQ_CANCELLED, E_D_REQ_GONE) ends the chain whatever @failed says: a
+   cancel is the user's, and nothing goes on behind it. */
+typedef int (*e_d_step_failed_fn)(const E_D_STEP_END *end, void *ctx);
+
+/* What a step's command builder says. */
+#define E_D_STEP_CMD_NONE  0     /* nothing to send: the step is skipped */
+#define E_D_STEP_CMD_SEND  1     /* @cmd holds the command */
+#define E_D_STEP_CMD_STOP (-1)   /* the step cannot go on: the chain ends with
+                                    ok 0, @failed told E_D_REQ_OTHER_PROMPT and
+                                    the chain's last command */
+
+/* One step: @command builds what to send (E_D_STEP_CMD_*); @answered reads
+   the answer and says E_D_STEP_*: E_D_STEP_STOP from here ends the chain
+   well (ok 1: the step read its answer and chose to stop); @failed hears of
+   every other end of the step's request.  A table of steps ends with a step
+   whose members are all NULL; a table row may leave @failed out. */
 typedef struct
 {
  int (*command)(char *cmd, size_t n, void *ctx);
  int (*answered)(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx);
+ e_d_step_failed_fn failed;
 } E_D_STEP;
 
-/* Called once when the chain ends: @ok is 0 when a request ended any way but
-   answered, or a command could not go out. */
-typedef void (*e_d_chain_done_fn)(int ok, void *ctx);
+/* How a chain ended.  @ok is 1 when the chain ran to its table's end or a
+   step's @answered said E_D_STEP_STOP; @ok is 0 when a step's @failed said
+   E_D_STEP_STOP, a step had no @failed and did not end E_D_REQ_DONE, a
+   command builder said E_D_STEP_CMD_STOP, or the chain could not start.
+   @last is the record of the step that ended it when !ok (its .how is
+   E_D_REQ_DONE when ok).  @said is 1 when the engine has said, or says
+   before control returns to the loop, or the chain said through the
+   requester's @notice, a sentence for @last. */
+typedef struct
+{
+ int ok;
+ E_D_STEP_END last;
+ int said;
+} E_D_CHAIN_END;
+
+/* Called once when the chain ends, with the record of how it ended. */
+typedef void (*e_d_chain_done_fn)(const E_D_CHAIN_END *end, void *ctx);
+
+/**
+ * e_d_chain_end_unstarted - The record for a chain that could not run at all
+ * (no debugger of the engine's, no adapter): not sent, E_D_SEND_GONE, said 0.
+ * @end: receives it.
+ *
+ * What a chain starter hands @finished instead of building a record of its
+ * own, so no one but the engine decides what an end looks like.
+ */
+void e_d_chain_end_unstarted(E_D_CHAIN_END *end);
 
 /* What a chain sends its commands through.  @request queues @cmd on
    @engine and returns 0 (E_D_SEND_OK) when it did, after which @answered
    is called exactly once; any other value means it was refused and
    @answered is never called.  The line engine below is one such engine; a
    debugger that frames its answers itself (a DAP adapter, matching answers
-   by seq) gives its own, so every backend runs the same tables of steps. */
+   by seq) gives its own, so every backend runs the same tables of steps.
+   @notice says a sentence on the status row for @engine's debugger (NULL:
+   none) and @name is the debugger's, for the sentences (NULL: "the
+   debugger").  A requester built on the stack is zeroed before its members
+   are set, so a NULL @notice is the only "none". */
 typedef int (*e_d_request_fn)(void *engine, const char *cmd,
                               e_d_answered_fn answered, void *ctx);
 
 typedef struct
 {
  e_d_request_fn request;
+ void (*notice)(const char *msg, void *engine);
+ const char *name;
  void *engine;              /* must outlive every chain run through it */
 } E_D_REQUESTER;
+
+/**
+ * e_d_req_end_words - Write the reason and the sentence of how a step ended.
+ * @end: the record: .how, .code, .cmd, .where and .prompt are read, .reason
+ * and .words written; @name: the debugger's name, or NULL.
+ *
+ * The one function that writes the words of a request's end, so the status
+ * row, a stop box and a breakpoint's mark say the same thing in the same
+ * way.  The command is shown to its first E_D_REQ_CMD_SHOWN bytes and
+ * "...", so the reason is there however long the command is.  The words
+ * carry no advice on how to leave: whoever says them on the status row of a
+ * live session appends E_D_REQ_QUIT_TAIL.
+ */
+void e_d_req_end_words(E_D_STEP_END *end, const char *name);
+
+/**
+ * e_d_req_notice - The requester's @notice for the line engine.
+ * @msg: the sentence; @engine: an E_D_REQ_LINK.
+ */
+void e_d_req_notice(const char *msg, void *engine);
 
 /* The line engine as a requester: an engine and its world, together. */
 typedef struct
@@ -380,12 +505,17 @@ int e_d_req_request(void *engine, const char *cmd, e_d_answered_fn answered,
  * e_d_chain_run - Run a table of steps, one request at a time.
  * @via: the engine the commands go through (copied; its @engine must
  * outlive the chain); @steps: the table; @ctx: handed to every step;
- * @finished: told exactly once, also when the chain cannot start.
+ * @finished: told exactly once, with the record of how the chain ended, also
+ * when the chain cannot start.
  *
  * The user sees the stop's watches and stack arrive one after the other
- * while keys still reach the editor; a cancel ends the chain quietly.
+ * while keys still reach the editor; a cancel ends the chain quietly.  A
+ * command the engine refuses ends its step as E_D_REQ_NOT_SENT: the step's
+ * @failed may take it (a breakpoint turns hollow with the reason and the
+ * chain goes on), and when it does not, the chain says it once through the
+ * requester's @notice.
  * Return: 1 while the chain runs or when it ended well at once, 0 when it
- * failed (@finished has then already been told 0).
+ * failed (@finished has then already been told).
  */
 int e_d_chain_run(const E_D_REQUESTER *via, const E_D_STEP *steps, void *ctx,
                   e_d_chain_done_fn finished);

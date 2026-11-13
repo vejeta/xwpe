@@ -865,10 +865,10 @@ static const E_D_STEP bsp_start_steps[] = {
  * bsp_start_finished - The chain ended: tell the owner, unless the start
  * was given up by e_bsp_close (then nobody waits for it any more).
  */
-static void bsp_start_finished(int ok, void *ctx)
+static void bsp_start_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  e_bsp_session *b = ctx;
- int good = ok && !b->failed;
+ int good = end->ok && !b->failed;
 
  b->starting = 0;
  if (!good && !b->err[0])
@@ -941,7 +941,9 @@ e_bsp_session *e_bsp_start_async(const char *workdir, const E_D_REQ_IO *io,
   return NULL;
  b->rio = io;
  b->starting = 1;
+ memset(&via, 0, sizeof via);   /* no notice: the server says its own b->err */
  via.request = bsp_req_request;
+ via.name = BSP_LAUNCHER_WHAT;
  via.engine = b;
  e_d_chain_run(&via, bsp_start_steps, b, bsp_start_finished);
  if (!b->starting)

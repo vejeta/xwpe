@@ -665,22 +665,64 @@ static int e_d_gdbmi_send_lines(const char *cmd)
  return(r);
 }
 
+static int e_d_ga_stranded(void);     /* (below: the request engine's word) */
+static void e_d_say_busy(void);        /* (below) */
+static void e_d_ga_notice(const char *msg, void *io);   /* (below) */
+
 /**
- * e_d_send_cmd - Send the debugger @cmd, its line ends included.
+ * e_d_write_cmd - The one raw writer of the debugger's input: send @cmd, its
+ * line ends included.
  *
  * The command goes out whole, behind what the debugger has not read yet,
- * without the editor waiting for it to read.
+ * without the editor waiting for it to read.  It asks nobody whether the
+ * debugger is listening: the callers are the request engine, whose own
+ * gate is its refusal of a command (e_d_ga_send), the quit, which must reach
+ * a debugger at any prompt (e_d_send_quit), and e_d_send_cmd, which asks the
+ * engine first.
  * Return: WPE_FD_WRITE_SENT or _QUEUED when it is on its way;
  * WPE_FD_WRITE_REFUSED when nothing went out; WPE_FD_WRITE_CLOSED when the
  * debugger closed its input (its end is reported by its output's end).
  */
-static int e_d_send_cmd(const char *cmd)
+static int e_d_write_cmd(const char *cmd)
 {
  e_d_read_runaway = 0;
  snprintf(e_d_last_cmd, sizeof e_d_last_cmd, "%s", cmd);
  if (e_d_gdbmi_on())
   return(e_d_gdbmi_send_lines(cmd));
  return(e_d_pipe_write(cmd, strlen(cmd)));
+}
+
+/**
+ * e_d_send_quit - Send the debugger its quit command.
+ * @cmd: the command, its line ends included.
+ *
+ * Not gated: Debug > Quit must reach a debugger that sits at a prompt the
+ * editor cannot speak, so that "Debug > Quit ends the session" is true.
+ * Return: as e_d_write_cmd.
+ */
+static int e_d_send_quit(const char *cmd)
+{
+ return(e_d_write_cmd(cmd));
+}
+
+/**
+ * e_d_send_cmd - Send the debugger @cmd, its line ends included, unless the
+ * debugger sits at a prompt that nobody speaks.
+ *
+ * The gate of every writer that goes around the request engine (the
+ * resumes, steps and finishes): a command sent to a debugger that reads its
+ * input as the body of a block would vanish in it and leave the run reader
+ * waiting for ever.  The user reads why on the status row.
+ * Return: as e_d_write_cmd; WPE_FD_WRITE_REFUSED when it was held back.
+ */
+static int e_d_send_cmd(const char *cmd)
+{
+ if (e_d_ga_stranded())
+ {
+  e_d_say_busy();
+  return(WPE_FD_WRITE_REFUSED);
+ }
+ return(e_d_write_cmd(cmd));
 }
 
 /**
@@ -3862,6 +3904,18 @@ static int e_d_debugger_end_signal(int program_runs)
 }
 
 /**
+ * e_d_debugger_unreachable - Will the debugger not read a quit?
+ * Return: 1 while the program runs, which does not read the debugger's
+ * input, or while the debugger sits at a prompt nobody speaks, where the
+ * quit would be read as the body of a block.  Either way it is ended by
+ * SIGTERM, and Quit does not wait the grace for a quit that is never read.
+ */
+static int e_d_debugger_unreachable(void)
+{
+ return(e_d_run_going() || e_d_ga_stranded());
+}
+
+/**
  * e_d_debugger_close_input - Close the debugger's input that was kept open
  * past its session for the quit queued in it.
  */
@@ -3914,7 +3968,7 @@ int e_d_quit_basic(FENSTER *f)
 
  /* How the debugger is ended is read before the session's memory of its
     output and of the running program is dropped below. */
- end_sig = e_d_debugger_end_signal(e_d_run_going());
+ end_sig = e_d_debugger_end_signal(e_d_debugger_unreachable());
  /* The Java program goes first: jdb's own "quit" would let a VM stopped
     at a breakpoint run on, and jdb never started it. */
  e_d_jdb_vm_end();
@@ -3930,7 +3984,7 @@ int e_d_quit_basic(FENSTER *f)
   return 0;
  /* A debugger that never answered is not spoken to: it is ended below. */
  if (e_d_quit_can_be_asked())
-  e_d_send_cmd(e_d_quit_command());
+  e_d_send_quit(e_d_quit_command());
  jdb_trace("e_d_quit_basic: quitting debugger type=%d\n", e_deb_type);
  kbdflgs = fcntl(0, F_GETFL, 0 );
  fcntl(0, F_SETFL, kbdflgs & ~O_NONBLOCK);
@@ -6499,10 +6553,14 @@ int e_make_breakpoint(FENSTER *f, int sw)
 #define E_D_CL_JDB_NO_OPEN     "Could not open:"
 #define E_D_CL_PDB_REFUSED_LINE "Debugger stopped: pdb could not change to the program's folder"
 #define E_D_CL_JDB_REFUSED_LINE "Debugger stopped: jdb could not read the start-up file"
+/* The box that ends a start the debugger cannot go on with: the words of
+   how the step ended, as the request engine writes them. */
+#define E_D_CL_STOP_FMT "Debugger stopped: %s"
+#define E_D_CL_STOP_NO_WORDS "Debugger stopped"
 
 static struct
 {
- int refused;                             /* the first command was refused        */
+ char stop_words[E_D_REQ_MSG_MAX];        /* the box that ends the start, or ""   */
  char dir[PATH_MAX];                      /* this session's own folder, or ""     */
  int n;                                   /* lines to send                        */
  int move_end;                            /* the first line after pin and move    */
@@ -6750,7 +6808,8 @@ static int e_d_cl_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
   e_d_cl.history = E_D_CL_HIST_DONE;
  else if (e_d_cl.sent == E_D_CL_LINE && e_d_cl.next == 0 && e_d_cl_first_refused(ans))
  {
-  e_d_cl.refused = 1;
+  snprintf(e_d_cl.stop_words, sizeof e_d_cl.stop_words, "%s",
+           e_d_cl_refused_line());
   e_d_cl.sent = E_D_CL_IDLE;
   return(E_D_STEP_STOP);
  }
@@ -6761,8 +6820,60 @@ static int e_d_cl_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 }
 
 /**
+ * e_d_cl_stop_words - Keep the box that ends the start, from how the step
+ * ended.
+ * @end: the record; its words say what the debugger was not given.
+ *
+ * The one writer of the stop box's text: a user whose start cannot go on
+ * reads which command failed and why, in the words every other end of a
+ * command uses.
+ */
+static void e_d_cl_stop_words(const E_D_STEP_END *end)
+{
+ snprintf(e_d_cl.stop_words, sizeof e_d_cl.stop_words, E_D_CL_STOP_FMT,
+          end->words);
+}
+
+/**
+ * e_d_cl_end_stops_start - Does this end of a step stop the start for good?
+ * @end: the record.
+ * Return: 1 for a command that can never be given (too long, the session
+ * over, the debugger at another prompt) and for a debugger left at another
+ * prompt; 0 for the refusals that pass (a full queue, an old answer still
+ * owed), which the next debugger key tries again.
+ */
+static int e_d_cl_end_stops_start(const E_D_STEP_END *end)
+{
+ if (end->how == E_D_REQ_OTHER_PROMPT)
+  return(1);
+ if (end->how != E_D_REQ_NOT_SENT)
+  return(0);
+ return(end->code != E_D_SEND_FULL && end->code != E_D_SEND_RESYNC);
+}
+
+/**
+ * e_d_cl_failed - A line the start sends did not end with the debugger's
+ * prompt.
+ * @end: how it ended; @ctx: unused.
+ *
+ * A command the debugger was not given (too long, the session over) stops
+ * the start with the box; so would a debugger left at another prompt.  The
+ * other ends were said by the engine or the chain.
+ * Return: E_D_STEP_STOP.
+ */
+static int e_d_cl_failed(const E_D_STEP_END *end, void *ctx)
+{
+ (void)ctx;
+ if (e_d_cl_end_stops_start(end))
+  e_d_cl_stop_words(end);
+ return(E_D_STEP_STOP);
+}
+
+/**
  * e_d_cl_stop_on_timer - Say why the start stopped, then end the session.
- * @data: the line to say.
+ * @data: a copy of the words, which this function frees; the session's own
+ * state is not read, since a Quit or a new start may have cleared it between
+ * the call that armed the timer and this one.
  *
  * Run from the loop and not from the answer's callback, as the restart of a
  * gdb found too old for MI is, so no descriptor is closed under the call
@@ -6773,24 +6884,27 @@ static void e_d_cl_stop_on_timer(void *data)
  ECNT *cn = WpeEditor;
  FENSTER *f = cn->f[cn->mxedt];
 
- e_error((char *)data, 0, f->fb);
+ e_error(data ? (char *)data : E_D_CL_STOP_NO_WORDS, 0, f->fb);
+ free(data);
  e_d_quit(f);
 }
 
 /**
- * e_d_cl_stop_session - The first command was refused: end the session and
- * say why, instead of debugging from the editor's empty folder.
- * Return: 1 when the session is being ended, 0 when nothing was refused.
+ * e_d_cl_stop_session - The start cannot go on: end the session and say why,
+ * instead of debugging from the editor's empty folder or with a command the
+ * debugger never took.
+ * Return: 1 when the session is being ended, 0 when nothing stopped the start.
  */
 static int e_d_cl_stop_session(void)
 {
- const char *line = e_d_cl_refused_line();
+ char *words;
 
- if (!e_d_cl.refused)
+ if (!e_d_cl.stop_words[0])
   return(0);
- e_d_cl.refused = 0;
- if (wpe_timer_add(0, 0, e_d_cl_stop_on_timer, (void *)line) <= 0)
-  e_d_cl_stop_on_timer((void *)line);
+ words = strdup(e_d_cl.stop_words);
+ e_d_cl.stop_words[0] = '\0';
+ if (wpe_timer_add(0, 0, e_d_cl_stop_on_timer, words) <= 0)
+  e_d_cl_stop_on_timer(words);
  return(1);
 }
 
@@ -11701,8 +11815,8 @@ void e_d_end_at_exit(void)
   return;
  e_d_dbg.say_later = 0;
  if (e_d_quit_can_be_asked())
-  e_d_send_cmd(e_d_quit_command());
- e_d_debugger_end(e_d_debugger_end_signal(e_d_run_going()));
+  e_d_send_quit(e_d_quit_command());
+ e_d_debugger_end(e_d_debugger_end_signal(e_d_debugger_unreachable()));
  e_d_contain_end();
 }
 
@@ -17993,9 +18107,32 @@ static int e_d_ga_send(const char *cmd, void *io)
   return(-1);
  snprintf(line, sizeof line, "%s\n", cmd);
  e_d_nb_forget();
- if (!e_d_send_went(e_d_send_cmd(line)))
+ if (!e_d_send_went(e_d_write_cmd(line)))
   return(-1);
  return(0);
+}
+
+/**
+ * e_d_ga_stranded - Is the debugger at a prompt that nobody speaks?
+ * Return: 1 when the request engine has refused every sender until the
+ * session ends.
+ */
+static int e_d_ga_stranded(void)
+{
+ return(e_d_ga.live && e_d_req_stranded(&e_d_ga.rq));
+}
+
+/**
+ * e_d_say_busy - Tell the user why a command was held back: the debugger
+ * has not finished what it was asked.
+ */
+static void e_d_say_busy(void)
+{
+ char msg[E_D_REQ_MSG_MAX];
+
+ e_d_req_busy_message(&e_d_ga.rq, &e_d_ga.io, msg, sizeof msg);
+ if (msg[0])
+  e_d_ga_notice(msg, NULL);
 }
 
 /**
@@ -18488,6 +18625,8 @@ static void e_d_ga_world(void)
  e_d_ga.link.rq = &e_d_ga.rq;
  e_d_ga.link.io = &e_d_ga.io;
  e_d_ga.via.request = e_d_req_request;
+ e_d_ga.via.notice = e_d_req_notice;
+ e_d_ga.via.name = e_d_ga.be->name;
  e_d_ga.via.engine = &e_d_ga.link;
 }
 
@@ -18761,11 +18900,13 @@ void e_d_answer_cancel(void)
 static int e_d_ga_chain_start(ECNT *cn, const E_D_STEP *steps, void *ctx,
                               e_d_chain_done_fn finished, int kind)
 {
+ E_D_CHAIN_END unstarted;
  int ret;
 
  if (!e_d_ga_backend_of(e_deb_type))
  {
-  finished(0, ctx);              /* no debugger of the engine's runs */
+  e_d_chain_end_unstarted(&unstarted);   /* no debugger of the engine's runs */
+  finished(&unstarted, ctx);
   return(0);
  }
  e_d_ga_begin(cn);
@@ -18910,6 +19051,8 @@ static void e_d_dr_begin(void)
  e_d_dr.io.notice = e_d_ga_notice;
  e_d_dr.io.name = g_dap_adapter_name;
  e_d_dr.via.request = e_dap_req_request;
+ e_d_dr.via.notice = e_d_ga_notice;
+ e_d_dr.via.name = g_dap_adapter_name;
  e_d_dr.via.engine = g_dap;
  for (i = 0; i < E_D_TIMERS; i++)
   e_d_dr.timer[i] = E_D_GA_NO_TIMER;
@@ -19117,11 +19260,13 @@ static void e_d_dr_forget(void)
 static int e_d_dr_chain_start(ECNT *cn, const E_D_STEP *steps, void *ctx,
                               e_d_chain_done_fn finished, int kind)
 {
+ E_D_CHAIN_END unstarted;
  int ret;
 
  if (!g_dap)
  {
-  finished(0, ctx);
+  e_d_chain_end_unstarted(&unstarted);   /* no adapter to ask */
+  finished(&unstarted, ctx);
   return(0);
  }
  e_d_ga.cn = cn;
@@ -19314,7 +19459,7 @@ static void e_d_dap_stop_tail(ECNT *cn, int shown)
  * @ok: 0 when an answer was given up on (the status row already says
  * which): nothing is drawn and the kept keys are dropped; @ctx: the context.
  */
-static void e_d_dc_stop_finished(int ok, void *ctx)
+static void e_d_dc_stop_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_DAP_CTX *st = ctx;
  ECNT *cn = st->cn;
@@ -19324,7 +19469,7 @@ static void e_d_dc_stop_finished(int ok, void *ctx)
   e_d_dc_free(st);
   return;
  }
- if (!ok)
+ if (!end->ok)
  {
   e_d_ga_actions_drop();
   e_d_dc_free(st);
@@ -19366,12 +19511,12 @@ static void e_d_dap_stop_ask(FENSTER *f, int pause)
  * window, then run the next kept key.
  * @ok: 0 when an answer was given up on; @ctx: the context.
  */
-static void e_d_dc_watches_finished(int ok, void *ctx)
+static void e_d_dc_watches_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_DAP_CTX *st = ctx;
  ECNT *cn = st->cn;
 
- if (!e_d_dr_chain_ended() || !ok)
+ if (!e_d_dr_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   e_d_dc_free(st);
@@ -20607,6 +20752,67 @@ static void e_d_gb_add_given_up(void)
 }
 
 /**
+ * e_d_gb_refuse_entry - A command for list entry @i could not be given to the
+ * debugger: the mark stays hollow with the reason, said on the status row
+ * until a key.
+ * @i: the entry; @reason: why, in the engine's words (the command's length,
+ * not the command, so the mark reads "not set: the command is longer than
+ * dbx takes").
+ *
+ * A user who set a breakpoint on a file with a very long name sees at once
+ * that it was not set, and why, instead of a solid mark that was never
+ * given to the debugger.
+ */
+static void e_d_gb_refuse_entry(int i, const char *reason)
+{
+ e_d_gb_take_verdict(i, 0, E_D_READ_ERROR, reason);
+ e_d_brk_say_refusal(e_d_ga_window(), i);
+ e_d_run_repaint_margin(e_d_ga.cn);
+}
+
+/**
+ * e_d_gb_not_sent_final - Can the command that was not sent never be sent?
+ * @end: the record of the step.
+ * Return: 1 for a command the engine refused for its length, which it
+ * refuses the same way for ever; 0 for the refusals that pass (a full
+ * queue, a debugger still owing an answer) and the ones that end the
+ * session.
+ */
+static int e_d_gb_not_sent_final(const E_D_STEP_END *end)
+{
+ return(end->how == E_D_REQ_NOT_SENT && end->code == E_D_SEND_TOO_LONG);
+}
+
+/**
+ * e_d_gb_add_failed - The command that sets list entry (the one of
+ * e_d_gb_late) did not end with the debugger's prompt.
+ * @end: how it ended; @ctx: unused.
+ *
+ * A command too long for the debugger turns the mark hollow with the reason
+ * and the chain goes on to the next breakpoint, so the start is not lost for
+ * one file name.  Any other refusal leaves the mark unsent, for the next
+ * chance, and ends the chain, which says why.  A command that was sent and
+ * not answered keeps its "asked" flag: the debugger may have set it, and the
+ * end of the chain clears a line it may hold (e_d_gb_add_given_up).
+ * Return: E_D_STEP_AGAIN when the mark took the refusal, else E_D_STEP_STOP.
+ */
+static int e_d_gb_add_failed(const E_D_STEP_END *end, void *ctx)
+{
+ int i;
+
+ (void)ctx;
+ if (end->how == E_D_REQ_NOT_SENT)
+  e_d_gb_late.asked = 0;
+ if (!e_d_gb_not_sent_final(end))
+  return(E_D_STEP_STOP);
+ i = e_d_brk_index_of(e_d_gb_late.file, e_d_gb_late.line);
+ if (i < 0)
+  return(E_D_STEP_STOP);
+ e_d_gb_refuse_entry(i, end->reason);
+ return(E_D_STEP_AGAIN);
+}
+
+/**
  * e_d_gdb_brk_set_id - The number gdb gave the breakpoint its answer to
  * "b file:line" names, or 0 when it gave none (it refused).
  */
@@ -20744,7 +20950,7 @@ static const E_D_STEP e_d_gdb_stop_steps[] =
  { e_d_gs_stack_cmd,  e_d_gs_stack_answered },
  { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gb_start_cmd,  e_d_gb_start_answered },
  { NULL, NULL }
 };
@@ -20754,7 +20960,7 @@ static const E_D_STEP e_d_gdb_sync_steps[] =
 {
  { e_d_gs_settle_cmd, e_d_gs_settle_answered },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -20763,7 +20969,7 @@ static const E_D_STEP e_d_gdb_sync_steps[] =
 static const E_D_STEP e_d_ga_brk_steps[] =
 {
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -21002,14 +21208,14 @@ static int e_d_gs_mark(char *file, int line)
  * which): nothing is drawn, and the kept keys are dropped.
  * @ctx: the context.
  */
-static void e_d_gs_stop_finished(int ok, void *ctx)
+static void e_d_gs_stop_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
  char file[E_D_LINE_MAX];
  int line = st->line;
 
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   e_d_gs_free(st);
@@ -21090,7 +21296,7 @@ static void e_d_gs_pause_instead(ECNT *cn)
  * @ok: 0 when an answer was given up on: the program stays stopped and the
  * status row says which answer did not come; @ctx: the context.
  */
-static void e_d_gs_sync_finished(int ok, void *ctx)
+static void e_d_gs_sync_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
@@ -21099,7 +21305,7 @@ static void e_d_gs_sync_finished(int ok, void *ctx)
  e_d_gs_free(st);
  if (!e_d_ga_chain_ended())
   return;
- if (!ok)
+ if (!end->ok)
  {
   e_refresh_editor_bars(cn);        /* stopped: the stepping keys again */
   return;
@@ -21155,7 +21361,7 @@ static int e_d_gdb_sync_on_loop(ECNT *cn)
  * answered: show the marks, then run the next kept key.
  * @ok: 0 when the answer was given up on; @ctx: the context.
  */
-static void e_d_gs_ask_finished(int ok, void *ctx)
+static void e_d_gs_ask_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
@@ -21163,7 +21369,7 @@ static void e_d_gs_ask_finished(int ok, void *ctx)
  e_d_gs_free(st);
  if (!e_d_ga_chain_ended())
   return;
- if (!ok)
+ if (!end->ok)
  {
   e_d_ga_actions_drop();
   return;
@@ -21228,11 +21434,11 @@ static int e_d_ga_ask_plain(ECNT *cn, const char *cmd)
  * have been answered: fill their windows.
  * @ok: 0 when an answer was given up on; @ctx: the context.
  */
-static void e_d_gs_windows_finished(int ok, void *ctx)
+static void e_d_gs_windows_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
 
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   e_d_gs_free(st);
@@ -21280,12 +21486,12 @@ static const E_D_STEP e_d_gdb_stack_steps[] =
  * window.
  * @ok: 0 when the answer was given up on; @ctx: the context.
  */
-static void e_d_gs_stack_finished(int ok, void *ctx)
+static void e_d_gs_stack_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  int ret;
 
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   e_d_gs_free(st);
@@ -21354,13 +21560,13 @@ static const E_D_STEP e_d_gdb_follow_steps[] =
  * watches read its locals, and its line is shown.
  * @ok: 0 when an answer was given up on; @ctx: the context.
  */
-static void e_d_gs_follow_finished(int ok, void *ctx)
+static void e_d_gs_follow_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  char file[E_D_LINE_MAX];
  int line = st->line;
 
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   e_d_gs_free(st);
@@ -21420,13 +21626,13 @@ static const E_D_STEP e_d_gdb_below_steps[] =
  * out of the library call Pause stopped in, then step.
  * @ok: 0 when the answer was given up on; @ctx: the context.
  */
-static void e_d_gs_below_finished(int ok, void *ctx)
+static void e_d_gs_below_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  int step_over = st->step_over;
 
  e_d_gs_free(st);
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   return;
@@ -21472,12 +21678,12 @@ static const E_D_STEP e_d_gdb_leave_steps[] =
  * run on to it, as a run of its own.
  * @ok: 0 when the answer was given up on; @ctx: the context.
  */
-static void e_d_gs_leave_finished(int ok, void *ctx)
+static void e_d_gs_leave_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
 
  e_d_gs_free(st);
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   return;
@@ -21570,24 +21776,64 @@ static int e_d_gu_tty_cmd(char *cmd, size_t n, void *ctx)
    on and asked again first clears a line gdb may have set unanswered. */
 static const E_D_STEP e_d_gdb_set_up_steps[] =
 {
- { e_d_cl_cmd,         e_d_cl_answered },
+ { e_d_cl_cmd,         e_d_cl_answered, e_d_cl_failed },
  { e_d_gu_confirm_cmd, e_d_gs_ignore_answer },
  { e_d_gu_tty_cmd,     e_d_gs_ignore_answer },
  { e_d_gb_remove_cmd,  e_d_gb_remove_answered },
- { e_d_gb_add_cmd,     e_d_gu_add_answered },
+ { e_d_gb_add_cmd,     e_d_gu_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
 static int e_d_gm_fell_back(E_D_GA_GO *go);   /* gdb too old for MI (below) */
 
 /**
+ * e_d_gu_session_is_over - Did the set-up end because the session did?
+ * @end: how the chain ended.
+ * Return: 1 when the debugger or the session is gone, which the session's
+ * own end says, so the set-up says nothing.
+ */
+static int e_d_gu_session_is_over(const E_D_CHAIN_END *end)
+{
+ if (end->last.how == E_D_REQ_GONE)
+  return(1);
+ return(end->last.how == E_D_REQ_NOT_SENT && end->last.code == E_D_SEND_GONE);
+}
+
+/**
+ * e_d_gu_set_up_failed - The set-up chain ended without finishing.
+ * @end: how it ended.
+ *
+ * A command that can never be given (too long for the debugger) or a
+ * debugger left at another prompt stops the start with a box that names the
+ * command and the reason: asking again would only be refused again, for
+ * ever, and the user would read nothing.  A wait given up on, a full queue
+ * or an old answer still owed leave the set-up for the next debugger key,
+ * and the status row has said why.
+ */
+static void e_d_gu_set_up_failed(const E_D_CHAIN_END *end)
+{
+ e_d_ga_actions_drop();
+ if (e_d_gu_session_is_over(end))
+  return;
+ if (e_d_cl_end_stops_start(&end->last))
+ {
+  if (!e_d_cl.stop_words[0])
+   e_d_cl_stop_words(&end->last);
+  e_d_cl_stop_session();
+  return;
+ }
+ e_d_ga.set_up_owed = 1;
+}
+
+/**
  * e_d_gu_set_up_finished - gdb is set up: the command the user pressed to
  * start the session runs now.
- * @ok: 0 when an answer was given up on: the status row names it, the keys
- * kept are dropped, and the next debugger command sets gdb up again (Debug
- * > Quit ends the session); @ctx: the context.
+ * @end: how the chain ended.  Not ok: the status row or a box names the
+ * command (see e_d_gu_set_up_failed), the keys kept are dropped, and the
+ * next debugger command sets gdb up again when that can help (Debug > Quit
+ * ends the session); @ctx: the context.
  */
-static void e_d_gu_set_up_finished(int ok, void *ctx)
+static void e_d_gu_set_up_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_GO *go = ctx;
  ECNT *cn = go->cn;
@@ -21596,10 +21842,9 @@ static void e_d_gu_set_up_finished(int ok, void *ctx)
 
  if (!e_d_ga_chain_ended())
   return;
- if (!ok)
+ if (!end->ok)
  {
-  e_d_ga_actions_drop();
-  e_d_ga.set_up_owed = 1;
+  e_d_gu_set_up_failed(end);
   return;
  }
  if (e_d_cl_stop_session())
@@ -21745,7 +21990,7 @@ static const E_D_STEP e_d_gdb_go_steps[] =
 {
  { e_d_gs_settle_cmd, e_d_gs_settle_answered },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gg_start_cmd,  e_d_gg_start_answered },
  { NULL, NULL }
 };
@@ -21937,13 +22182,13 @@ static void e_d_gg_given_up(E_D_GA_GO *go)
  * shown, keeps the program stopped and shows the stop instead.
  * @ok: 0 when an answer was given up on; @ctx: the context.
  */
-static void e_d_gg_finished(int ok, void *ctx)
+static void e_d_gg_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_GO *go = ctx;
 
  if (!e_d_ga_chain_ended())
   return;
- if (!ok)
+ if (!end->ok)
  {
   e_d_gg_given_up(go);
   return;
@@ -22335,7 +22580,7 @@ static const E_D_STEP e_d_pdb_stop_steps[] =
  { e_d_gp_frames_cmd,       e_d_gp_frames_answered },
  { e_d_gp_stop_watch_cmd,   e_d_gs_watch_answered },
  { e_d_gb_remove_cmd,       e_d_gb_remove_answered },
- { e_d_gb_add_cmd,          e_d_gb_add_answered },
+ { e_d_gb_add_cmd,          e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gp_cursor_clear_cmd, e_d_gs_ignore_answer },
  { NULL, NULL }
 };
@@ -22369,14 +22614,14 @@ static void e_d_gp_show_stop(ECNT *cn, char *file, int line, int start_brk)
  * which): nothing is drawn, and the kept keys are dropped.
  * @ctx: the context.
  */
-static void e_d_gp_stop_finished(int ok, void *ctx)
+static void e_d_gp_stop_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
  char file[E_D_LINE_MAX];
  int line = st->line, start_brk = st->start_brk;
 
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   e_d_gs_free(st);
@@ -22584,7 +22829,7 @@ static void e_d_gp_pause_shown(ECNT *cn, int how, char *file, int line)
  * @ok: 0 when an answer was given up on: nothing is drawn; @ctx: the
  * context.
  */
-static void e_d_gp_pause_finished(int ok, void *ctx)
+static void e_d_gp_pause_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
@@ -22595,7 +22840,7 @@ static void e_d_gp_pause_finished(int ok, void *ctx)
  e_d_gs_free(st);
  if (!e_d_ga_chain_ended())
   return;
- if (!ok)
+ if (!end->ok)
  {
   e_d_ga_actions_drop();
   return;
@@ -22694,7 +22939,7 @@ static const E_D_STEP e_d_pdb_sync_steps[] =
  { e_d_gs_settle_cmd,      e_d_gs_settle_answered },
  { e_d_gp_where_cmd,       e_d_gp_sync_where_answered },
  { e_d_gp_sync_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,         e_d_gb_add_answered },
+ { e_d_gb_add_cmd,         e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_ga_cursor_set_cmd,  e_d_gs_ignore_answer },
  { NULL, NULL }
 };
@@ -22718,7 +22963,7 @@ static void e_d_gp_sync_leave(void)
  * @ok: 0 when an answer was given up on: the program stays stopped and the
  * status row says which answer did not come; @ctx: the context.
  */
-static void e_d_gp_sync_finished(int ok, void *ctx)
+static void e_d_gp_sync_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
@@ -22728,7 +22973,7 @@ static void e_d_gp_sync_finished(int ok, void *ctx)
  e_d_gs_free(st);
  if (!e_d_ga_chain_ended())
   return;
- if (!ok)
+ if (!end->ok)
  {
   e_refresh_editor_bars(cn);        /* stopped: the stepping keys again */
   return;
@@ -22784,9 +23029,9 @@ static int e_d_pdb_sync_on_loop(ECNT *cn)
    have set unanswered. */
 static const E_D_STEP e_d_pdb_set_up_steps[] =
 {
- { e_d_cl_cmd,        e_d_cl_answered },
+ { e_d_cl_cmd,        e_d_cl_answered, e_d_cl_failed },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gu_add_answered },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -22847,7 +23092,7 @@ static const E_D_STEP e_d_pdb_go_steps[] =
 {
  { e_d_gs_settle_cmd,        e_d_gs_settle_answered },
  { e_d_gb_remove_cmd,        e_d_gb_remove_answered },
- { e_d_gb_add_cmd,           e_d_gb_add_answered },
+ { e_d_gb_add_cmd,           e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_ga_cursor_set_cmd,    e_d_gs_ignore_answer },
  { e_d_gp_finish_frames_cmd, e_d_gp_frames_answered },
  { NULL, NULL }
@@ -23657,7 +23902,7 @@ static const E_D_STEP e_d_jdb_stop_steps[] =
  { e_d_gj_frames_cmd,       e_d_gj_frames_answered },
  { e_d_gj_stop_watch_cmd,   e_d_gs_watch_answered },
  { e_d_gb_remove_cmd,       e_d_gb_remove_answered },
- { e_d_gb_add_cmd,          e_d_gb_add_answered },
+ { e_d_gb_add_cmd,          e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gj_cursor_clear_cmd, e_d_gs_ignore_answer },
  { e_d_gj_start_clear_cmd,  e_d_gb_start_answered },
  { NULL, NULL }
@@ -23694,14 +23939,14 @@ static void e_d_gj_show_stop(ECNT *cn, const char *stop)
  * which): nothing is drawn, and the kept keys are dropped.
  * @ctx: the context.
  */
-static void e_d_gj_stop_finished(int ok, void *ctx)
+static void e_d_gj_stop_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
  char *stop = st->stop;
 
  st->stop = NULL;
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   e_d_gs_free(st);
@@ -23939,7 +24184,7 @@ static const E_D_STEP e_d_jdb_pause_steps[] =
  { e_d_gj_up_cmd,               e_d_gj_up_answered },
  { e_d_gj_pause_watch_cmd,      e_d_gs_watch_answered },
  { e_d_gb_remove_cmd,           e_d_gb_remove_answered },
- { e_d_gb_add_cmd,              e_d_gb_add_answered },
+ { e_d_gb_add_cmd,              e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gj_cursor_clear_cmd,     e_d_gs_ignore_answer },
  { e_d_gj_start_clear_cmd,      e_d_gb_start_answered },
  { NULL, NULL }
@@ -23980,12 +24225,12 @@ static void e_d_gj_pause_shown(ECNT *cn, E_D_GA_CTX *st)
  * @ok: 0 when an answer was given up on: nothing is drawn; @ctx: the
  * context.
  */
-static void e_d_gj_pause_finished(int ok, void *ctx)
+static void e_d_gj_pause_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
 
- if (!e_d_ga_chain_ended() || !ok)
+ if (!e_d_ga_chain_ended() || !end->ok)
  {
   e_d_ga_actions_drop();
   e_d_gs_free(st);
@@ -24035,9 +24280,9 @@ static void e_d_gj_pause_instead(ECNT *cn)
    have set unanswered. */
 static const E_D_STEP e_d_jdb_set_up_steps[] =
 {
- { e_d_cl_cmd,        e_d_cl_answered },
+ { e_d_cl_cmd,        e_d_cl_answered, e_d_cl_failed },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gu_add_answered },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -24084,7 +24329,7 @@ static const E_D_STEP e_d_jdb_go_steps[] =
 {
  { e_d_gs_settle_cmd,        e_d_gj_settle_answered },
  { e_d_gb_remove_cmd,        e_d_gb_remove_answered },
- { e_d_gb_add_cmd,           e_d_gb_add_answered },
+ { e_d_gb_add_cmd,           e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_ga_cursor_set_cmd,    e_d_gs_ignore_answer },
  { e_d_gg_start_cmd,         e_d_gg_start_answered },
  { e_d_gj_finish_frames_cmd, e_d_gj_frames_answered },
@@ -24301,7 +24546,7 @@ static const E_D_STEP e_d_a68g_stop_steps[] =
  { e_d_ga68_frames_cmd,     e_d_ga68_frames_answered },
  { e_d_gs_watch_cmd,        e_d_gs_watch_answered },
  { e_d_ga68_stop_reset_cmd, e_d_ga68_reset_answered },
- { e_d_gb_add_cmd,          e_d_gb_add_answered },
+ { e_d_gb_add_cmd,          e_d_gb_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -24333,7 +24578,7 @@ static void e_d_ga68_show_stop(E_D_GA_CTX *st)
  * removal, so the next request clears it and a later run passes its line.
  * @ctx: the context.
  */
-static void e_d_ga68_stop_finished(int ok, void *ctx)
+static void e_d_ga68_stop_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
  ECNT *cn = st->cn;
@@ -24344,7 +24589,7 @@ static void e_d_ga68_stop_finished(int ok, void *ctx)
   e_d_gs_free(st);
   return;
  }
- if (!ok)
+ if (!end->ok)
  {
   e_d_ga68_cursor_brk_goes();
   e_d_ga_actions_drop();
@@ -24402,7 +24647,7 @@ static void e_d_a68g_pause_instead(ECNT *cn)
 static const E_D_STEP e_d_a68g_sync_steps[] =
 {
  { e_d_ga68_reset_cmd,    e_d_ga68_reset_answered },
- { e_d_gb_add_cmd,        e_d_gb_add_answered },
+ { e_d_gb_add_cmd,        e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_ga_cursor_set_cmd, e_d_gs_ignore_answer },
  { NULL, NULL }
 };
@@ -24425,7 +24670,7 @@ static int e_d_a68g_sync_on_loop(ECNT *cn)
 static const E_D_STEP e_d_a68g_set_up_steps[] =
 {
  { e_d_ga68_reset_cmd, e_d_ga68_reset_answered },
- { e_d_gb_add_cmd,     e_d_gu_add_answered },
+ { e_d_gb_add_cmd,     e_d_gu_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -24433,7 +24678,7 @@ static const E_D_STEP e_d_a68g_set_up_steps[] =
 static const E_D_STEP e_d_a68g_brk_steps[] =
 {
  { e_d_ga68_reset_cmd, e_d_ga68_reset_answered },
- { e_d_gb_add_cmd,     e_d_gb_add_answered },
+ { e_d_gb_add_cmd,     e_d_gb_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -24471,7 +24716,7 @@ static int e_d_ga68_finish_frames_cmd(char *cmd, size_t n, void *ctx)
 static const E_D_STEP e_d_a68g_go_steps[] =
 {
  { e_d_ga68_reset_cmd,         e_d_ga68_reset_answered },
- { e_d_gb_add_cmd,             e_d_gb_add_answered },
+ { e_d_gb_add_cmd,             e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_ga_cursor_set_cmd,      e_d_gs_ignore_answer },
  { e_d_ga68_finish_frames_cmd, e_d_ga68_frames_answered },
  { NULL, NULL }
@@ -24986,6 +25231,31 @@ static int e_d_gsdb_set_up_add_answered(E_D_REQ_END how, E_D_ANSWER *ans,
  if (e_d_gsdb_file_answered())
   return(E_D_STEP_AGAIN);
  return(e_d_gu_add_answered(how, ans, ctx));
+}
+
+/**
+ * e_d_gsdb_add_failed - A command of the breakpoint step did not end with
+ * sdb's prompt: the "e file" that comes first, or the breakpoint's own.
+ * @end: how it ended; @ctx: unused.
+ *
+ * A file name too long for the "e file" command leaves its breakpoint
+ * hollow with the reason, as a breakpoint command too long does.
+ * Return: E_D_STEP_AGAIN when a mark took the refusal, else E_D_STEP_STOP.
+ */
+static int e_d_gsdb_add_failed(const E_D_STEP_END *end, void *ctx)
+{
+ int i;
+
+ if (!e_d_gsdb.asked)
+  return(e_d_gb_add_failed(end, ctx));
+ if (end->how != E_D_REQ_NOT_SENT)
+  return(E_D_STEP_STOP);
+ e_d_gsdb.asked = 0;             /* the "e file" never went out */
+ i = e_d_gb_next_unsent();
+ if (!e_d_gb_not_sent_final(end) || i < 0)
+  return(E_D_STEP_STOP);
+ e_d_gb_refuse_entry(i, end->reason);
+ return(E_D_STEP_AGAIN);
 }
 
 /* step: one breakpoint the user removed, sdb told its file first */
@@ -25664,7 +25934,7 @@ static const E_D_STEP e_d_sdb_stop_steps[] =
  { e_d_gc_stack_cmd,        e_d_gs_stack_answered },
  { e_d_gs_watch_cmd,        e_d_gs_watch_answered },
  { e_d_gsdb_remove_cmd,     e_d_gsdb_remove_answered },
- { e_d_gsdb_add_cmd,        e_d_gsdb_add_answered },
+ { e_d_gsdb_add_cmd,        e_d_gsdb_add_answered, e_d_gsdb_add_failed },
  { NULL, NULL }
 };
 
@@ -25674,7 +25944,7 @@ static const E_D_STEP e_d_dbx_stop_steps[] =
  { e_d_gc_stack_cmd,  e_d_gs_stack_answered },
  { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -25684,7 +25954,7 @@ static const E_D_STEP e_d_xdb_stop_steps[] =
  { e_d_gc_stack_cmd,  e_d_gs_stack_answered },
  { e_d_gs_watch_cmd,  e_d_gs_watch_answered },
  { e_d_gx_remove_cmd, e_d_gx_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -25694,14 +25964,14 @@ static const E_D_STEP e_d_xdb_stop_steps[] =
 static const E_D_STEP e_d_sdb_set_up_steps[] =
 {
  { e_d_gsdb_remove_cmd, e_d_gsdb_remove_answered },
- { e_d_gsdb_add_cmd,    e_d_gsdb_set_up_add_answered },
+ { e_d_gsdb_add_cmd,    e_d_gsdb_set_up_add_answered, e_d_gsdb_add_failed },
  { NULL, NULL }
 };
 
 static const E_D_STEP e_d_dbx_set_up_steps[] =
 {
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gu_add_answered },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -25709,7 +25979,7 @@ static const E_D_STEP e_d_xdb_set_up_steps[] =
 {
  { e_d_gx_set_up_cmd, e_d_gs_ignore_answer },
  { e_d_gx_remove_cmd, e_d_gx_remove_answered },
- { e_d_gb_add_cmd,    e_d_gu_add_answered },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -25718,14 +25988,14 @@ static const E_D_STEP e_d_xdb_set_up_steps[] =
 static const E_D_STEP e_d_sdb_brk_steps[] =
 {
  { e_d_gsdb_remove_cmd, e_d_gsdb_remove_answered },
- { e_d_gsdb_add_cmd,    e_d_gsdb_add_answered },
+ { e_d_gsdb_add_cmd,    e_d_gsdb_add_answered, e_d_gsdb_add_failed },
  { NULL, NULL }
 };
 
 static const E_D_STEP e_d_xdb_brk_steps[] =
 {
  { e_d_gx_remove_cmd, e_d_gx_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -25770,7 +26040,7 @@ static const E_D_STEP e_d_xdb_follow_steps[] =
 static const E_D_STEP e_d_sdb_go_steps[] =
 {
  { e_d_gsdb_remove_cmd,     e_d_gsdb_remove_answered },
- { e_d_gsdb_add_cmd,        e_d_gsdb_add_answered },
+ { e_d_gsdb_add_cmd,        e_d_gsdb_add_answered, e_d_gsdb_add_failed },
  { e_d_gsdb_start_cmd,      e_d_gsdb_start_answered },
  { e_d_gsdb_cursor_set_cmd, e_d_gsdb_cursor_set_answered },
  { NULL, NULL }
@@ -25779,7 +26049,7 @@ static const E_D_STEP e_d_sdb_go_steps[] =
 static const E_D_STEP e_d_dbx_go_steps[] =
 {
  { e_d_gb_remove_cmd,     e_d_gb_remove_answered },
- { e_d_gb_add_cmd,        e_d_gb_add_answered },
+ { e_d_gb_add_cmd,        e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gg_start_cmd,      e_d_gg_start_answered },
  { e_d_ga_cursor_set_cmd, e_d_gc_cursor_set_answered },
  { NULL, NULL }
@@ -25788,7 +26058,7 @@ static const E_D_STEP e_d_dbx_go_steps[] =
 static const E_D_STEP e_d_xdb_go_steps[] =
 {
  { e_d_gx_remove_cmd,     e_d_gx_remove_answered },
- { e_d_gb_add_cmd,        e_d_gb_add_answered },
+ { e_d_gb_add_cmd,        e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gg_start_cmd,      e_d_gg_start_answered },
  { e_d_ga_cursor_set_cmd, e_d_gc_cursor_set_answered },
  { NULL, NULL }
@@ -26174,14 +26444,14 @@ static int e_d_gm_tty_cmd(char *cmd, size_t n, void *ctx)
    with its line interface before anything else is asked. */
 static const E_D_STEP e_d_gdbmi_set_up_steps[] =
 {
- { e_d_cl_cmd,          e_d_cl_answered },
+ { e_d_cl_cmd,          e_d_cl_answered, e_d_cl_failed },
  { e_d_gm_version_cmd,  e_d_gm_version_answered },
  { e_d_gm_features_cmd, e_d_gm_features_answered },
  { e_d_gm_confirm_cmd,  e_d_gs_ignore_answer },
  { e_d_gm_async_cmd,    e_d_gs_ignore_answer },
  { e_d_gm_tty_cmd,      e_d_gs_ignore_answer },
  { e_d_gb_remove_cmd,   e_d_gb_remove_answered },
- { e_d_gb_add_cmd,      e_d_gu_add_answered },
+ { e_d_gb_add_cmd,      e_d_gu_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -26434,7 +26704,7 @@ static const E_D_STEP e_d_gdbmi_stop_steps[] =
  { e_d_gm_stack_cmd,  e_d_gm_stack_answered },
  { e_d_gm_watch_cmd,  e_d_gm_watch_answered },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gb_start_cmd,  e_d_gb_start_answered },
  { NULL, NULL }
 };
@@ -26443,7 +26713,7 @@ static const E_D_STEP e_d_gdbmi_stop_steps[] =
 static const E_D_STEP e_d_gdbmi_sync_steps[] =
 {
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { NULL, NULL }
 };
 
@@ -26476,7 +26746,7 @@ static const E_D_STEP e_d_gdbmi_follow_steps[] =
 static const E_D_STEP e_d_gdbmi_go_steps[] =
 {
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gb_add_answered },
+ { e_d_gb_add_cmd,    e_d_gb_add_answered, e_d_gb_add_failed },
  { e_d_gg_start_cmd,  e_d_gg_start_answered },
  { NULL, NULL }
 };

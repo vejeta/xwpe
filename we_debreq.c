@@ -25,8 +25,10 @@
 #define DIGIT_BASE      10
 #define CANCEL_FMT      E_D_REQ_CANCEL_FMT
 #define TIMEOUT_FMT     E_D_REQ_TIMEOUT_FMT
-#define BUSY_FMT        "%s is still answering `%s`: Debug > Quit ends the session"
 #define DEFAULT_NAME    "debugger"
+#define ELLIPSIS        "..."
+#define UTF8_CONT_MASK  0xC0      /* the top bits of a UTF-8 continuation byte */
+#define UTF8_CONT_BITS  0x80
 
 /* ---- text buffers ---- */
 
@@ -252,13 +254,23 @@ void e_d_req_busy_message(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 	if (n == 0)
 		return;
 	out[0] = '\0';
+	if (rq->stranded) {
+		snprintf(out, n, E_D_REQ_AT_PROMPT_FMT E_D_REQ_QUIT_TAIL,
+		         world_name(io), rq->owed_cmd);
+		return;
+	}
 	if (rq->resync)
 		cmd = rq->owed_cmd;
 	else if (rq->n > 0)
 		cmd = rq->q[rq->head].cmd;
 	else
 		return;
-	snprintf(out, n, BUSY_FMT, world_name(io), cmd);
+	snprintf(out, n, E_D_REQ_BUSY_FMT E_D_REQ_QUIT_TAIL, world_name(io), cmd);
+}
+
+int e_d_req_stranded(const E_D_REQ_QUEUE *rq)
+{
+	return rq->stranded;
 }
 
 /* ---- the error stream at a prompt ---- */
@@ -425,6 +437,8 @@ static int send_refusal(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 {
 	if (rq->gone || rq->closing)
 		return E_D_SEND_GONE;
+	if (rq->stranded)
+		return E_D_SEND_STRANDED;
 	if (rq->resync)
 		return E_D_SEND_RESYNC;
 	if (!e_d_req_cmd_fits(io->name, cmd))
@@ -824,6 +838,7 @@ void e_d_req_cancel(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, E_D_REQ_END why)
 	if (why == E_D_REQ_GONE) {
 		rq->gone = 1;
 		rq->resync = 0;
+		rq->stranded = 0;
 	}
 	if (count == 0)
 		return;
@@ -873,75 +888,320 @@ typedef struct
 	void *ctx;
 	e_d_chain_done_fn finished;
 	int idx;
+	char last_cmd[E_D_REQ_CMD_MAX + 1];   /* the command of the step in flight */
 } E_D_CHAIN;
 
 #define CHAIN_FAILED   0
 #define CHAIN_RUNNING  1
 #define CHAIN_ENDED    2
+#define WHERE_SHOWN    128                /* bytes of a file name a sentence shows */
+#define CMD_TEXT_MAX   (E_D_REQ_CMD_SHOWN + sizeof ELLIPSIS + WHERE_SHOWN + 16)
+#define NO_PROMPT      ""
 
 static int chain_step_is_end(const E_D_STEP *s)
 {
-	return !s->command && !s->answered;
+	return !s->command && !s->answered && !s->failed;
+}
+
+/* ---- how a step ended, and the words that say it ---- */
+
+/**
+ * cmd_cut_shown - The longest start of @cmd a sentence shows, ending where a
+ * character does, so a name written in UTF-8 is never cut in the middle.
+ * Return: the bytes to show.
+ */
+static size_t cmd_cut_shown(const char *cmd)
+{
+	size_t n = strlen(cmd);
+
+	if (n <= E_D_REQ_CMD_SHOWN)
+		return n;
+	n = E_D_REQ_CMD_SHOWN;
+	while (n > 0 && ((unsigned char)cmd[n] & UTF8_CONT_MASK) == UTF8_CONT_BITS)
+		n--;
+	return n;
 }
 
 /**
- * chain_end - The chain is over: tell its owner once and free it.
- * Return: CHAIN_ENDED when @ok, else CHAIN_FAILED.
+ * cmd_text - How a sentence names a command: in quotes, cut to its first
+ * E_D_REQ_CMD_SHOWN bytes and "..." when it is longer, and the file it is a
+ * line of in brackets when it has one.
+ * @out, @n: the text.
  */
-static int chain_end(E_D_CHAIN *ch, int ok)
+static void cmd_text(const E_D_STEP_END *end, char *out, size_t n)
+{
+	const char *cmd = end->cmd ? end->cmd : "";
+	size_t shown = cmd_cut_shown(cmd);
+	const char *more = cmd[shown] ? ELLIPSIS : "";
+
+	if (end->where && end->where[0])
+		snprintf(out, n, "`%.*s%s` (%.*s)", (int)shown, cmd, more,
+		         WHERE_SHOWN, end->where);
+	else
+		snprintf(out, n, "`%.*s%s`", (int)shown, cmd, more);
+}
+
+/**
+ * send_reason - Why the engine did not take a command.
+ * @code: E_D_SEND_*; @name: the debugger's; @out, @n: the reason alone.
+ */
+static void send_reason(int code, const char *name, char *out, size_t n)
+{
+	switch (code) {
+	case E_D_SEND_TOO_LONG:
+		snprintf(out, n, E_D_REQ_TOO_LONG_REASON, name);
+		break;
+	case E_D_SEND_FULL:
+		snprintf(out, n, "%s", E_D_REQ_FULL_REASON);
+		break;
+	case E_D_SEND_RESYNC:
+		snprintf(out, n, E_D_REQ_RESYNC_REASON, name);
+		break;
+	case E_D_SEND_GONE:
+		snprintf(out, n, "%s", E_D_REQ_GONE_REASON);
+		break;
+	case E_D_SEND_FAILED:
+		snprintf(out, n, E_D_REQ_FAILED_REASON, name);
+		break;
+	case E_D_SEND_STRANDED:
+		snprintf(out, n, E_D_REQ_STRANDED_REASON, name);
+		break;
+	default:
+		snprintf(out, n, "%s", E_D_REQ_UNKNOWN_REASON);
+		break;
+	}
+}
+
+void e_d_req_end_words(E_D_STEP_END *end, const char *name)
+{
+	char cmdtxt[CMD_TEXT_MAX];
+
+	if (!name)
+		name = "the debugger";
+	cmd_text(end, cmdtxt, sizeof cmdtxt);
+	end->words[0] = '\0';
+	if (end->how == E_D_REQ_NOT_SENT) {
+		send_reason(end->code, name, end->reason, sizeof end->reason);
+		snprintf(end->words, sizeof end->words, E_D_REQ_NOT_SENT_FMT, name,
+		         cmdtxt, end->reason);
+	} else if (end->how == E_D_REQ_OTHER_PROMPT) {
+		end->reason[0] = '\0';
+		snprintf(end->words, sizeof end->words, E_D_REQ_OTHER_PROMPT_FMT,
+		         name, cmdtxt, end->prompt ? end->prompt : NO_PROMPT);
+	} else if (end->how == E_D_REQ_REFUSED) {
+		snprintf(end->words, sizeof end->words, E_D_REQ_REFUSED_FMT, name,
+		         cmdtxt, end->reason);
+	} else {
+		end->reason[0] = '\0';   /* a request given up on is said by the engine */
+	}
+}
+
+/**
+ * step_end_make - The record of how the step of @ch ended.
+ * @end: receives it; @how, @code: the end and, for a request not sent, why;
+ * @ans: what came or NULL.
+ *
+ * The command is the chain's own copy, which lives as long as the chain, so
+ * the record stays valid for the owner's @finished.
+ */
+static void step_end_make(const E_D_CHAIN *ch, E_D_STEP_END *end,
+                          E_D_REQ_END how, int code, const E_D_ANSWER *ans)
+{
+	memset(end, 0, sizeof *end);
+	end->how = how;
+	end->code = code;
+	end->cmd = ch->last_cmd;
+	end->prompt = NO_PROMPT;
+	end->ans = ans;
+	e_d_req_end_words(end, ch->via.name);
+}
+
+void e_d_chain_end_unstarted(E_D_CHAIN_END *end)
+{
+	memset(end, 0, sizeof *end);
+	end->last.how = E_D_REQ_NOT_SENT;
+	end->last.code = E_D_SEND_GONE;
+	end->last.cmd = "";
+	end->last.prompt = NO_PROMPT;
+}
+
+void e_d_req_notice(const char *msg, void *engine)
+{
+	E_D_REQ_LINK *link = engine;
+
+	world_notice(link->io, msg);
+}
+
+/**
+ * chain_say_not_sent - Say, once, a step the chain could not give to the
+ * debugger and that no step owner took.
+ * @ch: the chain; @end: the record.
+ * Return: 1 when a sentence was said (the requester has a @notice), else 0.
+ */
+static int chain_say_not_sent(const E_D_CHAIN *ch, const E_D_STEP_END *end)
+{
+	char msg[E_D_REQ_MSG_MAX];
+
+	if (!ch->via.notice)
+		return 0;
+	snprintf(msg, sizeof msg, "%.*s%s",
+	         (int)(sizeof msg - sizeof E_D_REQ_QUIT_TAIL), end->words,
+	         E_D_REQ_QUIT_TAIL);
+	ch->via.notice(msg, ch->via.engine);
+	return 1;
+}
+
+/**
+ * chain_end - The chain is over: tell its owner once, with the record, and
+ * free it.
+ * @ok: 1 when it ended well; @last: the record of the step that ended it, or
+ * NULL when it ended well; @said: a sentence was said for @last.
+ * Return: CHAIN_ENDED when @ok, else CHAIN_FAILED.
+ *
+ * The owner hears it before the chain is freed, since the record points at
+ * the chain's copy of the command.
+ */
+static int chain_end(E_D_CHAIN *ch, int ok, const E_D_STEP_END *last, int said)
 {
 	e_d_chain_done_fn finished = ch->finished;
-	void *ctx = ch->ctx;
+	E_D_CHAIN_END end;
 
-	free(ch);
+	memset(&end, 0, sizeof end);
+	end.ok = ok;
+	end.said = said;
+	if (last) {
+		end.last = *last;
+	} else {
+		end.last.how = E_D_REQ_DONE;
+		end.last.cmd = "";
+		end.last.prompt = NO_PROMPT;
+	}
+	ch->finished = NULL;
 	if (finished)
-		finished(ok, ctx);
+		finished(&end, ch->ctx);
+	free(ch);
 	return ok ? CHAIN_ENDED : CHAIN_FAILED;
 }
 
 static int chain_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx);
 
 /**
+ * chain_not_taken - A step's command did not go out: ask the step's owner
+ * what it means, and say it when nobody took it.
+ * @ch: the chain; @s: the step; @how, @code: E_D_REQ_NOT_SENT and the
+ * engine's refusal, or E_D_REQ_OTHER_PROMPT with code 0 when the builder
+ * said E_D_STEP_CMD_STOP.
+ * Return: E_D_STEP_NEXT or E_D_STEP_AGAIN when the owner took it and the
+ * chain goes on, E_D_STEP_STOP when the chain has ended.
+ */
+static int chain_not_taken(E_D_CHAIN *ch, const E_D_STEP *s, E_D_REQ_END how,
+                           int code)
+{
+	E_D_STEP_END end;
+	int verdict = E_D_STEP_STOP;
+
+	step_end_make(ch, &end, how, code, NULL);
+	if (s->failed)
+		verdict = s->failed(&end, ch->ctx);
+	if (how == E_D_REQ_OTHER_PROMPT) {
+		/* The builder said the step cannot go on: whoever owns it has the
+		   words (a box); with no owner the chain says them. */
+		chain_end(ch, 0, &end, s->failed ? 0 : chain_say_not_sent(ch, &end));
+		return E_D_STEP_STOP;
+	}
+	if (verdict != E_D_STEP_STOP)
+		return verdict;
+	chain_end(ch, 0, &end, chain_say_not_sent(ch, &end));
+	return E_D_STEP_STOP;
+}
+
+/**
  * chain_send_step - Send the command of the step at the chain's position.
  * Return: CHAIN_RUNNING with a request out, or the chain's end.
+ *
+ * A step whose command the engine refuses is told to its owner; when the
+ * owner takes it (a breakpoint marked refused) this loop goes on to the
+ * next step in the same frame, so sixty refused breakpoints do not nest
+ * sixty frames.
  */
 static int chain_send_step(E_D_CHAIN *ch)
 {
 	/* One byte more than any command may take: a step that writes more is
-	   cut to E_D_REQ_CMD_MAX bytes, which every debugger's limit refuses,
-	   so the chain ends failed and a different, shorter command is never
-	   sent in its place. */
+	   cut to E_D_REQ_CMD_MAX bytes, which every debugger's limit refuses.
+	   The step then ends as an E_D_SEND_TOO_LONG record, and a different,
+	   shorter command is never sent in its place. */
 	char cmd[E_D_REQ_CMD_MAX + 1];
 
 	for (;;) {
 		const E_D_STEP *s = &ch->steps[ch->idx];
+		int built, sent, verdict;
 
 		if (chain_step_is_end(s))
-			return chain_end(ch, 1);
-		if (!s->command || s->command(cmd, sizeof cmd, ch->ctx) == 0) {
+			return chain_end(ch, 1, NULL, 0);
+		built = s->command ? s->command(cmd, sizeof cmd, ch->ctx)
+		                   : E_D_STEP_CMD_NONE;
+		if (built == E_D_STEP_CMD_STOP) {
+			chain_not_taken(ch, s, E_D_REQ_OTHER_PROMPT, 0);
+			return CHAIN_FAILED;
+		}
+		if (built == E_D_STEP_CMD_NONE) {
 			ch->idx++;                      /* nothing to send: skipped */
 			continue;
 		}
-		if (ch->via.request(ch->via.engine, cmd, chain_answered, ch) != E_D_SEND_OK)
-			return chain_end(ch, 0);
-		return CHAIN_RUNNING;
+		snprintf(ch->last_cmd, sizeof ch->last_cmd, "%s", cmd);
+		sent = ch->via.request(ch->via.engine, cmd, chain_answered, ch);
+		if (sent == E_D_SEND_OK)
+			return CHAIN_RUNNING;
+		verdict = chain_not_taken(ch, s, E_D_REQ_NOT_SENT, sent);
+		if (verdict == E_D_STEP_STOP)
+			return CHAIN_FAILED;
+		if (verdict == E_D_STEP_NEXT)
+			ch->idx++;
 	}
 }
 
-/** chain_answered - A step's request ended: read it, then go where it says. */
+/** chain_given_up - Did a request end because the user or the clock gave up? */
+static int chain_given_up(E_D_REQ_END how)
+{
+	return how == E_D_REQ_TIMED_OUT || how == E_D_REQ_CANCELLED ||
+	       how == E_D_REQ_GONE;
+}
+
+/** chain_engine_said - Did the engine say how this request ended? */
+static int chain_engine_said(E_D_REQ_END how)
+{
+	return how == E_D_REQ_TIMED_OUT || how == E_D_REQ_CANCELLED;
+}
+
+/**
+ * chain_answered - A step's request ended: read it, then go where it says.
+ *
+ * A request that did not end with the debugger's own prompt reaches its
+ * step's @failed as a record.  The chain ends there when the owner says stop
+ * and always when the request was given up on.
+ */
 static int chain_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 {
 	E_D_CHAIN *ch = ctx;
 	const E_D_STEP *s = &ch->steps[ch->idx];
+	E_D_STEP_END end;
 	int verdict;
 
 	if (how != E_D_REQ_DONE) {
-		chain_end(ch, 0);
-		return E_D_STEP_STOP;
+		step_end_make(ch, &end, how, how == E_D_REQ_NOT_SENT ? E_D_SEND_STRANDED : 0, ans);
+		verdict = s->failed ? s->failed(&end, ch->ctx) : E_D_STEP_STOP;
+		if (chain_given_up(how) || verdict == E_D_STEP_STOP) {
+			chain_end(ch, 0, &end, chain_engine_said(how));
+			return E_D_STEP_STOP;
+		}
+		if (verdict == E_D_STEP_NEXT)
+			ch->idx++;
+		chain_send_step(ch);
+		return verdict;
 	}
 	verdict = s->answered ? s->answered(how, ans, ch->ctx) : E_D_STEP_NEXT;
 	if (verdict == E_D_STEP_STOP) {
-		chain_end(ch, 1);
+		chain_end(ch, 1, NULL, 0);
 		return verdict;
 	}
 	if (verdict == E_D_STEP_NEXT)
@@ -956,8 +1216,12 @@ int e_d_chain_run(const E_D_REQUESTER *via, const E_D_STEP *steps, void *ctx,
 	E_D_CHAIN *ch = calloc(1, sizeof *ch);
 
 	if (!ch) {
+		E_D_CHAIN_END end;
+
+		e_d_chain_end_unstarted(&end);
+		end.last.code = E_D_SEND_FAILED;
 		if (finished)
-			finished(0, ctx);
+			finished(&end, ctx);
 		return 0;
 	}
 	ch->via = *via;

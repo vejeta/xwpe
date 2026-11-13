@@ -690,6 +690,18 @@ typedef struct
 	int finished_calls;
 	int finished_ok;
 	int never_ran;
+	E_D_STEP_END last;                    /* the record the chain ended with */
+	char last_cmd[E_D_REQ_CMD_MAX + 1];   /* its command, kept past the chain */
+	int said;
+	int failed_calls;                     /* how often a step's failed was told */
+	int failed_verdict;                   /* what it says: E_D_STEP_* */
+	int refused_marks;                    /* steps whose failed took the refusal */
+	E_D_STEP_END seen;                    /* the first record a failed was told */
+	char seen_cmd[E_D_REQ_CMD_MAX + 1];
+	char seen_words[E_D_REQ_MSG_MAX];
+	char seen_reason[E_D_REQ_REASON_MAX];
+	unsigned long frame_low, frame_high;  /* where the command builders ran */
+	int refusals;                         /* refused steps left to build */
 } CHAIN;
 
 static int step_cmd_flush(char *cmd, size_t n, void *ctx)
@@ -752,12 +764,16 @@ static int step_cmd_never(char *cmd, size_t n, void *ctx)
 	return 1;
 }
 
-static void chain_finished(int ok, void *ctx)
+static void chain_finished(const E_D_CHAIN_END *end, void *ctx)
 {
 	CHAIN *c = ctx;
 
 	c->finished_calls++;
-	c->finished_ok = ok;
+	c->finished_ok = end->ok;
+	c->last = end->last;
+	snprintf(c->last_cmd, sizeof c->last_cmd, "%s", end->last.cmd);
+	c->last.cmd = c->last_cmd;
+	c->said = end->said;
 }
 
 static const E_D_STEP chain_steps[] = {
@@ -784,6 +800,7 @@ static void test_chain_runs_steps_in_order_and_ends_on_cancel(void)
 	e_d_req_init(&rq, NULL);
 	link.rq = &rq;
 	link.io = &io;
+	memset(&via, 0, sizeof via);
 	via.request = e_d_req_request;
 	via.engine = &link;
 	memset(&ch, 0, sizeof ch);
@@ -877,6 +894,7 @@ static int run_sized_chain(const char *name, size_t bytes, int *sent, size_t *se
 	e_d_req_init(&rq, NULL);
 	link.rq = &rq;
 	link.io = &io;
+	memset(&via, 0, sizeof via);
 	via.request = e_d_req_request;
 	via.engine = &link;
 	memset(&ch, 0, sizeof ch);
@@ -916,6 +934,418 @@ static void test_a_step_is_sent_whole_or_not_at_all(void)
 	/* a debugger nobody measured: a step over 255 is refused, as before */
 	chk_int("step: dbx refuses a 300-byte step", run_sized_chain("dbx", LONG_STEP_BYTES, &sent, &len), 0);
 	chk_int("step: and nothing was sent for it", sent, 0);
+}
+
+/* ---- how a step ended, and the words that say it ---- */
+
+/* @scenario SC-debug-136 */
+/* D1, D2, D3, D5, D7, D11 and the rows after them: every end of a step
+   reaches its owner as a record, the words are written in one place, and a
+   command refused for its length is a hollow mark and a sentence, not a
+   silent end. */
+
+#define REFUSED_MANY      60        /* refused steps in a row (D3) */
+#define SHOWN_FILLER_BYTES 62        /* "b " plus these fill E_D_REQ_CMD_SHOWN bytes */
+#define FRAME_SLACK        4096      /* a loop keeps its builders in one frame */
+#define UTF8_E_ACUTE       "\xc3\xa9"
+
+/* A world with a requester that says its sentences through the engine's
+   notice, as the editor's does. */
+typedef struct
+{
+	FAKE f;
+	E_D_REQ_QUEUE rq;
+	E_D_REQ_IO io;
+	E_D_REQ_LINK link;
+	E_D_REQUESTER via;
+} WORLD;
+
+static void world_make(WORLD *w, const char *name)
+{
+	world_init(&w->f, &w->io, 1);
+	w->io.name = name;
+	e_d_req_init(&w->rq, NULL);
+	w->link.rq = &w->rq;
+	w->link.io = &w->io;
+	memset(&w->via, 0, sizeof w->via);
+	w->via.request = e_d_req_request;
+	w->via.notice = e_d_req_notice;
+	w->via.name = name;
+	w->via.engine = &w->link;
+}
+
+/* The expected first E_D_REQ_CMD_SHOWN bytes of the sized command. */
+static void shown_sized(char *out, size_t n)
+{
+	size_t i;
+
+	snprintf(out, n, "b ");
+	for (i = 0; i < SHOWN_FILLER_BYTES; i++)
+		strcat(out, "f");
+}
+
+/* A step whose failed keeps the record it is told, and takes a refusal for
+   its length the way a breakpoint does: the mark turns hollow, the chain goes
+   on. */
+static int step_failed_mark(const E_D_STEP_END *end, void *ctx)
+{
+	CHAIN *c = ctx;
+
+	c->failed_calls++;
+	if (c->failed_calls == 1) {
+		c->seen = *end;
+		snprintf(c->seen_cmd, sizeof c->seen_cmd, "%s", end->cmd);
+		snprintf(c->seen_words, sizeof c->seen_words, "%s", end->words);
+		snprintf(c->seen_reason, sizeof c->seen_reason, "%s", end->reason);
+		c->seen.cmd = c->seen_cmd;
+		c->seen.words[0] = '\0';
+	}
+	if (end->how == E_D_REQ_NOT_SENT && end->code == E_D_SEND_TOO_LONG) {
+		c->refused_marks++;
+		return E_D_STEP_AGAIN;
+	}
+	return E_D_STEP_STOP;
+}
+
+/* The same, going on to the next step rather than staying on this one. */
+static int step_failed_next(const E_D_STEP_END *end, void *ctx)
+{
+	step_failed_mark(end, ctx);
+	return E_D_STEP_NEXT;
+}
+
+/* A builder that is refused REFUSED_MANY times, then has nothing left; it
+   notes where on the stack it ran. */
+static int step_cmd_refused_many(char *cmd, size_t n, void *ctx)
+{
+	CHAIN *c = ctx;
+	char here;
+	unsigned long at = (unsigned long)(void *)&here;
+
+	if (c->frame_low == 0 || at < c->frame_low)
+		c->frame_low = at;
+	if (at > c->frame_high)
+		c->frame_high = at;
+	if (c->refusals <= 0)
+		return 0;
+	c->refusals--;
+	step_bytes = LONG_STEP_BYTES;
+	return step_cmd_sized(cmd, n, ctx);
+}
+
+static const E_D_STEP refused_next_steps[] = {
+	{ step_cmd_sized, step_answered_next, step_failed_next },
+	{ step_cmd_last,  step_answered_stop },
+	{ NULL, NULL }
+};
+
+static const E_D_STEP refused_mark_steps[] = {
+	{ step_cmd_sized, step_answered_next, step_failed_mark },
+	{ step_cmd_last,  step_answered_stop },
+	{ NULL, NULL }
+};
+
+static const E_D_STEP refused_many_steps[] = {
+	{ step_cmd_refused_many, step_answered_next, step_failed_mark },
+	{ step_cmd_last,         step_answered_stop },
+	{ NULL, NULL }
+};
+
+static void test_a_refused_step_reaches_its_owner_and_the_chain_goes_on(void)
+{
+	static WORLD w;
+	CHAIN ch;
+	char shown[E_D_REQ_CMD_SHOWN + 1];
+
+	/* D1: the engine refuses a command for its length; the step's owner
+	   takes it (a breakpoint turns hollow) and the next step goes out */
+	world_make(&w, "dbx");
+	memset(&ch, 0, sizeof ch);
+	step_bytes = LONG_STEP_BYTES;
+	chk_int("D1: started", e_d_chain_run(&w.via, refused_next_steps, &ch, chain_finished), 1);
+	chk_int("D1: the owner heard it once", ch.failed_calls, 1);
+	chk_int("D1: as not sent", ch.seen.how, E_D_REQ_NOT_SENT);
+	chk_int("D1: for its length", ch.seen.code, E_D_SEND_TOO_LONG);
+	chk_str("D1: the reason alone", ch.seen_reason,
+	        "the command is longer than dbx takes");
+	chk_has("D1: the words hold the reason", ch.seen_words,
+	        "the command is longer than dbx takes");
+	shown_sized(shown, sizeof shown);
+	chk_has("D1: the words show the start of the command", ch.seen_words, shown);
+	chk_has("D1: and mark that the rest is left out", ch.seen_words, "...`");
+	chk_int("D1: the command is not in the words in full",
+	        strlen(ch.seen_words) < E_D_REQ_MSG_MAX && !strstr(ch.seen_words, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"), 1);
+	chk_int("D1: the next step's command went out", w.f.nsent, 1);
+	chk_str("D1: it is the next step's", w.f.sent[0], "last");
+	feed(&w.rq, &w.io, "ok\n" PROMPT);
+	chk_int("D1: finished once", ch.finished_calls, 1);
+	chk_int("D1: ended well", ch.finished_ok, 1);
+	chk_int("D1: nothing was said, the owner took it", w.f.nnotice, 0);
+	e_d_req_free(&w.rq);
+}
+
+static void test_a_refused_step_nobody_took_is_said_once(void)
+{
+	static WORLD w;
+	CHAIN ch;
+	char shown[E_D_REQ_CMD_SHOWN + 1], want[TEXT_ROOM];
+
+	/* D2: no failed in the table: the chain ends not ok, with the record,
+	   and says it once */
+	world_make(&w, "dbx");
+	memset(&ch, 0, sizeof ch);
+	step_bytes = LONG_STEP_BYTES;
+	chk_int("D2: reports failure", e_d_chain_run(&w.via, sized_steps, &ch, chain_finished), 0);
+	chk_int("D2: finished once", ch.finished_calls, 1);
+	chk_int("D2: not ok", ch.finished_ok, 0);
+	chk_int("D2: last is not sent", ch.last.how, E_D_REQ_NOT_SENT);
+	chk_int("D2: last is for its length", ch.last.code, E_D_SEND_TOO_LONG);
+	chk_int("D2: said", ch.said, 1);
+	chk_int("D2: one notice", w.f.nnotice, 1);
+	shown_sized(shown, sizeof shown);
+	snprintf(want, sizeof want,
+	         "dbx was not given `%s...`: the command is longer than dbx takes"
+	         E_D_REQ_QUIT_TAIL, shown);
+	chk_str("D2: the sentence", w.f.notice[0], want);
+	chk_int("D2: nothing was sent", w.f.nsent, 0);
+	e_d_req_free(&w.rq);
+
+	/* the same for the longest command the editor can build: the reason is
+	   in the sentence however long the command is */
+	world_make(&w, "gdb");
+	memset(&ch, 0, sizeof ch);
+	step_bytes = E_D_REQ_CMD_MAX + OVERLONG_EXTRA;
+	e_d_chain_run(&w.via, sized_steps, &ch, chain_finished);
+	chk_int("D2 long: one notice", w.f.nnotice, 1);
+	chk_has("D2 long: the reason is there", w.f.notice[0],
+	        "the command is longer than gdb takes" E_D_REQ_QUIT_TAIL);
+	chk_has("D2 long: so is the debugger's name", w.f.notice[0], "gdb was not given");
+	chk_int("D2 long: the sentence fits the row", strlen(w.f.notice[0]) < E_D_REQ_MSG_MAX, 1);
+	e_d_req_free(&w.rq);
+
+	/* a requester with no notice says nothing, and the record says so */
+	world_make(&w, "dbx");
+	w.via.notice = NULL;
+	memset(&ch, 0, sizeof ch);
+	step_bytes = LONG_STEP_BYTES;
+	e_d_chain_run(&w.via, sized_steps, &ch, chain_finished);
+	chk_int("D2 quiet: no notice", w.f.nnotice, 0);
+	chk_int("D2 quiet: not said", ch.said, 0);
+	chk_int("D2 quiet: still not ok", ch.finished_ok, 0);
+	e_d_req_free(&w.rq);
+}
+
+static void test_sixty_refused_steps_run_in_one_frame(void)
+{
+	static WORLD w;
+	CHAIN ch;
+
+	/* D3: each refusal is taken by its owner; the chain loops, it does not
+	   nest, so the builders of the first and the last ran in one frame */
+	world_make(&w, "dbx");
+	memset(&ch, 0, sizeof ch);
+	ch.refusals = REFUSED_MANY;
+	e_d_chain_run(&w.via, refused_many_steps, &ch, chain_finished);
+	chk_int("D3: every refusal reached its owner", ch.refused_marks, REFUSED_MANY);
+	chk_int("D3: the last step went out", w.f.nsent, 1);
+	feed(&w.rq, &w.io, "ok\n" PROMPT);
+	chk_int("D3: finished once", ch.finished_calls, 1);
+	chk_int("D3: ended well", ch.finished_ok, 1);
+	chk_int("D3: one frame", ch.frame_high - ch.frame_low < FRAME_SLACK, 1);
+	chk_int("D3: nothing said", w.f.nnotice, 0);
+	e_d_req_free(&w.rq);
+}
+
+static void test_the_engine_says_a_deadline_once_and_the_chain_not_at_all(void)
+{
+	static WORLD w;
+	CHAIN ch;
+
+	/* D5: the deadline in the middle of a chain: the engine says it, the
+	   chain adds nothing */
+	world_make(&w, "gdb");
+	memset(&ch, 0, sizeof ch);
+	e_d_chain_run(&w.via, chain_steps, &ch, chain_finished);
+	advance(&w.f, &w.rq, &w.io, (long)E_D_REQ_TIMEOUT_S * MS_PER_S);
+	chk_int("D5: finished once", ch.finished_calls, 1);
+	chk_int("D5: timed out", ch.last.how, E_D_REQ_TIMED_OUT);
+	chk_int("D5: said", ch.said, 1);
+	chk_int("D5: exactly one notice", w.f.nnotice, 1);
+	chk_has("D5: it is the engine's", w.f.notice[0], "did not answer `flush`");
+	e_d_req_free(&w.rq);
+}
+
+static void test_a_chain_answered_throughout_is_quiet(void)
+{
+	static WORLD w;
+	CHAIN ch;
+	int i;
+
+	/* D7: the control: every step answered */
+	world_make(&w, "gdb");
+	memset(&ch, 0, sizeof ch);
+	e_d_chain_run(&w.via, chain_steps, &ch, chain_finished);
+	for (i = 0; i < 5; i++)
+		feed(&w.rq, &w.io, "ok\n" PROMPT);
+	chk_int("D7: finished once", ch.finished_calls, 1);
+	chk_int("D7: ok", ch.finished_ok, 1);
+	chk_int("D7: the record says answered", ch.last.how, E_D_REQ_DONE);
+	chk_int("D7: not said", ch.said, 0);
+	chk_int("D7: no notice", w.f.nnotice, 0);
+	e_d_req_free(&w.rq);
+}
+
+static void test_a_refusal_that_passes_is_not_a_final_mark(void)
+{
+	static WORLD w;
+	CHAIN ch;
+	static CALL c;
+
+	/* D11: the debugger still owes an old answer: the step is refused as
+	   RESYNC; a step like a breakpoint's marks only what is final, so the
+	   mark stays unsent, the chain ends not ok and says it once */
+	world_make(&w, "pdb");
+	call_init(&c, 1);
+	e_d_req_send(&w.rq, &w.io, "step", on_answered, &c);
+	e_d_req_cancel(&w.rq, &w.io, E_D_REQ_CANCELLED);
+	w.f.nnotice = 0;
+	memset(&ch, 0, sizeof ch);
+	step_bytes = LONG_STEP_BYTES;
+	e_d_chain_run(&w.via, refused_mark_steps, &ch, chain_finished);
+	chk_int("D11: the owner heard it", ch.failed_calls, 1);
+	chk_int("D11: as a resync", ch.seen.code, E_D_SEND_RESYNC);
+	chk_int("D11: and marked nothing", ch.refused_marks, 0);
+	chk_int("D11: the chain ended not ok", ch.finished_ok, 0);
+	chk_int("D11: one notice", w.f.nnotice, 1);
+	chk_has("D11: it names the old answer", w.f.notice[0],
+	        "pdb still owes an old answer" E_D_REQ_QUIT_TAIL);
+	e_d_req_free(&w.rq);
+}
+
+static int step_cmd_stops(char *cmd, size_t n, void *ctx)
+{
+	(void)cmd; (void)n; (void)ctx;
+	return E_D_STEP_CMD_STOP;
+}
+
+static const E_D_STEP cmd_stop_steps[] = {
+	{ step_cmd_flush, step_answered_next },
+	{ step_cmd_stops, step_answered_next, step_failed_mark },
+	{ step_cmd_never, step_answered_next },
+	{ NULL, NULL }
+};
+
+static void test_a_builder_that_cannot_go_on_ends_the_chain(void)
+{
+	static WORLD w;
+	CHAIN ch;
+
+	/* a builder says the step cannot go on: its owner hears it with the
+	   chain's last command, the chain ends not ok, and the owner, which
+	   has the words, is the only one to say them */
+	world_make(&w, "pdb");
+	memset(&ch, 0, sizeof ch);
+	e_d_chain_run(&w.via, cmd_stop_steps, &ch, chain_finished);
+	feed(&w.rq, &w.io, "ok\n" PROMPT);
+	chk_int("stop: the owner heard it", ch.failed_calls, 1);
+	chk_int("stop: as another prompt", ch.seen.how, E_D_REQ_OTHER_PROMPT);
+	chk_str("stop: with the last command", ch.seen_cmd, "flush");
+	chk_int("stop: finished once", ch.finished_calls, 1);
+	chk_int("stop: not ok", ch.finished_ok, 0);
+	chk_int("stop: no later step ran", ch.never_ran, 0);
+	chk_int("stop: the owner said it, the chain did not", w.f.nnotice, 0);
+	e_d_req_free(&w.rq);
+}
+
+static void test_a_chain_that_cannot_start_hands_the_unstarted_record(void)
+{
+	E_D_CHAIN_END end;
+
+	memset(&end, 0xA5, sizeof end);
+	e_d_chain_end_unstarted(&end);
+	chk_int("unstarted: not ok", end.ok, 0);
+	chk_int("unstarted: not sent", end.last.how, E_D_REQ_NOT_SENT);
+	chk_int("unstarted: nobody to ask", end.last.code, E_D_SEND_GONE);
+	chk_int("unstarted: not said", end.said, 0);
+	chk_str("unstarted: no command", end.last.cmd, "");
+}
+
+static void test_the_words_of_an_end_are_written_in_one_place(void)
+{
+	E_D_STEP_END end;
+	char want[TEXT_ROOM], longname[TEXT_ROOM];
+
+	memset(&end, 0, sizeof end);
+	end.how = E_D_REQ_NOT_SENT;
+	end.code = E_D_SEND_FULL;
+	end.cmd = "p x";
+	end.where = "./.pdbrc";
+	e_d_req_end_words(&end, "pdb");
+	chk_str("words: the reason", end.reason, "eight commands are already waiting");
+	chk_str("words: the sentence", end.words,
+	        "pdb was not given `p x` (./.pdbrc): eight commands are already waiting");
+
+	/* a command cut at 64 bytes never ends inside a character */
+	{
+		char cmd[TEXT_ROOM];
+		size_t i;
+
+		for (i = 0; i < E_D_REQ_CMD_SHOWN - 1; i++)
+			cmd[i] = 'a';
+		cmd[i] = '\0';
+		strcat(cmd, UTF8_E_ACUTE "zzzz");
+		end.where = NULL;
+		end.cmd = cmd;
+		end.code = E_D_SEND_GONE;
+		e_d_req_end_words(&end, "pdb");
+		snprintf(want, sizeof want, "pdb was not given `%.*s...`: the session is over",
+		         E_D_REQ_CMD_SHOWN - 1, cmd);
+		chk_str("words: a character is not cut", end.words, want);
+	}
+
+	/* a long file name cannot push the reason out of the sentence */
+	memset(longname, 'n', sizeof longname - 1);
+	longname[sizeof longname - 1] = '\0';
+	end.cmd = "b x";
+	end.where = longname;
+	end.code = E_D_SEND_RESYNC;
+	e_d_req_end_words(&end, "gdb");
+	chk_has("words: the reason survives a long file", end.words,
+	        "gdb still owes an old answer");
+	chk_int("words: and the sentence fits", strlen(end.words) < E_D_REQ_MSG_MAX, 1);
+
+	/* another prompt names the prompt */
+	end.how = E_D_REQ_OTHER_PROMPT;
+	end.where = NULL;
+	end.prompt = "(com)";
+	e_d_req_end_words(&end, "pdb");
+	chk_str("words: another prompt", end.words,
+	        "pdb answered `b x` with its (com) prompt, not its own");
+}
+
+static void test_a_stranded_debugger_refuses_every_sender(void)
+{
+	static WORLD w;
+	char msg[TEXT_ROOM];
+	CALL c;
+
+	/* the gate every writer asks: the engine says it is stranded, refuses
+	   with its own code, names the command it owes, and a cancel for the
+	   session's end lifts it */
+	world_make(&w, "pdb");
+	chk_int("stranded: not at first", e_d_req_stranded(&w.rq), 0);
+	w.rq.stranded = 1;
+	snprintf(w.rq.owed_cmd, sizeof w.rq.owed_cmd, "%s", "interact");
+	call_init(&c, 1);
+	chk_int("stranded: asked", e_d_req_stranded(&w.rq), 1);
+	chk_int("stranded: a send is refused",
+	        e_d_req_send(&w.rq, &w.io, "p 1", on_answered, &c), E_D_SEND_STRANDED);
+	e_d_req_busy_message(&w.rq, &w.io, msg, sizeof msg);
+	chk_str("stranded: the user reads why", msg,
+	        "pdb is at another prompt after `interact`" E_D_REQ_QUIT_TAIL);
+	e_d_req_cancel(&w.rq, &w.io, E_D_REQ_GONE);
+	chk_int("stranded: the session's end lifts it", e_d_req_stranded(&w.rq), 0);
+	e_d_req_free(&w.rq);
 }
 
 /* ---- edges the request engine must hold ---- */
@@ -1184,6 +1614,16 @@ int main(void)
 	test_async_line_during_a_request_goes_to_the_session();
 	test_chain_runs_steps_in_order_and_ends_on_cancel();
 	test_a_step_is_sent_whole_or_not_at_all();
+	test_a_refused_step_reaches_its_owner_and_the_chain_goes_on();
+	test_a_refused_step_nobody_took_is_said_once();
+	test_sixty_refused_steps_run_in_one_frame();
+	test_the_engine_says_a_deadline_once_and_the_chain_not_at_all();
+	test_a_chain_answered_throughout_is_quiet();
+	test_a_refusal_that_passes_is_not_a_final_mark();
+	test_a_builder_that_cannot_go_on_ends_the_chain();
+	test_a_chain_that_cannot_start_hands_the_unstarted_record();
+	test_the_words_of_an_end_are_written_in_one_place();
+	test_a_stranded_debugger_refuses_every_sender();
 	test_request_engine_edges();
 	test_error_line_before_the_prompt_stays_with_its_answer();
 	test_resync_waits_for_its_own_numbered_echo();

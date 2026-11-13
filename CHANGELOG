@@ -233,6 +233,16 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A command the editor cannot give a debugger is now said, instead of a
+  start that ended with nothing on the screen.  Under dbx and xdb, which
+  keep their 255-byte command line, a breakpoint on a source whose name
+  makes the command longer stays hollow, the status row says "Breakpoint
+  at line 8 not set: the command is longer than dbx takes", and the
+  program is still run.  Any other command the debugger was not given
+  (the session over, an old answer still owed) is named with the reason on
+  the status row; when it is one the start needs, a box says which command
+  stopped it.
+
 * A file keeps its line endings when you save it.  A CRLF file is saved
   CRLF, and a file that mixes CR LF and LF lines no longer has every line
   rewritten: only the lines you changed differ.  A carriage return that is

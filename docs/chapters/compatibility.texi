@@ -17,7 +17,8 @@ The original asked, in a box, whether to quit the debugger when
 @kbd{Ctrl-C} was typed while it read the debugger's answer.  Under gdb,
 pdb, jdb, a68g, sdb, dbx and xdb, @kbd{Ctrl-C} now stops waiting for the
 answer, as @key{Esc}
-does, and the status row says which command the debugger did not answer;
+does, and the status row says which command the debugger did not answer
+(or could not be given, when the command was too long for it);
 Debug > Quit ends the session.  The box is gone: the editor keeps the
 keyboard while the debugger answers, at a stop, while the debugger starts
 or when a run or a step goes out, so there is no moment where only a box

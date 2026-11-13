@@ -2189,12 +2189,12 @@ static int chain_watch_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
  return E_D_STEP_NEXT;
 }
 
-static void chain_finished(int ok, void *ctx)
+static void chain_finished(const E_D_CHAIN_END *end, void *ctx)
 {
  struct chain_seen *c = ctx;
 
  c->finished++;
- c->ok = ok;
+ c->ok = end->ok;
 }
 
 static const E_D_STEP chain_steps[] = {
@@ -2224,6 +2224,7 @@ static void test_requester_runs_a_two_step_chain(void)
   return;
  memset(&c, 0, sizeof c);
  chain_session = s;
+ memset(&via, 0, sizeof via);
  via.request = e_dap_req_request;
  via.engine = s;
  CHECK(e_d_chain_run(&via, chain_steps, &c, chain_finished) == 1,

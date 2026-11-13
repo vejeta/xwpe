@@ -661,6 +661,13 @@ TESTS += tests/check-line-ends.sh
 # lines are in tests/debug-command.allow, each with its reason.
 TESTS += tests/check-debug-command.sh
 
+# One owner of how a debugger request ended and of the words that say it: the
+# request engine (we_debreq.[ch]).  tests/check-chain-outcome.sh fails when a
+# step that owns a verdict has no failed, a chain ends without saying why, a
+# chain is finished around the owner, or the debugger's input is written
+# without going through the gated writer.
+TESTS += tests/check-chain-outcome.sh
+
 # One owner of how long a path the editor holds may be (we_path.h) and of a
 # dialog field's way out (we_fieldtake.h): tests/check-path-buffers.sh fails
 # on an unbounded copy of a field's text, a refusal nobody reads, a call of
@@ -757,6 +764,7 @@ EXTRA_DIST = \
   tests/test_lineend.c \
   tests/check-debug-command.sh \
   tests/debug-command.allow \
+  tests/check-chain-outcome.sh \
   tests/check-path-buffers.sh \
   tests/check-box-layout.sh \
   tests/box-layout.allow \

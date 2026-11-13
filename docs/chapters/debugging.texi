@@ -479,6 +479,14 @@ environment variable @env{XWPE_DEBUG_ANSWER_TIMEOUT} to a number of
 seconds before you start xwpe.  Debug > Quit ends the session at any
 moment.
 
+A command xwpe cannot give the debugger at all is said the same way,
+naming the command and the reason: a command longer than the debugger
+takes (dbx and xdb keep 255 bytes), a debugger that still owes an old
+answer, a session that is over.  A breakpoint it concerns stays hollow
+and the status row says @samp{Breakpoint at line 8 not set: the command
+is longer than dbx takes}; the start goes on and the program runs.  When
+the command is one the start needs, a box names it and the session ends.
+
 @cindex debugger, waiting while gdb starts
 The same holds while gdb starts.  Once gdb has printed its banner, xwpe
 gives it its settings and your breakpoints, and only then runs the

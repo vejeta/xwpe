@@ -524,6 +524,15 @@
   {"id": "SC-debug-130", "requirement": "One owner of the length of a command to a debugger", "layer": "ncurses", "test": "tests/test_debugger_command_length.py::test_a_source_with_a_long_name_builds_and_the_program_runs", "status": "new", "needs": ["gcc"]},
   {"id": "SC-debug-131", "requirement": "One owner of the length of a command to a debugger", "layer": "ncurses", "test": "tests/test_debugger_command_length.py::test_gdb_a_breakpoint_in_a_source_with_a_long_name_stops_there", "status": "new", "needs": ["gcc", "gdb"]},
   {"id": "SC-debug-132", "requirement": "One owner of the length of a command to a debugger", "layer": "x11", "test": "tests/x11/test_debugger_command_length.py::test_a_source_with_a_long_name_builds", "status": "new", "needs": ["Xvfb", "xdotool", "gcc"]},
-  {"id": "SC-debug-133", "requirement": "One owner of the length of a command to a debugger", "layer": "c-unit", "test": "tests/check-debug-command.sh", "status": "new"}
+  {"id": "SC-debug-133", "requirement": "One owner of the length of a command to a debugger", "layer": "c-unit", "test": "tests/check-debug-command.sh", "status": "new"},
+  {"id": "SC-debug-134", "requirement": "The outcome of a debugger request chain is said", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_a_breakpoint_too_long_for_the_debugger_is_hollow_and_the_start_goes_on[dbx]", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-134", "requirement": "The outcome of a debugger request chain is said", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_a_breakpoint_too_long_for_the_debugger_is_hollow_and_the_start_goes_on[xdb]", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-134", "requirement": "The outcome of a debugger request chain is said", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_a_breakpoint_that_fits_still_stops_the_program[dbx]", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-134", "requirement": "The outcome of a debugger request chain is said", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_a_breakpoint_that_fits_still_stops_the_program[xdb]", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-134", "requirement": "The outcome of a debugger request chain is said", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_a_breakpoint_set_at_a_stop_that_is_too_long_stays_hollow[dbx]", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-134", "requirement": "The outcome of a debugger request chain is said", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_a_breakpoint_set_at_a_stop_that_is_too_long_stays_hollow[xdb]", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-135", "requirement": "The outcome of a debugger request chain is said", "layer": "x11", "test": "tests/x11/test_legacy_debuggers.py::test_dbx_is_run_after_a_breakpoint_too_long_to_send", "status": "new", "needs": ["Xvfb", "xdotool", "gcc"]},
+  {"id": "SC-debug-136", "requirement": "The outcome of a debugger request chain is said", "layer": "c-unit", "test": "test_debreq", "status": "new"},
+  {"id": "SC-debug-137", "requirement": "The outcome of a debugger request chain is said", "layer": "c-unit", "test": "tests/check-chain-outcome.sh", "status": "new"}
  ]
 }

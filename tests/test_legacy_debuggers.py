@@ -1207,3 +1207,138 @@ def test_sdb_step_reported_by_its_source_row_is_marked(tmp_path):
             % (C_LATER_LINE, _mark_line(w), _sent(tmp_path, "sdb"),
                _screen(w))
         assert w.alive(), "the editor should survive sdb's step report"
+
+
+# ---- a command the debugger cannot be given ----
+#
+# dbx and xdb keep the 255-byte command line they always had (the request
+# engine's unmeasured row).  A breakpoint on a source whose name makes the
+# command longer than that is not given to the debugger: its mark is hollow,
+# the status row says why, and the start goes on.  It used to end the set-up
+# silently, with Messages showing "Start Debugger" and nothing after it.
+
+LIMITED = ("dbx", "xdb")
+# The breakpoint command for line @n of a source named @name, and the longest
+# name for which line 8 still fits in 255 bytes and line 11 does not.
+SET_COMMAND_FORMAT = {"dbx": 'stop at "%s":%d', "xdb": "b %s:%d"}
+FITS_NAME_BYTES = {"dbx": 243, "xdb": 251}
+OVER_NAME_BYTES = 250     # the repro's name: line 8 is too long already
+TOO_LONG_WORDS = "not set: the command is longer than %s takes"
+
+
+def _named_session(tmp_path, backend, name_bytes):
+    """A session on a source named @name_bytes bytes long (with its ".c")."""
+    name = "d" * (name_bytes - len(".c")) + ".c"
+    cfg = tmp_path / ".config" / "xwpe"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "xwperc").write_text(
+        "[Programming]\nDebugger : %d\n" % DEBUGGER_TYPE[backend])
+    env = _stub_env(tmp_path, backend)
+    env["XWPE_STUB_SOURCE"] = name
+    return name, WpeSession(str(tmp_path), C_PROG, filename=name, wait=1.5,
+                            env_extra=env)
+
+
+def _set_command(backend, name, line):
+    return SET_COMMAND_FORMAT[backend] % (name, line)
+
+
+# @scenario SC-debug-134
+@pytest.mark.parametrize("backend", LIMITED)
+def test_a_breakpoint_too_long_for_the_debugger_is_hollow_and_the_start_goes_on(
+        tmp_path, backend):
+    """A breakpoint whose command passes dbx's or xdb's 255 bytes is not
+    sent: the status row says "Breakpoint at line 8 not set: the command is
+    longer than <debugger> takes" and the program is still run, to its end
+    (no breakpoint stops it).  The start used to end with nothing said and
+    the debugger never run.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real debugger.
+    """
+    _need("gcc")
+    name, session = _named_session(tmp_path, backend,
+                                   OVER_NAME_BYTES + len(".c"))
+    with session as w:
+        _move_down(w, C_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        words = "Breakpoint at line %d %s" % (C_BREAK_LINE,
+                                              TOO_LONG_WORDS % backend)
+        assert _status_row_says(w, words, START_TIMEOUT_S), \
+            "the status row should say %r; %s was sent %r:\n%s" \
+            % (words, backend, _sent(tmp_path, backend), _screen(w))
+        assert _wait_for(w, lambda: START_RUN_COMMAND[backend]
+                         in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
+            "%s should have been told to run after the refusal; it got %r" \
+            % (backend, _sent(tmp_path, backend))
+        assert _wait_for(w, lambda: END_LINE[backend] in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the program should have run to its end:\n%s" % _screen(w)
+        assert C_BREAK_LINE in (set(w.breakpoint_lines())
+                                | set(w.unconfirmed_breakpoint_lines())), \
+            "the breakpoint stays the user's, hollow or solid:\n%s" \
+            % _screen(w)
+        sent = _sent(tmp_path, backend)
+        assert _set_command(backend, name, C_BREAK_LINE) not in sent, \
+            "the command that does not fit must not be sent: %r" % sent
+        assert w.alive(), "the editor should survive the refusal"
+        w.key(ALT_X, delay=0.5)
+
+
+# @scenario SC-debug-134
+@pytest.mark.parametrize("backend", LIMITED)
+def test_a_breakpoint_that_fits_still_stops_the_program(tmp_path, backend):
+    """The control of the row above: a source named so that the command for
+    line 8 fits in 255 bytes is sent whole and stops the program there.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real debugger.
+    """
+    _need("gcc")
+    name, session = _named_session(tmp_path, backend, FITS_NAME_BYTES[backend])
+    with session as w:
+        _move_down(w, C_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == C_BREAK_LINE,
+                         START_TIMEOUT_S), \
+            "Ctrl-G R should stop %s on line %d; it was sent %r:\n%s" \
+            % (backend, C_BREAK_LINE, _sent(tmp_path, backend), _screen(w))
+        assert _set_command(backend, name, C_BREAK_LINE) in \
+            _sent(tmp_path, backend)
+        w.key(ALT_X, delay=0.5)
+
+
+# @scenario SC-debug-134
+@pytest.mark.parametrize("backend", LIMITED)
+def test_a_breakpoint_set_at_a_stop_that_is_too_long_stays_hollow(tmp_path,
+                                                                 backend):
+    """Line 8 fits and the program stops there; line 11 does not fit, so the
+    breakpoint set at that stop is not sent, its mark stays hollow with the
+    reason on the status row, and the session goes on.  The chain used to
+    end with nothing said.
+
+    Limit: the stub proves xwpe's half of the protocol, not a real debugger.
+    """
+    _need("gcc")
+    name, session = _named_session(tmp_path, backend, FITS_NAME_BYTES[backend])
+    with session as w:
+        _move_down(w, C_BREAK_LINE - 1)
+        w.key(CTRL_G, "b", delay=0.4)
+        w.key(CTRL_G, "r", delay=1.0)
+        assert _wait_for(w, lambda: _mark_line(w) == C_BREAK_LINE,
+                         START_TIMEOUT_S), \
+            "the start should stop on line %d:\n%s" % (C_BREAK_LINE,
+                                                       _screen(w))
+        _move_down(w, C_CURSOR_LINE - C_BREAK_LINE)
+        w.key(CTRL_G, "b", delay=0.6)
+        words = "Breakpoint at line %d %s" % (C_CURSOR_LINE,
+                                              TOO_LONG_WORDS % backend)
+        assert _status_row_says(w, words, HOLLOW_WAIT_S), \
+            "the status row should say %r; %s was sent %r:\n%s" \
+            % (words, backend, _sent(tmp_path, backend), _screen(w))
+        assert _breakpoint_drawn(w, C_CURSOR_LINE, hollow=True), \
+            "line %d should stay hollow:\n%s" % (C_CURSOR_LINE, _screen(w))
+        assert _set_command(backend, name, C_CURSOR_LINE) not in \
+            _sent(tmp_path, backend)
+        assert w.alive(), "the editor should survive the refusal"
+        w.key(ALT_X, delay=0.5)
