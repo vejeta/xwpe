@@ -74,8 +74,24 @@ static void e_t_truecolor_detect(void);
 #define TERM_BRACKETED_PASTE_ON  "\033[?2004h"
 #define TERM_BRACKETED_PASTE_OFF "\033[?2004l"
 
+/* How e_t_read_key waits for the key it returns. */
+#define E_T_READ_WAIT    0   /* until a key comes; the loop serves its other streams */
+#define E_T_READ_BLOCK   1   /* one blocking read, nothing else served */
+#define E_T_READ_NO_WAIT 2   /* only a key already typed: 0 when there is none */
+#define E_T_READ_POLL    3   /* at most INPUT_POLL_MS: 0 when none came */
+/* Wait forever in e_t_next_byte. */
+#define E_T_WAIT_BLOCK   (-1)
+/* What e_t_next_byte returns when no byte came. */
+#define E_T_NO_BYTE      ERR
+/* "unknown": a reply the terminal has not given. */
+#define E_T_KEYS_UNKNOWN (-1)
+
 static void e_t_bracketed_paste_enable(void);
 static void e_t_bracketed_paste_disable(void);
+static void e_t_private_modes_on(void);
+static void e_t_private_modes_off(void);
+static void e_t_install_suspend_handler(void);
+static int e_t_read_key(int mode);
 static void e_t_leave_terminal(void);
 static void e_t_take_terminal_back(void);
 
@@ -121,9 +137,10 @@ static int e_t_paste_swallows_lf(int c)
  * a long paste shows up whole at its end instead of being redrawn after
  * every byte.  A reader that asked for it gets the end as the key
  * WPE_PASTE_END; everyone else gets the next real key, as before.
- * Return: the key for the caller of e_t_getch.
+ * @mode: the E_T_READ_* mode of the read that met the marker.
+ * Return: the key for the caller of e_t_read_key.
  */
-static int e_t_paste_ended(void)
+static int e_t_paste_ended(int mode)
 {
  void (*hook)(void) = e_paste_end_hook;
 
@@ -136,7 +153,7 @@ static int e_t_paste_ended(void)
   g_paste_end_wanted = 0;
   return(WPE_PASTE_END);
  }
- return(e_t_getch());
+ return(e_t_read_key(mode));
 }
 /* CLICKED events carry no following RELEASED; the press bit accumulated into
    g_mouse_buttons would stay set and any while(e_mshit()) spin-loop in
@@ -666,12 +683,12 @@ int e_t_initscr()
     Esc closes dialogs/menus (no 3-press workaround that can be misread as
     an escape sequence and spin the File Manager). */
  set_escdelay(25);
- e_t_bracketed_paste_enable();
 #if MOUSE
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  mouseinterval(0);
- e_mouse_tracking_enable();
 #endif
+ e_t_private_modes_on();
+ e_t_install_suspend_handler();
 #endif
  if (has_colors())
  {
@@ -783,13 +800,176 @@ static void e_t_bracketed_paste_disable(void)
 #endif
 }
 
-void e_endwin()
+/* What the terminal said about its keyboard protocols, or
+   E_T_KEYS_UNKNOWN until it does.  Kept for the key-codes view. */
+static int e_t_kitty_flags = E_T_KEYS_UNKNOWN;
+static int e_t_mok_level = E_T_KEYS_UNKNOWN;
+
+/**
+ * e_t_is_linux_console - Is the keyboard a bare Linux console's?
+ *
+ * Asked once, when the terminal is set up.  The console has no keyboard
+ * protocol and its parser would print the tail of an unknown private
+ * sequence, so nothing is sent to it.
+ * Return: 1 on a Linux virtual console, 0 anywhere else.
+ */
+static int e_t_is_linux_console(void)
+{
+ static int probed = 0, console = 0;
+
+ if (!probed)
+ {
+#ifdef __linux__
+  console = WpeLinuxIsConsole();
+#endif
+  probed = 1;
+ }
+ return(console);
+}
+
+/**
+ * e_t_keyboard_protocol_on - Ask the terminal for unambiguous key reports.
+ *
+ * With xterm's modifyOtherKeys and kitty's keyboard protocol on, Ctrl-Shift
+ * letters, Ctrl-Tab, Esc at once and the other chords a legacy terminal
+ * cannot tell apart arrive as reports e_t_csi_key reads (we_keymap.c).  A
+ * terminal that knows neither drops the sequences and keeps sending the
+ * legacy bytes, which are read as before.  The first call also asks the
+ * terminal which it speaks; the replies are read as events, never waited
+ * for.
+ */
+static void e_t_keyboard_protocol_on(void)
+{
+ static int asked = 0;
+
+ if (e_t_is_linux_console())
+  return;
+ fputs(E_T_KEYS_ON_STR, stdout);
+ if (!asked)
+ {
+  fputs(E_T_KEYS_KITTY_QUERY E_T_KEYS_MOK_QUERY, stdout);
+  asked = 1;
+ }
+ fflush(stdout);
+}
+
+/**
+ * e_t_keyboard_protocol_off - Give the keyboard back as the shell had it.
+ *
+ * Pops the editor's kitty entry and resets modifyOtherKeys to the terminal's
+ * own setting.  Done while the editor's screen is still the active one: the
+ * alternate and the main screen keep separate stacks, so a pop after leaving
+ * would remove the shell's entry.
+ */
+static void e_t_keyboard_protocol_off(void)
+{
+ if (e_t_is_linux_console())
+  return;
+ fputs(E_T_KEYS_OFF_STR, stdout);
+ fflush(stdout);
+}
+
+/**
+ * e_t_private_modes_on - Switch on what the editor needs from the terminal.
+ *
+ * The one place the terminal's private modes are set: mouse tracking, then
+ * bracketed paste, then the keyboard protocol, in the order a terminal that
+ * resets one mode when another changes needs.  Used when the editor starts
+ * and whenever it takes the terminal back from a program.  The terminal's
+ * own screen switch must already be flushed.
+ */
+static void e_t_private_modes_on(void)
 {
 #ifdef NCURSES
 #if MOUSE
+ e_mouse_tracking_enable();
+#endif
+ e_t_bracketed_paste_enable();
+ e_t_keyboard_protocol_on();
+#endif
+}
+
+/**
+ * e_t_private_modes_off - Give the terminal back its modes.
+ *
+ * The reverse of e_t_private_modes_on, run before the editor leaves its
+ * screen: the keyboard protocol first, then bracketed paste, then the mouse.
+ * A program started from the editor, the shell after a quit and the user's
+ * prompt see an ordinary terminal.
+ */
+static void e_t_private_modes_off(void)
+{
+#ifdef NCURSES
+ e_t_keyboard_protocol_off();
+ e_t_bracketed_paste_disable();
+#if MOUSE
  e_mouse_tracking_disable();
 #endif
- e_t_bracketed_paste_disable();
+#endif
+}
+
+#ifdef NCURSES
+static struct sigaction e_t_ncurses_tstp;
+static struct sigaction e_t_our_tstp;
+
+/**
+ * e_t_on_suspend - The editor is stopped (SIGTSTP): give the shell its
+ * modes, and take them again when it continues.
+ * @sig: SIGTSTP.
+ *
+ * ncurses' own handler ends the screen but knows nothing of the private
+ * modes, so a stopped editor left the shell with mouse reports, paste
+ * markers and the keyboard protocol on.  This writes the modes off, lets
+ * ncurses' handler stop the process, and writes them on when that call
+ * returns, which is when the process continues.  Only write() is used.
+ */
+static void e_t_on_suspend(int sig)
+{
+ ssize_t n;
+
+ n = write(STDOUT_FILENO, E_T_PRIVATE_MODES_OFF_STR,
+           sizeof E_T_PRIVATE_MODES_OFF_STR - 1);
+ (void)n;
+ e_t_ncurses_tstp.sa_handler(sig);
+ sigaction(SIGTSTP, &e_t_our_tstp, NULL);   /* ncurses put its own back */
+ n = write(STDOUT_FILENO, E_T_MOUSE_PASTE_ON_STR,
+           sizeof E_T_MOUSE_PASTE_ON_STR - 1);
+ if (!e_t_is_linux_console())
+  n = write(STDOUT_FILENO, E_T_KEYS_ON_STR, sizeof E_T_KEYS_ON_STR - 1);
+ (void)n;
+}
+
+/**
+ * e_t_install_suspend_handler - Put e_t_on_suspend in front of ncurses'
+ * SIGTSTP handler.
+ *
+ * Called once, after initscr has installed ncurses' own.  Where that is not
+ * a plain handler (the process ignores SIGTSTP, or something else owns it)
+ * nothing is changed.
+ */
+static void e_t_install_suspend_handler(void)
+{
+ if (sigaction(SIGTSTP, NULL, &e_t_ncurses_tstp) != 0)
+  return;
+ if ((e_t_ncurses_tstp.sa_flags & SA_SIGINFO) ||
+     e_t_ncurses_tstp.sa_handler == SIG_DFL ||
+     e_t_ncurses_tstp.sa_handler == SIG_IGN)
+  return;
+ memset(&e_t_our_tstp, 0, sizeof e_t_our_tstp);
+ e_t_our_tstp.sa_handler = e_t_on_suspend;
+ sigemptyset(&e_t_our_tstp.sa_mask);
+ sigaction(SIGTSTP, &e_t_our_tstp, NULL);
+}
+#else
+static void e_t_install_suspend_handler(void)
+{
+}
+#endif
+
+void e_endwin()
+{
+#ifdef NCURSES
+ e_t_private_modes_off();
  endwin();
 #else
  fk_putp(ratt_bo);
@@ -1125,33 +1305,17 @@ static void e_t_leave_terminal(void)
 }
 
 /**
- * e_t_rearm_mouse - Make window drag/resize work again after running a tool.
- *
- * Used when returning to the editor from a sub-process (e.g. an F9 compile),
- * which had to hand the real terminal to the tool and so turned off mouse
- * motion reporting. Without re-arming it the user can still click, but
- * dragging a title bar to move a window or a corner to resize it silently does
- * nothing. The motion escape must be emitted AFTER the screen is restored,
- * because some terminals reset the mouse mode when the screen is switched back;
- * we flush that screen switch first, then re-enable tracking last.
- */
-static void e_t_rearm_mouse(void)
-{
- refresh();                  /* flush ncurses ca-mode re-entry (1049h) first */
- e_mouse_tracking_enable();  /* then the motion-tracking escape, emitted last */
-}
-
-/**
  * e_t_take_terminal_back - Return from a child to a fully repainted editor.
  *
  * The counterpart of e_t_leave_terminal.  The editor's tty settings and file
  * flags come back, the terminal is told to clear itself on the next refresh
  * (clearok) so that whatever the child scrolled or printed cannot survive
  * under the editor's picture, the whole screen is marked for redraw from the
- * editor's own buffer, and the private modes go on again in the order
- * e_t_rearm_mouse documents, bracketed paste last.  The user gets the screen
- * back exactly as it was before the child ran, with the mouse and paste
- * working as before.
+ * editor's own buffer, and the private modes go on again after the screen
+ * switch is flushed, because some terminals reset a mode when the screen is
+ * switched back.  The user gets the screen back exactly as it was before the
+ * child ran, with the mouse, paste and the keyboard protocol working as
+ * before: dragging a title bar still moves a window.
  */
 static void e_t_take_terminal_back(void)
 {
@@ -1161,8 +1325,10 @@ static void e_t_take_terminal_back(void)
  clearok(stdscr, TRUE);
 #endif
  e_abs_refr();
- e_t_rearm_mouse();
- e_t_bracketed_paste_enable();
+#ifdef NCURSES
+ refresh();                  /* flush ncurses ca-mode re-entry (1049h) first */
+#endif
+ e_t_private_modes_on();     /* then the modes, emitted last */
  fk_locate(0, 0);
 }
 
@@ -1187,6 +1353,57 @@ int e_t_sys_end()
 {
  e_t_take_terminal_back();
  return(0);
+}
+
+static int e_t_input_is_gone(void);
+
+/* One decoded key that was read and then not used (the drag poll met a key
+   where it looked for the mouse): the next read returns it first, with the
+   character flag it was read with. */
+static int e_t_unread_valid = 0;
+static int e_t_unread_key_code = 0;
+static int e_t_unread_was_char = 0;
+
+/**
+ * e_t_next_byte - Take the next byte, or curses key code, off the keyboard.
+ * @wait_ms: E_T_WAIT_BLOCK to wait for it, 0 to take only what is already
+ *   typed, or how many milliseconds to wait.
+ *
+ * The one call of this file that reads the keyboard: the decoder, the tail
+ * readers and the drag poll all take their bytes here, so what was read
+ * and what was left is decided in one place.
+ * Return: the byte or key code, or E_T_NO_BYTE when none came.
+ */
+static int e_t_next_byte(int wait_ms)
+{
+#ifdef NCURSES
+ int c;
+
+ timeout(wait_ms);
+ c = getch();
+ timeout(-1);
+ return(c);
+#else
+ (void)wait_ms;
+ return(fk_getch());
+#endif
+}
+
+/**
+ * e_t_push_back - Put a byte back so the next read takes it first.
+ * @c: a byte e_t_next_byte returned.
+ *
+ * For the one place that reads a byte before knowing whether it belongs to
+ * what it is assembling (a UTF-8 character met a byte that is not a
+ * continuation).
+ */
+static void e_t_push_back(int c)
+{
+#ifdef NCURSES
+ ungetch(c);
+#else
+ (void)c;
+#endif
 }
 
 int e_t_kbhit()
@@ -1218,52 +1435,14 @@ int e_t_kbhit()
  */
 void e_t_wait_for_enter_on_raw_terminal(void)
 {
+ int key;
+
  wpe_paint_modal_enter("a Hit CR wait");
- fk_getch();
+ do
+  key = e_t_read_key(E_T_READ_BLOCK);
+ while (key == 0 && !e_t_input_is_gone());
  wpe_paint_modal_leave();
 }
-
-/* The lead bytes of a multi-byte UTF-8 character, and how long the Run
-   loop waits for each of its continuation bytes. */
-#define E_T_RUN_UTF8_LEAD_FIRST 0xC0
-#define E_T_RUN_UTF8_LEAD_LAST  0xF7
-#define E_T_RUN_UTF8_CONT_MS    50
-
-#ifdef NCURSES
-/**
- * e_t_key_from_curses - The key typed on the terminal, or 0 when none is
- * waiting.
- *
- * A multi-byte UTF-8 character arrives as one code point, so a user typing
- * an accented letter for their program sends that letter, not its bytes.
- */
-static int e_t_key_from_curses(void)
-{
- int c, cp, i, expect, cont;
-
- timeout(0);
- c = getch();
- timeout(-1);
- if (c == ERR)
-  return 0;
- if ((unsigned int)c < E_T_RUN_UTF8_LEAD_FIRST ||
-     (unsigned int)c > E_T_RUN_UTF8_LEAD_LAST)
-  return c;
- if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; expect = 1; }
- else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; expect = 2; }
- else { cp = c & 0x07; expect = 3; }
- for (i = 0; i < expect; i++)
- {
-  timeout(E_T_RUN_UTF8_CONT_MS);
-  cont = getch();
-  timeout(-1);
-  if (cont == ERR || (cont & 0xC0) != 0x80)
-   return c;
-  cp = (cp << 6) | (cont & 0x3F);
- }
- return cp;
-}
-#endif
 
 /**
  * e_t_key_take - The terminal's answer to wpe_paint_take_key: the key the
@@ -1283,7 +1462,7 @@ static int e_t_key_take(int want)
  if (want != WPE_PAINT_ANY_KEY)
   return 0;
 #ifdef NCURSES
- return e_t_key_from_curses();
+ return e_t_read_key(E_T_READ_NO_WAIT);
 #else
  return e_t_kbhit();
 #endif
@@ -1358,13 +1537,12 @@ static int e_t_utf8_assemble(int first)
   return first;
  for (i = 0; i < expect; i++)
  {
-  timeout(INPUT_POLL_MS);
-  cont = fk_getch();
-  if (cont == ERR)
+  cont = e_t_next_byte(INPUT_POLL_MS);
+  if (cont == E_T_NO_BYTE)
    return first;            /* sequence stalled: emit the lead byte as-is */
   if ((cont & 0xC0) != 0x80)
   {
-   ungetch(cont);           /* not a continuation byte: requeue it so the
+   e_t_push_back(cont);     /* not a continuation byte: requeue it so the
                                next read sees it instead of dropping it */
    return first;
   }
@@ -1385,6 +1563,7 @@ void e_t_flush_input(void)
     spurious Make).  Discard the kernel queue first, then ncurses' buffer. */
  tcflush(0, TCIFLUSH);
  flushinp();
+ e_t_unread_valid = 0;
  { const char *tp = getenv("XWPE_UI_TRACE");   /* XWPE_UI_TRACE: diag only */
    if (tp) { FILE *tf = fopen(tp, "a");
      if (tf) { fprintf(tf, "e_t_flush_input RAN\n"); fclose(tf); } } }
@@ -1456,6 +1635,31 @@ static int e_t_key_read_wait_ms(int keyboard_watched)
  return(INPUT_POLL_MS);
 }
 
+/**
+ * e_t_read_raw - Read one byte or curses key code, and one whole character.
+ * @wait_ms: as for e_t_next_byte.
+ *
+ * A UTF-8 lead byte is joined with its continuation bytes into one code
+ * point, and e_input_was_char says so, so a typed letter above 255 is not
+ * taken for one of the editor's key codes.
+ * Return: the byte, key code or code point, or E_T_NO_BYTE.
+ */
+static int e_t_read_raw(int wait_ms)
+{
+ int c = e_t_next_byte(wait_ms);
+
+ if (c == E_T_NO_BYTE)
+  return(c);
+ if ((unsigned int)c >= 0xC0 && (unsigned int)c <= 0xF7)
+ {
+  c = e_t_utf8_assemble(c);
+  e_input_was_char = 1;
+ }
+ else
+  e_input_was_char = 0;
+ return(c);
+}
+
 static int e_t_getch_poll(void)
 {
  static int stdin_registered = 0;
@@ -1484,17 +1688,9 @@ static int e_t_getch_poll(void)
 #endif
  for (;;)
  {
-  timeout(e_t_key_read_wait_ms(stdin_registered));
-  c = fk_getch();
-  timeout(-1);
-  if (c != ERR)
-  {
-   if ((unsigned int)c >= 0xC0 && (unsigned int)c <= 0xF7)
-    { c = e_t_utf8_assemble(c); e_input_was_char = 1; }
-   else
-    e_input_was_char = 0;
+  c = e_t_read_raw(e_t_key_read_wait_ms(stdin_registered));
+  if (c != E_T_NO_BYTE)
    return c;
-  }
   if (e_t_input_is_gone())
    e_t_input_ended();
   if (e_d_async_pending)
@@ -1589,20 +1785,15 @@ static int e_t_sgr_mouse(void)
  int n[3], i, c, final, wheel;
  MEVENT mev;
 
- timeout(ESC_ALT_DELAY_MS);
  n[0] = n[1] = n[2] = 0;
  for (i = 0; i < 3; i++)
  {
-  while ((c = fk_getch()) >= '0' && c <= '9')
+  while ((c = e_t_next_byte(ESC_ALT_DELAY_MS)) >= '0' && c <= '9')
    n[i] = n[i] * 10 + (c - '0');
   if (i < 2 && c != ';')
-  {
-   timeout(-1);
    return(0);
-  }
  }
  final = c;
- timeout(-1);
  if (final != 'M' && final != 'm')
   return(0);
 
@@ -1617,37 +1808,61 @@ static int e_t_sgr_mouse(void)
  return(-1);
 }
 
-/* The longest escape sequence tail kept: "15;2~" is the longest one a key
-   sends, so this leaves room for a modifier and a final byte. */
-#define E_T_CSI_TAIL_MAX 16
+/* The longest escape sequence tail kept.  The longest key report is a
+   kitty one with its shifted and base keys and text, about 40 bytes; a
+   longer one is not a key and is dropped whole. */
+#define E_T_CSI_TAIL_MAX 48
+
+/* ECMA-48: a control sequence is parameter bytes (digits, ':', ';', and the
+   private markers '<' '=' '>' '?'), intermediate bytes, and one final byte. */
+#define E_T_CSI_INTERMEDIATE_FIRST 0x20
+#define E_T_CSI_FINAL_FIRST        0x40
+#define E_T_CSI_FINAL_LAST         0x7e
+#define E_T_BYTE_MAX               0xff
 
 /**
  * e_t_csi_read_tail - Read the rest of an escape sequence the keyboard sent.
  * @first: the byte already read after the introducer.
  * @tail: out, @first and the bytes after it, up to and including the final
- *   byte (a digit or ';' continues the sequence, anything else ends it).
+ *   byte.
  * @size: the room in @tail.
  *
- * Waits only the Alt delay for each byte, so a sequence that stops short
- * (a lone ESC [ typed by hand) does not hold the editor.
- * Return: how many bytes are in @tail.
+ * Reads to the sequence's final byte, whatever its parameters hold, so a
+ * kitty report with ':' parts or a longer tail is taken whole and never
+ * leaks its end into the text.  A sequence that does not fit in @tail is
+ * read to its end and dropped.  Waits only the Alt delay for each byte, so
+ * a sequence that stops short (a lone ESC [ typed by hand) does not hold the
+ * editor; a byte that cannot belong to a sequence (Enter, another ESC) is
+ * left for the next read.
+ * Return: how many bytes are in @tail, 0 when the sequence was dropped.
  */
 static size_t e_t_csi_read_tail(int first, char *tail, size_t size)
 {
  size_t n = 0;
  int c = first;
+ int overflow = 0;
 
- timeout(ESC_ALT_DELAY_MS);
- while (n < size)
+ for (;;)
  {
-  tail[n++] = (char)c;
-  if (!(c >= '0' && c <= '9') && c != ';')
+  if (c == E_T_NO_BYTE)
+   return(0);
+  if (c > E_T_BYTE_MAX || c < E_T_CSI_INTERMEDIATE_FIRST ||
+      c > E_T_CSI_FINAL_LAST)
+  {
+   if (c >= 0 && c <= E_T_BYTE_MAX)
+    e_t_push_back(c);
+   return(0);
+  }
+  if (n < size)
+   tail[n++] = (char)c;
+  else
+   overflow = 1;
+  if (c >= E_T_CSI_FINAL_FIRST)
    break;
-  c = fk_getch();
-  if (c == ERR || c > 0xff)
-   break;
+  c = e_t_next_byte(ESC_ALT_DELAY_MS);
  }
- timeout(-1);
+ if (overflow)
+  return(0);
  return(n);
 }
 
@@ -1676,16 +1891,66 @@ static int e_t_csi_paste_marker(const char *tail, size_t n)
  * Gives the same answer for "ESC [ 1;5P" as for the KEY_F(25) ncurses
  * folds it into, so a Ctrl-F chord works whether or not the terminfo entry
  * of the terminal knows it.
+ * The report forms of modifyOtherKeys and the kitty protocol are read
+ * here too, by the same table, so Ctrl-Shift-P, Ctrl-H and Esc arrive as the
+ * keys they are.  Typed text in a report is flagged as a character.
  * Return: the key code, or 0 when the tail is not a bound key.
  */
 static int e_t_csi_tail_key(int intro, const char *tail, size_t n)
 {
- WpeBaseKey base;
- unsigned mods;
+ int is_text;
+ int code = wpe_key_decode_csi(intro, tail, n, &is_text);
 
- if (!wpe_key_from_csi(intro, tail, n, &base, &mods))
+ if (code != 0 && is_text)
+  e_input_was_char = 1;
+ return(code);
+}
+
+/* The replies a terminal gives to the keyboard questions e_t_keyboard_
+   protocol_on asks: kitty's "CSI ? flags u" and xterm's "CSI > 4 ; level m". */
+#define WPE_CSI_REPLY_NUMBER_MAX 9999
+#define E_T_REPLY_KITTY_FLAGS '?'
+#define E_T_REPLY_MOK_LEVEL   '>'
+#define E_T_MOK_RESOURCE      4
+
+/**
+ * e_t_csi_reply - Is this tail the terminal's answer to a keyboard question?
+ * @intro: the introducer; @tail: the tail; @n: its length.
+ *
+ * Remembers what it says (kitty's flags, modifyOtherKeys' level) for the
+ * key-codes view.  An answer is no key.
+ * Return: 1 when the tail was an answer, 0 otherwise.
+ */
+static int e_t_csi_reply(int intro, const char *tail, size_t n)
+{
+ int first = 0, second = 0, *into = &first;
+ size_t i;
+
+ if (intro != '[' || n < 2)
   return(0);
- return(wpe_key_code(base, mods));
+ for (i = 1; i + 1 < n; i++)
+ {
+  if (tail[i] >= '0' && tail[i] <= '9')
+   *into = *into * 10 + (tail[i] - '0');
+  else if (tail[i] == ';' && into == &first)
+   into = &second;
+  else
+   return(0);
+  if (*into > WPE_CSI_REPLY_NUMBER_MAX)
+   return(0);
+ }
+ if (tail[0] == E_T_REPLY_KITTY_FLAGS && tail[n - 1] == 'u')
+ {
+  e_t_kitty_flags = first;
+  return(1);
+ }
+ if (tail[0] == E_T_REPLY_MOK_LEVEL && tail[n - 1] == 'm' &&
+     first == E_T_MOK_RESOURCE)
+ {
+  e_t_mok_level = second;
+  return(1);
+ }
+ return(0);
 }
 
 /* Decode the tail of a VT100 cursor/navigation escape after we have already read
@@ -1703,19 +1968,21 @@ static int e_t_csi_key(int intro)
  size_t n;
  int c, marker;
 
- timeout(ESC_ALT_DELAY_MS);
- c = fk_getch();
- timeout(-1);
+ c = e_t_next_byte(ESC_ALT_DELAY_MS);
  /* "ESC [ < ..." is an SGR (1006) mouse report ncurses did not fold into
     KEY_MOUSE (FreeBSD termcap console / OpenBSD base curses); decode it here. */
  if (c == '<')
   return(e_t_sgr_mouse());
- if (c == ERR || c > 0xff)
+ if (c == E_T_NO_BYTE || c > E_T_BYTE_MAX)
   return(0);
  n = e_t_csi_read_tail(c, tail, sizeof tail);
+ if (n == 0)
+  return(0);                    /* dropped whole: it was no key */
  marker = e_t_csi_paste_marker(tail, n);
  if (marker != 0)
   return(marker);
+ if (e_t_csi_reply(intro, tail, n))
+  return(0);
  return(e_t_csi_tail_key(intro, tail, n));
 }
 
@@ -1848,13 +2115,22 @@ static int e_t_curses_key(int ch, unsigned extra_mods)
  return(wpe_key_code(base, mods | extra_mods));
 }
 
-int e_t_getch()
+/**
+ * e_t_decode_key - The editor's key for a byte or curses code just read.
+ * @c: what e_t_read_raw returned (never E_T_NO_BYTE).
+ * @mode: the E_T_READ_* mode of the read, for a bracketed paste's next key.
+ *
+ * Folds curses' key codes, the bytes of Tab, Backspace and Esc, the
+ * sequences ncurses did not assemble (arrows in a dialog, the keyboard
+ * protocols' reports) and ESC followed by a key (Alt) into the one code the
+ * editor acts on; a mouse report or a resize is applied and reported as
+ * the editor's sentinel.
+ * Return: the key code, a sentinel, or 0 for a sequence that is no key.
+ */
+static int e_t_decode_key(int c, int mode)
 {
- int c;
  extern int g_mouse_buttons;
 
- e_refresh();
- c = e_t_getch_poll();
  if (c > KEY_CODE_YES && !e_input_was_char)
  {
   switch (c)
@@ -1865,12 +2141,10 @@ int e_t_getch()
     /* Drain any queued KEY_RESIZE events (resize often arrives in
        bursts).  Same technique as dialog(1) dlg_will_resize(). */
     { int _ch;
-      nodelay(stdscr, TRUE);
-      while ((_ch = getch()) == KEY_RESIZE)
+      while ((_ch = e_t_next_byte(INPUT_NO_WAIT_MS)) == KEY_RESIZE)
        ;
-      if (_ch != ERR)
-       ungetch(_ch);
-      nodelay(stdscr, FALSE);
+      if (_ch != E_T_NO_BYTE)
+       e_t_push_back(_ch);
     }
     /* ncurses already called resizeterm() and updated LINES/COLS */
     MAXSCOL = COLS;
@@ -1909,6 +2183,7 @@ int e_t_getch()
     break;
    }
 #endif
+   case KEY_ENTER:  c = WPE_CR; break;   /* the keypad's Enter */
    default:  c = e_t_curses_key(c, WPE_MOD_NONE); break;
   }
  }
@@ -1928,10 +2203,8 @@ int e_t_getch()
      following byte: an Alt-<key> combo sends ESC+key together (arrives within
      the window), a lone Esc does not -- so do not block for a second press.
      Fixes "Esc needs several presses" on the Linux console. */
-  timeout(ESC_ALT_DELAY_MS);
-  c = fk_getch();
-  timeout(-1);
-  if (c == ERR)
+  c = e_t_next_byte(ESC_ALT_DELAY_MS);
+  if (c == E_T_NO_BYTE)
    return(WPE_ESC);
   if (c > KEY_CODE_YES)
    c = e_t_curses_key(c, WPE_MOD_ALT);   /* ESC then a key is that key with Alt */
@@ -1954,18 +2227,124 @@ int e_t_getch()
     garbage in the editor); they only raise/lower g_bracketed_paste for the whole
     time the pasted bytes stream, and consumers that care (the dialog line editor)
     check that flag.  Fetch the next real key so callers never see the marker. */
- if (c == WPE_PASTE_BEG) { g_bracketed_paste = 1; s_t_paste_after_cr = 0; return e_t_getch(); }
- if (c == WPE_PASTE_END) return e_t_paste_ended();
+ if (c == WPE_PASTE_BEG) { g_bracketed_paste = 1; s_t_paste_after_cr = 0; return e_t_read_key(mode); }
+ if (c == WPE_PASTE_END) return e_t_paste_ended(mode);
  /* A paste carries verbatim LF newlines; map them to CR so the editor inserts
     real line breaks (a non-bracketed paste used to arrive as CR).  A single-line
     dialog field drops the CR itself while g_bracketed_paste is set.  The LF of
     a CR LF pair is one line ending with its CR, so it is not delivered at all. */
- if (g_bracketed_paste && e_t_paste_swallows_lf(c)) return e_t_getch();
+ if (g_bracketed_paste && e_t_paste_swallows_lf(c)) return e_t_read_key(mode);
  if (g_bracketed_paste && c == '\n') c = WPE_CR;
  return(c);
 }
 
+/**
+ * e_t_test_crash_hook - Crash once, after the first screen, when a test asks.
+ *
+ * XWPE_TEST_CRASH=1 raises SIGSEGV the first time the editor waits for a
+ * key, so a test can see what the terminal is left in when the editor dies:
+ * the keyboard protocol, paste and mouse must all be off again.
+ */
+static void e_t_test_crash_hook(void)
+{
+ static int checked = 0;
+
+ if (checked)
+  return;
+ checked = 1;
+ if (getenv("XWPE_TEST_CRASH") != NULL)
+  raise(SIGSEGV);
+}
+
+/**
+ * e_t_unread_key - Give a decoded key back to the reader.
+ * @key: a key e_t_read_key returned.
+ *
+ * Whole keys go back, never raw bytes, so what the next read returns is what
+ * this one would have returned.
+ */
+static void e_t_unread_key(int key)
+{
+ e_t_unread_valid = 1;
+ e_t_unread_key_code = key;
+ e_t_unread_was_char = e_input_was_char;
+}
+
+/**
+ * e_t_take_unread_key - Take the key e_t_unread_key gave back, if any.
+ * @key: out.
+ * Return: 1 when there was one, 0 otherwise.
+ */
+static int e_t_take_unread_key(int *key)
+{
+ if (!e_t_unread_valid)
+  return(0);
+ e_t_unread_valid = 0;
+ *key = e_t_unread_key_code;
+ e_input_was_char = e_t_unread_was_char;
+ return(1);
+}
+
+/**
+ * e_t_read_key - The only reader of the keyboard on the terminal: the
+ * editor's key for what the user typed.
+ * @mode: E_T_READ_WAIT to wait for a key while the loop serves its other
+ *   streams (the main loop's read); E_T_READ_BLOCK for one blocking read
+ *   (a "Hit CR" wait); E_T_READ_NO_WAIT for only a key already typed (the
+ *   Run loop, a box's type-ahead); E_T_READ_POLL for at most one poll
+ *   interval (the mouse drag).
+ *
+ * A key typed during a program's run, a keyboard protocol's report of
+ * Ctrl-C and a wait for Enter are all decoded here, by the one decoder, so
+ * no reader takes the bytes of a report apart or leaves its end behind as
+ * text.  The decoder's answer is a key, a sentinel (the mouse is -1, a
+ * wheel step and a resize are keys.h's) or 0 for nothing.
+ * Return: the key, or 0 when none came (never in WAIT mode, which waits).
+ */
+static int e_t_read_key(int mode)
+{
+ int c, wait_ms;
+
+ if (e_t_take_unread_key(&c))
+  return(c);
+ if (mode == E_T_READ_WAIT)
+ {
+  e_refresh();
+  e_t_test_crash_hook();
+  c = e_t_getch_poll();
+ }
+ else
+ {
+  if (mode == E_T_READ_BLOCK)
+   wait_ms = E_T_WAIT_BLOCK;
+  else if (mode == E_T_READ_POLL)
+   wait_ms = INPUT_POLL_MS;
+  else
+   wait_ms = INPUT_NO_WAIT_MS;
+  c = e_t_read_raw(wait_ms);
+  if (c == E_T_NO_BYTE)
+   return(0);
+ }
+ return(e_t_decode_key(c, mode));
+}
+
+int e_t_getch()
+{
+ return(e_t_read_key(E_T_READ_WAIT));
+}
+
 #else
+static int e_t_read_key(int mode)
+{
+ (void)mode;
+ return(e_t_getch());
+}
+
+static int e_t_input_is_gone(void)
+{
+ return(0);
+}
+
 int e_t_getch()
 {
  int c, c2, pshift, bk;
@@ -2197,29 +2576,20 @@ static void e_t_mouse_publish(int *g)
  g[3] = e_mouse.y * MOUSE_CELL_SUBDIV;
 }
 
-/* During a drag-poll, getch() returned a bare ESC.  On terminals whose terminfo
-   lacks an SGR-capable kmous (FreeBSD termcap console, OpenBSD base curses) a
-   mouse report arrives as the raw bytes "ESC [ < ..." instead of KEY_MOUSE, so
-   without this the drag-tracking loops (scrollbar thumb, submenu, window move)
-   would never see the motion.  Try to consume the introducer and decode the
-   report; return 1 if a mouse event was applied (a wheel step during a drag is
-   applied and otherwise ignored, as it always was), else push the two peeked
-   bytes back (the caller pushes the ESC) and return 0 for normal key handling. */
-static int e_t_mouse_poll_sgr(void)
+/**
+ * e_t_key_is_mouse_event - Did the key read report a mouse event?
+ * @key: what e_t_read_key returned.
+ *
+ * The decoder applies a mouse report (ncurses' KEY_MOUSE, or the raw SGR
+ * report of a terminal whose terminfo lacks an SGR-capable kmous: FreeBSD's
+ * termcap console, OpenBSD's base curses) to the button state and returns
+ * the mouse sentinel, or the scroll key of a wheel step; a drag ignores the
+ * wheel as it always did.
+ * Return: 1 for a mouse report, 0 for a key or nothing.
+ */
+static int e_t_key_is_mouse_event(int key)
 {
- int b1, b2;
-
- timeout(ESC_ALT_DELAY_MS);
- b1 = fk_getch();
- b2 = (b1 == '[') ? fk_getch() : ERR;
- timeout(-1);
- if (b1 == '[' && b2 == '<' && e_t_sgr_mouse() != 0)
-  return(1);
- if (b2 != ERR)
-  ungetch(b2);
- if (b1 != ERR)
-  ungetch(b1);
- return(0);
+ return(key == -1 || key == WPE_SCROLL_UP || key == WPE_SCROLL_DOWN);
 }
 
 /* The terminal backend has no pixel scrollbar, so its thumb-drag primitives are
@@ -2242,20 +2612,12 @@ int fk_t_mouse(int *g)
 {
 #if MOUSE
  extern struct mouse e_mouse;
- MEVENT mev;
- int ch;
+ int key;
 
  if (g[0] == 2)
   return(0);
- timeout(INPUT_POLL_MS);
- ch = getch();
- timeout(-1);
- if (ch == KEY_MOUSE && getmouse(&mev) == OK)
- {
-  e_t_mouse_apply_event(&mev);
-  e_t_mouse_publish(g);
- }
- else if (ch == WPE_ESC && e_t_mouse_poll_sgr())
+ key = e_t_read_key(E_T_READ_POLL);
+ if (e_t_key_is_mouse_event(key))
  {
   e_t_mouse_publish(g);
  }
@@ -2267,23 +2629,23 @@ int fk_t_mouse(int *g)
    e_mouse.k = 0;
    s_t_pending_click_release = 0;
   }
-  else if (ch != ERR && ch != WPE_ESC && g_mouse_buttons != 0)
+  else if (key != 0 && key != WPE_ESC && g_mouse_buttons != 0)
   {
-   /* A non-mouse byte arrived while a drag-poll still thinks a button is
-      held.  The matching release SGR may be queued behind it in the kernel
-      tty buffer, but ungetch() pushes this byte to the front of ncurses'
-      pushback stack so the next getch() never reaches the release -- the
-      caller's while(e_mshit()) spins on the same byte.  Cause observed on
-      macOS Terminal: a cursor key pressed right after a menu-bar click is
-      delivered before the release SGR.  Synthesize the release here: clear
-      g_mouse_buttons so the drag loop returns and ungetch the key so the
-      next e_getch() through the main path picks it up normally. */
+   /* A key arrived while a drag-poll still thinks a button is held.  The
+      matching release report may be queued behind it in the keyboard
+      stream, but the key goes back to the reader first, so the next read
+      never reaches the release -- the caller's while(e_mshit()) spins on
+      the same key.  Cause observed on macOS Terminal: a cursor key pressed
+      right after a menu-bar click is delivered before the release report.
+      Synthesize the release here: clear g_mouse_buttons so the drag loop
+      returns, and give the key back so the next e_getch() through the
+      main path picks it up normally. */
    g_mouse_buttons = 0;
    e_mouse.k = 0;
   }
   e_t_mouse_publish(g);
-  if (ch != ERR)
-   ungetch(ch);
+  if (key != 0)
+   e_t_unread_key(key);
  }
  return(0);
 #else

@@ -10,6 +10,22 @@
 
 #include <sys/ioctl.h>
 
+/**
+ * WpeLinuxIsConsole - Is the keyboard on a bare Linux console?
+ *
+ * Only a Linux virtual console answers TIOCLINUX's shift-state request; a
+ * terminal emulator's pty does not.  The editor asks once at start so it
+ * does not send the keyboard protocol sequences to a console that has no
+ * use for them.
+ * Return: 1 on a Linux console, 0 anywhere else.
+ */
+int WpeLinuxIsConsole(void)
+{
+ char c = 6;
+
+ return(ioctl(0, TIOCLINUX, &c) == 0);
+}
+
 int WpeLinuxBioskey(void)
 {
  char c;

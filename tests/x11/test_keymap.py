@@ -121,6 +121,36 @@ def test_ctrl_right_moves_by_a_word_as_it_does_in_the_terminal(xwpe):
         "Ctrl-Right should move the cursor a word right, line 1 is %r" % first
 
 
+LINES_SOURCE = "a\nb\nc\n"
+
+
+# @scenario SC-keymap-13
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": LINES_SOURCE}],
+                         indirect=True)
+@pytest.mark.parametrize("chord", ["ctrl+y", "ctrl+shift+y"])
+def test_ctrl_shift_letter_does_what_ctrl_letter_does(xwpe, chord):
+    """Ctrl-Y deletes a line.  Ctrl-Shift-Y is the same key in the Borland
+    key set, and on every display (the terminal's twin is in
+    tests/test_keymap_terminal.py): the first line is gone on disk."""
+    xwpe.key(chord)
+    xwpe.save()
+    assert xwpe.saved_text() == "b\nc\n", \
+        "%s should delete the first line, the file is %r" \
+        % (chord, xwpe.saved_text())
+
+
+# @scenario SC-keymap-14
+def test_ctrl_h_is_backspace_and_alt_letter_is_not_text(xwpe):
+    """Ctrl-H is Backspace (its control byte); Alt-F opens the File menu and
+    types nothing.  Both go through the chord owner now."""
+    xwpe.type("ab")
+    xwpe.key("ctrl+h")
+    xwpe.save()
+    first = xwpe.saved_text().splitlines()[0]
+    assert first.startswith("a") and not first.startswith("ab"), \
+        "Ctrl-H should delete the b just typed, line 1 is %r" % first
+
+
 # @scenario SC-debug-62
 def test_f11_does_not_quit_the_editor(xwpe):
     """F11 sends the same symbol as the Sun Stop key, which the graphical

@@ -504,3 +504,322 @@ def test_ctrl_right_and_ctrl_left_move_by_a_word_under_rxvt(tmp_path):
     assert lines[0] == "abc Xdef ghi", \
         "Ctrl-Right twice and Ctrl-Left should put the cursor on 'def', " \
         "line 1 is %r" % lines[0]
+
+
+# --- The two unambiguous keyboard protocols -------------------------------
+#
+# The editor asks the terminal for xterm's modifyOtherKeys and kitty's
+# keyboard protocol, so Ctrl-Shift-letter, Esc at once and the rest arrive as
+# reports.  With either on, Esc, every Ctrl-letter and every Alt-letter come
+# ONLY as a report, so each must read as the key the legacy byte reads as.
+# These rows send the reports a terminal sends (the pty under test sends
+# nothing of its own).
+
+PROTOCOL_SEED = "ab\n"
+# A report is no text and leaks no tail: each, then Q, leaves only Q typed.
+# The ':' forms and the long junk were typed as text before (the tail reader
+# stopped at the first byte that is not a digit or ';').
+REPORTS_THAT_TYPE_NOTHING = [
+    "\x1b[27;6;112~", "\x1b[112;6u", "\x1b[23~", "\x1b[27u",
+    "\x1b[27;5;115~", "\x1b[27;5;99~",
+    "\x1b[112:80;6u", "\x1b[1103:1071:1094;6u",
+    "\x1b[" + ";".join(["1"] * 20) + "z",
+]
+KITTY_CTRL_Y = "\x1b[121;5u"
+MOK_CTRL_Y = "\x1b[27;5;121~"
+KITTY_CTRL_SHIFT_Y = "\x1b[121;6u"
+MOK_CTRL_SHIFT_Y = "\x1b[27;6;121~"
+KITTY_CTRL_H = "\x1b[104;5u"
+KITTY_CTRL_M = "\x1b[109;5u"
+KITTY_CTRL_I = "\x1b[105;5u"
+KITTY_ALT_F = "\x1b[102;3u"
+MOK_ALT_F = "\x1b[27;3;102~"
+KITTY_ESC = "\x1b[27u"
+KITTY_CTRL_LBRACKET = "\x1b[91;5u"
+KITTY_CTRL_BACKSLASH = "\x1b[92;5u"
+FILE_MENU_ITEM = "Save As"      # only in the open menu; the bar has "F2 Save"
+
+
+def _typed_file(tmp_path, seed, *keys, term="xterm-256color"):
+    """The file on disk after the keys, then File > Save."""
+    with WpeSession(str(tmp_path), seed, filename="t.c",
+                    env_extra={"TERM": term}) as w:
+        w.key(*keys, delay=0.3)
+        w.save()
+        return w.text()
+
+
+# @scenario SC-keymap-01
+@pytest.mark.parametrize("report", REPORTS_THAT_TYPE_NOTHING)
+def test_a_key_report_types_nothing_and_leaks_no_tail(tmp_path, report):
+    """Each report, then Q, leaves only the Q in the file: the report is the
+    key it is or is dropped whole, and no part of its tail is typed."""
+    got = _typed_file(tmp_path, PROTOCOL_SEED, report, "Q")
+    assert got == "Q" + PROTOCOL_SEED, \
+        "%r then Q left %r, not 'Qab' (part of the report was typed)" \
+        % (report, got)
+
+
+# @scenario SC-keymap-02
+@pytest.mark.parametrize("report", [KITTY_CTRL_Y, MOK_CTRL_Y,
+                                    KITTY_CTRL_SHIFT_Y, MOK_CTRL_SHIFT_Y],
+                         ids=["kitty", "mok", "kitty-shift", "mok-shift"])
+def test_ctrl_y_deletes_the_line_in_every_protocol_form(tmp_path, report):
+    """Ctrl-Y deletes a line in the Borland key set.  Under a keyboard
+    protocol it arrives as a report, which used to be swallowed (nothing
+    happened); Ctrl-Shift-Y does what Ctrl-Y does there."""
+    got = _typed_file(tmp_path, "a\nb\nc\n", report)
+    assert got == "b\nc\n", \
+        "%r should delete the first line, the file is %r" % (report, got)
+
+
+# @scenario SC-keymap-03
+@pytest.mark.parametrize("pair", [
+    (KITTY_CTRL_H, "\x08"), (KITTY_CTRL_M, "\r"), (KITTY_CTRL_I, "\t")],
+    ids=["ctrl-h-is-backspace", "ctrl-m-is-enter", "ctrl-i-is-tab"])
+def test_ctrl_h_m_i_do_what_backspace_enter_tab_do(tmp_path, pair):
+    """The three letters whose control byte is another key's get codes of
+    their own under a protocol, and do what that other key does."""
+    report, legacy = pair
+    reported_dir = tmp_path / "reported"
+    legacy_dir = tmp_path / "legacy"
+    reported_dir.mkdir()
+    legacy_dir.mkdir()
+    with_report = _typed_file(reported_dir, "x\n", "ab", report, "c")
+    with_legacy = _typed_file(legacy_dir, "x\n", "ab", legacy, "c")
+    assert with_report == with_legacy, \
+        "%r should be read like %r: %r against %r" \
+        % (report, legacy, with_report, with_legacy)
+    assert with_legacy != "abcx\n", "the legacy key did nothing"
+
+
+# @scenario SC-keymap-16
+@pytest.mark.parametrize("pair", [
+    ("\x1b[127;2u", "\x7f"), ("\x1b[27;2;127~", "\x7f"),
+    ("\x1b[127;5u", "\x08"), ("\x1b[127;6u", "\x7f"),
+    ("\x1b[9;5u", "\t"), ("\x1b[27;5;9~", "\t")],
+    ids=["kitty-shift-backspace", "mok-shift-backspace",
+         "kitty-ctrl-backspace", "kitty-ctrl-shift-backspace",
+         "kitty-ctrl-tab", "mok-ctrl-tab"])
+def test_chords_a_legacy_terminal_sends_as_a_plain_key_still_do_it(tmp_path, pair):
+    """A legacy terminal sends Shift-, Ctrl- and Ctrl-Shift-Backspace as
+    Backspace's byte and Ctrl-Tab as Tab's; xterm and kitty report them as
+    chords once the editor asks.  The Borland keys must not lose them: each
+    report does what the legacy byte does."""
+    report, legacy = pair
+    reported_dir = tmp_path / "reported"
+    legacy_dir = tmp_path / "legacy"
+    reported_dir.mkdir()
+    legacy_dir.mkdir()
+    with_report = _typed_file(reported_dir, "x\n", "ab", report, "c")
+    with_legacy = _typed_file(legacy_dir, "x\n", "ab", legacy, "c")
+    assert with_report == with_legacy, \
+        "%r should be read like %r: %r against %r" \
+        % (report, legacy, with_report, with_legacy)
+    assert with_legacy != "abcx\n", "the legacy key did nothing"
+
+
+# @scenario SC-keymap-04
+@pytest.mark.parametrize("report", [KITTY_ALT_F, MOK_ALT_F],
+                         ids=["kitty", "mok"])
+def test_alt_letter_opens_its_menu_in_every_protocol_form(tmp_path, report):
+    """Alt-F opens the File menu.  Under a protocol it is a report."""
+    with WpeSession(str(tmp_path), PROTOCOL_SEED, filename="t.c") as w:
+        w.key(report, delay=0.5)
+        shown = "\n".join(w.display())
+        assert FILE_MENU_ITEM in shown, \
+            "%r did not open the File menu:\n%s" % (report, shown)
+
+
+# @scenario SC-keymap-05
+@pytest.mark.parametrize("esc", [KITTY_ESC, KITTY_CTRL_LBRACKET],
+                         ids=["esc", "ctrl-lbracket"])
+def test_a_reported_esc_closes_a_menu(tmp_path, esc):
+    """Esc, and Ctrl-[ which is the same key, close an open menu when they
+    arrive as reports (Esc is a report under the kitty protocol)."""
+    with WpeSession(str(tmp_path), PROTOCOL_SEED, filename="t.c") as w:
+        w.key("\x1bf", delay=0.5)           # the legacy Alt-F: the menu
+        assert FILE_MENU_ITEM in "\n".join(w.display()), "the menu did not open"
+        w.key(esc, delay=0.5)
+        shown = "\n".join(w.display())
+        assert FILE_MENU_ITEM not in shown, \
+            "%r did not close the menu:\n%s" % (esc, shown)
+
+
+# Ctrl-\ is the byte Shift-Tab used to be numbered as; in a dialog it moved
+# the focus back.  In the Replace box: Tab to the second field, then the key
+# under test, then X; where the X lands says where the focus is.
+def _focus_after_back_key(tmp_path, back_key):
+    with WpeSession(str(tmp_path), "line one\nline two\n",
+                    filename="t.c") as w:
+        w.key("\x1bs", delay=0.6)
+        w.key("r", delay=0.8)
+        w.key("ab", "\t", "cd", back_key, "X", delay=0.4)
+        disp = w.display()
+        w.key("\x1b")
+    find = next((r for r in disp if "Text to Find:" in r), "")
+    new = next((r for r in disp if "New Text:" in r), "")
+    return find, new, "\n".join(disp)
+
+
+# @scenario SC-keymap-06
+@pytest.mark.parametrize("ctrl_backslash", ["\x1c", KITTY_CTRL_BACKSLASH],
+                         ids=["byte", "report"])
+def test_ctrl_backslash_does_not_move_focus_back(tmp_path, ctrl_backslash):
+    """Ctrl-\\ sends byte 28, which was also the code of Shift-Tab: it moved
+    the focus back in a dialog.  It does nothing there now, and Shift-Tab
+    still moves back (the rows below)."""
+    find, new, whole = _focus_after_back_key(tmp_path, ctrl_backslash)
+    assert "Text to Find:  ab" in find and "X" in new, \
+        "Ctrl-\\ moved the focus back to the first field:\n%s" % whole
+
+
+# @scenario SC-keymap-07
+@pytest.mark.parametrize("shift_tab", ["\x1b[Z", "\x1b[27;2;9~", "\x1b[9;2u"],
+                         ids=["legacy", "mok", "kitty"])
+def test_shift_tab_moves_focus_back_in_every_form(tmp_path, shift_tab):
+    """Positive control for the row above: Shift-Tab, as the legacy
+    terminal, modifyOtherKeys and kitty each send it, moves back."""
+    find, new, whole = _focus_after_back_key(tmp_path, shift_tab)
+    assert "Text to Find:  X" in find and "cdX" not in new, \
+        "Shift-Tab did not move the focus back:\n%s" % whole
+
+
+# A program that reads its input to the end, so Ctrl-D (end of input) and
+# Ctrl-C (stop) are told apart from text.
+ECHO_PROG = ('#include <stdio.h>\n'
+             'int main(void){char b[100];int n=0;'
+             'puts("READY");fflush(stdout);'
+             'while(fgets(b,sizeof b,stdin))n+=(b[0]==\'a\'&&b[1]==\'b\'&&b[2]==10);'
+             'printf("EOFSEEN %d\\n",n);return 0;}\n')
+LOOP_PROG = ('#include <stdio.h>\n#include <unistd.h>\n'
+             'int main(void){FILE*o=fopen("loop.pid","w");'
+             'fprintf(o,"%d",(int)getpid());fclose(o);'
+             'for(;;)usleep(100000);return 0;}\n')
+RUN_CTRL_F9 = "\x1b[20;5~"
+PROTOCOL_CTRL_C = ["\x1b[99;5u", "\x1b[27;5;99~"]
+PROTOCOL_CTRL_D = ["\x1b[100;5u", "\x1b[27;5;100~"]
+RUN_WAIT_S = 20
+
+
+def _drain_until(w, predicate, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        w._drain(0.25)
+        if predicate():
+            return True
+    return False
+
+
+# @scenario SC-keymap-08
+@pytest.mark.parametrize("ctrl_c", PROTOCOL_CTRL_C, ids=["kitty", "mok"])
+def test_ctrl_c_in_a_protocol_form_stops_the_program_run_runs(tmp_path, ctrl_c):
+    """The Run loop reads keys through the one reader: Ctrl-C as a report
+    stops the program instead of being typed into it byte by byte."""
+    _need("gcc")
+    pidfile = tmp_path / "loop.pid"
+    with WpeSession(str(tmp_path), LOOP_PROG, filename="l.c", wait=1.5) as w:
+        w.key(RUN_CTRL_F9, delay=0.5)
+        assert _drain_until(
+            w, lambda: pidfile.exists() and pidfile.stat().st_size > 0,
+            RUN_WAIT_S), "Run never started the program"
+        pid = int(pidfile.read_text())
+        w.key(ctrl_c, delay=0.5)
+        gone = _drain_until(w, lambda: not os.path.exists("/proc/%d" % pid),
+                            RUN_WAIT_S)
+        if not gone:
+            os.kill(pid, 9)            # the pid the program wrote, nobody else's
+    assert gone, "Ctrl-C as %r did not stop the program (pid %d)" % (ctrl_c, pid)
+
+
+# @scenario SC-keymap-09
+@pytest.mark.parametrize("ctrl_d", PROTOCOL_CTRL_D, ids=["kitty", "mok"])
+def test_ctrl_d_in_a_protocol_form_ends_the_programs_input(tmp_path, ctrl_d):
+    """Type ab, Enter, then Ctrl-D as a report: the program reads ab and
+    then sees the end of its input (Ctrl-D is the byte 4 on its terminal)."""
+    _need("gcc")
+    with WpeSession(str(tmp_path), ECHO_PROG, filename="e.c", wait=1.5) as w:
+        w.key(RUN_CTRL_F9, delay=0.5)
+        assert wait_screen(w, "READY", RUN_WAIT_S), "Run never started the program"
+        w.key("ab", "\r", delay=0.4)
+        w.key(ctrl_d, delay=0.5)
+        ended = wait_screen(w, "EOFSEEN 1", RUN_WAIT_S)
+        shown = "\n".join(w.display())
+    assert ended, "Ctrl-D as %r did not end the program's input after the " \
+        "one line ab (EOFSEEN 1):\n%s" % (ctrl_d, shown)
+
+
+# @scenario SC-keymap-10
+def test_run_sends_the_cursor_keys_to_the_program(tmp_path):
+    """The Run loop used to drop the arrow and function keys.  A program
+    reading its input in raw bytes sees the xterm sequence of each."""
+    _need("gcc")
+    prog = ('#include <stdio.h>\n#include <unistd.h>\n#include <termios.h>\n'
+            'int main(void){struct termios t;tcgetattr(0,&t);'
+            't.c_lflag&=~(ICANON|ECHO);tcsetattr(0,TCSANOW,&t);'
+            'puts("RAWREADY");fflush(stdout);'
+            'unsigned char b[16];int n=read(0,b,sizeof b);'
+            'printf("N=%d B1=%d B2=%d B3=%d\\n",n,b[0],b[1],b[2]);'
+            'return 0;}\n')
+    with WpeSession(str(tmp_path), prog, filename="k.c", wait=1.5) as w:
+        w.key(RUN_CTRL_F9, delay=0.5)
+        assert wait_screen(w, "RAWREADY", RUN_WAIT_S), "Run never started it"
+        w.key("\x1b[A", delay=0.5)          # Up
+        ok = wait_screen(w, "N=3 B1=27 B2=91 B3=65", RUN_WAIT_S)
+        shown = "\n".join(w.display())
+    assert ok, "the program did not read ESC [ A for Up:\n%s" % shown
+
+
+# @scenario SC-keymap-15
+def test_the_keypad_enter_is_enter_in_a_terminal(tmp_path):
+    """xterm in application keypad mode sends the keypad's Enter as "ESC O M",
+    which curses names KEY_ENTER; the editor ignored it.  It breaks the line
+    as Enter does: ab, keypad Enter, c is two lines."""
+    got = _typed_file(tmp_path, "", "ab", "\x1bOM", "c")
+    assert got == "ab\nc\n", \
+        "the keypad Enter should break the line, the file is %r" % got
+
+
+# @scenario SC-keymap-12
+def test_a_reported_esc_in_a_hit_cr_wait_leaves_no_tail_behind(tmp_path):
+    """Ctrl-F9 on a shell script shows its output and waits for a key with
+    the terminal handed over (a line at a time).  Esc as a kitty report
+    ends the wait as one key; the wait used to take the ESC and leave
+    "[27u" queued for the editor, which typed it.  The Q after it is the
+    editor's (the line's end, the cooked terminal's Enter, ends the wait's
+    line and is dropped with it)."""
+    with WpeSession(str(tmp_path), "echo HITMARK\n", filename="h.sh") as w:
+        w.key(RUN_CTRL_F9, delay=1.5)
+        assert "Strike <Return> to continue" in "\n".join(w.display()), \
+            "the script's wait did not appear"
+        w.key(KITTY_ESC, "Q", "\r", delay=0.6)
+        w.save()
+        got = w.text()
+    assert "[27u" not in got, "the tail of the Esc report was typed: %r" % got
+    assert got == "Qecho HITMARK\n", \
+        "after the wait, the Q is typed into the file: %r" % got
+
+
+# @scenario SC-keymap-11
+def test_the_screen_harness_ignores_the_protocol_sequences(tmp_path):
+    """pyte read "CSI > 4 ; 2 m" as SGR 4;2 (underline) and drew the "u" of
+    "CSI < u".  The harness consumes the private key-protocol sequences, and
+    the screen after a real start has no underlined cell."""
+    from wpe_driver import _RepStream
+    from test_utf8_border import SafeScreen
+    screen = SafeScreen(20, 3)
+    stream = _RepStream(screen)
+    stream.feed("ab\x1b[>4;2mcd\x1b[<uef\x1b[?ugh\x1b[>5u")
+    stream.feed("ij\x1b[>4;")        # a sequence cut by the end of a read
+    stream.feed("2mkl")
+    assert screen.display[0].rstrip() == "abcdefghijkl", screen.display[0]
+    assert not any(screen.buffer[0][x].underscore for x in range(12)), \
+        "the harness took a key-protocol sequence for SGR underline"
+    with WpeSession(str(tmp_path), PROTOCOL_SEED, filename="t.c") as w:
+        sent = bytes(w.raw)
+        assert b"\x1b[>4;2m" in sent and b"\x1b[>5u" in sent, \
+            "the editor did not ask for the protocols: %r" % sent[:200]
+        scr = w.screen
+        assert not any(scr.buffer[y][x].underscore for y in range(scr.lines)
+                       for x in range(scr.columns)), \
+            "a cell is underlined after the start"

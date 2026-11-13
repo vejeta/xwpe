@@ -245,7 +245,7 @@ static void test_console_shift_state_adds_the_shift_row(void)
 	for (n = 1; n <= NFKEYS; n++)
 		chk("console Shift-Fn is KEY_F(10+n)", via_curses(KEY_F(10 + n), WPE_MOD_SHIFT), shift_f[n - 1]);
 	/* the same numbers on a terminal with no console shift state are xterm's */
-	chk("KEY_F(11) alone is F11, which nothing binds", via_curses(KEY_F(11), 0), 0);
+	chk("KEY_F(11) alone is F11", via_curses(KEY_F(11), 0), F11);
 	chk("KEY_F(15) alone is Shift-F3", via_curses(KEY_F(15), 0), SF3);
 #endif
 	chk("console Shift is the shift offset", wpe_key_code(WPE_KEY_UP, WPE_MOD_SHIFT), CUP + WPE_KEY_SHIFT_OFFSET);
@@ -254,7 +254,7 @@ static void test_console_shift_state_adds_the_shift_row(void)
 
 static void test_an_unbound_key_gives_zero_not_a_letter(void)
 {
-	chk("F11 has no binding", wpe_key_code(WPE_KEY_F11, WPE_MOD_NONE), 0);
+	chk("F11 is a key", wpe_key_code(WPE_KEY_F11, WPE_MOD_NONE), F11);
 	chk("Ctrl-Up has no binding", wpe_key_code(WPE_KEY_UP, WPE_MOD_CTRL), 0);
 	chk("Shift-Backspace has no binding", wpe_key_code(WPE_KEY_BACKSPACE, WPE_MOD_SHIFT), 0);
 	chk("Ctrl-Shift-Tab has no binding", wpe_key_code(WPE_KEY_TAB, WPE_MOD_CTRL | WPE_MOD_SHIFT), 0);
@@ -284,21 +284,21 @@ static void test_sun_keys_are_the_same_on_every_backend(void)
 	for (n = 0; n < NSUNKEYS; n++)
 		chk("Sun key from its keysym", via_keysym(0xffcaUL + n, 0), sun[n]);
 	/* L1 and L2 are F11 and F12's symbols: a PC keyboard's F11 must not
-	   quit the editor (Stop) nor F12 redo (Again), and the terminal never
-	   bound them either */
-	chk("F11 (Sun Stop's symbol) does nothing", via_keysym(0xffc8UL, 0), 0);
-	chk("F12 (Sun Again's symbol) does nothing", via_keysym(0xffc9UL, 0), 0);
-	chk("Shift-F11 does nothing", via_keysym(0xffc8UL, WPE_MOD_SHIFT), 0);
+	   quit the editor (Stop) nor F12 redo (Again), so they are read as
+	   F11 and F12, which the Borland key set gives no action */
+	chk("F11 (Sun Stop's symbol) is F11", via_keysym(0xffc8UL, 0), F11);
+	chk("F12 (Sun Again's symbol) is F12", via_keysym(0xffc9UL, 0), F12);
+	chk("Shift-F11 is SF11", via_keysym(0xffc8UL, WPE_MOD_SHIFT), SF11);
 #ifdef NCURSES
-	chk("the terminal's F11 does nothing", via_curses(KEY_F(11), 0), 0);
-	chk("the terminal's F12 does nothing", via_curses(KEY_F(12), 0), 0);
+	chk("the terminal's F11 is F11", via_curses(KEY_F(11), 0), F11);
+	chk("the terminal's F12 is F12", via_curses(KEY_F(12), 0), F12);
 #endif
 #ifdef HAVE_XK
-	chk("XK_L1 is not STOP", via_keysym(XK_L1, 0), 0);
+	chk("XK_L1 is not STOP", via_keysym(XK_L1, 0), F11);
 	chk("XK_L10 is CUT", via_keysym(XK_L10, 0), CUT);
 #endif
 #ifdef HAVE_XKB
-	chk("XKB_KEY_L1 is not STOP", via_keysym(XKB_KEY_L1, 0), 0);
+	chk("XKB_KEY_L1 is not STOP", via_keysym(XKB_KEY_L1, 0), F11);
 	chk("XKB_KEY_L10 is CUT", via_keysym(XKB_KEY_L10, 0), CUT);
 #endif
 }
@@ -439,8 +439,310 @@ static void test_bound_sequences_give_the_key_that_sends_them(void)
 	chk("no sequence", wpe_key_from_sequence(NULL, 0, NULL, NULL), 0);
 }
 
+/* A report of either protocol through the owner, before the fold to the
+   legacy keys, so a distinct code can be told from the plain key. */
+static int via_report(const char *tail)
+{
+	WpeBaseKey base;
+	unsigned mods;
+	int cp;
+
+	if (!wpe_key_from_csi_cp('[', tail, strlen(tail), &base, &mods, &cp))
+		return 0;
+	if (base == WPE_KEY_CHAR)
+		return wpe_key_code_char(cp, mods);
+	return wpe_key_code(base, mods);
+}
+
+/* The same through the whole decode the terminal calls, folded. */
+static int via_decode(const char *tail)
+{
+	int is_text;
+
+	return wpe_key_decode_csi('[', tail, strlen(tail), &is_text);
+}
+
+static int text_of(const char *tail)
+{
+	int is_text;
+
+	wpe_key_decode_csi('[', tail, strlen(tail), &is_text);
+	return is_text;
+}
+
+/* "<cp>;<param>u" and "27;<param>;<cp>~" for a letter and a modifier
+   parameter: the two protocols' spellings of one chord. */
+static void spellings(char *kitty, char *mok, size_t size, int cp, int param)
+{
+	snprintf(kitty, size, "%d;%du", cp, param);
+	snprintf(mok, size, "27;%d;%d~", param, cp);
+}
+
+#define PARAM_SHIFT 2
+#define PARAM_ALT   3
+#define PARAM_CTRL  5
+#define PARAM_CTRL_SHIFT 6
+#define PARAM_CTRL_ALT   7
+#define PARAM_ALT_SHIFT  4
+#define SPELL_MAX 32
+#define LETTERS 26
+#define ALT_SHIFT_FIRST 1024
+
+static void test_f11_and_f12_are_keys_from_every_delivery(void)
+{
+	chk("CSI 23~ is F11", via_csi("23~"), F11);
+	chk("CSI 24~ is F12", via_csi("24~"), F12);
+	chk("CSI 23;2~ is Shift-F11", via_csi("23;2~"), SF11);
+	chk("CSI 24;2~ is Shift-F12", via_csi("24;2~"), SF12);
+	chk("CSI 23;5~ is Ctrl-F11", via_csi("23;5~"), CF11);
+	chk("CSI 24;5~ is Ctrl-F12", via_csi("24;5~"), CF12);
+	chk("CSI 23;3~ is Alt-F11", via_csi("23;3~"), AF11);
+	chk("CSI 24;3~ is Alt-F12", via_csi("24;3~"), AF12);
+	chk("F11 is not an existing code", F11 != F10 && F11 != POS1 && F12 != CUP, 1);
+	chk("SF11 is F11 plus the shift offset", SF11, F11 + WPE_KEY_SHIFT_OFFSET);
+	chk("SF12 is F12 plus the shift offset", SF12, F12 + WPE_KEY_SHIFT_OFFSET);
+	chk("kitty F11", via_report("23~"), F11);
+	chk("kitty Shift-F3 is CSI 13;2~, not a private code", via_report("13;2~"), SF3);
+}
+
+static void test_a_codepoint_with_modifiers_is_one_code(void)
+{
+	int i;
+
+	chk("text",wpe_key_code_char('a', WPE_MOD_NONE), 'a');
+	chk("text beyond ASCII", wpe_key_code_char(0x20ac, WPE_MOD_NONE), 0x20ac);
+	chk("Esc", wpe_key_code_char(27, WPE_MOD_NONE), WPE_ESC);
+	chk("Enter", wpe_key_code_char(13, WPE_MOD_NONE), WPE_CR);
+	chk("Tab", wpe_key_code_char(9, WPE_MOD_NONE), WPE_TAB);
+	chk("Shift-Tab", wpe_key_code_char(9, WPE_MOD_SHIFT), WPE_BTAB);
+	chk("Ctrl-Tab", wpe_key_code_char(9, WPE_MOD_CTRL), WPE_CTRL_TAB);
+	chk("Backspace", wpe_key_code_char(127, WPE_MOD_NONE), CtrlH);
+	chk("Alt-Backspace", wpe_key_code_char(127, WPE_MOD_ALT), AltBS);
+	for (i = 0; i < LETTERS; i++) {
+		int cp = 'a' + i;
+		int ctrl = i + 1;
+
+		if (cp == 'h') ctrl = WPE_CTRL_H;
+		if (cp == 'i') ctrl = WPE_CTRL_I;
+		if (cp == 'm') ctrl = WPE_CTRL_M;
+		chk("Ctrl-letter", wpe_key_code_char(cp, WPE_MOD_CTRL), ctrl);
+		chk("Ctrl-capital is Ctrl-Shift", wpe_key_code_char('A' + i, WPE_MOD_CTRL), WPE_CS_FIRST + i);
+		chk("Ctrl-Shift-letter", wpe_key_code_char(cp, WPE_MOD_CTRL | WPE_MOD_SHIFT), WPE_CS_FIRST + i);
+		chk("Alt-Shift-letter is the window code", wpe_key_code_char(cp, WPE_MOD_ALT | WPE_MOD_SHIFT), ALT_SHIFT_FIRST + i);
+		chk("Alt-capital is the window code", wpe_key_code_char('A' + i, WPE_MOD_ALT), ALT_SHIFT_FIRST + i);
+		chk("Alt-letter is the Alt code", wpe_key_code_char(cp, WPE_MOD_ALT), wpe_alt_key_code(cp));
+		chk("Alt-letter is bound", wpe_key_code_char(cp, WPE_MOD_ALT) != 0, 1);
+		chk("Ctrl-Alt-letter is bound or reserved",
+		    wpe_key_code_char(cp, WPE_MOD_CTRL | WPE_MOD_ALT) != 0, 1);
+		chk("Ctrl-letter is never a Ctrl-Shift code",
+		    wpe_key_code_char(cp, WPE_MOD_CTRL) != WPE_CS_FIRST + i, 1);
+	}
+	chk("Alt-Shift-S is window 28's code", wpe_key_code_char('s', WPE_MOD_ALT | WPE_MOD_SHIFT), ALT_SHIFT_FIRST + 'S' - 'A');
+	chk("Alt-A", wpe_key_code_char('a', WPE_MOD_ALT), AltA);
+	chk("Alt-X", wpe_key_code_char('x', WPE_MOD_ALT), AltX);
+	chk("Alt-1", wpe_key_code_char('1', WPE_MOD_ALT), Alt1);
+	chk("Alt-0", wpe_key_code_char('0', WPE_MOD_ALT), Alt0);
+	chk("Alt-Space", wpe_key_code_char(' ', WPE_MOD_ALT), AltBl);
+	chk("Alt-#", wpe_key_code_char('#', WPE_MOD_ALT), AltSYS);
+	chk("Alt-comma is not bound", wpe_key_code_char(',', WPE_MOD_ALT), 0);
+	chk("Ctrl-Alt-A keeps ESC Ctrl-A's code", wpe_key_code_char('a', WPE_MOD_CTRL | WPE_MOD_ALT), CBUP);
+	chk("Ctrl-Alt-Q is reserved", wpe_key_code_char('q', WPE_MOD_CTRL | WPE_MOD_ALT), WPE_CA_FIRST + 'q' - 'a');
+	chk("Ctrl-Space", wpe_key_code_char(' ', WPE_MOD_CTRL), WPE_CTRL_SPACE);
+	chk("Ctrl-/", wpe_key_code_char('/', WPE_MOD_CTRL), WPE_CTRL_SLASH);
+	chk("Ctrl-backquote", wpe_key_code_char('`', WPE_MOD_CTRL), WPE_CTRL_BACKQUOTE);
+	chk("Ctrl-backslash is not Shift-Tab", wpe_key_code_char('\\', WPE_MOD_CTRL), WPE_CTRL_BACKSLASH);
+	chk("Ctrl-]", wpe_key_code_char(']', WPE_MOD_CTRL), WPE_CTRL_RBRACKET);
+	chk("Ctrl-[", wpe_key_code_char('[', WPE_MOD_CTRL), WPE_CTRL_LBRACKET);
+	chk("Ctrl-comma", wpe_key_code_char(',', WPE_MOD_CTRL), WPE_CTRL_COMMA);
+	chk("Ctrl-period", wpe_key_code_char('.', WPE_MOD_CTRL), WPE_CTRL_PERIOD);
+	chk("Ctrl-=", wpe_key_code_char('=', WPE_MOD_CTRL), WPE_CTRL_EQUAL);
+	chk("Ctrl--", wpe_key_code_char('-', WPE_MOD_CTRL), WPE_CTRL_MINUS);
+	chk("Ctrl-3 is not bound", wpe_key_code_char('3', WPE_MOD_CTRL), 0);
+	chk("Ctrl-Shift-/ is not bound", wpe_key_code_char('/', WPE_MOD_CTRL | WPE_MOD_SHIFT), 0);
+	chk("a control character is not a key", wpe_key_code_char(1, WPE_MOD_NONE), 0);
+	chk("Ctrl and a beyond-ASCII letter is not bound", wpe_key_code_char(0x20ac, WPE_MOD_CTRL), 0);
+	chk("the codes are distinct from the control bytes",
+	    WPE_CS_FIRST > 255 && WPE_CA_FIRST > 255 && WPE_CTRL_H > 255 && WPE_BTAB > 255, 1);
+	chk("Ctrl-Shift and Ctrl-Alt ranges do not meet",
+	    WPE_CS_LAST < WPE_CTRL_H && WPE_CTRL_MINUS < WPE_CA_FIRST, 1);
+	chk("BTAB is not a control byte", WPE_BTAB != 28, 1);
+}
+
+static void test_every_protocol_spelling_gives_the_legacy_code(void)
+{
+	char kitty[SPELL_MAX], mok[SPELL_MAX];
+	int i;
+
+	for (i = 0; i < LETTERS; i++) {
+		int cp = 'a' + i;
+
+		spellings(kitty, mok, sizeof kitty, cp, PARAM_CTRL);
+		chk("kitty Ctrl-letter", via_report(kitty), wpe_key_code_char(cp, WPE_MOD_CTRL));
+		chk("mok Ctrl-letter", via_report(mok), wpe_key_code_char(cp, WPE_MOD_CTRL));
+		chk("Ctrl-letter folds to the legacy byte", via_decode(kitty), i + 1);
+		chk("Ctrl-letter, mok, folds to the legacy byte", via_decode(mok), i + 1);
+
+		spellings(kitty, mok, sizeof kitty, cp, PARAM_CTRL_SHIFT);
+		chk("kitty Ctrl-Shift-letter", via_report(kitty), WPE_CS_FIRST + i);
+		chk("mok Ctrl-Shift-letter", via_report(mok), WPE_CS_FIRST + i);
+		chk("Ctrl-Shift-letter folds to Ctrl-letter", via_decode(kitty), i + 1);
+
+		spellings(kitty, mok, sizeof kitty, cp, PARAM_ALT);
+		chk("kitty Alt-letter", via_report(kitty), wpe_alt_key_code(cp));
+		chk("mok Alt-letter", via_report(mok), wpe_alt_key_code(cp));
+		chk("kitty Alt-letter is what ESC and the letter give", via_decode(kitty), wpe_alt_key_code(cp));
+
+		spellings(kitty, mok, sizeof kitty, cp, PARAM_ALT_SHIFT);
+		chk("kitty Alt-Shift-letter", via_report(kitty), ALT_SHIFT_FIRST + i);
+		chk("mok Alt-Shift-letter", via_report(mok), ALT_SHIFT_FIRST + i);
+
+		spellings(kitty, mok, sizeof kitty, cp, PARAM_CTRL_ALT);
+		chk("kitty Ctrl-Alt-letter", via_report(kitty), wpe_key_code_char(cp, WPE_MOD_CTRL | WPE_MOD_ALT));
+		chk("mok Ctrl-Alt-letter", via_report(mok), wpe_key_code_char(cp, WPE_MOD_CTRL | WPE_MOD_ALT));
+	}
+	chk("kitty Ctrl-H is its own code", via_report("104;5u"), WPE_CTRL_H);
+	chk("mok Ctrl-H is its own code", via_report("27;5;104~"), WPE_CTRL_H);
+	chk("kitty Ctrl-I", via_report("105;5u"), WPE_CTRL_I);
+	chk("kitty Ctrl-M", via_report("109;5u"), WPE_CTRL_M);
+	chk("kitty Ctrl-[", via_report("91;5u"), WPE_CTRL_LBRACKET);
+	chk("Ctrl-H folds to Backspace's byte", via_decode("104;5u"), CtrlH);
+	chk("Ctrl-I folds to Tab's byte", via_decode("105;5u"), WPE_TAB);
+	chk("Ctrl-M folds to Enter's byte", via_decode("109;5u"), WPE_CR);
+	chk("Ctrl-[ folds to Esc", via_decode("91;5u"), WPE_ESC);
+	chk("kitty Esc", via_report("27u"), WPE_ESC);
+	chk("mok Esc", via_report("27;1;27~"), WPE_ESC);
+	chk("kitty Ctrl-Space", via_report("32;5u"), WPE_CTRL_SPACE);
+	chk("mok Ctrl-Space", via_report("27;5;32~"), WPE_CTRL_SPACE);
+	chk("kitty Alt-Space", via_report("32;3u"), AltBl);
+	chk("kitty Alt-1", via_report("49;3u"), Alt1);
+	chk("kitty Alt-0", via_report("48;3u"), Alt0);
+	chk("kitty Alt-#", via_report("35;3u"), AltSYS);
+	chk("kitty Alt-Shift-3 with its shifted form is Alt-#", via_report("51:35;4u"), AltSYS);
+	chk("kitty Ctrl-Tab", via_report("9;5u"), WPE_CTRL_TAB);
+	chk("mok Ctrl-Tab", via_report("27;5;9~"), WPE_CTRL_TAB);
+	chk("Ctrl-Tab folds to Tab, as a legacy terminal sends it", via_decode("9;5u"), WPE_TAB);
+	chk("mok Ctrl-Tab folds to Tab", via_decode("27;5;9~"), WPE_TAB);
+	chk("kitty Shift-Tab", via_report("9;2u"), WPE_BTAB);
+	chk("mok Shift-Tab (xterm's own example)", via_report("27;2;9~"), WPE_BTAB);
+	chk("kitty Tab", via_report("9u"), WPE_TAB);
+	chk("kitty Enter", via_report("13u"), WPE_CR);
+	chk("kitty Shift-Enter", via_report("13;2u"), WPE_CR);
+	chk("kitty Alt-Enter is not bound", via_report("13;3u"), 0);
+	chk("kitty Backspace", via_report("127u"), CtrlH);
+	chk("kitty Alt-Backspace", via_report("127;3u"), AltBS);
+	chk("kitty Shift-Backspace erases, as its legacy byte did", via_report("127;2u"), CtrlH);
+	chk("kitty Ctrl-Backspace erases", via_report("127;5u"), CtrlH);
+	chk("kitty Ctrl-Shift-Backspace erases", via_report("127;6u"), CtrlH);
+	chk("mok Shift-Backspace erases", via_report("27;2;127~"), CtrlH);
+	chk("mok Ctrl-Backspace erases", via_report("27;5;8~"), CtrlH);
+	chk("kitty Alt-Shift-Backspace keeps its code", via_report("127;4u"), SABS);
+	chk("kitty Ctrl-\\ is not Shift-Tab", via_report("92;5u"), WPE_CTRL_BACKSLASH);
+}
+
+static void test_the_spec_examples_of_the_kitty_protocol(void)
+{
+	chk("shift+a with its text is the text A", via_report("97;2;65u"), 'A');
+	chk("... and the decode says it is text", text_of("97;2;65u"), 1);
+	chk("a plain a is text", via_report("97u"), 'a');
+	chk("Ctrl-a is not text", text_of("97;5u"), 0);
+	chk("Ctrl-Shift-I", via_report("105;6u"), WPE_CS_FIRST + 'i' - 'a');
+	chk("Ctrl-Shift-3 is no key", via_report("51;6u"), 0);
+	chk("Ctrl-Shift-; is no key", via_report("59;6u"), 0);
+	chk("Esc", via_report("27u"), WPE_ESC);
+	chk("Shift-F3 is 13;2~", via_report("13;2~"), SF3);
+	chk("Ctrl-Shift-P with its shifted key", via_report("112:80;6u"), WPE_CS_FIRST + 'p' - 'a');
+	chk("Ctrl-Shift-P with shifted and base keys", via_report("112:80:112;6u"), WPE_CS_FIRST + 'p' - 'a');
+	chk("Ctrl-Shift with a non-Latin letter and no US key is no key",
+	    via_report("1103:1071:1094;6u"), 0);
+	chk("Ctrl-S on a Cyrillic layout is read by its US key",
+	    via_report("1099::115;5u"), CtrlS);
+	chk("Alt-X on a Cyrillic layout is read by its US key",
+	    via_report("1095::120;3u"), AltX);
+	chk("typed text keeps its own character whatever the US key",
+	    via_report("1099::115u"), 1099);
+	chk("Ctrl-Z on a German layout stays Ctrl-Z, not its US place",
+	    via_report("122::121;5u"), CtrlZ);
+	chk("Alt-A on a French layout stays Alt-A, not its US place",
+	    via_report("97::113;3u"), AltA);
+	chk("Ctrl-S on a Dvorak layout stays Ctrl-S",
+	    via_report("115::59;5u"), CtrlS);
+	chk("the keypad's Enter", via_report("57414u"), WPE_CR);
+	chk("the keypad's Shift-Left", via_report("57417;2u"), CLE + WPE_KEY_SHIFT_OFFSET);
+	chk("a modifier key alone is nothing", via_report("57441u"), 0);
+	chk("a release is nothing", via_report("97;5:3u"), 0);
+	chk("a repeat is a press", via_report("97;5:2u"), CtrlA);
+	chk("a press with its event type", via_report("97;5:1u"), CtrlA);
+	chk("Super is not Ctrl", via_report("97;9u"), 0);
+	chk("Hyper is not Ctrl", via_report("97;17u"), 0);
+	chk("Meta is not Ctrl", via_report("97;33u"), 0);
+	chk("Caps Lock does not change the chord", via_report("97;69u"), CtrlA);
+	chk("Num Lock does not change the chord", via_report("97;133u"), CtrlA);
+	chk("the keypad's 0 is the text 0", via_report("57399u"), '0');
+	chk("the keypad's 9 is the text 9", via_report("57408u"), '9');
+	chk("the keypad's decimal point", via_report("57409u"), '.');
+	chk("the keypad's divide", via_report("57410u"), '/');
+	chk("the keypad's multiply", via_report("57411u"), '*');
+	chk("the keypad's minus", via_report("57412u"), '-');
+	chk("the keypad's plus", via_report("57413u"), '+');
+	chk("the keypad's equal", via_report("57415u"), '=');
+	chk("the keypad's separator", via_report("57416u"), ',');
+	chk("the keypad's Left", via_report("57417u"), CLE);
+	chk("the keypad's Delete", via_report("57426u"), ENTF);
+	chk("the keypad's Home with Ctrl", via_report("57423;5u"), CPS1);
+	chk("the keypad's Begin is nothing", via_report("57427u"), 0);
+	chk("F13 is nothing", via_report("57376u"), 0);
+	chk("F35 is nothing", via_report("57398u"), 0);
+	chk("Caps Lock key is nothing", via_report("57358u"), 0);
+	chk("Print Screen is nothing", via_report("57361u"), 0);
+	chk("Menu is nothing", via_report("57363u"), 0);
+	chk("a media key is nothing", via_report("57428u"), 0);
+	chk("the last modifier key is nothing", via_report("57454u"), 0);
+	chk("a number past Unicode is nothing", via_report("1114112u"), 0);
+	chk("an empty report is nothing", via_report("u"), 0);
+	chk("a report with four fields is nothing", via_report("97;5;65;1u"), 0);
+	chk("a report with four parts is nothing", via_report("97:1:2:3;5u"), 0);
+	chk("a control character number is nothing", via_report("1;5u"), 0);
+	chk("the kitty functional keys keep xterm's forms", via_report("1;2P"), SF1);
+	chk("kitty Insert", via_report("2~"), EINFG);
+	chk("kitty F5-F12 numbers", via_report("19~"), F8);
+	chk("an introducer other than [ is not kitty", wpe_key_decode_csi('O', "97;5u", 5, &(int){0}), 0);
+}
+
+static void test_a_long_or_unrecognised_tail_is_no_key(void)
+{
+	chk("a junk tail of 1s", via_decode("1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1z"), 0);
+	chk("three numbers that are not modifyOtherKeys", via_decode("1;1;1~"), 0);
+	chk("27 with two numbers is no key", via_decode("27;5~"), 0);
+	chk("a private-marked report is no key", via_decode("?1u"), 0);
+	chk("modifyOtherKeys of an unknown number", via_decode("27;5;1~"), 0);
+	chk("the colon on a legacy form is no key", via_decode("1;5:3A"), 0);
+	chk("a plain legacy key still decodes", via_decode("1;5D"), CCLE);
+}
+
+static void test_fold_gives_the_legacy_codes_and_nothing_else(void)
+{
+	int i;
+
+	chk("Ctrl-H", wpe_key_fold_legacy(WPE_CTRL_H), CtrlH);
+	chk("Ctrl-I", wpe_key_fold_legacy(WPE_CTRL_I), CtrlI);
+	chk("Ctrl-M", wpe_key_fold_legacy(WPE_CTRL_M), CtrlM);
+	chk("Ctrl-[", wpe_key_fold_legacy(WPE_CTRL_LBRACKET), WPE_ESC);
+	chk("Ctrl-Tab folds to Tab", wpe_key_fold_legacy(WPE_CTRL_TAB), WPE_TAB);
+	for (i = 0; i < LETTERS; i++)
+		chk("Ctrl-Shift-letter", wpe_key_fold_legacy(WPE_CS_FIRST + i), i + 1);
+	chk("a plain key is unchanged", wpe_key_fold_legacy(F5), F5);
+	chk("Ctrl-/ is unchanged", wpe_key_fold_legacy(WPE_CTRL_SLASH), WPE_CTRL_SLASH);
+	chk("Ctrl-Alt letter is unchanged", wpe_key_fold_legacy(WPE_CA_FIRST), WPE_CA_FIRST);
+}
+
 int main(void)
 {
+	test_f11_and_f12_are_keys_from_every_delivery();
+	test_a_codepoint_with_modifiers_is_one_code();
+	test_every_protocol_spelling_gives_the_legacy_code();
+	test_the_spec_examples_of_the_kitty_protocol();
+	test_a_long_or_unrecognised_tail_is_no_key();
+	test_fold_gives_the_legacy_codes_and_nothing_else();
 	test_bound_sequences_give_the_key_that_sends_them();
 	test_shifted_curses_cursor_keys_mark_a_block();
 	test_terminfo_names_give_the_modified_cursor_keys();

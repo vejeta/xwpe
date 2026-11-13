@@ -30,10 +30,158 @@ int e_codepoint_to_utf8(int cp, unsigned char *out);
 /* The byte a terminal reads for Backspace when nobody said otherwise. */
 #define E_PTY_DEL_BYTE 127
 
+/* One key the program's terminal reads as an xterm escape sequence, and
+   the modifier parameter xterm gives it (0 none, 2 Shift, 3 Alt, 5 Ctrl). */
+typedef struct {
+ int code;
+ int number;       /* the sequence's number, 0 when a letter ends it */
+ int final;        /* the final byte: a letter or '~' */
+ int mod;
+} EPtyKeySeq;
+
+#define E_PTY_MOD_NONE  0
+#define E_PTY_MOD_SHIFT 2
+#define E_PTY_MOD_ALT   3
+#define E_PTY_MOD_CTRL  5
+#define E_PTY_F_KEYS    12
+/* A letter-ended key with a modifier carries this number: "ESC [ 1 ; 5 D". */
+#define E_PTY_LETTER_KEY_NUMBER 1
+/* keys.h: a shifted key's code is the plain code plus this. */
+#define WPE_KEY_SHIFT_OFFSET_CODE 512
+
+/* The cursor and editing keys, plain and with Shift or Ctrl.  Shift is the
+   plain code plus 512 (keys.h). */
+#define E_PTY_CURSOR_ROWS(c, num, fin) \
+ { (c), (num), (fin), E_PTY_MOD_NONE }, \
+ { (c) + 512, (num), (fin), E_PTY_MOD_SHIFT }
+static const EPtyKeySeq e_pty_cursor_keys[] = {
+ E_PTY_CURSOR_ROWS(CUP,   0, 'A'), E_PTY_CURSOR_ROWS(CDO,  0, 'B'),
+ E_PTY_CURSOR_ROWS(CRI,   0, 'C'), E_PTY_CURSOR_ROWS(CLE,  0, 'D'),
+ E_PTY_CURSOR_ROWS(POS1,  0, 'H'), E_PTY_CURSOR_ROWS(ENDE, 0, 'F'),
+ E_PTY_CURSOR_ROWS(EINFG, 2, '~'), E_PTY_CURSOR_ROWS(ENTF, 3, '~'),
+ E_PTY_CURSOR_ROWS(BUP,   5, '~'), E_PTY_CURSOR_ROWS(BDO,  6, '~'),
+ { CCRI,  0, 'C', E_PTY_MOD_CTRL }, { CCLE,  0, 'D', E_PTY_MOD_CTRL },
+ { CPS1,  0, 'H', E_PTY_MOD_CTRL }, { CEND,  0, 'F', E_PTY_MOD_CTRL },
+ { CEINFG, 2, '~', E_PTY_MOD_CTRL }, { CENTF, 3, '~', E_PTY_MOD_CTRL },
+ { CBUP,  5, '~', E_PTY_MOD_CTRL }, { CBDO,  6, '~', E_PTY_MOD_CTRL },
+ { 0, 0, 0, 0 }
+};
+
+/* F1 to F12: the codes in keys.h for each modifier, and the number or
+   letter xterm sends.  F1 to F4 end in P to S, the others are "n~". */
+static const int e_pty_f_plain[E_PTY_F_KEYS] = {
+ F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12 };
+static const int e_pty_f_ctrl[E_PTY_F_KEYS] = {
+ CF1, CF2, CF3, CF4, CF5, CF6, CF7, CF8, CF9, CF10, CF11, CF12 };
+static const int e_pty_f_alt[E_PTY_F_KEYS] = {
+ AF1, AF2, AF3, AF4, AF5, AF6, AF7, AF8, AF9, AF10, AF11, AF12 };
+static const int e_pty_f_number[E_PTY_F_KEYS] = {
+ 0, 0, 0, 0, 15, 17, 18, 19, 20, 21, 23, 24 };
+#define E_PTY_F_FIRST_LETTER 'P'
+#define E_PTY_F_LETTER_KEYS 4
+
+/**
+ * e_pty_put_number - Write a decimal number into a key's bytes.
+ * @buf: the bytes; @n: how many are in it; @value: 0 to 99.
+ * Return: how many bytes @buf holds now.
+ */
+static int e_pty_put_number(unsigned char *buf, int n, int value)
+{
+ if (value >= 10)
+  buf[n++] = (unsigned char)('0' + value / 10);
+ buf[n++] = (unsigned char)('0' + value % 10);
+ return n;
+}
+
+/**
+ * e_pty_sequence_bytes - The xterm escape sequence for a key.
+ * @number: its number, 0 for a letter-ended key; @final: its final byte;
+ *   @mod: its modifier parameter, 0 for none.
+ * @buf: room for E_PTY_KEY_BYTES_MAX bytes.
+ *
+ * "ESC [ A", "ESC [ 1 ; 5 D", "ESC O P", "ESC [ 15 ~", "ESC [ 3 ; 2 ~".
+ * Return: the bytes put in @buf.
+ */
+static int e_pty_sequence_bytes(int number, int final, int mod,
+                                unsigned char *buf)
+{
+ int n = 0;
+
+ buf[n++] = WPE_ESC;
+ if (number == 0 && mod == E_PTY_MOD_NONE && final >= E_PTY_F_FIRST_LETTER)
+  buf[n++] = 'O';
+ else
+ {
+  buf[n++] = '[';
+  if (number != 0)
+   n = e_pty_put_number(buf, n, number);
+  else if (mod != E_PTY_MOD_NONE)
+   n = e_pty_put_number(buf, n, E_PTY_LETTER_KEY_NUMBER);
+  if (mod != E_PTY_MOD_NONE)
+  {
+   buf[n++] = ';';
+   n = e_pty_put_number(buf, n, mod);
+  }
+ }
+ buf[n++] = (unsigned char)final;
+ return n;
+}
+
+/**
+ * e_pty_function_key_bytes - The sequence for F1 to F12, with Shift, Ctrl
+ * or Alt.
+ * @key: the key; @buf: room for E_PTY_KEY_BYTES_MAX bytes.
+ * Return: the bytes put in @buf, 0 when @key is no function key.
+ */
+static int e_pty_function_key_bytes(int key, unsigned char *buf)
+{
+ int i, mod;
+
+ for (i = 0; i < E_PTY_F_KEYS; i++)
+ {
+  if (key == e_pty_f_plain[i])
+   mod = E_PTY_MOD_NONE;
+  else if (key == e_pty_f_plain[i] + WPE_KEY_SHIFT_OFFSET_CODE)
+   mod = E_PTY_MOD_SHIFT;
+  else if (key == e_pty_f_ctrl[i])
+   mod = E_PTY_MOD_CTRL;
+  else if (key == e_pty_f_alt[i])
+   mod = E_PTY_MOD_ALT;
+  else
+   continue;
+  if (i < E_PTY_F_LETTER_KEYS)
+   return e_pty_sequence_bytes(0, E_PTY_F_FIRST_LETTER + i, mod, buf);
+  return e_pty_sequence_bytes(e_pty_f_number[i], '~', mod, buf);
+ }
+ return 0;
+}
+
+/**
+ * e_pty_special_key_bytes - The sequence a program's terminal reads for a
+ * cursor, editing or function key.
+ * @key: the key; @buf: room for E_PTY_KEY_BYTES_MAX bytes.
+ *
+ * A program run from the editor (an editor, a pager, a menu) gets its
+ * arrow and function keys as it would from the terminal it expects, with
+ * Shift and Ctrl as xterm's parameters.
+ * Return: the bytes put in @buf, 0 for a key that has no sequence.
+ */
+static int e_pty_special_key_bytes(int key, unsigned char *buf)
+{
+ const EPtyKeySeq *row;
+
+ for (row = e_pty_cursor_keys; row->code != 0; row++)
+  if (row->code == key)
+   return e_pty_sequence_bytes(row->number, row->final, row->mod, buf);
+ return e_pty_function_key_bytes(key, buf);
+}
+
 /**
  * e_pty_key_bytes - What a program reading its terminal gets for a key
  * typed for it: a line end for Enter, the erase byte for Backspace, the
- * character in UTF-8 for text, nothing for any other key.
+ * control byte for Esc, Tab and Ctrl-letter (Ctrl-D ends the program's
+ * input), the character in UTF-8 for text, the xterm sequence for a cursor
+ * or function key, nothing for any other key.
  * @key: the key; @buf: room for E_PTY_KEY_BYTES_MAX bytes.
  * Return: the bytes put in @buf.
  *
@@ -52,9 +200,19 @@ int e_pty_key_bytes(int key, unsigned char *buf)
   buf[0] = E_PTY_DEL_BYTE;
   return 1;
  }
- if (key >= E_PTY_FIRST_TEXT_KEY)
+ if (key == WPE_ESC || key == WPE_TAB)
+ {
+  buf[0] = (unsigned char)key;
+  return 1;
+ }
+ if (key >= E_PTY_CTRL_FIRST && key <= E_PTY_CTRL_LAST)
+ {
+  buf[0] = (unsigned char)key;       /* Ctrl-D is the byte that ends input */
+  return 1;
+ }
+ if (key >= E_PTY_FIRST_TEXT_KEY && (key < E_PTY_TEXT_KEY_LIMIT || e_input_was_char))
   return e_codepoint_to_utf8(key, buf);
- return 0;
+ return e_pty_special_key_bytes(key, buf);
 }
 
 /* What the stall line says about the program Run started, and what ends it. */

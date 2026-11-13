@@ -1,0 +1,152 @@
+{
+ "capability": "modern-keymap",
+ "scenarios": [
+  {
+   "id": "SC-keymap-01",
+   "requirement": "A key report the editor does not use types nothing and leaks no part of its tail",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_a_key_report_types_nothing_and_leaks_no_tail",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-02",
+   "requirement": "Ctrl-letter and Ctrl-Shift-letter reports do what the legacy Ctrl-letter does",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_ctrl_y_deletes_the_line_in_every_protocol_form",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-03",
+   "requirement": "Reported Ctrl-H, Ctrl-M and Ctrl-I do what Backspace, Enter and Tab do",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_ctrl_h_m_i_do_what_backspace_enter_tab_do",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-04",
+   "requirement": "A reported Alt-letter opens its menu",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_alt_letter_opens_its_menu_in_every_protocol_form",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-05",
+   "requirement": "A reported Esc or Ctrl-[ closes a menu",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_a_reported_esc_closes_a_menu",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-06",
+   "requirement": "Ctrl-\\ does not move the focus back in a dialog",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_ctrl_backslash_does_not_move_focus_back",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-07",
+   "requirement": "Shift-Tab moves the focus back in a dialog in every form a terminal sends it",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_shift_tab_moves_focus_back_in_every_form",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-08",
+   "requirement": "Ctrl-C in a protocol form stops the program Run started",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_ctrl_c_in_a_protocol_form_stops_the_program_run_runs",
+   "status": "covered",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-keymap-09",
+   "requirement": "Ctrl-D in a protocol form ends the input of the program Run started",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_ctrl_d_in_a_protocol_form_ends_the_programs_input",
+   "status": "covered",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-keymap-10",
+   "requirement": "The cursor keys reach the program Run started as xterm sequences",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_run_sends_the_cursor_keys_to_the_program",
+   "status": "covered",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-keymap-11",
+   "requirement": "The screen harness consumes the private key-protocol sequences",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_the_screen_harness_ignores_the_protocol_sequences",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-12",
+   "requirement": "A reported Esc in a Hit CR wait leaves no tail behind",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_a_reported_esc_in_a_hit_cr_wait_leaves_no_tail_behind",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-13",
+   "requirement": "Ctrl-Shift-letter does what Ctrl-letter does on X11",
+   "layer": "x11",
+   "test": "tests/x11/test_keymap.py::test_ctrl_shift_letter_does_what_ctrl_letter_does",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-13",
+   "requirement": "Ctrl-Shift-letter does what Ctrl-letter does on Wayland",
+   "layer": "wayland",
+   "test": "tests/wayland/test_keymap.py::test_ctrl_shift_letter_does_what_ctrl_letter_does",
+   "status": "covered",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-keymap-14",
+   "requirement": "Ctrl-H is Backspace on X11",
+   "layer": "x11",
+   "test": "tests/x11/test_keymap.py::test_ctrl_h_is_backspace_and_alt_letter_is_not_text",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-14",
+   "requirement": "Ctrl-H is Backspace on Wayland",
+   "layer": "wayland",
+   "test": "tests/wayland/test_keymap.py::test_ctrl_h_is_backspace_and_alt_letter_is_not_text",
+   "status": "covered",
+   "needs": ["weston"]
+  },
+  {
+   "id": "SC-keymap-15",
+   "requirement": "The keypad Enter is Enter in a terminal",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_the_keypad_enter_is_enter_in_a_terminal",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-16",
+   "requirement": "Shift-, Ctrl- and Ctrl-Shift-Backspace and Ctrl-Tab reports do what their legacy bytes do",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_chords_a_legacy_terminal_sends_as_a_plain_key_still_do_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-17",
+   "requirement": "The cursor and function keys reach the program Run started on X11",
+   "layer": "x11",
+   "test": "tests/x11/test_run_typing.py::test_the_cursor_and_function_keys_reach_a_running_program",
+   "status": "covered",
+   "needs": ["gcc"]
+  },
+  {
+   "id": "SC-keymap-17",
+   "requirement": "The cursor and function keys reach the program Run started on Wayland",
+   "layer": "wayland",
+   "test": "tests/wayland/test_run_typing.py::test_the_cursor_and_function_keys_reach_a_running_program",
+   "status": "covered",
+   "needs": ["weston", "gcc"]
+  }
+ ]
+}

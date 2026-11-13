@@ -780,10 +780,17 @@ int e_clear_desk(FENSTER *f);
 void e_mouse_tracking_enable(void);
 void e_mouse_tracking_disable(void);
 void e_mouse_flush(void);
-/* The most bytes one key typed for a program becomes (UTF-8's longest). */
-#define E_PTY_KEY_BYTES_MAX 4
+/* The most bytes one key typed for a program becomes (the longest xterm
+   sequence, "ESC [ 2 4 ; 5 ~", is seven). */
+#define E_PTY_KEY_BYTES_MAX 8
 /* Keys below this are control keys, not text for the program. */
 #define E_PTY_FIRST_TEXT_KEY 32
+/* Ctrl-A to Ctrl-Z are their control bytes. */
+#define E_PTY_CTRL_FIRST 1
+#define E_PTY_CTRL_LAST 26
+/* From here up a key is text only when the display said it was a typed
+   character (the editor's own key codes live in the same range). */
+#define E_PTY_TEXT_KEY_LIMIT 255
 int e_pty_key_bytes(int key, unsigned char *buf);
 void e_pty_send_key(int fd, int key);
 int e_d_pty_type(int key);
@@ -1117,6 +1124,7 @@ int WpeGpmMouse(int *g);
 /* WeLinux.c */
 #ifdef __linux__
 int WpeLinuxBioskey(void);
+int WpeLinuxIsConsole(void);
 #endif
 
 extern char *e_msg[];

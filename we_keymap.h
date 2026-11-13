@@ -27,6 +27,9 @@ typedef enum {
     the same symbols as a PC keyboard's F11 and F12 and are read as those. */
  WPE_KEY_L3, WPE_KEY_L4, WPE_KEY_L5,
  WPE_KEY_L6, WPE_KEY_L7, WPE_KEY_L8, WPE_KEY_L9, WPE_KEY_L10,
+ /* A character key.  Which character travels beside it, as a codepoint, and
+    wpe_key_code_char() turns the pair into a code.  Never a table row. */
+ WPE_KEY_CHAR,
  WPE_KEY_BASE_MAX
 } WpeBaseKey;
 
@@ -65,6 +68,72 @@ extern const WpeKeyRow wpe_key_table[];
 int wpe_key_code(WpeBaseKey base, unsigned mods);
 
 /**
+ * wpe_key_code_char - The editor's code for a character key and the
+ * modifiers held.
+ * @codepoint: the key's unshifted character (a letter in lower case; the
+ *   shifted form is the Shift bit in @mods), or 27 for Escape and 13 for
+ *   Enter.
+ * @mods: WPE_MOD_* bits held with it.
+ *
+ * Use this where a display learns "the key with this letter, with these
+ * modifiers".  With no modifier the codepoint itself is the text typed.
+ * Ctrl with a letter is the letter's control byte (1 to 26), except Ctrl-H,
+ * Ctrl-I, Ctrl-M and Ctrl-[, which get codes of their own because Backspace,
+ * Tab, Enter and Esc already use those bytes; with Shift it is one of the
+ * WPE_CS_* codes.  Alt with a letter, digit, Space or '#' is the AltA..
+ * codes, and Alt with Shift and a letter is 1024 plus the letter's index
+ * (the window-switch codes).  Ctrl with Alt keeps the codes ESC followed by
+ * a control byte has always had and otherwise gives WPE_CA_*.  A chord that
+ * is not bound gives 0, never a character.
+ * Return: the keys.h code, the codepoint for text, or 0.
+ */
+int wpe_key_code_char(int codepoint, unsigned mods);
+
+/**
+ * wpe_alt_key_code - The code ESC followed by one byte stands for.
+ * @c: the byte after ESC: a letter, a digit, Space, '#', or a control byte.
+ *
+ * The one table of Alt chords.  A capital letter is Alt-Shift-letter (1024
+ * plus its index); a lower-case one is AltA.. ; ESC then Ctrl-A, Ctrl-E,
+ * Ctrl-B, Ctrl-F, Ctrl-P, Ctrl-N is the page and word jumps of the console
+ * and ESC then Ctrl-H is Alt-Backspace.
+ * Return: the code, or 0 when the byte is no Alt chord.
+ */
+int wpe_alt_key_code(int c);
+
+/**
+ * wpe_key_fold_legacy - Fold a distinct Ctrl code back to the legacy key.
+ * @code: a code a display decoder produced.
+ *
+ * A terminal that reports "Ctrl plus the letter" gives WPE_CTRL_H, _I, _M
+ * and _[ where a legacy terminal gives the bytes of Backspace, Tab, Enter
+ * and Esc; Ctrl-Shift-letter is a key of its own where a legacy terminal
+ * gives Ctrl-letter, and Ctrl-Tab is a key of its own where a legacy
+ * terminal and X11 gave Tab.  Until a key set binds them, each of these does
+ * what its legacy form does, so the editor behaves the same with or without
+ * the terminal's keyboard protocol.  Ctrl-Alt-letter and the Ctrl
+ * punctuation codes are keys with no legacy form to fold to.
+ * Return: the legacy code, or @code unchanged.
+ */
+int wpe_key_fold_legacy(int code);
+
+/**
+ * wpe_key_decode_csi - An escape sequence's tail as the editor's code.
+ * @intro: '[' or 'O'.
+ * @tail: the bytes after the introducer, up to and including the final byte.
+ * @n: how many.
+ * @is_text: out, 1 when the code is a character the user typed (a kitty
+ *   report of plain text), so the caller can tell it from a key code.
+ *
+ * The whole decode in one call: the xterm and rxvt key forms, modifyOtherKeys
+ * ("27;m;c~") and the kitty protocol ("c;mu"), already folded by
+ * wpe_key_fold_legacy().  A key release, a key the editor has no use for
+ * (the lock and modifier keys, F13 and up) and anything unrecognised give 0.
+ * Return: the code, or 0.
+ */
+int wpe_key_decode_csi(int intro, const char *tail, size_t n, int *is_text);
+
+/**
  * wpe_key_from_curses - A curses key code as a key and its modifiers.
  * @ch: the value getch() returned (above KEY_CODE_YES).
  * @console_mods: the shift and control the Linux console reports through
@@ -97,6 +166,28 @@ int wpe_key_from_keysym(unsigned long keysym, unsigned *mods,
                         WpeBaseKey *base);
 
 /**
+ * wpe_keysym_chord_codepoint - The character of a key held with Ctrl or Alt.
+ * @keysym: the level-0 symbol of a physical key (XK_* or XKB_KEY_*).
+ *
+ * The one reading of a key's symbol as the character a chord is made of, for
+ * X11 and Wayland alike: a letter in lower case, a digit, punctuation or
+ * Space as itself, Tab as 9.
+ * Return: the codepoint to give wpe_key_code_char(), or 0 for any other key.
+ */
+int wpe_keysym_chord_codepoint(unsigned long keysym);
+
+/**
+ * wpe_keysym_is_chord_letter - Is this symbol a Latin letter?
+ * @keysym: a level-0 symbol.
+ *
+ * Lets a display that walks the keyboard's layouts stop at the first one
+ * that has a Latin letter on the key, so Ctrl-S is Save on a Cyrillic or
+ * Greek layout.
+ * Return: 1 for A to Z in either case, 0 otherwise.
+ */
+int wpe_keysym_is_chord_letter(unsigned long keysym);
+
+/**
  * wpe_key_from_csi - The tail of an escape sequence as a key.
  * @intro: the introducer after ESC, '[' or 'O'.  Only rxvt's lower-case
  *   arrows depend on it: "ESC [ a" is Shift-Up, "ESC O a" Ctrl-Up.
@@ -112,6 +203,19 @@ int wpe_key_from_keysym(unsigned long keysym, unsigned *mods,
  */
 int wpe_key_from_csi(int intro, const char *tail, size_t n, WpeBaseKey *base,
                      unsigned *mods);
+
+/**
+ * wpe_key_from_csi_cp - As wpe_key_from_csi, and the characters too.
+ * @codepoint: out, set when @base is WPE_KEY_CHAR: the character, or 27 for
+ *   Escape and 13 for Enter.
+ *
+ * Also reads the two unambiguous protocols: modifyOtherKeys "27;m;c~" and
+ * the kitty report "c[:shifted[:base]];m[:event][;text]u".  An event type of
+ * 3 (release) is no key; a report with Super, Hyper or Meta held is no key.
+ * Return: 1 for a key, 0 for anything else.
+ */
+int wpe_key_from_csi_cp(int intro, const char *tail, size_t n, WpeBaseKey *base,
+                        unsigned *mods, int *codepoint);
 
 /**
  * wpe_key_from_sequence - A whole escape sequence as a key.

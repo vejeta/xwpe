@@ -49,8 +49,27 @@ we_term.o e_shell_run 1 keep e_t_system
 # keys: the names a platform gives its keys are spelled by the key table
 # (we_keymap.c) and nowhere else in the display code.  What is left is text,
 # not keys.
-we_xterm.o XK_ 65 keep the dead-key compose table and the Alt-letter recovery of XQuartz's Compose mode: text, not keys
+we_xterm.o XK_ 52 keep the dead-key compose table: text, not keys
+# The terminal's keyboard has one reader, e_t_next_byte, and one push back,
+# e_t_push_back; the four calls left are the termcap build's own reader
+# (e_t_getch under #else, e_find_key), compiled on no system that has ncurses.
+we_term.o term_raw_read 4 keep the termcap build's reader and its escape-sequence search
+# Two reads of fd 0 by number go around the reader: the termcap build's
+# e_t_kbhit, and the User Screen's wait for a key (e_t_wait_for_any_key),
+# where the editor has given up its screen and ncurses cannot read without
+# taking it back.  That wait takes one byte, so the rest of a cursor or
+# function key pressed there is typed into the text afterwards.
+we_term.o read(0 2 keep e_t_kbhit (termcap) and the User Screen's one-byte wait
+# A display spells no key it reads.  The seven left are what it writes to the
+# terminal: the bracketed-paste switches and the User Screen's clear and video
+# attributes.
+we_term.o display_key_literal 7 keep output escapes written to the terminal, never read
 we_wayland.o XKB_KEY_ 38 keep the built-in keysym selftest's table of keys to feed keysym_to_xwpe
+
+# The suspend handler writes the terminal's modes off and on with write(2): a
+# signal handler may use nothing else.  It writes to the terminal, never to a
+# child's input.
+we_term.o write 3 keep e_t_on_suspend, the three writes of the modes to the terminal
 
 # console mouse, clipboard, display
 we_gpm.o poll 1 P9o the gpm handshake

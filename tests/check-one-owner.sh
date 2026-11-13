@@ -109,7 +109,7 @@ EOF
 # place that hands the user's terminal or window to a command is a counted
 # line of the allow file, with its reason.
 cat > "$WORK/srcrules" <<'EOF'
-read(0 we_term.c
+read(0
 STDIN_FILENO we_term.c
 fileno(stdin) we_term.c
 e_u_key_take we_term.c we_xterm.c we_wayland.c we_unix.c we_edit.c
@@ -139,6 +139,8 @@ pos_field we_buffer.c
 pos_prefix we_buffer.c
 pos_whole we_buffer.c
 pos_address we_buffer.c
+term_raw_read
+display_key_literal
 e_undo_sw
 e_redo_sw
 EOF
@@ -265,6 +267,64 @@ pos_rule_re() {
   esac
 }
 
+# The terminal's keyboard has one reader.  In we_term.c a byte or curses key
+# code comes off the keyboard in e_t_next_byte (and goes back through
+# e_t_push_back) and nowhere else: the decoder, the tail readers, the mouse
+# poll and the Hit-CR wait all call those two, so no reader takes the bytes of
+# a keyboard protocol's report apart or leaves its end behind as text.  The
+# scan reads comment-stripped source and tracks the function a line is in (a
+# definition is a line that starts in column 1 and has a "(").
+TERM_READ_OWNERS="e_t_next_byte e_t_push_back"
+# A read(2) of fd 0 by number, wherever it is: the terminal's bytes taken
+# around its reader.
+READ_STDIN_RE='(^|[^A-Za-z0-9_])read[ \t]*[(][ \t]*0[ \t]*,'
+count_raw_reads() {
+  awk -v owners=" $TERM_READ_OWNERS " '
+    /^[A-Za-z_]/ && /[(]/ { fn = $0; sub(/[ \t]*[(].*/, "", fn); sub(/.*[ \t*]/, "", fn) }
+    {
+      s = $0
+      while (match(s, /(^|[^A-Za-z0-9_])(fk_getch|getch|wgetch|mvgetch|ungetch|get_wch|wget_wch)[ \t]*[(]/)) {
+        if (index(owners, " " fn " ") == 0) n++
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+    END { print n + 0 }' "$1"
+}
+
+# A display decodes no key by spelling it: an escape-sequence literal (ESC [
+# or ESC O, in octal or hex), or a case label of a Ctrl or Alt key code, in
+# we_term.c, we_xterm.c, we_wayland.c or WeXterm.c, is a key read on the
+# display's own, which is how the displays came to disagree.  What the
+# display writes to the terminal is not read, and is a counted line of the
+# allow file with its reason.  The source is read with comments blanked and
+# strings kept; the pattern is for grep, which keeps the backslashes whole.
+DISPLAY_KEY_LITERAL='\\033[[O]|\\x1[bB][[O]|case[[:space:]]+(Ctrl|Alt)[A-Za-z0-9]*[[:space:]]*:'
+strip_comments() {
+  awk -v sq="'" '
+    BEGIN { incom = 0 }
+    {
+      line = $0; out = ""; n = length(line); i = 1; instr = 0
+      while (i <= n) {
+        c = substr(line, i, 1); d = substr(line, i, 2)
+        if (incom) { if (d == "*/") { incom = 0; i += 2 } else i++; continue }
+        if (instr) {
+          out = out c
+          if (c == "\\") { out = out substr(line, i + 1, 1); i += 2 }
+          else { if (c == q) instr = 0; i++ }
+          continue
+        }
+        if (d == "/*") { incom = 1; out = out " "; i += 2; continue }
+        if (d == "//") break
+        if (c == "\"" || c == sq) { instr = 1; q = c; out = out c; i++; continue }
+        out = out c; i++
+      }
+      print out
+    }' "$1"
+}
+count_display_literals() {
+  grep -Eo "$DISPLAY_KEY_LITERAL" "$1" | wc -l | tr -d ' '
+}
+
 # the names of the function pointers a header declares with extern, one per
 # line: "extern int (*name)(...);".
 declared_slots() {
@@ -364,6 +424,58 @@ for fixrule in $POS_NAMES; do
   grep -qx "$fixrule" "$WORK/posmatched" ||
     problem "canary: position rule $fixrule matches nothing in its fixture (the rule is blind)"
 done
+
+# --- the self-test of the keyboard rules: the same blindness check.  The
+# fixture has two raw reads outside the owners (one of them a call of ungetch)
+# and, among the lines that only look like one, an owner's read, a name that
+# ends in getch, and a comment.  The display-literal fixture has four hits and
+# three lines that are not.
+cat > "$WORK/readerfixture.c" <<'EOF'
+static int e_t_next_byte(int w)
+{
+ c = getch();
+ return(c);
+}
+int e_other(void)
+{
+ c = fk_getch();
+ ungetch(c);
+ x = e_t_getch();
+ /* getch( in a comment */
+}
+EOF
+strip_c "$WORK/readerfixture.c" > "$WORK/readerfixture.stripped"
+[ "$(count_raw_reads "$WORK/readerfixture.stripped")" -eq 2 ] ||
+  problem "canary: the reader rule counts $(count_raw_reads "$WORK/readerfixture.stripped") raw reads in its fixture, not 2 (the rule is blind or too wide)"
+cat > "$WORK/stdinfixture.c" <<'EOF'
+ ret = read(0, &c, 1);
+ (void)read( 0 , &c, 1);
+ n = read(fd, &c, 1);
+ n = pread(0, &c, 1, 0);
+EOF
+[ "$(count_uses_re "$READ_STDIN_RE" "$WORK/stdinfixture.c")" -eq 2 ] ||
+  problem "canary: the read(0 rule counts $(count_uses_re "$READ_STDIN_RE" "$WORK/stdinfixture.c") reads of fd 0 in its fixture, not 2 (the rule is blind or too wide)"
+cat > "$WORK/literalfixture.c" <<'EOF'
+ puts("\033[2J");
+ x = "\033OP";
+ switch (c) { case CtrlK: break; }
+ switch (c) { case AltX : break; }
+ c = e_t_getch();
+ /* "\033[" in a comment */
+ y = Alt1 + CtrlA;
+EOF
+strip_comments "$WORK/literalfixture.c" > "$WORK/literalfixture.stripped"
+[ "$(count_display_literals "$WORK/literalfixture.stripped")" -eq 4 ] ||
+  problem "canary: the display-literal rule counts $(count_display_literals "$WORK/literalfixture.stripped") hits in its fixture, not 4 (the rule is blind or too wide)"
+
+mkdir "$WORK/commented"
+commented_source() {
+  src=$SRCDIR/$1
+  out=$WORK/commented/$1
+  [ -f "$src" ] || return 1
+  [ -f "$out" ] || strip_comments "$src" > "$out"
+  echo "$out"
+}
 
 stripped_source() {
   src=$SRCDIR/${1%.o}.c
@@ -466,6 +578,13 @@ canary_import() {
 }
 canary_import we_edit.o wpe_paint_replay_if_idle "what came behind a box is shown some other way"
 canary_import we_paint.o wpe_loop_hooks_set "the loop's callbacks are not bracketed by the owner"
+# Which key was pressed has one owner (we_keymap.c): the terminal reads an
+# escape sequence's tail, the keyboard protocols' reports among them, through
+# its decode, and X11 and Wayland turn a chord into a code through its
+# character table.
+canary_import we_term.o wpe_key_decode_csi "the terminal reads a key report some other way"
+canary_import we_xterm.o wpe_key_code_char "X11 decides a Ctrl or Alt chord some other way"
+canary_import we_wayland.o wpe_key_code_char "Wayland decides a Ctrl or Alt chord some other way"
 for engine in we_opt.o we_menue.o we_wind.o we_ai_ui.o; do
   canary_import $engine wpe_paint_modal_enter "a box owns the screen without telling its owner"
 done
@@ -676,13 +795,19 @@ for obj in $OBJECTS; do
   while read -r word allowed; do
     case " $allowed " in *" $c "*) continue ;; esac
     case $word in
-      'read(0') n=$(count_uses "read[ \t]*[(][ \t]*0[ \t]*," "$file") ;;
+      'read(0') n=$(count_uses_re "$READ_STDIN_RE" "$file") ;;
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
       wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F|e_getch) n=$(count_uses "$word" "$file") ;;
       XK_|XKB_KEY_|e_x_) n=$(count_words "$word[A-Za-z0-9_]+" "$file") ;;
       mxlines_write) n=$(count_uses_re 'mxlines[ \t]*[)]?[ \t]*([+][+]|--|[+]=|-=|=[^=])|([+][+]|--)[ \t]*[(]?[A-Za-z0-9_>.-]*mxlines' "$file") ;;
       pos_field|pos_prefix|pos_whole|pos_address) n=$(count_uses_re "$(pos_rule_re "$word")" "$file") ;;
       bf_alloc) n=$(count_uses_re 'bf[ \t]*=[ \t]*([(][ \t]*STRING[ \t]*[*][ \t]*[)][ \t]*)?(MALLOC|malloc|REALLOC|realloc|calloc)[ \t]*[(]|(REALLOC|realloc)[ \t]*[(][^,]*bf[ \t]*,' "$file") ;;
+      term_raw_read)
+        [ "$c" = we_term.c ] || continue
+        n=$(count_raw_reads "$file") ;;
+      display_key_literal)
+        case $c in we_term.c|we_xterm.c|we_wayland.c|WeXterm.c) ;; *) continue ;; esac
+        n=$(count_display_literals "$(commented_source "$c")") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac
     [ "$n" -gt 0 ] && echo "$base $word $n" >> "$WORK/found"

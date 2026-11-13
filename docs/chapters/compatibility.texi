@@ -69,9 +69,73 @@ pseudoterminal could be opened.
 @cindex F11, F12
 The original read the key symbols of @key{F11} and @key{F12} as the Sun
 keyboard's Stop and Again keys, which they also are, so a PC keyboard's
-@key{F11} quit the editor and @key{F12} redid.  They now do nothing, as
-they always did in a terminal: one key gives one action on every display,
-and quitting on a key no menu names surprised users.
+@key{F11} quit the editor and @key{F12} redid.  They are now the keys
+@key{F11} and @key{F12} on every display, with Shift, Ctrl and Alt; the
+Borland key set gives them no action, so they do nothing, as they always
+did in a terminal.  One key gives one action on every display, and
+quitting on a key no menu names surprised users.
+
+@item Key reports in a terminal
+@cindex key reports, unknown
+@cindex escape sequences, unknown
+The original typed the tail of an escape sequence it did not know as
+text, so a modified key a newer terminal sends (a Ctrl-Shift chord under
+xterm's modifyOtherKeys or the kitty keyboard protocol) put digits and
+letters in the file.  A report is now read as the key it is, or dropped
+whole, however long it is, so that no part of it is typed.
+
+@item Unambiguous keys in a terminal
+@cindex modifyOtherKeys
+@cindex kitty keyboard protocol
+@cindex Ctrl-H, Ctrl-I, Ctrl-M
+@cindex Ctrl-Shift, letters
+The original had only the bytes of the legacy keyboard, where Esc waits
+to see whether a key follows it, Ctrl-Shift-@var{letter} is
+Ctrl-@var{letter}, and Ctrl-H, Ctrl-I, Ctrl-M and Ctrl-[ are the bytes of
+Backspace, Tab, Enter and Esc.  xwpe asks the terminal for xterm's
+modifyOtherKeys and the kitty keyboard protocol, and gives them back when
+it ends, is suspended or crashes, and whenever it hands the terminal to a
+program.  In a terminal that knows either, Esc acts at once,
+Ctrl-Shift-@var{letter} is a key of its own (in the Borland key set it
+does what Ctrl-@var{letter} does), and Ctrl-H, Ctrl-I, Ctrl-M and Ctrl-[
+are keys of their own that do what Backspace, Tab, Enter and Esc do.  A
+terminal that knows neither keeps sending the legacy bytes, read as
+before.  The reason is that a terminal able to tell these keys apart
+should not lose the difference.
+
+@item Keys typed to a program run from the editor
+@cindex Run, keys for the program
+@cindex Ctrl-D, end of input
+In the original, the keys typed while a program ran in the editor reached
+it as the bytes the terminal gave.  They now reach it as its own terminal
+expects: Ctrl-D ends its input, Esc, Tab and the Ctrl keys are their
+bytes, and the cursor and function keys are the xterm sequences (the
+original dropped them).  Ctrl-C still stops the program, in every form a
+terminal sends it, so it is no longer typed into the program byte by byte.
+
+@item Ctrl-\ in a terminal and under X
+@cindex Ctrl-backslash
+The original gave Shift-Tab the code 28, which is also the byte Ctrl-\
+sends, so Ctrl-\ moved the focus back in a dialog or the file manager as
+Shift-Tab does.  Shift-Tab is now a code of its own and Ctrl-\ does
+nothing there, because one key should not act as another.
+
+@item Ctrl and Alt chords by the key's place
+@cindex Alt-Shift, letters
+@cindex keyboard layouts
+Under X11 and Wayland, Alt-Shift with a letter was a code nothing read,
+while a terminal selected the window of that number.  It now selects
+window 10 and up everywhere.  Ctrl and Alt chords on a key that types no
+Latin letter are read by the letter on the key's place in the first Latin
+layout of the keyboard, so Ctrl-S saves on a Cyrillic or Greek layout too;
+a Latin layout (German, French, Dvorak) keeps its own letters.  The reason
+is one decision for every display.
+
+@item Keypad Enter in a terminal
+@cindex keypad Enter
+The original ignored the keypad's @key{Enter} in a terminal that sends it
+as its own key (xterm in application keypad mode).  It is now Enter,
+as it is under X11 and Wayland.
 
 @item Alt-Delete in a terminal
 @cindex Alt-Delete, in a terminal

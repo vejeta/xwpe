@@ -739,6 +739,7 @@ EXTRA_DIST = \
   tests/test_scrollbar_glyphs.py \
   tests/test_keys_modified.py \
   tests/test_keymap_terminal.py \
+  tests/test_private_modes.py \
   tests/test_wayland_keysym.py \
   tests/test_chrome_ascii.py \
   tests/test_algol68.py \

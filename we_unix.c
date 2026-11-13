@@ -47,6 +47,7 @@ void wpe_render_cairo_start_threads(void);
 #include "we_fdloop.h"
 #include "we_dap.h"
 #include "we_startplan.h"
+#include "we_keymap.h"
 
 #ifdef NOSYMLINKS
 #define lstat(x,y)  stat(x,y)
@@ -581,59 +582,17 @@ void e_refresh_area(int x, int y, int width, int height)
    memset(&altschirm[(y+j) * MAXSCOL + (x+i)], 0, sizeof(SCREENCELL));
 }
 
+/**
+ * e_tast_sim - The code for ESC followed by one byte (an Alt chord).
+ * @c: the byte.
+ *
+ * The table of Alt chords is the key owner's (wpe_alt_key_code); the terminal
+ * and the menus ask it through here.
+ * Return: the code, or 0 when the byte is no Alt chord.
+ */
 int e_tast_sim(int c)
 {
- if (c >= 'A' && c <= 'Z')
-  return(c + 1024 - 'A');
- switch(c)
- {
-  case 'a':  return(AltA);
-  case 'b':  return(AltB);
-  case 'c':  return(AltC);
-  case 'd':  return(AltD);
-  case 'e':  return(AltE);
-  case 'f':  return(AltF);
-  case 'g':  return(AltG);
-  case 'h':  return(AltH);
-  case 'i':  return(AltI);
-  case 'j':  return(AltJ);
-  case 'k':  return(AltK);
-  case 'l':  return(AltL);
-  case 'm':  return(AltM);
-  case 'n':  return(AltN);
-  case 'o':  return(AltO);
-  case 'p':  return(AltP);
-  case 'q':  return(AltQ);
-  case 'r':  return(AltR);
-  case 's':  return(AltS);
-  case 't':  return(AltT);
-  case 'u':  return(AltU);
-  case 'v':  return(AltV);
-  case 'w':  return(AltW);
-  case 'x':  return(AltX);
-  case 'y':  return(AltY);
-  case 'z':  return(AltZ);
-  case '1':  return(Alt1);
-  case '2':  return(Alt2);
-  case '3':  return(Alt3);
-  case '4':  return(Alt4);
-  case '5':  return(Alt5);
-  case '6':  return(Alt6);
-  case '7':  return(Alt7);
-  case '8':  return(Alt8);
-  case '9':  return(Alt9);
-  case '0':  return(Alt0);
-  case ' ':  return(AltBl);
-  case '#':  return(AltSYS);
-  case CtrlA:  return(CBUP);
-  case CtrlE:  return(CBDO);
-  case CtrlB:  return(CCLE);
-  case CtrlF:  return(CCRI);
-  case CtrlP:  return(CPS1);
-  case CtrlN:  return(CEND);
-  case CtrlH:  return(AltBS);
-  default:  return(0);
- }
+ return(wpe_alt_key_code(c));
 }
 
 /* Every child the editor started leads a group or a session of its own, so a
@@ -674,7 +633,8 @@ void WpeSignalUnknown(int sig)
   write(fd, line, len);
   close(fd);
  }
- write(STDERR_FILENO, "\033[?1002l\033[?1006l\033[?1000l", 24);
+ write(STDERR_FILENO, E_T_PRIVATE_MODES_OFF_STR,
+       sizeof E_T_PRIVATE_MODES_OFF_STR - 1);
  tcsetattr(0, TCSANOW, &otermio);
  signal(sig, SIG_DFL);
  raise(sig);
@@ -727,11 +687,11 @@ void WpeSignalChild(int sig)
  */
 static void wpe_end_now(int sig)
 {
- const char *mouse_off = "\033[?1002l\033[?1006l\033[?1000l";
  ssize_t n;
 
  wpe_end_children_from_handler();
- n = write(STDERR_FILENO, mouse_off, 24);
+ n = write(STDERR_FILENO, E_T_PRIVATE_MODES_OFF_STR,
+           sizeof E_T_PRIVATE_MODES_OFF_STR - 1);
  (void)n;
  tcsetattr(0, TCSANOW, &otermio);
  signal(sig, SIG_DFL);

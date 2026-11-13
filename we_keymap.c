@@ -6,6 +6,8 @@
    KEY_*, X keysyms, escape sequence tails) are spelled here and nowhere else
    in the display code. */
 
+#include <string.h>
+
 #include "we_keymap.h"
 #include "keys.h"
 #include "unixkeys.h"
@@ -39,6 +41,8 @@ const WpeKeyRow wpe_key_table[] = {
  { WPE_KEY_F8,  NONE, F8  }, { WPE_KEY_F8,  CTRL, CF8  }, { WPE_KEY_F8,  ALT, AF8  },
  { WPE_KEY_F9,  NONE, F9  }, { WPE_KEY_F9,  CTRL, CF9  }, { WPE_KEY_F9,  ALT, AF9  },
  { WPE_KEY_F10, NONE, F10 }, { WPE_KEY_F10, CTRL, CF10 }, { WPE_KEY_F10, ALT, AF10 },
+ { WPE_KEY_F11, NONE, F11 }, { WPE_KEY_F11, CTRL, CF11 }, { WPE_KEY_F11, ALT, AF11 },
+ { WPE_KEY_F12, NONE, F12 }, { WPE_KEY_F12, CTRL, CF12 }, { WPE_KEY_F12, ALT, AF12 },
 
  { WPE_KEY_UP,    NONE, CUP  }, { WPE_KEY_UP,    ALT, BUP  },
  { WPE_KEY_DOWN,  NONE, CDO  }, { WPE_KEY_DOWN,  ALT, BDO  },
@@ -66,7 +70,7 @@ const WpeKeyRow wpe_key_table[] = {
  { WPE_KEY_HELP, NONE, HELP }, { WPE_KEY_HELP, ALT, AF1 },
  { WPE_KEY_BREAK, NONE, CtrlBrk },
 
- /* F11 and F12 have no row: the terminal never bound them, and their
+ /* F11 and F12 are keys, but the Borland key set gives them no action: their
     symbols are also the Sun Stop and Again keys, which quit the editor and
     redo, a surprise on a PC keyboard. */
  { WPE_KEY_L3, NONE, PROPS }, { WPE_KEY_L4, NONE, UNDO  }, { WPE_KEY_L5, NONE, FRONT },
@@ -340,6 +344,30 @@ static WpeBaseKey wpe_keysym_named_key(unsigned long keysym)
  }
 }
 
+/* Tab's keysym, and the printable ASCII keysyms (their own character). */
+#define WPE_KSYM_TAB         0xff09UL
+#define WPE_KSYM_TAB_CODEPOINT 9
+#define WPE_KSYM_ASCII_FIRST 0x20UL
+#define WPE_KSYM_ASCII_LAST  0x7eUL
+
+int wpe_keysym_chord_codepoint(unsigned long keysym)
+{
+ if (keysym == WPE_KSYM_TAB)
+  return(WPE_KSYM_TAB_CODEPOINT);
+ if (keysym >= 'A' && keysym <= 'Z')
+  return((int)(keysym - 'A' + 'a'));
+ if (keysym >= WPE_KSYM_ASCII_FIRST && keysym <= WPE_KSYM_ASCII_LAST)
+  return((int)keysym);
+ return(0);
+}
+
+int wpe_keysym_is_chord_letter(unsigned long keysym)
+{
+ int cp = wpe_keysym_chord_codepoint(keysym);
+
+ return(cp >= 'a' && cp <= 'z');
+}
+
 int wpe_key_from_keysym(unsigned long keysym, unsigned *mods, WpeBaseKey *base)
 {
  WpeBaseKey key;
@@ -430,7 +458,7 @@ static int wpe_csi_letter_key(int letter, WpeBaseKey *base, unsigned *mods)
  * wpe_csi_number_key - The key "<n>~" names.
  * @number: the parameter before the '~' (vt220 numbering: 1 and 7 Home,
  *   2 Insert, 3 Delete, 4 and 8 End, 5 and 6 the pages, 11..15 F1..F5,
- *   17..21 F6..F10).
+ *   17..21 F6..F10, 23 and 24 F11 and F12).
  * @base: out.
  * Return: 1 when the number names a key.
  */
@@ -450,6 +478,9 @@ static int wpe_csi_number_key(int number, WpeBaseKey *base)
   case 17: case 18: case 19: case 20: case 21:
    *base = (WpeBaseKey)(WPE_KEY_F6 + number - 17);
    return(1);
+  case 23: case 24:
+   *base = (WpeBaseKey)(WPE_KEY_F11 + number - 23);
+   return(1);
   default: return(0);
  }
 }
@@ -466,11 +497,16 @@ static int wpe_csi_number_key(int number, WpeBaseKey *base)
  * a number no key has.
  * Return: the new number, at most WPE_CSI_NUMBER_MAX.
  */
+static int wpe_csi_add_digit_max(int value, int digit, int max)
+{
+ if (value > (max - digit) / 10)
+  return(max);
+ return(value * 10 + digit);
+}
+
 static int wpe_csi_add_digit(int value, int digit)
 {
- if (value > (WPE_CSI_NUMBER_MAX - digit) / 10)
-  return(WPE_CSI_NUMBER_MAX);
- return(value * 10 + digit);
+ return(wpe_csi_add_digit_max(value, digit, WPE_CSI_NUMBER_MAX));
 }
 
 /**
@@ -607,8 +643,17 @@ static int wpe_csi_numbered_key(int number, int param, unsigned ending_mods,
 /* The final byte is the whole tail: no parameter came before it. */
 #define WPE_CSI_FINAL_ONLY 0
 
-int wpe_key_from_csi(int intro, const char *tail, size_t n, WpeBaseKey *base,
-                     unsigned *mods)
+/**
+ * wpe_csi_legacy_key - A key in xterm's or rxvt's own escape forms.
+ * @intro: '[' or 'O'; @tail: the tail; @n: its length.
+ * @base: out; @mods: out.
+ *
+ * The forms with at most two numbers: "A", "1;5P", "3~", "15;2~", rxvt's
+ * "8^" and "c", and "Z" for Shift-Tab.
+ * Return: 1 for a key, 0 otherwise.
+ */
+static int wpe_csi_legacy_key(int intro, const char *tail, size_t n,
+                              WpeBaseKey *base, unsigned *mods)
 {
  int first, second, last;
  int final_byte;
@@ -629,6 +674,615 @@ int wpe_key_from_csi(int intro, const char *tail, size_t n, WpeBaseKey *base,
   return(0);
  *mods |= wpe_csi_modifier_bits(second);
  return(1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Character keys                                                            */
+/* ------------------------------------------------------------------------ */
+
+/* The codepoints a protocol reports for the keys that have a byte of their
+   own, and the first one that is text. */
+#define WPE_CP_BACKSPACE_CTRL   8
+#define WPE_CP_TAB              9
+#define WPE_CP_ENTER            13
+#define WPE_CP_ESCAPE           27
+#define WPE_CP_TEXT_FIRST       32
+#define WPE_CP_BACKSPACE        127
+#define WPE_CP_MAX              0x10ffff
+/* Alt with a capital letter, and Alt-Shift with a letter, is this plus the
+   letter's index: the window-switch codes (Alt-Shift-S is window 28). */
+#define WPE_ALT_SHIFT_FIRST     1024
+#define WPE_LETTERS             26
+
+/**
+ * wpe_letter_index - Which letter a codepoint is.
+ * @cp: a codepoint; @upper: out, 1 when it is a capital.
+ * Return: 0 for A, up to 25 for Z, or -1 when it is no ASCII letter.
+ */
+static int wpe_letter_index(int cp, int *upper)
+{
+ *upper = 0;
+ if (cp >= 'a' && cp <= 'z')
+  return(cp - 'a');
+ if (cp >= 'A' && cp <= 'Z')
+ {
+  *upper = 1;
+  return(cp - 'A');
+ }
+ return(-1);
+}
+
+int wpe_alt_key_code(int c)
+{
+ if (c >= 'A' && c <= 'Z')
+  return(c + WPE_ALT_SHIFT_FIRST - 'A');
+ switch(c)
+ {
+  case 'a':  return(AltA);
+  case 'b':  return(AltB);
+  case 'c':  return(AltC);
+  case 'd':  return(AltD);
+  case 'e':  return(AltE);
+  case 'f':  return(AltF);
+  case 'g':  return(AltG);
+  case 'h':  return(AltH);
+  case 'i':  return(AltI);
+  case 'j':  return(AltJ);
+  case 'k':  return(AltK);
+  case 'l':  return(AltL);
+  case 'm':  return(AltM);
+  case 'n':  return(AltN);
+  case 'o':  return(AltO);
+  case 'p':  return(AltP);
+  case 'q':  return(AltQ);
+  case 'r':  return(AltR);
+  case 's':  return(AltS);
+  case 't':  return(AltT);
+  case 'u':  return(AltU);
+  case 'v':  return(AltV);
+  case 'w':  return(AltW);
+  case 'x':  return(AltX);
+  case 'y':  return(AltY);
+  case 'z':  return(AltZ);
+  case '1':  return(Alt1);
+  case '2':  return(Alt2);
+  case '3':  return(Alt3);
+  case '4':  return(Alt4);
+  case '5':  return(Alt5);
+  case '6':  return(Alt6);
+  case '7':  return(Alt7);
+  case '8':  return(Alt8);
+  case '9':  return(Alt9);
+  case '0':  return(Alt0);
+  case ' ':  return(AltBl);
+  case '#':  return(AltSYS);
+  case CtrlA:  return(CBUP);
+  case CtrlE:  return(CBDO);
+  case CtrlB:  return(CCLE);
+  case CtrlF:  return(CCRI);
+  case CtrlP:  return(CPS1);
+  case CtrlN:  return(CEND);
+  case CtrlH:  return(AltBS);
+  default:  return(0);
+ }
+}
+
+/** A control key that has no byte of its own, and its code. */
+typedef struct {
+ int cp;
+ int code;
+} WpeCtrlPunct;
+
+static const WpeCtrlPunct wpe_ctrl_punct[] = {
+ { '[',  WPE_CTRL_LBRACKET }, { ']', WPE_CTRL_RBRACKET },
+ { '/',  WPE_CTRL_SLASH },    { '`', WPE_CTRL_BACKQUOTE },
+ { ' ',  WPE_CTRL_SPACE },    { '\\', WPE_CTRL_BACKSLASH },
+ { ',',  WPE_CTRL_COMMA },    { '.', WPE_CTRL_PERIOD },
+ { '=',  WPE_CTRL_EQUAL },    { '-', WPE_CTRL_MINUS },
+ { 0,    0 }
+};
+
+/**
+ * wpe_ctrl_punct_code - The code of Ctrl with a punctuation key.
+ * @cp: the key's character.
+ * Return: the WPE_CTRL_* code, or 0.
+ */
+static int wpe_ctrl_punct_code(int cp)
+{
+ const WpeCtrlPunct *row;
+
+ for (row = wpe_ctrl_punct; row->cp != 0; row++)
+  if (row->cp == cp)
+   return(row->code);
+ return(0);
+}
+
+/**
+ * wpe_ctrl_letter_code - The code of Ctrl with a letter.
+ * @index: 0 for A to 25 for Z.
+ *
+ * The letter's control byte, except for the four whose byte another key
+ * already sends (H Backspace, I Tab, M Enter, and [ Esc): those are
+ * distinct codes, so a keyboard that says "Ctrl plus the letter" can be
+ * told from the plain key.
+ * Return: the code.
+ */
+static int wpe_ctrl_letter_code(int index)
+{
+ switch (index)
+ {
+  case 'h' - 'a': return(WPE_CTRL_H);
+  case 'i' - 'a': return(WPE_CTRL_I);
+  case 'm' - 'a': return(WPE_CTRL_M);
+  default:        return(index + 1);
+ }
+}
+
+/**
+ * wpe_ctrl_alt_code - The code of Ctrl and Alt with a letter.
+ * @index: 0 for A to 25 for Z.
+ *
+ * ESC followed by a control byte keeps the codes it always had (the page and
+ * word jumps); every other letter is a WPE_CA_* code, bound to nothing.
+ * Return: the code.
+ */
+static int wpe_ctrl_alt_code(int index)
+{
+ int legacy = wpe_alt_key_code(index + 1);
+
+ if (legacy != 0)
+  return(legacy);
+ return(WPE_CA_FIRST + index);
+}
+
+/**
+ * wpe_key_code_ctrl - Ctrl (with or without Shift) and one character.
+ * @cp: the character; @mods: the modifiers, Ctrl among them.
+ * Return: the code, or 0.
+ */
+static int wpe_key_code_ctrl(int cp, unsigned mods)
+{
+ int upper;
+ int index = wpe_letter_index(cp, &upper);
+
+ if (index >= 0)
+ {
+  if (mods & WPE_MOD_ALT)
+   return(wpe_ctrl_alt_code(index));
+  if ((mods & WPE_MOD_SHIFT) || upper)
+   return(WPE_CS_FIRST + index);
+  return(wpe_ctrl_letter_code(index));
+ }
+ if (mods & (WPE_MOD_SHIFT | WPE_MOD_ALT))
+  return(0);
+ return(wpe_ctrl_punct_code(cp));
+}
+
+/**
+ * wpe_key_code_alt - Alt (with or without Shift) and one character.
+ * @cp: the character; @mods: the modifiers, Alt among them, Ctrl not.
+ * Return: the code, or 0.
+ */
+static int wpe_key_code_alt(int cp, unsigned mods)
+{
+ int upper;
+ int index = wpe_letter_index(cp, &upper);
+
+ if (index >= 0)
+ {
+  if ((mods & WPE_MOD_SHIFT) || upper)
+   return(wpe_alt_key_code('A' + index));
+  return(wpe_alt_key_code('a' + index));
+ }
+ if (mods & WPE_MOD_SHIFT)
+  return(0);
+ return(wpe_alt_key_code(cp));
+}
+
+/**
+ * wpe_key_code_tab - Tab with the modifiers held.
+ * @mods: the modifiers.
+ * Return: Tab, Shift-Tab or Ctrl-Tab; 0 for any other chord.
+ */
+static int wpe_key_code_tab(unsigned mods)
+{
+ if (mods == WPE_MOD_NONE)
+  return(WPE_TAB);
+ if (mods == WPE_MOD_SHIFT)
+  return(WPE_BTAB);
+ if (mods == WPE_MOD_CTRL)
+  return(WPE_CTRL_TAB);
+ return(0);
+}
+
+/**
+ * wpe_key_code_backspace - Backspace with the modifiers held.
+ * @mods: the modifiers.
+ *
+ * A legacy terminal sends Backspace's own byte for Shift-Backspace and
+ * Ctrl-Backspace, so in a terminal that reports them as chords they still
+ * erase, as they always did; the Alt forms have codes of their own.
+ * Return: the code.
+ */
+static int wpe_key_code_backspace(unsigned mods)
+{
+ int code = wpe_key_code(WPE_KEY_BACKSPACE, mods);
+
+ if (code == 0 && !(mods & WPE_MOD_ALT))
+  return(wpe_key_code(WPE_KEY_BACKSPACE, WPE_MOD_NONE));
+ return(code);
+}
+
+int wpe_key_code_char(int cp, unsigned mods)
+{
+ if (cp == WPE_CP_ESCAPE)
+  return(WPE_ESC);
+ if (cp == WPE_CP_ENTER)
+  return((mods & WPE_MOD_ALT) ? 0 : WPE_CR);
+ if (cp == WPE_CP_TAB)
+  return(wpe_key_code_tab(mods));
+ if (cp == WPE_CP_BACKSPACE || cp == WPE_CP_BACKSPACE_CTRL)
+  return(wpe_key_code_backspace(mods));
+ if (cp < WPE_CP_TEXT_FIRST || cp > WPE_CP_MAX)
+  return(0);
+ if (mods & WPE_MOD_CTRL)
+  return(wpe_key_code_ctrl(cp, mods));
+ if (mods & WPE_MOD_ALT)
+  return(wpe_key_code_alt(cp, mods));
+ return(cp);
+}
+
+int wpe_key_fold_legacy(int code)
+{
+ switch (code)
+ {
+  case WPE_CTRL_H:        return(CtrlH);
+  case WPE_CTRL_I:        return(CtrlI);
+  case WPE_CTRL_M:        return(CtrlM);
+  case WPE_CTRL_LBRACKET: return(WPE_ESC);
+  case WPE_CTRL_TAB:      return(WPE_TAB);   /* a legacy terminal sends Tab */
+  default:                break;
+ }
+ if (code >= WPE_CS_FIRST && code <= WPE_CS_LAST)
+  return(code - WPE_CS_FIRST + CtrlA);   /* Ctrl-Shift-letter: Ctrl-letter */
+ return(code);
+}
+
+/* ------------------------------------------------------------------------ */
+/* modifyOtherKeys and the kitty keyboard protocol                           */
+/* ------------------------------------------------------------------------ */
+
+/* Both protocols report a key as numbers: "27;5;112~" (xterm's
+   modifyOtherKeys: 27, the modifier, the character) or "112:80;6u" (kitty:
+   the character with optional shifted and base-layout forms after ':', the
+   modifier with an optional event type, optional text). */
+/* A codepoint is at most 0x10ffff; a longer run of digits stays above it. */
+#define WPE_REPORT_NUMBER_MAX 9999999
+#define WPE_CSI_FIELDS_MAX 3
+#define WPE_CSI_SUBS_MAX   3
+/* Which sub-field is which. */
+#define WPE_CSI_SUB_MAIN    0
+#define WPE_CSI_SUB_SHIFTED 1
+#define WPE_CSI_SUB_BASE_LAYOUT 2
+#define WPE_CSI_SUB_EVENT   1
+/* Which field is which. */
+#define WPE_CSI_FIELD_KEY   0
+#define WPE_CSI_FIELD_MODS  1
+#define WPE_CSI_FIELD_TEXT  2
+/* modifyOtherKeys' first number, and its field count. */
+#define WPE_MOK_NUMBER 27
+#define WPE_MOK_FIELDS 3
+/* The kitty event types: 1 press, 2 repeat, 3 release. */
+#define WPE_KITTY_EVENT_RELEASE 3
+/* The modifier parameter is 1 plus a bit set; Super, Hyper and Meta have no
+   place in the editor, so a chord that holds one is not read as the same key
+   without it. */
+#define WPE_KITTY_MOD_UNUSED 0x38
+#define WPE_KITTY_MOD_PARAM_MAX 256
+/* The Private Use Area numbers kitty gives the keys that have no character. */
+#define WPE_KITTY_PUA_FIRST        57344
+#define WPE_KITTY_KP_DIGIT_FIRST   57399
+#define WPE_KITTY_KP_DIGIT_LAST    57408
+#define WPE_KITTY_KP_DECIMAL       57409
+#define WPE_KITTY_KP_ENTER         57414
+#define WPE_KITTY_KP_SEPARATOR     57416
+#define WPE_KITTY_KP_CURSOR_FIRST  57417
+#define WPE_KITTY_KP_CURSOR_LAST   57426
+
+/** The numbers of one escape sequence: fields split by ';', each in parts
+    split by ':'. */
+typedef struct {
+ int nfields;
+ int nsubs;
+ int v[WPE_CSI_FIELDS_MAX][WPE_CSI_SUBS_MAX];
+} WpeCsiFields;
+
+/**
+ * wpe_csi_parse_fields - Read the numbers of a tail up to its final byte.
+ * @tail: the tail; @n: its length.
+ * @f: out, the numbers (0 where a field or part is empty).
+ * Return: the index of the final byte, or -1 when anything but digits, ';'
+ * and ':' comes before it, or there are more fields or parts than a key
+ * report has.
+ */
+static int wpe_csi_parse_fields(const char *tail, size_t n, WpeCsiFields *f)
+{
+ size_t i;
+ int field = 0, sub = 0;
+
+ memset(f, 0, sizeof *f);
+ f->nfields = 1;
+ for (i = 0; i + 1 < n; i++)
+ {
+  if (tail[i] >= '0' && tail[i] <= '9')
+   f->v[field][sub] = wpe_csi_add_digit_max(f->v[field][sub], tail[i] - '0',
+                                            WPE_REPORT_NUMBER_MAX);
+  else if (tail[i] == ':')
+  {
+   if (++sub >= WPE_CSI_SUBS_MAX)
+    return(-1);
+   if (sub + 1 > f->nsubs)
+    f->nsubs = sub + 1;
+  }
+  else if (tail[i] == ';')
+  {
+   if (++field >= WPE_CSI_FIELDS_MAX)
+    return(-1);
+   sub = 0;
+   f->nfields = field + 1;
+  }
+  else
+   return(-1);
+ }
+ return((int)i);
+}
+
+/**
+ * wpe_report_modifiers - The modifiers of a protocol report's parameter.
+ * @param: the number (1 plus a bit set; 0 or 1 is none).
+ * @mods: out.
+ * Return: 1 for modifiers the editor reads; 0 for a chord with Super, Hyper
+ * or Meta held, or a parameter no terminal sends.  Caps and Num lock are
+ * not modifiers of the chord.
+ */
+static int wpe_report_modifiers(int param, unsigned *mods)
+{
+ if (param > WPE_KITTY_MOD_PARAM_MAX)
+  return(0);
+ if (param >= 2 && ((param - 1) & WPE_KITTY_MOD_UNUSED))
+  return(0);
+ *mods = wpe_csi_modifier_bits(param);
+ return(1);
+}
+
+/**
+ * wpe_kitty_pua_text - The character a keypad key of the kitty protocol
+ * types.
+ * @cp: a Private Use Area number.
+ * Return: the character (13 for the keypad's Enter), or 0 for a key that
+ * types none.
+ */
+static int wpe_kitty_pua_text(int cp)
+{
+ if (cp >= WPE_KITTY_KP_DIGIT_FIRST && cp <= WPE_KITTY_KP_DIGIT_LAST)
+  return('0' + cp - WPE_KITTY_KP_DIGIT_FIRST);
+ switch (cp)
+ {
+  case WPE_KITTY_KP_DECIMAL:   return('.');
+  case WPE_KITTY_KP_DECIMAL + 1: return('/');
+  case WPE_KITTY_KP_DECIMAL + 2: return('*');
+  case WPE_KITTY_KP_DECIMAL + 3: return('-');
+  case WPE_KITTY_KP_DECIMAL + 4: return('+');
+  case WPE_KITTY_KP_ENTER:     return(WPE_CP_ENTER);
+  case WPE_KITTY_KP_ENTER + 1: return('=');
+  case WPE_KITTY_KP_SEPARATOR: return(',');
+  default:                     return(0);
+ }
+}
+
+/** The keypad's cursor keys of the kitty protocol, in their numbering. */
+static const WpeBaseKey wpe_kitty_kp_cursor[] = {
+ WPE_KEY_LEFT, WPE_KEY_RIGHT, WPE_KEY_UP, WPE_KEY_DOWN, WPE_KEY_PGUP,
+ WPE_KEY_PGDN, WPE_KEY_HOME, WPE_KEY_END, WPE_KEY_INSERT, WPE_KEY_DELETE
+};
+
+/**
+ * wpe_pua_key - A kitty key that has no character, as a key.
+ * @cp: its Private Use Area number.
+ * @base: out; @codepoint: out, set when the key types a character.
+ *
+ * The keypad gives the keys and characters the keypad of a legacy terminal
+ * gives; F13 and up, the lock keys, Print Screen, Pause, Menu, the media
+ * keys and the modifier keys are no keys of the editor.
+ * Return: 1 for a key, 0 for one the editor has no use for.
+ */
+static int wpe_pua_key(int cp, WpeBaseKey *base, int *codepoint)
+{
+ int text = wpe_kitty_pua_text(cp);
+
+ if (text != 0)
+ {
+  *base = WPE_KEY_CHAR;
+  *codepoint = text;
+  return(1);
+ }
+ if (cp >= WPE_KITTY_KP_CURSOR_FIRST && cp <= WPE_KITTY_KP_CURSOR_LAST)
+ {
+  *base = wpe_kitty_kp_cursor[cp - WPE_KITTY_KP_CURSOR_FIRST];
+  return(1);
+ }
+ return(0);
+}
+
+/**
+ * wpe_report_text - The character a report types, as shifted by its mods.
+ * @cp: the key's unshifted character; @shifted: the shifted form the
+ *   protocol gave, or 0; @text: the text it gave, or 0.
+ * @mods: in and out: Shift is dropped when it only chose the character.
+ *
+ * With Ctrl or Alt held the key stands for itself (Alt-Shift-S is the
+ * window switch, with the capital's index); without them Shift made the
+ * character, from the report where it says so, from the letter otherwise.
+ * Return: the character.
+ */
+static int wpe_report_text(int cp, int shifted, int text, unsigned *mods)
+{
+ int upper;
+
+ if (*mods & WPE_MOD_CTRL)
+  return(cp);
+ if (*mods & WPE_MOD_ALT)
+ {
+  if ((*mods & WPE_MOD_SHIFT) && shifted != 0 &&
+      wpe_letter_index(cp, &upper) < 0)
+  {
+   *mods &= ~WPE_MOD_SHIFT;
+   return(shifted);
+  }
+  return(cp);
+ }
+ if (text >= WPE_CP_TEXT_FIRST)
+ {
+  *mods &= ~WPE_MOD_SHIFT;
+  return(text);
+ }
+ if ((*mods & WPE_MOD_SHIFT) && shifted != 0)
+ {
+  *mods &= ~WPE_MOD_SHIFT;
+  return(shifted);
+ }
+ if ((*mods & WPE_MOD_SHIFT) && cp >= 'a' && cp <= 'z')
+ {
+  *mods &= ~WPE_MOD_SHIFT;
+  return(cp - 'a' + 'A');
+ }
+ *mods &= ~WPE_MOD_SHIFT;
+ return(cp);
+}
+
+/**
+ * wpe_report_key - One protocol report as a key.
+ * @cp: the key's number; @shifted: its shifted form or 0; @base_layout: the
+ *   same key on a standard US layout, or 0; @text: its text or 0.
+ * @base: out; @mods: in and out; @codepoint: out.
+ *
+ * A chord with Ctrl or Alt on a key whose own character is not ASCII (a
+ * Cyrillic or Greek letter) is read by the key's place on the base layout
+ * when the terminal says it, so Ctrl-S stays Save there.  A key that types
+ * an ASCII character keeps it, as the X11 and Wayland decoders do, so
+ * Ctrl-Z on a German or a Dvorak keyboard is the Ctrl-Z its user typed.
+ * Return: 1 for a key, 0 for a number that is none.
+ */
+static int wpe_report_key(int cp, int shifted, int base_layout, int text,
+                          WpeBaseKey *base, unsigned *mods, int *codepoint)
+{
+ if ((*mods & (WPE_MOD_CTRL | WPE_MOD_ALT)) && cp > WPE_CP_BACKSPACE &&
+     cp < WPE_KITTY_PUA_FIRST &&
+     base_layout >= WPE_CP_TEXT_FIRST && base_layout < WPE_CP_BACKSPACE)
+  cp = base_layout;            /* Ctrl-S stays Save on a Cyrillic layout */
+ if (cp >= WPE_KITTY_PUA_FIRST)
+ {
+  if (!wpe_pua_key(cp, base, codepoint))
+   return(0);
+  if (*base != WPE_KEY_CHAR)
+   return(1);
+  cp = *codepoint;
+ }
+ else if (cp < WPE_CP_TEXT_FIRST &&
+          cp != WPE_CP_ESCAPE && cp != WPE_CP_ENTER && cp != WPE_CP_TAB &&
+          cp != WPE_CP_BACKSPACE_CTRL)
+  return(0);
+ else if (cp > WPE_CP_MAX)
+  return(0);
+ *base = WPE_KEY_CHAR;
+ if (cp >= WPE_CP_TEXT_FIRST && cp != WPE_CP_BACKSPACE)
+  cp = wpe_report_text(cp, shifted, text, mods);
+ *codepoint = cp;
+ return(1);
+}
+
+/**
+ * wpe_kitty_report_key - The key of "c[:shifted[:base]];m[:event][;text]u".
+ * @f: the parsed numbers.
+ * @base: out; @mods: out; @codepoint: out.
+ * Return: 1 for a key, 0 for a release or anything else that is none.
+ */
+static int wpe_kitty_report_key(const WpeCsiFields *f, WpeBaseKey *base,
+                                unsigned *mods, int *codepoint)
+{
+ if (f->v[WPE_CSI_FIELD_MODS][WPE_CSI_SUB_EVENT] >= WPE_KITTY_EVENT_RELEASE)
+  return(0);
+ if (!wpe_report_modifiers(f->v[WPE_CSI_FIELD_MODS][WPE_CSI_SUB_MAIN], mods))
+  return(0);
+ return(wpe_report_key(f->v[WPE_CSI_FIELD_KEY][WPE_CSI_SUB_MAIN],
+                       f->v[WPE_CSI_FIELD_KEY][WPE_CSI_SUB_SHIFTED],
+                       f->v[WPE_CSI_FIELD_KEY][WPE_CSI_SUB_BASE_LAYOUT],
+                       f->v[WPE_CSI_FIELD_TEXT][WPE_CSI_SUB_MAIN],
+                       base, mods, codepoint));
+}
+
+/**
+ * wpe_mok_report_key - The key of modifyOtherKeys' "27;m;c~".
+ * @f: the parsed numbers.
+ * @base: out; @mods: out; @codepoint: out.
+ * Return: 1 for a key, 0 otherwise.
+ */
+static int wpe_mok_report_key(const WpeCsiFields *f, WpeBaseKey *base,
+                              unsigned *mods, int *codepoint)
+{
+ if (!wpe_report_modifiers(f->v[WPE_CSI_FIELD_MODS][WPE_CSI_SUB_MAIN], mods))
+  return(0);
+ return(wpe_report_key(f->v[WPE_CSI_FIELD_TEXT][WPE_CSI_SUB_MAIN], 0, 0, 0,
+                       base, mods, codepoint));
+}
+
+int wpe_key_from_csi_cp(int intro, const char *tail, size_t n, WpeBaseKey *base,
+                        unsigned *mods, int *codepoint)
+{
+ WpeCsiFields f;
+ int last, final_byte;
+
+ *codepoint = 0;
+ if (n == 0)
+  return(0);
+ last = wpe_csi_parse_fields(tail, n, &f);
+ if (last < 0)
+  return(0);
+ final_byte = (unsigned char)tail[last];
+ if (final_byte == 'u')
+  return(intro == '[' && wpe_kitty_report_key(&f, base, mods, codepoint));
+ if (final_byte == '~' && f.nfields == WPE_MOK_FIELDS &&
+     f.v[WPE_CSI_FIELD_KEY][WPE_CSI_SUB_MAIN] == WPE_MOK_NUMBER)
+  return(wpe_mok_report_key(&f, base, mods, codepoint));
+ if (f.nfields > 2 || f.nsubs > 0)
+  return(0);
+ return(wpe_csi_legacy_key(intro, tail, n, base, mods));
+}
+
+int wpe_key_from_csi(int intro, const char *tail, size_t n, WpeBaseKey *base,
+                     unsigned *mods)
+{
+ int codepoint;
+
+ return(wpe_key_from_csi_cp(intro, tail, n, base, mods, &codepoint));
+}
+
+int wpe_key_decode_csi(int intro, const char *tail, size_t n, int *is_text)
+{
+ WpeBaseKey base;
+ unsigned mods;
+ int codepoint, code;
+
+ *is_text = 0;
+ if (!wpe_key_from_csi_cp(intro, tail, n, &base, &mods, &codepoint))
+  return(0);
+ if (base != WPE_KEY_CHAR)
+  return(wpe_key_fold_legacy(wpe_key_code(base, mods)));
+ code = wpe_key_code_char(codepoint, mods);
+ if (code != 0 && code == codepoint && codepoint >= WPE_CP_TEXT_FIRST &&
+     !(mods & (WPE_MOD_CTRL | WPE_MOD_ALT)))
+  *is_text = 1;
+ return(wpe_key_fold_legacy(code));
 }
 
 /* ESC and the introducer come before a sequence's tail. */

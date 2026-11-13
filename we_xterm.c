@@ -1598,6 +1598,63 @@ static int e_x_table_key(KeySym keysym, unsigned mods)
  return(wpe_key_code(base, mods));
 }
 
+/* The keyboard groups (layouts) XKB offers at most. */
+#define E_X_XKB_GROUPS_MAX 4
+
+/**
+ * e_x_chord_codepoint - The character of the physical key behind a chord.
+ * @keycode: the key.
+ *
+ * Reads the first layout of the keyboard map that has a Latin letter on the
+ * key, so Ctrl-S is Save on a Cyrillic or Greek layout too, where the
+ * current layout would give the layout's own letter.  A key with no Latin
+ * letter gives its first layout's symbol when that is a digit, punctuation,
+ * Space or Tab.
+ * Return: the codepoint, or 0 when the key is none of those.
+ */
+static int e_x_chord_codepoint(KeyCode keycode)
+{
+ KeySym first = NoSymbol, sym;
+ int group;
+
+ for (group = 0; group < E_X_XKB_GROUPS_MAX; group++)
+ {
+  sym = XkbKeycodeToKeysym(WpeXInfo.display, keycode, group, 0);
+  if (sym == NoSymbol)
+   continue;
+  if (first == NoSymbol)
+   first = sym;
+  if (wpe_keysym_is_chord_letter((unsigned long)sym))
+   return(wpe_keysym_chord_codepoint((unsigned long)sym));
+ }
+ if (first == NoSymbol)
+  return(0);
+ return(wpe_keysym_chord_codepoint((unsigned long)first));
+}
+
+/**
+ * e_x_chord_code - The editor's code for a key pressed with Ctrl or Alt.
+ * @ev: the key event; @state: its modifier mask.
+ *
+ * One call to the key owner, so Ctrl-Shift-P, Alt-Shift-S and Ctrl-H are the
+ * same codes here as on the terminal and on Wayland.  The distinct Ctrl
+ * codes are folded to the legacy keys until a key set binds them.
+ * Return: the code, or 0 when the chord is not one the owner knows (the
+ * caller goes on with the character the key typed).
+ */
+static int e_x_chord_code(XKeyEvent *ev, unsigned int state)
+{
+ unsigned mods = e_x_mods(state);
+ int codepoint;
+
+ if (!(mods & (WPE_MOD_CTRL | WPE_MOD_ALT)))
+  return(0);
+ codepoint = e_x_chord_codepoint(ev->keycode);
+ if (codepoint == 0)
+  return(0);
+ return(wpe_key_fold_legacy(wpe_key_code_char(codepoint, mods)));
+}
+
 static int e_x_first_utf8_codepoint(unsigned char *buf, int len)
 {
  int first_len = e_utf8_charlen(buf[0]);
@@ -1616,6 +1673,96 @@ static int e_x_first_utf8_codepoint(unsigned char *buf, int len)
  if (cp > 0)
   e_input_was_char = 1;             /* a decoded character, not a key code */
  return cp;
+}
+
+/**
+ * e_x_alt_byte_code - Alt with the one byte a key typed, as ESC and that
+ * byte would be read in a terminal.
+ * @byte: the byte; @state: the event's modifier mask.
+ *
+ * For a key the chord owner did not place (punctuation the layout shifts):
+ * the user still gets the Alt chord a terminal gives for the same byte.
+ * Return: the code, or 0.
+ */
+static int e_x_alt_byte_code(unsigned char byte, unsigned int state)
+{
+ if (state & ShiftMask)
+  return(e_tast_sim(toupper(byte)));
+ return(e_tast_sim(byte));
+}
+
+/**
+ * e_x_key_press_code - The editor's code for one key press.
+ * @ev: the KeyPress event.
+ *
+ * The one decoder of X11 key presses, for the editor's own read and for the
+ * key a program started from the Run menu is sent, so the program gets the
+ * arrow and function keys, Ctrl and Alt chords and typed characters exactly
+ * as the editor would read them.
+ * Return: the code, or 0 when the press gives none (a dead key waiting for
+ * its letter, a modifier alone).
+ */
+static int e_x_key_press_code(XKeyEvent *ev)
+{
+ KeySym keysym;
+ int charcount;
+ unsigned char buffer[BUFSIZE];
+ unsigned int key_b;
+ int c;
+
+ charcount = e_XLookupString(ev, (char *)buffer, BUFSIZE, &keysym, NULL);
+ key_b = ev->state;
+ /* A chord with Ctrl or Alt is decided by the key's place on the
+    keyboard, not by the character the layout, a dead key or XQuartz's
+    "Option-as-Compose" mode made of it (Alt+E would be the dead_acute
+    keysym, Alt+B the integral glyph): the chord key owner turns the
+    physical key's Latin letter and the modifiers into the code.  Eat any
+    compose state the chord would otherwise leave armed, so the next plain
+    letter is not turned into an accented character. */
+ c = e_x_chord_code(ev, key_b);
+ if (c != 0)
+ {
+  e_compose_pending = 0;
+  return(c);
+ }
+ if (charcount == 0 && keysym >= XK_dead_grave && keysym <= XK_dead_horn)
+ {
+  e_compose_pending = keysym;
+  return(0);
+ }
+ if (e_compose_pending && charcount == 1)
+ {
+  int composed = e_compose_dead(e_compose_pending, buffer[0]);
+  e_compose_pending = 0;
+  if (composed > 0)
+   return composed;
+ }
+ e_compose_pending = 0;
+ /* The keys the table binds (function keys, the cursor block, Shift+Tab
+    arriving as ISO_Left_Tab, Break, the Sun keys) are decoded by the
+    one table every display shares. */
+ c = e_x_table_key(keysym, e_x_mods(key_b));
+ if (c != 0)
+  return(c);
+ if (charcount == 1)
+ {
+  if (*buffer == 127)
+   return(wpe_key_code(WPE_KEY_DELETE, e_x_mods(key_b)));
+  if ((key_b & ShiftMask) && (*buffer == '\t'))
+   return(wpe_key_code(WPE_KEY_TAB, WPE_MOD_SHIFT));
+  if (!(key_b & WpeXInfo.altmask))
+   return(*buffer);
+  c = e_x_alt_byte_code(*buffer, key_b);
+ }
+ if (c != 0)
+  return(c);
+ if (charcount >= 2)
+ {
+  c = e_x_first_utf8_codepoint(buffer, charcount);
+  if (c > 0)
+   return(c);
+ }
+ return(0);
 }
 
 /* Discard any typed-ahead keys / clicks (X11): the analogue of e_t_flush_input,
@@ -1832,90 +1979,9 @@ int e_x_getch()
     }
     break;
    case KeyPress:
-    charcount = e_XLookupString(&report.xkey, buffer, BUFSIZE, &keysym,
-      NULL);
-    key_b = report.xkey.state;
-    /* XQuartz's default "Option-as-Compose" mode delivers Alt+<letter> through
-       the dead-key compose pipeline (e.g. Alt+E -> the dead_acute keysym;
-       Alt+B -> the integral glyph U+222B as UTF-8) instead of as plain letter
-       + altmask, which silently breaks every Alt+<letter> menu accelerator
-       (and the Alt-Q LSP prefix, Alt-M Make, ...).  When Alt is held, ignore
-       the composed/dead keysym and recover the unmodified letter from the
-       physical keycode via XKB.  Letters, digits, '#' and Space map directly
-       to the AltX codes the menu code expects.  Outside Alt this branch is
-       skipped, so normal dead-key compose still works for accented characters
-       typed without Alt. */
-    if ((key_b & WpeXInfo.altmask) &&
-        (charcount == 0 ||
-         (charcount == 1 && (unsigned char)buffer[0] >= 0x80) ||
-         (charcount >= 2 && ((unsigned char)buffer[0] & 0xC0) == 0xC0)))
-    {
-     KeySym base = XkbKeycodeToKeysym(WpeXInfo.display,
-                                      report.xkey.keycode, 0, 0);
-     int alt = 0;
-     if (base >= XK_a && base <= XK_z)
-      alt = e_tast_sim((int)(base - XK_a + 'a'));
-     else if (base >= XK_A && base <= XK_Z)
-      alt = e_tast_sim((int)(base - XK_A + 'a'));
-     else if (base >= XK_0 && base <= XK_9)
-      alt = e_tast_sim((int)(base - XK_0 + '0'));
-     else if (base == XK_numbersign)
-      alt = AltSYS;
-     else if (base == XK_space)
-      alt = AltBl;
-     if (alt)
-     {
-      /* Eat any compose state the dead keysym would otherwise leave armed,
-         so the next plain letter is not turned into an accented char. */
-      e_compose_pending = 0;
-      return alt;
-     }
-     /* Fall through if XKB returned a key we do not handle (e.g. a function
-        or punctuation key); the existing decoder below covers those. */
-    }
-    if (charcount == 0 && keysym >= XK_dead_grave && keysym <= XK_dead_horn)
-    {
-     e_compose_pending = keysym;
-     break;
-    }
-    if (e_compose_pending && charcount == 1)
-    {
-     int composed = e_compose_dead(e_compose_pending, buffer[0]);
-     e_compose_pending = 0;
-     if (composed > 0)
-      return composed;
-    }
-    e_compose_pending = 0;
-    /* The keys the table binds (function keys, the cursor block, Shift+Tab
-       arriving as ISO_Left_Tab, Break, the Sun keys) are decoded by the
-       one table every display shares. */
-    c = e_x_table_key(keysym, e_x_mods(key_b));
+    c = e_x_key_press_code(&report.xkey);
     if (c != 0)
      return(c);
-    if (charcount == 1)
-    {
-     if (*buffer == 127)
-      return(wpe_key_code(WPE_KEY_DELETE, e_x_mods(key_b)));
-     if ((key_b & ShiftMask) && (*buffer == '\t'))
-      return(wpe_key_code(WPE_KEY_TAB, WPE_MOD_SHIFT));
-
-     if (key_b & WpeXInfo.altmask)
-      c = e_tast_sim(key_b & ShiftMask ? toupper(*buffer) : *buffer);
-     else
-      return(*buffer);
-    }
-    if (c != 0)
-    {
-     if (key_b & ShiftMask)
-      c = c + 512;
-     return(c);
-    }
-    if (charcount >= 2)
-    {
-     c = e_x_first_utf8_codepoint(buffer, charcount);
-     if (c > 0)
-      return(c);
-    }
     break;
    case ButtonPress:
     if (report.xbutton.button == 4)
@@ -1991,9 +2057,6 @@ int e_x_getch()
 int e_x_kbhit()
 {
  XEvent report;
- KeySym keysym;
- int charcount;
- unsigned char buffer[BUFSIZE];
  int c;
  unsigned int key_b;
 
@@ -2019,30 +2082,7 @@ int e_x_kbhit()
   if(report.xbutton.button == 3) c |= 4;
   return(-c);
  }
- else
- {
-  charcount = e_XLookupString(&report.xkey, buffer, BUFSIZE,
-						&keysym, NULL);
-  if (charcount == 0 && keysym >= XK_dead_grave && keysym <= XK_dead_horn)
-  {
-   e_compose_pending = keysym;
-   return 0;
-  }
-  if (e_compose_pending && charcount == 1)
-  {
-   int composed = e_compose_dead(e_compose_pending, buffer[0]);
-   e_compose_pending = 0;
-   if (composed > 0) return composed;
-  }
-  e_compose_pending = 0;
-  if (charcount >= 2)
-  {
-   int cp = e_x_first_utf8_codepoint(buffer, charcount);
-   if (cp > 0) return cp;
-  }
-  if(charcount == 1) return(*buffer);
-  return(0);
- }
+ return(e_x_key_press_code(&report.xkey));
 }
 
 /* The editor keys a loop can ask for by name, with the X name of their key.

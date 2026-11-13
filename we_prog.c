@@ -906,23 +906,19 @@ static int e_run_start(WpeStartPlan *plan)
 
 /**
  * e_run_program_key - What the program is sent for a key the user typed.
- * @c: the key, as the display's reader gave it.
+ * @c: the key, as the display's reader decoded it.
  *
- * The terminal's own Backspace and Enter become the codes the program's
- * terminal reads, and its special keys (arrows, function keys) are not text
- * and go nowhere.
+ * Every display hands over decoded keys (the terminal's reader decodes the
+ * keyboard protocols too), so Backspace and Enter are already the codes the
+ * program's terminal reads; Ctrl-J is the line end Enter is.  What the
+ * program receives for the key (control bytes, text, the xterm sequences of
+ * the cursor and function keys) is e_pty_key_bytes' encoding.
  * Return: the key to send, or 0 for none.
  */
 static int e_run_program_key(int c)
 {
-#ifdef NCURSES
- if (c == KEY_BACKSPACE || c == 127 || c == 8)
-  return(WPE_DC);
- if (c == KEY_ENTER || c == '\n' || c == '\r')
+ if (c == '\n')
   return(WPE_CR);
- if (c > KEY_CODE_YES)
-  return(0);
-#endif
  return(c);
 }
 

@@ -24,6 +24,17 @@ class SafeScreen(pyte.Screen):
         kwargs.pop('private', None)
         super().set_margins(*args, **kwargs)
 
+    def select_graphic_rendition(self, *attrs, **kwargs):
+        """A private-marked "m" ("CSI ? 4 m", the editor's question to the
+        terminal about modifyOtherKeys) is no colour or attribute: a real
+        terminal answers or ignores it.  pyte passes it here with the
+        private flag, which its own method does not take, and the stream
+        stops with a TypeError, so a harness that reads the editor's output
+        with a plain pyte Stream must drop it."""
+        if kwargs.pop('private', None):
+            return
+        super().select_graphic_rendition(*attrs, **kwargs)
+
     def repeat_last(self, count=1):
         """ECMA-48 REP (CSI Pn b): repeat the last printed character Pn times.
 

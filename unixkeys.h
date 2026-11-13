@@ -72,7 +72,25 @@ extern char RE1, RE2, RE3, RE4, RE5, RE6, WBT;
 #define WPE_ESC 27
 #define WPE_DC 8
 #define WPE_TAB 9
-#define WPE_BTAB 28 /*First value which looks suitable for me*/
+/* WPE_BTAB (Shift-Tab) is in keys.h, above the control bytes. */
+
+/* The terminal's private modes the editor sets while it owns the keyboard,
+   written to the terminal and never read.  xterm's modifyOtherKeys level 2
+   and kitty's "disambiguate escape codes" plus "report alternate keys"
+   (flags 1 and 4) make Ctrl, Alt and Shift chords arrive as unambiguous
+   reports; the pop and reset give the shell its own mode back.  The off
+   string is one constant so a signal handler can write it. */
+#define E_T_KEYS_KITTY_PUSH   "\033[>5u"
+#define E_T_KEYS_KITTY_POP    "\033[<u"
+#define E_T_KEYS_KITTY_QUERY  "\033[?u"
+#define E_T_KEYS_MOK_ON       "\033[>4;2m"
+#define E_T_KEYS_MOK_OFF      "\033[>4m"
+#define E_T_KEYS_MOK_QUERY    "\033[?4m"
+#define E_T_KEYS_ON_STR   E_T_KEYS_MOK_ON E_T_KEYS_KITTY_PUSH
+#define E_T_KEYS_OFF_STR  E_T_KEYS_KITTY_POP E_T_KEYS_MOK_OFF
+#define E_T_MOUSE_PASTE_ON_STR  "\033[?1002h\033[?1006h\033[?2004h"
+#define E_T_MOUSE_PASTE_OFF_STR "\033[?2004l\033[?1002l\033[?1006l\033[?1000l"
+#define E_T_PRIVATE_MODES_OFF_STR E_T_KEYS_OFF_STR E_T_MOUSE_PASTE_OFF_STR
 
 #define SCLE CLE+512
 #define SCRI CRI+512

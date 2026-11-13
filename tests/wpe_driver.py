@@ -26,6 +26,7 @@ import base64
 import fcntl
 import os
 import pty
+import re
 import select
 import struct
 import termios
@@ -265,6 +266,27 @@ class _RepStream(pyte.Stream):
     """
     csi = {**pyte.Stream.csi, "b": "repeat_last",
            "S": "scroll_up", "T": "scroll_down"}
+
+    # The editor asks the terminal for unambiguous key reports and gives them
+    # back with private-marked sequences that end in u or m: "CSI > 4 ; 2 m",
+    # "CSI > 5 u", "CSI < u", "CSI ? u".  pyte skips a '>' marker and runs
+    # the rest (the first as SGR 4;2, underline), and takes '<' for a final
+    # byte and draws the 'u'; a real terminal does neither.  They are
+    # consumed here, before pyte sees them.  The private modes that do mean
+    # something to a screen (CSI ? 25 l, CSI ? 2004 h) end in h or l and are
+    # left alone.  A sequence cut by the end of a read is kept for the next.
+    _KEY_PROTOCOL_SEQ = re.compile(r"\x1b\[[<=>?][0-9;:]*[um]")
+    _CUT_SEQ_AT_END = re.compile(r"\x1b(\[[<=>?0-9;:]*)?\Z")
+    _held = ""
+
+    def feed(self, chars):
+        chars = self._held + chars
+        self._held = ""
+        cut = self._CUT_SEQ_AT_END.search(chars)
+        if cut:
+            self._held = chars[cut.start():]
+            chars = chars[:cut.start()]
+        super().feed(self._KEY_PROTOCOL_SEQ.sub("", chars))
 
 
 class ALT:

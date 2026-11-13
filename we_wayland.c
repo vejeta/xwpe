@@ -583,6 +583,43 @@ static int wl_table_key(xkb_keysym_t sym, unsigned mods)
  return wpe_key_code(base, mods);
 }
 
+/**
+ * wl_chord_codepoint - The character of the physical key behind a chord.
+ * @code: the xkb keycode.
+ *
+ * Reads the first layout of the keymap that has a Latin letter on the key, so
+ * Ctrl-S is Save on a Cyrillic or Greek layout too, where the active layout
+ * would give the layout's own letter.  A key with no Latin letter gives its
+ * first layout's symbol when that is a digit, punctuation, Space or Tab.
+ * Return: the codepoint for wpe_key_code_char(), or 0.
+ */
+/* "no symbol on this key": xkbcommon's NoSymbol, which is 0. */
+#define WL_NO_KEYSYM 0
+
+static int wl_chord_codepoint(xkb_keycode_t code)
+{
+ const xkb_keysym_t *syms;
+ xkb_layout_index_t layout, layouts;
+ xkb_keysym_t first = WL_NO_KEYSYM;
+
+ if (!WpeWl.xkb_keymap)
+  return 0;
+ layouts = xkb_keymap_num_layouts_for_key(WpeWl.xkb_keymap, code);
+ for (layout = 0; layout < layouts; layout++)
+ {
+  if (xkb_keymap_key_get_syms_by_level(WpeWl.xkb_keymap, code, layout, 0,
+                                       &syms) < 1)
+   continue;
+  if (first == WL_NO_KEYSYM)
+   first = syms[0];
+  if (wpe_keysym_is_chord_letter((unsigned long)syms[0]))
+   return wpe_keysym_chord_codepoint((unsigned long)syms[0]);
+ }
+ if (first == WL_NO_KEYSYM)
+  return 0;
+ return wpe_keysym_chord_codepoint((unsigned long)first);
+}
+
 /* keysym_to_xwpe - map an xkbcommon keysym (plus the UTF-8 text it produced and
    the active modifiers) to an internal xwpe key code.  This mirrors the X11
    translation in e_x_getch: both hand the keysym to the one key table
@@ -592,12 +629,23 @@ static int wl_table_key(xkb_keysym_t sym, unsigned mods)
    produced; 0 or >1 means a special key or a multibyte codepoint.  Returns 0
    when nothing maps (the caller drops it). */
 int keysym_to_xwpe(xkb_keysym_t sym, const char *utf8, int u8len,
-                   int ctrl, int shift, int alt)
+                   int ctrl, int shift, int alt, int chord_cp)
 {
  unsigned mods = wl_mods(ctrl, shift, alt);
  int c;
 
  g_wl_last_was_char = 0;             /* a key code unless the decoder says otherwise */
+
+ /* A chord with Ctrl or Alt is decided by the key's place on the keyboard
+    (chord_cp: the physical key's Latin letter, from wl_chord_codepoint), by
+    the chord key owner, so Ctrl-Shift-P and Alt-Shift-S are the same codes
+    here as on the terminal and on X11. */
+ if ((ctrl || alt) && chord_cp != 0)
+ {
+  c = wpe_key_fold_legacy(wpe_key_code_char(chord_cp, mods));
+  if (c != 0)
+   return c;
+ }
 
  /* The keys the table binds (function keys, the cursor block, Shift+Tab,
     Break, the Sun keys) are decoded by the table every display shares. */
@@ -620,11 +668,7 @@ int keysym_to_xwpe(xkb_keysym_t sym, const char *utf8, int u8len,
  }
 
  if (c != 0)
- {
-  if (shift)
-   c += 512;
   return c;
- }
  if (u8len >= 2 && ((unsigned char)utf8[0] & 0xC0) == 0xC0)
  {
   int cp = e_utf8_to_codepoint((unsigned char *)utf8, u8len);
@@ -742,7 +786,8 @@ static void kbd_key(void *data, struct wl_keyboard *kbd, uint32_t serial,
  u8len = xkb_state_key_get_utf8(WpeWl.xkb_state, code, u8, sizeof u8);
  wl_active_mods(&ctrl, &shift, &alt);
  {
-  int xwc = keysym_to_xwpe(sym, u8, u8len, ctrl, shift, alt);
+  int xwc = keysym_to_xwpe(sym, u8, u8len, ctrl, shift, alt,
+                           wl_chord_codepoint(code));
   WPE_TRACE("wayland", "kbd_key sym=0x%x u8len=%d ctrl=%d shift=%d alt=%d -> %d\n",
             (unsigned)sym, u8len, ctrl, shift, alt, xwc);
   wl_key_push(xwc, g_wl_last_was_char);
@@ -1959,7 +2004,7 @@ static void wl_keytest(void)
   { XKB_KEY_F10,         "",     0, 1,0,0, CF10,     "Ctrl+F10"   },
   { XKB_KEY_F10,         "",     0, 0,1,0, SF10,     "Shift+F10"  },
   { XKB_KEY_F5,          "",     0, 0,0,1, AF5,      "Alt+F5"     },
-  { XKB_KEY_F11,         "",     0, 0,0,0, 0,        "F11"        },
+  { XKB_KEY_F11,         "",     0, 0,0,0, F11,      "F11"        },
   { XKB_KEY_L5,          "",     0, 0,0,0, FRONT,    "Sun Front"  },
   { XKB_KEY_L10,         "",     0, 0,0,0, CUT,      "Sun Cut"    },
   { XKB_KEY_Left,        "",     0, 0,0,1, CCLE,     "Alt+Left"   },
@@ -1971,11 +2016,37 @@ static void wl_keytest(void)
  for (i = 0; i < n; i++)
  {
   int got = keysym_to_xwpe(t[i].sym, t[i].u8, t[i].len,
-                           t[i].ctrl, t[i].shift, t[i].alt);
+                           t[i].ctrl, t[i].shift, t[i].alt, 0);
   int ok = (got == t[i].want);
   if (!ok) fails++;
   fprintf(stderr, "  %-12s want=%d got=%d %s\n",
           t[i].name, t[i].want, got, ok ? "OK" : "FAIL");
+ }
+
+ /* Chords: the physical key's Latin letter (chord_cp) and the modifiers give
+    the chord key owner's code, whatever character the layout typed. */
+ {
+  static const struct {
+   int cp, ctrl, shift, alt, want; const char *name;
+  } ch[] = {
+   { 's', 1,0,0, CtrlS,                "Ctrl+S"           },
+   { 'p', 1,1,0, CtrlP,                "Ctrl+Shift+P is Ctrl+P" },
+   { 'h', 1,0,0, CtrlH,                "Ctrl+H is Backspace" },
+   { 's', 0,1,1, 1024 + 'S' - 'A',     "Alt+Shift+S"      },
+   { 'x', 0,0,1, AltX,                 "Alt+X"            },
+   { '\\', 1,0,0, WPE_CTRL_BACKSLASH,  "Ctrl+\\ is not Shift+Tab" }
+  };
+  int m = (int)(sizeof ch / sizeof ch[0]), k;
+
+  for (k = 0; k < m; k++)
+  {
+   int got = keysym_to_xwpe(WL_NO_KEYSYM, "", 0, ch[k].ctrl, ch[k].shift,
+                            ch[k].alt, ch[k].cp);
+   int ok = (got == ch[k].want);
+   if (!ok) fails++;
+   fprintf(stderr, "  %-22s want=%d got=%d %s\n",
+           ch[k].name, ch[k].want, got, ok ? "OK" : "FAIL");
+  }
  }
 
  /* Typed multibyte characters: the codepoint must come back AND be flagged as a
@@ -1996,13 +2067,13 @@ static void wl_keytest(void)
 
   for (k = 0; k < m; k++)
   {
-   got = keysym_to_xwpe(0, cc[k].u8, cc[k].len, 0, 0, 0);
+   got = keysym_to_xwpe(0, cc[k].u8, cc[k].len, 0, 0, 0, 0);
    int ok = (got == cc[k].want && g_wl_last_was_char == 1);
    if (!ok) fails++;
    fprintf(stderr, "  %-22s want=%d/char got=%d/%d %s\n",
            cc[k].name, cc[k].want, got, g_wl_last_was_char, ok ? "OK" : "FAIL");
   }
-  got = keysym_to_xwpe(XKB_KEY_n, "n", 1, 0, 0, 1);   /* Alt+n: a key code */
+  got = keysym_to_xwpe(XKB_KEY_n, "n", 1, 0, 0, 1, 0);   /* Alt+n: a key code */
   {
    int ok = (g_wl_last_was_char == 0);
    if (!ok) fails++;

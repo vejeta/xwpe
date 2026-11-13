@@ -90,3 +90,55 @@ def test_a_line_and_ctrl_c_typed_for_a_running_program_reach_it(xwpe):
     assert _wait(lambda: os.path.exists(_in_dir(xwpe, "sigint.txt")), ANSWER_S), \
         "Ctrl-C typed in the window should reach the program as SIGINT"
     assert xwpe.proc.poll() is None, "xwpe died running the program"
+
+
+# A program that reads its terminal byte by byte (no line editing) and writes
+# the bytes it got, as numbers, once it reads a 'q'.
+RAW_READER_PROG = (
+    "#include <stdio.h>\n"
+    "#include <termios.h>\n"
+    "#include <unistd.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  struct termios t;\n"
+    "  unsigned char b[128];\n"
+    "  int n = 0, i;\n"
+    "  FILE *o;\n"
+    "  alarm(60);\n"
+    "  tcgetattr(0, &t);\n"
+    "  t.c_lflag &= ~(ICANON | ECHO);\n"
+    "  tcsetattr(0, TCSANOW, &t);\n"
+    "  o = fopen(\"ready.txt\", \"w\");\n"
+    "  fclose(o);\n"
+    "  while (n < (int)sizeof b && read(0, b + n, 1) == 1 && b[n++] != 'q')\n"
+    "    ;\n"
+    "  o = fopen(\"bytes.txt\", \"w\");\n"
+    "  for (i = 0; i < n; i++)\n"
+    "    fprintf(o, \"%d \", b[i]);\n"
+    "  fclose(o);\n"
+    "  return 0;\n"
+    "}\n"
+)
+# Up, F5, Delete and q, as the xterm sequences a program's terminal reads.
+RAW_KEYS_WANTED = "27 91 65 27 91 49 53 126 27 91 51 126 113"
+
+
+# @scenario SC-keymap-17
+@pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": RAW_READER_PROG}],
+                         indirect=True)
+def test_the_cursor_and_function_keys_reach_a_running_program(xwpe):
+    """The keys typed for a program are decoded once, as the editor reads
+    them, and sent as its terminal expects: Up, F5 and Delete arrive as
+    their xterm sequences.  The window's key read used to drop them."""
+    xwpe.key("ctrl+F9")
+    assert _wait(lambda: os.path.exists(_in_dir(xwpe, "ready.txt")),
+                 BUILD_RUN_S), "Ctrl-F9 should build and start the program"
+    _sleep(0.5)
+    xwpe.key("Up", "F5", "Delete", "q", delay=0.4)
+    assert _wait(lambda: os.path.exists(_in_dir(xwpe, "bytes.txt")), ANSWER_S), \
+        "the program never read its q"
+    got = _read(_in_dir(xwpe, "bytes.txt")).strip()
+    assert got == RAW_KEYS_WANTED, \
+        "the program read %r, not Up, F5, Delete and q (%r)" \
+        % (got, RAW_KEYS_WANTED)

@@ -233,6 +233,26 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* In a terminal, the editor now asks for xterm's modifyOtherKeys and the
+  kitty keyboard protocol, and gives them back when it ends, is stopped,
+  crashes or hands the terminal to a program.  Esc acts at once,
+  Ctrl-Shift-letter is a key of its own (Ctrl-letter in the Borland keys),
+  and Ctrl-H, Ctrl-I, Ctrl-M and Ctrl-[ do what Backspace, Tab, Enter and
+  Esc do.  A report the editor does not know is dropped whole; before,
+  its tail was typed into the file.
+
+* A program run from the editor now gets Ctrl-D (end of input), Esc, Tab,
+  the Ctrl keys and the cursor and function keys as its own terminal
+  expects, and Ctrl-C stops it in every form a terminal sends it.
+
+* Ctrl-\ no longer moves the focus back in a dialog or the file manager;
+  only Shift-Tab does.  F11 and F12 are keys (with Shift, Ctrl and Alt)
+  that the Borland keys do not use.  Ctrl-S and the other Ctrl and Alt
+  chords work on a Cyrillic or Greek keyboard layout under X11 and
+  Wayland, Alt-Shift-letter selects windows 10 and up there as in a
+  terminal, and the keypad Enter works in a terminal that sends it as its
+  own key.
+
 * Typing a character such as the euro sign or a musical clef into a
   dialog field (Find, Replace, Go to line, file names, Options) no longer
   wipes what you had typed before it, and Left, Right, Backspace and Delete

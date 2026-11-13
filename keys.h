@@ -143,6 +143,49 @@
 #define CF8 357
 #define CF9 358
 #define CF10 951
+
+/* F11 and F12.  Their symbols are also the Sun Stop and Again keys; the
+   Borland key set binds neither, so they only do something where a key set
+   gives them an action.  Shift is the usual 512 above the plain key. */
+#define F11 324
+#define F12 325
+#define SF11 836
+#define SF12 837
+#define CF11 955
+#define CF12 956
+#define AF11 957
+#define AF12 958
+
+/* Control, Control+Shift and Control+Alt with a letter, and Control with the
+   punctuation keys that have no control byte of their own.  The legacy
+   control bytes (1 to 26) stay the codes of Ctrl-A to Ctrl-Z; these exist
+   for what a byte cannot say.  Ctrl+Shift+letter is WPE_CS_FIRST plus the
+   letter's index (A is 0).  Ctrl+Alt+letter is WPE_CA_FIRST plus the index,
+   except where the terminal's ESC-then-control-byte form already means
+   something (Alt-Ctrl-A is a page jump). */
+#define WPE_CS_FIRST 1100
+#define WPE_CS_A 1100
+#define WPE_CS_LAST 1125
+/* Ctrl-H, Ctrl-I, Ctrl-M and Ctrl-[ share their byte with Backspace, Tab,
+   Enter and Esc.  A terminal that reports "Ctrl plus the letter" gets these
+   codes; the legacy bytes keep meaning the four plain keys. */
+#define WPE_CTRL_H 1126
+#define WPE_CTRL_I 1127
+#define WPE_CTRL_M 1128
+#define WPE_CTRL_LBRACKET 1129
+#define WPE_CTRL_RBRACKET 1130
+#define WPE_CTRL_TAB 1131
+#define WPE_CTRL_SLASH 1132
+#define WPE_CTRL_BACKQUOTE 1133
+#define WPE_CTRL_SPACE 1134
+#define WPE_CTRL_BACKSLASH 1135
+#define WPE_CTRL_COMMA 1136
+#define WPE_CTRL_PERIOD 1137
+#define WPE_CTRL_EQUAL 1138
+#define WPE_CTRL_MINUS 1139
+#define WPE_CA_FIRST 1160
+#define WPE_CA_A 1160
+#define WPE_CA_LAST 1185
 /* Ctrl-Break: the key that pauses a program running under the debugger.
    Not named CBRK: <sys/ttydefaults.h> already defines that, as 0xff.
    X11 and Wayland send it as the keysym Break (or Ctrl+Pause); the terminal
@@ -175,6 +218,9 @@
    or cancel a dialog). */
 #define WPE_PASTE_BEG   2005
 #define WPE_PASTE_END   2006
+/* Shift-Tab, moving focus back in dialogs and the file manager.  It lives
+   above 255 so no control byte (Ctrl-\ is 28) can be taken for it. */
+#define WPE_BTAB        2007
 /* Synthetic action code: open the language-server (LSP) action menu.  Carried by
    the "LSP" entry on the editor's bottom shortcut bar (mouse-clickable), handled
    in e_prog_switch.  Not a keyboard key -- the Alt-Q prefix is the keyboard path. */
