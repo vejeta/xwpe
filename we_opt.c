@@ -881,6 +881,9 @@ int e_opt_save(FENSTER *f)
  int ret;
  char tmp[E_ARG_FIELD_MAX + 1];
 
+ if (e_opt_say_file_missing(f->ed, E_OPT_NOT_SAVED))
+  return(0);
+
  if (strlen(f->ed->optfile) > E_ARG_FIELD_MAX)
   return(e_opt_save_to_long_path(f));
  snprintf(tmp, sizeof tmp, "%s", f->ed->optfile);
@@ -1469,6 +1472,46 @@ int WpeWriteLanguage(ECNT *cn, char *section, FILE *opt_file)
 
 static void e_opt_move_user_only_keys(ECNT *cn);
 
+/**
+ * e_opt_file_missing - Is there no option file to read or write?
+ * @cn: the editor.
+ *
+ * The only case is a configuration folder whose path is longer than the
+ * system allows ($XDG_CONFIG_HOME of a deep folder): the editor runs with
+ * its defaults rather than create and fill a folder cut from the one the
+ * user named.
+ * Return: 1 when there is none.
+ */
+int e_opt_file_missing(ECNT *cn)
+{
+ return(!cn || !cn->optfile || !cn->optfile[0]);
+}
+
+/**
+ * e_opt_say_file_missing - Say on the status row why the options are not
+ * read or not saved, when there is no option file.
+ * @cn: the editor; @what: E_OPT_NOT_READ or E_OPT_NOT_SAVED.
+ *
+ * Without it the user would find his options reset, or his changes gone,
+ * with nothing telling him that the folder $XDG_CONFIG_HOME names is the
+ * reason.
+ * Return: 1 when it spoke (there is no option file), else 0.
+ */
+int e_opt_say_file_missing(ECNT *cn, const char *what)
+{
+ char sentence[WPE_PATH_MSG_MAX], line[WPE_PATH_MSG_MAX + 32];
+
+ if (!e_opt_file_missing(cn)) return(0);
+ if (!cn || !cn->fb) return(1);
+ snprintf(sentence, sizeof sentence, WPE_PATH_TOO_LONG_FMT,
+          "configuration folder", WPE_PATH_MAX);
+ snprintf(line, sizeof line, "%s: %s", what, sentence);
+ e_status_hold(line);
+ e_status_paint(cn->fb, line);
+ e_refresh();
+ return(1);
+}
+
 /*   save options    */
 int e_save_opt(FENSTER *f)
 {
@@ -1477,6 +1520,8 @@ int e_save_opt(FENSTER *f)
  int i;
  char *str_line;
 
+ if (e_opt_say_file_missing(cn, E_OPT_NOT_SAVED))
+  return(-1);
  str_line = MALLOC((strlen(cn->optfile)+1)*sizeof(char));
  strcpy(str_line, cn->optfile);
  for (i = strlen(str_line); i > 0 && str_line[i] != DIRC; i--);
@@ -2545,6 +2590,7 @@ int e_opt_read(ECNT *cn)
  int mode = E_OPT_READ_ALL, err;
 
  e_opt_ignored_keys[0] = '\0';
+ if (e_opt_file_missing(cn)) return 0;   /* said at start by e_opt_say_file_missing */
  if (e_opt_user_file && e_opt_same_file(e_opt_user_file, cn->optfile))
   e_opt_use_user_file(NULL);
  e_opt_forget_folder();
@@ -2614,10 +2660,14 @@ int e_opt_field_take(W_OPTSTR *o, int k, char *dst, size_t size)
  * @size: the size of the buffer the caller keeps the answer in.
  *
  * The field's own capacity, or less when the caller's buffer is smaller, so
- * the text always fits where it is going.
+ * the text always fits where it is going.  A caller that keeps a path (a
+ * buffer of WPE_PATH_SIZE) gets a field that takes any path the system
+ * allows, so a long Info-Path or project name can be read and edited.
  */
 static int e_arguments_field_max(size_t size)
 {
+ if (size >= (size_t)WPE_PATH_SIZE)
+  return(WPE_PATH_FIELD_MAX);
  if (size > (size_t)E_ARG_FIELD_MAX)
   return(E_ARG_FIELD_MAX);
  return((int)size - 1);
@@ -3634,7 +3684,9 @@ static void e_opt_run_text_field(W_OPTSTR *o, struct opt_run *r, int i)
  int c;
 
  r->cold = r->c;
- strcpy(tmp, w->txt);
+ /* The field holds at most wmx bytes and tmp has room for wmx + 1. */
+ if (wpe_field_take(w->txt, tmp, (size_t)w->wmx + 1) != 0)
+  tmp[0] = '\0';
  if (!w->df)
   c = e_schreib_leiste_lines(tmp, x, y, w->nw, w->wmx, o->fwt, o->fws,
                              w->lines_key);

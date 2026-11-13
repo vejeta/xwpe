@@ -4478,8 +4478,9 @@ static int e_ai_prompt(char *out, const char *title, FENSTER *f)
     of stealing focus and eating keystrokes. */
  ret = e_opt_kst(o);
  if (ret != WPE_ESC) {                        /* keep what was typed either way */
-  strncpy(out, o->wstr[0]->txt, AI_PROMPT_MAX);
-  out[AI_PROMPT_MAX] = '\0';
+  /* The field's capacity is AI_PROMPT_MAX, so what was typed always fits. */
+  if (e_opt_field_take(o, 0, out, AI_PROMPT_BUF) != 0)
+   out[0] = '\0';
  }
  freeostr(o);
  if (ret == WPE_ESC || ret == AltC) return 0; /* cancel (Esc or the Cancel button) */

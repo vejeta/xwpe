@@ -675,6 +675,15 @@ allows, and a dialog field takes what it shows and no more.  A path from a
 project file or an option file that the system itself cannot open (longer
 than 4096 bytes) is refused with a box that names it, or skipped and said.
 The reason: a cut path names another file.
+
+@item A path that was cut
+The original also cut paths it kept for later and used the piece that was
+left: a project's @code{LIBNAME} was cut to 79 characters and its
+@code{EXENAME} to 128 when @samp{Project-Options} saved them into your
+@file{.prj}, and Move, Copy and Link offered the first 128 characters of a
+file name and renamed the file to them.  xwpe keeps each of these whole.  The @samp{Executable}, @samp{LiBrary}, @samp{EXecution-Directory},
+@samp{System-Include-Path} and @samp{Info-Path} fields take 4095
+characters.  The reason: a cut path names another file.
 @end table
 
 @section Colours on an X display

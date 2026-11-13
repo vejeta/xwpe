@@ -1316,9 +1316,10 @@ int e_x_refresh()
     if (!dump_read) { dump_path = getenv("XWPE_X_DUMP"); dump_read = 1; }
     if (dump_path && *dump_path && WpeXInfo.window)
     {
-     char tmp[1024];
-     snprintf(tmp, sizeof tmp, "%s.tmp", dump_path);
-     if (wpe_x_dump_ppm(tmp) == 0)
+     char tmp[WPE_PATH_SIZE];
+     if (wpe_path_copy(tmp, sizeof tmp, dump_path) == 0 &&
+         wpe_path_cat(tmp, sizeof tmp, ".tmp") == 0 &&
+         wpe_x_dump_ppm(tmp) == 0)
       rename(tmp, dump_path);
     }
    }
@@ -2305,19 +2306,28 @@ int x_bioskey()
    words as given, then a wait for Return so the user reads its output. */
 #define E_X_SYSTEM_SCRIPT "\"$@\"\necho type \\<Return\\> to continue\nread i\n"
 #define E_X_SYSTEM_NAME   "we_sys_tmp"
-#define E_X_SYSTEM_PATH_MAX 1024
 
 /**
  * e_x_system_script - Write the helper script the terminal runs.
  * @file/@sz: receive its path, in the editor's own temporary folder.
  * Return: 0, or -1 when it could not be written.
+ *
+ * A temporary folder too long to hold the script's path is said in a box,
+ * so the user can set a shorter $TMPDIR instead of seeing nothing run.
  */
 static int e_x_system_script(char *file, size_t sz)
 {
  FILE *fp;
 
- if (snprintf(file, sz, "%s/%s", e_tmp_dir, E_X_SYSTEM_NAME) >= (int)sz)
+ if (wpe_path_join(file, sz, e_tmp_dir, E_X_SYSTEM_NAME) != 0)
+ {
+  char msg[WPE_PATH_MSG_MAX];
+
+  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "temporary folder", WPE_PATH_MAX);
+  if (WpeEditor && WpeEditor->mxedt >= 0)
+   e_message(0, msg, WpeEditor->f[WpeEditor->mxedt]);
   return(-1);
+ }
  if (!(fp = fopen(file, "w+")))
   return(-1);
  fputs(E_X_SYSTEM_SCRIPT, fp);
@@ -2343,7 +2353,7 @@ static int e_x_system_script(char *file, size_t sz)
  */
 int e_x_system(struct WpeStartPlan *plan)
 {
- char file[E_X_SYSTEM_PATH_MAX];
+ char file[WPE_PATH_SIZE];
  char *carrier[] = { XTERM_CMD, "-geometry", "80x25-0-0", "+sb", "-e", NULL, NULL, NULL };
  int ret;
 

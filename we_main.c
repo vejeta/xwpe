@@ -191,7 +191,7 @@ static char *e_info_search_path(const char *fallback)
 /* Create `path` and any missing parent directories (best-effort, mode 0700). */
 static void e_mkdirs(const char *path)
 {
- char tmp[1024];
+ char tmp[WPE_PATH_SIZE];
  size_t i, n = strlen(path);
  if (n == 0 || n >= sizeof tmp) return;
  memcpy(tmp, path, n + 1);
@@ -215,23 +215,51 @@ static int e_copy_file(const char *src, const char *dst)
  return fclose(out) == 0 ? 0 : -1;
 }
 
+/**
+ * e_xdg_config_paths - Where the configuration folder, its xwperc and the
+ * legacy xwperc are.
+ * @xdg: $XDG_CONFIG_HOME or NULL; @home: the home folder.
+ * @dir/@xdgfile/@legacy: receive the paths, each of WPE_PATH_SIZE bytes.
+ *
+ * A path is whole or the call fails: cut at some length, the configuration
+ * folder would be created, and the options saved, somewhere the user never
+ * named.
+ * Return: 0, or -1 when one of them does not fit.
+ */
+static int e_xdg_config_paths(const char *xdg, const char *home,
+                              char *dir, char *xdgfile, char *legacy)
+{
+ if (xdg && *xdg)
+ {
+  if (wpe_path_join(dir, WPE_PATH_SIZE, xdg, "xwpe")) return -1;
+ }
+ else
+ {
+  if (wpe_path_join(dir, WPE_PATH_SIZE, home, ".config")) return -1;
+  if (wpe_path_cat(dir, WPE_PATH_SIZE, "/xwpe")) return -1;
+ }
+ if (wpe_path_join(xdgfile, WPE_PATH_SIZE, dir, OPTION_FILE)) return -1;
+ if (wpe_path_join(legacy, WPE_PATH_SIZE, home, XWPE_HOME)) return -1;
+ if (wpe_path_cat(legacy, WPE_PATH_SIZE, "/" OPTION_FILE)) return -1;
+ return 0;
+}
+
 /* The user config file per the XDG Base Directory spec:
    $XDG_CONFIG_HOME/xwpe/xwperc (default ~/.config/xwpe/xwperc).  A legacy
    ~/.xwpe/xwperc is migrated (copied) the first time so existing settings carry
    over; if that copy fails, the legacy file is used so nothing is lost.  Returns
-   a malloc'd path. */
+   a malloc'd path, or NULL when the folder's path is longer than the system
+   allows (the editor then runs with its defaults and says so). */
 static char *e_xdg_config_file(void)
 {
  const char *xdg = getenv("XDG_CONFIG_HOME");
  const char *home = getenv("HOME");
- char dir[1024], xdgfile[1120], legacy[1120];
+ char dir[WPE_PATH_SIZE], xdgfile[WPE_PATH_SIZE], legacy[WPE_PATH_SIZE];
  char *p;
  size_t n;
  if (!home || !*home) home = ".";
- if (xdg && *xdg) snprintf(dir, sizeof dir, "%s/xwpe", xdg);
- else             snprintf(dir, sizeof dir, "%s/.config/xwpe", home);
- snprintf(xdgfile, sizeof xdgfile, "%s/%s", dir, OPTION_FILE);
- snprintf(legacy, sizeof legacy, "%s/%s/%s", home, XWPE_HOME, OPTION_FILE);
+ if (e_xdg_config_paths(xdg, home, dir, xdgfile, legacy) != 0)
+  return NULL;
 
  e_mkdirs(dir);                          /* so saving here works even on a fresh box */
  if (access(xdgfile, F_OK) != 0 && access(legacy, F_OK) == 0) {
@@ -241,10 +269,11 @@ static char *e_xdg_config_file(void)
   /* Migrated: leave a note in the old directory so anyone who looks there knows
      where the settings went (the legacy dir is kept as a backup, not deleted). */
   {
-   char note[1160];
-   FILE *nf;
-   snprintf(note, sizeof note, "%s/%s/MOVED_TO_XDG.txt", home, XWPE_HOME);
-   nf = fopen(note, "w");
+   char note[WPE_PATH_SIZE];
+   FILE *nf = NULL;
+   if (wpe_path_join(note, sizeof note, home, XWPE_HOME) == 0 &&
+       wpe_path_cat(note, sizeof note, "/MOVED_TO_XDG.txt") == 0)
+    nf = fopen(note, "w");
    if (nf) {
     fprintf(nf,
       "xwpe now stores its files following the XDG Base Directory specification.\n"
@@ -259,6 +288,27 @@ static char *e_xdg_config_file(void)
   }
  }
  n = strlen(xdgfile) + 1; p = MALLOC(n); if (p) memcpy(p, xdgfile, n); return p;
+}
+
+/**
+ * e_xdg_config_file_or_none - The user's own option file, or "" when its
+ * folder's path is longer than the system allows.
+ *
+ * "" is the state every reader of an option file treats as "there is none"
+ * (e_opt_file_missing), so the editor runs with its defaults and says so.
+ * It must never be NULL for the user's own file beside a start-folder
+ * xwperc: NULL there means "the options come from the user's own file",
+ * and a cloned folder's xwperc would then set the keys only the user may
+ * set (a hook, an engine command, an endpoint).
+ * Return: a malloc'd path, "" included.
+ */
+static char *e_xdg_config_file_or_none(void)
+{
+ char *path = e_xdg_config_file();
+
+ if (path)
+  return path;
+ return WpeStrdup("");
 }
 
 int main(int argc, char **argv)
@@ -354,11 +404,13 @@ int main(int argc, char **argv)
   {
    fclose(f);
    cn->optfile = e_mkfilename(cn->dirct, OPTION_FILE);
-   e_opt_use_user_file(e_xdg_config_file());   /* the keys a project may not set */
+   e_opt_use_user_file(e_xdg_config_file_or_none());   /* the keys a project may not set */
   }
   else
   {
-   cn->optfile = e_xdg_config_file();    /* ~/.config/xwpe/xwperc (XDG), legacy migrated */
+   /* ~/.config/xwpe/xwperc (XDG), legacy migrated; "" when its folder's
+      path is longer than the system allows. */
+   cn->optfile = e_xdg_config_file_or_none();
   }
  }
  if (so == 0) err = e_opt_read(cn);
@@ -383,6 +435,7 @@ int main(int argc, char **argv)
  /* this error comes from reading the options file */
  if (err > 0) e_error(e_msg[err], 0, cn->fb);
  e_opt_say_ignored_keys(cn);
+ e_opt_say_file_missing(cn, E_OPT_NOT_READ);
  if (WpeIsProg()) WpeSyntaxReadFile(cn);
 #ifdef UNIX
  for (i = 1; i < argc; i++)

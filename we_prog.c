@@ -88,7 +88,39 @@ int e_prj_new_pending = 0;
 char **e_arg = NULL;
 char *e__arguments = NULL;
 M_TIME last_time;
-char library[80];
+/* The project's library, kept whole on the heap: LIBNAME is a path, and the
+   80 bytes that held it cut it on Save. */
+static char *e_prj_library_text;
+
+/**
+ * e_prj_library - The project's library, "" when it has none.
+ *
+ * Project-Options shows it and Save writes it back to the .prj, so what the
+ * user typed or the file held is what comes back, at any length.
+ * Return: the library's path; never NULL.
+ */
+static char *e_prj_library(void)
+{
+ if (!e_prj_library_text)
+  e_prj_library_text = WpeStrdup("");
+ return(e_prj_library_text ? e_prj_library_text : (char *)"");
+}
+
+/**
+ * e_prj_library_set - Keep @path as the project's library.
+ * @path: its path, or "" for none.
+ *
+ * Without memory the library stays as it was.
+ */
+static void e_prj_library_set(const char *path)
+{
+ char *copy = wpe_path_dup(path);
+
+ if (!copy)
+  return;
+ free(e_prj_library_text);
+ e_prj_library_text = copy;
+}
 int e_save_pid;
 struct dirfile **e_p_df;
 
@@ -501,20 +533,38 @@ static void e_build_path_too_long(FENSTER *f, const char *what);
 static int e_p_link_operands_of(const char *exe_name, int comp_sw, const char *exedir,
                                 char *estr, char *ostr, size_t sz, const char *datnam)
 {
- char name[WPE_BUILD_PATH_MAX], stem[WPE_BUILD_PATH_MAX];
+ char name[WPE_PATH_SIZE], stem[WPE_PATH_SIZE];
 
- snprintf(stem, sizeof stem, "%s", datnam);
+ /* A name that does not fit is refused, never cut: the program would be
+    linked under a piece of the name the user gave. */
+ if (wpe_path_copy(stem, sizeof stem, datnam))
+  return(-1);
  WpeStringCutChar(stem, '.');
  if (exe_name && exe_name[0])
-  snprintf(name, sizeof name, "%s", exe_name);
+ {
+  if (wpe_path_copy(name, sizeof name, exe_name))
+   return(-1);
+ }
  else
-  snprintf(name, sizeof name, "%s%s", stem, E_P_PROGRAM_SUFFIX);
+ {
+  if (wpe_path_copy(name, sizeof name, stem) ||
+      wpe_path_cat(name, sizeof name, E_P_PROGRAM_SUFFIX))
+   return(-1);
+ }
  if (wpe_startplan_operand(estr, sz, exedir, name))
   return(-1);
+ if (wpe_path_copy(name, sizeof name, stem))
+  return(-1);
  if (comp_sw & 1)
-  snprintf(name, sizeof name, "%s%s", stem, E_P_CLASS_SUFFIX);
+ {
+  if (wpe_path_cat(name, sizeof name, E_P_CLASS_SUFFIX))
+   return(-1);
+ }
  else
-  snprintf(name, sizeof name, "%s%s", stem, E_P_OBJECT_SUFFIX);
+ {
+  if (wpe_path_cat(name, sizeof name, E_P_OBJECT_SUFFIX))
+   return(-1);
+ }
  return(wpe_startplan_operand(ostr, sz, exedir, name));
 }
 
@@ -531,7 +581,7 @@ static void e_p_make_link(ECNT *cn)
 {
  FENSTER *f;
  char ostr[WPE_BUILD_PATH_MAX], estr[WPE_BUILD_PATH_MAX];
- char cwd_saved[1024];
+ char cwd_saved[WPE_PATH_SIZE];
  int file = -1, cwd_chg = 0;
  struct stat cbuf[1], obuf[1];
  int linkRequest = 1; /* assume linking has to be done */
@@ -1017,9 +1067,36 @@ static int e_run_with_pty(WpeStartPlan *plan, BUFFER *b, FENSTER *mf)
 
 /* The source Ctrl-F9 was pressed on, kept by value: the program runs after
    the build, and the window may have been closed while it built. */
-static char e_run_src_dirct[256], e_run_src_datnam[256];
+static char *e_run_src_dirct, *e_run_src_datnam;
 
 static int e_run_program(ECNT *cn);
+
+/**
+ * e_run_src_keep - Remember the source Ctrl-F9 runs, whole, on the heap.
+ * @f: the window of the source.
+ *
+ * A folder as deep as the system allows still runs: the build gets the
+ * window's folder and the run gets the same one, never a prefix of it that
+ * names a file which is not there.
+ * Return: 0, or -1 when there is no memory.
+ */
+static int e_run_src_keep(FENSTER *f)
+{
+ char *dirct = wpe_path_dup(f->dirct);
+ char *datnam = wpe_path_dup(f->datnam);
+
+ if (!dirct || !datnam)
+ {
+  free(dirct);
+  free(datnam);
+  return(-1);
+ }
+ free(e_run_src_dirct);
+ free(e_run_src_datnam);
+ e_run_src_dirct = dirct;
+ e_run_src_datnam = datnam;
+ return(0);
+}
 
 /* The no-terminal run's output, cut into lines: what the program has written
    since its last newline waits here, and goes to Messages as one line when
@@ -1217,10 +1294,11 @@ int e_run(FENSTER *f)
     the user keeps still answers on them. */
  if (!e_run_sh(f))
   return(0);
- strncpy(e_run_src_dirct, f->dirct, sizeof(e_run_src_dirct) - 1);
- e_run_src_dirct[sizeof(e_run_src_dirct) - 1] = '\0';
- strncpy(e_run_src_datnam, f->datnam, sizeof(e_run_src_datnam) - 1);
- e_run_src_datnam[sizeof(e_run_src_datnam) - 1] = '\0';
+ if (e_run_src_keep(f))
+ {
+  e_error("Out of memory", 0, f->fb);
+  return(0);
+ }
  return(e_p_make_then(f, e_run_after_make, NULL));
 }
 
@@ -1299,22 +1377,28 @@ static void e_run_values_of(e_run_values *v, const struct e_s_prog *p, const cha
  */
 static int e_run_program_path(FENSTER *f, const e_run_values *v, char *out, size_t sz)
 {
- char name[WPE_BUILD_PATH_MAX];
+ char name[WPE_PATH_SIZE];
  const char *dir = v->exedir;
 
  if (v->exe_name && v->exe_name[0] == DIRC)
   return(wpe_startplan_operand(out, sz, NULL, v->exe_name));
  if (v->exe_name && v->exe_name[0])
-  snprintf(name, sizeof name, "%s", v->exe_name);
+ {
+  if (wpe_path_copy(name, sizeof name, v->exe_name))
+   return(-1);
+ }
  else if (e__project)
-  snprintf(name, sizeof name, "%s", E_RUN_PROJECT_PROG);
+ {
+  if (wpe_path_copy(name, sizeof name, E_RUN_PROJECT_PROG))
+   return(-1);
+ }
  else
  {
-  snprintf(name, sizeof name, "%s", f->datnam);
-  WpeStringCutChar(name, '.');
-  if (strlen(name) + strlen(E_RUN_PROGRAM_EXT) >= sizeof name)
+  if (wpe_path_copy(name, sizeof name, f->datnam))
    return(-1);
-  strcat(name, E_RUN_PROGRAM_EXT);
+  WpeStringCutChar(name, '.');
+  if (wpe_path_cat(name, sizeof name, E_RUN_PROGRAM_EXT))
+   return(-1);
  }
  if (!dir || !*dir)
   dir = E_RUN_HERE;
@@ -1373,13 +1457,19 @@ static int e_run_plan_first(WpeStartPlan *plan, FENSTER *f, const e_run_values *
  if (v->interp)
  {
   if (wpe_startplan_operand(path, sizeof path, e_run_src_dirct, e_run_src_datnam))
+  {
+   e_build_path_too_long(f, "source");
    return(-1);
+  }
   wpe_startplan_word(plan, path, WPE_WORD_OPERAND, WPE_FROM_USER, E_RUN_SRC_WINDOW);
   wpe_startplan_path(plan, path, WPE_PATH_INPUT, WPE_FROM_USER, E_RUN_SRC_WINDOW, NULL);
   return(0);
  }
  if (e_run_program_path(f, v, path, sizeof path))
+ {
+  e_build_path_too_long(f, "program");
   return(-1);
+ }
  from_dir = e_run_from(v, E_OPT_SCOPE_PROGRAMMING, "Exedir", v->exedir);
  from_exe = e_run_from(v, v->language, "Executable", v->exe_name);
  if (from_dir == WPE_FROM_FOLDER || from_exe == WPE_FROM_FOLDER)
@@ -1692,11 +1782,9 @@ static void e_build_remove_stale(FENSTER *f, const char *path)
  */
 static void e_build_path_too_long(FENSTER *f, const char *what)
 {
- char msg[160];
+ char msg[WPE_PATH_MSG_MAX];
 
- snprintf(msg, sizeof msg,
-          "The %s path is longer than %d characters.\nCompile from a shorter path.",
-          what, WPE_BUILD_PATH_MAX - 1);
+ snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, what, WPE_PATH_MAX);
  e_message(0, msg, f);
 }
 
@@ -2134,7 +2222,7 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
  ECNT *cn = f->ed;
  PIC *pic = NULL;
  char **arg = NULL, fstr[WPE_BUILD_PATH_MAX], ostr[WPE_BUILD_PATH_MAX];
- char cwd_saved[1024];
+ char cwd_saved[WPE_PATH_SIZE];
  int i, file = -1, len, argc, cwd_chg = 0;
  { const char *tp = getenv("XWPE_UI_TRACE");
    if (tp) { FILE *tf = fopen(tp, "a");
@@ -2424,15 +2512,18 @@ static FENSTER *e_find_or_create_messages(ECNT *cn)
    sources, or use Run -> Execute Make (Alt-A) to run the Makefile. */
 static void e_make_multifile_hint(FENSTER *f)
 {
- char path[1024];
+ char path[WPE_PATH_SIZE];
  struct stat sb;
 
  if (e__project || !f || !f->dirct || !f->dirct[0])
   return;
- snprintf(path, sizeof(path), "%sMakefile", f->dirct);
+ /* A hint only: a name that does not fit names no Makefile to suggest. */
+ if (wpe_path_join(path, sizeof(path), f->dirct, "Makefile") != 0)
+  return;
  if (stat(path, &sb) != 0)
  {
-  snprintf(path, sizeof(path), "%smakefile", f->dirct);
+  if (wpe_path_join(path, sizeof(path), f->dirct, "makefile") != 0)
+   return;
   if (stat(path, &sb) != 0)
    return;                       /* no Makefile -> nothing useful to suggest */
  }
@@ -4963,8 +5054,8 @@ int e_project_options(FENSTER *f)
  e_add_wrstr(4, 2, 22, 2, 36, 128, 0, AltC, "Compiler:", e_s_prog.compiler, NULL, o);
  e_add_wrstr(4, 4, 22, 4, 36, 256, 3, AltP, "ComPiler-Options:", e_s_prog.comp_str, NULL, o);
  e_add_wrstr(4, 6, 22, 6, 36, 256, 0, AltL, "Loader-Options:", e_s_prog.libraries, NULL, o);
- e_add_wrstr(4, 8, 22, 8, 36, 128, 0, AltE, "Executable:", e_s_prog.exe_name, NULL, o);
- e_add_wrstr(4, 10, 22, 10, 36, 128, 2, AltB, "LiBrary:", library, NULL, o);
+ e_add_wrstr(4, 8, 22, 8, 36, WPE_PATH_FIELD_MAX, 0, AltE, "Executable:", e_s_prog.exe_name, NULL, o);
+ e_add_wrstr(4, 10, 22, 10, 36, WPE_PATH_FIELD_MAX, 2, AltB, "LiBrary:", e_prj_library(), NULL, o);
  { const char *sym = e_s_prog.start_symbol ? e_s_prog.start_symbol : "main";
    e_add_wrstr(4, 12, 22, 12, 36, 128, 0, AltY, "Start sYmbol:", (char *)sym, NULL, o);
  }
@@ -4995,8 +5086,7 @@ int e_project_options(FENSTER *f)
   e_s_prog.start_symbol = WpeStrdup(o->wstr[5]->txt);
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
   e_s_prog.intstr = WpeValueToString(o->wstr[6]->txt);
-  /* Bounded: the LiBrary dialog field accepts more than sizeof(library). */
-  snprintf(library, sizeof(library), "%s", o->wstr[4]->txt);
+  e_prj_library_set(o->wstr[4]->txt);
   e_s_prog.comp_sw = o->pstr[0]->num;
   e_wrt_prj_fl(f);
  }
@@ -5065,7 +5155,8 @@ static void e_prog_fields_of(e_prog_field fld[4], W_OPTSTR *o, const struct e_s_
  fld[1].own = own ? own->comp_str : NULL;
  fld[2].own = own ? own->libraries : NULL;
  fld[3].own = own ? own->exe_name : NULL;
- fld[0].room = fld[1].room = fld[2].room = fld[3].room = E_PROG_FIELD_ROOM;
+ fld[0].room = fld[1].room = fld[2].room = E_PROG_FIELD_ROOM;
+ fld[3].room = WPE_PATH_FIELD_MAX;   /* the program is a path */
 }
 
 /**
@@ -5118,6 +5209,25 @@ static void e_prog_postfix_list(char *out, size_t sz)
  }
 }
 
+/**
+ * e_prog_postfix_word - One file extension of the File-Postfix field, on the
+ * heap.
+ * @list: where the word starts in the field's text; @len: its bytes.
+ *
+ * The field is a line of words; each becomes a language's extension.
+ * Return: the word, or NULL when there is no memory.
+ */
+static char *e_prog_postfix_word(const char *list, size_t len)
+{
+ char *word = (char *)WpeMalloc(len + 1);
+
+ if (!word)
+  return(NULL);
+ memcpy(word, list, len);
+ word[len] = '\0';
+ return(word);
+}
+
 int e_run_c_options(FENSTER *f)
 {
  int i, j, ret, his;
@@ -5141,7 +5251,7 @@ int e_run_c_options(FENSTER *f)
  e_add_wrstr(4, 4, 22, 4, 36, 128, 0, AltC, "Compiler:", e_s_prog.compiler, NULL, o);
  e_add_wrstr(4, 6, 22, 6, 36, 128, 3, AltP, "ComPiler-Options:", e_s_prog.comp_str, NULL, o);
  e_add_wrstr(4, 8, 22, 8, 36, 128, 0, AltL, "Loader-Options:", e_s_prog.libraries, NULL, o);
- e_add_wrstr(4, 10, 22, 10, 36, 128, 0, AltE, "Executable:", e_s_prog.exe_name, NULL, o);
+ e_add_wrstr(4, 10, 22, 10, 36, WPE_PATH_FIELD_MAX, 0, AltE, "Executable:", e_s_prog.exe_name, NULL, o);
  j = WpeExpArrayGetSize(e_s_prog.filepostfix);
  e_prog_postfix_list(filepostfix, sizeof filepostfix);
  e_add_wrstr(4, 12, 22, 12, 36, 128, 0, AltF, "File-Postfix:", filepostfix, NULL, o);
@@ -5180,9 +5290,7 @@ int e_run_c_options(FENSTER *f)
     continue;
    for (j = i; (o->wstr[5]->txt[j]) && (!isspace(o->wstr[5]->txt[j])); j++)
     ;
-   newpostfix = (char *)WpeMalloc(sizeof(char) * j - i + 1);
-   strncpy(newpostfix, o->wstr[5]->txt + i, j - i);
-   newpostfix[j - i] = 0;
+   newpostfix = e_prog_postfix_word(o->wstr[5]->txt + i, j - i);
    WpeExpArrayAdd((void **)&e_s_prog.filepostfix, &newpostfix);
    i = j - 1;
   }
@@ -5278,15 +5386,20 @@ int e_run_options(FENSTER *f)
 
 int e_project_name(FENSTER *f)
 {
- char str[E_ARG_FIELD_MAX + 1];  /* the dialog's field writes back this much */
+ char str[WPE_PATH_SIZE];  /* the dialog's field writes back this much */
 
  if (!e_prog.project)
  {
   e_prog.project = MALLOC(1);
   e_prog.project[0] = '\0';
  }
- /* An xwperc can name a project longer than the field: show what fits. */
- snprintf(str, sizeof str, "%s", e_prog.project);
+ /* A project the system could not open is not offered for editing: a cut
+    name would be written back in its place. */
+ if (wpe_path_copy(str, sizeof str, e_prog.project) != 0)
+ {
+  e_input_limit_say(WPE_PATH_FIELD_MAX);
+  return(WPE_ESC);
+ }
  if (e_add_arguments(str, sizeof str, "Project", f, 0, AltP, NULL))
  {
   /* Only a value he changed is his: OK on a folder's value cut to the
@@ -5392,24 +5505,38 @@ int e_open_project_file(ECNT *cn)
  return(0);
 }
 
+/**
+ * e_prj_default_exe_of - The program a new project builds, named after it.
+ * @exe/@size: receive the name; @path: the project file's path.
+ *
+ * The project's name up to its first dot (/tmp/nuevo.prj and nuevo.v2.prj
+ * both build "nuevo"), so New Project offers the program name it always
+ * has.  A name is at most NAME_MAX bytes, so it always fits; one that did
+ * not would leave EXENAME empty, never cut.
+ */
+static void e_prj_default_exe_of(char *exe, size_t size, const char *path)
+{
+ const char *base = strrchr(path, DIRC);
+ char *dot;
+
+ base = base ? base + 1 : path;
+ if (wpe_path_copy(exe, size, base) != 0)
+  return;
+ dot = strchr(exe, '.');
+ if (dot)
+  *dot = '\0';
+}
+
 /* Write a minimal .prj so a freshly named project can be opened.
    e_make_prj_opt() fills in the compiler defaults (gcc, -g). */
 static void e_write_default_prj(char *path)
 {
  FILE *fp = fopen(path, "w");
- char exe[128];
- const char *base;
- int i;
+ char exe[WPE_NAME_SIZE];
 
  if (!fp)
   return;
- /* Executable name = project basename without directory or .prj suffix
-    (e.g. /tmp/nuevo.prj -> nuevo). */
- base = strrchr(path, DIRC);
- base = base ? base + 1 : path;
- for (i = 0; base[i] && base[i] != '.' && i < (int)sizeof(exe) - 1; i++)
-  exe[i] = base[i];
- exe[i] = '\0';
+ e_prj_default_exe_of(exe, sizeof exe, path);
 
  fprintf(fp, "#\n# xwpe - project-file: %s\n", path);
  fprintf(fp, "# created by xwpe version %s\n#\n\n", VERSION);
@@ -6263,7 +6390,7 @@ static int e_make_start(FENSTER *f)
 int e_exec_make(FENSTER *f)
 {
  ECNT *cn = f->ed;
- char saved_cwd[1024];
+ char saved_cwd[WPE_PATH_SIZE];
  int i, file, cwd_changed;
 
  if (e_build_chain_begin(f, NULL, NULL))
@@ -7679,13 +7806,21 @@ static int e_prj_setup(FENSTER *f)
  e_s_prog.exe_name = WpeStrdup(ofile);
  e_argc = e_add_arg(&e_arg, e_s_prog.exe_name, 2, e_argc);
  df = e_p_get_var("LIBNAME");
- library[0] = '\0';
+ e_prj_library_set("");
  if (df && df->anz > 0)
  {
-  if (wpe_startplan_operand(library, sizeof(library), NULL, df->name[0]))
-   library[0] = '\0';               /* a name that does not fit is no library */
-  if (access(library, 0)) exlib = 1;
-  else stat(library, lbuf);
+  char libpath[WPE_PATH_SIZE];
+
+  if (wpe_startplan_operand(libpath, sizeof libpath, NULL, df->name[0]))
+  {
+   freedf(df);
+   e_build_path_too_long(f, "library");
+   e_free_arg(arg, argc);  e_free_arg(e_arg, e_argc);
+   return(-1);
+  }
+  e_prj_library_set(libpath);
+  if (access(libpath, 0)) exlib = 1;
+  else stat(libpath, lbuf);
  }
  if (df) freedf(df);
  df = e_p_get_var("CMPSWTCH");
@@ -7933,7 +8068,7 @@ static int e_prj_inserted_after_compile(void)
  char *base = e_prj_object_base();
  int len = strlen(e_s_prog.exe_name);
 
- if (g_prj.exlib || library[0] == '\0' || !strcmp(base, "main.o"))
+ if (g_prj.exlib || e_prj_library()[0] == '\0' || !strcmp(base, "main.o"))
   return(0);
  return(strncmp(e_s_prog.exe_name, base, len) || g_prj.ofile[len] == '.');
 }
@@ -7947,7 +8082,7 @@ static int e_prj_insert(enum e_prj_phase next)
 {
  g_prj.phase = next;
  g_prj.libsw = 1;
- e_make_library(library, g_prj.ofile, e_prj_top(), e_prj_step_done, NULL);
+ e_make_library(e_prj_library(), g_prj.ofile, e_prj_top(), e_prj_step_done, NULL);
  return(E_PRJ_WAIT);
 }
 
@@ -7984,7 +8119,7 @@ static int e_prj_drop_compile_args(void)
 static int e_prj_link_arg(void)
 {
  g_prj.phase = PRJ_NEXT;
- if (library[0] == '\0' || e_prj_is_program_object())
+ if (e_prj_library()[0] == '\0' || e_prj_is_program_object())
  {
   e_argc = e_add_arg(&e_arg, g_prj.ofile, e_argc, e_argc);
   return(E_PRJ_GO_ON);
@@ -8024,7 +8159,7 @@ static int e_prj_ranlib(void)
 {
  g_prj.phase = PRJ_FINISH;
 #ifdef RANLIB
- if (g_prj.libsw && library[0] != '\0')
+ if (g_prj.libsw && e_prj_library()[0] != '\0')
  {
   FENSTER *f = e_prj_top();
   PIC *pic = NULL;
@@ -8032,7 +8167,7 @@ static int e_prj_ranlib(void)
   int file = 0;
 
   ar_arg[0] = E_PRJ_RANLIB;
-  ar_arg[1] = library;
+  ar_arg[1] = e_prj_library();
   ar_arg[2] = NULL;
   /* The child prints its command line itself (e_exec_planned). */
   e_sys_ini();
@@ -8060,8 +8195,8 @@ static int e_prj_finish(void)
  void *data = g_prj.data;
  int k;
 
- if (library[0] != '\0')
-  e_argc = e_add_arg(&e_arg, library, e_argc, e_argc);
+ if (e_prj_library()[0] != '\0')
+  e_argc = e_add_arg(&e_arg, e_prj_library(), e_argc, e_argc);
  freedf(g_prj.df);
  g_prj.df = NULL;
  df = e_prj_var(E_PRJ_VAR_LDFLAGS);
@@ -8127,6 +8262,7 @@ static void e_prj_run(void)
 int e_c_project(FENSTER *f, e_build_cont done, void *data)
 {
  char cwd_saved[WPE_BUILD_PATH_MAX];
+ ECNT *cn = f->ed;
  int ret, cwd_chg;
 
  /* The project builds in its own directory, whichever one the editor was
@@ -8136,6 +8272,10 @@ int e_c_project(FENSTER *f, e_build_cont done, void *data)
  ret = e_prj_setup(f);
  if (ret)
  {
+  /* e_prj_setup opens a fresh Messages window, closing the old one, which
+     may be the window the key was pressed in: the build ends on the window
+     now on top. */
+  f = cn->f[cn->mxedt];
   if (cwd_chg)
    e_build_popd(cwd_saved);
   e_build_continue(done, f, ret, data);
@@ -8255,7 +8395,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
   e_s_prog.exe_name = e_prj_default_exe();
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
   e_s_prog.intstr = WpeStrdup(cc_intstr);
-  strcpy(library, "");
+  e_prj_library_set("");
   for (i = !save_df ? 0 : 1; i < 3; i++)
   {
    e_p_df[i] = MALLOC(sizeof(struct dirfile));
@@ -8317,8 +8457,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
 /**************************/
 
   else if (!strcmp(p_v[i]->var, "LIBNAME"))
-   /* Bounded: LIBNAME= from the .prj can be arbitrarily long. */
-   snprintf(library, sizeof(library), "%s", p_v[i]->string);
+   e_prj_library_set(p_v[i]->string);
   else if (!strcmp(p_v[i]->var, "CMPSWTCH"))
   {
    if (!strcmp(p_v[i]->string, "other")) e_s_prog.comp_sw = 1;
@@ -8472,8 +8611,8 @@ int e_wrt_prj_fl(FENSTER *f)
  fprintf(fp, "CMPFLAGS=\t%s\n", e_s_prog.comp_str);
  fprintf(fp, "LDFLAGS=\t%s\n", e_s_prog.libraries);
  fprintf(fp, "EXENAME=\t%s\n", e_s_prog.exe_name);
- if (library[0])
-  fprintf(fp, "LIBNAME=\t%s\n", library);
+ if (e_prj_library()[0])
+  fprintf(fp, "LIBNAME=\t%s\n", e_prj_library());
  fprintf(fp, "CMPSWTCH=\t%s\n", e_s_prog.comp_sw ? "other" : "gnu");
  fprintf(fp, "CMPMESSAGE=\t\'");
  for (i = 0; e_s_prog.intstr[i]; i++)
@@ -8547,7 +8686,7 @@ int e_p_update_prj_fl(FENSTER *f)
 
 int e_p_add_df(FLWND *fw, int sw)
 {
- char *title = NULL, str[256];
+ char *title = NULL, str[WPE_PATH_SIZE];
  int i;
 
  if (sw == 4)
@@ -8571,7 +8710,7 @@ int e_p_add_df(FLWND *fw, int sw)
 
 int e_p_edit_df(FLWND *fw, int sw)
 {
- char *title = NULL, str[E_ARG_FIELD_MAX + 1];
+ char *title = NULL, str[WPE_PATH_SIZE];
  int new = 0;
  if (sw == 4)
   title = "Change Filename";
@@ -8585,7 +8724,7 @@ int e_p_edit_df(FLWND *fw, int sw)
      editing: a cut entry would be written back in its place. */
   if (wpe_field_take(fw->df->name[fw->nf], str, sizeof str) != 0)
   {
-   e_input_limit_say(E_ARG_FIELD_MAX);
+   e_input_limit_say(WPE_PATH_FIELD_MAX);
    return(0);
   }
  }

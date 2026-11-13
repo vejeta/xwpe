@@ -32,25 +32,11 @@ int e_read_info();
 char *info_file = NULL;
 char *e_tmp_dir = NULL;
 
-/* create complete file name */
+/* create complete file name: the folder, one separator unless it ends in one,
+   the name, on the heap at their real length (the path owner's join) */
 char *e_mkfilename(char *dr, char *fn)
 {
- char *fl;
-
- if (!fn)
-  return(NULL);
- if(!dr)
- {
-  fl = MALLOC(strlen(fn) + 1);
-  strcpy(fl, fn);
-  return(fl);
- }
- fl = MALLOC(strlen(dr) + strlen(fn) + 2);
- strcpy(fl, dr);
- if (dr[0] != '\0' && dr[strlen(dr)-1] != DIRC)
-  strcat(fl, DIRS);
- strcat(fl, fn);
- return(fl);
+ return(wpe_path_join_dup(dr, fn));
 }
 
 /**
@@ -1411,7 +1397,7 @@ int e_help_loc(FENSTER *f, int sw)
 
 int e_help_options(FENSTER *f)
 {
- char str[E_ARG_FIELD_MAX + 1];
+ char str[WPE_PATH_SIZE];
 
  if (!info_file)
  {
@@ -1422,7 +1408,7 @@ int e_help_options(FENSTER *f)
     for editing: a cut path would be written back as the Info-Path. */
  if (wpe_field_take(info_file, str, sizeof str) != 0)
  {
-  e_input_limit_say(E_ARG_FIELD_MAX);
+  e_input_limit_say(WPE_PATH_FIELD_MAX);
   return(0);
  }
  if (e_add_arguments(str, sizeof str, "Info-Path", f, 0 , AltI, NULL))

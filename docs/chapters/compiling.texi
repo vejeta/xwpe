@@ -39,7 +39,8 @@ extension (@file{t.c} makes @file{t.e}), whatever the length of the name,
 up to what the system allows for a file name.
 
 @item Ctrl-F9 (Run)
-Build the executable and then run it, in the source's own folder.
+Build the executable and then run it, in the source's own folder, however
+deep that folder is.
 Program arguments can be set via @samp{Run @result{} Arguments}
 (@kbd{Alt-R A}); they are shell text of yours, so @samp{< input.txt}
 works.

@@ -266,7 +266,9 @@ for opening, copying, moving, renaming, and deleting files.
 
 Names and folders of any length the system allows work in the list, the
 tree and the Directory field, which takes a path of up to 4095
-characters.
+characters.  @samp{Move}, @samp{Copy} and @samp{Link} offer the whole
+name of the file to edit, and the field takes a path of up to 4095
+characters too.
 
 Additional file manager keys (documented since v1.4):
 

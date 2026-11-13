@@ -834,6 +834,12 @@ int e_opt_read(ECNT *cn);
 void e_opt_use_user_file(char *path);
 /* Say on the status line which keys the start-folder xwperc could not set. */
 void e_opt_say_ignored_keys(ECNT *cn);
+/* No option file: the configuration folder's path does not fit (optfile is
+   ""); the status row says why the options were not read or not saved. */
+#define E_OPT_NOT_READ  "Options not read"
+#define E_OPT_NOT_SAVED "Options not saved"
+int e_opt_file_missing(ECNT *cn);
+int e_opt_say_file_missing(ECNT *cn, const char *what);
 /* The program keys a start-folder xwperc sets, against the user's own. */
 #define E_OPT_DEBUGGER_UNSET (-1)
 struct e_s_prog;

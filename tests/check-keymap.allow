@@ -129,7 +129,7 @@ we_prog.c:e_p_make_link:* 1 dialog field editing
 we_prog.c:e_prj_compile_file:* 1 dialog field editing
 we_prog.c:e_prj_ob_svas:* 1 dialog field editing
 we_prog.c:e_prj_setup:* 2 dialog field editing
-we_prog.c:e_project_name:* 2 dialog field editing
+we_prog.c:e_project_name:* 3 dialog field editing
 we_prog.c:e_project_options:* 16 dialog field editing
 we_prog.c:e_run_c_options:* 14 dialog field editing
 we_prog.c:e_run_options:* 2 dialog field editing
@@ -220,7 +220,7 @@ we_fl_unix.c:WpeHandleFileManager:AltF 12 not yet in the table, context filemana
 we_fl_unix.c:WpeHandleFileManager:AltK 1 not yet in the table, context filemanager (K-d1)
 we_fl_unix.c:WpeHandleFileManager:AltL 3 not yet in the table, context filemanager (K-d1)
 we_fl_unix.c:WpeHandleFileManager:AltM 4 not yet in the table, context filemanager (K-d1)
-we_fl_unix.c:WpeHandleFileManager:AltN 11 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltN 14 not yet in the table, context filemanager (K-d1)
 we_fl_unix.c:WpeHandleFileManager:AltO 3 not yet in the table, context filemanager (K-d1)
 we_fl_unix.c:WpeHandleFileManager:AltR 6 not yet in the table, context filemanager (K-d1)
 we_fl_unix.c:WpeHandleFileManager:AltS 7 not yet in the table, context filemanager (K-d1)

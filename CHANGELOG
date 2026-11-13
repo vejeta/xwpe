@@ -269,6 +269,24 @@ Changes
   another file manager whose folder and the name together are longer than
   the system allows does nothing and says so.
 
+* A path is no longer cut to a piece of itself.  Ctrl-F9 on a script in a
+  folder longer than 255 characters ran the script from a folder that
+  did not exist; Project-Options cut a project's LIBNAME to 79
+  characters and its Executable to 128 when it saved them back into your
+  .prj; Move, Copy and Link offered only the first 128 characters of a
+  long file name, and Enter renamed the file to them; New Project in a
+  folder longer than 2047 characters wrote the project at a cut path; and
+  $XDG_CONFIG_HOME longer than 1023 characters made Save Options write
+  into a folder you never named.  They now work at any length the system
+  allows.  The Info-Path and project entries, the Executable, Library,
+  Execution-Directory and Include-Path fields take 4095 characters, so a
+  long one can be read and edited.  A path the system itself cannot hold is
+  refused with a box that names it ("The project path is longer than the
+  system allows (4096 bytes)"); a configuration folder like that leaves
+  the editor on its defaults and the status line says "Options not read"
+  or "Options not saved".  A long include folder is mentioned once per
+  Show Definition, not once per header.
+
 * Resizing the terminal while a command holds the screen (Ctrl-F9 on a
   shell script, Execute, Shell) no longer puts the old screen back over the
   new one afterwards: the status line was drawn in the middle of a larger

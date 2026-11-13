@@ -73,7 +73,11 @@ cannot be written; the status line then says they were not saved.
 When the option file's path is longer than the name field (128
 characters), @samp{Save Options} shows the whole path and asks before
 saving there, instead of offering a cut name.  A file you name with
-@option{-sf} is your own and is read whole.
+@option{-sf} is your own and is read whole.  When @env{XDG_CONFIG_HOME}
+names a folder whose path the system cannot hold (4096 bytes or more),
+there is no option file: the editor starts with its defaults, the status
+line says @samp{Options not read}, and @samp{Save Options} says
+@samp{Options not saved} instead of writing into a cut folder.
 
 @subsection Commands a folder names are asked about first
 @anchor{Folder commands}

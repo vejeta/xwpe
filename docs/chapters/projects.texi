@@ -35,8 +35,11 @@ only modified or uncompiled files, and tracks @code{#include} changes for C.
 @item @code{CMPSWTCH} @tab Error message format: @code{GNU} (default) or
 @code{other}.  Set to @code{other} to use a custom message-string format.
 @item @code{LDFLAGS} @tab Linker options (e.g.@: @code{-lm}).
-@item @code{EXENAME} @tab Name of the output executable (default: @code{a.out}).
-@item @code{LIBNAME} @tab Library file for object archive (auto-linked if set).
+@item @code{EXENAME} @tab Name of the output executable (default: @code{a.out}),
+of any length the system allows.
+@item @code{LIBNAME} @tab Library file for object archive (auto-linked if set),
+of any length the system allows.  A name the system itself cannot open is
+refused before the build, in a box that names the library.
 @end multitable
 
 A project file comes with its folder, a clone included.  The first

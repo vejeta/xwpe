@@ -362,9 +362,9 @@ int e_program_opt(FENSTER *f)
    "Messages", o);
  e_add_sswstr(22, 3, 0, AltD, f->ed->edopt & ED_SYNTAX_HIGHLIGHT ? 1 : 0,
    "Diff. Colors", o);
- e_add_wrstr(4, 6, 4, 7, 35, 128, 1, AltX, "EXecution-Directory:",
+ e_add_wrstr(4, 6, 4, 7, 35, WPE_PATH_FIELD_MAX, 1, AltX, "EXecution-Directory:",
    e_prog.exedir, NULL, o);
- e_add_wrstr(4, 9, 4, 10, 35, 128, 0, AltS, "System-Include-Path:",
+ e_add_wrstr(4, 9, 4, 10, 35, WPE_PATH_FIELD_MAX, 0, AltS, "System-Include-Path:",
    e_prog.sys_include, NULL, o);
  e_add_bttstr(10, 12, 1, AltO, " Ok ", NULL, o);
  e_add_bttstr(26, 12, -1, WPE_ESC, "Cancel", NULL, o);
@@ -712,16 +712,25 @@ static int e_aopen_in_folder(char *out, size_t n, const char *folder, size_t dle
  return(wrote < 0 || (size_t)wrote >= n ? -1 : 0);
 }
 
+/* Has the search in progress told the user about an include folder that is
+   too long?  A definition can lead through many headers, and every one of
+   them that is not found would otherwise raise the same box again. */
+static int e_aopen_said_too_long;
+
 /**
  * e_aopen_say_too_long - Tell the user an include folder was too long to try.
  *
  * Shown when the file was not found and an element of the include path was
- * skipped, so "not found" is not taken to mean the file is absent.
+ * skipped, so "not found" is not taken to mean the file is absent.  Said
+ * once for the whole search (e_show_nm_f clears it), not once per header.
  */
 static void e_aopen_say_too_long(void)
 {
  char msg[WPE_PATH_MSG_MAX];
 
+ if (e_aopen_said_too_long)
+  return;
+ e_aopen_said_too_long = 1;
  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "include folder", WPE_PATH_MAX);
  e_error(msg, 0, WpeEditor->fb);
 }
@@ -1342,6 +1351,7 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
  char str[WPE_PATH_SIZE], file[WPE_PATH_SIZE], *filename;
  struct dirfile *df, *fdf = NULL;
 
+ e_aopen_said_too_long = 0;      /* one search, one word about a long include folder */
 #ifndef TESTSDEF
  if (!access(e_prog.project, 0))
  {

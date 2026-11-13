@@ -33,8 +33,6 @@ extern char    *e_tmp_dir;
 #include <unistd.h>
 #endif
 
-#define WPE_PATHMAX 2048
-
 /* buffer size for copying */
 #define E_C_BUFFERSIZE 524288        /*   1/2  Mega Byte   */
 
@@ -725,6 +723,61 @@ static int e_list_close_key(FENSTER *f)
                                 wpe_binding_style(f->ed->edopt), WPE_CTX_LIST));
 }
 
+/**
+ * WpeProjectPathOf - The path of the project picked or named in the manager.
+ * @f: the manager's window; @out/@n: receive it; @name: what the Name field
+ * holds, a full path or a name in the window's folder.
+ *
+ * Open Project reads and New Project writes this path, so it is whole or it
+ * is refused: a cut path would open "not found" or write a project into a
+ * folder the user never named.  The refusal is said here, once.
+ * Return: 0, or -1 when the path does not fit.
+ */
+static int WpeProjectPathOf(FENSTER *f, char *out, size_t n, const char *name)
+{
+  char msg[WPE_PATH_MSG_MAX];
+  int  refused;
+
+  if(name[0] == DIRC)
+    refused = wpe_path_copy(out, n, name);
+  else
+    refused = wpe_path_join(out, n, f->dirct, name);
+  if(refused == 0)
+    return(0);
+  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "project", WPE_PATH_MAX);
+  e_error(msg, 0, f->fb);
+  return(-1);
+}
+
+/**
+ * WpeTargetNameNew - The name Move, Copy and Link offer for the user to edit.
+ * @f: the file manager's window; @name: the picked file or folder.
+ *
+ * The user types the new name over the old one, so the field holds the whole
+ * name (it never starts as a prefix that Enter would then rename the file
+ * to) and has room for a path such as "../x.c".  The buffer is a path's size
+ * because the field takes WPE_PATH_FIELD_MAX bytes.
+ * Return: the buffer, to FREE; NULL when there is no memory or the name does
+ * not fit (the user is told).
+ */
+static char *WpeTargetNameNew(FENSTER *f, const char *name)
+{
+  char msg[WPE_PATH_MSG_MAX];
+  char *buf = MALLOC(WPE_PATH_SIZE);
+
+  if(buf == NULL)
+  {
+    e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+    return(NULL);
+  }
+  if(wpe_path_copy(buf, WPE_PATH_SIZE, name) == 0)
+    return(buf);
+  FREE(buf);
+  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "file name", WPE_PATH_MAX);
+  e_error(msg, 0, f->fb);
+  return(NULL);
+}
+
 /* File Manager Handler */
 int WpeHandleFileManager(ECNT * cn)
 {
@@ -743,7 +796,7 @@ int WpeHandleFileManager(ECNT * cn)
   struct stat     buf;
   int             open_prj = 0;      /* 1 = open selected .prj after FM closes */
   int             new_prj = 0;        /* 1 = create (New Project) vs open existing */
-  char            prj_path[WPE_PATHMAX];
+  char            prj_path[WPE_PATH_SIZE];
 
   /* check whether we really get a file-manager window here */
   if(f->dtmd != DTMD_FILEMANAGER)
@@ -1114,20 +1167,16 @@ int WpeHandleFileManager(ECNT * cn)
         /* we are coming from files */
         if(cold == AltF)
         {
-          if((ftmp = MALLOC(129)) == NULL)
-            e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
-
-          if(strlen(*(b->df->name + b->fw->nf)) > 128)
+          if((ftmp = WpeTargetNameNew(f, *(b->df->name + b->fw->nf))) == NULL)
           {
-            strncpy(ftmp, *(b->df->name + b->fw->nf), 128);
-            ftmp[128] = '\0';
+            c = cold;
+            cold = AltN;
+            break;
           }
-          else
-            strcpy(ftmp, *(b->df->name + b->fw->nf));
 
           /* make the file name editable */
           c = e_schreib_leiste(ftmp, b->fw->xa, b->fw->ya + b->fw->nf - b->fw->ia,
-                               b->fw->xe - b->fw->xa, 128, f->fb->fr.fb, f->fb->fz.fb);
+                               b->fw->xe - b->fw->xa, WPE_PATH_FIELD_MAX, f->fb->fr.fb, f->fb->fz.fb);
           if(c == WPE_CR)
           {
             if(j == AltM)
@@ -1154,20 +1203,15 @@ int WpeHandleFileManager(ECNT * cn)
         /* we are coming from dirs */
         else if(cold == AltT && b->dw->nf >= b->cd->anz)
         {
-          if((ftmp = MALLOC(129)) == NULL)
-            e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
-
           /* selected dir */
           t = b->dw->nf - b->cd->anz;
 
-          if(strlen(*(b->dd->name + t)) > 128)
+          if((ftmp = WpeTargetNameNew(f, *(b->dd->name + t))) == NULL)
           {
-            strncpy(ftmp, *(b->dd->name + t), 128);
-            ftmp[128] = '\0';
+            c = cold;
+            cold = AltN;
+            break;
           }
-          else
-            strcpy(ftmp, *(b->dd->name + t));
-
 
           /* separate the dir name from other drawings in the line */
           for(i = 0; *(b->dw->df->name[b->dw->nf] + i) &&
@@ -1180,8 +1224,8 @@ int WpeHandleFileManager(ECNT * cn)
           b->dw->ja = i;
           e_pr_file_window(b->dw, 0, 1, f->fb->ft.fb, f->fb->fz.fb, f->fb->frft.fb);
           /* make the name editable */
-          c = e_schreib_leiste(ftmp, b->dw->xa, b->dw->ya + b->dw->nf - b->dw->ia, 
-                               b->dw->xe - b->dw->xa, 128, f->fb->fr.fb, f->fb->fz.fb);
+          c = e_schreib_leiste(ftmp, b->dw->xa, b->dw->ya + b->dw->nf - b->dw->ia,
+                               b->dw->xe - b->dw->xa, WPE_PATH_FIELD_MAX, f->fb->fr.fb, f->fb->fz.fb);
           if(c == WPE_CR)
           {
             if(j == AltM)
@@ -1328,10 +1372,11 @@ int WpeHandleFileManager(ECNT * cn)
              manager; the post-loop close opens it (avoids double close). */
           if(b->prj_sel)
           {
-            if(filen[0] == DIRC)
-              snprintf(prj_path, sizeof(prj_path), "%s", filen);
-            else
-              snprintf(prj_path, sizeof(prj_path), "%s%s", f->dirct, filen);
+            if(WpeProjectPathOf(f, prj_path, sizeof(prj_path), filen) != 0)
+            {
+              c = AltN;
+              break;
+            }
             open_prj = 1;
             new_prj = (b->prj_sel == FM_PRJ_NEW);  /* New vs Open Project */
             c = WPE_ESC;
@@ -3908,17 +3953,20 @@ static void e_man_split(const char *str, char *hstr, size_t hsize,
  * @tstr, @size: receive the path; @str: the word.
  *
  * A '/' in the word becomes '_', so the page can never be written outside
- * the temp folder, and a word longer than a file name is cut.
+ * the temp folder, and a word longer than a file name is cut (the name is
+ * only a label for the page).  A temp folder too long to hold the file is
+ * refused, never cut: the page would be written to another folder.
+ * Return: 0, or -1 with @tstr empty when the path does not fit.
  */
-static void e_man_outfile(char *tstr, size_t size, const char *str)
+static int e_man_outfile(char *tstr, size_t size, const char *str)
 {
-  size_t n = (size_t)snprintf(tstr, size, "%s/", e_tmp_dir);
+  char name[WPE_NAME_SIZE];
+  size_t n;
 
-  if(n >= size)
-    n = size - 1;
-  for(; *str && n + 1 < size; str++, n++)
-    tstr[n] = (*str == '/') ? '_' : *str;
-  tstr[n] = '\0';
+  for(n = 0; *str && n + 1 < sizeof name; str++, n++)
+    name[n] = (*str == '/') ? '_' : *str;
+  name[n] = '\0';
+  return(wpe_path_join(tstr, size, e_tmp_dir, name));
 }
 
 /**
@@ -3998,7 +4046,7 @@ static void e_man_give_up(const char *tstr)
 
 int e_ed_man(char *str, FENSTER * f)
 {
-  char            tstr[_POSIX_PATH_MAX];
+  char            tstr[WPE_PATH_SIZE], msg[WPE_PATH_MSG_MAX];
   char            cc, hstr[E_MAN_WORD_MAX], nstr[E_MAN_SECT_MAX];
   int             mdsv = f->ed->dtmd, bg, i, j = 0, opened;
   BUFFER         *b;
@@ -4017,7 +4065,13 @@ int e_ed_man(char *str, FENSTER * f)
     }
   }
   WpeMouseChangeShape(WpeWorkingShape);
-  e_man_outfile(tstr, sizeof tstr, str);
+  if(e_man_outfile(tstr, sizeof tstr, str) != 0)
+  {
+    snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "temporary folder", WPE_PATH_MAX);
+    e_error(msg, 0, f->fb);
+    WpeMouseRestoreShape();
+    return(0);
+  }
   e_man_split(str, hstr, sizeof hstr, nstr, sizeof nstr);
 
   while(1)
