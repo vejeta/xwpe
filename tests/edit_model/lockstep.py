@@ -107,7 +107,9 @@ def _key_did_nothing(action, field, before, w):
 # Disagreements already known, by the name a report gives them.  Every action
 # is one step now (Tab and Backspace with auto-indent, Ctrl-K I/U, Ctrl-O
 # U/M/H and Change All included): a step count that differs is new.  Backspace
-# with auto-indent takes a whole character: a byte it loses is new.
+# with auto-indent takes a whole character: a byte it loses is new.  An action
+# refused for memory changes nothing: a text that differs after a status row
+# said so is new.
 KNOWN_UNDO_CURSOR = "open question: where Ctrl-U and Ctrl-R leave the cursor"
 
 
@@ -220,6 +222,8 @@ def status_disagreements(pred, status, previous):
             return [(model.F_STATUS, pred.status, status)]
         return []
     if previous is None and model.STATUS_READ_ONLY in status:
+        return [(model.F_STATUS, "no refusal said", status)]
+    if previous is None and model.STATUS_NOMEM in status:
         return [(model.F_STATUS, "no refusal said", status)]
     return []
 

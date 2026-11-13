@@ -805,6 +805,90 @@
    "layer": "ncurses",
    "test": "tests/test_buffer_owner.py::test_an_undo_of_a_backspace_in_an_indent_fault_sweep_ends_in_a_whole_undo",
    "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_grouped_action_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_grouped_action_fault_sweep_ends_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_enter_with_auto_indent_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_enter_with_auto_indent_fault_sweep_ends_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_refused_backspace_in_an_indent_keeps_the_cursor",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_help_mark_on_a_full_row_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_change_all_with_a_prompt_refused_for_memory_stops_like_esc",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_a_ctrl_k_i_over_a_block_inside_one_row_names_no_row",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "ncurses",
+   "test": "tests/test_buffer_owner.py::test_an_indent_is_read_from_every_line_above",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_enter_with_auto_indent_refused_for_memory_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-10",
+   "requirement": "An action of several pieces is made whole or not at all when memory runs out",
+   "layer": "asan",
+   "test": "tests/test_buffer_owner.py::test_a_change_all_with_a_prompt_refused_for_memory_stops_like_esc",
+   "status": "new"
   }
  ]
 }

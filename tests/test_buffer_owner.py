@@ -2858,3 +2858,378 @@ def test_an_undo_of_a_backspace_in_an_indent_fault_sweep_ends_in_a_whole_undo(tm
     assert all(outcomes[n] == NOTHING for n in outcomes if n < whole[0]), \
         "a cut before the Undo's last allocation let it through: %s" % outcomes
     print("indent backspace undo: whole from allocation %d on" % whole[0])
+
+
+# ---- an action of several pieces refused for want of memory ----
+#
+# Each action below changes the text in several pieces.  Refused for memory
+# at any of its allocations it is made whole or not at all: refused, the
+# file is as it was, Ctrl-U finds nothing to undo, and the status row says
+# the action was not made.  (Each piece once went on without memory: most
+# of the action was made with no Ctrl-U for it, or a Ctrl-U was kept for a
+# piece never made, and that Ctrl-U then deleted the user's own text.)
+
+ACTION_FAULT_ROWS = range(1, 9)
+ACTION_SWEEP_MAX = 64
+# name: (the fault point, the action in the status row's words)
+ONE_STEP_FAULTS = {
+    "tab-auto-indent": ("indent", "the indent"),
+    "backspace-in-indent": ("indent", "the deletion"),
+    "ctrl-k-i": ("shift", "the shift to the right"),
+    "ctrl-k-u": ("shift", "the shift to the left"),
+    "ctrl-o-u": ("help-marks", "the help marks"),
+    "ctrl-o-m": ("help-marks", "the help marks"),
+    "ctrl-o-h": ("help-marks", "the help marks"),
+    "change-all": ("change-all", "Change All"),
+}
+REPLACED = "Replaced"                    # the box Change All ends with
+ROWS_PAST = "names rows past"            # the owner's trace of an action past the text
+
+
+def _close_the_replace_box(s):
+    """Close Change All's "Found / Replaced" box when it shows: a Change All
+    refused for memory shows none, and the key would be typed."""
+    if REPLACED in "\n".join(s.display(drain=0.6)):
+        s.key(ENTER, delay=0.6)
+
+
+def _change_all_that_may_be_refused(search, text):
+    def do(s):
+        s.menu(ALT.SEARCH, "r")
+        s.key(search)
+        s.key(ALT_N)
+        s.key(text)
+        s.key(ALT_P)                         # no prompt per replacement
+        s.key(ALT_A, delay=1.0)              # Change All
+        _close_the_replace_box(s)
+    return do
+
+
+def _action_keys(action):
+    """The keys of a one-step action, as a refused one must be able to run."""
+    if action == "change-all":
+        return _change_all_that_may_be_refused("foo", "ZZZ")
+    return ONE_STEP_ACTIONS[action][3]
+
+
+def _undo_finds_nothing(s):
+    """Ctrl-U: did it say there is nothing to undo?  Its box is closed."""
+    s.key(CTRL_U, delay=0.8)
+    shown = "\n".join(s.display(drain=0.3))
+    if NO_MORE_UNDO in shown:
+        s.key(ENTER, delay=0.4)
+        return True
+    return False
+
+
+def _action_whole_or_nothing(s, work, point, what, seed, edited, do):
+    """Run the action @do with memory refused from an allocation on.
+    Return: WHOLE when the file is @edited, nothing was said, and Ctrl-U and
+    Ctrl-R give each text back; NOTHING when the file is still @seed, Ctrl-U
+    finds nothing to undo and the status row says @what was not made."""
+    do(s)
+    _assert_fault_fired(work, point)
+    said = _said_out_of_memory(s, work, what)
+    got = _saved(s)
+    if got == edited:
+        assert ("buffer nomem %s" % what) not in _ui_trace(work), \
+            "%s was made and still said it ran out of memory" % what
+        _assert_undo_and_redo_on_disk(s, seed, edited, what)
+        return WHOLE
+    assert got == seed, "a refused %s changed the text: %r" % (what, got)
+    nothing_to_undo = _undo_finds_nothing(s)
+    assert _saved(s) == seed, "Ctrl-U after a refused %s changed the text: %r" % (what, s.text())
+    assert nothing_to_undo, "Ctrl-U after a refused %s found something to undo" % what
+    assert said, "the status row does not say %s was not made:\n%s" % (
+        what, "\n".join(s.display()))
+    return NOTHING
+
+
+def _grouped_action_with_fault(work, action, n):
+    """The one-step @action with memory refused from its n-th allocation.
+    Return: WHOLE or NOTHING."""
+    filename, seed, edited, _do = ONE_STEP_ACTIONS[action]
+    point, what = ONE_STEP_FAULTS[action]
+    env = _fault_env(work, "%s:%d" % (point, n))
+    with _session_with_options(work, seed, [], filename=filename, env_extra=env) as s:
+        outcome = _action_whole_or_nothing(s, work, point, what, seed, edited,
+                                           _action_keys(action))
+        assert s.alive(), "wpe died at n=%d" % n
+        return outcome
+
+
+def _cut_dir(tmp_path, n):
+    work = tmp_path / ("n%02d" % n)
+    work.mkdir()
+    return work
+
+
+def _fault_sweep(tmp_path, one):
+    """Run @one(work, n) for n = 1, 2, ... in batches side by side until one
+    is whole.  Return: {n: outcome}, checked: the first cut refused, every
+    cut before the first whole one refused."""
+    outcomes = {}
+    first = 1
+    with concurrent.futures.ThreadPoolExecutor(FAULT_SWEEP_BATCH) as pool:
+        while first <= ACTION_SWEEP_MAX and WHOLE not in outcomes.values():
+            last = min(first + FAULT_SWEEP_BATCH, ACTION_SWEEP_MAX + 1)
+            cuts = range(first, last)
+            outcomes.update(zip(cuts, pool.map(lambda n: one(_cut_dir(tmp_path, n), n), cuts)))
+            first = last
+    whole = [n for n in sorted(outcomes) if outcomes[n] == WHOLE]
+    assert outcomes[1] == NOTHING, "the first allocation refused still made the action"
+    assert whole, "no cut up to %d allocations let the action through" % ACTION_SWEEP_MAX
+    assert all(outcomes[n] == NOTHING for n in outcomes if n < whole[0]), \
+        "a cut before the action's last allocation let it through: %s" % outcomes
+    return outcomes, whole[0]
+
+
+# @scenario SC-buffer-10
+@pytest.mark.parametrize("n", ACTION_FAULT_ROWS)
+@pytest.mark.parametrize("action", sorted(ONE_STEP_FAULTS))
+def test_a_grouped_action_refused_for_memory_changes_nothing(tmp_path, action, n):
+    """Tab and Backspace with auto-indent, Ctrl-K I and U, Ctrl-O U, M and H
+    and Change All with memory refused from their n-th allocation: made
+    whole, with one Ctrl-U and one Ctrl-R for it, or not made at all, with
+    nothing to undo and the status row saying so."""
+    _grouped_action_with_fault(tmp_path, action, n)
+
+
+# @scenario SC-buffer-10
+@pytest.mark.parametrize("action", sorted(ONE_STEP_FAULTS))
+def test_a_grouped_action_fault_sweep_ends_whole(tmp_path, action):
+    """Memory cut at the first allocation of the action, then the second,
+    and on: every refused action changed nothing, and once the cut comes
+    after its last allocation it is made whole."""
+    _outcomes, first_whole = _fault_sweep(
+        tmp_path, lambda work, n: _grouped_action_with_fault(work, action, n))
+    print("%s: whole from allocation %d on" % (action, first_whole))
+
+
+def _enter_before_foo(s):
+    _down(s, 2)
+    s.key(RIGHT, RIGHT, delay=0.2)
+    s.key(ENTER, delay=0.6)
+
+
+def _enter_with_fault(work, n):
+    """Enter before foo(); in a C file (a line break and its indent) with
+    memory refused from its n-th allocation.  Return: WHOLE or NOTHING."""
+    with WpeSession(str(work), INDENT_SEED, env_extra=_fault_env(work, "enter:%d" % n)) as s:
+        outcome = _action_whole_or_nothing(s, work, "enter", "a line break", INDENT_SEED,
+                                           INDENT_AFTER, _enter_before_foo)
+        assert s.alive(), "wpe died at n=%d" % n
+        return outcome
+
+
+# @scenario SC-buffer-10
+@pytest.mark.parametrize("n", ACTION_FAULT_ROWS)
+def test_enter_with_auto_indent_refused_for_memory_changes_nothing(tmp_path, n):
+    """Enter with auto-indent refused from its n-th allocation: the line is
+    broken and indented, one Ctrl-U for both, or the line is as it was with
+    nothing to undo and the status row saying so (the break was once made
+    with no Ctrl-U, or the indent made without the record that takes it
+    back)."""
+    _enter_with_fault(tmp_path, n)
+
+
+# @scenario SC-buffer-10
+def test_enter_with_auto_indent_fault_sweep_ends_whole(tmp_path):
+    """Memory cut at Enter's first allocation, then the second, and on:
+    every refused Enter changed nothing, and from its last allocation on it
+    is whole."""
+    _outcomes, first_whole = _fault_sweep(tmp_path, _enter_with_fault)
+    print("enter: whole from allocation %d on" % first_whole)
+
+
+# @scenario SC-buffer-10
+def test_a_refused_backspace_in_an_indent_keeps_the_cursor(tmp_path):
+    """Backspace behind two tabs with memory refused from its first
+    allocation: the line and the cursor are where the key found them."""
+    with EditSession(str(tmp_path), INDENT_TABS_SEED, filename="t.c",
+                     env_extra=_fault_env(tmp_path, "indent:1")) as s:
+        d = s.send([DOWN] * INDENT_TABS_ROW + [HOME] + [RIGHT] * INDENT_TABS_COL)
+        before = d.win.cursor
+        d = s.send([BACKSPACE])
+        _assert_fault_fired(tmp_path, "indent")
+        assert d.win.disk() == INDENT_TABS_SEED.encode("utf-8"), \
+            "a refused Backspace changed the text: %r" % d.win.disk()
+        assert d.win.cursor == before, \
+            "a refused Backspace moved the cursor from %s to %s" % (before, d.win.cursor)
+        assert s.alive(), "wpe died"
+
+
+# A row of exactly Max. Columns 20: the end mark Ctrl-O puts in makes it wrap.
+HELP_FULL_SEED = "see the topic here!!\nnext\n"
+HELP_FULL_RC = ["MaxColumn : %d" % NARROW]
+
+
+def _help_full_marked(letter):
+    b, e = HELP_MARKED
+    return (HELP_FULL_SEED[:b] + HELP_STARTS[letter] + HELP_FULL_SEED[b:e] + HELP_END +
+            HELP_FULL_SEED[e:])
+
+
+# @scenario SC-buffer-10
+@pytest.mark.parametrize("n", ACTION_FAULT_ROWS)
+def test_a_help_mark_on_a_full_row_refused_for_memory_changes_nothing(tmp_path, n):
+    """Ctrl-O U on a word of a row Max. Columns wide, refused from its n-th
+    allocation: both marks in, the row wrapped, one Ctrl-U for both; or the
+    row as it was, nothing to undo, said (a Ctrl-U was once kept for a mark
+    never put in, and it deleted a character of the user's)."""
+    env = _fault_env(tmp_path, "help-marks:%d" % n)
+    with _session_with_options(tmp_path, HELP_FULL_SEED, HELP_FULL_RC, filename="t.txt",
+                               env_extra=env) as s:
+        _action_whole_or_nothing(s, tmp_path, "help-marks", "the help marks", HELP_FULL_SEED,
+                                 _help_full_marked("u"), _help_mark("u"))
+        assert s.alive(), "wpe died"
+
+
+PROMPT_HITS = 3
+PROMPT_QUESTION = "Replace this occurrence"
+PROMPT_REFUSED = "Out of memory: the replacement was not made"
+
+
+def _first_replaced(k):
+    """REPLACE_ALL_SEED with its first @k "foo" replaced."""
+    return REPLACE_ALL_SEED.replace("foo", "ZZZ", k)
+
+
+def _change_all_answering_yes(s):
+    """Search > Replace "foo" by "ZZZ" with Prompt on Replace, Change All,
+    and Y to every question.  Return: the screen the questions end on."""
+    s.menu(ALT.SEARCH, "r")
+    s.key("foo")
+    s.key(ALT_N)
+    s.key("ZZZ")
+    s.key(ALT_A, delay=1.0)
+    shown = "\n".join(s.display(drain=0.4))
+    for _ in range(PROMPT_HITS + 1):
+        if PROMPT_QUESTION not in shown:
+            break
+        s.key("y", delay=0.8)
+        shown = "\n".join(s.display(drain=0.4))
+    return shown
+
+
+# @scenario SC-buffer-10
+@pytest.mark.parametrize("n", ACTION_FAULT_ROWS)
+def test_a_change_all_with_a_prompt_refused_for_memory_stops_like_esc(tmp_path, n):
+    """Change All asking before each of three replacements, Y to each, with
+    memory refused from its n-th allocation: the replacements made are the
+    first ones, whole; a refused one stops the command as Esc would and the
+    box says why; one Ctrl-U takes back every replacement made."""
+    with WpeSession(str(tmp_path), REPLACE_ALL_SEED, filename="t.txt",
+                    env_extra=_fault_env(tmp_path, "change-all:%d" % n)) as s:
+        shown = _change_all_answering_yes(s)
+        _assert_fault_fired(tmp_path, "change-all")
+        said = PROMPT_REFUSED in shown
+        _close_the_replace_box(s)
+        got = _saved(s)
+        made = [k for k in range(PROMPT_HITS + 1) if got == _first_replaced(k)]
+        assert made, "the replacements made are not the first ones: %r" % got
+        assert (made[0] < PROMPT_HITS) == said, \
+            "%d of %d replaced, and the box %s say one was refused:\n%s" % (
+                made[0], PROMPT_HITS, "does" if said else "does not", shown)
+        s.key(CTRL_U, delay=0.8)
+        assert _saved(s) == REPLACE_ALL_SEED, \
+            "one Ctrl-U did not take back the %d replacements made: %r" % (made[0], s.text())
+        assert s.alive(), "wpe died"
+
+
+# @scenario SC-buffer-10
+def test_a_ctrl_k_i_over_a_block_inside_one_row_names_no_row(tmp_path):
+    """Ctrl-K I over a block inside one row shifts no line: the text is as
+    it was and nothing asks the owner for rows (an empty shift begins
+    nothing)."""
+    with WpeSession(str(tmp_path), HELP_SEED, filename="t.txt",
+                    env_extra={"XWPE_UI_TRACE": str(tmp_path / "ui.trace")}) as s:
+        _mark_in_line(s, 0, *HELP_MARKED)
+        s.key(CTRL_K, "i", delay=0.8)
+        assert _saved(s) == HELP_SEED, "Ctrl-K I inside one row changed the text: %r" % s.text()
+        assert ROWS_PAST not in _ui_trace(tmp_path), _ui_trace(tmp_path)
+        assert s.alive(), "wpe died"
+
+
+# The indent of Tab, Backspace and Enter comes from lines above the cursor,
+# however far up, past '#' lines: each is read from the whole text.
+# Backspace behind the tabs of bar(); goes back to foo();'s indent, past
+# the #define between them.
+BACKSPACE_PAST_HASH_SEED = "    foo();\n#define X\n\t\tbar();\n"
+BACKSPACE_PAST_HASH_AFTER = "    foo();\n#define X\n    bar();\n"
+BACKSPACE_PAST_HASH_ROW = 2
+# Enter behind the second #define is indented like x(); above both.
+ENTER_PAST_HASH_SEED = "    x();\n#define A\n#define B\n"
+ENTER_PAST_HASH_AFTER = "    x();\n#define A\n#define B\n    \n"
+ENTER_PAST_HASH_ROW = 2
+# The traces of an action the owner refused for the shape of the text.
+SHAPE_REFUSALS = ("names rows past", "row wider", "span overrun", "shell recorded")
+
+
+def _backspace_behind_the_tabs_past_hash(s):
+    _down(s, BACKSPACE_PAST_HASH_ROW)
+    s.key(HOME, delay=0.1)
+    for _ in range(INDENT_TABS_COL):
+        s.key(RIGHT, delay=0.1)
+    s.key(BACKSPACE, delay=0.6)
+
+
+def _enter_behind_the_second_define(s):
+    _down(s, ENTER_PAST_HASH_ROW)
+    s.key(END, delay=0.2)
+    s.key(ENTER, delay=0.6)
+
+
+# name: (seed, the text after the key, the keys)
+INDENT_FROM_ABOVE = {
+    "tab": (TAB_SEED, TAB_AFTER, _tab_behind_the_a),
+    "backspace": (BACKSPACE_PAST_HASH_SEED, BACKSPACE_PAST_HASH_AFTER,
+                  _backspace_behind_the_tabs_past_hash),
+    "enter": (ENTER_PAST_HASH_SEED, ENTER_PAST_HASH_AFTER, _enter_behind_the_second_define),
+}
+
+
+# @scenario SC-buffer-10
+@pytest.mark.parametrize("key", sorted(INDENT_FROM_ABOVE))
+def test_an_indent_is_read_from_every_line_above(tmp_path, key):
+    """Tab, Backspace in an indent and Enter in a C file take their indent
+    from lines above the cursor, past '#' lines and more than one row up:
+    the text is the one the key always made, one Ctrl-U gives the seed back,
+    and the owner refused nothing for the shape of the text."""
+    seed, after, do = INDENT_FROM_ABOVE[key]
+    with WpeSession(str(tmp_path), seed,
+                    env_extra={"XWPE_UI_TRACE": str(tmp_path / "ui.trace")}) as s:
+        do(s)
+        assert _saved(s) == after, "%s gave %r" % (key, s.text())
+        _assert_undo_and_redo_on_disk(s, seed, after, key)
+        trace = _ui_trace(tmp_path)
+        assert not [t for t in SHAPE_REFUSALS if t in trace], trace
+        assert s.alive(), "wpe died"
+
+
+# Change All over two rows of a 30-column window; the last occurrence ends
+# a row its replacement makes wrap.
+SCROLL_WIDTH_RC = ["MaxColumn : 30"]
+SCROLL_ROWS = ["row %02d" % i for i in range(60)]
+SCROLL_ROWS[10] = "foo at ten"
+SCROLL_ROWS[40] = "aaaa bbbb cccc dddd eeee foo"
+SCROLL_SEED = "\n".join(SCROLL_ROWS) + "\n"
+SCROLL_ROW_ABOVE_LAST_HIT = "row 39"
+WINDOW_FIRST_TEXT_ROW = 2                # the menu bar, the window's frame, then its text
+
+
+def test_change_all_ends_scrolled_to_the_row_of_its_last_occurrence(tmp_path):
+    """Change All without a prompt leaves the window scrolled so that the
+    row of its last occurrence is the second one shown, as it always did,
+    also when that replacement wrapped onto the row below."""
+    with _session_with_options(tmp_path, SCROLL_SEED, SCROLL_WIDTH_RC, filename="t.txt") as s:
+        s.menu(ALT.SEARCH, "r")
+        s.key("foo")
+        s.key(ALT_N)
+        s.key("REPLACEMENTTEXT")
+        s.key(ALT_P)
+        s.key(ALT_A, delay=1.2)
+        _close_the_replace_box(s)
+        top = s.display(drain=0.6)[WINDOW_FIRST_TEXT_ROW]
+        assert SCROLL_ROW_ABOVE_LAST_HIT in top, "the window's first row is %r" % top
+        assert s.alive(), "wpe died"

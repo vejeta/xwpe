@@ -446,7 +446,15 @@ Changes
   or not at all when memory runs out (an Undo of a joined line could use
   up its record, leave the line joined and put the breakpoint on a line
   you never marked; an Undo of a two-part step could make one part and
-  say the text was unchanged).  When the
+  say the text was unchanged).  An action of several pieces (Enter, Tab or
+  Backspace with auto-indent, Ctrl-K I and U, Ctrl-O U, M and H, Change
+  All) is made whole or not at all when memory runs out (it could make
+  most of its pieces with no Ctrl-U for them, or keep a Ctrl-U for a piece
+  it never made that then deleted your own text); Change All that asks per
+  replacement stops at the one it cannot make and says so.  Change All
+  without a prompt needs memory for a copy of the text it searches; when
+  there is not enough, nothing is replaced and the status row says so.
+  When the
   assistant's pane cannot get a row
   for want of memory the status row says so and the pane stays as it was
   (it ended the editor through the low-memory box).

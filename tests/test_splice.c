@@ -53,6 +53,9 @@ static int overrun_traced;
 static int move_view_traced;
 static int row_wider_traced;
 static int block_in_step_traced;
+static int rows_past_traced;     /* an action named rows the text does not have */
+static int shell_record_traced;  /* a record kept on a shell */
+static int user_record_traced;   /* a record kept on the user's list */
 
 void wpe_buffer_syntax_changed(BUFFER *b, int y)
 {
@@ -248,6 +251,12 @@ void wpe_buffer_trace(const char *fmt, ...)
   row_wider_traced++;
  if (strstr(fmt, "holds a block record") != NULL)
   block_in_step_traced++;
+ if (strstr(fmt, "names rows past") != NULL)
+  rows_past_traced++;
+ if (strstr(fmt, "buffer shell record kind=") != NULL)
+  shell_record_traced++;
+ if (strstr(fmt, "buffer record kind=") != NULL)
+  user_record_traced++;
 }
 
 static void hooks_reset(void)
@@ -255,6 +264,7 @@ static void hooks_reset(void)
  syntax_calls = moved_calls = nomem_calls = 0;
  moved_nremoved = moved_nadded = 0;
  overrun_traced = move_view_traced = row_wider_traced = block_in_step_traced = 0;
+ rows_past_traced = shell_record_traced = user_record_traced = read_only_calls = 0;
  stub_refuses = stub_overruns = 0;
  replay_calls = replay_row_missing = stub_marks_past = block_calls = 0;
 }
@@ -2642,6 +2652,286 @@ static void case_the_owners_check_agrees_with_the_rule(void)
  fixture_free();
 }
 
+/* ---- an editing action of several pieces ---- */
+
+/* The action of these cases works on rows 3 and 4 of "L0".."L7": its span
+   runs to the first hard row after its last (5, every row here is hard), so
+   the shell holds L2 (a guard), L3, L4, L5 and L6 (a guard).  Its pieces
+   split L3 after its first byte and then take L5 out under the cover of an
+   'r' record, as a join does, each pushing its record on the shell. */
+#define ACTION_Y0      3
+#define ACTION_Y1      4
+#define ACTION_TOP     2                    /* the shell's row 0 on the user's rows */
+#define ACTION_SPAN    3
+#define ACTION_WHAT    "the test action"
+#define ACTION_BEFORE  "L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\n"
+#define ACTION_AFTER   "L0\nL1\nL2\nL\n3\nL4\nL6\nL7\n"
+
+/* What a whole action takes from the owner: the shell (6), its fill (the
+   lines and rows arrays, five lines, the splice's added rows and room on
+   its margin: 9), the split (its 'a' record, its new line and the rows it
+   moves: 3), the join (its 'r' record and text, the deletion's removed rows
+   and the pocket's room: 4), the rows of the rewrite (1), the rewrite item
+   (its rows, removed, added: 3) and the room on the window's margin (1). */
+#define ACTION_ALLOCATIONS 27
+
+static void action_fixture(void)
+{
+ int rows[2] = {4, 5};
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ brp_set(2, rows);
+ buf.b = pnt(1, 3);
+}
+
+/* The pieces, on the shell's rows: they leave the cursor at the start of
+   "3", the second half of the split line. */
+static void action_pieces(BUFFER *shell)
+{
+ stub_split(shell, 1, ACTION_Y0 - ACTION_TOP);
+ stub_join(shell, 0, 3);
+ shell->b = pnt(0, 2);
+}
+
+/* The action as an editing command runs it: inside a step of the user's
+   buffer, begun, its pieces on the shell, committed.  Return: what the
+   action returned. */
+static int action_run(void)
+{
+ WpeBufferAction a;
+ int r;
+
+ e_buffer_step_begin(&buf);
+ r = e_buffer_action_begin(&a, &buf, ACTION_Y0, ACTION_Y1, E_BUFFER_FAULT_NONE, ACTION_WHAT);
+ if (r == E_BUFFER_OK) {
+  action_pieces(a.shell);
+  r = e_buffer_action_commit(&a);
+ }
+ e_buffer_step_end(&buf);
+ return(r);
+}
+
+static int action_is_whole(void)
+{
+ Undo *u = buf.ud;
+
+ return(strcmp(text_of(), ACTION_AFTER) == 0 && scr.brp[0] == 1 && brp_has(5) &&
+        list_len(u) == 2 && u->type == 'r' && u->b.y == 5 && (u->flags & E_UNDO_MORE) != 0 &&
+        u->nbrk == 1 && u->next->type == 'a' && u->next->b.x == 1 && u->next->b.y == 3 &&
+        (u->next->flags & E_UNDO_MORE) == 0 && buf.rd == NULL && buf.b.x == 0 &&
+        buf.b.y == 4 && win.save > 0 && moved_calls == 1);
+}
+
+static int action_changed_nothing(void)
+{
+ return(strcmp(text_of(), ACTION_BEFORE) == 0 && scr.brp[0] == 2 && brp_has(4) &&
+        brp_has(5) && buf.ud == NULL && buf.rd == NULL && buf.b.x == 1 && buf.b.y == 3 &&
+        moved_calls == 0 && win.save == 0);
+}
+
+/* The rows, the breakpoints, both records (oldest first, MORE on the
+   newer: one Ctrl-U), the cursor and the modified count arrive together. */
+static void case_an_action_runs_on_a_shell_and_commits_whole(void)
+{
+ action_fixture();
+ chk("52 an action of two pieces is made", action_run(), E_BUFFER_OK);
+ chk("52 ... whole: rows, breakpoint, records, cursor", action_is_whole(), 1);
+ chk("52 ... nothing said", nomem_calls, 0);
+ chk("52 ... the shell's records traced there, then once on the user's list",
+     shell_record_traced * 10 + user_record_traced, 22);
+ fixture_free();
+}
+
+/* A piece refused on the shell refuses the whole action: nothing of the
+   user's changes and the status row says so once. */
+static void case_an_action_refused_on_its_shell_changes_nothing_and_says_so_once(void)
+{
+ WpeBufferAction a;
+
+ action_fixture();
+ e_buffer_step_begin(&buf);
+ chk("53 begun", e_buffer_action_begin(&a, &buf, ACTION_Y0, ACTION_Y1, E_BUFFER_FAULT_NONE,
+                                         ACTION_WHAT), E_BUFFER_OK);
+ action_pieces(a.shell);
+ e_buffer_shell_refused(a.shell);
+ chk("53 a piece refused on the shell refuses the action", e_buffer_action_commit(&a),
+     E_BUFFER_NOMEM);
+ e_buffer_step_end(&buf);
+ chk("53 ... which changes nothing", action_changed_nothing(), 1);
+ chk("53 ... and says so once", nomem_calls, 1);
+ chk("53 ... with no shell left", a.shell == NULL, 1);
+ fixture_free();
+}
+
+/* Memory refused at each allocation of the action in turn: refused, the
+   user's text, breakpoints, lists and cursor as they were and said once;
+   from the last allocation on, whole. */
+static void case_an_action_refused_for_memory_at_each_allocation(void)
+{
+ int k, r, bad = 0, refused = 0, whole_from = 0;
+
+ for (k = 1; k <= SWEEP_LIMIT && whole_from == 0; k++) {
+  action_fixture();
+  e_buffer_test_fail_allocs(k);
+  r = action_run();
+  e_buffer_test_fail_allocs(0);
+  if (r == E_BUFFER_OK) {
+   whole_from = k;
+   if (!action_is_whole() || nomem_calls != 0)
+    bad++;
+  } else {
+   refused++;
+   if (r != E_BUFFER_NOMEM || !action_changed_nothing() || nomem_calls != 1)
+    bad++;
+  }
+  fixture_free();
+ }
+ chk("54 an action is whole or changes nothing, said once", bad, 0);
+ chk("54 every cut before its last allocation refuses it", refused, ACTION_ALLOCATIONS);
+ chk("54 the action takes this many allocations", whole_from - 1, ACTION_ALLOCATIONS);
+}
+
+/* The span of an action whose last row goes on without a line break runs
+   to the row that ends the line, with a guard on each side. */
+static void case_an_action_span_runs_to_the_first_hard_row_after_its_last(void)
+{
+ WpeBufferAction a;
+ char text[SPLIT_TEXT_MAX + 16], before[4096];
+
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ snprintf(text, sizeof text, "L0\n%sL4\nL5\n", repeated('s', 2 * WIDTH + 5, "\n"));
+ e_buffer_replace_all(&buf, text, E_BUFFER_STEP_NEW);
+ e_buffer_history_drop(&buf);
+ snprintf(before, sizeof before, "%s", text_of());
+ chk("55 a line of three rows between two lines", buf.mxlines, 6);
+ chk("55 begun on its first row", e_buffer_action_begin(&a, &buf, 1, 1, E_BUFFER_FAULT_NONE,
+                                                         ACTION_WHAT), E_BUFFER_OK);
+ chk("55 the span runs to the row that ends the line", a.y0 * 10 + a.n_del, 13);
+ chk("55 ... a guard above and below", a.g_top * 10 + a.g_bot, 11);
+ chk("55 the shell holds the span and its guards", a.shell->mxlines, 5);
+ e_buffer_action_abort(&a);
+ chk("55 an abort leaves no shell", a.shell == NULL, 1);
+ chk_str("55 ... and the text as it was", text_of(), before);
+ chk("55 ... nothing to undo, nothing said", list_len(buf.ud) * 10 + nomem_calls, 0);
+ chk("55 rows past the text are refused", e_buffer_action_begin(&a, &buf, 4, 6,
+     E_BUFFER_FAULT_NONE, ACTION_WHAT), E_BUFFER_RANGE);
+ chk("55 ... traced", rows_past_traced, 1);
+ chk("55 ... with no shell", a.shell == NULL, 1);
+ fixture_free();
+}
+
+/* An action over every row of the text has no guard rows: its rewrite
+   covers the whole text. */
+static void case_an_action_over_the_whole_text_has_no_guards(void)
+{
+ WpeBufferAction a;
+
+ fixture(3, E_BUFFER_HISTORY_FULL);
+ chk("56 begun over the whole text", e_buffer_action_begin(&a, &buf, 0, 2, E_BUFFER_FAULT_NONE,
+                                                            ACTION_WHAT), E_BUFFER_OK);
+ chk("56 no guard", a.g_top * 10 + a.g_bot, 0);
+ chk("56 the span is every row", a.y0 * 10 + a.n_del, 3);
+ stub_split(a.shell, 1, 0);
+ chk("56 committed", e_buffer_action_commit(&a), E_BUFFER_OK);
+ chk_str("56 the text is the shell's", text_of(), "L\n0\nL1\nL2\n");
+ chk("56 its record on the list", list_len(buf.ud) == 1 && buf.ud->type == 'a', 1);
+ fixture_free();
+}
+
+/* A piece that puts in more than a row (a long New Text) records an 'R' on
+   the shell: it arrives on the user's list on the user's rows, traced once
+   there, and its Ctrl-U puts the old rows back.  @a_y, @e_y: the marks the
+   window has before the action; the record keeps them, moved, or unset. */
+static void action_with_a_line_record(int a_y, int e_y, int want_a_y, int want_e_y,
+                                      const char *what)
+{
+ WpeBufferAction a;
+ STRING two[2];
+ char name[128];
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ scr.mark_begin = pnt(0, a_y);
+ scr.mark_end = pnt(1, e_y);
+ e_buffer_step_begin(&buf);
+ e_buffer_action_begin(&a, &buf, 2, 2, E_BUFFER_FAULT_NONE, ACTION_WHAT);
+ two[0] = line_of(a.shell, "long1");
+ two[1] = line_of(a.shell, "long2");
+ snprintf(name, sizeof name, "%s: the splice on the shell records", what);
+ chk(name, e_buffer_splice(a.shell, 1, 1, two, 2, NULL, 0, E_BUFFER_STEP_NEW), E_BUFFER_OK);
+ snprintf(name, sizeof name, "%s: traced as a shell's record", what);
+ chk(name, shell_record_traced * 10 + user_record_traced, 10);
+ snprintf(name, sizeof name, "%s: committed", what);
+ chk(name, e_buffer_action_commit(&a), E_BUFFER_OK);
+ e_buffer_step_end(&buf);
+ snprintf(name, sizeof name, "%s: traced once on the user's list", what);
+ chk(name, user_record_traced, 1);
+ snprintf(name, sizeof name, "%s: the text", what);
+ chk_str(name, text_of(), "L0\nL1\nlong1\nlong2\nL3\nL4\nL5\nL6\nL7\n");
+ snprintf(name, sizeof name, "%s: one line record on the user's rows", what);
+ chk(name, list_len(buf.ud) == 1 && buf.ud->type == E_UNDO_LINES && buf.ud->span == 2 &&
+     buf.ud->n_old == 1 && buf.ud->n_new == 2, 1);
+ snprintf(name, sizeof name, "%s: the block it saw", what);
+ chk(name, buf.ud->a.y * 100 + buf.ud->e.y, want_a_y * 100 + want_e_y);
+ snprintf(name, sizeof name, "%s: Ctrl-U", what);
+ chk(name, e_buffer_undo(&buf, &scr), E_BUFFER_OK);
+ snprintf(name, sizeof name, "%s: puts the old row back", what);
+ chk_str(name, text_of(), ACTION_BEFORE);
+ fixture_free();
+}
+
+static void case_an_action_keeps_a_line_record_of_its_shell(void)
+{
+ action_with_a_line_record(2, 3, 2, 3, "57 a block on the span");
+}
+
+static void case_a_line_record_of_a_shell_keeps_unset_marks_unset(void)
+{
+ action_with_a_line_record(-1, -1, -1, -1, "58 no block");
+}
+
+/* A window the user cannot change refuses the action before it takes any
+   memory: said once, nothing begun. */
+static void case_a_read_only_buffer_refuses_an_action_before_its_shell(void)
+{
+ WpeBufferAction a;
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ win.ins = WPE_INS_READONLY;
+ e_buffer_test_fail_allocs(1);            /* any owner allocation would refuse it for memory */
+ chk("59 a read-only window refuses the action",
+     e_buffer_action_begin(&a, &buf, 2, 3, E_BUFFER_FAULT_NONE, ACTION_WHAT), E_BUFFER_LOCKED);
+ e_buffer_test_fail_allocs(0);
+ chk("59 ... says so once", read_only_calls, 1);
+ chk("59 ... not as memory", nomem_calls, 0);
+ chk("59 ... with no shell", a.shell == NULL, 1);
+ chk_str("59 ... the text as it was", text_of(), ACTION_BEFORE);
+ win.ins = 0;
+ fixture_free();
+}
+
+/* Ctrl-K I or U over a block inside one row shifts no line: nothing is
+   begun, no memory is taken, no fault fires, nothing is traced. */
+static void case_an_empty_shift_begins_nothing(void)
+{
+ WpeBufferAction a;
+ int token;
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ e_buffer_test_fault_arm(E_BUFFER_FAULT_SHIFT, 1);
+ fault_traced = 0;
+ chk("60 an empty loop begins nothing",
+     e_buffer_action_begin(&a, &buf, 4, 3, E_BUFFER_FAULT_SHIFT, ACTION_WHAT), E_BUFFER_NOTHING);
+ chk("60 ... takes no memory and fires no fault", fault_traced, 0);
+ chk("60 ... names no row", rows_past_traced, 0);
+ chk("60 ... with no shell", a.shell == NULL, 1);
+ e_buffer_action_abort(&a);
+ chk_str("60 ... the text as it was", text_of(), ACTION_BEFORE);
+ token = e_buffer_test_fault_enter(E_BUFFER_FAULT_SHIFT);   /* the armed point fires here */
+ chk("60 the point was still armed", token, E_BUFFER_FAULT_FIRED);
+ e_buffer_test_fault_leave(token);
+ fixture_free();
+}
+
 int main(void)
 {
  case_insert_above_a_mark();
@@ -2703,6 +2993,15 @@ int main(void)
  case_enter_at_the_end_of_a_full_soft_row_gives_it_its_break();
  case_a_wide_view_row_copied_into_a_file_keeps_every_byte();
  case_the_owners_check_agrees_with_the_rule();
+ case_an_action_runs_on_a_shell_and_commits_whole();
+ case_an_action_refused_on_its_shell_changes_nothing_and_says_so_once();
+ case_an_action_refused_for_memory_at_each_allocation();
+ case_an_action_span_runs_to_the_first_hard_row_after_its_last();
+ case_an_action_over_the_whole_text_has_no_guards();
+ case_an_action_keeps_a_line_record_of_its_shell();
+ case_a_line_record_of_a_shell_keeps_unset_marks_unset();
+ case_a_read_only_buffer_refuses_an_action_before_its_shell();
+ case_an_empty_shift_begins_nothing();
  if (fails) {
   printf("test_splice: %d failure(s)\n", fails);
   return(1);

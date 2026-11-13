@@ -495,6 +495,7 @@ int e_blck_to_right(FENSTER *f);
 int e_blck_read(FENSTER *f);
 int e_blck_write(FENSTER *f);
 int e_rep_search(FENSTER *f);
+int e_find_next(BUFFER *b, SCHIRM *s, FIND *fd);
 
 /*******************************************************************************/
 /* (FENSTER *)f                                   */
@@ -539,6 +540,13 @@ int e_tst_dfkt(FENSTER *f, int c);
 int e_blk(int anz, int xa, int ya, int col);
 int e_car_ret(BUFFER *b, SCHIRM *s);
 int e_car_ret_split(BUFFER *b, SCHIRM *s);
+/* An editing action's own pieces, run on the owner's copy of the rows they
+   change: @top is the row of the user's text that the copy's row 0 holds,
+   @plan what the action read from the user's text before the copy. */
+typedef void (*EEditPieces)(BUFFER *b, SCHIRM *s, int top, void *plan);
+int e_edit_action_run(BUFFER *b, int y0, int y1, int point, const char *what,
+  EEditPieces pieces, void *plan);
+void e_status_keep_nomem(const char *what);
 void e_cursor_pos_only(FENSTER *f);
 void e_cursor(FENSTER *f, int sw);
 /* What a character primitive returns when the buffer's owner refused the

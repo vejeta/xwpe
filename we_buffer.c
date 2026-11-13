@@ -39,13 +39,15 @@ static int buffer_fault_n = 0;
 
 /* The names $XWPE_TEST_FAULT gives the points, indexed by E_BUFFER_FAULT_*. */
 static const char *const buffer_fault_names[] = {
- "none", "block-move", "undo", "redo", "block-copy", "read"
+ "none", "block-move", "undo", "redo", "block-copy", "read", "indent", "enter", "shift",
+ "help-marks", "change-all"
 };
 #define BUFFER_FAULT_POINTS ((int)(sizeof buffer_fault_names / sizeof buffer_fault_names[0]))
 
 /**
  * e_buffer_test_fault_point - The fault point a test names.
- * @name: "block-move", "undo", "redo", "block-copy" or "read".
+ * @name: "block-move", "undo", "redo", "block-copy", "read", "indent",
+ * "enter", "shift", "help-marks" or "change-all".
  *
  * Lets a test of the running editor say which action runs out of memory.
  * Return: E_BUFFER_FAULT_*, or E_BUFFER_FAULT_NONE for a name it does not
@@ -220,6 +222,19 @@ int e_buffer_change_refused(BUFFER *b)
  wpe_buffer_trace("buffer read-only refused");
  wpe_buffer_say_read_only(b);
  return(1);
+}
+
+/**
+ * e_buffer_closed - Is @b closed to the user's changes (a file opened
+ * read-only, the clipboard viewer)?
+ *
+ * Only asks: nothing is said or traced.  For a command that picks its way
+ * of working before it changes anything, such as Change All, which on a
+ * read-only window still finds and counts every occurrence.
+ */
+int e_buffer_closed(BUFFER *b)
+{
+ return(buffer_closed_to_user(b));
 }
 
 static int *buffer_brp(BUFFER *b)
@@ -919,6 +934,21 @@ static void buffer_record_trace(const BUFFER *b, const Undo *rec)
                   buffer_record_more(rec), buffer_replay_name(b));
 }
 
+/* Trace a line record a splice kept.  One made on a shell (a long New Text
+   Change All put in on its copy) is traced as a shell's record: it reaches
+   the user's list, traced there, only when the action is made, so a test
+   counting the user's steps never sees it twice. */
+static void buffer_line_record_trace(const BUFFER *b, const Undo *rec)
+{
+ if (b->shell)
+ {
+  wpe_buffer_trace("buffer shell record kind=%c", rec->type);
+  return;
+ }
+ wpe_buffer_trace("buffer record kind=R n_old=%d n_new=%d more=%d replay=%s", rec->n_old,
+                  rec->n_new, buffer_record_more(rec), buffer_replay_name(b));
+}
+
 /**
  * e_buffer_record_push - Keep the record of a change for Ctrl-U.
  * @b: the buffer; @rec: a record the caller composed.
@@ -1306,9 +1336,7 @@ static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int
  if (m->rec != NULL)
  {
   buffer_record_link(b, m->rec);
-  wpe_buffer_trace("buffer record kind=R n_old=%d n_new=%d more=%d replay=%s",
-                   m->rec->n_old, m->rec->n_new, buffer_record_more(m->rec),
-                   buffer_replay_name(b));
+  buffer_line_record_trace(b, m->rec);
   m->rec = NULL;
  }
  wpe_buffer_trace("buffer splice y=%d del=%d ins=%d step=%s covered=%d", y, n_del,
@@ -2649,14 +2677,23 @@ static int buffer_record_is_char(int kind)
  return(kind == 'a' || kind == 'r' || kind == 's' || kind == 'p');
 }
 
-/* Did the replay on a shell record only char kinds?  Another kind would
-   replay against the user's buffer as something it is not. */
+/* Is a record one a shell may hand over to the user's list: a char kind,
+   or a line record ('R', a New Text longer than a row put in on the copy)
+   whose old lines are rows of the shell's width, the buffer's? */
+static int buffer_record_moves_from_shell(int kind)
+{
+ return(buffer_record_is_char(kind) || kind == E_UNDO_LINES);
+}
+
+/* Did the pieces on a shell record only char kinds and line records?  A
+   block kind would replay against the user's buffer as something it is
+   not. */
 static int buffer_shell_records_replayable(BUFFER *shell)
 {
  Undo *rec;
 
  for (rec = shell->ud; rec != NULL; rec = rec->next)
-  if (!buffer_record_is_char(rec->type))
+  if (!buffer_record_moves_from_shell(rec->type))
   {
    wpe_buffer_trace("buffer shell recorded %c", rec->type);
    return(0);
@@ -2825,9 +2862,30 @@ static void buffer_shell_lines_given(BUFFER *shell, int g_top, int n_span, int a
  shell->mxlines = 0;
 }
 
-/* The inverses a replay pushed in its shell move onto the user's buffer,
-   oldest first, each its own record of the step the buffer is in, on the
-   row of the buffer: row 0 of the shell is row @off. */
+/* A mark a line record keeps, moved from a shell's rows to the buffer's:
+   an unset mark stays unset. */
+static void buffer_record_mark_from_shell(POINT *p, int off)
+{
+ if (p->y >= 0)
+  p->y += off;
+}
+
+/* A record made on a shell, put on the buffer's rows: row 0 of the shell is
+   row @off.  A line record moves its span and the block it saw with it, so
+   its Ctrl-U puts the old rows back where the user's text has them. */
+static void buffer_record_from_shell(Undo *rec, int off)
+{
+ rec->b.y += off;
+ if (rec->type != E_UNDO_LINES)
+  return;
+ rec->span += off;
+ buffer_record_mark_from_shell(&rec->a, off);
+ buffer_record_mark_from_shell(&rec->e, off);
+}
+
+/* The inverses a replay or an action pushed in its shell move onto the
+   user's buffer, oldest first, each its own record of the step the buffer
+   is in, on the row of the buffer: row 0 of the shell is row @off. */
 static void buffer_shell_records_move(BUFFER *shell, BUFFER *b, int off)
 {
  Undo *rec, *next, *oldest = NULL;
@@ -2844,7 +2902,7 @@ static void buffer_shell_records_move(BUFFER *shell, BUFFER *b, int off)
   next = rec->next;
   rec->next = NULL;
   rec->flags &= ~(E_UNDO_MORE | E_UNDO_STEP_BLOCK);
-  rec->b.y += off;
+  buffer_record_from_shell(rec, off);
   e_buffer_record_push(b, rec);
  }
 }
@@ -4134,22 +4192,24 @@ static void buffer_run_point_from_shell(POINT *p, const POINT *in, int top)
 }
 
 /**
- * buffer_shell_view_seed - Give a shell the cursor the record names and the
- * running marks that lie on its @n rows from row @top, on its own rows.
+ * buffer_shell_seed - Give a shell the cursor @cursor and the running marks
+ * that lie on its @n rows from row @top, on its own rows.
+ * @cursor: on the user's rows: the cursor a replayed record names, or the
+ * window's own for an editing action.
  *
- * The replay then moves or sets the block exactly as the primitive does on
- * the user's text: an Undo of a deletion marks the text it puts back.  A
- * mark the shell does not hold stays unset there, so the commit moves the
- * window's with the lines.
+ * The pieces then move or set the block exactly as the primitive does on
+ * the user's text: an Undo of a deletion marks the text it puts back, and
+ * Ctrl-K I reads and moves the block it shifts.  A mark the shell does not
+ * hold stays unset there, so the commit moves the window's with the lines.
  */
-static void buffer_shell_view_seed(BUFFER *shell, const BufferRunView *v, const Undo *rec,
-                                   int top, int n)
+static void buffer_shell_seed(BUFFER *shell, const BufferRunView *v, const POINT *cursor,
+                              int top, int n)
 {
  POINT *m[BUFFER_MARKS_MAX];
  int i, k = buffer_marks(shell, m);
 
- shell->b.x = rec->b.x;
- shell->b.y = rec->b.y - top;
+ shell->b.x = cursor->x;
+ shell->b.y = cursor->y - top;
  for (i = 0; i < k && i < v->n; i++)
   if (buffer_run_point_in(&v->mark[i], top, n))
   {
@@ -4280,6 +4340,37 @@ static void buffer_rows_add(int *rows, int *n, int rel, int n_ins)
 }
 
 /**
+ * buffer_shell_rows - The breakpoint rows a shell's margin holds between its
+ * guards, relative to its span.
+ * @g_top: the shell's guard rows above the span; @n_ins: the span's lines
+ * now; @extra: room for that many more rows the caller adds; @rows, @nrows:
+ * receive them.
+ *
+ * A breakpoint the pieces of an action or a replay moved on the shell's
+ * rows (a split that took a line down, a join that took one up) stays on
+ * its code when the shell's rows become the user's.
+ * Return: E_BUFFER_OK (*rows NULL when there is no room to take) or
+ * E_BUFFER_NOMEM.
+ */
+static int buffer_shell_rows(BUFFER *shell, int g_top, int n_ins, int extra, int **rows,
+                             int *nrows)
+{
+ int *brp = buffer_brp(shell), room = extra, i;
+
+ *rows = NULL;
+ *nrows = 0;
+ if (brp != NULL)
+  room += brp[0];
+ if (room <= 0)
+  return(E_BUFFER_OK);
+ if ((*rows = buffer_array(room, sizeof(int))) == NULL)
+  return(E_BUFFER_NOMEM);
+ for (i = 1; brp != NULL && i <= brp[0]; i++)
+  buffer_rows_add(*rows, nrows, brp[i] - g_top, n_ins);
+ return(E_BUFFER_OK);
+}
+
+/**
  * buffer_replay_rows - The breakpoint rows the lines a replay rebuilt carry,
  * relative to its span.
  * @shell: the shell the primitive ran on; @rec: the record replayed;
@@ -4295,18 +4386,10 @@ static void buffer_rows_add(int *rows, int *n, int rel, int n_ins)
 static int buffer_replay_rows(BUFFER *shell, const Undo *rec, int g_top, int rec_rel,
                               int n_ins, int **rows, int *nrows)
 {
- int *brp = buffer_brp(shell), room = rec->nbrk, i;
+ int i;
 
- *rows = NULL;
- *nrows = 0;
- if (brp != NULL)
-  room += brp[0];
- if (room <= 0)
-  return(E_BUFFER_OK);
- if ((*rows = buffer_array(room, sizeof(int))) == NULL)
+ if (buffer_shell_rows(shell, g_top, n_ins, rec->nbrk, rows, nrows) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
- for (i = 1; brp != NULL && i <= brp[0]; i++)
-  buffer_rows_add(*rows, nrows, brp[i] - g_top, n_ins);
  for (i = 0; i < rec->nbrk; i++)
   buffer_rows_add(*rows, nrows, rec_rel + rec->brk[i], n_ins);
  return(E_BUFFER_OK);
@@ -4342,7 +4425,7 @@ static int buffer_replay_on_a_shell(WpeBufferTxn *t, BUFFER *b, const Undo *rec,
   e_buffer_shell_free(shell);
   return(r);
  }
- buffer_shell_view_seed(shell, v, rec, top, n);
+ buffer_shell_seed(shell, v, &rec->b, top, n);
  e_buffer_step_begin(shell);
  wpe_buffer_replay_on_shell(shell, shell->f->s, rec, top);
  e_buffer_step_end(shell);
@@ -4762,6 +4845,182 @@ int e_buffer_apply_chars(BUFFER *b, SCHIRM *s, const Undo *rec)
   e_buffer_txn_abort(&t);
  e_buffer_step_end(b);
  return(r);
+}
+
+/* ---- an editing action of several pieces ---- */
+
+/**
+ * buffer_action_span - The rows action @a may change when its pieces work
+ * on rows @y0 to @y1 of its buffer, with the guard rows around them.
+ *
+ * The rule of a character replay, applied from the action's last row: a
+ * deletion on @y1 pulls words up only while @y1 goes on without a line
+ * break and takes a whole row only at the first hard one; an insertion
+ * pushes words down while the rows are soft and opens a row only below a
+ * full hard one; nothing above @y0 is touched.  So the copy the pieces run
+ * on holds every row they can change, and the rows past it are checked
+ * unchanged at the commit.
+ * Return: E_BUFFER_OK, or E_BUFFER_RANGE (traced) for rows past the text.
+ */
+static int buffer_action_span(WpeBufferAction *a, int y0, int y1)
+{
+ int lines = buffer_txn_lines_now(&a->t, a->b), end;
+
+ if (y0 < 0 || y1 >= lines)
+ {
+  wpe_buffer_trace("buffer action names rows past the text y0=%d y1=%d lines=%d", y0, y1,
+                   lines);
+  return(E_BUFFER_RANGE);
+ }
+ if ((end = buffer_replay_span_end(&a->t, a->b, y1, lines)) < 0)
+  return(E_BUFFER_RANGE);
+ a->y0 = y0;
+ a->n_del = end - y0 + 1;
+ a->g_top = (y0 > 0);
+ a->g_bot = (end + 1 < lines);
+ return(E_BUFFER_OK);
+}
+
+/**
+ * buffer_action_shell - The shell action @a's pieces run on: copies of its
+ * span and guards, with the window's cursor and the marks that lie on them.
+ *
+ * Its records are kept as one step whatever Num. Undo is, so every piece's
+ * Undo reaches the user's list at the commit.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM or E_BUFFER_RANGE, nothing kept on a
+ * refusal.
+ */
+static int buffer_action_shell(WpeBufferAction *a)
+{
+ BufferRunView v;
+ BUFFER *shell;
+ int top = a->y0 - a->g_top, n = a->g_top + a->n_del + a->g_bot, r;
+
+ if ((shell = e_buffer_shell_new(a->b, a->b->mx.x)) == NULL)
+  return(E_BUFFER_NOMEM);
+ if ((r = e_buffer_shell_fill(shell, &a->t, a->b, top, n)) != E_BUFFER_OK)
+ {
+  e_buffer_shell_free(shell);
+  return(r);
+ }
+ buffer_run_view_start(a->b, &v);
+ buffer_shell_seed(shell, &v, &v.cursor, top, n);
+ e_buffer_step_begin(shell);
+ a->shell = shell;
+ return(E_BUFFER_OK);
+}
+
+/**
+ * buffer_action_end - Action @a is over, made or refused for @r.
+ *
+ * Refused for want of memory, the status row says so once, in the action's
+ * own words; a refusal for the shape of the text (a piece that reached past
+ * its span, a row wider than Max. Columns) is traced and silent, as a
+ * replay's.  Memory a test refused to the action is back.
+ * Return: @r.
+ */
+static int buffer_action_end(WpeBufferAction *a, int r)
+{
+ if (r == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(a->b, a->what);
+ e_buffer_test_fault_leave(a->fault);
+ a->fault = 0;
+ return(r);
+}
+
+/* Give back everything action @a took and end it, refused for @r. */
+static int buffer_action_refused(WpeBufferAction *a, int r)
+{
+ e_buffer_shell_free(a->shell);
+ a->shell = NULL;
+ e_buffer_txn_abort(&a->t);
+ return(buffer_action_end(a, r));
+}
+
+/**
+ * e_buffer_action_begin - An editing action of several pieces begins on
+ * rows @y0 to @y1 of @b.
+ * @a: on the caller's stack, for this action; @point: its test fault point
+ * (E_BUFFER_FAULT_*); @what: the action, in the user's words.
+ *
+ * The action then runs its pieces on (@a->shell, @a->shell->f->s) instead
+ * of the user's buffer and screen, and calls e_buffer_action_commit.  A
+ * window the user cannot change refuses it here, said once, where each
+ * piece would say it again.  Rows @y1 < @y0 are an action with nothing to
+ * do (Ctrl-K I over a block inside one row): nothing is begun, taken or
+ * traced.
+ * Return: E_BUFFER_OK with @a->shell set; E_BUFFER_NOTHING, E_BUFFER_LOCKED,
+ * E_BUFFER_NOMEM (said) or E_BUFFER_RANGE (traced), with nothing kept and
+ * the user's text, cursor and marks as they were.
+ */
+int e_buffer_action_begin(WpeBufferAction *a, BUFFER *b, int y0, int y1, int point,
+                          const char *what)
+{
+ int r;
+
+ a->b = b;
+ a->shell = NULL;
+ a->what = what;
+ a->fault = 0;
+ a->y0 = a->n_del = a->g_top = a->g_bot = 0;
+ e_buffer_txn_begin(&a->t);           /* takes no memory: an abort is always safe */
+ if (y1 < y0)
+  return(E_BUFFER_NOTHING);
+ if (e_buffer_change_refused(b))
+  return(E_BUFFER_LOCKED);
+ a->fault = e_buffer_test_fault_enter(point);
+ r = buffer_action_span(a, y0, y1);
+ if (r == E_BUFFER_OK)
+  r = buffer_action_shell(a);
+ if (r != E_BUFFER_OK)
+  return(buffer_action_refused(a, r));
+ return(E_BUFFER_OK);
+}
+
+/**
+ * e_buffer_action_commit - Make action @a: the rows its pieces left on the
+ * shell become the user's, whole, or nothing changes.
+ *
+ * The rows, the breakpoints the pieces moved, every piece's Undo record (one
+ * Ctrl-U for the action, inside the step the caller keeps open), the cursor,
+ * the marks and the modified count arrive in one change.  A piece refused
+ * for want of memory on the shell refuses the whole action: the user's
+ * text, marks, breakpoints and both Undo lists stay as they were, and the
+ * status row says once that the action was not made.  The shell is freed
+ * either way.
+ * Return: E_BUFFER_OK, E_BUFFER_NOMEM or E_BUFFER_RANGE.
+ */
+int e_buffer_action_commit(WpeBufferAction *a)
+{
+ BUFFER *shell = a->shell;
+ int *rows, nrows, n_ins, r;
+
+ if (shell == NULL)
+  return(buffer_action_refused(a, E_BUFFER_RANGE));
+ e_buffer_step_end(shell);
+ if (shell->refusals > 0)
+  return(buffer_action_refused(a, E_BUFFER_NOMEM));
+ n_ins = shell->mxlines - a->g_top - a->g_bot;
+ if (buffer_shell_rows(shell, a->g_top, n_ins, 0, &rows, &nrows) != E_BUFFER_OK)
+  return(buffer_action_refused(a, E_BUFFER_NOMEM));
+ a->shell = NULL;                     /* the rewrite takes it, whatever it returns */
+ e_buffer_txn_rewrite(&a->t, a->b, a->y0, a->n_del, shell, a->g_top, a->g_bot, rows, nrows);
+ free(rows);
+ r = e_buffer_txn_commit(&a->t);
+ return(buffer_action_end(a, r));
+}
+
+/**
+ * e_buffer_action_abort - Give action @a up before its commit: the shell
+ * goes and nothing the user has changes.
+ *
+ * For a caller that finds, after e_buffer_action_begin, that it has nothing
+ * to make after all; it can never leak the shell or leave a test's memory
+ * fault on.
+ */
+void e_buffer_action_abort(WpeBufferAction *a)
+{
+ buffer_action_refused(a, E_BUFFER_OK);
 }
 
 /**

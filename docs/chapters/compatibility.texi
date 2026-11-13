@@ -242,14 +242,19 @@ away characters of yours beside it; it is now marked on the rows it is on.
 @item A block operation without memory
 @cindex out of memory, block operations
 The original stopped a block move, copy, paste or delete that ran out of
-memory with a low-memory box that offered to save.  Now such an
-operation, and the @kbd{Ctrl-U} or @kbd{Ctrl-R} of any change, several
-records at once included, are made whole or not at all: refused, the
-text, the block, the breakpoints and both Undo and Redo are as they were,
-and the status row says
+memory with a low-memory box that offered to save.  An action of several
+pieces that could not record its Undo showed the same box and made the
+change anyway, so @kbd{Ctrl-U} could not take it back.  Now a block
+operation, an action of several pieces (Return, Tab or Backspace with
+auto-indent, Ctrl-K I and U, Ctrl-O U, M and H, Change All), and the
+@kbd{Ctrl-U} or @kbd{Ctrl-R} of any change, are made whole or not at all:
+refused, the text, the block, the breakpoints and both Undo and Redo are as
+they were, and the status row says
 @samp{Out of memory: the block move was not made, the text is
-unchanged}.  A file that cannot be read for want of memory is not opened,
-so it cannot be saved over as an empty window.
+unchanged}.  Change All that asks before each replacement stops at the one
+it cannot make, as @key{Esc} would, and says so.  A file that cannot be
+read for want of memory is not opened, so it cannot be saved over as an
+empty window.
 
 @item Where a moved or pasted block wraps
 A line that a block move, copy, paste or delete makes, together with the

@@ -116,6 +116,8 @@ BOX_NO_REDO = "No more Redo"
 BOX_SAVE_FAILED = "File failed to save"
 # What the status row says when a command meets a window closed to changes.
 STATUS_READ_ONLY = "Read-only window: the text is unchanged"
+# What the status row says when an action was refused for want of memory.
+STATUS_NOMEM = "was not made, the text is unchanged"
 
 
 class Rule:

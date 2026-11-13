@@ -143,6 +143,8 @@ int e_input_was_char = 0;
 char *e_make_postf();
 int e_del_a_ind();
 int e_tab_a_ind();
+static int e_window_auto_indents(FENSTER *f);
+static void e_backspace_a_ind(BUFFER *b, SCHIRM *s, POINT at_key);
 int e_help_next();
 int e_codepoint_to_utf8(int cp, unsigned char *out);
 int e_utf8_charlen(unsigned char c);
@@ -977,11 +979,13 @@ int e_eingabe(ECNT *e)
     }
     else
     {
+     POINT at_key = b->b;
+
      if (b->b.x > 0)
      {
       int old_x = b->b.x;
       b->b.x = e_char_start_before(b, old_x, b->b.y);
-      if (f->flg & 1) e_del_a_ind(b, s);
+      if (e_window_auto_indents(f)) e_backspace_a_ind(b, s, at_key);
       else e_del_nchar(b, s, b->b.x, b->b.y, old_x - b->b.x);
      }
      else
@@ -989,7 +993,7 @@ int e_eingabe(ECNT *e)
       b->b.y--;
       b->b.x = b->bf[b->b.y].len;
       if (*(b->bf[b->b.y].s+b->b.x) == '\0') b->b.x--;
-      if (f->flg & 1) e_del_a_ind(b, s);
+      if (e_window_auto_indents(f)) e_backspace_a_ind(b, s, at_key);
       else e_del_nchar(b, s, b->b.x, b->b.y, 1);
      }
     }
@@ -1668,24 +1672,39 @@ static int e_help_mark_block_fits(SCHIRM *s)
 }
 
 /**
+ * e_help_mark_pieces - The two marks of Ctrl-O U, M or H, put in around
+ * the block of @s.
+ * @plan: the mark that opens it (HBG, HBB or HHD).
+ *
+ * Runs on the owner's copy of the block's row, so a wrap refused for want
+ * of memory leaves no Ctrl-U behind for a mark that never went in.
+ */
+static void e_help_mark_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ unsigned char end = HED;
+ unsigned char *start = plan;
+
+ e_ins_nchar(b, s, &end, s->mark_end.x, s->mark_end.y, 1);
+ e_ins_nchar(b, s, start, s->mark_begin.x, s->mark_end.y, 1);
+}
+
+/**
  * e_help_mark_block - Ctrl-O U, M and H: make the block a button, a
  * highlight or a headline of a help file.
  * @f: the window; @b, @s: its buffer and screen; @start: the help mark
  * that opens it (HBG, HBB or HHD).
  *
  * The end mark goes behind the block and @start in front of it, as one
- * action: one Ctrl-U takes both marks away, one Ctrl-R puts both back.
+ * action: one Ctrl-U takes both marks away, one Ctrl-R puts both back.  On
+ * a full row the end mark makes it wrap; when memory runs out for that,
+ * neither mark goes in and the status row says so.
  */
 static void e_help_mark_block(FENSTER *f, BUFFER *b, SCHIRM *s, unsigned char start)
 {
- unsigned char end = HED;
-
  if (!e_help_mark_block_fits(s))
   return;
- e_buffer_step_begin(b);
- e_ins_nchar(b, s, &end, s->mark_end.x, s->mark_end.y, 1);
- e_ins_nchar(b, s, &start, s->mark_begin.x, s->mark_end.y, 1);
- e_buffer_step_end(b);
+ e_edit_action_run(b, s->mark_end.y, s->mark_end.y, E_BUFFER_FAULT_HELP_MARKS,
+                   "the help marks", e_help_mark_pieces, &start);
  e_schirm(f, 1);
 }
 
@@ -1997,23 +2016,95 @@ int GetCharNumOfX(BUFFER *b, int line, int char_x)
 /****************************************/
 
 /**
- * e_tab_a_ind - Tab with auto-indent: indent the line like the ones above.
- * @b: the buffer; @s: its screen.
+ * e_edit_action_run - Make an editing action of several pieces whole, or
+ * not at all.
+ * @b: the user's buffer; @y0, @y1: the rows its pieces work on; @point:
+ * its test fault point (E_BUFFER_FAULT_*); @what: the action, in the
+ * user's words; @pieces: the action's own code; @plan: what the action
+ * read from the user's text before, handed to @pieces.
  *
- * Erasing the blanks behind the cursor and putting the indent in are one
- * action: one Ctrl-U gives the line back as it was before the Tab, one
- * Ctrl-R indents it again.
- * Return: the cursor's column.
+ * The pieces run on the owner's copy of those rows and the copy becomes
+ * the user's text in one change.  When memory runs out in the middle, the
+ * user keeps the text, cursor and block exactly as they were and reads one
+ * status line, never most of an action with no Ctrl-U for it.  The pieces
+ * are one step: one Ctrl-U takes them all back.
+ * Return: E_BUFFER_OK; E_BUFFER_NOTHING when there are no rows to work on;
+ * E_BUFFER_LOCKED, E_BUFFER_NOMEM or E_BUFFER_RANGE when nothing changed.
  */
-int e_tab_a_ind(BUFFER *b, SCHIRM *s)
+int e_edit_action_run(BUFFER *b, int y0, int y1, int point, const char *what,
+                      EEditPieces pieces, void *plan)
+{
+ WpeBufferAction a;
+ int r;
+
+ e_buffer_step_begin(b);
+ r = e_buffer_action_begin(&a, b, y0, y1, point, what);
+ if (r == E_BUFFER_OK)
+ {
+  pieces(a.shell, a.shell->f->s, a.y0 - a.g_top, plan);
+  r = e_buffer_action_commit(&a);
+ }
+ e_buffer_step_end(b);
+ return(r);
+}
+
+/**
+ * e_edit_action_row - The row an action at the cursor's row @y works on.
+ *
+ * The cursor can stand on the row past the last one (a deletion that took
+ * the last row); the action then works on the last row and the piece opens
+ * the row it needs on the copy, as it would on the user's text.
+ */
+static int e_edit_action_row(BUFFER *b, int y)
+{
+ if (y >= b->mxlines)
+  return(b->mxlines - 1);
+ return(y);
+}
+
+/**
+ * e_ins_blanks - Put @n blanks in at (@x, @y): the indent Tab, Backspace
+ * and Enter with auto-indent write.
+ */
+static void e_ins_blanks(BUFFER *b, SCHIRM *s, int x, int y, int n)
+{
+ char *str = MALLOC(n * sizeof(char));
+ int i;
+
+ for (i = 0; i < n; i++)
+  str[i] = ' ';
+ e_ins_nchar(b, s, (unsigned char *)str, x, y, n);
+ FREE(str);
+}
+
+/* What Tab with auto-indent does to the cursor's row, read before it is
+   changed: the blanks behind the cursor it erases, then what it puts in. */
+typedef struct {
+ int erase;        /* 1: erase @erase_n bytes at the cursor first */
+ int erase_n;
+ int ins_tab;      /* 1: a TAB character goes in; 0: @ins_n blanks */
+ int ins_n;
+} ETabPlan;
+
+/**
+ * e_tab_a_ind_plan - Read what Tab with auto-indent will do on the cursor's
+ * row of @b: the rows above give the indent the line takes.
+ *
+ * Every read happens before the first change, and the change on the
+ * cursor's row moves neither the cursor nor any row above it, so the plan
+ * holds for the pieces that follow.
+ */
+static void e_tab_a_ind_plan(BUFFER *b, ETabPlan *p)
 {
  int a_indent = b->cn->autoindent;
- int line, x, k, char_to_ins;
- char *str;
+ int line, x, k;
  int do_auto_indent = 0;
  int first_nospace_k;
 
- e_buffer_step_begin(b);
+ p->erase = 0;
+ p->erase_n = 0;
+ p->ins_tab = 1;
+ p->ins_n = 1;
 
  /* If at the right of current pos there are only space chars, tab up to
     first nospace position (auto-indent pos) of previous lines. 
@@ -2048,7 +2139,8 @@ int e_tab_a_ind(BUFFER *b, SCHIRM *s)
    if (do_auto_indent)
    {
     /* erase all tail spaces */
-    e_del_nchar(b, s, b->b.x, line, b->bf[line].len - b->b.x);
+    p->erase = 1;
+    p->erase_n = b->bf[line].len - b->b.x;
    }
   }
   else
@@ -2064,65 +2156,76 @@ int e_tab_a_ind(BUFFER *b, SCHIRM *s)
   if (b->bf[line].len > 0)
   {
    /* erase all tail spaces */
-   e_del_nchar(b, s, b->b.x, line, b->bf[line].len - b->b.x);
+   p->erase = 1;
+   p->erase_n = b->bf[line].len - b->b.x;
   }
  }
 
  if (!do_auto_indent)
+  return;                       /* insert TAB char */
+
+ /* find x of the first nospace char of lines from above */
+ x = 0;
+ for (line = b->b.y - 1; (line > 0); line--)
  {
-  /* insert TAB char */
-  str = MALLOC(sizeof(char));
-  str[0] = '\t';
-  char_to_ins = 1;
+  k = FindFirstNospaceChar(b, line);
+  if (k > -1)
+  {
+   x = GetXOfCharNum(b, line, k);
+   break;
+  }
  }
+
+ if (b->b.x < x)
+ {
+  /* indent to x with spaces */
+  p->ins_tab = 0;
+  p->ins_n = x - b->b.x;
+ }
+ else if (b->b.x < (x + a_indent))
+ {
+  /* indent to x + a_indent with spaces */
+  p->ins_tab = 0;
+  p->ins_n = x + a_indent - b->b.x;
+ }
+}
+
+/**
+ * e_tab_a_ind_pieces - Erase the blanks behind the cursor of @b and put the
+ * indent or the TAB in, as @plan says.
+ */
+static void e_tab_a_ind_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ ETabPlan *p = plan;
+ unsigned char tab = '\t';
+
+ if (p->erase)
+  e_del_nchar(b, s, b->b.x, b->b.y, p->erase_n);
+ if (p->ins_tab)
+  e_ins_nchar(b, s, &tab, b->b.x, b->b.y, 1);
  else
- {
-  /* auto-indent */ 
+  e_ins_blanks(b, s, b->b.x, b->b.y, p->ins_n);
+}
 
-  /* find x of the first nospace char of lines from above */
-  x = 0;
-  for (line = b->b.y - 1; (line > 0); line--)
-  {
-   k = FindFirstNospaceChar(b, line);
-   if (k > -1)
-   {
-    x = GetXOfCharNum(b, line, k);
-    break;
-   }
-  }
+/**
+ * e_tab_a_ind - Tab with auto-indent: indent the line like the ones above.
+ * @b: the buffer; @s: its screen.
+ *
+ * Erasing the blanks behind the cursor and putting the indent in are one
+ * action: one Ctrl-U gives the line back as it was before the Tab, one
+ * Ctrl-R indents it again.  When memory runs out, the line stays as it was
+ * and the status row says so.
+ * Return: the cursor's column, or E_CHAR_REFUSED when nothing changed.
+ */
+int e_tab_a_ind(BUFFER *b, SCHIRM *s)
+{
+ ETabPlan p;
+ int y = e_edit_action_row(b, b->b.y);
 
-  if (b->b.x < x)
-  {
-   /* indent to x with spaces */
-   /* insert chars */
-   k = x - b->b.x;
-   str = MALLOC(k * sizeof(char));
-   for (x = 0; x < k; x++)
-    str[x] = ' ';
-   char_to_ins = k;
-  }
-  else if (b->b.x < (x + a_indent))
-  {
-   /* indent to x + a_indent with spaces */
-   /* insert chars */
-   k = x + a_indent - b->b.x;
-   str = MALLOC(k * sizeof(char));
-   for (x = 0; x < k; x++)
-    str[x] = ' ';
-   char_to_ins = k;
-  }
-  else
-  {
-   /* insert TAB char */
-   str = MALLOC(sizeof(char));
-   str[0] = '\t';
-   char_to_ins = 1;
-  }
- }
-
- e_ins_nchar(b, s, str, b->b.x, b->b.y, char_to_ins);
- FREE(str);
- e_buffer_step_end(b);
+ e_tab_a_ind_plan(b, &p);
+ if (e_edit_action_run(b, y, y, E_BUFFER_FAULT_INDENT, "the indent", e_tab_a_ind_pieces,
+                       &p) != E_BUFFER_OK)
+  return(E_CHAR_REFUSED);
  return(b->b.x);
 }
 
@@ -2140,6 +2243,92 @@ static int e_char_is_blank_at(BUFFER *b, int x, int y)
  return(isspace(b->bf[y].s[x]) != 0);
 }
 
+/* The last deletion of Backspace with auto-indent takes the character at
+   the cursor, however many bytes it has. */
+#define E_DEL_A_IND_CHAR (-1)
+
+/* What Backspace with auto-indent does to the cursor's row, read before it
+   is changed. */
+typedef struct {
+ int reindent;     /* 1: the indent's tabs become blanks first */
+ int del0;         /* the bytes deleted at column 0 for that */
+ int blanks;       /* the blanks put back there */
+ int x;            /* the column of the last deletion */
+ int n;            /* its bytes, or E_DEL_A_IND_CHAR */
+ int taken;        /* the bytes the last deletion took, once made */
+} EDelAIndPlan;
+
+/**
+ * e_del_a_ind_plan - Read what Backspace with auto-indent will do on the
+ * cursor's row of @b: the rows above give the indent the line goes back to.
+ *
+ * The pieces change only the cursor's row, so the rows above read here are
+ * the rows the line is indented like, a '#' line or a far indent between
+ * them included.
+ */
+static void e_del_a_ind_plan(BUFFER *b, EDelAIndPlan *p)
+{
+ int i = 1, j = -1, k, x = b->b.x, y = b->b.y;
+
+ p->reindent = 0;
+ p->del0 = 0;
+ p->blanks = 0;
+ if (y > 0)
+ {
+  for (i = 0; i < b->bf[y].len && i < x && isspace(b->bf[y].s[i]); i++)
+   ;
+  if (i == x && e_char_is_blank_at(b, x, y))
+  {
+   for (j = 0, i = 0; j <= x; j++)
+    i = b->bf[y].s[j] == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
+   if (i != j)
+   {
+    p->reindent = 1;
+    p->del0 = j;
+    p->blanks = i;
+    x = i - 1;
+   }
+   for (j = y - 1; j >= 0; j--)
+   {
+    for (i = 0, k = 0; k < b->bf[j].len && isspace(b->bf[j].s[k]); k++)
+     i = b->bf[j].s[k] == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
+    if (k < b->bf[j].len && b->bf[j].s[k] != '#' && i <= x)
+    {
+     i = x - i + 1;
+     x -= i - 1;
+     break;
+    }
+   }
+   if (j < 0)
+    x = 0;
+  }
+ }
+ p->x = x;
+ p->n = i;
+ if (j < 0)
+  p->n = E_DEL_A_IND_CHAR;
+}
+
+/**
+ * e_del_a_ind_pieces - Turn the indent's tabs of the cursor's row of @b
+ * into blanks when @plan says so, then make the deletion it names.
+ */
+static void e_del_a_ind_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ EDelAIndPlan *p = plan;
+
+ if (p->reindent)
+ {
+  e_del_nchar(b, s, 0, b->b.y, p->del0);
+  e_ins_blanks(b, s, 0, b->b.y, p->blanks);
+ }
+ b->b.x = p->x;
+ p->taken = p->n;
+ if (p->n == E_DEL_A_IND_CHAR)
+  p->taken = e_char_bytes_at(b, b->b.x, b->b.y);
+ e_del_nchar(b, s, b->b.x, b->b.y, p->taken);
+}
+
 /**
  * e_del_a_ind - Backspace with auto-indent.
  * @b: the buffer; @s: its screen.
@@ -2148,90 +2337,77 @@ static int e_char_is_blank_at(BUFFER *b, int x, int y)
  * re-indented like the last line that started before the cursor: its tabs
  * become blanks and the blanks past that line's indent go.  Those pieces
  * are one action: one Ctrl-U gives the line back as it was before the
- * Backspace, one Ctrl-R deletes again.
+ * Backspace, one Ctrl-R deletes again.  When memory runs out the line stays
+ * as it was and the status row says so.
  * Elsewhere, and over a character that is not a blank (the first letter
  * after the indent, a character of several bytes), Backspace takes the
  * whole character at the cursor, as it does without auto-indent.
- * Return: how many bytes the last deletion took.
+ * Return: how many bytes the last deletion took, or E_CHAR_REFUSED when
+ * nothing changed.
  */
 int e_del_a_ind(BUFFER *b, SCHIRM *s)
 {
- int i = 1, j = -1, k;
+ EDelAIndPlan p;
+ int y = e_edit_action_row(b, b->b.y);
 
- e_buffer_step_begin(b);
- if (b->b.y > 0)
- {
-  for (i = 0;
-    i < b->bf[b->b.y].len && i < b->b.x && isspace(b->bf[b->b.y].s[i]); i++)
-   ;
-  if (i == b->b.x && e_char_is_blank_at(b, b->b.x, b->b.y))
-  {
-   for (j = 0, i = 0; j <= b->b.x; j++)
-   {
-    i = b->bf[b->b.y].s[j] == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn :
-      i + 1;
-   }
-   if (i != j)
-   {
-    char *str = MALLOC(i * sizeof(char));
-    e_del_nchar(b, s, 0, b->b.y, j);
-    for (j = 0; j < i; j++)
-     str[j] = ' ';
-    e_ins_nchar(b, s, str, 0, b->b.y, i);
-    b->b.x = i - 1;
-    FREE(str);
-   }
-   for (j = b->b.y-1; j >= 0; j--)
-   {
-    for (i = 0, k = 0; k < b->bf[j].len && isspace(b->bf[j].s[k]); k++)
-     i = b->bf[j].s[k] == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
-    if (k < b->bf[j].len && b->bf[j].s[k] != '#' && i <= b->b.x)
-    {
-     i = b->b.x - i + 1;
-     b->b.x -= i - 1;
-     break;
-    }
-   }
-   if (j < 0)
-   {
-    i = b->b.x;
-    b->b.x = 0;
-   }
-  }
- }
- if (j < 0)
-  i = e_char_bytes_at(b, b->b.x, b->b.y);
- e_del_nchar(b, s, b->b.x, b->b.y, i);
- e_buffer_step_end(b);
- return(i);
+ e_del_a_ind_plan(b, &p);
+ if (e_edit_action_run(b, y, y, E_BUFFER_FAULT_INDENT, "the deletion", e_del_a_ind_pieces,
+                       &p) != E_BUFFER_OK)
+  return(E_CHAR_REFUSED);
+ return(p.taken);
 }
 
-int e_car_a_ind(BUFFER *b, SCHIRM *s)
+/**
+ * e_backspace_a_ind - Backspace in a window that indents by itself, the
+ * key having moved the cursor of @b onto what it deletes.
+ * @at_key: where the cursor was when the key came.
+ *
+ * Refused (memory ran out), the text is unchanged and so is the cursor:
+ * the user sees nothing move, and the status row says why.
+ */
+static void e_backspace_a_ind(BUFFER *b, SCHIRM *s, POINT at_key)
 {
- int i, j, k;
- unsigned char *str;
+ if (e_del_a_ind(b, s) == E_CHAR_REFUSED)
+  b->b = at_key;
+}
 
- if (b->b.y == 0)
-  return(0);
- j = b->b.y;
+/**
+ * e_row_byte_within - The byte @k of row @y of @b, read as a row of @len
+ * bytes: a byte at or past @len reads as the end of the row.
+ */
+static int e_row_byte_within(BUFFER *b, int y, int k, int len)
+{
+ if (k >= len)
+  return('\0');
+ return(b->bf[y].s[k]);
+}
+
+/**
+ * e_car_a_ind_width - How far Enter indents the line it makes when it
+ * breaks row @y at byte @head_len.
+ *
+ * The line above the new one is row @y's first @head_len bytes, the head
+ * the break leaves; a '#' line takes the indent from the line above it, and
+ * a '{' that ends the line gives one column less.  Read on the user's text
+ * before the break, so every line above counts, however far up.
+ * Return: the blanks to put in, 0 for none.
+ */
+static int e_car_a_ind_width(BUFFER *b, int y, int head_len)
+{
+ int i, j = y + 1, k, len;
+
  do
  {
   j--;
+  len = b->bf[j].len;
+  if (j == y)
+   len = head_len;
   for (i = 0, k = 0;
-    k < b->bf[j].len && (isspace(b->bf[j].s[k]) || b->bf[j].s[i] == '{'); k++)
+    k < len && (isspace(b->bf[j].s[k]) || e_row_byte_within(b, j, i, len) == '{'); k++)
    i = b->bf[j].s[k] == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
- } while (j > 0 && b->bf[j].s[k] == '#');
- if (k == b->bf[j].len && k > 0 && b->bf[j].s[k-1] == '{')
+ } while (j > 0 && e_row_byte_within(b, j, k, len) == '#');
+ if (k == len && k > 0 && b->bf[j].s[k-1] == '{')
   i--;
- if (i > 0)
- {
-  str = MALLOC(i * sizeof(char));
-  for (j = 0; j < i; j++)
-   str[j] = ' ';
-  e_ins_nchar(b, s, str, 0, b->b.y, i);
-  b->b.x = i;
-  FREE(str);
- }
  return(i);
 }
 
@@ -2321,19 +2497,62 @@ int e_car_ret_split(BUFFER *b, SCHIRM *s)
  return(E_BUFFER_OK);
 }
 
+/* f->flg: the window indents automatically (a program's text). */
+#define E_FLG_AUTO_INDENT 1
+
+/**
+ * e_window_auto_indents - Does window @f indent a new line by itself?
+ *
+ * Read from the user's window, never from the owner's copy the pieces run
+ * on, which has no settings of its own.
+ */
+static int e_window_auto_indents(FENSTER *f)
+{
+ return(f != NULL && (f->flg & E_FLG_AUTO_INDENT) != 0);
+}
+
+/**
+ * e_car_ret_head_len - How many bytes of the cursor's row of @b Enter
+ * leaves above the new line: the bytes before the cursor.
+ */
+static int e_car_ret_head_len(BUFFER *b)
+{
+ if (b->b.x > b->bf[b->b.y].len)
+  return(b->bf[b->b.y].len);
+ return(b->b.x);
+}
+
+/**
+ * e_car_ret_pieces - Break the line at the cursor of @b and, when the break
+ * was made, indent the new line by the blanks @plan counts.
+ */
+static void e_car_ret_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ int *indent = plan;
+
+ if (e_car_ret_split(b, s) != E_BUFFER_OK || *indent <= 0)
+  return;
+ e_ins_blanks(b, s, 0, b->b.y, *indent);
+ b->b.x = *indent;
+}
+
 /**
  * e_car_ret - Enter: break the line at the cursor, then auto-indent.
  * @b: the buffer; @s: its screen.
  *
  * The break and its indent are one action: one Ctrl-U takes both back.
+ * When memory runs out for either, the line stays as it was and the status
+ * row says so.  Whether the new line is indented is the user's window's
+ * setting, and how far is read from the lines above before the break.
  * Return: the cursor's new line.
  */
 int e_car_ret(BUFFER *b, SCHIRM *s)
 {
- e_buffer_step_begin(b);
- if (e_car_ret_split(b, s) == E_BUFFER_OK && (b->f->flg & 1))
-  e_car_a_ind(b, s);
- e_buffer_step_end(b);
+ int indent = 0, y = e_edit_action_row(b, b->b.y);
+
+ if (e_window_auto_indents(b->f) && b->b.y < b->mxlines)
+  indent = e_car_a_ind_width(b, b->b.y, e_car_ret_head_len(b));
+ e_edit_action_run(b, y, y, E_BUFFER_FAULT_ENTER, "a line break", e_car_ret_pieces, &indent);
  return(b->b.y);
 }
 
@@ -4055,10 +4274,23 @@ void wpe_buffer_say_nomem(BUFFER *b, const char *what)
  */
 static void e_say_nomem_until_key(const char *what)
 {
+ wpe_buffer_trace("buffer nomem %s", what);
+ e_status_keep_nomem(what);
+}
+
+/**
+ * e_status_keep_nomem - Keep the line that says @what was not made for want
+ * of memory on the status row until the user presses a key.
+ *
+ * For a command run from a menu: the redraw that follows it would take the
+ * line away before the user read it.  The refusal itself was already said
+ * and traced.
+ */
+void e_status_keep_nomem(const char *what)
+{
  char line[E_BUFFER_SAY_MAX];
 
  snprintf(line, sizeof line, E_BUFFER_SAY_FMT, what);
- wpe_buffer_trace("buffer nomem %s", what);
  if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
   e_status_say_until_key(WpeEditor->f[WpeEditor->mxedt], line);
 }

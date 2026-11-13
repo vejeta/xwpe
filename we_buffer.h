@@ -211,6 +211,31 @@ int    e_buffer_shell_fill(BUFFER *shell, WpeBufferTxn *t, BUFFER *b, int y0, in
 int    e_buffer_is_shell(BUFFER *b);
 void   e_buffer_shell_refused(BUFFER *b);
 
+/* ---- an editing action of several pieces, whole or not at all ----
+
+   Tab and Backspace with auto-indent, Enter, Ctrl-K I and U, Ctrl-O U, M
+   and H and Change All change the text in several pieces, each a character
+   primitive.  The action asks the owner for a shell over the rows it may
+   touch, runs its own pieces on the shell, and commits: the shell's rows
+   become the user's in one rewrite, with the pieces' Undo records, the
+   cursor and the marks the pieces left.  A piece refused for want of memory
+   refuses the whole action, and the user's text, marks, breakpoints and
+   both Undo lists stay as they were; the status row says so once. */
+typedef struct {
+ WpeBufferTxn t;
+ BUFFER *b;           /* the user's buffer */
+ BUFFER *shell;       /* the rows the pieces run on, until the commit */
+ int y0, n_del;       /* the span: rows [y0, y0 + n_del) of b */
+ int g_top, g_bot;    /* the shell's guard rows above and below the span (0 or 1) */
+ int fault;           /* what e_buffer_test_fault_enter returned */
+ const char *what;    /* the action, in the user's words, for the status row */
+} WpeBufferAction;
+
+int    e_buffer_action_begin(WpeBufferAction *a, BUFFER *b, int y0, int y1, int point,
+                             const char *what);
+int    e_buffer_action_commit(WpeBufferAction *a);
+void   e_buffer_action_abort(WpeBufferAction *a);
+
 void   e_buffer_cover_begin(BUFFER *b, Undo *pocket);
 void   e_buffer_cover_end(BUFFER *b);
 int    e_buffer_covered(BUFFER *b);
@@ -234,6 +259,7 @@ void   e_buffer_mark_view(BUFFER *b);
    read-only, the clipboard while its viewer is in front)?  Says so on the
    status row.  Every character primitive and every recorded splice asks. */
 int    e_buffer_change_refused(BUFFER *b);
+int    e_buffer_closed(BUFFER *b);
 
 /* The editor's side: a link seam, defined in we_edit.c and we_debug.c and
    stubbed by the C test.  A link seam cannot be unset, and the first file is
@@ -264,6 +290,11 @@ void   e_buffer_test_fail_allocs(int n);
 #define E_BUFFER_FAULT_REDO        3   /* "redo": one Ctrl-R */
 #define E_BUFFER_FAULT_BLOCK_COPY  4   /* "block-copy": a block copy or paste */
 #define E_BUFFER_FAULT_READ        5   /* "read": reading a file into a window */
+#define E_BUFFER_FAULT_INDENT      6   /* "indent": Tab or Backspace with auto-indent */
+#define E_BUFFER_FAULT_ENTER       7   /* "enter": Enter, with its auto-indent */
+#define E_BUFFER_FAULT_SHIFT       8   /* "shift": Ctrl-K I or Ctrl-K U */
+#define E_BUFFER_FAULT_HELP_MARKS  9   /* "help-marks": Ctrl-O U, M or H */
+#define E_BUFFER_FAULT_CHANGE_ALL 10   /* "change-all": Search > Replace */
 #define E_BUFFER_FAULT_FIRED       1   /* the token of the action that fired it */
 
 int    e_buffer_test_fault_point(const char *name);

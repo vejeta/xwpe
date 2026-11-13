@@ -2102,6 +2102,99 @@ static char *e_unindent_blanks(int tabn)
  return(blanks);
 }
 
+/* What Ctrl-K I and U hand their pieces: the blanks one line moves by. */
+typedef struct {
+ char *blanks;     /* @n blanks */
+ int n;            /* Tabstops / 2 */
+ int tabn;         /* Tabstops */
+} EShift;
+
+/**
+ * e_shift_first_row - The first line Ctrl-K I or U moves: the block's first
+ * row, or the row below it when the block starts inside that row.
+ */
+static int e_shift_first_row(SCHIRM *s)
+{
+ if (s->mark_begin.x > 0)
+  return(s->mark_begin.y + 1);
+ return(s->mark_begin.y);
+}
+
+/**
+ * e_shift_last_row - The last line Ctrl-K I or U moves: the block's last
+ * row, or the row above it when the block ends at the start of that row.
+ *
+ * Before the first row (a block inside one row) there is no line to move,
+ * and nothing is begun.
+ */
+static int e_shift_last_row(SCHIRM *s)
+{
+ if (s->mark_end.x > 0)
+  return(s->mark_end.y);
+ return(s->mark_end.y - 1);
+}
+
+/**
+ * e_shift_right_pieces - Put the blanks of @plan in front of the first
+ * character of every line of the block of @s.
+ *
+ * The lines are read from the block as the pieces leave it: a line that
+ * wraps moves the end of the block down with it, as on the user's text.
+ */
+static void e_shift_right_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ EShift *sh = plan;
+ int i, j;
+
+ for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
+   i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
+ {
+  for (j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++)
+   ;                              /* a row of blanks stops at its end, before its line break */
+  e_ins_nchar(b, s, (unsigned char *)sh->blanks, j, i, sh->n);
+  if (i == s->mark_begin.y)
+   s->mark_begin.x = 0;
+ }
+}
+
+/**
+ * e_shift_left_pieces - Take Tabstops / 2 columns of indent from every line
+ * of the block of @s; a tab that spans more gives back blanks for the rest.
+ */
+static void e_shift_left_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ EShift *sh = plan;
+ int n = sh->n, i, j, k, l, m, nn;
+
+ for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
+   i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
+ {
+  for(j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++);
+  for(l = j - 1, k = 0; l >= 0 && k < n; l--)
+  {
+   if(b->bf[i].s[l] == ' ') k++;
+   else if(b->bf[i].s[l] == '\t')
+   {
+    for(nn = m = 0; m < l; m++)
+    {
+     if(b->bf[i].s[m] == ' ') nn++;
+     else if(b->bf[i].s[m] == '\t')
+     nn += sh->tabn - (nn % sh->tabn);
+    }
+    k += sh->tabn - (nn % sh->tabn);
+   }
+  }
+  l = j - l - 1;
+  if(l > 0)
+  {
+   nn = s->mark_begin.x;
+   e_del_nchar(b, s, j - l, i, l);
+   if (k > n) e_ins_nchar(b, s, (unsigned char *)sh->blanks, j-l, i, k-n);
+   s->mark_begin.x = nn;
+  }
+ }
+}
+
 /**
  * e_blck_to_left - Ctrl-K U: move every line of the block Tabstops / 2
  * columns to the left.
@@ -2116,8 +2209,9 @@ int e_blck_to_left(FENSTER *f)
 {
  BUFFER *b;
  SCHIRM *s;
- int n = f->ed->tabn/2, i, j, k, l, m, nn;
+ int n = f->ed->tabn/2, i;
  char *tstr;
+ EShift shift;
 
  for(i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--);
  if(i <= 0) return(0);
@@ -2131,35 +2225,11 @@ int e_blck_to_left(FENSTER *f)
   wpe_buffer_say_nomem(b, "the shift to the left");
   return(0);
  }
- e_buffer_step_begin(b);
- for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
-   i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
- {
-  for(j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++);
-  for(l = j - 1, k = 0; l >= 0 && k < n; l--)
-  {
-   if(b->bf[i].s[l] == ' ') k++;
-   else if(b->bf[i].s[l] == '\t')
-   {
-    for(nn = m = 0; m < l; m++)
-    {
-     if(b->bf[i].s[m] == ' ') nn++;
-     else if(b->bf[i].s[m] == '\t')
-     nn += f->ed->tabn - (nn % f->ed->tabn);
-    }
-    k += f->ed->tabn - (nn % f->ed->tabn);
-   }
-  }
-  l = j - l - 1;
-  if(l > 0)
-  {
-   nn = s->mark_begin.x;
-   e_del_nchar(b, s, j - l, i, l);
-   if (k > n) e_ins_nchar(b, s, tstr, j-l, i, k-n);
-   s->mark_begin.x = nn;
-  }
- }
- e_buffer_step_end(b);
+ shift.blanks = tstr;
+ shift.n = n;
+ shift.tabn = f->ed->tabn;
+ e_edit_action_run(b, e_shift_first_row(s), e_shift_last_row(s), E_BUFFER_FAULT_SHIFT,
+                   "the shift to the left", e_shift_left_pieces, &shift);
  FREE(tstr);
  e_schirm(f, 1);
  return(0);
@@ -2179,8 +2249,9 @@ int e_blck_to_right(FENSTER *f)
 {
  BUFFER *b;
  SCHIRM *s;
- int n = f->ed->tabn/2, i, j;
+ int n = f->ed->tabn/2, i;
  char *tstr = MALLOC((n+1)*sizeof(char));
+ EShift shift;
 
  for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
   ;
@@ -2193,17 +2264,11 @@ int e_blck_to_right(FENSTER *f)
  for (i = 0; i < n; i++)
   tstr[i] = ' ';
  tstr[n] = '\0';
- e_buffer_step_begin(b);
- for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
-   i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
- {
-  for (j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++)
-   ;                              /* a row of blanks stops at its end, before its line break */
-  e_ins_nchar(b, s, tstr, j, i, n);
-  if (i == s->mark_begin.y)
-   s->mark_begin.x = 0;
- }
- e_buffer_step_end(b);
+ shift.blanks = tstr;
+ shift.n = n;
+ shift.tabn = f->ed->tabn;
+ e_edit_action_run(b, e_shift_first_row(s), e_shift_last_row(s), E_BUFFER_FAULT_SHIFT,
+                   "the shift to the right", e_shift_right_pieces, &shift);
  FREE(tstr);
  e_schirm(f, 1);
  return(0);
@@ -2232,7 +2297,7 @@ int e_rep_search(FENSTER *f)
  SCHIRM *s;
  BUFFER *b;
  FIND *fd = &(f->ed->fd);
- int i, ret, j, iend, jend, end;
+ int i, row;
 
  for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
   ;
@@ -2241,6 +2306,37 @@ int e_rep_search(FENSTER *f)
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
+ if (e_find_next(b, s, fd))
+ {
+  if (!(fd->sw & 1))
+  {
+   row = s->fa.y;
+   e_cursor(f, 1);
+   s->fa.y = row;
+   e_schirm(f, 1);
+  }
+  return(1);
+ }
+ if (!(fd->sw & 1))
+  e_message(0, e_msg[ERR_GETSTRING], f);
+ return(0);
+}
+
+/**
+ * e_find_next - Find the next occurrence of what @fd names in @b, from the
+ * cursor on, within the scope @fd and the block of @s give.
+ *
+ * Search > Find, Find Again and Replace look on the user's text; Change
+ * All looks on the owner's copy of the rows it changes, the same search on
+ * the same text, so it finds every occurrence the user's text would show.
+ * Nothing is painted and nothing is said.
+ * Return: 1 with the occurrence in @s->fa to @s->fe and the cursor behind
+ * it (in front of it searching back), 0 when there is none.
+ */
+int e_find_next(BUFFER *b, SCHIRM *s, FIND *fd)
+{
+ int ret, j, iend, jend, end;
+
  ret = b->b.x;
  j = b->b.y;
  if ((fd->sw & 8) == 0)
@@ -2296,12 +2392,6 @@ int e_rep_search(FENSTER *f)
     b->b.y = s->fa.y = s->fe.y = j;
     s->fe.x = ret + fd->sn;
     b->b.x = ret = !(fd->sw & 4) ? s->fe.x : ret;
-    if (!(fd->sw & 1))
-    {
-     e_cursor(f, 1);
-     s->fa.y = j;
-     e_schirm(f, 1);
-    }
     return(1);
    }
    else if (ret >= 0 && (fd->sw & 64) != 0)
@@ -2313,8 +2403,6 @@ int e_rep_search(FENSTER *f)
    break;
   j = ((fd->sw & 4) == 0) ? j+1 : j-1;
  }
- if (!(fd->sw & 1))
-  e_message(0, e_msg[ERR_GETSTRING], f);
  return(0);
 }
 
@@ -2447,12 +2535,286 @@ static void e_rep_search_on_after(BUFFER *b, SCHIRM *s, int backwards, int y)
  s->fe = b->b;
 }
 
+/* fd->sw: the scope is the block (Selected Text). */
+#define E_FIND_SELECTED 8
+/* fd->sw: ask before each replacement (Prompt on Replace). */
+#define E_FIND_PROMPT 16
+/* A window whose top is above this screen row is scrolled so the hit shows
+   at its top, clear of the question box. */
+#define E_REPLACE_SCROLL_ROW 11
+/* Change All, in the words of the status row when it was not made. */
+#define E_CHANGE_ALL_WHAT "Change All"
+/* The box's third line when a replacement ran out of memory. */
+#define E_REPLACE_SAY_NOMEM "Out of memory: the replacement was not made"
+
+/* What Search > Replace did, for the box it ends with. */
+typedef struct {
+ int found;          /* occurrences found */
+ int replaced;       /* occurrences replaced */
+ int read_only;      /* occurrences a read-only window kept */
+ int out_of_memory;  /* 1: a replacement was refused for memory, and the command stopped */
+ int not_made;       /* 1: Change All was not made at all; the status row says why */
+} EReplaceReport;
+
+/* What one replacement, or Change All on the owner's copy, works with. */
+typedef struct {
+ FIND *fd;           /* the editor's Find and Replace texts and options */
+ int x, y;           /* one replacement: the occurrence, on the user's rows */
+ int found;          /* Change All: occurrences found on the copy */
+ int replaced;       /* Change All: occurrences replaced there */
+ int last_y;         /* Change All: the row of the last occurrence, on the user's rows */
+} EReplacePlan;
+
+/**
+ * e_replace_show_hit - Show the occurrence found on row @y of @f.
+ *
+ * Each hit Replace asks about, and the last one Change All replaced, is in
+ * view when the user reads the question or the report, on the row it was
+ * found on even when its replacement wrapped onto the row below.
+ */
+static void e_replace_show_hit(FENSTER *f, int y)
+{
+ if (f->a.y < E_REPLACE_SCROLL_ROW)
+  f->s->c.y = y - 1;
+ e_schirm(f, 1);
+}
+
+/**
+ * e_rep_search_past_hit - Search on behind the occurrence in @s->fa that
+ * stays in the text, never at it again.
+ */
+static void e_rep_search_past_hit(BUFFER *b, SCHIRM *s, FIND *fd)
+{
+ s->fe.x = s->fa.x + fd->sn;
+ if (fd->sw & E_FIND_BACKWARDS)
+  b->b.x = s->fa.x;
+ else
+  b->b.x = s->fe.x;
+}
+
+/**
+ * e_replace_hit_pieces - Replace the one occurrence @plan names on the
+ * owner's copy of its rows, whose row 0 is the user's row @top.
+ */
+static void e_replace_hit_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ EReplacePlan *p = plan;
+
+ e_replace_occurrence(b, s, p->x, p->y - top, p->fd->sn, (unsigned char *)p->fd->replace,
+                      p->fd->rn);
+}
+
+/**
+ * e_replace_hit - Replace the occurrence at (@x, @y) of @b, whole or not at
+ * all: what Replace does with each occurrence the user said yes to, and
+ * with the one its OK button replaces.
+ *
+ * A replacement longer than a row is a deletion and the new rows; when
+ * memory runs out for either, the occurrence stays as it was.
+ * Return: E_BUFFER_OK, or the refusal (E_BUFFER_LOCKED for a read-only
+ * window, E_BUFFER_NOMEM said on the status row, E_BUFFER_RANGE traced).
+ */
+static int e_replace_hit(BUFFER *b, FIND *fd, int x, int y)
+{
+ EReplacePlan p;
+
+ p.fd = fd;
+ p.x = x;
+ p.y = y;
+ return(e_edit_action_run(b, y, y, E_BUFFER_FAULT_CHANGE_ALL, "the replacement",
+                          e_replace_hit_pieces, &p));
+}
+
+/**
+ * e_replace_each - Replace on the user's text one occurrence at a time:
+ * Replace's OK button, Change All with Prompt on Replace, and a read-only
+ * window.
+ * @ret: the button (AltA for Change All); @r: what was done, for the box.
+ *
+ * Each replacement is its own whole change and all of them are one Ctrl-U.
+ * One refused for want of memory stops the command as Esc would, and the
+ * box says why; one a read-only window keeps is counted and searched past.
+ */
+static void e_replace_each(FENSTER *f, FIND *fd, int ret, EReplaceReport *r)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+ int fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_CHANGE_ALL);
+ int c, found_y, made;
+
+ e_buffer_step_begin(b);
+ while (e_rep_search(f) && ((ret == AltA) || (!r->found)))
+ {
+  r->found++;
+  e_replace_show_hit(f, b->b.y);
+  c = 'Y';
+  if (fd->sw & E_FIND_PROMPT)
+   c = e_message(1, "String found:\nReplace this occurrence ?", f);
+  if (c == WPE_ESC)
+   break;
+  if (c != 'Y')
+   continue;
+  found_y = b->b.y;
+  made = e_replace_hit(b, fd, s->fa.x, found_y);
+  if (made == E_BUFFER_NOMEM)
+  {
+   r->out_of_memory = 1;
+   e_schirm(f, 1);
+   break;
+  }
+  if (made == E_BUFFER_OK)
+  {
+   r->replaced++;
+   e_rep_search_on_after(b, s, fd->sw & E_FIND_BACKWARDS, found_y);
+  }
+  else
+  {
+   if (made == E_BUFFER_LOCKED)
+    r->read_only++;
+   e_rep_search_past_hit(b, s, fd);
+  }
+  e_schirm(f, 1);
+ }
+ e_buffer_step_end(b);
+ e_buffer_test_fault_leave(fault);
+}
+
+/**
+ * e_change_all_rows - The rows of @b Change All can change, from the first
+ * occurrence, which the cursor stands on, to the end of its scope.
+ *
+ * Rows above the first occurrence are never touched searching forward;
+ * searching back, the rows from the top to the first occurrence are.
+ */
+static void e_change_all_rows(BUFFER *b, SCHIRM *s, FIND *fd, int *y0, int *y1)
+{
+ if (fd->sw & E_FIND_BACKWARDS)
+ {
+  *y0 = 0;
+  *y1 = b->b.y;
+  return;
+ }
+ *y0 = b->b.y;
+ *y1 = b->mxlines - 1;
+ if ((fd->sw & E_FIND_SELECTED) && s->mark_end.y >= *y0 && s->mark_end.y < *y1)
+  *y1 = s->mark_end.y;
+}
+
+/**
+ * e_change_all_starved - Has the owner's copy Change All works on run out
+ * of memory?  The copy is then thrown away whole, so searching on would be
+ * work for nothing.
+ */
+static int e_change_all_starved(BUFFER *copy)
+{
+ return(copy->refusals > 0);
+}
+
+/**
+ * e_change_all_pieces - Replace the occurrence the cursor of the copy @b
+ * stands on and every later one in the scope, as Change All does.
+ *
+ * The search after each replacement reads the text the replacement left,
+ * so a replacement that wrapped or shortened its row is searched past
+ * exactly as on the user's text.
+ */
+static void e_change_all_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ EReplacePlan *p = plan;
+ FIND *fd = p->fd;
+ int y;
+
+ do
+ {
+  p->found++;
+  y = b->b.y;
+  p->last_y = y + top;
+  if (e_replace_occurrence(b, s, s->fa.x, y, fd->sn, (unsigned char *)fd->replace, fd->rn))
+  {
+   p->replaced++;
+   e_rep_search_on_after(b, s, fd->sw & E_FIND_BACKWARDS, y);
+  }
+ } while (!e_change_all_starved(b) && e_find_next(b, s, fd));
+}
+
+/**
+ * e_change_all_whole - Change All without a prompt, as one change: every
+ * occurrence in the scope is replaced, or, when memory runs out, none is.
+ * @r: what was done, for the box.
+ *
+ * The first occurrence is found on the user's text, so a Change All that
+ * finds nothing needs no memory.  The rest are found and replaced on the
+ * owner's copy of the rows from the first one to the end of the scope.
+ * Refused, the text, the cursor and the found text are as the dialog left
+ * them, and the status row says Change All was not made.
+ */
+static void e_change_all_whole(FENSTER *f, FIND *fd, EReplaceReport *r)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+ POINT at = b->b, fa = s->fa, fe = s->fe;
+ EReplacePlan p;
+ int y0, y1, made;
+
+ if (!e_rep_search(f))
+  return;
+ e_change_all_rows(b, s, fd, &y0, &y1);
+ p.fd = fd;
+ p.found = 0;
+ p.replaced = 0;
+ p.last_y = b->b.y;
+ made = e_edit_action_run(b, y0, y1, E_BUFFER_FAULT_CHANGE_ALL, E_CHANGE_ALL_WHAT,
+                          e_change_all_pieces, &p);
+ if (made != E_BUFFER_OK)
+ {
+  b->b = at;
+  s->fa = fa;
+  s->fe = fe;
+  r->not_made = 1;
+  if (made == E_BUFFER_NOMEM)
+   e_status_keep_nomem(E_CHANGE_ALL_WHAT);
+  return;
+ }
+ r->found = p.found;
+ r->replaced = p.replaced;
+ e_replace_show_hit(f, p.last_y);
+}
+
+/**
+ * e_replace_report - Tell the user what Search > Replace did: the
+ * occurrences found and replaced, and why any were not.
+ *
+ * A Change All that was not made at all shows no box: the status row
+ * already says so, and a count of occurrences nobody replaced would
+ * mislead.
+ */
+static void e_replace_report(FENSTER *f, const EReplaceReport *r)
+{
+ char line[80];
+
+ if (r->not_made)
+  return;
+ if (!r->found)
+ {
+  e_message(0, e_msg[ERR_GETSTRING], f);
+  return;
+ }
+ if (r->out_of_memory)
+  sprintf(line, "Found %d\nReplaced %d\n%s", r->found, r->replaced, E_REPLACE_SAY_NOMEM);
+ else if (r->read_only)
+  sprintf(line, "Found %d\nReplaced %d\n%s", r->found, r->replaced, E_SAY_READ_ONLY);
+ else
+  sprintf(line, "Found %d\nReplaced %d", r->found, r->replaced);
+ e_message(0, line, f);
+}
+
 int e_replace(FENSTER *f)
 {
  SCHIRM *s;
  BUFFER *b;
  FIND *fd = &(f->ed->fd);
- int i, ret, c, ym, rep=0, found=0, refused=0, found_y;
+ int i, ret;
+ EReplaceReport r;
  char strTemp[80];
  W_OPTSTR *o = e_init_opt_kst(f);
 
@@ -2519,59 +2881,14 @@ int e_replace(FENSTER *f)
   }
  }
  freeostr(o);
- if (ret != WPE_ESC)
- {
-  e_buffer_step_begin(b);      /* every replacement of Change All is one Ctrl-U */
-  while (e_rep_search(f) && ((ret == AltA) || (!found)))
-  {
-   found++;
-   if (f->a.y < 11)
-   {
-    s->c.y = b->b.y - 1; ym = 15;
-   }
-   else
-   {
-    ym = 1;
-   }
-   e_schirm(f, 1);
-   c = 'Y';
-   if (fd->sw & 16)
-    c = e_message(1, "String found:\nReplace this occurrence ?",f);
-   if (c == WPE_ESC)
-    break;
-   if (c == 'Y')
-   {
-    found_y = b->b.y;
-    if (e_replace_occurrence(b, s, s->fa.x, found_y, fd->sn,
-                             (unsigned char *)fd->replace, fd->rn))
-    {
-     rep++;
-     e_rep_search_on_after(b, s, fd->sw & E_FIND_BACKWARDS, found_y);
-    }
-    else
-    {
-     refused++;
-     s->fe.x = s->fa.x + fd->sn;  /* still there: search on behind it, never at it again */
-     if (fd->sw & E_FIND_BACKWARDS)
-      b->b.x = s->fa.x;
-     else
-      b->b.x = s->fe.x;
-    }
-    e_schirm(f, 1);
-   }
-  }
-  e_buffer_step_end(b);
-  if (found)
-  {
-   if (refused)
-    sprintf(strTemp, "Found %d\nReplaced %d\n%s", found, rep, E_SAY_READ_ONLY);
-   else
-    sprintf(strTemp, "Found %d\nReplaced %d", found, rep);
-   e_message(0, strTemp, f);
-  }
-  else
-   e_message(0, e_msg[ERR_GETSTRING], f);
- }
+ if (ret == WPE_ESC)
+  return(0);
+ memset(&r, 0, sizeof r);
+ if (ret == AltA && !(fd->sw & E_FIND_PROMPT) && !e_buffer_closed(b))
+  e_change_all_whole(f, fd, &r);
+ else
+  e_replace_each(f, fd, ret, &r);
+ e_replace_report(f, &r);
  return(0);
 }
 
