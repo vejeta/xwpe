@@ -1,4 +1,4 @@
-/* test_lsp_semantic.c -- unit test for e_lsp_semantic_decode (we_lsp.c): the LSP
+/* test_lsp_semantic.c -- unit test for e_lsp_semantic_decode (we_lsp_pos.c): the LSP
  * semantic-tokens wire format is a flat int array, groups of 5
  * (deltaLine, deltaStartChar, length, tokenType, tokenModifiers), where each
  * group is relative to the PREVIOUS token -- same line: char delta adds to the
@@ -20,6 +20,13 @@ static void chk(const char *name, int got, int want)
  {  printf("FAIL - %s (want %d, got %d)\n", name, want, got);  fails++;  }
 }
 
+/* A column in the server's units against the number it should be: read through
+   the owner's own comparison, as the engine and the bridge do. */
+static void chku(const char *name, e_lsp_units got, int want)
+{
+ chk(name, e_lsp_units_eq(got, e_lsp_units_make(want)), 1);
+}
+
 int main(void)
 {
  e_lsp_sem_token t[8];
@@ -31,11 +38,11 @@ int main(void)
   int data[] = { 0,0,5,15,0,   0,6,3,8,0,   2,4,4,13,0 };
   n = e_lsp_semantic_decode(data, (int)(sizeof(data)/sizeof(data[0])), t, 8);
   chk("count", n, 3);
-  chk("t0.line", t[0].line, 0);   chk("t0.start", t[0].start, 0);
-  chk("t0.length", t[0].length, 5); chk("t0.type", t[0].type, 15);
-  chk("t1 same line", t[1].line, 0); chk("t1.start += dchar", t[1].start, 6);
+  chk("t0.line", t[0].line, 0);   chku("t0.start", t[0].start, 0);
+  chku("t0.length", t[0].length, 5); chk("t0.type", t[0].type, 15);
+  chk("t1 same line", t[1].line, 0); chku("t1.start += dchar", t[1].start, 6);
   chk("t1.type", t[1].type, 8);
-  chk("t2 new line", t[2].line, 2); chk("t2.start absolute", t[2].start, 4);
+  chk("t2 new line", t[2].line, 2); chku("t2.start absolute", t[2].start, 4);
   chk("t2.type", t[2].type, 13);
  }
 
@@ -51,7 +58,7 @@ int main(void)
   int data[] = { 5,0,1,1,0,   0,3,1,2,0,   0,3,1,3,0 };
   n = e_lsp_semantic_decode(data, 15, t, 2);  /* room for 2 of the 3 */
   chk("count capped at max", n, 2);
-  chk("t1.start within cap", t[1].start, 3);
+  chku("t1.start within cap", t[1].start, 3);
  }
 
  /* defensive: NULL data / negative n -> 0, no crash. */

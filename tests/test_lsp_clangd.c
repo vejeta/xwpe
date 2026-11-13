@@ -35,9 +35,25 @@ static const char *C_SRC =
  "    return bad_symbol;\n"             /* line 9: undeclared -> diagnostic  */
  "}\n";                                 /* line 10                           */
 
+/* A literal ASCII column: units are bytes in every encoding. */
+#define COL(n) e_lsp_units_make(n)
+
+/* The same shape with an accented letter, CJK and an emoji before `total` on
+ * line 3: the column the server counts there is not the byte the symbol is on
+ * (total: byte 32, utf-16 unit 25).  The test asks and edits through the
+ * owner's conversion, whatever encoding the server answered. */
+static const char *U_SRC =
+ "int add(int a, int b) {\n"                                       /* line 0 */
+ "    return a + b;\n"                                             /* line 1 */
+ "}\n"                                                             /* line 2 */
+ "    /* caf\xC3\xA9 \xE6\xBC\xA2\xE5\xAD\x97 \xF0\x9F\x98\x80 */ int total = add(2, 3);\n"
+ "\n";                                                             /* line 3 */
+
+#define U_LINE 3
+
 static int g_diags = 0;
-static void on_diag(const char *path, int line, int ch, int end_line, int end_ch,
-                    int sev, const char *msg, void *ud)
+static void on_diag(const char *path, int line, e_lsp_units ch, int end_line,
+                    e_lsp_units end_ch, int sev, const char *msg, void *ud)
 {
  (void)path; (void)line; (void)ch; (void)end_line; (void)end_ch;
  (void)sev; (void)msg; (void)ud;
@@ -60,7 +76,8 @@ int main(void)
  e_lsp_session *s;
  char *hov;
  char defpath[1024];
- int defline = -1, defchar = -1, rc = 0, n;
+ int defline = -1, rc = 0, n;
+ e_lsp_units defchar = COL(0);
  e_lsp_completion_item items[64];
  FILE *f;
 
@@ -92,20 +109,20 @@ int main(void)
     Retry briefly while the AST settles. */
  hov = NULL;
  { int t; for (t = 0; t < 8 && !hov; t++)
-   { hov = e_lsp_hover(s, cpath, 7, 8); if (!hov) sleep(1); } }
+   { hov = e_lsp_hover(s, cpath, 7, COL(8)); if (!hov) sleep(1); } }
  if (!hov) { rc = fail("hover on total returned nothing"); goto close; }
  printf("  HOVER total: %s\n", hov);
  if (!strstr(hov, "int")) { free(hov); rc = fail("hover did not mention int"); goto close; }
  free(hov);
 
  /* definition of the add() call (line 7, char 16) -> its definition on line 2 */
- if (e_lsp_definition(s, cpath, 7, 16, defpath, sizeof(defpath), &defline, &defchar) != 0)
+ if (e_lsp_definition(s, cpath, 7, COL(16), defpath, sizeof(defpath), &defline, &defchar) != 0)
  { rc = fail("definition of add returned nothing"); goto close; }
  printf("  DEFINITION add -> line %d\n", defline);
  if (defline != 2) { rc = fail("definition of add should point to line 2"); goto close; }
 
  /* completion after `add` members context (line 8, char 4) -> non-empty */
- n = e_lsp_completion(s, cpath, 8, 4, items, 64);
+ n = e_lsp_completion(s, cpath, 8, COL(4), items, 64);
  printf("  COMPLETION: %d items%s%s\n", n, n > 0 ? ", e.g. " : "",
         n > 0 ? items[0].label : "");
  if (n <= 0) { rc = fail("completion returned no items"); goto close; }
@@ -113,7 +130,7 @@ int main(void)
  /* references on the add() call (line 7, char 16) -> definition + the call */
  {
   e_lsp_location locs[64];
-  int nr = e_lsp_references(s, cpath, 7, 16, locs, 64);
+  int nr = e_lsp_references(s, cpath, 7, COL(16), locs, 64);
   printf("  REFERENCES add: %d\n", nr);
   if (nr < 2) { rc = fail("references on add should find the def + call"); goto close; }
  }
@@ -130,7 +147,7 @@ int main(void)
  /* rename `add` (definition line 2, char 4) -> "plus": the edit-application path */
  {
   int others = 0;
-  char *rn = e_lsp_rename(s, cpath, 2, 4, "plus", C_SRC, &others);
+  char *rn = e_lsp_rename(s, cpath, 2, COL(4), "plus", C_SRC, &others);
   if (!rn) { rc = fail("rename returned nothing"); goto close; }
   printf("  RENAME add->plus (other files: %d)\n", others);
   if (!strstr(rn, "int plus(int a, int b)") || !strstr(rn, "plus(2, 3)"))
@@ -155,6 +172,44 @@ int main(void)
   if (ni <= 0) { rc = fail("inlay hints returned nothing for add(2, 3)"); goto close; }
   for (i = 0; i < ni; i++) if (hints[i].line == 7) on7 = 1;
   if (!on7) { rc = fail("expected a parameter-name hint on the add() call (line 7)"); goto close; }
+ }
+
+ /* The same rename and hover on a line with an accented letter, CJK and an
+    emoji before the symbol: the column goes out in the session's units, and
+    the edit that comes back lands on the bytes of `total`, not on the comment
+    before it. */
+ {
+  char upath[300];
+  const char *row = strstr(U_SRC, "    /* caf");
+  const char *sym = row ? strstr(row, "total") : NULL;
+  int rowlen = row ? (int)(strchr(row, '\n') - row) : 0;
+  int bytecol = sym ? (int)(sym - row) : 0;
+  e_lsp_units u = e_lsp_units_of((const unsigned char *)row, rowlen, bytecol,
+                                 e_lsp_position_encoding(s));
+  int others = 0;
+  char *rn, *uh = NULL;
+  int t;
+
+  snprintf(upath, sizeof(upath), "%s/uni.c", dir);
+  if (!(f = fopen(upath, "w"))) { rc = fail("write uni.c"); goto close; }
+  fputs(U_SRC, f); fclose(f);
+  if (e_lsp_did_open(s, upath, U_SRC) != 0) { rc = fail("did_open uni.c"); goto close; }
+  if (!e_lsp_wait_diagnostics(s, upath, 30000))
+  { rc = fail("no diagnostics for uni.c"); goto close; }
+  for (t = 0; t < 8 && !uh; t++)
+  { uh = e_lsp_hover(s, upath, U_LINE, u); if (!uh) sleep(1); }
+  if (!uh || !strstr(uh, "int"))
+  { free(uh); rc = fail("hover on total, after non-ASCII text, did not say int"); goto close; }
+  free(uh);
+  rn = e_lsp_rename(s, upath, U_LINE, u, "sum", U_SRC, &others);
+  if (!rn) { rc = fail("rename after non-ASCII text returned nothing"); goto close; }
+  if (!strstr(rn, "int sum = add(2, 3)") ||
+      !strstr(rn, "caf\xC3\xA9 \xE6\xBC\xA2\xE5\xAD\x97 \xF0\x9F\x98\x80 */"))
+  { printf("  ->\n%s\n", rn); free(rn);
+    rc = fail("rename after non-ASCII text did not land on total"); goto close; }
+  free(rn);
+  printf("  RENAME total->sum after non-ASCII text (encoding %s)\n",
+         e_lsp_encoding_name(e_lsp_position_encoding(s)));
  }
 
  printf("PASS: clangd drives the same LSP engine as Metals\n");

@@ -595,3 +595,160 @@ def test_undo_of_a_quick_fix_remarks_diagnostics(tmp_path):
         assert _problem_tooltip_open(w), \
             "Alt-Q . did not reopen a problem tooltip after undo:\n%s" % _text(w)
         w.key("\033", delay=0.5)
+
+
+# ---- the server's columns (we_lsp_pos.c) against the real clangd -----------
+# Every line of the file, 0-based; a screen row is a line + 2 and a screen
+# column is a visual column + 1 for the frame.  On line 5 an accented letter,
+# CJK and an emoji come before `total` (byte 32, UTF-16 unit 25, screen column
+# 28); line 6 is ASCII and has `total` at screen columns 20 to 24; on line 7
+# `bad_symbol` starts at byte 20, unit 19, screen column 20.
+UNI_PROG = (
+    "#include <stdio.h>\n"                                    # 0
+    "\n"                                                      # 1
+    "int add(int a, int b) { return a + b; }\n"               # 2
+    "\n"                                                      # 3
+    "int main(void) {\n"                                      # 4
+    "    /* caf\u00e9 \u6f22\u5b57 \U0001f600 */ int total = add(2, 3);\n"  # 5
+    "    printf(\"%d\\n\", total);\n"                         # 6
+    "    /* \u00e9 */ return bad_symbol;\n"                   # 7
+    "}\n"                                                     # 8
+)
+UNI_TEXT_ROW = 2                  # screen row of line 0
+UNI_TOTAL_COLS = range(28, 33)    # `total` on line 5
+UNI_TAIL_COLS = range(21, 26)     # `*/ in`: what a byte count would paint
+UNI_USE_COLS = range(20, 25)      # `total` on the ASCII line 6
+UNI_BAD_CURSOR = (20, 9)          # screen column and row of `bad_symbol`
+
+
+def _start_clangd(w):
+    time.sleep(1.0)
+    w._drain(1.0)
+    w.key(ALT_Q, delay=0.4)
+    w.key("e", delay=8.0)
+    w._drain(3.0)
+    assert w.alive(), "wpe died starting clangd"
+
+
+def _row_style(w, row, cols):
+    """The (fg, bg) of each cell of `cols` on screen row `row`."""
+    return [(w.screen.buffer[row][c].fg, w.screen.buffer[row][c].bg)
+            for c in cols]
+
+
+def test_clangd_highlight_paints_the_symbol_after_wide_text(tmp_path):
+    """Alt-Q U on `total`, after an accented letter, CJK and an emoji on the
+    line: the letters of `total` are painted, not the tail of the comment
+    (which a byte count of clangd's UTF-16 answer painted); the ASCII `total`
+    on the next line is the positive control, painted by the same answer."""
+    with WpeSession(str(tmp_path), UNI_PROG, filename="demo.c", wait=2.0) as w:
+        _start_clangd(w)
+        _find(w, "total")
+        w.key(ALT_Q, delay=0.4)
+        w.key("u", delay=3.0)
+        w._drain(1.5)
+        row = UNI_TEXT_ROW + 5
+        found = set(_row_style(w, row, UNI_TOTAL_COLS))
+        assert len(found) == 1, \
+            "the letters of `total` should be painted alike:\n%s" % _text(w)
+        control = set(_row_style(w, row + 1, UNI_USE_COLS))
+        assert control == found, \
+            "the ASCII `total` should be painted the same:\n%s" % _text(w)
+        for style in _row_style(w, row, UNI_TAIL_COLS):
+            assert style not in found, \
+                "the tail of the comment must not be painted:\n%s" % _text(w)
+
+
+def test_clangd_problem_jump_lands_on_the_symbol_after_wide_text(tmp_path):
+    """Alt-Q . puts the cursor on the first letter of `bad_symbol`, after an
+    accented letter on its line."""
+    with WpeSession(str(tmp_path), UNI_PROG, filename="demo.c", wait=2.0) as w:
+        _start_clangd(w)
+        if "1 error" not in _text(w):
+            pytest.skip("clangd has not published the diagnostic yet")
+        w.key(ALT_Q, delay=0.4)
+        w.key(".", delay=2.5)
+        w._drain(0.8)
+        assert (w.screen.cursor.x, w.screen.cursor.y) == UNI_BAD_CURSOR, \
+            "the cursor should be on `bad_symbol` at %s, is at %s:\n%s" \
+            % (UNI_BAD_CURSOR, (w.screen.cursor.x, w.screen.cursor.y), _text(w))
+
+
+def test_clangd_rename_edits_the_symbol_after_wide_text(tmp_path):
+    """Alt-Q N renames `total` to `sum`: the file's line 5 has the new name
+    where `total` was and the comment before it as it was (the edit used to
+    land on the bytes `*/ in` of the comment's tail)."""
+    with WpeSession(str(tmp_path), UNI_PROG, filename="demo.c", wait=2.0) as w:
+        _start_clangd(w)
+        _find(w, "total")
+        w.key(ALT_Q, delay=0.4)
+        w.key("n", delay=1.0)
+        w.key("sum", delay=0.3)
+        w.key("\r", delay=4.0)
+        w._drain(2.0)
+        w.save()
+        lines = w.text().split("\n")
+        want = UNI_PROG.split("\n")[5].replace("total", "sum")
+        assert lines[5] == want, \
+            "line 5 should be %r, is %r" % (want, lines[5])
+
+
+# `total` moved eleven bytes right (one more CJK word in the comment), so the
+# byte a column-as-byte hover sends falls inside the next identifier.
+SHIFTED_PROG = UNI_PROG.replace("\U0001f600 */", "\U0001f600 \u6f22\u5b57 */")
+
+
+def test_clangd_hover_names_the_symbol_after_wide_text(tmp_path):
+    """Alt-Q H on `total`: the popup says `total`, not the function `add`
+    that sits at the byte clangd was asked about when bytes were sent."""
+    with WpeSession(str(tmp_path), SHIFTED_PROG, filename="demo.c",
+                    wait=2.0) as w:
+        _start_clangd(w)
+        _find(w, "total")
+        w.key(ALT_Q, delay=0.4)
+        w.key("h", delay=3.0)
+        w._drain(1.0)
+        rows = w.display()
+        if not any("Hover" in r for r in rows):
+            pytest.skip("clangd returned no hover yet (cold start)")
+        body = "\n".join(rows)
+        assert "variable total" in body, \
+            "the hover should say `variable total`:\n%s" % body
+
+
+# A lone CR in a row is the editor's text: the server is sent a space (so its
+# lines are the editor's rows) and a rename elsewhere leaves the CR in the file.
+CR_PROG = UNI_PROG.replace("int add(int a, int b)", "int add(int a,\rint b)")
+
+
+def test_clangd_lone_cr_keeps_the_highlight(tmp_path):
+    """A lone CR on line 2: Alt-Q U still paints `total` on line 5."""
+    with WpeSession(str(tmp_path), CR_PROG, filename="demo.c", wait=2.0) as w:
+        _start_clangd(w)
+        _find(w, "total")
+        w.key(ALT_Q, delay=0.4)
+        w.key("u", delay=3.0)
+        w._drain(1.5)
+        row = UNI_TEXT_ROW + 5
+        found = set(_row_style(w, row, UNI_TOTAL_COLS))
+        control = set(_row_style(w, row + 1, UNI_USE_COLS))
+        plain = set(_row_style(w, row, range(2, 6)))
+        assert len(found) == 1 and control == found and not (found & plain), \
+            "total %s control %s plain %s\n%s" % (found, control, plain, _text(w))
+
+
+def test_clangd_lone_cr_survives_a_rename(tmp_path):
+    """Alt-Q N on `total`: the lone CR of line 2 is still in the saved file."""
+    with WpeSession(str(tmp_path), CR_PROG, filename="demo.c", wait=2.0) as w:
+        _start_clangd(w)
+        _find(w, "total")
+        w.key(ALT_Q, delay=0.4)
+        w.key("n", delay=1.0)
+        w.key("sum", delay=0.3)
+        w.key("\r", delay=4.0)
+        w._drain(2.0)
+        w.save()
+    with open(str(tmp_path / "demo.c"), "rb") as fh:
+        rows = fh.read().split(b"\n")
+    assert b"int sum = add" in rows[5], rows[5]
+    assert rows[2] == b"int add(int a,\rint b) { return a + b; }", rows[2]

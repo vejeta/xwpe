@@ -47,7 +47,8 @@
 > newline) and `e_lsp_poll` drains diagnostics non-blocking on each keystroke,
 > so errors update live in Messages (the `on_diagnostics_summary` count) without
 > an explicit save.  Rename/format apply server `TextEdit`s via `lsp_apply_edits`
-> (pure, offset-based) then rebuild the buffer with `e_lsp_replace_buffer`.
+> (pure, offset-based; the offsets come from `we_lsp_pos.c`, the server's units
+> turned into bytes) then rebuild the buffer with `e_lsp_replace_buffer`.
 >
 > Inline diagnostic marks: `on_diagnostic` now also gets the range END, so the
 > bridge keeps the problem ranges (`g_diag_active`, swapped in atomically per
@@ -280,6 +281,48 @@ from the server-agnostic engine (`we_lsp.c`):
 * The three modal popup engines (`e_opt_kst`, `WpeHandleSubmenu`, `e_error`)
   bracket `e_lsp_modal_enter/leave` so an async diagnostic/inlay paint cannot
   corrupt a dialog drawn over the editor (`g_lsp_modal_depth` gate).
+
+## Columns: the server's units and the buffer's bytes
+
+A server counts the characters of a line in the units it negotiated in
+`initialize` (`positionEncoding`: UTF-16 code units unless it said `utf-8`);
+the editor counts bytes.  On a line with an accented letter, a CJK character
+or an emoji before a symbol they differ, so every column that crosses goes
+through one owner, `we_lsp_pos.c`:
+
+* **The type.**  A column on the wire is an `e_lsp_units` (an opaque struct),
+  never an `int`.  Only `we_lsp_pos.c` makes one (`e_lsp_units_make`) or reads
+  its field; `tests/check-one-owner.sh` fails the build when another file does,
+  or when the JSON key `"character"` appears outside it.  The compiler does the
+  rest: a byte cannot be passed where units are meant, nor units used as a byte.
+* **The two conversions.**  `e_lsp_units_of(row, len, x, enc)` (bytes to units,
+  for every column the editor sends) and `e_lsp_col_of(row, len, u, enc)` (units
+  to bytes, for every column a server sends).  A glyph is what `e_utf8_glyph_at`
+  says: n units in UTF-8, two in UTF-16 above the BMP, one otherwise.  A unit
+  inside a pair goes back to the glyph's start; units past the row are its end.
+* **The text that is counted.**  The server counted over the text it has:
+  one server line is one buffer row (the document is the rows joined by `\n`,
+  `e_lsp_join_lines`, which keeps a CR inside a row; didOpen and didChange send
+  the text through `e_lsp_wire_text`, CR as a space, so it cannot end a line for
+  the server while the editor's copy keeps it).  The bridge (we_debug.c) converts an answer over the
+  text sent with its request (`a->base`), diagnostics and the overlays over the
+  text last synced (`g_lsp_synced_text`), and a location in another file over
+  that file on disk.  The rows of a text are found once (`e_lsp_text_index`).
+* **The engine** keeps the negotiated encoding in the session
+  (`e_lsp_position_encoding`), builds every `position` with
+  `e_lsp_position_json`, reads every one with `e_lsp_units_read`, and applies a
+  server's `TextEdit`s at `e_lsp_text_index_offset`.  A code action's
+  `context.diagnostics` echoes the server's own diagnostics and stays raw, in
+  the server's units.
+* **Sites that need no conversion** (so the scan's silence is explained): a
+  code action's `context.diagnostics` and the call-hierarchy items the engine
+  echoes back are the server's own objects and stay raw; completion reads no
+  server range (only `insertText` and `label`) and the bridge deletes the
+  typed prefix in bytes.  The day the engine reads a completion `textEdit`, it
+  goes through `e_lsp_units_read` and `e_lsp_text_offset`.  The jump
+  (`e_lsp_jump_told`) still drops the column: the cursor lands on the line.
+  The messages lines print the byte column + 1, as the status row does; a
+  later move of them into the error list must convert to a screen column.
 
 ## Notes / constraints
 

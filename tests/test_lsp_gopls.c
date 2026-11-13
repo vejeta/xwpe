@@ -33,8 +33,11 @@ static const char *GO_SRC =
  "}\n";                         /* line 12 */
 
 static int g_diags = 0;
-static void on_diag(const char *path, int line, int ch, int end_line, int end_ch,
-                    int sev, const char *msg, void *ud)
+/* A literal ASCII column: units are bytes in every encoding. */
+#define COL(n) e_lsp_units_make(n)
+
+static void on_diag(const char *path, int line, e_lsp_units ch, int end_line,
+                    e_lsp_units end_ch, int sev, const char *msg, void *ud)
 {
  (void)path; (void)line; (void)ch; (void)end_line; (void)end_ch;
  (void)sev; (void)msg; (void)ud;
@@ -58,7 +61,8 @@ int main(void)
  e_lsp_session *s;
  char *hov;
  char defpath[1024];
- int defline = -1, defchar = -1, rc = 0, n;
+ int defline = -1, rc = 0, n;
+ e_lsp_units defchar = COL(0);
  e_lsp_completion_item items[64];
  FILE *f;
 
@@ -92,13 +96,13 @@ int main(void)
  printf("  analysed (%d diagnostic(s) delivered)\n", g_diags);
 
  /* definition of the add() call (line 9, col 10) -> its def on line 4 */
- if (e_lsp_definition(s, gopath, 9, 10, defpath, sizeof(defpath), &defline, &defchar) != 0)
+ if (e_lsp_definition(s, gopath, 9, COL(10), defpath, sizeof(defpath), &defline, &defchar) != 0)
  { rc = fail("definition of add returned nothing"); goto close; }
  printf("  DEFINITION add -> line %d\n", defline);
  if (defline != 4) { rc = fail("definition of add should point to line 4"); goto close; }
 
  /* completion right after `fmt.` (line 10, col 5) -> package members */
- n = e_lsp_completion(s, gopath, 10, 5, items, 64);
+ n = e_lsp_completion(s, gopath, 10, COL(5), items, 64);
  printf("  COMPLETION: %d items%s%s\n", n, n > 0 ? ", e.g. " : "",
         n > 0 ? items[0].label : "");
  if (n <= 0) { rc = fail("completion after fmt. returned no items"); goto close; }
@@ -106,19 +110,19 @@ int main(void)
  /* references on the add() call (line 9, col 10) -> definition + the call */
  {
   e_lsp_location locs[64];
-  int nr = e_lsp_references(s, gopath, 9, 10, locs, 64);
+  int nr = e_lsp_references(s, gopath, 9, COL(10), locs, 64);
   printf("  REFERENCES add: %d\n", nr);
   if (nr < 2) { rc = fail("references on add should find the def + call"); goto close; }
  }
 
  /* hover + rename: report best-effort (gopls provides both, but keep the hard
     assertions to the cross-server common core). */
- hov = e_lsp_hover(s, gopath, 9, 10);
+ hov = e_lsp_hover(s, gopath, 9, COL(10));
  if (hov) { printf("  HOVER add: %.60s\n", hov); free(hov); }
  else printf("  HOVER add: (none -- not fatal)\n");
  {
   int others = 0;
-  char *rn = e_lsp_rename(s, gopath, 4, 5, "plus", GO_SRC, &others);
+  char *rn = e_lsp_rename(s, gopath, 4, COL(5), "plus", GO_SRC, &others);
   if (rn) { printf("  RENAME add->plus ok (other files: %d)\n", others); free(rn); }
   else printf("  RENAME: (none -- not fatal)\n");
  }

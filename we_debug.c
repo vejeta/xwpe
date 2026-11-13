@@ -27507,11 +27507,212 @@ static const char *e_lsp_path_of(FENSTER *f, char *buf, size_t sz)
  return(buf);
 }
 
+/* ---- the server's columns and the buffer's bytes ----------------------
+   A column the server sends is in the units the session negotiated, and the
+   editor keeps bytes.  Every conversion goes through we_lsp_pos.c, over the
+   text the server counted: the text sent with a request for its answer, the
+   text last synced for diagnostics and the overlays, the file on disk for a
+   location in another file.  One server line is one buffer row. */
+
+static void e_lsp_ui_trace(const char *fmt, ...);   /* XWPE_UI_TRACE diag (below) */
+
+/* The text last handed to the server (via didOpen or didChange).  Used so a sync
+   with no edits is a no-op: a needless didChange bumps the document version, and
+   index-based requests (definition / implementation / typeDefinition / outline)
+   then return nothing until the server recompiles the new version -- that was
+   the "No definition found" bug on a freshly opened, unmodified file.  Its rows
+   are found once per text (g_lsp_synced_ix), not once per column converted. */
+static char *g_lsp_synced_text = NULL;
+static e_lsp_text_index *g_lsp_synced_ix = NULL;
+
+/**
+ * e_lsp_units_at - The units the server expects for byte column @x of row
+ * @y of the window's buffer: what every request sends instead of the cursor's
+ * byte.  A row the buffer does not have counts as an empty one.
+ */
+static e_lsp_units e_lsp_units_at(FENSTER *f, int y, int x)
+{
+ BUFFER *b = f->b;
+ const unsigned char *row = NULL;
+ int len = 0;
+
+ if (y >= 0 && y < b->mxlines && b->bf[y].s)
+ {
+  row = (const unsigned char *)b->bf[y].s;
+  len = b->bf[y].len;
+ }
+ return(e_lsp_units_of(row, len, x, e_lsp_position_encoding(g_lsp)));
+}
+
+/**
+ * e_lsp_synced_rows - The rows of the text the server last had, found once.
+ */
+static const e_lsp_text_index *e_lsp_synced_rows(void)
+{
+ if (!g_lsp_synced_ix)
+  g_lsp_synced_ix = e_lsp_text_index_new(g_lsp_synced_text);
+ return(g_lsp_synced_ix);
+}
+
+/**
+ * e_lsp_col_synced - The byte column of a position the server counted over
+ * the text it last had (diagnostics, the overlays).
+ */
+static int e_lsp_col_synced(int line, e_lsp_units u)
+{
+ return(e_lsp_text_index_col(e_lsp_synced_rows(), line, u,
+                             e_lsp_position_encoding(g_lsp)));
+}
+
+/* Where the columns of one answer are converted: the text it was asked on, and
+   the files a location may name (each read from disk once per answer). */
+#define E_LSP_CONV_FILES_MAX 8
+#define E_LSP_CONV_FILE_BYTES (64L * 1024 * 1024)
+typedef struct
+{
+ char             *path;         /* the file                               */
+ char             *text;         /* its bytes, or NULL when unreadable     */
+ e_lsp_text_index *ix;
+} e_lsp_conv_file;
+typedef struct
+{
+ const char             *own_path;   /* the file the request was about     */
+ const e_lsp_text_index *own;        /* its rows as sent (not owned)       */
+ e_lsp_conv_file         file[E_LSP_CONV_FILES_MAX];
+ int                     nfile;
+} e_lsp_conv;
+
+/**
+ * e_lsp_conv_begin - Start converting one answer.
+ * @own_path: the file the request was about; @own: the rows of the text
+ * sent with it, which outlives the conversion.
+ */
+static void e_lsp_conv_begin(e_lsp_conv *c, const char *own_path,
+                             const e_lsp_text_index *own)
+{
+ memset(c, 0, sizeof *c);
+ c->own_path = own_path;
+ c->own = own;
+}
+
+static void e_lsp_conv_end(e_lsp_conv *c)
+{
+ int i;
+
+ for (i = 0; i < c->nfile; i++)
+ {
+  e_lsp_text_index_free(c->file[i].ix);   /* the index points into text */
+  free(c->file[i].text);
+  free(c->file[i].path);
+ }
+ c->nfile = 0;
+}
+
+/**
+ * e_lsp_same_file - Do two path names the same file?  The comparison the
+ * editor already trusts: the names, then the real paths (a link, a ./).
+ */
+static int e_lsp_same_file(const char *p, const char *q)
+{
+ char a[PATH_MAX], b[PATH_MAX];
+
+ if (!p || !q)
+  return(0);
+ if (!strcmp(p, q))
+  return(1);
+ if (!realpath(p, a) || !realpath(q, b))
+  return(0);
+ return(!strcmp(a, b));
+}
+
+/**
+ * e_lsp_read_file_text - The bytes of a file as a NUL-ended string, or NULL
+ * when it cannot be read (or is past E_LSP_CONV_FILE_BYTES).
+ */
+static char *e_lsp_read_file_text(const char *path)
+{
+ FILE *fp = fopen(path, "rb");
+ char *text;
+ long n = 0, got;
+
+ if (!fp)
+  return(NULL);
+ if (fseek(fp, 0, SEEK_END) == 0)
+  n = ftell(fp);
+ if (n < 0 || n > E_LSP_CONV_FILE_BYTES || fseek(fp, 0, SEEK_SET) != 0)
+ {
+  fclose(fp);
+  return(NULL);
+ }
+ text = malloc((size_t)n + 1);
+ if (!text)
+ {
+  fclose(fp);
+  return(NULL);
+ }
+ got = (long)fread(text, 1, (size_t)n, fp);
+ fclose(fp);
+ text[got] = '\0';
+ return(text);
+}
+
+/**
+ * e_lsp_conv_rows - The rows of the text the server counted for a location in
+ * @path: the text the request was sent with for the file asked about (the
+ * unsaved edits are in it, never read from disk), the file on disk for any
+ * other, which the server read itself.
+ */
+static const e_lsp_text_index *e_lsp_conv_rows(e_lsp_conv *c, const char *path)
+{
+ e_lsp_conv_file *cf;
+ int i;
+
+ if (!path || e_lsp_same_file(path, c->own_path))
+  return(c->own);
+ for (i = 0; i < c->nfile; i++)
+  if (!strcmp(c->file[i].path, path))
+   return(c->file[i].ix);
+ if (c->nfile == E_LSP_CONV_FILES_MAX)
+  return(NULL);                   /* more files than one answer names: bytes */
+ cf = &c->file[c->nfile];
+ cf->path = strdup(path);
+ cf->text = e_lsp_read_file_text(path);
+ cf->ix = e_lsp_text_index_new(cf->text);
+ if (!cf->path)
+ {
+  free(cf->text);
+  e_lsp_text_index_free(cf->ix);
+  return(NULL);
+ }
+ if (!cf->text)
+  e_lsp_ui_trace("lsp columns: cannot read %s, units taken as bytes", path);
+ c->nfile++;
+ return(cf->ix);
+}
+
+/**
+ * e_lsp_conv_col - The byte column of the server's (@line, @u) in @path.
+ * A file that cannot be read gives the units as bytes, as for ASCII text.
+ */
+static int e_lsp_conv_col(e_lsp_conv *c, const char *path, int line,
+                          e_lsp_units u)
+{
+ return(e_lsp_text_index_col(e_lsp_conv_rows(c, path), line, u,
+                             e_lsp_position_encoding(g_lsp)));
+}
+
 /* Semantic-tokens overlay state (server-driven syntax highlighting, Alt-Q M).
-   g_sem_active holds the whole file's decoded tokens; g_sem_on is the per-file
-   toggle; g_sem_stale is set when the server asks us to re-query. */
+   g_sem_active holds the whole file's tokens as byte spans; g_sem_on is the
+   per-file toggle; g_sem_stale is set when the server asks us to re-query. */
 #define LSP_MAX_SEM 8192
-static e_lsp_sem_token g_sem_active[LSP_MAX_SEM];
+typedef struct
+{
+ int line;                       /* 0-based                                */
+ int x0, x1;                     /* [x0, x1) in bytes of the synced row     */
+ int type;                       /* legend index                            */
+ int modifiers;
+} e_lsp_sem_span;
+static e_lsp_sem_span  g_sem_active[LSP_MAX_SEM];
 static int             g_sem_nactive = 0;
 static int             g_sem_on = 0;
 static int             g_sem_stale = 0;
@@ -27569,8 +27770,8 @@ static int e_lsp_sem_color_at(SCHIRM *s, int y, int x, int base)
  if (!g_sem_on)
   return(base);
  for (i = 0; i < g_sem_nactive; i++)
-  if (g_sem_active[i].line == y && x >= g_sem_active[i].start &&
-      x < g_sem_active[i].start + g_sem_active[i].length)
+  if (g_sem_active[i].line == y && x >= g_sem_active[i].x0 &&
+      x < g_sem_active[i].x1)
   {
    legend = e_lsp_semantic_legend(g_lsp, g_sem_active[i].type);
    fg = e_lsp_sem_fg(s, legend);
@@ -27764,7 +27965,14 @@ static void e_lsp_diag_clear(void)
  * for -- so the hint sits at the line end, conveying the same information (": T")
  * without disturbing the cursor/editing/scroll invariants.  Off by default. */
 #define LSP_MAX_INLAY 1024
-static e_lsp_inlay_hint g_inlay_active[LSP_MAX_INLAY];
+typedef struct
+{
+ char *label;                    /* the hint text (owned)                  */
+ int   line;                     /* 0-based                                */
+ int   x;                        /* the anchor, in bytes of the synced row  */
+ int   kind;
+} e_lsp_inlay_span;
+static e_lsp_inlay_span g_inlay_active[LSP_MAX_INLAY];
 static int             g_inlay_nactive = 0;
 static int             g_inlay_on = 0;    /* the toggle (per open file)         */
 static int             g_inlay_stale = 0; /* server asked us to re-query hints   */
@@ -27915,11 +28123,31 @@ static int e_lsp_inlay_take(void)
  }
  e_lsp_inlay_clear();
  for (i = 0; i < g_inlay_held.n; i++)
-  g_inlay_active[i] = g_inlay_held.hints[i];   /* the labels move over */
+ {
+  g_inlay_active[i].label = g_inlay_held.hints[i].label;   /* moves over */
+  g_inlay_active[i].line = g_inlay_held.hints[i].line;
+  g_inlay_active[i].x = e_lsp_col_synced(g_inlay_held.hints[i].line,
+                                         g_inlay_held.hints[i].character);
+  g_inlay_active[i].kind = g_inlay_held.hints[i].kind;
+ }
  g_inlay_nactive = g_inlay_held.n;
  g_inlay_held.n = 0;
  g_inlay_held.ready = 0;
  return(1);
+}
+
+/**
+ * e_lsp_sem_span_of - A token in the server's units as the span of bytes it
+ * covers in the text the server counted over (the one last synced), so the
+ * painter compares the byte index of a cell with bytes.
+ */
+static void e_lsp_sem_span_of(const e_lsp_sem_token *t, e_lsp_sem_span *out)
+{
+ out->line = t->line;
+ out->x0 = e_lsp_col_synced(t->line, t->start);
+ out->x1 = e_lsp_col_synced(t->line, e_lsp_units_sum(t->start, t->length));
+ out->type = t->type;
+ out->modifiers = t->modifiers;
 }
 
 /**
@@ -27930,6 +28158,8 @@ static int e_lsp_inlay_take(void)
  */
 static int e_lsp_sem_take(void)
 {
+ int i;
+
  if (!g_sem_held.ready)
   return(0);
  g_sem_held.ready = 0;
@@ -27940,8 +28170,8 @@ static int e_lsp_sem_take(void)
   g_sem_stale = 1;
   return(0);
  }
- memcpy(g_sem_active, g_sem_held.tokens,
-        (size_t)g_sem_held.n * sizeof(g_sem_held.tokens[0]));
+ for (i = 0; i < g_sem_held.n; i++)
+  e_lsp_sem_span_of(&g_sem_held.tokens[i], &g_sem_active[i]);
  g_sem_nactive = g_sem_held.n;
  return(1);
 }
@@ -28159,16 +28389,47 @@ static int e_lsp_is_worksheet(FENSTER *f)
  return(n > 3 && !strcmp(f->datnam + n - 3, ".sc"));
 }
 
+/* Past the end of any row: a problem that runs on to later lines is marked
+   from its start to the end of its first line. */
+#define E_LSP_DIAG_TO_ROW_END 100000
+
+/**
+ * e_lsp_diag_end_col - The byte column a problem's mark stops before.
+ * @line, @c0: where it starts (0-based line, byte column); @end_line,
+ * @end_ch: where the server says it ends, in its units.
+ *
+ * A problem with no width is marked over the one whole character at its
+ * start, so on an accented letter or an emoji the mark covers the letter and
+ * not the first byte of it.
+ */
+static int e_lsp_diag_end_col(int line, int c0, int end_line, e_lsp_units end_ch)
+{
+ int len = 0, c1;
+ const char *row;
+
+ if (end_line != line)
+  return(E_LSP_DIAG_TO_ROW_END);
+ c1 = e_lsp_col_synced(end_line, end_ch);
+ if (c1 > c0)
+  return(c1);
+ row = e_lsp_text_index_row(e_lsp_synced_rows(), line, &len);
+ if (!row || c0 >= len)
+  return(c0 + 1);                                  /* zero-width: one cell */
+ return(c0 + e_utf8_seq_len((const unsigned char *)row + c0, len - c0));
+}
+
 /* on_diagnostic: record the problem's range for inline marking, and (unless a
    live poll asked to stay quiet) surface it in the Messages window in the same
-   file:line:col: form as F9 build errors. */
-static void e_lsp_on_diag(const char *path, int line, int ch,
-                          int end_line, int end_ch, int sev,
+   file:line:col: form as F9 build errors.  The column is a byte column plus
+   one, as the status row and the compiler's lines count. */
+static void e_lsp_on_diag(const char *path, int line, e_lsp_units ch_units,
+                          int end_line, e_lsp_units end_ch, int sev,
                           const char *msg, void *ud)
 {
  char buf[700];
  const char *kind = sev == 1 ? "error" : sev == 2 ? "warning"
                   : sev == 3 ? "info"  : "hint";
+ int ch = e_lsp_col_synced(line, ch_units);     /* the problem's first byte */
  (void)path; (void)ud;
 
  /* Accumulate the mark for this batch.  Only single-line ranges are recolored
@@ -28176,9 +28437,7 @@ static void e_lsp_on_diag(const char *path, int line, int ch,
     from the start column to end-of-line so the problem is still visible. */
  if (g_diag_npending < LSP_MAX_DIAG)
  {
-  int c1 = (end_line == line) ? end_ch : 100000;  /* same line: exact end */
-  if (c1 <= ch)
-   c1 = ch + 1;                                   /* zero-width: mark one cell */
+  int c1 = e_lsp_diag_end_col(line, ch, end_line, end_ch);
   g_diag_pending[g_diag_npending].line = line;
   g_diag_pending[g_diag_npending].c0 = ch;
   g_diag_pending[g_diag_npending].c1 = c1;
@@ -28192,7 +28451,7 @@ static void e_lsp_on_diag(const char *path, int line, int ch,
  if (g_lsp_quiet)                   /* live poll: only the summary line shows */
   return;
  snprintf(buf, sizeof(buf), "%s:%d:%d: %s: %s",
-          e_d_dap_basename(g_lsp_file), line + 1, ch + 1, kind, msg ? msg : "");
+          e_d_dap_basename(g_lsp_file), line + 1, ch + 1, kind, msg ? msg : "");   /* ch is bytes */
  if (g_lsp_fenster)
   e_d_p_message(buf, g_lsp_fenster, 1);
 }
@@ -28379,15 +28638,10 @@ static char *e_lsp_buffer_text(FENSTER *f)
  return(body);
 }
 
-/* The text last handed to the server (via didOpen or didChange).  Used so a sync
-   with no edits is a no-op: a needless didChange bumps the document version, and
-   index-based requests (definition / implementation / typeDefinition / outline)
-   then return nothing until the server recompiles the new version -- that was
-   the "No definition found" bug on a freshly opened, unmodified file. */
-static char *g_lsp_synced_text = NULL;
-
 static void e_lsp_synced_set(char *owned)   /* takes ownership of `owned` */
 {
+ e_lsp_text_index_free(g_lsp_synced_ix);   /* its rows point into the old text */
+ g_lsp_synced_ix = NULL;
  free(g_lsp_synced_text);
  g_lsp_synced_text = owned;
  g_lsp_doc_gen++;                  /* an overlay fetched before is stale */
@@ -28894,15 +29148,23 @@ static FENSTER *e_lsp_window_of(const char *path)
 #define E_LSP_START_CANCELLED_LINE "Language server start cancelled."
 #define E_LSP_ASK_FAILED_LINE "Could not ask the language server."
 
+/* A selection range of an answer, in bytes of the text the request was sent
+   with, so it compares with the marks as they are. */
+typedef struct
+{
+ int start_line, start_x;        /* 0-based line, byte column             */
+ int end_line, end_x;
+} e_lsp_ask_range;
+
 /* One entry of a list answer, copied out of the engine's arrays: a
    location, a symbol, a lens, an action or a range. */
 typedef struct
 {
  char *name;                     /* symbol, lens title, action title, or NULL */
  char *path;                     /* its file, or NULL for the file asked about */
- int   line, character;          /* 0-based                                */
+ int   line, character;          /* 0-based line; character is a byte column */
  int   has_edit;                 /* an action: its edit is in hand         */
- e_lsp_range range;              /* a selection range                      */
+ e_lsp_ask_range range;          /* a selection range                      */
 } e_lsp_ask_row;
 
 /* A request out, of one kind, and its answer once it came. */
@@ -29325,7 +29587,7 @@ static void e_lsp_text_told(E_D_REQ_END how, char *text, void *ctx)
 
 /** e_lsp_jump_told - A jump's answer: the location, if one came. */
 static void e_lsp_jump_told(E_D_REQ_END how, int found, const char *path,
-                            int line, int character, void *ctx)
+                            int line, e_lsp_units character, void *ctx)
 {
  e_lsp_ask_t *a = ctx;
 
@@ -29407,55 +29669,82 @@ static char *e_lsp_ask_strdup(const char *s)
  return(strdup(s));
 }
 
-/** e_lsp_locs_told - References or highlight: the locations, copied. */
+/** e_lsp_locs_told - References or highlight: the locations, copied, their
+ *  columns turned into bytes of the text the server counted over. */
 static void e_lsp_locs_told(E_D_REQ_END how, const e_lsp_location *locs, int n,
                             void *ctx)
 {
  e_lsp_ask_t *a = ctx;
  e_lsp_ask_row *rows = e_lsp_ask_rows_new(a, n);
+ e_lsp_text_index *own = e_lsp_text_index_new(a->base);
+ e_lsp_conv conv;
  int i;
 
+ e_lsp_conv_begin(&conv, a->path, own);
  for (i = 0; rows && i < a->n; i++)
  {
   rows[i].path = e_lsp_ask_strdup(locs[i].path);
   rows[i].line = locs[i].line;
-  rows[i].character = locs[i].character;
+  rows[i].character = e_lsp_conv_col(&conv, locs[i].path, locs[i].line,
+                                     locs[i].character);
  }
+ e_lsp_conv_end(&conv);
+ e_lsp_text_index_free(own);
  if (n < 0)
   a->n = -1;
  e_lsp_ask_told(a, how);
 }
 
-/** e_lsp_syms_told - Symbols or a hierarchy: the entries, copied. */
+/** e_lsp_syms_told - Symbols or a hierarchy: the entries, copied, their
+ *  columns turned into bytes as e_lsp_locs_told does. */
 static void e_lsp_syms_told(E_D_REQ_END how, const e_lsp_symbol *syms, int n,
                             void *ctx)
 {
  e_lsp_ask_t *a = ctx;
  e_lsp_ask_row *rows = e_lsp_ask_rows_new(a, n);
+ e_lsp_text_index *own = e_lsp_text_index_new(a->base);
+ e_lsp_conv conv;
  int i;
 
+ e_lsp_conv_begin(&conv, a->path, own);
  for (i = 0; rows && i < a->n; i++)
  {
   rows[i].name = e_lsp_ask_strdup(syms[i].name);
   rows[i].path = e_lsp_ask_strdup(syms[i].path);
   rows[i].line = syms[i].line;
-  rows[i].character = syms[i].character;
+  rows[i].character = e_lsp_conv_col(&conv, syms[i].path, syms[i].line,
+                                     syms[i].character);
  }
+ e_lsp_conv_end(&conv);
+ e_lsp_text_index_free(own);
  if (n < 0)
   a->n = -1;
  e_lsp_ask_told(a, how);
 }
 
-/** e_lsp_ranges_told - Expand selection: the nested ranges, copied. */
+/** e_lsp_ranges_told - Expand selection: the nested ranges, copied, in bytes
+ *  of the text the request was sent with. */
 static void e_lsp_ranges_told(E_D_REQ_END how, const e_lsp_range *ranges, int n,
                               void *ctx)
 {
  e_lsp_ask_t *a = ctx;
  e_lsp_ask_row *rows = e_lsp_ask_rows_new(a, n);
+ e_lsp_text_index *own = e_lsp_text_index_new(a->base);
+ e_lsp_conv conv;
  int i;
 
+ e_lsp_conv_begin(&conv, a->path, own);
  for (i = 0; rows && i < a->n; i++)
-  rows[i].range = ranges[i];
+ {
+  rows[i].range.start_line = ranges[i].start_line;
+  rows[i].range.start_x = e_lsp_conv_col(&conv, NULL, ranges[i].start_line,
+                                         ranges[i].start_char);
+  rows[i].range.end_line = ranges[i].end_line;
+  rows[i].range.end_x = e_lsp_conv_col(&conv, NULL, ranges[i].end_line,
+                                       ranges[i].end_char);
+ }
+ e_lsp_conv_end(&conv);
+ e_lsp_text_index_free(own);
  if (n < 0)
   a->n = -1;
  e_lsp_ask_told(a, how);
@@ -30101,6 +30390,16 @@ static int e_lsp_ui_diagnostics(FENSTER *f)
 
 /* Defined below; the symbol actions snap the request to the identifier start. */
 static int e_lsp_symbol_col(FENSTER *f);
+
+/**
+ * e_lsp_symbol_units - The column a symbol action sends, in the server's
+ * units: the start of the identifier under the cursor, converted from its
+ * byte on the cursor's row.
+ */
+static e_lsp_units e_lsp_symbol_units(FENSTER *f)
+{
+ return(e_lsp_units_at(f, f->b->b.y, e_lsp_symbol_col(f)));
+}
 static int e_lsp_ui_dispatch(FENSTER *f, int c);   /* run the Alt-Q action `c` */
 void e_lsp_after_bulk_edit(FENSTER *f);            /* re-sync after a whole-buffer edit */
 
@@ -30121,7 +30420,7 @@ static int e_lsp_ui_jump(FENSTER *f, int which, const char *what)
   return(-1);
  snprintf(a->what, sizeof a->what, "%s", what);
  return(e_lsp_ask_sent(f, a, e_lsp_locate_async(g_lsp, which, g_lsp_file,
-                                                b->b.y, e_lsp_symbol_col(f),
+                                                b->b.y, e_lsp_symbol_units(f),
                                                 e_lsp_jump_told, a)));
 }
 
@@ -30356,7 +30655,7 @@ static int e_lsp_ui_hover(FENSTER *f)
  if (!a)
   return(-1);
  return(e_lsp_ask_sent(f, a, e_lsp_hover_async(g_lsp, g_lsp_file, b->b.y,
-                                               e_lsp_symbol_col(f),
+                                               e_lsp_symbol_units(f),
                                                e_lsp_text_told, a)));
 }
 
@@ -30571,7 +30870,8 @@ static int e_lsp_ui_complete(FENSTER *f)
  if (!a)
   return(-1);
  return(e_lsp_ask_sent(f, a, e_lsp_completion_async(g_lsp, g_lsp_file, b->b.y,
-                                                    b->b.x, E_LSP_ASK_ITEMS_MAX,
+                                                    e_lsp_units_at(f, b->b.y, b->b.x),
+                                                    E_LSP_ASK_ITEMS_MAX,
                                                     e_lsp_complete_told, a)));
 }
 
@@ -30648,7 +30948,8 @@ static int e_lsp_ui_signature(FENSTER *f)
  if (!a)
   return(-1);
  return(e_lsp_ask_sent(f, a, e_lsp_signature_help_async(g_lsp, g_lsp_file,
-                                                        b->b.y, b->b.x,
+                                                        b->b.y,
+                                                        e_lsp_units_at(f, b->b.y, b->b.x),
                                                         e_lsp_text_told, a)));
 }
 
@@ -30779,7 +31080,7 @@ static int e_lsp_ui_references(FENSTER *f)
  if (!a)
   return(-1);
  return(e_lsp_ask_sent(f, a, e_lsp_references_async(g_lsp, g_lsp_file, b->b.y,
-                                                    e_lsp_symbol_col(f),
+                                                    e_lsp_symbol_units(f),
                                                     E_LSP_ROWS_MAX,
                                                     e_lsp_locs_told, a)));
 }
@@ -30868,7 +31169,7 @@ static int e_lsp_ui_call_hierarchy(FENSTER *f, int outgoing)
  a->flag = outgoing;
  return(e_lsp_ask_sent(f, a, e_lsp_call_hierarchy_async(g_lsp, g_lsp_file,
                                                         b->b.y,
-                                                        e_lsp_symbol_col(f),
+                                                        e_lsp_symbol_units(f),
                                                         outgoing,
                                                         E_LSP_ROWS_MAX,
                                                         e_lsp_syms_told, a)));
@@ -30897,7 +31198,7 @@ static int e_lsp_ui_type_hierarchy(FENSTER *f, int subtypes)
  a->flag = subtypes;
  return(e_lsp_ask_sent(f, a, e_lsp_type_hierarchy_async(g_lsp, g_lsp_file,
                                                         b->b.y,
-                                                        e_lsp_symbol_col(f),
+                                                        e_lsp_symbol_units(f),
                                                         subtypes,
                                                         E_LSP_ROWS_MAX,
                                                         e_lsp_syms_told, a)));
@@ -30915,10 +31216,10 @@ static int e_lsp_pos_le(int al, int ac, int bl, int bc)
 }
 
 /* Does range R fully enclose the selection [sl,sc .. el,ec]? */
-static int e_lsp_range_covers(const e_lsp_range *r, int sl, int sc, int el, int ec)
+static int e_lsp_range_covers(const e_lsp_ask_range *r, int sl, int sc, int el, int ec)
 {
- return(e_lsp_pos_le(r->start_line, r->start_char, sl, sc) &&
-        e_lsp_pos_le(el, ec, r->end_line, r->end_char));
+ return(e_lsp_pos_le(r->start_line, r->start_x, sl, sc) &&
+        e_lsp_pos_le(el, ec, r->end_line, r->end_x));
 }
 
 /* AltQ V -- expand selection: grow the block mark to the smallest syntactic
@@ -30939,7 +31240,8 @@ static int e_lsp_ui_expand_selection(FENSTER *f)
  if (!a)
   return(-1);
  return(e_lsp_ask_sent(f, a, e_lsp_selection_range_async(g_lsp, g_lsp_file,
-                                                         b->b.y, b->b.x,
+                                                         b->b.y,
+                                                         e_lsp_units_at(f, b->b.y, b->b.x),
                                                          E_LSP_RANGES_MAX,
                                                          e_lsp_ranges_told,
                                                          a)));
@@ -30948,10 +31250,10 @@ static int e_lsp_ui_expand_selection(FENSTER *f)
 /**
  * e_lsp_range_is - Is range @r exactly the selection [sl,sc .. el,ec]?
  */
-static int e_lsp_range_is(const e_lsp_range *r, int sl, int sc, int el, int ec)
+static int e_lsp_range_is(const e_lsp_ask_range *r, int sl, int sc, int el, int ec)
 {
- return(r->start_line == sl && r->start_char == sc &&
-        r->end_line == el && r->end_char == ec);
+ return(r->start_line == sl && r->start_x == sc &&
+        r->end_line == el && r->end_x == ec);
 }
 
 /**
@@ -30983,7 +31285,7 @@ static int e_lsp_selection_pick(const e_lsp_ask_t *a, SCHIRM *s)
 static void e_lsp_selection_show(FENSTER *f, const e_lsp_ask_t *a)
 {
  SCHIRM *s = f->s;
- const e_lsp_range *r;
+ const e_lsp_ask_range *r;
  int chosen;
 
  if (a->n <= 0)
@@ -30998,8 +31300,8 @@ static void e_lsp_selection_show(FENSTER *f, const e_lsp_ask_t *a)
   return;
  }
  r = &a->rows[chosen].range;
- e_buffer_mark_set(f->b, E_BUFFER_MARK_BEGIN, r->start_line, r->start_char);
- e_buffer_mark_set(f->b, E_BUFFER_MARK_END, r->end_line, r->end_char);
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_BEGIN, r->start_line, r->start_x);
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_END, r->end_line, r->end_x);
  e_schirm(f, 1);
  e_cursor(f, 0);
 }
@@ -31031,7 +31333,7 @@ static int e_lsp_ui_highlight(FENSTER *f)
  a->wlen = strlen(word);   /* every hit is the same symbol: one length */
  return(e_lsp_ask_sent(f, a, e_lsp_document_highlight_async(g_lsp, g_lsp_file,
                                                             b->b.y,
-                                                            e_lsp_symbol_col(f),
+                                                            e_lsp_symbol_units(f),
                                                             E_LSP_HL_MAX,
                                                             e_lsp_locs_told,
                                                             a)));
@@ -31310,7 +31612,8 @@ static int e_lsp_ui_code_actions(FENSTER *f)
  if (!a)
   return(-1);
  return(e_lsp_ask_sent(f, a, e_lsp_code_actions_async(g_lsp, g_lsp_file,
-                                                      f->b->b.y, f->b->b.x,
+                                                      f->b->b.y,
+                                                      e_lsp_units_at(f, f->b->b.y, f->b->b.x),
                                                       E_LSP_ROWS_MAX,
                                                       e_lsp_actions_told, a)));
 }
@@ -31459,9 +31762,12 @@ static int e_lsp_ui_format(FENSTER *f)
  a = e_lsp_ask_begin(f, E_LSP_ASK_FORMAT);
  if (!a)
   return(-1);
- r.start_line = s->mark_begin.y;  r.start_char = s->mark_begin.x;
- r.end_line = s->mark_end.y;      r.end_char = s->mark_end.x;
- a->has_sel = (r.start_line != r.end_line || r.start_char != r.end_char);
+ r.start_line = s->mark_begin.y;
+ r.start_char = e_lsp_units_at(f, s->mark_begin.y, s->mark_begin.x);
+ r.end_line = s->mark_end.y;
+ r.end_char = e_lsp_units_at(f, s->mark_end.y, s->mark_end.x);
+ a->has_sel = (s->mark_begin.y != s->mark_end.y ||
+               s->mark_begin.x != s->mark_end.x);
  if (a->has_sel)
   rc = e_lsp_format_async(g_lsp, g_lsp_file, a->base, &r,
                           e_lsp_format_told, a);
@@ -31518,7 +31824,7 @@ static int e_lsp_ui_rename(FENSTER *f)
  if (!a)
   return(-1);
  return(e_lsp_ask_sent(f, a, e_lsp_rename_async(g_lsp, g_lsp_file, b->b.y,
-                                                e_lsp_symbol_col(f), newname,
+                                                e_lsp_symbol_units(f), newname,
                                                 a->base, e_lsp_applied_told,
                                                 a)));
 }

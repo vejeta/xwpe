@@ -143,7 +143,23 @@ term_raw_read
 display_key_literal
 e_undo_sw
 e_redo_sw
+lsp_units_field we_lsp_pos.c
+e_lsp_units_make we_lsp_pos.c
+lsp_char_key we_lsp_pos.c
 EOF
+
+# The language server's columns have one owner (we_lsp_pos.c): the units a
+# server counts a line in (UTF-16 code units unless it agreed to UTF-8) are
+# made, read and written only there, and every other file holds them as the
+# opaque e_lsp_units, so an int cannot be handed where units are meant, and
+# units cannot be used as a byte column.  Three rules close the gaps the
+# compiler leaves: the field of the type (lsp_units_field), its one
+# constructor (e_lsp_units_make, a call form), and the JSON key itself
+# (lsp_char_key: the string "character" outside we_lsp_pos.c is a position
+# read into an int, which the type alone cannot see; it is counted on the
+# source with comments blanked and strings kept).  The rules have no allow
+# line, so no allow-file entry can go stale for them; an allow line added
+# later needs the stale check of the allow file like any other.
 
 # The text a window shows has one owner (we_buffer.c): every line the editor
 # adds or removes goes through its splice, which keeps the window's undo,
@@ -265,6 +281,12 @@ pos_rule_re() {
     pos_whole) printf '%s\n' "(->|[.])(mark_begin|mark_end|ks)[ \\t]*=[^=]|(^|[^A-Za-z0-9_])([A-Za-z0-9_>.-]*(->|[.]))?$POS_IDENT(->|[.])(fa|fe)[ \\t]*=[^=]|->pt[[][^]]*[]][ \\t]*=[^=]|(^|[^A-Za-z0-9_])(b|[A-Za-z0-9_>.-]*->b[a-z]?)->b[ \\t]*=[^=]" ;;
     pos_address) printf '%s\n' "&[A-Za-z0-9_>.-]*(->|[.])(mark_begin|mark_end|ks)([^A-Za-z0-9_.[]|\$)|&([A-Za-z0-9_>.-]*(->|[.]))?$POS_IDENT(->|[.])(fa|fe)([^A-Za-z0-9_.[]|\$)|&(b|[A-Za-z0-9_>.-]*->b[a-z]?)->b([^A-Za-z0-9_.[]|\$)|&[A-Za-z0-9_>.-]*->pt[[]" ;;
   esac
+}
+
+# The field of the language server's units, in the bracket spelling awk -v
+# keeps whole: a read or write of it through . or ->.
+lsp_units_rule_re() {
+  printf '%s\n' '(->|[.])units_on_wire([^A-Za-z0-9_]|$)'
 }
 
 # The terminal's keyboard has one reader.  In we_term.c a byte or curses key
@@ -424,6 +446,32 @@ for fixrule in $POS_NAMES; do
   grep -qx "$fixrule" "$WORK/posmatched" ||
     problem "canary: position rule $fixrule matches nothing in its fixture (the rule is blind)"
 done
+
+# --- the self-test of the units rule: each line is "<matches> <text>", the
+# number of times the rule must match the text.  The first column counts the
+# whole line, so a line with two reads counts two.  The rule must match at
+# least one positive line, or it is blind.
+cat > "$WORK/unitsfixture" <<'EOF'
+1 u.units_on_wire = 3;
+1 p->units_on_wire
+1 return u.units_on_wire;
+2 if (a.units_on_wire == b.units_on_wire)
+0 units_on_wire_count = 0;
+0 x.units = 1;
+0 wire->units
+EOF
+unitsmatched=0
+while IFS= read -r fixline; do
+  fixwant=${fixline%% *}
+  fixtext=${fixline#* }
+  printf '%s\n' "$fixtext" > "$WORK/unitsline"
+  fixn=$(count_uses_re "$(lsp_units_rule_re)" "$WORK/unitsline")
+  [ "$fixn" -eq "$fixwant" ] ||
+    problem "canary: the units rule matches \"$fixtext\" $fixn times, not $fixwant (the rule is blind or too wide)"
+  [ "$fixn" -gt 0 ] && unitsmatched=1
+done < "$WORK/unitsfixture"
+[ $unitsmatched -eq 1 ] ||
+  problem "canary: the units rule matches nothing in its fixture (the rule is blind)"
 
 # --- the self-test of the keyboard rules: the same blindness check.  The
 # fixture has two raw reads outside the owners (one of them a call of ungetch)
@@ -779,6 +827,45 @@ while read -r slot; do
   grep -qE "^[a-z]+ $slot " "$WORK/fillexcept" && continue
   problem "fill: $slot is declared as a slot but is in no table (dead, or a new service without its fills)"
 done < "$WORK/declared"
+# The language server's columns: the owner is built and defines its
+# conversions, the bridge and the engine import them (a file that stops
+# importing one has gone back to reading a column on its own), and each of
+# the three source rules sees what it guards in the owner itself.
+LSP_OWNER_SEEN=0
+for obj in $OBJECTS; do
+  [ "$(basename "$obj")" = we_lsp_pos.o ] || continue
+  [ -f "$obj" ] || continue
+  LSP_OWNER_SEEN=1
+  defined_names "$obj" > "$WORK/defined"
+  for sym in e_lsp_units_of e_lsp_col_of e_lsp_units_read e_lsp_position_json \
+             e_lsp_text_offset e_lsp_text_index_col e_lsp_semantic_decode; do
+    grep -qx "$sym" "$WORK/defined" ||
+      problem "canary: $sym not defined in we_lsp_pos.o (the owner of the server's columns is incomplete)"
+  done
+done
+[ $LSP_OWNER_SEEN -eq 1 ] ||
+  problem "canary: we_lsp_pos.o is not among the objects (the owner of the server's columns is not built)"
+canary_import we_debug.o e_lsp_units_of "the bridge no longer converts the server's columns"
+canary_import we_debug.o e_lsp_text_index_col "the bridge no longer converts the server's columns"
+canary_import we_lsp.o e_lsp_units_read "the engine reads a position without the owner"
+canary_import we_lsp.o e_lsp_position_json "the engine writes a position without the owner"
+canary_import we_lsp.o e_lsp_text_index_offset "the engine edits text by a position without the owner"
+canary_import we_lsp.o e_lsp_encoding_parse "the engine reads the negotiated encoding without the owner"
+if lsppos=$(stripped_source we_lsp_pos.o); then
+  [ "$(count_uses e_lsp_units_make "$lsppos")" -gt 0 ] ||
+    problem "canary: the source scan sees no e_lsp_units_make( in we_lsp_pos.c (the call-form rule is blind)"
+  [ "$(count_uses_re "$(lsp_units_rule_re)" "$lsppos")" -gt 0 ] ||
+    problem "canary: the source scan sees no units_on_wire in we_lsp_pos.c (the field rule is blind)"
+else
+  problem "canary: we_lsp_pos.c not found under $SRCDIR"
+fi
+if lsppos=$(commented_source we_lsp_pos.c); then
+  [ "$(count_uses_re '"character"' "$lsppos")" -gt 0 ] ||
+    problem "canary: the source scan sees no \"character\" key in we_lsp_pos.c (the key rule is blind)"
+else
+  problem "canary: we_lsp_pos.c not found under $SRCDIR"
+fi
+
 # The call-form branch of the source scan must see the writer's own write(.
 if fdloop=$(stripped_source we_fdloop.o); then
   [ "$(count_uses write "$fdloop")" -gt 0 ] ||
@@ -797,7 +884,9 @@ for obj in $OBJECTS; do
     case $word in
       'read(0') n=$(count_uses_re "$READ_STDIN_RE" "$file") ;;
       'fileno(stdin)') n=$(count_uses "fileno[ \t]*[(][ \t]*stdin" "$file") ;;
-      wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F|e_getch) n=$(count_uses "$word" "$file") ;;
+      wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F|e_getch|e_lsp_units_make) n=$(count_uses "$word" "$file") ;;
+      lsp_units_field) n=$(count_uses_re "$(lsp_units_rule_re)" "$file") ;;
+      lsp_char_key) n=$(count_uses_re '"character"' "$(commented_source "$c")") ;;
       XK_|XKB_KEY_|e_x_) n=$(count_words "$word[A-Za-z0-9_]+" "$file") ;;
       mxlines_write) n=$(count_uses_re 'mxlines[ \t]*[)]?[ \t]*([+][+]|--|[+]=|-=|=[^=])|([+][+]|--)[ \t]*[(]?[A-Za-z0-9_>.-]*mxlines' "$file") ;;
       pos_field|pos_prefix|pos_whole|pos_address) n=$(count_uses_re "$(pos_rule_re "$word")" "$file") ;;

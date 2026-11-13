@@ -12,14 +12,16 @@
  * against a real server without running xwpe.  The editor bridge (completion
  * popup, hover box, diagnostic marks, definition jump) lives elsewhere.
  *
- * Coordinates are LSP's: 0-based line AND character.  The editor bridge
- * converts to/from xwpe's 1-based lines.
+ * Coordinates are LSP's: 0-based line, and the character column in the
+ * units the session negotiated (e_lsp_units, we_lsp_pos.h).  The editor
+ * bridge converts to and from byte columns and xwpe's 1-based lines.
  */
 #ifndef WE_LSP_H
 #define WE_LSP_H
 
 #include <stddef.h>
 #include "we_debreq.h"   /* E_D_REQ_IO, E_D_REQ_END, E_D_SEND_*: the requests' world */
+#include "we_lsp_pos.h"  /* e_lsp_units, e_lsp_sem_token: the server's columns */
 
 struct json_object;
 
@@ -27,8 +29,8 @@ struct json_object;
  * (line,character) is the diagnostic's range START and (end_line,end_character)
  * its END (both 0-based) so the editor can underline/recolor the exact span. */
 typedef struct {
- void (*on_diagnostic)(const char *path, int line, int character,
-                       int end_line, int end_character,
+ void (*on_diagnostic)(const char *path, int line, e_lsp_units character,
+                       int end_line, e_lsp_units end_character,
                        int severity, const char *message, void *ud);
  /* Called once per publishDiagnostics batch with the error/warning totals --
     for a non-spammy live "N errors, M warnings" status as you type. */
@@ -77,33 +79,25 @@ typedef struct {
 typedef struct {
  char *path;      /* filesystem path of the location's file */
  int   line;      /* 0-based                                */
- int   character; /* 0-based                                */
+ e_lsp_units character; /* 0-based, in the session's units   */
 } e_lsp_location;
 
 /* A text range [start, end), both ends 0-based (line, character) as in LSP. */
 typedef struct {
- int start_line, start_char;
- int end_line, end_char;
+ int start_line;
+ e_lsp_units start_char;
+ int end_line;
+ e_lsp_units end_char;
 } e_lsp_range;
 
-/* One semantic token: the half-open span [start, start+length) on `line` (all
- * 0-based), whose meaning is the legend index `type` (resolve to a name like
- * "keyword"/"class"/"method" with e_lsp_semantic_legend).  `modifiers` is the
- * raw modifier bitset (unused for colouring so far). */
-typedef struct {
- int line;
- int start;
- int length;
- int type;
- int modifiers;
-} e_lsp_sem_token;
+/* e_lsp_sem_token (one semantic token) is in we_lsp_pos.h with its decoder. */
 
 /* A symbol for the outline / workspace search (engine-owned strings). */
 typedef struct {
  char *name;      /* symbol name (object/def/val/...)        */
  char *path;      /* file path (NULL = the current document) */
  int   line;      /* 0-based line of the symbol              */
- int   character; /* 0-based                                 */
+ e_lsp_units character; /* 0-based, in the session's units   */
  int   kind;      /* LSP SymbolKind                          */
 } e_lsp_symbol;
 
@@ -126,7 +120,7 @@ typedef struct {
 typedef struct {
  char *label;     /* the hint text, padding (paddingLeft/Right) folded in */
  int   line;      /* 0-based line of the anchor position             */
- int   character; /* 0-based column of the anchor position           */
+ e_lsp_units character; /* 0-based column of the anchor, in the units */
  int   kind;      /* 1 = Type, 2 = Parameter, 0 = unspecified        */
 } e_lsp_inlay_hint;
 
@@ -245,9 +239,9 @@ typedef void (*e_lsp_answered_fn)(E_D_REQ_END how, struct json_object *resp,
    NULL when there is none or the request ended without an answer. */
 typedef void (*e_lsp_text_fn)(E_D_REQ_END how, char *text, void *ctx);
 /* A location answer: @found is 1 with @path (borrowed), @line, @character
-   (0-based) set, else 0. */
+   (0-based, in the session's units) set, else 0. */
 typedef void (*e_lsp_location_fn)(E_D_REQ_END how, int found, const char *path,
-                                  int line, int character, void *ctx);
+                                  int line, e_lsp_units character, void *ctx);
 /* A completion answer: @items (engine-owned, valid until the next completion
    or the close), @n of them, or n = -1 when the request ended unanswered. */
 typedef void (*e_lsp_items_fn)(E_D_REQ_END how,
@@ -308,12 +302,12 @@ int  e_lsp_requests_owed(const e_lsp_session *s);
 const char *e_lsp_request_waited(const e_lsp_session *s, long *secs);
 
 int e_lsp_hover_async(e_lsp_session *s, const char *path, int line,
-                      int character, e_lsp_text_fn fn, void *ctx);
+                      e_lsp_units character, e_lsp_text_fn fn, void *ctx);
 int e_lsp_locate_async(e_lsp_session *s, int which, const char *path,
-                       int line, int character, e_lsp_location_fn fn,
+                       int line, e_lsp_units character, e_lsp_location_fn fn,
                        void *ctx);
 int e_lsp_completion_async(e_lsp_session *s, const char *path, int line,
-                           int character, int max, e_lsp_items_fn fn,
+                           e_lsp_units character, int max, e_lsp_items_fn fn,
                            void *ctx);
 /* Whole file when @range is NULL; else the inclusive range it holds. */
 int e_lsp_format_async(e_lsp_session *s, const char *path,
@@ -321,28 +315,28 @@ int e_lsp_format_async(e_lsp_session *s, const char *path,
                        e_lsp_edit_fn fn, void *ctx);
 /* The active signature's label at a call (malloc'd text, or NULL). */
 int e_lsp_signature_help_async(e_lsp_session *s, const char *path, int line,
-                               int character, e_lsp_text_fn fn, void *ctx);
+                               e_lsp_units character, e_lsp_text_fn fn, void *ctx);
 /* Every use of the symbol, its declaration included; at most @max. */
 int e_lsp_references_async(e_lsp_session *s, const char *path, int line,
-                           int character, int max, e_lsp_locations_fn fn,
+                           e_lsp_units character, int max, e_lsp_locations_fn fn,
                            void *ctx);
 /* Every occurrence of the symbol in this file; at most @max. */
 int e_lsp_document_highlight_async(e_lsp_session *s, const char *path, int line,
-                                   int character, int max,
+                                   e_lsp_units character, int max,
                                    e_lsp_locations_fn fn, void *ctx);
 /* Who calls the symbol (@outgoing 0) or what it calls (1); n = 0 when the
    cursor is not on a callable. */
 int e_lsp_call_hierarchy_async(e_lsp_session *s, const char *path, int line,
-                               int character, int outgoing, int max,
+                               e_lsp_units character, int outgoing, int max,
                                e_lsp_symbols_fn fn, void *ctx);
 /* What the type extends (@subtypes 0) or what extends it (1); n = 0 when
    the cursor is not on a type. */
 int e_lsp_type_hierarchy_async(e_lsp_session *s, const char *path, int line,
-                               int character, int subtypes, int max,
+                               e_lsp_units character, int subtypes, int max,
                                e_lsp_symbols_fn fn, void *ctx);
 /* The nested "smart selection" ranges around the position. */
 int e_lsp_selection_range_async(e_lsp_session *s, const char *path, int line,
-                                int character, int max, e_lsp_ranges_fn fn,
+                                e_lsp_units character, int max, e_lsp_ranges_fn fn,
                                 void *ctx);
 /* The file's code lenses, each resolved where it needs it. */
 int e_lsp_code_lenses_async(e_lsp_session *s, const char *path, int max,
@@ -364,7 +358,7 @@ int e_lsp_workspace_symbols_async(e_lsp_session *s, const char *query, int max,
    diagnostics covering it sent along.  The list is kept for
    e_lsp_code_action_run_async until the next code action request. */
 int e_lsp_code_actions_async(e_lsp_session *s, const char *path, int line,
-                             int character, int max, e_lsp_actions_fn fn,
+                             e_lsp_units character, int max, e_lsp_actions_fn fn,
                              void *ctx);
 /* Run code action @index of the last list on @current_text: an edit in
    hand is applied at once (@fn told before this returns); an action that
@@ -377,7 +371,7 @@ int e_lsp_code_action_run_async(e_lsp_session *s, int index, const char *path,
 /* Rename the symbol to @new_name: the edits for this file applied to
    @current_text. */
 int e_lsp_rename_async(e_lsp_session *s, const char *path, int line,
-                       int character, const char *new_name,
+                       e_lsp_units character, const char *new_name,
                        const char *current_text, e_lsp_applied_fn fn,
                        void *ctx);
 
@@ -391,23 +385,23 @@ int  e_lsp_diagnostics_seen(const e_lsp_session *s);
 
 /* textDocument/hover at (line,character): returns a malloc'd plain-text string
  * (markdown fences stripped) the caller frees, or NULL. */
-char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character);
+char *e_lsp_hover(e_lsp_session *s, const char *path, int line, e_lsp_units character);
 
 /* textDocument/signatureHelp at (line,character): the active overload's
  * signature label (e.g. "def println(x: Any): Unit").  malloc'd, caller frees,
  * or NULL.  Most useful with the cursor inside a call's parentheses. */
 char *e_lsp_signature_help(e_lsp_session *s, const char *path,
-                           int line, int character);
+                           int line, e_lsp_units character);
 
 /* textDocument/definition (and the implementation / type-definition variants):
  * on success fill out_path/out_line/out_char with the first location and return
  * 0; return -1 if there is none. */
-int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,
-                     char *out_path, size_t out_sz, int *out_line, int *out_char);
-int e_lsp_implementation(e_lsp_session *s, const char *path, int line, int character,
-                         char *out_path, size_t out_sz, int *out_line, int *out_char);
-int e_lsp_type_definition(e_lsp_session *s, const char *path, int line, int character,
-                          char *out_path, size_t out_sz, int *out_line, int *out_char);
+int e_lsp_definition(e_lsp_session *s, const char *path, int line, e_lsp_units character,
+                     char *out_path, size_t out_sz, int *out_line, e_lsp_units *out_char);
+int e_lsp_implementation(e_lsp_session *s, const char *path, int line, e_lsp_units character,
+                         char *out_path, size_t out_sz, int *out_line, e_lsp_units *out_char);
+int e_lsp_type_definition(e_lsp_session *s, const char *path, int line, e_lsp_units character,
+                          char *out_path, size_t out_sz, int *out_line, e_lsp_units *out_char);
 
 /* workspace/symbol: search every symbol in the project matching `query`.  Fills
  * up to `max` symbols (engine-owned name+path); returns the count (>=0) or -1. */
@@ -417,7 +411,7 @@ int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
 /* textDocument/codeAction at (line,character): quick-fixes / refactors offered
  * there (organize imports, import missing, ...).  Fills up to `max` actions
  * (engine-owned titles); returns the count (>=0) or -1. */
-int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int character,
+int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, e_lsp_units character,
                        e_lsp_code_action *acts, int max);
 
 /* Run the code action chosen by index from the LAST e_lsp_code_actions call
@@ -429,13 +423,13 @@ char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
 
 /* textDocument/completion: fills up to `max` items and returns the count (>=0),
  * or -1 on error.  Items point at engine-owned memory (see e_lsp_completion_item). */
-int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character,
+int e_lsp_completion(e_lsp_session *s, const char *path, int line, e_lsp_units character,
                      e_lsp_completion_item *items, int max);
 
 /* textDocument/references: every use of the symbol at (line,character),
  * including its declaration.  Fills up to `max` locations (engine-owned paths);
  * returns the count (>=0) or -1. */
-int e_lsp_references(e_lsp_session *s, const char *path, int line, int character,
+int e_lsp_references(e_lsp_session *s, const char *path, int line, e_lsp_units character,
                      e_lsp_location *locs, int max);
 
 /* Call hierarchy for the symbol at (line,character): prepareCallHierarchy to
@@ -444,7 +438,7 @@ int e_lsp_references(e_lsp_session *s, const char *path, int line, int character
  * (engine-owned name + the caller/callee's own location) in `out`; returns the
  * count (>=0) or -1.  0 means the cursor was not on a callable, or none. */
 int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
-                         int character, int outgoing,
+                         e_lsp_units character, int outgoing,
                          e_lsp_symbol *out, int max);
 
 /* Type hierarchy for the type at (line,character): prepareTypeHierarchy to pin
@@ -453,7 +447,7 @@ int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
  * symbols (engine-owned name + each type's own location) in `out`; returns the
  * count (>=0) or -1.  0 means the cursor was not on a type, or none. */
 int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
-                         int character, int subtypes,
+                         e_lsp_units character, int subtypes,
                          e_lsp_symbol *out, int max);
 
 /* textDocument/selectionRange at (line,character): the server's nested
@@ -462,14 +456,14 @@ int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
  * previous).  Fills up to `max`; returns the count (>=0) or -1.  Drives an
  * editor "expand selection" that grows by syntactic structure, not by lines. */
 int e_lsp_selection_range(e_lsp_session *s, const char *path, int line,
-                          int character, e_lsp_range *out, int max);
+                          e_lsp_units character, e_lsp_range *out, int max);
 
 /* textDocument/documentHighlight: every occurrence of the symbol under the
  * cursor IN THIS FILE (read/write/text).  Fills up to `max` start locations
  * (engine-owned, all the current file); returns the count (>=0) or -1.  Lighter
  * than references -- single file, for "highlight all uses" as you rest on a name. */
 int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
-                             int character, e_lsp_location *locs, int max);
+                             e_lsp_units character, e_lsp_location *locs, int max);
 
 /* textDocument/codeLens (resolving each lens that needs it): the run/test/
  * reference annotations the server attaches to definitions in `path`.  Fills up
@@ -504,14 +498,14 @@ char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text)
  * (malloc'd, caller frees), or NULL if there is nothing to do / on error. */
 char *e_lsp_format_range(e_lsp_session *s, const char *path,
                          const char *current_text,
-                         int start_line, int start_char,
-                         int end_line, int end_char);
+                         int start_line, e_lsp_units start_char,
+                         int end_line, e_lsp_units end_char);
 
 /* textDocument/rename: rename the symbol at (line,character) to `new_name`.
  * Applies the resulting edits for THIS file to `current_text` and returns the new
  * full text (malloc'd), or NULL.  *other_files, if non-NULL, is set to the number
  * of OTHER files the rename also touches (not applied here -- the caller warns). */
-char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
+char *e_lsp_rename(e_lsp_session *s, const char *path, int line, e_lsp_units character,
                    const char *new_name, const char *current_text,
                    int *other_files);
 
@@ -523,7 +517,9 @@ void e_lsp_close(e_lsp_session *s);
 
 /* Join editor lines into the document body for the server, emitting exactly one
  * '\n' per line.  Each lines[i] ends at its first newline (the editor's WPE_WR
- * terminator) or NUL; a NULL element is an empty line.  Pure -- no session, no
+ * terminator) or NUL; a NULL element is an empty line.  A '\r' inside a row is
+ * kept (the editor's copy is spliced into and written back); didOpen and
+ * didChange send it as a space (e_lsp_wire_text).  Pure -- no session, no
  * I/O -- so the serialization invariant is unit-testable.  Returns a malloc'd
  * string (caller frees) or NULL on OOM. */
 char *e_lsp_join_lines(char *const *lines, int n);
@@ -535,11 +531,12 @@ char *e_lsp_join_lines(char *const *lines, int n);
  * unit-testable. */
 int e_lsp_doc_is_new(char **last, const char *body);
 
-/* Decode an LSP semantic-tokens `data` array (@n ints, groups of 5:
- * deltaLine, deltaStartChar, length, tokenType, tokenModifiers) into absolute
- * tokens.  Fills up to @max into @out and returns the count.  PURE -- no
- * session, no I/O -- so the (fiddly) delta decoding is unit-testable. */
-int e_lsp_semantic_decode(const int *data, int n, e_lsp_sem_token *out, int max);
+/* The semantic-tokens decoder, e_lsp_semantic_decode, is the owner's of the
+ * server's columns (we_lsp_pos.h). */
+
+/* The encoding the session negotiated at initialize (E_LSP_ENC_*): the
+ * units of every column the session sends and reads.  UTF16 for NULL. */
+int e_lsp_position_encoding(const e_lsp_session *s);
 
 /* textDocument/semanticTokens/full: the server's token classification for the
  * whole file.  Fills up to @max tokens in @out (each `type` is a legend index;

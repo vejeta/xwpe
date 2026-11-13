@@ -37,8 +37,11 @@ static const char *CARGO_TOML =
  "edition = \"2021\"\n";
 
 static int g_diags = 0;
-static void on_diag(const char *path, int line, int ch, int end_line, int end_ch,
-                    int sev, const char *msg, void *ud)
+/* A literal ASCII column: units are bytes in every encoding. */
+#define COL(n) e_lsp_units_make(n)
+
+static void on_diag(const char *path, int line, e_lsp_units ch, int end_line,
+                    e_lsp_units end_ch, int sev, const char *msg, void *ud)
 {
  (void)path; (void)line; (void)ch; (void)end_line; (void)end_ch;
  (void)sev; (void)msg; (void)ud;
@@ -70,7 +73,8 @@ int main(void)
  e_lsp_session *s;
  char *hov;
  char defpath[1024];
- int defline = -1, defchar = -1, rc = 0, n, t;
+ int defline = -1, rc = 0, n, t;
+ e_lsp_units defchar = COL(0);
  e_lsp_completion_item items[64];
 
  if (!have_tools())
@@ -110,7 +114,7 @@ int main(void)
   int ok = 0;
   for (t = 0; t < 8 && !ok; t++)
   {
-   if (e_lsp_definition(s, rspath, 5, 16, defpath, sizeof(defpath),
+   if (e_lsp_definition(s, rspath, 5, COL(16), defpath, sizeof(defpath),
                         &defline, &defchar) == 0 && defline == 0)
     ok = 1;
    else
@@ -123,22 +127,22 @@ int main(void)
  /* references on the add() call (line 5, col 16) -> definition + the call */
  {
   e_lsp_location locs[64];
-  int nr = e_lsp_references(s, rspath, 5, 16, locs, 64);
+  int nr = e_lsp_references(s, rspath, 5, COL(16), locs, 64);
   printf("  REFERENCES add: %d\n", nr);
   if (nr < 2) { rc = fail("references on add should find the def + call"); goto close; }
  }
 
  /* completion / hover / rename: report best-effort (availability depends on how
     far the cold-start index got). */
- n = e_lsp_completion(s, rspath, 5, 16, items, 64);
+ n = e_lsp_completion(s, rspath, 5, COL(16), items, 64);
  printf("  COMPLETION: %d items%s%s\n", n, n > 0 ? ", e.g. " : "",
         n > 0 ? items[0].label : "");
- hov = e_lsp_hover(s, rspath, 5, 16);
+ hov = e_lsp_hover(s, rspath, 5, COL(16));
  if (hov) { printf("  HOVER add: %.60s\n", hov); free(hov); }
  else printf("  HOVER add: (none -- not fatal)\n");
  {
   int others = 0;
-  char *rn = e_lsp_rename(s, rspath, 0, 3, "plus", RUST_SRC, &others);
+  char *rn = e_lsp_rename(s, rspath, 0, COL(3), "plus", RUST_SRC, &others);
   if (rn) { printf("  RENAME add->plus ok (other files: %d)\n", others); free(rn); }
   else printf("  RENAME: (none -- not fatal)\n");
  }

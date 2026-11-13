@@ -60,6 +60,17 @@ upward from the bar, listing every action with its letter.  Arrow keys move, the
 letter or a click picks, @key{ESC} closes.  @kbd{Alt-Q} then @key{ESC} cancels.
 @end itemize
 
+@cindex columns, language server
+@cindex UTF-16, language server
+@noindent
+@strong{Columns.}  A language server counts the characters of a line in UTF-16
+code units (unless it agrees to count bytes), and the editor counts bytes.
+Every position the editor sends or receives is converted, so on a line with an
+accented letter, a CJK character or an emoji before a symbol the marks and the
+edits land on the symbol, and @kbd{Alt-Q .} puts the cursor on the problem's
+first letter.  (Go to definition and the other jumps still land on the line.)
+The wire trace (@env{XWPE_LSP_TRACE}) names the encoding the server answered with.
+
 @noindent
 The entry appears only for files a server backs, and disappears when you switch
 to an ordinary file.  (Note: @kbd{Alt-Q}, not @kbd{Alt-M}, drives the server --

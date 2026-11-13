@@ -52,6 +52,9 @@
 #include "../we_dap_proto.h"
 #include "../we_fdloop.h"
 
+/* A literal ASCII column of the fixtures: units are bytes in every encoding. */
+#define COL(n)           e_lsp_units_make(n)
+
 #define FAKE_FLAG        "--fake-lsp"
 #define FAKE_REORDER     "reorder"
 #define FAKE_LATE        "late"
@@ -480,8 +483,8 @@ typedef struct {
 static int diagnostics_seen = 0;
 
 /** on_diag - The host's diagnostic hook: count what arrives. */
-static void on_diag(const char *path, int line, int ch, int el, int ec,
-                    int sev, const char *msg, void *ud)
+static void on_diag(const char *path, int line, e_lsp_units ch, int el,
+                    e_lsp_units ec, int sev, const char *msg, void *ud)
 {
  (void)path; (void)line; (void)ch; (void)el; (void)ec; (void)sev;
  (void)msg; (void)ud;
@@ -502,7 +505,7 @@ static void told_text(E_D_REQ_END how, char *text, void *ctx)
 
 /** told_location - A definition's continuation. */
 static void told_location(E_D_REQ_END how, int found, const char *path,
-                          int line, int character, void *ctx)
+                          int line, e_lsp_units character, void *ctx)
 {
  told *t = ctx;
 
@@ -569,9 +572,9 @@ static void test_answers_reach_their_own_requests_in_any_order(void)
  check(s != NULL, "the session starts on the stand-in");
  if (!s)
   return;
- check(e_lsp_hover_async(s, ASKED_FILE, 1, 1, told_text, &hover) == E_D_SEND_OK,
+ check(e_lsp_hover_async(s, ASKED_FILE, 1, COL(1), told_text, &hover) == E_D_SEND_OK,
        "the hover goes out");
- check(e_lsp_locate_async(s, E_LSP_LOCATE_DEFINITION, ASKED_FILE, 1, 1,
+ check(e_lsp_locate_async(s, E_LSP_LOCATE_DEFINITION, ASKED_FILE, 1, COL(1),
                           told_location, &def) == E_D_SEND_OK,
        "the definition goes out while the hover is still out");
  check(e_lsp_requests_pending(s), "both are waited for");
@@ -603,15 +606,15 @@ static void test_cancel_tells_each_owner_once_and_drops_the_late_answer(void)
  check(s != NULL, "the session starts on the stand-in");
  if (!s)
   return;
- e_lsp_hover_async(s, ASKED_FILE, 1, 1, told_text, &hover);
+ e_lsp_hover_async(s, ASKED_FILE, 1, COL(1), told_text, &hover);
  e_lsp_requests_cancel(s, E_D_REQ_CANCELLED);
  check(hover.n == 1 && hover.how[0] == E_D_REQ_CANCELLED,
        "Esc tells the hover it was cancelled, once");
  check(!e_lsp_requests_pending(s), "nothing is waited for after Esc");
  /* The next request makes the stand-in answer the cancelled hover now. */
- e_lsp_locate_async(s, E_LSP_LOCATE_DEFINITION, ASKED_FILE, 1, 1,
+ e_lsp_locate_async(s, E_LSP_LOCATE_DEFINITION, ASKED_FILE, 1, COL(1),
                     told_location, &def);
- e_lsp_hover_async(s, ASKED_FILE, 2, 2, told_text, &again);
+ e_lsp_hover_async(s, ASKED_FILE, 2, COL(2), told_text, &again);
  loop_until(s, &def.n, 1, ANSWER_WAIT_MS);
  check(hover.n == 1, "the cancelled hover's late answer is dropped");
  check(def.n == 1 && def.how[0] == E_D_REQ_DONE &&
@@ -698,7 +701,7 @@ static void test_deadline_gives_the_request_up_and_the_start_has_none(void)
  for (i = 0; i < E_D_TIMERS; i++)
   world.armed[i] = E_D_TIMER_OFF;
  e_lsp_requests_init(s, &io, FAKE_DEADLINE_S);
- e_lsp_hover_async(s, ASKED_FILE, 1, 1, told_text, &hover);
+ e_lsp_hover_async(s, ASKED_FILE, 1, COL(1), told_text, &hover);
  check(world.armed[E_D_TIMER_DEADLINE] == DEADLINE_MS,
        "the request's deadline is the one the user set");
  e_lsp_request_timer(s, E_D_TIMER_DEADLINE);
@@ -722,8 +725,8 @@ static void test_a_server_that_ends_tells_every_request_it_is_gone(void)
  check(s != NULL, "the session starts on the stand-in");
  if (!s)
   return;
- e_lsp_hover_async(s, ASKED_FILE, 1, 1, told_text, &hover);
- e_lsp_locate_async(s, E_LSP_LOCATE_DEFINITION, ASKED_FILE, 1, 1,
+ e_lsp_hover_async(s, ASKED_FILE, 1, COL(1), told_text, &hover);
+ e_lsp_locate_async(s, E_LSP_LOCATE_DEFINITION, ASKED_FILE, 1, COL(1),
                     told_location, &def);
  loop_until(s, &def.n, 1, ANSWER_WAIT_MS);
  check(hover.n == 1 && hover.how[0] == E_D_REQ_GONE,
@@ -753,9 +756,9 @@ static void test_an_answer_read_by_a_waited_request_reaches_its_owner(void)
  check(s != NULL, "the session starts on the stand-in");
  if (!s)
   return;
- check(e_lsp_hover_async(s, ASKED_FILE, 1, 1, told_text, &hover) == E_D_SEND_OK,
+ check(e_lsp_hover_async(s, ASKED_FILE, 1, COL(1), told_text, &hover) == E_D_SEND_OK,
        "the hover goes out");
- sig = e_lsp_signature_help(s, ASKED_FILE, 1, 1);
+ sig = e_lsp_signature_help(s, ASKED_FILE, 1, COL(1));
  free(sig);
  loop_until(s, &hover.n, 1, QUIET_LOOP_MS);
  check(hover.n == 1 && hover.how[0] == E_D_REQ_DONE &&
@@ -825,7 +828,7 @@ static void test_a_newer_overlay_fetch_replaces_the_older(void)
        "the older fetch is told at once that it was replaced");
  /* The stand-in answers the older fetch now, and the newer one when the
     next request comes. */
- e_lsp_hover_async(s, ASKED_FILE, 1, 1, told_text, &hover);
+ e_lsp_hover_async(s, ASKED_FILE, 1, COL(1), told_text, &hover);
  loop_until(s, &second.n, 1, ANSWER_WAIT_MS);
  check(first.n == 1 && first.how[0] == E_D_REQ_CANCELLED && first.count == -1,
        "the older fetch's late answer is never handed over");
@@ -874,7 +877,7 @@ static void test_a_command_edit_reaches_the_text_it_was_run_on(void)
  check(s != NULL, "the session starts on the stand-in");
  if (!s)
   return;
- n = e_lsp_code_actions(s, ASKED_FILE, 0, 0, acts, ACTIONS_MAX);
+ n = e_lsp_code_actions(s, ASKED_FILE, 0, COL(0), acts, ACTIONS_MAX);
  check(n == 1 && !acts[0].has_edit, "a command-based action is offered");
  text = e_lsp_apply_code_action(s, 0, ASKED_FILE, ACTION_TEXT, &others);
  check(text && !strcmp(text, ACTION_AFTER) && others == 0,

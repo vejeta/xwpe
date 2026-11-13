@@ -185,6 +185,14 @@ grows a faint `: Int = 12`), updating a moment after each edit. No `Eval`
 button, no `main` -- the lightweight way to try an API. (A plain `.sc` file is a
 scala-cli *script*: you get inferred-type hints but not the `= 12` results.)
 
+### Marks and edits land on the right letters
+
+A server counts the characters of a line in UTF-16 code units, the editor
+counts bytes. xwpe converts every column it sends or receives, so on a line
+with an accented letter, a CJK character or an emoji before a symbol, the
+highlights, problem marks, selections, renames and quick-fixes land on the
+symbol. `XWPE_LSP_TRACE` names the encoding the server answered with.
+
 ### It never freezes
 
 Opening a `.scala`/`.sc` already starts the server in the background, so it is

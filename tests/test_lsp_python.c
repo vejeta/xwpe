@@ -30,8 +30,11 @@ static const char *PY_SRC =
  "main()\n";                    /* line 8                          */
 
 static int g_diags = 0;
-static void on_diag(const char *path, int line, int ch, int end_line, int end_ch,
-                    int sev, const char *msg, void *ud)
+/* A literal ASCII column: units are bytes in every encoding. */
+#define COL(n) e_lsp_units_make(n)
+
+static void on_diag(const char *path, int line, e_lsp_units ch, int end_line,
+                    e_lsp_units end_ch, int sev, const char *msg, void *ud)
 {
  (void)path; (void)line; (void)ch; (void)end_line; (void)end_ch;
  (void)sev; (void)msg; (void)ud;
@@ -62,7 +65,8 @@ int main(void)
  e_lsp_session *s;
  char *hov;
  char defpath[1024];
- int defline = -1, defchar = -1, rc = 0, n;
+ int defline = -1, rc = 0, n;
+ e_lsp_units defchar = COL(0);
  e_lsp_completion_item items[64];
  FILE *f;
 
@@ -99,7 +103,7 @@ int main(void)
   printf("  analysed (0 diagnostics -- pylsp without python3-pyflakes; not fatal)\n");
 
  /* definition of the add() call (line 4, char 12) -> its def on line 0 */
- if (e_lsp_definition(s, pypath, 4, 12, defpath, sizeof(defpath), &defline, &defchar) != 0)
+ if (e_lsp_definition(s, pypath, 4, COL(12), defpath, sizeof(defpath), &defline, &defchar) != 0)
  { rc = fail("definition of add returned nothing"); goto close; }
  printf("  DEFINITION add -> line %d\n", defline);
  if (defline != 0) { rc = fail("definition of add should point to line 0"); goto close; }
@@ -107,7 +111,7 @@ int main(void)
  /* completion inside `total` in `print(total)` (line 5, char 12) -> non-empty;
     jedi completes the identifier prefix under the cursor, so the position must
     sit on a real prefix, not a blank column. */
- n = e_lsp_completion(s, pypath, 5, 12, items, 64);
+ n = e_lsp_completion(s, pypath, 5, COL(12), items, 64);
  printf("  COMPLETION: %d items%s%s\n", n, n > 0 ? ", e.g. " : "",
         n > 0 ? items[0].label : "");
  if (n <= 0) { rc = fail("completion returned no items"); goto close; }
@@ -115,19 +119,19 @@ int main(void)
  /* references on the add() call (line 4, char 12) -> definition + the call */
  {
   e_lsp_location locs[64];
-  int nr = e_lsp_references(s, pypath, 4, 12, locs, 64);
+  int nr = e_lsp_references(s, pypath, 4, COL(12), locs, 64);
   printf("  REFERENCES add: %d\n", nr);
   if (nr < 2) { rc = fail("references on add should find the def + call"); goto close; }
  }
 
  /* hover + rename: capability differs by server (pyright rich; pylsp needs
     jedi/rope), so report best-effort without failing the test. */
- hov = e_lsp_hover(s, pypath, 4, 12);
+ hov = e_lsp_hover(s, pypath, 4, COL(12));
  if (hov) { printf("  HOVER add: %.60s\n", hov); free(hov); }
  else printf("  HOVER add: (none -- not fatal)\n");
  {
   int others = 0;
-  char *rn = e_lsp_rename(s, pypath, 0, 4, "plus", PY_SRC, &others);
+  char *rn = e_lsp_rename(s, pypath, 0, COL(4), "plus", PY_SRC, &others);
   if (rn) { printf("  RENAME add->plus ok (other files: %d)\n", others); free(rn); }
   else printf("  RENAME: (none -- server lacks rename, not fatal)\n");
  }

@@ -266,6 +266,15 @@ Changes
   comes back whole, at the new size.  Closing a window after a resize
   (Wayland) no longer puts back a piece of the old screen.
 
+* The language server actions (Alt-Q) now land on the right letters on a
+  line that has an accented letter, a CJK character or an emoji before the
+  symbol.  The server counts such characters as one or two units where the
+  editor counts bytes, and the difference moved every highlight, problem
+  mark, selection, rename, quick-fix and semantic colour on that line a few
+  characters to the left.  The editor now converts every column it sends or
+  receives.  The column in the Messages lines (file:line:col) of problems
+  and references counts like the status row.
+
 * In a terminal, the editor now asks for xterm's modifyOtherKeys and the
   kitty keyboard protocol, and gives them back when it ends, is stopped,
   crashes or hands the terminal to a program.  Esc acts at once,

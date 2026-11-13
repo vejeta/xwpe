@@ -29,7 +29,8 @@ typedef struct {
  int   found;         /* a location: one came                                */
  char *path;          /* a location's file (out_path of the caller)          */
  size_t path_sz;
- int   line, character;
+ int   line;
+ e_lsp_units character;
  e_lsp_completion_item *items;   /* completion: the caller's array            */
  int   max, n;
  e_lsp_location   *locs;         /* references, highlight: the caller's array */
@@ -157,7 +158,7 @@ static void lsp_sync_text_told(E_D_REQ_END how, char *text, void *ctx)
  w->done = 1;
 }
 
-char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character)
+char *e_lsp_hover(e_lsp_session *s, const char *path, int line, e_lsp_units character)
 {
  lsp_sync_wait w;
 
@@ -171,7 +172,7 @@ char *e_lsp_hover(e_lsp_session *s, const char *path, int line, int character)
 
 /** lsp_sync_location_told - A jump answered: keep its first location. */
 static void lsp_sync_location_told(E_D_REQ_END how, int found, const char *path,
-                                   int line, int character, void *ctx)
+                                   int line, e_lsp_units character, void *ctx)
 {
  lsp_sync_wait *w = ctx;
 
@@ -190,8 +191,8 @@ static void lsp_sync_location_told(E_D_REQ_END how, int found, const char *path,
  * Return: 0 with out_* set, or -1.
  */
 static int lsp_sync_locate(e_lsp_session *s, int which, const char *path,
-                           int line, int character, char *out_path,
-                           size_t out_sz, int *out_line, int *out_char)
+                           int line, e_lsp_units character, char *out_path,
+                           size_t out_sz, int *out_line, e_lsp_units *out_char)
 {
  lsp_sync_wait w;
 
@@ -211,22 +212,22 @@ static int lsp_sync_locate(e_lsp_session *s, int which, const char *path,
  return 0;
 }
 
-int e_lsp_definition(e_lsp_session *s, const char *path, int line, int character,
-                     char *out_path, size_t out_sz, int *out_line, int *out_char)
+int e_lsp_definition(e_lsp_session *s, const char *path, int line, e_lsp_units character,
+                     char *out_path, size_t out_sz, int *out_line, e_lsp_units *out_char)
 {
  return lsp_sync_locate(s, E_LSP_LOCATE_DEFINITION, path, line, character,
                         out_path, out_sz, out_line, out_char);
 }
 
-int e_lsp_implementation(e_lsp_session *s, const char *path, int line, int character,
-                         char *out_path, size_t out_sz, int *out_line, int *out_char)
+int e_lsp_implementation(e_lsp_session *s, const char *path, int line, e_lsp_units character,
+                         char *out_path, size_t out_sz, int *out_line, e_lsp_units *out_char)
 {
  return lsp_sync_locate(s, E_LSP_LOCATE_IMPLEMENTATION, path, line, character,
                         out_path, out_sz, out_line, out_char);
 }
 
-int e_lsp_type_definition(e_lsp_session *s, const char *path, int line, int character,
-                          char *out_path, size_t out_sz, int *out_line, int *out_char)
+int e_lsp_type_definition(e_lsp_session *s, const char *path, int line, e_lsp_units character,
+                          char *out_path, size_t out_sz, int *out_line, e_lsp_units *out_char)
 {
  return lsp_sync_locate(s, E_LSP_LOCATE_TYPE_DEFINITION, path, line, character,
                         out_path, out_sz, out_line, out_char);
@@ -249,7 +250,7 @@ static void lsp_sync_items_told(E_D_REQ_END how,
   w->n = w->max;
 }
 
-int e_lsp_completion(e_lsp_session *s, const char *path, int line, int character,
+int e_lsp_completion(e_lsp_session *s, const char *path, int line, e_lsp_units character,
                      e_lsp_completion_item *items, int max)
 {
  lsp_sync_wait w;
@@ -398,7 +399,7 @@ static void lsp_sync_applied_told(E_D_REQ_END how, char *newtext, int others,
 }
 
 char *e_lsp_signature_help(e_lsp_session *s, const char *path,
-                           int line, int character)
+                           int line, e_lsp_units character)
 {
  lsp_sync_wait w;
 
@@ -410,7 +411,7 @@ char *e_lsp_signature_help(e_lsp_session *s, const char *path,
  return w.text;
 }
 
-int e_lsp_references(e_lsp_session *s, const char *path, int line, int character,
+int e_lsp_references(e_lsp_session *s, const char *path, int line, e_lsp_units character,
                      e_lsp_location *locs, int max)
 {
  lsp_sync_wait w;
@@ -425,7 +426,7 @@ int e_lsp_references(e_lsp_session *s, const char *path, int line, int character
 }
 
 int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
-                             int character, e_lsp_location *locs, int max)
+                             e_lsp_units character, e_lsp_location *locs, int max)
 {
  lsp_sync_wait w;
 
@@ -440,7 +441,7 @@ int e_lsp_document_highlight(e_lsp_session *s, const char *path, int line,
 }
 
 int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
-                         int character, int outgoing,
+                         e_lsp_units character, int outgoing,
                          e_lsp_symbol *out, int max)
 {
  lsp_sync_wait w;
@@ -456,7 +457,7 @@ int e_lsp_call_hierarchy(e_lsp_session *s, const char *path, int line,
 }
 
 int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
-                         int character, int subtypes,
+                         e_lsp_units character, int subtypes,
                          e_lsp_symbol *out, int max)
 {
  lsp_sync_wait w;
@@ -472,7 +473,7 @@ int e_lsp_type_hierarchy(e_lsp_session *s, const char *path, int line,
 }
 
 int e_lsp_selection_range(e_lsp_session *s, const char *path, int line,
-                          int character, e_lsp_range *out, int max)
+                          e_lsp_units character, e_lsp_range *out, int max)
 {
  lsp_sync_wait w;
 
@@ -558,7 +559,7 @@ int e_lsp_workspace_symbols(e_lsp_session *s, const char *query,
                                                             &w));
 }
 
-int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, int character,
+int e_lsp_code_actions(e_lsp_session *s, const char *path, int line, e_lsp_units character,
                        e_lsp_code_action *acts, int max)
 {
  lsp_sync_wait w;
@@ -589,7 +590,7 @@ char *e_lsp_apply_code_action(e_lsp_session *s, int index, const char *path,
  return w.text;
 }
 
-char *e_lsp_rename(e_lsp_session *s, const char *path, int line, int character,
+char *e_lsp_rename(e_lsp_session *s, const char *path, int line, e_lsp_units character,
                    const char *new_name, const char *current_text,
                    int *other_files)
 {
@@ -622,8 +623,8 @@ char *e_lsp_format(e_lsp_session *s, const char *path, const char *current_text)
 
 char *e_lsp_format_range(e_lsp_session *s, const char *path,
                          const char *current_text,
-                         int start_line, int start_char,
-                         int end_line, int end_char)
+                         int start_line, e_lsp_units start_char,
+                         int end_line, e_lsp_units end_char)
 {
  lsp_sync_wait w;
  e_lsp_range r;

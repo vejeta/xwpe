@@ -38,12 +38,15 @@ static const char *SCALA_SRC =
 
 static int g_diags = 0;
 static int g_last_diag_span = -1;   /* end_char - char of the last diagnostic */
-static void on_diag(const char *path, int line, int ch, int end_line, int end_ch,
-                    int sev, const char *msg, void *ud)
+/* A literal ASCII column: units are bytes in every encoding. */
+#define COL(n) e_lsp_units_make(n)
+
+static void on_diag(const char *path, int line, e_lsp_units ch, int end_line,
+                    e_lsp_units end_ch, int sev, const char *msg, void *ud)
 {
  (void)path; (void)line; (void)sev; (void)msg; (void)ud;
  if (end_line == line)
-  g_last_diag_span = end_ch - ch;
+  g_last_diag_span = end_ch.units_on_wire - ch.units_on_wire;
  g_diags++;
 }
 
@@ -56,8 +59,8 @@ static int have_tools(void)
 static int fail(const char *m) { printf("FAIL: %s\n", m); return 1; }
 
 /* (al,ac) at or before (bl,bc) in document order -- for nesting checks. */
-static int pos_le(int al, int ac, int bl, int bc)
-{ return al < bl || (al == bl && ac <= bc); }
+static int pos_le(int al, e_lsp_units ac, int bl, e_lsp_units bc)
+{ return al < bl || (al == bl && ac.units_on_wire <= bc.units_on_wire); }
 
 int main(void)
 {
@@ -70,7 +73,8 @@ int main(void)
  e_lsp_session *s;
  char *hov;
  char defpath[1024];
- int defline = -1, defchar = -1, rc = 0, n;
+ int defline = -1, rc = 0, n;
+ e_lsp_units defchar = COL(0);
  e_lsp_completion_item items[64];
  FILE *f;
 
@@ -105,7 +109,7 @@ int main(void)
  hov = NULL;
  for (int t = 0; t < 8 && !hov; t++)
  {
-  hov = e_lsp_hover(s, scala, 2, 8);
+  hov = e_lsp_hover(s, scala, 2, COL(8));
   if (!hov) sleep(3);
  }
  if (!hov) { rc = fail("hover on f returned nothing"); goto close; }
@@ -114,13 +118,13 @@ int main(void)
  free(hov);
 
  /* definition of the `f` use (line 5, char 6) -> its declaration on line 2 */
- if (e_lsp_definition(s, scala, 5, 6, defpath, sizeof(defpath), &defline, &defchar) != 0)
+ if (e_lsp_definition(s, scala, 5, COL(6), defpath, sizeof(defpath), &defline, &defchar) != 0)
  { rc = fail("definition of f returned nothing"); goto close; }
  printf("  DEFINITION f -> line %d\n", defline);
  if (defline != 2) { rc = fail("definition of f should point to line 2"); goto close; }
 
  /* completion at end of `println` (line 7, char 11) -> non-empty */
- n = e_lsp_completion(s, scala, 7, 11, items, 64);
+ n = e_lsp_completion(s, scala, 7, COL(11), items, 64);
  printf("  COMPLETION: %d items%s%s\n", n, n > 0 ? ", e.g. " : "",
         n > 0 ? items[0].label : "");
  if (n <= 0) { rc = fail("completion returned no items"); goto close; }
@@ -128,7 +132,7 @@ int main(void)
  /* references on the `f` use (line 5, char 6) -> declaration + several uses */
  {
   e_lsp_location locs[64];
-  int nr = e_lsp_references(s, scala, 5, 6, locs, 64);
+  int nr = e_lsp_references(s, scala, 5, COL(6), locs, 64);
   printf("  REFERENCES f: %d\n", nr);
   if (nr < 2) { rc = fail("references on f should find the decl + uses"); goto close; }
  }
@@ -146,7 +150,7 @@ int main(void)
  {
   char *sg = NULL;
   for (int t = 0; t < 5 && !sg; t++)
-  { sg = e_lsp_signature_help(s, scala, 7, 12); if (!sg) sleep(2); }
+  { sg = e_lsp_signature_help(s, scala, 7, COL(12)); if (!sg) sleep(2); }
   if (sg) { printf("  SIGNATURE: %s\n", sg); free(sg); }
   else printf("  SIGNATURE: (none -- not fatal)\n");
  }
@@ -154,7 +158,7 @@ int main(void)
  /* rename `f` (declaration line 2, char 8) -> "fff": the edit-application path */
  {
   int others = 0;
-  char *rn = e_lsp_rename(s, scala, 2, 8, "fff", SCALA_SRC, &others);
+  char *rn = e_lsp_rename(s, scala, 2, COL(8), "fff", SCALA_SRC, &others);
   if (!rn) { rc = fail("rename returned nothing"); goto close; }
   printf("  RENAME f->fff (other files: %d)\n", others);
   if (!strstr(rn, "var fff") || !strstr(rn, "fff = fff * i"))
@@ -176,7 +180,7 @@ int main(void)
     text it must round-trip without corruption (the object + println survive and
     out-of-range lines like `trait Greeter` are still present). */
  {
-  char *rf = e_lsp_format_range(s, scala, SCALA_SRC, 2, 0, 7, 40);
+  char *rf = e_lsp_format_range(s, scala, SCALA_SRC, 2, COL(0), 7, COL(40));
   if (rf)
   {
    printf("  RANGE-FORMAT [2..7]: %zu bytes\n", strlen(rf));
@@ -192,9 +196,10 @@ int main(void)
  /* implementation of the abstract Greeter.greet (line 10, char 6) -> the
     override in Hello.  Retry while the index warms. */
  {
-  char ip[1024]; int il = -1, ic = -1, ok = 0, t;
+  char ip[1024]; int il = -1, ok = 0, t;
+  e_lsp_units ic = COL(0);
   for (t = 0; t < 6 && !ok; t++)
-  { ok = (e_lsp_implementation(s, scala, 10, 6, ip, sizeof(ip), &il, &ic) == 0);
+  { ok = (e_lsp_implementation(s, scala, 10, COL(6), ip, sizeof(ip), &il, &ic) == 0);
     if (!ok) sleep(2); }
   if (!ok) { rc = fail("implementation of Greeter.greet returned nothing"); goto close; }
   printf("  IMPLEMENTATION greet -> %s:%d\n", ip, il);
@@ -203,9 +208,10 @@ int main(void)
  /* type definition of `theGreeter` (line 15, char 4): its type is Hello, so
     this jumps to the Hello class (line 12), not the val itself. */
  {
-  char tp[1024]; int tl = -1, tc = -1, ok = 0, t;
+  char tp[1024]; int tl = -1, ok = 0, t;
+  e_lsp_units tc = COL(0);
   for (t = 0; t < 6 && !ok; t++)
-  { ok = (e_lsp_type_definition(s, scala, 15, 4, tp, sizeof(tp), &tl, &tc) == 0);
+  { ok = (e_lsp_type_definition(s, scala, 15, COL(4), tp, sizeof(tp), &tl, &tc) == 0);
     if (!ok) sleep(2); }
   if (!ok) { rc = fail("type definition of theGreeter returned nothing"); goto close; }
   printf("  TYPE-DEFINITION theGreeter -> %s:%d\n", tp, tl);
@@ -226,7 +232,7 @@ int main(void)
     (>= 0, never -1); exercise the apply path if a direct-edit action exists. */
  {
   e_lsp_code_action acts[32];
-  int na = e_lsp_code_actions(s, scala, 10, 6, acts, 32), i;
+  int na = e_lsp_code_actions(s, scala, 10, COL(6), acts, 32), i;
   if (na < 0) { rc = fail("code actions returned an error"); goto close; }
   printf("  CODE-ACTIONS: %d%s%s\n", na, na > 0 ? ", e.g. " : "",
          na > 0 ? acts[0].title : "");
@@ -246,7 +252,7 @@ int main(void)
     THIS file (declaration + uses); same symbol, so >= 2. */
  {
   e_lsp_location hl[64];
-  int nh = e_lsp_document_highlight(s, scala, 5, 6, hl, 64);
+  int nh = e_lsp_document_highlight(s, scala, 5, COL(6), hl, 64);
   printf("  DOCUMENT-HIGHLIGHT f: %d\n", nh);
   if (nh < 2) { rc = fail("document highlight on f should find the decl + uses"); goto close; }
  }
@@ -293,7 +299,7 @@ int main(void)
   e_lsp_symbol ch[64];
   int nc = 0, t, k, found = 0;
   for (t = 0; t < 8 && nc < 1; t++)
-  { nc = e_lsp_call_hierarchy(s, scala, 16, 4, 1 /*outgoing*/, ch, 64);
+  { nc = e_lsp_call_hierarchy(s, scala, 16, COL(4), 1/*outgoing*/, ch, 64);
     if (nc < 1) sleep(2); }
   printf("  CALL-HIERARCHY caller outgoing: %d%s%s\n", nc, nc > 0 ? ", e.g. " : "",
          nc > 0 ? ch[0].name : "");
@@ -307,7 +313,7 @@ int main(void)
   if (!found) { rc = fail("outgoing calls of caller() missed helper()"); goto close; }
 
   found = 0;
-  nc = e_lsp_call_hierarchy(s, scala, 17, 4, 0 /*incoming*/, ch, 64);
+  nc = e_lsp_call_hierarchy(s, scala, 17, COL(4), 0/*incoming*/, ch, 64);
   printf("  CALL-HIERARCHY helper incoming: %d%s%s\n", nc, nc > 0 ? ", e.g. " : "",
          nc > 0 ? ch[0].name : "");
   if (nc < 0) { rc = fail("incoming call hierarchy returned an error"); goto close; }
@@ -324,7 +330,7 @@ int main(void)
   e_lsp_symbol th[64];
   int nt = 0, t, k, found = 0;
   for (t = 0; t < 8 && nt < 1; t++)
-  { nt = e_lsp_type_hierarchy(s, scala, 12, 6, 0 /*supertypes*/, th, 64);
+  { nt = e_lsp_type_hierarchy(s, scala, 12, COL(6), 0/*supertypes*/, th, 64);
     if (nt < 1) sleep(2); }
   printf("  TYPE-HIERARCHY Hello supertypes: %d%s%s\n", nt, nt > 0 ? ", e.g. " : "",
          nt > 0 ? th[0].name : "");
@@ -338,7 +344,7 @@ int main(void)
   if (!found) { rc = fail("supertypes of Hello missed Greeter"); goto close; }
 
   found = 0;
-  nt = e_lsp_type_hierarchy(s, scala, 9, 6, 1 /*subtypes*/, th, 64);
+  nt = e_lsp_type_hierarchy(s, scala, 9, COL(6), 1/*subtypes*/, th, 64);
   printf("  TYPE-HIERARCHY Greeter subtypes: %d%s%s\n", nt, nt > 0 ? ", e.g. " : "",
          nt > 0 ? th[0].name : "");
   if (nt < 0) { rc = fail("subtype hierarchy returned an error"); goto close; }
@@ -355,7 +361,7 @@ int main(void)
   e_lsp_range sr[64];
   int ns = 0, t, k, nested = 1;
   for (t = 0; t < 6 && ns < 1; t++)
-  { ns = e_lsp_selection_range(s, scala, 5, 6, sr, 64); if (ns < 1) sleep(2); }
+  { ns = e_lsp_selection_range(s, scala, 5, COL(6), sr, 64); if (ns < 1) sleep(2); }
   printf("  SELECTION-RANGE at f: %d range(s)\n", ns);
   if (ns < 1) { rc = fail("selection range returned nothing at f"); goto close; }
   for (k = 1; k < ns; k++)
