@@ -235,6 +235,8 @@ static int  e_d_ga_go_keeps_start_brk(int sw);
 static int  e_d_ga_go_keeps_goto_line(int line);
 static void e_d_ga_drop_start_entry(int i);
 static int  e_d_ga_set_up_again(FENSTER *f);
+static char *e_d_gdbmi_wanted(void);        /* gdb's interface, looked at only */
+static void e_d_contain_end(void);          /* the session's own folder goes (below) */
 /* What the request engine is told of gdb, pdb, jdb, a68g, sdb, dbx and xdb
    (e_d_ga, below). */
 typedef struct e_d_ga_backend E_D_GA_BACKEND;
@@ -386,6 +388,7 @@ static char e_d_last_cmd[E_D_RUN_AGAIN_MAX];
 
 #define E_D_GDBMI_ENV          "XWPE_GDB_INTERFACE"
 #define E_D_GDBMI_WORD_MI      "mi"
+#define E_D_GDBMI_ROW_VARIANT  "mi"   /* gdb's MI row of the start plan's table */
 #define E_D_GDBMI_WORD_CLI     "cli"
 #define E_D_GDBMI_SWITCH       "--interpreter=mi2"
 #define E_D_GDBMI_UNKNOWN_FMT \
@@ -3965,6 +3968,7 @@ int e_d_quit_basic(FENSTER *f)
  e_d_swtch = 0;
  e_d_debugger_end(end_sig);
  e_d_debugger_pid_forget();
+ e_d_contain_end();
  if (!WpeIsXwin())
  {
   if (e_d_out)
@@ -6488,6 +6492,176 @@ int e_make_breakpoint(FENSTER *f, int sw)
  return(1);
 }
 
+/* ---- The debugger's own folder, and the commands that contain it ---------
+ *
+ * A debugger that starts apart (gdb) runs in an empty folder the editor made
+ * for this session, so it finds no init file of the program's folder.  Its
+ * first commands then come from the editor, one request each, before the
+ * debugger is set up: the pin of its auto-load trust, the move to the
+ * program's folder, the history rule, what Run it loads, and the program.
+ * The folder ends with the session.
+ */
+
+#define E_D_CONTAIN_LINES_MAX  64
+#define E_D_CONTAIN_TOO_MANY_LINE "Debugger not started: too many files to load"
+/* What the request in flight asks, so its answer is read as that. */
+#define E_D_CL_IDLE   0
+#define E_D_CL_LINE   1   /* one of the plan's lines                              */
+#define E_D_CL_ASK    2   /* where gdb keeps its history                          */
+#define E_D_CL_FIX    3   /* move the history file to the program's folder        */
+/* How far the history rule is; nothing to do until a gdb plan sets it up. */
+#define E_D_CL_HIST_DONE 0
+#define E_D_CL_HIST_TODO 1
+#define E_D_CL_HIST_FIX  2
+#define E_D_CONTAIN_TOO_LONG_LINE "Debugger not started: the file path is too long"
+
+static struct
+{
+ char dir[PATH_MAX];                      /* this session's own folder, or ""     */
+ int n;                                   /* lines to send                        */
+ int move_end;                            /* the first line after pin and move    */
+ int next;                                /* the next line to send                */
+ char line[E_D_CONTAIN_LINES_MAX][E_D_REQ_CMD_MAX];
+ char ask[E_D_REQ_CMD_MAX];               /* the history question                 */
+ char fix[E_D_REQ_CMD_MAX];               /* the command that moves the file      */
+ int history;                             /* E_D_CL_HIST_*                        */
+ int sent;                                /* E_D_CL_* of the request in flight    */
+} e_d_cl;
+
+/**
+ * e_d_contain_end - The session is over: remove its own folder.
+ *
+ * Removed by its exact path.  A folder gdb left a file in stays, which is
+ * the user's to see; the owner forgets it only when it could remove it.
+ */
+static void e_d_contain_end(void)
+{
+ if (e_d_cl.dir[0])
+  wpe_startplan_debug_dir_end(e_d_cl.dir);
+ memset(&e_d_cl, 0, sizeof e_d_cl);
+}
+
+/**
+ * e_d_contain_copy_lines - Keep the editor's own lines of the plan that runs.
+ * @run: the plan that runs.
+ * Return: 0, or -1 when a line does not fit a command or there are too many.
+ */
+static int e_d_contain_copy_lines(const WpeStartPlan *run)
+{
+ int i, n = wpe_startplan_editor_inputs(run);
+
+ if (n > E_D_CONTAIN_LINES_MAX)
+  return(-1);
+ for (i = 0; i < n; i++)
+ {
+  if (strlen(run->input[i].text) >= E_D_REQ_CMD_MAX)
+   return(-1);
+  snprintf(e_d_cl.line[i], sizeof e_d_cl.line[i], "%s", run->input[i].text);
+ }
+ e_d_cl.n = n;
+ e_d_cl.move_end = run->load_at < n ? run->load_at : n;
+ return(0);
+}
+
+/**
+ * e_d_contain_keep - Take over the folder and the lines of the plan that
+ * runs, before the plan is freed.
+ * @plan: the answered plan.
+ * Return: 0, or -1 with the reason said in a box when its lines cannot be
+ * sent (a path longer than a command).
+ */
+static int e_d_contain_keep(WpeStartPlan *plan, FENSTER *f)
+{
+ WpeStartPlan *run = wpe_startplan_running(plan);
+ char *dir;
+
+ e_d_contain_end();
+ if (!run)
+  return(0);
+ if (e_d_contain_copy_lines(run) < 0)
+ {
+  memset(&e_d_cl, 0, sizeof e_d_cl);
+  e_error(wpe_startplan_editor_inputs(run) > E_D_CONTAIN_LINES_MAX ? E_D_CONTAIN_TOO_MANY_LINE
+                                                                    : E_D_CONTAIN_TOO_LONG_LINE,
+          0, f->fb);
+  return(-1);
+ }
+ if (wpe_startplan_history_lines(run, e_d_cl.ask, sizeof e_d_cl.ask, e_d_cl.fix,
+                                 sizeof e_d_cl.fix) == 0)
+  e_d_cl.history = E_D_CL_HIST_TODO;
+ if ((dir = wpe_startplan_debug_dir_take(run)) != NULL)
+ {
+  snprintf(e_d_cl.dir, sizeof e_d_cl.dir, "%s", dir);
+  free(dir);
+ }
+ return(0);
+}
+
+/**
+ * e_d_cl_history_needs_fix - Does gdb's answer put its history file in the
+ * session's own folder?
+ * @ans: the answer to the history question: gdb's sentence names the file
+ * in quotes, and so does the MI result.
+ * Return: 1 when it does: the file would be lost with the folder.  A path
+ * the user set himself (set history filename, GDBHISTFILE) is left alone.
+ */
+static int e_d_cl_history_needs_fix(const E_D_ANSWER *ans)
+{
+ size_t len = strlen(e_d_cl.dir);
+ const char *quote = ans->text ? strchr(ans->text, '"') : NULL;
+
+ return(quote && len > 0 && strncmp(quote + 1, e_d_cl.dir, len) == 0 &&
+        quote[1 + len] == DIRC);
+}
+
+/**
+ * e_d_cl_cmd - The next command that contains gdb: the plan's lines in order,
+ * with the history rule between the move and what is loaded.
+ * @cmd, @n: the command; @ctx: unused.
+ * Return: 1 with a command, 0 when every line has been sent.
+ */
+static int e_d_cl_cmd(char *cmd, size_t n, void *ctx)
+{
+ (void)ctx;
+ if (e_d_cl.next == e_d_cl.move_end && e_d_cl.history == E_D_CL_HIST_TODO)
+ {
+  snprintf(cmd, n, "%s", e_d_cl.ask);
+  e_d_cl.sent = E_D_CL_ASK;
+ }
+ else if (e_d_cl.next == e_d_cl.move_end && e_d_cl.history == E_D_CL_HIST_FIX)
+ {
+  snprintf(cmd, n, "%s", e_d_cl.fix);
+  e_d_cl.sent = E_D_CL_FIX;
+ }
+ else if (e_d_cl.next < e_d_cl.n)
+ {
+  snprintf(cmd, n, "%s", e_d_cl.line[e_d_cl.next]);
+  e_d_cl.sent = E_D_CL_LINE;
+ }
+ else
+  return(0);
+ wpe_ui_trace("startplan send %s", cmd);
+ return(1);
+}
+
+/**
+ * e_d_cl_answered - gdb answered one of the containing commands: go on to
+ * the next, whatever it said (its own warnings reach Messages).
+ */
+static int e_d_cl_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ (void)how;
+ (void)ctx;
+ if (e_d_cl.sent == E_D_CL_ASK)
+  e_d_cl.history = e_d_cl_history_needs_fix(ans) ? E_D_CL_HIST_FIX : E_D_CL_HIST_DONE;
+ else if (e_d_cl.sent == E_D_CL_FIX)
+  e_d_cl.history = E_D_CL_HIST_DONE;
+ else if (e_d_cl.sent == E_D_CL_LINE)
+  e_d_cl.next++;
+ e_d_cl.sent = E_D_CL_IDLE;
+ return(E_D_STEP_AGAIN);
+}
+
 /*   start Debugger   */
 /* Roll back a debugger launch that failed partway through e_exec_deb():
    close every pipe/pty fd opened so far and clear e_d_swtch so the user can
@@ -6503,6 +6677,7 @@ static void e_d_exec_fail(void)
  e_d_close_fd(&efildes[0]);
  e_d_close_fd(&efildes[1]);
  e_d_pty_close();
+ e_d_contain_end();
  e_d_swtch = 0;
 }
 
@@ -6552,29 +6727,11 @@ static void e_d_fd_nonblocking(int fd)
 #define E_D_PLAN_KEY_EXE        "Executable"
 #define E_D_PDB_MODULE_OPT      "-m"
 #define E_D_PDB_MODULE          "pdb"
-#define E_D_GDB_LOCAL_INIT_OPT  "-iex"
-#define E_D_GDB_LOCAL_INIT_OFF  "set auto-load local-gdbinit off"
-#define E_D_GDB_SCRIPTS_OFF     "set auto-load gdb-scripts off"
-#define E_D_GDB_PYTHON_OFF      "set auto-load python-scripts off"
-#define E_D_GDB_GUILE_OFF       "set auto-load guile-scripts off"
-#define E_D_GDB_OWN_TEXT        "gdb without the folder's ./.gdbinit"
-#define E_D_GDB_OWN_SCRIPTS_TEXT "gdb without the scripts beside the program"
-#define E_D_GDB_OWN_BOTH_TEXT   "gdb without the folder's ./.gdbinit and the program's scripts"
-#define E_D_GDB_OWN_EMBEDDED_TEXT "gdb without the scripts inside the program"
-#define E_D_GDB_OWN_PROGRAM_TEXT  "gdb without the program's scripts"
-#define E_D_GDB_LOCAL_INIT_SHOWN "./.gdbinit"
-/* What "Use mine" tells gdb to leave alone (e_d_plan_gdb_skips). */
-#define E_D_SKIP_LOCAL_INIT     1   /* the working folder's ./.gdbinit          */
-#define E_D_SKIP_SCRIPTS        2   /* the scripts named after the program      */
-#define E_D_SKIP_EMBEDDED       4   /* the scripts carried inside the program   */
-#define E_D_SKIP_PROGRAM_SCRIPTS (E_D_SKIP_SCRIPTS | E_D_SKIP_EMBEDDED)
-/* How gdb says it was built with Guile (gdb --configuration). */
-#define E_D_GDB_CONFIG_OPT      "--configuration"
-#define E_D_GDB_GUILE_WORD      "--with-guile"
-#define E_D_GDB_CONFIG_WHAT     "gdb --configuration"
-#define E_D_GDB_CONFIG_MAX      8192
-#define E_D_GDB_CONFIG_MS       5000
-#define E_D_GDB_GUILE_UNKNOWN   (-1)
+/* What "Use mine" is called in the box when the debugger starts apart: the
+   same debugger, with none of the folder's files loaded. */
+#define E_D_OWN_APART_FMT       "%s with none of the folder's files"
+#define E_D_OWN_FOLDER_FMT      "your own debugger (%s) with none of the folder's files"
+#define E_D_OWN_TEXT_MAX        128
 /* The key and file the folder's own choice of debugger is shown under. */
 #define E_D_PLAN_KEY_DEBUGGER   "Debugger"
 /* The run command that carries the program's Arguments, by debugger. */
@@ -6644,78 +6801,18 @@ static void e_d_plan_jdb_words(WpeStartPlan *p)
 }
 
 /**
- * e_d_gdb_has_guile - Was the gdb on PATH built with Guile?
- *
- * Asked of gdb itself once per editor run, and only when a folder holds a
- * script beside the program: a gdb without Guile refuses the setting that
- * turns Guile scripts off, and runs none anyway.
- * Return: 1 when it has Guile, 0 when not or when gdb could not tell.
- */
-static int e_d_gdb_has_guile(void)
-{
- static int known = E_D_GDB_GUILE_UNKNOWN;
- char config[E_D_GDB_CONFIG_MAX];
- char *argv[3];
- WpeStartPlan *plan;
- int status = 0;
-
- if (known != E_D_GDB_GUILE_UNKNOWN)
-  return(known);
- argv[0] = e_debugger;
- argv[1] = E_D_GDB_CONFIG_OPT;
- argv[2] = NULL;
- config[0] = '\0';
- known = 0;
- plan = wpe_startplan_fixed(WPE_START_PROBE, E_D_GDB_CONFIG_WHAT, argv);
- if (wpe_startplan_probe(plan, config, sizeof config, E_D_GDB_CONFIG_MS, &status,
-                         E_D_GDB_CONFIG_WHAT) == WPE_CAPTURE_ENDED &&
-     strstr(config, E_D_GDB_GUILE_WORD))
-  known = 1;
- wpe_startplan_free(plan);
- return(known);
-}
-
-/**
- * e_d_plan_gdb_skip_words - The switches of "Use mine" that keep gdb from
- * running the folder's files at its start.
- * @p: the plan; @skips: E_D_SKIP_* of the files the folder holds.
- *
- * Each is read before gdb looks at the folder (-iex), so the session the
- * user chose starts without them.  Only what the folder holds is turned
- * off: the pretty-printers a system's own scripts bring stay on unless the
- * program has a script of its own beside it or inside it.
- */
-static void e_d_plan_gdb_skip_words(WpeStartPlan *p, int skips)
-{
- if (skips & E_D_SKIP_LOCAL_INIT)
- {
-  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
-  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- }
- if (!(skips & E_D_SKIP_PROGRAM_SCRIPTS))
-  return;
- e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- e_d_plan_word(p, E_D_GDB_SCRIPTS_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- e_d_plan_word(p, E_D_GDB_PYTHON_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- if (!e_d_gdb_has_guile())
-  return;
- e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- e_d_plan_word(p, E_D_GDB_GUILE_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
-}
-
-/**
  * e_d_plan_words - The command line the selected debugger is started with,
  * the same in the terminal and in the graphical editor.
- * @p: the plan; @operand: the program (for pdb and a68g the source) as a
- * path that never reads as an option; @skips: for "Use mine", E_D_SKIP_*
- * of the files gdb is told to leave alone, else 0.
+ * @p: the plan, contained; @operand: the program (for pdb and a68g the
+ * source) as a path that never reads as an option.
  *
  * The debugger's name is the one the start folder named or the user's own
  * (e_d_debugger_wanted) and its switches are the editor's; the program is
- * the word e_start_debug chose, from wherever it came.
+ * the word e_start_debug chose, from wherever it came.  A debugger that
+ * starts apart gets no program word: the editor loads the program by its
+ * own command once the debugger is up (e_d_plan_contain).
  */
-static void e_d_plan_words(WpeStartPlan *p, const char *operand, int skips)
+static void e_d_plan_words(WpeStartPlan *p, const char *operand)
 {
  if (e_deb_type == DEB_JDB)
  {
@@ -6723,7 +6820,6 @@ static void e_d_plan_words(WpeStartPlan *p, const char *operand, int skips)
   return;
  }
  e_d_plan_debugger_word(p);
- e_d_plan_gdb_skip_words(p, skips);
  if (e_deb_type == DEB_PDB)
  {
   e_d_plan_word(p, E_D_PDB_MODULE_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
@@ -6731,8 +6827,8 @@ static void e_d_plan_words(WpeStartPlan *p, const char *operand, int skips)
  }
  else if (e_deb_swtch)
   e_d_plan_word(p, e_deb_swtch, WPE_WORD_OPTION, WPE_FROM_EDITOR);
- if (!operand[0])
-  return;                   /* a project without EXENAME: the debugger alone */
+ if (!operand[0] || wpe_startplan_is_apart(p))
+  return;                   /* a project without EXENAME, or a program the editor loads */
  e_d_plan_word(p, operand, WPE_WORD_OPERAND, e_d_prog_origin);
  wpe_startplan_path(p, operand, WPE_PATH_INPUT, e_d_prog_origin, E_D_PLAN_SOURCE_PROG,
                     NULL);
@@ -6838,39 +6934,75 @@ static void e_d_plan_file(WpeStartPlan *p, int args_from)
  else if ((e_d_prog_origin == WPE_FROM_FOLDER || args_from == WPE_FROM_FOLDER ||
            e_d_deb_origin == WPE_FROM_FOLDER) && e_opt_start_folder())
   wpe_startplan_set_file(p, E_STARTCMD_XWPERC, e_opt_start_folder());
- else if (reads && p->cwd)
-  wpe_startplan_set_file(p, reads->path, p->cwd);
+ else if (reads && p->program_dir)
+  wpe_startplan_set_file(p, reads->path, p->program_dir);
+}
+
+/**
+ * e_d_variant_of - Which of a debugger's rows its start follows.
+ * @type: an e_deb_type value.
+ * Return: "mi" for gdb when XWPE_GDB_INTERFACE asks for it, else "".
+ *
+ * The interface is the site's to say: the owner's table has one row for gdb's
+ * line interface and one for MI, each with the commands its own protocol takes.
+ */
+static const char *e_d_variant_of(int type)
+{
+ if (type == DEB_GDB && e_d_gdbmi_wanted())
+  return(E_D_GDBMI_ROW_VARIANT);
+ return("");
+}
+
+/**
+ * e_d_plan_contain - Give the debugger's plan its working folder, and for a
+ * debugger that starts apart its program and the commands that load it.
+ * @f: the source window; @p: the plan; @type: the debugger the plan is for;
+ * @operand: the program as the debugger gets it, or "".
+ *
+ * A debugger that starts apart gets an empty folder of its own, so it reads
+ * no init file from the program's folder; the program's folder is given to it
+ * afterwards by the editor's own command.  A build folder the window does not
+ * know means the editor's own folder.
+ */
+static void e_d_plan_contain(FENSTER *f, WpeStartPlan *p, int type, const char *operand)
+{
+ char *dir = e_build_dir(f);
+
+ wpe_startplan_program_origin(p, e_d_prog_origin, E_D_PLAN_SOURCE_PROG);
+ wpe_startplan_contain(p, e_deb_type_name(type), e_d_variant_of(type), dir, operand);
+ if (dir)
+  FREE(dir);
 }
 
 /**
  * e_d_plan_make - The plan of the session's debugger start.
  * @f: the source window; @operand: the program as the debugger gets it;
- * @skips: 0 for the plan the folder makes; for the user's own plan ("Use
- * mine"), E_D_SKIP_* of the files gdb is told to leave alone.
+ * @own: 0 for the plan the folder makes, 1 for the user's own ("Use mine"):
+ * the same start with none of the folder's files loaded.
  *
- * The debugger runs in the program's folder.  What it runs from that folder
- * on its own (./.pdbrc, ./jdb.ini, ./.gdbinit) and from beside the program
- * (gdb's <program>-gdb.py) is listed with its text, the run command with
- * the program's Arguments is part of it, and the box says the session runs
- * the folder's own program.
+ * The debugger starts in a folder of its own and is moved to the program's
+ * folder afterwards.  What it would run from the program's folder (./.pdbrc,
+ * ./jdb.ini, ./.gdbinit), from beside the program (gdb's <program>-gdb.py)
+ * and from inside it is listed with its text; for gdb the editor loads exactly
+ * those files when the user says Run it.  The run command with the program's
+ * Arguments is part of the plan, and the box says the session runs the
+ * folder's own program.
  * Return: the plan, or NULL out of memory.
  */
-static WpeStartPlan *e_d_plan_make(FENSTER *f, const char *operand, int skips)
+static WpeStartPlan *e_d_plan_make(FENSTER *f, const char *operand, int own)
 {
  WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, e_deb_type_name(e_deb_type));
- char *dir;
  int args_from;
 
  if (!p)
   return(NULL);
- if ((dir = e_build_dir(f)) != NULL)
+ e_d_plan_contain(f, p, e_deb_type, operand);
+ e_d_plan_words(p, operand);
+ if (!own)
  {
-  wpe_startplan_contain(p, e_deb_type_name(e_deb_type), NULL, dir, NULL);
-  FREE(dir);
- }
- e_d_plan_words(p, operand, skips);
- if (!skips)
   wpe_startplan_tool_reads_of(p, e_deb_type_name(e_deb_type), operand);
+  wpe_startplan_load_lines(p);
+ }
  args_from = e_d_plan_arguments(p);
  e_d_plan_file(p, args_from);
  p->honest = 1;
@@ -6880,18 +7012,22 @@ static WpeStartPlan *e_d_plan_make(FENSTER *f, const char *operand, int skips)
 /**
  * e_d_plan_own_debugger - The user's own debugger, as "Use mine" names it
  * when the start folder chose another one.
- * @own: the user's own debugger.
+ * @f: the source window; @own: the user's own debugger.
  *
- * Only its name: "Use mine" plans his debugger's start whole once he has
- * chosen it (e_start_debug), with the program word that debugger takes.
+ * Only its name and where it would start: "Use mine" plans his debugger's
+ * start whole once he has chosen it (e_start_debug), with the program word
+ * that debugger takes.  A debugger that starts apart is contained here too,
+ * so this plan could never start in the folder.
  * Return: the plan, or NULL out of memory.
  */
-static WpeStartPlan *e_d_plan_own_debugger(int own)
+static WpeStartPlan *e_d_plan_own_debugger(FENSTER *f, int own)
 {
  WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, e_deb_type_name(e_deb_type));
 
  if (!p)
   return(NULL);
+ if (own != DEB_DAP)
+  e_d_plan_contain(f, p, own, "");
  e_d_plan_word(p, e_deb_type_name(own), WPE_WORD_PROGRAM, WPE_FROM_USER);
  return(p);
 }
@@ -6922,62 +7058,40 @@ static char *e_d_plan_shown(const WpeStartPlan *p)
 }
 
 /**
- * e_d_plan_gdb_skips - What gdb can be told to leave alone of the files
- * the plan lists.
- * @p: the plan.
- * Return: E_D_SKIP_* of each kind of start-up file listed: the working
- * folder's ./.gdbinit, and the scripts named after the program.
+ * e_d_own_text - How the box names the start "Use mine" makes.
+ * @type: the debugger that start uses; @folder_chose: the start folder chose
+ * another debugger and "Use mine" starts this one.
+ * Return: the words, in a buffer that stays until the next call.
+ *
+ * A debugger that starts apart loads none of the folder's files; one that
+ * does not is named alone, since it reads what it reads on its own.
  */
-static int e_d_plan_gdb_skips(const WpeStartPlan *p)
+static const char *e_d_own_text(int type, int folder_chose)
 {
- int i, skips = 0;
+ static char text[E_D_OWN_TEXT_MAX];
+ const char *name = e_deb_type_name(type);
 
- for (i = 0; i < p->npath; i++)
- {
-  if (p->path[i].role != WPE_PATH_READS)
-   continue;
-  if (strcmp(p->path[i].path, E_D_GDB_LOCAL_INIT_SHOWN) == 0)
-   skips |= E_D_SKIP_LOCAL_INIT;
-  else if (p->path[i].embedded)
-   skips |= E_D_SKIP_EMBEDDED;
-  else
-   skips |= E_D_SKIP_SCRIPTS;
- }
- return(skips);
-}
-
-/**
- * e_d_plan_gdb_own_text - How the box names gdb's start without the
- * folder's files.
- * @skips: E_D_SKIP_* of what it leaves alone.
- */
-static const char *e_d_plan_gdb_own_text(int skips)
-{
- if (skips == E_D_SKIP_LOCAL_INIT)
-  return(E_D_GDB_OWN_TEXT);
- if (skips == E_D_SKIP_SCRIPTS)
-  return(E_D_GDB_OWN_SCRIPTS_TEXT);
- if (skips == E_D_SKIP_EMBEDDED)
-  return(E_D_GDB_OWN_EMBEDDED_TEXT);
- if (skips == E_D_SKIP_PROGRAM_SCRIPTS)
-  return(E_D_GDB_OWN_PROGRAM_TEXT);
- return(E_D_GDB_OWN_BOTH_TEXT);
+ if (wpe_startplan_row_is_apart(name, e_d_variant_of(type)))
+  snprintf(text, sizeof text, folder_chose ? E_D_OWN_FOLDER_FMT : E_D_OWN_APART_FMT, name);
+ else
+  snprintf(text, sizeof text, "%s", name);
+ return(text);
 }
 
 /**
  * e_d_plan_offers_own - Is there a start of the user's own to offer?
  * @p: the plan.
  *
- * Only for gdb, and only when the folder holds a ./.gdbinit, or the program
- * has a script beside it or inside it: gdb can be told to leave them alone.  pdb has no
- * switch for ./.pdbrc, and jdb's ./jdb.ini cannot be turned off either, so
- * the box offers Run it and Cancel only.  (A debugger the folder chose is
- * offered against the user's own in e_d_plan_approved.)
+ * For a debugger that starts apart, when the folder holds a start-up file
+ * the plan lists: the contained start without the editor's load lines is
+ * the user's own.  (A debugger the folder chose is offered against the user's
+ * own in e_d_plan_approved.)  The others read their files themselves, so the
+ * box offers Run it and Cancel only.
  * Return: 1 when "Use mine" can be offered.
  */
 static int e_d_plan_offers_own(const WpeStartPlan *p)
 {
- return(e_deb_type == DEB_GDB && e_d_plan_reads_first(p) != NULL);
+ return(wpe_startplan_is_apart(p) && e_d_plan_reads_first(p) != NULL);
 }
 
 /**
@@ -6991,20 +7105,18 @@ static int e_d_plan_offers_own(const WpeStartPlan *p)
 static int e_d_plan_set_own(FENSTER *f, WpeStartPlan *p, const char *operand,
                             E_STARTPLAN_SHOW *show)
 {
- int skips;
-
  show->own = NULL;
  if (e_d_deb_origin == WPE_FROM_FOLDER)
  {
-  wpe_startplan_set_own(p, e_d_plan_own_debugger(e_opt_own_debugger()));
-  show->own = e_deb_type_name(e_opt_own_debugger());
+  wpe_startplan_set_own(p, e_d_plan_own_debugger(f, e_opt_own_debugger()));
+  show->own = e_d_plan_reads_first(p) ? e_d_own_text(e_opt_own_debugger(), 1)
+                                      : e_deb_type_name(e_opt_own_debugger());
   return(1);
  }
  if (!e_d_plan_offers_own(p))
   return(0);
- skips = e_d_plan_gdb_skips(p);
- wpe_startplan_set_own(p, e_d_plan_make(f, operand, skips));
- show->own = e_d_plan_gdb_own_text(skips);
+ wpe_startplan_set_own(p, e_d_plan_make(f, operand, 1));
+ show->own = e_d_own_text(e_deb_type, 0);
  return(0);
 }
 
@@ -7866,6 +7978,11 @@ int e_exec_deb(FENSTER *f, char *prog)
  {
   wpe_startplan_free(plan);
   return(E_D_EXEC_NOT_FOUND);
+ }
+ if (e_d_contain_keep(plan, f) < 0)
+ {
+  wpe_startplan_free(plan);
+  return(E_D_EXEC_CANCELLED);
  }
  e_d_debugger_commit();
  e_d_swtch = 1;
@@ -8989,11 +9106,10 @@ static const char *e_d_dap_row_program(const char *program)
 
 /**
  * e_d_dap_plan_make - The plan of a debug adapter's start.
- * @argv: its command line, the editor's; @cwd: the program's folder;
- * @own: 1 for "Use mine": gdb leaves the folder's ./.gdbinit alone.
+ * @argv: its command line, the editor's; @cwd: the program's folder.
  * Return: the plan, or NULL out of memory.
  */
-static WpeStartPlan *e_d_dap_plan_make(char *const argv[], const char *cwd, int own)
+static WpeStartPlan *e_d_dap_plan_make(char *const argv[], const char *cwd)
 {
  const char *tool = e_d_dap_tool(argv[0]);
  const WpeStartPath *reads;
@@ -9005,15 +9121,9 @@ static WpeStartPlan *e_d_dap_plan_make(char *const argv[], const char *cwd, int 
  if (cwd)
   wpe_startplan_contain(p, E_D_DAP_ROW_KEY, e_d_dap_row_program(argv[0]), cwd, NULL);
  wpe_startplan_word(p, argv[0], WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
- if (own)
- {
-  wpe_startplan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
-  wpe_startplan_word(p, E_D_GDB_LOCAL_INIT_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
- }
  for (i = 1; argv[i]; i++)
   wpe_startplan_word(p, argv[i], WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
- if (!own)
-  wpe_startplan_tool_reads(p, tool);
+ wpe_startplan_tool_reads(p, tool);
  if ((reads = e_d_plan_reads_first(p)) != NULL && p->cwd)
   wpe_startplan_set_file(p, reads->path, p->cwd);
  p->honest = 1;
@@ -9026,29 +9136,28 @@ static WpeStartPlan *e_d_dap_plan_make(char *const argv[], const char *cwd, int 
  * @argv: the adapter's command line; @cwd: where it runs.
  *
  * gdb speaking DAP reads ./.gdbinit as gdb does, and lldb-dap ./.lldbinit:
- * a folder holding one is shown first, and "Use mine" starts gdb told to
- * leave it alone.  dlv reads nothing from its folder, and its start asks
- * nothing.
+ * a folder holding one is shown first.  dlv reads nothing from its folder,
+ * and its start asks nothing.  The adapters start in their own folder like
+ * gdb's line interface once their rows are switched on, and with it come
+ * their "Use mine".
  * Return: the plan answered for (we_dap.c frees it), or NULL to start nothing.
  */
 static WpeStartPlan *e_d_dap_plan(char *const argv[], const char *cwd)
 {
  char what[E_D_PLAN_WHAT_MAX];
  E_STARTPLAN_SHOW show;
- WpeStartPlan *p = e_d_dap_plan_make(argv, cwd, 0);
+ WpeStartPlan *p = e_d_dap_plan_make(argv, cwd);
  char *shown;
  int verdict;
 
  if (!p)
   return(NULL);
- if (strcmp(e_d_dap_tool(argv[0]), "gdb") == 0 && e_d_plan_reads_first(p))
-  wpe_startplan_set_own(p, e_d_dap_plan_make(argv, cwd, 1));
  shown = e_d_plan_shown(p);
  snprintf(what, sizeof what, E_D_PLAN_WHAT_FMT, e_d_dap_tool(argv[0]));
  show.who = E_D_PLAN_WHO;
  show.what = what;
  show.shown = shown ? shown : "";
- show.own = p->own ? E_D_GDB_OWN_TEXT : NULL;
+ show.own = NULL;
  verdict = e_startplan_approve(WpeEditor->f[WpeEditor->mxedt], p, &show);
  if (shown)
   FREE(shown);
@@ -11452,6 +11561,7 @@ void e_d_end_at_exit(void)
  if (e_d_quit_can_be_asked())
   e_d_send_cmd(e_d_quit_command());
  e_d_debugger_end(e_d_debugger_end_signal(e_d_run_going()));
+ e_d_contain_end();
 }
 
 /**
@@ -21316,6 +21426,7 @@ static int e_d_gu_tty_cmd(char *cmd, size_t n, void *ctx)
    on and asked again first clears a line gdb may have set unanswered. */
 static const E_D_STEP e_d_gdb_set_up_steps[] =
 {
+ { e_d_cl_cmd,         e_d_cl_answered },
  { e_d_gu_confirm_cmd, e_d_gs_ignore_answer },
  { e_d_gu_tty_cmd,     e_d_gs_ignore_answer },
  { e_d_gb_remove_cmd,  e_d_gb_remove_answered },
@@ -25948,6 +26059,7 @@ static int e_d_gm_tty_cmd(char *cmd, size_t n, void *ctx)
    with its line interface before anything else is asked. */
 static const E_D_STEP e_d_gdbmi_set_up_steps[] =
 {
+ { e_d_cl_cmd,          e_d_cl_answered },
  { e_d_gm_version_cmd,  e_d_gm_version_answered },
  { e_d_gm_features_cmd, e_d_gm_features_answered },
  { e_d_gm_confirm_cmd,  e_d_gs_ignore_answer },

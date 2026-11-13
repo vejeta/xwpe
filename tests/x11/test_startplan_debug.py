@@ -6,12 +6,15 @@ command of their own: Ctrl-G R draws the box with the run command they make
 before gdb starts, and Escape starts nothing.  A debugger the folder names
 is asked about in that same one box with the .pdbrc it would run, and Use
 mine on a script gdb would load beside the program, or from inside it,
-starts gdb without it,
-through the graphical editor's helper script.  The Wayland twin
+starts gdb with none of the folder's files, and Run it makes the editor load
+the script, both through the graphical editor's helper script; a library's
+script, which no box lists, never runs.  The Wayland twin
 (tests/wayland/test_startplan_debug.py) runs this same body; the terminal
 rows, start-up files among them, are in tests/test_startplan_debug.py.
 """
+import os
 import shutil
+import subprocess
 import time
 
 import pytest
@@ -26,6 +29,7 @@ ASK_WAIT_S = 30            # the build is done and the question up by then
 SETTLE_S = 1.5             # the box is drawn, or gone, by then
 RAN_WAIT_S = 4             # gdb would have run the program by then
 BOX_PX_MIN = 2000          # a box is thousands of changed pixels
+CANARY_S = 40              # a direct gdb run is far inside this
 
 
 def _wait(predicate, timeout):
@@ -146,8 +150,8 @@ def program_script(tmp_path):
 @pytest.mark.parametrize("xwpe", [SUB_SESSION], indirect=True)
 def test_startplan_program_gdb_script_use_mine_stops_it(program_script, xwpe):
     """Ctrl-G R shows the script beside the program; Use mine starts gdb,
-    through the graphical editor's own helper, told to leave it alone: the
-    session starts and the script never runs."""
+    through the graphical editor's own helper, with none of the folder's
+    files loaded: the session starts and the script never runs."""
     _sleep(SETTLE_S)
     xwpe.key("ctrl+g", "r", delay=0.6)
     assert _wait(lambda: "startcmd ask debug/gdb" in _trace(program_script), ASK_WAIT_S), \
@@ -158,8 +162,29 @@ def test_startplan_program_gdb_script_use_mine_stops_it(program_script, xwpe):
                  ASK_WAIT_S), _trace(program_script)
     _sleep(RAN_WAIT_S)
     said = _trace(program_script)
-    assert "startplan line Runs at start: ./t.e-gdb.py (1 line)" in said, said
+    assert "startplan line With Run it: ./t.e-gdb.py (1 line)" in said, said
     assert not (program_script / "ran").exists(), "gdb ran the program's script after Use mine"
+    assert xwpe.proc.poll() is None, "xwpe died starting gdb"
+
+
+# @scenario SC-debug-116
+@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
+                    reason="gcc and gdb not on PATH")
+@pytest.mark.parametrize("xwpe", [SUB_SESSION], indirect=True)
+def test_startplan_program_gdb_script_run_it_loads_it(program_script, xwpe):
+    """Run it on that box: the graphical editor's helper script starts gdb
+    apart from the folder, and the editor's own command loads the script."""
+    _sleep(SETTLE_S)
+    xwpe.key("ctrl+g", "r", delay=0.6)
+    assert _wait(lambda: "startcmd ask debug/gdb" in _trace(program_script), ASK_WAIT_S), \
+        _trace(program_script)
+    _sleep(SETTLE_S)
+    xwpe.key("alt+r", delay=0.4)
+    assert _wait(lambda: (program_script / "ran").exists(), ASK_WAIT_S), \
+        "Run it did not load the program's script:\n" + _trace(program_script)
+    said = _trace(program_script)
+    assert "startplan send set auto-load safe-path $debugdir:$datadir/auto-load" in said, said
+    assert "startplan contain gdb apart=1" in said, said
     assert xwpe.proc.poll() is None, "xwpe died starting gdb"
 
 
@@ -190,8 +215,8 @@ def embedded_script(tmp_path):
 @pytest.mark.parametrize("xwpe", [EMBEDDED_SESSION], indirect=True)
 def test_startplan_gdb_script_inside_the_program_use_mine_stops_it(embedded_script, xwpe):
     """Ctrl-G R lists the script the program carries inside itself; Use mine
-    starts gdb, through the graphical editor's own helper, told to leave it
-    alone: the session starts and the script never runs."""
+    starts gdb, through the graphical editor's own helper, with none of the
+    folder's files loaded: the session starts and the script never runs."""
     _sleep(SETTLE_S)
     xwpe.key("ctrl+g", "r", delay=0.6)
     assert _wait(lambda: "startcmd ask debug/gdb" in _trace(embedded_script), ASK_WAIT_S), \
@@ -202,7 +227,68 @@ def test_startplan_gdb_script_inside_the_program_use_mine_stops_it(embedded_scri
                  ASK_WAIT_S), _trace(embedded_script)
     _sleep(RAN_WAIT_S)
     said = _trace(embedded_script)
-    assert "startplan line Runs at start: ./t.e (.debug_gdb_scripts) (2 lines)" in said, said
+    assert "startplan line With Run it: ./t.e (.debug_gdb_scripts) (2 lines)" in said, said
     assert not (embedded_script / "ran").exists(), \
         "gdb ran the program's own script after Use mine"
+    assert xwpe.proc.poll() is None, "xwpe died starting gdb"
+
+
+# A program that loads a shared library of its folder, which has a script
+# beside it: nothing the box could list.
+LIBRARY_SOURCE = ('#include <dlfcn.h>\n'
+                  'int main(void){void *h = dlopen("./libx.so", RTLD_NOW); return h ? 0 : 1;}\n')
+LIBRARY_SESSION = dict(SESSION, XWPE_TEST_FILE=SUB_C, XWPE_TEST_SOURCE=LIBRARY_SOURCE)
+HOME_RAN = "home-ran"
+
+
+@pytest.fixture
+def library_script(tmp_path):
+    """The user's gdb trusts every folder and runs a command of its own; the
+    program's folder holds libx.so with libx.so-gdb.py beside it, which
+    touches tmp_path/ran.  The canary: gdb started directly there fires it."""
+    _subfolder(tmp_path)
+    sub = tmp_path / "sub"
+    (tmp_path / ".gdbinit").write_text("set auto-load safe-path /\nshell touch %s\n"
+                                       % (tmp_path / HOME_RAN))
+    (sub / "libx.c").write_text("int lib_f(void){return 1;}\n")
+    (sub / "libx.so-gdb.py").write_text("open(%r, 'w').close()\n" % str(tmp_path / "ran"))
+    subprocess.run(["gcc", "-g", "-shared", "-fPIC", "-o", str(sub / "libx.so"),
+                    str(sub / "libx.c")], check=True, timeout=CANARY_S)
+    (sub / "canary.c").write_text(LIBRARY_SOURCE)
+    subprocess.run(["gcc", "-g", "-o", str(sub / "canary.e"), str(sub / "canary.c")],
+                   check=True, timeout=CANARY_S)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path), "TERM": "dumb"}
+    subprocess.run(["gdb", "-q", "-batch", "-ex", "run", str(sub / "canary.e")], cwd=str(sub),
+                   env=env, timeout=CANARY_S, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    fired = (tmp_path / "ran").exists() and (tmp_path / HOME_RAN).exists()
+    for name in ("ran", HOME_RAN):
+        if (tmp_path / name).exists():
+            (tmp_path / name).unlink()
+    if not fired:
+        pytest.skip("canary: gdb started directly in the folder did not fire the library's "
+                    "script: this route's probe is dead here")
+    return tmp_path
+
+
+# @scenario SC-debug-116
+@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
+                    reason="gcc and gdb not on PATH")
+@pytest.mark.parametrize("xwpe", [LIBRARY_SESSION], indirect=True)
+def test_startplan_a_library_script_is_not_run_by_a_clean_start(library_script, xwpe):
+    """Nothing is listed, so no box opens; the program loads a library of the
+    folder with a script beside it.  gdb, started apart through the graphical
+    editor's helper script, has its default auto-load trust, so the script
+    never runs, and the user's own ~/.gdbinit does."""
+    _sleep(SETTLE_S)
+    xwpe.key("ctrl+g", "r", delay=0.6)
+    assert _wait(lambda: "startplan judge debug/gdb" in _trace(library_script), ASK_WAIT_S), \
+        _trace(library_script)
+    _sleep(RAN_WAIT_S * 2)
+    xwpe.key("ctrl+g", "r", delay=0.6)
+    _sleep(RAN_WAIT_S * 2)
+    said = _trace(library_script)
+    assert "startcmd ask" not in said, said
+    assert (library_script / HOME_RAN).exists(), "the user's own ~/.gdbinit did not run:\n" + said
+    assert not (library_script / "ran").exists(), "gdb ran the library's script"
     assert xwpe.proc.poll() is None, "xwpe died starting gdb"

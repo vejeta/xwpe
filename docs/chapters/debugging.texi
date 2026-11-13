@@ -747,17 +747,49 @@ start without a question.
 @cindex debugger, start-up files
 @cindex .pdbrc, .gdbinit, jdb.ini
 @anchor{Debugger start-up files}
-A debugger runs some files of the folder it starts in on its own,
-before xwpe sends it anything.  When the folder of the program you
-debug holds one, the start shows it first, with its lines, under
-@samp{Runs at start:}, and asks @samp{Run it} or @samp{Cancel}; the
+A debugger may run some files of the folder of the program you debug
+on its own, before xwpe sends it anything.  When the folder holds one,
+the start shows it first, with its lines, and asks @samp{Run it} or
+@samp{Cancel}, with @samp{Use mine} where there is a start without it; the
 answer is kept for that folder and that text, and a changed file asks
-again.  A line wider than the box is wrapped, never cut.  A file the
-box cannot show whole (over 16 kB, or holding a NUL byte, past which
-the box would show nothing while the debugger reads on) is shown in
-part and not offered to run.  The same file in your home folder is yours and
-is not asked about, nor is the folder's file when the folder is your
-home folder.
+again.  A debugger that starts in the folder (all but gdb's two
+interfaces) shows the file under @samp{Runs at start:}.  A line wider
+than the box is wrapped, never cut.  A file the box cannot show whole
+(over 16 kB, or holding a NUL byte, past which the box would show
+nothing while the debugger reads on) is shown in part and not offered
+to run.  The same file in your home folder is yours and is not asked
+about, nor is the folder's file when the folder is your home folder.
+
+@cindex gdb, started apart from the folder
+gdb is started in an empty folder of its own, made for the session and
+removed when it ends, so it finds no init file there; the editor then gives
+it the program's folder (@code{cd}) and loads the program by its own
+command.  Before any program is loaded the editor also sets gdb's
+auto-load safe-path to gdb's own default (@code{$debugdir:$datadir/auto-load}),
+whatever your @file{~/.gdbinit} set, so the folder is not a trusted source.
+Your own init files still run, first; a program they load themselves is
+loaded before the pin, as you chose.  Nothing of the folder's is loaded
+unless the box showed it and you chose @samp{Run it}: the start then lists
+the folder's @file{.gdbinit}, the script beside the program and the
+scripts inside the program under @samp{With Run it:}, with their lines,
+and loads exactly those files by its own commands (@code{add-auto-load-safe-path}
+for the file, @code{source} for the @file{.gdbinit}), before the program is
+loaded.  @samp{Use mine} (the default) starts gdb with none of them, and is
+offered whenever the box opens for them.  What the box cannot list, such as the
+scripts of a shared library the program loads, is never run (gdb refuses it
+with a warning of its own, which xwpe does not show); the way to allow one
+is a line in the folder's @file{.gdbinit}, @code{add-auto-load-safe-path
+@var{file}}, which @samp{Run it} loads after the box showed it.  A
+@code{set auto-load safe-path} or @code{add-auto-load-safe-path} in your
+@file{~/.gdbinit} does not apply inside xwpe.  The program is loaded by its
+absolute path; @code{pwd} and @code{info source} in gdb see the program's
+folder.  gdb's history file, which by default is @file{.gdb_history} in the
+folder gdb starts in, is moved to the program's folder.  A file your own
+init files write by a relative name, such as a log, is written in gdb's own
+folder, which then stays until the editor ends and goes with it; give such
+a file an absolute name to keep it.  A file whose path holds a colon or a
+@samp{$}, or is too long for one of gdb's commands, cannot be given to
+gdb's auto-load list, and is not offered to @samp{Run it}; the box says so.
 
 @multitable @columnfractions .18 .30 .52
 @headitem Debugger @tab File in the folder @tab When it runs it
@@ -766,25 +798,15 @@ home folder.
 there is no @samp{Use mine}.
 @item jdb @tab @file{jdb.ini}, else @file{.jdbrc}
 @tab Always, as well as the one in your home folder.
-@item gdb (also as a Rust adapter) @tab @file{.gdbinit}
+@item gdb (line and MI interface) @tab @file{.gdbinit}, @file{@var{program}-gdb.gdb},
+@file{-gdb.py}, @file{-gdb.scm} beside the program, and the scripts inside the program
+(its @code{.debug_gdb_scripts} section, listed as
+@file{./@var{program} (.debug_gdb_scripts)})
+@tab Only when you choose @samp{Run it}, loaded by xwpe's own commands.
+@samp{Use mine} loads none of them.
+@item gdb as a Rust adapter @tab @file{.gdbinit}
 @tab Only if your gdb settings allow auto-load from this folder (the
-auto-load safe-path).  The box says so; @samp{Use mine} starts gdb told
-to leave the file alone (@code{set auto-load local-gdbinit off}).
-@item gdb @tab @file{@var{program}-gdb.gdb}, @file{-gdb.py},
-@file{-gdb.scm} beside the program
-@tab Under the same setting, when gdb loads the program (the
-@file{.scm} one only in a gdb built with Guile).  @samp{Use mine} starts
-gdb told to leave them alone (@code{set auto-load gdb-scripts off},
-@code{python-scripts off}, and @code{guile-scripts off} when gdb has
-Guile), which also leaves off the scripts, pretty-printers among them,
-that your system's libraries bring.
-@item gdb @tab Scripts inside the program (its @code{.debug_gdb_scripts}
-section, listed as @file{./@var{program} (.debug_gdb_scripts)})
-@tab Under the same setting.  The box shows each script: one written
-into the program with its lines, one named as a file with its name and,
-when it lies in the folder gdb starts in, its lines; @samp{Use mine} turns
-them off with the same switches as above.  A program with no such
-section lists nothing and @samp{Use mine} adds no switch for it.
+auto-load safe-path).  The box says so, and offers no @samp{Use mine} yet.
 @item lldb-dap @tab @file{.lldbinit}
 @tab Only if your @file{~/.lldbinit} sets @code{target.load-cwd-lldbinit}.
 @item dbx @tab @file{.dbxinit} @tab Always.

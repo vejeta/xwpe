@@ -16,6 +16,7 @@
 #include "edit.h"
 #include "we_ai.h"      /* AI assistant config init (guarded by WPE_AI) */
 #include "we_testdump.h"
+#include "we_startplan.h"   /* where the debugger's own folders are made */
 
 #ifdef UNIX
 #include <sys/types.h>
@@ -597,6 +598,9 @@ int main(int argc, char **argv)
   perror("Xwpe: ");
   return 1;
  }
+ /* A debugger the editor starts runs in a folder of its own under the
+    editor's temporary folder, which goes with the editor. */
+ wpe_startplan_debug_base_set(e_tmp_dir);
 
  for (i = 1; i < argc; i++)
  {

@@ -309,9 +309,21 @@ Changes
   gdb loads from beside the program under the same settings
   (<program>-gdb.py, -gdb.gdb, -gdb.scm), or carries inside the program
   (its .debug_gdb_scripts section), Ctrl-G R shows its lines first
-  and asks; Use mine starts gdb without the folder's .gdbinit and those
-  scripts.  The line saying what Use mine starts is wrapped like the
-  lines above it instead of being cut at the edge of the box.  The
+  and asks.  gdb now starts in an empty folder of its own, removed when
+  the session ends, and moves to the program's folder afterwards, so it
+  reads no init file there; its auto-load trust is gdb's own default
+  whatever your ~/.gdbinit set (your own init still runs), so the
+  script of a shared library the program loads cannot run either.  Run
+  it loads exactly the files the box listed, under "With Run it:", and
+  Use mine (the default) loads none of them; with a path that holds a
+  colon or a $, or is too long for one of gdb's commands, Run it is not
+  offered.  A debug session's history file stays in the program's
+  folder; a log your ~/.gdbinit writes by a relative name lands in gdb's
+  own folder and goes when the editor ends.  An answer remembered for a gdb start
+  asks once more, and gdb as a Rust adapter has no Use mine until its
+  own start moves apart too.  The line saying what Use mine starts is
+  wrapped like the lines above it instead of being cut at the edge of
+  the box.  The
   answer is kept for that folder and that text, and a changed file asks
   again.  A debugger named by the xwperc of the folder
   you started in is asked about in that same one box, not in a box of

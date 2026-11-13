@@ -211,6 +211,8 @@ typedef struct WpeStartPlan {
                                 what relative paths mean, what the canonical text
                                 names; NULL means cwd                                */
  char *debug_dir;            /* the folder the owner made for this start, or NULL    */
+ int program_from;           /* WPE_FROM_*: whose word the program is (contain)      */
+ char *program_source;       /* what the box calls it, or NULL for "the program"      */
  const struct startplan_row *row; /* the debugger row contain() chose, or NULL      */
  const char *contain_refused; /* contain() could not make this start: why           */
  int load_at;                /* where Run it's lines go in input                     */
@@ -298,9 +300,17 @@ void wpe_startplan_runs_code(WpeStartPlan *p, const char *what);
 void wpe_startplan_debug_base_set(const char *base);
 char *wpe_startplan_debug_dir_new(const char *base);
 int wpe_startplan_debug_dir_end(const char *dir);
+char *wpe_startplan_debug_dir_take(WpeStartPlan *p);
+void wpe_startplan_program_origin(WpeStartPlan *p, int from, const char *source);
 int wpe_startplan_contain(WpeStartPlan *p, const char *key, const char *program_tool,
                           const char *folder, const char *program);
 int wpe_startplan_load_lines(WpeStartPlan *p);
+int wpe_startplan_is_apart(const WpeStartPlan *p);
+const char *wpe_startplan_program_path(const WpeStartPlan *p);
+int wpe_startplan_row_is_apart(const char *key, const char *program_tool);
+int wpe_startplan_editor_inputs(const WpeStartPlan *p);
+int wpe_startplan_history_lines(const WpeStartPlan *p, char *ask, size_t ask_n, char *fix,
+                                size_t fix_n);
 void wpe_startplan_rows_designed(int on);
 const char *wpe_startplan_row_info(int index, const char **variant, int *apart, int *designed,
                                    const char **reason);

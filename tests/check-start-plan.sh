@@ -21,11 +21,12 @@
 # we_debug.c and we_dap.c, like the lines above, so a debugger plan cannot
 # pick its own folder by a new call.
 #
-# --contain adds the rule that no debugger switch against a folder's files
-# lives outside the owner: the settings that turned off what gdb auto-loads,
-# and the -iex and -ix switches, appear in we_startplan.c only.  It stays out
-# of "make check" until the gdb rows start apart and the switches are gone
-# from we_debug.c and we_dap.c; until then it is red by design.
+# The containment rule (always on): no debugger switch against a folder's
+# files lives outside the owner: the settings that turned off what gdb
+# auto-loads, gdb's probe for Guile and the -iex and -ix switches appear in
+# we_startplan.c only, so a start-up file is contained by where the debugger
+# starts and never by a list of switches.  --contain is accepted and means
+# the same.
 #
 # The source scan: in the files that start programs, every line that builds
 # a start (the patterns below) is counted per function.  tests/start-plan.allow
@@ -47,7 +48,7 @@ HERE=$(dirname "$0")
 ALLOW=
 LIST=0
 BAD=1
-CONTAIN=0
+CONTAIN=1
 
 while [ $# -gt 0 ]; do
   case $1 in

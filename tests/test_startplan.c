@@ -553,7 +553,12 @@ static WpeStartPlan *debugger_plan(const char *dir, const char *tool)
 {
  WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, tool);
  if (!p) { fail("plan", "out of memory"); exit(1); }
- wpe_startplan_set_cwd(p, dir);
+ /* A debugger that starts apart is planned as the editor plans it: in a folder of its
+    own, the program's folder kept for what is listed. */
+ if (wpe_startplan_row_is_apart(tool, ""))
+  wpe_startplan_contain(p, tool, "", dir, NULL);
+ else
+  wpe_startplan_set_cwd(p, dir);
  wpe_startplan_set_file(p, "./xwperc", dir);
  wpe_startplan_word(p, tool, WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
  wpe_startplan_tool_reads(p, tool);
@@ -706,8 +711,7 @@ static void case_startup_rows(void)
  write_file(gdbinit, "shell true\n");
  p = debugger_plan(proj, "gdb");
  expect_int("gdb's ./.gdbinit is listed", p->npath, 1);
- expect_has("with the condition gdb runs it under", p->npath && p->path[0].note ?
-            p->path[0].note : "", "auto-load");
+ expect_int("with no condition: it runs only when Run it loads it", p->npath && p->path[0].note == NULL, 1);
  wpe_startplan_free(p);
  write_file(perldb, "1;\n");
  p = debugger_plan(proj, "perl");
@@ -726,7 +730,7 @@ static WpeStartPlan *gdb_plan_of(const char *program)
 {
  WpeStartPlan *p = wpe_startplan_new(WPE_START_DEBUGGER, "gdb");
  if (!p) { fail("plan", "out of memory"); exit(1); }
- wpe_startplan_set_cwd(p, proj);
+ wpe_startplan_contain(p, "gdb", "", proj, NULL);
  wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
  wpe_startplan_tool_reads_of(p, "gdb", program);
  return p;
@@ -746,8 +750,8 @@ static void case_startup_program_scripts(void)
  expect_int("gdb's t.e-gdb.py beside the program is listed", p->npath, 1);
  expect_str("as the box shows it", p->npath ? p->path[0].path : "", "./t.e-gdb.py");
  expect_int("as a file gdb runs", p->npath ? p->path[0].role : -1, WPE_PATH_READS);
- expect_has("with the condition gdb runs it under", p->npath && p->path[0].note ?
-            p->path[0].note : "", "auto-load");
+ expect_int("with no condition: it runs only when Run it loads it",
+            p->npath && p->path[0].note == NULL, 1);
  expect_int("so the plan asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
  wpe_startplan_free(p);
  p = gdb_plan_of("./t.e");
@@ -1059,8 +1063,8 @@ static void case_embedded_listed(void)
  expect_int("marked as inside the program", p->npath ? p->path[0].embedded : -1, 1);
  expect_str("its text is the name and the file's lines", p->npath ? p->path[0].content : "",
             "emb.py\nopen('ran','w').close()\n");
- expect_has("with the condition gdb runs it under", p->npath && p->path[0].note ?
-            p->path[0].note : "", "auto-load");
+ expect_int("with no condition: it runs only when Run it loads it",
+            p->npath && p->path[0].note == NULL, 1);
  expect_int("shown whole", wpe_startplan_reads_too_long(p), 0);
  expect_int("so the plan asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
  expect_has("and its text is part of the plan's text", wpe_startplan_text(p),
@@ -1404,6 +1408,42 @@ static void case_debug_dir(void)
  free(b);
 }
 
+/* Sessions whose debugger wrote a file into its folder (a log the user's own init file
+   keeps by a relative name) leave their folders behind: a later start still gets one. */
+#define LEFT_FOLDERS 40
+static void case_debug_dir_left_behind(void)
+{
+ char *left[LEFT_FOLDERS], *next, path[PATH_ROOM];
+ int i, kept = 0;
+
+ for (i = 0; i < LEFT_FOLDERS; i++)
+ {
+  left[i] = wpe_startplan_debug_dir_new(dbgbase);
+  if (!left[i])
+   continue;
+  kept++;
+  file_in(path, sizeof path, left[i], "gdb.txt");
+  write_file(path, "log");
+  wpe_startplan_debug_dir_end(left[i]);
+ }
+ expect_int("every session got a folder although each left its own behind", kept,
+            LEFT_FOLDERS);
+ next = wpe_startplan_debug_dir_new(dbgbase);
+ expect_int("and the next start still gets one", next != NULL, 1);
+ if (next)
+  wpe_startplan_debug_dir_end(next);
+ free(next);
+ for (i = 0; i < LEFT_FOLDERS; i++)
+ {
+  if (!left[i])
+   continue;
+  file_in(path, sizeof path, left[i], "gdb.txt");
+  unlink(path);
+  expect_int("a folder left behind ends once it is empty", wpe_startplan_debug_dir_end(left[i]), 0);
+  free(left[i]);
+ }
+}
+
 /* What one encoder gives for one path. */
 static void expect_enc(const char *name, int (*enc)(char *, size_t, const char *),
                        const char *path, int want_rc, const char *want)
@@ -1596,7 +1636,11 @@ static void case_contain_lines(void)
 
  wpe_startplan_rows_designed(0);
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
- expect_int("shipped: gdb gets no line", p->ninput + p->nword + p->ninit + p->npath, 0);
+ expect_int("shipped: gdb starts apart: the pin, the move, the program", p->ninput, 3);
+ expect_int("shipped: gdb has a folder of its own", p->debug_dir != NULL, 1);
+ end_plan(p);
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, "t.e");
+ expect_int("shipped: pdb gets no line", p->ninput + p->nword + p->ninit + p->npath, 0);
  expect_str("shipped: it starts in the program's folder", p->cwd, proj);
  expect_str("shipped: whose folder it is", p->program_dir, proj);
  expect_int("shipped: no folder of its own", p->debug_dir == NULL, 1);
@@ -1614,8 +1658,10 @@ static void case_rows(void)
  for (i = 0; (key = wpe_startplan_row_info(i, &variant, &apart, &designed, &reason)) != NULL; i++)
  {
   name = strcmp(key, "dap") == 0 ? variant : key;
-  expect_int("every row ships with the debugger starting where it did", apart, 0);
-  expect_int("and says why it does not start apart", reason != NULL && *reason != '\0', 1);
+  expect_int("only gdb's two rows ship with the debugger starting apart", apart,
+             strcmp(key, "gdb") == 0);
+  if (!apart)
+   expect_int("a row that does not start apart says why", reason != NULL && *reason != '\0', 1);
   listed = 0;
   for (k = 0; exceptions[k]; k++)
    if (strcmp(exceptions[k], name) == 0)
@@ -1723,7 +1769,15 @@ static void case_rule_apart(void)
  p = wpe_startplan_new(WPE_START_DEBUGGER, "gdb");
  wpe_startplan_set_cwd(p, proj);
  wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
- expect_int("with the shipped rows gdb starts in the folder as it did", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ expect_int("with the shipped rows gdb in the folder is refused", wpe_startplan_judge(p),
+            WPE_PLAN_REFUSED);
+ expect_str("saying so", p->refused, WPE_STARTPLAN_REFUSE_DEBUG_CWD);
+ wpe_startplan_free(p);
+ p = wpe_startplan_new(WPE_START_DEBUGGER, "pdb");
+ wpe_startplan_set_cwd(p, proj);
+ wpe_startplan_word(p, "pdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ expect_int("with the shipped rows pdb starts in the folder as it did", wpe_startplan_judge(p),
+            WPE_PLAN_CLEAN);
  wpe_startplan_free(p);
  unlink(prog);
 }
@@ -1735,46 +1789,46 @@ static void case_contain_text(void)
  char rc[PATH_ROOM], *before, *second;
  WpeStartPlan *p, *q;
 
- file_in(rc, sizeof rc, proj, ".gdbinit");
- write_file(rc, "set print pretty on\n");
+ file_in(rc, sizeof rc, proj, ".pdbrc");
+ write_file(rc, "p 1\n");
 
  /* Started the way every start was made before: set_cwd, a word, the listing. */
- p = wpe_startplan_new(WPE_START_DEBUGGER, "gdb");
+ p = wpe_startplan_new(WPE_START_DEBUGGER, "pdb");
  wpe_startplan_set_file(p, "this folder", proj);
  wpe_startplan_set_cwd(p, proj);
- wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
- wpe_startplan_tool_reads(p, "gdb");
- expect_int("the folder's .gdbinit asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ wpe_startplan_word(p, "pdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ wpe_startplan_tool_reads(p, "pdb");
+ expect_int("the folder's .pdbrc asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
  before = strdup(wpe_startplan_text(p));
  expect_int("the user said yes", wpe_startplan_remember(p, WPE_PLAN_RUN), 0);
  wpe_startplan_free(p);
 
  /* The same start through contain with the shipped rows. */
- p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, NULL);
- wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
- wpe_startplan_tool_reads(p, "gdb");
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
+ wpe_startplan_word(p, "pdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ wpe_startplan_tool_reads(p, "pdb");
  expect_int("the answer given before is still the answer", wpe_startplan_judge(p), WPE_PLAN_RUN);
  expect_str("because the text did not change", wpe_startplan_text(p), before);
  wpe_startplan_free(p);
 
  /* Apart: the folder's file is listed from the program's folder, inside it. */
  wpe_startplan_rows_designed(1);
- p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, NULL);
- wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
- expect_int("the folder's .gdbinit is listed", wpe_startplan_tool_reads(p, "gdb"), 1);
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
+ wpe_startplan_word(p, "pdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ expect_int("the folder's .pdbrc is listed", wpe_startplan_tool_reads(p, "pdb"), 1);
  expect_int("although the debugger starts elsewhere", p->cwd && strcmp(p->cwd, proj) != 0, 1);
  expect_int("it asks as before", wpe_startplan_judge(p), WPE_PLAN_ASK);
  expect_int("the listed file is the program's folder's", p->npath > 0 && strstr(p->path[0].resolved, proj) == p->path[0].resolved, 1);
  expect_int("and lies inside it", p->npath > 0 ? p->path[0].inside : -1, 1);
- expect_int("the box has the text of it", strstr(wpe_startplan_text(p), "set print pretty on") != NULL, 1);
+ expect_int("the box has the text of it", strstr(wpe_startplan_text(p), "p 1") != NULL, 1);
  expect_int("the plan is remembered", wpe_startplan_remember(p, WPE_PLAN_RUN), 0);
  second = strdup(wpe_startplan_text(p));
  end_plan(p);
 
  /* Another editor run: another debug folder, the same text, the same answer. */
- q = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, NULL);
- wpe_startplan_word(q, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
- wpe_startplan_tool_reads(q, "gdb");
+ q = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
+ wpe_startplan_word(q, "pdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ wpe_startplan_tool_reads(q, "pdb");
  expect_int("a second start gets a folder of its own", q->debug_dir != NULL, 1);
  expect_int("and the answer remembered covers it", wpe_startplan_judge(q), WPE_PLAN_RUN);
  expect_str("the same plan has the same text", wpe_startplan_text(q), second);
@@ -1783,6 +1837,204 @@ static void case_contain_text(void)
  wpe_startplan_rows_designed(0);
  free(before);
  free(second);
+ unlink(rc);
+}
+
+/* What a debugger site relies on when gdb starts apart: the folder's life, the lines
+   the editor sends, the history rule's two commands, the program's origin. */
+static void case_gdb_apart_owner(void)
+{
+ char prog[PATH_ROOM], dir[PATH_ROOM], ask[TEXT_ROOM], fix[TEXT_ROOM], want[PATH_ROOM];
+ char *taken;
+ WpeStartPlan *p;
+
+ file_in(prog, sizeof prog, proj, "t.e");
+ write_file(prog, "");
+
+ /* The plan's folder goes with the plan, unless the session took it over. */
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
+ snprintf(dir, sizeof dir, "%s", p->debug_dir);
+ expect_int("gdb starts apart", wpe_startplan_is_apart(p), 1);
+ expect_int("by its row too", wpe_startplan_row_is_apart("gdb", ""), 1);
+ expect_int("and over MI", wpe_startplan_row_is_apart("gdb", "mi"), 1);
+ expect_int("a debugger that does not is not", wpe_startplan_row_is_apart("pdb", ""), 0);
+ expect_int("nor one the table does not know", wpe_startplan_row_is_apart("nosuch", ""), 0);
+ expect_int("its folder exists", access(dir, F_OK), 0);
+ wpe_startplan_free(p);
+ expect_int("freeing the plan ends its folder", access(dir, F_OK), -1);
+
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
+ snprintf(dir, sizeof dir, "%s", p->debug_dir);
+ taken = wpe_startplan_debug_dir_take(p);
+ expect_str("the session takes the folder", taken, dir);
+ expect_int("the plan no longer holds it", p->debug_dir == NULL, 1);
+ wpe_startplan_free(p);
+ expect_int("so freeing the plan leaves it", access(dir, F_OK), 0);
+ expect_int("the session's end removes it", wpe_startplan_debug_dir_end(taken), 0);
+ expect_int("and it is gone", access(dir, F_OK), -1);
+ free(taken);
+
+ /* Forty starts, each ended: the owner's table never fills. */
+ {
+  int i, ok = 0;
+
+  for (i = 0; i < 40; i++)
+  {
+   p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
+   taken = wpe_startplan_debug_dir_take(p);
+   if (taken && wpe_startplan_debug_dir_end(taken) == 0)
+    ok++;
+   free(taken);
+   wpe_startplan_free(p);
+  }
+  expect_int("forty starts each made a folder and ended it", ok, 40);
+ }
+
+ /* The lines the editor sends are the plan's, ahead of a folder's Arguments. */
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
+ expect_int("three editor lines", wpe_startplan_editor_inputs(p), 3);
+ wpe_startplan_input(p, "r x", WPE_FROM_FOLDER, "./xwperc: Arguments");
+ expect_int("a folder's Arguments are not among them", wpe_startplan_editor_inputs(p), 3);
+ expect_int("but are an input of the plan", p->ninput, 4);
+ expect_str("the program the box names", wpe_startplan_program_path(p), prog);
+ expect_int("the program's folder is the plan's", strcmp(p->program_dir, proj), 0);
+
+ /* The history rule's two commands. */
+ expect_int("gdb has a history rule", wpe_startplan_history_lines(p, ask, sizeof ask, fix, sizeof fix), 0);
+ expect_str("it asks gdb where the history is", ask, "show history filename");
+ snprintf(want, sizeof want, "set history filename %s/.gdb_history", proj);
+ expect_str("and moves it to the program's folder", fix, want);
+ end_plan(p);
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", "mi", proj, "t.e");
+ expect_int("MI has one too", wpe_startplan_history_lines(p, ask, sizeof ask, fix, sizeof fix), 0);
+ expect_str("asked in MI's words", ask, "-gdb-show history filename");
+ snprintf(want, sizeof want, "-interpreter-exec console \"set history filename %s/.gdb_history\"",
+          proj);
+ expect_str("and moved through the console", fix, want);
+ end_plan(p);
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, "t.e");
+ expect_int("a debugger that starts in the folder has none",
+            wpe_startplan_history_lines(p, ask, sizeof ask, fix, sizeof fix), -1);
+ end_plan(p);
+
+ /* A program a folder names that lies outside it asks, as it did as a word of the command. */
+ p = wpe_startplan_new(WPE_START_DEBUGGER, "gdb");
+ wpe_startplan_program_origin(p, WPE_FROM_FOLDER, "the program the debugger is started on");
+ wpe_startplan_set_file(p, "this folder", proj);
+ wpe_startplan_contain(p, "gdb", "", proj, "/bin/true");
+ wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ expect_int("a folder's program outside the folder asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ end_plan(p);
+ p = wpe_startplan_new(WPE_START_DEBUGGER, "gdb");
+ wpe_startplan_set_file(p, "this folder", proj);
+ wpe_startplan_contain(p, "gdb", "", proj, "/bin/true");
+ wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ expect_int("the user's own program outside it does not", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ end_plan(p);
+
+ /* A window that knows no build folder gives the editor's own. */
+ {
+  char here[PATH_ROOM], real[PATH_ROOM];
+
+  p = wpe_startplan_new(WPE_START_DEBUGGER, "gdb");
+  expect_int("a start with no folder is made", wpe_startplan_contain(p, "gdb", "", NULL, "t.e"), 0);
+  expect_int("the editor's own folder is the program's",
+             getcwd(here, sizeof here) != NULL && realpath(here, real) != NULL &&
+             p->program_dir != NULL && strcmp(p->program_dir, real) == 0, 1);
+  expect_int("and still starts apart", p->debug_dir != NULL, 1);
+  end_plan(p);
+ }
+ unlink(prog);
+}
+
+/* How many of a plan's editor lines start with @head, and whether every one of them
+   is a command the request engine takes. */
+static int lines_with(const WpeStartPlan *p, const char *head, int *all_short)
+{
+ int i, n = 0;
+
+ for (i = 0; i < p->ninput; i++)
+ {
+  if (strlen(p->input[i].text) > 255)
+   *all_short = 0;
+  if (strncmp(p->input[i].text, head, strlen(head)) == 0)
+   n++;
+ }
+ return n;
+}
+
+/* A program under a folder longer than a command is reached in several, and loaded
+   from the folder gdb has moved to. */
+static void case_gdb_long_folder(void)
+{
+ char deep[PATH_ROOM], prog[PATH_ROOM], name[41];
+ WpeStartPlan *p;
+ int i, short_lines = 1, absolute, relative;
+
+ memset(name, 'd', 40);
+ name[40] = '\0';
+ snprintf(deep, sizeof deep, "%s", proj);
+ for (i = 0; i < 20; i++)
+ {
+  snprintf(deep + strlen(deep), sizeof deep - strlen(deep), "/%s", name);
+  mkdir(deep, 0700);
+ }
+ snprintf(prog, sizeof prog, "%s/t.e", deep);
+ write_file(prog, "");
+
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, "t.e");
+ expect_int("a long folder is reached in several commands", lines_with(p, "cd ", &short_lines) > 2, 1);
+ expect_int("the first is absolute", lines_with(p, "cd /", &short_lines), 1);
+ absolute = lines_with(p, "cd /", &short_lines);
+ relative = lines_with(p, "cd ./", &short_lines);
+ expect_int("the others are written from where gdb is", absolute + relative, lines_with(p, "cd ", &short_lines));
+ expect_int("none is longer than a command", short_lines, 1);
+ expect_str("the program loads from the folder", p->ninput ? p->input[p->ninput - 1].text : "", "file ./t.e");
+ expect_int("the program is still the plan's absolute path", wpe_startplan_program_path(p) != NULL &&
+            strcmp(wpe_startplan_program_path(p), prog) == 0, 1);
+ expect_int("the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ end_plan(p);
+
+ short_lines = 1;
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", "mi", deep, "t.e");
+ expect_int("over MI too", lines_with(p, "-environment-cd \"", &short_lines) > 2, 1);
+ expect_int("the first is absolute", lines_with(p, "-environment-cd \"/", &short_lines), 1);
+ expect_int("none is longer than a command", short_lines, 1);
+ expect_str("the program loads from the folder", p->ninput ? p->input[p->ninput - 1].text : "",
+            "-file-exec-and-symbols \"./t.e\"");
+ expect_int("the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ end_plan(p);
+
+ unlink(prog);
+ for (i = 0; i < 20; i++)
+ {
+  rmdir(deep);
+  *strrchr(deep, '/') = '\0';
+ }
+}
+
+/* An answer remembered for a gdb start before it started apart asks once more: the
+   canonical text now carries the containment lines. */
+static void case_contain_gdb_asks_again(void)
+{
+ char rc[PATH_ROOM], old_text[TEXT_ROOM], key[WPE_STARTPLAN_KEY_MAX];
+ WpeStartPlan *p;
+
+ file_in(rc, sizeof rc, proj, ".gdbinit");
+ write_file(rc, "set print pretty on\n");
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, NULL);
+ wpe_startplan_word(p, "gdb", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ wpe_startplan_tool_reads(p, "gdb");
+ wpe_startplan_key(p, key, sizeof key);
+ expect_int("the folder's .gdbinit asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ snprintf(old_text, sizeof old_text,
+          "xwpe-start 2\nkind debug\ncwd %s\nargv gdb\nreads %s 20\nset print pretty on\n",
+          proj, rc);
+ expect_int("the text of a start before the change was remembered",
+            wpe_startcmd_remember(p->folder, key, old_text, WPE_STARTCMD_YES), 0);
+ expect_int("a start that now carries its containment asks once more",
+            wpe_startplan_judge(p), WPE_PLAN_ASK);
+ end_plan(p);
  unlink(rc);
 }
 
@@ -1978,11 +2230,14 @@ static void case_load_lines(void)
 
  /* The shipped rows: no load line, the debugger reads the file itself. */
  wpe_startplan_rows_designed(0);
- write_file(gi, "set print pretty on\n");
- p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
- wpe_startplan_tool_reads_of(p, "gdb", "t.e");
+ write_file(gi, "p 1\n");
+ file_in(py, sizeof py, proj, ".pdbrc");
+ write_file(py, "p 1\n");
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, "t.e");
+ wpe_startplan_tool_reads_of(p, "pdb", "t.e");
  expect_int("a row that does not start apart loads nothing", wpe_startplan_load_lines(p), 0);
  expect_int("and has no line", p->ninput, 0);
+ unlink(py);
  end_plan(p);
  unlink(gi);
  unlink(prog);
@@ -2050,11 +2305,15 @@ int main(void)
  case_runs_code();
  case_carry();
  case_debug_dir();
+ case_debug_dir_left_behind();
  case_encoders();
  case_rows();
  case_contain_lines();
  case_rule_apart();
  case_contain_text();
+ case_contain_gdb_asks_again();
+ case_gdb_apart_owner();
+ case_gdb_long_folder();
  case_load_lines();
  teardown();
  if (failures) { printf("%d failure(s)\n", failures); return 1; }

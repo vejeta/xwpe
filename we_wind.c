@@ -1387,6 +1387,12 @@ void e_startcmd_typed(const char *folder, const char *key, const char *text)
 #define E_STARTPLAN_REFUSED_FMT  "%s's %s was not run: %s"
 #define E_STARTPLAN_RUNS_FMT     "Runs at start: %s (%d line%s)"
 #define E_STARTPLAN_RUNS_LONG_FMT "Runs at start: %s (%ld bytes, cannot be shown whole)"
+/* A debugger that starts apart runs nothing of the folder's at start: the
+   files it lists are what Run it makes the editor load. */
+#define E_STARTPLAN_WITH_RUN_FMT "With Run it: %s (%d line%s)"
+#define E_STARTPLAN_WITH_RUN_LONG_FMT "With Run it: %s (%ld bytes, cannot be shown whole)"
+#define E_STARTPLAN_DEBUGS_FMT   "Debugs: %s"
+#define E_STARTPLAN_NO_RUN_IT_FMT "Run it is not offered: %s"
 #define E_STARTPLAN_RUNS_LINE_FMT "    %s"
 #define E_STARTPLAN_THEN_FMT     "Then runs: %s"
 #define E_STARTPLAN_HONEST       "This runs the folder's own program."
@@ -1561,8 +1567,14 @@ static void e_startplan_lines_file_text(e_startplan_lines *l, const char *text)
  */
 static void e_startplan_lines_runs(e_startplan_lines *l, const WpeStartPlan *p)
 {
+ const char *fmt = E_STARTPLAN_RUNS_FMT, *long_fmt = E_STARTPLAN_RUNS_LONG_FMT;
  int i, n;
 
+ if (wpe_startplan_is_apart(p))
+ {
+  fmt = E_STARTPLAN_WITH_RUN_FMT;
+  long_fmt = E_STARTPLAN_WITH_RUN_LONG_FMT;
+ }
  for (i = 0; i < p->npath; i++)
  {
   const WpeStartPath *s = &p->path[i];
@@ -1570,12 +1582,11 @@ static void e_startplan_lines_runs(e_startplan_lines *l, const WpeStartPlan *p)
    continue;
   n = e_startplan_text_lines(s->content);
   if (s->too_long)
-   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_RUNS_LONG_FMT, s->path,
-                        s->length);
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, long_fmt, s->path, s->length);
   else if (n == 1)
-   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_RUNS_FMT, s->path, n, "");
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, fmt, s->path, n, "");
   else
-   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_RUNS_FMT, s->path, n, "s");
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, fmt, s->path, n, "s");
   if (s->note)
    e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "  %s", s->note);
   e_startplan_lines_file_text(l, s->content);
@@ -1592,7 +1603,25 @@ static void e_startplan_lines_input(e_startplan_lines *l, const WpeStartPlan *p)
  int i;
 
  for (i = 0; i < p->ninput; i++)
-  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_THEN_FMT, p->input[i].text);
+  if (p->input[i].from != WPE_FROM_EDITOR)
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_THEN_FMT, p->input[i].text);
+}
+
+/**
+ * e_startplan_lines_debugs - The program a debugger that starts apart is
+ * told to load, in a line of its own.
+ * @l: the lines; @p: the plan.
+ *
+ * It is no word of the command (the debugger starts with none), so the box
+ * names it here: the user reads which program the session runs before he
+ * says Run it.
+ */
+static void e_startplan_lines_debugs(e_startplan_lines *l, const WpeStartPlan *p)
+{
+ const char *program = wpe_startplan_program_path(p);
+
+ if (program && wpe_startplan_is_apart(p))
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_END, E_STARTPLAN_DEBUGS_FMT, program);
 }
 
 /**
@@ -1628,7 +1657,10 @@ static void e_startplan_lines_of(e_startplan_lines *l, const WpeStartPlan *p)
  wpe_startplan_counts(p, &outside, &dropped, &inside);
  if (inside > 0 && p->file)
   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_INSIDE_FMT, inside, p->file);
+ e_startplan_lines_debugs(l, p);
  e_startplan_lines_runs(l, p);
+ if (p->load_refused)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_NO_RUN_IT_FMT, p->load_refused);
  e_startplan_lines_input(l, p);
  if (p->runs_code)
   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "%s", p->runs_code);

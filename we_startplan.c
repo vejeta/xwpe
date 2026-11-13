@@ -210,6 +210,7 @@ WpeStartPlan *wpe_startplan_new(int kind, const char *name)
   return NULL;
  p->kind = kind;
  p->origin = WPE_CHILD_ORIGIN_USER;
+ p->program_from = WPE_FROM_USER;
  p->name = startplan_dup(startplan_or_empty(name));
  if (!p->name)
  {
@@ -259,6 +260,9 @@ void wpe_startplan_free(WpeStartPlan *p)
  }
  free(p->init);
  free(p->program_dir);
+ free(p->program_source);
+ if (p->debug_dir)
+  wpe_startplan_debug_dir_end(p->debug_dir);
  free(p->debug_dir);
  free(p->launch_cwd);
  for (i = 0; i < p->nvalue; i++)
@@ -1688,7 +1692,7 @@ int wpe_startplan_start(WpeStartPlan *p, char *const argv[], const WpeStartIo *i
  for (i = 0; i < n; i++)
   words[i] = startplan_holds(run, argv[i]);
  startplan_spec(&spec, io, words, run);
- spec.cwd = p->cwd;
+ spec.cwd = run->cwd ? run->cwd : p->cwd;
  rc = wpe_child_start(&spec, c, ended, data);
  free(words);
  return rc;
@@ -2058,6 +2062,8 @@ int wpe_startplan_reads_too_long(const WpeStartPlan *p)
 {
  int i;
 
+ if (p && p->load_refused)
+  return 1;
  for (i = 0; p && i < p->npath; i++)
   if (p->path[i].role == WPE_PATH_READS && p->path[i].too_long)
    return 1;
@@ -2075,18 +2081,19 @@ int wpe_startplan_reads_too_long(const WpeStartPlan *p)
      same file through a link once.  Measured with JDK 25: the working
      folder's jdb.ini is read ("Reading commands from ...").
    - gdb: gdb manual, "Init File in the Current Directory" -- ./.gdbinit is
-     read only when the auto-load safe-path admits the folder; the -iex
-     "set auto-load local-gdbinit off" of "Use mine" skips it (measured).
+     read only when the auto-load safe-path admits the folder, and only from
+     the folder gdb starts in (measured).
      gdb manual, "Auto-loading extensions" ("objfile-gdb.ext file") -- a
      script named after the program, <program>-gdb.gdb, -gdb.py or
      -gdb.scm, beside it (its real path first, then the name it was given)
-     runs under the same safe-path rule; "set auto-load gdb-scripts off",
-     "python-scripts off" and "guile-scripts off" skip them (measured on
-     gdb 18.1, which has no Guile and refuses the last setting).
+     runs under the same safe-path rule.
      gdb manual, "The .debug_gdb_scripts section" -- scripts carried inside
-     the program, under the same safe-path rule; the first two settings
-     skip them (measured on gdb 18.1: a file entry is looked up in gdb's
-     working folder).
+     the program, under the same safe-path rule (measured on gdb 18.1: a
+     file entry is looked up in gdb's working folder).
+     gdb's console and MI rows start apart (startplan_debugger_rows), so for
+     them these rows only say what the box shows and what Run it loads; the
+     notes below stay for gdb as a Rust adapter, which still starts in the
+     folder.
    - lldb: lldb(1) -- ./.lldbinit only with target.load-cwd-lldbinit true;
      lldb-dap reads init files the same way (to be measured on lldb-dap).
    - dbx: IBM AIX 7.2, "Customizing the dbx debugging environment" --
@@ -2135,6 +2142,20 @@ static const startplan_startup_file startplan_startup_files[] = {
  { "perl", ".perldb",   0, 1, 0, NULL, 0 },
  { NULL,   NULL,        0, 0, 0, NULL, 0 }
 };
+
+/**
+ * startplan_note_of - The sentence the box adds to a listed start-up file.
+ * @p: the plan; @row: the file's row.
+ *
+ * A file the debugger would read only under the user's own settings carries
+ * a condition.  When the debugger starts apart the condition no longer
+ * exists: the file runs only when the user chose Run it.
+ * Return: the sentence, or NULL.
+ */
+static const char *startplan_note_of(const WpeStartPlan *p, const startplan_startup_file *row)
+{
+ return wpe_startplan_is_apart(p) ? NULL : row->note;
+}
 
 /**
  * startplan_same_file_as_in - Is @st the file of that name in @dir?
@@ -2241,7 +2262,7 @@ static int startplan_add_startup_at(WpeStartPlan *p, const startplan_startup_fil
  if (wpe_startplan_path(p, given, WPE_PATH_READS, WPE_FROM_FOLDER, name, startplan_base(p)) < 0)
   return -1;
  s = &p->path[p->npath - 1];
- s->note = row->note;
+ s->note = startplan_note_of(p, row);
  startplan_read_startup(s, full);
  startplan_trace("startplan reads %s %ld", full, s->length);
  return 1;
@@ -2827,7 +2848,7 @@ static int startplan_add_embedded_startup(WpeStartPlan *p, const startplan_start
  if (wpe_startplan_path(p, shown, WPE_PATH_READS, WPE_FROM_FOLDER, row->file, startplan_base(p)) < 0)
   return -1;
  s = &p->path[p->npath - 1];
- s->note = row->note;
+ s->note = startplan_note_of(p, row);
  s->embedded = 1;
  if (!realpath(full, real))
   snprintf(real, sizeof real, "%s", full);
@@ -2932,7 +2953,6 @@ int wpe_startplan_tool_reads_known(const char *tool)
 
 /* The folder the owner makes for one debug start. */
 #define STARTPLAN_DEBUG_DIR_NAME   "xwpe_debug_XXXXXX"
-#define STARTPLAN_DEBUG_DIRS_MAX   32
 #define STARTPLAN_DEFAULT_BASE     "/tmp"
 #define STARTPLAN_TMPDIR_ENV       "TMPDIR"
 
@@ -2941,8 +2961,12 @@ int wpe_startplan_tool_reads_known(const char *tool)
 #define STARTPLAN_LK_WORD   1   /* a word of the debugger's command line                */
 #define STARTPLAN_LK_INIT   2   /* an adapter's launch init command                     */
 #define STARTPLAN_LK_CWD    3   /* the folder an adapter's launch request names         */
-#define STARTPLAN_LINES_MAX 8
+#define STARTPLAN_LINES_MAX 24
 #define STARTPLAN_LINE_MAX  (WPE_STARTPLAN_PATH_MAX + 256)
+/* The longest command the debugger's request engine sends: a line the editor types
+   to gdb, pdb or jdb is cut into several commands (a long folder is reached by
+   several cd) or refused, never sent longer. */
+#define STARTPLAN_COMMAND_MAX 255
 
 /* How a row's lines reach its debugger. */
 #define STARTPLAN_CHAN_NONE   0
@@ -2971,6 +2995,12 @@ int wpe_startplan_tool_reads_known(const char *tool)
 #define STARTPLAN_GDB_PIN           "set " STARTPLAN_GDB_SAFE_PATH
 #define STARTPLAN_MI_PIN            "-gdb-set " STARTPLAN_GDB_SAFE_PATH
 #define STARTPLAN_LLDB_PIN          "settings set target.load-script-from-symbol-file false"
+/* gdb's history file, and the two commands of the history rule. */
+#define STARTPLAN_GDB_HISTORY_NAME  ".gdb_history"
+#define STARTPLAN_GDB_HISTORY_FIX_FMT "set history filename %s"
+#define STARTPLAN_HISTORY_ASK       "show history filename"
+#define STARTPLAN_MI_HISTORY_ASK    "-gdb-show history filename"
+#define STARTPLAN_MI_CONSOLE        "-interpreter-exec console "
 #define STARTPLAN_IEX               "-iex"
 #define STARTPLAN_IX                "-ix"
 #define STARTPLAN_GDBINIT           ".gdbinit"
@@ -2996,9 +3026,9 @@ struct startplan_row {
 typedef struct startplan_row startplan_row;
 
 static const startplan_row startplan_debugger_rows[] = {
- { "gdb",  "",         0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_INPUT,
+ { "gdb",  "",         1, 1, "", STARTPLAN_CHAN_INPUT,
    STARTPLAN_GDB_PIN, STARTPLAN_MOVE_GDB, STARTPLAN_LOAD_GDB },
- { "gdb",  "mi",       0, 1, "not yet moved to its own folder", STARTPLAN_CHAN_INPUT,
+ { "gdb",  "mi",       1, 1, "", STARTPLAN_CHAN_INPUT,
    STARTPLAN_MI_PIN, STARTPLAN_MOVE_MI, STARTPLAN_LOAD_MI },
  { "sdb",  "",         0, 0, "no cd", STARTPLAN_CHAN_NONE, NULL,
    STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE },
@@ -3024,7 +3054,13 @@ static const startplan_row startplan_debugger_rows[] = {
    STARTPLAN_MOVE_NONE, STARTPLAN_LOAD_NONE }
 };
 
-static char *startplan_debug_dirs[STARTPLAN_DEBUG_DIRS_MAX];
+/* The folders the owner made and has not removed.  It grows: a folder the
+   debugger wrote into (a log the user's own init file keeps by a relative
+   name) cannot be removed when its session ends and stays here until the
+   editor ends; a later start still gets a folder of its own, up to
+   WPE_STARTPLAN_WORDS_MAX such folders in one editor run. */
+static char **startplan_debug_dirs;
+static int startplan_debug_ndirs;
 static char *startplan_debug_base;
 static int startplan_designed;
 
@@ -3151,18 +3187,29 @@ static const char *startplan_debug_base_of(const char *base)
  return STARTPLAN_DEFAULT_BASE;
 }
 
-/** startplan_debug_dir_keep - Remember a folder the owner made. Return: 0, or -1 when full. */
+/**
+ * startplan_debug_dir_keep - Remember a folder the owner made, in a free
+ * slot or a new one.
+ * Return: 0, or -1 out of memory.
+ */
 static int startplan_debug_dir_keep(const char *dir)
 {
  int i;
 
- for (i = 0; i < STARTPLAN_DEBUG_DIRS_MAX; i++)
+ for (i = 0; i < startplan_debug_ndirs; i++)
   if (!startplan_debug_dirs[i])
   {
    startplan_debug_dirs[i] = startplan_dup(dir);
    return startplan_debug_dirs[i] ? 0 : -1;
   }
- return -1;
+ if (startplan_grow((void **)&startplan_debug_dirs, startplan_debug_ndirs,
+                    sizeof *startplan_debug_dirs) < 0)
+  return -1;
+ startplan_debug_dirs[startplan_debug_ndirs] = startplan_dup(dir);
+ if (!startplan_debug_dirs[startplan_debug_ndirs])
+  return -1;
+ startplan_debug_ndirs++;
+ return 0;
 }
 
 /** startplan_is_debug_dir - Is this a folder the owner made and not yet ended? */
@@ -3170,7 +3217,7 @@ static int startplan_is_debug_dir(const char *dir)
 {
  int i;
 
- for (i = 0; dir && i < STARTPLAN_DEBUG_DIRS_MAX; i++)
+ for (i = 0; dir && i < startplan_debug_ndirs; i++)
   if (startplan_debug_dirs[i] && strcmp(startplan_debug_dirs[i], dir) == 0)
    return 1;
  return 0;
@@ -3213,7 +3260,7 @@ int wpe_startplan_debug_dir_end(const char *dir)
 {
  int i;
 
- for (i = 0; dir && i < STARTPLAN_DEBUG_DIRS_MAX; i++)
+ for (i = 0; dir && i < startplan_debug_ndirs; i++)
   if (startplan_debug_dirs[i] && strcmp(startplan_debug_dirs[i], dir) == 0)
   {
    if (rmdir(dir) != 0)
@@ -3443,6 +3490,8 @@ static int startplan_lines_add(startplan_lines *l, int kind, const char *head, c
  wrote = snprintf(l->text[l->n], STARTPLAN_LINE_MAX, "%s%s", head, arg ? arg : "");
  if (wrote < 0 || wrote >= STARTPLAN_LINE_MAX)
   return -1;
+ if (kind == STARTPLAN_LK_INPUT && wrote > STARTPLAN_COMMAND_MAX)
+  return -1;
  l->kind[l->n++] = kind;
  return 0;
 }
@@ -3475,6 +3524,102 @@ static int startplan_lines_pin(const startplan_row *row, startplan_lines *l)
 }
 
 /**
+ * startplan_cd_text - The command that changes gdb's folder, in the words of
+ * the row's interface.
+ * @row: the row; @path: an absolute folder; @relative: 1 to write it "./..."
+ * (a piece of a folder reached in several steps); @out/@n: receive it.
+ * Return: 0, or -1 when the folder cannot be given safely or the command is
+ * longer than the engine sends.
+ */
+static int startplan_cd_text(const startplan_row *row, const char *path, int relative, char *out,
+                             size_t n)
+{
+ char arg[STARTPLAN_LINE_MAX];
+ int wrote;
+
+ if (row->move == STARTPLAN_MOVE_MI)
+ {
+  if (wpe_startplan_mi_cstring(arg, sizeof arg, path) < 0)
+   return -1;
+  if (relative)                      /* "/name" with its quotes becomes "./name" */
+  {
+   memmove(arg + 2, arg + 1, strlen(arg));
+   arg[1] = '.';
+  }
+  wrote = snprintf(out, n, "-environment-cd %s", arg);
+ }
+ else
+ {
+  if (wpe_startplan_gdb_arg(arg, sizeof arg, path, WPE_GDB_ARG_RAW) < 0)
+   return -1;
+  wrote = snprintf(out, n, "cd %s%s", relative ? "." : "", arg);
+ }
+ if (wrote < 0 || (size_t)wrote >= n || wrote > STARTPLAN_COMMAND_MAX)
+  return -1;
+ return 0;
+}
+
+/**
+ * startplan_cd_add - Add one command that changes gdb's folder.
+ * Return: 0, or -1 as startplan_cd_text.
+ */
+static int startplan_cd_add(const startplan_row *row, const char *path, int relative,
+                            startplan_lines *l)
+{
+ char text[STARTPLAN_LINE_MAX];
+
+ if (startplan_cd_text(row, path, relative, text, sizeof text) < 0)
+  return -1;
+ return startplan_lines_add(l, STARTPLAN_LK_INPUT, text, NULL);
+}
+
+/**
+ * startplan_lines_cd - The commands that give gdb the program's folder.
+ * @row: the row; @folder: the program's folder, resolved; @l: the lines.
+ *
+ * One cd when the folder fits a command.  A deeper folder is reached in
+ * several, the first absolute and the others "./name/name", each as many
+ * folder names as fit, so a program under a very long path starts as it did
+ * when the debugger was started in its folder.
+ * Return: 0, or -1 when a folder name alone does not fit or cannot be given
+ * safely.
+ */
+static int startplan_lines_cd(const startplan_row *row, const char *folder, startplan_lines *l)
+{
+ char chunk[WPE_STARTPLAN_PATH_MAX], cand[WPE_STARTPLAN_PATH_MAX], text[STARTPLAN_LINE_MAX];
+ const char *name = folder;
+ size_t n;
+ int relative = 0;
+
+ if (startplan_cd_add(row, folder, 0, l) == 0)
+  return 0;
+ chunk[0] = '\0';
+ while (*name == STARTPLAN_SEP)
+  name++;
+ while (*name)
+ {
+  n = strcspn(name, "/");
+  if (snprintf(cand, sizeof cand, "%s%c%.*s", chunk, STARTPLAN_SEP, (int)n, name) >=
+      (int)sizeof cand)
+   return -1;
+  if (startplan_cd_text(row, cand, relative, text, sizeof text) < 0)
+  {
+   if (!chunk[0] || startplan_cd_add(row, chunk, relative, l) < 0)
+    return -1;
+   relative = 1;
+   snprintf(cand, sizeof cand, "%c%.*s", STARTPLAN_SEP, (int)n, name);
+   if (startplan_cd_text(row, cand, relative, text, sizeof text) < 0)
+    return -1;
+  }
+  snprintf(chunk, sizeof chunk, "%s", cand);
+  name += n;
+  while (*name == STARTPLAN_SEP)
+   name++;
+ }
+ return chunk[0] ? startplan_cd_add(row, chunk, relative, l) : -1;
+}
+
+/**
  * startplan_lines_move - The row's lines that give the program's folder.
  * @row: the row; @folder: the program's folder, resolved; @l: the lines.
  * Return: 0, or -1 when the folder cannot be given safely.
@@ -3486,13 +3631,8 @@ static int startplan_lines_move(const startplan_row *row, const char *folder, st
  switch (row->move)
  {
  case STARTPLAN_MOVE_GDB:
-  if (wpe_startplan_gdb_arg(arg, sizeof arg, folder, WPE_GDB_ARG_RAW) < 0)
-   return -1;
-  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "cd ", arg);
  case STARTPLAN_MOVE_MI:
-  if (wpe_startplan_mi_cstring(arg, sizeof arg, folder) < 0)
-   return -1;
-  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "-environment-cd ", arg);
+  return startplan_lines_cd(row, folder, l);
  case STARTPLAN_MOVE_GDB_DAP:
   if (wpe_startplan_gdb_arg(arg, sizeof arg, folder, WPE_GDB_ARG_RAW) < 0)
    return -1;
@@ -3587,13 +3727,49 @@ static int startplan_apply_lines(WpeStartPlan *p, const startplan_lines *l)
 }
 
 /**
+ * startplan_program_load_in_folder - The line that loads a program whose
+ * absolute path is longer than a command, written from the folder gdb has
+ * moved to ("./name").
+ * @row: the row; @program: the program, absolute; @folder: the program's
+ * folder; @l: receives the line.
+ * Return: 0, or -1 when the program is not under the folder or cannot be
+ * given safely.
+ */
+static int startplan_program_load_in_folder(const startplan_row *row, const char *program,
+                                            const char *folder, startplan_lines *l)
+{
+ char arg[STARTPLAN_LINE_MAX];
+ size_t n = strlen(folder);
+ const char *rest;
+
+ if (strncmp(program, folder, n) != 0 || program[n] != STARTPLAN_SEP)
+  return -1;
+ rest = program + n;                  /* "/name": the same file, from the folder */
+ if (row->load == STARTPLAN_LOAD_MI)
+ {
+  if (wpe_startplan_mi_cstring(arg, sizeof arg, rest) < 0)
+   return -1;
+  memmove(arg + 2, arg + 1, strlen(arg));
+  arg[1] = '.';
+  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "-file-exec-and-symbols ", arg);
+ }
+ if (wpe_startplan_gdb_arg(arg, sizeof arg, rest, WPE_GDB_ARG_SPLIT) < 0)
+  return -1;
+ return startplan_lines_add(l, STARTPLAN_LK_INPUT, "file .", arg);
+}
+
+/**
  * startplan_program_load - The line that loads the program, for the debuggers
  * that load it by a command (gdb's file, MI's -file-exec-and-symbols).
- * @row: the row; @program: the program, absolute; @l: receives the line.
+ * @row: the row; @program: the program, absolute; @folder: the program's
+ * folder; @l: receives the line.
+ *
+ * The absolute path, or, when that is longer than a command, the same file
+ * written from the folder gdb has moved to.
  * Return: 0, or -1 when the program's path cannot be given safely.
  */
 static int startplan_program_load(const startplan_row *row, const char *program,
-                                  startplan_lines *l)
+                                  const char *folder, startplan_lines *l)
 {
  char arg[STARTPLAN_LINE_MAX];
 
@@ -3602,13 +3778,17 @@ static int startplan_program_load(const startplan_row *row, const char *program,
  {
   if (wpe_startplan_gdb_arg(arg, sizeof arg, program, WPE_GDB_ARG_SPLIT) < 0)
    return -1;
-  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "file ", arg);
+  if (startplan_lines_add(l, STARTPLAN_LK_INPUT, "file ", arg) == 0)
+   return 0;
+  return startplan_program_load_in_folder(row, program, folder, l);
  }
  if (row->load == STARTPLAN_LOAD_MI)
  {
   if (wpe_startplan_mi_cstring(arg, sizeof arg, program) < 0)
    return -1;
-  return startplan_lines_add(l, STARTPLAN_LK_INPUT, "-file-exec-and-symbols ", arg);
+  if (startplan_lines_add(l, STARTPLAN_LK_INPUT, "-file-exec-and-symbols ", arg) == 0)
+   return 0;
+  return startplan_program_load_in_folder(row, program, folder, l);
  }
  return 0;
 }
@@ -3625,7 +3805,25 @@ static int startplan_add_program(WpeStartPlan *p, const char *program, char *out
 {
  if (wpe_startplan_resolve(program, p->program_dir, out, sz) < 0)
   return -1;
- return wpe_startplan_path(p, out, WPE_PATH_INPUT, WPE_FROM_USER, "the program", p->program_dir);
+ return wpe_startplan_path(p, out, WPE_PATH_INPUT, p->program_from,
+                           p->program_source ? p->program_source : "the program", p->program_dir);
+}
+
+/**
+ * wpe_startplan_program_origin - Say whose word the program is, before contain.
+ * @p: the plan; @from: WPE_FROM_*; @source: what the box calls it, or NULL
+ * for "the program".
+ *
+ * A program a folder names (a project's EXENAME, an xwperc's Executable)
+ * that lies outside the folder makes the plan ask, as it did when the
+ * program was a word of the command: contain keeps that origin on the path
+ * it adds.
+ */
+void wpe_startplan_program_origin(WpeStartPlan *p, int from, const char *source)
+{
+ free(p->program_source);
+ p->program_source = source ? startplan_dup(source) : NULL;
+ p->program_from = from;
 }
 
 /**
@@ -3650,7 +3848,7 @@ static int startplan_contain_apart(WpeStartPlan *p, const startplan_row *row, co
  if (!program || !*program)
   return 0;
  if (startplan_add_program(p, program, absolute, sizeof absolute) < 0 ||
-     startplan_program_load(row, absolute, &lines) < 0)
+     startplan_program_load(row, absolute, p->program_dir, &lines) < 0)
  {
   p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_PATH;
   return -1;
@@ -3711,6 +3909,140 @@ int wpe_startplan_contain(WpeStartPlan *p, const char *key, const char *program_
   return -1;
  startplan_trace("startplan contain %s apart=1 dir=%s", key, p->debug_dir);
  return startplan_contain_apart(p, row, program);
+}
+
+/**
+ * wpe_startplan_debug_dir_take - Hand the plan's debug folder to the session.
+ * @p: the plan that runs.
+ *
+ * The folder must outlive the plan, which is freed once the debugger has
+ * started: the session ends it (wpe_startplan_debug_dir_end) when it is over.
+ * Until then freeing the plan would end it.
+ * Return: the folder's path (the caller frees it), or NULL when the plan
+ * has none.
+ */
+char *wpe_startplan_debug_dir_take(WpeStartPlan *p)
+{
+ char *dir;
+
+ if (!p)
+  return NULL;
+ dir = p->debug_dir;
+ p->debug_dir = NULL;
+ return dir;
+}
+
+/**
+ * wpe_startplan_is_apart - Does this plan start its debugger apart from the
+ * program's folder?
+ * @p: the plan, after contain.
+ * Return: 1 when it does: the debugger gets no program word and loads the
+ * program by the editor's own command.
+ */
+int wpe_startplan_is_apart(const WpeStartPlan *p)
+{
+ return p && p->row && startplan_row_apart(p->row);
+}
+
+/**
+ * wpe_startplan_program_path - The program contain gave the debugger to load.
+ * @p: the plan.
+ * Return: its absolute path, or NULL when the plan has none.
+ */
+const char *wpe_startplan_program_path(const WpeStartPlan *p)
+{
+ const char *source = p && p->program_source ? p->program_source : "the program";
+ int i;
+
+ for (i = 0; p && i < p->npath; i++)
+  if (p->path[i].role == WPE_PATH_INPUT && p->path[i].source &&
+      strcmp(p->path[i].source, source) == 0)
+   return p->path[i].path;
+ return NULL;
+}
+
+/**
+ * wpe_startplan_row_is_apart - Does a debugger start apart?
+ * @key/@program_tool: as wpe_startplan_contain.
+ * Return: 1 when its row says so, 0 when it does not or the table does not
+ * know it.
+ */
+int wpe_startplan_row_is_apart(const char *key, const char *program_tool)
+{
+ const startplan_row *row = key ? startplan_row_find(key, program_tool) : NULL;
+
+ return row && startplan_row_apart(row);
+}
+
+/**
+ * wpe_startplan_editor_inputs - How many of the plan's input lines are the
+ * editor's own (containment, and what Run it loads), at the start of the list.
+ * @p: the plan.
+ *
+ * The lines a site adds after them (a folder's Arguments, shown as "Then
+ * runs") are the user's or the folder's and are sent when the program runs.
+ * Return: the count.
+ */
+int wpe_startplan_editor_inputs(const WpeStartPlan *p)
+{
+ int i;
+
+ for (i = 0; p && i < p->ninput && p->input[i].from == WPE_FROM_EDITOR; i++)
+  ;
+ return p ? i : 0;
+}
+
+/**
+ * startplan_history_fix_line - The line that moves gdb's history file to the
+ * program's folder, in the form the row's interface takes.
+ * @row: the row; @p: the plan; @out/@n: receive it.
+ * Return: 0, or -1 when the path cannot be given to gdb safely.
+ */
+static int startplan_history_fix_line(const startplan_row *row, const WpeStartPlan *p, char *out,
+                                      size_t n)
+{
+ char path[WPE_STARTPLAN_PATH_MAX], arg[STARTPLAN_LINE_MAX], cmd[STARTPLAN_LINE_MAX];
+
+ if (snprintf(path, sizeof path, "%s%c%s", p->program_dir, STARTPLAN_SEP,
+              STARTPLAN_GDB_HISTORY_NAME) >= (int)sizeof path)
+  return -1;
+ if (wpe_startplan_gdb_arg(arg, sizeof arg, path, WPE_GDB_ARG_RAW) < 0)
+  return -1;
+ snprintf(cmd, sizeof cmd, STARTPLAN_GDB_HISTORY_FIX_FMT, arg);
+ if (row->load != STARTPLAN_LOAD_MI)
+  return startplan_copy_text(out, n, cmd);
+ if (startplan_mi_quote(arg, sizeof arg, cmd) < 0)
+  return -1;
+ snprintf(cmd, sizeof cmd, "%s%s", STARTPLAN_MI_CONSOLE, arg);
+ return startplan_copy_text(out, n, cmd);
+}
+
+/**
+ * wpe_startplan_history_lines - The two commands of gdb's history rule.
+ * @p: the plan, after contain; @ask/@ask_n: receive the question; @fix/@fix_n:
+ * receive the command that moves the history file.
+ *
+ * gdb's default history file is ".gdb_history" in the folder it started in,
+ * which is the empty debug folder: a user who turned history saving on would
+ * lose his per-project history there.  The session asks gdb where the file
+ * is and, when the answer names the debug folder, sends the second command.
+ * Return: 0, or -1 for a plan that is not a gdb one starting apart, or a
+ * folder whose path gdb cannot be given safely.
+ */
+int wpe_startplan_history_lines(const WpeStartPlan *p, char *ask, size_t ask_n, char *fix,
+                                size_t fix_n)
+{
+ const startplan_row *row = p ? p->row : NULL;
+
+ if (!row || !startplan_row_apart(row) || !p->program_dir)
+  return -1;
+ if (row->load != STARTPLAN_LOAD_GDB && row->load != STARTPLAN_LOAD_MI)
+  return -1;
+ if (startplan_copy_text(ask, ask_n,
+                         row->load == STARTPLAN_LOAD_MI ? STARTPLAN_MI_HISTORY_ASK
+                                                        : STARTPLAN_HISTORY_ASK) < 0)
+  return -1;
+ return startplan_history_fix_line(row, p, fix, fix_n);
 }
 
 /**

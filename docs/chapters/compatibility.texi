@@ -524,8 +524,14 @@ debugger's commands as they were, a line break included.  Now the start
 shows such a file with its lines, and a folder's @code{Arguments} as the
 run command they make, and asks once per folder and text; the program
 is always a file; and a value with a line break, or with pdb's
-@samp{;;}, is never sent (@pxref{Debugger start-up files}).  The reason: a debugger reads these
-files and lines as its own commands, @code{shell} included.
+@samp{;;}, is never sent (@pxref{Debugger start-up files}).  gdb starts
+in an empty folder of its own and moves to the program's folder after its
+start-up, and gdb's auto-load trust inside xwpe is gdb's own default, not
+what your @file{~/.gdbinit} set: a script of the folder, of the program or
+of a library the program loads runs only when the box showed it and you chose
+@samp{Run it}.  The reason: a debugger reads these
+files and lines as its own commands, @code{shell} included, and a list
+of what it reads is always one place behind.
 
 @item Where a build writes, and the objects it removes
 @cindex Exedir, outside the folder

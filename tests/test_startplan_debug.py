@@ -11,7 +11,8 @@ in it (the rest of the line reached the debugger as a command of its own).
 Now the debugger's start is a start plan.  A start-up file the working
 folder holds, or a script gdb loads from beside the program
 (<program>-gdb.py), is shown with its lines and asked about, once per
-folder and text; "Use mine" starts gdb told to leave them alone; a
+folder and text; "Use mine" starts gdb with none of them loaded (gdb
+starts apart from the folder: tests/test_startplan_gdb_apart.py); a
 debugger the start folder names is asked about in that same one box, and
 "Use mine" there starts the user's own debugger; a folder's
 Arguments are shown as the run command they make; the program always
@@ -212,9 +213,9 @@ def test_startplan_gdbinit_in_the_folder_is_shown(tmp_path):
         s.key(ESC, delay=0.8)
         s._drain(SETTLE)
     lines = _plan_lines(folder)
-    assert "Runs at start: ./.gdbinit (1 line)" in lines, lines
-    assert "  gdb runs it only if your gdb settings allow auto-load from this folder" in lines, lines
-    assert "Your own setting: gdb without the folder's ./.gdbinit" in box, box
+    assert "With Run it: ./.gdbinit (1 line)" in lines, lines
+    assert not any("gdb runs it only if" in l for l in lines), lines
+    assert "Your own setting: gdb with none of the folder's files" in box, box
     assert not folder.ran.exists(), "gdb ran the folder's .gdbinit after Esc"
 
 
@@ -283,11 +284,13 @@ def test_startplan_folder_debugger_use_mine_starts_the_users(tmp_path):
     (folder.ws / ".pdbrc").write_text("!open('%s','w').close()\n" % folder.ran)
     with folder.session("t.c", SEED_C) as s:
         box = _debug_box(s, "Command from ./xwperc")
+        rows = s.display()
         s.key(USE_MINE, delay=0.8)
         started = _wait(lambda: "startplan judge debug/gdb" in folder.traced(), RAN_WAIT)
         ran = _wait(folder.ran.exists, 4)
         alive = s.proc.poll() is None
-    assert "Your own setting: gdb" in box, box
+    assert ("your own debugger (gdb) with none of the folder's files"
+            in _own_line_joined(rows)), box
     assert started, folder.traced()
     assert "startcmd answer debug/pdb own" in folder.traced(), folder.traced()
     assert _asks(folder) == 1, folder.traced()
@@ -313,10 +316,10 @@ def test_startplan_program_gdb_script_is_shown(tmp_path):
         s.key(ESC, delay=0.8)
         ran = _wait(folder.ran.exists, 4)
     lines = _plan_lines(folder)
-    assert "Runs at start: ./t.e-gdb.py (1 line)" in lines, lines
-    assert "  gdb runs it only if your gdb settings allow auto-load from this folder" in lines, lines
+    assert "With Run it: ./t.e-gdb.py (1 line)" in lines, lines
+    assert not any("gdb runs it only if" in l for l in lines), lines
     assert "    " + GDB_SCRIPT_PY.strip() % str(folder.ran) in lines, lines
-    assert "Your own setting: gdb without the scripts beside the program" in box, box
+    assert "Your own setting: gdb with none of the folder's files" in box, box
     assert not ran, "gdb ran the program's script after Esc"
 
 
@@ -324,7 +327,7 @@ def test_startplan_program_gdb_script_is_shown(tmp_path):
 @needs_gdb
 def test_startplan_program_gdb_scripts_use_mine_stops_them(tmp_path):
     """Use mine on that box, with a t.e-gdb.gdb beside the .py, starts gdb
-    told to leave both alone: the session starts, neither script runs, and
+    with neither loaded: the session starts, neither script runs, and
     "no" is kept for the folder."""
     folder = Folder(tmp_path)
     ran_gdb = folder.ws / "ran-gdb"
@@ -338,8 +341,8 @@ def test_startplan_program_gdb_scripts_use_mine_stops_them(tmp_path):
         ran = _wait(lambda: folder.ran.exists() or ran_gdb.exists(), RAN_WAIT)
         alive = s.proc.poll() is None
     lines = _plan_lines(folder)
-    assert "Runs at start: ./t.e-gdb.gdb (1 line)" in lines, lines
-    assert "Runs at start: ./t.e-gdb.py (1 line)" in lines, lines
+    assert "With Run it: ./t.e-gdb.gdb (1 line)" in lines, lines
+    assert "With Run it: ./t.e-gdb.py (1 line)" in lines, lines
     assert started, folder.traced()
     assert alive, "the editor died starting gdb"
     assert not ran, "gdb ran a script beside the program after Use mine"
@@ -379,19 +382,19 @@ def test_startplan_gdb_script_inside_the_program_is_shown(tmp_path):
         s.key(ESC, delay=0.8)
         ran = _wait(folder.ran.exists, 4)
     lines = _plan_lines(folder)
-    assert "Runs at start: ./t.e (.debug_gdb_scripts) (2 lines)" in lines, lines
-    assert "  gdb runs it only if your gdb settings allow auto-load from this folder" in lines, lines
+    assert "With Run it: ./t.e (.debug_gdb_scripts) (2 lines)" in lines, lines
+    assert not any("gdb runs it only if" in l for l in lines), lines
     assert "    emb.py" in lines, lines
     assert "    " + GDB_SCRIPT_PY.strip() % str(folder.ran) in lines, lines
-    assert "Your own setting: gdb without the scripts inside the program" in box, box
+    assert "Your own setting: gdb with none of the folder's files" in box, box
     assert not ran, "gdb ran the program's own script after Esc"
 
 
 # @scenario SC-compile-29
 @needs_gdb
 def test_startplan_gdb_script_inside_the_program_use_mine_stops_it(tmp_path):
-    """Use mine on that box starts gdb told to leave the program's own
-    scripts alone: the session starts, emb.py never runs, and "no" is kept
+    """Use mine on that box starts gdb with none of the program's own
+    scripts loaded: the session starts, emb.py never runs, and "no" is kept
     for the folder."""
     folder = _embedded_folder(tmp_path)
     with folder.session("t.c", SEED_EMBEDDED) as s:
@@ -435,23 +438,25 @@ def test_startplan_a_program_without_the_section_has_no_embedded_line(tmp_path):
 # @scenario SC-compile-29
 @needs_gdb
 def test_startplan_use_mine_line_is_wrapped_not_cut(tmp_path):
-    """The folder holds a .gdbinit and a script beside the program, so the
-    line that names what Use mine starts is 80 characters, wider than the
-    box.  It goes on in the next row like the lines above it, so every word
-    of it is on screen."""
+    """The start folder names pdb and holds a .pdbrc, so the line that names
+    what Use mine starts ("your own debugger (gdb) with none of the folder's
+    files") is longer than the box is wide.  It goes on in the next row like
+    the lines above it, so every word of it is on screen."""
     folder = Folder(tmp_path)
-    (folder.home / ".gdbinit").write_text(GDB_AUTOLOAD)
-    (folder.ws / ".gdbinit").write_text("shell %s\n" % folder.touch_line())
-    (folder.ws / "t.e-gdb.py").write_text(GDB_SCRIPT_PY % str(folder.ran))
+    (folder.ws / "xwperc").write_text(FOLDER_PDB)
+    (folder.ws / ".pdbrc").write_text("!open('%s','w').close()\n" % folder.ran)
     with folder.session("t.c", SEED_C) as s:
-        box = _debug_box(s, "Command from ./.gdbinit")
+        box = _debug_box(s, "Command from ./xwperc")
         rows = s.display()
         s.key(ESC, delay=0.8)
         s._drain(SETTLE)
     shown = _own_line_joined(rows)
-    assert "gdb without the folder's ./.gdbinit and the program's scripts" in shown, \
+    assert "your own debugger (gdb) with none of the folder's files" in shown, \
         "the Use mine line was cut:\n" + box
-    assert not folder.ran.exists(), "gdb ran a folder file after Esc"
+    first = next(r for r in rows if "Your own setting" in r)
+    assert "none of the folder's files" not in first, \
+        "the line fits the box, so it does not test wrapping:\n" + box
+    assert not folder.ran.exists(), "the folder's .pdbrc ran after Esc"
 
 
 # @scenario SC-compile-29
