@@ -696,14 +696,58 @@ int e_add_synt_tl(char *filename, FENSTER *f)
  return(0);
 }
 
+/**
+ * e_aopen_in_folder - Make "folder/name" for one element of the include path.
+ * @out/@n: receive the path; @folder/@dlen: the element, not terminated;
+ * @name: the file to look for.
+ *
+ * Return: 0, or -1 when the path does not fit: an include folder an option
+ * file made long is skipped, never cut to a path of another file.
+ */
+static int e_aopen_in_folder(char *out, size_t n, const char *folder, size_t dlen,
+ const char *name)
+{
+ int wrote = snprintf(out, n, "%.*s/%s", (int)dlen, folder, name);
+
+ return(wrote < 0 || (size_t)wrote >= n ? -1 : 0);
+}
+
+/**
+ * e_aopen_say_too_long - Tell the user an include folder was too long to try.
+ *
+ * Shown when the file was not found and an element of the include path was
+ * skipped, so "not found" is not taken to mean the file is absent.
+ */
+static void e_aopen_say_too_long(void)
+{
+ char msg[WPE_PATH_MSG_MAX];
+
+ snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "include folder", WPE_PATH_MAX);
+ e_error(msg, 0, WpeEditor->fb);
+}
+
 /*  Browser   */
-E_AFILE *e_aopen(char *name, char *path, int mode)
+/**
+ * e_aopen - Open a source for Show Definition: a window, then the name, then
+ * each folder of the include path.
+ * @name: the file as written; @path: the ':' list of include folders;
+ * @mode: 1 an open window, 2 the name itself, 4 the include folders;
+ * @found: when not NULL, receives the path the file was opened at if it was
+ * found through the include path (a heap string the caller frees), else NULL.
+ *
+ * The caller's @name is never written: a folder from an option file makes
+ * "folder/name" as long as it likes, and the result belongs on the heap.
+ */
+E_AFILE *e_aopen(char *name, char *path, int mode, char **found)
 {
  ECNT *cn = WpeEditor;
  E_AFILE *ep = MALLOC(sizeof(E_AFILE));
- char str[256];
- int i, j;
+ char str[WPE_PATH_SIZE];
+ int i, j, too_long = 0;
+ size_t dlen;
 
+ if (found)
+  *found = NULL;
  ep->b = NULL;
  ep->fp = NULL;
  if (mode & 1)
@@ -722,21 +766,26 @@ E_AFILE *e_aopen(char *name, char *path, int mode)
  {
   for (i = 0; path[i] && !ep->fp; i++)
   {
-   for (j = 0; (str[j] = path[i]) && path[i] != ':'; j++, i++)
+   for (j = i; path[i] && path[i] != ':'; i++)
     ;
-   if (!path[i]) i--;
-   str[j] = '/';
-   str[j+1] = '\0';
-   strcat(str, name);
+   dlen = (size_t)(i - j);
+   if (!path[i]) i--;     /* the last element: the loop's i++ ends it */
+   if (e_aopen_in_folder(str, sizeof str, path + j, dlen, name) != 0)
+   {
+    too_long = 1;
+    continue;
+   }
    if (!access(str, R_OK))
     ep->fp = fopen(str, "r");
-   if (ep->fp)
-    strcpy(name, str);
+   if (ep->fp && found)
+    *found = wpe_path_dup(str);
   }
  }
  if (!ep->b && !ep->fp)
  {
   FREE(ep);
+  if (too_long)
+   e_aopen_say_too_long();
   return NULL;
  }
  return(ep);
@@ -979,7 +1028,23 @@ struct dirfile *e_c_add_df(char *str, struct dirfile *df)
  return(df);
 }
 
-int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
+/**
+ * e_find_def_found - Hand back the path of the file a definition was found in.
+ * @file: the caller's buffer of WPE_PATH_SIZE bytes; @startfile: the path.
+ *
+ * Every path that gets here fits (a name from a window or an include line is
+ * short, an include folder joined with it was checked by e_aopen); a path
+ * that did not would leave @file empty rather than a cut path.
+ */
+static void e_find_def_found(char *file, const char *startfile)
+{
+ if (wpe_path_copy(file, WPE_PATH_SIZE, startfile) != 0)
+  file[0] = '\0';
+}
+
+/* The scan of one opened source for the definition of @name; the recursion
+   into its includes goes through e_find_def, which opens them. */
+static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, df, first, fp)
      char *name;
      char *startfile;
      int mode;
@@ -990,18 +1055,11 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
      char *oldfile;
      struct dirfile **df;
      int *first;
+     E_AFILE *fp;
 {
-   E_AFILE *fp = NULL;
    char *sp = NULL, str[256], *w, word[256];
    int i, n, com = 0, ret = 1;
    int len = strlen(name);
-   if(*df)
-   {  for(i = 0; i < (*df)->anz; i++)
-      if(!strcmp((*df)->name[i], startfile)) return(-2);
-   }
-   *df = e_c_add_df(startfile, *df);
-   if(!fp) fp = e_aopen(startfile, e_prog.sys_include, mode);
-   if(!fp) return(-1);
    for(n = 0; com == 2 || e_agets((sp = str), 256, fp); n++)
    {  if(com)
       {  if(com == 1 && !(sp = strstr(sp, "*/"))) continue;
@@ -1020,7 +1078,7 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
 	    if(isspace(*sp) && !(sp = e_sh_spl1(sp, str, fp, &n))) goto b_end;
 	    if(!strncmp(sp, name, len) && !isalnum1(sp[len]))
 	    {  if(*first)
-	       {  e_aclose(fp);  strcpy(file, startfile);
+	       {  e_aclose(fp);  e_find_def_found(file, startfile);
 		  *num = n;  *xn = ((int)(sp - str)) + len;  return(0);
 	       }
 	       else if(n == nold && !strcmp(startfile, oldfile)) *first = 1;
@@ -1059,7 +1117,7 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
 	       if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
 	       if(*sp == '{')
 	       {  if(*first)
-		  {  e_aclose(fp);  strcpy(file, startfile);
+		  {  e_aclose(fp);  e_find_def_found(file, startfile);
 		     *num = n;  *xn = (int)(sp - str);  return(0);
 		  }
 		  else if(n == nold && !strcmp(startfile, oldfile)) *first = 1;
@@ -1074,7 +1132,7 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
 	       if(*sp == ';')
 	       {  if(!strncmp(word, name, len))
 		  {  if(*first)
-		     {  e_aclose(fp);  strcpy(file, startfile);
+		     {  e_aclose(fp);  e_find_def_found(file, startfile);
 			*num = n;  *xn = (int)(sp - str);  return(0);
 		     }
 		     else if(n == nold && !strcmp(startfile, oldfile)) *first = 1;
@@ -1100,7 +1158,7 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
 	    if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
 	    if(*sp == '{')
 	    {  if(*first)
-	       {  e_aclose(fp);  strcpy(file, startfile);
+	       {  e_aclose(fp);  e_find_def_found(file, startfile);
 		  *num = n;  *xn = (int)(sp - str);  return(0);
 	       }
 	       else if(n == nold && !strcmp(startfile, oldfile)) *first = 1;
@@ -1125,7 +1183,7 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
 	       if((*sp == ';' || *sp == ',' || *sp == '='
 					 || *sp == '[' || *sp == ')'))
 	       {  if(*first)
-		  {  e_aclose(fp);  strcpy(file, startfile);
+		  {  e_aclose(fp);  e_find_def_found(file, startfile);
 		     *num = n;  *xn = (int)(sp - str);  return(0);
 		  }
 		  else if(n == nold && !strcmp(startfile, oldfile))
@@ -1138,7 +1196,7 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
 		  if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
 		  if(*sp == '{')
 		  {  if(*first)
-		     {  e_aclose(fp);  strcpy(file, startfile);
+		     {  e_aclose(fp);  e_find_def_found(file, startfile);
 			*num = n;  *xn = (int)(sp - str);  return(0);
 		     }
 		     else if(n == nold && !strcmp(startfile, oldfile))
@@ -1175,7 +1233,7 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
 	       if(*sp == ';' || *sp == ',' || *sp == '='
 					 || *sp == '[' || *sp == ')')
 	       {  if(*first)
-		  {  e_aclose(fp);  strcpy(file, startfile);
+		  {  e_aclose(fp);  e_find_def_found(file, startfile);
 		     *num = n;  *xn = (int)(sp - str);  return(0);
 		  }
 		  else if(n == nold && !strcmp(startfile, oldfile))
@@ -1186,7 +1244,7 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
 		  if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
 		  if(*sp == '{')
 		  {  if(*first)
-		     {  e_aclose(fp);  strcpy(file, startfile);
+		     {  e_aclose(fp);  e_find_def_found(file, startfile);
 			*num = n;  *xn = (int)(sp - str);  return(0);
 		     }
 		     else if(n == nold && !strcmp(startfile, oldfile))
@@ -1224,10 +1282,64 @@ int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
    return(ret);
 }
 
+/**
+ * e_find_def - Look for the definition of @name in @startfile and what it
+ * includes.
+ * @startfile: the source to start in; @file: receives the path of the file
+ * the definition is in, WPE_PATH_SIZE bytes.
+ *
+ * Opens the source (an include found through the include path is kept at its
+ * real path, however long the folder), then scans it.  Used when the user
+ * asks for a symbol's definition and it lives in a header.
+ * Return: 0 found, 1 not found, -1 not opened, -2 already visited.
+ */
+int e_find_def(name, startfile, mode, file, num, xn, nold, oldfile, df, first)
+     char *name;
+     char *startfile;
+     int mode;
+     char *file;
+     int *num;
+     int *xn;
+     int nold;
+     char *oldfile;
+     struct dirfile **df;
+     int *first;
+{
+   E_AFILE *fp;
+   char *opened_at = NULL;
+   int i, ret;
+   if(*df)
+   {  for(i = 0; i < (*df)->anz; i++)
+      if(!strcmp((*df)->name[i], startfile)) return(-2);
+   }
+   *df = e_c_add_df(startfile, *df);
+   fp = e_aopen(startfile, e_prog.sys_include, mode, &opened_at);
+   if(!fp) return(-1);
+   ret = e_find_def_scan(name, opened_at ? opened_at : startfile, mode, file,
+			 num, xn, nold, oldfile, df, first, fp);
+   FREE(opened_at);
+   return(ret);
+}
+
+/**
+ * e_say_file_path_too_long - Tell the user a project file's path was skipped.
+ * @f: the window the box is shown over.
+ *
+ * Shown when a project's FILES holds a path the system cannot open and the
+ * symbol was not found elsewhere, so a "not found" is not taken for "absent".
+ */
+static void e_say_file_path_too_long(FENSTER *f)
+{
+ char msg[WPE_PATH_MSG_MAX];
+
+ snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "project file", WPE_PATH_MAX);
+ e_error(msg, 0, f->fb);
+}
+
 int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
 {
- int i, j, len, ret, num, x, first = oldn < 0 ? 1 : 0;
- char str[128], file[128], *filename;
+ int i, j, len, ret, num, x, first = oldn < 0 ? 1 : 0, skipped = 0;
+ char str[WPE_PATH_SIZE], file[WPE_PATH_SIZE], *filename;
  struct dirfile *df, *fdf = NULL;
 
 #ifndef TESTSDEF
@@ -1246,11 +1358,18 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
    }
    for (i = 0, ret = 1; i < df->anz && ret; i++)
    {
-    strcpy(str, df->name[i]);
+    /* A FILES entry the system could not open is skipped, and said once. */
+    if (wpe_path_copy(str, sizeof str, df->name[i]) != 0)
+    {
+     skipped = 1;
+     continue;
+    }
     ret = e_find_def(name, str, 7, file, &num, &x, oldn,
       *oldname, &fdf, &first);
    }
    freedf(df);
+   if (skipped && ret)
+    e_say_file_path_too_long(f);
   }
  }
  else
@@ -1258,21 +1377,26 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
  {
   if (!DTMD_ISTEXT(f->dtmd)) return(-1);
   WpeMouseChangeShape(WpeWorkingShape);
-  strcpy(str, f->datnam);
+  if (wpe_path_copy(str, sizeof str, f->datnam) != 0)
+   str[0] = '\0';
   ret = e_find_def(name, str, 7, file, &num, &x, oldn,
     *oldname, &fdf, &first);
  }
  freedf(fdf);
  if (ret)
  {
-  sprintf(str, "%s not found!", name);
+  snprintf(str, sizeof str, "%s not found!", name);
   e_error(str, 0, f->fb);
   WpeMouseRestoreShape();
   return(-1);
  }
  if (*oldname) FREE(*oldname);
- *oldname = MALLOC((strlen(file)+1) * sizeof(char));
- strcpy(*oldname, file);
+ *oldname = wpe_path_dup(file);
+ if (!*oldname)
+ {
+  WpeMouseRestoreShape();
+  return(-1);
+ }
  for (i = strlen(file)-1; i >= 0 && file[i] != '/'; i--)
   ;
  for (j = f->ed->mxedt; j > 0; j--)
@@ -1316,13 +1440,13 @@ struct {
 
 int e_sh_def(FENSTER *f)
 {
- char str[80];
+ char str[E_ARG_FIELD_MAX + 1];
 
  if (f->ed->shdf && f->ed->shdf->anz > 0)
-  strcpy(str, f->ed->shdf->name[0]);
+  snprintf(str, sizeof str, "%s", f->ed->shdf->name[0]);
  else
   str[0] = '\0';
- if (e_add_arguments(str, "Show Definition", f, 0 , AltB, &f->ed->shdf))
+ if (e_add_arguments(str, sizeof str, "Show Definition", f, 0 , AltB, &f->ed->shdf))
  {
   if (sh_df.str)
    FREE(sh_df.str);

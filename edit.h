@@ -26,6 +26,8 @@
 #include <ctype.h>
 #include <limits.h>
 #include "we_paint.h"
+#include "we_path.h"        /* how long a path or a name the editor holds may be */
+#include "we_fieldtake.h"   /* the copy of a dialog field's text out into a buffer */
 
 #ifdef HAVE_LIBGPM
 #include <gpm.h>
@@ -107,9 +109,13 @@ typedef struct PICSTR {
  POINT e;        /* end point (bottom-right) */
 } PIC;
 
+/* What the Find, Replace and Grep dialogs' text fields take; the buffers of
+   FIND hold one byte more, for the terminator. */
+#define E_FIND_TEXT_MAX 128
+
 typedef struct FND {
- char search[80], replace[80];
- char file[80];   /* filename or pattern to search/open */
+ char search[E_FIND_TEXT_MAX + 1], replace[E_FIND_TEXT_MAX + 1];
+ char file[WPE_PATH_SIZE];   /* filename or pattern to search/open; its field takes WPE_PATH_FIELD_MAX */
  char *dirct;
  int sn;
  int rn;
@@ -848,12 +854,16 @@ int e_opt_named_debugger(void);
 void e_opt_debugger_chosen(int type);
 /* The debugger a type starts, as the user knows it ("gdb", "pdb"). */
 const char *e_deb_type_name(int type);
-/* The longest text e_add_arguments hands back (its field's capacity).  A
-   caller's buffer must hold E_ARG_FIELD_MAX + 1 bytes, or a long entry runs
-   past it. */
+/* The longest text e_add_arguments hands back (its field's capacity) when the
+   caller's buffer is roomy enough.  The field takes at most @size - 1 bytes,
+   so a caller's buffer of any size is never written past. */
 #define E_ARG_FIELD_MAX 128
-int e_add_arguments(char *str, char *head, FENSTER *f, int n, int sw,
+int e_add_arguments(char *str, size_t size, char *head, FENSTER *f, int n, int sw,
   struct dirfile **df);
+/* The one way a dialog field's text leaves the dialog into a caller's buffer:
+   0, or -1 (the buffer is then empty and the status row says the entry was
+   too long) when it does not fit whole. */
+int e_opt_field_take(W_OPTSTR *o, int k, char *dst, size_t size) WPE_FIELD_TAKE_RESULT;
 W_O_TXTSTR **e_add_txtstr(int x, int y, char *txt, W_OPTSTR *o);
 W_O_WRSTR **e_add_wrstr(int xt, int yt, int xw, int yw, int nw, int wmx,
   int nc, int sw, char *header, char *txt, struct dirfile **df, W_OPTSTR *o);
@@ -963,7 +973,10 @@ char *e_mkfilepath(char *dr, char *fn, char *fl);
 int e_compstr(char *a, char *b);
 struct dirfile *e_find_files(char *sufile, int sw);
 struct dirfile *e_find_dir(char *sufile, int sw);
-char *e_file_info(char *filen, char *str, int *num, int sw);
+/* Room for one row of the file manager's list: the mode, a name of up to
+   WPE_NAME_MAX bytes, the size and the date. */
+#define E_FILE_INFO_ROW_SIZE (WPE_NAME_SIZE + 64)
+char *e_file_info(char *filen, char *str, size_t size, int *num, int sw);
 void ini_repaint(ECNT *cn);
 void end_repaint(void);
 int e_frb_t_menue(int sw, int xa, int ya, FENSTER *f, int md);
@@ -1059,7 +1072,7 @@ int e_make_xrect_abs(int xa, int ya, int xe, int ye, int sw);
 int e_deb_inp(FENSTER *f);
 int e_d_quit_basic(FENSTER *f);
 int e_d_quit(FENSTER *f);
-int e_d_add_watch(char *str, FENSTER *f);
+int e_d_add_watch(char *str, size_t size, FENSTER *f);
 int e_remove_all_watches(FENSTER *f);
 int e_make_watches(FENSTER *f);
 int e_edit_watches(FENSTER *f);

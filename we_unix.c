@@ -1357,14 +1357,23 @@ struct dirfile *e_find_dir(char *sufile, int sw)
 
 #include <time.h>
 
-char *e_file_info(char *filen, char *str, int *num, int sw)
+/**
+ * e_file_info - One row of the file manager's list: mode, name, size, date.
+ * @filen: the file's name; @str/@size: the row's buffer and its size
+ * (E_FILE_INFO_ROW_SIZE holds any name the system allows); @num: receives
+ * the time or the size the list is sorted by, as @sw says.
+ *
+ * A folder holding a file with a long name is listed like any other: the
+ * row is written within @size, never past it.
+ */
+char *e_file_info(char *filen, char *str, size_t size, int *num, int sw)
 {
  struct tm *ttm;
  struct stat buf[1];
 
  stat(filen, buf);
  ttm = localtime(&(buf->st_mtime));
- sprintf(str, "%c%c%c%c%c%c%c%c%c%c  %-13s  %6ld  %2.2u.%2.2u.%4.4u  %2.2u.%2.2u",
+ snprintf(str, size, "%c%c%c%c%c%c%c%c%c%c  %-13s  %6ld  %2.2u.%2.2u.%4.4u  %2.2u.%2.2u",
    buf->st_mode & 040000 ? 'd' : '-',
    buf->st_mode & 0400 ? 'r' : '-',
    buf->st_mode & 0200 ? 'w' : '-',

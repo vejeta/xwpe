@@ -15,6 +15,8 @@
 #include <limits.h>
 #include <stddef.h>
 
+#include "we_path.h"   /* WPE_PATH_MAX: how long a path the editor holds may be */
+
 /* The debugger's answer to one command.  @text holds its lines, joined,
    '\0'-terminated, or is NULL when the debugger gave nothing before its
    prompt.  An owner that grows the text sets @size to the room it has; a
@@ -51,16 +53,15 @@ typedef struct
    A debugger nobody measured (sdb, xdb, dbx, a68g) keeps the 255 bytes it
    was always given, and so does an engine that is not a debugger's (the
    build server, the language server): see e_d_req_cmd_fits. */
-#define E_D_REQ_PATH_MAX        4096  /* the longest path the editor holds; the BSDs' and macOS's PATH_MAX is within it */
+#define E_D_REQ_PATH_MAX        WPE_PATH_MAX  /* the longest path the editor holds (we_path.h) */
 #define E_D_REQ_PATH_ESCAPE_MAX 4     /* one byte of a path as the widest command writes it: pdb's \xNN */
 #define E_D_REQ_CMD_HEAD_MAX    256   /* the words around the path: the longest is
                                          -interpreter-exec console "set history filename ..." */
 #define E_D_REQ_CMD_MAX \
   (E_D_REQ_PATH_MAX * E_D_REQ_PATH_ESCAPE_MAX + E_D_REQ_CMD_HEAD_MAX)
 
-#if defined(PATH_MAX) && PATH_MAX > E_D_REQ_PATH_MAX
-#error "PATH_MAX is longer than E_D_REQ_PATH_MAX: a command could not hold a path of this system"
-#endif
+/* we_path.h refuses to compile when PATH_MAX is longer than WPE_PATH_MAX, so
+   a command always holds a path of this system. */
 
 /* The longest command, in bytes with its terminator, to a debugger nobody
    has measured. */

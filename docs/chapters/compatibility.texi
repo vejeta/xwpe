@@ -658,6 +658,24 @@ or delete any file you can, or put a key you hold on a compiler's
 command line, on your first F9.
 @end table
 
+@section Paths and names
+
+@table @asis
+@item A long name or folder
+@cindex long file names
+@cindex path length
+The original copied file names, folders and the text of a dialog field
+into buffers of 80, 128 or 256 bytes.  A file name over 127 characters
+picked in the file manager, a folder name over about 250 characters in its
+tree, Show Definition in such a file, and 128 characters typed into the
+text field of Find, Replace, Grep or Show Definition all ran past a buffer
+and could end the editor.  xwpe takes any name and folder the system
+allows, and a dialog field takes what it shows and no more.  A path from a
+project file or an option file that the system itself cannot open (longer
+than 4096 bytes) is refused with a box that names it, or skipped and said.
+The reason: a cut path names another file.
+@end table
+
 @section Colours on an X display
 
 @table @asis

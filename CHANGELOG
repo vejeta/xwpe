@@ -244,6 +244,21 @@ Changes
   is not a text file's kind, such as 70 in a folder's options file, no longer
   crashes the editor or leaves windows that take no keys.
 
+* A long file name, folder name or typed entry no longer ends the editor
+  or damages its memory.  A file name longer than 127 characters picked
+  in the file manager, a folder name longer than about 250 characters in
+  its tree, Show Definition in a file with such a name (or a project
+  whose FILES holds one, or an include folder of an option file longer
+  than 255 characters), and the text fields of Find, Replace, Grep, Show
+  Definition and Info-Path all overran a buffer.  The Directory field of
+  the file manager also wrote one byte past its end when it was full.
+  Each field now takes what it shows and no more, and a path that does
+  not fit the system's limit is refused with a box that says so, never
+  cut to the path of another file.  An include folder or a project file
+  the system could not open is skipped and said.  Dragging a file onto
+  another file manager whose folder and the name together are longer than
+  the system allows does nothing and says so.
+
 * In a terminal, the editor now asks for xterm's modifyOtherKeys and the
   kitty keyboard protocol, and gives them back when it ends, is stopped,
   crashes or hands the terminal to a program.  Esc acts at once,

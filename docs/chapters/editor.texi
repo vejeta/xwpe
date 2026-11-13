@@ -264,6 +264,10 @@ for opening, copying, moving, renaming, and deleting files.
 @item @key{ESC} @tab @tab Close the file manager.
 @end multitable
 
+Names and folders of any length the system allows work in the list, the
+tree and the Directory field, which takes a path of up to 4095
+characters.
+
 Additional file manager keys (documented since v1.4):
 
 @table @kbd

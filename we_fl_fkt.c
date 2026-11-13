@@ -1411,15 +1411,21 @@ int e_help_loc(FENSTER *f, int sw)
 
 int e_help_options(FENSTER *f)
 {
- char str[128];
+ char str[E_ARG_FIELD_MAX + 1];
 
  if (!info_file)
  {
   info_file = MALLOC(1);
   info_file[0] = '\0';
  }
- strcpy(str, info_file);
- if (e_add_arguments(str, "Info-Path", f, 0 , AltI, NULL))
+ /* A path from an option file longer than the entry takes is not offered
+    for editing: a cut path would be written back as the Info-Path. */
+ if (wpe_field_take(info_file, str, sizeof str) != 0)
+ {
+  e_input_limit_say(E_ARG_FIELD_MAX);
+  return(0);
+ }
+ if (e_add_arguments(str, sizeof str, "Info-Path", f, 0 , AltI, NULL))
  {
   info_file = REALLOC(info_file, strlen(str) + 1);
   strcpy(info_file, str);

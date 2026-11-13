@@ -680,6 +680,26 @@ int e_prj_add_file_unique(FLWND *fw, char *ftmp, FENSTER *f)
   return 0;
 }
 
+/**
+ * WpeFileNameTake - Keep the name of the file picked in the manager.
+ * @f: the manager's window; @filen: a buffer of WPE_NAME_SIZE bytes;
+ * @name: the picked entry or typed name.
+ *
+ * A name the file system gave (readdir) is at most WPE_NAME_MAX bytes, so it
+ * always fits and a file with a long name can be opened, copied or added to a
+ * project like any other.  A name that does not fit is never cut (a cut name
+ * is another file): the user is told and the buffer is left empty.
+ */
+static void WpeFileNameTake(FENSTER *f, char *filen, const char *name)
+{
+  char msg[WPE_PATH_MSG_MAX];
+
+  if(wpe_path_copy(filen, WPE_NAME_SIZE, name) == 0)
+    return;
+  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "file name", WPE_NAME_MAX);
+  e_error(msg, 0, f->fb);
+}
+
 /* File Manager Handler */
 int WpeHandleFileManager(ECNT * cn)
 {
@@ -691,7 +711,7 @@ int WpeHandleFileManager(ECNT * cn)
   int             winnum = 0, nco, svmode = -1, fmode, len;
   POINT           mark_end;
   int             g[4], cold = AltN;
-  char            filen[128], *ftmp, *dtp = NULL, *ftp = NULL, *svdir = NULL;
+  char            filen[WPE_NAME_SIZE], *ftmp, *dtp = NULL, *ftp = NULL, *svdir = NULL;
   char           *dirtmp = NULL;
   PIC            *outp = NULL;
   FILE           *fp;
@@ -825,7 +845,7 @@ int WpeHandleFileManager(ECNT * cn)
         }
         else
         {
-          strcpy(filen, b->rdfile);   /* !!! alloc for filen ??? */
+          WpeFileNameTake(f, filen, b->rdfile);
           if(c == WPE_CR)
           {
             if(b->sw == 1)
@@ -853,18 +873,15 @@ int WpeHandleFileManager(ECNT * cn)
         fk_cursor(1);
 
         /* get the directory name */
-        if ((dirtmp = WpeMalloc(WPE_PATHMAX)) == NULL)        /* dirct mat not have enough memory */
+        /* The field takes WPE_PATH_FIELD_MAX bytes and its buffer holds one
+           more for the terminator; a window's folder always fits. */
+        if ((dirtmp = WpeMalloc(WPE_PATH_SIZE)) == NULL)        /* dirct mat not have enough memory */
           e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
 
-        if (strlen(f->dirct) >= WPE_PATHMAX)
-        {
-          strncpy(dirtmp, f->dirct, WPE_PATHMAX - 1);
-          dirtmp[WPE_PATHMAX - 1] = '\0';
-        }
-        else
-          strcpy(dirtmp, f->dirct);
+        if (wpe_path_copy(dirtmp, WPE_PATH_SIZE, f->dirct) != 0)
+          dirtmp[0] = '\0';
 
-        c = e_schr_lst_wsv(dirtmp, f->a.x + b->xda, f->a.y + 3, b->xdd + 1, WPE_PATHMAX,
+        c = e_schr_lst_wsv(dirtmp, f->a.x + b->xda, f->a.y + 3, b->xdd + 1, WPE_PATH_FIELD_MAX,
                            f->fb->fr.fb, f->fb->fz.fb, &f->ed->ddf, f);
         FREE(f->dirct);
         f->dirct = WpeStrdup(dirtmp);
@@ -969,7 +986,7 @@ int WpeHandleFileManager(ECNT * cn)
            || (b->sw == 0 && c == AltE) 
            || (b->sw == 4 && (c == AltS || c == AltY)) )
         {
-          strcpy(filen, *(b->df->name + b->fw->nf));   /* !!! alloc for filen ??? */
+          WpeFileNameTake(f, filen, *(b->df->name + b->fw->nf));
         }
         break;
 
@@ -1234,7 +1251,7 @@ int WpeHandleFileManager(ECNT * cn)
         if(b->sw == 3) /* file-manager in execution mode */
         {
           if(cold == AltF)
-            strcpy(filen, *(b->df->name + b->fw->nf));     /* !!! alloc filen ??? */
+            WpeFileNameTake(f, filen, *(b->df->name + b->fw->nf));
           if(!WpeIsXwin())
           {
             outp = e_open_view(0, 0, MAXSCOL - 1, MAXSLNS - 1, f->fb->ws, 1);
@@ -1528,7 +1545,7 @@ int WpeHandleFileManager(ECNT * cn)
         {
           if(cold == AltF) /* coming from file list */
           {
-            strcpy(filen, *(b->df->name + b->fw->nf));  /* alloc for filen ??? */
+            WpeFileNameTake(f, filen, *(b->df->name + b->fw->nf));
             /* change the file attributes */
             WpeFileDirAttributes(filen, f);
 
@@ -1568,7 +1585,7 @@ int WpeHandleFileManager(ECNT * cn)
         {
           FLWND *fw = (FLWND *)cn->f[cn->mxedt - 1]->b;
           if (cold != AltN)
-            strcpy(filen, *(b->df->name + b->fw->nf));
+            WpeFileNameTake(f, filen, *(b->df->name + b->fw->nf));
           dirtmp = cn->f[cn->mxedt - 1]->dirct;
           ftmp = MALLOC(strlen(f->dirct) + strlen(filen) + 2);
           len = strlen(dirtmp);
@@ -2208,7 +2225,7 @@ char  *WpeGetWastefile(char *file)
 struct dirfile *WpeGraphicalFileList(struct dirfile *df, int sw, ECNT *cn)
 {
  struct dirfile *edf;
- char          **name, **ename, *stmp, str[256];
+ char          **name, **ename, *stmp, str[E_FILE_INFO_ROW_SIZE];
  int             ntmp, n, i, *num;
 
  /* allocate the same structure as the argument */
@@ -2229,7 +2246,7 @@ struct dirfile *WpeGraphicalFileList(struct dirfile *df, int sw, ECNT *cn)
 
   for (i = 0; i < df->anz; i++)
   {
-   e_file_info(*(df->name + i), str, num + i, sw);
+   e_file_info(*(df->name + i), str, sizeof str, num + i, sw);
    if ((*(edf->name + i) = MALLOC(strlen(str) + 1)) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
    strcpy(*(edf->name + i), str);
@@ -2282,12 +2299,47 @@ struct dirfile *WpeGraphicalFileList(struct dirfile *df, int sw, ECNT *cn)
  return(edf);
 }
 
+/**
+ * WpeTreeLabel - One row of the directory tree: indentation, branch, name.
+ * @indent: how many blanks come first; @lead/@glyph: the blank and the branch
+ * drawing in front of the name; @name: the folder's name.
+ *
+ * The row lives on the heap at its own length.  It is as long as the folder
+ * is deep (two blanks per level) plus a name of up to WPE_NAME_MAX bytes, so
+ * no fixed buffer holds every row the file manager can be asked to draw.
+ * Return: the row, or NULL when out of memory.
+ */
+static char *WpeTreeLabel(int indent, const char *lead, const char *glyph, const char *name)
+{
+  size_t          pad = indent > 0 ? (size_t)indent : 0;
+  char           *row = MALLOC(pad + strlen(lead) + strlen(glyph) + strlen(name) + 1);
+
+  if(row == NULL)
+    return(NULL);
+  memset(row, ' ', pad);
+  sprintf(row + pad, "%s%s%s", lead, glyph, name);
+  return(row);
+}
+
+/**
+ * WpeTreeRootText - What the first row of the directory tree shows.
+ * @first: the first folder of the path: "/" is drawn as "Root".
+ */
+static const char *WpeTreeRootText(const char *first)
+{
+#ifndef DJGPP
+  if(*first == DIRC && *(first + 1) == '\0')
+    return("Root");
+#endif
+  return(first);
+}
+
 struct dirfile *WpeGraphicalDirTree(struct dirfile *cd, struct dirfile *dd, ECNT *cn)
 {
   extern char    *ctree[5];
   struct dirfile *edf;
-  char            str[256];
-  int             i = 0, j;
+  const char     *glyph;
+  int             i = 0;
 
   if((edf = MALLOC(sizeof(struct dirfile))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
@@ -2301,50 +2353,30 @@ struct dirfile *WpeGraphicalDirTree(struct dirfile *cd, struct dirfile *dd, ECNT
     for(i = 0; i < cd->anz; i++)
     {
       if(!i)
-#ifndef DJGPP
-      {
-        if(*cd->name[0] == DIRC && *(cd->name[0] + 1) == '\0')
-          strcpy(str, "Root");
-        else
-          strcpy(str, *(cd->name + i));
-#else
-      {
-        strcpy(str, *(cd->name + i));
-#endif
-      }
+        *(edf->name + i) = WpeTreeLabel(0, "", "", WpeTreeRootText(*(cd->name + i)));
       else
       {
-        for(str[0] = '\0', j = 0; j < i - 1; j++)
-          strcat(str, "  ");
         if(i == cd->anz - 1 && dd->anz < 1)
-          strcat(str, ctree[1]);
+          glyph = ctree[1];
         else if(i == cd->anz - 1)
-          strcat(str, ctree[2]);
+          glyph = ctree[2];
         else
-          strcat(str, ctree[0]);
-        strcat(str, *(cd->name + i));
+          glyph = ctree[0];
+        *(edf->name + i) = WpeTreeLabel(2 * (i - 1), "", glyph, *(cd->name + i));
       }
-      if((*(edf->name + i) = MALLOC((strlen(str) + 1) * sizeof(char))) == NULL)
+      if(*(edf->name + i) == NULL)
         e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
-      strcpy(*(edf->name + i), str);
     }
 
     for(; i < cd->anz + dd->anz; i++)
     {
-      for(str[0] = '\0', j = 0; j < cd->anz - 2; j++)
-        strcat(str, "  ");
-      strcat(str, " ");
       if(i == cd->anz + dd->anz - 1)
-        strcat(str, ctree[4]);
+        glyph = ctree[4];
       else
-        strcat(str, ctree[3]);
-      {
-        int             tttt = i - cd->anz;
-        strcat(str, *(dd->name + tttt));
-      }
-      if((*(edf->name + i) = MALLOC((strlen(str) + 1) * sizeof(char))) == NULL)
+        glyph = ctree[3];
+      *(edf->name + i) = WpeTreeLabel(2 * (cd->anz - 2), " ", glyph, *(dd->name + (i - cd->anz)));
+      if(*(edf->name + i) == NULL)
         e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
-      strcpy(*(edf->name + i), str);
     }
   }
 
@@ -3716,9 +3748,9 @@ int WpeGrepWindow(FENSTER * f)
   o->name = "Grep";
   o->crsw = AltO;
   e_add_txtstr(4, 4, "Options:", o);
-  e_add_wrstr(4, 2, 18, 2, 35, 128, 0, AltT, "Text to Find:", fd->search, &f->ed->sdf, o);
-  e_add_wrstr(4, 10, 17, 10, 36, 128, 0, AltF, "File:", fd->file, &f->ed->fdf, o);
-  e_add_wrstr(4, 12, 17, 12, 36, WPE_PATHMAX, 0, AltD, "Directory:", fd->dirct, &f->ed->ddf, o);
+  e_add_wrstr(4, 2, 18, 2, 35, E_FIND_TEXT_MAX, 0, AltT, "Text to Find:", fd->search, &f->ed->sdf, o);
+  e_add_wrstr(4, 10, 17, 10, 36, WPE_PATH_FIELD_MAX, 0, AltF, "File:", fd->file, &f->ed->fdf, o);
+  e_add_wrstr(4, 12, 17, 12, 36, WPE_PATH_FIELD_MAX, 0, AltD, "Directory:", fd->dirct, &f->ed->ddf, o);
   e_add_sswstr(5, 5, 0, AltC, fd->sw & 128 ? 1 : 0, "Case sensitive    ", o);
   e_add_sswstr(5, 6, 0, AltW, fd->sw & 64 ? 1 : 0, "Whole words only  ", o);
   e_add_sswstr(5, 7, 0, AltR, fd->sw & 32 ? 1 : 0, "Regular expression", o);
@@ -3726,13 +3758,14 @@ int WpeGrepWindow(FENSTER * f)
   e_add_bttstr(16, 14, 1, AltO, " Ok ", NULL, o);
   e_add_bttstr(34, 14, -1, WPE_ESC, "Cancel", NULL, o);
   ret = e_opt_kst(o);
+  if(ret != WPE_ESC && (e_opt_field_take(o, 0, fd->search, sizeof fd->search) != 0 ||
+                        e_opt_field_take(o, 1, fd->file, sizeof fd->file) != 0))
+    ret = WPE_ESC;
   if(ret != WPE_ESC)
   {
     fd->sw = 1024 + (o->sstr[0]->num << 7) + (o->sstr[1]->num << 6) +
       (o->sstr[2]->num << 5) + (o->sstr[3]->num << 9);
-    strcpy(fd->search, o->wstr[0]->txt);
     fd->sn = strlen(fd->search);
-    strcpy(fd->file, o->wstr[1]->txt);
     if (fd->dirct)
     {
      WpeFree(fd->dirct);
@@ -3762,16 +3795,17 @@ int WpeFindWindow(FENSTER * f)
   o->name = "Find File";
   o->crsw = AltO;
   e_add_txtstr(4, 6, "Options:", o);
-  e_add_wrstr(4, 2, 15, 2, 36, 128, 0, AltF, "File:", fd->file, &f->ed->fdf, o);
-  e_add_wrstr(4, 4, 15, 4, 36, WPE_PATHMAX, 0, AltD, "Directory:", fd->dirct, &f->ed->ddf, o);
+  e_add_wrstr(4, 2, 15, 2, 36, WPE_PATH_FIELD_MAX, 0, AltF, "File:", fd->file, &f->ed->fdf, o);
+  e_add_wrstr(4, 4, 15, 4, 36, WPE_PATH_FIELD_MAX, 0, AltD, "Directory:", fd->dirct, &f->ed->ddf, o);
   e_add_sswstr(5, 7, 0, AltS, 1, "Search Recursive  ", o);
   e_add_bttstr(13, 9, 1, AltO, " Ok ", NULL, o);
   e_add_bttstr(33, 9, -1, WPE_ESC, "Cancel", NULL, o);
   ret = e_opt_kst(o);
+  if(ret != WPE_ESC && e_opt_field_take(o, 0, fd->file, sizeof fd->file) != 0)
+    ret = WPE_ESC;
   if(ret != WPE_ESC)
   {
     fd->sw = (o->sstr[0]->num << 9);
-    strcpy(fd->file, o->wstr[0]->txt);
     if (fd->dirct)
     {
      WpeFree(fd->dirct);
@@ -4057,13 +4091,13 @@ int e_ed_man(char *str, FENSTER * f)
 
 int e_funct(FENSTER * f)
 {
- char            str[80];
+ char            str[E_ARG_FIELD_MAX + 1];
 
  if (f->ed->hdf && f->ed->hdf->anz > 0)
-  strcpy(str, f->ed->hdf->name[0]);
+  snprintf(str, sizeof str, "%s", f->ed->hdf->name[0]);
  else
   str[0] = '\0';
- if (e_add_arguments(str, "Function", f, 0, AltF, &f->ed->hdf))
+ if (e_add_arguments(str, sizeof str, "Function", f, 0, AltF, &f->ed->hdf))
  {
   f->ed->hdf = e_add_df(str, f->ed->hdf);
   e_ed_man(str, f);

@@ -2408,7 +2408,7 @@ int wpe_ai_changeset_review(FENSTER *f)
   if (k == 'C' && ck_mode == WS_CK_GIT) {
    static char msg[256];
    strcpy(msg, "AI-assisted change");
-   if (e_add_arguments(msg, "Commit message", f, 0, AltB, NULL) && msg[0])
+   if (e_add_arguments(msg, sizeof msg, "Commit message", f, 0, AltB, NULL) && msg[0])
     ws_commit_changeset(f, c, n, msg);
    kept = n;
    break;

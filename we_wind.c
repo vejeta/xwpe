@@ -3368,6 +3368,28 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
  return(ret);
 }
 
+/**
+ * e_schr_lst_pick - Put the history entry the user picked into the field.
+ * @str: the field's text, room for @len bytes and a terminator;
+ * @len: the field's capacity; @pick: the entry from the list.
+ *
+ * The lists are shared by several fields (the folder list by the file
+ * manager, Find and Grep), and an entry typed into a roomier one can be
+ * longer than this field.  Such an entry is left in the list and the field
+ * keeps its text, with the status row saying it is full, instead of the
+ * entry running past the field's buffer or being cut.
+ */
+static void e_schr_lst_pick(char *str, int len, const char *pick)
+{
+   if (strlen(pick) > (size_t)len)
+   {
+      e_input_limit_say(len);
+      return;
+   }
+   if (wpe_field_take(pick, str, (size_t)len + 1) != 0)
+      str[0] = '\0';
+}
+
 int e_schr_lst_wsv(char *str, int xa, int ya, int n, int len, int ft,
   int fz, struct dirfile **df, FENSTER *f)
 {
@@ -3387,7 +3409,7 @@ int e_schr_lst_wsv(char *str, int xa, int ya, int n, int len, int ft,
 				&& e_mouse.x <= xa+n-1) ret = CDO;
 #endif
       if (ret == CDO && e_sv_window(xa+n, ya, &num, *df, f) == WPE_CR)
-          (strcpy)(str, (*df)->name[num]);
+          e_schr_lst_pick(str, len, (*df)->name[num]);
    }  while(ret == CDO);
    return(ret);
 }

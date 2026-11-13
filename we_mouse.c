@@ -364,13 +364,35 @@ int WpeMngMouseInFileManager(FENSTER * f)
   return(c);
 }
 
+/**
+ * WpeDragTarget - The path a dragged file gets in the window it is dropped on.
+ * @f: the file manager the drag started in (where the box is shown);
+ * @tmp/@n: receive the path; @dirct: the folder of the window dropped on;
+ * @name: the dragged file's name.
+ *
+ * A folder and a name that each fit the system can still be too long
+ * together.  The drop then does nothing and the user is told so, instead of
+ * the file going to a path that is not the one they dropped it on.
+ * Return: 0, or -1 when the path does not fit (the box was shown).
+ */
+static int WpeDragTarget(FENSTER *f, char *tmp, size_t n, const char *dirct, const char *name)
+{
+  char            msg[WPE_PATH_MSG_MAX];
+
+  if(wpe_path_join(tmp, n, dirct, name) == 0)
+    return(0);
+  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "target file", WPE_PATH_MAX);
+  e_error(msg, 0, f->fb);
+  return(-1);
+}
+
 int WpeMouseInFileDirList(int k, int sw, FENSTER * f)
 {
   extern struct mouse e_mouse;
   ECNT           *cn = f->ed;
   FLBFFR         *b = (FLBFFR *) f->b;
   int             i;
-  char            tmp[256];
+  char            tmp[WPE_PATH_SIZE];
 
   if(e_mouse.x >= f->a.x && e_mouse.x <= f->e.x
      && e_mouse.y >= f->a.y && e_mouse.y <= f->e.y)
@@ -385,10 +407,8 @@ int WpeMouseInFileDirList(int k, int sw, FENSTER * f)
     return(0);
   if(sw)
   {
-    if(cn->f[i]->dirct[strlen(cn->f[i]->dirct) - 1] == DIRC)
-      sprintf(tmp, "%s%s", cn->f[i]->dirct, b->dd->name[b->dw->nf - b->cd->anz]);
-    else
-      sprintf(tmp, "%s/%s", cn->f[i]->dirct, b->dd->name[b->dw->nf - b->cd->anz]);
+    if(WpeDragTarget(f, tmp, sizeof tmp, cn->f[i]->dirct, b->dd->name[b->dw->nf - b->cd->anz]) != 0)
+      return(0);
 #ifndef DJGPP
     if(k == -2)
       e_copy(b->dd->name[b->dw->nf - b->cd->anz], tmp, f);
@@ -412,10 +432,8 @@ int WpeMouseInFileDirList(int k, int sw, FENSTER * f)
   }
   else
   {
-    if(cn->f[i]->dirct[strlen(cn->f[i]->dirct) - 1] == DIRC)
-      sprintf(tmp, "%s%s", cn->f[i]->dirct, b->df->name[b->fw->nf]);
-    else
-      sprintf(tmp, "%s/%s", cn->f[i]->dirct, b->df->name[b->fw->nf]);
+    if(WpeDragTarget(f, tmp, sizeof tmp, cn->f[i]->dirct, b->df->name[b->fw->nf]) != 0)
+      return(0);
 #ifndef DJGPP
     if(k == -2)
       e_copy(b->df->name[b->fw->nf], tmp, f);

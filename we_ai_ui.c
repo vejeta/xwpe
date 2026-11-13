@@ -9991,7 +9991,7 @@ static void ai_opt_save_provider_as(FENSTER *f)
 {
  char name[E_ARG_FIELD_MAX + 1] = "";
  /* field sw must differ from the dialog's confirm key (AltO) or Ok is shadowed */
- if (!e_add_arguments(name, "Save provider as", f, 0, AltN, NULL))
+ if (!e_add_arguments(name, sizeof name, "Save provider as", f, 0, AltN, NULL))
   return;
  ai_strip_blanks(name);
  if (!name[0])

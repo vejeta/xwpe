@@ -95,3 +95,11 @@ things the emulated pipeline does not cover:
       Alt-F5 shows the program's screen in the editor's own colours and a
       key returns to the editor.  Automated by tests/wayland/test_user_screen.py
       and the User Screen row of tests/wayland/test_screen_owner.py.
+  [ ] File drag with a long path: open two file managers (F3 twice) side by
+      side, the second in a folder of about 4000 characters, and drag a file
+      with a 200 character name from the first onto the second.  Nothing is
+      copied, moved or linked, and a box says "The target file path is longer
+      than the system allows (4096 bytes)."  Not automated: it needs the two
+      windows laid out side by side and a drag between their rows.  The
+      refusal itself is asserted at the C level by tests/test_path.c (a
+      4000 byte folder joined with a 200 byte name).

@@ -2476,7 +2476,7 @@ int e_find(FENSTER *f)
  e_add_txtstr(4, 4, "Options:", o);
  e_add_txtstr(4, 9, "Scope:", o);
  e_add_txtstr(32, 9, "Begin:", o);
- e_add_wrstr(4, 2, 18, 2, 35, 128, 0, AltT, "Text to Find:", fd->search, &f->ed->sdf, o);
+ e_add_wrstr(4, 2, 18, 2, 35, E_FIND_TEXT_MAX, 0, AltT, "Text to Find:", fd->search, &f->ed->sdf, o);
  e_add_sswstr(5, 5, 0, AltC, fd->sw & 128 ? 1 : 0, "Case sensitive    ", o);
  e_add_sswstr(5, 6, 0, AltW, fd->sw & 64 ? 1 : 0, "Whole words only  ", o);
  e_add_sswstr(5, 7, 0, AltR, fd->sw & 32 ? 1 : 0, "Regular expression", o);
@@ -2489,12 +2489,13 @@ int e_find(FENSTER *f)
  e_add_bttstr(16, 13, 1, AltO, " Ok ", NULL, o);
  e_add_bttstr(34, 13, -1, WPE_ESC, "Cancel", NULL, o);
  ret = e_opt_kst(o);
+ if (ret != WPE_ESC && e_opt_field_take(o, 0, fd->search, sizeof fd->search) != 0)
+  ret = WPE_ESC;
  if (ret != WPE_ESC)
  {
   fd->sw = (o->pstr[0]->num << 2) + (o->pstr[1]->num << 3) +
     (o->pstr[2]->num << 1) + (o->sstr[0]->num << 7) + (o->sstr[1]->num << 6) +
     (o->sstr[2]->num << 5);
-  strcpy(fd->search, o->wstr[0]->txt);
   fd->sn = strlen(fd->search);
   if ((fd->sw & 2) != 0)
    e_find_to_scope_start(b, fd);
@@ -2847,8 +2848,8 @@ int e_replace(FENSTER *f)
  o->crsw = AltO;
  e_add_txtstr(4, 6, "Options:", o);
  e_add_txtstr(32, 6, "Scope:", o);
- e_add_wrstr(4, 2, 18, 2, 35, 128, 0, AltT, "Text to Find:", fd->search, &f->ed->sdf, o);
- e_add_wrstr(4, 4, 18, 4, 35, 128, 0, AltN, "New Text:", fd->replace, &f->ed->rdf, o);
+ e_add_wrstr(4, 2, 18, 2, 35, E_FIND_TEXT_MAX, 0, AltT, "Text to Find:", fd->search, &f->ed->sdf, o);
+ e_add_wrstr(4, 4, 18, 4, 35, E_FIND_TEXT_MAX, 0, AltN, "New Text:", fd->replace, &f->ed->rdf, o);
  e_add_sswstr(5, 7, 0, AltC, fd->sw & 128 ? 1 : 0, "Case sensitive    ", o);
  e_add_sswstr(5, 8, 0, AltW, fd->sw & 64 ? 1 : 0, "Whole words only  ", o);
  e_add_sswstr(5, 9, 0, AltR, fd->sw & 32 ? 1 : 0, "Regular expression", o);
@@ -2862,11 +2863,12 @@ int e_replace(FENSTER *f)
  e_add_bttstr(41, 12, -1, WPE_ESC, "Cancel", NULL, o);
  e_add_bttstr(22, 12, 7, AltA, "Change All", NULL, o);
  ret = e_opt_kst(o);
+ if (ret != WPE_ESC && (e_opt_field_take(o, 0, fd->search, sizeof fd->search) != 0 ||
+                        e_opt_field_take(o, 1, fd->replace, sizeof fd->replace) != 0))
+  ret = WPE_ESC;
  if (ret != WPE_ESC)
  {
-  strcpy(fd->search, o->wstr[0]->txt);
   fd->sn = strlen(fd->search);
-  strcpy(fd->replace, o->wstr[1]->txt);
   fd->rn = strlen(fd->replace);
   fd->sw = 1 + (o->sstr[0]->num << 7)+ (o->sstr[1]->num << 6)
     + (o->sstr[2]->num << 5) + (o->sstr[3]->num << 4);

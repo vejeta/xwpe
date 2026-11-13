@@ -4363,11 +4363,11 @@ static int e_d_file_sendable(FENSTER *f)
 }
 
 /*    Watches   */
-int e_d_add_watch(char *str, FENSTER *f)
+int e_d_add_watch(char *str, size_t size, FENSTER *f)
 {
  int ret;
 
- ret = e_add_arguments(str, "Add Watch", f, 0, AltA, &f->ed->wdf);
+ ret = e_add_arguments(str, size, "Add Watch", f, 0, AltA, &f->ed->wdf);
  if (ret != WPE_ESC)
  {
   f->ed->wdf = e_add_df(str, f->ed->wdf);
@@ -4442,7 +4442,7 @@ int e_make_watches(FENSTER *f)
   snprintf(str, sizeof str, "%s", f->ed->wdf->name[0]);
  else
   str[0] = '\0';
- if (e_d_add_watch(str, f) && e_d_sendable(f, str, E_D_NOT_SENT_WATCH))
+ if (e_d_add_watch(str, sizeof str, f) && e_d_sendable(f, str, E_D_NOT_SENT_WATCH))
  {
   e_d_nwtchs++;
   if (e_d_nwtchs == 1)
@@ -4490,7 +4490,7 @@ int e_edit_watches(FENSTER *f)
  if (l == e_d_nwtchs && b->bf[b->b.y].len == 0)
   return(e_make_watches(f));
  snprintf(str, sizeof str, "%s", e_d_swtchs[l - 1]);
- if (e_d_add_watch(str, f) && e_d_sendable(f, str, E_D_NOT_SENT_WATCH))
+ if (e_d_add_watch(str, sizeof str, f) && e_d_sendable(f, str, E_D_NOT_SENT_WATCH))
  {
   e_d_swtchs[l - 1] = REALLOC(e_d_swtchs[l - 1], strlen(str) + 1);
   strcpy(e_d_swtchs[l - 1], str);
@@ -31270,7 +31270,7 @@ static int e_lsp_ui_workspace_symbols(FENSTER *f)
  if (e_lsp_ensure(f) < 0)
   return(-1);
  e_lsp_word_at_cursor(f, query, sizeof(query));
- if (!e_add_arguments(query, "Search symbol", f, 0, AltS, NULL) || !query[0])
+ if (!e_add_arguments(query, sizeof query, "Search symbol", f, 0, AltS, NULL) || !query[0])
   return(0);                        /* cancelled or empty */
  e_lsp_sync(f);
  a = e_lsp_ask_begin(f, E_LSP_ASK_SYMBOLS);
@@ -31533,7 +31533,7 @@ static int e_lsp_ui_rename(FENSTER *f)
 
  e_lsp_word_at_cursor(f, newname, sizeof(newname));
  e_lsp_ui_trace("e_lsp_ui_rename ENTER word='%s'", newname);
- dret = e_add_arguments(newname, "Rename to", f, 0, AltR, NULL);
+ dret = e_add_arguments(newname, sizeof newname, "Rename to", f, 0, AltR, NULL);
  e_lsp_ui_trace("e_lsp_ui_rename dialog ret=%d newname='%s'", dret, newname);
  if (!dret || !newname[0])
   return(0);                         /* cancelled or empty */

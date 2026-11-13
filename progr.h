@@ -139,7 +139,7 @@ int e_sc_nw_txt(int y, BUFFER *b, int sw);
 int *e_sc_txt(int *c_sw, BUFFER *b);
 void e_pr_c_line(int y, FENSTER *f);
 int e_add_synt_tl(char *filename, FENSTER *f);
-E_AFILE *e_aopen(char *name, char *path, int mode);
+E_AFILE *e_aopen(char *name, char *path, int mode, char **found);
 int e_aclose(E_AFILE *ep);
 char *e_agets(char *str, int n, E_AFILE *ep);
 char *e_sh_spl1(char *sp, char *str, E_AFILE *fp, int *n);
@@ -148,6 +148,8 @@ char *e_sh_spl3(char *sp, char *str, E_AFILE *fp, int *n);
 char *e_sh_spl4(char *sp, char *str, E_AFILE *fp, int *n);
 char *e_sh_spl5(char *sp, char *str, E_AFILE *fp, int *n);
 struct dirfile *e_c_add_df(char *str, struct dirfile *df);
+/* @file receives the path of the file the definition is in and must hold
+   WPE_PATH_SIZE bytes. */
 int e_find_def(char *name, char *startfile, int mode, char *file,
   int *num, int *xn, int nold, char *oldfile, struct dirfile **df,
   int *first);

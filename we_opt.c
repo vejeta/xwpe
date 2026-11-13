@@ -884,7 +884,7 @@ int e_opt_save(FENSTER *f)
  if (strlen(f->ed->optfile) > E_ARG_FIELD_MAX)
   return(e_opt_save_to_long_path(f));
  snprintf(tmp, sizeof tmp, "%s", f->ed->optfile);
- ret = e_add_arguments(tmp, "Save Option File", f, 0, AltS, NULL);
+ ret = e_add_arguments(tmp, sizeof tmp, "Save Option File", f, 0, AltS, NULL);
  if (ret)
  {
   f->ed->optfile = REALLOC(f->ed->optfile, (strlen(tmp)+1)*sizeof(char));
@@ -2588,14 +2588,53 @@ void e_opt_say_ignored_keys(ECNT *cn)
  e_refresh();
 }
 
-/*  window for entering a text line */
-int e_add_arguments(char *str, char *head, FENSTER *f, int n, int sw,
+/**
+ * e_opt_field_take - Take a dialog field's text into a buffer, whole.
+ * @o: the dialog; @k: the index of its text field; @dst/@size: the buffer.
+ *
+ * Every dialog that copies a field out goes through here, so a long entry
+ * is never written past a buffer smaller than the field and never cut to fit
+ * it.  Where a field is sized from its buffer this cannot refuse; where it
+ * does, the user is told the entry was too long instead of finding a
+ * different text in the editor.
+ * Return: 0, or -1 with @dst empty.
+ */
+int e_opt_field_take(W_OPTSTR *o, int k, char *dst, size_t size)
+{
+ if (!o || k < 0 || k >= o->wn || !o->wstr[k])
+  return(-1);
+ if (wpe_field_take(o->wstr[k]->txt, dst, size) == 0)
+  return(0);
+ e_input_limit_say((int)(size ? size - 1 : 0));
+ return(-1);
+}
+
+/**
+ * e_arguments_field_max - How many bytes the one-line entry window may take.
+ * @size: the size of the buffer the caller keeps the answer in.
+ *
+ * The field's own capacity, or less when the caller's buffer is smaller, so
+ * the text always fits where it is going.
+ */
+static int e_arguments_field_max(size_t size)
+{
+ if (size > (size_t)E_ARG_FIELD_MAX)
+  return(E_ARG_FIELD_MAX);
+ return((int)size - 1);
+}
+
+/*  window for entering a text line; the answer goes into @str of @size bytes */
+int e_add_arguments(char *str, size_t size, char *head, FENSTER *f, int n, int sw,
   struct dirfile **df)
 {
  int ret;
- char *tmp = MALLOC((strlen(head)+2) * sizeof(char));
- W_OPTSTR *o = e_init_opt_kst(f);
+ char *tmp;
+ W_OPTSTR *o;
 
+ if (!str || size < 2)
+  return(-1);
+ tmp = MALLOC((strlen(head)+2) * sizeof(char));
+ o = e_init_opt_kst(f);
  if (!o || !tmp)
   return(-1);
  o->xa = 20;  o->ya = 4;  o->xe = 57;  o->ye = 11;
@@ -2603,13 +2642,13 @@ int e_add_arguments(char *str, char *head, FENSTER *f, int n, int sw,
  o->name = head;
  o->crsw = AltO;
  sprintf(tmp, "%s:", head);
- e_add_wrstr(4, 2, 4, 3, 30, E_ARG_FIELD_MAX, n, sw, tmp, str, df, o);
+ e_add_wrstr(4, 2, 4, 3, 30, e_arguments_field_max(size), n, sw, tmp, str, df, o);
  e_add_bttstr(7, 5, 1, AltO, " Ok ", NULL, o);
  e_add_bttstr(24, 5, -1, WPE_ESC, "Cancel", NULL, o);
  FREE(tmp);
  ret = e_opt_kst(o);
- if (ret != WPE_ESC)
-  strcpy(str, o->wstr[0]->txt);
+ if (ret != WPE_ESC && e_opt_field_take(o, 0, str, size) != 0)
+  ret = WPE_ESC;
  freeostr(o);
  return(ret == WPE_ESC ? 0 : 1);
 }

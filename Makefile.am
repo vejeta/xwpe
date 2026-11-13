@@ -70,6 +70,7 @@ we_SOURCES = \
   we_opt.c \
   we_startcmd.c \
   we_startplan.c \
+  we_path.c \
   we_wind.c \
   we_prog.c \
   we_progn.c \
@@ -207,6 +208,8 @@ noinst_HEADERS = \
   we_child.h \
   we_startcmd.h \
   we_startplan.h \
+  we_path.h \
+  we_fieldtake.h \
   we_wayland.h \
   we_fdloop.h \
   we_paint.h \
@@ -319,7 +322,17 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice test_lineend edit_driver test_startcmd test_startplan
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_fieldtake
+
+# The owner of how long a path the editor holds may be (we_path.c): copy,
+# join and cat that refuse instead of cutting, at the boundary of a buffer.
+test_path_SOURCES = tests/test_path.c we_path.c
+test_path_CFLAGS = $(XWPE_STDFLAG)
+
+# The owner of the copy out of a dialog field (we_fieldtake.h): a text that
+# does not fit its destination is refused, never written past it.
+test_fieldtake_SOURCES = tests/test_fieldtake.c
+test_fieldtake_CFLAGS = $(XWPE_STDFLAG)
 
 # The owner of the start plan: we_startplan.c with the store (we_startcmd.c)
 # and the children's owner it starts through.  The operand rule on every
@@ -582,7 +595,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap test_paint test_splice test_lineend test_startcmd test_startplan
+  test_child test_childsig test_keymap test_paint test_splice test_lineend test_startcmd test_startplan test_path test_fieldtake
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -607,6 +620,13 @@ TESTS += tests/check-line-ends.sh
 # debugger command by a number of its own; the caps that are not debugger
 # lines are in tests/debug-command.allow, each with its reason.
 TESTS += tests/check-debug-command.sh
+
+# One owner of how long a path the editor holds may be (we_path.h) and of a
+# dialog field's way out (we_fieldtake.h): tests/check-path-buffers.sh fails
+# on an unbounded copy of a field's text, a refusal nobody reads, a call of
+# e_add_arguments without its buffer's size, and a second definition of the
+# two numbers.
+TESTS += tests/check-path-buffers.sh
 AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
 
@@ -681,6 +701,7 @@ EXTRA_DIST = \
   tests/test_lineend.c \
   tests/check-debug-command.sh \
   tests/debug-command.allow \
+  tests/check-path-buffers.sh \
   tests/stubs/a68g/a68g \
   tests/stubs/gdb \
   tests/stubs/full-pipe/lldb-dap \

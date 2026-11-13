@@ -4315,7 +4315,7 @@ int e_arguments(FENSTER *f)
  }
  /* An xwperc can make the arguments longer than the field: show what fits. */
  snprintf(str, sizeof str, "%s", e_prog.arguments);
- if (e_add_arguments(str, "Arguments", f, 0 , AltA, NULL))
+ if (e_add_arguments(str, sizeof str, "Arguments", f, 0 , AltA, NULL))
  {
   /* Only a value he changed is his: OK on a folder's value cut to the
      field's room approves nothing. */
@@ -5258,7 +5258,7 @@ int e_run_options(FENSTER *f)
  }
  else if (n == 1)
  {
-  if(e_add_arguments(tmp, "Remove Compiler", f, 0, AltR, NULL))
+  if(e_add_arguments(tmp, sizeof tmp, "Remove Compiler", f, 0, AltR, NULL))
   {
    for (i = 0; i < e_prog.num && strcmp(e_prog.comp[i]->language, tmp); i++)
     ;
@@ -5294,7 +5294,7 @@ int e_project_name(FENSTER *f)
  }
  /* An xwperc can name a project longer than the field: show what fits. */
  snprintf(str, sizeof str, "%s", e_prog.project);
- if (e_add_arguments(str, "Project", f, 0, AltP, NULL))
+ if (e_add_arguments(str, sizeof str, "Project", f, 0, AltP, NULL))
  {
   /* Only a value he changed is his: OK on a folder's value cut to the
      field's room approves nothing. */
@@ -8564,7 +8564,7 @@ int e_p_add_df(FLWND *fw, int sw)
  else if (sw == 6)
   title = "Add Command";
  str[0] = '\0'; /* terminate new string to prevent garbage in display */
- if (e_add_arguments(str, title, fw->f, 0, AltA, NULL))
+ if (e_add_arguments(str, sizeof str, title, fw->f, 0, AltA, NULL))
  {
   fw->df->anz++;
   fw->df->name = REALLOC(fw->df->name, fw->df->anz * sizeof(char *));
@@ -8578,7 +8578,7 @@ int e_p_add_df(FLWND *fw, int sw)
 
 int e_p_edit_df(FLWND *fw, int sw)
 {
- char *title = NULL, str[256];
+ char *title = NULL, str[E_ARG_FIELD_MAX + 1];
  int new = 0;
  if (sw == 4)
   title = "Change Filename";
@@ -8587,13 +8587,21 @@ int e_p_edit_df(FLWND *fw, int sw)
  else if (sw == 6)
   title = "Change Command";
  if (fw->nf < fw->df->anz-1 && fw->df->name[fw->nf])
-  strcpy(str, fw->df->name[fw->nf]);
+ {
+  /* An entry the dialog's field cannot hold whole is not offered for
+     editing: a cut entry would be written back in its place. */
+  if (wpe_field_take(fw->df->name[fw->nf], str, sizeof str) != 0)
+  {
+   e_input_limit_say(E_ARG_FIELD_MAX);
+   return(0);
+  }
+ }
  else
  {
   new = 1;
   str[0] = '\0';
  }
- if (e_add_arguments(str, title, fw->f, 0, AltA, NULL))
+ if (e_add_arguments(str, sizeof str, title, fw->f, 0, AltA, NULL))
  {
   if (fw->nf > fw->df->anz-2)
   {
