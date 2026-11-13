@@ -716,6 +716,27 @@ def test_clangd_hover_names_the_symbol_after_wide_text(tmp_path):
             "the hover should say `variable total`:\n%s" % body
 
 
+def test_clangd_answers_the_utf8_offer_and_gets_byte_columns(tmp_path):
+    """The initialize request offers utf-8 and utf-16, clangd answers utf-8,
+    and the highlight request then carries the byte column of `total` (32),
+    not its utf-16 unit (25)."""
+    trace = tmp_path / "lsp-trace.log"
+    with WpeSession(str(tmp_path), UNI_PROG, filename="demo.c", wait=2.0,
+                    env_extra={"XWPE_LSP_TRACE": str(trace)}) as w:
+        _start_clangd(w)
+        _find(w, "total")
+        w.key(ALT_Q, delay=0.4)
+        w.key("u", delay=3.0)
+        w._drain(1.5)
+        text = trace.read_text(errors="replace")
+        assert '"positionEncodings": [ "utf-8", "utf-16" ]' in text, \
+            "initialize should offer the encodings:\n%s" % text[:2000]
+        assert "positionEncoding=utf-8 -> utf-8" in text, \
+            "clangd should have answered utf-8:\n%s" % text[:2000]
+        assert '"line": 5, "character": 32' in text, \
+            "the highlight should ask at the byte column:\n%s" % text[-2000:]
+
+
 # A lone CR in a row is the editor's text: the server is sent a space (so its
 # lines are the editor's rows) and a rename elsewhere leaves the CR in the file.
 CR_PROG = UNI_PROG.replace("int add(int a, int b)", "int add(int a,\rint b)")

@@ -118,7 +118,10 @@ def result(msg):
         caps = {"semanticTokensProvider": {
             "legend": {"tokenTypes": ["variable"], "tokenModifiers": []},
             "full": True}}
-        if cfg["encoding"]:
+        offered = msg.get("params", {}).get("capabilities", {}) \
+                     .get("general", {}).get("positionEncodings") or []
+        if cfg["encoding"] and cfg["encoding"] in offered:
+            # like clangd: an encoding is answered only when it was offered
             caps["positionEncoding"] = cfg["encoding"]
         return {"capabilities": caps}
     return fill(cfg["answers"].get(method), msg)
@@ -620,6 +623,17 @@ def test_11b_no_answer_is_utf16(tmp_path):
         s.settle()
         assert "positionEncoding=absent -> utf-16" in _trace(tmp_path), \
             "the trace should name the encoding:\n%s" % _trace(tmp_path)
+
+
+# @scenario SC-lsp-positions-12
+def test_12_the_offer_names_utf8_then_utf16(tmp_path):
+    """The initialize request offers general.positionEncodings, utf-8
+    first (the byte columns the editor holds), utf-16 as the fallback every
+    server supports."""
+    with Session(tmp_path, "F1") as s:
+        s.settle()
+        assert "INIT offer=utf-8,utf-16" in _log(tmp_path), \
+            "the initialize should offer the encodings:\n%s" % _log(tmp_path)
 
 
 # @scenario SC-lsp-positions-13

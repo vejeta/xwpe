@@ -66,3 +66,36 @@ def test_gopls_lsp_bridge(tmp_path):
         text = _text(w)
         assert ("LSP:" in text or "error" in text or "Language server" in text), \
             "no gopls diagnostics/status in Messages:\n%s" % text
+
+
+WIDE_PROG = PROG.replace("\t_ = undefinedName\n",
+                         "    _ = \"caf\u00e9 \U0001f600\" + undefinedName\n")
+WIDE_CURSOR = (21, 13)      # screen column and row of `undefinedName`
+
+
+def test_gopls_keeps_utf16_and_the_jump_lands_on_the_symbol(tmp_path):
+    """The editor offers utf-8 and utf-16; gopls ignores the offer and counts
+    in utf-16 (the trace says so), and Alt-Q . still puts the cursor on
+    `undefinedName` after an accented letter and an emoji on its line."""
+    (tmp_path / "go.mod").write_text("module demo\n\ngo 1.21\n")
+    trace = tmp_path / "lsp-trace.log"
+    with WpeSession(str(tmp_path), WIDE_PROG, filename="main.go", wait=2.0,
+                    env_extra={"XWPE_LSP_TRACE": str(trace)}) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=15.0)
+        time.sleep(2.0)
+        w._drain(3.0)
+        assert w.alive(), "wpe died starting gopls"
+        w.key(ALT_Q, delay=0.4)
+        w.key(".", delay=2.5)
+        w._drain(0.8)
+        text = trace.read_text(errors="replace")
+        assert '"positionEncodings": [ "utf-8", "utf-16" ]' in text, \
+            "initialize should offer the encodings:\n%s" % text[:2000]
+        assert "positionEncoding=absent -> utf-16" in text, \
+            "gopls should stay on utf-16:\n%s" % text[:2000]
+        assert (w.screen.cursor.x, w.screen.cursor.y) == WIDE_CURSOR, \
+            "the cursor should be on `undefinedName` at %s, is at %s:\n%s" \
+            % (WIDE_CURSOR, (w.screen.cursor.x, w.screen.cursor.y), _text(w))

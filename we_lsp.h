@@ -13,7 +13,8 @@
  * popup, hover box, diagnostic marks, definition jump) lives elsewhere.
  *
  * Coordinates are LSP's: 0-based line, and the character column in the
- * units the session negotiated (e_lsp_units, we_lsp_pos.h).  The editor
+ * units the session negotiated (e_lsp_units, we_lsp_pos.h): `initialize`
+ * offers utf-8 and utf-16 and the server's answer is honoured.  The editor
  * bridge converts to and from byte columns and xwpe's 1-based lines.
  */
 #ifndef WE_LSP_H

@@ -308,6 +308,13 @@ through one owner, `we_lsp_pos.c`:
   text sent with its request (`a->base`), diagnostics and the overlays over the
   text last synced (`g_lsp_synced_text`), and a location in another file over
   that file on disk.  The rows of a text are found once (`e_lsp_text_index`).
+* **The offer.**  `initialize` carries `general.positionEncodings` from
+  `e_lsp_encodings_offered()`, `["utf-8", "utf-16"]`.  The answer
+  (`capabilities.positionEncoding`) is honoured: clangd and rust-analyzer
+  answer `utf-8`, so their columns are bytes; pyright, gopls and Metals ignore
+  the offer, answer nothing, and stay `utf-16`.  An answer the editor did not offer is read as `utf-16`.  The
+  wire trace has one `ENC` line per session with the answer and the encoding
+  in use (`positionEncoding=utf-8 -> utf-8`).
 * **The engine** keeps the negotiated encoding in the session
   (`e_lsp_position_encoding`), builds every `position` with
   `e_lsp_position_json`, reads every one with `e_lsp_units_read`, and applies a

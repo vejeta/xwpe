@@ -64,8 +64,10 @@ letter or a click picks, @key{ESC} closes.  @kbd{Alt-Q} then @key{ESC} cancels.
 @cindex UTF-16, language server
 @noindent
 @strong{Columns.}  A language server counts the characters of a line in UTF-16
-code units (unless it agrees to count bytes), and the editor counts bytes.
-Every position the editor sends or receives is converted, so on a line with an
+code units unless it agrees to count bytes, and the editor counts bytes.  At
+start-up the editor offers UTF-8 and UTF-16; clangd and rust-analyzer answer
+UTF-8, pyright, gopls and Metals ignore the offer and stay on UTF-16.  Every
+position the editor sends or receives is converted, so on a line with an
 accented letter, a CJK character or an emoji before a symbol the marks and the
 edits land on the symbol, and @kbd{Alt-Q .} puts the cursor on the problem's
 first letter.  (Go to definition and the other jumps still land on the line.)

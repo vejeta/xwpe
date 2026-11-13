@@ -1277,6 +1277,16 @@ static struct json_object *lsp_client_caps(void)
  }
  json_object_object_add(caps, "textDocument", td);
  {
+  /* Offer the encodings the position owner can count in.  A server that
+     honours the offer (clangd answers utf-8) sends byte columns; one that
+     ignores it (pyright, gopls) stays utf-16, which the session reads from
+     the answer in lsp_capture_encoding. */
+  struct json_object *general = json_object_new_object();
+  json_object_object_add(general, "positionEncodings",
+                         e_lsp_encodings_offered());
+  json_object_object_add(caps, "general", general);
+ }
+ {
   struct json_object *ws = json_object_new_object();
   struct json_object *ih = json_object_new_object();
   json_object_object_add(ws, "configuration", json_object_new_boolean(1));

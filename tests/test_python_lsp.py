@@ -66,3 +66,37 @@ def test_python_lsp_bridge(tmp_path):
         text = _text(w)
         assert ("LSP:" in text or "error" in text or "Language server" in text), \
             "no Python diagnostics/status in Messages:\n%s" % text
+
+
+WIDE_PROG = PROG.replace("    return undefined_name\n",
+                         "    return \"caf\u00e9 \U0001f600\", undefined_name\n")
+WIDE_CURSOR = (23, 8)       # screen column and row of `undefined_name`
+
+
+def test_python_lsp_keeps_utf16_and_the_jump_lands_on_the_symbol(tmp_path):
+    """The editor offers utf-8 and utf-16; pyright ignores the offer and
+    counts in utf-16 (the trace says so), and Alt-Q . still puts the cursor
+    on `undefined_name` after an accented letter and an emoji on its line."""
+    trace = tmp_path / "lsp-trace.log"
+    with WpeSession(str(tmp_path), WIDE_PROG, filename="demo.py", wait=2.0,
+                    env_extra={"XWPE_LSP_TRACE": str(trace)}) as w:
+        time.sleep(1.0)
+        w._drain(1.0)
+        w.key(ALT_Q, delay=0.4)
+        w.key("e", delay=12.0)
+        time.sleep(2.0)
+        w._drain(3.0)
+        assert w.alive(), "wpe died starting the Python language server"
+        if _server_label() != "pyright":
+            pytest.skip("the encoding row is for pyright")
+        w.key(ALT_Q, delay=0.4)
+        w.key(".", delay=2.5)
+        w._drain(0.8)
+        text = trace.read_text(errors="replace")
+        assert '"positionEncodings": [ "utf-8", "utf-16" ]' in text, \
+            "initialize should offer the encodings:\n%s" % text[:2000]
+        assert "positionEncoding=absent -> utf-16" in text, \
+            "pyright should stay on utf-16:\n%s" % text[:2000]
+        assert (w.screen.cursor.x, w.screen.cursor.y) == WIDE_CURSOR, \
+            "the cursor should be on `undefined_name` at %s, is at %s:\n%s" \
+            % (WIDE_CURSOR, (w.screen.cursor.x, w.screen.cursor.y), _text(w))
