@@ -1,3 +1,6 @@
 # Goldens the user has approved, one per line:
 #   <name> <sha256 of name.trace> <date> <decision id>
 # A golden not listed here is not a source: its rows skip.
+typing_wraps e26315ce447f2b641791662a12738f9620fa0d00fd8ffd0f467c016033ba5084 2026-11-13 D94
+enter_autoindent f276b0d86349dec52c3fcbdbcc8563d9aa9acb01cbb357fcf5a8528251c2ca10 2026-11-13 D94
+backspace_joins a4c529f353f8d9e4dff87e0ff0142767f55b1b4d217b37dfd4ebbbf521020283 2026-11-13 D94
