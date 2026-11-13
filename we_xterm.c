@@ -1710,7 +1710,8 @@ static int e_x_chord_codepoint(KeyCode keycode)
  *
  * One call to the key owner, so Ctrl-Shift-P, Alt-Shift-S and Ctrl-H are the
  * same codes here as on the terminal and on Wayland.  The distinct Ctrl
- * codes are folded to the legacy keys until a key set binds them.
+ * codes are returned as they are; the editor folds them once, where it
+ * takes a key (wpe_binding_fold).
  * Return: the code, or 0 when the chord is not one the owner knows (the
  * caller goes on with the character the key typed).
  */
@@ -1724,7 +1725,7 @@ static int e_x_chord_code(XKeyEvent *ev, unsigned int state)
  codepoint = e_x_chord_codepoint(ev->keycode);
  if (codepoint == 0)
   return(0);
- return(wpe_key_fold_legacy(wpe_key_code_char(codepoint, mods)));
+ return(wpe_key_code_char(codepoint, mods));
 }
 
 static int e_x_first_utf8_codepoint(unsigned char *buf, int len)

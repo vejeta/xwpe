@@ -14885,20 +14885,41 @@ static int e_ai_menu_read_folders(FENSTER *f)
    Permissions row shows the live policy, so its caption is filled in at build
    time; only its key and function are constant here. */
 static const struct ai_menu_row {
- const char *name; char key; int (*fkt)(FENSTER *);
+ const char *name; int action; int (*fkt)(FENSTER *);
 } ai_menu_rows[] = {
- { "Ask (chat)",          'A', e_ai_chat             },
- { "Edit current file",   'E', e_ai_edit             },
- { "Complete at cursor",  'C', e_ai_complete         },
- { "Multi-file edit",     'F', e_ai_plan             },
- { "Agent (tools)",       'G', e_ai_agent            },
- { "Build & fix (agent)", 'B', e_ai_fix_build        },
- { NULL,                  0,   NULL                  },   /* separator */
- { "Permissions",         'Y', e_ai_menu_policy      },
- { "Read folders",        'R', e_ai_menu_read_folders },  /* only while a folder is open */
- { "Clear conversation",  'N', e_ai_menu_new_session },
- { "AI settings...",      'S', e_ai_options          }
+ { "Ask (chat)",          WPE_ACT_AI_ASK,          e_ai_chat             },
+ { "Edit current file",   WPE_ACT_AI_EDIT,         e_ai_edit             },
+ { "Complete at cursor",  WPE_ACT_AI_COMPLETE,     e_ai_complete         },
+ { "Multi-file edit",     WPE_ACT_AI_PLAN,         e_ai_plan             },
+ { "Agent (tools)",       WPE_ACT_AI_AGENT,        e_ai_agent            },
+ { "Build & fix (agent)", WPE_ACT_AI_FIX_BUILD,    e_ai_fix_build        },
+ { NULL,                  WPE_ACT_NONE,            NULL                  },   /* separator */
+ { "Permissions",         WPE_ACT_AI_POLICY,       e_ai_menu_policy      },
+ { "Read folders",        WPE_ACT_AI_READ_FOLDERS, e_ai_menu_read_folders },  /* only while a folder is open */
+ { "Clear conversation",  WPE_ACT_AI_NEW_SESSION,  e_ai_menu_new_session },
+ { "AI settings...",      WPE_ACT_AI_SETTINGS,     e_ai_options          }
 };
+
+/**
+ * ai_menu_style - The key style the assistant's menu reads its letters in.
+ */
+static int ai_menu_style(void)
+{
+ return(WpeEditor ? wpe_binding_style(WpeEditor->edopt) : WPE_STYLE_BORLAND);
+}
+
+/**
+ * ai_menu_row_key - The letter after Alt-G that runs a menu row.
+ * @r: a row of ai_menu_rows.
+ * Return: the upper-case letter the key table binds to the row's action, 0
+ * for the divider.
+ */
+static int ai_menu_row_key(const struct ai_menu_row *r)
+{
+ if (r->action == WPE_ACT_NONE)
+  return 0;
+ return wpe_binding_first_code((WpeAction)r->action, ai_menu_style(), WPE_CTX_PREFIX_AI);
+}
 #define AI_MENU_NROWS ((int)(sizeof ai_menu_rows / sizeof ai_menu_rows[0]))
 /* The most rows the menu can show: every row of the table. */
 #define AI_MENU_MAXROWS AI_MENU_NROWS
@@ -14927,8 +14948,8 @@ static int ai_menu_has_key(int key)
 {
  int i, up = e_toupper(key);
  for (i = 0; i < AI_MENU_NROWS; i++)
-  if (ai_menu_rows[i].fkt && ai_menu_rows[i].key && ai_menu_row_shown(&ai_menu_rows[i]) &&
-      e_toupper((int)ai_menu_rows[i].key) == up)
+  if (ai_menu_rows[i].fkt && ai_menu_row_key(&ai_menu_rows[i]) && ai_menu_row_shown(&ai_menu_rows[i]) &&
+      wpe_binding_action(up, ai_menu_style(), WPE_CTX_PREFIX_AI) == (WpeAction)ai_menu_rows[i].action)
    return 1;
  return 0;
 }
@@ -14946,8 +14967,8 @@ static int ai_menu_dispatch_key(FENSTER *f, int key)
 {
  int i, up = e_toupper(key);
  for (i = 0; i < AI_MENU_NROWS; i++)
-  if (ai_menu_rows[i].fkt && ai_menu_rows[i].key && ai_menu_row_shown(&ai_menu_rows[i]) &&
-      e_toupper((int)ai_menu_rows[i].key) == up) {
+  if (ai_menu_rows[i].fkt && ai_menu_row_key(&ai_menu_rows[i]) && ai_menu_row_shown(&ai_menu_rows[i]) &&
+      wpe_binding_action(up, ai_menu_style(), WPE_CTX_PREFIX_AI) == (WpeAction)ai_menu_rows[i].action) {
    ai_menu_rows[i].fkt(f);
    return 1;
   }
@@ -14979,13 +15000,13 @@ static int e_ai_menu_items(OPTK *it)
    name = perm_row;
   if (ai_menu_rows[i].fkt == e_ai_menu_read_folders)
    name = grants_row;
-  snprintf(code, sizeof code, "Alt-G %c", ai_menu_rows[i].key);   /* 7 chars */
+  snprintf(code, sizeof code, "Alt-G %c", ai_menu_row_key(&ai_menu_rows[i]));   /* 7 chars */
   pad = AI_MENU_TEXTW - (int)strlen(name) - (int)strlen(code);
   if (pad < 1)
    pad = 1;
   snprintf(label[k], sizeof label[k], "%s%*s%s", name, pad, "", code);
   hl = (int)strlen(label[k]) - 1;               /* the letter in "Alt-G X" */
-  it[k] = WpeFillSubmenuItem(label[k], hl, ai_menu_rows[i].key, ai_menu_rows[i].fkt);
+  it[k] = WpeFillSubmenuItem(label[k], hl, (char)ai_menu_row_key(&ai_menu_rows[i]), ai_menu_rows[i].fkt);
   k++;
  }
  return k;

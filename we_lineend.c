@@ -164,7 +164,7 @@ static int eol_file_end(EolRows *rl, int y, POINT *end)
 static int eol_help_byte(EolSrc *src, int n, signed char *c, signed char *cc, int *hb,
                          EolRows *rl)
 {
- if (*c == CtrlH)
+ if (*c == '\b')
  {
   if (*hb == E_READ_BOLD_NONE)
   {
@@ -205,12 +205,12 @@ static void eol_classify(const unsigned char *p, size_t n, WpeEolInfo *info)
  {
   if (p[i] == WPE_WR)
   {
-   if (i > 0 && p[i - 1] == WPE_CR)
+   if (i > 0 && p[i - 1] == '\r')
     crlf++;
    else
     bare++;
   }
-  else if (p[i] == WPE_CR && (i + 1 >= n || p[i + 1] != WPE_WR))
+  else if (p[i] == '\r' && (i + 1 >= n || p[i + 1] != WPE_WR))
    info->lone_cr++;
  }
  info->breaks = crlf + bare;
@@ -266,7 +266,7 @@ static int eol_read_bytes(EolSrc *src, EolRows *rl, int crlf, int manpage, WpeEo
    info->nul++;
    continue;
   }
-  if (n == 1 && c == WPE_CR && eol_cr_is_break(src, crlf, manpage))
+  if (n == 1 && c == '\r' && eol_cr_is_break(src, crlf, manpage))
    continue;
   if (manpage)
    n = eol_help_byte(src, n, &c, &cc, &hb, rl);
@@ -539,7 +539,7 @@ static void eol_sink_put(EolSink *k, const unsigned char *p, size_t n)
  */
 static void eol_break_put(EolSink *k, int eol)
 {
- static const unsigned char crlf[2] = { WPE_CR, WPE_WR };
+ static const unsigned char crlf[2] = { '\r', WPE_WR };
 
  if (eol == E_EOL_CRLF)
   eol_sink_put(k, crlf, 2);

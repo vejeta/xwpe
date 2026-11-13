@@ -3852,9 +3852,8 @@ static int e_opt_run_button(W_OPTSTR *o, struct opt_run *r, int i)
  */
 static int e_opt_is_move_key(W_OPTSTR *o, int c)
 {
- if (o->f->ed->edopt & ED_CUA_STYLE)
-  return c == CtrlL;
- return c == AF2;
+ return wpe_binding_action(c, wpe_binding_style(o->f->ed->edopt),
+                           WPE_CTX_DIALOG_MOVE) == WPE_ACT_SIZE_MOVE;
 }
 
 /**

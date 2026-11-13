@@ -3347,8 +3347,8 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
 #if MOUSE
   if (ret < 0) ret = e_rahmen_mouse(f);
 #endif
-  if ((ret == AF2 && !(f->ed->edopt & ED_CUA_STYLE)) ||
-    (f->ed->edopt & ED_CUA_STYLE && ret == CtrlL))
+  if (wpe_binding_action(ret, wpe_binding_style(f->ed->edopt),
+                         WPE_CTX_DIALOG_MOVE) == WPE_ACT_SIZE_MOVE)
    e_size_move(f);
  } while(ret != WPE_CR && ret != WPE_ESC);
  *n = fw->nf;

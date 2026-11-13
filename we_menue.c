@@ -65,6 +65,60 @@ static int WpeMainmenuReadKey(void)
   return c;
 }
 
+/* The text of the items whose keys come from the key table.  An item holds a
+   pointer to its text, so the texts are kept for as long as the menus are
+   open; they are written again, with the same content, each time the menu
+   bar opens. */
+#define E_MENU_TEXT_LEN 64
+#define E_MENU_TEXTS_MAX 128
+static char e_menu_texts[E_MENU_TEXTS_MAX][E_MENU_TEXT_LEN];
+static int e_menu_texts_used;
+
+/* The width of the item text of each menu: the keys end at this column. */
+#define E_MENU_WIDTH_FILE   19
+#define E_MENU_WIDTH_EDIT   22
+#define E_MENU_WIDTH_SEARCH 23
+#define E_MENU_WIDTH_BLOCK  20
+#define E_MENU_WIDTH_RUN    30
+#define E_MENU_WIDTH_DEBUG  28
+#define E_MENU_WIDTH_WINDOW 23
+#define E_MENU_WIDTH_HELP   22
+
+/**
+ * WpeFillBoundItemSep - A menu item whose keys the key table names, with the
+ * keys joined by @sep.
+ * @style: the editor's key style; @stem: the item's words.
+ * @x: the index of its hot letter; @o: the letter; @fkt: what it runs.
+ * @action: what it runs, in the key table; @contexts: the contexts whose keys
+ * it shows; @width: the width of the item text, the keys end at its edge.
+ *
+ * The item reads the keys the editor's style binds to its action, so a menu
+ * never advertises a key that does something else.  An action with no key in
+ * the style is shown with its words alone.
+ */
+static OPTK WpeFillBoundItemSep(int style, const char *stem, int x, char o,
+                                int (*fkt)(), WpeAction action,
+                                unsigned contexts, int width, const char *sep)
+{
+  char *text;
+
+  /* A menu with more items than the pool holds shows its words alone. */
+  if (e_menu_texts_used >= E_MENU_TEXTS_MAX)
+    return(WpeFillSubmenuItem((char *)stem, x, o, fkt));
+  text = e_menu_texts[e_menu_texts_used++];
+  wpe_menu_item_text(text, E_MENU_TEXT_LEN, stem, action, style, contexts,
+                     width, sep);
+  return(WpeFillSubmenuItem(text, x, o, fkt));
+}
+
+/** WpeFillBoundItemSep with the usual " / " between keys. */
+static OPTK WpeFillBoundItem(int style, const char *stem, int x, char o,
+                             int (*fkt)(), WpeAction action,
+                             unsigned contexts, int width)
+{
+  return(WpeFillBoundItemSep(style, stem, x, o, fkt, action, contexts, width, NULL));
+}
+
 /* main menu control bar */
 int WpeHandleMainmenu(int n, FENSTER *f)
 {
@@ -74,7 +128,9 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   extern char    *e_hlp, *e_hlp_str[];
   ECNT           *cn = f->ed;
   MENU           *mainmenu = MALLOC(MENOPT * sizeof(MENU));
+  int             style = wpe_binding_style(cn->edopt);
 
+  e_menu_texts_used = 0;
   for(i = 0; i < MENOPT; i++)
     mainmenu[i].width = 0;
   fk_cursor(0);
@@ -112,18 +168,12 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   mainmenu[1].no_of_items = 11;
   if((mainmenu[1].menuitems = MALLOC(mainmenu[1].no_of_items * sizeof(OPTK))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-  if(f->ed->edopt & ED_CUA_STYLE)
-  {
-    mainmenu[1].menuitems[0] = WpeFillSubmenuItem("File-Manager     F2", 0, 'M', WpeManager);
-    mainmenu[1].menuitems[2] = WpeFillSubmenuItem("Save         Alt F2", 0, 'S', e_m_save);
-    mainmenu[1].menuitems[10] = WpeFillSubmenuItem("Quit         Alt F4", 0, 'Q', e_quit);
-  }
-  else
-  {
-    mainmenu[1].menuitems[0] = WpeFillSubmenuItem("File-Manager     F3", 0, 'M', WpeManager);
-    mainmenu[1].menuitems[2] = WpeFillSubmenuItem("Save             F2", 0, 'S', e_m_save);
-    mainmenu[1].menuitems[10] = WpeFillSubmenuItem("Quit          Alt X", 0, 'Q', e_quit);
-  }
+  mainmenu[1].menuitems[0] = WpeFillBoundItem(style, "File-Manager", 0, 'M', WpeManager,
+                                              WPE_ACT_FILE_MANAGER, WPE_CTXM_MENU, E_MENU_WIDTH_FILE);
+  mainmenu[1].menuitems[2] = WpeFillBoundItem(style, "Save", 0, 'S', e_m_save,
+                                              WPE_ACT_SAVE, WPE_CTXM_MENU, E_MENU_WIDTH_FILE);
+  mainmenu[1].menuitems[10] = WpeFillBoundItem(style, "Quit", 0, 'Q', e_quit,
+                                               WPE_ACT_QUIT, WPE_CTXM_MENU, E_MENU_WIDTH_FILE);
   mainmenu[1].menuitems[1] = WpeFillSubmenuItem("New", 0, 'N', e_new);
   mainmenu[1].menuitems[3] = WpeFillSubmenuItem("Save As", 5, 'A', WpeSaveAsManager);
   mainmenu[1].menuitems[4] = WpeFillSubmenuItem("Save aLl", 6, 'L', e_saveall);
@@ -140,30 +190,31 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   mainmenu[2].no_of_items = 7;
   if((mainmenu[2].menuitems = MALLOC(mainmenu[2].no_of_items * sizeof(OPTK))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-  mainmenu[2].menuitems[0] = WpeFillSubmenuItem("Cut     Shift Del / ^X", 2, 'T', e_edt_del);
-  mainmenu[2].menuitems[1] = WpeFillSubmenuItem("Copy         ^Ins / ^C", 0, 'C', e_edt_copy);
-  mainmenu[2].menuitems[2] = WpeFillSubmenuItem("Paste   Shift Ins / ^V", 0, 'P', e_edt_einf);
-  mainmenu[2].menuitems[3] = WpeFillSubmenuItem("Show Buffer      Alt Y", 0, 'S', e_show_clipboard);
-  mainmenu[2].menuitems[4] = WpeFillSubmenuItem("Delete            ^Del", 0, 'D', e_blck_del);
-  mainmenu[2].menuitems[5] = WpeFillSubmenuItem("Undo                ^U", 0, 'U', e_make_undo);
-  mainmenu[2].menuitems[6] = WpeFillSubmenuItem("Redo                ^R", 0, 'R', e_make_redo);
+  mainmenu[2].menuitems[0] = WpeFillBoundItem(style, "Cut", 2, 'T', e_edt_del,
+                                              WPE_ACT_EDIT_CUT, WPE_CTXM_DIRECT, E_MENU_WIDTH_EDIT);
+  mainmenu[2].menuitems[1] = WpeFillBoundItem(style, "Copy", 0, 'C', e_edt_copy,
+                                              WPE_ACT_EDIT_COPY, WPE_CTXM_DIRECT, E_MENU_WIDTH_EDIT);
+  mainmenu[2].menuitems[2] = WpeFillBoundItem(style, "Paste", 0, 'P', e_edt_einf,
+                                              WPE_ACT_EDIT_PASTE, WPE_CTXM_DIRECT, E_MENU_WIDTH_EDIT);
+  mainmenu[2].menuitems[3] = WpeFillBoundItem(style, "Show Buffer", 0, 'S', e_show_clipboard,
+                                              WPE_ACT_SHOW_CLIPBOARD, WPE_CTXM_DIRECT, E_MENU_WIDTH_EDIT);
+  mainmenu[2].menuitems[4] = WpeFillBoundItem(style, "Delete", 0, 'D', e_blck_del,
+                                              WPE_ACT_BLOCK_DELETE, WPE_CTXM_DIRECT, E_MENU_WIDTH_EDIT);
+  mainmenu[2].menuitems[5] = WpeFillBoundItem(style, "Undo", 0, 'U', e_make_undo,
+                                              WPE_ACT_EDIT_UNDO, WPE_CTXM_DIRECT, E_MENU_WIDTH_EDIT);
+  mainmenu[2].menuitems[6] = WpeFillBoundItem(style, "Redo", 0, 'R', e_make_redo,
+                                              WPE_ACT_EDIT_REDO, WPE_CTXM_DIRECT, E_MENU_WIDTH_EDIT);
   mainmenu[3].position = -3;
   mainmenu[3].width = 28;
   mainmenu[3].no_of_items = 4;
   if((mainmenu[3].menuitems = MALLOC(mainmenu[3].no_of_items * sizeof(OPTK))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-  if(f->ed->edopt & ED_CUA_STYLE)
-  {
-    mainmenu[3].menuitems[0] = WpeFillSubmenuItem("Find      Alt F3 / ^O F", 0, 'F', e_find);
-    mainmenu[3].menuitems[1] = WpeFillSubmenuItem("Replace Shift F3 / ^O A", 0, 'R', e_replace);
-    mainmenu[3].menuitems[2] = WpeFillSubmenuItem("Search again         F3", 0, 'S', e_rep_search);
-  }
-  else
-  {
-    mainmenu[3].menuitems[0] = WpeFillSubmenuItem("Find          F4 / ^O F", 0, 'F', e_find);
-    mainmenu[3].menuitems[1] = WpeFillSubmenuItem("Replace   Alt F4 / ^O A", 0, 'R', e_replace);
-    mainmenu[3].menuitems[2] = WpeFillSubmenuItem("Search again         ^L", 0, 'S', e_rep_search);
-  }
+  mainmenu[3].menuitems[0] = WpeFillBoundItem(style, "Find", 0, 'F', e_find,
+                                              WPE_ACT_FIND, WPE_CTXM_MENU, E_MENU_WIDTH_SEARCH);
+  mainmenu[3].menuitems[1] = WpeFillBoundItem(style, "Replace", 0, 'R', e_replace,
+                                              WPE_ACT_REPLACE, WPE_CTXM_MENU, E_MENU_WIDTH_SEARCH);
+  mainmenu[3].menuitems[2] = WpeFillBoundItem(style, "Search again", 0, 'S', e_rep_search,
+                                              WPE_ACT_SEARCH_AGAIN, WPE_CTXM_MENU, E_MENU_WIDTH_SEARCH);
   /* The programming editor gives Alt-G to the assistant, so the item must not
      offer a key that does nothing there: the accelerator is advertised only in
      the mode that honours it.  The letter still reaches this item with the menu
@@ -171,27 +222,43 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   if(WpeIsProg())
     mainmenu[3].menuitems[3] = WpeFillSubmenuItem("Go to Line", 0, 'G', e_goto_line);
   else
-    mainmenu[3].menuitems[3] = WpeFillSubmenuItem("Go to Line        Alt G", 0, 'G', e_goto_line);
+    mainmenu[3].menuitems[3] = WpeFillBoundItem(style, "Go to Line", 0, 'G', e_goto_line,
+                                                WPE_ACT_GOTO_LINE, WPE_CTXM_MENU, E_MENU_WIDTH_SEARCH);
   mainmenu[4].position = -3;
   mainmenu[4].width = 25;
   mainmenu[4].no_of_items = 15;
   if((mainmenu[4].menuitems = MALLOC(mainmenu[4].no_of_items * sizeof(OPTK))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-  mainmenu[4].menuitems[0] = WpeFillSubmenuItem("Begin Mark      ^K B", 0, 'B', e_blck_begin);
-  mainmenu[4].menuitems[1] = WpeFillSubmenuItem("End Mark        ^K K", 0, 'E', e_blck_end);
-  mainmenu[4].menuitems[2] = WpeFillSubmenuItem("Mark WhOle      ^K X", 7, 'O', e_blck_mrk_all);
-  mainmenu[4].menuitems[3] = WpeFillSubmenuItem("Mark Line       ^K L", 5, 'L', e_blck_mrk_line);
-  mainmenu[4].menuitems[4] = WpeFillSubmenuItem("Goto Begin      ^K A", 0, 'G', e_blck_gt_beg);
-  mainmenu[4].menuitems[5] = WpeFillSubmenuItem("Goto ENd        ^K Z", 6, 'N', e_blck_gt_end);
-  mainmenu[4].menuitems[6] = WpeFillSubmenuItem("Copy            ^K C", 0, 'C', e_blck_copy);
-  mainmenu[4].menuitems[7] = WpeFillSubmenuItem("Move            ^K V", 0, 'M', e_blck_move);
-  mainmenu[4].menuitems[8] = WpeFillSubmenuItem("Delete          ^K Y", 0, 'D', e_blck_del);
-  mainmenu[4].menuitems[9] = WpeFillSubmenuItem("Hide            ^K H", 0, 'H', e_blck_hide);
-  mainmenu[4].menuitems[10] = WpeFillSubmenuItem("Read            ^K R", 0, 'R', e_blck_read);
-  mainmenu[4].menuitems[11] = WpeFillSubmenuItem("Write           ^K W", 0, 'W', e_blck_write);
-  mainmenu[4].menuitems[12] = WpeFillSubmenuItem("Move to RIght   ^K I", 9, 'I', e_blck_to_right);
-  mainmenu[4].menuitems[13] = WpeFillSubmenuItem("Move to LefT    ^K U", 11, 'T', e_blck_to_left);
-  mainmenu[4].menuitems[14] = WpeFillSubmenuItem("ChAnge Case     ^K D", 2, 'A', e_changecase_dialog);
+  mainmenu[4].menuitems[0] = WpeFillBoundItem(style, "Begin Mark", 0, 'B', e_blck_begin,
+                                              WPE_ACT_BLOCK_BEGIN, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[1] = WpeFillBoundItem(style, "End Mark", 0, 'E', e_blck_end,
+                                              WPE_ACT_BLOCK_END, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[2] = WpeFillBoundItem(style, "Mark WhOle", 7, 'O', e_blck_mrk_all,
+                                              WPE_ACT_BLOCK_ALL, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[3] = WpeFillBoundItem(style, "Mark Line", 5, 'L', e_blck_mrk_line,
+                                              WPE_ACT_BLOCK_LINE, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[4] = WpeFillBoundItem(style, "Goto Begin", 0, 'G', e_blck_gt_beg,
+                                              WPE_ACT_BLOCK_GOTO_BEGIN, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[5] = WpeFillBoundItem(style, "Goto ENd", 6, 'N', e_blck_gt_end,
+                                              WPE_ACT_BLOCK_GOTO_END, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[6] = WpeFillBoundItem(style, "Copy", 0, 'C', e_blck_copy,
+                                              WPE_ACT_BLOCK_COPY, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[7] = WpeFillBoundItem(style, "Move", 0, 'M', e_blck_move,
+                                              WPE_ACT_BLOCK_MOVE, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[8] = WpeFillBoundItem(style, "Delete", 0, 'D', e_blck_del,
+                                              WPE_ACT_BLOCK_DELETE, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[9] = WpeFillBoundItem(style, "Hide", 0, 'H', e_blck_hide,
+                                              WPE_ACT_BLOCK_HIDE, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[10] = WpeFillBoundItem(style, "Read", 0, 'R', e_blck_read,
+                                               WPE_ACT_BLOCK_READ, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[11] = WpeFillBoundItem(style, "Write", 0, 'W', e_blck_write,
+                                               WPE_ACT_BLOCK_WRITE, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[12] = WpeFillBoundItem(style, "Move to RIght", 9, 'I', e_blck_to_right,
+                                               WPE_ACT_BLOCK_INDENT, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[13] = WpeFillBoundItem(style, "Move to LefT", 11, 'T', e_blck_to_left,
+                                               WPE_ACT_BLOCK_UNINDENT, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
+  mainmenu[4].menuitems[14] = WpeFillBoundItem(style, "ChAnge Case", 2, 'A', e_changecase_dialog,
+                                               WPE_ACT_BLOCK_CASE, WPE_CTXM_PREFIX, E_MENU_WIDTH_BLOCK);
 #ifdef PROG
   if(WpeIsProg())
   {
@@ -203,17 +270,28 @@ int WpeHandleMainmenu(int n, FENSTER *f)
     /* Only keys a terminal delivers are shown.  Alt-F9, Alt-F8 and Alt-F7
        still compile and walk where they arrive (X11, Wayland, the Linux
        console) but terminal emulators keep them for themselves. */
-    mainmenu[5].menuitems[0] = WpeFillSubmenuItem("Compile                  Alt C", 0, 'C', e_compile);
-    mainmenu[5].menuitems[1] = WpeFillSubmenuItem("Make                F9 / Alt M", 0, 'M', e_p_make);
-    mainmenu[5].menuitems[2] = WpeFillSubmenuItem("Run                ^F9 / Alt U", 0, 'R', e_run);
-    mainmenu[5].menuitems[3] = WpeFillSubmenuItem("Install                  Alt L", 0, 'I', e_install);
-    mainmenu[5].menuitems[4] = WpeFillSubmenuItem("Execute Make             Alt A", 0, 'E', e_exec_make);
-    mainmenu[5].menuitems[5] = WpeFillSubmenuItem("Next Error               Alt T", 0, 'N', e_next_error);
-    mainmenu[5].menuitems[6] = WpeFillSubmenuItem("Previous Error           Alt V", 0, 'P', e_previous_error);
-    mainmenu[5].menuitems[7] = WpeFillSubmenuItem("Show Definition           ^O S", 0, 'S', e_sh_def);
-    mainmenu[5].menuitems[8] = WpeFillSubmenuItem("Show NeXt Definition      ^O N", 7, 'X', e_sh_nxt_def);
-    mainmenu[5].menuitems[9] = WpeFillSubmenuItem("Matching BracKet          ^O K", 13, 'K', e_nxt_brk);
-    mainmenu[5].menuitems[10] = WpeFillSubmenuItem("Beautify                  ^O B", 0, 'B', e_p_beautify);
+    mainmenu[5].menuitems[0] = WpeFillBoundItem(style, "Compile", 0, 'C', e_compile,
+                                                WPE_ACT_COMPILE, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[1] = WpeFillBoundItem(style, "Make", 0, 'M', e_p_make,
+                                                WPE_ACT_MAKE, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[2] = WpeFillBoundItem(style, "Run", 0, 'R', e_run,
+                                                WPE_ACT_RUN, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[3] = WpeFillBoundItem(style, "Install", 0, 'I', e_install,
+                                                WPE_ACT_INSTALL, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[4] = WpeFillBoundItem(style, "Execute Make", 0, 'E', e_exec_make,
+                                                WPE_ACT_EXEC_MAKE, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[5] = WpeFillBoundItem(style, "Next Error", 0, 'N', e_next_error,
+                                                WPE_ACT_NEXT_ERROR, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[6] = WpeFillBoundItem(style, "Previous Error", 0, 'P', e_previous_error,
+                                                WPE_ACT_PREV_ERROR, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[7] = WpeFillBoundItem(style, "Show Definition", 0, 'S', e_sh_def,
+                                                WPE_ACT_SHOW_DEFINITION, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[8] = WpeFillBoundItem(style, "Show NeXt Definition", 7, 'X', e_sh_nxt_def,
+                                                WPE_ACT_NEXT_DEFINITION, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[9] = WpeFillBoundItem(style, "Matching BracKet", 13, 'K', e_nxt_brk,
+                                                WPE_ACT_MATCH_BRACKET, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
+    mainmenu[5].menuitems[10] = WpeFillBoundItem(style, "Beautify", 0, 'B', e_p_beautify,
+                                                 WPE_ACT_BEAUTIFY, WPE_CTXM_MENU, E_MENU_WIDTH_RUN);
     mainmenu[5].menuitems[11] = WpeFillSubmenuItem("Arguments                     ", 0, 'A', e_arguments);
 
     mainmenu[MENOPT - 4].position = -3;
@@ -238,31 +316,38 @@ int WpeHandleMainmenu(int n, FENSTER *f)
     if((mainmenu[MENOPT - 5].menuitems = MALLOC(mainmenu[MENOPT - 5].no_of_items * sizeof(OPTK))) == NULL)
       e_error(e_msg[ERR_LOWMEM], 1, f->fb);
 
-    if(f->ed->edopt & ED_CUA_STYLE)
-    {
-      mainmenu[MENOPT - 5].menuitems[0] = WpeFillSubmenuItem("Toggle Breakpoint  F5 / ^G B", 7, 'B', e_breakpoint);
-      mainmenu[MENOPT - 5].menuitems[2] = WpeFillSubmenuItem("Make Watch        ^F5 / ^G W", 5, 'W', e_make_watches);
-      mainmenu[MENOPT - 5].menuitems[6] = WpeFillSubmenuItem("Show stacK        ^F3 / ^G K", 9, 'K', e_deb_stack);
-    }
-    else
-    {
-      mainmenu[MENOPT - 5].menuitems[0] = WpeFillSubmenuItem("Toggle Breakpoint ^F8 / ^G B", 7, 'B', e_breakpoint);
-      mainmenu[MENOPT - 5].menuitems[2] = WpeFillSubmenuItem("Make Watch        ^F7 / ^G W", 5, 'W', e_make_watches);
-      mainmenu[MENOPT - 5].menuitems[6] = WpeFillSubmenuItem("Show stacK        ^F6 / ^G K", 9, 'K', e_deb_stack);
-    }
-    mainmenu[MENOPT - 5].menuitems[1] = WpeFillSubmenuItem("ReMove all Breakp.      ^G M", 2, 'M', e_remove_breakpoints);
-    mainmenu[MENOPT - 5].menuitems[3] = WpeFillSubmenuItem("Edit watch              ^G E", 0, 'E', e_edit_watches);
-    mainmenu[MENOPT - 5].menuitems[4] = WpeFillSubmenuItem("Delete watch            ^G D", 0, 'D', e_delete_watches);
-    mainmenu[MENOPT - 5].menuitems[5] = WpeFillSubmenuItem("Remove All watches      ^G A", 7, 'A', e_remove_all_watches);
-    mainmenu[MENOPT - 5].menuitems[7] = WpeFillSubmenuItem("Goto cursor             ^G U", 0, 'U', e_d_goto_cursor);
-    mainmenu[MENOPT - 5].menuitems[8] = WpeFillSubmenuItem("Finish function         ^G F", 0, 'F', e_d_finish_func);
-    mainmenu[MENOPT - 5].menuitems[9] = WpeFillSubmenuItem("Trace              F7 / ^G T", 0, 'T', e_deb_trace);
-    mainmenu[MENOPT - 5].menuitems[10] = WpeFillSubmenuItem("Step               F8 / ^G S", 0, 'S', e_deb_next);
-    mainmenu[MENOPT - 5].menuitems[11] = WpeFillSubmenuItem("Run/Continue     ^F10 / ^G R", 0, 'R', e_deb_run);
-    mainmenu[MENOPT - 5].menuitems[12] = WpeFillSubmenuItem("Interrupt (pause)  ^Brk/^G I", 0, 'I', e_d_pause);
-    mainmenu[MENOPT - 5].menuitems[13] = WpeFillSubmenuItem("Program output          ^G P", 0, 'P', e_u_deb_out);
-    mainmenu[MENOPT - 5].menuitems[14] = WpeFillSubmenuItem("debugger Options        ^G O", 9, 'O', e_deb_options);
-    mainmenu[MENOPT - 5].menuitems[15] = WpeFillSubmenuItem("Quit              ^F2 / ^G Q", 0, 'Q', e_d_quit);
+    mainmenu[MENOPT - 5].menuitems[0] = WpeFillBoundItem(style, "Toggle Breakpoint", 7, 'B', e_breakpoint,
+                                                         WPE_ACT_DEBUG_BREAKPOINT, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[1] = WpeFillBoundItem(style, "ReMove all Breakp.", 2, 'M', e_remove_breakpoints,
+                                                         WPE_ACT_DEBUG_REMOVE_BREAKPOINTS, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[2] = WpeFillBoundItem(style, "Make Watch", 5, 'W', e_make_watches,
+                                                         WPE_ACT_DEBUG_WATCH, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[3] = WpeFillBoundItem(style, "Edit watch", 0, 'E', e_edit_watches,
+                                                         WPE_ACT_DEBUG_EDIT_WATCH, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[4] = WpeFillBoundItem(style, "Delete watch", 0, 'D', e_delete_watches,
+                                                         WPE_ACT_DEBUG_DELETE_WATCH, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[5] = WpeFillBoundItem(style, "Remove All watches", 7, 'A', e_remove_all_watches,
+                                                         WPE_ACT_DEBUG_REMOVE_ALL_WATCHES, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[6] = WpeFillBoundItem(style, "Show stacK", 9, 'K', e_deb_stack,
+                                                         WPE_ACT_DEBUG_STACK, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[7] = WpeFillBoundItem(style, "Goto cursor", 0, 'U', e_d_goto_cursor,
+                                                         WPE_ACT_DEBUG_GOTO_CURSOR, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[8] = WpeFillBoundItem(style, "Finish function", 0, 'F', e_d_finish_func,
+                                                         WPE_ACT_DEBUG_FINISH, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[9] = WpeFillBoundItem(style, "Trace", 0, 'T', e_deb_trace,
+                                                         WPE_ACT_DEBUG_TRACE, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[10] = WpeFillBoundItem(style, "Step", 0, 'S', e_deb_next,
+                                                          WPE_ACT_DEBUG_STEP, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[11] = WpeFillBoundItem(style, "Run/Continue", 0, 'R', e_deb_run,
+                                                          WPE_ACT_DEBUG_RUN, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[12] = WpeFillBoundItemSep(style, "Interrupt (pause)", 0, 'I', e_d_pause,
+                                                             WPE_ACT_DEBUG_PAUSE, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG, "/");
+    mainmenu[MENOPT - 5].menuitems[13] = WpeFillBoundItem(style, "Program output", 0, 'P', e_u_deb_out,
+                                                          WPE_ACT_DEBUG_OUTPUT, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[14] = WpeFillBoundItem(style, "debugger Options", 9, 'O', e_deb_options,
+                                                          WPE_ACT_DEBUG_OPTIONS, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
+    mainmenu[MENOPT - 5].menuitems[15] = WpeFillBoundItem(style, "Quit", 0, 'Q', e_d_quit,
+                                                          WPE_ACT_DEBUG_QUIT, WPE_CTXM_MENU, E_MENU_WIDTH_DEBUG);
   }
 #endif
   mainmenu[MENOPT - 3].position = -4;
@@ -332,27 +417,25 @@ int WpeHandleMainmenu(int n, FENSTER *f)
 #endif
   if((mainmenu[MENOPT - 2].menuitems = MALLOC(mainmenu[MENOPT - 2].no_of_items * sizeof(OPTK))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-  if(f->ed->edopt & ED_CUA_STYLE)
-  {
-    mainmenu[MENOPT - 2].menuitems[0] = WpeFillSubmenuItem("Size/Move            ^L", 0, 'S', e_size_move);
-    mainmenu[MENOPT - 2].menuitems[1] = WpeFillSubmenuItem("Zoom   Shift F6 / Alt Z", 0, 'Z', e_ed_zoom);
-    mainmenu[MENOPT - 2].menuitems[4] = WpeFillSubmenuItem("Next        ^F6 / Alt N", 2, 'X', e_ed_next);
-    mainmenu[MENOPT - 2].menuitems[5] = WpeFillSubmenuItem("Close       ^W / ^F4", 0, 'C', e_close_window);
-  }
-  else
-  {
-    mainmenu[MENOPT - 2].menuitems[0] = WpeFillSubmenuItem("Size/Move        Alt F2", 0, 'S', e_size_move);
-    mainmenu[MENOPT - 2].menuitems[1] = WpeFillSubmenuItem("Zoom         F5 / Alt Z", 0, 'Z', e_ed_zoom);
-    mainmenu[MENOPT - 2].menuitems[4] = WpeFillSubmenuItem("Next         F6 / Alt N", 2, 'X', e_ed_next);
-    mainmenu[MENOPT - 2].menuitems[5] = WpeFillSubmenuItem("Close                ^W", 0, 'C', e_close_window);
-  }
-  mainmenu[MENOPT - 2].menuitems[2] = WpeFillSubmenuItem("Tile           Shift F4", 0, 'T', e_ed_tile);
-  mainmenu[MENOPT - 2].menuitems[3] = WpeFillSubmenuItem("Cascade        Shift F5", 1, 'A', e_ed_cascade);
-  mainmenu[MENOPT - 2].menuitems[6] = WpeFillSubmenuItem("List All          Alt 0", 0, 'L', e_list_all_win);
+  mainmenu[MENOPT - 2].menuitems[0] = WpeFillBoundItem(style, "Size/Move", 0, 'S', e_size_move,
+                                                       WPE_ACT_SIZE_MOVE, WPE_CTXM_MENU, E_MENU_WIDTH_WINDOW);
+  mainmenu[MENOPT - 2].menuitems[1] = WpeFillBoundItem(style, "Zoom", 0, 'Z', e_ed_zoom,
+                                                       WPE_ACT_ZOOM, WPE_CTXM_MENU, E_MENU_WIDTH_WINDOW);
+  mainmenu[MENOPT - 2].menuitems[2] = WpeFillBoundItem(style, "Tile", 0, 'T', e_ed_tile,
+                                                       WPE_ACT_TILE, WPE_CTXM_MENU, E_MENU_WIDTH_WINDOW);
+  mainmenu[MENOPT - 2].menuitems[3] = WpeFillBoundItem(style, "Cascade", 1, 'A', e_ed_cascade,
+                                                       WPE_ACT_CASCADE, WPE_CTXM_MENU, E_MENU_WIDTH_WINDOW);
+  mainmenu[MENOPT - 2].menuitems[4] = WpeFillBoundItem(style, "Next", 2, 'X', e_ed_next,
+                                                       WPE_ACT_NEXT_WINDOW, WPE_CTXM_MENU, E_MENU_WIDTH_WINDOW);
+  mainmenu[MENOPT - 2].menuitems[5] = WpeFillBoundItem(style, "Close", 0, 'C', e_close_window,
+                                                       WPE_ACT_CLOSE_WINDOW, WPE_CTXM_MENU, E_MENU_WIDTH_WINDOW);
+  mainmenu[MENOPT - 2].menuitems[6] = WpeFillBoundItem(style, "List All", 0, 'L', e_list_all_win,
+                                                       WPE_ACT_LIST_WINDOWS, WPE_CTXM_MENU, E_MENU_WIDTH_WINDOW);
 #ifndef DJGPP
   if(!WpeIsXwin())
 #endif
-    mainmenu[MENOPT - 2].menuitems[7] = WpeFillSubmenuItem("User Screen       Alt F5", 0, 'U', e_user_screen);
+    mainmenu[MENOPT - 2].menuitems[7] = WpeFillBoundItem(style, "User Screen", 0, 'U', e_user_screen,
+                                                         WPE_ACT_USER_SCREEN, WPE_CTXM_MENU, E_MENU_WIDTH_WINDOW);
 #ifdef PROG
   if(WpeIsProg())
   {
@@ -380,10 +463,13 @@ int WpeHandleMainmenu(int n, FENSTER *f)
 #endif
   if((mainmenu[MENOPT - 1].menuitems = MALLOC(mainmenu[MENOPT - 1].no_of_items * sizeof(OPTK))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-  mainmenu[MENOPT - 1].menuitems[0] = WpeFillSubmenuItem("Editor              F1", 0, 'E', e_help);
+  mainmenu[MENOPT - 1].menuitems[0] = WpeFillBoundItem(style, "Editor", 0, 'E', e_help,
+                                                       WPE_ACT_HELP_EDITOR, WPE_CTXM_MENU, E_MENU_WIDTH_HELP);
 #if defined(PROG) && !defined(DJGPP)
-  mainmenu[MENOPT - 1].menuitems[1] = WpeFillSubmenuItem("Topic Search       ^F1", 0, 'T', e_topic_search);
-  mainmenu[MENOPT - 1].menuitems[2] = WpeFillSubmenuItem("FUnction Index  Alt F1", 1, 'U', e_funct_in);
+  mainmenu[MENOPT - 1].menuitems[1] = WpeFillBoundItem(style, "Topic Search", 0, 'T', e_topic_search,
+                                                       WPE_ACT_TOPIC_SEARCH, WPE_CTXM_MENU, E_MENU_WIDTH_HELP);
+  mainmenu[MENOPT - 1].menuitems[2] = WpeFillBoundItem(style, "FUnction Index", 1, 'U', e_funct_in,
+                                                       WPE_ACT_FUNCTION_INDEX, WPE_CTXM_MENU, E_MENU_WIDTH_HELP);
 /*   mainmenu[MENOPT-1].menuitems[2] = WpeFillSubmenuItem("Functions      Alt F1", 0, 'F', e_funct); */
 #endif
   mainmenu[MENOPT - 1].menuitems[mainmenu[MENOPT - 1].no_of_items - 5] = 
@@ -393,9 +479,11 @@ int WpeHandleMainmenu(int n, FENSTER *f)
   mainmenu[MENOPT - 1].menuitems[mainmenu[MENOPT - 1].no_of_items - 3] = 
     WpeFillSubmenuItem("Back             <BSP>", 0, 'B', e_hp_back);
   mainmenu[MENOPT - 1].menuitems[mainmenu[MENOPT - 1].no_of_items - 2] = 
-    WpeFillSubmenuItem("Next    Alt F8 / Alt T", 0, 'G', e_hp_next);
-  mainmenu[MENOPT - 1].menuitems[mainmenu[MENOPT - 1].no_of_items - 1] = 
-    WpeFillSubmenuItem("Prev.   Alt F7 / Alt V", 0, 'P', e_hp_prev);
+    WpeFillBoundItem(style, "Next", 0, 'G', e_hp_next,
+                     WPE_ACT_HELP_NEXT, WPE_CTXM_HELP, E_MENU_WIDTH_HELP);
+  mainmenu[MENOPT - 1].menuitems[mainmenu[MENOPT - 1].no_of_items - 1] =
+    WpeFillBoundItem(style, "Prev.", 0, 'P', e_hp_prev,
+                     WPE_ACT_HELP_PREV, WPE_CTXM_HELP, E_MENU_WIDTH_HELP);
 
   /* check for valid n */
   if(n < 0 || n > MENOPT - 1)

@@ -195,6 +195,10 @@
 #define CtrlBrk 952
 
 
+/* What a key loop returns to say the editor is to end.  It is Alt-X's code,
+   as it always was; it is a result, not a key to bind. */
+#define WPE_RESULT_QUIT AltX
+
 #define HBG CtrlA	/*  Button start  */
 #define HFB CtrlG	/*  Button-Man-Page start  */
 #define HNF CtrlC	/*  Button with link to file   */

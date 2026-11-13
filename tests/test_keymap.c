@@ -13,8 +13,12 @@
 #include <string.h>
 
 #include "../we_keymap.h"
+#include "../we_bindings.h"
 #include "../keys.h"
 #include "../unixkeys.h"
+
+/* The fold the editor does once where it takes a key (the key table's). */
+#define wpe_key_fold_legacy(code) wpe_binding_fold((code), WPE_STYLE_BORLAND, WPE_CTX_EDIT)
 
 #ifdef NCURSES
 #include <curses.h>
@@ -454,12 +458,12 @@ static int via_report(const char *tail)
 	return wpe_key_code(base, mods);
 }
 
-/* The same through the whole decode the terminal calls, folded. */
+/* The same through the whole decode the terminal calls, then the fold. */
 static int via_decode(const char *tail)
 {
 	int is_text;
 
-	return wpe_key_decode_csi('[', tail, strlen(tail), &is_text);
+	return wpe_key_fold_legacy(wpe_key_decode_csi('[', tail, strlen(tail), &is_text));
 }
 
 static int text_of(const char *tail)

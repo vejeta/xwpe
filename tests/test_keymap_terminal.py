@@ -823,3 +823,36 @@ def test_the_screen_harness_ignores_the_protocol_sequences(tmp_path):
         assert not any(scr.buffer[y][x].underscore for y in range(scr.lines)
                        for x in range(scr.columns)), \
             "a cell is underlined after the start"
+
+
+def _screen_after(tmp_path, name, *strokes):
+    """The screen after @strokes, in a session of its own."""
+    where = tmp_path / name
+    where.mkdir()
+    with WpeSession(str(where), PROTOCOL_SEED, filename="t.c") as w:
+        for stroke in strokes:
+            w.key(stroke, delay=0.5)
+        return [row.rstrip() for row in w.display()]
+
+
+# @scenario SC-keymap-18
+@pytest.mark.parametrize("opening,report,legacy", [
+    ("\x1bOS", KITTY_CTRL_H, "\x08"),
+    ("\x1bOR", KITTY_CTRL_LBRACKET, "\x1b"),
+    ("\x1bf", KITTY_CTRL_LBRACKET, "\x1b")],
+    ids=["find-dialog-ctrl-h", "file-manager-ctrl-lbracket", "menu-ctrl-lbracket"])
+def test_a_dialog_the_file_manager_and_a_menu_read_the_folded_key(
+        tmp_path, opening, report, legacy):
+    """The fold of Ctrl-H and Ctrl-[ to Backspace and Esc is done once, where
+    the editor takes a key, so a field of a dialog, the file manager and a menu
+    see the same key as the editor: the screen after the report is the screen
+    after the legacy byte."""
+    typed = "ab" if opening == "\x1bOS" else ""
+    shown_report = _screen_after(tmp_path, "report", opening, typed, report) \
+        if typed else _screen_after(tmp_path, "report", opening, report)
+    shown_legacy = _screen_after(tmp_path, "legacy", opening, typed, legacy) \
+        if typed else _screen_after(tmp_path, "legacy", opening, legacy)
+    assert shown_report == shown_legacy, \
+        "%r after %r is not read like %r:\n%s\n---\n%s" % (
+            report, opening, legacy, "\n".join(shown_report),
+            "\n".join(shown_legacy))

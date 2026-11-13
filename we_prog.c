@@ -171,56 +171,51 @@ extern int e_lsp_ui_menu(FENSTER *f);  /* LSP action menu, defined in we_debug.c
 
 int e_prog_switch(FENSTER *f, int c)
 {
- switch(c)
+ switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PROGRAM))
  {
-  case AltU:
-  case CF9:
+  case WPE_ACT_RUN:
    e_run(f);
    break;
-  case AltQ:           /*  Alt-Q  language-server prefix: Alt-Q+letter runs the
-                           action directly (silent, no flicker); Alt-Q ? (or any
-                           unknown key) opens the menu; ESC cancels. */
+  case WPE_ACT_LSP_PREFIX:   /*  language-server prefix: the letter after it runs
+                                 the action directly (silent, no flicker); ? (or any
+                                 unknown key) opens the menu; ESC cancels. */
    e_lsp_ui_key(f);
    break;
-  case WPE_LSP_MENU:   /*  click on the bottom-bar entry -> open the menu */
+  case WPE_ACT_LSP_MENU:     /*  click on the bottom-bar entry -> open the menu */
    e_lsp_ui_menu(f);
    break;
-  case AltM:   /*  Alt M  Make */
-  case F9:
+  case WPE_ACT_MAKE:
    e_p_make(f);
    break;
-  case AltC:   /*  Alt C  Compile */
-  case AF9:
+  case WPE_ACT_COMPILE:
    e_compile(f);
    break;
-  case AltL:   /*  Alt L  InstaLl */
+  case WPE_ACT_INSTALL:
    e_install(f);
    break;
-  case AltA:   /*  Alt A  Execute MAke */
+  case WPE_ACT_EXEC_MAKE:
    e_exec_make(f);
    break;
 #ifdef WPE_AI
-  case AltG:   /*  Alt-G  AI assistant prefix (Alt-B is the Block menu; Alt-G is a
-                   free Alt-letter, chosen like the LSP's Alt-Q so the assistant
-                   never shadows an existing key).  The bar entry reads "Alt-G AI". */
+  case WPE_ACT_AI_PREFIX:    /*  AI assistant prefix (Alt-B is the Block menu; Alt-G is a
+                                 free Alt-letter, chosen like the LSP's Alt-Q so the assistant
+                                 never shadows an existing key).  The bar entry reads "Alt-G AI". */
    e_ai_ui_key(f);
    break;
-  case WPE_AI_MENU:   /*  click on the "Alt-G AI" bottom-bar entry: the same door as
-                          Alt-G, so the first-use notice is shown once, whichever
-                          way the user came in */
+  case WPE_ACT_AI_MENU:      /*  click on the "Alt-G AI" bottom-bar entry: the same door as
+                                 Alt-G, so the first-use notice is shown once, whichever
+                                 way the user came in */
    e_ai_ui_key(f);
    break;
 #endif
-  case AltT:   /*  Alt T  NexT Error */
-  case AF8:
+  case WPE_ACT_NEXT_ERROR:
    e_next_error(f);
    break;
-  case AltV:   /*  Alt V  PreVious Error  */
-  case AF7:
+  case WPE_ACT_PREV_ERROR:
    e_previous_error(f);
    break;
 #ifdef DEBUGGER
-  case CtrlG:   /*  Ctrl G DebuG - Modus */
+  case WPE_ACT_DEBUG_PREFIX:   /*  the debugger's prefix */
    e_deb_inp(f);
    break;
   default:
@@ -4912,12 +4907,10 @@ int e_prj_ob_btt(FENSTER *f, int sw)
  }
  if (sw > 0)
  {
-  if (!(f->ed->edopt & ED_CUA_STYLE))
-   while (e_data_eingabe(f->ed) != AF3)
-    ;
-  else
-   while (e_data_eingabe(f->ed) != CF4)
-    ;
+  while (wpe_binding_action(e_data_eingabe(f->ed),
+                            wpe_binding_style(f->ed->edopt),
+                            WPE_CTX_LIST) != WPE_ACT_CLOSE_LIST)
+   ;
   fw = (FLWND *)f->ed->f[f->ed->mxedt]->b;
   fw->df = NULL;
   e_close_window(f->ed->f[f->ed->mxedt]);

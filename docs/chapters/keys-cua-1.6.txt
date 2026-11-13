@@ -1,0 +1,172 @@
+Windows and menus | 375 | Alt-1..9 | Switch window
+Windows and menus | 1024 | Alt-Shift-A..Z | Switch window
+Windows and menus | 314 | F1 | Help
+Windows and menus | 431 | Sun Help | Help
+Windows and menus | 349 | Ctrl-F1 | Topic search
+Windows and menus | 359 | Alt-F1 | Function index
+Windows and menus | 27 | Esc | Escape
+Windows and menus | 323 | F10 | Menu bar
+Windows and menus | 386 | Alt-Space | Menu bar
+Windows and menus | 384 | Alt-0 | List all windows
+Windows and menus | 363 | Alt-F5 | User screen
+Windows and menus | 12 | Ctrl-L | Size/Move
+Windows and menus | 315 | F2 | File manager
+Windows and menus | 427 | Sun Open | File manager
+Windows and menus | 827 | Shift-F2 | File manager (home)
+Windows and menus | 23 | Ctrl-W | Close window
+Windows and menus | 352 | Ctrl-F4 | Close window
+Windows and menus | 300 | Alt-X | Close window
+Windows and menus | 425 | Sun Front | Cascade
+Windows and menus | 276 | Alt-Z | Cascade
+Windows and menus | 829 | Shift-F4 | Cascade
+Windows and menus | 830 | Shift-F5 | Tile
+Windows and menus | 831 | Shift-F6 | Zoom
+Windows and menus | 354 | Ctrl-F6 | Next window
+Windows and menus | 304 | Alt-N | Next window
+Windows and menus | 421 | Sun Stop | Quit
+Windows and menus | 362 | Alt-F4 | Quit
+Programming | 358 | Ctrl-F9 | Run
+Programming | 277 | Alt-U | Run
+Programming | 271 | Alt-Q | Language server
+Programming | 2003 | (click) | Language server menu
+Programming | 322 | F9 | Make
+Programming | 305 | Alt-M | Make
+Programming | 301 | Alt-C | Compile
+Programming | 367 | Alt-F9 | Compile
+Programming | 293 | Alt-L | Install
+Programming | 285 | Alt-A | Execute make
+Programming | 289 | Alt-G | Assistant
+Programming | 2004 | (click) | Assistant menu
+Programming | 275 | Alt-T | Next error
+Programming | 366 | Alt-F8 | Next error
+Programming | 302 | Alt-V | Previous error
+Programming | 365 | Alt-F7 | Previous error
+Programming | 7 | Ctrl-G | Debugger
+Debugger | 320 | F7 | Trace
+Debugger | 321 | F8 | Step
+Debugger | 951 | Ctrl-F10 | Run/Continue
+Debugger | 350 | Ctrl-F2 | Quit debugger
+Debugger | 952 | Ctrl-Brk | Interrupt
+Debugger | 318 | F5 | Toggle breakpoint
+Debugger | 353 | Ctrl-F5 | Make watch
+Debugger | 351 | Ctrl-F3 | Show stack
+Editing | 11 | Ctrl-K | Block commands
+Editing | 15 | Ctrl-O | Editing commands
+Editing | 289 | Alt-G | Go to line
+Editing | 951 | Ctrl-F10 | Show buffer
+Editing | 299 | Alt-Y | Show buffer
+Editing | 852 | Ctrl-Del | Delete block
+Editing | 424 | Sun Undo | Undo
+Editing | 385 | Alt-Backspace | Undo
+Editing | 21 | Ctrl-U | Undo
+Editing | 422 | Sun Again | Redo
+Editing | 897 | Alt-Shift-Backspace | Redo
+Editing | 18 | Ctrl-R | Redo
+Editing | 430 | Sun Cut | Cut
+Editing | 850 | Shift-Del | Cut
+Editing | 24 | Ctrl-X | Cut
+Editing | 428 | Sun Paste | Paste
+Editing | 849 | Shift-Ins | Paste
+Editing | 953 | Alt-Ins | Paste
+Editing | 22 | Ctrl-V | Paste
+Editing | 426 | Sun Copy | Copy
+Editing | 851 | Ctrl-Ins | Copy
+Editing | 954 | Alt-Del | Copy
+Editing | 3 | Ctrl-C | Copy
+Editing | 360 | Alt-F2 | Save
+Editing | 429 | Sun Find | Find
+Editing | 361 | Alt-F3 | Find
+Editing | 828 | Shift-F3 | Replace
+Editing | 316 | F3 | Search again
+After Ctrl-K | 65 | Ctrl-K A | Go to block start
+After Ctrl-K | 66 | Ctrl-K B | Begin mark
+After Ctrl-K | 67 | Ctrl-K C | Copy block
+After Ctrl-K | 68 | Ctrl-K D | Change case
+After Ctrl-K | 70 | Ctrl-K F | Beautify block
+After Ctrl-K | 72 | Ctrl-K H | Hide block
+After Ctrl-K | 73 | Ctrl-K I | Move block right
+After Ctrl-K | 75 | Ctrl-K K | End mark
+After Ctrl-K | 76 | Ctrl-K L | Mark line
+After Ctrl-K | 82 | Ctrl-K R | Read block
+After Ctrl-K | 85 | Ctrl-K U | Move block left
+After Ctrl-K | 86 | Ctrl-K V | Move block
+After Ctrl-K | 87 | Ctrl-K W | Write block
+After Ctrl-K | 88 | Ctrl-K X | Mark whole text
+After Ctrl-K | 89 | Ctrl-K Y | Delete block
+After Ctrl-K | 90 | Ctrl-K Z | Go to block end
+After Ctrl-K | 48 | Ctrl-K 0..9 | Set marker
+After Ctrl-O | 89 | Ctrl-O Y | Delete to end of line
+After Ctrl-O | 84 | Ctrl-O T | Delete word left
+After Ctrl-O | 70 | Ctrl-O F | Find
+After Ctrl-O | 65 | Ctrl-O A | Replace
+After Ctrl-O | 83 | Ctrl-O S | Show definition
+After Ctrl-O | 78 | Ctrl-O N | Show next definition
+After Ctrl-O | 75 | Ctrl-O K | Matching bracket
+After Ctrl-O | 66 | Ctrl-O B | Beautify
+After Ctrl-O | 85 | Ctrl-O U | Help button
+After Ctrl-O | 77 | Ctrl-O M | Help highlight
+After Ctrl-O | 72 | Ctrl-O H | Help header
+After Ctrl-O | 69 | Ctrl-O E | Help page end
+After Ctrl-O | 76 | Ctrl-O L | Delete help marks
+After Ctrl-O | 67 | Ctrl-O C | Check help file
+After Ctrl-O | 48 | Ctrl-O 0..9 | Go to marker
+After Ctrl-G | 98 | Ctrl-G B | Toggle breakpoint
+After Ctrl-G | 109 | Ctrl-G M | Remove all breakpoints
+After Ctrl-G | 119 | Ctrl-G W | Make watch
+After Ctrl-G | 101 | Ctrl-G E | Edit watch
+After Ctrl-G | 100 | Ctrl-G D | Delete watch
+After Ctrl-G | 97 | Ctrl-G A | Remove all watches
+After Ctrl-G | 107 | Ctrl-G K | Show stack
+After Ctrl-G | 117 | Ctrl-G U | Go to cursor
+After Ctrl-G | 102 | Ctrl-G F | Finish function
+After Ctrl-G | 116 | Ctrl-G T | Trace
+After Ctrl-G | 115 | Ctrl-G S | Step
+After Ctrl-G | 114 | Ctrl-G R | Run/Continue
+After Ctrl-G | 99 | Ctrl-G C | Run/Continue
+After Ctrl-G | 105 | Ctrl-G I | Interrupt
+After Ctrl-G | 112 | Ctrl-G P | Program output
+After Ctrl-G | 111 | Ctrl-G O | Debugger options
+After Ctrl-G | 113 | Ctrl-G Q | Quit debugger
+After Alt-Q | 100 | Alt-Q D | Go to definition
+After Alt-Q | 105 | Alt-Q I | Go to implementation
+After Alt-Q | 116 | Alt-Q T | Go to type
+After Alt-Q | 104 | Alt-Q H | Hover
+After Alt-Q | 99 | Alt-Q C | Complete
+After Alt-Q | 114 | Alt-Q R | References
+After Alt-Q | 98 | Alt-Q B | Callers
+After Alt-Q | 103 | Alt-Q G | Callees
+After Alt-Q | 107 | Alt-Q K | Supertypes
+After Alt-Q | 106 | Alt-Q J | Subtypes
+After Alt-Q | 118 | Alt-Q V | Expand selection
+After Alt-Q | 117 | Alt-Q U | Highlight uses
+After Alt-Q | 121 | Alt-Q Y | Inlay hints
+After Alt-Q | 109 | Alt-Q M | Semantic colours
+After Alt-Q | 108 | Alt-Q L | Code lens
+After Alt-Q | 115 | Alt-Q S | Signature help
+After Alt-Q | 119 | Alt-Q W | Workspace symbols
+After Alt-Q | 97 | Alt-Q A | Code actions
+After Alt-Q | 102 | Alt-Q F | Format
+After Alt-Q | 110 | Alt-Q N | Rename
+After Alt-Q | 111 | Alt-Q O | Outline
+After Alt-Q | 101 | Alt-Q E | Diagnostics
+After Alt-Q | 46 | Alt-Q . | Next problem
+After Alt-Q | 44 | Alt-Q , | Previous problem
+After Alt-Q | 27 | Alt-Q Esc | Cancel
+After Alt-G | 65 | Alt-G A | Ask (chat)
+After Alt-G | 69 | Alt-G E | Edit current file
+After Alt-G | 67 | Alt-G C | Complete at cursor
+After Alt-G | 70 | Alt-G F | Multi-file edit
+After Alt-G | 71 | Alt-G G | Agent (tools)
+After Alt-G | 66 | Alt-G B | Build and fix (agent)
+After Alt-G | 89 | Alt-G Y | Permissions
+After Alt-G | 82 | Alt-G R | Read folders
+After Alt-G | 78 | Alt-G N | Clear conversation
+After Alt-G | 83 | Alt-G S | AI settings
+Watches window | 337 | Ins | Make watch
+Watches window | 338 | Del | Delete watch
+Help viewer | 366 | Alt-F8 | Help: next link
+Help viewer | 275 | Alt-T | Help: next link
+Help viewer | 365 | Alt-F7 | Help: previous link
+Help viewer | 302 | Alt-V | Help: previous link
+File manager lists | 352 | Ctrl-F4 | Close list
+Dialog move | 12 | Ctrl-L | Size/Move

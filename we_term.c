@@ -2775,8 +2775,17 @@ int e_t_user_screen(FENSTER *f)
  if (e_d_prog_output && e_d_prog_output_len > 0)
   fwrite(e_d_prog_output, 1, e_d_prog_output_len, stderr);
  else
-  fputs("(no program output yet -- run with Ctrl-F9 or start a debug session)",
-    stderr);
+ {
+  char hint[160];
+  int edopt = 0;
+
+  if (WpeEditor)
+   edopt = WpeEditor->edopt;
+  snprintf(hint, sizeof hint,
+           "(no program output yet -- run with %s or start a debug session)",
+           wpe_binding_run_key(edopt));
+  fputs(hint, stderr);
+ }
  /* A discreet, reverse-video prompt on its own line so it does not paint over
     the program's last line. */
  fputs("\033[0m\r\n\033[7m xwpe: press any key to return to the editor \033[0m",

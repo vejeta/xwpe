@@ -110,6 +110,11 @@ we_asan
 # the sources live in tests/ and must stay tracked.
 /test_*
 /edit_driver
+# The key reference generator, built by make from tools/keymap-texi.c.
+/tools/keymap-texi
+/tools/keymap_texi-*.o
+/tools/.deps/
+/tools/.dirstamp
 # The test driver's result files for the shell checks under tests/.
 /tests/*.sh.log
 /tests/*.sh.trs

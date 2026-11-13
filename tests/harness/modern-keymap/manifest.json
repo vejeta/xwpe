@@ -147,6 +147,21 @@
    "test": "tests/wayland/test_run_typing.py::test_the_cursor_and_function_keys_reach_a_running_program",
    "status": "covered",
    "needs": ["weston", "gcc"]
+  },
+  {
+   "id": "SC-keymap-18",
+   "requirement": "A dialog field, the file manager and a menu read the folded Ctrl-H and Ctrl-[ like the editor",
+   "layer": "ncurses",
+   "test": "tests/test_keymap_terminal.py::test_a_dialog_the_file_manager_and_a_menu_read_the_folded_key",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-19",
+   "requirement": "Ctrl+[ ends the short command the editor waits for on Wayland, as Esc does",
+   "layer": "wayland",
+   "test": "tests/wayland/test_short_command_cancel.py::test_ctrl_bracket_ends_a_short_command_the_editor_waits_for",
+   "status": "covered",
+   "needs": ["weston"]
   }
  ]
 }

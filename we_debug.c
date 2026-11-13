@@ -3381,72 +3381,54 @@ int e_deb_inp(FENSTER *f)
 
  c = wpe_paint_modal_getch();
  f = cn->f[cn->mxedt];
- switch(c)
+ switch (wpe_binding_action(c, wpe_binding_style(cn->edopt), WPE_CTX_PREFIX_DEBUG))
  {
-  case 'p':
-  case ('p' - 'a' + 1):
+  case WPE_ACT_DEBUG_OUTPUT:
    e_deb_out(f);
    break;
-  case 'o':
-  case ('o' - 'a' + 1):
+  case WPE_ACT_DEBUG_OPTIONS:
    e_deb_options(f);
    break;
-  case 'b':
-  case ('b' - 'a' + 1):
+  case WPE_ACT_DEBUG_BREAKPOINT:
    e_breakpoint(f);
    break;
-  case 'm':
-  case ('m' - 'a' + 1):
+  case WPE_ACT_DEBUG_REMOVE_BREAKPOINTS:
    e_remove_breakpoints(f);
    break;
-  case 'a':
-  case 1:
+  case WPE_ACT_DEBUG_REMOVE_ALL_WATCHES:
    e_remove_all_watches(f);
    break;
-  case 'd':
-  case ('d' - 'a' + 1):
+  case WPE_ACT_DEBUG_DELETE_WATCH:
    e_delete_watches(f);
    break;
-  case 'w':
-  case ('w' - 'a' + 1):
+  case WPE_ACT_DEBUG_WATCH:
    e_make_watches(f);
    break;
-  case 'e':
-  case ('e' - 'a' + 1):
+  case WPE_ACT_DEBUG_EDIT_WATCH:
    e_edit_watches(f);
    break;
-  case 'k':
-  case ('k' - 'a' + 1):
+  case WPE_ACT_DEBUG_STACK:
    e_deb_stack(f);
    break;
-  case 't':
-  case ('t' - 'a' + 1):
+  case WPE_ACT_DEBUG_TRACE:
    e_deb_trace(f);
    break;
-  case 's':
-  case ('s' - 'a' + 1):
+  case WPE_ACT_DEBUG_STEP:
    e_deb_next(f);
    break;
-  case 'r':
-  case 'c':
-  case ('r' - 'a' + 1):
-  case ('c' - 'a' + 1):
+  case WPE_ACT_DEBUG_RUN:
    e_deb_run(f);
    break;
-  case 'q':
-  case ('q' - 'a' + 1):
+  case WPE_ACT_DEBUG_QUIT:
    e_d_quit(f);
    break;
-  case 'u':
-  case ('u'-'a'+1):
+  case WPE_ACT_DEBUG_GOTO_CURSOR:
    e_d_goto_cursor(f);
    break;
-  case 'f':
-  case ('f'-'a'+1):
+  case WPE_ACT_DEBUG_FINISH:
    e_d_finish_func(f);
    break;
-  case 'i':
-  case ('i'-'a'+1):
+  case WPE_ACT_DEBUG_PAUSE:
    e_d_pause(f);
    break;
   default:
@@ -3479,67 +3461,43 @@ int e_d_session_runs(void)
 
 int e_debug_switch(FENSTER *f, int c)
 {
- switch (c)
+ switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_DEBUG))
  {
-  case F7:
+  case WPE_ACT_DEBUG_TRACE:
    e_deb_trace(f);
    break;
-  case F8:
+  case WPE_ACT_DEBUG_STEP:
    e_deb_next(f);
    break;
-  case CF10:
+  case WPE_ACT_DEBUG_RUN:
    e_deb_run(f);
    break;
-  case CF2:
+  case WPE_ACT_DEBUG_QUIT:
    e_d_q_quit(f);
    break;
-  case CtrlBrk:
+  case WPE_ACT_DEBUG_PAUSE:
    e_d_pause(f);
    break;
+  case WPE_ACT_DEBUG_BREAKPOINT:
+   e_breakpoint(f);
+   break;
+  case WPE_ACT_DEBUG_WATCH:
+   e_make_watches(f);
+   break;
+  case WPE_ACT_DEBUG_STACK:
+   e_deb_stack(f);
+   break;
+  case WPE_ACT_DEBUG_GOTO_CURSOR:
+   /* Borland's F4 is Go to cursor while a program is stopped and Search
+      the rest of the time, so the key does what the bar under it says:
+      only a source window whose bar offers it runs to the cursor, never
+      Messages or a backend that cannot. */
+   if (!e_bar_offers_goto_cursor(f))
+    return(c);
+   e_d_goto_cursor(f);
+   break;
   default:
-   if (f->ed->edopt & ED_CUA_STYLE)
-   {
-    switch (c)
-    {
-     case F5:
-      e_breakpoint(f);
-      break;
-     case CF5:
-      e_make_watches(f);
-      break;
-     case CF3:
-      e_deb_stack(f);
-      break;
-     default:
-      return(c);
-    }
-   }
-   else
-   {
-    switch (c)
-    {
-     case F4:
-      /* Borland's F4 is Go to cursor while a program is stopped and Search
-         the rest of the time, so the key does what the bar under it says:
-         only a source window whose bar offers it runs to the cursor, never
-         Messages or a backend that cannot. */
-      if (!e_bar_offers_goto_cursor(f))
-       return(c);
-      e_d_goto_cursor(f);
-      break;
-     case CF8:
-      e_breakpoint(f);
-      break;
-     case CF7:
-      e_make_watches(f);
-      break;
-     case CF6:
-      e_deb_stack(f);
-      break;
-     default:
-      return(c);
-    }
-   }
+   return(c);
  }
  return(0);
 }
@@ -3821,12 +3779,15 @@ int e_d_is_watch(int c, FENSTER *f)
 {
  if (strcmp(f->datnam, "Watches"))
   return(0);
- if(c == EINFG)
-  return(e_make_watches(f));
- else if (c == ENTF)
-  return(e_delete_watches(f));
- else
-  return(0);
+ switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_WATCHES))
+ {
+  case WPE_ACT_DEBUG_WATCH:
+   return(e_make_watches(f));
+  case WPE_ACT_DEBUG_DELETE_WATCH:
+   return(e_delete_watches(f));
+  default:
+   return(0);
+ }
 }
 
 static void e_d_jdb_vm_end(void);   /* the Java program's VM (below) */
@@ -30307,6 +30268,19 @@ static int e_lsp_tip_split(const char *text, char **tln, int max, int wrap, int 
    for one key to dismiss it, restore the screen, and RETURN the dismiss key (so a
    caller like diagnostic navigation can keep walking on '.'/',' without making the
    user re-open it).  Used by hover, signature help and the problem jumps. */
+/**
+ * e_lsp_is_prefix_key - Is @k the key that starts a language-server command?
+ * @f: the window; @k: the key a tooltip was closed with.
+ *
+ * A tooltip closed with the prefix key chains into the next command, so the
+ * user's key style decides which key that is.
+ */
+static int e_lsp_is_prefix_key(FENSTER *f, int k)
+{
+ return(wpe_binding_action(k, wpe_binding_style(f->ed->edopt), WPE_CTX_PROGRAM)
+        == WPE_ACT_LSP_PREFIX);
+}
+
 static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text,
                               const char *hint)
 {
@@ -30411,7 +30385,7 @@ static int e_lsp_hover_show(FENSTER *f, char *hov)
    free(hov);
    /* Alt-Q while the peek is up: chain straight into the next action (e.g. hover
       then Alt-Q d to jump to the definition) instead of just dismissing. */
-   if (k == AltQ)
+   if (e_lsp_is_prefix_key(f, k))
     return(e_lsp_ui_dispatch(f, wpe_paint_modal_getch()));
  }
  return(0);
@@ -30696,7 +30670,7 @@ static int e_lsp_signature_show(FENSTER *f, char *sig)
  }
  k = e_lsp_cursor_popup(f, "Signature", sig, "Press any key to close");
  free(sig);
- if (k == AltQ)                         /* chain into the next Alt-Q action */
+ if (e_lsp_is_prefix_key(f, k))         /* chain into the next Alt-Q action */
   return(e_lsp_ui_dispatch(f, wpe_paint_modal_getch()));
  return(0);
 }
@@ -30771,7 +30745,7 @@ static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
        : (g_diag_active[idx].sev == 3) ? "Info" : "Hint";
   c = e_lsp_cursor_popup(f, kind, g_diag_active[idx].msg,
                          ". next   , prev   any other key closes");
-  if (c == AltQ)                                  /* re-pressed the Alt-Q prefix:    */
+  if (e_lsp_is_prefix_key(f, c))                  /* re-pressed the Alt-Q prefix:    */
   {
    int k = wpe_paint_modal_getch();               /* take its letter                 */
    if (k == '.')  {  dir = +1;  continue;  }      /* '.'/',' keep walking the list   */
@@ -31651,10 +31625,6 @@ const char *e_lsp_server_label(FENSTER *f)
  return(srv->label);      /* "Metals", "clangd", "pyright", ... -- the bar name */
 }
 
-extern WOPT eblst_lsp_o[], eblst_lsp_u[];   /* the LSP bottom bars (we_main.c) */
-#ifdef WPE_AI
-extern WOPT eblst_lspai_o[], eblst_lspai_u[]; /* combined LSP+AI bars (we_main.c) */
-#endif
 
 /* e_lsp_pack_bar - Re-lay-out a 7-button LSP bar after its label changed, so the
    buttons stay tight and the last one never runs off the screen edge.  A uniform
@@ -31691,17 +31661,13 @@ void e_lsp_bar_label(FENSTER *f)
  if (!srv)
   return;
  snprintf(lbl, sizeof(lbl), "Alt-Q ? %s", srv);
- eblst_lsp_o[5].t = lbl;          /* index 5 is the LSP menu hint in both bars */
- eblst_lsp_u[5].t = lbl;
- e_lsp_pack_bar(eblst_lsp_o);     /* re-fit the row to the (maybe longer) label */
- e_lsp_pack_bar(eblst_lsp_u);
+ eblst_lsp_bar[5].t = lbl;        /* index 5 is the LSP menu hint in both styles */
+ e_lsp_pack_bar(eblst_lsp_bar);   /* re-fit the row to the (maybe longer) label */
 #ifdef WPE_AI
  /* The combined LSP+AI bar names the server too, so a .c with AI on still reads
     "Alt-Q ? clangd" -- the LSP hint is at index 4 there (the AI hint follows). */
- eblst_lspai_o[4].t = lbl;
- eblst_lspai_u[4].t = lbl;
- e_lsp_pack_bar(eblst_lspai_o);
- e_lsp_pack_bar(eblst_lspai_u);
+ eblst_lspai_bar[4].t = lbl;
+ e_lsp_pack_bar(eblst_lspai_bar);
 #endif
 }
 
@@ -31853,7 +31819,8 @@ static int e_lsp_bar_entry_x(FENSTER *f)
  if (!f->blst)
   return(-1);
  for (i = 0; i < f->nblst; i++)
-  if (f->blst[i].as == WPE_LSP_MENU)
+  if (wpe_binding_action(f->blst[i].as, wpe_binding_style(f->ed->edopt),
+                         WPE_CTX_PROGRAM) == WPE_ACT_LSP_MENU)
    return(f->blst[i].x);
  return(-1);
 }
@@ -31890,7 +31857,10 @@ int e_lsp_ui_menu(FENSTER *f)
     a second Alt-Q (or the Alt form of a row letter) from running a row and
     leaves Left and Right without effect.  A bar menu's own Alt letter still
     comes back as that menu's index, and that menu then opens. */
- verdict = WpeHandleSubmenuFromPrefix(xa, ya, xe, ye, AltQ, items, f);
+ verdict = WpeHandleSubmenuFromPrefix(xa, ya, xe, ye,
+             wpe_binding_first_code(WPE_ACT_LSP_PREFIX,
+                                    wpe_binding_style(f->ed->edopt), WPE_CTX_PROGRAM),
+             items, f);
  if (verdict >= 0 && verdict < MENOPT)
   WpeHandleMainmenu(verdict, f);
  return(0);
@@ -31903,57 +31873,57 @@ int e_lsp_ui_menu(FENSTER *f)
    anything unknown opens the action menu; ESC cancels. */
 static int e_lsp_ui_dispatch(FENSTER *f, int c)
 {
- switch (c)
+ switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PREFIX_LSP))
  {
-  case 'd': case ('d' - 'a' + 1):
+  case WPE_ACT_LSP_DEFINITION:
    return(e_lsp_ui_definition(f));
-  case 'i': case ('i' - 'a' + 1):
+  case WPE_ACT_LSP_IMPLEMENTATION:
    return(e_lsp_ui_implementation(f));
-  case 't': case ('t' - 'a' + 1):
+  case WPE_ACT_LSP_TYPE_DEFINITION:
    return(e_lsp_ui_type_definition(f));
-  case 'h': case ('h' - 'a' + 1):
+  case WPE_ACT_LSP_HOVER:
    return(e_lsp_ui_hover(f));
-  case 'c': case ('c' - 'a' + 1):
+  case WPE_ACT_LSP_COMPLETE:
    return(e_lsp_ui_complete(f));
-  case 'r': case ('r' - 'a' + 1):
+  case WPE_ACT_LSP_REFERENCES:
    return(e_lsp_ui_references(f));
-  case 'b': case ('b' - 'a' + 1):
+  case WPE_ACT_LSP_CALLERS:
    return(e_lsp_ui_callers(f));        /* B = called By (incoming) */
-  case 'g': case ('g' - 'a' + 1):
+  case WPE_ACT_LSP_CALLEES:
    return(e_lsp_ui_callees(f));        /* G = Goes to (outgoing)   */
-  case 'k': case ('k' - 'a' + 1):
+  case WPE_ACT_LSP_SUPERTYPES:
    return(e_lsp_ui_supertypes(f));     /* K = up (vim) = supertypes */
-  case 'j': case ('j' - 'a' + 1):
+  case WPE_ACT_LSP_SUBTYPES:
    return(e_lsp_ui_subtypes(f));       /* J = down (vim) = subtypes */
-  case 'v': case ('v' - 'a' + 1):
+  case WPE_ACT_LSP_EXPAND_SELECTION:
    return(e_lsp_ui_expand_selection(f)); /* V = expand (Visual) selection */
-  case 'u': case ('u' - 'a' + 1):
+  case WPE_ACT_LSP_HIGHLIGHT:
    return(e_lsp_ui_highlight(f));      /* U = Uses */
-  case 'y': case ('y' - 'a' + 1):
+  case WPE_ACT_LSP_INLAY:
    return(e_lsp_ui_inlay(f));          /* Y = inlaY hints */
-  case 'm': case ('m' - 'a' + 1):
+  case WPE_ACT_LSP_SEMANTIC:
    return(e_lsp_ui_semantic(f));       /* M = se(M)antic colours */
-  case 'l': case ('l' - 'a' + 1):
+  case WPE_ACT_LSP_CODELENS:
    return(e_lsp_ui_codelens(f));       /* L = Lens */
-  case 's': case ('s' - 'a' + 1):
+  case WPE_ACT_LSP_SIGNATURE:
    return(e_lsp_ui_signature(f));
-  case 'w': case ('w' - 'a' + 1):
+  case WPE_ACT_LSP_WORKSPACE_SYMBOLS:
    return(e_lsp_ui_workspace_symbols(f));
-  case 'a': case ('a' - 'a' + 1):
+  case WPE_ACT_LSP_CODE_ACTIONS:
    return(e_lsp_ui_code_actions(f));
-  case 'f': case ('f' - 'a' + 1):
+  case WPE_ACT_LSP_FORMAT:
    return(e_lsp_ui_format(f));
-  case 'n': case ('n' - 'a' + 1):
+  case WPE_ACT_LSP_RENAME:
    return(e_lsp_ui_rename(f));
-  case 'o': case ('o' - 'a' + 1):
+  case WPE_ACT_LSP_OUTLINE:
    return(e_lsp_ui_outline(f));
-  case 'e': case ('e' - 'a' + 1):
+  case WPE_ACT_LSP_DIAGNOSTICS:
    return(e_lsp_ui_diagnostics(f));
-  case '.':
+  case WPE_ACT_LSP_NEXT_PROBLEM:
    return(e_lsp_ui_next_problem(f)); /* . = next problem (like F8)          */
-  case ',':
+  case WPE_ACT_LSP_PREV_PROBLEM:
    return(e_lsp_ui_prev_problem(f)); /* , = previous problem                */
-  case WPE_ESC:
+  case WPE_ACT_LSP_CANCEL:
    return(0);                        /* cancel -- no action, no menu        */
   default:
    return(e_lsp_ui_menu(f));         /* '?', F1, anything else -> the menu  */

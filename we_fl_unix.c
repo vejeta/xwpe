@@ -700,6 +700,31 @@ static void WpeFileNameTake(FENSTER *f, char *filen, const char *name)
   e_error(msg, 0, f->fb);
 }
 
+/**
+ * e_is_list_close_key - Is @c the key that closes a file manager list?
+ * @f: the list's window.
+ *
+ * The key is the one the editor's key style gives the lists, so a user of
+ * either style closes a Window list, a project list or the project add
+ * manager with the key the bottom bar names.
+ */
+static int e_is_list_close_key(FENSTER *f, int c)
+{
+  return(wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_LIST)
+         == WPE_ACT_CLOSE_LIST);
+}
+
+/**
+ * e_list_close_key - The key code that closes a file manager list, as if
+ * it had been pressed.
+ * @f: the list's window.
+ */
+static int e_list_close_key(FENSTER *f)
+{
+  return(wpe_binding_first_code(WPE_ACT_CLOSE_LIST,
+                                wpe_binding_style(f->ed->edopt), WPE_CTX_LIST));
+}
+
 /* File Manager Handler */
 int WpeHandleFileManager(ECNT * cn)
 {
@@ -1658,9 +1683,7 @@ int WpeHandleFileManager(ECNT * cn)
             f->ed->flopt = FM_SHOW_HIDDEN_FILES | FM_SHOW_HIDDEN_DIRS |
               FM_MOVE_OVERWRITE | FM_REKURSIVE_ACTIONS;
         }
-        else if(   c == WPE_ESC
-                || (!(f->ed->edopt & ED_CUA_STYLE) && c == AF3)
-                || (f->ed->edopt & ED_CUA_STYLE && c == CF4))
+        else if(c == WPE_ESC || e_is_list_close_key(f, c))
         {
           if(svdir != NULL)
           {
@@ -4496,15 +4519,13 @@ int e_data_eingabe(ECNT * cn)
       if(c == AltBl)
         c = WPE_ESC;
       else if(c == WPE_ESC)
-        c = (f->ed->edopt & ED_CUA_STYLE) ? CF4 : AF3;
-      if(f->ins == 7 && ((!(f->ed->edopt & ED_CUA_STYLE) && c == AF3)
-                         || ((f->ed->edopt & ED_CUA_STYLE) && c == CF4)))
+        c = e_list_close_key(f);
+      if(f->ins == 7 && e_is_list_close_key(f, c))
       {
         e_close_window(f);   /* frees f: the Window list is gone */
         return(0);
       }
-      if(f->ins == 4 && ((!(f->ed->edopt & ED_CUA_STYLE) && c == AF3)
-                         || ((f->ed->edopt & ED_CUA_STYLE) && c == CF4)))
+      if(f->ins == 4 && e_is_list_close_key(f, c))
       {
         FENSTER        *pf = f->ed->f[f->ed->mxedt];
         FLWND          *fw = (FLWND *) pf->b;
@@ -4518,8 +4539,7 @@ int e_data_eingabe(ECNT * cn)
       }
       if(f->ins == 4 && (!e_tst_dfkt(f, c) || !e_prog_switch(f, c)))
         return(0);
-      if(f->ins > 4 && ((!(f->ed->edopt & ED_CUA_STYLE) && c == AF3)
-                        || ((f->ed->edopt & ED_CUA_STYLE) && c == CF4)))
+      if(f->ins > 4 && e_is_list_close_key(f, c))
         return(c);
       else if((f->ins < 4 || f->ins == 7) && !e_tst_dfkt(f, c))
         return(0);
@@ -4527,7 +4547,7 @@ int e_data_eingabe(ECNT * cn)
         c = AltF;
     }
   }
-  return((f->ed->edopt & ED_CUA_STYLE) ? CF4 : AF3);
+  return(e_list_close_key(f));
 }
 
 int e_get_funct_in(char *nstr, FENSTER * f)

@@ -49,6 +49,13 @@ AM_CPPFLAGS = -include config.h
 # --- The single binary ---
 bin_PROGRAMS = we
 
+# The key reference is generated from the key table (we_bindings.c): this
+# program prints docs/chapters/keys-generated.texi and the dump of a style's
+# bindings.  make check compares its output with the files kept in the tree.
+noinst_PROGRAMS = tools/keymap-texi
+tools_keymap_texi_SOURCES = tools/keymap-texi.c we_bindings.c
+tools_keymap_texi_CFLAGS = $(XWPE_STDFLAG)
+
 we_SOURCES = \
   we_main.c \
   we_block.c \
@@ -66,6 +73,8 @@ we_SOURCES = \
   we_menurows.c \
   we_mousedrain.c \
   we_keymap.c \
+  we_bindings.c \
+  we_bars.c \
   we_mouse.c \
   we_opt.c \
   we_startcmd.c \
@@ -203,6 +212,8 @@ noinst_HEADERS = \
   we_menurows.h \
   we_mousedrain.h \
   we_keymap.h \
+  we_bindings.h \
+  we_bars.h \
   we_render.h \
   we_render_glyphs.h \
   we_palette.h \
@@ -325,7 +336,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_fieldtake test_layout
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_fieldtake test_layout
 
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
@@ -395,8 +406,17 @@ test_layout_CFLAGS = $(XWPE_STDFLAG)
 # library.  Every bound pair has one row, the curses, keysym and escape
 # sequence forms of a key give the same code, a chord the Debug menu shows is
 # decoded, and an unbound key gives 0 and never a letter.
-test_keymap_SOURCES = tests/test_keymap.c we_keymap.c
+test_keymap_SOURCES = tests/test_keymap.c we_keymap.c we_bindings.c
 test_keymap_CFLAGS = $(XWPE_STDFLAG)
+
+# The key bindings (we_bindings.c) and the bottom bars built from them
+# (we_bars.c), no editor and no display.  Every key code in both styles gives
+# what the dispatchers gave before the keys became data, the Ctrl-K, Ctrl-O
+# and Ctrl-G letters and the two single-key questions the same, every bar
+# entry has the label, column, highlight and click code it had, and the rules
+# of the table hold (no key bound twice, one bar key per action and style).
+test_bindings_SOURCES = tests/test_bindings.c we_bindings.c we_bars.c
+test_bindings_CFLAGS = $(AM_CFLAGS)
 
 # The children's owner: we_child.c with the fd loop only (the status line is a
 # hook, stubbed).  Real children: twenty ending at once each report their own
@@ -606,7 +626,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap test_paint test_splice test_lineend test_startcmd test_startplan test_path test_fieldtake test_layout
+  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_fieldtake test_layout
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -645,7 +665,16 @@ TESTS += tests/check-path-buffers.sh
 # dropped by hand; what the boxes still to move do is counted in
 # tests/box-layout.allow, and the counts may only fall.
 TESTS += tests/check-box-layout.sh
+
+# One owner of what a key does: the key table (we_bindings.c).  No other
+# file decides an action from a key code or names a key to the user:
+# tests/check-keymap.sh scans every we_*.c for key comparisons and key
+# names and fails on any that is not in tests/check-keymap.allow, with its
+# reason; an allowed line that no longer matches fails too.  And the key
+# reference in docs/chapters is the table's own output.
+TESTS += tests/check-keymap.sh tests/check-keymap-docs.sh
 AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
+  KEYMAP_TEXI='$(top_builddir)/tools/keymap-texi$(EXEEXT)'; export KEYMAP_TEXI; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
 
 # --- AI assistant unit tests (only when --enable-ai) ---
@@ -722,6 +751,11 @@ EXTRA_DIST = \
   tests/check-path-buffers.sh \
   tests/check-box-layout.sh \
   tests/box-layout.allow \
+  tests/check-keymap.sh \
+  tests/check-keymap.allow \
+  tests/check-keymap-docs.sh \
+  tests/test_keymap_docs.py \
+  docs/chapters/keys-cua-1.6.txt \
   tests/stubs/a68g/a68g \
   tests/stubs/gdb \
   tests/stubs/full-pipe/lldb-dap \

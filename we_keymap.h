@@ -102,22 +102,6 @@ int wpe_key_code_char(int codepoint, unsigned mods);
 int wpe_alt_key_code(int c);
 
 /**
- * wpe_key_fold_legacy - Fold a distinct Ctrl code back to the legacy key.
- * @code: a code a display decoder produced.
- *
- * A terminal that reports "Ctrl plus the letter" gives WPE_CTRL_H, _I, _M
- * and _[ where a legacy terminal gives the bytes of Backspace, Tab, Enter
- * and Esc; Ctrl-Shift-letter is a key of its own where a legacy terminal
- * gives Ctrl-letter, and Ctrl-Tab is a key of its own where a legacy
- * terminal and X11 gave Tab.  Until a key set binds them, each of these does
- * what its legacy form does, so the editor behaves the same with or without
- * the terminal's keyboard protocol.  Ctrl-Alt-letter and the Ctrl
- * punctuation codes are keys with no legacy form to fold to.
- * Return: the legacy code, or @code unchanged.
- */
-int wpe_key_fold_legacy(int code);
-
-/**
  * wpe_key_decode_csi - An escape sequence's tail as the editor's code.
  * @intro: '[' or 'O'.
  * @tail: the bytes after the introducer, up to and including the final byte.
@@ -126,8 +110,8 @@ int wpe_key_fold_legacy(int code);
  *   report of plain text), so the caller can tell it from a key code.
  *
  * The whole decode in one call: the xterm and rxvt key forms, modifyOtherKeys
- * ("27;m;c~") and the kitty protocol ("c;mu"), already folded by
- * wpe_key_fold_legacy().  A key release, a key the editor has no use for
+ * ("27;m;c~") and the kitty protocol ("c;mu"); a distinct Ctrl code is
+ * returned as it is and folded by the key table (wpe_binding_fold).  A key release, a key the editor has no use for
  * (the lock and modifier keys, F13 and up) and anything unrecognised give 0.
  * Return: the code, or 0.
  */

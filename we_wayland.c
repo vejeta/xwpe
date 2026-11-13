@@ -543,13 +543,32 @@ static void wl_key_remove_at(int i)
  * character is never taken for a key code of the same number.
  * Return: @want, or 0 when it is not queued.
  */
+static int wl_key_take(int want);
+
+/**
+ * wl_fold_key - A queued key as the editor reads it.
+ * @code: what the decoder queued.
+ * Return: the code after the key table's fold (Ctrl+[ is Esc, Ctrl+H is
+ * Backspace), in the key style in use.
+ */
+static int wl_fold_key(int code)
+{
+ int edopt = 0;
+
+ if (WpeEditor)
+  edopt = WpeEditor->edopt;
+ return(wpe_binding_fold(code, wpe_binding_style(edopt), WPE_CTX_EDIT));
+}
+
 static int wl_key_take(int want)
 {
  int i;
 
  for (i = WpeWl.key_head; i != WpeWl.key_tail; i = (i + 1) % WL_KEYQ_LEN)
  {
-  if (WpeWl.key_q[i] == want && !WpeWl.key_char_q[i])
+  /* The queue holds what the decoder gave (Ctrl+[ is a code of its own);
+     the key the user asked for is the one the editor reads after the fold. */
+  if (!WpeWl.key_char_q[i] && wl_fold_key(WpeWl.key_q[i]) == want)
   {
    wl_key_remove_at(i);
    return want;
@@ -653,7 +672,7 @@ int keysym_to_xwpe(xkb_keysym_t sym, const char *utf8, int u8len,
     here as on the terminal and on X11. */
  if ((ctrl || alt) && chord_cp != 0)
  {
-  c = wpe_key_fold_legacy(wpe_key_code_char(chord_cp, mods));
+  c = wpe_key_code_char(chord_cp, mods);
   if (c != 0)
    return c;
  }
@@ -2051,8 +2070,12 @@ static void wl_keytest(void)
 
   for (k = 0; k < m; k++)
   {
-   int got = keysym_to_xwpe(WL_NO_KEYSYM, "", 0, ch[k].ctrl, ch[k].shift,
-                            ch[k].alt, ch[k].cp);
+   /* The decoder returns the distinct codes (Ctrl+Shift+P, Ctrl+H); the
+      editor folds them once where it takes a key, so the rows compare the
+      folded code, as the editor reads it. */
+   int got = wpe_binding_fold(keysym_to_xwpe(WL_NO_KEYSYM, "", 0, ch[k].ctrl,
+                                             ch[k].shift, ch[k].alt, ch[k].cp),
+                              WPE_STYLE_BORLAND, WPE_CTX_EDIT);
    int ok = (got == ch[k].want);
    if (!ok) fails++;
    fprintf(stderr, "  %-22s want=%d got=%d %s\n",

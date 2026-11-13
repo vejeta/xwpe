@@ -20,6 +20,7 @@
 
 #include "model.h"
 #include "keys.h"
+#include "we_bindings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -292,7 +293,8 @@ typedef struct WOPTION {
 void e_pack_button_bar(WOPT *bar, int n, int x0, int gap);
 /* The entries of an editor-window bar (see we_main.c). */
 int e_editor_bar_size(WOPT *bar);
-WOPT *e_plain_editor_bar(int cua);
+WOPT *e_plain_editor_bar(int style);
+#include "we_bars.h"
 
 typedef struct OPTKAST {
  char *t;

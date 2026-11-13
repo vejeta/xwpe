@@ -932,22 +932,6 @@ int wpe_key_code_char(int cp, unsigned mods)
  return(cp);
 }
 
-int wpe_key_fold_legacy(int code)
-{
- switch (code)
- {
-  case WPE_CTRL_H:        return(CtrlH);
-  case WPE_CTRL_I:        return(CtrlI);
-  case WPE_CTRL_M:        return(CtrlM);
-  case WPE_CTRL_LBRACKET: return(WPE_ESC);
-  case WPE_CTRL_TAB:      return(WPE_TAB);   /* a legacy terminal sends Tab */
-  default:                break;
- }
- if (code >= WPE_CS_FIRST && code <= WPE_CS_LAST)
-  return(code - WPE_CS_FIRST + CtrlA);   /* Ctrl-Shift-letter: Ctrl-letter */
- return(code);
-}
-
 /* ------------------------------------------------------------------------ */
 /* modifyOtherKeys and the kitty keyboard protocol                           */
 /* ------------------------------------------------------------------------ */
@@ -1277,12 +1261,12 @@ int wpe_key_decode_csi(int intro, const char *tail, size_t n, int *is_text)
  if (!wpe_key_from_csi_cp(intro, tail, n, &base, &mods, &codepoint))
   return(0);
  if (base != WPE_KEY_CHAR)
-  return(wpe_key_fold_legacy(wpe_key_code(base, mods)));
+  return(wpe_key_code(base, mods));
  code = wpe_key_code_char(codepoint, mods);
  if (code != 0 && code == codepoint && codepoint >= WPE_CP_TEXT_FIRST &&
      !(mods & (WPE_MOD_CTRL | WPE_MOD_ALT)))
   *is_text = 1;
- return(wpe_key_fold_legacy(code));
+ return(code);
 }
 
 /* ESC and the introducer come before a sequence's tail. */

@@ -197,8 +197,12 @@ int e_vterm_user_screen(FENSTER *f)
 
  if (!e_d_prog_output || e_d_prog_output_len <= 0)
  {
-  e_error("No program output yet -- run with Ctrl-F9 or start a debug session",
-    0, f->fb);
+  char hint[160];
+
+  snprintf(hint, sizeof hint,
+           "No program output yet -- run with %s or start a debug session",
+           wpe_binding_run_key(f->ed->edopt));
+  e_error(hint, 0, f->fb);
   return 0;
  }
 

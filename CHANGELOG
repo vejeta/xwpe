@@ -286,6 +286,19 @@ Changes
   terminal, and the keypad Enter works in a terminal that sends it as its
   own key.
 
+* The menus, the bottom bar and the manual's key tables now name the keys
+  the editor binds, in each key style.  Before, the Window menu said
+  Shift-F4 for Tile and Shift-F5 for Cascade in both styles; the CUA style
+  has them the other way round and the default style binds neither, so
+  its menu names no key for them.  The CUA Window menu no longer says
+  Alt-Z zooms (Alt-Z cascades there), and the Window menu's Close,
+  User Screen and Zoom lines are lined up on one edge.  The Help page on
+  the CUA keys no longer lists the changed keys by hand, and the Help page
+  and manual page on windows and on Replace in the CUA style now give the
+  keys the code binds.  The manual's key tables, generated from the same
+  table the editor reads, give every key in both styles, and the Ctrl-G
+  table no longer calls Ctrl-G S Trace.  No key does anything different.
+
 * Typing a character such as the euro sign or a musical clef into a
   dialog field (Find, Replace, Go to line, file names, Options) no longer
   wipes what you had typed before it, and Left, Right, Backspace and Delete

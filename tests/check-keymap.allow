@@ -1,0 +1,350 @@
+# check-keymap.allow -- the places outside we_bindings.c that use a key
+# constant or name a key, each counted and with its reason.  One line each:
+#
+#   file:function:NAME count reason
+#
+# NAME is a key constant, STR (a key named in a string) or * (every key use of
+# the function; not allowed for a key loop, where each key is named).  The
+# count is exact: more is a new use, fewer is a stale line.  The reasons are
+# the fixed set in tests/check-keymap.sh, plus two debts that say what the
+# table has not taken yet:
+#
+#   not yet in the table, context NAME (K-d1)   a key the context NAME decides
+#   not yet generated from the table, K-d1      a key name written by hand in a message
+#
+# What the table decides is not here: windows, menus, help, quit, the
+# programming and debugger keys, undo, the clipboard, search, the letters after
+# Ctrl-K, Ctrl-O, Ctrl-G, Alt-Q and Alt-G, and the Watches window's keys.
+#
+# "dialog field editing" is a box's own keys (Esc, Enter, Tab, the cursor, the
+# letters of its fields).  "compose" is the decoders and what re-encodes a key
+# for a program.
+
+# ---- dialogs and boxes -----------------------------------------------------
+we_ai_ui.c:ai_agent_read_yes_no:* 2 dialog field editing
+we_ai_ui.c:ai_box_key_decision:* 2 dialog field editing
+we_ai_ui.c:ai_consent_gate:* 4 dialog field editing
+we_ai_ui.c:ai_diff_box_show:* 5 dialog field editing
+we_ai_ui.c:ai_in_paste_break:* 1 dialog field editing
+we_ai_ui.c:ai_menu_run_dropdown:* 1 dialog field editing
+we_ai_ui.c:ai_opt_save_provider_as:* 1 dialog field editing
+we_ai_ui.c:ai_opt_sync_widgets:* 2 dialog field editing
+we_ai_ui.c:ai_web_notice:* 2 dialog field editing
+we_ai_ui.c:e_ai_opt_advanced:* 10 dialog field editing
+we_ai_ui.c:e_ai_options:* 23 dialog field editing
+we_ai_ui.c:e_ai_opt_pick_model:* 1 dialog field editing
+we_ai_ui.c:e_ai_pick:* 6 dialog field editing
+we_ai_ui.c:e_ai_prompt:* 10 dialog field editing
+we_ai_ws.c:wpe_ai_changeset_review:* 4 dialog field editing
+we_block.c:e_blck_del:* 1 dialog field editing
+we_block.c:e_blck_read:* 1 dialog field editing
+we_block.c:e_changecase_dialog:* 9 dialog field editing
+we_block.c:e_find:* 17 dialog field editing
+we_block.c:e_goto_line:* 1 dialog field editing
+we_block.c:e_replace:* 19 dialog field editing
+we_block.c:e_replace_each:* 2 dialog field editing
+we_buffer.c:e_buffer_pos_set_col:* 1 dialog field editing
+we_debug.c:e_d_add_watch:* 2 dialog field editing
+we_debug.c:e_deb_options:* 19 dialog field editing
+we_debug.c:e_d_goto_break:* 1 dialog field editing
+we_debug.c:e_d_pty_type:* 1 dialog field editing
+we_debug.c:e_lsp_after_bulk_edit:* 1 dialog field editing
+we_debug.c:e_lsp_on_edit:* 1 dialog field editing
+we_debug.c:e_lsp_pick_at:* 3 dialog field editing
+we_debug.c:e_lsp_ui_rename:* 1 dialog field editing
+we_debug.c:e_lsp_ui_workspace_symbols:* 1 dialog field editing
+we_e_aus.c:e_field_is_pasted_break:* 1 dialog field editing
+we_e_aus.c:e_pasted_control_byte:* 6 dialog field editing
+we_e_aus.c:e_schreib_leiste_lines:* 42 dialog field editing
+we_e_aus.c:e_schreib_zif:* 6 dialog field editing
+we_edit.c:e_key_cancels_answer:* 2 dialog field editing
+we_fl_fkt.c:e_help_options:* 1 dialog field editing
+we_fl_fkt.c:e_m_save:* 1 dialog field editing
+we_fl_fkt.c:e_quit:* 2 dialog field editing
+we_fl_fkt.c:e_save:* 1 dialog field editing
+we_fl_fkt.c:e_saveall:* 3 dialog field editing
+we_fl_fkt.c:e_write:* 4 dialog field editing
+we_fl_unix.c:e_funct:* 1 dialog field editing
+we_fl_unix.c:e_funct_in:* 1 dialog field editing
+we_fl_unix.c:WpeDirDelOptions:* 7 dialog field editing
+we_fl_unix.c:WpeFileDirAttributes:* 14 dialog field editing
+we_fl_unix.c:WpeFileManagerOptions:* 24 dialog field editing
+we_fl_unix.c:WpeFindWindow:* 10 dialog field editing
+we_fl_unix.c:WpeGrepWindow:* 14 dialog field editing
+we_fl_unix.c:WpeRemoveDir:* 3 dialog field editing
+we_fl_unix.c:WpeRenameCopyDir:* 1 dialog field editing
+we_hfkt.c:e_num_kst:* 4 dialog field editing
+we_mouse.c:e_ccp_mouse:* 5 dialog field editing
+we_mouse.c:e_edt_mouse:* 4 dialog field editing
+we_mouse.c:e_er_mouse:* 2 dialog field editing
+we_mouse.c:e_m1_mouse:* 1 dialog field editing
+we_mouse.c:e_m2_mouse:* 1 dialog field editing
+we_mouse.c:e_m3_mouse:* 2 dialog field editing
+we_mouse.c:e_msg_mouse:* 2 dialog field editing
+we_mouse.c:e_opt_ck_mouse:* 1 dialog field editing
+we_mouse.c:e_opt_cw_mouse:* 3 dialog field editing
+we_mouse.c:e_opt_mouse:* 1 dialog field editing
+we_mouse.c:e_rahmen_mouse:* 1 dialog field editing
+we_opt.c:e_ad_colors:* 1 dialog field editing
+we_opt.c:e_ad_colors_md:* 1 dialog field editing
+we_opt.c:e_add_arguments:* 6 dialog field editing
+we_opt.c:e_clear_desk:* 2 dialog field editing
+we_opt.c:e_dif_colors:* 2 dialog field editing
+we_opt.c:e_edt_options:* 21 dialog field editing
+we_opt.c:e_frb_x_menue:* 7 dialog field editing
+we_opt.c:e_get_opt_sw:* 12 dialog field editing
+we_opt.c:e_get_opt_sw_spatial:* 4 dialog field editing
+we_opt.c:e_get_opt_sw_tab:* 1 dialog field editing
+we_opt.c:e_get_sw_cmp:* 10 dialog field editing
+we_opt.c:e_opt_activate_button:* 2 dialog field editing
+we_opt.c:e_opt_box_show:* 1 dialog field editing
+we_opt.c:e_opt_box_wait_key:* 2 dialog field editing
+we_opt.c:e_opt_cancel:* 2 dialog field editing
+we_opt.c:e_opt_kst_run:* 5 dialog field editing
+we_opt.c:e_opt_leaving_for_restart:* 1 dialog field editing
+we_opt.c:e_opt_move:* 6 dialog field editing
+we_opt.c:e_opt_press_button:* 1 dialog field editing
+we_opt.c:e_opt_route_button_key:* 2 dialog field editing
+we_opt.c:e_opt_route_checkbox_key:* 2 dialog field editing
+we_opt.c:e_opt_route_field_key:* 2 dialog field editing
+we_opt.c:e_opt_route_radio_key:* 2 dialog field editing
+we_opt.c:e_opt_run_num_field:* 1 dialog field editing
+we_opt.c:e_opt_run_text_field:* 1 dialog field editing
+we_opt.c:e_opt_save:* 1 dialog field editing
+we_opt.c:e_opt_wait_esc_or_resize:* 2 dialog field editing
+we_opt.c:e_pr_ed_beispiel:* 1 dialog field editing
+we_prog.c:e_arguments:* 1 dialog field editing
+we_prog.c:e_build_step_verdict:* 1 dialog field editing
+we_prog.c:e_comp_start:* 4 dialog field editing
+we_prog.c:e_d_car_mouse:* 1 dialog field editing
+we_prog.c:e_exec_make:* 6 dialog field editing
+we_prog.c:e_install_lines_run:* 1 dialog field editing
+we_prog.c:e_install_run:* 1 dialog field editing
+we_prog.c:e_msg_car_mouse:* 1 dialog field editing
+we_prog.c:e_new_message:* 1 dialog field editing
+we_prog.c:e_open_project_file:* 1 dialog field editing
+we_prog.c:e_p_add_df:* 1 dialog field editing
+we_prog.c:e_p_edit_df:* 1 dialog field editing
+we_prog.c:e_p_make_link:* 1 dialog field editing
+we_prog.c:e_prj_compile_file:* 1 dialog field editing
+we_prog.c:e_prj_ob_svas:* 1 dialog field editing
+we_prog.c:e_prj_setup:* 2 dialog field editing
+we_prog.c:e_project_name:* 2 dialog field editing
+we_prog.c:e_project_options:* 16 dialog field editing
+we_prog.c:e_run_c_options:* 14 dialog field editing
+we_prog.c:e_run_options:* 2 dialog field editing
+we_prog.c:e_show_error:* 1 dialog field editing
+we_progn.c:e_p_beautify:* 11 dialog field editing
+we_progn.c:e_pr_c_line:* 3 dialog field editing
+we_progn.c:e_program_opt:* 10 dialog field editing
+we_progn.c:e_sh_def:* 1 dialog field editing
+we_unix.c:e_err_save_window:* 1 dialog field editing
+we_unix.c:e_frb_t_menue:* 5 dialog field editing
+we_wind.c:e_close_window:* 1 dialog field editing
+we_wind.c:e_ed_zoom:* 1 dialog field editing
+we_wind.c:e_error_run:* 4 dialog field editing
+we_wind.c:e_message:* 11 dialog field editing
+we_wind.c:e_mess_win:* 2 dialog field editing
+we_wind.c:e_opt_sec_box:* 13 dialog field editing
+we_wind.c:e_pr_line:* 3 dialog field editing
+we_wind.c:e_schr_lst_wsv:* 4 dialog field editing
+we_wind.c:e_startcmd_add_buttons:* 3 dialog field editing
+we_wind.c:e_sv_window:* 2 dialog field editing
+
+# ---- not yet in the table: the editor's own keys (context editing) ---------
+we_edit.c:e_cursor:* 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_cursor_visual_adjust:* 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_key_is_vertical_move:* 4 not yet in the table, context editing (K-d1)
+we_edit.c:e_eingabe:ENTF 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_eingabe:WPE_CR 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_eingabe:WPE_DC 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_eingabe:WPE_ESC 10 not yet in the table, context editing (K-d1)
+we_edit.c:e_eingabe:WPE_RESIZE 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_eingabe:WPE_SCROLL_DOWN 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_eingabe:WPE_SCROLL_UP 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_eingabe:WPE_TAB 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:AltI 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:AltJ 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:BDO 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:BUP 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CBDO 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CBUP 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CCLE 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CCRI 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CDO 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CEND 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CLE 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CPS1 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CRI 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CtrlA 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CtrlB 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CtrlE 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CtrlF 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CtrlN 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CtrlP 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CtrlT 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CtrlZ 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:CUP 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:EINFG 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:ENDE 2 not yet in the table, context editing (K-d1)
+we_edit.c:e_tst_cur:POS1 2 not yet in the table, context editing (K-d1)
+
+# ---- not yet in the table: the move mode of a window -----------------------
+we_wind.c:e_size_move:* 14 not yet in the table, context window move (K-d1)
+
+# ---- not yet in the table: the file manager (context filemanager) ----------
+we_fl_fkt.c:e_file_window:* 19 not yet in the table, context filemanager (K-d1)
+we_mouse.c:e_data_ein_mouse:* 11 not yet in the table, context filemanager (K-d1)
+we_mouse.c:fl_wnd_mouse:* 4 not yet in the table, context filemanager (K-d1)
+we_mouse.c:WpeMngMouseInFileManager:* 22 not yet in the table, context filemanager (K-d1)
+we_mouse.c:WpeMouseInFileDirList:* 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:AltA 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:AltBl 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:AltD 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:AltE 2 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:AltF 9 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:AltO 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:AltS 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:EINFG 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:ENTF 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:WPE_CR 3 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:e_data_eingabe:WPE_ESC 4 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:Alt1 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:Alt9 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltA 4 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltBl 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltC 6 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltD 6 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltE 8 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltF 12 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltK 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltL 3 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltM 4 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltN 11 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltO 3 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltR 6 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltS 7 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltT 9 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltW 6 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:AltY 2 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:BDO 2 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:BUP 2 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:CCLE 2 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:CCRI 2 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:CDO 2 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:CLE 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:CRI 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:EINFG 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:ENTF 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:F2 1 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:WPE_BTAB 4 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:WPE_CR 8 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:WPE_ESC 9 not yet in the table, context filemanager (K-d1)
+we_fl_unix.c:WpeHandleFileManager:WPE_TAB 4 not yet in the table, context filemanager (K-d1)
+
+# ---- not yet in the table: the bottom bars' fixed mnemonic entries ---------
+we_bars.c:-:* 33 not yet in the table, context window mnemonics (K-d1)
+
+# ---- key names written by hand in a message --------------------------------
+we_debug.c:e_d_out_keep:* 1 not yet generated from the table, K-d1
+we_debug.c:e_d_pause_report:* 1 not yet generated from the table, K-d1
+we_debug.c:e_d_pdb_answer_place:* 1 not yet generated from the table, K-d1
+we_debug.c:e_d_pty_close:* 1 not yet generated from the table, K-d1
+we_debug.c:e_lsp_bar_label:* 1 not yet generated from the table, K-d1
+we_debug.c:e_lsp_menu_items:* 1 not yet generated from the table, K-d1
+we_debug.c:e_lsp_ui_inlay:* 1 not yet generated from the table, K-d1
+we_debug.c:e_lsp_ui_semantic:* 1 not yet generated from the table, K-d1
+we_debug.c:e_scala_pin_jdk:* 2 not yet generated from the table, K-d1
+we_fl_unix.c:WpeDrawFileManager:* 5 not yet generated from the table, K-d1
+we_lsp.c:-:* 1 not yet generated from the table, K-d1
+we_prog.c:e_make_multifile_hint:* 1 not yet generated from the table, K-d1
+we_prog.c:e_run_with_pty:* 1 not yet generated from the table, K-d1
+we_term.c:init_cursor:* 3 not yet generated from the table, K-d1
+
+# ---- the menu bar's and the drop-downs' own keys ---------------------------
+we_main.c:-:* 8 menu navigation
+we_menue.c:WpeHandleMainmenu:AltX 1 menu navigation
+we_menue.c:WpeHandleMainmenu:CDO 1 menu navigation
+we_menue.c:WpeHandleMainmenu:CLE 1 menu navigation
+we_menue.c:WpeHandleMainmenu:CRI 1 menu navigation
+we_menue.c:WpeHandleMainmenu:CtrlA 1 menu navigation
+we_menue.c:WpeHandleMainmenu:CtrlB 1 menu navigation
+we_menue.c:WpeHandleMainmenu:CtrlE 1 menu navigation
+we_menue.c:WpeHandleMainmenu:CtrlF 1 menu navigation
+we_menue.c:WpeHandleMainmenu:CtrlN 1 menu navigation
+we_menue.c:WpeHandleMainmenu:ENDE 1 menu navigation
+we_menue.c:WpeHandleMainmenu:POS1 1 menu navigation
+we_menue.c:WpeHandleMainmenu:WPE_CR 5 menu navigation
+we_menue.c:WpeHandleMainmenu:WPE_ESC 2 menu navigation
+we_menue.c:WpeHandleSubmenu_run:Alt0 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CDO 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CLE 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CRI 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CtrlA 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CtrlB 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CtrlE 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CtrlF 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CtrlN 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CtrlP 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:CUP 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:ENDE 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:POS1 1 menu navigation
+we_menue.c:WpeHandleSubmenu_run:WPE_CR 2 menu navigation
+we_menue.c:WpeHandleSubmenu_run:WPE_ESC 9 menu navigation
+we_menue.c:WpeHandleSubmenu_run:WPE_RESIZE 1 menu navigation
+
+# ---- the AI pane's own keys and the assistant's messages -------------------
+we_ai.c:ai_unreachable_hint:* 1 AI pane text keys
+we_ai_http.c:ai_http_seterr:* 1 AI pane text keys
+we_ai_ui.c:ai_agent_report_undo_hint:* 1 AI pane text keys
+we_ai_ui.c:ai_append_selection:* 2 AI pane text keys
+we_ai_ui.c:ai_build_system:* 7 AI pane text keys
+we_ai_ui.c:ai_chat_emit_hints_once:* 1 AI pane text keys
+we_ai_ui.c:ai_chat_key_is_printable:* 9 AI pane text keys
+we_ai_ui.c:ai_complete_insert:* 1 AI pane text keys
+we_ai_ui.c:ai_conv_after_process:* 1 AI pane text keys
+we_ai_ui.c:ai_edit_done:* 2 AI pane text keys
+we_ai_ui.c:ai_mp_key_listed:* 6 AI pane text keys
+we_ai_ui.c:ai_mp_key_listing:* 6 AI pane text keys
+we_ai_ui.c:ai_plan_finish:* 1 AI pane text keys
+we_ai_ui.c:ai_utf8_continues:* 1 AI pane text keys
+we_ai_ui.c:e_ai_chat_key:* 5 AI pane text keys
+we_ai_ui.c:e_ai_chat_wheel:* 2 AI pane text keys
+we_ai_ui.c:e_ai_compose:* 1 AI pane text keys
+we_ai_ui.c:e_ai_menu_items:* 1 AI pane text keys
+we_ai_ui.c:host_turn_end_notice:* 2 AI pane text keys
+
+# ---- decoders, and what re-encodes a key for a program ---------------------
+we_edit.c:-:* 54 compose
+we_edit.c:e_key_is_program_text:* 2 compose
+we_edit.c:e_pty_key_bytes:* 5 compose
+we_edit.c:e_pty_sequence_bytes:* 1 compose
+we_keymap.c:-:* 82 compose
+we_keymap.c:wpe_alt_key_code:* 62 compose
+we_keymap.c:wpe_ctrl_alt_code:* 1 compose
+we_keymap.c:wpe_ctrl_letter_code:* 3 compose
+we_keymap.c:wpe_key_code_char:* 2 compose
+we_keymap.c:wpe_key_code_ctrl:* 1 compose
+we_keymap.c:wpe_key_code_tab:* 3 compose
+we_prog.c:e_run_program_key:* 1 compose
+we_prog.c:e_run_serve_key:* 1 compose
+we_prog.c:e_run_text_serve_key:* 1 compose
+we_term.c:e_find_key:* 74 compose
+we_term.c:e_t_csi_paste_marker:* 2 compose
+we_term.c:e_t_decode_key:* 11 compose
+we_term.c:e_t_drain_keys_after_box:* 3 compose
+we_term.c:e_t_getch:* 11 compose
+we_term.c:e_t_key_is_mouse_event:* 2 compose
+we_term.c:e_t_mouse_wheel_key:* 2 compose
+we_term.c:e_t_paste_ended:* 1 compose
+we_term.c:e_t_paste_swallows_lf:* 1 compose
+we_term.c:fk_t_mouse:* 1 compose
+we_unix.c:e_capture_cancel_asked:* 2 compose
+we_unix.c:e_ini_unix:* 5 compose
+we_wayland.c:e_w_getch:* 1 compose
+we_wayland.c:ptr_axis:* 2 compose
+we_xterm.c:e_x_getch:* 5 compose
+we_xterm.c:e_x_kbhit:* 1 compose
+
+# ---- the display's self-test table -----------------------------------------
+we_wayland.c:wl_keytest:* 66 self-test table

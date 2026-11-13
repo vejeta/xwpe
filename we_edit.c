@@ -879,10 +879,27 @@ static int e_paint_text_on_top(void)
  return(DTMD_ISTEXT(top->dtmd));
 }
 
+/**
+ * e_fold_key - The key every reader in the editor sees: what a display
+ * reported, with a key the style binds to nothing turned into the key it
+ * stands for.
+ * @c: what e_getch returned.
+ *
+ * Run once on every key the editor takes, so a dialog, a menu and the editor
+ * read the same code and no reader folds for itself.  The fold itself is
+ * the key table's (wpe_binding_fold).
+ */
+static int e_fold_key(int c)
+{
+ int style = WpeEditor ? wpe_binding_style(WpeEditor->edopt) : WPE_STYLE_BORLAND;
+
+ return(wpe_binding_fold(c, style, WPE_CTX_EDIT));
+}
+
 /** e_paint_read_key - The display's key reader, for a box's key. */
 static int e_paint_read_key(void)
 {
- return(e_getch());
+ return(e_fold_key(e_getch()));
 }
 
 /**
@@ -894,7 +911,7 @@ static int e_paint_take_key(int want)
 {
  if (!e_u_key_take)
   return(0);
- return((*e_u_key_take)(want));
+ return(e_fold_key((*e_u_key_take)(want)));
 }
 
 /**
@@ -1067,7 +1084,7 @@ int e_eingabe(ECNT *e)
    if (f->save > f->ed->maxchg) e_autosave(f);
    e_buffer_depth_check(f->b);
    e_buffer_marks_inside(f->b);   /* no mark or Shift anchor past a row's end */
-   c = e_getch();
+   c = e_fold_key(e_getch());
    /* A build ending while the editor waited for this key may have put
       another window on top (the jump to its first error): the key belongs
       to the window the user now sees. */
@@ -1570,18 +1587,21 @@ int e_tst_cur(int c, ECNT *e)
 	 e_delete_line_key(b, s);
 	 e_schirm(f, 1);
 	 break;
-      case AF7:
-      case AltV:
-	 if(f->dtmd != DTMD_HELP || f->ins != WPE_INS_READONLY) return(c);
-         e_help_next(f, 0);
-	 break;
-      case AF8:
-      case AltT:
-	 if(f->dtmd != DTMD_HELP || f->ins != WPE_INS_READONLY) return(c);
-         e_help_next(f, 1);
-	 break;
       default:
-	 return(c);
+	 switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_HELP))
+	 {
+	    case WPE_ACT_HELP_PREV:
+	       if(f->dtmd != DTMD_HELP || f->ins != WPE_INS_READONLY) return(c);
+	       e_help_next(f, 0);
+	       break;
+	    case WPE_ACT_HELP_NEXT:
+	       if(f->dtmd != DTMD_HELP || f->ins != WPE_INS_READONLY) return(c);
+	       e_help_next(f, 1);
+	       break;
+	    default:
+	       return(c);
+	 }
+	 break;
    }
    if(c >= 512 )
    {  e_shift_extend_block(b, s);
@@ -1627,100 +1647,54 @@ int e_tst_fkt(int c, ECNT *e)
     return(0);
   }
 
- switch (c)
+ switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_EDIT))
  {
-  case CtrlK:
-   e_ctrl_k(f);    /*  ctrl k  */
+  case WPE_ACT_K_PREFIX:
+   e_ctrl_k(f);
    break;
-  case CtrlO:      /*  ctrl o  */
+  case WPE_ACT_O_PREFIX:
    e_ctrl_o(f);
    break;
-  case AltG:
+  case WPE_ACT_GOTO_LINE:
    e_goto_line(f);
    break;
-  case CF10:
-  case AltY:        /* emacs M-y: browse the paste buffer (kill ring) */
+  case WPE_ACT_SHOW_CLIPBOARD:    /* emacs M-y: browse the paste buffer (kill ring) */
    e_show_clipboard(f);
    break;
-  case CtrlDel:
+  case WPE_ACT_BLOCK_DELETE:
    e_blck_del(f);
    break;
-  case UNDO:
-  case AltBS:
-  case CtrlU:
+  case WPE_ACT_EDIT_UNDO:
    if (e_window_text_locked(f)) break;
    e_make_undo(f);
    break;
-  case AGAIN:
-  case SABS:
-  case CtrlR:
+  case WPE_ACT_EDIT_REDO:
    if (e_window_text_locked(f)) break;
    e_make_redo(f);
    break;
-  case CUT:
-  case ShiftDel:    /*  shift Del  :  Delete to Clipboard  */
-/*               case 402:     */
-  case CtrlX:
+  case WPE_ACT_EDIT_CUT:          /*  Delete to the clipboard  */
    e_edt_del(f);
    break;
-  case PASTE:
-  case ShiftEin:    /*  shift Einf  */
-  case AltEin:      /*  alt Einf: the same paste, whichever display  */
-  case CtrlV:
+  case WPE_ACT_EDIT_PASTE:
    e_edt_einf(f);
    break;
-  case COPY:
-  case CtrlEin:    /*  ctrl Einf  */
-/*               case 401:    */
-  case AltDel:     /*  alt Del: the same copy, whichever display  */
-  case CtrlC:
+  case WPE_ACT_EDIT_COPY:
    e_edt_copy(f);
    break;
-  default:
-   if (f->ed->edopt & ED_CUA_STYLE)
-   {
-    switch (c)
-    {
-     case AF2:
-      e_m_save(f);
-      break;
-     case FID:
-     case AF3:
-      e_find(f);
-      break;
-     case SF3:
-      e_replace(f);
-      break;
-     case F3:
-      e_rep_search(f);
-      break;
-     default:
-      return(c);
-    }
-   }
-   else
-   {
-    switch(c)
-    {
-     case F2:
-      e_m_save(f);
-      break;
-     case FID:
-     case F4:
-      e_find(f);
-      break;
-     case AF4:
-      e_replace(f);
-      break;
-     case CtrlL:
-     case CF4:
-      e_rep_search(f);
-      break;
-     default:
-      return(c);
-    }
-   }
+  case WPE_ACT_SAVE:
+   e_m_save(f);
    break;
+  case WPE_ACT_FIND:
+   e_find(f);
+   break;
+  case WPE_ACT_REPLACE:
+   e_replace(f);
+   break;
+  case WPE_ACT_SEARCH_AGAIN:
+   e_rep_search(f);
+   break;
+  default:
+   return(c);
  }
  fk_cursor(1);
  return(0);
@@ -1761,13 +1735,13 @@ int e_ctrl_k(FENSTER *f)
  c = e_prefix_read_letter();
  if (c < 32)
   c = c + 'A' - 1;
- switch (c)
+ switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PREFIX_K))
  {
-  case 'A':
+  case WPE_ACT_BLOCK_GOTO_BEGIN:
    e_buffer_cursor_from(b, E_BUFFER_MARK_BEGIN);
    e_schirm(f, 1);
    break;
-  case 'B':
+  case WPE_ACT_BLOCK_BEGIN:
    /* Route the keyboard Begin-Mark through e_blck_begin so it honours the
       block-marking mode (ED_BLOCK_WORDSTAR): modern resets begin AND end so
       re-marking leaves no stale block; WordStar moves only begin.  Setting
@@ -1775,64 +1749,57 @@ int e_ctrl_k(FENSTER *f)
       from the keyboard (only from the Block menu). */
    e_blck_begin(f);
    break;
-  case 'C':
+  case WPE_ACT_BLOCK_COPY:
    e_blck_copy(f);
    break;
-  case 'D':
+  case WPE_ACT_BLOCK_CASE:
    e_changecase_dialog(f);
    break;
-  case 'F':
+  case WPE_ACT_BLOCK_BEAUTIFY:
    e_mk_beauty(1, 3, f);
    break;
-  case 'H':
+  case WPE_ACT_BLOCK_HIDE:
    e_blck_hide(f);
    break;
-  case 'I':
+  case WPE_ACT_BLOCK_INDENT:
    e_blck_to_right(f);
    break;
-  case 'K':
+  case WPE_ACT_BLOCK_END:
    e_buffer_mark_from(b, E_BUFFER_MARK_END, E_BUFFER_POS_CURSOR);
    e_schirm(f, 1);
    break;
-  case 'L':
+  case WPE_ACT_BLOCK_LINE:
    e_buffer_block_line(b);
    e_schirm(f, 1);
    break;
-  case 'R':
+  case WPE_ACT_BLOCK_READ:
    e_blck_read(f);
    break;
-  case 'U':
+  case WPE_ACT_BLOCK_UNINDENT:
    e_blck_to_left(f);
    break;
-  case 'V':
+  case WPE_ACT_BLOCK_MOVE:
    e_blck_move(f);
    break;
-  case 'W':
+  case WPE_ACT_BLOCK_WRITE:
    e_blck_write(f);
    break;
-  case 'X':
+  case WPE_ACT_BLOCK_ALL:
    e_buffer_block_all(b);
    e_schirm(f, 1);
    break;
-  case 'Y':
+  case WPE_ACT_BLOCK_DELETE:
    e_blck_del(f);
    break;
-  case 'Z':
+  case WPE_ACT_BLOCK_GOTO_END:
    e_buffer_cursor_from(b, E_BUFFER_MARK_END);
    e_schirm(f, 1);
    break;
-  case '0':
-  case '1':
-  case '2':
-  case '3':
-  case '4':
-  case '5':
-  case '6':
-  case '7':
-  case '8':
-  case '9':
+  case WPE_ACT_MARKER_SET:
    e_buffer_marker_set(b, c - '0');
    e_schirm(f, 1);
+   break;
+  default:
    break;
  }
  return 0;
@@ -1991,71 +1958,64 @@ int e_ctrl_o(FENSTER *f)
 
  c = e_prefix_read_letter();
  if (c < 32) c = c + 'A' - 1;
- switch(c)
+ switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PREFIX_O))
  {
-  case 'Y':     /*  delete end of line    */
+  case WPE_ACT_DELETE_TO_EOL:
    if (e_window_text_locked(f)) break;
    e_delete_to_end_of_row(b, s);
    e_schirm(f, 1);
    e_cursor(f, 1);
    break;
-  case 'T':     /*  delete up to beginning of next word    */
+  case WPE_ACT_DELETE_WORD_LEFT:     /*  up to beginning of the word  */
    if (e_window_text_locked(f)) break;
    e_delete_word_left(b, s);
    e_schirm(f, 1);
    break;
-  case 'F':     /*  find string    */
+  case WPE_ACT_FIND:
    e_find(f);
    break;
-  case 'A':     /*  replace string    */
+  case WPE_ACT_REPLACE:
    e_replace(f);
    break;
 #ifdef PROG
-  case 'S':     /*  find declaration    */
+  case WPE_ACT_SHOW_DEFINITION:
    e_sh_def(f);
    break;
-  case 'N':     /*  ...next...  */
+  case WPE_ACT_NEXT_DEFINITION:
    e_sh_nxt_def(f);
    break;
-  case 'K':     /*  next bracket  */
+  case WPE_ACT_MATCH_BRACKET:
    e_nxt_brk(f);
    break;
-  case 'B':     /*  beautify text  */
+  case WPE_ACT_BEAUTIFY:
    e_p_beautify(f);
    break;
 #endif
-  case 'U':     /*   for help file: create button */
+  case WPE_ACT_HELP_MARK_BUTTON:     /*   for help file: create button */
    e_help_mark_block(f, b, s, HBG);
    break;
-  case 'M':     /*   for help file: Mark-Line  */
+  case WPE_ACT_HELP_MARK_LINE:       /*   for help file: Mark-Line  */
    e_help_mark_block(f, b, s, HBB);
    break;
-  case 'H':     /*   for help file: create Header  */
+  case WPE_ACT_HELP_MARK_HEADER:     /*   for help file: create Header  */
    e_help_mark_block(f, b, s, HHD);
    break;
-  case 'E':     /*   for help file: create end mark  */
+  case WPE_ACT_HELP_MARK_END:        /*   for help file: create end mark  */
    e_help_page_end_insert(b);
    e_schirm(f, 1);
    break;
-  case 'L':     /*   for help file: delete "help" special chars  */
+  case WPE_ACT_HELP_MARKS_DELETE:    /*   for help file: delete "help" special chars  */
    e_help_marks_delete(b, s);
    e_schirm(f, 1);
    break;
-  case 'C':     /*   for help file: check help file   */
+  case WPE_ACT_HELP_CHECK:           /*   for help file: check help file   */
    e_help_comp(f);
    break;
-  case '0':
-  case '1':
-  case '2':
-  case '3':
-  case '4':
-  case '5':
-  case '6':
-  case '7':
-  case '8':
-  case '9':
+  case WPE_ACT_MARKER_GOTO:
    e_buffer_marker_goto(b, c - '0');
    e_cursor(f, 1);
+   break;
+  default:
    break;
  }
  return(0);
@@ -2066,33 +2026,29 @@ int e_ctrl_o(FENSTER *f)
    something has happened */
 int e_tst_dfkt(FENSTER *f, int c)
 {
- if (c >= Alt1 && c <= Alt9)
+ int number = wpe_binding_window_number(c);
+
+ if (number > 0)
  {
-  e_switch_window(c - Alt1 + 1, f);
+  e_switch_window(number, f);
   return(0);
  }
- if (c >= 1024 && c <= 1049)
+ switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_WINDOW))
  {
-  e_switch_window(c - 1014, f);
-  return(0);
- }
- switch (c)
- {
-  case F1:
-  case HELP:
+  case WPE_ACT_HELP_EDITOR:
    e_help_loc(f, 0);
    break;
 #if defined(PROG)
-  case CF1:
+  case WPE_ACT_TOPIC_SEARCH:
    if (WpeIsProg())
     e_topic_search(f);
    break;
-  case AF1:
+  case WPE_ACT_FUNCTION_INDEX:
    if (WpeIsProg())
     e_funct_in(f);
    break;
 #endif
-  case WPE_ESC:
+  case WPE_ACT_ESCAPE:
    /* Borland/Turbo Vision faithful: a bare Esc opens nothing.  F10 (and
       Alt-Space) enter the menu; Esc only CANCELS an already-open dialog or
       menu, and those have their own input loops that consume it -- so here,
@@ -2104,94 +2060,44 @@ int e_tst_dfkt(FENSTER *f, int c)
     e_messages_return(f);
 #endif
    break;
-  case F10:
-  case AltBl:
+  case WPE_ACT_MENU_BAR:
    WpeHandleMainmenu(-1, f);
    break;
-  case Alt0:
+  case WPE_ACT_LIST_WINDOWS:
    e_list_all_win(f);
    break;
-  case AF5:
+  case WPE_ACT_USER_SCREEN:
    e_user_screen(f);
    break;
+  case WPE_ACT_SIZE_MOVE:
+   e_size_move(f);
+   break;
+  case WPE_ACT_FILE_MANAGER:
+   WpeManager(f);
+   break;
+  case WPE_ACT_FILE_MANAGER_FIRST:
+   WpeManagerFirst(f);
+   break;
+  case WPE_ACT_CLOSE_WINDOW:
+   e_close_window(f);
+   break;
+  case WPE_ACT_CASCADE:
+   e_ed_cascade(f);
+   break;
+  case WPE_ACT_TILE:
+   e_ed_tile(f);
+   break;
+  case WPE_ACT_ZOOM:
+   e_ed_zoom(f);
+   break;
+  case WPE_ACT_NEXT_WINDOW:
+   e_ed_next(f);
+   break;
+  case WPE_ACT_QUIT:
+   e_quit(f);
+   break;
   default:
-   if (f->ed->edopt & ED_CUA_STYLE)
-   {
-    switch (c)
-    {
-     case CtrlL:
-      e_size_move(f);
-      break;
-     case OPEN:
-     case F2:
-      WpeManager(f);
-      break;
-     case SF2:
-      WpeManagerFirst(f);
-      break;
-     case CF4:
-     case AltX:
-     case CtrlW:        /* modern close-window (browser/VSCode/IntelliJ tab) */
-      e_close_window(f);
-      break;
-     case FRONT:
-     case AltZ:
-     case SF4:
-      e_ed_cascade(f);
-      break;
-     case SF5:
-      e_ed_tile(f);
-      break;
-     case SF6:
-      e_ed_zoom(f);
-      break;
-     case CF6:
-     case AltN:
-      e_ed_next(f);
-      break;
-     case STOP:
-     case AF4:
-      e_quit(f);
-      break;
-     default:
-      return(c);
-    }
-   }
-   else
-   {
-    switch(c)
-    {
-     case CF5:
-     case AF2:
-      e_size_move(f);
-      break;
-     case OPEN:
-     case F3:
-      WpeManager(f);
-      break;
-     case CF3:
-      WpeManagerFirst(f);
-      break;
-     case CtrlW:        /* modern close-window; Alt-F3 dropped (WM/kernel grabs it) */
-      e_close_window(f);
-      break;
-     case FRONT:
-     case AltZ:
-     case F5:
-      e_ed_zoom(f);
-      break;
-     case F6:
-     case AltN:
-      e_ed_next(f);
-      break;
-     case STOP:
-     case AltX:
-      e_quit(f);
-      break;
-     default:
-      return(c);
-    }
-   }
+   return(c);
  }
  return(0);
 }

@@ -115,282 +115,7 @@ OPT opt[] = {  {"#",        3, '#', AltSYS},
 #endif
 	    };
 
-WOPT eblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"F2 Save",  9, 0, 2, F2},
-		    {"F3 Files", 18, 0, 2,  F3},
-		    {"^W Close W.", 28, 0, 2, CtrlW},
-		    {"F4 Search", 45, 0, 2, F4},
-		    {"^L S.Again", 56, 0, 2, CF4},
-		    {"Alt-X Quit",  68, 0, 5, AltX}  };
-
-WOPT eblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Alt-F2 Save",  9, 0, 6, AF2},
-		    {"F2 Files", 22, 0, 2,  F2},
-		    {"^F4 Close ", 32, 0, 3, CF4},
-		    {"Alt-F3 Srch", 44, 0, 6, AF3},
-		    {"F3 S.Ag.", 57, 0, 2, F3},
-		    {"Alt-F4 Quit",  67, 0, 6, AF4}  };
-
-/* The editor bar of the programming modes (wpe, xwpe): F9 builds, as Turbo
-   C's bar said, so the bar names it.  "Close" and "Again" are shortened to
-   keep every key on an 80-column row; the plain editor (we) has no F9 and
-   keeps the bar above.  The CUA bars have no room for one more entry.  The
-   Messages bar is the one that offers Compile and Make by name. */
-WOPT eblst_prog_o[] = {  {"F1 Help",  0, 0, 2, F1},
-			 {"F2 Save",  9, 0, 2, F2},
-			 {"F3 Files", 18, 0, 2,  F3},
-			 {"^W Close", 28, 0, 2, CtrlW},
-			 {"F4 Search", 37, 0, 2, F4},
-			 {"^L Again", 48, 0, 2, CF4},
-			 {"F9 Build", 58, 0, 2, F9},
-			 {"Alt-X Quit",  68, 0, 5, AltX}  };
-
-/* Editor bottom bar shown ONLY while an LSP-supported file is the active window
-   (chosen per-window in e_edit) -- it swaps the "Search Again" hint for an
-   "Alt-Q ? Metals" entry.  The highlighted "Alt-Q ?" (n=7) tells the user how to
-   OPEN the action menu from the keyboard, the way every other entry on this bar
-   shows its key in red (cf. "Alt-X Quit", "^W Close W.").  "Metals" names the
-   server (when clangd/pyright is wired, give it its own variant).  The actions
-   themselves run with Alt-Q+letter directly (no menu, no flicker -- the Borland
-   Ctrl-K-for-blocks idea); Alt-Q ?, F1, an unknown key, or a click on this entry
-   open the menu for discovery.  Alt-Q ("Query the language server") is the only
-   collision-free mnemonic: M=Make, L=Install, A=exec-Make are taken and the sole
-   free Alt-letter (K) has no tie to a language server.  Positions are packed a
-   little tighter than the plain editor bar to fit the longer entry. */
-WOPT eblst_lsp_o[] = {  {"F1 Help",  0, 0, 2, F1},
-			{"F2 Save",  8, 0, 2, F2},
-			{"F3 Files", 16, 0, 2,  F3},
-			{"^W Close", 25, 0, 2, CtrlW},
-			{"F4 Search", 34, 0, 2, F4},
-			{"Alt-Q ? Metals", 44, 0, 7, WPE_LSP_MENU},
-			{"F9 Build", 59, 0, 2, F9},
-			{"Alt-X Quit",  68, 0, 5, AltX}  };
-
-WOPT eblst_lsp_u[] = {  {"F1 Help",  0, 0, 2, F1},
-			{"Alt-F2 Save",  8, 0, 6, AF2},
-			{"F2 Files", 20, 0, 2,  F2},
-			{"^F4 Close ", 29, 0, 3, CF4},
-			{"Alt-F3 Srch", 40, 0, 6, AF3},
-			{"Alt-Q ? Metals", 52, 0, 7, WPE_LSP_MENU},
-			{"Alt-F4 Quit",  67, 0, 6, AF4}  };
-
-#ifdef WPE_AI
-/* Editor bottom bar shown while the AI assistant is enabled and the active
-   window holds a plain file that did NOT already get the contextual LSP bar.
-   It swaps the "Search Again" hint for an "Alt-G AI" entry: the highlighted
-   "Alt-G" (n=5) shows the keyboard prefix, and a click on the entry opens the
-   AI action menu (handled as WPE_AI_MENU in e_prog_switch).  "Alt-G AI" keeps
-   the column of the "Search Again" slot it replaces in the plain editor bar;
-   "F9 Build" sits right before it. */
-WOPT eblst_ai_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		       {"F2 Save",  9, 0, 2, F2},
-		       {"F3 Files", 18, 0, 2,  F3},
-		       {"^W Close", 28, 0, 2, CtrlW},
-		       {"F4 Search", 37, 0, 2, F4},
-		       {"F9 Build", 47, 0, 2, F9},
-		       {"Alt-G AI", 56, 0, 5, WPE_AI_MENU},
-		       {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT eblst_ai_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		       {"Alt-F2 Save",  9, 0, 6, AF2},
-		       {"F2 Files", 22, 0, 2,  F2},
-		       {"^F4 Close ", 32, 0, 3, CF4},
-		       {"Alt-F3 Srch", 44, 0, 6, AF3},
-		       {"Alt-G AI", 57, 0, 5, WPE_AI_MENU},
-		       {"Alt-F4 Quit",  67, 0, 6, AF4}  };
-
-/* Combined editor bottom bar for a file that has BOTH a language server AND the
-   AI assistant enabled: it must show BOTH prefixes so neither feature loses its
-   discoverability -- "Alt-Q ? LSP" opens the language-server action menu (the
-   "Alt-Q ?" in red shows the keyboard prefix) and "Alt-G AI" opens the AI menu.
-   To fit both in 80 columns the "Search Again" and "Search" hints are dropped
-   (F4/^L still work); the server name is shown generically as "LSP" since the
-   slot is shared.  Alt-Q and Alt-G both keep working regardless -- this only
-   restores their on-screen hints. */
-WOPT eblst_lspai_o[] = {  {"F1 Help",  0, 0, 2, F1},
-			  {"F2 Save",  8, 0, 2, F2},
-			  {"F3 Files", 16, 0, 2,  F3},
-			  {"^W Close", 25, 0, 2, CtrlW},
-			  {"Alt-Q ? LSP", 34, 0, 7, WPE_LSP_MENU},
-			  {"Alt-G AI", 46, 0, 5, WPE_AI_MENU},
-			  {"F9 Build", 55, 0, 2, F9},
-			  {"Alt-X Quit",  64, 0, 5, AltX}  };
-
-WOPT eblst_lspai_u[] = {  {"F1 Help",  0, 0, 2, F1},
-			  {"Alt-F2 Save",  8, 0, 6, AF2},
-			  {"F2 Files", 20, 0, 2,  F2},
-			  {"^F4 Close", 30, 0, 3, CF4},
-			  {"Alt-Q ? LSP", 40, 0, 7, WPE_LSP_MENU},
-			  {"Alt-G AI", 54, 0, 5, WPE_AI_MENU},
-			  {"Alt-F4 Quit",  67, 0, 6, AF4}  };
-#endif
-
-WOPT fblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Edit",  10, 0, 1, AltE},
-		    {"Attributes", 17, 0, 1,  AltA},
-		    {"Move", 29, 0, 1, AltM},
-		    {"COpy", 35, 1, 1, AltO},
-		    {"Remove", 41, 0, 1, AltR},
-		    {"^W Close W.", 49, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT fblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Edit",  9, 0, 1, AltE},
-		    {"RePlace", 15, 2, 1,  AltP},
-		    {"Move", 24, 0, 1, AltM},
-		    {"DUplicate", 30, 1, 1, AltU},
-		    {"Remove", 41, 0, 1, AltR},
-		    {"^F4 Close W.", 49, 0, 3, CF4},
-		    {"Alt-F4 Quit",  63, 0, 6, AF4}  };
-
-WOPT mblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"PreV. Err.",  9, 3, 1, AltV},
-		    {"NexT Err.", 21, 3, 1,  AltT},
-		    {"Compile", 32, 0, 1, AltC},
-		    {"Make", 41, 0, 1, AltM},
-		    {"RUn", 47, 1, 1, AltU},
-		    {"^W Close", 52, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT mblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"PreV. Err.",  9, 3, 1, AltV},
-		    {"NexT Err.", 21, 3, 1,  AltT},
-		    {"Compile", 32, 0, 1, AltC},
-		    {"Make", 41, 0, 1, AltM},
-		    {"RUn", 47, 1, 1, AltU},
-		    {"^F4 Close", 52, 0, 3, CF4},
-		    {"Alt-F4 Quit",  63, 0, 6, AF4}  };
-
-WOPT dblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"^F7 Make Watch",  9, 0, 3, CF7},
-		    {"F7 Trace", 25, 0, 2,  F7},
-                    {"F8 Step", 34, 0, 2, F8},
-		    {"^F10 Run", 43, 0, 4, CF10},
-		    {"^W Close", 53, 0, 2, CtrlW},
-		    {"Alt-X Quit",  67, 0, 5, AltX}  };
-
-WOPT dblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"^F5 Make Watch",  9, 0, 3, CF5},
-		    {"F7 Trace", 25, 0, 2,  F7},
-		    {"F8 Step", 34, 0, 2, F8},
-		    {"^F10 Run", 43, 0, 4, CF10},
-		    {"^F4 Close", 53, 0, 3, CF4},
-                    {"Alt-F4 Quit",  64, 0, 6, AF4}  };
-
-/* The bar a source window shows while a debug session runs: the keys that
-   drive the session, the way Turbo C's bar named them, so the user does not
-   have to remember them.  A click sends the key the label names, so "^F10
-   Run" would continue and "^F2 Quit" ends the debugger; "F4 Go to cursor" is
-   the Borland style's, which is the only style that has one.  The CUA style
-   keeps its editing bar: its debugger keys are not decided yet, and a bar
-   that names a key doing nothing is worse than one that names none. */
-WOPT dblst_src_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"F7 Trace", 8, 0, 2, F7},
-		    {"F8 Step", 17, 0, 2, F8},
-		    {"F4 Go to cursor", 25, 0, 2, F4},
-		    {"^F7 Make Watch", 41, 0, 3, CF7},
-		    {"^F2 Quit", 56, 0, 3, CF2},
-		    {"Alt-X Quit", 66, 0, 5, AltX}  };
-
-/* The bar a source window shows while the program runs under the debugger:
-   only keys that work then.  F7, F8, F4 and the breakpoint and watch keys are
-   refused until the program stops, so they are not named (they come back
-   here when breakpoints and watches can change during a run); a click on
-   "^Brk Pause" sends Ctrl-Break, so a terminal that never sends that key can
-   still pause the program. */
-WOPT dblst_run_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"^Brk Pause", 9, 0, 4, CtrlBrk},
-		    {"^F2 Quit", 21, 0, 3, CF2}  };
-
-WOPT xblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Execute",  19, 0, 1, AltE},
-		    {"^W Close W.", 38, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT xblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Execute",  19, 0, 1, AltE},
-		    {"^F4 Close W.", 38, 0, 3, CF4},
-		    {"Alt-F4 Quit",  63, 0, 6, AF4}  };
-
-WOPT wblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Write",  19, 0, 1, AltW},
-		    {"^W Close W.", 38, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT wblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Write",  19, 0, 1, AltW},
-		    {"^F4 Close W.", 38, 0, 3, CF4},
-		    {"Alt-F4 Quit",  63, 0, 6, AF4}  };
-
-WOPT rblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Read",  19, 0, 1, AltR},
-		    {"^W Close W.", 38, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT rblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Read",  19, 0, 1, AltR},
-		    {"^F4 Close W.", 38, 0, 3, CF4},
-		    {"Alt-F4 Quit",  63, 0, 6, AF4}  };
-
-WOPT ablst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Add",  19, 0, 1, AltA},
-		    {"^W Close W.", 38, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT ablst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Add",  19, 0, 1, AltA},
-		    {"^F4 Close W.", 38, 0, 3, CF4},
-		    {"Alt-F4 Quit",  63, 0, 6, AF4}  };
-
-WOPT sblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Save",  14, 0, 1, AltS},
-		    {"Change Dir",  25, 0, 1, AltC},
-		    {"^W Close W.", 42, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT sblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Save",  14, 0, 1, AltS},
-		    {"Change Dir",  25, 0, 1, AltC},
-		    {"^F4 Close W.", 42, 0, 3, CF4},
-		    {"Alt-F4 Quit",  66, 0, 6, AF4}  };
-
-WOPT hblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"<BSP> Back",  9, 0, 5, WPE_DC},
-		    {"<CR> Goto",  21, 0, 4, WPE_CR},
-		    {" PreVious",  32, 4, 1, AltV},
-		    {" NexT",  45, 4, 1, AltT},
-		    {"^W Close", 54, 0, 2, CtrlW},
-		    {"Alt-X Quit",  68, 0, 5, AltX}  };
-
-WOPT hblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"<BSP> Back",  9, 0, 5, WPE_DC},
-		    {"<CR> Goto",  21, 0, 4, WPE_CR},
-		    {" PreVious",  32, 4, 1, AltV},
-		    {" NexT",  45, 4, 1, AltT},
-		    {"^F4 Close", 54, 0, 3, CF4},
-		    {"Alt-F4 Quit",  65, 0, 6, AF4}  };
-
-WOPT gblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Show",  19, 0, 1, AltS},
-		    {"^W Close W.", 38, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX}  };
-
-WOPT gblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Show",  19, 0, 1, AltS},
-		    {"^F4 Close W.", 38, 0, 3, CF4},
-		    {"Alt-F4 Quit",  63, 0, 6, AF4}  };
-
-WOPT oblst_o[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Add",  14, 0, 1, AltA},
-		    {"Delete",  25, 0, 1, AltD},
-		    {"^W Close W.", 42, 0, 2, CtrlW},
-		    {"Alt-X Quit",  66, 0, 5, AltX} };
-
-WOPT oblst_u[] = {  {"F1 Help",  0, 0, 2, F1},
-		    {"Add",  14, 0, 1, AltA},
-		    {"Delete",  25, 0, 1, AltD},
-		    {"^F4 Close W.", 42, 0, 3, CF4},
-		    {"Alt-F4 Quit",  63, 0, 6, AF4}  };
+/* The bottom bars are built from the key table: see we_bars.c. */
 
 void ECNT_Init(ECNT *cn)
 {
@@ -646,8 +371,7 @@ int main(int argc, char **argv)
   if (info_file) FREE(info_file);
   info_file = e_info_search_path(tp);    /* keep our infodir ahead of $INFOPATH too */
  }
- if (cn->edopt & ED_CUA_STYLE) blst = eblst_u;
- else blst = eblst_o;
+ blst = eblst_bar;
  e_ini_desk(cn);
  e_use_editor_bar(cn->f[0], eblst);
 #if MOUSE
@@ -693,63 +417,53 @@ int main(int argc, char **argv)
   else if (cn->f[cn->mxedt]->dtmd == DTMD_FILEMANAGER) i = WpeHandleFileManager(cn);
   else if (cn->f[cn->mxedt]->dtmd == DTMD_DATA) i = e_data_eingabe(cn);
   else i = e_eingabe(cn);
-  if (i == AltX) i = e_quit(cn->f[cn->mxedt]);
+  if (i == WPE_RESULT_QUIT) i = e_quit(cn->f[cn->mxedt]);
  }
- while (i != AltX);
+ while (i != WPE_RESULT_QUIT);
  WpeExit(0);
  return 0;
 }
 
-#define E_BAR_LEN(bar) ((int)(sizeof(bar) / sizeof((bar)[0])))
-
-/* The editor-window bars and their number of entries: the ones that name
-   F9 have one more.  The debug bar belongs here too, so a window that gets
+/* The editor-window bars: the ones that name F9 have one more entry than
+   the plain one.  The debug bar belongs here too, so a window that gets
    it paints and takes clicks on exactly its own entries. */
-static const struct {
- WOPT *bar;
- int n;
-} e_editor_bars[] = {
- {  eblst_o, E_BAR_LEN(eblst_o)  },
- {  eblst_u, E_BAR_LEN(eblst_u)  },
- {  eblst_prog_o, E_BAR_LEN(eblst_prog_o)  },
- {  eblst_lsp_o, E_BAR_LEN(eblst_lsp_o)  },
- {  eblst_lsp_u, E_BAR_LEN(eblst_lsp_u)  },
- {  dblst_src_o, E_BAR_LEN(dblst_src_o)  },
- {  dblst_run_o, E_BAR_LEN(dblst_run_o)  },
+static WOPT *const e_editor_bars[] = {
+ eblst_bar, eblst_prog_bar, eblst_lsp_bar,
+ dblst_src_bar, dblst_run_bar,
 #ifdef WPE_AI
- {  eblst_ai_o, E_BAR_LEN(eblst_ai_o)  },
- {  eblst_ai_u, E_BAR_LEN(eblst_ai_u)  },
- {  eblst_lspai_o, E_BAR_LEN(eblst_lspai_o)  },
- {  eblst_lspai_u, E_BAR_LEN(eblst_lspai_u)  },
+ eblst_ai_bar, eblst_lspai_bar,
 #endif
 };
 
-/**
- * e_editor_bar_size - How many entries an editor-window bar has.
- * @bar: one of the editor bars.
- *
- * The bars of the programming modes name F9 and have one entry more than
- * the plain editor's, so the count travels with the bar: a window that
- * changes bar (the AI switch, the CUA keys) paints and takes clicks on
- * exactly the entries its new bar has.
- * Return: the number of entries, 0 for a bar that is not an editor bar.
- */
-int e_editor_bar_size(WOPT *bar)
-{
- int i;
-
- for (i = 0; i < E_BAR_LEN(e_editor_bars); i++)
-  if (e_editor_bars[i].bar == bar)
-   return(e_editor_bars[i].n);
- return(0);
-}
+#define E_EDITOR_BARS ((int)(sizeof(e_editor_bars) / sizeof(e_editor_bars[0])))
 
 /**
  * e_is_editor_bar - Is @bar one of the editor-window bars?
  */
 static int e_is_editor_bar(WOPT *bar)
 {
- return(e_editor_bar_size(bar) > 0);
+ int i;
+
+ for (i = 0; i < E_EDITOR_BARS; i++)
+  if (e_editor_bars[i] == bar)
+   return(1);
+ return(0);
+}
+
+/**
+ * e_editor_bar_size - How many entries an editor-window bar has.
+ * @bar: one of the editor bars.
+ *
+ * The bars of the programming modes name F9 and have one entry more than
+ * the plain editor's, and the CUA style's bars have fewer than the
+ * Borland style's, so the count travels with the bar: a window that
+ * changes bar (the AI switch, the CUA keys) paints and takes clicks on
+ * exactly the entries its new bar has in the style in use.
+ * Return: the number of entries, 0 for a bar that is not an editor bar.
+ */
+int e_editor_bar_size(WOPT *bar)
+{
+ return(e_is_editor_bar(bar) ? e_bar_length(bar) : 0);
 }
 
 /**
@@ -765,92 +479,54 @@ void e_use_editor_bar(FENSTER *f, WOPT *bar)
 /**
  * e_plain_editor_bar - The bar of an editor window with no language
  * server and no assistant.
- * @cua: the CUA key style is on.
+ * @style: WPE_STYLE_*.
  *
  * wpe and xwpe show F9, which builds there; we does not build and keeps
  * the classic bar.
  */
-WOPT *e_plain_editor_bar(int cua)
+WOPT *e_plain_editor_bar(int style)
 {
- if (cua)
-  return(eblst_u);
+ if (style == WPE_STYLE_CUA)
+  return(eblst_bar);
  if (WpeIsProg())
-  return(eblst_prog_o);
- return(eblst_o);
+  return(eblst_prog_bar);
+ return(eblst_bar);
 }
 
 /**
- * e_editor_bar_in_style - The same editor bar in the other key style.
- * @bar: an editor bar; @cua: the style to change to.
- * Return: the bar to use, @bar itself when it is already in that style.
+ * e_use_style_bars - Make the bars of a key style the ones every kind of window
+ * draws from.
+ * @style: WPE_STYLE_*.
+ *
+ * Every bar is one array that windows point at; this fills them for the style
+ * and names the plain editor bar the style and the mode call for.
  */
-static WOPT *e_editor_bar_in_style(WOPT *bar, int cua)
+static void e_use_style_bars(int style)
 {
- if (bar == eblst_o || bar == eblst_u || bar == eblst_prog_o)
-  return(e_plain_editor_bar(cua));
- if (bar == eblst_lsp_o || bar == eblst_lsp_u)
-  return(cua ? eblst_lsp_u : eblst_lsp_o);
+ e_bars_use_style(style);
+ eblst = e_plain_editor_bar(style);
+ eblst_lsp = eblst_lsp_bar;
+ fblst = fblst_bar; mblst = mblst_bar; dblst = dblst_bar;
+ xblst = xblst_bar; wblst = wblst_bar; rblst = rblst_bar; ablst = ablst_bar;
+ sblst = sblst_bar; hblst = hblst_bar; gblst = gblst_bar; oblst = oblst_bar;
 #ifdef WPE_AI
- if (bar == eblst_ai_o || bar == eblst_ai_u)
-  return(cua ? eblst_ai_u : eblst_ai_o);
- if (bar == eblst_lspai_o || bar == eblst_lspai_u)
-  return(cua ? eblst_lspai_u : eblst_lspai_o);
+ eblst_ai = eblst_ai_bar;
+ eblst_lspai = eblst_lspai_bar;
 #endif
- return(bar);
 }
 
+/**
+ * e_switch_blst - The key style changed: draw the bars again for it.
+ * @cn: the editor.
+ *
+ * The bars are filled for the new style and every editor window takes the
+ * bar its style offers, with the length that style gives it.  The debugger's
+ * bar belongs to the Borland style alone, so the editor bars are all picked
+ * again.
+ */
 int e_switch_blst(ECNT *cn)
 {
- int i;
- FENSTER *f;
-
- for (i = 0; i <= cn->mxedt; i++)
- {
-  f = cn->f[i];
-  if (e_is_editor_bar(f->blst))
-   e_use_editor_bar(f, e_editor_bar_in_style(f->blst,
-                                            (cn->edopt & ED_CUA_STYLE) != 0));
- }
- if (cn->edopt & ED_CUA_STYLE)
- {
-  for (i = 0; i <= cn->mxedt; i++)
-  {
-   f = cn->f[i];
-   if (e_is_editor_bar(f->blst)) continue;
-   else if (f->blst == fblst_o) f->blst= fblst_u;
-   else if (f->blst == mblst_o) f->blst= mblst_u;
-   else if (f->blst == dblst_o) f->blst= dblst_u;
-   else if (f->blst == xblst_o) f->blst= xblst_u;
-   else if (f->blst == wblst_o) f->blst= wblst_u;
-   else if (f->blst == rblst_o) f->blst= rblst_u;
-   else if (f->blst == ablst_o) f->blst= ablst_u;
-   else if (f->blst == sblst_o) f->blst= sblst_u;
-   else if (f->blst == hblst_o) f->blst= hblst_u;
-   else if (f->blst == gblst_o) f->blst= gblst_u;
-   else if (f->blst == oblst_o) f->blst= oblst_u;
-  }
- }
- else
- {
-  for(i = 0; i <= cn->mxedt; i++)
-  {
-   f = cn->f[i];
-   if (e_is_editor_bar(f->blst)) continue;
-   else if (f->blst == fblst_u) f->blst= fblst_o;
-   else if (f->blst == mblst_u) f->blst= mblst_o;
-   else if (f->blst == dblst_u) f->blst= dblst_o;
-   else if (f->blst == xblst_u) f->blst= xblst_o;
-   else if (f->blst == wblst_u) f->blst= wblst_o;
-   else if (f->blst == rblst_u) f->blst= rblst_o;
-   else if (f->blst == ablst_u) f->blst= ablst_o;
-   else if (f->blst == sblst_u) f->blst= sblst_o;
-   else if (f->blst == hblst_u) f->blst= hblst_o;
-   else if (f->blst == gblst_u) f->blst= gblst_o;
-   else if (f->blst == oblst_u) f->blst= oblst_o;
-  }
- }
- /* The debugger's bar belongs to the Borland style alone, and an editor bar
-    has to be the one this style offers: re-pick them all after the swap. */
+ e_use_style_bars(wpe_binding_style(cn->edopt));
  e_refresh_editor_bars(cn);
  return(0);
 }
@@ -896,7 +572,7 @@ int e_lsp_bar_wanted(FENSTER *f)
 
 /**
  * e_editor_bar_for - The editing bar a file window shows right now.
- * @f: the window; @cua: the CUA key style is on.
+ * @f: the window; @style: the key style.
  *
  * One place decides which editing keys a file window offers, so a window
  * never keeps a bar that a change made wrong: the assistant switched off, a
@@ -904,21 +580,21 @@ int e_lsp_bar_wanted(FENSTER *f)
  * server and the assistant gets the combined bar, so neither hint is lost.
  * Return: the bar to give the window.
  */
-static WOPT *e_editor_bar_for(FENSTER *f, int cua)
+static WOPT *e_editor_bar_for(FENSTER *f, int style)
 {
 #ifdef WPE_AI
 #ifdef DEBUGGER
  if (e_ai_bar_wanted() && e_lsp_bar_wanted(f))
-  return(cua ? eblst_lspai_u : eblst_lspai_o);
+  return(eblst_lspai_bar);
 #endif
  if (e_ai_bar_wanted())
-  return(cua ? eblst_ai_u : eblst_ai_o);
+  return(eblst_ai_bar);
 #endif
 #ifdef DEBUGGER
  if (e_lsp_bar_wanted(f))
-  return(cua ? eblst_lsp_u : eblst_lsp_o);
+  return(eblst_lsp_bar);
 #endif
- return(e_plain_editor_bar(cua));
+ return(e_plain_editor_bar(style));
 }
 
 /**
@@ -935,7 +611,7 @@ static int e_debug_bar_wanted(ECNT *cn)
 #ifndef DEBUGGER
  return(0);
 #else
- if (cn->edopt & ED_CUA_STYLE)
+ if (wpe_binding_style(cn->edopt) == WPE_STYLE_CUA)
   return(0);
  return(e_d_session_runs());
 #endif
@@ -997,13 +673,13 @@ static void e_use_messages_bar(FENSTER *f, int running)
 {
  if (running)
  {
-  f->blst = dblst_run_o;
-  f->nblst = E_BAR_LEN(dblst_run_o);
+  f->blst = dblst_run_bar;
+  f->nblst = e_bar_length(dblst_run_bar);
  }
- else if (f->blst == dblst_run_o)
+ else if (f->blst == dblst_run_bar)
  {
   f->blst = mblst;
-  f->nblst = E_BAR_LEN(mblst_o);   /* mblst_u has as many entries */
+  f->nblst = e_bar_length(mblst_bar);
  }
 }
 
@@ -1035,7 +711,7 @@ void e_refresh_editor_bars(ECNT *cn)
  */
 void e_pick_editor_bars(ECNT *cn)
 {
- int i, cua = (cn->edopt & ED_CUA_STYLE) ? 1 : 0;
+ int i, style = wpe_binding_style(cn->edopt);
  int debugging = e_debug_bar_wanted(cn);
 
  for (i = 0; i <= cn->mxedt; i++)
@@ -1050,7 +726,7 @@ void e_pick_editor_bars(ECNT *cn)
   if (!e_is_editor_bar(f->blst))
    continue;                            /* not an editor-file bar -- leave it   */
   if (!debugging || !e_give_debug_bar(f))
-   e_use_editor_bar(f, e_editor_bar_for(f, cua));
+   e_use_editor_bar(f, e_editor_bar_for(f, style));
  }
 }
 
@@ -1073,9 +749,9 @@ int e_give_debug_bar(FENSTER *f)
   return(0);
 #ifdef DEBUGGER
  if (e_d_program_runs())
-  e_use_editor_bar(f, dblst_run_o);
+  e_use_editor_bar(f, dblst_run_bar);
  else
-  e_use_editor_bar(f, dblst_src_o);
+  e_use_editor_bar(f, dblst_src_bar);
 #endif
  return(1);
 }
@@ -1091,7 +767,7 @@ int e_give_debug_bar(FENSTER *f)
  */
 int e_bar_offers_goto_cursor(FENSTER *f)
 {
- return(f && f->blst == dblst_src_o);
+ return(f && f->blst == dblst_src_bar);
 }
 
 /**
@@ -1129,8 +805,7 @@ void e_pack_button_bar(WOPT *bar, int n, int x0, int gap)
    internal clipboard Buffer at f[0] has no visible frame to host it). */
 void e_show_empty_desk(ECNT *cn)
 {
- if (cn->edopt & ED_CUA_STYLE) blst = eblst_u;
- else                          blst = eblst_o;
+ blst = eblst_bar;
  nblst = 0;
  e_ini_desk(cn);
  fk_cursor(0);
@@ -1142,28 +817,7 @@ void e_ini_desk(ECNT *cn)
  extern int e_mn_men;
  int i;
 
- if (cn->edopt & ED_CUA_STYLE)
- {
-  eblst = eblst_u; fblst = fblst_u; mblst = mblst_u; dblst = dblst_u;
-  xblst = xblst_u; wblst = wblst_u; rblst = rblst_u; ablst = ablst_u;
-  sblst = sblst_u; hblst = hblst_u; gblst = gblst_u; oblst = oblst_u;
-  eblst_lsp = eblst_lsp_u;
-#ifdef WPE_AI
-  eblst_ai = eblst_ai_u;
-  eblst_lspai = eblst_lspai_u;
-#endif
- }
- else
- {
-  eblst = e_plain_editor_bar(0); fblst = fblst_o; mblst = mblst_o; dblst = dblst_o;
-  xblst = xblst_o; wblst = wblst_o; rblst = rblst_o; ablst = ablst_o;
-  sblst = sblst_o; hblst = hblst_o; gblst = gblst_o; oblst = oblst_o;
-  eblst_lsp = eblst_lsp_o;
-#ifdef WPE_AI
-  eblst_ai = eblst_ai_o;
-  eblst_lspai = eblst_lspai_o;
-#endif
- }
+ e_use_style_bars(wpe_binding_style(cn->edopt));
  /* Pack the project (Data window) status bar compactly like the editor bar,
     leaving the right edge free for the "Project: <name>" label drawn by
     e_pr_uul. Two-column gap matches the editor's button spacing. */
