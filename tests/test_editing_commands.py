@@ -13,6 +13,7 @@ a file that can be saved) and the window on the screen.
 - Ctrl-O E (the help file's end-of-page mark) is one Undo step.
 """
 import os
+import re
 
 import pytest
 
@@ -501,3 +502,30 @@ def _replayed_until(s, key, want):
         if _saved(s) == want:
             break
     return s.text()
+
+
+def _cursor_readout(s):
+    """The "line:column" the status row of the current window shows."""
+    for row in s.display(drain=0.3):
+        found = re.search(r"\b(\d+:\d+)\s", row)
+        if found and "ro.c" not in row:
+            return found.group(1)
+    return None
+
+
+# @scenario SC-buffer-01
+def test_backspace_with_auto_indent_in_a_read_only_window_keeps_the_cursor(tmp_path):
+    """In a read-only C file Backspace behind the first letter of an
+    indented line changes nothing: the text is as it was and the cursor
+    stays where it was, never one column to the left."""
+    with WpeSession(str(tmp_path), "") as s:
+        _open_read_only(s, tmp_path)
+        s.key(DOWN, END, delay=0.4)
+        before = _cursor_readout(s)
+        assert before is not None, "no cursor readout:\n" + "\n".join(s.display())
+        rows = _text_rows(s)
+        s.key("\x7f", delay=0.5)
+        assert _cursor_readout(s) == before, \
+            "Backspace moved the cursor of a read-only window:\n" + "\n".join(s.display())
+        assert _text_rows(s) == rows, "Backspace changed a read-only window"
+        assert s.alive(), "wpe died"

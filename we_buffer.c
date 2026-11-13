@@ -4914,15 +4914,18 @@ static int buffer_action_shell(WpeBufferAction *a)
  * buffer_action_end - Action @a is over, made or refused for @r.
  *
  * Refused for want of memory, the status row says so once, in the action's
- * own words; a refusal for the shape of the text (a piece that reached past
- * its span, a row wider than Max. Columns) is traced and silent, as a
- * replay's.  Memory a test refused to the action is back.
+ * own words; refused for the shape of the text (a piece that reached past
+ * its span, a row wider than Max. Columns) it says that once, with that
+ * reason, and the trace names the row.  Memory a test refused to the action
+ * is back.
  * Return: @r.
  */
 static int buffer_action_end(WpeBufferAction *a, int r)
 {
  if (r == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(a->b, a->what);
+ else if (r == E_BUFFER_RANGE)
+  wpe_buffer_say_shape(a->b, a->what);
  e_buffer_test_fault_leave(a->fault);
  a->fault = 0;
  return(r);
@@ -4950,7 +4953,7 @@ static int buffer_action_refused(WpeBufferAction *a, int r)
  * do (Ctrl-K I over a block inside one row): nothing is begun, taken or
  * traced.
  * Return: E_BUFFER_OK with @a->shell set; E_BUFFER_NOTHING, E_BUFFER_LOCKED,
- * E_BUFFER_NOMEM (said) or E_BUFFER_RANGE (traced), with nothing kept and
+ * E_BUFFER_NOMEM (said) or E_BUFFER_RANGE (said and traced), with nothing kept and
  * the user's text, cursor and marks as they were.
  */
 int e_buffer_action_begin(WpeBufferAction *a, BUFFER *b, int y0, int y1, int point,

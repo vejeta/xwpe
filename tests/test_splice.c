@@ -95,6 +95,19 @@ void wpe_buffer_say_nomem(BUFFER *b, const char *what)
  nomem_calls++;
 }
 
+static int shape_calls;          /* refusals said for the shape of the text */
+
+/* As the editor's: a refusal inside a shell counts there and says nothing. */
+void wpe_buffer_say_shape(BUFFER *b, const char *what)
+{
+ (void) what;
+ if (e_buffer_is_shell(b)) {
+  e_buffer_shell_refused(b);
+  return;
+ }
+ shape_calls++;
+}
+
 static int read_only_calls;
 
 /* As the editor's: the status row says a read-only window kept its text. */
@@ -265,6 +278,7 @@ static void hooks_reset(void)
  moved_nremoved = moved_nadded = 0;
  overrun_traced = move_view_traced = row_wider_traced = block_in_step_traced = 0;
  rows_past_traced = shell_record_traced = user_record_traced = read_only_calls = 0;
+ shape_calls = 0;
  stub_refuses = stub_overruns = 0;
  replay_calls = replay_row_missing = stub_marks_past = block_calls = 0;
 }
@@ -2932,6 +2946,26 @@ static void case_an_empty_shift_begins_nothing(void)
  fixture_free();
 }
 
+/* An action refused for the shape of the text (rows the text does not
+   have) is said once on the status row, with that reason and not as memory;
+   an action with nothing to do says nothing. */
+static void case_an_action_refused_for_the_shape_of_the_text_says_so(void)
+{
+ WpeBufferAction a;
+
+ fixture(8, E_BUFFER_HISTORY_FULL);
+ chk("61 rows past the text are refused", e_buffer_action_begin(&a, &buf, 9, 10,
+     E_BUFFER_FAULT_NONE, ACTION_WHAT), E_BUFFER_RANGE);
+ chk("61 ... said once", shape_calls, 1);
+ chk("61 ... not as memory", nomem_calls, 0);
+ chk_str("61 ... the text as it was", text_of(), ACTION_BEFORE);
+ chk("61 nothing to do is not a refusal", e_buffer_action_begin(&a, &buf, 4, 3,
+     E_BUFFER_FAULT_NONE, ACTION_WHAT), E_BUFFER_NOTHING);
+ e_buffer_action_abort(&a);
+ chk("61 ... and says nothing more", shape_calls, 1);
+ fixture_free();
+}
+
 int main(void)
 {
  case_insert_above_a_mark();
@@ -3002,6 +3036,7 @@ int main(void)
  case_a_line_record_of_a_shell_keeps_unset_marks_unset();
  case_a_read_only_buffer_refuses_an_action_before_its_shell();
  case_an_empty_shift_begins_nothing();
+ case_an_action_refused_for_the_shape_of_the_text_says_so();
  if (fails) {
   printf("test_splice: %d failure(s)\n", fails);
   return(1);

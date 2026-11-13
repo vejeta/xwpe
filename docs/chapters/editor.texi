@@ -96,7 +96,9 @@ with auto-indent, @kbd{Ctrl-K I} and @kbd{Ctrl-K U}, @kbd{Ctrl-O U},
 @kbd{M} and @kbd{H}, Change All), and the Undo or Redo of any change, that
 runs out of memory is not made at all: the text, the block, the
 breakpoints and both Undo and Redo stay as they were, and the status row
-says so.  Change All that asks before each replacement stops at the one it
+says so.  An action refused because its rows would not fit a line (wider
+than Max.@: Columns) is not made either, and the status row says that.
+Change All that asks before each replacement stops at the one it
 cannot make, as @key{Esc} would, and says so.  Change All without a prompt
 needs memory for a copy of the text it searches; when there is not enough,
 nothing is replaced and the status row says so.  The assistant's pane, when it cannot get a row, does the same:
@@ -109,8 +111,9 @@ block Delete, Move and Paste do nothing there; the block commands
 @kbd{Ctrl-K I}, @kbd{U}, @kbd{D} and @kbd{F}, the line commands
 @kbd{Ctrl-O B}, @kbd{L}, @kbd{U}, @kbd{M}, @kbd{H} and @kbd{E}, and
 Search > Replace are refused and the status row says @samp{Read-only
-window: the text is unchanged}.  Copy still works, so their text can be
-taken elsewhere.
+window: the text is unchanged}.  @key{Backspace}, with auto-indent or
+without, changes nothing there and the cursor stays where it was.  Copy
+still works, so their text can be taken elsewhere.
 
 @section Block operations
 

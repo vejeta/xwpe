@@ -2146,8 +2146,7 @@ static void e_shift_right_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
  EShift *sh = plan;
  int i, j;
 
- for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
-   i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
+ for (i = e_shift_first_row(s); i <= e_shift_last_row(s); i++)
  {
   for (j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++)
    ;                              /* a row of blanks stops at its end, before its line break */
@@ -2166,8 +2165,7 @@ static void e_shift_left_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
  EShift *sh = plan;
  int n = sh->n, i, j, k, l, m, nn;
 
- for (i = (!s->mark_begin.x) ? s->mark_begin.y : s->mark_begin.y + 1;
-   i < s->mark_end.y || (i == s->mark_end.y && s->mark_end.x > 0); i++)
+ for (i = e_shift_first_row(s); i <= e_shift_last_row(s); i++)
  {
   for(j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++);
   for(l = j - 1, k = 0; l >= 0 && k < n; l--)
@@ -2612,7 +2610,7 @@ static void e_replace_hit_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
  * A replacement longer than a row is a deletion and the new rows; when
  * memory runs out for either, the occurrence stays as it was.
  * Return: E_BUFFER_OK, or the refusal (E_BUFFER_LOCKED for a read-only
- * window, E_BUFFER_NOMEM said on the status row, E_BUFFER_RANGE traced).
+ * window, E_BUFFER_NOMEM or E_BUFFER_RANGE said on the status row).
  */
 static int e_replace_hit(BUFFER *b, FIND *fd, int x, int y)
 {

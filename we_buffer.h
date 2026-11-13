@@ -269,6 +269,7 @@ void   wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
                               const int *rows_removed, int n_removed,
                               const int *rows_added, int n_added);
 void   wpe_buffer_say_nomem(BUFFER *b, const char *what);
+void   wpe_buffer_say_shape(BUFFER *b, const char *what);
 void   wpe_buffer_say_read_only(BUFFER *b);
 int    wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec);
 /* Run the character primitive that replays @rec ('a' 'r' 's' 'p') on a

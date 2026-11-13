@@ -72,6 +72,13 @@ void wpe_buffer_say_nomem(BUFFER *b, const char *what)
   e_buffer_shell_refused(b);
 }
 
+void wpe_buffer_say_shape(BUFFER *b, const char *what)
+{
+ (void) what;
+ if (e_buffer_is_shell(b))
+  e_buffer_shell_refused(b);
+}
+
 /* The driver has no status row: a refusal for a read-only window is
    seen by the client through the splice's return code alone. */
 void wpe_buffer_say_read_only(BUFFER *b)

@@ -454,6 +454,8 @@ Changes
   replacement stops at the one it cannot make and says so.  Change All
   without a prompt needs memory for a copy of the text it searches; when
   there is not enough, nothing is replaced and the status row says so.
+  An action refused because its rows would not fit a line (wider than Max.
+  Columns) says so on the status row too, and the text is unchanged.
   When the
   assistant's pane cannot get a row
   for want of memory the status row says so and the pane stays as it was

@@ -19,6 +19,8 @@
 /* Room for the status line that says a change was refused for memory. */
 #define E_BUFFER_SAY_MAX 160
 #define E_BUFFER_SAY_FMT "Out of memory: %s was not made, the text is unchanged"
+/* The same for a change refused because its rows would not fit a line. */
+#define E_BUFFER_SAY_SHAPE_FMT "Rows too wide: %s was not made, the text is unchanged"
 
 static void e_say_nomem_until_key(const char *what);
 static int e_del_line(int yd, BUFFER *b, SCHIRM *s);
@@ -4259,6 +4261,31 @@ void wpe_buffer_say_nomem(BUFFER *b, const char *what)
  }
  snprintf(line, sizeof line, E_BUFFER_SAY_FMT, what);
  wpe_buffer_trace("buffer nomem %s", what);
+ if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
+  e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
+}
+
+/**
+ * wpe_buffer_say_shape - Say on the status row that a change was refused
+ * because the rows it would make do not fit a line (wider than Max.
+ * Columns, or past the text); the text is as it was.
+ * @what: the change, in the user's words.
+ *
+ * Without it the key would seem to do nothing, and the user would not know
+ * whether to try again or to look for another way.
+ */
+void wpe_buffer_say_shape(BUFFER *b, const char *what)
+{
+ char line[E_BUFFER_SAY_MAX];
+
+ if (e_buffer_is_shell(b))
+ {
+  e_buffer_shell_refused(b);
+  wpe_buffer_trace("buffer shell shape %s", what);
+  return;
+ }
+ snprintf(line, sizeof line, E_BUFFER_SAY_SHAPE_FMT, what);
+ wpe_buffer_trace("buffer shape %s", what);
  if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
   e_status_say(WpeEditor->f[WpeEditor->mxedt], line);
 }
