@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include "we_fdloop.h"
 #include "we_clip.h"
+#include "we_layout.h"
 
 #include<signal.h>
 #define KEYFN 42
@@ -264,6 +265,22 @@ char *tgoto();
 
 int WpeGpmMouseInit(void);
 
+/**
+ * e_t_repaint_resized - The terminal's repaint of the desk after a resize.
+ *
+ * Every window's saved view describes the old grid, and the terminal's
+ * repaint does not rebuild them (the graphical displays' does), so they are
+ * freed first; the repaint opens fresh ones.  Called only by the layout
+ * owner's walk.
+ */
+static void e_t_repaint_resized(void)
+{
+ if (WpeEditor == NULL)
+  return;
+ e_free_all_pics(WpeEditor);
+ e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+}
+
 int WpeDllInit(int *argc, char **argv)
 {
  fk_u_cursor = fk_t_cursor;
@@ -286,6 +303,7 @@ int WpeDllInit(int *argc, char **argv)
  e_clip_os_set = e_clip_t_os_set;   /* ^C / ^Ins -> OS clipboard via OSC 52 */
  e_clip_os_get = e_clip_os_get_none;   /* a terminal cannot read the system's selection: Paste uses the editor's clipboard */
  e_u_serve_display = WpeNullFunction;   /* the console has no expose or resize event to answer while a command runs */
+ e_u_repaint_resized = e_t_repaint_resized;
 #ifdef HAVE_LIBGPM
  if (WpeGpmMouseInit() == 0)
  {
@@ -2160,9 +2178,7 @@ static int e_t_decode_key(int c, int mode)
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
      extbyte = REALLOC(extbyte, MAXSCOL * MAXSLNS);
 #endif
-     e_relayout_windows(WpeEditor, old_scol, old_slns);
-     e_free_all_pics(WpeEditor);
-     e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+     wpe_layout_screen_resized(old_scol, old_slns);
     }
     return WPE_RESIZE;
    }

@@ -571,6 +571,7 @@ int main(int argc, char **argv)
  }
  ECNT_Init(cn);
  e_paint_desk_ready();
+ e_layout_desk_ready();
  e_ini_unix(&argc, argv);
  e_switch_screen(1);
  fb = e_ini_farbe();

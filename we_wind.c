@@ -10,6 +10,7 @@
 #include "we_buffer.h"
 #include "we_testdump.h"
 #include "we_paint.h"
+#include "we_layout.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
 #include <stdarg.h>
@@ -92,36 +93,6 @@ void e_repaint_desk_nopic(FENSTER *f)
   e_schirm(cn->f[i], sw);
  }
  e_refresh();
-}
-
-/**
- * e_forget_box_view_on_resize - Stop the desk's repaint from putting a box
- * back after a resize.
- * @cn: the desktop.
- *
- * On X11 and Wayland the desk's repaint keeps the last box opened (a
- * dialog, a dropdown, the About box) on top of the windows it draws, so an
- * expose does not wipe the box.  After a resize that box's cells describe
- * the old screen: kept, they would stay behind as a ghost of the box at its
- * old place, and its saved background would put the ghost back when the
- * box closes.  So, unless the last view is a window's own, it is forgotten
- * before the desk is drawn at the new size; the box hears of the resize
- * (WPE_RESIZE) and draws itself again over the new desk.  The terminal
- * repaints no box, so it does not need this.
- */
-void e_forget_box_view_on_resize(ECNT *cn)
-{
-#ifndef NO_XWINDOWS
- extern PIC *e_X_l_pic;
- int i;
-
- for (i = 0; i <= cn->mxedt; i++)
-  if (e_X_l_pic == cn->f[i]->pic)
-   return;
- (*e_u_setlastpic)(NULL);
-#else
- (void)cn;
-#endif
 }
 
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
@@ -1883,6 +1854,7 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
  pic->a.y = ya;
  pic->e.x = xe;
  pic->e.y = ye;
+ pic->generation = wpe_layout_generation();
 
  /* Save schirm content behind this popup using calloc'd SCREENCELL array.
     This is the same approach as the original code but with proper
@@ -1916,14 +1888,32 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
  return(pic);
 }
 
-/*   close screen section - refresh background  */
+/**
+ * e_close_view - Close a screen section and put its background back.
+ * @pic: the view e_open_view made.
+ * @sw: 0 to just free it; non-zero to restore the saved background.
+ *
+ * A background saved before the screen took its present size describes a
+ * screen that is gone: put back, it would paint the old status row or old
+ * text over the new desk.  So it is restored only when it was saved at the
+ * current size (see wpe_layout_generation); otherwise the view is freed as
+ * with @sw == 0 and the trace says so.  This is why a command that holds
+ * the screen across a resize leaves the editor whole afterwards.
+ */
 int e_close_view(PIC *pic, int sw)
 {
  int i, j;
+ int answer = sw;
 #ifndef NO_XWINDOWS
  if (WpeIsXwin()) (*e_u_setlastpic)(NULL);
 #endif
  if (pic == NULL) return(-1);
+ if (sw != 0 && pic->generation != wpe_layout_generation())
+ {
+  wpe_ui_trace("layout dropped a stale background %d,%d-%d,%d",
+               pic->a.x, pic->a.y, pic->e.x, pic->e.y);
+  sw = 0;
+ }
 
  if (sw != 0 && pic->buf)
  {
@@ -1961,7 +1951,7 @@ int e_close_view(PIC *pic, int sw)
  FREE(pic);
 
  e_refresh();
- return(sw);
+ return(answer);
 }
 
 /** Free a window's off-screen backing view and clear the caller's pointer.

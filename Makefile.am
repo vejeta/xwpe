@@ -92,6 +92,8 @@ we_SOURCES = \
   we_render_cairo.c \
   we_fdloop.c \
   we_paint.c \
+  we_layout.c \
+  we_layout_desk.c \
   we_testdump.c \
   we_trace.c \
   we_vterm.c \
@@ -213,6 +215,7 @@ noinst_HEADERS = \
   we_wayland.h \
   we_fdloop.h \
   we_paint.h \
+  we_layout.h \
   we_testdump.h \
   we_buffer.h \
   we_lineend.h \
@@ -322,7 +325,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_fieldtake
+check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_fieldtake test_layout
 
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
@@ -379,6 +382,14 @@ edit_driver_CFLAGS = $(XWPE_STDFLAG)
 # later, a box inside a box keeps the screen, and nothing runs on leave.
 test_paint_SOURCES = tests/test_paint.c we_paint.c we_fdloop.c
 test_paint_CFLAGS = $(XWPE_STDFLAG)
+
+# The box layout owner: we_layout.c with the screen's owner and the fd loop
+# only (the desk is given through hooks the test sets).  Where each rule puts
+# a box at the displays' sizes, the stack the walk lays out outermost first,
+# and the stamp that keeps a background saved at another size from being put
+# back.
+test_layout_SOURCES = tests/test_layout.c we_layout.c we_paint.c we_fdloop.c
+test_layout_CFLAGS = $(XWPE_STDFLAG)
 
 # The key decoder's table: we_keymap.c alone, no editor and no display
 # library.  Every bound pair has one row, the curses, keysym and escape
@@ -595,7 +606,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap test_paint test_splice test_lineend test_startcmd test_startplan test_path test_fieldtake
+  test_child test_childsig test_keymap test_paint test_splice test_lineend test_startcmd test_startplan test_path test_fieldtake test_layout
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -627,6 +638,13 @@ TESTS += tests/check-debug-command.sh
 # e_add_arguments without its buffer's size, and a second definition of the
 # two numbers.
 TESTS += tests/check-path-buffers.sh
+
+# One layout path for every box: the layout owner (we_layout.c).
+# tests/check-box-layout.sh fails when a box's place is computed outside
+# the owner, a display lays the windows out on its own, or a background is
+# dropped by hand; what the boxes still to move do is counted in
+# tests/box-layout.allow, and the counts may only fall.
+TESTS += tests/check-box-layout.sh
 AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
 
@@ -702,6 +720,8 @@ EXTRA_DIST = \
   tests/check-debug-command.sh \
   tests/debug-command.allow \
   tests/check-path-buffers.sh \
+  tests/check-box-layout.sh \
+  tests/box-layout.allow \
   tests/stubs/a68g/a68g \
   tests/stubs/gdb \
   tests/stubs/full-pipe/lldb-dap \

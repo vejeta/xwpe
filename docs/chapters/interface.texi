@@ -493,4 +493,6 @@ menu bar closes.  The pickers are not laid out again yet.  A resize
 closes the language server popups (hover, signature help and the
 problem shown at a jump), the reason box of the model picker and the
 User Screen, and ends the wait for Enter after a command on the
-terminal.
+terminal.  When that wait ends, the editor comes back whole at the new
+size, with the status line on the last row: the picture of the screen
+saved before the command describes the old size and is not put back.

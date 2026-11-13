@@ -259,6 +259,13 @@ Changes
   another file manager whose folder and the name together are longer than
   the system allows does nothing and says so.
 
+* Resizing the terminal while a command holds the screen (Ctrl-F9 on a
+  shell script, Execute, Shell) no longer puts the old screen back over the
+  new one afterwards: the status line was drawn in the middle of a larger
+  screen, or an old text row on the last row of a smaller one.  The editor
+  comes back whole, at the new size.  Closing a window after a resize
+  (Wayland) no longer puts back a piece of the old screen.
+
 * In a terminal, the editor now asks for xterm's modifyOtherKeys and the
   kitty keyboard protocol, and gives them back when it ends, is stopped,
   crashes or hands the terminal to a program.  Esc acts at once,

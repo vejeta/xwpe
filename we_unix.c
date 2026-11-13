@@ -141,6 +141,7 @@ int (*e_u_ini_size)(void);
 int (*e_u_s_sys_end)(void);
 int (*e_u_s_sys_ini)(void);
 void (*e_u_setlastpic)(PIC *pic);
+void (*e_u_repaint_resized)(void);
 
 FARBE *u_fb, *x_fb;
 

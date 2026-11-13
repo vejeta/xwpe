@@ -47,6 +47,7 @@
 #include "we_render.h"
 #include "we_wayland.h"
 #include "we_fdloop.h"
+#include "we_layout.h"
 #include "we_clip.h"        /* e_clip_os_set / e_clip_os_get function pointers */
 #include "we_trace.h"
 #include "we_keymap.h"      /* the key table: keysyms to editor keys */
@@ -277,6 +278,32 @@ static void wl_note_configure_size(int w, int h)
  g_resize_pending = 1;
 }
 
+/**
+ * e_w_repaint_resized - Wayland's repaint of the desk after a resize.
+ *
+ * Called only by the layout owner's walk.  Do NOT e_free_all_pics here: this
+ * is a WpeIsXwin backend, so e_repaint_desk dereferences e_X_l_pic (the last
+ * view's backing pic) and reallocates the views itself via
+ * e_change_pic/e_u_ini_size.  Freeing the pics first leaves e_X_l_pic
+ * dangling, a use after free.  X11 likewise repaints without freeing pics;
+ * only the terminal frees them, and it can because it is not WpeIsXwin
+ * (e_repaint_desk skips the pic block).
+ * e_repaint_desk reallocated the grid, so the altschirm shadow it diffs
+ * against is fresh garbage; its dirty-cell refresh then leaves any cell whose
+ * garbage happened to match unpainted (stale pixels on the newly exposed edge,
+ * e.g. the right of the menu bar).  One full repaint paints every cell and
+ * re-syncs the shadow.
+ */
+static void e_w_repaint_resized(void)
+{
+ if (WpeEditor == NULL)
+  return;
+ e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+ e_w_render_dirty_cells(1);
+ if (WpeRender.flush_all)
+  WpeRender.flush_all();
+}
+
 /* Apply the latest pending size exactly once, after the event-dispatch batch.
    Derives the cell grid from the pixel size (clamped to a usable minimum) and,
    only when the grid actually changes, re-lays-out the windows and repaints --
@@ -321,26 +348,10 @@ static int wl_apply_pending_resize(void)
  {
   MAXSCOL = cols;
   MAXSLNS = rows;
-  /* As X11's ConfigureNotify: a box's cells describe the old screen, so the
-     repaint below must not keep it on top; the box draws itself again when
-     the key reader hands it WPE_RESIZE. */
-  e_forget_box_view_on_resize(WpeEditor);
-  e_relayout_windows(WpeEditor, old_scol, old_slns);
-  /* Do NOT e_free_all_pics here: this is a WpeIsXwin backend, so e_repaint_desk
-     dereferences e_X_l_pic (the last view's backing pic) and reallocates the
-     views itself via e_change_pic/e_u_ini_size.  Freeing the pics first leaves
-     e_X_l_pic dangling -> use-after-free.  The X11 ConfigureNotify path likewise
-     repaints without freeing pics; only the ncurses KEY_RESIZE path frees them,
-     and it can because it is not WpeIsXwin (e_repaint_desk skips the pic block). */
-  e_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
-  /* e_repaint_desk reallocated the grid, so the altschirm shadow it diffs
-     against is fresh garbage; its dirty-cell refresh then leaves any cell whose
-     garbage happened to match unpainted (stale pixels on the newly exposed edge,
-     e.g. the right of the menu bar).  Force one full repaint to paint every cell
-     and re-sync the shadow. */
-  e_w_render_dirty_cells(1);
-  if (WpeRender.flush_all)
-   WpeRender.flush_all();
+  /* The layout owner lays the windows and every box out again (see
+     e_w_repaint_resized for the repaint), here at the top of the input loop
+     and never from inside a paint. */
+  wpe_layout_screen_resized(old_scol, old_slns);
   relaid = 1;
  }
  in_progress = 0;
@@ -2178,6 +2189,7 @@ int WpeWaylandInit(int *argc, char **argv)
  e_u_key_take      = e_w_key_take;
  e_u_palette_rgb   = wpe_render_wayland_palette_rgb;
  e_u_serve_display = e_w_serve_display;
+ e_u_repaint_resized = e_w_repaint_resized;
  e_u_focus_editor  = e_w_focus_editor;
  e_u_raise_editor  = e_w_raise_editor;
  e_u_ini_size      = e_w_ini_size;

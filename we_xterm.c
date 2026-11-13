@@ -13,6 +13,7 @@
 #include "we_childsig.h"
 #include "we_clip.h"
 #include "we_keymap.h"
+#include "we_layout.h"
 #include "we_startplan.h"
 #include <X11/Xatom.h>
 #include <poll.h>
@@ -42,6 +43,7 @@ int e_x_system(struct WpeStartPlan *plan);
 static void e_clip_x_set(const char *utf8, int len);
 static char *e_clip_x_get(int *len);
 static void e_x_serve_display(void);
+static void e_x_repaint_resized(void);
 static void e_x_focus_editor(void);
 static void e_x_raise_editor(void);
 int e_x_repaint_desk(FENSTER *f);
@@ -160,6 +162,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_key_take = e_x_key_take;
  e_u_palette_rgb = e_x_palette_rgb;
  e_u_serve_display = e_x_serve_display;
+ e_u_repaint_resized = e_x_repaint_resized;
  e_u_focus_editor = e_x_focus_editor;
  e_u_raise_editor = e_x_raise_editor;
  e_u_ini_size = e_ini_size;
@@ -1323,29 +1326,58 @@ int e_x_refresh()
    return(0);
 }
 
-/* Common prefix of the two ConfigureNotify handlers (e_x_answer_configure and
-   e_x_getch): drain the queued configures down to the final size, and -- only
-   if the cell grid actually changed -- update MAXSCOL/MAXSLNS and reallocate
-   the Xft draw / back buffer.  Returns 1 with the new pixel size (*pw,*ph) and the old grid
-   (*old_scol,*old_slns) when it resized, 0 otherwise.  The caller does the
-   repaint tail, which differs between the two sites (e_x_getch also invalidates
-   the last-view pic and returns WPE_RESIZE), so only this identical prefix is
-   shared.  Snaps to whole cells, like the code it replaces. */
+/* The key reader's ConfigureNotify: drain the queued configures down to the
+   final size and take it (e_x_apply_size).  Returns 1 with the new pixel
+   size (*pw,*ph) and the old grid (*old_scol,*old_slns) when the grid
+   changed, 0 otherwise; the caller then has the layout owner lay the editor
+   out again.  A size that arrives while a command runs is only noted
+   (e_x_answer_configure) and taken by the same e_x_apply_size later. */
+static int e_x_apply_size(int raw_w, int raw_h, int *pw, int *ph,
+                          int *old_scol, int *old_slns);
+
 static int e_x_apply_configure(XEvent *report, int *pw, int *ph,
                                int *old_scol, int *old_slns)
 {
- int w, h;
-
  while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
         ConfigureNotify, report))
   ;
+ return e_x_apply_size(report->xconfigure.width, report->xconfigure.height,
+                       pw, ph, old_scol, old_slns);
+}
+
+/* The size a window had been given while the editor could not take it: the
+   serve path (a command runs) and the live-resize hook only store it, and
+   the key reader applies it, grid, buffers and layout together, before it
+   paints anything (e_x_apply_pending_resize).  Taking it earlier changed
+   MAXSCOL while schirm was still the old size. */
+static int e_x_size_pending;
+static int e_x_size_pending_w, e_x_size_pending_h;
+
+static void e_x_set_pending_size(int raw_w, int raw_h)
+{
+ e_x_size_pending = 1;
+ e_x_size_pending_w = raw_w;
+ e_x_size_pending_h = raw_h;
+}
+
+/**
+ * e_x_apply_size - Take a window size: snap it to whole cells and, if the
+ * grid changed, update MAXSCOL/MAXSLNS and the Xft draw and back buffer.
+ * @raw_w: @raw_h: the window's size in pixels.
+ * Return: 1 with the snapped size and the old grid when the grid changed.
+ */
+static int e_x_apply_size(int raw_w, int raw_h, int *pw, int *ph,
+                          int *old_scol, int *old_slns)
+{
+ int w, h;
+
  /* A mixed-DPI monitor move changes the backing scale under libx11-compat; the
     font is reloaded to the new density before the grid is snapped so the glyph
     size tracks the destination monitor (no-op on a real X server). The new
     font_width/height then make the grid comparison below detect the change. */
  e_x_refit_font_for_dpi();
- w = (report->xconfigure.width  / WpeXInfo.font_width)  * WpeXInfo.font_width;
- h = (report->xconfigure.height / WpeXInfo.font_height) * WpeXInfo.font_height;
+ w = (raw_w / WpeXInfo.font_width)  * WpeXInfo.font_width;
+ h = (raw_h / WpeXInfo.font_height) * WpeXInfo.font_height;
  if (w == MAXSCOL * WpeXInfo.font_width && h == MAXSLNS * WpeXInfo.font_height)
   return 0;
 
@@ -1439,19 +1471,59 @@ static void e_x_answer_expose(XEvent *report)
 }
 
 /**
- * e_x_answer_configure - Lay the editor out again for the window's new size.
+ * e_x_repaint_resized - X11's repaint of the desk after a resize.
+ *
+ * Called only by the layout owner's walk.  X11's own repaint frees every
+ * window's saved view and reallocates the grid and the back buffer, so the
+ * views are not freed first as on the terminal.
+ */
+static void e_x_repaint_resized(void)
+{
+ if (WpeEditor != NULL)
+  e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+}
+
+/**
+ * e_x_answer_configure - Take the window's new size while the editor waits
+ * for something else (a command run in a window of its own).
  * @report: the ConfigureNotify event.
+ *
+ * Only the final size is kept.  The grid, the screen buffers and the layout
+ * follow together at the top of the key reader (e_x_apply_pending_resize),
+ * where nothing is being drawn: the editor still paints the frame it left
+ * when the command ends, and that must be the old grid's.
  */
 static void e_x_answer_configure(XEvent *report)
 {
+ while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+        ConfigureNotify, report))
+  ;
+ e_x_set_pending_size(report->xconfigure.width, report->xconfigure.height);
+}
+
+/**
+ * e_x_apply_pending_resize - Take a size noted while the editor was busy.
+ *
+ * Called first thing in the key reader, before anything is refreshed: the
+ * grid and buffers change, the window shows the back buffer, and the layout
+ * owner lays the windows and every box out again.
+ * Return: non-zero when the grid changed (the reader returns the resize
+ * sentinel).
+ */
+static int e_x_apply_pending_resize(void)
+{
  int pw, ph, old_scol, old_slns;
 
- if (!e_x_apply_configure(report, &pw, &ph, &old_scol, &old_slns))
-  return;
+ if (!e_x_size_pending)
+  return 0;
+ e_x_size_pending = 0;
+ if (!e_x_apply_size(e_x_size_pending_w, e_x_size_pending_h, &pw, &ph,
+                     &old_scol, &old_slns))
+  return 0;
  XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
    WpeXInfo.gc, 0, 0, pw, ph, 0, 0);
- e_relayout_windows(WpeEditor, old_scol, old_slns);
- e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+ wpe_layout_screen_resized(old_scol, old_slns);
+ return 1;
 }
 
 /**
@@ -1778,11 +1850,10 @@ void e_x_flush_input(void)
  e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
 }
 
-/* Apply a window pixel size to the cell grid and repaint, mirroring the
-   ConfigureNotify handler in e_x_getch().  Snaps the size down to whole font
-   cells and no-ops when the resulting grid is unchanged, so it is safe to call
-   repeatedly (e.g. once per live-resize drag tick).  Shared by the live-resize
-   reflow hook below. */
+/* Note a window pixel size the live-resize hook reports: clear the sub-cell
+   band at the edges now, and leave the grid, its buffers and the layout to
+   the key reader (e_x_apply_pending_resize), which takes only the last size
+   noted.  Safe to call once per live-resize drag tick. */
 static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
 {
  int snap_w = (win_pixel_w / WpeXInfo.font_width) * WpeXInfo.font_width;
@@ -1805,43 +1876,10 @@ static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
  if (win_pixel_h > snap_h)
   XClearArea(WpeXInfo.display, WpeXInfo.window, 0, snap_h,
     win_pixel_w, win_pixel_h - snap_h, False);
- if (snap_w == MAXSCOL * WpeXInfo.font_width &&
-     snap_h == MAXSLNS * WpeXInfo.font_height)
-  return;
- { int _old_scol = MAXSCOL, _old_slns = MAXSLNS;
-   MAXSCOL = snap_w / WpeXInfo.font_width;
-   MAXSLNS = snap_h / WpeXInfo.font_height;
-#ifdef HAVE_XFT
-   if (WpeXInfo.xftfont)
-   {
-    if (WpeXInfo.xftdraw)
-     XftDrawDestroy(WpeXInfo.xftdraw);
-    if (WpeRender.resize)
-    {
-     WpeRender.resize(snap_w, snap_h);
-    }
-    else
-    {
-     if (WpeXInfo.backbuf)
-      XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
-     WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-       snap_w, snap_h,
-       DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-     XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-       BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-     XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-       0, 0, snap_w, snap_h);
-    }
-    WpeXInfo.xftdraw = e_x_xftdraw_create();
-   }
-#endif
-   e_forget_box_view_on_resize(WpeEditor);
-   XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-     WpeXInfo.gc, 0, 0,
-     MAXSCOL * WpeXInfo.font_width, MAXSLNS * WpeXInfo.font_height, 0, 0);
-   e_relayout_windows(WpeEditor, _old_scol, _old_slns);
-   e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
- }
+ /* The grid, its buffers and the layout follow at the top of the key reader
+    (e_x_apply_pending_resize), never from this callback: the editor may be
+    in the middle of a paint that still reads the old grid. */
+ e_x_set_pending_size(win_pixel_w, win_pixel_h);
 }
 
 /* libx11-compat live-resize hook: invoked on each tick of the macOS modal
@@ -1874,6 +1912,8 @@ int e_x_getch()
  XSizeHints size_hints;
  int keyboard_watched;
 
+ if (e_x_apply_pending_resize())
+  return WPE_RESIZE;
  e_refresh();
  e_input_was_char = 0;              /* default; the UTF-8 decoders set it when a
                                         typed character is returned */
@@ -1899,6 +1939,10 @@ int e_x_getch()
 
  while (1)
  {
+  /* A resize a command's window noted while it ran is laid out here, at
+     the one point where nothing is being drawn. */
+  if (e_x_apply_pending_resize() || wpe_layout_run_pending())
+   return WPE_RESIZE;
   if (!XPending(WpeXInfo.display))
   {
    extern int e_d_async_pending;
@@ -1952,14 +1996,12 @@ int e_x_getch()
          WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
        XFlush(WpeXInfo.display);
 
-       /* If the last-view pic is not a live window's, drop it: the grid (and so
-          every pic) was just resized, and e_x_repaint_desk would dereference a
-          stale one. */
-       e_forget_box_view_on_resize(WpeEditor);
+       /* The layout owner lays the windows and every box out again, and
+          forgets a stale last view first (the grid, and so every pic, was
+          just resized). */
        XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
          WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
-       e_relayout_windows(WpeEditor, _old_scol, _old_slns);
-       e_x_repaint_desk(WpeEditor->f[WpeEditor->mxedt]);
+       wpe_layout_screen_resized(_old_scol, _old_slns);
        return WPE_RESIZE;
       }
     }

@@ -107,6 +107,7 @@ typedef struct PICSTR {
  void *buf;      /* saved SCREENCELL buffer (calloc'd) */
  POINT a;        /* anchor point (top-left) */
  POINT e;        /* end point (bottom-right) */
+ unsigned generation;   /* the screen's size when saved (we_layout.h): a view of an older size is never put back */
 } PIC;
 
 /* What the Find, Replace and Grep dialogs' text fields take; the buffers of
@@ -541,6 +542,7 @@ int e_find_next(BUFFER *b, SCHIRM *s, FIND *fd);
 int e_edit(ECNT *cn, char *filename);
 int e_eingabe(ECNT *e);
 void e_paint_desk_ready(void);
+void e_layout_desk_ready(void);
 int e_tst_cur(int c, ECNT *e);
 int e_tst_fkt(int c, ECNT *e);
 int e_ctrl_k(FENSTER *f);
@@ -808,7 +810,6 @@ int e_d_pty_type(int key);
 void e_free_all_pics(ECNT *cn);
 void e_repaint_desk_nopic(FENSTER *f);
 void e_relayout_windows(ECNT *cn, int old_scol, int old_slns);
-void e_forget_box_view_on_resize(ECNT *cn);
 void e_lsp_window_closing(FENSTER *f);
 void e_position_messages_window(FENSTER *msg, ECNT *cn);
 void e_position_ai_window(FENSTER *ai, ECNT *cn);
@@ -1044,6 +1045,9 @@ extern int (*e_u_ini_size)(void);
 extern int (*e_u_s_sys_end)(void);
 extern int (*e_u_s_sys_ini)(void);
 extern void (*e_u_setlastpic)(PIC *pic);
+/* The display's repaint of the desk after it took a new grid size; called
+   only by the layout owner's walk (we_layout.c). */
+extern void (*e_u_repaint_resized)(void);
 extern int (*e_u_system)(struct WpeStartPlan *plan);
 /* The key the user typed, taken without waiting: the first one for
    WPE_PAINT_ANY_KEY, else only @want, the others left queued.  0 for none. */

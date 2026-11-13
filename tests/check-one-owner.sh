@@ -734,7 +734,7 @@ FILLS=$(echo fk_u_locate fk_u_cursor fk_u_putchar u_bioskey e_frb_u_menue \
   WpeMouseChangeShape WpeMouseRestoreShape e_u_d_switch_out \
   e_u_switch_screen e_u_deb_out e_u_system e_u_key_take WpeDisplayEnd \
   e_clip_os_set e_u_focus_editor e_u_raise_editor e_u_palette_rgb \
-  e_u_serve_display e_clip_os_get)
+  e_u_serve_display e_u_repaint_resized e_clip_os_get)
 # "kind  slot  reason"
 cat > "$WORK/fillexcept" <<'EOF'
 graphical e_u_ini_size read under WpeIsXwin (we_opt.c) and by the X11 backend
