@@ -706,6 +706,7 @@ int e_message(int sw, char *str, FENSTER *f)
 #define E_STARTCMD_FIXED_ROWS   11   /* frame, sentences, blanks, buttons  */
 #define E_STARTCMD_SCREEN_ROWS  2    /* the menu bar and the status row    */
 #define E_STARTCMD_LINE_MAX     1024 /* a sentence of the box             */
+#define E_STARTCMD_OWN_ROWS_MAX 6    /* the most rows the user's own setting takes */
 #define E_STARTCMD_STATUS_MAX   512  /* a status line about the answer    */
 
 /* How a line below the command is cut when it is wider than the box. */
@@ -838,26 +839,40 @@ static void e_startcmd_add_line(W_OPTSTR *o, int y, const char *text, int width,
 }
 
 /**
- * e_startcmd_add_own - The user's own setting, as the box names it.
- * @o: the box; @y: its row; @own: the user's own command, or NULL;
- * @width: the room.
+ * e_startcmd_own_rows - The user's own setting as the rows the box draws.
+ * @own: the user's own command, or NULL; @width: characters per row;
+ * @rows: receives the malloc'd rows (e_startcmd_free_rows frees them).
+ *
+ * What "Use mine" starts is read whole, like the command: a line wider than
+ * the box goes on in the next row instead of being cut at the edge.
+ * Return: the number of rows, 0 out of memory.
  */
-static void e_startcmd_add_own(W_OPTSTR *o, int y, const char *own, int width)
+static int e_startcmd_own_rows(const char *own, int width, char ***rows)
 {
  char line[E_STARTCMD_LINE_MAX];
  char *shown;
 
+ *rows = NULL;
  if (!own || !*own)
- {
-  e_startcmd_add_line(o, y, E_STARTCMD_OWN_NONE, width, 0);
-  return;
- }
+  return(e_startcmd_rows(E_STARTCMD_OWN_NONE, width, rows));
  shown = e_startcmd_shown(own);
  if (!shown)
-  return;
+  return(0);
  snprintf(line, sizeof line, E_STARTCMD_OWN_FMT, shown);
  FREE(shown);
- e_startcmd_add_line(o, y, line, width, 0);
+ return(e_startcmd_rows(line, width, rows));
+}
+
+/**
+ * e_startcmd_add_own - The user's own setting, as the box names it.
+ * @o: the box; @y: its first row; @rows/@n: the rows e_startcmd_own_rows made.
+ */
+static void e_startcmd_add_own(W_OPTSTR *o, int y, char **rows, int n)
+{
+ int i;
+
+ for (i = 0; i < n; i++)
+  e_add_txtstr(E_STARTCMD_MARGIN, y + i, rows[i], o);
 }
 
 /**
@@ -1121,8 +1136,9 @@ static int e_startcmd_show_rows(FENSTER *f, const e_startcmd_view *v)
 {
  W_OPTSTR *o;
  char title[E_STARTCMD_LINE_MAX], line[E_STARTCMD_LINE_MAX];
- char *shown, **rows = NULL;
+ char *shown, **rows = NULL, **own_text = NULL;
  int width, text_w, nrows, room, shown_rows, whole, y, ret, nextra, extra_rows;
+ int own_rows, own_shown;
  E_STARTCMD c;
 
  if (!(shown = e_startcmd_shown(v->text)))
@@ -1135,7 +1151,11 @@ static int e_startcmd_show_rows(FENSTER *f, const e_startcmd_view *v)
  width = e_startcmd_box_width();
  text_w = width - 2 * E_STARTCMD_MARGIN;
  nrows = e_startcmd_rows(shown, text_w - E_STARTCMD_INDENT, &rows);
- room = MAXSLNS - E_STARTCMD_SCREEN_ROWS - E_STARTCMD_FIXED_ROWS;
+ own_rows = e_startcmd_own_rows(v->own, text_w, &own_text);
+ own_shown = own_rows < E_STARTCMD_OWN_ROWS_MAX ? own_rows : E_STARTCMD_OWN_ROWS_MAX;
+ if (own_shown < 1)
+  own_shown = 1;
+ room = MAXSLNS - E_STARTCMD_SCREEN_ROWS - E_STARTCMD_FIXED_ROWS - (own_shown - 1);
  nextra = e_startcmd_extra_rows(v, room);
  extra_rows = nextra ? nextra + E_STARTCMD_EXTRA_GAP : 0;
  room -= extra_rows;
@@ -1146,10 +1166,10 @@ static int e_startcmd_show_rows(FENSTER *f, const e_startcmd_view *v)
   shown_rows = 1;
  o->xa = (MAXSCOL - width) / 2;
  o->xe = o->xa + width;
- o->ya = (MAXSLNS - shown_rows - extra_rows - E_STARTCMD_FIXED_ROWS) / 2;
+ o->ya = (MAXSLNS - shown_rows - extra_rows - E_STARTCMD_FIXED_ROWS - (own_shown - 1)) / 2;
  if (o->ya < 1)
   o->ya = 1;
- o->ye = o->ya + shown_rows + extra_rows + E_STARTCMD_FIXED_ROWS - 1;
+ o->ye = o->ya + shown_rows + extra_rows + E_STARTCMD_FIXED_ROWS + (own_shown - 1) - 1;
  o->bgsw = 0;
  snprintf(title, sizeof title, E_STARTCMD_TITLE_FMT, v->source);
  o->name = title;
@@ -1162,14 +1182,18 @@ static int e_startcmd_show_rows(FENSTER *f, const e_startcmd_view *v)
  y = 4 + shown_rows + 1;
  e_startcmd_add_extra(o, y, v, nextra, text_w);
  y += extra_rows;
- e_startcmd_add_own(o, y, v->own, text_w);
+ if (own_shown < own_rows)
+  e_startcmd_add_own(o, y, own_text, own_shown);
+ else
+  e_startcmd_add_own(o, y, own_text, own_rows);
  snprintf(line, sizeof line, E_STARTCMD_FOLDER_FMT, v->folder);
- e_startcmd_add_line(o, y + 1, line, text_w, 1);
+ e_startcmd_add_line(o, y + own_shown, line, text_w, 1);
  e_startcmd_add_buttons(o, o->ye - o->ya - 2, whole, v->offer_mine);
  wpe_ui_trace("startcmd ask %s %s%s", v->key, shown, whole ? "" : " (too long)");
  ret = e_opt_kst_message(o);
  freeostr(o);
  e_startcmd_free_rows(rows, nrows);
+ e_startcmd_free_rows(own_text, own_rows);
  FREE(shown);
  if (ret == E_STARTCMD_RUN_KEY && whole)
   return(WPE_STARTCMD_RUN);

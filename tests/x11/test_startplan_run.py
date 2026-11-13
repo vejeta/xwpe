@@ -58,6 +58,43 @@ def test_startplan_script_named_like_a_command_runs_alone(xwpe, tmp_path):
     assert xwpe.proc.poll() is None, "xwpe died running the script"
 
 
+# A login shell that, like csh and tcsh, cannot run a script whose command is
+# "$@": it refuses such a script and starts nothing.  Any other script it
+# hands to sh.
+CSH_LIKE_SHELL = ('#!/bin/sh\n'
+                  'if grep -q \'"[$]@"\' "$1" 2>/dev/null; then\n'
+                  '  echo "Illegal variable name." >&2\n'
+                  '  exit 1\n'
+                  'fi\n'
+                  'exec /bin/sh "$@"\n')
+
+
+@pytest.fixture
+def csh_like_login_shell(tmp_path, monkeypatch):
+    """$SHELL is a shell that cannot run "$@", as the editor starts."""
+    stub = tmp_path / "csh-like"
+    stub.write_text(CSH_LIKE_SHELL)
+    stub.chmod(0o755)
+    monkeypatch.setenv("SHELL", str(stub))
+    return stub
+
+
+# @scenario SC-compile-30
+@pytest.mark.skipif(not shutil.which("xterm"), reason="no xterm")
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": SCRIPT, "XWPE_TEST_FILE": "t.sh",
+                                   **SESSION}], indirect=True)
+def test_startplan_run_in_a_terminal_under_a_csh_login_shell(csh_like_login_shell, xwpe,
+                                                             tmp_path):
+    """Ctrl-F9 on a script, the user's login shell a csh: the script runs
+    in its terminal.  The terminal's helper was started by $SHELL, which
+    cannot run its "$@", so the terminal closed with nothing run."""
+    xwpe.key("ctrl+F9", delay=0.5)
+    ran = _wait(lambda: (tmp_path / "executed.out").exists(), RUN_WAIT_S)
+    _sleep(SETTLE_S)
+    assert ran, "the script did not run under a csh login shell"
+    assert xwpe.proc.poll() is None, "xwpe died running the script"
+
+
 MAKEFILE = "all:\n\t@echo made > made.out\n"
 
 

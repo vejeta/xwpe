@@ -104,6 +104,9 @@
 #define WPE_STARTPLAN_SHELL     "/bin/sh"
 #define WPE_STARTPLAN_SHELL_OPT "-c"
 
+/* The section of a program that carries gdb scripts inside it. */
+#define WPE_STARTPLAN_GDB_SECTION ".debug_gdb_scripts"
+
 /* The name a planned shell line gets as its $0: the editor's, never shown. */
 #define WPE_STARTPLAN_SHELL_NAME "sh"
 
@@ -142,6 +145,9 @@ typedef struct {
  long length;                /* WPE_PATH_READS: the file's whole size in bytes        */
  int too_long;               /* WPE_PATH_READS: not shown whole, so not run unseen   */
  const char *note;           /* WPE_PATH_READS: when the tool runs it, for the box    */
+ int embedded;               /* WPE_PATH_READS: not a file of its own: the scripts the
+                                program carries inside itself (gdb's
+                                .debug_gdb_scripts); content is what they hold       */
 } WpeStartPath;
 
 /* One value a folder file set, as the box lists it. */
@@ -216,6 +222,7 @@ int wpe_startplan_value(WpeStartPlan *p, const char *file, const char *key,
                         const char *raw, const char *expanded);
 void wpe_startplan_set_own(WpeStartPlan *p, WpeStartPlan *own);
 int wpe_startplan_operand(char *out, size_t n, const char *dir, const char *name);
+int wpe_startplan_operand_in(char *out, size_t n, const char *dir, const char *name);
 int wpe_startplan_resolve(const char *path, const char *cwd, char *out, size_t sz);
 int wpe_startplan_root_usable(const char *root);
 int wpe_startplan_judge(WpeStartPlan *p);
@@ -242,6 +249,8 @@ void wpe_startplan_trace_set(void (*trace)(const char *line));
 int wpe_startplan_tool_reads(WpeStartPlan *p, const char *tool);
 int wpe_startplan_tool_reads_of(WpeStartPlan *p, const char *tool, const char *program);
 int wpe_startplan_tool_reads_known(const char *tool);
+int wpe_startplan_elf_section(const char *file, const char *name, unsigned char *out,
+                              size_t max, size_t *size);
 int wpe_startplan_input(WpeStartPlan *p, const char *text, int from, const char *source);
 int wpe_startplan_line_ok(const char *value);
 int wpe_startplan_reads_too_long(const WpeStartPlan *p);

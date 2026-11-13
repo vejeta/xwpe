@@ -156,6 +156,7 @@ def test_startplan_run_file_name_with_a_quote_runs(tmp_path):
 
 EXEC_NAME = "a;touch pwned;x"
 EXEC_SCRIPT = "#!/bin/sh\necho ran > executed.out\n"
+NAME_BOX_MAX = 79          # the file manager's name box takes this many bytes
 
 
 def _executable(path, text):
@@ -184,6 +185,32 @@ def test_startplan_execute_file_name_is_not_shell(tmp_path):
         s._drain(SETTLE)
     assert not (folder.ws / "pwned").exists(), "a file name ran as shell text"
     assert done, "the selected file did not run"
+
+
+# @scenario SC-compile-30
+def test_startplan_execute_absolute_name_runs_as_typed(tmp_path):
+    """File > Execute with the whole path typed in the name box ("/dir/tool"):
+    that program runs.  The file manager splits a typed name at its last
+    "/" into a folder and a file name, so the name Execute gets is a bare
+    one and the row passes on the tree before the fix too; the rule that a
+    whole path is kept as typed is held by the owner's C case
+    (case_operand_in of tests/test_startplan.c)."""
+    folder = Folder(tmp_path)
+    tool = folder.ws / "tool"
+    if len(str(tool)) > NAME_BOX_MAX:
+        pytest.skip("the test folder's path is longer than the name box takes")
+    _executable(tool, EXEC_SCRIPT)
+    with folder.session() as s:
+        s.key(ALT.FILE, delay=0.6)
+        s.key("e", delay=1.0)
+        s.key(str(tool), delay=0.8)        # the name box: the whole path
+        s.key(ENTER, delay=1.5)            # the name is taken
+        screen = _screen(s)
+        s.key(ALT_E, delay=1.5)            # the Execute button
+        done = _wait(lambda: (folder.ws / "executed.out").exists(), RUN_WAIT)
+        s.key(ENTER, delay=0.8)            # "Hit CR"
+        s._drain(SETTLE)
+    assert done, "the program typed with its whole path did not run:\n" + screen
 
 
 MAKEFILE = "all:\n\t@echo made > made.out\n"

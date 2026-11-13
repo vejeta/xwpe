@@ -346,6 +346,114 @@ def test_startplan_program_gdb_scripts_use_mine_stops_them(tmp_path):
     assert any(r.startswith("no\tdebug/gdb\t") for r in folder.records()), folder.records()
 
 
+# A program that carries a gdb script inside itself: its .debug_gdb_scripts
+# section holds one entry, a Python file named emb.py (gdb looks for it in
+# its working folder, which is the program's).
+SEED_EMBEDDED = ("int main(void){return 0;}\n"
+                 '__asm__(".pushsection .debug_gdb_scripts,\\"MS\\",@progbits,1\\n"\n'
+                 '        ".byte 1\\n"\n'
+                 '        ".asciz \\"emb.py\\"\\n"\n'
+                 '        ".popsection\\n");\n')
+EMBEDDED_TITLE = "Command from ./t.e (.debug_gdb_scripts)"
+
+
+def _embedded_folder(tmp_path):
+    """A folder whose program carries emb.py inside it, and a gdb that
+    loads scripts from any folder."""
+    folder = Folder(tmp_path)
+    (folder.home / ".gdbinit").write_text(GDB_AUTOLOAD)
+    (folder.ws / "emb.py").write_text(GDB_SCRIPT_PY % str(folder.ran))
+    return folder
+
+
+# @scenario SC-compile-29
+@needs_gdb
+def test_startplan_gdb_script_inside_the_program_is_shown(tmp_path):
+    """The program's .debug_gdb_scripts section names emb.py, which gdb runs
+    when it loads the program: Ctrl-G R lists the section as a start-up file
+    of the program, with the script's name and lines and the condition, and
+    Esc starts nothing."""
+    folder = _embedded_folder(tmp_path)
+    with folder.session("t.c", SEED_EMBEDDED) as s:
+        box = _debug_box(s, EMBEDDED_TITLE)
+        s.key(ESC, delay=0.8)
+        ran = _wait(folder.ran.exists, 4)
+    lines = _plan_lines(folder)
+    assert "Runs at start: ./t.e (.debug_gdb_scripts) (2 lines)" in lines, lines
+    assert "  gdb runs it only if your gdb settings allow auto-load from this folder" in lines, lines
+    assert "    emb.py" in lines, lines
+    assert "    " + GDB_SCRIPT_PY.strip() % str(folder.ran) in lines, lines
+    assert "Your own setting: gdb without the scripts inside the program" in box, box
+    assert not ran, "gdb ran the program's own script after Esc"
+
+
+# @scenario SC-compile-29
+@needs_gdb
+def test_startplan_gdb_script_inside_the_program_use_mine_stops_it(tmp_path):
+    """Use mine on that box starts gdb told to leave the program's own
+    scripts alone: the session starts, emb.py never runs, and "no" is kept
+    for the folder."""
+    folder = _embedded_folder(tmp_path)
+    with folder.session("t.c", SEED_EMBEDDED) as s:
+        _debug_box(s, EMBEDDED_TITLE)
+        s.key(USE_MINE, delay=0.8)
+        started = _wait(lambda: "startcmd answer debug/gdb own" in folder.traced(), RAN_WAIT)
+        ran = _wait(folder.ran.exists, RAN_WAIT)
+        alive = s.proc.poll() is None
+    assert started, folder.traced()
+    assert alive, "the editor died starting gdb"
+    assert not ran, "gdb ran the program's own script after Use mine"
+    assert any(r.startswith("no\tdebug/gdb\t") for r in folder.records()), folder.records()
+
+
+# @scenario SC-compile-29
+@needs_gdb
+def test_startplan_gdb_script_inside_the_program_run_it_runs_it(tmp_path):
+    """Run it on that box starts gdb as it is: the program's script runs."""
+    folder = _embedded_folder(tmp_path)
+    with folder.session("t.c", SEED_EMBEDDED) as s:
+        _debug_box(s, EMBEDDED_TITLE)
+        s.key(RUN_IT, delay=0.8)
+        ran = _wait(folder.ran.exists, RAN_WAIT)
+    assert ran, "Run it did not start gdb on the program's own script"
+
+
+# @scenario SC-compile-29
+@needs_gdb
+def test_startplan_a_program_without_the_section_has_no_embedded_line(tmp_path):
+    """An ordinary program: no start-up line for the section, no question."""
+    folder = _embedded_folder(tmp_path)
+    with folder.session("t.c", SEED_C) as s:
+        s.key(CTRL_G, "r", delay=1.0)
+        started = _wait(lambda: "startplan judge debug/gdb" in folder.traced(), BOX_WAIT)
+        screen = _screen(s)
+    assert started, folder.traced()
+    assert ".debug_gdb_scripts" not in folder.traced(), folder.traced()
+    assert "Command from" not in screen, screen
+
+
+# @scenario SC-compile-29
+@needs_gdb
+def test_startplan_use_mine_line_is_wrapped_not_cut(tmp_path):
+    """The folder holds a .gdbinit and a script beside the program, so the
+    line that names what Use mine starts is 80 characters, wider than the
+    box.  It goes on in the next row like the lines above it, so every word
+    of it is on screen."""
+    folder = Folder(tmp_path)
+    (folder.home / ".gdbinit").write_text(GDB_AUTOLOAD)
+    (folder.ws / ".gdbinit").write_text("shell %s\n" % folder.touch_line())
+    (folder.ws / "t.e-gdb.py").write_text(GDB_SCRIPT_PY % str(folder.ran))
+    with folder.session("t.c", SEED_C) as s:
+        box = _debug_box(s, "Command from ./.gdbinit")
+        rows = s.display()
+        s.key(ESC, delay=0.8)
+        s._drain(SETTLE)
+    shown = _own_line_joined(rows)
+    assert "gdb without the folder's ./.gdbinit and the program's scripts" in shown, \
+        "the Use mine line was cut:\n" + box
+    assert not folder.ran.exists(), "gdb ran a folder file after Esc"
+
+
 # @scenario SC-compile-29
 @needs_gdb
 def test_startplan_folder_arguments_reach_gdb_only_after_the_box(tmp_path):
@@ -435,6 +543,23 @@ def _box_rows_joined(rows, first, last):
     for r in rows[start + 1:]:
         seg = r[col:col + BOX_TEXT_W].rstrip()
         if last in seg:
+            break
+        if seg.endswith(WRAP_MARK):
+            seg = seg[:-len(WRAP_MARK)]
+        out.append(seg)
+    return "".join(out)
+
+
+def _own_line_joined(rows):
+    """The "Your own setting:" line of the box, from its first row to the
+    row before "Folder:", each wrap mark taken off, joined."""
+    first = "Your own setting:"
+    start = next(i for i, r in enumerate(rows) if first in r)
+    col = rows[start].index(first)
+    out = []
+    for r in rows[start:]:
+        seg = r[col:col + BOX_TEXT_W].rstrip()
+        if seg.startswith("Folder:"):
             break
         if seg.endswith(WRAP_MARK):
             seg = seg[:-len(WRAP_MARK)]

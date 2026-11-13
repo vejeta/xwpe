@@ -2251,7 +2251,11 @@ static int e_x_system_script(char *file, size_t sz)
  * The terminal and the helper script that waits for Return are the
  * editor's own carriers; the command's words follow them one by one, as
  * the plan holds them, so a file named with a quote or a ';' reaches the
- * terminal as that one file's name and is never read as shell text.
+ * terminal as that one file's name and is never read as shell text.  The
+ * helper always runs under /bin/sh, whatever the user's login shell is: a
+ * csh or tcsh cannot run its "$@", and the user would see the terminal
+ * close with nothing run.  The user's own shell is still what File > Shell
+ * starts, as the plan's command.
  * Return: the terminal's wait status, or -1 when it could not be started.
  */
 int e_x_system(struct WpeStartPlan *plan)
@@ -2262,7 +2266,7 @@ int e_x_system(struct WpeStartPlan *plan)
 
  if (e_x_system_script(file, sizeof file) < 0)
   return(-1);
- carrier[5] = user_shell;
+ carrier[5] = WPE_STARTPLAN_SHELL;
  carrier[6] = file;
  ret = -1;
  if (wpe_startplan_carry(plan, carrier, WPE_FROM_USER) == 0)

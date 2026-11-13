@@ -5,7 +5,8 @@ folder's xwperc sets Arguments that end gdb's run command and start a shell
 command of their own: Ctrl-G R draws the box with the run command they make
 before gdb starts, and Escape starts nothing.  A debugger the folder names
 is asked about in that same one box with the .pdbrc it would run, and Use
-mine on a script gdb would load beside the program starts gdb without it,
+mine on a script gdb would load beside the program, or from inside it,
+starts gdb without it,
 through the graphical editor's helper script.  The Wayland twin
 (tests/wayland/test_startplan_debug.py) runs this same body; the terminal
 rows, start-up files among them, are in tests/test_startplan_debug.py.
@@ -159,4 +160,49 @@ def test_startplan_program_gdb_script_use_mine_stops_it(program_script, xwpe):
     said = _trace(program_script)
     assert "startplan line Runs at start: ./t.e-gdb.py (1 line)" in said, said
     assert not (program_script / "ran").exists(), "gdb ran the program's script after Use mine"
+    assert xwpe.proc.poll() is None, "xwpe died starting gdb"
+
+
+# The program carries a gdb script inside itself: its .debug_gdb_scripts
+# section names emb.py, which gdb looks for in its working folder, the
+# program's.
+EMBEDDED_SOURCE = ("int main(void){return 0;}\n"
+                   '__asm__(".pushsection .debug_gdb_scripts,\\"MS\\",@progbits,1\\n"\n'
+                   '        ".byte 1\\n"\n'
+                   '        ".asciz \\"emb.py\\"\\n"\n'
+                   '        ".popsection\\n");\n')
+EMBEDDED_SESSION = dict(SESSION, XWPE_TEST_FILE=SUB_C, XWPE_TEST_SOURCE=EMBEDDED_SOURCE)
+
+
+@pytest.fixture
+def embedded_script(tmp_path):
+    """The user's gdb auto-loads from any folder; the program's folder holds
+    emb.py, which touches tmp_path/ran."""
+    _subfolder(tmp_path)
+    (tmp_path / ".gdbinit").write_text("set auto-load safe-path /\n")
+    (tmp_path / "sub" / "emb.py").write_text("open(%r, 'w').close()\n" % str(tmp_path / "ran"))
+    return tmp_path
+
+
+# @scenario SC-compile-29
+@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
+                    reason="gcc and gdb not on PATH")
+@pytest.mark.parametrize("xwpe", [EMBEDDED_SESSION], indirect=True)
+def test_startplan_gdb_script_inside_the_program_use_mine_stops_it(embedded_script, xwpe):
+    """Ctrl-G R lists the script the program carries inside itself; Use mine
+    starts gdb, through the graphical editor's own helper, told to leave it
+    alone: the session starts and the script never runs."""
+    _sleep(SETTLE_S)
+    xwpe.key("ctrl+g", "r", delay=0.6)
+    assert _wait(lambda: "startcmd ask debug/gdb" in _trace(embedded_script), ASK_WAIT_S), \
+        _trace(embedded_script)
+    _sleep(SETTLE_S)
+    xwpe.key("alt+u", delay=0.4)
+    assert _wait(lambda: "startcmd answer debug/gdb own" in _trace(embedded_script),
+                 ASK_WAIT_S), _trace(embedded_script)
+    _sleep(RAN_WAIT_S)
+    said = _trace(embedded_script)
+    assert "startplan line Runs at start: ./t.e (.debug_gdb_scripts) (2 lines)" in said, said
+    assert not (embedded_script / "ran").exists(), \
+        "gdb ran the program's own script after Use mine"
     assert xwpe.proc.poll() is None, "xwpe died starting gdb"

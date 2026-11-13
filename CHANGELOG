@@ -307,10 +307,13 @@ Changes
   start (.pdbrc for pdb, jdb.ini or .jdbrc for jdb, .gdbinit for gdb
   when your gdb settings allow it, .lldbinit for lldb-dap), or a script
   gdb loads from beside the program under the same settings
-  (<program>-gdb.py, -gdb.gdb, -gdb.scm), Ctrl-G R shows its lines first
+  (<program>-gdb.py, -gdb.gdb, -gdb.scm), or carries inside the program
+  (its .debug_gdb_scripts section), Ctrl-G R shows its lines first
   and asks; Use mine starts gdb without the folder's .gdbinit and those
-  scripts.  The answer is kept for that folder and that text, and a
-  changed file asks again.  A debugger named by the xwperc of the folder
+  scripts.  The line saying what Use mine starts is wrapped like the
+  lines above it instead of being cut at the edge of the box.  The
+  answer is kept for that folder and that text, and a changed file asks
+  again.  A debugger named by the xwperc of the folder
   you started in is asked about in that same one box, not in a box of
   its own before it, and Use mine there starts your own debugger.
   Arguments set by the xwperc of the folder you
@@ -328,8 +331,10 @@ Changes
   words, never as shell text, so "; touch x" in them is an argument and
   nothing more.  Your own Arguments stay your shell text, as before.  A
   file named "a;touch x;.c" or "it's.c" now runs at Ctrl-F9, and runs
-  alone, and File > Execute runs the file you picked as ./name with no
-  shell in between, on the console and in the graphical editors' xterm.
+  alone, and File > Execute runs the file you picked as ./name (a name
+  with its whole path is run as you typed it) with no shell in between,
+  on the console and in the graphical editors' xterm, which now runs its
+  helper under /bin/sh even when your login shell is csh or tcsh.
   A project's install lines are one question for all of them.  Opening a
   Rust or Scala file in a folder now asks once before rust-analyzer or
   Metals starts, since they run that folder's build scripts or build;

@@ -17,6 +17,7 @@
 #include <limits.h>
 #include <pwd.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -568,6 +569,24 @@ int wpe_startplan_operand(char *out, size_t n, const char *dir, const char *name
  if (wrote < 0 || (size_t)wrote >= n)
   return -1;
  return 0;
+}
+
+/**
+ * wpe_startplan_operand_in - The path of a file the user named, as the
+ * program that runs it gets it.
+ * @out/@n: receive the path; @dir: the folder a bare or relative name is
+ * in; @name: the name as picked or typed.
+ *
+ * A name typed with its folder ("/usr/bin/id") is kept as typed.  Any other
+ * is a file of @dir, so it gets the folder in front ("./name") and is never
+ * looked up on PATH.
+ * Return: 0, or -1 when it does not fit.
+ */
+int wpe_startplan_operand_in(char *out, size_t n, const char *dir, const char *name)
+{
+ if (name && name[0] == STARTPLAN_SEP)
+  return wpe_startplan_operand(out, n, NULL, name);
+ return wpe_startplan_operand(out, n, dir, name);
 }
 
 /**
@@ -2026,6 +2045,10 @@ int wpe_startplan_reads_too_long(const WpeStartPlan *p)
      runs under the same safe-path rule; "set auto-load gdb-scripts off",
      "python-scripts off" and "guile-scripts off" skip them (measured on
      gdb 18.1, which has no Guile and refuses the last setting).
+     gdb manual, "The .debug_gdb_scripts section" -- scripts carried inside
+     the program, under the same safe-path rule; the first two settings
+     skip them (measured on gdb 18.1: a file entry is looked up in gdb's
+     working folder).
    - lldb: lldb(1) -- ./.lldbinit only with target.load-cwd-lldbinit true;
      lldb-dap reads init files the same way (to be measured on lldb-dap).
    - dbx: IBM AIX 7.2, "Customizing the dbx debugging environment" --
@@ -2042,9 +2065,15 @@ typedef struct {
                                 of the user's the editor cannot see                 */
  int enabled;                /* 0: a tool the editor does not start                 */
  const char *note;           /* the box's sentence for a conditional file           */
- int of_program;             /* 1: file is a suffix to the program's own name, and
-                                the script lies beside the program               */
+ int of_program;             /* STARTPLAN_BESIDE: file is a suffix to the program's own
+                                name, and the script lies beside the program;
+                                STARTPLAN_INSIDE: file is a section of the program */
 } startplan_startup_file;
+
+/* Where a start-up file of the program lies (startplan_startup_file.of_program). */
+#define STARTPLAN_IN_FOLDER 0   /* the working folder                                 */
+#define STARTPLAN_BESIDE    1   /* beside the program, named after it                 */
+#define STARTPLAN_INSIDE    2   /* inside the program, in a section of it             */
 
 /* The box's sentences for the files gdb runs only under the user's settings. */
 #define STARTPLAN_GDB_AUTOLOAD_NOTE \
@@ -2060,6 +2089,7 @@ static const startplan_startup_file startplan_startup_files[] = {
  { "gdb",  "-gdb.gdb",  0, 0, 1, STARTPLAN_GDB_AUTOLOAD_NOTE, 1 },
  { "gdb",  "-gdb.py",   0, 0, 1, STARTPLAN_GDB_AUTOLOAD_NOTE, 1 },
  { "gdb",  "-gdb.scm",  0, 0, 1, STARTPLAN_GDB_GUILE_NOTE, 1 },
+ { "gdb",  WPE_STARTPLAN_GDB_SECTION, 0, 0, 1, STARTPLAN_GDB_AUTOLOAD_NOTE, STARTPLAN_INSIDE },
  { "lldb", ".lldbinit", 0, 0, 1,
    "lldb runs it only if your ~/.lldbinit says load-cwd-lldbinit", 0 },
  { "dbx",  ".dbxinit",  0, 1, 1, NULL, 0 },
@@ -2298,6 +2328,451 @@ static int startplan_add_program_startup(WpeStartPlan *p, const startplan_startu
  return rc || rc_real;
 }
 
+/* The parts of an ELF file the section reader reads (elf(5)).  Both classes,
+   both byte orders; a number is read byte by byte, never through a cast. */
+#define STARTPLAN_ELF_MAGIC       "\177ELF"
+#define STARTPLAN_ELF_MAGIC_LEN   4
+#define STARTPLAN_ELF_IDENT_LEN   16
+#define STARTPLAN_ELF_CLASS_AT    4
+#define STARTPLAN_ELF_DATA_AT     5
+#define STARTPLAN_ELF_CLASS_32    1
+#define STARTPLAN_ELF_CLASS_64    2
+#define STARTPLAN_ELF_LSB         1
+#define STARTPLAN_ELF_MSB         2
+#define STARTPLAN_ELF32_HEADER    52
+#define STARTPLAN_ELF64_HEADER    64
+#define STARTPLAN_ELF32_SECTION   40
+#define STARTPLAN_ELF64_SECTION   64
+#define STARTPLAN_ELF_NOBITS      8        /* a section with no bytes in the file */
+/* The section names' table is read whole: a program's is a few hundred bytes. */
+#define STARTPLAN_ELF_NAMES_MAX   1048576
+
+/* What the section reader knows of the file it reads. */
+typedef struct {
+ int wide;                   /* 64-bit class                                        */
+ int big;                    /* big-endian                                          */
+ uint64_t file_size;
+ uint64_t table;             /* where the section headers start                     */
+ unsigned entsize;           /* the size of one section header                      */
+ unsigned count;             /* how many there are                                  */
+ unsigned names;             /* the index of the section that holds their names    */
+} startplan_elf;
+
+/* One section header: what the reader needs of it. */
+typedef struct {
+ uint64_t name;              /* offset of its name in the names' table              */
+ uint64_t type;
+ uint64_t offset;
+ uint64_t size;
+} startplan_elf_section;
+
+/**
+ * startplan_elf_num - A number of an ELF file.
+ * @b: its bytes; @size: how many; @big: 1 when the first is the most significant.
+ */
+static uint64_t startplan_elf_num(const unsigned char *b, unsigned size, int big)
+{
+ uint64_t v = 0;
+ unsigned i;
+
+ for (i = 0; i < size; i++)
+ {
+  if (big)
+   v = (v << 8) | b[i];
+  else
+   v |= (uint64_t)b[i] << (8 * i);
+ }
+ return v;
+}
+
+/**
+ * startplan_elf_fits - Do @n bytes at @off lie inside the file?
+ * Return: 1 when they do (no sum can overflow), else 0.
+ */
+static int startplan_elf_fits(const startplan_elf *e, uint64_t off, uint64_t n)
+{
+ return n <= e->file_size && off <= e->file_size - n;
+}
+
+/**
+ * startplan_elf_read - Read @n bytes of the file at @off.
+ * Return: 0, or -1 when they are not all inside the file.
+ */
+static int startplan_elf_read(int fd, const startplan_elf *e, uint64_t off, void *buf, size_t n)
+{
+ size_t done = 0;
+ ssize_t got;
+
+ if (!startplan_elf_fits(e, off, n))
+  return -1;
+ while (done < n)
+ {
+  got = pread(fd, (char *)buf + done, n - done, (off_t)(off + done));
+  if (got <= 0)
+   return -1;
+  done += (size_t)got;
+ }
+ return 0;
+}
+
+/**
+ * startplan_elf_fields - Take the section table's place from the file header.
+ * @h: the header; @e: its class and byte order set, receives the fields.
+ * Return: 1 when the table is whole inside the file, else 0.
+ */
+static int startplan_elf_fields(const unsigned char *h, startplan_elf *e)
+{
+ unsigned least;
+
+ if (e->wide)
+ {
+  e->table = startplan_elf_num(h + 0x28, 8, e->big);
+  e->entsize = (unsigned)startplan_elf_num(h + 0x3A, 2, e->big);
+  e->count = (unsigned)startplan_elf_num(h + 0x3C, 2, e->big);
+  e->names = (unsigned)startplan_elf_num(h + 0x3E, 2, e->big);
+  least = STARTPLAN_ELF64_SECTION;
+ }
+ else
+ {
+  e->table = startplan_elf_num(h + 0x20, 4, e->big);
+  e->entsize = (unsigned)startplan_elf_num(h + 0x2E, 2, e->big);
+  e->count = (unsigned)startplan_elf_num(h + 0x30, 2, e->big);
+  e->names = (unsigned)startplan_elf_num(h + 0x32, 2, e->big);
+  least = STARTPLAN_ELF32_SECTION;
+ }
+ if (e->count == 0 || e->names >= e->count || e->entsize < least)
+  return 0;
+ return startplan_elf_fits(e, e->table, (uint64_t)e->count * e->entsize);
+}
+
+/**
+ * startplan_elf_open_header - Read the header of an ELF file.
+ * @fd: the file; @e: receives what the reader needs.
+ * Return: 1 when it is an ELF file with a whole section table, else 0 (not
+ * ELF, another class, cut short, a table that does not fit the file).
+ */
+static int startplan_elf_open_header(int fd, startplan_elf *e)
+{
+ unsigned char h[STARTPLAN_ELF64_HEADER];
+ struct stat st;
+ size_t len;
+
+ if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0)
+  return 0;
+ e->file_size = (uint64_t)st.st_size;
+ if (startplan_elf_read(fd, e, 0, h, STARTPLAN_ELF_IDENT_LEN) != 0 ||
+     memcmp(h, STARTPLAN_ELF_MAGIC, STARTPLAN_ELF_MAGIC_LEN) != 0)
+  return 0;
+ if (h[STARTPLAN_ELF_CLASS_AT] != STARTPLAN_ELF_CLASS_32 &&
+     h[STARTPLAN_ELF_CLASS_AT] != STARTPLAN_ELF_CLASS_64)
+  return 0;
+ if (h[STARTPLAN_ELF_DATA_AT] != STARTPLAN_ELF_LSB && h[STARTPLAN_ELF_DATA_AT] != STARTPLAN_ELF_MSB)
+  return 0;
+ e->wide = h[STARTPLAN_ELF_CLASS_AT] == STARTPLAN_ELF_CLASS_64;
+ e->big = h[STARTPLAN_ELF_DATA_AT] == STARTPLAN_ELF_MSB;
+ len = e->wide ? STARTPLAN_ELF64_HEADER : STARTPLAN_ELF32_HEADER;
+ if (startplan_elf_read(fd, e, 0, h, len) != 0)
+  return 0;
+ return startplan_elf_fields(h, e);
+}
+
+/**
+ * startplan_elf_section_at - Read the @i'th section header.
+ * Return: 0, or -1 when it cannot be read.
+ */
+static int startplan_elf_section_at(int fd, const startplan_elf *e, unsigned i,
+                                    startplan_elf_section *s)
+{
+ unsigned char b[STARTPLAN_ELF64_SECTION];
+ size_t len = e->wide ? STARTPLAN_ELF64_SECTION : STARTPLAN_ELF32_SECTION;
+
+ if (startplan_elf_read(fd, e, e->table + (uint64_t)i * e->entsize, b, len) != 0)
+  return -1;
+ s->name = startplan_elf_num(b, 4, e->big);
+ s->type = startplan_elf_num(b + 4, 4, e->big);
+ if (e->wide)
+ {
+  s->offset = startplan_elf_num(b + 24, 8, e->big);
+  s->size = startplan_elf_num(b + 32, 8, e->big);
+ }
+ else
+ {
+  s->offset = startplan_elf_num(b + 16, 4, e->big);
+  s->size = startplan_elf_num(b + 20, 4, e->big);
+ }
+ return 0;
+}
+
+/**
+ * startplan_elf_has_bytes - Does the section hold bytes that lie in the file?
+ */
+static int startplan_elf_has_bytes(const startplan_elf *e, const startplan_elf_section *s)
+{
+ return s->type != STARTPLAN_ELF_NOBITS && startplan_elf_fits(e, s->offset, s->size);
+}
+
+/**
+ * startplan_elf_names - Read the table of the sections' names.
+ * Return: the names, malloc'd and ended by a NUL, with their size in @len,
+ * or NULL when there is no such table in the file.
+ */
+static char *startplan_elf_names(int fd, const startplan_elf *e, size_t *len)
+{
+ startplan_elf_section s;
+ char *names;
+
+ if (startplan_elf_section_at(fd, e, e->names, &s) != 0 || !startplan_elf_has_bytes(e, &s) ||
+     s.size > STARTPLAN_ELF_NAMES_MAX)
+  return NULL;
+ if (!(names = malloc((size_t)s.size + 1)))
+  return NULL;
+ if (startplan_elf_read(fd, e, s.offset, names, (size_t)s.size) != 0)
+ {
+  free(names);
+  return NULL;
+ }
+ names[s.size] = '\0';
+ *len = (size_t)s.size;
+ return names;
+}
+
+/**
+ * startplan_elf_find - Find a section by its name.
+ * @names/@len: the names' table; @name: the section's name; @s: receives it.
+ * Return: 1 when found with its bytes in the file, else 0.
+ */
+static int startplan_elf_find(int fd, const startplan_elf *e, const char *names, size_t len,
+                              const char *name, startplan_elf_section *s)
+{
+ unsigned i;
+
+ for (i = 0; i < e->count; i++)
+ {
+  if (startplan_elf_section_at(fd, e, i, s) != 0)
+   return 0;
+  if (s->name < len && strcmp(names + s->name, name) == 0)
+   return startplan_elf_has_bytes(e, s);
+ }
+ return 0;
+}
+
+/**
+ * wpe_startplan_elf_section - Read a named section of an ELF program.
+ * @file: the program; @name: the section (".debug_gdb_scripts"); @out/@max:
+ * receive its first bytes; @size: receives its whole size.
+ *
+ * The user is shown what gdb would run out of the program before it starts,
+ * so the debug box can name a script that travels inside the executable and
+ * not only one that lies beside it.  The file is read with its own header's
+ * numbers only after each is checked against the file's size: a program
+ * that is not ELF, is cut short, or whose headers point past its end has no
+ * such section.
+ * Return: 1 when the section is there, else 0.
+ */
+int wpe_startplan_elf_section(const char *file, const char *name, unsigned char *out, size_t max,
+                              size_t *size)
+{
+ startplan_elf e;
+ startplan_elf_section s;
+ char *names;
+ size_t len = 0, take;
+ int fd, found = 0;
+
+ if (!file || !name || !out || !size)
+  return 0;
+ if ((fd = open(file, O_RDONLY | O_NONBLOCK)) < 0)
+  return 0;
+ if (startplan_elf_open_header(fd, &e) && (names = startplan_elf_names(fd, &e, &len)) != NULL)
+ {
+  if (startplan_elf_find(fd, &e, names, len, name, &s))
+  {
+   take = s.size < max ? (size_t)s.size : max;
+   if (startplan_elf_read(fd, &e, s.offset, out, take) == 0)
+   {
+    *size = (size_t)s.size;
+    found = 1;
+   }
+  }
+  free(names);
+ }
+ close(fd);
+ return found;
+}
+
+/* The kinds of entry of gdb's .debug_gdb_scripts section (gdb manual,
+   "The .debug_gdb_scripts section"): the first byte of each, followed by
+   one NUL-ended string.  A file entry's string is a name gdb looks for in
+   its working folder; a text entry's string is the script itself, its
+   first line the script's name (measured on gdb 18.1). */
+#define STARTPLAN_SCRIPT_PYTHON_FILE 1
+#define STARTPLAN_SCRIPT_SCHEME_FILE 3
+#define STARTPLAN_SCRIPT_PYTHON_TEXT 4
+#define STARTPLAN_SCRIPT_SCHEME_TEXT 6
+
+/**
+ * startplan_script_is_file - Does this kind of entry name a file?
+ */
+static int startplan_script_is_file(int kind)
+{
+ return kind == STARTPLAN_SCRIPT_PYTHON_FILE || kind == STARTPLAN_SCRIPT_SCHEME_FILE;
+}
+
+/**
+ * startplan_script_is_text - Does this kind of entry hold the script?
+ */
+static int startplan_script_is_text(int kind)
+{
+ return kind == STARTPLAN_SCRIPT_PYTHON_TEXT || kind == STARTPLAN_SCRIPT_SCHEME_TEXT;
+}
+
+/**
+ * startplan_embedded_put - Add text to what the box shows of a program's
+ * own scripts, ending its last line.
+ * @s: the path; @text/@n: the text.
+ *
+ * When it does not all fit in what the box can show, the path is marked
+ * too long, so Run it is not offered.
+ */
+static void startplan_embedded_put(WpeStartPath *s, const char *text, size_t n)
+{
+ size_t have = strlen(s->content);
+
+ if (have + n + 1 > WPE_STARTPLAN_READS_MAX)
+ {
+  s->too_long = 1;
+  return;
+ }
+ memcpy(s->content + have, text, n);
+ have += n;
+ if (n == 0 || text[n - 1] != '\n')
+  s->content[have++] = '\n';
+ s->content[have] = '\0';
+}
+
+/**
+ * startplan_embedded_file - Add the text of the script file an entry names.
+ * @s: the path; @cwd: the folder gdb runs in; @name: the file's name.
+ *
+ * gdb looks for a relative name in its working folder, so that is where the
+ * file is read; an absolute name is read where it lies.  A file that is not
+ * there is not run, and the box says so.
+ */
+static void startplan_embedded_file(WpeStartPath *s, const char *cwd, const char *name)
+{
+ char full[WPE_STARTPLAN_PATH_MAX];
+ WpeStartPath file;
+
+ if (name[0] == STARTPLAN_SEP)
+  snprintf(full, sizeof full, "%s", name);
+ else if (snprintf(full, sizeof full, "%s%c%s", cwd, STARTPLAN_SEP, name) >= (int)sizeof full)
+ {
+  s->too_long = 1;
+  return;
+ }
+ memset(&file, 0, sizeof file);
+ if (access(full, F_OK) != 0)
+ {
+  startplan_embedded_put(s, "(not found)", strlen("(not found)"));
+  return;
+ }
+ startplan_read_startup(&file, full);
+ if (file.too_long)
+  s->too_long = 1;
+ if (file.content)
+  startplan_embedded_put(s, file.content, strlen(file.content));
+ free(file.content);
+}
+
+/**
+ * startplan_embedded_entry - Add one entry of the section to what the box shows.
+ * @s: the path; @cwd: gdb's working folder; @raw/@n: the section; @at: where
+ * the entry starts.
+ * Return: where the next one starts, or @n when the rest cannot be read
+ * (the path is then marked too long).
+ */
+static size_t startplan_embedded_entry(WpeStartPath *s, const char *cwd,
+                                       const unsigned char *raw, size_t n, size_t at)
+{
+ int kind = raw[at++];
+ const char *text = (const char *)raw + at;
+ const unsigned char *end = memchr(raw + at, '\0', n - at);
+ size_t len;
+
+ if (!end || (!startplan_script_is_file(kind) && !startplan_script_is_text(kind)))
+ {
+  s->too_long = 1;
+  return n;
+ }
+ len = (size_t)(end - raw) - at;
+ startplan_embedded_put(s, text, len);
+ if (startplan_script_is_file(kind))
+  startplan_embedded_file(s, cwd, text);
+ return at + len + 1;
+}
+
+/**
+ * startplan_embedded_text - What the box shows of the scripts inside a program.
+ * @s: the path, its content allocated and empty; @cwd: gdb's working folder;
+ * @raw/@n: the section as it is in the file.
+ *
+ * A file entry is its name, then the file's lines; a text entry is the
+ * script itself, whose first line is its name.  Every entry gdb would run
+ * is shown, so a text entry cannot hide a file entry behind it.
+ */
+static void startplan_embedded_text(WpeStartPath *s, const char *cwd, const unsigned char *raw,
+                                    size_t n)
+{
+ size_t at = 0;
+
+ while (at < n && !s->too_long)
+  at = startplan_embedded_entry(s, cwd, raw, n, at);
+}
+
+/**
+ * startplan_add_embedded_startup - List the scripts gdb finds inside the
+ * program, when it has a .debug_gdb_scripts section.
+ * @p: the plan; @row: the table's row; @program: the program as the tool
+ * gets it, or NULL.
+ *
+ * The program is read as a file, never run.  With no such section, or no
+ * program, nothing is listed and "Use mine" adds no switch for it.
+ * Return: 1 when the section was found and listed, 0 when not, -1 out of memory.
+ */
+static int startplan_add_embedded_startup(WpeStartPlan *p, const startplan_startup_file *row,
+                                          const char *program)
+{
+ char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX], shown[WPE_STARTPLAN_PATH_MAX];
+ unsigned char raw[WPE_STARTPLAN_READS_MAX];
+ WpeStartPath *s;
+ size_t size = 0;
+
+ if (!program || !*program)
+  return 0;
+ if (startplan_program_paths(p, program, "", full, given, sizeof given) < 0)
+  return 0;
+ if (!wpe_startplan_elf_section(full, row->file, raw, sizeof raw, &size))
+  return 0;
+ if (snprintf(shown, sizeof shown, "%s (%s)", given, row->file) >= (int)sizeof shown)
+  return 0;
+ if (wpe_startplan_path(p, shown, WPE_PATH_READS, WPE_FROM_FOLDER, row->file, p->cwd) < 0)
+  return -1;
+ s = &p->path[p->npath - 1];
+ s->note = row->note;
+ s->embedded = 1;
+ s->length = (long)size;
+ if (!(s->content = calloc(1, WPE_STARTPLAN_READS_MAX + 1)))
+ {
+  s->too_long = 1;
+  return 1;
+ }
+ if (size > sizeof raw)
+  s->too_long = 1;
+ else
+  startplan_embedded_text(s, p->cwd, raw, size);
+ startplan_trace("startplan reads %s %ld", shown, s->length);
+ return 1;
+}
+
 /**
  * wpe_startplan_tool_reads - Rule 7: list what the tool runs from its folder.
  * @p: the plan, its working folder set; @tool: "gdb", "pdb", "jdb", "lldb",
@@ -2338,7 +2813,9 @@ int wpe_startplan_tool_reads_of(WpeStartPlan *p, const char *tool, const char *p
   if (row->alternative && before)
    continue;
   had = p->npath;
-  if (row->of_program)
+  if (row->of_program == STARTPLAN_INSIDE)
+   rc = startplan_add_embedded_startup(p, row, program);
+  else if (row->of_program == STARTPLAN_BESIDE)
    rc = startplan_add_program_startup(p, row, program);
   else
    rc = startplan_add_startup(p, row);

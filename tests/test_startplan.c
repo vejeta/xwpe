@@ -772,6 +772,389 @@ static void case_startup_program_scripts(void)
  rmdir(sub);
 }
 
+/* A small ELF file built by hand: a header, one section of gdb scripts, the
+   table of the sections' names, three section headers (null, scripts,
+   names).  Both classes, both byte orders. */
+#define ELF_ROOM        512
+#define ELF_SECTIONS    3
+#define ELF_NULL        0
+#define ELF_SCRIPTS     1
+#define ELF_NAMES       2
+#define ELF_NAMES_TEXT  "\0.debug_gdb_scripts\0.shstrtab"
+#define ELF_NAMES_LEN   30
+#define ELF_NAME_SCRIPTS 1
+#define ELF_NAME_NAMES   20
+#define ELF_PROGBITS    1
+#define ELF_STRTAB      3
+#define ELF_NOBITS      8
+#define ELF_SECTION_NAME ".debug_gdb_scripts"
+
+typedef struct {
+ unsigned char b[ELF_ROOM];
+ size_t len;
+ int wide, big;
+ size_t table, entsize;
+} elf_image;
+
+static void elf_put(unsigned char *p, unsigned size, int big, unsigned long long v)
+{
+ unsigned i;
+ for (i = 0; i < size; i++)
+  p[big ? size - 1 - i : i] = (unsigned char)(v >> (8 * i));
+}
+
+/* Where field @at (a 64-bit class offset) of section header @idx lies. */
+static unsigned char *elf_header_at(elf_image *e, int idx, unsigned at)
+{
+ return e->b + e->table + (size_t)idx * e->entsize + at;
+}
+
+/* Set one section header's name, type, offset and size. */
+static void elf_set_section(elf_image *e, int idx, unsigned long long name, unsigned long long type,
+                            unsigned long long offset, unsigned long long size)
+{
+ elf_put(elf_header_at(e, idx, 0), 4, e->big, name);
+ elf_put(elf_header_at(e, idx, 4), 4, e->big, type);
+ if (e->wide)
+ {
+  elf_put(elf_header_at(e, idx, 24), 8, e->big, offset);
+  elf_put(elf_header_at(e, idx, 32), 8, e->big, size);
+ }
+ else
+ {
+  elf_put(elf_header_at(e, idx, 16), 4, e->big, offset);
+  elf_put(elf_header_at(e, idx, 20), 4, e->big, size);
+ }
+}
+
+static void elf_make(elf_image *e, int wide, int big, const char *payload, size_t plen)
+{
+ size_t header = wide ? 64 : 52, names;
+ memset(e, 0, sizeof *e);
+ e->wide = wide;
+ e->big = big;
+ e->entsize = wide ? 64 : 40;
+ memcpy(e->b, "\177ELF", 4);
+ e->b[4] = wide ? 2 : 1;
+ e->b[5] = big ? 2 : 1;
+ e->b[6] = 1;
+ memcpy(e->b + header, payload, plen);
+ names = header + plen;
+ memcpy(e->b + names, ELF_NAMES_TEXT, ELF_NAMES_LEN);
+ e->table = names + ELF_NAMES_LEN;
+ e->len = e->table + ELF_SECTIONS * e->entsize;
+ if (wide)
+ {
+  elf_put(e->b + 0x28, 8, big, e->table);
+  elf_put(e->b + 0x3A, 2, big, e->entsize);
+  elf_put(e->b + 0x3C, 2, big, ELF_SECTIONS);
+  elf_put(e->b + 0x3E, 2, big, ELF_NAMES);
+ }
+ else
+ {
+  elf_put(e->b + 0x20, 4, big, e->table);
+  elf_put(e->b + 0x2E, 2, big, e->entsize);
+  elf_put(e->b + 0x30, 2, big, ELF_SECTIONS);
+  elf_put(e->b + 0x32, 2, big, ELF_NAMES);
+ }
+ elf_set_section(e, ELF_SCRIPTS, ELF_NAME_SCRIPTS, ELF_PROGBITS, header, plen);
+ elf_set_section(e, ELF_NAMES, ELF_NAME_NAMES, ELF_STRTAB, names, ELF_NAMES_LEN);
+}
+
+/* The image, or its first @len bytes, as a file; the section read from it. */
+static int elf_read(const elf_image *e, size_t len, const char *section, unsigned char *out,
+                    size_t max, size_t *size)
+{
+ char path[PATH_ROOM];
+ file_in(path, sizeof path, proj, "t.elf");
+ write_bytes(path, (const char *)e->b, len);
+ *size = 0;
+ return wpe_startplan_elf_section(path, section, out, max, size);
+}
+
+static const char ELF_PAYLOAD[] = "\001emb.py\0";
+#define ELF_PAYLOAD_LEN (sizeof ELF_PAYLOAD - 1)   /* the entry, its NUL included */
+
+static void case_elf_kinds(void)
+{
+ static const int wide[] = { 0, 1, 0, 1 }, big[] = { 0, 0, 1, 1 };
+ static const char *const name[] = { "32-bit little", "64-bit little", "32-bit big", "64-bit big" };
+ unsigned char out[ELF_ROOM];
+ char what[TEXT_ROOM];
+ elf_image e;
+ size_t size;
+ int i;
+
+ for (i = 0; i < 4; i++)
+ {
+  elf_make(&e, wide[i], big[i], ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+  snprintf(what, sizeof what, "%s-endian ELF: the section is found", name[i]);
+  expect_int(what, elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 1);
+  expect_int("with its whole size", (int)size, (int)ELF_PAYLOAD_LEN);
+  expect_int("and its bytes", memcmp(out, ELF_PAYLOAD, ELF_PAYLOAD_LEN), 0);
+  expect_int("another section's name is not it",
+             elf_read(&e, e.len, ".nothing", out, sizeof out, &size), 0);
+ }
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ expect_int("a short buffer is filled and the size is still the whole",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, 3, &size), 1);
+ expect_int("the size", (int)size, (int)ELF_PAYLOAD_LEN);
+}
+
+static void case_elf_not_elf(void)
+{
+ unsigned char out[ELF_ROOM];
+ char path[PATH_ROOM];
+ elf_image e;
+ size_t size;
+
+ file_in(path, sizeof path, proj, "t.elf");
+ write_file(path, "#!/bin/sh\necho not a program\n");
+ expect_int("a script is not ELF", wpe_startplan_elf_section(path, ELF_SECTION_NAME, out,
+                                                           sizeof out, &size), 0);
+ write_file(path, "");
+ expect_int("an empty file has no section", wpe_startplan_elf_section(path, ELF_SECTION_NAME, out,
+                                                                    sizeof out, &size), 0);
+ expect_int("a file that is not there has none", wpe_startplan_elf_section(
+            "/nonexistent/t.elf", ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ expect_int("a folder has none", wpe_startplan_elf_section(proj, ELF_SECTION_NAME, out,
+                                                         sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ e.b[4] = 3;
+ expect_int("an unknown class is no section", elf_read(&e, e.len, ELF_SECTION_NAME, out,
+                                                       sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ e.b[5] = 0;
+ expect_int("an unknown byte order is no section", elf_read(&e, e.len, ELF_SECTION_NAME, out,
+                                                            sizeof out, &size), 0);
+ unlink(path);
+}
+
+static void case_elf_cut_short(void)
+{
+ unsigned char out[ELF_ROOM];
+ elf_image e;
+ size_t size, cuts[] = { 3, 10, 40, 70, 0 }, i;
+
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ for (i = 0; cuts[i]; i++)
+  expect_int("a file cut inside its header or before its table has no section",
+             elf_read(&e, cuts[i], ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ expect_int("a file cut inside its last section header has none",
+            elf_read(&e, e.len - 1, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 0, 1, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ expect_int("the same for a 32-bit file",
+            elf_read(&e, e.len - 1, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+}
+
+static void case_elf_wild_numbers(void)
+{
+ unsigned char out[ELF_ROOM];
+ elf_image e;
+ size_t size;
+
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_put(e.b + 0x3C, 2, 0, 65535);
+ expect_int("e_shnum 65535 in a small file reaches past its end",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_put(e.b + 0x3C, 2, 0, 0);
+ expect_int("e_shnum 0 is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_put(e.b + 0x3A, 2, 0, 65535);
+ expect_int("a section header size of 65535 reaches past the end",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_put(e.b + 0x3A, 2, 0, 8);
+ expect_int("a section header smaller than a header is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_put(e.b + 0x28, 8, 0, 0xFFFFFFFFFFFFFFF0ULL);
+ expect_int("a table at an offset that wraps is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 0, 1, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_put(e.b + 0x30, 2, 1, 65535);
+ expect_int("e_shnum 65535 in a small 32-bit file reaches past its end",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+}
+
+static void case_elf_bad_sections(void)
+{
+ unsigned char out[ELF_ROOM];
+ elf_image e;
+ size_t size;
+
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_put(e.b + 0x3E, 2, 0, ELF_SECTIONS);
+ expect_int("a names section past the table is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_set_section(&e, ELF_NAMES, ELF_NAME_NAMES, ELF_STRTAB, e.len + 1000, ELF_NAMES_LEN);
+ expect_int("a names table out of the file is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_set_section(&e, ELF_NAMES, ELF_NAME_NAMES, ELF_STRTAB, 64, 0xFFFFFFFFULL);
+ expect_int("a names table of 4 GB in a small file is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 0, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_set_section(&e, ELF_NAMES, ELF_NAME_NAMES, ELF_STRTAB, 0xFFFFFFF0ULL, 0x20);
+ expect_int("a 32-bit names table whose end wraps is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_set_section(&e, ELF_SCRIPTS, 1000, ELF_PROGBITS, 64, ELF_PAYLOAD_LEN);
+ expect_int("a name past the names table is not found",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_set_section(&e, ELF_SCRIPTS, ELF_NAME_SCRIPTS, ELF_PROGBITS, 64, 100000);
+ expect_int("a section whose bytes pass the end of the file is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_set_section(&e, ELF_SCRIPTS, ELF_NAME_SCRIPTS, ELF_NOBITS, 64, ELF_PAYLOAD_LEN);
+ expect_int("a section with no bytes in the file is no section",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+ elf_make(&e, 1, 0, ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ elf_set_section(&e, ELF_NAMES, ELF_NAME_NAMES, ELF_STRTAB, 64 + ELF_PAYLOAD_LEN,
+                 ELF_NAMES_LEN - 20);
+ expect_int("a names table cut inside the wanted name does not find it",
+            elf_read(&e, e.len, ELF_SECTION_NAME, out, sizeof out, &size), 0);
+}
+
+/* gdb's plan in proj for @program, when the file t.e holds @payload as its
+   .debug_gdb_scripts. */
+static WpeStartPlan *embedded_plan(const char *payload, size_t plen)
+{
+ elf_image e;
+ char path[PATH_ROOM];
+
+ elf_make(&e, 1, 0, payload, plen);
+ file_in(path, sizeof path, proj, "t.e");
+ write_bytes(path, (const char *)e.b, e.len);
+ return gdb_plan_of("t.e");
+}
+
+static void case_embedded_listed(void)
+{
+ /* gdb's layout, measured on gdb 18.1: a text entry is one NUL-ended
+    string whose first line is the script's name. */
+ static const char text_entry[] = "\004name\nprint(1)\n\0";
+ static const char text_then_file[] = "\004name\nprint(1)\n\0\001emb.py\0";
+ static const char scheme_text[] = "\006name\n(display 1)\n\0";
+ char py[PATH_ROOM], exe[PATH_ROOM];
+ WpeStartPlan *p;
+
+ file_in(exe, sizeof exe, proj, "t.e");
+ file_in(py, sizeof py, proj, "emb.py");
+ write_file(py, "open('ran','w').close()\n");
+ p = embedded_plan(ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ expect_int("a program's gdb script section is listed", p->npath, 1);
+ expect_str("as the program with its section", p->npath ? p->path[0].path : "",
+            "./t.e (.debug_gdb_scripts)");
+ expect_int("as a file gdb runs", p->npath ? p->path[0].role : -1, WPE_PATH_READS);
+ expect_int("marked as inside the program", p->npath ? p->path[0].embedded : -1, 1);
+ expect_str("its text is the name and the file's lines", p->npath ? p->path[0].content : "",
+            "emb.py\nopen('ran','w').close()\n");
+ expect_has("with the condition gdb runs it under", p->npath && p->path[0].note ?
+            p->path[0].note : "", "auto-load");
+ expect_int("shown whole", wpe_startplan_reads_too_long(p), 0);
+ expect_int("so the plan asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ expect_has("and its text is part of the plan's text", wpe_startplan_text(p),
+            "emb.py\nopen('ran','w').close()");
+ wpe_startplan_free(p);
+
+ write_file(py, "open('ran2','w').close()\n");
+ p = embedded_plan(ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ expect_str("a changed script is a changed text", p->npath ? p->path[0].content : "",
+            "emb.py\nopen('ran2','w').close()\n");
+ wpe_startplan_free(p);
+
+ p = embedded_plan(text_then_file, sizeof text_then_file - 1);
+ expect_str("a file entry after a text entry shows the file's lines too",
+            p->npath ? p->path[0].content : "",
+            "name\nprint(1)\nemb.py\nopen('ran2','w').close()\n");
+ expect_int("and both are shown whole", wpe_startplan_reads_too_long(p), 0);
+ wpe_startplan_free(p);
+ unlink(py);
+
+ p = embedded_plan(ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ expect_str("a file entry whose file is not there says so",
+            p->npath ? p->path[0].content : "", "emb.py\n(not found)\n");
+ expect_int("and that is all there is to show", wpe_startplan_reads_too_long(p), 0);
+ wpe_startplan_free(p);
+
+ p = embedded_plan(text_entry, sizeof text_entry - 1);
+ expect_str("a text entry shows its name and its text", p->npath ? p->path[0].content : "",
+            "name\nprint(1)\n");
+ expect_int("a text entry is shown whole", wpe_startplan_reads_too_long(p), 0);
+ wpe_startplan_free(p);
+
+ p = embedded_plan(scheme_text, sizeof scheme_text - 1);
+ expect_str("a Guile text entry (kind 6) is shown", p->npath ? p->path[0].content : "",
+            "name\n(display 1)\n");
+ wpe_startplan_free(p);
+
+ p = embedded_plan("\001emb.py", 7);
+ expect_int("an entry whose name has no end is listed", p->npath, 1);
+ expect_int("but not shown whole: Run it is withheld", wpe_startplan_reads_too_long(p), 1);
+ wpe_startplan_free(p);
+
+ p = embedded_plan("\011x\0", 3);
+ expect_int("an entry of a kind gdb does not know is listed", p->npath, 1);
+ expect_int("and not shown whole", wpe_startplan_reads_too_long(p), 1);
+ wpe_startplan_free(p);
+
+ p = embedded_plan("\004name\nprint(1)", 14);
+ expect_int("a text entry with no end is not shown whole", wpe_startplan_reads_too_long(p), 1);
+ wpe_startplan_free(p);
+
+ p = embedded_plan("\005name\0", 6);
+ expect_int("kind 5, which gdb calls invalid, is not shown whole",
+            wpe_startplan_reads_too_long(p), 1);
+ wpe_startplan_free(p);
+
+ unlink(exe);
+ p = gdb_plan_of("t.e");
+ expect_int("a program that is not there has no section listed", p->npath, 0);
+ wpe_startplan_free(p);
+ p = debugger_plan(proj, "gdb");
+ expect_int("with no program known none is listed", p->npath, 0);
+ wpe_startplan_free(p);
+}
+
+static void case_embedded_absent(void)
+{
+ char exe[PATH_ROOM];
+ WpeStartPlan *p;
+
+ file_in(exe, sizeof exe, proj, "t.e");
+ write_file(exe, "#!/bin/sh\n");
+ p = gdb_plan_of("t.e");
+ expect_int("a program that is not ELF lists nothing", p->npath, 0);
+ expect_int("and a plan of the user's own words runs", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ wpe_startplan_free(p);
+ unlink(exe);
+}
+
+static void case_operand_in(void)
+{
+ char out[PATH_ROOM];
+
+ expect_int("a bare name", wpe_startplan_operand_in(out, sizeof out, ".", "tool"), 0);
+ expect_str("is a file of the folder", out, "./tool");
+ wpe_startplan_operand_in(out, sizeof out, ".", "sub/tool");
+ expect_str("a relative name keeps its folder part", out, "./sub/tool");
+ wpe_startplan_operand_in(out, sizeof out, ".", "-x");
+ expect_str("a name like an option is still a file", out, "./-x");
+ expect_int("a whole path", wpe_startplan_operand_in(out, sizeof out, ".", "/usr/bin/id"), 0);
+ expect_str("is kept as typed", out, "/usr/bin/id");
+ wpe_startplan_operand_in(out, sizeof out, ".", "/");
+ expect_str("the root too", out, "/");
+ expect_int("a path that does not fit is refused, never cut",
+            wpe_startplan_operand_in(out, TINY_ROOM, ".", "/usr/bin/id"), -1);
+ expect_int("a bare name that does not fit too",
+            wpe_startplan_operand_in(out, TINY_ROOM, ".", "longname.o"), -1);
+}
+
 static void case_input(void)
 {
  WpeStartPlan *p;
@@ -945,6 +1328,10 @@ static void teardown(void)
  rmdir(state);
  snprintf(path, sizeof path, "%s/t.o", proj);
  unlink(path);
+ snprintf(path, sizeof path, "%s/t.elf", proj);
+ unlink(path);
+ snprintf(path, sizeof path, "%s/t.e", proj);
+ unlink(path);
  unlink(link_out);
  rmdir(proj);
  rmdir(outside);
@@ -977,6 +1364,14 @@ int main(void)
  case_startup_at_the_limit();
  case_startup_rows();
  case_startup_program_scripts();
+ case_elf_kinds();
+ case_elf_not_elf();
+ case_elf_cut_short();
+ case_elf_wild_numbers();
+ case_elf_bad_sections();
+ case_embedded_listed();
+ case_embedded_absent();
+ case_operand_in();
  case_input();
  case_carrier();
  case_unplanned_refused();

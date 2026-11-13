@@ -778,6 +778,13 @@ gdb told to leave them alone (@code{set auto-load gdb-scripts off},
 @code{python-scripts off}, and @code{guile-scripts off} when gdb has
 Guile), which also leaves off the scripts, pretty-printers among them,
 that your system's libraries bring.
+@item gdb @tab Scripts inside the program (its @code{.debug_gdb_scripts}
+section, listed as @file{./@var{program} (.debug_gdb_scripts)})
+@tab Under the same setting.  The box shows each script: one written
+into the program with its lines, one named as a file with its name and,
+when it lies in the folder gdb starts in, its lines; @samp{Use mine} turns
+them off with the same switches as above.  A program with no such
+section lists nothing and @samp{Use mine} adds no switch for it.
 @item lldb-dap @tab @file{.lldbinit}
 @tab Only if your @file{~/.lldbinit} sets @code{target.load-cwd-lldbinit}.
 @item dbx @tab @file{.dbxinit} @tab Always.

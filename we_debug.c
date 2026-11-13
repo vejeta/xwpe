@@ -6560,10 +6560,14 @@ static void e_d_fd_nonblocking(int fd)
 #define E_D_GDB_OWN_TEXT        "gdb without the folder's ./.gdbinit"
 #define E_D_GDB_OWN_SCRIPTS_TEXT "gdb without the scripts beside the program"
 #define E_D_GDB_OWN_BOTH_TEXT   "gdb without the folder's ./.gdbinit and the program's scripts"
+#define E_D_GDB_OWN_EMBEDDED_TEXT "gdb without the scripts inside the program"
+#define E_D_GDB_OWN_PROGRAM_TEXT  "gdb without the program's scripts"
 #define E_D_GDB_LOCAL_INIT_SHOWN "./.gdbinit"
 /* What "Use mine" tells gdb to leave alone (e_d_plan_gdb_skips). */
 #define E_D_SKIP_LOCAL_INIT     1   /* the working folder's ./.gdbinit          */
 #define E_D_SKIP_SCRIPTS        2   /* the scripts named after the program      */
+#define E_D_SKIP_EMBEDDED       4   /* the scripts carried inside the program   */
+#define E_D_SKIP_PROGRAM_SCRIPTS (E_D_SKIP_SCRIPTS | E_D_SKIP_EMBEDDED)
 /* How gdb says it was built with Guile (gdb --configuration). */
 #define E_D_GDB_CONFIG_OPT      "--configuration"
 #define E_D_GDB_GUILE_WORD      "--with-guile"
@@ -6679,7 +6683,7 @@ static int e_d_gdb_has_guile(void)
  * Each is read before gdb looks at the folder (-iex), so the session the
  * user chose starts without them.  Only what the folder holds is turned
  * off: the pretty-printers a system's own scripts bring stay on unless the
- * program has a script of its own beside it.
+ * program has a script of its own beside it or inside it.
  */
 static void e_d_plan_gdb_skip_words(WpeStartPlan *p, int skips)
 {
@@ -6688,7 +6692,7 @@ static void e_d_plan_gdb_skip_words(WpeStartPlan *p, int skips)
   e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
   e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
  }
- if (!(skips & E_D_SKIP_SCRIPTS))
+ if (!(skips & E_D_SKIP_PROGRAM_SCRIPTS))
   return;
  e_d_plan_word(p, E_D_GDB_LOCAL_INIT_OPT, WPE_WORD_OPTION, WPE_FROM_EDITOR);
  e_d_plan_word(p, E_D_GDB_SCRIPTS_OFF, WPE_WORD_OPTION, WPE_FROM_EDITOR);
@@ -6934,6 +6938,8 @@ static int e_d_plan_gdb_skips(const WpeStartPlan *p)
    continue;
   if (strcmp(p->path[i].path, E_D_GDB_LOCAL_INIT_SHOWN) == 0)
    skips |= E_D_SKIP_LOCAL_INIT;
+  else if (p->path[i].embedded)
+   skips |= E_D_SKIP_EMBEDDED;
   else
    skips |= E_D_SKIP_SCRIPTS;
  }
@@ -6951,6 +6957,10 @@ static const char *e_d_plan_gdb_own_text(int skips)
   return(E_D_GDB_OWN_TEXT);
  if (skips == E_D_SKIP_SCRIPTS)
   return(E_D_GDB_OWN_SCRIPTS_TEXT);
+ if (skips == E_D_SKIP_EMBEDDED)
+  return(E_D_GDB_OWN_EMBEDDED_TEXT);
+ if (skips == E_D_SKIP_PROGRAM_SCRIPTS)
+  return(E_D_GDB_OWN_PROGRAM_TEXT);
  return(E_D_GDB_OWN_BOTH_TEXT);
 }
 
@@ -6958,8 +6968,8 @@ static const char *e_d_plan_gdb_own_text(int skips)
  * e_d_plan_offers_own - Is there a start of the user's own to offer?
  * @p: the plan.
  *
- * Only for gdb, and only when the folder holds a ./.gdbinit or a script
- * beside the program: gdb can be told to leave them alone.  pdb has no
+ * Only for gdb, and only when the folder holds a ./.gdbinit, or the program
+ * has a script beside it or inside it: gdb can be told to leave them alone.  pdb has no
  * switch for ./.pdbrc, and jdb's ./jdb.ini cannot be turned off either, so
  * the box offers Run it and Cancel only.  (A debugger the folder chose is
  * offered against the user's own in e_d_plan_approved.)

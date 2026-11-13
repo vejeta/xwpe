@@ -233,10 +233,18 @@ modules first, a @file{pdb.py} or @file{sitecustomize.py} there
 included.  Whether gdb runs @file{./.gdbinit} and lldb-dap
 @file{./.lldbinit} depends on your own init files, which xwpe does not
 read; the box says so and asks either way.  A program can also carry
-scripts for gdb inside itself (its @code{.debug_gdb_scripts} section),
-which gdb runs under the same setting: the box cannot list them, and
-@samp{Use mine} turns them off only when the box also lists a script
-beside the program.  The
+scripts for gdb inside itself (its @code{.debug_gdb_scripts} section).
+The box lists them, by reading the program's section headers, when the
+program is a 32 or 64 bit ELF file; a program in another format, one
+with more than 65279 sections (ELF's extended numbering), or one whose
+headers are damaged or point outside the file, is taken to have none,
+so gdb runs them unlisted.  A script such an entry names is shown when
+it lies in the folder gdb starts in, and is not shown when gdb finds it
+among its own scripts.  Only the program is read: the same section in a
+shared library the program loads, one of the folder's own included, is
+not listed, and gdb runs its scripts when it loads the library;
+@samp{Use mine} turns those off too, but the box is not shown for them
+alone.  The
 debugger is found on your @env{PATH}, as your shell finds it.
 
 @item Run, Make and the language servers run the folder's own code

@@ -3277,7 +3277,8 @@ static WpeStartPlan *e_shell_plan(void)
  * e_execute_plan - The plan of Execute in the file manager.
  * @name: the file's name, as the user picked or typed it.
  *
- * The file runs as a program of its own, "./<name>", with no shell between:
+ * The file runs as a program of its own, "./<name>" (an absolute name as
+ * typed), with no shell between:
  * a file named "a';touch x;'.c" runs that file (or fails to), and nothing
  * else.  The user chose it, so it starts without a question; the box would
  * say only that it runs the folder's own program.
@@ -3291,7 +3292,7 @@ static WpeStartPlan *e_execute_plan(const char *name)
 
   if (!plan)
     return(NULL);
-  if (wpe_startplan_operand(path, sizeof path, E_EXECUTE_HERE, name))
+  if (wpe_startplan_operand_in(path, sizeof path, E_EXECUTE_HERE, name))
   {
     wpe_startplan_free(plan);
     return(NULL);
