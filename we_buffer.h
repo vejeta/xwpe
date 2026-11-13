@@ -114,6 +114,7 @@ void   e_buffer_marks_inside(BUFFER *b);
 #define E_BUFFER_MARK_FIND_A  2   /* the find mark's start */
 #define E_BUFFER_MARK_FIND_E  3   /* the find mark's end */
 #define E_BUFFER_MARK_ANCHOR  4   /* what a Shift key selects from */
+#define E_BUFFER_POS_CURSOR   5   /* the cursor, where a call reads a place */
 
 /* What the cursor and the block were before a block replay set the record's:
    put back when the replay is refused. */
@@ -122,6 +123,15 @@ typedef struct
  POINT cursor, mark_begin, mark_end;
 } WpeReplayView;
 
+/* The cursor and the find hit of a window, kept to put back when a change
+   to the text that was to be made whole is refused. */
+typedef struct
+{
+ POINT cursor, fa, fe;
+} WpeFindView;
+
+void   e_buffer_find_view_keep(BUFFER *b, WpeFindView *v);
+void   e_buffer_find_view_back(BUFFER *b, const WpeFindView *v);
 int    e_buffer_pos_fits(const BUFFER *b, const POINT *p);
 int    e_buffer_cursor_fits(const BUFFER *b);
 int    e_buffer_first_misplaced(BUFFER *b);
@@ -132,21 +142,39 @@ void   e_buffer_pos_step(BUFFER *b, POINT *p, int dir);
 void   e_buffer_cursor_set(BUFFER *b, int y, int x);
 void   e_buffer_cursor_set_col(BUFFER *b, int y, int col);
 void   e_buffer_cursor_step(BUFFER *b, int dir);
+void   e_buffer_cursor_from_offset(BUFFER *b, int y, int off);
 void   e_buffer_mark_set(BUFFER *b, int which, int y, int x);
 void   e_buffer_mark_unset(BUFFER *b, int which);
 void   e_buffer_mark_copy(BUFFER *b, int which, const POINT *from);
 void   e_buffer_block_set(BUFFER *b, const POINT *begin, const POINT *end);
+/* The same three, with the place read from another of the window's own
+   positions by name (E_BUFFER_MARK_* or E_BUFFER_POS_CURSOR), so no caller
+   hands out the address of a position. */
+void   e_buffer_block_all(BUFFER *b);
+void   e_buffer_block_line(BUFFER *b);
+void   e_buffer_mark_from(BUFFER *b, int which, int from);
+void   e_buffer_cursor_from(BUFFER *b, int from);
+void   e_buffer_block_between(BUFFER *b, int from_a, int from_b);
 void   e_buffer_find_set(BUFFER *b, int y, int xa, int xe);
+int    e_buffer_find_mark_erase_due(BUFFER *b);
+void   e_buffer_find_mark_erased(BUFFER *b);
+void   e_buffer_find_mark_shown(BUFFER *b);
+void   e_buffer_find_mark_restore(BUFFER *b, int row);
 void   e_buffer_marker_set(BUFFER *b, int n);
 void   e_buffer_marker_goto(BUFFER *b, int n);
+void   e_buffer_marker_unset(BUFFER *b, int n);
+void   e_buffer_markers_settle(BUFFER *b);
 void   e_buffer_record_at(Undo *rec, int y, int x);
 void   e_buffer_view_keep(BUFFER *b, WpeReplayView *v);
+void   e_buffer_view_back(BUFFER *b, const WpeReplayView *v);
+void   e_buffer_block_lend(BUFFER *b, const BUFFER *from);
 /* Marks and anchor after @n bytes were taken out of, or put into, row @y at
    column @x, or the row was cut at column @c; the bytes are already changed.
    Each ends by putting every position on the rows touched back on a glyph. */
 void   e_buffer_text_removed(BUFFER *b, int y, int x, int n);
 void   e_buffer_text_inserted(BUFFER *b, int y, int x, int n);
 void   e_buffer_row_cut(BUFFER *b, int y, int c);
+void   e_buffer_row_head_joined(BUFFER *b, int y, int at, int n);
 void   e_buffer_row_positions_snap(BUFFER *b, int y);
 
 /* ---- a change made of several splices, whole or not at all ----

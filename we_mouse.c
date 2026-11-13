@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_buffer.h"
 #include "we_render.h"
 #include "we_mousedrain.h"
 
@@ -664,11 +665,16 @@ static void e_scroll_drag_end_cursor(FENSTER *f)
  int vp_right = vp_left + (f->e.x - f->a.x - 2);
  int vp_top = f->s->c.y;
  int vp_bottom = vp_top + (f->e.y - f->a.y - 2);
+ int col = e_cursor_display_col(f);
+ int row = f->b->b.y;
 
- if (f->b->b.x < vp_left || f->b->b.x > vp_right)
-  f->b->b.x = vp_left;
- if (f->b->b.y < vp_top || f->b->b.y > vp_bottom)
-  f->b->b.y = (vp_top + vp_bottom) / 2;
+ /* The viewport is counted in screen columns, so the cursor is compared by
+    the column it is shown in, not by its byte. */
+ if (col < vp_left || col > vp_right)
+  col = vp_left;
+ if (row < vp_top || row > vp_bottom)
+  row = (vp_top + vp_bottom) / 2;
+ e_buffer_cursor_set_col(f->b, row, col);
 
  e_cursor_pos_only(f);
  e_schirm(f, 1);
@@ -1028,8 +1034,8 @@ int e_edt_mouse(int c, FENSTER *f)
     e_scroll_drag_v(f);
    else
    {
-    f->b->b.y = e_lst_mouse(f->e.x, f->a.y+1, f->e.y-f->a.y-1, 0,
-      f->b->mxlines, f->b->b.y);
+    e_buffer_cursor_set_col(f->b, e_lst_mouse(f->e.x, f->a.y+1,
+      f->e.y-f->a.y-1, 0, f->b->mxlines, f->b->b.y), f->b->clsv);
     e_cursor(f, 1);
     e_refresh();
    }
@@ -1038,7 +1044,7 @@ int e_edt_mouse(int c, FENSTER *f)
   {
    while (e_mshit())
    {
-    f->b->b.x = f->b->b.x > 0 ? f->b->b.x - 1 : 0;
+    e_buffer_cursor_step(f->b, -1);
     e_cursor(f, 1);
     e_refresh();
    }
@@ -1047,8 +1053,7 @@ int e_edt_mouse(int c, FENSTER *f)
   {
    while (e_mshit())
    {
-    f->b->b.x = f->b->b.x < f->b->bf[f->b->b.y].len ?
-      f->b->b.x + 1 : f->b->bf[f->b->b.y].len;
+    e_buffer_cursor_step(f->b, 1);
     e_cursor(f, 1);
     e_refresh();
    }
@@ -1061,8 +1066,8 @@ int e_edt_mouse(int c, FENSTER *f)
     e_scroll_drag_h(f);
    else
    {
-    f->b->b.x = e_lst_mouse(f->a.x+19, f->e.y, f->e.x-f->a.x-20, 1,
-      f->b->mx.x, NUM_COLS_OFF_SCREEN_LEFT);
+    e_buffer_cursor_set_col(f->b, f->b->b.y, e_lst_mouse(f->a.x+19, f->e.y,
+      f->e.x-f->a.x-20, 1, f->b->mx.x, NUM_COLS_OFF_SCREEN_LEFT));
     e_cursor(f, 1);
     e_refresh();
    }
@@ -1123,6 +1128,71 @@ int e_ccp_mouse(int c, FENSTER *f)
  else return(0);
 }
 
+/* Is the place (@ay, @ax) at or before the place (@zy, @zx) in the text? */
+static int e_mouse_not_after(int ay, int ax, int zy, int zx)
+{
+ return(ay < zy || (ay == zy && ax <= zx));
+}
+
+/**
+ * e_mouse_select_line - A second click on a selected word selects the whole
+ * row the cursor is on.
+ */
+static void e_mouse_select_line(BUFFER *b)
+{
+ POINT first, last;
+
+ first.y = last.y = b->b.y;
+ first.x = 0;
+ last.x = b->bf[b->b.y].len;
+ e_buffer_block_set(b, &first, &last);
+}
+
+/**
+ * e_mouse_select_word - A click that does not move the cursor selects the
+ * word under it: the letters, digits and underscores on both sides.
+ */
+static void e_mouse_select_word(BUFFER *b)
+{
+ const STRING *row = &b->bf[b->b.y];
+ POINT first, last;
+
+ first.y = last.y = b->b.y;
+ for (first.x = b->b.x; first.x > 0 && isalnum1(row->s[first.x-1]); first.x--)
+  ;
+ for (last.x = b->b.x; last.x < row->len && isalnum1(row->s[last.x]); last.x++)
+  ;
+ e_buffer_block_set(b, &first, &last);
+}
+
+/* The block runs from its end @kept (E_BUFFER_MARK_BEGIN or _END) to the
+   cursor, and that end is the anchor a drag goes on from. */
+static void e_mouse_block_keeps(BUFFER *b, int kept)
+{
+ e_buffer_block_between(b, kept, E_BUFFER_POS_CURSOR);
+ e_buffer_mark_from(b, E_BUFFER_MARK_ANCHOR, kept);
+}
+
+/**
+ * e_mouse_extend_block - A Shift click moves the end of the block that the
+ * click is on the side of, and keeps the other end as the anchor the drag
+ * goes on from.
+ * @bs: where the cursor stood before the click.
+ *
+ * A click after the block moves its end; before the block, its begin; inside
+ * it, the end the cursor was nearer to before the click.
+ */
+static void e_mouse_extend_block(BUFFER *b, SCHIRM *s, const POINT *bs)
+{
+ if (e_mouse_not_after(s->mark_end.y, s->mark_end.x, b->b.y, b->b.x))
+  e_mouse_block_keeps(b, E_BUFFER_MARK_BEGIN);
+ else if (e_mouse_not_after(b->b.y, b->b.x, s->mark_begin.y, s->mark_begin.x) ||
+          e_mouse_not_after(s->mark_end.y, s->mark_end.x, bs->y, bs->x))
+  e_mouse_block_keeps(b, E_BUFFER_MARK_END);
+ else
+  e_mouse_block_keeps(b, E_BUFFER_MARK_BEGIN);
+}
+
 /*       Mouse cursor in edit window control   */
 void e_cur_mouse(f)
      FENSTER *f;
@@ -1136,57 +1206,26 @@ void e_cur_mouse(f)
    {  if(b->b.x == bs.x && b->b.y == bs.y && f->dtmd != DTMD_HELP)
       {  if(s->mark_begin.y == b->b.y && s->mark_end.y == b->b.y
 		&& s->mark_begin.x <= b->b.x && s->mark_end.x > b->b.x)
-	 {  s->mark_begin.x = 0;  s->mark_end.x = b->bf[b->b.y].len;  }
+	    e_mouse_select_line(b);
 	 else
-	 {  s->mark_begin.y = s->mark_end.y = b->b.y;
-	    for(s->mark_begin.x = b->b.x; s->mark_begin.x > 0
-			&& isalnum1(b->bf[b->b.y].s[s->mark_begin.x-1]); s->mark_begin.x--);
-	    for(s->mark_end.x = b->b.x; s->mark_end.x < b->bf[b->b.y].len
-			&& isalnum1(b->bf[b->b.y].s[s->mark_end.x]); s->mark_end.x++);
-	 }
+	    e_mouse_select_word(b);
 	 e_schirm(f, 1);
       }
-      s->ks.x = b->b.x;  s->ks.y = b->b.y;
+      e_buffer_mark_from(b, E_BUFFER_MARK_ANCHOR, E_BUFFER_POS_CURSOR);
    }
    else
-   {  if(s->mark_end.y < b->b.y || ( s->mark_end.y == b->b.y && s->mark_end.x <= b->b.x))
-      {  s->mark_end.x = b->b.x;  s->mark_end.y = b->b.y;
-	 s->ks.x = s->mark_begin.x;  s->ks.y = s->mark_begin.y;
-      }
-      else if(s->mark_begin.y > b->b.y || ( s->mark_begin.y == b->b.y && s->mark_begin.x >= b->b.x))
-      {  s->mark_begin.x = b->b.x;  s->mark_begin.y = b->b.y;
-	 s->ks.x = s->mark_end.x;  s->ks.y = s->mark_end.y;
-      }
-      else if(s->mark_end.y < bs.y || ( s->mark_end.y == bs.y && s->mark_end.x <= bs.x))
-      {  s->mark_begin.x = b->b.x;  s->mark_begin.y = b->b.y;
-	 s->ks.x = s->mark_end.x;  s->ks.y = s->mark_end.y;
-      }
-      else
-      {  s->mark_end.x = b->b.x;  s->mark_end.y = b->b.y;
-	 s->ks.x = s->mark_begin.x;  s->ks.y = s->mark_begin.y;
-      }
-   }
+      e_mouse_extend_block(b, s, &bs);
    WpeMouseChangeShape(WpeSelectionShape);
    while(e_mshit() != 0)
    {  bs.x = b->b.x;  bs.y = b->b.y;
       e_mouse_cursor(b, s, f);
-      if(b->b.x < 0) b->b.x = 0;
-      else if(b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
       if(b->b.x != bs.x || b->b.y != bs.y)
-      {  if(s->ks.y < b->b.y || ( s->ks.y == b->b.y && s->ks.x <= b->b.x))
-	 {  s->mark_end.x = b->b.x;  s->mark_end.y = b->b.y;
-	    s->mark_begin.x = s->ks.x;  s->mark_begin.y = s->ks.y;
-	 }
-	 else
-	 {  s->mark_begin.x = b->b.x;  s->mark_begin.y = b->b.y;
-	    s->mark_end.x = s->ks.x;  s->mark_end.y = s->ks.y;
-	 }
-      }
+	 e_buffer_block_between(b, E_BUFFER_MARK_ANCHOR, E_BUFFER_POS_CURSOR);
       e_cursor(f, 1);
       e_schirm(f, 1);
       e_refresh();
    }
-   s->ks.x = b->b.x;  s->ks.y = b->b.y;
+   e_buffer_mark_from(b, E_BUFFER_MARK_ANCHOR, E_BUFFER_POS_CURSOR);
    WpeMouseRestoreShape();
    e_cursor(f, 1);
 }

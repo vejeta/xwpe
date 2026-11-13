@@ -438,7 +438,10 @@ Changes
   whole last character of that row.  The block marks of the Shift keys
   land on a character too, and when Delete or Backspace makes one
   character out of stray bytes (a Latin-1 file) the cursor stands before
-  it.
+  it.  The mouse, the arrows of the status bar, the markers, Search and
+  Ctrl-K Y do the same: after deleting a block inside one row the cursor
+  goes to where the block was, on that row (it kept its own row, whatever
+  row that was), and a search hit is stepped over as a whole character.
 
 * A Shift selection that goes back past the place it started from
   (Shift-End, then Shift-Home) selects the text between that place and the

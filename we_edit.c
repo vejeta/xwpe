@@ -474,18 +474,18 @@ int e_edit(ECNT *cn, char *filename)
   f->flg = 0;
  }
  f->s->c = e_set_pnt(0, 0);
- f->s->ks = e_set_pnt(0, 0);
- f->s->mark_begin = e_set_pnt(0, 0);
- f->s->mark_end = e_set_pnt(0, 0);
- f->s->fa = e_set_pnt(0, 0);
- f->s->fe = e_set_pnt(0, 0);
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_ANCHOR, 0, 0);
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_BEGIN, 0, 0);
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_END, 0, 0);
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_FIND_A, 0, 0);
+ e_buffer_mark_set(f->b, E_BUFFER_MARK_FIND_E, 0, 0);
  f->s->fb = f->fb;
 #ifdef DEBUGGER
  f->s->da.y = -1;
 #endif
  f->dirct = path;
  for (i = 0; i < E_MARKERS; i++)
-  f->s->pt[i] = e_set_pnt(-1, -1);
+  e_buffer_marker_unset(f->b, i);
  if (cn->mxedt == 0)    /*  Clipboard  */
  {
   cn->curedt=0;
@@ -1090,7 +1090,7 @@ weiter:
   {
    b = f->b;
    s = f->s;
-   e_buffer_mark_copy(b, E_BUFFER_MARK_ANCHOR, &b->b);
+   e_buffer_mark_from(b, E_BUFFER_MARK_ANCHOR, E_BUFFER_POS_CURSOR);
    e_cursor(f, 1);
    if (!e_key_is_vertical_move(c)) b->clsv = b->cl;
    e_zlsplt(f);
@@ -1135,10 +1135,7 @@ static void e_delete_word_right(BUFFER *b, SCHIRM *s)
  else if (b->bf[b->b.y].s[b->b.x] == WPE_WR)
   e_del_nchar(b, s, b->b.x, b->b.y, 1);
  else
- {
-  b->b.x = 0;
-  b->b.y++;
- }
+  e_buffer_cursor_set(b, b->b.y + 1, 0);
 }
 
 /**
@@ -1275,16 +1272,16 @@ static void e_delete_line_key(BUFFER *b, SCHIRM *s)
  */
 static void e_shift_extend_block(BUFFER *b, SCHIRM *s)
 {
- POINT fixed;
+ int fixed;
  int block_is_set = (s->mark_begin.y != s->mark_end.y || s->mark_begin.x != s->mark_end.x);
 
  if (s->ks.y == s->mark_begin.y && s->ks.x == s->mark_begin.x && block_is_set)
-  fixed = s->mark_end;
+  fixed = E_BUFFER_MARK_END;
  else if (s->ks.y == s->mark_end.y && s->ks.x == s->mark_end.x && block_is_set)
-  fixed = s->mark_begin;
+  fixed = E_BUFFER_MARK_BEGIN;
  else
-  fixed = s->ks;
- e_buffer_block_set(b, &fixed, &b->b);
+  fixed = E_BUFFER_MARK_ANCHOR;
+ e_buffer_block_between(b, fixed, E_BUFFER_POS_CURSOR);
 }
 
 /*              Interpretation of cursor keys
@@ -1600,7 +1597,7 @@ int e_ctrl_k(FENSTER *f)
  switch (c)
  {
   case 'A':
-   b->b = s->mark_begin;
+   e_buffer_cursor_from(b, E_BUFFER_MARK_BEGIN);
    e_schirm(f, 1);
    break;
   case 'B':
@@ -1627,22 +1624,11 @@ int e_ctrl_k(FENSTER *f)
    e_blck_to_right(f);
    break;
   case 'K':
-   s->mark_end = e_set_pnt(b->b.x, b->b.y);
+   e_buffer_mark_from(b, E_BUFFER_MARK_END, E_BUFFER_POS_CURSOR);
    e_schirm(f, 1);
    break;
   case 'L':
-   f->s->mark_begin.x = 0;
-   f->s->mark_begin.y = f->b->b.y;
-   if (f->b->b.y < f->b->mxlines-1)
-   {
-    f->s->mark_end.x = 0;
-    f->s->mark_end.y = f->b->b.y+1;
-   }
-   else
-   {
-    f->s->mark_end.x = f->b->bf[f->b->b.y].len;
-    f->s->mark_end.y = f->b->b.y;
-   }
+   e_buffer_block_line(b);
    e_schirm(f, 1);
    break;
   case 'R':
@@ -1658,17 +1644,14 @@ int e_ctrl_k(FENSTER *f)
    e_blck_write(f);
    break;
   case 'X':
-   s->mark_begin.x = 0;
-   s->mark_begin.y = 0;
-   s->mark_end.y = b->mxlines-1;
-   s->mark_end.x = b->bf[b->mxlines-1].len;
+   e_buffer_block_all(b);
    e_schirm(f, 1);
    break;
   case 'Y':
    e_blck_del(f);
    break;
   case 'Z':
-   b->b = s->mark_end;
+   e_buffer_cursor_from(b, E_BUFFER_MARK_END);
    e_schirm(f, 1);
    break;
   case '0':
@@ -1681,8 +1664,7 @@ int e_ctrl_k(FENSTER *f)
   case '7':
   case '8':
   case '9':
-   s->pt[c-'0'] = e_set_pnt(b->b.x, b->b.y);
-   s->fa.y = b->b.y;  s->fa.x = b->b.x;  s->fe.x = b->b.x+1;
+   e_buffer_marker_set(b, c - '0');
    e_schirm(f, 1);
    break;
  }
@@ -1726,7 +1708,7 @@ static int e_help_page_end_insert(BUFFER *b)
    wpe_buffer_say_nomem(b, "a new line");
   return(r);
  }
- b->b.x = line.len;
+ e_buffer_cursor_set(b, b->b.y, line.len);
  return(E_BUFFER_OK);
 }
 
@@ -1810,6 +1792,24 @@ static void e_help_mark_block(FENSTER *f, BUFFER *b, SCHIRM *s, unsigned char st
 }
 
 /**
+ * e_delete_word_left - Ctrl-O T: delete from the start of the word before the
+ * cursor up to the cursor; at the start of a row, only go to the end of the
+ * row above.
+ * @b, @s: the buffer and its screen.
+ *
+ * The word's start is where Ctrl-Left would stop, so the two keys agree and
+ * the cursor never stands inside a character.
+ */
+static void e_delete_word_left(BUFFER *b, SCHIRM *s)
+{
+ int from = b->b.x;
+
+ e_cursor_word_left(b);
+ if (from > 0 && b->b.x < from)
+  e_del_nchar(b, s, b->b.x, b->b.y, from - b->b.x);
+}
+
+/**
  * e_ctrl_o - Ctrl-O: read the editing command's letter and run it.
  * @f: the window the prefix was pressed in.
  *
@@ -1834,17 +1834,7 @@ int e_ctrl_o(FENSTER *f)
    break;
   case 'T':     /*  delete up to beginning of next word    */
    if (e_window_text_locked(f)) break;
-   if (b->b.x <= 0 && b->b.y > 0)
-   {
-    b->b.y--;
-    b->b.x = b->bf[b->b.y].len;
-   }
-   else if (b->b.x > 0)
-   {
-    c = b->b.x;
-    b->b.x = e_su_rblk(b->b.x - 1, b->bf[b->b.y].s);
-    e_del_nchar(b, s, b->b.x, b->b.y, c-b->b.x);
-   }
+   e_delete_word_left(b, s);
    e_schirm(f, 1);
    break;
   case 'F':     /*  find string    */
@@ -1897,8 +1887,7 @@ int e_ctrl_o(FENSTER *f)
   case '7':
   case '8':
   case '9':
-   b->b.x = s->pt[c-'0'].x;  b->b.y = s->pt[c-'0'].y;
-   s->fa.y = b->b.y;  s->fa.x = b->b.x;  s->fe.x = b->b.x+1;
+   e_buffer_marker_goto(b, c - '0');
    e_cursor(f, 1);
    break;
  }
@@ -2395,7 +2384,7 @@ static void e_del_a_ind_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
   e_del_nchar(b, s, 0, b->b.y, p->del0);
   e_ins_blanks(b, s, 0, b->b.y, p->blanks);
  }
- b->b.x = p->x;
+ e_buffer_cursor_set(b, b->b.y, p->x);
  p->taken = p->n;
  if (p->n == E_DEL_A_IND_CHAR)
   p->taken = e_char_bytes_at(b, b->b.x, b->b.y);
@@ -2563,10 +2552,7 @@ int e_car_ret_split(BUFFER *b, SCHIRM *s)
  e_add_undo('a', b, x, y, 1);
  e_char_count_change(b, 1);
  if (y < b->mxlines - 1)
- {
-  b->b.y = y + 1;
-  b->b.x = 0;
- }
+  e_buffer_cursor_set(b, y + 1, 0);
  return(E_BUFFER_OK);
 }
 
@@ -2606,7 +2592,7 @@ static void e_car_ret_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
  if (e_car_ret_split(b, s) != E_BUFFER_OK || *indent <= 0)
   return;
  e_ins_blanks(b, s, 0, b->b.y, *indent);
- b->b.x = *indent;
+ e_buffer_cursor_set(b, b->b.y, *indent);
 }
 
 /**
@@ -2646,6 +2632,19 @@ static int e_cursor_visual_adjust(FENSTER *f)
                            b->bf[b->b.y].len, &j);
  }
  return j;
+}
+
+/**
+ * e_cursor_display_col - The screen column the cursor of @f is shown in, in
+ * the text's own columns (before the window's scroll is taken off).
+ *
+ * What a drag of the scroll bar compares with the visible columns to tell
+ * whether the cursor is still on screen: tabs, control characters and wide
+ * characters make it differ from the byte column.
+ */
+int e_cursor_display_col(FENSTER *f)
+{
+ return(f->b->b.x + e_cursor_visual_adjust(f));
 }
 
 static int e_cursor_in_viewport(FENSTER *f, int sx, int sy)
@@ -2697,10 +2696,7 @@ void e_cursor_pos_only(FENSTER *f)
  else
  {
   int visible = f->e.y - f->a.y - 1;
-  b->b.y = s->c.y + visible / 2;
-  if (b->b.y >= b->mxlines) b->b.y = b->mxlines - 1;
-  if (b->b.y < 0) b->b.y = 0;
-  b->b.x = 0;
+  e_buffer_cursor_set(b, s->c.y + visible / 2, 0);
   j = e_cursor_visual_adjust(f);
   b->cl = b->b.x + j;
   fk_locate(f->a.x + b->b.x - s->c.x + j + 1,
@@ -2776,8 +2772,13 @@ void e_cursor(FENSTER *f, int sw)
   else if (s->c.x >= b->bf[b->b.y].len + j) s->c.x = b->bf[b->b.y].len + j;
   e_schirm(f, sw);
  }
- if (s->fa.y == -1) {  e_schirm(f, sw);  s->fa.y--;  }
- else if (s->fa.y > -1) s->fa.y = -1;
+ if (e_buffer_find_mark_erase_due(b))
+ {
+  e_schirm(f, sw);
+  e_buffer_find_mark_erased(b);
+ }
+ else
+  e_buffer_find_mark_shown(b);
  if (sw != 0)
  {
   iold = e_lst_zeichen(f->e.x, f->a.y+1, f->e.y-f->a.y-1, 0,
@@ -2855,10 +2856,7 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
    for (j = 0; j < i; ++j)
     *(b->bf[y].s+len-n+j) = *(b->bf[y+1].s+j);
    *(b->bf[y].s+len-n+i) = '\0';
-   if (s->mark_begin.y == y+1 && s->mark_begin.x <= i)
-   {  s->mark_begin.y--;  s->mark_begin.x += (len-n);  }
-   if (s->mark_end.y == y+1 && s->mark_end.x <= i)
-   {  s->mark_end.y--;  s->mark_end.x += (len-n);  }
+   e_buffer_row_head_joined(b, y, len - n, i);
    e_del_nchar(b, s, 0, y+1, i);
   }
  }
@@ -3040,8 +3038,7 @@ static void e_char_record_place(Undo *rec, int x, int y)
   return;
  for (i = 0; i < rec->nbrk; i++)
   rec->brk[i] -= y - rec->b.y;
- rec->b.x = x;
- rec->b.y = y;
+ e_buffer_record_at(rec, y, x);
 }
 
 /**
@@ -3370,13 +3367,12 @@ static int e_char_start_before(BUFFER *b, int x, int y)
  *
  * The whole character goes, so the row stays valid UTF-8, and the record
  * keeps every byte it replaced: Ctrl-U gives the character back whole and
- * Ctrl-R types over it again.  The cursor is left on the byte typed, as for
- * any overwrite, for the caller to step past.
+ * Ctrl-R types over it again.  The cursor ends after the byte typed, as for
+ * any overwrite.
  */
 static void e_put_char_over_wide(BUFFER *b, SCHIRM *s, unsigned char cc, int k)
 {
  e_replace_occurrence(b, s, b->b.x, b->b.y, k, &cc, 1);
- b->b.x--;
 }
 
 /*     Overwriting of a character       */
@@ -3401,44 +3397,73 @@ int e_put_char(int c, BUFFER *b, SCHIRM *s)
  {
   e_add_undo('p', b, b->b.x, b->b.y, 1);
   e_char_count_change(b, 1);
-  *(b->bf[b->b.y].s+b->b.x) = c;
+  b->bf[b->b.y].s[b->b.x] = c;
+  e_buffer_cursor_step(b, 1);
  }
- (b->b.x)++;
  return(b->b.x);
 }
 
-/*   search right (left end of word) */
+/**
+ * e_su_lblk - Search right for the start of the next word.
+ * @xa: where the search starts, in bytes; @s: the text.
+ *
+ * Ctrl-Right and Ctrl-T land on the start of the next word.  The walk steps
+ * over one character at a time, by the rule Left and Right use, so the
+ * position it returns is a place between characters, never inside one.
+ * Return: the byte where the next word starts, or the text's length.
+ */
 int e_su_lblk(int xa, char *s)
 {
  int len = strlen(s);
+ const unsigned char *u = (const unsigned char *) s;
 
  if (len == 0)
   return(0);
  if (xa >= len)
-  xa = len - 1;
- for (; xa < len  && isalnum1(s[xa]); xa++)
+  xa = e_utf8_char_before(u, len, len);
+ for (; xa < len  && isalnum1(s[xa]); xa += e_utf8_seq_len(u + xa, len - xa))
   ;
- for (; xa < len && !isalnum1(s[xa]); xa++)
+ for (; xa < len && !isalnum1(s[xa]); xa += e_utf8_seq_len(u + xa, len - xa))
   ;
  return(xa);
 }
 
-/*     Search left (left end of word)     */
+/* What e_utf8_seq_len answers for a character of one byte. */
+#define E_SU_ONE_BYTE 1
+
+/**
+ * e_su_rblk - Search left for the start of a word.
+ * @xa: where the search starts, in bytes; @s: the text.
+ *
+ * Ctrl-Left and Ctrl-O T in the editor, in a dialog field, and the rows that
+ * come up when a line is joined, all land on the start of a word.  The walk
+ * steps over one character at a time, by the rule Left and Right use, so
+ * the position it returns is never inside a character of several bytes or
+ * between the halves of a cut one.  A word behind a character of several
+ * bytes at the start of the row that is no letter (`¿Qué`) starts after that
+ * character, as it always did; when that character is a letter, or is one
+ * byte, the walk ends at 0, as it always did too.
+ * Return: the byte where the word starts, 0 for the start of the text.
+ */
 int e_su_rblk(int xa, char *s)
 {
  int len = strlen(s);
+ const unsigned char *u = (const unsigned char *) s;
 
  if (xa <= 0)
   return(xa);
  if (xa > len)
   xa = len;
- for (xa--; xa > 0 && !isalnum1(s[xa]); xa--)
+ for (xa = e_utf8_char_before(u, xa, len); xa > 0 && !isalnum1(s[xa]);
+      xa = e_utf8_char_before(u, xa, len))
   ;
  if (!xa)
   return(xa);
- for (; xa > 0 && isalnum1(s[xa]); xa--)
+ for (; xa > 0 && isalnum1(s[xa]); xa = e_utf8_char_before(u, xa, len))
   ;
- return(!xa ? xa : xa + 1);
+ if (!xa && (isalnum1(s[0]) || e_utf8_seq_len(u, len) == E_SU_ONE_BYTE))
+  return(xa);
+ return(xa + e_utf8_seq_len(u + xa, len - xa));
 }
 
 /* Prints out the line number and column of cursor */
@@ -3632,8 +3657,7 @@ int e_autosave(FENSTER *f)
  */
 static int e_undo_record_compose(Undo *next, int sw, BUFFER *b, int x, int y, int n)
 {
- next->b.x = x;
- next->b.y = y;
+ e_buffer_record_at(next, y, x);
  next->a.x = n;
  if (sw == 'p')
   next->u.c = b->bf[y].s[x];
@@ -3851,7 +3875,7 @@ static void e_rudo_text_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
  unsigned char *text = (unsigned char *) rec->u.pt;
  int n = rec->a.x, chars = n;
- POINT begin = rec->b;
+ POINT begin = rec->b, end;
 
  if (n <= 0)
   return;                 /* a record of no characters puts nothing back */
@@ -3864,8 +3888,8 @@ static void e_rudo_text_back(BUFFER *b, SCHIRM *s, Undo *rec)
  }
  if (chars < n)
   e_car_ret_split(b, s);
- s->mark_begin = begin;
- s->mark_end = b->b;
+ end = b->b;
+ e_buffer_block_set(b, &begin, &end);
 }
 
 /**
@@ -3924,19 +3948,16 @@ static int e_rudo_block_refusal(int r, Undo *rec)
 static int e_rudo_block_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
  BUFFER *bn = (BUFFER *) rec->u.pt;
- SCHIRM *sn = bn->f->s;
- POINT mark_begin = s->mark_begin;
- POINT mark_end = s->mark_end;
+ WpeReplayView before;
  Undo *way_back = NULL;
  int r;
 
- s->mark_begin = sn->mark_begin;
- s->mark_end = sn->mark_end;
+ e_buffer_view_keep(b, &before);
+ e_buffer_block_lend(b, bn);
  r = e_move_block_covered(rec->b.x, rec->b.y, bn, b, b->f, 'c', &way_back);
  if (r != E_BLOCK_MOVED)
  {
-  s->mark_begin = mark_begin;
-  s->mark_end = mark_end;
+  e_buffer_view_back(b, &before);
   return(e_rudo_block_refusal(r, rec));
  }
  e_buffer_shell_free(bn);
@@ -3953,9 +3974,7 @@ static WpeReplayView e_rudo_view_keep(BUFFER *b, SCHIRM *s)
 {
  WpeReplayView v;
 
- v.cursor = b->b;
- v.mark_begin = s->mark_begin;
- v.mark_end = s->mark_end;
+ e_buffer_view_keep(b, &v);
  return(v);
 }
 
@@ -3965,9 +3984,7 @@ static WpeReplayView e_rudo_view_keep(BUFFER *b, SCHIRM *s)
  */
 static void e_rudo_view_back(BUFFER *b, SCHIRM *s, const WpeReplayView *v)
 {
- b->b = v->cursor;
- s->mark_begin = v->mark_begin;
- s->mark_end = v->mark_end;
+ e_buffer_view_back(b, v);
 }
 
 /**
@@ -4002,9 +4019,8 @@ static int e_rudo_block_copy_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
  WpeReplayView v = e_rudo_view_keep(b, s);
 
- b->b = rec->a;
- s->mark_begin = rec->a;
- s->mark_end = rec->e;
+ e_buffer_cursor_set(b, rec->a.y, rec->a.x);
+ e_buffer_block_set(b, &rec->a, &rec->e);
  return(e_rudo_block_replayed(e_block_delete_marked(b->f), b, s, rec, &v));
 }
 
@@ -4017,9 +4033,8 @@ static int e_rudo_block_move_again(BUFFER *b, SCHIRM *s, Undo *rec)
 {
  WpeReplayView v = e_rudo_view_keep(b, s);
 
- b->b = rec->b;
- s->mark_begin = rec->a;
- s->mark_end = rec->e;
+ e_buffer_cursor_set(b, rec->b.y, rec->b.x);
+ e_buffer_block_set(b, &rec->a, &rec->e);
  return(e_rudo_block_replayed(e_block_move_marked(b->f), b, s, rec, &v));
 }
 
@@ -4081,7 +4096,7 @@ void wpe_buffer_replay_on_shell(BUFFER *shell, SCHIRM *s, const Undo *rec, int y
 {
  Undo at = *rec;
 
- at.b.y -= y0;
+ e_buffer_record_at(&at, at.b.y - y0, at.b.x);
  at.next = NULL;
  if (at.type == 'r')
   e_rudo_text_back(shell, s, &at);

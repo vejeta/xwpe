@@ -1220,16 +1220,23 @@ def apply(state, action):
     elif name in blocks.BLOCK_ACTIONS:
         blocks.apply_action(st, action)
     _after_key(st, name, pre)
-    if name not in blocks.BLOCK_ACTIONS:
+    if name not in POSITION_NEUTRAL:
         _assert_positions_on_glyphs(st, name)
     return st
+
+
+# Actions that write no position at all: the clipboard copy and the option
+# dialog.  They keep the places they were given, so a state handed to them
+# is not theirs to answer for.
+POSITION_NEUTRAL = ("edit_copy", "option_set")
 
 
 def _assert_positions_on_glyphs(st, name):
     """The model's own fitness: after an action the cursor, the block's marks
     and the anchor stand on a glyph of their rows.  The model raising on its
     own state is a model bug, found before the editor is blamed.  The block
-    commands have their own pass, so their actions are not checked here."""
+    commands are checked like every other action; only those that write no
+    position (POSITION_NEUTRAL) are not."""
     for what, p in (("cursor", (st.y, st.x)), ("mark begin", st.mb),
                     ("mark end", st.me), ("anchor", st.ks)):
         y, x = p
@@ -1262,6 +1269,21 @@ def _mark_inside(rows, p):
 VERTICAL_MOVES = ("up", "down", "page_up", "page_down")
 
 
+def _settle_markers(st):
+    """e_buffer_markers_settle: every marker that is set goes onto a place of
+    the text as it is now, once per key, wherever in the key the text changed:
+    its row into the text, its column back to the start of its glyph."""
+    if not st.rows:
+        return
+    settled = []
+    for py, px in st.pt:
+        if py >= 0:
+            py = min(py, len(st.rows) - 1)
+            px = utf8_glyph_floor(st.rows[py].data, px)
+        settled.append((py, px))
+    st.pt = settled
+
+
 def _after_key(st, name, pre):
     """What the key loop does after every key: the anchor, the clamp, the
     column memory, and the autosave check before the next key."""
@@ -1269,6 +1291,7 @@ def _after_key(st, name, pre):
     st.fired.append("anchor_after_key")
     st.mb = _mark_inside(st.rows, st.mb)
     st.me = _mark_inside(st.rows, st.me)
+    _settle_markers(st)
     if 0 <= st.y < len(st.rows):
         ln = len(st.rows[st.y].data)
         if st.x > ln:

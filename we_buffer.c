@@ -690,6 +690,16 @@ void e_buffer_cursor_set_col(BUFFER *b, int y, int col)
 }
 
 /**
+ * e_buffer_cursor_from_offset - Put the cursor @off bytes into the line that
+ * starts at row @y, its soft rows followed: where a backward search goes on
+ * after a replacement that wrapped the line again.
+ */
+void e_buffer_cursor_from_offset(BUFFER *b, int y, int off)
+{
+ e_buffer_pos_from_offset(b, &b->b, y, off);
+}
+
+/**
  * e_buffer_cursor_step - Move the cursor one glyph left (@dir < 0) or right
  * (@dir > 0) inside its row.
  */
@@ -849,6 +859,94 @@ void e_buffer_block_set(BUFFER *b, const POINT *begin, const POINT *end)
 }
 
 /**
+ * e_buffer_block_all - Mark the whole text as the block: from the start of
+ * the first row to the end of the last.
+ */
+void e_buffer_block_all(BUFFER *b)
+{
+ POINT first, last;
+
+ if (b->mxlines == 0)
+  return;
+ first.y = first.x = 0;
+ last.y = b->mxlines - 1;
+ last.x = b->bf[last.y].len;
+ e_buffer_block_set(b, &first, &last);
+}
+
+/**
+ * e_buffer_block_line - Mark the row the cursor is on as the block, with its
+ * line break; on the last row, up to the row's end.
+ */
+void e_buffer_block_line(BUFFER *b)
+{
+ POINT first, last;
+
+ if (b->mxlines == 0)
+  return;
+ first.y = b->b.y;
+ first.x = 0;
+ if (b->b.y < b->mxlines - 1)
+ {
+  last.y = b->b.y + 1;
+  last.x = 0;
+ }
+ else
+ {
+  last.y = b->b.y;
+  last.x = b->bf[b->b.y].len;
+ }
+ e_buffer_block_set(b, &first, &last);
+}
+
+/* A position of the window of @b read by name: the cursor or one of its
+   marks; NULL when the window has no such place. */
+static const POINT *buffer_pos_named(BUFFER *b, int which)
+{
+ if (which == E_BUFFER_POS_CURSOR)
+  return(&b->b);
+ return(buffer_mark_at(b, which));
+}
+
+/**
+ * e_buffer_mark_from - Put the mark @which where the position @from stands
+ * (E_BUFFER_POS_CURSOR or another mark): a Shift key's anchor is the cursor.
+ */
+void e_buffer_mark_from(BUFFER *b, int which, int from)
+{
+ const POINT *p = buffer_pos_named(b, from);
+
+ if (p != NULL)
+  e_buffer_mark_copy(b, which, p);
+}
+
+/**
+ * e_buffer_cursor_from - Put the cursor where the mark @from stands: Ctrl-K
+ * Q B goes to the block's begin, a Shift click goes back to its anchor.
+ */
+void e_buffer_cursor_from(BUFFER *b, int from)
+{
+ const POINT *p = buffer_pos_named(b, from);
+
+ if (p != NULL)
+  e_buffer_cursor_set(b, p->y, p->x);
+}
+
+/**
+ * e_buffer_block_between - Mark the block between two of the window's own
+ * positions, whichever comes first: a Shift selection is the block between
+ * its anchor and the cursor.
+ */
+void e_buffer_block_between(BUFFER *b, int from_a, int from_b)
+{
+ const POINT *a = buffer_pos_named(b, from_a);
+ const POINT *z = buffer_pos_named(b, from_b);
+
+ if (a != NULL && z != NULL)
+  e_buffer_block_set(b, a, z);
+}
+
+/**
  * e_buffer_find_set - Mark the find hit on row @y from column @xa to @xe.
  *
  * The one place a position is brought outward: the hit starts at the start
@@ -874,6 +972,93 @@ void e_buffer_find_set(BUFFER *b, int y, int xa, int xe)
  end = (xe > l->len) ? l->len : xe;
  if (start < end)
   fe->x = start + e_utf8_seq_len(l->s + start, l->len - start);
+}
+
+/* What the find mark's row holds besides a row: -1 is a hit shown once and
+   to be erased by the next paint, -2 a hit already erased. */
+#define BUFFER_FIND_ERASE_DUE   (-1)
+#define BUFFER_FIND_ERASED      (-2)
+
+/**
+ * e_buffer_find_mark_erase_due - Has the last find hit been shown and is its
+ * highlight to be erased by one more paint of the window?
+ */
+int e_buffer_find_mark_erase_due(BUFFER *b)
+{
+ const POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+
+ return(fa != NULL && fa->y == BUFFER_FIND_ERASE_DUE);
+}
+
+/**
+ * e_buffer_find_mark_erased - The paint that erased the hit's highlight is
+ * done: the next one has nothing to erase.
+ */
+void e_buffer_find_mark_erased(BUFFER *b)
+{
+ POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+
+ if (fa != NULL)
+  fa->y = BUFFER_FIND_ERASED;
+}
+
+/**
+ * e_buffer_find_mark_shown - A hit that is set was drawn: the next paint
+ * erases it.  Nothing happens when no hit is set.
+ */
+void e_buffer_find_mark_shown(BUFFER *b)
+{
+ POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+
+ if (fa != NULL && fa->y > BUFFER_FIND_ERASE_DUE)
+  fa->y = BUFFER_FIND_ERASE_DUE;
+}
+
+/**
+ * e_buffer_find_view_keep - Remember the cursor and the find hit of @b in
+ * @v, to put them back when Change All is refused.
+ */
+void e_buffer_find_view_keep(BUFFER *b, WpeFindView *v)
+{
+ const POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+ const POINT *fe = buffer_mark_at(b, E_BUFFER_MARK_FIND_E);
+
+ v->cursor = b->b;
+ v->fa.x = v->fa.y = BUFFER_POS_UNSET;
+ v->fe.x = v->fe.y = BUFFER_POS_UNSET;
+ if (fa != NULL)
+  v->fa = *fa;
+ if (fe != NULL)
+  v->fe = *fe;
+}
+
+/**
+ * e_buffer_find_view_back - Put the cursor and the find hit of @b back as
+ * @v kept them: the text is as it was, so every place still fits.
+ */
+void e_buffer_find_view_back(BUFFER *b, const WpeFindView *v)
+{
+ POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+ POINT *fe = buffer_mark_at(b, E_BUFFER_MARK_FIND_E);
+
+ b->b = v->cursor;
+ if (fa != NULL)
+  *fa = v->fa;
+ if (fe != NULL)
+  *fe = v->fe;
+}
+
+/**
+ * e_buffer_find_mark_restore - Put the find hit's row back to @row after a
+ * paint of the cursor took it for its one-shot flag, so a hit that was found
+ * stays shown until the next one.
+ */
+void e_buffer_find_mark_restore(BUFFER *b, int row)
+{
+ POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+
+ if (fa != NULL)
+  fa->y = row;
 }
 
 /**
@@ -924,6 +1109,19 @@ void e_buffer_marker_goto(BUFFER *b, int n)
 }
 
 /**
+ * e_buffer_marker_unset - Marker @n is set nowhere: a new window has none.
+ */
+void e_buffer_marker_unset(BUFFER *b, int n)
+{
+ SCHIRM *s;
+
+ if (b->f == NULL || (s = b->f->s) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
+  return;
+ s->pt[n].y = BUFFER_POS_UNSET;
+ s->pt[n].x = BUFFER_POS_UNSET;
+}
+
+/**
  * e_buffer_record_at - A record's own place: where Ctrl-U puts the cursor.
  *
  * The record is not a position of the text it was made on, so nothing is
@@ -954,17 +1152,59 @@ void e_buffer_view_keep(BUFFER *b, WpeReplayView *v)
   v->mark_end = *me;
 }
 
+/**
+ * e_buffer_view_back - Put the cursor and the block of @b back as @v kept
+ * them, for a block replay that was refused and changed nothing.
+ *
+ * The text is as it was when the view was kept, so every place still fits
+ * and nothing is snapped.
+ */
+void e_buffer_view_back(BUFFER *b, const WpeReplayView *v)
+{
+ POINT *mb = buffer_mark_at(b, E_BUFFER_MARK_BEGIN);
+ POINT *me = buffer_mark_at(b, E_BUFFER_MARK_END);
+
+ b->b = v->cursor;
+ if (mb != NULL)
+  *mb = v->mark_begin;
+ if (me != NULL)
+  *me = v->mark_end;
+}
+
+/**
+ * e_buffer_block_lend - Give @b the block of @from, as it stands in @from's
+ * own text, for a block operation that reads the marks of its destination
+ * window while it takes lines out of @from.
+ *
+ * These are places of @from, not of @b, so nothing is snapped against @b's
+ * text; the caller puts the block back (e_buffer_view_back) or the operation
+ * sets the marks again.
+ */
+void e_buffer_block_lend(BUFFER *b, const BUFFER *from)
+{
+ POINT *mb = buffer_mark_at(b, E_BUFFER_MARK_BEGIN);
+ POINT *me = buffer_mark_at(b, E_BUFFER_MARK_END);
+ const SCHIRM *sf = (from->f != NULL) ? from->f->s : NULL;
+
+ if (mb == NULL || me == NULL || sf == NULL)
+  return;
+ *mb = sf->mark_begin;
+ *me = sf->mark_end;
+}
+
 /* The positions that move with the text of their row, and are set again
-   when it changes: the block's marks and the anchor.  The find mark is not
-   one of them: Replace reads the hit it found at the place the search left
-   it while the replacement goes in, and puts it right itself
-   (e_buffer_find_set). */
+   when it changes: the block's marks, the find hit and the anchor.  Replace
+   reads the column its hit started at before the replacement goes in, so the
+   hit moving with the text does not change what it searches next. */
 static const int BUFFER_FOLLOW_MARKS[] = { E_BUFFER_MARK_BEGIN, E_BUFFER_MARK_END,
+                                           E_BUFFER_MARK_FIND_A, E_BUFFER_MARK_FIND_E,
                                            E_BUFFER_MARK_ANCHOR };
 #define BUFFER_FOLLOW_COUNT (sizeof BUFFER_FOLLOW_MARKS / sizeof BUFFER_FOLLOW_MARKS[0])
 
 /* Every position of the window that stands on row @y, set again through the
-   one write: the cursor, the block, the anchor, the markers. */
+   one write: the cursor, the block, the find hit, the anchor and the
+   markers.  The markers are also set again once before the next key
+   (e_buffer_markers_settle), for the rows a key's steps did not name. */
 static void buffer_row_points_set(BUFFER *b, int y)
 {
  POINT *p;
@@ -984,6 +1224,28 @@ static void buffer_row_points_set(BUFFER *b, int y)
  }
  for (n = 0; n < BUFFER_MARKER_COUNT; n++)
   if (s->pt[n].y == y)
+   e_buffer_pos_set(b, &s->pt[n], s->pt[n].y, s->pt[n].x);
+}
+
+/**
+ * e_buffer_markers_settle - Every marker that is set goes onto a place of
+ * the text as it is now.
+ *
+ * A marker keeps its place when the text around it changes, so after an
+ * edit it may name a row that is gone, a column past the end of its row or
+ * a column inside a character.  Settling them once, before the next key, puts
+ * each on the row's last place or back to the start of its character, the
+ * same wherever in the key the text changed.
+ */
+void e_buffer_markers_settle(BUFFER *b)
+{
+ SCHIRM *s;
+ int n;
+
+ if (b->f == NULL || (s = b->f->s) == NULL)
+  return;
+ for (n = 0; n < BUFFER_MARKER_COUNT; n++)
+  if (s->pt[n].y >= 0)
    e_buffer_pos_set(b, &s->pt[n], s->pt[n].y, s->pt[n].x);
 }
 
@@ -1104,6 +1366,28 @@ void e_buffer_row_cut(BUFFER *b, int y, int c)
   }
  buffer_row_points_set(b, y);
  buffer_row_points_set(b, y + 1);
+}
+
+/**
+ * e_buffer_row_head_joined - The first @n bytes of row @y + 1 were copied
+ * onto row @y at column @at: the marks and the anchor in those bytes go up
+ * with them.
+ *
+ * Only the move is done here: the caller measures row @y and sets the
+ * positions on it again (e_buffer_row_positions_snap) once its length is
+ * right.
+ */
+void e_buffer_row_head_joined(BUFFER *b, int y, int at, int n)
+{
+ POINT *p[E_BUFFER_MARK_ANCHOR + 1];
+ int i, k = buffer_follow_points(b, p);
+
+ for (i = 0; i < k; i++)
+  if (p[i]->y == y + 1 && p[i]->x <= n)
+  {
+   p[i]->y--;
+   p[i]->x += at;
+  }
 }
 
 /* Move one mark for a splice at y of n_del lines over n_ins, of which the
@@ -5741,6 +6025,7 @@ void e_buffer_marks_inside(BUFFER *b)
  buffer_marks_inside(b);
  if (b->f != NULL && b->f->s != NULL)
   buffer_mark_pull_inside(b, &b->f->s->ks);
+ e_buffer_markers_settle(b);
 }
 
 /* One step back (Undo) or forward (Redo), whole or not at all.  Its

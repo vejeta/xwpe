@@ -548,6 +548,7 @@ int e_edit_action_run(BUFFER *b, int y0, int y1, int point, const char *what,
   EEditPieces pieces, void *plan);
 void e_status_keep_nomem(const char *what);
 void e_cursor_pos_only(FENSTER *f);
+int e_cursor_display_col(FENSTER *f);
 void e_cursor(FENSTER *f, int sw);
 /* What a character primitive returns when the buffer's owner refused the
    change (a window the user cannot change): nothing was changed. */

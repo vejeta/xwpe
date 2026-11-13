@@ -127,8 +127,7 @@ void e_block_record_keep(Undo *rec, BUFFER *b, int x, int y)
 {
  if (rec == NULL)
   return;
- rec->b.x = x;
- rec->b.y = y;
+ e_buffer_record_at(rec, y, x);
  rec->a = b->f->s->mark_begin;
  rec->e = b->f->s->mark_end;
  e_buffer_record_push(b, rec);
@@ -239,7 +238,7 @@ static int e_blk_marks_empty(SCHIRM *s)
 
 /**
  * e_blk_delete_in_line_now - Delete a block inside one line: its characters
- * go, the cursor stays where the block began.
+ * go, and the cursor goes to where the block began, on that line.
  *
  * The deletion and its Undo record are made together by the buffer owner or
  * not at all, so a delete that could not be undone is not made.
@@ -248,19 +247,19 @@ static int e_blk_marks_empty(SCHIRM *s)
 static int e_blk_delete_in_line_now(BUFFER *b, SCHIRM *s)
 {
  Undo as_if;
- int row = b->b.y, r;
+ int r;
 
  memset(&as_if, 0, sizeof(as_if));
  as_if.type = 'a';
- as_if.b = s->mark_begin;
+ e_buffer_record_at(&as_if, s->mark_begin.y, s->mark_begin.x);
  as_if.a.x = s->mark_end.x - s->mark_begin.x;
  r = e_buffer_apply_chars(b, s, &as_if);
  if (r == E_BUFFER_NOMEM)
   return(E_BLOCK_NOMEM);
  if (r != E_BUFFER_OK)
   return(E_BLOCK_NOT_MOVED);
- b->b.y = row;
- b->b.x = s->mark_end.x = s->mark_begin.x;
+ e_buffer_cursor_from(b, E_BUFFER_MARK_BEGIN);
+ e_buffer_mark_from(b, E_BUFFER_MARK_END, E_BUFFER_MARK_BEGIN);
  return(E_BLOCK_MOVED);
 }
 
@@ -596,9 +595,7 @@ void e_clip_pull_os_into_buffer(FENSTER *w0)
  if (e_buffer_replace_all(w0->b, text, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(w0->b, "the pasted text");
  free(text);
- w0->s->mark_begin.x = w0->s->mark_begin.y = 0;
- w0->s->mark_end.y = w0->b->mxlines - 1;
- w0->s->mark_end.x = w0->b->bf[w0->b->mxlines - 1].len;
+ e_buffer_block_all(w0->b);
 }
 
 /*            Copy block buffer into window  */
@@ -1333,10 +1330,9 @@ static int e_move_block_prepare(WpeBlockOp *op, int x, int y, BUFFER *bv, BUFFER
  */
 static void e_blk_mark_source_left(WpeBlockOp *op)
 {
- SCHIRM *sv = op->bv->f->s;
-
- sv->mark_begin.x = sv->mark_end.x = op->bv->b.x = op->k.kax;
- sv->mark_begin.y = sv->mark_end.y = op->bv->b.y = op->k.kay;
+ e_buffer_cursor_set(op->bv, op->k.kay, op->k.kax);
+ e_buffer_mark_from(op->bv, E_BUFFER_MARK_BEGIN, E_BUFFER_POS_CURSOR);
+ e_buffer_mark_from(op->bv, E_BUFFER_MARK_END, E_BUFFER_POS_CURSOR);
 }
 
 /* Which end of a block a column on a wrapped line is for: a column at the
@@ -1388,12 +1384,12 @@ static POINT e_blk_point_on_rows(BUFFER *b, int y, int x, int which)
  */
 static void e_blk_mark_chars_landed(WpeBlockOp *op)
 {
- SCHIRM *sz = op->bz->f->s;
  int y = e_blk_landed_row(op);
+ POINT begin = e_blk_point_on_rows(op->bz, y, op->mark_x, E_BLK_AT_START);
+ POINT end = e_blk_point_on_rows(op->bz, y, op->mark_x + op->n, E_BLK_AT_END);
 
- sz->mark_begin = e_blk_point_on_rows(op->bz, y, op->mark_x, E_BLK_AT_START);
- sz->mark_end = e_blk_point_on_rows(op->bz, y, op->mark_x + op->n, E_BLK_AT_END);
- op->bz->b = sz->mark_end;
+ e_buffer_block_set(op->bz, &begin, &end);
+ e_buffer_cursor_from(op->bz, E_BUFFER_MARK_END);
 }
 
 /**
@@ -1406,12 +1402,12 @@ static void e_blk_mark_chars_landed(WpeBlockOp *op)
  */
 static void e_blk_mark_lines_landed(WpeBlockOp *op)
 {
- SCHIRM *sz = op->bz->f->s;
+ POINT begin = e_blk_point_on_rows(op->bz, e_blk_landed_row(op), op->mark_x,
+                                   E_BLK_AT_START);
+ POINT end = e_blk_point_on_rows(op->bz, e_blk_end_row(op), op->k.kex, E_BLK_AT_END);
 
- sz->mark_begin = e_blk_point_on_rows(op->bz, e_blk_landed_row(op), op->mark_x,
-                                      E_BLK_AT_START);
- sz->mark_end = e_blk_point_on_rows(op->bz, e_blk_end_row(op), op->k.kex, E_BLK_AT_END);
- op->bz->b = sz->mark_end;
+ e_buffer_block_set(op->bz, &begin, &end);
+ e_buffer_cursor_from(op->bz, E_BUFFER_MARK_END);
 }
 
 /**
@@ -1440,12 +1436,11 @@ static void e_blk_mark_chars_moved(WpeBlockOp *op)
  */
 static void e_blk_mark_shifted_left(WpeBlockOp *op)
 {
- SCHIRM *sv = op->bv->f->s;
+ POINT begin = e_set_pnt(op->x, op->k.kay);
+ POINT end = e_set_pnt(op->k.kex, op->k.key);
 
- op->bv->b.x = sv->mark_begin.x = op->x;
- op->bv->b.y = sv->mark_begin.y = op->k.kay;
- sv->mark_end.x = op->k.kex;
- sv->mark_end.y = op->k.key;
+ e_buffer_block_set(op->bv, &begin, &end);
+ e_buffer_cursor_from(op->bv, E_BUFFER_MARK_BEGIN);
 }
 
 /**
@@ -1454,13 +1449,11 @@ static void e_blk_mark_shifted_left(WpeBlockOp *op)
  */
 static void e_blk_mark_shifted_right(WpeBlockOp *op)
 {
- SCHIRM *sv = op->bv->f->s;
+ POINT begin = e_set_pnt(op->k.kax + op->n, op->k.kay);
+ POINT end = e_set_pnt(op->k.kex, op->k.key + op->wrapped - 1);
 
- sv->mark_begin.x = op->k.kax + op->n;
- sv->mark_begin.y = op->k.kay;
- sv->mark_end.x = op->k.kex;
- sv->mark_end.y = op->k.key + op->wrapped - 1;
- op->bv->b = sv->mark_end;
+ e_buffer_block_set(op->bv, &begin, &end);
+ e_buffer_cursor_from(op->bv, E_BUFFER_MARK_END);
 }
 
 /**
@@ -1810,8 +1803,7 @@ static int e_copy_block_covered(int x, int y, BUFFER *bs, BUFFER *bd, FENSTER *f
 /*   delete block marks   */
 int e_blck_hide(FENSTER *f)
 {
- BUFFER *b;
- SCHIRM *s;
+ POINT origin = e_set_pnt(0, 0);
  int i;
 
  for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
@@ -1820,10 +1812,7 @@ int e_blck_hide(FENSTER *f)
   return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- b = f->b;
- s = f->s;
- s->mark_begin = e_set_pnt(0, 0);
- s->mark_end = e_set_pnt(0, 0);
+ e_buffer_block_set(f->b, &origin, &origin);
  e_schirm(f, 1);
  return(0);
 }
@@ -1845,9 +1834,9 @@ int e_blck_begin(FENSTER *f)
     independent markers, so Begin Mark sets only the begin and leaves the end
     untouched (classic Borland behaviour).  Toggle in Options -> Editor. */
  if (f->ed->edopt & ED_BLOCK_WORDSTAR)
-  f->s->mark_begin = f->b->b;
+  e_buffer_mark_from(f->b, E_BUFFER_MARK_BEGIN, E_BUFFER_POS_CURSOR);
  else
-  f->s->mark_begin = f->s->mark_end = f->b->b;
+  e_buffer_block_between(f->b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
  e_schirm(f, 1);
  return(0);
 }
@@ -1863,7 +1852,7 @@ int e_blck_end(FENSTER *f)
   return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- f->s->mark_end = f->b->b;
+ e_buffer_mark_from(f->b, E_BUFFER_MARK_END, E_BUFFER_POS_CURSOR);
  e_schirm(f, 1);
  return(0);
 }
@@ -1879,7 +1868,7 @@ int e_blck_gt_beg(FENSTER *f)
   return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- f->b->b = f->s->mark_begin;
+ e_buffer_cursor_from(f->b, E_BUFFER_MARK_BEGIN);
  e_schirm(f, 1);
  return(0);
 }
@@ -1895,7 +1884,7 @@ int e_blck_gt_end(FENSTER *f)
   return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- f->b->b = f->s->mark_end;
+ e_buffer_cursor_from(f->b, E_BUFFER_MARK_END);
  e_schirm(f, 1);
  return(0);
 }
@@ -1911,10 +1900,7 @@ int e_blck_mrk_all(FENSTER *f)
   return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- f->s->mark_begin.x = 0;
- f->s->mark_begin.y = 0;
- f->s->mark_end.y = f->b->mxlines-1;
- f->s->mark_end.x = f->b->bf[f->b->mxlines-1].len;
+ e_buffer_block_all(f->b);
  e_schirm(f, 1);
  return(0);
 }
@@ -1930,18 +1916,7 @@ int e_blck_mrk_line(FENSTER *f)
   return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- f->s->mark_begin.x = 0;
- f->s->mark_begin.y = f->b->b.y;
- if(f->b->b.y < f->b->mxlines-1)
- {
-  f->s->mark_end.x = 0;
-  f->s->mark_end.y = f->b->b.y+1;
- }
- else
- {
-  f->s->mark_end.x = f->b->bf[f->b->b.y].len;
-  f->s->mark_end.y = f->b->b.y;
- }
+ e_buffer_block_line(f->b);
  e_schirm(f, 1);
  return(0);
 }
@@ -2152,7 +2127,7 @@ static void e_shift_right_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
    ;                              /* a row of blanks stops at its end, before its line break */
   e_ins_nchar(b, s, (unsigned char *)sh->blanks, j, i, sh->n);
   if (i == s->mark_begin.y)
-   s->mark_begin.x = 0;
+   e_buffer_mark_set(b, E_BUFFER_MARK_BEGIN, i, 0);
  }
 }
 
@@ -2188,7 +2163,7 @@ static void e_shift_left_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
    nn = s->mark_begin.x;
    e_del_nchar(b, s, j - l, i, l);
    if (k > n) e_ins_nchar(b, s, (unsigned char *)sh->blanks, j-l, i, k-n);
-   s->mark_begin.x = nn;
+   e_buffer_mark_set(b, E_BUFFER_MARK_BEGIN, s->mark_begin.y, nn);
   }
  }
 }
@@ -2310,7 +2285,7 @@ int e_rep_search(FENSTER *f)
   {
    row = s->fa.y;
    e_cursor(f, 1);
-   s->fa.y = row;
+   e_buffer_find_mark_restore(b, row);
    e_schirm(f, 1);
   }
   return(1);
@@ -2386,10 +2361,11 @@ int e_find_next(BUFFER *b, SCHIRM *s, FIND *fd)
      (isalnum(*(b->bf[j].s+ret+fd->sn)) == 0 &&
      (ret == 0 || isalnum(*(b->bf[j].s+ret-1)) == 0))))
    {
-    s->fa.x = ret;
-    b->b.y = s->fa.y = s->fe.y = j;
-    s->fe.x = ret + fd->sn;
-    b->b.x = ret = !(fd->sw & 4) ? s->fe.x : ret;
+    e_buffer_find_set(b, j, ret, ret + fd->sn);
+    if (fd->sw & 4)
+     e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_A);
+    else
+     e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_E);
     return(1);
    }
    else if (ret >= 0 && (fd->sw & 64) != 0)
@@ -2424,6 +2400,29 @@ int e_goto_line(FENSTER *f)
   e_buffer_cursor_set_col(b, 0, b->clsv);
  e_cursor(f, 1);
  return(0);
+}
+
+/**
+ * e_find_to_scope_start - Put the cursor where a search over its whole scope
+ * begins: the start of the text or of the block going forward, the end of
+ * the text or of the block going backward.
+ * @b: the buffer; @fd: the search's options (fd->sw).
+ *
+ * Find and Replace with "Entire Scope" then look at every place the scope
+ * holds, whatever the cursor was.
+ */
+static void e_find_to_scope_start(BUFFER *b, FIND *fd)
+{
+ int in_block = (fd->sw & 8) != 0;
+
+ if ((fd->sw & 4) == 0 && in_block)
+  e_buffer_cursor_from(b, E_BUFFER_MARK_BEGIN);
+ else if ((fd->sw & 4) == 0)
+  e_buffer_cursor_set(b, 0, 0);
+ else if (in_block)
+  e_buffer_cursor_from(b, E_BUFFER_MARK_END);
+ else
+  e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
 }
 
 int e_find(FENSTER *f)
@@ -2478,18 +2477,7 @@ int e_find(FENSTER *f)
   strcpy(fd->search, o->wstr[0]->txt);
   fd->sn = strlen(fd->search);
   if ((fd->sw & 2) != 0)
-  {
-   if ((fd->sw & 4) == 0)
-   {
-    b->b.x = (fd->sw & 8) == 0 ? 0 : s->mark_begin.x;
-    b->b.y = (fd->sw & 8) == 0 ? 0 : s->mark_begin.y;
-   }
-   else
-   {
-    b->b.x = (fd->sw & 8) == 0 ? b->bf[b->mxlines-1].len : s->mark_end.x;
-    b->b.y = (fd->sw & 8) == 0 ? b->mxlines-1 : s->mark_end.y;
-   }
-  }
+   e_find_to_scope_start(b, fd);
  }
  freeostr(o);
  if (ret != WPE_ESC)
@@ -2515,22 +2503,24 @@ int e_find(FENSTER *f)
  * replaced the occurrence found on row @y: behind the new text, on the row
  * where it ends (a replacement that wrapped ends on a row below), or, when
  * searching backwards, before where it starts now.
- * @b, @s: the buffer and its screen; @backwards: nonzero to search back.
+ * @b, @s: the buffer and its screen; @backwards: nonzero to search back;
+ * @hit_x: the column the occurrence started at, read before it was replaced.
  *
  * The next occurrence is then never looked for inside the new text, nor
  * past the end of a row the replacement made shorter.  A wrap may have
  * moved the text just before the replacement to the row below with it; a
  * backward search starts behind that text, so no occurrence in it is
- * skipped.
+ * skipped.  The find mark moves with the text as it is replaced, so the
+ * start is the one read before, not the mark's.
  */
-static void e_rep_search_on_after(BUFFER *b, SCHIRM *s, int backwards, int y)
+static void e_rep_search_on_after(BUFFER *b, SCHIRM *s, int backwards, int y, int hit_x)
 {
  if (backwards)
  {
-  e_ins_point_at(b, y, s->fa.x, &b->b);
+  e_buffer_cursor_from_offset(b, y, hit_x);
   return;
  }
- s->fe = b->b;
+ e_buffer_mark_from(b, E_BUFFER_MARK_FIND_E, E_BUFFER_POS_CURSOR);
 }
 
 /* fd->sw: the scope is the block (Selected Text). */
@@ -2583,11 +2573,11 @@ static void e_replace_show_hit(FENSTER *f, int y)
  */
 static void e_rep_search_past_hit(BUFFER *b, SCHIRM *s, FIND *fd)
 {
- s->fe.x = s->fa.x + fd->sn;
+ e_buffer_find_set(b, s->fa.y, s->fa.x, s->fa.x + fd->sn);
  if (fd->sw & E_FIND_BACKWARDS)
-  b->b.x = s->fa.x;
+  e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_A);
  else
-  b->b.x = s->fe.x;
+  e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_E);
 }
 
 /**
@@ -2638,7 +2628,7 @@ static void e_replace_each(FENSTER *f, FIND *fd, int ret, EReplaceReport *r)
  BUFFER *b = f->b;
  SCHIRM *s = f->s;
  int fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_CHANGE_ALL);
- int c, found_y, made;
+ int c, found_y, hit_x, made;
 
  e_buffer_step_begin(b);
  while (e_rep_search(f) && ((ret == AltA) || (!r->found)))
@@ -2653,7 +2643,8 @@ static void e_replace_each(FENSTER *f, FIND *fd, int ret, EReplaceReport *r)
   if (c != 'Y')
    continue;
   found_y = b->b.y;
-  made = e_replace_hit(b, fd, s->fa.x, found_y);
+  hit_x = s->fa.x;
+  made = e_replace_hit(b, fd, hit_x, found_y);
   if (made == E_BUFFER_NOMEM)
   {
    r->out_of_memory = 1;
@@ -2663,7 +2654,7 @@ static void e_replace_each(FENSTER *f, FIND *fd, int ret, EReplaceReport *r)
   if (made == E_BUFFER_OK)
   {
    r->replaced++;
-   e_rep_search_on_after(b, s, fd->sw & E_FIND_BACKWARDS, found_y);
+   e_rep_search_on_after(b, s, fd->sw & E_FIND_BACKWARDS, found_y, hit_x);
   }
   else
   {
@@ -2720,17 +2711,18 @@ static void e_change_all_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
 {
  EReplacePlan *p = plan;
  FIND *fd = p->fd;
- int y;
+ int y, hit_x;
 
  do
  {
   p->found++;
   y = b->b.y;
+  hit_x = s->fa.x;
   p->last_y = y + top;
-  if (e_replace_occurrence(b, s, s->fa.x, y, fd->sn, (unsigned char *)fd->replace, fd->rn))
+  if (e_replace_occurrence(b, s, hit_x, y, fd->sn, (unsigned char *)fd->replace, fd->rn))
   {
    p->replaced++;
-   e_rep_search_on_after(b, s, fd->sw & E_FIND_BACKWARDS, y);
+   e_rep_search_on_after(b, s, fd->sw & E_FIND_BACKWARDS, y, hit_x);
   }
  } while (!e_change_all_starved(b) && e_find_next(b, s, fd));
 }
@@ -2750,10 +2742,11 @@ static void e_change_all_whole(FENSTER *f, FIND *fd, EReplaceReport *r)
 {
  BUFFER *b = f->b;
  SCHIRM *s = f->s;
- POINT at = b->b, fa = s->fa, fe = s->fe;
+ WpeFindView before;
  EReplacePlan p;
  int y0, y1, made;
 
+ e_buffer_find_view_keep(b, &before);
  if (!e_rep_search(f))
   return;
  e_change_all_rows(b, s, fd, &y0, &y1);
@@ -2765,9 +2758,7 @@ static void e_change_all_whole(FENSTER *f, FIND *fd, EReplaceReport *r)
                           e_change_all_pieces, &p);
  if (made != E_BUFFER_OK)
  {
-  b->b = at;
-  s->fa = fa;
-  s->fe = fe;
+  e_buffer_find_view_back(b, &before);
   r->not_made = 1;
   if (made == E_BUFFER_NOMEM)
    e_status_keep_nomem(E_CHANGE_ALL_WHAT);
@@ -2863,17 +2854,15 @@ int e_replace(FENSTER *f)
   {
    case 2:
     fd->sw |= 2;
-    b->b.x = b->b.y = 0;
+    e_buffer_cursor_set(b, 0, 0);
     break;
    case 1:
     fd->sw |= 4;
-    b->b.x = b->bf[b->mxlines-1].len;
-    b->b.y = b->mxlines-1;
+    e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
     break;
    case 3:
     fd->sw |= 10;
-    b->b.x = s->mark_begin.x;
-    b->b.y = s->mark_begin.y;
+    e_buffer_cursor_from(b, E_BUFFER_MARK_BEGIN);
    default:
     break;
   }

@@ -373,7 +373,11 @@ marks on a character, never between its bytes, and @key{Page Up},
 @key{Page Down}, @kbd{Ctrl-Y} and Goto Line keep the screen column, as
 @key{Up} and @key{Down} always did.  @key{Backspace} at the start of the
 row below a row that goes on without a line break takes the whole last
-character of that row, not its last byte.  When @key{Delete},
+character of that row, not its last byte.  After @kbd{Ctrl-K Y} on a block
+inside one row the original kept the cursor on its own row and took the
+block's column there, which on another row could be between the bytes of a
+character; the cursor now goes to where the deleted block began, on the
+block's row.  When @key{Delete},
 @key{Backspace} or a join makes one character out of stray bytes (a
 Latin-1 file), the cursor stands before that character.  The reason: a
 character of several bytes is one place, and a position that is not a

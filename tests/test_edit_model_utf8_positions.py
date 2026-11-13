@@ -16,9 +16,9 @@ import pytest
 pytest.importorskip("pyte")
 
 from edit_model import selfcheck  # noqa: E402
-from edit_model.oracle import (BACKSPACE, DELETE, DOWN, END, ENTER, HOME,  # noqa: E402
-                               PGDN, PGUP, RIGHT, SHIFT_RIGHT, UP, EditSession,
-                               alt, ctrl)
+from edit_model.oracle import (BACKSPACE, CTRL_LEFT, DELETE, DOWN, END, ENTER,  # noqa: E402
+                               HOME, PGDN, PGUP, RIGHT, SHIFT_LEFT, SHIFT_RIGHT, UP,
+                               EditSession, alt, ctrl)
 
 SHIFT_PGUP = "\033[5;2~"
 CK = ctrl("k")
@@ -166,7 +166,6 @@ def test_covering_row_r001_undo_after_an_overwrite_gives_back_what_the_model_say
 
 
 # @scenario SC-edit-model-utf8-10
-@still_open("Ctrl-K Y still writes the cursor without the position owner")
 def test_covering_row_r019_block_delete_leaves_no_position_inside_a_character(tmp_path):
     """Replay of the covering row r019: an Undo and a Redo leave the block on
     another row, a letter with an accent is typed, Ctrl-K Y deletes the block
@@ -302,6 +301,121 @@ def test_ctrl_y_lands_on_the_character_under_the_column(tmp_path):
         w = s.send([ctrl("y")]).win
         assert w.cursor == (0, 2), "cursor %s: %s" % (w.cursor, _where(w))
         _assert_on_glyphs(w, s)
+
+
+def _sgr(button, col, row, press=True):
+    """An SGR 1006 mouse report at the 1-based screen cell (col, row)."""
+    return "\x1b[<%d;%d;%d%s" % (button, col, row, "M" if press else "m")
+
+
+# The right arrow of a window's status row, as a 1-based screen cell: the
+# window of an 80x30 screen ends on row 21 and its arrow is two cells left of
+# its right edge.
+STATUS_ARROW_RIGHT = (78, 21)
+
+
+# @scenario SC-edit-model-53
+def test_the_status_bar_arrow_steps_one_character(tmp_path):
+    """A click on the right arrow of the status bar moves the cursor one
+    character, not one byte: on a row of ten `é` the byte step would leave it
+    between the bytes of the first one, and the letter typed next would split
+    that character.  The arrow repeats while the button is down, so the test
+    asks for a character boundary, never an exact column."""
+    from wpe_driver import WpeSession
+    col, row = STATUS_ARROW_RIGHT
+    with WpeSession(str(tmp_path), "é" * 10 + "\n") as w:
+        w.key(_sgr(0, col, row, True), _sgr(0, col, row, False), delay=0.5)
+        w.key("X")
+        w.save()
+        with open(w.path, "rb") as fh:
+            data = fh.read()
+        assert data.decode("utf-8") and data.startswith("é".encode()), \
+            "the letter went between the bytes of a character: %r" % data
+        assert b"X" in data and data.index(b"X") > 0, "the arrow did not move: %r" % data
+
+
+# @scenario SC-edit-model-53
+def test_a_marker_over_moved_text_lands_on_a_character(tmp_path):
+    """Marker 1 is set between `b` and `é`; a `€` typed at the start of the
+    row covers that column.  The marker keeps its place, and going back to it
+    stands on the character that is there now, not between its bytes."""
+    with _session(tmp_path, "abé\n") as s:
+        s.send([RIGHT, RIGHT, CK, "1", HOME, "€"])
+        w = s.send([ctrl("o"), "1"]).win
+        assert w.cursor == (0, 0), "cursor %s: %s" % (w.cursor, _where(w))
+        _assert_on_glyphs(w, s)
+
+
+# @scenario SC-edit-model-53
+def test_search_again_goes_on_behind_a_hit_that_is_a_character(tmp_path):
+    """Find puts the cursor behind the hit and Search Again goes on to the
+    next one: each hit is the whole `é`, the find mark and the cursor stand on
+    characters at every step."""
+    with _session(tmp_path, "ééé\n") as s:
+        w = s.send([ctrl("o"), "f", "é", ENTER]).win
+        assert (w.cursor, w.pos) == ((0, 2), -1), "cursor %s: %s" % (w.cursor, _where(w))
+        w = s.send([ctrl("l")]).win
+        assert (w.cursor, w.pos) == ((0, 4), -1), "cursor %s: %s" % (w.cursor, _where(w))
+        _assert_no_position_trace(s)
+
+
+# @scenario SC-edit-model-53
+@still_open("a regular expression hit runs to the end of the row, so no hit can end inside a character")
+def test_a_regular_expression_hit_inside_a_character_is_stepped_over(tmp_path):
+    """The regular expression `.` matches the first byte of an `é`: the hit is
+    shown and stepped over as the whole character, so Search Again goes on to
+    the next one instead of finding the same byte again.  Today the hit of
+    every regular expression ends at the row's end on the old editor and the
+    new one alike, a defect of its own."""
+    with _session(tmp_path, "éa\n") as s:
+        w = s.send([ctrl("o"), "f", ".", "\033r", ENTER]).win
+        assert w.cursor == (0, 2), "cursor %s: %s" % (w.cursor, _where(w))
+        _assert_on_glyphs(w, s)
+        w = s.send([ctrl("l")]).win
+        assert w.cursor == (0, 3), "cursor %s: %s" % (w.cursor, _where(w))
+        _assert_on_glyphs(w, s)
+
+
+# @scenario SC-edit-model-53
+def test_block_delete_on_another_row_puts_the_cursor_at_the_block(tmp_path):
+    """Ctrl-K Y on a block that lies on another row leaves the cursor where
+    the deleted text was: the block's row and column, which stand on a
+    character, not the cursor's row at the block's column."""
+    with _session(tmp_path, "éa\nxyz\n") as s:
+        s.send([DOWN, RIGHT, SHIFT_RIGHT, UP])
+        w = s.send([CK, "y"]).win
+        assert w.disk() == "éa\nxz\n".encode("utf-8")
+        assert w.cursor == (1, 1), "cursor %s: %s" % (w.cursor, _where(w))
+        _assert_on_glyphs(w, s)
+
+
+# @scenario SC-edit-model-53
+def test_ctrl_left_stops_at_a_word_behind_a_character_of_several_bytes(tmp_path):
+    """Ctrl-Left from the end of `¿Qu` lands on the `Q`, after the `¿` that
+    starts the row, and Ctrl-O T from there deletes only the word: the walk
+    steps over whole characters and stops where it always stopped."""
+    with _session(tmp_path, "¿Qu tal\n") as s:
+        s.send([RIGHT, RIGHT, RIGHT])
+        w = s.send([CTRL_LEFT]).win
+        assert w.cursor == (0, 2), "cursor %s: %s" % (w.cursor, _where(w))
+        s.send([RIGHT, RIGHT])
+        w = s.send([ctrl("o"), "t"]).win
+        assert w.disk() == "¿ tal\n".encode("utf-8")
+        assert w.cursor == (0, 2), "cursor %s: %s" % (w.cursor, _where(w))
+        _assert_on_glyphs(w, s)
+
+
+# @scenario SC-edit-model-53
+def test_a_shift_selection_that_goes_back_past_its_start_is_a_normal_block(tmp_path):
+    """Shift-Right and then Shift-Left twice select the character before where
+    the selection began: the block is that character, and Ctrl-K Y deletes
+    it."""
+    with _session(tmp_path, "abcd\n") as s:
+        w = s.send([RIGHT, RIGHT, SHIFT_RIGHT, SHIFT_LEFT, SHIFT_LEFT]).win
+        assert (w.mb, w.me) == ((0, 1), (0, 2)), "marks %s %s" % (w.mb, w.me)
+        w = s.send([CK, "y"]).win
+        assert w.disk() == b"acd\n"
+        _assert_no_position_trace(s)
 
 
 # @scenario SC-edit-model-53

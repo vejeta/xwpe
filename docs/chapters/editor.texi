@@ -67,6 +67,8 @@ whole UTF-8 character, or one byte that starts no character.  The cursor
 always stands between characters: @key{Page Up}, @key{Page Down},
 @kbd{Ctrl-Y} and Goto Line keep the screen column, as @key{Up} and
 @key{Down} do, and land on the character that stands under it.
+@kbd{Ctrl-K Y} on a block inside one row leaves the cursor where the
+deleted block began.
 
 @kbd{Ctrl-U} undoes and @kbd{Ctrl-R} redoes one action at a time: an
 @key{Return} or a @key{Tab} with the indent it brought, a @key{Backspace}
@@ -232,7 +234,9 @@ xwpe uses @command{egrep}-compatible regular expressions:
 xwpe supports ten position markers, numbered 0--9, as the Borland
 editors have ten bookmarks.  Set a marker with @kbd{Ctrl-K @var{n}} where
 @var{n} is 0--9.  Jump to a marker with @kbd{Ctrl-O @var{n}}.  Each marker
-keeps its own place: setting one never moves another.  (Documented since
+keeps its own place: setting one never moves another.  A marker's highlight
+covers the whole character under it, and a marker over text that has
+changed goes to the character that stands there now.  (Documented since
 v1.4, as 1--9.)
 
 @section File manager

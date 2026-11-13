@@ -646,8 +646,9 @@ def _block_delete(st, action):
         rows = Rows(st)
         rows.del_nchar(kax, kay, kex - kax)
         rows.commit()
-        st.x = kax
-        st.me = (st.me[0], kax)
+        # the cursor goes where the block began, on that row (e_blk_delete_in_line_now)
+        st.y, st.x = kay, kax
+        st.me = (kay, kax)
     else:
         a, b = _block_span(st)
         splice_text(st, a, b, b"")
@@ -728,6 +729,7 @@ def _block_indent(st, action):
     before = Snapshot(st)
     n = st.options.tabn // 2
     rows = Rows(st)
+    markers = list(st.pt)     # the shift works on a copy of the rows: the markers wait
     tstr = b" " * n
     for i in _block_rows(st):
         j = _first_visible_c(rows, i)
@@ -736,6 +738,7 @@ def _block_indent(st, action):
         if i == st.mb[0]:
             st.mb = (st.mb[0], 0)
     rows.commit()
+    st.pt = markers
     _commit(st, before, action)
 
 
@@ -791,6 +794,7 @@ def _block_unindent(st, action):
     st.fired.extend(["indent_keys", "indent_width", "indent_one_step"])
     before = Snapshot(st)
     rows = Rows(st)
+    markers = list(st.pt)     # the shift works on a copy of the rows: the markers wait
     for i in _block_rows_as_they_go(st, rows):
         j, k, l = _unindent_scan(rows, i, tabn, n)
         if l > 0:
@@ -800,6 +804,7 @@ def _block_unindent(st, action):
                 _put_back_columns(st, rows, k - n, j - l, i)
             st.mb = (st.mb[0], keep)
     rows.commit()
+    st.pt = markers
     _commit(st, before, action)
 
 
@@ -813,9 +818,11 @@ def _help_marker(st, action, marker):
     st.fired.extend(["help_markers", "help_markers_detail", "help_markers_one_step"])
     before = Snapshot(st)
     rows = Rows(st)
+    markers = list(st.pt)     # the marks go in on a copy of the rows: the markers wait
     rows.ins_nchar(bytes([HELP_END]), kex, key)
     rows.ins_nchar(bytes([marker]), kax, key)
     rows.commit()
+    st.pt = markers
     _commit(st, before, action)
 
 
@@ -918,6 +925,7 @@ def _replace_all(st, action):
                      "replace_one_step", "replace_message"])
     before = Snapshot(st)
     rows = Rows(st)
+    markers = list(st.pt)     # Change All works on a copy of the rows: the markers wait
     st.y = st.x = 0
     found = 0
     sn = len(search)
@@ -930,6 +938,7 @@ def _replace_all(st, action):
         rows.del_nchar(x, y, sn)
         rows.ins_nchar(repl, x, y)   # the search goes on behind it, where it ends
     rows.commit()
+    st.pt = markers
     if found:
         st.box = BOX_FOUND % (found, found)
     else:
@@ -1006,3 +1015,15 @@ def apply_action(st, action):
         _replace_all(st, action)
     elif name == "option_set":
         _option_set(st, action)
+    if name not in model.POSITION_NEUTRAL:
+        _land_on_glyphs(st)
+
+
+def _land_on_glyphs(st):
+    """The editor lands the cursor and the block of a block command through
+    the owner (e_buffer_cursor_set, e_buffer_block_set), which puts each back
+    to the start of the glyph it falls in; so does the model."""
+    if st.rows and 0 <= st.y < len(st.rows):
+        st.x = model.utf8_glyph_floor(st.rows[st.y].data, st.x)
+    st.mb = model._mark_inside(st.rows, st.mb)
+    st.me = model._mark_inside(st.rows, st.me)
