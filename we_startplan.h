@@ -131,6 +131,8 @@
  "a folder or program whose path is longer than the system allows"
 #define WPE_STARTPLAN_REFUSE_DEBUG_MEMORY \
  "not enough memory to plan the debugger's start"
+#define WPE_STARTPLAN_REFUSE_DEBUG_FOLDER \
+ "the debugger's own working folder could not be made"
 
 /* Why Run it is not offered for a plan whose start-up files cannot be sent
    to the debugger by the editor's own command. */

@@ -1,0 +1,11 @@
+# tests/check-debug-command.sh, rule 2: a #define whose name ends in CMD_MAX or
+# COMMAND_MAX and whose value does not name E_D_REQ_CMD_MAX.  Each is a size
+# that is not a line to a debugger, with the reason.  The count may only fall;
+# a line that matches nothing fails as stale.
+#
+# file|name|count|reason
+we_dap.c|DAP_CMD_MAX|1|the name of a DAP request ("launch"), never a line to a debugger
+we_dap_sync.c|SYNC_CMD_MAX|1|the name of a DAP request, as DAP_CMD_MAX
+we_debug.c|E_D_COMPILE_CMD_MAX|1|the compiler's command line, which is not a debugger's
+we_ai_ui.c|AI_TOOL_CMD_MAX|1|the assistant's tool call, which no debugger reads
+tests/test_dap.c|CALL_CMD_MAX|1|the unit test's own record of a DAP request's name

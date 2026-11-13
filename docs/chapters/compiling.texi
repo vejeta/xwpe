@@ -34,7 +34,9 @@ recompiled.
 @item F9 or Alt-M (Make)
 Recompile all modified files and link the executable.  This is the
 most common command, and the bottom row of a source window names it
-(@samp{F9 Build}).
+(@samp{F9 Build}).  The program is named after the source without its
+extension (@file{t.c} makes @file{t.e}), whatever the length of the name,
+up to what the system allows for a file name.
 
 @item Ctrl-F9 (Run)
 Build the executable and then run it, in the source's own folder.

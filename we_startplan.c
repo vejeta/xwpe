@@ -435,6 +435,8 @@ int wpe_startplan_path(WpeStartPlan *p, const char *path, int role, int from,
                        const char *source, const char *root)
 {
  WpeStartPath *s;
+ char real[PATH_MAX];
+ int resolved;
 
  if (!path || startplan_grow((void **)&p->path, p->npath, sizeof *p->path) < 0)
   return -1;
@@ -442,12 +444,14 @@ int wpe_startplan_path(WpeStartPlan *p, const char *path, int role, int from,
  memset(s, 0, sizeof *s);
  s->path = startplan_dup(path);
  s->source = startplan_dup(startplan_or_empty(source));
- s->root = NULL;
- if (root)
-  s->root = startplan_realpath_dup(root);
+ resolved = root && *root && realpath(root, real);
+ s->root = resolved ? startplan_dup(real) : NULL;
  s->role = role;
  s->from = from;
- if (!s->path || !s->source)
+ /* A root that does not resolve is no root; one that resolved and could
+    not be kept is out of memory, and the path is refused, not judged
+    against another folder. */
+ if (!s->path || !s->source || (resolved && !s->root))
  {
   free(s->path);
   free(s->source);
@@ -3747,7 +3751,10 @@ static int startplan_apply_line(WpeStartPlan *p, int kind, const char *text)
 
 /**
  * startplan_apply_lines - Put the lines into the plan, in order.
- * Return: 0, or -1.
+ *
+ * The lines were judged when they were made, so the only way to fail is for
+ * want of memory, and the plan's refusal says that.
+ * Return: 0, or -1 with p->contain_refused set.
  */
 static int startplan_apply_lines(WpeStartPlan *p, const startplan_lines *l)
 {
@@ -3755,7 +3762,10 @@ static int startplan_apply_lines(WpeStartPlan *p, const startplan_lines *l)
 
  for (i = 0; i < l->n; i++)
   if (startplan_apply_line(p, l->kind[i], l->text[i]) < 0)
+  {
+   p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_MEMORY;
    return -1;
+  }
  return 0;
 }
 
@@ -3793,25 +3803,31 @@ static int startplan_program_load(const startplan_row *row, const char *program,
 /**
  * startplan_add_program - Add the program as an absolute path of the plan.
  * @p: the plan; @program: as the site names it; @out: receives it absolute;
- * @too_long: set to 1 when the program cannot be resolved because its path
- * does not fit the system's limit, else 0.
+ * @refusal: receives the plan's reason when it fails: a path longer than the
+ * system allows, a path that cannot be given safely, or no memory.
  *
  * Rooted in the program's folder, so it is inside it, whatever the debugger's
  * own working folder is.
- * Return: 0, or -1.
+ * Return: 0, or -1 with *@refusal set.
  */
 static int startplan_add_program(WpeStartPlan *p, const char *program, char *out, size_t sz,
-                                 int *too_long)
+                                 const char **refusal)
 {
  errno = 0;
  if (wpe_startplan_resolve(program, p->program_dir, out, sz) < 0)
  {
-  *too_long = errno == ENAMETOOLONG;
+  *refusal = errno == ENAMETOOLONG ? WPE_STARTPLAN_REFUSE_DEBUG_LONG
+                                   : WPE_STARTPLAN_REFUSE_DEBUG_PATH;
   return -1;
  }
- *too_long = 0;
- return wpe_startplan_path(p, out, WPE_PATH_INPUT, p->program_from,
-                           p->program_source ? p->program_source : "the program", p->program_dir);
+ if (wpe_startplan_path(p, out, WPE_PATH_INPUT, p->program_from,
+                        p->program_source ? p->program_source : "the program",
+                        p->program_dir) < 0)
+ {
+  *refusal = WPE_STARTPLAN_REFUSE_DEBUG_MEMORY;
+  return -1;
+ }
+ return 0;
 }
 
 /**
@@ -3853,7 +3869,7 @@ static int startplan_contain_apart_lines(WpeStartPlan *p, const startplan_row *r
                                          const char *program, startplan_lines *lines)
 {
  char absolute[WPE_STARTPLAN_PATH_MAX];
- int too_long;
+ const char *refusal;
 
  if (startplan_lines_of(row, p->program_dir, lines) < 0)
  {
@@ -3866,10 +3882,9 @@ static int startplan_contain_apart_lines(WpeStartPlan *p, const startplan_row *r
  p->load_word_at = p->nword;
  if (!program || !*program)
   return 0;
- if (startplan_add_program(p, program, absolute, sizeof absolute, &too_long) < 0)
+ if (startplan_add_program(p, program, absolute, sizeof absolute, &refusal) < 0)
  {
-  p->contain_refused = too_long ? WPE_STARTPLAN_REFUSE_DEBUG_LONG
-                                : WPE_STARTPLAN_REFUSE_DEBUG_PATH;
+  p->contain_refused = refusal;
   return -1;
  }
  if (startplan_program_load(row, absolute, lines) < 0)
@@ -3894,6 +3909,24 @@ static int startplan_contain_apart(WpeStartPlan *p, const startplan_row *row, co
  rc = startplan_contain_apart_lines(p, row, program, &lines);
  startplan_lines_reset(&lines);
  return rc;
+}
+
+/**
+ * startplan_make_debug_folder - Make the empty folder a debugger that starts
+ * apart runs in, and make it the plan's working folder.
+ * @p: the plan; a folder of an earlier contain is ended first.
+ * Return: 0, or -1 with p->contain_refused saying the folder could not be made.
+ */
+static int startplan_make_debug_folder(WpeStartPlan *p)
+{
+ if (p->debug_dir)
+  wpe_startplan_debug_dir_end(p->debug_dir);
+ free(p->debug_dir);
+ p->debug_dir = wpe_startplan_debug_dir_new(NULL);
+ if (p->debug_dir && wpe_startplan_set_cwd(p, p->debug_dir) == 0)
+  return 0;
+ p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_FOLDER;
+ return -1;
 }
 
 /**
@@ -3946,17 +3979,21 @@ int wpe_startplan_contain(WpeStartPlan *p, const char *key, const char *program_
  p->contain_refused = NULL;
  apart = startplan_row_apart(row);
  if (!p->program_dir)
+ {
+  p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_MEMORY;
   return -1;
+ }
  if (!apart)
  {
   startplan_trace("startplan contain %s apart=0 dir=%s", key, real);
-  return wpe_startplan_set_cwd(p, real);
+  if (wpe_startplan_set_cwd(p, real) < 0)
+  {
+   p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_MEMORY;
+   return -1;
+  }
+  return 0;
  }
- if (p->debug_dir)
-  wpe_startplan_debug_dir_end(p->debug_dir);
- free(p->debug_dir);
- if (!(p->debug_dir = wpe_startplan_debug_dir_new(NULL)) ||
-     wpe_startplan_set_cwd(p, p->debug_dir) < 0)
+ if (startplan_make_debug_folder(p) < 0)
   return -1;
  startplan_trace("startplan contain %s apart=1 dir=%s", key, p->debug_dir);
  return startplan_contain_apart(p, row, program);

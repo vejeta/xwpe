@@ -273,3 +273,67 @@ def test_pdb_go_to_cursor_in_a_script_under_a_very_deep_folder_stops_there(tmp_p
     assert stopped, "pdb never stopped on the breakpoint:\n%s\n%s" % (folder.traced(), screen)
     assert reached, "Go to cursor did not stop on the cursor's line (at %s):\n%s" % (line, screen)
 
+
+F9 = "\033[20~"                     # Make: compile and link
+STEM_BYTES = [80, 200, 250]        # a source's name before ".c": the link used to cut it at 79
+HELLO_C = '#include <stdio.h>\nint main(void)\n{\n puts("linked");\n return 0;\n}\n'
+BUILD_WAIT = 30                    # a compile and a link of a small file
+
+
+def _program_prints(path):
+    """Run the program the build made and return what it printed."""
+    done = subprocess.run([str(path)], capture_output=True, text=True, timeout=CANARY_S)
+    return done.stdout
+
+
+# @scenario SC-debug-130
+@pytest.mark.skipif(not tool_usable("gcc", "--version"), reason="gcc not usable")
+@pytest.mark.parametrize("stem", STEM_BYTES, ids=["%d-byte-stem" % n for n in STEM_BYTES])
+def test_a_source_with_a_long_name_builds_and_the_program_runs(tmp_path, stem):
+    """The link names the program from the source's name without its
+    extension, as the build's plan does.  The link kept that name in 80
+    bytes, so a source over 79 bytes was compiled and then refused at the
+    link ("a word the plan did not show").  Both now take the one name the
+    plan judged: F9 makes the program and it runs."""
+    folder = LongFolder(tmp_path, tmp_path / "ws")
+    name = "s" * stem
+    program = folder.ws / (name + ".e")
+    with folder.session(HELLO_C, name + ".c") as s:
+        s.key(F9, delay=1.0)
+        made = _wait(program.exists, BUILD_WAIT)
+        screen = _screen(s)
+    assert made, "F9 made no program for a %d-byte name:\n%s\n%s" % (stem, folder.traced(), screen)
+    assert _program_prints(program) == "linked\n"
+
+
+BRK_C = ('int main(void)\n{\n int x = 1;\n x = x + 1;\n return x - 2;\n}\n')
+BRK_LINE = 5                       # the line the breakpoint is set on
+LONG_SOURCE_STEM = 250             # a source name of 252 bytes, as long as a name can be with ".c"
+
+
+# @scenario SC-debug-131
+@needs_gdb
+@pytest.mark.parametrize("interface", INTERFACES)
+@pytest.mark.parametrize("stem", [10, LONG_SOURCE_STEM], ids=["short-name-control", "250-byte-name"])
+def test_gdb_a_breakpoint_in_a_source_with_a_long_name_stops_there(tmp_path, stem, interface):
+    """gdb names a breakpoint by the source's file name, so a source whose
+    name is 252 bytes makes a break command over 255 (a console command or
+    an MI one).  The build refused such a name at the link, and the
+    engine's old limit would have cut the command; both now take it whole.
+    The breakpoint is set before the start and the program stops on its line
+    instead of running to its end.  The short name is the control: the same
+    keys with a name that never made a long command."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    folder = LongFolder(tmp_path, ws)
+    name = "b" * stem + ".c"
+    with folder.session(BRK_C, name, interface) as s:
+        s.key(DOWN, DOWN, DOWN, DOWN, delay=0.1)
+        s.key(CTRL_G, "b", delay=0.4)
+        s.key(CTRL_G, "r", delay=1.0)
+        reached = _wait(lambda: s.mark_line() == BRK_LINE, STOP_S)
+        line = s.mark_line()
+        screen = _screen(s)
+    assert reached, ("the program did not stop on the breakpoint (at %s):\n%s\n%s" %
+                     (line, folder.traced(), screen))
+

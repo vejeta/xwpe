@@ -282,7 +282,7 @@ static void e_d_gb_add_given_up(void);
 #define E_D_ACT_GOTO    5   /* Ctrl-G U or F4, Go to cursor */
 static int  e_d_act_deferred(int kind, FENSTER *f, int line);
 /* Room for one status line and for one watch's print command. */
-#define E_D_WATCH_CMD_MAX 256
+#define E_D_WATCH_CMD_MAX E_D_REQ_CMD_MAX
 #define E_D_WATCH_REFUSED_FMT "watches are not available with %s"
 static int  e_d_a68g_cur_line = 0;   /* source line a68g is currently stopped on */
 
@@ -397,9 +397,17 @@ static char e_d_last_cmd[E_D_RUN_AGAIN_MAX];
 #define E_D_GDBMI_CONSOLE_HEAD "-interpreter-exec console \""
 #define E_D_GDBMI_CONSOLE_TAIL "\""
 #define E_D_GDBMI_MI_LEAD      '-'
-/* A command line once numbered and, for the console, quoted: every byte
-   of a command the engine takes may need its escape. */
-#define E_D_GDBMI_LINE_MAX     (2 * E_D_RUN_AGAIN_MAX + 64)
+/* A command the engine takes, written as the inside of an MI string: every
+   byte may need a backslash before it, and the string ends in a NUL. */
+#define E_D_GDBMI_QUOTE_ESCAPE 2
+#define E_D_GDBMI_QUOTED_MAX   (E_D_GDBMI_QUOTE_ESCAPE * E_D_REQ_CMD_MAX + 1)
+/* What a console line carries besides its quoted command: the number (nine
+   digits), the console's head and tail, the line end and the NUL. */
+#define E_D_GDBMI_FRAME_MAX    64
+/* A command line once numbered and, for the console, quoted. */
+#define E_D_GDBMI_LINE_MAX     (E_D_GDBMI_QUOTED_MAX + E_D_GDBMI_FRAME_MAX)
+typedef char e_d_gdbmi_frame_holds_its_words[
+ (E_D_GDBMI_FRAME_MAX >= 9 + sizeof E_D_GDBMI_CONSOLE_HEAD + sizeof E_D_GDBMI_CONSOLE_TAIL + 1) ? 1 : -1];
 /* The highest number a command is given; the next one is 1 again.  It has
    as many digits as gdb's answer is read with (E_GDBMI_TOKEN_DIGITS_MAX in
    we_gdbmi.c), so every answer still names its command; a number comes
@@ -466,7 +474,8 @@ static int e_d_gdbmi_word_of(const char *line, const char **mi)
 /**
  * e_d_gdbmi_quote - Copy @in into @out as the inside of an MI string:
  * quotes and backslashes escaped.
- * @out, @n: where it goes, cut to fit.
+ * @out, @n: where it goes; E_D_GDBMI_QUOTED_MAX holds any command the
+ * request engine takes, so a command is never cut here.
  */
 static void e_d_gdbmi_quote(char *out, size_t n, const char *in)
 {
@@ -490,7 +499,7 @@ static void e_d_gdbmi_quote(char *out, size_t n, const char *in)
  */
 static int e_d_gdbmi_line_of(const char *line, int token, char *out, size_t n)
 {
- char quoted[E_D_GDBMI_LINE_MAX];
+ char quoted[E_D_GDBMI_QUOTED_MAX];
  const char *mi;
 
  if (e_d_gdbmi_word_of(line, &mi))
@@ -624,7 +633,7 @@ static size_t e_d_gdbmi_lines_max(const char *cmd)
  */
 static int e_d_gdbmi_send_lines(const char *cmd)
 {
- char line[E_D_RUN_AGAIN_MAX];
+ char line[E_D_REQ_CMD_MAX + 1];
  char out[E_D_GDBMI_LINE_MAX];
  const char *p = cmd, *nl;
  size_t len, used = 0, room = e_d_gdbmi_lines_max(cmd) * E_D_GDBMI_LINE_MAX;
@@ -5495,7 +5504,7 @@ static void e_d_breakpoints_changed(ECNT *cn)
 }
 
 /* Room for a breakpoint command that names a file, and for its answer. */
-#define E_D_BRK_CMD_MAX     (PATH_MAX + 64)
+#define E_D_BRK_CMD_MAX     (E_D_REQ_CMD_MAX + 2)
 #define E_D_BRK_ANSWER_MAX  E_D_LINE_MAX
 /* No line to add to a debug adapter's list. */
 #define E_D_BRK_NO_LINE     0
@@ -21550,7 +21559,7 @@ static int e_d_ga_leave_unknown_source(ECNT *cn)
 #define E_D_GDB_TTY_FMT      "set inferior-tty %s"
 /* A resume command: "r" with the program's arguments, or "advance" with a
    path. */
-#define E_D_GO_CMD_MAX       (E_D_LINE_MAX + PATH_MAX)
+#define E_D_GO_CMD_MAX       (E_D_REQ_CMD_MAX + 2)
 
 /* What a start or a resume is to do once the debugger has answered. */
 struct e_d_ga_go
@@ -26016,7 +26025,7 @@ static int e_d_gm_refused_words(const E_D_ANSWER *ans, char *words, size_t n)
  */
 static void e_d_gm_brk_add_cmd(int i, char *cmd, size_t n)
 {
- char file[PATH_MAX];
+ char file[E_D_GDBMI_QUOTED_MAX];
 
  e_d_gdbmi_quote(file, sizeof file, e_d_sbrpts[i]);
  snprintf(cmd, n, E_D_GDBMI_BREAK_FMT, file, e_d_ybrpts[i]);
@@ -26076,7 +26085,7 @@ static void e_d_gm_start_brk_cmd(char *cmd, size_t n)
 {
  const char *sym = e_get_start_symbol();
  char where[PATH_MAX];
- char quoted[PATH_MAX];
+ char quoted[E_D_GDBMI_QUOTED_MAX];
 
  if (sym && !strcmp(sym, GA68_ENTRY_SYMBOL) && e_d_file[0])
   snprintf(where, sizeof where, "%s:1", e_d_file);
@@ -26405,7 +26414,7 @@ static int e_d_gm_stack_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 static int e_d_gm_watch_cmd(char *cmd, size_t n, void *ctx)
 {
  E_D_GA_CTX *st = ctx;
- char quoted[E_D_REQ_CMD_MAX];
+ char quoted[E_D_GDBMI_QUOTED_MAX];
 
  if (st->watch >= st->nvalues)
   return(0);

@@ -348,7 +348,10 @@ Changes
   allows, in the widest form any of them writes it.  gdb's history file
   is kept in the program's folder for such a folder too, a breakpoint in
   a source file with a very long name is no longer cut short, and a path
-  longer than the system allows is refused with a box that says so.
+  longer than the system allows is refused with a box that says so.  F9
+  now links a source whose name is longer than 79 bytes, which it used to
+  refuse after compiling it, and a debugger start that runs out of memory
+  says so instead of blaming the path.
 
 * Run, Make, Execute and the language servers now start the way the
   build does: what a folder decides is shown first.  When the xwperc of

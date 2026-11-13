@@ -493,19 +493,23 @@ static void e_build_path_too_long(FENSTER *f, const char *what);
  * e_p_link_operands_of - The program and the object file of F9's link step.
  * @exe_name: the language's Executable, or NULL; @comp_sw: its compiler's
  * switches; @exedir: the output folder; @estr/@ostr: receive them; @sz:
- * the room of each; @stem: the source's name without its extension.
+ * the room of each; @datnam: the source's file name.
  *
  * Both go through wpe_startplan_operand, so an Exedir a folder sets ("@r")
  * makes a path ("./@r/t.o") and never a response file the linker reads.
- * The build's plan and its link step both take their paths from here, so
- * the link names exactly the paths the plan judged.
+ * The name of the program and of the object is the source's name without
+ * its extension, worked out here and nowhere else: the build's plan and its
+ * link step both take it and the paths from here, so a source with a long
+ * name is linked under the name the plan judged.
  * Return: 0, or -1 when one does not fit.
  */
 static int e_p_link_operands_of(const char *exe_name, int comp_sw, const char *exedir,
-                                char *estr, char *ostr, size_t sz, const char *stem)
+                                char *estr, char *ostr, size_t sz, const char *datnam)
 {
- char name[WPE_BUILD_PATH_MAX];
+ char name[WPE_BUILD_PATH_MAX], stem[WPE_BUILD_PATH_MAX];
 
+ snprintf(stem, sizeof stem, "%s", datnam);
+ WpeStringCutChar(stem, '.');
  if (exe_name && exe_name[0])
   snprintf(name, sizeof name, "%s", exe_name);
  else
@@ -531,7 +535,7 @@ static int e_exec_planned(FENSTER *f, char **argv);
 static void e_p_make_link(ECNT *cn)
 {
  FENSTER *f;
- char ostr[WPE_BUILD_PATH_MAX], estr[WPE_BUILD_PATH_MAX], mstr[80];
+ char ostr[WPE_BUILD_PATH_MAX], estr[WPE_BUILD_PATH_MAX];
  char cwd_saved[1024];
  int file = -1, cwd_chg = 0;
  struct stat cbuf[1], obuf[1];
@@ -548,10 +552,8 @@ static void e_p_make_link(ECNT *cn)
   e_argc = e_make_arg(&e_arg, e_s_prog.libraries);
   e_arg[1] = MALLOC(3);
   strcpy(e_arg[1], "-o");
-  snprintf(mstr, sizeof(mstr), "%s", f->datnam);
-  WpeStringCutChar(mstr, '.');
   if (e_p_link_operands_of(e_s_prog.exe_name, e_s_prog.comp_sw, e_prog.exedir,
-                           estr, ostr, sizeof estr, mstr))
+                           estr, ostr, sizeof estr, f->datnam))
   {
    e_free_arg(e_arg, e_argc);
    if (cwd_chg)
@@ -1991,7 +1993,7 @@ static int e_comp_operands(FENSTER *f, const char *exedir, int comp_sw,
 static int e_build_plan_paths(WpeStartPlan *plan, FENSTER *f, const e_build_values *v)
 {
  char fstr[WPE_BUILD_PATH_MAX], ostr[WPE_BUILD_PATH_MAX];
- char estr[WPE_BUILD_PATH_MAX], lostr[WPE_BUILD_PATH_MAX], stem[WPE_BUILD_PATH_MAX];
+ char estr[WPE_BUILD_PATH_MAX], lostr[WPE_BUILD_PATH_MAX];
  int from_dir = e_build_from(v, E_OPT_SCOPE_PROGRAMMING, "Exedir", v->exedir);
  int from_exe = e_build_from(v, v->language, "Executable", v->exe_name);
  int from_prog = WPE_FROM_USER;
@@ -2005,9 +2007,7 @@ static int e_build_plan_paths(WpeStartPlan *plan, FENSTER *f, const e_build_valu
  wpe_startplan_mark_output(plan, WPE_OUTPUT_OBJECT);
  wpe_startplan_path(plan, ostr, WPE_PATH_REMOVE, from_dir, "./xwperc: Exedir", NULL);
  wpe_startplan_mark_output(plan, WPE_OUTPUT_OBJECT);
- snprintf(stem, sizeof stem, "%s", f->datnam);
- WpeStringCutChar(stem, '.');
- if (e_p_link_operands_of(v->exe_name, v->comp_sw, v->exedir, estr, lostr, sizeof estr, stem))
+ if (e_p_link_operands_of(v->exe_name, v->comp_sw, v->exedir, estr, lostr, sizeof estr, f->datnam))
   return(-1);
  wpe_startplan_path(plan, estr, WPE_PATH_WRITE, from_prog, "./xwperc: Exedir, Executable", NULL);
  wpe_startplan_mark_output(plan, WPE_OUTPUT_PRODUCT);

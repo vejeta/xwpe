@@ -60,6 +60,12 @@ def _folder(tmp_path, name):
     return tmp_path / name
 
 
+LONG_STEM = "s" * 200     # a source name before ".c": the link used to cut it at 79
+LONG_STEM_SOURCE = "int main(void){return 0;}\n"
+LONG_STEM_SESSION = dict(SESSION, XWPE_TEST_FILE=LONG_STEM + ".c",
+                         XWPE_TEST_SOURCE=LONG_STEM_SOURCE)
+BUILD_WAIT_S = 40         # a compile and a link of a small file
+
 GDB_SESSION = dict(SESSION, XWPE_TEST_FILE=LONGEST_NAME + "/t.c", XWPE_TEST_SOURCE=GDB_SOURCE)
 PDB_SESSION = dict(SESSION, XWPE_TEST_FILE=CJK_NAME + "/t.py", XWPE_TEST_SOURCE=PDB_SOURCE)
 
@@ -111,3 +117,20 @@ def test_pdb_starts_in_a_folder_named_in_cjk_letters(cjk_folder, tmp_path, xwpe)
     assert moves[0].count("\\xe4\\xb8\\xad") == 20, moves[0]
     assert "startplan refused" not in _trace(tmp_path), _trace(tmp_path)
     assert xwpe.proc.poll() is None, "xwpe died starting pdb"
+
+
+# @scenario SC-debug-132
+@pytest.mark.skipif(not shutil.which("gcc"), reason="gcc not on PATH")
+@pytest.mark.parametrize("xwpe", [LONG_STEM_SESSION], indirect=True)
+def test_a_source_with_a_long_name_builds(tmp_path, xwpe):
+    """F9 on a source whose name is 200 bytes: the link takes the program's
+    name from the source's whole name, as the build's plan does, and makes
+    the program.  The link used to keep that name in 80 bytes and refuse a
+    name over 79 after compiling it."""
+    _sleep(SETTLE_S)
+    xwpe.key("F9", delay=0.6)
+    program = tmp_path / (LONG_STEM + ".e")
+    assert _wait(program.exists, BUILD_WAIT_S), \
+        "F9 made no program for a 200-byte name:\n" + _trace(tmp_path)
+    assert "startplan refused" not in _trace(tmp_path), _trace(tmp_path)
+    assert xwpe.proc.poll() is None, "xwpe died building"

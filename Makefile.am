@@ -327,6 +327,8 @@ check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop te
 # record per plan, the cover check of a step, and mutants of the rules.
 test_startplan_SOURCES = tests/test_startplan.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c
 test_startplan_CFLAGS = $(XWPE_STDFLAG)
+# The rows that make an allocation fail take over malloc and realloc.
+test_startplan_LDFLAGS = -Wl,--wrap=malloc -Wl,--wrap=realloc
 test_startplan_LDADD = $(UTIL_LIBS)
 
 # The owner of the question about a folder's commands: we_startcmd.c alone.
@@ -586,6 +588,12 @@ TESTS += tests/check-one-owner.sh
 # program keys, is counted per function in tests/start-plan.allow, with
 # the pass that moves it into a plan; the counts may only fall.
 TESTS += tests/check-start-plan.sh
+
+# One owner of how long a command to a debugger may be: the request engine
+# (we_debreq.h).  tests/check-debug-command.sh fails when a site sizes a
+# debugger command by a number of its own; the caps that are not debugger
+# lines are in tests/debug-command.allow, each with its reason.
+TESTS += tests/check-debug-command.sh
 AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
 
@@ -655,6 +663,8 @@ EXTRA_DIST = \
   tests/one-owner.allow \
   tests/check-start-plan.sh \
   tests/start-plan.allow \
+  tests/check-debug-command.sh \
+  tests/debug-command.allow \
   tests/stubs/a68g/a68g \
   tests/stubs/gdb \
   tests/stubs/full-pipe/lldb-dap \

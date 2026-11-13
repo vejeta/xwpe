@@ -36,6 +36,43 @@
 #define TRACE_ROOM        8192
 #define SHORT_DEADLINE_MS 10000L                 /* echo has answered long before */
 
+/* Every allocation of the planner passes through these two (the test is
+   linked with --wrap=malloc and --wrap=realloc), so a row can make the Nth
+   one fail and see what the planner answers.  Not armed, they are malloc and
+   realloc. */
+#define FAIL_NEVER (-1L)
+static long fail_countdown = FAIL_NEVER;   /* allocations left before the next one fails */
+void *__real_malloc(size_t n);
+void *__real_realloc(void *p, size_t n);
+
+/* Whether the allocation now asked for is the one to fail. */
+static int allocation_fails_now(void)
+{
+ if (fail_countdown == FAIL_NEVER)
+  return 0;
+ if (fail_countdown > 0)
+ {
+  fail_countdown--;
+  return 0;
+ }
+ fail_countdown = FAIL_NEVER;
+ return 1;
+}
+
+void *__wrap_malloc(size_t n)
+{
+ if (allocation_fails_now())
+  return NULL;
+ return __real_malloc(n);
+}
+
+void *__wrap_realloc(void *p, size_t n)
+{
+ if (allocation_fails_now())
+  return NULL;
+ return __real_realloc(p, n);
+}
+
 static int failures;
 static char base[PATH_ROOM];     /* the temporary directory, resolved */
 static char state[PATH_ROOM];    /* base/state: $XDG_STATE_HOME */
@@ -2294,6 +2331,59 @@ static void case_long_path_refusals(void)
  rmdir(bad);
 }
 
+#define FAIL_SCAN_MAX 4000L      /* more allocations than any start makes */
+
+/* Make each allocation of one contain call fail in turn, and check that a
+   start that could not be planned for want of memory says so: the memory
+   text, never the one for a path that cannot be given safely, no text at
+   all, or a plan that goes on as if nothing failed. */
+static void scan_allocation_failures(const char *what, const char *key, const char *variant,
+                                     const char *program)
+{
+ char name[TEXT_ROOM];
+ WpeStartPlan *p;
+ long k;
+ int rc, fired;
+
+ for (k = 0; k < FAIL_SCAN_MAX; k++)
+ {
+  p = wpe_startplan_new(WPE_START_DEBUGGER, key);
+  if (!p) { fail("plan", "out of memory"); exit(1); }
+  wpe_startplan_set_file(p, "this folder", proj);
+  fail_countdown = k;
+  rc = wpe_startplan_contain(p, key, variant, proj, program);
+  fired = fail_countdown == FAIL_NEVER;
+  fail_countdown = FAIL_NEVER;
+  if (!fired)
+  {
+   snprintf(name, sizeof name, "%s: with %ld allocations to spare it plans", what, k);
+   expect_int(name, rc, 0);
+   end_plan(p);
+   return;
+  }
+  snprintf(name, sizeof name, "%s: allocation %ld failing is reported", what, k);
+  expect_int(name, rc, -1);
+  snprintf(name, sizeof name, "%s: allocation %ld failing says why", what, k);
+  expect_int(name, p->contain_refused != NULL &&
+             (strcmp(p->contain_refused, WPE_STARTPLAN_REFUSE_DEBUG_MEMORY) == 0 ||
+              strcmp(p->contain_refused, WPE_STARTPLAN_REFUSE_DEBUG_FOLDER) == 0), 1);
+  end_plan(p);
+ }
+ fail(what, "the scan never reached an allocation that is not made: raise FAIL_SCAN_MAX");
+}
+
+/* An allocation that fails while a debugger's start is planned is refused
+   with the memory text, on every route of the plan: the pin and move lines,
+   the program's path and its load line, and the lines put into the plan. */
+static void case_allocation_failures(void)
+{
+ scan_allocation_failures("gdb console", "gdb", NULL, NULL);
+ scan_allocation_failures("gdb console with a program", "gdb", NULL, "t.e");
+ scan_allocation_failures("gdb MI with a program", "gdb", "mi", "t.e");
+ scan_allocation_failures("pdb", "pdb", NULL, "t.py");
+ scan_allocation_failures("jdb", "jdb", NULL, NULL);
+}
+
 /* S6b: a folder within a few bytes of the system's limit: the history file's
    path passes the limit by the separator and its name, and the rule still has
    its command, which gdb is left to judge. */
@@ -2840,6 +2930,7 @@ int main(void)
  case_pdb_deepest_folder();
  case_gdb_folder_at_the_limit();
  case_long_path_refusals();
+ case_allocation_failures();
  case_load_lines();
  case_load_pdbrc();
  case_load_pdbrc_longest_line();

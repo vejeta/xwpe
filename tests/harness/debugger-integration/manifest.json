@@ -520,6 +520,10 @@
   {"id": "SC-debug-126", "requirement": "One owner of the length of a command to a debugger", "layer": "x11", "test": "tests/x11/test_debugger_command_length.py::test_gdb_starts_in_a_folder_named_with_the_longest_name", "status": "new", "needs": ["Xvfb", "xdotool", "gcc", "gdb"]},
   {"id": "SC-debug-127", "requirement": "One owner of the length of a command to a debugger", "layer": "x11", "test": "tests/x11/test_debugger_command_length.py::test_pdb_starts_in_a_folder_named_in_cjk_letters", "status": "new", "needs": ["Xvfb", "xdotool", "python3"]},
   {"id": "SC-debug-128", "requirement": "One owner of the length of a command to a debugger", "layer": "c-unit", "test": "test_startplan", "status": "new"},
-  {"id": "SC-debug-129", "requirement": "One owner of the length of a command to a debugger", "layer": "ncurses", "test": "tests/test_debugger_command_length.py::test_pdb_go_to_cursor_in_a_script_under_a_very_deep_folder_stops_there", "status": "new", "needs": ["python3"]}
+  {"id": "SC-debug-129", "requirement": "One owner of the length of a command to a debugger", "layer": "ncurses", "test": "tests/test_debugger_command_length.py::test_pdb_go_to_cursor_in_a_script_under_a_very_deep_folder_stops_there", "status": "new", "needs": ["python3"]},
+  {"id": "SC-debug-130", "requirement": "One owner of the length of a command to a debugger", "layer": "ncurses", "test": "tests/test_debugger_command_length.py::test_a_source_with_a_long_name_builds_and_the_program_runs", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-debug-131", "requirement": "One owner of the length of a command to a debugger", "layer": "ncurses", "test": "tests/test_debugger_command_length.py::test_gdb_a_breakpoint_in_a_source_with_a_long_name_stops_there", "status": "new", "needs": ["gcc", "gdb"]},
+  {"id": "SC-debug-132", "requirement": "One owner of the length of a command to a debugger", "layer": "x11", "test": "tests/x11/test_debugger_command_length.py::test_a_source_with_a_long_name_builds", "status": "new", "needs": ["Xvfb", "xdotool", "gcc"]},
+  {"id": "SC-debug-133", "requirement": "One owner of the length of a command to a debugger", "layer": "c-unit", "test": "tests/check-debug-command.sh", "status": "new"}
  ]
 }
