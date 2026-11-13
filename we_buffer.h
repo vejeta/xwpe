@@ -124,7 +124,6 @@ typedef struct
 
 int    e_buffer_pos_fits(const BUFFER *b, const POINT *p);
 int    e_buffer_cursor_fits(const BUFFER *b);
-int    e_buffer_cursor_in_text(const BUFFER *b);
 int    e_buffer_first_misplaced(BUFFER *b);
 void   e_buffer_pos_set(BUFFER *b, POINT *p, int y, int x);
 void   e_buffer_pos_set_col(BUFFER *b, POINT *p, int y, int col);

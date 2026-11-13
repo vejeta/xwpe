@@ -416,6 +416,22 @@ Changes
   by the same rule.  On a terminal that is not UTF-8 (the C locale) text
   the terminal cannot show is one ? per glyph, never a blank.
 
+* The cursor always stands between characters.  Page Up, Page Down,
+  Ctrl-Y and Goto Line kept the byte index of the cursor, so on a row with
+  an é the cursor could land between its two bytes, and a letter typed or
+  Delete then left bytes that are no text.  They now keep the screen
+  column, as Up and Down do, and land on the character under it (on a row
+  with tabs the byte index was also another column).  Backspace at the
+  start of the row below a row that goes on without a line break takes the
+  whole last character of that row.  The block marks of the Shift keys
+  land on a character too, and when Delete or Backspace makes one
+  character out of stray bytes (a Latin-1 file) the cursor stands before
+  it.
+
+* A Shift selection that goes back past the place it started from
+  (Shift-End, then Shift-Home) selects the text between that place and the
+  cursor; it left an empty block and nothing was selected.
+
 * Backspace in a C file (auto-indent on) right after the first character
   that follows the indent deletes that character only; it re-indented the
   line and took the indent with it.  It re-indents only when the cursor

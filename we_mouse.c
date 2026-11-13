@@ -1005,8 +1005,7 @@ int e_edt_mouse(int c, FENSTER *f)
    /*changed the while()... to a do...while();  :Mark L*/
    do
    {
-    f->b->b.y = f->b->b.y > 0 ? f->b->b.y - 1 : 0;
-    f->b->b.x = e_chr_sp(f->b->clsv, f->b, f);
+    e_buffer_cursor_set_col(f->b, f->b->b.y - 1, f->b->clsv);
     e_cursor(f, 1);
     e_refresh();
    } while(e_mshit());
@@ -1016,9 +1015,7 @@ int e_edt_mouse(int c, FENSTER *f)
    /*changed the while()... to a do...while();  :Mark L*/
    do
    {
-    f->b->b.y = f->b->b.y < f->b->mxlines - 1 ?
-      f->b->b.y + 1 : f->b->mxlines - 1;
-    f->b->b.x = e_chr_sp(f->b->clsv, f->b, f);
+    e_buffer_cursor_set_col(f->b, f->b->b.y + 1, f->b->clsv);
     e_cursor(f, 1);
     e_refresh();
    } while(e_mshit());
@@ -1102,11 +1099,8 @@ int e_mouse_cursor(BUFFER *b, SCHIRM *s, FENSTER *f)
      (e_gt_flags(mx, e_mouse.y) & CELL_WIDE_SPACER) && mx > 0)
   mx--;
 
- b->b.x = mx-f->a.x+s->c.x-1;
- b->b.y = e_mouse.y-f->a.y+s->c.y-1;
- if (b->b.y < 0) b->b.y = 0;
- else if (b->b.y >= b->mxlines) b->b.y = b->mxlines - 1;
- return(b->b.x = e_chr_sp(b->b.x, b, f));
+ e_buffer_cursor_set_col(b, e_mouse.y-f->a.y+s->c.y-1, mx-f->a.x+s->c.x-1);
+ return(b->b.x);
 }
 
 /*  Copy, Cut and Paste functions    */

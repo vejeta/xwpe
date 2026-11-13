@@ -570,7 +570,8 @@ def resync(st, w, vertical=False, clip=None, rebase_steps=False):
     """Take the editor's word for the fields the model got wrong, keeping
     line identities where the rows still match (common head and tail) and
     the undo steps the model holds (they were agreed when pushed).  Unless
-    the key was Up or Down (@vertical), the column those keys keep is the
+    the key only changed the row (@vertical: Up, Down, Page Up, Page Down,
+    VERTICAL_MOVES), the column those keys keep is the
     editor's cursor column, as the key loop sets it after every other key.
     When the text or the steps disagreed (@rebase_steps) the steps the model
     holds were recorded from its own wrong prediction, so every step becomes
@@ -700,12 +701,32 @@ class Rows:
         self.st.mb, self.st.me = tuple(m[0]), tuple(m[1])
 
     def clamp_point(self, p):
+        """buffer_point_settle: a set position goes into the text and back
+        onto the start of the glyph it falls in."""
         if p[1] < 0:
             return
         if p[0] >= self.nlines:
             p[0] = self.nlines - 1
         if p[1] > self.str_len(p[0]):
             p[1] = self.str_len(p[0])
+        p[1] = utf8_glyph_floor(self.content(p[0]), p[1])
+
+    def snap_row(self, y):
+        """e_buffer_row_positions_snap: the cursor and the block marks that
+        stand on row @y go back onto a glyph of the row as it is now."""
+        if not 0 <= y < self.nlines:
+            return
+        data = self.content(y)
+        m = self.marks()
+        for p in m:
+            if p[0] == y and p[1] >= 0:
+                p[1] = utf8_glyph_floor(data, p[1])
+        self.set_marks(m)
+        if self.st.y == y:
+            self.st.x = utf8_glyph_floor(data, self.st.x)
+        for n, (py, px) in enumerate(self.st.pt):
+            if py == y and px >= 0:
+                self.st.pt[n] = (py, utf8_glyph_floor(data, px))
 
     def clamp_all(self):
         m = self.marks()
@@ -735,6 +756,8 @@ class Rows:
             p[0] += n_ins - n_del
         self.set_marks(m)
         self.clamp_all()
+        for k in range(changed):        # buffer_marks_move: the rows rewritten in place
+            self.snap_row(y + k)
 
     def insert_blank(self, y):
         """e_buffer_insert_blank: an empty row at y."""
@@ -825,7 +848,7 @@ class Rows:
         while y < self.nlines - 1 and off > self.str_len(y) and not self.hard(y):
             off -= self.str_len(y)
             y += 1
-        return [y, min(off, self.str_len(y))]
+        return [y, utf8_glyph_floor(self.content(y), min(off, self.str_len(y)))]
 
     def _ins_long(self, s, xa, ya):
         """e_ins_long_run: a run longer than a row; the row is built again
@@ -866,6 +889,7 @@ class Rows:
         buf[xa:xa + n] = s
         self.st.x = xa + n
         self.st.y = ya
+        self.snap_row(ya)
 
     def _wrap_point(self, xa, ya, n):
         """e_ins_wrap_point: after the last blank or dash that leaves room for
@@ -909,6 +933,8 @@ class Rows:
         self.set_marks(m)
         buf = self.bufs[ya]
         buf[c:] = bytes(len(buf) - c)
+        self.snap_row(ya)
+        self.snap_row(ya + 1)
 
     def _wrap_tail_down(self, ya, c):
         """e_ins_wrap_tail_down: the bytes behind @c to a new row below, which
@@ -937,6 +963,8 @@ class Rows:
                 p[1] = p[1] - n if p[1] - n > x else x
         self.set_marks(m)
         self.st.fired.append("primitive_marks")
+        if ln > n:
+            self.snap_row(y)
         if ln <= n:
             self.delete_line(y)
         elif y < self.nlines - 1 and buf[ln - n - 1] != WR:
@@ -963,11 +991,15 @@ class Rows:
                         p[1] += ln - n
                 self.set_marks(m)
                 self.del_nchar(0, y + 1, i)
+        self.snap_row(y)
         return x + n
 
     def _char_bytes_at(self, x, y):
         """e_char_bytes_at: the bytes of the glyph at (y, x)."""
-        return utf8_seq_len(self.content(y), x)
+        data = self.content(y)
+        if x >= len(data):
+            return 1                  # the line break, or nothing
+        return utf8_seq_len(data, x)
 
     def put_char(self, c):
         """e_put_char: overwrite the character at the cursor, whole (insert
@@ -1046,6 +1078,20 @@ def utf8_glyph_start(data, x):
     while pos < x and pos < len(data):
         pos += utf8_seq_len(data, pos)
     return pos == x or x >= len(data)
+
+
+def utf8_glyph_floor(data, x):
+    """Where column @x of the row bytes @data goes when it falls between the
+    bytes of one glyph: back to the start of that glyph, never forward
+    (e_buffer_pos_set).  A column at or past the row's end stays at the end."""
+    x = max(0, min(x, len(data)))
+    pos = 0
+    while pos < len(data):
+        nxt = pos + utf8_seq_len(data, pos)
+        if nxt > x:
+            return pos
+        pos = nxt
+    return x
 
 
 def utf8_char_before(data, x):
@@ -1174,7 +1220,24 @@ def apply(state, action):
     elif name in blocks.BLOCK_ACTIONS:
         blocks.apply_action(st, action)
     _after_key(st, name, pre)
+    if name not in blocks.BLOCK_ACTIONS:
+        _assert_positions_on_glyphs(st, name)
     return st
+
+
+def _assert_positions_on_glyphs(st, name):
+    """The model's own fitness: after an action the cursor, the block's marks
+    and the anchor stand on a glyph of their rows.  The model raising on its
+    own state is a model bug, found before the editor is blamed.  The block
+    commands have their own pass, so their actions are not checked here."""
+    for what, p in (("cursor", (st.y, st.x)), ("mark begin", st.mb),
+                    ("mark end", st.me), ("anchor", st.ks)):
+        y, x = p
+        if y < 0 or y >= len(st.rows):
+            continue
+        if not utf8_glyph_start(st.rows[y].data, x):
+            raise AssertionError("model: %s (%d, %d) inside a character after %s"
+                                 % (what, y, x, name))
 
 
 def _mark_inside(rows, p):
@@ -1191,7 +1254,12 @@ def _mark_inside(rows, p):
         if rows[y].end == HARD and y < len(rows) - 1:
             return (y + 1, 0)
         return (y, len(rows[y].data))
-    return (y, max(x, 0))
+    return (y, utf8_glyph_floor(rows[y].data, max(x, 0)))
+
+
+# The keys that only change the row and keep the column the user chose
+# (e_key_is_vertical_move): the column memory is not rewritten after them.
+VERTICAL_MOVES = ("up", "down", "page_up", "page_down")
 
 
 def _after_key(st, name, pre):
@@ -1209,7 +1277,7 @@ def _after_key(st, name, pre):
         if st.x < 0:
             st.x = 0
     base = name[len("shift_"):] if name.startswith("shift_") else name
-    if base not in ("up", "down") and 0 <= st.y < len(st.rows):
+    if base not in VERTICAL_MOVES and 0 <= st.y < len(st.rows):
         st.clsv = visual_col(st.rows[st.y].data, st.x, st.options.tabn)
     if st.save_known and st.save > st.options.maxchg:
         st.fired.append("autosave_threshold")
@@ -1255,6 +1323,12 @@ def _move(st, name):
     elif base == "down":
         if y < last:
             y += 1
+        x = byte_at_col(rows[y].data, st.clsv, tabn)
+    elif base == "page_down":
+        y = min(y + height - 2, last)
+        x = byte_at_col(rows[y].data, st.clsv, tabn)
+    elif base == "page_up":
+        y = max(y - ey + ay + 2, 0)
         x = byte_at_col(rows[y].data, st.clsv, tabn)
     elif base == "left":
         if 0 < x <= len(data):
@@ -1303,16 +1377,6 @@ def _move(st, name):
     elif base == "file_end":
         y = last
         x = len(rows[last].data)
-    elif base == "page_down":
-        y = y + height - 2
-        if y > last:
-            y = last
-        x = min(x, len(rows[y].data))     # e_cursor runs inside the key
-    elif base == "page_up":
-        y = y - ey + ay + 2
-        if y < 0:
-            y = 0
-        x = min(x, len(rows[y].data))
     elif base == "window_top":
         x = 0
         y = cy
@@ -1324,6 +1388,8 @@ def _move(st, name):
             y = last
         if 0 <= y < len(rows):
             x = len(rows[y].data)
+    if 0 <= y < len(rows):
+        x = utf8_glyph_floor(rows[y].data, x)     # e_buffer_cursor_set
     st.y, st.x = y, x
     if shift:
         _shift_marks(st)
@@ -1337,13 +1403,13 @@ def _shift_marks(st):
     cur = (st.y, st.x)
     has_block = st.mb != st.me
     if ks == st.mb and has_block:
-        st.mb = cur
+        fixed = st.me
     elif ks == st.me and has_block:
-        st.me = cur
-    elif ks < cur:
-        st.mb, st.me = ks, cur
+        fixed = st.mb
     else:
-        st.mb, st.me = cur, ks
+        fixed = ks
+    # e_buffer_block_set: the two ends, the earlier one first
+    st.mb, st.me = min(fixed, cur), max(fixed, cur)
 
 
 # -- edits
@@ -1523,6 +1589,15 @@ def _back_over_char(data, x):
     return utf8_char_before(data, x)
 
 
+def _cursor_to_row_end_or_last_glyph(st, rows):
+    """Backspace joining onto row st.y: the cursor stands at its end, and on
+    its last glyph, whole, when the row goes on without a line break."""
+    data = rows.content(st.y)
+    st.x = len(data)
+    if not rows.hard(st.y) and st.x > 0:
+        st.x = utf8_char_before(data, st.x)
+
+
 def _backspace(st, rows):
     """Backspace; returns True when a whole line went (a line record)."""
     st.fired.append("backspace_char")
@@ -1534,9 +1609,7 @@ def _backspace(st, rows):
         st.fired.extend(["backspace_joins", "backspace_cursor_rows"])
         rows.delete_line(y)
         st.y = y - 1
-        st.x = rows.str_len(st.y)
-        if not rows.hard(st.y):
-            st.x -= 1
+        _cursor_to_row_end_or_last_glyph(st, rows)
         return True
     autoindent = (st.flg & FLG_AUTOINDENT) != 0
     if x > 0:
@@ -1549,10 +1622,8 @@ def _backspace(st, rows):
         return False
     st.fired.extend(["backspace_joins", "backspace_cursor_rows"])
     st.y = y - 1
-    st.x = rows.str_len(st.y)
-    if not rows.hard(st.y):
-        st.x -= 1
-    rows.del_nchar(st.x, st.y, 1)
+    _cursor_to_row_end_or_last_glyph(st, rows)
+    rows.del_nchar(st.x, st.y, rows._char_bytes_at(st.x, st.y))
     return False
 
 
@@ -1642,6 +1713,8 @@ def _delete_line(st, rows):
     rows.delete_line(st.y)
     if st.y > rows.nlines - 1:
         st.y -= 1
+    # the key's landing: the row that came up, on the column the user chose
+    st.x = byte_at_col(rows.content(st.y), st.clsv, st.options.tabn)
 
 
 # -- undo
@@ -1668,6 +1741,8 @@ def _push_step(st, before, action, line_record):
 def _restore(st, snap):
     st.rows = [Row(r.data, r.end, r.ident) for r in snap.rows]
     st.y, st.x = snap.cursor
+    if 0 <= st.y < len(st.rows):
+        st.x = utf8_glyph_floor(st.rows[st.y].data, st.x)   # e_buffer_cursor_set
 
 
 def _text_offsets(rows):

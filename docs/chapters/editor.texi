@@ -63,7 +63,10 @@ undo step: the next @kbd{Ctrl-U} takes back what you did before it.
 
 @key{Left}, @key{Right}, @key{Backspace} and @key{Delete} take one
 character as the screen shows it, in a window and in a dialog field: a
-whole UTF-8 character, or one byte that starts no character.
+whole UTF-8 character, or one byte that starts no character.  The cursor
+always stands between characters: @key{Page Up}, @key{Page Down},
+@kbd{Ctrl-Y} and Goto Line keep the screen column, as @key{Up} and
+@key{Down} do, and land on the character that stands under it.
 
 @kbd{Ctrl-U} undoes and @kbd{Ctrl-R} redoes one action at a time: an
 @key{Return} or a @key{Tab} with the indent it brought, a @key{Backspace}

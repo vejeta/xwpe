@@ -442,6 +442,41 @@
    "layer": "ncurses",
    "test": "tests/test_edit_model_channel.py::test_the_self_checks_refuse_a_dump_that_breaks_them",
    "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "Backspace at the start of the row below a row without a line break takes that row's last character whole",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_utf8_positions.py::test_backspace_below_a_soft_row_takes_its_last_character_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "Goto Line keeps the screen column and lands on a character",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_utf8_positions.py::test_goto_line_keeps_the_screen_column_and_lands_on_a_character",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "Ctrl-Y keeps the screen column over a tab, and lands on the character under it",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_utf8_positions.py::test_ctrl_y_keeps_the_screen_column_over_a_tab",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "Ctrl-Y lands on a character of the row that comes up",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_utf8_positions.py::test_ctrl_y_lands_on_the_character_under_the_column",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "A deletion that fuses stray bytes into one character leaves the cursor before it",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_utf8_positions.py::test_delete_that_fuses_stray_bytes_leaves_the_cursor_before_the_character",
+   "status": "new"
   }
  ]
 }

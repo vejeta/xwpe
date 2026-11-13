@@ -965,6 +965,9 @@ def _marker(st, name, n):
     else:
         # an unset marker is (-1, -1); the cursor is put back inside the text
         st.y, st.x = max(st.pt[n][0], 0), max(st.pt[n][1], 0)
+        if st.y < len(st.rows):
+            # on the glyph that stands there now (the next paint puts it so)
+            st.x = model.utf8_glyph_floor(st.rows[st.y].data, st.x)
 
 
 def apply_action(st, action):

@@ -531,24 +531,6 @@ int e_buffer_cursor_fits(const BUFFER *b)
 }
 
 /**
- * e_buffer_cursor_in_text - Is the cursor of @b on a row of its text and at
- * a column from 0 to the row's end, whether or not that column is between
- * the bytes of a character?
- *
- * The weaker question of the painter's defence: a cursor off the text is
- * brought in, as it always was; one inside a character is traced only, until
- * every writer is the owner.
- * Return: 1 or 0.
- */
-int e_buffer_cursor_in_text(const BUFFER *b)
-{
- if (b->mxlines == 0)
-  return(b->b.y == 0 && b->b.x == 0);
- return(b->b.y >= 0 && b->b.y < b->mxlines && b->b.x >= 0 &&
-        b->b.x <= b->bf[b->b.y].len);
-}
-
-/**
  * e_buffer_pos_set - The one write of a position: put @p at row @y, column
  * @x, brought to the nearest place of the text.
  * @b: the buffer; @p: the position to write; @y, @x: where it was asked to go.
@@ -737,28 +719,16 @@ static POINT *buffer_mark_at(BUFFER *b, int which)
  return(NULL);
 }
 
-/* A position that may stand outside the text, brought inside it: its row
-   into the text, its column from 0 to its row's end.  An unset mark (a
-   negative row) stays unset.  This is the clamp the splice, the replays and
-   the marks have always had, and it does not put the position on a glyph:
-   the pass that makes every writer the owner calls e_buffer_pos_set from
-   these places instead. */
-static void buffer_point_bound(BUFFER *b, POINT *p)
+/* A position that may stand outside the text, brought inside it and onto a
+   glyph: its row into the text, its column from 0 to its row's end, back to
+   the start of the character it falls in.  An unset mark (a negative row)
+   stays unset.  What the splice, the replays and the shell's return do to
+   every position they carry over text that may have changed. */
+static void buffer_point_settle(BUFFER *b, POINT *p)
 {
  if (p->y < 0)
   return;
- if (b->mxlines == 0)
- {
-  p->y = 0;
-  p->x = 0;
-  return;
- }
- if (p->y >= b->mxlines)
-  p->y = b->mxlines - 1;
- if (p->x > b->bf[p->y].len)
-  p->x = b->bf[p->y].len;
- if (p->x < 0)
-  p->x = 0;
+ e_buffer_pos_set(b, p, p->y, p->x);
 }
 
 /* A mark past the end of row @p->y: just after a line break is the start
@@ -778,14 +748,14 @@ static void buffer_mark_past_row_end(BUFFER *b, POINT *p)
 /* Pull one mark that is set back inside the text: a row past the end goes
    to the end of the last row, a column past its row as above.  A mark is
    never past its row's end, so the block commands read every block the
-   same way.  It does not put the mark on a glyph (see buffer_point_bound). */
+   same way.  It ends on a glyph, as every mark the owner writes does. */
 static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
 {
  if (p->y < 0)
   return;
  if (b->mxlines == 0)
  {
-  buffer_point_bound(b, p);
+  buffer_point_settle(b, p);
   return;
  }
  if (p->y >= b->mxlines)
@@ -797,15 +767,7 @@ static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
   buffer_mark_past_row_end(b, p);
  if (p->x < 0)
   p->x = 0;
-}
-
-/* A mark that is set, pulled inside the text as above and then onto a
-   glyph: what a mark written through the owner's calls stands on. */
-static void buffer_mark_settle(BUFFER *b, POINT *p)
-{
- buffer_mark_pull_inside(b, p);
- if (p->y >= 0)
-  e_buffer_pos_set(b, p, p->y, p->x);
+ buffer_point_settle(b, p);
 }
 
 /**
@@ -829,7 +791,7 @@ void e_buffer_mark_set(BUFFER *b, int which, int y, int x)
   p->x = BUFFER_POS_UNSET;
   return;
  }
- buffer_mark_settle(b, p);
+ buffer_mark_pull_inside(b, p);
 }
 
 /**
@@ -992,21 +954,31 @@ void e_buffer_view_keep(BUFFER *b, WpeReplayView *v)
   v->mark_end = *me;
 }
 
+/* The positions that move with the text of their row, and are set again
+   when it changes: the block's marks and the anchor.  The find mark is not
+   one of them: Replace reads the hit it found at the place the search left
+   it while the replacement goes in, and puts it right itself
+   (e_buffer_find_set). */
+static const int BUFFER_FOLLOW_MARKS[] = { E_BUFFER_MARK_BEGIN, E_BUFFER_MARK_END,
+                                           E_BUFFER_MARK_ANCHOR };
+#define BUFFER_FOLLOW_COUNT (sizeof BUFFER_FOLLOW_MARKS / sizeof BUFFER_FOLLOW_MARKS[0])
+
 /* Every position of the window that stands on row @y, set again through the
-   one write: the cursor, the block, the find mark, the anchor, the markers. */
+   one write: the cursor, the block, the anchor, the markers. */
 static void buffer_row_points_set(BUFFER *b, int y)
 {
  POINT *p;
  SCHIRM *s;
- int which, n;
+ size_t i;
+ int n;
 
  if (b->b.y == y)
   e_buffer_pos_set(b, &b->b, b->b.y, b->b.x);
  if (b->f == NULL || (s = b->f->s) == NULL)
   return;
- for (which = E_BUFFER_MARK_BEGIN; which <= E_BUFFER_MARK_ANCHOR; which++)
+ for (i = 0; i < BUFFER_FOLLOW_COUNT; i++)
  {
-  p = buffer_mark_at(b, which);
+  p = buffer_mark_at(b, BUFFER_FOLLOW_MARKS[i]);
   if (p != NULL && p->y == y)
    e_buffer_pos_set(b, p, p->y, p->x);
  }
@@ -1070,13 +1042,15 @@ void e_buffer_row_positions_snap(BUFFER *b, int y)
  buffer_row_points_set(b, y);
 }
 
-/* The block's marks, the find mark and the anchor of the window of @b. */
+/* The positions that move with the text of their row, of the window of @b
+   (BUFFER_FOLLOW_MARKS). */
 static int buffer_follow_points(BUFFER *b, POINT **p)
 {
- int which, n = 0;
+ size_t i;
+ int n = 0;
 
- for (which = E_BUFFER_MARK_BEGIN; which <= E_BUFFER_MARK_ANCHOR; which++)
-  if ((p[n] = buffer_mark_at(b, which)) != NULL)
+ for (i = 0; i < BUFFER_FOLLOW_COUNT; i++)
+  if ((p[n] = buffer_mark_at(b, BUFFER_FOLLOW_MARKS[i])) != NULL)
    n++;
  return(n);
 }
@@ -1168,9 +1142,11 @@ static void buffer_marks_move(BUFFER *b, int y, int n_del, int n_ins, int change
   if (m[i]->y < 0)
    continue;
   buffer_mark_move(b, m[i], y, n_del, n_ins, changed);
-  buffer_point_bound(b, m[i]);
+  buffer_point_settle(b, m[i]);
  }
- buffer_point_bound(b, &b->b);
+ buffer_point_settle(b, &b->b);
+ for (i = 0; i < changed && y + i < b->mxlines; i++)
+  buffer_row_points_set(b, y + i);
 }
 
 /**
@@ -3476,14 +3452,13 @@ int e_buffer_txn_rewrite(WpeBufferTxn *t, BUFFER *b, int y, int n_del, BUFFER *s
    saw them, inside the text. */
 static void buffer_replay_view_back(BUFFER *b, Undo *rec)
 {
- b->b = rec->b;
- buffer_point_bound(b, &b->b);
+ e_buffer_cursor_set(b, rec->b.y, rec->b.x);
  if (b->f != NULL && b->f->s != NULL)
  {
   b->f->s->mark_begin = rec->a;
   b->f->s->mark_end = rec->e;
-  buffer_point_bound(b, &b->f->s->mark_begin);
-  buffer_point_bound(b, &b->f->s->mark_end);
+  buffer_point_settle(b, &b->f->s->mark_begin);
+  buffer_point_settle(b, &b->f->s->mark_end);
  }
 }
 
@@ -3494,6 +3469,9 @@ static void buffer_txn_commit_replay(WpeBufferTxnSplice *sp)
  BUFFER *b = sp->b;
  Undo *rec = sp->rec;
 
+ /* The record's cursor is only where the splice's mark move starts from: the
+    rows it names are not the rows of the old text until the commit below
+    has run, so it is set on a glyph by buffer_replay_view_back after it. */
  b->b = rec->b;
  buffer_splice_commit(b, sp->y, sp->n_del, sp->lines, sp->n_ins, sp->brk, sp->nbrk,
                       E_BUFFER_STEP_REPLAY, sp->no_changed, NULL, NULL, NULL, sp->pocket,
@@ -3529,7 +3507,7 @@ static void buffer_record_mark_from_shell(POINT *p, int off)
    its Ctrl-U puts the old rows back where the user's text has them. */
 static void buffer_record_from_shell(Undo *rec, int off)
 {
- rec->b.y += off;
+ e_buffer_record_at(rec, rec->b.y + off, rec->b.x);
  if (rec->type != E_UNDO_LINES)
   return;
  rec->span += off;
@@ -3579,9 +3557,7 @@ static void buffer_shell_marks_back(BUFFER *shell, BUFFER *b, int off)
   out[i]->y = in[i]->y + off;
   buffer_mark_pull_inside(b, out[i]);
  }
- b->b.x = shell->b.x;
- b->b.y = shell->b.y + off;
- buffer_point_bound(b, &b->b);
+ e_buffer_cursor_set(b, shell->b.y + off, shell->b.x);
 }
 
 /* Commit a rewrite item: the shell's span lines are the buffer's with the
@@ -4862,6 +4838,10 @@ static void buffer_shell_seed(BUFFER *shell, const BufferRunView *v, const POINT
  POINT *m[BUFFER_MARKS_MAX];
  int i, k = buffer_marks(shell, m);
 
+ /* These are places of the user's text carried onto the shell's rows by
+    the span's offset: the pieces compare them with the span (a place outside
+    it stays outside, which a clamp here would change), and the commit puts
+    them back on the user's rows through the owner (buffer_shell_marks_back). */
  shell->b.x = cursor->x;
  shell->b.y = cursor->y - top;
  for (i = 0; i < k && i < v->n; i++)
@@ -5693,10 +5673,10 @@ static int buffer_replay_block(BUFFER *b, SCHIRM *s, Undo *rec)
  POINT cursor = b->b;
  int r;
 
- b->b = rec->b;
+ e_buffer_cursor_set(b, rec->b.y, rec->b.x);
  r = wpe_buffer_replay_kind(b, s, rec);
  if (r != E_BUFFER_OK)
-  b->b = cursor;
+  e_buffer_cursor_set(b, cursor.y, cursor.x);
  return(r);
 }
 

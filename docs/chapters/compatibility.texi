@@ -360,6 +360,36 @@ typed over an @samp{é} or a @samp{€} it left the rest of that character
 behind as bytes that are no text.  It now replaces the whole character
 under the cursor, and @kbd{Ctrl-U} gives that character back whole.
 
+@item The cursor between the bytes of a character
+@cindex cursor, between the bytes of a character
+@cindex Page Up, Page Down, Goto Line, Ctrl-Y, screen column
+The original kept the byte index of the cursor when a key changed the
+row.  After @key{Page Up}, @key{Page Down}, Goto Line or @kbd{Ctrl-Y} the
+cursor could stand between the two bytes of an @samp{é}, and a letter
+typed or @key{Delete} then split it and left bytes that are no text.  On a
+row with tabs the same byte index was also another screen column.  Now
+every key, the mouse, Undo and the markers put the cursor and the block
+marks on a character, never between its bytes, and @key{Page Up},
+@key{Page Down}, @kbd{Ctrl-Y} and Goto Line keep the screen column, as
+@key{Up} and @key{Down} always did.  @key{Backspace} at the start of the
+row below a row that goes on without a line break takes the whole last
+character of that row, not its last byte.  When @key{Delete},
+@key{Backspace} or a join makes one character out of stray bytes (a
+Latin-1 file), the cursor stands before that character.  The reason: a
+character of several bytes is one place, and a position that is not a
+place is how a file stops being text.  Latin-1 bytes that happen to form a
+UTF-8 character (@samp{Ã} followed by a no-break space) are one character
+to the cursor, as they are to the screen.
+
+@item A Shift selection that goes back past its start
+@cindex Shift selection, back past its start
+The original moved only the end of the block the cursor stood on, so a
+Shift key that took the cursor back past the place the selection started
+from (@kbd{Shift-End}, then @kbd{Shift-Home}) left an empty block, and
+nothing was selected.  The block now runs from that place to the cursor,
+on whichever side of it the cursor is.  The reason: a selection is the
+text between where it started and the cursor.
+
 @item Text that is not UTF-8
 @cindex Latin-1 text
 @cindex UTF-8, bytes that are no character

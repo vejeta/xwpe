@@ -2419,9 +2419,9 @@ int e_goto_line(FENSTER *f)
  f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
  if ((num = e_num_kst("Goto Line Number", b->b.y+1, b->mxlines, f, 0, AltG)) > 0)
-  b->b.y = num - 1;
+  e_buffer_cursor_set_col(b, num - 1, b->clsv);
  else if (num == 0)
-  b->b.y = num;
+  e_buffer_cursor_set_col(b, 0, b->clsv);
  e_cursor(f, 1);
  return(0);
 }

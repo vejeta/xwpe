@@ -393,7 +393,7 @@ class Walk:
             base = action.name.replace("shift_", "")
             rebase = (model.F_TEXT in pred.resync_fields or model.F_TEXT in here
                       or model.F_STEPS in here)
-            model.resync(pred, d.win, vertical=base in ("up", "down"),
+            model.resync(pred, d.win, vertical=base in model.VERTICAL_MOVES,
                          clip=d.windows.get(0), rebase_steps=rebase)
         self.state = pred
         return True

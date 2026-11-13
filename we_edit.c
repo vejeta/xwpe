@@ -805,6 +805,76 @@ static int e_window_full(FENSTER *f, int n)
 #endif
 }
 
+/**
+ * e_key_is_vertical_move - Does key @c only change the row, keeping the
+ * column the user last chose?
+ *
+ * Up, Down, Page Up and Page Down (with or without Shift) land on the
+ * remembered screen column, so a trip through a short row and back ends
+ * where it started.  Every other key makes the column it lands on the one
+ * to remember.
+ */
+static int e_key_is_vertical_move(int c)
+{
+ int key = c & 511;
+
+ return(key == CUP || key == CDO || key == BUP || key == BDO);
+}
+
+/**
+ * e_backspace_empty_row - Backspace on an empty row: the row goes and the
+ * cursor stands at the end of the row above, on the last character of it
+ * when that row goes on without a line break.
+ */
+static void e_backspace_empty_row(BUFFER *b, SCHIRM *s)
+{
+ /* The deletion already moved the cursor off a deleted last row, so the
+    row above is named, not stepped to. */
+ int row_above = b->b.y - 1;
+
+ e_del_line(b->b.y, b, s);
+ if (row_above < 0)
+  row_above = 0;
+ e_buffer_cursor_set(b, row_above, b->bf[row_above].len);
+ if (b->bf[row_above].s[b->bf[row_above].len] == '\0')
+  e_buffer_cursor_step(b, -1);
+}
+
+/**
+ * e_backspace_in_row - Backspace inside a row: the whole character before
+ * the cursor goes, however many bytes it has.
+ */
+static void e_backspace_in_row(FENSTER *f, BUFFER *b, SCHIRM *s)
+{
+ POINT at_key = b->b;
+ int old_x = b->b.x;
+
+ e_buffer_cursor_step(b, -1);
+ if (e_window_auto_indents(f))
+  e_backspace_a_ind(b, s, at_key);
+ else
+  e_del_nchar(b, s, b->b.x, b->b.y, old_x - b->b.x);
+}
+
+/**
+ * e_backspace_at_row_start - Backspace at the start of a row: the line
+ * break before it goes and the rows join; below a row that goes on without
+ * a break, the last character of that row goes, whole.
+ */
+static void e_backspace_at_row_start(FENSTER *f, BUFFER *b, SCHIRM *s)
+{
+ POINT at_key = b->b;
+ int row = b->b.y - 1;
+
+ e_buffer_cursor_set(b, row, b->bf[row].len);
+ if (b->bf[row].s[b->bf[row].len] == '\0')
+  e_buffer_cursor_step(b, -1);
+ if (e_window_auto_indents(f))
+  e_backspace_a_ind(b, s, at_key);
+ else
+  e_del_nchar(b, s, b->b.x, b->b.y, e_char_bytes_at(b, b->b.x, b->b.y));
+}
+
 /*   keyboard output routine */
 int e_eingabe(ECNT *e)
 {
@@ -945,36 +1015,11 @@ int e_eingabe(ECNT *e)
    if (b->b.y > 0 || b->b.x > 0)
    {
     if (b->bf[b->b.y].len == 0)
-    {
-     /* The deletion already moved the cursor off a deleted last row, so
-        the row above is named, not stepped to. */
-     int row_above = b->b.y - 1;
-     e_del_line(b->b.y, b, s);
-     if (row_above < 0) row_above = 0;
-     b->b.y = row_above;
-     b->b.x = b->bf[b->b.y].len;
-     if (*(b->bf[b->b.y].s+b->b.x) == '\0') b->b.x--;
-    }
+     e_backspace_empty_row(b, s);
+    else if (b->b.x > 0)
+     e_backspace_in_row(f, b, s);
     else
-    {
-     POINT at_key = b->b;
-
-     if (b->b.x > 0)
-     {
-      int old_x = b->b.x;
-      b->b.x = e_char_start_before(b, old_x, b->b.y);
-      if (e_window_auto_indents(f)) e_backspace_a_ind(b, s, at_key);
-      else e_del_nchar(b, s, b->b.x, b->b.y, old_x - b->b.x);
-     }
-     else
-     {
-      b->b.y--;
-      b->b.x = b->bf[b->b.y].len;
-      if (*(b->bf[b->b.y].s+b->b.x) == '\0') b->b.x--;
-      if (e_window_auto_indents(f)) e_backspace_a_ind(b, s, at_key);
-      else e_del_nchar(b, s, b->b.x, b->b.y, 1);
-     }
-    }
+     e_backspace_at_row_start(f, b, s);
     e_schirm(f, 1);
    }
   }
@@ -1045,9 +1090,9 @@ weiter:
   {
    b = f->b;
    s = f->s;
-   s->ks.x = b->b.x;  s->ks.y = b->b.y;
+   e_buffer_mark_copy(b, E_BUFFER_MARK_ANCHOR, &b->b);
    e_cursor(f, 1);
-   if ((c & 511) != CUP && (c & 511) != CDO) b->clsv = b->cl;
+   if (!e_key_is_vertical_move(c)) b->clsv = b->cl;
    e_zlsplt(f);
   }
  }
@@ -1114,6 +1159,134 @@ static void e_delete_to_end_of_row(BUFFER *b, SCHIRM *s)
  e_del_nchar(b, s, b->b.x, b->b.y, n);
 }
 
+/**
+ * e_cursor_up - Up: one row up, on the column the user last chose; on the
+ * first row the cursor stays on that row and lands on the column.
+ */
+static void e_cursor_up(BUFFER *b)
+{
+ int y = b->b.y;
+
+ if (y > 0)
+  y--;
+ e_buffer_cursor_set_col(b, y, b->clsv);
+}
+
+/**
+ * e_cursor_down - Down: one row down, on the column the user last chose.
+ */
+static void e_cursor_down(BUFFER *b)
+{
+ int y = b->b.y;
+
+ if (y < b->mxlines - 1)
+  y++;
+ e_buffer_cursor_set_col(b, y, b->clsv);
+}
+
+/**
+ * e_cursor_left - Left: one character left; at the start of a row, the end
+ * of the row above.
+ */
+static void e_cursor_left(BUFFER *b)
+{
+ int y = b->b.y;
+
+ if (b->b.x > 0)
+  e_buffer_cursor_step(b, -1);
+ else if (y > 0)
+  e_buffer_cursor_set(b, y - 1, b->bf[y - 1].len);
+}
+
+/**
+ * e_cursor_right - Right: one character right; at the end of a row, the
+ * start of the row below.
+ */
+static void e_cursor_right(BUFFER *b)
+{
+ int y = b->b.y;
+
+ if (b->b.x < b->bf[y].len)
+  e_buffer_cursor_step(b, 1);
+ else if (y < b->mxlines - 1)
+  e_buffer_cursor_set(b, y + 1, 0);
+}
+
+/**
+ * e_cursor_word_left - Ctrl-Left: to the start of the word before the
+ * cursor; at the start of a row, the end of the row above.
+ */
+static void e_cursor_word_left(BUFFER *b)
+{
+ int y = b->b.y;
+
+ if (b->b.x <= 0 && y > 0)
+  e_buffer_cursor_set(b, y - 1, b->bf[y - 1].len);
+ else if (b->b.x > 0)
+  e_buffer_cursor_set(b, y, e_su_rblk(b->b.x - 1, (char *)b->bf[y].s));
+}
+
+/**
+ * e_cursor_word_right - Ctrl-Right: to the start of the next word; at the
+ * end of a row, the start of the row below.
+ */
+static void e_cursor_word_right(BUFFER *b)
+{
+ int y = b->b.y;
+
+ if (b->b.x >= b->bf[y].len && y < b->mxlines - 1)
+  e_buffer_cursor_set(b, y + 1, 0);
+ else if (b->b.x < b->bf[y].len)
+  e_buffer_cursor_set(b, y, e_su_lblk(b->b.x, (char *)b->bf[y].s));
+}
+
+/**
+ * e_cursor_screen_bottom_end - Ctrl-End: the end of the last row the window
+ * shows, or of the last row of the text when it is all on the screen.
+ */
+static void e_cursor_screen_bottom_end(FENSTER *f)
+{
+ BUFFER *b = f->b;
+ int y = b->mxlines - 1;
+
+ if (LINE_NUM_ON_SCREEN_BOTTOM < b->mxlines)
+  y = LINE_NUM_ON_SCREEN_BOTTOM - 1;
+ e_buffer_cursor_set(b, y, b->bf[y].len);
+}
+
+/**
+ * e_delete_line_key - Ctrl-Y: the row goes and the cursor stands on the
+ * column the user last chose, on the row that came up under it (the new
+ * last row, when the last one went).
+ */
+static void e_delete_line_key(BUFFER *b, SCHIRM *s)
+{
+ e_del_line(b->b.y, b, s);
+ e_buffer_cursor_set_col(b, b->b.y, b->clsv);
+}
+
+/**
+ * e_shift_extend_block - After a Shift key moved the cursor, the block runs
+ * from the end that stays to the cursor.
+ *
+ * The end that stays is the one the user did not move: the block's other end
+ * when the key started from one end of a block, the anchor (where the cursor
+ * was when the key came) otherwise.  Both ends land on characters, whole.
+ */
+static void e_shift_extend_block(BUFFER *b, SCHIRM *s)
+{
+ POINT fixed;
+ int block_is_set = (s->mark_begin.y != s->mark_end.y || s->mark_begin.x != s->mark_end.x);
+
+ if (s->ks.y == s->mark_begin.y && s->ks.x == s->mark_begin.x && block_is_set)
+  fixed = s->mark_end;
+ else if (s->ks.y == s->mark_end.y && s->ks.x == s->mark_end.x && block_is_set)
+  fixed = s->mark_begin;
+ else
+  fixed = s->ks;
+ e_buffer_block_set(b, &fixed, &b->b);
+}
+
 /*              Interpretation of cursor keys
                      ( Primitive editor )                    */
 int e_tst_cur(int c, ECNT *e)
@@ -1126,98 +1299,62 @@ int e_tst_cur(int c, ECNT *e)
    {  case CtrlP:
       case CUP:
       case CUP+512:
-	 if(b->b.y > 0) (b->b.y)--;
-	 b->b.x = e_chr_sp(b->clsv, b, f);
+	 e_cursor_up(b);
 	 break;
       case CtrlN:
       case CDO:
       case CDO+512:
-	 if(b->b.y < b->mxlines - 1) (b->b.y)++;
-	 b->b.x = e_chr_sp(b->clsv, b, f);
+	 e_cursor_down(b);
 	 break;
       case CtrlB:
       case CLE:
       case CLE+512:
-	 if (b->b.x > 0 && b->b.x <= b->bf[b->b.y].len)
-	  b->b.x = e_char_start_before(b, b->b.x, b->b.y);
-	 else
-	  (b->b.x)--;
-	 if(b->b.x < 0)
-	 {  if(b->b.y > 0)
-	    {  (b->b.y)--; b->b.x = b->bf[b->b.y].len;  }
-	    else {  b->b.x = 0;  }
-	 }
+	 e_cursor_left(b);
 	 break;
       case CtrlF:
       case CRI:
       case CRI+512:
-	 if (b->b.x < b->bf[b->b.y].len)
-	  b->b.x += e_char_bytes_at(b, b->b.x, b->b.y);
-	 else
-	 {
-	  (b->b.x)++;
-	 }
-	 if(b->b.x > b->bf[b->b.y].len)
-	 {  if(b->b.y < b->mxlines - 1)  {  (b->b.y)++; b->b.x = 0;  }
-	    else {  b->b.x = b->bf[b->b.y].len;  }
-	 }
+	 e_cursor_right(b);
 	 break;
-	 
+
       case CCLE:
       case CCLE+512:
-	 if(b->b.x <= 0 && b->b.y > 0)
-	 {  b->b.y--;
-	    b->b.x = b->bf[b->b.y].len;
-	 }
-	 else if( b->b.x > 0 )
-	 b->b.x = e_su_rblk(b->b.x - 1, b->bf[b->b.y].s);
+	 e_cursor_word_left(b);
 	 break;
       case CCRI:
       case CCRI+512:
-	 if(b->b.x >= b->bf[b->b.y].len && b->b.y < b->mxlines - 1)
-	 {  b->b.x = 0; b->b.y++;  }
-	 else if( b->b.x < b->bf[b->b.y].len )
-	 b->b.x = e_su_lblk(b->b.x, b->bf[b->b.y].s);
+	 e_cursor_word_right(b);
 	 break;
       case BDO:
       case BDO+512:
-	 b->b.y = b->b.y + NUM_LINES_ON_SCREEN - 2;
-	 if(b->b.y > b->mxlines - 1) b->b.y = b->mxlines - 1;
+	 e_buffer_cursor_set_col(b, b->b.y + NUM_LINES_ON_SCREEN - 2, b->clsv);
 	 e_schirm(f, 1);
 	 e_cursor(f, 1);
 	 break;
       case BUP:
       case BUP+512:
-	 b->b.y = b->b.y - f->e.y + f->a.y + 2;
-	 if(b->b.y < 0) b->b.y = 0;
+	 e_buffer_cursor_set_col(b, b->b.y - f->e.y + f->a.y + 2, b->clsv);
 	 e_schirm(f, 1);
 	 e_cursor(f, 1);
 	 break;
       case CBDO:
       case CBDO+512:
-	 b->b.y = b->mxlines - 1;
-	 b->b.x = b->bf[b->mxlines - 1].len;
+	 e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
 	 e_schirm(f, 1);
 	 break;
       case CBUP:
       case CBUP+512:
 	 if(b->b.y != 0)
-	 {  b->b.x = 0;
-	    b->b.y = 0;
+	 {  e_buffer_cursor_set(b, 0, 0);
 	    e_schirm(f, 1);  }
 	 break;
       case CEND:
       case CEND+512:
-	 if(LINE_NUM_ON_SCREEN_BOTTOM < b->mxlines)
-	 b->b.y = LINE_NUM_ON_SCREEN_BOTTOM - 1;
-	 else
-	 b->b.y = b->mxlines - 1;
-	 b->b.x = b->bf[b->b.y].len;
+	 e_cursor_screen_bottom_end(f);
 	 break;
       case CPS1:
       case CPS1+512:
-	 b->b.x = 0;
-	 b->b.y = s->c.y;
+	 e_buffer_cursor_set(b, s->c.y, 0);
 	 break;
       case AltI:
       case EINFG:
@@ -1247,12 +1384,12 @@ int e_tst_cur(int c, ECNT *e)
       case CtrlA:
       case POS1:
       case POS1+512:
-	 b->b.x = 0;
+	 e_buffer_cursor_set(b, b->b.y, 0);
 	 break;
       case CtrlE:
       case ENDE:
       case ENDE+512:
-	 b->b.x = b->bf[b->b.y].len;
+	 e_buffer_cursor_set(b, b->b.y, b->bf[b->b.y].len);
 	 break;
       case CtrlT:
 	 if(e_window_text_locked(f)) break;
@@ -1266,8 +1403,7 @@ int e_tst_cur(int c, ECNT *e)
 	 break;
       case DGZ:
 	 if(e_window_text_locked(f)) break;
-	 e_del_line(b->b.y, b, s);
-	 if(b->b.y > b->mxlines - 1) (b->b.y)--;
+	 e_delete_line_key(b, s);
 	 e_schirm(f, 1);
 	 break;
       case AF7:
@@ -1284,20 +1420,7 @@ int e_tst_cur(int c, ECNT *e)
 	 return(c);
    }
    if(c >= 512 )
-   {  if(s->ks.y == s->mark_begin.y && s->ks.x == s->mark_begin.x &&
-		(s->mark_begin.y != s->mark_end.y || s->mark_begin.x != s->mark_end.x))
-      {  s->mark_begin.x = b->b.x;  s->mark_begin.y = b->b.y;  }
-      else if(s->ks.y == s->mark_end.y && s->ks.x == s->mark_end.x &&
-		(s->mark_begin.y != s->mark_end.y || s->mark_begin.x != s->mark_end.x))
-      {  s->mark_end.x = b->b.x;  s->mark_end.y = b->b.y;  }
-      else if(s->ks.y < b->b.y || ( s->ks.y == b->b.y && s->ks.x < b->b.x))
-      {  s->mark_begin.x = s->ks.x;  s->mark_begin.y = s->ks.y;
-	 s->mark_end.x = b->b.x;  s->mark_end.y = b->b.y;
-      }
-      else
-      {  s->mark_end.x = s->ks.x;  s->mark_end.y = s->ks.y;
-	 s->mark_begin.x = b->b.x;  s->mark_begin.y = b->b.y;
-      }
+   {  e_shift_extend_block(b, s);
       e_schirm(f, 1);
    }
    return(0);
@@ -1917,34 +2040,6 @@ int e_tst_dfkt(FENSTER *f, int c)
  return(0);
 }
 
-int e_chr_sp(int x, BUFFER *b, FENSTER *f)
-{
- int i, j;
-
- for (i = j = 0; i + j < x && i < b->bf[b->b.y].len; i++)
- {
-  unsigned char uc = (unsigned char) *(b->bf[b->b.y].s + i);
-  if (uc == WPE_TAB)
-   j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
-#ifdef UNIX
-  else if (uc < ' ')
-   j++;
-  else if (UTF8_IS_LEAD(uc))
-   i += e_utf8_visual_step((unsigned char *)b->bf[b->b.y].s, i,
-                           b->bf[b->b.y].len, &j);
-  if (f->dtmd == DTMD_HELP)
-  {
-   if (b->bf[b->b.y].s[i] == HBG || b->bf[b->b.y].s[i] == HFB ||
-     b->bf[b->b.y].s[i] == HED || b->bf[b->b.y].s[i] == HHD ||
-     b->bf[b->b.y].s[i] == HFE || b->bf[b->b.y].s[i] == HBB ||
-     b->bf[b->b.y].s[i] == HNF)
-    j -= 2;
-  }
-#endif
- }
- return(i);
-}
-
 /****************************************/
 int FindFirstNospaceChar(BUFFER *b, int line)
 /* returns char number in the line, -1 otherwise */
@@ -2346,7 +2441,7 @@ int e_del_a_ind(BUFFER *b, SCHIRM *s)
 static void e_backspace_a_ind(BUFFER *b, SCHIRM *s, POINT at_key)
 {
  if (e_del_a_ind(b, s) == E_CHAR_REFUSED)
-  b->b = at_key;
+  e_buffer_cursor_set(b, at_key.y, at_key.x);
 }
 
 /**
@@ -2565,11 +2660,10 @@ static int e_cursor_in_viewport(FENSTER *f, int sx, int sy)
  *
  * Every key, click and replay should put the cursor on a place through the
  * owner of the text; this is the last defence for a writer that did not.  A
- * cursor off the text (past a row's end, on a row that is gone) is put back
- * in it, as it always was, and one between the bytes of a character is
- * traced as well.  The trace line is how a test sees the writer that was
- * missed.  A cursor between the bytes is left where it is for now: it is
- * put on the character's start once every writer is the owner.
+ * cursor off the text or between the bytes of a character is put on the
+ * nearest place (the start of that character), so the user never sees it
+ * wrong, and it is traced.  The trace line is how a test sees the writer
+ * that was missed.
  */
 static void e_cursor_keep_on_text(BUFFER *b)
 {
@@ -2580,8 +2674,6 @@ static void e_cursor_keep_on_text(BUFFER *b)
  if (b->b.y >= 0 && b->b.y < b->mxlines)
   len = b->bf[b->b.y].len;
  wpe_buffer_trace("buffer position off a glyph y=%d x=%d len=%d", b->b.y, b->b.x, len);
- if (e_buffer_cursor_in_text(b))
-  return;
  e_buffer_cursor_set(b, b->b.y, b->b.x);
 }
 
@@ -2719,6 +2811,16 @@ static int e_del_line(int yd, BUFFER *b, SCHIRM *s)
  */
 static Undo *e_char_record(int sw, BUFFER *b, int x, int y, int n);
 
+/**
+ * e_row_remeasure - Count the bytes and the characters of row @y again,
+ * after its bytes were moved in place.
+ */
+static void e_row_remeasure(BUFFER *b, int y)
+{
+ b->bf[y].len = e_str_len(b->bf[y].s);
+ b->bf[y].nrc = e_str_nrc(b->bf[y].s);
+}
+
 /*   delete N chars from buffer */
 int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
 {
@@ -2734,10 +2836,9 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
  if (*(b->bf[y].s+len) == WPE_WR) len++;
  for (j = x; j <= len - n; ++j) *(b->bf[y].s+j) = *(b->bf[y].s+j+n)
   ;
- if (s->mark_begin.y == y && s->mark_begin.x > x)
-  s->mark_begin.x = (s->mark_begin.x-n > x) ? s->mark_begin.x-n : x;
- if (s->mark_end.y == y && s->mark_end.x > x)
-  s->mark_end.x = (s->mark_end.x-n > x) ? s->mark_end.x-n : x;
+ if (len > n)
+  e_row_remeasure(b, y);
+ e_buffer_text_removed(b, y, x, n);
 
  if (len <= n) e_del_line(y, b, s);
  else if (y < b->mxlines - 1 && *(b->bf[y].s+len-n-1) != WPE_WR )
@@ -2763,8 +2864,8 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
  }
  if (y < b->mxlines)
  {
-  b->bf[y].len = e_str_len(b->bf[y].s);
-  b->bf[y].nrc = e_str_nrc(b->bf[y].s);
+  e_row_remeasure(b, y);
+  e_buffer_row_positions_snap(b, y);
  }
  e_buffer_cover_end(b);
  sc_txt_4(y, b, 0);
@@ -2776,28 +2877,6 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
 #define E_INS_CUT_NONE 0
 /* The fewest bytes a row must keep beside a run for a cut to be looked for. */
 #define E_INS_ROOM_MIN 1
-
-/**
- * e_ins_mark_follows_cut - A block mark on a row that wraps at column @c:
- * a mark on the text that moved goes with it to the start of the row below.
- */
-static void e_ins_mark_follows_cut(POINT *p, int ya, int c)
-{
- if (p->y != ya || p->x < c)
-  return;
- p->y++;
- p->x -= c;
-}
-
-/**
- * e_ins_mark_follows_run - A block mark at or after the place @n bytes go
- * in on row @ya moves right with the text behind it.
- */
-static void e_ins_mark_follows_run(POINT *p, int ya, int xa, int n)
-{
- if (p->y == ya && p->x >= xa)
-  p->x += n;
-}
 
 /**
  * e_ins_wrap_tail_down - Typing past the margin of a row: the text behind
@@ -2873,11 +2952,9 @@ static int e_ins_cut_row(BUFFER *b, SCHIRM *sch, int ya, int c)
   if (e_ins_nchar(b, sch, b->bf[ya].s + c, 0, ya + 1, tail) == E_CHAR_REFUSED)
    return(E_BUFFER_RANGE);
  }
- e_ins_mark_follows_cut(&sch->mark_begin, ya, c);
- e_ins_mark_follows_cut(&sch->mark_end, ya, c);
  b->bf[ya].s[c] = '\0';
- b->bf[ya].len = e_str_len(b->bf[ya].s);
- b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
+ e_row_remeasure(b, ya);
+ e_buffer_row_cut(b, ya, c);
  return(E_BUFFER_OK);
 }
 
@@ -3037,6 +3114,52 @@ void e_ins_point_at(BUFFER *b, int y, int off, POINT *p)
 }
 
 /**
+ * e_ins_mark_column_behind - The column of block mark @m when it stands on
+ * row @ya at or behind column @xa, where a run put in there moves it, or
+ * E_INS_MARK_BEFORE when it does not.
+ */
+static int e_ins_mark_column_behind(POINT m, int ya, int xa)
+{
+ if (m.y == ya && m.x >= xa)
+  return(m.x);
+ return(E_INS_MARK_BEFORE);
+}
+
+/**
+ * e_ins_long_run_marks_behind - After a run was put in over several rows,
+ * the block marks that stood behind it stand behind it again, on the rows
+ * the text was wrapped onto.
+ * @behind: the columns the begin and the end of the block had, or
+ * E_INS_MARK_BEFORE for one that was not behind the run; @n: its bytes.
+ */
+static void e_ins_long_run_marks_behind(BUFFER *b, int ya, const int *behind, int n)
+{
+ static const int WHICH[2] = { E_BUFFER_MARK_BEGIN, E_BUFFER_MARK_END };
+ POINT at;
+ int i;
+
+ for (i = 0; i < 2; i++)
+ {
+  if (behind[i] == E_INS_MARK_BEFORE)
+   continue;
+  e_buffer_pos_from_offset(b, &at, ya, behind[i] + n);
+  e_buffer_mark_set(b, WHICH[i], at.y, at.x);
+ }
+}
+
+/**
+ * e_ins_long_run_cursor - After a run was put in over several rows, the
+ * cursor stands behind it: @off bytes into the line that starts at row @ya.
+ */
+static void e_ins_long_run_cursor(BUFFER *b, int ya, int off)
+{
+ POINT at;
+
+ e_buffer_pos_from_offset(b, &at, ya, off);
+ e_buffer_cursor_set(b, at.y, at.x);
+}
+
+/**
  * e_ins_long_run - Put in a run longer than a row (a replacement or a
  * completion wider than Max. Columns): the row is built again from the text
  * before the run, the run and the rest of the row, wrapped by the owner over
@@ -3054,8 +3177,7 @@ static int e_ins_long_run(BUFFER *b, SCHIRM *sch, const unsigned char *s,
 {
  STRING *row = &b->bf[ya], *lines;
  WpeBufferPart parts[E_INS_LONG_PARTS];
- POINT *marks[2];
- int behind[2], i, k;
+ int behind[2], k;
 
  parts[0].s = row->s;
  parts[0].n = xa;
@@ -3069,14 +3191,8 @@ static int e_ins_long_run(BUFFER *b, SCHIRM *sch, const unsigned char *s,
   wpe_buffer_say_nomem(b, "the text put in");
   return(E_CHAR_REFUSED);
  }
- marks[0] = &sch->mark_begin;
- marks[1] = &sch->mark_end;
- for (i = 0; i < 2; i++)
- {
-  behind[i] = E_INS_MARK_BEFORE;
-  if (marks[i]->y == ya && marks[i]->x >= xa)
-   behind[i] = marks[i]->x;
- }
+ behind[0] = e_ins_mark_column_behind(sch->mark_begin, ya, xa);
+ behind[1] = e_ins_mark_column_behind(sch->mark_end, ya, xa);
  if (e_buffer_splice(b, ya, 1, lines, k, NULL, 0, E_BUFFER_STEP_NEW) != E_BUFFER_OK)
  {
   e_buffer_lines_free(lines, k);
@@ -3084,10 +3200,8 @@ static int e_ins_long_run(BUFFER *b, SCHIRM *sch, const unsigned char *s,
   return(E_CHAR_REFUSED);
  }
  FREE(lines);
- for (i = 0; i < 2; i++)
-  if (behind[i] != E_INS_MARK_BEFORE)
-   e_ins_point_at(b, ya, behind[i] + n, marks[i]);
- e_ins_point_at(b, ya, xa + n, &b->b);
+ e_ins_long_run_marks_behind(b, ya, behind, n);
+ e_ins_long_run_cursor(b, ya, xa + n);
  sc_txt_4(ya, b, 0);
  return(b->b.x);
 }
@@ -3134,13 +3248,10 @@ static void e_ins_run_here(BUFFER *b, SCHIRM *sch, const unsigned char *s,
 {
  if (e_ins_row_overflows(b, ya, n) && e_ins_refused_wide(b, ya, n))
   return;
- e_ins_mark_follows_run(&sch->mark_begin, ya, xa, n);
- e_ins_mark_follows_run(&sch->mark_end, ya, xa, n);
  e_ins_bytes_at(b, ya, xa, s, n);
- b->b.x = xa + n;
- b->b.y = ya;
- b->bf[ya].len = e_str_len(b->bf[ya].s);
- b->bf[ya].nrc = e_str_nrc(b->bf[ya].s);
+ e_row_remeasure(b, ya);
+ e_buffer_text_inserted(b, ya, xa, n);
+ e_buffer_cursor_set(b, ya, xa + n);
 }
 
 /**
