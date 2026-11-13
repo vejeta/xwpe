@@ -12,6 +12,7 @@
 
    Plain C: no curses, no X11, no Wayland, no editor header. */
 
+#include <limits.h>
 #include <stddef.h>
 
 /* The debugger's answer to one command.  @text holds its lines, joined,
@@ -33,8 +34,39 @@ typedef struct
    needs from the world comes through E_D_REQ_IO, so tests/test_debreq.c
    drives it with a fake clock and a transcript. */
 
+/* How long a command to a debugger may be.
+
+   No debugger the editor writes paths to caps its input line below the
+   system's path limit.  Measured over a pipe, as the editor drives them
+   (gdb 18.1, Python 3.14, jdb 25, lldb 21): gdb's console took a line of
+   300000 bytes, pdb, jdb and lldb 70000, and each took a path of 3928 bytes
+   in one command.  So the only limit is the longest path the editor can hand
+   a debugger, written in the longest form any command writes it.
+
+   The invariant behind the number: a command carries ONE path (an escaped
+   name or a program), never two.  gdb's break carries a file name, not a
+   path.  A command with two paths at the worst escape would not fit; the
+   first one added makes this number two paths wide.
+
+   A debugger nobody measured (sdb, xdb, dbx, a68g) keeps the 255 bytes it
+   was always given, and so does an engine that is not a debugger's (the
+   build server, the language server): see e_d_req_cmd_fits. */
+#define E_D_REQ_PATH_MAX        4096  /* the longest path the editor holds; the BSDs' and macOS's PATH_MAX is within it */
+#define E_D_REQ_PATH_ESCAPE_MAX 4     /* one byte of a path as the widest command writes it: pdb's \xNN */
+#define E_D_REQ_CMD_HEAD_MAX    256   /* the words around the path: the longest is
+                                         -interpreter-exec console "set history filename ..." */
+#define E_D_REQ_CMD_MAX \
+  (E_D_REQ_PATH_MAX * E_D_REQ_PATH_ESCAPE_MAX + E_D_REQ_CMD_HEAD_MAX)
+
+#if defined(PATH_MAX) && PATH_MAX > E_D_REQ_PATH_MAX
+#error "PATH_MAX is longer than E_D_REQ_PATH_MAX: a command could not hold a path of this system"
+#endif
+
+/* The longest command, in bytes with its terminator, to a debugger nobody
+   has measured. */
+#define E_D_REQ_CMD_UNMEASURED_MAX 256
+
 /* Sizes and times. */
-#define E_D_REQ_CMD_MAX      256      /* one command */
 #define E_D_REQ_QUEUE_MAX    8        /* in flight plus waiting; more is refused */
 #define E_D_REQ_TIMEOUT_S    30       /* seconds before a silent debugger is given up on */
 #define E_D_REQ_TIMEOUT_MAX_S 86400   /* the override is cut here */
@@ -187,6 +219,21 @@ void e_d_req_init(E_D_REQ_QUEUE *rq, const char *timeout_text);
  * dropped without being called: end them first with e_d_req_cancel.
  */
 void e_d_req_free(E_D_REQ_QUEUE *rq);
+
+/**
+ * e_d_req_cmd_fits - Can this command be sent to this debugger?
+ * @debugger: its name as the engine's world gives it ("gdb"), or NULL;
+ * @cmd: the command, no line end.
+ *
+ * The one place that compares a command's length with a number.  A path at
+ * the system's limit, in its longest written form, always fits the
+ * debuggers that were measured (gdb, pdb, jdb, lldb), so a user whose
+ * program lies in a very deep folder, or in one named outside ASCII, can
+ * debug it.  sdb, xdb, dbx and a68g, and any engine that is not one of
+ * those, keep the 255 bytes they always had until a measurement lifts them.
+ * Return: 1 when it fits with its terminator.
+ */
+int e_d_req_cmd_fits(const char *debugger, const char *cmd);
 
 /**
  * e_d_req_send - Ask the debugger @cmd, to be told of the answer.

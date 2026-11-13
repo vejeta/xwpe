@@ -20,6 +20,7 @@
 #include <stddef.h>
 
 #include "we_child.h"
+#include "we_debreq.h"
 
 /* Where a value came from: shown in the box, and decides whether to ask. */
 #define WPE_FROM_EDITOR 0   /* a literal the editor adds: "-c", "-o", "ar"            */
@@ -92,7 +93,7 @@
 #define WPE_STARTPLAN_NOT_PLANNED 2   /* not a removal of this plan: left as it is   */
 
 /* Sizes. */
-#define WPE_STARTPLAN_PATH_MAX  4096
+#define WPE_STARTPLAN_PATH_MAX  E_D_REQ_PATH_MAX   /* the debugger request engine's path, one number */
 #define WPE_STARTPLAN_KEY_MAX   256
 #define WPE_STARTPLAN_WORDS_MAX 1024     /* a project with many FILES               */
 #define WPE_STARTPLAN_TEXT_MAX  65536    /* past it the plan cannot be remembered   */
@@ -126,12 +127,16 @@
 #define WPE_STARTPLAN_REFUSE_DEBUG_UNKNOWN "a debugger the plan does not know"
 #define WPE_STARTPLAN_REFUSE_DEBUG_PATH \
  "a folder or program the debugger cannot be given safely"
+#define WPE_STARTPLAN_REFUSE_DEBUG_LONG \
+ "a folder or program whose path is longer than the system allows"
+#define WPE_STARTPLAN_REFUSE_DEBUG_MEMORY \
+ "not enough memory to plan the debugger's start"
 
 /* Why Run it is not offered for a plan whose start-up files cannot be sent
    to the debugger by the editor's own command. */
 #define WPE_STARTPLAN_LOAD_REFUSED "a start-up file whose path the debugger cannot be given safely"
 #define WPE_STARTPLAN_LOAD_REFUSED_PDBRC \
- "a .pdbrc line that pdb cannot be given one at a time (a commands block or a very long line)"
+ "a .pdbrc line that pdb cannot be given one at a time (a commands block)"
 
 /* One word of a command line. */
 typedef struct {
@@ -308,6 +313,7 @@ int wpe_startplan_contain(WpeStartPlan *p, const char *key, const char *program_
                           const char *folder, const char *program);
 int wpe_startplan_load_lines(WpeStartPlan *p);
 int wpe_startplan_is_apart(const WpeStartPlan *p);
+const char *wpe_startplan_debugger_of(const WpeStartPlan *p);
 const char *wpe_startplan_program_path(const WpeStartPlan *p);
 int wpe_startplan_row_is_apart(const char *key, const char *program_tool);
 int wpe_startplan_editor_inputs(const WpeStartPlan *p);
@@ -328,5 +334,10 @@ int wpe_startplan_mi_cstring(char *out, size_t n, const char *path);
 int wpe_startplan_lldb_source_arg(char *out, size_t n, const char *path);
 int wpe_startplan_jdb_read_arg(char *out, size_t n, const char *path);
 int wpe_startplan_python_bytes(char *out, size_t n, const char *path);
+
+/* How many bytes the widest escape of wpe_startplan_python_bytes writes for
+   one byte of a path: \xNN.  The request engine's command length is derived
+   from it (we_debreq.h, checked in we_startplan.c). */
+#define WPE_STARTPLAN_PYTHON_ESCAPE 4
 
 #endif

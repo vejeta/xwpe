@@ -325,7 +325,7 @@ check_PROGRAMS = test_checkheader test_fl_sel_len test_syntax_def test_fdloop te
 # folder, a removal outside dropped and a write outside asked, the home
 # folder never a root, a plan equal in effect to the user's own, one
 # record per plan, the cover check of a step, and mutants of the rules.
-test_startplan_SOURCES = tests/test_startplan.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c
+test_startplan_SOURCES = tests/test_startplan.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c
 test_startplan_CFLAGS = $(XWPE_STDFLAG)
 test_startplan_LDADD = $(UTIL_LIBS)
 

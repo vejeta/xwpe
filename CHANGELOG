@@ -316,11 +316,11 @@ Changes
   script of a shared library the program loads cannot run either.  Run
   it loads exactly the files the box listed, under "With Run it:", and
   Use mine (the default) loads none of them; with a path that holds a
-  colon or a $, or is too long for one of gdb's commands, Run it is not
-  offered.  A debug session's history file stays in the program's
-  folder; a log your ~/.gdbinit writes by a relative name lands in gdb's
-  own folder and goes when the editor ends.  pdb and jdb start the same
-  way: pdb is moved into the program's folder by its first input line
+  colon or a $, Run it is not offered.  A debug session's history file
+  stays in the program's folder; a log your ~/.gdbinit writes by a
+  relative name lands in gdb's own folder and goes when the editor ends.
+  pdb and jdb start the same way: pdb is moved into the program's
+  folder by its first input line
   and a pdb.py of the folder cannot replace it, Run it sends the
   .pdbrc to pdb line by line and jdb "read jdb.ini" when its VM has
   connected, as jdb read it before, and Use mine sends neither; a .pdbrc with a commands block
@@ -341,6 +341,14 @@ Changes
   debugger as a file, and a value with a line break (a project file's
   watch or breakpoint, Arguments, a file name), or with pdb's ";;", is
   never sent to a debugger, where the rest would run as a command.
+
+* A program in a folder with a very long name, or one named outside
+  ASCII, can be debugged with gdb and pdb again: the commands the editor
+  writes to a debugger now hold a path of the longest length the system
+  allows, in the widest form any of them writes it.  gdb's history file
+  is kept in the program's folder for such a folder too, a breakpoint in
+  a source file with a very long name is no longer cut short, and a path
+  longer than the system allows is refused with a box that says so.
 
 * Run, Make, Execute and the language servers now start the way the
   build does: what a folder decides is shown first.  When the xwperc of

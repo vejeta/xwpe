@@ -368,10 +368,10 @@ static long e_d_read_runaway = 0;
 #define E_D_RUNAWAY_MAX  100000L
 
 /* Room for the command a run was started with, sent again when an interrupt
-   left over from a race stops the program before it moved.  It holds the
-   longest command the editor builds for a run: gdb's advance "file":line
-   (e_d_gdb_run_to_line), a path and a line number. */
-#define E_D_RUN_AGAIN_MAX (E_D_LINE_MAX + PATH_MAX)
+   left over from a race stops the program before it moved.  It holds any
+   command the request engine takes, with its line end, so a copy never cuts
+   a command that was sent. */
+#define E_D_RUN_AGAIN_MAX (E_D_REQ_CMD_MAX + 2)
 /* The last command sent to the debugger: the run controller keeps it as the
    command of the run it is handed. */
 static char e_d_last_cmd[E_D_RUN_AGAIN_MAX];
@@ -398,7 +398,7 @@ static char e_d_last_cmd[E_D_RUN_AGAIN_MAX];
 #define E_D_GDBMI_CONSOLE_TAIL "\""
 #define E_D_GDBMI_MI_LEAD      '-'
 /* A command line once numbered and, for the console, quoted: every byte
-   may need its escape. */
+   of a command the engine takes may need its escape. */
 #define E_D_GDBMI_LINE_MAX     (2 * E_D_RUN_AGAIN_MAX + 64)
 /* The highest number a command is given; the next one is 1 again.  It has
    as many digits as gdb's answer is read with (E_GDBMI_TOKEN_DIGITS_MAX in
@@ -6513,7 +6513,15 @@ int e_make_breakpoint(FENSTER *f, int sw)
 #define E_D_CL_HIST_DONE 0
 #define E_D_CL_HIST_TODO 1
 #define E_D_CL_HIST_FIX  2
-#define E_D_CONTAIN_TOO_LONG_LINE "Debugger not started: the file path is too long"
+/* What a refused start says: the plan's own words, never a sentence of the
+   sender's. */
+#define E_D_CONTAIN_TOO_LONG_LINE "Debugger not started: " WPE_STARTPLAN_REFUSE_DEBUG_LONG
+#define E_D_CONTAIN_NO_MEMORY_LINE "Debugger not started: " WPE_STARTPLAN_REFUSE_DEBUG_MEMORY
+/* Why the plan's lines could not be kept. */
+#define E_D_CL_COPY_OK         0
+#define E_D_CL_COPY_TOO_MANY   (-1)
+#define E_D_CL_COPY_TOO_LONG   (-2)
+#define E_D_CL_COPY_NO_MEMORY  (-3)
 /* What pdb and jdb say when the editor's first command is refused, and what the
    user reads then: the session ends, since going on would leave the debugger
    in the editor's empty folder. */
@@ -6529,12 +6537,29 @@ static struct
  int n;                                   /* lines to send                        */
  int move_end;                            /* the first line after pin and move    */
  int next;                                /* the next line to send                */
- char line[E_D_CONTAIN_LINES_MAX][E_D_REQ_CMD_MAX];
- char ask[E_D_REQ_CMD_MAX];               /* the history question                 */
- char fix[E_D_REQ_CMD_MAX];               /* the command that moves the file      */
+ char *line[E_D_CONTAIN_LINES_MAX];       /* each kept at its own length          */
+ char *ask;                               /* the history question                 */
+ char *fix;                               /* the command that moves the file      */
  int history;                             /* E_D_CL_HIST_*                        */
  int sent;                                /* E_D_CL_* of the request in flight    */
 } e_d_cl;
+
+/**
+ * e_d_cl_free_lines - Free every line the sender kept: the plan's lines and
+ * the two commands of the history rule.
+ *
+ * Called by every path that ends the sender's state (the session's end, a
+ * start that is refused), so no kept line outlives its session.
+ */
+static void e_d_cl_free_lines(void)
+{
+ int i;
+
+ for (i = 0; i < E_D_CONTAIN_LINES_MAX; i++)
+  free(e_d_cl.line[i]);
+ free(e_d_cl.ask);
+ free(e_d_cl.fix);
+}
 
 /**
  * e_d_contain_end - The session is over: remove its own folder.
@@ -6546,25 +6571,34 @@ static void e_d_contain_end(void)
 {
  if (e_d_cl.dir[0])
   wpe_startplan_debug_dir_end(e_d_cl.dir);
+ e_d_cl_free_lines();
  memset(&e_d_cl, 0, sizeof e_d_cl);
 }
 
 /**
  * e_d_contain_copy_lines - Keep the editor's own lines of the plan that runs.
  * @run: the plan that runs.
- * Return: 0, or -1 when a line does not fit a command or there are too many.
+ *
+ * Each line is copied at its own length.  The plan bounds its lines by the
+ * request engine's rule when it makes them; this asks the same rule once
+ * more (e_d_req_cmd_fits) as a belt, since the engine would refuse such a
+ * line only after the debugger had been started.
+ * Return: E_D_CL_COPY_OK, or why the lines cannot be kept.
  */
 static int e_d_contain_copy_lines(const WpeStartPlan *run)
 {
+ const char *debugger = wpe_startplan_debugger_of(run);
  int i, n = wpe_startplan_editor_inputs(run);
 
  if (n > E_D_CONTAIN_LINES_MAX)
-  return(-1);
+  return(E_D_CL_COPY_TOO_MANY);
  for (i = 0; i < n; i++)
  {
-  if (strlen(run->input[i].text) >= E_D_REQ_CMD_MAX)
-   return(-1);
-  snprintf(e_d_cl.line[i], sizeof e_d_cl.line[i], "%s", run->input[i].text);
+  if (!e_d_req_cmd_fits(debugger, run->input[i].text))
+   return(E_D_CL_COPY_TOO_LONG);
+  e_d_cl.line[i] = strdup(run->input[i].text);
+  if (!e_d_cl.line[i])
+   return(E_D_CL_COPY_NO_MEMORY);
  }
  e_d_cl.n = n;
  e_d_cl.move_end = run->load_at < n ? run->load_at : n;
@@ -6572,31 +6606,66 @@ static int e_d_contain_copy_lines(const WpeStartPlan *run)
 }
 
 /**
+ * e_d_contain_keep_history - Keep gdb's history rule of the plan that runs,
+ * when it has one.
+ * @run: the plan that runs.
+ * Return: 0, or -1 when memory ran out.
+ */
+static int e_d_contain_keep_history(const WpeStartPlan *run)
+{
+ char ask[E_D_REQ_CMD_MAX], fix[E_D_REQ_CMD_MAX];
+
+ if (wpe_startplan_history_lines(run, ask, sizeof ask, fix, sizeof fix) != 0)
+  return(0);
+ e_d_cl.ask = strdup(ask);
+ e_d_cl.fix = strdup(fix);
+ if (!e_d_cl.ask || !e_d_cl.fix)
+  return(-1);
+ e_d_cl.history = E_D_CL_HIST_TODO;
+ return(0);
+}
+
+/**
+ * e_d_contain_refusal_line - What the user reads when the plan's lines
+ * cannot be kept.
+ * @why: E_D_CL_COPY_TOO_MANY, _TOO_LONG or _NO_MEMORY.
+ */
+static char *e_d_contain_refusal_line(int why)
+{
+ if (why == E_D_CL_COPY_TOO_MANY)
+  return(E_D_CONTAIN_TOO_MANY_LINE);
+ if (why == E_D_CL_COPY_NO_MEMORY)
+  return(E_D_CONTAIN_NO_MEMORY_LINE);
+ return(E_D_CONTAIN_TOO_LONG_LINE);
+}
+
+/**
  * e_d_contain_keep - Take over the folder and the lines of the plan that
  * runs, before the plan is freed.
  * @plan: the answered plan.
  * Return: 0, or -1 with the reason said in a box when its lines cannot be
- * sent (a path longer than a command).
+ * kept (too many, a command the debugger would not be given, or no memory);
+ * nothing is kept then.
  */
 static int e_d_contain_keep(WpeStartPlan *plan, FENSTER *f)
 {
  WpeStartPlan *run = wpe_startplan_running(plan);
  char *dir;
+ int why;
 
  e_d_contain_end();
  if (!run)
   return(0);
- if (e_d_contain_copy_lines(run) < 0)
+ why = e_d_contain_copy_lines(run);
+ if (why == E_D_CL_COPY_OK && e_d_contain_keep_history(run) < 0)
+  why = E_D_CL_COPY_NO_MEMORY;
+ if (why != E_D_CL_COPY_OK)
  {
+  e_d_cl_free_lines();
   memset(&e_d_cl, 0, sizeof e_d_cl);
-  e_error(wpe_startplan_editor_inputs(run) > E_D_CONTAIN_LINES_MAX ? E_D_CONTAIN_TOO_MANY_LINE
-                                                                    : E_D_CONTAIN_TOO_LONG_LINE,
-          0, f->fb);
+  e_error(e_d_contain_refusal_line(why), 0, f->fb);
   return(-1);
  }
- if (wpe_startplan_history_lines(run, e_d_cl.ask, sizeof e_d_cl.ask, e_d_cl.fix,
-                                 sizeof e_d_cl.fix) == 0)
-  e_d_cl.history = E_D_CL_HIST_TODO;
  if ((dir = wpe_startplan_debug_dir_take(run)) != NULL)
  {
   snprintf(e_d_cl.dir, sizeof e_d_cl.dir, "%s", dir);
@@ -7756,58 +7825,6 @@ static void e_d_program_tty_name(void)
  e_d_own_tty_name();
 }
 
-/* The directory pdb is in once the editor has moved it into the program's
-   folder (its first input line), when the program it was given lies in that
-   folder, or "".  Paths relative to it name one file to pdb whichever
-   command carries them. */
-static char e_d_debugger_dir[PATH_MAX];
-
-/**
- * e_d_dir_holds_file - Is @path a file directly in directory @dir?
- * @dir: a directory, with or without a closing separator; @path: a path.
- */
-static int e_d_dir_holds_file(const char *dir, const char *path)
-{
- size_t dlen = strlen(dir);
- const char *rest;
-
- if (path[0] != DIRC)
-  return(strchr(path, DIRC) == NULL);   /* a bare name, run from @dir */
- while (dlen > 1 && dir[dlen - 1] == DIRC)
-  dlen--;
- if (dlen == 0 || strncmp(path, dir, dlen) || path[dlen] != DIRC)
-  return(0);
- for (rest = path + dlen; *rest == DIRC; rest++)
-  ;                            /* "dir/" joined with "/name" */
- return(strchr(rest, DIRC) == NULL);
-}
-
-/**
- * e_d_debugger_dir_note - Remember the directory pdb is moved into, when the
- * program it was given lies in it.
- * @f: the window the session was started from; @prog: the program, for
- * pdb its script.
- *
- * pdb resolves a relative path in "clear" against the directory it runs
- * in, but one in "b" against its script's directory.  Only when the two are
- * one does a relative path name the same file in both, and a breakpoint in
- * a file under a very deep directory can then still be named in a command
- * short enough for the request engine.  Otherwise (a project built in
- * another directory) the full path is sent, and a breakpoint is never set
- * in another file of the same relative name.
- */
-static void e_d_debugger_dir_note(FENSTER *f, const char *prog)
-{
- char *dir = e_build_dir(f);
-
- e_d_debugger_dir[0] = '\0';
- if (!dir)
-  return;
- if (prog && e_d_dir_holds_file(dir, prog))
-  snprintf(e_d_debugger_dir, sizeof e_d_debugger_dir, "%s", dir);
- FREE(dir);
-}
-
 /**
  * e_d_debugger_io - What every debugger start has in common.
  * @io: receives it.
@@ -8163,7 +8180,6 @@ int e_exec_deb(FENSTER *f, char *prog)
   e_d_exec_fail();
   return(0);
  }
- e_d_debugger_dir_note(f, prog);
  return(1);
 }
 
@@ -22121,52 +22137,20 @@ static void e_d_gdb_remove_all(ECNT *cn)
 #define E_D_GP_UP_FMT        "up %d"
 #define E_D_GP_BREAK_FMT     "b %s:%d"
 #define E_D_GP_CLEAR_FMT     "clear %s:%d"   /* every breakpoint on a line */
-#define E_D_GP_PLACE_ROOM    32      /* "clear " and ":<line>" around a path */
 /* pdb names a breakpoint by its place: any number stands for one it set. */
 #define E_D_GP_ID_SET        1
 
 /* ---- a breakpoint's place, as pdb is told it ---- */
 
 /**
- * e_d_gp_short_path - The path pdb is given in a breakpoint command: @full,
- * or, when that would not fit in one command of the request engine, the
- * path from the directory pdb runs in, which pdb takes too.
- * @full: the file's full path; @out, @n: the path to send.
- *
- * A breakpoint in a script under a very deep directory is then still set,
- * and cleared again, at the start of the session as at a stop.
- */
-static void e_d_gp_short_path(const char *full, char *out, size_t n)
-{
- size_t dlen = strlen(e_d_debugger_dir);
- const char *rest = full + dlen;
-
- if (strlen(full) + E_D_GP_PLACE_ROOM < E_D_REQ_CMD_MAX || dlen == 0 ||
-     strncmp(full, e_d_debugger_dir, dlen))
- {
-  snprintf(out, n, "%s", full);
-  return;
- }
- if (*rest != DIRC && e_d_debugger_dir[dlen - 1] != DIRC)
- {
-  snprintf(out, n, "%s", full);          /* another directory's name */
-  return;
- }
- while (*rest == DIRC)
-  rest++;
- snprintf(out, n, "%s", rest);
-}
-
-/**
- * e_d_gp_place_of - The path pdb is given for the breakpoint list's @file.
+ * e_d_gp_place_of - The path pdb is given for the breakpoint list's @file:
+ * its full path, however deep the file lies, since a command holds a path of
+ * the longest form the system allows.
  * @out, @n: the path.
  */
 static void e_d_gp_place_of(const char *file, char *out, size_t n)
 {
- char full[PATH_MAX];
-
- e_d_brk_path_of(e_d_ga.cn ? e_d_ga.cn : WpeEditor, file, full, sizeof full);
- e_d_gp_short_path(full, out, n);
+ e_d_brk_path_of(e_d_ga.cn ? e_d_ga.cn : WpeEditor, file, out, n);
 }
 
 /**
@@ -22347,13 +22331,10 @@ static void e_d_pdb_settle_cmd_for(const char *marker, char *cmd, size_t n)
  */
 static void e_d_pdb_cursor_brk_cmd(int set, char *cmd, size_t n)
 {
- char place[PATH_MAX];
-
- e_d_gp_short_path(e_d_cursor_brk.path, place, sizeof place);
  if (set)
-  snprintf(cmd, n, E_D_GP_BREAK_FMT, place, e_d_cursor_brk.line);
+  snprintf(cmd, n, E_D_GP_BREAK_FMT, e_d_cursor_brk.path, e_d_cursor_brk.line);
  else
-  snprintf(cmd, n, E_D_GP_CLEAR_FMT, place, e_d_cursor_brk.line);
+  snprintf(cmd, n, E_D_GP_CLEAR_FMT, e_d_cursor_brk.path, e_d_cursor_brk.line);
 }
 
 /* step: Go to cursor's own breakpoint goes at the first stop after it.

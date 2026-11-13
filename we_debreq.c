@@ -339,22 +339,24 @@ static int request_start(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 static void request_end_head(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
                              E_D_REQ_END how, size_t prompt_len)
 {
-	E_D_REQ req = *queue_head(rq);
+	const E_D_REQ *head = queue_head(rq);
+	e_d_answered_fn answered = head->answered;
+	void *ctx = head->ctx;
 	E_D_ANSWER ans = rq->ans;
 
 	memset(&rq->ans, 0, sizeof rq->ans);
 	tail_clear(rq);
+	rq->late_fn = head->late_fn;        /* the command's text is not needed */
+	rq->late_ctx = head->late_ctx;
 	queue_pop(rq);
 	rq->inflight = 0;
 	rq->waiting_shown = 0;
-	rq->late_fn = req.late_fn;
-	rq->late_ctx = req.late_ctx;
 	world_disarm_all(io);
 	answer_drop_prompt(&ans, prompt_len);
 	if (how == E_D_REQ_DONE)
 		answer_join_waiting_errors(&ans, io);
-	if (req.answered)
-		req.answered(how, &ans, req.ctx);
+	if (answered)
+		answered(how, &ans, ctx);
 	answer_clear(&ans);
 }
 
@@ -372,14 +374,60 @@ static void queue_dispatch(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 	}
 }
 
+/* How long a command may be to each debugger the editor measured, and to the
+   ones it did not.  A debugger that is in neither list, or no debugger at
+   all (the build server, the language server), keeps the unmeasured length.
+   gdb, pdb and jdb: measured over a pipe, see we_debreq.h.  lldb: measured
+   the same way; the editor reaches it through its adapter, never this
+   engine, so the row only says what was measured.  sdb, xdb, dbx and a68g
+   have no host here: their row says so and keeps what they always had. */
+typedef struct
+{
+	const char *debugger;
+	size_t max;                     /* bytes with the terminator */
+} CMD_LIMIT;
+
+static const CMD_LIMIT cmd_limits[] = {
+	{ "gdb",  E_D_REQ_CMD_MAX },
+	{ "pdb",  E_D_REQ_CMD_MAX },
+	{ "jdb",  E_D_REQ_CMD_MAX },
+	{ "lldb", E_D_REQ_CMD_MAX },
+	{ "sdb",  E_D_REQ_CMD_UNMEASURED_MAX },
+	{ "xdb",  E_D_REQ_CMD_UNMEASURED_MAX },
+	{ "dbx",  E_D_REQ_CMD_UNMEASURED_MAX },
+	{ "a68g", E_D_REQ_CMD_UNMEASURED_MAX },
+	{ NULL,   E_D_REQ_CMD_UNMEASURED_MAX }
+};
+
+/**
+ * cmd_limit_of - How many bytes a command to this debugger may take.
+ * @debugger: the debugger's name, or NULL.
+ * Return: the row's length; the unmeasured one for a name not in the table.
+ */
+static size_t cmd_limit_of(const char *debugger)
+{
+	const CMD_LIMIT *row;
+
+	for (row = cmd_limits; row->debugger; row++)
+		if (debugger && strcmp(row->debugger, debugger) == 0)
+			return row->max;
+	return row->max;
+}
+
+int e_d_req_cmd_fits(const char *debugger, const char *cmd)
+{
+	return strlen(cmd) < cmd_limit_of(debugger);
+}
+
 /** send_refusal - Why a command cannot be queued now, or E_D_SEND_OK. */
-static int send_refusal(const E_D_REQ_QUEUE *rq, const char *cmd)
+static int send_refusal(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
+                        const char *cmd)
 {
 	if (rq->gone || rq->closing)
 		return E_D_SEND_GONE;
 	if (rq->resync)
 		return E_D_SEND_RESYNC;
-	if (strlen(cmd) >= E_D_REQ_CMD_MAX)
+	if (!e_d_req_cmd_fits(io->name, cmd))
 		return E_D_SEND_TOO_LONG;
 	if (rq->n >= E_D_REQ_QUEUE_MAX)
 		return E_D_SEND_FULL;
@@ -389,7 +437,7 @@ static int send_refusal(const E_D_REQ_QUEUE *rq, const char *cmd)
 int e_d_req_send(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, const char *cmd,
                  e_d_answered_fn answered, void *ctx)
 {
-	int refused = send_refusal(rq, cmd);
+	int refused = send_refusal(rq, io, cmd);
 
 	if (refused != E_D_SEND_OK)
 		return refused;
@@ -758,9 +806,17 @@ static void resync_begin(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 	tail_clear(rq);
 }
 
+/* What a cancel keeps of each request: who to tell, not the command, so the
+   copy on the stack is two pointers per request and not a command's room. */
+typedef struct
+{
+	e_d_answered_fn answered;
+	void *ctx;
+} CANCELLED;
+
 void e_d_req_cancel(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, E_D_REQ_END why)
 {
-	E_D_REQ list[E_D_REQ_QUEUE_MAX];
+	CANCELLED list[E_D_REQ_QUEUE_MAX];
 	E_D_ANSWER first = { NULL, 0, 0, 0 };
 	E_D_ANSWER empty = { NULL, 0, 0, 0 };
 	int count = rq->n, was_inflight = rq->inflight, i;
@@ -771,11 +827,17 @@ void e_d_req_cancel(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, E_D_REQ_END why)
 	}
 	if (count == 0)
 		return;
-	for (i = 0; i < count; i++)
-		list[i] = rq->q[(rq->head + i) % E_D_REQ_QUEUE_MAX];
+	for (i = 0; i < count; i++) {
+		const E_D_REQ *r = &rq->q[(rq->head + i) % E_D_REQ_QUEUE_MAX];
+
+		list[i].answered = r->answered;
+		list[i].ctx = r->ctx;
+	}
 	if (was_inflight) {
-		snprintf(rq->owed_cmd, sizeof rq->owed_cmd, "%s", list[0].cmd);
-		cancel_say(rq, io, why, list[0].cmd);
+		const char *head_cmd = queue_head(rq)->cmd;
+
+		snprintf(rq->owed_cmd, sizeof rq->owed_cmd, "%s", head_cmd);
+		cancel_say(rq, io, why, head_cmd);
 		tail_move_to_answer(rq);        /* the owner sees all that came */
 		first = rq->ans;
 		memset(&rq->ans, 0, sizeof rq->ans);
@@ -845,7 +907,11 @@ static int chain_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx);
  */
 static int chain_send_step(E_D_CHAIN *ch)
 {
-	char cmd[E_D_REQ_CMD_MAX];
+	/* One byte more than any command may take: a step that writes more is
+	   cut to E_D_REQ_CMD_MAX bytes, which every debugger's limit refuses,
+	   so the chain ends failed and a different, shorter command is never
+	   sent in its place. */
+	char cmd[E_D_REQ_CMD_MAX + 1];
 
 	for (;;) {
 		const E_D_STEP *s = &ch->steps[ch->idx];

@@ -787,9 +787,10 @@ folder.  gdb's history file, which by default is @file{.gdb_history} in the
 folder gdb starts in, is moved to the program's folder.  A file your own
 init files write by a relative name, such as a log, is written in gdb's own
 folder, which then stays until the editor ends and goes with it; give such
-a file an absolute name to keep it.  A file whose path holds a colon or a
-@samp{$}, or is too long for one of gdb's commands, cannot be given to
-gdb's auto-load list, and is not offered to @samp{Run it}; the box says so.
+a file an absolute name to keep it.  A file whose path holds a colon, a
+@samp{$}, or one of @samp{*?[}, cannot be given to gdb's auto-load list, and
+is not offered to @samp{Run it}; the box says so.  A path of any length the
+system allows is given to gdb whole, in one command.
 
 @cindex pdb, jdb, started apart from the folder
 pdb and jdb are started the same way, in an empty folder of their own.
@@ -807,10 +808,14 @@ with a @code{commands} block, which pdb answers with a prompt of its own,
 and a file whose path holds a blank, which jdb's one-word @code{read}
 cannot take, are not offered to @samp{Run it}; the box says so.  A
 @file{~/.pdbrc} that continues the program runs it before the move, in
-pdb's own folder.  A folder with one name too long for a pdb command
-(about 225 bytes, each byte outside ASCII written as four) cannot be
-debugged with pdb; the start says so.  If pdb refuses the move, or jdb cannot open the file
-@samp{Run it} loads, the start stops and says so.
+pdb's own folder.  A folder or program path up to the system's path limit
+is given to gdb, pdb and jdb whole, in one command, whatever its depth or
+the letters of its names; a path that holds a control character or a
+blank at its end is still refused, and one longer than the system allows
+is refused with a box that says so.  A @file{.pdbrc} line is sent whole
+up to the most a start-up file is read (16 thousand bytes); a longer file
+is not offered to @samp{Run it}.  If pdb refuses the move, or jdb cannot
+open the file @samp{Run it} loads, the start stops and says so.
 
 @multitable @columnfractions .18 .30 .52
 @headitem Debugger @tab File in the folder @tab When it runs it

@@ -252,9 +252,9 @@ static void call_init(CALL *c, int id)
 
 static void test_request_deadline_fires_without_an_answer(void)
 {
-	FAKE f;
+	static FAKE f;
 	E_D_REQ_IO io;
-	E_D_REQ_QUEUE rq;
+	static E_D_REQ_QUEUE rq;
 	CALL c;
 	char msg[TEXT_ROOM];
 
@@ -328,11 +328,11 @@ static void test_request_deadline_fires_without_an_answer(void)
 
 static void test_requests_go_out_one_at_a_time_and_the_queue_refuses_past_its_bound(void)
 {
-	FAKE f;
+	static FAKE f;
 	E_D_REQ_IO io;
-	E_D_REQ_QUEUE rq;
+	static E_D_REQ_QUEUE rq;
 	CALL c[E_D_REQ_QUEUE_MAX + 1];
-	char cmd[E_D_REQ_CMD_MAX];
+	static char cmd[E_D_REQ_CMD_MAX];
 	int i, rc;
 
 	world_init(&f, &io, 0);
@@ -370,9 +370,154 @@ static void test_requests_go_out_one_at_a_time_and_the_queue_refuses_past_its_bo
 	call_init(&c[0], 0);
 	chk_int("queue: room again", e_d_req_send(&rq, &io, "p again", on_answered, &c[0]),
 	        E_D_SEND_OK);
-	chk_int("queue: command too long", e_d_req_send(&rq, &io,
+	chk_int("queue: a command over the old 255 is taken for gdb", e_d_req_send(&rq, &io,
 	        "p aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-	        on_answered, &c[1]), E_D_SEND_TOO_LONG);
+	        on_answered, &c[1]), E_D_SEND_OK);
+	e_d_req_free(&rq);
+}
+
+/* ---- how long a command may be ---- */
+
+#define HEAD_PDB_CHDIR   "!__import__('os').chdir(b'"
+#define TAIL_PDB_CHDIR   "')"
+#define ESCAPED_BYTE     "\\x41"       /* one byte of a path as pdb's literal writes it */
+#define HEAD_WORDS_MAX   28            /* the words around a path in the move command */
+#define UNMEASURED_BYTES (E_D_REQ_CMD_UNMEASURED_MAX - 1)   /* the longest unmeasured command */
+
+/* @n bytes of 'a' after the word @head. */
+static void make_command(char *out, size_t sz, const char *head, size_t n)
+{
+	size_t at = strlen(head);
+
+	snprintf(out, sz, "%s", head);
+	memset(out + at, 'a', n - at);
+	out[n] = '\0';
+}
+
+/* The move command of pdb for a path of @bytes bytes, every one written as
+   \xNN, the widest way any command writes a path byte. */
+static void make_widest_move(char *out, size_t sz, size_t bytes)
+{
+	size_t i;
+
+	snprintf(out, sz, "%s", HEAD_PDB_CHDIR);
+	for (i = 0; i < bytes; i++)
+		snprintf(out + strlen(out), sz - strlen(out), "%s", ESCAPED_BYTE);
+	snprintf(out + strlen(out), sz - strlen(out), "%s", TAIL_PDB_CHDIR);
+}
+
+/* One send of @cmd to a debugger named @name; the engine is left empty. */
+static int send_to(const char *name, const char *cmd)
+{
+	static FAKE f;
+	static E_D_REQ_QUEUE rq;
+	E_D_REQ_IO io;
+	CALL c;
+	int rc;
+
+	world_init(&f, &io, 0);
+	io.name = name;
+	e_d_req_init(&rq, NULL);
+	call_init(&c, 1);
+	rc = e_d_req_send(&rq, &io, cmd, on_answered, &c);
+	if (rc == E_D_SEND_OK) {
+		chk_int("send_to: the command went out whole", (long)strlen(f.sent[0]),
+		        (long)strlen(cmd));
+		chk_int("send_to: it went out once", f.nsent, 1);
+	}
+	e_d_req_free(&rq);
+	return rc;
+}
+
+/* @scenario SC-debug-125 */
+static void test_the_length_of_a_command_is_the_owners(void)
+{
+	static char cmd[E_D_REQ_CMD_MAX + 16];
+	size_t widest = E_D_REQ_PATH_MAX - 1;
+
+	/* the derivation: a path at the system's limit, four bytes per byte */
+	chk_int("length: a command holds a path in its widest form",
+	        E_D_REQ_CMD_MAX >= E_D_REQ_PATH_MAX * E_D_REQ_PATH_ESCAPE_MAX + 64, 1);
+
+	/* a path of the longest length, in its widest form, with its words */
+	make_widest_move(cmd, sizeof cmd, widest);
+	chk_int("length: the widest move is under the owner's number",
+	        (long)strlen(cmd) < E_D_REQ_CMD_MAX, 1);
+	chk_int("length: it is far over the old 255", (long)strlen(cmd) > 16000, 1);
+	chk_int("length: and it is the widest the words may make", (long)strlen(cmd) <=
+	        (long)(widest * E_D_REQ_PATH_ESCAPE_MAX + HEAD_WORDS_MAX), 1);
+	chk_int("length: gdb takes it", send_to("gdb", cmd), E_D_SEND_OK);
+	chk_int("length: pdb takes it", send_to("pdb", cmd), E_D_SEND_OK);
+	chk_int("length: jdb takes it", send_to("jdb", cmd), E_D_SEND_OK);
+	chk_int("length: lldb takes it", send_to("lldb", cmd), E_D_SEND_OK);
+
+	/* the number itself: one byte under is sent, the number is not */
+	make_command(cmd, sizeof cmd, "p ", E_D_REQ_CMD_MAX - 1);
+	chk_int("length: E_D_REQ_CMD_MAX - 1 bytes are sent", send_to("gdb", cmd), E_D_SEND_OK);
+	make_command(cmd, sizeof cmd, "p ", E_D_REQ_CMD_MAX);
+	chk_int("length: E_D_REQ_CMD_MAX bytes are refused", send_to("gdb", cmd), E_D_SEND_TOO_LONG);
+	chk_int("length: also for pdb", send_to("pdb", cmd), E_D_SEND_TOO_LONG);
+	make_command(cmd, sizeof cmd, "p ", E_D_REQ_CMD_MAX + 10);
+	chk_int("length: and more", send_to("gdb", cmd), E_D_SEND_TOO_LONG);
+
+	/* the debuggers nobody measured, and an engine that is none, keep 255 */
+	make_command(cmd, sizeof cmd, "p ", UNMEASURED_BYTES);
+	chk_int("length: sdb takes 255", send_to("sdb", cmd), E_D_SEND_OK);
+	chk_int("length: xdb takes 255", send_to("xdb", cmd), E_D_SEND_OK);
+	chk_int("length: dbx takes 255", send_to("dbx", cmd), E_D_SEND_OK);
+	chk_int("length: a68g takes 255", send_to("a68g", cmd), E_D_SEND_OK);
+	chk_int("length: an engine with no name takes 255", send_to(NULL, cmd), E_D_SEND_OK);
+	make_command(cmd, sizeof cmd, "p ", UNMEASURED_BYTES + 1);
+	chk_int("length: sdb refuses 256", send_to("sdb", cmd), E_D_SEND_TOO_LONG);
+	chk_int("length: xdb refuses 256", send_to("xdb", cmd), E_D_SEND_TOO_LONG);
+	chk_int("length: dbx refuses 256", send_to("dbx", cmd), E_D_SEND_TOO_LONG);
+	chk_int("length: a68g refuses 256", send_to("a68g", cmd), E_D_SEND_TOO_LONG);
+	chk_int("length: the build server's engine refuses 256", send_to("the build server", cmd),
+	        E_D_SEND_TOO_LONG);
+	chk_int("length: an engine with no name refuses 256", send_to(NULL, cmd), E_D_SEND_TOO_LONG);
+	chk_int("length: but gdb takes 256", send_to("gdb", cmd), E_D_SEND_OK);
+
+	/* the predicate is the same rule */
+	chk_int("fits: gdb, 256 bytes", e_d_req_cmd_fits("gdb", cmd), 1);
+	chk_int("fits: dbx, 256 bytes", e_d_req_cmd_fits("dbx", cmd), 0);
+}
+
+/* ---- a long command through the whole of a request ---- */
+
+static void test_a_long_command_runs_a_whole_request(void)
+{
+	static FAKE f;
+	static E_D_REQ_QUEUE rq;
+	static char cmd[E_D_REQ_CMD_MAX];
+	E_D_REQ_IO io;
+	CALL c, d;
+	char msg[TEXT_ROOM];
+
+	make_widest_move(cmd, sizeof cmd, E_D_REQ_PATH_MAX - 1);
+	world_init(&f, &io, 1);
+	e_d_req_init(&rq, NULL);
+	call_init(&c, 1);
+	call_init(&d, 2);
+	chk_int("long: sent", e_d_req_send(&rq, &io, cmd, on_answered, &c), E_D_SEND_OK);
+	chk_int("long: queued behind it, whole", e_d_req_send(&rq, &io, cmd, on_answered, &d), E_D_SEND_OK);
+	chk_int("long: only the first is out", f.nsent, 1);
+	chk_int("long: the first went out whole", (long)strlen(f.sent[0]), (long)strlen(cmd));
+	feed(&rq, &io, "ok\n" PROMPT);
+	chk_int("long: answered", c.how, E_D_REQ_DONE);
+	chk_int("long: the second went out whole", (long)strlen(f.sent[1]), (long)strlen(cmd));
+
+	/* given up on while it is in flight: the owed command is kept whole,
+	   so the resync and the sentence name it */
+	e_d_req_cancel(&rq, &io, E_D_REQ_CANCELLED);
+	chk_int("long: the cancelled request is called", d.how, E_D_REQ_CANCELLED);
+	chk_int("long: one notice", f.nnotice, 1);
+	chk_has("long: the notice names the command's start", f.notice[0], HEAD_PDB_CHDIR);
+	e_d_req_busy_message(&rq, &io, msg, sizeof msg);
+	chk_has("long: the busy sentence names it too", msg, HEAD_PDB_CHDIR);
+	chk_int("long: the settle command went out after it", f.nsent, 3);
+	chk_str("long: it is the settle command", f.sent[2], SETTLE_CMD);
+	feed(&rq, &io, SETTLE_MARKER "\n" PROMPT);
+	chk_int("long: settled", e_d_req_pending(&rq), 0);
 	e_d_req_free(&rq);
 }
 
@@ -380,9 +525,9 @@ static void test_requests_go_out_one_at_a_time_and_the_queue_refuses_past_its_bo
 
 static void test_request_cancel_empties_the_queue_and_names_the_command(void)
 {
-	FAKE f;
+	static FAKE f;
 	E_D_REQ_IO io;
-	E_D_REQ_QUEUE rq;
+	static E_D_REQ_QUEUE rq;
 	CALL c[3];
 	CALL late;
 	char msg[TEXT_ROOM];
@@ -474,9 +619,9 @@ static void on_late_error(const E_D_ANSWER *err, void *ctx)
 
 static void test_async_line_during_a_request_goes_to_the_session(void)
 {
-	FAKE f;
+	static FAKE f;
 	E_D_REQ_IO io;
-	E_D_REQ_QUEUE rq;
+	static E_D_REQ_QUEUE rq;
 	CALL c;
 
 	world_init(&f, &io, 0);
@@ -626,9 +771,9 @@ static const E_D_STEP chain_steps[] = {
 
 static void test_chain_runs_steps_in_order_and_ends_on_cancel(void)
 {
-	FAKE f;
+	static FAKE f;
 	E_D_REQ_IO io;
-	E_D_REQ_QUEUE rq;
+	static E_D_REQ_QUEUE rq;
 	E_D_REQ_LINK link;
 	E_D_REQUESTER via;
 	CHAIN ch;
@@ -691,6 +836,88 @@ static void test_chain_runs_steps_in_order_and_ends_on_cancel(void)
 	e_d_req_free(&rq);
 }
 
+/* ---- a step's command is never cut and sent ---- */
+
+#define LONG_STEP_BYTES   300        /* more than the old 255, far under the owner's number */
+#define OVERLONG_EXTRA    10         /* how far a step passes the owner's number */
+
+static size_t step_bytes;            /* how many bytes the next step writes */
+
+static int step_cmd_sized(char *cmd, size_t n, void *ctx)
+{
+	size_t at;
+
+	(void)ctx;
+	snprintf(cmd, n, "%s", "b ");
+	at = strlen(cmd);
+	for (; at + 1 < n && at < step_bytes; at++)
+		cmd[at] = 'f';
+	cmd[at] = '\0';
+	return 1;
+}
+
+static const E_D_STEP sized_steps[] = {
+	{ step_cmd_sized, step_answered_stop },
+	{ NULL, NULL }
+};
+
+/* Run a one-step chain whose command is @bytes long against a debugger named
+   @name; returns what the chain finished with, -1 if it did not finish. */
+static int run_sized_chain(const char *name, size_t bytes, int *sent, size_t *sent_len)
+{
+	static FAKE f;
+	static E_D_REQ_QUEUE rq;
+	E_D_REQ_IO io;
+	E_D_REQ_LINK link;
+	E_D_REQUESTER via;
+	CHAIN ch;
+
+	world_init(&f, &io, 0);
+	io.name = name;
+	e_d_req_init(&rq, NULL);
+	link.rq = &rq;
+	link.io = &io;
+	via.request = e_d_req_request;
+	via.engine = &link;
+	memset(&ch, 0, sizeof ch);
+	step_bytes = bytes;
+	e_d_chain_run(&via, sized_steps, &ch, chain_finished);
+	*sent = f.nsent;
+	*sent_len = f.nsent > 0 ? strlen(f.sent[0]) : 0;
+	if (f.nsent > 0)
+		feed(&rq, &io, "ok\n" PROMPT);
+	e_d_req_free(&rq);
+	return ch.finished_calls == 1 ? ch.finished_ok : -1;
+}
+
+static void test_a_step_is_sent_whole_or_not_at_all(void)
+{
+	int sent;
+	size_t len;
+
+	/* a step of 300 bytes was cut to 255 and sent: gdb then answered about
+	   a file that does not exist */
+	chk_int("step: a 300-byte step ends well", run_sized_chain("gdb", LONG_STEP_BYTES, &sent, &len), 1);
+	chk_int("step: it was sent", sent, 1);
+	chk_int("step: whole", (long)len, LONG_STEP_BYTES);
+
+	/* the longest command the owner takes is sent whole too */
+	chk_int("step: the longest command ends well",
+	        run_sized_chain("gdb", E_D_REQ_CMD_MAX - 1, &sent, &len), 1);
+	chk_int("step: the longest was sent whole", (long)len, E_D_REQ_CMD_MAX - 1);
+
+	/* a step that writes more than the owner takes is cut to the owner's
+	   number, which every debugger refuses: nothing is sent and the chain
+	   ends failed */
+	chk_int("step: an overlong step fails the chain",
+	        run_sized_chain("gdb", E_D_REQ_CMD_MAX + OVERLONG_EXTRA, &sent, &len), 0);
+	chk_int("step: and nothing was sent", sent, 0);
+
+	/* a debugger nobody measured: a step over 255 is refused, as before */
+	chk_int("step: dbx refuses a 300-byte step", run_sized_chain("dbx", LONG_STEP_BYTES, &sent, &len), 0);
+	chk_int("step: and nothing was sent for it", sent, 0);
+}
+
 /* ---- edges the request engine must hold ---- */
 
 #define MI_PROMPT "(gdb) \n"
@@ -708,9 +935,9 @@ static int mi_answer_ended(const E_D_ANSWER *a, size_t *prompt_len, void *io)
 
 static void test_request_engine_edges(void)
 {
-	FAKE f;
+	static FAKE f;
 	E_D_REQ_IO io;
-	E_D_REQ_QUEUE rq;
+	static E_D_REQ_QUEUE rq;
 	CALL c, d;
 	const char *two = "^done\n" MI_PROMPT "*stopped,reason=\"x\"\n";
 	size_t took, big = (size_t)E_D_REQ_ANSWER_MAX + 4096, i;
@@ -818,9 +1045,9 @@ static void test_request_engine_edges(void)
 
 static void test_error_line_before_the_prompt_stays_with_its_answer(void)
 {
-	FAKE f;
+	static FAKE f;
 	E_D_REQ_IO io;
-	E_D_REQ_QUEUE rq;
+	static E_D_REQ_QUEUE rq;
 	CALL c, d;
 
 	/* the refusal was written before the prompt, the prompt is read first:
@@ -907,11 +1134,11 @@ static void fake_resync_settle(char *cmd, size_t cmd_n, char *marker,
 
 static void test_resync_waits_for_its_own_numbered_echo(void)
 {
-	FAKE f;
+	static FAKE f;
 	E_D_REQ_IO io;
-	E_D_REQ_QUEUE rq;
+	static E_D_REQ_QUEUE rq;
 	CALL c, d;
-	char owed[E_D_REQ_CMD_MAX];
+	static char owed[E_D_REQ_CMD_MAX];
 	const char *text = "SETTLED-12\nSETTLED-1\n";
 
 	chk_int("marker: a longer number is not it",
@@ -952,8 +1179,11 @@ int main(void)
 	test_request_deadline_fires_without_an_answer();
 	test_requests_go_out_one_at_a_time_and_the_queue_refuses_past_its_bound();
 	test_request_cancel_empties_the_queue_and_names_the_command();
+	test_the_length_of_a_command_is_the_owners();
+	test_a_long_command_runs_a_whole_request();
 	test_async_line_during_a_request_goes_to_the_session();
 	test_chain_runs_steps_in_order_and_ends_on_cancel();
+	test_a_step_is_sent_whole_or_not_at_all();
 	test_request_engine_edges();
 	test_error_line_before_the_prompt_stays_with_its_answer();
 	test_resync_waits_for_its_own_numbered_echo();

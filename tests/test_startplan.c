@@ -1998,70 +1998,325 @@ static void case_gdb_apart_owner(void)
  unlink(prog);
 }
 
-/* How many of a plan's editor lines start with @head, and whether every one of them
-   is a command the request engine takes. */
-static int lines_with(const WpeStartPlan *p, const char *head, int *all_short)
+/* ---- A path as long as the system allows: one command holds it ---------- */
+
+#define NAME_ROOM        256        /* NAME_MAX and its terminator */
+#define NAME_BYTES       255        /* the longest name a file system takes */
+#define LONG_NAME_BYTES  200        /* a name of a deep folder's level */
+#define PATH_HEADROOM    200        /* what a deep folder leaves under PATH_ROOM */
+#define E_ACUTE          "\xc3\xa9"    /* U+00E9 in UTF-8: two bytes */
+#define CJK_ZHONG        "\xe4\xb8\xad" /* U+4E2D in UTF-8: three bytes */
+#define PDB_CHDIR        "!__import__('os').chdir(b'"
+#define LINE_ROOM        20000      /* a command the request engine takes, with room */
+#define HISTORY_FIX_ROOM E_D_REQ_CMD_MAX
+
+/* @unit written @n times, as one name. */
+static void repeat_unit(char *out, size_t sz, const char *unit, int n)
+{
+ int i;
+
+ out[0] = '\0';
+ for (i = 0; i < n; i++)
+  snprintf(out + strlen(out), sz - strlen(out), "%s", unit);
+}
+
+/* Make @depth folders below @from, each named @name; @out is the deepest. */
+static void deep_folder(char *out, size_t sz, const char *from, const char *name, int depth)
+{
+ int i;
+
+ snprintf(out, sz, "%s", from);
+ for (i = 0; i < depth; i++)
+ {
+  snprintf(out + strlen(out), sz - strlen(out), "/%s", name);
+  mkdir(out, 0700);
+ }
+}
+
+/* Make one folder below @from that is @total bytes long: names of
+   LONG_NAME_BYTES, then a last name that makes up the rest. */
+static void deep_folder_of_size(char *out, size_t sz, const char *from, size_t total)
+{
+ char name[NAME_ROOM];
+ size_t left;
+
+ snprintf(out, sz, "%s", from);
+ while ((left = total - strlen(out)) > NAME_BYTES + 1)
+ {
+  memset(name, 'n', LONG_NAME_BYTES);
+  name[LONG_NAME_BYTES] = '\0';
+  snprintf(out + strlen(out), sz - strlen(out), "/%s", name);
+  mkdir(out, 0700);
+ }
+ memset(name, 'm', left - 1);        /* the separator takes one byte */
+ name[left - 1] = '\0';
+ snprintf(out + strlen(out), sz - strlen(out), "/%s", name);
+ mkdir(out, 0700);
+}
+
+/* Remove what deep_folder or deep_folder_of_size made, down to @stop. */
+static void deep_remove(char *folder, const char *stop)
+{
+ while (strcmp(folder, stop) != 0 && strlen(folder) > strlen(stop))
+ {
+  rmdir(folder);
+  *strrchr(folder, '/') = '\0';
+ }
+}
+
+/* How many levels of names of @name_bytes a folder can have under @proj
+   and keep PATH_HEADROOM bytes to spare. */
+static int levels_that_fit(size_t name_bytes)
+{
+ return (int)((PATH_ROOM - PATH_HEADROOM - strlen(proj)) / (name_bytes + 1));
+}
+
+/* How many times @needle is in @text. */
+static int count_of(const char *text, const char *needle)
+{
+ int n = 0;
+
+ for (; (text = strstr(text, needle)) != NULL; text += strlen(needle))
+  n++;
+ return n;
+}
+
+/* How many of a plan's input lines begin with @head. */
+static int lines_with(const WpeStartPlan *p, const char *head)
 {
  int i, n = 0;
 
  for (i = 0; i < p->ninput; i++)
- {
-  if (strlen(p->input[i].text) > 255)
-   *all_short = 0;
   if (strncmp(p->input[i].text, head, strlen(head)) == 0)
    n++;
- }
  return n;
 }
 
-/* A program under a folder longer than a command is reached in several, and loaded
-   from the folder gdb has moved to. */
-static void case_gdb_long_folder(void)
+/* The plan's line @i, or "" past the end. */
+static const char *input_at(const WpeStartPlan *p, int i)
 {
- char deep[PATH_ROOM], prog[PATH_ROOM], name[41];
- WpeStartPlan *p;
- int i, short_lines = 1, absolute, relative;
+ return i >= 0 && i < p->ninput ? p->input[i].text : "";
+}
 
- memset(name, 'd', 40);
- name[40] = '\0';
- snprintf(deep, sizeof deep, "%s", proj);
- for (i = 0; i < 20; i++)
- {
-  snprintf(deep + strlen(deep), sizeof deep - strlen(deep), "/%s", name);
-  mkdir(deep, 0700);
- }
+/* @scenario SC-debug-128 */
+/* S1, S2: a folder with one name of the longest length a file system takes
+   cannot be reached by any shorter command; the start must not be refused. */
+static void case_gdb_longest_name(void)
+{
+ char name[NAME_ROOM], deep[PATH_ROOM], prog[PATH_ROOM], want[PATH_ROOM];
+ WpeStartPlan *p;
+
+ repeat_unit(name, sizeof name, "a", NAME_BYTES);
+ deep_folder(deep, sizeof deep, proj, name, 1);
  snprintf(prog, sizeof prog, "%s/t.e", deep);
  write_file(prog, "");
 
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, "t.e");
- expect_int("a long folder is reached in several commands", lines_with(p, "cd ", &short_lines) > 2, 1);
- expect_int("the first is absolute", lines_with(p, "cd /", &short_lines), 1);
- absolute = lines_with(p, "cd /", &short_lines);
- relative = lines_with(p, "cd ./", &short_lines);
- expect_int("the others are written from where gdb is", absolute + relative, lines_with(p, "cd ", &short_lines));
- expect_int("none is longer than a command", short_lines, 1);
- expect_str("the program loads from the folder", p->ninput ? p->input[p->ninput - 1].text : "", "file ./t.e");
- expect_int("the program is still the plan's absolute path", wpe_startplan_program_path(p) != NULL &&
-            strcmp(wpe_startplan_program_path(p), prog) == 0, 1);
- expect_int("the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ expect_int("gdb: a folder of one 255-byte name is not refused", p->contain_refused == NULL, 1);
+ expect_int("gdb: a pin, one cd and the program", p->ninput, 3);
+ snprintf(want, sizeof want, "cd %s", deep);
+ expect_int("gdb: exactly one cd", lines_with(p, "cd "), 1);
+ expect_str("gdb: the cd is the whole absolute folder", input_at(p, 1), want);
+ snprintf(want, sizeof want, "file %s", prog);
+ expect_str("gdb: the program is loaded by its absolute path", input_at(p, 2), want);
+ expect_int("gdb: the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
  end_plan(p);
 
- short_lines = 1;
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", "mi", deep, "t.e");
- expect_int("over MI too", lines_with(p, "-environment-cd \"", &short_lines) > 2, 1);
- expect_int("the first is absolute", lines_with(p, "-environment-cd \"/", &short_lines), 1);
- expect_int("none is longer than a command", short_lines, 1);
- expect_str("the program loads from the folder", p->ninput ? p->input[p->ninput - 1].text : "",
-            "-file-exec-and-symbols \"./t.e\"");
- expect_int("the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ expect_int("MI: a pin, one cd and the program", p->ninput, 3);
+ snprintf(want, sizeof want, "-environment-cd \"%s\"", deep);
+ expect_str("MI: one cd with the whole folder", input_at(p, 1), want);
+ snprintf(want, sizeof want, "-file-exec-and-symbols \"%s\"", prog);
+ expect_str("MI: the program by its absolute path", input_at(p, 2), want);
+ expect_int("MI: the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
  end_plan(p);
 
  unlink(prog);
- for (i = 0; i < 20; i++)
- {
-  rmdir(deep);
-  *strrchr(deep, '/') = '\0';
- }
+ deep_remove(deep, proj);
+}
+
+/* S3, S4: pdb's move writes every byte over ASCII as four, so a folder
+   named in another language, or a long ASCII name, was refused. */
+static void case_pdb_wide_names(void)
+{
+ char name[NAME_ROOM], rest[NAME_ROOM], deep[PATH_ROOM], prog[PATH_ROOM];
+ const char *line;
+ WpeStartPlan *p;
+
+ repeat_unit(name, sizeof name, CJK_ZHONG, 20);
+ deep_folder(deep, sizeof deep, proj, name, 1);
+ snprintf(prog, sizeof prog, "%s/t.py", deep);
+ write_file(prog, "");
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, deep, "t.py");
+ expect_int("pdb: a folder of 20 CJK characters is not refused", p->contain_refused == NULL, 1);
+ expect_int("pdb: one move line", p->ninput, 1);
+ line = input_at(p, 0);
+ expect_int("pdb: it is a chdir of bytes", strncmp(line, PDB_CHDIR, strlen(PDB_CHDIR)), 0);
+ expect_int("pdb: the name's twenty characters are written byte by byte",
+            count_of(line, "\\xe4\\xb8\\xad"), 20);
+ expect_int("pdb: the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ end_plan(p);
+ unlink(prog);
+ deep_remove(deep, proj);
+
+ repeat_unit(name, sizeof name, E_ACUTE, 85);
+ repeat_unit(rest, sizeof rest, "x", 85);
+ strcat(name, rest);
+ deep_folder(deep, sizeof deep, proj, name, 1);
+ snprintf(prog, sizeof prog, "%s/t.py", deep);
+ write_file(prog, "");
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, deep, "t.py");
+ expect_int("pdb: a name of 255 bytes, 85 of them two-byte letters, is not refused",
+            p->contain_refused == NULL, 1);
+ expect_int("pdb: one move line", p->ninput, 1);
+ line = input_at(p, 0);
+ expect_int("pdb: longer than the old 255", strlen(line) > 255, 1);
+ expect_int("pdb: the engine takes it", e_d_req_cmd_fits("pdb", line), 1);
+ expect_int("pdb: the 85 letters are written byte by byte", count_of(line, "\\xc3\\xa9"), 85);
+ expect_int("pdb: the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ end_plan(p);
+ unlink(prog);
+ deep_remove(deep, proj);
+}
+
+/* S5: the deepest folder the system allows, made of non-ASCII names: pdb's
+   move, four bytes per byte, still fits one command, and the engine takes
+   it. */
+static void case_pdb_deepest_folder(void)
+{
+ char name[NAME_ROOM], deep[PATH_ROOM], prog[PATH_ROOM];
+ const char *line;
+ WpeStartPlan *p;
+ int levels = levels_that_fit(2 * 127);
+
+ repeat_unit(name, sizeof name, E_ACUTE, 127);
+ deep_folder(deep, sizeof deep, proj, name, levels);
+ snprintf(prog, sizeof prog, "%s/t.py", deep);
+ write_file(prog, "");
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, deep, "t.py");
+ expect_int("pdb: a folder of about 3.8 KB of two-byte letters is not refused",
+            p->contain_refused == NULL, 1);
+ expect_int("pdb: one move line", p->ninput, 1);
+ line = input_at(p, 0);
+ expect_int("pdb: the line is far over the old 255", strlen(line) > 3000, 1);
+ expect_int("pdb: and the engine takes it", e_d_req_cmd_fits("pdb", line), 1);
+ expect_int("pdb: the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ end_plan(p);
+ unlink(prog);
+ deep_remove(deep, proj);
+}
+
+/* S6: a deep ASCII folder is one move line and the program's absolute path,
+   not a chain of cd; the history rule always has its command. */
+static void case_gdb_long_folder(void)
+{
+ char name[NAME_ROOM], deep[PATH_ROOM], prog[PATH_ROOM], want[PATH_ROOM];
+ static char ask[HISTORY_FIX_ROOM], fix[HISTORY_FIX_ROOM];
+ WpeStartPlan *p;
+
+ memset(name, 'd', LONG_NAME_BYTES);
+ name[LONG_NAME_BYTES] = '\0';
+ deep_folder(deep, sizeof deep, proj, name, levels_that_fit(LONG_NAME_BYTES));
+ snprintf(prog, sizeof prog, "%s/t.e", deep);
+ write_file(prog, "");
+
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, "t.e");
+ expect_int("a 3.8 KB folder is one cd, not a chain", lines_with(p, "cd "), 1);
+ expect_int("the plan has the pin, the cd and the program: three lines", p->ninput, 3);
+ snprintf(want, sizeof want, "cd %s", deep);
+ expect_str("the cd is the whole absolute folder", input_at(p, 1), want);
+ snprintf(want, sizeof want, "file %s", prog);
+ expect_str("the program loads by its absolute path", input_at(p, 2), want);
+ expect_int("the program is still the plan's absolute path", wpe_startplan_program_path(p) != NULL &&
+            strcmp(wpe_startplan_program_path(p), prog) == 0, 1);
+ expect_int("the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ expect_int("the history rule has its command", wpe_startplan_history_lines(p, ask, sizeof ask,
+            fix, sizeof fix), 0);
+ snprintf(want, sizeof want, "set history filename %s/.gdb_history", deep);
+ expect_str("and it names the folder's own history file", fix, want);
+ end_plan(p);
+
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", "mi", deep, "t.e");
+ expect_int("over MI too: one cd", lines_with(p, "-environment-cd \""), 1);
+ expect_int("over MI too: three lines", p->ninput, 3);
+ snprintf(want, sizeof want, "-file-exec-and-symbols \"%s\"", prog);
+ expect_str("the program by its absolute path", input_at(p, 2), want);
+ expect_int("the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
+ expect_int("the MI history rule has its command", wpe_startplan_history_lines(p, ask, sizeof ask,
+            fix, sizeof fix), 0);
+ end_plan(p);
+
+ unlink(prog);
+ deep_remove(deep, proj);
+}
+
+/* S9, S10: a path longer than the system allows is refused for that reason,
+   and a path that is merely unsafe still says so. */
+static void case_long_path_refusals(void)
+{
+ static char long_folder[PATH_ROOM + 16];
+ char deep[PATH_ROOM], name[NAME_ROOM], bad[PATH_ROOM];
+ WpeStartPlan *p;
+ int rc;
+
+ /* a folder string longer than any path: realpath cannot take it */
+ memset(long_folder, 'q', PATH_ROOM + 10);
+ long_folder[0] = '/';
+ long_folder[PATH_ROOM + 10] = '\0';
+ p = wpe_startplan_new(WPE_START_DEBUGGER, "gdb");
+ wpe_startplan_set_file(p, "this folder", proj);
+ rc = wpe_startplan_contain(p, "gdb", NULL, long_folder, "t.e");
+ expect_int("a folder past the system's limit: contain says no", rc, -1);
+ expect_str("and says why", p->contain_refused, WPE_STARTPLAN_REFUSE_DEBUG_LONG);
+ expect_int("the plan is refused", wpe_startplan_judge(p), WPE_PLAN_REFUSED);
+ expect_str("with that reason", p->refused, WPE_STARTPLAN_REFUSE_DEBUG_LONG);
+ end_plan(p);
+
+ /* a folder near the limit and a program name that does not fit under it */
+ deep_folder_of_size(deep, sizeof deep, proj, PATH_ROOM - 60);
+ memset(name, 'p', 100);
+ name[100] = '\0';
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, name);
+ expect_str("a program whose path passes the limit: the reason", p->contain_refused,
+            WPE_STARTPLAN_REFUSE_DEBUG_LONG);
+ expect_int("the plan is refused", wpe_startplan_judge(p), WPE_PLAN_REFUSED);
+ end_plan(p);
+ deep_remove(deep, proj);
+
+ /* the positive control: an unsafe path keeps its own reason */
+ snprintf(bad, sizeof bad, "%s/bad\001dir", proj);
+ make_dir(bad);
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, bad, NULL);
+ expect_str("a folder with a control character is still unsafe", p->contain_refused,
+            WPE_STARTPLAN_REFUSE_DEBUG_PATH);
+ expect_int("and the plan is refused", wpe_startplan_judge(p), WPE_PLAN_REFUSED);
+ end_plan(p);
+ rmdir(bad);
+}
+
+/* S6b: a folder within a few bytes of the system's limit: the history file's
+   path passes the limit by the separator and its name, and the rule still has
+   its command, which gdb is left to judge. */
+static void case_gdb_folder_at_the_limit(void)
+{
+ char deep[PATH_ROOM];
+ static char want[HISTORY_FIX_ROOM], ask[HISTORY_FIX_ROOM], fix[HISTORY_FIX_ROOM];
+ const size_t total = PATH_ROOM - 8;
+ WpeStartPlan *p;
+
+ deep_folder_of_size(deep, sizeof deep, proj, total);
+ expect_int("the folder is as long as the test meant", (int)strlen(deep), (int)total);
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, NULL);
+ expect_int("a folder near the system's limit is not refused", p->contain_refused == NULL, 1);
+ expect_int("one cd of the whole folder", lines_with(p, "cd "), 1);
+ expect_int("the history file's path passes the limit",
+            (int)(strlen(deep) + strlen("/.gdb_history")) >= PATH_ROOM, 1);
+ expect_int("and the rule has its command anyway", wpe_startplan_history_lines(p, ask, sizeof ask,
+            fix, sizeof fix), 0);
+ snprintf(want, sizeof want, "set history filename %s/.gdb_history", deep);
+ expect_str("naming the folder's history file", fix, want);
+ end_plan(p);
+ deep_remove(deep, proj);
 }
 
 /* An answer remembered for a gdb start before it started apart asks once more: the
@@ -2347,6 +2602,7 @@ static void case_load_pdbrc(void)
  expect_str("the indented command is sent", p->ninput > 2 ? p->input[2].text : "", "  p 2");
  end_plan(p);
 
+ /* A line of 398 bytes, which was refused, is a command like any other. */
  memset(longline, 'x', sizeof longline - 2);
  longline[0] = 'p';
  longline[1] = ' ';
@@ -2356,59 +2612,132 @@ static void case_load_pdbrc(void)
  p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
  wpe_startplan_tool_reads(p, "pdb");
  wpe_startplan_judge(p);
- expect_int("a line longer than a command is not sent", wpe_startplan_load_lines(p), -1);
- expect_int("and Run it is not offered", p->load_refused != NULL, 1);
+ expect_int("a line of 398 bytes is sent", wpe_startplan_load_lines(p), 1);
+ expect_int("and Run it is offered", p->load_refused == NULL, 1);
+ expect_int("whole", p->ninput > 1 ? (int)strlen(p->input[1].text) : -1, (int)sizeof longline - 2);
  end_plan(p);
 
- /* The same length cut at ";;" into two commands that fit. */
+ /* The same length cut at ";;" into two commands. */
  longline[200] = ';';
  longline[201] = ';';
  write_file(rcp, longline);
  p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
  wpe_startplan_tool_reads(p, "pdb");
  wpe_startplan_judge(p);
- expect_int("a long line cut at ;; into commands that fit is sent", wpe_startplan_load_lines(p), 2);
+ expect_int("a long line cut at ;; into commands is sent as them", wpe_startplan_load_lines(p), 2);
  end_plan(p);
  unlink(rcp);
 }
 
-/* A program under a folder longer than a command: pdb reaches it in several chdir. */
+#define PDBRC_WHOLE_BYTES  16000   /* a file under WPE_STARTPLAN_READS_MAX */
+#define PDBRC_TOO_BYTES    17000   /* a file over it */
+
+/* S7: a .pdbrc line is sent whole up to the most a start-up file is read; a
+   file past that is not run unseen. */
+static void case_load_pdbrc_longest_line(void)
+{
+ char rcp[PATH_ROOM];
+ char *text = malloc(PDBRC_TOO_BYTES + 2);
+ WpeStartPlan *p;
+
+ if (!text) { fail("long .pdbrc line", "out of memory"); return; }
+ file_in(rcp, sizeof rcp, proj, ".pdbrc");
+
+ memset(text, 'x', PDBRC_WHOLE_BYTES);
+ text[0] = 'p';
+ text[1] = ' ';
+ text[PDBRC_WHOLE_BYTES] = '\n';
+ text[PDBRC_WHOLE_BYTES + 1] = '\0';
+ write_file(rcp, text);
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
+ wpe_startplan_tool_reads(p, "pdb");
+ wpe_startplan_judge(p);
+ expect_int("a 16000-byte line in a readable file is sent", wpe_startplan_load_lines(p), 1);
+ expect_int("whole", p->ninput > 1 ? (int)strlen(p->input[1].text) : -1, PDBRC_WHOLE_BYTES);
+ expect_int("the engine takes it", e_d_req_cmd_fits("pdb", input_at(p, 1)), 1);
+ end_plan(p);
+
+ memset(text, 'x', PDBRC_TOO_BYTES);
+ text[0] = 'p';
+ text[1] = ' ';
+ text[PDBRC_TOO_BYTES] = '\n';
+ text[PDBRC_TOO_BYTES + 1] = '\0';
+ write_file(rcp, text);
+ p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
+ wpe_startplan_tool_reads(p, "pdb");
+ wpe_startplan_judge(p);
+ expect_int("a file past what is read is listed too long", wpe_startplan_reads_too_long(p), 1);
+ end_plan(p);
+
+ free(text);
+ unlink(rcp);
+}
+
+/* A script under a deep folder: pdb moves there with one chdir. */
 static void case_pdb_long_folder(void)
 {
- char deep[PATH_ROOM], prog[PATH_ROOM], name[41];
+ char deep[PATH_ROOM], prog[PATH_ROOM], name[NAME_ROOM];
  WpeStartPlan *p;
- int i, short_lines = 1, absolute, relative;
 
- memset(name, 'd', 40);
- name[40] = '\0';
- snprintf(deep, sizeof deep, "%s", proj);
- for (i = 0; i < 20; i++)
- {
-  snprintf(deep + strlen(deep), sizeof deep - strlen(deep), "/%s", name);
-  mkdir(deep, 0700);
- }
+ memset(name, 'd', LONG_NAME_BYTES);
+ name[LONG_NAME_BYTES] = '\0';
+ deep_folder(deep, sizeof deep, proj, name, levels_that_fit(LONG_NAME_BYTES));
  snprintf(prog, sizeof prog, "%s/t.py", deep);
  write_file(prog, "");
 
  p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, deep, "t.py");
- expect_int("a long folder is reached in several chdir", lines_with(p, "!__import__('os').chdir(", &short_lines) > 2, 1);
- absolute = lines_with(p, "!__import__('os').chdir(b'/", &short_lines);
- relative = lines_with(p, "!__import__('os').chdir(b'./", &short_lines);
- expect_int("the first is absolute", absolute, 1);
- expect_int("the others are written from where pdb is", absolute + relative,
-            lines_with(p, "!__import__('os').chdir(", &short_lines));
- expect_int("none is longer than a command", short_lines, 1);
+ expect_int("a 3.8 KB folder is one chdir, not a chain", lines_with(p, PDB_CHDIR), 1);
+ expect_int("and the plan's only line", p->ninput, 1);
+ expect_int("the engine takes it", e_d_req_cmd_fits("pdb", input_at(p, 0)), 1);
  expect_int("the script is still the plan's absolute path", wpe_startplan_program_path(p) != NULL &&
             strcmp(wpe_startplan_program_path(p), prog) == 0, 1);
  expect_int("the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
  end_plan(p);
 
  unlink(prog);
- for (i = 0; i < 20; i++)
- {
-  rmdir(deep);
-  *strrchr(deep, '/') = '\0';
- }
+ deep_remove(deep, proj);
+}
+
+/* S8: jdb's read and lldb's source of a start-up file in a deep folder. */
+static void case_jdb_lldb_deep_startup(void)
+{
+ char name[NAME_ROOM], deep[PATH_ROOM], init[PATH_ROOM], want[PATH_ROOM];
+ WpeStartPlan *p;
+
+ memset(name, 'j', LONG_NAME_BYTES);
+ name[LONG_NAME_BYTES] = '\0';
+ deep_folder(deep, sizeof deep, proj, name, levels_that_fit(LONG_NAME_BYTES));
+ snprintf(init, sizeof init, "%s/jdb.ini", deep);
+ write_file(init, "stop at Main:3\n");
+
+ p = contained_plan(WPE_START_DEBUGGER, "jdb", "jdb", NULL, deep, NULL);
+ wpe_startplan_tool_reads(p, "jdb");
+ wpe_startplan_judge(p);
+ expect_int("jdb: the start-up file in a deep folder is listed", p->npath >= 1, 1);
+ expect_int("jdb: Run it adds its read", wpe_startplan_load_lines(p), 1);
+ snprintf(want, sizeof want, "read %s", init);
+ expect_str("jdb: one read of the absolute path", input_at(p, p->ninput - 1), want);
+ expect_int("jdb: the engine takes the line", e_d_req_cmd_fits("jdb", input_at(p, p->ninput - 1)), 1);
+ expect_int("jdb: the line is longer than the old 255", strlen(input_at(p, p->ninput - 1)) > 255, 1);
+ end_plan(p);
+ unlink(init);
+
+ snprintf(init, sizeof init, "%s/.lldbinit", deep);
+ write_file(init, "version\n");
+ wpe_startplan_rows_designed(1);
+ p = wpe_startplan_new(WPE_START_DEBUG_ADAPTER, "lldb");
+ wpe_startplan_set_file(p, "this folder", deep);
+ wpe_startplan_word(p, "lldb-dap", WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
+ wpe_startplan_contain(p, "dap", "lldb-dap", deep, NULL);
+ wpe_startplan_tool_reads(p, "lldb");
+ wpe_startplan_judge(p);
+ expect_int("lldb: Run it adds its source", wpe_startplan_load_lines(p), 1);
+ snprintf(want, sizeof want, "command source \"%s\"", init);
+ expect_str("lldb: one source of the absolute path", p->ninit > 1 ? p->init[1].text : "", want);
+ end_plan(p);
+ wpe_startplan_rows_designed(0);
+ unlink(init);
+ deep_remove(deep, proj);
 }
 
 /* An answer remembered for a pdb or jdb start before it started apart asks once more. */
@@ -2506,9 +2835,16 @@ int main(void)
  case_contain_gdb_asks_again();
  case_gdb_apart_owner();
  case_gdb_long_folder();
+ case_gdb_longest_name();
+ case_pdb_wide_names();
+ case_pdb_deepest_folder();
+ case_gdb_folder_at_the_limit();
+ case_long_path_refusals();
  case_load_lines();
  case_load_pdbrc();
+ case_load_pdbrc_longest_line();
  case_pdb_long_folder();
+ case_jdb_lldb_deep_startup();
  case_contain_pdb_jdb_asks_again();
  teardown();
  if (failures) { printf("%d failure(s)\n", failures); return 1; }
