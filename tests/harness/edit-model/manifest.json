@@ -428,6 +428,20 @@
    "layer": "ncurses",
    "test": "tests/test_chrome_ascii.py::test_c_locale_dialog_field_shows_a_mark_for_each_glyph",
    "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "The owner of the text puts the cursor, the block marks, the find mark and the anchor on a glyph or at a row's end, never between the bytes of one character",
+   "layer": "c-unit",
+   "test": "test_splice",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-53",
+   "requirement": "The model-free check reads the cursor as well as the marks: a cursor inside a character is a finding",
+   "layer": "ncurses",
+   "test": "tests/test_edit_model_channel.py::test_the_self_checks_refuse_a_dump_that_breaks_them",
+   "status": "new"
   }
  ]
 }

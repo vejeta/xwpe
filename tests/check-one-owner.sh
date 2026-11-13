@@ -135,6 +135,10 @@ wpe_chrome_suppress we_paint.c
 e_x_ we_xterm.c WeXterm.c we_render_cairo.c
 mxlines_write we_buffer.c
 bf_alloc we_buffer.c
+pos_field we_buffer.c
+pos_prefix we_buffer.c
+pos_whole we_buffer.c
+pos_address we_buffer.c
 e_undo_sw
 e_redo_sw
 EOF
@@ -152,6 +156,19 @@ EOF
 # way writes mxlines or reallocates bf, and is seen here.  This section is
 # strict in every mode: no line of the allow file may stand for it unless
 # it is a permanent exception with its reason.
+
+# Where the cursor and the marks stand has one owner as well (we_buffer.c):
+# a position is a row and a byte column, and every write of one goes through
+# the owner's calls (e_buffer_cursor_set, e_buffer_mark_set, ...), which end
+# in the rule that a position is the first byte of a glyph or a row's end.
+# Four source rules name the writes: a field of a position assigned or
+# stepped (pos_field), stepped with a prefix operator (pos_prefix), a whole
+# position assigned (pos_whole), and the address of one handed out
+# (pos_address), so a helper that writes through a pointer cannot hide.
+# The regexes are in pos_rule_re, spelled with brackets because awk -v eats
+# backslashes; a self-test runs them over a fixture before the scan.  Until
+# the last writer is converted the offenders are counted lines of the allow
+# file; the count may only fall.
 
 # The screen has one owner (we_paint.c): a box, a menu or a prefix that
 # reads keys says so to it, and content from outside the user's keys is
@@ -232,6 +249,22 @@ count_assign() {
     END { print n + 0 }' "$2"
 }
 
+# The regex of one position rule, in the bracket spelling awk -v keeps
+# whole: the only backslash is \t inside [ \t], which -v turns into a tab on
+# purpose.  POS_IDENT is an identifier that does not end in "fb" (a colour
+# table handle, whose "fa" field is a colour and no position).  The cursor
+# is written as b, or as a path that ends in ->b, ->bz, ...
+POS_IDENT='([A-Za-z0-9_]|[A-Za-z0-9_]*([A-Za-eg-z0-9_][A-Za-z0-9_]|f[A-Zac-z0-9_]))'
+POS_NAMES="pos_field pos_prefix pos_whole pos_address"
+pos_rule_re() {
+  case $1 in
+    pos_field) printf '%s\n' '(->|[.])(b|mark_begin|mark_end|ks|fa|fe)[.](x|y)[ \t]*[)]?[ \t]*([+][+]|--|[+]=|-=|=[^=])' ;;
+    pos_prefix) printf '%s\n' '([+][+]|--)[ \t]*[(]?[A-Za-z0-9_>.-]*(->|[.])(b|mark_begin|mark_end|ks|fa|fe)[.](x|y)' ;;
+    pos_whole) printf '%s\n' "(->|[.])(mark_begin|mark_end|ks)[ \\t]*=[^=]|(^|[^A-Za-z0-9_])([A-Za-z0-9_>.-]*(->|[.]))?$POS_IDENT(->|[.])(fa|fe)[ \\t]*=[^=]|->pt[[][^]]*[]][ \\t]*=[^=]|(^|[^A-Za-z0-9_])(b|[A-Za-z0-9_>.-]*->b[a-z]?)->b[ \\t]*=[^=]" ;;
+    pos_address) printf '%s\n' "&[A-Za-z0-9_>.-]*(->|[.])(mark_begin|mark_end|ks)([^A-Za-z0-9_.[]|\$)|&([A-Za-z0-9_>.-]*(->|[.]))?$POS_IDENT(->|[.])(fa|fe)([^A-Za-z0-9_.[]|\$)|&(b|[A-Za-z0-9_>.-]*->b[a-z]?)->b([^A-Za-z0-9_.[]|\$)|&[A-Za-z0-9_>.-]*->pt[[]" ;;
+  esac
+}
+
 # the names of the function pointers a header declares with extern, one per
 # line: "extern int (*name)(...);".
 declared_slots() {
@@ -263,6 +296,69 @@ call_pattern() {
 mkdir "$WORK/stripped"
 
 problem() { echo "$*" >> "$WORK/problems"; }
+
+# --- the self-test of the position rules: a rule that matches nothing is
+# indistinguishable from a clean source, so each one is run over a fixture
+# first.  "+" lines must match the four rules exactly once in all, "-"
+# lines (code that looks like a position write and is not) none, and every
+# rule must match at least one "+" line.
+cat > "$WORK/posfixture" <<'EOF'
++ b->b.x = 1;
++ f->b->b.y++;
++ (b->b.x)--;
++ mf->b->b.x += 2;
++ --wf->b->b.y;
++ s->mark_begin = p;
++ s->mark_end.x += n;
++ s->fa.y--;
++ sch->ks.y = 0;
++ s->pt[3] = q;
++ b->b = at;
++ op->bz->b = e;
++ f(&sch->mark_begin);
++ g(&b->b);
++ h(&f->s->fe);
++ k(&s->pt[n]);
++ sch->fa = e_set_pnt(0, 0);
+- if (b->b.x == 1)
+- x = s->mark_begin.x;
+- f->b = MALLOC(n);
+- c->b = 4;
+- ep->b = NULL;
+- d->b = b;
+- c = &fb->fa;
+- y = fb->fa.fb;
+- p = &b->bf[0];
+- sscanf(v, "%d", &c->b);
+- g(&seg.b);
+- c = &f->fb->fa;
+- fb->fa = e_s_x_clr(15,5);
+- u_fb->fa = e_n_t_clr(A_REVERSE);
+- if (b->b.x != len)
+- e_set_pnt(b->b.x, b->b.y)
+- x = b->b.x - 1;
+EOF
+: > "$WORK/posmatched"
+while IFS= read -r fixline; do
+  fixkind=${fixline%% *}
+  fixtext=${fixline#* }
+  printf '%s\n' "$fixtext" > "$WORK/posline"
+  fixsum=0
+  for fixrule in $POS_NAMES; do
+    fixn=$(count_uses_re "$(pos_rule_re "$fixrule")" "$WORK/posline")
+    [ "$fixn" -gt 0 ] && [ "$fixkind" = "+" ] && echo "$fixrule" >> "$WORK/posmatched"
+    fixsum=$((fixsum + fixn))
+  done
+  if [ "$fixkind" = "+" ] && [ "$fixsum" -ne 1 ]; then
+    problem "canary: the position rules match \"$fixtext\" $fixsum times, not once (a rule is blind or double)"
+  elif [ "$fixkind" = "-" ] && [ "$fixsum" -ne 0 ]; then
+    problem "canary: the position rules match \"$fixtext\" $fixsum times, and it is no position write (a rule is too wide)"
+  fi
+done < "$WORK/posfixture"
+for fixrule in $POS_NAMES; do
+  grep -qx "$fixrule" "$WORK/posmatched" ||
+    problem "canary: position rule $fixrule matches nothing in its fixture (the rule is blind)"
+done
 
 stripped_source() {
   src=$SRCDIR/${1%.o}.c
@@ -442,6 +538,11 @@ canary_import we_block.o e_buffer_txn_commit "the block code moves lines some ot
 canary_import we_block.o e_buffer_record_push "the block kinds record some other way"
 canary_import we_block.o e_buffer_shell_new "a block delete makes its shell some other way"
 canary_import we_edit.o e_buffer_record_text "a char record copies its text some other way"
+# The positions' owner: the painter puts a cursor that is off a glyph on one
+# through it.  It proves a call exists, not that no raw write is left; that
+# is the self-test's and the counted lines' work.  The block code and the
+# mouse join this list when they stop writing the cursor in place.
+canary_import we_edit.o e_buffer_cursor_set "the cursor is put on a glyph some other way"
 BUFFER_OWNER_SEEN=0
 for obj in $OBJECTS; do
   [ "$(basename "$obj")" = we_buffer.o ] || continue
@@ -575,6 +676,7 @@ for obj in $OBJECTS; do
       wpe_fd_wait_for|wpe_fd_end_wait|wpe_fd_wait_serving|e_shell_run|write|fdopen|KEY_F|e_getch) n=$(count_uses "$word" "$file") ;;
       XK_|XKB_KEY_|e_x_) n=$(count_words "$word[A-Za-z0-9_]+" "$file") ;;
       mxlines_write) n=$(count_uses_re 'mxlines[ \t]*[)]?[ \t]*([+][+]|--|[+]=|-=|=[^=])|([+][+]|--)[ \t]*[(]?[A-Za-z0-9_>.-]*mxlines' "$file") ;;
+      pos_field|pos_prefix|pos_whole|pos_address) n=$(count_uses_re "$(pos_rule_re "$word")" "$file") ;;
       bf_alloc) n=$(count_uses_re 'bf[ \t]*=[ \t]*([(][ \t]*STRING[ \t]*[*][ \t]*[)][ \t]*)?(MALLOC|malloc|REALLOC|realloc|calloc)[ \t]*[(]|(REALLOC|realloc)[ \t]*[(][^,]*bf[ \t]*,' "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac

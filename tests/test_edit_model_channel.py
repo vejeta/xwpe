@@ -144,6 +144,32 @@ def test_the_self_checks_refuse_a_dump_that_breaks_them(tmp_path):
     assert selfcheck.check_inside(_window(rows, mb="0,0", me="5,0"))[0][0] == "marks"
     assert selfcheck.check_inside(_window(rows, mb="0,0", me="1,3")) == []
     assert selfcheck.check_inside(_window(rows, mb="0,0", me="1,4"))[0][0] == "marks"
+    # a block with both marks at one place outside the text is still outside
+    assert selfcheck.check_inside(_window(rows, mb="5,0", me="5,0"))[0][0] == "marks"
+    assert selfcheck.check_inside(_window(rows, mb="1,4", me="1,4"))[0][0] == "marks"
+    # a mark that is not set is no place
+    assert selfcheck.check_inside(_window(rows, mb="-1,-1", me="-1,-1")) == []
+    # a mark on a character's second byte is not on a boundary
+    accent = [("H", "café".encode("utf-8"))]
+    assert selfcheck.check_inside(_window(accent, mb="0,0", me="0,3")) == []
+    assert selfcheck.check_inside(_window(accent, mb="0,0", me="0,5")) == []
+    assert selfcheck.check_inside(_window(accent, mb="0,0", me="0,4"))[0][0] == "marks"
+    # the cursor stands on a glyph as well: between the bytes of the e-acute
+    # is a finding of its own, before it and after it are not
+    assert selfcheck.check_inside(_window(accent, y=0, x=3)) == []
+    assert selfcheck.check_inside(_window(accent, y=0, x=5)) == []
+    assert selfcheck.check_inside(_window(accent, y=0, x=4))[0][0] == "cursor"
+    assert "inside a character" in selfcheck.check_inside(_window(accent, y=0, x=4))[0][1]
+    # a Latin-1 byte and a cut lead are glyphs of one byte: a place of their own
+    stray = [("H", b"a\xe9b\xc3")]
+    assert [selfcheck.check_inside(_window(stray, y=0, x=i)) for i in range(5)] == [[]] * 5
+    # the editor's own check, pos=, is read from the dump: none when absent
+    assert _window(rows).pos == -1
+    assert _window(rows, pos=3).pos == 3
+    from edit_model import model
+    assert model.utf8_glyph_start(b"caf\xc3\xa9", 4) is False
+    assert model.utf8_glyph_start(b"caf\xc3\xa9", 5) is True
+    assert model.RULES["position_on_glyph"].fields == (model.F_CURSOR, model.F_MARKS, model.F_ANCHOR)
     assert selfcheck.check_inside(_window(rows, brp="1,1"))[0][0] == "breakpoints"
     assert selfcheck.check_inside(_window(rows, brp="2"))[0][0] == "breakpoints"
     disp = [" " * 80 for _ in range(30)]
@@ -351,3 +377,9 @@ def test_the_utf8_check_reports_a_byte_the_key_left_alone_in_a_character():
     assert selfcheck.check_utf8_stays_valid(good, [("H", b"caf\xc3")])[0][0] == "encoding"
     assert selfcheck.check_utf8_stays_valid(good, [("H", b"caf")]) == []
     assert selfcheck.check_utf8_stays_valid([("H", b"caf\xe9")], [("H", b"caf\xe9x")]) == []
+    # a stray byte the file itself held may come back (a block pasted again,
+    # an Undo); a byte of a split character may not
+    seed = selfcheck.stray_bytes(b"caf\xe9 table")
+    assert seed == {0xE9}
+    assert selfcheck.check_utf8_stays_valid([("H", b"")], [("H", b"caf\xe9 t")], seed) == []
+    assert selfcheck.check_utf8_stays_valid([("H", b"")], [("H", b"caf\xc3")], seed)[0][0] == "encoding"

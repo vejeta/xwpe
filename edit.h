@@ -570,10 +570,7 @@ int e_lst_zeichen(int x, int y, int n, int sw, int frb, int max, int iold,
   int new);
 void e_mouse_bar(int x, int y, int n, int sw, int frb);
 int e_chr_sp(int x, BUFFER *b, FENSTER *f);
-int e_utf8_seq_len(const unsigned char *s, int avail);          /* we_edit.c */
-int e_utf8_char_before(const unsigned char *s, int pos, int len);
-int e_utf8_glyph_at(const unsigned char *s, int avail, int *codepoint,
-                    int *cols);
+#include "we_utf8.h"            /* what a character is: static inline, one rule */
 int e_add_undo(int sw, BUFFER *b, int x, int y, int n);
 int e_make_undo(FENSTER *f);
 int e_make_redo(FENSTER *f);

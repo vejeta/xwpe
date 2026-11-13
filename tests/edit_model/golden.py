@@ -71,9 +71,9 @@ class Script:
 
 
 # Fields of the W line a golden leaves out: the markers Ctrl-K 1-9 set,
-# which no golden script touches, and the row-width check, which the
-# lockstep reads from the dump instead.
-OMITTED_FIELDS = ("pt=", "rows=")
+# which no golden script touches, and the row-width and position checks,
+# which the lockstep reads from the dump instead.
+OMITTED_FIELDS = ("pt=", "rows=", "pos=")
 EMPTY_MARKERS = "pt=" + "/".join(["-1,-1"] * 9)
 
 

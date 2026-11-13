@@ -23,6 +23,9 @@
      W <n> <name> ro=<0|1> mx=<width> y=<n> x=<n> mb=<y>,<x> me=<y>,<x> ks=<y>,<x>
        ins=<n> flg=<n> save=<n> view=<c.y>,<c.x>,<a.y>,<a.x>,<e.y>,<e.x>
        pt=<x>,<y>/<x>,<y>/... brp=<row>,<row>|- ud=<steps> rd=<steps>
+       rows=<first row wider than the margin or not ended as a row ends, -1>
+       pos=<-1, or the first position that is not a place: 0 cursor, 1 block
+            begin, 2 block end, 3 find start, 4 find end, 5 anchor>
      L <n> <H|S> <bytes>          (one per line of window n; H ends with a
                                    line break, S is a soft row)
      F <search> <replace> <sw>

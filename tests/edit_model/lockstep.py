@@ -130,7 +130,8 @@ def expected_tag(action, field, before, pred, editor_w):
 
 def _cursor_outside(w):
     """Is the editor's cursor outside the editor's own text?"""
-    return any(cls == "cursor" for cls, _detail in selfcheck.check_inside(w))
+    return any(cls == "cursor" and "outside" in detail
+               for cls, detail in selfcheck.check_inside(w))
 
 
 def logical_offset(lines, y, x):
@@ -166,6 +167,20 @@ def _around(text, off):
 FIELD_UTF8 = "utf8-valid"
 FIELD_INSIDE = "inside"
 FIELD_ROW_WIDTH = "row-width"
+
+# What the editor's pos= field says (we_testdump.c): -1 when every position
+# is a place, else the index of the first one that is not.
+POS_NONE = -1
+POS_NAMES = ("the cursor", "the block's begin", "the block's end",
+             "the find mark's start", "the find mark's end", "the anchor")
+# The lines the editor traces when a position was not a place and was put
+# right (we_edit.c, we_buffer.c): the defence counts, it does not excuse.
+POSITION_TRACES = ("position off a glyph", "position inside")
+
+
+def position_trace_lines(trace):
+    """The lines of one key's trace that say a position was not a place."""
+    return [t for t in trace if any(p in t for p in POSITION_TRACES)]
 
 
 def compare(pred, d, session, action, check_screen, filename=FILENAME):
@@ -228,14 +243,23 @@ def status_disagreements(pred, status, previous):
     return []
 
 
-def model_free_checks(before, w):
+def model_free_checks(before, w, seed_stray=frozenset()):
     """What the editor's own dumps alone can say about one step, with no
     model: the cursor and the marks inside the text, and the soft rule that
-    text which was valid UTF-8 stays valid.  [(field, wanted, got)]."""
+    text which was valid UTF-8 stays valid (the stray bytes of the file's own
+    text, @seed_stray, are not a broken character).  [(field, wanted, got)]."""
     out = []
-    for cls, detail in selfcheck.check_inside(w):
+    inside = selfcheck.check_inside(w)
+    for cls, detail in inside:
         out.append((FIELD_INSIDE, "inside the text", detail))
-    for cls, detail in selfcheck.check_utf8_stays_valid(before.lines(), list(w.lines)):
+    seen_by_model = any(cls in ("cursor", "marks") for cls, _detail in inside)
+    if w.pos != POS_NONE and not seen_by_model:
+        # the editor's own check names a position the dump's rows do not
+        # show wrong by themselves (the find mark, the anchor)
+        out.append((FIELD_INSIDE, "inside the text",
+                    "the editor's own check: %s is not a place" % POS_NAMES[w.pos]))
+    for cls, detail in selfcheck.check_utf8_stays_valid(before.lines(), list(w.lines),
+                                                        seed_stray):
         out.append((FIELD_UTF8, "valid UTF-8", detail))
     for cls, detail in selfcheck.check_rows_fit(w):
         out.append((FIELD_ROW_WIDTH, "rows within Max. Columns", detail))
@@ -256,6 +280,10 @@ class Walk:
         self.n_steps = n_steps
         self.seed_text = row.seed_text if row is not None else seed_text
         self.filename = row.filename if row is not None else FILENAME
+        seed_bytes = self.seed_text
+        if isinstance(seed_bytes, str):
+            seed_bytes = seed_bytes.encode("utf-8")
+        self.seed_stray = selfcheck.stray_bytes(seed_bytes)
         self.binary = binary
         if row is None:
             # the walk of one key style keeps the draws it had before the
@@ -268,6 +296,9 @@ class Walk:
         self.coverage = coverage if coverage is not None else walk.Coverage()
         self.levels = row.levels() if row is not None else {}
         self.disagreements = []
+        # (step, action, trace line): a position the editor found off a glyph
+        # and put right; counted by action, and 0 once every writer is the owner
+        self.position_traces = []
         self.lost = []
         self.history = []
         self.steps_run = 0
@@ -337,6 +368,8 @@ class Walk:
             self.lose(i, name, str(e), st, s)
             return False
         self.steps_run += 1
+        for line in position_trace_lines(s.trace_since_last()):
+            self.position_traces.append((i, name, line))
         box = None
         status = status_row(s.display())
         if d.ctx != "edit" or d.win is None or d.win.name != self.filename:
@@ -350,7 +383,7 @@ class Walk:
             self.note(i, action, model.F_BOX, pred.box, box, st, pred, d.win)
         found = check_typed_bytes_kept(st, action, d.win)
         found += compare(pred, d, s, action, i % SCREEN_EVERY == 0, self.filename)
-        found += model_free_checks(st, d.win)
+        found += model_free_checks(st, d.win, self.seed_stray)
         found += status_disagreements(pred, status, self.prev_status)
         self.prev_status = pred.status
         for field, mine, theirs in found:
@@ -389,7 +422,9 @@ class Walk:
             cls, rules = CLASS_EDITOR, []
         elif field == FIELD_TYPED_KEPT:
             cls, rules = CLASS_EDITOR, [model.RULES["type_insert"]]
-        elif field in (FIELD_UTF8, FIELD_INSIDE):
+        elif field == FIELD_INSIDE:
+            cls, rules = CLASS_EDITOR, [model.RULES["position_on_glyph"]]
+        elif field == FIELD_UTF8:
             cls, rules = CLASS_UNSPECIFIED, []
         elif field == FIELD_ROW_WIDTH:
             cls, rules = CLASS_EDITOR, [model.RULES["wrap_at_max_columns"]]
@@ -417,6 +452,7 @@ class Walk:
                           "observed": _jsonable(self.start_observed or {})},
                 "style": self.style, "seed": self.seed, "steps": self.steps_run,
                 "lost": [list(x) for x in self.lost],
+                "position_traces": [list(x) for x in self.position_traces],
                 "disagreements": [dict((k, _jsonable(v)) for k, v in x.items())
                                   for x in self.disagreements]}
 
@@ -458,6 +494,22 @@ def summarize(walks):
     for w in walks:
         for lost in w.lost:
             out.append("LOST %s seed %d step %d %s: %s" % ((w.style, w.seed) + lost))
+    return "\n".join(out)
+
+
+def summarize_position_traces(walks):
+    """The position lines the editor traced over some walks, counted by the
+    action that left the position off a glyph, as text: the number of a pass
+    that has not yet made every writer the owner, 0 for the one that has."""
+    by_action = {}
+    for w in walks:
+        for _step, name, line in w.position_traces:
+            key = (name, line.split(" y=")[0])
+            by_action[key] = by_action.get(key, 0) + 1
+    total = sum(by_action.values())
+    out = ["position trace lines: %d" % total]
+    for (name, what), n in sorted(by_action.items()):
+        out.append("    %-16s %-32s x%d" % (name, what, n))
     return "\n".join(out)
 
 
@@ -544,6 +596,7 @@ def main(argv):
                 for seed in args.seed or [1]:
                     walks.append(Walk(base, style, seed, args.steps, coverage=cov).run())
     print(summarize(walks))
+    print(summarize_position_traces(walks))
     print("steps %d, disagreements %d" % (sum(w.steps_run for w in walks),
                                           sum(len(w.disagreements) for w in walks)))
     if args.coverage_out:

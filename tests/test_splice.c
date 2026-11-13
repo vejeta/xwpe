@@ -2966,8 +2966,364 @@ static void case_an_action_refused_for_the_shape_of_the_text_says_so(void)
  fixture_free();
 }
 
+/* ---- positions: the cursor and the marks stand on a glyph ---- */
+
+/* A row of every shape a glyph takes: ASCII, a two byte character, a stray
+   continuation byte, a three byte one, a cut lead, ASCII, a four byte one,
+   an overlong form, a surrogate, a Latin-1 letter, a lead above F4 with its
+   continuation bytes (a glyph of four), and a byte above F7 with a
+   continuation byte (two glyphs of one byte).  Separate literals, so no hex
+   escape swallows the letter after it. */
+static const char SHAPES[] = "a" "\xC3\xA9" "\x80" "\xE2\x82\xAC" "\xC3" "b"
+                             "\xF0\x9F\x98\x80" "\xC0\x80" "\xED\xA0\x80"
+                             "\xE9" "\xF5\x80\x80\x80" "\xF8\x80";
+#define SHAPES_LEN ((int) sizeof SHAPES - 1)
+#define TAB_WIDTH 8
+
+/* A window with one row of @n bytes of @text, an editor behind it that
+   gives the tab width, and no marks set. */
+static void pos_fixture(const char *text, int n)
+{
+ fixture(1, E_BUFFER_HISTORY_FULL);
+ cn.tabn = TAB_WIDTH;
+ win.ed = &cn;
+ e_buffer_set_line(&buf, 0, text, n);
+ scr.mark_begin.x = scr.mark_begin.y = -1;
+ scr.mark_end.x = scr.mark_end.y = -1;
+ scr.fa.x = scr.fa.y = -1;
+ scr.fe.x = scr.fe.y = -1;
+ scr.ks.x = scr.ks.y = -1;
+ buf.b.x = buf.b.y = 0;
+}
+
+/* Is column @x of the row a glyph start, by the forward walk from byte 0?
+   Written from the rule, not from the owner. */
+static int pos_obeys(const BUFFER *b, int y, int x)
+{
+ const STRING *l = &b->bf[y];
+ int pos = 0;
+
+ while (pos < x && pos < l->len)
+  pos += e_utf8_seq_len(l->s + pos, l->len - pos);
+ return(pos == x);
+}
+
+/* The glyph start at or before @x, by the same walk. */
+static int pos_floor(const BUFFER *b, int y, int x)
+{
+ const STRING *l = &b->bf[y];
+ int pos = 0, next;
+
+ if (x > l->len)
+  x = l->len;
+ for (;;) {
+  if (pos >= l->len)
+   return(l->len);
+  next = pos + e_utf8_seq_len(l->s + pos, l->len - pos);
+  if (next > x)
+   return(pos);
+  pos = next;
+ }
+}
+
+/* @scenario SC-edit-model-53
+   A position is a glyph start, or the end of its row. */
+static void case_a_position_is_a_glyph_start(void)
+{
+ POINT p;
+ int x, want;
+ char what[80];
+
+ pos_fixture(SHAPES, SHAPES_LEN);
+ for (x = 0; x <= SHAPES_LEN + 2; x++) {
+  p.y = 0;
+  p.x = x;
+  snprintf(what, sizeof what, "62 fits at x=%d", x);
+  chk(what, e_buffer_pos_fits(&buf, &p), x <= SHAPES_LEN && pos_obeys(&buf, 0, x));
+  want = pos_floor(&buf, 0, x);
+  e_buffer_pos_set(&buf, &p, 0, x);
+  snprintf(what, sizeof what, "62 set at x=%d lands on the glyph at or before it", x);
+  chk(what, p.x, want);
+  snprintf(what, sizeof what, "62 set at x=%d stays on row 0", x);
+  chk(what, p.y, 0);
+  snprintf(what, sizeof what, "62 what set gives fits (x=%d)", x);
+  chk(what, e_buffer_pos_fits(&buf, &p), 1);
+ }
+ e_buffer_pos_set(&buf, &p, -4, 3);
+ chk("62 a row above the text is the first row", p.y, 0);
+ e_buffer_pos_set(&buf, &p, 9, 3);
+ chk("62 a row past the text is the last row", p.y, buf.mxlines - 1);
+ e_buffer_pos_set(&buf, &p, 0, -3);
+ chk("62 a column below 0 is 0", p.x, 0);
+ e_buffer_cursor_set(&buf, 0, 2);
+ chk("62 the cursor set inside an e-acute goes before it", buf.b.x, 1);
+ chk("62 ... on its row", buf.b.y, 0);
+ e_buffer_cursor_set(&buf, 0, SHAPES_LEN + 40);
+ chk("62 the cursor set past the row goes to its end", buf.b.x, SHAPES_LEN);
+ fixture_free();
+}
+
+/* @scenario SC-edit-model-53
+   The position of an empty text reads no row, and an unset mark stays unset
+   whatever the owner does to the marks around it. */
+static void case_a_position_in_an_empty_or_unset_place(void)
+{
+ POINT p;
+ STRING *rows;
+
+ pos_fixture("ab", 2);
+ rows = buf.bf;
+ buf.bf = NULL;
+ buf.mxlines = 0;
+ p.y = 0;
+ p.x = 0;
+ chk("63 an empty text holds the position 0,0", e_buffer_pos_fits(&buf, &p), 1);
+ p.x = 1;
+ chk("63 ... and no other column", e_buffer_pos_fits(&buf, &p), 0);
+ p.x = 0;
+ p.y = 1;
+ chk("63 ... and no other row", e_buffer_pos_fits(&buf, &p), 0);
+ e_buffer_pos_set(&buf, &p, 3, 5);
+ chk("63 set in an empty text gives 0,0", p.y == 0 && p.x == 0, 1);
+ buf.bf = rows;
+ buf.mxlines = 1;
+ e_buffer_marks_inside(&buf);
+ chk("63 a mark never set stays unset", scr.mark_begin.y, -1);
+ e_buffer_mark_set(&buf, E_BUFFER_MARK_BEGIN, 0, 1);
+ chk("63 a mark set stands where it was put", scr.mark_begin.y == 0 && scr.mark_begin.x == 1, 1);
+ e_buffer_mark_unset(&buf, E_BUFFER_MARK_BEGIN);
+ chk("63 a mark unset is unset again", scr.mark_begin.y < 0 && scr.mark_begin.x < 0, 1);
+ e_buffer_mark_set(&buf, E_BUFFER_MARK_END, -1, -1);
+ chk("63 a mark set to nowhere is unset", scr.mark_end.y < 0, 1);
+ fixture_free();
+}
+
+/* The display column onto a row: the loop of the cursor's own Up and Down,
+   kept here as it was, which the owner's copy must agree with byte for byte. */
+static int ref_col_to_byte(int col, BUFFER *b, FENSTER *f, int y)
+{
+ int i, j;
+
+ for (i = j = 0; i + j < col && i < b->bf[y].len; i++) {
+  unsigned char uc = (unsigned char) *(b->bf[y].s + i);
+
+  if (uc == WPE_TAB)
+   j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
+  else if (uc < ' ')
+   j++;
+  else if (UTF8_IS_LEAD(uc))
+   i += e_utf8_visual_step((unsigned char *)b->bf[y].s, i, b->bf[y].len, &j);
+ }
+ return(i);
+}
+
+/* @scenario SC-edit-model-53
+   A display column lands on a glyph, as Up and Down did. */
+static void case_a_display_column_lands_on_a_glyph(void)
+{
+ static const char ROW[] = "a\tb" "\xC3\xA9" "\xE4\xB8\xAD" "\x01" "\xE2\x82\xAC" "z\t\t" "\xF0\x9F\x98\x80" "end";
+ POINT p;
+ int col;
+ char what[80];
+
+ pos_fixture(ROW, (int) sizeof ROW - 1);
+ for (col = 0; col <= 120; col++) {
+  e_buffer_pos_set_col(&buf, &p, 0, col);
+  snprintf(what, sizeof what, "64 column %d: the byte Up and Down gave", col);
+  chk(what, p.x, ref_col_to_byte(col, &buf, &win, 0));
+  snprintf(what, sizeof what, "64 column %d: a glyph start", col);
+  chk(what, e_buffer_pos_fits(&buf, &p), 1);
+ }
+ buf.b.x = 5;
+ e_buffer_cursor_set_col(&buf, 0, 3);
+ chk("64 the cursor lands by display column", buf.b.x, ref_col_to_byte(3, &buf, &win, 0));
+ fixture_free();
+}
+
+/* @scenario SC-edit-model-53
+   A search hit is shown whole: its start goes back, its
+   end goes forward, to the edge of the glyph it falls in. */
+static void case_a_find_mark_snaps_outward(void)
+{
+ static const int CASES[][2] = { {1, 1}, {0, 1}, {1, 2} };
+ size_t i;
+ char what[60];
+
+ pos_fixture("\xC3\xA9" "a", 3);
+ for (i = 0; i < sizeof CASES / sizeof CASES[0]; i++) {
+  e_buffer_find_set(&buf, 0, CASES[i][0], CASES[i][1]);
+  snprintf(what, sizeof what, "65 hit %d,%d starts at 0", CASES[i][0], CASES[i][1]);
+  chk(what, scr.fa.x, 0);
+  snprintf(what, sizeof what, "65 hit %d,%d ends at 2", CASES[i][0], CASES[i][1]);
+  chk(what, scr.fe.x, 2);
+  chk("65 the hit is on its row", scr.fa.y == 0 && scr.fe.y == 0, 1);
+ }
+ e_buffer_find_set(&buf, 0, 2, 3);
+ chk("65 a hit on whole glyphs stays: start", scr.fa.x, 2);
+ chk("65 a hit on whole glyphs stays: end", scr.fe.x, 3);
+ fixture_free();
+}
+
+/* @scenario SC-edit-model-53
+   Marks behind a change in their row follow the text. */
+static void case_marks_move_with_an_in_row_change(void)
+{
+ STRING below;
+
+ pos_fixture("abcdefgh", 8);
+ scr.mark_begin.y = scr.mark_end.y = scr.ks.y = 0;
+ scr.mark_begin.x = 1;
+ scr.mark_end.x = 5;
+ scr.ks.x = 7;
+ /* "cd" (2 bytes at 2) taken out: the bytes are gone before the call */
+ memmove(buf.bf[0].s + 2, buf.bf[0].s + 4, 5);
+ buf.bf[0].len = 6;
+ e_buffer_text_removed(&buf, 0, 2, 2);
+ chk("66 removed: a mark before the change stays", scr.mark_begin.x, 1);
+ chk("66 removed: a mark behind it moves left", scr.mark_end.x, 3);
+ chk("66 removed: so does the anchor", scr.ks.x, 5);
+ scr.mark_end.x = 3;
+ scr.mark_begin.x = 3;
+ memmove(buf.bf[0].s + 1, buf.bf[0].s + 4, 3);
+ buf.bf[0].len = 3;
+ e_buffer_text_removed(&buf, 0, 1, 3);
+ chk("66 removed: a mark inside the cut goes to its start", scr.mark_begin.x, 1);
+ fixture_free();
+ pos_fixture("abcdefgh", 8);
+ scr.mark_begin.y = scr.mark_end.y = scr.ks.y = 0;
+ scr.mark_begin.x = 1;
+ scr.mark_end.x = 2;
+ scr.ks.x = 6;
+ memmove(buf.bf[0].s + 4, buf.bf[0].s + 2, 7);
+ buf.bf[0].len = 10;
+ e_buffer_text_inserted(&buf, 0, 2, 2);
+ chk("66 inserted: a mark before the place stays", scr.mark_begin.x, 1);
+ chk("66 inserted: a mark at the place moves right", scr.mark_end.x, 4);
+ chk("66 inserted: so does the anchor behind it", scr.ks.x, 8);
+ fixture_free();
+ pos_fixture("abcdefgh", 8);
+ below = line_of(&buf, "wxyz");
+ e_buffer_splice(&buf, 1, 0, &below, 1, NULL, 0, E_BUFFER_STEP_COVERED);
+ scr.mark_begin.y = scr.mark_end.y = 0;
+ scr.mark_begin.x = 2;
+ scr.mark_end.x = 6;
+ e_buffer_row_cut(&buf, 0, 4);
+ chk("66 cut: a mark before the cut stays on its row", scr.mark_begin.y == 0 && scr.mark_begin.x == 2, 1);
+ chk("66 cut: a mark behind it goes to the row below", scr.mark_end.y == 1 && scr.mark_end.x == 2, 1);
+ fixture_free();
+}
+
+/* @scenario SC-edit-model-53
+   A change that makes one character of stray bytes
+   leaves the cursor and the marks before it, not inside. */
+static void case_a_glyph_merge_resnaps_the_cursor(void)
+{
+ pos_fixture("\xC3" "x" "\xA9", 3);
+ buf.b.x = 1;
+ scr.mark_begin.y = scr.mark_end.y = 0;
+ scr.mark_begin.x = 1;
+ scr.mark_end.x = 3;
+ scr.pt[2].y = 0;
+ scr.pt[2].x = 1;
+ memmove(buf.bf[0].s + 1, buf.bf[0].s + 2, 2);
+ buf.bf[0].len = 2;
+ e_buffer_text_removed(&buf, 0, 1, 1);
+ chk("67 the cursor that was between them is before the character", buf.b.x, 0);
+ chk("67 a mark that was between them is too", scr.mark_begin.x, 0);
+ chk("67 the end of the row stays the end", scr.mark_end.x, 2);
+ chk("67 a marker the same", scr.pt[2].x, 0);
+ chk("67 the position is a place", e_buffer_pos_fits(&buf, &buf.b), 1);
+ fixture_free();
+}
+
+/* @scenario SC-edit-model-53
+   A splice keeps the cursor on its row and inside the row's text. */
+static void case_a_splice_keeps_the_cursor_inside_its_row(void)
+{
+ STRING l;
+
+ pos_fixture("abcdef", 6);
+ buf.b.y = 0;
+ buf.b.x = 5;
+ l = line_of(&buf, "\xC3\xA9" "z");
+ chk("68 a shorter row put under the cursor", e_buffer_splice(&buf, 0, 1, &l, 1, NULL, 0,
+     E_BUFFER_STEP_COVERED), E_BUFFER_OK);
+ chk("68 keeps the cursor's row", buf.b.y, 0);
+ chk("68 and takes it to the row's end", buf.b.x, 3);
+ fixture_free();
+}
+
+/* @scenario SC-edit-model-53
+   The cursor and the block that a view keeps and the
+   marker and step calls write are places. */
+static void case_the_named_positions_are_places(void)
+{
+ WpeReplayView v;
+ Undo rec;
+ POINT from;
+
+ pos_fixture("\xC3\xA9" "ab" "\xE2\x82\xAC" "c", 8);
+ buf.b.y = 0;
+ buf.b.x = 3;
+ e_buffer_mark_set(&buf, E_BUFFER_MARK_BEGIN, 0, 3);
+ e_buffer_mark_set(&buf, E_BUFFER_MARK_END, 0, 6);
+ e_buffer_view_keep(&buf, &v);
+ chk("69 the view keeps the cursor", v.cursor.x == 3 && v.cursor.y == 0, 1);
+ chk("69 ... and the block, its end back at the start of the euro sign",
+     v.mark_begin.x == 3 && v.mark_end.x == 4, 1);
+ e_buffer_mark_copy(&buf, E_BUFFER_MARK_ANCHOR, &buf.b);
+ chk("69 the anchor copies the cursor", scr.ks.x == 3 && scr.ks.y == 0, 1);
+ from.y = 0;
+ from.x = 6;
+ e_buffer_mark_copy(&buf, E_BUFFER_MARK_ANCHOR, &from);
+ chk("69 ... and goes to the start of a glyph it fell in", scr.ks.x, 4);
+ e_buffer_block_set(&buf, &scr.mark_end, &scr.mark_begin);
+ chk("69 a block is set begin before end, from its own marks",
+     scr.mark_begin.x == 3 && scr.mark_end.x == 4, 1);
+ e_buffer_cursor_set(&buf, 0, 0);
+ e_buffer_cursor_step(&buf, 1);
+ chk("69 a step right takes the whole e-acute", buf.b.x, 2);
+ e_buffer_cursor_step(&buf, 1);
+ e_buffer_cursor_step(&buf, 1);
+ chk("69 ... and then one byte letters", buf.b.x, 4);
+ e_buffer_cursor_step(&buf, 1);
+ chk("69 ... and the whole euro sign", buf.b.x, 7);
+ e_buffer_cursor_step(&buf, -1);
+ chk("69 a step left takes the whole euro sign", buf.b.x, 4);
+ e_buffer_cursor_set(&buf, 0, 0);
+ e_buffer_cursor_step(&buf, -1);
+ chk("69 a step left at the row's start stays", buf.b.x, 0);
+ e_buffer_cursor_set(&buf, 0, buf.bf[0].len);
+ e_buffer_cursor_step(&buf, 1);
+ chk("69 a step right at the row's end stays", buf.b.x, buf.bf[0].len);
+ e_buffer_cursor_set(&buf, 0, 3);
+ e_buffer_marker_set(&buf, 4);
+ chk("69 a marker is the cursor", scr.pt[4].x == 3 && scr.pt[4].y == 0, 1);
+ chk("69 its highlight is one glyph: start", scr.fa.x == 3 && scr.fa.y == 0, 1);
+ chk("69 its highlight is one glyph: end", scr.fe.x, 4);
+ e_buffer_cursor_set(&buf, 0, 0);
+ e_buffer_marker_goto(&buf, 4);
+ chk("69 the marker's place is the cursor again", buf.b.x == 3 && buf.b.y == 0, 1);
+ memset(&rec, 0, sizeof rec);
+ e_buffer_record_at(&rec, 0, 5);
+ chk("69 a record is given its place", rec.b.y == 0 && rec.b.x == 5, 1);
+ e_buffer_pos_from_offset(&buf, &from, 0, 2);
+ chk("69 an offset into the line is a place", from.y == 0 && from.x == 2, 1);
+ e_buffer_pos_from_offset(&buf, &from, 0, 600);
+ chk("69 ... clamped to the row's end", from.x, buf.bf[0].len);
+ fixture_free();
+}
+
 int main(void)
 {
+ case_a_position_is_a_glyph_start();
+ case_a_position_in_an_empty_or_unset_place();
+ case_a_display_column_lands_on_a_glyph();
+ case_a_find_mark_snaps_outward();
+ case_marks_move_with_an_in_row_change();
+ case_a_glyph_merge_resnaps_the_cursor();
+ case_a_splice_keeps_the_cursor_inside_its_row();
+ case_the_named_positions_are_places();
  case_insert_above_a_mark();
  case_delete_above();
  case_delete_across_a_mark();

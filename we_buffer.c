@@ -441,8 +441,8 @@ static int brp_count_in(const int *brp, int lo, int hi)
 #define BUFFER_MARKS_MAX 4
 
 /* The marks of a window, by their place in what buffer_marks() gives. */
-#define BUFFER_MARK_BEGIN 0
-#define BUFFER_MARK_END   1
+#define BUFFER_MARK_BEGIN E_BUFFER_MARK_BEGIN
+#define BUFFER_MARK_END   E_BUFFER_MARK_END
 /* The block: its begin and its end. */
 #define BUFFER_BLOCK_MARKS WPE_BLOCK_ENDS
 
@@ -464,16 +464,672 @@ static int buffer_marks(BUFFER *b, POINT **m)
  return(n);
 }
 
-static void buffer_point_clamp(BUFFER *b, POINT *p)
+/* ---- positions: one rule for where the cursor and the marks stand ---- */
+
+/* The tab width a buffer with no editor behind it counts (a shell). */
+#define BUFFER_TAB_DEFAULT 8
+/* What a position that is not set holds in its row and its column. */
+#define BUFFER_POS_UNSET (-1)
+/* The marker whose highlight Ctrl-K and Ctrl-O n set: the numbers there are. */
+#define BUFFER_MARKER_COUNT E_MARKERS
+
+/**
+ * buffer_glyph_floor - The first byte of the glyph that covers column @x of
+ * row @l: @x itself when a glyph starts there or the row ends there.
+ *
+ * A byte that is no continuation byte always starts a glyph.  A
+ * continuation byte starts one unless a lead byte up to three bytes before
+ * it has all its continuation bytes in the row and so covers it: the
+ * answer e_utf8_char_before gives going left, so the cursor's steps and this
+ * test agree byte for byte.  A column past the row's end is the end.
+ */
+static int buffer_glyph_floor(const STRING *l, int x)
+{
+ int k, lead;
+
+ if (x >= l->len)
+  return(l->len);
+ if (x <= 0 || !e_utf8_is_continuation(l->s[x]))
+  return(x < 0 ? 0 : x);
+ for (k = 1; k < E_UTF8_MAX_BYTES && k <= x; k++)
+ {
+  lead = x - k;
+  if (e_utf8_seq_len(l->s + lead, l->len - lead) > k)
+   return(lead);
+ }
+ return(x);
+}
+
+/**
+ * e_buffer_pos_fits - Is @p a place of @b: a row of the text and a column
+ * that is the first byte of a glyph or the end of the row?
+ * @b: the buffer; @p: the position.
+ *
+ * Read only.  An empty text holds the place (0, 0) and no other, and no
+ * row is read for it.  A mark that is not set (a negative row) is not a
+ * place: the caller skips it.
+ * Return: 1 or 0.
+ */
+int e_buffer_pos_fits(const BUFFER *b, const POINT *p)
+{
+ if (b->mxlines == 0)
+  return(p->y == 0 && p->x == 0);
+ if (p->y < 0 || p->y >= b->mxlines || p->x < 0 || p->x > b->bf[p->y].len)
+  return(0);
+ return(buffer_glyph_floor(&b->bf[p->y], p->x) == p->x);
+}
+
+/**
+ * e_buffer_cursor_fits - Does the cursor of @b stand on a place of its text?
+ *
+ * The question the painter asks before it draws the cursor.
+ * Return: 1 or 0.
+ */
+int e_buffer_cursor_fits(const BUFFER *b)
+{
+ return(e_buffer_pos_fits(b, &b->b));
+}
+
+/**
+ * e_buffer_cursor_in_text - Is the cursor of @b on a row of its text and at
+ * a column from 0 to the row's end, whether or not that column is between
+ * the bytes of a character?
+ *
+ * The weaker question of the painter's defence: a cursor off the text is
+ * brought in, as it always was; one inside a character is traced only, until
+ * every writer is the owner.
+ * Return: 1 or 0.
+ */
+int e_buffer_cursor_in_text(const BUFFER *b)
+{
+ if (b->mxlines == 0)
+  return(b->b.y == 0 && b->b.x == 0);
+ return(b->b.y >= 0 && b->b.y < b->mxlines && b->b.x >= 0 &&
+        b->b.x <= b->bf[b->b.y].len);
+}
+
+/**
+ * e_buffer_pos_set - The one write of a position: put @p at row @y, column
+ * @x, brought to the nearest place of the text.
+ * @b: the buffer; @p: the position to write; @y, @x: where it was asked to go.
+ *
+ * The row goes into the text, the column into its row, and a column that
+ * falls between the bytes of one character goes back to the start of that
+ * character, never forward: the user sees the character under the cursor,
+ * and a block mark never takes in a character nobody marked.
+ */
+void e_buffer_pos_set(BUFFER *b, POINT *p, int y, int x)
+{
+ if (b->mxlines == 0)
+ {
+  p->y = 0;
+  p->x = 0;
+  return;
+ }
+ if (y >= b->mxlines)
+  y = b->mxlines - 1;
+ if (y < 0)
+  y = 0;
+ if (x < 0)
+  x = 0;
+ p->y = y;
+ p->x = buffer_glyph_floor(&b->bf[y], x);
+}
+
+/* Is the byte one of the marks a help text carries inside its row (a button
+   start, an end, a link), which take no column on the screen? */
+static int buffer_is_help_mark(unsigned char c)
+{
+ return(c == HBG || c == HFB || c == HED || c == HHD || c == HFE || c == HBB ||
+        c == HNF);
+}
+
+/* The columns a tab stop is apart in the window the buffer shows. */
+static int buffer_tab_width(const BUFFER *b)
+{
+ if (b->f != NULL && b->f->ed != NULL && b->f->ed->tabn > 0)
+  return(b->f->ed->tabn);
+ if (b->cn != NULL && b->cn->tabn > 0)
+  return(b->cn->tabn);
+ return(BUFFER_TAB_DEFAULT);
+}
+
+/**
+ * e_buffer_pos_set_col - Put @p on row @y at the byte that stands under
+ * display column @col.
+ * @b: the buffer; @p: the position to write; @y: the row; @col: the column
+ * as the screen counts it (tabs, control characters, wide characters).
+ *
+ * What Up, Down and a click do to find the byte under a column: a tab or a
+ * wide character that covers @col puts the position on the glyph after it,
+ * and the answer is a glyph start by construction.
+ */
+void e_buffer_pos_set_col(BUFFER *b, POINT *p, int y, int col)
+{
+ const STRING *l;
+ int i, j, tabn = buffer_tab_width(b);
+ int help = (b->f != NULL && b->f->dtmd == DTMD_HELP);
+
+ if (b->mxlines == 0)
+ {
+  p->y = 0;
+  p->x = 0;
+  return;
+ }
+ if (y >= b->mxlines)
+  y = b->mxlines - 1;
+ if (y < 0)
+  y = 0;
+ l = &b->bf[y];
+ for (i = j = 0; i + j < col && i < l->len; i++)
+ {
+  unsigned char uc = l->s[i];
+
+  if (uc == WPE_TAB)
+   j += (tabn - ((j + i) % tabn) - 1);
+  else if (uc < ' ')
+   j++;
+  else if (UTF8_IS_LEAD(uc))
+   i += e_utf8_visual_step(l->s, i, l->len, &j);
+  if (help && buffer_is_help_mark(l->s[i]))
+   j -= 2;
+ }
+ p->y = y;
+ p->x = i;
+}
+
+/**
+ * e_buffer_pos_from_offset - Put @p @off bytes into the line that starts at
+ * row @y, its soft rows followed.
+ *
+ * Where a run's end or a mark lands after a line was wrapped again.
+ */
+void e_buffer_pos_from_offset(BUFFER *b, POINT *p, int y, int off)
+{
+ if (b->mxlines == 0)
+ {
+  e_buffer_pos_set(b, p, 0, 0);
+  return;
+ }
+ if (y < 0)
+  y = 0;
+ while (y < b->mxlines - 1 && off > b->bf[y].len
+        && b->bf[y].s[b->bf[y].len] != WPE_WR)
+ {
+  off -= b->bf[y].len;
+  y++;
+ }
+ e_buffer_pos_set(b, p, y, off);
+}
+
+/**
+ * e_buffer_pos_step - Move @p one glyph left (@dir < 0) or right (@dir > 0)
+ * inside its row.
+ *
+ * What Left and Right do within a row: a whole character, or one byte that
+ * is no character.  At the row's start or end the position stays: leaving
+ * the row is the key's decision.
+ */
+void e_buffer_pos_step(BUFFER *b, POINT *p, int dir)
+{
+ const STRING *l;
+ int x;
+
+ e_buffer_pos_set(b, p, p->y, p->x);
+ if (b->mxlines == 0)
+  return;
+ l = &b->bf[p->y];
+ x = p->x;
+ if (dir < 0 && x > 0)
+  x = e_utf8_char_before(l->s, x, l->len);
+ else if (dir > 0 && x < l->len)
+  x += e_utf8_seq_len(l->s + x, l->len - x);
+ p->x = x;
+}
+
+/**
+ * e_buffer_cursor_set - Put the cursor of @b at row @y, column @x.
+ *
+ * The cursor stands on a glyph of the text after any key, click or replay
+ * that moves it; see e_buffer_pos_set.
+ */
+void e_buffer_cursor_set(BUFFER *b, int y, int x)
+{
+ e_buffer_pos_set(b, &b->b, y, x);
+}
+
+/**
+ * e_buffer_cursor_set_col - Put the cursor of @b on row @y under display
+ * column @col, as Up and Down land on the remembered column.
+ */
+void e_buffer_cursor_set_col(BUFFER *b, int y, int col)
+{
+ e_buffer_pos_set_col(b, &b->b, y, col);
+}
+
+/**
+ * e_buffer_cursor_step - Move the cursor one glyph left (@dir < 0) or right
+ * (@dir > 0) inside its row.
+ */
+void e_buffer_cursor_step(BUFFER *b, int dir)
+{
+ e_buffer_pos_step(b, &b->b, dir);
+}
+
+/* The position a name of E_BUFFER_MARK_* stands for in the window of @b, or
+   NULL when the buffer has no window (a view nobody marks). */
+static POINT *buffer_mark_at(BUFFER *b, int which)
+{
+ SCHIRM *s;
+
+ if (b->f == NULL || (s = b->f->s) == NULL)
+  return(NULL);
+ if (which == E_BUFFER_MARK_BEGIN)
+  return(&s->mark_begin);
+ if (which == E_BUFFER_MARK_END)
+  return(&s->mark_end);
+ if (which == E_BUFFER_MARK_FIND_A)
+  return(&s->fa);
+ if (which == E_BUFFER_MARK_FIND_E)
+  return(&s->fe);
+ if (which == E_BUFFER_MARK_ANCHOR)
+  return(&s->ks);
+ return(NULL);
+}
+
+/* A position that may stand outside the text, brought inside it: its row
+   into the text, its column from 0 to its row's end.  An unset mark (a
+   negative row) stays unset.  This is the clamp the splice, the replays and
+   the marks have always had, and it does not put the position on a glyph:
+   the pass that makes every writer the owner calls e_buffer_pos_set from
+   these places instead. */
+static void buffer_point_bound(BUFFER *b, POINT *p)
 {
  if (p->y < 0)
   return;
+ if (b->mxlines == 0)
+ {
+  p->y = 0;
+  p->x = 0;
+  return;
+ }
  if (p->y >= b->mxlines)
   p->y = b->mxlines - 1;
  if (p->x > b->bf[p->y].len)
   p->x = b->bf[p->y].len;
  if (p->x < 0)
   p->x = 0;
+}
+
+/* A mark past the end of row @p->y: just after a line break is the start
+   of the next row, so a block that holds the break ends there; past the
+   last row of the text, or past a row without a break, the row's end. */
+static void buffer_mark_past_row_end(BUFFER *b, POINT *p)
+{
+ if (b->bf[p->y].s[b->bf[p->y].len] == WPE_WR && p->y < b->mxlines - 1)
+ {
+  p->y++;
+  p->x = 0;
+  return;
+ }
+ p->x = b->bf[p->y].len;
+}
+
+/* Pull one mark that is set back inside the text: a row past the end goes
+   to the end of the last row, a column past its row as above.  A mark is
+   never past its row's end, so the block commands read every block the
+   same way.  It does not put the mark on a glyph (see buffer_point_bound). */
+static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
+{
+ if (p->y < 0)
+  return;
+ if (b->mxlines == 0)
+ {
+  buffer_point_bound(b, p);
+  return;
+ }
+ if (p->y >= b->mxlines)
+ {
+  p->y = b->mxlines - 1;
+  p->x = b->bf[p->y].len;
+ }
+ if (p->x > b->bf[p->y].len)
+  buffer_mark_past_row_end(b, p);
+ if (p->x < 0)
+  p->x = 0;
+}
+
+/* A mark that is set, pulled inside the text as above and then onto a
+   glyph: what a mark written through the owner's calls stands on. */
+static void buffer_mark_settle(BUFFER *b, POINT *p)
+{
+ buffer_mark_pull_inside(b, p);
+ if (p->y >= 0)
+  e_buffer_pos_set(b, p, p->y, p->x);
+}
+
+/**
+ * e_buffer_mark_set - Put the mark @which (E_BUFFER_MARK_*) at row @y,
+ * column @x; a negative row unsets it.
+ *
+ * A mark just past a hard row's break is the start of the next row, past
+ * the last row or a soft row's end the row's end, and it stands on a glyph.
+ */
+void e_buffer_mark_set(BUFFER *b, int which, int y, int x)
+{
+ POINT *p = buffer_mark_at(b, which);
+
+ if (p == NULL)
+  return;
+ p->y = y;
+ p->x = x;
+ if (y < 0)
+ {
+  p->y = BUFFER_POS_UNSET;
+  p->x = BUFFER_POS_UNSET;
+  return;
+ }
+ buffer_mark_settle(b, p);
+}
+
+/**
+ * e_buffer_mark_unset - The mark @which (E_BUFFER_MARK_*) is set nowhere.
+ */
+void e_buffer_mark_unset(BUFFER *b, int which)
+{
+ POINT *p = buffer_mark_at(b, which);
+
+ if (p == NULL)
+  return;
+ p->y = BUFFER_POS_UNSET;
+ p->x = BUFFER_POS_UNSET;
+}
+
+/**
+ * e_buffer_mark_copy - Put the mark @which where @from is: a Shift key's
+ * anchor is the cursor, the block's end is the cursor.
+ *
+ * @from may be the mark itself or another position of the window.
+ */
+void e_buffer_mark_copy(BUFFER *b, int which, const POINT *from)
+{
+ POINT at = *from;
+
+ e_buffer_mark_set(b, which, at.y, at.x);
+}
+
+static int buffer_point_before(const POINT *a, const POINT *b);
+
+/**
+ * e_buffer_block_set - Mark the block from @begin to @end, begin first.
+ *
+ * Both ends are brought onto glyphs; given in the other order they are
+ * swapped, so every block command reads one block.  The arguments may be
+ * the window's own marks.
+ */
+void e_buffer_block_set(BUFFER *b, const POINT *begin, const POINT *end)
+{
+ POINT *mb = buffer_mark_at(b, E_BUFFER_MARK_BEGIN);
+ POINT *me = buffer_mark_at(b, E_BUFFER_MARK_END);
+ POINT first = *begin, last = *end;
+
+ if (mb == NULL || me == NULL)
+  return;
+ e_buffer_mark_set(b, E_BUFFER_MARK_BEGIN, first.y, first.x);
+ e_buffer_mark_set(b, E_BUFFER_MARK_END, last.y, last.x);
+ if (mb->y >= 0 && me->y >= 0 && buffer_point_before(me, mb))
+ {
+  POINT swap = *mb;
+
+  *mb = *me;
+  *me = swap;
+ }
+}
+
+/**
+ * e_buffer_find_set - Mark the find hit on row @y from column @xa to @xe.
+ *
+ * The one place a position is brought outward: the hit starts at the start
+ * of the glyph its first byte falls in and ends after the glyph its last
+ * byte falls in, so a hit is shown whole and a search that goes on from its
+ * end always moves on.
+ */
+void e_buffer_find_set(BUFFER *b, int y, int xa, int xe)
+{
+ POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+ POINT *fe = buffer_mark_at(b, E_BUFFER_MARK_FIND_E);
+ int start, end;
+ const STRING *l;
+
+ if (fa == NULL || fe == NULL)
+  return;
+ e_buffer_pos_set(b, fa, y, xa);
+ e_buffer_pos_set(b, fe, y, xe);
+ if (b->mxlines == 0)
+  return;
+ l = &b->bf[fe->y];
+ start = fe->x;
+ end = (xe > l->len) ? l->len : xe;
+ if (start < end)
+  fe->x = start + e_utf8_seq_len(l->s + start, l->len - start);
+}
+
+/**
+ * buffer_marker_highlight - The find mark covers the glyph under the cursor:
+ * what Ctrl-K n and Ctrl-O n show where the marker is.
+ */
+static void buffer_marker_highlight(BUFFER *b)
+{
+ POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+ POINT *fe = buffer_mark_at(b, E_BUFFER_MARK_FIND_E);
+
+ if (fa == NULL || fe == NULL)
+  return;
+ e_buffer_pos_set(b, fa, b->b.y, b->b.x);
+ *fe = *fa;
+ e_buffer_pos_step(b, fe, 1);
+}
+
+/**
+ * e_buffer_marker_set - Ctrl-K @n: marker @n is where the cursor is, and its
+ * highlight is the glyph under the cursor.
+ */
+void e_buffer_marker_set(BUFFER *b, int n)
+{
+ SCHIRM *s;
+
+ if (b->f == NULL || (s = b->f->s) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
+  return;
+ e_buffer_pos_set(b, &s->pt[n], b->b.y, b->b.x);
+ buffer_marker_highlight(b);
+}
+
+/**
+ * e_buffer_marker_goto - Ctrl-O @n: the cursor goes to marker @n, on the
+ * glyph that stands there now, and the highlight shows it.
+ *
+ * A marker keeps its own place when the text above it changes; a marker
+ * over text that moved lands on the glyph that is there.
+ */
+void e_buffer_marker_goto(BUFFER *b, int n)
+{
+ SCHIRM *s;
+
+ if (b->f == NULL || (s = b->f->s) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
+  return;
+ e_buffer_cursor_set(b, s->pt[n].y, s->pt[n].x);
+ buffer_marker_highlight(b);
+}
+
+/**
+ * e_buffer_record_at - A record's own place: where Ctrl-U puts the cursor.
+ *
+ * The record is not a position of the text it was made on, so nothing is
+ * snapped: it is brought onto a glyph of the text it is played over, when
+ * it is played (the replay's own cursor_set).
+ */
+void e_buffer_record_at(Undo *rec, int y, int x)
+{
+ rec->b.y = y;
+ rec->b.x = x;
+}
+
+/**
+ * e_buffer_view_keep - Remember the cursor and the block of @b in @v, to put
+ * them back when a block replay is refused.
+ */
+void e_buffer_view_keep(BUFFER *b, WpeReplayView *v)
+{
+ POINT *mb = buffer_mark_at(b, E_BUFFER_MARK_BEGIN);
+ POINT *me = buffer_mark_at(b, E_BUFFER_MARK_END);
+
+ v->cursor = b->b;
+ v->mark_begin.x = v->mark_begin.y = BUFFER_POS_UNSET;
+ v->mark_end.x = v->mark_end.y = BUFFER_POS_UNSET;
+ if (mb != NULL)
+  v->mark_begin = *mb;
+ if (me != NULL)
+  v->mark_end = *me;
+}
+
+/* Every position of the window that stands on row @y, set again through the
+   one write: the cursor, the block, the find mark, the anchor, the markers. */
+static void buffer_row_points_set(BUFFER *b, int y)
+{
+ POINT *p;
+ SCHIRM *s;
+ int which, n;
+
+ if (b->b.y == y)
+  e_buffer_pos_set(b, &b->b, b->b.y, b->b.x);
+ if (b->f == NULL || (s = b->f->s) == NULL)
+  return;
+ for (which = E_BUFFER_MARK_BEGIN; which <= E_BUFFER_MARK_ANCHOR; which++)
+ {
+  p = buffer_mark_at(b, which);
+  if (p != NULL && p->y == y)
+   e_buffer_pos_set(b, p, p->y, p->x);
+ }
+ for (n = 0; n < BUFFER_MARKER_COUNT; n++)
+  if (s->pt[n].y == y)
+   e_buffer_pos_set(b, &s->pt[n], s->pt[n].y, s->pt[n].x);
+}
+
+/* Is a find hit marked in the window of @b?  Its start's row is negative
+   when none is (the painter also keeps a repaint flag there). */
+static int buffer_find_mark_shown(BUFFER *b)
+{
+ const POINT *fa = buffer_mark_at(b, E_BUFFER_MARK_FIND_A);
+
+ return(fa != NULL && fa->y >= 0);
+}
+
+/**
+ * e_buffer_first_misplaced - Which position of the window of @b is not a
+ * place of its text: 0 the cursor, 1 the block's begin, 2 its end, 3 the
+ * find mark's start, 4 its end, 5 the anchor.
+ *
+ * What the test dump writes as pos=, so a test sees a position that no key
+ * should have left off a glyph.  A mark that is not set is skipped, and so
+ * is the find mark's end while its start is not set: no hit is shown then,
+ * and the end is only what the last hit left behind.
+ * Return: the first such position's number, or -1 when every one is a place.
+ */
+int e_buffer_first_misplaced(BUFFER *b)
+{
+ static const int ORDER[] = { E_BUFFER_MARK_BEGIN, E_BUFFER_MARK_END,
+                              E_BUFFER_MARK_FIND_A, E_BUFFER_MARK_FIND_E,
+                              E_BUFFER_MARK_ANCHOR };
+ const POINT *p;
+ size_t i;
+
+ if (!e_buffer_cursor_fits(b))
+  return(0);
+ for (i = 0; i < sizeof ORDER / sizeof ORDER[0]; i++)
+ {
+  if (ORDER[i] == E_BUFFER_MARK_FIND_E && !buffer_find_mark_shown(b))
+   continue;
+  p = buffer_mark_at(b, ORDER[i]);
+  if (p != NULL && p->y >= 0 && !e_buffer_pos_fits(b, p))
+   return((int) i + 1);
+ }
+ return(-1);
+}
+
+/**
+ * e_buffer_row_positions_snap - Every position on row @y goes back onto a
+ * glyph of the row as it is now.
+ *
+ * After bytes of a row changed, a deletion or a join can fuse a lone lead
+ * byte with the stray continuation bytes next to it into one character; a
+ * position that was between two glyphs is then inside it, and goes back to
+ * its start.
+ */
+void e_buffer_row_positions_snap(BUFFER *b, int y)
+{
+ buffer_row_points_set(b, y);
+}
+
+/* The block's marks, the find mark and the anchor of the window of @b. */
+static int buffer_follow_points(BUFFER *b, POINT **p)
+{
+ int which, n = 0;
+
+ for (which = E_BUFFER_MARK_BEGIN; which <= E_BUFFER_MARK_ANCHOR; which++)
+  if ((p[n] = buffer_mark_at(b, which)) != NULL)
+   n++;
+ return(n);
+}
+
+/**
+ * e_buffer_text_removed - @n bytes were taken out of row @y at column @x
+ * (the bytes are already gone): the marks and the anchor behind the cut move
+ * left with their text, those inside it go to its start.
+ */
+void e_buffer_text_removed(BUFFER *b, int y, int x, int n)
+{
+ POINT *p[E_BUFFER_MARK_ANCHOR + 1];
+ int i, k = buffer_follow_points(b, p);
+
+ for (i = 0; i < k; i++)
+  if (p[i]->y == y && p[i]->x > x)
+   p[i]->x = (p[i]->x - n > x) ? p[i]->x - n : x;
+ buffer_row_points_set(b, y);
+}
+
+/**
+ * e_buffer_text_inserted - @n bytes were put into row @y at column @x (the
+ * bytes are already in): the marks and the anchor at or behind that place
+ * move right with their text.
+ */
+void e_buffer_text_inserted(BUFFER *b, int y, int x, int n)
+{
+ POINT *p[E_BUFFER_MARK_ANCHOR + 1];
+ int i, k = buffer_follow_points(b, p);
+
+ for (i = 0; i < k; i++)
+  if (p[i]->y == y && p[i]->x >= x)
+   p[i]->x += n;
+ buffer_row_points_set(b, y);
+}
+
+/**
+ * e_buffer_row_cut - Row @y was cut at column @c and its tail went to the
+ * row below: the marks and the anchor on the tail go with it.
+ */
+void e_buffer_row_cut(BUFFER *b, int y, int c)
+{
+ POINT *p[E_BUFFER_MARK_ANCHOR + 1];
+ int i, k = buffer_follow_points(b, p);
+
+ for (i = 0; i < k; i++)
+  if (p[i]->y == y && p[i]->x >= c)
+  {
+   p[i]->y++;
+   p[i]->x -= c;
+  }
+ buffer_row_points_set(b, y);
+ buffer_row_points_set(b, y + 1);
 }
 
 /* Move one mark for a splice at y of n_del lines over n_ins, of which the
@@ -512,9 +1168,9 @@ static void buffer_marks_move(BUFFER *b, int y, int n_del, int n_ins, int change
   if (m[i]->y < 0)
    continue;
   buffer_mark_move(b, m[i], y, n_del, n_ins, changed);
-  buffer_point_clamp(b, m[i]);
+  buffer_point_bound(b, m[i]);
  }
- buffer_point_clamp(b, &b->b);
+ buffer_point_bound(b, &b->b);
 }
 
 /**
@@ -540,8 +1196,6 @@ static int buffer_block_get(BUFFER *b, POINT *blk)
  blk[1] = *m[BUFFER_MARK_END];
  return(1);
 }
-
-static void buffer_mark_pull_inside(BUFFER *b, POINT *p);
 
 /**
  * buffer_block_set - Mark @blk as the window's block, pulled inside the
@@ -2823,13 +3477,13 @@ int e_buffer_txn_rewrite(WpeBufferTxn *t, BUFFER *b, int y, int n_del, BUFFER *s
 static void buffer_replay_view_back(BUFFER *b, Undo *rec)
 {
  b->b = rec->b;
- buffer_point_clamp(b, &b->b);
+ buffer_point_bound(b, &b->b);
  if (b->f != NULL && b->f->s != NULL)
  {
   b->f->s->mark_begin = rec->a;
   b->f->s->mark_end = rec->e;
-  buffer_point_clamp(b, &b->f->s->mark_begin);
-  buffer_point_clamp(b, &b->f->s->mark_end);
+  buffer_point_bound(b, &b->f->s->mark_begin);
+  buffer_point_bound(b, &b->f->s->mark_end);
  }
 }
 
@@ -2927,7 +3581,7 @@ static void buffer_shell_marks_back(BUFFER *shell, BUFFER *b, int off)
  }
  b->b.x = shell->b.x;
  b->b.y = shell->b.y + off;
- buffer_point_clamp(b, &b->b);
+ buffer_point_bound(b, &b->b);
 }
 
 /* Commit a rewrite item: the shell's span lines are the buffer's with the
@@ -5070,39 +5724,6 @@ static void buffer_records_drop(Undo **list, int n)
   *list = rec->next;
   e_buffer_record_free(rec);
  }
-}
-
-/* A mark past the end of row @p->y: just after a line break is the start
-   of the next row, so a block that holds the break ends there; past the
-   last row of the text, or past a row without a break, the row's end. */
-static void buffer_mark_past_row_end(BUFFER *b, POINT *p)
-{
- if (b->bf[p->y].s[b->bf[p->y].len] == WPE_WR && p->y < b->mxlines - 1)
- {
-  p->y++;
-  p->x = 0;
-  return;
- }
- p->x = b->bf[p->y].len;
-}
-
-/* Pull one mark that is set back inside the text: a row past the end goes
-   to the end of the last row, a column past its row as above.  A mark is
-   never past its row's end, so the block commands read every block the
-   same way. */
-static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
-{
- if (p->y < 0)
-  return;
- if (p->y >= b->mxlines)
- {
-  p->y = b->mxlines - 1;
-  p->x = b->bf[p->y].len;
- }
- if (p->x > b->bf[p->y].len)
-  buffer_mark_past_row_end(b, p);
- if (p->x < 0)
-  p->x = 0;
 }
 
 /**

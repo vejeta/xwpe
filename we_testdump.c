@@ -317,9 +317,11 @@ static void dump_markers(DumpBuf *d, SCHIRM *s)
 /**
  * dump_window_head - Add the W line of window @n.
  *
- * Its last field, rows=, is the first row wider than Max. Columns or not
+ * Its rows= field is the first row wider than Max. Columns or not
  * ended as a row ends (-1 for none), so a key that left a row past the
  * margin is seen at the key, even where the primitive wrote it in place.
+ * Its last field, pos=, names the first position that is not a place of the
+ * text (-1 for none).
  */
 static void dump_window_head(DumpBuf *d, int n, FENSTER *f)
 {
@@ -338,8 +340,8 @@ static void dump_window_head(DumpBuf *d, int n, FENSTER *f)
  dump_markers(d, s);
  dump_printf(d, " brp=");
  dump_breakpoints(d, f);
- dump_printf(d, " ud=%d rd=%d rows=%d\n", dump_steps(b->ud), dump_steps(b->rd),
-             e_buffer_rows_check(b));
+ dump_printf(d, " ud=%d rd=%d rows=%d pos=%d\n", dump_steps(b->ud), dump_steps(b->rd),
+             e_buffer_rows_check(b), e_buffer_first_misplaced(b));
 }
 
 /**

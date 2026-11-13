@@ -211,6 +211,7 @@ noinst_HEADERS = \
   we_paint.h \
   we_testdump.h \
   we_buffer.h \
+  we_utf8.h \
   we_trace.h \
   we_vterm.h \
   we_dap_proto.h \

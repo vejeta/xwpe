@@ -129,19 +129,33 @@ def _pos_ok(y, x, rows, past_break):
     return 0 <= x <= limit
 
 
+def _on_boundary(data, x):
+    """Does column @x of the row bytes @data start a glyph, or end the row?
+    The model's one rule (model.utf8_glyph_start), which reads the row glyph
+    by glyph as the editor does."""
+    from edit_model import model
+    return model.utf8_glyph_start(data, x)
+
+
 def check_inside(w):
-    """Checks 3 and 4 on one window: what is wrong, as short strings."""
+    """Checks 3 and 4 on one window: what is wrong, as short strings.  The
+    cursor stands on a glyph as well as the marks: the model-free check of
+    the owner of positions."""
     bad = []
     rows = _rows(w)
     if not _pos_ok(w.y, w.x, rows, False):
         bad.append(("cursor", "cursor %s outside %d rows" % (w.cursor, len(rows))))
+    elif not _on_boundary(rows[w.y][1], w.x):
+        bad.append(("cursor", "cursor %s inside a character" % (w.cursor,)))
     for name, (y, x) in (("mark_begin", w.mb), ("mark_end", w.me)):
-        if w.mb == w.me:
-            break
+        if y < 0:
+            continue  # a mark that is not set
         # a mark is never past its row's end: just after a line break is
         # the start of the next row (the owner keeps it there after a key)
         if not _pos_ok(y, x, rows, False):
             bad.append(("marks", "%s (%d,%d) outside the text" % (name, y, x)))
+        elif not _on_boundary(rows[y][1], x):
+            bad.append(("marks", "%s (%d,%d) inside a character" % (name, y, x)))
     for r in w.brp:
         if r < 0 or r >= len(rows):
             bad.append(("breakpoints", "breakpoint row %d outside %d rows" % (r, len(rows))))
@@ -257,11 +271,22 @@ def check_says_so(kind, before, after, status_before, status_after, idle=None):
     return []
 
 
-def check_utf8_stays_valid(before_lines, after_lines):
+def stray_bytes(data):
+    """The byte values of @data that are no part of a valid UTF-8 character
+    (the Latin-1 letter a file was given): the bytes a key may bring back,
+    from the clipboard or an Undo, without having broken a character."""
+    text = data.decode("utf-8", errors="surrogateescape")
+    return frozenset(ord(c) - 0xDC00 for c in text if 0xDC80 <= ord(c) <= 0xDCFF)
+
+
+def check_utf8_stays_valid(before_lines, after_lines, seed_stray=frozenset()):
     """The soft rule (9): text that was valid UTF-8 is still valid after a
     key.  Reports what the key did to a character: a lone continuation or
     lead byte, as Backspace or Ctrl-T leave after an overwrite of a
-    multibyte letter.  [("encoding", detail)]."""
+    multibyte letter.  A stray byte of the file's own text (@seed_stray, as
+    stray_bytes gives it) is not a broken character: the text held it
+    before, and a block cut and pasted back, or an Undo, returns it.
+    [("encoding", detail)]."""
     def disk(lines):
         out = bytearray()
         for end, data in lines:
@@ -275,11 +300,15 @@ def check_utf8_stays_valid(before_lines, after_lines):
     except UnicodeDecodeError:
         return []                       # not valid before: nothing to keep
     after = disk(after_lines)
-    try:
-        after.decode("utf-8")
-    except UnicodeDecodeError as e:
-        return [("encoding", "valid UTF-8 became invalid at byte %d: %r"
-                 % (e.start, after[max(0, e.start - 4):e.start + 4]))]
+    pos = 0
+    for ch in after.decode("utf-8", errors="surrogateescape"):
+        if 0xDC80 <= ord(ch) <= 0xDCFF:
+            if ord(ch) - 0xDC00 not in seed_stray:
+                return [("encoding", "valid UTF-8 became invalid at byte %d: %r"
+                         % (pos, after[max(0, pos - 4):pos + 4]))]
+            pos += 1
+        else:
+            pos += len(ch.encode("utf-8"))
     return []
 
 

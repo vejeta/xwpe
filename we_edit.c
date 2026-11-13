@@ -149,36 +149,12 @@ static int e_window_auto_indents(FENSTER *f);
 static void e_backspace_a_ind(BUFFER *b, SCHIRM *s, POINT at_key);
 int e_help_next();
 int e_codepoint_to_utf8(int cp, unsigned char *out);
-int e_utf8_charlen(unsigned char c);
-int e_utf8_seq_len(const unsigned char *s, int avail);
-int e_utf8_char_before(const unsigned char *s, int pos, int len);
-int e_utf8_glyph_at(const unsigned char *s, int avail, int *codepoint,
-                    int *cols);
-int e_utf8_to_codepoint(unsigned char *buf, int len);
 int e_utf8_visual_len(unsigned char *s, int bytes);
 static int e_char_bytes_at(BUFFER *b, int x, int y);
 static int e_char_start_before(BUFFER *b, int x, int y);
 
 /* What e_char_bytes_at gives for ASCII or a byte that starts no character. */
 #define E_CHAR_ONE_BYTE 1
-
-/* True for a UTF-8 lead byte (start of a 2..4 byte sequence). */
-#define UTF8_IS_LEAD(c) ((c) >= 0xC0 && (c) < 0xFE)
-
-/* Walk one UTF-8 character starting at s[i] (line length `len`) while computing
-   the screen column.  Takes the glyph the keys step over (e_utf8_glyph_at),
-   adds its (display width - byte count) to *j -- a multi-byte glyph is one
-   b->b.x step per byte but only its columns wide, one column for bytes that
-   are not a character -- and returns the number of EXTRA (continuation)
-   bytes so the caller's loop can skip them.  0 for a 1-byte glyph. */
-static int e_utf8_visual_step(unsigned char *s, int i, int len, int *j)
-{
- int codepoint, cols;
- int nb = e_utf8_glyph_at(s + i, len - i, &codepoint, &cols);
-
- *j += cols - nb;
- return nb - 1;
-}
 
 #ifdef PROG
 BUFFER *e_p_m_buffer = NULL;
@@ -2582,6 +2558,33 @@ static int e_cursor_in_viewport(FENSTER *f, int sx, int sy)
  return sx > f->a.x && sx < f->e.x && sy > f->a.y && sy < f->e.y;
 }
 
+/**
+ * e_cursor_keep_on_text - Before the cursor is drawn, make sure it stands on
+ * a place of the text.
+ * @b: the buffer whose cursor is about to be painted.
+ *
+ * Every key, click and replay should put the cursor on a place through the
+ * owner of the text; this is the last defence for a writer that did not.  A
+ * cursor off the text (past a row's end, on a row that is gone) is put back
+ * in it, as it always was, and one between the bytes of a character is
+ * traced as well.  The trace line is how a test sees the writer that was
+ * missed.  A cursor between the bytes is left where it is for now: it is
+ * put on the character's start once every writer is the owner.
+ */
+static void e_cursor_keep_on_text(BUFFER *b)
+{
+ int len = -1;
+
+ if (e_buffer_cursor_fits(b))
+  return;
+ if (b->b.y >= 0 && b->b.y < b->mxlines)
+  len = b->bf[b->b.y].len;
+ wpe_buffer_trace("buffer position off a glyph y=%d x=%d len=%d", b->b.y, b->b.x, len);
+ if (e_buffer_cursor_in_text(b))
+  return;
+ e_buffer_cursor_set(b, b->b.y, b->b.x);
+}
+
 void e_cursor_pos_only(FENSTER *f)
 {
  BUFFER *b = f->b;
@@ -2590,11 +2593,7 @@ void e_cursor_pos_only(FENSTER *f)
  extern int cur_on;
 
  if (!DTMD_ISTEXT(f->dtmd)) return;
- if (b->b.y < 0) b->b.y = 0;
- if (b->b.y > b->mxlines - 1) b->b.y = b->mxlines - 1;
- if (b->b.x < 0) b->b.x = 0;
- if (b->mxlines == 0) b->b.x = 0;
- else if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
+ e_cursor_keep_on_text(b);
 
  j = e_cursor_visual_adjust(f);
  b->cl = b->b.x + j;
@@ -2625,11 +2624,7 @@ void e_cursor(FENSTER *f, int sw)
  int i, j;
 
  if (!DTMD_ISTEXT(f->dtmd)) return;
- if (b->b.y > b->mxlines-1) b->b.y = b->mxlines-1;
- if (b->b.y < 0) b->b.y = 0;
- if (b->b.x < 0) b->b.x = 0;
- if (b->mxlines==0) b->b.x=0; /* the else branch needs b->b.y < b->mxlines, which is not true for b->mxlines==0 */
- else if (b->b.x > b->bf[b->b.y].len) b->b.x = b->bf[b->b.y].len;
+ e_cursor_keep_on_text(b);
  for (i = j = 0; i < b->b.x; i++)
  {
   unsigned char uc = (unsigned char) *(b->bf[b->b.y].s + i);
@@ -3224,150 +3219,6 @@ int e_codepoint_to_utf8(int cp, unsigned char *out)
  out[0] = 0xF0 | (cp >> 18); out[1] = 0x80 | ((cp >> 12) & 0x3F);
  out[2] = 0x80 | ((cp >> 6) & 0x3F); out[3] = 0x80 | (cp & 0x3F);
  return 4;
-}
-
-int e_utf8_charlen(unsigned char c)
-{
- if (c < 0x80) return 1;
- if ((c & 0xE0) == 0xC0) return 2;
- if ((c & 0xF0) == 0xE0) return 3;
- if ((c & 0xF8) == 0xF0) return 4;
- return 1;
-}
-
-/**
- * e_utf8_seq_len - Bytes of the character that starts at @s, when only @avail
- * bytes of the string may be read.
- * @s: the first byte of the character; @avail: the bytes it may read, or
- * E_UTF8_UNBOUNDED for a string that ends in a NUL byte.
- *
- * A text that ends inside a character (a file, a field or a paste cut after
- * the first byte of an `€`) never makes a caller read or step past its end:
- * a lead byte that is not followed by all its continuation bytes is one byte
- * long, and is drawn as the replacement glyph.
- * Return: 1 to 4.
- */
-int e_utf8_seq_len(const unsigned char *s, int avail)
-{
- int n = e_utf8_charlen(s[0]), i;
-
- if (n > avail)
-  return(1);
- for (i = 1; i < n; i++)
-  if ((s[i] & 0xC0) != 0x80)
-   return(1);
- return(n);
-}
-
-/* The smallest code point each sequence length may carry (a shorter form of
-   it is an overlong encoding), the surrogates, and the last code point. */
-#define E_UTF8_MIN_2_BYTES   0x80
-#define E_UTF8_MIN_3_BYTES   0x800
-#define E_UTF8_MIN_4_BYTES   0x10000
-#define E_UTF8_SURROGATE_LO  0xD800
-#define E_UTF8_SURROGATE_HI  0xDFFF
-#define E_UTF8_LAST_CODEPOINT 0x10FFFF
-
-/**
- * e_utf8_scalar_is_valid - Is @cp, decoded from @n bytes, a character UTF-8
- * allows in that many bytes?
- *
- * Bytes of the right shape can still be no character: an overlong form
- * (C0 80), a surrogate (ED A0 80) or a lead above F4.  They are not shown
- * as a character.
- */
-static int e_utf8_scalar_is_valid(int cp, int n)
-{
- if (n == 2)
-  return(cp >= E_UTF8_MIN_2_BYTES);
- if (n == 3)
-  return(cp >= E_UTF8_MIN_3_BYTES &&
-         (cp < E_UTF8_SURROGATE_LO || cp > E_UTF8_SURROGATE_HI));
- return(cp >= E_UTF8_MIN_4_BYTES && cp <= E_UTF8_LAST_CODEPOINT);
-}
-
-/**
- * e_utf8_glyph_at - The glyph that starts at @s: its bytes, what to draw for
- * it and how many columns it takes.
- * @s: the first byte; @avail: the bytes that may be read.
- * @codepoint: receives the character, or 0 when the bytes are no character
- * the terminal can show (a stray byte, a cut sequence, or bytes of a good
- * shape that are invalid as UTF-8: an overlong form, a surrogate, a lead
- * above F4); the caller then draws its replacement.
- * @cols: receives the columns the glyph takes, at least 1.
- *
- * The one place that decides what a glyph is, for the keys, the screen, the
- * cursor and the mouse alike: the bytes are one glyph exactly when
- * e_utf8_seq_len says so, so a key step, a drawn cell and a clicked cell
- * always cover the same bytes, whatever the file holds.
- * Return: the bytes of the glyph, 1 to 4.
- */
-int e_utf8_glyph_at(const unsigned char *s, int avail, int *codepoint,
-                    int *cols)
-{
- int n = e_utf8_seq_len(s, avail);
- int cp, w;
-
- *codepoint = 0;
- *cols = 1;
- if (n < 2)
-  return(n);
- cp = e_utf8_to_codepoint((unsigned char *)s, n);
- if (!e_utf8_scalar_is_valid(cp, n))
-  return(n);
- *codepoint = cp;
- w = wcwidth((wchar_t)cp);
- if (w > 1)
-  *cols = w;
- return(n);
-}
-
-/* The most bytes one UTF-8 character takes. */
-#define E_UTF8_MAX_BYTES 4
-
-/* Is @c a continuation byte (10xxxxxx), never the start of a character? */
-static int e_utf8_is_continuation(unsigned char c)
-{
- return((c & 0xC0) == 0x80);
-}
-
-/**
- * e_utf8_char_before - Where the character that ends just before @pos
- * starts, read by the same rule as e_utf8_seq_len.
- * @s: the text; @pos: a character boundary, 1 or more; @len: the bytes of
- * @s that may be read.
- *
- * Left and Backspace step over exactly what Right and Delete step over
- * and what the screen draws as one glyph: a whole character, or one byte
- * of a cut one (a lead byte without all its continuation bytes, a stray
- * continuation byte, a Latin-1 letter).  Every byte that is not a
- * continuation starts a character, so the walk looks back at most to the
- * lead byte the character could have.
- * Return: the first byte of that character, from 0 to @pos - 1.
- */
-int e_utf8_char_before(const unsigned char *s, int pos, int len)
-{
- int lead = pos - 1;
-
- while (lead > 0 && pos - lead < E_UTF8_MAX_BYTES && e_utf8_is_continuation(s[lead]))
-  lead--;
- if (e_utf8_is_continuation(s[lead]))
-  return(pos - 1);
- if (lead + e_utf8_seq_len(s + lead, len - lead) < pos)
-  return(pos - 1);
- return(lead);
-}
-
-int e_utf8_to_codepoint(unsigned char *buf, int len)
-{
- if (len >= 2 && (buf[0] & 0xE0) == 0xC0)
-  return ((buf[0] & 0x1F) << 6) | (buf[1] & 0x3F);
- if (len >= 3 && (buf[0] & 0xF0) == 0xE0)
-  return ((buf[0] & 0x0F) << 12) | ((buf[1] & 0x3F) << 6) | (buf[2] & 0x3F);
- if (len >= 4 && (buf[0] & 0xF8) == 0xF0)
-  return ((buf[0] & 0x07) << 18) | ((buf[1] & 0x3F) << 12) |
-         ((buf[2] & 0x3F) << 6) | (buf[3] & 0x3F);
- return -1;
 }
 
 int e_utf8_visual_len(unsigned char *s, int bytes)
@@ -3982,13 +3833,6 @@ static int e_rudo_block_back(BUFFER *b, SCHIRM *s, Undo *rec)
  e_block_record_keep(way_back, b, rec->b.x, rec->b.y);
  return(E_BUFFER_OK);
 }
-
-/* What the user had before a block replay set the record's block and
-   cursor: put back when the replay is refused. */
-typedef struct
-{
- POINT cursor, mark_begin, mark_end;
-} WpeReplayView;
 
 /**
  * e_rudo_view_keep - Remember the cursor and the block before a block

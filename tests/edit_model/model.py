@@ -274,6 +274,10 @@ _rule("cursor_detail", SOURCE_CODE, "we_edit.c:1084-1287",
       (F_CURSOR,))
 _rule("cursor_clamped", SOURCE_CODE, "we_edit.c:2250-2252",
       "The cursor is put back inside its row after each key.", (F_CURSOR,))
+_rule("position_on_glyph", SOURCE_MANUAL, EDITOR + ":64-66",
+      "The cursor and the block marks stand between characters: on the first "
+      "byte of a glyph or at the end of a row, never between the bytes of "
+      "one.", (F_CURSOR, F_MARKS, F_ANCHOR))
 _rule("anchor_after_key", SOURCE_CODE, "we_edit.c:1073",
       "The Shift-marking anchor is the cursor after every key, before the "
       "clamp.", (F_ANCHOR,))
@@ -1031,6 +1035,17 @@ def utf8_seq_len(data, x):
     if any((data[x + i] & UTF8_CONT_MASK) != UTF8_CONT for i in range(1, n)):
         return 1
     return n
+
+
+def utf8_glyph_start(data, x):
+    """Does column @x of the row bytes @data start a glyph, or end the row?
+    The row is read glyph by glyph (utf8_seq_len) from byte 0, as the editor
+    reads it: a whole UTF-8 character is one glyph, and so is a stray byte (a
+    Latin-1 letter, a lone continuation byte), which is a place of its own."""
+    pos = 0
+    while pos < x and pos < len(data):
+        pos += utf8_seq_len(data, pos)
+    return pos == x or x >= len(data)
 
 
 def utf8_char_before(data, x):

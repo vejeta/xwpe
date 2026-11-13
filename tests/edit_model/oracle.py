@@ -137,6 +137,10 @@ class Window:
         # the first row wider than Max. Columns or not ended as a row ends;
         # -1 for none (an editor without the field says none)
         self.rows = int(kv.get("rows", "-1"))
+        # the first position (0 cursor, 1 block begin, 2 block end, 3 find
+        # start, 4 find end, 5 anchor) that is not a place of the text; -1
+        # for none (an editor without the field says none)
+        self.pos = int(kv.get("pos", "-1"))
         self.lines = []          # [(end 'H'|'S', bytes)]
 
     @property
