@@ -104,6 +104,26 @@ def _installed_manual(wpe_bin):
     return os.path.join(prefix, 'share', 'info', 'xwpe.info')
 
 
+# The fixed Info directories the editor searches after its own infodir
+# (INFO_DIR in unixkeys.h).
+SYSTEM_INFO_DIRS = ("/usr/share/info", "/usr/local/info", "/usr/info")
+
+
+def _system_manual_answers_for(wpe_bin):
+    """The system Info directory that holds an xwpe manual of its own, when the
+    installed binary's infodir is not that directory, else None.  A copy there
+    (a distribution's xwpe package) would open even with a wrong compiled-in
+    infodir, so the row below could not tell the two apart."""
+    own = os.path.realpath(os.path.dirname(_installed_manual(wpe_bin)))
+    for directory in SYSTEM_INFO_DIRS:
+        if not os.path.isdir(directory) or os.path.realpath(directory) == own:
+            continue
+        if any(name.startswith("xwpe.info") for name in os.listdir(directory)):
+            return directory
+    return None
+
+
+# @scenario SC-macos-11
 @pytest.mark.skipif(not os.path.exists(_installed_manual(WPE_BIN)),
                     reason="wpe not installed beside its manual; the compiled-in "
                            "infodir path is only testable against an installed build "
@@ -119,6 +139,10 @@ def test_help_info_finds_installed_manual_without_infopath(tmp_path):
     not on that list) -- silently showed the system dir node instead.  The fix
     bakes $(infodir) into the path; this proves it WITHOUT the INFOPATH crutch the
     test above leans on."""
+    shadow = _system_manual_answers_for(WPE_BIN)
+    if shadow:
+        pytest.skip("%s holds an xwpe manual of its own, which would open "
+                    "even with a wrong compiled-in infodir" % shadow)
     text, alive = _open_info(str(tmp_path), with_infopath=False)
     assert alive, "wpe died opening Help -> Info (installed, no INFOPATH):\n%s" % text
     assert "manual for xwpe" in text or "Introduction" in text, \

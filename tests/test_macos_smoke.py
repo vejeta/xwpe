@@ -37,8 +37,11 @@ def open_wpe(files, workdir, term='xterm-256color', extra_env=None):
     # Load the in-app help from the checkout so the F1/Help check works from a
     # plain build tree (no `make install`), via the editor's "_eng" fallback.
     env.setdefault('XWPE_LIB', os.path.dirname(os.path.abspath(WPE)))
-    if extra_env:
-        env.update(extra_env)
+    for name, value in (extra_env or {}).items():
+        if value is None:
+            env.pop(name, None)        # None removes the variable
+        else:
+            env[name] = value
     proc = subprocess.Popen([WPE, *files], stdin=slave, stdout=slave,
                             stderr=slave, cwd=workdir, env=env,
                             preexec_fn=os.setsid)
@@ -256,11 +259,28 @@ def _run_checks():
     cleanup(proc, m)
 
     print('\n== §5 macOS-specific ==', flush=True)
-    rec('§5', 'wpe runs without XQuartz (ncurses build)', 'PASS')
+    # Measured, not assumed: with no display variable at all the editor
+    # starts, draws the file, and quits on Alt-X with status 0.
+    no_display = {'DISPLAY': None, 'WAYLAND_DISPLAY': None}
+    proc, m, scr, st = open_wpe(['e.c'], wd, extra_env=no_display)
+    drain(m, st, 1.5)
+    drew = screen_has(scr, 'int main')
+    os.write(m, b'\x1bx')
+    t0 = time.time()
+    while time.time() - t0 < 3 and proc.poll() is None:
+        drain(m, st, 0.2)
+    code = proc.poll()
+    rec('§5', 'wpe runs, draws the file and quits with DISPLAY unset',
+        'PASS' if drew and code == 0 else 'FAIL',
+        f'drew={drew} exit={code}')
+    cleanup(proc, m)
+
+    graphical = os.path.exists(os.path.join(TOP, 'xwpe'))
     rec('§5', 'xwpe build present?',
-        'PASS' if os.path.exists(os.path.join(TOP, 'xwpe')) else 'SKIP',
-        '' if os.path.exists(os.path.join(TOP, 'xwpe'))
-        else 'not built (expected on macOS without XQuartz)')
+        'PASS' if graphical else 'SKIP',
+        '' if graphical
+        else 'no graphical build here; configure with --with-libx11-compat '
+             'or --with-x to get one')
 
     shutil.rmtree(wd, ignore_errors=True)
     return results

@@ -257,6 +257,11 @@ Changes
   instead of closing anyway.  Quit stops at that window; the files saved
   before it stay saved.
 
+* The macOS install pages now put the libx11-compat build first and
+  XQuartz second, and say what the libx11-compat build leaves out: no
+  Alt-F5 User Screen (it focuses Messages), no Cairo renderer, no native
+  Wayland backend.
+
 * Enter in a Grep or Find window that found nothing no longer ends the
   editor.  The list says "No entry in this list" and stays open until you
   close it.  The same holds for a list that has lost its last entry (the

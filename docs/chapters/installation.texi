@@ -74,25 +74,45 @@ make
 sudo make install
 @end example
 
-@subsection On macOS (Homebrew + XQuartz)
+@subsection On macOS (Homebrew)
 
 @cindex macOS
 @cindex Homebrew
 @cindex XQuartz
+@cindex libx11-compat
 
 xwpe builds on macOS with Homebrew.  The terminal @command{wpe} needs no
-X server; the X11 @command{xwpe} needs @uref{https://www.xquartz.org/,
+X server and no SDL.  The graphical @command{xwpe} has two builds: the
+recommended one links against @uref{https://github.com/sysprog21/libx11-compat,
+libx11-compat}, which draws a native window through SDL2 and needs no X
+server, and the fallback links against @uref{https://www.xquartz.org/,
 XQuartz}.  Homebrew's @code{ncurses} is keg-only, so point
-@env{PKG_CONFIG_PATH} at it before @command{configure}:
+@env{PKG_CONFIG_PATH} at it before @command{configure}.  The terminal
+@command{wpe}:
 
 @example
 brew install autoconf automake pkg-config ncurses libvterm json-c texinfo
 export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$PKG_CONFIG_PATH"
-autoreconf -fi && ./configure && make && sudo make install
+autoreconf -fi && ./configure --without-x --without-gpm && make && sudo make install
 @end example
 
-For the X11 build add @code{cairo pango libx11 libxft} and install
-XQuartz.  The repository's @file{contrib/setup.sh} automates the whole
+For the graphical @command{xwpe} with libx11-compat, install SDL2, build
+libx11-compat into a prefix @file{$LX11C} (see its README), and point
+@command{configure} at it:
+
+@example
+brew install sdl2 sdl2_ttf
+./configure --with-libx11-compat="$LX11C" --without-gpm
+@end example
+
+This build draws text through Xft only.  It has no User Screen
+(@kbd{Alt-F5} focuses the Messages window instead), no Cairo renderer and
+no native Wayland backend, because those need libvterm, Cairo or Wayland,
+which this configuration leaves out.
+
+For the XQuartz fallback add @code{cairo pango libx11 libxft} and install
+XQuartz, then configure with @option{--with-x}.  This build has the Cairo
+renderer and the User Screen.  The repository's @file{contrib/setup.sh} automates the whole
 dependency-install-and-build for both Debian/Ubuntu and macOS; see the
 README's @samp{Building & installing} section for the full list and the
 keyboard notes (the Option key must be set to send Alt/Meta; the function

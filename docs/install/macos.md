@@ -1,9 +1,12 @@
 # Installing xwpe on macOS
 
 Both binaries build clean on macOS (Apple Silicon and Intel) against Homebrew:
-`wpe` runs natively in a terminal (no XQuartz), and the graphical `xwpe` links
-against XQuartz + Homebrew's Cairo/Pango/Xft stack and is exercised end-to-end
-by the X11 test suite (see [tests/README.md](../../tests/README.md)).
+`wpe` runs natively in a terminal (no X server, no SDL). The graphical `xwpe`
+has two builds: the recommended one links against
+[libx11-compat](https://github.com/sysprog21/libx11-compat) (a native window
+through SDL2, no XQuartz), and the fallback links against XQuartz +
+Homebrew's Cairo/Pango/Xft stack and is exercised by the X11 test suite (see
+[tests/README.md](../../tests/README.md)).
 
 > **macOS keyboard heads-up.** The Option key must be set as Meta, and the
 > top-row `F1`-`F12` are taken by the system -- but every command also has a
@@ -12,7 +15,7 @@ by the X11 test suite (see [tests/README.md](../../tests/README.md)).
 
 ## Pre-built tap (shortest path)
 
-A Homebrew tap on Codeberg packages the X11 build (`xwpe`, `xwe`, `wpe`, `we`)
+A Homebrew tap on Codeberg packages the XQuartz X11 build (`xwpe`, `xwe`, `wpe`, `we`)
 so a fresh install is three commands:
 
 ```sh
@@ -46,34 +49,9 @@ export PATH="$HOME/.local/bin:$PATH"      # add to ~/.zshrc to keep it
 wpe foo.c                                 # syntax_def + Help come from the install
 ```
 
-### Graphical `xwpe` (XQuartz)
+### Graphical `xwpe`, native (libx11-compat, recommended)
 
-Install [XQuartz](https://www.xquartz.org/) (`brew install --cask xquartz`, log
-out/in once so `$DISPLAY` is wired up), then add the X/Cairo/Pango stack and
-reconfigure with `--with-x`:
-
-```sh
-brew install --cask xquartz                                      # X server
-brew install cairo pango libxft libxext libx11                   # rendering stack
-./configure --with-x --without-gpm --prefix="$HOME/.local"
-make && make install
-xwpe foo.c                                                       # graphical build
-```
-
-That is a complete editor. For the `Alt-Q` IDE features continue with
-[docs/ide-setup.md](../ide-setup.md) (install the servers and `source
-contrib/xwpe-env`, which is what puts Metals/clangd on `PATH` and sets
-`JAVA_HOME`).
-
-**Using fish?** The two `export` lines above are bash/zsh; the fish equivalents
-are `set -x PKG_CONFIG_PATH (brew --prefix ncurses)/lib/pkgconfig
-$PKG_CONFIG_PATH` and `fish_add_path ~/.local/bin`. (The runtime variables --
-`XWPE_LIB`, `JAVA_HOME`, server `PATH` -- are handled per-shell by
-`contrib/xwpe-env`, see [docs/ide-setup.md](../ide-setup.md).)
-
-### Native GUI without XQuartz (libx11-compat)
-
-The graphical `xwpe` can also run **natively on macOS with no XQuartz**, through
+The graphical `xwpe` runs **natively on macOS with no XQuartz**, through
 [libx11-compat](https://github.com/sysprog21/libx11-compat) -- a drop-in X11
 implementation that translates Xlib to SDL2. You get a real Cocoa window,
 pixel-exact Retina text, and native live-resize; the editor is the same X11
@@ -97,6 +75,41 @@ xwpe already carries the optional shim hooks (live-resize reflow, HiDPI scale),
 so nothing else is needed in the editor. A Homebrew formula that wires this up
 as `brew install` (libx11-compat + SDL2 as dependencies) is in progress -- until
 then this is the from-source path.
+
+**What this build does not have.** Cairo, libvterm and the native Wayland
+backend are left out of it (`configure` skips them under the shim):
+
+- no embedded User Screen: `Alt-F5` focuses the Messages window instead;
+- text is drawn by Xft, not by the Cairo renderer;
+- no native Wayland backend (it is not a macOS target anyway).
+
+Everything else of the editor is the same. The XQuartz build below keeps the
+Cairo renderer and the User Screen.
+
+### Graphical `xwpe` (XQuartz, fallback)
+
+Install [XQuartz](https://www.xquartz.org/) (`brew install --cask xquartz`, log
+out/in once so `$DISPLAY` is wired up), then add the X/Cairo/Pango stack and
+reconfigure with `--with-x`:
+
+```sh
+brew install --cask xquartz                                      # X server
+brew install cairo pango libxft libxext libx11                   # rendering stack
+./configure --with-x --without-gpm --prefix="$HOME/.local"
+make && make install
+xwpe foo.c                                                       # graphical build
+```
+
+That is a complete editor. For the `Alt-Q` IDE features continue with
+[docs/ide-setup.md](../ide-setup.md) (install the servers and `source
+contrib/xwpe-env`, which is what puts Metals/clangd on `PATH` and sets
+`JAVA_HOME`).
+
+**Using fish?** The two `export` lines above are bash/zsh; the fish equivalents
+are `set -x PKG_CONFIG_PATH (brew --prefix ncurses)/lib/pkgconfig
+$PKG_CONFIG_PATH` and `fish_add_path ~/.local/bin`. (The runtime variables --
+`XWPE_LIB`, `JAVA_HOME`, server `PATH` -- are handled per-shell by
+`contrib/xwpe-env`, see [docs/ide-setup.md](../ide-setup.md).)
 
 ## Keyboard & terminal on macOS
 

@@ -23,6 +23,9 @@ from wpe_driver import WpeSession, ALT
 # A terminfo with no SGR mouse capability, so ncurses passes the raw
 # "ESC [ < ..." through to wpe instead of synthesising KEY_MOUSE.
 NO_SGR_TERM = {"TERM": "vt220"}
+# An entry only the open File menu shows.  "Save" alone is no proof: the
+# status line says "F2 Save" before any click.
+FILE_MENU_ITEM = "Save As"
 
 
 def _sgr(button, col, row, press=True):
@@ -38,10 +41,12 @@ def test_sgr_click_opens_menu_on_no_sgr_terminal(tmp_path):
         bar = w.display()[0]
         assert "File" in bar, "menu bar not drawn: %r" % bar
         col = bar.index("File") + 1          # 1-based SGR column of 'F'
+        assert FILE_MENU_ITEM not in "\n".join(w.display()), \
+            "the File menu is already open before the click"
         w.key(_sgr(0, col, 1, True), _sgr(0, col, 1, False), delay=0.5)
         screen = "\n".join(w.display())
         assert w.alive(), "wpe died decoding the SGR mouse report"
-        assert "Save" in screen or "New" in screen, \
+        assert FILE_MENU_ITEM in screen, \
             "SGR click on 'File' did not open the File menu:\n" + screen
 
 
