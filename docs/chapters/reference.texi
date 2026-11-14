@@ -328,6 +328,11 @@ search criteria from @samp{File @result{} Grep}.  Press @key{Return}
 or @kbd{Alt-S} to open the marked file for editing; the cursor jumps
 to the first occurrence.  Press @key{ESC} to close the window.
 
+When nothing matched, the Find and Grep windows are empty: @key{Return}
+and @kbd{Alt-S} then say @samp{No entry in this list} and the window
+stays open.  The same holds in a Function Index section with no manual
+pages and in a project file list whose last file was deleted.
+
 @subsection The Message Window
 
 @cindex Message Window

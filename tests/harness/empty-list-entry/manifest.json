@@ -1,0 +1,13 @@
+{
+ "capability": "empty-list-entry",
+ "scenarios": [
+  {"id": "SC-empty-list-entry-01", "requirement": "Enter in an empty Grep result window leaves the editor alive and says there is no entry", "layer": "ncurses", "test": "tests/test_empty_list_enter.py::test_enter_in_an_empty_grep_result_leaves_the_editor_alive", "status": "new"},
+  {"id": "SC-empty-list-entry-02", "requirement": "Enter in an empty Find result window leaves the editor alive and says there is no entry", "layer": "ncurses", "test": "tests/test_empty_list_enter.py::test_enter_in_an_empty_find_result_leaves_the_editor_alive", "status": "new"},
+  {"id": "SC-empty-list-entry-03", "requirement": "Enter on a Grep result that has a match still opens it", "layer": "ncurses", "test": "tests/test_empty_list_enter.py::test_enter_in_a_grep_result_with_a_match_still_opens_it", "status": "new"},
+  {"id": "SC-empty-list-entry-04", "requirement": "Alt-S in an empty Grep result window leaves the editor alive and says there is no entry", "layer": "ncurses", "test": "tests/test_empty_list_enter.py::test_alt_s_in_an_empty_grep_result_says_no_entry", "status": "new"},
+  {"id": "SC-empty-list-entry-05", "requirement": "Enter and Alt-S in an empty Function Index section say there is no entry", "layer": "ncurses", "test": "tests/test_empty_list_enter.py::test_enter_in_an_empty_function_index_section_says_no_entry", "status": "new"},
+  {"id": "SC-empty-list-entry-06", "requirement": "Enter and Alt-E in a project list whose last file was deleted say there is no entry and open nothing", "layer": "ncurses", "test": "tests/test_empty_list_enter.py::test_enter_in_a_project_list_whose_last_file_was_deleted", "status": "new"},
+  {"id": "SC-empty-list-entry-01x", "requirement": "Enter in an empty Grep or Find result window leaves the graphical editor alive", "layer": "x11", "test": "tests/x11/test_empty_list_enter.py::test_x11_enter_in_an_empty_result_window_leaves_the_editor_alive", "status": "new"},
+  {"id": "SC-empty-list-entry-01w", "requirement": "Enter in an empty Grep or Find result window leaves the graphical editor alive", "layer": "wayland", "test": "tests/wayland/test_empty_list_enter.py::test_x11_enter_in_an_empty_result_window_leaves_the_editor_alive", "status": "new"}
+ ]
+}

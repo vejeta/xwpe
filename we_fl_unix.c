@@ -4479,6 +4479,47 @@ int e_data_schirm(FENSTER * f)
   return(0);
 }
 
+/** What the list says when a key asks for the entry it does not have. */
+#define E_DATA_NO_ENTRY_MSG "No entry in this list"
+
+/**
+ * e_data_has_entry - Tell whether a list window has a selected entry.
+ * @fw: the list of a Grep, Find, Function-Index, Window or Project window.
+ *
+ * A search that found nothing leaves a list with no entry at all. Enter on
+ * such a list must not go and read the name of an entry that is not there.
+ *
+ * Return: 1 when the highlighted row names an entry, 0 otherwise.
+ */
+static int e_data_has_entry(FLWND *fw)
+{
+  if(fw->df == NULL || fw->df->anz <= 0)
+    return(0);
+  return(fw->nf >= 0 && fw->nf < fw->df->anz);
+}
+
+/**
+ * e_data_key_takes_entry - Tell whether a key acts on the selected entry.
+ * @f: the list window the key was pressed in.
+ * @c: the key.
+ *
+ * Enter (or Alt-S) opens the entry of a Function-Index, Grep, Find or Window
+ * list, and Enter (or Alt-E) opens the file of the Project list. The keys
+ * that add to a list act on no entry, so they are not counted here.
+ *
+ * Return: 1 when the key needs an entry, 0 otherwise.
+ */
+static int e_data_key_takes_entry(FENSTER *f, int c)
+{
+  if((c == WPE_CR || c == AltS) && (f->ins < 4 || f->ins == 7))
+    return(1);
+#ifdef PROG
+  if(f->ins == 4 && (c == AltE || c == WPE_CR))
+    return(1);
+#endif
+  return(0);
+}
+
 int e_data_eingabe(ECNT * cn)
 {
   FENSTER        *f = cn->f[cn->mxedt];
@@ -4505,6 +4546,12 @@ int e_data_eingabe(ECNT * cn)
     if(c == MBKEY)
       c = e_data_ein_mouse(f);
 #endif
+    if(e_data_key_takes_entry(f, c) && !e_data_has_entry(fw))
+    {
+      e_error(E_DATA_NO_ENTRY_MSG, 0, f->fb);
+      c = AltF;
+      continue;
+    }
     if(((c == WPE_CR || c == AltS) && (f->ins < 4 || f->ins == 7)) ||
        ((c == AltA || c == EINFG) && (f->ins > 3 && f->ins < 7)))
     {
