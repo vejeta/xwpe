@@ -80,7 +80,6 @@ COPY|we_debug.c|e_d_bsp_command_text|1|sized|the destination is allocated at its
 COPY|we_debug.c|e_d_dap_start|1|text|a fixed message with an adapter name into 160 bytes
 COPY|we_debug.c|e_d_dap_watch_put|1|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_d_start_end|1|checked|cut at the label's size minus one, a label
-COPY|we_debug.c|e_d_exe_name_of|1|checked|the length is tested against the buffer's size before the ending is added
 COPY|we_debug.c|e_deb_run|10|text|command words into a line buffer sized for them
 COPY|we_e_aus.c|e_schreib_leiste_lines|5|sized|copies between a field's buffer and a copy of the field's own size plus one
 COPY|we_edit.c|e_edit|1|sized|the destination is allocated at its sources' length just before

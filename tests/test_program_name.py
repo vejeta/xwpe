@@ -438,6 +438,166 @@ def test_project_debugger_loads_the_program_under_exedir(tmp_path):
     assert any(l.rstrip().endswith("out/p") for l in loads), loads
 
 
+def _debug_a_single_file(build, link_word):
+    """F9, then Ctrl-G r on the open file, with a stand-in gdb: the words the
+    debugger was told to load (`file ...`), and the link F9 wrote."""
+    gdb = build.bin / "gdb"
+    gdb.write_text(STAND_IN_GDB)
+    gdb.chmod(0o755)
+    with build.session() as s:
+        s.key(F9, delay=2.0)
+        assert _until(s, lambda: build.links()), "no link:\n" + _text(s)
+        s.key(CTRL_G, "r", delay=2.0)
+        assert _until(s, lambda: [l for l in build.lines()
+                                  if l.startswith("gdb-sent") and " file " in l]), \
+            "gdb was told no file:\n%s\n%s" % (build.lines(), _text(s))
+        _intact(s, "Ctrl-G r after F9")
+    assert build.links() == [link_word], build.links()
+    return [l.split(" file ", 1)[1].strip() for l in build.lines()
+            if l.startswith("gdb-sent") and " file " in l]
+
+
+# The debugger loads what F9 wrote: under Exedir.
+# @scenario SC-program-name-01
+@needs_sh
+def test_debugger_loads_what_f9_wrote_under_exedir(tmp_path):
+    """Exedir out.d, F9 links out.d/t.e; Ctrl-G r tells gdb to load that
+    file.  It was told the bare t.e, a file F9 never wrote."""
+    build = Build(tmp_path)
+    (build.ws / "out.d").mkdir()
+    build.own_config("[Programming]\nExedir : out.d\n")
+    loads = _debug_a_single_file(build, "out.d/t.e")
+    assert loads and all(_same_file(build.ws, l, "out.d/t.e") for l in loads), loads
+
+
+# The language's Executable, under Exedir, reaches the debugger.
+# @scenario SC-program-name-02
+@needs_sh
+def test_executable_under_exedir_reaches_the_debugger(tmp_path):
+    """Exedir out, the C Executable prog: F9 links out/prog and the debugger
+    loads out/prog, not the bare word prog."""
+    build = Build(tmp_path)
+    (build.ws / "out").mkdir()
+    build.own_config("[Programming]\nExedir : out\n[Language/C]\nExecutable : prog\n")
+    loads = _debug_a_single_file(build, "out/prog")
+    assert loads and all(_same_file(build.ws, l, "out/prog") for l in loads), loads
+
+
+# jdb gets the class, never a path, with an Exedir set.
+# @scenario SC-program-name-12
+@pytest.mark.skipif(not (tool_usable("javac", "-version") and tool_usable("jdb", "-version")),
+                    reason="javac and jdb not usable")
+def test_jdb_still_gets_the_class_with_an_exedir(tmp_path):
+    """Exedir out.d, T.java, Ctrl-G r: javac writes T.class where it ran and
+    jdb starts the class T.  Green before the owner and after it: the class
+    is the stem alone, never placed under Exedir."""
+    build = Build(tmp_path)
+    (build.ws / "out.d").mkdir()
+    build.own_config("[Programming]\nExedir : out.d\n")
+    trace = tmp_path / "ui.trace"
+    seed = "class T { public static void main(String[] a) { System.out.println(1); } }\n"
+    with build.session(filename="T.java", seed=seed,
+                       env={"XWPE_UI_TRACE": str(trace)}) as s:
+        s.key(CTRL_G, "r", delay=1.0)
+
+        def started():
+            return trace.exists() and "startplan judge debuggee/java" in trace.read_text()
+        assert _until(s, started), "jdb did not start the class:\n" + _text(s)
+        screen = _text(s)
+        _intact(s, "Ctrl-G r on T.java with an Exedir")
+    assert "ClassNotFound" not in screen and "Unable to" not in screen, screen
+    assert (build.ws / "T.class").exists()
+    assert not (build.ws / "out.d" / "T.class").exists()
+
+
+# fpc's program is loaded from the build folder, whatever Exedir says.
+# @scenario SC-program-name-13
+@needs_sh
+@pytest.mark.skipif(not tool_usable("fpc", "-iV"), reason="fpc not usable")
+def test_fpc_program_is_loaded_from_the_build_folder_with_an_exedir(tmp_path):
+    """Exedir out.d, a.pas, Ctrl-G r: fpc writes `a` where it ran, so gdb is
+    told to load <folder>/a.  Green before the owner and after it."""
+    build = Build(tmp_path)
+    (build.ws / "out.d").mkdir()
+    build.own_config("[Programming]\nExedir : out.d\n")
+    gdb = build.bin / "gdb"
+    gdb.write_text(STAND_IN_GDB)
+    gdb.chmod(0o755)
+    with build.session(filename="a.pas", seed="program a;\nbegin\nend.\n") as s:
+        s.key(CTRL_G, "r", delay=2.0)
+        assert _until(s, lambda: [l for l in build.lines()
+                                  if l.startswith("gdb-sent") and " file " in l]), \
+            "gdb was told no file:\n%s\n%s" % (build.lines(), _text(s))
+        _intact(s, "Ctrl-G r on a.pas with an Exedir")
+    loads = [l.split(" file ", 1)[1].strip() for l in build.lines()
+             if l.startswith("gdb-sent") and " file " in l]
+    assert all(_same_file(build.ws, l, "a") for l in loads), loads
+
+
+# The Rust debug binary is written where F9's program goes.
+# @scenario SC-program-name-03
+@pytest.mark.xfail(strict=True, reason="the debug compile's plan must carry Exedir's origin first: DESIGN-debug-compile-origin pass P3c")
+def test_rust_debug_binary_goes_under_exedir(tmp_path):
+    """Exedir out.d, Ctrl-G r on a.rs: the compiler is told -o <folder>/out.d/a.dbg.
+    It was told <folder>/a.dbg.  Only the -o word is asserted: the compiler's
+    error file (a.dbgerr, named by the same owner call beside it) goes to the
+    shell as an argument the stand-in compiler does not see."""
+    from test_path_debugger import _compiler_started, _recorded_arguments, _recording_env
+    from test_signal_save import DAP_RUST_PROG
+    folder = tmp_path / "work"
+    (folder / "out.d").mkdir(parents=True)
+    home = tmp_path / "home"
+    cfg = home / ".config" / "xwpe"
+    cfg.mkdir(parents=True)
+    (cfg / "xwperc").write_text("[Programming]\nExedir : out.d\n")
+    env = _recording_env(tmp_path, "")
+    env.update({"HOME": str(home)})
+    with WpeSession(str(folder), DAP_RUST_PROG, filename="a.rs", wait=1.5,
+                    env_extra=env) as s:
+        s.key(CTRL_G, "r", delay=0.2)
+        _compiler_started(s, tmp_path)
+        _intact(s, "Ctrl-G r on a.rs with an Exedir")
+    args = _recorded_arguments(tmp_path)
+    assert "-o" in args, args
+    assert args[args.index("-o") + 1] == os.path.join(str(folder), "out.d", "a.dbg"), args
+
+
+# A folder's Exedir outside the folder: the compile for debug asks first.
+# @scenario SC-program-name-15
+def test_a_folders_exedir_outside_never_gets_the_debug_compile_unasked(tmp_path):
+    """The start folder's xwperc sets Exedir ../elsewhere, which holds an
+    a.dbgerr of its own; Ctrl-G r on a.rs.  The compile for debug writes its
+    binary and its error file beside the source, so nothing in ../elsewhere
+    is written or removed unless a question came first."""
+    from test_path_debugger import _compiler_started, _recorded_arguments, _recording_env
+    from test_signal_save import DAP_RUST_PROG
+    folder = tmp_path / "work"
+    folder.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    victim = elsewhere / "a.dbgerr"
+    victim.write_text("kept\n")
+    (folder / "xwperc").write_text("[Programming]\nExedir : ../elsewhere\n")
+    home = tmp_path / "home"
+    home.mkdir()
+    trace = tmp_path / "ui.trace"
+    env = _recording_env(tmp_path, "")
+    env.update({"HOME": str(home), "XWPE_UI_TRACE": str(trace)})
+    with WpeSession(str(folder), DAP_RUST_PROG, filename="a.rs", wait=1.5,
+                    env_extra=env) as s:
+        s.key(CTRL_G, "r", delay=0.2)
+        _compiler_started(s, tmp_path)
+        s._drain(3.0)
+        _intact(s, "Ctrl-G r on a.rs with a folder's Exedir outside")
+    traced = trace.read_text() if trace.exists() else ""
+    if "startcmd ask " in traced:
+        return
+    assert victim.exists() and victim.read_text() == "kept\n", \
+        "a file in the folder's Exedir was overwritten or removed unasked:\n" + traced
+    assert not (elsewhere / "a.dbg").exists(), \
+        "the compile for debug wrote outside the folder unasked:\n" + traced
+
+
 # ---- What the build trusts as current: only what this editor built here ----
 
 SHIP_AHEAD = 3600           # seconds after the session's seed a shipped output is dated

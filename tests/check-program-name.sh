@@ -226,6 +226,59 @@ canary R5 we_prog.c planted 'void planted(const char *p) { struct stat sb; fstat
 allowed_canary we_prog.c planted 'void planted(const char *p, struct stat *sb) { e_build_stat(p, sb); (void)sb->st_mtime; }' || blind=1
 allowed_canary we_debug.c planted 'void planted(const char *p) { struct stat sb; stat(p, &sb); }' || blind=1
 
+# debug_literals DIR - "file function count" for each function of we_debug.c
+# that writes the name or suffix of an output in a literal.  The debugger has
+# moved onto the owner, so this is not a count an allow file can hold.
+debug_literals() {
+  [ -f "$1/we_debug.c" ] || return 0
+  count_by_function we_debug.c "$1/we_debug.c" "$SUFFIX_RE" | grep -v '^#fn|'
+}
+
+# debug_literal_canary - a literal planted in a copy of we_debug.c must be
+# named by debug_literals, or the rule is blind.
+debug_literal_canary() {
+  c=$(mktemp -d "$WORK/canary.XXXXXX")
+  printf '%s\n' 'void planted(char *b, const char *d) { snprintf(b, 9, "%s.dbg", d); }' > "$c/we_debug.c"
+  if ! debug_literals "$c" | grep -q '^we_debug.c|planted|'; then
+    echo "canary R2 (debugger): a planted literal was not found"
+    return 1
+  fi
+  return 0
+}
+debug_literal_canary || blind=1
+
+debug_literals "$SRCDIR" > "$WORK/debug-literals"
+while IFS='|' read -r dfile dfn dcount; do
+  [ -n "$dfn" ] || continue
+  problem "offender: $dfile: $dfn writes the name of an output in a literal ($dcount): the debugger names files through we_progname, and no allow line can say otherwise"
+done < "$WORK/debug-literals"
+
+# The symbol half: the debugger's object imports the owner's functions, so a
+# debugger that names the program or the debug binary by its own rule cannot
+# pass by having no literal left.  Read from the objects make check names.
+NMTOOL=${NM:-nm}
+DEBUG_OBJ=
+for o in $ONE_OWNER_OBJECTS; do
+  case $o in *we_debug.o) DEBUG_OBJ=$o ;; esac
+done
+SYMBOL_SKIPPED=0
+if [ -z "$ONE_OWNER_OBJECTS" ]; then
+  echo "check-program-name: symbol half skipped: ONE_OWNER_OBJECTS is empty"
+elif [ -z "$DEBUG_OBJ" ]; then
+  problem "symbol: ONE_OWNER_OBJECTS names no we_debug.o: the symbol half cannot read the debugger's imports"
+elif [ ! -f "$DEBUG_OBJ" ]; then
+  problem "symbol: $DEBUG_OBJ is not built: the symbol half cannot read the debugger's imports"
+elif [ "$NMTOOL" = ":" ] || ! command -v "$NMTOOL" >/dev/null 2>&1; then
+  echo "check-program-name: symbol half skipped: no nm ($NMTOOL)"
+  SYMBOL_SKIPPED=1
+else
+  "$NMTOOL" -u "$DEBUG_OBJ" 2>/dev/null | awk '{ print $NF }' > "$WORK/debug-imports"
+  for sym in wpe_progname_program wpe_progname_debug_binary wpe_progname_debug_errors wpe_progname_stem wpe_progname_extension; do
+    grep -qx "$sym" "$WORK/debug-imports" ||
+      problem "symbol: $DEBUG_OBJ does not import $sym: the debugger names a program, a debug binary or a class by a rule of its own"
+  done
+fi
+
 scan_tree "$SRCDIR" "$WORK/found"
 grep -q '^#fn|we_prog.c|e_comp_operands$' "$WORK/found.fn" ||
   problem "canary: e_comp_operands not seen as a function of we_prog.c (the function scan is blind)"
@@ -278,4 +331,7 @@ if [ "$blind" -ne 0 ] || [ -s "$WORK/problems" ] || [ $status -ne 0 ]; then
   exit $BAD
 fi
 echo "check-program-name: ok ($(awk -F'|' '{ n += $3 } END { print n + 0 }' "$WORK/found") line(s) in $(wc -l < "$WORK/found" | tr -d ' ') listed function(s))"
+# The source half passed; with no nm the test is skipped, as the sibling
+# scripts do, rather than reported as a pass that read no symbols.
+[ "$SYMBOL_SKIPPED" -eq 1 ] && exit 77
 exit 0

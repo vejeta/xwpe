@@ -55,6 +55,7 @@ we_xterm.c|e_x_system|1|plan|the graphical editors' entry: a planned command beh
 
 # --- the debuggers (converted) ---
 we_debug.c|e_d_arguments|1|plan|reads Arguments once for the debugger's start plan and its run command
+we_debug.c|e_d_exedir|1|plan|the one reader of Exedir in the debugger: the program's folder for its name, its compile, and its origin in the debug plan
 we_debug.c|e_d_pick_start_arg|1|plan|the program's name, handed to the debugger's plan as its operand with its origin
 
 # --- the working folder of a plan that is not a debugger's start (wpe_startplan_set_cwd) ---

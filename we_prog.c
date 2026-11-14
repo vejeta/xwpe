@@ -713,8 +713,8 @@ static void e_build_path_too_long(FENSTER *f, const char *what);
  * name the editor gives to what a build makes goes through the owner from
  * here, so F9, Alt-C and Ctrl-F9 name the same files.
  */
-static void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const struct e_s_prog *entry,
-                             const char *executable, const char *exedir)
+void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const struct e_s_prog *entry,
+                      const char *executable, const char *exedir)
 {
  memset(s, 0, sizeof *s);
  s->name = f->datnam;

@@ -629,6 +629,13 @@ Compile with debug symbols (@code{-g}) and no optimisation
 include @code{-g}.  To add @code{-O0}, go to
 @samp{Options @result{} Compiler} and append it to Compiler Options.
 
+@cindex Exedir, the program the debugger loads
+The debugger loads the program F9 wrote, where F9 wrote it: in the output
+folder (@code{Exedir}) when one is set, under the language's
+@code{Executable} when it has one.  A compiler that writes its own program
+(Pascal, Java) leaves it in the build folder, and that is where it is
+loaded from.
+
 @section Choosing the start symbol
 
 @cindex start symbol

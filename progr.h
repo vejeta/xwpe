@@ -10,6 +10,7 @@
 #include <time.h>
 #include <signal.h>
 #include "WeProg.h"
+#include "we_progname.h"
 
 /* What Ctrl-F9 starts once the build has made it: a field of the language's
    entry, so a language that is not built in (a user's Lua) can say it in
@@ -121,6 +122,11 @@ const char *e_find_var_raw(const char *var);
 const char *e_get_start_symbol(void);
 /* The program the open project links, as a command names it (under Exedir). */
 const char *e_prj_program(void);
+/* The open file as the program-name owner (we_progname.h) reads it: the
+   debugger names the program it loads and the binary it compiles through
+   the same adapter F9 and Run use. */
+void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const struct e_s_prog *entry,
+                      const char *executable, const char *exedir);
 int e_run_options(FENSTER *f);
 int e_run_c_options(FENSTER *f);
 int e_project_options(FENSTER *f);

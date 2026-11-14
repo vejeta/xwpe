@@ -7168,6 +7168,7 @@ static void e_d_fd_nonblocking(int fd)
 #define E_D_PLAN_SOURCE_ARGS    "./xwperc: Arguments"
 #define E_D_PLAN_KEY_ARGS       "Arguments"
 #define E_D_PLAN_KEY_EXE        "Executable"
+#define E_D_PLAN_KEY_EXEDIR     "Exedir"
 #define E_D_PDB_MODULE_OPT      "-m"
 #define E_D_PDB_MODULE          "pdb"
 /* What "Use mine" is called in the box when the debugger starts apart: the
@@ -8624,6 +8625,26 @@ static const e_d_dap_lang DAP_LANGS[] = {
 };
 #define DAP_NLANGS ((int)(sizeof(DAP_LANGS) / sizeof(DAP_LANGS[0])))
 
+/**
+ * e_d_dap_lang_of_name - The DAP language a file name belongs to.
+ * @name: a file name.
+ *
+ * The extension is read the way the compiler entry and the program name read
+ * it (wpe_progname_extension), so a file is the same language to the
+ * compiler, to the build and to the debugger.
+ * Return: the descriptor, or NULL for a file no DAP adapter debugs.
+ */
+static const e_d_dap_lang *e_d_dap_lang_of_name(const char *name)
+{
+ const char *ext = wpe_progname_extension(name);
+ int i;
+
+ for (i = 0; i < DAP_NLANGS; i++)
+  if (!strcmp(ext, DAP_LANGS[i].ext))
+   return(&DAP_LANGS[i]);
+ return(NULL);
+}
+
 /* True if `datnam` ends in a DAP-debugged language's extension.  The debugger
    gates (e_make_breakpoint, e_d_quit) otherwise admit only files e_check_c_file
    recognises -- the C/compiler-table check -- which does not know a build-server
@@ -8631,18 +8652,9 @@ static const e_d_dap_lang DAP_LANGS[] = {
    This lets such files carry breakpoints and restore focus on quit. */
 static int e_d_dap_source_ext(const char *datnam)
 {
- int i, n;
-
  if (!datnam)
   return(0);
- n = strlen(datnam);
- for (i = 0; i < DAP_NLANGS; i++)
- {
-  int el = strlen(DAP_LANGS[i].ext);
-  if (n > el && !strcmp(datnam + n - el, DAP_LANGS[i].ext))
-   return(1);
- }
- return(0);
+ return(e_d_dap_lang_of_name(datnam) != NULL);
 }
 
 /* Pick the adapter for a language.  Order of preference: an explicit
@@ -8679,18 +8691,9 @@ static char *const *e_d_dap_choose_argv(const e_d_dap_lang *lang)
    pipeline and to pick the adapter/transport/compile policy. */
 static const e_d_dap_lang *e_d_dap_lang_for(FENSTER *f)
 {
- int i, n;
-
  if (!f || !f->datnam || !DTMD_ISTEXT(f->dtmd))
   return(NULL);
- n = strlen(f->datnam);
- for (i = 0; i < DAP_NLANGS; i++)
- {
-  int el = strlen(DAP_LANGS[i].ext);
-  if (n > el && !strcmp(f->datnam + n - el, DAP_LANGS[i].ext))
-   return(&DAP_LANGS[i]);
- }
- return(NULL);
+ return(e_d_dap_lang_of_name(f->datnam));
 }
 
 /* on_stopped: just RECORD where the program halted.  The actual cursor jump +
@@ -8997,38 +9000,44 @@ static void e_d_compile_too_long(FENSTER *f, const char *what)
 }
 
 /**
+ * e_d_exedir - The output folder the user set (Exedir), as typed.
+ *
+ * The one place the debugger reads Exedir, so the program it loads and the
+ * origin the start plan shows come from the same value.
+ * Return: Exedir, possibly empty.
+ */
+static const char *e_d_exedir(void)
+{
+ return(e_prog.exedir);
+}
+
+/**
  * e_d_compile_paths - Name the source, the binary and the error file of the
  * compile for debug of @f.
  * @f: the source window.
  *
- * The binary is written next to the source as "<name>.dbg", the compiler's
- * errors go to "<name>.dbgerr" there.  Each path is whole or the compile
- * does not start: a box names the one that does not fit.
+ * The program-name owner names the binary and the compiler's error file;
+ * both are written beside the source, in the source's folder, whatever
+ * Exedir says.  Each path is whole or the compile does not start: a box
+ * names the one that does not fit.
  * Return: 0, or -1 (said in a box).
  */
 static int e_d_compile_paths(FENSTER *f)
 {
- char stem[WPE_NAME_SIZE];
+ WpeProgramSource s;
 
  if (wpe_path_join(e_d_compile.src, sizeof e_d_compile.src, f->dirct, f->datnam))
  {
   e_d_compile_too_long(f, E_D_COMPILE_SOURCE_WHAT);
   return(-1);
  }
- if (wpe_path_copy(stem, sizeof stem, f->datnam))
- {
-  e_d_compile_too_long(f, E_D_COMPILE_SOURCE_WHAT);
-  return(-1);
- }
- WpeStringCutChar(stem, '.');
- if (wpe_path_join(e_d_compile.binary, sizeof e_d_compile.binary, f->dirct, stem) ||
-     wpe_path_cat(e_d_compile.binary, sizeof e_d_compile.binary, ".dbg"))
+ e_prog_source_of(&s, f, &e_s_prog, NULL, f->dirct);
+ if (wpe_progname_debug_binary(e_d_compile.binary, sizeof e_d_compile.binary, &s))
  {
   e_d_compile_too_long(f, E_D_COMPILE_BINARY_WHAT);
   return(-1);
  }
- if (wpe_path_join(e_d_compile.errf, sizeof e_d_compile.errf, f->dirct, stem) ||
-     wpe_path_cat(e_d_compile.errf, sizeof e_d_compile.errf, ".dbgerr"))
+ if (wpe_progname_debug_errors(e_d_compile.errf, sizeof e_d_compile.errf, &s))
  {
   e_d_compile_too_long(f, E_D_COMPILE_ERRF_WHAT);
   return(-1);
@@ -9065,7 +9074,7 @@ static int e_d_compile_script(FENSTER *f, const char *cc, const char *flags)
  * @f: the source window.
  *
  * The compiler and its flags come from the file's Options entry; the
- * binary is written next to the source, the errors into a file read once
+ * binary is written beside the source, the errors into a file read once
  * the compiler has ended.  The three paths go to the shell as arguments
  * (e_d_compile_begin), so a file a cloned folder names with a quote or a
  * ';' in it is compiled as that file and never runs a command.
@@ -12807,29 +12816,22 @@ static char *e_d_gdbmi_wanted(void)
 #define E_D_PATH_TOO_LONG_LINE "Debugger not started: the file path is too long"
 
 /**
- * e_d_exe_name_of - Name of the program built from a source file: the name
- * without its extension, plus ".e" unless the compiler adds none (fpc).
+ * e_d_exe_name_of - The program the debugger loads for a source file: the
+ * file F9 wrote, or for a compiler that writes its own program (fpc, jdb's
+ * class) the name it gave it.
  *
- * @out: destination, @n: its size, @datnam: the source file name.
+ * @out: destination, @n: its size; @f: the source's window; @executable: the
+ * language's Executable, or NULL.
+ * The same name F9 links and Ctrl-F9 starts, under the output folder, so the
+ * debugger opens the file the build made and no other.
  * Return: 0 on success, -1 when the result does not fit in @n.
  */
-static int e_d_exe_name_of(char *out, size_t n, const char *datnam)
+static int e_d_exe_name_of(char *out, size_t n, FENSTER *f, const char *executable)
 {
- if (e_d_copy_arg(out, n, datnam))
-  return(-1);
- WpeStringCutChar(out, '.');
- /* Non-GNU compilers (fpc) produce executables without .e extension.
-    GNU compilers use the .e convention from xwpe's link step. */
- if (!(e_s_prog.comp_sw & 1))
- {
-  if (strlen(out) + 3 > n)
-  {
-   out[0] = '\0';
-   return(-1);
-  }
-  strcat(out, ".e");
- }
- return(0);
+ WpeProgramSource s;
+
+ e_prog_source_of(&s, f, &e_s_prog, executable, e_d_exedir());
+ return(wpe_progname_program(out, n, &s));
 }
 
 /**
@@ -12845,13 +12847,18 @@ static int e_d_pick_start_arg(ECNT *cn, FENSTER *f, char *estr, size_t n)
  int _fi;
 
  e_d_prog_origin = WPE_FROM_USER;
+ if (e_opt_value_from(E_OPT_SCOPE_PROGRAMMING, E_D_PLAN_KEY_EXEDIR, e_d_exedir()) == WPE_FROM_FOLDER)
+  e_d_prog_origin = WPE_FROM_FOLDER;
  if (exe && exe[0])
  {
-  e_d_prog_origin = e_opt_value_from(e_s_prog.language, E_D_PLAN_KEY_EXE, exe);
-  return(e_d_copy_arg(estr, n, exe));
+  if (e_opt_value_from(e_s_prog.language, E_D_PLAN_KEY_EXE, exe) == WPE_FROM_FOLDER)
+   e_d_prog_origin = WPE_FROM_FOLDER;
+  if (e_deb_type == DEB_PDB || e_deb_type == DEB_A68G)
+   return(e_d_copy_arg(estr, n, exe));
+  return(e_d_exe_name_of(estr, n, f, exe));
  }
  if (e_deb_type != DEB_PDB && e_deb_type != DEB_A68G)
-  return(e_d_exe_name_of(estr, n, f->datnam));
+  return(e_d_exe_name_of(estr, n, f, NULL));
  /* pdb/a68g: debug the source file (.py/.a68) with full path.
     e_d_file has the basename; we need dirct + datnam for the
     full path so pdb can find it from any working directory. */
@@ -13424,8 +13431,7 @@ static int e_d_jdb_mark_stop(FENSTER *f, const char *stop)
  e_ds_take_cli_stop_line(&e_d_session, DEB_JDB, stop);
  if (!e_ds_jdb_stop_class(stop, cls, sizeof cls))
  {
-  snprintf(cls, sizeof cls, "%s", e_d_file);
-  WpeStringCutChar(cls, '.');
+  wpe_progname_stem(cls, sizeof cls, e_d_file);
  }
  if (!e_d_jdb_find_source(f->ed, cls, path, sizeof path))
  {
@@ -17016,8 +17022,7 @@ static int e_d_user_brk_on(const char *file, int line)
  */
 static void e_d_brk_jdb_class(const char *file, char *out, size_t size)
 {
- snprintf(out, size, "%s", file);
- WpeStringCutChar(out, '.');
+ wpe_progname_stem(out, size, file);
 }
 
 /**
@@ -23654,8 +23659,7 @@ static struct
  */
 static void e_d_jdb_start_class(char *out, size_t n)
 {
- snprintf(out, n, "%s", e_d_file);
- WpeStringCutChar(out, '.');
+ wpe_progname_stem(out, n, e_d_file);
 }
 
 /**

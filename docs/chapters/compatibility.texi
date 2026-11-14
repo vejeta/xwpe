@@ -825,6 +825,18 @@ leaves a value its field cannot show as it was unless you change that
 field.  The reason: a cut path or line is another path or
 line.
 
+@item The program the debugger loads
+@cindex debugger, program under Exedir
+The original loaded the program named after the source from the
+debugger's own folder, whatever @code{Exedir} said, so with an
+@code{Exedir} set the debugger found no program while F9 had linked one
+into it.  The debugger now loads the program F9 wrote, where F9 wrote it;
+a program a compiler writes itself is loaded from the build folder as
+before.  A file named only @file{.go}, @file{.rs} or @file{.scala} now
+counts as that language's source for the debugger, as @file{.c} alone is
+C.  The reason: one rule names a program from its source, in every
+command that builds, runs or debugs it.
+
 @item An absolute Executable
 @cindex Executable, absolute
 The original linked a language's @code{Executable} such as

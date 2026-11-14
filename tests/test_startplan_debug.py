@@ -459,6 +459,84 @@ def test_startplan_use_mine_line_is_wrapped_not_cut(tmp_path):
     assert not folder.ran.exists(), "the folder's .pdbrc ran after Esc"
 
 
+# @scenario SC-program-name-15b
+@needs_gdb
+def test_startplan_a_folders_exedir_names_the_program_origin_and_asks(tmp_path):
+    """The start folder's xwperc sets an Exedir outside the folder, so the
+    program gdb loads is a file the folder placed elsewhere: Ctrl-G R asks
+    first, as Run does, and Esc starts nothing.  (An Exedir inside the folder
+    asks nothing, for Run as for the debugger: the program stays in the
+    folder.)  The compile for debug asks first about the files it writes
+    there; Run it on that box, then the debugger's own box comes up."""
+    folder = Folder(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (folder.ws / "xwperc").write_text("[Programming]\nExedir : %s\n" % elsewhere)
+    with folder.session("t.c", SEED_C) as s:
+        _debug_box(s, "Command from ./xwperc")
+        s.key(RUN_IT, delay=1.0)
+        asked = _wait(lambda: "startcmd ask debug/gdb" in folder.traced(), BOX_WAIT)
+        s.key(ESC, delay=0.8)
+        s._drain(SETTLE)
+    assert asked, folder.traced()
+    assert "startcmd ask debug/gdb" in folder.traced(), folder.traced()
+    assert "startcmd answer debug/gdb cancel" in folder.traced(), folder.traced()
+
+
+# @scenario SC-program-name-15c
+@needs_gdb
+def test_startplan_without_a_folder_exedir_the_program_asks_nothing(tmp_path):
+    """The control of the row above: the same file with no folder xwperc,
+    so Exedir is the user's own default: gdb starts with no question."""
+    folder = Folder(tmp_path)
+    with folder.session("t.c", SEED_C) as s:
+        s.key(CTRL_G, "r", delay=1.0)
+        judged = _wait(lambda: "startplan judge debug/gdb" in folder.traced(), BOX_WAIT)
+        s._drain(SETTLE)
+    assert judged, folder.traced()
+    assert "startcmd ask" not in folder.traced(), folder.traced()
+
+
+# @scenario SC-program-name-15d
+@needs_gdb
+def test_startplan_a_folders_exedir_inside_the_folder_asks_nothing(tmp_path):
+    """The same folder xwperc, with an Exedir inside the folder (sub): the
+    program stays in the folder, so neither the build nor gdb asks, as for
+    Run."""
+    folder = Folder(tmp_path)
+    (folder.ws / "sub").mkdir()
+    (folder.ws / "xwperc").write_text("[Programming]\nExedir : sub\n")
+    with folder.session("t.c", SEED_C) as s:
+        s.key(CTRL_G, "r", delay=1.0)
+        judged = _wait(lambda: "startplan judge debug/gdb" in folder.traced(), BOX_WAIT)
+        s._drain(SETTLE)
+    assert judged, folder.traced()
+    assert "startcmd ask" not in folder.traced(), folder.traced()
+    assert (folder.ws / "sub" / "t.e").exists()
+
+
+# @scenario SC-program-name-15e
+@needs_gdb
+def test_startplan_a_folders_executable_outside_the_folder_asks(tmp_path):
+    """The start folder's xwperc names the C Executable ../elsewhere/evil:
+    the link writes it there (the build asks; Run it), and gdb would load a
+    program the folder placed outside it, so gdb's start asks too and Esc
+    starts nothing."""
+    folder = Folder(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    (folder.ws / "xwperc").write_text("[Language/C]\nExecutable : ../elsewhere/evil\n")
+    with folder.session("t.c", SEED_C) as s:
+        _debug_box(s, "Command from ./xwperc")
+        s.key(RUN_IT, delay=1.0)
+        judged = _wait(lambda: "startplan judge debug/gdb" in folder.traced(), BOX_WAIT)
+        s.key(ESC, delay=0.8)
+        s._drain(SETTLE)
+    assert judged, folder.traced()
+    assert (tmp_path / "elsewhere" / "evil").exists(), folder.traced()
+    assert "startcmd ask debug/gdb" in folder.traced(), folder.traced()
+    assert "startcmd answer debug/gdb cancel" in folder.traced(), folder.traced()
+
+
 # @scenario SC-compile-29
 @needs_gdb
 def test_startplan_folder_arguments_reach_gdb_only_after_the_box(tmp_path):
