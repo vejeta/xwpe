@@ -15,6 +15,7 @@
 #include "we_child.h"
 #include "we_startplan.h"
 #include "we_fdloop.h"
+#include "we_helpbuf.h"
 #include <ftw.h>
 #ifdef UNIX
 #include <sys/types.h>
@@ -797,10 +798,117 @@ static int e_help_add_row(BUFFER *b, const char *text)
  return(-1);
 }
 
+/**
+ * e_help_set_first_row - Make @line the first row of a help page or Info node.
+ *
+ * A page opens on the row the reader found, whole, however long the file's
+ * line is: the row grows to the line instead of the line running past a row
+ * sized for the window's width.  If memory is short the user is told and
+ * the page opens without its first row.
+ * Return: 0, or -1 when the row could not be set.
+ */
+static int e_help_set_first_row(BUFFER *b, const char *line)
+{
+ int n = strlen(line);
+
+ if (n > 0 && line[n-1] == '\n')
+  n--;
+ if (e_buffer_set_line_ended(b, b->mxlines-1, line, n, WPE_WR) == E_BUFFER_OK)
+  return(0);
+ wpe_buffer_say_nomem(b, "the help text");
+ return(-1);
+}
+
+/* The byte that ends a link, a header or a file name in a help row. */
+static const char help_end_mark[] = { HED, '\0' };
+
+/* The headline mark the Info reader puts in front of a node's first row. */
+static const char help_head_mark[] = { HHD, '\0' };
+
+/**
+ * e_info_node_key - The text a node header must contain for the node named
+ * @name to be the one opened: "Node: " and the name, without its end mark.
+ *
+ * The key is held at the name's real length, so a long node name is looked
+ * up whole, never by its first bytes.
+ * Return: the key in malloc'd storage, or NULL when memory is short.
+ */
+static char *e_info_node_key(const char *name)
+{
+ size_t room = strlen(name) + sizeof("Node: ");
+ char *key = MALLOC(room);
+ size_t len;
+
+ if (!key)
+  return(NULL);
+ wpe_help_lcpy(key, room, "Node: ");
+ len = wpe_help_lcat(key, room, name);
+ if (len > 0 && key[len-1] == HED)
+  key[len-1] = '\0';
+ return(key);
+}
+
+/**
+ * e_help_take_name - Take the name that starts at byte @from of a help row.
+ * @name: where it goes, @size bytes.
+ *
+ * The row's own bytes are the limit: the line break after the last byte of
+ * a row is never part of a name.  A name is a key (a page to jump to, a file
+ * to open), so one that does not fit is not used cut: the caller refuses.
+ * Return: 0 when the name fits whole, -1 when it would have been cut.
+ */
+static int e_help_take_name(const STRING *row, int from, char *name, size_t size)
+{
+ const char *src;
+ int avail, cut;
+
+ if (from > row->len)
+  from = row->len;
+ avail = row->len - from;
+ src = (const char *) row->s + from;
+ wpe_help_token(name, size, src, avail, help_end_mark, NULL, &cut);
+ if (cut)
+  return(-1);
+ return(0);
+}
+
+/**
+ * e_help_take_header - Build the key "headline mark, name, end mark" of the
+ * page the link at byte @from of a row points to.
+ *
+ * It is the text e_read_help and e_read_info search the file for, and what
+ * Back returns to.
+ * Return: 0, or -1 when the name does not fit @key whole.
+ */
+static int e_help_take_header(const STRING *row, int from, char *key, size_t size)
+{
+ if (size < 3)
+  return(-1);
+ key[0] = HHD;
+ if (e_help_take_name(row, from, key + 1, size - 2) != 0)
+  return(-1);
+ wpe_help_lcat(key, size, help_end_mark);
+ return(0);
+}
+
+/**
+ * e_help_refuse_name - Tell the user a link names something too long to follow.
+ *
+ * A very long link in a help page or a long name in an Info file is not
+ * followed to a page chosen by its first bytes; the user sees why nothing
+ * opened.
+ * Return: 1, the "no jump" result of e_help_ret.
+ */
+static int e_help_refuse_name(FENSTER *f)
+{
+ e_error("Link name too long", 0, f->fb);
+ return(1);
+}
+
 int e_read_help(char *str, FENSTER *f, int sw)
 {
  IFILE *fp;
- char *ptmp, tstr[256];
+ char *ptmp, tstr[WPE_HELP_LINE_SIZE];
  int i;
 
  ptmp = e_lib_file(HELP_FILE);
@@ -818,24 +926,24 @@ int e_read_help(char *str, FENSTER *f, int sw)
  f->b->fb = f->fb;
  if (str && str[0])
  {
-  while ((ptmp = e_i_fgets(tstr, 256, fp)) && !WpeStrcstr(tstr, str))
+  while ((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp)) && !WpeStrcstr(tstr, str))
    ;
-  if (ptmp && !sw)
+  if (ptmp && !sw && e_help_set_first_row(f->b, tstr) != 0)
   {
-   strcpy(f->b->bf[f->b->mxlines-1].s, tstr);
-   f->b->bf[f->b->mxlines-1].len = e_str_len(f->b->bf[f->b->mxlines-1].s);
-   f->b->bf[f->b->mxlines-1].nrc = e_str_nrc(f->b->bf[f->b->mxlines-1].s);
+   e_i_fclose(fp);
+   return(2);
   }
  }
  if (sw)
  {
-  char *tp = NULL, tmp[128], ts[2];
+  char *tp = NULL, tmp[WPE_HELP_LINE_SIZE], ts[2];
+  int cut;
 
   ts[0] = HHD; ts[1] = '\0';
-  while ((ptmp = e_i_fgets(tstr, 256, fp)) && !(tp = strstr(tstr, ts)))
+  while ((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp)) && !(tp = strstr(tstr, ts)))
    ;
   if (!str || !str[0])
-   while((ptmp = e_i_fgets(tstr, 256, fp)) && !(tp = strstr(tstr, ts)))
+   while((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp)) && !(tp = strstr(tstr, ts)))
     ;
   if (!ptmp)
   {
@@ -844,17 +952,23 @@ int e_read_help(char *str, FENSTER *f, int sw)
   }
   else
   {
-   for (i = 0; (tmp[i] = tp[i]) && tp[i] != HED; i++)
-    ;
-   tmp[i] = HED;  tmp[i+1] = '\0';
+   wpe_help_token(tmp, sizeof tmp - 1, tp, strlen(tp), help_end_mark, NULL, &cut);
+   if (cut)
+   {
+    e_i_fclose(fp);
+    return(e_error("Header name too long", 0, f->fb));
+   }
+   wpe_help_lcat(tmp, sizeof tmp, help_end_mark);
    if ((ud_help->str = MALLOC((strlen(tmp)+1)*sizeof(char))) != NULL)
     strcpy(ud_help->str, tmp);
-   strcpy(f->b->bf[f->b->mxlines-1].s, tstr);
-   f->b->bf[f->b->mxlines-1].len = e_str_len(f->b->bf[f->b->mxlines-1].s);
-   f->b->bf[f->b->mxlines-1].nrc = e_str_nrc(f->b->bf[f->b->mxlines-1].s);
+   if (e_help_set_first_row(f->b, tstr) != 0)
+   {
+    e_i_fclose(fp);
+    return(2);
+   }
   }
  }
- while(e_i_fgets(tstr, 256, fp))
+ while(e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp))
  {
   for(i = 0; tstr[i]; i++)
   if (tstr[i] == HFE)  {  e_i_fclose(fp);  return(0);  }
@@ -868,16 +982,14 @@ int e_read_help(char *str, FENSTER *f, int sw)
 int e_help_ret(FENSTER *f)
 {
  BUFFER *b = f->b;
- int i, j;
- char str[126];
+ int i;
+ char str[WPE_HELP_LINE_SIZE];
  struct help_ud *next;
 
    for(i = b->b.x; i >= 0 && b->bf[b->b.y].s[i] != HED; i--)
    {  if(b->bf[b->b.y].s[i] == HBG)
-      {  str[0] = HHD;
-	 for(j = i+1; j < b->bf[b->b.y].len
-			&& (str[j-i] = b->bf[b->b.y].s[j]) != HED; j++);
-	 str[j-i+1] = '\0';
+      {  if(e_help_take_header(&b->bf[b->b.y], i+1, str, sizeof str) != 0)
+	    return(e_help_refuse_name(f));
 	 if((next = MALLOC(sizeof(struct help_ud))) != NULL)
 	 {  next->str = MALLOC((strlen(str)+1) * sizeof(char));
 	    if(next->str) strcpy(next->str, str);
@@ -902,9 +1014,8 @@ int e_help_ret(FENSTER *f)
       }
       else if(b->bf[b->b.y].s[i] == HNF)
       {  for(i++; i < b->bf[b->b.y].len && b->bf[b->b.y].s[i] != HED; i++);
-	 for(i++, j = 0; j+i < b->bf[b->b.y].len
-			&& (str[j] = b->bf[b->b.y].s[j+i]) != HED; j++);
-	 str[j] = '\0';
+	 if(e_help_take_name(&b->bf[b->b.y], i+1, str, sizeof str) != 0)
+	    return(e_help_refuse_name(f));
 	 if((next = MALLOC(sizeof(struct help_ud))) != NULL)
 	 {  next->str = MALLOC(4 * sizeof(char));
 	    if(next->str) strcpy(next->str, "Top");
@@ -924,9 +1035,8 @@ int e_help_ret(FENSTER *f)
 	 return(0);
       }
       else if(b->bf[b->b.y].s[i] == HFB)
-      {  for(j = i+1; j < b->bf[b->b.y].len
-			&& (str[j-i-1] = b->bf[b->b.y].s[j]) != HED; j++);
-	 str[j-i-1] = '\0';
+      {  if(e_help_take_name(&b->bf[b->b.y], i+1, str, sizeof str) != 0)
+	    return(e_help_refuse_name(f));
 	 return(e_ed_man(str, f));
       }
       else if(b->bf[b->b.y].s[i] == HHD) return(e_help_last(f));
@@ -1027,71 +1137,111 @@ int e_help_free(FENSTER *f)
  return(0);
 }
 
-int e_help_comp(FENSTER *f)
+/* The bytes that end a switch or a header name when the help is checked. */
+static const char help_comp_stops[] = { HED, HBG, HHD, HFE, '\0' };
+
+/**
+ * e_help_comp_name - The switch or header name that follows the mark at byte
+ * @mark of row @row, at its real length.
+ * @stop: set to the byte where the name ended; @closed: set to 1 when an
+ * end mark ended it.
+ *
+ * Checking a help file for missing headers compares names, so none is cut.
+ * Return: the name in malloc'd storage, or NULL when memory is short.
+ */
+static char *e_help_comp_name(const STRING *row, int mark, int *stop, int *closed)
+{
+ const char *src = (const char *) row->s + mark + 1;
+ int avail = row->len - (mark + 1);
+ const char *end;
+ char *name;
+
+ name = wpe_help_token_dup(src, avail, help_comp_stops, &end);
+ *stop = mark + 1 + (int) (end - src);
+ *closed = (end < src + avail && *end == HED);
+ return(name);
+}
+
+/**
+ * e_help_comp_add - Append @name to the list @list of @count names.
+ * Return: 0, or -1 (@name freed) when memory is short.
+ */
+static int e_help_comp_add(char ***list, int *count, char *name)
+{
+ char **grown;
+
+ if (!name)
+  return(-1);
+ grown = REALLOC(*list, (*count + 1) * sizeof(char *));
+ if (!grown)
+ {
+  FREE(name);
+  return(-1);
+ }
+ grown[(*count)++] = name;
+ *list = grown;
+ return(0);
+}
+
+/**
+ * e_help_comp_collect - Collect the name after every @mark of the help window.
+ * @what: the message for a mark whose name is not closed by an end mark.
+ *
+ * On a mark without its end mark the user is told and the cursor goes to the
+ * place, so the author of the help file sees which one to fix.
+ * Return: 0, or 2 when a mark is broken or memory is short.
+ */
+static int e_help_comp_collect(FENSTER *f, int mark, const char *what,
+                               char ***list, int *count)
 {
  BUFFER *b = f->b;
- int i, j, k, hn = 0, sn = 0;
- char **swtch = MALLOC(sizeof(char *));
- char **hdrs = MALLOC(sizeof(char *));
- char str[256];
+ int i, j, stop, closed;
+ char *name;
 
- if (f->dtmd != DTMD_HELP) return(1);
  for (j = 0; j < b->mxlines; j++)
  {
   for (i = 0; i < b->bf[j].len; i++)
   {
-   if (b->bf[j].s[i] == HBG)
+   if (b->bf[j].s[i] != mark)
+    continue;
+   name = e_help_comp_name(&b->bf[j], i, &stop, &closed);
+   if (name && !closed)
    {
-    for (k = i+1; k < b->bf[j].len && (str[k-i-1] = b->bf[j].s[k]) != HED &&
-      str[k-i-1] != HBG && str[k-i-1] != HHD && str[k-i-1] != HFE ; k++)
-     ;
-    if (str[k-i-1] != HED)
-    {
-     e_error("Error in Switch!", 0, f->fb);
-     e_buffer_cursor_set(b, j, k);
-     e_cursor(f, 1);
-     return(2);
-    }
-    str[k-i-1] = '\0';
-    sn++;
-    swtch = REALLOC(swtch, sn * sizeof(char *));
-    swtch[sn-1] = MALLOC((strlen(str) + 1) + sizeof(char));
-    strcpy(swtch[sn-1], str);
+    FREE(name);
+    e_error((char *) what, 0, f->fb);
+    e_buffer_cursor_set(b, j, stop);
+    e_cursor(f, 1);
+    return(2);
+   }
+   if (e_help_comp_add(list, count, name) != 0)
+   {
+    e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+    return(2);
    }
   }
  }
- for (j = 0; j < b->mxlines; j++)
- {
-  for (i = 0; i < b->bf[j].len; i++)
-  {
-   if (b->bf[j].s[i] == HHD)
-   {
-    for (k = i+1; k < b->bf[j].len && (str[k-i-1] = b->bf[j].s[k]) != HED &&
-      str[k-i-1] != HBG && str[k-i-1] != HHD && str[k-i-1] != HFE ; k++)
-     ;
-    if (str[k-i-1] != HED)
-    {
-     e_error("Error in Header!", 0, f->fb);
-     e_buffer_cursor_set(b, j, k);
-     e_cursor(f, 1);
-     return(2);
-    }
-    str[k-i-1] = '\0';
-    hn++;
-    hdrs = REALLOC(hdrs, hn * sizeof(char *));
-    hdrs[hn-1] = MALLOC((strlen(str) + 1) + sizeof(char));
-    strcpy(hdrs[hn-1], str);
-   }
-  }
- }
+ return(0);
+}
+
+/**
+ * e_help_comp_pairs - Tell the user of the first switch without a header, or
+ * header without a switch.
+ *
+ * The message shows the name cut to the line buffer: it is display only.
+ */
+static void e_help_comp_pairs(FENSTER *f, char **swtch, int sn, char **hdrs, int hn)
+{
+ char str[WPE_HELP_LINE_SIZE];
+ int i, j;
+
  for (j = 0; j < sn; j++)
  {
   for (i = 0; i < hn; i++) if(!WpeStrccmp(swtch[j], hdrs[i])) break;
   if (i >= hn)
   {
-   sprintf(str, "Switch \'%s\' has no Header!", swtch[j]);
+   snprintf(str, sizeof str, "Switch \'%s\' has no Header!", swtch[j]);
    e_error(str, 0, f->fb);
-   goto ende;
+   return;
   }
  }
  for (j = 0; j < hn; j++)
@@ -1099,17 +1249,30 @@ int e_help_comp(FENSTER *f)
   for (i = 0; i < sn; i++) if(!WpeStrccmp(swtch[i], hdrs[j])) break;
   if (i >= sn)
   {
-   sprintf(str, "No Jump to Header \'%s\'!", hdrs[j]);
+   snprintf(str, sizeof str, "No Jump to Header \'%s\'!", hdrs[j]);
    e_error(str, 0, f->fb);
-   goto ende;
+   return;
   }
  }
-ende:
+}
+
+int e_help_comp(FENSTER *f)
+{
+ int i, hn = 0, sn = 0, result;
+ char **swtch = NULL;
+ char **hdrs = NULL;
+
+ if (f->dtmd != DTMD_HELP) return(1);
+ result = e_help_comp_collect(f, HBG, "Error in Switch!", &swtch, &sn);
+ if (result == 0)
+  result = e_help_comp_collect(f, HHD, "Error in Header!", &hdrs, &hn);
+ if (result == 0)
+  e_help_comp_pairs(f, swtch, sn, hdrs, hn);
  for (i = 0; i < sn; i++) FREE(swtch[i]);
  for (i = 0; i < hn; i++) FREE(hdrs[i]);
  FREE(swtch);
  FREE(hdrs);
- return(0);
+ return(result);
 }
 
 /*          Help window    */
@@ -1191,35 +1354,94 @@ int e_mk_info_mrk(char *str)
  return(0);
 }
 
+/* One subfile of an indirect Info file: its name and the first line it holds. */
+struct FL_INFO {  char *name; int line;  };
+
+/* The byte between a node's name and its line in the tag table of an Info file. */
+#define INFO_NODE_SEP '\177'
+static const char info_name_end[] = { ':', '\0' };
+
+/**
+ * e_info_table_add - Add the subfile named by a row "name: line" of the
+ * Indirect table to @files.
+ *
+ * The name is kept at its real length: it is the file that gets opened.  A
+ * row without a colon names nothing and is skipped.
+ * Return: 0 added, -1 skipped.
+ */
+static int e_info_table_add(struct FL_INFO ***files, int *anz, const char *row)
+{
+ const char *end;
+ char *name;
+ struct FL_INFO *entry, **grown;
+
+ name = wpe_help_token_dup(row, strlen(row), info_name_end, &end);
+ if (!name)
+  return(-1);
+ if (*end != ':')
+ {
+  FREE(name);
+  return(-1);
+ }
+ entry = MALLOC(sizeof(struct FL_INFO));
+ grown = REALLOC(*files, (*anz + 1) * sizeof(struct FL_INFO *));
+ if (!entry || !grown)
+ {
+  FREE(name);
+  FREE(entry);
+  if (grown)
+   *files = grown;
+  return(-1);
+ }
+ entry->name = name;
+ entry->line = atoi(end + 1);
+ grown[(*anz)++] = entry;
+ *files = grown;
+ return(0);
+}
+
+/**
+ * e_info_tag_line - The line a tag table row gives for the node @key names,
+ * or -1 when the row is another node's.
+ * @key/@keylen: "Node: " and the name searched for.
+ *
+ * Only a row whose name ends where @key ends is that node's, so a node whose
+ * name merely starts with the one asked for ("Topaz" when the user follows
+ * "Top") does not send the reader to the other node's subfile.  The number is
+ * read after the separator that ends the name, never at a fixed place.
+ */
+static int e_info_tag_line(const char *row, const char *key, size_t keylen)
+{
+ if (strncmp(row, key, keylen) != 0 || row[keylen] != INFO_NODE_SEP)
+  return(-1);
+ return(atoi(row + keylen + 1));
+}
+
 IFILE *e_info_jump(char *str, char **path, IFILE *fp)
 {
  IFILE *fpn;
  int i, j, n, anz = 0;
- char *ptmp, *fstr, tstr[256], nfl[128];
- struct FL_INFO{  char *name; int line;  } **files = MALLOC(1);
+ char *ptmp, *fstr, tstr[WPE_HELP_LINE_SIZE];
+ struct FL_INFO **files = NULL;
 
- while (e_i_fgets(tstr, 256, fp) && tstr[0] != IFE)
+ fstr = e_info_node_key(str);
+ if (!fstr)
+  return(fp);
+ while (e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp) && tstr[0] != IFE)
+  e_info_table_add(&files, &anz, tstr);
+ if (anz == 0)
  {
-  for (i = 0; (nfl[i] = tstr[i]) && tstr[i] != ':'; i++)
-   ;
-  if (!tstr[i]) continue;
-  nfl[i] = '\0';
-  anz++;
-  files = REALLOC(files, anz * sizeof(struct FL_INFO *));
-  files[anz-1] = MALLOC(sizeof(struct FL_INFO));
-  files[anz-1]->name = MALLOC((strlen(nfl)+1)*sizeof(char));
-  strcpy(files[anz-1]->name, nfl);
-  files[anz-1]->line = atoi(tstr+i+1);
+  FREE(files);
+  FREE(fstr);
+  return(fp);
  }
- i = (strlen(str) + 6);
- fstr = MALLOC((i+1) * sizeof(char));
- strcat(strcpy(fstr, "Node: "), str);
- if (fstr[n = strlen(fstr)-1] == HED) {  fstr[n] = '\0';  i--;  }
- while ((ptmp = e_i_fgets(tstr, 256, fp)) && strncmp(tstr, fstr, i))
+ i = strlen(fstr);
+ n = -1;
+ while ((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp))
+        && (n = e_info_tag_line(tstr, fstr, i)) < 0)
   ;
- if (ptmp)
+ if (ptmp && n >= 0)
  {
-  n = atoi(tstr+i+1);
   for (i = 1; i < anz && n >= files[i]->line; i++)
    ;
   if (files[i-1]->name[0] == DIRC)
@@ -1258,30 +1480,43 @@ IFILE *e_info_jump(char *str, char **path, IFILE *fp)
  return(fp);
 }
 
+/* The bytes that end the name after "Next:" or "Prev:" in a node header. */
+static const char info_link_end[] = { ',', '\n', '\0' };
+
+/**
+ * e_mk_info_pt - The name after "@node:" ("Next" or "Prev") in an Info node
+ * header line, so Next and Prev can open the neighbouring node.
+ *
+ * The name is a key, so it is returned at its real length.  The search for
+ * the field goes on after a word that only starts with @node (a file called
+ * "Nextfile.info" in the same header), so such a header cannot hold the
+ * editor in a loop.
+ * Return: the name in malloc'd storage, or NULL when there is none.
+ */
 char *e_mk_info_pt(char *str, char *node)
 {
- int i;
- char *ptmp, tmp[128];
+ char *ptmp, *name;
+ const char *from = str;
 
  do
  {
-  if (!(ptmp = strstr(str, node)))
+  if (!(ptmp = strstr(from, node)))
    return(NULL);
   while (*ptmp && *ptmp != ',' && *ptmp != ':')
    ptmp++;
   if (!*ptmp)
    return(NULL);
+  from = ptmp + 1;
  } while (*ptmp == ',');
  for (ptmp++; isspace(*ptmp); ptmp++)
   ;
- for (i = 0; (tmp[i] = ptmp[i]) && ptmp[i] != ',' && ptmp[i] != '\n'; i++)
-  ;
- tmp[i] = '\0';
- if (i == 0)
+ name = wpe_help_token_dup(ptmp, strlen(ptmp), info_link_end, NULL);
+ if (name && name[0] == '\0')
+ {
+  FREE(name);
   return(NULL);
- ptmp = MALLOC((strlen(tmp)+1)*sizeof(char));
- strcpy(ptmp, tmp);
- return(ptmp);
+ }
+ return(name);
 }
 
 char *e_mk_info_path(char *path, char *file)
@@ -1318,19 +1553,18 @@ char *e_mk_info_path(char *path, char *file)
 int e_read_info(char *str, FENSTER *f, char *file)
 {
    IFILE *fp = NULL;
-   char *path = NULL, *ptmp, tstr[256], fstr[128];
-   int i, len, sw = 0, bsw = 0;
+   char *path = NULL, *ptmp, tstr[WPE_HELP_LINE_SIZE], *fstr;
+   int i, sw = 0, bsw = 0;
    if(!str) str = "Top";
    if(str[0] == HHD) str++;
-   strcat(strcpy(fstr, "Node: "), str);
-   len = strlen(fstr);
-   if(fstr[len-1] == HED) fstr[len-1] = '\0';
+   fstr = e_info_node_key(str);
+   if(!fstr) e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    if(!file || !file[0]) file = "dir";
    do
    {  path = e_mk_info_path(path, file);
       fp = e_i_fopen(path, "rb");
    } while(!fp && path && !e_unpack_stopped());
-   if(!fp) return(1);
+   if(!fp) {  FREE(fstr);  return(1);  }
    e_close_buffer(f->b);
    if( (f->b = (BUFFER *) MALLOC(sizeof(BUFFER))) == NULL)
    e_error(e_msg[ERR_LOWMEM], 1, f->fb);
@@ -1339,28 +1573,29 @@ int e_read_info(char *str, FENSTER *f, char *file)
    if (f->b->mxlines != 1)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    f->b->fb = f->fb;
-   while((ptmp = e_i_fgets(tstr, 256, fp)) != NULL)
+   while((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp)) != NULL)
    {  if(!strncmp(tstr, "Indirect:", 9)) fp = e_info_jump(str, &path, fp);
       else if(!strncmp(tstr, "File:", 5) && strstr(tstr, fstr)) break;
    }
+   FREE(fstr);
    FREE(path);
    if(ptmp)
    {  ud_help->nstr = e_mk_info_pt(tstr, "Next");
       ud_help->pstr = e_mk_info_pt(tstr, "Prev");
    }
    if(!strcmp(file, "dir"))
-      while((ptmp = e_i_fgets(tstr, 256, fp)) 
+      while((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp))
          && WpeStrnccmp(tstr, "* Menu:", 7));
-   else while((ptmp = e_i_fgets(tstr, 256, fp)) && tstr[0] == '\n');
+   else while((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp)) && tstr[0] == '\n');
    if(ptmp)
    {  if(!sw && !WpeStrnccmp(tstr, "* Menu:", 7)) sw = 1;
-      for(i = len = strlen(tstr); i >= 0; i--) tstr[i+1] = tstr[i];
-      tstr[0] = HHD;  tstr[len+1] = HED;  tstr[len+1] = '\0';
-      strcpy(f->b->bf[f->b->mxlines-1].s, tstr);
-      f->b->bf[f->b->mxlines-1].len = e_str_len(f->b->bf[f->b->mxlines-1].s);
-      f->b->bf[f->b->mxlines-1].nrc = e_str_nrc(f->b->bf[f->b->mxlines-1].s);
+      wpe_help_line_insert(tstr, sizeof tstr, 0, help_head_mark, 1);
+      if(e_help_set_first_row(f->b, tstr) != 0)
+      {  e_i_fclose(fp);
+         return(2);
+      }
    }
-   while(e_i_fgets(tstr, 256, fp))
+   while(e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp))
    {  for(i = 0; tstr[i]; i++)
       if(tstr[i] == IFE)  {  e_i_fclose(fp);  return(0);  }
       if(bsw == 1)
