@@ -355,7 +355,9 @@ edits an entry.  @kbd{Alt-D} or @key{Delete} deletes an item (only
 available when the Project Window is open).
 (Detail from German manpage.)  Press @kbd{Alt-E} or @key{Return} to edit an entry,
 @kbd{Alt-D} or @key{Delete} to remove an entry, @kbd{Alt-O} to open
-project options, @key{ESC} to close.
+project options, @key{ESC} to close.  The blank row under the last file is
+not a file: @key{Return} or @kbd{Alt-E} on it says ``No entry in this
+list'', and @key{Delete} leaves it.
 
 @subsection The Variable Window
 
@@ -364,7 +366,9 @@ project options, @key{ESC} to close.
 The Variable Window (opened from Project Options) displays project
 variables.  Press @kbd{Alt-A} or @key{Insert} to add, @kbd{Alt-E}
 or @key{Return} to edit, @kbd{Alt-D} or @key{Delete} to remove,
-@key{ESC} to close.  (Documented since v1.4.)
+@key{ESC} to close.  The blank row at the end is where a new variable
+goes: @kbd{Alt-E} or @key{Return} on it adds one, and @key{Delete} leaves
+it.  (Documented since v1.4.)
 
 @subsection The Install Window
 
@@ -373,8 +377,9 @@ or @key{Return} to edit, @kbd{Alt-D} or @key{Delete} to remove,
 The Install Window (opened from Project Options) displays and edits
 the commands executed by the @samp{install} target.  Press @kbd{Alt-A}
 or @key{Insert} to add, @kbd{Alt-E} or @key{Return} to edit,
-@kbd{Alt-D} or @key{Delete} to remove, @key{ESC} to close.
-(Documented since v1.4.)
+@kbd{Alt-D} or @key{Delete} to remove, @key{ESC} to close.  The blank
+row at the end is where a new command goes: @kbd{Alt-E} or @key{Return}
+on it adds one, and @key{Delete} leaves it.  (Documented since v1.4.)
 
 @subsection The Watch Window
 

@@ -1,0 +1,23 @@
+# The functions that still index a list's names by the highlighted row, outside
+# we_listsel.c.  Checked by tests/check-list-entry.sh.
+#
+#   file|function|count|keep|reason
+#
+# "count" is the number of indexings in the function; it may only fall.  Every
+# line here is the file manager's own panels (the file list and the directory
+# tree's ancestor rows), which keep an in-range invariant of their own:
+# activation refuses an empty panel (we_fl_unix.c), a rebuild resets the row,
+# and e_file_window clamps it on entry.  A measured out-of-range read in a
+# panel moves that panel onto a we_listsel accessor and lowers its line, as the
+# directory tree's subdirectory did.
+#
+# Known blind spots of the scan: an index through an alias of the highlighted
+# row (a local set from another local that was set from nf), and an index
+# split across two lines.  Neither exists in the sources now; a review of a
+# new list site must still look for them.
+
+we_fl_fkt.c|e_file_window|6|keep|file panel drawing and search loops, the row is clamped on entry
+we_fl_fkt.c|e_fl_sel_len|1|keep|file panel, guarded against an empty panel just above
+we_fl_unix.c|WpeHandleFileManager|12|keep|file panel and tree label of the manager's own loop
+we_mouse.c|fl_wnd_mouse|9|keep|file panel click, the row is clamped after
+we_mouse.c|WpeMouseInFileDirList|5|keep|file panel drag, the file panel's row

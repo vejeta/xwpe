@@ -434,19 +434,24 @@ int WpeMouseInFileDirList(int k, int sw, FENSTER * f)
     return(0);
   if(sw)
   {
-    if(WpeDragTarget(f, tmp, sizeof tmp, cn->f[i]->dirct, b->dd->name[b->dw->nf - b->cd->anz]) != 0)
+    char *subdir = e_fm_tree_subdir(b);
+
+    /* A drag that starts on one of the ancestor rows names no folder. */
+    if(subdir == NULL)
+      return(0);
+    if(WpeDragTarget(f, tmp, sizeof tmp, cn->f[i]->dirct, subdir) != 0)
       return(0);
 #ifndef DJGPP
     if(k == -2)
-      e_copy(b->dd->name[b->dw->nf - b->cd->anz], tmp, f);
+      e_copy(subdir, tmp, f);
     else if(k == -4)
-      e_link(b->dd->name[b->dw->nf - b->cd->anz], tmp, f);
+      e_link(subdir, tmp, f);
 #else
     if(k == -4)
-      e_copy(b->dd->name[b->dw->nf - b->cd->anz], tmp, f);
+      e_copy(subdir, tmp, f);
 #endif
     else
-      e_rename(b->dd->name[b->dw->nf - b->cd->anz], tmp, f);
+      e_rename(subdir, tmp, f);
     freedf(b->cd);
     freedf(b->dw->df);
     freedf(b->dd);

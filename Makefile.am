@@ -83,6 +83,7 @@ we_SOURCES = \
   we_startplan.c \
   we_path.c \
   we_progname.c \
+  we_listsel.c \
   we_wind.c \
   we_prog.c \
   we_progn.c \
@@ -228,6 +229,7 @@ noinst_HEADERS = \
   we_startplan.h \
   we_path.h \
   we_progname.h \
+  we_listsel.h \
   we_fieldtake.h \
   we_wayland.h \
   we_fdloop.h \
@@ -344,7 +346,14 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel
+
+# The owner of the selected entry of a list window (we_listsel.c): a
+# selection names an entry or nothing, the blank row that ends a project
+# list is never an entry, Delete cannot remove it, and the directory tree
+# names no subdirectory for an ancestor row.
+test_listsel_SOURCES = tests/test_listsel.c we_listsel.c
+test_listsel_CFLAGS = $(XWPE_STDFLAG)
 
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
@@ -672,7 +681,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject
+  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -739,6 +748,12 @@ TESTS += tests/check-program-name.sh
 # The editor never takes a terminal as its own: tests/check-tty-open.sh
 # fails on an open() of a tty or pty name without O_NOCTTY.
 TESTS += tests/check-tty-open.sh
+
+# One owner of the selected entry of a list window (we_listsel.h):
+# tests/check-list-entry.sh counts, per function, the indexings of a list's
+# names by the highlighted row outside the owner; the file manager's panels
+# still doing it are in tests/list-entry.allow, and the counts may only fall.
+TESTS += tests/check-list-entry.sh
 
 # One layout path for every box: the layout owner (we_layout.c).
 # tests/check-box-layout.sh fails when a box's place is computed outside
@@ -834,6 +849,10 @@ EXTRA_DIST = \
   tests/chain-outcome.allow \
   tests/check-path-buffers.sh \
   tests/check-selection-mode.sh \
+  tests/check-list-entry.sh \
+  tests/list-entry.allow \
+  tests/test_listsel.c \
+  tests/test_list_entry.py \
   tests/check-program-name.sh \
   tests/check-tty-open.sh \
   tests/program-name.allow \

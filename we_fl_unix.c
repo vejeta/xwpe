@@ -650,24 +650,25 @@ static int WpeSaveAsTranscript(FENSTER *f, FENSTER *fe, char *filen,
 
 int e_prj_add_file_unique(FLWND *fw, char *ftmp, FENSTER *f)
 {
-  int i;
+  int i, row;
   char msg[256];
 
-  for (i = 0; i < fw->df->anz; i++)
+  for (i = 0; i < wpe_listsel_count(fw->df, 1); i++)
   {
-    if (strcmp(fw->df->name[i], ftmp) == 0)
+    if (strcmp(wpe_listsel_entry(fw->df, i, 1), ftmp) == 0)
     {
       e_error("File already in project", 0, f->fb);
       FREE(ftmp);
       return -1;
     }
   }
-  fw->df->anz++;
-  fw->df->name = REALLOC(fw->df->name, fw->df->anz * sizeof(char *));
-  for (i = fw->df->anz - 1; i > fw->nf; i--)
-    fw->df->name[i] = fw->df->name[i - 1];
-  fw->df->name[i] = ftmp;
-  fw->nf++;
+  row = wpe_listsel_insert(fw->df, fw->nf, ftmp);
+  if (row < 0)
+  {
+    FREE(ftmp);
+    return -1;
+  }
+  fw->nf = row + 1;
   if (fw->nf - fw->ia >= fw->ye - fw->ya)
     fw->ia = fw->nf + fw->ya - fw->ye + 1;
   /* Persist immediately (before the notification, which is modal) so the
@@ -676,6 +677,7 @@ int e_prj_add_file_unique(FLWND *fw, char *ftmp, FENSTER *f)
   e_wrt_prj_fl(f);
   snprintf(msg, sizeof(msg), "Added to project: %s", ftmp);
   e_message(0, msg, f);
+  FREE(ftmp);   /* the list holds its own copy */
   return 0;
 }
 
@@ -821,6 +823,21 @@ static void WpeSaveAsSettleName(FENSTER *fe, char *old_dir, char *old_name, int 
   fe->datnam = old_name;
 }
 
+/**
+ * e_fm_tree_subdir - The subdirectory highlighted in the file manager's tree.
+ * @b: the file manager's buffer.
+ *
+ * Move, Copy, Remove and the drag of a folder act on the highlighted
+ * subdirectory; on one of the ancestor rows above them there is nothing to
+ * act on, and none of them may start.
+ *
+ * Return: the subdirectory's name, or NULL for an ancestor row.
+ */
+char *e_fm_tree_subdir(const FLBFFR *b)
+{
+  return(wpe_listsel_tree_subdir(b->cd, b->dd, b->dw->nf));
+}
+
 /* File Manager Handler */
 int WpeHandleFileManager(ECNT * cn)
 {
@@ -829,7 +846,8 @@ int WpeHandleFileManager(ECNT * cn)
   FLBFFR         *b = (FLBFFR *) f->b;
   BUFFER         *be = NULL;
   SCHIRM         *se = NULL;
-  int             c = AltC, i, j, t;
+  int             c = AltC, i, j;
+  char           *subdir;          /* the directory tree's selected subdirectory */
   int             winnum = 0, nco, svmode = -1, fmode, len;
   POINT           mark_end;
   int             g[4], cold = AltN;
@@ -1245,12 +1263,10 @@ int WpeHandleFileManager(ECNT * cn)
           FREE(ftmp);
         }
         /* we are coming from dirs */
-        else if(cold == AltT && b->dw->nf >= b->cd->anz)
+        else if(cold == AltT && (subdir = e_fm_tree_subdir(b)) != NULL)
         {
-          /* selected dir */
-          t = b->dw->nf - b->cd->anz;
-
-          if((ftmp = WpeTargetNameNew(f, *(b->dd->name + t))) == NULL)
+          /* selected dir: subdir */
+          if((ftmp = WpeTargetNameNew(f, subdir)) == NULL)
           {
             c = cold;
             cold = AltN;
@@ -1273,11 +1289,11 @@ int WpeHandleFileManager(ECNT * cn)
           if(c == WPE_CR)
           {
             if(j == AltM)
-              e_rename(*(b->dd->name + t), ftmp, f); /* move */
+              e_rename(subdir, ftmp, f); /* move */
             else if(j == AltL)
-              e_link(*(b->dd->name + t), ftmp, f); /* link */
+              e_link(subdir, ftmp, f); /* link */
             else if(j == AltO)
-              e_copy(*(b->dd->name + t), ftmp, f); /* copy */
+              e_copy(subdir, ftmp, f); /* copy */
 
             /* free up structures */
             freedf(b->cd);
@@ -1329,10 +1345,9 @@ int WpeHandleFileManager(ECNT * cn)
           }
           /* coming from the dir tree list and the selected dir is a subdir of
              the current directory */
-          else if(cold == AltT && b->dw->nf >= b->cd->anz)
+          else if(cold == AltT && (subdir = e_fm_tree_subdir(b)) != NULL)
           {
-            t = b->dw->nf - b->cd->anz;
-            WpeRemove(*(b->dd->name + t), f);  /* remove the dir */
+            WpeRemove(subdir, f);  /* remove the dir */
 
             /* free up structures */
             freedf(b->cd);
@@ -1670,14 +1685,12 @@ int WpeHandleFileManager(ECNT * cn)
             /* setup drawing */
             b->fw->df = WpeGraphicalFileList(b->df, f->ed->flopt >> 9, cn);
           }
-          else if(cold == AltT && b->dw->nf >= b->cd->anz) /* coming from dir tree */
+          else if(cold == AltT && (subdir = e_fm_tree_subdir(b)) != NULL) /* coming from dir tree */
           {
-            t = b->dw->nf - b->cd->anz;
-
-            if((ftmp = MALLOC(strlen(*(b->dd->name + t)) + 1)) == NULL)
+            if((ftmp = MALLOC(strlen(subdir) + 1)) == NULL)
               e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
 
-            strcpy(ftmp, *(b->dd->name + t));
+            strcpy(ftmp, subdir);
             /* change the dir attributes */
             WpeFileDirAttributes(ftmp, f);
 
@@ -4527,41 +4540,47 @@ int e_data_schirm(FENSTER * f)
 #define E_DATA_NO_ENTRY_MSG "No entry in this list"
 
 /**
- * e_data_has_entry - Tell whether a list window has a selected entry.
- * @fw: the list of a Grep, Find, Function-Index, Window or Project window.
- *
- * A search that found nothing leaves a list with no entry at all. Enter on
- * such a list must not go and read the name of an entry that is not there.
- *
- * Return: 1 when the highlighted row names an entry, 0 otherwise.
- */
-static int e_data_has_entry(FLWND *fw)
-{
-  if(fw->df == NULL || fw->df->anz <= 0)
-    return(0);
-  return(fw->nf >= 0 && fw->nf < fw->df->anz);
-}
-
-/**
- * e_data_key_takes_entry - Tell whether a key acts on the selected entry.
- * @f: the list window the key was pressed in.
+ * e_data_list_action - Tell what a key asks of a list window.
+ * @ins: the window's kind (Function-Index, Grep, Find, Project, Variables,
+ *       Install or Windows).
  * @c: the key.
  *
  * Enter (or Alt-S) opens the entry of a Function-Index, Grep, Find or Window
- * list, and Enter (or Alt-E) opens the file of the Project list. The keys
- * that add to a list act on no entry, so they are not counted here.
+ * list. In the Project list Enter (or Alt-E) opens the file, Alt-A adds one,
+ * Alt-D deletes one and Alt-O opens the project options. In Variables and
+ * Install Alt-A adds, Alt-D deletes and Enter (or Alt-E) edits. This is the
+ * one place a key becomes a list action; the rest of the dispatch and the
+ * check for an entry work on the action.
  *
- * Return: 1 when the key needs an entry, 0 otherwise.
+ * Return: the action, WPE_LIST_NONE for any other key.
  */
-static int e_data_key_takes_entry(FENSTER *f, int c)
+static enum wpe_list_action
+e_data_list_action(int ins, int c)
 {
-  if((c == WPE_CR || c == AltS) && (f->ins < 4 || f->ins == 7))
-    return(1);
+  if(ins < 4 || ins == 7)
+  {
+    if(c == WPE_CR || c == AltS)
+      return(WPE_LIST_OPEN);
+    return(WPE_LIST_NONE);
+  }
 #ifdef PROG
-  if(f->ins == 4 && (c == AltE || c == WPE_CR))
-    return(1);
+  if(wpe_listsel_is_sealed_kind(ins))
+  {
+    if(c == AltA || c == EINFG)
+      return(WPE_LIST_ADD);
+    if(c == AltD || c == ENTF)
+      return(WPE_LIST_DELETE);
+    if(c == AltE || c == WPE_CR)
+    {
+      if(ins == 4)
+        return(WPE_LIST_OPEN);
+      return(WPE_LIST_EDIT);
+    }
+    if(ins == 4 && c == AltO)
+      return(WPE_LIST_OPTIONS);
+  }
 #endif
-  return(0);
+  return(WPE_LIST_NONE);
 }
 
 int e_data_eingabe(ECNT * cn)
@@ -4569,6 +4588,8 @@ int e_data_eingabe(ECNT * cn)
   FENSTER        *f = cn->f[cn->mxedt];
   FLWND          *fw = (FLWND *) f->b;
   int             c = AltF;
+  int             sealed;
+  enum wpe_list_action action;
 
   fk_cursor(0);
   if(f->ins == 7)
@@ -4590,25 +4611,23 @@ int e_data_eingabe(ECNT * cn)
     if(c == MBKEY)
       c = e_data_ein_mouse(f);
 #endif
-    if(e_data_key_takes_entry(f, c) && !e_data_has_entry(fw))
+    action = e_data_list_action(f->ins, c);
+    sealed = wpe_listsel_is_sealed_kind(f->ins);
+    if(wpe_listsel_action_needs_entry(f->ins, action) &&
+       !wpe_listsel_has(fw->df, fw->nf, sealed))
     {
       e_error(E_DATA_NO_ENTRY_MSG, 0, f->fb);
       c = AltF;
       continue;
     }
-    if(((c == WPE_CR || c == AltS) && (f->ins < 4 || f->ins == 7)) ||
-       ((c == AltA || c == EINFG) && (f->ins > 3 && f->ins < 7)))
+    if((action == WPE_LIST_OPEN && !sealed) || action == WPE_LIST_ADD)
     {
       if(f->ins == 1)
-        e_ed_man(fw->df->name[fw->nf], f);
-      else if(f->ins == 2 && e_edit(f->ed, fw->df->name[fw->nf]) == 0)
+        e_ed_man(wpe_listsel_name(fw->df, fw->nf, sealed), f);
+      else if(f->ins == 2 && e_edit(f->ed, wpe_listsel_name(fw->df, fw->nf, sealed)) == 0)
         e_rep_search(f->ed->f[f->ed->mxedt]);   /* only in the window just opened */
       else if(f->ins == 3)
-      {
-        e_edit(f->ed, fw->df->name[fw->nf]);
-
-/*        WpeCreateFileManager(0, f->ed, fw->df->name[fw->nf]); */
-      }
+        e_edit(f->ed, wpe_listsel_name(fw->df, fw->nf, sealed));
       else if(f->ins == 7)
         e_switch_window(f->ed->edt[fw->df->anz - fw->nf], f);
 #ifdef PROG
@@ -4635,25 +4654,25 @@ int e_data_eingabe(ECNT * cn)
         return(0);
     }
 #ifdef PROG
-    else if(f->ins > 3 && f->ins < 7 && (c == AltD || c == ENTF))
+    else if(action == WPE_LIST_DELETE)
     {
       e_p_del_df(fw, f->ins);
       e_wrt_prj_fl(f);   /* persist on each Delete, same as the menu path (#137) */
       c = AltF;
       f->save = 1;
     }
-    else if(f->ins > 4 && f->ins < 7 && (c == AltE || c == WPE_CR))
+    else if(action == WPE_LIST_EDIT)
     {
       e_p_edit_df(fw, f->ins);
       c = AltF;
       f->save = 1;
     }
-    else if(f->ins == 4 && (c == AltE || c == WPE_CR))
+    else if(action == WPE_LIST_OPEN)
     {
-      e_edit(f->ed, fw->df->name[fw->nf]);
+      e_edit(f->ed, wpe_listsel_name(fw->df, fw->nf, sealed));
       c = WPE_ESC;
     }
-    else if(f->ins == 4 && c == AltO)
+    else if(action == WPE_LIST_OPTIONS)
     {
       e_project_options(f);
       c = AltF;

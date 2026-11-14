@@ -722,6 +722,23 @@ file name and renamed the file to them.  xwpe keeps each of these whole.  The @s
 characters.  The reason: a cut path names another file.
 @end table
 
+@section Project lists
+
+@table @asis
+@item The blank row at the end of a list
+@cindex blank row, project lists
+@cindex project lists
+The Project, Variable and Install lists end in a blank row where the
+cursor stands to add an entry.  The original treated that row as an
+entry: @key{Return} or @kbd{Alt-E} on it opened a window named with one
+blank, @key{Delete} could remove it, and a Save wrote it into the
+@file{.prj} as a blank variable, a blank word in @samp{FILES=} and a blank
+@samp{install:} command, and added an @samp{install:} section to a project
+that had none.  xwpe says ``No entry in this list'' on the blank row,
+keeps it when you delete, and writes none of it.  The reason: a blank row
+is where an entry goes, not an entry.
+@end table
+
 @section Colours on an X display
 
 @table @asis

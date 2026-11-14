@@ -1,0 +1,23 @@
+{
+ "capability": "list-entry",
+ "scenarios": [
+  {"id": "SC-list-entry-01", "requirement": "Typing a variable into an empty Variables list keeps it and leaves the editor alive", "layer": "ncurses", "test": "tests/test_list_entry.py::test_typing_a_variable_into_an_empty_variables_list", "status": "new"},
+  {"id": "SC-list-entry-02", "requirement": "Typing a command into an empty Install list keeps it and leaves the editor alive", "layer": "ncurses", "test": "tests/test_list_entry.py::test_typing_a_command_into_an_empty_install_list", "status": "new"},
+  {"id": "SC-list-entry-03", "requirement": "Delete leaves the blank row, removes the last command, and a new command can be typed", "layer": "ncurses", "test": "tests/test_list_entry.py::test_deleting_every_install_command_then_typing_a_new_one", "status": "new"},
+  {"id": "SC-list-entry-04", "requirement": "Project > Add Item on a project with an empty FILES line adds and saves the file", "layer": "ncurses", "test": "tests/test_list_entry.py::test_add_item_to_a_project_with_an_empty_files_list", "status": "new"},
+  {"id": "SC-list-entry-05", "requirement": "A project with an install section and no FILES line opens with an empty Project window", "layer": "ncurses", "test": "tests/test_list_entry.py::test_open_a_project_with_install_and_no_files_line", "status": "new"},
+  {"id": "SC-list-entry-06", "requirement": "Save writes no blank variable, file or install command", "layer": "ncurses", "test": "tests/test_list_entry.py::test_save_writes_no_blank_variable_file_or_command", "status": "new"},
+  {"id": "SC-list-entry-07", "requirement": "Save adds no install section to a project without one", "layer": "ncurses", "test": "tests/test_list_entry.py::test_save_adds_no_install_section_to_a_project_without_one", "status": "new"},
+  {"id": "SC-list-entry-08", "requirement": "Enter and Alt-E on the blank row of the Project list say there is no entry and open nothing", "layer": "ncurses", "test": "tests/test_list_entry.py::test_enter_and_alt_e_on_the_blank_row_of_the_project_list", "status": "new"},
+  {"id": "SC-list-entry-09", "requirement": "Editing the last variable changes it in place", "layer": "ncurses", "test": "tests/test_list_entry.py::test_editing_the_last_variable_changes_it_in_place", "status": "new"},
+  {"id": "SC-list-entry-10", "requirement": "Cancelling the options keeps the Project window's files", "layer": "ncurses", "test": "tests/test_list_entry.py::test_cancelling_the_options_keeps_the_project_windows_files", "status": "new"},
+  {"id": "SC-list-entry-12", "requirement": "Install asks nothing for the blank install line of a 1.5.30a project", "layer": "ncurses", "test": "tests/test_list_entry.py::test_install_asks_nothing_for_the_blank_line_of_an_old_project", "status": "new"},
+  {"id": "SC-list-entry-11", "requirement": "The blank row is no entry, Delete refuses it, the directory tree names no subdirectory for an ancestor row", "layer": "c-unit", "test": "test_listsel", "status": "new"},
+  {"id": "SC-list-entry-05x", "requirement": "A project with an install section and no FILES line saves from the graphical editor", "layer": "x11", "test": "tests/x11/test_list_entry.py::test_x11_project_with_install_and_no_files_line_saves", "status": "new"},
+  {"id": "SC-list-entry-06x", "requirement": "Save writes no blank variable, file or install command in the graphical editor", "layer": "x11", "test": "tests/x11/test_list_entry.py::test_x11_save_writes_no_blank_variable_file_or_command", "status": "new"},
+  {"id": "SC-list-entry-07x", "requirement": "Save adds no install section in the graphical editor", "layer": "x11", "test": "tests/x11/test_list_entry.py::test_x11_save_adds_no_install_section", "status": "new"},
+  {"id": "SC-list-entry-05w", "requirement": "A project with an install section and no FILES line saves from the Wayland editor", "layer": "wayland", "test": "tests/wayland/test_list_entry.py::test_x11_project_with_install_and_no_files_line_saves", "status": "new"},
+  {"id": "SC-list-entry-06w", "requirement": "Save writes no blank variable, file or install command in the Wayland editor", "layer": "wayland", "test": "tests/wayland/test_list_entry.py::test_x11_save_writes_no_blank_variable_file_or_command", "status": "new"},
+  {"id": "SC-list-entry-07w", "requirement": "Save adds no install section in the Wayland editor", "layer": "wayland", "test": "tests/wayland/test_list_entry.py::test_x11_save_adds_no_install_section", "status": "new"}
+ ]
+}

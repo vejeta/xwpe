@@ -5674,7 +5674,7 @@ int e_p_add_item(FENSTER *f)
   e_make_prj_opt(f);
   e_prj_ob_file(f);
   fw = (FLWND *) cn->f[cn->mxedt]->b;
-  fw->nf = fw->df->anz - 1;
+  fw->nf = wpe_listsel_sentinel_row(fw->df);
  }
  cn->f[cn->mxedt]->save = 1;
  WpeCreateFileManager(5, cn, NULL);
@@ -7080,6 +7080,10 @@ static int e_install_run(FENSTER *f)
   }
   if (text[0] != '\t')
    break;
+  /* A blank install line is no command: a project saved by 1.5.30a ends
+     its install section with one, and Install must not ask to run it. */
+  if (sp[0] == '\0')
+   continue;
   if (!(string = MALLOC(strlen(sp) + 1)))
   {
    fclose(fp);
@@ -8368,6 +8372,34 @@ int e_rel_brkwtch(FENSTER *f)
   from project file, which is not good for WATCHES
   and BREAKPOINTS.
 ****/  
+/**
+ * e_make_prj_opt_finish - The one way out of e_make_prj_opt.
+ * @save_df: the Files list of a Project window with unsaved edits, or NULL.
+ *
+ * Every way e_make_prj_opt can end, including the ones that stop early
+ * because the project file is short or unreadable, goes through here. The
+ * window the user is editing gets its own list back, and the three project
+ * lists (Files, Variables, Install) are sealed whatever the file held: a
+ * project with no FILES line or no install section still opens, adds,
+ * edits and deletes without a list that is missing or half built.
+ *
+ * Return: the three project lists.
+ */
+static struct dirfile **e_make_prj_opt_finish(struct dirfile *save_df)
+{
+ int i;
+
+ if (save_df)
+ {
+  if (e_p_df[0] && e_p_df[0] != save_df)
+   freedf(e_p_df[0]);
+  e_p_df[0] = save_df;
+ }
+ for (i = 0; i < 3; i++)
+  wpe_listsel_seal(&e_p_df[i]);
+ return(e_p_df);
+}
+
 struct dirfile **e_make_prj_opt(FENSTER *f)
 {
  int i, j, ret;
@@ -8397,23 +8429,10 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
   e_s_prog.intstr = WpeStrdup(cc_intstr);
   e_prj_library_set("");
-  for (i = !save_df ? 0 : 1; i < 3; i++)
-  {
-   e_p_df[i] = MALLOC(sizeof(struct dirfile));
-   e_p_df[i]->name = MALLOC(sizeof(char *));
-   e_p_df[i]->name[0] = MALLOC(2 * sizeof(char));
-   *e_p_df[i]->name[0] = ' '; *(e_p_df[i]->name[0] + 1) = '\0';
-   e_p_df[i]->anz = 1;
-  }
-  if (save_df) e_p_df[0] = save_df;
-  return(e_p_df);
+  return(e_make_prj_opt_finish(save_df));
  }
- if (!(e_p_df[1] = MALLOC(sizeof(struct dirfile)))) return(e_p_df);
- if (!(e_p_df[1]->name = MALLOC(sizeof(char *)))) return(e_p_df);
- e_p_df[1]->anz = 0;
- if (!(e_p_df[2] = MALLOC(sizeof(struct dirfile)))) return(e_p_df);
- if (!(e_p_df[2]->name = MALLOC(sizeof(char *)))) return(e_p_df);
- e_p_df[2]->anz = 0;
+ if (!(e_p_df[1] = wpe_listsel_new_empty())) return(e_make_prj_opt_finish(save_df));
+ if (!(e_p_df[2] = wpe_listsel_new_empty())) return(e_make_prj_opt_finish(save_df));
  for (i = 0; i < p_v_n; i++)
  {
   if (!strcmp(p_v[i]->var, "CMP"))
@@ -8470,10 +8489,10 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
    e_p_df[1]->anz++;
    if (!(e_p_df[1]->name = REALLOC(tmp =
 				e_p_df[1]->name, e_p_df[1]->anz * sizeof(char *))))
-   {  e_p_df[1]->anz--;  e_p_df[1]->name = tmp;  return(e_p_df);  }
+   {  e_p_df[1]->anz--;  e_p_df[1]->name = tmp;  return(e_make_prj_opt_finish(save_df));  }
    if (!(e_p_df[1]->name[e_p_df[1]->anz-1] = MALLOC((strlen(p_v[i]->var)
 			+ strlen(p_v[i]->string) + 2)*sizeof(char))))
-   {  e_p_df[1]->anz--;  return(e_p_df);  }
+   {  e_p_df[1]->anz--;  return(e_make_prj_opt_finish(save_df));  }
    sprintf(e_p_df[1]->name[e_p_df[1]->anz-1], "%s=%s",
 					p_v[i]->var, p_v[i]->string);
   }
@@ -8491,15 +8510,10 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  }
  if (!e_s_prog.intstr)
   e_s_prog.intstr = WpeStrdup(cc_intstr);
- if (!e_p_df[0])
- {
-  e_p_df[0] = MALLOC(sizeof(struct dirfile));
-  e_p_df[0]->anz = 0;
- }
  if ((fp = fopen(e_prog.project, "r")) == NULL)
  {
   e_prj_say_open_failed(f);
-  return(e_p_df);
+  return(e_make_prj_opt_finish(save_df));
  }
  while ((tp = fgets(text, 256, fp)))
  {
@@ -8512,7 +8526,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
    break;
   }
  }
- if (!tp) {  fclose(fp);  return(e_p_df);  }
+ if (!tp) {  fclose(fp);  return(e_make_prj_opt_finish(save_df));  }
  while(tp && (tp = fgets(text, 256, fp)))
  {
   for (i = 0; isspace(text[i]); i++);
@@ -8528,9 +8542,9 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
   e_p_df[2]->anz++;
   if (!(e_p_df[2]->name = REALLOC(tmp =
 				e_p_df[2]->name, e_p_df[2]->anz * sizeof(char *))))
-  {  e_p_df[2]->anz--;  e_p_df[2]->name = tmp;  fclose(fp);  return(e_p_df);  }
+  {  e_p_df[2]->anz--;  e_p_df[2]->name = tmp;  fclose(fp);  return(e_make_prj_opt_finish(save_df));  }
   if (!(e_p_df[2]->name[e_p_df[2]->anz-1] = MALLOC((strlen(sp) + 1))))
-  {  e_p_df[2]->anz--;  fclose(fp);  return(e_p_df);  }
+  {  e_p_df[2]->anz--;  fclose(fp);  return(e_make_prj_opt_finish(save_df));  }
 
   strcpy(e_p_df[2]->name[e_p_df[2]->anz-1], sp);
   while(tp && (text[j = strlen(text)-1] != '\n' || text[j-1] == '\\'))
@@ -8545,7 +8559,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
 			strlen(e_p_df[2]->name[e_p_df[2]->anz-1])
 			+ strlen(text) + 1)))
     {  fclose(fp);  FREE(sp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
-	       return(e_p_df);
+	       return(e_make_prj_opt_finish(save_df));
     }
     strcat(e_p_df[2]->name[e_p_df[2]->anz-1], text);
    }
@@ -8555,23 +8569,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
    *(e_p_df[2]->name[e_p_df[2]->anz-1]+j-1) = '\0';
  }
  fclose(fp);
- for (i = 0; i < 3; i++)
- {
-  if (!e_p_df[i])
-  {
-   e_p_df[i] = MALLOC(sizeof(struct dirfile));
-   e_p_df[i]->name = MALLOC(sizeof(char *));
-   e_p_df[i]->anz = 0;
-  }
-  e_p_df[i]->name = REALLOC(e_p_df[i]->name,
-				(e_p_df[i]->anz + 1) * sizeof(char *));
-  e_p_df[i]->name[e_p_df[i]->anz] = MALLOC(2*sizeof(char));
-  *e_p_df[i]->name[e_p_df[i]->anz] = ' ';
-  *(e_p_df[i]->name[e_p_df[i]->anz] + 1) = '\0';
-  e_p_df[i]->anz++;
- }
- if (save_df) {  freedf(e_p_df[0]);  e_p_df[0] = save_df;  }
- return(e_p_df);
+ return(e_make_prj_opt_finish(save_df));
 }
 
 int freedfN(struct dirfile **df, int n)
@@ -8606,8 +8604,8 @@ int e_wrt_prj_fl(FENSTER *f)
  }
  fprintf(fp, "#\n# xwpe - project-file: %s\n", e_prog.project);
  fprintf(fp, "# created by xwpe version %s\n#\n", VERSION);
- for (i = 0; i < e_p_df[1]->anz; i++)
-  fprintf(fp, "%s\n", e_p_df[1]->name[i]);
+ for (i = 0; i < wpe_listsel_count(e_p_df[1], 1); i++)
+  fprintf(fp, "%s\n", wpe_listsel_entry(e_p_df[1], i, 1));
  fprintf(fp, "\nCMP=\t%s\n", e_s_prog.compiler);
  fprintf(fp, "CMPFLAGS=\t%s\n", e_s_prog.comp_str);
  fprintf(fp, "LDFLAGS=\t%s\n", e_s_prog.libraries);
@@ -8632,15 +8630,15 @@ int e_wrt_prj_fl(FENSTER *f)
  }
  fprintf(fp, "\'\n");
  fprintf(fp, "\nFILES=\t");
- for (i = 0, len = 8; i < e_p_df[0]->anz; i++)
+ for (i = 0, len = 8; i < wpe_listsel_count(e_p_df[0], 1); i++)
  {
-  len += strlen(e_p_df[0]->name[i]);
+  len += strlen(wpe_listsel_entry(e_p_df[0], i, 1));
   if (len > 80)
   {
    fprintf(fp, " \\\n\t");
    len = 1;
   }
-  fprintf(fp, "%s ", e_p_df[0]->name[i]);
+  fprintf(fp, "%s ", wpe_listsel_entry(e_p_df[0], i, 1));
  }
  fprintf(fp, "\n");
    
@@ -8668,10 +8666,10 @@ int e_wrt_prj_fl(FENSTER *f)
  fprintf(fp, "\n");
 /*****************************************/   
 
- if (e_p_df[2]->anz > 0)
+ if (wpe_listsel_count(e_p_df[2], 1) > 0)
   fprintf(fp, "\ninstall:\n");
- for (i = 0; i < e_p_df[2]->anz; i++)
-  fprintf(fp, "\t%s\n", e_p_df[2]->name[i]);
+ for (i = 0; i < wpe_listsel_count(e_p_df[2], 1); i++)
+  fprintf(fp, "\t%s\n", wpe_listsel_entry(e_p_df[2], i, 1));
  fclose(fp);
  return(0);
 }
@@ -8688,7 +8686,6 @@ int e_p_update_prj_fl(FENSTER *f)
 int e_p_add_df(FLWND *fw, int sw)
 {
  char *title = NULL, str[WPE_PATH_SIZE];
- int i;
 
  if (sw == 4)
   title = "Add File";
@@ -8698,75 +8695,49 @@ int e_p_add_df(FLWND *fw, int sw)
   title = "Add Command";
  str[0] = '\0'; /* terminate new string to prevent garbage in display */
  if (e_add_arguments(str, sizeof str, title, fw->f, 0, AltA, NULL))
- {
-  fw->df->anz++;
-  fw->df->name = REALLOC(fw->df->name, fw->df->anz * sizeof(char *));
-  for (i = fw->df->anz - 1; i > fw->nf; i--)
-   fw->df->name[i] = fw->df->name[i-1];
-  fw->df->name[i] = MALLOC(strlen(str)+1);
-  strcpy(fw->df->name[i], str);
- }
+  wpe_listsel_insert(fw->df, fw->nf, str);
  return(0);
 }
 
 int e_p_edit_df(FLWND *fw, int sw)
 {
  char *title = NULL, str[WPE_PATH_SIZE];
- int new = 0;
+ char *entry;
+ int row;
+
  if (sw == 4)
   title = "Change Filename";
  else if (sw == 5)
   title = "Change Variable";
  else if (sw == 6)
   title = "Change Command";
- if (fw->nf < fw->df->anz-1 && fw->df->name[fw->nf])
+ entry = wpe_listsel_name(fw->df, fw->nf, 1);
+ if (entry)
  {
   /* An entry the dialog's field cannot hold whole is not offered for
      editing: a cut entry would be written back in its place. */
-  if (wpe_field_take(fw->df->name[fw->nf], str, sizeof str) != 0)
+  if (wpe_field_take(entry, str, sizeof str) != 0)
   {
    e_input_limit_say(WPE_PATH_FIELD_MAX);
    return(0);
   }
  }
  else
- {
-  new = 1;
   str[0] = '\0';
- }
  if (e_add_arguments(str, sizeof str, title, fw->f, 0, AltA, NULL))
  {
-  if (fw->nf > fw->df->anz-2)
-  {
-   fw->nf = fw->df->anz-1;
-   fw->df->anz++;
-   fw->df->name = REALLOC(fw->df->name, fw->df->anz * sizeof(char *));
-   fw->df->name[fw->df->anz-1] = fw->df->name[fw->df->anz-2];
-  }
-  if (!new)
-   FREE(fw->df->name[fw->nf]);
-  fw->df->name[fw->nf] = MALLOC(strlen(str)+1);
-  if (fw->df->name[fw->nf])
-   strcpy(fw->df->name[fw->nf], str);
+  row = wpe_listsel_set(fw->df, fw->nf, str);
+  if (row >= 0)
+   fw->nf = row;
  }
  return(0);
 }
 
 int e_p_del_df(FLWND *fw, int sw)
 {
- int i;
-
- /* Nothing to delete only when the list is empty or the selection is out of
-    range. The old guard (nf > anz-2) wrongly refused to delete the LAST entry
-    (including the single remaining file). */
- if (fw->df->anz <= 0 || fw->nf < 0 || fw->nf >= fw->df->anz)
-  return(0);
- fw->df->anz--;
- for (i = fw->nf; i < fw->df->anz; i++)
-  fw->df->name[i] = fw->df->name[i+1];
- /* Keep the highlight on a valid row after removing the last one. */
- if (fw->nf >= fw->df->anz && fw->nf > 0)
-  fw->nf--;
+ /* Delete removes an entry, never the blank row that ends the list, and the
+    last real file stays deletable because the list is sealed. */
+ wpe_listsel_remove(fw->df, &fw->nf);
  return(0);
 }
 

@@ -371,10 +371,10 @@ int wpe_ai_scope_files(FENSTER *f, int with_project, int with_folder, char ***ou
  if (with_project && e_project_is_open() && e_p_df && e_p_df[0]) {
   char *root = ws_root(f);
   int k;
-  for (k = 0; k < e_p_df[0]->anz; k++) {
-   const char *m = e_p_df[0]->name[k];
+  for (k = 0; k < wpe_listsel_count(e_p_df[0], 1); k++) {
+   const char *m = wpe_listsel_entry(e_p_df[0], k, 1);
    char *p;
-   if (!m || !*m || !strcmp(m, " ")) continue;
+   if (!m || !*m) continue;
    if (m[0] == '/') p = ws_strdup(m);
    else { size_t L = strlen(root) + strlen(m) + 2; p = malloc(L); if (p) snprintf(p, L, "%s/%s", root, m); }
    if (p && !ws_list_has(l, n, p)) ws_list_push(&l, &n, &cap, p); else free(p);

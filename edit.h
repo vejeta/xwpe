@@ -88,10 +88,7 @@ struct mouse {
    e_window_text_locked, never compared by hand in new code. */
 #define WPE_INS_READONLY   8
 
-struct dirfile {
- int anz;      /* number elements in the list */
- char **name;  /* the list elements */
-};
+#include "we_listsel.h"     /* struct dirfile and the owner of a list's selected entry */
 
 typedef struct PNT {
  int x;
@@ -647,6 +644,7 @@ void e_input_limit_say(int limit);
 int WpeExecuteManager(FENSTER *f);
 
 int WpeHandleFileManager(ECNT *cn);
+char *e_fm_tree_subdir(const FLBFFR *b);
 int WpeGrepFile(char *file, char *string, int sw);
 int WpeRemove(char *file, FENSTER *f);
 

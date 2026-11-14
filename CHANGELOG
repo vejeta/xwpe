@@ -283,6 +283,16 @@ Changes
   close it.  The same holds for a list that has lost its last entry (the
   Function-Index and the project's file list).
 
+* The project lists no longer end the editor in three more places: typing
+  a variable or an install command into a list that has none, Project >
+  Add Item on a project with no files yet, and opening a project that has
+  an install section but no FILES line.  The blank row at the end of the
+  Project, Variable and Install lists is not an entry any more: Return on
+  it says "No entry in this list", Delete leaves it, and a Save no longer
+  writes blank lines into the .prj or adds an install section to a project
+  without one.  Editing the last variable changes it instead of adding a
+  copy.
+
 * A command the editor cannot give a debugger is now said, instead of a
   start that ended with nothing on the screen.  Under dbx and xdb, which
   keep their 255-byte command line, a breakpoint on a source whose name
