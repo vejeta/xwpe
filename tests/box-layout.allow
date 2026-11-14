@@ -27,7 +27,7 @@ stdkst we_opt.o 1 P14c
 # full-screen views of a command (we_prog.c, we_fl_unix.c) open through the
 # owner's FULL_SCREEN rule in P14b2.
 openview we_fl_unix.c 2 P14b2
-openview we_menue.c 2 P14b2
+openview we_menue.c 1 P14b2
 openview we_mouse.c 3 keep
 openview we_opt.c 1 keep
 openview we_prog.c 1 P14b2

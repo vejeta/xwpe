@@ -98,22 +98,7 @@ char *e_msg[] = {  "Not Enough Memory",
                    "Inconsistent copying"
 		};
 
-OPT opt[] = {  {"#",        3, '#', AltSYS},
-	       {"File",    10, 'F', AltF},
-	       {"Edit",    19, 'E', AltE},
-	       {"Search",  28, 'S', AltS},
-	       {"Block",   39, 'B', AltB},
-	       {"Options", 49, 'O', AltO},
-	       {"Window",  61, 'W', AltW},
-	       {"Help",    72, 'H', AltH}
-#ifdef PROG
-	       , {NULL,  0, 0, 0}
-	       , {NULL,  0, 0, 0}
-#endif
-#ifdef DEBUGGER
-	       , {NULL, 0, 0, 0}
-#endif
-	    };
+/* The menu bar (opt[]) is laid out from the table of we_menus.c. */
 
 /* The bottom bars are built from the key table: see we_bars.c. */
 
@@ -927,6 +912,7 @@ void e_show_empty_desk(ECNT *cn)
 void e_ini_desk(ECNT *cn)
 {
  extern int e_mn_men;
+ extern OPT opt[];
  int i;
 
  e_use_style_bars(wpe_binding_style(cn->edopt));

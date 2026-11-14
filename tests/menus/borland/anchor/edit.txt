@@ -1,0 +1,9 @@
+ 1|lqqqqqqqq lqqqqqqqqqqqqqqqqqqqqqqqqk  t.c qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq1q □ ✕qk
+ 2|xhello wo x Cut     Shift Del / ^X x                                           ^
+ 3|xsecond l x Copy         ^Ins / ^C x                                           ▮
+ 4|xthird    x Paste   Shift Ins / ^V x                                           a
+ 5|x         x Show Buffer      Alt Y x                                           a
+ 6|x         x Delete            ^Del x                                           a
+ 7|x         x Undo                ^U x                                           a
+ 8|x         x Redo                ^R x                                           a
+ 9|x         mqqqqqqqqqqqqqqqqqqqqqqqqj                                           a

@@ -14,6 +14,7 @@ xwpe_TEXINFOS = \
   chapters/configuration.texi \
   chapters/reference.texi \
   chapters/keys-generated.texi \
+  chapters/menus-generated.texi \
   chapters/tutorials.texi \
   chapters/history.texi \
   chapters/bugs-and-limits.texi \

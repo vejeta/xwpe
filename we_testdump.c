@@ -61,10 +61,14 @@ static int dump_fd = DUMP_FD_NONE;
 static long dump_keys = 0;              /* keys the display's reader returned */
 static long dump_last_seq = DUMP_SEQ_NONE;
 static int dump_autosaved = 0;
+static long dump_says = 0;              /* status lines said since the last dump */
 static DumpCtx dump_ctx[DUMP_CTX_MAX];
 static int dump_ctx_depth = 0;
 static int (*dump_real_getch)(void);
 static int (*dump_real_take)(int want);
+static const OPTK *dump_menu_rows = NULL;   /* the open dropdown's rows, or NULL */
+static int dump_menu_bar = 0;               /* the bar entry it hangs from */
+static int dump_menu_count = 0;             /* how many rows it has */
 
 /* ---- the buffer ---- */
 
@@ -393,6 +397,31 @@ static void dump_windows(DumpBuf *d)
 }
 
 /**
+ * dump_menu - Add the M line: the dropdown that is open, if one is.
+ *
+ * A test on a display with no text screen reads the menu's shape here, the
+ * way a terminal test reads it from the screen: which entry of the bar it
+ * hangs from, how many rows it has and the text of each, keys included.
+ */
+static void dump_menu(DumpBuf *d)
+{
+ int i;
+
+ if (dump_menu_rows == NULL || dump_ctx_depth == 0 ||
+     dump_ctx[dump_ctx_depth - 1].kind != WPE_TEST_CTX_MENU)
+  return;
+ dump_printf(d, "M %d %d ", dump_menu_bar, dump_menu_count);
+ for (i = 0; i < dump_menu_count; i++)
+ {
+  if (i > 0)
+   dump_printf(d, "|");
+  dump_bytes(d, (const unsigned char *)dump_menu_rows[i].t,
+             (int)strlen(dump_menu_rows[i].t), 1);
+ }
+ dump_printf(d, "\n");
+}
+
+/**
  * dump_find - Add the F line: what Find and Replace will look for.
  */
 static void dump_find(DumpBuf *d)
@@ -419,14 +448,16 @@ static void dump_state(int waiting)
   top = WpeEditor->mxedt;
  dump_printf(&d, "S %ld ctx=", dump_keys);
  dump_ctx_name(&d, waiting);
- dump_printf(&d, " top=%d autosaved=%d\n", top, dump_autosaved);
+ dump_printf(&d, " top=%d autosaved=%d says=%ld\n", top, dump_autosaved, dump_says);
  dump_windows(&d);
+ dump_menu(&d);
  dump_find(&d);
  dump_printf(&d, "E %ld\n", dump_keys);
  if (!d.failed)
   dump_write(&d);
  free(d.s);
  dump_autosaved = 0;
+ dump_says = 0;
  dump_last_seq = dump_keys;
 }
 
@@ -618,6 +649,40 @@ void wpe_test_ctx_leave(void)
   return;
  if (dump_ctx_depth > 0)
   dump_ctx_depth--;
+}
+
+/**
+ * wpe_test_status_said - The editor said a line on the status row.
+ *
+ * The next dump counts the lines said since the one before, so a test can
+ * tell a command that said its refusal once from one that said it twice.
+ */
+void wpe_test_status_said(void)
+{
+ if (dump_fd != DUMP_FD_NONE)
+  dump_says++;
+}
+
+/**
+ * wpe_test_menu_enter - A dropdown is open: the dump names its rows.
+ * @nm: the bar entry it hangs from (WPE_SUBMENU_NO_BAR_MENU for none);
+ * @rows, @count: its rows.
+ */
+void wpe_test_menu_enter(int nm, const OPTK *rows, int count)
+{
+ if (dump_fd == DUMP_FD_NONE)
+  return;
+ dump_menu_rows = rows;
+ dump_menu_bar = nm;
+ dump_menu_count = count;
+}
+
+/**
+ * wpe_test_menu_leave - The dropdown closed: the dump no longer names it.
+ */
+void wpe_test_menu_leave(void)
+{
+ dump_menu_rows = NULL;
 }
 
 /**

@@ -61,7 +61,9 @@ Press @kbd{Ctrl-G Q} to quit the debugger.
 @section Debug menu reference
 
 All commands are available from the @samp{Debug} menu (@kbd{Alt-D})
-and via @kbd{Ctrl-G} prefix shortcuts:
+and via @kbd{Ctrl-G} prefix shortcuts.  A command that needs a session (Quit,
+Interrupt, Edit watch, Delete watch, Remove All watches, Show stack) says @samp{No debug
+session} on the status row when there is none:
 
 @multitable @columnfractions .30 .18 .18 .34
 @headitem Command @tab Menu key @tab Shortcut @tab Description
@@ -123,7 +125,8 @@ is marked, the Watches are refreshed, and the status row says
 @samp{Paused}.  The program has no error to show for the interrupt.  A
 terminal sends no Ctrl-Break that curses can read, so there use
 @kbd{Ctrl-G I}, the menu or the bar.  With no session, or with the
-program stopped, Pause only says so on the status row.  It works under
+program stopped, Pause only says so on the status row: with no session
+it says @samp{No debug session}.  It works under
 gdb, sdb, dbx, xdb, pdb, a68g, jdb and the debug adapters (dlv for Go,
 lldb-dap and gdb's adapter for Rust).  The Scala adapter is asked to
 pause like the others; whether it stops the program is up to the

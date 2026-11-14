@@ -8,6 +8,7 @@
 #include "model.h"		/* exchange for D.S.  */
 #include "edit.h"
 #include "we_buffer.h"
+#include "we_menus.h"
 
 #ifdef XWPE_DLL
 #include <dlfcn.h>
@@ -149,8 +150,6 @@ FARBE *u_fb, *x_fb;
 char MCI, MCA, RD1, RD2, RD3, RD4, RD5, RD6, WBT;
 char RE1, RE2, RE3, RE4, RE5, RE6;
 char *ctree[5];
-int MENOPT = 8;
-int e_mn_men = 3;
 
 int MAXSLNS = 24;
 int MAXSCOL = 80;
@@ -506,29 +505,7 @@ int e_ini_unix(int *argc, char **argv)
  }
 #endif
  e_ini_children_display();
- if (WpeIsProg())
- {
-#ifndef DEBUGGER
-  opt[0].x = 2, opt[1].x = 7, opt[2].x = 14; opt[3].x = 21; opt[4].x = 30;
-  opt[9].t = opt[7].t; opt[9].x = 74; opt[9].s = opt[7].s; opt[9].as = opt[7].as;
-  opt[8].t = opt[6].t; opt[8].x = 65; opt[8].s = opt[6].s; opt[8].as = opt[6].as;
-  opt[7].t = opt[5].t; opt[7].x = 55; opt[7].s = opt[5].s; opt[7].as = opt[5].as;
-  opt[6].t = "Project"; opt[6].x = 45; opt[6].s = 'P'; opt[6].as = AltP;
-  opt[5].t = "Run"; opt[5].x = 38; opt[5].s = 'R'; opt[5].as = AltR;
-  MENOPT = 10;
-  e_mn_men = 2;
-#else
-  opt[0].x = 2, opt[1].x = 6, opt[2].x = 12; opt[3].x = 18; opt[4].x = 26;
-  opt[10].t = opt[7].t; opt[10].x = 74; opt[10].s = opt[7].s; opt[10].as = opt[7].as;
-  opt[9].t = opt[6].t; opt[9].x = 65; opt[9].s = opt[6].s; opt[9].as = opt[6].as;
-  opt[8].t = opt[5].t; opt[8].x = 56; opt[8].s = opt[5].s; opt[8].as = opt[5].as;
-  opt[7].t = "Project"; opt[7].x = 47; opt[7].s = 'P'; opt[7].as = AltP;
-  opt[6].t = "Debug"; opt[6].x = 40; opt[6].s = 'D'; opt[6].as = AltD;
-  opt[5].t = "Run"; opt[5].x = 34; opt[5].s = 'R'; opt[5].as = AltR;
-  MENOPT = 11;
-  e_mn_men = 1;
-#endif
- }
+ e_menu_bar_from_heads(wpe_menu_bar_composition(WpeIsProg() != 0));
 
  /* Unknown error signal handling */
  act.sa_handler = WpeSignalUnknown;
@@ -1417,7 +1394,7 @@ int e_recover(ECNT *cn)
    b = cn->f[cn->mxedt]->b;
    e_buffer_mark_set(b, E_BUFFER_MARK_END, b->mxlines - 1,
                      b->bf[b->mxlines-1].len);
-   e_edt_copy(f);
+   e_edt_copy_block(f);
    e_close_window(f);
   }
   else f->save = 1;

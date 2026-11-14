@@ -1737,6 +1737,27 @@ int e_tst_cur(int c, ECNT *e)
    return(0);
 }
 
+/**
+ * e_menu_key_to_editor - Run a key the editor takes before the menu bar does.
+ * @f: the current window; @c: the key.
+ *
+ * The windows' keys come first, then, in the programming editor, the build,
+ * run and debugger keys.  A key typed while a menu is open goes through the
+ * same two steps, so a Run or Compile shortcut works with the menu open and
+ * the menu and the editor can never read the same key two ways.
+ * Return: 0 when a command ran, else the key was not one of these.
+ */
+int e_menu_key_to_editor(FENSTER *f, int c)
+{
+ if (e_tst_dfkt(f, c) == 0)
+  return(0);
+#ifdef PROG
+ if (WpeIsProg() && e_prog_switch(f, c) == 0)
+  return(0);
+#endif
+ return(1);
+}
+
 /*   function key (F1-F12) evaluation, editor only */
 int e_tst_fkt(int c, ECNT *e)
 {
@@ -1744,11 +1765,7 @@ int e_tst_fkt(int c, ECNT *e)
  int i;
  FENSTER *f = e->f[e->mxedt];
 
-#ifdef PROG
- if (e_tst_dfkt(f, c) == 0 || ((WpeIsProg()) && e_prog_switch(f, c) == 0))
-#else
- if (e_tst_dfkt(f, c) == 0)
-#endif
+ if (e_menu_key_to_editor(f, c) == 0)
  {
   f = e->f[e->mxedt];
   fk_cursor(1);
@@ -4808,7 +4825,10 @@ int e_make_rudo(FENSTER *f, int sw)
   r = e_buffer_redo(b, s);
  if (r == E_BUFFER_NOTHING)
  {
-  e_error((!sw ? e_msg[ERR_UNDO] : e_msg[ERR_REDO]), 0, b->fb);
+  if (!sw)
+   e_status_say_until_key(f, E_SAY_NO_UNDO);
+  else
+   e_status_say_until_key(f, E_SAY_NO_REDO);
   return(-1);
  }
  e_schirm(f, 1);

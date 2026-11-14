@@ -319,10 +319,10 @@ def test_ctrl_o_e_is_one_undo_and_one_redo(tmp_path):
         assert s.text() == marked, "one Ctrl-R gave %r" % s.text()
         s.key(CTRL_U, delay=0.6)
         s.key(CTRL_U, delay=0.6)
-        assert "No more Undo" in "\n".join(s.display()), \
+        assert "No more Undo" in s.display()[-1], \
             "a second Ctrl-U found something to undo:\n" + "\n".join(s.display())
-        s.key(ENTER, delay=0.6)                 # the "No more Undo" box
-        s.key(F2, delay=0.8)
+        assert "Error" not in "\n".join(s.display()), "the refusal is a line, not a box"
+        s.key(F2, delay=0.8)                    # the next key acts: no box to close
         assert s.text() == HELP_SEED, "a second Ctrl-U took the user's text: %r" % s.text()
         assert s.alive(), "wpe died"
 

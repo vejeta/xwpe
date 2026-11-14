@@ -1,0 +1,13 @@
+ 1|lqq lqqqqqqqqqqqqqqqqqqqqqk qqqqqqqqq t.c qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq1q □ ✕qk
+ 2|xhe x File-Manager     ^O x                                                    ^
+ 3|xse x New                 x                                                    ▮
+ 4|xth x Save             ^S x                                                    a
+ 5|x   x Save As             x                                                    a
+ 6|x   x Save aLl            x                                                    a
+ 7|x   x Execute             x                                                    a
+ 8|x   x SHell               x                                                    a
+ 9|x   x Find                x                                                    a
+10|x   x Grep                x                                                    a
+11|x   x Print File          x                                                    a
+12|x   x Quit     ^Q / Alt X x                                                    a
+13|x   mqqqqqqqqqqqqqqqqqqqqqj                                                    a

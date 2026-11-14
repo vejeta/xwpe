@@ -327,6 +327,18 @@ Changes
   F2, Ctrl-F6) or nothing.  What each terminal sends was measured and is
   recorded in docs/chapters/keys-delivery.txt.
 
+* The menus are the same in both key sets; the key beside each item is the
+  key of the set in use.  Block > Mark Word marks the word under the cursor
+  (Ctrl-D with Modern keys) and is in the menu with the Modern keys and in the
+  Selection block mode.  The manual's menu tables are generated from the menu
+  table.
+
+* Cut, Copy, Delete, Paste, Undo and Redo with nothing to act on say so on
+  the status row ("Nothing is marked", "The clipboard is empty", "No more
+  Undo"); Undo and Redo no longer open a box for it.  The block commands that
+  need a block say it too, and a debugger command with no session says "No
+  debug session".
+
 * A 1.6 profile that used the CUA style is upgraded to Modern once, with a
   note on the status row.  A new profile is asked which keys it wants, in a
   box where Enter picks Modern.  "xwpe --keys borland" and "xwpe --keys

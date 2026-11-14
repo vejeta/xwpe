@@ -15,6 +15,7 @@
 #include "we_startplan.h"
 #include "we_paint.h"
 #include "we_layout.h"
+#include "we_menus.h"
 #include <ctype.h>
 #include <limits.h>
 #include <sys/types.h>
@@ -1234,7 +1235,10 @@ void e_keys_notice_shown(ECNT *cn)
 /* ---- The first-run question: which keys does a new profile want? ---- */
 
 #define E_KEYS_ASK_NAME "Keys"
-#define E_KEYS_ASK_LINES 5
+#define E_KEYS_ASK_LINES 6
+/* Said so that a user who picks Modern does not take the Borland bar for the
+   wrong choice. */
+#define E_KEYS_ASK_MENUS_LINE "The menus are the same in both; the keys beside the items change"
 #define E_KEYS_ASK_MODERN_FMT "Modern: %s saves, %s undoes, %s debugs, as in VS Code"
 #define E_KEYS_ASK_BORLAND_FMT "Borland: %s saves, %s builds, as in Turbo C"
 #define E_KEYS_ASK_LINE_MAX 96
@@ -1295,7 +1299,8 @@ static int e_keys_ask_box(FENSTER *f)
  snprintf(a, sizeof a, "%s", wpe_binding_key_name(WPE_ACT_SAVE, WPE_STYLE_BORLAND));
  snprintf(b, sizeof b, "%s", wpe_binding_key_name(WPE_ACT_MAKE, WPE_STYLE_BORLAND));
  snprintf(text[3], sizeof text[3], E_KEYS_ASK_BORLAND_FMT, a, b);
- snprintf(text[4], sizeof text[4], "%s", "Options > Editor > Keys changes it later");
+ snprintf(text[4], sizeof text[4], "%s", E_KEYS_ASK_MENUS_LINE);
+ snprintf(text[5], sizeof text[5], "%s", "Options > Editor > Keys changes it later");
  for (i = 0; i < E_KEYS_ASK_LINES; i++)
  {
   len = (int)strlen(text[i]);
@@ -4795,6 +4800,24 @@ static void e_opt_take_print_cmd(ECNT *cn, const char *text)
 int e_opt_block_wordstar(int edopt)
 {
  return((edopt & ED_BLOCK_WORDSTAR) && !(edopt & ED_BLOCK_SELECTION));
+}
+
+/**
+ * wpe_block_mode - The block mode the editor options select.
+ * @edopt: the editor's option word.
+ *
+ * The one reader of the block mode bits for the menus: the Block menu shows
+ * Mark Word in the Selection mode, and the menu table asks here instead of
+ * reading the bits.
+ * Return: WPE_BLOCKS_SELECTION, WPE_BLOCKS_WORDSTAR or WPE_BLOCKS_ANCHOR.
+ */
+int wpe_block_mode(int edopt)
+{
+ if (edopt & ED_BLOCK_SELECTION)
+  return(WPE_BLOCKS_SELECTION);
+ if (e_opt_block_wordstar(edopt))
+  return(WPE_BLOCKS_WORDSTAR);
+ return(WPE_BLOCKS_ANCHOR);
 }
 
 /** e_opt_wordstar_ticked - Is the WordStar blocK box ticked when the dialog opens? */

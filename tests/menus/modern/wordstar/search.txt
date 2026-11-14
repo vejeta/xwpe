@@ -1,0 +1,6 @@
+ 1|lqqqqqqqqqqqqqq lqqqqqqqqqqqqqqqqqqqqqqqqqk qqqqqqqqqqqqqqqqqqqqqqqqqqqq1q □ ✕qk
+ 2|xhello world    x Find                 ^F x                                    ^
+ 3|xsecond line    x Replace              ^R x                                    ▮
+ 4|xthird          x Search again         F3 x                                    a
+ 5|x               x Go to Line           ^G x                                    a
+ 6|x               mqqqqqqqqqqqqqqqqqqqqqqqqqj                                    a

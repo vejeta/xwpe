@@ -1,0 +1,13 @@
+ 1|lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq t.c qqqqqqqqq lqqqqqqqqqqqqqqqqqqqqqqqqqk
+ 2|xhello world                                        x Size/Move        Alt F2 x
+ 3|xsecond line                                        x Zoom                    x
+ 4|xthird                                              x Tile                    x
+ 5|x                                                   x Cascade                 x
+ 6|x                                                   x Next         F6 / Alt N x
+ 7|x                                                   x Close          ^W / ^F4 x
+ 8|x                                                   x List All          Alt 0 x
+ 9|x                                                   x User Screen      Alt F5 x
+10|x                                                   x Watches                 x
+11|x                                                   x Messages                x
+12|x                                                   x Project                 x
+13|x                                                   mqqqqqqqqqqqqqqqqqqqqqqqqqj

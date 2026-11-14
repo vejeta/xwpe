@@ -179,11 +179,18 @@ class Dump:
         self.ctx = kv["ctx"]
         self.top = int(kv["top"])
         self.autosaved = int(kv["autosaved"])
+        self.says = int(kv.get("says", 0))    # status lines said since the dump before
         self.windows = {}
         self.find = None
+        self.menu = None         # (bar entry, [row text]) while a dropdown is open
         self.raw = "\n".join(lines)
         for line in lines[1:]:
-            if line.startswith("W "):
+            if line.startswith("M "):
+                _, bar, count, texts = line.split(" ", 3)
+                rows = texts.split("|")
+                assert len(rows) == int(count), line
+                self.menu = (int(bar), rows)
+            elif line.startswith("W "):
                 w = Window(line.split(" "))
                 self.windows[w.n] = w
             elif line.startswith("L "):

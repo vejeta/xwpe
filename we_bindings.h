@@ -343,14 +343,17 @@ const char *wpe_binding_row_name(const WpeBinding *row, int form, char *buf, siz
  * @contexts: WPE_CTX_BIT() of the contexts to read.
  * @flag: only the rows with this flag (WPE_ROW_BAR or WPE_ROW_MENU).
  * @form: the spelling.  @sep: between keys, " / " when NULL.
+ * @prog: 1 in the programming editor, 0 in the plain one.
  * Return: the length written, 0 when no row matches.
  *
  * What a bar or a menu prints beside an item, so the text cannot name a key
- * the table does not bind.
+ * the table does not bind, nor one that an earlier context binds to another
+ * action in this mode: Go to Line's Alt-G is the assistant's key in the
+ * programming editor, so its item shows no key there.
  */
 int wpe_binding_key_text(char *buf, size_t n, WpeAction action, int style,
                          unsigned contexts, unsigned flag, int form,
-                         const char *sep);
+                         const char *sep, int prog);
 
 /**
  * wpe_binding_key_name - The key that names an action in a style.
@@ -394,13 +397,14 @@ const char *wpe_bar_entry_text(char *buf, size_t n, WpeAction action, int style,
  * @contexts: which contexts' keys are shown.
  * @width: the label's width; the keys end at its right edge.  0 for no padding.
  * @sep: between keys, " / " when NULL.
+ * @prog: 1 in the programming editor (see wpe_binding_key_text).
  * Return: @buf.  With no key to show the label is @stem alone, without
  *   padding.  At least one space separates the words from the keys, so a
  *   label whose keys do not fit in @width is longer than @width.
  */
 const char *wpe_menu_item_text(char *buf, size_t n, const char *stem,
                                WpeAction action, int style, unsigned contexts,
-                               int width, const char *sep);
+                               int width, const char *sep, int prog);
 
 /* ---- Which terminals deliver which key ---------------------------------
    The fourth column of the generated reference.  Everything here is filled

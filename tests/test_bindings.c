@@ -1185,13 +1185,13 @@ static void test_table_rules(void)
 	{
 		char b[96];
 
-		wpe_menu_item_text(b, sizeof b, "Save", WPE_ACT_SAVE, WPE_STYLE_MODERN, WPE_CTXM_MENU, 19, NULL);
+		wpe_menu_item_text(b, sizeof b, "Save", WPE_ACT_SAVE, WPE_STYLE_MODERN, WPE_CTXM_MENU, 19, NULL, 1);
 		same("menu item", 0, b, "Save             ^S");
-		wpe_menu_item_text(b, sizeof b, "Save", WPE_ACT_SAVE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 19, NULL);
+		wpe_menu_item_text(b, sizeof b, "Save", WPE_ACT_SAVE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 19, NULL, 1);
 		same("Borland menu item", 0, b, "Save             F2");
-		wpe_menu_item_text(b, sizeof b, "Tile", WPE_ACT_TILE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 23, NULL);
+		wpe_menu_item_text(b, sizeof b, "Tile", WPE_ACT_TILE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 23, NULL, 1);
 		same("menu item without a key", 0, b, "Tile");
-		wpe_menu_item_text(b, sizeof b, "Replace", WPE_ACT_REPLACE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 23, NULL);
+		wpe_menu_item_text(b, sizeof b, "Replace", WPE_ACT_REPLACE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 23, NULL, 1);
 		same("menu item with a prefix key", 0, b, "Replace   Alt F4 / ^O A");
 	}
 	/* an action with no key in a style names none */
@@ -1202,8 +1202,38 @@ static void test_table_rules(void)
 		fail("Tile has a Modern key", 0, "a key", "none");
 }
 
+/* The key beside Go to Line: a key that an earlier context binds to another
+ * action in this mode is not printed.  Alt-G is the assistant's door in the
+ * programming editor, so Borland's item shows no key there and Alt G in the
+ * plain one; Modern's Ctrl-G is bound by nobody earlier and shows in both. */
+static void test_menu_key_shadowing(void)
+{
+	char b[96];
+	int prog;
+
+	wpe_menu_item_text(b, sizeof b, "Go to Line", WPE_ACT_GOTO_LINE, WPE_STYLE_MODERN,
+			   WPE_CTXM_MENU, 23, NULL, 1);
+	same("Modern Go to Line key in wpe", 1, b, "Go to Line           ^G");
+	wpe_menu_item_text(b, sizeof b, "Go to Line", WPE_ACT_GOTO_LINE, WPE_STYLE_MODERN,
+			   WPE_CTXM_MENU, 23, NULL, 0);
+	same("Modern Go to Line keys in we", 0, b, "Go to Line   Alt G / ^G");
+	wpe_menu_item_text(b, sizeof b, "Go to Line", WPE_ACT_GOTO_LINE, WPE_STYLE_BORLAND,
+			   WPE_CTXM_MENU, 23, NULL, 1);
+	same("Borland Go to Line key in wpe", 1, b, "Go to Line");
+	wpe_menu_item_text(b, sizeof b, "Go to Line", WPE_ACT_GOTO_LINE, WPE_STYLE_BORLAND,
+			   WPE_CTXM_MENU, 23, NULL, 0);
+	same("Borland Go to Line key in we", 0, b, "Go to Line        Alt G");
+	/* a key nobody takes first is printed in both modes */
+	for (prog = 0; prog <= 1; prog++) {
+		wpe_menu_item_text(b, sizeof b, "Save", WPE_ACT_SAVE, WPE_STYLE_BORLAND,
+				   WPE_CTXM_MENU, 19, NULL, prog);
+		same("Save key in both modes", prog, b, "Save             F2");
+	}
+}
+
 int main(void)
 {
+	test_menu_key_shadowing();
 	test_dispatch();
 	test_modern_table();
 	test_delivery();

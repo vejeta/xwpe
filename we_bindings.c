@@ -695,9 +695,56 @@ const char *wpe_binding_row_name(const WpeBinding *row, int form, char *buf, siz
  return(buf);
 }
 
+/**
+ * wpe_context_is_read_in - Does the editor read context @ctx in this mode?
+ * @ctx: a direct context; @prog: 1 in the programming editor.
+ *
+ * The build and run keys exist only in the programming editor, and the
+ * debugger's keys only while a session is open, so a key they bind does not
+ * take another context's key away in the plain editor or between sessions
+ * (F4 stays Search until a debug session makes it Go to cursor).
+ */
+static int wpe_context_is_read_in(int ctx, int prog)
+{
+ if (ctx == WPE_CTX_PROGRAM)
+  return(prog != 0);
+ if (ctx == WPE_CTX_DEBUG)
+  return(prog != 0 && wpe_session_runs());
+ return(1);
+}
+
+/**
+ * wpe_row_is_shadowed - Does an earlier context take this row's key?
+ * @row: a row; @style: the key style; @prog: 1 in the programming editor.
+ *
+ * A key reaches the contexts one after the other (windows, then the
+ * programming doors, then editing), so a row's key does something else when
+ * an earlier context binds the same key to another action.  A menu that
+ * printed it would offer a key that does not do what the item says.
+ * Return: 1 when the key does another action; always 0 for a letter after a
+ * prefix, which no other context reads.
+ */
+static int wpe_row_is_shadowed(const WpeBinding *row, int style, int prog)
+{
+ size_t i;
+ int ctx;
+
+ if (!(WPE_CTXM_DIRECT & WPE_CTX_BIT(row->context)))
+  return(0);
+ for (ctx = WPE_CTX_WINDOW; ctx < row->context; ctx++) {
+  if (!wpe_context_is_read_in(ctx, prog))
+   continue;
+  for (i = 0; i < WPE_BINDING_COUNT; i++)
+   if (wpe_bindings[i].action != row->action &&
+       wpe_row_matches(&wpe_bindings[i], row->code, style, ctx))
+    return(1);
+ }
+ return(0);
+}
+
 int wpe_binding_key_text(char *buf, size_t n, WpeAction action, int style,
                          unsigned contexts, unsigned flag, int form,
-                         const char *sep)
+                         const char *sep, int prog)
 {
  size_t i;
  size_t len = 0;
@@ -713,6 +760,8 @@ int wpe_binding_key_text(char *buf, size_t n, WpeAction action, int style,
   if (row->action != action || !(row->styles & WPE_STYLE_BIT(style)))
    continue;
   if (!(contexts & WPE_CTX_BIT(row->context)) || !(row->flags & flag))
+   continue;
+  if (wpe_row_is_shadowed(row, style, prog))
    continue;
   wpe_binding_row_name(row, form, name, sizeof name);
   if (len + strlen(sep) + strlen(name) + 1 > n)
@@ -794,11 +843,11 @@ const char *wpe_bar_entry_text(char *buf, size_t n, WpeAction action, int style,
 
 const char *wpe_menu_item_text(char *buf, size_t n, const char *stem,
                                WpeAction action, int style, unsigned contexts,
-                               int width, const char *sep)
+                               int width, const char *sep, int prog)
 {
  char keys[96];
  int keylen = wpe_binding_key_text(keys, sizeof keys, action, style, contexts,
-                                   WPE_ROW_MENU, WPE_NAME_MENU, sep);
+                                   WPE_ROW_MENU, WPE_NAME_MENU, sep, prog);
  int pad = width - (int)strlen(stem) - keylen;
 
  if (keylen == 0) {

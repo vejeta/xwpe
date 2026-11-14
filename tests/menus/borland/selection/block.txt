@@ -1,0 +1,18 @@
+ 1|lqqqqqqqqqqqqqqqqqqqqqq lqqqqqqqqqqqqqqqqqqqqqqk qqqqqqqqqqqqqqqqqqqqqqq1q □ ✕qk
+ 2|xhello world            x Begin Mark      ^K B x                               ^
+ 3|xsecond line            x End Mark        ^K K x                               ▮
+ 4|xthird                  x Mark WhOle      ^K X x                               a
+ 5|x                       x Mark Line       ^K L x                               a
+ 6|x                       x MarK Word            x                               a
+ 7|x                       x Goto Begin      ^K A x                               a
+ 8|x                       x Goto ENd        ^K Z x                               a
+ 9|x                       x Copy            ^K C x                               a
+10|x                       x Move            ^K V x                               a
+11|x                       x Delete          ^K Y x                               a
+12|x                       x Hide            ^K H x                               a
+13|x                       x Read            ^K R x                               a
+14|x                       x Write           ^K W x                               a
+15|x                       x Move to RIght   ^K I x                               a
+16|x                       x Move to LefT    ^K U x                               a
+17|x                       x ChAnge Case     ^K D x                               a
+18|x                       mqqqqqqqqqqqqqqqqqqqqqqj                               a

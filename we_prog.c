@@ -14,6 +14,7 @@
 #include "we_progname.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
+#include "we_testdump.h"
 
 #ifdef PROG
 
@@ -3448,6 +3449,7 @@ void e_status_say_until_key(FENSTER *f, const char *text)
 {
  if (!f || !f->fb)
   return;
+ wpe_test_status_said();
  e_status_hold(text);
  e_status_paint(f->fb, text);
  e_refresh();

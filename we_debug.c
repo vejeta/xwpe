@@ -3444,16 +3444,16 @@ int e_deb_inp(FENSTER *f)
    e_remove_breakpoints(f);
    break;
   case WPE_ACT_DEBUG_REMOVE_ALL_WATCHES:
-   e_remove_all_watches(f);
+   e_remove_all_watches_command(f);
    break;
   case WPE_ACT_DEBUG_DELETE_WATCH:
-   e_delete_watches(f);
+   e_delete_watches_command(f);
    break;
   case WPE_ACT_DEBUG_WATCH:
    e_make_watches(f);
    break;
   case WPE_ACT_DEBUG_EDIT_WATCH:
-   e_edit_watches(f);
+   e_edit_watches_command(f);
    break;
   case WPE_ACT_DEBUG_STACK:
    e_deb_stack(f);
@@ -3468,7 +3468,7 @@ int e_deb_inp(FENSTER *f)
    e_deb_run(f);
    break;
   case WPE_ACT_DEBUG_QUIT:
-   e_d_quit(f);
+   e_d_quit_entry(f);
    break;
   case WPE_ACT_DEBUG_GOTO_CURSOR:
    e_d_goto_cursor(f);
@@ -3477,12 +3477,70 @@ int e_deb_inp(FENSTER *f)
    e_d_finish_func(f);
    break;
   case WPE_ACT_DEBUG_PAUSE:
-   e_d_pause(f);
+   e_d_pause_command(f);
    break;
   default:
    return(c);
  }
  return(0);
+}
+
+/**
+ * e_d_say_no_session - Tell the user a debugger command has no session.
+ * @f: the window on top.
+ *
+ * A command that needs a session (quit it, pause it, change its watches) and
+ * finds none used to do nothing and say nothing.  The status row now says
+ * why, the same line from the menu and from the Ctrl-G letters.  A program
+ * still being compiled for its session counts as one, so Quit still ends it.
+ * Return: 1 when there is no session and the line was said, else 0.
+ */
+int e_d_say_no_session(FENSTER *f)
+{
+ if (e_d_session_runs() || e_d_compile_busy())
+  return(0);
+ e_status_say_until_key(f, E_SAY_NO_DEBUG_SESSION);
+ return(1);
+}
+
+/** Debug > Quit, and Ctrl-G Q: end the session, or say there is none. */
+int e_d_quit_entry(FENSTER *f)
+{
+ if (e_d_say_no_session(f))
+  return(0);
+ return(e_d_quit(f));
+}
+
+/** Debug > Interrupt, and Ctrl-G I: pause the program, or say there is no session. */
+int e_d_pause_command(FENSTER *f)
+{
+ if (e_d_say_no_session(f))
+  return(0);
+ return(e_d_pause(f));
+}
+
+/** Debug > Edit watch, and Ctrl-G E: change a watch, or say there is no session. */
+int e_edit_watches_command(FENSTER *f)
+{
+ if (e_d_say_no_session(f))
+  return(0);
+ return(e_edit_watches(f));
+}
+
+/** Debug > Delete watch, and Ctrl-G D: delete a watch, or say there is no session. */
+int e_delete_watches_command(FENSTER *f)
+{
+ if (e_d_say_no_session(f))
+  return(0);
+ return(e_delete_watches(f));
+}
+
+/** Debug > Remove All watches, and Ctrl-G A: drop every watch, or say there is no session. */
+int e_remove_all_watches_command(FENSTER *f)
+{
+ if (e_d_say_no_session(f))
+  return(0);
+ return(e_remove_all_watches(f));
 }
 
 int e_d_q_quit(FENSTER *f)
@@ -4974,9 +5032,18 @@ int e_d_reinit_watches(FENSTER * f,char * prj)
 }
 /***************************************/
 
-/*  stack   */
+/**
+ * e_deb_stack - Debug > Show stack, Ctrl-G K and its key: list the frames.
+ * @f: the window on top.
+ *
+ * With no session the status row says so, as the other commands that need
+ * one do, instead of a box that has to be dismissed.
+ * Return: 0, or what the listing returns.
+ */
 int e_deb_stack(FENSTER *f)
 {
+ if (e_d_say_no_session(f))
+  return(0);
  if (e_d_refuse_while_running(f))
   return(0);
  e_d_switch_out(0);

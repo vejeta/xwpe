@@ -111,8 +111,10 @@ F_STATUS = "status"      # what the status row says after the key
 FIELDS = (F_TEXT, F_CURSOR, F_MARKS, F_ANCHOR, F_MODE, F_SAVE, F_STEPS,
           F_BREAKPOINTS, F_DISK, F_AUTOSAVE, F_BOX, F_CLIP, F_MARKERS, F_STATUS)
 
-BOX_NO_UNDO = "No more Undo"
-BOX_NO_REDO = "No more Redo"
+# What the status row says when Undo or Redo has nothing to take back (edit.h
+# E_SAY_NO_UNDO, E_SAY_NO_REDO); it was an Error box before the menus said it.
+STATUS_NO_UNDO = "No more Undo"
+STATUS_NO_REDO = "No more Redo"
 BOX_SAVE_FAILED = "File failed to save"
 # What the status row says when a command meets a window closed to changes.
 STATUS_READ_ONLY = "Read-only window: the text is unchanged"
@@ -349,9 +351,9 @@ _rule("undo_unmodelled_step", SOURCE_DESIGN, "this model: steps it cannot replay
       "Undo or Redo of a step the model holds no snapshot of: the editor's "
       "answer is taken, not predicted.",
       (F_TEXT, F_CURSOR, F_MARKS, F_BREAKPOINTS, F_SAVE))
-_rule("undo_empty_says_so", SOURCE_CODE, "we_main.c:71, 81",
-      "Undo or Redo with nothing left shows the error box No more Undo / "
-      "No more Redo.", (F_BOX,))
+_rule("undo_empty_says_so", SOURCE_CODE, "we_edit.c e_make_rudo, edit.h E_SAY_NO_UNDO / E_SAY_NO_REDO",
+      "Undo or Redo with nothing left says No more Undo / No more Redo on "
+      "the status row, no box.", (F_STATUS,))
 
 # -- the selection block mode, the trim of an auto-indent, the file's ending
 # (DESIGN-modern-keymap.md 4.2 and 7; decision D94)
@@ -2183,7 +2185,7 @@ def _undo(st):
             _unmodelled_step(st)
         else:
             st.fired.append("undo_empty_says_so")
-            st.box = BOX_NO_UNDO
+            st.status = STATUS_NO_UNDO
         return
     step = st.undo.pop()
     st.redo.append(step)
@@ -2228,7 +2230,7 @@ def _redo(st):
             _unmodelled_step(st)
         else:
             st.fired.append("undo_empty_says_so")
-            st.box = BOX_NO_REDO
+            st.status = STATUS_NO_REDO
         return
     step = st.redo.pop()
     st.undo.append(step)

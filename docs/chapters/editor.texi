@@ -144,7 +144,8 @@ Or use @kbd{Ctrl-K B} to set the start and @kbd{Ctrl-K K} to set the end.
 @item Begin mark @tab @kbd{Alt-B B} @tab @kbd{Ctrl-K B}
 @item End mark @tab @kbd{Alt-B E} @tab @kbd{Ctrl-K K}
 @item Mark line @tab @kbd{Alt-B L} @tab @kbd{Ctrl-K L}
-@item Mark all @tab @kbd{Alt-B W} @tab @kbd{Ctrl-K X}
+@item Mark all @tab @kbd{Alt-B O} @tab @kbd{Ctrl-K X}
+@item Mark word @tab @kbd{Alt-B K} @tab (@kbd{Ctrl-D} in the Modern style)
 @item Go to block start @tab @kbd{Alt-B G} @tab @kbd{Ctrl-K A}
 @item Go to block end @tab @kbd{Alt-B N} @tab @kbd{Ctrl-K Z}
 @item Copy block @tab @kbd{Alt-B C} @tab @kbd{Ctrl-K C}
@@ -155,7 +156,12 @@ Or use @kbd{Ctrl-K B} to set the start and @kbd{Ctrl-K K} to set the end.
 @item Write block to file @tab @kbd{Alt-B W} @tab @kbd{Ctrl-K W}
 @item Indent block @tab @kbd{Alt-B I} @tab @kbd{Ctrl-K I}
 @item Unindent block @tab @kbd{Alt-B T} @tab @kbd{Ctrl-K U}
+@item Change case @tab @kbd{Alt-B A} @tab @kbd{Ctrl-K D}
 @end multitable
+
+Mark word is in the Block menu with the Modern keys and in the Selection
+block mode.  A block command with nothing marked says @samp{Nothing is marked}
+on the status row.
 
 Indent and unindent move each line of the block half a Tabstop.  When
 the last thing an unindent takes is a tab worth more columns than that,
@@ -206,6 +212,12 @@ Paste (insert clipboard at cursor).
 @item Alt-E S
 Show clipboard contents.
 @end table
+
+In the Selection block mode, Paste and Delete from the menu act on the
+selection as their keys do.  With nothing marked, Cut, Copy and Delete say
+@samp{Nothing is marked} on the status row; Paste with an empty clipboard says
+@samp{The clipboard is empty}.  No box opens and no key is needed to dismiss
+anything.
 
 @section Search and replace
 

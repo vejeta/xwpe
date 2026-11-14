@@ -53,8 +53,10 @@ bin_PROGRAMS = we
 # program prints docs/chapters/keys-generated.texi and the dump of a style's
 # bindings.  make check compares its output with the files kept in the tree.
 noinst_PROGRAMS = tools/keymap-texi
-tools_keymap_texi_SOURCES = tools/keymap-texi.c we_bindings.c
-tools_keymap_texi_CFLAGS = $(XWPE_STDFLAG)
+tools_keymap_texi_SOURCES = tools/keymap-texi.c we_bindings.c we_menus.c
+tools_keymap_texi_CFLAGS = $(AM_CFLAGS)
+# The menu rows without the editor's functions (we_menus.c, WPE_MENU_TABLE_ONLY).
+tools_keymap_texi_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_MENU_TABLE_ONLY
 
 we_SOURCES = \
   we_main.c \
@@ -72,6 +74,7 @@ we_SOURCES = \
   we_hfkt.c \
   we_rowfind.c \
   we_menue.c \
+  we_menus.c \
   we_menurows.c \
   we_mousedrain.c \
   we_termrelease.c \
@@ -218,6 +221,7 @@ noinst_HEADERS = \
   we_debreq.h \
   we_gdbmi.h \
   we_menurows.h \
+  we_menus.h \
   we_mousedrain.h \
   we_termrelease.h \
   we_keymap.h \
@@ -352,7 +356,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -492,6 +496,15 @@ test_keymap_CFLAGS = $(XWPE_STDFLAG)
 # of the table hold (no key bound twice, one bar key per action and style).
 test_bindings_SOURCES = tests/test_bindings.c we_bindings.c we_bars.c
 test_bindings_CFLAGS = $(AM_CFLAGS)
+
+# The menu table (we_menus.c) and the key table, no editor: the rows, the
+# three bars, the filter that decides a row from the key style, block mode,
+# editor mode and display, and the rule that no menu Alt letter is a bound
+# key.  Built with WPE_MENU_TABLE_ONLY the rows name no function and the
+# builder is left out, so the test links with no editor symbol.
+test_menus_SOURCES = tests/test_menus.c we_menus.c we_bindings.c
+test_menus_CFLAGS = $(AM_CFLAGS)
+test_menus_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_MENU_TABLE_ONLY
 
 # The children's owner: we_child.c with the fd loop only (the status line is a
 # hook, stubbed).  Real children: twenty ending at once each report their own
@@ -713,7 +726,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse
+  test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -825,6 +838,12 @@ TESTS += tests/check-box-layout.sh
 # reason; an allowed line that no longer matches fails too.  And the key
 # reference in docs/chapters is the table's own output.
 TESTS += tests/check-keymap.sh tests/check-keymap-docs.sh
+
+# One owner of what a menu shows: the menu table (we_menus.c).  The items are
+# built nowhere else, the dropdown engine (we_menue.c) is blind to the key
+# style, block mode and editor mode, and the bar is laid out in one place:
+# tests/check-menus.sh fails on a site that does otherwise.
+TESTS += tests/check-menus.sh
 AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
   KEYMAP_TEXI='$(top_builddir)/tools/keymap-texi$(EXEEXT)'; export KEYMAP_TEXI; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
@@ -929,6 +948,14 @@ EXTRA_DIST = \
   tests/box-layout.allow \
   tests/check-keymap.sh \
   tests/check-keymap.allow \
+  tests/check-menus.sh \
+  tests/check-menus.allow \
+  tests/test_menus.c \
+  tests/test_menu_golden.py \
+  tests/test_menu_refusals.py \
+  tests/test_menu_record.py \
+  tests/menus \
+  docs/chapters/menus-generated.texi \
   tests/check-keymap-docs.sh \
   tests/test_keymap_docs.py \
   docs/chapters/keys-cua-1.6.txt \
@@ -1044,6 +1071,7 @@ EXTRA_DIST = \
   tests/test_macos_smoke.py \
   tests/wayland/conftest.py \
   tests/wayland/test_menu_edit.py \
+  tests/wayland/test_menu_by_mode.py \
   tests/wayland/test_popup_close_button.py \
   tests/wayland/test_clipboard.py \
   tests/wayland/test_block_marking.py \
@@ -1061,6 +1089,7 @@ EXTRA_DIST = \
   tests/x11/test_block_marking.py \
   tests/x11/test_clipboard.py \
   tests/x11/test_menu_edit.py \
+  tests/x11/test_menu_by_mode.py \
   tests/x11/test_menu_search.py \
   tests/x11/test_menu_file.py \
   tests/x11/test_menu_system.py \

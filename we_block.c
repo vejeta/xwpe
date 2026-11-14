@@ -245,6 +245,43 @@ static int e_blk_marks_empty(SCHIRM *s)
 }
 
 /**
+ * e_blk_say_nothing_marked - Tell the user a block command found no block.
+ * @f: the window on top.
+ *
+ * The one place that spells the line.  A key, a menu item and the palette
+ * all get the same words on the status row, so a command that did nothing
+ * says why and no box has to be dismissed.
+ */
+static void e_blk_say_nothing_marked(FENSTER *f)
+{
+ e_status_say_until_key(f, E_SAY_NOTHING_MARKED);
+}
+
+/**
+ * e_blk_refuse_unmarked - Refuse a block command that has no block to act on.
+ * @f: the text window the command acts on.
+ * @changes_text: 1 for a command that changes the text.
+ *
+ * Says why on the status row: "Nothing is marked", or, for a command that
+ * changes the text of a window closed to changes, that the window is read
+ * only (the window then says it itself when an assistant has it).
+ * Return: 1 when the command must not go on, 0 when a block is marked.
+ */
+static int e_blk_refuse_unmarked(FENSTER *f, int changes_text)
+{
+ if (!e_blk_marks_empty(f->s))
+  return(0);
+ if (changes_text && e_window_text_locked(f))
+ {
+  if (f->ins == WPE_INS_READONLY)
+   wpe_buffer_say_read_only(f->b);
+ }
+ else
+  e_blk_say_nothing_marked(f);
+ return(1);
+}
+
+/**
  * e_blk_delete_in_line_now - Delete a block inside one line: its characters
  * go, and the cursor goes to where the block began, on that line.
  *
@@ -319,7 +356,7 @@ int e_block_delete_marked(FENSTER *f)
 /*	delete block */
 int e_blck_del(FENSTER *f)
 {
- if ((f = e_blk_text_window(f)) == NULL || e_blk_marks_empty(f->s))
+ if ((f = e_blk_text_window(f)) == NULL || e_blk_refuse_unmarked(f, 1))
   return(0);
  if (e_window_text_locked(f))
   return(WPE_ESC);
@@ -522,15 +559,46 @@ static int e_clip_clear(BUFFER *b0)
  return(0);
 }
 
+/**
+ * e_edt_del - Edit > Cut: copy the block to the clipboard, then delete it.
+ * @f: the window the command came from.
+ *
+ * With nothing marked the delete says so, once: the copy step is silent.
+ * Return: 0.
+ */
 int e_edt_del(FENSTER *f)
 {
- e_edt_copy(f);
+ e_edt_copy_block(f);
  e_blck_del(f);
  return(0);
 }
 
-/* copy block to buffer */
+/**
+ * e_edt_copy - Edit > Copy: put the marked block on the clipboard.
+ * @f: the window the command came from.
+ *
+ * With nothing marked the status row says so, the same line from the key,
+ * the menu and the palette.
+ * Return: 0.
+ */
 int e_edt_copy(FENSTER *f)
+{
+ if (e_edt_copy_block(f) == E_COPY_NOTHING_MARKED)
+  e_blk_say_nothing_marked(f);
+ return(0);
+}
+
+/**
+ * e_edt_copy_block - Copy the marked block to the clipboard, saying nothing.
+ * @f: the window the command came from.
+ *
+ * The copy step Cut, Block > Copy in a closed window and the recovery of a
+ * saved buffer share; the commands that the user runs say the refusal.
+ * Return: E_COPY_DONE, E_COPY_NOTHING_MARKED, or E_COPY_NOT_DONE when there
+ * is no text window, the source is the clipboard viewer itself or memory
+ * ran out (the last says so itself).
+ */
+int e_edt_copy_block(FENSTER *f)
 {
  BUFFER *b;
  BUFFER *b0 = f->ed->f[0]->b;
@@ -539,7 +607,7 @@ int e_edt_copy(FENSTER *f)
  for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
   ;
  if (i <= 0)
-  return(0);
+  return(E_COPY_NOT_DONE);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;  save = f->save;
@@ -550,18 +618,14 @@ int e_edt_copy(FENSTER *f)
     the AI chat/Messages output) are legitimate sources; refusing them left
     their text uncopyable. */
  if (b == b0)
-  return(0);
- if ((f->s->mark_end.y < f->s->mark_begin.y) ||
-   ((f->s->mark_begin.y == f->s->mark_end.y) &&
-     (f->s->mark_end.x <= f->s->mark_begin.x)))
- {
-  return(0);
- }
+  return(E_COPY_NOT_DONE);
+ if (e_blk_marks_empty(f->s))
+  return(E_COPY_NOTHING_MARKED);
  if (e_clip_clear(b0) != 0 ||
      e_copy_block_covered(0, 0, b, b0, f, 0, NULL) == E_BLOCK_NOMEM)
  {
   wpe_buffer_say_nomem(b0, "the copy");
-  return(0);
+  return(E_COPY_NOT_DONE);
  }
  f->save = save;
  /* Export to the OS clipboard from the SOURCE selection, not the clip buffer:
@@ -579,7 +643,7 @@ int e_edt_copy(FENSTER *f)
    e_clip_export_buffer(b0);
   }
  }
- return(0);
+ return(E_COPY_DONE);
 }
 
 /**
@@ -604,6 +668,32 @@ void e_clip_pull_os_into_buffer(FENSTER *w0)
   wpe_buffer_say_nomem(w0->b, "the pasted text");
  free(text);
  e_buffer_block_all(w0->b);
+}
+
+/**
+ * e_clip_is_empty - Does the clipboard (window 0) hold no character?
+ * @w0: window 0, after the OS clipboard was merged into it for a paste.
+ *
+ * The clipboard is one empty line until something is copied; it is read from
+ * the text, not from its marks, which a paste may have cleared.
+ */
+static int e_clip_is_empty(FENSTER *w0)
+{
+ BUFFER *b0 = w0->b;
+
+ return(b0->mxlines <= 1 && b0->bf[0].len == 0);
+}
+
+/**
+ * e_clip_say_empty - Tell the user a paste found nothing to paste.
+ * @f: the window on top.
+ *
+ * The status row says it, the same line from Ctrl-V, Edit > Paste and the
+ * palette, so a paste that did nothing tells why.
+ */
+static void e_clip_say_empty(FENSTER *f)
+{
+ e_status_say_until_key(f, E_SAY_CLIPBOARD_EMPTY);
 }
 
 /*            Copy block buffer into window  */
@@ -636,6 +726,11 @@ int e_edt_einf(FENSTER *f)
  b = f->b;
  if (e_window_text_locked(f))
   return(0);
+ if (e_clip_is_empty(f->ed->f[0]))
+ {
+  e_clip_say_empty(f);
+  return(0);
+ }
  if (e_selection_range(f, &begin, &end))
  {
   i = e_paste_over_selection(f, b0, &begin, &end);
@@ -715,7 +810,7 @@ int e_block_move_marked(FENSTER *f)
 /*   move block within window */
 int e_blck_move(FENSTER *f)
 {
- if ((f = e_blk_text_window(f)) == NULL)
+ if ((f = e_blk_text_window(f)) == NULL || e_blk_refuse_unmarked(f, 1))
   return(0);
  if (e_block_move_marked(f) == E_BLOCK_NOMEM)
   wpe_buffer_say_nomem(f->b, "the block move");
@@ -1654,13 +1749,19 @@ int e_blck_copy(FENSTER *f)
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;
+ if (e_blk_refuse_unmarked(f, 0))
+  return(0);
  /* Block-Copy (Ctrl-K C / Block menu) duplicates the block at the cursor, which
     would edit the buffer -- impossible in a window closed to text changes (a
     read-only tool pane such as the AI chat / Messages output, or a window
     waiting for an assistant reply).  Rather than do nothing, treat it there as
     a clipboard copy, so the instinctive "Copy" pulls the selected text out
     like Edit > Copy does. */
- if (e_window_text_locked(f)) return(e_edt_copy(f));
+ if (e_window_text_locked(f))
+ {
+  e_edt_copy_block(f);
+  return(0);
+ }
  i = e_copy_block_covered(b->b.x, b->b.y, b, b, f, 'c', &rec);
  if (i == E_BLOCK_NOMEM)
   wpe_buffer_say_nomem(b, "the block copy");
@@ -2046,6 +2147,30 @@ int e_blck_mrk_line(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_blck_mrk_word - Block > MarK Word: mark the word under the cursor.
+ * @f: the window the menu was opened from.
+ *
+ * Marks the letters and digits around the cursor as the block, the same
+ * word Ctrl-D selects with the Modern keys, so a user of the menu and a
+ * user of the key end with the same marked text.
+ * Return: 0.
+ */
+int e_blck_mrk_word(FENSTER *f)
+{
+ int i;
+
+ for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
+  ;
+ if (i <= 0)
+  return(0);
+ e_switch_window(f->ed->edt[i], f);
+ f = f->ed->f[f->ed->mxedt];
+ e_select_word_at_cursor(f->b);
+ e_schirm(f, 1);
+ return(0);
+}
+
 /*	block: up- or downcase
 mode=0 every character downcase
 mode=1 every character upcase
@@ -2153,7 +2278,12 @@ int e_changecase_dialog(FENSTER *f)
 {
  static int b_sw = 0;
  int ret;
- W_OPTSTR *o = e_init_opt_kst(f);
+ FENSTER *text = e_blk_text_window(f);
+ W_OPTSTR *o;
+
+ if (text == NULL || e_blk_refuse_unmarked(text, 1))
+  return(0);
+ o = e_init_opt_kst(f);
  if (!o) return(-1);
  o->xa = 21;
  o->xe = 52;
@@ -2317,6 +2447,8 @@ int e_blck_to_left(FENSTER *f)
  f = f->ed->f[f->ed->mxedt];
  b = f->b;
  s = f->s;
+ if (e_blk_refuse_unmarked(f, 1))
+  return(0);
  tstr = e_unindent_blanks(f->ed->tabn);
  if (tstr == NULL)
  {
@@ -2348,7 +2480,7 @@ int e_blck_to_right(FENSTER *f)
  BUFFER *b;
  SCHIRM *s;
  int n = f->ed->tabn/2, i;
- char *tstr = MALLOC((n+1)*sizeof(char));
+ char *tstr;
  EShift shift;
 
  for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
@@ -2359,6 +2491,9 @@ int e_blck_to_right(FENSTER *f)
  f = f->ed->f[f->ed->mxedt];
  b = f->b;
  s = f->s;
+ if (e_blk_refuse_unmarked(f, 1))
+  return(0);
+ tstr = MALLOC((n+1)*sizeof(char));
  for (i = 0; i < n; i++)
   tstr[i] = ' ';
  tstr[n] = '\0';
@@ -2385,6 +2520,10 @@ int e_blck_read(FENSTER *f)
 /*   write block to file   */
 int e_blck_write(FENSTER *f)
 {
+ FENSTER *text = e_blk_text_window(f);
+
+ if (text == NULL || e_blk_refuse_unmarked(text, 0))
+  return(0);
  WpeCreateFileManager(2, f->ed, "");
  return(0);
 }

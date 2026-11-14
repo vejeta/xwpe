@@ -1,0 +1,6 @@
+ 1|lqqqqqqqqqqqqqq lqqqqqqqqqqqqqqqqqqqqqqqqqk qqqqqqqqqqqqqqqqqqqqqqqqqqqq1q □ ✕qk
+ 2|xhello world    x Find          F4 / ^O F x                                    ^
+ 3|xsecond line    x Replace   Alt F4 / ^O A x                                    ▮
+ 4|xthird          x Search again         ^L x                                    a
+ 5|x               x Go to Line              x                                    a
+ 6|x               mqqqqqqqqqqqqqqqqqqqqqqqqqj                                    a

@@ -323,7 +323,8 @@ line, or @env{XWPE_KEYS} in the environment, sets the style without
 reading or writing the option file; the command line wins over the
 variable, and either wins over the option file.  A new profile (no option
 file and no configuration folder) is asked which keys it wants, once, unless
-one of these is set or the input is not a terminal.
+one of these is set or the input is not a terminal.  The menus are the same in
+both; the key beside each item follows the set in use.
 
 @subsubheading Blocks, indent and file ending
 
@@ -335,7 +336,8 @@ that stay where they are put.
 @samp{SelEction blocK}: a marked block is a selection that typing, Return,
 Delete and Backspace replace or delete, and a cursor key without
 @key{Shift} ends (@pxref{Selection mode}).  If both boxes are ticked when
-you press Ok, the one you ticked in this dialog wins.
+you press Ok, the one you ticked in this dialog wins.  The Block menu shows
+Mark Word in this mode.
 @item Alt-A
 @samp{Trim Auto-indent}: the indent that @key{Return} put on a line is
 taken off again when the cursor leaves the line with nothing typed on it,

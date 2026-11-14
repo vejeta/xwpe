@@ -19,7 +19,8 @@
    key reader is the display's own.
 
    The format, one record per line, every field on one line:
-     S <seq> ctx=<edit|prefix|menu|dialog:<title>|message|filemanager|window|box|wait> top=<n> autosaved=<0|1>
+     S <seq> ctx=<edit|prefix|menu|dialog:<title>|message|filemanager|window|box|wait> top=<n> autosaved=<0|1> says=<n>
+       (says: the status lines said since the dump before)
      W <n> <name> ro=<0|1> mx=<width> y=<n> x=<n> mb=<y>,<x> me=<y>,<x> ks=<y>,<x>
        ins=<n> flg=<n> save=<n> view=<c.y>,<c.x>,<a.y>,<a.x>,<e.y>,<e.x>
        pt=<x>,<y>/<x>,<y>/... brp=<row>,<row>|- ud=<steps> rd=<steps>
@@ -28,6 +29,8 @@
             begin, 2 block end, 3 find start, 4 find end, 5 anchor>
      L <n> <H|S> <bytes>          (one per line of window n; H ends with a
                                    line break, S is a soft row)
+     M <bar entry> <rows> <text>|<text>|...     (only while a dropdown is open;
+                                   the text of a row is its words and keys)
      F <search> <replace> <sw>
      E <seq>
    Bytes outside printable ASCII, and the backslash, are written \xHH; in
@@ -50,6 +53,13 @@ int  wpe_test_dump_on(void);
 void wpe_test_dump_idle(void);
 void wpe_test_ctx_enter(WpeTestCtx kind, const char *title);
 void wpe_test_ctx_leave(void);
+/* The dropdown that is open, for the M record: its place in the bar and its
+   rows (OPTK of edit.h). */
+struct OPTKAST;
+void wpe_test_menu_enter(int nm, const struct OPTKAST *rows, int count);
+void wpe_test_menu_leave(void);
 void wpe_test_dump_note_autosave(void);
+/* A line was said on the status row (the S record's says=). */
+void wpe_test_status_said(void);
 
 #endif /* WE_TESTDUMP_H */

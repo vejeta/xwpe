@@ -50,6 +50,18 @@ def test_a_new_profile_is_asked_and_enter_picks_modern(tmp_path):
     assert _options2(tmp_path) & MODERN_BITS == MODERN_BITS
 
 
+# @scenario SC-menus-30
+def test_the_question_says_the_menus_are_the_same_in_both(tmp_path):
+    """A user who picks Modern must not take the Borland bar for the wrong
+    choice: the box says the menus are the same and only the keys change."""
+    s = _run(tmp_path)
+    try:
+        assert "The menus are the same in both; the keys beside the items change" in \
+            _screen(s), _screen(s)
+    finally:
+        s.close()
+
+
 def test_the_answer_is_kept_and_not_asked_again(tmp_path):
     s = _run(tmp_path)
     try:

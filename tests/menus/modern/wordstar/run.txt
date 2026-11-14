@@ -1,0 +1,14 @@
+ 1|lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk qqqqq1q □ ✕qk
+ 2|xhello world                    x Compile                  Alt C x             ^
+ 3|xsecond line                    x Make                     Alt M x             ▮
+ 4|xthird                          x Run          ^F5 / ^F9 / Alt U x             a
+ 5|x                               x Install                  Alt L x             a
+ 6|x                               x Execute Make             Alt A x             a
+ 7|x                               x Next Error          F8 / Alt T x             a
+ 8|x                               x Previous Error Shift F8 / Alt Vx             a
+ 9|x                               x Show Definition                x             a
+10|x                               x Show NeXt Definition           x             a
+11|x                               x Matching BracKet               x             a
+12|x                               x Beautify                       x             a
+13|x                               x Arguments                      x             a
+14|x                               mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj             a

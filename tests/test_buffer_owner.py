@@ -826,7 +826,7 @@ CTRL_G_RUN = (CTRL_G, "r")       # Debug > Run: start, or continue
 CTRL_G_STACK = (CTRL_G, "k")     # Debug > Stack
 CTRL_G_WATCH = (CTRL_G, "w")     # Debug > Watches: add a watch
 F8 = "\033[19~"                  # step over
-NO_MORE_UNDO = "No more Undo"    # the box Edit > Undo shows with nothing to undo
+NO_MORE_UNDO = "No more Undo"    # the status-row line Edit > Undo says with nothing to undo
 
 # Three calls deep, so the Stack window lists three frames at the first stop and
 # one at the second.  Lines are 1-based; a breakpoint goes on 3 and on 12.
@@ -921,10 +921,12 @@ def test_the_stack_window_has_no_undo_after_three_refreshes(tmp_path):
                       dbg.STEP_TIMEOUT_S)
         s.key(*CTRL_G_STACK, delay=0.8)     # the Stack window on top
         s.menu(ALT.EDIT, "u")
-        shown = "\n".join(s.display(drain=0.8))
-        assert NO_MORE_UNDO in shown, \
+        rows = s.display(drain=0.8)
+        shown = "\n".join(rows)
+        assert NO_MORE_UNDO in rows[-1], \
             "Edit > Undo in the Stack window changed it instead of saying " \
             "there is nothing to undo:\n" + shown
+        assert "Error" not in shown, "the refusal is a line, not a box:\n" + shown
         assert s.alive(), "wpe died"
 
 
@@ -969,10 +971,12 @@ def test_the_watches_window_has_no_undo_after_a_refresh(tmp_path):
         dbg._wait_for(s, lambda: dbg._mark_line(s) == STACK_IN_LEAF + 1,
                       dbg.STEP_TIMEOUT_S)
         s.menu(ALT.EDIT, "u")
-        shown = "\n".join(s.display(drain=0.8))
-        assert NO_MORE_UNDO in shown, \
+        rows = s.display(drain=0.8)
+        shown = "\n".join(rows)
+        assert NO_MORE_UNDO in rows[-1], \
             "Edit > Undo in the Watches window did not say there is nothing " \
             "to undo:\n" + shown
+        assert "Error" not in shown, "the refusal is a line, not a box:\n" + shown
         assert s.alive(), "wpe died"
 
 
@@ -2913,13 +2917,11 @@ def _action_keys(action):
 
 
 def _undo_finds_nothing(s):
-    """Ctrl-U: did it say there is nothing to undo?  Its box is closed."""
+    """Ctrl-U: did it say there is nothing to undo?  The line is on the
+    status row and no box opens, so the next key acts at once."""
     s.key(CTRL_U, delay=0.8)
-    shown = "\n".join(s.display(drain=0.3))
-    if NO_MORE_UNDO in shown:
-        s.key(ENTER, delay=0.4)
-        return True
-    return False
+    rows = s.display(drain=0.3)
+    return NO_MORE_UNDO in rows[-1] and "Error" not in "\n".join(rows)
 
 
 def _action_whole_or_nothing(s, work, point, what, seed, edited, do):

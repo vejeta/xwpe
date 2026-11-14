@@ -34,6 +34,23 @@ xwpe has 10 top-level menus (11 in programming mode).  The @samp{Run},
 @samp{Debug}, and @samp{Project} menus only appear in @command{wpe} and
 @command{xwpe}, not in @command{we} or @command{xwe}.
 
+@subsection What changes with the key style and the block mode
+
+The menus are the same in both key styles and in every block mode: the bar,
+its Alt letters, the items and their order.  The key written beside an item
+is the key of the style in use, read from the key table, so a Modern user
+sees @kbd{^S} beside Save where a Borland user sees @kbd{F2}.  One item
+depends on the mode: Block > Mark Word is there with the Modern keys and in
+the Selection block mode, and not in the Borland keys with anchor or WordStar
+blocks.  Where a key is the assistant's in the programming editor (Alt-G),
+the Go to Line item shows no key there.  The tables below list every item
+with the keys of both styles; they are generated from the menu table, so they
+cannot differ from the menus.  An item that finds nothing to act on says so
+on the status row (@samp{Nothing is marked}, @samp{The clipboard is empty},
+@samp{No more Undo}, @samp{No debug session}) and never opens a box.
+
+@include chapters/menus-generated.texi
+
 @subsection System menu (@kbd{Alt-#})
 
 @table @kbd
@@ -132,10 +149,13 @@ from the Search menu; only @command{we} also has it on @kbd{Alt-G}.
 Set the beginning of a block.
 @item E -- End Mark
 Set the end of a block.
+@item O -- Mark Whole
+Mark the entire document.
 @item L -- Mark Line
 Mark the current line.
-@item W -- Mark Whole
-Mark the entire document.
+@item K -- Mark Word
+Mark the word under the cursor.  This item is in the menu with the Modern
+keys (@kbd{Ctrl-D}) and in the Selection block mode.
 @item G -- Goto Begin
 Jump to the beginning of the block.
 @item N -- Goto End
@@ -156,6 +176,8 @@ Write the block to a file.
 Shift the block right (indent).
 @item T -- Move to Left
 Shift the block left (unindent).
+@item A -- Change Case
+Change the case of the block: lower, upper, headline or first character.
 @end table
 
 @subsection Run menu (@kbd{Alt-R}) -- programming mode only

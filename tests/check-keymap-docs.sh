@@ -13,6 +13,7 @@
 #   tools/keymap-texi -o docs/chapters/keys-generated.texi
 #   tools/keymap-texi -o docs/chapters/keys-modern-changes.texi \
 #       --changes docs/chapters/keys-cua-1.6.txt
+#   tools/keymap-texi -o docs/chapters/menus-generated.texi --menus
 #
 # Environment (set by `make check`): KEYMAP_TEXI, srcdir.
 # Exit: 0 equal, 1 different, 77 the tool was not built.
@@ -76,6 +77,15 @@ fi
 if ! diff -u "$SRCDIR/docs/chapters/keys-modern-changes.texi" "$WORK/keys-modern-changes.texi" > "$WORK/changes.diff"; then
   echo "check-keymap-docs: FAIL, docs/chapters/keys-modern-changes.texi is not the table's output:"
   cat "$WORK/changes.diff"
+  status=$BAD
+fi
+
+# The menu item tables are the menu table's own output
+# (tools/keymap-texi -o docs/chapters/menus-generated.texi --menus).
+"$TOOL" --menus > "$WORK/menus-generated.texi" || exit $BAD
+if ! diff -u "$SRCDIR/docs/chapters/menus-generated.texi" "$WORK/menus-generated.texi" > "$WORK/menus.diff"; then
+  echo "check-keymap-docs: FAIL, docs/chapters/menus-generated.texi is not the menu table's output:"
+  cat "$WORK/menus.diff"
   status=$BAD
 fi
 

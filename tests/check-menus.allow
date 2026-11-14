@@ -1,0 +1,6 @@
+# file count reason
+# The sites that build a dropdown item outside we_menus.c, exact counts.
+edit.h 1 prototype
+we_ai_ui.c 2 prefix dropdown
+we_debug.c 2 prefix dropdown and the extern of its builder
+we_menue.c 1 definition

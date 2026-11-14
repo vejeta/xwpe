@@ -482,6 +482,11 @@ int e_show_clipboard(FENSTER *f);
 int e_put_wide_cell(int sx, int sy, int wc, int cw, int frb, int has_room);
 int e_edt_del(FENSTER *f);
 int e_edt_copy(FENSTER *f);
+/* What e_edt_copy_block, the silent copy step, returns. */
+#define E_COPY_DONE 1
+#define E_COPY_NOTHING_MARKED 0
+#define E_COPY_NOT_DONE (-1)
+int e_edt_copy_block(FENSTER *f);
 int e_edt_einf(FENSTER *f);
 void e_clip_pull_os_into_buffer(FENSTER *w0);
 int e_blck_move(FENSTER *f);
@@ -581,6 +586,13 @@ void e_cursor(FENSTER *f, int sw);
 #define E_CHAR_REFUSED (-1)
 /* What the user is told when a command meets such a window. */
 #define E_SAY_READ_ONLY "Read-only window: the text is unchanged"
+/* What the user is told when a command finds nothing to act on.  One line on
+   the bottom row, the same from a key, a menu or the palette, never a box. */
+#define E_SAY_NOTHING_MARKED "Nothing is marked: the text is unchanged"
+#define E_SAY_CLIPBOARD_EMPTY "The clipboard is empty: nothing pasted"
+#define E_SAY_NO_UNDO "No more Undo"
+#define E_SAY_NO_REDO "No more Redo"
+#define E_SAY_NO_DEBUG_SESSION "No debug session"
 /* The room for the line that tells how many NUL bytes a read left out, and
    for the question before the Save that would write the file without them. */
 #define E_NUL_SAY_MAX 96
@@ -770,6 +782,24 @@ int WpeHandleSubmenu(int xa, int ya, int xe, int ye,
 int WpeHandleSubmenuFromPrefix(int xa, int ya, int xe, int ye,
                                int prefix, OPTK *fopt, FENSTER *f);
 OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
+/* The columns a dropdown's box is drawn in: one narrower at each side on a
+   graphical display (we_menus.c owns the geometry). */
+int e_menu_box_inset(void);
+/* A key typed with a menu open that the editor itself should take (a
+   Run or Compile shortcut): 0 when it ran (we_edit.c). */
+int e_menu_key_to_editor(FENSTER *f, int c);
+
+/*   we_menus.c   */
+/* Build the dropdowns of the bar for the editor @f, one MENU per entry of the
+   bar; the caller gives them back with e_menu_free. */
+MENU *e_menu_build(FENSTER *f, int *count);
+void e_menu_free(MENU *menus, int count);
+/* Put the titles, columns and Alt letters of a bar into opt[], MENOPT and
+   e_mn_men (a WpeBarComposition of we_menus.h). */
+void e_menu_bar_from_heads(int composition);
+/* The help line of the bar's entry @n, or E_MENU_HELP_BAR for the bar. */
+#define E_MENU_HELP_BAR (-1)
+char *e_menu_help_line(int n);
 
 /*   we_mouse.c   */
 #if  MOUSE
@@ -1137,6 +1167,16 @@ int e_make_xrect_abs(int xa, int ya, int xe, int ye, int sw);
 int e_deb_inp(FENSTER *f);
 int e_d_quit_basic(FENSTER *f);
 int e_d_quit(FENSTER *f);
+/* The debugger commands as a user runs them: with no session each says
+   "No debug session" on the status row (the menu and Ctrl-G call these). */
+int e_d_say_no_session(FENSTER *f);
+int e_d_session_runs(void);
+int e_d_compile_busy(void);
+int e_d_quit_entry(FENSTER *f);
+int e_d_pause_command(FENSTER *f);
+int e_edit_watches_command(FENSTER *f);
+int e_delete_watches_command(FENSTER *f);
+int e_remove_all_watches_command(FENSTER *f);
 int e_d_add_watch(char *str, size_t size, FENSTER *f);
 int e_remove_all_watches(FENSTER *f);
 int e_make_watches(FENSTER *f);

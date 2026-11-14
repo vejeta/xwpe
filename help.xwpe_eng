@@ -322,13 +322,10 @@
           Copy             C  Copy the marked text into the
                               clipboard.
           Paste            P  Insert the buffer behind the cursor.
-          Show Clipboard   S
+          Show Buffer      S  Show the clipboard in a window.
           Delete           D  Delete the marked text.
           Undo             U  Undo the last change in the text.
           Redo             R  Do the last change one time more.
-          Load XBuffer     L  Copy the XWindow-buffer into xwpe's
-                              paste-buffer.
-          Write to XBuffer W  Just the other way round.
 
 
 
@@ -349,8 +346,10 @@
 
           Begin Mark     B    Mark the beginning of a block.
           End Mark       E    Set the end-mark.
+          Mark Whole     O    Mark the entire scope.
           Mark Line      L    Mark this line.
-          Mark Whole     W    Mark the entire scope.
+          Mark Word      K    Mark the word at the cursor (with the
+                              Modern keys and in the Selection mode).
           Goto Begin     G    Jump to the beginning of this block.
           Goto End       N    Jump to the end of this block.
           Copy           C    Copy this block.
@@ -361,6 +360,7 @@
           Write          W    Write a block to a file.
           Move to Right  I    Move a block to the right.
           Move to Left   T    Move a block to the left.
+          Change Case    A    Change the case of a block.
 
      A block can also be marked by pressing `^k b' at the
      entire beginning and `^k k' at the end of the desired block. 

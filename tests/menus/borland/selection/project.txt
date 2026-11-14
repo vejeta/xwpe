@@ -1,0 +1,8 @@
+ 1|lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq t.c qq lqqqqqqqqqqqqqqqqqqqqk qqqq1q □ ✕qk
+ 2|xhello world                                 x New Project        x            ^
+ 3|xsecond line                                 x Open Project       x            ▮
+ 4|xthird                                       x Close Project      x            a
+ 5|x                                            x Add Item           x            a
+ 6|x                                            x Delete Item        x            a
+ 7|x                                            x Options            x            a
+ 8|x                                            mqqqqqqqqqqqqqqqqqqqqj            a

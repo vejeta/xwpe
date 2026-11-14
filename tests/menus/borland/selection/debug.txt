@@ -1,0 +1,18 @@
+ 1|lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk q1q □ ✕qk
+ 2|xhello world                          x Toggle Breakpoint ^F8 / ^G B x         ^
+ 3|xsecond line                          x ReMove all Breakp.      ^G M x         ▮
+ 4|xthird                                x Make Watch        ^F7 / ^G W x         a
+ 5|x                                     x Edit watch              ^G E x         a
+ 6|x                                     x Delete watch            ^G D x         a
+ 7|x                                     x Remove All watches      ^G A x         a
+ 8|x                                     x Show stacK        ^F6 / ^G K x         a
+ 9|x                                     x Goto cursor             ^G U x         a
+10|x                                     x Finish function         ^G F x         a
+11|x                                     x Trace              F7 / ^G T x         a
+12|x                                     x Step               F8 / ^G S x         a
+13|x                                     x Run/Continue     ^F10 / ^G R x         a
+14|x                                     x Interrupt (pause)  ^Brk/^G I x         a
+15|x                                     x Program output          ^G P x         a
+16|x                                     x debugger Options        ^G O x         a
+17|x                                     x Quit              ^F2 / ^G Q x         a
+18|x                                     mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj         a

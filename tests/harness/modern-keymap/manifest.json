@@ -318,6 +318,243 @@
    "test": "tests/wayland/test_modern_keys.py::test_the_modern_key_reaches_its_action_on_the_graphical_display",
    "status": "covered",
    "needs": ["weston"]
+  },
+  {
+   "id": "SC-menus-01",
+   "requirement": "Every menu of the bar is drawn as its golden in each key style and block mode",
+   "layer": "ncurses",
+   "test": "tests/test_menu_golden.py::test_every_menu_matches_its_golden",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-02",
+   "requirement": "The plain editor (we) draws its eight menus as its golden",
+   "layer": "ncurses",
+   "test": "tests/test_menu_golden.py::test_we_menus_match_their_golden",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-03",
+   "requirement": "The block mode changes no menu but Block",
+   "layer": "ncurses",
+   "test": "tests/test_menu_golden.py::test_block_mode_changes_no_menu_but_block",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-04",
+   "requirement": "Mark Word is the one row the block mode adds to the Borland Block menu, and the Modern style has it in every mode",
+   "layer": "ncurses",
+   "test": "tests/test_menu_golden.py::test_mark_word_is_the_one_row_the_block_mode_adds",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-05",
+   "requirement": "Mark Word is the fourth row of the Modern Block menu, with Ctrl-D",
+   "layer": "ncurses",
+   "test": "tests/test_menu_golden.py::test_mark_word_is_the_fourth_row_after_mark_line",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-06",
+   "requirement": "The Modern menus differ from the Borland menus only by the key text",
+   "layer": "ncurses",
+   "test": "tests/test_menu_golden.py::test_modern_menus_differ_from_borland_only_by_key_text",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-07",
+   "requirement": "Go to Line shows no key in the Borland programming editor, Alt G in the plain one and Ctrl-G with Modern keys",
+   "layer": "ncurses",
+   "test": "tests/test_menu_golden.py::test_go_to_line_key_follows_the_mode_and_the_style",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-10",
+   "requirement": "Cut, Copy and Delete with nothing marked say so once on the status row",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_edit_commands_with_nothing_marked_say_so_once",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-11",
+   "requirement": "The block commands that need a block say Nothing is marked",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_block_commands_with_nothing_marked_say_so",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-12",
+   "requirement": "Paste with an empty clipboard says so on the status row",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_paste_with_an_empty_clipboard_says_so",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-13",
+   "requirement": "Undo and Redo with nothing say so on the status row and open no box",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_undo_and_redo_with_nothing_say_so_without_a_box",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-14",
+   "requirement": "A debugger command with no session says No debug session",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_debugger_commands_with_no_session_say_so",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-15",
+   "requirement": "Commands that act without a session do not say No debug session",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_commands_that_start_or_act_without_a_session_do_not_say_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-16",
+   "requirement": "Cut with a block marked cuts and says nothing of it",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_with_a_block_cut_cuts_and_says_nothing_of_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-17",
+   "requirement": "The Undo of a block deletion says nothing",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_the_undo_of_a_block_deletion_says_nothing",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-18",
+   "requirement": "A window closed to changes says the read-only line, not Nothing is marked",
+   "layer": "ncurses",
+   "test": "tests/test_menu_refusals.py::test_a_window_closed_to_changes_says_read_only_not_nothing_marked",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-20",
+   "requirement": "The open dropdown names its bar entry and its rows in the state channel",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_the_open_dropdown_names_its_rows",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-21",
+   "requirement": "A closed menu names nothing in the state channel",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_a_closed_menu_names_nothing",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-22",
+   "requirement": "The Window menu of a terminal has User Screen",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_the_window_menu_of_a_terminal_has_user_screen",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-23",
+   "requirement": "Mark Word is in the Block menu where the key style or block mode has it",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_mark_word_is_in_the_block_menu_where_the_mode_has_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-24",
+   "requirement": "Alt-B K marks the word under the cursor where the menu has the row",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_alt_b_k_marks_the_word_under_the_cursor",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-25",
+   "requirement": "Alt-B K does not mark the word where the menu has no such row",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_alt_b_k_does_nothing_where_the_menu_has_no_mark_word",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-26",
+   "requirement": "Alt-B O still marks the whole text",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_alt_b_o_marks_the_whole_text",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-27",
+   "requirement": "Cut with nothing marked says its refusal once, counted by the state channel",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_a_refusal_is_said_once",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-28",
+   "requirement": "A cut with a block and the undo of a block deletion say no line",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_a_cut_with_a_block_and_the_undo_of_a_deletion_say_nothing",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-29",
+   "requirement": "A debugger command with no session says No debug session once, from the menu and from Ctrl-G",
+   "layer": "ncurses",
+   "test": "tests/test_menu_record.py::test_no_debug_session_is_said_once",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-30",
+   "requirement": "The first-run question says the menus are the same in both key sets",
+   "layer": "ncurses",
+   "test": "tests/test_first_run.py::test_the_question_says_the_menus_are_the_same_in_both",
+   "status": "covered"
+  },
+  {
+   "id": "SC-menus-40",
+   "requirement": "Alt-B K marks the word with the Modern keys on the graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_menu_by_mode.py::test_alt_b_k_marks_the_word_with_the_modern_keys",
+   "status": "covered",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-menus-41",
+   "requirement": "Alt-B K is no row with the Borland keys on the graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_menu_by_mode.py::test_alt_b_k_is_no_row_with_the_borland_keys",
+   "status": "covered",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-menus-42",
+   "requirement": "Alt-B O still marks the whole text on the graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_menu_by_mode.py::test_alt_b_o_still_marks_the_whole_text",
+   "status": "covered",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-menus-43",
+   "requirement": "Edit > Cut with nothing marked changes nothing on the graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_menu_by_mode.py::test_cut_with_nothing_marked_changes_nothing",
+   "status": "covered",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-menus-44",
+   "requirement": "Undo with nothing to undo opens no box on the graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_menu_by_mode.py::test_undo_with_nothing_to_undo_opens_no_box",
+   "status": "covered",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-menus-45",
+   "requirement": "Alt-B K marks the word with the Modern keys on native Wayland",
+   "layer": "wayland",
+   "test": "tests/wayland/test_menu_by_mode.py::test_alt_b_k_marks_the_word_with_the_modern_keys",
+   "status": "covered",
+   "needs": ["weston"]
   }
  ]
 }

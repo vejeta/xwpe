@@ -48,6 +48,13 @@ leave its program running.  xwpe now ends it as Debug > Quit does: told
 to quit at its prompt, or sent SIGTERM while its program runs, and
 killed only if it is still there two seconds later, so the debugger ends
 its program and leaves no core file.
+
+@item A debugger command with no session
+@cindex debugger, no session
+Debug > Quit, Interrupt, Edit watch, Delete watch and Remove All watches did
+nothing, and said nothing, when no session was open, and Show stack opened an
+Error box.  They now say @samp{No debug session} on the status row, the same
+from the menu and from the @kbd{Ctrl-G} letters.
 @end table
 
 @section Where the program under the debugger writes
@@ -158,6 +165,15 @@ other editors (Ctrl-F finds, Ctrl-A selects all) and has no Ctrl-O or Ctrl-G
 prefix, so Ctrl-K is the only one left: a letter after it is a WordStar block
 command, and a control letter after it is a chord of its own, not the letter.
 The Borland style is unchanged.  A key means one thing in a style.
+
+@item Menus in the Modern key set
+@cindex menus, key styles
+The original had one key set and one set of menus, with the keys written into
+the item texts.  The menus are now the same in both key sets and in every
+block mode: the bar, its Alt letters, the items and their order.  Beside each
+item stands the key of the set in use, read from the key table.  The Block
+menu has a Mark Word item in the Modern set and in the Selection block mode.
+There is one menu to learn, and the keys are what differs.
 
 @item Which keys to use, asked once
 @cindex first run
@@ -571,6 +587,18 @@ The original kept markers 0 to 8 and let marker 9 share its place with the
 search highlight, so it moved whenever another marker was set.  There are
 now ten markers, 0 to 9, each with a place of its own, as the Borland
 editors have ten bookmarks.
+
+@item Nothing to cut, copy, paste or undo
+@cindex nothing marked
+@cindex empty clipboard
+@cindex Undo, nothing to undo
+The original did nothing, and said nothing, for Cut, Copy and Delete with no
+block and for Paste with an empty clipboard, and opened an Error box for Undo
+and Redo with nothing to take back.  Each now says so in one line on the
+status row (@samp{Nothing is marked}, @samp{The clipboard is empty},
+@samp{No more Undo}), so a key that did nothing tells why and no box has to be
+dismissed.  Block > Copy, Move, Write, Move to Right, Move to Left and Change
+Case say the same with nothing marked.
 
 @item Commands in a read-only window
 @cindex read-only window, commands

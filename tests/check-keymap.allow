@@ -264,7 +264,7 @@ we_term.c:init_cursor:* 3 not yet generated from the table, K-d1
 we_wind.c:e_build_record_say:STR 2 not yet generated from the table, K-d1
 
 # ---- the menu bar's and the drop-downs' own keys ---------------------------
-we_main.c:-:* 8 menu navigation
+we_menus.c:-:* 11 menu navigation
 we_menue.c:WpeHandleMainmenu:AltX 1 menu navigation
 we_menue.c:WpeHandleMainmenu:CDO 1 menu navigation
 we_menue.c:WpeHandleMainmenu:CLE 1 menu navigation
@@ -342,7 +342,6 @@ we_term.c:e_t_paste_ended:* 1 compose
 we_term.c:e_t_paste_swallows_lf:* 1 compose
 we_term.c:fk_t_mouse:* 1 compose
 we_unix.c:e_capture_cancel_asked:* 2 compose
-we_unix.c:e_ini_unix:* 5 compose
 we_wayland.c:e_w_getch:* 1 compose
 we_wayland.c:ptr_axis:* 2 compose
 we_xterm.c:e_x_getch:* 5 compose
