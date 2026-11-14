@@ -192,7 +192,6 @@ def test_covering_row_r012_backspace_after_page_up_takes_the_character_the_model
 
 
 # @scenario SC-edit-model-utf8-12
-@still_open("the model selects from column 0 where the editor leaves the block empty")
 def test_covering_row_r012_shift_down_on_the_last_row_selects_what_the_editor_selects(tmp_path):
     """Editor-attributed `shift_down marks`: Shift-Down on the last row after
     typing an `é`. The model selects from column 0; the editor leaves the block
@@ -222,24 +221,89 @@ def test_covering_row_r038_block_indent_that_changes_nothing_records_no_step(tmp
 
 
 # @scenario SC-edit-model-utf8-15
-@still_open("a moved block on a full row breaks at another place than the model")
 def test_covering_row_r039_block_move_wraps_where_the_model_wraps(tmp_path):
-    """Editor-attributed `block_move text`: two pastes, Page Down, Ctrl-K V
-    on a row that reaches Max. Columns: the editor breaks the moved text at a
-    different place than the model."""
+    """Two pastes, Page Down, Ctrl-K V on a row that reaches Max. Columns: a
+    block of one row leaves the rows above it in its soft-wrapped line as
+    they were."""
     found = _replay(tmp_path, "r039", [LIT, ("edit_paste", None), ("edit_paste", None),
                                        ("page_down", None), ("block_move", None)])
     assert _found(found, "block_move", "text") == []
 
 
+MOVE_RC = "[General]\nMaxColumn : 20\n"
+ONE_ROW_MOVES = [
+    # the row the block leaves fills up to the width again, a word later
+    # than typing would pull it up
+    ("a bb dddd a hh-ii a dddd a ccc eeeee hh-ii ccc bb eeeee", 2, 3, 10),
+    # the rows after it break at a dash where it fits
+    ("bb ccc hh-ii eeeee hh-ii eeeee eeeee hh-ii a eeeee f-g hh-ii hh-ii a f-g "
+     "dddd hh-ii hh-ii", 3, 0, 14),
+    # the blank at the end of a soft row goes, so two words meet
+    ("eeeee hh-ii f-g a jjjjjjj f-g ccc bb jjjjjjj a dddd eeeee ccc dddd hh-ii", 3, 14, 15),
+]
+
+
+# @scenario SC-edit-model-utf8-15
+@pytest.mark.parametrize("para,row,begin,end", ONE_ROW_MOVES)
+def test_a_one_row_block_moved_away_leaves_its_line_wrapped_as_the_model_says(
+        tmp_path, para, row, begin, end):
+    """Ctrl-K V of a block inside one row of a soft-wrapped line, dropped at
+    the start of the last line: the rows above the block keep their breaks,
+    and the block's row with the rows after it is wrapped where the file
+    reader wraps (at the last blank or dash that fits)."""
+    from edit_model import model
+    with _session(tmp_path, "top line\n" + para + "\nzz end\n", filename="t.txt",
+                  xwperc=MOVE_RC) as s:
+        keys = ([DOWN] * row + [HOME] + [RIGHT] * begin + [CK, "b"]
+                + [RIGHT] * (end - begin) + [CK, "k"])
+        w = s.send(keys).win
+        target = len(w.lines) - 2 if w.lines[-1][1] == b"" else len(w.lines) - 1
+        w = s.send([DOWN] * (target - row) + [HOME]).win
+        st = model.state_from_window(w, model.Options.from_xwperc(MOVE_RC))
+        pred = model.apply(st, model.Action("block_move"))
+        w = s.send([CK, "v"]).win
+        assert [tuple(r[:2]) for r in w.lines] == list(pred.lines())
+
+
 # @scenario SC-edit-model-utf8-16
-@still_open("undo restores the block the record saw, the model the one at the cursor")
 def test_covering_row_r022_undo_of_typing_restores_the_block_the_model_says(tmp_path):
-    """Editor-attributed `undo marks`: Ctrl-U of two typed letters after
-    Ctrl-K L: the editor's block is the one the record saw, the model's is
-    where the cursor is."""
+    """Ctrl-U of two typed letters after Ctrl-K L: the block stays the line
+    Ctrl-K L marked, moved only by the letter Ctrl-U takes out."""
     found = _replay(tmp_path, "r022", [("type", b"x"), ("type", b"x"),
                                        ("block_line", None), ("undo", None)])
+    assert _found(found, "undo", "marks") == []
+
+
+# @scenario SC-edit-model-utf8-16
+def test_undo_of_a_letter_typed_beside_the_same_letter_moves_the_block_by_its_place(tmp_path):
+    """`x` typed before another `x`, a block from between them to the end,
+    Ctrl-U: the letter taken out is the one typed, so both ends of the
+    block move back one column."""
+    found = _replay(tmp_path, "r022", [("type", b"a"), ("type", b"x"), ("left", None),
+                                       ("type", b"x"), ("block_begin", None), ("end", None),
+                                       ("block_end", None), ("undo", None)])
+    assert _found(found, "undo", "marks") == []
+
+
+# @scenario SC-edit-model-utf8-16
+def test_undo_of_a_letter_typed_while_a_block_is_shown_keeps_that_block(tmp_path):
+    """A letter typed with a block marked, the block's start set again, and
+    Ctrl-U: the block stays where it is now, moved by the letter taken out,
+    not the one it was before the letter."""
+    found = _replay(tmp_path, "r022", [
+        ("type", b"a"), ("type", b"b"), ("type", b"c"), ("home", None), ("right", None),
+        ("block_begin", None), ("end", None), ("block_end", None), ("home", None),
+        ("type", b"x"), ("block_begin", None), ("undo", None)])
+    assert _found(found, "undo", "marks") == []
+
+
+# @scenario SC-edit-model-utf8-16
+def test_undo_of_a_byte_typed_over_a_wide_character_marks_the_character(tmp_path):
+    """Overwrite mode, a `}` typed over an `é`, a block set elsewhere, and
+    Ctrl-U: the `é` comes back marked, as the text a replacement puts back."""
+    found = _replay(tmp_path, "r020", [LIT, ("type", "é".encode()), ("left", None),
+                                       ("type", b"}"), ("end", None), ("shift_left", None),
+                                       ("undo", None)])
     assert _found(found, "undo", "marks") == []
 
 

@@ -243,7 +243,7 @@ _rule("kill_soft_row_whole", SOURCE_CODE, "we_edit.c:2365",
       "Killing a soft row from column 0 removes the row.", (F_TEXT, F_CURSOR))
 _rule("ctrl_y_line", SOURCE_MANUAL, HELP + ":614",
       "Ctrl-Y deletes a whole line.", (F_TEXT,))
-_rule("ctrl_y_only_line", SOURCE_CHAPTER, COMPAT + ":144-147",
+_rule("ctrl_y_only_line", SOURCE_CHAPTER, COMPAT + ":265-268",
       "Ctrl-Y on the only line is undoable like any other.", (F_STEPS,))
 _rule("ctrl_y_cursor", SOURCE_CODE, "we_edit.c:1250-1255",
       "After Ctrl-Y the cursor stays on its row (the one above at the end).",
@@ -323,6 +323,13 @@ _rule("undo_line_cursor", SOURCE_MANUAL, EDITOR + ":64-65",
 _rule("undo_cursor_snapshot", SOURCE_DESIGN, "this model: Undo as a snapshot",
       "Undo puts the cursor where it was before the change, Redo where it was "
       "after.", (F_CURSOR,))
+_rule("undo_marks_live", SOURCE_CODE,
+      "we_edit.c wpe_buffer_replay_on_shell, 'a' and 'p' records "
+      "(1.5.30a we_edit.c:2260-2263)",
+      "Undo of a typed character, inserted or written over one byte, keeps "
+      "the block where it is, moved only by the bytes the replay takes out; "
+      "the manual (editor.texi:89-92) names the marks only for actions of "
+      "several pieces.", (F_MARKS,))
 _rule("undo_marks_span", SOURCE_CODE, "we_buffer.c replay of 'a' and 'r' records",
       "Undo of a deletion marks the text it brings back (a line break it "
       "brings back ends the block at the start of the next row, never past "
@@ -1114,12 +1121,15 @@ def _char_width(data, i):
         return 1, 1
     for nb in (4, 3, 2):
         try:
-            ch = data[i:i + nb].decode("utf-8")
+            piece = data[i:i + nb]
+            ch = piece.decode("utf-8")
         except UnicodeDecodeError:
             continue
         if len(ch) == 1:
             w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-            return w, nb
+            # a character at the end of a row has fewer bytes than the
+            # slice tried: the byte count is the real length
+            return w, len(piece)
     return 1, 1
 
 
@@ -1819,6 +1829,69 @@ def _marks_on_inserted(st, short_rows, long_rows, fallback):
     st.me = _offset_point(long_rows, starts, sp[1])
 
 
+def _typed_bytes_taken_back(step):
+    """How many bytes the Undo of a typed key takes out: the length the key
+    added to the text.  Positive for an insert (the editor's 'a' record),
+    zero for one byte written over another ('p'), negative when the key
+    wrote over a character of several bytes, which the editor records as a
+    replacement ('s', e_put_char_over_wide)."""
+    before, _ = _text_offsets(step.before.rows)
+    after, _ = _text_offsets(step.after.rows)
+    return len(after) - len(before)
+
+
+def _is_char_record(step):
+    """Is the step a typed key whose Undo keeps the live block: an insert
+    ('a', taken back by e_del_nchar) or one byte written over another ('p',
+    the byte put back)?  1.5.30a e_make_rudo, we_edit.c:2260-2263, touches
+    no mark for either.  A replacement ('s' or 'r') marks the text it puts
+    back instead (we_edit.c:2225-2245; now e_rudo_text_back), so a key that
+    wrote over a character of several bytes is not one."""
+    return (step.action.name == "type" and not step.line_record
+            and _typed_bytes_taken_back(step) >= 0)
+
+
+def _is_wide_overwrite(step):
+    """Did the typed key of @step write over a character of several bytes:
+    the replacement whose Undo puts that character back, marked?"""
+    return (step.action.name == "type" and not step.line_record
+            and _typed_bytes_taken_back(step) < 0)
+
+
+def _marks_on_put_back_character(st, step):
+    """The block after the Undo of a key typed over a character of several
+    bytes: the character put back, from the cursor the key was typed at
+    (e_rudo_text_back marks the text a replacement puts back)."""
+    y, x = step.before.cursor
+    put_back = 1 - _typed_bytes_taken_back(step)
+    st.mb = (y, x)
+    st.me = (y, x + put_back)
+
+
+def _marks_moved_by_replay(st, step, cur_rows, new_rows):
+    """The live marks after the Undo of a typed key: they stay where they
+    are on @cur_rows, moved only as e_del_nchar moves them when it takes out
+    the bytes the key put in at the cursor of @step (a mark inside them goes
+    to their start, one after them moves back by their length).  The marks
+    are read from the state before its rows are restored."""
+    cur, cur_starts = _text_offsets(cur_rows)
+    before, before_starts = _text_offsets(step.before.rows)
+    new_starts = _text_offsets(new_rows)[1]
+    y, x = step.before.cursor
+    at = before_starts[y] + x if 0 <= y < len(before_starts) else 0
+    n = len(cur) - len(before)
+    points = []
+    for point in (st.mb, st.me):
+        if not 0 <= point[0] < len(cur_starts):
+            points.append(point)
+            continue
+        off = cur_starts[point[0]] + point[1]
+        if off > at:
+            off = off - n if off - n > at else at
+        points.append(_offset_point(new_rows, new_starts, off))
+    st.mb, st.me = points
+
+
 def _unmodelled_step(st):
     """Ctrl-U or Ctrl-R on a step the model holds no snapshot of (the editor
     pushed more steps for an action than the user's decision allows, or the
@@ -1845,9 +1918,18 @@ def _undo(st):
         return
     step = st.undo.pop()
     st.redo.append(step)
+    live_rows = st.rows
+    live_marks = (st.mb, st.me)
     _restore(st, step.before)
     st.save_known = False
-    if step.undo_marks is not None:
+    if _is_char_record(step) and step.undo_marks is None:
+        st.fired.extend(["undo_cursor_snapshot", "undo_marks_live"])
+        st.mb, st.me = live_marks
+        _marks_moved_by_replay(st, step, live_rows, step.before.rows)
+    elif _is_wide_overwrite(step) and step.undo_marks is None:
+        st.fired.extend(["undo_cursor_snapshot", "undo_marks_span"])
+        _marks_on_put_back_character(st, step)
+    elif step.undo_marks is not None:
         st.fired.extend(["undo_cursor_snapshot", "block_undo_marks"])
         st.mb, st.me = step.undo_marks
     elif step.line_record:

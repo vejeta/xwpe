@@ -91,7 +91,7 @@ _r("block_copy_lands_inside", model.SOURCE_CODE, "we_block.c:1592-1602",
 _r("block_move_into_itself", model.SOURCE_CODE, "we_block.c:1239-1269",
    "A move with the cursor inside the block, or a block of several lines "
    "dropped on one of its own lines, is refused.", (model.F_TEXT,))
-_r("block_rewrap", model.SOURCE_CHAPTER, COMPAT + ":197-201",
+_r("block_rewrap", model.SOURCE_CHAPTER, COMPAT + ":324-328",
    "A line a block operation makes, with the rows it goes on to, is wrapped "
    "where the file reader wraps a long line.", (model.F_TEXT,))
 _r("block_marks_after", model.SOURCE_CODE, "we_block.c:1355-1400",
@@ -284,12 +284,14 @@ def _pieces(segment):
     return out
 
 
-def splice_text(st, a, b, ins):
+def splice_text(st, a, b, ins, first_row=None):
     """Replace the text between offsets @a and @b by @ins.  The lines it
     touches, with the rows they go on to, are made again by the file
-    reader's wrap; every other row stays as it is.  The first row of the
-    stretch keeps its line's identity, except that bytes put in at column 0
-    leave the old line, with its identity, below them."""
+    reader's wrap; every other row stays as it is.  With @first_row (a row
+    of the line @a is on), the rows of that line above it keep their
+    breaks and the wrap starts there.  The first row of the stretch keeps
+    its line's identity, except that bytes put in at column 0 leave the old
+    line, with its identity, below them."""
     rows = st.rows
     text, starts = model._text_offsets(rows)
     lines = _logical_lines(rows)
@@ -303,6 +305,8 @@ def splice_text(st, a, b, ins):
 
     la, lb = line_of(a), line_of(b)
     fr, lr = lines[la][0], lines[lb][1]
+    if first_row is not None and fr <= first_row <= lines[la][1]:
+        fr = first_row
     last = lines[lb]
     s0 = starts[fr]
     e0 = starts[last[0]] + len(last[2]) + (1 if last[3] else 0)
@@ -613,6 +617,7 @@ def _block_move(st, action):
     before = Snapshot(st)
     a, b = _block_span(st)
     p = _point_offset(st, st.y, st.x)
+    one_row = st.mb[0] == st.me[0]
     exclude = set(range(st.mb[0], st.me[0] + 1))
     # put a copy in where the cursor is (the rows between the block's ends
     # stay as they are), then take the block out of its old place
@@ -620,15 +625,31 @@ def _block_move(st, action):
                                       (st.mb, st.me), exclude)
     _apply_built(st, y0, y1, built)
     if p <= a:
-        splice_text(st, a + length, b + length, b"")
+        _take_out_old_block(st, a + length, b + length, one_row)
         dest = p
     else:
-        splice_text(st, a, b, b"")
+        _take_out_old_block(st, a, b, one_row)
         dest = p - length
     _land(st, dest, length)
     st.save = st.options.maxchg + 1
     st.fired.append("block_save_count")
     _commit(st, before, action)
+
+
+def _take_out_old_block(st, a, b, one_row):
+    """Remove the moved block's old text, offsets @a to @b.  A block of one
+    row goes out of that row alone (we_block.c e_blk_plan_chars_move): the
+    rows above it in a soft-wrapped line keep their breaks, and the block's
+    row with the rows its line goes on to is wrapped where the file reader
+    wraps, as for every block operation; a block of several rows wraps the
+    lines it touches."""
+    if one_row:
+        start = _offset_point(st, a, POINT_AT_START)
+        stop = _offset_point(st, b, POINT_AT_END)
+        if start[0] == stop[0]:
+            splice_text(st, a, b, b"", first_row=start[0])
+            return
+    splice_text(st, a, b, b"")
 
 
 def _block_delete(st, action):
