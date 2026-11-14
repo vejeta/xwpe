@@ -23,6 +23,10 @@ Bugs fixed in 1.6.x:
 * An option file whose first setting comes before any [Section] line no
   longer crashes the editor at start; the line is reported like any other
   line the editor cannot place.
+* An error-message pattern is read and saved exactly as written: an empty
+  pattern or one made only of line breaks no longer leaves the option file
+  empty at quit, a pattern ending in a backslash picks up no stray bytes,
+  and a hand-written \r in an option file is now a carriage return.
 * File-Manager: typing 18 or more characters of a name in the Files or
   DirTree panel wrote past the end of the type-ahead buffer.  It now holds a
   whole path, so a long name can be typed in full and the panel lands on it.

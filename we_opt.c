@@ -973,53 +973,6 @@ int e_opt_save(FENSTER *f)
  return(ret);
 }
 
-char *WpeStringToValue(const char *str)
-{
- char *answer, *cur_ans;
- const char *cur_str;
- int i, len;
-
- len = strlen(str);
- answer = WpeMalloc((len * 2) * sizeof(char));
- for (i = strlen(str), cur_ans = answer, cur_str = str; i; i--, cur_str++)
- {
-  if ((*cur_str == '\n') || (*cur_str == '\\'))
-  {
-   len++;
-   cur_ans[0] = '\\';
-   cur_ans[1] = ((*cur_str == '\n') ? 'n' : '\\');
-   cur_ans++;
-  }
-  else
-   *cur_ans = *cur_str;
-  cur_ans++;
- }
- *cur_ans = 0;
- return answer;
-}
-
-char *WpeValueToString(const char *value)
-{
- char *answer, *cur_ans;
- const char *cur_val;
- int i;
-
- answer = WpeMalloc((strlen(value) + 1) * sizeof(char));
- for (i = strlen(value), cur_ans = answer, cur_val = value; i; i--, cur_ans++)
- {
-  if (*cur_val == '\\')
-  {
-   cur_val++;
-   *cur_ans = ((*cur_val == 'n') ? '\n' : '\\');
-  }
-  else
-   *cur_ans = *cur_val;
-  cur_val++;
- }
- *cur_ans = 0;
- return answer;
-}
-
 /* ---- The key style: one place decides what each style brings ---- */
 
 /** The option bits the Modern keys bring with them: the style bit, and the

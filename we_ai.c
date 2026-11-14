@@ -30,7 +30,8 @@
 
 #include "we_ai.h"
 #include "we_ai_http.h"
-#include "we_child.h"     /* every command and CLI the assistant runs */
+#include "we_optval.h"   /* one line of a trace is an escaped value */
+#include "we_child.h"    /* every command and CLI the assistant runs */
 #include "we_fdloop.h"   /* the mock's delay is a timer on the editor's loop */
 
 static char *ai_strdup(const char *s);            /* defined below; used early */
@@ -2528,16 +2529,11 @@ static int ai_mock_open(struct wpe_ai_stream *st)
  */
 static char *ai_trace_one_line(const char *text)
 {
- char *out = malloc(2 * strlen(text) + 1), *o = out;
+ size_t n = strlen(text), cap = wpe_optval_encoded_size(n);
+ char *out = malloc(cap);
  if (!out)
   return NULL;
- for (; *text; text++)
- {
-  if (*text == '\\' || *text == '\n')
-   *o++ = '\\';
-  *o++ = (*text == '\n') ? 'n' : *text;
- }
- *o = '\0';
+ wpe_optval_encode(out, cap, text, n);
  return out;
 }
 

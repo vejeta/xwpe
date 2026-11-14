@@ -91,6 +91,7 @@ we_SOURCES = \
   we_listsel.c \
   we_helpbuf.c \
   we_errpat.c \
+  we_optval.c \
   we_wind.c \
   we_prog.c \
   we_progn.c \
@@ -241,6 +242,7 @@ noinst_HEADERS = \
   we_listsel.h \
   we_helpbuf.h \
   we_errpat.h \
+  we_optval.h \
   we_fieldtake.h \
   we_wayland.h \
   we_fdloop.h \
@@ -358,7 +360,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -379,6 +381,12 @@ test_helpbuf_CFLAGS = $(XWPE_STDFLAG)
 # read, whatever the text.
 test_errpat_SOURCES = tests/test_errpat.c we_errpat.c
 test_errpat_CFLAGS = $(XWPE_STDFLAG)
+
+# The owner of an option value's stored form (we_optval.c): a value reads
+# back byte for byte, whatever it holds, and no byte outside the value or
+# the buffer is touched.
+test_optval_SOURCES = tests/test_optval.c we_optval.c
+test_optval_CFLAGS = $(XWPE_STDFLAG)
 
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
@@ -745,7 +753,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat
+  test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -966,6 +974,10 @@ EXTRA_DIST = \
   tests/test_listsel.c \
   tests/test_helpbuf.c \
   tests/test_errpat.c \
+  tests/test_optval.c \
+  tests/test_option_codec.py \
+  tests/x11/test_option_codec.py \
+  tests/wayland/test_option_codec.py \
   tests/test_help_buffers.py \
   tests/x11/test_help_buffers.py \
   tests/wayland/test_help_buffers.py \

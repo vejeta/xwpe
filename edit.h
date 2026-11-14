@@ -835,7 +835,7 @@ int e_opt_bs_mouse_ai(void);
 int e_rahmen_mouse(FENSTER *f);
 #endif
 
-/*   we_opt.c   */
+/*   we_optval.c   */
 char *WpeStringToValue(const char *str);
 char *WpeValueToString(const char *value);
 int e_about_WE(FENSTER *f);
