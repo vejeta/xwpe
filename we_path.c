@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define PATH_SEP '/'
 
@@ -84,6 +85,75 @@ int wpe_path_cat(char *out, size_t n, const char *tail)
  }
  memcpy(out + len, tail, tlen + 1);
  return 0;
+}
+
+/**
+ * wpe_path_entry_join - Name @command as it would sit in one PATH entry.
+ * @entry/@len: the entry, which is not terminated; @out/@n: receive
+ * "<entry>/<command>" ("./<command>" for an empty entry).
+ * Return: 0, or -1 with @out empty when the entry or the path is too long.
+ */
+static int wpe_path_entry_join(const char *entry, size_t len, const char *command,
+                               char *out, size_t n)
+{
+ char dir[WPE_PATH_SIZE];
+
+ if (len == 0)
+  return wpe_path_join(out, n, ".", command);
+ if (len >= sizeof dir)
+ {
+  if (n)
+   out[0] = '\0';
+  return -1;
+ }
+ memcpy(dir, entry, len);
+ dir[len] = '\0';
+ return wpe_path_join(out, n, dir, command);
+}
+
+/**
+ * wpe_path_search_in - Find the executable @name in a ':' list of folders.
+ * @list: a PATH; @name: a program's name; @out/@n: receive its path.
+ *
+ * Lets the editor offer a debugger, a compiler or a language server only
+ * when it is installed, on a PATH it does not control: an entry too long for
+ * the system to hold is skipped, so it can neither overrun a buffer nor
+ * point at some other folder.
+ * Return: 0 with the path in @out; -1 with @out empty when not found;
+ * WPE_PATH_SEARCH_NO_LIST when @list is NULL.
+ */
+int wpe_path_search_in(const char *list, const char *name, char *out, size_t n)
+{
+ const char *entry, *end;
+
+ if (out && n)
+  out[0] = '\0';
+ if (!list)
+  return WPE_PATH_SEARCH_NO_LIST;
+ if (!name || !out || !n)
+  return -1;
+ for (entry = list; ; entry = end + 1)
+ {
+  end = strchr(entry, ':');
+  if (!end)
+   end = entry + strlen(entry);
+  if (wpe_path_entry_join(entry, (size_t)(end - entry), name, out, n) == 0 &&
+      access(out, X_OK) == 0)
+   return 0;
+  if (!*end)
+   break;
+ }
+ out[0] = '\0';
+ return -1;
+}
+
+/**
+ * wpe_path_search - Find the executable @name on the environment's PATH.
+ * Return: as wpe_path_search_in.
+ */
+int wpe_path_search(const char *name, char *out, size_t n)
+{
+ return wpe_path_search_in(getenv("PATH"), name, out, n);
 }
 
 /**

@@ -67,7 +67,8 @@ def _intact(w, what):
 def _folder_of_length(base, total):
     """A folder under @base whose absolute path is exactly @total bytes."""
     path = str(base)
-    while len(path) + 1 + COMPONENT < total:
+    # Stop while at least two bytes are left, so the last name is never empty.
+    while len(path) + 1 + COMPONENT <= total - 2:
         path = os.path.join(path, "d" * COMPONENT)
     last = total - len(path) - 1
     if last > 0:

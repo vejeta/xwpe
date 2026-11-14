@@ -15,6 +15,7 @@
 #include "we_ai_host.h"
 #include "we_child.h"
 #include "we_fdloop.h"
+#include "we_path.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +27,6 @@
 #include <json-c/json.h>
 
 #define HOST_MAX_EDITS 32
-#define HOST_PATH_MAX  1024
 /* Room for the hosted CLI's argument vector: the longest dial builds 22 words,
    and each folder the user already allowed adds one. */
 #define HOST_ARGV_MAX  48
@@ -57,7 +57,7 @@ struct wpe_host {
  char            session_id[128];
  /* Files an edit tool touched this turn; reloaded into open buffers at the
     turn boundary, once the writes are surely on disk. */
- char            edited[HOST_MAX_EDITS][HOST_PATH_MAX];
+ char            edited[HOST_MAX_EDITS][WPE_PATH_SIZE];
  int             nedited;
  int             text_seen;             /* assistant text streamed this turn */
  int             adapter;               /* WPE_AI_HOST_ADAPTER_* : how to read stdout */
@@ -73,7 +73,8 @@ static void host_note_edit(wpe_host *h, const char *path)
  if (!path || !path[0] || h->nedited >= HOST_MAX_EDITS) return;
  for (i = 0; i < h->nedited; i++)
   if (!strcmp(h->edited[i], path)) return;
- snprintf(h->edited[h->nedited], HOST_PATH_MAX, "%s", path);
+ if (wpe_path_copy(h->edited[h->nedited], sizeof h->edited[h->nedited], path))
+  return;                  /* a path the system cannot hold names no file to reload */
  h->nedited++;
 }
 

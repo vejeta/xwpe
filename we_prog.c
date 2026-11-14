@@ -38,12 +38,6 @@
 #include "we_childsig.h"
 #include <stdint.h>
 
-/* A path handed to a build command, or a directory a build runs in. */
-#ifndef PATH_MAX
-#define PATH_MAX 4096
-#endif
-#define WPE_BUILD_PATH_MAX PATH_MAX
-
 int e_run_sh(FENSTER *f);
 char *e_prj_dir(void);
 static void e_prj_anchor_path(void);
@@ -313,7 +307,7 @@ char *e_build_dir(FENSTER *f)
  */
 char *e_prj_dir(void)
 {
- char cwd[WPE_BUILD_PATH_MAX], *path, *slash, *dir;
+ char cwd[WPE_PATH_SIZE], *path, *slash, *dir;
 
  if (!e_prog.project || !e_prog.project[0])
   return(NULL);
@@ -346,7 +340,7 @@ char *e_prj_dir(void)
  */
 static void e_prj_anchor_path(void)
 {
- char cwd[WPE_BUILD_PATH_MAX], *path;
+ char cwd[WPE_PATH_SIZE], *path;
 
  if (!e_prog.project || !e_prog.project[0] || e_prog.project[0] == DIRC)
   return;
@@ -533,7 +527,7 @@ static void e_build_note_up_to_date(const char *target);
 static WpeBuiltSet g_built;     /* the records of the build's folder             */
 static int g_built_ready;       /* g_built is loaded for the build in progress    */
 static struct {
- char path[WPE_BUILD_PATH_MAX];
+ char path[WPE_PATH_SIZE];
  int existed;                   /* the output was there before the step           */
  struct stat st;                /* and this is what it was                        */
 } g_built_before[E_BUILT_STEP_MAX];
@@ -575,7 +569,7 @@ static void e_build_record_begin(FENSTER *f)
  */
 static int e_build_stat(const char *output, struct stat *st)
 {
- char path[WPE_BUILD_PATH_MAX];
+ char path[WPE_PATH_SIZE];
  int n;
 
  if (!g_built.folder[0])
@@ -778,7 +772,7 @@ static int e_exec_planned(FENSTER *f, char **argv);
 static void e_p_make_link(ECNT *cn)
 {
  FENSTER *f;
- char ostr[WPE_BUILD_PATH_MAX], estr[WPE_BUILD_PATH_MAX];
+ char ostr[WPE_PATH_SIZE], estr[WPE_PATH_SIZE];
  char cwd_saved[WPE_PATH_SIZE];
  int file = -1, cwd_chg = 0;
  int linkRequest = 1; /* assume linking has to be done */
@@ -1529,32 +1523,14 @@ static char *e_prog_text_add(char *text, const char *part);
  * e_java_find_in_path - Where @name is found on PATH, as the shell finds it.
  * @name: a command; @out/@n: receive its path.
  *
- * An empty element of PATH means the current folder, as it does for the
- * shell.
+ * The lookup is the path owner's (wpe_path_search): an empty element of
+ * PATH means the current folder, as it does for the shell, and an element
+ * too long for @out is skipped instead of cut into another folder's name.
  * Return: 1 when an executable file of that name is on PATH, else 0.
  */
 static int e_java_find_in_path(const char *name, char *out, size_t n)
 {
- const char *path = getenv("PATH"), *dir, *end;
- int len;
-
- if (!path)
-  return(0);
- for (dir = path; ; dir = end + 1)
- {
-  end = strchr(dir, ':');
-  if (!end)
-   end = dir + strlen(dir);
-  len = (int)(end - dir);
-  if (len == 0)
-   snprintf(out, n, "./%s", name);
-  else
-   snprintf(out, n, "%.*s%c%s", len, dir, DIRC, name);
-  if (access(out, X_OK) == 0)
-   return(1);
-  if (*end == '\0')
-   return(0);
- }
+ return(wpe_path_search(name, out, n) == 0);
 }
 
 /**
@@ -2026,7 +2002,7 @@ static void e_run_note_choices(WpeStartPlan *plan, FENSTER *f, const e_run_value
  */
 static int e_run_plan_source(WpeStartPlan *plan, FENSTER *f)
 {
- char path[WPE_BUILD_PATH_MAX];
+ char path[WPE_PATH_SIZE];
 
  if (wpe_startplan_operand(path, sizeof path, e_run_src_dirct, e_run_src_datnam))
  {
@@ -2048,7 +2024,7 @@ static int e_run_plan_source(WpeStartPlan *plan, FENSTER *f)
  */
 static int e_run_plan_program(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
 {
- char path[WPE_BUILD_PATH_MAX];
+ char path[WPE_PATH_SIZE];
  int from_dir, from_exe, from = WPE_FROM_USER;
 
  if (e_run_program_path(f, v, path, sizeof path))
@@ -2102,7 +2078,7 @@ static int e_run_vm_parts(FENSTER *f, const e_run_values *v, char *java, size_t 
  */
 static int e_run_plan_vm(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
 {
- char java[WPE_PATH_SIZE], cls[WPE_BUILD_PATH_MAX], msg[WPE_BUILD_PATH_MAX + 64];
+ char java[WPE_PATH_SIZE], cls[WPE_PATH_SIZE], msg[WPE_PATH_SIZE + 64];
  int rc;
 
  if (e_run_vm_parts(f, v, java, sizeof java, cls, sizeof cls))
@@ -2207,7 +2183,7 @@ static WpeStartPlan *e_run_plan_make(FENSTER *f, const e_run_values *v)
  */
 static char *e_run_shown(FENSTER *f, const e_run_values *v)
 {
- char path[WPE_BUILD_PATH_MAX], java[WPE_PATH_SIZE];
+ char path[WPE_PATH_SIZE], java[WPE_PATH_SIZE];
  char *text = NULL;
 
  if (v->kind == E_RUN_INTERPRETER)
@@ -2425,7 +2401,7 @@ static const char *e_p_file_type(const char *name)
 
 /* The last thing a build found already current: the object of a compile,
    or the program of a link.  Empty while every step had work to do. */
-static char g_build_up_to_date[WPE_BUILD_PATH_MAX];
+static char g_build_up_to_date[WPE_PATH_SIZE];
 
 /**
  * e_build_note_up_to_date - A step of the build found @target current and
@@ -2448,8 +2424,7 @@ static void e_build_note_up_to_date(const char *target)
    replaces cut the path mid-word at 127 characters and handed the compiler the
    piece that was left, which then reported a linker input file it could not
    find: the message blamed the linker for a name the editor had truncated.
-   A build path is a path, so it is sized like one (WPE_BUILD_PATH_MAX, at
-   the top of this file). */
+   A build path is a path, so it is sized like one (WPE_PATH_SIZE). */
 
 /* The room wpe_startplan_operand may add in front of a path that would read
    as an option or a response file: "./". */
@@ -2773,7 +2748,7 @@ static int e_comp_operands(FENSTER *f, const char *exedir, char *fstr, char *ost
 static void e_comp_step_begin(FENSTER *f, const char *ostr)
 {
  WpeProgramSource s;
- char estr[WPE_BUILD_PATH_MAX], lostr[WPE_BUILD_PATH_MAX];
+ char estr[WPE_PATH_SIZE], lostr[WPE_PATH_SIZE];
 
  e_prog_source_of(&s, f, &e_s_prog, e_s_prog.exe_name, e_prog.exedir);
  if (s.self_linked &&
@@ -2797,8 +2772,8 @@ static void e_comp_step_begin(FENSTER *f, const char *ostr)
  */
 static int e_build_plan_paths(WpeStartPlan *plan, FENSTER *f, const e_build_values *v)
 {
- char fstr[WPE_BUILD_PATH_MAX], ostr[WPE_BUILD_PATH_MAX];
- char estr[WPE_BUILD_PATH_MAX], lostr[WPE_BUILD_PATH_MAX];
+ char fstr[WPE_PATH_SIZE], ostr[WPE_PATH_SIZE];
+ char estr[WPE_PATH_SIZE], lostr[WPE_PATH_SIZE];
  int from_dir = e_build_from(v, E_OPT_SCOPE_PROGRAMMING, "Exedir", v->exedir);
  int from_exe = e_build_from(v, v->language, "Executable", v->exe_name);
  int from_prog = WPE_FROM_USER;
@@ -2947,7 +2922,7 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
 {
  ECNT *cn = f->ed;
  PIC *pic = NULL;
- char **arg = NULL, fstr[WPE_BUILD_PATH_MAX], ostr[WPE_BUILD_PATH_MAX];
+ char **arg = NULL, fstr[WPE_PATH_SIZE], ostr[WPE_PATH_SIZE];
  char cwd_saved[WPE_PATH_SIZE];
  int i, file = -1, len, argc, cwd_chg = 0;
  { const char *tp = getenv("XWPE_UI_TRACE");
@@ -3368,7 +3343,7 @@ typedef struct {
  int hb_timer;          /* the heartbeat timer, or WPE_TIMER_NONE          */
  ECNT *cn;
  PIC *pic;
- char dir[WPE_BUILD_PATH_MAX];   /* where the child runs; its paths resolve there */
+ char dir[WPE_PATH_SIZE];   /* where the child runs; its paths resolve there */
  e_build_cont cont;
  void *data;
 } e_build_step;
@@ -4090,7 +4065,7 @@ static void e_build_step_end(void)
  ECNT *cn = g_build.cn;
  e_build_cont cont = g_build.cont;
  void *data = g_build.data;
- char cwd_saved[WPE_BUILD_PATH_MAX];
+ char cwd_saved[WPE_PATH_SIZE];
  FENSTER *mf;
  int result, cwd_chg;
 
@@ -5377,22 +5352,9 @@ int e_add_arg(char ***arg, char *str, int n, int argc)
    e.g. prefer the ga68 compiler when present. */
 static int e_cmd_in_path(const char *cmd)
 {
- char *path = getenv("PATH"), *copy, *dir, buf[1056];
+ char found[WPE_PATH_SIZE];
 
- if (!path || !*path)
-  return 0;
- copy = WpeStrdup(path);
- for (dir = strtok(copy, ":"); dir; dir = strtok(NULL, ":"))
- {
-  snprintf(buf, sizeof(buf), "%s/%s", dir, cmd);
-  if (access(buf, X_OK) == 0)
-  {
-   FREE(copy);
-   return 1;
-  }
- }
- FREE(copy);
- return 0;
+ return wpe_path_search(cmd, found, sizeof found) == 0;
 }
 
 /* ------------------------------------------------------------ Algol 68 ----
@@ -5833,9 +5795,47 @@ static char *e_prj_line_text(char *cmp, char *flags, char *ldflags);
 static void e_prj_note_typed(int his);
 static int e_prj_fields_are_his(W_OPTSTR *o);
 
+/**
+ * e_prj_options_take - Keep what Project-Options was left with.
+ * @o: the dialog, after OK; @message: the Message-String it was opened with.
+ *
+ * Each field gives what the user left in it, except a project value too long
+ * for its field that he did not touch: that stays whole (e_opt_field_result),
+ * so Save does not shorten the .prj he wrote.  The values are taken before
+ * any is replaced, because an untouched one is the value being replaced.
+ */
+static void e_prj_options_take(W_OPTSTR *o, const char *message)
+{
+ int his = e_prj_fields_are_his(o);
+ char *compiler = WpeStrdup(e_opt_field_result(o, 0, e_s_prog.compiler));
+ char *options = WpeStrdup(e_opt_field_result(o, 1, e_s_prog.comp_str));
+ char *loader = WpeStrdup(e_opt_field_result(o, 2, e_s_prog.libraries));
+ char *program = WpeStrdup(e_opt_field_result(o, 3, e_s_prog.exe_name));
+ char *symbol = WpeStrdup(e_opt_field_result(o, 5, e_s_prog.start_symbol ? e_s_prog.start_symbol : "main"));
+ char *library = WpeStrdup(e_opt_field_result(o, 4, e_prj_library()));
+ char *intstr = WpeValueToString((char *)e_opt_field_result(o, 6, message));
+
+ if (e_s_prog.compiler) FREE(e_s_prog.compiler);
+ e_s_prog.compiler = compiler;
+ if (e_s_prog.comp_str) FREE(e_s_prog.comp_str);
+ e_s_prog.comp_str = options;
+ if (e_s_prog.libraries) FREE(e_s_prog.libraries);
+ e_s_prog.libraries = loader;
+ e_prj_note_typed(his);
+ if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
+ e_s_prog.exe_name = program;
+ if (e_s_prog.start_symbol) FREE(e_s_prog.start_symbol);
+ e_s_prog.start_symbol = symbol;
+ if (e_s_prog.intstr) FREE(e_s_prog.intstr);
+ e_s_prog.intstr = intstr;
+ e_prj_library_set(library);
+ if (library) FREE(library);
+ e_s_prog.comp_sw = o->pstr[0]->num;
+}
+
 int e_project_options(FENSTER *f)
 {
- int ret, his;
+ int ret;
  W_OPTSTR *o = e_init_opt_kst(f);
  char *messagestring;
 
@@ -5861,7 +5861,6 @@ int e_project_options(FENSTER *f)
  }
  messagestring = WpeStringToValue(e_s_prog.intstr);
  e_add_wrstr(22, 14, 22, 15, 36, 256, 0, AltM, "Message-String:", messagestring, NULL, o);
- WpeFree(messagestring);
  e_add_pswstr(0, 5, 15, 0, AltG, 0, "GNU       ", o);
  e_add_pswstr(0, 5, 16, 1, AltT, e_s_prog.comp_sw, "OTher     ", o);
  e_add_bttstr(9, 19, 0, AltS, "Save", NULL, o);
@@ -5872,24 +5871,10 @@ int e_project_options(FENSTER *f)
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
-  his = e_prj_fields_are_his(o);
-  if (e_s_prog.compiler) FREE(e_s_prog.compiler);
-  e_s_prog.compiler = WpeStrdup(o->wstr[0]->txt);
-  if (e_s_prog.comp_str) FREE(e_s_prog.comp_str);
-  e_s_prog.comp_str = WpeStrdup(o->wstr[1]->txt);
-  if (e_s_prog.libraries) FREE(e_s_prog.libraries);
-  e_s_prog.libraries = WpeStrdup(o->wstr[2]->txt);
-  e_prj_note_typed(his);
-  if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
-  e_s_prog.exe_name = WpeStrdup(o->wstr[3]->txt);
-  if (e_s_prog.start_symbol) FREE(e_s_prog.start_symbol);
-  e_s_prog.start_symbol = WpeStrdup(o->wstr[5]->txt);
-  if (e_s_prog.intstr) FREE(e_s_prog.intstr);
-  e_s_prog.intstr = WpeValueToString(o->wstr[6]->txt);
-  e_prj_library_set(o->wstr[4]->txt);
-  e_s_prog.comp_sw = o->pstr[0]->num;
+  e_prj_options_take(o, messagestring);
   e_wrt_prj_fl(f);
  }
+ WpeFree(messagestring);
  freeostr(o);
  if (f->ed->mxedt > 0)
   e_ed_rahmen(f, 1);
@@ -7253,7 +7238,7 @@ static WpeStartPlan *e_run_sh_plan_make(FENSTER *f, const char *args, int own)
 {
  WpeStartPlan *plan = wpe_startplan_new(WPE_START_SCRIPT, E_RUN_SH_NAME);
  e_run_values v;
- char path[WPE_BUILD_PATH_MAX];
+ char path[WPE_PATH_SIZE];
  int from = WPE_FROM_USER, args_as_text;
  char *line;
 
@@ -7725,7 +7710,7 @@ static char *e_install_text(const e_install_list *l)
 static WpeStartPlan *e_install_plan_make(const e_install_list *l)
 {
  WpeStartPlan *plan = wpe_startplan_new(WPE_START_INSTALL, e_prj_file_name());
- char folder[WPE_BUILD_PATH_MAX];
+ char folder[WPE_PATH_SIZE];
  int i;
 
  if (!plan)
@@ -7975,8 +7960,8 @@ static struct {
  struct dirfile *df;       /* the project's FILES                        */
  int k;                    /* the file being built                       */
  int libsw, exlib, sccs;
- char ofile[WPE_BUILD_PATH_MAX];
- char program[WPE_BUILD_PATH_MAX]; /* the project's program, placed (e_prj_program) */
+ char ofile[WPE_PATH_SIZE];
+ char program[WPE_PATH_SIZE]; /* the project's program, placed (e_prj_program) */
  struct stat obuf;
  int lib_remove;           /* a library this editor did not build is in the way */
  enum e_prj_phase phase;
@@ -7997,7 +7982,7 @@ static struct {
  */
 const char *e_prj_program(void)
 {
- static char fallback[WPE_BUILD_PATH_MAX];
+ static char fallback[WPE_PATH_SIZE];
 
  if (g_prj.program[0])
   return(g_prj.program);
@@ -8139,7 +8124,7 @@ static void e_prj_typed_scope(char *out, size_t sz)
  */
 static int e_prj_part_from(const char *name, const char *value, const char *own_value)
 {
- char scope[WPE_STARTCMD_KEY_MAX], folder[WPE_BUILD_PATH_MAX];
+ char scope[WPE_STARTCMD_KEY_MAX], folder[WPE_PATH_SIZE];
 
  if (!value || !*value)
   return(WPE_FROM_USER);
@@ -8227,7 +8212,7 @@ static int e_prj_object_of(const char *file, const char *exedir, char *out, size
  */
 static int e_prj_plan_program(WpeStartPlan *plan, const char *exedir, int from_dir)
 {
- char ofile[WPE_BUILD_PATH_MAX], source[E_BUILD_SRC_MAX];
+ char ofile[WPE_PATH_SIZE], source[E_BUILD_SRC_MAX];
  struct dirfile *df = e_p_get_var("EXENAME");
  int from = from_dir, rc;
 
@@ -8258,7 +8243,7 @@ static int e_prj_plan_program(WpeStartPlan *plan, const char *exedir, int from_d
  */
 static int e_prj_plan_files(WpeStartPlan *plan, const char *exedir)
 {
- char named[WPE_BUILD_PATH_MAX], object[WPE_BUILD_PATH_MAX], source[E_BUILD_SRC_MAX];
+ char named[WPE_PATH_SIZE], object[WPE_PATH_SIZE], source[E_BUILD_SRC_MAX];
  struct dirfile *df = e_p_get_var("FILES");
  int k;
 
@@ -8290,7 +8275,7 @@ static int e_prj_plan_files(WpeStartPlan *plan, const char *exedir)
  */
 static void e_prj_plan_library(WpeStartPlan *plan)
 {
- char lib[WPE_BUILD_PATH_MAX], source[E_BUILD_SRC_MAX];
+ char lib[WPE_PATH_SIZE], source[E_BUILD_SRC_MAX];
  struct dirfile *df = e_p_get_var("LIBNAME");
 
  if (df && df->anz > 0 && wpe_startplan_operand(lib, sizeof lib, NULL, df->name[0]) == 0)
@@ -8336,7 +8321,7 @@ static void e_prj_plan_project_file(WpeStartPlan *plan)
  */
 static WpeStartPlan *e_prj_plan_make(const struct e_s_prog *own, int mine, const char *exedir)
 {
- char folder[WPE_BUILD_PATH_MAX];
+ char folder[WPE_PATH_SIZE];
  WpeStartPlan *plan = wpe_startplan_new(WPE_START_PROJECT, e_prj_file_name());
  int from_dir = WPE_FROM_USER;
  char *dir;
@@ -8454,7 +8439,7 @@ static int e_prj_fields_are_his(W_OPTSTR *o)
  */
 static void e_prj_note_typed(int his)
 {
- char scope[WPE_STARTCMD_KEY_MAX], folder[WPE_BUILD_PATH_MAX];
+ char scope[WPE_STARTCMD_KEY_MAX], folder[WPE_PATH_SIZE];
 
  if (!his || !e_prog.project || !e_prog.project[0])
   return;
@@ -8520,7 +8505,7 @@ static int e_prj_setup(FENSTER *f)
  struct dirfile *df = NULL;
  char **arg;
  int i, j, k, argc, exlib = 0, lib_remove = 0;
- char ofile[WPE_BUILD_PATH_MAX];
+ char ofile[WPE_PATH_SIZE];
  struct stat lbuf;
 
  last_time = (M_TIME) 0;
@@ -9065,7 +9050,7 @@ static void e_prj_run(void)
  */
 int e_c_project(FENSTER *f, e_build_cont done, void *data)
 {
- char cwd_saved[WPE_BUILD_PATH_MAX];
+ char cwd_saved[WPE_PATH_SIZE];
  ECNT *cn = f->ed;
  int ret, cwd_chg;
 
@@ -10071,13 +10056,13 @@ static size_t e_p_longest_row(BUFFER *b)
  * empty string, so F9 on such a language reports "no error rows recognised"
  * instead of reading memory nobody filled.
  */
-static void e_p_alloc_pattern_rows(char *rows[E_P_PATTERN_ROWS], char *srch)
+static void e_p_alloc_pattern_rows(char *rows[E_P_PATTERN_ROWS], size_t cap)
 {
  int n;
 
  for (n = 0; n < E_P_PATTERN_ROWS; n++)
  {
-  rows[n] = MALLOC(strlen(srch) + 2);
+  rows[n] = MALLOC(cap);
   rows[n][0] = '\0';
  }
 }
@@ -10095,7 +10080,7 @@ int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret,
  cmp = MALLOC(cap);
  file = MALLOC(cap);
  search = MALLOC(cap);
- e_p_alloc_pattern_rows(tmp, srch);
+ e_p_alloc_pattern_rows(tmp, cap);       /* a row takes text of the message row, not of the pattern */
  cmp[0] = search[0] = file[0] = '\0';
  if (!e_p_pattern_names_file(srch) && e_p_compiled_source)
   strcpy(file, e_p_compiled_source);

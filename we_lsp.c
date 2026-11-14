@@ -38,7 +38,7 @@
    to the text the request was sent with. */
 typedef struct {
  char *text;                      /* the working copy, edited in place         */
- char  uri[PATH_MAX + 8];         /* file:// of the file it is a copy of       */
+ char  uri[WPE_PATH_SIZE + 8];         /* file:// of the file it is a copy of       */
  int   others;                    /* edits aimed at other files                */
  int   applied;                   /* at least one applyEdit came               */
 } lsp_work;
@@ -69,7 +69,7 @@ struct e_lsp_session {
                                     it stopped reading, or closed its input */
  e_lsp_host   host;
  int          doc_version;       /* textDocument version (didOpen = 1)    */
- char         root_uri[PATH_MAX + 8];
+ char         root_uri[WPE_PATH_SIZE + 8];
  e_lsp_completion_item items[256];  /* engine-owned completion result      */
  int          nitems;
  e_lsp_location locs[256];          /* engine-owned references result      */
@@ -84,7 +84,7 @@ struct e_lsp_session {
     context.diagnostics -- a server only offers the matching quick-fixes when it
     sees them there.  Replaced on every publish; NULL until the first one. */
  struct json_object *diag_raw;
- char         diag_uri[PATH_MAX + 8];
+ char         diag_uri[WPE_PATH_SIZE + 8];
  e_lsp_code_lens lenses[64];        /* engine-owned code-lens result        */
  int          nlenses;
  e_lsp_inlay_hint inlays[512];      /* engine-owned inlay-hint result        */
@@ -100,7 +100,7 @@ struct e_lsp_session {
  int          waiting_shown;        /* its waiting line is on the status row */
  int          ending;               /* e_lsp_close runs: tell nobody twice    */
  /* The C tests' "has this file compiled?": batches published for one path. */
- char         diag_watch[PATH_MAX + 8];
+ char         diag_watch[WPE_PATH_SIZE + 8];
  int          diag_watch_hits;
 };
 
@@ -349,7 +349,7 @@ static void lsp_dispatch_diagnostics(e_lsp_session *s, struct json_object *param
 
 void e_lsp_diagnostics_watch(e_lsp_session *s, const char *path)
 {
- char abspath[PATH_MAX];
+ char abspath[WPE_PATH_SIZE];
 
  if (!s)
   return;
@@ -1411,7 +1411,7 @@ e_lsp_session *e_lsp_open_async(char *const argv[], const char *root_dir,
                                 const char *lang, const e_lsp_host *host)
 {
  e_lsp_session *s;
- char rootdir[PATH_MAX];
+ char rootdir[WPE_PATH_SIZE];
  struct json_object *args;
 
  if (!realpath(root_dir, rootdir))
@@ -1472,7 +1472,7 @@ static struct json_object *lsp_text_pos(e_lsp_session *s, const char *path,
 {
  struct json_object *args = json_object_new_object();
  struct json_object *doc = json_object_new_object();
- char uri[PATH_MAX + 8];
+ char uri[WPE_PATH_SIZE + 8];
 
  (void)s;
  snprintf(uri, sizeof(uri), "file://%s", path);
@@ -1486,8 +1486,8 @@ int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text)
 {
  struct json_object *args = json_object_new_object();
  struct json_object *doc = json_object_new_object();
- char abspath[PATH_MAX];
- char uri[PATH_MAX + 8];
+ char abspath[WPE_PATH_SIZE];
+ char uri[WPE_PATH_SIZE + 8];
 
  if (!s)
   return -1;
@@ -1507,8 +1507,8 @@ int e_lsp_did_open(e_lsp_session *s, const char *path, const char *text)
 
 int e_lsp_did_focus(e_lsp_session *s, const char *path)
 {
- char abspath[PATH_MAX];
- char uri[PATH_MAX + 8];
+ char abspath[WPE_PATH_SIZE];
+ char uri[WPE_PATH_SIZE + 8];
 
  if (!s)
   return -1;
@@ -1527,8 +1527,8 @@ int e_lsp_did_focus(e_lsp_session *s, const char *path)
 int e_lsp_did_change(e_lsp_session *s, const char *path, const char *text)
 {
  struct json_object *args, *doc, *changes, *change;
- char abspath[PATH_MAX];
- char uri[PATH_MAX + 8];
+ char abspath[WPE_PATH_SIZE];
+ char uri[WPE_PATH_SIZE + 8];
 
  if (!s)
   return -1;
@@ -1704,7 +1704,7 @@ static char *lsp_hover_text(struct json_object *resp)
 static void lsp_abspath(const char *path, char *out)
 {
  if (!realpath(path, out))
-  snprintf(out, PATH_MAX, "%s", path);
+  snprintf(out, WPE_PATH_SIZE, "%s", path);
 }
 
 /* What a typed request keeps until its answer: the caller's continuation, and
@@ -1727,8 +1727,8 @@ typedef struct {
  int            max;           /* the most items wanted                     */
  int            flag;          /* hierarchies: outgoing calls, subtypes     */
  char          *base;          /* format, rename, code action: the text sent */
- char           path[PATH_MAX];       /* the file as the server knows it   */
- char           uri[PATH_MAX + 8];    /* ... and its file:// form          */
+ char           path[WPE_PATH_SIZE];       /* the file as the server knows it   */
+ char           uri[WPE_PATH_SIZE + 8];    /* ... and its file:// form          */
  const char    *next_method;   /* hierarchies: the step after the prepare   */
  const char    *wrap;          /* ... the field each answer entry wraps the
                                   item in ("from", "to"), or NULL           */
@@ -1835,7 +1835,7 @@ static void lsp_hover_answered(E_D_REQ_END how, struct json_object *resp,
 int e_lsp_hover_async(e_lsp_session *s, const char *path, int line,
                       e_lsp_units character, e_lsp_text_fn fn, void *ctx)
 {
- char abspath[PATH_MAX];
+ char abspath[WPE_PATH_SIZE];
  lsp_typed *t;
 
  if (!s || !fn)
@@ -1958,7 +1958,7 @@ static void lsp_locate_answered(E_D_REQ_END how, struct json_object *resp,
                                 void *ctx)
 {
  lsp_typed *t = ctx;
- char where[PATH_MAX];
+ char where[WPE_PATH_SIZE];
  int line = 0, found = 0;
  e_lsp_units character = e_lsp_units_zero();
 
@@ -1973,7 +1973,7 @@ int e_lsp_locate_async(e_lsp_session *s, int which, const char *path,
                        int line, e_lsp_units character, e_lsp_location_fn fn,
                        void *ctx)
 {
- char abspath[PATH_MAX];
+ char abspath[WPE_PATH_SIZE];
  lsp_typed *t;
 
  if (!s || !fn)
@@ -2068,7 +2068,7 @@ int e_lsp_completion_async(e_lsp_session *s, const char *path, int line,
                            e_lsp_units character, int max, e_lsp_items_fn fn,
                            void *ctx)
 {
- char abspath[PATH_MAX];
+ char abspath[WPE_PATH_SIZE];
  lsp_typed *t;
 
  if (!s || !fn)
@@ -3157,7 +3157,7 @@ static struct json_object *lsp_format_params(const char *abspath,
  struct json_object *args = json_object_new_object();
  struct json_object *doc = json_object_new_object();
  struct json_object *opts = json_object_new_object();
- char uri[PATH_MAX + 8];
+ char uri[WPE_PATH_SIZE + 8];
 
  snprintf(uri, sizeof(uri), "file://%s", abspath);
  json_object_object_add(doc, "uri", json_object_new_string(uri));
@@ -3211,7 +3211,7 @@ int e_lsp_format_async(e_lsp_session *s, const char *path,
                        const char *current_text, const e_lsp_range *range,
                        e_lsp_edit_fn fn, void *ctx)
 {
- char abspath[PATH_MAX];
+ char abspath[WPE_PATH_SIZE];
  const char *method = "textDocument/formatting";
  lsp_typed *t;
 

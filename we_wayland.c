@@ -120,7 +120,7 @@ static int wl_anon_file(size_t size)
  if (fd < 0)
  {
   const char *dir = getenv("XDG_RUNTIME_DIR");
-  char name[PATH_MAX];
+  char name[WPE_PATH_SIZE];
 
   if (!dir || !*dir)
    dir = "/tmp";
@@ -1693,7 +1693,7 @@ static int e_w_refresh(void)
     no signal/thread coordination needed. */
  if (g_wl_dump_path && *g_wl_dump_path)
  {
-  char tmp[PATH_MAX];
+  char tmp[WPE_PATH_SIZE];
   snprintf(tmp, sizeof tmp, "%s.tmp", g_wl_dump_path);
   if (wpe_wl_dump_ppm(tmp) == 0)
    rename(tmp, g_wl_dump_path);

@@ -2183,8 +2183,7 @@ void wpe_ai_pane_before_paint(FENSTER *f)
  * save asks a name in the editor's Save As dialog under its own title, and
  * the pane keeps that name until it is closed. */
 #define AI_TRANSCRIPT_DIALOG_TITLE "Save transcript"
-#define AI_TRANSCRIPT_PATH_MAX     4096     /* the directory the dialog was in */
-#define AI_TRANSCRIPT_SAY_MAX      (AI_TRANSCRIPT_PATH_MAX + 64)
+#define AI_TRANSCRIPT_SAY_MAX      (WPE_PATH_SIZE + 64)
 
 /* The file the transcript was last saved to (absolute), NULL before the first save. */
 static char *g_ai_transcript_path = NULL;
@@ -2212,7 +2211,7 @@ static void ai_transcript_forget(void)
  */
 static char *ai_transcript_absolute(const char *name)
 {
- char cwd[AI_TRANSCRIPT_PATH_MAX];
+ char cwd[WPE_PATH_SIZE];            /* the directory the dialog was in */
  size_t n;
  char *p;
  if (name[0] == DIRC || !getcwd(cwd, sizeof cwd))

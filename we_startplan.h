@@ -93,7 +93,7 @@
 #define WPE_STARTPLAN_NOT_PLANNED 2   /* not a removal of this plan: left as it is   */
 
 /* Sizes. */
-#define WPE_STARTPLAN_PATH_MAX  E_D_REQ_PATH_MAX   /* the debugger request engine's path, one number */
+#define WPE_STARTPLAN_PATH_MAX  WPE_PATH_SIZE   /* a path the editor holds, one number */
 #define WPE_STARTPLAN_KEY_MAX   256
 #define WPE_STARTPLAN_WORDS_MAX 1024     /* a project with many FILES               */
 #define WPE_STARTPLAN_TEXT_MAX  65536    /* past it the plan cannot be remembered   */

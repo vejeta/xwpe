@@ -13,13 +13,9 @@
    code the user runs. */
 
 #include <stddef.h>
-#include <limits.h>
+#include "we_path.h"
 #include "we_debreq.h"
 #include "we_gdbmi.h"
-
-#ifndef PATH_MAX
-#define PATH_MAX 4096
-#endif
 
 /* Which debugger printed the text: the values of we_debug.c's DEB_* (they
    are persisted in the options file, so they never change). */
@@ -33,7 +29,7 @@
 #define E_DS_DAP   7
 
 /* Sizes of what a session keeps. */
-#define E_DS_PATH_MAX     PATH_MAX   /* a source file a frame names */
+#define E_DS_PATH_MAX     WPE_PATH_SIZE   /* a source file a frame names */
 #define E_DS_NAME_MAX     128        /* a function, a signal, a class */
 #define E_DS_LINE_MAX     512        /* an error the debugger gave */
 #define E_DS_FRAMES_MAX   64         /* frames past this are not kept */

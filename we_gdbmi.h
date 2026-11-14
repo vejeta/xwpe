@@ -25,7 +25,7 @@
 #define E_GDBMI_TEXT_MAX    32768   /* bytes of names and strings in one record */
 #define E_GDBMI_CLASS_MAX   64      /* "stopped", "breakpoint-modified" */
 #define E_GDBMI_DEPTH_MAX   32      /* tuples and lists inside each other */
-#define E_GDBMI_PATH_MAX    128     /* one name in a path */
+#define E_GDBMI_KEY_MAX     128     /* one key in a lookup path ("frame.fullname") */
 
 /* No token, no node, no text. */
 #define E_GDBMI_NONE        (-1)

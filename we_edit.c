@@ -302,7 +302,6 @@ static int e_debug_console_input(int c, FENSTER *f)
    would otherwise look like an xwpe key code. */
 int e_input_was_char = 0;
 
-char *e_make_postf();
 int e_del_a_ind();
 int e_tab_a_ind();
 static int e_window_auto_indents(FENSTER *f);
@@ -822,7 +821,9 @@ int e_edit(ECNT *cn, char *filename)
   {
    if (e_we_sw & 8)
    {
-    strcpy(f->datnam, "Messages");
+    /* the window's name is "Noname" or the file given: shorter than the word */
+    WpeFree(f->datnam);
+    f->datnam = WpeStrdup("Messages");
     e_we_sw &= ~8;
    }
    if (!strcmp(f->datnam, "Messages"))
@@ -4319,8 +4320,15 @@ int e_autosave(FENSTER *f)
  if (((maxname = pathconf(f->dirct, _PC_NAME_MAX)) >= strlen(f->datnam) + 4) &&
    (maxname > 12))
  {
-  str = MALLOC(strlen(f->datnam) + 5);
-  str = e_make_postf(str, f->datnam, ".ASV");
+  size_t room = strlen(f->datnam) + 5;
+
+  str = MALLOC(room);
+  if (!str || !e_make_postf(str, room, f->datnam, ".ASV"))
+  {
+   if (str)
+    FREE(str);
+   return(0);
+  }
   tmp = f->datnam;
   f->datnam = str;
   /*e_save(f);*/
@@ -4846,10 +4854,20 @@ int e_make_rudo(FENSTER *f, int sw)
  return(0);
 }
 
-char *e_make_postf(char *out, char *name, char *pf)
+/**
+ * e_make_postf - Name the autosave or emergency-save file of a window.
+ * @out/@n: receive @name followed by @pf (".ASV", ".ESV"); @name, @pf: the
+ * window's name and the ending.
+ *
+ * The file saved beside the user's own must be that file's name with an
+ * ending, never a cut of it: a name that does not fit leaves nothing saved
+ * and nothing removed.
+ * Return: @out, or NULL (with @out empty) when the name does not fit.
+ */
+char *e_make_postf(char *out, size_t n, const char *name, const char *pf)
 {
- strcpy(out, name);
- strcat(out, pf);
+ if (wpe_path_copy(out, n, name) || wpe_path_cat(out, n, pf))
+  return(NULL);
  return(out);
 }
 

@@ -1915,6 +1915,62 @@ int WpeHandleFileManager(ECNT * cn)
 }
 
 
+/* The longest line Grep searches: a file with no line end (a binary, a
+   minified script) is not read into memory whole, its first bytes are
+   searched as the line they begin. */
+#define E_GREP_LINE_MAX    (1 << 20)
+#define E_GREP_LINE_FIRST  256
+
+/**
+ * e_grep_room - Make room for one more byte of a line being read.
+ * @line/@cap: the line's buffer and its size; @len: the bytes it holds.
+ * Return: 1, or 0 out of memory.
+ */
+static int e_grep_room(char **line, size_t *cap, size_t len)
+{
+  char *bigger;
+  size_t want = *cap ? *cap * 2 : E_GREP_LINE_FIRST;
+
+  if(len + 1 < *cap)
+    return(1);
+  if((bigger = realloc(*line, want)) == NULL)
+    return(0);
+  *line = bigger;
+  *cap = want;
+  return(1);
+}
+
+/**
+ * e_grep_read_line - Read the next line of a file, whole.
+ * @fp: the file; @line/@cap: the buffer, grown as needed and kept between
+ * calls; @len: receives the line's bytes without its line end.
+ *
+ * Grep gives each line to the search as a line, so `^`, `$` and a match
+ * across the old 255 byte pieces mean what they say.  A line past
+ * E_GREP_LINE_MAX is read to its end and only its start is kept.
+ * Return: 1 with a line, 0 at the end of the file (or out of memory).
+ */
+static int e_grep_read_line(FILE *fp, char **line, size_t *cap, size_t *len)
+{
+  int c;
+
+  *len = 0;
+  while((c = getc(fp)) != EOF && c != '\n')
+  {
+    if(*len >= E_GREP_LINE_MAX)
+      continue;
+    if(!e_grep_room(line, cap, *len))
+      return(0);
+    (*line)[(*len)++] = (char)c;
+  }
+  if(c == EOF && *len == 0)
+    return(0);
+  if(!e_grep_room(line, cap, *len))
+    return(0);
+  (*line)[*len] = '\0';
+  return(1);
+}
+
 /**
  * WpeGrepFile - Does the Find text of @fd occur in the file @file?
  *
@@ -1927,24 +1983,27 @@ int WpeHandleFileManager(ECNT * cn)
 int WpeGrepFile(char *file, const FIND *fd)
 {
   FILE           *fp;
-  char            str[256];
+  char           *line = NULL;
+  size_t          cap = 0, len;
   WpeRowHit       hit;
   int             rc;
 
   if((fp = fopen(file, "r")) == NULL)
     return(0);
 
-  while(fgets(str, 256, fp))
+  while(e_grep_read_line(fp, &line, &cap, &len))
   {
-    rc = wpe_rowfind_row(fd, (unsigned char *)str, strcspn(str, "\n"),
+    rc = wpe_rowfind_row(fd, (unsigned char *)line, len,
                          WPE_ROW_STARTS_LINE | WPE_ROW_ENDS_LINE, 0,
-                         strcspn(str, "\n"), 0, &hit);
+                         len, 0, &hit);
     if(rc != 0)
     {
+      free(line);
       fclose(fp);
       return(rc);
     }
   }
+  free(line);
   fclose(fp);
   return(0);
 }
@@ -3424,7 +3483,6 @@ int WpeDirDelOptions(FENSTER * f)
 #define E_EXECUTE_PLAN_NAME "execute"
 #define E_EXECUTE_SOURCE    "the file manager's file"
 #define E_EXECUTE_HERE      "."
-#define E_EXECUTE_PATH_MAX  512   /* "./" and a name of the file manager's */
 
 /**
  * e_shell_plan - The plan of File > Shell: the user's own shell, in the
@@ -3458,7 +3516,7 @@ static WpeStartPlan *e_shell_plan(void)
 static WpeStartPlan *e_execute_plan(const char *name)
 {
   WpeStartPlan *plan = wpe_startplan_new(WPE_START_SHELL, E_EXECUTE_PLAN_NAME);
-  char path[E_EXECUTE_PATH_MAX];
+  char path[WPE_PATH_SIZE];
 
   if (!plan)
     return(NULL);

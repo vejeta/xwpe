@@ -306,7 +306,7 @@ int wpe_startplan_key(const WpeStartPlan *p, char *out, size_t sz)
  */
 static char *startplan_realpath_dup(const char *dir)
 {
- char real[PATH_MAX];
+ char real[WPE_PATH_SIZE];
 
  if (!dir || !*dir || !realpath(dir, real))
   return NULL;
@@ -439,7 +439,7 @@ int wpe_startplan_path(WpeStartPlan *p, const char *path, int role, int from,
                        const char *source, const char *root)
 {
  WpeStartPath *s;
- char real[PATH_MAX];
+ char real[WPE_PATH_SIZE];
  int resolved;
 
  if (!path || startplan_grow((void **)&p->path, p->npath, sizeof *p->path) < 0)
@@ -714,7 +714,7 @@ static int startplan_follow_dangling(char *out, size_t sz, int depth)
  */
 static int startplan_step(char *out, size_t sz, const char *comp, int *exists, int depth)
 {
- char real[PATH_MAX];
+ char real[WPE_PATH_SIZE];
 
  if (strcmp(comp, ".") == 0 || !*comp)
   return 0;
@@ -765,7 +765,7 @@ int wpe_startplan_resolve(const char *path, const char *cwd, char *out, size_t s
 static int startplan_resolve_at(const char *path, const char *cwd, char *out, size_t sz,
                                 int depth)
 {
- char work[WPE_STARTPLAN_PATH_MAX], here[PATH_MAX];
+ char work[WPE_STARTPLAN_PATH_MAX], here[WPE_PATH_SIZE];
  char *comp, *save = NULL;
  int exists = 1;
 
@@ -818,7 +818,7 @@ static int startplan_under(const char *path, const char *dir)
 
 /**
  * startplan_home - The home folder, resolved.
- * @out: receives it (PATH_MAX bytes).
+ * @out: receives it (WPE_PATH_SIZE bytes).
  *
  * $HOME, or the user database's entry when $HOME is not set: an editor
  * started without $HOME must still never take the home folder for a
@@ -850,7 +850,7 @@ static int startplan_home(char *out)
  */
 int wpe_startplan_root_usable(const char *root)
 {
- char home[PATH_MAX];
+ char home[WPE_PATH_SIZE];
 
  if (!root || !*root || strcmp(root, STARTPLAN_SEP_TEXT) == 0)
   return 0;
@@ -865,7 +865,7 @@ int wpe_startplan_root_usable(const char *root)
  */
 static int startplan_is_home(const char *dir)
 {
- char home[PATH_MAX];
+ char home[WPE_PATH_SIZE];
 
  return startplan_home(home) && strcmp(home, dir) == 0;
 }
@@ -2406,7 +2406,7 @@ static int startplan_program_paths(const WpeStartPlan *p, const char *program, c
  */
 static int startplan_program_real(const char *full, const char *suffix, char *out, size_t sz)
 {
- char program[WPE_STARTPLAN_PATH_MAX], real[PATH_MAX];
+ char program[WPE_STARTPLAN_PATH_MAX], real[WPE_PATH_SIZE];
  size_t len = strlen(full) - strlen(suffix);
  int n;
 
@@ -2812,7 +2812,7 @@ static void startplan_embedded_file(WpeStartPath *s, const char *cwd, const char
 {
  char full[WPE_STARTPLAN_PATH_MAX];
  WpeStartPath file;
- char real[PATH_MAX];
+ char real[WPE_PATH_SIZE];
 
  if (name[0] == STARTPLAN_SEP)
   snprintf(full, sizeof full, "%s", name);
@@ -2899,7 +2899,7 @@ static int startplan_add_embedded_startup(WpeStartPlan *p, const startplan_start
                                           const char *program)
 {
  char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX], shown[WPE_STARTPLAN_PATH_MAX];
- char real[PATH_MAX];
+ char real[WPE_PATH_SIZE];
  unsigned char raw[WPE_STARTPLAN_READS_MAX];
  WpeStartPath *s;
  size_t size = 0;
@@ -3318,7 +3318,7 @@ static int startplan_is_debug_dir(const char *dir)
  */
 char *wpe_startplan_debug_dir_new(const char *base)
 {
- char tmpl[WPE_STARTPLAN_PATH_MAX], real[PATH_MAX];
+ char tmpl[WPE_STARTPLAN_PATH_MAX], real[WPE_PATH_SIZE];
 
  if (snprintf(tmpl, sizeof tmpl, "%s%c%s", startplan_debug_base_of(base), STARTPLAN_SEP,
               STARTPLAN_DEBUG_DIR_NAME) >= (int)sizeof tmpl)
@@ -4044,7 +4044,7 @@ int wpe_startplan_contain(WpeStartPlan *p, const char *key, const char *program_
                           const char *folder, const char *program)
 {
  const startplan_row *row;
- char here[PATH_MAX], real[PATH_MAX];
+ char here[WPE_PATH_SIZE], real[WPE_PATH_SIZE];
  int apart;
 
  if (!p || !key)

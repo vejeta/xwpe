@@ -883,6 +883,56 @@ static void test_late_breakpoints_during_stack_trace(void)
  end_session(s, conn, lfd, &rd);
 }
 
+/* @scenario SC-path-debug-08 */
+/* The source path of a frame is a path, kept at its own length: one of 1100
+   bytes (over the 1023 the frame's array held) comes back whole from the Stack
+   window's stackTrace, not as the prefix of itself that names another file. */
+#define LONG_FRAME_PATH_BYTES 1100
+static void test_frame_path_longer_than_1023_is_kept_whole(void)
+{
+ static const int lines[] = { 6, 9 };
+ char a1[ADAPTER_BUF / 2], a2[ADAPTER_BUF], body[ADAPTER_BUF - 256];
+ char path[LONG_FRAME_PATH_BYTES + 1];
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ e_dap_frame frames[BP_SEEN_MAX];
+ e_dap_session *s;
+ struct json_object *m;
+ int conn = -1, lfd = -1, seq, i;
+
+ path[0] = '/';
+ for (i = 1; i < LONG_FRAME_PATH_BYTES; i++)
+  path[i] = 'p';
+ path[LONG_FRAME_PATH_BYTES] = '\0';
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ CHECK(e_dap_set_file_breakpoints_async(s, TEST_FILE, lines, 2) == 0,
+       "async setBreakpoints refused at a stop");
+ seq = expect_request(conn, &rd, "setBreakpoints");
+ answer_breakpoints_pending(a1, sizeof a1, seq);
+ snprintf(body, sizeof body,
+          "{\"stackFrames\":[{\"id\":7,\"name\":\"main\",\"line\":6,"
+          "\"source\":{\"path\":\"%s\"}},"
+          "{\"id\":8,\"name\":\"outer\",\"line\":3,"
+          "\"source\":{\"path\":\"" TEST_FILE "\"}}]}", path);
+ answer_body(a2, sizeof a2, seq + 1, "stackTrace", body);
+ put_two(conn, a1, a2);
+ memset(frames, 0, sizeof frames);
+ CHECK(e_dap_stack_trace(s, frames, BP_SEEN_MAX) == 2,
+       "stackTrace lost its own answer");
+ CHECK(!strcmp(frames[0].path, path),
+       "a frame's path of 1100 bytes was not kept whole");
+ CHECK(!strcmp(frames[1].path, TEST_FILE), "the short path was changed");
+ m = take_request(conn, &rd, "stackTrace");
+ if (m)
+  json_object_put(m);
+ end_session(s, conn, lfd, &rd);
+}
+
 /* @scenario SC-debug-12 */
 static void test_events_during_evaluate_are_delivered(void)
 {
@@ -2302,6 +2352,7 @@ int main(int argc, char **argv)
  test_pump_going_stopped_ended();
  test_only_a_launched_local_program_is_named();
  test_late_breakpoints_during_stack_trace();
+ test_frame_path_longer_than_1023_is_kept_whole();
  test_events_during_evaluate_are_delivered();
  test_late_breakpoints_during_the_stops_location();
  test_stop_before_the_resume_answer_is_the_stop();

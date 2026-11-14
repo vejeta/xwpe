@@ -145,7 +145,7 @@ void wpe_startcmd_note_own(const char *key, const char *text)
  */
 int wpe_startcmd_resolve_folder(const char *folder, char *out, size_t sz)
 {
- char real[PATH_MAX];
+ char real[WPE_PATH_SIZE];
  if (!folder || !*folder || sz == 0) return -1;
  if (!realpath(folder, real)) return -1;
  if (strlen(real) >= sz) return -1;
@@ -955,7 +955,7 @@ void wpe_startcmd_built_free(WpeBuiltSet *set)
 /**
  * built_real_path - The real path of an output of a set's folder.
  * @set: the set; @output: absolute, or relative to the set's folder; @out:
- * receives the real path (PATH_MAX).
+ * receives the real path (WPE_PATH_SIZE).
  *
  * Never relative to the process's folder: the record and the lookup name the
  * same file whatever the editor's working folder is.

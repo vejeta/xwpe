@@ -38,11 +38,12 @@
 
 #include "we_child.h"
 #include "we_childsig.h"
+#include "we_path.h"
 #include "we_fdloop.h"
 
 #define WPE_CHILD_EXEC_FAILED 1          /* a command that could not run */
 #define WPE_CHILD_SAID_FAILED 127        /* one that said why, as a shell's */
-#define WPE_CHILD_SAY_MAX     (PATH_MAX + 128)
+#define WPE_CHILD_SAY_MAX     (WPE_PATH_SIZE + 128)
 #define WPE_CHILD_TTY_FAILED_FMT  "cannot give %s a terminal: %s\r\n"
 #define WPE_CHILD_DIR_FAILED_FMT  "cannot enter %s: %s\r\n"
 #define WPE_CHILD_RUN_FAILED_FMT  "cannot run %s: %s\r\n"

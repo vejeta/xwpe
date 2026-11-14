@@ -13,6 +13,8 @@
 
 #include <stddef.h>
 
+#include "we_path.h"
+
 /* What a lookup or the question answers. */
 #define WPE_STARTCMD_RUN     0   /* run the folder's command                   */
 #define WPE_STARTCMD_USE_OWN 1   /* run the user's own command instead         */
@@ -48,7 +50,7 @@
 
 /* Room for a key, a resolved folder and a store path. */
 #define WPE_STARTCMD_KEY_MAX    256
-#define WPE_STARTCMD_FOLDER_MAX 4096
+#define WPE_STARTCMD_FOLDER_MAX WPE_PATH_SIZE
 
 /* How a load of the store went. */
 #define WPE_STARTCMD_STORE_OK      0

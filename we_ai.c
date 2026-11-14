@@ -145,22 +145,9 @@ const char *wpe_ai_backend_name(int backend)
 static int ai_which(const char *prog)
 {
  const char *path = getenv("PATH");
- char buf[1024];
- size_t plen = strlen(prog);
+ char found[WPE_PATH_SIZE];
  if (!path || !*path) path = "/usr/bin:/bin:/usr/local/bin";
- while (*path) {
-  const char *colon = strchr(path, ':');
-  size_t l = colon ? (size_t)(colon - path) : strlen(path);
-  if (l > 0 && l + plen + 2 < sizeof buf) {
-   memcpy(buf, path, l);
-   buf[l] = '/';
-   memcpy(buf + l + 1, prog, plen + 1);
-   if (access(buf, X_OK) == 0) return 1;
-  }
-  if (!colon) break;
-  path = colon + 1;
- }
- return 0;
+ return wpe_path_search_in(path, prog, found, sizeof found) == 0;
 }
 
 int wpe_ai_claude_cli_available(void) { return ai_which("claude"); }

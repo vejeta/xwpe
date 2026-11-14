@@ -138,7 +138,7 @@ struct e_dap_session {
  int           program_pid;   /* the `process` event's systemProcessId:
                                  the program, on this machine; 0 when the
                                  adapter named none (Bloop's does not)  */
- char          bp_file[512];
+ char          bp_file[WPE_PATH_SIZE];   /* the file the breakpoints are set in */
  int           bp_lines[DAP_MAX_BP];
  int           bp_n;
  int           eof;           /* the transport reached its end              */
@@ -1718,7 +1718,7 @@ static int dap_stage_keep_lines(e_dap_session *s, const char *path,
 int e_dap_stage_breakpoints(e_dap_session *s, const char *file,
                             const int *lines, int count, char *cmd, size_t n)
 {
- char abspath[PATH_MAX];
+ char abspath[WPE_PATH_SIZE];
 
  if (!s || !file || count < 0 || count > DAP_MAX_BP)
   return 0;
@@ -2792,7 +2792,7 @@ e_dap_session *e_dap_start_tcp(const char *host, int port, const char *program,
 
 int e_dap_add_breakpoint(e_dap_session *s, const char *file, int line)
 {
- char abspath[PATH_MAX];
+ char abspath[WPE_PATH_SIZE];
  if (!s || s->bp_n >= DAP_MAX_BP)
   return -1;
  if (!s->bp_file[0])
@@ -2834,7 +2834,7 @@ static struct json_object *dap_breakpoints_args(const char *path,
 
 /**
  * dap_absolute_path - The path the adapter knows @file by.
- * @file: as the host names it; @out: receives it (PATH_MAX bytes).
+ * @file: as the host names it; @out: receives it (WPE_PATH_SIZE bytes).
  *
  * On macOS the build server compiles from the realpath()'d directory, so a
  * path through a symlink would be dropped as an unknown source.
@@ -2842,7 +2842,7 @@ static struct json_object *dap_breakpoints_args(const char *path,
 static void dap_absolute_path(const char *file, char *out)
 {
  if (!realpath(file, out))
-  snprintf(out, PATH_MAX, "%s", file);
+  snprintf(out, WPE_PATH_SIZE, "%s", file);
 }
 
 /**
@@ -2888,7 +2888,7 @@ static void dap_pending_keep_lines(dap_pending *p, const char *path,
 int e_dap_set_file_breakpoints_async(e_dap_session *s, const char *file,
                                      const int *lines, int n)
 {
- char abspath[PATH_MAX];
+ char abspath[WPE_PATH_SIZE];
  int seq;
 
  if (!s || s->ended || s->eof || s->step < DAP_STEP_READY)

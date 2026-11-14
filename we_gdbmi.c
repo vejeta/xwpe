@@ -679,7 +679,7 @@ const E_GDBMI_NODE *e_gdbmi_find_in(const E_GDBMI_RECORD *r,
  {
   dot = strchr(seg, E_GDBMI_C_PATH_SEP);
   len = dot ? (size_t)(dot - seg) : strlen(seg);
-  if (len == 0 || len >= E_GDBMI_PATH_MAX)
+  if (len == 0 || len >= E_GDBMI_KEY_MAX)
    return(NULL);
   n = e_gdbmi_child_named(r, n, seg, len);
   if (!n || !dot)

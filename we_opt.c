@@ -2897,7 +2897,7 @@ static int e_opt_merge_user_only(const e_opt_lines *own, const e_opt_lines *mine
  */
 static void e_opt_say_move_failed(ECNT *cn)
 {
- char line[E_OPT_IGNORED_LINE_MAX + PATH_MAX];
+ char line[E_OPT_IGNORED_LINE_MAX + WPE_PATH_SIZE];
 
  if (!cn || !cn->fb) return;
  snprintf(line, sizeof line, E_OPT_MOVE_FAILED_FMT, e_opt_user_file);
@@ -3159,6 +3159,33 @@ int e_opt_field_take(W_OPTSTR *o, int k, char *dst, size_t size)
   return(0);
  e_input_limit_say((int)(size ? size - 1 : 0));
  return(-1);
+}
+
+/**
+ * e_opt_field_result - The value a text field leaves the dialog with.
+ * @o: the dialog, after OK; @k: the index of its text field; @opened: the
+ * value the field was opened with (a path or a command from a project file
+ * or an option file).
+ *
+ * A field holds only as many bytes as its capacity says, so a longer value
+ * is shown cut (e_add_wrstr).  Saving that cut would shorten the user's file
+ * behind his back: a value the field could not hold, and he did not touch,
+ * stays what it was.  A value he edited, or one that fit, is the field's
+ * text.
+ * Return: @opened when the field was too small for it and still shows its
+ * start unchanged, else the field's text; valid while @o and @opened are.
+ */
+const char *e_opt_field_result(const W_OPTSTR *o, int k, const char *opened)
+{
+ const W_O_WRSTR *w;
+
+ if (!o || k < 0 || k >= o->wn || !o->wstr[k])
+  return("");
+ w = o->wstr[k];
+ if (opened && strlen(opened) > (size_t)w->wmx &&
+     strlen(w->txt) == (size_t)w->wmx && strncmp(opened, w->txt, (size_t)w->wmx) == 0)
+  return(opened);
+ return(w->txt);
 }
 
 /**

@@ -621,7 +621,9 @@ char *e_buffer_to_text(BUFFER *b);   /* we_buffer.c */
 void e_window_show_replaced_text(FENSTER *f);   /* we_edit.c */
 int e_make_rudo(FENSTER *f, int sw);
 int e_autosave(FENSTER *f);
-char *e_make_postf(char *out, char *name, char *pf);
+/* The name of a window's autosave or emergency-save file: its name and an
+   ending, or NULL when that does not fit the buffer. */
+char *e_make_postf(char *out, size_t n, const char *name, const char *pf);
 
 /*   we_e_aus.c   */
 void e_cls(int frb, int chr);
@@ -941,6 +943,9 @@ int e_add_arguments(char *str, size_t size, char *head, FENSTER *f, int n, int s
    0, or -1 (the buffer is then empty and the status row says the entry was
    too long) when it does not fit whole. */
 int e_opt_field_take(W_OPTSTR *o, int k, char *dst, size_t size) WPE_FIELD_TAKE_RESULT;
+/* What a text field leaves the dialog with: the value it was opened with when
+   that was too long for the field and the user left it alone, else the text. */
+const char *e_opt_field_result(const W_OPTSTR *o, int k, const char *opened);
 W_O_TXTSTR **e_add_txtstr(int x, int y, char *txt, W_OPTSTR *o);
 W_O_WRSTR **e_add_wrstr(int xt, int yt, int xw, int yw, int nw, int wmx,
   int nc, int sw, char *header, char *txt, struct dirfile **df, W_OPTSTR *o);
@@ -1055,7 +1060,7 @@ void e_err_save(void);
 int e_emergency_save_running(void);
 int wpe_end_requested(void);
 void e_exit(int n);
-char *e_mkfilepath(char *dr, char *fn, char *fl);
+char *e_mkfilepath(char *dr, char *fn, char *fl, size_t n);
 int e_compstr(char *a, char *b);
 struct dirfile *e_find_files(char *sufile, int sw);
 struct dirfile *e_find_dir(char *sufile, int sw);

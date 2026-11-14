@@ -807,6 +807,24 @@ file name and renamed the file to them.  xwpe keeps each of these whole.  The @s
 @samp{System-Include-Path} and @samp{Info-Path} fields take 4095
 characters.  The reason: a cut path names another file.
 
+@item A long PATH entry, a long line in Grep, a value Project-Options cannot show
+@cindex PATH entry, long
+@cindex Grep, long line
+@cindex Project-Options, long value
+The original looked for a debugger, a compiler or a language server on
+@env{PATH} with a 256 byte array, so an entry of 256 bytes or more, or a
+compiler name of that length from a folder's option file, ran past it and
+could end the editor; it read a file for Grep in pieces of 255 bytes and
+searched each as a line, so a match across two pieces was missed and
+@samp{^} and @samp{$} matched inside a long line; and
+@samp{Project-Options} wrote the first 4095 bytes of a path (256 of the
+compiler options) over a longer value of your @file{.prj} when it saved.
+xwpe skips a @env{PATH} entry the system cannot hold, reads each line of
+a Grep whole (a line longer than 1 MiB is searched in its first MiB), and
+leaves a value its field cannot show as it was unless you change that
+field.  The reason: a cut path or line is another path or
+line.
+
 @item An absolute Executable
 @cindex Executable, absolute
 The original linked a language's @code{Executable} such as

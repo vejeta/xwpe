@@ -1061,14 +1061,19 @@ static void wpe_end_on_wake(int fd, void *data)
  wpe_end_by_default(sig);
 }
 
-char *e_mkfilepath(char *dr, char *fn, char *fl)
+/**
+ * e_mkfilepath - The path of file @fn in folder @dr, in the caller's buffer.
+ * @dr/@fn: the folder and the name; @fl/@n: receive the path.
+ *
+ * Used while a folder is read, to look at each entry through stat.  A path
+ * that does not fit leaves @fl empty, so no file but the one meant is looked
+ * at.
+ * Return: @fl.
+ */
+char *e_mkfilepath(char *dr, char *fn, char *fl, size_t n)
 {
- strcpy(fl, dr);
- if (dr[strlen(dr)-1] != DIRC)
- {
-  strcat(fl, DIRS);
- }
- strcat(fl, fn);
+ if (wpe_path_join(fl, n, dr, fn))
+  fl[0] = '\0';
  return(fl);
 }
 
@@ -1204,7 +1209,7 @@ struct dirfile *e_find_files(char *sufile, int sw)
     stmp = (char *)WpeRealloc(stmp, sizeStmp);
    }
 
-   e_mkfilepath(sdir, dp->d_name, stmp);
+   e_mkfilepath(sdir, dp->d_name, stmp, sizeStmp);
    lstat(stmp, &lbuf);
    stat(stmp, &buf);
 
@@ -1295,7 +1300,7 @@ struct dirfile *e_find_dir(char *sufile, int sw)
      sizeStmp <<= 1;
     stmp = (char *)WpeRealloc(stmp, sizeStmp);
    }
-   stat(e_mkfilepath(sdir, dp->d_name, stmp), &buf);
+   stat(e_mkfilepath(sdir, dp->d_name, stmp, sizeStmp), &buf);
 
    /* we accept _only_ real, existing directories */
    if (S_ISDIR(buf.st_mode))

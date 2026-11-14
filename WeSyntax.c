@@ -73,6 +73,71 @@ int WpeReservedWordCompare(const void *x, const void *y)
  return (strcmp(*((char **)x), *((char **)y)));
 }
 
+/**
+ * WpeSyntaxGetPersonal - The user's own syntax file, "~/.xwpe/syntax_def".
+ * @filename/@n: receive the path.
+ *
+ * The user's file is read in preference to the system's, so a home folder
+ * the system cannot hold (a long temporary folder, say) gives no personal
+ * file rather than the file of a cut folder.
+ * Return: 0, or -1 with @filename empty when the path does not fit.
+ */
+static int WpeSyntaxGetPersonal(char *filename, size_t n)
+{
+#ifdef DJGPP
+ return wpe_path_copy(filename, n, "./" SYNTAX_FILE);
+#else
+ const char *home = getenv("HOME");
+
+ /* No HOME is the root folder, as before: never the folder the editor was
+    started in, which may be a cloned project's. */
+ if (!home || !*home)
+  home = "/";
+ if (wpe_path_join(filename, n, home, XWPE_HOME) ||
+     wpe_path_cat(filename, n, "/" SYNTAX_FILE))
+ {
+  if (n)
+   filename[0] = '\0';
+  return -1;
+ }
+ return 0;
+#endif
+}
+
+/**
+ * WpeSyntaxGetSystem - The syntax file installed with the editor.
+ * @filename/@n: receive the path.
+ * Return: 0, or -1 with @filename empty when the path does not fit.
+ */
+static int WpeSyntaxGetSystem(char *filename, size_t n)
+{
+ return wpe_path_join(filename, n, e_lib_dir(), SYNTAX_FILE);
+}
+
+/**
+ * WpeSyntaxOpenPersonal - Open the user's own syntax file, if there is one.
+ * @buf/@n: scratch for its path.
+ * Return: the open file, or NULL.
+ */
+static FILE *WpeSyntaxOpenPersonal(char *buf, size_t n)
+{
+ if (WpeSyntaxGetPersonal(buf, n))
+  return NULL;
+ return fopen(buf, "r");
+}
+
+/**
+ * WpeSyntaxOpenSystem - Open the syntax file installed with the editor.
+ * @buf/@n: scratch for its path.
+ * Return: the open file, or NULL.
+ */
+static FILE *WpeSyntaxOpenSystem(char *buf, size_t n)
+{
+ if (WpeSyntaxGetSystem(buf, n))
+  return NULL;
+ return fopen(buf, "r");
+}
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeSyntaxReadFile - Reads the programming language syntax file.
 
@@ -83,16 +148,16 @@ void WpeSyntaxReadFile(ECNT *cn)
 {
  FILE *syntax_file;
  WpeSyntaxExt *new_syntax;
- char tmp[WPE_SYNTAX_PATH_MAX];
+ char tmp[WPE_PATH_SIZE];
  int reserved_num, long_op_num;
  int i, k;
 
  WpeSyntaxDef = (WpeSyntaxExt **)WpeExpArrayCreate(0, sizeof(WpeSyntaxExt *), 4);
- WpeSyntaxGetPersonal(tmp);
- if ((syntax_file = fopen(tmp, "r")) == NULL)
+ syntax_file = WpeSyntaxOpenPersonal(tmp, sizeof tmp);
+ if (syntax_file == NULL)
  {
-  WpeSyntaxGetSystem(tmp);
-  if ((syntax_file = fopen(tmp, "r")) == NULL)
+  syntax_file = WpeSyntaxOpenSystem(tmp, sizeof tmp);
+  if (syntax_file == NULL)
   {
    /* C Syntax (".c" extension) */
    new_syntax = WpeMalloc(sizeof(WpeSyntaxExt));

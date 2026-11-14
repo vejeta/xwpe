@@ -787,8 +787,10 @@ TESTS += tests/check-chain-outcome.sh
 # One owner of how long a path the editor holds may be (we_path.h) and of a
 # dialog field's way out (we_fieldtake.h): tests/check-path-buffers.sh fails
 # on an unbounded copy of a field's text, a refusal nobody reads, a call of
-# e_add_arguments without its buffer's size, and a second definition of the
-# two numbers.
+# e_add_arguments without its buffer's size, a second definition of the two
+# numbers, a path number of a file's own, the system's PATH_MAX named outside
+# the owner, and a strcpy, strcat, strncpy or sprintf nobody has judged
+# (counted per function in tests/path-buffers.allow, which may only shrink).
 TESTS += tests/check-path-buffers.sh
 
 # One owner of a help or Info token taken into fixed storage (we_helpbuf.h)
@@ -935,6 +937,7 @@ EXTRA_DIST = \
   tests/check-chain-outcome.sh \
   tests/chain-outcome.allow \
   tests/check-path-buffers.sh \
+  tests/path-buffers.allow \
   tests/check-help-buffers.sh \
   tests/help-buffers.allow \
   tests/check-number-fields.sh \

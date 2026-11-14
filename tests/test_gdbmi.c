@@ -781,6 +781,46 @@ static void test_parser_nested_tuples_and_lists(void)
 		        "No symbol \"nosuch\" in current context.");
 }
 
+/* @scenario SC-path-debug-07 */
+/* The file of a frame is a value of the record, kept at its own length: a
+   path far over the 127 bytes of one key in a lookup path (E_GDBMI_KEY_MAX)
+   comes back whole, and the session keeps it whole.  Only a KEY longer than
+   E_GDBMI_KEY_MAX is refused, so a lookup path cannot run past its piece. */
+#define LONG_FILE_BYTES   1100
+#define KEY_OVER_BYTES    200
+#define KEY_UNDER_BYTES   100
+static void test_mi_file_of_any_length_is_kept_whole(void)
+{
+	static char line[LINE_ROOM], path[LONG_FILE_BYTES + 1], key[KEY_OVER_BYTES + 1];
+	int i;
+
+	path[0] = '/';
+	for (i = 1; i < LONG_FILE_BYTES; i++)
+		path[i] = 'p';
+	path[LONG_FILE_BYTES] = '\0';
+	snprintf(line, sizeof line, "*stopped,reason=\"breakpoint-hit\",frame={addr=\"0x1\","
+	         "func=\"f\",args=[],file=\"p.c\",fullname=\"%s\",line=\"7\"},thread-id=\"1\"", path);
+	e_ds_reset(&sess);
+	if (!parse_ok("a long file", line))
+		return;
+	chk_str("record: frame.fullname", e_gdbmi_get(&rec, "frame.fullname"), path);
+	e_ds_take_mi_record(&sess, &rec);
+	chk_int("long file: one frame", sess.nframes, 1);
+	chk_str("long file: the session keeps it whole", sess.frames[0].file, path);
+
+	for (i = 0; i < KEY_OVER_BYTES; i++)
+		key[i] = 'k';
+	key[KEY_OVER_BYTES] = '\0';
+	snprintf(line, sizeof line, "^done,%s=\"v\"", key);
+	if (parse_ok("a long key", line))
+		chk_int("a key over the lookup's piece is not looked up",
+		        e_gdbmi_get(&rec, key) == NULL, 1);
+	key[KEY_UNDER_BYTES] = '\0';
+	snprintf(line, sizeof line, "^done,%s=\"v\"", key);
+	if (parse_ok("a key under the piece", line))
+		chk_str("a key under the lookup's piece is found", e_gdbmi_get(&rec, key), "v");
+}
+
 static void test_get_is_null_when_absent(void)
 {
 	if (!parse_ok("absent", "^done,frame={line=\"7\",args=[]}"))
@@ -1256,6 +1296,7 @@ int main(void)
 	test_parser_decodes_the_escapes();
 	test_parser_nested_tuples_and_lists();
 	test_get_is_null_when_absent();
+	test_mi_file_of_any_length_is_kept_whole();
 	test_parser_refuses_malformed_lines();
 	test_parser_never_reads_past_the_line();
 	test_parser_reports_what_does_not_fit();

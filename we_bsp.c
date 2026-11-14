@@ -54,7 +54,7 @@ struct e_bsp_session {
  char         staged_cmd[BSP_METHOD_MAX];
  struct json_object *staged_args;
  /* What the start learns. */
- char         rootdir[PATH_MAX];
+ char         rootdir[WPE_PATH_SIZE];
  struct json_object *target;  /* the main build target's id               */
  char         mainclass[BSP_CLASS_MAX];
  char         host[BSP_HOST_MAX];
@@ -450,7 +450,7 @@ static WpeStartPlan *bsp_plan_of(const char *rootdir, const char *file, char **a
  */
 static int bsp_connection_file(const char *dir, char *file, size_t filesz)
 {
- char path[PATH_MAX];
+ char path[WPE_PATH_SIZE];
  DIR *d;
  struct dirent *de;
  struct stat st;
@@ -480,8 +480,8 @@ static int bsp_connection_file(const char *dir, char *file, size_t filesz)
 
 static char **bsp_read_connection_argv(const char *workdir, char *file, size_t filesz)
 {
- char path[PATH_MAX];
- char jsonpath[PATH_MAX];
+ char path[WPE_PATH_SIZE];
+ char jsonpath[WPE_PATH_SIZE];
  struct json_object *root, *argv;
  char **av = NULL;
  int n, i;
@@ -530,7 +530,7 @@ static void bsp_free_argv(char **av)
  */
 char **e_bsp_connection_argv(const char *workdir, char *file, size_t filesz)
 {
- char rootdir[PATH_MAX];
+ char rootdir[WPE_PATH_SIZE];
 
  if (!realpath(workdir, rootdir))
   snprintf(rootdir, sizeof(rootdir), "%s", workdir);
@@ -669,7 +669,7 @@ static int bsp_parse_uri(const char *uri, char *host, size_t hsz, int *port)
  */
 int e_bsp_needs_setup(const char *workdir)
 {
- char rootdir[PATH_MAX], file[PATH_MAX];
+ char rootdir[WPE_PATH_SIZE], file[WPE_PATH_SIZE];
  char **argv;
 
  if (!realpath(workdir, rootdir))
@@ -721,7 +721,7 @@ static int bsp_init_cmd(char *cmd, size_t n, void *ctx)
 {
  e_bsp_session *b = ctx;
  struct json_object *args, *caps, *langs;
- char rooturi[PATH_MAX + 8];
+ char rooturi[WPE_PATH_SIZE + 8];
 
  args = json_object_new_object();
  json_object_object_add(args, "displayName", json_object_new_string("xwpe"));
@@ -883,7 +883,7 @@ static e_bsp_session *bsp_session_spawn(const char *rootdir, char *errbuf, size_
 {
  e_bsp_session *b;
  WpeStartPlan *plan = NULL;
- char file[PATH_MAX];
+ char file[WPE_PATH_SIZE];
  char **argv;
 
  file[0] = '\0';
@@ -930,7 +930,7 @@ e_bsp_session *e_bsp_start_async(const char *workdir, const E_D_REQ_IO *io,
 {
  e_bsp_session *b;
  E_D_REQUESTER via;
- char rootdir[PATH_MAX];
+ char rootdir[WPE_PATH_SIZE];
 
  if (errbuf && errsz)
   errbuf[0] = '\0';

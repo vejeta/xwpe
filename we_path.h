@@ -57,6 +57,17 @@ int wpe_path_join(char *out, size_t n, const char *dir, const char *name) WPE_PA
    refusal @out is left empty. */
 int wpe_path_cat(char *out, size_t n, const char *tail) WPE_PATH_RESULT;
 
+/* The one place a program is looked up on a PATH.  Each entry of the ':' list
+   (an empty one is the current folder, as the shell reads it) is joined with
+   @name; an entry whose path would not fit @out is skipped, never cut into
+   the path of some other folder.  Returns 0 with the path of the first
+   executable found in @out, -1 with @out empty when there is none, and
+   WPE_PATH_SEARCH_NO_LIST when @list is NULL. */
+#define WPE_PATH_SEARCH_NO_LIST (-2)
+int wpe_path_search_in(const char *list, const char *name, char *out, size_t n);
+/* The same on the PATH of the environment. */
+int wpe_path_search(const char *name, char *out, size_t n);
+
 /* A path kept past the call lives on the heap at its real length.  NULL when
    out of memory. */
 char *wpe_path_dup(const char *src);

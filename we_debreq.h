@@ -96,7 +96,7 @@ const E_D_OTHER_PROMPT *e_d_req_other_prompt_at(const E_D_ANSWER *ans,
 #define E_D_REQ_CMD_MAX \
   (E_D_REQ_PATH_MAX * E_D_REQ_PATH_ESCAPE_MAX + E_D_REQ_CMD_HEAD_MAX)
 
-/* we_path.h refuses to compile when PATH_MAX is longer than WPE_PATH_MAX, so
+/* we_path.h refuses to compile when the system's path length is longer than WPE_PATH_MAX, so
    a command always holds a path of this system. */
 
 /* The longest command, in bytes with its terminator, to a debugger nobody

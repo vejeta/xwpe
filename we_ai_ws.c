@@ -254,7 +254,7 @@ static void ws_output_reason(const char *out, int status, char *buf, size_t sz)
  */
 static void ws_make_dir_parents(const char *path)
 {
- char buf[PATH_MAX];
+ char buf[WPE_PATH_SIZE];
  size_t i, n = strlen(path);
 
  if (n == 0 || n >= sizeof buf) return;
@@ -502,7 +502,7 @@ static int    ck_mode;                 /* 0 none, 1 git ref, 2 snapshot copies *
 #define WS_CK_GIT      1
 #define WS_CK_SNAPSHOT 2
 static char   ck_ref[160];
-static char   ck_dir[1024];
+static char   ck_dir[WPE_PATH_SIZE];
 static char   ck_snapdir[1024];
 static char **ck_files;
 static int    ck_n;
@@ -589,7 +589,7 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
  int nsubs = 0, scap = 0, stopped = 0, k;
  if (!d) return 0;
  while ((de = readdir(d))) {
-  char *p, real[PATH_MAX];
+  char *p, real[WPE_PATH_SIZE];
   size_t L;
   struct stat st;
   if (*n >= WS_WATCH_MAX) { stopped = 1; break; }
@@ -637,7 +637,7 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
  */
 static int ws_list_watched_files(char ***l, int *n, int record)
 {
- char own[1024], real[PATH_MAX];
+ char own[WPE_PATH_SIZE], real[WPE_PATH_SIZE];
  const char *skip;
  int cap = 0, k, stopped = 0;
  ws_state_dir(own, sizeof own);
@@ -671,7 +671,7 @@ static int ws_list_watched_files(char ***l, int *n, int record)
  */
 static int ws_snapshot_run_created(const char *path)
 {
- char dir[PATH_MAX];
+ char dir[WPE_PATH_SIZE];
  char *sl;
  if (ws_list_has(ck_before, ck_before_n, path)) return 0;
  if (strlen(path) >= sizeof dir) return 0;
@@ -1041,8 +1041,13 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  int i;
 
  ck_clear();
- strncpy(ck_dir, root, sizeof ck_dir - 1);
- ck_dir[sizeof ck_dir - 1] = '\0';
+ if (wpe_path_copy(ck_dir, sizeof ck_dir, root)) {
+  /* a workspace the system cannot hold: no checkpoint, rather than one of a
+     cut folder */
+  free(root);
+  wpe_ai_trace("checkpoint refused: workspace path too long");
+  return -1;
+ }
  ws_strip_slash(ck_dir);
  free(root);
 

@@ -111,14 +111,14 @@ char **e_d_swtchs; /* e_d_swtchs[i] is the i-th watch expression (a char*) */
 
 /* The longest line read from a debugger.  A stop, a frame or a breakpoint
    answer names a source file, and a file may sit under any path up to
-   PATH_MAX; the margin is for what the debugger prints around it (the
+   WPE_PATH_MAX; the margin is for what the debugger prints around it (the
    function and its arguments, "at ", ":line").  A longer line is cut at this
    size and the rest dropped, never read as a second line.  Lines whose end
    matters -- a stop line, a frame, a value -- are read whole instead
    (E_D_LINE): their "at file:line" comes after a function name and
    arguments of any length. */
 #define E_D_LINE_MARGIN  512
-#define E_D_LINE_MAX     (PATH_MAX + E_D_LINE_MARGIN)
+#define E_D_LINE_MAX     (WPE_PATH_SIZE + E_D_LINE_MARGIN)
 /* A debugger line of any length, read by e_d_line_read_nb_whole. */
 typedef struct
 {
@@ -317,7 +317,7 @@ char *npipe[5] = {  NULL, NULL, NULL, NULL, NULL  };
 
 /* Per-step read of jdb, pdb and a68g output: scratch buffer size (the run of
    pdb, jdb and a68g waits as long as the program takes). */
-#define DEB_STEP_BUF     (PATH_MAX + 4096)
+#define DEB_STEP_BUF     (WPE_PATH_SIZE + 4096)
 
 /* Safety bound on the stderr-drain loop (e_d_line_drain_errors): a debugger
    that floods its error stream (e.g. a68g's abend->io_write_string recursion
@@ -1981,11 +1981,11 @@ static int e_d_line_output_fd(void)
 /**
  * e_d_debugger_pid_path - The file the debugger's PID is recorded in under
  * the graphical editors.
- * @path: PATH_MAX bytes for the answer.
+ * @path: WPE_PATH_SIZE bytes for the answer.
  */
 static void e_d_debugger_pid_path(char *path)
 {
- snprintf(path, PATH_MAX, "%s/%s", e_tmp_dir, E_D_DEBUGGER_PID_FILE);
+ snprintf(path, WPE_PATH_SIZE, "%s/%s", e_tmp_dir, E_D_DEBUGGER_PID_FILE);
 }
 
 /**
@@ -1994,7 +1994,7 @@ static void e_d_debugger_pid_path(char *path)
  */
 static void e_d_debugger_pid_forget(void)
 {
- char path[PATH_MAX];
+ char path[WPE_PATH_SIZE];
 
  if (!WpeIsXwin())
   return;
@@ -2009,7 +2009,7 @@ static void e_d_debugger_pid_forget(void)
  */
 static pid_t e_d_debugger_pid_read(void)
 {
- char path[PATH_MAX];
+ char path[WPE_PATH_SIZE];
  FILE *fp;
  long pid = 0;
 
@@ -6634,7 +6634,7 @@ int e_make_breakpoint(FENSTER *f, int sw)
 static struct
 {
  char stop_words[E_D_REQ_MSG_MAX];        /* the box that ends the start, or ""   */
- char dir[PATH_MAX];                      /* this session's own folder, or ""     */
+ char dir[WPE_PATH_SIZE];                      /* this session's own folder, or ""     */
  int n;                                   /* lines to send                        */
  int move_end;                            /* the first line after pin and move    */
  int next;                                /* the next line to send                */
@@ -7394,7 +7394,7 @@ static const WpeStartPath *e_d_plan_reads_first(const WpeStartPlan *p)
  */
 static void e_d_plan_project_file(WpeStartPlan *p)
 {
- char folder[PATH_MAX];
+ char folder[WPE_PATH_SIZE];
 
  e_prj_folder(folder, sizeof folder);
  wpe_startplan_set_file(p, e_prj_file_name(), folder);
@@ -7642,7 +7642,7 @@ static int e_d_plan_set_own(FENSTER *f, WpeStartPlan *p, const char *operand,
  */
 static WpeStartPlan *e_d_plan_approved(FENSTER *f, const char *prog, int *use_own_debugger)
 {
- char operand[PATH_MAX + 2], what[E_D_PLAN_WHAT_MAX];
+ char operand[WPE_PATH_SIZE + 2], what[E_D_PLAN_WHAT_MAX];
  E_STARTPLAN_SHOW show;
  WpeStartPlan *p;
  char *shown;
@@ -7706,7 +7706,7 @@ static void e_d_script_word(FILE *fp, const char *word)
  */
 static void e_d_script_command(FILE *fp, char **argv)
 {
- char pidfile[PATH_MAX];
+ char pidfile[WPE_PATH_SIZE];
  int i;
 
  e_d_debugger_pid_path(pidfile);
@@ -7733,7 +7733,7 @@ static void e_d_script_command(FILE *fp, char **argv)
  */
 static void e_d_script_forget_pid(FILE *fp)
 {
- char pidfile[PATH_MAX];
+ char pidfile[WPE_PATH_SIZE];
 
  e_d_debugger_pid_path(pidfile);
  fputs("rm -f ", fp);
@@ -7792,9 +7792,9 @@ typedef struct {
  int status_known;
  int awaiting_end;           /* jdb said the program ended; the session
                                 waits for the process the editor started */
- char main_class[PATH_MAX];  /* the class it runs */
- char java[PATH_MAX];        /* the java it is started with */
- char dir[PATH_MAX];         /* where it runs: the build's directory */
+ char main_class[WPE_PATH_SIZE];  /* the class it runs */
+ char java[WPE_PATH_SIZE];        /* the java it is started with */
+ char dir[WPE_PATH_SIZE];         /* where it runs: the build's directory */
 } E_D_JDB_VM;
 
 static E_D_JDB_VM e_d_jdb_vm;
@@ -8269,7 +8269,7 @@ static int e_d_script_connect(FENSTER *f);   /* (below) */
  */
 static int e_d_start_in_script(FENSTER *f, WpeStartPlan *plan)
 {
- char file[PATH_MAX], **argv = wpe_startplan_argv(plan);
+ char file[WPE_PATH_SIZE], **argv = wpe_startplan_argv(plan);
  WpeStartIo io;
  int ret, wrote;
 
@@ -8318,7 +8318,7 @@ static int e_d_start_in_script(FENSTER *f, WpeStartPlan *plan)
  */
 static int e_d_debugger_missing(FENSTER *f)
 {
- char line[PATH_MAX];
+ char line[WPE_PATH_SIZE];
 
  if (!e_test_command(e_debugger))
   return(0);
@@ -8514,8 +8514,8 @@ static int            g_dap_closing = 0; /* the session is being closed     */
 static int            g_dap_shown = 0;   /* how much of the program's output
                                             (e_d_prog_output) Messages has  */
 static e_dap_host     g_dap_host;
-static char           g_dap_progdir[1024] = "";  /* the user's program directory */
-static char           g_dap_stop_file[1024] = "";/* full path of the current stop */
+static char           g_dap_progdir[WPE_PATH_SIZE] = "";  /* the user's program directory */
+static char           g_dap_stop_file[WPE_PATH_SIZE] = "";/* full path of the current stop */
 static int            g_dap_stop_line = -1;      /* line of the current stop      */
 static char           g_dap_stop_reason[32] = "";/* the adapter's reason for it  */
 static int            g_dap_entry_func = 0;      /* the editor set an entry
@@ -8707,11 +8707,8 @@ static void e_d_dap_on_stopped(const char *file, int line, const char *reason,
  if (reason)
   snprintf(g_dap_stop_reason, sizeof(g_dap_stop_reason), "%s", reason);
  g_dap_stop_file[0] = '\0';
- if (file)
- {
-  strncpy(g_dap_stop_file, file, sizeof(g_dap_stop_file) - 1);
-  g_dap_stop_file[sizeof(g_dap_stop_file) - 1] = '\0';
- }
+ if (file && wpe_path_copy(g_dap_stop_file, sizeof g_dap_stop_file, file))
+  g_dap_stop_file[0] = '\0';        /* a path the system cannot hold names no window */
 }
 
 static int e_d_dap_watches_fill(FENSTER *f, char **values, int nvalues,
@@ -8740,8 +8737,8 @@ static void e_d_dap_show_stop(FENSTER *f, char **values, int nvalues)
  if (!f || !e_d_dap_stop_has_place())
   return;
  e_d_nstack = 0;                      /* a stop selects the top frame again */
- strncpy(e_d_file, e_d_dap_basename(g_dap_stop_file), sizeof(e_d_file) - 1);
- e_d_file[sizeof(e_d_file) - 1] = '\0';
+ if (wpe_path_copy(e_d_file, sizeof e_d_file, e_d_dap_basename(g_dap_stop_file)))
+  e_d_file[0] = '\0';
  e_d_dap_watches_fill(f, values, nvalues, 0);
  e_d_goto_break(g_dap_stop_file, g_dap_stop_line, f);
 }
@@ -8960,8 +8957,11 @@ void e_d_dap_end_at_exit(void)
    word, never read by the shell, whatever quotes or ';' it holds. */
 #define E_D_COMPILE_SCRIPT_FMT     "%s %s -o \"$1\" \"$2\" 2>\"$3\""
 #define E_D_COMPILE_SCRIPT_NAME    "sh"
-#define E_D_COMPILE_PATH_MAX       1024
-#define E_D_COMPILE_CMD_MAX        (4 * E_D_COMPILE_PATH_MAX)
+#define E_D_COMPILE_CMD_MAX        (4 * WPE_PATH_MAX)
+#define E_D_COMPILE_SOURCE_WHAT    "source"
+#define E_D_COMPILE_BINARY_WHAT    "program"
+#define E_D_COMPILE_ERRF_WHAT      "compiler error file"
+#define E_D_COMPILE_COMMAND_WHAT   "compiler command"
 #define E_D_COMPILE_ERR_LINE_MAX   512
 #define E_D_COMPILE_DEFAULT_CC     "rustc"
 #define E_D_COMPILE_DEFAULT_FLAGS  "-g"
@@ -8974,10 +8974,91 @@ static struct {
  int ok;                               /* it ended with exit status 0 */
  int compiled;                         /* the next start of the session uses binary */
  char cmd[E_D_COMPILE_CMD_MAX];
- char src[E_D_COMPILE_PATH_MAX];       /* the file it compiles */
- char binary[E_D_COMPILE_PATH_MAX];
- char errf[E_D_COMPILE_PATH_MAX];      /* where the compiler's errors go */
+ char src[WPE_PATH_SIZE];             /* the file it compiles */
+ char binary[WPE_PATH_SIZE];
+ char errf[WPE_PATH_SIZE];             /* where the compiler's errors go */
 } e_d_compile;
+
+/**
+ * e_d_compile_too_long - Say which part of the compile for debug does not
+ * fit, instead of compiling a cut path.
+ * @f: the window the box belongs to; @what: the part ("source", "program").
+ *
+ * A folder the editor stands in fits, but its binary's name and the error
+ * file's tail can make a path the system cannot hold; the compiler would
+ * then be told a prefix of it and write the binary somewhere else.
+ */
+static void e_d_compile_too_long(FENSTER *f, const char *what)
+{
+ char msg[WPE_PATH_MSG_MAX];
+
+ snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, what, WPE_PATH_MAX);
+ e_error(msg, 0, f->fb);
+}
+
+/**
+ * e_d_compile_paths - Name the source, the binary and the error file of the
+ * compile for debug of @f.
+ * @f: the source window.
+ *
+ * The binary is written next to the source as "<name>.dbg", the compiler's
+ * errors go to "<name>.dbgerr" there.  Each path is whole or the compile
+ * does not start: a box names the one that does not fit.
+ * Return: 0, or -1 (said in a box).
+ */
+static int e_d_compile_paths(FENSTER *f)
+{
+ char stem[WPE_NAME_SIZE];
+
+ if (wpe_path_join(e_d_compile.src, sizeof e_d_compile.src, f->dirct, f->datnam))
+ {
+  e_d_compile_too_long(f, E_D_COMPILE_SOURCE_WHAT);
+  return(-1);
+ }
+ if (wpe_path_copy(stem, sizeof stem, f->datnam))
+ {
+  e_d_compile_too_long(f, E_D_COMPILE_SOURCE_WHAT);
+  return(-1);
+ }
+ WpeStringCutChar(stem, '.');
+ if (wpe_path_join(e_d_compile.binary, sizeof e_d_compile.binary, f->dirct, stem) ||
+     wpe_path_cat(e_d_compile.binary, sizeof e_d_compile.binary, ".dbg"))
+ {
+  e_d_compile_too_long(f, E_D_COMPILE_BINARY_WHAT);
+  return(-1);
+ }
+ if (wpe_path_join(e_d_compile.errf, sizeof e_d_compile.errf, f->dirct, stem) ||
+     wpe_path_cat(e_d_compile.errf, sizeof e_d_compile.errf, ".dbgerr"))
+ {
+  e_d_compile_too_long(f, E_D_COMPILE_ERRF_WHAT);
+  return(-1);
+ }
+ return(0);
+}
+
+/**
+ * e_d_compile_script - Put the compiler and its options into the script the
+ * shell runs.
+ * @f: the source window; @cc, @flags: the compiler and its options, which an
+ * option file of a cloned folder can make any length.
+ *
+ * A command cut in the middle is another command, so one that does not fit
+ * is refused and said, never run shortened.
+ * Return: 0, or -1 (said in a box).
+ */
+static int e_d_compile_script(FENSTER *f, const char *cc, const char *flags)
+{
+ int n = snprintf(e_d_compile.cmd, sizeof e_d_compile.cmd,
+                  E_D_COMPILE_SCRIPT_FMT, cc, flags);
+
+ if (n < 0 || (size_t)n >= sizeof e_d_compile.cmd)
+ {
+  e_d_compile.cmd[0] = '\0';
+  e_d_compile_too_long(f, E_D_COMPILE_COMMAND_WHAT);
+  return(-1);
+ }
+ return(0);
+}
 
 /**
  * e_d_compile_command - Build the compiler's command line for @f.
@@ -8992,7 +9073,7 @@ static struct {
  */
 static int e_d_compile_command(FENSTER *f)
 {
- char stem[E_D_COMPILE_PATH_MAX], m[160];
+ char m[160];
  const char *cc = E_D_COMPILE_DEFAULT_CC, *flags = E_D_COMPILE_DEFAULT_FLAGS;
 
  e_check_c_file_w(f);                 /* set e_s_prog to this file's compiler */
@@ -9008,17 +9089,9 @@ static int e_d_compile_command(FENSTER *f)
   e_error(m, 0, f->fb);
   return(-1);
  }
- snprintf(stem, sizeof stem, "%s", f->datnam);
- WpeStringCutChar(stem, '.');
- snprintf(e_d_compile.binary, sizeof e_d_compile.binary, "%s%s.dbg",
-          f->dirct, stem);
- snprintf(e_d_compile.src, sizeof e_d_compile.src, "%s%s", f->dirct,
-          f->datnam);
- snprintf(e_d_compile.errf, sizeof e_d_compile.errf, "%s%s.dbgerr",
-          f->dirct, stem);
- snprintf(e_d_compile.cmd, sizeof e_d_compile.cmd, E_D_COMPILE_SCRIPT_FMT,
-          cc, flags);
- return(0);
+ if (e_d_compile_paths(f))
+  return(-1);
+ return(e_d_compile_script(f, cc, flags));
 }
 
 /**
@@ -9030,11 +9103,12 @@ static int e_d_compile_command(FENSTER *f)
  */
 static int e_d_compile_is_for(FENSTER *f)
 {
- char src[E_D_COMPILE_PATH_MAX];
+ char src[WPE_PATH_SIZE];
 
  if (!f || !f->dirct || !f->datnam)
   return(0);
- snprintf(src, sizeof src, "%s%s", f->dirct, f->datnam);
+ if (wpe_path_join(src, sizeof src, f->dirct, f->datnam))
+  return(0);
  return(strcmp(src, e_d_compile.src) == 0);
 }
 
@@ -9282,7 +9356,6 @@ static void e_d_compile_end_at_exit(void)
 #define E_SCALA_SETUP_PROGRAM "scala-cli"
 #define E_SCALA_SETUP_VERB    "setup-ide"
 #define E_SCALA_SETUP_WHAT    "scala-cli setup-ide"
-#define E_SCALA_SETUP_DIR_MAX 1024
 #define E_SCALA_SETUP_ARGC    3
 /* The waiting line, for the language server and the debugger alike. */
 #define E_SCALA_SETUP_LINE \
@@ -9299,7 +9372,7 @@ typedef struct
  int running;                       /* started, its end not reported yet */
  int held;                          /* ended behind a dialog: not told yet */
  int ok;                            /* how it ended, while held */
- char dir[E_SCALA_SETUP_DIR_MAX];   /* the project, also its argument */
+ char dir[WPE_PATH_SIZE];           /* the project, also its argument */
  e_scala_setup_done_fn done;
 } E_SCALA_SETUP;
 
@@ -9323,7 +9396,7 @@ static int e_scala_setup_succeeded(int status, int how)
  */
 static void e_scala_setup_tell(E_SCALA_SETUP *su)
 {
- char dir[E_SCALA_SETUP_DIR_MAX];
+ char dir[WPE_PATH_SIZE];
 
  su->held = 0;
  snprintf(dir, sizeof dir, "%s", su->dir);
@@ -9375,7 +9448,7 @@ static void e_scala_setup_deliver_held(void)
  */
 static WpeStartPlan *e_scala_setup_plan(const char *dir)
 {
- char operand[E_SCALA_SETUP_DIR_MAX + 2];
+ char operand[WPE_PATH_SIZE + 2];
  char *argv[E_SCALA_SETUP_ARGC + 1];
  WpeStartPlan *p;
 
@@ -9406,7 +9479,8 @@ static int e_scala_setup_begin(E_SCALA_SETUP *su, const char *dir,
  WpeStartIo io;
  int rc;
 
- snprintf(su->dir, sizeof su->dir, "%s", dir);
+ if (wpe_path_copy(su->dir, sizeof su->dir, dir))
+  return(-1);
  if (!(plan = e_scala_setup_plan(su->dir)))
   return(-1);
  memset(&io, 0, sizeof io);
@@ -10017,8 +10091,8 @@ static char *e_d_bsp_command_text(char *const *argv)
 /* What the editor's own `scala-cli setup-ide` wrote in this session: the
    project, the connection file's name and the command it names; empty
    when it wrote nothing. */
-static char e_d_bsp_made_dir[PATH_MAX];
-static char e_d_bsp_made_file[PATH_MAX];
+static char e_d_bsp_made_dir[WPE_PATH_SIZE];
+static char e_d_bsp_made_file[WPE_PATH_SIZE];
 static char *e_d_bsp_made_text;
 
 static char *e_d_bsp_command_text(char *const *argv);
@@ -10067,7 +10141,7 @@ static void e_d_bsp_note_made_here(const char *dir)
  */
 static int e_d_bsp_made_here(const char *rootdir, const char *file, const char *text)
 {
- char real[PATH_MAX];
+ char real[WPE_PATH_SIZE];
 
  if (!e_d_bsp_made_text || !realpath(rootdir, real))
   return(0);
@@ -10245,7 +10319,7 @@ void e_d_bsp_cancel(void)
 static int e_d_dap_start(FENSTER *f)
 {
  const e_d_dap_lang *lang = e_d_dap_lang_for(f);
- char dir[1024], binary[1024];
+ char dir[WPE_PATH_SIZE], binary[WPE_PATH_SIZE];
  char *const *adapter;
  const char *program;
  int i, dlen, compiled;
@@ -10275,11 +10349,13 @@ static int e_d_dap_start(FENSTER *f)
  /* Program directory without the trailing slash: the adapter's working dir, and
     the root that tells the user's own code from library/runtime stops.  (dlv's
     package resolution also rejects a trailing "DIR/".) */
- dlen = snprintf(dir, sizeof(dir), "%s", f->dirct ? f->dirct : ".");
+ if (wpe_path_copy(dir, sizeof dir, f->dirct ? f->dirct : "."))
+  return(-1);                          /* a window's folder always fits */
+ dlen = (int)strlen(dir);
  while (dlen > 1 && dir[dlen - 1] == DIRC)
   dir[--dlen] = '\0';
- strncpy(g_dap_progdir, dir, sizeof(g_dap_progdir) - 1);
- g_dap_progdir[sizeof(g_dap_progdir) - 1] = '\0';
+ if (wpe_path_copy(g_dap_progdir, sizeof g_dap_progdir, dir))
+  return(-1);
  g_dap_stop_file[0] = '\0';
  g_dap_stop_line = -1;
  g_dap_stop_reason[0] = '\0';
@@ -10322,8 +10398,8 @@ static int e_d_dap_start(FENSTER *f)
   {  e_bsp_close(g_bsp);  g_bsp = NULL;  }
   return(-1);
  }
- strncpy(e_d_file, f->datnam, sizeof(e_d_file) - 1);
- e_d_file[sizeof(e_d_file) - 1] = '\0';
+ if (wpe_path_copy(e_d_file, sizeof e_d_file, f->datnam))
+  e_d_file[0] = '\0';
  /* Install breakpoints the user toggled before Run.  e_make_breakpoint already
     recorded them as (file, line) in the e_d_*brpts arrays; translate each to a
     full path the adapter can resolve. */
@@ -12970,7 +13046,7 @@ static void e_d_debugger_commit(void)
  */
 static int e_d_start_planned(ECNT *cn, FENSTER *f, int type)
 {
- char estr[PATH_MAX];
+ char estr[WPE_PATH_SIZE];
 
  e_d_select_debugger(type);
  jdb_trace("e_start_debug: e_d_file='%s', e_deb_type=%d, comp_sw=%d\n",
@@ -13900,7 +13976,7 @@ static void e_d_jdb_owe_one(void)
  */
 static void e_d_jdb_owed_line(const char *line)
 {
- char spec[PATH_MAX];
+ char spec[WPE_PATH_SIZE];
  const char *at;
 
  if (e_d_jdb_owed <= 0)
@@ -14085,7 +14161,7 @@ static int e_d_jdb_answer_fd(void)
  */
 static void e_d_jdb_confirm_deferred(const char *spec)
 {
- char cls[PATH_MAX], entry[PATH_MAX];
+ char cls[WPE_PATH_SIZE], entry[WPE_PATH_SIZE];
  const char *colon = strchr(spec, ':');
  size_t len;
  int line, i;
@@ -14113,7 +14189,7 @@ static void e_d_jdb_confirm_deferred(const char *spec)
 /* jdb's answers to a breakpoint command sent while the program runs come
    in the run's output, in any order with the program's events; each line
    is read by e_ds_jdb_live_word (we_debsess.c). */
-#define E_D_JDB_SPEC_MAX  PATH_MAX
+#define E_D_JDB_SPEC_MAX  WPE_PATH_SIZE
 
 /**
  * e_d_jdb_take_live_word - jdb answered a breakpoint command sent while the
@@ -16878,8 +16954,8 @@ static struct {
  int wanted;                   /* pdb: set it before the Continue goes out */
  int line;                     /* its 1-based line                         */
  int id;                       /* the number dbx or xdb gave it            */
- char file[PATH_MAX];          /* the window's file name, as breakpoints   */
- char path[PATH_MAX];          /* the full path the debugger is given      */
+ char file[WPE_PATH_SIZE];          /* the window's file name, as breakpoints   */
+ char path[WPE_PATH_SIZE];          /* the full path the debugger is given      */
 } e_d_cursor_brk;
 
 /**
@@ -16952,7 +17028,7 @@ static void e_d_brk_jdb_class(const char *file, char *out, size_t size)
 static int e_d_brk_line_cmd(int set, const char *file, const char *path,
                             int line, char *out, size_t size)
 {
- char cls[PATH_MAX];
+ char cls[WPE_PATH_SIZE];
 
  if (e_deb_type == DEB_PDB && set)
   snprintf(out, size, "b %s:%d\n", path, line);
@@ -17099,7 +17175,7 @@ static void e_d_dap_say_answer_at_stop(int i)
  */
 static int e_d_brk_same_file(ECNT *cn, const char *name, const char *abs)
 {
- char path[PATH_MAX], a[PATH_MAX], b[PATH_MAX];
+ char path[WPE_PATH_SIZE], a[WPE_PATH_SIZE], b[WPE_PATH_SIZE];
 
  e_d_brk_path_of(cn, name, path, sizeof(path));
  if (!strcmp(path, abs))
@@ -17267,7 +17343,7 @@ static void e_d_brk_session_answer(const char *file, int line, int ret,
  */
 static int e_d_brk_arm(ECNT *cn, int i)
 {
- char path[PATH_MAX];
+ char path[WPE_PATH_SIZE];
  E_D_BRK_ANSWER ans;
 
  e_d_nrbrpts[i] = i + 1;
@@ -17290,7 +17366,7 @@ static int e_d_brk_arm(ECNT *cn, int i)
  */
 static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id)
 {
- char path[PATH_MAX];
+ char path[WPE_PATH_SIZE];
 
  (void)id;
  e_d_brk_path_of(cn, file, path, sizeof(path));
@@ -17308,7 +17384,7 @@ static int e_d_brk_disarm(ECNT *cn, const char *file, int line, int id)
  */
 static void e_d_jdb_send_live(ECNT *cn, int set, const char *file, int line)
 {
- char path[PATH_MAX], cmd[E_D_BRK_CMD_MAX];
+ char path[WPE_PATH_SIZE], cmd[E_D_BRK_CMD_MAX];
 
  e_d_brk_path_of(cn, file, path, sizeof(path));
  if (!e_d_brk_line_cmd(set, file, path, line, cmd, sizeof(cmd)))
@@ -17396,7 +17472,7 @@ static void e_d_brk_mark_file_sent(const char *file)
  */
 static int e_d_dap_sync_file_live(ECNT *cn, const char *file)
 {
- char name[PATH_MAX], path[PATH_MAX];
+ char name[WPE_PATH_SIZE], path[WPE_PATH_SIZE];
  int *brk_lines = MALLOC(sizeof(int) * (e_d_nbrpts + 1));
  int i, n = 0, ret;
 
@@ -17472,7 +17548,7 @@ static int e_d_dap_brk_sync_at_stop(ECNT *cn)
  */
 static void e_d_dap_clear_every_file(ECNT *cn)
 {
- char path[PATH_MAX];
+ char path[WPE_PATH_SIZE];
  int i;
 
  if (!e_d_dap_active())
@@ -17547,8 +17623,8 @@ static void e_d_cursor_brk_clear(void)
 /* The file Go to cursor was pressed in, taken with its line at the key: the
    debugger starts meanwhile, and the window on top may be another by then. */
 static struct {
- char file[PATH_MAX];          /* the window's file name                   */
- char dirct[PATH_MAX];         /* the window's directory                   */
+ char file[WPE_PATH_SIZE];          /* the window's file name                   */
+ char dirct[WPE_PATH_SIZE];         /* the window's directory                   */
 } e_d_goto_target;
 
 /**
@@ -17670,7 +17746,7 @@ static int e_d_gdb_run_command(FENSTER *f, const char *cmd)
  */
 static int e_d_gdb_run_to_line(FENSTER *f, int line)
 {
- char str[E_D_LINE_MAX + PATH_MAX];
+ char str[E_D_LINE_MAX + WPE_PATH_SIZE];
 
  if (e_d_goto_target.file[0])
   snprintf(str, sizeof(str), "advance \"%s\":%d\n",
@@ -17842,8 +17918,8 @@ static int e_d_stop_file_line(char *line)
  char file[E_D_LINE_MAX];
  int num = e_make_line_num(line, file);
 
- if (num >= 0)
-  strcpy(e_d_file, file);
+ if (num >= 0 && wpe_path_copy(e_d_file, sizeof e_d_file, file))
+  return(-1);
  return(num);
 }
 
@@ -17924,7 +18000,7 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  SCHIRM *s;
  FENSTER ftmp;
  int i;
- char str[PATH_MAX + 64];
+ char str[WPE_PATH_SIZE + 64];
 
 /*   if(schirm != e_d_save_schirm) e_d_switch_out(0);  */
  e_d_switch_out(0);
@@ -18129,8 +18205,8 @@ typedef struct
 {
  int kind;
  int line;
- char file[PATH_MAX];
- char dirct[PATH_MAX];
+ char file[WPE_PATH_SIZE];
+ char dirct[WPE_PATH_SIZE];
 } E_D_ACT;
 
 typedef struct e_d_ga_ctx E_D_GA_CTX;     /* what a chain's steps learn */
@@ -20781,7 +20857,7 @@ static int e_d_gs_watch_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
    goes out. */
 static struct
 {
- char file[PATH_MAX];
+ char file[WPE_PATH_SIZE];
  int line;
  int asked;                  /* "b file:line" went out and is not answered */
 } e_d_gb_late;
@@ -22704,7 +22780,7 @@ static void e_d_gp_place_of(const char *file, char *out, size_t n)
  */
 static void e_d_pdb_brk_add_cmd(int i, char *cmd, size_t n)
 {
- char place[PATH_MAX];
+ char place[WPE_PATH_SIZE];
 
  e_d_gp_place_of(e_d_sbrpts[i], place, sizeof place);
  snprintf(cmd, n, E_D_GP_BREAK_FMT, place, e_d_ybrpts[i]);
@@ -22718,7 +22794,7 @@ static void e_d_pdb_brk_add_cmd(int i, char *cmd, size_t n)
  */
 static void e_d_pdb_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
 {
- char place[PATH_MAX];
+ char place[WPE_PATH_SIZE];
 
  e_d_gp_place_of(g->file, place, sizeof place);
  snprintf(cmd, n, E_D_GP_CLEAR_FMT, place, g->line);
@@ -23237,7 +23313,7 @@ static int e_d_gp_sync_where_answered(E_D_REQ_END how, E_D_ANSWER *ans,
  */
 static int e_d_gp_clears_cursor_brk(const E_D_BRK_GONE *g)
 {
- char full[PATH_MAX];
+ char full[WPE_PATH_SIZE];
 
  if (!e_d_cursor_brk.set || g->line != e_d_cursor_brk.line)
   return(0);
@@ -23586,7 +23662,7 @@ static void e_d_jdb_start_class(char *out, size_t n)
  */
 static void e_d_jdb_brk_add_cmd(int i, char *cmd, size_t n)
 {
- char cls[PATH_MAX];
+ char cls[WPE_PATH_SIZE];
 
  e_d_brk_jdb_class(e_d_sbrpts[i], cls, sizeof cls);
  snprintf(cmd, n, E_D_GJ_STOP_AT_FMT, cls, e_d_ybrpts[i]);
@@ -23601,7 +23677,7 @@ static void e_d_jdb_brk_add_cmd(int i, char *cmd, size_t n)
  */
 static void e_d_jdb_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
 {
- char cls[PATH_MAX];
+ char cls[WPE_PATH_SIZE];
 
  if (!g->file[0])
  {
@@ -23620,7 +23696,7 @@ static void e_d_jdb_brk_remove_cmd(const E_D_BRK_GONE *g, char *cmd, size_t n)
  */
 static void e_d_jdb_start_brk_cmd(char *cmd, size_t n)
 {
- char cls[PATH_MAX];
+ char cls[WPE_PATH_SIZE];
 
  e_d_jdb_start_class(cls, sizeof cls);
  snprintf(cmd, n, E_D_GJ_STOP_IN_FMT, cls, e_get_start_symbol());
@@ -23633,7 +23709,7 @@ static void e_d_jdb_start_brk_cmd(char *cmd, size_t n)
  */
 static void e_d_jdb_cursor_brk_cmd(int set, char *cmd, size_t n)
 {
- char cls[PATH_MAX];
+ char cls[WPE_PATH_SIZE];
 
  e_d_brk_jdb_class(e_d_cursor_brk.file, cls, sizeof cls);
  if (set)
@@ -25260,7 +25336,7 @@ static int e_d_cli_run_never_started(FENSTER *f)
    the command that names a line in it goes next. */
 static struct
 {
- char file[PATH_MAX];
+ char file[WPE_PATH_SIZE];
  int asked;                  /* "e file" went out and is not answered */
  int told;                   /* sdb answered it: the line's command is next */
 } e_d_gsdb;
@@ -26659,7 +26735,7 @@ static void e_d_gm_brk_verdict(int i, int id, const E_D_ANSWER *ans)
 static void e_d_gm_start_brk_cmd(char *cmd, size_t n)
 {
  const char *sym = e_get_start_symbol();
- char where[PATH_MAX];
+ char where[WPE_PATH_SIZE];
  char quoted[E_D_GDBMI_QUOTED_MAX];
 
  if (sym && !strcmp(sym, GA68_ENTRY_SYMBOL) && e_d_file[0])
@@ -26871,7 +26947,7 @@ static int e_d_gm_flush_cmd(char *cmd, size_t n, void *ctx)
  */
 static void e_d_gm_window_file(ECNT *cn, const char *full, char *out, size_t n)
 {
- char path[PATH_MAX], real_win[PATH_MAX], real_full[PATH_MAX];
+ char path[WPE_PATH_SIZE], real_win[WPE_PATH_SIZE], real_full[WPE_PATH_SIZE];
  const char *slash = strrchr(full, DIRC);
  const char *name = slash ? slash + 1 : full;
 
@@ -28199,24 +28275,19 @@ int e_deb_options(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_test_command - Is the program @str on the PATH and runnable?
+ *
+ * Decides whether a debugger, a compiler or a language server is offered.
+ * The lookup is the path owner's (wpe_path_search), which skips a PATH entry
+ * the system cannot hold instead of running past a buffer or cutting it.
+ * Return: 0 when it is, -1 when it is not, -2 when there is no PATH.
+ */
 int e_test_command(char *str)
 {
- int i = -1, k;
- char tmp[256], *path = getenv("PATH");
+ char found[WPE_PATH_SIZE];
 
- if (!path) return(-2);
- do
- {
-  for(i++, k = 0; (tmp[k] = path[i]) && path[i] != ':'; k++, i++)
-   ;
-  if (k == 0)
-  {  tmp[0] = '.';  k++;  }
-  tmp[k] = '/';
-  tmp[k+1] = '\0';
-  strcat(tmp, str);
-  if (!access(tmp, X_OK)) return(0);
- } while(path[i]);
- return(-1);
+ return(wpe_path_search(str, found, sizeof found));
 }
 
 /***********************************************************************
@@ -28229,7 +28300,7 @@ int e_test_command(char *str)
  ***********************************************************************/
 
 static e_lsp_session *g_lsp = NULL;        /* the live server session, or NULL */
-static char           g_lsp_file[1024] = "";  /* full path g_lsp is opened for */
+static char           g_lsp_file[WPE_PATH_SIZE] = "";  /* full path g_lsp is opened for */
 static FENSTER       *g_lsp_fenster = NULL;
 static FENSTER       *g_lsp_pending_ws = NULL; /* worksheet to focus once ready */
 /**
@@ -28312,13 +28383,35 @@ static int e_lsp_diag_color(SCHIRM *s, int severity)
  return is_err ? s->fb->db.fb : s->fb->ek.fb;  /* mono: standout / underline */
 }
 
-/* The file currently shown in `f`, or NULL.  (dirct already ends in '/'.) */
+/**
+ * e_lsp_path_of - The path of the file shown in @f, whole.
+ * @f: the window; @buf/@sz: receive the path (dirct already ends in '/').
+ *
+ * What the language server is told about a file must be the file, so a path
+ * the system cannot hold gives no answer and the server is not asked about
+ * a file that is not there.
+ * Return: @buf, or NULL when @f shows no file or its path does not fit.
+ */
 static const char *e_lsp_path_of(FENSTER *f, char *buf, size_t sz)
 {
  if (!f || !f->datnam)
   return(NULL);
- snprintf(buf, sz, "%s%s", f->dirct ? f->dirct : "./", f->datnam);
+ if (wpe_path_join(buf, sz, f->dirct ? f->dirct : "./", f->datnam))
+  return(NULL);
  return(buf);
+}
+
+/**
+ * e_lsp_say_path_too_long - Tell the user a language server was not asked
+ * about a file whose path is longer than the system allows.
+ * @f: the window the box belongs to.
+ */
+static void e_lsp_say_path_too_long(FENSTER *f)
+{
+ char msg[WPE_PATH_MSG_MAX];
+
+ snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "file", WPE_PATH_MAX);
+ e_error(msg, 0, f->fb);
 }
 
 /* ---- the server's columns and the buffer's bytes ----------------------
@@ -28428,7 +28521,7 @@ static void e_lsp_conv_end(e_lsp_conv *c)
  */
 static int e_lsp_same_file(const char *p, const char *q)
 {
- char a[PATH_MAX], b[PATH_MAX];
+ char a[WPE_PATH_SIZE], b[WPE_PATH_SIZE];
 
  if (!p || !q)
   return(0);
@@ -28627,7 +28720,7 @@ static void e_lsp_deliver_later(void)
 typedef struct
 {
  unsigned long gen;
- char path[1024];
+ char path[WPE_PATH_SIZE];
 } e_lsp_fetch_ticket;
 
 /**
@@ -28660,7 +28753,7 @@ static struct
 {
  int ready;
  unsigned long gen;
- char path[1024];
+ char path[WPE_PATH_SIZE];
  int n;
  e_lsp_sem_token tokens[LSP_MAX_SEM];
 } g_sem_held;
@@ -28729,7 +28822,7 @@ static void e_lsp_sem_refresh_pending(FENSTER *f)
    per-character query (below) free of path work. */
 int e_lsp_decor_active_for(FENSTER *f)
 {
- char path[1200];
+ char path[WPE_PATH_SIZE];
  if (!g_lsp || (g_diag_nactive == 0 && g_hl_nactive == 0 &&
                 !(g_sem_on && g_sem_nactive > 0)))
   return(0);
@@ -28805,7 +28898,7 @@ static struct
 {
  int ready;
  unsigned long gen;
- char path[1024];
+ char path[WPE_PATH_SIZE];
  int n;
  e_lsp_inlay_hint hints[LSP_MAX_INLAY];
 } g_inlay_held;
@@ -29026,7 +29119,7 @@ static void e_lsp_overlay_deliver(void)
 /* Per-line gate for the renderer: is the inlay overlay on for the file in f? */
 int e_lsp_inlay_active_for(FENSTER *f)
 {
- char path[1200];
+ char path[WPE_PATH_SIZE];
  if (!g_lsp || !g_inlay_on || g_inlay_nactive == 0)
   return(0);
  if (!e_lsp_path_of(f, path, sizeof(path)))
@@ -29567,7 +29660,7 @@ static int e_find_supported_jdk(char *out, size_t sz)
   NULL
  };
  int p, i;
- char jbin[1100];
+ char jbin[WPE_PATH_SIZE];
 
  for (p = 0; pat[p]; p++)
  {
@@ -29577,7 +29670,8 @@ static int e_find_supported_jdk(char *out, size_t sz)
   for (i = 0; i < (int)g.gl_pathc; i++)
   {
    int m;
-   snprintf(jbin, sizeof(jbin), "%s/bin/java", g.gl_pathv[i]);
+   if (wpe_path_join(jbin, sizeof jbin, g.gl_pathv[i], "bin/java") != 0)
+    continue;
    if (access(jbin, X_OK) != 0)
     continue;
    m = e_jdk_major(jbin);
@@ -29603,13 +29697,14 @@ static int e_find_supported_jdk(char *out, size_t sz)
 static void e_scala_pin_jdk(FENSTER *f, const char *who)
 {
  const char *jh = getenv("JAVA_HOME");
- char jbin[1100], jdk[1024], msg[1200], newpath[4096];
+ char jbin[WPE_PATH_SIZE], jdk[WPE_PATH_SIZE], msg[WPE_PATH_SIZE + 200];
+ char *newpath;
  const char *oldpath;
+ size_t newlen;
  int major;
 
- if (jh && *jh)
+ if (jh && *jh && wpe_path_join(jbin, sizeof jbin, jh, "bin/java") == 0)
  {
-  snprintf(jbin, sizeof(jbin), "%s/bin/java", jh);
   if (e_jdk_major(jbin) <= 23)
    return;                       /* user pinned a usable JAVA_HOME: respect it */
  }
@@ -29626,8 +29721,16 @@ static void e_scala_pin_jdk(FENSTER *f, const char *who)
  }
  setenv("JAVA_HOME", jdk, 1);
  oldpath = getenv("PATH");
- snprintf(newpath, sizeof(newpath), "%s/bin:%s", jdk, oldpath ? oldpath : "");
- setenv("PATH", newpath, 1);
+ if (!oldpath)
+  oldpath = "";
+ newlen = strlen(jdk) + strlen(oldpath) + 6;             /* "/bin:" and the end */
+ newpath = malloc(newlen);
+ if (newpath)
+ {
+  snprintf(newpath, newlen, "%s/bin:%s", jdk, oldpath);
+  setenv("PATH", newpath, 1);
+  free(newpath);
+ }
  snprintf(msg, sizeof(msg), "%s: pinned JAVA_HOME=%s (default JDK %d is too "
           "new for the Scala compiler).", who, jdk, major);
  e_d_p_message(msg, f, 1);
@@ -29876,12 +29979,10 @@ static int e_lsp_is_dep_source(FENSTER *f)
  return (f && f->dirct && strstr(f->dirct, "/.metals/readonly/") != NULL);
 }
 
-#define E_LSP_PATH_MAX 1200
-
 /* The file whose `scala-cli setup-ide` has ended, so its next start goes
    straight to the server; and the file the running setup is for. */
-static char g_lsp_setup_done[E_LSP_PATH_MAX];
-static char g_lsp_setup_for[E_LSP_PATH_MAX];
+static char g_lsp_setup_done[WPE_PATH_SIZE];
+static char g_lsp_setup_for[WPE_PATH_SIZE];
 
 static int e_lsp_ensure(FENSTER *f);
 
@@ -29892,16 +29993,15 @@ static int e_lsp_ensure(FENSTER *f);
 static FENSTER *e_lsp_window_of(const char *path)
 {
  ECNT *cn = WpeEditor;
- char p[E_LSP_PATH_MAX];
+ char p[WPE_PATH_SIZE];
  int i;
 
  for (i = 1; cn && i <= cn->mxedt; i++)
  {
   FENSTER *w = cn->f[i];
 
-  if (!w || !w->datnam)
+  if (!w || !e_lsp_path_of(w, p, sizeof p))
    continue;
-  snprintf(p, sizeof p, "%s%s", w->dirct ? w->dirct : "./", w->datnam);
   if (!strcmp(p, path))
    return(w);
  }
@@ -29986,7 +30086,7 @@ typedef struct
 {
  int   kind;                     /* E_LSP_ASK_*, NONE when the slot is free */
  unsigned long seq;              /* the order asked: answers show in it    */
- char  path[E_LSP_PATH_MAX];     /* the file asked about                   */
+ char  path[WPE_PATH_SIZE];      /* the file asked about                   */
  char *base;                     /* its text when asked                    */
  int   y, x;                     /* the cursor when asked                  */
  char  what[E_LSP_WHAT_MAX];     /* a jump: "definition", ...              */
@@ -29998,7 +30098,7 @@ typedef struct
  char *text;                     /* hover, signature, new text, or NULL    */
  int   others;                   /* rename, action: other files it changes */
  int   found;                    /* a jump: a location came                */
- char  target[E_LSP_PATH_MAX];   /* ... its file                           */
+ char  target[WPE_PATH_SIZE];    /* ... its file                           */
  int   line;                     /* ... its line, 0-based                  */
  int   n;                        /* candidates or rows, -1 none            */
  e_lsp_completion_item items[E_LSP_ASK_ITEMS_MAX];
@@ -30983,7 +31083,6 @@ static int e_lsp_scala_setup_needed(const char *lang, const char *path)
 #define E_LSP_PLAN_FILE "this folder"
 #define E_LSP_PLAN_HEAD "Opening this file starts its language server:"
 #define E_LSP_PLAN_WHAT "language server"
-#define E_LSP_ROOT_MAX  1024
 
 /* The answered plan of the server about to start, handed to the protocol
    engine's planner once (e_lsp_planner); NULL between starts. */
@@ -30991,7 +31090,7 @@ static WpeStartPlan *g_lsp_planned;
 
 /* The folder whose server the user declined this session: opening another
    of its files does not ask again until he asks for an action. */
-static char g_lsp_declined[E_LSP_ROOT_MAX];
+static char g_lsp_declined[WPE_PATH_SIZE];
 
 /**
  * e_lsp_planner - The protocol engine asks for the plan of the server it is
@@ -31023,7 +31122,8 @@ static void e_lsp_root_dir(FENSTER *f, char *dir, size_t sz)
 {
  int dl;
 
- snprintf(dir, sz, "%s", f->dirct ? f->dirct : ".");
+ if (wpe_path_copy(dir, sz, f->dirct ? f->dirct : "."))
+  return;                  /* a window's folder always fits: @dir stays empty */
  dl = strlen(dir);
  while (dl > 1 && dir[dl - 1] == DIRC)
   dir[--dl] = '\0';
@@ -31104,7 +31204,7 @@ static int e_lsp_plan_approve(FENSTER *f, const e_lsp_server *srv, const char *d
  */
 static int e_lsp_declined_here(FENSTER *f)
 {
- char dir[E_LSP_ROOT_MAX];
+ char dir[WPE_PATH_SIZE];
 
  e_lsp_root_dir(f, dir, sizeof dir);
  return(g_lsp_declined[0] && strcmp(g_lsp_declined, dir) == 0);
@@ -31115,14 +31215,15 @@ static int e_lsp_ensure(FENSTER *f)
  const char *lang = e_lsp_lang_for(f);
  static e_lsp_host host;
  const e_lsp_server *srv = e_lsp_server_for(lang);
- char dir[E_LSP_ROOT_MAX], path[1200];
+ char dir[WPE_PATH_SIZE], path[WPE_PATH_SIZE];
 
  if (!lang || !srv)
  {  e_error("Language server: unsupported file type.", 0, f->fb);  return(-1);  }
  if (e_lsp_is_dep_source(f))
  {  e_error("Read-only library source -- language-server actions run from the "
             "project window, not here.", 0, f->fb);  return(-1);  }
- snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
+ if (!e_lsp_path_of(f, path, sizeof path))
+ {  e_lsp_say_path_too_long(f);  return(-1);  }
  if (e_lsp_ask_refused_elsewhere(f, path))
   return(-1);                                   /* its answers would be lost */
  if (g_lsp && !strcmp(g_lsp_file, path))
@@ -31146,8 +31247,8 @@ static int e_lsp_ensure(FENSTER *f)
  if (e_lsp_plan_approve(f, srv, dir))
   return(-1);
  g_lsp_fenster = f;
- strncpy(g_lsp_file, path, sizeof(g_lsp_file) - 1);
- g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
+ if (wpe_path_copy(g_lsp_file, sizeof g_lsp_file, path))
+ {  e_lsp_say_path_too_long(f);  return(-1);  }
 
  if (e_lsp_scala_setup_needed(lang, path))
   return(e_lsp_setup_scala_build(f, dir, path));   /* Metals starts after it */
@@ -32649,13 +32750,12 @@ static int e_lsp_ui_rename(FENSTER *f)
    blocking, and no save needed.  Only acts on the file the server is open for. */
 void e_lsp_on_edit(FENSTER *f, int c)
 {
- char path[1200];
+ char path[WPE_PATH_SIZE];
 
  if (!g_lsp || !e_lsp_started(g_lsp))
   return;                            /* no session, or still starting (fd-loop runs it) */
- if (!f || !f->datnam)
+ if (!e_lsp_path_of(f, path, sizeof path))
   return;
- snprintf(path, sizeof(path), "%s%s", f->dirct ? f->dirct : "./", f->datnam);
  if (strcmp(path, g_lsp_file) != 0)
   return;
  g_lsp_quiet = 1;                   /* show only the summary, not each line */
@@ -32808,7 +32908,7 @@ void e_lsp_bar_label(FENSTER *f)
    nothing.) */
 static void e_lsp_focus_worksheet(FENSTER *f)
 {
- char path[1200];
+ char path[WPE_PATH_SIZE];
  char *text;
 
  if (!e_lsp_path_of(f, path, sizeof(path)) || !strcmp(path, g_lsp_file))
@@ -32816,8 +32916,8 @@ static void e_lsp_focus_worksheet(FENSTER *f)
  e_lsp_inlay_clear();
  e_lsp_diag_clear();
  g_lsp_fenster = f;
- strncpy(g_lsp_file, path, sizeof(g_lsp_file) - 1);
- g_lsp_file[sizeof(g_lsp_file) - 1] = '\0';
+ if (wpe_path_copy(g_lsp_file, sizeof g_lsp_file, path))
+  return;                                 /* a path the system cannot hold */
  text = e_lsp_buffer_text(f);
  e_lsp_did_open(g_lsp, g_lsp_file, text ? text : "");
  e_lsp_did_focus(g_lsp, g_lsp_file);

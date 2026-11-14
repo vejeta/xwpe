@@ -476,6 +476,20 @@ Changes
   or "Options not saved".  A long include folder is mentioned once per
   Show Definition, not once per header.
 
+* The debugger side keeps a path whole too.  Ctrl-G on a Rust file in a
+  folder longer than 1023 characters gave the compiler a cut path, and a
+  Go, Rust or Scala session in such a folder, or a language server for a
+  file whose path was that long, worked on a cut folder or file.  A PATH
+  with an entry of 256 characters or more, or a compiler of that length
+  named by the xwperc of the folder you start in, ended the editor when it
+  looked for a debugger, a compiler or a language server.  Every such
+  look-up now goes through one function, which skips an entry the system
+  cannot hold.  Project-Options no longer shortens a .prj value its field
+  cannot show (4095 characters for a path, 256 for compiler options) when
+  it saves.  Grep reads each line of a file whole, up to its first MiB: a
+  match across the old 255 character pieces was missed, and ^ or $ matched
+  inside a long line.
+
 * Resizing the terminal while a command holds the screen (Ctrl-F9 on a
   shell script, Execute, Shell) no longer puts the old screen back over the
   new one afterwards: the status line was drawn in the middle of a larger

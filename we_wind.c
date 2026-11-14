@@ -2692,8 +2692,10 @@ int e_close_window(FENSTER *f)
   if ((maxname = pathconf(f->dirct, _PC_NAME_MAX) >= strlen(f->datnam) + 4) &&
     (maxname > 12))
   {
-   remove(e_make_postf(text, f->datnam, ".ASV"));
-   remove(e_make_postf(text, f->datnam, ".ESV"));
+   if (e_make_postf(text, sizeof text, f->datnam, ".ASV"))
+    remove(text);
+   if (e_make_postf(text, sizeof text, f->datnam, ".ESV"))
+    remove(text);
   }
   if (strcmp(f->datnam, "Messages") && strcmp(f->datnam, "Watches"))
    e_close_buffer(f->b);

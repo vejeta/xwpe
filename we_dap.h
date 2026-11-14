@@ -203,12 +203,11 @@ char *e_dap_evaluate(e_dap_session *s, const char *expr);
 
 /* One frame of the stopped thread's call stack, as stackTrace reports it. */
 #define E_DAP_FRAME_NAME_MAX 128
-#define E_DAP_FRAME_PATH_MAX 1024
 typedef struct {
  int  id;                           /* the adapter's frameId, for evaluate  */
  int  line;                         /* 1-based, 0 when the frame has none   */
  char name[E_DAP_FRAME_NAME_MAX];   /* the function                         */
- char path[E_DAP_FRAME_PATH_MAX];   /* its source file, "" when it has none */
+ char path[WPE_PATH_SIZE];          /* its source file, "" when it has none */
 } e_dap_frame;
 
 /* Every frame of the stopped thread, innermost first, in one stackTrace

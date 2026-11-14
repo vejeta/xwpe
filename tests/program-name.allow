@@ -14,7 +14,7 @@ we_prog.c|e_prj_inserted_after_compile|1|owner|"main.o" is named by a literal, a
 
 # --- moved onto the owner with the debugger ---
 we_debug.c|e_d_exe_name_of|3|owner|the program the debugger loads: stem cut, ".e" and the compiler style that says whether the compiler wrote it
-we_debug.c|e_d_compile_command|3|owner|the debug binary and its error file: stem cut, ".dbg", ".dbgerr"
+we_debug.c|e_d_compile_paths|3|owner|the debug binary and its error file: stem cut, ".dbg", ".dbgerr"
 we_debug.c|e_d_dap_lang_for|2|owner|which adapter: the end of the name against a table's extension
 we_debug.c|e_d_dap_source_ext|2|owner|is this a DAP source: the same end-of-name compare as e_d_dap_lang_for
 we_debug.c|e_d_jdb_mark_stop|1|owner|a class named after its source: stem cut
@@ -34,14 +34,12 @@ we_prog.c|e_build_current|3|keep|the build's one up-to-date rule: the output's t
 we_prog.c|e_build_stat|1|keep|the only stat of a build output, taken in the build's folder
 we_prog.c|e_check_header|2|keep|a source and its headers: their times against the output's, as the compile always asked
 we_prog.c|e_make_library|1|keep|ar -cr when the library is absent; a library this editor did not build is removed first
-we_prog.c|e_cmd_in_path|1|keep|is a command on PATH: names no output
 we_prog.c|e_make_multifile_hint|2|keep|looks for the folder's Makefile: names no output
 we_prog.c|e_create_project|1|keep|is the project file there: a source, not an output
 we_prog.c|e_new_message|1|keep|is the Messages file there: not a build output
 we_prog.c|e_p_file_exists|1|keep|is a file there: asked of a source by name
 we_prog.c|e_project_is_open|1|keep|is the project file there: a source, not an output
 we_prog.c|e_run_sh_make_runnable|1|keep|the mode of the script the user runs: not a build output
-we_prog.c|e_java_find_in_path|1|keep|is a command on PATH: the java the VM starts with, no output named
 we_prog.c|e_java_tool_path|1|keep|is the tool the java sits beside there: no output named
 we_prog.c|e_vm_path_named|1|keep|is the java or scala runner beside a tool there: no output named
 
@@ -56,7 +54,8 @@ we_prog.c|e_comp_start|2|keep|build step: the compile flags and the object of a 
 we_prog.c|e_make_error_list|1|keep|message format: GNU diagnostics or the entry's own
 we_prog.c|e_run_c_options|2|keep|Options dialog: the style radio of a language
 we_prog.c|e_make_prj_opt|2|keep|Options dialog: the style radio of a project
-we_prog.c|e_project_options|2|keep|Options dialog: the style of a project's compiler
+we_prog.c|e_prj_options_take|1|keep|Options dialog: the style of a project's compiler
+we_prog.c|e_project_options|1|keep|Options dialog: the style of a project's compiler
 we_prog.c|e_prj_setup|2|keep|the project's style: CMPSWTCH other sets it
 we_prog.c|e_wrt_prj_fl|1|keep|the project writer: CMPSWTCH
 we_prog.c|e_ini_prog|1|keep|the defaults: GNU for gcc, g++, gfortran and cobc, other for the rest

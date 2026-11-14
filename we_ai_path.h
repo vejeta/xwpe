@@ -7,8 +7,10 @@
 
 #include <stddef.h>
 
+#include "we_path.h"
+
 /* Room for a resolved path; a path that does not fit is "outside". */
-#define WPE_PATH_RESOLVED_MAX 4096
+#define WPE_PATH_RESOLVED_MAX WPE_PATH_SIZE
 
 /* How many symbolic links one path may pass through before it counts as a
    loop; the same bound the kernel uses. */
