@@ -13,7 +13,7 @@ body.
 import os
 import subprocess
 
-from conftest import DISPLAY, changed_pixels, _sleep
+from conftest import changed_pixels, _sleep, xtool_env
 
 # Two sizes below every size a row starts at (the harness's screen, or the
 # size the compositor's output kept from an earlier row); the smaller one
@@ -35,7 +35,7 @@ BOXES = {
 def _xdo(*args):
     """xdotool on the display the editor's window is on (the X server, or
     the one the compositor's window is on)."""
-    subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": DISPLAY},
+    subprocess.run(["xdotool", *args], env=xtool_env(),
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

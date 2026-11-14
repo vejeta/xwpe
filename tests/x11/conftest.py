@@ -19,14 +19,31 @@ Pipeline
 
 If any binary is missing the whole module skips with a clear reason.
 Set XWPE_BIN to point at the xwpe binary (defaults to ../../xwpe).
+
+Every process of the suite (the X server, the window manager, each editor,
+a helper client) is started and ended by the owner in tests/gui_owner.py:
+the X server takes a free display number by itself (Xvfb -displayfd), so
+two runs at once never share a display; an editor gets a whitelisted
+environment and only this suite's display; each wait is for an event, not
+for a number of seconds; and what an editor leaves running is found, ended
+and reported as an error of its row.  A row asks for the display by
+display_name(), never by a constant.
 """
 import os
+import select
 import shutil
 import subprocess
-import tempfile
+import sys
 import time
 
 import pytest
+
+TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+import gui_owner as owner_api  # noqa: E402
+from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
 
 # The window manager and the XWD-to-PNG converter are platform-dependent:
 # matchbox + convert (ImageMagick 6) on Debian/Ubuntu CI, twm + magick +
@@ -72,7 +89,6 @@ def pytest_collection_modifyitems(config, items):
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 XWPE_BIN = os.environ.get("XWPE_BIN") or os.path.normpath(os.path.join(HERE, "..", "..", "xwpe"))
-DISPLAY = os.environ.get("XWPE_TEST_DISPLAY", ":88")
 SCREEN = "1024x768x24"
 SCREEN_W, SCREEN_H = (int(v) for v in SCREEN.split("x")[:2])
 WINDOW_NAME = "Programming Environment"
@@ -80,9 +96,22 @@ WINDOW_NAME = "Programming Environment"
 # xdotool's --classname (--name is broken in some xdotool builds; see _launch).
 WINDOW_CLASS = "xwpe"
 
-
-def _spawn(cmd, **kw):
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
+# Deadlines, in seconds before XWPE_TEST_WAIT_SCALE, of the events the
+# fixtures wait for.  Each is how long a loaded host may need, not how long
+# the event takes: a wait ends the moment its event happens.
+SERVER_START_S = 20.0
+WM_START_S = 20.0
+WINDOW_S = 10.0
+GEOMETRY_S = 10.0
+WINDOW_GONE_S = 10.0
+# twm announces nothing when it is ready (it sets no window manager
+# property), so the macOS fallback gets one fixed, scaled settle.
+TWM_SETTLE_S = 1.5
+# The line xprop prints for a root property that is set.
+WM_CHECK_PROPERTY = "_NET_SUPPORTING_WM_CHECK"
+WM_CHECK_SET = "window id"
+# How many bytes the server's display-number pipe is read in.
+DISPLAY_LINE_MAX = 64
 
 
 # A loaded CI runner is 3-5x slower than a dev box, so the fixed settle times
@@ -90,7 +119,7 @@ def _spawn(cmd, **kw):
 # changed" -- the dialog had not rendered yet). XWPE_TEST_WAIT_SCALE stretches
 # every settle without slowing the local run (default 1.0; the Debian
 # autopkgtest sets 3). _sleep() replaces _sleep() throughout this module.
-_WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+_WAIT_SCALE = owner_api.wait_scale()
 _real_sleep = time.sleep
 
 
@@ -98,28 +127,69 @@ def _sleep(seconds):
     _real_sleep(seconds * _WAIT_SCALE)
 
 
+# The X display of this run: set by the xserver fixture once the server has
+# said which number it took, cleared when the session ends.
+_SERVED = {"display": None, "row": None}
+
+
+def display_name():
+    """The name of the display this run's X server serves (":N").
+
+    A row that talks to the server itself (a query, a screenshot, a helper
+    client) asks for it here, when it needs it: the server picks its own
+    number, so there is no constant to import."""
+    served = _SERVED["display"]
+    if served is None:
+        raise RuntimeError("no X display yet: ask for it from a row that "
+                           "uses the xserver or xwpe fixture")
+    return served.name
+
+
+def xtool_env():
+    """The environment for a short X tool (xdotool, xwd, xclip) a row runs:
+    the machine's, pointed at this run's display."""
+    return {**os.environ, "DISPLAY": display_name()}
+
+
 def _xdo(*args):
-    subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": DISPLAY},
+    subprocess.run(["xdotool", *args], env=xtool_env(),
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _find_xwpe_window(timeout=10.0, step=0.25):
-    """Wait up to `timeout` seconds for an xwpe window to appear; return its id.
+def _window_ids():
+    """The ids of the xwpe windows on the display now (empty when none).
 
     Uses xdotool's --classname (XGetClassHint) rather than --name (a regex over
     WM_NAME): the Homebrew xdotool's name regex returns nothing even for
     `--name .` while xprop confirms WM_NAME is set, whereas --classname is
-    reliable across builds.  Returns None on timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        out = subprocess.run(["xdotool", "search", "--classname", WINDOW_CLASS],
-                             env={**os.environ, "DISPLAY": DISPLAY},
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        ids = out.stdout.decode().split()
-        if ids:
-            return ids[0]
-        _real_sleep(step)
-    return None
+    reliable across builds."""
+    out = subprocess.run(["xdotool", "search", "--classname", WINDOW_CLASS],
+                         env=xtool_env(), stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL)
+    return out.stdout.decode().split()
+
+
+def _find_xwpe_window(timeout=WINDOW_S):
+    """Wait for an xwpe window to appear and return its id, or None when
+    none came within `timeout` seconds (before the wait scale)."""
+    try:
+        return wait_for(lambda: (_window_ids() or [None])[0],
+                        "an xwpe window to appear on %s" % display_name(),
+                        timeout)
+    except owner_api.OwnerTimeout:
+        return None
+
+
+def _window_size(win):
+    """(width, height) of `win` as xdotool reports it, or None."""
+    out = subprocess.run(["xdotool", "getwindowgeometry", "--shell", win],
+                         env=xtool_env(), stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL)
+    values = dict(line.split("=", 1) for line in out.stdout.decode().split()
+                  if "=" in line)
+    if "WIDTH" not in values or "HEIGHT" not in values:
+        return None
+    return int(values["WIDTH"]), int(values["HEIGHT"])
 
 
 def _force_window_geometry(win, x=0, y=0, w=SCREEN_W, h=SCREEN_H):
@@ -129,10 +199,13 @@ def _force_window_geometry(win, x=0, y=0, w=SCREEN_W, h=SCREEN_H):
     full-screen; twm (the macOS fallback) uses RandomPlacement, leaving the
     window at roughly +50+50 a few pixels smaller -- which throws off every
     scrollbar/dialog coordinate scan and the bottom-strip status-bar diff.
-    Forcing the geometry via xdotool makes both WMs equivalent for the suite."""
+    Forcing the geometry via xdotool makes both WMs equivalent for the suite.
+    It returns once the server reports the size."""
     _xdo("windowmove", win, str(x), str(y))
     _xdo("windowsize", win, str(w), str(h))
-    _sleep(0.3)
+    wait_for(lambda: _window_size(win) == (w, h),
+             "the window manager to give %s the size %dx%d" % (win, w, h),
+             GEOMETRY_S, state_fn=lambda: _window_size(win))
 
 
 _FKEY_KEYCODE = {}
@@ -151,8 +224,7 @@ def _fkey_keycodes():
     the true function key.  Cached after the first lookup."""
     if _FKEY_KEYCODE:
         return _FKEY_KEYCODE
-    out = subprocess.run(["xmodmap", "-pke"],
-                         env={**os.environ, "DISPLAY": DISPLAY},
+    out = subprocess.run(["xmodmap", "-pke"], env=xtool_env(),
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
     for line in out.splitlines():
         parts = line.split()
@@ -194,9 +266,27 @@ class XwpeSession:
     """A running xwpe instance under the headless display, with helpers
     to send input and screenshot the result."""
 
-    def __init__(self, proc, win):
+    def __init__(self, proc, win, owned=None):
         self.proc = proc
         self.win = win
+        self.owned = owned
+
+    def _note_children(self):
+        """Tell the owner what the editor has started so far.
+
+        Called before each input, which is what makes the editor start a
+        program or a language server: if the editor crashes later, the
+        owner still knows its children, also those it moved to a session
+        of their own, and ends them with the row."""
+        if self.owned is not None:
+            self.owned.reap_zombies()
+            self.owned.refresh_tree()
+
+    def reap_zombies(self):
+        """Collect the editor's orphaned programs that have ended, so a
+        check that a program is gone does not see its zombie."""
+        if self.owned is not None:
+            self.owned.reap_zombies()
 
     def focus(self):
         _xdo("windowfocus", self.win)
@@ -204,6 +294,7 @@ class XwpeSession:
 
     def key(self, *keys, delay=0.5):
         for k in keys:
+            self._note_children()
             _xdo("key", "--window", self.win, "--clearmodifiers", _to_keycodes(k))
             _sleep(delay)
 
@@ -211,6 +302,7 @@ class XwpeSession:
         """Click at (px,py) with `button` (1 left, 2 middle, 3 right).  `hold`
         names a modifier key (an xdotool key name such as "alt") kept down
         for the click, so a test can drive Alt-click."""
+        self._note_children()
         _xdo("mousemove", "--window", self.win, str(px), str(py))
         _sleep(0.2)
         if hold:
@@ -225,6 +317,7 @@ class XwpeSession:
         """Press button 1 at (x1,y1), move to (x2,y2) in steps, release.
         Drives the real X11 drag path (ButtonPress -> MotionNotify* ->
         ButtonRelease) -- e.g. a scrollbar-thumb drag."""
+        self._note_children()
         _xdo("mousemove", "--window", self.win, str(x1), str(y1))
         _sleep(0.15)
         _xdo("mousedown", "1")
@@ -242,6 +335,7 @@ class XwpeSession:
         """Spin the mouse wheel (button 4 = up, 5 = down) `count` times, over
         (px,py) if given.  Drives WPE_SCROLL_UP/DOWN."""
         button = "4" if direction == "up" else "5"
+        self._note_children()
         if px is not None:
             _xdo("mousemove", "--window", self.win, str(px), str(py))
             _sleep(0.1)
@@ -252,6 +346,7 @@ class XwpeSession:
 
     def type(self, text, delay=0.4):
         """Type a literal string (into a focused text field) via XTEST."""
+        self._note_children()
         _xdo("type", "--window", self.win, "--clearmodifiers", text)
         _sleep(delay)
         return self
@@ -291,8 +386,7 @@ class XwpeSession:
 
     def screenshot(self):
         """Return the root window as a Pillow Image (RGB)."""
-        xwd = subprocess.run(["xwd", "-root", "-silent"],
-                             env={**os.environ, "DISPLAY": DISPLAY},
+        xwd = subprocess.run(["xwd", "-root", "-silent"], env=xtool_env(),
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         return xwd_to_image(xwd.stdout)
 
@@ -320,71 +414,192 @@ def xwd_to_image(xwd_bytes):
     return Image.open(io.BytesIO(png)).convert("RGB")
 
 
-@pytest.fixture(scope="session")
-def xserver():
-    """Start Xvfb + matchbox once for the whole test session.
+def _display_number(fd, chunks):
+    """The display number the server wrote to fd, once its line is whole."""
+    if not select.select([fd], [], [], 0)[0]:
+        return None
+    data = os.read(fd, DISPLAY_LINE_MAX)
+    chunks.append(data)
+    text = b"".join(chunks)
+    if not data or not text.endswith(b"\n"):
+        return None
+    return int(text.strip())
 
-    A display whose lock file exists belongs to someone else (another run,
-    another session): it is never taken over and its lock never removed;
-    the run stops and says which display to change.  Both servers are
-    started inside the try whose finally ends them, by their own process
-    objects, so a failed start leaves nothing running."""
-    lock = "/tmp/.X%s-lock" % DISPLAY.lstrip(":")
-    if os.path.exists(lock):
-        pytest.exit("X display %s is in use (%s exists): set XWPE_TEST_DISPLAY "
-                    "to a free display" % (DISPLAY, lock), returncode=2)
-    started = []
+
+def _start_xvfb(owner, request, log_dir):
+    """Start Xvfb on the display number it picks; return the owner's
+    record of that display.
+
+    The server writes its number to the pipe once it is listening, so the
+    read is the ready event: no fixed number, no lock file looked at or
+    removed, and two runs at once never meet on one display."""
+    read_fd, write_fd = os.pipe()
     try:
-        yield from _xserver_run(started)
+        server = owner.start_service(
+            ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", SCREEN,
+             "-nolisten", "tcp"],
+            "Xvfb of the X11 suite", log_dir, log_dir, kind="server",
+            request=request, pass_fds=(write_fd,))
     finally:
-        _end_servers(started)
+        os.close(write_fd)
+    chunks = []
+    try:
+        number = wait_for(lambda: _display_number(read_fd, chunks),
+                          "Xvfb to print its display number", SERVER_START_S,
+                          state_fn=server.log_text)
+    finally:
+        os.close(read_fd)
+    return owner.register_x_display(":%d" % number, server)
 
 
-def _end_servers(procs):
-    """End the servers this run started, the last started first."""
-    for proc in reversed(procs):
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-
-
-def _xserver_run(started):
-    """Start Xvfb and the window manager, noting each in @started; yield
-    the display while the session runs."""
-    xvfb = _spawn(["Xvfb", DISPLAY, "-screen", "0", SCREEN])
-    started.append(xvfb)
-    _sleep(2.0)
+def _wm_argv(log_dir):
+    """The window manager's command line for this platform."""
     if _WM_BIN == "matchbox-window-manager":
         # Use an empty kbdconfig: matchbox's default grabs <Alt>n/p/c/d/m, <Alt>Tab
         # etc. at the root, which are xwpe's own dialog/menu hotkeys -- the WM would
         # swallow them and fake an "Alt-hotkey broken" divergence.  See the file.
         kbd = os.path.join(HERE, "matchbox-kbdconfig")
-        wm = _spawn([_WM_BIN, "-use_titlebar", "no", "-kbdconfig", kbd],
-                    env={**os.environ, "DISPLAY": DISPLAY})
-    else:
-        # twm (the macOS fallback): a default install pops a startup menu and
-        # grabs the X server for interactive window placement -- that locks out
-        # xdotool and xwd.  RandomPlacement + NoGrabServer disables both;
-        # NoTitle keeps the geometry the test suite expects.  twm has no Alt-
-        # <letter> bindings in this minimal config, so xwpe's menu hotkeys
-        # reach the application unmodified.
-        twmrc = os.path.join(tempfile.gettempdir(), "xwpe-test-twmrc")
-        with open(twmrc, "w") as fh:
-            fh.write("NoTitle\nRandomPlacement\nNoGrabServer\n")
-        wm = _spawn([_WM_BIN, "-f", twmrc],
-                    env={**os.environ, "DISPLAY": DISPLAY})
-    started.append(wm)
-    _sleep(1.5)
-    yield DISPLAY
+        return [_WM_BIN, "-use_titlebar", "no", "-kbdconfig", kbd]
+    # twm (the macOS fallback): a default install pops a startup menu and
+    # grabs the X server for interactive window placement -- that locks out
+    # xdotool and xwd.  RandomPlacement + NoGrabServer disables both;
+    # NoTitle keeps the geometry the test suite expects.  twm has no Alt-
+    # <letter> bindings in this minimal config, so xwpe's menu hotkeys
+    # reach the application unmodified.
+    twmrc = os.path.join(log_dir, "twmrc")
+    with open(twmrc, "w") as fh:
+        fh.write("NoTitle\nRandomPlacement\nNoGrabServer\n")
+    return [_WM_BIN, "-f", twmrc]
+
+
+def _wm_is_ready():
+    """True once a window manager has announced itself on the root window."""
+    out = subprocess.run(["xprop", "-root", WM_CHECK_PROPERTY],
+                         env=xtool_env(), stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL).stdout.decode()
+    return WM_CHECK_SET in out
+
+
+def _wait_wm_ready(wm):
+    """Wait until the window manager is managing the display.
+
+    matchbox sets _NET_SUPPORTING_WM_CHECK on the root window when it is
+    ready.  twm sets nothing, so it gets one scaled settle."""
+    if _WM_BIN == "twm":
+        _real_sleep(owner_api.scaled(TWM_SETTLE_S))
+        return
+    wait_for(_wm_is_ready, "the window manager to announce itself on %s"
+             % display_name(), WM_START_S, state_fn=wm.log_text)
+
+
+def _start_window_manager(owner, request, display, log_dir):
+    """Start the window manager on the owner's display and wait for it."""
+    wm = owner.start_service(_wm_argv(log_dir), "window manager of the X11 "
+                             "suite", log_dir, log_dir, kind="wm",
+                             extra_env={"DISPLAY": display.name},
+                             request=request)
+    _wait_wm_ready(wm)
+    return wm
+
+
+@pytest.fixture(scope="session")
+def xserver(gui_owner, tmp_path_factory, request):
+    """Start Xvfb + the window manager once for the whole test session.
+
+    Both are started by the owner, on a display number the server picked,
+    and ended by it when the session ends, so a failed start leaves nothing
+    running and nothing of another run is touched."""
+    log_dir = str(tmp_path_factory.mktemp("x11-session"))
+    display = _start_xvfb(gui_owner, request, log_dir)
+    _SERVED["display"] = display
+    try:
+        _start_window_manager(gui_owner, request, display, log_dir)
+        yield display.name
+    finally:
+        _SERVED["display"] = None
+
+
+def pytest_configure(config):
+    """Refuse --reruns: a row that fails under load must fail."""
+    owner_api.reject_reruns(config)
+
+
+class PreviousRowLeft(AssertionError):
+    """A row started while the one before it had left something behind."""
+
+
+def _running_editors(owner):
+    """The editors the owner still has running."""
+    return [owned for owned in owner.ledger.entries() if owned.kind == "xwpe"]
+
+
+def _previous_row():
+    return _SERVED["row"] or "an earlier row"
+
+
+def _require_clean_display(owner):
+    """Check the display holds no editor before a row starts its own.
+
+    A leftover window or editor of the row before is named, with that
+    row's id, instead of letting this row find the old window by accident."""
+    running = _running_editors(owner)
+    if running:
+        raise PreviousRowLeft("%s left an editor running: %s"
+                              % (_previous_row(),
+                                 "; ".join(o.describe() for o in running)))
+    try:
+        wait_for(lambda: not _window_ids(),
+                 "the xwpe window of the row before to leave %s" % display_name(),
+                 WINDOW_GONE_S, state_fn=_window_ids)
+    except owner_api.OwnerTimeout as error:
+        raise PreviousRowLeft("%s left an xwpe window on the display: %s"
+                              % (_previous_row(), error)) from error
+
+
+def _require_windows_gone():
+    """Wait, after a row's editor has ended, for its window to leave."""
+    wait_for(lambda: not _window_ids(),
+             "the ended editor's window to leave %s" % display_name(),
+             WINDOW_GONE_S, state_fn=_window_ids)
+
+
+def launch_editor(owner, workdir, request, args, extra_env=None,
+                  detached_from_terminal=False):
+    """Start xwpe with `args` on the suite's display, in `workdir`, which is
+    also its HOME, and return the owner's record of it.
+
+    Its end is registered with the row before anything waits on it, so a
+    row that fails to start it, or never sees its window, still ends it.
+    The row's id is kept so the next row can name it if it leaves a
+    window behind."""
+    _require_clean_display(owner)
+    _SERVED["row"] = request.node.nodeid
+    return owner_api.Editor.start(
+        owner, XWPE_BIN, args, "x11", _SERVED["display"], str(workdir),
+        str(workdir), extra_env=extra_env, label=request.node.nodeid,
+        request=request, dump=False,
+        detached_from_terminal=detached_from_terminal)
+
+
+def launch_client(owner, workdir, request, argv):
+    """Start a helper client (xlogo, a probe) on the suite's display; the
+    row's end ends it, and anything it leaves is reported."""
+    return owner_api.Client.start(
+        owner, argv, _SERVED["display"], str(workdir), str(workdir),
+        label=request.node.nodeid, request=request)
 
 
 @pytest.fixture
-def xwpe(xserver, tmp_path, request):
-    """Launch a fresh xwpe editing a small C file; tear it down after."""
+def xwpe(xserver, gui_owner, tmp_path, request):
+    """Launch a fresh xwpe editing a small C file; tear it down after.
+
+    The editor is started by the owner, with its end registered before the
+    first wait, so a row that fails to start never leaves it running; the
+    display must be clean when the row starts and the ended editor's window
+    must be gone when it ends."""
     assert os.path.exists(XWPE_BIN), "xwpe binary not found at %s (set XWPE_BIN)" % XWPE_BIN
+    # Registered first, so it runs last: after the editor has been ended.
+    request.addfinalizer(_require_windows_gone)
     src = tmp_path / "t.c"
     # Several lines so the block-marking tests have room to mark and re-mark.
     src.write_text(
@@ -419,13 +634,9 @@ def xwpe(xserver, tmp_path, request):
     # without pinning, the coordinate-based pixel scans below would shift with
     # whatever monospace size the test host happens to have configured (the
     # GNOME schema default is "Monospace 11", not the 10 these tests assume).
-    env = {**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
-           "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10",
-           # Force the X11 backend: xwpe auto-detects Wayland when WAYLAND_DISPLAY
-           # is set (e_pick_gfx_backend), so on a Wayland HOST session it would
-           # otherwise connect to the real compositor instead of this headless
-           # Xvfb -- and no X window would ever appear here.
-           "XWPE_BACKEND": "x11"}
+    # The launcher pins everything else: HOME is the row's folder, the
+    # backend is x11 on this suite's display only (never the user's Wayland
+    # session), the font size and the eager-server opt-out are set.
     param = dict(getattr(request, "param", None) or {})
     # XWPE_TEST_SOURCE: a test that needs its own program in t.c, not env.
     source = param.pop("XWPE_TEST_SOURCE", None)
@@ -437,18 +648,16 @@ def xwpe(xserver, tmp_path, request):
     if name is not None:
         src = tmp_path / name
         src.write_text(source or "")
-    env.update(param)   # optional per-test env (e.g. AI)
-    proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path))
+    # XWPE_TEST_DETACHED: start the editor as a desktop launcher would, a
+    # session leader with no controlling terminal.
+    detached = param.pop("XWPE_TEST_DETACHED", None) is not None
+    owned = launch_editor(gui_owner, tmp_path, request, [str(src)], param,
+                          detached_from_terminal=detached)
     win = _find_xwpe_window()
     assert win, "xwpe window did not appear"
     _force_window_geometry(win)
     _sleep(1.0)
-    session = XwpeSession(proc, win)
+    session = XwpeSession(owned.proc, win, owned)
     session.srcfile = str(src)
     session.focus()
     yield session
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except Exception:
-        proc.kill()

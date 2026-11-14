@@ -84,6 +84,9 @@ KILL_WAIT_S = 2.0
 # How long a process the owner started without its own end ladder (a
 # server, a client, a busy process) gets after SIGTERM, before the scale.
 SERVICE_GRACE_S = 2.0
+# How long what an editor left is given to end by itself before it counts as
+# a leak, before the scale.
+LEFTOVER_GRACE_S = 2.0
 # Every sweep round ends one level of what was left: a killed process's
 # own children come back to the subreaper and are found by the next round.
 SWEEP_MAX_ROUNDS = 16
@@ -350,6 +353,16 @@ def subreaper_set():
     value = ctypes.c_int(0)
     _LIBC.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(value), 0, 0, 0)
     return value.value != 0
+
+
+def owners_begun():
+    """How many owners of this process are begun and not finished.
+
+    The subreaper is set exactly while this is above 0, so a row that runs
+    beside a suite whose session owner is live still checks the flag
+    against what it should be, not against unset."""
+    with _subreaper_lock:
+        return _subreaper_users
 
 
 def _set_subreaper(on):
@@ -779,13 +792,27 @@ class Owner:
     # -- launching ----------------------------------------------------------
 
     def launch(self, argv, env, cwd, log_dir, kind, label, request=None,
-               daemons=None, ladder_s=SERVICE_GRACE_S, pass_fds=()):
+               daemons=None, ladder_s=SERVICE_GRACE_S, pass_fds=(),
+               detached_from_terminal=False):
         """Start argv as an owned process and return it.
 
-        Every process of a row goes through here: its own session, the
-        death signal, its log in the row's folder, a watch and a ledger
-        entry, and its end registered with the row before anything waits
-        on it, so a failed start still ends what was started."""
+        Every process of a row goes through here: its own process group
+        (as a job started from a shell has), the death signal, its log in
+        the row's folder, a watch and a ledger entry, and its end
+        registered with the row before anything waits on it, so a failed
+        start still ends what was started.
+
+        It is NOT a session leader unless detached_from_terminal is true:
+        a session leader has no controlling terminal and is the one that
+        gets one by opening a terminal, which is how an editor started
+        from a desktop launcher behaves, not how one started from a
+        terminal does.  What the default loses: the sweep can no longer
+        take a leftover by the editor's session id, only by the snapshot
+        of its descendants and by the editor's own group, so a child that
+        moved to a group of its own and was orphaned between two refreshes
+        (or after the last one, before a crash) is not found.  A detached
+        editor keeps the session basis.  A double-forked child that made a
+        session of its own is found only from a snapshot, either way."""
         if threading.current_thread() is not threading.main_thread():
             raise OwnerRefused("the owner launches only from the main thread: "
                                "the death signal follows the thread that forks")
@@ -794,7 +821,9 @@ class Owner:
         try:
             proc = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT,
-                                    start_new_session=True, pass_fds=pass_fds,
+                                    start_new_session=detached_from_terminal,
+                                    process_group=None if detached_from_terminal else 0,
+                                    pass_fds=pass_fds,
                                     preexec_fn=_child_setup(os.getpid()))
         except subprocess.SubprocessError as error:
             raise OwnerRefused("%s for %s was not started: its death signal "
@@ -913,6 +942,13 @@ class Tree:
             self.started[pid] = start_ticks(pid)
         # pytest's own session is never a candidate's, whatever a tree held.
         self.sids.discard(os.getsid(0))
+        # The process's own group: an editor started as a terminal starts it
+        # shares pytest's session, so a child it left in its group (a script
+        # that asks the user something) is found by the group instead.
+        self.pgids = set()
+        root_group = group_of(root_pid)
+        if root_group is not None and root_group != os.getpgid(0):
+            self.pgids.add(root_group)
         self.closed_at = None
 
     def extend(self, pid):
@@ -939,12 +975,14 @@ class Tree:
         """True when the process (pid, fields) is one this tree left.
 
         A recorded pid counts only with the start time the snapshot saw; a
-        recorded session only for a process that started before the mark
+        recorded session or the process's own group only for a process
+        that started before the mark
         (the row's own sweep ended every member there was then)."""
         started = int(fields[STAT_STARTTIME])
         if pid in self.pids:
             return self.started.get(pid) == started
-        if int(fields[STAT_SESSION]) not in self.sids:
+        if (int(fields[STAT_SESSION]) not in self.sids
+                and int(fields[STAT_PGRP]) not in self.pgids):
             return False
         # Strictly before: a tick is 10 ms, and a process started in the
         # mark's own tick may already be one the kernel gave a reused number.
@@ -988,8 +1026,25 @@ def _end_adopted(tree, pid, fields, daemons):
     return Leak(pid, comm, cwd, state, tree.label, comm in daemons)
 
 
+def _let_leftovers_exit(owner, tree):
+    """Give what a tree left a moment to end by itself.
+
+    An editor that has just ended may have told its debugger or a child to
+    stop, and that process is still on its way out when the sweep looks: it
+    is no leak.  A process that is still running after LEFTOVER_GRACE_S
+    (before the scale) is."""
+    deadline = time.monotonic() + scaled(LEFTOVER_GRACE_S)
+    while time.monotonic() < deadline:
+        running = [pid for pid, fields in _candidates_linux(owner, tree)
+                   if fields[STAT_STATE] != ZOMBIE]
+        if not running:
+            return
+        time.sleep(DEFAULT_POLL_S)
+
+
 def _sweep_linux(owner, tree, daemons):
     """End, level by level, everything a tree left with pytest."""
+    _let_leftovers_exit(owner, tree)
     found = []
     for _ in range(SWEEP_MAX_ROUNDS):
         candidates = _candidates_linux(owner, tree)
@@ -1072,6 +1127,50 @@ class OwnedProcess:
         self.ended = False
         self.abrupt = False
         self.env = None
+        self.tree = Tree(self.pid, label)
+
+    def refresh_tree(self):
+        """Note what the process has started so far, while it runs.
+
+        An editor that crashes takes its own list of children with it, and
+        one that moved a child to a session of its own is no longer found
+        through the editor's session: a row calls this after each input it
+        sends, so the sweep still knows that child when the editor is
+        gone.  It does nothing once the process has ended."""
+        if not self.ended and not self.watch.wait(0):
+            self.tree.extend(self.pid)
+
+    def reap_zombies(self):
+        """Reap the ended processes of this editor that pytest adopted.
+
+        pytest is the child subreaper, so a program the editor started and
+        left orphaned comes to pytest, which must collect it when it ends:
+        left alone it stays a zombie and a row that asks whether it is
+        still there is told yes.  Only a zombie that is a direct child of
+        pytest and is, by pid and start time, in this process's snapshot is
+        collected, by its exact pid; nothing else is, and never with
+        waitpid(-1), which would take the children of the row's own
+        Popen.  Returns the pids reaped."""
+        reaped = []
+        if not (IS_LINUX and self.owner.is_begun()):
+            return reaped
+        for pid in sorted(self.tree.pids):
+            if self._is_adopted_zombie(pid):
+                try:
+                    os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    continue
+                reaped.append(pid)
+        return reaped
+
+    def _is_adopted_zombie(self, pid):
+        """True when pid is a zombie child of pytest from this snapshot."""
+        fields = _stat_fields(pid)
+        if fields is None or fields[STAT_STATE] != ZOMBIE:
+            return False
+        if int(fields[STAT_PPID]) != os.getpid():
+            return False
+        return self.tree.started.get(pid) == int(fields[STAT_STARTTIME])
 
     def describe(self):
         """One line naming the process for a failure message."""
@@ -1112,13 +1211,15 @@ class OwnedProcess:
         if self.ended:
             return []
         self.ended = True
-        tree = Tree(self.pid, self.label)
+        tree = self.tree
+        tree.extend(self.pid)
         try:
             self.abrupt = self._ladder()
             self.proc.wait()
         finally:
             self.watch.close()
             self.owner.ledger.forget(self.pid)
+        self.reap_zombies()
         leaks = _sweep(self.owner, tree, self.daemons)
         tree.close()
         self.owner.note_ended(tree, leaks)
@@ -1146,10 +1247,13 @@ class Editor:
 
     @staticmethod
     def start(owner, binary, args, backend, display, cwd, home, log_dir=None,
-              extra_env=None, label="", request=None, daemons=None, dump=None):
+              extra_env=None, label="", request=None, daemons=None, dump=None,
+              detached_from_terminal=False):
         """Start the editor on a display this owner started.
 
-        The backend is pinned (x11 or wayland), the display and the
+        With detached_from_terminal the editor is a session leader with no
+        controlling terminal, as when a desktop launcher starts it; by
+        default it is started as a terminal would start it.  The backend is pinned (x11 or wayland), the display and the
         fallback display are the owner's, the environment is the whitelist
         plus extra_env, and the editor's end ladder is waited for before
         it is called abrupt.  A row benefits by never opening on the
@@ -1159,14 +1263,17 @@ class Editor:
                                % (", ".join(BACKENDS), backend))
         _check_extra_displays(owner, extra_env)
         log_dir = log_dir or home
-        dump = dump or os.path.join(log_dir, "frame.ppm")
+        if dump is False and backend != "x11":
+            raise OwnerRefused("a Wayland editor needs its frame dump")
         env = _editor_env(_backend_env(owner, backend, display, home))
-        _add_dump(env, backend, dump)
+        if dump is not False:
+            _add_dump(env, backend, dump or os.path.join(log_dir, "frame.ppm"))
         _apply_extra(env, extra_env)
         env["XWPE_BACKEND"] = backend
         owned = owner.launch([binary] + list(args), env, cwd, log_dir, "xwpe",
                              label, request=request, daemons=daemons,
-                             ladder_s=editor_end_ladder_s())
+                             ladder_s=editor_end_ladder_s(),
+                             detached_from_terminal=detached_from_terminal)
         owned.env = env
         return owned
 

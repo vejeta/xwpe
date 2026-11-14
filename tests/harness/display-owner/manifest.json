@@ -445,6 +445,109 @@
    "test": "tests/test_gui_owner.py::test_an_editor_that_ended_on_its_own_is_still_swept",
    "status": "new",
    "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-20",
+   "requirement": "A child an editor moved to a session of its own is found after the editor crashed, because the row noted it while the editor ran",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_child_moved_to_its_own_session_is_found_when_the_editor_crashed",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-21",
+   "requirement": "Control: with no refresh before the crash, a child in a session of its own is unknown to the owner",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_child_in_its_own_session_is_known_only_from_the_refresh",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-22",
+   "requirement": "Two runs of the X11 suite at once each have a display of their own and neither ends the other's server",
+   "layer": "x11",
+   "test": "tests/x11/test_session_owner.py::test_two_runs_at_once_each_have_a_display_of_their_own",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool", "xwd"]
+  },
+  {
+   "id": "SC-harness-owner-23",
+   "requirement": "No X11 module reads a display constant, and both suites' conftests offer display_name()",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_no_x11_module_reads_a_display_constant_and_both_conftests_have_the_accessor",
+   "status": "new"
+  },
+  {
+   "id": "SC-harness-owner-24",
+   "requirement": "A row that starts an editor while another is still running is refused with the name of the row that left it",
+   "layer": "x11",
+   "test": "tests/x11/test_session_owner.py::test_a_second_editor_while_one_runs_is_refused_naming_the_first_row",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool", "xwd"]
+  },
+  {
+   "id": "SC-harness-owner-25",
+   "requirement": "A graphical run asked to rerun failed rows is refused",
+   "layer": "x11",
+   "test": "tests/x11/test_session_owner.py::test_a_run_asked_to_rerun_failed_rows_is_refused",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool", "xwd"]
+  },
+  {
+   "id": "SC-harness-owner-26",
+   "requirement": "An ended orphan of an editor that is in the editor's snapshot is reaped by its exact pid",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_an_orphan_zombie_in_the_snapshot_is_reaped",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-27",
+   "requirement": "A zombie that is not in the editor's snapshot, such as a child the row started itself, is left alone",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_zombie_outside_the_snapshot_is_left_alone",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-28",
+   "requirement": "An editor is started as a terminal starts it, not as a session leader, unless the row asks to be detached from the terminal",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_an_editor_is_not_a_session_leader_unless_detached",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-32",
+   "requirement": "A program an editor started as a terminal starts it orphaned in its own group, before any snapshot saw it, is found by that group, ended and errors the row",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_an_orphan_left_in_the_editors_group_is_found",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-31",
+   "requirement": "A child still on its way out when its editor ends is given a grace and is no leak if it ends by itself",
+   "layer": "ncurses",
+   "test": "tests/test_gui_owner.py::test_a_child_still_on_its_way_out_when_the_editor_ends_is_no_leak",
+   "status": "new",
+   "needs": ["pidfd"]
+  },
+  {
+   "id": "SC-harness-owner-29",
+   "requirement": "Known defect, strict expected failure: a detached editor cannot run the jdb keys shape",
+   "layer": "x11",
+   "test": "tests/x11/test_session_owner.py::test_a_detached_editor_runs_the_jdb_keys_shape",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool", "xwd", "jdb", "javac"]
+  },
+  {
+   "id": "SC-harness-owner-30",
+   "requirement": "Known defect, strict expected failure: a detached editor cannot run the pdb start shape",
+   "layer": "x11",
+   "test": "tests/x11/test_session_owner.py::test_a_detached_editor_runs_the_pdb_start_shape",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool", "xwd", "python3"]
   }
  ]
 }

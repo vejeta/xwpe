@@ -13,11 +13,11 @@ import os
 import subprocess
 import time
 
-from conftest import DISPLAY, changed_pixels
+from conftest import changed_pixels, xtool_env
 
 
 def _xdo(*a):
-    subprocess.run(["xdotool", *a], env={**os.environ, "DISPLAY": DISPLAY},
+    subprocess.run(["xdotool", *a], env=xtool_env(),
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

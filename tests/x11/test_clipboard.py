@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from conftest import DISPLAY, changed_pixels
+from conftest import changed_pixels, xtool_env
 from test_selection_keys import (SAME_FIELD_PIXELS, close_dialog,
                                  copy_two_lines, field_image, open_find)
 
@@ -24,7 +24,7 @@ def _xclip(selection, target=None):
     cmd = ["xclip", "-selection", selection, "-o"]
     if target:
         cmd += ["-t", target]
-    out = subprocess.run(cmd, env={**os.environ, "DISPLAY": DISPLAY},
+    out = subprocess.run(cmd, env=xtool_env(),
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     return out.stdout.decode("utf-8", "replace")
 
@@ -61,7 +61,7 @@ def test_paste_pulls_from_os_clipboard(xwpe):
     Seed the OS clipboard from outside xwpe, paste, then copy the buffer back
     out and read it -- if the seeded text is there, the paste landed."""
     subprocess.run(["xclip", "-selection", "clipboard"], input=b"OSPASTE_42",
-                   env={**os.environ, "DISPLAY": DISPLAY})
+                   env=xtool_env())
     time.sleep(0.3)
     xwpe.key("ctrl+v")          # paste from the OS clipboard into the editor
     _mark_whole_and_copy(xwpe)  # copy the buffer back out
@@ -90,7 +90,7 @@ def _xclip_own(selection, text):
     """Make another client own `selection` with `text` (xclip stays behind as
     the owner until something else takes the selection)."""
     subprocess.run(["xclip", "-selection", selection], input=text.encode(),
-                   env={**os.environ, "DISPLAY": DISPLAY})
+                   env=xtool_env())
 
 
 def _mark_first_word(xwpe):

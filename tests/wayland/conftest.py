@@ -101,6 +101,17 @@ def _sleep(seconds):
     _real_sleep(seconds * _WAIT_SCALE)
 
 
+def display_name():
+    """The X display this suite's weston runs on: the same accessor the X11
+    suite has, so a module both suites run reads its display one way."""
+    return DISPLAY
+
+
+def xtool_env():
+    """The environment for a short X tool a row runs, as the X11 suite's."""
+    return {**os.environ, "DISPLAY": display_name()}
+
+
 def _frame_digest(path):
     """Content hash of the current XWPE_WL_DUMP frame, or None if unreadable."""
     try:

@@ -18,44 +18,31 @@ import subprocess
 import pytest
 
 import conftest
-from conftest import _spawn, _find_xwpe_window, _sleep
+from conftest import _find_xwpe_window, _sleep, launch_editor
 
 TRACE = "ui.trace"
 LINE = re.compile(r"^xftdraw colormap=(\d+) private=(\d)$", re.M)
 WININFO_CMAP = re.compile(r"Colormap:\s+(0x[0-9a-fA-F]+)")
 
 
-def _stop(proc):
-    """End the editor and collect it, whatever state it is in."""
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except Exception:
-        proc.kill()
-        proc.wait()
-
-
 @contextlib.contextmanager
-def _editor(xserver, tmp_path, resources):
+def _editor(owner, request, tmp_path, resources):
     """Run xwpe with `resources` in its ~/.Xdefaults; yield its window.
 
-    The editor is ended and collected on the way out, also when its window
-    never appears."""
+    The owner started the editor, so it is ended and swept on the way out,
+    also when its window never appears."""
     src = tmp_path / "t.c"
     src.write_text("int main(void){return 0;}\n")
     (tmp_path / ".Xdefaults").write_text("xwpe.altMask: mod1\n" + resources)
-    env = {**os.environ, "DISPLAY": conftest.DISPLAY, "HOME": str(tmp_path),
-           "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10",
-           "XWPE_BACKEND": "x11",
-           "XWPE_UI_TRACE": str(tmp_path / TRACE)}
-    proc = _spawn([conftest.XWPE_BIN, str(src)], env=env, cwd=str(tmp_path))
+    owned = launch_editor(owner, tmp_path, request, [str(src)],
+                          {"XWPE_UI_TRACE": str(tmp_path / TRACE)})
     try:
         win = _find_xwpe_window()
         assert win, "xwpe window did not appear"
         _sleep(1.0)
         yield win
     finally:
-        _stop(proc)
+        owned.end()
 
 
 def _glyph_surfaces(tmp_path):
@@ -68,7 +55,7 @@ def _glyph_surfaces(tmp_path):
 
 def _window_colormap(win):
     out = subprocess.run(["xwininfo", "-id", win],
-                         env={**os.environ, "DISPLAY": conftest.DISPLAY},
+                         env=conftest.xtool_env(),
                          stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL).stdout.decode()
     m = WININFO_CMAP.search(out)
@@ -77,8 +64,8 @@ def _window_colormap(win):
 
 
 # @scenario SC-display-05
-def test_text_is_painted_in_the_private_colormap(xserver, tmp_path):
-    with _editor(xserver, tmp_path, "xwpe.pcmap: on\n") as win:
+def test_text_is_painted_in_the_private_colormap(xserver, gui_owner, tmp_path, request):
+    with _editor(gui_owner, request, tmp_path, "xwpe.pcmap: on\n") as win:
         surfaces = _glyph_surfaces(tmp_path)
         assert surfaces, "the editor never said which colormap its text uses"
         assert all(private == 1 for _, private in surfaces), \
@@ -89,8 +76,9 @@ def test_text_is_painted_in_the_private_colormap(xserver, tmp_path):
 
 
 # @scenario SC-display-05
-def test_text_is_painted_in_the_default_colormap_without_pcmap(xserver, tmp_path):
-    with _editor(xserver, tmp_path, ""):
+def test_text_is_painted_in_the_default_colormap_without_pcmap(
+        xserver, gui_owner, tmp_path, request):
+    with _editor(gui_owner, request, tmp_path, ""):
         surfaces = _glyph_surfaces(tmp_path)
         assert surfaces, "the editor never said which colormap its text uses"
         assert all(private == 0 for _, private in surfaces), \

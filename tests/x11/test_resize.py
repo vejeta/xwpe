@@ -11,7 +11,7 @@ handler: it fails if a resize stops re-laying-out or starts crashing.
 """
 import time
 
-from conftest import DISPLAY, _xdo
+from conftest import _xdo
 
 
 def _size(win, w, h):

@@ -12,7 +12,8 @@ import time
 
 import pytest
 
-from conftest import DISPLAY, changed_pixels
+import procinfo
+from conftest import changed_pixels, launch_client, xtool_env
 
 SLOW_MAN = '''#!/bin/sh
 echo $$ > "%(dir)s/man.pid"
@@ -31,18 +32,15 @@ REPAINT_TOLERANCE_PX = 200
 
 
 def _xdo(*args):
-    return subprocess.run(["xdotool", *args],
-                          env={**os.environ, "DISPLAY": DISPLAY},
+    return subprocess.run(["xdotool", *args], env=xtool_env(),
                           stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL).stdout.decode()
 
 
 def _alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    """True while pid runs: an ended process nobody has collected yet (a
+    zombie) is gone, though kill(pid, 0) still finds it."""
+    return procinfo.run_state(pid) not in (procinfo.GONE, procinfo.ZOMBIE)
 
 
 @pytest.fixture
@@ -58,20 +56,10 @@ def slow_man(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def cover():
-    """A window that covers the editor's once it is mapped; ended after."""
-    proc = subprocess.Popen(["xlogo"], env={**os.environ, "DISPLAY": DISPLAY},
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL)
-    try:
-        yield proc
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+def cover(gui_owner, tmp_path, request):
+    """A window that covers the editor's once it is mapped; the owner ends
+    it with the row, also when the row fails."""
+    return launch_client(gui_owner, tmp_path, request, ["xlogo"])
 
 
 @pytest.mark.skipif(not shutil.which("xlogo"), reason="no xlogo")

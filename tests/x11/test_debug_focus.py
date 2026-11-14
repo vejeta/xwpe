@@ -24,7 +24,7 @@ import sys
 
 import pytest
 
-from conftest import DISPLAY, _sleep
+from conftest import _sleep, launch_client, xtool_env
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_menu_debug import BLOCKED_PROG, BREAK_LINE, RUN_TIMEOUT_S, _gdb, _wait  # noqa: E402
@@ -39,8 +39,7 @@ XLOGO_WAIT_S = 10
 
 def _xdo_out(*args):
     """What an xdotool query printed, or None when it failed."""
-    done = subprocess.run(["xdotool", *args],
-                          env={**os.environ, "DISPLAY": DISPLAY},
+    done = subprocess.run(["xdotool", *args], env=xtool_env(),
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     if done.returncode != 0:
         return None
@@ -55,13 +54,13 @@ def _active_window():
     return _xdo_out("getactivewindow")
 
 
-def _map_xlogo():
+def _map_xlogo(owner, tmp_path, request):
     """Map a second window and wait until it is the active one; return its
-    process (the caller ends it) and its window id."""
-    proc = subprocess.Popen(
-        ["xlogo", "-geometry", "120x120+850+620"],
-        env={**os.environ, "DISPLAY": DISPLAY},
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process (the caller ends it) and its window id.
+
+    The owner starts it, so the row's end ends it even when the row fails."""
+    proc = launch_client(owner, tmp_path, request,
+                         ["xlogo", "-geometry", "120x120+850+620"])
     found = []
 
     def mapped():
@@ -99,12 +98,13 @@ def _wait_blocked(xwpe):
 @needs_tools
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": BLOCKED_PROG}],
                          indirect=True)
-def test_a_debug_start_gives_the_editor_the_keyboard_and_leaves_the_stacking(xwpe):
+def test_a_debug_start_gives_the_editor_the_keyboard_and_leaves_the_stacking(
+        xwpe, gui_owner, tmp_path, request):
     """With another window in front, a debug start moves the keyboard to the
     editor (getwindowfocus) and leaves the other window the active one
     (getactivewindow)."""
     _skip_without_active_window_property()
-    logo, logo_win = _map_xlogo()
+    logo, logo_win = _map_xlogo(gui_owner, tmp_path, request)
     try:
         assert _active_window() == logo_win, "xlogo should be the active window"
         before = _focus_window()
@@ -116,22 +116,22 @@ def test_a_debug_start_gives_the_editor_the_keyboard_and_leaves_the_stacking(xwp
         assert _active_window() == logo_win, \
             "the debug start should leave the stacking alone"
     finally:
-        logo.terminate()
-        logo.wait(timeout=5)
+        logo.end()
 
 
 # @scenario SC-display-04
 @needs_tools
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": BLOCKED_PROG}],
                          indirect=True)
-def test_a_debug_stop_brings_the_editor_window_to_the_front(xwpe):
+def test_a_debug_stop_brings_the_editor_window_to_the_front(
+        xwpe, gui_owner, tmp_path, request):
     """The program runs, another window is mapped in front, the program
     reads its line and stops at the breakpoint: the editor is then both the
     active window and the one with the keyboard."""
     _skip_without_active_window_property()
     _break_and_run(xwpe)
     _wait_blocked(xwpe)
-    logo, logo_win = _map_xlogo()
+    logo, logo_win = _map_xlogo(gui_owner, tmp_path, request)
     try:
         assert _active_window() == logo_win, "xlogo should be the active window"
         assert _focus_window() != xwpe.win, "the keyboard should be elsewhere"
@@ -142,5 +142,4 @@ def test_a_debug_stop_brings_the_editor_window_to_the_front(xwpe):
         assert _wait(lambda: _focus_window() == xwpe.win, 5), \
             "the debug stop should give the editor the keyboard"
     finally:
-        logo.terminate()
-        logo.wait(timeout=5)
+        logo.end()

@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from conftest import DISPLAY, _sleep, changed_pixels
+from conftest import _sleep, changed_pixels, xtool_env
 
 SCRIPT_SECONDS = 14
 SCRIPT = "#!/bin/sh\nsleep %d\n" % SCRIPT_SECONDS
@@ -28,7 +28,7 @@ REPAINT_TOLERANCE_PX = 200
 
 def _xdo(*args):
     return subprocess.run(["xdotool", *args],
-                          env={**os.environ, "DISPLAY": DISPLAY},
+                          env=xtool_env(),
                           stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL).stdout.decode()
 

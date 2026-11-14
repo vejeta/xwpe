@@ -18,7 +18,7 @@ import subprocess
 
 import pytest
 
-from conftest import DISPLAY, changed_pixels, _sleep
+from conftest import changed_pixels, _sleep, xtool_env
 
 START_W, START_H = 1024, 768      # the size every graphical row starts at
 FULL_W, FULL_H = 880, 620
@@ -30,7 +30,7 @@ XTERM_UP_S = 2.5
 
 
 def _xdo(*args):
-    subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": DISPLAY},
+    subprocess.run(["xdotool", *args], env=xtool_env(),
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -60,7 +60,7 @@ def _answer_the_xterm():
     """Press Return in the xterm the script runs in: it ends there, and the
     editor's window is the one the user sees again."""
     found = subprocess.run(["xdotool", "search", "--class", "XTerm"],
-                           env={**os.environ, "DISPLAY": DISPLAY},
+                           env=xtool_env(),
                            stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL).stdout.decode().split()
     assert found, "the script's xterm is not there"

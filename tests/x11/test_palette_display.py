@@ -26,7 +26,7 @@ if TESTS not in sys.path:
     sys.path.insert(0, TESTS)
 
 import gui_owner as owner_api  # noqa: E402
-from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
+from gui_owner import wait_for  # noqa: E402  (the gui_owner fixture is the conftest's)
 
 import conftest  # noqa: E402
 

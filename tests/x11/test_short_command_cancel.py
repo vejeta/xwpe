@@ -12,11 +12,17 @@ command runs; tests/test_short_commands.py pins that.
 import os
 import stat
 import subprocess
+import sys
 import time
 
 import pytest
 
-from conftest import DISPLAY, _sleep
+from conftest import _sleep, xtool_env
+
+# The Wayland twin runs this module under its own conftest, which does not
+# put tests/ on the path.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import procinfo  # noqa: E402  (the tests/ directory is added just above)
 
 SLOW_MAN = '''#!/bin/sh
 echo $$ > "%(dir)s/man.pid"
@@ -34,11 +40,9 @@ CHANGED_PX_MAX = 200       # a window or a box is thousands of pixels
 
 
 def _alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    """True while pid runs: an ended process nobody has collected yet (a
+    zombie) is gone, though kill(pid, 0) still finds it."""
+    return procinfo.run_state(pid) not in (procinfo.GONE, procinfo.ZOMBIE)
 
 
 def _wait(predicate, timeout):
@@ -88,7 +92,7 @@ def esc_released():
     editor on the shared display is never told of an Esc again."""
     yield
     subprocess.run(["xdotool", "keyup", "Escape"],
-                   env={**os.environ, "DISPLAY": DISPLAY},
+                   env=xtool_env(),
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

@@ -22,9 +22,10 @@ import time
 import pytest
 
 from conftest import (
-    DISPLAY, XWPE_BIN, HERE,
-    _spawn, _find_xwpe_window, _force_window_geometry, XwpeSession,
+    HERE, WINDOW_GONE_S, _find_xwpe_window, _force_window_geometry,
+    _window_ids, launch_editor, XwpeSession,
 )
+from gui_owner import wait_for
 
 # The repo's syntax_def carries the Algol 68 block.  xwpe reads
 # $HOME/.xwpe/syntax_def first and the fixtures set HOME=tmp_path, so we drop
@@ -59,24 +60,23 @@ def _install_syntax(home):
     shutil.copyfile(SYNTAX_DEF, os.path.join(xd, "syntax_def"))
 
 
-def _launch(xserver, tmp_path, fname, text):
-    """Start xwpe editing tmp_path/fname containing `text`; return the session."""
+def _launch(owner, request, tmp_path, fname, text):
+    """Start xwpe editing tmp_path/fname containing `text`; return the session.
+
+    The launcher gives the editor the same environment as the conftest
+    fixture (no eager language server, which would pop a Messages window
+    mid-test and change pixels in the text band diffed for colour; the
+    suite's display only, on a Wayland host too).  Its end is registered
+    with the row before the window is waited for."""
     _install_syntax(str(tmp_path))
     src = tmp_path / fname
     src.write_text(text)
-    # XWPE_LSP_NO_EAGER: align with the conftest fixture -- a language server
-    # popping a Messages window mid-test would change pixels in the text band
-    # we diff for colour and would make this test flaky.
-    proc = _spawn([XWPE_BIN, str(src)],
-                  env={**os.environ, "DISPLAY": DISPLAY, "HOME": str(tmp_path),
-                       "XWPE_LSP_NO_EAGER": "1", "XWPE_FONT_SIZE": "10",
-                       "XWPE_BACKEND": "x11"},   # force X11 on a Wayland host
-                  cwd=str(tmp_path))
+    owned = launch_editor(owner, tmp_path, request, [str(src)])
     win = _find_xwpe_window()
     assert win, "xwpe window did not appear for %s" % fname
     _force_window_geometry(win)
     time.sleep(1.0)
-    session = XwpeSession(proc, win)
+    session = XwpeSession(owned.proc, win, owned)
     session.srcfile = str(src)
     session.focus()
     return session
@@ -103,37 +103,26 @@ def _colour_changed(img_a, img_b, thresh=60):
     return peak.point(lambda p: 255 if p > thresh else 0).histogram()[255]
 
 
-def _windows():
-    out = subprocess.run(["xdotool", "search", "--classname", "xwpe"],
-                         env={**os.environ, "DISPLAY": DISPLAY},
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return out.stdout.decode().split()
-
-
 def _close(session):
-    """Terminate xwpe AND wait for its window to leave the server, so the next
-    launch's `xdotool search` cannot latch onto this dying window (a stale-window
-    race that makes the before/after screenshots identical)."""
-    try:
-        session.proc.terminate()
-        session.proc.wait(timeout=5)
-    except Exception:
-        session.proc.kill()
-    for _ in range(40):
-        if not _windows():
-            return
-        time.sleep(0.1)
+    """End xwpe through the owner AND wait for its window to leave the
+    server, so the next launch's `xdotool search` cannot latch onto this
+    dying window (a stale-window race that makes the before/after
+    screenshots identical)."""
+    session.owned.end()
+    wait_for(lambda: not _window_ids(),
+             "the ended editor's window to leave the display", WINDOW_GONE_S,
+             state_fn=_window_ids)
 
 
-def _assert_highlight(xserver, tmp_path, text, tag):
+def _assert_highlight(owner, request, tmp_path, text, tag):
     """Render `text` as .a68 (highlighted) and .txt (plain); the text band must
     differ, proving xwpe coloured the reserved words."""
-    hl = _launch(xserver, tmp_path / (tag + "a"), "hi.a68", text)
+    hl = _launch(owner, request, tmp_path / (tag + "a"), "hi.a68", text)
     try:
         band_a68 = _shoot_band(hl)
     finally:
         _close(hl)
-    plain = _launch(xserver, tmp_path / (tag + "b"), "hi.txt", text)
+    plain = _launch(owner, request, tmp_path / (tag + "b"), "hi.txt", text)
     try:
         band_txt = _shoot_band(plain)
     finally:
@@ -155,11 +144,11 @@ def homes(tmp_path):
     return tmp_path
 
 
-def test_highlight_ga68_lowercase(xserver, homes):
+def test_highlight_ga68_lowercase(xserver, gui_owner, request, homes):
     """Modern (ga68) stropping: lowercase begin/int/puts highlight in Xft."""
-    _assert_highlight(xserver, homes, LOWER, "lower")
+    _assert_highlight(gui_owner, request, homes, LOWER, "lower")
 
 
-def test_highlight_a68g_uppercase(xserver, homes):
+def test_highlight_a68g_uppercase(xserver, gui_owner, request, homes):
     """Classic (a68g) stropping: UPPER BEGIN/INT highlight (case-insensitive)."""
-    _assert_highlight(xserver, homes, UPPER, "upper")
+    _assert_highlight(gui_owner, request, homes, UPPER, "upper")
