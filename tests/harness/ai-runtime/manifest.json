@@ -45,6 +45,7 @@
   {"id": "SC-ai-runtime-17", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_diagnostics.py::test_chat_prompt_includes_diagnostics", "status": "covered", "needs": ["clangd"]},
   {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_build_and_fix_checks_a_lone_c_file_with_the_compiler", "status": "covered"},
   {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_fix_build.py::test_fix_build_loop", "status": "covered"},
+  {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_fix_build_quoting.py::test_fix_build_command_quotes_the_file_name", "status": "new"},
   {"id": "SC-ai-runtime-18", "requirement": "Build and fix knows what it builds", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_build_and_fix_with_no_build_command_runs_nothing", "status": "new"},
   {"id": "SC-ai-runtime-19", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_model_listing_before_a_task_takes_esc_and_sends_nothing", "status": "new"},
   {"id": "SC-ai-runtime-19", "requirement": "The task, the queue and the status", "layer": "ncurses", "test": "tests/test_ai_runtime.py::test_model_listing_before_an_edit_takes_keys_and_the_edit_then_runs", "status": "new"},

@@ -142,6 +142,9 @@ char *wpe_ai_tool_result_mark_cut(char *result, size_t len);
 /* Single-quote one argument for /bin/sh -c, so a path with a space or a
  * quote in it reaches a command as the one argument it is. */
 void  wpe_ai_shell_quote(char *dst, size_t sz, const char *src);
+/* The same, but 0 only when all of src fits in dst; -1 and nothing cut when
+ * it does not. */
+int   wpe_ai_shell_quote_whole(char *dst, size_t sz, const char *src);
 
 /* A command run for a tool step, its result handed back on the editor's loop:
  * the editor takes keys while it runs.  The command runs in a session of its

@@ -243,6 +243,13 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Security fix: Build & fix no longer runs a command hidden in a file name.
+  With no makefile, it checks the current C file with gcc, and a name such
+  as a'; touch x; '.c ended the quotes and ran the second command.  The name
+  is now quoted like every other path the assistant gives to a shell, the
+  pane shows the quoted command, and a name too long to fit is refused
+  instead of cut.
+
 * Enter in a Grep or Find window that found nothing no longer ends the
   editor.  The list says "No entry in this list" and stays open until you
   close it.  The same holds for a list that has lost its last entry (the

@@ -771,6 +771,19 @@ static int ws_quote_whole(char *dst, size_t sz, const char *src)
 }
 
 /**
+ * wpe_ai_shell_quote_whole - Shell-quote one argument, or refuse when it is too long.
+ * @dst/@sz: the quoted result; @src: the argument as the user knows it.
+ *
+ * For a command the user reads and the shell runs, such as the Build & fix
+ * line: a name that does not fit is refused, never cut to a shorter name.
+ * Return: 0 with @dst holding all of @src, -1 when it would not fit.
+ */
+int wpe_ai_shell_quote_whole(char *dst, size_t sz, const char *src)
+{
+ return ws_quote_whole(dst, sz, src);
+}
+
+/**
  * ws_format_whole - Build a command only when all of it fits.
  * @dst/@sz: the command; @fmt: its pattern and arguments.
  *

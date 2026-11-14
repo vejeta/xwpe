@@ -660,6 +660,11 @@ TESTS += tests/check-one-owner.sh
 # the pass that moves it into a plan; the counts may only fall.
 TESTS += tests/check-start-plan.sh
 
+# One owner of how the assistant quotes a word for /bin/sh:
+# wpe_ai_shell_quote.  tests/check-shell-quote.sh fails when a string in
+# we_ai*.c holds a hand-written '%s'.
+TESTS += tests/check-shell-quote.sh
+
 # One owner of a file's line endings (we_lineend.c): no second reader or
 # writer of the bytes of a line break.  Offenders still to go are in
 # tests/line-ends.allow.
@@ -776,6 +781,7 @@ EXTRA_DIST = \
   tests/one-owner.allow \
   tests/check-start-plan.sh \
   tests/start-plan.allow \
+  tests/check-shell-quote.sh \
   tests/check-line-ends.sh \
   tests/line-ends.allow \
   tests/test_lineend.c \

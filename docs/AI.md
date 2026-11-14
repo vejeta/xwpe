@@ -608,6 +608,12 @@ for the file's type (C and C++ have one), Alt-G b says
 `[fix-build] no build command for <file>: no makefile here, and only C and C++
 have a syntax check` and runs nothing.
 
+The file's name goes into the syntax-only command as one quoted word, so a
+name with a space, a quote or a `;` in it is checked as that one file and
+runs nothing else. A path too long to fit in the command is not cut to a
+shorter name: the pane says `[fix-build] the file's path is too long to put in
+a command; nothing ran`.
+
 **Project instructions.** A `.xwpe-ai.md` (or, when it is absent, an
 `AGENTS.md`) in the working directory is folded into the prompt under a
 `PROJECT INSTRUCTIONS` heading, so a repository's standing rules are followed

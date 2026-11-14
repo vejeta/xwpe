@@ -13359,7 +13359,11 @@ int e_ai_agent(FENSTER *f)
    source file can still be checked.  With neither, there is nothing to run: a
    `make` with no makefile cannot build anything, so none is offered.  The
    command is shown to the user and handed to the agent verbatim -- nothing is
-   hidden.  Returns 1 when a command was written, 0 when there is none. */
+   hidden.  The file's path is quoted for /bin/sh, so a name with a quote or
+   a ; in it stays one argument.  Returns 1 when a command was written, 0 when
+   there is none, AI_BUILD_PATH_TOO_LONG when the quoted path does not fit
+   (nothing is cut). */
+#define AI_BUILD_PATH_TOO_LONG (-1)
 static int ai_build_command(FENSTER *f, char *out, size_t sz)
 {
  const char *dir = (f->dirct && f->dirct[0]) ? f->dirct : ".";
@@ -13381,8 +13385,14 @@ static int ai_build_command(FENSTER *f, char *out, size_t sz)
             !strcmp(dot, ".cxx") || !strcmp(dot, ".C")) cc = "g++";
   }
   if (cc && full) {
-   snprintf(out, sz, "%s -fsyntax-only -Wall '%s'", cc, full);
+   char quoted[1200];
+   int fits = wpe_ai_shell_quote_whole(quoted, sizeof quoted, full) == 0;
    free(full);
+   if (!fits) { out[0] = '\0'; return AI_BUILD_PATH_TOO_LONG; }
+   if ((size_t)snprintf(out, sz, "%s -fsyntax-only -Wall %s", cc, quoted) >= sz) {
+    out[0] = '\0';
+    return AI_BUILD_PATH_TOO_LONG;
+   }
    return 1;
   }
   free(full);
@@ -13416,27 +13426,64 @@ static void ai_fix_build_refuse(FENSTER *f)
    goal and the exact build command, so the user does not have to type either. */
 static void ai_launch_fix_build(FENSTER *f, const char *goal);
 
-static int e_ai_fix_build(FENSTER *f)
+/* The longest Build & fix command, and the room for the task that names it
+   twice around its fixed text. */
+#define AI_FIX_BUILD_LINE_MAX 1024
+#define AI_FIX_BUILD_TEXT_MAX 512
+#define AI_FIX_BUILD_GOAL_MAX (2 * AI_FIX_BUILD_LINE_MAX +AI_FIX_BUILD_TEXT_MAX)
+
+/**
+ * ai_fix_build_goal - Write the task that tells the agent which command to run.
+ * @extra/@sz: the task; @cmd: the build command, shown to the user as is.
+ *
+ * The agent runs the command exactly as this task spells it, so the task
+ * must hold all of it: a cut command would end inside its quoted file name
+ * and the agent would run something other than what the pane showed.
+ * Return: 0 with @extra holding the whole task, -1 when it would not fit.
+ */
+static int ai_fix_build_goal(char *extra, size_t sz, const char *cmd)
 {
- char cmd[1024], extra[1700];
- if (wpe_ai_busy()) {
-  ai_enqueue(f, ai_launch_fix_build, "");
-  return 0;
- }
- if (!ai_build_command(f, cmd, sizeof cmd)) {
-  ai_fix_build_refuse(f);
-  return 0;
- }
- wpe_ai_trace("fix-build cmd=%s", cmd);
- { char line[1200]; snprintf(line, sizeof line, "[fix-build] build command: %s", cmd);
-   ai_pane(f, line, AI_ROLE_MACHINERY, 1); }
- snprintf(extra, sizeof extra,
+ int n = snprintf(extra, sz,
    "You are fixing a failing build. The build command is:\n  %s\n"
    "First run it with `TOOL run_command %s`. If it succeeds (no errors), reply "
    "DONE. Otherwise read the compiler errors, edit the source files to fix the "
    "root cause (not by silencing warnings), then run the build command again. "
    "Repeat until the build succeeds, then reply DONE with a short summary of "
    "what you changed.", cmd, cmd);
+ if (n < 0 || (size_t)n >= sz) {
+  extra[0] = '\0';
+  return -1;
+ }
+ return 0;
+}
+
+static int e_ai_fix_build(FENSTER *f)
+{
+ char cmd[AI_FIX_BUILD_LINE_MAX],extra[AI_FIX_BUILD_GOAL_MAX];
+ if (wpe_ai_busy()) {
+  ai_enqueue(f, ai_launch_fix_build, "");
+  return 0;
+ }
+ int built = ai_build_command(f, cmd, sizeof cmd);
+ if (built == AI_BUILD_PATH_TOO_LONG) {
+  wpe_ai_trace("fix-build path too long");
+  ai_pane(f, "[fix-build] the file's path is too long to put in a command; nothing ran",
+          AI_ROLE_MACHINERY, 1);
+  return 0;
+ }
+ if (!built) {
+  ai_fix_build_refuse(f);
+  return 0;
+ }
+ wpe_ai_trace("fix-build cmd=%s", cmd);
+ { char line[1200]; snprintf(line, sizeof line, "[fix-build] build command: %s", cmd);
+   ai_pane(f, line, AI_ROLE_MACHINERY, 1); }
+ if (ai_fix_build_goal(extra, sizeof extra, cmd) != 0) {
+  wpe_ai_trace("fix-build goal too long");
+  ai_pane(f, "[fix-build] the build command is too long to hand to the agent; nothing ran",
+          AI_ROLE_MACHINERY, 1);
+  return 0;
+ }
  return ai_agent_launch(f, "Fix the failing build.", extra, ai_launch_fix_build);
 }
 

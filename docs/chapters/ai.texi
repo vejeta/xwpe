@@ -828,6 +828,12 @@ a normal agent run.  With no makefile and no such check for the file's type, the
 pane says @samp{[fix-build] no build command for @var{file}: no makefile here,
 and only C and C++ have a syntax check} and nothing runs.
 
+The file's name goes into the syntax-only command as one quoted word, so a
+name with a space, a quote or a @samp{;} in it is checked as that one file and
+runs nothing else.  A path too long to fit in the command is not cut to a
+shorter name: the pane says @samp{[fix-build] the file's path is too long to
+put in a command; nothing ran}.
+
 @section Complete at cursor
 
 @cindex AI, completion
