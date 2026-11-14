@@ -32,7 +32,7 @@ def _find(s, pattern, *extra):
     ("abab\n", [RIGHT], "a", (0, 3)),
     ("abc\nxyz\n", [RIGHT], "^x", (1, 1)),
     ("abc\nxyz\n", [], "c$", (0, 3)),
-    ("abab\n", [], "b*", (0, 2)),
+    ("abab\n", [], "b*", (0, 0)),
 ], ids=["a", "b+", "group", "from-cursor", "bol", "eol", "empty-then-text"])
 def test_forward_hit_is_what_matched(tmp_path, seed, keys, pattern, cursor):
     with EditSession(str(tmp_path), seed) as s:
@@ -40,6 +40,17 @@ def test_forward_hit_is_what_matched(tmp_path, seed, keys, pattern, cursor):
             s.send(keys)
         w = _find(s, pattern)
         assert w.cursor == cursor, "cursor %s" % (w.cursor,)
+
+
+# @scenario SC-edit-model-53
+def test_an_empty_hit_is_a_place_and_search_again_goes_past_it(tmp_path):
+    """`b*` on "abab" matches empty at the cursor: that place is the hit, and
+    Search Again goes on to the `b` behind it."""
+    with EditSession(str(tmp_path), "abab\n") as s:
+        w = _find(s, "b*")
+        assert w.cursor == (0, 0), "cursor %s" % (w.cursor,)
+        w = s.send([ctrl("l")]).win
+        assert w.cursor == (0, 2), "cursor %s" % (w.cursor,)
 
 
 # @scenario SC-edit-model-53
@@ -93,15 +104,15 @@ def _change_all(s, pattern, new, *extra):
 @pytest.mark.parametrize("seed,pattern,new,extra,disk", [
     ("abc\nxyz\n", "^", "", [], b"abc\nxyz\n"),
     ("abc\n", "x*", "", [], b"abc\n"),
-    ("abc\n", "x*", "Z", [], b"abc\n"),
-    ("abc\nxyz\n", "$", "Z", [ALT_B], b"abc\nxyz\n"),
+    ("abc\n", "x*", "Z", [], b"ZaZbZcZ\n"),
+    ("abc\nxyz\n", "$", "Z", [ALT_B], b"abcZ\nxyzZ\n"),
     ("ab\nab\n", "^a", "Z", [], b"Zb\nZb\n"),
 ], ids=["bol-to-nothing", "empty-to-nothing", "empty-to-text", "eol-backward",
         "anchored"])
 def test_change_all_never_stands_still_on_an_empty_hit(tmp_path, seed, pattern, new, extra,
                                                       disk):
     """An expression that can match empty text: Change All ends (it used to
-    run for ever), and only hits with text in them are replaced."""
+    run for ever), and each place it matches empty is written to once."""
     with EditSession(str(tmp_path), seed) as s:
         if ALT_B in extra:
             s.send(["\033[B", END])
@@ -109,13 +120,19 @@ def test_change_all_never_stands_still_on_an_empty_hit(tmp_path, seed, pattern, 
 
 
 # @scenario SC-edit-model-53
-@pytest.mark.parametrize("pattern,extra", [("^", []), ("q*", []), ("$", [ALT_B])],
-                         ids=["bol", "empty", "eol-backward"])
-def test_search_again_never_stands_still_on_an_empty_hit(tmp_path, pattern, extra):
-    """Search Again after an expression that matches only empty text goes
-    nowhere new: nothing is found, the cursor stays where the user left it."""
+@pytest.mark.parametrize("pattern,extra,first,again", [
+    ("^", [], (1, 0), (1, 0)),
+    ("q*", [], (0, 1), (0, 2)),
+    ("$", [ALT_B], (0, 1), (0, 1)),
+], ids=["bol", "empty", "eol-backward"])
+def test_search_again_never_stands_still_on_an_empty_hit(tmp_path, pattern, extra, first,
+                                                        again):
+    """Search Again after an expression that matches only empty text: the
+    first search finds the place, Search Again goes to the next place, and
+    where there is none the cursor stays where it was."""
     with EditSession(str(tmp_path), "abc\nxyz\n") as s:
         s.send([RIGHT])
         w = _find(s, pattern, *extra)
+        assert w.cursor == first, "cursor %s" % (w.cursor,)
         w = s.send([ctrl("l")]).win
-        assert w.cursor == (0, 1), "cursor %s" % (w.cursor,)
+        assert w.cursor == again, "cursor %s" % (w.cursor,)

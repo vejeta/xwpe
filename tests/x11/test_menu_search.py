@@ -91,3 +91,43 @@ def test_find_via_f4(xwpe):
     t = xwpe.saved_text()
     assert "Xreturn" in t or "returnX" in t, \
         "F4 Find should move the cursor to the match, got %r" % t
+
+
+# --- a regular expression that matches empty text is a place ---
+# The find mark is painted by shared code from the hit's two ends; a hit of no
+# characters paints nothing and leaves the cursor at the line start.
+
+# @scenario SC-edit-model-56
+def test_find_of_a_line_start_puts_the_cursor_there(xwpe):
+    """`^` is a place: from the middle of line 1 the cursor goes to the start
+    of line 2, so a marker typed there starts that line."""
+    xwpe.key("Right")                    # the cursor is inside line 1
+    xwpe.menu("s", "f")                  # Find dialog
+    xwpe.type("^")                       # Text to Find
+    xwpe.key("alt+r")                    # Regular expression
+    xwpe.key("Return")
+    xwpe.type("X")                       # marker at the hit
+    xwpe.save()
+    assert xwpe.proc.poll() is None, "xwpe died on Find of ^"
+    lines = xwpe.saved_text().splitlines()
+    assert lines[0] == "int main(){" and lines[1].startswith("X  int a"), \
+        "Find ^ should leave the cursor at the start of line 2, got %r" % lines[:2]
+
+
+# @scenario SC-edit-model-56
+def test_change_all_writes_at_every_line_start(xwpe):
+    """Change All of `^` by "// " writes once at the start of every line, and
+    what it wrote reaches the file."""
+    xwpe.menu("s", "r")                  # Replace dialog
+    xwpe.type("^")                       # Text to Find
+    xwpe.key("alt+r")                    # Regular expression
+    xwpe.key("alt+n"); xwpe.type("// ")  # New Text
+    xwpe.key("alt+p")                    # Prompt on Replace off
+    xwpe.key("alt+a")                    # Change All
+    xwpe.key("Return")                   # dismiss the report
+    xwpe.save()
+    assert xwpe.proc.poll() is None, "xwpe died on Change All of ^"
+    lines = xwpe.saved_text().splitlines()
+    assert len(lines) == 9 and all(l.startswith("// ") and not l.startswith("// // ")
+                                   for l in lines), \
+        "Change All ^ should write once at each line start, got %r" % lines

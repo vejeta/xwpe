@@ -73,6 +73,7 @@ e_add_undo we_buffer.o we_edit.o
 wpe_child_start we_child.o we_startplan.o
 wpe_child_capture|wpe_child_probe|wpe_child_run_to_file|wpe_child_capture_plan|wpe_child_probe_plan|wpe_child_run_to_file_plan we_child.o we_startplan.o
 regcomp|regexec|regfree|regerror we_rowfind.o
+e_strstr|e_ustrstr|e_rstrstr|e_urstrstr
 refresh|wrefresh|doupdate|endwin|resizeterm|def_prog_mode|reset_prog_mode|reset_shell_mode we_term.o
 tcsetattr|tcgetattr we_term.o we_child.o
 e_mouse_tracking_enable|e_mouse_tracking_disable we_term.o

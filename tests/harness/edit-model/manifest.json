@@ -617,6 +617,272 @@
    "layer": "wayland",
    "test": "tests/wayland/test_close_save_fails.py::test_working_save_still_closes",
    "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "The search over a row has one owner: the engine and the rules of a hit agree with a reference over random rows, in the three locales, with the engine on the whole row",
+   "layer": "c-unit",
+   "test": "test_rowfind",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "The same where the C library has no REG_STARTEND: the engine runs on a copy of the row",
+   "layer": "c-unit",
+   "test": "test_rowfind_copy",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "The same where no UTF-8 ctype can be made: a match that is not whole characters is no hit",
+   "layer": "c-unit",
+   "test": "test_rowfind_reject",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Case sensitive off keeps \\w as a word",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_w_survives_a_case_insensitive_search",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A word boundary sees the text before where the search starts",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_word_boundary_sees_the_text_before_where_the_search_starts",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "The block is a range a hit must lie in, not a cut of the row",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_the_block_is_a_range_not_a_cut_of_the_row",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Case sensitive off folds letters beyond ASCII, with and without Regular expression",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_case_insensitive_search_folds_letters_beyond_ascii",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A line start is a place Find goes to",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_line_start_is_a_place_to_find",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Search Again goes from line start to line start",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_search_again_goes_from_line_start_to_line_start",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "An empty hit is found once per place, and again when the cursor comes back",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_an_empty_hit_is_found_once_per_place_and_the_cursor_may_come_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A cursor that left an empty hit finds it again when it comes back",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_cursor_that_left_an_empty_hit_finds_it_again_when_it_comes_back",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A Find confirmed again in its dialog starts afresh",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_find_confirmed_again_in_its_dialog_starts_afresh",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A Change All after a Find starts at the cursor",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_change_all_after_a_find_starts_at_the_cursor",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All takes a line start once",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_change_all_takes_a_line_start_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All writes at every place an expression matches empty",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_change_all_writes_at_every_place_an_expression_matches_empty",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All backward writes at every line start",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_change_all_backward_writes_at_every_line_start",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "An empty hit replaced by nothing changes neither the text nor the modified mark",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_an_empty_hit_replaced_by_nothing_changes_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "One Ctrl-U takes back a Change All of an empty hit, with and without Prompt on Replace",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_one_undo_takes_back_a_change_all_of_an_empty_hit",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All looks on the rows as its replacements leave them",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_change_all_reads_the_text_it_has_made",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A wrapped row has no line start or end inside its line",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_wrapped_row_has_no_line_start_or_end_inside_the_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All on wrapped lines writes at the line ends only",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_change_all_on_wrapped_lines_writes_at_the_line_ends_only",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All of a wrap width of text goes in once per line",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_change_all_of_a_wrap_width_of_text_goes_in_once_per_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Whole words takes underscore and letters beyond ASCII as word letters",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_whole_words_takes_underscore_and_letters_beyond_ascii_as_word_letters",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A dot takes a whole character in every locale",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_dot_takes_a_whole_character_in_every_locale",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A set never matches a part of another character",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_set_never_matches_a_part_of_another_character",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Case folding does not read UTF-8 bytes as Latin-1",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_case_folding_does_not_read_utf8_bytes_as_latin1",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A Latin-1 byte in a row does not hide the text beside it",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_latin1_byte_in_a_row_does_not_hide_the_text_beside_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A Latin-1 byte taken into the Find text is found",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_latin1_byte_taken_into_the_find_text_is_found",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "An empty Find text finds nothing",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_an_empty_find_text_finds_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All of an empty Find text ends",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_change_all_of_an_empty_find_text_ends",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "A Find text that is no expression says why",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_a_text_that_is_no_expression_says_why",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Grep lists a file by the rules of Find",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_grep_lists_a_file_by_the_rules_of_find",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Grep of a text that is no expression says why",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_grep_of_a_text_that_is_no_expression_says_why",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All over a hundred thousand rows ends soon",
+   "layer": "ncurses",
+   "test": "tests/test_find_regex_owner.py::test_change_all_over_a_hundred_thousand_rows_ends_soon",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Find of a line start puts the cursor there, in the X11 window",
+   "layer": "x11",
+   "test": "tests/x11/test_menu_search.py::test_find_of_a_line_start_puts_the_cursor_there",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "Change All writes at every line start, in the X11 window",
+   "layer": "x11",
+   "test": "tests/x11/test_menu_search.py::test_change_all_writes_at_every_line_start",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "The same, in the Wayland window",
+   "layer": "wayland",
+   "test": "tests/wayland/test_menu_search.py::test_find_of_a_line_start_puts_the_cursor_there",
+   "status": "new"
+  },
+  {
+   "id": "SC-edit-model-56",
+   "requirement": "The same, in the Wayland window",
+   "layer": "wayland",
+   "test": "tests/wayland/test_menu_search.py::test_change_all_writes_at_every_line_start",
+   "status": "new"
   }
  ]
 }

@@ -10,6 +10,7 @@
 #include "makro.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
+#include "we_rowfind.h"
 #include "we_ai.h"
 #include "we_child.h"
 #include "we_startplan.h"
@@ -237,6 +238,7 @@ int e_quit(FENSTER *f)
   return(0);
  e_tmp_remove(e_tmp_dir);
 #endif
+ wpe_rowfind_release();
 #if  MOUSE
  g[0] = 2;
  fk_mouse(g);

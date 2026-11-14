@@ -1130,6 +1130,7 @@ int e_eingabe(ECNT *e)
    if (f->save > f->ed->maxchg) e_autosave(f);
    e_buffer_depth_check(f->b);
    e_buffer_marks_inside(f->b);   /* no mark or Shift anchor past a row's end */
+   e_find_resume_check(f->b);     /* a cursor that left a search hit no longer goes on from it */
    c = e_fold_key(e_getch());
    /* A build ending while the editor waited for this key may have put
       another window on top (the jump to its first error): the key belongs
@@ -4347,6 +4348,9 @@ static int e_replace_long(BUFFER *b, SCHIRM *s, int x, int y, int sn,
  * moves them back; the record follows the replacement to the row it
  * wrapped onto, so Ctrl-U puts the old text back where the new one is.
  * A replacement longer than a row takes several rows: e_replace_long.
+ * An occurrence of no characters (a `^` or `$` that matched empty) is a
+ * place: the replacement is put in there and nothing is taken out, and an
+ * empty replacement changes nothing at all, not even the modified mark.
  * Return: 1 when the occurrence was replaced, 0 when the window refused it.
  */
 int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
@@ -4354,8 +4358,12 @@ int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
 {
  Undo *rec;
 
+ if (sn == 0 && rn == 0)
+  return(1);                 /* an empty place made empty: nothing to record */
  if (e_buffer_change_refused(b))
   return(0);
+ if (sn == 0)
+  return(e_ins_nchar(b, s, text, x, y, rn) != E_CHAR_REFUSED);
  if (!e_buffer_change_fits(b, y, x, sn, "replace"))
  {
   wpe_buffer_say_partial(b);

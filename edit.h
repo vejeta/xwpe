@@ -512,6 +512,7 @@ int e_blck_read(FENSTER *f);
 int e_blck_write(FENSTER *f);
 int e_rep_search(FENSTER *f);
 int e_find_next(BUFFER *b, SCHIRM *s, FIND *fd);
+void e_find_resume_check(BUFFER *b);
 
 /*******************************************************************************/
 /* (FENSTER *)f                                   */
@@ -645,15 +646,15 @@ int WpeExecuteManager(FENSTER *f);
 
 int WpeHandleFileManager(ECNT *cn);
 char *e_fm_tree_subdir(const FLBFFR *b);
-int WpeGrepFile(char *file, char *string, int sw);
+int WpeGrepFile(char *file, const FIND *fd);
 int WpeRemove(char *file, FENSTER *f);
 
 int WpeFindWindow(FENSTER *f);
 int WpeGrepWindow(FENSTER *f);
 
-struct dirfile *WpeSearchFiles(FENSTER *f, 
-                               char *dirct, char *file, char *string,
-                               struct dirfile *df, int sw);
+struct dirfile *WpeSearchFiles(FENSTER *f,
+                               char *dirct, char *file, const FIND *fd,
+                               struct dirfile *df);
 int WpeShell(FENSTER *f);
 int WpePrintFile(FENSTER *f);
 int e_rename(char *file, char *newname, FENSTER *f);
@@ -721,10 +722,6 @@ int e_help_ret(FENSTER *f);
 int e_topic_search(FENSTER *f);
 
 /*   we_hfkt.c   */
-int e_strstr(int x, int n, unsigned char *s, unsigned char *f);
-int e_ustrstr(int x, int n, unsigned char *s, unsigned char *f);
-int e_urstrstr(int x, int n, unsigned char *s, unsigned char *f, int *nn);
-int e_rstrstr(int x, int n, unsigned char *s, unsigned char *f, int *nn);
 int e_str_len(unsigned char *s);
 #if 0
 int e_str_nrc(unsigned char *s);

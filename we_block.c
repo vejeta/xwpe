@@ -10,6 +10,7 @@
 #include "we_clip.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
+#include "we_rowfind.h"
 #include <ctype.h>
 
 /* The marked block of a window: from (kax, kay) up to, not including,
@@ -2388,6 +2389,23 @@ int e_blck_write(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_find_say_not_found - Tell the user the search found nothing: "String
+ * not found", or, when the Find text is a regular expression that does not
+ * compile, the compiler's words for it.
+ *
+ * A mistyped expression is then told apart from a text that is not there.
+ */
+static void e_find_say_not_found(FENSTER *f)
+{
+ const char *why = wpe_rowfind_error();
+
+ if (why != NULL)
+  e_message(0, (char *)why, f);
+ else
+  e_message(0, e_msg[ERR_GETSTRING], f);
+}
+
 /*   find again   */
 int e_rep_search(FENSTER *f)
 {
@@ -2415,8 +2433,177 @@ int e_rep_search(FENSTER *f)
   return(1);
  }
  if (!(fd->sw & 1))
-  e_message(0, e_msg[ERR_GETSTRING], f);
+  e_find_say_not_found(f);
  return(0);
+}
+
+/* fd->sw: the search runs back from the cursor (Back from Cursor). */
+#define E_FIND_BACKWARDS 4
+/* fd->sw: the scope is the block (Selected Text). */
+#define E_FIND_SELECTED 8
+
+/**
+ * e_find_scope_end - Where the scope of a search ends: the last row to look
+ * at and the column on it.
+ * @jend, @iend: receive that row and column.
+ *
+ * The end of the text, or of the block for Selected Text, going forward; the
+ * start of either going back.
+ */
+static void e_find_scope_end(BUFFER *b, SCHIRM *s, const FIND *fd, int *jend, int *iend)
+{
+ int backward = (fd->sw & E_FIND_BACKWARDS) != 0;
+
+ if (!(fd->sw & E_FIND_SELECTED) && backward)
+ {
+  *jend = 0;
+  *iend = 0;
+ }
+ else if (!(fd->sw & E_FIND_SELECTED))
+ {
+  *jend = b->mxlines - 1;
+  *iend = b->bf[b->mxlines - 1].len;
+ }
+ else if (backward)
+ {
+  *jend = s->mark_begin.y;
+  *iend = s->mark_begin.x;
+ }
+ else
+ {
+  *jend = s->mark_end.y;
+  *iend = s->mark_end.x;
+ }
+}
+
+/**
+ * e_find_row_kind - What row @j is in its line: a line longer than Max.
+ * Columns is several rows, and `^` and `$` belong to the line.
+ * Return: WPE_ROW_STARTS_LINE and WPE_ROW_ENDS_LINE as they hold.
+ */
+static unsigned e_find_row_kind(BUFFER *b, int j)
+{
+ unsigned kind = 0;
+
+ if (j == 0 || b->bf[j - 1].s[b->bf[j - 1].len] == WPE_WR)
+  kind |= WPE_ROW_STARTS_LINE;
+ if (b->bf[j].s[b->bf[j].len] == WPE_WR || j == b->mxlines - 1)
+  kind |= WPE_ROW_ENDS_LINE;
+ return(kind);
+}
+
+/**
+ * e_find_cursor_place - The cursor as a place in the text: the end of a row
+ * that goes on in the next is the start of that next row.
+ * @y, @x: receive the row and column.
+ *
+ * Search Again and Replace compare it with where the last hit left the
+ * cursor, so a rewrap that moved the cursor from one name of a place to the
+ * other still stands on it.
+ */
+static void e_find_cursor_place(BUFFER *b, int *y, int *x)
+{
+ *y = b->b.y;
+ *x = b->b.x;
+ wpe_rowfind_text_place(y, x, b->bf[*y].len, e_find_row_kind(b, *y));
+}
+
+/**
+ * e_find_note_resume - Remember where the cursor stands, after a hit or a
+ * replacement, as the place the next search goes on from.
+ *
+ * A zero-width hit (`^`, `$`, `x*`) is found once per place: the search that
+ * goes on from the place the last one left the cursor at does not find it
+ * again, so Search Again and Change All move on.
+ */
+static void e_find_note_resume(BUFFER *b, int backward)
+{
+ int y, x;
+
+ e_find_cursor_place(b, &y, &x);
+ wpe_rowfind_note_resume(y, x, backward != 0);
+}
+
+/**
+ * e_find_resume_check - Forget "the search goes on from a hit" once the
+ * cursor has left the place the last hit or replacement put it at.
+ * @b: the buffer of the window the next key goes to.
+ *
+ * Run before each key is read.  A user who moves away from a hit and comes
+ * back to its place finds an empty hit there again, as a first search
+ * would; only a cursor that has stood on the place since the hit goes on
+ * past it.
+ */
+void e_find_resume_check(BUFFER *b)
+{
+ int y, x;
+
+ e_find_cursor_place(b, &y, &x);
+ if (!wpe_rowfind_resumes_at(y, x, 0) && !wpe_rowfind_resumes_at(y, x, 1))
+  wpe_rowfind_forget_resume();
+}
+
+/**
+ * e_find_goes_on - Does a search from the cursor go on from a hit?
+ * Return: 1 when the cursor stands where the last hit or replacement left it.
+ */
+static int e_find_goes_on(BUFFER *b, const FIND *fd)
+{
+ int y, x;
+
+ e_find_cursor_place(b, &y, &x);
+ return(wpe_rowfind_resumes_at(y, x, (fd->sw & E_FIND_BACKWARDS) != 0));
+}
+
+/**
+ * e_find_in_row - Look for the Find text on row @j of @b, inside the scope.
+ * @jend, @iend: where the scope ends (e_find_scope_end).
+ * @hit: receives the columns of the occurrence.
+ *
+ * The first row is looked at from the cursor, the others whole; the last
+ * row of the scope only up to its end.  The owner of the row search decides
+ * what a hit is; this only says which part of which row.
+ * Return: 1 a hit, 0 none on the row, -1 the Find text is no expression.
+ */
+static int e_find_in_row(BUFFER *b, const FIND *fd, int j, int jend, int iend, WpeRowHit *hit)
+{
+ int backward = (fd->sw & E_FIND_BACKWARDS) != 0;
+ int len = b->bf[j].len;
+ int from, to;
+ unsigned how = backward ? WPE_ROWFIND_BACKWARD : 0;
+
+ if (j == b->b.y && e_find_goes_on(b, fd))
+  how |= WPE_ROWFIND_AFTER_HIT;
+ if (!backward)
+ {
+  from = (j == b->b.y) ? b->b.x : 0;
+  to = (j == jend) ? iend : len;
+ }
+ else
+ {
+  from = (j == jend) ? iend : 0;
+  to = (j == b->b.y) ? b->b.x : len;
+ }
+ return(wpe_rowfind_row(fd, (unsigned char *)b->bf[j].s, len, e_find_row_kind(b, j),
+                        from, to, how, hit));
+}
+
+/**
+ * e_find_take_hit - Make @hit on row @j the found text and put the cursor
+ * behind it (in front of it searching back).
+ *
+ * The length of the occurrence is what the owner found, for Replace to take
+ * out; the place the cursor was put at is where the next search goes on from.
+ */
+static void e_find_take_hit(BUFFER *b, FIND *fd, int j, const WpeRowHit *hit)
+{
+ fd->sn = hit->eo - hit->so;
+ e_buffer_find_set(b, j, hit->so, hit->eo);
+ if (fd->sw & E_FIND_BACKWARDS)
+  e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_A);
+ else
+  e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_E);
+ e_find_note_resume(b, fd->sw & E_FIND_BACKWARDS);
 }
 
 /**
@@ -2432,75 +2619,24 @@ int e_rep_search(FENSTER *f)
  */
 int e_find_next(BUFFER *b, SCHIRM *s, FIND *fd)
 {
- int ret, j, iend, jend, end;
+ int backward = (fd->sw & E_FIND_BACKWARDS) != 0;
+ int step = backward ? -1 : 1;
+ int j, jend, iend, rc;
+ WpeRowHit hit;
 
- ret = b->b.x;
- j = b->b.y;
- if ((fd->sw & 8) == 0)
+ e_find_scope_end(b, s, fd, &jend, &iend);
+ for (j = b->b.y; backward ? j >= jend : j <= jend; j += step)
  {
-  jend = (fd->sw & 4) ? 0 : b->mxlines-1;
-  iend = (fd->sw & 4) ? 0 : b->bf[b->mxlines-1].len;
- }
- else
- {
-  jend = (fd->sw & 4) ? s->mark_begin.y : s->mark_end.y;
-  iend = (fd->sw & 4) ? s->mark_begin.x : s->mark_end.x;
- }
-
- for (; ; ret = -1)
- {
-  if ((fd->sw & 4) == 0 && j > jend)
+  rc = e_find_in_row(b, fd, j, jend, iend, &hit);
+  if (rc < 0)
    break;
-  else if ((fd->sw & 4) != 0 && j < jend)
-   break;
-  do
+  if (rc > 0)
   {
-   if (j == jend)
-    end = iend;
-   else if (!(fd->sw & 4))
-    end = b->bf[j].len;
-   else
-    end = 0;
-   if (fd->sw & 4 && ret == -1)
-    ret = b->bf[j].len;
-   if ((fd->sw & 32) == 0)
-   {
-    if ((fd->sw & 128) != 0)
-     ret = e_strstr(ret, end, b->bf[j].s, fd->search);
-    else
-     ret = e_ustrstr(ret, end, b->bf[j].s, fd->search);
-   }
-   else
-   {
-    if ((fd->sw & 128) != 0)
-     ret = e_rstrstr(ret, end, b->bf[j].s, fd->search, &(fd->sn));
-    else
-     ret = e_urstrstr(ret, end, b->bf[j].s, fd->search, &(fd->sn));
-   }
-   if ((fd->sw & 4) == 0 && j == jend && ret > iend)
-    break;
-   else if ((fd->sw & 4) != 0 && j == jend && ret < iend)
-    break;
-   if (ret >= 0 && ((fd->sw & 64) == 0 ||
-     (isalnum(*(b->bf[j].s+ret+fd->sn)) == 0 &&
-     (ret == 0 || isalnum(*(b->bf[j].s+ret-1)) == 0))))
-   {
-    e_buffer_find_set(b, j, ret, ret + fd->sn);
-    if (fd->sw & 4)
-     e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_A);
-    else
-     e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_E);
-    return(1);
-   }
-   else if (ret >= 0 && (fd->sw & 64) != 0)
-    ret++;
-  } while(ret >= 0);
-  if ((fd->sw & 4) == 0 && j > jend)
-   break;
-  else if ((fd->sw & 4) != 0 && j < jend)
-   break;
-  j = ((fd->sw & 4) == 0) ? j+1 : j-1;
+   e_find_take_hit(b, fd, j, &hit);
+   return(1);
+  }
  }
+ wpe_rowfind_forget_resume();
  return(0);
 }
 
@@ -2568,10 +2704,7 @@ int e_find(FENSTER *f)
  f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
  if (e_blck_dup(strTemp, f))
- {
   strcpy(fd->search, strTemp);
-  fd->sn = strlen(fd->search);
- }
  o->xa = 7;  o->ya = 3;  o->xe = 63;  o->ye = 18;
  o->bgsw = 0;
  o->crsw = AltO;
@@ -2600,7 +2733,7 @@ int e_find(FENSTER *f)
   fd->sw = (o->pstr[0]->num << 2) + (o->pstr[1]->num << 3) +
     (o->pstr[2]->num << 1) + (o->sstr[0]->num << 7) + (o->sstr[1]->num << 6) +
     (o->sstr[2]->num << 5);
-  fd->sn = strlen(fd->search);
+  wpe_rowfind_forget_resume();
   if ((fd->sw & 2) != 0)
    e_find_to_scope_start(b, fd);
  }
@@ -2620,9 +2753,6 @@ int e_find(FENSTER *f)
   The result window is either 'String NOT Found' or the number of
   occurrences found and the number actually replaced.
 */
-/* fd->sw: the search runs back from the cursor (Back from Cursor). */
-#define E_FIND_BACKWARDS 4
-
 /**
  * e_rep_search_on_after - Where Search > Replace looks next after it
  * replaced the occurrence found on row @y: behind the new text, on the row
@@ -2641,15 +2771,12 @@ int e_find(FENSTER *f)
 static void e_rep_search_on_after(BUFFER *b, SCHIRM *s, int backwards, int y, int hit_x)
 {
  if (backwards)
- {
   e_buffer_cursor_from_offset(b, y, hit_x);
-  return;
- }
- e_buffer_mark_from(b, E_BUFFER_MARK_FIND_E, E_BUFFER_POS_CURSOR);
+ else
+  e_buffer_mark_from(b, E_BUFFER_MARK_FIND_E, E_BUFFER_POS_CURSOR);
+ e_find_note_resume(b, backwards);
 }
 
-/* fd->sw: the scope is the block (Selected Text). */
-#define E_FIND_SELECTED 8
 /* fd->sw: ask before each replacement (Prompt on Replace). */
 #define E_FIND_PROMPT 16
 /* A window whose top is above this screen row is scrolled so the hit shows
@@ -2703,6 +2830,7 @@ static void e_rep_search_past_hit(BUFFER *b, SCHIRM *s, FIND *fd)
   e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_A);
  else
   e_buffer_cursor_from(b, E_BUFFER_MARK_FIND_E);
+ e_find_note_resume(b, fd->sw & E_FIND_BACKWARDS);
 }
 
 /**
@@ -2910,7 +3038,7 @@ static void e_replace_report(FENSTER *f, const EReplaceReport *r)
   return;
  if (!r->found)
  {
-  e_message(0, e_msg[ERR_GETSTRING], f);
+  e_find_say_not_found(f);
   return;
  }
  if (r->out_of_memory)
@@ -2942,10 +3070,7 @@ int e_replace(FENSTER *f)
  f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
  if (e_blck_dup(strTemp, f))
- {
   strcpy(fd->search, strTemp);
-  fd->sn = strlen(fd->search);
- }
  o->xa = 7;  o->ya = 3;  o->xe = 67;  o->ye = 17;
  o->bgsw = 0;
  o->name = "Replace";
@@ -2972,8 +3097,8 @@ int e_replace(FENSTER *f)
   ret = WPE_ESC;
  if (ret != WPE_ESC)
  {
-  fd->sn = strlen(fd->search);
   fd->rn = strlen(fd->replace);
+  wpe_rowfind_forget_resume();
   fd->sw = 1 + (o->sstr[0]->num << 7)+ (o->sstr[1]->num << 6)
     + (o->sstr[2]->num << 5) + (o->sstr[3]->num << 4);
   switch (o->pstr[0]->num)

@@ -574,7 +574,11 @@ int wpe_rowfind_row(const FIND *fd, const unsigned char *row, int row_len,
  RowSearch x;
 
  if (fd->search[0] == '\0')
+ {
+  cache_clear(&g_cache);   /* no compile error of an earlier text speaks for this one */
+  g_has_error = 0;
   return(0);
+ }
  if (!cache_ensure(fd))
   return(-1);
  if (row_len < 0)

@@ -10,6 +10,7 @@
 #include "we_ai.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
+#include "we_rowfind.h"
 #include "we_child.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
@@ -1894,39 +1895,34 @@ int WpeHandleFileManager(ECNT * cn)
 }
 
 
-int WpeGrepFile(char *file, char *string, int sw)
+/**
+ * WpeGrepFile - Does the Find text of @fd occur in the file @file?
+ *
+ * Search > Grep lists the files with an occurrence.  Each line is a whole
+ * line to the search, so `^` and `$` are its ends and a whole word is a word
+ * on that line, with the rules of Find.
+ * Return: 1 when it occurs, 0 when it does not (or the file cannot be read),
+ * -1 when the Find text is a regular expression that does not compile.
+ */
+int WpeGrepFile(char *file, const FIND *fd)
 {
   FILE           *fp;
   char            str[256];
-  int             ret, nn;
+  WpeRowHit       hit;
+  int             rc;
 
   if((fp = fopen(file, "r")) == NULL)
     return(0);
 
-  nn = strlen(string);
   while(fgets(str, 256, fp))
   {
-    if((sw & 32) == 0)
-    {
-      if((sw & 128) != 0)
-        ret = e_strstr(0, strlen(str), str, string);
-      else
-        ret = e_ustrstr(0, strlen(str), str, string);
-    }
-    else
-    {
-      if((sw & 128) != 0)
-        ret = e_rstrstr(0, strlen(str), str, string, &nn);
-      else
-        ret = e_urstrstr(0, strlen(str), str, string, &nn);
-    }
-    if(   ret >= 0 
-       && (   !(sw & 64) 
-           || (   isalnum(str[ret + nn]) == 0
-               && (ret == 0 || isalnum(str[ret - 1]) == 0))))
+    rc = wpe_rowfind_row(fd, (unsigned char *)str, strcspn(str, "\n"),
+                         WPE_ROW_STARTS_LINE | WPE_ROW_ENDS_LINE, 0,
+                         strcspn(str, "\n"), 0, &hit);
+    if(rc != 0)
     {
       fclose(fp);
-      return(1);
+      return(rc);
     }
   }
   fclose(fp);
@@ -3696,9 +3692,10 @@ int WpePrintFile(FENSTER * f)
 }
 #endif
 
-struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, char *string,
-                               struct dirfile *df, int sw)
+struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, const FIND *fd,
+                               struct dirfile *df)
 {
+  int             sw = fd->sw;
   struct dirfile *dd;
   char          **tname, *tp, *tmp, *tmp2;
   int             i;
@@ -3785,7 +3782,7 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, char *string
 
         sprintf(tp, "%s%s", tmp2, dd->name[i]);
 
-        if(WpeGrepFile(tp, string, sw))
+        if(WpeGrepFile(tp, fd) > 0)
         {
           df->anz++;
           if((tname = REALLOC(df->name, df->anz * sizeof(char *))) == NULL)
@@ -3840,7 +3837,7 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, char *string
     else
       sprintf(tmp, "%s%s", dirct, dd->name[i]);
 
-    df = WpeSearchFiles(f, tmp, file, string, df, sw);
+    df = WpeSearchFiles(f, tmp, file, fd, df);
     FREE(tmp);
   }
 
@@ -3850,6 +3847,21 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, char *string
 
 }
 
+
+/**
+ * e_grep_say_bad_text - Tell the user why a Grep listed no file when its
+ * Find text is a regular expression that does not compile.
+ *
+ * An empty list and a mistyped expression then do not look alike.
+ */
+static void e_grep_say_bad_text(FENSTER *f, const FIND *fd)
+{
+  WpeRowHit       hit;
+
+  if(wpe_rowfind_row(fd, (const unsigned char *)"", 0,
+                     WPE_ROW_STARTS_LINE | WPE_ROW_ENDS_LINE, 0, 0, 0, &hit) < 0)
+    e_message(0, (char *)wpe_rowfind_error(), f);
+}
 
 int WpeGrepWindow(FENSTER * f)
 {
@@ -3861,10 +3873,7 @@ int WpeGrepWindow(FENSTER * f)
   if(!o)
     return(-1);
   if(e_blck_dup(strTemp, f))
-  {
     strcpy(fd->search, strTemp);
-    fd->sn = strlen(fd->search);
-  }
   o->xa = 7;
   o->ya = 3;
   o->xe = 63;
@@ -3890,7 +3899,7 @@ int WpeGrepWindow(FENSTER * f)
   {
     fd->sw = 1024 + (o->sstr[0]->num << 7) + (o->sstr[1]->num << 6) +
       (o->sstr[2]->num << 5) + (o->sstr[3]->num << 9);
-    fd->sn = strlen(fd->search);
+    wpe_rowfind_forget_resume();
     if (fd->dirct)
     {
      WpeFree(fd->dirct);
@@ -3899,7 +3908,10 @@ int WpeGrepWindow(FENSTER * f)
   }
   freeostr(o);
   if(ret != WPE_ESC)
+  {
     ret = e_data_first(2, f->ed, fd->dirct);
+    e_grep_say_bad_text(f, fd);
+  }
   return(ret);
 }
 
@@ -4402,16 +4414,12 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
   else if(sw == 2)
   {
     f->datnam = "Grep";
-    df = WpeSearchFiles(f, nstr, cn->fd.file, 
-                        cn->fd.search, NULL,
-                        cn->fd.sw);
+    df = WpeSearchFiles(f, nstr, cn->fd.file, &cn->fd, NULL);
   }
   else if(sw == 3)
   {
     f->datnam = "Find";
-    df = WpeSearchFiles(f, nstr, cn->fd.file, 
-                        cn->fd.search, NULL,
-                        cn->fd.sw);
+    df = WpeSearchFiles(f, nstr, cn->fd.file, &cn->fd, NULL);
   }
   else if(sw == 7)
   {
