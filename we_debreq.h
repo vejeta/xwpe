@@ -22,13 +22,49 @@
    prompt.  An owner that grows the text sets @size to the room it has; a
    reader handed text it does not own sees @size 0 and never grows or frees
    it.  @error is set when an error record or a line of the debugger's error
-   stream was part of the answer. */
+   stream was part of the answer.  @err holds the bytes of the answer that
+   came on the error stream (also kept in @text, so every reader of @text is
+   unchanged), NULL when none did: a reader that must tell a refusal from a
+   warning reads it.  @prompt names the other prompt the answer ended at
+   when the request ended E_D_REQ_OTHER_PROMPT, else NULL. */
 typedef struct
 {
  char   *text;
  size_t  len, size;
  int     error;
+ char   *err;
+ size_t  err_len, err_size;
+ const char *prompt;
 } E_D_ANSWER;
+
+/* A prompt of a debugger that is not the one it ends its answers with: the
+   one it shows when it reads the lines of a block (pdb's commands, gdb's
+   define), or hands its input to a nested session.  A table of them ends
+   with a row whose @text is NULL. */
+#define E_D_PROMPT_ENDS_WITH 0   /* the answer's text ends with @text (no line end) */
+#define E_D_PROMPT_LAST_LINE 1   /* the last line, blanks before it dropped, is @text */
+
+typedef struct
+{
+ const char *name;     /* as the sentence names it: "(com)" */
+ const char *text;     /* the bytes */
+ int shape;            /* E_D_PROMPT_* */
+} E_D_OTHER_PROMPT;
+
+/**
+ * e_d_req_other_prompt_at - Which of @rows the answer ends at.
+ * @ans: the answer so far; @rows: a table ended by a row with no text, or NULL;
+ * @len: receives the bytes of the prompt, from the start of its line for
+ * E_D_PROMPT_LAST_LINE (its blanks and line end included), so that cutting
+ * them leaves the answer without it.
+ * Return: the row, or NULL.
+ *
+ * The one matcher of "another prompt", used by the request engine and by the
+ * start's banner wait, so both read the same table the same way.
+ */
+const E_D_OTHER_PROMPT *e_d_req_other_prompt_at(const E_D_ANSWER *ans,
+                                                const E_D_OTHER_PROMPT *rows,
+                                                size_t *len);
 
 /* ---- the request engine ----
    One command is in flight at a time; the ones typed meanwhile wait behind
@@ -72,6 +108,9 @@ typedef struct
 #define E_D_REQ_TIMEOUT_S    30       /* seconds before a silent debugger is given up on */
 #define E_D_REQ_TIMEOUT_MAX_S 86400   /* the override is cut here */
 #define E_D_REQ_QUIET_MS     1000     /* silence before the waiting line is shown */
+#define E_D_REQ_PROMPT_MS    250      /* silence after what looks like another prompt
+                                         before it is one: a debugger writes a prompt
+                                         in one write and then reads */
 #define E_D_REQ_SECOND_MS    1000     /* the waiting line counts seconds */
 #define E_D_REQ_ANSWER_MAX   1048576  /* an answer keeps no more than this */
 #define E_D_REQ_LINE_MAX     65536    /* a line without an end is cut here */
@@ -95,14 +134,17 @@ typedef struct
 #define E_D_REQ_OTHER_PROMPT_FMT   "%s answered %s with its %s prompt, not its own"
 #define E_D_REQ_REFUSED_FMT        "%s refused %s: %s"
 #define E_D_REQ_BUSY_FMT           "%s is still answering `%s`"  /* + E_D_REQ_QUIT_TAIL */
-#define E_D_REQ_AT_PROMPT_FMT      "%s is at another prompt after `%s`"   /* + E_D_REQ_QUIT_TAIL */
+#define E_D_REQ_AT_PROMPT_FMT      "%s is at its %s prompt after `%s`"   /* + E_D_REQ_QUIT_TAIL */
+#define E_D_REQ_START_PROMPT_FMT   "%s answered its start with its %s prompt, not its own"
+#define E_D_REQ_START_PROMPT_WHY   "A start-up file it reads itself left it there"   /* a second row of Messages */
+#define E_D_REQ_NOT_STARTED_FMT   "%s could not run its commands: %s"  /* debugger, reason */
 /* The reasons of E_D_SEND_*. */
 #define E_D_REQ_TOO_LONG_REASON    "the command is longer than %s takes"
 #define E_D_REQ_FULL_REASON        "eight commands are already waiting"
 #define E_D_REQ_RESYNC_REASON      "%s still owes an old answer"
 #define E_D_REQ_GONE_REASON        "the session is over"
 #define E_D_REQ_FAILED_REASON      "%s does not take input"
-#define E_D_REQ_STRANDED_REASON    "%s is at another prompt"
+#define E_D_REQ_STRANDED_REASON    "%s is at a prompt of its own that the editor cannot answer"
 #define E_D_REQ_UNKNOWN_REASON     "the command was not taken"
 #define E_D_REQ_REASON_MAX         160    /* the reason alone, for a mark */
 #define E_D_REQ_CMD_SHOWN          64     /* bytes of a command a sentence shows before "..." */
@@ -146,6 +188,9 @@ typedef enum
 #define E_D_STEP_NEXT   0   /* go on to the next step of the chain */
 #define E_D_STEP_AGAIN  1   /* run this step once more (the next watch) */
 #define E_D_STEP_STOP   2   /* the chain ends here */
+#define E_D_STEP_STOP_SAID 3 /* the chain ends here and the step's owner says why
+                                itself (a box): neither the chain nor the engine
+                                adds a sentence on the status row */
 
 typedef int (*e_d_answered_fn)(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx);
 
@@ -180,8 +225,12 @@ typedef void (*e_d_late_error_fn)(const E_D_ANSWER *err, void *ctx);
    echo into @marker (room @marker_n), numbered past every settle command
    still owed, so the resync ends at its own echo and not inside an owed
    one that holds the same words; NULL: the resync sends @settle_cmd and
-   waits for @settle_marker.  Only @send, @answer_ended and @now_ms are
-   required. */
+   waits for @settle_marker.  @other_prompt, optional, says which of the
+   debugger's other prompts (a block it reads lines for) the answer so far
+   ends at, and sets @len to its bytes: asked only after @answer_ended said
+   the answer is not whole, it makes a candidate, never a verdict; the verdict
+   is taken when the debugger stays silent for E_D_REQ_PROMPT_MS after it.
+   Only @send, @answer_ended and @now_ms are required. */
 typedef struct
 {
  int  (*send)(const char *cmd, void *io);
@@ -198,6 +247,8 @@ typedef struct
  const char *settle_marker;
  void (*resync_settle)(char *cmd, size_t cmd_n, char *marker,
                        size_t marker_n, void *io);
+ const E_D_OTHER_PROMPT *(*other_prompt)(const E_D_ANSWER *ans, size_t *len,
+                                         void *io);
  void *io;
 } E_D_REQ_IO;
 
@@ -222,6 +273,11 @@ typedef struct
  int gone;                       /* the session is over */
  int stranded;                   /* the debugger is at a prompt nobody speaks:
                                     every sender is refused (E_D_SEND_STRANDED) */
+ const E_D_OTHER_PROMPT *at_prompt;     /* the other prompt the debugger stands at
+                                           (taken by a step, or stranded), or NULL */
+ const E_D_OTHER_PROMPT *prompt_seen;   /* what looks like another prompt, until
+                                           the debugger stays silent after it */
+ size_t prompt_seen_at;                 /* the bytes of the answer when it was seen */
  int waiting_shown;
  E_D_ANSWER ans;                 /* what has come for the one in flight */
  char *tail;                     /* the line that has no end yet */
@@ -350,7 +406,9 @@ int e_d_req_pending(const E_D_REQ_QUEUE *rq);
 
 /**
  * e_d_req_stranded - Is the debugger at a prompt that nobody speaks?
- * Return: 1 when every sender is refused until the session ends, else 0.
+ * Return: 1 when every sender is refused until the session ends, or while a
+ * step of a chain is speaking the lines of a block the debugger reads (a
+ * prompt it took), else 0.
  *
  * The one query every writer to the debugger's input asks, so a resume does
  * not vanish into a block the debugger is reading as text.
@@ -393,7 +451,12 @@ typedef struct
 /* What a step's owner says when its request did not end E_D_REQ_DONE.
    E_D_STEP_NEXT or E_D_STEP_AGAIN: the step took the outcome (a breakpoint
    marked refused with @end->reason) and the chain goes on; E_D_STEP_STOP: the
-   chain ends with ok 0 and this record as its last.  A NULL @failed in the
+   chain ends with ok 0 and this record as its last, and says it once through
+   the requester's @notice; E_D_STEP_STOP_SAID: the same, and the owner says
+   it (a box), so the chain and the engine stay silent.  For a request that
+   ended E_D_REQ_OTHER_PROMPT, NEXT or AGAIN means the step takes the prompt
+   (it speaks the lines of the block next); STOP or STOP_SAID leaves the
+   debugger stranded there.  A NULL @failed in the
    table is E_D_STEP_STOP.  A request that was given up on (E_D_REQ_TIMED_OUT,
    E_D_REQ_CANCELLED, E_D_REQ_GONE) ends the chain whatever @failed says: a
    cancel is the user's, and nothing goes on behind it. */
@@ -480,6 +543,17 @@ typedef struct
  * live session appends E_D_REQ_QUIT_TAIL.
  */
 void e_d_req_end_words(E_D_STEP_END *end, const char *name);
+
+/**
+ * e_d_req_set_reason - Keep a debugger's own words as the reason of a refusal.
+ * @end: the record whose .reason is written; @words: what the debugger said.
+ *
+ * A debugger names the cause at the end of its words ("<path>: No such file
+ * or directory."), and a long path in front of it must not push the cause
+ * out: words longer than the reason holds keep their start and their end,
+ * joined by "...", cut where a character ends.
+ */
+void e_d_req_set_reason(E_D_STEP_END *end, const char *words);
 
 /**
  * e_d_req_notice - The requester's @notice for the line engine.

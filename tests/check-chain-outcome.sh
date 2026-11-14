@@ -7,14 +7,25 @@
 # owner once, with a record.  A step table, a writer or a chain starter that
 # goes around it is how a start ended with nothing said.
 #
-#   check-chain-outcome.sh [--srcdir DIR]
+#   check-chain-outcome.sh [--allow FILE] [--srcdir DIR]
 #
-# Four rules, each with a canary: the script plants an offender in a copy of
+# Seven rules, each with a canary: the script plants an offender in a copy of
 # the sources and fails when the rule does not name it, so a scanner gone
-# blind fails instead of passing.  The rules are numbered as in the design;
-# the ones about the sentences, the other prompts and the keyword rule join
-# with the pass that moves them.
+# blind fails instead of passing.  The rules are numbered as in the design.
 #
+#  1. The sentences of a request's end live in the owner.  Outside
+#     we_debreq.h no string literal of a top-level source holds "did not
+#     answer", "was not given", "with its ... prompt" or "Debug > Quit ends",
+#     except the lines of the allow file, each a sentence of another owner
+#     (an engine's own deadline, the input-stall line, the run's refusal)
+#     with its reason.  The count of a line may only fall; a line that
+#     matches nothing fails as stale.
+#  3. Every debugger the request engine runs names its other prompts.  The
+#     initializer of each e_d_ga_<x>_backend holds e_d_<x>_other_prompts,
+#     e_d_no_other_prompts or e_d_unmeasured_other_prompts, and the two shared
+#     tables are used only by the backends the allow file names.
+#  4. The keyword rule stays gone.  STARTPLAN_PDB_COMMANDS and the literal
+#     "(a commands block)" appear in no top-level source.
 #  2. A step that owns a verdict names its failed.  Every row of an E_D_STEP
 #     table whose command is e_d_gb_add_cmd, e_d_gsdb_add_cmd or e_d_cl_cmd
 #     has three members, the third not NULL.  The two commands that write a
@@ -39,14 +50,18 @@
 
 SRCDIR=${srcdir:-.}
 BAD=1
+ALLOW=
+HERE=$(cd "$(dirname "$0")" && pwd)
 
 while [ $# -gt 0 ]; do
   case $1 in
     --srcdir) shift; SRCDIR=$1 ;;
+    --allow) shift; ALLOW=$1 ;;
     *) echo "check-chain-outcome: unknown argument $1" >&2; exit $BAD ;;
   esac
   shift
 done
+[ -n "$ALLOW" ] || ALLOW=$HERE/chain-outcome.allow
 
 ENGINE=we_debreq.c
 DEBUG=we_debug.c
@@ -227,10 +242,89 @@ rule7() {
     }' "$WORK/r7.calls" >> "$out"
 }
 
-# scan_tree DIR OUT - run the four rules on the sources under DIR.
+# Rule 1.  PHRASES are matched inside a string literal; the allow file holds
+# R1|file|phrase|count|reason lines, parsed into $WORK/allow.r1.
+PHRASES='did not answer|was not given|Debug > Quit ends'
+rule1() {
+  src=$1; out=$2; allowed=$3
+  : > "$WORK/r1.found"
+  for f in "$src"/*.c "$src"/*.h; do
+    [ -f "$f" ] || continue
+    base=${f##*/}
+    [ "$base" = we_debreq.h ] && continue
+    strip_comments "$f" | awk -v file="$base" -v phrases="$PHRASES" '
+      BEGIN { n = split(phrases, ph, "|") }
+      {
+        s = $0
+        while (match(s, /"([^"\\]|\\.)*"/)) {
+          lit = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+          for (k = 1; k <= n; k++) if (index(lit, ph[k]) > 0) cnt[ph[k]]++
+          if (lit ~ /with its [^"]*prompt/) cnt["with its prompt"]++
+        }
+      }
+      END { for (p in cnt) print file "\t" p "\t" cnt[p] }' >> "$WORK/r1.found"
+  done
+  awk -F'\t' -v allowed="$allowed" '
+    BEGIN { while ((getline line < allowed) > 0) { split(line, a, "\t"); al[a[1] "\t" a[2]] = a[3] } }
+    { key = $1 "\t" $2; got[key] = $3
+      if (!(key in al)) print "R1: a sentence of a request'"'"'s end outside we_debreq.h: " $1 " holds " $2 " (" $3 "x)"
+      else if ($3 > al[key]) print "R1: " $1 " holds " $2 " " $3 "x, the allow file says " al[key]
+      else if ($3 < al[key]) print "R1: " $1 " holds " $2 " " $3 "x, lower the allow line from " al[key] }
+    END { for (k in al) if (!(k in got)) { gsub(/\t/, " ", k); print "R1: stale allow line, delete it: " k } }' \
+    "$WORK/r1.found" >> "$out"
+}
+
+# Rule 3.  The allow file holds R3|token|backends|reason lines, parsed into
+# $WORK/allow.r3 as "token<TAB>backends".
+rule3() {
+  src=$1; out=$2; allowed=$3
+  strip_comments "$src/$DEBUG" | awk -F'\t' -v allowed="$allowed" '
+    BEGIN { while ((getline line < allowed) > 0) { split(line, a, "\t"); who[a[1]] = " " a[2] " " } }
+    function finish(   tok, shared, k, name) {
+      if (name_x == "") return
+      tok = "e_d_" name_x "_other_prompts"
+      found = 0
+      if (index(body, tok) > 0) found = 1
+      for (shared in who) if (index(body, shared) > 0) {
+        found = 1
+        if (index(who[shared], " " name_x " ") == 0)
+          print "R3: backend " name_x " uses " shared ", which the allow file does not grant it"
+      }
+      if (!found) print "R3: backend " name_x " names no other-prompt table (" tok ", e_d_no_other_prompts or e_d_unmeasured_other_prompts)"
+      name_x = ""; body = ""
+    }
+    /^static const E_D_GA_BACKEND e_d_ga_[a-z0-9]+_backend/ {
+      finish()
+      line = $0; sub(/^static const E_D_GA_BACKEND e_d_ga_/, "", line); sub(/_backend.*/, "", line)
+      name_x = line; body = ""; seen++; next
+    }
+    name_x != "" { body = body " " $0; if ($0 ~ /^};/) finish() }
+    END { finish(); if (seen == 0) print "R3: no backend initializer found in '"$DEBUG"' (the scan is blind)" }' \
+    >> "$out"
+  for tok in $(awk -F'\t' '{print $1}' "$allowed"); do
+    grep -q "$tok" "$src/$DEBUG" || echo "R3: $tok is in the allow file and no longer exists in $DEBUG" >> "$out"
+  done
+}
+
+# Rule 4.
+rule4() {
+  src=$1; out=$2
+  for f in "$src"/*.c "$src"/*.h; do
+    [ -f "$f" ] || continue
+    base=${f##*/}
+    strip_comments "$f" | awk -v file="$base" '
+      /STARTPLAN_PDB_COMMANDS/ { print "R4: the keyword rule is back: STARTPLAN_PDB_COMMANDS in " file ":" NR }
+      /\(a commands block\)/ { print "R4: the keyword rule is back: \"(a commands block)\" in " file ":" NR }' >> "$out"
+  done
+}
+
+# scan_tree DIR OUT R1ALLOW R3ALLOW - run the seven rules on the sources under DIR.
 scan_tree() {
   : > "$2"
+  rule1 "$1" "$2" "$3"
   rule2 "$1" "$2"
+  rule3 "$1" "$2" "$4"
+  rule4 "$1" "$2"
   rule5 "$1" "$2"
   rule6 "$1" "$2"
   rule7 "$1" "$2"
@@ -251,16 +345,43 @@ canary() {
     return
   fi
   printf '%b\n' "$text" >> "$WORK/copy/$file"
-  scan_tree "$WORK/copy" "$WORK/canary.out"
+  scan_tree "$WORK/copy" "$WORK/canary.out" "$WORK/allow.r1" "$WORK/allow.r3"
   grep -q "^$rule:" "$WORK/canary.out" ||
     problem "canary $rule: a planted offender in $file was not named (the rule is blind)"
 }
 
+# The allow file: R1|file|phrase|count|reason, R3|token|backends|reason.
+: > "$WORK/allow.r1"
+: > "$WORK/allow.r3"
+if [ -f "$ALLOW" ]; then
+  awk -F'|' -v r1="$WORK/allow.r1" -v r3="$WORK/allow.r3" '
+    /^#/ || /^[ \t]*$/ { next }
+    $1 == "R1" && NF >= 5 && $4 ~ /^[0-9]+$/ && $5 != "" { print $2 "\t" $3 "\t" $4 > r1; next }
+    $1 == "R3" && NF >= 4 && $4 != "" { print $2 "\t" $3 > r3; next }
+    { print "bad line " NR " in the allow file: " $0 > "/dev/stderr"; bad = 1 }
+    END { exit bad }' "$ALLOW" ||
+    problem "the allow file $ALLOW has malformed lines"
+else
+  problem "no allow file at $ALLOW"
+fi
+
 if [ ! -f "$SRCDIR/$ENGINE" ] || [ ! -f "$SRCDIR/$DEBUG" ]; then
   problem "$ENGINE or $DEBUG not found under $SRCDIR (the scan is blind)"
 else
-  scan_tree "$SRCDIR" "$WORK/real.out"
+  scan_tree "$SRCDIR" "$WORK/real.out" "$WORK/allow.r1" "$WORK/allow.r3"
   cat "$WORK/real.out" >> "$WORK/problems"
+  canary R1 "$DEBUG" 'static const char *planted_say = "gdb did not answer `x`";'
+  canary R1 "$DEBUG" 'static const char *planted_not_given = "gdb was not given `x`";'
+  canary R3 "$DEBUG" 'static const E_D_GA_BACKEND e_d_ga_planted_backend =\n{\n NULL\n};'
+  canary R3 "$DEBUG" 'static const E_D_GA_BACKEND e_d_ga_plantedshared_backend =\n{\n e_d_no_other_prompts\n};'
+  canary R4 we_startplan.c '#define STARTPLAN_PDB_COMMANDS "commands"'
+  canary R4 we_startplan.c 'static const char *planted_refusal = "a .pdbrc line (a commands block)";'
+  # A line of the allow file that matches nothing must be named as stale.
+  cp "$WORK/allow.r1" "$WORK/allow.r1.stale"
+  printf 'we_debug.c\tdid not answer, no such sentence\t1\n' >> "$WORK/allow.r1.stale"
+  scan_tree "$SRCDIR" "$WORK/stale.out" "$WORK/allow.r1.stale" "$WORK/allow.r3"
+  grep -q '^R1: stale allow line' "$WORK/stale.out" ||
+    problem "canary R1: a stale allow line was not named"
   canary R2 "$DEBUG" 'static const E_D_STEP planted_steps[] =\n{\n { e_d_gb_add_cmd, e_d_gb_add_answered },\n { NULL, NULL }\n};'
   canary R2 "$DEBUG" 'static const E_D_STEP planted_null[] =\n{\n { e_d_cl_cmd, e_d_cl_answered, NULL },\n { NULL, NULL }\n};'
   canary R5 "$ENGINE" 'static int planted_end(E_D_CHAIN *ch)\n{\n\treturn chain_end(ch, 0, NULL, 0);\n}'
@@ -277,5 +398,5 @@ if [ -s "$WORK/problems" ]; then
   cat "$WORK/problems"
   exit $BAD
 fi
-echo "check-chain-outcome: ok (4 rules, 9 canaries)"
+echo "check-chain-outcome: ok (7 rules, 15 canaries)"
 exit 0

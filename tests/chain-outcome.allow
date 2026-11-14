@@ -1,0 +1,20 @@
+# tests/check-chain-outcome.sh.
+#
+# R1: a top-level source other than we_debreq.h whose string literal holds a
+# sentence of a request's end ("did not answer", "was not given", "with its ...
+# prompt", "Debug > Quit ends").  Each is a sentence of another owner, not of a
+# request's end, with the reason.  The count may only fall; a line that matches
+# nothing fails as stale.
+#
+# R1|file|phrase|count|reason
+R1|we_bsp.c|did not answer|1|the build server's own deadline sentence, said through its own notice
+R1|we_lsp.c|did not answer|1|the language server's own deadline sentence ("Alt-Q asks again")
+R1|we_dap.c|Debug > Quit ends|1|the adapter's input-stall line
+R1|we_debug.c|Debug > Quit ends|2|the input-stall line (E_D_INPUT_ENDS) and the program-runs refusal
+R1|we_debug.c|did not answer|2|the start's banner wait (E_D_START_TIMED_OUT_FMT) and the adapter's disconnect
+#
+# R3: the two shared other-prompt tables, and the backends allowed to use each.
+#
+# R3|table|backends|reason
+R3|e_d_no_other_prompts|jdb|measured on jdb 25: every refusal ends at its own prompt
+R3|e_d_unmeasured_other_prompts|a68g sdb dbx xdb|no host here, so nothing was measured: a debugger left at another prompt costs the deadline

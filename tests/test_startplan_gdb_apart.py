@@ -282,9 +282,10 @@ def test_gdb_run_it_loads_what_is_listed_and_not_the_librarys(tmp_path, interfac
 @pytest.mark.parametrize("interface", INTERFACES)
 def test_gdb_gets_its_lines_in_order_and_the_pin_is_first(tmp_path, interface):
     """What the editor sends gdb before anything else: the pin of its
-    auto-load trust first, then the move to the program's folder, the
-    history question, and the program last, in gdb's own words for the
-    interface the user chose."""
+    auto-load trust first, then (gdb's console only) the two lines that turn
+    off gdb 18's error and warning symbols, then the move to the program's
+    folder, the history question, and the program last, in gdb's own words
+    for the interface the user chose."""
     folder = GdbFolder(tmp_path, interface)
     with folder.session(SEED_C) as s:
         s.key(CTRL_G, "r", delay=1.0)
@@ -294,17 +295,19 @@ def test_gdb_gets_its_lines_in_order_and_the_pin_is_first(tmp_path, interface):
     ws = os.path.realpath(str(folder.ws))
     if interface == "cli":
         assert sends[0] == PIN, sends
-        assert sends[1] == "cd %s" % ws, sends
-        assert sends[2] == "show history filename", sends
-        assert sends[3] == "set history filename %s/.gdb_history" % ws, sends
-        assert sends[4] == "file %s/t.e" % ws, sends
+        assert sends[1] == "set style error-prefix", sends
+        assert sends[2] == "set style warning-prefix", sends
+        assert sends[3] == "cd %s" % ws, sends
+        assert sends[4] == "show history filename", sends
+        assert sends[5] == "set history filename %s/.gdb_history" % ws, sends
+        assert sends[6] == "file %s/t.e" % ws, sends
     else:
         assert sends[0] == MI_PIN, sends
         assert sends[1] == '-environment-cd "%s"' % ws, sends
         assert sends[2] == "-gdb-show history filename", sends
         assert sends[3] == ('-interpreter-exec console "set history filename %s/.gdb_history"' % ws), sends
         assert sends[4] == '-file-exec-and-symbols "%s/t.e"' % ws, sends
-    assert len(sends) == 5, sends
+    assert len(sends) == (7 if interface == "cli" else 5), sends
 
 
 # @scenario SC-debug-115

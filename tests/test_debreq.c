@@ -158,6 +158,29 @@ static void fake_notice(const char *msg, void *io)
 	f->nnotice++;
 }
 
+/* The other prompts the fake debugger can show: pdb's, then gdb's block
+   prompt and MI's console-stream form of it. */
+enum { OTHER_COM, OTHER_DEBUG, OTHER_INTERACT, OTHER_CONT1, OTHER_CONT3,
+       OTHER_GT, OTHER_MI_GT };
+
+static const E_D_OTHER_PROMPT other_rows[] = {
+	{ "(com)",   "(com) ",   E_D_PROMPT_ENDS_WITH },
+	{ "((Pdb))", "((Pdb)) ", E_D_PROMPT_ENDS_WITH },
+	{ ">>>",     ">>> ",     E_D_PROMPT_ENDS_WITH },
+	{ "...",     "... ",     E_D_PROMPT_ENDS_WITH },
+	{ "...",     "...   ",   E_D_PROMPT_ENDS_WITH },
+	{ ">",       ">",        E_D_PROMPT_LAST_LINE },
+	{ ">",       "~\">\"",   E_D_PROMPT_LAST_LINE },
+	{ NULL, NULL, 0 }
+};
+
+static const E_D_OTHER_PROMPT *fake_other_prompt(const E_D_ANSWER *a, size_t *len,
+                                                 void *io)
+{
+	(void)io;
+	return e_d_req_other_prompt_at(a, other_rows, len);
+}
+
 static void world_init(FAKE *f, E_D_REQ_IO *io, int with_settle)
 {
 	int i;
@@ -174,6 +197,7 @@ static void world_init(FAKE *f, E_D_REQ_IO *io, int with_settle)
 	io->arm_timer = fake_arm;
 	io->waiting = fake_waiting;
 	io->notice = fake_notice;
+	io->other_prompt = fake_other_prompt;
 	io->name = "gdb";
 	if (with_settle) {
 		io->settle_cmd = SETTLE_CMD;
@@ -222,7 +246,10 @@ typedef struct
 	int calls;
 	E_D_REQ_END how;
 	char text[TEXT_ROOM];
+	char err[TEXT_ROOM];
+	char prompt[E_D_REQ_NAME_MAX];
 	int error;
+	int verdict;                         /* what the owner says to an other prompt */
 } CALL;
 
 static int call_order[LOG_MAX];
@@ -236,8 +263,12 @@ static int on_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 	c->how = how;
 	c->error = ans ? ans->error : 0;
 	snprintf(c->text, sizeof c->text, "%s", ans && ans->text ? ans->text : "");
+	snprintf(c->err, sizeof c->err, "%s", ans && ans->err ? ans->err : "");
+	snprintf(c->prompt, sizeof c->prompt, "%s", ans && ans->prompt ? ans->prompt : "");
 	if (ncall_order < LOG_MAX)
 		call_order[ncall_order++] = c->id;
+	if (how == E_D_REQ_OTHER_PROMPT)
+		return c->verdict;
 	return E_D_STEP_NEXT;
 }
 
@@ -1268,6 +1299,75 @@ static void test_a_chain_that_cannot_start_hands_the_unstarted_record(void)
 	chk_int("unstarted: nobody to ask", end.last.code, E_D_SEND_GONE);
 	chk_int("unstarted: not said", end.said, 0);
 	chk_str("unstarted: no command", end.last.cmd, "");
+	/* a box made from it never reads an empty line */
+	chk_str("unstarted: words, not an empty box", end.last.words,
+	        "the debugger could not run its commands: the session is over");
+}
+
+static int step_failed_says_itself(const E_D_STEP_END *end, void *ctx)
+{
+	(void)end; (void)ctx;
+	return E_D_STEP_STOP_SAID;
+}
+
+static const E_D_STEP said_by_owner_steps[] = {
+	{ step_cmd_sized, step_answered_next, step_failed_says_itself },
+	{ step_cmd_last,  step_answered_stop },
+	{ NULL, NULL }
+};
+
+static void test_a_stopped_chain_whose_owner_says_it_is_said_once(void)
+{
+	static WORLD w;
+	CHAIN ch;
+
+	/* an owner that keeps a box for a refused command says it itself: the
+	   chain adds no sentence on the status row, so one stopped start reads
+	   its reason once */
+	world_make(&w, "dbx");
+	memset(&ch, 0, sizeof ch);
+	step_bytes = LONG_STEP_BYTES;
+	e_d_chain_run(&w.via, said_by_owner_steps, &ch, chain_finished);
+	chk_int("said once: the chain ended not ok", ch.finished_ok, 0);
+	chk_int("said once: told once", ch.finished_calls, 1);
+	chk_int("said once: said", ch.said, 1);
+	chk_int("said once: nothing on the status row", w.f.nnotice, 0);
+	e_d_req_free(&w.rq);
+}
+
+/* A refusal whose words begin with a long path keeps the cause that ends
+   them: gdb's "cd <path>" answer names the path first and the reason last. */
+static void test_a_long_refusal_keeps_its_cause(void)
+{
+	E_D_STEP_END end;
+	char words[600], *p = words;
+	size_t i, len;
+
+	memset(&end, 0, sizeof end);
+	*p++ = '/';
+	for (i = 0; i < 100; i++) {           /* "/\xc3\xa9\xc3\xa9..." 200 bytes */
+		*p++ = (char)0xc3;
+		*p++ = (char)0xa9;
+	}
+	snprintf(p, sizeof words - (size_t)(p - words), "%s",
+	         "/ws: No such file or directory.");
+	e_d_req_set_reason(&end, words);
+	len = strlen(end.reason);
+	chk_int("long reason: fits", len < sizeof end.reason, 1);
+	chk_has("long reason: the cause is kept", end.reason,
+	        "ws: No such file or directory.");
+	chk_has("long reason: the cut is shown", end.reason, "...");
+	chk_int("long reason: begins with the path", end.reason[0], '/');
+	for (i = 1; end.reason[i] != '.'; i += 2)   /* whole characters before the cut */
+		chk_int("long reason: no character cut", (unsigned char)end.reason[i], 0xc3);
+	end.how = E_D_REQ_REFUSED;
+	end.cmd = "cd /x";
+	end.prompt = "";
+	e_d_req_end_words(&end, "gdb");
+	chk_has("long reason: the sentence ends with the cause", end.words,
+	        "No such file or directory.");
+	e_d_req_set_reason(&end, "short words");
+	chk_str("long reason: short words are kept whole", end.reason, "short words");
 }
 
 static void test_the_words_of_an_end_are_written_in_one_place(void)
@@ -1335,6 +1435,7 @@ static void test_a_stranded_debugger_refuses_every_sender(void)
 	world_make(&w, "pdb");
 	chk_int("stranded: not at first", e_d_req_stranded(&w.rq), 0);
 	w.rq.stranded = 1;
+	w.rq.at_prompt = &other_rows[OTHER_INTERACT];
 	snprintf(w.rq.owed_cmd, sizeof w.rq.owed_cmd, "%s", "interact");
 	call_init(&c, 1);
 	chk_int("stranded: asked", e_d_req_stranded(&w.rq), 1);
@@ -1342,7 +1443,7 @@ static void test_a_stranded_debugger_refuses_every_sender(void)
 	        e_d_req_send(&w.rq, &w.io, "p 1", on_answered, &c), E_D_SEND_STRANDED);
 	e_d_req_busy_message(&w.rq, &w.io, msg, sizeof msg);
 	chk_str("stranded: the user reads why", msg,
-	        "pdb is at another prompt after `interact`" E_D_REQ_QUIT_TAIL);
+	        "pdb is at its >>> prompt after `interact`" E_D_REQ_QUIT_TAIL);
 	e_d_req_cancel(&w.rq, &w.io, E_D_REQ_GONE);
 	chk_int("stranded: the session's end lifts it", e_d_req_stranded(&w.rq), 0);
 	e_d_req_free(&w.rq);
@@ -1604,6 +1705,325 @@ static void test_resync_waits_for_its_own_numbered_echo(void)
 	e_d_req_free(&rq);
 }
 
+/* ---- the debugger's other prompts ---- */
+
+/* @scenario SC-debug-138 */
+/* D4, D6, D8, D9, D10, D12, D13: an answer that ends at another prompt of the
+   debugger is told by the engine's quiet timer and never by a byte boundary;
+   a step may take the prompt, or the debugger is left stranded there and
+   every sender is refused. */
+
+static int step_cmd_interact(char *cmd, size_t n, void *ctx)
+{
+	(void)ctx;
+	snprintf(cmd, n, "interact");
+	return 1;
+}
+
+/* What the step owners below say to an other prompt. */
+static int prompt_verdict = E_D_STEP_STOP;
+
+static int step_failed_prompt(const E_D_STEP_END *end, void *ctx)
+{
+	CHAIN *c = ctx;
+
+	c->failed_calls++;
+	c->seen = *end;
+	snprintf(c->seen_cmd, sizeof c->seen_cmd, "%s", end->cmd);
+	c->seen.cmd = c->seen_cmd;
+	if (end->how == E_D_REQ_OTHER_PROMPT && end->ans && end->ans->text)
+		snprintf(c->seen_words, sizeof c->seen_words, "%s", end->ans->text);
+	if (end->how == E_D_REQ_OTHER_PROMPT)
+		return prompt_verdict;
+	return E_D_STEP_STOP;
+}
+
+static const E_D_STEP interact_steps[] = {
+	{ step_cmd_flush,    step_answered_next },
+	{ step_cmd_interact, step_answered_next, step_failed_prompt },
+	{ step_cmd_never,    step_answered_next },
+	{ NULL, NULL }
+};
+
+static void test_another_prompt_is_told_by_the_quiet_timer_and_strands(void)
+{
+	static WORLD w;
+	CHAIN ch;
+	CALL c;
+	char msg[TEXT_ROOM];
+
+	/* D4 */
+	world_make(&w, "pdb");
+	memset(&ch, 0, sizeof ch);
+	prompt_verdict = E_D_STEP_STOP;
+	e_d_chain_run(&w.via, interact_steps, &ch, chain_finished);
+	feed(&w.rq, &w.io, "ok\n" PROMPT);
+	feed(&w.rq, &w.io, "*pdb interact start*\n>>> ");
+	chk_int("D4: nothing is decided at the byte", ch.failed_calls, 0);
+	chk_int("D4: the verdict waits for the quiet time",
+	        w.f.armed[E_D_TIMER_QUIET], w.f.now + E_D_REQ_PROMPT_MS);
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS);
+	chk_int("D4: the owner heard it", ch.failed_calls, 1);
+	chk_int("D4: as another prompt", ch.seen.how, E_D_REQ_OTHER_PROMPT);
+	chk_str("D4: named", ch.seen.prompt, ">>>");
+	chk_str("D4: with its command", ch.seen_cmd, "interact");
+	chk_str("D4: the answer holds the banner", ch.seen_words, "*pdb interact start*\n");
+	chk_int("D4: finished once", ch.finished_calls, 1);
+	chk_int("D4: not ok", ch.finished_ok, 0);
+	chk_int("D4: said", ch.said, 1);
+	chk_int("D4: no later step ran", ch.never_ran, 0);
+	chk_int("D4: one notice", w.f.nnotice, 1);
+	chk_str("D4: the sentence", w.f.notice[0],
+	        "pdb answered `interact` with its >>> prompt, not its own" E_D_REQ_QUIT_TAIL);
+	call_init(&c, 1);
+	chk_int("D4: stranded", e_d_req_stranded(&w.rq), 1);
+	chk_int("D4: every sender is refused",
+	        e_d_req_send(&w.rq, &w.io, "p 1", on_answered, &c), E_D_SEND_STRANDED);
+	e_d_req_busy_message(&w.rq, &w.io, msg, sizeof msg);
+	chk_str("D4: the busy sentence names the prompt", msg,
+	        "pdb is at its >>> prompt after `interact`" E_D_REQ_QUIT_TAIL);
+	e_d_req_cancel(&w.rq, &w.io, E_D_REQ_GONE);
+	chk_int("D4: the session's end lifts it", e_d_req_stranded(&w.rq), 0);
+	e_d_req_free(&w.rq);
+
+	/* the owner that says it itself leaves the engine silent, still stranded */
+	world_make(&w, "pdb");
+	memset(&ch, 0, sizeof ch);
+	prompt_verdict = E_D_STEP_STOP_SAID;
+	e_d_chain_run(&w.via, interact_steps, &ch, chain_finished);
+	feed(&w.rq, &w.io, "ok\n" PROMPT);
+	feed(&w.rq, &w.io, ">>> ");
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS);
+	chk_int("D4b: the owner said it, nobody else", w.f.nnotice, 0);
+	chk_int("D4b: still stranded", e_d_req_stranded(&w.rq), 1);
+	chk_int("D4b: the chain knows it was said", ch.said, 1);
+	e_d_req_free(&w.rq);
+}
+
+static void test_each_other_prompt_of_a_table_is_told(void)
+{
+	static const struct { const char *feed; const char *name; } rows[] = {
+		{ "(com) ",        "(com)" },
+		{ "((Pdb)) ",      "((Pdb))" },
+		{ ">>> ",          ">>>" },
+		{ "... ",          "..." },
+		{ "...   ",        "..." },
+		{ "define\n >",    ">" },
+		{ "~\">\"\n",      ">" },
+	};
+	static WORLD w;
+	CALL c;
+	size_t i;
+
+	/* D6 */
+	for (i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+		char what[64];
+
+		world_make(&w, "pdb");
+		call_init(&c, 1);
+		c.verdict = E_D_STEP_STOP;
+		e_d_req_send(&w.rq, &w.io, "x", on_answered, &c);
+		feed(&w.rq, &w.io, rows[i].feed);
+		snprintf(what, sizeof what, "D6: %s waits", rows[i].name);
+		chk_int(what, c.calls, 0);
+		advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS);
+		snprintf(what, sizeof what, "D6: row %d ends as another prompt", (int)i);
+		chk_int(what, c.how, E_D_REQ_OTHER_PROMPT);
+		chk_str("D6: named", c.prompt, rows[i].name);
+		chk_int("D6: stranded", e_d_req_stranded(&w.rq), 1);
+		e_d_req_free(&w.rq);
+	}
+
+	/* the own prompt ends DONE at once, no timer */
+	world_make(&w, "pdb");
+	call_init(&c, 1);
+	e_d_req_send(&w.rq, &w.io, "x", on_answered, &c);
+	feed(&w.rq, &w.io, "1\n" PROMPT);
+	chk_int("D6: the own prompt is DONE", c.how, E_D_REQ_DONE);
+	chk_int("D6: and nothing is stranded", e_d_req_stranded(&w.rq), 0);
+	e_d_req_free(&w.rq);
+
+	/* a settle command swallowed by a block: the resync strands, naming the
+	   command the debugger still owes */
+	world_make(&w, "pdb");
+	call_init(&c, 1);
+	e_d_req_send(&w.rq, &w.io, "commands 1", on_answered, &c);
+	e_d_req_cancel(&w.rq, &w.io, E_D_REQ_CANCELLED);
+	w.f.nnotice = 0;
+	feed(&w.rq, &w.io, "(com) ");
+	chk_int("D6: the resync waits", e_d_req_stranded(&w.rq), 0);
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS);
+	chk_int("D6: a swallowed settle command strands", e_d_req_stranded(&w.rq), 1);
+	chk_int("D6: the resync is over", e_d_req_pending(&w.rq), 0);
+	chk_int("D6: one sentence", w.f.nnotice, 1);
+	chk_has("D6: it names the owed command", w.f.notice[0],
+	        "pdb answered `commands 1` with its (com) prompt");
+	e_d_req_free(&w.rq);
+}
+
+static void test_the_error_stream_is_kept_apart_in_the_answer(void)
+{
+	static WORLD w;
+	CALL c;
+
+	/* D8 */
+	world_make(&w, "gdb");
+	w.io.errors_waiting = fake_errors_waiting;
+	call_init(&c, 1);
+	e_d_req_send(&w.rq, &w.io, "cd /x", on_answered, &c);
+	fake_write_error(&w.f, "no such folder\n");
+	feed(&w.rq, &w.io, PROMPT);
+	chk_str("D8: err holds exactly the error bytes", c.err, "no such folder\n");
+	chk_str("D8: the text still holds them", c.text, "no such folder\n");
+	chk_int("D8: flagged", c.error, 1);
+
+	/* a plain answer has no err */
+	call_init(&c, 2);
+	e_d_req_send(&w.rq, &w.io, "p 1", on_answered, &c);
+	feed(&w.rq, &w.io, "$1 = 1\n" PROMPT);
+	chk_str("D8: a plain answer has no err", c.err, "");
+	e_d_req_free(&w.rq);
+}
+
+static void test_program_output_that_looks_like_a_prompt_is_not_one(void)
+{
+	static WORLD w;
+	CALL c;
+
+	/* D9: a program's "Loading... " is read as the end of a read, and the
+	   debugger's own prompt follows within the quiet time */
+	world_make(&w, "pdb");
+	call_init(&c, 1);
+	e_d_req_send(&w.rq, &w.io, "p x", on_answered, &c);
+	feed(&w.rq, &w.io, "Loading... ");
+	chk_int("D9: a candidate re-arms the quiet timer",
+	        w.f.armed[E_D_TIMER_QUIET], w.f.now + E_D_REQ_PROMPT_MS);
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS / 2);
+	feed(&w.rq, &w.io, "\n");
+	chk_int("D9: later bytes take the candidate back",
+	        w.f.armed[E_D_TIMER_QUIET], w.f.now + E_D_REQ_QUIET_MS);
+	feed(&w.rq, &w.io, PROMPT);
+	chk_int("D9: the request ended DONE", c.how, E_D_REQ_DONE);
+	chk_int("D9: no notice", w.f.nnotice, 0);
+	chk_int("D9: not stranded", e_d_req_stranded(&w.rq), 0);
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS * 4);
+	chk_int("D9: and nothing fires later", w.f.nnotice, 0);
+	e_d_req_free(&w.rq);
+}
+
+static void test_mi_console_record_then_its_result_is_one_answer(void)
+{
+	static WORLD w;
+	CALL c;
+
+	/* D10: ~">" is a candidate at its line end, and 1^done and the prompt
+	   follow in the same read */
+	world_make(&w, "gdb");
+	w.io.answer_ended = mi_answer_ended;
+	call_init(&c, 1);
+	e_d_req_send(&w.rq, &w.io, "3-interpreter-exec console \"python\"", on_answered, &c);
+	feed(&w.rq, &w.io, "~\">\"\n1^done\n" MI_PROMPT);
+	chk_int("D10: DONE", c.how, E_D_REQ_DONE);
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS * 4);
+	chk_int("D10: no notice", w.f.nnotice, 0);
+	chk_int("D10: not stranded", e_d_req_stranded(&w.rq), 0);
+	e_d_req_free(&w.rq);
+}
+
+/* A step that speaks the lines of a block: "commands 1", "silent", "end". */
+static int step_cmd_block(char *cmd, size_t n, void *ctx)
+{
+	CHAIN *c = ctx;
+	static const char *lines[] = { "commands 1", "silent", "end" };
+
+	if (c->watches_sent >= 3)
+		return 0;
+	snprintf(cmd, n, "%s", lines[c->watches_sent++]);
+	return 1;
+}
+
+static int step_answered_again(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+	(void)how; (void)ans; (void)ctx;
+	return E_D_STEP_AGAIN;
+}
+
+static const E_D_STEP block_steps[] = {
+	{ step_cmd_block, step_answered_again, step_failed_prompt },
+	{ step_cmd_last,  step_answered_stop },
+	{ NULL, NULL }
+};
+
+static void test_a_step_may_take_the_prompt_of_a_block(void)
+{
+	static WORLD w;
+	CHAIN ch;
+
+	/* D12: pdb's (com) while a .pdbrc block is spoken, until its end */
+	world_make(&w, "pdb");
+	memset(&ch, 0, sizeof ch);
+	prompt_verdict = E_D_STEP_AGAIN;
+	e_d_chain_run(&w.via, block_steps, &ch, chain_finished);
+	chk_str("D12: the block's first line", w.f.sent[0], "commands 1");
+	feed(&w.rq, &w.io, "(com) ");
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS);
+	chk_int("D12: taken, nobody says it", w.f.nnotice, 0);
+	chk_str("D12: the next line goes out", w.f.sent[1], "silent");
+	chk_int("D12: the writers are refused meanwhile", e_d_req_stranded(&w.rq), 1);
+	feed(&w.rq, &w.io, "(com) ");
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS);
+	chk_str("D12: and the leave", w.f.sent[2], "end");
+	chk_int("D12: still refused", e_d_req_stranded(&w.rq), 1);
+	feed(&w.rq, &w.io, PROMPT);
+	chk_str("D12: the chain goes on past the block", w.f.sent[3], "last");
+	chk_int("D12: the debugger is at its own prompt", e_d_req_stranded(&w.rq), 0);
+	feed(&w.rq, &w.io, "x\n" PROMPT);
+	chk_int("D12: finished once", ch.finished_calls, 1);
+	chk_int("D12: well", ch.finished_ok, 1);
+	chk_int("D12: no notice at all", w.f.nnotice, 0);
+	e_d_req_free(&w.rq);
+}
+
+static int step_cmd_block_then_stop(char *cmd, size_t n, void *ctx)
+{
+	CHAIN *c = ctx;
+
+	if (c->watches_sent >= 1)
+		return E_D_STEP_CMD_STOP;
+	c->watches_sent++;
+	snprintf(cmd, n, "commands 1");
+	return 1;
+}
+
+static const E_D_STEP block_open_steps[] = {
+	{ step_cmd_block_then_stop, step_answered_again, step_failed_prompt },
+	{ step_cmd_never,           step_answered_next },
+	{ NULL, NULL }
+};
+
+static void test_a_file_that_ends_inside_a_block_stops_the_chain(void)
+{
+	static WORLD w;
+	CHAIN ch;
+
+	/* D13 */
+	world_make(&w, "pdb");
+	memset(&ch, 0, sizeof ch);
+	prompt_verdict = E_D_STEP_AGAIN;
+	e_d_chain_run(&w.via, block_open_steps, &ch, chain_finished);
+	feed(&w.rq, &w.io, "(com) ");
+	advance(&w.f, &w.rq, &w.io, E_D_REQ_PROMPT_MS);
+	chk_int("D13: the owner heard the builder's stop too", ch.failed_calls, 2);
+	chk_int("D13: as another prompt", ch.seen.how, E_D_REQ_OTHER_PROMPT);
+	chk_int("D13: the chain ended not ok", ch.finished_ok, 0);
+	chk_int("D13: finished once", ch.finished_calls, 1);
+	chk_str("D13: with the last command", ch.last_cmd, "commands 1");
+	chk_str("D13: and the prompt", ch.last.prompt, "(com)");
+	chk_int("D13: no later step ran", ch.never_ran, 0);
+	chk_int("D13: nothing more was sent", w.f.nsent, 1);
+	e_d_req_free(&w.rq);
+}
+
 int main(void)
 {
 	test_request_deadline_fires_without_an_answer();
@@ -1622,11 +2042,20 @@ int main(void)
 	test_a_refusal_that_passes_is_not_a_final_mark();
 	test_a_builder_that_cannot_go_on_ends_the_chain();
 	test_a_chain_that_cannot_start_hands_the_unstarted_record();
+	test_a_stopped_chain_whose_owner_says_it_is_said_once();
 	test_the_words_of_an_end_are_written_in_one_place();
+	test_a_long_refusal_keeps_its_cause();
 	test_a_stranded_debugger_refuses_every_sender();
 	test_request_engine_edges();
 	test_error_line_before_the_prompt_stays_with_its_answer();
 	test_resync_waits_for_its_own_numbered_echo();
+	test_another_prompt_is_told_by_the_quiet_timer_and_strands();
+	test_each_other_prompt_of_a_table_is_told();
+	test_the_error_stream_is_kept_apart_in_the_answer();
+	test_program_output_that_looks_like_a_prompt_is_not_one();
+	test_mi_console_record_then_its_result_is_one_answer();
+	test_a_step_may_take_the_prompt_of_a_block();
+	test_a_file_that_ends_inside_a_block_stops_the_chain();
 	if (fails) {
 		printf("test_debreq: %d check(s) failed\n", fails);
 		return 1;

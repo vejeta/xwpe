@@ -1602,17 +1602,27 @@ static void case_contain_lines(void)
  wpe_startplan_rows_designed(1);
 
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
- expect_int("gdb: the pin, the move and the program", p->ninput, 3);
+ expect_int("gdb: the pin, the two style lines, the move and the program", p->ninput, 5);
  expect_str("gdb: the pin comes first", p->ninput > 0 ? p->input[0].text : "", GDB_PIN);
+ expect_str("gdb: then the error symbol off", p->ninput > 1 ? p->input[1].text : "",
+            "set style error-prefix");
+ expect_str("gdb: and the warning symbol off", p->ninput > 2 ? p->input[2].text : "",
+            "set style warning-prefix");
  snprintf(want, sizeof want, "cd %s", proj);
- expect_str("gdb: then the program's folder", p->ninput > 1 ? p->input[1].text : "", want);
+ expect_str("gdb: then the program's folder", p->ninput > 3 ? p->input[3].text : "", want);
  snprintf(want, sizeof want, "file %s", prog);
- expect_str("gdb: the program loads last", p->ninput > 2 ? p->input[2].text : "", want);
+ expect_str("gdb: the program loads last", p->ninput > 4 ? p->input[4].text : "", want);
+ /* S4: what a refusal of each line means */
+ expect_int("gdb: a refused pin stops the start", wpe_startplan_input_outcome(p, 0), WPE_REFUSAL_STOPS);
+ expect_int("gdb: a refused style line is ignored", wpe_startplan_input_outcome(p, 1), WPE_REFUSAL_QUIET);
+ expect_int("gdb: both of them", wpe_startplan_input_outcome(p, 2), WPE_REFUSAL_QUIET);
+ expect_int("gdb: a refused move stops the start", wpe_startplan_input_outcome(p, 3), WPE_REFUSAL_STOPS);
+ expect_int("gdb: a refused program stops the start", wpe_startplan_input_outcome(p, 4), WPE_REFUSAL_STOPS);
  expect_int("gdb: no word is added", p->nword, 0);
  expect_int("gdb: it does not start in the program's folder", p->cwd && strcmp(p->cwd, proj) != 0, 1);
  expect_str("gdb: the program's folder is kept", p->program_dir, proj);
  expect_int("gdb: its own folder is empty", dir_entries(p->cwd), 0);
- expect_int("gdb: Run it's lines go before the program", p->load_at, 2);
+ expect_int("gdb: Run it's lines go before the program", p->load_at, 4);
  expect_int("gdb: the program is a path of the plan", p->npath, 1);
  expect_str("gdb: absolute", p->npath ? p->path[0].path : "", prog);
  expect_int("gdb: and judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
@@ -1622,7 +1632,7 @@ static void case_contain_lines(void)
  end_plan(p);
 
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", "mi", proj, "t.e");
- expect_int("mi: the pin, the move and the program", p->ninput, 3);
+ expect_int("mi: the pin, the move and the program (no style lines)", p->ninput, 3);
  expect_str("mi: the pin", p->ninput > 0 ? p->input[0].text : "", MI_PIN);
  snprintf(want, sizeof want, "-environment-cd \"%s\"", proj);
  expect_str("mi: the move", p->ninput > 1 ? p->input[1].text : "", want);
@@ -1682,7 +1692,7 @@ static void case_contain_lines(void)
 
  wpe_startplan_rows_designed(0);
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
- expect_int("shipped: gdb starts apart: the pin, the move, the program", p->ninput, 3);
+ expect_int("shipped: gdb starts apart: the pin, the style lines, the move, the program", p->ninput, 5);
  expect_int("shipped: gdb has a folder of its own", p->debug_dir != NULL, 1);
  end_plan(p);
  p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, "t.e");
@@ -1976,10 +1986,10 @@ static void case_gdb_apart_owner(void)
 
  /* The lines the editor sends are the plan's, ahead of a folder's Arguments. */
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, proj, "t.e");
- expect_int("three editor lines", wpe_startplan_editor_inputs(p), 3);
+ expect_int("five editor lines", wpe_startplan_editor_inputs(p), 5);
  wpe_startplan_input(p, "r x", WPE_FROM_FOLDER, "./xwperc: Arguments");
- expect_int("a folder's Arguments are not among them", wpe_startplan_editor_inputs(p), 3);
- expect_int("but are an input of the plan", p->ninput, 4);
+ expect_int("a folder's Arguments are not among them", wpe_startplan_editor_inputs(p), 5);
+ expect_int("but are an input of the plan", p->ninput, 6);
  expect_str("the program the box names", wpe_startplan_program_path(p), prog);
  expect_int("the program's folder is the plan's", strcmp(p->program_dir, proj), 0);
 
@@ -2150,12 +2160,12 @@ static void case_gdb_longest_name(void)
 
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, "t.e");
  expect_int("gdb: a folder of one 255-byte name is not refused", p->contain_refused == NULL, 1);
- expect_int("gdb: a pin, one cd and the program", p->ninput, 3);
+ expect_int("gdb: a pin, two style lines, one cd and the program", p->ninput, 5);
  snprintf(want, sizeof want, "cd %s", deep);
  expect_int("gdb: exactly one cd", lines_with(p, "cd "), 1);
- expect_str("gdb: the cd is the whole absolute folder", input_at(p, 1), want);
+ expect_str("gdb: the cd is the whole absolute folder", input_at(p, 3), want);
  snprintf(want, sizeof want, "file %s", prog);
- expect_str("gdb: the program is loaded by its absolute path", input_at(p, 2), want);
+ expect_str("gdb: the program is loaded by its absolute path", input_at(p, 4), want);
  expect_int("gdb: the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
  end_plan(p);
 
@@ -2259,11 +2269,11 @@ static void case_gdb_long_folder(void)
 
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, "t.e");
  expect_int("a 3.8 KB folder is one cd, not a chain", lines_with(p, "cd "), 1);
- expect_int("the plan has the pin, the cd and the program: three lines", p->ninput, 3);
+ expect_int("the plan has the pin, two style lines, the cd and the program: five lines", p->ninput, 5);
  snprintf(want, sizeof want, "cd %s", deep);
- expect_str("the cd is the whole absolute folder", input_at(p, 1), want);
+ expect_str("the cd is the whole absolute folder", input_at(p, 3), want);
  snprintf(want, sizeof want, "file %s", prog);
- expect_str("the program loads by its absolute path", input_at(p, 2), want);
+ expect_str("the program loads by its absolute path", input_at(p, 4), want);
  expect_int("the program is still the plan's absolute path", wpe_startplan_program_path(p) != NULL &&
             strcmp(wpe_startplan_program_path(p), prog) == 0, 1);
  expect_int("the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
@@ -2455,20 +2465,26 @@ static void case_load_lines(void)
  wpe_startplan_judge(p);
  text = strdup(wpe_startplan_text(p));
  expect_int("Run it adds the admit and the source", wpe_startplan_load_lines(p), 2);
- expect_int("five lines now", p->ninput, 5);
+ expect_int("seven lines now", p->ninput, 7);
  snprintf(want, sizeof want, "add-auto-load-safe-path %s", gi);
- expect_str("gdb: the file is admitted", p->ninput > 2 ? p->input[2].text : "", want);
+ expect_str("gdb: the file is admitted", p->ninput > 4 ? p->input[4].text : "", want);
  snprintf(want, sizeof want, "source %s", gi);
- expect_str("gdb: then run", p->ninput > 3 ? p->input[3].text : "", want);
+ expect_str("gdb: then run", p->ninput > 5 ? p->input[5].text : "", want);
  snprintf(want, sizeof want, "file %s", prog);
- expect_str("gdb: the program still loads last", p->ninput > 4 ? p->input[4].text : "", want);
+ expect_str("gdb: the program still loads last", p->ninput > 6 ? p->input[6].text : "", want);
+ /* S4: an admit is containment; the user's .gdbinit is the debugger's to refuse */
+ expect_int("gdb: a refused admit stops the start", wpe_startplan_input_outcome(p, 4), WPE_REFUSAL_STOPS);
+ expect_int("gdb: a refused source is said", wpe_startplan_input_outcome(p, 5), WPE_REFUSAL_SAID);
+ expect_str("gdb: and names the file it reads, as the box lists it",
+            wpe_startplan_input_file(p, 5), "./.gdbinit");
+ expect_int("gdb: an admit names no file", wpe_startplan_input_file(p, 4) == NULL, 1);
  expect_str("gdb: the pin is still first", p->ninput ? p->input[0].text : "", GDB_PIN);
  wpe_startplan_judge(p);
  expect_int("the plan with its load lines is not refused", p->verdict != WPE_PLAN_REFUSED, 1);
  expect_int("its text differs from the plan without them",
             strcmp(wpe_startplan_text(p), text) != 0, 1);
  expect_int("Run it once", wpe_startplan_load_lines(p), 0);
- expect_int("and adds nothing more", p->ninput, 5);
+ expect_int("and adds nothing more", p->ninput, 7);
  free(text);
  end_plan(p);
 
@@ -2480,9 +2496,9 @@ static void case_load_lines(void)
  expect_int("a beside script is admitted, not sourced: three lines with the .gdbinit's two",
             wpe_startplan_load_lines(p), 3);
  snprintf(want, sizeof want, "add-auto-load-safe-path %s", py);
- expect_str("by its own path", p->ninput > 4 ? p->input[4].text : "", want);
+ expect_str("by its own path", p->ninput > 6 ? p->input[6].text : "", want);
  snprintf(want, sizeof want, "file %s", prog);
- expect_str("and before the program", p->ninput > 5 ? p->input[5].text : "", want);
+ expect_str("and before the program", p->ninput > 7 ? p->input[7].text : "", want);
  end_plan(p);
  unlink(py);
 
@@ -2502,9 +2518,9 @@ static void case_load_lines(void)
  expect_int("the program's own scripts: the program for the text, the file for the file entry",
             wpe_startplan_load_lines(p), 2);
  snprintf(want, sizeof want, "add-auto-load-safe-path %s", prog);
- expect_str("a text entry is checked by the program's path", p->ninput > 2 ? p->input[2].text : "", want);
+ expect_str("a text entry is checked by the program's path", p->ninput > 4 ? p->input[4].text : "", want);
  snprintf(want, sizeof want, "add-auto-load-safe-path %s", emb);
- expect_str("a file entry by the script's path", p->ninput > 3 ? p->input[3].text : "", want);
+ expect_str("a file entry by the script's path", p->ninput > 5 ? p->input[5].text : "", want);
  end_plan(p);
  unlink(emb);
  write_file(prog, "");
@@ -2552,7 +2568,7 @@ static void case_load_lines(void)
   wpe_startplan_judge(p);
   expect_int("a folder with a colon cannot be admitted", wpe_startplan_load_lines(p), -1);
   expect_str("and Run it says why", p->load_refused, WPE_STARTPLAN_LOAD_REFUSED);
-  expect_int("nothing was admitted", p->ninput, 2);
+  expect_int("nothing was admitted", p->ninput, 4);
   end_plan(p);
   unlink(cgi);
   rmdir(colon);
@@ -2651,15 +2667,29 @@ static void case_load_pdbrc(void)
  p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
  wpe_startplan_tool_reads(p, "pdb");
  wpe_startplan_judge(p);
- expect_int("a commands block cannot be sent a line at a time", wpe_startplan_load_lines(p), -1);
- expect_str("and Run it says why", p->load_refused, WPE_STARTPLAN_LOAD_REFUSED_PDBRC);
+ /* S3: a commands block is offered like any other lines; what pdb answers
+    to each line decides at the start, and the file supplies the block's end */
+ expect_int("a commands block is sent a line at a time, with its end", wpe_startplan_load_lines(p), 4);
+ expect_int("and Run it is offered", p->load_refused == NULL, 1);
+ expect_str("the block opens", p->ninput > 2 ? p->input[2].text : "", "commands 1");
+ expect_str("its body", p->ninput > 3 ? p->input[3].text : "", "silent");
+ expect_str("and its end is sent", p->ninput > 4 ? p->input[4].text : "", "end");
+ expect_int("the move is containment: a refusal stops the start",
+            wpe_startplan_input_outcome(p, 0), WPE_REFUSAL_STOPS);
+ expect_int("a line of the user's .pdbrc is said and the start goes on",
+            wpe_startplan_input_outcome(p, 1), WPE_REFUSAL_SAID);
+ expect_int("the block's lines too", wpe_startplan_input_outcome(p, 4), WPE_REFUSAL_SAID);
+ expect_int("each names the .pdbrc it is a line of",
+            wpe_startplan_input_file(p, 2) != NULL &&
+            strstr(wpe_startplan_input_file(p, 2), ".pdbrc") != NULL, 1);
+ expect_int("the move names no file", wpe_startplan_input_file(p, 0) == NULL, 1);
  end_plan(p);
 
  write_file(rcp, "  commands\nend\n");
  p = contained_plan(WPE_START_DEBUGGER, "pdb", "pdb", NULL, proj, NULL);
  wpe_startplan_tool_reads(p, "pdb");
  wpe_startplan_judge(p);
- expect_int("an indented commands line is one too", wpe_startplan_load_lines(p), -1);
+ expect_int("an indented commands line is one too", wpe_startplan_load_lines(p), 2);
  end_plan(p);
 
  write_file(rcp, "commandsx = 1\n!print(commands)\n");

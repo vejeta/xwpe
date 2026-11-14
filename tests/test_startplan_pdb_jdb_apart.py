@@ -281,7 +281,8 @@ read first
 printf '*** FileNotFoundError: no such folder\\n(Pdb) '
 read second
 """
-REFUSED_MOVE = "Debugger stopped: pdb could not change to the program's folder"
+REFUSED_MOVE = "Debugger stopped: pdb refused"
+REFUSED_REASON = "FileNotFoundError: no such folder"
 
 
 # @scenario SC-debug-117
@@ -306,27 +307,47 @@ def test_pdb_a_refused_move_stops_the_start_with_a_message(tmp_path):
         dirs = _debug_dirs(folder)
         after = [d for d in dirs if os.path.exists(d)]
     assert said, "no message said why the start stopped:\n" + screen
+    assert REFUSED_REASON in screen, "the box did not give pdb's reason:\n" + screen
     assert not marked, "the session went on after the move was refused"
     assert dirs and not after, "the session's folder was left: %s" % after
 
 
 # @scenario SC-debug-117
 @needs_pdb
-def test_pdb_a_commands_block_has_no_run_it(tmp_path):
-    """pdb answers a .pdbrc's "commands" with a prompt of its own, so its
-    lines cannot be sent one at a time: Run it is not offered and says why;
-    Use mine still starts pdb."""
+def test_pdb_a_commands_block_is_offered_but_use_mine_does_not_run_it(tmp_path):
+    """A .pdbrc with a commands block is offered Run it like any other; Use
+    mine still starts pdb and the block never runs."""
     folder = PdbFolder(tmp_path)
-    (folder.ws / ".pdbrc").write_text("break 1\ncommands 1\n" + _touch_line(folder.ran) + "end\n")
+    (folder.ws / ".pdbrc").write_text("break 2\ncommands 1\n" + _touch_line(folder.ran) + "end\n")
     with folder.session() as s:
         _break_in_the_script(s)
         box = _debug_box(s, "Command from ./.pdbrc")
         buttons = [r for r in box.splitlines() if "Use mine" in r and "Cancel" in r]
-        assert buttons and "Run it" not in buttons[0], box
-        assert "Run it is not offered:" in box, box
+        assert buttons and "Run it" in buttons[0], box
+        assert "Run it is not offered:" not in box, box
         s.key(USE_MINE, delay=0.8)
         assert _wait(lambda: _stopped(s), STOP_S), _screen(s)
     assert not folder.ran.exists(), "pdb ran the folder's .pdbrc after Use mine"
+
+
+# @scenario SC-debug-138
+@needs_pdb
+def test_pdb_a_commands_block_runs_under_run_it_with_its_end(tmp_path):
+    """T6: the block is sent a line at a time, pdb answers each with its (com)
+    prompt, the block's end brings pdb back, and the block runs at the
+    breakpoint as pdb runs it from its own file.  The block's "continue" is
+    the proof it ran: the program goes on past the breakpoint and ends."""
+    folder = PdbFolder(tmp_path)
+    (folder.ws / ".pdbrc").write_text("break 2\ncommands 1\nsilent\ncontinue\nend\n")
+    with folder.session() as s:
+        _debug_box(s, "Command from ./.pdbrc")
+        s.key(RUN_IT, delay=0.8)
+        ended = wait_screen(s, "Program exited", tmo=STOP_S)
+        screen = _screen(s)
+    assert ended, "the block did not run at the breakpoint:\n" + folder.traced() + screen
+    assert "did not answer" not in screen and "prompt, not its own" not in screen, screen
+    sends = _traced_sends(folder)
+    assert sends[1:] == ["break 2", "commands 1", "silent", "continue", "end"], sends
 
 
 def _remember_the_old_text(folder):
@@ -520,15 +541,20 @@ def test_jdb_its_own_folder_is_empty_and_gone_after_the_session(tmp_path):
     assert not after, "the session's folder is still there after Quit: %s" % after
 
 
-JDB_REFUSED = "Debugger stopped: jdb could not read the start-up file"
+
+def _said(folder):
+    """The whole sentences the editor said on the status row, from the trace."""
+    return [l.split("debugger said ", 1)[1] for l in folder.traced().splitlines()
+            if l.startswith("debugger said ")]
 
 
-# @scenario SC-debug-118
+# @scenario SC-debug-138
 @needs_jdb
-def test_jdb_a_refused_read_stops_the_start_with_a_message(tmp_path):
-    """The folder's jdb.ini is gone between the box and Run it: jdb says it
-    could not open it, and the start stops and says so, instead of debugging
-    without the file the user accepted."""
+def test_jdb_a_refused_read_is_said_and_the_start_goes_on(tmp_path):
+    """T13: the folder's jdb.ini is gone between the box and Run it: jdb says
+    it could not open it and prompts again, as it does with its own
+    start-up file, so the status row says which line and why, and the start
+    reaches its first stop."""
     folder = JdbFolder(tmp_path)
     title = folder.folder_ini()
     with folder.session() as s:
@@ -538,16 +564,12 @@ def test_jdb_a_refused_read_stops_the_start_with_a_message(tmp_path):
         _debug_box(s, title)
         (folder.ws / "jdb.ini").unlink()
         s.key(RUN_IT, delay=0.8)
-        said = wait_screen(s, JDB_REFUSED, tmo=STOP_S)
+        stopped = _wait(lambda: s.mark_line() == JAVA_USER_LINE, STOP_S)
         screen = _screen(s)
-        s.key(ENTER, delay=0.8)
-        s._drain(SETTLE * 2)
-        marked = s.mark_line()
-        dirs = _debug_dirs(folder)
-        after = [d for d in dirs if os.path.exists(d)]
-    assert said, "no message said why the start stopped:\n" + screen
-    assert marked != JAVA_USER_LINE, "the session went on after the read was refused"
-    assert dirs and not after, "the session's folder was left: %s" % after
+    said = _said(folder)
+    assert stopped, "the start did not go on after jdb refused the read:\n" + screen
+    assert len(said) == 1 and said[0].startswith("jdb refused `read "), said
+    assert "(./jdb.ini): Could not open: " in said[0], said
 
 
 # @scenario SC-debug-118

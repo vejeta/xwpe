@@ -281,6 +281,20 @@ Changes
   the status row; when it is one the start needs, a box says which command
   stopped it.
 
+* An answer that is another prompt of the debugger's (pdb's (com) while it
+  reads a commands block, ((Pdb)) after debug, >>> after interact, ... for
+  an open statement; gdb's > after define or python) is said within a
+  quarter second, with the command, instead of after 30 seconds, and xwpe
+  stops sending commands into it.  A ~/.pdbrc that leaves pdb at another
+  prompt before the first command is said at the start.  A .pdbrc
+  commands block now runs under Run it, sent with its end.  gdb's pin,
+  folder change, program and admits are checked, and a refusal stops the
+  start with gdb's own words; a refused line of a .gdbinit, .pdbrc or
+  jdb.ini under Run it is said on the status row and the start goes on,
+  as the debugger goes on.  gdb 18's error and warning symbols are turned
+  off for the session, so gdb's reason in the box that stops a start
+  reads plain.
+
 * A file keeps its line endings when you save it.  A CRLF file is saved
   CRLF, and a file that mixes CR LF and LF lines no longer has every line
   rewritten: only the lines you changed differ.  A carriage return that is
@@ -481,10 +495,9 @@ Changes
   folder by its first input line
   and a pdb.py of the folder cannot replace it, Run it sends the
   .pdbrc to pdb line by line and jdb "read jdb.ini" when its VM has
-  connected, as jdb read it before, and Use mine sends neither; a .pdbrc with a commands block
-  and a file whose path holds a blank (for jdb) are not offered to Run
-  it, and a move or a read the debugger refuses stops the start and says
-  so.  An answer remembered for a gdb, pdb or jdb start
+  connected, as jdb read it before, and Use mine sends neither; a file
+  whose path holds a blank (for jdb) is not offered to Run it, and a
+  move the debugger refuses stops the start and says so.  An answer remembered for a gdb, pdb or jdb start
   asks once more, and gdb as a Rust adapter has no Use mine until its
   own start moves apart too.  The line saying what Use mine starts is
   wrapped like the lines above it instead of being cut at the edge of

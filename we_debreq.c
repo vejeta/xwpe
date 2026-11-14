@@ -27,6 +27,7 @@
 #define TIMEOUT_FMT     E_D_REQ_TIMEOUT_FMT
 #define DEFAULT_NAME    "debugger"
 #define ELLIPSIS        "..."
+#define NO_PROMPT       ""
 #define UTF8_CONT_MASK  0xC0      /* the top bits of a UTF-8 continuation byte */
 #define UTF8_CONT_BITS  0x80
 
@@ -89,10 +90,29 @@ static void answer_append_unfinished(E_D_ANSWER *a, const char *bytes, size_t n)
 	answer_append_upto(a, bytes, n, E_D_REQ_ANSWER_MAX + E_D_REQ_LINE_MAX);
 }
 
+/**
+ * answer_append_err - Add bytes to the part of an answer that came on the
+ * error stream.  The same bytes are also appended to the text by the caller,
+ * so a reader of the text sees what it always saw.
+ */
+static void answer_append_err(E_D_ANSWER *a, const char *bytes, size_t n)
+{
+	size_t room = a->err_len < E_D_REQ_ANSWER_MAX ? E_D_REQ_ANSWER_MAX - a->err_len : 0;
+
+	if (n > room)
+		n = room;
+	if (n == 0 || !buf_reserve(&a->err, &a->err_size, a->err_len + n + 1))
+		return;
+	memcpy(a->err + a->err_len, bytes, n);
+	a->err_len += n;
+	a->err[a->err_len] = '\0';
+}
+
 /** answer_clear - Forget an answer's text and flags. */
 static void answer_clear(E_D_ANSWER *a)
 {
 	free(a->text);
+	free(a->err);
 	memset(a, 0, sizeof *a);
 }
 
@@ -254,9 +274,10 @@ void e_d_req_busy_message(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 	if (n == 0)
 		return;
 	out[0] = '\0';
-	if (rq->stranded) {
+	if (rq->stranded || rq->at_prompt) {
 		snprintf(out, n, E_D_REQ_AT_PROMPT_FMT E_D_REQ_QUIT_TAIL,
-		         world_name(io), rq->owed_cmd);
+		         world_name(io), rq->at_prompt ? rq->at_prompt->name : "another",
+		         rq->owed_cmd);
 		return;
 	}
 	if (rq->resync)
@@ -270,7 +291,66 @@ void e_d_req_busy_message(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 
 int e_d_req_stranded(const E_D_REQ_QUEUE *rq)
 {
-	return rq->stranded;
+	return rq->stranded || rq->at_prompt != NULL;
+}
+
+/* ---- the debugger's other prompts ---- */
+
+/**
+ * last_line_start - Where the last line of a text begins.  One line end at
+ * the very end of the text belongs to the last line.
+ */
+static size_t last_line_start(const char *text, size_t len)
+{
+	size_t end = len, at;
+
+	if (end > 0 && text[end - 1] == '\n')
+		end--;
+	at = end;
+	while (at > 0 && text[at - 1] != '\n')
+		at--;
+	return at;
+}
+
+/**
+ * prompt_row_matches - Does the answer end at this row?
+ * @len: receives the prompt's bytes when it does.
+ */
+static int prompt_row_matches(const E_D_ANSWER *ans, const E_D_OTHER_PROMPT *row,
+			      size_t *len)
+{
+	size_t n = strlen(row->text), at, end;
+
+	if (row->shape == E_D_PROMPT_ENDS_WITH) {
+		if (ans->len < n || memcmp(ans->text + ans->len - n, row->text, n) != 0)
+			return 0;
+		*len = n;
+		return 1;
+	}
+	at = last_line_start(ans->text, ans->len);
+	end = ans->len;
+	if (end > at && ans->text[end - 1] == '\n')
+		end--;
+	while (at < end && ans->text[at] == ' ')
+		at++;
+	if (end - at != n || memcmp(ans->text + at, row->text, n) != 0)
+		return 0;
+	*len = ans->len - last_line_start(ans->text, ans->len);
+	return 1;
+}
+
+const E_D_OTHER_PROMPT *e_d_req_other_prompt_at(const E_D_ANSWER *ans,
+                                                const E_D_OTHER_PROMPT *rows,
+                                                size_t *len)
+{
+	const E_D_OTHER_PROMPT *row;
+
+	if (!rows || !ans || !ans->text || ans->len == 0)
+		return NULL;
+	for (row = rows; row->text; row++)
+		if (prompt_row_matches(ans, row, len))
+			return row;
+	return NULL;
 }
 
 /* ---- the error stream at a prompt ---- */
@@ -297,6 +377,7 @@ static void answer_join_waiting_errors(E_D_ANSWER *a, const E_D_REQ_IO *io)
 	while (taken < E_D_REQ_ANSWER_MAX &&
 	       (n = io->errors_waiting(buf, sizeof buf, io->io)) > 0) {
 		answer_append(a, buf, n);
+		answer_append_err(a, buf, n);
 		a->error = 1;
 		taken += n;
 	}
@@ -310,8 +391,9 @@ static void answer_join_waiting_errors(E_D_ANSWER *a, const E_D_REQ_IO *io)
  */
 static void resync_drop_waiting_errors(const E_D_REQ_IO *io)
 {
-	E_D_ANSWER old = { NULL, 0, 0, 0 };
+	E_D_ANSWER old;
 
+	memset(&old, 0, sizeof old);
 	answer_join_waiting_errors(&old, io);
 	answer_clear(&old);
 }
@@ -331,6 +413,7 @@ static int request_start(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 	rq->waiting_shown = 0;
 	rq->late_fn = NULL;             /* the last request's hook may be freed now */
 	rq->late_ctx = NULL;
+	rq->prompt_seen = NULL;
 	rq->sent_ms = io->now_ms(io->io);
 	answer_clear(&rq->ans);
 	tail_clear(rq);
@@ -344,32 +427,50 @@ static int request_start(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
  * tell its owner how it ended, with the answer that came.
  * @prompt_len: bytes of prompt to cut from the answer.
  *
+ * @row: the other prompt the answer ended at when @how is
+ * E_D_REQ_OTHER_PROMPT, else NULL.
+ * Return: what the owner's callback said (E_D_STEP_*), E_D_STEP_STOP when it
+ * has none.
+ *
  * The request is off the queue and the engine is idle before the owner is
  * called, so an owner that sends the next command of its chain from here
- * finds an engine that takes it at once.
+ * finds an engine that takes it at once.  A debugger that ended the request at
+ * its own prompt is no longer at another one.
  */
-static void request_end_head(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
-                             E_D_REQ_END how, size_t prompt_len)
+static int request_end_head(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
+                            E_D_REQ_END how, size_t prompt_len,
+                            const E_D_OTHER_PROMPT *row)
 {
 	const E_D_REQ *head = queue_head(rq);
 	e_d_answered_fn answered = head->answered;
 	void *ctx = head->ctx;
 	E_D_ANSWER ans = rq->ans;
+	int verdict = E_D_STEP_STOP;
 
 	memset(&rq->ans, 0, sizeof rq->ans);
 	tail_clear(rq);
 	rq->late_fn = head->late_fn;        /* the command's text is not needed */
 	rq->late_ctx = head->late_ctx;
+	if (how == E_D_REQ_OTHER_PROMPT)
+		snprintf(rq->owed_cmd, sizeof rq->owed_cmd, "%s", head->cmd);
 	queue_pop(rq);
 	rq->inflight = 0;
 	rq->waiting_shown = 0;
+	rq->prompt_seen = NULL;
 	world_disarm_all(io);
 	answer_drop_prompt(&ans, prompt_len);
-	if (how == E_D_REQ_DONE)
+	if (how == E_D_REQ_DONE) {
+		rq->at_prompt = NULL;
 		answer_join_waiting_errors(&ans, io);
+	}
+	if (how == E_D_REQ_OTHER_PROMPT) {
+		rq->at_prompt = row;
+		ans.prompt = row->name;
+	}
 	if (answered)
-		answered(how, &ans, ctx);
+		verdict = answered(how, &ans, ctx);
 	answer_clear(&ans);
+	return verdict;
 }
 
 /**
@@ -382,7 +483,7 @@ static void queue_dispatch(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 	while (rq->n > 0 && !rq->inflight && !rq->closing && !rq->gone) {
 		if (request_start(rq, io))
 			return;
-		request_end_head(rq, io, E_D_REQ_GONE, 0);
+		request_end_head(rq, io, E_D_REQ_GONE, 0, NULL);
 	}
 }
 
@@ -478,11 +579,40 @@ void e_d_req_set_late_error(E_D_REQ_QUEUE *rq, e_d_late_error_fn fn, void *ctx)
 /* ---- reading ---- */
 
 /**
+ * prompt_candidate - The answer so far (the unfinished line counted) is not
+ * whole: note whether it ends at one of the debugger's other prompts.
+ *
+ * A match is a candidate, never a verdict: a program's own output may end
+ * in the same bytes ("Loading... ") and the debugger's own prompt come in
+ * the next read.  The verdict is taken by e_d_req_timer when nothing more
+ * came for E_D_REQ_PROMPT_MS.  Bytes that came after a candidate take it
+ * back, and the waiting line's clock runs as before.
+ */
+static void prompt_candidate(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
+{
+	size_t len = 0;
+	const E_D_OTHER_PROMPT *row = NULL;
+
+	if (io->other_prompt)
+		row = io->other_prompt(&rq->ans, &len, io->io);
+	if (row) {
+		rq->prompt_seen = row;
+		rq->prompt_seen_at = rq->ans.len;
+		world_arm(io, E_D_TIMER_QUIET, E_D_REQ_PROMPT_MS);
+	} else if (rq->prompt_seen) {
+		rq->prompt_seen = NULL;
+		world_arm(io, E_D_TIMER_QUIET, E_D_REQ_QUIET_MS);
+	}
+}
+
+/**
  * answer_is_whole - Ask the debugger's reader whether the answer, with the
  * line that has no end yet counted, is complete.
  * @prompt_len: the prompt's bytes when it is.
  *
  * The unfinished line is where a prompt is, since a prompt has no line end.
+ * An answer that is not whole may end at another prompt: that is noted as a
+ * candidate (prompt_candidate), after the own prompt was looked for first.
  */
 static int answer_is_whole(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
                            size_t *prompt_len)
@@ -497,6 +627,7 @@ static int answer_is_whole(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 		tail_clear(rq);
 		return 1;
 	}
+	prompt_candidate(rq, io);
 	rq->ans.len = keep;
 	if (rq->ans.text)
 		rq->ans.text[keep] = '\0';
@@ -602,9 +733,30 @@ static void resync_drop_old_lines(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 		answer_clear(&rq->ans);
 }
 
+/**
+ * resync_candidate - The resync is not over: note whether what the debugger
+ * has written so far ends at one of its other prompts.
+ *
+ * A settle command that a block swallowed as one of its own lines is never
+ * echoed; the debugger answers it with the block's prompt, and the verdict
+ * of e_d_req_timer then strands the engine instead of leaving it "still
+ * answering" for ever.
+ */
+static void resync_candidate(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
+{
+	size_t keep = rq->ans.len;
+
+	answer_append_unfinished(&rq->ans, rq->tail, rq->tail_len);
+	prompt_candidate(rq, io);
+	rq->ans.len = keep;
+	if (rq->ans.text)
+		rq->ans.text[keep] = '\0';
+}
+
 /** resync_finish - The debugger is back in step: the next command may go. */
 static void resync_finish(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 {
+	rq->prompt_seen = NULL;
 	rq->resync = 0;
 	rq->owed_cmd[0] = '\0';
 	answer_clear(&rq->ans);
@@ -651,7 +803,7 @@ static int take_line_end(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 	}
 	if (!answer_is_whole(rq, io, &prompt_len))
 		return 0;
-	request_end_head(rq, io, E_D_REQ_DONE, prompt_len);
+	request_end_head(rq, io, E_D_REQ_DONE, prompt_len, NULL);
 	queue_dispatch(rq, io);
 	return 1;
 }
@@ -669,11 +821,13 @@ static void take_unfinished(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 	if (rq->resync) {
 		if (resync_is_over(rq, io))
 			resync_finish(rq, io);
+		else
+			resync_candidate(rq, io);
 		return;
 	}
 	if (!answer_is_whole(rq, io, &prompt_len))
 		return;
-	request_end_head(rq, io, E_D_REQ_DONE, prompt_len);
+	request_end_head(rq, io, E_D_REQ_DONE, prompt_len, NULL);
 	queue_dispatch(rq, io);
 }
 
@@ -712,6 +866,7 @@ void e_d_req_feed_errors(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 		return;
 	if (rq->inflight) {
 		answer_append(&rq->ans, bytes, n);
+		answer_append_err(&rq->ans, bytes, n);
 		rq->ans.error = 1;
 		return;
 	}
@@ -719,6 +874,7 @@ void e_d_req_feed_errors(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io,
 		return;
 	memset(&err, 0, sizeof err);
 	answer_append(&err, bytes, n);
+	answer_append_err(&err, bytes, n);
 	err.error = 1;
 	rq->late_fn(&err, rq->late_ctx);
 	answer_clear(&err);
@@ -743,9 +899,119 @@ static void waiting_show(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
 	world_arm(io, E_D_TIMER_SECOND, E_D_REQ_SECOND_MS);
 }
 
+/**
+ * prompt_unchanged - Is the debugger still silent after the candidate?
+ * Return: 1 when no byte came since the candidate was noted.
+ */
+static int prompt_unchanged(const E_D_REQ_QUEUE *rq)
+{
+	return rq->prompt_seen &&
+	       rq->ans.len + rq->tail_len == rq->prompt_seen_at;
+}
+
+/**
+ * prompt_say - Say, once, that the debugger answered with another prompt.
+ * @rq, @io: the engine and its world; the owed command and the prompt in
+ * rq->at_prompt name it.
+ *
+ * Said on the status row of the live session, with the way out.
+ */
+static void prompt_say(const E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
+{
+	E_D_STEP_END end;
+	char msg[E_D_REQ_MSG_MAX];
+
+	memset(&end, 0, sizeof end);
+	end.how = E_D_REQ_OTHER_PROMPT;
+	end.cmd = rq->owed_cmd;
+	end.prompt = rq->at_prompt ? rq->at_prompt->name : NO_PROMPT;
+	e_d_req_end_words(&end, io->name);
+	snprintf(msg, sizeof msg, "%.*s%s",
+	         (int)(sizeof msg - sizeof E_D_REQ_QUIT_TAIL), end.words,
+	         E_D_REQ_QUIT_TAIL);
+	world_notice(io, msg);
+}
+
+/**
+ * prompt_strand - The debugger is at a prompt that nobody speaks: from now
+ * on every sender is refused until the session ends, so no command is
+ * swallowed in silence as a line of a block, and the requests still waiting
+ * are given back as not sent.
+ * @say: say it on the status row (the owner of the step did not).
+ */
+static void prompt_strand(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, int say)
+{
+	E_D_ANSWER empty;
+
+	if (rq->gone || rq->closing)
+		return;
+	rq->stranded = 1;
+	if (say)
+		prompt_say(rq, io);
+	memset(&empty, 0, sizeof empty);
+	while (rq->n > 0) {
+		const E_D_REQ *head = queue_head(rq);
+		e_d_answered_fn answered = head->answered;
+		void *ctx = head->ctx;
+
+		queue_pop(rq);
+		rq->inflight = 0;
+		if (answered)
+			answered(E_D_REQ_NOT_SENT, &empty, ctx);
+	}
+}
+
+/**
+ * prompt_verdict_request - The debugger stayed silent after what looked like
+ * another prompt: the request in flight ends there.
+ *
+ * The owner's callback says whether the step takes the prompt (it speaks the
+ * lines of the block next) or the debugger is left stranded there.
+ */
+static void prompt_verdict_request(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
+{
+	const E_D_OTHER_PROMPT *row = rq->prompt_seen;
+	size_t len = 0;
+	int verdict;
+
+	tail_move_to_answer(rq);
+	if (io->other_prompt)
+		io->other_prompt(&rq->ans, &len, io->io);
+	verdict = request_end_head(rq, io, E_D_REQ_OTHER_PROMPT, len, row);
+	if (verdict == E_D_STEP_STOP || verdict == E_D_STEP_STOP_SAID) {
+		prompt_strand(rq, io, verdict == E_D_STEP_STOP);
+		return;
+	}
+	queue_dispatch(rq, io);
+}
+
+/**
+ * prompt_verdict_resync - The settle command of a resync was swallowed by a
+ * block: the debugger is stranded at its prompt, and the user is told which
+ * command it still owes.
+ */
+static void prompt_verdict_resync(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io)
+{
+	rq->at_prompt = rq->prompt_seen;
+	rq->prompt_seen = NULL;
+	rq->resync = 0;
+	answer_clear(&rq->ans);
+	tail_clear(rq);
+	prompt_strand(rq, io, 1);
+}
+
 void e_d_req_timer(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, int which)
 {
-	if (!rq->inflight || rq->gone)
+	if (rq->gone)
+		return;
+	if (which == E_D_TIMER_QUIET && prompt_unchanged(rq)) {
+		if (rq->inflight)
+			prompt_verdict_request(rq, io);
+		else if (rq->resync)
+			prompt_verdict_resync(rq, io);
+		return;
+	}
+	if (!rq->inflight)
 		return;
 	if (which == E_D_TIMER_QUIET)
 		waiting_show(rq, io);
@@ -831,14 +1097,18 @@ typedef struct
 void e_d_req_cancel(E_D_REQ_QUEUE *rq, const E_D_REQ_IO *io, E_D_REQ_END why)
 {
 	CANCELLED list[E_D_REQ_QUEUE_MAX];
-	E_D_ANSWER first = { NULL, 0, 0, 0 };
-	E_D_ANSWER empty = { NULL, 0, 0, 0 };
+	E_D_ANSWER first;
+	E_D_ANSWER empty;
 	int count = rq->n, was_inflight = rq->inflight, i;
 
+	memset(&first, 0, sizeof first);
+	memset(&empty, 0, sizeof empty);
+	rq->prompt_seen = NULL;
 	if (why == E_D_REQ_GONE) {
 		rq->gone = 1;
 		rq->resync = 0;
 		rq->stranded = 0;
+		rq->at_prompt = NULL;
 	}
 	if (count == 0)
 		return;
@@ -888,6 +1158,7 @@ typedef struct
 	void *ctx;
 	e_d_chain_done_fn finished;
 	int idx;
+	const char *prompt;                   /* the other prompt a step took, or NO_PROMPT */
 	char last_cmd[E_D_REQ_CMD_MAX + 1];   /* the command of the step in flight */
 } E_D_CHAIN;
 
@@ -896,7 +1167,6 @@ typedef struct
 #define CHAIN_ENDED    2
 #define WHERE_SHOWN    128                /* bytes of a file name a sentence shows */
 #define CMD_TEXT_MAX   (E_D_REQ_CMD_SHOWN + sizeof ELLIPSIS + WHERE_SHOWN + 16)
-#define NO_PROMPT      ""
 
 static int chain_step_is_end(const E_D_STEP *s)
 {
@@ -972,6 +1242,34 @@ static void send_reason(int code, const char *name, char *out, size_t n)
 	}
 }
 
+/**
+ * utf8_back_to_start - Move @at back to where a character begins in @s.
+ */
+static size_t utf8_back_to_start(const char *s, size_t at)
+{
+	while (at > 0 && ((unsigned char)s[at] & UTF8_CONT_MASK) == UTF8_CONT_BITS)
+		at--;
+	return at;
+}
+
+void e_d_req_set_reason(E_D_STEP_END *end, const char *words)
+{
+	size_t len = strlen(words), room = sizeof end->reason - 1;
+	size_t keep, head, tail;
+
+	if (len <= room) {
+		memcpy(end->reason, words, len + 1);
+		return;
+	}
+	keep = room - (sizeof ELLIPSIS - 1);
+	head = utf8_back_to_start(words, keep / 2);
+	tail = len - (keep - keep / 2);
+	while (tail < len && ((unsigned char)words[tail] & UTF8_CONT_MASK) == UTF8_CONT_BITS)
+		tail++;
+	snprintf(end->reason, sizeof end->reason, "%.*s%s%s", (int)head, words,
+	         ELLIPSIS, words + tail);
+}
+
 void e_d_req_end_words(E_D_STEP_END *end, const char *name)
 {
 	char cmdtxt[CMD_TEXT_MAX];
@@ -982,8 +1280,12 @@ void e_d_req_end_words(E_D_STEP_END *end, const char *name)
 	end->words[0] = '\0';
 	if (end->how == E_D_REQ_NOT_SENT) {
 		send_reason(end->code, name, end->reason, sizeof end->reason);
-		snprintf(end->words, sizeof end->words, E_D_REQ_NOT_SENT_FMT, name,
-		         cmdtxt, end->reason);
+		if (end->cmd && end->cmd[0])
+			snprintf(end->words, sizeof end->words, E_D_REQ_NOT_SENT_FMT,
+			         name, cmdtxt, end->reason);
+		else
+			snprintf(end->words, sizeof end->words, E_D_REQ_NOT_STARTED_FMT,
+			         name, end->reason);
 	} else if (end->how == E_D_REQ_OTHER_PROMPT) {
 		end->reason[0] = '\0';
 		snprintf(end->words, sizeof end->words, E_D_REQ_OTHER_PROMPT_FMT,
@@ -1012,6 +1314,8 @@ static void step_end_make(const E_D_CHAIN *ch, E_D_STEP_END *end,
 	end->code = code;
 	end->cmd = ch->last_cmd;
 	end->prompt = NO_PROMPT;
+	if (how == E_D_REQ_OTHER_PROMPT)
+		end->prompt = ans && ans->prompt ? ans->prompt : ch->prompt;
 	end->ans = ans;
 	e_d_req_end_words(end, ch->via.name);
 }
@@ -1023,6 +1327,7 @@ void e_d_chain_end_unstarted(E_D_CHAIN_END *end)
 	end->last.code = E_D_SEND_GONE;
 	end->last.cmd = "";
 	end->last.prompt = NO_PROMPT;
+	e_d_req_end_words(&end->last, NULL);   /* a box never reads an empty line */
 }
 
 void e_d_req_notice(const char *msg, void *engine)
@@ -1103,15 +1408,20 @@ static int chain_not_taken(E_D_CHAIN *ch, const E_D_STEP *s, E_D_REQ_END how,
 	step_end_make(ch, &end, how, code, NULL);
 	if (s->failed)
 		verdict = s->failed(&end, ch->ctx);
+	/* A builder that said the step cannot go on is never taken: the debugger
+	   is at the prompt of a block and the next command would be swallowed. */
 	if (how == E_D_REQ_OTHER_PROMPT) {
 		/* The builder said the step cannot go on: whoever owns it has the
 		   words (a box); with no owner the chain says them. */
-		chain_end(ch, 0, &end, s->failed ? 0 : chain_say_not_sent(ch, &end));
+		chain_end(ch, 0, &end, s->failed ? 1 : chain_say_not_sent(ch, &end));
 		return E_D_STEP_STOP;
 	}
-	if (verdict != E_D_STEP_STOP)
+	if (verdict == E_D_STEP_NEXT || verdict == E_D_STEP_AGAIN)
 		return verdict;
-	chain_end(ch, 0, &end, chain_say_not_sent(ch, &end));
+	if (verdict == E_D_STEP_STOP_SAID)
+		chain_end(ch, 0, &end, 1);
+	else
+		chain_end(ch, 0, &end, chain_say_not_sent(ch, &end));
 	return E_D_STEP_STOP;
 }
 
@@ -1188,11 +1498,19 @@ static int chain_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 	int verdict;
 
 	if (how != E_D_REQ_DONE) {
+		if (how == E_D_REQ_OTHER_PROMPT && ans && ans->prompt)
+			ch->prompt = ans->prompt;
 		step_end_make(ch, &end, how, how == E_D_REQ_NOT_SENT ? E_D_SEND_STRANDED : 0, ans);
 		verdict = s->failed ? s->failed(&end, ch->ctx) : E_D_STEP_STOP;
-		if (chain_given_up(how) || verdict == E_D_STEP_STOP) {
+		if (chain_given_up(how)) {
 			chain_end(ch, 0, &end, chain_engine_said(how));
 			return E_D_STEP_STOP;
+		}
+		if (verdict == E_D_STEP_STOP || verdict == E_D_STEP_STOP_SAID) {
+			/* A prompt left unspoken and a request dropped behind it are said
+			   by the engine, once, unless the step's owner said it itself. */
+			chain_end(ch, 0, &end, 1);
+			return verdict;
 		}
 		if (verdict == E_D_STEP_NEXT)
 			ch->idx++;
@@ -1200,7 +1518,7 @@ static int chain_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
 		return verdict;
 	}
 	verdict = s->answered ? s->answered(how, ans, ch->ctx) : E_D_STEP_NEXT;
-	if (verdict == E_D_STEP_STOP) {
+	if (verdict == E_D_STEP_STOP || verdict == E_D_STEP_STOP_SAID) {
 		chain_end(ch, 1, NULL, 0);
 		return verdict;
 	}
@@ -1220,6 +1538,7 @@ int e_d_chain_run(const E_D_REQUESTER *via, const E_D_STEP *steps, void *ctx,
 
 		e_d_chain_end_unstarted(&end);
 		end.last.code = E_D_SEND_FAILED;
+		e_d_req_end_words(&end.last, NULL);
 		if (finished)
 			finished(&end, ctx);
 		return 0;

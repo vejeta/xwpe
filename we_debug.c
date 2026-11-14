@@ -668,6 +668,11 @@ static int e_d_gdbmi_send_lines(const char *cmd)
 
 static int e_d_ga_stranded(void);     /* (below: the request engine's word) */
 static void e_d_say_busy(void);        /* (below) */
+static void e_d_gsdb_forget(void);     /* (below, sdb's "e file" state) */
+static const E_D_OTHER_PROMPT *e_d_ga_prompts_of(int type);   /* (below) */
+static const char *e_d_input_name(void);   /* (below) */
+static int e_d_ga_refused_words(const E_D_ANSWER *ans, char *words, size_t n);   /* (below) */
+static int e_d_gu_add_failed(const E_D_STEP_END *end, void *ctx);   /* (below, the set-up) */
 static void e_d_ga_notice(const char *msg, void *io);   /* (below) */
 
 /**
@@ -6547,17 +6552,16 @@ int e_make_breakpoint(FENSTER *f, int sw)
 #define E_D_CL_COPY_TOO_MANY   (-1)
 #define E_D_CL_COPY_TOO_LONG   (-2)
 #define E_D_CL_COPY_NO_MEMORY  (-3)
-/* What pdb and jdb say when the editor's first command is refused, and what the
-   user reads then: the session ends, since going on would leave the debugger
-   in the editor's empty folder. */
-#define E_D_CL_PDB_ERROR_MARK  "***"
-#define E_D_CL_JDB_NO_OPEN     "Could not open:"
-#define E_D_CL_PDB_REFUSED_LINE "Debugger stopped: pdb could not change to the program's folder"
-#define E_D_CL_JDB_REFUSED_LINE "Debugger stopped: jdb could not read the start-up file"
+/* The other prompt of pdb that a .pdbrc line may take: the lines of its
+   commands block, until the file's own end. */
+#define E_D_CL_PDB_BLOCK "(com)"
 /* The box that ends a start the debugger cannot go on with: the words of
-   how the step ended, as the request engine writes them. */
+   how the step ended, as the request engine writes them; and the same when
+   the file ends inside a block pdb is still reading. */
 #define E_D_CL_STOP_FMT "Debugger stopped: %s"
+#define E_D_CL_STOP_BLOCK_FMT "Debugger stopped: %s; the file ends inside its block"
 #define E_D_CL_STOP_NO_WORDS "Debugger stopped"
+#define E_D_CL_NO_LINE (-1)
 
 static struct
 {
@@ -6567,6 +6571,10 @@ static struct
  int move_end;                            /* the first line after pin and move    */
  int next;                                /* the next line to send                */
  char *line[E_D_CONTAIN_LINES_MAX];       /* each kept at its own length          */
+ int kind[E_D_CONTAIN_LINES_MAX];         /* WPE_REFUSAL_*: what its refusal means */
+ char *where[E_D_CONTAIN_LINES_MAX];      /* its start-up file as listed, or NULL */
+ const char *block;                       /* the other prompt a line took, or NULL */
+ int last;                                /* the line in flight or last sent      */
  char *ask;                               /* the history question                 */
  char *fix;                               /* the command that moves the file      */
  int history;                             /* E_D_CL_HIST_*                        */
@@ -6585,7 +6593,10 @@ static void e_d_cl_free_lines(void)
  int i;
 
  for (i = 0; i < E_D_CONTAIN_LINES_MAX; i++)
+ {
   free(e_d_cl.line[i]);
+  free(e_d_cl.where[i]);
+ }
  free(e_d_cl.ask);
  free(e_d_cl.fix);
 }
@@ -6605,6 +6616,27 @@ static void e_d_contain_end(void)
 }
 
 /**
+ * e_d_contain_copy_one - Keep one of the editor's lines of the plan that
+ * runs, with what its refusal means and the start-up file it is a line of.
+ * @run: the plan; @i: the line's place in its input list.
+ * Return: E_D_CL_COPY_OK, or why it cannot be kept.
+ */
+static int e_d_contain_copy_one(const WpeStartPlan *run, int i)
+{
+ const char *file = wpe_startplan_input_file(run, i);
+
+ if (!e_d_req_cmd_fits(wpe_startplan_debugger_of(run), run->input[i].text))
+  return(E_D_CL_COPY_TOO_LONG);
+ e_d_cl.line[i] = strdup(run->input[i].text);
+ if (!e_d_cl.line[i])
+  return(E_D_CL_COPY_NO_MEMORY);
+ e_d_cl.kind[i] = wpe_startplan_input_outcome(run, i);
+ if (file && !(e_d_cl.where[i] = strdup(file)))
+  return(E_D_CL_COPY_NO_MEMORY);
+ return(E_D_CL_COPY_OK);
+}
+
+/**
  * e_d_contain_copy_lines - Keep the editor's own lines of the plan that runs.
  * @run: the plan that runs.
  *
@@ -6616,18 +6648,15 @@ static void e_d_contain_end(void)
  */
 static int e_d_contain_copy_lines(const WpeStartPlan *run)
 {
- const char *debugger = wpe_startplan_debugger_of(run);
- int i, n = wpe_startplan_editor_inputs(run);
+ int i, why, n = wpe_startplan_editor_inputs(run);
 
  if (n > E_D_CONTAIN_LINES_MAX)
   return(E_D_CL_COPY_TOO_MANY);
  for (i = 0; i < n; i++)
  {
-  if (!e_d_req_cmd_fits(debugger, run->input[i].text))
-   return(E_D_CL_COPY_TOO_LONG);
-  e_d_cl.line[i] = strdup(run->input[i].text);
-  if (!e_d_cl.line[i])
-   return(E_D_CL_COPY_NO_MEMORY);
+  why = e_d_contain_copy_one(run, i);
+  if (why != E_D_CL_COPY_OK)
+   return(why);
  }
  e_d_cl.n = n;
  e_d_cl.move_end = run->load_at < n ? run->load_at : n;
@@ -6724,7 +6753,10 @@ static int e_d_cl_history_needs_fix(const E_D_ANSWER *ans)
  * e_d_cl_cmd - The next command that contains the debugger: the plan's lines
  * in order, with gdb's history rule between the move and what is loaded.
  * @cmd, @n: the command; @ctx: unused.
- * Return: 1 with a command, 0 when every line has been sent.
+ * Return: E_D_STEP_CMD_SEND with a command, E_D_STEP_CMD_NONE when every line
+ * has been sent, E_D_STEP_CMD_STOP when they are out and the debugger is
+ * still at the prompt of a block a line opened (the file ended inside it):
+ * the next step's command would be swallowed as a line of that block.
  */
 static int e_d_cl_cmd(char *cmd, size_t n, void *ctx)
 {
@@ -6733,106 +6765,165 @@ static int e_d_cl_cmd(char *cmd, size_t n, void *ctx)
  {
   snprintf(cmd, n, "%s", e_d_cl.ask);
   e_d_cl.sent = E_D_CL_ASK;
+  e_d_cl.last = E_D_CL_NO_LINE;
  }
  else if (e_d_cl.next == e_d_cl.move_end && e_d_cl.history == E_D_CL_HIST_FIX)
  {
   snprintf(cmd, n, "%s", e_d_cl.fix);
   e_d_cl.sent = E_D_CL_FIX;
+  e_d_cl.last = E_D_CL_NO_LINE;
  }
  else if (e_d_cl.next < e_d_cl.n)
  {
   snprintf(cmd, n, "%s", e_d_cl.line[e_d_cl.next]);
   e_d_cl.sent = E_D_CL_LINE;
+  e_d_cl.last = e_d_cl.next;
  }
+ else if (e_d_cl.block)
+  return(E_D_STEP_CMD_STOP);
  else
-  return(0);
+  return(E_D_STEP_CMD_NONE);
  wpe_ui_trace("startplan send %s", cmd);
- return(1);
+ return(E_D_STEP_CMD_SEND);
 }
 
 /**
- * e_d_cl_answer_begins - Does the debugger's answer begin with @mark?
- * @ans: the answer; @mark: the words a refusal starts with.
+ * e_d_cl_where - The start-up file the line last sent is a line of.
+ * Return: the file as the box lists it, or NULL for a line of the editor's own.
  */
-static int e_d_cl_answer_begins(const E_D_ANSWER *ans, const char *mark)
+static const char *e_d_cl_where(void)
 {
- const char *text = ans->text;
-
- if (!text)
-  return(0);
- text += strspn(text, " \t\r\n");
- return(strncmp(text, mark, strlen(mark)) == 0);
+ if (e_d_cl.last < 0 || e_d_cl.last >= e_d_cl.n)
+  return(NULL);
+ return(e_d_cl.where[e_d_cl.last]);
 }
 
 /**
- * e_d_cl_first_refused - Did pdb or jdb refuse the editor's first command?
- * @ans: the answer to it.
- *
- * The first command is pdb's move into the program's folder or jdb's read of
- * the start-up file Run it loads.  pdb says "*** <error>" and jdb says
- * "Could not open: <file>".  A debugger that went on in its empty folder
- * would debug a program whose relative files it cannot find, so the start
- * stops instead (e_d_cl_stop_session).
- * Return: 1 when it was refused.
+ * e_d_cl_name - The debugger's name as the sentences say it.
  */
-static int e_d_cl_first_refused(const E_D_ANSWER *ans)
+static const char *e_d_cl_name(void)
 {
- if (e_deb_type == DEB_PDB)
-  return(e_d_cl_answer_begins(ans, E_D_CL_PDB_ERROR_MARK));
- if (e_deb_type == DEB_JDB)
-  return(e_d_cl_answer_begins(ans, E_D_CL_JDB_NO_OPEN));
- return(0);
-}
-
-/**
- * e_d_cl_refused_line - What the user reads when the first command was refused.
- */
-static const char *e_d_cl_refused_line(void)
-{
- if (e_deb_type == DEB_PDB)
-  return(E_D_CL_PDB_REFUSED_LINE);
- return(E_D_CL_JDB_REFUSED_LINE);
-}
-
-/**
- * e_d_cl_answered - The debugger answered one of the containing commands: go
- * on to the next, whatever it said (its own warnings reach Messages), except
- * that pdb's or jdb's refusal of the first one stops the start.
- */
-static int e_d_cl_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
-{
- (void)how;
- (void)ctx;
- if (e_d_cl.sent == E_D_CL_ASK)
-  e_d_cl.history = e_d_cl_history_needs_fix(ans) ? E_D_CL_HIST_FIX : E_D_CL_HIST_DONE;
- else if (e_d_cl.sent == E_D_CL_FIX)
-  e_d_cl.history = E_D_CL_HIST_DONE;
- else if (e_d_cl.sent == E_D_CL_LINE && e_d_cl.next == 0 && e_d_cl_first_refused(ans))
- {
-  snprintf(e_d_cl.stop_words, sizeof e_d_cl.stop_words, "%s",
-           e_d_cl_refused_line());
-  e_d_cl.sent = E_D_CL_IDLE;
-  return(E_D_STEP_STOP);
- }
- else if (e_d_cl.sent == E_D_CL_LINE)
-  e_d_cl.next++;
- e_d_cl.sent = E_D_CL_IDLE;
- return(E_D_STEP_AGAIN);
+ return(e_d_input_name());
 }
 
 /**
  * e_d_cl_stop_words - Keep the box that ends the start, from how the step
  * ended.
- * @end: the record; its words say what the debugger was not given.
+ * @end: the record; its words say what the debugger was not given or how it
+ * answered.
  *
  * The one writer of the stop box's text: a user whose start cannot go on
  * reads which command failed and why, in the words every other end of a
- * command uses.
+ * command uses.  A file that ends inside a block the debugger is still
+ * reading says so (the record of a builder that stopped has no answer).
  */
 static void e_d_cl_stop_words(const E_D_STEP_END *end)
 {
- snprintf(e_d_cl.stop_words, sizeof e_d_cl.stop_words, E_D_CL_STOP_FMT,
-          end->words);
+ if (e_d_cl.block && end->how == E_D_REQ_OTHER_PROMPT && !end->ans)
+  snprintf(e_d_cl.stop_words, sizeof e_d_cl.stop_words, E_D_CL_STOP_BLOCK_FMT,
+           end->words);
+ else
+  snprintf(e_d_cl.stop_words, sizeof e_d_cl.stop_words, E_D_CL_STOP_FMT,
+           end->words);
+}
+
+/**
+ * e_d_cl_words_of - The record of a line the debugger did not take or
+ * refused, with the file it is a line of and the words that say it.
+ * @end: receives it; @how: its end; @code, @prompt: as E_D_STEP_END; @cmd:
+ * the line; @reason: the debugger's reason for a refusal, or NULL.
+ */
+static void e_d_cl_words_of(E_D_STEP_END *end, E_D_REQ_END how, const char *cmd,
+                            const char *reason)
+{
+ memset(end, 0, sizeof *end);
+ end->how = how;
+ end->cmd = cmd;
+ end->where = e_d_cl_where();
+ end->prompt = "";
+ if (reason)
+  e_d_req_set_reason(end, reason);
+ e_d_req_end_words(end, e_d_cl_name());
+}
+
+/**
+ * e_d_cl_refused_line - A line of the start was refused: the plan says what
+ * that means for it.
+ * @words: the debugger's reason.
+ *
+ * A line of the editor's own that keeps the session where the box promised
+ * it (the pin, the move, the program, an admit) stops the start with the
+ * box.  A line of the user's own start-up file is said on the status row
+ * until a key, as the debugger itself says it, and the start goes on; a
+ * nicety is ignored.
+ * Return: E_D_STEP_STOP when the start stops, else E_D_STEP_AGAIN.
+ */
+static int e_d_cl_refused_line(const char *words)
+{
+ E_D_STEP_END end;
+ int kind = e_d_cl.kind[e_d_cl.next];
+
+ if (kind == WPE_REFUSAL_QUIET)
+  return(E_D_STEP_AGAIN);
+ e_d_cl_words_of(&end, E_D_REQ_REFUSED, e_d_cl.line[e_d_cl.next], words);
+ if (kind == WPE_REFUSAL_SAID)
+ {
+  e_d_ga_notice(end.words, NULL);
+  return(E_D_STEP_AGAIN);
+ }
+ e_d_cl_stop_words(&end);
+ return(E_D_STEP_STOP);
+}
+
+/**
+ * e_d_cl_fix_refused - The move of gdb's history file was refused: a nicety
+ * of the start, so it is said on the status row and the start goes on.
+ */
+static void e_d_cl_fix_refused(const char *words)
+{
+ E_D_STEP_END end;
+
+ e_d_cl_words_of(&end, E_D_REQ_REFUSED, e_d_cl.fix, words);
+ e_d_ga_notice(end.words, NULL);
+}
+
+/**
+ * e_d_cl_answered - The debugger answered one of the containing commands, with
+ * its own prompt: every line is read by the debugger's own refusal reader.
+ *
+ * What a refusal means is the plan's word for that line: it stops the start
+ * (containment), or is said and the start goes on (the user's own start-up
+ * file), or is ignored.  A debugger that is back at its own prompt has left
+ * the block a line opened.
+ * Return: E_D_STEP_AGAIN, or E_D_STEP_STOP when a refused line stops the start
+ * (the box is kept for e_d_cl_stop_session).
+ */
+static int e_d_cl_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
+{
+ char words[E_D_BRK_ANSWER_MAX];
+ int refused = e_d_ga_refused_words(ans, words, sizeof words);
+ int verdict = E_D_STEP_AGAIN;
+
+ (void)how;
+ (void)ctx;
+ e_d_cl.block = NULL;
+ if (e_d_cl.sent == E_D_CL_ASK)
+  e_d_cl.history = e_d_cl_history_needs_fix(ans) ? E_D_CL_HIST_FIX : E_D_CL_HIST_DONE;
+ else if (e_d_cl.sent == E_D_CL_FIX)
+ {
+  e_d_cl.history = E_D_CL_HIST_DONE;
+  if (refused)
+   e_d_cl_fix_refused(words);
+ }
+ else if (e_d_cl.sent == E_D_CL_LINE)
+ {
+  if (refused)
+   verdict = e_d_cl_refused_line(words);
+  if (verdict != E_D_STEP_STOP)
+   e_d_cl.next++;
+ }
+ e_d_cl.sent = E_D_CL_IDLE;
+ return(verdict);
 }
 
 /**
@@ -6853,21 +6944,54 @@ static int e_d_cl_end_stops_start(const E_D_STEP_END *end)
 }
 
 /**
+ * e_d_cl_takes_prompt - Does the line in flight take the prompt it got?
+ * @end: the record of the line's end.
+ * Return: 1 for a line of the user's .pdbrc that opened pdb's commands block:
+ * the lines that follow are the block's, and the file supplies its end.
+ */
+static int e_d_cl_takes_prompt(const E_D_STEP_END *end)
+{
+ if (end->how != E_D_REQ_OTHER_PROMPT || !end->prompt || e_d_cl.sent != E_D_CL_LINE)
+  return(0);
+ if (e_d_cl.kind[e_d_cl.next] != WPE_REFUSAL_SAID || e_deb_type != DEB_PDB)
+  return(0);
+ return(strcmp(end->prompt, E_D_CL_PDB_BLOCK) == 0);
+}
+
+/**
  * e_d_cl_failed - A line the start sends did not end with the debugger's
  * prompt.
  * @end: how it ended; @ctx: unused.
  *
- * A command the debugger was not given (too long, the session over) stops
- * the start with the box; so would a debugger left at another prompt.  The
- * other ends were said by the engine or the chain.
- * Return: E_D_STEP_STOP.
+ * A .pdbrc line that opened pdb's commands block takes the prompt: the
+ * following lines are sent as the block's own, and its end brings the
+ * debugger back (the file ends inside a block: e_d_cl_cmd stops).  A command
+ * the debugger was not given (too long, the session over) stops the start
+ * with the box; so does a debugger left at another prompt, a line pdb would
+ * read from the terminal (interact, debug, an open statement).  The other
+ * ends were said by the engine or the chain.
+ * Return: E_D_STEP_AGAIN when the prompt is taken, E_D_STEP_STOP_SAID when the
+ * box says it, else E_D_STEP_STOP.
  */
 static int e_d_cl_failed(const E_D_STEP_END *end, void *ctx)
 {
+ E_D_STEP_END copy;
+
  (void)ctx;
- if (e_d_cl_end_stops_start(end))
-  e_d_cl_stop_words(end);
- return(E_D_STEP_STOP);
+ if (e_d_cl_takes_prompt(end))
+ {
+  e_d_cl.block = end->prompt;
+  e_d_cl.next++;
+  e_d_cl.sent = E_D_CL_IDLE;
+  return(E_D_STEP_AGAIN);
+ }
+ if (!e_d_cl_end_stops_start(end))
+  return(E_D_STEP_STOP);
+ copy = *end;
+ copy.where = e_d_cl_where();
+ e_d_req_end_words(&copy, e_d_cl_name());
+ e_d_cl_stop_words(&copy);
+ return(E_D_STEP_STOP_SAID);
 }
 
 /**
@@ -6885,7 +7009,10 @@ static void e_d_cl_stop_on_timer(void *data)
  ECNT *cn = WpeEditor;
  FENSTER *f = cn->f[cn->mxedt];
 
- e_error(data ? (char *)data : E_D_CL_STOP_NO_WORDS, 0, f->fb);
+ char none[] = E_D_CL_STOP_NO_WORDS;
+
+ wpe_ui_trace("startplan stop %s", data ? (char *)data : none);
+ e_message(0, data ? (char *)data : none, f);   /* wraps: the reason ends the sentence */
  free(data);
  e_d_quit(f);
 }
@@ -10912,6 +11039,10 @@ static int e_d_scala_setup_first(FENSTER *f, const char *dir)
 #define E_D_START_UNWATCHED 3   /* the loop had no room to read its answer */
 #define E_D_START_NO_PORT   4   /* jdb named no port to listen on */
 #define E_D_START_VM_GONE   5   /* the Java VM ended before it reached jdb */
+#define E_D_START_OTHER_PROMPT 6 /* the banner ended at another prompt of the debugger's */
+/* Heartbeats the banner must stand still at such a prompt before it is one:
+   two of them are the start's grain of E_D_REQ_PROMPT_MS. */
+#define E_D_START_PROMPT_TICKS 2
 
 #define E_D_START_NO_PORT_FMT "%s named no port to listen on"
 #define E_D_START_VM_GONE_FMT \
@@ -10934,6 +11065,9 @@ static struct {
  int pty_fd;        /* an adapter's debuggee pty, while it is watched       */
  int opened_messages; /* Messages was opened for the waiting line alone      */
  ECNT *cn;
+ const char *prompt_name;  /* the other prompt the banner stopped at, or NULL  */
+ int prompt_len;    /* the bytes held when the heartbeat last saw one       */
+ int prompt_ticks;  /* heartbeats those bytes stood unchanged               */
 } e_d_start = { 0, E_D_START_WAITING, 0, 0, E_D_START_TIMEOUT, 0,
                 WPE_TIMER_NONE, E_D_START_NO_FD, 0, E_D_START_NO_FD, 0, NULL };
 
@@ -11348,8 +11482,17 @@ static void e_d_start_say_end(int why, const char *label, int timeout, FENSTER *
   snprintf(line, sizeof line, E_D_START_NO_PORT_FMT, label);
  else if (why == E_D_START_VM_GONE)
   e_d_jdb_vm_gone_line(line, sizeof line, label);
+ else if (why == E_D_START_OTHER_PROMPT)
+ {
+  snprintf(line, sizeof line, E_D_REQ_START_PROMPT_FMT, label,
+           e_d_start.prompt_name ? e_d_start.prompt_name : "");
+  wpe_ui_trace("start said %s", line);
+  e_d_p_message(line, f, 1);
+  snprintf(line, sizeof line, "%s", E_D_REQ_START_PROMPT_WHY);
+ }
  else
   snprintf(line, sizeof line, E_D_START_TIMED_OUT_FMT, label, timeout);
+ wpe_ui_trace("start said %s", line);
  e_d_p_message(line, f, 1);
 }
 
@@ -12068,6 +12211,57 @@ static void e_d_jdb_start_read(const char *text)
 }
 
 /**
+ * e_d_start_prompt_reset - The banner is not at another prompt (any more).
+ */
+static void e_d_start_prompt_reset(void)
+{
+ e_d_start.prompt_len = 0;
+ e_d_start.prompt_ticks = 0;
+}
+
+/**
+ * e_d_start_banner_stuck - Is the debugger's banner standing at another
+ * prompt of its own, so that it will never reach the one that ends it?
+ *
+ * A start-up file the debugger reads itself (pdb's ~/.pdbrc with interact, an
+ * open statement, debug) leaves it reading the terminal before the editor's
+ * first command.  The heartbeat is the start's quiet timer: the bytes the
+ * reader holds end in a row of the debugger's table, through the same
+ * matcher the request engine uses, and have not changed for
+ * E_D_START_PROMPT_TICKS heartbeats.
+ * Return: 1 when it is.
+ */
+static int e_d_start_banner_stuck(void)
+{
+ E_D_ANSWER held;
+ const E_D_OTHER_PROMPT *row;
+ size_t len = 0;
+
+ if (e_d_start.dap || e_d_async.nb_len <= 0)
+ {
+  e_d_start_prompt_reset();
+  return(0);
+ }
+ memset(&held, 0, sizeof held);
+ held.text = (char *)e_d_async.nb.s;
+ held.len = e_d_async.nb_len;
+ row = e_d_req_other_prompt_at(&held, e_d_ga_prompts_of(e_deb_type), &len);
+ if (!row)
+ {
+  e_d_start_prompt_reset();
+  return(0);
+ }
+ if (e_d_start.prompt_len != e_d_async.nb_len || e_d_start.prompt_name != row->name)
+ {
+  e_d_start.prompt_len = e_d_async.nb_len;
+  e_d_start.prompt_name = row->name;
+  e_d_start.prompt_ticks = 1;
+  return(0);
+ }
+ return(++e_d_start.prompt_ticks >= E_D_START_PROMPT_TICKS);
+}
+
+/**
  * e_d_start_on_tick - The heartbeat: turn the waiting line, apply the
  * deadline, and finish a debugger that is being ended.
  * @data: unused.
@@ -12092,6 +12286,11 @@ static void e_d_start_on_tick(void *data)
  {
   e_d_jdb_start_show_vm_words(E_D_PTY_READS_ALL);
   e_d_start_stop(E_D_START_VM_GONE);
+  return;
+ }
+ if (e_d_start_banner_stuck())
+ {
+  e_d_start_stop(E_D_START_OTHER_PROMPT);
   return;
  }
  e_d_start_check_deadline();
@@ -12139,6 +12338,8 @@ void e_d_start_cancel(void)
  */
 static void e_d_start_begin(FENSTER *f, int dap)
 {
+ e_d_start_prompt_reset();
+ e_d_start.prompt_name = NULL;
  e_d_start.active = 1;
  e_d_start.dap = dap;
  e_d_start.opened_messages = 0;
@@ -18012,6 +18213,13 @@ struct e_d_ga_backend
     reason.  NULL: the error flag says so and the first line is the reason,
     as the line debuggers refuse. */
  int  (*refused_words)(const E_D_ANSWER *ans, char *words, size_t n);
+ /* The prompts the debugger shows that are not the one it ends its answers
+    with: the lines of a block it reads (pdb's commands, gdb's define), or a
+    nested session.  Always a table: e_d_no_other_prompts for a debugger
+    measured to have none, e_d_unmeasured_other_prompts for one nobody could
+    measure on this host.  The request engine asks it only when the answer
+    is not whole (e_d_ga_other_prompt). */
+ const E_D_OTHER_PROMPT *other_prompts;
 };
 
 /* The request engine, its world and what runs on it. */
@@ -18226,6 +18434,35 @@ static int e_d_ga_answer_ended(const E_D_ANSWER *ans, size_t *prompt_len,
 }
 
 /**
+ * e_d_ga_prompts_of - The other prompts of the debugger of kind @type.
+ * @type: DEB_*.
+ * Return: its table, or NULL for a debugger the engine does not run.
+ */
+static const E_D_OTHER_PROMPT *e_d_ga_prompts_of(int type)
+{
+ const E_D_GA_BACKEND *be = e_d_ga_backend_of(type);
+
+ return(be ? be->other_prompts : NULL);
+}
+
+/**
+ * e_d_ga_other_prompt - Which of the debugger's other prompts does the answer
+ * end at?
+ * @ans, @len, @io: as E_D_REQ_IO's other_prompt.
+ *
+ * What lets the engine tell a debugger that reads the lines of a block from
+ * one that is still working, so the user reads which prompt it is at
+ * instead of waiting for the deadline.
+ * Return: the row, or NULL.
+ */
+static const E_D_OTHER_PROMPT *e_d_ga_other_prompt(const E_D_ANSWER *ans,
+                                                   size_t *len, void *io)
+{
+ (void)io;
+ return(e_d_req_other_prompt_at(ans, e_d_ga.be->other_prompts, len));
+}
+
+/**
  * e_d_ga_now_ms - The monotonic clock in milliseconds, for the engine's
  * waiting line and deadline.
  */
@@ -18374,6 +18611,7 @@ static void e_d_ga_notice(const char *msg, void *io)
  char line[E_D_GA_LINE_MAX + E_D_REQ_MSG_MAX];
 
  (void)io;
+ wpe_ui_trace("debugger said %s", msg);     /* the whole sentence: the row crops it */
  e_d_wait_line_forget(&e_d_ga.kept);
  snprintf(line, sizeof line, " %s", msg);
  if (e_status_keep_until_free(line))
@@ -18616,6 +18854,7 @@ static void e_d_ga_world(void)
  if (e_d_ga.be->send)
   e_d_ga.io.send = e_d_ga.be->send;
  e_d_ga.io.answer_ended = e_d_ga_answer_ended;
+ e_d_ga.io.other_prompt = e_d_ga_other_prompt;
  e_d_ga.io.line_is_async = e_d_ga.be->line_is_async;
  e_d_ga.io.deliver_async = e_d_ga.be->deliver_async;
  e_d_ga.io.now_ms = e_d_ga_now_ms;
@@ -18754,7 +18993,8 @@ static int e_d_ga_answering(void)
   return(1);
  if (!e_d_ga.live)
   return(0);
- return(e_d_req_pending(&e_d_ga.rq) || e_d_ga.chain != E_D_GA_NONE);
+ return(e_d_req_pending(&e_d_ga.rq) || e_d_ga.chain != E_D_GA_NONE ||
+        e_d_req_stranded(&e_d_ga.rq));
 }
 
 /**
@@ -18935,6 +19175,7 @@ static int e_d_ga_chain_ended(void)
  e_d_gs_settle_forget();
  e_d_ga.running_said = 0;
  e_d_gb_removing_id = 0;
+ e_d_gsdb_forget();
  e_d_gb_add_given_up();
  if (!e_d_ga.live)
   return(0);
@@ -20029,15 +20270,16 @@ static void e_d_act_pop(E_D_ACT *a)
  * F8 F8 typed while the watches of a stop are read steps twice, in order,
  * as the user meant.  While gdb is told of a breakpoint change the program
  * runs for the user, and the key is refused as while it runs, never kept.
- * A ninth key, or one typed while gdb still answers a command given up on,
- * is refused with the line that says so.
+ * A ninth key, one typed while gdb still answers a command given up on, or
+ * one typed while the debugger is left at a prompt nobody speaks (it would
+ * never run), is refused with the line that says so.
  * Return: 1 when the key was kept or refused here.
  */
 static int e_d_act_deferred(int kind, FENSTER *f, int line)
 {
  if (!e_d_ga_answering())
   return(0);
- if (e_d_ga.chain == E_D_GA_SYNC || e_d_ga.rq.resync ||
+ if (e_d_ga.chain == E_D_GA_SYNC || e_d_ga.rq.resync || e_d_ga.rq.stranded ||
      e_d_ga.nact >= E_D_GA_ACT_MAX)
   return(e_d_ga_refused(f));
  e_d_act_push(kind, f, line);
@@ -20603,7 +20845,8 @@ static void e_d_gb_on_late_error(const E_D_ANSWER *err, void *ctx)
  (void)ctx;
  if (i < 0 || e_d_nrbrpts[i] != 0)
   return;
- e_d_gb_first_words(err->text, words, sizeof words);
+ if (!e_d_ga_refused_words(err, words, sizeof words))
+  return;                         /* a warning is not a refusal */
  e_d_gb_take_verdict(i, 0, E_D_READ_ERROR, words);
  e_d_brk_say_refusal(e_d_ga_window(), i);
  e_d_run_repaint_margin(e_d_ga.cn);
@@ -20619,14 +20862,44 @@ static int e_d_gb_removal_told(int id)
  return(id != 0 && id == e_d_gb_removing_id);
 }
 
+static void e_d_gb_gone_drop_id(int id);   /* (below) */
+
+/**
+ * e_d_gb_remove_refused - A removal whose command the debugger can never be
+ * given (a place longer than dbx or xdb take) is forgotten and said.
+ * @cmd: the command that was built.
+ *
+ * The same command would be refused the same way for ever, and the chain
+ * would end on it at every stop.  The user reads on the status row which
+ * command the debugger was not given; the breakpoint stays in the debugger.
+ */
+static void e_d_gb_remove_refused(const char *cmd)
+{
+ E_D_STEP_END end;
+
+ memset(&end, 0, sizeof end);
+ end.how = E_D_REQ_NOT_SENT;
+ end.code = E_D_SEND_TOO_LONG;
+ end.cmd = cmd;
+ end.prompt = "";
+ e_d_req_end_words(&end, e_d_ga.be->name);
+ e_d_gb_gone_drop_id(e_d_gb_removing_id);
+ e_d_gb_removing_id = 0;
+ e_d_ga_notice(end.words, NULL);
+}
+
 static int e_d_gb_remove_cmd(char *cmd, size_t n, void *ctx)
 {
  (void)ctx;
- if (e_d_brk_ngone <= 0)
-  return(0);
- e_d_gb_removing_id = e_d_brk_gone[0].id;
- e_d_ga.be->brk_remove_cmd(&e_d_brk_gone[0], cmd, n);
- return(1);
+ while (e_d_brk_ngone > 0)
+ {
+  e_d_gb_removing_id = e_d_brk_gone[0].id;
+  e_d_ga.be->brk_remove_cmd(&e_d_brk_gone[0], cmd, n);
+  if (e_d_req_cmd_fits(e_d_ga.be->name, cmd))
+   return(1);
+  e_d_gb_remove_refused(cmd);
+ }
+ return(0);
 }
 
 /**
@@ -20808,8 +21081,8 @@ static int e_d_gb_add_failed(const E_D_STEP_END *end, void *ctx)
  int i;
 
  (void)ctx;
- if (end->how == E_D_REQ_NOT_SENT)
-  e_d_gb_late.asked = 0;
+ if (end->how == E_D_REQ_NOT_SENT || end->how == E_D_REQ_OTHER_PROMPT)
+  e_d_gb_late.asked = 0;      /* a block swallowed it: it was never set */
  if (!e_d_gb_not_sent_final(end))
   return(E_D_STEP_STOP);
  i = e_d_brk_index_of(e_d_gb_late.file, e_d_gb_late.line);
@@ -20844,11 +21117,8 @@ static void e_d_gdb_brk_verdict(int i, int id, const E_D_ANSWER *ans)
   e_d_gb_number_line(ans->text, str, sizeof str);
   e_d_gb_take_verdict(i, id, 0, str);
  }
- else if (ans->error)
- {
-  e_d_gb_first_words(ans->text, str, sizeof str);
+ else if (e_d_ga_refused_words(ans, str, sizeof str))
   e_d_gb_take_verdict(i, 0, E_D_READ_ERROR, str);
- }
  else
   e_d_gb_take_verdict(i, 0, E_D_READ_PROMPT, "");
 }
@@ -21787,7 +22057,7 @@ static const E_D_STEP e_d_gdb_set_up_steps[] =
  { e_d_gu_confirm_cmd, e_d_gs_ignore_answer },
  { e_d_gu_tty_cmd,     e_d_gs_ignore_answer },
  { e_d_gb_remove_cmd,  e_d_gb_remove_answered },
- { e_d_gb_add_cmd,     e_d_gu_add_answered, e_d_gb_add_failed },
+ { e_d_gb_add_cmd,     e_d_gu_add_answered, e_d_gu_add_failed },
  { NULL, NULL }
 };
 
@@ -21807,6 +22077,38 @@ static int e_d_gu_session_is_over(const E_D_CHAIN_END *end)
 }
 
 /**
+ * e_d_gu_dropped_by_strand - Did the set-up end because a request behind a
+ * stranded debugger was given back, not by anything of its own?
+ * @end: how the chain ended.
+ */
+static int e_d_gu_dropped_by_strand(const E_D_CHAIN_END *end)
+{
+ return(end->last.how == E_D_REQ_NOT_SENT && end->last.code == E_D_SEND_STRANDED);
+}
+
+/**
+ * e_d_gu_add_failed - The breakpoint command of a set-up did not end with the
+ * debugger's prompt.
+ * @end: how it ended; @ctx: the context.
+ *
+ * As every breakpoint step: a command too long for the debugger turns the
+ * mark hollow and the set-up goes on.  A debugger left at another prompt
+ * by it cannot be set up, so the start stops with the box, said once.
+ * Return: as e_d_gb_add_failed, or E_D_STEP_STOP_SAID with the box kept.
+ */
+static int e_d_gu_add_failed(const E_D_STEP_END *end, void *ctx)
+{
+ int verdict = e_d_gb_add_failed(end, ctx);
+
+ if (verdict == E_D_STEP_STOP && end->how == E_D_REQ_OTHER_PROMPT)
+ {
+  e_d_cl_stop_words(end);
+  return(E_D_STEP_STOP_SAID);
+ }
+ return(verdict);
+}
+
+/**
  * e_d_gu_set_up_failed - The set-up chain ended without finishing.
  * @end: how it ended.
  *
@@ -21822,14 +22124,23 @@ static void e_d_gu_set_up_failed(const E_D_CHAIN_END *end)
  e_d_ga_actions_drop();
  if (e_d_gu_session_is_over(end))
   return;
- if (e_d_cl_end_stops_start(&end->last))
+ if (e_d_cl.stop_words[0])
  {
-  if (!e_d_cl.stop_words[0])
-   e_d_cl_stop_words(&end->last);
-  e_d_cl_stop_session();
+  e_d_cl_stop_session();            /* an owner of a step kept the box */
   return;
  }
- e_d_ga.set_up_owed = 1;
+ if (!e_d_cl_end_stops_start(&end->last))
+ {
+  e_d_ga.set_up_owed = 1;
+  return;
+ }
+ if (e_d_gu_dropped_by_strand(end))
+  return;                           /* the chain that stranded it ends the session */
+ if (end->said)
+  snprintf(e_d_cl.stop_words, sizeof e_d_cl.stop_words, "%s", E_D_CL_STOP_NO_WORDS);
+ else
+  e_d_cl_stop_words(&end->last);
+ e_d_cl_stop_session();
 }
 
 /**
@@ -23038,7 +23349,7 @@ static const E_D_STEP e_d_pdb_set_up_steps[] =
 {
  { e_d_cl_cmd,        e_d_cl_answered, e_d_cl_failed },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gb_add_failed },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gu_add_failed },
  { NULL, NULL }
 };
 
@@ -24289,7 +24600,7 @@ static const E_D_STEP e_d_jdb_set_up_steps[] =
 {
  { e_d_cl_cmd,        e_d_cl_answered, e_d_cl_failed },
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gb_add_failed },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gu_add_failed },
  { NULL, NULL }
 };
 
@@ -24677,7 +24988,7 @@ static int e_d_a68g_sync_on_loop(ECNT *cn)
 static const E_D_STEP e_d_a68g_set_up_steps[] =
 {
  { e_d_ga68_reset_cmd, e_d_ga68_reset_answered },
- { e_d_gb_add_cmd,     e_d_gu_add_answered, e_d_gb_add_failed },
+ { e_d_gb_add_cmd,     e_d_gu_add_answered, e_d_gu_add_failed },
  { NULL, NULL }
 };
 
@@ -24941,6 +25252,20 @@ static struct
  int asked;                  /* "e file" went out and is not answered */
  int told;                   /* sdb answered it: the line's command is next */
 } e_d_gsdb;
+
+/**
+ * e_d_gsdb_forget - A chain is over: its "e file" is no longer out and none
+ * is answered.
+ *
+ * A chain that ended on a refusal or a deadline would otherwise leave the
+ * flag set, and the next chain's first answer would be read as the answer
+ * to an "e file" nobody asked.
+ */
+static void e_d_gsdb_forget(void)
+{
+ e_d_gsdb.asked = 0;
+ e_d_gsdb.told = 0;
+}
 
 /**
  * e_d_gsdb_file_first - Before sdb is sent a command on a line of @file:
@@ -25978,7 +26303,7 @@ static const E_D_STEP e_d_sdb_set_up_steps[] =
 static const E_D_STEP e_d_dbx_set_up_steps[] =
 {
  { e_d_gb_remove_cmd, e_d_gb_remove_answered },
- { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gb_add_failed },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gu_add_failed },
  { NULL, NULL }
 };
 
@@ -25986,7 +26311,7 @@ static const E_D_STEP e_d_xdb_set_up_steps[] =
 {
  { e_d_gx_set_up_cmd, e_d_gs_ignore_answer },
  { e_d_gx_remove_cmd, e_d_gx_remove_answered },
- { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gb_add_failed },
+ { e_d_gb_add_cmd,    e_d_gu_add_answered, e_d_gu_add_failed },
  { NULL, NULL }
 };
 
@@ -26458,7 +26783,7 @@ static const E_D_STEP e_d_gdbmi_set_up_steps[] =
  { e_d_gm_async_cmd,    e_d_gs_ignore_answer },
  { e_d_gm_tty_cmd,      e_d_gs_ignore_answer },
  { e_d_gb_remove_cmd,   e_d_gb_remove_answered },
- { e_d_gb_add_cmd,      e_d_gu_add_answered, e_d_gb_add_failed },
+ { e_d_gb_add_cmd,      e_d_gu_add_answered, e_d_gu_add_failed },
  { NULL, NULL }
 };
 
@@ -27112,6 +27437,199 @@ static const E_D_RUN_OPS *e_d_gdbmi_run_ops(void)
  return(&e_d_gdbmi_ops);
 }
 
+/* ---- how each debugger refuses, and its other prompts ---- */
+
+/* What gdb 18 puts in front of a warning on its error stream when the
+   style lines of the start did not empty it (a symbol, then this word). */
+#define E_D_GDB_WARNING_MARK  "warning: "
+#define E_D_PDB_REFUSED_MARK  "*** "
+#define E_D_JDB_NO_OPEN_MARK  "Could not open:"
+#define E_D_JDB_UNKNOWN_MARK  "Unrecognized command:"
+#define E_D_ASCII_LIMIT       0x80
+
+/**
+ * e_d_gdb_line_is_warning - Is this line of gdb's error stream a warning?
+ * @line: the line.
+ *
+ * gdb writes warnings on the error stream too, and a warning is not a
+ * refusal ("directory" of a missing folder warns and succeeds).  The start
+ * turns the symbols in front of the lines off, but a gdb that refused those
+ * lines still writes one, so leading symbol bytes and blanks are skipped.
+ */
+static int e_d_gdb_line_is_warning(const char *line)
+{
+ while (*line == ' ' || ((unsigned char)*line) >= E_D_ASCII_LIMIT)
+  line++;
+ return(strncmp(line, E_D_GDB_WARNING_MARK, strlen(E_D_GDB_WARNING_MARK)) == 0);
+}
+
+/**
+ * e_d_gdb_trim_line - Cut the line end and the blanks off the end of @words,
+ * so a sentence that holds gdb's words ends with them.
+ */
+static void e_d_gdb_trim_line(char *words)
+{
+ size_t len = strlen(words);
+
+ while (len > 0 && (words[len - 1] == '\n' || words[len - 1] == '\r' ||
+                    words[len - 1] == ' '))
+  words[--len] = '\0';
+}
+
+/**
+ * e_d_gdb_add_cause - When gdb's first line only introduces its reason ("...:
+ * Error in sourced command file:"), add the line that gives it.
+ * @err: gdb's error stream; @words, @n: the first line, which receives the
+ * cause after a blank.
+ *
+ * A refused source says where it stopped on the first line and why on the
+ * next, and a sentence that ends at the colon would not tell the user why.
+ */
+static void e_d_gdb_add_cause(const char *err, char *words, size_t n)
+{
+ size_t len = strlen(words);
+ const char *p = strstr(err, words);
+ const char *next;
+ size_t take;
+
+ if (len == 0 || words[len - 1] != ':' || !p)
+  return;
+ next = strchr(p + len, '\n');
+ while (next && (*next == '\n' || *next == ' ' || *next == '\r'))
+  next++;
+ if (!next || !*next || len + 2 >= n)
+  return;
+ take = strcspn(next, "\n");
+ if (take > n - len - 2)
+  take = n - len - 2;
+ words[len] = ' ';
+ memcpy(words + len + 1, next, take);
+ words[len + 1 + take] = '\0';
+}
+
+/**
+ * e_d_gdb_refused_words - Did gdb's console refuse what @ans answers?
+ * @ans: the answer; @words, @n: receive gdb's reason.
+ *
+ * gdb refuses on its error stream: a refusal is an answer whose error
+ * stream holds a first line that is not a warning.  A command gdb took and
+ * noted on its output ("(No debugging symbols found ...)") is not one.
+ * Return: 1 when it refused.
+ */
+static int e_d_gdb_refused_words(const E_D_ANSWER *ans, char *words, size_t n)
+{
+ if (!ans->err || !ans->err[0])
+  return(0);
+ e_d_gb_first_words(ans->err, words, n);
+ e_d_gdb_trim_line(words);
+ if (!words[0] || e_d_gdb_line_is_warning(words))
+  return(0);
+ e_d_gdb_add_cause(ans->err, words, n);
+ return(1);
+}
+
+/**
+ * e_d_line_with_mark - The first line of an answer that begins with @mark.
+ * @text: the answer or NULL; @mark: the words a refusal starts with;
+ * @words, @n: receive the line past @mark when @keep_mark is 0, else the line.
+ * Return: 1 when there is one.
+ */
+static int e_d_line_with_mark(const char *text, const char *mark, int keep_mark,
+                              char *words, size_t n)
+{
+ size_t len = strlen(mark);
+ const char *p = text;
+
+ while (p && *p)
+ {
+  const char *end = strchr(p, '\n');
+  size_t line = end ? (size_t)(end - p) : strlen(p);
+
+  if (strncmp(p, mark, len) == 0)
+  {
+   const char *from = keep_mark ? p : p + len;
+   size_t take = keep_mark ? line : line - len;
+
+   if (take >= n)
+    take = n - 1;
+   memcpy(words, from, take);
+   words[take] = '\0';
+   return(1);
+  }
+  p = end ? end + 1 : NULL;
+ }
+ return(0);
+}
+
+/**
+ * e_d_pdb_refused_words - Did pdb refuse what @ans answers?  It says
+ * "*** <error>" on its output, one line, and prompts again.
+ * Return: 1 when it did; @words receives the line past the stars.
+ */
+static int e_d_pdb_refused_words(const E_D_ANSWER *ans, char *words, size_t n)
+{
+ return(e_d_line_with_mark(ans->text, E_D_PDB_REFUSED_MARK, 0, words, n));
+}
+
+/**
+ * e_d_jdb_refused_words - Did jdb refuse what @ans answers?  It says
+ * "Could not open: <file>" for a read it cannot do and "Unrecognized
+ * command: ..." for a word it does not know, then prompts again.
+ * Return: 1 when it did; @words receives the line.
+ */
+static int e_d_jdb_refused_words(const E_D_ANSWER *ans, char *words, size_t n)
+{
+ if (e_d_line_with_mark(ans->text, E_D_JDB_NO_OPEN_MARK, 1, words, n))
+  return(1);
+ return(e_d_line_with_mark(ans->text, E_D_JDB_UNKNOWN_MARK, 1, words, n));
+}
+
+/* The other prompts, each row measured on this host (Python 3.14.10 pdb,
+   gdb 18.1 console and MI) as the editor drives a debugger, over a pipe. */
+
+/* pdb: the lines of a commands block, a nested debugger (debug <expr>),
+   interact, interact's continuation, and the statement continuation of
+   Python 3.13 and later (three blanks after the dots). */
+static const E_D_OTHER_PROMPT e_d_pdb_other_prompts[] =
+{
+ { "(com)",   "(com) ",   E_D_PROMPT_ENDS_WITH },
+ { "((Pdb))", "((Pdb)) ", E_D_PROMPT_ENDS_WITH },
+ { ">>>",     ">>> ",     E_D_PROMPT_ENDS_WITH },
+ { "...",     "... ",     E_D_PROMPT_ENDS_WITH },
+ { "...",     "...   ",   E_D_PROMPT_ENDS_WITH },
+ { NULL, NULL, 0 }
+};
+
+/* gdb's console: the lines of define, document, commands, if, while and
+   python: one ">" per line, a blank in front for every level of nesting. */
+static const E_D_OTHER_PROMPT e_d_gdb_other_prompts[] =
+{
+ { ">", ">", E_D_PROMPT_LAST_LINE },
+ { NULL, NULL, 0 }
+};
+
+/* gdb over MI: the same raw ">" for define and commands, and python's
+   prompt as a console-stream record. */
+static const E_D_OTHER_PROMPT e_d_gdbmi_other_prompts[] =
+{
+ { ">", ">",       E_D_PROMPT_LAST_LINE },
+ { ">", "~\">\"",  E_D_PROMPT_LAST_LINE },
+ { NULL, NULL, 0 }
+};
+
+/* jdb 25 was measured to show none: every refusal ends at its own prompt. */
+static const E_D_OTHER_PROMPT e_d_no_other_prompts[] =
+{
+ { NULL, NULL, 0 }
+};
+
+/* sdb, dbx, xdb and a68g have no host here, so nothing was measured: a
+   debugger left at another prompt costs the deadline, as it always did. */
+static const E_D_OTHER_PROMPT e_d_unmeasured_other_prompts[] =
+{
+ { NULL, NULL, 0 }
+};
+
 /* ---- the backends ---- */
 
 static const E_D_GA_BACKEND e_d_ga_gdbmi_backend =
@@ -27150,7 +27668,8 @@ static const E_D_GA_BACKEND e_d_ga_gdbmi_backend =
  NULL,
  NULL,
  e_d_gm_send,
- e_d_gm_refused_words
+ e_d_gm_refused_words,
+ e_d_gdbmi_other_prompts
 };
 
 static const E_D_GA_BACKEND e_d_ga_gdb_backend =
@@ -27187,7 +27706,10 @@ static const E_D_GA_BACKEND e_d_ga_gdb_backend =
  e_d_gdb_go_steps,
  NULL,
  NULL,
- NULL
+ NULL,
+ NULL,
+ e_d_gdb_refused_words,
+ e_d_gdb_other_prompts
 };
 
 static const E_D_GA_BACKEND e_d_ga_pdb_backend =
@@ -27224,7 +27746,10 @@ static const E_D_GA_BACKEND e_d_ga_pdb_backend =
  e_d_pdb_go_steps,
  NULL,
  E_D_PDB_INT_ANSWER,
- e_d_pdb_settle_cmd_for
+ e_d_pdb_settle_cmd_for,
+ NULL,
+ e_d_pdb_refused_words,
+ e_d_pdb_other_prompts
 };
 
 /* jdb's prompt is no fixed string (e_d_jdb_ends_in_prompt); E_D_JDB_BARE_PROMPT
@@ -27264,7 +27789,10 @@ static const E_D_GA_BACKEND e_d_ga_jdb_backend =
  e_d_jdb_go_steps,
  NULL,
  NULL,
- NULL
+ NULL,
+ NULL,
+ e_d_jdb_refused_words,
+ e_d_no_other_prompts
 };
 
 /* a68g's word prompt ends each answer; its refusals of a breakpoint are on
@@ -27304,7 +27832,10 @@ static const E_D_GA_BACKEND e_d_ga_a68g_backend =
  e_d_a68g_go_steps,
  NULL,
  NULL,
- NULL
+ NULL,
+ NULL,
+ NULL,
+ e_d_unmeasured_other_prompts
 };
 
 /* sdb, dbx and xdb answer on their output and refuse on their error stream,
@@ -27346,7 +27877,10 @@ static const E_D_GA_BACKEND e_d_ga_sdb_backend =
  e_d_sdb_go_steps,
  e_d_gc_run_went,
  NULL,
- NULL
+ NULL,
+ NULL,
+ NULL,
+ e_d_unmeasured_other_prompts
 };
 
 static const E_D_GA_BACKEND e_d_ga_dbx_backend =
@@ -27383,7 +27917,10 @@ static const E_D_GA_BACKEND e_d_ga_dbx_backend =
  e_d_dbx_go_steps,
  e_d_gc_run_went,
  NULL,
- NULL
+ NULL,
+ NULL,
+ NULL,
+ e_d_unmeasured_other_prompts
 };
 
 static const E_D_GA_BACKEND e_d_ga_xdb_backend =
@@ -27420,7 +27957,10 @@ static const E_D_GA_BACKEND e_d_ga_xdb_backend =
  e_d_xdb_go_steps,
  e_d_gc_run_went,
  NULL,
- NULL
+ NULL,
+ NULL,
+ NULL,
+ e_d_unmeasured_other_prompts
 };
 
 /**

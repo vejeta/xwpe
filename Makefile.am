@@ -699,8 +699,11 @@ TESTS += tests/check-debug-command.sh
 # One owner of how a debugger request ended and of the words that say it: the
 # request engine (we_debreq.[ch]).  tests/check-chain-outcome.sh fails when a
 # step that owns a verdict has no failed, a chain ends without saying why, a
-# chain is finished around the owner, or the debugger's input is written
-# without going through the gated writer.
+# chain is finished around the owner, the debugger's input is written
+# without going through the gated writer, a sentence of a request's end is
+# written outside the engine's header, a debugger names no other-prompt table,
+# or the .pdbrc keyword rule comes back (tests/chain-outcome.allow holds the
+# sentences of other owners, each with its reason).
 TESTS += tests/check-chain-outcome.sh
 
 # One owner of how long a path the editor holds may be (we_path.h) and of a
@@ -812,6 +815,7 @@ EXTRA_DIST = \
   tests/check-debug-command.sh \
   tests/debug-command.allow \
   tests/check-chain-outcome.sh \
+  tests/chain-outcome.allow \
   tests/check-path-buffers.sh \
   tests/check-program-name.sh \
   tests/check-tty-open.sh \

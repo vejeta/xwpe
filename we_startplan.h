@@ -138,7 +138,16 @@
    to the debugger by the editor's own command. */
 #define WPE_STARTPLAN_LOAD_REFUSED "a start-up file whose path the debugger cannot be given safely"
 #define WPE_STARTPLAN_LOAD_REFUSED_PDBRC \
- "a .pdbrc line that pdb cannot be given one at a time (a commands block)"
+ "a .pdbrc line longer than one command"
+
+/* What a debugger's refusal of one of the editor's input lines means for the
+   start.  The plan owns it, line by line, since only the plan knows why it
+   sends the line. */
+#define WPE_REFUSAL_STOPS 0   /* containment: the session would not be the one the box
+                                 promised, so the start stops and says so            */
+#define WPE_REFUSAL_SAID  1   /* the user's own start-up file: the debugger says it and
+                                 goes on, so the status row says it and the start goes on */
+#define WPE_REFUSAL_QUIET 2   /* a nicety: ignored                                     */
 
 /* One word of a command line. */
 typedef struct {
@@ -146,6 +155,9 @@ typedef struct {
  int role;                   /* WPE_WORD_*                                            */
  int from;                   /* WPE_FROM_*                                            */
  char *source;               /* "./xwperc: Compiler", or ""                           */
+ int on_refusal;             /* an input line: WPE_REFUSAL_*                          */
+ char *file;                 /* an input line of a start-up file: that file as the
+                                box lists it, or NULL                                */
 } WpeStartWord;
 
 /* One path the start touches by the editor's hand. */
@@ -319,6 +331,8 @@ const char *wpe_startplan_debugger_of(const WpeStartPlan *p);
 const char *wpe_startplan_program_path(const WpeStartPlan *p);
 int wpe_startplan_row_is_apart(const char *key, const char *program_tool);
 int wpe_startplan_editor_inputs(const WpeStartPlan *p);
+int wpe_startplan_input_outcome(const WpeStartPlan *p, int index);
+const char *wpe_startplan_input_file(const WpeStartPlan *p, int index);
 int wpe_startplan_history_lines(const WpeStartPlan *p, char *ask, size_t ask_n, char *fix,
                                 size_t fix_n);
 void wpe_startplan_rows_designed(int on);

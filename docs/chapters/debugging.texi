@@ -487,9 +487,25 @@ and the status row says @samp{Breakpoint at line 8 not set: the command
 is longer than dbx takes}; the start goes on and the program runs.  When
 the command is one the start needs, a box names it and the session ends.
 
+@cindex debugger, another prompt
+An answer that is another prompt of the debugger's, not the one that ends
+its answers, is said within a quarter second instead of after the 30
+seconds: pdb's @samp{(com)} while it reads a @code{commands} block,
+@samp{((Pdb))} after @code{debug}, @samp{>>>} after @code{interact} and
+@samp{...} for a statement left open; gdb's @samp{>} after @code{define},
+@code{if} or @code{python}.  The status row says
+@samp{pdb answered `interact` with its >>> prompt, not its own: Debug >
+Quit ends the session}, and xwpe leaves the debugger there: it refuses
+every command until you end the session, since anything it sent would be
+read as a line of that prompt.  If the program writes a line that only
+looks like such a prompt and goes on, nothing is said.
+
 @cindex debugger, waiting while gdb starts
 The same holds while gdb starts.  Once gdb has printed its banner, xwpe
-gives it its settings and your breakpoints, and only then runs the
+gives it its settings (gdb 18 puts a symbol in front of every error and
+warning, and xwpe turns those symbols off for the session, also when your
+@file{~/.gdbinit} set them, so gdb's reasons read plain) and your
+breakpoints, and only then runs the
 command you pressed; if gdb is slow to answer, the status row shows the
 same line, for example:
 
@@ -812,9 +828,13 @@ line cut at @samp{;;} is sent as its commands), and sends jdb
 and the @file{jdb.ini} in your home folder still run.  jdb reads the file
 once the program's VM has connected, the moment it read it before, and
 is given the program's folder as its source path.  A @file{.pdbrc}
-with a @code{commands} block, which pdb answers with a prompt of its own,
-and a file whose path holds a blank, which jdb's one-word @code{read}
-cannot take, are not offered to @samp{Run it}; the box says so.  A
+@code{commands} block is sent line by line with its @code{end}, and runs
+as pdb runs it from the file.  A line pdb would read from the terminal
+(@code{interact}, @code{debug}, a statement left open) or a block the file
+does not close stops the start at that line: the box names the line, the
+file and the prompt, and the lines before it ran.  A file whose path
+holds a blank, which jdb's one-word @code{read} cannot take, is not
+offered to @samp{Run it}; the box says so.  A
 @file{~/.pdbrc} that continues the program runs it before the move, in
 pdb's own folder.  A folder or program path up to the system's path limit
 is given to gdb, pdb and jdb whole, in one command, whatever its depth or
@@ -822,8 +842,15 @@ the letters of its names; a path that holds a control character or a
 blank at its end is still refused, and one longer than the system allows
 is refused with a box that says so.  A @file{.pdbrc} line is sent whole
 up to the most a start-up file is read (16 thousand bytes); a longer file
-is not offered to @samp{Run it}.  If pdb refuses the move, or jdb cannot
-open the file @samp{Run it} loads, the start stops and says so.
+is not offered to @samp{Run it}.  If the debugger refuses one of xwpe's own
+commands (gdb's @code{cd}, @code{file} or an admit of a script's path; pdb's
+move), the start stops and the box names the command and the debugger's
+words.  A line of your own start-up file that the debugger refuses (a
+@file{.pdbrc} line, a @file{.gdbinit} gdb stops reading at, a
+@file{jdb.ini} jdb cannot open) is said on the status row until a key and
+the start goes on, as the debugger goes on with its own start-up file.  A
+@file{~/.pdbrc} that leaves pdb at another prompt before xwpe's first
+command is said at the start instead of after its 30 seconds.
 
 @multitable @columnfractions .18 .30 .52
 @headitem Debugger @tab File in the folder @tab When it runs it

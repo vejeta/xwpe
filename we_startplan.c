@@ -251,6 +251,7 @@ void wpe_startplan_free(WpeStartPlan *p)
  {
   free(p->input[i].text);
   free(p->input[i].source);
+  free(p->input[i].file);
  }
  free(p->input);
  for (i = 0; i < p->ninit; i++)
@@ -377,6 +378,8 @@ int wpe_startplan_word(WpeStartPlan *p, const char *text, int role, int from,
  w->source = startplan_dup(startplan_or_empty(source));
  w->role = role;
  w->from = from;
+ w->on_refusal = WPE_REFUSAL_STOPS;
+ w->file = NULL;
  if (!w->text || !w->source)
  {
   free(w->text);
@@ -2064,6 +2067,8 @@ int wpe_startplan_input(WpeStartPlan *p, const char *text, int from, const char 
  w->source = startplan_dup(startplan_or_empty(source));
  w->role = WPE_WORD_TEXT;
  w->from = from;
+ w->on_refusal = WPE_REFUSAL_STOPS;
+ w->file = NULL;
  if (!w->text || !w->source)
  {
   free(w->text);
@@ -3021,6 +3026,11 @@ typedef char startplan_file_line_fits_a_command[
 #define STARTPLAN_LOAD_PDB       5   /* the .pdbrc's lines, one by one                 */
 #define STARTPLAN_LOAD_JDB       6   /* read                                           */
 
+/* gdb 18's symbols in front of an error and a warning: emptied by these two
+   lines (no argument), so a refusal reads as gdb's words. */
+#define STARTPLAN_GDB_STYLE_ERROR   "set style error-prefix"
+#define STARTPLAN_GDB_STYLE_WARNING "set style warning-prefix"
+
 /* gdb's own default for where it may auto-load from; the folder is not in it. */
 #define STARTPLAN_GDB_SAFE_PATH     "auto-load safe-path $debugdir:$datadir/auto-load"
 #define STARTPLAN_GDB_PIN           "set " STARTPLAN_GDB_SAFE_PATH
@@ -3044,10 +3054,8 @@ typedef char startplan_file_line_fits_a_command[
 #define STARTPLAN_PDB_SEPARATOR     ';'
 /* pdb's move: a statement that binds no name in the program's module. */
 #define STARTPLAN_PDB_CHDIR_FMT     "!__import__('os').chdir(%s)"
-/* The .pdbrc line that opens a block pdb answers with its own prompt, the one
-   that defines an alias, and what cuts a line into commands. */
-#define STARTPLAN_PDB_COMMANDS      "commands"
-#define STARTPLAN_PDB_ALIAS         "alias"
+/* The .pdbrc line that defines an alias, and what cuts a line into commands. */
+#define STARTPLAN_PDB_ALIAS        "alias"
 #define STARTPLAN_PDB_SPLIT         ";;"
 
 struct startplan_row {
@@ -3515,6 +3523,7 @@ int wpe_startplan_python_bytes(char *out, size_t n, const char *path)
    owned by the lines. */
 typedef struct {
  int kind[STARTPLAN_LINES_MAX];
+ int outcome[STARTPLAN_LINES_MAX];   /* WPE_REFUSAL_*: what a refusal of the line means */
  char *text[STARTPLAN_LINES_MAX];
  int n;
  const char *debugger;       /* the row's key: whose command length a line obeys    */
@@ -3573,7 +3582,21 @@ static int startplan_lines_add(startplan_lines *l, int kind, const char *head, c
   return -1;
  }
  l->kind[l->n] = kind;
+ l->outcome[l->n] = WPE_REFUSAL_STOPS;
  l->text[l->n++] = text;
+ return 0;
+}
+
+/**
+ * startplan_lines_add_quiet - Add one line whose refusal is ignored: a
+ * nicety of the start, not part of its containment.
+ * Return: as startplan_lines_add.
+ */
+static int startplan_lines_add_quiet(startplan_lines *l, int kind, const char *head)
+{
+ if (startplan_lines_add(l, kind, head, NULL) < 0)
+  return -1;
+ l->outcome[l->n - 1] = WPE_REFUSAL_QUIET;
  return 0;
 }
 
@@ -3602,6 +3625,28 @@ static int startplan_lines_pin(const startplan_row *row, startplan_lines *l)
  if (row->channel == STARTPLAN_CHAN_LAUNCH)
   return startplan_lines_add(l, STARTPLAN_LK_INIT, row->pin, NULL);
  return startplan_lines_add(l, STARTPLAN_LK_INPUT, row->pin, NULL);
+}
+
+/**
+ * startplan_lines_style - The lines that turn off gdb 18's error and warning
+ * symbols for the session, after the pin.
+ * @row: the row; @l: the lines.
+ *
+ * gdb 18 writes a symbol and a blank in front of every error and warning,
+ * also over a pipe, so a refusal read from its error stream would begin with
+ * a symbol and a warning could not be told from an error by its first word.
+ * Only gdb's console row has them: gdb over MI says its refusals in a record
+ * that carries no symbol.  The pin stays the editor's first command; a gdb
+ * that has no such setting refuses these lines, and the start goes on.
+ * Return: 0, or -1.
+ */
+static int startplan_lines_style(const startplan_row *row, startplan_lines *l)
+{
+ if (row->channel != STARTPLAN_CHAN_INPUT || row->load != STARTPLAN_LOAD_GDB)
+  return 0;
+ if (startplan_lines_add_quiet(l, STARTPLAN_LK_INPUT, STARTPLAN_GDB_STYLE_ERROR) < 0)
+  return -1;
+ return startplan_lines_add_quiet(l, STARTPLAN_LK_INPUT, STARTPLAN_GDB_STYLE_WARNING);
 }
 
 /**
@@ -3699,6 +3744,8 @@ static int startplan_lines_of(const startplan_row *row, const char *folder, star
  startplan_lines_reset(l);
  if (startplan_lines_pin(row, l) < 0)
   return -1;
+ if (startplan_lines_style(row, l) < 0)
+  return -1;
  return startplan_lines_move(row, folder, l);
 }
 
@@ -3720,6 +3767,8 @@ static int startplan_insert(WpeStartWord **list, int *n, int at, const char *tex
  w->source = startplan_dup("");
  w->role = role;
  w->from = from;
+ w->on_refusal = WPE_REFUSAL_STOPS;
+ w->file = NULL;
  if (!w->text || !w->source)
  {
   free(w->text);
@@ -3736,10 +3785,16 @@ static int startplan_insert(WpeStartWord **list, int *n, int at, const char *tex
  * @p: the plan; @kind: STARTPLAN_LK_*; @text: the line.
  * Return: 0, or -1.
  */
-static int startplan_apply_line(WpeStartPlan *p, int kind, const char *text)
+static int startplan_apply_line(WpeStartPlan *p, int kind, const char *text, int outcome)
 {
  if (kind == STARTPLAN_LK_INPUT)
-  return startplan_insert(&p->input, &p->ninput, p->ninput, text, WPE_WORD_TEXT, WPE_FROM_EDITOR);
+ {
+  if (startplan_insert(&p->input, &p->ninput, p->ninput, text, WPE_WORD_TEXT,
+                       WPE_FROM_EDITOR) < 0)
+   return -1;
+  p->input[p->ninput - 1].on_refusal = outcome;
+  return 0;
+ }
  if (kind == STARTPLAN_LK_WORD)
   return startplan_insert(&p->word, &p->nword, p->nword, text, WPE_WORD_OPTION, WPE_FROM_EDITOR);
  if (kind == STARTPLAN_LK_INIT)
@@ -3761,7 +3816,7 @@ static int startplan_apply_lines(WpeStartPlan *p, const startplan_lines *l)
  int i;
 
  for (i = 0; i < l->n; i++)
-  if (startplan_apply_line(p, l->kind[i], l->text[i]) < 0)
+  if (startplan_apply_line(p, l->kind[i], l->text[i], l->outcome[i]) < 0)
   {
    p->contain_refused = WPE_STARTPLAN_REFUSE_DEBUG_MEMORY;
    return -1;
@@ -4093,6 +4148,32 @@ int wpe_startplan_editor_inputs(const WpeStartPlan *p)
 }
 
 /**
+ * wpe_startplan_input_outcome - What a debugger's refusal of one input line
+ * means for the start.
+ * @p: the plan; @index: the line's place in its input list.
+ * Return: WPE_REFUSAL_STOPS, _SAID or _QUIET; STOPS for a place the plan
+ * does not hold, since a line nobody vouched for is not ignored.
+ */
+int wpe_startplan_input_outcome(const WpeStartPlan *p, int index)
+{
+ if (!p || index < 0 || index >= p->ninput)
+  return WPE_REFUSAL_STOPS;
+ return p->input[index].on_refusal;
+}
+
+/**
+ * wpe_startplan_input_file - The start-up file an input line is a line of.
+ * @p: the plan; @index: the line's place in its input list.
+ * Return: the file as the box lists it, or NULL for a line of the editor's own.
+ */
+const char *wpe_startplan_input_file(const WpeStartPlan *p, int index)
+{
+ if (!p || index < 0 || index >= p->ninput)
+  return NULL;
+ return p->input[index].file;
+}
+
+/**
  * startplan_history_fix_line - The line that moves gdb's history file to the
  * program's folder, in the form the row's interface takes.
  * @row: the row; @p: the plan; @out/@n: receive it.
@@ -4265,24 +4346,45 @@ static int startplan_named(const char *path, const char *name)
 }
 
 /**
+ * startplan_load_input - Put one input line of what Run it loads at @at, with
+ * what its refusal means and the start-up file it comes from.
+ * @p: the plan; @at: the place in the input list; @text: the line;
+ * @outcome: WPE_REFUSAL_*; @file: the file as the box lists it, or NULL.
+ * Return: 0, or -1 out of memory.
+ */
+static int startplan_load_input(WpeStartPlan *p, int at, const char *text, int outcome,
+                                const char *file)
+{
+ if (startplan_insert(&p->input, &p->ninput, at, text, WPE_WORD_TEXT, WPE_FROM_EDITOR) < 0)
+  return -1;
+ p->input[at].on_refusal = outcome;
+ if (!file)
+  return 0;
+ p->input[at].file = startplan_dup(file);
+ return p->input[at].file ? 0 : -1;
+}
+
+/**
  * startplan_load_at - Put one load line at the next place of its list.
- * @p: the plan; @l: the line made; @in/@word: where the next input and word go.
+ * @p: the plan; @l: the line made; @in/@word: where the next input and word go;
+ * @outcome: what a refusal of an input line means (WPE_REFUSAL_*); @file: the
+ * start-up file the line reads, as the box lists it, or NULL.
  * Return: 0, or -1.
  */
-static int startplan_load_at(WpeStartPlan *p, const startplan_lines *l, int *in, int *word)
+static int startplan_load_at(WpeStartPlan *p, const startplan_lines *l, int *in, int *word,
+                             int outcome, const char *file)
 {
  int i, rc;
 
  for (i = 0; i < l->n; i++)
  {
   if (l->kind[i] == STARTPLAN_LK_INPUT)
-   rc = startplan_insert(&p->input, &p->ninput, p->load_at + (*in)++, l->text[i], WPE_WORD_TEXT,
-                         WPE_FROM_EDITOR);
+   rc = startplan_load_input(p, p->load_at + (*in)++, l->text[i], outcome, file);
   else if (l->kind[i] == STARTPLAN_LK_WORD)
    rc = startplan_insert(&p->word, &p->nword, p->load_word_at + (*word)++, l->text[i],
                          WPE_WORD_OPTION, WPE_FROM_EDITOR);
   else
-   rc = startplan_apply_line(p, l->kind[i], l->text[i]);
+   rc = startplan_apply_line(p, l->kind[i], l->text[i], outcome);
   if (rc < 0)
    return -1;
  }
@@ -4362,7 +4464,7 @@ static int startplan_load_gdb_lines(WpeStartPlan *p, const startplan_row *row,
   {
    startplan_lines_reset(lines);
    if (startplan_gdb_admit(row, s->admit[i], lines) < 0 ||
-       startplan_load_at(p, lines, in, word) < 0)
+       startplan_load_at(p, lines, in, word, WPE_REFUSAL_STOPS, NULL) < 0)
     return -1;
   }
   return 0;
@@ -4370,14 +4472,15 @@ static int startplan_load_gdb_lines(WpeStartPlan *p, const startplan_row *row,
  if (wpe_startplan_resolve(s->path, startplan_base(p), real, sizeof real) < 0)
   return -1;
  startplan_lines_reset(lines);
- if (startplan_gdb_admit(row, real, lines) < 0 || startplan_load_at(p, lines, in, word) < 0)
+ if (startplan_gdb_admit(row, real, lines) < 0 ||
+     startplan_load_at(p, lines, in, word, WPE_REFUSAL_STOPS, NULL) < 0)
   return -1;
  if (!startplan_named(real, STARTPLAN_GDBINIT))
   return 0;
  startplan_lines_reset(lines);
  if (startplan_gdb_source(row, real, lines) < 0)
   return -1;
- return startplan_load_at(p, lines, in, word);
+ return startplan_load_at(p, lines, in, word, WPE_REFUSAL_SAID, s->path);
 }
 
 /**
@@ -4405,33 +4508,27 @@ static int startplan_load_gdb(WpeStartPlan *p, const startplan_row *row, const W
  * startplan_pdbrc_line_sendable - Can this .pdbrc line be sent to pdb on its own?
  * @line: one line of the file.
  *
- * pdb answers "commands" with a prompt of its own and reads the lines of the
- * block until "end", which the editor's one-request-per-line reading would
- * wait for until it gave up.  A line is never longer than a command: a start-up
- * file is read whole only up to WPE_STARTPLAN_READS_MAX bytes, which is under a
- * command's length (checked at the top of this section), so the length test
- * below only guards that arithmetic.
+ * Every line is offered: what pdb answers to it decides, at the start, line by
+ * line (a commands block is sent with its end, a line pdb reads from the
+ * terminal stops the start there).  A line is never longer than a command: a
+ * start-up file is read whole only up to WPE_STARTPLAN_READS_MAX bytes, which
+ * is under a command's length (checked at the top of this section), so the
+ * length test below only guards that arithmetic.
  * Return: 1 when it can.
  */
 static int startplan_pdbrc_line_sendable(const char *debugger, const char *line)
 {
- const char *word = line + strspn(line, " \t");
- size_t n = strlen(STARTPLAN_PDB_COMMANDS);
-
- if (!e_d_req_cmd_fits(debugger, line))
-  return 0;
- return !(strncmp(word, STARTPLAN_PDB_COMMANDS, n) == 0 &&
-          (word[n] == '\0' || word[n] == ' ' || word[n] == '\t'));
+ return e_d_req_cmd_fits(debugger, line);
 }
 
 /**
  * startplan_pdbrc_add - Add one command of a .pdbrc to the plan's input.
  * @p: the plan; @command: the command, no ";;" in it unless it is an alias.
- * @in: how many load lines were added so far.
+ * @in: how many load lines were added so far; @file: the .pdbrc as listed.
  * Return: 0, or -1 when it cannot be sent (p->load_refused says which kind)
  * or does not fit.
  */
-static int startplan_pdbrc_add(WpeStartPlan *p, const char *command, int *in)
+static int startplan_pdbrc_add(WpeStartPlan *p, const char *command, int *in, const char *file)
 {
  if (!startplan_pdbrc_line_sendable(p->row->key, command))
  {
@@ -4440,8 +4537,7 @@ static int startplan_pdbrc_add(WpeStartPlan *p, const char *command, int *in)
  }
  if (!wpe_startplan_line_ok(command))
   return -1;
- return startplan_insert(&p->input, &p->ninput, p->load_at + (*in)++, command, WPE_WORD_TEXT,
-                         WPE_FROM_EDITOR);
+ return startplan_load_input(p, p->load_at + (*in)++, command, WPE_REFUSAL_SAID, file);
 }
 
 /**
@@ -4469,7 +4565,7 @@ static int startplan_pdbrc_is_alias(const char *line)
  * and an empty part are left whole or dropped as pdb leaves them.
  * Return: 0, or -1 as startplan_pdbrc_add.
  */
-static int startplan_pdbrc_line(WpeStartPlan *p, const char *line, int *in)
+static int startplan_pdbrc_line(WpeStartPlan *p, const char *line, int *in, const char *file)
 {
  char part[E_D_REQ_CMD_MAX];
  const char *marker;
@@ -4479,13 +4575,13 @@ static int startplan_pdbrc_line(WpeStartPlan *p, const char *line, int *in)
  {
   marker = strstr(line, STARTPLAN_PDB_SPLIT);
   if (!marker || marker == line || startplan_pdbrc_is_alias(line))
-   return startplan_pdbrc_add(p, line, in);
+   return startplan_pdbrc_add(p, line, in, file);
   len = (size_t)(marker - line);
   while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t'))
    len--;
   memcpy(part, line, len);
   part[len] = '\0';
-  if (startplan_pdbrc_add(p, part, in) < 0)
+  if (startplan_pdbrc_add(p, part, in, file) < 0)
    return -1;
   line = marker + strlen(STARTPLAN_PDB_SPLIT);
   line += strspn(line, " \t");
@@ -4522,7 +4618,7 @@ static int startplan_load_pdb(WpeStartPlan *p, const WpeStartPath *s, int *in)
   first = one + strspn(one, " \t");
   if (first[0] == '\0' || first[0] == STARTPLAN_PDBRC_COMMENT)
    continue;
-  if (startplan_pdbrc_line(p, one, in) < 0)
+  if (startplan_pdbrc_line(p, one, in, s->path) < 0)
    return -1;
  }
  return 0;
@@ -4557,7 +4653,7 @@ static int startplan_load_other_lines(WpeStartPlan *p, const startplan_row *row,
   if (startplan_lines_add(lines, STARTPLAN_LK_INPUT, "read ", arg) < 0)
    return -1;
  }
- return startplan_load_at(p, lines, in, word);
+ return startplan_load_at(p, lines, in, word, WPE_REFUSAL_SAID, s->path);
 }
 
 /**
