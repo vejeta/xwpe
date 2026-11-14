@@ -30,11 +30,11 @@ stamp-h1
 *.lo
 .dirstamp
 
-# Binaries
-we
-wpe
-xwe
-xwpe
+# Binaries (at the top of the tree only: tests/menus/*/we/ holds recordings)
+/we
+/wpe
+/xwe
+/xwpe
 
 # Editor swap files
 *~

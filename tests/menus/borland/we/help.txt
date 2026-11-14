@@ -1,0 +1,10 @@
+ 1|lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq t.c qqqqqqqq lqqqqqqqqqqqqqqqqqqqqqqqqk qk
+ 2|xhello world                                       x Editor              F1 x  ^
+ 3|xsecond line                                       x Topic Search       ^F1 x  ▮
+ 4|xthird                                             x FUnction Index  Alt F1 x  a
+ 5|x                                                  x Info                   x  a
+ 6|x                                                  x Goto              <CR> x  a
+ 7|x                                                  x Back             <BSP> x  a
+ 8|x                                                  x Next    Alt F8 / Alt T x  a
+ 9|x                                                  x Prev.   Alt F7 / Alt V x  a
+10|x                                                  mqqqqqqqqqqqqqqqqqqqqqqqqj  a

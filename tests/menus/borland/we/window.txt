@@ -1,0 +1,10 @@
+ 1|lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq t.c qqqqq lqqqqqqqqqqqqqqqqqqqqqqqqqk  ✕qk
+ 2|xhello world                                    x Size/Move        Alt F2 x    ^
+ 3|xsecond line                                    x Zoom         F5 / Alt Z x    ▮
+ 4|xthird                                          x Tile                    x    a
+ 5|x                                               x Cascade                 x    a
+ 6|x                                               x Next         F6 / Alt N x    a
+ 7|x                                               x Close                ^W x    a
+ 8|x                                               x List All          Alt 0 x    a
+ 9|x                                               x User Screen      Alt F5 x    a
+10|x                                               mqqqqqqqqqqqqqqqqqqqqqqqqqj    a
