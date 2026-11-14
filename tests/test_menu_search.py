@@ -11,7 +11,7 @@ typing a marker at the new cursor position and asserting on the saved file.
 Replace changes the file directly.  Search/Replace is historically buggy
 (amagnasco) so incoherences get @incoherence(...) for manual review.
 """
-from wpe_driver import WpeSession, ALT
+from wpe_driver import WpeSession, ALT, incoherence
 
 
 def test_goto_line_moves_cursor(tmp_path):
@@ -25,6 +25,76 @@ def test_goto_line_moves_cursor(tmp_path):
         lines = w.text().splitlines()
         assert len(lines) >= 3 and lines[2].startswith("X"), \
             "Go to Line 3 should put the cursor on line 3, got %r" % w.text()
+
+
+GOTO_SEED = "L1\nL2\nL3\nL4\nL5\n"
+
+
+def _goto_field_line(w):
+    """The screen line of the Go to Line dialog that holds its number field."""
+    return [l for l in w.display() if "Goto Line Number" in l and "q" not in l]
+
+
+def _goto_typed_then_leave_field(w, typed):
+    """Open Go to Line, type @typed, move the focus to Ok so the field is
+    drawn again from the value the dialog holds, and return that line."""
+    w.menu(ALT.SEARCH, "g")
+    w.key(*typed)
+    w.key("\t")
+    return _goto_field_line(w)
+
+
+def _marker_lines(w):
+    """Type a marker at the cursor, save, and return the 1-based lines it is on,
+    after checking the rest of the file is untouched."""
+    w.key("X")
+    w.save()
+    text = w.text()
+    assert [l.replace("X", "") for l in text.splitlines()] == \
+        ["L1", "L2", "L3", "L4", "L5"], "file damaged: %r" % text
+    return [i + 1 for i, l in enumerate(text.splitlines()) if "X" in l]
+
+
+def test_goto_line_field_keeps_a_ten_digit_number_whole(tmp_path):
+    """A ten digit line number fills the Go to Line field: it still reads
+    whole once the focus leaves the field, and Go to Line takes the cursor to
+    the last line, as any number past the end does.
+
+    The field has ten places: drawing it used to work out 10**10 in an int,
+    which overflows (the sanitizer build stops on it when the dialog opens,
+    and a plain build drew 1999999999 as 1410065407).  Moving the focus to Ok
+    draws the field again from the value the dialog holds, so a field that
+    cut the number short shows it here."""
+    with WpeSession(str(tmp_path), GOTO_SEED) as w:
+        field = _goto_typed_then_leave_field(w, "1999999999")
+        assert field and "1999999999" in field[0], \
+            "the field should still read 1999999999, screen:\n%s" % \
+            "\n".join(w.display())
+        w.key("\r")
+        assert _marker_lines(w) == [5], "Go to Line 1999999999 missed the last line"
+        assert w.alive(), "wpe died on Go to Line 1999999999"
+
+
+@incoherence("a number above the int range typed into Go to Line is read back "
+             "wrapped: 3456789012 becomes negative and is drawn as punctuation, "
+             "and the cursor does not move")
+def test_goto_line_past_the_int_range_goes_to_the_last_line(tmp_path):
+    """Twelve digits typed into the ten place field leave its last ten,
+    3456789012, which is past the end of any file: the field should keep
+    showing a number once the focus leaves it, and Go to Line should take the
+    cursor to the last line, as it does for 1999999999.  Which number the
+    field then shows (the digits typed, or the largest it can hold) is left
+    to the fix; only digits are required."""
+    with WpeSession(str(tmp_path), GOTO_SEED) as w:
+        field = _goto_typed_then_leave_field(w, "123456789012")
+        after_label = field[0].split("Goto Line Number", 1)[1] if field else ""
+        shown = (after_label.replace(":", " ").split() or [""])[0]
+        assert shown.isdigit(), \
+            "the field shows %r, not a number, screen:\n%s" % (
+                shown, "\n".join(w.display()))
+        w.key("\r")
+        assert _marker_lines(w) == [5], "Go to Line 3456789012 missed the last line"
+        assert w.alive(), "wpe died on Go to Line 3456789012"
 
 
 def test_find_moves_cursor_to_match(tmp_path):

@@ -20,6 +20,9 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* Search > Go to Line: a ten digit line number above 1410065407 was shown
+  as 1410065407 once the focus left the field.  The field now shows every
+  number it can hold whole.
 * Search > Find with Regular expression: the hit ran from where the search
   began to the end of the row unless the expression had a group, so the
   cursor landed at the row's end, Replace and Change All replaced the rest

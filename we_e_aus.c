@@ -820,14 +820,37 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
  return(c);
 }
 
+/**
+ * e_number_field_largest - The biggest number a field of @max digits can show.
+ * @max: how many digit places the field has on screen.
+ *
+ * A field of three places shows up to 999, so a larger value is cut to that
+ * instead of spilling past the field's frame.  A field of ten places or more,
+ * such as the one in Go to Line, holds every value an int can have, so the
+ * number is shown whole and the editor never computes 10 to the power of
+ * @max, which no int can hold.
+ * Return: the largest value to draw, at most INT_MAX.
+ */
+static int e_number_field_largest(int max)
+{
+ int i, largest = 0;
+
+ for (i = 0; i < max; i++)
+ {
+  if (largest > (INT_MAX - 9) / 10)
+   return INT_MAX;
+  largest = largest * 10 + 9;
+ }
+ return largest;
+}
+
 int e_schr_nzif(int num, int x, int y, int max, int col)
 {
  char *str = MALLOC((max+1)*sizeof(char));
- int i, nt;
+ int largest = e_number_field_largest(max);
 
- for (i = 0, nt = 1; i < max; i++) nt *= 10;
- if (num >= nt)
-  num = nt - 1;
+ if (num > largest)
+  num = largest;
  e_pr_char(x - 1, y, ' ', col);
  e_pr_zstring(WpeNumberToString(num, max, str), x, y, max, col);
  e_pr_char(x + max, y, ' ', col);
