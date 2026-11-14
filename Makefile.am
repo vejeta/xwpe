@@ -69,6 +69,7 @@ we_SOURCES = \
   we_fl_fkt.c \
   we_fl_unix.c \
   we_hfkt.c \
+  we_rowfind.c \
   we_menue.c \
   we_menurows.c \
   we_mousedrain.c \
@@ -233,6 +234,7 @@ noinst_HEADERS = \
   we_testdump.h \
   we_buffer.h \
   we_lineend.h \
+  we_rowfind.h \
   we_utf8.h \
   we_trace.h \
   we_vterm.h \
@@ -340,7 +342,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject
 
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
@@ -413,6 +415,24 @@ test_paint_CFLAGS = $(XWPE_STDFLAG)
 # back.
 test_layout_SOURCES = tests/test_layout.c we_layout.c we_paint.c we_fdloop.c
 test_layout_CFLAGS = $(XWPE_STDFLAG)
+
+# The owner of a search over a row: we_rowfind.c alone.  A differential
+# against the engine run by hand on every start of a row, the invariants of
+# every hit, the progress of Search Again and Change All on rows wrapped at
+# a chosen width, and the speed bounds.  Built twice: the second build forces
+# the copy path that a C library without REG_STARTEND needs, where a word
+# boundary at the start of a call is judged without the byte before it.
+test_rowfind_SOURCES = tests/test_rowfind.c we_rowfind.c
+test_rowfind_CFLAGS = $(XWPE_STDFLAG)
+test_rowfind_copy_SOURCES = tests/test_rowfind.c we_rowfind.c
+test_rowfind_copy_CFLAGS = $(XWPE_STDFLAG)
+test_rowfind_copy_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_NO_STARTEND
+# The third build has no UTF-8 ctype to make (OpenBSD, a minimal system): the
+# engine then reads bytes under a process locale that is not UTF-8, and the
+# owner rejects a match that covers part of a character instead of widening it.
+test_rowfind_reject_SOURCES = tests/test_rowfind.c we_rowfind.c
+test_rowfind_reject_CFLAGS = $(XWPE_STDFLAG)
+test_rowfind_reject_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_NO_UTF8_CTYPE
 
 # The key decoder's table: we_keymap.c alone, no editor and no display
 # library.  Every bound pair has one row, the curses, keysym and escape
@@ -645,7 +665,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_progname test_fieldtake test_layout
+  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)

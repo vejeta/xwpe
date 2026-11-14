@@ -477,27 +477,12 @@ static int buffer_marks(BUFFER *b, POINT **m)
  * buffer_glyph_floor - The first byte of the glyph that covers column @x of
  * row @l: @x itself when a glyph starts there or the row ends there.
  *
- * A byte that is no continuation byte always starts a glyph.  A
- * continuation byte starts one unless a lead byte up to three bytes before
- * it has all its continuation bytes in the row and so covers it: the
- * answer e_utf8_char_before gives going left, so the cursor's steps and this
- * test agree byte for byte.  A column past the row's end is the end.
+ * The rule is e_utf8_glyph_floor's (we_utf8.h), the one the search owner
+ * uses for the characters of a hit, so a mark and a hit agree.
  */
 static int buffer_glyph_floor(const STRING *l, int x)
 {
- int k, lead;
-
- if (x >= l->len)
-  return(l->len);
- if (x <= 0 || !e_utf8_is_continuation(l->s[x]))
-  return(x < 0 ? 0 : x);
- for (k = 1; k < E_UTF8_MAX_BYTES && k <= x; k++)
- {
-  lead = x - k;
-  if (e_utf8_seq_len(l->s + lead, l->len - lead) > k)
-   return(lead);
- }
- return(x);
+ return(e_utf8_glyph_floor((const unsigned char *)l->s, l->len, x));
 }
 
 /**

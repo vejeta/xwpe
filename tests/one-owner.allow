@@ -115,3 +115,14 @@ we_ai_ws.o write 1 keep a regular file the model named, opened at the place the 
 # the positions: the cursor, the block, the find mark, the anchor and the
 # markers are written only through the owner's calls (we_buffer.c), and the
 # check allows no line for its names.
+
+# the search over a row: the engine, the end-of-line flag and the word test
+# are the owner's (we_rowfind.c).  The four old row searchers and their two
+# callers still stand until the callers move onto the owner; each line goes
+# with them.
+we_hfkt.o regcomp 1 P1b e_rstrstr, deleted with the four old searchers
+we_hfkt.o regexec 1 P1b e_rstrstr, deleted with the four old searchers
+we_hfkt.o regfree 1 P1b e_rstrstr, deleted with the four old searchers
+we_hfkt.o REG_NOTEOL 1 P1b e_rstrstr, deleted with the four old searchers
+we_block.o isalnum 2 P1b the whole-word test of e_find_next, replaced by the owner's word rule
+we_fl_unix.o isalnum 2 P1b the whole-word test of WpeGrepFile, replaced by the owner's word rule

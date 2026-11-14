@@ -82,6 +82,37 @@ static inline int e_utf8_is_continuation(unsigned char c)
 }
 
 /**
+ * e_utf8_glyph_floor - The first byte of the glyph that covers column @x of
+ * the row @s of @len bytes: @x itself when a glyph starts there or the row
+ * ends there.
+ *
+ * A byte that is no continuation byte always starts a glyph.  A
+ * continuation byte starts one unless a lead byte up to three bytes before
+ * it has all its continuation bytes in the row and so covers it: the
+ * answer e_utf8_char_before gives going left, so the cursor's steps and this
+ * test agree byte for byte.  A column past the row's end is the end.  The
+ * owner of the text's positions and the owner of a search both ask it where
+ * a character starts, so a mark and a hit never disagree about one.
+ * Return: the column of the glyph's first byte, 0 to @len.
+ */
+static inline int e_utf8_glyph_floor(const unsigned char *s, int len, int x)
+{
+ int k, lead;
+
+ if (x >= len)
+  return(len);
+ if (x <= 0 || !e_utf8_is_continuation(s[x]))
+  return(x < 0 ? 0 : x);
+ for (k = 1; k < E_UTF8_MAX_BYTES && k <= x; k++)
+ {
+  lead = x - k;
+  if (e_utf8_seq_len(s + lead, len - lead) > k)
+   return(lead);
+ }
+ return(x);
+}
+
+/**
  * e_utf8_to_codepoint - The code point of the @len bytes at @buf, or -1 when
  * they are not a sequence of a lead byte and its continuation bytes.
  */

@@ -289,6 +289,16 @@ AC_CHECK_LIB([z], [inflate], [],
 # --- Feature checks ---
 AC_CHECK_FUNCS([mkdtemp])
 
+# --- The search over a row (we_rowfind.c) ---
+# REG_STARTEND lets the engine see the whole row and start inside it, so a
+# word boundary looks at the byte before the start; musl has no such flag and
+# the owner then matches on a copy of the row.  newlocale/uselocale let the
+# owner run the engine under a UTF-8 ctype when the process locale is not
+# UTF-8, so the engine and the editor agree on what a character is.
+AC_CHECK_DECLS([REG_STARTEND], [], [], [[#include <sys/types.h>
+#include <regex.h>]])
+AC_CHECK_FUNCS([newlocale uselocale])
+
 # --- A pollable wait for a child's exit, for Quit under a debug adapter ---
 # Linux has pidfd_open (no check needed: the sources use SYS_pidfd_open when
 # the kernel headers name it).  The BSDs and macOS have kqueue with

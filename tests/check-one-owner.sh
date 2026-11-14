@@ -72,6 +72,7 @@ WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o
 e_add_undo we_buffer.o we_edit.o
 wpe_child_start we_child.o we_startplan.o
 wpe_child_capture|wpe_child_probe|wpe_child_run_to_file|wpe_child_capture_plan|wpe_child_probe_plan|wpe_child_run_to_file_plan we_child.o we_startplan.o
+regcomp|regexec|regfree|regerror we_rowfind.o
 EOF
 
 # A program the editor starts for the user comes from a start plan
@@ -146,6 +147,10 @@ e_redo_sw
 lsp_units_field we_lsp_pos.c
 e_lsp_units_make we_lsp_pos.c
 lsp_char_key we_lsp_pos.c
+REG_NOTEOL we_rowfind.c
+isalnum we_rowfind.c we_fl_fkt.c we_prog.c we_progn.c
+uselocale we_rowfind.c
+newlocale we_rowfind.c
 EOF
 
 # The language server's columns have one owner (we_lsp_pos.c): the units a
@@ -864,6 +869,25 @@ if lsppos=$(commented_source we_lsp_pos.c); then
     problem "canary: the source scan sees no \"character\" key in we_lsp_pos.c (the key rule is blind)"
 else
   problem "canary: we_lsp_pos.c not found under $SRCDIR"
+fi
+
+# The search over a row has one owner (we_rowfind.c): the regular expression
+# engine is run only there (the symbol rule), so no caller decides what the
+# engine sees, what a character, a word or an empty hit is; REG_NOTEOL, the
+# flag that keeps $ for the end of a line and not of a wrapped row, and the
+# word-byte test (isalnum) are the owner's, as are the locale calls that give
+# the engine a UTF-8 ctype.  The canaries: the symbol scan must see regexec
+# imported by the owner's object, and the source scan must see the flag in
+# its source, or a blind scanner would pass for a clean tree.
+grep -qx "we_rowfind.o regexec" "$WORK/imports" ||
+  problem "canary: regexec not seen in we_rowfind.o (the search owner is not built, or the symbol scan is blind)"
+if rowfind=$(stripped_source we_rowfind.o); then
+  [ "$(count_words REG_NOTEOL "$rowfind")" -gt 0 ] ||
+    problem "canary: the source scan sees no REG_NOTEOL in we_rowfind.c (the source rules of the search owner are blind)"
+  [ "$(count_words isalnum "$rowfind")" -gt 0 ] ||
+    problem "canary: the source scan sees no isalnum in we_rowfind.c (the word rule of the search owner is blind)"
+else
+  problem "canary: we_rowfind.c not found under $SRCDIR"
 fi
 
 # The call-form branch of the source scan must see the writer's own write(.
