@@ -9,24 +9,19 @@
 # does it since P14a, so each goes with the box it belongs to.
 drops we_ai_ui.c 2 P14c
 drops we_menue.c 1 P14b2
-drops we_opt.c 2 P14b1
-drops we_wind.c 1 P14b1
 # Rule 3: a box opens through wpe_box_open, which enters the screen owner
 # itself.  The prefixes and readers with no box (we_mouse.c, we_term.c,
 # we_prog.c) stay: P14c moves them onto the owner's no-box reader.
-# The we_wind.c line is the error box (e_error_run, we_wind.c:616), P14b1.
 modal we_ai_ui.c 4 P14c
 modal we_menue.c 2 P14b2
 modal we_mouse.c 1 P14c
-modal we_opt.c 1 P14b1
 modal we_prog.c 2 P14c
 modal we_term.c 2 P14c
-modal we_wind.c 1 P14b1
 # Rule 5: an object that imports e_std_kst draws a frame by hand; a box's
-# frame goes through wpe_box_frame.
+# frame goes through wpe_box_frame.  we_opt.o is the colour editor (P14c).
 stdkst we_ai_ui.o 1 P14c
 stdkst we_debug.o 1 P14c
-stdkst we_opt.o 1 P14b1
+stdkst we_opt.o 1 P14c
 # Rule 5: e_open_view( calls per file.  The windows' own views (we_wind.c),
 # the desk's keep-view and the mouse drags are not boxes and stay; the
 # full-screen views of a command (we_prog.c, we_fl_unix.c) open through the

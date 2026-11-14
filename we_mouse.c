@@ -1490,6 +1490,7 @@ void e_opt_eck_mouse(o)
 	 o->ye = o->ye + y - o->ya;  o->ya = y;
 	 g[0] = 2;  fk_mouse(g);
 	 o->pic = e_change_pic(o->xa, o->ya, o->xe, o->ye, o->pic, 1, o->frt);
+	 e_opt_box_follow(o);
 	 if(o->pic == NULL)  e_error(e_msg[ERR_LOWMEM], 1, o->f->fb);
 	 g[0] = 1;  fk_mouse(g);
 	 if(snap != NULL)

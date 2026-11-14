@@ -447,6 +447,7 @@ typedef struct {
  W_O_WRSTR  **wstr;
  W_O_NUMSTR **nstr;
  FENSTER *f;
+ struct WpeBox *box;   /* the layout owner's box while the dialog runs (we_layout.h) */
 } W_OPTSTR;
 
 typedef struct wpeOptionSection {
@@ -795,6 +796,7 @@ int e_opt_cw_mouse(int xa, int ya, int md);
 int e_opt_bs_mouse(void);
 void e_opt_eck_mouse(W_OPTSTR *o);
 PIC *e_opt_drag_snapshot(W_OPTSTR *o);
+void e_opt_box_follow(W_OPTSTR *o);
 int e_opt_mouse(W_OPTSTR *o, int c);
 
 int e_data_ein_mouse(FENSTER *f);

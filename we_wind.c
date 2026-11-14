@@ -520,76 +520,151 @@ char **StringToStringArray(char *str, int *maxLen, int minWidth, int *anzahl)
  return (s);
 }
 
+/* The error box: its frame is the text's width plus E_ERROR_FRAME_COLS
+   columns and E_ERROR_FRAME_ROWS rows.  It is centred as a box one column
+   narrower and one row lower, as it has been drawn since 1.5.30a. */
+#define E_ERROR_MIN_TEXT     20
+#define E_ERROR_FRAME_COLS   5
+#define E_ERROR_FRAME_ROWS   7
+#define E_ERROR_CENTRE_COLS  (E_ERROR_FRAME_COLS - 1)
+#define E_ERROR_CENTRE_ROWS  6
+
+/* What the error box's draw hook needs. */
+typedef struct
+{
+ char *text;
+ char *header;
+ int sw;          /* -1 message, 0 error, 1 serious, 2 fatal */
+ FARBE *f;
+} E_ERROR_BOX;
+
+/**
+ * e_error_frame - Draw the frame of an error box and keep what it covers.
+ * @box: the box, placed by the owner.
+ *
+ * A fatal error, or a frame that could not be saved for want of memory,
+ * is drawn plain: the box that reports a lack of memory must still show.
+ * Without a saved background the box clears the screen when it closes.
+ */
+static void e_error_frame(WpeBox *box)
+{
+ E_ERROR_BOX *e = box->self;
+ int failed = 1;
+
+ if (e->sw < 2)
+  failed = (wpe_box_frame(box, e->header, e->f->nr.fb, e->f->nt.fb, e->f->ne.fb) != 0);
+ if (failed)
+ {
+  box->pic = e_open_view(box->at.bx_left, box->at.bx_top, box->at.bx_right,
+                         box->at.bx_bottom, 0, 0);
+  e_std_rahmen(box->at.bx_left, box->at.bx_top, box->at.bx_right,
+               box->at.bx_bottom, e->header, 1, 0, 0);
+ }
+}
+
+/**
+ * e_error_box_draw - Draw an error box: its frame, its text and its OK.
+ * @box: the box, placed by the owner for the screen as it is now.
+ * Return: WPE_BOX_DRAWN always: a box that cannot save its background is
+ * still drawn, because it is the one that reports the lack of memory.
+ */
+static WpeBoxDrawn e_error_box_draw(WpeBox *box)
+{
+ E_ERROR_BOX *e = box->self;
+ int xa = box->at.bx_left, xe = box->at.bx_right, ya = box->at.bx_top;
+
+ e_error_frame(box);
+ if (e->sw < 2)
+ {
+  e_pr_str((xe + xa - e_str_len((unsigned char *)e->text))/2,
+    ya + 2, e->text, e->f->nt.fb, 0, 0, 0, 0);
+  e_pr_str((xe + xa - 4)/2, ya + 4, " OK ", e->f->nz.fb, 1, -1,
+    e->f->ns.fb, e->f->nt.fb);
+ }
+ else
+ {
+  e_pr_str((xe + xa - e_str_len((unsigned char *)e->text))/2,
+    ya + 2, e->text, 112, 0, 0, 0, 0);
+  e_pr_str((xe + xa - 4)/2, ya + 4, " OK ", 32, 1, -1, 46, 112);
+ }
+ return(WPE_BOX_DRAWN);
+}
+
+/**
+ * e_error_box_init - Give the error box its rule: centred, as a box of the
+ * text's width, from the row a six-row box would have.
+ * @box: receives the box; @e: its text, header, kind and colours; @len: the
+ * width the text takes.
+ */
+static void e_error_box_init(WpeBox *box, E_ERROR_BOX *e, int len)
+{
+ memset(box, 0, sizeof *box);
+ box->what = "an error box";
+ box->self = e;
+ box->draw = e_error_box_draw;
+ box->place.anchor = WPE_BOX_CENTRED_SCREEN;
+ box->place.w = len + E_ERROR_FRAME_COLS;
+ box->place.h = E_ERROR_FRAME_ROWS;
+ box->place.centre_w = len + E_ERROR_CENTRE_COLS;
+ box->place.centre_h = E_ERROR_CENTRE_ROWS;
+}
+
+/**
+ * e_error_read_answer - Read the key that answers an error box.
+ * @box: the open box.
+ * Return: Esc, Return or O to leave; WPE_RESIZE when the screen changed
+ * (the owner has drawn the box again); anything else otherwise.
+ */
+static int e_error_read_answer(WpeBox *box)
+{
+ int i;
+
+#if  MOUSE
+ if ((i = e_toupper(wpe_box_getch(box))) == -1)
+ {
+  extern struct mouse e_mouse;
+  int xa = box->at.bx_left, xe = box->at.bx_right, ya = box->at.bx_top;
+
+  i = e_er_mouse(xa+3, ya,(xe+xa-4)/2, ya+4);
+  if (i == 0 && e_mouse.y == ya && e_mouse.x == xe-2)
+   i = WPE_ESC;   /* clicked the title-bar [X] close box -> dismiss */
+ }
+#else
+ i = e_toupper(wpe_box_getch(box));
+#endif
+ return(i);
+}
+
 /*
       Print error message        */
 static int e_error_run(char *text, int sw, FARBE *f)
 {
- PIC *pic = NULL;
- int len, i, xa, xe, ya = 8, ye = 14;
- char *header = NULL;
+ WpeBox box;
+ E_ERROR_BOX e;
+ int len, i;
 
  fk_cursor(0);
  WpeMouseChangeShape(WpeErrorShape);
- if ((len = strlen((char *)text)) < 20 ) len = 20;
- if (sw == -1) header = "Message";
- else if (sw == 0) header = "Error";
- else if (sw == 1) header = "Serious Error";
- else if (sw == 2) header = "Fatal Error";
+ if ((len = strlen((char *)text)) < E_ERROR_MIN_TEXT) len = E_ERROR_MIN_TEXT;
+ e.text = text;
+ e.sw = sw;
+ e.f = f;
+ e.header = NULL;
+ if (sw == -1) e.header = "Message";
+ else if (sw == 0) e.header = "Error";
+ else if (sw == 1) e.header = "Serious Error";
+ else if (sw == 2) e.header = "Fatal Error";
 
-e_error_restart:
- xa = (MAXSCOL-len)/2 - 2;
- xe = xa + len + 4;
- ya = (MAXSLNS-6)/2;
- ye = ya + 6;
- if (xa < 0) xa = 0;
- if (xe >= MAXSCOL) xe = MAXSCOL - 1;
- if (ya < 1) ya = 1;
- if (ye >= MAXSLNS - 1) ye = MAXSLNS - 2;
-
- if (sw < 2) pic = e_std_kst(xa, ya, xe, ye, header, 1, f->nr.fb, f->nt.fb, f->ne.fb);
- if (sw == 2 || pic == NULL)
- {
-  pic = e_open_view(xa, ya, xe, ye, 0, 0);
-  e_std_rahmen(xa, ya, xe, ye, header, 1, 0, 0);
- }
- if (sw < 2)
- {
-  e_pr_str((xe + xa - e_str_len((unsigned char *)text))/2,
-    ya + 2, text, f->nt.fb, 0, 0, 0, 0);
-  e_pr_str((xe + xa - 4)/2, ya + 4, " OK ", f->nz.fb, 1, -1,
-    f->ns.fb, f->nt.fb);
- }
- else
- {
-  e_pr_str((xe + xa - e_str_len((unsigned char *)text))/2,
-    ya + 2, text, 112, 0, 0, 0, 0);
-  e_pr_str((xe + xa - 4)/2, ya + 4, " OK ", 32, 1, -1, 46, 112);
- }
+ e_error_box_init(&box, &e, len);
+ wpe_box_open(&box);
  do
- {
-#if  MOUSE
-  if ((i = e_toupper(wpe_paint_modal_getch())) == -1)
-  {
-   extern struct mouse e_mouse;
-   i = e_er_mouse(xa+3, ya,(xe+xa-4)/2, ya+4);
-   if (i == 0 && e_mouse.y == ya && e_mouse.x == xe-2)
-    i = WPE_ESC;   /* clicked the title-bar [X] close box -> dismiss */
-  }
-#else
-  i = e_toupper(wpe_paint_modal_getch());
-#endif
-  if (i == WPE_RESIZE)
-  {
-   /* The display drew the desk again at the new size: the cells saved
-      behind the box are the old screen's, so they are dropped, not put
-      back, and the box is drawn again over the new desk. */
-   e_close_view(pic, 0);
-   goto e_error_restart;
-  }
- } while (i != WPE_ESC && i != WPE_CR && i != 'O');
+  i = e_error_read_answer(&box);
+ while (i != WPE_ESC && i != WPE_CR && i != 'O');
  WpeMouseRestoreShape();
- if (pic != NULL) e_close_view(pic, 1);
+ if (box.pic != NULL) e_close_view(box.pic, 1);
  else e_cls(0, ' ');
+ box.pic = NULL;
+ wpe_box_close(&box);
  fk_cursor(1);
  if (sw == 1) e_quit(WpeEditor->f[WpeEditor->mxedt]);
  if (sw > 0) WpeExit(sw);
@@ -599,11 +674,11 @@ e_error_restart:
 /* e_error - public entry to the message box (errors and plain "Message" notes,
    e.g. an LSP action's "No references found", shown right after the action while
    the server may still be streaming).  It runs its own getch loop over a box that
-   pushes no window, so -- like e_opt_kst and WpeHandleSubmenu -- it brackets the
-   async LSP fd-loop's painting with the modal-depth guard, so a server update
-   arriving behind the box cannot draw under it and corrupt it.  A fatal error
-   (sw >= 1) exits from e_error_run and never returns -- fine, the process is going
-   away, so the unbalanced guard never matters. */
+   pushes no window; the box is opened through the layout owner (wpe_box_open),
+   which brackets the async LSP fd-loop's painting with the modal-depth guard, so
+   a server update arriving behind the box cannot draw under it and corrupt it,
+   and lays the box out again when the screen changes size.  A fatal error
+   (sw >= 1) closes its box and exits from e_error_run. */
 int e_error(char *text, int sw, FARBE *f)
 {
  int ret;
@@ -613,12 +688,42 @@ int e_error(char *text, int sw, FARBE *f)
  if (e_emergency_save_running())
   return(sw);
 #endif
- wpe_paint_modal_enter("an error box");
  wpe_test_ctx_enter(WPE_TEST_CTX_MESSAGE, NULL);
  ret = e_error_run(text, sw, f);
  wpe_test_ctx_leave();
- wpe_paint_modal_leave();
  return(ret);
+}
+
+/* The rows of a question box that are not text (its frame, the blanks and
+   the buttons: six) and the two the screen keeps for the menu bar and the
+   status row: the text gets what is left. */
+#define E_MESSAGE_FRAME_ROWS  8
+#define E_MESSAGE_ELLIPSIS    "..."
+
+/**
+ * e_message_fit_rows - Cut the text of a question to the rows the screen has.
+ * @s: the text's lines, as StringToStringArray made them; @anz: their count,
+ * lowered to what fits.
+ *
+ * A path or a command of thousands of characters wraps into more lines than
+ * the screen has rows, and the box then had no room left for its buttons: the
+ * user could only press Esc.  The lines that do not fit are left out and the
+ * last one shown says so with "...", so Yes and No are always on the screen.
+ */
+static void e_message_fit_rows(char **s, int *anz)
+{
+ int room = MAXSLNS - E_MESSAGE_FRAME_ROWS;
+ int i;
+
+ if (room < 1)
+  room = 1;
+ if (*anz <= room)
+  return;
+ for (i = room; i < *anz; i++)
+  FREE(s[i]);
+ FREE(s[room - 1]);
+ s[room - 1] = WpeStrdup(E_MESSAGE_ELLIPSIS);
+ *anz = room;
 }
 
 /*   message with selection        */
@@ -632,6 +737,7 @@ int e_message(int sw, char *str, FENSTER *f)
   return(-1);
 
  s = StringToStringArray(str, &mxlen, 22, &anz);
+ e_message_fit_rows(s, &anz);
 
  o->ye = MAXSLNS - 6;
  o->ya = o->ye - anz - 5;
@@ -1850,6 +1956,7 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
  int h = ye - ya + 1;
 
  if (pic == NULL) return(NULL);
+ wpe_layout_frame_outside(xa, ya, xe, ye, sw);
  pic->a.x = xa;
  pic->a.y = ya;
  pic->e.x = xe;
@@ -3450,60 +3557,183 @@ int e_schr_nchar_wsv(char *str, int x, int y, int n, int max, int col,
 }
 #endif
 
+/* The Ctrl-C box of a long file operation (Remove, Rename, Copy): its frame
+   is the text's width plus E_MESS_FRAME_COLS columns and the lines plus
+   E_MESS_FRAME_ROWS rows.  It keeps E_MESS_INSET rows free next to the menu
+   bar and the status row, and is centred as a box one column narrower, as it
+   has been drawn since 1.5.30a.  The text starts E_MESS_TEXT_COL columns in
+   and E_MESS_TEXT_TOP rows down; below it are the blank row and the "Ctrl C"
+   button row. */
+#define E_MESS_FRAME_COLS  7
+#define E_MESS_FRAME_ROWS  6
+#define E_MESS_INSET       1
+#define E_MESS_TEXT_COL    3
+#define E_MESS_TEXT_TOP    2
+#define E_MESS_TAIL_ROWS   5   /* rows of the frame that are not text */
+#define E_MESS_ELLIPSIS    "..."
+
+/* What the Ctrl-C box's draw hook needs. */
+typedef struct
+{
+ char *header;
+ char **lines;
+ int anz;
+ ECNT *cn;
+ PIC *carry;      /* the background the previous call left on the screen */
+} E_MESS_BOX;
+
+/**
+ * e_mess_take_carry - Use the previous call's background, or give it back.
+ * @box: the box, placed by the owner; @m: its state.
+ *
+ * The box lives across calls, one per file of the operation, and the
+ * caller keeps its saved background in between.  When the box is at the
+ * same place, at the same screen size, it is drawn over itself and the
+ * background is kept; otherwise the old background is put back (a stale one
+ * from before a resize is only freed) and the box takes a new one.
+ */
+static void e_mess_take_carry(WpeBox *box, E_MESS_BOX *m)
+{
+ PIC *c = m->carry;
+
+ m->carry = NULL;
+ if (c == NULL)
+  return;
+ if (c->generation == wpe_layout_generation() && c->a.x == box->at.bx_left &&
+     c->a.y == box->at.bx_top && c->e.x == box->at.bx_right &&
+     c->e.y == box->at.bx_bottom)
+  box->pic = c;
+ else
+  e_close_view(c, 1);
+}
+
+/**
+ * e_mess_box_new_frame - Frame a Ctrl-C box that has no background yet and
+ * draw its button row.
+ * @box: the box; @m: its state.
+ */
+static void e_mess_box_new_frame(WpeBox *box, E_MESS_BOX *m)
+{
+ FARBE *fb = m->cn->fb;
+ int xa = box->at.bx_left, xe = box->at.bx_right, ye = box->at.bx_bottom;
+ int i;
+
+ if (wpe_box_frame(box, m->header, fb->er.fb, fb->et.fb, fb->es.fb) != 0)
+  return;
+ for (i = xa + 1; i < xe; i++)
+ {
+  e_pr_char(i, ye-2, ' ', fb->et.fb);
+  e_pr_char(i, ye-1, ' ', fb->et.fb);
+ }
+ e_pr_str((xe + xa - 6)/2, ye-2, "Ctrl C", fb->nz.fb, -1, -1,
+   fb->ns.fb, fb->nt.fb);
+}
+
+/**
+ * e_mess_box_text_rows - How many text lines the box has room for.
+ */
+static int e_mess_box_text_rows(WpeBox *box, E_MESS_BOX *m)
+{
+ int room = box->at.bx_bottom - box->at.bx_top - E_MESS_TAIL_ROWS;
+
+ return(m->anz < room ? m->anz : room);
+}
+
+/**
+ * e_mess_box_draw - Draw the Ctrl-C box: the operation's header, the file
+ * it is on, and the "Ctrl C" button.
+ * @box: the box, placed by the owner for the screen as it is now.
+ * Return: WPE_BOX_DRAWN.  A box that cannot save its background is still
+ * drawn: the operation goes on.
+ */
+static WpeBoxDrawn e_mess_box_draw(WpeBox *box)
+{
+ E_MESS_BOX *m = box->self;
+ FARBE *fb = m->cn->fb;
+ int xa = box->at.bx_left, ya = box->at.bx_top;
+ int xe = box->at.bx_right, ye = box->at.bx_bottom;
+ int num = e_mess_box_text_rows(box, m);
+ int i, j;
+
+ e_mess_take_carry(box, m);
+ if (box->pic == NULL)
+  e_mess_box_new_frame(box, m);
+ e_std_rahmen(xa, ya, xe, ye, m->header, 1, fb->er.fb, fb->es.fb);
+ for (i = xa + 1; i < xe; i++)
+  e_pr_char(i, ya+1, ' ', fb->er.fb);
+ for (j = 0; j < num; j++)
+ {
+  char *line = (j == num - 1 && num < m->anz) ? E_MESS_ELLIPSIS : m->lines[j];
+
+  e_pr_char(xa+1, ya+E_MESS_TEXT_TOP+j, ' ', fb->et.fb);
+  e_pr_char(xa+2, ya+E_MESS_TEXT_TOP+j, ' ', fb->et.fb);
+  e_pr_str(xa+E_MESS_TEXT_COL, ya+E_MESS_TEXT_TOP+j, line, fb->et.fb, 0, 0, 0, 0);
+  for (i = xa+strlen(line)+E_MESS_TEXT_COL; i < xe; i++)
+   e_pr_char(i, ya+E_MESS_TEXT_TOP+j, ' ', fb->et.fb);
+ }
+ for (j = (num > 0 ? num : 0) + ya + E_MESS_TEXT_TOP; j < ye-2; j++)
+  for (i = xa + 1; i < xe; i++)
+   e_pr_char(i, j, ' ', fb->et.fb);
+ return(WPE_BOX_DRAWN);
+}
+
+/**
+ * e_mess_box_init - Give the Ctrl-C box its rule.
+ * @box: receives the box; @m: its state; @mxlen: the width of the text;
+ * @anz: the number of lines.
+ */
+static void e_mess_box_init(WpeBox *box, E_MESS_BOX *m, int mxlen, int anz)
+{
+ memset(box, 0, sizeof *box);
+ box->what = "the Ctrl-C box";
+ box->self = m;
+ box->draw = e_mess_box_draw;
+ box->place.anchor = WPE_BOX_CENTRED_SCREEN;
+ box->place.w = mxlen + E_MESS_FRAME_COLS;
+ box->place.h = anz + E_MESS_FRAME_ROWS;
+ box->place.inset = E_MESS_INSET;
+ box->place.centre_w = box->place.w - 1;
+ box->place.centre_h = box->place.h;
+}
+
+/**
+ * e_mess_win - Show which file a long operation is on, and take a Ctrl C.
+ * @header: the operation; @str: the file (or files) it is on.
+ * @pic: the box's saved background, kept by the caller between calls.
+ * @f: the current window.
+ * Return: 1 when the user cancelled, else 0.
+ *
+ * The box is opened here and left again before the call returns, so nothing
+ * on the layout owner's stack outlives it; the caller closes the background
+ * it holds in @pic with e_close_view when the operation ends.  A resize
+ * while the box waits for a key is laid out by the owner, which gives the
+ * box the new background.
+ */
 int e_mess_win(char *header, char *str, PIC **pic, FENSTER *f)
 {
- ECNT *cn = f->ed;
- int xa, ya, xe, ye, num, anz = 0, mxlen = 0, i, j;
+ WpeBox box;
+ E_MESS_BOX m;
+ int mxlen = 0, anz = 0, i, key;
  char **s;
 
  s = StringToStringArray(str, &mxlen, strlen(header) + 8, &anz);
-
- ya = (MAXSLNS - anz - 6)/2;
- ye = ya + anz + 5;
- xa = (MAXSCOL - mxlen - 6)/2;
- xe = xa + mxlen + 6;
- if (ya < 2) ya = 2;
- if (ye > MAXSLNS-3) ye = MAXSLNS - 3;
- num = anz;
- if (num > ye - ya - 5)
- {
-  num = ye - ya - 5;
-  strcpy(s[num-1], "...");
- }
-
- if (!(*pic) || (*pic)->e.x != xe || (*pic)->a.x != xa || (*pic)->e.x < xe)
- {
-  *pic = e_change_pic(xa, ya, xe, ye, *pic, 1, cn->fb->er.fb);
-  for (i = xa + 1; i < xe; i++)
-  {
-   e_pr_char(i, ye-2, ' ', cn->fb->et.fb);
-   e_pr_char(i, ye-1, ' ', cn->fb->et.fb);
-  }
-  e_pr_str((xe + xa - 6)/2, ye-2, "Ctrl C", cn->fb->nz.fb, -1, -1,
-    cn->fb->ns.fb, cn->fb->nt.fb);
- }
- e_std_rahmen(xa, ya, xe, ye, header, 1, cn->fb->er.fb, cn->fb->es.fb);
- for (i = xa + 1; i < xe; i++)
-  e_pr_char(i, ya+1, ' ', cn->fb->er.fb);
- for (j = 0; j < num; j++)
- {
-  e_pr_char(xa+1, ya+2+j, ' ', cn->fb->et.fb);
-  e_pr_char(xa+2, ya+2+j, ' ', cn->fb->et.fb);
-  e_pr_str(xa+3, ya+2+j, s[j], cn->fb->et.fb, 0, 0, 0, 0);
-  for (i = xa+strlen(s[j])+3; i < xe; i++)
-   e_pr_char(i, ya+2+j, ' ', cn->fb->et.fb);
- }
- for (j += ya+2; j < ye-2; j++)
-  for (i = xa + 1; i < xe; i++)
-   e_pr_char(i, j, ' ', cn->fb->et.fb);
+ m.header = header;
+ m.lines = s;
+ m.anz = anz;
+ m.cn = f->ed;
+ m.carry = *pic;
+ e_mess_box_init(&box, &m, mxlen, anz);
+ wpe_box_open(&box);
+ e_refresh();
+ e_t_wait_for_enter_on_raw_terminal();
+ key = e_t_drain_keys_after_box(box.at.bx_left, box.at.bx_right, box.at.bx_bottom);
+ e_mouse_flush();
+ *pic = box.pic;
+ wpe_box_close(&box);
  for (i = 0; i < anz; i++)
   FREE(s[i]);
  FREE(s);
- e_refresh();
- e_t_wait_for_enter_on_raw_terminal();
- i = e_t_drain_keys_after_box(xa, xe, ye);
- e_mouse_flush();
- return(i == CtrlC ? 1 : 0);
+ return(key == CtrlC ? 1 : 0);
 }
 
 int e_opt_sec_box(int xa, int ya, int num, OPTK *opt, FENSTER *f, int sw)

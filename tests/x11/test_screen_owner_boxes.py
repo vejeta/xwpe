@@ -93,6 +93,22 @@ def _box_region(without, with_box):
     return (x1, y1 + MENU_BAR_PX, x2, y2 + MENU_BAR_PX)
 
 
+def _box_pixels_differ(under, reopened, closed, region, thresh=40):
+    """How many of the box's own pixels differ between the box drawn again
+    after the resize (`under`) and the box opened at that size
+    (`reopened`).  The box's own pixels are those its opening changed
+    (`reopened` against `closed`); the rest of the region is the desk
+    beside the box, where the windows' scrollbar overlay is still on the
+    window when a box opens but is left off by the full repaint a resize
+    under a box makes, a difference of the overlay and not of the box."""
+    from PIL import ImageChops
+    def mask(a, b):
+        diff = ImageChops.difference(a.crop(region), b.crop(region)).convert("L")
+        return diff.point(lambda p: 255 if p > thresh else 0)
+    both = ImageChops.multiply(mask(reopened, closed), mask(under, reopened))
+    return both.histogram()[255]
+
+
 def _open(xwpe, keys):
     xwpe.key(*keys, delay=0.6)
     _sleep(SETTLE_S)
@@ -142,10 +158,10 @@ def _resize_under(xwpe, box):
     reopened = xwpe.screenshot()
     region = _box_region(closed, reopened)
     assert region is not None, "%s did not open again" % box
-    assert changed_pixels(under.crop(region), reopened.crop(region)) == 0, \
+    differ = _box_pixels_differ(under, reopened, closed, region)
+    assert differ == 0, \
         "%d pixels of %s differ between the box drawn again after the " \
         "resize and the box opened at that size, within %s" \
-        % (changed_pixels(under.crop(region), reopened.crop(region)), box,
-           region)
+        % (differ, box, region)
     xwpe.key("Escape", delay=CLOSE_S)
     assert xwpe.proc.poll() is None, "xwpe died closing %s" % box

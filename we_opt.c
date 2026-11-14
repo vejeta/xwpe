@@ -14,6 +14,7 @@
 #include "we_startcmd.h"
 #include "we_startplan.h"
 #include "we_paint.h"
+#include "we_layout.h"
 #include <ctype.h>
 #include <limits.h>
 #include <sys/types.h>
@@ -137,23 +138,60 @@ static char *e_opt_own_prog[E_OPT_OWN_PROG_KEYS];
    keys a save moved out of the start-folder xwperc. */
 #define E_OPT_MOVE_FAILED_FMT "could not write your own config %s: its assistant settings were not saved"
 
-/* Draws an information box and returns the background it saved, or NULL. */
-typedef PIC *(*e_opt_box_draw)(FENSTER *f);
+/* The About box: its frame, and the column its text is centred on (the
+   frame's width less one, as it was drawn since 1.5.30a). */
+#define E_ABOUT_W        55
+#define E_ABOUT_H        18
+#define E_ABOUT_CENTRE_W (E_ABOUT_W - 1)
+
+/* The System Info box: it keeps this many columns to either side, is never
+   narrower than E_SYS_INFO_MIN_W, and its values start E_SYS_INFO_VALUE_COL
+   columns in with E_SYS_INFO_VALUE_ROOM columns of the frame left of them. */
+#define E_SYS_INFO_SIDE        4
+#define E_SYS_INFO_MIN_W       41
+#define E_SYS_INFO_VALUE_COL   23
+#define E_SYS_INFO_VALUE_ROOM  24
+/* Rows of frame and blanks around the System Info lines. */
+#define E_SYS_INFO_FIXED_ROWS  7
+/* The longest line an information box cuts to fit. */
+#define E_INFO_LINE_MAX        512
+
+/**
+ * e_info_line - Print one line of an information box, cut at its frame.
+ * @box: the open box; @dx: @dy: the line's place from the box's corner;
+ * @text: what to print; @col: its colour.
+ *
+ * A screen too small for the box clips it; a line that would run through
+ * the frame, or below it, is cut or left out, so the frame stays clean and
+ * nothing is written past the box.
+ */
+static void e_info_line(WpeBox *box, int dx, int dy, const char *text, int col)
+{
+ char cut[E_INFO_LINE_MAX];
+ int x = box->at.bx_left + dx;
+ int y = box->at.bx_top + dy;
+ int room = box->at.bx_right - x;
+
+ if (y >= box->at.bx_bottom || room <= 0)
+  return;
+ if ((int)strlen(text) > room)
+ {
+  snprintf(cut, sizeof cut, "%.*s", room, text);
+  text = cut;
+ }
+ e_pr_str(x, y, (char *)text, col, 0, 0, 0, 0);
+}
 
 /**
  * e_opt_box_wait_key - Hold an information box until the user presses a key.
- * @pic: the box's saved background, replaced when the box is drawn again;
- * @draw: draws the box; @f: the current window.
+ * @box: the open box.
  *
  * The About box and the System Info box stay until a key.  A resize is not
- * that key: the display has already drawn the desk at the new size, so the
- * background saved before it is dropped, never put back, and the box is
- * drawn again over the new desk.  While the box waits, what arrives from
- * the loop waits for it.
- * Return: the key, or WPE_ESC when the box could not be drawn again (*@pic
- * is then NULL).
+ * that key: the owner has already laid the desk and the box out again at the
+ * new size.  While the box waits, what arrives from the loop waits for it.
+ * Return: the key, or WPE_ESC when the owner could not draw the box again.
  */
-static int e_opt_box_wait_key(PIC **pic, e_opt_box_draw draw, FENSTER *f)
+static int e_opt_box_wait_key(WpeBox *box)
 {
  int c;
 
@@ -161,11 +199,9 @@ static int e_opt_box_wait_key(PIC **pic, e_opt_box_draw draw, FENSTER *f)
  while (e_mshit() != 0)
   ;
 #endif
- while ((c = wpe_paint_modal_getch()) == WPE_RESIZE)
+ while ((c = wpe_box_getch(box)) == WPE_RESIZE)
  {
-  e_close_view(*pic, 0);
-  *pic = draw(f);
-  if (*pic == NULL)
+  if (box->pic == NULL)
    return(WPE_ESC);
  }
 #if  MOUSE
@@ -177,72 +213,91 @@ static int e_opt_box_wait_key(PIC **pic, e_opt_box_draw draw, FENSTER *f)
 
 /**
  * e_opt_box_show - Show an information box until a key, then take it away.
- * @draw: draws the box; @f: the current window.
+ * @box: the box, with its rule and its draw hook; it is opened here.
+ * @f: the current window.
  * Return: 0, or WPE_ESC when there was no memory for the box.
  */
-static int e_opt_box_show(e_opt_box_draw draw, FENSTER *f)
+static int e_opt_box_show(WpeBox *box, FENSTER *f)
 {
- PIC *pic;
-
  fk_cursor(0);
- pic = draw(f);
- if (pic == NULL)
+ if (wpe_box_open(box) != WPE_BOX_DRAWN)
  {
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
   return(WPE_ESC);
  }
  wpe_test_ctx_enter(WPE_TEST_CTX_MESSAGE, NULL);
- e_opt_box_wait_key(&pic, draw, f);
+ e_opt_box_wait_key(box);
  wpe_test_ctx_leave();
- if (pic != NULL)
-  e_close_view(pic, 1);
+ if (box->pic != NULL)
+  e_close_view(box->pic, 1);
+ box->pic = NULL;
+ wpe_box_close(box);
  return(0);
+}
+
+/**
+ * e_opt_info_box_init - Set up an information box centred on the screen.
+ * @box: receives the box; @what: its name for the trace; @draw: its draw
+ * hook; @w: @h: its size, frame included; @f: the current window.
+ */
+static void e_opt_info_box_init(WpeBox *box, const char *what, WpeBoxDraw draw,
+                                int w, int h, FENSTER *f)
+{
+ memset(box, 0, sizeof *box);
+ box->what = what;
+ box->draw = draw;
+ box->self = f;
+ box->place.anchor = WPE_BOX_CENTRED_SCREEN;
+ box->place.w = w;
+ box->place.h = h;
 }
 
 /**
  * e_about_box_draw - Draw the About box: the program, its version, who
  * wrote and keeps it, and its licence.
- * @f: the current window.
- * Return: the background the box saved, or NULL when there is no memory.
+ * @box: the box, placed by the owner.
+ * Return: WPE_BOX_DRAWN, or WPE_BOX_NO_MEMORY.
  */
-static PIC *e_about_box_draw(FENSTER *f)
+static WpeBoxDrawn e_about_box_draw(WpeBox *box)
 {
- PIC *pic = NULL;
- int xa = 8, ya = 3, xe = xa + 54, ye = ya + 17;
+ FENSTER *f = box->self;
  char tmp[60];
 
- pic = e_std_kst(xa, ya, xe, ye, NULL, 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
- if (pic == NULL)
-  return(NULL);
+ if (wpe_box_frame(box, NULL, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb) != 0)
+  return(WPE_BOX_NO_MEMORY);
 
  sprintf(tmp, "Version %s", VERSION);
 #ifdef UNIX
  if (WpeIsXwin() && WpeIsProg())
-  e_pr_str(xa+9, ya+2, "XWindow Programming Environment", f->fb->et.fb, 0, 0, 0, 0);
+  e_info_line(box, 9, 2, "XWindow Programming Environment", f->fb->et.fb);
  else if (WpeIsProg())
-  e_pr_str(xa+10, ya+2, "Window Programming Environment", f->fb->et.fb, 0, 0, 0, 0);
+  e_info_line(box, 10, 2, "Window Programming Environment", f->fb->et.fb);
  else if (WpeIsXwin())
-  e_pr_str(xa+15, ya+2, "XWindow Editor", f->fb->et.fb, 0, 0, 0, 0);
+  e_info_line(box, 15, 2, "XWindow Editor", f->fb->et.fb);
  else
 #endif
-  e_pr_str(xa+17, ya+2, "Window Editor", f->fb->et.fb, 0, 0, 0, 0);
- e_pr_str(xa + (54 - strlen(tmp)) / 2, ya+3, tmp, f->fb->et.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+5, "Created by Fred Kruse, 1993", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+6, "Continued by Dennis Payne, 2000-2006", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+7, "Maintained by Juan Manuel Mendez Rey, 2026", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+8, "https://codeberg.org/mendezr/xwpe", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+10, "Copyright (C) 1993-2026", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+11, "This software comes with ABSOLUTELY NO WARRANTY;", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+12, "This is free software, and you are welcome to", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+13, "redistribute it under certain conditions;", f->fb->nt.fb, 0, 0, 0, 0);
- e_pr_str(xa+2, ya+14, "See 'Help\\Editor\\GNU Pub...' for details.", f->fb->nt.fb, 0, 0, 0, 0);
- return(pic);
+  e_info_line(box, 17, 2, "Window Editor", f->fb->et.fb);
+ e_info_line(box, (E_ABOUT_CENTRE_W - (int)strlen(tmp)) / 2, 3, tmp, f->fb->et.fb);
+ e_info_line(box, 2, 5, "Created by Fred Kruse, 1993", f->fb->nt.fb);
+ e_info_line(box, 2, 6, "Continued by Dennis Payne, 2000-2006", f->fb->nt.fb);
+ e_info_line(box, 2, 7, "Maintained by Juan Manuel Mendez Rey, 2026", f->fb->nt.fb);
+ e_info_line(box, 2, 8, "https://codeberg.org/mendezr/xwpe", f->fb->nt.fb);
+ e_info_line(box, 2, 10, "Copyright (C) 1993-2026", f->fb->nt.fb);
+ e_info_line(box, 2, 11, "This software comes with ABSOLUTELY NO WARRANTY;", f->fb->nt.fb);
+ e_info_line(box, 2, 12, "This is free software, and you are welcome to", f->fb->nt.fb);
+ e_info_line(box, 2, 13, "redistribute it under certain conditions;", f->fb->nt.fb);
+ e_info_line(box, 2, 14, "See 'Help\\Editor\\GNU Pub...' for details.", f->fb->nt.fb);
+ return(WPE_BOX_DRAWN);
 }
 
 /*    About WE      */
 int e_about_WE(FENSTER *f)
 {
- return(e_opt_box_show(e_about_box_draw, f));
+ WpeBox box;
+
+ e_opt_info_box_init(&box, "the About box", e_about_box_draw,
+                     E_ABOUT_W, E_ABOUT_H, f);
+ return(e_opt_box_show(&box, f));
 }
 
 /*    delete everything    */
@@ -339,57 +394,100 @@ int e_repaint_desk(FENSTER *f)
 
 /*    write system information   */
 /**
- * e_pr_text - Print a plain string at (x, y) in a single color.
- * @x:   Screen column.
- * @y:   Screen row.
- * @str: The string to display.
- * @col: Color attribute (FARBE index).
+ * e_info_wrap - Print a string over as many lines as it needs, in a box.
+ * @box: the open box; @dx: @dy: the first line's place from its corner;
+ * @str: the string; @width: the most characters of a line; @col: colour.
  *
- * Convenience wrapper around e_pr_str() for the common case where
- * no highlighting, shadow, or button styling is needed (the last 4
- * arguments are all 0).
+ * A path longer than the box is wide goes on the next row, as the System
+ * Info box has always shown it; the rows the box has no room for are left
+ * out (e_info_line cuts them at the frame).
+ * Return: the rows the string takes (at least one).
  */
-static void e_pr_text(int x, int y, char *str, int col)
+static int e_info_wrap(WpeBox *box, int dx, int dy, const char *str, int width,
+                       int col)
 {
- e_pr_str(x, y, str, col, 0, 0, 0, 0);
-}
-
-/**
- * e_pr_str_wrap - Print a string with word-wrap across multiple lines.
- * @x:      Screen column to start printing on each line.
- * @y:      Screen row of the first line.
- * @str:    The string to display.
- * @width:  Maximum characters per line.
- * @col:    Color attribute (FARBE index) for the text.
- *
- * Prints @str starting at (@x, @y).  If the string is longer than
- * @width, it continues on the next row at column @x.
- *
- * Return: Number of rows used (1 if no wrap needed).
- */
-static int e_pr_str_wrap(int x, int y, char *str, int width, int col)
-{
- char buf[512];
+ char buf[E_INFO_LINE_MAX];
  int len = strlen(str);
  int rows = 0;
  int pos = 0;
 
- if (width <= 0) return(0);
+ if (width <= 0)
+  return(0);
  while (pos < len)
  {
   int chunk = len - pos;
-  if (chunk > width) chunk = width;
-  if (chunk > 511) chunk = 511;
-  strncpy(buf, str + pos, chunk);
-  buf[chunk] = '\0';
-  e_pr_text(x, y + rows, buf, col);
+
+  if (chunk > width)
+   chunk = width;
+  if (chunk > E_INFO_LINE_MAX - 1)
+   chunk = E_INFO_LINE_MAX - 1;
+  snprintf(buf, sizeof buf, "%.*s", chunk, str + pos);
+  e_info_line(box, dx, dy + rows, buf, col);
   pos += chunk;
   rows++;
  }
  return(rows > 0 ? rows : 1);
 }
 
-static PIC *e_sys_info_box_draw(FENSTER *f);   /* (below) */
+/**
+ * e_sys_info_rows - How many rows the file and the directory take.
+ * @f: the current window; @avail: the characters a value line holds.
+ * @file_rows: @dir_rows: receive the counts.
+ * @shown: receives the path the file line shows (@buf holds it when it is
+ * the full path); @buf: @size: room for it.
+ */
+static void e_sys_info_rows(FENSTER *f, int avail, int *file_rows, int *dir_rows,
+                            const char **shown, char *buf, size_t size)
+{
+ if (strcmp(f->datnam, "Clipboard") != 0 && strcmp(f->dirct, f->ed->dirct) != 0)
+ {
+  snprintf(buf, size, "%s%s%s", f->dirct, DIRS, f->datnam);
+  *shown = buf;
+ }
+ else
+  *shown = f->datnam;
+ if (avail < 1)
+  avail = 1;
+ *file_rows = ((int)strlen(*shown) + avail - 1) / avail;
+ if (*file_rows < 1)
+  *file_rows = 1;
+ *dir_rows = ((int)strlen(f->ed->dirct) + avail - 1) / avail;
+ if (*dir_rows < 1)
+  *dir_rows = 1;
+}
+
+/**
+ * e_sys_info_width - The width of the System Info box on this screen.
+ *
+ * Most of the screen, with E_SYS_INFO_SIDE columns left to either side.
+ */
+static int e_sys_info_width(void)
+{
+ int w = MAXSCOL - 2 * E_SYS_INFO_SIDE;
+
+ return(w < E_SYS_INFO_MIN_W ? E_SYS_INFO_MIN_W : w);
+}
+
+/**
+ * e_sys_info_refresh - Fit the System Info box to the screen and its text.
+ * @box: the box; its size follows the width of the screen and the length of
+ * the paths, so a resize lays out the lines again.
+ */
+static void e_sys_info_refresh(WpeBox *box)
+{
+ FENSTER *f = box->self;
+ char tmp[E_INFO_LINE_MAX];
+ const char *shown;
+ int w = e_sys_info_width();
+ int file_rows, dir_rows;
+
+ e_sys_info_rows(f, w - 1 - E_SYS_INFO_VALUE_ROOM, &file_rows, &dir_rows,
+                 &shown, tmp, sizeof tmp);
+ box->place.w = w;
+ box->place.h = E_SYS_INFO_FIXED_ROWS + file_rows + dir_rows;
+}
+
+static WpeBoxDrawn e_sys_info_box_draw(WpeBox *box);   /* (below) */
 
 /**
  * e_sys_info - Display the System Information dialog.
@@ -408,72 +506,49 @@ static PIC *e_sys_info_box_draw(FENSTER *f);   /* (below) */
  */
 int e_sys_info(FENSTER *f)
 {
- return(e_opt_box_show(e_sys_info_box_draw, f));
+ WpeBox box;
+
+ e_opt_info_box_init(&box, "the System Info box", e_sys_info_box_draw,
+                     E_SYS_INFO_MIN_W, E_SYS_INFO_FIXED_ROWS + 2, f);
+ box.refresh = e_sys_info_refresh;
+ return(e_opt_box_show(&box, f));
 }
 
 /**
- * e_sys_info_box_draw - Draw the System Information box at the present
- * screen size.
- * @f: the current window.
- * Return: the background the box saved, or NULL when there is no memory.
+ * e_sys_info_box_draw - Draw the System Information box where the owner
+ * placed it, for the screen as it is now.
+ * @box: the box.
+ * Return: WPE_BOX_DRAWN, or WPE_BOX_NO_MEMORY.
  */
-static PIC *e_sys_info_box_draw(FENSTER *f)
+static WpeBoxDrawn e_sys_info_box_draw(WpeBox *box)
 {
- PIC *pic = NULL;
- char tmp[512];
- char *filepath;
- int xa = 4, ya = 3, xe, ye;
- int avail, file_rows, dir_rows, row;
+ FENSTER *f = box->self;
+ char tmp[E_INFO_LINE_MAX];
+ const char *filepath;
+ int avail = box->at.bx_right - box->at.bx_left - E_SYS_INFO_VALUE_ROOM;
+ int file_rows, dir_rows, row = 2;
+ int col = f->fb->nt.fb;
 
- /* Use most of the screen width */
- xe = MAXSCOL - 4;
- if (xe < xa + 40) xe = xa + 40;
- avail = xe - xa - 24;  /* chars available for content values */
+ if (wpe_box_frame(box, " Information ", f->fb->nr.fb, f->fb->nt.fb,
+                   f->fb->ne.fb) != 0)
+  return(WPE_BOX_NO_MEMORY);
+ e_sys_info_rows(f, avail, &file_rows, &dir_rows, &filepath, tmp, sizeof tmp);
 
- /* Determine what to show for Current File */
- if (strcmp(f->datnam, "Clipboard") != 0 &&
-     strcmp(f->dirct, f->ed->dirct) != 0)
- {
-  snprintf(tmp, sizeof(tmp), "%s%s%s", f->dirct, DIRS, f->datnam);
-  filepath = tmp;
- }
- else
-  filepath = f->datnam;
-
- /* Calculate rows needed for wrapping */
- file_rows = ((int)strlen(filepath) + avail - 1) / avail;
- if (file_rows < 1) file_rows = 1;
- dir_rows = ((int)strlen(f->ed->dirct) + avail - 1) / avail;
- if (dir_rows < 1) dir_rows = 1;
-
- /* Dialog height: 2 margin + file label + file rows + gap + dir label +
-    dir rows + gap + numfiles row + 2 margin */
- ye = ya + 4 + file_rows + dir_rows + 2;
- if (ye > MAXSLNS - 2) ye = MAXSLNS - 2;
-
- pic = e_std_kst(xa, ya, xe, ye, " Information ", 1, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb);
- if (pic == NULL)
-  return(NULL);
-
- row = ya + 2;
- { int col = f->fb->nt.fb;
-
- e_pr_text(xa+3, row, " Current File: ", col);
+ e_info_line(box, 3, row, " Current File: ", col);
  if (strcmp(f->datnam, "Clipboard") != 0)
-  row += e_pr_str_wrap(xa+23, row, filepath, avail, col);
+  row += e_info_wrap(box, E_SYS_INFO_VALUE_COL, row, filepath, avail, col);
  else
   row++;
  row++;
 
- e_pr_text(xa+3, row, " Current Directory: ", col);
- row += e_pr_str_wrap(xa+23, row, f->ed->dirct, avail, col);
+ e_info_line(box, 3, row, " Current Directory: ", col);
+ row += e_info_wrap(box, E_SYS_INFO_VALUE_COL, row, f->ed->dirct, avail, col);
  row++;
 
- e_pr_text(xa+3, row, " Number of Files: ", col);
- e_pr_text(xa+23, row,
+ e_info_line(box, 3, row, " Number of Files: ", col);
+ e_info_line(box, E_SYS_INFO_VALUE_COL, row,
    WpeNumberToString(f->ed->mxedt, WpeNumberOfPlaces(f->ed->mxedt), tmp), col);
- }
- return(pic);
+ return(WPE_BOX_DRAWN);
 }
 
 /*   color adjustments  */
@@ -2962,6 +3037,24 @@ static int e_opt_getch(void)
  return c;
 }
 
+/**
+ * e_opt_box_follow - Tell the layout owner where the user put the dialog.
+ * @o: the dialog, after it was moved (the keyboard mover, the mouse drag).
+ *
+ * The dialog keeps its new place when something floats over it and goes
+ * away (the owner redraws it there), and the owner holds the background the
+ * move saved, so a resize drops the right one.  A resize centres it again.
+ */
+void e_opt_box_follow(W_OPTSTR *o)
+{
+ WpeBox *box = o->box;
+
+ if (box == NULL)
+  return;
+ box->pic = o->pic;
+ wpe_box_move(box, o->xa - box->at.bx_left, o->ya - box->at.bx_top);
+}
+
 int e_opt_move(W_OPTSTR *o)
 {
  int xa = o->xa, ya = o->ya, xe = o->xe, ye = o->ye;
@@ -2972,6 +3065,12 @@ int e_opt_move(W_OPTSTR *o)
  {
   switch(c)
   {
+   case WPE_RESIZE:
+    /* The owner laid the dialog out again at the new size: the move goes
+       on from there. */
+    xa = o->xa; ya = o->ya; xe = o->xe; ye = o->ye;
+    e_std_rahmen(o->xa, o->ya, o->xe, o->ye, o->name, 0, o->frt, o->frs);
+    break;
    case CLE:
     if (xa > 0) {  xa--; xe--;  }
     break;
@@ -2993,6 +3092,7 @@ int e_opt_move(W_OPTSTR *o)
    o->xe = xe;
    o->ye = ye;
    o->pic = e_change_pic(o->xa, o->ya, o->xe, o->ye, o->pic, 1, o->frt);
+   e_opt_box_follow(o);
    if (o->pic == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, o->f->fb);
    if (snap != NULL)
@@ -3191,24 +3291,26 @@ int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o)
    return(!ret ? c : ret);
 }
 
-static void e_opt_center_dialog(W_OPTSTR *o, int dlg_w, int dlg_h)
+/* The window kind of a docked tool or output pane (AI, Messages). */
+#define E_OPT_PANE_INS 8
+
+/**
+ * e_opt_box_refresh - Tell the layout owner which window the dialog sits on.
+ * @box: the dialog's box.
+ *
+ * Called before every placement, so the dialog is centred on the window that
+ * is under it now, after the windows were laid out for a new screen size.  A
+ * tool or output pane is a small docked strip; a dialog centred on it lands
+ * squashed in a corner (and, when it is the pane the user just used,
+ * unusable), so the owner centres such dialogs on the whole screen.
+ */
+static void e_opt_box_refresh(WpeBox *box)
 {
+   W_OPTSTR *o = box->self;
    FENSTER *ef = o->f->ed->f[o->f->ed->mxedt];
-   int bx = ef->a.x, by = ef->a.y, bex = ef->e.x, bey = ef->e.y;
-   /* A tool/output pane (AI, Messages -- ins == 8) is a small docked strip; a
-      dialog centred on it lands squashed in a corner (and, when it is the pane
-      the user just used, unusable).  Centre such dialogs on the whole screen. */
-   if (ef->ins == 8) { bx = 0; by = 1; bex = MAXSCOL - 1; bey = MAXSLNS - 2; }
-   o->xa = bx + (bex - bx - dlg_w) / 2;
-   o->ya = by + (bey - by - dlg_h) / 2;
-   if (o->xa < 0) o->xa = 0;
-   if (o->ya < 1) o->ya = 1;
-   o->xe = o->xa + dlg_w;
-   o->ye = o->ya + dlg_h;
-   if (o->xe >= MAXSCOL) o->xe = MAXSCOL - 1;
-   if (o->ye >= MAXSLNS - 1) o->ye = MAXSLNS - 2;
-   if (o->xa >= o->xe - 4) o->xa = 0;
-   if (o->ya >= o->ye - 2) o->ya = 1;
+
+   wpe_box_within(&box->place, ef->a.x, ef->a.y, ef->e.x, ef->e.y,
+                  ef->ins == E_OPT_PANE_INS);
 }
 
 /**
@@ -3405,6 +3507,8 @@ static void e_opt_draw_marks(W_OPTSTR *o)
  for (i = 0; i < o->sn; i++)
  {
   W_O_SSWSTR *s = o->sstr[i];
+  if (!e_opt_element_visible(o, s->x, s->y, e_opt_glyph_hit_width(s->header)))
+   continue;          /* the box is cut there: no widget, so no mark */
   if (s->num)
    e_pr_char(o->xa + s->x + 1, o->ya + s->y, 'X', o->fst);
   else
@@ -3415,6 +3519,8 @@ static void e_opt_draw_marks(W_OPTSTR *o)
   for (j = 0; j < o->pstr[i]->np; j++)
   {
    W_O_SPSWSTR *p = o->pstr[i]->ps[j];
+   if (!e_opt_element_visible(o, p->x, p->y, e_opt_glyph_hit_width(p->header)))
+    continue;         /* the box is cut there: no widget, so no mark */
    if (o->pstr[i]->num == j)
     e_pr_char(o->xa + p->x + 1, o->ya + p->y, '*', o->fst);
    else
@@ -3909,19 +4015,66 @@ static int e_opt_is_move_key(W_OPTSTR *o, int c)
 }
 
 /**
- * e_opt_prepare_restart - Tear the box down for a from-scratch redraw.
+ * e_opt_box_draw - Draw the dialog where the layout owner placed it.
+ * @box: the dialog's box.
  *
- * After a terminal resize, or when a button's action floated a picker over
- * the dialog, the box is drawn again from the top of e_opt_kst_run.  The
- * focus goes to the first widget (c == 0 lets the layout pick it) and in
- * FOCUS mode: a redraw is not a click, so the widget it lands on is
- * highlighted, never toggled -- a resize used to flip the first checkbox.
+ * The owner calls this when the dialog opens, after a resize (it places the
+ * dialog by its rule for the new screen first) and when a picker that floated
+ * over the dialog has gone.  The frame, the widgets and their marks are all
+ * painted from the dialog's own state, so what the user typed is kept.
+ * Return: WPE_BOX_DRAWN, or WPE_BOX_NO_MEMORY.
  */
-static void e_opt_prepare_restart(W_OPTSTR *o, struct opt_run *r)
+static WpeBoxDrawn e_opt_box_draw(WpeBox *box)
 {
- e_close_view(o->pic, 0);
- o->pic = NULL;
- r->c = 0;
+ W_OPTSTR *o = box->self;
+
+ o->xa = box->at.bx_left;
+ o->ya = box->at.bx_top;
+ o->xe = box->at.bx_right;
+ o->ye = box->at.bx_bottom;
+ if (wpe_box_frame(box, o->name, o->frt, o->ftt, o->frs) != 0)
+ {
+  o->pic = NULL;
+  return(WPE_BOX_NO_MEMORY);
+ }
+ o->pic = box->pic;
+ e_opt_draw_widgets(o);
+ e_opt_draw_marks(o);
+ return(WPE_BOX_DRAWN);
+}
+
+/**
+ * e_opt_box_init - Give the dialog its placement rule and its draw hook.
+ * @o: the dialog, with the size its author gave it in xa..ye.
+ * @box: receives the box.
+ *
+ * The dialog is centred on the window under it, as it has been since 1.5.30a.
+ */
+static void e_opt_box_init(W_OPTSTR *o, WpeBox *box)
+{
+ memset(box, 0, sizeof *box);
+ box->what = "a dialog";
+ box->self = o;
+ box->draw = e_opt_box_draw;
+ box->refresh = e_opt_box_refresh;
+ box->place.anchor = WPE_BOX_CENTRED_WINDOW;
+ box->place.w = o->xe - o->xa + 1;
+ box->place.h = o->ye - o->ya + 1;
+ o->box = box;
+}
+
+/**
+ * e_opt_refocus_first - Put the focus on the dialog's first widget.
+ *
+ * After a resize, or when a picker floated over the dialog, the focus goes
+ * to the first widget (c == 0 lets the layout pick it) and in FOCUS mode:
+ * a redraw is not a click, so the widget it lands on is highlighted, never
+ * toggled -- a resize used to flip the first checkbox.
+ */
+static void e_opt_refocus_first(W_OPTSTR *o, struct opt_run *r)
+{
+ r->c = e_get_opt_sw(CDO, 0, 0, o);
+ r->cold = r->c;
  r->sw = OPT_FOCUS;
 }
 
@@ -3930,7 +4083,7 @@ static void e_opt_prepare_restart(W_OPTSTR *o, struct opt_run *r)
  *
  * When the frame had to be clipped, nothing in it is safe to operate, so
  * every key is swallowed until the user gives up (Esc) or the terminal grows
- * (a resize, after which the box is laid out again).
+ * (a resize, after which the owner has laid the box out again).
  */
 static int e_opt_wait_esc_or_resize(void)
 {
@@ -3943,47 +4096,98 @@ static int e_opt_wait_esc_or_resize(void)
 }
 
 /**
+ * e_opt_hold_clipped - Hold the dialog while the screen is too small for it.
+ * @o: the dialog; @box: its box; @r: the loop's state.
+ *
+ * A dialog the frame of which was cut shows no widget that could be
+ * operated, so the keys are swallowed until the user gives up (Esc, the
+ * answer is then WPE_ESC) or the screen is made big enough, when the dialog
+ * is whole again with the focus on its first widget.
+ * Return: WPE_ESC when the user gave up, else 0.
+ */
+static int e_opt_hold_clipped(W_OPTSTR *o, WpeBox *box, struct opt_run *r)
+{
+ while (!box->fits)
+ {
+  if (e_opt_wait_esc_or_resize() == WPE_ESC)
+   return(WPE_ESC);
+ }
+ e_opt_refocus_first(o, r);
+ return(0);
+}
+
+/**
+ * e_opt_after_resize - The owner laid the dialog out again: go on.
+ * @o: the dialog; @box: its box; @r: the loop's state.
+ *
+ * The owner has placed the dialog for the new screen and drawn its frame
+ * and widgets; what a field held while the key arrived is drawn again here,
+ * and the focus goes to the first widget.
+ * Return: WPE_ESC when the new screen is too small and the user gave up.
+ */
+static int e_opt_after_resize(W_OPTSTR *o, WpeBox *box, struct opt_run *r)
+{
+ e_opt_draw_widgets(o);
+ e_opt_refocus_first(o, r);
+ if (!box->fits)
+  return(e_opt_hold_clipped(o, box, r));
+ return(0);
+}
+
+/**
+ * e_opt_redraw_in_place - Draw the dialog again where it stands.
+ * @o: the dialog; @box: its box; @r: the loop's state.
+ *
+ * A button's action floated a picker over the dialog and the picker's own
+ * restore cannot rebuild the dialog under it; the owner draws the dialog
+ * again at the place the user left it, without centring it anew.
+ * Return: WPE_BOX_DRAWN, or WPE_BOX_NO_MEMORY.
+ */
+static WpeBoxDrawn e_opt_redraw_in_place(W_OPTSTR *o, WpeBox *box, struct opt_run *r)
+{
+ WpeBoxDrawn drawn = wpe_box_redraw(box);
+
+ e_opt_refocus_first(o, r);
+ return(drawn);
+}
+
+/**
  * e_opt_close - Take the box off the screen and give the editor back.
  */
-static void e_opt_close(W_OPTSTR *o)
+static void e_opt_close(W_OPTSTR *o, WpeBox *box)
 {
- e_close_view(o->pic, 1);
+ e_close_view(box->pic, 1);
+ box->pic = NULL;
+ o->pic = NULL;
+ o->box = NULL;
  e_mouse_flush();
  e_repaint_desk_nopic(o->f->ed->f[o->f->ed->mxedt]);
+ wpe_box_close(box);
 }
 
 static int e_opt_kst_run(W_OPTSTR *o)
 {
    struct opt_run r;
-   int i, j, keep_pos = 0;
-   int dlg_w = o->xe - o->xa;
-   int dlg_h = o->ye - o->ya;
+   WpeBox box;
+   int i, j;
 
    r.c = o->bgsw;
    r.cold = 0;
    r.sw = OPT_FOCUS;
    r.ret = 0;
    fk_cursor(0);
-e_opt_kst_restart:
-   /* Keep a user-dragged position across an in-place repaint (a picker button
-      that returns -1, e.g. Alt-M / Alt-V): centre only on the first layout and
-      on a screen resize, not on every restart -- otherwise the dialog jumps back
-      to centre and forgets where the user moved it. */
-   if (!keep_pos) e_opt_center_dialog(o, dlg_w, dlg_h);
-   keep_pos = 0;
-   o->pic = e_std_kst(o->xa, o->ya, o->xe, o->ye, o->name, 1, o->frt, o->ftt, o->frs);
-   if(o->pic == NULL) {  e_error(e_msg[ERR_LOWMEM], 0, o->f->fb); return(-1);  }
-   if(!r.c) r.c = e_get_opt_sw(CDO, 0, 0, o);
-   e_opt_draw_widgets(o);
-   r.cold = r.c;
-   if (o->xe - o->xa < dlg_w || o->ye - o->ya < dlg_h)
+   e_opt_box_init(o, &box);
+   if (wpe_box_open(&box) != WPE_BOX_DRAWN)
    {
-      if (e_opt_wait_esc_or_resize() == WPE_RESIZE)
-      {
-         e_opt_prepare_restart(o, &r);
-         goto e_opt_kst_restart;
-      }
-      e_opt_close(o);
+      o->box = NULL;
+      e_error(e_msg[ERR_LOWMEM], 0, o->f->fb);
+      return(-1);
+   }
+   if(!r.c) r.c = e_get_opt_sw(CDO, 0, 0, o);
+   r.cold = r.c;
+   if (!box.fits && e_opt_hold_clipped(o, &box, &r) == WPE_ESC)
+   {
+      e_opt_close(o, &box);
       return(WPE_ESC);
    }
    /* The loop ends on Esc in activate mode only: Esc in focus mode names the
@@ -3992,8 +4196,12 @@ e_opt_kst_restart:
    {
       if (r.c == WPE_RESIZE)
       {
-         e_opt_prepare_restart(o, &r);
-         goto e_opt_kst_restart;
+         if (e_opt_after_resize(o, &box, &r) == WPE_ESC)
+         {
+            e_opt_close(o, &box);
+            return(WPE_ESC);
+         }
+         continue;
       }
       e_opt_draw_marks(o);
       if (e_opt_is_move_key(o, r.c))
@@ -4030,23 +4238,28 @@ e_opt_kst_restart:
       {
          if (e_opt_run_button(o, &r, i) == OPT_RESTART)
          {
-            e_opt_prepare_restart(o, &r);
-            keep_pos = 1;   /* in-place repaint: keep the dragged position */
-            goto e_opt_kst_restart;
+            /* In place: the dialog keeps the position the user gave it. */
+            if (e_opt_redraw_in_place(o, &box, &r) != WPE_BOX_DRAWN)
+            {
+               e_error(e_msg[ERR_LOWMEM], 0, o->f->fb);
+               e_opt_close(o, &box);
+               return(-1);
+            }
          }
          continue;
       }
       e_opt_refocus(&r);
    }
-   e_opt_close(o);
+   e_opt_close(o, &box);
    return(r.ret);
 }
 
 /* e_opt_kst - public entry to the modal dialog/picker/menu engine.  The box
    owns the screen for its whole lifetime, so program output, a stop, a reply or
    a server update arriving mid-dialog waits for it to close instead of drawing
-   under it.  This box pushes no window onto the editor stack, so it tells the
-   screen's owner (we_paint.c) instead. */
+   under it.  This box pushes no window onto the editor stack; the layout owner
+   (wpe_box_open) tells the screen's owner (we_paint.c) and lays the box out
+   again when the screen changes size. */
 static int e_opt_kst_as(W_OPTSTR *o, WpeTestCtx kind);
 
 int e_opt_kst(W_OPTSTR *o)
@@ -4074,11 +4287,9 @@ int e_opt_kst_message(W_OPTSTR *o)
 static int e_opt_kst_as(W_OPTSTR *o, WpeTestCtx kind)
 {
    int ret;
-   wpe_paint_modal_enter("a dialog");
    wpe_test_ctx_enter(kind, o->name);
    ret = e_opt_kst_run(o);
    wpe_test_ctx_leave();
-   wpe_paint_modal_leave();
    return(ret);
 }
 

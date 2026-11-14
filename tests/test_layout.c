@@ -391,14 +391,217 @@ static void test_the_walk_without_a_graphical_display(void)
 	wpe_box_close(&a);
 }
 
+/* ---- the boxes that moved onto the owner keep their corners ---- */
+
+#define LEGACY_ERROR_MIN_TEXT 20
+
+/* The error box's corners as the dialog code drew them in 1.5.30a. */
+static void legacy_error_box(int scol, int slns, int len, int *xa, int *ya,
+                             int *xe, int *ye)
+{
+	if (len < LEGACY_ERROR_MIN_TEXT)
+		len = LEGACY_ERROR_MIN_TEXT;
+	*xa = (scol - len) / 2 - 2;
+	*xe = *xa + len + 4;
+	*ya = (slns - 6) / 2;
+	*ye = *ya + 6;
+	if (*xa < 0) *xa = 0;
+	if (*xe >= scol) *xe = scol - 1;
+	if (*ya < 1) *ya = 1;
+	if (*ye >= slns - 1) *ye = slns - 2;
+}
+
+/* The Ctrl-C box's corners as the file operations drew them. */
+static void legacy_ctrl_c_box(int scol, int slns, int mxlen, int anz,
+                              int *xa, int *ya, int *xe, int *ye)
+{
+	*ya = (slns - anz - 6) / 2;
+	*ye = *ya + anz + 5;
+	*xa = (scol - mxlen - 6) / 2;
+	*xe = *xa + mxlen + 6;
+	if (*ya < 2) *ya = 2;
+	if (*ye > slns - 3) *ye = slns - 3;
+}
+
+static void test_error_and_ctrl_c_boxes_keep_their_corners(void)
+{
+	int scol, slns, len, anz, xa, ya, xe, ye, fits;
+	WpeBoxPlace p;
+	WpeBoxRect at;
+	char what[96];
+
+	for (scol = 30; scol <= 200; scol += 7) {
+		for (slns = 6; slns <= 60; slns++) {
+			for (len = 0; len <= scol; len += 11) {
+				legacy_error_box(scol, slns, len, &xa, &ya, &xe, &ye);
+				p = rule(WPE_BOX_CENTRED_SCREEN,
+				         (len < LEGACY_ERROR_MIN_TEXT ? LEGACY_ERROR_MIN_TEXT : len) + 5,
+				         7, 0, 0);
+				p.centre_w = p.w - 1;
+				p.centre_h = 6;
+				wpe_box_place(&p, scol, slns, &at, &fits);
+				snprintf(what, sizeof what, "error box %dx%d text %d", scol, slns, len);
+				chk_rect(what, &at, xa, ya, xe, ye);
+			}
+			for (anz = 1; anz <= 12; anz += 3) {
+				int mxlen = 20 + anz * 3;
+
+				if (mxlen + 7 > scol)
+					continue;
+				legacy_ctrl_c_box(scol, slns, mxlen, anz, &xa, &ya, &xe, &ye);
+				p = rule(WPE_BOX_CENTRED_SCREEN, mxlen + 7, anz + 6, 0, 0);
+				p.inset = 1;
+				p.centre_w = p.w - 1;
+				p.centre_h = p.h;
+				wpe_box_place(&p, scol, slns, &at, &fits);
+				snprintf(what, sizeof what, "Ctrl-C box %dx%d lines %d", scol, slns, anz);
+				chk_rect(what, &at, xa, ya, xe, ye);
+			}
+		}
+	}
+}
+
+/* About is centred and never on the status row: at 21 rows it is the
+   case the old fixed place got wrong. */
+static void test_about_stays_above_the_status_row(void)
+{
+	WpeBoxPlace p = rule(WPE_BOX_CENTRED_SCREEN, 55, 18, 0, 0);
+	WpeBoxRect at;
+	int fits, rows;
+
+	for (rows = 24; rows >= 20; rows--) {
+		wpe_box_place(&p, 80, rows, &at, &fits);
+		chk("About fits", fits, 1);
+		chk("About is above the status row", at.bx_bottom <= rows - 2, 1);
+		chk("About is under the bar", at.bx_top >= 1, 1);
+	}
+	wpe_box_place(&p, 80, 24, &at, &fits);
+	chk_rect("About at 80x24 keeps its row", &at, 12, 3, 66, 20);
+	/* Too small: clipped at the top left, the first lines are what shows. */
+	wpe_box_place(&p, 80, 15, &at, &fits);
+	chk("About on 15 rows is clipped", fits, 0);
+	chk_rect("About on 15 rows at the top left", &at, 0, 1, 54, 13);
+	wpe_box_place(&p, 40, 24, &at, &fits);
+	chk("About on 40 columns is clipped", fits, 0);
+	chk_rect("About on 40 columns at the top left", &at, 0, 1, 39, 18);
+}
+
+/* ---- a box the user moved, a box drawn again in place, the refresh ---- */
+
+static int refreshed;
+static int drawn_at_left;
+
+static void refresh_wider(WpeBox *b)
+{
+	refreshed++;
+	b->place.w = 30;
+}
+
+static WpeBoxDrawn draw_note_left(WpeBox *b)
+{
+	drawn_at_left = b->at.bx_left;
+	return WPE_BOX_DRAWN;
+}
+
+static void test_move_redraw_and_refresh(void)
+{
+	WpeBox a;
+
+	screen_cols = 80;
+	screen_rows = 24;
+	wpe_layout_desk_set(&desk);
+	make_box(&a, "a", draw_note_left);
+	a.refresh = refresh_wider;
+	chk("open", wpe_box_open(&a), WPE_BOX_DRAWN);
+	chk("the refresh ran before the place", refreshed, 1);
+	chk("and the place used it", a.at.bx_right - a.at.bx_left + 1, 30);
+	chk("centred", a.at.bx_left, 25);
+
+	/* The user moved it: it keeps the place until the screen changes. */
+	wpe_box_move(&a, -10, 2);
+	chk("moved left", a.at.bx_left, 15);
+	chk("moved down", a.at.bx_top, 11);
+	chk("the size is kept", a.at.bx_right - a.at.bx_left + 1, 30);
+	dropped = 0;
+	a.pic = (void *)&a;
+	drawn_at_left = -1;
+	chk("redraw", wpe_box_redraw(&a), WPE_BOX_DRAWN);
+	chk("redrawn where the user left it", drawn_at_left, 15);
+	chk("the old background was dropped", dropped, 1);
+	chk("the refresh did not run again", refreshed, 1);
+
+	/* A resize centres it again. */
+	screen_cols = 100;
+	wpe_layout_note_resize(80, 24);
+	wpe_layout_run_pending();
+	chk("the walk refreshed it", refreshed, 2);
+	chk("a resize centres it again", a.at.bx_left, 35);
+	wpe_box_close(&a);
+	screen_cols = 80;
+}
+
+/* ---- a frame opened outside the path is reported ---- */
+
+static unsigned frames_from_draw;
+
+static WpeBoxDrawn draw_opens_a_frame(WpeBox *b)
+{
+	(void)b;
+	frames_from_draw += wpe_layout_frame_outside(10, 5, 40, 15, 1) ? 1 : 0;
+	return WPE_BOX_DRAWN;
+}
+
+static void test_frames_outside_the_path(void)
+{
+	WpeBox a;
+	unsigned before;
+
+	screen_cols = 80;
+	screen_rows = 24;
+	wpe_layout_desk_set(&desk);
+	before = wpe_layout_frames_outside();
+
+	/* The positive control: a box frame opened with no draw running. */
+	chk("a frame outside any draw is reported",
+	    wpe_layout_frame_outside(10, 5, 40, 15, 1), 1);
+	chk("and counted", (int)(wpe_layout_frames_outside() - before), 1);
+
+	/* The exemptions, by name: a window's frame, the desk's keep-view and a
+	   drag (the plain view), and the whole screen handed to a command. */
+	chk("a plain view is exempt", wpe_layout_frame_outside(10, 5, 40, 15,
+	    WPE_LAYOUT_PLAIN_VIEW), 0);
+	chk("the whole screen is exempt", wpe_layout_frame_outside(0, 0, 79, 23, 1), 0);
+	chk("a view one row short of the screen is not",
+	    wpe_layout_frame_outside(0, 0, 79, 22, 1), 1);
+	chk("nothing else was counted", (int)(wpe_layout_frames_outside() - before), 2);
+
+	/* Inside a draw it is the path. */
+	make_box(&a, "a", draw_opens_a_frame);
+	frames_from_draw = 0;
+	before = wpe_layout_frames_outside();
+	chk("open", wpe_box_open(&a), WPE_BOX_DRAWN);
+	chk("a frame opened by the draw is not reported", (int)frames_from_draw, 0);
+	wpe_layout_note_resize(80, 24);
+	wpe_layout_run_pending();
+	chk("nor when the walk draws it again", (int)frames_from_draw, 0);
+	chk("none counted", (int)(wpe_layout_frames_outside() - before), 0);
+	wpe_box_close(&a);
+	chk("after the box closes it is reported again",
+	    wpe_layout_frame_outside(10, 5, 40, 15, 1), 1);
+}
+
 /* @scenario SC-box-04 */
 int main(void)
 {
 	test_known_places();
 	test_every_rule_stays_on_the_screen();
+	test_error_and_ctrl_c_boxes_keep_their_corners();
+	test_about_stays_above_the_status_row();
 	test_the_walk();
 	test_gone_and_no_memory();
 	test_the_walk_without_a_graphical_display();
+	test_move_redraw_and_refresh();
+	test_frames_outside_the_path();
 	if (fails) {
 		printf("%d failure(s)\n", fails);
 		return 1;

@@ -375,6 +375,19 @@ Changes
   comes back whole, at the new size.  Closing a window after a resize
   (Wayland) no longer puts back a piece of the old screen.
 
+* The About and System Info boxes are centred between the menu bar and
+  the status line, also after the terminal changes size, and the About box
+  no longer covers the status line on a screen of 21 rows or fewer (it was
+  drawn at a fixed place).  A dialog you moved keeps its place after a
+  picker has floated over it, and a resize centres it again.  A question
+  with a very long text, such as Save Options in a deep folder, is cut to
+  the rows the screen has when it opens and ends in "...", so Yes and No
+  are on the screen and Y answers (the buttons were below the screen and
+  only Esc was left).  A dialog on a screen too small for it shows only the
+  fields and buttons that fit inside its frame; the marks of the hidden
+  check boxes and radio buttons no longer land on the frame or the status
+  line.
+
 * The language server actions (Alt-Q) now land on the right letters on a
   line that has an accented letter, a CJK character or an emoji before the
   symbol.  The server counts such characters as one or two units where the

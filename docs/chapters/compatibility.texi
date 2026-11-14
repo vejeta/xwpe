@@ -185,6 +185,20 @@ no such callbacks, and here none draws while a box or a run has the screen.
 A box drawn over is a box you can no longer read.
 @end table
 
+@section Where the boxes are drawn
+
+@table @asis
+@item The About and System Info boxes
+@cindex About box, place
+@cindex System Info box, place
+The original drew the About box at a fixed place, 8 columns in and 3 rows
+down, and the System Info box 4 columns in and 3 rows down, on every
+screen.  xwpe centres both between the menu bar and the status line, also
+after the screen changes size, so a small screen shows them whole and they
+never cover the status line.  The reason: at a fixed place the About box
+ran over the status line on a screen of fewer than 22 rows.
+@end table
+
 @section Undo and breakpoints
 
 @table @asis

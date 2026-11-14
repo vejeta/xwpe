@@ -44,6 +44,8 @@ typedef struct
  int has_within;          /* `within` is a window the rule must stay in */
  int within_is_pane;      /* a docked tool pane: CENTRED_WINDOW uses the screen instead */
  WpeBoxRect within;
+ int inset;               /* CENTRED_SCREEN: rows kept free under the bar and above the status row */
+ int centre_w, centre_h;  /* CENTRED_SCREEN: centre as a box of this size (0: the box's own) */
 } WpeBoxPlace;
 
 /* The rows a box may use: under the bar row, above the status row. */
@@ -70,6 +72,7 @@ typedef struct WpeBox
 {
  const char *what;        /* for the trace: "the About box" */
  WpeBoxPlace place;
+ void (*refresh)(struct WpeBox *box);  /* optional: brings place up to date (the window a dialog sits on, a size that follows the text) before each placement */
  WpeBoxDraw draw;         /* draws the box at box->at; the frame goes through wpe_box_frame */
  void *self;              /* the box's own state */
  WpeBoxRect at;           /* where the owner put it; a loop reads it on every paint */
@@ -99,6 +102,26 @@ WpeBoxDrawn wpe_box_open(WpeBox *box);
 void        wpe_box_close(WpeBox *box);
 int         wpe_box_getch(WpeBox *box);
 int         wpe_box_depth(void);
+/* A box the user moved keeps its new place until the next resize, which
+   centres it again by its rule. */
+void        wpe_box_move(WpeBox *box, int dx, int dy);
+/* Draw an open box again where it is: a picker that floated over a dialog
+   has gone, and the dialog must be whole again without being placed anew. */
+WpeBoxDrawn wpe_box_redraw(WpeBox *box);
+/* Say which window a CENTRED_WINDOW box sits on (the owner of the place
+   rules is the only code that builds a WpeBoxRect). */
+void        wpe_box_within(WpeBoxPlace *place, int left, int top, int right,
+                           int bottom, int is_pane);
+
+/* The kind of view e_open_view makes for a window's frame, the desk's
+   keep-view and a drag: it is not a box, and is not checked. */
+#define WPE_LAYOUT_PLAIN_VIEW 2
+/* A frame was opened (e_open_view): returns 1, and writes "layout frame
+   outside the path" to the trace, when no box's draw is running and the
+   view is neither a PLAIN_VIEW nor the whole screen handed to a command. */
+int  wpe_layout_frame_outside(int left, int top, int right, int bottom, int view_kind);
+/* How many such frames there have been (for the tests). */
+unsigned wpe_layout_frames_outside(void);
 
 /* A display has taken a new grid: stamp every view saved from now as new,
    and remember the size the windows must scale from.  Cheap and safe from

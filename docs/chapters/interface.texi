@@ -486,9 +486,20 @@ key.
 @cindex resize, while a box is open
 If the terminal or the window changes size while a box is open, the
 windows are laid out for the new size and, for the dropdowns, the About
-and System Info boxes, error boxes and dialogs, the box is drawn again
-over them; when it closes you see the windows as they are now, not what
-was behind the box before.  A dropdown that no longer fits under the
+and System Info boxes, error boxes, dialogs and the box of a long file
+operation (Remove, Rename, Copy), the box is drawn again over them;
+when it closes you see the windows as they are now, not what was behind
+the box before.  Each box is placed again by its own rule for the new
+size: a dialog and an error box are centred again, and the About and
+System Info boxes are centred between the menu bar and the status line,
+whatever the size.  A dialog you moved with @kbd{Alt-F2} or the mouse
+keeps the place you gave it, also after a picker has floated over it,
+until the next resize centres it again.  On a screen too small for a box
+the About and System Info boxes are cut at the top left, and a dialog
+shows only the fields and buttons that fit inside its frame until you
+press @kbd{Esc} or make the screen bigger.  A question with a very long
+text (Save Options in a deep folder) is cut to the rows the screen has
+when it opens and ends in @samp{...}, so its buttons are on the screen.  A dropdown that no longer fits under the
 menu bar closes.  The pickers are not laid out again yet.  A resize
 closes the language server popups (hover, signature help and the
 problem shown at a jump), the reason box of the model picker and the

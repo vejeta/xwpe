@@ -369,10 +369,13 @@ and `e_relayout_windows` (resize with Messages open).
 
 ### Dialog resize during SIGWINCH (we_opt.c, we_term.c)
 
-Dialogs (`e_opt_kst`) survive terminal resize via a restart pattern:
-WPE_RESIZE closes the dialog PIC, re-centers coordinates with
-`e_opt_center_dialog`, and jumps to `e_opt_kst_restart` which
-creates a fresh PIC and redraws.
+Dialogs (`e_opt_kst`) are boxes of the layout owner (`we_layout.c`):
+the dialog opens through `wpe_box_open` with a `CENTRED_WINDOW` rule and
+a draw hook (`e_opt_box_draw`).  On a resize the owner's walk drops the
+old background, places the dialog again by its rule and calls the hook;
+the dialog loop then only resets the focus (`e_opt_after_resize`).  A
+picker that floated over the dialog is followed by `wpe_box_redraw`
+(in place, so a dialog the user moved keeps its place).
 
 Three mechanisms prevent crashes and artifacts:
 

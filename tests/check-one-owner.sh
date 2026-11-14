@@ -638,8 +638,13 @@ canary_import we_paint.o wpe_loop_hooks_set "the loop's callbacks are not bracke
 canary_import we_term.o wpe_key_decode_csi "the terminal reads a key report some other way"
 canary_import we_xterm.o wpe_key_code_char "X11 decides a Ctrl or Alt chord some other way"
 canary_import we_wayland.o wpe_key_code_char "Wayland decides a Ctrl or Alt chord some other way"
-for engine in we_opt.o we_menue.o we_wind.o we_ai_ui.o; do
+for engine in we_menue.o we_ai_ui.o; do
   canary_import $engine wpe_paint_modal_enter "a box owns the screen without telling its owner"
+done
+# A box that moved onto the layout owner (we_layout.c) opens through
+# wpe_box_open, which tells the screen's owner for it.
+for engine in we_opt.o we_wind.o; do
+  canary_import $engine wpe_box_open "a box owns the screen without opening through the layout owner"
 done
 # The menu bar, the prefixes, the move/size loop and every box (dialogs and
 # their text fields, dropdowns, error boxes, pickers, the colour menu, the
