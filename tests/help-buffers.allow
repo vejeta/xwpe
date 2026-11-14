@@ -1,0 +1,24 @@
+# Sites of the kinds check-help-buffers.sh looks for that lie outside the
+# Help viewer and the Info reader and were found when the scan was first
+# run over every source.  They are not moved by the pass that wrote the scan.
+# Format: RULE|file|function|count|why.  A count may only fall: a function
+# that holds more fails, and a line that allows more than the scan finds is
+# stale and fails.
+#
+# Bounded by a check or a size just before, or a fixed text into a larger
+# array; remove the line when the site is moved onto a bounded writer.
+R1|we_ai_ws.c|wpe_ai_changeset_review|1|fixed text into a 256 byte array
+R1|we_ai_ws.c|ws_snapshot_run_created|1|length checked against the array just before
+R1|we_block.c|e_replace_report|3|two numbers and a fixed text into 80 bytes
+R1|we_debug.c|e_d_dap_start|1|adapter name from a fixed table into 160 bytes
+R1|we_debug.c|e_deb_run|10|command words into a line buffer sized for them, not audited site by site
+R1|we_edit.c|e_zlsplt|1|two numbers into 20 bytes; a line number of ten digits would not fit
+R1|we_opt.c|e_about_box_draw|1|the version string
+R1|we_prog.c|e_run_program|1|one number into 256 bytes
+R1|WeXterm.c|x_palette_resource_names|1|fixed text into 8 bytes
+R2|we_progn.c|e_find_def_scan|1|the include word is copied out of a line read into an array of the same 256 bytes, so it ends at that line's terminator
+# Unbounded on input from the environment: a PATH entry of 256 bytes or more
+# overflows tmp when a C file is opened, and a long command name overflows
+# it in the strcat.  Needs its own fix on the path owner.
+R1|we_debug.c|e_test_command|1|a command name appended after a PATH entry, neither bounded
+R2|we_debug.c|e_test_command|1|a PATH entry of 256 bytes or more

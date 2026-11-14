@@ -1294,9 +1294,67 @@ int e_info(FENSTER *f)
 
 #define IFE 31
 
-int e_mk_info_button(char *str)
+/**
+ * info_mark_at - Put one markup byte into an Info line at an offset of @str.
+ * @line/@n: the whole line buffer; @str: the part of it being scanned, so
+ * that @at counts from @str.
+ *
+ * Return: 0 inserted, -1 when the line has no room left.
+ */
+static int info_mark_at(char *line, size_t n, const char *str, int at,
+                        char mark)
 {
- int i, bg, nd, len = strlen(str);
+ return(wpe_help_line_insert(line, n, (int) (str - line) + at, &mark, 1));
+}
+
+/**
+ * info_mark_cross_reference - Turn a menu entry or *note into a button.
+ * @line/@n: the whole line buffer; @str: the scanned part; @bg/@nd: where
+ * the reference text starts and where its end mark goes.
+ *
+ * The end mark and the start mark are two inserts, so the room for both is
+ * checked first: a reference that cannot be marked up stays whole, readable
+ * text instead of a button with only one end.
+ * Return: 0 marked up or left as plain text.
+ */
+static int info_mark_cross_reference(char *line, size_t n, const char *str,
+                                     int bg, int nd)
+{
+ if (strlen(line) + 2 + 1 > n)
+  return(0);
+ if (info_mark_at(line, n, str, nd, HED) != 0)
+  return(0);
+ info_mark_at(line, n, str, bg, HBG);
+ return(0);
+}
+
+/**
+ * info_mark_file_link - Turn a menu entry "(file)node" into a button that
+ * opens another Info file.
+ * @line/@n: the whole line buffer; @str: the scanned part; @bg: where the
+ * entry starts; @nd: the offset of its '('.
+ *
+ * Only one byte is inserted, in front of the entry; the parentheses are
+ * overwritten with end marks afterwards, so a full line leaves the entry as
+ * plain text.
+ * Return: 0 marked up or left as plain text.
+ */
+static int info_mark_file_link(char *line, size_t n, char *str, int bg,
+                               int nd)
+{
+ if (info_mark_at(line, n, str, bg, HNF) != 0)
+  return(0);
+ str[nd+1] = HED;
+ for (nd++; str[nd] && str[nd] != ')'; nd++)
+  ;
+ if (str[nd])
+  str[nd] = HED;
+ return(0);
+}
+
+int e_mk_info_button(char *line, size_t n, char *str)
+{
+ int bg, nd;
 
  if (str[0] == '\n' || str[0] == '\0')
   return(1);
@@ -1311,28 +1369,13 @@ int e_mk_info_button(char *str)
  {
   for (nd++; str[nd] && isspace(str[nd]); nd++);
   if (str[nd] == '(')
-  {
-   for (i = len; i >= bg; i--)
-    str[i+1] = str[i];
-   str[bg] = HNF;
-   str[nd+1] = HED;
-   for (nd++; str[nd] && str[nd] && str[nd] != ')'; nd++);
-   if (str[nd])
-    str[nd] = HED;
-   return(0);
-  }
+   return(info_mark_file_link(line, n, str, bg, nd));
   for (; str[nd] && (str[nd] != '.' || isalnum1(str[nd+1])); nd++);
   if (!str[nd]) return(-1);
   for (bg = nd; str[bg] != ':' || !isspace(str[bg+1]); bg--);
   for (bg++; isspace(str[bg]); bg++);
  }
- for (i = len; i >= nd; i--)
-  str[i+2] = str[i];
- str[nd+1] = HED;
- for (; i >= bg; i--)
-  str[i+1] = str[i];
- str[bg] = HBG;
- return(0);
+ return(info_mark_cross_reference(line, n, str, bg, nd));
 }
 
 int e_mk_info_mrk(char *str)
@@ -1599,20 +1642,20 @@ int e_read_info(char *str, FENSTER *f, char *file)
    {  for(i = 0; tstr[i]; i++)
       if(tstr[i] == IFE)  {  e_i_fclose(fp);  return(0);  }
       if(bsw == 1)
-      {  bsw = e_mk_info_button(tstr);
+      {  bsw = e_mk_info_button(tstr, sizeof tstr, tstr);
          for(ptmp = tstr; (ptmp = WpeStrcstr(ptmp, "*note")); ptmp += 5)
-            bsw = e_mk_info_button(ptmp+5);
+            bsw = e_mk_info_button(tstr, sizeof tstr, ptmp+5);
       }
       else if(!sw && !WpeStrnccmp(tstr, "* Menu:", 7)) sw = 1;
       else if((ptmp = WpeStrcstr(tstr, "*note")))
-      {  bsw = e_mk_info_button(ptmp+5);
+      {  bsw = e_mk_info_button(tstr, sizeof tstr, ptmp+5);
          for(ptmp += 5; (ptmp = WpeStrcstr(ptmp, "*note")); ptmp += 5)
-            bsw = e_mk_info_button(ptmp+5);
+            bsw = e_mk_info_button(tstr, sizeof tstr, ptmp+5);
       }
       else if(sw && tstr[0] == '*') 
-      {  bsw = e_mk_info_button(tstr+1);
+      {  bsw = e_mk_info_button(tstr, sizeof tstr, tstr+1);
          for(ptmp = tstr+1; (ptmp = WpeStrcstr(ptmp, "*note")); ptmp += 5)
-            bsw = e_mk_info_button(ptmp+5);
+            bsw = e_mk_info_button(tstr, sizeof tstr, ptmp+5);
       }
       e_mk_info_mrk(tstr);
       if (e_help_add_row(f->b, tstr) != 0)

@@ -742,6 +742,14 @@ TESTS += tests/check-chain-outcome.sh
 # two numbers.
 TESTS += tests/check-path-buffers.sh
 
+# One owner of a help or Info token taken into fixed storage (we_helpbuf.h)
+# and of a buffer row's bytes (we_buffer.c): tests/check-help-buffers.sh
+# fails on an unbounded copy into a char array, a line grown by shifting its
+# tail, and a row written with strcpy (tests/help-buffers.allow holds the
+# sites of other readers found when the scan was first run, each with its
+# reason).
+TESTS += tests/check-help-buffers.sh
+
 # One owner of the selection block mode's replacement (e_selection_run), of
 # the pending auto-indent mark (the buffer owner) and of the final line break
 # Save writes: tests/check-selection-mode.sh fails when a site writes the
@@ -861,6 +869,8 @@ EXTRA_DIST = \
   tests/check-chain-outcome.sh \
   tests/chain-outcome.allow \
   tests/check-path-buffers.sh \
+  tests/check-help-buffers.sh \
+  tests/help-buffers.allow \
   tests/check-selection-mode.sh \
   tests/check-list-entry.sh \
   tests/list-entry.allow \

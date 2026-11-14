@@ -754,6 +754,20 @@ project file or an option file that the system itself cannot open (longer
 than 4096 bytes) is refused with a box that names it, or skipped and said.
 The reason: a cut path names another file.
 
+@item A long link in a help page or an Info file
+@cindex help link, long
+@cindex Info node name, long
+The original copied the name of a help link, a page heading, an Info node,
+a @samp{Next:} or @samp{Prev:} field and an Info menu entry into buffers of
+126 to 128 bytes, and made room for the marks of a cross-reference by
+shifting a 256 byte line in place.  A link or node name longer than that,
+or a long Info line with no room left for the marks of its references, ran
+past a buffer and could end the editor, and Info files come from the system
+and from the user.  A
+name is now shown whole or the jump is refused with a message, and a
+reference that has no room for its marks stays plain text.  The reason: a
+name that was cut would open another page.
+
 @item A path that was cut
 The original also cut paths it kept for later and used the piece that was
 left: a project's @code{LIBNAME} was cut to 79 characters and its

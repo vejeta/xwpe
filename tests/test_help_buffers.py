@@ -154,6 +154,80 @@ def test_info_node_with_a_200_byte_next_name_opens(tmp_path):
         assert _shows(s, "TOP-THREE-MARKER"), _text(s)
 
 
+INFO_LINE_BYTES = 255           # the longest line the reader takes from a file
+BUTTON_BG = "green"             # the background of a cross-reference button
+
+
+def _line_of_notes(count, lead="", size=INFO_LINE_BYTES):
+    """An Info line of size bytes holding count cross-references
+    "*note a::", "*note b::" ... after lead, padded with x."""
+    notes = "".join("*note %s:: " % chr(ord("a") + i) for i in range(count))
+    text = lead + notes
+    return text + "x" * (size - len(text))
+
+
+def _button_cells(s, needle):
+    """The x of every button cell on the screen row holding needle."""
+    row = next(y for y, line in enumerate(s.display(drain=0)) if needle in line)
+    cells = s.screen.buffer[row]
+    return [x for x in range(s.screen.columns) if cells[x].bg == BUTTON_BG]
+
+
+# @scenario SC-help-buffers-04
+def test_menu_row_of_255_bytes_with_five_references_is_marked(tmp_path):
+    """A menu row of 255 bytes holding five cross-references needs ten bytes
+    of marks; the line has room for eight.  The editor stays alive, shows the
+    line and the text after it, and marks the references that fit."""
+    row = _line_of_notes(5, lead="* a: Top.  ")
+    top = _node("Top", "Up: (dir)",
+                "* Menu:\n\n%s\nMENU-FOUR-MARKER" % row)
+    with _info_session(str(tmp_path), "This is xwpe.info.\n" + top) as s:
+        _open_info(s)
+        assert s.alive(), "wpe died on a 255 byte menu row with five references"
+        assert _shows(s, "MENU-FOUR-MARKER"), _text(s)
+        assert len(_button_cells(s, "*note a::")) == 4, _text(s)
+
+
+# @scenario SC-help-buffers-04b
+@pytest.mark.parametrize("size", [INFO_LINE_BYTES, INFO_LINE_BYTES - 1])
+def test_references_beyond_the_room_of_a_line_stay_plain_text(tmp_path, size):
+    """Five cross-references on a line of 255 or 254 bytes: the first four
+    become buttons, the fifth has no room for its marks and stays readable
+    text.  At 254 bytes the fifth would fit its end mark but not its start
+    mark, the case the room check for both marks exists for."""
+    row = _line_of_notes(5, size=size)
+    top = _node("Top", "Up: (dir)", "FIRST-FOUR-B-MARKER\n%s\nTAIL-FOUR-B-MARKER" % row)
+    with _info_session(str(tmp_path), "This is xwpe.info.\n" + top) as s:
+        _open_info(s)
+        assert s.alive(), "wpe died on a 255 byte line with five references"
+        assert _shows(s, "TAIL-FOUR-B-MARKER"), _text(s)
+        buttons = _button_cells(s, "*note a::")
+        assert len(buttons) == 4, "%s\n%s" % (buttons, _text(s))
+        line = next(l for l in s.display(drain=0) if "*note a::" in l)
+        assert "*note e::" in line, _text(s)
+        fifth_label = line.index("*note e::") + len("*note ")
+        assert fifth_label not in buttons, _text(s)
+
+
+# @scenario SC-help-buffers-04c
+def test_file_link_beyond_the_room_of_a_line_stays_plain_text(tmp_path):
+    """Four cross-references fill the room of a 255 byte line; a fifth that
+    opens another Info file, "*note e: (other)Top.", needs one more byte for
+    its start mark.  The editor stays alive and the fifth stays readable
+    text with its parentheses, so the file link is the one place where the
+    insert itself, not the room check for two marks, refuses."""
+    lead = "".join("*note %s:: " % c for c in "abcd") + "*note e: (other)Top. "
+    row = lead + "x" * (INFO_LINE_BYTES - 1 - len(lead))
+    top = _node("Top", "Up: (dir)", "FIRST-FOUR-C-MARKER\n%s\nTAIL-FOUR-C-MARKER" % row)
+    with _info_session(str(tmp_path), "This is xwpe.info.\n" + top) as s:
+        _open_info(s)
+        assert s.alive(), "wpe died on a full line ending in a file link"
+        assert _shows(s, "TAIL-FOUR-C-MARKER"), _text(s)
+        assert len(_button_cells(s, "*note a::")) == 4, _text(s)
+        line = next(l for l in s.display(drain=0) if "*note a::" in l)
+        assert "*note e: (other)Top." in line, _text(s)
+
+
 # @scenario SC-help-buffers-05
 @pytest.mark.parametrize("length", [122, 125, 127])
 def test_next_node_with_a_long_name_is_opened(tmp_path, length):

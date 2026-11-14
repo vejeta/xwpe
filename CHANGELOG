@@ -23,6 +23,9 @@ Bugs fixed in 1.6.x:
 * File-Manager: typing 18 or more characters of a name in the Files or
   DirTree panel wrote past the end of the type-ahead buffer.  It now holds a
   whole path, so a long name can be typed in full and the panel lands on it.
+* Help and Info: a very long link in a help page, or a long node name or
+  menu entry in an Info file, no longer crashes the viewer.  The name is
+  shown whole or the jump is refused with a message.
 * Debugging from xwpe started by a desktop launcher: the debugger's program
   terminal no longer becomes the editor's own.  jdb's VM could not take it
   ("cannot give P a terminal") and ending the session sent the editor a
