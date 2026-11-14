@@ -1350,7 +1350,7 @@ char *e_file_info(char *filen, char *str, size_t size, int *num, int sw)
 
  stat(filen, buf);
  ttm = localtime(&(buf->st_mtime));
- snprintf(str, size, "%c%c%c%c%c%c%c%c%c%c  %-13s  %6ld  %2.2u.%2.2u.%4.4u  %2.2u.%2.2u",
+ snprintf(str, size, "%c%c%c%c%c%c%c%c%c%c  %-13s  %6lld  %2.2u.%2.2u.%4.4u  %2.2u.%2.2u",
    buf->st_mode & 040000 ? 'd' : '-',
    buf->st_mode & 0400 ? 'r' : '-',
    buf->st_mode & 0200 ? 'w' : '-',
@@ -1362,7 +1362,7 @@ char *e_file_info(char *filen, char *str, size_t size, int *num, int sw)
    buf->st_mode & 02 ? 'w' : '-',
    buf->st_mode & 01 ? 'x' : '-',
    filen,
-   buf->st_size, ttm->tm_mday,
+   (long long) buf->st_size, ttm->tm_mday,
    ttm->tm_mon + 1, ttm->tm_year + 1900, ttm->tm_hour, ttm->tm_min);
  if (sw & 1) *num = buf->st_mtime;
  else if (sw & 2) *num = buf->st_size;

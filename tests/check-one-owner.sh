@@ -36,6 +36,7 @@ OBJECTS=
 HERE=$(dirname "$0")
 BAD=1
 SKIP=77
+. "$HERE/nm-undefined.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -233,9 +234,9 @@ EOF
 # a "$..." suffix (macOS versioned names), "@..." (versioned ELF), and the
 # fortified "__poll_chk" form.  Reads imports on stdin, prints names.
 normalise() {
-  awk '
-    NF >= 2 && $(NF-1) == "U" {
-      n = $NF
+  nm_undefined_names | awk '
+    {
+      n = $0
       sub(/@.*/, "", n)
       sub(/\$.*/, "", n)
       if (n ~ /^__.*_chk$/) { sub(/^__/, "", n); sub(/_chk$/, "", n) }

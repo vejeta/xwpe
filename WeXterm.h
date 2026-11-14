@@ -71,6 +71,10 @@ void WpeXInit(int *argc, char **argv);
 void WpeXMouseChangeShape(WpeMouseShape new_shape);
 void WpeXMouseRestoreShape();
 
+/* The editor's colour table for a one-bit display (WeXterm.c calls it when
+   the screen has depth 1; we_xterm.c defines it). */
+int e_X_sw_color(void);
+
 /* Reload the font at the current libx11-compat backing scale after a mixed-DPI
    monitor move. Returns nonzero when the font changed so the caller recomputes
    the grid. No-op (returns 0) on a real X server or without Xft. */

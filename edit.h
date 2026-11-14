@@ -1194,6 +1194,8 @@ int e_make_stack(FENSTER *f);
 int e_breakpoint(FENSTER *f);
 int e_remove_breakpoints(FENSTER *f);
 int e_make_breakpoint(FENSTER *f, int sw);
+int e_mk_brk_main(FENSTER *f, int sw);
+int e_codepoint_to_utf8(int cp, unsigned char *out);
 int e_exec_deb(FENSTER *f, char *prog);
 int e_start_debug(FENSTER *f);
 int e_run_debug(FENSTER *f);

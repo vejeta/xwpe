@@ -46,6 +46,7 @@ NMTOOL=${NM:-nm}
 OBJECTS=
 HERE=$(dirname "$0")
 BAD=1
+. "$HERE/nm-undefined.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -161,10 +162,10 @@ for f in $SOURCES; do
 done
 
 # --- the symbol scan (rules 4 and 5)
-normalise() { awk '{ sub(/^ *[Uu] /, ""); sub(/@.*/, ""); print }'; }
+normalise() { nm_undefined_source_names | awk '{ sub(/@.*/, ""); print }'; }
 defined_names() {
   "$NMTOOL" -g --defined-only "$1" 2>/dev/null | awk '
-    NF >= 2 && $(NF-1) != "U" { n = $NF; sub(/@.*/, "", n); print n }'
+    NF >= 2 && $(NF-1) != "U" { n = $NF; sub(/@.*/, "", n); print n; if (n ~ /^_/) { sub(/^_/, "", n); print n } }'
 }
 if command -v "$NMTOOL" >/dev/null 2>&1 && [ "$NMTOOL" != ":" ]; then
   seen_displays=0

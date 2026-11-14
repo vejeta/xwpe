@@ -66,6 +66,7 @@ STRICT=0
 BAD=1
 NMTOOL=${NM:-nm}
 OBJECTS=$ONE_OWNER_OBJECTS
+. "$HERE/nm-undefined.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -316,7 +317,7 @@ parser_linked() {
   command -v "$cc" >/dev/null 2>&1 || return 1
   printf '%s\n' "$1" > "$WORK/linked.c"
   "$cc" -O2 -c -o "$WORK/linked.o" "$WORK/linked.c" 2>/dev/null || return 1
-  "$NMTOOL" -u "$WORK/linked.o" 2>/dev/null | awk 'NF >= 2 && $(NF-1) == "U" { n = $NF; sub(/@.*/, "", n); print n }'
+  "$NMTOOL" -u "$WORK/linked.o" 2>/dev/null | nm_undefined_source_names | awk '{ n = $0; sub(/@.*/, "", n); print n }'
 }
 
 # probe_attribute - the compiler is the other half of rule 6: a program that
@@ -356,8 +357,8 @@ object_of() {
 
 # nm_names OBJ - the undefined symbols of an object that are a parser.
 nm_names() {
-  "$NMTOOL" -u "$1" 2>/dev/null | awk -v re="^$PARSER_RE\$" '
-    NF >= 2 && $(NF-1) == "U" { n = $NF; sub(/@.*/, "", n); if (n ~ re) print n }'
+  "$NMTOOL" -u "$1" 2>/dev/null | nm_undefined_source_names | awk -v re="^$PARSER_RE\$" '
+    { n = $0; sub(/@.*/, "", n); if (n ~ re) print n }'
 }
 
 # --- the scan of the tree

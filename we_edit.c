@@ -12,6 +12,7 @@
 #include "we_buffer.h"
 #include "we_lineend.h"
 #include "we_testdump.h"
+#include "we_ai.h"       /* the assistant's key hooks (guarded by WPE_AI) */
 
 #include<sys/types.h> /*  included for digital station  */
 #include<sys/stat.h>

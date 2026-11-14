@@ -3,6 +3,11 @@
  "scenarios": [
   {"id": "SC-platform-01", "requirement": "No source sets a feature macro of its own: configure writes them into config.h", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
   {"id": "SC-platform-02", "requirement": "The write-owner test compiles because config.h carries the feature macros, and fails without them", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
-  {"id": "SC-platform-03", "requirement": "A name of NetBSD's longest NAME_MAX fits the path owner's limit", "layer": "c-unit", "test": "test_path", "status": "new"}
+  {"id": "SC-platform-03", "requirement": "A name of NetBSD's longest NAME_MAX fits the path owner's limit", "layer": "c-unit", "test": "test_path", "status": "new"},
+  {"id": "SC-platform-04", "requirement": "nm -u is read the same in GNU, bare-U and OpenBSD's name-only format", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
+  {"id": "SC-platform-05", "requirement": "An undeclared function is an error on every compiler: Makefile.am does not hide it and the probed flag wins over a compiler that only warns", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
+  {"id": "SC-platform-06", "requirement": "The -Wno- flags configure chose are known to the compiler in use (no unknown warning option)", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
+  {"id": "SC-platform-07", "requirement": "A file size is printed as a long long", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
+  {"id": "SC-platform-08", "requirement": "configure names libm for floor and ceil where the linker does not find them through another library", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"}
  ]
 }

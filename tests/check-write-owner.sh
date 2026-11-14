@@ -48,6 +48,7 @@ SELFTEST=0
 NMTOOL=${NM:-nm}
 OBJECTS=
 BAD=1
+. "$HERE/nm-undefined.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -260,9 +261,9 @@ if command -v "$NMTOOL" >/dev/null 2>&1 && [ -n "$OBJECTS" ]; then
     [ -f "$o" ] || o=$SRCDIR/$o
     base=$(basename "$o")
     [ "$base" = we_write.o ] && continue
-    "$NMTOOL" -u "$o" 2>/dev/null | awk -v obj="$base" '
-      NF >= 2 && $(NF-1) == "U" {
-        n = $NF; sub(/@.*/, "", n)
+    "$NMTOOL" -u "$o" 2>/dev/null | nm_undefined_source_names | awk -v obj="$base" '
+      {
+        n = $0; sub(/@.*/, "", n)
         if (n == "e_write" || n == "e_eol_write") print "r1", obj, n, 1
       }'
   done > "$WORK/symfound"

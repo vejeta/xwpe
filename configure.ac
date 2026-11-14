@@ -53,6 +53,73 @@ AS_IF([test -z "$XWPE_STDFLAG"], [AC_MSG_RESULT([none])],
   [AC_MSG_RESULT([$XWPE_STDFLAG])])
 AC_SUBST([XWPE_STDFLAG])
 
+# Warning flags.  The 1993 code needs three -Wno- flags.  A compiler that
+# does not know a -Wno- flag accepts it silently (gcc) or warns on every
+# compile (clang: "unknown warning option"), so each one is probed in its
+# positive form with -Werror and the -Wno- form is kept only when the
+# compiler knows the warning (the idiom of meson's get_supported_arguments).
+AC_MSG_CHECKING([which warning flags the compiler knows])
+XWPE_WARNFLAGS=
+for ace_w in incompatible-pointer-types int-conversion old-style-declaration; do
+  ace_save_CFLAGS="$CFLAGS"
+  CFLAGS="$CFLAGS -Werror -W$ace_w"
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])],
+    [XWPE_WARNFLAGS="$XWPE_WARNFLAGS -Wno-$ace_w"])
+  CFLAGS="$ace_save_CFLAGS"
+done
+XWPE_WARNFLAGS=${XWPE_WARNFLAGS# }
+AC_MSG_RESULT([${XWPE_WARNFLAGS:-none}])
+xwpe_say_warn=${XWPE_WARNFLAGS:-"none (every compile of the 1993 code prints its warnings)"}
+AC_SUBST([XWPE_WARNFLAGS])
+
+# Format checking.  -Wformat is what catches a %ld given an off_t (clang has
+# it on by default; gcc only with -Wall).  On gcc it also turns on the
+# truncation and overflow estimates of fixed-size string writes (22 in the
+# editor, 273 in the tests, and one unbounded sprintf at we_edit.c:4162),
+# which are another class of finding, so those two are left off the same
+# probed way as above until that class is worked through.
+AC_MSG_CHECKING([which format flags the compiler knows])
+XWPE_FORMATFLAGS=-Wformat
+for ace_w in format-truncation format-overflow; do
+  ace_save_CFLAGS="$CFLAGS"
+  CFLAGS="$CFLAGS -Werror -W$ace_w"
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])],
+    [XWPE_FORMATFLAGS="$XWPE_FORMATFLAGS -Wno-$ace_w"])
+  CFLAGS="$ace_save_CFLAGS"
+done
+AC_MSG_RESULT([$XWPE_FORMATFLAGS])
+AC_SUBST([XWPE_FORMATFLAGS])
+
+# A call to an undeclared function is an error, whatever the compiler's
+# default: gcc 14 and clang 16 already refuse it, but NetBSD 9's gcc 7 only
+# warns, and a build that only warns hides the missing header on exactly the
+# system that lacks it.
+AC_MSG_CHECKING([for a flag that makes an implicit declaration an error])
+XWPE_DECLFLAG=
+ace_save_CFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS -Werror=implicit-function-declaration"
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])],
+  [XWPE_DECLFLAG=-Werror=implicit-function-declaration])
+CFLAGS="$ace_save_CFLAGS"
+AC_MSG_RESULT([${XWPE_DECLFLAG:-none}])
+xwpe_say_decl=${XWPE_DECLFLAG:-"none (a missing header is only a warning)"}
+AC_SUBST([XWPE_DECLFLAG])
+
+# The math library.  we_render_cairo.c calls floor and ceil.  Linux and
+# FreeBSD find them through libcairo's own dependency on libm, but OpenBSD's
+# linker does not look through a dependency (the same reason freetype2 is
+# named below), so libm is named directly where it is a library of its own.
+# It goes into LIBM (a we_LDADD slot), not the global LIBS.
+ace_save_LIBS="$LIBS"
+LIBM=
+AC_SEARCH_LIBS([floor], [m],
+  [xwpe_say_libm="in libc"
+   AS_IF([test "x$ac_cv_search_floor" != "xnone required"],
+     [LIBM="$ac_cv_search_floor"; xwpe_say_libm="$LIBM"])],
+  [xwpe_say_libm="not found: the link fails on floor and ceil"])
+LIBS="$ace_save_LIBS"
+AC_SUBST([LIBM])
+
 # --- Optional: documentation tools ---
 AC_CHECK_PROG([TEXI2ANY], [texi2any], [texi2any], [:])
 AC_CHECK_PROG([PANDOC], [pandoc], [pandoc], [:])
@@ -456,4 +523,10 @@ AC_MSG_RESULT([
     AI host:   $have_ai_agent_host
     PRNTCMD:   $PRNTCMD
     pandoc:    $PANDOC
+
+    platform:
+      math library:      $xwpe_say_libm
+      warning flags:     $xwpe_say_warn
+      format checks:     $XWPE_FORMATFLAGS
+      declaration check: $xwpe_say_decl
 ])

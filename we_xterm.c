@@ -25,7 +25,6 @@
 #define WpeDllInit WpeXtermInit
 #endif
 
-int e_X_sw_color(void);
 int fk_show_cursor(void);
 int e_ini_size(void);
 int e_x_getch(void);
