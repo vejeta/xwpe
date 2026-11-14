@@ -1,0 +1,20 @@
+{
+ "capability": "xwperc-sections",
+ "scenarios": [
+  {"id": "SC-xwperc-section-01", "requirement": "A folder's xwperc of one colon does not crash the editor at start", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_folder_xwperc_of_one_colon_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-01a", "requirement": "A folder's xwperc of one colon does not crash the editor at start", "layer": "asan", "test": "tests/test_option_file_sections.py::test_folder_xwperc_of_one_colon_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-02", "requirement": "A key before any [Section] line in a folder's xwperc does not crash the editor", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_folder_key_without_a_header_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-02a", "requirement": "A key before any [Section] line in a folder's xwperc does not crash the editor", "layer": "asan", "test": "tests/test_option_file_sections.py::test_folder_key_without_a_header_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-03", "requirement": "Comments then a key before any [Section] line do not crash the editor", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_comments_then_a_key_do_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-03a", "requirement": "Comments then a key before any [Section] line do not crash the editor", "layer": "asan", "test": "tests/test_option_file_sections.py::test_comments_then_a_key_do_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-04", "requirement": "The user's own config with its key first does not crash the editor", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_users_own_config_with_the_key_first_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-04a", "requirement": "The user's own config with its key first does not crash the editor", "layer": "asan", "test": "tests/test_option_file_sections.py::test_users_own_config_with_the_key_first_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-05", "requirement": "A file named with -sf whose key comes first does not crash the editor", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_sf_file_with_the_key_first_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-05a", "requirement": "A file named with -sf whose key comes first does not crash the editor", "layer": "asan", "test": "tests/test_option_file_sections.py::test_sf_file_with_the_key_first_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-06", "requirement": "Control: a [General] section and a key starts", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_control_general_section_and_key_starts", "status": "new"},
+  {"id": "SC-xwperc-section-07", "requirement": "Control: an unclosed header gives the error box and the editor lives", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_control_unclosed_header_starts", "status": "new"},
+  {"id": "SC-xwperc-section-08", "requirement": "Control: an empty option file starts", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_control_empty_file_starts", "status": "new"},
+  {"id": "SC-xwperc-section-09", "requirement": "The user's own config with its key first, under a good folder xwperc, does not crash the editor", "layer": "ncurses", "test": "tests/test_option_file_sections.py::test_users_own_config_bad_under_a_good_folder_xwperc_does_not_crash", "status": "new"},
+  {"id": "SC-xwperc-section-09a", "requirement": "The user's own config with its key first, under a good folder xwperc, does not crash the editor", "layer": "asan", "test": "tests/test_option_file_sections.py::test_users_own_config_bad_under_a_good_folder_xwperc_does_not_crash", "status": "new"}
+ ]
+}

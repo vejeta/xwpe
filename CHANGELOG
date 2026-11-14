@@ -20,6 +20,9 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* An option file whose first setting comes before any [Section] line no
+  longer crashes the editor at start; the line is reported like any other
+  line the editor cannot place.
 * File-Manager: typing 18 or more characters of a name in the Files or
   DirTree panel wrote past the end of the type-ahead buffer.  It now holds a
   whole path, so a long name can be typed in full and the panel lands on it.

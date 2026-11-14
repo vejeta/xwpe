@@ -3010,13 +3010,24 @@ static int e_opt_read_stream(ECNT *cn, FILE *fp, int mode)
      ;
     str_tmp++;
     *str_tmp = 0;
+    /* An option before any [Section] line has no section to belong to:
+       reported like a line the reader cannot place. */
+    if (section == NULL)
+    {
+     WpeFree(str_line);
+     return ERR_READ_OPF;
+    }
     for (i = 0;
       (i < OPTION_SECTIONS) &&
         (strncmp(WpeSectionRead[i].section, section, strlen(WpeSectionRead[i].section)) != 0);
       i++)
      ;
     if (i >= OPTION_SECTIONS)
+    {
+     WpeFree(str_line);
+     WpeFree(section);
      return ERR_READ_OPF;
+    }
     if (mode == E_OPT_READ_SHARED)
      e_opt_note_named(section, option, value);
     if (e_opt_line_applies(section, option, mode))
