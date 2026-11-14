@@ -171,9 +171,7 @@ borland} and @samp{--keys modern} on the command line, or @env{XWPE_KEYS},
 choose the keys for one run and never write them to the option file, and a
 run whose input is not a terminal is never asked.  A new profile started from a
 script or as another program's editor would otherwise stop on a question
-nobody can answer.  A script that drives the editor through a pseudo-terminal
-does look like a terminal, so it must pass @samp{--keys} or set
-@env{XWPE_KEYS}, or its first keystrokes answer the box.
+nobody can answer.
 
 @item Keypad Enter in a terminal
 @cindex keypad Enter
@@ -754,20 +752,6 @@ project file or an option file that the system itself cannot open (longer
 than 4096 bytes) is refused with a box that names it, or skipped and said.
 The reason: a cut path names another file.
 
-@item A long link in a help page or an Info file
-@cindex help link, long
-@cindex Info node name, long
-The original copied the name of a help link, a page heading, an Info node,
-a @samp{Next:} or @samp{Prev:} field and an Info menu entry into buffers of
-126 to 128 bytes, and made room for the marks of a cross-reference by
-shifting a 256 byte line in place.  A link or node name longer than that,
-or a long Info line with no room left for the marks of its references, ran
-past a buffer and could end the editor, and Info files come from the system
-and from the user.  A
-name is now shown whole or the jump is refused with a message, and a
-reference that has no room for its marks stays plain text.  The reason: a
-name that was cut would open another page.
-
 @item A path that was cut
 The original also cut paths it kept for later and used the piece that was
 left: a project's @code{LIBNAME} was cut to 79 characters and its
@@ -796,19 +780,6 @@ and the next build linked @file{out/out/a.out}.  The field now keeps the
 word the file holds, or
 offers @code{a.out} when it has none.  The reason: what you typed is never
 replaced by a path the editor worked out.
-
-@item What Run starts
-@cindex Run, what it starts
-@cindex Ctrl-F9, Pascal
-The original ran @file{@var{name}.e} after every build, for C, C++,
-Fortran and Pascal alike, so Ctrl-F9 on a Pascal file started a program
-the compiler (which writes @file{@var{name}}) had never made.  Ctrl-F9
-now starts what the language's compiler made: the program it linked or
-wrote (@file{./t} for Pascal), and a folder's @file{xwperc} value that
-changes what Run starts (@code{Run} or @code{CompilerSwitch}, like
-@code{Compiler}, @code{Exedir} and @code{Executable}) is shown and asked
-about first.  The reason: Run runs the program the build made, and a
-folder never chooses it unseen.
 
 @item What the build trusts as current
 @cindex up to date, object and program
@@ -844,6 +815,46 @@ keeps it when you delete, and writes none of it.  The reason: a blank row
 is where an entry goes, not an entry.
 @end table
 
+@section Search
+
+@table @asis
+@item A regular expression hit
+@cindex regular expression, extent of a hit
+In the original, a regular expression without a group matched from where
+the search began to the end of the row, so @code{a} on @samp{abc} put the
+cursor at the end of the row, Replace replaced the rest of the row, and
+@code{^} and @code{$} never matched.  The hit is now the text the
+expression matched, and @code{^} and @code{$} anchor it to the ends of the
+row (@code{^a}, @code{c$}).  The reason: a hit that is not what the user
+typed is not a search.
+
+@item One engine behind Find, Replace, Change All and Grep
+@cindex search engine
+@cindex empty match
+@cindex Change All, line starts
+The original gave Find Next, Search Again, Replace, Change All and Grep a
+search loop each, and the four string searchers disagreed with the regular
+expression one about empty hits, line starts and wrapped rows: Find of
+@code{^} skipped the row the cursor stood on, Change All wrote twice at a
+line start, and a regular expression Change All over a large file took
+minutes.  All five now ask one owner where the Find text occurs.  An empty
+hit (@code{^}, @code{$}, @code{x*}) is a position: Find puts the cursor on
+it and the next Search Again steps past it, so no search stands on one
+place for ever.  Change All writes once at each line start.  @code{_} is a
+word character for Whole Words and for @code{\<} and @code{\>}.  Plain text
+and a regular expression follow the same rules.  Grep reads each file line
+by line through that owner, and a bad expression is reported in the
+compiler's own words in Find, Replace and Grep alike.  Replacing an empty
+hit with nothing changes nothing and leaves no undo step.  The reason: five
+searchers that disagree make five different editors, and one owner settles
+what a word, a character, a case and an empty hit are.
+
+One difference is kept for now: Change All searches the text as its own
+replacements leave it, so @code{\<a} replaced by nothing turns @samp{aaa b}
+into @samp{ b}, while VS Code, Vim and sed, which find every hit on the
+line before they replace, give @samp{aa b}.
+@end table
+
 @section Colours on an X display
 
 @table @asis
@@ -863,56 +874,4 @@ not running.
 The original stopped at start when an X resource named a colour the
 server does not know.  It now reports the name on stderr and uses the
 built-in colour for that entry, so one typing mistake costs one colour.
-
-@item A regular expression hit
-@cindex regular expression, extent of a hit
-In the original, a regular expression without a group matched from where
-the search began to the end of the row, so @code{a} on @samp{abc} put the
-cursor at the end of the row, Replace replaced the rest of the row, and
-@code{^} and @code{$} never matched.  The hit is now the text the
-expression matched, and @code{^} and @code{$} anchor it to the ends of
-the row (@code{^a}, @code{c$}).  A hit always has text in it, so an
-expression that matches only empty text (@code{^} or @code{x*} alone)
-finds nothing.  The reason: a hit that is not what the user
-typed is not a search, and an empty hit would leave Search Again and
-Change All standing on it for ever.
-@end table
-
-@section Saving and the emergency save
-
-@table @asis
-@item A write that fails
-@cindex save fails
-@cindex write fails
-The original showed @samp{Can't open File %s}, with the @samp{%s} left in
-the box, and went on as if the write had worked: Save As gave the window
-its new name, Print ran the print command on a copy that was not there,
-Block Write said nothing about the file.  A write that fails now leaves
-the window, its name and its text as they were, and says in one box the
-path, the reason and what is kept (@samp{Cannot write /home/u/t.c:
-Permission denied.  Your text is still in the window.}).  After a failed
-Save As the window keeps its old name; after a failed print copy nothing
-is printed.  The reason: the user must know the text is not on disk, and
-must still have it.
-
-@item A write that fails half way
-When a write failed after the file was opened (the disk filled, or the
-file size limit was reached), the original left the file cut short and
-the editor could be ended by the limit.  xwpe puts the old content back
-from the backup copy into the same file, so a link, a second name for
-the file, its owner and its group stay as they were.  When the old content
-cannot be put back, or no backup copy could be made, the box says the file
-may be cut short and names the backup copy when there is one.  The reason:
-the save that fails must not also destroy the file.
-
-@item The backup copy
-The original showed a second box, @samp{Can't open file for writing}, when
-the backup copy could not be made in a read-only folder, and then wrote
-the file anyway.  A save that works shows no box: the status row says
-@samp{t.c written; no backup was made: Permission denied.}.  The backup
-copy takes the file's own permissions before it holds any of its text, and
-counts as made only when every byte reached the disk; a backup that stops
-half way refuses the save and leaves the file untouched, because the same
-disk would refuse the new text.  The reason: a short backup must never be
-trusted, and a private file's backup must never be readable by others.
 @end table

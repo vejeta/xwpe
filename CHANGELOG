@@ -23,9 +23,6 @@ Bugs fixed in 1.6.x:
 * File-Manager: typing 18 or more characters of a name in the Files or
   DirTree panel wrote past the end of the type-ahead buffer.  It now holds a
   whole path, so a long name can be typed in full and the panel lands on it.
-* Help and Info: a very long link in a help page, or a long node name or
-  menu entry in an Info file, no longer crashes the viewer.  The name is
-  shown whole or the jump is refused with a message.
 * Debugging from xwpe started by a desktop launcher: the debugger's program
   terminal no longer becomes the editor's own.  jdb's VM could not take it
   ("cannot give P a terminal") and ending the session sent the editor a
@@ -51,7 +48,23 @@ Bugs fixed in 1.6.x:
   of the row, and ^ and $ never matched.  The hit is now the matched text,
   ^ and $ anchor it to the ends of the row, and searching backward finds
   the last match before the cursor.  An expression that matches only
-  empty text finds nothing, so Change All with x* no longer runs for ever.
+  empty text finds a position, and Change All with x* no longer runs for
+  ever because the next search steps past it.
+* Find, Search Again, Replace, Change All and Grep now search through one
+  engine.  The four string searchers disagreed with the regular expression
+  one about empty hits, line starts and wrapped rows: Find of ^ skipped the
+  row the cursor stood on, Change All wrote twice at a line start, and a
+  regular expression Change All over a large file took minutes.  An empty
+  hit is now a position, found once and stepped past by the next search;
+  Change All writes once at each line start; _ counts as a word character
+  for Whole Words and for \< and \>; plain text follows the same rules as a
+  regular expression; Grep reads each file line by line through the same
+  engine; and a bad expression shows the compiler's own words in Find,
+  Replace and Grep.  Replacing an empty hit with nothing changes nothing
+  and leaves no undo step.  Change All still searches the text it has
+  already changed, so \<a replaced by nothing on "aaa b" gives " b", where
+  VS Code, Vim and sed, which find every hit on the line first, give
+  "aa b".
 * Options > Editor: checkboxes and radio buttons could not be ticked in xwpe
   (X11) -- fixed (1.6.3).  Space, mouse-click and the Alt-<letter> hotkey all
   flipped the option's value, but in X11 nothing was drawn, so the box looked
@@ -265,9 +278,6 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
-* A language set up without an error-message pattern no longer reads past
-  memory when F9 reports errors.
-
 * One rule now names the program a build makes, so F9, Alt-C and Ctrl-F9
   agree on the files.  Ctrl-F9 starts a project's program as ./a.out, not
   ././a.out, and an absolute Executable (/tmp/prog) is started where F9
@@ -277,22 +287,6 @@ Changes
   longer links out/out/a.out.  A project with no EXENAME shows a.out there.
   New Project names the program after the project up to its last dot
   (my.app.prj builds my.app, not my), as a source does.
-
-* Ctrl-F9 starts what the build made.  For Rust, Pascal, Go, Java, Scala
-  and LaTeX it ran the compiler a second time and never the program (since
-  1.6.2).  Now Rust, Pascal and Go start the program they wrote (./t), Java
-  starts the class on the VM (java T, in the source's folder, with the java
-  beside the compiler and your own CLASSPATH, as the Java debugger does),
-  Scala starts it with the scala runner beside scalac (scala T, which puts
-  scala-library on the class path), and LaTeX says it makes no program to run.  A project starts its
-  program whatever its Compiler Style says.  Each language's entry carries
-  this as a Run line in xwperc (interpreter, program, vm or none), saved by
-  Options; a language you add keeps running as before (an interpreter when
-  its style is Other).  A folder's xwperc that sets Run or CompilerSwitch,
-  or an Executable for a compiler that writes its own program, is shown and
-  asked about before the program it chose starts, and so is a folder's
-  project of style other (CMPSWTCH=other), whose build links nothing.  A class named like an
-  option (-x.java) is not started, and the status row says so.
 
 * F9 and Ctrl-F9 no longer trust a built file that came with a clone.  A
   program, object or library counted as up to date when it was newer than
@@ -342,27 +336,6 @@ Changes
   disk), the error is shown and the window stays open with your text,
   instead of closing anyway.  Quit stops at that window; the files saved
   before it stay saved.
-
-* A save that fails now says what happened, once, in one box: the path, the
-  reason and what is kept ("Cannot write /home/u/t.c: Permission denied.
-  Your text is still in the window.").  Before, the box read "Can't open
-  File %s" with the %s left in it.  Save As that fails leaves the window
-  under its old name, Block Write says the file is not there, and Print no
-  longer runs the print command on a copy that was not written.
-
-* A write that fails half way (a full disk, a file size limit) puts the old
-  content back from the backup copy instead of leaving the file cut short,
-  and the editor is no longer ended by the size limit.  If the old content
-  cannot be put back, or there was no backup, the box says the file may be
-  cut short and names the backup when there is one.  A file reached through
-  a link stays a link, and the file keeps its group.
-
-* A save in a folder that does not take the backup copy now writes the file
-  and says on the status row "t.c written; no backup was made: Permission
-  denied", instead of a box about the backup and then the save.  The backup
-  copy takes the file's permissions before it holds any text, so a private
-  file's backup is private.  A backup that stops half way (a full disk)
-  refuses the save and leaves the file untouched.
 
 * The macOS install pages now put the libx11-compat build first and
   XQuartz second, and say what the libx11-compat build leaves out: no

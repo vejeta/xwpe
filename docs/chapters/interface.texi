@@ -79,7 +79,8 @@ its screen from its own buffer and switches its modes back on.
 @item F -- Find
 Search for a file by name.
 @item G -- Grep
-Search for a regular expression across files.
+Search for a string or regular expression across files
+(@pxref{Editor,,Search and replace}).
 @item P -- Print
 Print the current file (uses the @env{PRNTCMD} setting).  The print
 command gets the file's name as its argument and has a minute to take

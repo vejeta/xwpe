@@ -261,8 +261,39 @@ xwpe uses @command{egrep}-compatible regular expressions:
 The hit is the text the expression matched, with or without a group: the
 cursor stands behind it (in front of it searching backward), and Replace
 changes only that text.  Searching backward finds the match that starts
-last before the cursor.  A hit always has text in it: @code{c$} finds the
-@samp{c} that ends a row, but @code{$} or @code{x*} alone finds nothing.
+last before the cursor.
+
+@subsection One engine behind every search
+
+@cindex search engine
+@cindex empty match
+
+Find, Search Again, Replace, Change All and Grep all ask one engine where
+the Find text occurs.  A plain search and a regular expression search
+therefore follow the same rules for case, whole words and the ends of a
+line, and Grep reads each file line by line and judges every line the way
+Find judges a row.
+
+An expression that matches empty text (@code{^}, @code{$}, @code{x*})
+finds a position, not nothing.  Find puts the cursor there and the next
+Search Again steps past it, so no search stands on one place for ever.
+Replacing such a hit with an empty New String touches no text: the file
+stays unmodified and no undo step is recorded.
+
+Whole Words, @code{\<} and @code{\>} count @code{_} as part of a word, as
+they count a letter or a digit beyond ASCII.
+
+Change All writes once at each line start, so @code{^a} replaced by
+nothing turns @samp{aab} into @samp{ab}.
+
+An expression the compiler refuses is reported in the compiler's own
+words, in Find, in Replace and in Grep.
+
+One difference stays for now: Change All searches the text as its own
+replacements leave it, so @code{\<a} replaced by nothing turns
+@samp{aaa b} into @samp{ b}, because the second @samp{a} starts a word
+once the first is gone.  VS Code, Vim and sed find every hit on the line
+before they replace, and give @samp{aa b}.
 
 @section Markers
 
