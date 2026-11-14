@@ -252,6 +252,10 @@ typedef struct WpeStartPlan {
  const char *runs_code;      /* what of the folder's own code the program runs on its
                                 own as it starts (a language server's build scripts),
                                 said in the box; the plan then asks once per folder */
+ char *chose;                /* the keys of a folder's file that chose the program the
+                                plan starts ("CompilerSwitch = 1"), or NULL: the
+                                program is then a file the folder may ship, so the
+                                plan asks even though it lies inside the folder    */
  int list_inside;            /* the inside operands are part of the text (a project) */
  struct WpeStartPlan *own;   /* what "Use mine" starts instead, or NULL               */
  int verdict;                /* WPE_PLAN_*                                            */
@@ -316,6 +320,7 @@ int wpe_startplan_carry(WpeStartPlan *p, char *const carrier[], int from);
 int wpe_startplan_start_carried(WpeStartPlan *p, const WpeStartIo *io, WpeChild *c,
                                 WpeChildEndedFn ended, void *data);
 void wpe_startplan_runs_code(WpeStartPlan *p, const char *what);
+int wpe_startplan_folder_chose(WpeStartPlan *p, const char *what);
 
 /* The debugger's own empty folder, and the one call a debugger site makes. */
 void wpe_startplan_debug_base_set(const char *base);

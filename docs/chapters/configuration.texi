@@ -89,7 +89,9 @@ line says @samp{Options not read}, and @samp{Save Options} says
 A folder's @file{xwperc} may still set the print command
 (@code{PrintCmd}), a language's compiler line (@code{Compiler},
 @code{CompilerOptions}, @code{Libraries}, @code{Executable} under
-@samp{[Language/@var{name}]}) and the debugger (@code{Debugger}); a
+@samp{[Language/@var{name}]}; and @code{CompilerSwitch} and @code{Run},
+which choose what @kbd{Ctrl-F9} starts, asked about when they would
+start a file the folder ships) and the debugger (@code{Debugger}); a
 project file (@file{.prj}) its @code{CMP}, @code{CMPFLAGS} and
 @code{LDFLAGS} and its @code{install:} lines; and a Scala project's
 @file{.bsp/@var{name}.json} the build server a debug session starts
@@ -486,7 +488,10 @@ The file extension that triggers this compiler (e.g.@: @code{.c}).
 @item Compiler-Style
 Select whether error messages use the GNU format
 (@code{file:line:column:}) or a custom format defined in the
-Message-String field.
+Message-String field.  A language of style Other writes its own program.
+What @kbd{Ctrl-F9} starts is the language's @code{Run} line in
+@file{xwperc} (@code{interpreter}, @code{program}, @code{vm} or
+@code{none}; @pxref{Compiling}); @samp{Save Options} writes it.
 @item OK
 Accept changes.
 @item CANCEL

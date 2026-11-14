@@ -797,6 +797,19 @@ word the file holds, or
 offers @code{a.out} when it has none.  The reason: what you typed is never
 replaced by a path the editor worked out.
 
+@item What Run starts
+@cindex Run, what it starts
+@cindex Ctrl-F9, Pascal
+The original ran @file{@var{name}.e} after every build, for C, C++,
+Fortran and Pascal alike, so Ctrl-F9 on a Pascal file started a program
+the compiler (which writes @file{@var{name}}) had never made.  Ctrl-F9
+now starts what the language's compiler made: the program it linked or
+wrote (@file{./t} for Pascal), and a folder's @file{xwperc} value that
+changes what Run starts (@code{Run} or @code{CompilerSwitch}, like
+@code{Compiler}, @code{Exedir} and @code{Executable}) is shown and asked
+about first.  The reason: Run runs the program the build made, and a
+folder never chooses it unseen.
+
 @item What the build trusts as current
 @cindex up to date, object and program
 @cindex nothing to build, a clone

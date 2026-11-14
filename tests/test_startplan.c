@@ -1350,6 +1350,39 @@ static void case_runs_code(void)
  wpe_startplan_free(p);
 }
 
+/* A program inside the folder that a folder's value chose asks: Run's
+   program is an operand lying in the folder, which is clean on its own, but
+   not when the folder's CompilerSwitch, Run or Executable decided which
+   file it is. */
+static void case_folder_chose_program(void)
+{
+ WpeStartPlan *p = project_plan();
+ WpeStartPlan *other = project_plan();
+
+ wpe_startplan_word(p, "./t", WPE_WORD_OPERAND, WPE_FROM_FOLDER, "./xwperc: Exedir, Executable");
+ wpe_startplan_path(p, "./t", WPE_PATH_INPUT, WPE_FROM_FOLDER, "./xwperc: Exedir, Executable", NULL);
+ expect_int("a folder's program inside its folder asks nothing", wpe_startplan_judge(p),
+            WPE_PLAN_CLEAN);
+ expect_int("a plan that says nothing chose holds no key", p->chose == NULL, 1);
+ expect_int("the folder's choice is taken", wpe_startplan_folder_chose(p, "CompilerSwitch = 1"), 0);
+ expect_int("a program the folder's value chose asks", wpe_startplan_judge(p), WPE_PLAN_ASK);
+ expect_has("and the text names the key", wpe_startplan_text(p), "chose CompilerSwitch = 1");
+ expect_int("a second key is added to the first",
+            wpe_startplan_folder_chose(p, "Executable = evil"), 0);
+ wpe_startplan_judge(p);
+ expect_has("both are in the text", wpe_startplan_text(p),
+            "chose CompilerSwitch = 1, Executable = evil");
+ expect_int("the answer is kept", wpe_startplan_remember(p, WPE_PLAN_RUN), 0);
+ expect_int("and the same choice runs next time", wpe_startplan_judge(p), WPE_PLAN_RUN);
+ wpe_startplan_word(other, "./t", WPE_WORD_OPERAND, WPE_FROM_FOLDER, "./xwperc: Exedir, Executable");
+ wpe_startplan_path(other, "./t", WPE_PATH_INPUT, WPE_FROM_FOLDER, "./xwperc: Exedir, Executable", NULL);
+ wpe_startplan_folder_chose(other, "Run = program");
+ expect_int("another key asks again", wpe_startplan_judge(other), WPE_PLAN_ASK);
+ expect_int("no word is no choice", wpe_startplan_folder_chose(other, NULL), -1);
+ wpe_startplan_free(other);
+ wpe_startplan_free(p);
+}
+
 /* The editor's terminal carries a command; a folder's value never does. */
 static void case_carry(void)
 {
@@ -2951,6 +2984,7 @@ int main(void)
  case_unplanned_refused();
  case_shell_positional();
  case_runs_code();
+ case_folder_chose_program();
  case_carry();
  case_debug_dir();
  case_debug_dir_left_behind();

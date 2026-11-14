@@ -1472,6 +1472,7 @@ void e_startcmd_typed(const char *folder, const char *key, const char *text)
 #define E_STARTPLAN_NO_RUN_IT_FMT "Run it is not offered: %s"
 #define E_STARTPLAN_RUNS_LINE_FMT "    %s"
 #define E_STARTPLAN_THEN_FMT     "Then runs: %s"
+#define E_STARTPLAN_CHOSE_FMT    "Program chosen by %s: %s"
 #define E_STARTPLAN_HONEST       "This runs the folder's own program."
 #define E_STARTPLAN_HONEST_MAKE  "This runs the folder's own Makefile."
 #define E_STARTPLAN_LINES_MAX    (WPE_STARTPLAN_WORDS_MAX + 8)
@@ -1714,6 +1715,23 @@ static const char *e_startplan_honest_line(const WpeStartPlan *p)
 }
 
 /**
+ * e_startplan_line_chose - Say which keys of the folder's file chose the
+ * program.
+ * @l: the lines; @p: the plan.
+ *
+ * The program lies inside the folder, so it is the keys that tell the user
+ * why he is asked: "Program chosen by ./xwperc: CompilerSwitch = 1".
+ */
+static void e_startplan_line_chose(e_startplan_lines *l, const WpeStartPlan *p)
+{
+ const char *file = E_STARTCMD_XWPERC;
+
+ if (p->file)
+  file = p->file;
+ e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_CHOSE_FMT, file, p->chose);
+}
+
+/**
  * e_startplan_lines_of - Everything the box says about a plan below its command.
  * @l: receives the lines; @p: the plan, judged.
  *
@@ -1741,6 +1759,8 @@ static void e_startplan_lines_of(e_startplan_lines *l, const WpeStartPlan *p)
  e_startplan_lines_input(l, p);
  if (p->runs_code)
   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "%s", p->runs_code);
+ if (p->chose)
+  e_startplan_line_chose(l, p);
  if (p->honest)
   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "%s", e_startplan_honest_line(p));
 }

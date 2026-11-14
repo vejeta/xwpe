@@ -7733,64 +7733,6 @@ typedef struct {
 static E_D_JDB_VM e_d_jdb_vm;
 
 /**
- * e_d_find_in_path - Where @name is found on PATH, as the shell finds it.
- * @name: a command; @out, @n: receives its path.
- * Return: 1 when an executable file of that name is on PATH, else 0.
- */
-static int e_d_find_in_path(const char *name, char *out, size_t n)
-{
- const char *path = getenv("PATH"), *dir, *end;
- int len;
-
- if (!path)
-  return(0);
- for (dir = path; ; dir = end + 1)
- {
-  end = strchr(dir, ':');
-  if (!end)
-   end = dir + strlen(dir);
-  len = (int)(end - dir);
-  if (len == 0)
-   snprintf(out, n, "./%s", name);
-  else
-   snprintf(out, n, "%.*s%c%s", len, dir, DIRC, name);
-  if (access(out, X_OK) == 0)
-   return(1);
-  if (*end == '\0')
-   return(0);
- }
-}
-
-/**
- * e_d_jdb_java_path - The java the program's VM is started with.
- * @out, @n: receives it.
- *
- * The java next to jdb, the one jdb itself started the VM with before the
- * editor did: a class compiled by that JDK's javac runs there, while the
- * java first on PATH may be another release.  Otherwise java on PATH.
- */
-static void e_d_jdb_java_path(char *out, size_t n)
-{
- char jdb[PATH_MAX], real[PATH_MAX], *slash;
-
- if (e_d_find_in_path(e_debugger, jdb, sizeof jdb) && realpath(jdb, real))
- {
-  slash = strrchr(real, DIRC);
-  if (slash)
-  {
-   slash[1] = '\0';
-   /* A path that does not fit is no java found: PATH is tried next. */
-   if (snprintf(out, n, "%s%s", real, E_D_JDB_JAVA) < (int)n &&
-       access(out, X_OK) == 0)
-    return;
-  }
- }
- if (e_d_find_in_path(E_D_JDB_JAVA, out, n))
-  return;
- snprintf(out, n, "%s", E_D_JDB_JAVA);
-}
-
-/**
  * e_d_jdb_vm_prepare - Note what the session's VM will run, and where,
  * before jdb is started.
  * @f: the source window; @main_class: the class to run.
@@ -7804,7 +7746,9 @@ static void e_d_jdb_vm_prepare(FENSTER *f, const char *main_class)
  e_d_jdb_vm.awaiting_end = 0;
  snprintf(e_d_jdb_vm.main_class, sizeof e_d_jdb_vm.main_class, "%s",
           main_class);
- e_d_jdb_java_path(e_d_jdb_vm.java, sizeof e_d_jdb_vm.java);
+ /* The java beside jdb: a class made by that JDK's javac runs there.  The
+    same lookup starts Run's class, with the compiler's own java. */
+ e_java_vm_path(e_debugger, e_d_jdb_vm.java, sizeof e_d_jdb_vm.java);
  e_d_jdb_vm.dir[0] = '\0';
  if (!dir)
   return;
@@ -7936,15 +7880,15 @@ static WpeStartPlan *e_d_jdb_vm_plan(const char *agent)
 {
  WpeStartPlan *p;
 
- if (e_d_jdb_vm.main_class[0] == '-' || e_d_jdb_vm.main_class[0] == '@')
-  return(NULL);
  if (!(p = wpe_startplan_new(WPE_START_DEBUGGEE, E_D_JDB_JAVA)))
   return(NULL);
  if (e_d_jdb_vm.dir[0])
   wpe_startplan_set_cwd(p, e_d_jdb_vm.dir);
- wpe_startplan_word(p, e_d_jdb_vm.java, WPE_WORD_PROGRAM, WPE_FROM_USER, NULL);
- wpe_startplan_word(p, agent, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL);
- wpe_startplan_word(p, e_d_jdb_vm.main_class, WPE_WORD_TEXT, WPE_FROM_USER, NULL);
+ if (e_java_vm_words(p, e_d_jdb_vm.java, agent, e_d_jdb_vm.main_class, WPE_FROM_USER))
+ {
+  wpe_startplan_free(p);
+  return(NULL);
+ }
  p->honest = 1;
  wpe_startplan_judge(p);
  return(p);

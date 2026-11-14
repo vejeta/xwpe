@@ -13,7 +13,7 @@ we_prog.c|e_prj_is_program_object|1|owner|"main.o" is named by a literal; which 
 we_prog.c|e_prj_inserted_after_compile|1|owner|"main.o" is named by a literal, as above
 
 # --- moved onto the owner with the debugger ---
-we_debug.c|e_d_exe_name_of|2|owner|the program the debugger loads: stem cut and ".e"
+we_debug.c|e_d_exe_name_of|3|owner|the program the debugger loads: stem cut, ".e" and the compiler style that says whether the compiler wrote it
 we_debug.c|e_d_compile_command|3|owner|the debug binary and its error file: stem cut, ".dbg", ".dbgerr"
 we_debug.c|e_d_dap_lang_for|2|owner|which adapter: the end of the name against a table's extension
 we_debug.c|e_d_dap_source_ext|2|owner|is this a DAP source: the same end-of-name compare as e_d_dap_lang_for
@@ -41,3 +41,25 @@ we_prog.c|e_new_message|1|keep|is the Messages file there: not a build output
 we_prog.c|e_p_file_exists|1|keep|is a file there: asked of a source by name
 we_prog.c|e_project_is_open|1|keep|is the project file there: a source, not an output
 we_prog.c|e_run_sh_make_runnable|1|keep|the mode of the script the user runs: not a build output
+we_prog.c|e_java_find_in_path|1|keep|is a command on PATH: the java the VM starts with, no output named
+we_prog.c|e_java_tool_path|1|keep|is the tool the java sits beside there: no output named
+we_prog.c|e_vm_path_named|1|keep|is the java or scala runner beside a tool there: no output named
+
+# --- rule 6, the compiler style (comp_sw): never what Run starts ---
+# Run reads the kind of the entry (e_run_kind_of); the style keeps to these.
+we_prog.c|e_prog_source_of|2|keep|the adapter: the style names the files, a compiler of the "other" style writes its own program
+we_prog.c|e_prog_switch_text|1|keep|the style as a value an xwperc writes, for the answers a folder's file is compared with
+we_prog.c|e_run_kind_default|1|keep|the kind of an entry that names none, from its style
+we_prog.c|e_p_make_note_program_current|1|keep|build step: a compiler that writes its own program has no link to note
+we_prog.c|e_p_make_link|1|keep|build step: a compiler of the "other" style links nothing
+we_prog.c|e_comp_start|2|keep|build step: the compile flags and the object of a compiler of the "other" style
+we_prog.c|e_make_error_list|1|keep|message format: GNU diagnostics or the entry's own
+we_prog.c|e_run_c_options|2|keep|Options dialog: the style radio of a language
+we_prog.c|e_make_prj_opt|2|keep|Options dialog: the style radio of a project
+we_prog.c|e_project_options|2|keep|Options dialog: the style of a project's compiler
+we_prog.c|e_prj_setup|2|keep|the project's style: CMPSWTCH other sets it
+we_prog.c|e_wrt_prj_fl|1|keep|the project writer: CMPSWTCH
+we_prog.c|e_ini_prog|1|keep|the defaults: GNU for gcc, g++, gfortran and cobc, other for the rest
+we_prog.c|e_algol68_apply|2|keep|the toolchain's defaults: ga68 is GNU, a68g is other
+we_prog.c|e_copy_prog|2|keep|copying an entry copies its style
+we_debug.c|e_d_start_planned|2|keep|a trace line of the debugger's start

@@ -707,8 +707,10 @@ static void e_build_path_too_long(FENSTER *f, const char *what);
 
 /**
  * e_prog_source_of - The open file as the program-name owner reads it.
- * @s: filled in; @f: the file's window; @executable: the language's
- * Executable, or NULL; @exedir: the output folder.
+ * @s: filled in; @f: the file's window; @entry: the language's entry whose
+ * compiler style names the files (the one in force, or the user's own for
+ * "Use mine"); @executable: its Executable, or NULL; @exedir: the output
+ * folder.
  *
  * The one place the compiler's style is read to name something: a compiler
  * of the "other" style (fpc, javac, rustc) writes its own program, which is
@@ -716,15 +718,27 @@ static void e_build_path_too_long(FENSTER *f, const char *what);
  * name the editor gives to what a build makes goes through the owner from
  * here, so F9, Alt-C and Ctrl-F9 name the same files.
  */
-static void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const char *executable,
-                             const char *exedir)
+static void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const struct e_s_prog *entry,
+                             const char *executable, const char *exedir)
 {
  memset(s, 0, sizeof *s);
  s->name = f->datnam;
  s->exedir = exedir;
  s->executable = executable;
- s->self_linked = e_s_prog.comp_sw & 1;
- s->class_object = e_s_prog.comp_sw & 1;
+ s->self_linked = entry->comp_sw & 1;
+ s->class_object = entry->comp_sw & 1;
+}
+
+/**
+ * e_prog_switch_text - A language's compiler style, as its xwperc writes it.
+ * @entry: the language's entry; @out/@n: receive "0" or "1".
+ *
+ * Run compares the style with the answers a folder's xwperc is checked
+ * against, which hold it as this text (CompilerSwitch).
+ */
+static void e_prog_switch_text(const struct e_s_prog *entry, char *out, size_t n)
+{
+ snprintf(out, n, "%d", entry->comp_sw);
 }
 
 /**
@@ -745,7 +759,7 @@ static int e_p_link_operands_of(FENSTER *f, const char *exe_name, const char *ex
 {
  WpeProgramSource s;
 
- e_prog_source_of(&s, f, exe_name, exedir);
+ e_prog_source_of(&s, f, &e_s_prog, exe_name, exedir);
  if (wpe_progname_program(estr, sz, &s))
   return(-1);
  return(wpe_progname_object(ostr, sz, &s));
@@ -1486,12 +1500,19 @@ int e_run(FENSTER *f)
  return(e_p_make_then(f, e_run_after_make, NULL));
 }
 
-/* Run's shell line.  The program, or the file an interpreter runs, is its
-   "$1"; the user's own Arguments follow as his own shell text (a "< input"
-   of his keeps working), a folder's follow as "$2", "$3" ... words, never as
-   shell text. */
+/* Run's shell line.  What the kind starts is its words "$1" ... "$k" (the
+   program; the file an interpreter runs; the java and the class of a VM);
+   the user's own Arguments follow as his own shell text (a "< input" of his
+   keeps working), a folder's follow as more words, never as shell text. */
 #define E_RUN_LINE_ALL     "\"$@\""
-#define E_RUN_LINE_FIRST   "\"$1\""
+#define E_RUN_WORD_REF_ROOM 12      /* room of one "$N" and the blank after it */
+#define E_RUN_WORDS_FILE   1        /* an interpreter or a program: one word, the file */
+#define E_RUN_WORDS_VM     2        /* a VM: the java and the class */
+#define E_RUN_REFUSED_FMT  "not run: the class %s would be read by %s as an option"
+#define E_RUN_NONE_FMT     "%s makes no program to run"
+#define E_JAVA_NAME        "java"
+#define E_SCALA_NAME       "scala"   /* Scala's runner: it puts scala-library on the class path */
+#define E_SCALA_LANGUAGE   "Scala"
 #define E_RUN_HERE        "."       /* the program's folder when Exedir is empty */
 #define E_RUN_NAME         "program" /* the key's name when no language is known */
 #define E_RUN_WHAT_ASKED   "program to run"
@@ -1503,15 +1524,148 @@ int e_run(FENSTER *f)
 
 static char *e_prog_text_add(char *text, const char *part);
 
+/**
+ * e_java_find_in_path - Where @name is found on PATH, as the shell finds it.
+ * @name: a command; @out/@n: receive its path.
+ *
+ * An empty element of PATH means the current folder, as it does for the
+ * shell.
+ * Return: 1 when an executable file of that name is on PATH, else 0.
+ */
+static int e_java_find_in_path(const char *name, char *out, size_t n)
+{
+ const char *path = getenv("PATH"), *dir, *end;
+ int len;
+
+ if (!path)
+  return(0);
+ for (dir = path; ; dir = end + 1)
+ {
+  end = strchr(dir, ':');
+  if (!end)
+   end = dir + strlen(dir);
+  len = (int)(end - dir);
+  if (len == 0)
+   snprintf(out, n, "./%s", name);
+  else
+   snprintf(out, n, "%.*s%c%s", len, dir, DIRC, name);
+  if (access(out, X_OK) == 0)
+   return(1);
+  if (*end == '\0')
+   return(0);
+ }
+}
+
+/**
+ * e_java_tool_path - Where a tool is, as it is named.
+ * @tool: a command or a path; @out/@n: receive the path.
+ * Return: 1 when it names an executable file, else 0.
+ */
+static int e_java_tool_path(const char *tool, char *out, size_t n)
+{
+ if (!strchr(tool, DIRC))
+  return(e_java_find_in_path(tool, out, n));
+ if (snprintf(out, n, "%s", tool) >= (int)n)
+  return(0);
+ return(access(out, X_OK) == 0);
+}
+
+/**
+ * e_java_vm_path - The java a class is run with.
+ * @beside: the tool the class was made with (javac, scalac) or the
+ * debugger (jdb), as a command or a path; NULL for none.
+ * @out/@n: receive the java.
+ *
+ * The java next to that tool: a class made by that JDK's compiler runs
+ * there, while the java first on PATH may be another release.  Otherwise
+ * java on PATH, else "java".  The tool is an argument, never the debugger
+ * in force: at Run time that names whatever debugger the user last chose.
+ * Return: 0, or -1 when no path fits @n (@out is then empty).
+ */
+static int e_vm_path_named(const char *beside, const char *name, char *out, size_t n)
+{
+ char tool[WPE_PATH_SIZE], real[WPE_PATH_SIZE], *slash;
+
+ if (beside && beside[0] && e_java_tool_path(beside, tool, sizeof tool) &&
+     realpath(tool, real) && (slash = strrchr(real, DIRC)))
+ {
+  slash[1] = '\0';
+  /* A path that does not fit is no runner found: PATH is tried next. */
+  if (snprintf(out, n, "%s%s", real, name) < (int)n && access(out, X_OK) == 0)
+   return(0);
+ }
+ if (e_java_find_in_path(name, out, n))
+  return(0);
+ if (snprintf(out, n, "%s", name) >= (int)n)
+ {
+  out[0] = '\0';
+  return(-1);
+ }
+ return(0);
+}
+
+/* The java beside @beside, as above (the debugger's start and Java's Run).
+   e_vm_path_named does the same for another runner, as Scala's scala. */
+int e_java_vm_path(const char *beside, char *out, size_t n)
+{
+ return(e_vm_path_named(beside, E_JAVA_NAME, out, n));
+}
+
+
+/**
+ * e_java_vm_words - The words of a VM start, added to a plan.
+ * @p: the plan; @java: the java; @agent: an option the editor puts between
+ * the java and the class (jdb's agent), or NULL; @cls: the class;
+ * @from: whose the java and the class are (WPE_FROM_*).
+ *
+ * Run and the Java debugger start the VM through here, with the class path
+ * java reads from the user's own CLASSPATH and the build folder as the
+ * working folder.  A class named like an option is no class java could
+ * run, and is never handed to it.
+ * Return: 0, -1 for such a class (no word is added), -2 out of memory.
+ */
+int e_java_vm_words(WpeStartPlan *p, const char *java, const char *agent, const char *cls,
+                    int from)
+{
+ if (cls[0] == '-' || cls[0] == '@')
+  return(-1);
+ if (wpe_startplan_word(p, java, WPE_WORD_PROGRAM, from, NULL) < 0)
+  return(-2);
+ if (agent && wpe_startplan_word(p, agent, WPE_WORD_OPTION, WPE_FROM_EDITOR, NULL) < 0)
+  return(-2);
+ if (wpe_startplan_word(p, cls, WPE_WORD_TEXT, from, NULL) < 0)
+  return(-2);
+ return(0);
+}
+
 /* The values one Run takes, and whose they are. */
 typedef struct {
  const char *language;
- const char *interp;     /* the interpreter of a file run as it is, or NULL  */
+ const struct e_s_prog *entry; /* the entry whose switch and kind it follows   */
+ int kind;               /* E_RUN_*: what it starts                        */
+ const char *runner;     /* the Compiler: the interpreter, or the tool the
+                            VM's java sits beside; NULL when there is none */
  const char *exedir;     /* the folder the program was built into          */
  const char *exe_name;   /* its name (Executable), or NULL for the default */
  const char *args;       /* Arguments                                      */
  int own;                /* 1: the user's own plan, every value his        */
 } e_run_values;
+
+/**
+ * e_run_vm_name - The command that runs the class a language's build made.
+ * @v: the values.
+ *
+ * java for Java.  A Scala object needs scala-library on the class path, so
+ * Scala's own scala runner is used: java on its own fails with
+ * NoClassDefFoundError scala/Predef$.
+ * Return: the command's name.
+ */
+static const char *e_run_vm_name(const e_run_values *v)
+{
+ if (v->language && !strcmp(v->language, E_SCALA_LANGUAGE))
+  return(E_SCALA_NAME);
+ return(E_JAVA_NAME);
+}
 
 /**
  * e_run_from - Whose a value of a Run is.
@@ -1529,19 +1683,39 @@ static int e_run_from(const e_run_values *v, const char *scope, const char *key,
 }
 
 /**
+ * e_run_kind_in_force - What Ctrl-F9 starts for the open file.
+ * @p: the language's entry.
+ *
+ * A project's Run starts the project's program, whatever its compiler
+ * style says; a file's Run starts what its language's entry says.
+ * Return: E_RUN_*.
+ */
+static int e_run_kind_in_force(const struct e_s_prog *p)
+{
+ if (e__project)
+  return(E_RUN_PROGRAM);
+ return(e_run_kind_of(p));
+}
+
+/**
  * e_run_values_of - The values a Run takes from a language's entry.
- * @v: filled in; @p: the entry, or NULL; @exedir/@args: the output folder
- * and the Arguments; @own: 1 when they are the user's own.
+ * @v: filled in; @p: the entry, or NULL for a user who has none for the
+ * language (the open file's entry then gives the kind and the style, and
+ * nothing else of it is his); @exedir/@args: the output folder and the
+ * Arguments; @own: 1 when they are the user's own.
  */
 static void e_run_values_of(e_run_values *v, const struct e_s_prog *p, const char *exedir,
                             const char *args, int own)
 {
  memset(v, 0, sizeof *v);
  v->language = e_s_prog.language;
- if (p && (e_s_prog.comp_sw & 1))
-  v->interp = p->compiler;
+ v->entry = p ? p : &e_s_prog;
+ v->kind = e_run_kind_in_force(v->entry);
  if (p)
+ {
+  v->runner = p->compiler;
   v->exe_name = p->exe_name;
+ }
  v->exedir = exedir;
  v->args = args;
  v->own = own;
@@ -1562,8 +1736,41 @@ static int e_run_program_placed(FENSTER *f, const e_run_values *v, char *out, si
 
  if (e__project)
   return(wpe_path_copy(out, sz, e_prj_program()));
- e_prog_source_of(&s, f, v->exe_name, v->exedir);
+ e_prog_source_of(&s, f, v->entry, v->exe_name, v->exedir);
  return(wpe_progname_program(out, sz, &s));
+}
+
+/**
+ * e_run_vm_class - The class a VM runs: the name of what the build made.
+ * @f: the source window; @v: the values; @out/@sz: receive it.
+ *
+ * The same name the Java debugger starts: the file's name without its
+ * extension, never placed under Exedir, since the compiler wrote the class
+ * where it ran.
+ * Return: 0, or -1 when it does not fit.
+ */
+static int e_run_vm_class(FENSTER *f, const e_run_values *v, char *out, size_t sz)
+{
+ WpeProgramSource s;
+
+ e_prog_source_of(&s, f, v->entry, v->exe_name, v->exedir);
+ return(wpe_progname_program_name(out, sz, &s));
+}
+
+/**
+ * e_run_self_linked - Does the compiler write the program itself?
+ * @f: the source window; @v: the values.
+ *
+ * Then the build never writes the language's Executable, and a folder that
+ * sets one names a file the folder may ship.
+ * Return: 1 when it does.
+ */
+static int e_run_self_linked(FENSTER *f, const e_run_values *v)
+{
+ WpeProgramSource s;
+
+ e_prog_source_of(&s, f, v->entry, v->exe_name, v->exedir);
+ return(s.self_linked);
 }
 
 /**
@@ -1588,30 +1795,78 @@ static int e_run_program_path(FENSTER *f, const e_run_values *v, char *out, size
 }
 
 /**
+ * e_run_word_count - How many words the editor puts before the user's text.
+ * @kind: E_RUN_*.
+ * Return: the file an interpreter runs or the program, 1; the java and the
+ * class of a VM, 2.
+ */
+static int e_run_word_count(int kind)
+{
+ if (kind == E_RUN_VM)
+  return(E_RUN_WORDS_VM);
+ return(E_RUN_WORDS_FILE);
+}
+
+/**
+ * e_run_line_words - The shell's references to the first @k words of a Run.
+ * @k: how many.
+ * Return: the malloc'd text "$1" "$2" ... "$k", sized from @k; NULL out of
+ * memory.
+ */
+static char *e_run_line_words(int k)
+{
+ char *text = MALLOC((size_t)k * E_RUN_WORD_REF_ROOM + 1);
+ size_t used = 0;
+ int i;
+
+ if (!text)
+  return(NULL);
+ text[0] = '\0';
+ for (i = 1; i <= k; i++)
+ {
+  if (i > 1)
+   used += (size_t)sprintf(text + used, " \"$%d\"", i);
+  else
+   used += (size_t)sprintf(text + used, "\"$%d\"", i);
+ }
+ return(text);
+}
+
+/**
  * e_run_line - The shell line of a Run.
  * @v: the values; @args_as_text: 1 when the user's own Arguments follow as
  * his shell text.
+ *
+ * An interpreter's line starts with the interpreter, which is the plan's
+ * own text; every other kind's words are the plan's words.
  * Return: the malloc'd line, or NULL out of memory.
  */
 static char *e_run_line(const e_run_values *v, int args_as_text)
 {
+ char *words = NULL, *line;
  const char *first = E_RUN_LINE_ALL;
  size_t size;
- char *line;
 
  if (args_as_text)
-  first = E_RUN_LINE_FIRST;
+ {
+  if (!(words = e_run_line_words(e_run_word_count(v->kind))))
+   return(NULL);
+  first = words;
+ }
  size = strlen(first) + 1;
- if (v->interp)
-  size += strlen(v->interp) + 1;
+ if (v->kind == E_RUN_INTERPRETER && v->runner)
+  size += strlen(v->runner) + 1;
  if (args_as_text)
   size += strlen(v->args) + 1;
  if (!(line = MALLOC(size)))
-  return(NULL);
- line[0] = '\0';
- if (v->interp)
  {
-  strcat(line, v->interp);
+  FREE(words);
+  return(NULL);
+ }
+ line[0] = '\0';
+ if (v->kind == E_RUN_INTERPRETER && v->runner)
+ {
+  strcat(line, v->runner);
   strcat(line, " ");
  }
  strcat(line, first);
@@ -1620,40 +1875,188 @@ static char *e_run_line(const e_run_values *v, int args_as_text)
   strcat(line, " ");
   strcat(line, v->args);
  }
+ FREE(words);
  return(line);
 }
 
+/** The keys of a language's entry that decide what Run starts. */
+#define E_RUN_KEY_RUN        "Run"
+#define E_RUN_KEY_SWITCH     "CompilerSwitch"
+#define E_RUN_KEY_COMPILER   "Compiler"
+#define E_RUN_KEY_EXECUTABLE "Executable"
+#define E_RUN_SWITCH_ROOM    16
+#define E_RUN_CHOICE_ROOM    (WPE_PATH_SIZE + 32)
+
 /**
- * e_run_plan_first - The program, or the file the interpreter runs: "$1".
+ * e_run_kind_from - Whose the kind of a Run is.
+ * @v: the values.
+ * Return: WPE_FROM_FOLDER when a folder's xwperc named it, else
+ * WPE_FROM_USER.
+ */
+static int e_run_kind_from(const e_run_values *v)
+{
+ return(e_run_from(v, v->language, E_RUN_KEY_RUN, e_run_kind_name(v->kind)));
+}
+
+/**
+ * e_run_interp_from - Whose the interpreter's shell line is.
+ * @v: the values.
+ *
+ * The line starts with the Compiler, which the kind turns into the
+ * interpreter, so the folder's Compiler or its Run makes it the folder's.
+ * Return: WPE_FROM_FOLDER or WPE_FROM_USER.
+ */
+static int e_run_interp_from(const e_run_values *v)
+{
+ if (e_run_from(v, v->language, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER)
+  return(WPE_FROM_FOLDER);
+ return(e_run_kind_from(v));
+}
+
+/**
+ * e_run_switch_from - Whose the compiler style of a Run is.
+ * @v: the values.
+ *
+ * The style decides whether the compiler writes its own program, so it
+ * decides which file a program kind starts.
+ * Return: WPE_FROM_FOLDER or WPE_FROM_USER.
+ */
+static int e_run_switch_from(const e_run_values *v)
+{
+ char text[E_RUN_SWITCH_ROOM];
+
+ e_prog_switch_text(v->entry, text, sizeof text);
+ return(e_run_from(v, v->language, E_RUN_KEY_SWITCH, text));
+}
+
+/**
+ * e_run_vm_from - Whose the java and the class of a VM run are.
+ * @f: the source window; @v: the values.
+ *
+ * The java sits beside the Compiler, and the class is named by the style
+ * and the Executable, so a folder that set any of them chose what starts.
+ * Return: WPE_FROM_FOLDER or WPE_FROM_USER.
+ */
+static int e_run_vm_from(FENSTER *f, const e_run_values *v)
+{
+ if (e_run_from(v, v->language, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER ||
+     e_run_kind_from(v) == WPE_FROM_FOLDER || e_run_switch_from(v) == WPE_FROM_FOLDER)
+  return(WPE_FROM_FOLDER);
+ if (e_run_self_linked(f, v) &&
+     e_run_from(v, v->language, E_RUN_KEY_EXECUTABLE, v->exe_name) == WPE_FROM_FOLDER)
+  return(WPE_FROM_FOLDER);
+ return(WPE_FROM_USER);
+}
+
+/**
+ * e_run_note_choice - Say a key a folder set that chose what Run starts.
+ * @plan: the plan; @key/@value: the key and its value.
+ *
+ * It makes the plan ask, and the box names the key and the program it
+ * picked: without it a folder's CompilerSwitch or Run would turn Run's
+ * program into a file the folder ships and nothing would say so.
+ */
+static void e_run_note_choice(WpeStartPlan *plan, const char *key, const char *value)
+{
+ char what[E_RUN_CHOICE_ROOM];
+
+ wpe_startplan_value(plan, E_STARTCMD_XWPERC, key, value, NULL);
+ snprintf(what, sizeof what, "%s = %s", key, value);
+ wpe_startplan_folder_chose(plan, what);
+}
+
+/** A project's compiler style, as its file writes it. */
+#define E_RUN_KEY_PRJ_SWITCH "CMPSWTCH"
+#define E_RUN_PRJ_OTHER      "other"
+
+/**
+ * e_run_note_project_style - Say that a project's style left its program
+ * unbuilt.
+ * @plan: the plan; @f: the source window; @v: the values.
+ *
+ * A project of style other (CMPSWTCH=other) links nothing, so the program
+ * Run starts is a file the folder holds, never one this build wrote.  When
+ * that style is not the user's own, the plan asks and the box names it.
+ */
+static void e_run_note_project_style(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
+{
+ if (e_run_self_linked(f, v) && e_run_switch_from(v) == WPE_FROM_FOLDER)
+  e_run_note_choice(plan, E_RUN_KEY_PRJ_SWITCH, E_RUN_PRJ_OTHER);
+}
+
+/**
+ * e_run_note_choices - Say every key of a folder that chose Run's program.
+ * @plan: the plan; @f: the source window; @v: the values.
+ *
+ * Run (the kind), CompilerSwitch (it makes the compiler write its own
+ * program, so the word is another file) and, for a compiler that writes its
+ * own program, Executable (the build never writes that file).  A linked
+ * program under a folder's Exedir or Executable is not one of them: the
+ * link writes that file in this very build.  A project's program is the
+ * project's, unless its style links nothing.
+ */
+static void e_run_note_choices(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
+{
+ char text[E_RUN_SWITCH_ROOM];
+
+ if (e__project)
+ {
+  e_run_note_project_style(plan, f, v);
+  return;
+ }
+ if (e_run_kind_from(v) == WPE_FROM_FOLDER)
+  e_run_note_choice(plan, E_RUN_KEY_RUN, e_run_kind_name(v->kind));
+ if (v->kind == E_RUN_INTERPRETER)
+  return;
+ if (e_run_switch_from(v) == WPE_FROM_FOLDER)
+ {
+  e_prog_switch_text(v->entry, text, sizeof text);
+  e_run_note_choice(plan, E_RUN_KEY_SWITCH, text);
+ }
+ if (v->exe_name && v->exe_name[0] && e_run_self_linked(f, v) &&
+     e_run_from(v, v->language, E_RUN_KEY_EXECUTABLE, v->exe_name) == WPE_FROM_FOLDER)
+  e_run_note_choice(plan, E_RUN_KEY_EXECUTABLE, v->exe_name);
+}
+
+/**
+ * e_run_plan_source - The file an interpreter runs: the source, as "$1".
+ * @plan: the plan; @f: the source window.
+ * Return: 0, or -1 when the path does not fit.
+ */
+static int e_run_plan_source(WpeStartPlan *plan, FENSTER *f)
+{
+ char path[WPE_BUILD_PATH_MAX];
+
+ if (wpe_startplan_operand(path, sizeof path, e_run_src_dirct, e_run_src_datnam))
+ {
+  e_build_path_too_long(f, "source");
+  return(-1);
+ }
+ wpe_startplan_word(plan, path, WPE_WORD_OPERAND, WPE_FROM_USER, E_RUN_SRC_WINDOW);
+ wpe_startplan_path(plan, path, WPE_PATH_INPUT, WPE_FROM_USER, E_RUN_SRC_WINDOW, NULL);
+ return(0);
+}
+
+/**
+ * e_run_plan_program - The program the build made: "$1".
  * @plan: the plan; @f: the source window; @v: the values.
  *
  * A folder's Exedir or Executable that chose the program is the folder's,
  * and asks when it puts the program outside the folder.
  * Return: 0, or -1 when the path does not fit.
  */
-static int e_run_plan_first(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
+static int e_run_plan_program(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
 {
  char path[WPE_BUILD_PATH_MAX];
  int from_dir, from_exe, from = WPE_FROM_USER;
 
- if (v->interp)
- {
-  if (wpe_startplan_operand(path, sizeof path, e_run_src_dirct, e_run_src_datnam))
-  {
-   e_build_path_too_long(f, "source");
-   return(-1);
-  }
-  wpe_startplan_word(plan, path, WPE_WORD_OPERAND, WPE_FROM_USER, E_RUN_SRC_WINDOW);
-  wpe_startplan_path(plan, path, WPE_PATH_INPUT, WPE_FROM_USER, E_RUN_SRC_WINDOW, NULL);
-  return(0);
- }
  if (e_run_program_path(f, v, path, sizeof path))
  {
   e_build_path_too_long(f, "program");
   return(-1);
  }
  from_dir = e_run_from(v, E_OPT_SCOPE_PROGRAMMING, "Exedir", v->exedir);
- from_exe = e_run_from(v, v->language, "Executable", v->exe_name);
+ from_exe = e_run_from(v, v->language, E_RUN_KEY_EXECUTABLE, v->exe_name);
  if (from_dir == WPE_FROM_FOLDER || from_exe == WPE_FROM_FOLDER)
   from = WPE_FROM_FOLDER;
  wpe_startplan_word(plan, path, WPE_WORD_OPERAND, from, E_RUN_PROG_SOURCE);
@@ -1661,8 +2064,78 @@ static int e_run_plan_first(WpeStartPlan *plan, FENSTER *f, const e_run_values *
  if (from_dir == WPE_FROM_FOLDER)
   wpe_startplan_value(plan, E_STARTCMD_XWPERC, "Exedir", v->exedir, NULL);
  if (from_exe == WPE_FROM_FOLDER)
-  wpe_startplan_value(plan, E_STARTCMD_XWPERC, "Executable", v->exe_name, NULL);
+  wpe_startplan_value(plan, E_STARTCMD_XWPERC, E_RUN_KEY_EXECUTABLE, v->exe_name, NULL);
  return(0);
+}
+
+/**
+ * e_run_vm_parts - The java and the class a VM run starts.
+ * @f: the source window; @v: the values; @java/@jsz and @cls/@csz: receive
+ * them.
+ * Return: 0, or -1 when one does not fit (the user is told which).
+ */
+static int e_run_vm_parts(FENSTER *f, const e_run_values *v, char *java, size_t jsz,
+                          char *cls, size_t csz)
+{
+ if (e_run_vm_class(f, v, cls, csz))
+ {
+  e_build_path_too_long(f, "program");
+  return(-1);
+ }
+ if (e_vm_path_named(v->runner, e_run_vm_name(v), java, jsz))
+ {
+  e_build_path_too_long(f, "program");
+  return(-1);
+ }
+ return(0);
+}
+
+/**
+ * e_run_plan_vm - The java and the class a build made: "$1" and "$2".
+ * @plan: the plan; @f: the source window; @v: the values.
+ *
+ * The same start the Java debugger makes, in the build's folder, so the
+ * class path is the user's own CLASSPATH.  A class named like an option is
+ * refused and said, never handed to java.
+ * Return: 0, or -1 when nothing may start.
+ */
+static int e_run_plan_vm(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
+{
+ char java[WPE_PATH_SIZE], cls[WPE_BUILD_PATH_MAX], msg[WPE_BUILD_PATH_MAX + 64];
+ int rc;
+
+ if (e_run_vm_parts(f, v, java, sizeof java, cls, sizeof cls))
+  return(-1);
+ rc = e_java_vm_words(plan, java, NULL, cls, e_run_vm_from(f, v));
+ if (rc == -1)
+ {
+  snprintf(msg, sizeof msg, E_RUN_REFUSED_FMT, cls, e_run_vm_name(v));
+  e_status_say(f, msg);
+ }
+ return(rc);
+}
+
+/**
+ * e_run_plan_first - What Run starts, as the first words of its shell line.
+ * @plan: the plan; @f: the source window; @v: the values.
+ *
+ * By kind: the file an interpreter runs, the program, or the java and the
+ * class of a VM.  The keys of a folder's xwperc that chose it are noted.
+ * Return: 0, or -1 when it does not fit or may not start.
+ */
+static int e_run_plan_first(WpeStartPlan *plan, FENSTER *f, const e_run_values *v)
+{
+ int rc;
+
+ if (v->kind == E_RUN_INTERPRETER)
+  rc = e_run_plan_source(plan, f);
+ else if (v->kind == E_RUN_VM)
+  rc = e_run_plan_vm(plan, f, v);
+ else
+  rc = e_run_plan_program(plan, f, v);
+ if (rc == 0)
+  e_run_note_choices(plan, f, v);
+ return(rc);
 }
 
 /**
@@ -1705,14 +2178,15 @@ static WpeStartPlan *e_run_plan_make(FENSTER *f, const e_run_values *v)
  wpe_startplan_set_cwd(plan, dir ? dir : E_RUN_HERE);
  if (dir)
   FREE(dir);
- if (v->interp)
-  from_interp = e_run_from(v, v->language, "Compiler", v->interp);
+ if (v->kind == E_RUN_INTERPRETER)
+  from_interp = e_run_interp_from(v);
  line = e_run_line(v, args_as_text);
  wpe_startplan_shell(plan, line ? line : "", from_interp, E_RUN_INTERP_SOURCE);
  if (line)
   FREE(line);
- if (from_interp == WPE_FROM_FOLDER)
-  wpe_startplan_value(plan, E_STARTCMD_XWPERC, "Compiler", v->interp, NULL);
+ if (e_run_from(v, v->language, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER &&
+     v->kind == E_RUN_INTERPRETER)
+  wpe_startplan_value(plan, E_STARTCMD_XWPERC, E_RUN_KEY_COMPILER, v->runner, NULL);
  if (e_run_plan_first(plan, f, v))
  {
   wpe_startplan_free(plan);
@@ -1732,14 +2206,22 @@ static WpeStartPlan *e_run_plan_make(FENSTER *f, const e_run_values *v)
  */
 static char *e_run_shown(FENSTER *f, const e_run_values *v)
 {
- char path[WPE_BUILD_PATH_MAX];
+ char path[WPE_BUILD_PATH_MAX], java[WPE_PATH_SIZE];
  char *text = NULL;
 
- if (v->interp)
+ if (v->kind == E_RUN_INTERPRETER)
  {
-  text = e_prog_text_add(text, v->interp);
+  text = e_prog_text_add(text, v->runner);
   if (wpe_startplan_operand(path, sizeof path, e_run_src_dirct, e_run_src_datnam) == 0)
    text = e_prog_text_add(text, path);
+ }
+ else if (v->kind == E_RUN_VM)
+ {
+  if (e_run_vm_parts(f, v, java, sizeof java, path, sizeof path) == 0)
+  {
+   text = e_prog_text_add(text, java);
+   text = e_prog_text_add(text, path);
+  }
  }
  else if (e_run_program_path(f, v, path, sizeof path) == 0)
   text = e_prog_text_add(text, path);
@@ -1747,6 +2229,47 @@ static char *e_run_shown(FENSTER *f, const e_run_values *v)
  if (!text)
   text = WpeStrdup("");
  return(text);
+}
+
+/**
+ * e_run_say_nothing - Say that the language makes no program to run.
+ * @f: the source window; e_s_prog holds its language's entry.
+ *
+ * Ctrl-F9 on a LaTeX file builds the document with F9's own step and then
+ * tells the user there is nothing to start, instead of running the build
+ * again and saying nothing.
+ */
+static void e_run_say_nothing(FENSTER *f)
+{
+ char msg[WPE_PATH_MSG_MAX];
+
+ snprintf(msg, sizeof msg, E_RUN_NONE_FMT, e_s_prog.language ? e_s_prog.language : E_RUN_NAME);
+ e_status_say(f, msg);
+}
+
+/**
+ * e_run_own_plan_offered - May the Run box offer "Use mine"?
+ * @f: the source window; @mine: the values of the user's own plan;
+ * @has_own: 1 when he has an entry of his own for the language.
+ *
+ * With an entry of his, his plan starts what his entry says.  With none (a
+ * language only the folder's xwperc makes), the kind and the compiler style
+ * are the folder's, so "Use mine" is offered only for a program this build
+ * links: an interpreter, a class or a program the compiler writes itself
+ * would be a file the folder chose, started as if it were his.
+ * Return: 1 when it may be offered.
+ */
+static int e_run_own_plan_offered(FENSTER *f, const e_run_values *mine, int has_own)
+{
+ if (mine->kind == E_RUN_NONE)
+  return(0);
+ if (has_own)
+  return(1);
+ if (mine->kind != E_RUN_PROGRAM)
+  return(0);
+ if (e__project)
+  return(1);
+ return(!e_run_self_linked(f, mine));
 }
 
 /**
@@ -1769,6 +2292,11 @@ static WpeStartPlan *e_run_plan_approve(FENSTER *f)
  int verdict;
 
  e_run_values_of(&v, &e_s_prog, e_prog.exedir, e_prog.arguments, 0);
+ if (v.kind == E_RUN_NONE)
+ {
+  e_run_say_nothing(f);
+  return(NULL);
+ }
  if (!(plan = e_run_plan_make(f, &v)))
   return(NULL);
  shown = e_run_shown(f, &v);
@@ -1777,7 +2305,7 @@ static WpeStartPlan *e_run_plan_approve(FENSTER *f)
   if (e_s_prog.language)
    own = e_opt_own_language(e_s_prog.language);
   e_run_values_of(&v, own, e_opt_own_value("Exedir"), e_opt_own_value(E_ARGS_KEY), 1);
-  if (own || !(e_s_prog.comp_sw & 1))   /* an interpreter only the folder names: none of his */
+  if (e_run_own_plan_offered(f, &v, own != NULL))
   {
    wpe_startplan_set_own(plan, e_run_plan_make(f, &v));
    own_shown = e_run_shown(f, &v);
@@ -2227,7 +2755,7 @@ static int e_comp_operands(FENSTER *f, const char *exedir, char *fstr, char *ost
 
  if (wpe_startplan_operand(fstr, sz, f->dirct, f->datnam))
   return(-1);
- e_prog_source_of(&s, f, NULL, exedir);
+ e_prog_source_of(&s, f, &e_s_prog, NULL, exedir);
  if (wpe_progname_object(ostr, sz, &s))
   return(-2);
  return(0);
@@ -2246,7 +2774,7 @@ static void e_comp_step_begin(FENSTER *f, const char *ostr)
  WpeProgramSource s;
  char estr[WPE_BUILD_PATH_MAX], lostr[WPE_BUILD_PATH_MAX];
 
- e_prog_source_of(&s, f, e_s_prog.exe_name, e_prog.exedir);
+ e_prog_source_of(&s, f, &e_s_prog, e_s_prog.exe_name, e_prog.exedir);
  if (s.self_linked &&
      !e_p_link_operands_of(f, e_s_prog.exe_name, e_prog.exedir, estr, lostr, sizeof estr))
  {
@@ -4914,6 +5442,7 @@ static void e_algol68_apply(struct e_s_prog *cp, int use_ga68)
   cp->intstr       = WpeStrdup(cc_intstr);
   cp->start_symbol = WpeStrdup("__algol68_main");
   cp->comp_sw      = 0;
+  cp->run_kind     = E_RUN_PROGRAM;
  }
  else
  {
@@ -4925,6 +5454,7 @@ static void e_algol68_apply(struct e_s_prog *cp, int use_ga68)
   cp->intstr       = WpeStrdup(A68G_INTSTR);
   cp->start_symbol = NULL;
   cp->comp_sw      = 1;
+  cp->run_kind     = E_RUN_INTERPRETER;
  }
 }
 
@@ -4984,6 +5514,78 @@ int e_algol68_use_ga68_in(const char *dir, const char *name)
  if (full)
   FREE(full);
  return use;
+}
+
+/* The built-in languages in the order e_ini_prog makes them, and what
+   Ctrl-F9 starts for each: C, C++, Fortran, Pascal, Java, Python, LaTeX,
+   Perl, COBOL, Algol 68 (e_algol68_apply chooses per toolchain), Go, Rust,
+   Scala. */
+static const int e_ini_run_kinds[] = {
+ E_RUN_PROGRAM, E_RUN_PROGRAM, E_RUN_PROGRAM, E_RUN_PROGRAM, E_RUN_VM,
+ E_RUN_INTERPRETER, E_RUN_NONE, E_RUN_INTERPRETER, E_RUN_PROGRAM,
+ E_RUN_PROGRAM, E_RUN_PROGRAM, E_RUN_PROGRAM, E_RUN_VM
+};
+
+/**
+ * e_run_kind_of - What Ctrl-F9 starts for a language.
+ * @p: the language's entry.
+ *
+ * Run reads the kind here and nowhere else, so a language that is not built
+ * in says what it runs in its own xwperc, and the compiler style
+ * (CompilerSwitch) keeps to the build steps and the message format it was
+ * made for.
+ * Return: E_RUN_*.
+ */
+int e_run_kind_of(const struct e_s_prog *p)
+{
+ return(p->run_kind);
+}
+
+/** The words an xwperc writes after "Run :", indexed by E_RUN_* - 1. */
+static const char *const e_run_kind_names[] = { "interpreter", "program", "vm", "none" };
+
+/**
+ * e_run_kind_name - The word an xwperc writes for a kind.
+ * @kind: E_RUN_*.
+ * Return: "interpreter", "program", "vm" or "none"; "" for UNSET.
+ */
+const char *e_run_kind_name(int kind)
+{
+ if (kind < E_RUN_INTERPRETER || kind > E_RUN_NONE)
+  return("");
+ return(e_run_kind_names[kind - E_RUN_INTERPRETER]);
+}
+
+/**
+ * e_run_kind_parse - The kind an xwperc's "Run" value means.
+ * @name: the value, in any case.
+ * Return: E_RUN_*, or E_RUN_KIND_UNSET for a word that names none (the
+ * entry then keeps the kind it has).
+ */
+int e_run_kind_parse(const char *name)
+{
+ int kind;
+
+ for (kind = E_RUN_INTERPRETER; kind <= E_RUN_NONE; kind++)
+  if (WpeStrccmp(e_run_kind_names[kind - E_RUN_INTERPRETER], name) == 0)
+   return(kind);
+ return(E_RUN_KIND_UNSET);
+}
+
+/**
+ * e_run_kind_default - The kind of an entry whose xwperc gives no Run.
+ * @p: the entry.
+ *
+ * A compiler of the "other" style used to be run as an interpreter, so an
+ * entry a user made before the key existed (a Lua with CompilerSwitch 1)
+ * keeps running as one; any other entry runs the program it builds.
+ * Return: E_RUN_INTERPRETER or E_RUN_PROGRAM.
+ */
+int e_run_kind_default(const struct e_s_prog *p)
+{
+ if (p->comp_sw & 1)
+  return(E_RUN_INTERPRETER);
+ return(E_RUN_PROGRAM);
 }
 
 int e_ini_prog(ECNT *cn)
@@ -5136,6 +5738,7 @@ int e_ini_prog(ECNT *cn)
   e_prog.comp[i]->libraries = WpeStrdup("");
   e_prog.comp[i]->exe_name = WpeStrdup("");
   e_prog.comp[i]->comp_sw = (i < 3 || i == 8) ? 0 : 1;  /* GNU for gcc/g++/gfortran/cobc, other for rest */
+  e_prog.comp[i]->run_kind = e_ini_run_kinds[i];
  }
  /* Default the Algol 68 entry to whichever compiler is installed (ga68 when it
     is the only one).  Each .a68 file's actual compiler is then chosen by its
@@ -5175,6 +5778,7 @@ int e_copy_prog(struct e_s_prog *out, struct e_s_prog *in)
  out->start_symbol = in->start_symbol ? WpeStrdup(in->start_symbol) : NULL;
  out->key = in->key;
  out->comp_sw = in->comp_sw;
+ out->run_kind = in->run_kind;
  return(0);
 }
 
@@ -5538,6 +6142,9 @@ int e_run_options(FENSTER *f)
    e_prog.comp[e_prog.num - 1]->filepostfix =
      (char **)WpeExpArrayCreate(0, sizeof(char *), 1);
    e_copy_prog(e_prog.comp[e_prog.num-1], &e_s_prog);
+   /* A new language is what its own style says, not what the language the
+      dialog was opened from runs. */
+   e_prog.comp[e_prog.num-1]->run_kind = e_run_kind_default(e_prog.comp[e_prog.num-1]);
    for (n = 0; e_prog.comp[e_prog.num-1]->language[n]; n++)
    {
     for (i = 0; i <= e_prog.num &&

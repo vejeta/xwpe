@@ -278,6 +278,22 @@ Changes
   New Project names the program after the project up to its last dot
   (my.app.prj builds my.app, not my), as a source does.
 
+* Ctrl-F9 starts what the build made.  For Rust, Pascal, Go, Java, Scala
+  and LaTeX it ran the compiler a second time and never the program (since
+  1.6.2).  Now Rust, Pascal and Go start the program they wrote (./t), Java
+  starts the class on the VM (java T, in the source's folder, with the java
+  beside the compiler and your own CLASSPATH, as the Java debugger does),
+  Scala starts it with the scala runner beside scalac (scala T, which puts
+  scala-library on the class path), and LaTeX says it makes no program to run.  A project starts its
+  program whatever its Compiler Style says.  Each language's entry carries
+  this as a Run line in xwperc (interpreter, program, vm or none), saved by
+  Options; a language you add keeps running as before (an interpreter when
+  its style is Other).  A folder's xwperc that sets Run or CompilerSwitch,
+  or an Executable for a compiler that writes its own program, is shown and
+  asked about before the program it chose starts, and so is a folder's
+  project of style other (CMPSWTCH=other), whose build links nothing.  A class named like an
+  option (-x.java) is not started, and the status row says so.
+
 * F9 and Ctrl-F9 no longer trust a built file that came with a clone.  A
   program, object or library counted as up to date when it was newer than
   its sources, so the first F9 in a clone built nothing and Ctrl-F9 ran the

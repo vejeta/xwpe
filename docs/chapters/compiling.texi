@@ -48,8 +48,18 @@ Program arguments can be set via @samp{Run @result{} Arguments}
 (@kbd{Alt-R A}); they are shell text of yours, so @samp{< input.txt}
 works.
 
-For interpreted languages (Python, Perl), @kbd{Ctrl-F9} runs the
-script directly via the interpreter (e.g.@: @code{python3 file.py}).
+What @kbd{Ctrl-F9} starts depends on the language's entry (its
+@code{Run} kind, below): an interpreted language (Python, Perl, Algol 68
+with a68g) runs the source with its interpreter (e.g.@: @code{python3
+file.py}); a compiled one (C, C++, Fortran, COBOL, Pascal, Go, Rust,
+Algol 68 with ga68) starts the program the build made (@file{./t.e}
+where xwpe linked it, @file{./t} where the compiler wrote it); Java
+starts the class with @code{java T}, in the source's folder, with
+the @code{java} that sits beside the compiler (else the first on
+@env{PATH}) and your own @env{CLASSPATH}; Scala does the same with the
+@code{scala} runner beside @code{scalac} (@code{scala T}), which puts
+@file{scala-library} on the class path; LaTeX makes no program, and
+the status row says so.  A project always starts its program.
 In X11 mode, output is captured to the Messages buffer through a
 terminal of the program's own; no xterm is spawned.  What you type goes
 to the program (in a terminal, on X11 and on Wayland alike),
@@ -221,10 +231,21 @@ starts that file; an absolute name is written below the folder too
 (@file{/tmp/prog} with an @code{Exedir} of @file{.} is
 @file{.//tmp/prog}) and at its own path only when @code{Exedir} is
 empty.  A compiler of style @code{Other} (fpc, javac,
-rustc) writes its own program where it runs, in the source's folder.
+rustc) writes its own program where it runs, in the source's folder;
+@kbd{F9} does not pass it the @code{Executable Name}, so a name you set
+there is only the name @kbd{Ctrl-F9} starts.
 @item @strong{Compiler Style}: @code{GNU} or @code{Other}.
 @code{GNU} uses the built-in @code{file:line:column:} pattern.
-@code{Other} uses a custom interpreter string that you define.
+@code{Other} uses a custom interpreter string that you define, and
+means the compiler writes its own program.
+@item @strong{Run}: what @kbd{Ctrl-F9} starts once the build has made it:
+@code{interpreter} (the Compiler runs the source), @code{program} (the
+program the build made), @code{vm} (@code{java}, or @code{scala} for
+Scala, runs the class the build made) or @code{none} (nothing to start).  It is read from a language's
+@code{Run} line in @file{xwperc} and saved by @samp{Save Options}.  The
+built-in languages have theirs, and an entry that names none (a language
+you add) is an interpreter when its Compiler Style is @code{Other} and a
+program otherwise.
 @end itemize
 
 When an @file{xwperc} in the folder you started in sets a language's
@@ -237,9 +258,16 @@ that folder and line.  A project file's @code{CMP}, @code{CMPFLAGS} and
 Run (@kbd{Ctrl-F9}) and Make (@kbd{Alt-A}) run the folder's own
 program and its @file{Makefile}, which is the folder's code by design;
 when the folder's @file{xwperc} sets @code{Arguments}, or chooses which
-program Run starts with an @code{Exedir} outside the folder, they show
+program Run starts (an @code{Exedir} outside the folder; a @code{Run} or
+@code{CompilerSwitch} of its own; an @code{Executable} for a compiler
+that writes its own program, a file the build never writes; a project
+whose @code{CMPSWTCH} is @code{other}, which links nothing), they show
 it and ask once, and say that they run the folder's own program or
-@file{Makefile}.  After @samp{Run it} a folder's @code{Arguments} reach
+@file{Makefile}.  The box names the keys that chose the program
+(@samp{Program chosen by ./xwperc: CompilerSwitch = 1}).  For a language
+only the folder's @file{xwperc} defines, @samp{Use mine} is offered only
+when Run starts a program the build links: you have no interpreter, class
+or Run line of your own for it.  After @samp{Run it} a folder's @code{Arguments} reach
 the program and @command{make} as separate words, never as shell text;
 your own stay your shell text.  The program and every file name Run
 hands over are words too, so a source named @file{a;touch x;.c} or
@@ -277,13 +305,16 @@ the note below).
 @item Fortran @tab gfortran @tab .f .f90 .f95 .f03 .f08 @tab @code{file:line:col:} @tab
   GNU style.  Blank lines in output are handled.
 @item Pascal @tab fpc @tab .p .pas .pp @tab @code{file(line,col)} @tab
-  Dedicated pattern.  Cursor jumps to exact column.
+  Dedicated pattern.  Cursor jumps to exact column.  fpc writes the
+  program itself; Ctrl-F9 starts it.
 @item Java @tab javac @tab .java @tab @code{file:line:} @tab
-  No column in javac output.  Cursor goes to start of line.
+  No column in javac output.  Cursor goes to start of line.  Ctrl-F9
+  starts the class on the VM (@code{java T}).
 @item Python @tab python3 @tab .py @tab @code{File file, line N} @tab
   Uses @code{-m py_compile}.  Ctrl-F9 runs the script.
 @item LaTeX @tab pdflatex @tab .tex @tab @code{file:line:} @tab
-  Uses @code{-interaction=nonstopmode -file-line-error}.
+  Uses @code{-interaction=nonstopmode -file-line-error}.  Makes no
+  program, so Ctrl-F9 builds the document and says so.
 @item Perl @tab perl @tab .pl .pm @tab @code{at file line N} @tab
   Uses @code{-c} for syntax check.  Ctrl-F9 runs the script.
 @item COBOL @tab cobc @tab .cob .cbl @tab @code{file:line:} @tab
@@ -294,7 +325,8 @@ the note below).
   a68g (Algol 68 Genie) interprets, with @code{--norun} for the F9 check.
 @item Scala @tab scalac @tab .scala @tab @code{file:line:} @tab
   Uses @code{-deprecation}.  scalac writes the class files itself, so
-  there is no link step.  Scala 3's @samp{-- [E007] @dots{}: t.scala:3:17}
+  there is no link step; Ctrl-F9 starts the class with @code{scala T},
+  the runner beside scalac.  Scala 3's @samp{-- [E007] @dots{}: t.scala:3:17}
   heading makes a row too.
 @end multitable
 
@@ -325,7 +357,9 @@ Go (@code{.go}), Rust (@code{.rs}) and Scala (@code{.scala}) also have
 build is driven by the debug toolchain itself (Delve builds the Go package,
 xwpe compiles Rust with @code{rustc -g}, and Bloop builds the Scala target).
 See @ref{Debugging}.  All three are syntax-highlighted -- see
-@ref{Configuration} (@file{syntax_def}).
+@ref{Configuration} (@file{syntax_def}).  @kbd{Ctrl-F9} starts the
+program Go and Rust wrote (@file{./t} for @file{t.go} and @file{t.rs}),
+and the class Scala wrote on the VM.
 @end quotation
 
 @section The interpreter string (pattern language)

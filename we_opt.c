@@ -1764,6 +1764,58 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
  return 0;
 }
 
+/** The key a language's entry names what Ctrl-F9 starts with. */
+#define E_OPT_KEY_RUN "Run"
+/** The room of a CompilerSwitch value written as a number. */
+#define E_OPT_SWITCH_ROOM 16
+
+/**
+ * e_opt_take_run_kind - Take the "Run" value of a language's entry.
+ * @kind: the entry's kind; @value: the file's word.
+ *
+ * A word that names no kind leaves the entry as it was, so a misspelt key
+ * never turns a language into something else.
+ */
+static void e_opt_take_run_kind(int *kind, const char *value)
+{
+ int named = e_run_kind_parse(value);
+
+ if (named != E_RUN_KIND_UNSET)
+  *kind = named;
+}
+
+/**
+ * e_opt_decide_kind - Give an entry that names no Run the kind its style
+ * says.
+ * @p: the entry.
+ */
+static void e_opt_decide_kind(struct e_s_prog *p)
+{
+ if (p->run_kind == E_RUN_KIND_UNSET)
+  p->run_kind = e_run_kind_default(p);
+}
+
+/**
+ * e_opt_lang_finish - Decide the Run kind of every entry a file created.
+ *
+ * Called once an option file has been read to its end, when every key of
+ * each language section is known: a language the editor does not build in
+ * (a user's own Lua) that names no Run runs as it did before the key
+ * existed, an interpreter when its CompilerSwitch is 1 and its program
+ * otherwise.  An entry the editor made keeps its own kind unless the file
+ * says Run: Options > Save writes CompilerSwitch for every language and no
+ * Run, and must not turn Rust or Java into interpreters.
+ */
+static void e_opt_lang_finish(void)
+{
+ int i;
+
+ for (i = 0; i < e_prog.num; i++)
+  e_opt_decide_kind(e_prog.comp[i]);
+ for (i = 0; i < e_opt_own_nlang; i++)
+  e_opt_decide_kind(e_opt_own_lang[i]);
+}
+
 int WpeReadLanguage(ECNT *cn, char *section, char *option, char *value)
 {
  int i, j;
@@ -1788,6 +1840,7 @@ int WpeReadLanguage(ECNT *cn, char *section, char *option, char *value)
   e_prog.comp[i]->start_symbol = NULL;
   e_prog.comp[i]->key = '\0';
   e_prog.comp[i]->comp_sw = 0;
+  e_prog.comp[i]->run_kind = E_RUN_KIND_UNSET;   /* decided when the file is read to its end */
   e_prog.comp[i]->x = 0;
  }
  if (WpeStrccmp("Compiler", option) == 0)
@@ -1841,6 +1894,8 @@ int WpeReadLanguage(ECNT *cn, char *section, char *option, char *value)
  }
  else if (WpeStrccmp("CompilerSwitch", option) == 0)
   e_prog.comp[i]->comp_sw = atoi(value);
+ else if (WpeStrccmp(E_OPT_KEY_RUN, option) == 0)
+  e_opt_take_run_kind(&e_prog.comp[i]->run_kind, value);
  else if (WpeStrccmp("X", option) == 0)
   e_prog.comp[i]->x = atoi(value);
  return 0;
@@ -1869,6 +1924,7 @@ int WpeWriteLanguage(ECNT *cn, char *section, FILE *opt_file)
   if (e_prog.comp[i]->start_symbol && e_prog.comp[i]->start_symbol[0])
    fprintf(opt_file, "StartSymbol : %s\n", e_prog.comp[i]->start_symbol);
   fprintf(opt_file, "CompilerSwitch : %d\n", e_prog.comp[i]->comp_sw);
+  fprintf(opt_file, E_OPT_KEY_RUN " : %s\n", e_run_kind_name(e_run_kind_of(e_prog.comp[i])));
   fprintf(opt_file, "Key : %c\n", e_prog.comp[i]->key);
   fprintf(opt_file, "X : %d\n", e_prog.comp[i]->x);
  }
@@ -2183,6 +2239,7 @@ static struct e_s_prog *e_opt_own_find_lang(const char *language, int create)
  p->comp_str = WpeStrdup("");
  p->libraries = WpeStrdup("");
  p->exe_name = WpeStrdup("");
+ p->run_kind = E_RUN_KIND_UNSET;   /* calloc's 0 is no kind by accident */
  e_opt_own_lang[e_opt_own_nlang++] = p;
  return(p);
 }
@@ -2246,6 +2303,26 @@ static void e_opt_note_own_field(const char *scope, const char *key, const char 
 }
 
 /**
+ * e_opt_note_own_switch_and_kind - Count a language's compiler style and
+ * Run kind as the user's own.
+ * @p: the entry.
+ *
+ * They decide which file Ctrl-F9 starts, so a folder's xwperc that sets
+ * either to another value is asked about, and one that repeats his own (or
+ * the built-in) value is not.  A kind not yet decided is not noted: the
+ * file is still being read.
+ */
+static void e_opt_note_own_switch_and_kind(const struct e_s_prog *p)
+{
+ char text[E_OPT_SWITCH_ROOM];
+
+ snprintf(text, sizeof text, "%d", p->comp_sw);
+ e_opt_note_own_field(p->language, "CompilerSwitch", text);
+ if (p->run_kind != E_RUN_KIND_UNSET)
+  e_opt_note_own_field(p->language, E_OPT_KEY_RUN, e_run_kind_name(p->run_kind));
+}
+
+/**
  * e_opt_note_own_lang_fields - Count each value of a language's line as his.
  * @p: the entry.
  *
@@ -2259,6 +2336,7 @@ static void e_opt_note_own_lang_fields(const struct e_s_prog *p)
  e_opt_note_own_field(p->language, "CompilerOptions", p->comp_str);
  e_opt_note_own_field(p->language, "Libraries", p->libraries);
  e_opt_note_own_field(p->language, "Executable", p->exe_name);
+ e_opt_note_own_switch_and_kind(p);
 }
 
 /**
@@ -2433,6 +2511,8 @@ static void e_opt_own_from_defaults(ECNT *cn)
   e_opt_own_set(&p->comp_str, e_prog.comp[i]->comp_str);
   e_opt_own_set(&p->libraries, e_prog.comp[i]->libraries);
   e_opt_own_set(&p->exe_name, e_prog.comp[i]->exe_name);
+  p->comp_sw = e_prog.comp[i]->comp_sw;
+  p->run_kind = e_run_kind_of(e_prog.comp[i]);
   e_opt_note_own_lang(p);
   e_opt_note_own_lang_fields(p);
  }
@@ -2464,7 +2544,8 @@ static void e_opt_capture_own_lang(const char *language, const char *option,
  struct e_s_prog *p;
 
  if (WpeStrccmp("Compiler", option) != 0 && WpeStrccmp("CompilerOptions", option) != 0 &&
-     WpeStrccmp("Libraries", option) != 0 && WpeStrccmp("Executable", option) != 0)
+     WpeStrccmp("Libraries", option) != 0 && WpeStrccmp("Executable", option) != 0 &&
+     WpeStrccmp("CompilerSwitch", option) != 0 && WpeStrccmp(E_OPT_KEY_RUN, option) != 0)
   return;
  if (!(p = e_opt_own_find_lang(language, 1)))
   return;
@@ -2474,6 +2555,10 @@ static void e_opt_capture_own_lang(const char *language, const char *option,
   e_opt_own_set(&p->comp_str, value);
  else if (WpeStrccmp("Libraries", option) == 0)
   e_opt_own_set(&p->libraries, value);
+ else if (WpeStrccmp("CompilerSwitch", option) == 0)
+  p->comp_sw = atoi(value);
+ else if (WpeStrccmp(E_OPT_KEY_RUN, option) == 0)
+  e_opt_take_run_kind(&p->run_kind, value);
  else
   e_opt_own_set(&p->exe_name, value);
 }
@@ -3013,10 +3098,10 @@ int e_opt_read(ECNT *cn)
   fclose(fp);
  }
  if (e_opt_user_file)
- {
   e_opt_read_user_only(cn);
+ e_opt_lang_finish();
+ if (e_opt_user_file)
   e_opt_note_own_values();
- }
  return err;
 }
 

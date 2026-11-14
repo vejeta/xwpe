@@ -1055,6 +1055,10 @@ the system picks, and xwpe starts the JVM itself with the program's
 class, telling it to connect to that port.  Nothing listens that another
 user could reach to run code.  The JVM is the @command{java} next to
 @command{jdb}, so a class built by that JDK's @command{javac} runs.
+The VM starts in the source's folder with no class path of its own, as
+@kbd{Ctrl-F9} starts it (@pxref{Compiling}), so your @env{CLASSPATH} is
+honoured as @command{java} honours it: when it is set it must hold
+@file{.} for the class to be found, for Run and for the debugger alike.
 While jdb waits for it the waiting line in Messages says
 @samp{jdb starting the Java VM}; Esc ends both.  A JVM that cannot
 start says why in Messages (@samp{Could not find or load main class P},

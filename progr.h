@@ -11,12 +11,24 @@
 #include <signal.h>
 #include "WeProg.h"
 
+/* What Ctrl-F9 starts once the build has made it: a field of the language's
+   entry, so a language that is not built in (a user's Lua) can say it in
+   its xwperc as "Run : interpreter".  UNSET is not a kind: it is what an
+   entry read from an option file holds until the file is read to its end
+   (e_opt_lang_finish) and no Run key named one. */
+#define E_RUN_KIND_UNSET   0
+#define E_RUN_INTERPRETER  1   /* <Compiler> <source>: Python, Perl, a68g */
+#define E_RUN_PROGRAM      2   /* the program the build made: C, Rust, Go */
+#define E_RUN_VM           3   /* java <class>, in the build folder: Java, Scala */
+#define E_RUN_NONE         4   /* nothing: LaTeX makes no program */
+
 struct e_s_prog {
  char *language, *compiler, *comp_str, *libraries,
    *exe_name, *intstr, key;
  char *start_symbol;
  char **filepostfix; /* Expandable array */
  int	comp_sw, x;
+ int	run_kind;           /* E_RUN_*: what Ctrl-F9 starts */
 };
 
 struct e_prog {
@@ -83,6 +95,22 @@ char *e_cat_string(char *p, char *str);
 int e_make_arg(char ***arg, char *str);
 int e_ini_prog(ECNT *cn);
 int e_copy_prog(struct e_s_prog *out, struct e_s_prog *in);
+/* What Ctrl-F9 starts for a language's entry (E_RUN_*), the name its xwperc
+   writes for it ("interpreter", "program", "vm", "none"), the kind a name
+   means (E_RUN_KIND_UNSET for a word that is none), and the kind an entry
+   that names none takes from its compiler style. */
+int e_run_kind_of(const struct e_s_prog *p);
+const char *e_run_kind_name(int kind);
+int e_run_kind_parse(const char *name);
+int e_run_kind_default(const struct e_s_prog *p);
+/* The java beside @beside (a tool the class was made with, or the debugger),
+   else java on PATH, else "java"; and the VM's words on a start plan: the
+   java, @agent when not NULL, then the class.  Both Run and jdb start the
+   VM through them.  The words refuse a class java would read as an option. */
+struct WpeStartPlan;
+int e_java_vm_path(const char *beside, char *out, size_t n);
+int e_java_vm_words(struct WpeStartPlan *p, const char *java, const char *agent,
+                    const char *cls, int from);
 /* A language's compile and link line as the question shows it (malloc'd). */
 char *e_prog_command_text(const struct e_s_prog *p);
 /* Ask before a compile line a start-folder xwperc names runs: 0 to go on. */

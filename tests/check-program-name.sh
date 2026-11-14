@@ -35,6 +35,14 @@
 #     program once counted as current.  A closed list: every function that
 #     still does is in the allow file with its reason, and any other fails,
 #     whatever its variables are called.
+#  6. A mention of comp_sw (the compiler style), in any scanned file.  Run's
+#     kind is a field of the language's entry (e_run_kind_of); the style
+#     keeps to the build steps, the message format, the dialogs, the project
+#     file and the defaults it was made for.  A closed list: every function
+#     that still mentions it is in the allow file with its reason, and one
+#     that is not fails, whatever it is called.  A function that reads the
+#     style to decide what Run starts is how Rust, Java and Go once ran their
+#     compiler twice.
 #
 # tests/program-name.allow lists each function that still offends, with its
 # count and the pass that moves it onto the owner ("owner") or the reason it
@@ -78,7 +86,11 @@ CUT_RE='(WpeStringCutChar|strrchr|strchr)[ \t]*[(][^;]*[\047][.][\047]'
 SUFFIX_RE='[.](e|o|class|dbg|dbgerr)"|["/]a[.]out"|#[ \t]*define[ \t]+[A-Za-z0-9_]*(_SUFFIX|_EXT|_PROJECT_PROG)[ \t]+"[.](e|o|class|dbg|dbgerr)"'
 JOIN_RE='wpe_startplan_operand(_in)?[ \t]*[(][^;]*,[ \t]*(name|stem|exe|ofile|estr|ostr)[ \t]*[)]|wpe_startplan_operand(_in)?[ \t]*[(][^,;]*,[^,;]*,[^,;]*[Ee][Xx][Ee][Dd][Ii][Rr][^,;]*,'
 TABLE_RE='strlen[ \t]*[(][^;]*[.>]ext[ \t]*[)]|[+][ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*-[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*,[^;]*[.>]ext([^A-Za-z0-9_]|$)'
-ALL_RE="$CUT_RE|$SUFFIX_RE|$JOIN_RE|$TABLE_RE"
+# Rule 6: any mention of the compiler style.  A name, not a shape, because the
+# style was once read as "the compiler is an interpreter" in two places that
+# looked nothing alike.
+COMPSW_RE='(^|[^A-Za-z0-9_])comp_sw([^A-Za-z0-9_]|$)'
+ALL_RE="$CUT_RE|$SUFFIX_RE|$JOIN_RE|$TABLE_RE|$COMPSW_RE"
 # Rule 5, we_prog.c only: a comparison with a time in it ("->" is not a
 # comparison), and a call that looks at a file.
 TIME_RE='(st_mtime|st_mtim|last_time)[^;]*(<=|>=|==|!=|<|[^-]>)|(<=|>=|==|!=|<|[^-]>)[^;]*(st_mtime|st_mtim|last_time)'
@@ -207,6 +219,8 @@ canary R5 we_prog.c planted 'void planted(struct stat *sb, struct stat *zz) { if
 canary R5 we_prog.c planted 'void planted(M_TIME qq) { if (qq < last_time) return; }' || blind=1
 canary R5 we_prog.c planted 'void planted(const char *p) { struct stat sb; stat(p, &sb); }' || blind=1
 canary R5 we_prog.c planted 'void planted(const char *p) { if (access(p, 0)) return; }' || blind=1
+canary R6 we_prog.c e_run_planted 'void e_run_planted(void) { if (e_s_prog.comp_sw & 1) return; }' || blind=1
+canary R6 we_debug.c planted 'void planted(const struct e_s_prog *p) { int x = p->comp_sw; (void)x; }' || blind=1
 canary R5 we_prog.c planted 'void planted(const char *p) { if (faccessat(0, p, 0, 0)) return; }' || blind=1
 canary R5 we_prog.c planted 'void planted(const char *p) { struct stat sb; fstatat(0, p, &sb, 0); }' || blind=1
 allowed_canary we_prog.c planted 'void planted(const char *p, struct stat *sb) { e_build_stat(p, sb); (void)sb->st_mtime; }' || blind=1

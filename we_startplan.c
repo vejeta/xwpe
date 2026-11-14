@@ -266,6 +266,7 @@ void wpe_startplan_free(WpeStartPlan *p)
   wpe_startplan_debug_dir_end(p->debug_dir);
  free(p->debug_dir);
  free(p->launch_cwd);
+ free(p->chose);
  for (i = 0; i < p->nvalue; i++)
  {
   free(p->value[i].file);
@@ -1190,7 +1191,7 @@ static int plan_from_folder(const WpeStartPlan *p)
 {
  int i;
 
- if (p->runs_code)
+ if (p->runs_code || p->chose)
   return 1;
  for (i = 0; i < p->nword; i++)
   if (p->word[i].from == WPE_FROM_FOLDER && p->word[i].role != WPE_WORD_OPERAND)
@@ -1337,6 +1338,8 @@ static char *startplan_build_text(const WpeStartPlan *p)
   startplan_put(&b, "init ", p->init[i].text);
  if (p->runs_code)
   startplan_put(&b, "runs ", p->runs_code);
+ if (p->chose)
+  startplan_put(&b, "chose ", p->chose);
  if (b.bad)
  {
   free(b.s);
@@ -1859,6 +1862,40 @@ void wpe_startplan_runs_code(WpeStartPlan *p, const char *what)
 {
  if (p)
   p->runs_code = what;
+}
+
+/** The text between two keys a folder chose. */
+#define WPE_STARTPLAN_CHOSE_JOIN ", "
+
+/**
+ * wpe_startplan_folder_chose - Say that a value of a folder's file chose
+ * the program the plan starts.
+ * @p: the plan; @what: the key and its value ("CompilerSwitch = 1"), copied.
+ *
+ * The program is then a file the folder may ship: a plan that starts a
+ * program inside its own folder is clean, but not when the folder's
+ * CompilerSwitch, Run or Executable decided which file that is, since the
+ * editor never wrote it.  The plan asks, the box names each key and the
+ * answer is kept with the plan's text.  Each call adds a key.
+ * Return: 0, or -1 out of memory.
+ */
+int wpe_startplan_folder_chose(WpeStartPlan *p, const char *what)
+{
+ size_t had = p && p->chose ? strlen(p->chose) + strlen(WPE_STARTPLAN_CHOSE_JOIN) : 0;
+ char *grown;
+
+ if (!p || !what)
+  return -1;
+ grown = realloc(p->chose, had + strlen(what) + 1);
+ if (!grown)
+  return -1;
+ if (!p->chose)
+  grown[0] = '\0';
+ else
+  strcat(grown, WPE_STARTPLAN_CHOSE_JOIN);
+ strcat(grown, what);
+ p->chose = grown;
+ return 0;
 }
 
 /**
