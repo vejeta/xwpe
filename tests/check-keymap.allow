@@ -265,6 +265,7 @@ we_lsp.c:-:* 1 not yet generated from the table, K-d1
 we_prog.c:e_make_multifile_hint:* 1 not yet generated from the table, K-d1
 we_prog.c:e_run_with_pty:* 1 not yet generated from the table, K-d1
 we_term.c:init_cursor:* 3 not yet generated from the table, K-d1
+we_wind.c:e_build_record_say:STR 2 not yet generated from the table, K-d1
 
 # ---- the menu bar's and the drop-downs' own keys ---------------------------
 we_main.c:-:* 8 menu navigation

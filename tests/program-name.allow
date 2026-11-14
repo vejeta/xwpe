@@ -9,22 +9,8 @@
 # reason.  --strict ignores the "owner" lines.
 
 # --- moved onto the owner with the F9, Run and project path ---
-we_prog.c|e_p_link_operands_of|3|owner|stem cut, suffix literals and the folder join of the link
-we_prog.c|e_comp_operands|1|owner|cuts the placed path of the compile's object
-we_prog.c|e_run_program_path|2|owner|Run's own stem cut and join
-we_prog.c|e_prj_object_of|2|owner|a FILES word's object: its own cut and join
-we_prog.c|e_prj_program_path|2|owner|EXENAME or "a.out", joined
-we_prog.c|e_prj_default_exe|1|owner|the Executable default, cut at the last dot of the project path
-we_prog.c|e_prj_default_exe_of|1|owner|New Project's EXENAME, cut at the first dot
-we_prog.c|e_check_c_file|1|owner|the extension of the compiler entry
-we_prog.c|e_p_file_type|1|owner|the extension of the "no compiler entry" message
 we_prog.c|e_prj_is_program_object|1|owner|"main.o" is named by a literal; which objects enter the library is a build decision the owner keeps as it is
 we_prog.c|e_prj_inserted_after_compile|1|owner|"main.o" is named by a literal, as above
-we_prog.c|#define E_P_PROGRAM_SUFFIX|1|owner|the link's program suffix
-we_prog.c|#define E_P_OBJECT_SUFFIX|1|owner|the link's object suffix
-we_prog.c|#define E_P_CLASS_SUFFIX|1|owner|the link's class suffix
-we_prog.c|#define E_RUN_PROGRAM_EXT|1|owner|Run's program suffix
-we_prog.c|#define E_RUN_PROJECT_PROG|1|owner|Run's default project program
 
 # --- moved onto the owner with the debugger ---
 we_debug.c|e_d_exe_name_of|2|owner|the program the debugger loads: stem cut and ".e"
@@ -42,3 +28,16 @@ we_ai_ws.c|ws_source_like|1|keep|is this file source-like: an extension for a re
 we_debug.c|e_d_jdb_class_file|1|keep|a dotted Java class name: the simple name after its last dot
 we_debug.c|e_d_jdb_frame_source|1|keep|a dotted Java class name in a stack frame
 we_fl_unix.c|e_execute_plan|1|keep|the file the user typed to run; the operand is a source, not an output
+
+# --- rule 5, we_prog.c: the decisions about time and the calls that look at a file ---
+we_prog.c|e_build_current|3|keep|the build's one up-to-date rule: the output's time against its source, against the newest object, and the record of what this editor built
+we_prog.c|e_build_stat|1|keep|the only stat of a build output, taken in the build's folder
+we_prog.c|e_check_header|2|keep|a source and its headers: their times against the output's, as the compile always asked
+we_prog.c|e_make_library|1|keep|ar -cr when the library is absent; a library this editor did not build is removed first
+we_prog.c|e_cmd_in_path|1|keep|is a command on PATH: names no output
+we_prog.c|e_make_multifile_hint|2|keep|looks for the folder's Makefile: names no output
+we_prog.c|e_create_project|1|keep|is the project file there: a source, not an output
+we_prog.c|e_new_message|1|keep|is the Messages file there: not a build output
+we_prog.c|e_p_file_exists|1|keep|is a file there: asked of a source by name
+we_prog.c|e_project_is_open|1|keep|is the project file there: a source, not an output
+we_prog.c|e_run_sh_make_runnable|1|keep|the mode of the script the user runs: not a build output

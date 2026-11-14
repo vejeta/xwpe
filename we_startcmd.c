@@ -173,6 +173,21 @@ static int startcmd_state_dir(char *out, size_t sz)
 }
 
 /**
+ * startcmd_path_of - The path of one of the stores.
+ * @name: the store's file name; @out/@sz: receive it.
+ * Return: 0, or -1 when there is nowhere to keep it.
+ */
+static int startcmd_path_of(const char *name, char *out, size_t sz)
+{
+ char dir[WPE_STARTCMD_FOLDER_MAX];
+ int n;
+ if (startcmd_state_dir(dir, sizeof dir) < 0) return -1;
+ n = snprintf(out, sz, "%s/%s", dir, name);
+ if (n < 0 || (size_t)n >= sz) return -1;
+ return 0;
+}
+
+/**
  * wpe_startcmd_store_path - Where the remembered answers are kept.
  * @out/@sz: receive $XDG_STATE_HOME/xwpe/start-commands, or the same below
  * ~/.local/state.
@@ -180,12 +195,46 @@ static int startcmd_state_dir(char *out, size_t sz)
  */
 int wpe_startcmd_store_path(char *out, size_t sz)
 {
- char dir[WPE_STARTCMD_FOLDER_MAX];
- int n;
- if (startcmd_state_dir(dir, sizeof dir) < 0) return -1;
- n = snprintf(out, sz, "%s/%s", dir, WPE_STARTCMD_STORE_NAME);
- if (n < 0 || (size_t)n >= sz) return -1;
- return 0;
+ return startcmd_path_of(WPE_STARTCMD_STORE_NAME, out, sz);
+}
+
+/**
+ * startcmd_mine_alone - Is a file or folder the user's, and not writable by
+ * group or others?
+ * @st: its stat.
+ *
+ * What a store and its folder must be before the editor believes a word of
+ * it: anyone who could write there could answer for the user.
+ */
+static int startcmd_mine_alone(const struct stat *st)
+{
+ return st->st_uid == geteuid() && !(st->st_mode & (S_IWGRP | S_IWOTH));
+}
+
+/**
+ * startcmd_dir_trusted - May the state folder be believed?
+ * @dir: the folder.
+ *
+ * A folder of another user is refused.  A folder of the user's that group or
+ * others may write is made the user's alone again, as every save already
+ * does: older editors made it with the umask (0775 under umask 002), and
+ * refusing it would lose every answer the user gave.  That is safe because
+ * the folder only holds the stores, and each store is still believed only
+ * when it is the user's alone (startcmd_stream_of): what a group member could
+ * do there is remove or rename the user's own files, never write one.
+ * Return: WPE_STARTCMD_STORE_OK, _MISSING (no folder yet), or _BAD (not a
+ * folder, not the user's, or a mode that could not be tightened).
+ */
+static int startcmd_dir_trusted(const char *dir)
+{
+ struct stat st;
+ int fd, ok;
+ fd = open(dir, O_RDONLY | O_DIRECTORY);
+ if (fd < 0) return errno == ENOENT ? WPE_STARTCMD_STORE_MISSING : WPE_STARTCMD_STORE_BAD;
+ ok = fstat(fd, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == geteuid();
+ if (ok && !startcmd_mine_alone(&st)) ok = fchmod(fd, STARTCMD_DIR_MODE) == 0;
+ close(fd);
+ return ok ? WPE_STARTCMD_STORE_OK : WPE_STARTCMD_STORE_BAD;
 }
 
 /** startcmd_store_free - Free every record of a store. */
@@ -342,12 +391,41 @@ static FILE *startcmd_stream_of(int fd, const char *mode)
  struct stat st;
  int flags;
  FILE *fp;
- if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { close(fd); return NULL; }
+ if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || !startcmd_mine_alone(&st)) {
+  close(fd);                      /* not a regular file of the user's alone */
+  return NULL;
+ }
  flags = fcntl(fd, F_GETFL);
  if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
  fp = fdopen(fd, mode);
  if (!fp) close(fd);
  return fp;
+}
+
+/**
+ * startcmd_open_store - Open one of the stores for reading, if it can be
+ * believed.
+ * @name: the store's file name; @out: receives the stream.
+ *
+ * The folder must be the user's alone, and the file is opened without
+ * following a link and checked through its descriptor (a regular file, the
+ * user's, not writable by group or others), so a store another user could
+ * have written is a store that cannot be read.
+ * Return: WPE_STARTCMD_STORE_OK, _MISSING or _BAD.
+ */
+static int startcmd_open_store(const char *name, FILE **out)
+{
+ char dir[WPE_STARTCMD_FOLDER_MAX], path[WPE_STARTCMD_FOLDER_MAX];
+ int fd, state;
+ *out = NULL;
+ if (startcmd_state_dir(dir, sizeof dir) < 0 || startcmd_path_of(name, path, sizeof path) < 0)
+  return WPE_STARTCMD_STORE_BAD;
+ state = startcmd_dir_trusted(dir);
+ if (state != WPE_STARTCMD_STORE_OK) return state;
+ fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+ if (fd < 0) return errno == ENOENT ? WPE_STARTCMD_STORE_MISSING : WPE_STARTCMD_STORE_BAD;
+ *out = startcmd_stream_of(fd, "r");
+ return *out ? WPE_STARTCMD_STORE_OK : WPE_STARTCMD_STORE_BAD;
 }
 
 /**
@@ -361,16 +439,12 @@ static FILE *startcmd_stream_of(int fd, const char *mode)
  */
 static int startcmd_store_load(startcmd_store *s)
 {
- char path[WPE_STARTCMD_FOLDER_MAX];
  FILE *fp;
- int fd, state;
+ int state;
  s->rec = NULL;
  s->n = 0;
- if (wpe_startcmd_store_path(path, sizeof path) < 0) return WPE_STARTCMD_STORE_BAD;
- fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
- if (fd < 0) return errno == ENOENT ? WPE_STARTCMD_STORE_MISSING : WPE_STARTCMD_STORE_BAD;
- fp = startcmd_stream_of(fd, "r");
- if (!fp) return WPE_STARTCMD_STORE_BAD;
+ state = startcmd_open_store(WPE_STARTCMD_STORE_NAME, &fp);
+ if (state != WPE_STARTCMD_STORE_OK) return state;
  state = startcmd_parse_stream(fp, s);
  fclose(fp);
  if (state != WPE_STARTCMD_STORE_OK) startcmd_store_free(s);
@@ -505,13 +579,14 @@ static int startcmd_make_dirs(const char *dir)
  * name is replaced, never followed.
  * Return: 0, or -1 when it could not be written.
  */
-static int startcmd_store_save(const startcmd_store *s)
+static int startcmd_save_file(const char *name, int (*write_fn)(FILE *, const void *),
+                              const void *ctx)
 {
  char dir[WPE_STARTCMD_FOLDER_MAX], path[WPE_STARTCMD_FOLDER_MAX];
  char temp[WPE_STARTCMD_FOLDER_MAX + sizeof STARTCMD_TEMP_SUFFIX];
  FILE *fp;
  int fd, rc;
- if (startcmd_state_dir(dir, sizeof dir) < 0 || wpe_startcmd_store_path(path, sizeof path) < 0)
+ if (startcmd_state_dir(dir, sizeof dir) < 0 || startcmd_path_of(name, path, sizeof path) < 0)
   return -1;
  if (startcmd_make_dirs(dir) < 0) return -1;
  snprintf(temp, sizeof temp, "%s%s", path, STARTCMD_TEMP_SUFFIX);
@@ -520,11 +595,23 @@ static int startcmd_store_save(const startcmd_store *s)
  fchmod(fd, STARTCMD_FILE_MODE);
  fp = startcmd_stream_of(fd, "w");
  if (!fp) { unlink(temp); return -1; }
- rc = startcmd_write_records(fp, s);
+ rc = write_fn(fp, ctx);
  if (fclose(fp) != 0) rc = -1;
  if (rc == 0 && rename(temp, path) != 0) rc = -1;
  if (rc != 0) unlink(temp);
  return rc;
+}
+
+/** startcmd_write_answers - The writer of the answers' store, for startcmd_save_file. */
+static int startcmd_write_answers(FILE *fp, const void *ctx)
+{
+ return startcmd_write_records(fp, (const startcmd_store *)ctx);
+}
+
+/** startcmd_store_save - Put the answers in place of the store; see startcmd_save_file. */
+static int startcmd_store_save(const startcmd_store *s)
+{
+ return startcmd_save_file(WPE_STARTCMD_STORE_NAME, startcmd_write_answers, s);
 }
 
 /** startcmd_store_drop - Take one record out of the store. */
@@ -602,6 +689,437 @@ int wpe_startcmd_remember(const char *folder, const char *key, const char *text,
  rc = startcmd_store_put(&s, real, key, text, answer);
  if (rc == 0) rc = startcmd_store_save(&s);
  startcmd_store_free(&s);
+ return rc;
+}
+
+/* ---- What this editor built: the built-outputs store ---------------------- */
+
+/* A record: folder, output, dev, ino, size, mtime s and ns, ctime s and ns. */
+#define BUILT_FIELDS 9
+
+#ifdef __APPLE__
+#define BUILT_MTIM(st) ((st)->st_mtimespec)
+#define BUILT_CTIM(st) ((st)->st_ctimespec)
+#else
+#define BUILT_MTIM(st) ((st)->st_mtim)
+#define BUILT_CTIM(st) ((st)->st_ctim)
+#endif
+
+/** built_rec_free - Free the texts of one record. */
+static void built_rec_free(WpeBuiltRec *r)
+{
+ free(r->folder);
+ free(r->output);
+ r->folder = NULL;
+ r->output = NULL;
+}
+
+/** built_recs_free - Free a list of records. */
+static void built_recs_free(WpeBuiltRec *rec, int n)
+{
+ int i;
+ for (i = 0; i < n; i++) built_rec_free(&rec[i]);
+ free(rec);
+}
+
+/** built_rec_identify - Take the identity of a file into a record. */
+static void built_rec_identify(WpeBuiltRec *r, const struct stat *st)
+{
+ r->dev = (unsigned long long)st->st_dev;
+ r->ino = (unsigned long long)st->st_ino;
+ r->size = (unsigned long long)st->st_size;
+ r->mtime_s = (long long)BUILT_MTIM(st).tv_sec;
+ r->mtime_ns = (long long)BUILT_MTIM(st).tv_nsec;
+ r->ctime_s = (long long)BUILT_CTIM(st).tv_sec;
+ r->ctime_ns = (long long)BUILT_CTIM(st).tv_nsec;
+}
+
+/**
+ * built_rec_is - Is this the very file the record describes?
+ * @r: the record; @st: the file's stat.
+ *
+ * The change time is part of it: the kernel sets it on every create, rename,
+ * chmod and utime, and nobody can set it back, so a file put in place of the
+ * recorded one, or touched since, never matches.
+ */
+static int built_rec_is(const WpeBuiltRec *r, const struct stat *st)
+{
+ WpeBuiltRec now;
+ built_rec_identify(&now, st);
+ return r->dev == now.dev && r->ino == now.ino && r->size == now.size &&
+        r->mtime_s == now.mtime_s && r->mtime_ns == now.mtime_ns &&
+        r->ctime_s == now.ctime_s && r->ctime_ns == now.ctime_ns;
+}
+
+/**
+ * wpe_startcmd_same_file - Is a file, as it is now, the file it was before?
+ * @before: the stat taken before a step; @now: the stat taken after it.
+ *
+ * Device, inode, size and the modification and change times in nanoseconds
+ * must all be equal.  A step is said to have written an output only when
+ * this is 0, so a file that was there before the step and that the step left
+ * alone is never taken for the step's work.
+ * Return: 1 when nothing about the file changed, else 0.
+ */
+int wpe_startcmd_same_file(const struct stat *before, const struct stat *now)
+{
+ WpeBuiltRec a;
+ memset(&a, 0, sizeof a);
+ built_rec_identify(&a, before);
+ return built_rec_is(&a, now);
+}
+
+/**
+ * built_recs_add - Append a record, copying its texts.
+ * @rec/@n: the list; @folder/@output: the texts; @id: a record that carries
+ * the identity.
+ * Return: 0, or -1 out of memory.
+ */
+static int built_recs_add(WpeBuiltRec **rec, int *n, const char *folder, const char *output,
+                          const WpeBuiltRec *id)
+{
+ WpeBuiltRec *grown = realloc(*rec, (size_t)(*n + 1) * sizeof **rec);
+ WpeBuiltRec *r;
+ if (!grown) return -1;
+ *rec = grown;
+ r = &grown[*n];
+ *r = *id;
+ r->folder = startcmd_dup(folder);
+ r->output = startcmd_dup(output);
+ if (!r->folder || !r->output) {
+  built_rec_free(r);
+  return -1;
+ }
+ (*n)++;
+ return 0;
+}
+
+/** built_recs_drop - Take one record out of a list. */
+static void built_recs_drop(WpeBuiltRec *rec, int *n, int i)
+{
+ built_rec_free(&rec[i]);
+ memmove(&rec[i], &rec[i + 1], (size_t)(*n - i - 1) * sizeof rec[0]);
+ (*n)--;
+}
+
+/**
+ * built_number - Read an unsigned decimal field whole.
+ * Return: 0, or -1 for text that is not one.
+ */
+static int built_number(const char *text, unsigned long long *out)
+{
+ char *end;
+ if (!*text || *text == '-') return -1;
+ errno = 0;
+ *out = strtoull(text, &end, 10);
+ return (*end || errno) ? -1 : 0;
+}
+
+/** built_signed - Read a signed decimal field whole; 0, or -1. */
+static int built_signed(const char *text, long long *out)
+{
+ char *end;
+ if (!*text) return -1;
+ errno = 0;
+ *out = strtoll(text, &end, 10);
+ return (*end || errno) ? -1 : 0;
+}
+
+/**
+ * built_split - Cut a record line at its tabs.
+ * @line: changed in place; @field: receives BUILT_FIELDS fields.
+ * Return: 0 for exactly that many, else -1.
+ */
+static int built_split(char *line, char *field[BUILT_FIELDS])
+{
+ int i;
+ char *p = line, *tab;
+ for (i = 0; i < BUILT_FIELDS; i++) {
+  field[i] = p;
+  tab = strchr(p, '\t');
+  if (i == BUILT_FIELDS - 1) return tab ? -1 : 0;
+  if (!tab) return -1;
+  *tab = '\0';
+  p = tab + 1;
+ }
+ return -1;
+}
+
+/**
+ * built_parse_record - Take one record line of the store.
+ * @line: without its newline, changed in place; @only: keep only the
+ * records of this folder, or NULL for all; @rec/@n: the list.
+ * Return: 0, or -1 for a line that does not parse.
+ */
+static int built_parse_record(char *line, const char *only, WpeBuiltRec **rec, int *n)
+{
+ char *f[BUILT_FIELDS];
+ WpeBuiltRec id;
+ int i;
+ memset(&id, 0, sizeof id);
+ if (built_split(line, f) < 0) return -1;
+ for (i = 0; i < 2; i++)
+  if (startcmd_unescape(f[i]) < 0 || !f[i][0]) return -1;
+ if (built_number(f[2], &id.dev) < 0 || built_number(f[3], &id.ino) < 0 ||
+     built_number(f[4], &id.size) < 0 || built_signed(f[5], &id.mtime_s) < 0 ||
+     built_signed(f[6], &id.mtime_ns) < 0 || built_signed(f[7], &id.ctime_s) < 0 ||
+     built_signed(f[8], &id.ctime_ns) < 0)
+  return -1;
+ if (only && strcmp(f[0], only) != 0) return 0;
+ return built_recs_add(rec, n, f[0], f[1], &id);
+}
+
+/**
+ * built_read_stream - Read the store's lines.
+ * @fp: the open store; @only: the folder to keep, or NULL; @rec/@n: receive.
+ * Return: WPE_STARTCMD_STORE_OK, or _BAD for another first line or a bad line.
+ */
+static int built_read_stream(FILE *fp, const char *only, WpeBuiltRec **rec, int *n)
+{
+ char *line = NULL;
+ size_t room = 0;
+ int first = 1, state = WPE_STARTCMD_STORE_OK;
+ while (state == WPE_STARTCMD_STORE_OK && getline(&line, &room, fp) >= 0) {
+  startcmd_chop(line);
+  if (first) {
+   first = 0;
+   if (strcmp(line, WPE_BUILT_STORE_MAGIC) != 0) state = WPE_STARTCMD_STORE_BAD;
+   continue;
+  }
+  if (!line[0]) continue;
+  if (built_parse_record(line, only, rec, n) < 0) state = WPE_STARTCMD_STORE_BAD;
+ }
+ if (first || ferror(fp)) state = WPE_STARTCMD_STORE_BAD;
+ free(line);
+ return state;
+}
+
+/**
+ * built_read_store - Read the built-outputs store.
+ * @only: the folder whose records to keep, or NULL for all; @rec/@n: receive
+ * them (empty unless the result is OK).
+ * Return: WPE_STARTCMD_STORE_OK, _MISSING or _BAD.
+ */
+static int built_read_store(const char *only, WpeBuiltRec **rec, int *n)
+{
+ FILE *fp;
+ int state;
+ char dir[WPE_STARTCMD_FOLDER_MAX];
+ *rec = NULL;
+ *n = 0;
+ /* No state folder to name (none set, or one too long): there is nothing
+    to read, and the first save says it could not write. */
+ if (startcmd_state_dir(dir, sizeof dir) < 0) return WPE_STARTCMD_STORE_MISSING;
+ state = startcmd_open_store(WPE_BUILT_STORE_NAME, &fp);
+ if (state != WPE_STARTCMD_STORE_OK) return state;
+ state = built_read_stream(fp, only, rec, n);
+ fclose(fp);
+ if (state != WPE_STARTCMD_STORE_OK) {
+  built_recs_free(*rec, *n);
+  *rec = NULL;
+  *n = 0;
+ }
+ return state;
+}
+
+/**
+ * wpe_startcmd_built_load - The records of one build folder.
+ * @folder: the build folder, as the plan runs in it; @set: receives them.
+ *
+ * Read once at the plan of a build and held in memory, so the cost per output
+ * is one lookup, never a parse of the store.  Only this folder's records are
+ * kept.
+ * Return: the store's state; the set is usable (empty) for _OK and _MISSING,
+ * and refuses everything for _BAD.
+ */
+int wpe_startcmd_built_load(const char *folder, WpeBuiltSet *set)
+{
+ memset(set, 0, sizeof *set);
+ set->state = WPE_STARTCMD_STORE_BAD;
+ if (wpe_startcmd_resolve_folder(folder, set->folder, sizeof set->folder) < 0) {
+  set->folder[0] = '\0';
+  return set->state;
+ }
+ set->state = built_read_store(set->folder, &set->rec, &set->n);
+ return set->state;
+}
+
+/** wpe_startcmd_built_free - Free a set's records. */
+void wpe_startcmd_built_free(WpeBuiltSet *set)
+{
+ built_recs_free(set->rec, set->n);
+ memset(set, 0, sizeof *set);
+ set->state = WPE_STARTCMD_STORE_BAD;
+}
+
+/**
+ * built_real_path - The real path of an output of a set's folder.
+ * @set: the set; @output: absolute, or relative to the set's folder; @out:
+ * receives the real path (PATH_MAX).
+ *
+ * Never relative to the process's folder: the record and the lookup name the
+ * same file whatever the editor's working folder is.
+ * Return: 0, or -1 when it cannot be resolved (it does not exist).
+ */
+static int built_real_path(const WpeBuiltSet *set, const char *output, char *out)
+{
+ char joined[WPE_STARTCMD_FOLDER_MAX];
+ int n;
+ if (!output || !*output || !set->folder[0]) return -1;
+ if (output[0] == '/')
+  n = snprintf(joined, sizeof joined, "%s", output);
+ else
+  n = snprintf(joined, sizeof joined, "%s/%s", set->folder, output);
+ if (n < 0 || (size_t)n >= sizeof joined) return -1;
+ return realpath(joined, out) ? 0 : -1;
+}
+
+/** built_set_find - The index of the record of a real path in a set, or -1. */
+static int built_set_find(const WpeBuiltSet *set, const char *real)
+{
+ int i;
+ for (i = 0; i < set->n; i++)
+  if (strcmp(set->rec[i].output, real) == 0) return i;
+ return -1;
+}
+
+/**
+ * wpe_startcmd_built_here - Did this editor build this very file here?
+ * @set: the folder's records; @output: the output; @st: the caller's stat of
+ * it, or NULL.
+ * Return: 1 for a record of this real path whose identity is the file's;
+ * else 0, a refused store included.
+ */
+int wpe_startcmd_built_here(const WpeBuiltSet *set, const char *output, const struct stat *st)
+{
+ char real[WPE_STARTCMD_FOLDER_MAX];
+ struct stat own;
+ int i;
+ if (set->state == WPE_STARTCMD_STORE_BAD) return 0;
+ if (built_real_path(set, output, real) < 0) return 0;
+ if (!st) {
+  if (stat(real, &own) != 0) return 0;
+  st = &own;
+ }
+ i = built_set_find(set, real);
+ return i >= 0 && built_rec_is(&set->rec[i], st);
+}
+
+/**
+ * wpe_startcmd_note_built - This editor just built @output: it is now its own.
+ * @set: the folder's records; @output: the output; @st: the stat the caller
+ * made of it after the step.
+ *
+ * Kept in memory, one record per real path, replaced in place; the store is
+ * written by wpe_startcmd_built_save, once per step.
+ * Return: 0, or -1 for a refused store, an output that cannot be resolved
+ * or out of memory.
+ */
+int wpe_startcmd_note_built(WpeBuiltSet *set, const char *output, const struct stat *st)
+{
+ char real[WPE_STARTCMD_FOLDER_MAX];
+ WpeBuiltRec id;
+ int i;
+ if (!st || set->state == WPE_STARTCMD_STORE_BAD) return -1;
+ if (built_real_path(set, output, real) < 0) return -1;
+ memset(&id, 0, sizeof id);
+ built_rec_identify(&id, st);
+ i = built_set_find(set, real);
+ if (i >= 0) built_recs_drop(set->rec, &set->n, i);
+ if (built_recs_add(&set->rec, &set->n, set->folder, real, &id) < 0) return -1;
+ set->dirty = 1;
+ return 0;
+}
+
+/**
+ * built_prune - Drop the records whose file is gone or is not the one built.
+ * @rec/@n: the list.
+ */
+static void built_prune(WpeBuiltRec *rec, int *n)
+{
+ struct stat st;
+ int i = 0;
+ while (i < *n) {
+  if (stat(rec[i].output, &st) != 0 || !built_rec_is(&rec[i], &st))
+   built_recs_drop(rec, n, i);
+  else
+   i++;
+ }
+}
+
+/* The records a save writes. */
+typedef struct {
+ WpeBuiltRec *rec;
+ int n;
+} built_list;
+
+/** built_write_list - Write the store's text for a list of records. */
+static int built_write_list(FILE *fp, const void *ctx)
+{
+ const built_list *l = ctx;
+ int i;
+ fprintf(fp, "%s\n", WPE_BUILT_STORE_MAGIC);
+ for (i = 0; i < l->n; i++) {
+  const WpeBuiltRec *r = &l->rec[i];
+  startcmd_put_escaped(fp, r->folder);
+  fputc('\t', fp);
+  startcmd_put_escaped(fp, r->output);
+  fprintf(fp, "\t%llu\t%llu\t%llu\t%lld\t%lld\t%lld\t%lld\n", r->dev, r->ino, r->size,
+          r->mtime_s, r->mtime_ns, r->ctime_s, r->ctime_ns);
+ }
+ if (fflush(fp) != 0 || ferror(fp)) return -1;
+ return 0;
+}
+
+/**
+ * built_merge - Replace a folder's records in the whole store's list.
+ * @all/@nall: the store's records; @set: the folder's records.
+ * Return: 0, or -1 out of memory.
+ */
+static int built_merge(WpeBuiltRec **all, int *nall, const WpeBuiltSet *set)
+{
+ int i = 0;
+ while (i < *nall) {
+  if (strcmp((*all)[i].folder, set->folder) == 0) built_recs_drop(*all, nall, i);
+  else i++;
+ }
+ for (i = 0; i < set->n; i++)
+  if (built_recs_add(all, nall, set->rec[i].folder, set->rec[i].output, &set->rec[i]) < 0)
+   return -1;
+ return 0;
+}
+
+/**
+ * wpe_startcmd_built_save - Write what a step noted.
+ * @set: the folder's records.
+ *
+ * The store is read again, so another folder's records, and another
+ * editor's, are kept; this folder's are replaced; records whose file is gone
+ * or changed are dropped; the oldest go past WPE_BUILT_MAX_RECORDS.  Two
+ * editors writing at once can lose each other's records, which only means one
+ * more build.
+ * Return: 0 (also when nothing was noted), or -1 when it could not be written.
+ */
+int wpe_startcmd_built_save(WpeBuiltSet *set)
+{
+ WpeBuiltRec *all = NULL;
+ int nall = 0, state, rc;
+ built_list l;
+ if (!set->dirty) return 0;
+ if (set->state == WPE_STARTCMD_STORE_BAD || !set->folder[0]) return -1;
+ state = built_read_store(NULL, &all, &nall);
+ if (state == WPE_STARTCMD_STORE_BAD) return -1;
+ if (built_merge(&all, &nall, set) < 0) { built_recs_free(all, nall); return -1; }
+ built_prune(all, &nall);
+ while (nall > WPE_BUILT_MAX_RECORDS) built_recs_drop(all, &nall, 0);
+ l.rec = all;
+ l.n = nall;
+ rc = startcmd_save_file(WPE_BUILT_STORE_NAME, built_write_list, &l);
+ built_recs_free(all, nall);
+ if (rc == 0) {
+  set->dirty = 0;
+  set->state = WPE_STARTCMD_STORE_OK;
+ }
  return rc;
 }
 

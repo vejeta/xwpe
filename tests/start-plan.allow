@@ -21,19 +21,20 @@
 
 # --- the F9 path: compile, link, project build (converted) ---
 we_prog.c|e_comp_start|6|plan|the compile's words through e_exec_planned, its stale object through e_build_remove_stale
-we_prog.c|e_p_make_link|6|plan|the link's words through e_exec_planned
-we_prog.c|e_prj_setup|6|plan|the project's compile and link words, judged by e_prj_approve, started through e_exec_planned
-we_prog.c|e_prj_compile_file|5|plan|a project file's compile through e_exec_planned, its stale object through e_build_remove_stale
+we_prog.c|e_p_make_link|5|plan|the link's words through e_exec_planned
+we_prog.c|e_prj_setup|2|plan|the project's compile and link words, judged by e_prj_approve, started through e_exec_planned
+we_prog.c|e_comp_step_begin|4|plan|names the compile's outputs for the record of what was built; starts nothing
+we_prog.c|e_prj_compile_file|6|plan|a project file's compile through e_exec_planned, its stale object through e_build_remove_stale, its object for the record of what was built
 we_prog.c|e_make_library|2|plan|ar through e_exec_planned
 we_prog.c|e_prj_insert|2|plan|hands the library and object to e_make_library
-we_prog.c|e_prj_link_arg|2|plan|an object onto the link line, a path of the plan
+we_prog.c|e_prj_link_arg|3|plan|an object onto the link line, a path of the plan; its object against the library through e_build_current
 we_prog.c|e_prj_finish|1|plan|LDFLAGS onto the link line, words of the plan
 we_prog.c|e_prj_object_name|4|plan|the object's path through e_prj_object_of, as the plan names it
 we_prog.c|e_prj_object_base|3|plan|reads the object's name for the library test
-we_prog.c|e_prj_inserted_after_compile|3|plan|reads the object's name for the library test
-we_prog.c|e_prj_is_program_object|3|plan|reads the object's name for the library test
-we_prog.c|e_prj_object_current|1|plan|the editor's own up-to-date test of an object
-we_prog.c|e_p_make_note_program_current|1|plan|the "nothing to build" line names the program
+we_prog.c|e_prj_inserted_after_compile|1|plan|reads the object's name for the library test
+we_prog.c|e_prj_is_program_object|1|plan|reads the object's name for the library test
+we_prog.c|e_prj_object_current|2|plan|the editor's own up-to-date test of an object, through e_build_current
+we_prog.c|e_prj_program|2|plan|the project's program for the link, as the build plan names it: its EXENAME word under Exedir
 we_prog.c|e_build_plan_approve|1|plan|the build's plan reads the output folder
 we_prog.c|e_prj_approve|1|plan|the project's plan reads the output folder
 we_prog.c|e_build_take_own_exedir|5|plan|"Use mine" puts the user's own output folder in force
@@ -55,7 +56,6 @@ we_xterm.c|e_x_system|1|plan|the graphical editors' entry: a planned command beh
 # --- the debuggers (converted) ---
 we_debug.c|e_d_arguments|1|plan|reads Arguments once for the debugger's start plan and its run command
 we_debug.c|e_d_pick_start_arg|1|plan|the program's name, handed to the debugger's plan as its operand with its origin
-we_debug.c|e_d_start_planned|1|plan|a project's program, handed to the debugger's plan as its operand
 
 # --- the working folder of a plan that is not a debugger's start (wpe_startplan_set_cwd) ---
 # A debugger or an adapter gets its folder from wpe_startplan_contain.  These
@@ -75,7 +75,7 @@ we_prog.c|e_add_arg|1|keep|the definition
 we_prog.c|e_make_arg|1|keep|the definition
 we_prog.c|e_ini_prog|9|keep|the built-in defaults
 we_prog.c|e_arguments|8|keep|the Arguments dialog edits the value
-we_prog.c|e_make_prj_opt|8|keep|Project-Options edits the values
+we_prog.c|e_make_prj_opt|11|keep|Project-Options edits the values
 we_prog.c|e_project_options|4|keep|Project-Options edits the values
 we_prog.c|e_run_c_options|4|keep|the Compiler dialog edits the values
 we_prog.c|e_prog_fields_of|1|keep|the Compiler dialog compares the values

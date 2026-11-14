@@ -11,6 +11,7 @@
 #include "we_ai.h"       /* AI assistant entry point (guarded by WPE_AI) */
 #include "we_buffer.h"
 #include "we_lineend.h"
+#include "we_progname.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
 
@@ -407,6 +408,20 @@ static FENSTER *e_p_source_window(ECNT *cn)
  return(cn->f[cn->mxedt-1]);
 }
 
+static void e_build_step_end_of(FENSTER *f, int result);
+
+/**
+ * e_compile_after - The compile of Alt-C has ended: note its object, end the
+ * build.
+ * @f: the top window; @result: the compile's result; @data: unused.
+ */
+static void e_compile_after(FENSTER *f, int result, void *data)
+{
+ (void)data;
+ e_build_step_end_of(f, result);
+ e_build_chain_end(f, result, NULL);
+}
+
 /**
  * e_compile - Alt-C: compile the current file without linking, in the
  * background.
@@ -418,7 +433,7 @@ int e_compile(FENSTER *f)
  WpeMouseChangeShape(WpeWorkingShape);
  efildes[0] = efildes[1] = -1;
  wfildes[0] = wfildes[1] = -1;
- e_comp(f, e_build_chain_end, NULL);
+ e_comp(f, e_compile_after, NULL);
  WpeMouseRestoreShape();
  return(0);
 }
@@ -432,6 +447,7 @@ static void e_p_make_link(ECNT *cn);
 static void e_p_make_after_compile(FENSTER *f, int result, void *data)
 {
  (void)data;
+ e_build_step_end_of(f, result);
  if (result)
  {
   e_build_chain_end(f, result, NULL);
@@ -452,6 +468,7 @@ static void e_p_make_after_link(FENSTER *f, int result, void *data)
  ECNT *cn = f->ed;
 
  (void)data;
+ e_build_step_end_of(f, result);
  e_build_chain_end(f, result, NULL);
  if (result)
   e_make_multifile_hint(e_p_source_window(cn));
@@ -492,6 +509,170 @@ int e_p_make(FENSTER *f)
 
 static void e_build_note_up_to_date(const char *target);
 
+/* What this editor built here.  An object, a program or a library counts as
+   up to date only when this editor wrote that very file in this folder, so a
+   built file a clone ships never makes a build skip a step and never reaches
+   Ctrl-F9.  The records live in the user's state folder (we_startcmd.h); one
+   set, of the build's folder, is read when a build is planned and written
+   once per step. */
+#define E_BUILT_STEP_MAX 2   /* the most outputs one step writes: object and program */
+
+static WpeBuiltSet g_built;     /* the records of the build's folder             */
+static int g_built_ready;       /* g_built is loaded for the build in progress    */
+static struct {
+ char path[WPE_BUILD_PATH_MAX];
+ int existed;                   /* the output was there before the step           */
+ struct stat st;                /* and this is what it was                        */
+} g_built_before[E_BUILT_STEP_MAX];
+static int g_built_nbefore;     /* outputs of the step in progress                */
+
+/**
+ * e_build_record_begin - Read the records of the folder a build runs in.
+ * @f: the window the build was asked from.
+ *
+ * Called once when a build is planned, after the user answered whatever the
+ * plan asked.  A store that cannot be believed is said once and nothing
+ * counts as built here: every F9 builds.
+ */
+static void e_build_record_begin(FENSTER *f)
+{
+ char *dir = e_build_dir(f);
+
+ if (g_built_ready)
+  wpe_startcmd_built_free(&g_built);
+ g_built_ready = 0;
+ g_built_nbefore = 0;
+ if (!dir)
+  return;
+ wpe_startcmd_built_load(dir, &g_built);
+ FREE(dir);
+ g_built_ready = 1;
+ if (g_built.state == WPE_STARTCMD_STORE_BAD)
+  e_build_record_say(f, E_BUILT_NOT_READ);
+}
+
+/**
+ * e_build_stat - The stat of a build output, taken in the build's folder.
+ * @output: its path as the build names it; @st: receives the stat.
+ *
+ * Resolved against the folder the plan runs in, never against the process's
+ * folder, so the record and the lookup name one file whatever the editor's
+ * working folder is.
+ * Return: 0 when it exists, else -1.
+ */
+static int e_build_stat(const char *output, struct stat *st)
+{
+ char path[WPE_BUILD_PATH_MAX];
+ int n;
+
+ if (!g_built.folder[0])
+  return(-1);
+ if (output[0] == DIRC)
+  n = snprintf(path, sizeof path, "%s", output);
+ else
+  n = snprintf(path, sizeof path, "%s/%s", g_built.folder, output);
+ if (n < 0 || (size_t)n >= sizeof path)
+  return(-1);
+ return(stat(path, st));
+}
+
+/**
+ * e_build_current - Is an output up to date: built here, and no older than
+ * what it is made of?
+ * @output: the output; @source: the file it is made of, or NULL;
+ * @since: it must be no older than this time, or 0; @newest: raised to the
+ * output's time when it exists, or NULL; @out_st: receives its stat when it
+ * exists, or NULL.
+ *
+ * The build's one up-to-date rule.  A time stamp alone never makes a shipped
+ * file current: the record of what this editor built must hold this very
+ * file (device, inode, times, size).  So the first F9 in a fresh clone
+ * builds once, then "nothing to build" works as it always did.
+ * Return: 1 when the output is current.
+ */
+static int e_build_current(const char *output, const char *source, M_TIME since, M_TIME *newest,
+                           struct stat *out_st)
+{
+ struct stat st, sb;
+
+ if (e_build_stat(output, &st))
+  return(0);
+ if (out_st)
+  *out_st = st;
+ if (newest && st.st_mtime > *newest)
+  *newest = st.st_mtime;
+ if (source && (e_build_stat(source, &sb) || st.st_mtime < sb.st_mtime))
+  return(0);
+ if (st.st_mtime < since)
+  return(0);
+ return(wpe_startcmd_built_here(&g_built, output, &st));
+}
+
+/**
+ * e_built_step_begin - Remember the outputs of a step before it runs.
+ * @first/@second: the outputs the step writes (a compile: the object; a
+ * link: the program; a compiler that writes its own program: both; ar and
+ * ranlib: the library), or NULL.
+ *
+ * What a clone shipped is there before the step; only a file the step made
+ * or changed is the step's work.
+ */
+static void e_built_step_begin(const char *first, const char *second)
+{
+ const char *out[E_BUILT_STEP_MAX];
+ int i, n = 0;
+
+ out[0] = first;
+ out[1] = second;
+ for (i = 0; i < E_BUILT_STEP_MAX; i++)
+ {
+  if (!out[i] || !out[i][0])
+   continue;
+  snprintf(g_built_before[n].path, sizeof g_built_before[n].path, "%s", out[i]);
+  g_built_before[n].existed = (e_build_stat(out[i], &g_built_before[n].st) == 0);
+  n++;
+ }
+ g_built_nbefore = n;
+}
+
+/**
+ * e_build_step_note - A step succeeded: its work is this editor's.
+ * @f: the window.
+ *
+ * Notes only the outputs of the step that ran, and only a file that was
+ * absent before it or whose identity changed during it, then writes the
+ * records once.  A step that changed nothing notes nothing.
+ */
+static void e_build_step_note(FENSTER *f)
+{
+ struct stat now;
+ int i;
+
+ for (i = 0; i < g_built_nbefore && g_built_ready; i++)
+ {
+  if (e_build_stat(g_built_before[i].path, &now))
+   continue;
+  if (g_built_before[i].existed && wpe_startcmd_same_file(&g_built_before[i].st, &now))
+   continue;
+  wpe_startcmd_note_built(&g_built, g_built_before[i].path, &now);
+ }
+ g_built_nbefore = 0;
+ if (g_built_ready && g_built.dirty && wpe_startcmd_built_save(&g_built))
+  e_build_record_say(f, E_BUILT_NOT_SAVED);
+}
+
+/**
+ * e_build_step_end_of - A step ended: note its work, or forget it failed.
+ * @f: the window; @result: the step's result.
+ */
+static void e_build_step_end_of(FENSTER *f, int result)
+{
+ if (result)
+  g_built_nbefore = 0;
+ else
+  e_build_step_note(f);
+}
+
 /**
  * e_p_make_note_program_current - The link found the program current.
  * @estr: the program of a single-file build.
@@ -505,68 +686,57 @@ static void e_p_make_note_program_current(const char *estr)
  if (e_s_prog.comp_sw & 1)
   return;
  if (e__project)
-  e_build_note_up_to_date(e_s_prog.exe_name);
+  e_build_note_up_to_date(e_prj_program());
  else
   e_build_note_up_to_date(estr);
 }
 
 static void e_build_path_too_long(FENSTER *f, const char *what);
 
-/* What a single-file build calls its program and its object. */
-#define E_P_PROGRAM_SUFFIX ".e"
-#define E_P_OBJECT_SUFFIX  ".o"
-#define E_P_CLASS_SUFFIX   ".class"
+/**
+ * e_prog_source_of - The open file as the program-name owner reads it.
+ * @s: filled in; @f: the file's window; @executable: the language's
+ * Executable, or NULL; @exedir: the output folder.
+ *
+ * The one place the compiler's style is read to name something: a compiler
+ * of the "other" style (fpc, javac, rustc) writes its own program, which is
+ * therefore never placed under Exedir, and its object is a .class.  Every
+ * name the editor gives to what a build makes goes through the owner from
+ * here, so F9, Alt-C and Ctrl-F9 name the same files.
+ */
+static void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const char *executable,
+                             const char *exedir)
+{
+ memset(s, 0, sizeof *s);
+ s->name = f->datnam;
+ s->exedir = exedir;
+ s->executable = executable;
+ s->self_linked = e_s_prog.comp_sw & 1;
+ s->class_object = e_s_prog.comp_sw & 1;
+}
 
 /**
  * e_p_link_operands_of - The program and the object file of F9's link step.
- * @exe_name: the language's Executable, or NULL; @comp_sw: its compiler's
- * switches; @exedir: the output folder; @estr/@ostr: receive them; @sz:
- * the room of each; @datnam: the source's file name.
+ * @f: the source's window; @exe_name: the language's Executable, or NULL;
+ * @exedir: the output folder; @estr/@ostr: receive them; @sz: the room of
+ * each.
  *
- * Both go through wpe_startplan_operand, so an Exedir a folder sets ("@r")
- * makes a path ("./@r/t.o") and never a response file the linker reads.
- * The name of the program and of the object is the source's name without
- * its extension, worked out here and nowhere else: the build's plan and its
- * link step both take it and the paths from here, so a source with a long
- * name is linked under the name the plan judged.
+ * Named by the owner, which joins an Exedir a folder sets ("@r") through the
+ * start plan's operand, so it makes a path ("./@r/t.o") and never a response
+ * file the linker reads.  The build's plan and its link step both take the
+ * names from here, so a source with a long name is linked under the name
+ * the plan judged.
  * Return: 0, or -1 when one does not fit.
  */
-static int e_p_link_operands_of(const char *exe_name, int comp_sw, const char *exedir,
-                                char *estr, char *ostr, size_t sz, const char *datnam)
+static int e_p_link_operands_of(FENSTER *f, const char *exe_name, const char *exedir,
+                                char *estr, char *ostr, size_t sz)
 {
- char name[WPE_PATH_SIZE], stem[WPE_PATH_SIZE];
+ WpeProgramSource s;
 
- /* A name that does not fit is refused, never cut: the program would be
-    linked under a piece of the name the user gave. */
- if (wpe_path_copy(stem, sizeof stem, datnam))
+ e_prog_source_of(&s, f, exe_name, exedir);
+ if (wpe_progname_program(estr, sz, &s))
   return(-1);
- WpeStringCutChar(stem, '.');
- if (exe_name && exe_name[0])
- {
-  if (wpe_path_copy(name, sizeof name, exe_name))
-   return(-1);
- }
- else
- {
-  if (wpe_path_copy(name, sizeof name, stem) ||
-      wpe_path_cat(name, sizeof name, E_P_PROGRAM_SUFFIX))
-   return(-1);
- }
- if (wpe_startplan_operand(estr, sz, exedir, name))
-  return(-1);
- if (wpe_path_copy(name, sizeof name, stem))
-  return(-1);
- if (comp_sw & 1)
- {
-  if (wpe_path_cat(name, sizeof name, E_P_CLASS_SUFFIX))
-   return(-1);
- }
- else
- {
-  if (wpe_path_cat(name, sizeof name, E_P_OBJECT_SUFFIX))
-   return(-1);
- }
- return(wpe_startplan_operand(ostr, sz, exedir, name));
+ return(wpe_progname_object(ostr, sz, &s));
 }
 
 static int e_exec_planned(FENSTER *f, char **argv);
@@ -584,7 +754,6 @@ static void e_p_make_link(ECNT *cn)
  char ostr[WPE_BUILD_PATH_MAX], estr[WPE_BUILD_PATH_MAX];
  char cwd_saved[WPE_PATH_SIZE];
  int file = -1, cwd_chg = 0;
- struct stat cbuf[1], obuf[1];
  int linkRequest = 1; /* assume linking has to be done */
 
  f = e_p_source_window(cn);
@@ -598,8 +767,8 @@ static void e_p_make_link(ECNT *cn)
   e_argc = e_make_arg(&e_arg, e_s_prog.libraries);
   e_arg[1] = MALLOC(3);
   strcpy(e_arg[1], "-o");
-  if (e_p_link_operands_of(e_s_prog.exe_name, e_s_prog.comp_sw, e_prog.exedir,
-                           estr, ostr, sizeof estr, f->datnam))
+  if (e_p_link_operands_of(f, e_s_prog.exe_name, e_prog.exedir,
+                           estr, ostr, sizeof estr))
   {
    e_free_arg(e_arg, e_argc);
    if (cwd_chg)
@@ -610,14 +779,12 @@ static void e_p_make_link(ECNT *cn)
   }
   e_argc = e_add_arg(&e_arg, estr, 2, e_argc);
   e_argc = e_add_arg(&e_arg, ostr, 3, e_argc);
-  stat(ostr, cbuf);
-  if (!stat(estr, obuf) && obuf->st_mtime >= cbuf->st_mtime)
+  if (e_build_current(estr, ostr, 0, NULL, NULL))
    linkRequest = 0;
  }
  else
  {
-  if (!stat(e_s_prog.exe_name, obuf) && !e_p_l_comp &&
-    obuf->st_mtime >= last_time)
+  if (!e_p_l_comp && e_build_current(e_prj_program(), NULL, last_time, NULL, NULL))
    linkRequest = 0;
  }
  /* Non-GNU compilers (fpc, javac) handle linking internally during
@@ -631,6 +798,10 @@ static void e_p_make_link(ECNT *cn)
   if (e_d_swtch > 0)
    e_d_quit(f);
 #endif
+  if (e__project)
+   e_built_step_begin(e_prj_program(), NULL);
+  else
+   e_built_step_begin(estr, NULL);
   e_sys_ini();
   file = e_exec_planned(f, e_arg);
   e_sys_end();
@@ -1309,9 +1480,7 @@ int e_run(FENSTER *f)
    shell text. */
 #define E_RUN_LINE_ALL     "\"$@\""
 #define E_RUN_LINE_FIRST   "\"$1\""
-#define E_RUN_PROGRAM_EXT  ".e"      /* the program a single file's link makes */
-#define E_RUN_PROJECT_PROG "a.out"   /* a project's program with no EXENAME    */
-#define E_RUN_HERE         "."       /* the program's folder when Exedir is empty */
+#define E_RUN_HERE        "."       /* the program's folder when Exedir is empty */
 #define E_RUN_NAME         "program" /* the key's name when no language is known */
 #define E_RUN_WHAT_ASKED   "program to run"
 #define E_RUN_SRC_WINDOW   "the window's file"
@@ -1367,43 +1536,43 @@ static void e_run_values_of(e_run_values *v, const struct e_s_prog *p, const cha
 }
 
 /**
+ * e_run_program_placed - The program the build made, as the build names it.
+ * @f: the source window; @v: the values; @out/@sz: receive it.
+ *
+ * The owner's name for a single file (under Exedir, an absolute Executable
+ * where the link put it) or the project's program: the file F9 wrote, so
+ * Ctrl-F9 starts the file the build made and no other.
+ * Return: 0, or -1 when it does not fit.
+ */
+static int e_run_program_placed(FENSTER *f, const e_run_values *v, char *out, size_t sz)
+{
+ WpeProgramSource s;
+
+ if (e__project)
+  return(wpe_path_copy(out, sz, e_prj_program()));
+ e_prog_source_of(&s, f, v->exe_name, v->exedir);
+ return(wpe_progname_program(out, sz, &s));
+}
+
+/**
  * e_run_program_path - The program Run starts, as a path.
  * @f: the source window; @v: the values; @out/@sz: receive it.
  *
- * Exedir and Executable, or the source's own name with ".e", or a.out for
- * a project: always with a folder in front, so the shell never looks the
- * name up on PATH, and through the operand rule, so a name starting with
- * '-' is only ever that file.
+ * The program the build made, with a folder in front when its name has none,
+ * so the shell never looks the name up on PATH, and through the operand rule,
+ * so a name starting with '-' is only ever that file.  A path the build
+ * already placed (under Exedir, or absolute) is the word as it is.
  * Return: 0, or -1 when it does not fit.
  */
 static int e_run_program_path(FENSTER *f, const e_run_values *v, char *out, size_t sz)
 {
- char name[WPE_PATH_SIZE];
- const char *dir = v->exedir;
+ char placed[WPE_PATH_SIZE];
 
- if (v->exe_name && v->exe_name[0] == DIRC)
-  return(wpe_startplan_operand(out, sz, NULL, v->exe_name));
- if (v->exe_name && v->exe_name[0])
- {
-  if (wpe_path_copy(name, sizeof name, v->exe_name))
-   return(-1);
- }
- else if (e__project)
- {
-  if (wpe_path_copy(name, sizeof name, E_RUN_PROJECT_PROG))
-   return(-1);
- }
- else
- {
-  if (wpe_path_copy(name, sizeof name, f->datnam))
-   return(-1);
-  WpeStringCutChar(name, '.');
-  if (wpe_path_cat(name, sizeof name, E_RUN_PROGRAM_EXT))
-   return(-1);
- }
- if (!dir || !*dir)
-  dir = E_RUN_HERE;
- return(wpe_startplan_operand(out, sz, dir, name));
+ if (e_run_program_placed(f, v, placed, sizeof placed))
+  return(-1);
+ if (strchr(placed, DIRC))
+  return(wpe_path_copy(out, sz, placed));
+ return(wpe_startplan_operand_in(out, sz, E_RUN_HERE, placed));
 }
 
 /**
@@ -1706,10 +1875,10 @@ int e_check_c_file_w(FENSTER *fw)
  */
 static const char *e_p_file_type(const char *name)
 {
- const char *dot = strrchr(name, '.');
+ const char *ext = wpe_progname_extension(name);
 
- if (dot)
-  return(dot);
+ if (ext[0])
+  return(ext);
  return(name);
 }
 
@@ -1940,7 +2109,6 @@ typedef struct {
  const char *language;
  const char *compiler, *comp_str, *libraries, *exe_name;
  const char *exedir;
- int comp_sw;        /* the compiler's switches, as the build reads them */
  int own;            /* 1: the user's own plan, every value his          */
 } e_build_values;
 
@@ -1958,7 +2126,6 @@ static void e_build_values_of(e_build_values *v, const struct e_s_prog *p,
  v->libraries = p->libraries;
  v->exe_name = p->exe_name;
  v->exedir = exedir;
- v->comp_sw = e_s_prog.comp_sw;
  v->own = own;
 }
 
@@ -2033,31 +2200,48 @@ static void e_build_plan_words(WpeStartPlan *plan, const e_build_values *v)
 
 /**
  * e_comp_operands - The source and the object of a file's compile.
- * @f: the file's window; @exedir: the output folder; @comp_sw: the
- * compiler's switches; @fstr/@ostr: receive them; @sz: the room of each.
+ * @f: the file's window; @exedir: the output folder; @fstr/@ostr: receive
+ * them; @sz: the room of each.
  *
  * The compile and the build's plan both take their paths from here, so
- * the compile names exactly the paths the plan judged.
+ * the compile names exactly the paths the plan judged.  The object is the
+ * owner's: the file's name without its extension, under Exedir, so an
+ * Exedir with a dot in it never changes the object's name.
  * Return: 0, -1 when the source does not fit, -2 when the object does not.
  */
-static int e_comp_operands(FENSTER *f, const char *exedir, int comp_sw,
-                           char *fstr, char *ostr, size_t sz)
+static int e_comp_operands(FENSTER *f, const char *exedir, char *fstr, char *ostr, size_t sz)
 {
- const char *ext = E_P_OBJECT_SUFFIX;
+ WpeProgramSource s;
 
  if (wpe_startplan_operand(fstr, sz, f->dirct, f->datnam))
   return(-1);
- if (wpe_startplan_operand(ostr, sz, exedir, f->datnam))
+ e_prog_source_of(&s, f, NULL, exedir);
+ if (wpe_progname_object(ostr, sz, &s))
   return(-2);
- WpeStringCutChar(ostr, '.');
- /* javac produces .class files, not .o: the up-to-date test looks for
-    the right one */
- if (comp_sw & 1)
-  ext = E_P_CLASS_SUFFIX;
- if (strlen(ostr) + strlen(ext) >= sz)
-  return(-2);
- strcat(ostr, ext);
  return(0);
+}
+
+/**
+ * e_comp_step_begin - Remember what the compile of the open file is about to
+ * write.
+ * @f: the file's window; @ostr: its object.
+ *
+ * The object; and, for a compiler that writes its own program (javac, fpc,
+ * rustc), the program too, since that compile is the whole build.
+ */
+static void e_comp_step_begin(FENSTER *f, const char *ostr)
+{
+ WpeProgramSource s;
+ char estr[WPE_BUILD_PATH_MAX], lostr[WPE_BUILD_PATH_MAX];
+
+ e_prog_source_of(&s, f, e_s_prog.exe_name, e_prog.exedir);
+ if (s.self_linked &&
+     !e_p_link_operands_of(f, e_s_prog.exe_name, e_prog.exedir, estr, lostr, sizeof estr))
+ {
+  e_built_step_begin(ostr, estr);
+  return;
+ }
+ e_built_step_begin(ostr, NULL);
 }
 
 /**
@@ -2080,14 +2264,14 @@ static int e_build_plan_paths(WpeStartPlan *plan, FENSTER *f, const e_build_valu
 
  if (from_dir == WPE_FROM_FOLDER || from_exe == WPE_FROM_FOLDER)
   from_prog = WPE_FROM_FOLDER;
- if (e_comp_operands(f, v->exedir, v->comp_sw, fstr, ostr, sizeof fstr))
+ if (e_comp_operands(f, v->exedir, fstr, ostr, sizeof fstr))
   return(-1);
  wpe_startplan_path(plan, fstr, WPE_PATH_INPUT, WPE_FROM_USER, E_BUILD_SRC_WINDOW, NULL);
  wpe_startplan_path(plan, ostr, WPE_PATH_WRITE, from_dir, "./xwperc: Exedir", NULL);
  wpe_startplan_mark_output(plan, WPE_OUTPUT_OBJECT);
  wpe_startplan_path(plan, ostr, WPE_PATH_REMOVE, from_dir, "./xwperc: Exedir", NULL);
  wpe_startplan_mark_output(plan, WPE_OUTPUT_OBJECT);
- if (e_p_link_operands_of(v->exe_name, v->comp_sw, v->exedir, estr, lostr, sizeof estr, f->datnam))
+ if (e_p_link_operands_of(f, v->exe_name, v->exedir, estr, lostr, sizeof estr))
   return(-1);
  wpe_startplan_path(plan, estr, WPE_PATH_WRITE, from_prog, "./xwperc: Exedir, Executable", NULL);
  wpe_startplan_mark_output(plan, WPE_OUTPUT_PRODUCT);
@@ -2229,11 +2413,7 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
    if (tp) { FILE *tf = fopen(tp, "a");
      if (tf) { fprintf(tf, "e_comp ENTER datnam=%s\n",
               f && f->datnam ? f->datnam : "?"); fclose(tf); } } }
-#ifdef CHECKHEADER
  struct stat obuf[1];
-#else
- struct stat cbuf[1], obuf[1];
-#endif
 
  e__project = e_project_is_open();
  if (e__project)
@@ -2257,7 +2437,7 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
  f = cn->f[i];
  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
  /* A path that does not fit is said before anything is asked or run. */
- len = e_comp_operands(f, e_prog.exedir, e_s_prog.comp_sw, fstr, ostr, sizeof fstr);
+ len = e_comp_operands(f, e_prog.exedir, fstr, ostr, sizeof fstr);
  if (len == -1)
  {
   e_build_path_too_long(f, "source");
@@ -2271,11 +2451,12 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
  if (e_build_plan_approve(f))
   return(WPE_ESC);
  /* "Use mine" may have put the user's own output folder in force. */
- if (e_comp_operands(f, e_prog.exedir, e_s_prog.comp_sw, fstr, ostr, sizeof fstr))
+ if (e_comp_operands(f, e_prog.exedir, fstr, ostr, sizeof fstr))
  {
   e_build_path_too_long(f, "object");
   return (-1);
  }
+ e_build_record_begin(f);
  argc = e_make_arg(&arg, e_s_prog.comp_str);
  if (!(e_s_prog.comp_sw & 1))
  {
@@ -2308,10 +2489,9 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
     launch directory when it differs from the file's. */
  cwd_chg = e_build_pushd(f, cwd_saved, sizeof(cwd_saved));
 #ifdef CHECKHEADER
- if ((stat(ostr, obuf) || e_check_header(fstr, obuf->st_mtime, cn, 0)))
+ if (!e_build_current(ostr, NULL, 0, NULL, obuf) || e_check_header(fstr, obuf->st_mtime, cn, 0))
 #else
- stat(f->datnam, cbuf);
- if ((stat(ostr, obuf) || obuf->st_mtime < cbuf->st_mtime))
+ if (!e_build_current(ostr, f->datnam, 0, NULL, obuf))
 #endif
  {
   if (e_new_message(f))
@@ -2323,6 +2503,7 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
    return(WPE_ESC);
   }
   e_build_remove_stale(f, ostr);
+  e_comp_step_begin(f, ostr);
   if ((file = e_exec_planned(f, arg)) == 0)
   {
    e_sys_end();
@@ -4421,10 +4602,10 @@ int e_algol68_use_ga68(const char *filename);
 int e_check_c_file(char *name)
 {
  int i, j;
- char *postfix;
+ const char *postfix;
 
- postfix = strrchr(name, '.');
- if (postfix)
+ postfix = wpe_progname_extension(name);
+ if (postfix[0])
  {
   for (i = 0; i < e_prog.num; i++)
    for (j = WpeExpArrayGetSize(e_prog.comp[i]->filepostfix); j; j--)
@@ -5506,30 +5687,11 @@ int e_open_project_file(ECNT *cn)
  return(0);
 }
 
-/**
- * e_prj_default_exe_of - The program a new project builds, named after it.
- * @exe/@size: receive the name; @path: the project file's path.
- *
- * The project's name up to its first dot (/tmp/nuevo.prj and nuevo.v2.prj
- * both build "nuevo"), so New Project offers the program name it always
- * has.  A name is at most NAME_MAX bytes, so it always fits; one that did
- * not would leave EXENAME empty, never cut.
- */
-static void e_prj_default_exe_of(char *exe, size_t size, const char *path)
-{
- const char *base = strrchr(path, DIRC);
- char *dot;
-
- base = base ? base + 1 : path;
- if (wpe_path_copy(exe, size, base) != 0)
-  return;
- dot = strchr(exe, '.');
- if (dot)
-  *dot = '\0';
-}
-
 /* Write a minimal .prj so a freshly named project can be opened.
-   e_make_prj_opt() fills in the compiler defaults (gcc, -g). */
+   e_make_prj_opt() fills in the compiler defaults (gcc, -g).  Its program is
+   named after the project by the owner, as a source's is: "my.app.prj"
+   builds "my.app".  A name too long for the room would leave EXENAME empty,
+   never cut. */
 static void e_write_default_prj(char *path)
 {
  FILE *fp = fopen(path, "w");
@@ -5537,7 +5699,7 @@ static void e_write_default_prj(char *path)
 
  if (!fp)
   return;
- e_prj_default_exe_of(exe, sizeof exe, path);
+ wpe_progname_project_default(exe, sizeof exe, path);
 
  fprintf(fp, "#\n# xwpe - project-file: %s\n", path);
  fprintf(fp, "# created by xwpe version %s\n#\n\n", VERSION);
@@ -6860,19 +7022,6 @@ static void e_prj_say_open_failed(FENSTER *f)
  FREE(text);
 }
 
-/**
- * e_prj_default_exe - The program a project without EXENAME builds.
- * Return: the project's path without its extension, malloc'd.
- */
-static char *e_prj_default_exe(void)
-{
- char *exe = WpeStrdup(e_prog.project);
-
- if (exe)
-  WpeStringCutChar(exe, '.');
- return(exe);
-}
-
 /* The "install:" lines of a project, each expanded, in order. */
 typedef struct {
  char **line;
@@ -7206,11 +7355,34 @@ static struct {
  int k;                    /* the file being built                       */
  int libsw, exlib, sccs;
  char ofile[WPE_BUILD_PATH_MAX];
- struct stat lbuf, obuf;
+ char program[WPE_BUILD_PATH_MAX]; /* the project's program, placed (e_prj_program) */
+ struct stat obuf;
+ int lib_remove;           /* a library this editor did not build is in the way */
  enum e_prj_phase phase;
  e_build_cont done;
  void *data;
 } g_prj;
+
+/**
+ * e_prj_program - The program the open project links, as a command names it.
+ *
+ * Worked out once per build by e_prj_setup from the project's EXENAME and
+ * Exedir, so the link, the up-to-date test, the "nothing to build" line, Run
+ * and the debugger all name the file the build writes.  The Executable field
+ * of Project-Options keeps the word the project file holds: a build never
+ * writes its placed path into the user's EXENAME.
+ * Return: the path; before the first build of a session, the one that word
+ * and Exedir give.
+ */
+const char *e_prj_program(void)
+{
+ static char fallback[WPE_BUILD_PATH_MAX];
+
+ if (g_prj.program[0])
+  return(g_prj.program);
+ wpe_progname_project_program(fallback, sizeof fallback, e_s_prog.exe_name, e_prog.exedir);
+ return(fallback);
+}
 
 static void e_prj_run(void);
 
@@ -7505,6 +7677,9 @@ static void e_prj_plan_library(WpeStartPlan *plan)
   snprintf(source, sizeof source, E_PRJ_SRC_FMT, e_prj_file_name(), "LIBNAME");
   wpe_startplan_path(plan, lib, WPE_PATH_WRITE, WPE_FROM_FOLDER, source, NULL);
   wpe_startplan_mark_output(plan, WPE_OUTPUT_PRODUCT);
+  /* A library the editor did not build is removed before ar makes it anew. */
+  wpe_startplan_path(plan, lib, WPE_PATH_REMOVE, WPE_FROM_FOLDER, source, NULL);
+  wpe_startplan_mark_output(plan, WPE_OUTPUT_PRODUCT);
   wpe_startplan_value(plan, e_prj_file_name(), "LIBNAME", e_find_var_raw("LIBNAME"),
                       e_find_var("LIBNAME"));
  }
@@ -7706,11 +7881,11 @@ static int e_prj_files_as_paths(struct dirfile *df)
  */
 static int e_prj_program_path(char *out, size_t sz, struct dirfile *df, const char *exedir)
 {
- const char *name = "a.out";
+ const char *word = NULL;
 
- if (df && df->anz > 0 && df->name[0][0])
-  name = df->name[0];
- return(wpe_startplan_operand(out, sz, exedir, name));
+ if (df && df->anz > 0)
+  word = df->name[0];
+ return(wpe_progname_project_program(out, sz, word, exedir));
 }
 
 /**
@@ -7723,9 +7898,9 @@ static int e_prj_setup(FENSTER *f)
  ECNT *cn = f->ed;
  struct dirfile *df = NULL;
  char **arg;
- int i, j, k, argc, exlib = 0;
+ int i, j, k, argc, exlib = 0, lib_remove = 0;
  char ofile[WPE_BUILD_PATH_MAX];
- struct stat lbuf[1];
+ struct stat lbuf;
 
  last_time = (M_TIME) 0;
  e_p_l_comp = 0;
@@ -7748,6 +7923,7 @@ static int e_prj_setup(FENSTER *f)
  }
  if (e_prj_approve(f))
   return(WPE_ESC);
+ e_build_record_begin(f);
  e_arg = (char **) MALLOC(e_argc*sizeof(char *));
  arg = (char **) MALLOC(argc*sizeof(char *));
  /* MALLOC leaves slot 0 uninitialised.  The CMP/FILES lookups below can bail
@@ -7807,9 +7983,7 @@ static int e_prj_setup(FENSTER *f)
   return(-1);
  }
  if (df) freedf(df);
- if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
- e_s_prog.exe_name = WpeStrdup(ofile);
- e_argc = e_add_arg(&e_arg, e_s_prog.exe_name, 2, e_argc);
+ e_argc = e_add_arg(&e_arg, ofile, 2, e_argc);
  df = e_p_get_var("LIBNAME");
  e_prj_library_set("");
  if (df && df->anz > 0)
@@ -7824,8 +7998,13 @@ static int e_prj_setup(FENSTER *f)
    return(-1);
   }
   e_prj_library_set(libpath);
-  if (access(libpath, 0)) exlib = 1;
-  else stat(libpath, lbuf);
+  /* A library this editor did not build here is no library of the build:
+     every object goes into one made anew, and the shipped one, with any
+     member it carries, is removed before the first insert. */
+  if (e_build_stat(libpath, &lbuf))
+   exlib = 1;
+  else if (!e_build_current(libpath, NULL, 0, NULL, &lbuf))
+   exlib = lib_remove = 1;
  }
  if (df) freedf(df);
  df = e_p_get_var("CMPSWTCH");
@@ -7873,12 +8052,13 @@ static int e_prj_setup(FENSTER *f)
  }
  arg[argc] = NULL;
  memset(&g_prj, 0, sizeof g_prj);
+ snprintf(g_prj.program, sizeof g_prj.program, "%s", ofile);
  g_prj.cn = cn;
  g_prj.arg = arg;
  g_prj.argc = argc;
  g_prj.df = df;
  g_prj.exlib = exlib;
- g_prj.lbuf = lbuf[0];
+ g_prj.lib_remove = lib_remove;
  return(0);
 }
 
@@ -7920,8 +8100,8 @@ static void e_prj_end(int result)
  */
 static void e_prj_step_done(FENSTER *f, int result, void *data)
 {
- (void)f;
  (void)data;
+ e_build_step_end_of(f, result);
  if (result)
  {
   e_prj_end(result);
@@ -7941,20 +8121,12 @@ static void e_prj_step_done(FENSTER *f, int result, void *data)
  */
 static int e_prj_object_of(const char *file, const char *exedir, char *out, size_t sz)
 {
- const char *base = strrchr(file, DIRC);
- char name[WPE_BUILD_PATH_MAX], *dot;
+ WpeProgramSource s;
 
- if (base)
-  base++;
- else
-  base = file;
- snprintf(name, sizeof name, "%s", base);
- dot = strrchr(name, '.');
- if (dot)
-  *dot = '\0';
- if (strlen(name) + strlen(E_P_OBJECT_SUFFIX) < sizeof name)
-  strcat(name, E_P_OBJECT_SUFFIX);
- return(wpe_startplan_operand(out, sz, exedir, name));
+ memset(&s, 0, sizeof s);
+ s.name = file;
+ s.exedir = exedir;
+ return(wpe_progname_object(out, sz, &s));
 }
 
 /**
@@ -7972,18 +8144,12 @@ static void e_prj_object_name(int k)
  */
 static int e_prj_object_current(int k)
 {
-#ifndef CHECKHEADER
- struct stat cbuf;
-#endif
-
- if (stat(g_prj.ofile, &g_prj.obuf))
-  return(0);
- if (g_prj.obuf.st_mtime > last_time) last_time = g_prj.obuf.st_mtime;
 #ifdef CHECKHEADER
+ if (!e_build_current(g_prj.ofile, NULL, 0, &last_time, &g_prj.obuf))
+  return(0);
  return(!e_check_header(g_prj.df->name[k], g_prj.obuf.st_mtime, g_prj.cn, 0));
 #else
- stat(g_prj.df->name[k], &cbuf);
- return(g_prj.obuf.st_mtime >= cbuf.st_mtime);
+ return(e_build_current(g_prj.ofile, g_prj.df->name[k], 0, &last_time, &g_prj.obuf));
 #endif
 }
 
@@ -8018,6 +8184,7 @@ static int e_prj_compile_file(int k)
 #endif
  g_prj.arg[g_prj.argc] = NULL;
  e_build_remove_stale(f, g_prj.ofile);
+ e_built_step_begin(g_prj.ofile, NULL);
  g_prj.sccs = 1;
  e_p_set_compiled_source(g_prj.df->name[k]);
  /* The child prints its own command line first (e_exec_planned), as every
@@ -8057,11 +8224,12 @@ static char *e_prj_object_base(void)
 static int e_prj_is_program_object(void)
 {
  char *base = e_prj_object_base();
- int len = strlen(e_s_prog.exe_name);
+ const char *program = e_prj_program();
+ int len = strlen(program);
 
  if (!strcmp(base, "main.o"))
   return(1);
- return(!strncmp(e_s_prog.exe_name, base, len) && g_prj.ofile[len] == '.');
+ return(!strncmp(program, base, len) && g_prj.ofile[len] == '.');
 }
 
 /**
@@ -8071,11 +8239,12 @@ static int e_prj_is_program_object(void)
 static int e_prj_inserted_after_compile(void)
 {
  char *base = e_prj_object_base();
- int len = strlen(e_s_prog.exe_name);
+ const char *program = e_prj_program();
+ int len = strlen(program);
 
  if (g_prj.exlib || e_prj_library()[0] == '\0' || !strcmp(base, "main.o"))
   return(0);
- return(strncmp(e_s_prog.exe_name, base, len) || g_prj.ofile[len] == '.');
+ return(strncmp(program, base, len) || g_prj.ofile[len] == '.');
 }
 
 /**
@@ -8087,6 +8256,14 @@ static int e_prj_insert(enum e_prj_phase next)
 {
  g_prj.phase = next;
  g_prj.libsw = 1;
+ if (g_prj.lib_remove)
+ {
+  /* The library in the way is not one this editor built: ar makes it anew
+     from the editor's own objects, so no member of the clone's survives. */
+  e_build_remove_stale(e_prj_top(), e_prj_library());
+  g_prj.lib_remove = 0;
+ }
+ e_built_step_begin(e_prj_library(), NULL);
  e_make_library(e_prj_library(), g_prj.ofile, e_prj_top(), e_prj_step_done, NULL);
  return(E_PRJ_WAIT);
 }
@@ -8129,7 +8306,7 @@ static int e_prj_link_arg(void)
   e_argc = e_add_arg(&e_arg, g_prj.ofile, e_argc, e_argc);
   return(E_PRJ_GO_ON);
  }
- if (g_prj.exlib || g_prj.obuf.st_mtime >= g_prj.lbuf.st_mtime)
+ if (g_prj.exlib || !e_build_current(e_prj_library(), g_prj.ofile, 0, NULL, NULL))
   return(e_prj_insert(PRJ_NEXT));
  return(E_PRJ_GO_ON);
 }
@@ -8174,6 +8351,7 @@ static int e_prj_ranlib(void)
   ar_arg[0] = E_PRJ_RANLIB;
   ar_arg[1] = e_prj_library();
   ar_arg[2] = NULL;
+  e_built_step_begin(e_prj_library(), NULL);
   /* The child prints its command line itself (e_exec_planned). */
   e_sys_ini();
   file = e_exec_planned(f, ar_arg);
@@ -8200,7 +8378,7 @@ static int e_prj_finish(void)
  void *data = g_prj.data;
  int k;
 
- if (e_prj_library()[0] != '\0')
+ if (e_prj_library()[0] != '\0' && !g_prj.lib_remove)
   e_argc = e_add_arg(&e_arg, e_prj_library(), e_argc, e_argc);
  freedf(g_prj.df);
  g_prj.df = NULL;
@@ -8424,8 +8602,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
   if (e_s_prog.libraries) FREE(e_s_prog.libraries);
   e_s_prog.libraries = WpeStrdup("");
   if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
-  /* Project my_prog.prj defaults to an executable of my_prog BD */
-  e_s_prog.exe_name = e_prj_default_exe();
+  e_s_prog.exe_name = WpeStrdup(WPE_PROJECT_DEFAULT_PROGRAM);
   if (e_s_prog.intstr) FREE(e_s_prog.intstr);
   e_s_prog.intstr = WpeStrdup(cc_intstr);
   e_prj_library_set("");
@@ -8503,10 +8680,11 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
   e_s_prog.comp_str = WpeStrdup("-g");
  if (!e_s_prog.libraries)
   e_s_prog.libraries = WpeStrdup("");
- if (!e_s_prog.exe_name)
+ if (!e_s_prog.exe_name || !e_s_prog.exe_name[0])
  {
-  /* Project my_prog.prj defaults to an executable of my_prog BD */
-  e_s_prog.exe_name = e_prj_default_exe();
+  /* A project that names no program builds a.out; Project-Options offers it */
+  if (e_s_prog.exe_name) FREE(e_s_prog.exe_name);
+  e_s_prog.exe_name = WpeStrdup(WPE_PROJECT_DEFAULT_PROGRAM);
  }
  if (!e_s_prog.intstr)
   e_s_prog.intstr = WpeStrdup(cc_intstr);

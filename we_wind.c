@@ -1913,6 +1913,31 @@ void e_startplan_say_not_removed(FENSTER *f, struct WpeStartPlan *plan, const ch
  e_startcmd_say(f, line);
 }
 
+/**
+ * e_build_record_say - Say once that the record of what was built could not
+ * be read or written.
+ * @f: the window; @what: E_BUILT_NOT_READ or E_BUILT_NOT_SAVED.
+ *
+ * Without the record nothing counts as built here, so every F9 builds; the
+ * build itself works, and the status row says why it never says "nothing to
+ * build".
+ */
+void e_build_record_say(FENSTER *f, int what)
+{
+ /* Each failure is said once a session. */
+ static const char not_read[] = "build record not read: the next F9 builds everything again";
+ static const char not_saved[] = "build record not saved: the next F9 builds everything again";
+ static int said[E_BUILT_NOT_SAVED + 1];
+
+ if (what < E_BUILT_NOT_READ || what > E_BUILT_NOT_SAVED || said[what])
+  return;
+ said[what] = 1;
+ if (what == E_BUILT_NOT_READ)
+  e_startcmd_say(f, not_read);
+ else
+  e_startcmd_say(f, not_saved);
+}
+
 /*         First opening of a window                 */
 void e_firstl(FENSTER *f, int sw)
 {

@@ -91,6 +91,8 @@ char *e_find_var(char *var);
 /* A project variable as its file writes it, before expansion ("" if unset). */
 const char *e_find_var_raw(const char *var);
 const char *e_get_start_symbol(void);
+/* The program the open project links, as a command names it (under Exedir). */
+const char *e_prj_program(void);
 int e_run_options(FENSTER *f);
 int e_run_c_options(FENSTER *f);
 int e_project_options(FENSTER *f);

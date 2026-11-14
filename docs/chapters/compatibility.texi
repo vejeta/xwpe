@@ -720,6 +720,42 @@ left: a project's @code{LIBNAME} was cut to 79 characters and its
 file name and renamed the file to them.  xwpe keeps each of these whole.  The @samp{Executable}, @samp{LiBrary}, @samp{EXecution-Directory},
 @samp{System-Include-Path} and @samp{Info-Path} fields take 4095
 characters.  The reason: a cut path names another file.
+
+@item An absolute Executable
+@cindex Executable, absolute
+The original linked a language's @code{Executable} such as
+@file{/tmp/prog} below the output folder (@file{.//tmp/prog}) and then ran
+@file{/tmp/prog}, another file, which the link had not written.  Run now
+starts the file the link wrote.  The reason: F9 and Ctrl-F9 name one
+file, and nothing new is written outside the folder.
+
+@item The Executable field after a build
+@cindex EXENAME, rewritten by a build
+@cindex Project-Options, Executable
+The original put the path of the built program into the project's
+@samp{Executable} field after F9, so for a project with no @code{EXENAME}
+and an @code{Exedir} of @file{out}, @samp{Project-Options} showed
+@file{out/a.out}, Save wrote it into the @file{.prj} as @code{EXENAME},
+and the next build linked @file{out/out/a.out}.  The field now keeps the
+word the file holds, or
+offers @code{a.out} when it has none.  The reason: what you typed is never
+replaced by a path the editor worked out.
+
+@item What the build trusts as current
+@cindex up to date, object and program
+@cindex nothing to build, a clone
+The original, like make, took any object, program or library newer than its
+source as up to date, a clone's shipped one included, so the first F9 in a
+clone built nothing and Ctrl-F9 ran the program the clone shipped.  F9's own
+compile and link now trust an object, a program or a library only after xwpe
+built it in this folder (the record is in your state folder, never in the
+project); the first F9 or Ctrl-F9 in a fresh clone, or in a tree you built
+elsewhere, compiles and links once, then ``nothing to build'' works as
+before.  No question is asked.  A library xwpe did not build in this folder (a shipped
+one, or one made by make or by hand) is removed and made anew from the objects
+xwpe built, so a member that is not one of the project's files is dropped.  A Makefile build keeps make's rule, and the
+classes javac reads from the class path are the compiler's.  The reason: a
+clone can ship a built program that is not the program of its sources.
 @end table
 
 @section Project lists

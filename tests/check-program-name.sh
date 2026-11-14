@@ -20,11 +20,21 @@
 #     the others only the files that name outputs.
 #  3. A folder joined to a name the same function derived: the plan's
 #     operand call whose last argument is name, stem, exe, ofile, estr or
-#     ostr.
+#     ostr; and any operand call whose folder is an Exedir, whatever the
+#     name is called: what goes under Exedir is an output, placed by the
+#     owner alone.
 #  4. The end of a name compared with an extension by hand: strlen of a
 #     table's .ext/->ext, or "name + n - el" against it.  A compare of
 #     wpe_progname_extension() with the field is the owner's way and is not
 #     counted.
+#  5. (we_prog.c only) A decision about time: a comparison that reads
+#     st_mtime, st_mtim or last_time, and any stat, lstat or access call.
+#     What the build trusts as current is decided by e_build_current alone
+#     (an output counts only when this editor built it here); a site that
+#     compares a time stamp or stats a file of its own is how a shipped
+#     program once counted as current.  A closed list: every function that
+#     still does is in the allow file with its reason, and any other fails,
+#     whatever its variables are called.
 #
 # tests/program-name.allow lists each function that still offends, with its
 # count and the pass that moves it onto the owner ("owner") or the reason it
@@ -66,9 +76,14 @@ OWNER_FILES="we_progname.c we_progname.h"
 # \047 is a single quote: awk turns it into one when it reads -v.
 CUT_RE='(WpeStringCutChar|strrchr|strchr)[ \t]*[(][^;]*[\047][.][\047]'
 SUFFIX_RE='[.](e|o|class|dbg|dbgerr)"|["/]a[.]out"|#[ \t]*define[ \t]+[A-Za-z0-9_]*(_SUFFIX|_EXT|_PROJECT_PROG)[ \t]+"[.](e|o|class|dbg|dbgerr)"'
-JOIN_RE='wpe_startplan_operand(_in)?[ \t]*[(][^;]*,[ \t]*(name|stem|exe|ofile|estr|ostr)[ \t]*[)]'
+JOIN_RE='wpe_startplan_operand(_in)?[ \t]*[(][^;]*,[ \t]*(name|stem|exe|ofile|estr|ostr)[ \t]*[)]|wpe_startplan_operand(_in)?[ \t]*[(][^,;]*,[^,;]*,[^,;]*[Ee][Xx][Ee][Dd][Ii][Rr][^,;]*,'
 TABLE_RE='strlen[ \t]*[(][^;]*[.>]ext[ \t]*[)]|[+][ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*-[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*,[^;]*[.>]ext([^A-Za-z0-9_]|$)'
 ALL_RE="$CUT_RE|$SUFFIX_RE|$JOIN_RE|$TABLE_RE"
+# Rule 5, we_prog.c only: a comparison with a time in it ("->" is not a
+# comparison), and a call that looks at a file.
+TIME_RE='(st_mtime|st_mtim|last_time)[^;]*(<=|>=|==|!=|<|[^-]>)|(<=|>=|==|!=|<|[^-]>)[^;]*(st_mtime|st_mtim|last_time)'
+STAT_RE='(^|[^A-Za-z0-9_])(stat|lstat|fstatat|statx|stat64|lstat64|access|faccessat|eaccess|euidaccess)[ \t]*[(]'
+WE_PROG_RE="$ALL_RE|$TIME_RE|$STAT_RE"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/program-name.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
@@ -135,7 +150,9 @@ scan_tree() {
       [ "$QUIET" = 1 ] || problem "canary: $f not found under $dir (the scan is blind)"
       continue
     fi
-    count_by_function "$f" "$dir/$f" "$ALL_RE" >> "$out.raw"
+    re=$ALL_RE
+    [ "$f" = we_prog.c ] && re=$WE_PROG_RE
+    count_by_function "$f" "$dir/$f" "$re" >> "$out.raw"
   done
   for p in "$dir"/*.c "$dir"/*.h; do
     [ -f "$p" ] || continue
@@ -181,9 +198,19 @@ canary R1 we_debug.c planted "void planted(const char *s) { const char *p = strr
 canary R2 we_debug.c planted 'void planted(char *b, const char *d, const char *s) { snprintf(b, 9, "%s%s.dbg", d, s); }' || blind=1
 canary R2 we_prog.c '#define E_X_SUFFIX' '#define E_X_SUFFIX ".e"' || blind=1
 canary R3 we_prog.c planted 'void planted(char *o, const char *dir, const char *stem) { wpe_startplan_operand(o, 9, dir, stem); }' || blind=1
+canary R3 we_prog.c planted 'void planted(char *o, FENSTER *f) { wpe_startplan_operand(o, 9, e_prog.exedir, f->datnam); }' || blind=1
+allowed_canary we_prog.c planted 'void planted(char *o, FENSTER *f) { wpe_startplan_operand(o, 9, f->dirct, f->datnam); }' || blind=1
 canary R4 we_debug.c planted 'void planted(int i, const char *n, int len) { int el = strlen(T[i].ext); if (!strcmp(n + len - el, T[i].ext)) return; }' || blind=1
 canary R4 we_debug.c planted 'void planted(const char *n, int len, const E *p) { if (!strcmp(n + len - el, p->ext)) return; }' || blind=1
 allowed_canary we_debug.c planted 'void planted(int i, const char *n) { if (!strcmp(wpe_progname_extension(n), T[i].ext)) return; }' || blind=1
+canary R5 we_prog.c planted 'void planted(struct stat *sb, struct stat *zz) { if (sb->st_mtime >= zz->st_mtime) return; }' || blind=1
+canary R5 we_prog.c planted 'void planted(M_TIME qq) { if (qq < last_time) return; }' || blind=1
+canary R5 we_prog.c planted 'void planted(const char *p) { struct stat sb; stat(p, &sb); }' || blind=1
+canary R5 we_prog.c planted 'void planted(const char *p) { if (access(p, 0)) return; }' || blind=1
+canary R5 we_prog.c planted 'void planted(const char *p) { if (faccessat(0, p, 0, 0)) return; }' || blind=1
+canary R5 we_prog.c planted 'void planted(const char *p) { struct stat sb; fstatat(0, p, &sb, 0); }' || blind=1
+allowed_canary we_prog.c planted 'void planted(const char *p, struct stat *sb) { e_build_stat(p, sb); (void)sb->st_mtime; }' || blind=1
+allowed_canary we_debug.c planted 'void planted(const char *p) { struct stat sb; stat(p, &sb); }' || blind=1
 
 scan_tree "$SRCDIR" "$WORK/found"
 grep -q '^#fn|we_prog.c|e_comp_operands$' "$WORK/found.fn" ||

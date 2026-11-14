@@ -413,6 +413,25 @@ def tool_usable(name, *args):
         return False
 
 
+STATE_DIR_MODE = 0o700      # the editor keeps its state folder the user's alone
+STATE_FILE_MODE = 0o600     # and each store in it
+
+
+def write_user_store(path, text):
+    """Write one of the editor's stores (start-commands, built-outputs) in
+    the user's state folder, as the editor itself writes it: the folder and
+    the file the user's alone, whatever the umask.  The editor never believes
+    a store that group or others could write, so a test that wrote it with
+    the umask (0664 under Debian's 002) would test a refused store instead
+    of the answer it planted."""
+    folder = os.path.dirname(str(path))
+    os.makedirs(folder, exist_ok=True)
+    os.chmod(folder, STATE_DIR_MODE)
+    with open(str(path), "w") as fh:
+        fh.write(text)
+    os.chmod(str(path), STATE_FILE_MODE)
+
+
 # -- reading the AI pane ------------------------------------------------------
 #
 # The pane is an ordinary framed window whose transcript is word-wrapped to the

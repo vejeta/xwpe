@@ -36,7 +36,11 @@ only modified or uncompiled files, and tracks @code{#include} changes for C.
 @code{other}.  Set to @code{other} to use a custom message-string format.
 @item @code{LDFLAGS} @tab Linker options (e.g.@: @code{-lm}).
 @item @code{EXENAME} @tab Name of the output executable (default: @code{a.out}),
-of any length the system allows.
+of any length the system allows.  @samp{Project-Options} offers
+@code{a.out} in its @samp{Executable} field when the file names none, and a
+build never writes the path it placed the program at back into the field.
+@samp{Project @result{} New Project} names the program after the project,
+up to its last dot (@file{my.app.prj} gives @code{EXENAME = my.app}).
 @item @code{LIBNAME} @tab Library file for object archive (auto-linked if set),
 of any length the system allows.  A name the system itself cannot open is
 refused before the build, in a box that names the library.

@@ -29,14 +29,17 @@ Compile the current file only.  For GNU compilers (gcc, g++, gfortran),
 xwpe invokes the compiler with @code{-c -o @var{file}.o @var{file}.c}.
 For non-GNU compilers (fpc, javac), the @code{-c} and @code{-o} flags
 are omitted.  Only files modified since the last compilation are
-recompiled.
+recompiled; an object or program that xwpe did not build in this folder
+(one that came with a clone, say) counts as not built, and is built once.
 
 @item F9 or Alt-M (Make)
 Recompile all modified files and link the executable.  This is the
 most common command, and the bottom row of a source window names it
 (@samp{F9 Build}).  The program is named after the source without its
-extension (@file{t.c} makes @file{t.e}), whatever the length of the name,
-up to what the system allows for a file name.
+extension, taken off at the last dot (@file{t.c} makes @file{t.e},
+@file{a.b.c} makes @file{a.b.e}), whatever the length of the name, up to
+what the system allows for a file name.  It is written in the output
+folder (@code{Exedir}), and @kbd{Ctrl-F9} starts that file.
 
 @item Ctrl-F9 (Run)
 Build the executable and then run it, in the source's own folder, however
@@ -117,9 +120,14 @@ were in.
 @cindex nothing to build
 @cindex up to date
 When there is nothing to do, because the program (for @kbd{F9}) or the
-object file (for @kbd{Alt-C}) is newer than its sources, Messages starts
-afresh with one line, for example @samp{nothing to build: t.e is up to
-date}, and the keys stay in the source window.
+object file (for @kbd{Alt-C}) is newer than its sources and xwpe built it
+in this folder, Messages starts afresh with one line, for example
+@samp{nothing to build: t.e is up to date}, and the keys stay in the
+source window.  What xwpe built is remembered in your state folder
+(@file{$XDG_STATE_HOME/xwpe/built-outputs}), never in the project, so the
+first @kbd{F9} or @kbd{Ctrl-F9} in a fresh clone, or in a folder built
+elsewhere, compiles and links once.  When that record cannot be read or
+written, the status row says so once and every @kbd{F9} builds.
 
 @subsection Walking the errors
 
@@ -207,7 +215,13 @@ Settings per language:
 @item @strong{Loader Options}: flags passed to the linker
 (e.g.@: @code{-lm}).
 @item @strong{Executable Name}: name of the output binary
-(default: derived from the source file name).
+(default: the source file name without its extension, plus @file{.e}).
+It is written in the output folder (@code{Exedir}) and @kbd{Ctrl-F9}
+starts that file; an absolute name is written below the folder too
+(@file{/tmp/prog} with an @code{Exedir} of @file{.} is
+@file{.//tmp/prog}) and at its own path only when @code{Exedir} is
+empty.  A compiler of style @code{Other} (fpc, javac,
+rustc) writes its own program where it runs, in the source's folder.
 @item @strong{Compiler Style}: @code{GNU} or @code{Other}.
 @code{GNU} uses the built-in @code{file:line:column:} pattern.
 @code{Other} uses a custom interpreter string that you define.

@@ -262,6 +262,30 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* One rule now names the program a build makes, so F9, Alt-C and Ctrl-F9
+  agree on the files.  Ctrl-F9 starts a project's program as ./a.out, not
+  ././a.out, and an absolute Executable (/tmp/prog) is started where F9
+  wrote it, not at /tmp/prog.  After F9, Project-Options no longer shows
+  the path the program was placed at (out/a.out) in the Executable field,
+  Save no longer writes it into the project file, and the next build no
+  longer links out/out/a.out.  A project with no EXENAME shows a.out there.
+  New Project names the program after the project up to its last dot
+  (my.app.prj builds my.app, not my), as a source does.
+
+* F9 and Ctrl-F9 no longer trust a built file that came with a clone.  A
+  program, object or library counted as up to date when it was newer than
+  its sources, so the first F9 in a clone built nothing and Ctrl-F9 ran the
+  program the clone shipped.  Now only a file xwpe built in that folder
+  counts, kept in a record in your state folder (never in the project), and
+  a library xwpe did not build there is made anew from the project's files
+  (a member added to it outside xwpe is dropped).  Every folder built before this version
+  builds once on its first F9, because it has no record yet; the second F9
+  says "nothing to build" as before.  If the record cannot be read or
+  written, the status row says so once and every F9 builds.  The store
+  must be yours alone (not writable by group or others), as the
+  start-command answers already were; a state folder of yours that others
+  could write is made yours alone again.
+
 * Security fix: Build & fix no longer runs a command hidden in a file name.
   With no makefile, it checks the current C file with gcc, and a name such
   as a'; touch x; '.c ended the quotes and ran the second command.  The name

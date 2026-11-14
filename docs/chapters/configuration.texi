@@ -466,7 +466,9 @@ Flags passed to the compiler (e.g.@: @code{-Wall -g}).
 @item Loader-Options
 Flags passed to the linker (e.g.@: @code{-lm}).
 @item Executable-Name
-The name of the resulting executable (default: @file{@var{name}.e}).
+The name of the resulting executable (default: @file{@var{name}.e}, the
+source's name without its extension from the last dot).  It is written in
+the @code{Exedir} folder, and @kbd{Ctrl-F9} starts that file.
 @item File-Postfix
 The file extension that triggers this compiler (e.g.@: @code{.c}).
 @item Compiler-Style

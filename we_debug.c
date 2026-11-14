@@ -12964,7 +12964,7 @@ static int e_d_start_planned(ECNT *cn, FENSTER *f, int type)
  if (e__project)
  {
   e_d_prog_origin = WPE_FROM_FOLDER;
-  return(e_exec_deb(f, e_s_prog.exe_name));
+  return(e_exec_deb(f, e_prj_program()));
  }
  if (e_d_pick_start_arg(cn, f, estr, sizeof(estr)))
  {

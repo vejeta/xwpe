@@ -13,6 +13,8 @@
  * link is the same folder; the user's own texts run; the printable form of
  * a command writes every control byte out.
  */
+#include <dirent.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,6 +77,7 @@ static void write_file(const char *path, const char *text)
  if (!fp) { perror(path); exit(2); }
  fputs(text, fp);
  fclose(fp);
+ chmod(path, 0600);      /* a store is the user's alone: a umask of 002 must not change that */
 }
 
 /* How many lines the store holds, its first one included. */
@@ -168,6 +171,28 @@ static void case_modes(void)
  expect_int("store is the user's alone", (int)(st.st_mode & 0777), 0600);
  if (stat(state, &st) != 0) { fail("state mode", "no folder"); return; }
  expect_int("state folder below is made", S_ISDIR(st.st_mode), 1);
+}
+
+/* The answers survive a state folder an editor made with umask 002; a store
+   the group could write is never believed, and is left for the user. */
+static void case_umask_folder(void)
+{
+ char dir[PATH_ROOM];
+ struct stat st;
+ snprintf(dir, sizeof dir, "%s/%s", state, WPE_STARTCMD_STATE_SUBDIR);
+ expect_int("remember before", wpe_startcmd_remember(proj, "PrintCmd", "./umask-lpr", WPE_STARTCMD_YES), 0);
+ chmod(dir, 0775);
+ expect_int("a 0775 folder of the user's keeps the answer",
+            wpe_startcmd_check(proj, "PrintCmd", "./umask-lpr"), WPE_STARTCMD_RUN);
+ expect_int("the folder is the user's alone again", stat(dir, &st) == 0 ? (int)(st.st_mode & 0777) : -1,
+            0700);
+ chmod(store, 0664);
+ expect_int("a store the group may write asks", wpe_startcmd_check(proj, "PrintCmd", "./umask-lpr"),
+            WPE_STARTCMD_ASK);
+ expect_int("and is a refused store", wpe_startcmd_last_store_state(), WPE_STARTCMD_STORE_BAD);
+ expect_int("which is not written over", wpe_startcmd_remember(proj, "PrintCmd", "./umask-lpr", WPE_STARTCMD_YES), -1);
+ expect_int("and keeps its mode", stat(store, &st) == 0 ? (int)(st.st_mode & 0777) : -1, 0664);
+ chmod(store, 0600);
 }
 
 static void case_escapes(void)
@@ -355,9 +380,313 @@ static void teardown(void)
  rmdir(base);
 }
 
+/* ---- What this editor built (built-outputs) ---------------------------- */
+
+#define BUILT_SETTLE_US   30000   /* past the kernel's time tick, so a change shows */
+#define BUILT_MANY        2000    /* records of one folder that must survive a write */
+#define BUILT_DEAD_COUNT  3
+
+static char built_dir[PATH_ROOM];       /* base/built: a build folder */
+static char built_store[PATH_ROOM];     /* the built-outputs store */
+
+static void built_paths(void)
+{
+ under_base(built_dir, sizeof built_dir, "built");
+ snprintf(built_store, sizeof built_store, "%s/%s/%s", state, WPE_STARTCMD_STATE_SUBDIR,
+          WPE_BUILT_STORE_NAME);
+}
+
+/* Make a file with a text in a folder; its path in @out. */
+static void built_file(const char *folder, const char *name, const char *text, char *out, size_t sz)
+{
+ snprintf(out, sz, "%s/%s", folder, name);
+ write_file(out, text);
+}
+
+static int built_stat(const char *path, struct stat *st)
+{
+ if (stat(path, st) != 0) { perror(path); exit(2); }
+ return 0;
+}
+
+/* Note @name of @folder as built, and save; the set stays loaded in @set. */
+static int built_note(WpeBuiltSet *set, const char *folder, const char *name)
+{
+ char path[PATH_ROOM];
+ struct stat st;
+ snprintf(path, sizeof path, "%s/%s", folder, name);
+ built_stat(path, &st);
+ wpe_startcmd_built_load(folder, set);
+ if (wpe_startcmd_note_built(set, name, &st) != 0) return -1;
+ return wpe_startcmd_built_save(set);
+}
+
+/* Is @name of @folder, as it is now, this editor's? A fresh load each time. */
+static int built_asks(const char *folder, const char *name)
+{
+ char path[PATH_ROOM];
+ WpeBuiltSet set;
+ struct stat st;
+ int r;
+ snprintf(path, sizeof path, "%s/%s", folder, name);
+ built_stat(path, &st);
+ wpe_startcmd_built_load(folder, &set);
+ r = wpe_startcmd_built_here(&set, name, &st);
+ wpe_startcmd_built_free(&set);
+ return r;
+}
+
+static void built_reset_store(void)
+{
+ char dir[PATH_ROOM];
+ snprintf(dir, sizeof dir, "%s/%s", state, WPE_STARTCMD_STATE_SUBDIR);
+ chmod(dir, 0700);
+ unlink(built_store);
+}
+
+static void case_built_round_trip(void)
+{
+ char path[PATH_ROOM];
+ WpeBuiltSet set;
+ struct stat st;
+ built_reset_store();
+ make_dir(built_dir);
+ built_file(built_dir, "t.e", "one", path, sizeof path);
+ expect_int("no record: not built here", built_asks(built_dir, "t.e"), 0);
+ expect_int("note and save", built_note(&set, built_dir, "t.e"), 0);
+ wpe_startcmd_built_free(&set);
+ expect_int("noted: built here", built_asks(built_dir, "t.e"), 1);
+ built_stat(path, &st);
+ wpe_startcmd_built_load(built_dir, &set);
+ expect_int("the caller's stat answers the same", wpe_startcmd_built_here(&set, path, &st), 1);
+ expect_int("an absolute path is the same file", wpe_startcmd_built_here(&set, "./t.e", &st), 1);
+ wpe_startcmd_built_free(&set);
+ struct stat sb;
+ expect_int("the store is the user's alone", stat(built_store, &sb) == 0 ? (int)(sb.st_mode & 0777) : -1, 0600);
+}
+
+static void case_built_changed(void)
+{
+ char path[PATH_ROOM];
+ WpeBuiltSet set;
+ FILE *fp;
+ built_reset_store();
+ built_file(built_dir, "u.e", "one", path, sizeof path);
+ built_note(&set, built_dir, "u.e");
+ wpe_startcmd_built_free(&set);
+ usleep(BUILT_SETTLE_US);
+ fp = fopen(path, "w");                         /* a rewrite: size, times */
+ if (fp) { fputs("another text", fp); fclose(fp); }
+ expect_int("a rewrite is not the built file", built_asks(built_dir, "u.e"), 0);
+ built_note(&set, built_dir, "u.e");
+ wpe_startcmd_built_free(&set);
+ expect_int("built again: here", built_asks(built_dir, "u.e"), 1);
+ usleep(BUILT_SETTLE_US);
+ {
+  struct timespec ts[2] = { { 1000, 0 }, { 1000, 0 } };
+  utimensat(AT_FDCWD, path, ts, 0);
+ }
+ expect_int("a new date is not the built file", built_asks(built_dir, "u.e"), 0);
+ built_note(&set, built_dir, "u.e");
+ wpe_startcmd_built_free(&set);
+ usleep(BUILT_SETTLE_US);
+ chmod(path, 0700);
+ expect_int("chmod changes the change time: not the built file", built_asks(built_dir, "u.e"), 0);
+}
+
+static void case_built_other_folder(void)
+{
+ char other[PATH_ROOM], path[PATH_ROOM], elsewhere[PATH_ROOM], real[PATH_ROOM];
+ WpeBuiltSet set;
+ built_reset_store();
+ built_file(built_dir, "v.e", "one", path, sizeof path);
+ built_note(&set, built_dir, "v.e");
+ wpe_startcmd_built_free(&set);
+ under_base(other, sizeof other, "copy");
+ make_dir(other);
+ built_file(other, "v.e", "one", path, sizeof path);
+ expect_int("the same name in another real folder: not built here", built_asks(other, "v.e"), 0);
+ /* the recorded output, replaced by a link to itself elsewhere */
+ under_base(elsewhere, sizeof elsewhere, "elsewhere");
+ make_dir(elsewhere);
+ snprintf(real, sizeof real, "%s/v.e", built_dir);
+ built_file(elsewhere, "v.e", "one", path, sizeof path);
+ unlink(real);
+ if (symlink(path, real) != 0) { perror("symlink"); exit(2); }
+ expect_int("a link to a file elsewhere: not built here", built_asks(built_dir, "v.e"), 0);
+ unlink(real);
+}
+
+static void case_built_refused_store(void)
+{
+ char dir[PATH_ROOM], path[PATH_ROOM], victim[PATH_ROOM];
+ WpeBuiltSet set;
+ struct stat st;
+ built_reset_store();
+ built_file(built_dir, "w.e", "one", path, sizeof path);
+ built_stat(path, &st);
+ snprintf(dir, sizeof dir, "%s/%s", state, WPE_STARTCMD_STATE_SUBDIR);
+ /* a link at the store */
+ under_base(victim, sizeof victim, "victim-built");
+ write_file(victim, "xwpe-built-outputs 1\n");
+ if (symlink(victim, built_store) != 0) { perror("symlink"); exit(2); }
+ wpe_startcmd_built_load(built_dir, &set);
+ expect_int("a link at the store is refused", set.state, WPE_STARTCMD_STORE_BAD);
+ expect_int("nothing is built here", wpe_startcmd_built_here(&set, "w.e", &st), 0);
+ expect_int("nothing can be noted", wpe_startcmd_note_built(&set, "w.e", &st), -1);
+ wpe_startcmd_built_free(&set);
+ unlink(built_store);
+ unlink(victim);
+ /* a store others may write */
+ built_note(&set, built_dir, "w.e");
+ wpe_startcmd_built_free(&set);
+ chmod(built_store, 0666);
+ expect_int("a store others write is refused", built_asks(built_dir, "w.e"), 0);
+ chmod(built_store, 0600);
+ expect_int("the same store, mode 0600, is believed", built_asks(built_dir, "w.e"), 1);
+ /* a state folder of the user's that others may write, as an editor made
+    it under umask 002: made the user's alone again, and its stores read */
+ chmod(dir, 0777);
+ expect_int("the user's own folder, others writing, is tightened and read",
+            built_asks(built_dir, "w.e"), 1);
+ expect_int("and it is the user's alone again", stat(dir, &st) == 0 ? (int)(st.st_mode & 0777) : -1,
+            0700);
+ chmod(dir, 0775);
+ chmod(built_store, 0664);
+ expect_int("a store the group may write is still refused", built_asks(built_dir, "w.e"), 0);
+ chmod(built_store, 0600);
+ built_stat(path, &st);
+ /* a folder where the store should be: it cannot be opened as one */
+ unlink(built_store);
+ if (mkdir(built_store, 0700) != 0) { perror("mkdir"); exit(2); }
+ wpe_startcmd_built_load(built_dir, &set);
+ expect_int("a store that cannot be opened is bad", set.state, WPE_STARTCMD_STORE_BAD);
+ expect_int("so built_here is 0", wpe_startcmd_built_here(&set, "w.e", &st), 0);
+ expect_int("and note_built fails", wpe_startcmd_note_built(&set, "w.e", &st), -1);
+ wpe_startcmd_built_free(&set);
+ rmdir(built_store);
+}
+
+static void case_built_many(void)
+{
+ char path[PATH_ROOM], name[TEXT_ROOM];
+ WpeBuiltSet set;
+ struct stat st;
+ int i, here = 0;
+ built_reset_store();
+ wpe_startcmd_built_load(built_dir, &set);
+ for (i = 0; i < BUILT_MANY; i++) {
+  snprintf(name, sizeof name, "m%d.o", i);
+  built_file(built_dir, name, "x", path, sizeof path);
+  built_stat(path, &st);
+  if (wpe_startcmd_note_built(&set, name, &st) != 0) { fail("many", "note failed"); break; }
+ }
+ expect_int("2000 records of one folder are written", wpe_startcmd_built_save(&set), 0);
+ wpe_startcmd_built_free(&set);
+ wpe_startcmd_built_load(built_dir, &set);
+ for (i = 0; i < BUILT_MANY; i++) {
+  snprintf(name, sizeof name, "m%d.o", i);
+  snprintf(path, sizeof path, "%s/%s", built_dir, name);
+  built_stat(path, &st);
+  here += wpe_startcmd_built_here(&set, name, &st);
+ }
+ expect_int("all of them survive: no per-folder cap", here, BUILT_MANY);
+ wpe_startcmd_built_free(&set);
+}
+
+static void case_built_dead_folder(void)
+{
+ char dead[PATH_ROOM], path[PATH_ROOM], text[PATH_ROOM];
+ WpeBuiltSet set;
+ char line[PATH_ROOM * 2];
+ FILE *fp;
+ int i, lines = 0;
+ built_reset_store();
+ under_base(dead, sizeof dead, "dead");
+ make_dir(dead);
+ for (i = 0; i < BUILT_DEAD_COUNT; i++) {
+  snprintf(text, sizeof text, "d%d.o", i);
+  built_file(dead, text, "x", path, sizeof path);
+  built_note(&set, dead, text);
+  wpe_startcmd_built_free(&set);
+ }
+ for (i = 0; i < BUILT_DEAD_COUNT; i++) {
+  snprintf(path, sizeof path, "%s/d%d.o", dead, i);
+  unlink(path);
+ }
+ rmdir(dead);
+ built_file(built_dir, "live.o", "x", path, sizeof path);
+ built_note(&set, built_dir, "live.o");
+ wpe_startcmd_built_free(&set);
+ fp = fopen(built_store, "r");
+ if (!fp) { fail("dead folder", "no store"); return; }
+ while (fgets(line, sizeof line, fp)) {
+  lines++;
+  if (strstr(line, "/dead/")) fail("dead folder", "a dead folder's record was kept");
+ }
+ fclose(fp);
+ if (lines < 2) fail("dead folder", "the live record is gone");
+}
+
+static void case_built_cap(void)
+{
+ char path[PATH_ROOM], name[TEXT_ROOM];
+ WpeBuiltSet set;
+ struct stat st;
+ int i, total = WPE_BUILT_MAX_RECORDS + CAP_EXTRA, n = 0;
+ char line[PATH_ROOM * 2];
+ FILE *fp;
+ built_reset_store();
+ wpe_startcmd_built_load(built_dir, &set);
+ for (i = 0; i < total; i++) {
+  snprintf(name, sizeof name, "c%d.o", i);
+  built_file(built_dir, name, "x", path, sizeof path);
+  built_stat(path, &st);
+  wpe_startcmd_note_built(&set, name, &st);
+ }
+ expect_int("past the cap: still written", wpe_startcmd_built_save(&set), 0);
+ wpe_startcmd_built_free(&set);
+ fp = fopen(built_store, "r");
+ if (!fp) { fail("built cap", "no store"); return; }
+ while (fgets(line, sizeof line, fp)) n++;
+ fclose(fp);
+ expect_int("the oldest go: the cap and the first line", n, WPE_BUILT_MAX_RECORDS + 1);
+ expect_int("the oldest is gone", built_asks(built_dir, "c0.o"), 0);
+ expect_int("the newest is kept", built_asks(built_dir, "c8199.o"), 1);
+}
+
+/* Remove what the built-outputs cases made, file by file, in the test's own
+   folders under the temporary directory. */
+static void built_cleanup(void)
+{
+ static const char *folders[] = { "built", "copy", "elsewhere" };
+ char path[PATH_ROOM];
+ struct dirent *e;
+ DIR *d;
+ size_t i;
+ for (i = 0; i < sizeof folders / sizeof folders[0]; i++) {
+  under_base(path, sizeof path, folders[i]);
+  d = opendir(path);
+  if (d) {
+   while ((e = readdir(d)) != NULL) {
+    char file[PATH_ROOM * 2];
+    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    snprintf(file, sizeof file, "%s/%s", path, e->d_name);
+    unlink(file);
+   }
+   closedir(d);
+  }
+  rmdir(path);
+ }
+ under_base(path, sizeof path, "victim-built");
+ unlink(path);
+ unlink(built_store);
+}
+
 int main(void)
 {
  setup();
+ built_paths();
  case_printable();
  case_round_trip();
  case_modes();
@@ -370,6 +699,15 @@ int main(void)
  case_cap();
  case_folder_cap();
  case_fifo();
+ case_umask_folder();
+ case_built_round_trip();
+ case_built_changed();
+ case_built_other_folder();
+ case_built_refused_store();
+ case_built_many();
+ case_built_dead_folder();
+ case_built_cap();
+ built_cleanup();
  teardown();
  if (failures) { printf("%d failure(s)\n", failures); return 1; }
  printf("test_startcmd: all cases passed\n");

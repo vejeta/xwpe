@@ -20,7 +20,7 @@ import sys
 import time
 
 import procinfo
-from wpe_driver import WpeSession, WAIT_SCALE
+from wpe_driver import WpeSession, WAIT_SCALE, write_user_store
 
 CTRL_G = "\x07"
 ESC = "\033"
@@ -157,8 +157,7 @@ def _project(tmp_path):
     # escaped onto one.
     real = os.path.realpath(str(tmp_path))
     store = tmp_path / ".local" / "state" / "xwpe" / "start-commands"
-    store.parent.mkdir(parents=True)
-    store.write_text("xwpe-start-commands 2\nyes\tbsp/stub.json\t%s\t"
+    write_user_store(store, "xwpe-start-commands 2\nyes\tbsp/stub.json\t%s\t"
                      "xwpe-start 2\\nkind bsp\\ncwd %s\\nargv %s\n"
                      % (real, real, server))
     return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", ""))}

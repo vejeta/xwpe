@@ -20,7 +20,7 @@ import stat
 import time
 
 import pytest
-from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen, tool_usable
+from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen, tool_usable, write_user_store
 
 F9 = "\033[20~"            # Make: compile and link
 ESC = "\033"
@@ -75,9 +75,11 @@ class Folder:
         cfg.mkdir(parents=True, exist_ok=True)
         (cfg / "xwperc").write_text(text)
 
-    def session(self, filename="t.c", seed=SEED):
+    def session(self, filename="t.c", seed=SEED, rows=None):
         env = {"HOME": str(self.home), "XWPE_UI_TRACE": str(self.trace)}
-        return WpeSession(str(self.ws), seed, filename=filename, env_extra=env)
+        if rows is None:
+            return WpeSession(str(self.ws), seed, filename=filename, env_extra=env)
+        return WpeSession(str(self.ws), seed, filename=filename, env_extra=env, rows=rows)
 
     def traced(self):
         try:
@@ -234,10 +236,9 @@ def test_startcmd_store_fails_closed(tmp_path):
     """A store of another version holding a yes for this very command: the
     question comes anyway, the status line says why, the store is kept."""
     folder = Folder(tmp_path, "[Language/C]\nCompiler : ./fake-cc\n")
-    folder.store.parent.mkdir(parents=True)
     real = os.path.realpath(str(folder.ws))
     planted = "xwpe-start-commands 9\nyes\tCompiler/C\t%s\t./fake-cc -g\n" % real
-    folder.store.write_text(planted)
+    write_user_store(folder.store, planted)
     _compile_and_answer(folder, ESC)
     assert not folder.marker.exists(), "an unreadable store let the command run"
     assert "could not read the remembered commands" in folder.traced(), folder.traced()
@@ -446,6 +447,9 @@ def test_a_file_name_never_runs_at_the_compile_for_debug(tmp_path):
 
 
 UTIL = "int util(void){return 1;}\n"
+# The library row's build goes on to the link, so the ar line scrolls up in
+# Messages: a screen this tall keeps every line of the build in view.
+LIBRARY_ROWS = 60
 
 
 # @scenario SC-compile-28
@@ -453,7 +457,10 @@ UTIL = "int util(void){return 1;}\n"
 def test_startcmd_project_library_is_never_an_option(tmp_path):
     """LIBNAME names `@lib.rsp`, a response file holding `--version`: ar
     gets the file ./@lib.rsp, and never reads options out of it (ar would
-    print its version)."""
+    print its version).  The folder's @lib.rsp is no library this editor
+    built here, so it is removed first and ar makes the library anew (-cr);
+    the word ar is handed is still the path ./@lib.rsp, which is what this
+    row pins."""
     folder = Folder(tmp_path)
     rsp = folder.ws / "@lib.rsp"
     rsp.write_text("--version\n")
@@ -461,13 +468,13 @@ def test_startcmd_project_library_is_never_an_option(tmp_path):
     (folder.ws / "demo.prj").write_text(
         "CMP=\tgcc\nCMPFLAGS=\t-g\nEXENAME=\tdemo\nLIBNAME=\t@lib.rsp\n"
         "FILES=\tmain.c util.c\n")
-    with folder.session(filename="main.c") as s:
+    with folder.session(filename="main.c", rows=LIBRARY_ROWS) as s:
         _open_project(s)
         s.key(F9, delay=0.8)
-        assert wait_screen(s, "ar -r", tmo=BUILD_WAIT), _screen(s)
+        assert wait_screen(s, "ar -cr", tmo=BUILD_WAIT), _screen(s)
         s._drain(SETTLE)
         screen = _screen(s)
-    assert "ar -r ./@lib.rsp" in screen, "ar was handed the library as an option:\n" + screen
+    assert "ar -cr ./@lib.rsp" in screen, "ar was handed the library as an option:\n" + screen
     assert "GNU ar" not in screen, "ar read options out of the library's name:\n" + screen
 
 

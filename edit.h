@@ -948,6 +948,10 @@ int e_startplan_approve(FENSTER *f, struct WpeStartPlan *plan, const E_STARTPLAN
 int e_startplan_approve_headed(FENSTER *f, struct WpeStartPlan *plan,
                                const E_STARTPLAN_SHOW *show, const char *heading);
 void e_startplan_say_not_removed(FENSTER *f, struct WpeStartPlan *plan, const char *path);
+/* What e_build_record_say is asked to say about the record of what was built. */
+#define E_BUILT_NOT_READ  1
+#define E_BUILT_NOT_SAVED 2
+void e_build_record_say(FENSTER *f, int what);
 void e_firstl(FENSTER *f, int sw);
 int e_pr_filetype(FENSTER *f);
 PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw);

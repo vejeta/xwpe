@@ -292,19 +292,19 @@ def test_new_project_in_a_deep_folder_writes_it_there(tmp_path):
         "the project was not written in its folder"
 
 
-# The program of a new project is still its name up to the first dot.
+# The program of a new project is named like a source's: up to the last dot.
 # @scenario SC-path-cuts-15
-def test_new_project_names_its_program_up_to_the_first_dot(tmp_path):
-    """New Project "my.app.prj" writes EXENAME "my", as it always did: the
-    name is copied whole now, and only its extension is taken off, from the
-    first dot."""
+def test_new_project_names_its_program_up_to_the_last_dot(tmp_path):
+    """New Project "my.app.prj" writes EXENAME "my.app": the one rule that
+    names a program from a source ("my.app.c" builds "my.app") names the
+    project's too.  The first dot was taken before, which gave "my"."""
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n", filename="t.c", wait=2.0,
                     cols=140, rows=40, env_extra=ASAN_ENV) as w:
         w.key(ALT_P, delay=1.0)
         w.key("n", delay=1.5)
         w.key("my.app.prj" + ENTER, delay=2.0)
         _intact(w, "New Project my.app.prj")
-    assert _variable(os.path.join(str(tmp_path), "my.app.prj"), "EXENAME") == "my"
+    assert _variable(os.path.join(str(tmp_path), "my.app.prj"), "EXENAME") == "my.app"
 
 
 # A folder and a name that each fit, joined, do not.

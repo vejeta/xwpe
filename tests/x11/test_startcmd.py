@@ -27,6 +27,8 @@ ASK_WAIT_S = 8             # F9 has reached the question by then
 RAN_WAIT_S = 10            # the folder's compiler has run by then
 SETTLE_S = 1.5             # the box is drawn, or gone, by then
 BOX_PX_MIN = 2000          # a box is thousands of changed pixels
+STATE_DIR_MODE = 0o700     # the editor's state folder: the user's alone
+STATE_FILE_MODE = 0o600    # and the store in it
 
 FAKE = '''#!/bin/sh
 touch "%(marker)s"
@@ -79,6 +81,10 @@ def remembered_compiler(folder_compiler):
     real = os.path.realpath(str(folder_compiler))
     store.write_text("xwpe-start-commands 2\nyes\tbuild/C\t%s\t%s\n"
                      % (real, PLAN_TEXT % {"cwd": real}))
+    # As the editor writes it, whatever the umask: a store group or others
+    # could write is never believed.
+    os.chmod(str(store.parent), STATE_DIR_MODE)
+    os.chmod(str(store), STATE_FILE_MODE)
     return folder_compiler
 
 

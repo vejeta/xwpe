@@ -30,7 +30,7 @@ import subprocess
 
 import pytest
 
-from wpe_driver import ALT, WAIT_SCALE, WpeSession, tool_usable
+from wpe_driver import ALT, WAIT_SCALE, WpeSession, tool_usable, write_user_store
 from test_startplan_debug import (CTRL_G, ENTER, ESC, RUN_IT, SEED_C, USE_MINE,
                                   RAN_WAIT, SETTLE, BOX_WAIT, Folder, _debug_box,
                                   _own_line_joined, _plan_lines, _screen, _wait)
@@ -399,8 +399,8 @@ def _remember_the_old_text(folder):
     old_text = ("xwpe-start 2\nkind debug\ncwd %s\nargv gdb\nreads %s/.gdbinit %d\n%s"
                 % (ws, ws, len(content), content))
     escaped = old_text.replace("\\", "\\\\").replace("\n", "\\n")
-    folder.store.parent.mkdir(parents=True, exist_ok=True)
-    folder.store.write_text("xwpe-start-commands 2\nyes\tdebug/gdb\t%s\t%s\n" % (ws, escaped))
+    write_user_store(folder.store, "xwpe-start-commands 2\nyes\tdebug/gdb\t%s\t%s\n"
+                     % (ws, escaped))
 
 
 # @scenario SC-debug-115
