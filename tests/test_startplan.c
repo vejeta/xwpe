@@ -37,11 +37,13 @@
 #define SHORT_DEADLINE_MS 10000L                 /* echo has answered long before */
 
 /* Every allocation of the planner passes through these two (the test is
-   linked with --wrap=malloc and --wrap=realloc), so a row can make the Nth
-   one fail and see what the planner answers.  Not armed, they are malloc and
-   realloc. */
+   linked with --wrap=malloc and --wrap=realloc, when the linker has them:
+   WPE_TEST_LD_WRAP), so a row can make the Nth one fail and see what the
+   planner answers.  Not armed, they are malloc and realloc.  Without the
+   linker's help the rows that need them print SKIP. */
 #define FAIL_NEVER (-1L)
 static long fail_countdown = FAIL_NEVER;   /* allocations left before the next one fails */
+#ifdef WPE_TEST_LD_WRAP
 void *__real_malloc(size_t n);
 void *__real_realloc(void *p, size_t n);
 
@@ -72,6 +74,7 @@ void *__wrap_realloc(void *p, size_t n)
   return NULL;
  return __real_realloc(p, n);
 }
+#endif /* WPE_TEST_LD_WRAP */
 
 static int failures;
 static char base[PATH_ROOM];     /* the temporary directory, resolved */
@@ -2387,6 +2390,10 @@ static void scan_allocation_failures(const char *what, const char *key, const ch
    the program's path and its load line, and the lines put into the plan. */
 static void case_allocation_failures(void)
 {
+#ifndef WPE_TEST_LD_WRAP
+ printf("SKIP allocation failures: the linker has no --wrap\n");
+ return;
+#endif
  scan_allocation_failures("gdb console", "gdb", NULL, NULL);
  scan_allocation_failures("gdb console with a program", "gdb", NULL, "t.e");
  scan_allocation_failures("gdb MI with a program", "gdb", "mi", "t.e");

@@ -13,6 +13,24 @@ AC_PROG_LN_S
 # for tests/check-one-owner.sh.
 AC_CHECK_TOOL([NM], [nm], [:])
 
+# Whether the linker can take over malloc and realloc (GNU ld and lld:
+# -Wl,--wrap=).  Apple's ld cannot.  tests/test_startplan.c uses it to make
+# allocations fail on purpose; where it is missing those rows report SKIP.
+AC_MSG_CHECKING([whether the linker supports -Wl,--wrap])
+ace_save_LDFLAGS="$LDFLAGS"
+LDFLAGS="$LDFLAGS -Wl,--wrap=malloc -Wl,--wrap=realloc"
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM([[#include <stdlib.h>
+void *__real_malloc(size_t n);
+void *__wrap_malloc(size_t n) { return __real_malloc(n); }
+void *__real_realloc(void *p, size_t n);
+void *__wrap_realloc(void *p, size_t n) { return __real_realloc(p, n); }]],
+     [[free(malloc(1));]])],
+  [have_ld_wrap=yes], [have_ld_wrap=no])
+LDFLAGS="$ace_save_LDFLAGS"
+AC_MSG_RESULT([$have_ld_wrap])
+AM_CONDITIONAL([HAVE_LD_WRAP], [test "x$have_ld_wrap" = xyes])
+
 # Pick a C standard flag that keeps K&R unprototyped '()' semantics (so the
 # 1993 code still compiles) and that the compiler actually supports. Modern
 # GCC/Clang take -std=gnu17; NetBSD 9's base GCC 7 only knows up to gnu11,

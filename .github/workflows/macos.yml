@@ -126,6 +126,10 @@ jobs:
         # file manager and quits cleanly. On-disk ground truth, so it does NOT
         # depend on scraping the rendered screen (the x86_64 "0 bytes" capture
         # trap). A failure here is a failure Homebrew-core would hit.
+        env:
+          # A fresh HOME has no profile, so a first start asks which keys to
+          # use and the typed keys would answer that box. XWPE_KEYS skips it.
+          XWPE_KEYS: borland
         run: |
           export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
           ./configure --prefix=/tmp/xp --without-x --without-gpm >/tmp/cf3.log 2>&1
@@ -135,10 +139,15 @@ jobs:
           require "pty"
           require "io/console"
           require "tmpdir"
+          require "timeout"
           ENV["TERM"] = "xterm-256color"
           BIN = "/tmp/xp/bin/wpe"
+          # One run of the editor may take 60 s at most; a stuck editor then
+          # fails here with what it painted, not at the 20 minute step limit.
+          RUN_LIMIT = 60
           drive = lambda do |arg, keys|
             status = nil
+            seen = +""
             PTY.spawn(BIN, arg.to_s) do |r, w, pid|
               r.winsize = [24, 80]
               settle = lambda do |floor, cap|
@@ -149,7 +158,7 @@ jobs:
                   ready, = IO.select([r], nil, nil, 0.2)
                   if ready
                     begin
-                      r.read_nonblock(4096); last = Time.now
+                      seen << r.read_nonblock(4096); last = Time.now
                     rescue IO::WaitReadable
                       nil
                     rescue Errno::EIO, EOFError
@@ -161,19 +170,25 @@ jobs:
                 end
               end
               begin
-                settle.call(4, 12)                       # wait for first paint
-                keys.each { |k| w.write k; settle.call(2, 6) }
-                w.write "\ex"
-                sleep 1
+                Timeout.timeout(RUN_LIMIT) do
+                  settle.call(4, 12)                       # wait for first paint
+                  keys.each { |k| w.write k; settle.call(2, 6) }
+                  w.write "\ex"
+                  sleep 1
+                end
               rescue Errno::EIO
                 nil
+              rescue Timeout::Error
+                puts "STUCK after #{RUN_LIMIT}s on #{arg}; painted #{seen.bytesize} bytes, tail:"
+                puts seen[-600..-1].inspect
+                raise "editor stuck on #{arg}"
               ensure
                 begin
                   Process.kill "TERM", pid
                 rescue Errno::ESRCH
                   nil
                 end
-                status = (Process.wait2(pid)[1] rescue nil)
+                status = (Timeout.timeout(10) { Process.wait2(pid)[1] } rescue nil)
               end
             end
             status
@@ -195,6 +210,8 @@ jobs:
       - name: Diagnose the INSTALLED binary (true Homebrew condition)
         if: always()
         timeout-minutes: 15
+        env:
+          XWPE_KEYS: borland   # no first-run keys question in a fresh HOME
         # The step above runs ./wpe from the BUILD TREE with XWPE_LIB=$PWD, which
         # is NOT what `brew test` does: Homebrew runs the INSTALLED wpe with no
         # XWPE_LIB. If the installed binary cannot find its data (terminfo, help,
@@ -247,6 +264,8 @@ jobs:
         # timeout. continue-on-error: it documents the bug, it does not gate CI.
         continue-on-error: true
         timeout-minutes: 5
+        env:
+          XWPE_KEYS: borland   # no first-run keys question in a fresh HOME
         run: |
           cat > /tmp/brew_test_old.rb <<'RUBY'
           require "pty"

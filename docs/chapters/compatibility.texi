@@ -171,7 +171,9 @@ borland} and @samp{--keys modern} on the command line, or @env{XWPE_KEYS},
 choose the keys for one run and never write them to the option file, and a
 run whose input is not a terminal is never asked.  A new profile started from a
 script or as another program's editor would otherwise stop on a question
-nobody can answer.
+nobody can answer.  A script that drives the editor through a pseudo-terminal
+does look like a terminal, so it must pass @samp{--keys} or set
+@env{XWPE_KEYS}, or its first keystrokes answer the box.
 
 @item Keypad Enter in a terminal
 @cindex keypad Enter

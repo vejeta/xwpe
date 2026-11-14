@@ -389,8 +389,13 @@ test_fieldtake_CFLAGS = $(XWPE_STDFLAG)
 # record per plan, the cover check of a step, and mutants of the rules.
 test_startplan_SOURCES = tests/test_startplan.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c
 test_startplan_CFLAGS = $(XWPE_STDFLAG)
-# The rows that make an allocation fail take over malloc and realloc.
+# The rows that make an allocation fail take over malloc and realloc, which
+# needs a linker with --wrap.  Without one (Apple's ld) the test is built
+# without them and reports those rows as SKIP.
+if HAVE_LD_WRAP
+test_startplan_CFLAGS += -DWPE_TEST_LD_WRAP=1
 test_startplan_LDFLAGS = -Wl,--wrap=malloc -Wl,--wrap=realloc
+endif
 test_startplan_LDADD = $(UTIL_LIBS)
 
 # The owner of the question about a folder's commands: we_startcmd.c alone.
