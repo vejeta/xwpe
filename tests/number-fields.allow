@@ -11,7 +11,7 @@
 # ones.
 
 # --- the option file reader, moved onto the owner with the file pass (P2) ---
-R1|we_opt.c|(file)|21|P2|five of these are the editor numbers (P2); the other sixteen are the option file's other integer keys, moved in P4
+R1|we_opt.c|(file)|22|P2|five of these are the editor numbers (P2); the other seventeen are the option file's other integer keys, moved in P4 (CompilerSwitch is read twice: the language entry and the user's own copy)
 R2|we_opt.c|WpeReadGeneral|5|P2|the five editor numbers are read with atoi and written into the editor
 
 # --- a buffer built without an editor ---
