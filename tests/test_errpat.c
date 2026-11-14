@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "../we_errpat.h"
+#include "test_watchdog.h"
 
 static int fails;
 
@@ -610,9 +611,10 @@ static void test_many_classes_in_time(void)
   char *text = classes_text(4000, "[!]a]", "");
   WpeErrPat *p;
 
-  alarm(MANY_CLASSES_ALARM_SECONDS);
+  test_watchdog_arm("test_many_classes_in_time: compiling 4000 classes",
+                    MANY_CLASSES_ALARM_SECONDS);
   p = accept("4000 classes", text);
-  alarm(0);
+  test_watchdog_disarm();
   if (p)
     wpe_errpat_free(p);
   free(text);
@@ -702,13 +704,13 @@ static void test_fuzz_compile(void)
   unsigned long seed;
   int accepted = 0;
 
-  alarm(FUZZ_ALARM_SECONDS);
+  test_watchdog_arm("test_fuzz_compile: the fuzz seeds", FUZZ_ALARM_SECONDS);
   for (seed = 0; seed < FUZZ_SEEDS; seed++)
   {
     fuzz_text(seed, text);
     fuzz_check(seed, text, &accepted);
   }
-  alarm(0);
+  test_watchdog_disarm();
   chk_int("some patterns are accepted", accepted > 100, 1);
   chk_int("some patterns are refused", accepted < FUZZ_SEEDS - 100, 1);
 }

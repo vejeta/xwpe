@@ -31,6 +31,12 @@
 #include "../we_child.h"
 #include "../we_dap_proto.h"
 #include "../we_fdloop.h"
+#include "test_watchdog.h"
+
+/* Every case runs under the watchdog with its own name: a hang fails naming
+   the case within CASE_GUARD_S (scaled), not at a CI step limit. */
+#define CASE_GUARD_S 60
+#define RUN(c) do { test_watchdog_case(#c, CASE_GUARD_S); c(); } while (0)
 
 #define FAKE_FLAG        "--fake-bsp"
 #define FAKE_SLOW_TERM   "slow-term"  /* ends FAKE_TERM_CLEANUP_MS after TERM */
@@ -93,7 +99,7 @@ static void fake_start_daemon(const char *dir)
   close(STDIN_FILENO);
   close(STDOUT_FILENO);
   signal(SIGTERM, SIG_DFL);
-  alarm(FAKE_LIFETIME_S);
+  test_lifetime_arm(FAKE_LIFETIME_S);
   for (;;)
    pause();
  }
@@ -173,7 +179,7 @@ static int fake_wait_for_term(const char *dir)
  sigprocmask(SIG_BLOCK, &term, &old);
  while (!fake_termed)
   sigsuspend(&old);
- poll(NULL, 0, FAKE_TERM_CLEANUP_MS);
+ test_sleep_ms(FAKE_TERM_CLEANUP_MS);
  snprintf(marker, sizeof marker, "%s/ended-cleanly", dir);
  f = fopen(marker, "w");
  if (f)
@@ -186,7 +192,7 @@ static int fake_launcher(const char *mode, const char *dir)
 {
  int deaf = !strcmp(mode, FAKE_DEAF);
 
- alarm(FAKE_LIFETIME_S);
+ test_lifetime_arm(FAKE_LIFETIME_S);
  fake_write_pid(dir, "launcher.pid", getpid());
  fake_start_daemon(dir);
  if (deaf)
@@ -469,8 +475,9 @@ int main(int argc, char **argv)
   snprintf(self_path, sizeof self_path, "%s", argv[0]);
  signal(SIGPIPE, SIG_IGN);
  install_reaper();
- test_close_lets_the_launcher_end_after_sigterm();
- test_close_ends_a_launcher_that_ignores_sigterm();
+ RUN(test_close_lets_the_launcher_end_after_sigterm);
+ RUN(test_close_ends_a_launcher_that_ignores_sigterm);
+ test_watchdog_disarm();
  if (failures == 0)
   return 0;
  printf("%d check(s) failed\n", failures);

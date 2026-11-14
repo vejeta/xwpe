@@ -17,6 +17,14 @@
 #include <signal.h>
 
 #include "../we_dap.h"
+#include "test_watchdog.h"
+
+/* The whole run (build, adapter, a stop, Quit) must end within this, else the
+   watchdog fails it by name instead of a CI step limit ending it.  Scaled by
+   3 on the slow runners it stays below the per-test runner's 600 s
+   (tests/with-deadline.sh), so the watchdog's line is the one that is
+   printed. */
+#define LLDB_GUARD_S 180
 
 static const char *RUST_SRC =
  "fn main() {\n"
@@ -175,11 +183,7 @@ static int read_program_pid(const char *path)
    here, by its own PID, so no test leaves one either. */
 static int program_gone(int pid)
 {
- long end = now_ms() + PROGRAM_GONE_MS;
-
- while (kill(pid, 0) == 0 && now_ms() < end)
-  poll(NULL, 0, 50);
- if (kill(pid, 0) != 0)
+ if (test_wait_gone(pid, PROGRAM_GONE_MS))
   return 1;
  kill(pid, SIGKILL);
  return 0;
@@ -313,6 +317,7 @@ int main(void)
   printf("SKIP: lldb-dap and rustc are required for the DAP/lldb test\n");
   return 77;
  }
+ test_watchdog_arm("test_dap_lldb (adapter session)", LLDB_GUARD_S);
  if (!mkdtemp(dir))
   return fail("mkdtemp");
 

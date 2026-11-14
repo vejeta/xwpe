@@ -26,6 +26,7 @@
 
 #include "../we_child.h"
 #include "../we_fdloop.h"
+#include "test_watchdog.h"
 
 #define HANG_SECONDS       30
 #define MANY_WATCHED       16
@@ -90,14 +91,6 @@ static void chk_true(const char *what, int cond)
 		printf("FAIL: %s\n", what);
 		fails++;
 	}
-}
-
-static void on_alarm(int sig)
-{
-	static const char msg[] = "FAIL: a child's end never came\n";
-	(void)sig;
-	if (write(1, msg, sizeof msg - 1) < 0) { /* nothing to do */ }
-	_exit(1);
 }
 
 /* The handler the editor installs (WpeSignalChild), in its essentials. */
@@ -1274,8 +1267,8 @@ int main(void)
 {
 	struct sigaction act;
 
-	signal(SIGALRM, on_alarm);
-	alarm(HANG_SECONDS);
+	test_watchdog_case("test_child (the owner's start, signal and end of a "
+	                   "child): a child's end never came", HANG_SECONDS);
 	memset(&act, 0, sizeof act);
 	act.sa_handler = on_child;
 	sigemptyset(&act.sa_mask);

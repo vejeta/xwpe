@@ -24,6 +24,7 @@
 #include <sys/types.h>
 
 #include "../we_startcmd.h"
+#include "test_watchdog.h"
 
 #define PATH_ROOM         4096
 #define TEST_DIR_PARENT   "/tmp"                 /* when $TMPDIR is not set */
@@ -97,15 +98,6 @@ static void drop_store(void)
  unlink(store);
 }
 
-/* A lookup that blocked on a FIFO: say so and end, rather than hang. */
-static void on_blocked(int sig)
-{
- static const char line[] = "FAIL a FIFO at the store: the lookup blocked\n";
- (void)sig;
- if (write(STDOUT_FILENO, line, sizeof line - 1) < 0) _exit(1);
- _exit(1);
-}
-
 static void setup(void)
 {
  char tmpl[PATH_ROOM];
@@ -114,7 +106,6 @@ static void setup(void)
  if (!tmp || !*tmp) tmp = TEST_DIR_PARENT;
  snprintf(tmpl, sizeof tmpl, "%s/%s", tmp, TEST_DIR_NAME);
  setvbuf(stdout, NULL, _IONBF, 0);
- signal(SIGALRM, on_blocked);
  if (!mkdtemp(tmpl)) { perror("mkdtemp"); exit(2); }
  if (!realpath(tmpl, real)) { perror("realpath"); exit(2); }
  snprintf(base, sizeof base, "%s", real);
@@ -286,10 +277,12 @@ static void case_fifo(void)
 {
  drop_store();
  if (mkfifo(store, 0600) != 0) { perror("mkfifo"); exit(2); }
- alarm(FIFO_ALARM_S);               /* a read that blocks on the FIFO fails the test */
+ /* a read that blocks on the FIFO fails the test, by name */
+ test_watchdog_arm("case_fifo: a FIFO at the store, the lookup blocked",
+                   FIFO_ALARM_S);
  expect_int("a FIFO at the store asks", wpe_startcmd_check(proj, "PrintCmd", "lpr"), WPE_STARTCMD_ASK);
  expect_int("a FIFO at the store is not a store", wpe_startcmd_last_store_state(), WPE_STARTCMD_STORE_BAD);
- alarm(0);
+ test_watchdog_disarm();
  drop_store();
 }
 

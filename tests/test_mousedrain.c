@@ -11,6 +11,7 @@
 #include <signal.h>
 
 #include "../we_mousedrain.h"
+#include "test_watchdog.h"
 
 #define HANG_SECONDS 5
 
@@ -22,14 +23,6 @@ static void chk(const char *what, int got, int want)
 		printf("FAIL: %s: got %d want %d\n", what, got, want);
 		fails++;
 	}
-}
-
-static void on_alarm(int sig)
-{
-	static const char msg[] = "FAIL: drain did not return (spins on a queue that never ends)\n";
-	(void)sig;
-	if (write(1, msg, sizeof msg - 1) < 0) { /* nothing to do */ }
-	_exit(1);
 }
 
 /* A queue that never runs out and only ever holds empty events. */
@@ -83,8 +76,8 @@ static void test_empty_queue(void)
 
 int main(void)
 {
-	signal(SIGALRM, on_alarm);
-	alarm(HANG_SECONDS);
+	test_watchdog_case("test_mousedrain: the drain returning (it spins on a "
+	                   "queue that never ends)", HANG_SECONDS);
 
 	test_empty_events_end_the_drain();
 	test_real_events_are_bounded();

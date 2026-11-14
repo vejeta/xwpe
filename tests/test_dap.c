@@ -22,8 +22,15 @@
 
 #include "../we_dap_proto.h"
 #include "../we_dap.h"
+#include "test_watchdog.h"
 
 static int failures = 0;
+
+/* Every case runs under the watchdog with its own name, so a wait that never
+   ends fails naming the case within CASE_GUARD_S (scaled by
+   XWPE_TEST_WAIT_SCALE) instead of sitting until a CI step limit. */
+#define CASE_GUARD_S 60
+#define RUN(c) do { test_watchdog_case(#c, CASE_GUARD_S); c(); } while (0)
 
 #define CHECK(cond, msg) do {                                           \
   if (!(cond)) { printf("FAIL: %s\n", msg); failures++; }               \
@@ -376,6 +383,11 @@ static void test_start_refused(void)
 #define FAKE_TERM_CLEANUP_MS 200   /* well inside the engine's grace        */
 #define PUMP_BLOCK_GUARD_S   2     /* a pump that blocks is a failure       */
 #define QUIT_EXIT_MS         2000  /* the engine's wait for the exit        */
+#define FAKE_MUTE    "mute"        /* reads its input, never writes, keeps stdout open */
+#define FAKE_LIFETIME_S      30    /* a fake ends by itself after this      */
+#define FAKE_REAP_MS         5000  /* wait for a fake that was killed       */
+#define MUTE_ROW_FLAG        "--mute-row"
+#define MUTE_ROW_GUARD_S     3     /* the row gets this long to come back   */
 #define FAKE_FLOOD   "flood"       /* never answers, writes output for ever */
 #define FLOOD_GUARD_S        15    /* a Quit that never ends is a failure   */
 /* An answered Quit: with an exit descriptor (pidfd, kqueue) the adapter is
@@ -1325,19 +1337,6 @@ static void test_evaluate_names_the_stopped_frame(void)
  end_session(s, conn, lfd, &rd);
 }
 
-/* A pump that blocked would leave the editor without keys; fail at once. */
-static void pump_blocked(int sig)
-{
- static const char msg[] = "FAIL: the run pump blocked before the start "
-                           "was ready\n";
- ssize_t n;
-
- (void)sig;
- n = write(STDOUT_FILENO, msg, sizeof msg - 1);
- (void)n;
- _exit(1);
-}
-
 /* The editor may pump at any time; before the adapter has answered
    anything, the pump must not wait for it.
    @scenario SC-debug-17 */
@@ -1355,12 +1354,14 @@ static void test_pump_before_the_start_is_ready_never_blocks(void)
  if (!s || conn < 0)
   return;
  expect_request(conn, &rd, "initialize");   /* and never answered */
- signal(SIGALRM, pump_blocked);
- alarm(PUMP_BLOCK_GUARD_S);
+ /* A pump that blocked would leave the editor without keys: fail at once,
+    naming the pump, then go back to the case's own guard. */
+ test_watchdog_arm("test_pump_before_the_start_is_ready_never_blocks: "
+                   "the run pump blocked before the start was ready",
+                   PUMP_BLOCK_GUARD_S);
  CHECK(e_dap_run_pump(s) == E_DAP_RUN_GOING,
        "a pump with nothing to read did not answer GOING");
- alarm(0);
- signal(SIGALRM, SIG_DFL);
+ test_watchdog_rearm_case();
  close(conn);
  e_dap_close(s);
  close(lfd);
@@ -1519,7 +1520,7 @@ static int fake_wait_for_term(const char *marker)
  sigprocmask(SIG_BLOCK, &term, &old);
  while (!fake_termed)
   sigsuspend(&old);
- poll(NULL, 0, FAKE_TERM_CLEANUP_MS);
+ test_sleep_ms(FAKE_TERM_CLEANUP_MS);
  fake_mark(marker);
  return 0;
 }
@@ -1565,14 +1566,14 @@ static int fake_disconnect(const char *mode, int seq, const char *marker,
   e_dap_reader_free(rd);
   return fake_flood();
  }
- poll(NULL, 0, FAKE_ANSWER_DELAY_MS);   /* an adapter that takes its time */
+ test_sleep_ms(FAKE_ANSWER_DELAY_MS);   /* an adapter that takes its time */
  fake_reply(seq, "disconnect");
  while ((m = next_request(STDIN_FILENO, rd)) != NULL)
   json_object_put(m);
  e_dap_reader_free(rd);
  /* Like a real adapter, it cleans up for a moment after its input ends:
     a close that kills it as soon as it answered leaves no marker. */
- poll(NULL, 0, FAKE_EXIT_DELAY_MS);
+ test_sleep_ms(FAKE_EXIT_DELAY_MS);
  fake_mark(marker);
  return 0;
 }
@@ -1584,11 +1585,21 @@ static int fake_adapter(const char *mode, const char *marker)
  const char *cmd;
  int seq;
 
+ test_lifetime_arm(FAKE_LIFETIME_S);   /* a child's own guard */
  if (!strcmp(mode, FAKE_SILENT))
   signal(SIGTERM, SIG_IGN);
  if (!strcmp(mode, FAKE_TERM))
   signal(SIGTERM, fake_on_term);
  e_dap_reader_init(&rd);
+ if (!strcmp(mode, FAKE_MUTE))
+ {
+  /* Reads every request, answers none, and keeps its stdout open until
+     its input ends: no answer and no end of file for the engine. */
+  while ((m = next_request(STDIN_FILENO, &rd)) != NULL)
+   json_object_put(m);
+  e_dap_reader_free(&rd);
+  return 1;
+ }
  while ((m = next_request(STDIN_FILENO, &rd)) != NULL)
  {
   cmd = str_field(m, "command");
@@ -1635,7 +1646,7 @@ static void fake_gone_or_killed(pid_t pid)
  if (pid <= 0 || kill(pid, 0) != 0)
   return;
  kill(pid, SIGKILL);
- waitpid(pid, NULL, 0);
+ test_wait_child(pid, FAKE_REAP_MS);
 }
 
 /* @scenario SC-debug-18 */
@@ -1695,18 +1706,6 @@ static void test_close_terms_before_it_kills(void)
  rmdir(dir);
 }
 
-/* A Quit that never ended would leave the editor hung; fail at once. */
-static void quit_never_ended(int sig)
-{
- static const char msg[] = "FAIL: Quit did not end under an adapter "
-                           "that floods its output\n";
- ssize_t n;
-
- (void)sig;
- n = write(STDOUT_FILENO, msg, sizeof msg - 1);
- (void)n;
- _exit(1);
-}
 
 /* An adapter that never answers Quit and writes output without end cannot
    hold Quit past its bound: the deadline holds while data keeps coming.
@@ -1722,13 +1721,15 @@ static void test_close_ends_under_an_adapter_that_floods(void)
  if (!s)
   return;
  pid = e_dap_adapter_pid(s);
- signal(SIGALRM, quit_never_ended);
- alarm(FLOOD_GUARD_S);
+ /* A Quit that never ended would leave the editor hung: fail at once,
+    naming the case, then go back to the case's own guard. */
+ test_watchdog_arm("test_close_ends_under_an_adapter_that_floods: Quit did "
+                   "not end under an adapter that floods its output",
+                   FLOOD_GUARD_S);
  t0 = ms_now();
  e_dap_close(s);
  took = ms_now() - t0;
- alarm(0);
- signal(SIGALRM, SIG_DFL);
+ test_watchdog_rearm_case();
  CHECK(took < QUIT_DEADLINE_MS + QUIT_TERM_MS + QUIT_SLACK_MS,
        "Quit under a flooding adapter went past its bound");
  CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the adapter was not reaped");
@@ -2335,50 +2336,142 @@ static void test_long_watch_expression_goes_out_whole(void)
  end_session(s, conn, lfd, &rd);
 }
 
+/* The start of a session whose adapter reads and never answers must end at
+   the start's budget, and say so.  Today the start's wait has no deadline
+   (we_dap_sync.c), so this case does not come back: the watchdog ends it.
+   Run alone by the expected-failure runner below, never in the main run.
+   @scenario SC-child-wait-01 */
+static void test_open_fails_within_the_budget_when_the_adapter_never_answers(void)
+{
+ e_dap_session *s = fake_session(FAKE_MUTE, "/nonexistent");
+
+ CHECK(s == NULL, "an adapter that never answers was taken as started");
+ if (s)
+  e_dap_close(s);
+}
+
+/* The test program, started again to run only the mute-adapter row under
+   its own short guard (the hang ends it, as the guard's FAIL line). */
+static int run_the_mute_row(void)
+{
+ const char *name =
+  "test_open_fails_within_the_budget_when_the_adapter_never_answers";
+
+ signal(SIGPIPE, SIG_IGN);
+ test_watchdog_case(name, MUTE_ROW_GUARD_S);
+ test_open_fails_within_the_budget_when_the_adapter_never_answers();
+ test_watchdog_disarm();
+ return failures ? 1 : 0;
+}
+
+/* Start the mute row in its own process; its output is read into @out and
+   its wait status returned (-1: it could not be started). */
+static int start_the_mute_row(char *out, size_t room)
+{
+ int fds[2], st;
+ size_t used = 0;
+ ssize_t n;
+ pid_t pid;
+
+ out[0] = '\0';
+ if (pipe(fds) != 0)
+  return -1;
+ pid = fork();
+ if (pid < 0)
+  return -1;
+ if (pid == 0)
+ {
+  close(fds[0]);
+  dup2(fds[1], STDOUT_FILENO);
+  close(fds[1]);
+  execl(self_path, self_path, MUTE_ROW_FLAG, (char *)NULL);
+  _exit(127);
+ }
+ close(fds[1]);
+ while (used + 1 < room &&
+        (n = read(fds[0], out + used, room - used - 1)) > 0)
+  used += (size_t)n;
+ out[used] = '\0';
+ close(fds[0]);
+ st = test_wait_child(pid, FAKE_REAP_MS);
+ return st;
+}
+
+/* EXPECTED FAILURE until the sync layer's waits are bounded (pass C of the
+   child-wait design): the mute-adapter row must fail by the watchdog,
+   naming its case, within MUTE_ROW_GUARD_S.  XFAIL is printed and the run
+   stays green.  When the row passes (the wait is bounded) this reports
+   XPASS as a failure: delete this runner and run the row in main then.
+   @scenario SC-child-wait-01 */
+static void test_the_mute_adapter_row_fails_by_name_until_the_wait_is_bounded(void)
+{
+ char out[512];
+ int st = start_the_mute_row(out, sizeof out);
+
+ if (st != -1 && WIFEXITED(st) && WEXITSTATUS(st) == 0)
+ {
+  CHECK(0, "XPASS: the mute-adapter row passes now; run it in main and "
+           "drop its expected-failure runner");
+  return;
+ }
+ CHECK(st != -1 && WIFEXITED(st) && WEXITSTATUS(st) == 1,
+       "the mute-adapter row neither passed nor was stopped by its watchdog");
+ CHECK(strstr(out, "FAIL: test_open_fails_within_the_budget_when_the_adapter_"
+                   "never_answers did not finish within ") != NULL,
+       "the mute-adapter row did not fail naming its case");
+ printf("XFAIL: SC-child-wait-01 mute adapter: no answer, no end of file, "
+        "the start waits for ever (expected until pass C); the watchdog "
+        "ended it naming its case\n");
+}
+
 int main(int argc, char **argv)
 {
  if (argc >= 4 && !strcmp(argv[1], FAKE_FLAG))
   return fake_adapter(argv[2], argv[3]);
  if (!realpath(argv[0], self_path))
   snprintf(self_path, sizeof self_path, "%s", argv[0]);
+ if (argc >= 2 && !strcmp(argv[1], MUTE_ROW_FLAG))
+  return run_the_mute_row();
  signal(SIGPIPE, SIG_IGN);
- test_build();
- test_whole_frame();
- test_split_frame();
- test_two_frames();
- test_malformed_resyncs();
- test_start_machine();
- test_start_refused();
- test_pump_going_stopped_ended();
- test_only_a_launched_local_program_is_named();
- test_late_breakpoints_during_stack_trace();
- test_frame_path_longer_than_1023_is_kept_whole();
- test_events_during_evaluate_are_delivered();
- test_late_breakpoints_during_the_stops_location();
- test_stop_before_the_resume_answer_is_the_stop();
- test_pause_stop_whatever_its_reason();
- test_stop_read_with_the_starts_last_answer();
- test_answer_read_with_an_evaluate_answer();
- test_refused_continue_is_a_stop_where_it_was();
- test_a_request_the_adapter_cannot_take_is_not_sent();
- test_evaluate_names_the_stopped_frame();
- test_pump_before_the_start_is_ready_never_blocks();
- test_eof_in_the_middle_of_a_message_ends_the_pump();
- test_disconnect_answered_through_the_pump();
- test_late_location_during_quit_does_not_stop_it();
- test_close_waits_for_the_disconnect_answer();
- test_close_kills_an_adapter_that_never_answers();
- test_close_terms_before_it_kills();
- test_close_ends_under_an_adapter_that_floods();
- test_an_adapter_reaped_but_not_reported_is_known_gone_with_its_status();
- test_evaluate_answered_by_callback_while_events_come();
- test_answer_for_a_request_given_up_is_dropped();
- test_deadline_ends_a_request();
- test_next_deadline_counts_from_its_own_send();
- test_forgotten_session_leaves_the_hosts_timers_alone();
- test_quit_during_the_start_asks_nothing_more();
- test_requester_runs_a_two_step_chain();
- test_long_watch_expression_goes_out_whole();
+ RUN(test_build);
+ RUN(test_whole_frame);
+ RUN(test_split_frame);
+ RUN(test_two_frames);
+ RUN(test_malformed_resyncs);
+ RUN(test_start_machine);
+ RUN(test_start_refused);
+ RUN(test_pump_going_stopped_ended);
+ RUN(test_only_a_launched_local_program_is_named);
+ RUN(test_late_breakpoints_during_stack_trace);
+ RUN(test_frame_path_longer_than_1023_is_kept_whole);
+ RUN(test_events_during_evaluate_are_delivered);
+ RUN(test_late_breakpoints_during_the_stops_location);
+ RUN(test_stop_before_the_resume_answer_is_the_stop);
+ RUN(test_pause_stop_whatever_its_reason);
+ RUN(test_stop_read_with_the_starts_last_answer);
+ RUN(test_answer_read_with_an_evaluate_answer);
+ RUN(test_refused_continue_is_a_stop_where_it_was);
+ RUN(test_a_request_the_adapter_cannot_take_is_not_sent);
+ RUN(test_evaluate_names_the_stopped_frame);
+ RUN(test_pump_before_the_start_is_ready_never_blocks);
+ RUN(test_eof_in_the_middle_of_a_message_ends_the_pump);
+ RUN(test_disconnect_answered_through_the_pump);
+ RUN(test_late_location_during_quit_does_not_stop_it);
+ RUN(test_close_waits_for_the_disconnect_answer);
+ RUN(test_close_kills_an_adapter_that_never_answers);
+ RUN(test_close_terms_before_it_kills);
+ RUN(test_close_ends_under_an_adapter_that_floods);
+ RUN(test_an_adapter_reaped_but_not_reported_is_known_gone_with_its_status);
+ RUN(test_evaluate_answered_by_callback_while_events_come);
+ RUN(test_answer_for_a_request_given_up_is_dropped);
+ RUN(test_deadline_ends_a_request);
+ RUN(test_next_deadline_counts_from_its_own_send);
+ RUN(test_forgotten_session_leaves_the_hosts_timers_alone);
+ RUN(test_quit_during_the_start_asks_nothing_more);
+ RUN(test_requester_runs_a_two_step_chain);
+ RUN(test_long_watch_expression_goes_out_whole);
+ RUN(test_the_mute_adapter_row_fails_by_name_until_the_wait_is_bounded);
+ test_watchdog_disarm();
  if (failures)
  {
   printf("test_dap: %d FAILURE(S)\n", failures);

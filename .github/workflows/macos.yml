@@ -61,23 +61,53 @@ jobs:
           ./configure --without-x --without-gpm
           make
 
-      - name: make check
+      - name: make check (the editor's own tests)
         # Every step past the build has its own time limit: a step that hangs
         # must fail by itself, so the later steps and the log upload still run.
         # A job stopped by the 6-hour limit keeps no logs at all.
-        timeout-minutes: 45
+        #
+        # The tests of the owner of children and of waiting (the fd loop, the
+        # child owner, the DAP transport, the BSP and LSP request layers) need
+        # no toolchain, so they run here alone and first: a hang in one of them
+        # fails inside this step, named, and the toolchain tests below still run.
+        # Each test runs under tests/with-deadline.sh (TERM, then KILL, after 600 s,
+        # a TIMEOUT line in its log), and the C tests carry their own watchdog
+        # (tests/test_watchdog.h) that names the case that hung.  VERBOSE=yes
+        # makes automake print the log of every failed test into this step's log.
+        timeout-minutes: 15
+        env:
+          VERBOSE: "yes"
+          # Stretch every wait by 3x, as the pyte suite below and the Debian
+          # autopkgtest do, instead of weakening the assertions.
+          XWPE_TEST_WAIT_SCALE: "3"
+        run: >-
+          make check
+          LOG_COMPILER="$PWD/tests/with-deadline.sh 600"
+          TESTS="test_watchdog tests/check-with-deadline.sh test_checkheader
+          test_syntax_def test_fdloop test_child test_childsig test_dap
+          test_bsp_close test_lsp_requests test_startplan test_clipboard
+          test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor"
+          || { cat test-suite.log; exit 1; }
+
+      - name: make check (the tests that need a toolchain)
         # LSP/DAP server tests SKIP when their server is absent. But GitHub's
         # macOS runner ships rust-analyzer + cargo, so test_lsp_rust runs instead
         # of skipping, and its cold start (indexing std + cargo-check) exceeds the
         # test's wait budget on a fresh runner -- a flaky timeout, not an xwpe
         # fault. The Rust LSP path is covered by the Linux CI, so exclude just
         # that one test here (everything else passes or skips cleanly).
+        # Runs even when the step above failed, so one run reports both.
+        if: always()
+        timeout-minutes: 30
+        env:
+          VERBOSE: "yes"
+          XWPE_TEST_WAIT_SCALE: "3"
         run: >-
           make check
-          TESTS="test_checkheader test_syntax_def test_fdloop test_clipboard
-          test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor
-          test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala
+          LOG_COMPILER="$PWD/tests/with-deadline.sh 600"
+          TESTS="test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala
           test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls"
+          || { cat test-suite.log; exit 1; }
 
       - name: pyte UI regression suite (keystrokes, menus, editing, rendering)
         timeout-minutes: 150
@@ -326,7 +356,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-logs-${{ matrix.runner }}
+          # test-suite.log is the automake summary; test_*.log are the per-test
+          # logs (a hung test leaves its watchdog or TIMEOUT line in its own).
           path: |
+            test-suite.log
+            test_*.log
             *.log
             tests/*.log
           if-no-files-found: ignore

@@ -24,6 +24,7 @@
 
 #include "../we_bsp.h"
 #include "../we_dap.h"
+#include "test_watchdog.h"
 
 /* Line 6 is the loop body; `f` is in scope and grows 1,1,2,6,24,120,... */
 static const char *SCALA_SRC =
@@ -68,10 +69,6 @@ static int fail(const char *msg) { printf("FAIL: %s\n", msg); return 1; }
 #define PROC_PATH_MAX      64
 #define COMM_MAX           32
 
-static volatile sig_atomic_t deadline_passed = 0;
-
-static void on_deadline(int sig) { (void)sig; deadline_passed = 1; }
-
 static int session(const char *dir);
 
 /**
@@ -100,7 +97,6 @@ static int test_deadline_s(void)
  */
 static int run_within_deadline(const char *dir)
 {
- struct sigaction sa;
  int st = 0, secs = test_deadline_s();
  pid_t pid;
 
@@ -115,25 +111,15 @@ static int run_within_deadline(const char *dir)
   fflush(stdout);
   _exit(rc);
  }
- memset(&sa, 0, sizeof sa);
- sa.sa_handler = on_deadline;       /* no SA_RESTART: the wait is cut short */
- sigemptyset(&sa.sa_mask);
- sigaction(SIGALRM, &sa, NULL);
- alarm(secs);
- while (waitpid(pid, &st, 0) < 0)
+ /* test_wait_child ends the child by SIGKILL at the deadline (scaled by
+    XWPE_TEST_WAIT_SCALE on top of TEST_DEADLINE_ENV) and returns -1. */
+ st = test_wait_child(pid, (long)secs * 1000L);
+ if (st == -1)
  {
-  if (errno != EINTR)
-   return fail("waitpid");
-  if (!deadline_passed)
-   continue;
   printf("FAIL: the Scala session did not finish within %d s "
          "(set %s for a slower machine); ended it\n", secs, TEST_DEADLINE_ENV);
-  kill(pid, SIGKILL);
-  while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
-   ;
   return 1;
  }
- alarm(0);
  return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
 }
 
@@ -170,26 +156,14 @@ static int is_program_in(int pid, const char *dir)
  * wait_program_end - Give a program that is still ending PROGRAM_END_MS.
  * @pid: the program.
  *
- * Waits on the process's own descriptor where the system has one (it is
- * not the test's child, so waitpid cannot); elsewhere it is not waited for.
+ * The process is not the test's child, so waitpid cannot wait for it:
+ * test_wait_gone asks kill(pid, 0) between short sleeps, the same on every
+ * system (no pidfd, so macOS waits too).
  * Return: 1 once it has ended.
  */
 static int wait_program_end(int pid)
 {
-#ifdef SYS_pidfd_open
- struct pollfd pfd;
- int fd = (int)syscall(SYS_pidfd_open, pid, 0);
-
- if (fd >= 0)
- {
-  pfd.fd = fd;
-  pfd.events = POLLIN;
-  while (poll(&pfd, 1, PROGRAM_END_MS) < 0 && errno == EINTR)
-   ;
-  close(fd);
- }
-#endif
- return kill(pid, 0) != 0;
+ return test_wait_gone(pid, PROGRAM_END_MS);
 }
 
 /**

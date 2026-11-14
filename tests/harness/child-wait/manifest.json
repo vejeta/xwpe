@@ -1,0 +1,8 @@
+{
+ "capability": "child-wait",
+ "scenarios": [
+  {"id": "SC-child-wait-01", "requirement": "A session whose adapter reads and never answers fails at the start's budget naming what it waited for", "layer": "c-unit", "test": null, "status": "blocked", "reason": "expected failure until pass C of DESIGN-child-wait: today the start's wait has no deadline. test_dap runs the row alone (test_dap --mute-row) and prints XFAIL when the watchdog ends it naming its case, XPASS (a failure) once the wait is bounded; pass C moves the row into test_dap's main and sets this row to new"},
+  {"id": "SC-child-wait-07", "requirement": "The test watchdog names what did not finish within its time, scales as a float, and keeps earlier output", "layer": "c-unit", "test": "test_watchdog", "status": "new"},
+  {"id": "SC-child-wait-08", "requirement": "with-deadline.sh ends a hung command after SECS with TERM then KILL, prints TIMEOUT and exits 124, under dash too", "layer": "c-unit", "test": "tests/check-with-deadline.sh", "status": "new"}
+ ]
+}

@@ -536,6 +536,16 @@ test_childsig_SOURCES = tests/test_childsig.c we_child.c we_fdloop.c
 test_childsig_CFLAGS = $(XWPE_STDFLAG)
 test_childsig_LDADD = $(UTIL_LIBS)
 
+# The hang guard every C test that starts a child arms (tests/test_watchdog.h),
+# tested: an alarm names what did not finish, XWPE_TEST_WAIT_SCALE (a float)
+# stretches it, earlier output survives it, and the two waits it offers
+# (test_wait_child, test_wait_gone) bound themselves.  The runner that ends a
+# whole test after SECS is tests/with-deadline.sh, tested by
+# tests/check-with-deadline.sh.
+check_PROGRAMS += test_watchdog
+test_watchdog_SOURCES = tests/test_watchdog.c tests/test_watchdog.h
+test_watchdog_CFLAGS = $(XWPE_STDFLAG)
+
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
 test_fdloop_SOURCES = tests/test_fdloop.c
@@ -743,6 +753,9 @@ TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test
 # its own.  Offenders still to go are in tests/one-owner.allow.
 TESTS += tests/check-one-owner.sh
 
+# The test hang guard and the per-test deadline runner (see test_watchdog).
+TESTS += test_watchdog tests/check-with-deadline.sh
+
 # One owner of what the editor decides about a program it starts: the
 # start plan (we_startplan.c).  Every line of the start sites that builds a
 # command line, a working folder or a shell line, or names a folder's
@@ -923,6 +936,9 @@ EXTRA_DIST = \
   tests/run-tests.sh \
   tests/check-one-owner.sh \
   tests/one-owner.allow \
+  tests/with-deadline.sh \
+  tests/check-with-deadline.sh \
+  tests/test_watchdog.h \
   tests/check-start-plan.sh \
   tests/start-plan.allow \
   tests/check-shell-quote.sh \

@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 
 #include "../we_child.h"
+#include "test_watchdog.h"
 
 #define HANG_SECONDS      30
 #define STORM_CHILDREN    40
@@ -37,14 +38,6 @@ static void chk(const char *what, long got, long want)
 		printf("FAIL: %s: got %ld want %ld\n", what, got, want);
 		fails++;
 	}
-}
-
-static void on_alarm(int sig)
-{
-	static const char msg[] = "FAIL: the read never returned\n";
-	(void)sig;
-	if (write(1, msg, sizeof msg - 1) < 0) { /* nothing to do */ }
-	_exit(1);
 }
 
 /* The handler the editor installs (WpeSignalChild), in its essentials. */
@@ -105,8 +98,8 @@ static void test_a_pipe_read_survives_a_sigchld_storm(void)
 
 int main(void)
 {
-	signal(SIGALRM, on_alarm);
-	alarm(HANG_SECONDS);
+	test_watchdog_case("test_a_pipe_read_survives_a_sigchld_storm: the read "
+	                   "never returned", HANG_SECONDS);
 	chk("the handler is installed", wpe_child_sigchld_install(on_child), 0);
 	test_a_pipe_read_survives_a_sigchld_storm();
 	if (fails) {

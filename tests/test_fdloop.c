@@ -27,6 +27,7 @@
  * test can put the private id counter next to INT_MAX instead of making two
  * billion calls to reach it.  Its tables are static: so is its table size. */
 #include "we_fdloop.c"
+#include "test_watchdog.h"
 
 static int cb_calls = 0;
 static int reaped_fd = -1;
@@ -1349,7 +1350,8 @@ static int test_close_when_written_sends_every_byte_then_end_of_file(void)
 int main(void)
 {
  int rc = 0;
- alarm(HANG_GUARD_S);      /* a poll that never wakes fails the test, not the build */
+ /* a poll that never wakes fails the test, by name, not the build */
+ test_watchdog_case("test_fdloop: a poll that never wakes", HANG_GUARD_S);
  rc |= test_callback_fd_reaped_on_hup();
  rc |= test_wakeonly_fd_dropped_on_hup();
  rc |= test_one_shot_fires_once();

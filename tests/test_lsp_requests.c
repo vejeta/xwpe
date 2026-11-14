@@ -51,6 +51,12 @@
 #include "../we_child.h"
 #include "../we_dap_proto.h"
 #include "../we_fdloop.h"
+#include "test_watchdog.h"
+
+/* Every case runs under the watchdog with its own name: a hang fails naming
+   the case within CASE_GUARD_S (scaled), not at a CI step limit. */
+#define CASE_GUARD_S 60
+#define RUN(c) do { test_watchdog_case(#c, CASE_GUARD_S); c(); } while (0)
 
 /* A literal ASCII column of the fixtures: units are bytes in every encoding. */
 #define COL(n)           e_lsp_units_make(n)
@@ -342,7 +348,7 @@ static void fake_leave_a_holder(void)
  close(STDIN_FILENO);
  snprintf(pid, sizeof pid, "%ld", (long)getpid());
  fake_note("HOLDER", pid);
- alarm(FAKE_HOLDER_LIFETIME_S);
+ test_lifetime_arm(FAKE_HOLDER_LIFETIME_S);
  for (;;)
   pause();
 }
@@ -356,7 +362,7 @@ static int fake_server(const char *mode, const char *dir)
  char buf[FAKE_READ_CHUNK];
  ssize_t n;
 
- alarm(FAKE_LIFETIME_S);
+ test_lifetime_arm(FAKE_LIFETIME_S);
  snprintf(fake_log_path, sizeof fake_log_path, "%s/%s", dir, FAKE_LOG);
  if (!strcmp(mode, FAKE_HOLDER))
   fake_leave_a_holder();
@@ -973,15 +979,16 @@ int main(int argc, char **argv)
   return 1;
  signal(SIGPIPE, SIG_IGN);
  install_reaper();
- test_answers_reach_their_own_requests_in_any_order();
- test_cancel_tells_each_owner_once_and_drops_the_late_answer();
- test_deadline_gives_the_request_up_and_the_start_has_none();
- test_a_server_that_ends_tells_every_request_it_is_gone();
- test_an_answer_read_by_a_waited_request_reaches_its_owner();
- test_a_newer_overlay_fetch_replaces_the_older();
- test_a_command_edit_reaches_the_text_it_was_run_on();
- test_a_closed_output_held_open_is_let_go();
- test_close_asks_on_the_pipe_and_returns_at_once();
+ RUN(test_answers_reach_their_own_requests_in_any_order);
+ RUN(test_cancel_tells_each_owner_once_and_drops_the_late_answer);
+ RUN(test_deadline_gives_the_request_up_and_the_start_has_none);
+ RUN(test_a_server_that_ends_tells_every_request_it_is_gone);
+ RUN(test_an_answer_read_by_a_waited_request_reaches_its_owner);
+ RUN(test_a_newer_overlay_fetch_replaces_the_older);
+ RUN(test_a_command_edit_reaches_the_text_it_was_run_on);
+ RUN(test_a_closed_output_held_open_is_let_go);
+ RUN(test_close_asks_on_the_pipe_and_returns_at_once);
+ test_watchdog_disarm();
  fake_log_clear();
  rmdir(work_dir);
  if (failures == 0)
