@@ -19,16 +19,8 @@ import subprocess
 
 import pytest
 
+from build_config import requires
 from wpe_driver import WpeSession, ALT, WPE_BIN, checkbox_mark, row_with
-
-
-def _ai_build():
-    try:
-        out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
-                             stdout=subprocess.PIPE, timeout=30).stdout
-        return b"AI settings" in out
-    except Exception:
-        return False
 
 
 ENV = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
@@ -39,7 +31,7 @@ ESC = "\033"
 TAB = "\t"
 ALT_T = "\033t"              # Tabstops, the numeric field of Editor options
 PASTE_BEGIN, PASTE_END = "\033[200~", "\033[201~"
-needs_ai = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
+needs_ai = requires("enable-ai")
 
 
 def _paste(text):

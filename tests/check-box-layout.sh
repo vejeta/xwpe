@@ -62,10 +62,17 @@ done
 [ -n "$OBJECTS" ] || OBJECTS=$ONE_OWNER_OBJECTS
 [ -n "$ALLOW" ] || ALLOW=$HERE/box-layout.allow
 
+# What this build contains (tests/build-config.sh asks the binary once): an
+# object of a feature the build lacks is not built, which is not the same as
+# a scan that cannot see it.  Sourcing prints the build's line.
+[ $LIST -eq 1 ] && WPE_BUILD_QUIET=1
+. "$HERE/build-config.sh"
+
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/box-layout.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 : > "$WORK/problems"
 : > "$WORK/found"
+: > "$WORK/notbuilt"       # one word per line, for what this build lacks
 mkdir -p "$WORK/stripped"
 
 problem() { echo "$*" >> "$WORK/problems"; }
@@ -194,8 +201,15 @@ if command -v "$NMTOOL" >/dev/null 2>&1 && [ "$NMTOOL" != ":" ]; then
           problem "canary: we_layout.o does not import wpe_paint_modal_enter (the stack is not the screen owner's)" ;;
     esac
   done
-  [ "$seen_displays" -eq 0 ] || [ "$seen_displays" -eq 3 ] ||
-    problem "canary: $seen_displays of the 3 display objects were seen (the symbol scan is blind)"
+  # The terminal is in every build; X11 and Wayland are displays when the
+  # build has them.  A build with one display sees one, never zero.
+  expected_displays=1
+  wpe_built with-x && expected_displays=$((expected_displays + 1))
+  wpe_built with-wayland && expected_displays=$((expected_displays + 1))
+  [ "$seen_displays" -eq "$expected_displays" ] ||
+    problem "canary: $seen_displays of the $expected_displays display objects this build has were seen (the symbol scan is blind)"
+  wpe_built with-x || echo with-x >> "$WORK/notbuilt"
+  wpe_built with-wayland || echo with-wayland >> "$WORK/notbuilt"
 fi
 
 sort "$WORK/found" -o "$WORK/found"
@@ -231,6 +245,22 @@ if [ $STRICT -eq 1 ]; then
   mv "$WORK/allowed.keep" "$WORK/allowed"
 fi
 
+# A line on an object of a feature this build lacks (the symbol rules name
+# objects) is not stale: it is not built here, and is said so.
+: > "$WORK/allowed.live"
+while read -r arule aname acount apass; do
+  case $aname in
+    *.o)
+      afeature=$(wpe_feature_of_object "$aname")
+      if [ -n "$afeature" ] && ! wpe_built "$afeature"; then
+        echo "$afeature" >> "$WORK/notbuilt"
+        continue
+      fi ;;
+  esac
+  echo "$arule $aname $acount $apass" >> "$WORK/allowed.live"
+done < "$WORK/allowed"
+mv "$WORK/allowed.live" "$WORK/allowed"
+
 awk '
   FILENAME == ARGV[1] { al[$1 " " $2] = $3; pass[$1 " " $2] = $4; next }
   {
@@ -255,5 +285,5 @@ if [ -s "$WORK/problems" ] || [ $status -ne 0 ]; then
   cat "$WORK/problems" "$WORK/report" 2>/dev/null
   exit $BAD
 fi
-echo "check-box-layout: ok ($(wc -l < "$WORK/found" | tr -d ' ') allowed offender line(s))"
+echo "check-box-layout: ok ($(wc -l < "$WORK/found" | tr -d ' ') allowed offender line(s)$(wpe_not_built_note "$WORK/notbuilt"))"
 exit 0

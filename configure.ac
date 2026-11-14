@@ -308,6 +308,7 @@ AS_IF([test "x$have_x11" = xyes && test "x$with_libx11_compat" = xno], [
        AC_DEFINE([HAVE_VTERM], [1], [Define if libvterm is available])
      ], [have_vterm=no])])
 ])
+AM_CONDITIONAL([HAVE_VTERM], [test "x$have_vterm" = xyes])
 
 # --- Optional: GPM mouse ---
 AC_ARG_WITH([gpm],
@@ -324,6 +325,7 @@ AS_IF([test "x$with_gpm" != xno], [
        [AC_MSG_ERROR([libgpm requested but not found])])])
 ])
 AC_SUBST([GPM_LIBS])
+AM_CONDITIONAL([HAVE_LIBGPM], [test "x$have_gpm" = xyes])
 
 # --- Required: openpty (debugger / program pty capture) ---
 # openpty() lives in libutil on Linux and the BSDs, but is part of libc on
@@ -490,6 +492,32 @@ AC_ARG_WITH([xdb],
 AS_IF([test "x$with_xdb" = "xyes"],
   [AC_DEFINE([XDB], [1], [Offer HP-UX's xdb as a debugger backend])])
 
+# --- What this build contains, as facts every reader sees the same way ---
+# config.h defines each WPE_BUILT_* to 0 or 1 (never left undefined), the
+# editor prints them (--version), and the feature lists of Makefile.am and the
+# test suite use the same words.  The word is the configure option without its
+# leading dashes, or the library's name where configure finds it on its own.
+# Test a fact with "#if WPE_BUILT_X", never "#ifdef": it is always defined, so
+# a misspelt name is a -Wundef warning and never a silent zero.
+AC_DEFUN([WPE_BUILT],
+  [AS_IF([$3], [wpe_built_$1=1; wpe_word_$1=yes], [wpe_built_$1=0; wpe_word_$1=no])
+   AC_DEFINE_UNQUOTED([WPE_BUILT_$1], [$wpe_built_$1],
+     [1 when this build has $2, 0 when it does not])
+   wpe_built_line="$wpe_built_line $2=$wpe_word_$1"])
+wpe_built_line=
+WPE_BUILT([AI],      [enable-ai],            [test "x$enable_ai" = xyes])
+WPE_BUILT([AI_HOST], [enable-ai-agent-host], [test "x$have_ai_agent_host" = xyes])
+WPE_BUILT([AI_TLS],  [enable-ai-tls],        [test "x$have_ai_tls" = xyes])
+WPE_BUILT([X11],     [with-x],               [test "x$have_x11" = xyes])
+WPE_BUILT([WAYLAND], [with-wayland],         [test "x$have_wayland" = xyes])
+WPE_BUILT([GPM],     [with-gpm],             [test "x$have_gpm" = xyes])
+WPE_BUILT([XDB],     [with-xdb],             [test "x$with_xdb" = xyes])
+WPE_BUILT([TRACE],   [enable-trace],         [test "x$enable_trace" = xyes])
+WPE_BUILT([VTERM],   [libvterm],             [test "x$have_vterm" = xyes])
+WPE_BUILT([XFT],     [xft],                  [test "x$have_xft" = xyes])
+WPE_BUILT([CAIRO],   [cairo],                [test "x$have_cairo" = xyes])
+WPE_BUILT([PANGO],   [pango],                [test "x$have_pango" = xyes])
+
 # --- Unconditional defines ---
 AC_DEFINE([UNIX], [1], [Building on a Unix system])
 AC_DEFINE([NCURSES], [1], [Using ncurses library])
@@ -521,6 +549,7 @@ AC_MSG_RESULT([
     AI:        $enable_ai
     AI TLS:    $have_ai_tls
     AI host:   $have_ai_agent_host
+    built with:$wpe_built_line
     PRNTCMD:   $PRNTCMD
     pandoc:    $PANDOC
 

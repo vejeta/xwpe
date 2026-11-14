@@ -11,7 +11,12 @@ asserts the editor is still alive afterwards.
 import os
 import tempfile
 
+from build_config import requires
 from wpe_driver import WpeSession
+
+# The row opens the assistant's settings dialog from Options, which a build
+# without the assistant does not have.
+pytestmark = requires("enable-ai")
 
 
 # @scenario SC-dialog-engine-05

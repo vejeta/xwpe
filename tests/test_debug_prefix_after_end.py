@@ -16,6 +16,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from build_config import requires
 from wpe_driver import WpeSession, WAIT_SCALE
 import time
 
@@ -161,6 +162,7 @@ def test_gdb_alt_q_after_continue_is_a_prefix(tmp_path):
         _assert_untouched(w, C_PROG, "the key after Alt-Q")
 
 
+@requires("enable-ai")
 def test_gdb_alt_g_after_continue_is_a_prefix(tmp_path):
     """Alt-G right after Ctrl-G R: the assistant prefix arrives whole."""
     _need("gcc", "gdb")

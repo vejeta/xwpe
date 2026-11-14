@@ -57,6 +57,12 @@ if [ "$NMTOOL" = ":" ] || ! command -v "$NMTOOL" >/dev/null 2>&1; then
   exit $SKIP
 fi
 
+# What this build contains (tests/build-config.sh asks the binary once): an
+# object of a feature the build does not have is not built, which is not the
+# same as a scan that cannot see it.  Sourcing prints the build's line.
+[ $LIST -eq 1 ] && WPE_BUILD_QUIET=1
+. "$HERE/build-config.sh"
+
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/one-owner.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
@@ -451,6 +457,31 @@ mkdir "$WORK/stripped"
 
 problem() { echo "$*" >> "$WORK/problems"; }
 
+# What a build without a feature could not check, named: "skip canary" lines
+# for the scans, and one word per line for everything not built here.
+: > "$WORK/skips"
+: > "$WORK/notbuilt"
+
+# named_object OBJECT WHAT -- the path of the object a scan is about to read,
+# among the objects of this run.  An object of a feature this build lacks is
+# a named skip (WHAT is what was not checked); an object every build has, or
+# one of a feature this build has, that is missing from the list is a problem:
+# the object list is wrong and the scan is blind.  Returns 1 after saying
+# which, so the caller moves on.
+named_object() {
+  res=$(wpe_object_of "$1" "$OBJECTS")
+  case $res in
+    unknown)
+      problem "object list has no $1 (the scan is blind)"
+      return 1 ;;
+    "not-built "*)
+      echo "skip canary: $1 $2: $(wpe_not_built_reason "${res#not-built }")" >> "$WORK/skips"
+      echo "${res#not-built }" >> "$WORK/notbuilt"
+      return 1 ;;
+  esac
+  echo "$res"
+}
+
 # --- the self-test of the position rules: a rule that matches nothing is
 # indistinguishable from a clean source, so each one is run over a fixture
 # first.  "+" lines must match the four rules exactly once in all, "-"
@@ -707,46 +738,39 @@ grep -qx "we_child.o fork" "$WORK/imports" ||
   problem "canary: fork not seen in we_child.o (LTO objects, wrong nm, or an empty object list)"
 grep -qx "we_unix.o waitpid" "$WORK/imports" ||
   problem "canary: waitpid not seen in we_unix.o (LTO objects, wrong nm, or an empty object list)"
-grep -qx "WeXterm.o XOpenDisplay" "$WORK/imports" ||
-  problem "canary: XOpenDisplay not seen in WeXterm.o (the prefix scan of the X11 connection is blind)"
+if named_object WeXterm.o XOpenDisplay >/dev/null; then
+  grep -qx "WeXterm.o XOpenDisplay" "$WORK/imports" ||
+    problem "canary: XOpenDisplay not seen in WeXterm.o (the prefix scan of the X11 connection is blind)"
+fi
 
 # Every child talker must send through the loop's writer: one that does not
 # import wpe_fd_write is talking to its child some other way.  And it must
 # close its child's input through wpe_fd_close, which forgets the queue:
 # a plain close() leaves queued bytes for whatever next gets that number.
 for talker in we_debug.o we_lsp.o we_dap.o we_bsp.o; do
-  for obj in $OBJECTS; do
-    [ "$(basename "$obj")" = "$talker" ] || continue
-    [ -f "$obj" ] || continue
-    "$NMTOOL" -u "$obj" 2>/dev/null | normalise > "$WORK/talker"
-    grep -qx wpe_fd_write "$WORK/talker" ||
-      problem "canary: $talker does not import wpe_fd_write (a child is written some other way)"
-    grep -qx wpe_fd_close "$WORK/talker" ||
-      problem "canary: $talker does not import wpe_fd_close (a child's input is closed with its bytes still queued)"
-  done
+  obj=$(named_object $talker "wpe_fd_write") || continue
+  "$NMTOOL" -u "$obj" 2>/dev/null | normalise > "$WORK/talker"
+  grep -qx wpe_fd_write "$WORK/talker" ||
+    problem "canary: $talker does not import wpe_fd_write (a child is written some other way)"
+  grep -qx wpe_fd_close "$WORK/talker" ||
+    problem "canary: $talker does not import wpe_fd_close (a child's input is closed with its bytes still queued)"
 done
 # Every display decodes its keys through the one table: a display that does
 # not import wpe_key_code has gone back to a ladder of its own, which the
 # name scan below would not see while it spells no new name.
 for display in we_term.o we_xterm.o we_wayland.o; do
-  for obj in $OBJECTS; do
-    [ "$(basename "$obj")" = "$display" ] || continue
-    [ -f "$obj" ] || continue
-    "$NMTOOL" -u "$obj" 2>/dev/null | normalise > "$WORK/display"
-    grep -qx wpe_key_code "$WORK/display" ||
-      problem "canary: $display does not import wpe_key_code (keys are decoded some other way)"
-  done
+  obj=$(named_object $display wpe_key_code) || continue
+  "$NMTOOL" -u "$obj" 2>/dev/null | normalise > "$WORK/display"
+  grep -qx wpe_key_code "$WORK/display" ||
+    problem "canary: $display does not import wpe_key_code (keys are decoded some other way)"
 done
 # The screen's owner: the key loop shows what waited behind a box through
 # it, and the dialog engines tell it they own the screen.  An object that
 # stops importing these has gone back to a flag or a replay of its own.
 canary_import() {
-  for obj in $OBJECTS; do
-    [ "$(basename "$obj")" = "$1" ] || continue
-    [ -f "$obj" ] || continue
-    "$NMTOOL" -u "$obj" 2>/dev/null | normalise | grep -qx "$2" ||
-      problem "canary: $1 does not import $2 ($3)"
-  done
+  obj=$(named_object "$1" "$2") || return 0
+  "$NMTOOL" -u "$obj" 2>/dev/null | normalise | grep -qx "$2" ||
+    problem "canary: $1 does not import $2 ($3)"
 }
 canary_import we_edit.o wpe_paint_replay_if_idle "what came behind a box is shown some other way"
 canary_import we_paint.o wpe_loop_hooks_set "the loop's callbacks are not bracketed by the owner"
@@ -802,12 +826,10 @@ for obj in $OBJECTS; do
   done
 done
 # The canary of that rule: a scanner that lists no definitions sees nothing.
-for obj in $OBJECTS; do
-  [ "$(basename "$obj")" = we_paint.o ] || continue
-  [ -f "$obj" ] || continue
+if obj=$(named_object we_paint.o wpe_paint_modal_getch); then
   defined_names "$obj" | grep -qx wpe_paint_modal_getch ||
     problem "canary: wpe_paint_modal_getch not seen defined in we_paint.o (the deleted-symbol scan is blind)"
-done
+fi
 for taker in we_prog.o we_unix.o; do
   canary_import $taker wpe_paint_take_key "a key is taken without waiting some other way"
 done
@@ -849,11 +871,7 @@ canary_import we_edit.o e_buffer_record_text "a char record copies its text some
 # is the self-test's and the counted lines' work.  The block code and the
 # mouse join this list when they stop writing the cursor in place.
 canary_import we_edit.o e_buffer_cursor_set "the cursor is put on a glyph some other way"
-BUFFER_OWNER_SEEN=0
-for obj in $OBJECTS; do
-  [ "$(basename "$obj")" = we_buffer.o ] || continue
-  [ -f "$obj" ] || continue
-  BUFFER_OWNER_SEEN=1
+if obj=$(named_object we_buffer.o purity); then
   "$NMTOOL" -u "$obj" 2>/dev/null | normalise > "$WORK/owner"
   for sym in e_error e_schirm e_refresh WpeEditor e_sc_nw_txt e_sc_txt e_brk_recalc \
              e_make_breakpoint e_getch e_switch_window e_set_pnt; do
@@ -862,9 +880,7 @@ for obj in $OBJECTS; do
   done
   grep -qx malloc "$WORK/owner" ||
     problem "canary: malloc not seen in we_buffer.o (the purity scan is blind)"
-done
-[ $BUFFER_OWNER_SEEN -eq 1 ] ||
-  problem "canary: we_buffer.o is not among the objects (the text's owner is not built)"
+fi
 # Gone for good: the line primitives, the whole-buffer rebuilds, the output
 # appenders and the global undo covers the text's owner replaced.  No object
 # of the editor defines one again (`nm -g --defined-only`): a function that
@@ -883,12 +899,10 @@ for obj in $OBJECTS; do
   done
 done
 # The canary of that rule: a scanner that lists no definitions sees nothing.
-for obj in $OBJECTS; do
-  [ "$(basename "$obj")" = we_buffer.o ] || continue
-  [ -f "$obj" ] || continue
+if obj=$(named_object we_buffer.o e_buffer_splice); then
   defined_names "$obj" | grep -qx e_buffer_splice ||
     problem "canary: e_buffer_splice not seen defined in we_buffer.o (the deleted-symbol scan of the text is blind)"
-done
+fi
 DELETED_DISPLAY_SYMBOLS="e_x_clear_area e_x_vterm_user_screen e_x_vterm_load_palette
   e_x_change e_d_x_focus_to_editor e_x_reclaim_focus
   e_x_cp_X_to_buffer e_x_copy_X_buffer e_x_paste_X_buffer
@@ -965,20 +979,14 @@ done < "$WORK/declared"
 # conversions, the bridge and the engine import them (a file that stops
 # importing one has gone back to reading a column on its own), and each of
 # the three source rules sees what it guards in the owner itself.
-LSP_OWNER_SEEN=0
-for obj in $OBJECTS; do
-  [ "$(basename "$obj")" = we_lsp_pos.o ] || continue
-  [ -f "$obj" ] || continue
-  LSP_OWNER_SEEN=1
+if obj=$(named_object we_lsp_pos.o "the owner's definitions"); then
   defined_names "$obj" > "$WORK/defined"
   for sym in e_lsp_units_of e_lsp_col_of e_lsp_units_read e_lsp_position_json \
              e_lsp_text_offset e_lsp_text_index_col e_lsp_semantic_decode; do
     grep -qx "$sym" "$WORK/defined" ||
       problem "canary: $sym not defined in we_lsp_pos.o (the owner of the server's columns is incomplete)"
   done
-done
-[ $LSP_OWNER_SEEN -eq 1 ] ||
-  problem "canary: we_lsp_pos.o is not among the objects (the owner of the server's columns is not built)"
+fi
 canary_import we_debug.o e_lsp_units_of "the bridge no longer converts the server's columns"
 canary_import we_debug.o e_lsp_text_index_col "the bridge no longer converts the server's columns"
 canary_import we_lsp.o e_lsp_units_read "the engine reads a position without the owner"
@@ -1072,14 +1080,23 @@ fi
 # --- compare with the allow file
 : > "$WORK/allowed"
 if [ -f "$ALLOW" ]; then
+  # The count is a number, or a number and @word (1@with-x) for a line on an
+  # always-built object whose code is behind a feature: split here, once.
   awk '
+    function split_count(field,   at) {
+      at = index(field, "@")
+      if (at == 0) { count = field; word = "-"; return }
+      count = substr(field, 1, at - 1)
+      word = substr(field, at + 1)
+    }
     /^[ \t]*(#|$)/ { next }
     {
-      if (NF < 4 || $3 !~ /^[0-9]+$/) { print "bad line " NR " in the allow file: " $0 > "/dev/stderr"; bad = 1; next }
+      if (NF < 4 || $3 !~ /^[0-9]+(@[A-Za-z0-9-]+)?$/) { print "bad line " NR " in the allow file: " $0 > "/dev/stderr"; bad = 1; next }
       key = $1 " " $2
       if (key in seen) { print "duplicate allow line for " key > "/dev/stderr"; bad = 1; next }
       seen[key] = 1
-      print $1, $2, $3, $4
+      split_count($3)
+      print $1, $2, count, $4, word
     }
     END { exit bad }' "$ALLOW" > "$WORK/allowed" ||
     problem "the allow file $ALLOW has malformed or duplicate lines"
@@ -1114,6 +1131,26 @@ if [ $STRICT -eq 1 ]; then
   mv "$WORK/allowed.keep" "$WORK/allowed"
 fi
 
+# A line on a feature object this build lacks, or behind a feature it lacks
+# (the @word suffix), is not stale: it is not built here, and is said so.
+: > "$WORK/allowed.live"
+while read -r aobj asym acount apass aword; do
+  if [ "$aword" != - ] && ! wpe_built "$aword"; then
+    echo "$aword" >> "$WORK/notbuilt"
+    continue
+  fi
+  case $aobj in
+    *.o)
+      afeature=$(wpe_feature_of_object "$aobj")
+      if [ -n "$afeature" ] && ! wpe_built "$afeature"; then
+        echo "$afeature" >> "$WORK/notbuilt"
+        continue
+      fi ;;
+  esac
+  echo "$aobj $asym $acount $apass" >> "$WORK/allowed.live"
+done < "$WORK/allowed"
+mv "$WORK/allowed.live" "$WORK/allowed"
+
 awk '
   FILENAME == ARGV[1] { al[$1 " " $2] = $3; pass[$1 " " $2] = $4; next }
   {
@@ -1135,7 +1172,7 @@ status=$?
 if [ -s "$WORK/problems" ] || [ $status -ne 0 ]; then
   [ $STRICT -eq 1 ] && echo "check-one-owner --strict: FAIL"
   [ $STRICT -eq 0 ] && echo "check-one-owner: FAIL"
-  cat "$WORK/problems" "$WORK/report" 2>/dev/null
+  cat "$WORK/problems" "$WORK/report" "$WORK/skips" 2>/dev/null
   if [ $STRICT -eq 1 ]; then
     echo "objects with an offender:"
     awk '{ print $1 }' "$WORK/found" | sort -u | tr '\n' ' '
@@ -1143,5 +1180,6 @@ if [ -s "$WORK/problems" ] || [ $status -ne 0 ]; then
   fi
   exit $BAD
 fi
-echo "check-one-owner: ok ($(wc -l < "$WORK/found" | tr -d ' ') allowed offender line(s))"
+cat "$WORK/skips"
+echo "check-one-owner: ok ($(wc -l < "$WORK/found" | tr -d ' ') allowed offender line(s)$(wpe_not_built_note "$WORK/notbuilt"))"
 exit 0

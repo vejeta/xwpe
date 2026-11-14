@@ -38,6 +38,7 @@ import time
 import pytest
 import pyte
 
+import build_config
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "..", "wpe")
@@ -317,21 +318,18 @@ def assistant_build(bin_path=None):
 
     The assistant is off by default at configure time, so a distribution build
     usually does not have it, and a test that drives it must skip rather than
-    fail there.  The marker is a sentence from the assistant's own prompt,
-    which no other part of the editor contains: measured on a build configured
-    without it, the string is absent while strings a test might pick instead,
-    such as a menu label, are still there because they sit in conditional
-    blocks of files that always compile.
+    fail there.  The answer is the binary's own (`--version` says
+    "enable-ai=yes"), read through build_config, the one reader of what a
+    build contains.  A binary that cannot say counts as "no assistant", as it
+    always did here, so that collecting a tree with no binary still works.
 
-    Use it as `pytestmark = pytest.mark.skipif(not assistant_build(),
-    reason="wpe built without --enable-ai")` whenever a test opens the
-    assistant's pane, its menu or its page in Options.
+    New tests use `pytestmark = requires("enable-ai")` (build_config), which
+    skips by name and resolves when the row runs; this function stays for the
+    callers that ask at import time.
     """
     try:
-        out = subprocess.run(["strings", os.path.abspath(bin_path or WPE_BIN)],
-                             stdout=subprocess.PIPE, timeout=30).stdout
-        return b"xwpe console editor" in out
-    except Exception:
+        return build_config.built("enable-ai", bin_path or WPE_BIN)
+    except build_config.BuildUnknown:
         return False
 
 

@@ -18,19 +18,10 @@ import subprocess
 
 import pytest
 
+from build_config import requires
 from wpe_driver import WpeSession, ALT, WPE_BIN, title_pos
 
-
-def _ai_build():
-    try:
-        out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
-                             stdout=subprocess.PIPE, timeout=30).stdout
-        return b"AI settings" in out
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
+pytestmark = requires("enable-ai")
 
 ENV = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
 SEED = "int main(void){return 0;}\n"

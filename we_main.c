@@ -15,6 +15,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_ai.h"      /* AI assistant config init (guarded by WPE_AI) */
+#include "we_features.h"
 #include "we_lineend.h"
 #include "we_testdump.h"
 #include "we_startplan.h"   /* where the debugger's own folders are made */
@@ -357,6 +358,7 @@ int main(int argc, char **argv)
   if (!strcmp(argv[i], "--version") || !strcmp(argv[i], "-V"))
   {
    printf("xwpe %s\n", VERSION);
+   printf("%s\n", wpe_features_line());
    return 0;
   }
   if (!strcmp(argv[i], "--help"))
@@ -366,7 +368,7 @@ int main(int argc, char **argv)
           "editor; file arguments are opened on start.\n"
           "  --keys STYLE    key style for this run: borland or modern\n"
           "                  (also $XWPE_KEYS; the option file is not changed)\n"
-          "  --version, -V   print the version and exit\n"
+          "  --version, -V   print the version and what the build contains, and exit\n"
           "  --help          print this help and exit\n", argv[0]);
    return 0;
   }

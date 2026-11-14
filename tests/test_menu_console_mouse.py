@@ -21,6 +21,7 @@ import subprocess
 import time
 
 import pytest
+from build_config import requires
 from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
 
 SEED = "int main(void){return 0;}\n"
@@ -36,21 +37,12 @@ CONSOLE_TERMS = ["screen-256color", "tmux-256color"]
 CONTROL_TERM = "xterm-256color"
 
 
-def _ai_build():
-    try:
-        out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
-                             stdout=subprocess.PIPE, timeout=30).stdout
-        return b"AI settings" in out
-    except Exception:
-        return False
-
-
 def _gpm_reachable():
     return os.path.exists("/dev/gpmctl") or os.path.exists("/var/run/gpm.pid")
 
 
 pytestmark = [
-    pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
+    requires("enable-ai"),
     pytest.mark.skipif(not _gpm_reachable(),
                        reason="no GPM daemon reachable, so the console-mouse "
                               "path is not taken at all"),

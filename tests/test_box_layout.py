@@ -27,7 +27,8 @@ import pytest
 
 from wpe_driver import WpeSession, ALT
 from test_path_cuts import _folder_of_length
-from test_opt_dialog_move import _ai_build, ENV as AI_ENV
+from build_config import requires
+from test_opt_dialog_move import ENV as AI_ENV
 
 RUN_CTRL_F9 = "\x1b[20;5~"
 STRIKE = "Strike <Return> to continue"
@@ -351,7 +352,7 @@ def _open_ai_settings(tmp_path, cols=80, rows=30):
     return w
 
 
-needs_ai = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
+needs_ai = requires("enable-ai")
 
 
 # @scenario SC-box-07

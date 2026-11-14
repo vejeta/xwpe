@@ -1,0 +1,29 @@
+{
+ "capability": "config-aware-tests",
+ "scenarios": [
+  {"id": "SC-config-01", "requirement": "A partial configure's make check has no configure artifact: nothing fails for a feature the build was never asked for", "layer": "c-unit", "test": "tests/check-one-owner.sh", "status": "new", "note": "red on bfdad35 with --without-x --without-gpm: test_menus, check-one-owner, check-box-layout, check-keymap-docs"},
+  {"id": "SC-config-01", "requirement": "A partial configure's make check has no configure artifact: nothing fails for a feature the build was never asked for", "layer": "c-unit", "test": "tests/check-box-layout.sh", "status": "new"},
+  {"id": "SC-config-02", "requirement": "The full configure is unchanged: the same offender counts, the allow files changed only by the two @with-x suffixes", "layer": "c-unit", "test": "tests/check-one-owner.sh", "status": "new"},
+  {"id": "SC-config-02", "requirement": "The full configure is unchanged: the same offender counts, the allow files changed only by the two @with-x suffixes", "layer": "c-unit", "test": "tests/check-box-layout.sh", "status": "new"},
+  {"id": "SC-config-03", "requirement": "The menu table is complete in every build: the rows of Options are the same with and without the assistant", "layer": "c-unit", "test": "test_menus", "status": "new"},
+  {"id": "SC-config-03b", "requirement": "The Options menu offers the AI row exactly when the build has the assistant", "layer": "ncurses", "test": "tests/test_config_aware_menu.py::test_options_menu_shows_the_ai_row_exactly_when_the_assistant_is_built", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-04", "requirement": "The key reference generated from the menu table is the same on every build", "layer": "c-unit", "test": "tests/check-keymap-docs.sh", "status": "new"},
+  {"id": "SC-config-05", "requirement": "The binary says what it contains and the faces agree: config.h, --version and the feature lists", "layer": "c-unit", "test": "tests/check-build-config.sh", "status": "new"},
+  {"id": "SC-config-08", "requirement": "An absent object is named as not built here or fails as a blind scan, never skipped", "layer": "c-unit", "test": "tests/check-one-owner.sh", "status": "new"},
+  {"id": "SC-config-11", "requirement": "A build without a feature compiles no hollow object for it", "layer": "c-unit", "test": "tests/check-build-config.sh", "status": "new"},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options_render.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_paste.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options_web.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options_contracts.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_place.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options_persist.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_click.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_drag.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_debug_prefix_after_end.py::test_gdb_alt_g_after_continue_is_a_prefix", "status": "new", "needs": ["python3"]}
+ ]
+}

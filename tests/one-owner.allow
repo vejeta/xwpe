@@ -6,6 +6,11 @@
 # fall (the script fails when it is wrong in either direction, and when a
 # line matches nothing any more).  "pass" is the pass that removes the
 # line.  "keep" is a permanent exception and stays in --strict mode too.
+# A count may end in @word (for example 1@with-x) for a line on an
+# always-built object whose code is behind a feature: when the build says
+# word=no the line is reported as not built here instead of stale.  A line
+# on a feature object (we_xterm.o, we_ai.o, ...) needs no suffix: the object
+# is the feature.
 # Each pass deletes the lines it clears; the last pass deletes the file.
 
 # the assistant's commands whose callers need the answer before they return
@@ -15,10 +20,10 @@
 we_ai.o poll 1 P9s2 the bounded wait of the hook, checkpoint and review commands
 
 # the debugger
-we_debug.o usleep 1 P9o the external xterm settle
+we_debug.o usleep 1@with-x P9o the external xterm settle
 we_debug.o STDIN_FILENO 1 keep ttyname_r names the editor's own terminal; no read
 we_debug.o tcgetattr 2 keep the debugger's own pty (its erase key, the external xterm's line), not the user's terminal
-we_debug.o tcsetattr 1 keep the external xterm's line settings, a pty of the debugger's own, not the user's terminal
+we_debug.o tcsetattr 1@with-x keep the external xterm's line settings, a pty of the debugger's own, not the user's terminal
 
 # the terminal's settings: only the terminal session (we_term.c) changes them.
 # The start-up note of the settings, read before any display exists so that a

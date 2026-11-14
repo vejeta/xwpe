@@ -48,6 +48,15 @@ int             e_hp_next(FENSTER *f);
 static int e_menu_program_output(FENSTER *f);
 #endif
 
+/* The assistant's row is in the table in every build, so the key reference
+   and the row counts read the same everywhere; without the assistant it
+   names no function, and WPE_WHERE_AI keeps the editor from showing it. */
+#if WPE_BUILT_AI
+#define MENU_FKT_AI(fkt) (fkt)
+#else
+#define MENU_FKT_AI(fkt) NULL
+#endif
+
 /* The bar the editor shows, and what the mouse reads of it. */
 OPT opt[WPE_MENU_COUNT];
 int MENOPT = 8;
@@ -235,9 +244,7 @@ static const WpeMenuRow wpe_rows[] = {
 #ifdef DEBUGGER
  WORDS_IF(WPE_MENU_OPTIONS, "Debugger", 0, 'D', WPE_WHERE_PROG, e_deb_options),
 #endif
-#ifdef WPE_AI
- WORDS_IF(WPE_MENU_OPTIONS, "AI", 1, 'I', WPE_WHERE_AI, e_ai_options),
-#endif
+ WORDS_IF(WPE_MENU_OPTIONS, "AI", 1, 'I', WPE_WHERE_AI, MENU_FKT_AI(e_ai_options)),
  /* Window */
  BOUND(WPE_MENU_WINDOW, "Size/Move", 0, 'S', e_size_move, SIZE_MOVE, WPE_CTXM_MENU),
  BOUND(WPE_MENU_WINDOW, "Zoom", 0, 'Z', e_ed_zoom, ZOOM, WPE_CTXM_MENU),
@@ -416,11 +423,7 @@ static WpeMenuFacts e_menu_facts_of(FENSTER *f)
  facts.blocks = wpe_block_mode(f->ed->edopt);
  facts.prog = WpeIsProg() != 0;
  facts.xwin = WpeIsXwin() != 0;
-#ifdef WPE_AI
- facts.assistant = 1;
-#else
- facts.assistant = 0;
-#endif
+ facts.assistant = WPE_BUILT_AI;
  return(facts);
 }
 

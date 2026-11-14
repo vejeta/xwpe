@@ -69,6 +69,8 @@ jobs:
           grep -q '#define WPE_AI 1' config.h
           grep -q '#define WPE_AI_AGENT_HOST 1' config.h
           ldd ./we | grep -Eiq 'wayland-client|xkbcommon'
+          # What the binary says it contains: the line every test reads.
+          ./we --version
 
       - name: make check (C unit tests)
         # The deterministic, server-free unit tests (the LSP/DAP server-driven
@@ -76,9 +78,16 @@ jobs:
         # The two assistant programs are here because libssl-dev is installed
         # above: they link the HTTP layer, which only this job builds with TLS,
         # and that link broke once without any build noticing.
+        # WPE_EXPECT_BUILT is what this job configured: a library missing from
+        # the image fails tests/check-build-config.sh here instead of turning
+        # a capability into "not built here" and a green run.
+        env:
+          WPE_EXPECT_BUILT: >-
+            enable-ai=yes enable-ai-agent-host=yes enable-ai-tls=yes
+            with-wayland=yes
         run: >-
           make check
-          TESTS="test_checkheader test_syntax_def test_fdloop test_clipboard
+          TESTS="tests/check-build-config.sh test_checkheader test_syntax_def test_fdloop test_clipboard
           test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor
           test_dap test_ai_http test_ai_diff"
 

@@ -8,16 +8,8 @@ value in use -- plus an Enable checkbox.  Ok applies the choices to the session
 import os
 import subprocess
 import pytest
+from build_config import requires
 from wpe_driver import WpeSession, ALT, WPE_BIN
-
-
-def _ai_build():
-    try:
-        out = subprocess.run(["strings", os.path.abspath(WPE_BIN)],
-                             stdout=subprocess.PIPE, timeout=30).stdout
-        return b"AI settings" in out
-    except Exception:
-        return False
 
 
 def _tls_build():
@@ -37,7 +29,7 @@ def _have_openssl():
         return False
 
 
-pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
+pytestmark = requires("enable-ai")
 
 ENV = {
     "XWPE_AI_ENABLE": "1",

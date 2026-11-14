@@ -111,24 +111,49 @@ we_SOURCES = \
   WeSyntax.c \
   WeExpArr.c \
   WeLinux.c \
-  we_gpm.c \
-  we_xterm.c \
-  WeXterm.c \
   we_term.c \
   we_render.c \
-  we_render_cairo.c \
   we_fdloop.c \
   we_paint.c \
   we_layout.c \
   we_layout_desk.c \
   we_testdump.c \
   we_trace.c \
-  we_vterm.c \
+  we_features.c \
   we_dap_proto.c \
   we_dap.c \
   we_bsp.c \
   we_lsp.c \
   we_lsp_pos.c
+
+# --- What each optional feature adds, named once ---
+# A source is listed under the conditional that builds it, so a build without
+# the feature compiles no hollow object, and the same list is told to the test
+# scripts (WPE_FEATURE_SOURCES, below) so that "this object is not here" is
+# answered by name: not built here, or a blind scan.  The word before each
+# list is the configure option's (see `we --version`).
+X11_SOURCES     = we_xterm.c WeXterm.c
+CAIRO_SOURCES   = we_render_cairo.c
+GPM_SOURCES     = we_gpm.c
+VTERM_SOURCES   = we_vterm.c
+WAYLAND_SOURCES = we_wayland.c we_render_wayland.c
+AI_SOURCES      = we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_ws.c we_ai_path.c
+AI_HOST_SOURCES = we_ai_host.c
+AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope
+AI_TLS_CHECK    = test_ai_tls_live
+
+if HAVE_X11
+we_SOURCES += $(X11_SOURCES)
+endif
+if HAVE_CAIRO
+we_SOURCES += $(CAIRO_SOURCES)
+endif
+if HAVE_LIBGPM
+we_SOURCES += $(GPM_SOURCES)
+endif
+if HAVE_VTERM
+we_SOURCES += $(VTERM_SOURCES)
+endif
 
 we_LDADD = \
   $(NCURSESW_LIBS) \
@@ -153,7 +178,7 @@ we_LDADD = \
 # we_wayland.c / we_render_wayland.c are listed in we_SOURCES under the
 # conditional, so automake still distributes them when the backend is off.
 if HAVE_WAYLAND
-we_SOURCES += we_wayland.c we_render_wayland.c
+we_SOURCES += $(WAYLAND_SOURCES)
 nodist_we_SOURCES = xdg-shell-protocol.c primary-selection-unstable-v1-protocol.c \
   xdg-decoration-unstable-v1-protocol.c
 BUILT_SOURCES = xdg-shell-client-protocol.h \
@@ -207,18 +232,19 @@ endif
 # already linked; the plain-HTTP backends (Ollama, localhost OpenAI-compatible)
 # need no extra library.  TLS libs are pulled in only under --enable-ai-tls.
 if WPE_AI
-we_SOURCES += we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_agent.c we_ai_ws.c we_ai_path.c
+we_SOURCES += $(AI_SOURCES)
 if WPE_AI_TLS
 AM_CFLAGS += $(AITLS_CFLAGS)
 we_LDADD += $(AITLS_LIBS)
 endif
 if WPE_AI_AGENT_HOST
-we_SOURCES += we_ai_host.c
+we_SOURCES += $(AI_HOST_SOURCES)
 endif
 endif
 
 # --- Header files (for dist) ---
 noinst_HEADERS = \
+  we_features.h \
   Xwpe.h \
   WeString.h \
   WeXterm.h \
@@ -758,7 +784,10 @@ test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_lsp.c we_lsp_pos.c we_lsp_sync.
 test_lsp_rust_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
-TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
+# What this build contains: tests/check-build-config.sh is first, so a run's
+# log opens with the line `we --version` prints, and fails when configure, the
+# binary and the feature lists above do not say the same thing.
+TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
   test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
@@ -894,7 +923,10 @@ TESTS += tests/check-platform.sh
 AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
   CC='$(CC)'; export CC; NCURSESW_CFLAGS='$(NCURSESW_CFLAGS)'; export NCURSESW_CFLAGS; \
   KEYMAP_TEXI='$(top_builddir)/tools/keymap-texi$(EXEEXT)'; export KEYMAP_TEXI; \
-  ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
+  ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS; \
+  WPE_BUILD_BINARY='$(top_builddir)/we$(EXEEXT)'; export WPE_BUILD_BINARY; \
+  WPE_FEATURE_SOURCES='with-x:$(X11_SOURCES);cairo:$(CAIRO_SOURCES);with-gpm:$(GPM_SOURCES);libvterm:$(VTERM_SOURCES);with-wayland:$(WAYLAND_SOURCES);enable-ai:$(AI_SOURCES);enable-ai-agent-host:$(AI_HOST_SOURCES)'; export WPE_FEATURE_SOURCES; \
+  WPE_FEATURE_TESTS='enable-ai:$(AI_TESTS);enable-ai-tls:$(AI_TLS_CHECK)'; export WPE_FEATURE_TESTS;
 
 # --- AI assistant unit tests (only when --enable-ai) ---
 # WPE_AI comes from config.h (the build is configured --enable-ai here).  The
@@ -905,8 +937,8 @@ AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
 # local socket; we_ai_http_sync.c, the waiting calls a test needs, is linked
 # into the tests only, never into the editor.
 if WPE_AI
-check_PROGRAMS += test_ai_http test_ai_diff test_ai_path test_ai_scope
-TESTS += test_ai_http test_ai_diff test_ai_path test_ai_scope
+check_PROGRAMS += $(AI_TESTS)
+TESTS += $(AI_TESTS)
 test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c
 test_ai_path_CFLAGS = $(TEST_CFLAGS)
 test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c
@@ -919,7 +951,7 @@ test_ai_diff_CFLAGS = $(TEST_CFLAGS)
 # Live TLS smoke: built with the TLS backend but kept out of TESTS (it needs the
 # network); run by hand, e.g. ./test_ai_tls_live https://api.github.com /zen
 if WPE_AI_TLS
-check_PROGRAMS += test_ai_tls_live
+check_PROGRAMS += $(AI_TLS_CHECK)
 test_ai_tls_live_SOURCES = tests/test_ai_tls_live.c we_ai_http.c we_ai_http_sync.c we_fdloop.c
 test_ai_tls_live_CFLAGS = $(TEST_CFLAGS) $(AITLS_CFLAGS)
 test_ai_tls_live_LDADD = $(AITLS_LIBS)
@@ -971,6 +1003,9 @@ EXTRA_DIST = \
   tests/test_lineend.c \
   tests/check-platform.sh \
   tests/nm-undefined.sh \
+  tests/build-config.sh \
+  tests/check-build-config.sh \
+  we_ai_agent.c \
   tests/check-write-owner.sh \
   tests/write-owner.allow \
   tests/test_write_owner.c \
@@ -1085,6 +1120,8 @@ EXTRA_DIST = \
   tests/test_block_asan.py \
   tests/test_clipboard_osc52.py \
   tests/wpe_driver.py \
+  tests/build_config.py \
+  tests/test_config_aware_menu.py \
   tests/test_menu_edit.py \
   tests/test_menu_search.py \
   tests/test_menu_file.py \
