@@ -876,7 +876,13 @@ TESTS += tests/check-keymap.sh tests/check-keymap-docs.sh
 # style, block mode and editor mode, and the bar is laid out in one place:
 # tests/check-menus.sh fails on a site that does otherwise.
 TESTS += tests/check-menus.sh
+
+# The feature macros have one owner, configure (AC_USE_SYSTEM_EXTENSIONS
+# writes them into config.h): tests/check-platform.sh fails on a source that
+# sets one of its own, and on a test that compiles without config.h's.
+TESTS += tests/check-platform.sh
 AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
+  CC='$(CC)'; export CC; NCURSESW_CFLAGS='$(NCURSESW_CFLAGS)'; export NCURSESW_CFLAGS; \
   KEYMAP_TEXI='$(top_builddir)/tools/keymap-texi$(EXEEXT)'; export KEYMAP_TEXI; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS;
 
@@ -953,6 +959,7 @@ EXTRA_DIST = \
   tests/check-line-ends.sh \
   tests/line-ends.allow \
   tests/test_lineend.c \
+  tests/check-platform.sh \
   tests/check-write-owner.sh \
   tests/write-owner.allow \
   tests/test_write_owner.c \

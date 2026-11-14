@@ -1,4 +1,4 @@
-AC_PREREQ([2.69])
+AC_PREREQ([2.70])
 AC_INIT([xwpe], [1.7.0], [juan.mendezr@proton.me], [xwpe],
         [https://codeberg.org/mendezr/xwpe])
 AC_CONFIG_SRCDIR([Xwpe.h])
@@ -8,6 +8,10 @@ AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
 
 # Compiler
 AC_PROG_CC
+# The feature macros (_GNU_SOURCE, _DARWIN_C_SOURCE, _NETBSD_SOURCE, ...)
+# are decided here and written into config.h, which is force-included before
+# every source file.  No source file sets a feature macro of its own.
+AC_USE_SYSTEM_EXTENSIONS
 AC_PROG_LN_S
 # nm of the toolchain that built the objects (a cross or LTO build's own),
 # for tests/check-one-owner.sh.

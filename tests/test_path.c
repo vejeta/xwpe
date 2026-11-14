@@ -12,6 +12,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* NetBSD's NAME_MAX is 511.  Say so before the owner's header is read, so
+   its guard is tried against the longest name any system builds on, whatever
+   system this runs on. */
+#undef NAME_MAX
+#define NAME_MAX 511
+
 #include "../we_path.h"
 
 static int fails;

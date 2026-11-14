@@ -61,6 +61,10 @@ jobs:
           ./configure --without-x --without-gpm
           make
 
+      - name: Build every check program (names each that does not compile)
+        timeout-minutes: 15
+        run: make -k check TESTS= 2>&1 | tee check-programs.log || true
+
       - name: make check (the editor's own tests)
         # Every step past the build has its own time limit: a step that hangs
         # must fail by itself, so the later steps and the log upload still run.

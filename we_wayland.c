@@ -17,12 +17,6 @@
  * caller falls back to the X11/XWayland backend and `xwpe` stays fully usable.
  */
 
-/* memfd_create()/mkostemp() live behind _GNU_SOURCE; config.h (force-included)
-   carries no system headers, so defining it here is still before the first. */
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE 1
-#endif
-
 #ifdef HAVE_WAYLAND
 
 #include <stdio.h>

@@ -1,0 +1,8 @@
+{
+ "capability": "platform",
+ "scenarios": [
+  {"id": "SC-platform-01", "requirement": "No source sets a feature macro of its own: configure writes them into config.h", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
+  {"id": "SC-platform-02", "requirement": "The write-owner test compiles because config.h carries the feature macros, and fails without them", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
+  {"id": "SC-platform-03", "requirement": "A name of NetBSD's longest NAME_MAX fits the path owner's limit", "layer": "c-unit", "test": "test_path", "status": "new"}
+ ]
+}

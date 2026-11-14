@@ -11,15 +11,6 @@
  * ignored signal.
  */
 /* @scenario SC-unsaved-text-19 */
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE             /* RTLD_NEXT, for the two watched calls below */
-#endif
-#ifndef _DEFAULT_SOURCE
-#define _DEFAULT_SOURCE
-#endif
-#ifndef _XOPEN_SOURCE
-#define _XOPEN_SOURCE 600
-#endif
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>

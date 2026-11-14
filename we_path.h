@@ -16,7 +16,7 @@
 #include <stddef.h>
 
 #define WPE_PATH_MAX   4096          /* PATH_MAX of Linux; the BSDs' and macOS's 1024 are within it */
-#define WPE_NAME_MAX   255           /* NAME_MAX of Linux, the BSDs and macOS */
+#define WPE_NAME_MAX   511           /* the largest NAME_MAX of the systems built on: NetBSD's; Linux, FreeBSD, OpenBSD and macOS have 255 */
 #define WPE_PATH_SIZE  WPE_PATH_MAX  /* room for a path and its terminator: a path is under PATH_MAX bytes */
 #define WPE_NAME_SIZE  (WPE_NAME_MAX + 1)
 
