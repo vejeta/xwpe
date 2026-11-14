@@ -168,7 +168,7 @@ lsp_units_field we_lsp_pos.c
 e_lsp_units_make we_lsp_pos.c
 lsp_char_key we_lsp_pos.c
 REG_NOTEOL we_rowfind.c
-isalnum we_rowfind.c we_fl_fkt.c we_prog.c we_progn.c
+isalnum we_rowfind.c we_fl_fkt.c we_prog.c we_progn.c we_errpat.c
 uselocale we_rowfind.c
 newlocale we_rowfind.c
 EOF
