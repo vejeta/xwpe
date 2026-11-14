@@ -424,13 +424,10 @@ def test_search_again_goes_on_behind_a_hit_that_is_a_character(tmp_path):
 
 
 # @scenario SC-edit-model-53
-@still_open("a regular expression hit runs to the end of the row, so no hit can end inside a character")
 def test_a_regular_expression_hit_inside_a_character_is_stepped_over(tmp_path):
     """The regular expression `.` matches the first byte of an `é`: the hit is
     shown and stepped over as the whole character, so Search Again goes on to
-    the next one instead of finding the same byte again.  Today the hit of
-    every regular expression ends at the row's end on the old editor and the
-    new one alike, a defect of its own."""
+    the next one instead of finding the same byte again."""
     with _session(tmp_path, "éa\n") as s:
         w = s.send([ctrl("o"), "f", ".", "\033r", ENTER]).win
         assert w.cursor == (0, 2), "cursor %s: %s" % (w.cursor, _where(w))

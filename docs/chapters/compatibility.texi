@@ -705,4 +705,17 @@ not running.
 The original stopped at start when an X resource named a colour the
 server does not know.  It now reports the name on stderr and uses the
 built-in colour for that entry, so one typing mistake costs one colour.
+
+@item A regular expression hit
+@cindex regular expression, extent of a hit
+In the original, a regular expression without a group matched from where
+the search began to the end of the row, so @code{a} on @samp{abc} put the
+cursor at the end of the row, Replace replaced the rest of the row, and
+@code{^} and @code{$} never matched.  The hit is now the text the
+expression matched, and @code{^} and @code{$} anchor it to the ends of
+the row (@code{^a}, @code{c$}).  A hit always has text in it, so an
+expression that matches only empty text (@code{^} or @code{x*} alone)
+finds nothing.  The reason: a hit that is not what the user
+typed is not a search, and an empty hit would leave Search Again and
+Change All standing on it for ever.
 @end table

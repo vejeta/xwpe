@@ -20,6 +20,13 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* Search > Find with Regular expression: the hit ran from where the search
+  began to the end of the row unless the expression had a group, so the
+  cursor landed at the row's end, Replace and Change All replaced the rest
+  of the row, and ^ and $ never matched.  The hit is now the matched text,
+  ^ and $ anchor it to the ends of the row, and searching backward finds
+  the last match before the cursor.  An expression that matches only
+  empty text finds nothing, so Change All with x* no longer runs for ever.
 * Options > Editor: checkboxes and radio buttons could not be ticked in xwpe
   (X11) -- fixed (1.6.3).  Space, mouse-click and the Alt-<letter> hotkey all
   flipped the option's value, but in X11 nothing was drawn, so the box looked

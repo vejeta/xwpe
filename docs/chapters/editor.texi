@@ -226,6 +226,12 @@ xwpe uses @command{egrep}-compatible regular expressions:
 @item @code{\} @tab Escape the next character.
 @end multitable
 
+The hit is the text the expression matched, with or without a group: the
+cursor stands behind it (in front of it searching backward), and Replace
+changes only that text.  Searching backward finds the match that starts
+last before the cursor.  A hit always has text in it: @code{c$} finds the
+@samp{c} that ends a row, but @code{$} or @code{x*} alone finds nothing.
+
 @section Markers
 
 @cindex markers

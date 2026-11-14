@@ -99,13 +99,26 @@ int e_urstrstr(int x, int n, unsigned char *s, unsigned char *f, int *nn)
  return(i);
 }
 
-/*   find string in text line (including control chars) */
+/**
+ * e_rstrstr - Find the regular expression @f in the row @s between the
+ * columns @x and @n (forward when @x <= @n, else backward from @x).
+ * @nn: receives the length of the hit.
+ *
+ * Search > Find with "Regular expression" on puts the cursor behind the
+ * text the expression matched, not behind the rest of the row, whether or
+ * not the expression has a group.  `^` and `$` anchor to the start and end
+ * of the row (`^a`, `c$`); backward the hit that starts last is the one
+ * found.  A hit always has text in it, so an expression that matches only
+ * empty text (`^` or `x*` alone) finds nothing and Search Again or Change
+ * All can never stand still on it.
+ * Return: the column the hit starts at, -1 when there is none.
+ */
 int e_rstrstr(int x, int n, unsigned char *s, unsigned char *f, int *nn)
 {
  regex_t *regz;
- regmatch_t *matches = NULL;
- int start, end, i, len;
- int res;
+ regmatch_t whole;
+ int start, end, line_len, pos, hit = -1, hit_len = 0;
+ int backwards = (x > n);
  unsigned char old;
 
  regz = MALLOC(sizeof(regex_t));
@@ -114,41 +127,52 @@ int e_rstrstr(int x, int n, unsigned char *s, unsigned char *f, int *nn)
   free(regz);
   return (-1);
  }
- len = regz->re_nsub;
- if (len)
-  matches = MALLOC(len*sizeof(regmatch_t));
  start = (x < n) ? x : n;
  end = (n > x) ? n : x;
  if (start < 0)
   start = 0;
+ /* The row's text ends at its newline, which is not text `$` can stand
+    in front of nor `.` can match. */
+ line_len = strcspn((char *)s, "\n");
+ if (end > line_len)
+  end = line_len;
  old = s[end];/* Save char */
  s[end] = '\0';
- res=regexec(regz,&s[start],len,matches,REG_NOTBOL|REG_NOTEOL);
+ for (pos = start; pos <= end; )
+ {
+  int flags = (pos > 0 ? REG_NOTBOL : 0) | (end < line_len ? REG_NOTEOL : 0);
+  int so, eo;
+
+  /* Slot 0 of the match array is the whole match, groups or none. */
+  if (regexec(regz, (char *)&s[pos], 1, &whole, flags) != 0)
+   break;
+  so = pos + whole.rm_so;
+  eo = pos + whole.rm_eo;
+  /* An empty hit could never be stepped past: Search Again and Change All
+     would find it again for ever.  Look on for one with text in it. */
+  if (so == eo)
+  {
+   pos = so + 1;
+   continue;
+  }
+  if (!backwards)
+  {
+   hit = so;
+   hit_len = eo - so;
+   break;
+  }
+  /* Backwards: the hit that starts last, as the plain search finds it. */
+  hit = so;
+  hit_len = eo - so;
+  pos = so + 1;
+ }
  s[end] = old;/* Restore char */
  regfree(regz);
  free(regz);
- if (res != 0)
- { 
-  free(matches);
+ if (hit < 0)
   return (-1); /* Can't find any occurences */
- }
- start=strlen(s);
- end=0;
-
- for (i=0;i<len;i++)
- {
-  start = (matches[i].rm_so<start) ? matches[i].rm_so : start;
-  end = (matches[i].rm_eo>end) ? matches[i].rm_eo : end;
- }
- if (start > end)/* Whole line matches regex */
- {
-  end = start;
-  start = 0;
- }
- if (matches)
-  free(matches);
- *nn=end;
- return start;
+ *nn = hit_len;
+ return hit;
 }
 
 /*   numbers box (numbers input/edit)     */
