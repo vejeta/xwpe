@@ -20,8 +20,10 @@
 #include "we_fdloop.h"
 #include "we_clip.h"
 #include "we_layout.h"
+#include "we_termrelease.h"
 
 #include<signal.h>
+#include<pthread.h>
 #define KEYFN 42
 #define NSPCHR 13
 
@@ -44,7 +46,6 @@ char *init_key(char *key);
 char *init_kkey(char *key);
 int init_cursor(void);
 int e_begscr(void);
-void e_endwin(void);
 int fk_t_cursor(int x);
 int fk_t_putchar(int c);
 int fk_attrset(int a);
@@ -93,8 +94,33 @@ static void e_t_private_modes_on(void);
 static void e_t_private_modes_off(void);
 static void e_t_install_suspend_handler(void);
 static int e_t_read_key(int mode);
-static void e_t_leave_terminal(void);
-static void e_t_take_terminal_back(void);
+static void e_t_terminal_hand_over(void);
+static void e_t_terminal_take_back(void);
+static void e_t_terminal_release(void);
+static void e_t_terminal_release_from_handler(void);
+static void e_t_release_string_publish(void);
+static int e_t_flush(void);
+#ifndef NCURSES
+static int e_t_putp(const char *s);
+#undef e_putp
+#define e_putp(s) e_t_putp(s)
+#endif
+
+/* Who has the terminal.  The editor paints and reads it through curses while
+   it is OWNED.  A program, the User Screen or a prompt has it while it is
+   HANDED: the editor writes nothing to it then.  After RELEASED the terminal
+   is the shell's for good and nothing is written again.  Only the transitions
+   (e_t_terminal_hand_over, _take_back, _release and its signal handler twin)
+   write the state, and the signal handlers read it, so it is a sig_atomic_t. */
+#define E_T_TERM_OWNED    0
+#define E_T_TERM_HANDED   1
+#define E_T_TERM_RELEASED 2
+static volatile sig_atomic_t e_t_term_state = E_T_TERM_OWNED;
+
+/* What a signal handler writes to give the terminal back, and its length
+   (0 until it is built); see e_t_release_string_publish. */
+static char e_t_release_str[E_T_RELEASE_MAX];
+static volatile sig_atomic_t e_t_release_len = 0;
 
 int g_mouse_buttons = 0;
 /* Set while a bracketed paste (terminal mode 2004) is streaming, between the
@@ -245,7 +271,7 @@ char *tgoto();
 #define tigetstr(k) tgetstr(k, &ap)
 
 #define term_move(x,y) e_putp(tgoto(cur_rc, x, y))
-#define term_refresh() fflush(stdout)
+#define term_refresh() e_t_flush()
 #else
 /* Because term.h defines "buttons" it messes up we_gpm.c if in edit.h */
 #include <term.h>
@@ -256,10 +282,10 @@ char *tgoto();
 
 #ifdef NCURSES
 #define term_move(x,y) move(y, x)
-#define term_refresh() refresh()
+#define term_refresh() e_t_flush()
 #else
 #define term_move(x,y) e_putp(tparm2(cur_rc, y, x))
-#define term_refresh() fflush(stdout)
+#define term_refresh() e_t_flush()
 #endif
 #endif
 
@@ -316,7 +342,7 @@ int WpeDllInit(int *argc, char **argv)
  fk_u_drag_next = fk_t_drag_next;
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeMouseRestoreShape = WpeNullFunction;
- WpeDisplayEnd = e_endwin;
+ WpeDisplayEnd = e_t_terminal_release;
 #ifdef __linux__
  u_bioskey = WpeLinuxBioskey;
 #else
@@ -674,6 +700,10 @@ int e_t_initscr()
 
  e_t_detect_unicode();
  ret = tcgetattr(1, &otermio); /* save old settings */
+ /* The settings a handler puts back are saved: from here a signal that ends
+    the editor gives the terminal back (the string it writes is built below,
+    and until then it writes nothing). */
+ WpeDisplayReleaseFromHandler = e_t_terminal_release_from_handler;
 /*
  if(ret)
  {
@@ -705,6 +735,7 @@ int e_t_initscr()
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
  mouseinterval(0);
 #endif
+ e_t_release_string_publish();   /* before the first mode goes on */
  e_t_private_modes_on();
  e_t_install_suspend_handler();
 #endif
@@ -984,7 +1015,103 @@ static void e_t_install_suspend_handler(void)
 }
 #endif
 
-void e_endwin()
+/* The state name the trace says when output is refused. */
+static const char *e_t_term_state_name(void)
+{
+ if (e_t_term_state == E_T_TERM_HANDED)
+  return("handed over");
+ return("released");
+}
+
+/* A refusal is noted once per stretch of the same state, not at every call,
+   so a long shell does not fill the trace. */
+static int e_t_refusal_noted = E_T_TERM_OWNED;
+
+/**
+ * e_t_flush - Put what the editor drew on the terminal, if the terminal is
+ * the editor's.
+ *
+ * The one place the file asks curses (or stdio, without curses) to write the
+ * screen.  While a program, the User Screen or a prompt has the terminal, or
+ * after the editor has given it back, nothing is written: an editor that
+ * drew over a shell prompt, or switched the alternate screen on again after
+ * leaving it, is what this refuses.
+ * Return: what the write returned, or 0 when it was refused.
+ */
+static int e_t_flush(void)
+{
+ if (e_t_term_state != E_T_TERM_OWNED)
+ {
+  if (e_t_refusal_noted != e_t_term_state)
+  {
+   e_t_refusal_noted = e_t_term_state;
+   wpe_ui_trace("output refused: terminal %s", e_t_term_state_name());
+  }
+  return(0);
+ }
+ e_t_refusal_noted = E_T_TERM_OWNED;
+#ifdef NCURSES
+ return(refresh());
+#else
+ return(fflush(stdout));
+#endif
+}
+
+#ifndef NCURSES
+/**
+ * e_t_putp - Send one terminfo or termcap string to the terminal, if the
+ * terminal is the editor's.
+ * @s: the string, as the capability gives it.
+ *
+ * The one place the file calls tputs.  Refused, like e_t_flush, while the
+ * terminal is handed over or given back.  (With curses the editor writes
+ * through curses and never calls it.)
+ * Return: 1 when the string was sent or there was none, 0 when refused.
+ */
+static int e_t_putp(const char *s)
+{
+ if (e_t_term_state != E_T_TERM_OWNED)
+  return(0);
+ if (s == NULL)
+  return(1);
+ tputs((char *)s, 1, fk_u_putchar);
+ return(1);
+}
+#endif
+
+/**
+ * e_t_release_string_publish - Make ready what a signal handler writes to
+ * give the terminal back.
+ *
+ * Built from the terminal's own strings once, at start-up, before the first
+ * mode is switched on: a handler that runs later reads it and writes it with
+ * one write(2), which is all it may do.  The length is stored last, so a
+ * handler that comes in the middle sees length 0 and writes nothing.
+ */
+static void e_t_release_string_publish(void)
+{
+#ifdef NCURSES
+ size_t len;
+
+ e_t_release_len = 0;
+ len = e_t_release_string_build(e_t_release_str, sizeof e_t_release_str,
+                               e_t_is_linux_console(), tigetstr("sgr0"),
+                               tigetstr("cnorm"), tigetstr("rmkx"),
+                               tigetstr("rmcup"));
+ e_t_release_len = (sig_atomic_t)len;
+#endif
+}
+
+/**
+ * e_t_screen_leave - Take the editor off the terminal's screen.
+ *
+ * The modes go off first, in order (the keyboard protocol, bracketed paste,
+ * the mouse), while the editor's screen is still the active one; then curses
+ * leaves the alternate screen and the keypad mode; then the line settings
+ * the terminal had before the editor started come back.  Without curses the
+ * attributes are reset and the alternate screen left.
+ */
+static void e_t_screen_leave(void)
 {
 #ifdef NCURSES
  e_t_private_modes_off();
@@ -993,6 +1120,122 @@ void e_endwin()
  fk_putp(ratt_bo);
 #endif
  tcsetattr(0, TCSADRAIN, &otermio);
+}
+
+/**
+ * e_t_end_signals_hold - Keep a signal that ends the editor waiting while the
+ * terminal is given back.
+ * @prev: where the signal mask before the hold is kept.
+ *
+ * A second SIGTERM or SIGHUP (a closed terminal window after a kill, a
+ * session manager that asks twice) that came while curses was writing the
+ * end of the screen would end the editor in the middle of it, and the shell
+ * would be left in the editor's alternate screen.  Held, it comes once the
+ * terminal is the shell's again, and its handler finds nothing left to give
+ * back.
+ */
+static void e_t_end_signals_hold(sigset_t *prev)
+{
+ sigset_t ends;
+
+ sigemptyset(&ends);
+ sigaddset(&ends, SIGTERM);
+ sigaddset(&ends, SIGHUP);
+ sigaddset(&ends, SIGQUIT);
+ pthread_sigmask(SIG_BLOCK, &ends, prev);
+}
+
+/**
+ * e_t_end_signals_let_go - Let a signal held by e_t_end_signals_hold come.
+ * @prev: the mask e_t_end_signals_hold kept.
+ */
+static void e_t_end_signals_let_go(const sigset_t *prev)
+{
+ pthread_sigmask(SIG_SETMASK, prev, NULL);
+}
+
+/**
+ * e_t_terminal_release - Give the terminal back to the shell for good.
+ *
+ * The display's end, and what the editor's exit and an error exit call.  The
+ * shell then finds the screen it had before the editor, with the keyboard
+ * and the mouse as it left them, and nothing is written afterwards.  When a
+ * program or the User Screen has the terminal, the screen was already left
+ * and the keyboard modes already off, so only the line settings are put
+ * back (a second reset would pop the shell's own keyboard mode).  A signal
+ * that would end the editor waits until the terminal is given back whole.
+ */
+static void e_t_terminal_release(void)
+{
+ int was_owned = (e_t_term_state == E_T_TERM_OWNED);
+ sigset_t prev;
+
+ if (e_t_term_state == E_T_TERM_RELEASED)
+  return;
+ e_t_end_signals_hold(&prev);
+#ifdef NCURSES
+ /* Given back before the bytes are written, so a signal that comes while
+    they are written does not write the release string a second time. */
+ e_t_term_state = E_T_TERM_RELEASED;
+#endif
+ if (was_owned)
+ {
+  e_t_screen_leave();
+#ifndef NCURSES
+  e_t_switch_screen(0);   /* without curses the alternate screen is left here */
+#endif
+ }
+ else
+  tcsetattr(0, TCSADRAIN, &otermio);
+ e_t_term_state = E_T_TERM_RELEASED;
+ e_t_end_signals_let_go(&prev);
+}
+
+/**
+ * e_t_terminal_release_from_handler - Give the terminal back from a signal
+ * handler that ends the editor at once.
+ *
+ * Installed as the terminal's WpeDisplayReleaseFromHandler.  Runs only what a
+ * signal handler may: one write of the string built at start-up, to stdout
+ * where curses paints (so the bytes follow the picture), and tcsetattr.  When
+ * the terminal is handed over or already given back the screen and the modes
+ * are not the editor's to reset, and only the line settings are put back.
+ */
+static void e_t_terminal_release_from_handler(void)
+{
+ int len = e_t_release_len;
+ ssize_t n;
+
+ if (e_t_term_state == E_T_TERM_OWNED && len > 0)
+ {
+  n = write(STDOUT_FILENO, e_t_release_str, (size_t)len);
+  (void)n;
+ }
+ e_t_term_state = E_T_TERM_RELEASED;
+ tcsetattr(0, TCSANOW, &otermio);
+}
+
+/**
+ * e_t_mouse_tracking_pause - Switch the mouse reports off while the editor
+ * is still the terminal's owner (the Run loop gives the keys to the program).
+ *
+ * The Run loop's off, through the terminal owner: nothing is written when
+ * the terminal is handed over or given back.
+ */
+void e_t_mouse_tracking_pause(void)
+{
+ if (e_t_term_state == E_T_TERM_OWNED)
+  e_mouse_tracking_disable();
+}
+
+/**
+ * e_t_mouse_tracking_resume - Switch the mouse reports on again after
+ * e_t_mouse_tracking_pause.
+ */
+void e_t_mouse_tracking_resume(void)
+{
+ if (e_t_term_state == E_T_TERM_OWNED)
+  e_mouse_tracking_enable();
 }
 
 int fk_t_cursor(int x)
@@ -1297,35 +1540,43 @@ int e_t_refresh()
 }
 
 /**
- * e_t_leave_terminal - Hand the real terminal to a child process.
+ * e_t_terminal_hand_over - Hand the real terminal to a child process.
  *
  * The one way the console editor steps aside for something else that needs
  * the terminal: a compile or tool run (F9), File > Shell, the User Screen.
  * Pending screen output is flushed, the editor's own tty settings and file
- * flags are remembered for e_t_take_terminal_back, and e_endwin then turns
- * the private modes off in order (mouse tracking, bracketed paste, then
- * ncurses' endwin, which leaves the alternate screen and keypad transmit
- * mode) and restores the cooked line discipline the terminal had before the
- * editor started.  The child therefore sees an ordinary terminal: a paste or
- * a mouse movement in a shell prints text, not escape sequences, and what
- * the user types is echoed and line-edited.
+ * flags are remembered for e_t_terminal_take_back, and the private modes go
+ * off in order (mouse tracking, bracketed paste, then ncurses' endwin, which
+ * leaves the alternate screen and keypad transmit mode) and the cooked line
+ * discipline the terminal had before the editor started comes back.  The
+ * child therefore sees an ordinary terminal: a paste or a mouse movement in
+ * a shell prints text, not escape sequences, and what the user types is
+ * echoed and line-edited.  From here the terminal is HANDED: the editor
+ * writes nothing to it until it is taken back.
  *
- * Nothing may touch ncurses between this call and e_t_take_terminal_back: a
+ * Nothing may touch ncurses between this call and e_t_terminal_take_back: a
  * refresh() would silently re-enter the alternate screen, raw mode and mouse
- * tracking before the child has even started.
+ * tracking before the child has even started, which is why e_t_flush now
+ * refuses.  A second hand-over while the terminal is already handed over
+ * (or given back) does nothing: its mode resets would pop the shell's own.
  */
-static void e_t_leave_terminal(void)
+static void e_t_terminal_hand_over(void)
 {
+ if (e_t_term_state != E_T_TERM_OWNED)
+  return;
  e_refresh();
  tcgetattr(0, &ttermio);
  svflgs = fcntl( 0, F_GETFL, 0 );
- e_endwin();
+ e_t_screen_leave();
+ e_t_term_state = E_T_TERM_HANDED;
 }
 
 /**
- * e_t_take_terminal_back - Return from a child to a fully repainted editor.
+ * e_t_terminal_take_back - Return from a child to a fully repainted editor.
  *
- * The counterpart of e_t_leave_terminal.  The editor's tty settings and file
+ * The counterpart of e_t_terminal_hand_over.  The terminal is the editor's
+ * again first, so what follows may be drawn; nothing happens after the
+ * terminal was given back for good.  The editor's tty settings and file
  * flags come back, the terminal is told to clear itself on the next refresh
  * (clearok) so that whatever the child scrolled or printed cannot survive
  * under the editor's picture, the whole screen is marked for redraw from the
@@ -1335,8 +1586,11 @@ static void e_t_leave_terminal(void)
  * child ran, with the mouse, paste and the keyboard protocol working as
  * before: dragging a title bar still moves a window.
  */
-static void e_t_take_terminal_back(void)
+static void e_t_terminal_take_back(void)
 {
+ if (e_t_term_state == E_T_TERM_RELEASED)
+  return;
+ e_t_term_state = E_T_TERM_OWNED;
  tcsetattr(0, TCSADRAIN, &ttermio);
  fcntl( 0, F_SETFL, svflgs );
 #ifdef NCURSES
@@ -1344,7 +1598,7 @@ static void e_t_take_terminal_back(void)
 #endif
  e_abs_refr();
 #ifdef NCURSES
- refresh();                  /* flush ncurses ca-mode re-entry (1049h) first */
+ e_t_flush();                /* flush ncurses ca-mode re-entry (1049h) first */
 #endif
  e_t_private_modes_on();     /* then the modes, emitted last */
  fk_locate(0, 0);
@@ -1353,11 +1607,12 @@ static void e_t_take_terminal_back(void)
 /**
  * e_t_sys_ini - Leave the terminal before running a tool (F9 compile path).
  *
- * The console backend behind the e_sys_ini pointer; see e_t_leave_terminal.
+ * The console backend behind the e_sys_ini pointer; see
+ * e_t_terminal_hand_over.
  */
 int e_t_sys_ini()
 {
- e_t_leave_terminal();
+ e_t_terminal_hand_over();
  return(0);
 }
 
@@ -1365,11 +1620,11 @@ int e_t_sys_ini()
  * e_t_sys_end - Take the terminal back after a tool has run (F9 compile path).
  *
  * The console backend behind the e_sys_end pointer; see
- * e_t_take_terminal_back.
+ * e_t_terminal_take_back.
  */
 int e_t_sys_end()
 {
- e_t_take_terminal_back();
+ e_t_terminal_take_back();
  return(0);
 }
 
@@ -2763,7 +3018,7 @@ int e_t_user_screen(FENSTER *f)
  (void)f;
 
  e_d_pty_drain();
- e_t_leave_terminal();
+ e_t_terminal_hand_over();
  /* Borland's "User Screen": leave the editor and show the program's own
     full screen.  Replay the captured output VERBATIM -- the bytes the program
     wrote to its terminal, including cursor positioning, ANSI colour and box
@@ -2794,19 +3049,8 @@ int e_t_user_screen(FENSTER *f)
  wpe_paint_modal_enter("the User Screen");
  e_t_wait_for_any_key();
  wpe_paint_modal_leave();
- e_t_take_terminal_back();
+ e_t_terminal_take_back();
  return(0);
-}
-
-int e_d_switch_screen(int sw)
-{
-#ifdef DEBUGGER
- if (!sw)
-  e_g_sys_ini();
- else
-  e_g_sys_end();
-#endif
- return(e_switch_screen(sw));
 }
 
 int e_t_d_switch_out(int sw)
@@ -2832,7 +3076,7 @@ int e_t_d_switch_out(int sw)
 
 void e_exitm(char *s, int n)
 {
- e_endwin();
+ e_t_terminal_release();
  if (n != 0)
   printf("\n%s\n", s);
  exit(n);
@@ -2842,7 +3086,7 @@ void e_exitm(char *s, int n)
  * e_s_sys_ini - Give a child the whole screen (File > Shell, Execute).
  *
  * The same leave as the compile path: on the console that is
- * e_t_leave_terminal, whose endwin already leaves the alternate screen; in
+ * e_t_terminal_hand_over, whose endwin already leaves the alternate screen; in
  * xwpe it is a no-op.  It used to add a screen switch after the leave, and on
  * ncurses that switch is a refresh(), which re-entered the alternate screen,
  * raw mode and mouse tracking before the child started -- the shell then
@@ -2882,7 +3126,7 @@ int e_t_system(struct WpeStartPlan *plan)
  * e_s_sys_end - Take the whole screen back from a child (File > Shell,
  * Execute).
  *
- * The same return as the compile path: e_t_take_terminal_back on the console
+ * The same return as the compile path: e_t_terminal_take_back on the console
  * (the next refresh re-enters the alternate screen and repaints everything),
  * a no-op in xwpe.
  */

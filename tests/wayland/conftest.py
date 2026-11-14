@@ -25,6 +25,7 @@ the dumped pixels.  If any binary is missing the whole module skips cleanly.
 Set XWPE_BIN to point at the xwpe binary (defaults to ../../xwpe).
 """
 import os
+import pty
 import shutil
 import subprocess
 import sys
@@ -491,10 +492,22 @@ def xwpe(wlserver, tmp_path, request):
     # XWPE_TEST_DETACHED: start the editor as a desktop launcher would, a
     # session leader with no controlling terminal (present means detached).
     detached = param.pop("XWPE_TEST_DETACHED", None) is not None
+    # XWPE_TEST_PTY: the editor's standard streams are a pty the test reads,
+    # as when xwpe is started from a terminal; every byte it writes to that
+    # terminal is then visible (session.pty_master).
+    on_pty = param.pop("XWPE_TEST_PTY", False)
     env.update(param)   # optional per-test env (e.g. AI)
-    proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
-                  stderr=_logfile("xwpe-%s.log" % request.node.name),
-                  start_new_session=detached)
+    pty_master = None
+    if on_pty:
+        pty_master, pty_slave = pty.openpty()
+        proc = subprocess.Popen([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
+                                stdin=pty_slave, stdout=pty_slave,
+                                stderr=pty_slave)
+        os.close(pty_slave)
+    else:
+        proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
+                      stderr=_logfile("xwpe-%s.log" % request.node.name),
+                      start_new_session=detached)
     # Wait for the weston X window (the xdotool target) and the first frame dump.
     wid = None
     for _ in range(60):
@@ -510,8 +523,11 @@ def xwpe(wlserver, tmp_path, request):
     _sleep(1.0)
     session = WaylandSession(proc, env, wid, dump)
     session.srcfile = str(src)
+    session.pty_master = pty_master
     session.focus()
     yield session
+    if pty_master is not None:
+        os.close(pty_master)
     # Fully reap this xwpe AND let weston process its surface-destroy before the
     # next test spawns a client.  Otherwise, under load, the dying client's
     # surface can still hold the seat focus when the next xwpe starts, so its

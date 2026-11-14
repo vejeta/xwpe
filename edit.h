@@ -814,6 +814,8 @@ int e_about_WE(FENSTER *f);
 int e_clear_desk(FENSTER *f);
 void e_mouse_tracking_enable(void);
 void e_mouse_tracking_disable(void);
+void e_t_mouse_tracking_pause(void);
+void e_t_mouse_tracking_resume(void);
 void e_mouse_flush(void);
 /* The most bytes one key typed for a program becomes (the longest xterm
    sequence, "ESC [ 2 4 ; 5 ~", is seven). */
@@ -1081,6 +1083,12 @@ extern int (*e_u_system)(struct WpeStartPlan *plan);
    WPE_PAINT_ANY_KEY, else only @want, the others left queued.  0 for none. */
 extern int (*e_u_key_take)(int want);
 extern void (*WpeDisplayEnd)(void);
+/* The display's answer to a signal that ends the editor at once: give the
+   terminal back, in a way a signal handler may run (write and tcsetattr
+   only).  A display with no terminal does nothing; the slot starts as
+   nothing, so a signal that comes before a display is chosen touches no
+   terminal. */
+extern void (*WpeDisplayReleaseFromHandler)(void);
 void e_t_wait_for_enter_on_raw_terminal(void);
 int e_t_drain_keys_after_box(int xa, int xe, int ye);
 
@@ -1152,8 +1160,6 @@ int e_d_brk_drawn_hollow(const char *file, int line);
 int e_bar_offers_goto_cursor(FENSTER *f);
 int e_debug_switch(FENSTER *f, int c);
 int e_d_putchar(int c);
-int e_g_sys_ini(void);
-int e_g_sys_end(void);
 int e_test_command(char *str);
 
 /**** functions for breakpoints resyncing, reloading etc ****/

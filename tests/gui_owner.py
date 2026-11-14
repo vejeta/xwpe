@@ -793,8 +793,13 @@ class Owner:
 
     def launch(self, argv, env, cwd, log_dir, kind, label, request=None,
                daemons=None, ladder_s=SERVICE_GRACE_S, pass_fds=(),
-               detached_from_terminal=False):
+               detached_from_terminal=False, terminal_fd=None):
         """Start argv as an owned process and return it.
+
+        With terminal_fd (the slave side of a pty the row reads) the
+        process's standard streams are that terminal, as when it is
+        started from a shell, so the row sees every byte it writes there;
+        otherwise its output goes to its log and its input is empty.
 
         Every process of a row goes through here: its own process group
         (as a job started from a shell has), the death signal, its log in
@@ -818,9 +823,13 @@ class Owner:
                                "the death signal follows the thread that forks")
         log_path = _free_log_path(log_dir, kind)
         log = open(log_path, "wb")
+        stdin_arg, stdout_arg, stderr_arg = (subprocess.DEVNULL, log,
+                                             subprocess.STDOUT)
+        if terminal_fd is not None:
+            stdin_arg = stdout_arg = stderr_arg = terminal_fd
         try:
-            proc = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
-                                    stdout=log, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(argv, env=env, cwd=cwd, stdin=stdin_arg,
+                                    stdout=stdout_arg, stderr=stderr_arg,
                                     start_new_session=detached_from_terminal,
                                     process_group=None if detached_from_terminal else 0,
                                     pass_fds=pass_fds,
@@ -1248,8 +1257,12 @@ class Editor:
     @staticmethod
     def start(owner, binary, args, backend, display, cwd, home, log_dir=None,
               extra_env=None, label="", request=None, daemons=None, dump=None,
-              detached_from_terminal=False):
+              detached_from_terminal=False, terminal_fd=None):
         """Start the editor on a display this owner started.
+
+        With terminal_fd the editor's standard streams are that pty's slave
+        side (see Owner.launch), so a row can read what a graphical editor
+        writes to the terminal it was started from.
 
         With detached_from_terminal the editor is a session leader with no
         controlling terminal, as when a desktop launcher starts it; by
@@ -1273,7 +1286,8 @@ class Editor:
         owned = owner.launch([binary] + list(args), env, cwd, log_dir, "xwpe",
                              label, request=request, daemons=daemons,
                              ladder_s=editor_end_ladder_s(),
-                             detached_from_terminal=detached_from_terminal)
+                             detached_from_terminal=detached_from_terminal,
+                             terminal_fd=terminal_fd)
         owned.env = env
         return owned
 

@@ -30,6 +30,7 @@ and reported as an error of its row.  A row asks for the display by
 display_name(), never by a constant.
 """
 import os
+import pty
 import select
 import shutil
 import subprocess
@@ -295,7 +296,9 @@ class XwpeSession:
     def key(self, *keys, delay=0.5):
         for k in keys:
             self._note_children()
-            _xdo("key", "--window", self.win, "--clearmodifiers", _to_keycodes(k))
+            keystroke = _to_keycodes(k)
+            _KEYS_SENT.update(keystroke.split("+"))
+            _xdo("key", "--window", self.win, "--clearmodifiers", keystroke)
             _sleep(delay)
 
     def click(self, px, py, delay=0.5, button=1, hold=None):
@@ -537,11 +540,32 @@ def _previous_row():
     return _SERVED["row"] or "an earlier row"
 
 
+# The keys a synthetic keystroke may leave held.  A row that ends the editor
+# with a key (Alt-X) has the chord's release sent to a window that is gone,
+# so the server keeps Alt and x down: the next editor then gets Alt-x by
+# auto-repeat and quits at once (its window never appears), and a later Alt-x
+# is ignored because x is already down.
+HELD_KEY_NAMES = ("Alt_L", "Alt_R", "Control_L", "Control_R", "Shift_L",
+                  "Shift_R", "Meta_L", "Meta_R", "Super_L", "Super_R")
+# Every key name or code a row has sent since the last release.
+_KEYS_SENT = set()
+
+
+def release_held_keys():
+    """Release every modifier and every key a row sent that a synthetic
+    keystroke may have left held on the display, so the next editor starts
+    from a keyboard with nothing down."""
+    names = list(HELD_KEY_NAMES) + sorted(_KEYS_SENT)
+    _KEYS_SENT.clear()
+    _xdo("keyup", *names)
+
+
 def _require_clean_display(owner):
     """Check the display holds no editor before a row starts its own.
 
     A leftover window or editor of the row before is named, with that
     row's id, instead of letting this row find the old window by accident."""
+    release_held_keys()
     running = _running_editors(owner)
     if running:
         raise PreviousRowLeft("%s left an editor running: %s"
@@ -558,13 +582,14 @@ def _require_clean_display(owner):
 
 def _require_windows_gone():
     """Wait, after a row's editor has ended, for its window to leave."""
+    release_held_keys()
     wait_for(lambda: not _window_ids(),
              "the ended editor's window to leave %s" % display_name(),
              WINDOW_GONE_S, state_fn=_window_ids)
 
 
 def launch_editor(owner, workdir, request, args, extra_env=None,
-                  detached_from_terminal=False):
+                  detached_from_terminal=False, terminal_fd=None):
     """Start xwpe with `args` on the suite's display, in `workdir`, which is
     also its HOME, and return the owner's record of it.
 
@@ -578,7 +603,8 @@ def launch_editor(owner, workdir, request, args, extra_env=None,
         owner, XWPE_BIN, args, "x11", _SERVED["display"], str(workdir),
         str(workdir), extra_env=extra_env, label=request.node.nodeid,
         request=request, dump=False,
-        detached_from_terminal=detached_from_terminal)
+        detached_from_terminal=detached_from_terminal,
+        terminal_fd=terminal_fd)
 
 
 def launch_client(owner, workdir, request, argv):
@@ -651,13 +677,27 @@ def xwpe(xserver, gui_owner, tmp_path, request):
     # XWPE_TEST_DETACHED: start the editor as a desktop launcher would, a
     # session leader with no controlling terminal.
     detached = param.pop("XWPE_TEST_DETACHED", None) is not None
-    owned = launch_editor(gui_owner, tmp_path, request, [str(src)], param,
-                          detached_from_terminal=detached)
+    # XWPE_TEST_PTY: the editor's standard streams are a pty the test reads,
+    # as when xwpe is started from a terminal; every byte it writes to that
+    # terminal is then visible (session.pty_master).
+    on_pty = param.pop("XWPE_TEST_PTY", False)
+    pty_master = pty_slave = None
+    if on_pty:
+        pty_master, pty_slave = pty.openpty()
+        request.addfinalizer(lambda: os.close(pty_master))
+    try:
+        owned = launch_editor(gui_owner, tmp_path, request, [str(src)], param,
+                              detached_from_terminal=detached,
+                              terminal_fd=pty_slave)
+    finally:
+        if pty_slave is not None:
+            os.close(pty_slave)
     win = _find_xwpe_window()
     assert win, "xwpe window did not appear"
     _force_window_geometry(win)
     _sleep(1.0)
     session = XwpeSession(owned.proc, win, owned)
     session.srcfile = str(src)
+    session.pty_master = pty_master
     session.focus()
     yield session

@@ -1049,7 +1049,7 @@ static int e_run_with_pty(WpeStartPlan *plan, BUFFER *b, FENSTER *mf)
  e_view_add_row(b);
  e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
  if (!WpeIsXwin())
-  e_mouse_tracking_disable();
+  e_t_mouse_tracking_pause();
  fk_cursor(1);
  e_cursor(mf, 1);
  e_schirm(mf, 1);
@@ -1062,7 +1062,7 @@ static int e_run_with_pty(WpeStartPlan *plan, BUFFER *b, FENSTER *mf)
  e_run_release_sigint(&old_int);
  wpe_fd_close(pty_master);
  if (!WpeIsXwin())
-  e_mouse_tracking_enable();
+  e_t_mouse_tracking_resume();
  return ret;
 }
 

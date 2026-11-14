@@ -4029,9 +4029,7 @@ int e_d_quit_basic(FENSTER *f)
  {
   if (efildes[1] >= 0)
   {  close(efildes[1]);  efildes[1] = -1;  }
-  if (!e_deb_mode)
-   e_g_sys_end();
-  else
+  if (e_deb_mode)
   {
    e_d_switch_out(1);
    fk_locate(MAXSCOL, MAXSLNS);
@@ -28185,21 +28183,6 @@ int e_deb_options(FENSTER *f)
  }
  freeostr(o);
  return(0);
-}
-
-int e_g_sys_ini()
-{
- if (!e_d_swtch || e_deb_mode)
-  return(0);
- tcgetattr(0, &ttermio);
- return(tcsetattr(0, TCSADRAIN, &otermio));
-}
-
-int e_g_sys_end()
-{
- if (!e_d_swtch || e_deb_mode)
-  return(0);
- return(tcsetattr(0, TCSADRAIN, &ttermio));
 }
 
 int e_test_command(char *str)

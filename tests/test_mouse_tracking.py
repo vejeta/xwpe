@@ -1,6 +1,6 @@
 """Mouse-tracking regression test for wpe (terminal mode).
 
-A sub-process run (F9 compile) goes through e_t_sys_ini() -> e_endwin(),
+A sub-process run (F9 compile) goes through e_t_sys_ini() -> e_t_terminal_hand_over(),
 which disables xterm motion tracking (CSI ?1002h -> ?1002l). The symmetric
 e_t_sys_end() must re-enable it, or window drag/resize silently stops working
 after F9 (clicks still arrive via the basic 1000 mode, but no motion events).

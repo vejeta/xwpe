@@ -88,9 +88,13 @@ extern char RE1, RE2, RE3, RE4, RE5, RE6, WBT;
 #define E_T_KEYS_MOK_QUERY    "\033[?4m"
 #define E_T_KEYS_ON_STR   E_T_KEYS_MOK_ON E_T_KEYS_KITTY_PUSH
 #define E_T_KEYS_OFF_STR  E_T_KEYS_KITTY_POP E_T_KEYS_MOK_OFF
-#define E_T_MOUSE_PASTE_ON_STR  "\033[?1002h\033[?1006h\033[?2004h"
+#define E_T_MOUSE_PASTE_ON_STR  "\033[?1000h\033[?1002h\033[?1006h\033[?2004h"
 #define E_T_MOUSE_PASTE_OFF_STR "\033[?2004l\033[?1002l\033[?1006l\033[?1000l"
 #define E_T_PRIVATE_MODES_OFF_STR E_T_KEYS_OFF_STR E_T_MOUSE_PASTE_OFF_STR
+/* OSC 22 with an empty name gives the terminal's own mouse pointer back.  It
+   is written when the mouse tracking ends, and by the release string a
+   signal handler writes. */
+#define E_T_POINTER_SHAPE_RESET_STR "\033]22;\a"
 
 #define SCLE CLE+512
 #define SCRI CRI+512

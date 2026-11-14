@@ -24,6 +24,7 @@ import pytest
 
 from wpe_driver import WpeSession, ALT, wait_screen
 from test_file_shell import SHELL_MARK, SHELL_ENTRY, write_marker_shell
+from test_terminal_owner import release_string
 
 # What the editor writes, byte for byte (unixkeys.h).
 KEYS_ON = b"\x1b[>4;2m\x1b[>5u"
@@ -123,17 +124,20 @@ def test_sigterm_gives_the_modes_back(tmp_path):
     assert KEYS_ON not in raw[raw.find(MODES_OFF):]
 
 
+@pytest.mark.skipif(not shutil.which("tput"), reason="no tput")
 def test_a_crash_gives_the_modes_back_as_the_last_thing_written(tmp_path):
     """XWPE_TEST_CRASH=1 raises SIGSEGV at the first wait for a key: the
-    handler writes the one constant string of the modes off."""
+    handler writes the modes off, in the order the exit writes them, and then
+    the pointer and the terminal's own strings that leave the alternate
+    screen: the release string is the last thing written."""
     with WpeSession(str(tmp_path), SEED, env_extra={"XWPE_TEST_CRASH": "1"}) as w:
         w._drain(2.0)
         raw = bytes(w.raw)
         assert not w.alive(), "the editor did not crash"
     assert raw.rfind(CRASH_OFF) > raw.rfind(KEYS_ON), \
         "the crash left the protocols on:\n%r" % raw[-200:]
-    assert raw.endswith(CRASH_OFF), \
-        "the modes off string is not the last thing written:\n%r" % raw[-120:]
+    assert raw.endswith(release_string()), \
+        "the release string is not the last thing written:\n%r" % raw[-160:]
 
 
 def test_a_stop_and_a_continue_give_the_modes_back_and_take_them_again(tmp_path):

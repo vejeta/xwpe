@@ -113,6 +113,7 @@ static void wpe_end_request_open(void);
 void (*WpeMouseChangeShape)(WpeMouseShape new_shape);
 void (*WpeMouseRestoreShape)(void);
 void (*WpeDisplayEnd)(void);
+void (*WpeDisplayReleaseFromHandler)(void) = WpeNullFunction;
 int (*fk_u_locate)(int x, int y);
 int (*fk_u_cursor)(int x);
 int (*fk_u_putchar)(int c);
@@ -634,9 +635,7 @@ void WpeSignalUnknown(int sig)
   write(fd, line, len);
   close(fd);
  }
- write(STDERR_FILENO, E_T_PRIVATE_MODES_OFF_STR,
-       sizeof E_T_PRIVATE_MODES_OFF_STR - 1);
- tcsetattr(0, TCSANOW, &otermio);
+ (*WpeDisplayReleaseFromHandler)();
  signal(sig, SIG_DFL);
  raise(sig);
 }
@@ -681,20 +680,16 @@ void WpeSignalChild(int sig)
  * the editor was set up, in a forked child before it ran its program, or a
  * second time while the first one's save was still running (a save that
  * hangs must never leave the editor impossible to end).  Only
- * async-signal-safe work: every child is killed, the mouse tracking turned
- * off and the terminal modes restored, so the shell is usable again, and
- * the signal is raised again with its default action, so the parent sees
- * the usual "killed by SIGTERM".
+ * async-signal-safe work: every child is killed and the display gives the
+ * terminal back (the alternate screen, the mouse, the keyboard modes and
+ * the line settings), so the shell is usable again, and the signal is
+ * raised again with its default action, so the parent sees the usual
+ * "killed by SIGTERM".
  */
 static void wpe_end_now(int sig)
 {
- ssize_t n;
-
  wpe_end_children_from_handler();
- n = write(STDERR_FILENO, E_T_PRIVATE_MODES_OFF_STR,
-           sizeof E_T_PRIVATE_MODES_OFF_STR - 1);
- (void)n;
- tcsetattr(0, TCSANOW, &otermio);
+ (*WpeDisplayReleaseFromHandler)();
  signal(sig, SIG_DFL);
  raise(sig);
 }
@@ -980,8 +975,10 @@ static int e_exit_children_gone(void)
  * e_exit_teardown - Stop what the editor started and give the terminal back.
  *
  * The debugger, the language server and a running build are ended, so none
- * of them outlives the editor, and the display is closed and the terminal
- * modes restored.
+ * of them outlives the editor, and the display is closed.  Giving the
+ * terminal back is the display's own business (WpeDisplayEnd): the editor
+ * writes nothing to a terminal after that, and a graphical display never
+ * wrote to the terminal it was started from.
  */
 static void e_exit_teardown(void)
 {
@@ -1010,9 +1007,6 @@ static void e_exit_teardown(void)
     knows how to ask) is killed with its group, without a wait. */
  wpe_child_end_from_handler();
  (*WpeDisplayEnd)();
- e_switch_screen(0);
- tcsetattr(0, TCSADRAIN, &otermio);
- fputs("\033c", stderr);
 }
 
 static int e_exit_started = 0;

@@ -17,6 +17,14 @@ we_ai.o poll 1 P9s2 the bounded wait of the hook, checkpoint and review commands
 # the debugger
 we_debug.o usleep 1 P9o the external xterm settle
 we_debug.o STDIN_FILENO 1 keep ttyname_r names the editor's own terminal; no read
+we_debug.o tcgetattr 2 keep the debugger's own pty (its erase key, the external xterm's line), not the user's terminal
+we_debug.o tcsetattr 1 keep the external xterm's line settings, a pty of the debugger's own, not the user's terminal
+
+# the terminal's settings: only the terminal session (we_term.c) changes them.
+# The start-up note of the settings, read before any display exists so that a
+# signal during the display's set-up can put them back, is the one read of the
+# user's terminal outside it.
+we_unix.o tcgetattr 1 keep the settings noted at start-up, before the display is chosen
 
 # the display's connection: only the X11 backend names it.  Wayland shares
 # three schirm-only functions of that file, none of which touches Xlib.
@@ -69,7 +77,7 @@ we_wayland.o XKB_KEY_ 38 keep the built-in keysym selftest's table of keys to fe
 # The suspend handler writes the terminal's modes off and on with write(2): a
 # signal handler may use nothing else.  It writes to the terminal, never to a
 # child's input.
-we_term.o write 3 keep e_t_on_suspend, the three writes of the modes to the terminal
+we_term.o write 4 keep e_t_on_suspend's three writes of the modes and the signal handlers' one write of the release string, all to the terminal
 
 # console mouse, clipboard, display
 we_gpm.o poll 1 P9o the gpm handshake

@@ -73,6 +73,7 @@ we_SOURCES = \
   we_menue.c \
   we_menurows.c \
   we_mousedrain.c \
+  we_termrelease.c \
   we_keymap.c \
   we_bindings.c \
   we_bars.c \
@@ -214,6 +215,7 @@ noinst_HEADERS = \
   we_gdbmi.h \
   we_menurows.h \
   we_mousedrain.h \
+  we_termrelease.h \
   we_keymap.h \
   we_bindings.h \
   we_bars.h \
@@ -342,7 +344,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject
 
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
@@ -529,6 +531,11 @@ test_menurows_CFLAGS = $(XWPE_STDFLAG)
 test_mousedrain_SOURCES = tests/test_mousedrain.c we_mousedrain.c
 test_mousedrain_CFLAGS = $(XWPE_STDFLAG)
 
+# The string a signal handler writes to give the terminal back: we_termrelease.c
+# only, no curses, always runs.
+test_termrelease_SOURCES = tests/test_termrelease.c we_termrelease.c
+test_termrelease_CFLAGS = $(XWPE_STDFLAG)
+
 # Clipboard helpers unit test: RFC 4648 base64 + OSC 52 framing (we_clip.c
 # only, no editor/X11). Always runs (no skip).
 test_clipboard_SOURCES = tests/test_clipboard.c we_clip.c
@@ -664,7 +671,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
-  test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
+  test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
   test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
@@ -912,6 +919,7 @@ EXTRA_DIST = \
   tests/test_keys_modified.py \
   tests/test_keymap_terminal.py \
   tests/test_private_modes.py \
+  tests/test_terminal_owner.py \
   tests/test_wayland_keysym.py \
   tests/test_chrome_ascii.py \
   tests/test_algol68.py \
@@ -972,8 +980,11 @@ EXTRA_DIST = \
   tests/test_screen_owner.py \
   tests/x11/test_screen_owner.py \
   tests/wayland/test_screen_owner.py \
+  tests/wayland/test_terminal_owner.py \
   tests/x11/test_menu_status_bar.py \
   tests/x11/test_popup_close_button.py \
+  tests/x11/test_terminal_owner.py \
+  tests/x11/test_terminal_owner_session.py \
   tests/x11/test_user_screen.py \
   tests/x11/test_syntax_algol68.py \
   tests/inputs/README \

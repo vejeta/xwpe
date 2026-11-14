@@ -35,7 +35,7 @@ SHELL_ENTRY = "h"
 
 # Private-mode sequences, byte for byte as the editor emits them.
 BRACKETED_PASTE_ON = b"\x1b[?2004h"       # we_term.c, startup / terminal back
-BRACKETED_PASTE_OFF = b"\x1b[?2004l"      # we_term.c, e_endwin
+BRACKETED_PASTE_OFF = b"\x1b[?2004l"      # we_term.c, e_t_private_modes_off
 MOUSE_BUTTON_ON = b"\x1b[?1002h"          # we_mouse.c, e_mouse_tracking_enable
 MOUSE_SGR_ON = b"\x1b[?1006h"
 MOUSE_BUTTON_OFF = b"\x1b[?1002l"         # we_mouse.c, e_mouse_tracking_disable

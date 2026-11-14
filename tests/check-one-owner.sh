@@ -73,7 +73,22 @@ e_add_undo we_buffer.o we_edit.o
 wpe_child_start we_child.o we_startplan.o
 wpe_child_capture|wpe_child_probe|wpe_child_run_to_file|wpe_child_capture_plan|wpe_child_probe_plan|wpe_child_run_to_file_plan we_child.o we_startplan.o
 regcomp|regexec|regfree|regerror we_rowfind.o
+refresh|wrefresh|doupdate|endwin|resizeterm|def_prog_mode|reset_prog_mode|reset_shell_mode we_term.o
+tcsetattr|tcgetattr we_term.o we_child.o
+e_mouse_tracking_enable|e_mouse_tracking_disable we_term.o
 EOF
+
+# Who has the terminal has one owner, the terminal session of we_term.c: the
+# editor's screen is written through curses only in e_t_flush, and the
+# terminal's settings (the line discipline, the alternate screen, the mouse and
+# keyboard modes) are changed only by its transitions, so nothing writes to a
+# terminal the editor has handed to a program or given back.  The three rules
+# above name the calls: curses' screen and mode calls, the terminal's
+# attributes (the child's pty in we_child.c and the debugger's own pty, an
+# allow line, are not the user's terminal), and the mouse modes, which only the
+# terminal's mode switch and the Run loop's pause write.  The source rules
+# below count the rest: refresh and tputs outside the two writers, and the
+# terminal reset that used to end the editor.
 
 # A program the editor starts for the user comes from a start plan
 # (we_startplan.c), which shows and asks about what a folder decided: only
@@ -142,6 +157,10 @@ pos_whole we_buffer.c
 pos_address we_buffer.c
 term_raw_read
 display_key_literal
+term_output
+ris_literal
+mouse_mode_call we_term.c
+e_switch_screen we_main.c we_term.c
 e_undo_sw
 e_redo_sw
 lsp_units_field we_lsp_pos.c
@@ -311,6 +330,52 @@ count_raw_reads() {
     {
       s = $0
       while (match(s, /(^|[^A-Za-z0-9_])(fk_getch|getch|wgetch|mvgetch|ungetch|get_wch|wget_wch)[ \t]*[(]/)) {
+        if (index(owners, " " fn " ") == 0) n++
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+    END { print n + 0 }' "$1"
+}
+
+# The terminal's output has two writers in we_term.c: e_t_flush puts the
+# editor's screen on the terminal (curses' refresh, wrefresh or doupdate,
+# stdio's flush without curses) and e_t_putp sends a terminfo string (tputs or
+# putp).  Both refuse while the terminal is handed over or given back, so a
+# call of curses' refresh or of tputs anywhere else in the file is a write the
+# gate does not see: the screen entered again after it was left.  Counted on
+# comment-stripped source with the same tracking of the function a line is in
+# as the reader rule; e_putp, fk_putp and term_refresh are the callers of the
+# two writers, not writers.
+TERM_OUTPUT_OWNERS="e_t_flush e_t_putp"
+# The mouse modes are written by e_mouse_tracking_enable and _disable, and
+# those are called only by the terminal session (we_term.c).  The symbol rule
+# sees a call from another object; a call inside we_mouse.c, which defines
+# them, is no undefined symbol, so the source rule counts the calls: an
+# indented line that names one (a definition starts in column 1).
+count_mouse_mode_calls() {
+  awk '
+    /^[A-Za-z_#]/ { next }
+    {
+      s = $0
+      while (match(s, /(^|[^A-Za-z0-9_])e_mouse_tracking_(enable|disable)[ \t]*[(]/)) {
+        n++
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+    END { print n + 0 }' "$1"
+}
+# The full terminal reset (ESC c) that ended the editor, spelled in octal or in
+# hex, in the bracket spelling awk -v keeps whole (four backslashes in the
+# shell become the two of the regex).  The editor gives the terminal back
+# string by string; a reset would wipe the shell's own screen and, on a
+# graphical display, is a write to a terminal the editor never owned.
+RIS_LITERAL_RE='\\\\033c|\\\\x1[bB]c'
+count_term_output() {
+  awk -v owners=" $TERM_OUTPUT_OWNERS " '
+    /^[A-Za-z_]/ && /[(]/ { fn = $0; sub(/[ \t]*[(].*/, "", fn); sub(/.*[ \t*]/, "", fn) }
+    {
+      s = $0
+      while (match(s, /(^|[^A-Za-z0-9_])(refresh|wrefresh|doupdate|tputs|putp)[ \t]*[(]/)) {
         if (index(owners, " " fn " ") == 0) n++
         s = substr(s, RSTART + RLENGTH)
       }
@@ -500,6 +565,54 @@ EOF
 strip_c "$WORK/readerfixture.c" > "$WORK/readerfixture.stripped"
 [ "$(count_raw_reads "$WORK/readerfixture.stripped")" -eq 2 ] ||
   problem "canary: the reader rule counts $(count_raw_reads "$WORK/readerfixture.stripped") raw reads in its fixture, not 2 (the rule is blind or too wide)"
+# The output fixture has two writes outside the owners (a refresh and a tputs)
+# and, among the lines that only look like one, the owners' own calls, the
+# callers of the two writers, a name that ends in refresh and a comment.
+cat > "$WORK/outputfixture.c" <<'EOF'
+static int e_t_flush(void)
+{
+ return(refresh());
+}
+static int e_t_putp(const char *s)
+{
+ tputs(s, 1, f);
+ return(1);
+}
+int e_other(void)
+{
+ refresh();
+ tputs(x, 1, f);
+ e_putp(y);
+ term_refresh();
+ e_t_refresh();
+ /* doupdate( in a comment */
+}
+EOF
+strip_c "$WORK/outputfixture.c" > "$WORK/outputfixture.stripped"
+[ "$(count_term_output "$WORK/outputfixture.stripped")" -eq 2 ] ||
+  problem "canary: the output rule counts $(count_term_output "$WORK/outputfixture.stripped") writes in its fixture, not 2 (the rule is blind or too wide)"
+cat > "$WORK/mousemodefixture.c" <<'EOF'
+void e_mouse_tracking_enable(void)
+{
+ e_mouse_tracking_enable();
+ e_t_mouse_tracking_enable();
+ /* e_mouse_tracking_disable( in a comment */
+ if (x) e_mouse_tracking_disable();
+}
+EOF
+strip_c "$WORK/mousemodefixture.c" > "$WORK/mousemodefixture.stripped"
+[ "$(count_mouse_mode_calls "$WORK/mousemodefixture.stripped")" -eq 2 ] ||
+  problem "canary: the mouse-mode rule counts $(count_mouse_mode_calls "$WORK/mousemodefixture.stripped") calls in its fixture, not 2 (the rule is blind or too wide)"
+cat > "$WORK/risfixture.c" <<'EOF'
+ fputs("\033c", stderr);
+ write(1, "\x1bc", 2);
+ puts("\033[2J");
+ /* "\033c" in a comment */
+ x = "\033cat";
+EOF
+strip_comments "$WORK/risfixture.c" > "$WORK/risfixture.stripped"
+[ "$(count_uses_re "$RIS_LITERAL_RE" "$WORK/risfixture.stripped")" -eq 3 ] ||
+  problem "canary: the reset rule counts $(count_uses_re "$RIS_LITERAL_RE" "$WORK/risfixture.stripped") literals in its fixture, not 3 (the rule is blind or too wide)"
 cat > "$WORK/stdinfixture.c" <<'EOF'
  ret = read(0, &c, 1);
  (void)read( 0 , &c, 1);
@@ -584,6 +697,10 @@ grep -qx "we_fdloop.o poll" "$WORK/imports" ||
   problem "canary: poll not seen in we_fdloop.o (LTO objects, wrong nm, or an empty object list)"
 grep -qx "we_term.o wgetch" "$WORK/imports" ||
   problem "canary: wgetch not seen in we_term.o (LTO objects, wrong nm, or an empty object list)"
+grep -qx "we_term.o endwin" "$WORK/imports" ||
+  problem "canary: endwin not seen in we_term.o (the terminal-session scan is blind)"
+grep -qx "we_term.o tcsetattr" "$WORK/imports" ||
+  problem "canary: tcsetattr not seen in we_term.o (the terminal-session scan is blind)"
 grep -qx "we_child.o fork" "$WORK/imports" ||
   problem "canary: fork not seen in we_child.o (LTO objects, wrong nm, or an empty object list)"
 grep -qx "we_unix.o waitpid" "$WORK/imports" ||
@@ -692,6 +809,11 @@ done
 for taker in we_prog.o we_unix.o; do
   canary_import $taker wpe_paint_take_key "a key is taken without waiting some other way"
 done
+# The terminal's mode owner: the Run loop turns the mouse reports off and on
+# through the terminal session, which writes them only while the terminal is
+# the editor's.  A loop that goes back to the mouse module's own calls has
+# stopped asking the owner (the symbol rule above would also name it).
+canary_import we_prog.o e_t_mouse_tracking_pause "the Run loop's mouse modes are written some other way"
 # The display's colours: the User Screen asks the display table for the
 # palette, and the Cairo renderer reads the colours the X server allocated.
 # Neither asks the server again, so no object imports XQueryColor, which
@@ -792,7 +914,7 @@ FILLS=$(echo fk_u_locate fk_u_cursor fk_u_putchar u_bioskey e_frb_u_menue \
   WpeMouseChangeShape WpeMouseRestoreShape e_u_d_switch_out \
   e_u_switch_screen e_u_deb_out e_u_system e_u_key_take WpeDisplayEnd \
   e_clip_os_set e_u_focus_editor e_u_raise_editor e_u_palette_rgb \
-  e_u_serve_display e_u_repaint_resized e_clip_os_get)
+  e_u_serve_display e_u_repaint_resized e_clip_os_get WpeDisplayReleaseFromHandler)
 # "kind  slot  reason"
 cat > "$WORK/fillexcept" <<'EOF'
 graphical e_u_ini_size read under WpeIsXwin (we_opt.c) and by the X11 backend
@@ -926,6 +1048,11 @@ for obj in $OBJECTS; do
       display_key_literal)
         case $c in we_term.c|we_xterm.c|we_wayland.c|WeXterm.c) ;; *) continue ;; esac
         n=$(count_display_literals "$(commented_source "$c")") ;;
+      term_output)
+        [ "$c" = we_term.c ] || continue
+        n=$(count_term_output "$file") ;;
+      ris_literal) n=$(count_uses_re "$RIS_LITERAL_RE" "$(commented_source "$c")") ;;
+      mouse_mode_call) n=$(count_mouse_mode_calls "$file") ;;
       *) n=$(count_words "$word" "$file") ;;
     esac
     [ "$n" -gt 0 ] && echo "$base $word $n" >> "$WORK/found"

@@ -172,6 +172,7 @@ int WpeDllInit(int *argc, char **argv)
 /* WpeMouseChangeShape = WpeXMouseChangeShape;
  WpeMouseRestoreShape = WpeXMouseRestoreShape;*/
  WpeDisplayEnd = e_x_display_end;
+ WpeDisplayReleaseFromHandler = WpeNullFunction;   /* no terminal of the editor's to give back */
  e_u_switch_screen = WpeZeroFunction;
  e_u_d_switch_out = (int (*)(int sw))WpeZeroFunction;
  { extern int e_t_deb_out(FENSTER *);

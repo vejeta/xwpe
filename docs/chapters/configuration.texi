@@ -751,6 +751,18 @@ xwpe saved every window; only the modified ones are saved now.  A second
 at once.  A crash, and
 @code{SIGKILL}, end the editor without this save.
 
+However the editor ends (the quit command, an error, a signal or a
+crash), the terminal it ran in is handed back as the shell had it: the
+alternate screen is left, the mouse reports, bracketed paste and the
+keyboard protocols are switched off, and the pointer shape is the
+terminal's own.  The terminal is not reset, so what the shell showed
+before the editor started, and the lines that tell which @file{.ESV}
+files were written, stay on the screen.  On a terminal without an
+alternate screen, the editor's last picture stays above the prompt.  The
+graphical editor sends no control sequence to the terminal it was started
+from; the lines about @file{.ESV} files are the only thing it prints
+there.
+
 During a session under a debug adapter (@command{dlv},
 @command{lldb-dap}, @command{gdb} in DAP mode) the save comes first, and
 then the editor tells the adapter to end the program it debugs and waits

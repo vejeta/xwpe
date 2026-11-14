@@ -269,10 +269,16 @@ Terminal mouse drag requires mode 1002 (`\033[?1002h`), which reports
 motion.  Mode 1002 is the same protocol used by Midnight Commander,
 tmux, and vim for drag operations.
 
-Enabled at terminal init (`e_t_initscr`), disabled at exit
-(`e_endwin`).  SGR extended coordinates (`\033[?1006h`) are enabled
-alongside mode 1002 for terminals wider than 223 columns, where the
-X10 encoding cannot represent the coordinate.
+Written only by the terminal's mode switch (`e_t_private_modes_on` /
+`_off` in `we_term.c`): on at terminal init and whenever the editor
+takes the terminal back from a program, off whenever it hands the
+terminal over (`e_t_terminal_hand_over`) or gives it back at the end
+(`e_t_terminal_release`).  The Run loop pauses and resumes them through
+`e_t_mouse_tracking_pause` / `_resume`.  Mode 1000 is written before
+1002 for terminals that have only the click mode.  SGR extended
+coordinates (`\033[?1006h`) are enabled alongside mode 1002 for
+terminals wider than 223 columns, where the X10 encoding cannot
+represent the coordinate.
 
 ### g_mouse_buttons: global button state
 
@@ -302,14 +308,14 @@ Called at the exit of popup/menu event loops (`e_mess_win`,
 `e_opt_kst`) to resynchronise mouse state after a popup:
 
 1. Drain all pending `KEY_MOUSE` events from the ncurses queue
-   via `getmouse()`.
-2. Re-enable mode 1002 (`\033[?1002h\033[?1006h`) -- ncurses
-   internally disables mouse tracking when processing certain
-   escape sequences, and popup event loops can leave it off.
-3. Reset `g_mouse_buttons = 0`.
+   via `getmouse()` (on the terminal only; a graphical display has no
+   terminal queue).
+2. Reset `g_mouse_buttons = 0`.
 
 Without this, the first drag after a popup hangs because stale
-RELEASED events are queued and mode 1002 is silently disabled.
+RELEASED events are queued.  It does not write the mouse modes: they
+stay on while the editor owns the terminal, and writing them here put
+mouse reporting on the terminal a graphical xwpe was started from.
 
 ### Window relayout on resize (we_wind.c)
 

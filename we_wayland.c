@@ -2220,6 +2220,7 @@ int WpeWaylandInit(int *argc, char **argv)
  WpeMouseChangeShape  = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeMouseRestoreShape = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeDisplayEnd     = e_w_display_end;
+ WpeDisplayReleaseFromHandler = WpeNullFunction;   /* no terminal of the editor's to give back */
  e_u_switch_screen = WpeZeroFunction;
  e_u_d_switch_out  = (int (*)(int))WpeZeroFunction;
  e_u_deb_out       = e_t_deb_out;

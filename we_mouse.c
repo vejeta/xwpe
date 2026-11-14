@@ -20,16 +20,20 @@
    on SGR 1006 extended reporting, which is not byte-limited. */
 #define MOUSE_X10_MAX_COL 223
 
-/* xterm private modes for console mouse tracking: 1002 reports button events
-   and drags, 1006 switches the reports to SGR encoding (no 223-column cap,
-   readable without terminfo).  OSC 22 picks the pointer shape: "default" is
-   the arrow, an empty name pops back to the terminal's own pointer. */
+/* xterm private modes for console mouse tracking: 1000 reports button
+   presses and releases, which a terminal that has no 1002 still honours,
+   1002 adds the drags, 1006 switches the reports to SGR encoding (no
+   223-column cap, readable without terminfo).  OSC 22 picks the pointer
+   shape: "default" is the arrow, an empty name pops back to the terminal's
+   own pointer. */
+#define TERM_MOUSE_CLICK_TRACKING_ON   "\033[?1000h"
+#define TERM_MOUSE_CLICK_TRACKING_OFF  "\033[?1000l"
 #define TERM_MOUSE_BUTTON_TRACKING_ON  "\033[?1002h"
 #define TERM_MOUSE_BUTTON_TRACKING_OFF "\033[?1002l"
 #define TERM_MOUSE_SGR_REPORTS_ON      "\033[?1006h"
 #define TERM_MOUSE_SGR_REPORTS_OFF     "\033[?1006l"
 #define TERM_POINTER_SHAPE_ARROW       "\033]22;default\a"
-#define TERM_POINTER_SHAPE_RESET       "\033]22;\a"
+#define TERM_POINTER_SHAPE_RESET       E_T_POINTER_SHAPE_RESET_STR
 
 int e_mouse_cursor();
 void e_scroll_drag_v(FENSTER *f);
@@ -38,19 +42,27 @@ void e_scroll_drag_h(FENSTER *f);
 static void e_scroll_drag_end_cursor(FENSTER *f);
 #endif
 
+/**
+ * e_mouse_tracking_enable - Ask the terminal to report the mouse.
+ *
+ * Written by the terminal owner's mode switch (e_t_private_modes_on) and by
+ * the Run loop's resume, and by nothing else: the terminal gets its mouse
+ * modes from one place, so a display with no terminal never writes them.
+ */
 void e_mouse_tracking_enable(void)
 {
 #if MOUSE
 #ifdef NCURSES
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
- /* Enable button-event tracking, then ALWAYS request SGR (1006) extended
-    coordinates -- not just past 223 columns.  SGR is what every modern
-    terminal speaks, has no 223 cap, and lets the terminfo-independent SGR
-    parser in we_term.c (e_t_sgr_mouse) work on terminals whose curses cannot
-    decode mouse input itself (FreeBSD's termcap, OpenBSD's base curses).  On
-    ncurses-with-SGR systems (Linux, NetBSD pkgsrc) this is harmless: ncurses
-    already enabled SGR and folds the reports into KEY_MOUSE before the parser
-    ever sees them. */
+ /* Enable click tracking, then button-event tracking, then ALWAYS request
+    SGR (1006) extended coordinates -- not just past 223 columns.  SGR is
+    what every modern terminal speaks, has no 223 cap, and lets the
+    terminfo-independent SGR parser in we_term.c (e_t_sgr_mouse) work on
+    terminals whose curses cannot decode mouse input itself (FreeBSD's
+    termcap, OpenBSD's base curses).  On ncurses-with-SGR systems (Linux,
+    NetBSD pkgsrc) this is harmless: ncurses already enabled SGR and folds
+    the reports into KEY_MOUSE before the parser ever sees them. */
+ printf(TERM_MOUSE_CLICK_TRACKING_ON);
  printf(TERM_MOUSE_BUTTON_TRACKING_ON);
  printf(TERM_MOUSE_SGR_REPORTS_ON);
  /* Ask the terminal to show an arrow pointer instead of the text I-beam while
@@ -64,6 +76,11 @@ void e_mouse_tracking_enable(void)
 #endif
 }
 
+/**
+ * e_mouse_tracking_disable - Give the terminal's mouse back.
+ *
+ * The reverse of e_mouse_tracking_enable, called from the same two places.
+ */
 void e_mouse_tracking_disable(void)
 {
 #if MOUSE
@@ -73,6 +90,7 @@ void e_mouse_tracking_disable(void)
  printf(TERM_POINTER_SHAPE_RESET);
  printf(TERM_MOUSE_SGR_REPORTS_OFF);
  printf(TERM_MOUSE_BUTTON_TRACKING_OFF);
+ printf(TERM_MOUSE_CLICK_TRACKING_OFF);
  fflush(stdout);
 #endif
 #endif
@@ -103,12 +121,21 @@ static int e_mouse_pull_curses(void *arg)
 #endif
 #endif
 
+/**
+ * e_mouse_flush - Forget the mouse events that came while a box was open.
+ *
+ * After an Options box or a message closes, clicks made over it must not
+ * act on the editor underneath.  The terminal's queue is emptied only on
+ * the terminal; a graphical display has no terminal to read.  The mouse
+ * modes are not touched here: the terminal owner switched them on when it
+ * took the terminal, and nothing since has switched them off.
+ */
 void e_mouse_flush(void)
 {
 #if MOUSE
 #ifdef NCURSES
- wpe_mouse_drain(e_mouse_pull_curses, NULL);
- e_mouse_tracking_enable();
+ if (!WpeIsXwin())
+  wpe_mouse_drain(e_mouse_pull_curses, NULL);
 #endif
  { extern int g_mouse_buttons;
    g_mouse_buttons = 0;
