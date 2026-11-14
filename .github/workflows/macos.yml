@@ -62,6 +62,10 @@ jobs:
           make
 
       - name: make check
+        # Every step past the build has its own time limit: a step that hangs
+        # must fail by itself, so the later steps and the log upload still run.
+        # A job stopped by the 6-hour limit keeps no logs at all.
+        timeout-minutes: 45
         # LSP/DAP server tests SKIP when their server is absent. But GitHub's
         # macOS runner ships rust-analyzer + cargo, so test_lsp_rust runs instead
         # of skipping, and its cold start (indexing std + cargo-check) exceeds the
@@ -76,6 +80,7 @@ jobs:
           test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls"
 
       - name: pyte UI regression suite (keystrokes, menus, editing, rendering)
+        timeout-minutes: 150
         # The terminal UI is what users actually touch, and "simple" key/render
         # regressions -- like Backspace not erasing on macOS terminals, which send
         # DEL (0x7f) rather than BS -- slip straight past a C-only `make check`.
@@ -113,6 +118,7 @@ jobs:
 
       - name: Homebrew test-block reproduction (installed binary, on-disk A/B/C)
         if: always()   # validate the formula fix even if a pyte UI test flaked
+        timeout-minutes: 20
         # Faithful mirror of Formula/x/xwpe.rb `test do`: build + install to a
         # prefix and drive the INSTALLED wpe (no XWPE_LIB, exactly as `brew test`
         # does) through the three on-disk assertions -- edit+save lands the typed
@@ -188,6 +194,7 @@ jobs:
 
       - name: Diagnose the INSTALLED binary (true Homebrew condition)
         if: always()
+        timeout-minutes: 15
         # The step above runs ./wpe from the BUILD TREE with XWPE_LIB=$PWD, which
         # is NOT what `brew test` does: Homebrew runs the INSTALLED wpe with no
         # XWPE_LIB. If the installed binary cannot find its data (terminfo, help,
@@ -239,6 +246,7 @@ jobs:
         # fast-exiting or fast-EOF child leaves output empty until the 30s
         # timeout. continue-on-error: it documents the bug, it does not gate CI.
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           cat > /tmp/brew_test_old.rb <<'RUBY'
           require "pty"
@@ -288,6 +296,7 @@ jobs:
 
       - name: Console mouse probe
         if: always()    # the macOS-specific guard: run it even if a test above failed
+        timeout-minutes: 5
         # macOS keeps openpty() in libc, so no -lutil (unlike the BSDs/glibc).
         run: |
           cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c
@@ -298,5 +307,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-logs-${{ matrix.runner }}
-          path: "*.log"
+          path: |
+            *.log
+            tests/*.log
           if-no-files-found: ignore
