@@ -2654,7 +2654,7 @@ int e_goto_line(FENSTER *f)
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
- if ((num = e_num_kst("Goto Line Number", b->b.y+1, b->mxlines, f, 0, AltG)) > 0)
+ if ((num = e_num_kst("Goto Line Number", b->b.y+1, WPE_NUM(WPE_NUM_LINE), f, 0, AltG)) > 0)
   e_buffer_cursor_set_col(b, num - 1, b->clsv);
  else if (num == 0)
   e_buffer_cursor_set_col(b, 0, b->clsv);

@@ -1329,18 +1329,6 @@ int e_eingabe(ECNT *e)
     e_tab_a_ind(b, s);
    e_schirm(f, 1);
   }
-/*
-          else if(c == WPE_TAB)
-          {    if(f->ins == 8) continue;
-               if (f->ins == 0 || f->ins == 2)  
-                 for(c = f->ed->tabn - b->b.x % f->ed->tabn; c > 0 
-                                              && b->b.x < b->mx.x; c--) 
-              		{   e_put_char(' ', b, s);  b->b.x++;  }
-               else  e_ins_nchar(b, s, f->ed->tabs, b->b.x, b->b.y, 
-                                       f->ed->tabn - b->b.x % f->ed->tabn);
-               e_schirm(b, s, f, 1);
-          }
-*/
   else
   {
    ret = e_tst_cur(c, e); /*up/down arrows go this way*/

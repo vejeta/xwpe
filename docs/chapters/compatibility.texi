@@ -473,6 +473,24 @@ Max.@: Columns goes in whole over as many rows as it needs, and
 @kbd{Ctrl-U} takes it out again; the replace that follows goes on behind
 it, also when it wrapped.
 
+@item Number fields
+@cindex number fields, range
+@cindex Tabstops, zero
+@cindex Go to Line, past the last line
+The original kept the digits typed up to the width of a number field and
+read them back with @code{atoi}.  The largest number each field declared
+was never checked, so Tabstops 0 divided by zero and ended the editor with
+the file unsaved, Max.@: Columns 0 lost what was typed, and a key that was
+not a digit was dropped but made the next digit append to the old number
+instead of replacing it.  Every number now has a range
+(@pxref{Editor options dialog}).  A number outside it is refused where it
+is typed: the range is said on the bottom row, and the box stays open with
+the field in focus until the number can be used or you cancel.  Max.@:
+Columns goes up to 9999, in a field of four places.  Go to Line takes any
+run of digits, and a number past the end, however large, goes to the last
+line.  Reason: a number the editor divides by, or sizes a row with, must be
+one it can use.
+
 @item Overwrite over a character outside ASCII
 @cindex overwrite, multibyte characters
 The original wrote a character typed in overwrite mode over one byte, so

@@ -75,9 +75,6 @@ def test_goto_line_field_keeps_a_ten_digit_number_whole(tmp_path):
         assert w.alive(), "wpe died on Go to Line 1999999999"
 
 
-@incoherence("a number above the int range typed into Go to Line is read back "
-             "wrapped: 3456789012 becomes negative and is drawn as punctuation, "
-             "and the cursor does not move")
 def test_goto_line_past_the_int_range_goes_to_the_last_line(tmp_path):
     """Twelve digits typed into the ten place field leave its last ten,
     3456789012, which is past the end of any file: the field should keep

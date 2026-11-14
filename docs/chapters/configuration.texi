@@ -364,22 +364,43 @@ above.
 
 @subsubheading Numeric fields
 
-@table @kbd
-@item Alt-M
-Maximum number of columns per row (word-wrap column).  A row holds up to
-this many bytes and its line break; what is typed past it wraps to the
+@cindex number fields, range
+@cindex Tabstops, range
+@cindex Max. Columns, range
+Each number field has a range.  A number outside it is refused where you
+type it: the range is on the bottom row, the box stays open and the field
+keeps the focus, so Enter, @key{Tab}, a click on another field or on
+@samp{Ok} cannot take it.  @kbd{Esc}, @samp{Cancel} and the close mark leave
+the number as it was.
+
+@multitable @columnfractions .22 .12 .1 .56
+@headitem Field @tab Range @tab Default @tab What it is
+@item Max.@: Columns (@kbd{Alt-M})
+@tab 4 to 9999 @tab 120
+@tab Maximum number of columns per row (word-wrap column).  A row holds up
+to this many bytes and its line break; what is typed past it wraps to the
 next row at the last blank or dash.  A character outside ASCII takes two
-to four bytes.
-@item Alt-T
-Number of characters per tab stop.
-@item Alt-X
-Number of changes before an auto-save (if enabled).
-@item Alt-N
-Number of undo steps saved.  A step is one action, however many lines or
-replacements it changed (a Change All, a @kbd{Ctrl-K I} over a block).
-@item Alt-I
-Number of columns for auto-indent step.
-@end table
+to four bytes, so the least, 4, still holds one.  Every row costs this many
+bytes plus two, so 9999 columns cost 1 GB for a file of 100000 lines.
+@item Tabstops (@kbd{Alt-T})
+@tab 1 to 99 @tab 8
+@tab Number of characters per tab stop.  The editor divides by it, so 0 is
+not a number it can use.  With 1 the shift of a block by half a tab moves
+nothing, as in the original.
+@item Max.@: Changes (@kbd{Alt-X})
+@tab 0 to 999 @tab 999
+@tab Number of changes before an auto-save (if enabled); 0 saves after
+every change.
+@item Num.@: Undo (@kbd{Alt-N})
+@tab 0 to 99 @tab 10
+@tab Number of undo steps saved; 0 keeps one.  A step is one action,
+however many lines or replacements it changed (a Change All, a
+@kbd{Ctrl-K I} over a block).
+@item Auto Ind.@: Col. (@kbd{Alt-I})
+@tab 0 to 99 @tab 3
+@tab Number of columns for the auto-indent step; 0 adds none.  The Number
+of Columns of Beautify is the same number.
+@end multitable
 
 @anchor{File manager options dialog}
 @subsection File manager options dialog

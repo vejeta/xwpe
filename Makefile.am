@@ -83,6 +83,7 @@ we_SOURCES = \
   we_startcmd.c \
   we_startplan.c \
   we_path.c \
+  we_number.c \
   we_progname.c \
   we_listsel.c \
   we_helpbuf.c \
@@ -230,6 +231,7 @@ noinst_HEADERS = \
   we_startcmd.h \
   we_startplan.h \
   we_path.h \
+  we_number.h \
   we_progname.h \
   we_listsel.h \
   we_helpbuf.h \
@@ -350,7 +352,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -377,6 +379,13 @@ test_path_CFLAGS = $(XWPE_STDFLAG)
 test_progname_SOURCES = tests/test_progname.c we_progname.c we_path.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c
 test_progname_CFLAGS = $(XWPE_STDFLAG)
 test_progname_LDADD = $(UTIL_LIBS)
+
+# The owner of a number the user or a file gives the editor (we_number.c):
+# the parser reads a text whole and refuses overflow and trailing text, the
+# range of each kind, and the field's accept (saturating Go to Line).  Links
+# the editor's string helpers only; the status row is a stub of the test.
+test_number_parse_SOURCES = tests/test_number_parse.c we_number.c WeString.c
+test_number_parse_CFLAGS = $(AM_CFLAGS)
 
 # The owner of the copy out of a dialog field (we_fieldtake.h): a text that
 # does not fit its destination is refused, never written past it.
@@ -704,7 +713,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf
+  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -767,6 +776,14 @@ TESTS += tests/check-path-buffers.sh
 # sites of other readers found when the scan was first run, each with its
 # reason).
 TESTS += tests/check-help-buffers.sh
+
+# One owner of a number the user or a file gives the editor (we_number.c):
+# tests/check-number-fields.sh fails on a second parser of an option's
+# digits, a write of the five editor numbers outside the owner, a field
+# without a type, a guard of a site against a value the owner already keeps
+# in range, and a refusal nobody reads; what the file reader still parses by
+# itself is counted in tests/number-fields.allow, and the count may only fall.
+TESTS += tests/check-number-fields.sh
 
 # One owner of the selection block mode's replacement (e_selection_run), of
 # the pending auto-indent mark (the buffer owner) and of the final line break
@@ -892,6 +909,10 @@ EXTRA_DIST = \
   tests/check-path-buffers.sh \
   tests/check-help-buffers.sh \
   tests/help-buffers.allow \
+  tests/check-number-fields.sh \
+  tests/number-fields.allow \
+  tests/test_number_parse.c \
+  tests/test_number_fields.py \
   tests/check-selection-mode.sh \
   tests/check-list-entry.sh \
   tests/list-entry.allow \

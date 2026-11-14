@@ -76,15 +76,6 @@ int WpeNumberOfPlaces(int n);
 char *WpeNumberToString(int n, int len, char *s);
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
-  WpeStringToNumber - Converts a string to a number.
-
-    Parameters:
-      s            (In)  String to be converted to a number
-    Returns: The string's number value
-\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-int WpeStringToNumber(const char *s);
-
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeStringToUpper - Converts a string to all uppercase.
 
     Parameters:

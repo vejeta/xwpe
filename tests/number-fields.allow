@@ -1,0 +1,18 @@
+# What the option file reader still parses or writes by itself, and the one
+# guard that is kept.  Checked by tests/check-number-fields.sh.
+#
+#   rule|file|function|count|pass|reason
+#
+# "count" is the number of matches in the function (for rule 1, in the
+# file); it may only fall.  "pass" is the pass that moves it onto the owner
+# (P2, P4) and "keep" for one that is not a number the owner keeps, with its
+# reason.  A file with a rule 1 line is read in source form instead of by nm
+# until its last parser is gone.  --strict ignores every line but the keep
+# ones.
+
+# --- the option file reader, moved onto the owner with the file pass (P2) ---
+R1|we_opt.c|(file)|21|P2|five of these are the editor numbers (P2); the other sixteen are the option file's other integer keys, moved in P4
+R2|we_opt.c|WpeReadGeneral|5|P2|the five editor numbers are read with atoi and written into the editor
+
+# --- a buffer built without an editor ---
+R4|we_buffer.c|buffer_tab_width|2|keep|the buffer owner is pure and unit tested without an editor: it falls back to its own default for a tab width of 0 or less

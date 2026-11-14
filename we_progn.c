@@ -2108,7 +2108,7 @@ int e_p_beautify(FENSTER *f)
  o->crsw = AltO;
  e_add_txtstr(4, 2, "Begin:", o);
  e_add_txtstr(4, 6, "Scope:", o);
- e_add_numstr(4, 12, 26, 12, 2, 100, 0, AltN, "Number of Columns:", f->ed->autoindent, o);
+ e_add_numstr(4, 12, 26, 12, WPE_NUM(WPE_NUM_AUTOINDENT), 0, AltN, "Number of Columns:", f->ed->autoindent, o);
  e_add_sswstr(5, 10, 3, AltT, (b_sw & 4) ? 1 : 0, "No Tabulators     ", o);
  e_add_pswstr(0, 5, 3, 0, AltG, 0, "Global            ", o);
  e_add_pswstr(0, 5, 4, 0, AltS, b_sw & 1, "Selected Text     ", o);
@@ -2120,7 +2120,8 @@ int e_p_beautify(FENSTER *f)
  if (ret != WPE_ESC)
  {
   b_sw = o->pstr[0]->num + (o->pstr[1]->num << 1) + (o->sstr[0]->num << 2);
-  f->ed->autoindent = o->nstr[0]->num;
+  if (e_number_store(f->ed, WPE_NUM(WPE_NUM_AUTOINDENT), o->nstr[0]->num) != 0)
+   e_error("A number is outside its range", 0, f->fb);
   e_mk_beauty(b_sw, f->ed->autoindent, f);
  }
  freeostr(o);

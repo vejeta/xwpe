@@ -9,9 +9,9 @@
 #include "we_fdloop.h"
 
 /*   numbers box (numbers input/edit)     */
-int e_num_kst(char *s, int num, int max, FENSTER *f, int n, int sw)
+int e_num_kst(char *s, int num, const WpeNumberType *type, FENSTER *f, int n, int sw)
 {
- int ret, nz = WpeNumberOfPlaces(max);
+ int ret, nz = WpeNumberOfPlaces(type->max);
  int field_w = nz < 10 ? 10 : nz;
  int label_len = strlen(s) + 1;
  int inner_w = label_len + 2 + field_w + 4;
@@ -31,7 +31,7 @@ int e_num_kst(char *s, int num, int max, FENSTER *f, int n, int sw)
  o->name = s;
  o->crsw = AltO;
  sprintf(tmp, "%s:", s);
- e_add_numstr(3, 2, label_len + 3, 2, field_w, max, n, sw, tmp, num, o);
+ e_add_numstr(3, 2, label_len + 3, 2, type, n, sw, tmp, num, o);
  FREE(tmp);
  { int btn_w = inner_w - 4;
    e_add_bttstr(btn_w / 3 - 1, 5, 1, AltO, " Ok ", NULL, o);

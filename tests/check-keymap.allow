@@ -56,7 +56,7 @@ we_debug.c:e_lsp_ui_workspace_symbols:* 1 dialog field editing
 we_e_aus.c:e_field_is_pasted_break:* 1 dialog field editing
 we_e_aus.c:e_pasted_control_byte:* 6 dialog field editing
 we_e_aus.c:e_schreib_leiste_lines:* 42 dialog field editing
-we_e_aus.c:e_schreib_zif:* 6 dialog field editing
+we_e_aus.c:e_schreib_zif:* 5 dialog field editing
 we_edit.c:e_key_cancels_answer:* 2 dialog field editing
 we_fl_fkt.c:e_help_options:* 1 dialog field editing
 we_fl_fkt.c:e_quit:* 2 dialog field editing
@@ -107,7 +107,7 @@ we_opt.c:e_opt_route_button_key:* 2 dialog field editing
 we_opt.c:e_opt_route_checkbox_key:* 2 dialog field editing
 we_opt.c:e_opt_route_field_key:* 2 dialog field editing
 we_opt.c:e_opt_route_radio_key:* 2 dialog field editing
-we_opt.c:e_opt_run_num_field:* 1 dialog field editing
+we_opt.c:e_opt_num_field_edit:* 2 dialog field editing
 we_opt.c:e_opt_run_text_field:* 1 dialog field editing
 we_opt.c:e_opt_save:* 1 dialog field editing
 we_opt.c:e_opt_wait_esc_or_resize:* 2 dialog field editing

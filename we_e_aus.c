@@ -419,18 +419,58 @@ static int e_field_byte_at_column(unsigned char *s, int from, int len, int col)
  return pos;
 }
 
-int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
+/**
+ * e_field_digits_in - How many places of a number field's text hold digits.
+ * @s: the field's text, blanks then digits; @max: its places.
+ *
+ * Return: the count, at least 1 (a field is never empty).
+ */
+static int e_field_digits_in(const char *s, int max)
+{
+ int blanks = 0;
+
+ while (blanks < max - 1 && s[blanks] == ' ')
+  blanks++;
+ return max - blanks;
+}
+
+/**
+ * e_field_key_is_dropped_char - Is @c a printable key a number field ignores?
+ *
+ * Any printable key that is not a digit: it changes nothing, and it must not
+ * count as the first key either, or a stray '-' would make the next digit
+ * append to the old number instead of replacing it.
+ */
+static int e_field_key_is_dropped_char(int c)
+{
+ return c >= 32 && c <= 255 && !(c >= '0' && c <= '9');
+}
+
+/**
+ * e_schreib_zif - Let the user type the digits of a number field.
+ * @text: the field's digits, @max places and a terminator, edited in place.
+ * @x, @y: where the field is on screen; @max: its places.
+ * @ft, @fs: its colours while typing and as first drawn.
+ *
+ * The field only edits text: the number it holds is read back by the owner of
+ * the field's type (e_number_field_accept), which knows the range and says
+ * when the typed number cannot be used.  Esc returns without a word, and
+ * every other key that is not a digit or an editing key returns as the key
+ * that left the field.
+ * Return: that key.
+ */
+int e_schreib_zif(char *text, int x, int y, int max, int ft, int fs)
 {
 #if  MOUSE
  extern struct mouse e_mouse;
 #endif
  extern int g_bracketed_paste;      /* set while a terminal paste streams */
- int c, i, jc = max-1, ntmp = *num, nnum = WpeNumberOfPlaces(ntmp);
+ int c, i, jc = max-1, nnum = e_field_digits_in(text, max);
  int first = 1;
- char *s = MALLOC((max+1)*sizeof(char));
+ char *s = text;
 
  e_pr_char(x - 1, y, ' ', fs);
- e_pr_zstring(WpeNumberToString(ntmp, max, s), x, y, max, fs);
+ e_pr_zstring(s, x, y, max, fs);
  e_pr_char(x + max, y, ' ', fs);
  fk_locate(x+jc, y);
  fk_cursor(1);
@@ -441,11 +481,7 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
   if (g_bracketed_paste && e_pasted_control_byte(c))
    continue;
   if (c == WPE_RESIZE)
-  {
-   *num = WpeStringToNumber(s);
-   FREE(s);
    return WPE_RESIZE;
-  }
 #if  MOUSE
   if (c < 0)
   {
@@ -454,12 +490,7 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
     jc = e_mouse.x-x > max-nnum ? e_mouse.x-x : max-nnum;
    }
    else
-   {
-    if (c > -2)
-     *num = WpeStringToNumber(s);
-    FREE(s);
     return(c);
-   }
   }
 #endif
   if (e_field_key_is_wide_text(c))
@@ -508,13 +539,10 @@ int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs)
    if (nnum < max)
     nnum++;
   }
+  else if (e_field_key_is_dropped_char(c))
+   continue;           /* leaves the field as it was, "first" included */
   else if (c > 0 && (c < 32 || c > 255))
-  {
-   if (c != WPE_ESC)
-    *num = WpeStringToNumber(s);
-   FREE(s);
    return(c);
-  }
   if (jc > max -1)
    jc = max-1;
   else if (jc < max - nnum) jc = max-nnum;

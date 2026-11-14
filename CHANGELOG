@@ -33,6 +33,13 @@ Bugs fixed in 1.6.x:
 * Search > Go to Line: a ten digit line number above 1410065407 was shown
   as 1410065407 once the focus left the field.  The field now shows every
   number it can hold whole.
+* Options > Editor, Beautify and Search > Go to Line: a number field refuses
+  a number outside its range and says the range on the bottom row; the box
+  stays open on the field until the number can be used.  Tabstops 0 no
+  longer ends the editor, Max. Columns 0 no longer loses what is typed, and
+  a key that is not a digit no longer makes the next digit append.  Max.
+  Columns goes up to 9999.  A Go to Line number larger than the editor can
+  count goes to the last line.
 * Quitting, a signal (SIGTERM, SIGHUP) or a crash now hands the terminal
   back as the shell had it, on every terminal: the alternate screen is
   left and stays left, and the mouse, bracketed paste and keyboard modes

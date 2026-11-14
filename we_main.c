@@ -142,13 +142,7 @@ void ECNT_Init(ECNT *cn)
  cn->dtmd = DTMD_NORMAL;
  cn->eol_default = E_EOL_LF;
  cn->autosv = 0;
- cn->maxchg = 999;
- cn->numundo = 10;
- cn->maxcol = MAXCOLUM;
- cn->tabn = 8;
- cn->autoindent = 3;
- cn->tabs = MALLOC((cn->tabn+1)*sizeof(char));
- WpeStringBlank(cn->tabs, cn->tabn);
+ e_number_defaults(cn);
  cn->flopt = FM_REKURSIVE_ACTIONS | FM_REMOVE_INTO_WB | FM_MOVE_PROMPT |
    FM_MOVE_PROMPT | FM_PROMPT_DELETE;
  cn->edopt = ED_SOURCE_AUTO_INDENT | ED_ERRORS_STOP_AT | ED_SYNTAX_HIGHLIGHT;

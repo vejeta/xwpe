@@ -3252,7 +3252,7 @@ W_O_WRSTR **e_add_wrstr(int xt, int yt, int xw, int yw, int nw, int wmx,
  return(o->wstr);
 }
 
-W_O_NUMSTR **e_add_numstr(int xt, int yt, int xw, int yw, int nw, int wmx,
+W_O_NUMSTR **e_add_numstr(int xt, int yt, int xw, int yw, const WpeNumberType *type,
    int nc, int sw, char *header, int num, W_OPTSTR *o)
 {
  if (o->nn == 0)
@@ -3268,11 +3268,9 @@ W_O_NUMSTR **e_add_numstr(int xt, int yt, int xw, int yw, int nw, int wmx,
  o->nstr[o->nn-1]->yt = yt;
  o->nstr[o->nn-1]->xw = xw;
  o->nstr[o->nn-1]->yw = yw;
- o->nstr[o->nn-1]->nw = nw;
- o->nstr[o->nn-1]->wmx = wmx;
  o->nstr[o->nn-1]->nc = nc;
  o->nstr[o->nn-1]->sw = sw;
- o->nstr[o->nn-1]->num = num;
+ e_number_field_init(o->nstr[o->nn-1], type, num);
  strcpy(o->nstr[o->nn-1]->header, header);
  return(o->nstr);
 }
@@ -4239,24 +4237,71 @@ static void e_opt_run_text_field(W_OPTSTR *o, struct opt_run *r, int i)
 }
 
 /**
+ * e_opt_num_field_resize_take - Keep the typed number through a resize if it is one.
+ *
+ * A resize tears the box down and draws it again from the field's value, so
+ * a number the user had typed survives the resize when the owner accepts it;
+ * one it refuses is dropped, and the box shows the last valid value.
+ */
+static void e_opt_num_field_resize_take(W_OPTSTR *o, W_O_NUMSTR *n, char *text)
+{
+ if (e_number_field_accept(n, text, o->f) != 0)
+  return;
+}
+
+/**
+ * e_opt_num_field_edit - Edit a number field's digits until a key leaves it
+ * with a value the owner accepts.
+ * @text: the field's digits, edited in place.
+ *
+ * Esc, Cancel and the dialog's close mark leave at once and take nothing.  A
+ * resize leaves too, keeping the number if it is valid.  Any other key that
+ * would leave, a Tab, Enter, an accelerator or a click on another field or
+ * on Ok, is held while the typed number is outside its range: the range is
+ * on the status row and the user keeps typing where he was, so the box can
+ * never be closed with a number the editor cannot use.  The field is drawn
+ * where the box is now, so a box dragged by its title while a number is held
+ * keeps its field inside it.
+ * Return: the key or widget code that left the field.
+ */
+static int e_opt_num_field_edit(W_OPTSTR *o, W_O_NUMSTR *n, char *text)
+{
+ int c;
+
+ for (;;)
+ {
+  c = e_schreib_zif(text, o->xa + n->xw, o->ya + n->yw, n->nw, o->fwt, o->fws);
+#if MOUSE
+  if (c < 0)
+   c = e_opt_mouse(o, c);   /* the mouse first: Cancel and the close mark are Esc */
+#endif
+  if (c == WPE_ESC)
+   return c;
+  if (c == WPE_RESIZE)
+  {
+   e_opt_num_field_resize_take(o, n, text);
+   return c;
+  }
+  if (e_number_field_accept(n, text, o->f) == 0)
+   return c;
+ }
+}
+
+/**
  * e_opt_run_num_field - Let the user edit a numeric field until a key leaves it.
  */
 static void e_opt_run_num_field(W_OPTSTR *o, struct opt_run *r, int i)
 {
  W_O_NUMSTR *n = o->nstr[i];
- int x = o->xa + n->xw;
- int y = o->ya + n->yw;
- int num = n->num;
+ char text[WPE_NUM_TEXT_SIZE];
+ int x, y;
  int c;
 
  r->cold = r->c;
- c = e_schreib_zif(&num, x, y, n->nw, o->fwt, o->fws);
-#if MOUSE
- if (c < 0)
-  c = e_opt_mouse(o, c);
-#endif
- if (c != WPE_ESC)
-  n->num = num;
+ WpeNumberToString(n->num, n->nw, text);
+ c = e_opt_num_field_edit(o, n, text);
+ x = o->xa + n->xw;     /* where the box is now: a drag may have moved it */
+ y = o->ya + n->yw;
  r->c = c;
  e_opt_route_field_key(o, r, x, y);
  if (e_opt_focus_moved_on(r))
@@ -4804,6 +4849,26 @@ static int e_opt_keys_radio_preset(int before, int taken)
  return(e_keys_preset(taken, (taken & ED_CUA_STYLE) != 0));
 }
 
+/**
+ * e_opt_store_numbers - Take the five numbers of Options > Editor into the editor.
+ * @cn: the editor's state; @o: the box the user closed with Ok.
+ *
+ * A number field is left only with a value of its range, so the owner takes
+ * each one; a refusal here would mean the box and the owner disagree about a
+ * range, and says so instead of leaving the editor on a stale number.
+ */
+static void e_opt_store_numbers(ECNT *cn, W_OPTSTR *o)
+{
+ static const WpeNumberKind kinds[] = {
+  WPE_NUM_MAXCOL, WPE_NUM_TAB, WPE_NUM_MAXCHG, WPE_NUM_NUMUNDO, WPE_NUM_AUTOINDENT
+ };
+ int i;
+
+ for (i = 0; i < (int)(sizeof kinds / sizeof kinds[0]); i++)
+  if (e_number_store(cn, WPE_NUM(kinds[i]), o->nstr[i]->num) != 0)
+   e_error("A number is outside its range", 0, cn->fb);
+}
+
 int e_edt_options(FENSTER *f)
 {
  int i, ret, edopt = f->ed->edopt;
@@ -4819,11 +4884,11 @@ int e_edt_options(FENSTER *f)
  e_add_txtstr(25, 6, "Keys:", o);
  e_add_txtstr(25, 10, "Auto-Indent:", o);
  e_add_txtstr(3, 5, "Tile:", o);
- e_add_numstr(3, 8, 19, 8, 3, 100, 0, AltM, "Max. Columns:", f->ed->maxcol, o);
- e_add_numstr(3, 9, 20, 9, 2, 100, 0, AltT, "Tabstops:", f->ed->tabn, o);
- e_add_numstr(3, 10, 19, 10, 3, 1000, 2, AltX, "MaX. Changes:", f->ed->maxchg, o);
- e_add_numstr(3, 11, 20, 11, 2, 100, 0, AltN, "Num. Undo:", f->ed->numundo, o);
- e_add_numstr(3, 12, 20, 12, 2, 100, 5, AltI, "Auto Ind. Col.:", f->ed->autoindent, o);
+ e_add_numstr(3, 8, 18, 8, WPE_NUM(WPE_NUM_MAXCOL), 0, AltM, "Max. Columns:", f->ed->maxcol, o);
+ e_add_numstr(3, 9, 20, 9, WPE_NUM(WPE_NUM_TAB), 0, AltT, "Tabstops:", f->ed->tabn, o);
+ e_add_numstr(3, 10, 19, 10, WPE_NUM(WPE_NUM_MAXCHG), 2, AltX, "MaX. Changes:", f->ed->maxchg, o);
+ e_add_numstr(3, 11, 20, 11, WPE_NUM(WPE_NUM_NUMUNDO), 0, AltN, "Num. Undo:", f->ed->numundo, o);
+ e_add_numstr(3, 12, 20, 12, WPE_NUM(WPE_NUM_AUTOINDENT), 5, AltI, "Auto Ind. Col.:", f->ed->autoindent, o);
  e_add_sswstr(4, 3, 0, AltS, f->ed->edopt & ED_SHOW_ENDMARKS ? 1 : 0, "Show Endmark  ", o);
  e_add_sswstr(26, 3, 1, AltP, f->ed->autosv & 1, "OPtions         ", o);
  e_add_sswstr(26, 4, 1, AltH, f->ed->autosv & 2 ? 1 : 0, "CHanges         ", o);
@@ -4848,11 +4913,7 @@ int e_edt_options(FENSTER *f)
  if (ret != WPE_ESC)
  {
   f->ed->autosv = o->sstr[1]->num + (o->sstr[2]->num << 1);
-  f->ed->maxcol = o->nstr[0]->num;
-  f->ed->tabn = o->nstr[1]->num;
-  f->ed->maxchg = o->nstr[2]->num;
-  f->ed->numundo = o->nstr[3]->num;
-  f->ed->autoindent = o->nstr[4]->num;
+  e_opt_store_numbers(f->ed, o);
   f->ed->edopt = ((f->ed->edopt & ~ED_EDITOR_OPTIONS) | o->pstr[0]->num) |
     (o->pstr[1]->num == 0 ? ED_SOURCE_AUTO_INDENT : 0) |
     (o->pstr[1]->num == 1 ? ED_ALWAYS_AUTO_INDENT : 0) |

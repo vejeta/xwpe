@@ -28,6 +28,7 @@
 #include <limits.h>
 #include "we_paint.h"
 #include "we_path.h"        /* how long a path or a name the editor holds may be */
+#include "we_number.h"      /* what a number the user or a file gives the editor may be */
 #include "we_fieldtake.h"   /* the copy of a dialog field's text out into a buffer */
 
 #ifdef HAVE_LIBGPM
@@ -350,7 +351,7 @@ typedef struct CNT {
  int autoindent;
  char *print_cmd;
  char *dirct;         /* current directory */
- char *optfile, *tabs; 
+ char *optfile;
  struct dirfile *sdf, *rdf, *fdf, *ddf, *wdf, *hdf, *shdf;
  FIND fd;
  FARBE *fb;
@@ -405,7 +406,8 @@ typedef struct {
 } W_O_WRSTR;
 
 typedef struct {
- int xt, yt, xw, yw, nw, wmx, nc, num, sw; 
+ int xt, yt, xw, yw, nw, nc, num, sw;
+ const WpeNumberType *type;   /* its range and its places, set by e_number_field_init */
  char *header;
 } W_O_NUMSTR;
 
@@ -617,7 +619,7 @@ void e_pr_str(int x, int y, char *str, int col, int b2, int n2, int col2,
 int e_pr_zstring(char *s, int x, int y, int n, int fb);
 int e_schr_nchar(char *s, int x, int y, int n, int max, int frb);
 void e_pr_nstr(int x, int y, int n, char *str, int col, int col2);
-int e_schreib_zif(int *num, int x, int y, int max, int ft, int fs);
+int e_schreib_zif(char *text, int x, int y, int max, int ft, int fs);
 int e_schreib_leiste(char *s, int x, int y, int n, int max, int ft, int fs);
 int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft, int fs,
                            int lines_key);
@@ -740,7 +742,7 @@ static inline int e_toupper(int c)
   return (c >= 0 && c <= 0xff) ? toupper(c) : c;
 }
 #endif
-int e_num_kst(char *s, int num, int max, FENSTER *f, int n, int sw);
+int e_num_kst(char *s, int num, const WpeNumberType *type, FENSTER *f, int n, int sw);
 COLOR e_s_x_clr(int f, int b);
 COLOR e_n_x_clr(int fb);
 #ifdef UNIX
@@ -912,8 +914,13 @@ int e_opt_field_take(W_OPTSTR *o, int k, char *dst, size_t size) WPE_FIELD_TAKE_
 W_O_TXTSTR **e_add_txtstr(int x, int y, char *txt, W_OPTSTR *o);
 W_O_WRSTR **e_add_wrstr(int xt, int yt, int xw, int yw, int nw, int wmx,
   int nc, int sw, char *header, char *txt, struct dirfile **df, W_OPTSTR *o);
-W_O_NUMSTR **e_add_numstr(int xt, int yt, int xw, int yw, int nw, int wmx,
+W_O_NUMSTR **e_add_numstr(int xt, int yt, int xw, int yw, const WpeNumberType *type,
   int nc, int sw, char *header, int num, W_OPTSTR *o);
+/* The owner of a number the user gives the editor (we_number.c). */
+void e_number_defaults(ECNT *cn);
+int e_number_store(ECNT *cn, const WpeNumberType *t, int value) WPE_NUMBER_RESULT;
+void e_number_field_init(W_O_NUMSTR *n, const WpeNumberType *type, int value);
+int e_number_field_accept(W_O_NUMSTR *n, char *text, FENSTER *f) WPE_NUMBER_RESULT;
 W_O_SSWSTR **e_add_sswstr(int x, int y, int nc, int sw, int num,
   char *header, W_OPTSTR *o);
 W_O_SPSWSTR **e_add_spswstr(int n, int x, int y, int nc, int sw,

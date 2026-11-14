@@ -102,16 +102,6 @@ char *WpeNumberToString(int n, int len, char *s)
  return(s);
 }
 
-int WpeStringToNumber(const char *s)
-{
- /* This checking of blanks is probably not needed. */
- while ((*s) == ' ')
- {
-  s++;
- }
- return(atoi(s));
-}
-
 char *WpeStringToUpper(char *s)
 {
  char *s2;

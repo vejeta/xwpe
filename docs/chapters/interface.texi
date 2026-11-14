@@ -119,7 +119,8 @@ Search and replace.
 @item S -- Search again
 Repeat the last search.
 @item G -- Go to Line
-Jump to a specific line number.  In the programming mode (@command{wpe},
+Jump to a specific line number; a number past the last line, however many
+digits it has, goes to the last line.  In the programming mode (@command{wpe},
 @command{xwpe}) @kbd{Alt-G} is the assistant, so Go to Line is reached here,
 from the Search menu; only @command{we} also has it on @kbd{Alt-G}.
 @end table
