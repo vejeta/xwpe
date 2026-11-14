@@ -1,0 +1,44 @@
+# The functions that still name an output of a build by a rule of their own,
+# or read a file's extension.  Checked by tests/check-program-name.sh.
+#
+#   file|function|count|pass|reason
+#
+# "count" is the number of matches in the function; it may only fall.
+# "pass" is "owner" for a function the program-name owner (we_progname.c)
+# takes over, and "keep" for one that is not the name of an output, with its
+# reason.  --strict ignores the "owner" lines.
+
+# --- moved onto the owner with the F9, Run and project path ---
+we_prog.c|e_p_link_operands_of|3|owner|stem cut, suffix literals and the folder join of the link
+we_prog.c|e_comp_operands|1|owner|cuts the placed path of the compile's object
+we_prog.c|e_run_program_path|2|owner|Run's own stem cut and join
+we_prog.c|e_prj_object_of|2|owner|a FILES word's object: its own cut and join
+we_prog.c|e_prj_program_path|2|owner|EXENAME or "a.out", joined
+we_prog.c|e_prj_default_exe|1|owner|the Executable default, cut at the last dot of the project path
+we_prog.c|e_prj_default_exe_of|1|owner|New Project's EXENAME, cut at the first dot
+we_prog.c|e_check_c_file|1|owner|the extension of the compiler entry
+we_prog.c|e_p_file_type|1|owner|the extension of the "no compiler entry" message
+we_prog.c|e_prj_is_program_object|1|owner|"main.o" is named by a literal; which objects enter the library is a build decision the owner keeps as it is
+we_prog.c|e_prj_inserted_after_compile|1|owner|"main.o" is named by a literal, as above
+we_prog.c|#define E_P_PROGRAM_SUFFIX|1|owner|the link's program suffix
+we_prog.c|#define E_P_OBJECT_SUFFIX|1|owner|the link's object suffix
+we_prog.c|#define E_P_CLASS_SUFFIX|1|owner|the link's class suffix
+we_prog.c|#define E_RUN_PROGRAM_EXT|1|owner|Run's program suffix
+we_prog.c|#define E_RUN_PROJECT_PROG|1|owner|Run's default project program
+
+# --- moved onto the owner with the debugger ---
+we_debug.c|e_d_exe_name_of|2|owner|the program the debugger loads: stem cut and ".e"
+we_debug.c|e_d_compile_command|3|owner|the debug binary and its error file: stem cut, ".dbg", ".dbgerr"
+we_debug.c|e_d_dap_lang_for|2|owner|which adapter: the end of the name against a table's extension
+we_debug.c|e_d_dap_source_ext|2|owner|is this a DAP source: the same end-of-name compare as e_d_dap_lang_for
+we_debug.c|e_d_jdb_mark_stop|1|owner|a class named after its source: stem cut
+we_debug.c|e_d_brk_jdb_class|1|owner|a class named after its source: stem cut
+we_debug.c|e_d_jdb_start_class|1|owner|a class named after its source: stem cut
+
+# --- not the name of an output ---
+we_progn.c|e_add_synt_tl|1|keep|a syntax table is chosen by the file's extension; a read, nothing is named
+we_ai_ui.c|ai_build_command|1|keep|the compiler for a "Build and fix" read (-fsyntax-only); names no output
+we_ai_ws.c|ws_source_like|1|keep|is this file source-like: an extension for a read
+we_debug.c|e_d_jdb_class_file|1|keep|a dotted Java class name: the simple name after its last dot
+we_debug.c|e_d_jdb_frame_source|1|keep|a dotted Java class name in a stack frame
+we_fl_unix.c|e_execute_plan|1|keep|the file the user typed to run; the operand is a source, not an output

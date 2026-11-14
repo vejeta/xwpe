@@ -80,6 +80,7 @@ we_SOURCES = \
   we_startcmd.c \
   we_startplan.c \
   we_path.c \
+  we_progname.c \
   we_wind.c \
   we_prog.c \
   we_progn.c \
@@ -223,6 +224,7 @@ noinst_HEADERS = \
   we_startcmd.h \
   we_startplan.h \
   we_path.h \
+  we_progname.h \
   we_fieldtake.h \
   we_wayland.h \
   we_fdloop.h \
@@ -338,12 +340,20 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_fieldtake test_layout
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout
 
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
 test_path_SOURCES = tests/test_path.c we_path.c
 test_path_CFLAGS = $(XWPE_STDFLAG)
+
+# The owner of the name of what a build makes from a source (we_progname.c):
+# the extension and stem of a name, the program, the object and the debug
+# binary under Exedir through the start plan's operand, a result that does
+# not fit refused whole, and the project's two names.
+test_progname_SOURCES = tests/test_progname.c we_progname.c we_path.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c
+test_progname_CFLAGS = $(XWPE_STDFLAG)
+test_progname_LDADD = $(UTIL_LIBS)
 
 # The owner of the copy out of a dialog field (we_fieldtake.h): a text that
 # does not fit its destination is refused, never written past it.
@@ -635,7 +645,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain \
-  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_fieldtake test_layout
+  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_progname test_fieldtake test_layout
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -674,6 +684,13 @@ TESTS += tests/check-chain-outcome.sh
 # e_add_arguments without its buffer's size, and a second definition of the
 # two numbers.
 TESTS += tests/check-path-buffers.sh
+
+# One owner of the name of what a build makes from a source (we_progname.h):
+# tests/check-program-name.sh counts, per function, the cuts at a dot, the
+# output suffixes in a string and the joins of a name derived on the spot;
+# the functions still to move are in tests/program-name.allow, and the
+# counts may only fall.
+TESTS += tests/check-program-name.sh
 
 # One layout path for every box: the layout owner (we_layout.c).
 # tests/check-box-layout.sh fails when a box's place is computed outside
@@ -766,6 +783,8 @@ EXTRA_DIST = \
   tests/debug-command.allow \
   tests/check-chain-outcome.sh \
   tests/check-path-buffers.sh \
+  tests/check-program-name.sh \
+  tests/program-name.allow \
   tests/check-box-layout.sh \
   tests/box-layout.allow \
   tests/check-keymap.sh \
