@@ -1,0 +1,35 @@
+step 0 start
+W 1 t.txt ro=0 mx=120 y=0 x=0 mb=2,5 me=2,5 ks=0,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+L 1 H third|
+step 1 shift_down
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=0,0 me=1,0 ks=1,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+L 1 H third|
+step 2 shift_right
+W 1 t.txt ro=0 mx=120 y=1 x=1 mb=0,0 me=1,1 ks=1,1 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+L 1 H third|
+step 3 shift_right
+W 1 t.txt ro=0 mx=120 y=1 x=2 mb=0,0 me=1,2 ks=1,2 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+L 1 H third|
+step 4 enter
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=1,0 me=1,0 ks=1,0 ins=1 flg=0 save=35 view=0,0,1,0,20,79 brp=- ud=1 rd=0
+L 1 H |
+L 1 H cond line|
+L 1 H third|
+step 5 undo
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=0,0 me=1,2 ks=1,0 ins=1 flg=0 save=90 view=0,0,1,0,20,79 brp=- ud=0 rd=1
+L 1 H hello world|
+L 1 H second line|
+L 1 H third|
+step 6 redo
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=1,0 me=1,0 ks=1,0 ins=1 flg=0 save=137 view=0,0,1,0,20,79 brp=- ud=1 rd=0
+L 1 H |
+L 1 H cond line|
+L 1 H third|

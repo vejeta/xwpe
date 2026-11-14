@@ -1,0 +1,14 @@
+# Return with auto-indent, and Options > Editor > Trim Auto-indent on: the
+# indent Return left on a line goes when the cursor leaves the line without
+# anything typed on it, in the same Ctrl-U as the key. A line the user typed
+# on keeps its indent.
+file t.c
+seed b"    int a = 1;\n"
+rc "[General]\nOptions2 : 2200\n"
+end
+enter
+type b"b"
+enter
+enter
+up
+down

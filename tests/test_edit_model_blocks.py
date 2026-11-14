@@ -217,6 +217,29 @@ def test_copy_cut_and_paste_through_the_clipboard_window():
 
 
 # @scenario SC-edit-model-21
+@pytest.mark.parametrize("selected", [False, True])
+def test_paste_in_the_selection_mode_leaves_nothing_selected_and_redo_too(selected):
+    """With the selection mode a paste replaces a selection (one step) and
+    the pasted text is never selected: not after the paste, not after Ctrl-U
+    and Ctrl-R, which end with the cursor after the pasted text."""
+    st = _state(selection=True)
+    st.clip = [("H", b"XY")]
+    st.y, st.x = 1, 1
+    if selected:
+        st.mb, st.me = (1, 1), (1, 3)
+    pasted = _do(st, "edit_paste")
+    want = b"bXYeta two" if not selected else b"bXYa two"
+    assert pasted.lines()[1] == ("H", want)
+    assert (pasted.y, pasted.x) == (1, 3) and pasted.mb == pasted.me == (1, 3)
+    assert pasted.ud == 1
+    back = _do(pasted, "undo")
+    assert back.lines()[1] == ("H", b"beta two")
+    again = _do(back, "redo")
+    assert again.lines()[1] == ("H", want)
+    assert (again.y, again.x) == (1, 3) and again.mb == again.me == (1, 3)
+
+
+# @scenario SC-edit-model-21
 def test_a_locked_window_refuses_every_text_change_but_copy_works():
     """In a window closed to changes: Copy and Ctrl-K C fill the
     clipboard, Cut copies and refuses the delete, and Paste, Move, Delete,

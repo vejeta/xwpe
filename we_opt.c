@@ -4102,6 +4102,51 @@ static void e_opt_take_print_cmd(ECNT *cn, const char *text)
   e_startcmd_typed(e_opt_folder_dir, WPE_STARTCMD_KEY_PRINT, text);
 }
 
+/**
+ * e_opt_block_wordstar - Do Ctrl-K B and Ctrl-K K work as two independent
+ * markers under the options @edopt?
+ *
+ * The selection mode wins over a WordStar bit left in a hand-edited options
+ * file, so the editor never works in two block modes at once and the dialog
+ * never shows them.  Every reader of the WordStar bit asks here.
+ */
+int e_opt_block_wordstar(int edopt)
+{
+ return((edopt & ED_BLOCK_WORDSTAR) && !(edopt & ED_BLOCK_SELECTION));
+}
+
+/** e_opt_wordstar_ticked - Is the WordStar blocK box ticked when the dialog opens? */
+static int e_opt_wordstar_ticked(int edopt)
+{
+ return(e_opt_block_wordstar(edopt));
+}
+
+/**
+ * e_opt_block_mode_bits - The block mode the Editor-Options boxes ask for.
+ * @before: the options the dialog opened on; @wordstar, @selection: the two
+ * block boxes as they stand at Ok.
+ *
+ * The block mode has three levels (anchor, WordStar, selection) and the
+ * dialog shows two boxes, so both can be ticked: the one the user ticked in
+ * this dialog wins, and the other is cleared.  A user who ticks Selection
+ * while WordStar is on gets Selection, and the other way round.
+ * Return: ED_BLOCK_WORDSTAR, ED_BLOCK_SELECTION or 0 (anchor).
+ */
+static int e_opt_block_mode_bits(int before, int wordstar, int selection)
+{
+ if (wordstar && selection)
+ {
+  if (before & ED_BLOCK_SELECTION)
+   return(ED_BLOCK_WORDSTAR);
+  return(ED_BLOCK_SELECTION);
+ }
+ if (selection)
+  return(ED_BLOCK_SELECTION);
+ if (wordstar)
+  return(ED_BLOCK_WORDSTAR);
+ return(0);
+}
+
 int e_edt_options(FENSTER *f)
 {
  int i, ret, edopt = f->ed->edopt;
@@ -4126,8 +4171,11 @@ int e_edt_options(FENSTER *f)
  e_add_sswstr(26, 3, 1, AltP, f->ed->autosv & 1, "OPtions         ", o);
  e_add_sswstr(26, 4, 1, AltH, f->ed->autosv & 2 ? 1 : 0, "CHanges         ", o);
  e_add_sswstr(4, 6, 2, AltD, f->ed->edopt & ED_OLD_TILE_METHOD ? 1 : 0, "OlD Style     ", o);
- e_add_sswstr(4, 4, 13, AltK, f->ed->edopt & ED_BLOCK_WORDSTAR ? 1 : 0, "WordStar blocK", o);
+ e_add_sswstr(4, 4, 13, AltK, e_opt_wordstar_ticked(f->ed->edopt), "WordStar blocK", o);
  /* The AI assistant on/off + backend/model/policy now live in Options -> AI. */
+ e_add_sswstr(4, 7, 3, AltE, f->ed->edopt & ED_BLOCK_SELECTION ? 1 : 0, "SelEction blocK", o);
+ e_add_sswstr(4, 13, 5, AltA, f->ed->edopt & ED_TRIM_AUTO_INDENT ? 1 : 0, "Trim Auto-indent", o);
+ e_add_sswstr(4, 16, 5, AltF, f->ed->edopt & ED_KEEP_FILE_ENDING ? 1 : 0, "Keep Final newline", o);
  e_add_pswstr(0, 26, 7, 1, AltL, 0, "OLd-Style       ", o);
  e_add_pswstr(0, 26, 8, 0, AltC, f->ed->edopt & ED_CUA_STYLE, "CUA-Style       ", o);
  e_add_pswstr(1, 26, 11, 3, AltY, 0, "OnlY Source-Text", o);
@@ -4148,12 +4196,14 @@ int e_edt_options(FENSTER *f)
   f->ed->maxchg = o->nstr[2]->num;
   f->ed->numundo = o->nstr[3]->num;
   f->ed->autoindent = o->nstr[4]->num;
-  f->ed->edopt = ((f->ed->edopt & ~ED_EDITOR_OPTIONS) + o->pstr[0]->num) +
-    (o->pstr[1]->num == 0 ? ED_SOURCE_AUTO_INDENT : 0) +
-    (o->pstr[1]->num == 1 ? ED_ALWAYS_AUTO_INDENT : 0) +
-    (o->sstr[3]->num ? ED_OLD_TILE_METHOD : 0) +
-    (o->sstr[0]->num ? ED_SHOW_ENDMARKS : 0) +
-    (o->sstr[4]->num ? ED_BLOCK_WORDSTAR : 0);
+  f->ed->edopt = ((f->ed->edopt & ~ED_EDITOR_OPTIONS) | o->pstr[0]->num) |
+    (o->pstr[1]->num == 0 ? ED_SOURCE_AUTO_INDENT : 0) |
+    (o->pstr[1]->num == 1 ? ED_ALWAYS_AUTO_INDENT : 0) |
+    (o->sstr[3]->num ? ED_OLD_TILE_METHOD : 0) |
+    (o->sstr[0]->num ? ED_SHOW_ENDMARKS : 0) |
+    e_opt_block_mode_bits(edopt, o->sstr[4]->num, o->sstr[5]->num) |
+    (o->sstr[6]->num ? ED_TRIM_AUTO_INDENT : 0) |
+    (o->sstr[7]->num ? ED_KEEP_FILE_ENDING : 0);
   e_opt_take_print_cmd(f->ed, o->wstr[0]->txt);
   if (edopt != f->ed->edopt)
   {

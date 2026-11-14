@@ -1,0 +1,8 @@
+# Selection block mode: Block > Mark whole text (Ctrl-K X) is a selection
+# like any other; typing replaces all of it and Ctrl-U gives all of it back.
+file t.txt
+seed b"one\ntwo two\nthree\n"
+rc "[General]\nOptions2 : 1048\n"
+block_all
+type b"x"
+undo

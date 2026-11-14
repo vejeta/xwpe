@@ -27,7 +27,7 @@ and the coverage report lists them as not built, never as covered.
 # name -> levels, in the order the TSV lists them.
 FACTORS = {
     "keys": ("old", "cua"),
-    "block": ("modern", "wordstar"),
+    "block": ("modern", "wordstar", "selection"),
     "ins": ("insert", "overwrite"),
     "autoindent": ("source", "always", "never"),
     # Max. Columns: the width the window opens with (118, 40), or the width
@@ -44,6 +44,9 @@ FACTORS = {
     "alt_j": ("off", "on"),
     "window": ("file", "readonly"),
     "windows": ("one",),
+    # Options > Editor > Trim Auto-indent, and Keep Final newline
+    "trim": ("off", "on"),
+    "ending": ("add", "keep"),
 }
 # Levels the design names and the harness cannot drive yet.
 PENDING = {
@@ -54,7 +57,8 @@ PENDING = {
 # Factors whose combinations are covered three at a time; every other pair
 # of factors is covered two at a time.
 STRENGTH_3 = (("keys", "block", "ins", "autoindent"),
-              ("width", "file", "clipboard", "windows"))
+              ("width", "file", "clipboard", "windows"),
+              ("autoindent", "trim", "keys"))
 
 # Max. Columns when the window opens before the dialog changes it.
 WIDTH_RAISED_START = 60
@@ -70,6 +74,9 @@ OPTIONS2_BASE = 8 + 16
 OPT_CUA = 1
 OPT_ENDMARK = 2
 OPT_WORDSTAR = 4
+OPT_SELECTION = 0x400
+OPT_TRIM = 0x800
+OPT_KEEP_ENDING = 0x1000
 OPT_AUTOINDENT_SOURCE = 128
 OPT_AUTOINDENT_ALWAYS = 256
 READONLY_MODE = 0o444
@@ -110,6 +117,13 @@ COPY_ONE_LINE = (("block_begin", None), ("end", None), ("block_end", None),
 COPY_SEVERAL_LINES = (("block_begin", None), ("down", None), ("down", None),
                       ("end", None), ("block_end", None), ("edit_copy", None),
                       ("block_hide", None), ("file_start", None))
+# The same blocks marked with Shift: in the selection block mode a move
+# without Shift collapses the block Ctrl-K B began, so the copy above would
+# copy nothing and the row would start with an empty clipboard.
+SELECT_ONE_LINE = (("shift_end", None), ("edit_copy", None), ("block_hide", None),
+                   ("file_start", None))
+SELECT_SEVERAL_LINES = (("shift_down", None), ("shift_down", None), ("shift_end", None),
+                        ("edit_copy", None), ("block_hide", None), ("file_start", None))
 
 
 class Row:
@@ -158,6 +172,12 @@ class Row:
             v += OPT_ENDMARK
         if self.lv["block"] == "wordstar":
             v += OPT_WORDSTAR
+        elif self.lv["block"] == "selection":
+            v += OPT_SELECTION
+        if self.lv["trim"] == "on":
+            v += OPT_TRIM
+        if self.lv["ending"] == "keep":
+            v += OPT_KEEP_ENDING
         ai = self.lv["autoindent"]
         if ai == "source":
             v += OPT_AUTOINDENT_SOURCE
@@ -198,8 +218,13 @@ class Row:
 
     def _clipboard_prelude(self):
         level = self.lv["clipboard"]
+        selection = self.lv["block"] == "selection"
+        if level == "oneline" and selection:
+            return list(SELECT_ONE_LINE)
         if level == "oneline":
             return list(COPY_ONE_LINE)
+        if level == "multiline" and selection:
+            return list(SELECT_SEVERAL_LINES)
         if level == "multiline":
             return list(COPY_SEVERAL_LINES)
         return []
@@ -349,6 +374,8 @@ def expected_levels(row):
 TRUSTED_LEVELS = (
     ("keys", "the key style"),
     ("block", "the block mode"),
+    ("trim", "Trim Auto-indent"),
+    ("ending", "Keep Final newline"),
     ("numundo", "Num. Undo"),
     ("autosave", "Autosave"),
     ("autoindent", "source against always (both read as on)"),

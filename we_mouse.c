@@ -1229,6 +1229,8 @@ void e_cur_mouse(f)
 	    e_mouse_select_word(b);
 	 e_schirm(f, 1);
       }
+      else
+	 e_selection_end(f);
       e_buffer_mark_from(b, E_BUFFER_MARK_ANCHOR, E_BUFFER_POS_CURSOR);
    }
    else

@@ -147,6 +147,8 @@ def check_typed_bytes_kept(before, action, w):
     if action.name != "type" or not (before.ins & model.INS_INSERT) \
             or before.ins == model.INS_READONLY:
         return []
+    if before.options.selection and before.mb != before.me:
+        return []          # the typed bytes replace the selection (sel_typing_replaces)
     old = render_disk(before.lines())
     off = logical_offset(before.lines(), before.y, before.x)
     want = old[:off] + action.arg + old[off:]
@@ -172,7 +174,8 @@ FIELD_ROW_WIDTH = "row-width"
 # is a place, else the index of the first one that is not.
 POS_NONE = -1
 POS_NAMES = ("the cursor", "the block's begin", "the block's end",
-             "the find mark's start", "the find mark's end", "the anchor")
+             "the find mark's start", "the find mark's end", "the anchor",
+             "the pending auto-indent")
 # The lines the editor traces when a position was not a place and was put
 # right (we_edit.c, we_buffer.c): the defence counts, it does not excuse.
 POSITION_TRACES = ("position off a glyph", "position inside")

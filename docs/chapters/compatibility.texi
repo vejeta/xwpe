@@ -543,6 +543,19 @@ The original closed the window after Yes to @samp{Do you want to save File ?}
 even when the file could not be written, and the edits were lost.  The
 window now stays open with its text, and Quit stops at it.
 
+@item Selection, Trim Auto-indent and Keep Final newline
+@cindex selection mode
+@cindex final line break
+The original never let typing touch a marked block, left the blanks
+@key{Return} had indented a line on that line when the cursor went away,
+and always ended a saved file on a line break.  Three boxes of
+@samp{Options @result{} Editor} change each of these, and all three are
+clear until you tick them: with @samp{SelEction blocK} typing replaces the
+selection, with @samp{Trim Auto-indent} the unused indent goes, with
+@samp{Keep Final newline} a file saved ends as it was read.  The reason is
+that other editors work this way and the original's way is still the
+default.
+
 @item The @samp{Data} key of the options file
 @cindex options file, Data
 The original read the number after @samp{Data} into the kind of every new

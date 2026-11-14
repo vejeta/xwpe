@@ -55,6 +55,11 @@ typedef struct
  int left_row;          /* a move: the row the block's old start stands on now */
  int end_row;           /* the row the line holding the block's end starts on ... */
  int end_after;         /* ... as of this many splices */
+ int step;              /* how its splices count for Ctrl-U: E_BUFFER_STEP_COVERED, the
+                           record of a block copy or move replays them; E_BUFFER_STEP_NEW,
+                           a paste over a selection, Undo gives the deleted text back */
+ int replacing;         /* 1: a copy over a selection, from (y, x) to (sel_y, sel_x) */
+ int sel_y, sel_x;      /* the end of the selection the copy replaces */
 } WpeBlockOp;
 
 /* A move whose old place is not given (a shift keeps its own rule). */
@@ -66,6 +71,7 @@ static void e_blk_end_at_line_front(WpeBlockOp *op);
 
 static int e_copy_block_covered(int x, int y, BUFFER *bs, BUFFER *bd, FENSTER *f, int kind,
                                 Undo **rec);
+static int e_paste_over_selection(FENSTER *f, BUFFER *bs, const POINT *begin, const POINT *end);
 
 /**
  * e_blk_of - The block a window has marked.
@@ -605,6 +611,7 @@ int e_edt_einf(FENSTER *f)
  BUFFER *b;
  BUFFER *b0 = f->ed->f[0]->b;
  Undo *rec = NULL;
+ POINT begin, end;
  int i;
 
  /* A window closed to text changes (the clipboard/Show Buffer viewer, a locked
@@ -628,12 +635,26 @@ int e_edt_einf(FENSTER *f)
  b = f->b;
  if (e_window_text_locked(f))
   return(0);
+ if (e_selection_range(f, &begin, &end))
+ {
+  i = e_paste_over_selection(f, b0, &begin, &end);
+  if (i == E_BLOCK_NOMEM)
+   wpe_buffer_say_nomem(b, "the paste");
+  if (i == E_BLOCK_MOVED)
+  {
+   sc_txt_2(f);
+   f->save = b->cn->maxchg + 1;
+  }
+  return(0);
+ }
  i = e_copy_block_covered(b->b.x, b->b.y, b0, b, f, 'c', &rec);
  if (i == E_BLOCK_NOMEM)
   wpe_buffer_say_nomem(b, "the paste");
  if (i != E_BLOCK_MOVED)
   return(0);
  e_block_record_keep(rec, b, b->b.x, b->b.y);
+ e_selection_end(f);      /* Selection mode: the pasted text is not selected, nor after Redo */
+ e_selection_redo_ends_here(f, 1);
  sc_txt_2(f);
  f->save = b->cn->maxchg + 1;
  return(0);
@@ -769,6 +790,7 @@ static int e_blk_marks_on_glyphs(const BUFFER *b, const WpeBlock *k)
 static void e_blk_op_begin(WpeBlockOp *op, SCHIRM *s, BUFFER *bv, BUFFER *bz, int kind)
 {
  memset(op, 0, sizeof(*op));
+ op->step = E_BUFFER_STEP_COVERED;
  e_buffer_txn_begin(&op->t);
  e_blk_of(s, &op->k);
  if (!e_blk_marks_on_glyphs(bv, &op->k))
@@ -957,7 +979,7 @@ static int e_blk_put_parts_at(WpeBlockOp *op, BUFFER *b, int y, int n_del,
                               const WpeBufferPart *parts, int nparts)
 {
  int k = e_buffer_txn_splice_parts(&op->t, b, y, n_del, parts, nparts,
-                                   E_BUFFER_STEP_COVERED);
+                                   op->step);
 
  if (k >= 0)
   e_blk_note(op, b, y, n_del, k);
@@ -1119,6 +1141,22 @@ static void e_blk_end_at_line_front(WpeBlockOp *op)
 }
 
 /**
+ * e_blk_rest_row - The row the text that stays behind the dropped block
+ * is read from: the line it was dropped into, or, when it replaces a
+ * selection, the line the selection ends on.
+ */
+static int e_blk_rest_row(const WpeBlockOp *op)
+{
+ return(op->replacing ? op->sel_y : op->y);
+}
+
+/** e_blk_rest_column - The column in that row where the text behind starts. */
+static int e_blk_rest_column(const WpeBlockOp *op)
+{
+ return(op->replacing ? op->sel_x : op->x);
+}
+
+/**
  * e_blk_end_into_line - Add the block's last line's part, followed by the
  * rest of the line it was dropped into, below the lines already landed,
  * and note the line holding the block's end.
@@ -1129,8 +1167,9 @@ static void e_blk_end_into_line(WpeBlockOp *op)
  WpeBufferPart parts[WPE_BLK_PARTS_MAX];
 
  parts[0] = e_blk_part(op->bv, k->key, 0, k->kex);
- parts[1] = e_blk_part(op->bz, op->y, op->x, WPE_BLK_TO_END);
- e_blk_set_end(op, e_blk_put_line(op, op->bz, op->y + 1, 0, parts, 2, op->y));
+ parts[1] = e_blk_part(op->bz, e_blk_rest_row(op), e_blk_rest_column(op), WPE_BLK_TO_END);
+ e_blk_set_end(op, e_blk_put_line(op, op->bz, op->y + 1, e_blk_rest_row(op) - op->y, parts, 2,
+                                  e_blk_rest_row(op)));
 }
 
 /**
@@ -1662,7 +1701,7 @@ static void e_blk_copy_middle(WpeBlockOp *op, int row_to)
   return;
  y = e_blk_row_now(op, op->bz, row_to);
  landed = e_buffer_txn_copy_lines(&op->t, op->bz, y, op->bv, op->k.kay + 1, m,
-                                  E_BUFFER_STEP_COVERED);
+                                  op->step);
  if (landed >= 0)
   e_blk_note(op, op->bz, y, 0, landed);
 }
@@ -1718,8 +1757,9 @@ static void e_blk_plan_chars_copy(WpeBlockOp *op)
  op->mark_x = op->x;
  parts[0] = e_blk_part(op->bz, op->y, 0, op->x);
  parts[1] = e_blk_part(op->bv, k->kay, k->kax, k->kex);
- parts[2] = e_blk_part(op->bz, op->y, op->x, WPE_BLK_TO_END);
- e_blk_set_landed(op, e_blk_put_line(op, op->bz, op->y, 1, parts, 3, op->y));
+ parts[2] = e_blk_part(op->bz, e_blk_rest_row(op), e_blk_rest_column(op), WPE_BLK_TO_END);
+ e_blk_set_landed(op, e_blk_put_line(op, op->bz, op->y, e_blk_rest_row(op) - op->y + 1, parts,
+                                     3, e_blk_rest_row(op)));
 }
 
 /**
@@ -1732,7 +1772,7 @@ static void e_blk_plan_copy(WpeBlockOp *op)
  op->mark_x = op->x;
  if (op->k.kay == op->k.key)
   e_blk_plan_chars_copy(op);
- else if (op->x == 0)
+ else if (op->x == 0 && !op->replacing)
   e_blk_copy_to_line_start(op);
  else
   e_blk_copy_into_line(op);
@@ -1821,6 +1861,69 @@ static int e_copy_block_covered(int x, int y, BUFFER *bs, BUFFER *bd, FENSTER *f
  return(E_BLOCK_MOVED);
 }
 
+/**
+ * e_paste_over_prepare - Prepare the copy of the clipboard block @bs over the
+ * selection from @begin to @end of @bd, every splice of it; nothing changes yet.
+ *
+ * The selection's rows and the clipboard's lines are one splice list, so the
+ * deletion and the insertion are made together or not at all.
+ * Return: E_BLOCK_MOVED (ready to make), E_BLOCK_NOT_MOVED (the clipboard is
+ * empty) or E_BLOCK_NOMEM.
+ */
+static int e_paste_over_prepare(WpeBlockOp *op, BUFFER *bs, BUFFER *bd, const POINT *begin,
+                                const POINT *end)
+{
+ e_blk_op_begin(op, bs->f->s, bs, bd, 0);
+ op->step = E_BUFFER_STEP_NEW;
+ if (e_blk_is_empty(&op->k))
+  return(E_BLOCK_NOT_MOVED);
+ op->replacing = 1;
+ op->sel_y = end->y;
+ op->sel_x = end->x;
+ op->y = begin->y;
+ op->x = e_blk_column_on_line(bd, begin->x, begin->y);
+ if (op->x < 0)
+  return(E_BLOCK_NOT_MOVED);
+ e_blk_plan_copy(op);
+ return(e_blk_op_state(op));
+}
+
+/**
+ * e_paste_over_selection - Paste the clipboard block @bs over the selection
+ * of window @f, as one Undo step that is made whole or not at all.
+ *
+ * Paste in Selection mode with text selected replaces the selection, as in
+ * other editors: one Ctrl-U gives back the text and the selection, and the
+ * pasted text is not selected afterwards, so the next typed key goes after
+ * it.  When memory runs out the text, cursor and selection stay as they
+ * were.
+ * Return: E_BLOCK_MOVED, E_BLOCK_NOT_MOVED or E_BLOCK_NOMEM; it says
+ * nothing itself.
+ */
+static int e_paste_over_selection(FENSTER *f, BUFFER *bs, const POINT *begin, const POINT *end)
+{
+ BUFFER *bd = f->b;
+ WpeBlockOp op;
+ int r, fault;
+
+ e_buffer_step_begin(bd);
+ fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_REPLACE);
+ r = e_blk_op_make(&op, e_paste_over_prepare(&op, bs, bd, begin, end));
+ if (r == E_BLOCK_MOVED)
+ {
+  e_blk_mark_copied(&op);
+  e_selection_end(f);
+  e_selection_redo_ends_here(f, e_buffer_step_pieces(bd));
+ }
+ e_buffer_test_fault_leave(fault);
+ e_buffer_step_end(bd);
+ if (r != E_BLOCK_MOVED)
+  return(r);
+ e_cursor(f, 1);
+ e_schirm(f, 1);
+ return(E_BLOCK_MOVED);
+}
+
 /*   delete block marks   */
 int e_blck_hide(FENSTER *f)
 {
@@ -1854,10 +1957,10 @@ int e_blck_begin(FENSTER *f)
     then extends it.  WordStar mode (ED_BLOCK_WORDSTAR): begin and end are
     independent markers, so Begin Mark sets only the begin and leaves the end
     untouched (classic Borland behaviour).  Toggle in Options -> Editor. */
- if (f->ed->edopt & ED_BLOCK_WORDSTAR)
+ if (e_opt_block_wordstar(f->ed->edopt))
   e_buffer_mark_from(f->b, E_BUFFER_MARK_BEGIN, E_BUFFER_POS_CURSOR);
  else
-  e_buffer_block_between(f->b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
+  e_buffer_block_open(f->b);
  e_schirm(f, 1);
  return(0);
 }

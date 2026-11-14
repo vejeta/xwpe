@@ -151,7 +151,7 @@ DESIGN_ONE_STEP = "DESIGN-edit-model.md 1.4 rule 2: one user action is one step"
 # one of them fired the general design rule is not offered beside it.
 ONE_STEP_RULES = ("enter_one_step", "tab_one_step", "backspace_indent_one_step",
                   "indent_one_step", "help_markers_one_step", "help_end_one_step",
-                  "replace_one_step")
+                  "replace_one_step", "sel_one_step", "trim_one_step")
 
 # -- characters
 _rule("type_insert", SOURCE_MANUAL, HELP + ":602-603",
@@ -353,6 +353,45 @@ _rule("undo_empty_says_so", SOURCE_CODE, "we_main.c:71, 81",
       "Undo or Redo with nothing left shows the error box No more Undo / "
       "No more Redo.", (F_BOX,))
 
+# -- the selection block mode, the trim of an auto-indent, the file's ending
+# (DESIGN-modern-keymap.md 4.2 and 7; decision D94)
+KEYMAP_DESIGN = "DESIGN-modern-keymap.md 4.2"
+_rule("sel_collapse_on_move", SOURCE_DESIGN, KEYMAP_DESIGN + " sel_collapse_on_move",
+      "In the selection block mode a move without Shift ends a selection made "
+      "with Shift or the mouse: the block is empty at the cursor.  A block "
+      "Ctrl-K B started stays open until Ctrl-K K.", (F_MARKS,))
+_rule("sel_typing_replaces", SOURCE_DESIGN, KEYMAP_DESIGN + " sel_typing_replaces",
+      "With a selection, a typed character, Return or Tab inside one line "
+      "first deletes the selection and then acts, at the place it began; the "
+      "block is then empty at the cursor.", (F_TEXT, F_CURSOR, F_MARKS))
+_rule("sel_delete_keys", SOURCE_DESIGN, KEYMAP_DESIGN + " sel_delete_keys",
+      "Delete and Backspace with a selection delete the selection only.",
+      (F_TEXT, F_CURSOR, F_MARKS))
+_rule("sel_paste_replaces", SOURCE_DESIGN, KEYMAP_DESIGN + " sel_paste_replaces",
+      "In the selection block mode Paste with a selection replaces it, in one "
+      "step, and the pasted text is not selected afterwards (also without a "
+      "selection): the next typed key goes after it.", (F_TEXT, F_CURSOR, F_MARKS))
+_rule("sel_overwrite", SOURCE_DESIGN, KEYMAP_DESIGN + " sel_overwrite",
+      "In overwrite mode a typed character still replaces the selection and is "
+      "inserted, not written over the character after it.", (F_TEXT, F_CURSOR))
+_rule("sel_one_step", SOURCE_DESIGN, KEYMAP_DESIGN + " sel_typing_replaces",
+      "Replacing a selection is one Ctrl-U: the deletion and the new text are "
+      "one step.", (F_STEPS,))
+_rule("sel_undo_marks", SOURCE_DESIGN, KEYMAP_DESIGN + " sel_undo_marks",
+      "Undo of a replacement gives back the text and the selection that was "
+      "replaced; Redo leaves the block empty at the cursor.", (F_MARKS,))
+_rule("trim_auto_indent", SOURCE_DESIGN, "DESIGN-modern-keymap.md 7.1; decision D94 (3)",
+      "With Trim Auto-indent on, the indent Return put on a line goes when the "
+      "cursor leaves the line with nothing typed on it; a line whose blanks "
+      "were typed or read is never touched.", (F_TEXT, F_CURSOR))
+_rule("trim_one_step", SOURCE_DESIGN, "DESIGN-modern-keymap.md 7.1; decision D94 (3)",
+      "The key that leaves the line and the removal of its indent are one "
+      "Ctrl-U.", (F_STEPS, F_SAVE))
+_rule("save_keeps_final_break", SOURCE_DESIGN, "DESIGN-modern-keymap.md 7.2; decision D94 (2)",
+      "With Keep Final newline on, a file read without a final line break, an "
+      "empty file and a new file are saved without one; any other is saved as "
+      "it always was.", (F_DISK,))
+
 
 # Where a manual rule and the code say different things.  The model follows
 # the code (so the editor and the model agree) and the user decides which
@@ -380,7 +419,8 @@ class Options:
 
     def __init__(self, tabn=DEFAULT_TABN, autoindent_col=DEFAULT_AUTOINDENT_COL,
                  numundo=DEFAULT_NUMUNDO, maxchg=DEFAULT_MAXCHG, autosave=False,
-                 cua=False, maxcol=DEFAULT_MAXCOL, wordstar=False, endmark=False):
+                 cua=False, maxcol=DEFAULT_MAXCOL, wordstar=False, endmark=False,
+                 selection=False, trim_auto_indent=False, keep_ending=False):
         self.tabn = tabn
         self.autoindent_col = autoindent_col
         self.numundo = numundo
@@ -390,6 +430,9 @@ class Options:
         self.maxcol = maxcol          # the width a window opened now gets
         self.wordstar = wordstar      # Ctrl-K B keeps the block's end
         self.endmark = endmark        # a hard row shows $ after its text
+        self.selection = selection    # the block is a selection (ED_BLOCK_SELECTION)
+        self.trim_auto_indent = trim_auto_indent   # ED_TRIM_AUTO_INDENT
+        self.keep_ending = keep_ending             # ED_KEEP_FILE_ENDING
 
     @classmethod
     def from_xwperc(cls, text):
@@ -416,8 +459,12 @@ class Options:
                 o.autosave = (v & 2) != 0
             elif key == "Options2":
                 o.cua = (v & CUA_STYLE_BIT) != 0
-                o.wordstar = (v & WORDSTAR_BIT) != 0
+                o.selection = (v & SELECTION_BIT) != 0
+                # e_opt_block_wordstar: the selection mode wins over the WordStar bit
+                o.wordstar = (v & WORDSTAR_BIT) != 0 and not o.selection
                 o.endmark = (v & ENDMARK_BIT) != 0
+                o.trim_auto_indent = (v & TRIM_AUTO_INDENT_BIT) != 0
+                o.keep_ending = (v & KEEP_ENDING_BIT) != 0
             elif key == "MaxColumn":
                 o.maxcol = v
         return o
@@ -427,6 +474,11 @@ class Options:
 CUA_STYLE_BIT = 1
 ENDMARK_BIT = 2
 WORDSTAR_BIT = 4
+# The selection block mode, the trim of the indent auto-indent left, and the
+# final line break Save keeps as read.
+SELECTION_BIT = 0x400
+TRIM_AUTO_INDENT_BIT = 0x800
+KEEP_ENDING_BIT = 0x1000
 
 
 # ---- state ---------------------------------------------------------------------
@@ -458,6 +510,9 @@ class Step:
         self.line_record = line_record
         self.ins = ins          # the mode the action was typed in
         self.undo_marks = None  # (begin, end) Undo leaves, when the action says
+        self.undo_cursor = None  # where Undo leaves the cursor, when the action says
+        self.rewrap = False     # Undo puts the bytes back through the wrap, so the
+        #                         soft rows it leaves are the editor's to say
 
 
 class Snapshot:
@@ -481,6 +536,7 @@ class State:
         self.mb = (0, 0)
         self.me = (0, 0)
         self.ks = (0, 0)
+        self.block_open = False   # Ctrl-K B started the block, nothing has ended it
         self.ins = INS_INSERT
         self.flg = 0
         self.save = 0
@@ -505,6 +561,9 @@ class State:
         self.clip_width = DEFAULT_MAXCOL   # the clipboard window's width
         self.pt = [(-1, -1)] * MARKER_COUNT   # the markers, (row, column); (-1, -1) unset
         self.resync_fields = set()  # fields the last action does not predict
+        self.ai = None          # (row identity, indent width): the indent auto-indent
+        #                         put on a line that nothing was typed on yet
+        self.final_break = True  # the file on disk ended on a line break (False: it did not)
 
     # -- reading ---------------------------------------------------------------
     @property
@@ -570,6 +629,7 @@ def state_from_window(w, options=None, clip=None):
     st.brp = set(st.rows[r].ident for r in w.brp if 0 <= r < len(st.rows))
     st.opaque_undo = w.ud
     st.opaque_redo = w.rd
+    st.final_break = (w.final == 1)
     return st
 
 
@@ -1203,6 +1263,17 @@ class Action:
         return "%s(%r)" % (self.name, self.arg)
 
 
+def _writes_block_ends(st, name):
+    """Does action @name write a block end (e_buffer_mark_set), which ends
+    the open block Ctrl-K B started?  A plain move, a text edit that
+    replaces no selection, the goto of a block end and the toggles do not."""
+    if name in SHIFT_MOVES or name in ("undo", "redo"):
+        return True
+    if name in blocks.BLOCK_ACTIONS:
+        return name not in ("block_goto_begin", "block_goto_end")
+    return name in EDITS and _selection_for(st, name) is not None
+
+
 def apply(state, action):
     """The state after @action; @state itself is not changed."""
     st = state.copy()
@@ -1211,6 +1282,8 @@ def apply(state, action):
     st.status = None
     name = action.name
     pre = (st.y, st.x)
+    if _writes_block_ends(st, name):
+        st.block_open = False
     if name in MOVES or name in SHIFT_MOVES:
         _move(st, name)
     elif name in EDITS:
@@ -1229,6 +1302,8 @@ def apply(state, action):
         _toggle_breakpoint(st)
     elif name in blocks.BLOCK_ACTIONS:
         blocks.apply_action(st, action)
+    _ai_keep_or_forget(st)
+    _ai_take_off(st, state, action)
     _after_key(st, name, pre)
     if name not in POSITION_NEUTRAL:
         _assert_positions_on_glyphs(st, name)
@@ -1426,6 +1501,9 @@ def _move(st, name):
     st.y, st.x = y, x
     if shift:
         _shift_marks(st)
+    elif st.options.selection and not st.block_open:
+        st.fired.append("sel_collapse_on_move")
+        st.mb = st.me = (y, x)
 
 
 def _shift_marks(st):
@@ -1451,12 +1529,20 @@ def _edit(st, action):
     if _locked(st):
         st.fired.append("locked_keeps_text")
         return
+    name = action.name
+    sel = _selection_for(st, name)
+    if sel is not None and name == "tab" and sel[0][0] != sel[1][0]:
+        # a Tab over several lines indents them, as Ctrl-K I does
+        blocks.apply_action(st, Action("block_indent"))
+        return
     before = Snapshot(st)
     rows = Rows(st)
-    name = action.name
     line_record = False
     recorded = False            # a step even when the text comes out the same
-    if name == "type":
+    if sel is not None:
+        _replace_selection(st, rows, action, sel)
+        recorded = True
+    elif name == "type":
         _type(st, rows, action.arg)
     elif name == "enter":
         _enter(st, rows)
@@ -1476,6 +1562,89 @@ def _edit(st, action):
     rows.commit()
     if recorded or [(r.end, r.data) for r in before.rows] != st.lines():
         _push_step(st, before, action, line_record)
+        if sel is not None:
+            st.undo[-1].undo_marks = sel
+            st.undo[-1].rewrap = any(r.end == SOFT for r in before.rows[sel[0][0]:sel[1][0] + 1])
+            st.undo[-1].undo_cursor = _selection_undo_cursor(before, sel)
+
+
+# The keys that replace a selection (Tab over several lines indents them).
+SELECTION_KEYS = ("type", "enter", "tab", "backspace", "delete")
+
+
+def _selection_for(st, name):
+    """The selection (begin, end) a key replaces, or None: the block mode is
+    the selection and the block holds a character.  A Tab over several lines
+    is returned too: _edit indents them."""
+    if not st.options.selection or name not in SELECTION_KEYS:
+        return None
+    b, e = st.mb, st.me
+    if b[0] < 0 or e[0] < 0 or b[0] >= len(st.rows):
+        return None
+    if e[0] >= len(st.rows):
+        e = (len(st.rows) - 1, len(st.rows[-1].data))
+    if e <= b:
+        return None
+    return (b, e)
+
+
+def _selection_undo_cursor(before, sel):
+    """Where Ctrl-U leaves the cursor after a replacement: the owner puts the
+    deleted bytes back chunk by chunk, the first deletion last, and the cursor
+    stands behind what the last chunk brought back.  Known for a selection
+    inside one row (its end) and for one that starts at a hard row's start
+    (the start of the next row); None where the first chunk is not that."""
+    (by, bx), (ey, ex) = sel
+    if by == ey:
+        return (by, ex)
+    if bx == 0 and before.rows[by].end == HARD:
+        return (by + 1, 0)
+    return None
+
+
+def _row_bytes(rows, y):
+    """The bytes of row @y with its line break (e_sel_row_bytes)."""
+    return rows.str_len(y) + (1 if rows.hard(y) else 0)
+
+
+def _replace_selection(st, rows, action, sel):
+    """e_selection_run: delete the selection's bytes at the place it began,
+    then act there; one step, the block empty at the cursor afterwards."""
+    (by, bx), (ey, ex) = sel
+    name = action.name
+    st.fired.extend(["sel_typing_replaces" if name in ("type", "enter", "tab")
+                     else "sel_delete_keys", "sel_one_step", "sel_undo_marks"])
+    delete_selection_bytes(st, rows, sel)
+    if name == "type":
+        if not st.ins & INS_INSERT:
+            st.fired.append("sel_overwrite")
+        rows.ins_nchar(action.arg, bx, by)
+    elif name == "tab":
+        rows.ins_nchar(b"\t", bx, by)
+    elif name == "enter":
+        _enter(st, rows)
+    st.mb = st.me = (st.y, st.x)
+
+
+def delete_selection_bytes(st, rows, sel):
+    """Delete the selection's bytes at the place it began, the line breaks
+    inside it included, and put the cursor there (e_sel_replace_pieces)."""
+    (by, bx), (ey, ex) = sel
+    if by == ey:
+        left = ex - bx
+    else:
+        left = _row_bytes(rows, by) - bx
+        for y in range(by + 1, ey):
+            left += _row_bytes(rows, y)
+        left += ex
+    y = by
+    while left > 0 and y < rows.nlines:
+        n = min(left, _row_bytes(rows, y) - bx)
+        if n <= 0:
+            break
+        rows.del_nchar(bx, y, n)
+        left -= n
+    st.y, st.x = by, bx
 
 
 def _type(st, rows, data):
@@ -1498,6 +1667,16 @@ def _type(st, rows, data):
 def _enter(st, rows):
     st.fired.extend(["enter_splits", "enter_cursor_next_row", "enter_one_step"])
     y, x = st.y, st.x
+    trimming = _ai_pending_row(st) == y
+    width = 0
+    if trimming:
+        # e_car_ret: the new line's indent is read from the text before the
+        # indent of this line goes, then this line is emptied and broken
+        width = _indent_width_ahead(st, rows)
+        st.fired.append("trim_auto_indent")
+        if rows.str_len(y) > 0:
+            rows.del_nchar(0, y, rows.str_len(y))
+        x = st.x = 0
     ln = rows.str_len(y)
     if x == ln and not rows.hard(y):
         st.fired.append("enter_soft_end_hardens")
@@ -1505,8 +1684,88 @@ def _enter(st, rows):
     rows.count(SAVE_PER_CHAR)
     if y < rows.nlines - 1:
         st.y, st.x = y + 1, 0
-    if st.flg & FLG_AUTOINDENT:
+    if trimming:
+        if width > 0:
+            rows.ins_nchar(b" " * width, 0, st.y)
+            st.x = width
+    elif st.flg & FLG_AUTOINDENT:
         _enter_indent(st, rows)
+    _ai_remember(st, rows)
+
+
+def _indent_width_ahead(st, rows):
+    """The blanks Return's new line would get if the break were made now at
+    the cursor: what e_car_a_ind_width reads from the user's text before
+    anything changes."""
+    sc = st.copy()
+    scr = Rows(sc)
+    y, x = sc.y, sc.x
+    scr.split_line(y, x)
+    if y < scr.nlines - 1:
+        sc.y, sc.x = y + 1, 0
+    if sc.flg & FLG_AUTOINDENT:
+        _enter_indent(sc, scr)
+    st.fired.extend(f for f in sc.fired if f.startswith("enter_indent"))
+    return sc.x
+
+
+def _ai_remember(st, rows):
+    """e_auto_indent_mark_new_line: Return indented the line the cursor is
+    on; the owner remembers that indent (Options: Trim Auto-indent)."""
+    if st.options.trim_auto_indent and st.x > 0 and st.y < rows.nlines:
+        st.ai = (rows.ids[st.y], st.x)
+    else:
+        st.ai = None
+
+
+def _ai_pending_row(st):
+    """e_auto_indent_pending_row: the row that still holds only the indent
+    Return put on it, or -1."""
+    if not st.options.trim_auto_indent or st.ai is None:
+        return -1
+    ident, x = st.ai
+    for y, r in enumerate(st.rows):
+        if r.ident == ident:
+            if r.data == b" " * x:
+                return y
+            return -1
+    return -1
+
+
+def _ai_keep_or_forget(st):
+    """The owner forgets the pending indent as soon as anything but its own
+    taking off changes its row, or the row goes (Undo and Redo too)."""
+    if st.ai is None:
+        return
+    if _ai_pending_row(st) < 0:
+        st.ai = None
+
+
+def _ai_take_off(st, before_state, action):
+    """e_auto_indent_take_off, inside the key's own step: the key left the
+    line whose indent is pending, so its blanks go.  A key that made a step
+    of its own gets the removal in it; a key that made none gets one."""
+    y = _ai_pending_row(st)
+    if y < 0 or y == st.y:
+        return
+    pushed = len(st.undo) > len(before_state.undo)
+    snap = Snapshot(st)
+    st.fired.extend(["trim_auto_indent", "trim_one_step"])
+    rows = Rows(st)
+    rows.del_nchar(0, y, st.ai[1])
+    rows.commit()
+    st.ai = None
+    if pushed:
+        st.undo[-1].after = Snapshot(st)
+    else:
+        st.undo.append(Step(snap, Snapshot(st), action, False, st.ins))
+        st.redo = []
+        st.opaque_redo = 0
+        while st.ud > _undo_limit(st):
+            if st.opaque_undo:
+                st.opaque_undo -= 1
+            else:
+                st.undo.pop(0)
 
 
 def _enter_indent(st, rows):
@@ -1902,11 +2161,21 @@ def _unmodelled_step(st):
     st.save_known = False
 
 
+def _rewrapped_replay(st):
+    """Ctrl-U or Ctrl-R of a replacement that spanned soft rows: the owner
+    puts the deleted bytes back through the wrap, so the text is the same
+    but the rows soft-wrap where the owner decides, not where they were."""
+    st.fired.append("undo_unmodelled_step")
+    st.resync_fields.update((F_TEXT, F_CURSOR, F_MARKS))
+
+
 def _undo(st):
     if _locked(st):
         st.fired.append("locked_keeps_text")
         return
     st.fired.extend(["undo_text", "undo_count_unpredicted"])
+    if st.undo or st.opaque_undo:
+        st.ai = None            # a replay is not typing: no claim survives it
     if not st.undo:
         if st.opaque_undo:
             st.opaque_undo -= 1
@@ -1922,6 +2191,10 @@ def _undo(st):
     live_marks = (st.mb, st.me)
     _restore(st, step.before)
     st.save_known = False
+    if step.undo_cursor is not None:
+        st.y, st.x = step.undo_cursor
+    if step.rewrap:
+        _rewrapped_replay(st)
     if _is_char_record(step) and step.undo_marks is None:
         st.fired.extend(["undo_cursor_snapshot", "undo_marks_live"])
         st.mb, st.me = live_marks
@@ -1946,6 +2219,8 @@ def _redo(st):
         st.fired.append("locked_keeps_text")
         return
     st.fired.extend(["redo_text", "undo_count_unpredicted"])
+    if st.redo or st.opaque_redo:
+        st.ai = None
     if not st.redo:
         if st.opaque_redo:
             st.opaque_redo -= 1
@@ -1959,6 +2234,8 @@ def _redo(st):
     st.undo.append(step)
     _restore(st, step.after)
     st.save_known = False
+    if step.rewrap:
+        _rewrapped_replay(st)
     st.fired.extend(["undo_cursor_snapshot", "undo_marks_span"])
     if step.undo_marks is not None or step.line_record:
         st.mb, st.me = step.after.mb, step.after.me
@@ -1977,6 +2254,8 @@ def _save(st):
         return
     st.fired.extend(["save_writes_file", "save_format", "modified_count"])
     st.disk = render_disk(st)
+    if not st.options.keep_ending:
+        st.final_break = True       # e_save_final_break_after: the file now ends on a break
     st.save = 0
     st.save_known = True
 
@@ -1993,7 +2272,12 @@ def _toggle_breakpoint(st):
 def render_disk(st):
     """The file a Save writes from the state's rows."""
     from .render import render_disk as _rd
-    return _rd(st.lines())
+    data = _rd(st.lines())
+    if st.options.keep_ending and not st.final_break and st.rows \
+            and st.rows[-1].end == HARD:
+        st.fired.append("save_keeps_final_break")
+        data = data[:-1]
+    return data
 
 
 def rules_for(fired, field):

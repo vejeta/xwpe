@@ -1,0 +1,13 @@
+# Selection block mode: Tab over a selection inside one line replaces it by
+# a tab; over several lines it indents them, as Ctrl-K I does, and the
+# selection stays.
+file t.txt
+seed b"hello world\nsecond line\n"
+rc "[General]\nOptions2 : 1048\n"
+right
+shift_right
+shift_right
+tab
+home
+shift_down
+tab

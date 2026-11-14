@@ -99,3 +99,110 @@ the code changes. If the editor, the manual's sentence is wrong and gets
 corrected. Until you decide the model follows the editor, and its rule is
 marked as coming from the code, so an agreement with the editor on this
 key proves nothing.
+
+# Goldens of the selection block mode and the trim of an auto-indent
+
+Recorded on the tree with Options > Editor > SelEction blocK (Options2 bit
+0x400) or Trim Auto-indent (0x800) on. They are not in `APPROVED`: a CUA
+user decides first. `[` and `]` mark the selection in the pictures.
+
+## sel_typing_replaces (plain text, selection mode)
+
+- `[hello] world$ second line$`, cursor after `hello` (Shift-Right five
+  times). Typing `J`: `J| world$`; the selection is gone, one Ctrl-U step.
+- Ctrl-U: `hello world`, the selection `[hello]` marked again, cursor after
+  it. Ctrl-R: `J| world` again.
+
+## sel_move_collapses
+
+- Shift-Right three times marks `[hel]lo`. Right (no Shift): the mark goes,
+  the cursor is after `hell`. Shift-Down marks from there to the same column
+  of the next line; Left (no Shift) collapses it again.
+
+## sel_shift_extends_both_ways
+
+- Right, Right, then Shift-Right twice marks `he[ll]o`. Shift-Left twice
+  gets back to the start; a third Shift-Left turns the selection round
+  (`h[e]llo`, cursor now before it) and a fourth makes it `[he]llo`.
+
+## sel_block_all_then_type
+
+- Ctrl-K X marks the whole text. Typing `x` leaves `x|$`. Ctrl-U brings all
+  three lines back and the whole text marked.
+
+To decide: after that Ctrl-U the cursor stands at the start of the second
+line, not at the start of the text. It is where the owner left it after
+putting the first line back, the same rule the open question about where
+Ctrl-U leaves the cursor already names; the model follows the editor.
+
+## sel_block_line_then_type
+
+- Down, then Ctrl-K L marks the line `two two` with its line break. Typing
+  `L` replaces it: `one$ L|three$`, so `L` joins the line below.
+
+## sel_delete_backspace
+
+- `[hel]lo world`: Delete leaves `lo world`, cursor at the start; Shift-Right
+  twice and Backspace leave ` world`. Neither key takes a character beside
+  the selection.
+
+## sel_ctrl_k_b_in_selection_mode
+
+- Ctrl-K B at `he|llo`, Right three times, Ctrl-K K: the block
+  `he[llo]`. Typing `!` leaves `he!| world`.
+
+Decided (D98): only a selection made with Shift or the mouse collapses on a
+plain move. A block Ctrl-K B started stays open until Ctrl-K K, as in Turbo
+Pascal.
+
+## sel_undo_restores_selection
+
+- Shift-Down, Shift-Right twice marks `[hello world$ se]cond line$` (two
+  lines). Return replaces it by one line break: `$ cond line$ third$`, cursor
+  at the start of the second line, one step. Ctrl-U brings back both lines
+  and the selection; Ctrl-R breaks the line again.
+
+## sel_tab_one_line_replaces
+
+- `h[el]lo`: Tab replaces the two letters by a tab. Home, Shift-Down marks
+  two lines (the second only at its column 0); Tab then indents the first
+  line as Ctrl-K I does, in one step, and the selection stays. Nothing is
+  typed over it.
+
+## sel_overwrite_replaces
+
+- Overwrite mode (Ins off), `[hel]lo`: typing `Z` gives `Z|lo world`. The
+  `l` after the selection is not overwritten.
+
+## enter_autoindent_trim (C file, auto-indent on, Trim Auto-indent on)
+
+- `    int a = 1;|$`, Return: a line of four blanks. Typing `b` keeps them
+  (`    b`). Return: a new line of four blanks. Return again: the line of
+  four blanks is emptied and a new one of four blanks stands below. Up: the
+  last line of blanks is emptied, in the same step as the key. Down.
+  Result: `    int a = 1;$ $     b$ $ $` with the indent kept only on the line
+  typed on; every empty line is empty.
+
+To decide: Ctrl-U after Up brings the four blanks back with the cursor
+move (one step). After it the blanks are no longer taken off when the
+cursor leaves again.
+
+## Save and the final line break (tests/test_selection_mode.py)
+
+These are not traces: the file on disk is what they show.
+
+- save_keeps_no_final_newline (Keep Final newline on): a file `a\nb` with no
+  final line break is saved as `a\nb`. With it off (Borland), as `a\nb\n`.
+- save_empty_stays_empty (on): an empty file is saved empty. Off: `\n`.
+  To decide: the second is the one odd case the editor has always had; the
+  user may want it changed for the Borland style too.
+- save_new_file_as_typed (on): a new file in which `q` was typed is saved
+  as `q`. Off: `q\n`.
+
+## ctrl_y, and the only line (D94 task 1.0, not done in this pass)
+
+Not re-recorded: it needs the rule "the last line of the text always has its
+line break" in the line owner (Ctrl-Y on the only line must leave an empty
+line with its break, not a row that goes on). That is a change to the
+editing rule of every mode, not to the selection mode, and it is listed in
+the report of this pass.

@@ -1,0 +1,12 @@
+# Selection block mode: Delete and Backspace with a selection delete the
+# selection only, not the character beside it.
+file t.txt
+seed b"hello world\nsecond line\n"
+rc "[General]\nOptions2 : 1048\n"
+shift_right
+shift_right
+shift_right
+delete
+shift_right
+shift_right
+backspace

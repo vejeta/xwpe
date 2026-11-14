@@ -387,6 +387,7 @@ def _mark_actions(st, name):
             st.mb = (st.y, st.x)
         else:
             st.mb = st.me = (st.y, st.x)
+            st.block_open = st.options.selection
     elif name == "block_end":
         st.me = (st.y, st.x)
     elif name == "block_hide":
@@ -528,6 +529,12 @@ def _paste(st, action):
         st.fired.append("block_empty")
         return
     before = Snapshot(st)
+    sel = model._selection_for(st, "delete")
+    if sel is not None:
+        st.fired.extend(["sel_one_step", "sel_undo_marks"])
+        rows = Rows(st)
+        model.delete_selection_bytes(st, rows, sel)
+        rows.commit()
     p = _point_offset(st, st.y, st.x)
     src = _model_rows(st.clip)
     y0, y1, built, length = copy_rows(st.rows, st.width, st.y, st.x, src, block)
@@ -535,8 +542,18 @@ def _paste(st, action):
     _land(st, p, length)
     st.save = st.options.maxchg + 1
     st.fired.append("block_save_count")
-    _commit(st, before, action, undo_marks=None)
-    _undo_marks_at_start(st, p)
+    if st.options.selection:
+        # the pasted text is not selected, and a Redo leaves it so
+        st.fired.append("sel_paste_replaces")
+        st.mb = st.me = (st.y, st.x)
+    if sel is not None:
+        _commit(st, before, action, undo_marks=sel)
+        st.undo[-1].undo_cursor = model._selection_undo_cursor(before, sel)
+        st.undo[-1].rewrap = any(r.end == model.SOFT for r in
+                                 before.rows[sel[0][0]:sel[1][0] + 1])
+    else:
+        _commit(st, before, action, undo_marks=None)
+        _undo_marks_at_start(st, p)
 
 
 def _undo_marks_at_start(st, offset):

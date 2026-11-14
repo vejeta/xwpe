@@ -36,18 +36,20 @@ void e_buffer_test_fail_allocs(int n)
    allocation of its action on memory is refused. */
 static int buffer_fault_armed = E_BUFFER_FAULT_NONE;
 static int buffer_fault_n = 0;
+/* How many entries of the armed point still run before it fires. */
+static int buffer_fault_skip = 0;
 
 /* The names $XWPE_TEST_FAULT gives the points, indexed by E_BUFFER_FAULT_*. */
 static const char *const buffer_fault_names[] = {
  "none", "block-move", "undo", "redo", "block-copy", "read", "indent", "enter", "shift",
- "help-marks", "change-all"
+ "help-marks", "change-all", "replace"
 };
 #define BUFFER_FAULT_POINTS ((int)(sizeof buffer_fault_names / sizeof buffer_fault_names[0]))
 
 /**
  * e_buffer_test_fault_point - The fault point a test names.
  * @name: "block-move", "undo", "redo", "block-copy", "read", "indent",
- * "enter", "shift", "help-marks" or "change-all".
+ * "enter", "shift", "help-marks", "change-all" or "replace".
  *
  * Lets a test of the running editor say which action runs out of memory.
  * Return: E_BUFFER_FAULT_*, or E_BUFFER_FAULT_NONE for a name it does not
@@ -72,10 +74,25 @@ int e_buffer_test_fault_point(const char *name)
  */
 void e_buffer_test_fault_arm(int point, int n)
 {
- if (point <= E_BUFFER_FAULT_NONE || point >= BUFFER_FAULT_POINTS || n < 1)
+ e_buffer_test_fault_arm_at(point, n, 1);
+}
+
+/**
+ * e_buffer_test_fault_arm_at - Arm one fault point for the @k-th action
+ * that enters it: the @k - 1 before it run with all their memory.
+ *
+ * Lets a test show that a key is one action: armed for the second entry,
+ * a key that enters its point once never meets the fault, and a key that
+ * split its change into two actions has the second refused after the first
+ * already changed the user's text, which the test then sees.
+ */
+void e_buffer_test_fault_arm_at(int point, int n, int k)
+{
+ if (point <= E_BUFFER_FAULT_NONE || point >= BUFFER_FAULT_POINTS || n < 1 || k < 1)
   return;
  buffer_fault_armed = point;
  buffer_fault_n = n;
+ buffer_fault_skip = k - 1;
 }
 
 /**
@@ -94,6 +111,13 @@ int e_buffer_test_fault_enter(int point)
 {
  if (point == E_BUFFER_FAULT_NONE || point != buffer_fault_armed)
   return(0);
+ if (buffer_fault_skip > 0)
+ {
+  buffer_fault_skip--;
+  wpe_buffer_trace("buffer fault %s passed, %d to go", buffer_fault_names[point],
+                   buffer_fault_skip);
+  return(0);
+ }
  buffer_fail_from = buffer_fault_n;
  buffer_fault_armed = E_BUFFER_FAULT_NONE;
  wpe_buffer_trace("buffer fault %s armed n=%d", buffer_fault_names[point], buffer_fault_n);
@@ -438,11 +462,13 @@ static int brp_count_in(const int *brp, int lo, int hi)
 
 /* ---- marks ---- */
 
-#define BUFFER_MARKS_MAX 4
+#define BUFFER_MARKS_MAX 5
 
 /* The marks of a window, by their place in what buffer_marks() gives. */
 #define BUFFER_MARK_BEGIN E_BUFFER_MARK_BEGIN
 #define BUFFER_MARK_END   E_BUFFER_MARK_END
+/* The pending auto-indent comes after the block and the find hit. */
+#define BUFFER_MARK_AI    4
 /* The block: its begin and its end. */
 #define BUFFER_BLOCK_MARKS WPE_BLOCK_ENDS
 
@@ -461,6 +487,7 @@ static int buffer_marks(BUFFER *b, POINT **m)
  m[n++] = &s->mark_end;
  m[n++] = &s->fa;
  m[n++] = &s->fe;
+ m[n++] = &s->ai;
  return(n);
 }
 
@@ -749,6 +776,8 @@ static POINT *buffer_mark_at(BUFFER *b, int which)
   return(&s->fe);
  if (which == E_BUFFER_MARK_ANCHOR)
   return(&s->ks);
+ if (which == E_BUFFER_MARK_AUTO_INDENT)
+  return(&s->ai);
  return(NULL);
 }
 
@@ -803,6 +832,35 @@ static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
  buffer_point_settle(b, p);
 }
 
+/* Any write of a block end ends the "block started by Ctrl-K B" state:
+   only e_buffer_block_open sets it, after its own write. */
+static void buffer_block_close(BUFFER *b)
+{
+ if (b->f != NULL && b->f->s != NULL)
+  b->f->s->block_open = 0;
+}
+
+/**
+ * e_buffer_block_open - Start a block at the cursor that stays open: an
+ * empty block there which a move without Shift does not collapse, until
+ * the next write of a block end (Ctrl-K K, a Shift move, a click, Hide).
+ *
+ * Ctrl-K B in Selection mode starts its block this way, so the user can
+ * move to where it should end and mark it, as in Turbo Pascal.
+ */
+void e_buffer_block_open(BUFFER *b)
+{
+ e_buffer_block_between(b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
+ if (b->f != NULL && b->f->s != NULL)
+  b->f->s->block_open = 1;
+}
+
+/** e_buffer_block_is_open - Did Ctrl-K B start the block and nothing ended it? */
+int e_buffer_block_is_open(BUFFER *b)
+{
+ return(b->f != NULL && b->f->s != NULL && b->f->s->block_open);
+}
+
 /**
  * e_buffer_mark_set - Put the mark @which (E_BUFFER_MARK_*) at row @y,
  * column @x; a negative row unsets it.
@@ -816,6 +874,8 @@ void e_buffer_mark_set(BUFFER *b, int which, int y, int x)
 
  if (p == NULL)
   return;
+ if (which == E_BUFFER_MARK_BEGIN || which == E_BUFFER_MARK_END)
+  buffer_block_close(b);
  p->y = y;
  p->x = x;
  if (y < 0)
@@ -1284,7 +1344,7 @@ static int buffer_find_mark_shown(BUFFER *b)
 /**
  * e_buffer_first_misplaced - Which position of the window of @b is not a
  * place of its text: 0 the cursor, 1 the block's begin, 2 its end, 3 the
- * find mark's start, 4 its end, 5 the anchor.
+ * find mark's start, 4 its end, 5 the anchor, 6 the pending auto-indent's end.
  *
  * What the test dump writes as pos=, so a test sees a position that no key
  * should have left off a glyph.  A mark that is not set is skipped, and so
@@ -1296,7 +1356,7 @@ int e_buffer_first_misplaced(BUFFER *b)
 {
  static const int ORDER[] = { E_BUFFER_MARK_BEGIN, E_BUFFER_MARK_END,
                               E_BUFFER_MARK_FIND_A, E_BUFFER_MARK_FIND_E,
-                              E_BUFFER_MARK_ANCHOR };
+                              E_BUFFER_MARK_ANCHOR, E_BUFFER_MARK_AUTO_INDENT };
  const POINT *p;
  size_t i;
 
@@ -1341,6 +1401,25 @@ static int buffer_follow_points(BUFFER *b, POINT **p)
 }
 
 /**
+ * buffer_ai_mark_forget_row - A change other than the auto-indent's own
+ * landed in row @y: if the pending auto-indent stands on it, it is gone.
+ *
+ * The indent is only ever taken off a line nothing has been typed on, so
+ * the first byte put into, taken out of, cut from or joined onto its row
+ * ends the claim, wherever in the row it falls.
+ */
+static void buffer_ai_mark_forget_row(BUFFER *b, int y)
+{
+ POINT *ai = buffer_mark_at(b, E_BUFFER_MARK_AUTO_INDENT);
+
+ if (ai != NULL && ai->y == y)
+ {
+  ai->y = BUFFER_POS_UNSET;
+  ai->x = BUFFER_POS_UNSET;
+ }
+}
+
+/**
  * e_buffer_text_removed - @n bytes were taken out of row @y at column @x
  * (the bytes are already gone): the marks and the anchor behind the cut move
  * left with their text, those inside it go to its start.
@@ -1353,6 +1432,7 @@ void e_buffer_text_removed(BUFFER *b, int y, int x, int n)
  for (i = 0; i < k; i++)
   if (p[i]->y == y && p[i]->x > x)
    p[i]->x = (p[i]->x - n > x) ? p[i]->x - n : x;
+ buffer_ai_mark_forget_row(b, y);
  buffer_row_points_set(b, y);
 }
 
@@ -1369,6 +1449,7 @@ void e_buffer_text_inserted(BUFFER *b, int y, int x, int n)
  for (i = 0; i < k; i++)
   if (p[i]->y == y && p[i]->x >= x)
    p[i]->x += n;
+ buffer_ai_mark_forget_row(b, y);
  buffer_row_points_set(b, y);
 }
 
@@ -1387,6 +1468,7 @@ void e_buffer_row_cut(BUFFER *b, int y, int c)
    p[i]->y++;
    p[i]->x -= c;
   }
+ buffer_ai_mark_forget_row(b, y);
  buffer_row_points_set(b, y);
  buffer_row_points_set(b, y + 1);
 }
@@ -1411,6 +1493,8 @@ void e_buffer_row_head_joined(BUFFER *b, int y, int at, int n)
    p[i]->y--;
    p[i]->x += at;
   }
+ buffer_ai_mark_forget_row(b, y);
+ buffer_ai_mark_forget_row(b, y + 1);
 }
 
 /* Move one mark for a splice at y of n_del lines over n_ins, of which the
@@ -1448,6 +1532,12 @@ static void buffer_marks_move(BUFFER *b, int y, int n_del, int n_ins, int change
  {
   if (m[i]->y < 0)
    continue;
+  if (i == BUFFER_MARK_AI && m[i]->y >= y && m[i]->y < y + n_del)
+  {
+   m[i]->y = BUFFER_POS_UNSET;       /* its row was rewritten or went */
+   m[i]->x = BUFFER_POS_UNSET;
+   continue;
+  }
   buffer_mark_move(b, m[i], y, n_del, n_ins, changed);
   buffer_point_settle(b, m[i]);
  }
@@ -3764,6 +3854,7 @@ static void buffer_replay_view_back(BUFFER *b, Undo *rec)
  e_buffer_cursor_set(b, rec->b.y, rec->b.x);
  if (b->f != NULL && b->f->s != NULL)
  {
+  buffer_block_close(b);
   b->f->s->mark_begin = rec->a;
   b->f->s->mark_end = rec->e;
   buffer_point_settle(b, &b->f->s->mark_begin);
@@ -6112,6 +6203,52 @@ void e_buffer_marks_inside(BUFFER *b)
  e_buffer_markers_settle(b);
 }
 
+/**
+ * e_buffer_step_pieces - How many records the open step holds so far.
+ */
+int e_buffer_step_pieces(const BUFFER *b)
+{
+ return(b->step_pushed);
+}
+
+/**
+ * e_buffer_redo_view_keep - The @n newest records of the Undo list stand for
+ * a step whose Redo ends with the cursor where it is now and the block
+ * empty there.
+ *
+ * A paste in the selection mode leaves the cursor after the pasted text and
+ * nothing selected; the records alone would give Redo the cursor from before
+ * the paste, or the pasted text as the block.
+ */
+void e_buffer_redo_view_keep(BUFFER *b, int n)
+{
+ Undo *rec;
+
+ for (rec = b->ud; rec != NULL && n > 0; rec = rec->next, n--)
+ {
+  rec->flags |= E_UNDO_REDO_VIEW;
+  rec->redo_at = b->b;
+ }
+}
+
+/* After a replay that made its step: the step it pushed onto the other
+   list keeps the Redo view of the one it replayed, and a Redo ends in it. */
+static void buffer_replay_view_pass(BUFFER *b, int replaying, const POINT *at)
+{
+ Undo *rec = (replaying == E_BUFFER_REPLAY_UNDO) ? b->rd : b->ud;
+ int n = b->step_pushed;
+
+ for (; rec != NULL && n > 0; rec = rec->next, n--)
+ {
+  rec->flags |= E_UNDO_REDO_VIEW;
+  rec->redo_at = *at;
+ }
+ if (replaying != E_BUFFER_REPLAY_REDO)
+  return;
+ e_buffer_cursor_set(b, at->y, at->x);
+ e_buffer_block_between(b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
+}
+
 /* One step back (Undo) or forward (Redo), whole or not at all.  Its
    records are taken off their list only once the step was made: a step
    refused for want of memory leaves them, the user's lines, marks,
@@ -6120,9 +6257,14 @@ void e_buffer_marks_inside(BUFFER *b)
 static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
 {
  int r, fault, taken;
+ int view;
+ POINT view_at;
 
  if (*list == NULL)
   return(E_BUFFER_NOTHING);
+ view = ((*list)->flags & E_UNDO_REDO_VIEW) != 0;
+ view_at = (*list)->redo_at;
+ e_buffer_mark_unset(b, E_BUFFER_MARK_AUTO_INDENT);   /* a replay is not typing: no claim survives it */
  fault = e_buffer_test_fault_enter(buffer_replay_fault_point(replaying));
  b->replaying = replaying;
  e_buffer_step_begin(b);
@@ -6131,6 +6273,9 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
  {
   buffer_records_drop(list, taken);
   buffer_marks_inside(b);
+  buffer_block_close(b);     /* the step set the block's ends: a block Ctrl-K B left open is ended */
+  if (view)
+   buffer_replay_view_pass(b, replaying, &view_at);
  }
  e_buffer_step_end(b);
  b->replaying = E_BUFFER_REPLAY_NONE;

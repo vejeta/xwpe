@@ -713,6 +713,15 @@ TESTS += tests/check-chain-outcome.sh
 # two numbers.
 TESTS += tests/check-path-buffers.sh
 
+# One owner of the selection block mode's replacement (e_selection_run), of
+# the pending auto-indent mark (the buffer owner) and of the final line break
+# Save writes: tests/check-selection-mode.sh fails when a site writes the
+# mark, passes the replacement's fault point or reads the selection bit by
+# itself, or when e_write stops asking e_write_keeps_file_ending.  The block
+# Ctrl-K B leaves open (the window's block_open) has one owner too: only
+# we_buffer.c sets or clears it.
+TESTS += tests/check-selection-mode.sh
+
 # One owner of the name of what a build makes from a source (we_progname.h):
 # tests/check-program-name.sh counts, per function, the cuts at a dot, the
 # output suffixes in a string and the joins of a name derived on the spot;
@@ -817,6 +826,7 @@ EXTRA_DIST = \
   tests/check-chain-outcome.sh \
   tests/chain-outcome.allow \
   tests/check-path-buffers.sh \
+  tests/check-selection-mode.sh \
   tests/check-program-name.sh \
   tests/check-tty-open.sh \
   tests/program-name.allow \

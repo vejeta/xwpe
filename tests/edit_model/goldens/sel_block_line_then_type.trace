@@ -1,0 +1,19 @@
+step 0 start
+W 1 t.txt ro=0 mx=120 y=0 x=0 mb=2,5 me=2,5 ks=0,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H one|
+L 1 H two two|
+L 1 H three|
+step 1 down
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=1,0 me=1,0 ks=1,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H one|
+L 1 H two two|
+L 1 H three|
+step 2 block_line
+W 1 t.txt ro=0 mx=120 y=1 x=0 mb=1,0 me=2,0 ks=1,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H one|
+L 1 H two two|
+L 1 H three|
+step 3 type b'L'
+W 1 t.txt ro=0 mx=120 y=1 x=1 mb=1,1 me=1,1 ks=1,1 ins=1 flg=0 save=19 view=0,0,1,0,20,79 brp=- ud=1 rd=0
+L 1 H one|
+L 1 H Lthree|

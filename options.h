@@ -64,9 +64,26 @@
  * otherwise. */
 #define ED_AI_ENABLE          0x0200
 
+/* Selection block mode.  Set = a block is a selection like in a modern
+ * editor: Shift and a move extends it, a move without Shift collapses it,
+ * and a typed character, Enter, Tab inside one line, Delete or Backspace
+ * replaces or deletes it as one Undo step.  It is a third level of the
+ * block option (anchor, WordStar, selection), independent of the key style
+ * bit above; with it set the WordStar bit has no effect. */
+#define ED_BLOCK_SELECTION    0x0400
+
+/* The indent that auto-indent put on a line is taken off again when the
+ * cursor leaves the line without anything having been typed on it. */
+#define ED_TRIM_AUTO_INDENT   0x0800
+
+/* Save keeps the final line break of the file as it was read: a file that
+ * had none is written without one, and so is a new file or an empty one. */
+#define ED_KEEP_FILE_ENDING   0x1000
+
 #define ED_EDITOR_OPTIONS \
   (ED_CUA_STYLE | ED_OLD_TILE_METHOD | ED_SOURCE_AUTO_INDENT | \
-  ED_ALWAYS_AUTO_INDENT | ED_SHOW_ENDMARKS | ED_BLOCK_WORDSTAR)
+  ED_ALWAYS_AUTO_INDENT | ED_SHOW_ENDMARKS | ED_BLOCK_WORDSTAR | \
+  ED_BLOCK_SELECTION | ED_TRIM_AUTO_INDENT | ED_KEEP_FILE_ENDING)
 
 #define ED_PROGRAMMING_OPTIONS \
   (ED_ERRORS_STOP_AT | ED_MESSAGES_STOP_AT | ED_SYNTAX_HIGHLIGHT)

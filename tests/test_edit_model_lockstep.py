@@ -233,7 +233,7 @@ def test_a_row_that_asks_for_what_the_editor_refuses_is_caught_at_its_start(tmp_
     auto-indent by the file's kind asked of a text file."""
     levels = dict(zip(option_row.FACTORS, (
         "old", "modern", "overwrite", "source", "118", "8", "10", "off", "off",
-        "empty.txt", "none", "oneline", "on", "readonly", "one")))
+        "empty.txt", "none", "oneline", "on", "readonly", "one", "off", "add")))
     bad = option_row.Row(levels, "bad")
     assert option_row.violates(levels)
     w = lockstep.Walk(str(tmp_path), None, 1, 0, row=bad, coverage=walk.Coverage()).run()

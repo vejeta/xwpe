@@ -1,0 +1,12 @@
+# Selection block mode: a move without Shift ends the selection (the block
+# is empty at the cursor); Shift and a move marks again from where the
+# cursor stands.
+file t.txt
+seed b"hello world\nsecond line\n"
+rc "[General]\nOptions2 : 1048\n"
+shift_right
+shift_right
+shift_right
+right
+shift_down
+left

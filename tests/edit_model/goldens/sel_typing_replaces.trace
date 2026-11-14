@@ -1,0 +1,36 @@
+step 0 start
+W 1 t.txt ro=0 mx=120 y=0 x=0 mb=1,11 me=1,11 ks=0,0 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+step 1 shift_right
+W 1 t.txt ro=0 mx=120 y=0 x=1 mb=0,0 me=0,1 ks=0,1 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+step 2 shift_right
+W 1 t.txt ro=0 mx=120 y=0 x=2 mb=0,0 me=0,2 ks=0,2 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+step 3 shift_right
+W 1 t.txt ro=0 mx=120 y=0 x=3 mb=0,0 me=0,3 ks=0,3 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+step 4 shift_right
+W 1 t.txt ro=0 mx=120 y=0 x=4 mb=0,0 me=0,4 ks=0,4 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+step 5 shift_right
+W 1 t.txt ro=0 mx=120 y=0 x=5 mb=0,0 me=0,5 ks=0,5 ins=1 flg=0 save=0 view=0,0,1,0,20,79 brp=- ud=0 rd=0
+L 1 H hello world|
+L 1 H second line|
+step 6 type b'J'
+W 1 t.txt ro=0 mx=120 y=0 x=1 mb=0,1 me=0,1 ks=0,1 ins=1 flg=0 save=6 view=0,0,1,0,20,79 brp=- ud=1 rd=0
+L 1 H J world|
+L 1 H second line|
+step 7 undo
+W 1 t.txt ro=0 mx=120 y=0 x=5 mb=0,0 me=0,5 ks=0,5 ins=1 flg=0 save=12 view=0,0,1,0,20,79 brp=- ud=0 rd=1
+L 1 H hello world|
+L 1 H second line|
+step 8 redo
+W 1 t.txt ro=0 mx=120 y=0 x=1 mb=0,1 me=0,1 ks=0,1 ins=1 flg=0 save=18 view=0,0,1,0,20,79 brp=- ud=1 rd=0
+L 1 H J world|
+L 1 H second line|

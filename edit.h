@@ -209,6 +209,7 @@ typedef struct frb {
 typedef struct undo {
  int type;
  POINT b, a, e;
+ POINT redo_at;        /* E_UNDO_REDO_VIEW: where a Redo of the step leaves the cursor */
  union {
   char c;
   void *pt;
@@ -266,6 +267,9 @@ typedef struct SCHRM {
  POINT mark_begin;
  POINT mark_end;
  POINT ks;
+ POINT ai;             /* the end of the indent auto-indent just put on a line (unset: none) */
+ int block_open;       /* 1: Ctrl-K B started the block and Ctrl-K K has not ended it, so
+                          a plain move does not collapse it (Selection mode) */
  POINT pt[E_MARKERS];
  POINT fa;
  POINT fe;
@@ -554,6 +558,11 @@ int e_ctrl_o(FENSTER *f);
 int e_tst_dfkt(FENSTER *f, int c);
 int e_blk(int anz, int xa, int ya, int col);
 int e_car_ret(BUFFER *b, SCHIRM *s);
+void e_selection_collapse(FENSTER *f);
+void e_selection_end(FENSTER *f);
+void e_selection_redo_ends_here(FENSTER *f, int n);
+int e_opt_block_wordstar(int edopt);
+int e_selection_range(FENSTER *f, POINT *begin, POINT *end);
 int e_car_ret_split(BUFFER *b, SCHIRM *s);
 /* An editing action's own pieces, run on the owner's copy of the rows they
    change: @top is the row of the user's text that the copy's row 0 holds,

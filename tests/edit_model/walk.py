@@ -67,6 +67,11 @@ LITERAL_TYPED = [b"x", b"q", b"\x14", b"\x19", b"\x1a"]
 LITERAL_LEAVE_P = 0.4
 UNDO_RUN_MAX = 3
 REDO_RUN_MAX = 3
+# In the selection block mode, with a selection standing, the next action is
+# one of these this often: the keys that replace or delete a selection are
+# the rule's hot spot (DESIGN-modern-keymap.md 8.2).
+SELECTION_REPLACE_P = 0.5
+SELECTION_REPLACERS = ("type", "type", "enter", "tab", "backspace", "delete")
 # What a Change All looks for and puts: text the seeds hold, replacements
 # that are never empty and never part of what is searched.
 SEARCH_TERMS = [b"a", b"e", b"o", b"line", b"the", b"w0"]
@@ -96,6 +101,8 @@ class Drawer:
             if self.rng.random() < LITERAL_LEAVE_P:
                 return "literal_toggle", None
             return "type", self.rng.choice(LITERAL_TYPED)
+        if st.options.selection and st.mb != st.me and self.rng.random() < SELECTION_REPLACE_P:
+            return self.make(self.rng.choice(SELECTION_REPLACERS))
         kind = self.rng.choices(self.kinds, self.weights)[0]
         return self.make(kind)
 

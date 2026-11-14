@@ -1,0 +1,173 @@
+{
+ "capability": "selection-mode",
+ "scenarios": [
+  {
+   "id": "SC-selection-01",
+   "requirement": "Typing over a selection replaces it as one Undo step, and Ctrl-U gives back the text and the selection",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_typing_over_a_selection_replaces_it_as_one_step",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-02",
+   "requirement": "A move without Shift collapses the selection and Shift extends it from the end that did not move",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_a_move_without_shift_collapses_the_selection_and_shift_extends_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-03",
+   "requirement": "Delete and Backspace delete the selection only",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_delete_and_backspace_delete_the_selection_only",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-04",
+   "requirement": "Return over a selection breaks the line and indents the new line",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_return_over_a_selection_breaks_the_line_and_indents_the_new_one",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-05",
+   "requirement": "Tab replaces a selection inside one line",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_tab_replaces_a_selection_inside_one_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-06",
+   "requirement": "In overwrite mode a typed character still replaces the selection and does not overwrite after it",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_overwrite_mode_still_replaces_the_selection_and_does_not_overwrite_after_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-07",
+   "requirement": "With the mode off a selection is only a block and typing does not replace it",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_without_the_mode_a_selection_is_only_a_block",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-08",
+   "requirement": "Ctrl-K B and Ctrl-K K mark the same kind of selection as Shift",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_the_mode_covers_a_selection_made_with_ctrl_k_marks",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-09",
+   "requirement": "A replacement refused for memory changes nothing and says so; a sweep of cuts ends whole",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_a_replacement_refused_for_memory_changes_nothing_and_a_sweep_ends_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-10",
+   "requirement": "Trim Auto-indent takes the indent off when the cursor leaves with nothing typed, in the key's own step",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_trim_takes_the_indent_off_when_the_cursor_leaves_with_nothing_typed",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-11",
+   "requirement": "Keep Final newline saves the file's final line break as it was read",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_keep_final_newline_saves_the_file_as_it_was_read",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-12",
+   "requirement": "The Editor dialog shows the three options and an Ok keeps the bits it does not own",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_ticking_selection_in_the_dialog_turns_the_mode_on_and_ok_keeps_the_other_bits",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-13",
+   "requirement": "Through the X key path, Shift and a cursor key marks a selection and typing replaces it",
+   "layer": "x11",
+   "test": "tests/x11/test_selection_mode.py::test_typing_over_a_shift_selection_replaces_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-14",
+   "requirement": "Through the X key path, Keep Final newline saves a file without a final line break as it was",
+   "layer": "x11",
+   "test": "tests/x11/test_selection_mode.py::test_keep_final_newline_saves_a_file_without_one_as_it_was",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-15",
+   "requirement": "The native Wayland twin of SC-selection-13",
+   "layer": "wayland",
+   "test": "tests/wayland/test_selection_mode.py::test_typing_over_a_shift_selection_replaces_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-16",
+   "requirement": "The native Wayland twin of SC-selection-14",
+   "layer": "wayland",
+   "test": "tests/wayland/test_selection_mode.py::test_keep_final_newline_saves_a_file_without_one_as_it_was",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-17",
+   "requirement": "Tab over several lines indents them as one step and the selection stays",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_tab_over_several_lines_indents_them_as_one_step",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-18",
+   "requirement": "A block Ctrl-K B started stays open over plain moves until Ctrl-K K; a Shift selection still collapses",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_a_block_ctrl_k_b_started_stays_open_over_plain_moves",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-19",
+   "requirement": "Paste over a selection replaces it as one step and the pasted text is not selected",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_paste_of_several_rows_replaces_a_selection_and_a_selection_over_rows",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-20",
+   "requirement": "A paste refused for memory changes nothing and says so; a sweep of cuts ends whole",
+   "layer": "ncurses",
+   "test": "tests/test_selection_mode.py::test_a_paste_refused_for_memory_changes_nothing_and_a_sweep_ends_whole",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-21",
+   "requirement": "On X11 a block Ctrl-K B started stays open over plain cursor keys until Ctrl-K K",
+   "layer": "x11",
+   "test": "tests/x11/test_selection_mode.py::test_a_block_ctrl_k_b_started_stays_open_over_plain_cursor_keys",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-22",
+   "requirement": "On X11 paste over a selection replaces it and the pasted text is not selected",
+   "layer": "x11",
+   "test": "tests/x11/test_selection_mode.py::test_paste_over_a_selection_replaces_it_and_leaves_the_text_unselected",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-23",
+   "requirement": "The native Wayland twin of SC-selection-21",
+   "layer": "wayland",
+   "test": "tests/wayland/test_selection_mode.py::test_a_block_ctrl_k_b_started_stays_open_over_plain_cursor_keys",
+   "status": "new"
+  },
+  {
+   "id": "SC-selection-24",
+   "requirement": "The native Wayland twin of SC-selection-22",
+   "layer": "wayland",
+   "test": "tests/wayland/test_selection_mode.py::test_paste_over_a_selection_replaces_it_and_leaves_the_text_unselected",
+   "status": "new"
+  }
+ ]
+}

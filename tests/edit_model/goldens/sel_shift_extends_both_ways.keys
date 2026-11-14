@@ -1,0 +1,13 @@
+# Selection block mode: Shift and a move grows the selection from the end
+# that did not move, so going back past the place it began turns it round.
+file t.txt
+seed b"hello world\nsecond line\n"
+rc "[General]\nOptions2 : 1048\n"
+right
+right
+shift_right
+shift_right
+shift_left
+shift_left
+shift_left
+shift_left

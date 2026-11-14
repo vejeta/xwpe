@@ -1,0 +1,15 @@
+# Selection block mode: typing over a selection replaces it, as one Ctrl-U.
+# Shift and a move marks the text; the typed character takes its place and
+# the block is empty at the cursor. Ctrl-U gives back the text and the
+# selection; Ctrl-R replaces it again.
+file t.txt
+seed b"hello world\nsecond line\n"
+rc "[General]\nOptions2 : 1048\n"
+shift_right
+shift_right
+shift_right
+shift_right
+shift_right
+type b"J"
+undo
+redo

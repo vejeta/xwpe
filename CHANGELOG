@@ -306,6 +306,20 @@ Changes
   is not a text file's kind, such as 70 in a folder's options file, no longer
   crashes the editor or leaves windows that take no keys.
 
+* Options > Editor has three new boxes, all off until you tick them.
+  "SelEction blocK" makes a marked block a selection, as in other editors:
+  Shift and a move marks it, a move without Shift ends it (a block that
+  Ctrl-K B started stays open until Ctrl-K K), and a typed character,
+  Return, Tab inside one line, Delete, Backspace or Paste replaces or
+  deletes it as one Ctrl-U step; Tab over several lines indents them; the
+  pasted text is not left selected; if the replacement cannot be made,
+  nothing changes and the status row says so.  "Trim Auto-indent" takes the indent
+  that Return put on a line off again when you leave the line without
+  having typed on it.  "Keep Final newline" makes Save write the file's last
+  line break as it was read: a file without one is saved without one, and
+  so are an empty file and a new file.  Ticking "SelEction blocK" while
+  "WordStar blocK" is ticked keeps Selection.
+
 * A file that has NUL bytes is no longer shortened without a word.  The
   status row says how many were left out when the file is opened (and after
   Block > Read), and the first Save asks before it writes the file without

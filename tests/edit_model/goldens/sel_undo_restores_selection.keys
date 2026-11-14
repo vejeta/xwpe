@@ -1,0 +1,12 @@
+# Selection block mode: Return over a selection of two lines replaces it by
+# one line break, in one step. Ctrl-U gives back both lines and the
+# selection; Ctrl-R breaks the line again.
+file t.txt
+seed b"hello world\nsecond line\nthird\n"
+rc "[General]\nOptions2 : 1048\n"
+shift_down
+shift_right
+shift_right
+enter
+undo
+redo

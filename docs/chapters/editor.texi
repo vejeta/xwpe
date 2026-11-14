@@ -162,6 +162,38 @@ the last thing an unindent takes is a tab worth more columns than that,
 the columns beyond come back as blanks, so the line moves exactly half a
 Tabstop.
 
+@anchor{Selection mode}
+@cindex selection mode
+@cindex typing over a selection
+@subsection Selection mode
+
+With @samp{SelEction blocK} ticked in @samp{Options @result{} Editor}
+(@kbd{Alt-O E}, @kbd{Alt-E}), a marked block is a selection, as in other
+editors.  A cursor key without @key{Shift} ends a selection made with
+@key{Shift} or the mouse: the block is empty at the cursor.  @key{Shift}
+and a cursor key marks it again, from the end that did not move, so going
+back past the place it began turns it round.  A typed character,
+@key{Return}, @key{Delete} and @key{Backspace} replace or delete the
+selection and nothing beside it, and @key{Tab} replaces a selection inside
+one line; over several lines it indents them, as @kbd{Ctrl-K I} does, and
+the selection stays.  In overwrite mode a typed character still replaces
+the selection and goes in; it does not also overwrite the character after
+it.  A block that @kbd{Ctrl-K B} started stays open over cursor keys, as in
+Turbo Pascal, until @kbd{Ctrl-K K} ends it; a click, a @key{Shift} move,
+@kbd{Ctrl-K H}, @kbd{Ctrl-U} and @kbd{Ctrl-R} end it too.
+
+The deletion and what takes its place are one action: one @kbd{Ctrl-U}
+gives back the text and the selection, one @kbd{Ctrl-R} replaces it again.
+When the replacement cannot be made (memory, or a row that would pass
+Max.@: Columns) the text, the cursor and the selection stay as they were
+and the status row says so.  The mode does not change the key style, and
+the @samp{WordStar blocK} box has no effect while it is ticked.  Pasting
+(@kbd{Ctrl-V}, @kbd{Shift-Ins}, @samp{Edit @result{} Paste}) over a
+selection replaces it, as one action like typing over it, and the pasted
+text is not selected afterwards, so the next key you type goes after it.
+Pasting with nothing selected does not select the pasted text either.
+@kbd{Ctrl-K C} still copies the block to the cursor and marks the copy.
+
 Cut, copy, and paste use the Edit menu:
 
 @table @kbd

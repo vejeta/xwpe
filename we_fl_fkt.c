@@ -82,6 +82,42 @@ int e_m_save(FENSTER *f)
 }
 
 /**
+ * e_write_keeps_file_ending - Does a write of this range leave out the
+ * final line break the file did not have?
+ * @f: the window written; @b: its buffer; the range as e_write takes it.
+ *
+ * Only when the option "Keep Final newline" is on and the write is the
+ * whole text: a block written to a file, or the part of a file below a
+ * mark, is not the file's own end.  So a file read without a final line
+ * break is saved without one, and so is a new or an empty file, and
+ * `git diff` shows no change to a last line the user did not touch.
+ * Return: 1 to leave the final break out when the buffer recorded none.
+ */
+static int e_write_keeps_file_ending(FENSTER *f, BUFFER *b, int xa, int ya, int xe, int ye)
+{
+ int whole = (xa == 0 && ya == 0 && xe >= E_BUFFER_ROW_END(b) && ye >= b->mxlines - 1);
+
+ return(whole && (f->ed->edopt & ED_KEEP_FILE_ENDING) != 0);
+}
+
+/**
+ * e_save_final_break_after - What the buffer records of its file's final
+ * line break once the text was saved.
+ * @f: the window saved; @b: its buffer.
+ *
+ * A save that wrote the break leaves the file ending on one.  A save that
+ * kept the file's ending leaves the record as it was: a file that had no
+ * final break still has none, and turning the option off later makes the
+ * next save add it.
+ */
+static void e_save_final_break_after(FENSTER *f, BUFFER *b)
+{
+ if (f->ed->edopt & ED_KEEP_FILE_ENDING)
+  return;
+ b->final_break = E_FINAL_BREAK_HAD;
+}
+
+/**
  * e_save_nul_confirmed - Before the first Save of a file that lost NUL bytes
  * when it was read, ask whether to write it without them.
  * @f: the window; @b: its buffer.
@@ -122,7 +158,7 @@ int e_save(FENSTER *f)
  if (ret != WPE_ESC)
  {
   f->save = 0;
-  b->final_break = E_FINAL_BREAK_HAD;   /* the file now ends on a line break */
+  e_save_final_break_after(f, b);
   b->nul_dropped = 0;                   /* the user knew, and the file is written */
  }
  WpeMouseRestoreShape();
@@ -243,7 +279,7 @@ int e_write(int xa, int ya, int xe, int ye, FENSTER *f, int backup)
  }
  if (f->filemode >= 0)
   chmod(ptmp, f->filemode);
- e_eol_write(fp, b, ya, xa, ye, xe, 0);
+ e_eol_write(fp, b, ya, xa, ye, xe, e_write_keeps_file_ending(f, b, xa, ya, xe, ye));
  if (ferror(fp))
  {
   e_error("Error writing file (disk full?)", 0, f->fb);

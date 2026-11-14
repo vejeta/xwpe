@@ -135,10 +135,34 @@ def test_block_delete_leaves_the_cursor_between_characters(tmp_path):
 # a walk, after the row's own prelude.
 LIT = ("literal_toggle", None)
 
+# The levels of each row as the run that found it had them.  The array is
+# regenerated when a factor is added, and its row names then stand for other
+# options: a row named here keeps the options its finding was made on, and
+# the factors added since stay at their old behaviour.
+FOUND_ON = {
+    "r001": "old modern overwrite never 118 1 2 off on mixed.c two oneline on file one",
+    "r009": "cua modern overwrite always lowered 4 10 off on oneline.c none oneline on file one",
+    "r012": "cua modern insert always 40 1 10 changes on empty.txt none empty on file one",
+    "r019": "cua wordstar overwrite always raised 8 2 off on mixed.txt none empty on file one",
+    "r020": "cua modern overwrite source 118 8 0 off off oneline.c none empty on file one",
+    "r022": "old modern insert always 40 1 2 off off empty.c none empty off file one",
+    "r038": "old modern overwrite never 40 1 10 off off mixed.txt none empty off file one",
+    "r039": "cua wordstar overwrite never 40 4 10 changes off mixed.txt none oneline on file one",
+}
+FOUND_ON_LATER_FACTORS = {"trim": "off", "ending": "add"}
+
+
+def _found_on_row(row_name):
+    from edit_model import option_row
+    levels = dict(zip(option_row.FACTORS, FOUND_ON[row_name].split()))
+    levels.update(FOUND_ON_LATER_FACTORS)
+    assert set(levels) == set(option_row.FACTORS), "a factor without its old level"
+    return option_row.Row(levels, row_name)
+
 
 def _replay(tmp_path, row_name, actions, no_traces=False):
-    from edit_model import covering, lockstep
-    row = dict((r.name, r) for r in covering.load())[row_name]
+    from edit_model import lockstep
+    row = _found_on_row(row_name)
     walk = lockstep.Walk(str(tmp_path), None, 1, len(actions), row=row)
     walk.drawer.queue = list(actions)
     walk.run()

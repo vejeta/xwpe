@@ -58,6 +58,8 @@
 #define E_UNDO_MORE              1   /* the record below this one belongs to the same step */
 #define E_UNDO_EMPTIED           2   /* the canonical empty line is no changed row */
 #define E_UNDO_STEP_BLOCK        4   /* blk_before and blk_after hold the step's block */
+#define E_UNDO_REDO_VIEW         8   /* a Redo of this step ends with the cursor at redo_at and
+                                        the block empty there (a paste in the selection mode) */
 
 /* how a splice counts for Ctrl-U */
 typedef enum {
@@ -117,6 +119,9 @@ void   e_buffer_marks_inside(BUFFER *b);
 #define E_BUFFER_MARK_FIND_E  3   /* the find mark's end */
 #define E_BUFFER_MARK_ANCHOR  4   /* what a Shift key selects from */
 #define E_BUFFER_POS_CURSOR   5   /* the cursor, where a call reads a place */
+#define E_BUFFER_MARK_AUTO_INDENT 6 /* the end of the indent auto-indent put on a
+                                       line that nothing has been typed on yet: the
+                                       row's start is its begin (Options: Trim) */
 
 /* What the cursor and the block were before a block replay set the record's:
    put back when the replay is refused. */
@@ -158,6 +163,10 @@ void   e_buffer_block_line(BUFFER *b);
 void   e_buffer_mark_from(BUFFER *b, int which, int from);
 void   e_buffer_cursor_from(BUFFER *b, int from);
 void   e_buffer_block_between(BUFFER *b, int from_a, int from_b);
+void   e_buffer_block_open(BUFFER *b);
+int    e_buffer_block_is_open(BUFFER *b);
+int    e_buffer_step_pieces(const BUFFER *b);
+void   e_buffer_redo_view_keep(BUFFER *b, int n);
 void   e_buffer_find_set(BUFFER *b, int y, int xa, int xe);
 int    e_buffer_find_mark_erase_due(BUFFER *b);
 void   e_buffer_find_mark_erased(BUFFER *b);
@@ -380,10 +389,12 @@ void   e_buffer_test_fail_allocs(int n);
 #define E_BUFFER_FAULT_SHIFT       8   /* "shift": Ctrl-K I or Ctrl-K U */
 #define E_BUFFER_FAULT_HELP_MARKS  9   /* "help-marks": Ctrl-O U, M or H */
 #define E_BUFFER_FAULT_CHANGE_ALL 10   /* "change-all": Search > Replace */
+#define E_BUFFER_FAULT_REPLACE    11   /* "replace": typing, Enter, Tab, Delete or Backspace over a selection */
 #define E_BUFFER_FAULT_FIRED       1   /* the token of the action that fired it */
 
 int    e_buffer_test_fault_point(const char *name);
 void   e_buffer_test_fault_arm(int point, int n);
+void   e_buffer_test_fault_arm_at(int point, int n, int k);
 int    e_buffer_test_fault_enter(int point);
 void   e_buffer_test_fault_leave(int token);
 

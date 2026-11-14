@@ -1,0 +1,11 @@
+# Selection block mode in overwrite mode: a typed character still replaces
+# the selection and goes in, it does not also overwrite the character after
+# the selection.
+file t.txt
+seed b"hello world\nsecond line\n"
+rc "[General]\nOptions2 : 1048\n"
+insert_toggle
+shift_right
+shift_right
+shift_right
+type b"Z"

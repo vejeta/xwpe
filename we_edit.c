@@ -306,6 +306,23 @@ char *e_make_postf();
 int e_del_a_ind();
 int e_tab_a_ind();
 static int e_window_auto_indents(FENSTER *f);
+static int e_selection_active(FENSTER *f);
+static int e_selection_takes_char(FENSTER *f, int c);
+static void e_selection_type(FENSTER *f, int c);
+static void e_selection_break(FENSTER *f);
+static void e_selection_delete(FENSTER *f);
+static int e_selection_tab(FENSTER *f);
+static int e_auto_indent_pending_row(BUFFER *b);
+static void e_auto_indent_take_off(BUFFER *b, SCHIRM *s);
+
+/* The buffer whose Undo step a key opened because an auto-indent is
+   pending in it: the key and the taking off of the indent are that step. */
+typedef struct {
+ BUFFER *b;
+} EAutoIndentStep;
+static void e_auto_indent_key_begin(FENSTER *f, EAutoIndentStep *step);
+static void e_auto_indent_key_done(ECNT *e, EAutoIndentStep *step);
+static void e_auto_indent_key_close(ECNT *e, EAutoIndentStep *step);
 static void e_backspace_a_ind(BUFFER *b, SCHIRM *s, POINT at_key);
 int e_help_next();
 int e_codepoint_to_utf8(int cp, unsigned char *out);
@@ -563,6 +580,7 @@ int e_edit(ECNT *cn, char *filename)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
  if ((f->s = (SCHIRM*)MALLOC(sizeof(SCHIRM))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+ f->s->block_open = 0;
 #ifdef DEBUGGER
  f->s->brp = NULL;
 #endif
@@ -661,6 +679,7 @@ int e_edit(ECNT *cn, char *filename)
  e_buffer_mark_set(f->b, E_BUFFER_MARK_END, 0, 0);
  e_buffer_mark_set(f->b, E_BUFFER_MARK_FIND_A, 0, 0);
  e_buffer_mark_set(f->b, E_BUFFER_MARK_FIND_E, 0, 0);
+ e_buffer_mark_unset(f->b, E_BUFFER_MARK_AUTO_INDENT);
  f->s->fb = f->fb;
 #ifdef DEBUGGER
  f->s->da.y = -1;
@@ -1087,12 +1106,19 @@ int e_eingabe(ECNT *e)
  FENSTER *f = e->f[e->mxedt];
  int ret, c = 0;
  unsigned char cc;
+ EAutoIndentStep indent_step;
 
+ indent_step.b = NULL;
  fk_cursor(1);
  while (c != WPE_ESC)
  {
+  e_auto_indent_key_close(e, &indent_step);   /* the last key never reached its end */
   if (e->mxedt < 1) c = WpeHandleMainmenu(-1, f);
-  else if (!DTMD_ISTEXT(f->dtmd)) return(0);
+  else if (!DTMD_ISTEXT(f->dtmd))
+  {
+   e_auto_indent_key_close(e, &indent_step);
+   return(0);
+  }
   else
   {
    /* What came behind a box (a reply, a build's end, a stop, an answer,
@@ -1118,6 +1144,7 @@ int e_eingabe(ECNT *e)
 #else
    cc = c;
 #endif
+   e_auto_indent_key_begin(f, &indent_step);
   }
 #ifdef WPE_AI
   wpe_ai_flash_clear(f);          /* any key clears a one-shot status-line flash */
@@ -1197,7 +1224,9 @@ int e_eingabe(ECNT *e)
   {
    if (e_window_text_locked(f)) continue;
    if (e_window_full(f, e_key_text_bytes(c))) continue;
-   if (c >= 0x80)
+   if (e_selection_takes_char(f, c))
+    e_selection_type(f, c);
+   else if (c >= 0x80)
    {
     unsigned char u8[4];
     int u8len = e_codepoint_to_utf8(c, u8);
@@ -1216,7 +1245,12 @@ int e_eingabe(ECNT *e)
     if (f->dtmd == DTMD_HELP) e_help_last(f);
     continue;
    }
-   if (b->b.y > 0 || b->b.x > 0)
+   if (e_selection_active(f))
+   {
+    e_selection_delete(f);
+    e_schirm(f, 1);
+   }
+   else if (b->b.y > 0 || b->b.x > 0)
    {
     if (b->bf[b->b.y].len == 0)
      e_backspace_empty_row(b, s);
@@ -1238,7 +1272,12 @@ int e_eingabe(ECNT *e)
 #endif
     continue;
    }
-   if (*(b->bf[b->b.y].s + b->b.x) != '\0' &&
+   if (e_selection_active(f))
+   {
+    e_selection_delete(f);
+    e_schirm(f, 1);
+   }
+   else if (*(b->bf[b->b.y].s + b->b.x) != '\0' &&
      (b->b.y < b->mxlines-1 || *(b->bf[b->b.y].s + b->b.x) != WPE_WR))
    {
     e_del_nchar(b, s, b->b.x, b->b.y, e_char_bytes_at(b, b->b.x, b->b.y));
@@ -1261,14 +1300,18 @@ int e_eingabe(ECNT *e)
    if (e_window_text_locked(f)) continue;
 #endif
    if (e_window_full(f, E_LINE_BREAK_BYTES)) continue;
-   e_car_ret(b, s);
+   if (e_selection_active(f))
+    e_selection_break(f);
+   else
+    e_car_ret(b, s);
    e_schirm(f, 1);
   }
   else if (c == WPE_TAB)
   {
    if (e_window_text_locked(f)) continue;
    if (e_window_full(f, E_TAB_KEY_BYTES)) continue;
-   e_tab_a_ind(b, s);
+   if (!e_selection_tab(f))
+    e_tab_a_ind(b, s);
    e_schirm(f, 1);
   }
 /*
@@ -1294,12 +1337,14 @@ weiter:
   {
    b = f->b;
    s = f->s;
+   e_auto_indent_key_done(e, &indent_step);
    e_buffer_mark_from(b, E_BUFFER_MARK_ANCHOR, E_BUFFER_POS_CURSOR);
    e_cursor(f, 1);
    if (!e_key_is_vertical_move(c)) b->clsv = b->cl;
    e_zlsplt(f);
   }
  }
+ e_auto_indent_key_close(e, &indent_step);
  return(c);
 }
 
@@ -1495,7 +1540,8 @@ int e_tst_cur(int c, ECNT *e)
    FENSTER *f = e->f[e->mxedt];
    BUFFER *b = f->b;
    SCHIRM *s = f->s;
-   
+   int moved = 1;              /* the key moved the cursor: it ends a selection */
+
    switch (c)
    {  case CtrlP:
       case CUP:
@@ -1559,6 +1605,7 @@ int e_tst_cur(int c, ECNT *e)
 	 break;
       case AltI:
       case EINFG:
+	 moved = 0;
 	 if (f->ins == WPE_INS_READONLY) {
 #ifdef DEBUGGER
 	    if (WpeIsProg()) e_d_is_watch(c, f);
@@ -1573,6 +1620,7 @@ int e_tst_cur(int c, ECNT *e)
 #endif
 	 break;
       case AltJ:
+	 moved = 0;
 	 if (f->ins == WPE_INS_READONLY) break;
 	 if(f->ins & 2) f->ins &= ~2;
 	 else f->ins |= 2;
@@ -1593,21 +1641,25 @@ int e_tst_cur(int c, ECNT *e)
 	 e_buffer_cursor_set(b, b->b.y, b->bf[b->b.y].len);
 	 break;
       case CtrlT:
+	 moved = 0;
 	 if(e_window_text_locked(f)) break;
 	 e_delete_word_right(b, s);
 	 e_schirm(f, 1);
 	 break;
       case CtrlZ:
+	 moved = 0;
 	 if(e_window_text_locked(f)) break;
 	 e_delete_to_end_of_row(b, s);
 	 e_schirm(f, 1);
 	 break;
       case DGZ:
+	 moved = 0;
 	 if(e_window_text_locked(f)) break;
 	 e_delete_line_key(b, s);
 	 e_schirm(f, 1);
 	 break;
       default:
+	 moved = 0;
 	 switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_HELP))
 	 {
 	    case WPE_ACT_HELP_PREV:
@@ -1627,6 +1679,8 @@ int e_tst_cur(int c, ECNT *e)
    {  e_shift_extend_block(b, s);
       e_schirm(f, 1);
    }
+   else if (moved)
+      e_selection_collapse(f);
    return(0);
 }
 
@@ -2674,18 +2728,153 @@ static int e_car_ret_head_len(BUFFER *b)
  return(b->b.x);
 }
 
+/* What Enter does, read from the user's text before it is changed. */
+typedef struct {
+ int indent;       /* the blanks the new line is indented by */
+ int trim_row;     /* the cursor's row when it holds only the indent a
+                      previous Enter left (Options: Trim), else -1 */
+} ECarRetPlan;
+
 /**
- * e_car_ret_pieces - Break the line at the cursor of @b and, when the break
- * was made, indent the new line by the blanks @plan counts.
+ * e_car_ret_pieces - Take the indent a previous Enter left off the cursor's
+ * row when @plan says it is still only that, break the line at the cursor
+ * and, when the break was made, indent the new line by the blanks @plan
+ * counts.
  */
 static void e_car_ret_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
 {
- int *indent = plan;
+ ECarRetPlan *p = plan;
 
- if (e_car_ret_split(b, s) != E_BUFFER_OK || *indent <= 0)
+ if (p->trim_row >= 0 && b->bf[b->b.y].len > 0)
+ {
+  e_del_nchar(b, s, 0, b->b.y, b->bf[b->b.y].len);
+  e_buffer_cursor_set(b, b->b.y, 0);
+ }
+ if (e_car_ret_split(b, s) != E_BUFFER_OK || p->indent <= 0)
   return;
- e_ins_blanks(b, s, 0, b->b.y, *indent);
- e_buffer_cursor_set(b, b->b.y, *indent);
+ e_ins_blanks(b, s, 0, b->b.y, p->indent);
+ e_buffer_cursor_set(b, b->b.y, p->indent);
+}
+
+/**
+ * e_auto_indent_pending_row - The row that still holds only the indent
+ * auto-indent put on it, in a window that takes such an indent off again.
+ * @b: the buffer.
+ *
+ * The indent is pending while nothing was typed on its row: the row is
+ * still exactly the blanks the owner marked (E_BUFFER_MARK_AUTO_INDENT) and
+ * Options > Editor > Trim Auto-indent is on.  A mark the owner could not
+ * keep true (a change in the row, the row gone) is not set.
+ * Return: the row, or -1.
+ */
+static int e_auto_indent_pending_row(BUFFER *b)
+{
+ POINT mark;
+ int i;
+
+ if (b->f == NULL || b->f->ed == NULL || !(b->f->ed->edopt & ED_TRIM_AUTO_INDENT))
+  return(-1);
+ mark = b->f->s->ai;
+ if (mark.y < 0 || mark.y >= b->mxlines || b->bf[mark.y].len != mark.x)
+  return(-1);
+ for (i = 0; i < mark.x; i++)
+  if (b->bf[mark.y].s[i] != ' ' && b->bf[mark.y].s[i] != '\t')
+   return(-1);
+ return(mark.y);
+}
+
+/**
+ * e_auto_indent_mark_new_line - Enter indented the line the cursor is on:
+ * the owner remembers that indent, so it can be taken off again when the
+ * cursor leaves the line with nothing typed on it.
+ * @b: the buffer, its cursor at the end of the new indent; @indent: the
+ * blanks Enter put in (0: none, nothing to remember).
+ *
+ * Only when Options > Editor > Trim Auto-indent is on.
+ */
+static void e_auto_indent_mark_new_line(BUFFER *b, int indent)
+{
+ if (b->f == NULL || b->f->ed == NULL || !(b->f->ed->edopt & ED_TRIM_AUTO_INDENT))
+  return;
+ if (indent > 0 && b->b.x == indent)
+  e_buffer_mark_set(b, E_BUFFER_MARK_AUTO_INDENT, b->b.y, indent);
+ else
+  e_buffer_mark_unset(b, E_BUFFER_MARK_AUTO_INDENT);
+}
+
+/**
+ * e_auto_indent_key_begin - A key is about to be handled in window @f: open
+ * the Undo step the key and the taking off of a pending indent share.
+ *
+ * Nothing is opened when no auto-indent is pending, which is almost always.
+ */
+static void e_auto_indent_key_begin(FENSTER *f, EAutoIndentStep *step)
+{
+ step->b = NULL;
+ if (e_auto_indent_pending_row(f->b) < 0)
+  return;
+ e_buffer_step_begin(f->b);
+ step->b = f->b;
+}
+
+/**
+ * e_auto_indent_window_has - Does the editor still have a window on buffer
+ * @b?  A key can close the window it came from.
+ */
+static int e_auto_indent_window_has(ECNT *e, BUFFER *b)
+{
+ int i;
+
+ for (i = 1; i <= e->mxedt; i++)
+  if (e->f[i]->b == b)
+   return(1);
+ return(0);
+}
+
+/**
+ * e_auto_indent_key_close - Close the key's step without taking an indent
+ * off: the key left the loop before it was handled (a scroll, a refused
+ * edit, a key that went to another window).
+ */
+static void e_auto_indent_key_close(ECNT *e, EAutoIndentStep *step)
+{
+ if (step->b != NULL && e_auto_indent_window_has(e, step->b))
+  e_buffer_step_end(step->b);
+ step->b = NULL;
+}
+
+/**
+ * e_auto_indent_key_done - The key was handled: take the pending indent off
+ * if the key left its line, then close the key's step.
+ */
+static void e_auto_indent_key_done(ECNT *e, EAutoIndentStep *step)
+{
+ FENSTER *f = e->f[e->mxedt];
+
+ if (step->b != NULL && f->b == step->b)
+  e_auto_indent_take_off(step->b, f->s);
+ e_auto_indent_key_close(e, step);
+}
+
+/**
+ * e_auto_indent_take_off - The key left the line auto-indent indented: the
+ * indent goes, if nothing was typed on it.
+ * @b: the buffer; @s: its screen.
+ *
+ * Called after every key while an indent is pending.  The cursor still on
+ * the row keeps the indent (the user may type there); once it stands on
+ * another row the row is emptied, inside the key's own step, so one Ctrl-U
+ * brings the indent back with the key's move.
+ */
+static void e_auto_indent_take_off(BUFFER *b, SCHIRM *s)
+{
+ int y = e_auto_indent_pending_row(b);
+
+ if (y < 0 || b->b.y == y)
+  return;
+ e_buffer_mark_unset(b, E_BUFFER_MARK_AUTO_INDENT);
+ if (b->bf[y].len > 0)
+  e_del_nchar(b, s, 0, y, b->bf[y].len);
 }
 
 /**
@@ -2700,12 +2889,321 @@ static void e_car_ret_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
  */
 int e_car_ret(BUFFER *b, SCHIRM *s)
 {
- int indent = 0, y = e_edit_action_row(b, b->b.y);
+ ECarRetPlan plan;
+ int y = e_edit_action_row(b, b->b.y);
 
+ plan.indent = 0;
+ plan.trim_row = -1;
  if (e_window_auto_indents(b->f) && b->b.y < b->mxlines)
-  indent = e_car_a_ind_width(b, b->b.y, e_car_ret_head_len(b));
- e_edit_action_run(b, y, y, E_BUFFER_FAULT_ENTER, "a line break", e_car_ret_pieces, &indent);
+  plan.indent = e_car_a_ind_width(b, b->b.y, e_car_ret_head_len(b));
+ if (e_auto_indent_pending_row(b) == b->b.y)
+  plan.trim_row = b->b.y;
+ if (e_edit_action_run(b, y, y, E_BUFFER_FAULT_ENTER, "a line break", e_car_ret_pieces,
+                       &plan) == E_BUFFER_OK)
+  e_auto_indent_mark_new_line(b, plan.indent);
  return(b->b.y);
+}
+
+/* ---- the selection block mode (Options > Editor > SelEction blocK) ----
+
+   With the mode on, the block the user marked is a selection: a move
+   without Shift collapses it, and typing, Enter, Tab inside one line,
+   Delete and Backspace replace or delete it as one Undo step.  The whole
+   step runs through e_edit_action_run, so a replacement the owner could not
+   make leaves the text, the cursor and the selection exactly as they were. */
+
+/* The character a Tab puts in the text. */
+#define E_TAB_CHAR '\t'
+
+/* What takes the selection's place once its text is deleted. */
+#define E_SEL_PIECE_NONE   0   /* Delete and Backspace: nothing */
+#define E_SEL_PIECE_TEXT   1   /* a typed character or a Tab */
+#define E_SEL_PIECE_BREAK  2   /* Enter */
+
+/* The words the status row uses when a replacement could not be made. */
+#define E_SEL_WHAT_REPLACE "the replacement of the selection"
+#define E_SEL_WHAT_DELETE  "the deletion of the selection"
+
+/* A selection replacement, read before anything changes. */
+typedef struct {
+ POINT begin, end;                      /* the selection, on the user's rows */
+ int piece;                             /* E_SEL_PIECE_* */
+ unsigned char text[E_UTF8_CHAR_MAX];   /* E_SEL_PIECE_TEXT: its bytes */
+ int n;
+ int indent;                            /* E_SEL_PIECE_BREAK: the new line's blanks */
+} ESelReplacePlan;
+
+/**
+ * e_selection_bounds - The selection of window @f, when it has one.
+ * @begin, @end: receive the selection's ends, the end inside the text.
+ *
+ * A selection exists when the window is in selection mode and its block
+ * holds at least one character.
+ * Return: 1 and the ends, or 0.
+ */
+static int e_selection_bounds(FENSTER *f, POINT *begin, POINT *end)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+
+ if (!(f->ed->edopt & ED_BLOCK_SELECTION) || b->mxlines < 1)
+  return(0);
+ if (s->mark_begin.y < 0 || s->mark_end.y < 0 || s->mark_begin.y >= b->mxlines)
+  return(0);
+ *begin = s->mark_begin;
+ *end = s->mark_end;
+ if (end->y >= b->mxlines)
+ {
+  end->y = b->mxlines - 1;
+  end->x = b->bf[end->y].len;
+ }
+ if (end->y < begin->y || (end->y == begin->y && end->x <= begin->x))
+  return(0);
+ return(1);
+}
+
+/**
+ * e_selection_range - The selection of window @f a paste replaces, when it
+ * has one: the same selection typing replaces.
+ * Return: 1 and the ends in @begin and @end, or 0.
+ */
+int e_selection_range(FENSTER *f, POINT *begin, POINT *end)
+{
+ return(e_selection_bounds(f, begin, end));
+}
+
+/**
+ * e_selection_active - Does window @f have a selection a key replaces?
+ *
+ * Typing, Enter, Delete and Backspace ask this first; a window outside the
+ * selection mode, or with nothing marked, edits as it always did.
+ */
+static int e_selection_active(FENSTER *f)
+{
+ POINT begin, end;
+
+ return(e_selection_bounds(f, &begin, &end));
+}
+
+/**
+ * e_selection_takes_char - Does the typed character @c replace the
+ * selection of window @f?
+ *
+ * Every character does; a Tab over several lines takes it too, to indent
+ * them (e_selection_tab).
+ */
+static int e_selection_takes_char(FENSTER *f, int c)
+{
+ POINT begin, end;
+
+ return(e_selection_bounds(f, &begin, &end));
+}
+
+/** e_sel_row_bytes - The bytes of row @y of @b, its line break included. */
+static int e_sel_row_bytes(BUFFER *b, int y)
+{
+ return(b->bf[y].len + (b->bf[y].s[b->bf[y].len] == WPE_WR ? 1 : 0));
+}
+
+/**
+ * e_sel_span_bytes - How many bytes lie between the selection's ends, the
+ * line breaks included, on a shell whose row 0 is row @top of the text.
+ */
+static int e_sel_span_bytes(BUFFER *b, const ESelReplacePlan *p, int top)
+{
+ int y0 = p->begin.y - top, y1 = p->end.y - top, y, n;
+
+ if (y0 == y1)
+  return(p->end.x - p->begin.x);
+ n = e_sel_row_bytes(b, y0) - p->begin.x;
+ for (y = y0 + 1; y < y1; y++)
+  n += e_sel_row_bytes(b, y);
+ return(n + p->end.x);
+}
+
+/**
+ * e_sel_insert_piece - Put what replaces the selection in at the cursor of
+ * the shell, which stands where the selection began.
+ */
+static void e_sel_insert_piece(BUFFER *b, SCHIRM *s, int top, ESelReplacePlan *p)
+{
+ ECarRetPlan breaking;
+
+ if (p->piece == E_SEL_PIECE_TEXT)
+ {
+  if (e_ins_nchar(b, s, p->text, b->b.x, b->b.y, p->n) == E_CHAR_REFUSED)
+   e_buffer_shell_refused(b);
+ }
+ else if (p->piece == E_SEL_PIECE_BREAK)
+ {
+  breaking.indent = p->indent;
+  breaking.trim_row = -1;
+  e_car_ret_pieces(b, s, top, &breaking);
+ }
+}
+
+/**
+ * e_sel_replace_pieces - Delete the selection's bytes row by row, then put
+ * the replacement in where it began.
+ *
+ * Deleting the bytes up to a row's end takes its line break with them, and
+ * the owner's deletion pulls the next row up into the place, so a selection
+ * over many rows is a run of deletions at one place.  A piece the owner
+ * refuses refuses the whole action.
+ */
+static void e_sel_replace_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
+{
+ ESelReplacePlan *p = plan;
+ int y = p->begin.y - top, x = p->begin.x;
+ int left = e_sel_span_bytes(b, p, top), n;
+
+ e_buffer_cursor_set(b, y, x);
+ while (left > 0 && y < b->mxlines)
+ {
+  n = e_sel_row_bytes(b, y) - x;
+  if (n > left)
+   n = left;
+  if (n <= 0 || e_del_nchar(b, s, x, y, n) == E_CHAR_REFUSED)
+   break;
+  left -= n;
+ }
+ if (left > 0)
+ {
+  e_buffer_shell_refused(b);
+  return;
+ }
+ e_buffer_cursor_set(b, y, x);
+ e_sel_insert_piece(b, s, top, p);
+}
+
+/**
+ * e_selection_run - Replace the selection of window @f by @piece, as one
+ * Undo step that is made whole or not at all.
+ * @text, @n: the bytes of E_SEL_PIECE_TEXT; @what: the change in the user's
+ * words, for the status row when it is refused.
+ *
+ * Afterwards the block collapses to the cursor, still inside the step, so
+ * one Ctrl-U gives back the text and the selection that was replaced.
+ */
+static void e_selection_run(FENSTER *f, int piece, const unsigned char *text, int n,
+                            const char *what)
+{
+ BUFFER *b = f->b;
+ ESelReplacePlan p;
+ int r;
+
+ if (!e_selection_bounds(f, &p.begin, &p.end))
+  return;
+ p.piece = piece;
+ p.n = n;
+ if (n > 0)
+  memcpy(p.text, text, (size_t)n);
+ p.indent = 0;
+ if (piece == E_SEL_PIECE_BREAK && e_window_auto_indents(f))
+  p.indent = e_car_a_ind_width(b, p.begin.y, p.begin.x);
+ e_buffer_step_begin(b);
+ r = e_edit_action_run(b, p.begin.y, p.end.y, E_BUFFER_FAULT_REPLACE, what,
+                       e_sel_replace_pieces, &p);
+ if (r == E_BUFFER_OK)
+ {
+  e_buffer_block_between(b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
+  if (piece == E_SEL_PIECE_BREAK)
+   e_auto_indent_mark_new_line(b, p.indent);
+ }
+ e_buffer_step_end(b);
+}
+
+/**
+ * e_selection_type - A typed character (or a Tab) replaces the selection.
+ * @c: the character as the key loop read it (a codepoint past ASCII).
+ */
+static void e_selection_type(FENSTER *f, int c)
+{
+ unsigned char u8[E_UTF8_CHAR_MAX];
+ int n;
+
+ if (c == E_TAB_CHAR)
+ {
+  e_selection_tab(f);
+  return;
+ }
+ if (c < 0x80)
+ {
+  u8[0] = (unsigned char)c;
+  n = 1;
+ }
+ else
+  n = e_codepoint_to_utf8(c, u8);
+ e_selection_run(f, E_SEL_PIECE_TEXT, u8, n, E_SEL_WHAT_REPLACE);
+}
+
+/** e_selection_break - Enter replaces the selection by a line break. */
+static void e_selection_break(FENSTER *f)
+{
+ e_selection_run(f, E_SEL_PIECE_BREAK, NULL, 0, E_SEL_WHAT_REPLACE);
+}
+
+/** e_selection_delete - Delete and Backspace delete the selection only. */
+static void e_selection_delete(FENSTER *f)
+{
+ e_selection_run(f, E_SEL_PIECE_NONE, NULL, 0, E_SEL_WHAT_DELETE);
+}
+
+/**
+ * e_selection_tab - Tab with a selection inside one line replaces it by a
+ * tab.  Over several lines it indents them, as Block > Indent (Ctrl-K I)
+ * does, and the selection stays on them, so a user who selected lines and
+ * pressed Tab gets them indented and not a tab typed over them.
+ * Return: 1 when the key was taken, 0 for the ordinary Tab.
+ */
+static int e_selection_tab(FENSTER *f)
+{
+ POINT begin, end;
+ unsigned char tab = E_TAB_CHAR;
+
+ if (!e_selection_bounds(f, &begin, &end))
+  return(0);
+ if (begin.y != end.y)
+ {
+  e_blck_to_right(f);
+  return(1);
+ }
+ e_selection_run(f, E_SEL_PIECE_TEXT, &tab, 1, E_SEL_WHAT_REPLACE);
+ return(1);
+}
+
+/**
+ * e_selection_end - Pointing with the mouse ends the selection: the block
+ * becomes empty at the cursor, a block Ctrl-K B left open included.  In a
+ * window outside the selection mode nothing happens.
+ */
+void e_selection_end(FENSTER *f)
+{
+ if (f->ed->edopt & ED_BLOCK_SELECTION)
+  e_buffer_block_between(f->b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
+}
+
+/**
+ * e_selection_redo_ends_here - A paste in the selection mode leaves the cursor
+ * after the pasted text and nothing selected; its Redo must leave the same.
+ * @n: how many of the newest Undo records are the paste.
+ */
+void e_selection_redo_ends_here(FENSTER *f, int n)
+{
+ if (f->ed->edopt & ED_BLOCK_SELECTION)
+  e_buffer_redo_view_keep(f->b, n);
+}
+
+/**
+ * e_selection_collapse - A cursor key without Shift ends the selection a
+ * Shift key or the mouse made.  A block Ctrl-K B started stays open, so the
+ * user can move to where it ends and press Ctrl-K K.
+ */
+void e_selection_collapse(FENSTER *f)
+{
+ if (e_buffer_block_is_open(f->b))
+  return;
+ e_selection_end(f);
 }
 
 /*   cursor placement */
@@ -4434,6 +4932,8 @@ void wpe_buffer_trace(const char *fmt, ...)
 
 /* The longest point name $XWPE_TEST_FAULT may carry, its end included. */
 #define E_BUFFER_FAULT_NAME_MAX 32
+/* Without "@<k>" the first action that enters the point meets the fault. */
+#define E_BUFFER_FAULT_FIRST_ENTRY 1
 
 /**
  * wpe_buffer_fault_from_env - Arm the test fault $XWPE_TEST_FAULT names.
@@ -4442,14 +4942,17 @@ void wpe_buffer_trace(const char *fmt, ...)
  * move or delete from its fourth allocation on, "undo:1" to the first
  * Ctrl-U, and so on (we_buffer.h), so a test of the running editor can show
  * that a change refused for want of memory leaves the user's text, marks
- * and undo as they were.  Unset, or a value it cannot read, arms nothing.
+ * and undo as they were.  "replace:1@2" waits for the second action that
+ * enters the point, so a test can show one key is one action.  Unset, or a
+ * value it cannot read, arms nothing.
  */
 void wpe_buffer_fault_from_env(void)
 {
  const char *spec = getenv("XWPE_TEST_FAULT");
- const char *colon;
+ const char *colon, *at;
  char name[E_BUFFER_FAULT_NAME_MAX];
  size_t len;
+ int entry = E_BUFFER_FAULT_FIRST_ENTRY;
 
  if (spec == NULL || (colon = strchr(spec, ':')) == NULL)
   return;
@@ -4458,6 +4961,9 @@ void wpe_buffer_fault_from_env(void)
   return;
  memcpy(name, spec, len);
  name[len] = '\0';
- e_buffer_test_fault_arm(e_buffer_test_fault_point(name), atoi(colon + 1));
+ at = strchr(colon + 1, '@');
+ if (at != NULL)
+  entry = atoi(at + 1);
+ e_buffer_test_fault_arm_at(e_buffer_test_fault_point(name), atoi(colon + 1), entry);
 }
 

@@ -1,0 +1,9 @@
+# Selection block mode: Block > Mark line (Ctrl-K L) selects the cursor's
+# line with its line break; typing replaces it, so the typed character
+# joins the line below.
+file t.txt
+seed b"one\ntwo two\nthree\n"
+rc "[General]\nOptions2 : 1048\n"
+down
+block_line
+type b"L"

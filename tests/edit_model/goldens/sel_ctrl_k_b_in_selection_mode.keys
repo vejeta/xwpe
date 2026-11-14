@@ -1,0 +1,14 @@
+# Selection block mode: Ctrl-K B starts a block at the cursor that plain
+# moves do not collapse (only a selection made with Shift or the mouse
+# collapses on a plain move), and Ctrl-K K ends it; typing replaces it.
+file t.txt
+seed b"hello world\nsecond line\n"
+rc "[General]\nOptions2 : 1048\n"
+right
+right
+block_begin
+right
+right
+right
+block_end
+type b"!"

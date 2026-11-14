@@ -90,7 +90,7 @@ we_opt.c:e_ad_colors_md:* 1 dialog field editing
 we_opt.c:e_add_arguments:* 6 dialog field editing
 we_opt.c:e_clear_desk:* 2 dialog field editing
 we_opt.c:e_dif_colors:* 2 dialog field editing
-we_opt.c:e_edt_options:* 21 dialog field editing
+we_opt.c:e_edt_options:* 24 dialog field editing
 we_opt.c:e_frb_x_menue:* 7 dialog field editing
 we_opt.c:e_get_opt_sw:* 12 dialog field editing
 we_opt.c:e_get_opt_sw_spatial:* 4 dialog field editing

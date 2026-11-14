@@ -311,6 +311,29 @@ Use the default keybindings (Turbo C style, xwpe < 1.2.0 compatible).
 Use Common User Access (CUA) keybindings (MS-Windows / OSF Motif style).
 @end table
 
+@subsubheading Blocks, indent and file ending
+
+@table @kbd
+@item Alt-K
+@samp{WordStar blocK}: @kbd{Ctrl-K B} and @kbd{Ctrl-K K} are two markers
+that stay where they are put.
+@item Alt-E
+@samp{SelEction blocK}: a marked block is a selection that typing, Return,
+Delete and Backspace replace or delete, and a cursor key without
+@key{Shift} ends (@pxref{Selection mode}).  If both boxes are ticked when
+you press Ok, the one you ticked in this dialog wins.
+@item Alt-A
+@samp{Trim Auto-indent}: the indent that @key{Return} put on a line is
+taken off again when the cursor leaves the line with nothing typed on it,
+in the same @kbd{Ctrl-U} step as the key.  A line you typed on, or whose
+blanks were in the file, keeps them.
+@item Alt-F
+@samp{Keep Final newline}: Save writes the file's last line break as it
+was read.  A file that did not end on one, an empty file and a new file are
+saved without it; with the box clear, Save always ends the file on a line
+break, as the original did.
+@end table
+
 @subsubheading Auto-indent
 
 Auto-indent is configured in @samp{Options @result{} Editor}: choose

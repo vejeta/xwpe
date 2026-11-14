@@ -77,7 +77,7 @@ def test_a_row_becomes_an_options_file_a_file_and_a_prelude():
     session to the state it names, the modes last."""
     row = option_row.Row(dict(zip(option_row.FACTORS, (
         "cua", "wordstar", "insert", "always", "lowered", "4", "2", "changes", "on",
-        "mixed.c", "two", "multiline", "off", "readonly", "one"))), "t")
+        "mixed.c", "two", "multiline", "off", "readonly", "one", "off", "add"))), "t")
     rc = row.xwperc()
     o = model.Options.from_xwperc(rc)
     assert (o.cua, o.wordstar, o.endmark) == (True, True, True)
@@ -90,12 +90,12 @@ def test_a_row_becomes_an_options_file_a_file_and_a_prelude():
     assert "insert_toggle" not in names and "literal_toggle" not in names
     modes = option_row.Row(dict(zip(option_row.FACTORS, (
         "old", "modern", "overwrite", "never", "raised", "8", "10", "off", "off",
-        "mixed.txt", "none", "oneline", "on", "file", "one"))), "m")
+        "mixed.txt", "none", "oneline", "on", "file", "one", "off", "add"))), "m")
     assert [n for n, _a in modes.prelude()][-2:] == ["insert_toggle", "literal_toggle"]
     assert "MaxColumn : 60" in modes.xwperc() and modes.start_width() == 60
     plain = option_row.Row(dict(zip(option_row.FACTORS, (
         "old", "modern", "insert", "never", "118", "8", "10", "off", "off",
-        "empty.txt", "none", "empty", "off", "file", "one"))), "p")
+        "empty.txt", "none", "empty", "off", "file", "one", "off", "add"))), "p")
     assert plain.prelude() == [] and plain.file_mode is None and plain.seed_text == b""
     assert plain.filename == "t.txt"
 
@@ -192,7 +192,7 @@ def _levels(**kw):
     base = dict(keys="old", block="modern", ins="insert", autoindent="never", width="118",
                 tabn="8", numundo="10", autosave="off", endmark="off", file="mixed.c",
                 breakpoints="none", clipboard="empty", alt_j="off", window="file",
-                windows="one")
+                windows="one", trim="off", ending="add")
     base.update(kw)
     return base
 
