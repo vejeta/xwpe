@@ -262,6 +262,9 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A language set up without an error-message pattern no longer reads past
+  memory when F9 reports errors.
+
 * One rule now names the program a build makes, so F9, Alt-C and Ctrl-F9
   agree on the files.  Ctrl-F9 starts a project's program as ./a.out, not
   ././a.out, and an absolute Executable (/tmp/prog) is started where F9

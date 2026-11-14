@@ -1,0 +1,8 @@
+{
+ "capability": "error-patterns",
+ "scenarios": [
+  {"id": "SC-error-pattern-01", "requirement": "A language with no error-message pattern does not read past memory when F9 reports errors", "layer": "asan", "test": "tests/test_error_patterns.py::test_empty_message_string_does_not_overflow", "status": "new"},
+  {"id": "SC-error-pattern-02", "requirement": "A pattern that ends inside a test does not read past memory when F9 reports errors", "layer": "asan", "test": "tests/test_error_patterns.py::test_pattern_cut_inside_a_test_does_not_overflow", "status": "new"},
+  {"id": "SC-error-pattern-03", "requirement": "A pattern with fewer rows than the maximum does not read past memory when F9 reports errors", "layer": "asan", "test": "tests/test_error_patterns.py::test_one_row_pattern_does_not_overflow", "status": "new"}
+ ]
+}

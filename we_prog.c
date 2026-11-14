@@ -9454,6 +9454,25 @@ static size_t e_p_longest_row(BUFFER *b)
 /* A pattern is cut into at most this many rows, one per line of output. */
 #define E_P_PATTERN_ROWS 4
 
+/**
+ * e_p_alloc_pattern_rows - Allocate the row buffers of one error pattern.
+ *
+ * A language set up without a MessageString has an empty pattern, and a
+ * pattern may have fewer rows than E_P_PATTERN_ROWS. Every row starts as an
+ * empty string, so F9 on such a language reports "no error rows recognised"
+ * instead of reading memory nobody filled.
+ */
+static void e_p_alloc_pattern_rows(char *rows[E_P_PATTERN_ROWS], char *srch)
+{
+ int n;
+
+ for (n = 0; n < E_P_PATTERN_ROWS; n++)
+ {
+  rows[n] = MALLOC(strlen(srch) + 2);
+  rows[n][0] = '\0';
+ }
+}
+
 int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret,
                  size_t row_max)
 {
@@ -9467,8 +9486,7 @@ int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret,
  cmp = MALLOC(cap);
  file = MALLOC(cap);
  search = MALLOC(cap);
- for (n = 0; n < E_P_PATTERN_ROWS; n++)
-  tmp[n] = MALLOC(strlen(srch) + 2);
+ e_p_alloc_pattern_rows(tmp, srch);
  cmp[0] = search[0] = file[0] = '\0';
  if (!e_p_pattern_names_file(srch) && e_p_compiled_source)
   strcpy(file, e_p_compiled_source);
@@ -9491,6 +9509,7 @@ int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret,
     if (!srch[j])
     {
      wnum--;
+     tmp[n][l] = '\0';
      break;
     }
     for (m = 0; srch[j+m] && srch[j+m] != '}'; m++);
