@@ -160,9 +160,6 @@ must be pressed three times to trigger the escape function.  This is
 because xwpe uses @key{ESC} as the prefix for Alt-key sequences, and
 the terminal sends the same byte for both.
 
-@item No error on disk full
-xwpe does not detect or report write failures due to a full disk.
-
 @item Maximum column and cut/paste interaction
 Changing the maximum column setting and then using cut and paste can
 crash xwpe.

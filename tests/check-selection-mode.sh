@@ -6,7 +6,7 @@
 # not at all (e_selection_run, through e_edit_action_run).  The indent that
 # Return put on a line is a mark of the buffer owner (E_BUFFER_MARK_AUTO_INDENT)
 # so it moves with the text and goes when the row changes.  Save leaves the
-# final line break out only where e_write_keeps_file_ending says so.  A site
+# final line break out only where write_keeps_file_ending says so.  A site
 # that does these by itself leaves half a replacement, an indent mark that
 # points at the wrong row, or a file that loses its last line break.
 #
@@ -23,8 +23,8 @@
 #     pasted), and nowhere else but the owner's table in we_buffer.[ch].
 #  3. The selection bit has its readers: ED_BLOCK_SELECTION appears in
 #     options.h, we_edit.c and we_opt.c and nowhere else.
-#  4. The final line break has one writer: e_write in we_fl_fkt.c gives
-#     e_eol_write e_write_keeps_file_ending, and every other caller outside
+#  4. The final line break has one writer: write_rows in we_write.c gives
+#     e_eol_write write_keeps_file_ending, and every other caller outside
 #     the line-ending owner passes 0.
 #  5. The block Ctrl-K B leaves open has one owner: only we_buffer.c sets or
 #     clears the window's block_open (e_buffer_block_open and every write of
@@ -83,7 +83,7 @@ scan() {
         if (base != "options.h" && base != "we_edit.c" && base != "we_opt.c" &&
             out ~ /ED_BLOCK_SELECTION/)
           print "3|" base ":" NR "|" out
-        if (base != "we_lineend.c" && base != "we_lineend.h" && base != "we_fl_fkt.c" &&
+        if (base != "we_lineend.c" && base != "we_lineend.h" && base != "we_write.c" &&
             out ~ /e_eol_write[ \t]*\(/ && out !~ /,[ \t]*0[ \t]*\)/)
           print "4|" base ":" NR "|" out
         if (base != "we_buffer.c" &&
@@ -101,8 +101,8 @@ scan() {
           print "2|" base "|E_BUFFER_FAULT_REPLACE named " named + 0 " times, want once"
       }' "$f"
   done
-  if ! grep -q 'e_eol_write(fp, b, ya, xa, ye, xe, e_write_keeps_file_ending(' "$dir/we_fl_fkt.c"; then
-    echo "4|we_fl_fkt.c|e_write does not give e_eol_write e_write_keeps_file_ending"
+  if ! grep -q 'e_eol_write(fp, b, ya, xa, ye, xe, write_keeps_file_ending(' "$dir/we_write.c"; then
+    echo "4|we_write.c|write_rows does not give e_eol_write write_keeps_file_ending"
   fi
 }
 

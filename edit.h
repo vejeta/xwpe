@@ -583,9 +583,6 @@ void e_cursor(FENSTER *f, int sw);
    for the question before the Save that would write the file without them. */
 #define E_NUL_SAY_MAX 96
 #define E_NUL_ASK_MAX 256
-/* What e_save returns when the user declined to write the file (not an
-   error: the disk is as it was). */
-#define E_SAVE_DECLINED 1
 int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n);
 int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n);
@@ -602,6 +599,7 @@ int e_lst_zeichen(int x, int y, int n, int sw, int frb, int max, int iold,
   int new);
 void e_mouse_bar(int x, int y, int n, int sw, int frb);
 #include "we_utf8.h"            /* what a character is: static inline, one rule */
+#include "we_write.h"           /* the outcome of writing the user's text */
 int e_add_undo(int sw, BUFFER *b, int x, int y, int n);
 int e_make_undo(FENSTER *f);
 int e_make_redo(FENSTER *f);

@@ -804,7 +804,7 @@ static void e_say_nul_read(FENSTER *f, const WpeEolInfo *info)
  * WpeSaveAsSettleName - After Save As tried to write the file under its new
  * name, keep the new name only when the file was written.
  * @fe: the window; @old_dir, @old_name: its name before (taken over here);
- * @saved: what e_save returned (0 when written).
+ * @saved: the status the write returned.
  *
  * Answering No to the question before the write, or a write that fails,
  * leaves the window under the name it had, so its next Save does not go to a
@@ -812,7 +812,7 @@ static void e_say_nul_read(FENSTER *f, const WpeEolInfo *info)
  */
 static void WpeSaveAsSettleName(FENSTER *fe, char *old_dir, char *old_name, int saved)
 {
-  if(saved == 0)
+  if(saved == WPE_WRITE_WRITTEN)
   {
     FREE(old_dir);
     FREE(old_name);
@@ -837,6 +837,31 @@ static void WpeSaveAsSettleName(FENSTER *fe, char *old_dir, char *old_name, int 
 char *e_fm_tree_subdir(const FLBFFR *b)
 {
   return(wpe_listsel_tree_subdir(b->cd, b->dd, b->dw->nf));
+}
+
+/**
+ * WpeWriteBlockToFile - Write the marked block to the file the user named.
+ * @fe: the window the block is marked in; @se: its screen, with the marks;
+ * @filen: the name typed in the file manager.
+ *
+ * The window keeps its own name and its text.  A write that fails says why
+ * and where, so the user knows the file is not there.
+ */
+static void WpeWriteBlockToFile(FENSTER *fe, SCHIRM *se, const char *filen)
+{
+  WpeWriteOutcome  o;
+  char            *dir = NULL, *name = NULL, *path;
+
+  WpeFilenameToPathFile((char *)filen, &dir, &name);
+  path = (dir && name) ? e_mkfilename(dir, name) : NULL;
+  FREE(dir);
+  FREE(name);
+  if(path == NULL)
+    return;
+  if(wpe_write_range(fe, path, se->mark_begin.x, se->mark_begin.y,
+                     se->mark_end.x, se->mark_end.y, 1, &o) != 0)
+    wpe_write_say(fe, &o, WPE_WRITE_THEN_KEPT);
+  FREE(path);
 }
 
 /* File Manager Handler */
@@ -1563,21 +1588,16 @@ int WpeHandleFileManager(ECNT * cn)
         }
         if(WpeSaveAsIsTranscript(b, fe))
           return(WpeSaveAsTranscript(f, fe, filen, svmode, &svdir));
-        /* the window's own name, kept until the file is written */
-        dtp = fe->dirct;
-        ftp = fe->datnam;
-
-        WpeFilenameToPathFile(filen, &fe->dirct, &fe->datnam);
         if(b->sw == 4) /* save as mode */
-          WpeSaveAsSettleName(fe, dtp, ftp, e_save(fe));
-        else
         {
-          e_write(se->mark_begin.x, se->mark_begin.y, se->mark_end.x, se->mark_end.y, fe, WPE_BACKUP);
-          FREE(fe->dirct);  /* restore current dir window header */
-          FREE(fe->datnam);
-          fe->dirct = dtp;
-          fe->datnam = ftp;
+          /* the window's own name, kept until the file is written */
+          dtp = fe->dirct;
+          ftp = fe->datnam;
+          WpeFilenameToPathFile(filen, &fe->dirct, &fe->datnam);
+          WpeSaveAsSettleName(fe, dtp, ftp, wpe_write_save(fe, WPE_WRITE_THEN_NAME_KEPT, ftp));
         }
+        else
+          WpeWriteBlockToFile(fe, se, filen);
 
         if(b->sw == 4 && (f->ed->edopt & ED_SYNTAX_HIGHLIGHT))
         {
@@ -3633,11 +3653,38 @@ static int e_print_approve(FENSTER *f)
  return(0);
 }
 
+/**
+ * WpePrintMakeCopy - Write the copy of the window the print command reads.
+ * @f: the text window to print.
+ * Return: 0 when the copy is in the temp folder, -1 when it is not (the
+ * user has been told, and nothing is printed).
+ *
+ * The copy is written as autosave writes: the file on disk, the window's
+ * modified mark and its NUL question are not touched.  A read-only window
+ * is printed like any other.
+ */
+static int WpePrintMakeCopy(FENSTER *f)
+{
+ WpeWriteOutcome o;
+ char           *path = e_mkfilename(e_tmp_dir, f->datnam);
+ int             window_ins = f->ins, rc;
+
+ if (path == NULL)
+  return(-1);
+ f->ins = 0;
+ rc = wpe_write_range(f, path, 0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1, 0, &o);
+ f->ins = window_ins;
+ FREE(path);
+ if (rc != 0)
+  wpe_write_say(f, &o, WPE_WRITE_THEN_NO_PRINT);
+ return(rc);
+}
+
 int WpePrintFile(FENSTER *f)
 {
- char           *str, *dp;
+ char           *str;
  size_t          size;
- int             c, sins = f->ins;
+ int             c;
 
  for (c = f->ed->mxedt; c > 0 && !DTMD_ISTEXT(f->ed->f[c]->dtmd); c--)
   ;
@@ -3661,16 +3708,8 @@ int WpePrintFile(FENSTER *f)
  if (e_print_approve(f))
   return(0);
 
- dp = f->dirct;
- f->dirct = e_tmp_dir;
- f->ins = 0;
-
- /* A copy for the printer, written as autosave writes: the file on disk,
-    the window's modified mark and its NUL question are not touched. */
- e_write(0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1, f, WPE_NOBACKUP);
-
- f->dirct = dp;
- f->ins = sins;
+ if (WpePrintMakeCopy(f) != 0)
+  return(0);
 
  if (e_print_run(e_tmp_dir, f->ed->print_cmd, f->datnam) == E_PRINT_FAILED)
   e_error(e_msg[ERR_NOTINSTALL], 0, f->fb);

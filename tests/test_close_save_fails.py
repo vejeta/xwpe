@@ -21,7 +21,7 @@ from wpe_driver import ALT, WpeSession  # noqa: E402
 CTRL_W = "\x17"          # Close the active window
 SEED = "alpha\n"
 ASK = "NOT saved"        # the question's first line
-FAILED = "Can't open"    # the write's error box; checked loosely
+FAILED = "Cannot write"  # the write's error box; checked loosely
 
 
 def _lock(folder, name):

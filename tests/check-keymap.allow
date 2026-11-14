@@ -59,11 +59,7 @@ we_e_aus.c:e_schreib_leiste_lines:* 42 dialog field editing
 we_e_aus.c:e_schreib_zif:* 6 dialog field editing
 we_edit.c:e_key_cancels_answer:* 2 dialog field editing
 we_fl_fkt.c:e_help_options:* 1 dialog field editing
-we_fl_fkt.c:e_m_save:* 1 dialog field editing
 we_fl_fkt.c:e_quit:* 2 dialog field editing
-we_fl_fkt.c:e_save:* 1 dialog field editing
-we_fl_fkt.c:e_saveall:* 3 dialog field editing
-we_fl_fkt.c:e_write:* 4 dialog field editing
 we_fl_unix.c:e_funct:* 1 dialog field editing
 we_fl_unix.c:e_funct_in:* 1 dialog field editing
 we_fl_unix.c:WpeDirDelOptions:* 7 dialog field editing
@@ -156,6 +152,7 @@ we_wind.c:e_pr_line:* 3 dialog field editing
 we_wind.c:e_schr_lst_wsv:* 4 dialog field editing
 we_wind.c:e_startcmd_add_buttons:* 3 dialog field editing
 we_wind.c:e_sv_window:* 2 dialog field editing
+we_write.c:e_write:* 2 dialog field editing
 
 # ---- not yet in the table: the editor's own keys (context editing) ---------
 we_edit.c:e_cursor:* 1 not yet in the table, context editing (K-d1)

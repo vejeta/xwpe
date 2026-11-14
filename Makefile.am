@@ -66,6 +66,7 @@ we_SOURCES = \
   we_edit.c \
   we_buffer.c \
   we_lineend.c \
+  we_write.c \
   we_fl_fkt.c \
   we_fl_unix.c \
   we_hfkt.c \
@@ -240,6 +241,7 @@ noinst_HEADERS = \
   we_testdump.h \
   we_buffer.h \
   we_lineend.h \
+  we_write.h \
   we_rowfind.h \
   we_utf8.h \
   we_trace.h \
@@ -348,7 +350,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -418,6 +420,14 @@ test_splice_CFLAGS = $(XWPE_STDFLAG)
 # what the buffer made goes back into it as it was.
 test_lineend_SOURCES = tests/test_lineend.c we_buffer.c we_lineend.c
 test_lineend_CFLAGS = $(XWPE_STDFLAG)
+
+# The owner of writing the user's text (we_write.c), the editor's side
+# played by stubs: the one sentence a failed write says, the backup copy
+# (private, counted as made only when whole), the restore after a write
+# that fails half way (by rename, through a link, with a hard link, one that
+# fails), the size limit as an outcome and SIGXFSZ put back.
+test_write_owner_SOURCES = tests/test_write_owner.c we_write.c
+test_write_owner_CFLAGS = $(XWPE_STDFLAG)
 
 # The same owner behind a line protocol, for the edit model's walks
 # (tests/edit_model/cdriver.py).  Built by `make check`, not run by it.
@@ -694,7 +704,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf
+  test_child test_childsig test_keymap test_bindings test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -718,6 +728,14 @@ TESTS += tests/check-shell-quote.sh
 # writer of the bytes of a line break.  Offenders still to go are in
 # tests/line-ends.allow.
 TESTS += tests/check-line-ends.sh
+
+# One owner of writing the user's text (we_write.c): the only code that
+# opens the user's file for writing, judges the write and builds the
+# sentence a failed one says.  tests/check-write-owner.sh fails when another
+# file opens a file for writing, drops or compares with numbers the result
+# of a save, or spells the old message.  Offenders still to go are in
+# tests/write-owner.allow, each with the pass that moves it.
+TESTS += tests/check-write-owner.sh
 
 # One owner of how long a command to a debugger may be: the request engine
 # (we_debreq.h).  tests/check-debug-command.sh fails when a site sizes a
@@ -864,6 +882,9 @@ EXTRA_DIST = \
   tests/check-line-ends.sh \
   tests/line-ends.allow \
   tests/test_lineend.c \
+  tests/check-write-owner.sh \
+  tests/write-owner.allow \
+  tests/test_write_owner.c \
   tests/check-debug-command.sh \
   tests/debug-command.allow \
   tests/check-chain-outcome.sh \

@@ -2568,11 +2568,12 @@ int e_close_buffer(BUFFER *b)
  * text exists only in this window, so the caller must keep the window open
  * and the edits with it.
  *
- * Return: nonzero when the file was not written, 0 when it was.
+ * Return: nonzero when the file was not written, 0 when it was.  A window
+ * with nothing to write (a file manager) counts as written, so it closes.
  */
 static int e_close_save_failed(FENSTER *f)
 {
- return(e_save(f) != 0);
+ return(e_save(f) != WPE_WRITE_WRITTEN);
 }
 
 /*    close window */

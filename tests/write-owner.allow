@@ -1,0 +1,60 @@
+# The sites outside we_write.c that open a file for writing, drop the result
+# of a save, compare one with numbers, or spell the old message.  Checked by
+# tests/check-write-owner.sh.
+#
+#   file|rN:function|count|pass|reason
+#
+# rN is the rule (1 symbols, 2 opens, 4 dropped results, 5 numbers, 6 the old
+# message); for rule 1 the file is the object and the function the symbol.
+# "count" may only fall, and a line that matches nothing is stale.  "pass" is
+# the pass that moves the site onto the owner and deletes the line; "keep" is
+# a permanent exception and the reason says why the text is not the user's.
+
+# the next passes of the owner
+we_edit.o|r1:e_write|1|P2|autosave writes through e_write until wpe_write_copy
+we_unix.o|r1:e_write|1|P2|the emergency save writes through e_write until wpe_write_copy
+we_edit.c|r4:e_autosave|1|P2|the autosave drops the outcome until it becomes a copy
+we_unix.c|r5:e_err_save_window|1|P2|the emergency save compares e_write with WPE_ESC until wpe_write_copy
+we_prog.c|r4:e_chk_save_if_open|1|P3|a build save
+we_prog.c|r4:e_comp_start|1|P3|a build save
+we_prog.c|r4:e_exec_make|1|P3|a build save
+we_prog.c|r4:e_prj_save_file|1|P3|a build save
+we_prog.c|r4:e_run_sh|1|P3|a build save
+we_prog.c|r2:e_write_default_prj|1|P1b|the new .prj, a stream write
+we_prog.c|r2:e_wrt_prj_fl|1|P1b|the project file, a stream write
+we_opt.c|r2:e_save_opt|1|P1b|the options file, a stream write
+we_opt.c|r2:e_opt_lines_store|1|P1b|the options lines, a stream write
+we_ai_path.c|r2:wpe_path_open_write|1|P4|the judged write into the user's own file
+we_ai_ui.c|r2:ai_transcript_write|1|P4|the transcript
+we_ai_ws.c|r2:ws_write_file|1|P4|the workspace's copies
+we_ai_ws.c|r2:ws_write_pathspec|1|P4|the conversation
+we_fl_unix.c|r2:WpeCopyFileCont|1|P5|the File Manager's Copy and its Move across file systems: both closes unjudged, the source removed after; a pass of its own
+
+# not the user's text
+we_prog.c|r6:e_prj_say_open_failed|2|keep|formats the message for the reads of the project machine
+we_main.c|r6:e_msg|1|keep|the message table: the entry stays for e_prj_say_open_failed
+we_ai.c|r2:wpe_ai_trace|1|keep|a behaviour trace
+we_ai.c|r2:wpe_ai_write_openai_key|2|keep|the key file, written with its own mode
+we_ai_ui.c|r2:ai_consent_remember|1|keep|the consent marker
+we_child.c|r2:wpe_child_io_tty|1|keep|a child's terminal
+we_child.c|r2:wpe_child_stdout_to_file|1|keep|a child's output file
+we_debug.c|r2:e_d_script_connect|2|keep|the debugger's own pty and pipe
+we_debug.c|r2:e_d_script_write|1|keep|the script handed to the debugger
+we_debug.c|r2:e_lsp_ui_hover|1|keep|a test trace
+we_debug.c|r2:e_lsp_ui_trace|1|keep|a test trace
+we_edit.c|r2:wpe_buffer_trace|1|keep|a behaviour trace
+we_fl_unix.c|r2:e_man_run|1|keep|the temporary output of the man command
+we_lsp.c|r2:lsp_trace_file|1|keep|a trace
+we_main.c|r2:e_copy_file|1|keep|the XDG migration copy
+we_main.c|r2:e_xdg_config_file|1|keep|the XDG migration note
+we_main.c|r2:e_binding_trace|1|keep|a keystroke trace
+we_paint.c|r2:wpe_ui_trace|1|keep|a keystroke trace
+we_prog.c|r2:e_comp_start|1|keep|a behaviour trace
+we_prog.c|r2:e_p_make_then|1|keep|a behaviour trace
+we_prog.c|r2:e_run|1|keep|a behaviour trace
+we_term.c|r2:e_t_flush_input|1|keep|a behaviour trace
+we_trace.c|r2:wpe_trace_file|1|keep|the trace owner
+we_unix.c|r2:WpeSignalUnknown|1|keep|the crash log
+we_wayland.c|r2:wpe_wl_dump_ppm|1|keep|a test screen dump
+we_xterm.c|r2:e_x_system_script|1|keep|the script of the external terminal
+we_xterm.c|r2:wpe_x_dump_ppm|1|keep|a test screen dump

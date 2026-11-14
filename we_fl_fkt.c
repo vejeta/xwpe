@@ -69,118 +69,26 @@ int e_new(FENSTER *f)
 
 int e_m_save(FENSTER *f)
 {
- int ret;
-
 #ifdef WPE_AI
  /* The AI pane backs no file: F2 and File > Save write its transcript. */
  if (wpe_ai_is_pane(f))
   return(wpe_ai_pane_save(f));
 #endif
- ret = e_save(f);
-
- if (ret == WPE_ESC)
-  e_message(0, e_msg[ERR_MSG_SAVE], f);
- return(ret);
-}
-
-/**
- * e_write_keeps_file_ending - Does a write of this range leave out the
- * final line break the file did not have?
- * @f: the window written; @b: its buffer; the range as e_write takes it.
- *
- * Only when the option "Keep Final newline" is on and the write is the
- * whole text: a block written to a file, or the part of a file below a
- * mark, is not the file's own end.  So a file read without a final line
- * break is saved without one, and so is a new or an empty file, and
- * `git diff` shows no change to a last line the user did not touch.
- * Return: 1 to leave the final break out when the buffer recorded none.
- */
-static int e_write_keeps_file_ending(FENSTER *f, BUFFER *b, int xa, int ya, int xe, int ye)
-{
- int whole = (xa == 0 && ya == 0 && xe >= E_BUFFER_ROW_END(b) && ye >= b->mxlines - 1);
-
- return(whole && (f->ed->edopt & ED_KEEP_FILE_ENDING) != 0);
-}
-
-/**
- * e_save_final_break_after - What the buffer records of its file's final
- * line break once the text was saved.
- * @f: the window saved; @b: its buffer.
- *
- * A save that wrote the break leaves the file ending on one.  A save that
- * kept the file's ending leaves the record as it was: a file that had no
- * final break still has none, and turning the option off later makes the
- * next save add it.
- */
-static void e_save_final_break_after(FENSTER *f, BUFFER *b)
-{
- if (f->ed->edopt & ED_KEEP_FILE_ENDING)
-  return;
- b->final_break = E_FINAL_BREAK_HAD;
-}
-
-/**
- * e_save_nul_confirmed - Before the first Save of a file that lost NUL bytes
- * when it was read, ask whether to write it without them.
- * @f: the window; @b: its buffer.
- *
- * A row cannot hold a NUL byte, so the file on disk is longer than what the
- * window holds.  Saving over it without a word would shorten a binary file
- * silently; answering No (or Cancel) leaves the disk as it is.
- * Return: 1 when the Save may go on (nothing was lost, or the user said Yes).
- */
-static int e_save_nul_confirmed(FENSTER *f, BUFFER *b)
-{
- char sentence[E_NUL_SAY_MAX], question[E_NUL_ASK_MAX];
-
- if (b->nul_dropped <= 0)
-  return(1);
- e_eol_nul_sentence(b->nul_dropped, sentence, sizeof sentence);
- snprintf(question, sizeof question, "%s.\nSaving writes the file without them.\nSave anyway?",
-          sentence);
- return(e_message(1, question, f) == 'Y');
-}
-
-int e_save(FENSTER *f)
-{
- BUFFER *b;
- int ret;
-
- if (!DTMD_ISTEXT(f->dtmd))
-  return(0);
- for (ret = f->ed->mxedt; ret > 0 && f->ed->f[ret] != f; ret--)
-  ;
- if (!ret)
-  return(0);
- b = f->ed->f[ret]->b;
- if (!e_save_nul_confirmed(f, b))
-  return(E_SAVE_DECLINED);
- WpeMouseChangeShape(WpeWorkingShape);
- ret = e_write(0, 0, E_BUFFER_ROW_END(b), b->mxlines-1, f, WPE_BACKUP);
- if (ret != WPE_ESC)
- {
-  f->save = 0;
-  e_save_final_break_after(f, b);
-  b->nul_dropped = 0;                   /* the user knew, and the file is written */
- }
- WpeMouseRestoreShape();
- return(ret);
+ return(e_save(f));
 }
 
 /*	save all windows */
 int e_saveall(FENSTER *f)
 {
- int i, ret = 0;
+ int i, ret = WPE_WRITE_WRITTEN;
  ECNT *cn = f->ed;
 
  for (i = cn->mxedt; i > 0; i--)
  {
   if (cn->f[i]->save != 0 && cn->f[i]->ins != 8)
-   if (e_save(cn->f[i]) == WPE_ESC)
-    ret = WPE_ESC;
+   if (e_save(cn->f[i]) == WPE_WRITE_FAILED)
+    ret = WPE_WRITE_FAILED;
  }
- if (ret == WPE_ESC)
-  e_message(0, e_msg[ERR_MSG_SAVEALL], f);
  return(ret);
 }
 
@@ -249,54 +157,6 @@ int e_quit(FENSTER *f)
  fk_cursor(1);
  e_refresh();
  WpeExit(0);
- return(0);
-}
-
-/*	write file to disk */
-int e_write(int xa, int ya, int xe, int ye, FENSTER *f, int backup)
-{
- BUFFER *b;
- int j;
- char *tmp, *ptmp;
- FILE *fp;
-
- for (j = f->ed->mxedt; j > 0 && f->ed->f[j] != f; j--)
-  ;
- b = f->ed->f[j]->b;
- if (f->ins == 8)
-  return(WPE_ESC);
- ptmp = e_mkfilename(f->dirct, f->datnam);
- if ((backup == WPE_BACKUP) && (access(ptmp, 0) == 0))
- {
-  tmp = e_bakfilename(ptmp);
-  if (access(tmp, 0) == 0)
-   remove(tmp);
-  WpeRenameCopy(ptmp, tmp, f, 1);
-  WpeFree(tmp);
- }
- if ((fp = fopen(ptmp, "wb")) == NULL)
- {
-  e_error(e_msg[ERR_FOPEN], 0, f->fb);
-  FREE(ptmp);
-  return(WPE_ESC);
- }
- if (f->filemode >= 0)
-  chmod(ptmp, f->filemode);
- e_eol_write(fp, b, ya, xa, ye, xe, e_write_keeps_file_ending(f, b, xa, ya, xe, ye));
- if (ferror(fp))
- {
-  e_error("Error writing file (disk full?)", 0, f->fb);
-  fclose(fp);
-  FREE(ptmp);
-  return(WPE_ESC);
- }
- if (fclose(fp) != 0)
- {
-  e_error("Error writing file (disk full?)", 0, f->fb);
-  FREE(ptmp);
-  return(WPE_ESC);
- }
- FREE(ptmp);
  return(0);
 }
 

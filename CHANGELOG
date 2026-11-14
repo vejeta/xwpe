@@ -327,6 +327,27 @@ Changes
   instead of closing anyway.  Quit stops at that window; the files saved
   before it stay saved.
 
+* A save that fails now says what happened, once, in one box: the path, the
+  reason and what is kept ("Cannot write /home/u/t.c: Permission denied.
+  Your text is still in the window.").  Before, the box read "Can't open
+  File %s" with the %s left in it.  Save As that fails leaves the window
+  under its old name, Block Write says the file is not there, and Print no
+  longer runs the print command on a copy that was not written.
+
+* A write that fails half way (a full disk, a file size limit) puts the old
+  content back from the backup copy instead of leaving the file cut short,
+  and the editor is no longer ended by the size limit.  If the old content
+  cannot be put back, or there was no backup, the box says the file may be
+  cut short and names the backup when there is one.  A file reached through
+  a link stays a link, and the file keeps its group.
+
+* A save in a folder that does not take the backup copy now writes the file
+  and says on the status row "t.c written; no backup was made: Permission
+  denied", instead of a box about the backup and then the save.  The backup
+  copy takes the file's permissions before it holds any text, so a private
+  file's backup is private.  A backup that stops half way (a full disk)
+  refuses the save and leaves the file untouched.
+
 * The macOS install pages now put the libx11-compat build first and
   XQuartz second, and say what the libx11-compat build leaves out: no
   Alt-F5 User Screen (it focuses Messages), no Cairo renderer, no native

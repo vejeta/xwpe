@@ -126,3 +126,7 @@ we_ai_ws.o write 1 keep a regular file the model named, opened at the place the 
 
 # the search over a row: the engine, the end-of-line flag and the word test
 # are the owner's (we_rowfind.c), and the check allows no line for its names.
+
+# the owner of writing the user's text (we_write.c) copies and writes files
+# through descriptors; nothing it writes is a child's input.
+we_write.o write 2 keep the backup copy and restore, and the text writers, write the user's files

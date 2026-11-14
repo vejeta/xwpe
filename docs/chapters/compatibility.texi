@@ -864,3 +864,42 @@ finds nothing.  The reason: a hit that is not what the user
 typed is not a search, and an empty hit would leave Search Again and
 Change All standing on it for ever.
 @end table
+
+@section Saving and the emergency save
+
+@table @asis
+@item A write that fails
+@cindex save fails
+@cindex write fails
+The original showed @samp{Can't open File %s}, with the @samp{%s} left in
+the box, and went on as if the write had worked: Save As gave the window
+its new name, Print ran the print command on a copy that was not there,
+Block Write said nothing about the file.  A write that fails now leaves
+the window, its name and its text as they were, and says in one box the
+path, the reason and what is kept (@samp{Cannot write /home/u/t.c:
+Permission denied.  Your text is still in the window.}).  After a failed
+Save As the window keeps its old name; after a failed print copy nothing
+is printed.  The reason: the user must know the text is not on disk, and
+must still have it.
+
+@item A write that fails half way
+When a write failed after the file was opened (the disk filled, or the
+file size limit was reached), the original left the file cut short and
+the editor could be ended by the limit.  xwpe puts the old content back
+from the backup copy into the same file, so a link, a second name for
+the file, its owner and its group stay as they were.  When the old content
+cannot be put back, or no backup copy could be made, the box says the file
+may be cut short and names the backup copy when there is one.  The reason:
+the save that fails must not also destroy the file.
+
+@item The backup copy
+The original showed a second box, @samp{Can't open file for writing}, when
+the backup copy could not be made in a read-only folder, and then wrote
+the file anyway.  A save that works shows no box: the status row says
+@samp{t.c written; no backup was made: Permission denied.}.  The backup
+copy takes the file's own permissions before it holds any of its text, and
+counts as made only when every byte reached the disk; a backup that stops
+half way refuses the save and leaves the file untouched, because the same
+disk would refuse the new text.  The reason: a short backup must never be
+trusted, and a private file's backup must never be readable by others.
+@end table
