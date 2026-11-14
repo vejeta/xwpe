@@ -96,13 +96,8 @@ static void chk_true(const char *what, int cond)
 /* The handler the editor installs (WpeSignalChild), in its essentials. */
 static void on_child(int sig)
 {
-	int saved = errno, st;
-	pid_t pid;
-
 	(void)sig;
-	while ((pid = waitpid(-1, &st, WNOHANG)) > 0)
-		wpe_child_note_ended(pid, st);
-	errno = saved;
+	wpe_child_reap_now();
 }
 
 static long now_ms(void)
@@ -1262,20 +1257,90 @@ static void test_a_probe_is_not_ended_by_the_users_cancel(void)
 /* @scenario SC-debug-72 */
 /* @scenario SC-debug-82 */
 /* @scenario SC-debug-103 */
+/* ---- wpe_child_reap_install: a child's end wakes a loop with no editor ----
+ *
+ * What the sync layers and the C tests rely on: the owner's own SIGCHLD
+ * reaper, so a followed child's end ends a wait on the loop at once, also
+ * when a grandchild keeps the child's pipes open and no end of file comes.
+ */
+#define WAKE_DEADLINE_MS   5000   /* what the wait is given */
+#define WAKE_PROMPT_MS     200    /* how soon the end must be noticed */
+/* A shell that leaves a grandchild holding its output pipe, and ends. */
+#define HOLDER_SCRIPT      "sleep 3 & exit 0"
+#define OWN_CHILD_EXIT     5
+
+static Run reap_run;
+
+static int reap_run_ended(void)
+{
+	return reap_run.calls > 0;
+}
+
+/** wait_for_the_end - Start @script and wait on the loop for its end; return
+    how long the wait took, or -1 when the start failed. */
+static long wait_for_the_end(const char *script)
+{
+	long t0, took;
+
+	if (start_sh(&reap_run, script) != 0)
+		return -1;
+	t0 = now_ms();
+	wpe_fd_wait_for(reap_run_ended, WAKE_DEADLINE_MS, "the test child's end");
+	took = now_ms() - t0;
+	close_ends(&reap_run);
+	return took;
+}
+
+/* @scenario SC-child-wait-06 */
+static void test_a_reaper_for_the_loop_wakes_it_when_a_child_ends(void)
+{
+	struct sigaction first, again;
+	long took;
+	pid_t own;
+	int st = 0;
+
+	chk("reap_install installs", wpe_child_reap_install(), 0);
+	chk("and SIGCHLD has a handler now", sigaction(SIGCHLD, NULL, &first), 0);
+	chk("not the default", first.sa_handler != SIG_DFL, 1);
+	chk("a second call is accepted", wpe_child_reap_install(), 0);
+	chk("and changes nothing", sigaction(SIGCHLD, NULL, &again), 0);
+	chk("the same handler", again.sa_handler == first.sa_handler, 1);
+
+	took = wait_for_the_end("exit 0");
+	chk("a child that exits at once is noticed before its deadline",
+	    took >= 0 && took < WAKE_PROMPT_MS, 1);
+	if (took >= WAKE_PROMPT_MS)
+		printf("  it took %ld ms\n", took);
+
+	/* The shell leaves a grandchild holding its output pipe: the pipe never
+	   reaches its end, only the child's death can end the wait. */
+	took = wait_for_the_end(HOLDER_SCRIPT);
+	chk("a child whose pipe a grandchild keeps open is noticed too",
+	    took >= 0 && took < WAKE_PROMPT_MS, 1);
+	if (took >= WAKE_PROMPT_MS)
+		printf("  it took %ld ms\n", took);
+
+	/* A process the test forks and waits for itself keeps its status. */
+	own = fork();
+	if (own == 0)
+		_exit(OWN_CHILD_EXIT);
+	chk("a child the test forked", own > 0, 1);
+	test_sleep_ms(2 * TEST_WAIT_STEP_MS);
+	chk("is left for the test's own wait", waitpid(own, &st, 0) == own, 1);
+	chk("with its status", exit_code(st), OWN_CHILD_EXIT);
+}
+
 /* @scenario SC-debug-111 */
 int main(void)
 {
-	struct sigaction act;
-
 	test_watchdog_case("test_child (the owner's start, signal and end of a "
 	                   "child): a child's end never came", HANG_SECONDS);
-	memset(&act, 0, sizeof act);
-	act.sa_handler = on_child;
-	sigemptyset(&act.sa_mask);
-	act.sa_flags = SA_RESTART | SA_NOCLDSTOP;
 	WpeChildWakeOpen();
 	wpe_child_say_set(on_say);
-	sigaction(SIGCHLD, &act, NULL);
+	test_a_reaper_for_the_loop_wakes_it_when_a_child_ends();
+	test_watchdog_case("test_child (the owner's start, signal and end of a "
+	                   "child): a child's end never came", HANG_SECONDS);
+	wpe_child_sigchld_install(on_child);
 
 	test_twenty_children_ending_at_once_each_report_their_status();
 	test_a_child_that_ignores_sigterm_is_killed_after_the_grace();

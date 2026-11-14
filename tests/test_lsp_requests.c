@@ -416,24 +416,14 @@ static void check(int ok, const char *what)
 /** on_child - Reap as the editor's SIGCHLD handler does. */
 static void on_child(int sig)
 {
- int status;
- pid_t pid;
-
  (void)sig;
- while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
-  wpe_child_note_ended(pid, status);
+ wpe_child_reap_now();
 }
 
 /** install_reaper - Reap children as the editor does. */
 static void install_reaper(void)
 {
- struct sigaction act;
-
- memset(&act, 0, sizeof act);
- act.sa_handler = on_child;
- sigemptyset(&act.sa_mask);
- act.sa_flags = SA_RESTART;
- sigaction(SIGCHLD, &act, NULL);
+ wpe_child_sigchld_install(on_child);
 }
 
 /** fake_log - The fake's log so far ("" when none). */

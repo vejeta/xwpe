@@ -84,6 +84,25 @@ static int test_deadline_s(void)
 }
 
 /**
+ * set_session_budgets - Give every wait of the sync layer the session's own
+ * deadline, as long as the whole session may take.
+ *
+ * The layer's default budgets are the editor's (30 s for the first answer),
+ * which a Scala build server on a cold cache can exceed; the session's
+ * deadline above is what ends a server that stops answering, so no single
+ * wait is cut earlier.  Both are scaled by XWPE_TEST_WAIT_SCALE.
+ */
+static void set_session_budgets(void)
+{
+ long ms = (long)test_deadline_s() * 1000L;
+
+ e_dap_sync_budget_set(E_DAP_SYNC_START, ms);
+ e_dap_sync_budget_set(E_DAP_SYNC_LAUNCH, ms);
+ e_dap_sync_budget_set(E_DAP_SYNC_REQUEST, ms);
+ e_dap_sync_budget_set(E_DAP_SYNC_RUN, ms);
+}
+
+/**
  * run_within_deadline - Run the session in a child of the test's, and give
  * up on it at the deadline.
  * @dir: the session's folder.
@@ -274,8 +293,14 @@ static int session(const char *dir)
  if (strcmp(mainclass, "Factorial") != 0)
  { printf("  (main class = %s)\n", mainclass); rc = fail("main class != Factorial"); goto closebsp; }
 
+ set_session_budgets();
  s = e_dap_open_tcp(host, port, dir, NULL, &hostcb);
- if (!s) { rc = fail("e_dap_open_tcp (connect to Bloop DAP endpoint)"); goto closebsp; }
+ if (!s)
+ {
+  printf("  (%s)\n", e_dap_sync_last_wait());
+  rc = fail("e_dap_open_tcp (connect to Bloop DAP endpoint)");
+  goto closebsp;
+ }
 
  snprintf(path, sizeof(path), "%s/factorial.scala", dir);
  e_dap_add_breakpoint(s, path, 6);

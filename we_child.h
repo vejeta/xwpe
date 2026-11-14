@@ -189,6 +189,8 @@ void wpe_child_capture_display_set(int (*quiet_fd)(void), void (*serve)(void),
 /* For the SIGCHLD handler and the crash and end handlers (async-signal-safe),
    and the fd that wakes the loop. */
 void wpe_child_note_ended(pid_t pid, int status);
+void wpe_child_reap_now(void);
+int  wpe_child_reap_install(void);
 void wpe_child_end_from_handler(void);
 int  wpe_child_fd_private(int fd);
 

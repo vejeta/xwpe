@@ -627,8 +627,7 @@ void WpeSignalUnknown(int sig)
 
 void WpeSignalChild(int sig)
 {
- int statloc, saved_errno = errno;
- pid_t pid;
+ int saved_errno = errno;
 
  if (!wpe_signal_on_main_thread())
  {
@@ -644,8 +643,7 @@ void WpeSignalChild(int sig)
     which made a pclose of a popen'ed command hang.
     errno is kept for the code this signal interrupted.  A watched child
     that ended wakes the loop, which calls its owner back. */
- while ((pid = waitpid(-1, &statloc, WNOHANG)) > 0)
-  wpe_child_note_ended(pid, statloc);
+ wpe_child_reap_now();
  errno = saved_errno;
 }
 

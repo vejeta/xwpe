@@ -18,6 +18,15 @@ DIR=$(mktemp -d "${TMPDIR:-/tmp}/check-with-deadline.XXXXXX") || exit 1
 
 fail() { echo "FAIL: $1"; BAD=1; }
 
+# The most seconds the hung command may take: its 1 s deadline plus the 2 s
+# between TERM and KILL, times the scale a slow machine sets for the test
+# suite (XWPE_TEST_WAIT_SCALE, a float; the macOS runner took 4 s at 1).
+# Whole seconds, because the clock below counts whole seconds.
+LIMIT=$(awk -v s="${XWPE_TEST_WAIT_SCALE:-1}" 'BEGIN {
+	if (s + 0 <= 0 || s + 0 > 1000) s = 1
+	printf "%d", 2 * s + 0.999
+}')
+
 # The command writes its PID, then becomes the sleep: the PID is the command's.
 PIDFILE=$DIR/pid
 START=$(date +%s)
@@ -26,7 +35,8 @@ RC=$?
 END=$(date +%s)
 
 [ "$RC" -eq 124 ] || fail "exit status $RC, wanted 124"
-[ $((END - START)) -le 2 ] || fail "took $((END - START)) s, wanted at most 2"
+[ $((END - START)) -le "$LIMIT" ] ||
+	fail "took $((END - START)) s, wanted at most $LIMIT"
 case $OUT in
 *"TIMEOUT: "*" after 1 s"*) ;;
 *) fail "no TIMEOUT line in: $OUT" ;;

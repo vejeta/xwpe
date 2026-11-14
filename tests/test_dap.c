@@ -16,6 +16,7 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -229,6 +230,10 @@ static struct json_object *next_request(int fd, e_dap_reader *rd)
   if (m)
    return m;
   n = read(fd, buf, sizeof buf);
+  /* A read with SO_RCVTIMEO is not restarted after a late writer's
+     SIGCHLD, whatever SA_RESTART says: read again. */
+  if (n < 0 && errno == EINTR)
+   continue;
   if (n <= 0)
    return NULL;
   e_dap_reader_push(rd, buf, (size_t)n);
@@ -265,9 +270,118 @@ static size_t response(char *dst, int seq, const char *command, int success,
  return frame(dst, body);
 }
 
+/* A slow wire, to prove a row does not rely on the loopback delivering a
+   write at once (which macOS and the BSDs do not promise): while
+   wire_delay_ms is above 0, what put() writes reaches the engine that many
+   milliseconds later, written by a short-lived child of the test. */
+#define LATE_WRITERS_MAX 32
+#define LATE_WRITER_WAIT_MS 5000
+static int wire_delay_ms;
+static pid_t late_writers[LATE_WRITERS_MAX];
+static int late_writers_n;
+
+static void put_late(int fd, const char *buf, size_t n)
+{
+ pid_t pid;
+
+ if (late_writers_n >= LATE_WRITERS_MAX)
+ {
+  CHECK(0, "too many late writes in one row");
+  return;
+ }
+ pid = fork();
+ if (pid == 0)
+ {
+  test_sleep_ms(wire_delay_ms);
+  _exit(write(fd, buf, n) == (ssize_t)n ? 0 : 1);
+ }
+ CHECK(pid > 0, "cannot start a late writer");
+ if (pid > 0)
+  late_writers[late_writers_n++] = pid;
+}
+
+/* The late writers have all written and ended. */
+static void wait_for_late_writers(void)
+{
+ while (late_writers_n > 0)
+ {
+  int st = test_wait_child(late_writers[--late_writers_n],
+                           LATE_WRITER_WAIT_MS);
+
+  CHECK(st != -1 && WIFEXITED(st) && WEXITSTATUS(st) == 0,
+        "a late write did not reach the engine");
+ }
+}
+
 static void put(int fd, const char *buf, size_t n)
 {
+ if (wire_delay_ms > 0)
+ {
+  put_late(fd, buf, n);
+  return;
+ }
  CHECK(write(fd, buf, n) == (ssize_t)n, "short write to the engine");
+}
+
+/* A loopback write can reach the reader a moment after write() returns (on
+   macOS and the BSDs the loopback hands the bytes on through a queue the
+   kernel serves later), and the engine's pumps read once and never block.
+   So a pump here waits for its descriptor first, as the editor's loop does,
+   and pumps anyway after PUMP_WAIT_MS: it answers what was already read.
+   Pumping at once, as the start machine's rows once did, found nothing to
+   read on those systems: the engine never saw the answer, never sent the
+   next request, and the row waited for it for ever. */
+#define PUMP_WAIT_MS 2000
+static void wait_readable(int fd)
+{
+ struct pollfd p;
+ struct timespec t0, t;
+ long budget = test_scaled_ms(PUMP_WAIT_MS), left = budget;
+
+ if (fd < 0)
+  return;
+ p.fd = fd;
+ p.events = POLLIN;
+ /* A late writer's SIGCHLD cuts poll() short with EINTR (SA_RESTART never
+    restarts poll); wait again on what is left, or the pump reads nothing. */
+ clock_gettime(CLOCK_MONOTONIC, &t0);
+ for (;;)
+ {
+  p.revents = 0;
+  if (poll(&p, 1, (int)left) >= 0 || errno != EINTR)
+   return;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  left = budget - ((t.tv_sec - t0.tv_sec) * 1000L +
+                   (t.tv_nsec - t0.tv_nsec) / 1000000L);
+  if (left <= 0)
+   return;
+ }
+}
+
+/* One pump of the start machine, once the start's descriptor is readable. */
+static int pump_start_when_readable(e_dap_session *s)
+{
+ wait_readable(e_dap_start_fd(s));
+ return e_dap_start_pump(s);
+}
+
+/* The engine's next request must not be waited for for ever: a request that
+   never comes fails the row (a read that times out is "no request"). */
+#define ENGINE_REQUEST_WAIT_MS 10000
+
+/* Accept the engine's connection on @lfd; its reads are bounded. */
+static int accept_engine(int lfd)
+{
+ struct timeval tv;
+ long ms = test_scaled_ms(ENGINE_REQUEST_WAIT_MS);
+ int fd = accept(lfd, NULL, NULL);
+
+ if (fd < 0)
+  return fd;
+ tv.tv_sec = ms / 1000;
+ tv.tv_usec = (ms % 1000) * 1000;
+ setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+ return fd;
 }
 
 /* Connect a Scala-style session (launch, then wait `initialized`). */
@@ -282,7 +396,7 @@ static e_dap_session *start_session(int *conn, int *lfd)
   return NULL;
  s = e_dap_start_tcp("127.0.0.1", port, "/tmp/p", NULL, NULL);
  CHECK(s != NULL, "e_dap_start_tcp returned NULL");
- *conn = accept(*lfd, NULL, NULL);
+ *conn = accept_engine(*lfd);
  CHECK(*conn >= 0, "accept failed");
  return s;
 }
@@ -305,10 +419,10 @@ static void test_start_machine(void)
  seq = expect_request(conn, &rd, "initialize");
  n = response(buf, seq, "initialize", 1, "");
  put(conn, buf, SPLIT_AT);
- CHECK(e_dap_start_pump(s) == E_DAP_START_WAITING, "half a frame finished the start");
+ CHECK(pump_start_when_readable(s) == E_DAP_START_WAITING, "half a frame finished the start");
  CHECK(!e_dap_start_answered(s), "half a frame counted as the answer");
  put(conn, buf + SPLIT_AT, n - SPLIT_AT);
- CHECK(e_dap_start_pump(s) == E_DAP_START_WAITING, "start should wait for launch");
+ CHECK(pump_start_when_readable(s) == E_DAP_START_WAITING, "start should wait for launch");
  CHECK(e_dap_start_answered(s), "the split initialize answer was not taken");
  CHECK(!strcmp(e_dap_start_waits_for(s), "launching"), "should wait on launch");
 
@@ -317,18 +431,18 @@ static void test_start_machine(void)
  n = response(buf, seq, "launch", 1, "");
  m = frame(buf + n, "{\"seq\":2,\"type\":\"event\",\"event\":\"initialized\"}");
  put(conn, buf, n + m);
- CHECK(e_dap_start_pump(s) == E_DAP_START_WAITING, "start should wait for breakpoints");
+ CHECK(pump_start_when_readable(s) == E_DAP_START_WAITING, "start should wait for breakpoints");
  CHECK(!strcmp(e_dap_start_waits_for(s), "configuring"), "two frames: initialized lost");
 
  seq = expect_request(conn, &rd, "setBreakpoints");
  n = response(buf, seq, "setBreakpoints", 1, "");
  put(conn, buf, n);
- CHECK(e_dap_start_pump(s) == E_DAP_START_WAITING, "start should wait for configurationDone");
+ CHECK(pump_start_when_readable(s) == E_DAP_START_WAITING, "start should wait for configurationDone");
 
  seq = expect_request(conn, &rd, "configurationDone");
  n = response(buf, seq, "configurationDone", 1, "");
  put(conn, buf, n);
- CHECK(e_dap_start_pump(s) == E_DAP_START_READY, "configurationDone did not finish the start");
+ CHECK(pump_start_when_readable(s) == E_DAP_START_READY, "configurationDone did not finish the start");
 
  e_dap_close(s);
  close(conn);
@@ -351,7 +465,7 @@ static void test_start_refused(void)
  seq = expect_request(conn, &rd, "initialize");
  n = response(buf, seq, "initialize", 0, "adapter says no");
  put(conn, buf, n);
- CHECK(e_dap_start_pump(s) == E_DAP_START_FAILED, "a refusal did not end the start");
+ CHECK(pump_start_when_readable(s) == E_DAP_START_FAILED, "a refusal did not end the start");
  CHECK(e_dap_start_error(s) && !strcmp(e_dap_start_error(s), "adapter says no"),
        "the adapter's reason was not kept");
  e_dap_close(s);
@@ -386,9 +500,14 @@ static void test_start_refused(void)
 #define FAKE_MUTE    "mute"        /* reads its input, never writes, keeps stdout open */
 #define FAKE_LIFETIME_S      30    /* a fake ends by itself after this      */
 #define FAKE_REAP_MS         5000  /* wait for a fake that was killed       */
-#define MUTE_ROW_FLAG        "--mute-row"
-#define MUTE_ROW_GUARD_S     3     /* the row gets this long to come back   */
-#define FAKE_FLOOD   "flood"       /* never answers, writes output for ever */
+#define FAKE_DIE     "die"         /* reads initialize and leaves, status 3 */
+#define FAKE_HOLDER  "holder"      /* the same, a process keeps its stdout  */
+#define FAKE_LEAVE_STATUS    3
+#define FAKE_HOLDER_LIFETIME_S 5   /* the holder's own end                  */
+#define FAKE_SLOWREAD "slowread"   /* answers initialize, reads late, answers evaluate */
+#define FAKE_SLOW_READ_MS    600   /* how long it does not read             */
+#define BIG_REQUEST_BYTES    (256 * 1024)   /* more than a pipe holds       */
+#define FAKE_FLOOD  "flood"       /* never answers, writes output for ever */
 #define FLOOD_GUARD_S        15    /* a Quit that never ends is a failure   */
 /* An answered Quit: with an exit descriptor (pidfd, kqueue) the adapter is
    reaped as it exits, well inside the answer wait.  Without one (the
@@ -496,20 +615,11 @@ static void seen_host(e_dap_host *h, struct seen *r)
  h->ud = r;
 }
 
-/* Pump as the editor's loop does: once the transport is readable.  A
-   loopback write can reach the reader a moment after write() returns, and
-   the pump never blocks to wait for it.  With nothing to read within the
-   bound, it pumps anyway (it answers what was already read). */
-#define PUMP_WAIT_MS 2000
+/* Pump the run as the editor's loop does: once the transport is readable
+   (see wait_readable). */
 static int pump_when_readable(e_dap_session *s)
 {
- struct pollfd p;
-
- p.fd = e_dap_fd(s);
- p.events = POLLIN;
- p.revents = 0;
- if (p.fd >= 0)
-  poll(&p, 1, PUMP_WAIT_MS);
+ wait_readable(e_dap_fd(s));
  return e_dap_run_pump(s);
 }
 
@@ -626,18 +736,18 @@ static e_dap_session *configuring_session(const e_dap_host *host, int *conn,
  if (*lfd < 0)
   return NULL;
  s = e_dap_start_tcp("127.0.0.1", port, "/tmp/p", NULL, host);
- *conn = accept(*lfd, NULL, NULL);
+ *conn = accept_engine(*lfd);
  CHECK(s != NULL && *conn >= 0, "loopback session not connected");
  if (!s || *conn < 0)
   return NULL;
  seq = expect_request(*conn, rd, "initialize");
  put(*conn, buf, response(buf, seq, "initialize", 1, ""));
- e_dap_start_pump(s);
+ pump_start_when_readable(s);
  seq = expect_request(*conn, rd, "launch");
  n = response(buf, seq, "launch", 1, "");
  n += frame(buf + n, INITIALIZED_EVENT);
  put(*conn, buf, n);
- e_dap_start_pump(s);
+ pump_start_when_readable(s);
  *cd_seq = expect_request(*conn, rd, "configurationDone");
  return s;
 }
@@ -657,7 +767,7 @@ static void answer_configuration(e_dap_session *s, int conn, int cd_seq,
   put_two(conn, ans, ev);
  else
   put(conn, buf, frame(buf, ans));
- CHECK(e_dap_start_pump(s) == E_DAP_START_READY, "start not ready");
+ CHECK(pump_start_when_readable(s) == E_DAP_START_READY, "start not ready");
 }
 
 /* A session whose start is ready and whose program runs.  NULL on error. */
@@ -1349,7 +1459,7 @@ static void test_pump_before_the_start_is_ready_never_blocks(void)
  e_dap_reader_init(&rd);
  lfd = listen_local(&port);
  s = e_dap_start_tcp("127.0.0.1", port, "/tmp/p", NULL, NULL);
- conn = accept(lfd, NULL, NULL);
+ conn = accept_engine(lfd);
  CHECK(s != NULL && conn >= 0, "loopback session not connected");
  if (!s || conn < 0)
   return;
@@ -1578,6 +1688,67 @@ static int fake_disconnect(const char *mode, int seq, const char *marker,
  return 0;
 }
 
+/* A response with a body, written to the engine. */
+static void fake_reply_body(int seq, const char *command, const char *body)
+{
+ char buf[ADAPTER_BUF], msg[ADAPTER_BUF / 2];
+ size_t n;
+
+ answer_body(msg, sizeof msg, seq, command, body);
+ n = frame(buf, msg);
+ if (write(STDOUT_FILENO, buf, n) != (ssize_t)n)
+  _exit(2);
+}
+
+/* Reads the first request (initialize) and leaves with FAKE_LEAVE_STATUS
+   without answering.  The holder variant first starts a process that keeps
+   the adapter's stdout open, so the engine never reads an end of file: only
+   the adapter's death can tell it. */
+static int fake_leave(const char *mode, e_dap_reader *rd)
+{
+ struct json_object *m = next_request(STDIN_FILENO, rd);
+
+ if (m)
+  json_object_put(m);
+ if (!strcmp(mode, FAKE_HOLDER) && fork() == 0)
+ {
+  test_lifetime_arm(FAKE_HOLDER_LIFETIME_S);
+  for (;;)
+   pause();
+ }
+ _exit(FAKE_LEAVE_STATUS);
+}
+
+/* Answers initialize, then does not read for FAKE_SLOW_READ_MS, so a request
+   bigger than the pipe cannot go in whole meanwhile; then reads, answers
+   evaluate with "ok" and ends with disconnect. */
+static int fake_slow_reader(e_dap_reader *rd)
+{
+ struct json_object *m = next_request(STDIN_FILENO, rd);
+ const char *cmd;
+
+ if (!m)
+  return 1;
+ fake_reply(req_seq(m), "initialize");
+ json_object_put(m);
+ test_sleep_ms(FAKE_SLOW_READ_MS);
+ while ((m = next_request(STDIN_FILENO, rd)) != NULL)
+ {
+  cmd = str_field(m, "command");
+  if (cmd && !strcmp(cmd, "evaluate"))
+   fake_reply_body(req_seq(m), cmd, "{\"result\":\"ok\"}");
+  if (cmd && !strcmp(cmd, "disconnect"))
+  {
+   fake_reply(req_seq(m), cmd);
+   json_object_put(m);
+   break;
+  }
+  json_object_put(m);
+ }
+ e_dap_reader_free(rd);
+ return 0;
+}
+
 static int fake_adapter(const char *mode, const char *marker)
 {
  e_dap_reader rd;
@@ -1600,6 +1771,10 @@ static int fake_adapter(const char *mode, const char *marker)
   e_dap_reader_free(&rd);
   return 1;
  }
+ if (!strcmp(mode, FAKE_DIE) || !strcmp(mode, FAKE_HOLDER))
+  return fake_leave(mode, &rd);
+ if (!strcmp(mode, FAKE_SLOWREAD))
+  return fake_slow_reader(&rd);
  while ((m = next_request(STDIN_FILENO, &rd)) != NULL)
  {
   cmd = str_field(m, "command");
@@ -1762,13 +1937,8 @@ static void test_close_kills_an_adapter_that_never_answers(void)
    essentials: it reaps, and the owner of the children keeps the status. */
 static void reap_as_the_editor(int sig)
 {
- int saved = errno, st;
- pid_t pid;
-
  (void)sig;
- while ((pid = waitpid(-1, &st, WNOHANG)) > 0)
-  wpe_child_note_ended(pid, st);
- errno = saved;
+ wpe_child_reap_now();
 }
 
 /* An adapter killed from outside, reaped by the editor's handler, its end
@@ -2156,13 +2326,13 @@ static void test_quit_during_the_start_asks_nothing_more(void)
  if (lfd < 0)
   return;
  s = e_dap_start_tcp("127.0.0.1", port, "/tmp/p", NULL, &host);
- conn = accept(lfd, NULL, NULL);
+ conn = accept_engine(lfd);
  CHECK(s != NULL && conn >= 0, "loopback session not connected");
  if (!s || conn < 0)
   return;
  seq = expect_request(conn, &rd, "initialize");
  put(conn, buf, response(buf, seq, "initialize", 1, ""));
- e_dap_start_pump(s);
+ pump_start_when_readable(s);
  seq = expect_request(conn, &rd, "launch");
  CHECK(e_dap_disconnect(s) == 0, "disconnect not sent during the start");
  m = take_request(conn, &rd, "disconnect");
@@ -2336,92 +2506,246 @@ static void test_long_watch_expression_goes_out_whole(void)
  end_session(s, conn, lfd, &rd);
 }
 
+/* ---- the waits of the sync layer have budgets (SC-child-wait) -----------
+ *
+ * Every call that waits for an adapter returns within its budget, with the
+ * reason in e_dap_sync_last_wait(), and the adapter's end ends the wait at
+ * once.  A budget a row sets is put back before the row returns.  The rows
+ * compare against the budget the layer really used, which
+ * XWPE_TEST_WAIT_SCALE multiplies.
+ */
+#define ROW_START_BUDGET_MS   2000
+#define ROW_REQUEST_BUDGET_MS 1000
+#define ROW_RUN_BUDGET_MS     1000
+#define ROW_SLACK_MS          1500   /* a loaded machine's slack          */
+#define ROW_DEAD_BOUND_MS     500    /* a death is noticed at once        */
+#define ROW_EARLY_MS          200    /* a wait may not end this early     */
+#define WIRE_DELAY_MS         100    /* the slow wire's late delivery     */
+#define BIG_REQUEST_BUDGET_MS 10000  /* the flushed request's answer      */
+
+/* Did @took reach the budget and end within it plus @extra and the slack? */
+static void check_at_the_budget(const char *what, long took, long budget_ms,
+                                long extra_ms)
+{
+ long scaled = test_scaled_ms(budget_ms);
+
+ if (took < scaled - ROW_EARLY_MS)
+ {
+  printf("FAIL: %s ended after %ld ms, before its budget of %ld ms\n", what,
+         took, scaled);
+  failures++;
+ }
+ if (took > scaled + extra_ms + ROW_SLACK_MS)
+ {
+  printf("FAIL: %s took %ld ms, past its budget of %ld ms\n", what, took,
+         scaled);
+  failures++;
+ }
+}
+
 /* The start of a session whose adapter reads and never answers must end at
-   the start's budget, and say so.  Today the start's wait has no deadline
-   (we_dap_sync.c), so this case does not come back: the watchdog ends it.
-   Run alone by the expected-failure runner below, never in the main run.
+   the start's budget, and say what it waited for.
    @scenario SC-child-wait-01 */
 static void test_open_fails_within_the_budget_when_the_adapter_never_answers(void)
 {
- e_dap_session *s = fake_session(FAKE_MUTE, "/nonexistent");
+ e_dap_session *s;
+ long t0, took;
 
+ e_dap_sync_budget_set(E_DAP_SYNC_START, ROW_START_BUDGET_MS);
+ t0 = ms_now();
+ s = fake_session(FAKE_MUTE, "/nonexistent");
+ took = ms_now() - t0;
+ e_dap_sync_budget_set(E_DAP_SYNC_START, 0);
  CHECK(s == NULL, "an adapter that never answers was taken as started");
  if (s)
   e_dap_close(s);
+ check_at_the_budget("the start", took, ROW_START_BUDGET_MS,
+                     E_DAP_CLOSE_MAX_MS);
+ CHECK(!strncmp(e_dap_sync_last_wait(), "initialize: no answer within ", 29),
+       e_dap_sync_last_wait());
+ CHECK(strstr(e_dap_sync_last_wait(), "adapter alive") != NULL,
+       "the failure line does not say the adapter was alive");
 }
 
-/* The test program, started again to run only the mute-adapter row under
-   its own short guard (the hang ends it, as the guard's FAIL line). */
-static int run_the_mute_row(void)
+/* An adapter that dies before it answers ends the start at once.
+   @scenario SC-child-wait-02 */
+static void test_open_fails_at_once_when_the_adapter_dies_before_answering(void)
 {
- const char *name =
-  "test_open_fails_within_the_budget_when_the_adapter_never_answers";
+ e_dap_session *s;
+ long t0, took;
 
- signal(SIGPIPE, SIG_IGN);
- test_watchdog_case(name, MUTE_ROW_GUARD_S);
- test_open_fails_within_the_budget_when_the_adapter_never_answers();
- test_watchdog_disarm();
- return failures ? 1 : 0;
+ t0 = ms_now();
+ s = fake_session(FAKE_DIE, "/nonexistent");
+ took = ms_now() - t0;
+ CHECK(s == NULL, "an adapter that died was taken as started");
+ if (s)
+  e_dap_close(s);
+ CHECK(took < test_scaled_ms(ROW_DEAD_BOUND_MS) + ROW_SLACK_MS,
+       "the start did not end at the adapter's death");
+ CHECK(strstr(e_dap_sync_last_wait(), "(adapter exited, status 3)") != NULL,
+       e_dap_sync_last_wait());
 }
 
-/* Start the mute row in its own process; its output is read into @out and
-   its wait status returned (-1: it could not be started). */
-static int start_the_mute_row(char *out, size_t room)
+/* The same when a process the adapter left behind keeps its stdout open, so
+   the engine never reads an end of file: only the adapter's death, told by
+   the owner's SIGCHLD reaper, ends the wait.
+   @scenario SC-child-wait-02 */
+static void test_open_fails_at_once_when_a_process_keeps_the_dead_adapters_pipe(void)
 {
- int fds[2], st;
- size_t used = 0;
- ssize_t n;
- pid_t pid;
+ e_dap_session *s;
+ long t0, took;
 
- out[0] = '\0';
- if (pipe(fds) != 0)
-  return -1;
- pid = fork();
- if (pid < 0)
-  return -1;
- if (pid == 0)
+ e_dap_sync_budget_set(E_DAP_SYNC_START, ROW_START_BUDGET_MS);
+ t0 = ms_now();
+ s = fake_session(FAKE_HOLDER, "/nonexistent");
+ took = ms_now() - t0;
+ e_dap_sync_budget_set(E_DAP_SYNC_START, 0);
+ CHECK(s == NULL, "an adapter that died was taken as started");
+ if (s)
+  e_dap_close(s);
+ CHECK(took < test_scaled_ms(ROW_START_BUDGET_MS) - ROW_EARLY_MS,
+       "the start sat out its budget instead of ending at the death");
+ CHECK(strstr(e_dap_sync_last_wait(), "(adapter exited, status 3)") != NULL,
+       e_dap_sync_last_wait());
+}
+
+/* A request the adapter never answers ends at its budget, and the session
+   is still open.
+   @scenario SC-child-wait-03 */
+static void test_a_request_ends_at_its_budget(void)
+{
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ e_dap_session *s;
+ char *val;
+ long t0, took;
+ int conn = -1, lfd = -1;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ e_dap_sync_budget_set(E_DAP_SYNC_REQUEST, ROW_REQUEST_BUDGET_MS);
+ t0 = ms_now();
+ val = e_dap_evaluate(s, "x");
+ took = ms_now() - t0;
+ e_dap_sync_budget_set(E_DAP_SYNC_REQUEST, 0);
+ CHECK(val == NULL, "an evaluate nobody answered returned a value");
+ free(val);
+ check_at_the_budget("the request", took, ROW_REQUEST_BUDGET_MS, 0);
+ CHECK(!strncmp(e_dap_sync_last_wait(), "evaluate: no answer within ", 27),
+       e_dap_sync_last_wait());
+ CHECK(!e_dap_ended(s), "a request that timed out ended the session");
+ end_session(s, conn, lfd, &rd);
+}
+
+/* A run that does not stop within its budget answers "still going", and the
+   session stays open.
+   @scenario SC-child-wait-04 */
+static void test_the_run_wait_ends_at_its_budget(void)
+{
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ e_dap_session *s;
+ long t0, took;
+ int conn = -1, lfd = -1, st;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = ready_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ t0 = ms_now();
+ st = e_dap_wait_stop(s, ROW_RUN_BUDGET_MS);
+ took = ms_now() - t0;
+ CHECK(st == E_DAP_RUN_GOING, "a run that did not stop was not going");
+ check_at_the_budget("the run wait", took, ROW_RUN_BUDGET_MS, 0);
+ CHECK(!strncmp(e_dap_sync_last_wait(), "run to a stop: no answer within ", 32),
+       e_dap_sync_last_wait());
+ CHECK(!e_dap_ended(s), "a run wait that timed out ended the session");
+ end_session(s, conn, lfd, &rd);
+}
+
+/* The start machine's rows hold on a wire that delivers late.
+   @scenario SC-child-wait-09 */
+static void test_the_start_machine_holds_on_a_slow_wire(void)
+{
+ wire_delay_ms = WIRE_DELAY_MS;
+ test_start_machine();
+ wait_for_late_writers();
+ wire_delay_ms = 0;
+}
+
+/* @scenario SC-child-wait-14 */
+/* The end request (a SIGTERM or SIGHUP the caller turned into a readable
+   descriptor) gives up a start whose adapter never answers at once, not at
+   the start's budget. */
+static int end_was_requested;
+
+static int end_requested_now(void)
+{
+ return end_was_requested;
+}
+
+static void test_the_end_request_gives_up_the_start_at_once(void)
+{
+ e_dap_session *s;
+ int endp[2];
+ long t0, took;
+
+ CHECK(pipe(endp) == 0, "pipe for the end request");
+ CHECK(write(endp[1], "x", 1) == 1, "raise the end request");
+ end_was_requested = 1;
+ e_dap_set_end_watch(endp[0], end_requested_now, NULL);
+ e_dap_sync_budget_set(E_DAP_SYNC_START, ROW_START_BUDGET_MS);
+ t0 = ms_now();
+ s = fake_session(FAKE_MUTE, "/nonexistent");
+ took = ms_now() - t0;
+ e_dap_sync_budget_set(E_DAP_SYNC_START, 0);
+ e_dap_set_end_watch(-1, NULL, NULL);
+ end_was_requested = 0;
+ close(endp[0]);
+ close(endp[1]);
+ CHECK(s == NULL, "a start given up by the end request was taken as started");
+ if (s)
+  e_dap_close(s);
+ CHECK(took < test_scaled_ms(ROW_START_BUDGET_MS) - ROW_EARLY_MS,
+       "the end request did not give the start up before its budget");
+ CHECK(strstr(e_dap_sync_last_wait(), "the end was requested") != NULL,
+       e_dap_sync_last_wait());
+}
+
+/* A request bigger than the adapter's pipe, sent while the adapter is not
+   reading, is flushed by the wait and answered: the engine queues what the
+   pipe did not take, and only a wait on the loop writes it out.
+   @scenario SC-child-wait-13 */
+static void test_a_request_bigger_than_the_pipe_is_flushed_by_the_wait(void)
+{
+ e_dap_session *s = fake_session(FAKE_SLOWREAD, "/nonexistent");
+ char *expr, *val;
+
+ CHECK(s != NULL, "the fake adapter did not answer initialize");
+ if (!s)
+  return;
+ expr = malloc(BIG_REQUEST_BYTES + 1);
+ if (!expr)
  {
-  close(fds[0]);
-  dup2(fds[1], STDOUT_FILENO);
-  close(fds[1]);
-  execl(self_path, self_path, MUTE_ROW_FLAG, (char *)NULL);
-  _exit(127);
- }
- close(fds[1]);
- while (used + 1 < room &&
-        (n = read(fds[0], out + used, room - used - 1)) > 0)
-  used += (size_t)n;
- out[used] = '\0';
- close(fds[0]);
- st = test_wait_child(pid, FAKE_REAP_MS);
- return st;
-}
-
-/* EXPECTED FAILURE until the sync layer's waits are bounded (pass C of the
-   child-wait design): the mute-adapter row must fail by the watchdog,
-   naming its case, within MUTE_ROW_GUARD_S.  XFAIL is printed and the run
-   stays green.  When the row passes (the wait is bounded) this reports
-   XPASS as a failure: delete this runner and run the row in main then.
-   @scenario SC-child-wait-01 */
-static void test_the_mute_adapter_row_fails_by_name_until_the_wait_is_bounded(void)
-{
- char out[512];
- int st = start_the_mute_row(out, sizeof out);
-
- if (st != -1 && WIFEXITED(st) && WEXITSTATUS(st) == 0)
- {
-  CHECK(0, "XPASS: the mute-adapter row passes now; run it in main and "
-           "drop its expected-failure runner");
+  e_dap_close(s);
   return;
  }
- CHECK(st != -1 && WIFEXITED(st) && WEXITSTATUS(st) == 1,
-       "the mute-adapter row neither passed nor was stopped by its watchdog");
- CHECK(strstr(out, "FAIL: test_open_fails_within_the_budget_when_the_adapter_"
-                   "never_answers did not finish within ") != NULL,
-       "the mute-adapter row did not fail naming its case");
- printf("XFAIL: SC-child-wait-01 mute adapter: no answer, no end of file, "
-        "the start waits for ever (expected until pass C); the watchdog "
-        "ended it naming its case\n");
+ memset(expr, 'a', BIG_REQUEST_BYTES);
+ expr[BIG_REQUEST_BYTES] = '\0';
+ e_dap_sync_budget_set(E_DAP_SYNC_REQUEST, BIG_REQUEST_BUDGET_MS);
+ val = e_dap_evaluate(s, expr);
+ e_dap_sync_budget_set(E_DAP_SYNC_REQUEST, 0);
+ CHECK(val && !strcmp(val, "ok"), "the big request was not flushed and "
+       "answered");
+ free(val);
+ free(expr);
+ e_dap_close(s);
 }
 
 int main(int argc, char **argv)
@@ -2430,8 +2754,6 @@ int main(int argc, char **argv)
   return fake_adapter(argv[2], argv[3]);
  if (!realpath(argv[0], self_path))
   snprintf(self_path, sizeof self_path, "%s", argv[0]);
- if (argc >= 2 && !strcmp(argv[1], MUTE_ROW_FLAG))
-  return run_the_mute_row();
  signal(SIGPIPE, SIG_IGN);
  RUN(test_build);
  RUN(test_whole_frame);
@@ -2470,7 +2792,14 @@ int main(int argc, char **argv)
  RUN(test_quit_during_the_start_asks_nothing_more);
  RUN(test_requester_runs_a_two_step_chain);
  RUN(test_long_watch_expression_goes_out_whole);
- RUN(test_the_mute_adapter_row_fails_by_name_until_the_wait_is_bounded);
+ RUN(test_open_fails_within_the_budget_when_the_adapter_never_answers);
+ RUN(test_open_fails_at_once_when_the_adapter_dies_before_answering);
+ RUN(test_open_fails_at_once_when_a_process_keeps_the_dead_adapters_pipe);
+ RUN(test_a_request_ends_at_its_budget);
+ RUN(test_the_run_wait_ends_at_its_budget);
+ RUN(test_the_start_machine_holds_on_a_slow_wire);
+ RUN(test_a_request_bigger_than_the_pipe_is_flushed_by_the_wait);
+ RUN(test_the_end_request_gives_up_the_start_at_once);
  test_watchdog_disarm();
  if (failures)
  {

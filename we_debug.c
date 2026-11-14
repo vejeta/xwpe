@@ -11103,8 +11103,10 @@ static int e_d_scala_setup_first(FENSTER *f, const char *dir)
  */
 
 /* How long (seconds) a started debugger may stay silent before the start is
-   given up; the environment variable overrides it. */
-#define E_D_START_TIMEOUT 30
+   given up; the environment variable overrides it.  The number is the one
+   the C tests give a debug adapter's answer (E_DAP_START_ANSWER_MS), so the
+   tests prove the editor's bound. */
+#define E_D_START_TIMEOUT ((int)(E_DAP_START_ANSWER_MS / WPE_TIMER_MS_PER_S))
 #define E_D_START_TIMEOUT_ENV "XWPE_DEBUG_START_TIMEOUT"
 /* The waiting line turns at the build's cadence. */
 #define E_D_START_TICK_NS 120000000L

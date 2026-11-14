@@ -300,6 +300,92 @@ void wpe_child_note_ended(pid_t pid, int status)
 }
 
 /**
+ * wpe_child_reap_now - Reap every child that has ended and note each one.
+ *
+ * The body of the editor's SIGCHLD handler (WpeSignalChild): waitpid with
+ * WNOHANG until nothing more has ended, each status handed to
+ * wpe_child_note_ended, so a watched child's owner is called back from the
+ * loop and a child nobody watches is simply not left a zombie.
+ * Async-signal-safe; errno is kept for the code the signal interrupted.
+ */
+void wpe_child_reap_now(void)
+{
+ int status, saved_errno = errno;
+ pid_t pid;
+
+ while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+  wpe_child_note_ended(pid, status);
+ errno = saved_errno;
+}
+
+/**
+ * wpe_child_reap_owned - Reap only the children the owner follows.
+ *
+ * A program with no editor around it (a sync layer, a C test) also forks
+ * processes it waits for itself, and a reaper that took every status would
+ * leave that wait with ECHILD.  This one asks for each followed child by
+ * its number, so nothing else is touched.  Async-signal-safe.
+ */
+static void wpe_child_reap_owned(void)
+{
+ int i, status;
+
+ for (i = 0; i < WPE_CHILD_MAX; i++)
+ {
+  pid_t pid = wpe_child_table[i].pid;
+
+  if (pid <= 0 || wpe_child_table[i].ended)
+   continue;
+  if (waitpid(pid, &status, WNOHANG) == pid)
+   wpe_child_note_ended(pid, status);
+ }
+}
+
+/**
+ * wpe_child_on_sigchld - SIGCHLD for a program that runs the loop without
+ * the editor: reap the followed children and wake the loop.
+ * @sig: SIGCHLD.
+ */
+static void wpe_child_on_sigchld(int sig)
+{
+ int saved_errno = errno;
+
+ (void)sig;
+ wpe_child_reap_owned();
+ errno = saved_errno;
+}
+
+/**
+ * wpe_child_reap_install - Make the death of a followed child end a wait on
+ * the loop, in a program that has no editor around it.
+ *
+ * What a sync layer or a C test calls before it starts a child: the wake
+ * pipe is made and SIGCHLD is taken with the owner's reaper, so a child's end
+ * reaches wpe_fd_wait_for at once, also when a grandchild still holds the
+ * child's pipes open, instead of at the wait's deadline.  Calling it again
+ * changes nothing, and a SIGCHLD handler somebody else installed (the
+ * editor's) is left alone.  A followed child that has already ended is
+ * reaped and reported by the time it returns.
+ * Return: 0, or -1 when the system refused.
+ */
+int wpe_child_reap_install(void)
+{
+ struct sigaction old;
+
+ WpeChildWakeOpen();
+ if (sigaction(SIGCHLD, NULL, &old) != 0)
+  return(-1);
+ if (!(old.sa_flags & SA_SIGINFO) && old.sa_handler != SIG_DFL &&
+     old.sa_handler != SIG_IGN)
+  return(0);
+ if (wpe_child_sigchld_install(wpe_child_on_sigchld) != 0)
+  return(-1);
+ /* A child that ended before the handler was there left no signal behind. */
+ wpe_child_reap_owned();
+ return(0);
+}
+
+/**
  * wpe_child_end_from_handler - End every child the editor follows, at once.
  *
  * Called by a crash or end signal's handler, and by the editor's own end

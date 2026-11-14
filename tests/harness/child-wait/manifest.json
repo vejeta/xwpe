@@ -1,7 +1,14 @@
 {
  "capability": "child-wait",
  "scenarios": [
-  {"id": "SC-child-wait-01", "requirement": "A session whose adapter reads and never answers fails at the start's budget naming what it waited for", "layer": "c-unit", "test": null, "status": "blocked", "reason": "expected failure until pass C of DESIGN-child-wait: today the start's wait has no deadline. test_dap runs the row alone (test_dap --mute-row) and prints XFAIL when the watchdog ends it naming its case, XPASS (a failure) once the wait is bounded; pass C moves the row into test_dap's main and sets this row to new"},
+  {"id": "SC-child-wait-01", "requirement": "A session whose adapter reads and never answers fails at the start's budget naming what it waited for", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-child-wait-02", "requirement": "An adapter that dies before it answers ends the start at once, also when a process it left behind keeps its pipe open, and the failure line says how it ended", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-child-wait-03", "requirement": "A request the adapter never answers ends at the request budget and the session stays open", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-child-wait-04", "requirement": "A run that does not stop within its budget answers still going and the session stays open", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-child-wait-06", "requirement": "wpe_child_reap_install installs once, a followed child's end wakes the loop before its deadline also when a grandchild holds its pipe, and a process the caller waits for itself keeps its status", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-wait-09", "requirement": "The start machine's rows hold on a wire that delivers a loopback write late: every pump waits for its descriptor", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-child-wait-13", "requirement": "A request bigger than the adapter's pipe, sent while the adapter is not reading, is flushed by the wait on the loop and answered", "layer": "c-unit", "test": "test_dap", "status": "new"},
+  {"id": "SC-child-wait-14", "requirement": "An end request raised while the adapter never answers gives the start up at once, not at the start's budget, and says the end was requested", "layer": "c-unit", "test": "test_dap", "status": "new"},
   {"id": "SC-child-wait-07", "requirement": "The test watchdog names what did not finish within its time, scales as a float, and keeps earlier output", "layer": "c-unit", "test": "test_watchdog", "status": "new"},
   {"id": "SC-child-wait-08", "requirement": "with-deadline.sh ends a hung command after SECS with TERM then KILL, prints TIMEOUT and exits 124, under dash too", "layer": "c-unit", "test": "tests/check-with-deadline.sh", "status": "new"}
  ]

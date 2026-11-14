@@ -90,8 +90,8 @@ we_gpm.o STDIN_FILENO 2 keep isatty asks whether the terminal is the console; no
 we_wayland.o poll 1 P9o the clipboard pipe
 we_xterm.o poll 1 P9o the paste wait for SelectionNotify
 
-# children: started, signalled and reaped only by we_child.c.
-we_unix.o waitpid 1 keep the SIGCHLD handler reaps, and hands each child to we_child.c
+# children: started, signalled and reaped only by we_child.c (its
+# wpe_child_reap_now is the body of the SIGCHLD handler in we_unix.c).
 
 # children the user's keys start come from a start plan (we_startplan.c),
 # the only importer of wpe_child_start for them: the build, Run, Make, the

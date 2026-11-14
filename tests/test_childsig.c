@@ -43,13 +43,8 @@ static void chk(const char *what, long got, long want)
 /* The handler the editor installs (WpeSignalChild), in its essentials. */
 static void on_child(int sig)
 {
-	int saved = errno, st;
-	pid_t pid;
-
 	(void)sig;
-	while ((pid = waitpid(-1, &st, WNOHANG)) > 0)
-		wpe_child_note_ended(pid, st);
-	errno = saved;
+	wpe_child_reap_now();
 }
 
 /* A child that ends after @after_us. */

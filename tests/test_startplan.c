@@ -530,12 +530,8 @@ static void case_inside_list(void)
 /* The editor's SIGCHLD handler, in its essentials. */
 static void on_child(int sig)
 {
- int saved = errno, st;
- pid_t pid;
  (void)sig;
- while ((pid = waitpid(-1, &st, WNOHANG)) > 0)
-  wpe_child_note_ended(pid, st);
- errno = saved;
+ wpe_child_reap_now();
 }
 
 static void on_child_trace(const char *line)
@@ -550,15 +546,10 @@ static void case_short_command(void)
  char *echo[] = { "echo", "planned", NULL };
  char out[TEXT_ROOM];
  int status = 0;
- struct sigaction act;
  WpeStartPlan *p;
 
- memset(&act, 0, sizeof act);
- act.sa_handler = on_child;
- sigemptyset(&act.sa_mask);
- act.sa_flags = SA_RESTART | SA_NOCLDSTOP;
  WpeChildWakeOpen();
- sigaction(SIGCHLD, &act, NULL);
+ wpe_child_sigchld_install(on_child);
  wpe_child_trace_set(on_child_trace);
 
  p = wpe_startplan_fixed(WPE_START_PROBE, "echo", echo);

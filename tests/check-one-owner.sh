@@ -736,8 +736,8 @@ grep -qx "we_term.o tcsetattr" "$WORK/imports" ||
   problem "canary: tcsetattr not seen in we_term.o (the terminal-session scan is blind)"
 grep -qx "we_child.o fork" "$WORK/imports" ||
   problem "canary: fork not seen in we_child.o (LTO objects, wrong nm, or an empty object list)"
-grep -qx "we_unix.o waitpid" "$WORK/imports" ||
-  problem "canary: waitpid not seen in we_unix.o (LTO objects, wrong nm, or an empty object list)"
+grep -qx "we_child.o waitpid" "$WORK/imports" ||
+  problem "canary: waitpid not seen in we_child.o (LTO objects, wrong nm, or an empty object list)"
 if named_object WeXterm.o XOpenDisplay >/dev/null; then
   grep -qx "WeXterm.o XOpenDisplay" "$WORK/imports" ||
     problem "canary: XOpenDisplay not seen in WeXterm.o (the prefix scan of the X11 connection is blind)"

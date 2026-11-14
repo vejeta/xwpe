@@ -64,9 +64,37 @@ typedef struct e_dap_session e_dap_session;
 /* ---- calls that wait (we_dap_sync.c, for callers with no event loop) ----
  * e_dap_open*, e_dap_run, e_dap_run_to_first_stop, e_dap_step,
  * e_dap_evaluate, e_dap_stack_trace, e_dap_set_file_breakpoints,
- * e_dap_close and e_dap_set_end_watch wait with poll() until the adapter
- * has answered.  The editor never calls them: it follows the same engine
- * from its loop (e_dap_start*, the run pump, e_dap_request). */
+ * e_dap_close and e_dap_set_end_watch wait until the adapter has answered.
+ * The editor never calls them: it follows the same engine from its loop
+ * (e_dap_start*, the run pump, e_dap_request).
+ *
+ * The start, a request and the run wait on the fd loop (we_fdloop.c), each
+ * with a budget, so an adapter that never answers ends the call with the
+ * reason in e_dap_sync_last_wait() instead of holding the caller for ever,
+ * and the end of an adapter ends the wait at once (the owner's SIGCHLD
+ * reaper, installed by the first call).  The budgets are the editor's where
+ * the editor has one (the start's answer) and are multiplied by
+ * XWPE_TEST_WAIT_SCALE, a float, for slow machines.  What is the product's,
+ * not the wait's (Quit's waits, the owner's end ladder), is never scaled.
+ * The editor's XWPE_DEBUG_START_TIMEOUT is not read here. */
+#define E_DAP_START_ANSWER_MS 30000L   /* the adapter's answer to initialize */
+#define E_DAP_SYNC_START   0           /* initialize's answer                 */
+#define E_DAP_SYNC_LAUNCH  1           /* launch to the start's end (dlv builds) */
+#define E_DAP_SYNC_REQUEST 2           /* evaluate, stackTrace, setBreakpoints */
+#define E_DAP_SYNC_RUN     3           /* a run to its next stop              */
+#define E_DAP_SYNC_ACCEPT  4           /* dlv dialling in                     */
+/* Replace the budget of one kind of wait for the calls that follow (0 puts
+ * the default back).  A caller that sets one puts the default back when it
+ * is done. */
+void e_dap_sync_budget_set(int which, long ms);
+/* Wait on the loop until the run stops or ends, at most @budget_ms (0: the
+ * run budget).  E_DAP_RUN_STOPPED, E_DAP_RUN_ENDED, or E_DAP_RUN_GOING when
+ * the budget or the end request came first; the session stays open. */
+int  e_dap_wait_stop(e_dap_session *s, long budget_ms);
+/* How the last wait ended and what it waited for, for a failure line:
+ * "initialize: no answer within 30 s (adapter alive, pid 123)", or
+ * "(adapter exited, status 1)".  "" before any wait. */
+const char *e_dap_sync_last_wait(void);
 
 /* Spawn the adapter (argv NULL-terminated, e.g. {"dlv","dap","--client-addr=...",0}
  * -- but the engine appends --client-addr itself, so pass just {"dlv","dap",0}),
