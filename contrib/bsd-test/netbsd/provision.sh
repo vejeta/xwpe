@@ -29,6 +29,29 @@ fetch4() {  # fetch4 <outfile> <url>
   return 1
 }
 
+# The same IPv6 problem, for pkgin: ftp.NetBSD.org is pinned to a literal
+# address above, any other mirror is pinned from DNS so libfetch gets an A
+# record only.  Best-effort -- without an IPv4 the install just fails.
+pin4() {  # pin4 <hostname>
+  _ip=$(host -4 -t a "$1" 2>/dev/null | awk '/has address/ {print $NF; exit}')
+  if [ -n "$_ip" ]; then
+    grep -q "$1" /etc/hosts || echo "$_ip $1" >> /etc/hosts
+  else
+    echo "  (no IPv4 for $1; pkgin may fail on IPv6)"
+  fi
+}
+
+# One name pkgin cannot find aborts the whole transaction, so the packages whose
+# names move between releases are installed one at a time; first match wins.
+pkgin_any() {  # pkgin_any <name> [<name>...]
+  for _n in "$@"; do
+    echo "  trying $_n"
+    if pkgin -y install "$_n"; then return 0; fi
+  done
+  echo "  (the repository has none of: $*)"
+  return 1
+}
+
 # pkgsrc tools install under /usr/pkg; X11 is in the base system under /usr/X11R7.
 PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH; export PATH
 # /usr/pkg FIRST: prefer pkgsrc's newer .pc files over the base X set's, so
@@ -48,18 +71,53 @@ for s in xbase xcomp; do
   tar -C / -xJpf "/tmp/$s.tar.xz"
 done
 
-echo "=== installing build deps (pkgin) ==="
-# Use ftp.NetBSD.org (the project's own server) rather than the Fastly CDN, which
-# this VM's NAT reaches unreliably.  The pkgsrc binary path uses the MACHINE_ARCH
-# (uname -p = x86_64), not MACHINE (uname -m = amd64).
-echo "https://ftp.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/${REL}/All" \
-  > /usr/pkg/etc/pkgin/repositories.conf
-pkgin -y update || true
-# NetBSD 10 pkgsrc names: libvterm is 'libvterm01' (was libvterm03 on NetBSD 9),
-# wide-char ncurses is 'ncurses'.  python311 + twm drive the headless X11 smoke
-# (best-effort: the smoke skips cleanly if any of Xvfb/twm/python3 is absent).
-pkgin -y install gmake autoconf automake pkgconf cairo pango json-c \
-  libvterm01 ncurses python311 twm xdotool || true
+echo "=== choosing a pkgsrc binary repository ==="
+# The pkgsrc binary path uses MACHINE_ARCH (uname -p = x86_64), not MACHINE
+# (uname -m = amd64).  ftp.NetBSD.org (the project's own server) and its CDN
+# carry the releases pkgsrc still builds for; an EOL release is pruned from both
+# and its packages survive on the archive host, so each candidate is tried with
+# the real thing -- `pkgin update` -- and the winner is reported.  Set
+# XWPE_PKG_REPO to skip the search when the right directory is already known,
+# for instance a quarterly one:
+#   XWPE_PKG_REPO=https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/x86_64/9.0_2024Q4/All
+CONF=/usr/pkg/etc/pkgin/repositories.conf
+REPO="${XWPE_PKG_REPO:-}"
+if [ -n "$REPO" ]; then
+  echo "$REPO" > "$CONF"
+  pkgin -y update || true
+else
+  for u in \
+      "https://ftp.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/${REL}/All" \
+      "https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/${REL}/All" \
+      "https://archive.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/${REL}/All" \
+      "https://archive.netbsd.org/pub/pkgsrc-archive/packages/NetBSD/$(uname -p)/${REL}/All" ; do
+    echo "  trying $u"
+    _h=${u#https://}
+    pin4 "${_h%%/*}"
+    echo "$u" > "$CONF"
+    if pkgin -y update; then REPO="$u"; break; fi
+  done
+fi
+echo "repository: ${REPO:-none answered}"
+[ -n "$REPO" ] || echo "  (the installs below will fail; set XWPE_PKG_REPO)"
+
+# Names that pkgsrc keeps across releases go in one transaction; the ones it
+# renames go through pkgin_any below.  Wide-char ncurses is 'ncurses'.
+pkgin -y install gmake autoconf automake pkgconf cairo pango json-c ncurses \
+  twm xdotool || true
+# libvterm is 'libvterm01' on NetBSD 10 and was 'libvterm03' on NetBSD 9.
+pkgin_any libvterm01 libvterm03 || true
+# python3 + twm drive the headless X11 smoke (best-effort: the smoke skips
+# cleanly if any of Xvfb/twm/python3 is absent).
+pkgin_any python313 python312 python311 python310 || true
+# The terminal-UI tests (tests/*.py) need pytest and pyte, which pkgsrc spells
+# after the interpreter they are built for: py313-test, py313-pyte.  That
+# version moves with the release, so try the recent ones newest first, and name
+# wcwidth explicitly because pyte does not import without it.
+for v in 313 312 311 310 39; do
+  echo "  trying py$v-test py$v-pyte py$v-wcwidth"
+  if pkgin -y install "py$v-test" "py$v-pyte" "py$v-wcwidth"; then break; fi
+done
 
 echo "=== fetching main archive ==="
 fetch4 /tmp/xwpe-main.tar.gz "$ARCHIVE"

@@ -21,11 +21,33 @@ fetch4() {  # fetch4 <outfile> <url>
   return 1
 }
 
-# The box's default mirror (ftp.usa.openbsd.org) is missing this release's
-# packages; the CDN carries the current release plus the two prior ones.
-echo "https://cdn.openbsd.org/pub/OpenBSD" > /etc/installurl
 REL="$(uname -r)"           # e.g. 7.7
 V="$(uname -r | tr -d .)"   # e.g. 77
+ARCH="$(uname -m)"          # amd64
+
+# Pick a mirror that still carries this release, because the box's own default
+# (ftp.usa.openbsd.org) is often missing packages.  cdn.openbsd.org and
+# ftp.openbsd.org keep only supported releases: an EOL one (7.4 and older) is
+# pruned from both and survives on the archive mirrors.  The probe is the
+# package directory that pkg_add itself reads, and it is a single attempt per
+# mirror -- a pruned release answers 404 at once, so only the flaky NAT needs
+# fetch4's retries, further down.
+echo "=== choosing a mirror for ${REL}/${ARCH} ==="
+MIRROR=""
+for m in https://cdn.openbsd.org/pub/OpenBSD \
+         https://ftp.openbsd.org/pub/OpenBSD \
+         https://mirror.leaseweb.com/pub/OpenBSD ; do
+  if ftp -4 -o /dev/null "$m/$REL/packages/$ARCH/" >/dev/null 2>&1; then
+    MIRROR="$m"; break
+  fi
+  echo "  (no ${REL} packages at $m)"
+done
+if [ -z "$MIRROR" ]; then
+  echo "FAILED: no mirror carries OpenBSD $REL packages for $ARCH"
+  exit 1
+fi
+echo "mirror: $MIRROR"
+echo "$MIRROR" > /etc/installurl
 
 # The box ships without the X11 (xenocara) base sets, so cairo/pango/libXft
 # cannot resolve libX11/Xft/fontconfig/freetype.  Install the base X sets first
@@ -33,7 +55,7 @@ V="$(uname -r | tr -d .)"   # e.g. 77
 # Xvfb for the headless smoke).
 echo "=== installing X11 base sets (xenocara ${REL}) ==="
 for s in xbase xshare xfont xserv; do
-  fetch4 "/tmp/$s$V.tgz" "https://cdn.openbsd.org/pub/OpenBSD/${REL}/amd64/$s$V.tgz"
+  fetch4 "/tmp/$s$V.tgz" "$MIRROR/${REL}/$ARCH/$s$V.tgz"
   tar -C / -xzphf "/tmp/$s$V.tgz"
 done
 
@@ -46,6 +68,13 @@ pkg_add -I gmake metaauto autoconf%2.72 automake%1.16 pkgconf \
   cairo pango json-c libvterm python3 xdotool || \
 pkg_add -I gmake metaauto autoconf%2.71 automake%1.16 pkgconf \
   cairo pango json-c libvterm python3 xdotool || true
+
+# The terminal-UI tests (tests/*.py) need pytest and pyte.  OpenBSD spells
+# pytest 'py3-test'; there is no py3-pytest, only py3-pytest-subtests.  pyte is
+# named separately from wcwidth, but it does not import without it.
+echo "=== installing terminal-UI test deps (pytest, pyte) ==="
+pkg_add -I py3-test py3-pyte py3-wcwidth || \
+pkg_add -I py3-pytest py3-pyte py3-wcwidth || true
 
 # The auto* wrappers require an explicit version; match whatever got installed.
 AUTOCONF_VERSION="$(ls /usr/local/bin/autoconf-* 2>/dev/null | sed 's/.*autoconf-//' | sort -V | tail -1)"

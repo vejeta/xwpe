@@ -11,7 +11,10 @@ platform); the per-platform folders hold only the `Vagrantfile` + `provision.sh`
 that install deps and build:
 - `sgr_mouse_probe.c` — console-mouse probe for `wpe`
 - `xvfb_smoke.sh` — headless X11 render smoke for `xwpe`
-- `run_tests.sh` — runs all three checks in order
+- `run_tests.sh` — runs all three checks in order. `gmake check` runs with
+  `LOG_COMPILER="tests/with-deadline.sh 300"` on every BSD, because NetBSD and
+  OpenBSD base have no `timeout(1)` that escalates to KILL; a test that hangs
+  ends at 300 s and its name is printed instead of stalling the run.
 
 ## What it checks
 
@@ -80,16 +83,27 @@ fresh `vagrant up` always tests the current `main`. On failure it prints only th
 
 ### Box / version quirks captured in the provision scripts
 
-- **OpenBSD** uses `generic/openbsd7` (= 7.4, EOL): the EOL package set is pruned
-  from the CDN, so `PKG_PATH` points at the leaseweb archive; the X sets
-  (`xbase`/`xshare`/`xfont`) are fetched and `ldconfig` is run; wide-char curses
-  comes from the base system (no `ncursesw.pc`); `tar` has no
-  `--strip-components`.
-- **NetBSD** uses `generic/netbsd9` (= 9.3): fetch the X sets (`xbase`/`xcomp`);
-  pkgsrc names are `libvterm03` and `ncurses`; `PKG_CONFIG_PATH` must put
-  `/usr/pkg` FIRST so pkgsrc's newer `fontconfig.pc` wins over the base X set's.
-- **FreeBSD** (`generic/freebsd14`) needs the fewest tweaks: the X sets ship in
-  base and `ncursesw.pc` is present.
+- **Mirrors are probed, not assumed.** Neither project keeps binary packages for
+  a release it no longer supports, so an aged box (OpenBSD 7.4, NetBSD 9) finds
+  nothing at the usual URL and every install fails. Each provision tries the
+  normal mirror first, then the archives, and prints the one it used
+  (`mirror: ...` on OpenBSD, `repository: ...` on NetBSD). `XWPE_PKG_REPO`
+  overrides the NetBSD search when the right directory is already known.
+- **OpenBSD** (`pygolo/openbsd7`) tries `cdn.openbsd.org`, `ftp.openbsd.org` and
+  then the leaseweb archive, which keeps EOL releases; the X sets
+  (`xbase`/`xshare`/`xfont`/`xserv`) come from the chosen mirror and `ldconfig`
+  is run; wide-char curses comes from the base system (no `ncursesw.pc`); `tar`
+  has no `--strip-components`; pytest is `py3-test` (there is no `py3-pytest`),
+  and `py3-pyte` needs `py3-wcwidth` to import.
+- **NetBSD** (`pygolo/netbsd10`) tries `ftp.NetBSD.org`, `cdn.NetBSD.org` and
+  then `archive.netbsd.org`; fetch the X sets (`xbase`/`xcomp`);
+  `PKG_CONFIG_PATH` must put `/usr/pkg` FIRST so pkgsrc's newer `fontconfig.pc`
+  wins over the base X set's; pkgsrc renames packages between releases
+  (`libvterm01` on 10, `libvterm03` on 9) and spells the Python ones after the
+  interpreter (`py313-test`, `py313-pyte`), so those are installed from a
+  fallback list.
+- **FreeBSD** (`generic/freebsd14`) needs the fewest tweaks: `pkg` still carries
+  a supported release, the X sets ship in base and `ncursesw.pc` is present.
 
 ## Not here: the port-submission files
 

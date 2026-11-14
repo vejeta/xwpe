@@ -15,11 +15,15 @@ DIR="${1:?usage: run_tests.sh /path/to/build-tree}"
 cd "$DIR" || { echo "run_tests: cannot cd $DIR"; exit 1; }
 RC=0
 
-echo "=== unit tests (gmake check) ==="
-if gmake check >/tmp/xwpe-check.log 2>&1; then
+echo "=== unit tests (gmake check, 300 s per test) ==="
+# NetBSD and OpenBSD base have no timeout(1) that escalates to KILL, so a hung
+# test would stall the whole run: automake's LOG_COMPILER is the in-tree
+# deadline runner, which ends a test at 300 s (TERM, then KILL) and names it.
+if gmake check LOG_COMPILER="tests/with-deadline.sh 300" >/tmp/xwpe-check.log 2>&1; then
   echo "make check: PASS"
 else
-  echo "make check: FAIL"; grep -iE "FAIL:|error:" /tmp/xwpe-check.log | head; RC=1
+  echo "make check: FAIL"
+  grep -iE "FAIL:|TIMEOUT:|error:" /tmp/xwpe-check.log | head; RC=1
 fi
 
 echo "=== console-mouse probe (wpe under a pty) ==="
