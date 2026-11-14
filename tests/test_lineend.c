@@ -368,6 +368,116 @@ static void test_the_rows_policy_splits_on_lf_only(void)
  chk("empty text has no row", count, 0);
 }
 
+static void test_the_buffer_remembers_the_nul_bytes_the_reader_left_out(void)
+{
+ WpeEolInfo info;
+ BUFFER *b = read_bytes(LIT("a\0b\0c\nd\n"), WIDTH, &info);
+ char line[E_NUL_SAY_MAX];
+
+ chk("the reader counts them", info.nul, 2);
+ chk("the buffer keeps the count for the first Save", b->nul_dropped, 2);
+ e_eol_nul_sentence(b->nul_dropped, line, sizeof line);
+ chk("the sentence says how many", strcmp(line, "2 NUL bytes of the file were left out "
+                                                 "when they were read"), 0);
+ e_eol_nul_sentence(1, line, sizeof line);
+ chk("and the singular", strcmp(line, "1 NUL byte of the file was left out when it was read"), 0);
+ free_buffer(b);
+ b = read_bytes(LIT("a\nb\n"), WIDTH, &info);
+ chk("a file without any records none", b->nul_dropped, 0);
+ free_buffer(b);
+}
+
+static void test_the_normalize_policy_reads_a_cr_lf_as_one_break(void)
+{
+ int count;
+ STRING *rows = e_eol_lines((const unsigned char *) "a\r\nb\rc\r\n", 8, WIDTH, E_EOL_NORMALIZE,
+                            NULL, &count);
+ char buf[16];
+ size_t n;
+
+ chk("two rows", count, 2);
+ chk("row 0 has no carriage return", rows[0].len, 1);
+ chk("row 1 keeps its lone carriage return", rows[1].len, 3);
+ chk("row 1 is b CR c", memcmp(rows[1].s, "b\rc", 3), 0);
+ e_buffer_lines_free(rows, count);
+
+ n = e_eol_normalize(buf, "x\r\ny\rz\r", 7);
+ chk_bytes("a CR before an LF goes, the others stay", buf, n, LIT("x\ny\rz\r"));
+ memcpy(buf, "x\r\r\ny\r\n", 8);
+ n = e_eol_normalize(buf, buf, 7);
+ chk_bytes("in place, and only the CR next to the LF goes", buf, n, LIT("x\r\ny\n"));
+ n = e_eol_normalize(buf, "", 0);
+ chk("empty text", (int) n, 0);
+}
+
+static void test_appended_program_output_has_no_carriage_returns(void)
+{
+ WpeEolInfo info;
+ BUFFER *b = read_bytes(LIT("first\n"), WIDTH, &info);
+ int before = b->mxlines;
+
+ chk("the text is appended",
+     e_eol_append_text(b, "one\r\n\r\ntwo\r\n", 1, E_EOL_NORMALIZE), E_BUFFER_OK);
+ chk("two rows were added, the blank one left out", b->mxlines, before + 2);
+ chk("the first has no carriage return", b->bf[before].len, 3);
+ chk("nor the second", b->bf[before + 1].len, 3);
+ free_buffer(b);
+}
+
+static void test_a_text_the_buffer_made_is_not_normalized(void)
+{
+ WpeEolInfo info;
+ BUFFER *b = read_bytes(LIT("a\r\nb\nc\r\n"), WIDTH, &info);
+ char *text;
+ size_t tn;
+ STRING *rows;
+ int count;
+
+ tn = e_eol_text(b, 0, 0, b->mxlines - 1, E_BUFFER_ROW_END(b), E_EOL_LF, 0, &text);
+ chk_bytes("an LF file with carriage returns in two rows", text, tn, LIT("a\r\nb\nc\r\n"));
+ rows = e_eol_lines((const unsigned char *) text, tn, WIDTH, E_EOL_NORMALIZE, NULL, &count);
+ chk("normalizing it loses the carriage return of row 0", rows[0].len, 1);
+ e_buffer_lines_free(rows, count);
+ rows = e_eol_lines((const unsigned char *) text, tn, WIDTH, E_EOL_ROWS, NULL, &count);
+ chk("reading it as the buffer's rows keeps it", rows[0].len, 2);
+ e_buffer_lines_free(rows, count);
+ free(text);
+ free_buffer(b);
+}
+
+/* A file read as a manual page: its backspace sequences make bold runs and
+   every carriage return is dropped, in a CRLF file and in an LF one. */
+static BUFFER *read_manpage(const char *bytes, size_t n, WpeEolInfo *info)
+{
+ BUFFER *b = calloc(1, sizeof(BUFFER));
+ FILE *fp = tmpfile();
+ POINT end;
+
+ e_buffer_init(b, NULL, NULL, WIDTH, E_BUFFER_NO_HISTORY);
+ fwrite(bytes, 1, n, fp);
+ rewind(fp);
+ chk("the manual page is read", e_eol_read_file_into(fp, b, 0, 0, 1, info, &end), E_BUFFER_OK);
+ fclose(fp);
+ return(b);
+}
+
+static void test_the_manual_page_filter_is_the_readers_own(void)
+{
+ WpeEolInfo info;
+ BUFFER *b = read_manpage(LIT("abc\r\ndef\rg\n"), &info);
+
+ chk("two rows and the fresh line", b->mxlines, 3);
+ chk("row 0 has no carriage return", b->bf[0].len, 3);
+ chk("row 1 has none either, lone or not", b->bf[1].len, 4);
+ chk("row 1 is d e f g", memcmp(b->bf[1].s, "defg", 4), 0);
+ free_buffer(b);
+
+ b = read_manpage(LIT("N\bNAME\nplain\n"), &info);
+ chk_bytes("the bold run is marked", b->bf[0].s, (size_t) b->bf[0].len, LIT("\x0f" "N\x05" "AME"));
+ chk("the plain line follows", memcmp(b->bf[1].s, "plain", 5), 0);
+ free_buffer(b);
+}
+
 static void test_a_range_is_written_as_e_write_took_it(void)
 {
  WpeEolInfo info;
@@ -395,6 +505,11 @@ int main(void)
  test_a_long_line_is_cut_before_its_break();
  test_text_the_buffer_made_goes_back_as_it_was();
  test_the_rows_policy_splits_on_lf_only();
+ test_the_buffer_remembers_the_nul_bytes_the_reader_left_out();
+ test_the_normalize_policy_reads_a_cr_lf_as_one_break();
+ test_appended_program_output_has_no_carriage_returns();
+ test_a_text_the_buffer_made_is_not_normalized();
+ test_the_manual_page_filter_is_the_readers_own();
  test_a_range_is_written_as_e_write_took_it();
  if (fails) {
   printf("%d failure(s)\n", fails);

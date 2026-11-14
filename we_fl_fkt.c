@@ -81,6 +81,28 @@ int e_m_save(FENSTER *f)
  return(ret);
 }
 
+/**
+ * e_save_nul_confirmed - Before the first Save of a file that lost NUL bytes
+ * when it was read, ask whether to write it without them.
+ * @f: the window; @b: its buffer.
+ *
+ * A row cannot hold a NUL byte, so the file on disk is longer than what the
+ * window holds.  Saving over it without a word would shorten a binary file
+ * silently; answering No (or Cancel) leaves the disk as it is.
+ * Return: 1 when the Save may go on (nothing was lost, or the user said Yes).
+ */
+static int e_save_nul_confirmed(FENSTER *f, BUFFER *b)
+{
+ char sentence[E_NUL_SAY_MAX], question[E_NUL_ASK_MAX];
+
+ if (b->nul_dropped <= 0)
+  return(1);
+ e_eol_nul_sentence(b->nul_dropped, sentence, sizeof sentence);
+ snprintf(question, sizeof question, "%s.\nSaving writes the file without them.\nSave anyway?",
+          sentence);
+ return(e_message(1, question, f) == 'Y');
+}
+
 int e_save(FENSTER *f)
 {
  BUFFER *b;
@@ -92,13 +114,16 @@ int e_save(FENSTER *f)
   ;
  if (!ret)
   return(0);
- WpeMouseChangeShape(WpeWorkingShape);
  b = f->ed->f[ret]->b;
+ if (!e_save_nul_confirmed(f, b))
+  return(E_SAVE_DECLINED);
+ WpeMouseChangeShape(WpeWorkingShape);
  ret = e_write(0, 0, E_BUFFER_ROW_END(b), b->mxlines-1, f, WPE_BACKUP);
  if (ret != WPE_ESC)
  {
   f->save = 0;
   b->final_break = E_FINAL_BREAK_HAD;   /* the file now ends on a line break */
+  b->nul_dropped = 0;                   /* the user knew, and the file is written */
  }
  WpeMouseRestoreShape();
  return(ret);
@@ -716,7 +741,7 @@ int e_i_fclose(IFILE *fp)
  */
 static int e_help_add_row(BUFFER *b, const char *text)
 {
- if (e_buffer_append_text(b, text, 0) == E_BUFFER_OK)
+ if (e_eol_append_text(b, text, 0, E_EOL_NORMALIZE) == E_BUFFER_OK)
   return(0);
  wpe_buffer_say_nomem(b, "the help text");
  return(-1);

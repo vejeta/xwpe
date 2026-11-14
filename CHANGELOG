@@ -266,6 +266,21 @@ Changes
   is not a text file's kind, such as 70 in a folder's options file, no longer
   crashes the editor or leaves windows that take no keys.
 
+* A file that has NUL bytes is no longer shortened without a word.  The
+  status row says how many were left out when the file is opened (and after
+  Block > Read), and the first Save asks before it writes the file without
+  them; No leaves the file on disk as it is.  Save As answered No keeps the
+  window's old name.  Print no longer marks the window as saved.  Program
+  and build output with CR LF line breaks shows in Messages without a ^M
+  on each line.
+
+* An accepted assistant Edit, or a Multi-file Apply all, no longer drops the
+  carriage return of a line it did not change, and a model that answers
+  with CR LF line endings changes only the lines it meant to.  A long line the editor folds over several
+  rows reaches the model as one line.  Text pasted from another application
+  with CR LF line breaks no longer leaves a carriage return at the end of
+  each line.
+
 * A long file name, folder name or typed entry no longer ends the editor
   or damages its memory.  A file name longer than 127 characters picked
   in the file manager, a folder name longer than about 250 characters in

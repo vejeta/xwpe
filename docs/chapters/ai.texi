@@ -473,7 +473,14 @@ A reply with CRLF line endings is read as LF before anything is compared, so
 only the lines the model really changed are shown and no carriage return reaches
 the buffer; a file that is itself CRLF keeps its line endings, and a carriage
 return that is not part of a line break stays in its line as text
-(@pxref{Compatibility}).
+(@pxref{Compatibility}).  A line of the window that ends in such a carriage
+return is the same line as the reply's without it, so an accepted edit leaves
+the lines it did not change, carriage return included, as they were; so
+does Apply all of a Multi-file edit.  The other side of that rule is that an
+Edit cannot take such a carriage return away.  A file the agent writes with
+a tool is compared byte for byte, so a change of line endings shows in the
+Write box on every line it touches.  A line
+the editor folded over several rows reaches the model as one line.
 
 The model's rewrite is shown as a @dfn{diff} you review hunk by hunk in a popup
 inside the file window.  Before the popup opens, the file scrolls so the hunk's

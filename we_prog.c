@@ -10,6 +10,7 @@
 #include "WeExpArr.h"
 #include "we_ai.h"       /* AI assistant entry point (guarded by WPE_AI) */
 #include "we_buffer.h"
+#include "we_lineend.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
 
@@ -702,7 +703,7 @@ static void e_view_say_refused(BUFFER *b, int r)
  */
 void e_view_append(BUFFER *b, const char *text)
 {
- e_view_say_refused(b, e_buffer_append_rows(b, text));
+ e_view_say_refused(b, e_eol_append_rows(b, text, E_EOL_NORMALIZE));
 }
 
 /**
@@ -717,7 +718,7 @@ void e_view_append(BUFFER *b, const char *text)
  */
 static void e_view_append_wrapped(BUFFER *b, const char *text)
 {
- e_view_say_refused(b, e_buffer_append_text(b, text, 1));
+ e_view_say_refused(b, e_eol_append_text(b, text, 1, E_EOL_NORMALIZE));
 }
 
 /* Fold one raw output byte from the running program into the Messages buffer:

@@ -9,6 +9,7 @@
 #include "edit.h"
 #include "we_ai.h"
 #include "we_buffer.h"
+#include "we_lineend.h"
 #include "we_child.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
@@ -778,10 +779,53 @@ static char *WpeTargetNameNew(FENSTER *f, const char *name)
   return(NULL);
 }
 
+/**
+ * e_say_nul_read - Say on the status row that a file read into the text
+ * (Block > Read) lost NUL bytes, when it did.
+ * @f: the window the file went into; @info: what the read found.
+ *
+ * The inserted text is the file without them, so the user knows the bytes
+ * are not in the window.  The file on disk is not touched.
+ */
+static void e_say_nul_read(FENSTER *f, const WpeEolInfo *info)
+{
+  char line[E_NUL_SAY_MAX];
+
+  if (info->nul <= 0)
+    return;
+  e_eol_nul_sentence(info->nul, line, sizeof line);
+  e_status_say_until_key(f, line);
+}
+
+/**
+ * WpeSaveAsSettleName - After Save As tried to write the file under its new
+ * name, keep the new name only when the file was written.
+ * @fe: the window; @old_dir, @old_name: its name before (taken over here);
+ * @saved: what e_save returned (0 when written).
+ *
+ * Answering No to the question before the write, or a write that fails,
+ * leaves the window under the name it had, so its next Save does not go to a
+ * file the user never wrote.
+ */
+static void WpeSaveAsSettleName(FENSTER *fe, char *old_dir, char *old_name, int saved)
+{
+  if(saved == 0)
+  {
+    FREE(old_dir);
+    FREE(old_name);
+    return;
+  }
+  FREE(fe->dirct);
+  FREE(fe->datnam);
+  fe->dirct = old_dir;
+  fe->datnam = old_name;
+}
+
 /* File Manager Handler */
 int WpeHandleFileManager(ECNT * cn)
 {
   FENSTER        *f = cn->f[cn->mxedt], *fe = NULL;
+  WpeEolInfo      read_info;
   FLBFFR         *b = (FLBFFR *) f->b;
   BUFFER         *be = NULL;
   SCHIRM         *se = NULL;
@@ -1411,17 +1455,22 @@ int WpeHandleFileManager(ECNT * cn)
             se = fe->s;
             f = cn->f[cn->mxedt];
             /* the buffer's style stands: the file's own is not kept */
-            if(e_read_file_into(fp, be, be->b.x, be->b.y, 0, NULL, &mark_end) == E_BUFFER_OK)
+            memset(&read_info, 0, sizeof(read_info));
+            if(e_read_file_into(fp, be, be->b.x, be->b.y, 0, &read_info, &mark_end) == E_BUFFER_OK)
             {
               /* the inserted text is the block */
               e_buffer_mark_from(be, E_BUFFER_MARK_BEGIN, E_BUFFER_POS_CURSOR);
               e_buffer_mark_set(be, E_BUFFER_MARK_END, mark_end.y, mark_end.x);
             }
             else
+            {
               wpe_buffer_say_nomem(be, "the insert");
+              read_info.nul = 0;                /* nothing was inserted: nothing to tell */
+            }
             fclose(fp);
 
             e_schirm(fe, 1);
+            e_say_nul_read(fe, &read_info);
           }
 
           /* if there was no error */
@@ -1498,20 +1547,13 @@ int WpeHandleFileManager(ECNT * cn)
         }
         if(WpeSaveAsIsTranscript(b, fe))
           return(WpeSaveAsTranscript(f, fe, filen, svmode, &svdir));
-        if(b->sw != 4)
-        {
-          dtp = fe->dirct;
-          ftp = fe->datnam;
-        }
-        else /* save as mode, current dir and window header will/may change */
-        {
-          FREE(fe->dirct);
-          FREE(fe->datnam);
-        }
+        /* the window's own name, kept until the file is written */
+        dtp = fe->dirct;
+        ftp = fe->datnam;
 
         WpeFilenameToPathFile(filen, &fe->dirct, &fe->datnam);
         if(b->sw == 4) /* save as mode */
-          e_save(fe);
+          WpeSaveAsSettleName(fe, dtp, ftp, e_save(fe));
         else
         {
           e_write(se->mark_begin.x, se->mark_begin.y, se->mark_end.x, se->mark_end.y, fe, WPE_BACKUP);
@@ -3614,7 +3656,9 @@ int WpePrintFile(FENSTER *f)
  f->dirct = e_tmp_dir;
  f->ins = 0;
 
- e_save(f);
+ /* A copy for the printer, written as autosave writes: the file on disk,
+    the window's modified mark and its NUL question are not touched. */
+ e_write(0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1, f, WPE_NOBACKUP);
 
  f->dirct = dp;
  f->ins = sins;

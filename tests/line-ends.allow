@@ -10,13 +10,10 @@
 #              (the language server's document), and stays
 #   keep       not a serialiser: it names rows and a '\n' for another reason
 #
-# L-a1 moved the file writer and the file reader into the owner.  The rest
-# of the nine row serialisers of HEAD are here until their pass.
+# L-a1 moved the file writer and the file reader into the owner, L-a2 the
+# assistant's four.  The rest of the nine row serialisers of HEAD are here
+# until their pass.
 
-we_ai_ui.c|ai_compose_text|1|L-a2|the composer's text of the file's rows
-we_ai_ui.c|ai_current_file_text|1|L-a2|the model's copy of the window
-we_ai_ui.c|ai_lines_text|1|L-a2|the model's copy of a range of rows
-we_ai_ui.c|ai_splice_lines|2|L-a2|the file with a selection replaced, for the diff
 we_ai_ws.c|ws_window_text|1|L-b|the model's workspace copy of a window
 we_block.c|e_block_to_text|1|L-b|the OS clipboard's copy of a block
 we_buffer.c|e_buffer_to_text|1|L-b|the clipboard export and the model's copy

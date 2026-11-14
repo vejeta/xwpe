@@ -168,6 +168,139 @@
    "layer": "c-unit",
    "test": "tests/check-line-ends.sh",
    "status": "new"
+  },
+  {
+   "id": "SC-line-endings-21",
+   "requirement": "Opening a file that lost NUL bytes says how many were left out",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_opening_a_file_with_nul_bytes_says_how_many_were_left_out",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-22",
+   "requirement": "The first Save of a file that lost NUL bytes asks; No leaves the disk as it was",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_the_first_save_of_a_file_that_lost_nul_bytes_asks",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-23",
+   "requirement": "Block > Read of a file that lost NUL bytes says so",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_file_read_into_the_text_says_when_it_lost_nul_bytes",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-24",
+   "requirement": "An accepted Edit keeps the carriage return of a line it left alone",
+   "layer": "ncurses",
+   "test": "tests/test_ai_line_endings.py::test_an_edit_keeps_the_carriage_return_of_a_line_it_left_alone",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-25",
+   "requirement": "A reply in CR LF changes only the line it meant to change",
+   "layer": "ncurses",
+   "test": "tests/test_ai_line_endings.py::test_an_edit_answered_in_crlf_changes_the_same_one_line",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-26",
+   "requirement": "A block Edit keeps the carriage returns around the block",
+   "layer": "ncurses",
+   "test": "tests/test_ai_line_endings.py::test_a_block_edit_keeps_the_carriage_returns_around_the_block",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-27",
+   "requirement": "A line folded over several rows reaches the model as one line",
+   "layer": "ncurses",
+   "test": "tests/test_ai_line_endings.py::test_a_long_line_is_one_line_to_the_model",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-29",
+   "requirement": "Text pasted from another X11 application with CR LF line breaks leaves no carriage return in the rows",
+   "layer": "x11",
+   "test": "tests/x11/test_clipboard.py::test_paste_of_windows_line_breaks_leaves_no_carriage_returns",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-30",
+   "requirement": "The same for text pasted from another Wayland client",
+   "layer": "wayland",
+   "test": "tests/wayland/test_clipboard.py::test_paste_of_windows_line_breaks_leaves_no_carriage_returns",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-31",
+   "requirement": "Multi-file Apply all changes the lines the box counted and keeps the carriage return of the others",
+   "layer": "ncurses",
+   "test": "tests/test_ai_line_endings.py::test_apply_all_keeps_the_carriage_return_of_a_line_it_left_alone",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-32",
+   "requirement": "The Write box of a tool shows a change of line endings as a change of every line",
+   "layer": "ncurses",
+   "test": "tests/test_ai_line_endings.py::test_a_tool_that_changes_only_line_endings_shows_every_line_it_changes",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-33",
+   "requirement": "Bytes a tool writes over a file are diffed byte for byte, carriage returns included",
+   "layer": "c-unit",
+   "test": "test_ai_diff",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-34",
+   "requirement": "Print writes a copy for the printer: no Save question, the window stays modified",
+   "layer": "config-file",
+   "test": "tests/test_line_endings.py::test_printing_a_file_that_lost_nul_bytes_asks_nothing_and_saves_nothing",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-35",
+   "requirement": "Save As declined leaves the window under its old name",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_save_as_declined_leaves_the_window_under_its_name",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-36",
+   "requirement": "Save As that cannot write the file leaves the window under its old name, still modified",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_save_as_that_cannot_write_leaves_the_window_under_its_name",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-37",
+   "requirement": "Close and Quit whose Save was declined at the NUL question keep the window and the disk as they were",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_closing_a_window_whose_save_was_declined_keeps_it",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-38",
+   "requirement": "A help file with CR LF line breaks shows no carriage returns",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_a_help_file_with_crlf_breaks_shows_no_carriage_returns",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-39",
+   "requirement": "Build output with CR LF line breaks shows in Messages with no carriage returns",
+   "layer": "ncurses",
+   "test": "tests/test_line_endings.py::test_build_output_with_crlf_breaks_shows_no_carriage_returns",
+   "status": "new"
+  },
+  {
+   "id": "SC-line-endings-28",
+   "requirement": "The review diff takes a line of the window and the same line of a reply cleaned of CR LF as one line",
+   "layer": "c-unit",
+   "test": "test_ai_diff",
+   "status": "new"
   }
  ]
 }

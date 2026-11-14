@@ -77,6 +77,20 @@ def test_paste_pulls_external_selection(xwpe):
         "^V should insert the external wl selection, got %r" % xwpe.saved_text()
 
 
+# @scenario SC-line-endings-30
+def test_paste_of_windows_line_breaks_leaves_no_carriage_returns(xwpe):
+    """Text another client copied with CR LF line breaks arrives as lines,
+    with no stray carriage return at the end of a row."""
+    _wl_copy(xwpe.env, "X\r\nY\r\n")
+    time.sleep(0.6)
+    xwpe.key("ctrl+v")
+    xwpe.save()
+    with open(xwpe.srcfile, "rb") as fh:
+        saved = fh.read()
+    assert saved.startswith(b"X\nYint main"), saved[:20]
+    assert b"\r" not in saved[:12], saved[:20]
+
+
 def test_copy_owns_primary_selection(xwpe):
     """^K X (Mark Whole) + ^C also makes xwpe own the PRIMARY selection, so a
     middle-click paste in a Wayland app gets the text -- matching the X11 backend

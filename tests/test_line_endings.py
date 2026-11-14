@@ -10,15 +10,19 @@ The dump's W line carries the buffer's style and whether the file ended on a
 line break (eol=lf|crlf final=0|1).
 """
 import os
+import shutil
 import signal
+import time
 
 import pytest
 
 pytest.importorskip("pyte")
 
-from edit_model.oracle import ENTER, F2, EditSession, alt, ctrl  # noqa: E402
+from edit_model.oracle import ENTER, ESC, F2, EditSession, alt, ctrl  # noqa: E402
+from wpe_driver import XWPE_LIB_DIR  # noqa: E402
 
 BLOCK_READ = [ctrl("k"), "r"]
+F1 = "\033OP"
 
 
 def _folder(tmp_path, name):
@@ -29,14 +33,16 @@ def _folder(tmp_path, name):
     return path
 
 
-def _save_after(tmp_path, seed, keys, filename="t.txt", xwperc=None):
+def _save_after(tmp_path, seed, keys, filename="t.txt", xwperc=None, answer=None):
     """Open @seed, send @keys, save with F2: the bytes on disk.  The folder
     is the filename's own, so a row may call it again with another options
-    file."""
+    file.  @answer is the keys that answer a question the Save asks."""
     folder = _folder(tmp_path, "%s.%s" % (filename, "rc" if xwperc else "plain"))
     with EditSession(folder, seed, filename=filename, xwperc=xwperc) as s:
         s.send(keys)
         s.send([F2])
+        if answer:
+            s.send(answer)
         return s.disk(filename)
 
 
@@ -194,8 +200,9 @@ def test_a_long_crlf_line_is_written_back_as_one_line(tmp_path):
 # @scenario SC-line-endings-14
 def test_a_nul_byte_does_not_merge_lines(tmp_path):
     """A row cannot hold a NUL byte: the byte is dropped, but the rest of
-    its row and its line break are kept."""
-    got = _save_after(tmp_path, b"a\x00b\nc\n", ["x"])
+    its row and its line break are kept.  The first Save asks, and Yes
+    writes the file without the byte."""
+    got = _save_after(tmp_path, b"a\x00b\nc\n", ["x"], answer=[alt("y")])
     assert got == b"xab\nc\n", got
 
 
@@ -230,3 +237,211 @@ def test_the_data_key_is_written_back_as_the_original_wrote_it(tmp_path, value, 
         text = fh.read()
     assert "Version :" in text, "the options were not saved: %r" % text
     assert "Data : %s\n" % written in text, text
+
+
+NUL_SEED = b"a\x00b\x00c\nd\n"
+
+
+# @scenario SC-line-endings-21
+def test_opening_a_file_with_nul_bytes_says_how_many_were_left_out(tmp_path):
+    """A row cannot hold a NUL byte, so the reader leaves them out.  The
+    user is told on the status row at once, not at the first Save."""
+    with EditSession(str(tmp_path), NUL_SEED, filename="t.txt") as s:
+        shown = "\n".join(s.display())
+        w = s.last.win
+    assert w.nul == 2
+    assert "2 NUL bytes of the file were left out" in shown, shown
+    with EditSession(_folder(tmp_path, "clean"), b"a\nb\n", filename="t.txt") as s:
+        shown = "\n".join(s.display())
+        assert s.last.win.nul == 0
+    assert "NUL" not in shown, shown
+
+
+# @scenario SC-line-endings-22
+def test_the_first_save_of_a_file_that_lost_nul_bytes_asks(tmp_path):
+    """No (or Cancel) leaves the disk exactly as it was and the window still
+    modified; Yes writes the file without the bytes, and the next Save does
+    not ask again."""
+    with EditSession(str(tmp_path), NUL_SEED, filename="t.txt") as s:
+        s.send(["x"])
+        got = s.send([F2])
+        assert got.ctx == "message", got.ctx
+        s.send([alt("n")])
+        assert s.disk("t.txt") == NUL_SEED
+        assert s.last.win.save != 0 and s.last.win.nul == 2
+        s.send([F2])
+        s.send([ESC])                                   # Cancel
+        assert s.disk("t.txt") == NUL_SEED
+        s.send([F2])
+        s.send([alt("y")])
+        assert s.disk("t.txt") == b"xabc\nd\n", s.disk("t.txt")
+        assert s.last.win.nul == 0
+        s.send(["y"])
+        got = s.send([F2])
+        assert got.ctx != "message", "the second Save asked again"
+        assert s.disk("t.txt") == b"xyabc\nd\n", s.disk("t.txt")
+
+
+# @scenario SC-line-endings-35
+def test_save_as_declined_leaves_the_window_under_its_name(tmp_path):
+    """Save As asks the NUL question like Save; No writes nothing, and the
+    window keeps the name it had instead of the one that was typed."""
+    with EditSession(str(tmp_path), NUL_SEED, filename="t.txt") as s:
+        s.send([alt("f"), "a"])
+        s.send(list("u.txt") + [ENTER])
+        got = s.send([alt("n")])
+        assert got.win.name == "t.txt", got.win.name
+        assert not os.path.exists(os.path.join(str(tmp_path), "u.txt"))
+        assert s.disk("t.txt") == NUL_SEED
+
+
+# @scenario SC-line-endings-34
+def test_printing_a_file_that_lost_nul_bytes_asks_nothing_and_saves_nothing(tmp_path):
+    """Print writes a copy for the printer, as autosave does: the file on
+    disk and the window's modified mark stay as they were, and the Save
+    question waits for a real Save."""
+    with EditSession(str(tmp_path), NUL_SEED, filename="t.txt",
+                     xwperc="[General]\nPrintCmd : true\n") as s:
+        s.send(["x"])
+        s.send([alt("f"), "p"])
+        got = s.send([alt("y")])                       # print it
+        assert got.ctx != "message", "Print asked the Save question"
+        assert got.win.nul == 2 and got.win.save != 0, (got.win.nul, got.win.save)
+        assert s.disk("t.txt") == NUL_SEED
+
+
+# @scenario SC-line-endings-23
+def test_a_file_read_into_the_text_says_when_it_lost_nul_bytes(tmp_path):
+    """Block > Read puts the file's rows into the text; the bytes that could
+    not be held are named on the status row.  The window's own file is not
+    asked about: nothing of it is lost."""
+    with open(os.path.join(str(tmp_path), "r.bin"), "wb") as fh:
+        fh.write(b"X\x00Y\n")
+    with EditSession(str(tmp_path), b"a\nb\n", filename="t.txt") as s:
+        _block_read(s, "r.bin")
+        shown = "\n".join(s.display())
+        assert s.last.win.nul == 0
+        got = s.send([F2])
+        assert got.ctx != "message", "the Save asked about a file that lost nothing"
+        saved = s.disk("t.txt")
+    assert "1 NUL byte of the file was left out" in shown, shown
+    assert saved == b"XY\na\nb\n", saved
+
+
+def _until_editing(s, got, tries=3):
+    """Dismiss the error box a failed write opens: Enter until the window
+    has the keys again."""
+    for _ in range(tries):
+        if got.ctx == "edit":
+            break
+        got = s.send([ENTER])
+    return got
+
+
+# @scenario SC-line-endings-36
+def test_save_as_that_cannot_write_leaves_the_window_under_its_name(tmp_path):
+    """Save As into a folder that cannot be written fails; the window keeps
+    its own name and stays modified, so the next Save goes to the file it
+    came from, with its line breaks."""
+    locked = os.path.join(str(tmp_path), "locked")
+    os.mkdir(locked)
+    os.chmod(locked, 0o555)
+    try:
+        with EditSession(str(tmp_path), b"a\r\nb\r\n", filename="t.txt") as s:
+            s.send(["x"])
+            s.send([alt("f"), "a"])
+            got = _until_editing(s, s.send(list("locked/u.txt") + [ENTER]))
+            assert got.win.name == "t.txt", got.win.name
+            assert got.win.save != 0
+            s.send([F2])
+            assert s.disk("t.txt") == b"xa\r\nb\r\n", s.disk("t.txt")
+    finally:
+        os.chmod(locked, 0o755)
+
+
+# @scenario SC-line-endings-37
+def test_closing_a_window_whose_save_was_declined_keeps_it(tmp_path):
+    """Closing a modified window that lost NUL bytes: Yes to "save?" asks
+    the NUL question, and No there keeps the window open with the disk as
+    it was; Quit does the same and the editor stays."""
+    with EditSession(str(tmp_path), NUL_SEED, filename="t.txt") as s:
+        s.send(["x"])
+        s.send([ctrl("w")])
+        got = s.send([alt("y")])
+        assert got.ctx == "message", got.ctx
+        got = s.send([alt("n")])
+        assert got.win is not None and got.win.name == "t.txt", got.top
+        assert s.disk("t.txt") == NUL_SEED
+        s.send([alt("x")])
+        s.send([alt("y")])
+        got = s.send([alt("n")])
+        assert s.alive()
+        assert got.win is not None and got.win.name == "t.txt", got.top
+        assert s.disk("t.txt") == NUL_SEED
+
+
+def _help_files_with_crlf(tmp_path):
+    """A copy of the editor's library folder whose help text has CR LF line
+    breaks, as a help file edited on Windows has."""
+    lib = os.path.join(str(tmp_path), "lib")
+    os.mkdir(lib)
+    for name in os.listdir(XWPE_LIB_DIR):
+        src = os.path.join(XWPE_LIB_DIR, name)
+        if (name.startswith("help.") or name == "syntax_def") and os.path.isfile(src):
+            shutil.copy(src, os.path.join(lib, name))
+    path = os.path.join(lib, "help.xwpe_eng")
+    with open(path, "rb") as fh:
+        data = fh.read().replace(b"\r\n", b"\n")
+    with open(path, "wb") as fh:
+        fh.write(data.replace(b"\n", b"\r\n"))
+    return lib
+
+
+# @scenario SC-line-endings-38
+def test_a_help_file_with_crlf_breaks_shows_no_carriage_returns(tmp_path):
+    """F1 shows a help file written with Windows line breaks as plain lines,
+    with no ^M at the end of each."""
+    lib = _help_files_with_crlf(tmp_path)
+    with EditSession(_folder(tmp_path, "w"), b"x\n", filename="t.c",
+                     env_extra={"XWPE_LIB": lib}) as s:
+        got = s.send([F1])
+        shown = "\n".join(s.display())
+        rows = [data for w in got.windows.values() for _, data in w.lines]
+    assert "Help" in shown, shown
+    assert len(rows) > 5, rows
+    assert "^M" not in shown, shown
+    assert not [r for r in rows if r.endswith(b"\r")], rows[:5]
+
+
+EXECUTE_MAKE = "\033a"
+UP = "\033[A"
+
+
+def _messages_rows_with(s, needles, timeout=10):
+    """The rows of Messages that hold one of @needles, once each has come."""
+    deadline = time.monotonic() + timeout
+    rows = []
+    while time.monotonic() < deadline:
+        got = s.send([UP])
+        rows = [data for w in got.windows.values() if w.name == "Messages"
+                for _, data in w.lines if any(n in data for n in needles)]
+        if len(rows) >= len(needles):
+            break
+        time.sleep(0.3)
+    return rows
+
+
+# @scenario SC-line-endings-39
+def test_build_output_with_crlf_breaks_shows_no_carriage_returns(tmp_path):
+    """A build that prints Windows line breaks shows its lines in Messages
+    as plain lines, with no ^M at the end of each, so a compiler's row
+    reads as it would from an LF build."""
+    with open(os.path.join(str(tmp_path), "Makefile"), "w") as fh:
+        fh.write("all:\n\t@printf 'BUILD_ONE\\r\\nt.c:1:1: error: BUILD_TWO\\r\\n'\n")
+    with EditSession(str(tmp_path), b"int main(void){return 0;}\n", filename="t.c") as s:
+        s.send([EXECUTE_MAKE])
+        rows = _messages_rows_with(s, [b"BUILD_ONE", b"BUILD_TWO"])
+        shown = "\n".join(s.display())
+    assert len(rows) == 2, (rows, shown)
+    assert rows == [b"BUILD_ONE", b"t.c:1:1: error: BUILD_TWO"], rows
+    assert "^M" not in shown, shown

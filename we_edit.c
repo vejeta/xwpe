@@ -365,6 +365,25 @@ static int e_edit_read_file(FENSTER *f, FILE *fp)
 }
 
 /**
+ * e_edit_say_nul_dropped - Tell the user, on the status row, that the file
+ * just opened lost NUL bytes when it was read.
+ * @f: the new window.
+ *
+ * A row cannot hold a NUL byte, so the reader leaves them out.  Saying so at
+ * once (and asking before the first Save) means a binary file is not
+ * rewritten shorter without the user having been told.
+ */
+static void e_edit_say_nul_dropped(FENSTER *f)
+{
+ char line[E_NUL_SAY_MAX];
+
+ if (f->b->nul_dropped <= 0 || f->dtmd == DTMD_HELP)
+  return;
+ e_eol_nul_sentence(f->b->nul_dropped, line, sizeof line);
+ e_status_say_until_key(f, line);
+}
+
+/**
  * e_edit_drop_window - Take back a window that is being opened, before it
  * was ever drawn: its buffer, its screen and its names are freed and the
  * desk is as it was.
@@ -844,6 +863,7 @@ int e_edit(ECNT *cn, char *filename)
  e_brk_schirm(f);
  e_schirm(f, 1);
  e_cursor(f, 1);
+ e_edit_say_nul_dropped(f);
 #ifdef DEBUGGER
  /* The "3" of the 3+1 LSP start: opening a language-server file boots the server
     in the background (only if its binary is installed and none runs yet), so the

@@ -146,6 +146,9 @@ class Window:
         # an LF file that did
         self.eol = kv.get("eol", "lf")
         self.final = int(kv.get("final", "1"))
+        # how many NUL bytes of the file the reader left out (a row cannot
+        # hold one); 0 for none
+        self.nul = int(kv.get("nul", "0"))
         self.lines = []          # [(end 'H'|'S', bytes)]
 
     @property

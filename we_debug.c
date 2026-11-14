@@ -16,6 +16,7 @@
 #include "we_debpath.h"
 #include "we_debsess.h"
 #include "we_buffer.h"
+#include "we_lineend.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
 
@@ -4631,7 +4632,7 @@ static int e_d_view_list(BUFFER *b, const char *text)
  int first = was_empty ? 0 : b->mxlines;
  int before = b->mxlines;
 
- if (e_buffer_append_text(b, text, 1) != E_BUFFER_OK)
+ if (e_eol_append_text(b, text, 1, E_EOL_NORMALIZE) != E_BUFFER_OK)
  {
   wpe_buffer_say_nomem(b, "the listing");
   return(-1);
@@ -31982,7 +31983,7 @@ static void e_lsp_edit_show(FENSTER *f, const e_lsp_ask_t *a)
  */
 static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
 {
- if (e_buffer_replace_all(f->b, newtext, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+ if (e_eol_replace_all(f->b, newtext, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(f->b, "the new text");
  e_window_show_replaced_text(f);
  e_lsp_after_bulk_edit(f);          /* tell the server the buffer changed, so its

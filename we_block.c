@@ -9,6 +9,7 @@
 #include "edit.h"
 #include "we_clip.h"
 #include "we_buffer.h"
+#include "we_lineend.h"
 #include <ctype.h>
 
 /* The marked block of a window: from (kax, kay) up to, not including,
@@ -592,7 +593,7 @@ void e_clip_pull_os_into_buffer(FENSTER *w0)
 
  if ((text = e_clip_os_get(&len)) == NULL)
   return;
- if (e_buffer_replace_all(w0->b, text, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+ if (e_eol_replace_all(w0->b, text, E_BUFFER_STEP_NEW, E_EOL_NORMALIZE) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(w0->b, "the pasted text");
  free(text);
  e_buffer_block_all(w0->b);

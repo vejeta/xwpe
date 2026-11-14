@@ -258,6 +258,8 @@ typedef struct BFF {
                           may be wider than mx.x, and no row-width check applies */
  int eol;              /* the file's line-ending style (E_EOL_LF, E_EOL_CRLF); zero is LF */
  int final_break;      /* E_FINAL_BREAK_HAD: the file ended on a line break; zero: it did not */
+ int nul_dropped;      /* how many NUL bytes of the file were left out when it was read
+                          (a row cannot hold one); the first Save asks, and clears it */
 } BUFFER;
 
 typedef struct SCHRM {
@@ -568,6 +570,13 @@ void e_cursor(FENSTER *f, int sw);
 #define E_CHAR_REFUSED (-1)
 /* What the user is told when a command meets such a window. */
 #define E_SAY_READ_ONLY "Read-only window: the text is unchanged"
+/* The room for the line that tells how many NUL bytes a read left out, and
+   for the question before the Save that would write the file without them. */
+#define E_NUL_SAY_MAX 96
+#define E_NUL_ASK_MAX 256
+/* What e_save returns when the user declined to write the file (not an
+   error: the disk is as it was). */
+#define E_SAVE_DECLINED 1
 int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n);
 int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n);

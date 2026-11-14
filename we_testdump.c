@@ -343,7 +343,7 @@ static void dump_window_head(DumpBuf *d, int n, FENSTER *f)
  dump_breakpoints(d, f);
  dump_printf(d, " ud=%d rd=%d rows=%d pos=%d", dump_steps(b->ud), dump_steps(b->rd),
              e_buffer_rows_check(b), e_buffer_first_misplaced(b));
- dump_printf(d, " eol=%s final=%d\n", e_eol_name(b), b->final_break);
+ dump_printf(d, " eol=%s final=%d nul=%d\n", e_eol_name(b), b->final_break, b->nul_dropped);
 }
 
 /**

@@ -78,6 +78,8 @@ int    e_buffer_split_line(BUFFER *b, int y, int x, WpeBufferStep step, int head
 int    e_buffer_detach_lines(BUFFER *b, int y, int n, STRING *out, int *brk_out, int *nbrk);
 int    e_buffer_replace_all(BUFFER *b, const char *text, WpeBufferStep step);
 int    e_buffer_append_text(BUFFER *b, const char *text, int skip_blank);
+int    e_buffer_replace_rows(BUFFER *b, STRING *lines, int n, WpeBufferStep step);
+int    e_buffer_append_lines(BUFFER *b, STRING *lines, int n, int skip_blank);
 int    e_buffer_append_rows(BUFFER *b, const char *text);
 int    e_buffer_clear(BUFFER *b);
 /* A row set with either of these keeps all @n bytes, even past the buffer's

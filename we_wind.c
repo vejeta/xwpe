@@ -2503,8 +2503,8 @@ int e_close_window(FENSTER *f)
    c = e_message(1, text, f);
    if (c == WPE_ESC)
     return(c);
-   else if (c == 'Y')
-    e_save(f);
+   else if (c == 'Y' && e_save(f) == E_SAVE_DECLINED)
+    return(WPE_ESC);
   }
 #ifdef WPE_AI
   /* The close is certain now and the window is still whole: a background AI

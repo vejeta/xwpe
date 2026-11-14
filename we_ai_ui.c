@@ -14,6 +14,7 @@
 #include "progr.h"
 #include "we_fdloop.h"
 #include "we_buffer.h"
+#include "we_lineend.h"
 #include "we_ai.h"
 #include "we_ai_path.h"
 #include "we_ai_host.h"
@@ -823,30 +824,48 @@ void wpe_ai_pane_error(FENSTER *f, const char *line)
  ai_pane(f, line, AI_ROLE_ERROR, 1);
 }
 
+/**
+ * ai_rows_text - Rows @y0 to @y1 of a buffer as text, one line break after
+ * each line, malloc'd.
+ * @b: the buffer; @y0, @y1: the first and last row (an empty range gives "").
+ *
+ * The one way the assistant reads the window's text: the line-ending owner
+ * writes it, so a line the editor folded over several rows reaches the model
+ * as one line and the lines come back the way the file has them.
+ * Return: the text, or NULL when memory ran out.
+ */
+static char *ai_rows_text(BUFFER *b, int y0, int y1)
+{
+ char *t = NULL;
+
+ e_eol_text(b, y0, 0, y1 + 1, 0, E_EOL_LF, 0, &t);
+ return t;
+}
+
+/**
+ * ai_cut_context - Cut a text after the first line break at or past
+ * AI_CTX_MAX bytes, so the model gets whole lines and a bounded block.
+ * @t: the text, cut in place.
+ */
+static void ai_cut_context(char *t)
+{
+ size_t n = strlen(t);
+ char *nl;
+
+ if (n <= AI_CTX_MAX)
+  return;
+ nl = memchr(t + AI_CTX_MAX, '\n', n - AI_CTX_MAX);
+ if (nl)
+  nl[1] = '\0';
+}
+
 /* Join the current file's lines into a single (bounded) text block. */
 static char *ai_current_file_text(FENSTER *f)
 {
- BUFFER *b = f->b;
- size_t cap = 4096, len = 0;
- char *t = malloc(cap);
- int y;
- if (!t) return NULL;
- for (y = 0; y < b->mxlines; y++) {
-  const char *ls = (const char *)b->bf[y].s;
-  int ll = b->bf[y].len;
-  if (ll < 0) ll = 0;
-  if (len + (size_t)ll + 2 > cap) {
-   char *nt;
-   while (len + (size_t)ll + 2 > cap) cap *= 2;
-   nt = realloc(t, cap);
-   if (!nt) { free(t); return NULL; }
-   t = nt;
-  }
-  if (ls && ll > 0) { memcpy(t + len, ls, (size_t)ll); len += (size_t)ll; }
-  t[len++] = '\n';
-  if (len > AI_CTX_MAX) break;
- }
- t[len] = '\0';
+ char *t = ai_rows_text(f->b, 0, f->b->mxlines - 1);
+
+ if (t)
+  ai_cut_context(t);
  return t;
 }
 
@@ -872,25 +891,44 @@ static int ai_block_range(FENSTER *f, int *y0, int *y1)
    send only the selected region to the model for a scoped Edit. */
 static char *ai_lines_text(FENSTER *f, int y0, int y1)
 {
- BUFFER *b = f->b;
- size_t cap = 1024, len = 0;
- char *t = malloc(cap);
- int y;
+ return ai_rows_text(f->b, y0, y1);
+}
+
+/**
+ * ai_row_breaks_after - Does a line break follow row @y in the text a window
+ * makes?  A row the editor folded from a longer line has none.
+ * @b: the buffer; @y: the row.
+ */
+static int ai_row_breaks_after(BUFFER *b, int y)
+{
+ STRING *row = &b->bf[y];
+
+ return row->s != NULL && row->len <= b->mx.x && row->s[row->len] == WPE_WR;
+}
+
+/**
+ * ai_join_splice - Put a head, a reply's lines and a tail in one text.
+ * @head: the text before; @join: 1 to end the head with a line break first;
+ * @snippet, @sl: the reply's lines (@sl bytes, no final break); @tail: the
+ * text after.
+ *
+ * Return: the text, or NULL when memory ran out.
+ */
+static char *ai_join_splice(const char *head, int join, const char *snippet, size_t sl,
+                            const char *tail)
+{
+ size_t hl = strlen(head), tl = strlen(tail), len = 0;
+ char *t = malloc(hl + (size_t)join + sl + 1 + tl + 1);
+
  if (!t) return NULL;
- for (y = y0; y <= y1 && y < b->mxlines; y++) {
-  const char *ls = (const char *)b->bf[y].s;
-  int ll = b->bf[y].len;
-  if (ll < 0) ll = 0;
-  if (len + (size_t)ll + 2 > cap) {
-   char *nt;
-   while (len + (size_t)ll + 2 > cap) cap *= 2;
-   nt = realloc(t, cap);
-   if (!nt) { free(t); return NULL; }
-   t = nt;
-  }
-  if (ls && ll > 0) { memcpy(t + len, ls, (size_t)ll); len += (size_t)ll; }
-  t[len++] = '\n';
- }
+ memcpy(t, head, hl);
+ len = hl;
+ if (join) t[len++] = '\n';
+ memcpy(t + len, snippet, sl);
+ len += sl;
+ t[len++] = '\n';
+ memcpy(t + len, tail, tl);
+ len += tl;
  t[len] = '\0';
  return t;
 }
@@ -898,38 +936,22 @@ static char *ai_lines_text(FENSTER *f, int y0, int y1)
 /* ai_splice_lines - the whole file with lines [y0..y1] replaced by `snippet`, so
    a selection edit reuses the proven whole-file diff+apply path while confining
    the change to the selected region.  A trailing '\n' on `snippet` is dropped so
-   the join does not introduce a blank line. */
+   the join does not introduce a blank line.  The rows outside the region are
+   the window's text as it stands, a carriage return kept as text included, so
+   the lines the edit does not touch come back unchanged. */
 static char *ai_splice_lines(FENSTER *f, int y0, int y1, const char *snippet)
 {
  BUFFER *b = f->b;
- size_t cap = 4096, len = 0, sl = strlen(snippet);
- char *t = malloc(cap);
- int y;
- if (!t) return NULL;
+ size_t sl = strlen(snippet);
+ char *head, *tail, *t;
+ int join = (y0 > 0 && y0 <= b->mxlines && !ai_row_breaks_after(b, y0 - 1));
+
  while (sl > 0 && snippet[sl - 1] == '\n') sl--;   /* one join newline, not two */
- for (y = 0; y < b->mxlines; y++) {
-  const char *ls;
-  int ll;
-  if (y == y0) {                                    /* splice the new region in  */
-   if (len + sl + 2 > cap) {
-    char *nt; while (len + sl + 2 > cap) cap *= 2;
-    nt = realloc(t, cap); if (!nt) { free(t); return NULL; }
-    t = nt;
-   }
-   memcpy(t + len, snippet, sl); len += sl; t[len++] = '\n';
-  }
-  if (y >= y0 && y <= y1) continue;                 /* drop the old region       */
-  ls = (const char *)b->bf[y].s; ll = b->bf[y].len;
-  if (ll < 0) ll = 0;
-  if (len + (size_t)ll + 2 > cap) {
-   char *nt; while (len + (size_t)ll + 2 > cap) cap *= 2;
-   nt = realloc(t, cap); if (!nt) { free(t); return NULL; }
-   t = nt;
-  }
-  if (ls && ll > 0) { memcpy(t + len, ls, (size_t)ll); len += (size_t)ll; }
-  t[len++] = '\n';
- }
- t[len] = '\0';
+ head = ai_rows_text(b, 0, y0 - 1);
+ tail = ai_rows_text(b, y1 + 1, b->mxlines - 1);
+ t = (head && tail) ? ai_join_splice(head, join, snippet, sl, tail) : NULL;
+ free(head);
+ free(tail);
  return t;
 }
 
@@ -4224,7 +4246,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
 static void ai_compose_show_seed(FENSTER *w, const char *seed)
 {
  BUFFER *b = w->b;
- if (e_buffer_replace_all(b, seed, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+ if (e_eol_replace_all(b, seed, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(b, "the composer's text");
  e_buffer_history_drop(b);                   /* the seed is not the user's to undo */
  /* caret after the text */
@@ -4310,21 +4332,10 @@ int e_ai_window_full(FENSTER *f, int n)
 static char *ai_compose_text(FENSTER *w)
 {
  BUFFER *b = w->b;
- char *t = malloc((size_t)ai_compose_bytes(w) + 1);
- size_t len = 0;
- int y;
- if (!t)
-  return NULL;
- for (y = 0; y < b->mxlines; y++) {
-  int ll = b->bf[y].len;
-  if (b->bf[y].s && ll > 0) {
-   memcpy(t + len, b->bf[y].s, (size_t)ll);
-   len += (size_t)ll;
-  }
-  if (ai_compose_row_ends_line(b, y))
-   t[len++] = '\n';
- }
- t[len] = '\0';
+ int last = b->mxlines - 1;
+ char *t = NULL;
+
+ e_eol_text(b, 0, 0, last, b->bf[last].len, E_EOL_LF, 0, &t);   /* no break after the last row */
  return t;
 }
 
@@ -5530,7 +5541,7 @@ static void ai_hook_after_accept(FENSTER *f)
 static void e_ai_apply_text(FENSTER *f, const char *newtext)
 {
  e_buffer_step_begin(f->b);
- if (e_buffer_replace_all(f->b, newtext, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+ if (e_eol_replace_all(f->b, newtext, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(f->b, "the new text");
  ai_hook_after_accept(f);
  e_buffer_step_end(f->b);
@@ -5690,37 +5701,16 @@ static void ai_reply_split(const char *reply, ai_reply_parts *parts)
 }
 
 /**
- * ai_copy_lf_only - Copy reply bytes, turning every CRLF line ending into LF.
- * @out: room for @len bytes; @in: the reply bytes; @len: how many.
- *
- * What the user gains: a model that answers with Windows line endings no
- * longer turns every line of the file into a change.  The buffer holds lines
- * without carriage returns (the editor strips them on load and writes them
- * back on save for a CRLF file), so a reply is diffed and spliced on the same
- * terms: the review shows only the lines that really changed, and no stray
- * carriage return reaches the buffer or the disk.  A carriage return that is
- * not followed by a line feed is content and is kept.
- *
- * Return: the number of bytes written to @out.
- */
-static size_t ai_copy_lf_only(char *out, const char *in, size_t len)
-{
- size_t i, n = 0;
- for (i = 0; i < len; i++) {
-  if (in[i] == '\r' && i + 1 < len && in[i + 1] == '\n')
-   continue;
-  out[n++] = in[i];
- }
- return n;
-}
-
-/**
  * ai_file_text - The text a file reply lands as: LF endings, trimmed, one final newline.
  * @code: the first byte of the code; @len: how many bytes of it.
  *
  * A file ends with a newline however the model closed its answer, so blank
  * lines and spaces at the end are cut and exactly one newline is added; CRLF
- * line endings become LF (see ai_copy_lf_only) before anything is diffed.
+ * line endings become LF (e_eol_normalize) before anything is diffed, so a
+ * model that answers with Windows line endings does not turn every line of
+ * the file into a change.  The review diff ignores a carriage return at the
+ * end of a line of the window, so a line the reply leaves alone stays as it
+ * is, carriage return and all.
  * This is the cleaner for a reply that is a FILE (Edit, Multi-file); a
  * completion is cleaned by ai_completion_text instead, which keeps the
  * reply's own leading and trailing bytes.
@@ -5738,7 +5728,7 @@ static char *ai_file_text(const char *code, size_t len)
  len = (size_t)(end - code);
  out = malloc(len + 2);
  if (!out) return NULL;
- n = ai_copy_lf_only(out, code, len);
+ n = e_eol_normalize(out, code, len);
  out[n] = '\n';
  out[n + 1] = '\0';
  return out;
@@ -5918,7 +5908,7 @@ static const char *ai_before_closing_fence(const char *start, const char *end)
  * @reply: the whole reply.
  *
  * Only markdown fences are removed and CRLF line endings become LF (see
- * ai_copy_lf_only), so a multi-line completion from a model that answers with
+ * e_eol_normalize), so a multi-line completion from a model that answers with
  * Windows line endings does not leave a carriage return at the end of each
  * line.  No newline is added or taken away: a completion goes in at the
  * cursor, which may be in the middle of a line, so "foo(" completed with
@@ -5938,7 +5928,7 @@ static char *ai_completion_text(const char *reply)
  size_t n;
  char *out = malloc(len + 1);
  if (!out) return NULL;
- n = ai_copy_lf_only(out, start, len);
+ n = e_eol_normalize(out, start, len);
  out[n] = '\0';
  return out;
 }
@@ -8335,7 +8325,7 @@ static void ai_edit_done(ai_async_op *op)
   ai_op_free(op);
   return;
  }
- nseg = wpe_ai_diff_segments(now ? now : "", clean, &segs);
+ nseg = wpe_ai_diff_reply_segments(now ? now : "", clean, &segs);
  free(now);
  for (i = 0; i < nseg; i++) if (segs[i].is_change) { has_change = 1; break; }
  if (!has_change) {
@@ -13640,7 +13630,7 @@ static int ai_plan_count_change(FENSTER *f, const ai_proposal *p, int *plus, int
  int ns, k;
  *plus = 0;
  *minus = 0;
- ns = wpe_ai_diff_segments(now ? now : "", p->text, &segs);
+ ns = wpe_ai_diff_reply_segments(now ? now : "", p->text, &segs);
  for (k = 0; k < ns; k++) {
   if (!segs[k].is_change) continue;
   *plus += segs[k].bn;
@@ -13760,7 +13750,7 @@ static int ai_plan_review_file(FENSTER *w, const ai_proposal *p)
  wpe_ai_seg *segs;
  int ns, applied = 0;
  char *result;
- ns = wpe_ai_diff_segments(now ? now : "", p->text, &segs);
+ ns = wpe_ai_diff_reply_segments(now ? now : "", p->text, &segs);
  free(now);
  result = ai_hunk_apply(w, segs, ns, NULL, NULL, NULL);
  if (result) {
@@ -13770,6 +13760,39 @@ static int ai_plan_review_file(FENSTER *w, const ai_proposal *p)
  }
  wpe_ai_segs_free(segs, ns);
  return applied;
+}
+
+/**
+ * ai_plan_apply_file - Put a proposal into its window without a review.
+ * @w: the window holding the file; @p: the proposal.
+ *
+ * Every change of the proposal is taken, as Apply all promises, and the lines
+ * it leaves alone are the window's own, so a carriage return kept as text in
+ * one of them is still there: Apply all changes the lines the box counted
+ * and no other.
+ */
+static void ai_plan_apply_file(FENSTER *w, const ai_proposal *p)
+{
+ char *now = ai_full_file_text(w);
+ wpe_ai_seg *segs;
+ int ns, k, *acc;
+ char *result = NULL;
+
+ ns = wpe_ai_diff_reply_segments(now ? now : "", p->text, &segs);
+ free(now);
+ acc = malloc((size_t)(ns > 0 ? ns : 1) * sizeof *acc);
+ if (acc) {
+  for (k = 0; k < ns; k++) acc[k] = 1;
+  result = ai_segs_join_chosen(segs, ns, acc);
+  free(acc);
+ }
+ wpe_ai_segs_free(segs, ns);
+ if (result) {
+  e_ai_apply_text(w, result);
+  free(result);
+ } else {
+  wpe_buffer_say_nomem(w->b, "the new text");
+ }
 }
 
 /* The text a Multi-file row carries in Messages and in the Alt-T list. */
@@ -13927,7 +13950,7 @@ static void ai_plan_finish(ai_async_op *op)
   w = cn->f[cn->mxedt];
   before = ai_full_file_text(w);
   if (mode == AI_PLAN_APPLY_ALL) {
-   e_ai_apply_text(w, pd->props[i].text);
+   ai_plan_apply_file(w, &pd->props[i]);
    done = 1;
   } else {
    done = ai_plan_review_file(w, &pd->props[i]);

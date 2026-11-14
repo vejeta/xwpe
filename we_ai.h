@@ -391,6 +391,9 @@ typedef struct {
  char **b; int bn;
 } wpe_ai_seg;
 int  wpe_ai_diff_segments(const char *a, const char *b, wpe_ai_seg **segs);
+/* The same for a window's text and a model's reply for it: a line that
+ * differs only by a carriage return at its end is the same line. */
+int  wpe_ai_diff_reply_segments(const char *window, const char *reply, wpe_ai_seg **segs);
 void wpe_ai_segs_free(wpe_ai_seg *segs, int n);
 
 /* ----- editor entry points (we_ai_ui.c) --------------------------------- */

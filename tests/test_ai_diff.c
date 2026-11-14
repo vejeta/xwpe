@@ -61,6 +61,53 @@ int main(void)
   wpe_ai_segs_free(segs, n);
  }
 
+ /* @scenario SC-line-endings-28
+  * A line of the window that ends in a carriage return (it is text there)
+  * is the same line as the reply's, which was cleaned of CR LF: only the
+  * line the reply changed is a hunk, and the unchanged part is taken from
+  * the window's side, carriage return and all. */
+ {
+  wpe_ai_seg *segs;
+  int n, i, changes = 0;
+  n = wpe_ai_diff_reply_segments("a\r\nb\nc\r\n", "a\nB\nc\n", &segs);
+  for (i = 0; i < n; i++) if (segs[i].is_change) changes++;
+  check(changes == 1, "carriage return: exactly one change hunk");
+  check(n >= 1 && !segs[0].is_change && !strcmp(segs[0].a[0], "a\r"),
+        "carriage return: the unchanged line keeps the window's carriage return");
+  check(n == 3 && !segs[2].is_change && !strcmp(segs[2].a[0], "c\r"),
+        "carriage return: so does the one after the change");
+  wpe_ai_segs_free(segs, n);
+  n = wpe_ai_diff_reply_segments("a\nb\n", "a\r\nb\r\n", &segs);
+  for (i = 0, changes = 0; i < n; i++) if (segs[i].is_change) changes++;
+  check(changes == 0, "carriage return: a reply with extra carriage returns changes nothing");
+  wpe_ai_segs_free(segs, n);
+  n = wpe_ai_diff_reply_segments("a\rb\n", "ab\n", &segs);
+  for (i = 0, changes = 0; i < n; i++) if (segs[i].is_change) changes++;
+  check(changes == 1, "carriage return: one inside a line is a real difference");
+  wpe_ai_segs_free(segs, n);
+ }
+
+ /* @scenario SC-line-endings-33
+  * Two texts that will be written as they are (a file and what a tool writes
+  * over it) are compared byte for byte: a tool that takes the carriage
+  * returns away shows its change. */
+ {
+  wpe_ai_seg *segs;
+  char *d;
+  int n, i, changes = 0;
+  n = wpe_ai_diff_segments("a\r\nb\r\n", "a\nb\n", &segs);
+  for (i = 0; i < n; i++) if (segs[i].is_change) changes++;
+  check(changes == 1, "strict: a CRLF to LF rewrite is a change hunk");
+  wpe_ai_segs_free(segs, n);
+  d = wpe_ai_diff("a\r\nb\r\n", "a\nb\n");
+  check(d && strchr(d, '-') != NULL && strchr(d, '+') != NULL,
+        "strict: and the line diff shows it");
+  free(d);
+  n = wpe_ai_diff_segments("a\r\n", "a\r\n", &segs);
+  check(n == 1 && !segs[0].is_change, "strict: identical text is one unchanged hunk");
+  wpe_ai_segs_free(segs, n);
+ }
+
  /* @scenario SC-ai-edit-34
   * Either side past the size guard (AI_DIFF_MAX_LINES = 4000, we_ai_diff.c:17)
   * falls back to one all-encompassing hunk instead of running the line diff

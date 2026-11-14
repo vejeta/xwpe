@@ -532,7 +532,9 @@ sets.  Saving must not change lines you did not edit.
 The original wrote nothing of a line after a NUL byte in it, line break
 included, so the line ran into the next one when saved.  A line cannot hold
 a NUL byte: it is left out when the file is read, and the rest of the line
-and its line break are kept.
+and its line break are kept.  The status row says how many were left out,
+Block > Read says the same, and the first Save of such a file asks before
+it writes the file without them (No leaves the file on disk as it is).
 
 @item The @samp{Data} key of the options file
 @cindex options file, Data

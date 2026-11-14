@@ -13,6 +13,7 @@
 #include "WeExpArr.h"
 #include "progr.h"
 #include "we_buffer.h"
+#include "we_lineend.h"
 #include "we_ai.h"
 #include "we_ai_path.h"
 
@@ -1329,7 +1330,7 @@ static void ws_free_changes(ws_change *c, int n)
  */
 static void ws_window_take_text(FENSTER *w, const char *text)
 {
- if (e_buffer_replace_all(w->b, text, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+ if (e_eol_replace_all(w->b, text, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(w->b, "the new text");
  e_buffer_cursor_set(w->b, w->b->b.y, w->b->b.x);
  w->save++;

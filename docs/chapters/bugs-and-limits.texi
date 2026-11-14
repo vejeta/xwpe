@@ -125,6 +125,14 @@ mitigates this automatically: it pins @env{JAVA_HOME} to an installed LTS JDK
 limitation: if @emph{no} LTS JDK is installed, you must install one and/or set
 @env{JAVA_HOME} yourself.
 
+@item A NUL byte cannot be held in the text
+@cindex NUL byte
+A line of the text cannot hold a NUL byte, so a file that has them (a
+binary file, say) is read without them.  The status row says how many were
+left out when the file is opened, and the first Save asks before it writes
+the file without them; answer No to leave the file on disk as it is.  A
+binary file is not edited here with its NUL bytes in place.
+
 @item X11 mode does not display UTF-8
 The X11 binaries (@command{xwpe}, @command{xwe}) use
 @code{XDrawImageString} which does not support multi-byte characters.

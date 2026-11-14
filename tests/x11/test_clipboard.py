@@ -70,6 +70,22 @@ def test_paste_pulls_from_os_clipboard(xwpe):
         "Paste should pull the external OS clipboard, got %r" % got
 
 
+# @scenario SC-line-endings-29
+def test_paste_of_windows_line_breaks_leaves_no_carriage_returns(xwpe):
+    """Text another application copied with CR LF line breaks arrives as
+    lines: the paste reads each CR LF as one break, so no row of the text
+    ends in a stray carriage return that would be saved with it."""
+    subprocess.run(["xclip", "-selection", "clipboard"], input=b"X\r\nY\r\n",
+                   env={**os.environ, "DISPLAY": DISPLAY})
+    time.sleep(0.3)
+    xwpe.key("ctrl+v")
+    xwpe.save()
+    with open(xwpe.srcfile, "rb") as fh:
+        saved = fh.read()
+    assert saved.startswith(b"X\nYint main"), saved[:20]
+    assert b"\r" not in saved[:12], saved[:20]
+
+
 def _xclip_own(selection, text):
     """Make another client own `selection` with `text` (xclip stays behind as
     the owner until something else takes the selection)."""

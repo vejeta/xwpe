@@ -72,7 +72,8 @@ the model works):
   in the source. A reply with CRLF line endings is read as LF before the
   comparison, so only the real changes show and no carriage return reaches the
   buffer (a CRLF file keeps its line endings, and a carriage return that is not
-  part of a line break stays in its line as text). Otherwise the
+  part of a line break stays in its line as text; the lines the model leaves
+  alone keep their carriage return when the edit is accepted). Otherwise the
   proposed change appears in a **colored diff popup** inside the file window,
   one hunk at a time: the file first scrolls to the hunk's first line and puts
   the cursor on it (column kept), as Search and Goto Line do, and the popup

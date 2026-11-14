@@ -140,7 +140,7 @@ we_progn.c:e_program_opt:* 10 dialog field editing
 we_progn.c:e_sh_def:* 1 dialog field editing
 we_unix.c:e_err_save_window:* 1 dialog field editing
 we_unix.c:e_frb_t_menue:* 5 dialog field editing
-we_wind.c:e_close_window:* 1 dialog field editing
+we_wind.c:e_close_window:* 2 dialog field editing
 we_wind.c:e_ed_zoom:* 1 dialog field editing
 we_wind.c:e_error_run:* 4 dialog field editing
 we_wind.c:e_message:* 11 dialog field editing

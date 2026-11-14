@@ -4721,13 +4721,31 @@ static int buffer_common_tail(BUFFER *b, const STRING *lines, int n, int head)
 int e_buffer_replace_all(BUFFER *b, const char *text, WpeBufferStep step)
 {
  STRING *lines;
- BufferDiff d;
- char *used;
- int n, head, tail, na, nb, r, i;
+ int n;
 
  lines = e_buffer_lines_from_text(text, b->mx.x, &n);
  if (n < 0)
   return(E_BUFFER_NOMEM);
+ return(e_buffer_replace_rows(b, lines, n, step));
+}
+
+/**
+ * e_buffer_replace_rows - Make the buffer hold these rows, changing only
+ * what differs.
+ * @lines, @n: the rows, which the buffer owns from here on (taken on every
+ * path, freed when not used); @step: how the change counts for Ctrl-U.
+ *
+ * The same swap as e_buffer_replace_all, for a caller that made its rows
+ * itself: the line-ending owner turns the bytes of a clipboard or a tool's
+ * text into rows by the rule of where the bytes came from.
+ * Return: as e_buffer_replace_all.
+ */
+int e_buffer_replace_rows(BUFFER *b, STRING *lines, int n, WpeBufferStep step)
+{
+ BufferDiff d;
+ char *used;
+ int head, tail, na, nb, r, i;
+
  if (n == 0)
  {
   if (b->mxlines == 1 && b->bf[0].len == 0)
@@ -4774,11 +4792,24 @@ int e_buffer_replace_all(BUFFER *b, const char *text, WpeBufferStep step)
 int e_buffer_append_text(BUFFER *b, const char *text, int skip_blank)
 {
  STRING *lines;
- int n, k = 0, i, r;
+ int n;
 
  lines = e_buffer_lines_from_text(text, b->mx.x, &n);
  if (n < 0)
   return(E_BUFFER_NOMEM);
+ return(e_buffer_append_lines(b, lines, n, skip_blank));
+}
+
+/**
+ * e_buffer_append_lines - Add rows after the last line.
+ * @lines, @n: the rows, which the buffer owns from here on (taken on every
+ * path); @skip_blank: drop empty lines, as build output in Messages does.
+ * Return: as e_buffer_splice.
+ */
+int e_buffer_append_lines(BUFFER *b, STRING *lines, int n, int skip_blank)
+{
+ int k = 0, i, r;
+
  for (i = 0; i < n; i++)
  {
   if (skip_blank && lines[i].len == 0)

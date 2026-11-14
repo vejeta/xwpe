@@ -26,6 +26,13 @@
 #     that matches nothing is stale and fails.
 #  3. e_buffer_rows_push and buffer_lines_push (bytes to rows) are called
 #     only from we_buffer.c and we_lineend.c.
+#  4. e_buffer_replace_all, e_buffer_append_text, e_buffer_append_rows and
+#     e_buffer_lines_from_text, which split text with no policy, are called
+#     only from we_buffer.c and we_lineend.c; the rest use e_eol_replace_all /
+#     e_eol_append_text / e_eol_append_rows / e_eol_lines and say whether the
+#     text is
+#     the buffer's own rows (E_EOL_ROWS) or comes from outside
+#     (E_EOL_NORMALIZE).
 #
 # --selftest feeds a fixture with a blind serialiser to the scan and fails
 # unless the scan names it (a scanner that sees nothing is not a check).
@@ -192,6 +199,15 @@ for f in "$SRCDIR"/*.c "$SRCDIR"/*.h; do
   case ${f##*/} in edit.h|we_lineend.c) continue ;; esac
   grep -n 'DTMD_MSDOS' "$f" | while IFS= read -r hit; do
     echo "DTMD_MSDOS outside the owner: ${f##*/}:${hit%%:*}"
+  done >> "$WORK/problems"
+done
+
+# Rule 4.
+for f in "$SRCDIR"/we_*.c; do
+  [ -f "$f" ] || continue
+  case ${f##*/} in we_buffer.c|we_lineend.c) continue ;; esac
+  grep -n -e 'e_buffer_replace_all[ \t]*(' -e 'e_buffer_lines_from_text[ \t]*(' -e 'e_buffer_append_text[ \t]*(' -e 'e_buffer_append_rows[ \t]*(' "$f" | while IFS= read -r hit; do
+    echo "text to rows without saying where the text came from: ${f##*/}:${hit%%:*}"
   done >> "$WORK/problems"
 done
 

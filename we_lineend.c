@@ -423,15 +423,41 @@ int e_eol_read_file_into(FILE *fp, BUFFER *b, int x, int y, int manpage, WpeEolI
 }
 
 /**
- * eol_rows_from_text - The lines of text the buffer's own rows made, split on
- * LF only.
- * @bytes, @n: the text; @mx_x: Max. Columns; @count: receives the number of
- * lines.
+ * e_eol_normalize - Copy text, leaving out the carriage return of every
+ * CR LF line break.
+ * @out: room for @len bytes (it may be @in: the copy only shrinks);
+ * @in: the text; @len: how many bytes.
+ *
+ * What the user gains: text from outside the buffer (the system clipboard, a
+ * model's reply, a program's output) that uses Windows line breaks does not
+ * put a carriage return at the end of every line, and a model that answers
+ * in CR LF does not turn every line of the file into a change.  A carriage
+ * return that is not followed by a line feed is text and is kept.
+ * Return: the number of bytes written to @out.
+ */
+size_t e_eol_normalize(char *out, const char *in, size_t len)
+{
+ size_t i, n = 0;
+
+ for (i = 0; i < len; i++)
+ {
+  if (in[i] == '\r' && i + 1 < len && in[i + 1] == WPE_WR)
+   continue;
+  out[n++] = in[i];
+ }
+ return(n);
+}
+
+/**
+ * eol_rows_from_text - The lines of some text, split on LF only.
+ * @bytes, @n: the text; @mx_x: Max. Columns; @normalize: leave out the CR of
+ * each CR LF first (E_EOL_NORMALIZE); @count: receives the number of lines.
  *
  * The first NUL ends the text, as it ends a row.  Return: as
  * e_buffer_lines_from_text.
  */
-static STRING *eol_rows_from_text(const unsigned char *bytes, size_t n, int mx_x, int *count)
+static STRING *eol_rows_from_text(const unsigned char *bytes, size_t n, int mx_x, int normalize,
+                                  int *count)
 {
  STRING *lines;
  char *text = malloc(n + 1);
@@ -441,7 +467,10 @@ static STRING *eol_rows_from_text(const unsigned char *bytes, size_t n, int mx_x
   *count = -1;
   return(NULL);
  }
- memcpy(text, bytes, n);
+ if (normalize)
+  n = e_eol_normalize(text, (const char *) bytes, n);
+ else
+  memcpy(text, bytes, n);
  text[n] = '\0';
  lines = e_buffer_lines_from_text(text, mx_x, count);
  free(text);
@@ -452,12 +481,14 @@ static STRING *eol_rows_from_text(const unsigned char *bytes, size_t n, int mx_x
  * e_eol_lines - Make the rows of some bytes.
  * @bytes, @n: the bytes; @mx_x: Max. Columns, how wide a row is; @policy: how
  * the bytes were made (E_EOL_KEEP for a file's bytes, E_EOL_ROWS for text
- * the buffer's rows made); @info: receives what E_EOL_KEEP found (may be
- * NULL); @count: receives the number of rows.
+ * the buffer's rows made, E_EOL_NORMALIZE for text from outside); @info:
+ * receives what E_EOL_KEEP found (may be NULL); @count: receives the number
+ * of rows.
  *
  * E_EOL_ROWS is the exact inverse of e_eol_text with E_EOL_LF: a text the
  * buffer made goes back into the buffer with every carriage return where it
  * was, so a whole-text replace does not change a line nobody touched.
+ * E_EOL_NORMALIZE reads a CR LF as one break (see e_eol_normalize).
  * Return: rows the caller owns until a splice adopts them (NULL with
  * *count == 0 for empty text; *count < 0 for no memory).
  */
@@ -470,7 +501,9 @@ STRING *e_eol_lines(const unsigned char *bytes, size_t n, int mx_x, WpeEolPolicy
 
  *count = 0;
  if (policy == E_EOL_ROWS)
-  return(eol_rows_from_text(bytes, n, mx_x, count));
+  return(eol_rows_from_text(bytes, n, mx_x, 0, count));
+ if (policy == E_EOL_NORMALIZE)
+  return(eol_rows_from_text(bytes, n, mx_x, 1, count));
  if (info == NULL)
   info = &mine;
  memset(&rl, 0, sizeof(rl));
@@ -488,6 +521,80 @@ STRING *e_eol_lines(const unsigned char *bytes, size_t n, int mx_x, WpeEolPolicy
  free(rl.cur);
  *count = rl.n;
  return(rl.line);
+}
+
+/**
+ * e_eol_replace_all - Make a buffer hold some text, changing only the lines
+ * that differ.
+ * @b: the buffer; @text: the whole new text; @step: how the change counts
+ * for Ctrl-U; @policy: where the text came from (E_EOL_ROWS for text the
+ * buffer's own rows made, E_EOL_NORMALIZE for text from outside).
+ *
+ * What the user gains: a tool's rewrite of a file (an accepted Edit, a
+ * server's reformat) leaves every line it did not touch as it was, a
+ * carriage return kept as text included, so the next Save does not change a
+ * line nobody edited.  Return: as e_buffer_replace_all.
+ */
+int e_eol_replace_all(BUFFER *b, const char *text, WpeBufferStep step, WpeEolPolicy policy)
+{
+ STRING *lines;
+ int n;
+
+ lines = e_eol_lines((const unsigned char *) (text ? text : ""), text ? strlen(text) : 0,
+                     b->mx.x, policy, NULL, &n);
+ if (n < 0)
+  return(E_BUFFER_NOMEM);
+ return(e_buffer_replace_rows(b, lines, n, step));
+}
+
+/**
+ * e_eol_append_text - Add text after a buffer's last line.
+ * @b: the buffer; @text: the text; @skip_blank: drop empty lines, as build
+ * output in Messages does; @policy: as e_eol_replace_all.
+ *
+ * What the user gains: output of a program that uses Windows line breaks
+ * shows as lines in Messages and the debugger's views, with no ^M at the
+ * end of each.  Return: as e_buffer_append_lines.
+ */
+int e_eol_append_text(BUFFER *b, const char *text, int skip_blank, WpeEolPolicy policy)
+{
+ STRING *lines;
+ int n;
+
+ lines = e_eol_lines((const unsigned char *) (text ? text : ""), text ? strlen(text) : 0,
+                     b->mx.x, policy, NULL, &n);
+ if (n < 0)
+  return(E_BUFFER_NOMEM);
+ return(e_buffer_append_lines(b, lines, n, skip_blank));
+}
+
+/**
+ * e_eol_append_rows - Add text after a buffer's last line, one row for each
+ * of its lines however wide, the empty ones left out.
+ * @b: the buffer of Messages or of an output window; @text: the text;
+ * @policy: as e_eol_replace_all.
+ *
+ * What the user gains: a build or a program that writes Windows line breaks
+ * shows its lines in Messages with no ^M at the end of each, and Alt-T reads
+ * the file name and line number of a compiler's row as it would on an LF
+ * line.  Return: as e_buffer_append_rows.
+ */
+int e_eol_append_rows(BUFFER *b, const char *text, WpeEolPolicy policy)
+{
+ char *copy;
+ size_t len;
+ int r;
+
+ if (text == NULL || policy != E_EOL_NORMALIZE)
+  return(e_buffer_append_rows(b, text));
+ len = strlen(text);
+ copy = malloc(len + 1);
+ if (copy == NULL)
+  return(E_BUFFER_NOMEM);
+ copy[e_eol_normalize(copy, text, len)] = '\0';
+ r = e_buffer_append_rows(b, copy);
+ free(copy);
+ return(r);
 }
 
 /* Where the bytes of rows go: a file, or memory. */
@@ -696,6 +803,23 @@ void e_eol_buffer_fresh(BUFFER *b, const ECNT *cn)
 {
  b->eol = e_eol_default(cn);
  b->final_break = E_FINAL_BREAK_NONE;
+ b->nul_dropped = 0;
+}
+
+/**
+ * e_eol_nul_sentence - The sentence that tells how many NUL bytes of a file
+ * were left out when it was read.
+ * @count: how many; @buf, @size: where the sentence goes.
+ *
+ * One wording for the status line on open, the question before the first
+ * Save and the line after Block > Read.
+ */
+void e_eol_nul_sentence(int count, char *buf, size_t size)
+{
+ if (count == 1)
+  snprintf(buf, size, "1 NUL byte of the file was left out when it was read");
+ else
+  snprintf(buf, size, "%d NUL bytes of the file were left out when they were read", count);
 }
 
 /**
@@ -713,6 +837,7 @@ void e_eol_buffer_adopt(BUFFER *b, const ECNT *cn, const WpeEolInfo *info)
  else
   b->eol = info->eol;
  b->final_break = info->final_break;
+ b->nul_dropped = info->nul;
 }
 
 /**
