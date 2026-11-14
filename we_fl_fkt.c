@@ -387,11 +387,21 @@ int e_fl_sel_len(FLWND *fw)
    return(strlen(*(fw->df->name + fw->nf)));
 }
 
+/**
+ * WPE_TYPEAHEAD_MAX - Size of the type-ahead buffer of a file panel.
+ *
+ * Typing in the Files or DirTree panel jumps to the first name that starts
+ * with the typed text.  The buffer is as large as a whole path, so any name
+ * the panel can show, however long, can be typed in full and found.  Keys
+ * typed after the buffer is full are ignored, never written past its end.
+ */
+#define WPE_TYPEAHEAD_MAX WPE_PATH_MAX
+
 int e_file_window(int sw, FLWND *fw, int ft, int fz)
 {
    int i, c, nsu = 0;
    int len = 0;
-   char sustr[18];
+   char sustr[WPE_TYPEAHEAD_MAX];
    if(fw->df->anz > 0)
    {  if(fw->nf >= fw->df->anz) fw->nf = fw->df->anz-1;
       len = e_fl_sel_len(fw);
@@ -446,6 +456,8 @@ int e_file_window(int sw, FLWND *fw, int ft, int fz)
       {  fw->nf = 0; nsu = 0;  fw->ja = fw->srcha > 0 ? fw->srcha : 0;  }
       else if (c == ENDE || c == CtrlE || c == CBDO)
       fw->nf = fw->df->anz-1;
+      else if (c >= 32 && c < 127 && nsu >= WPE_TYPEAHEAD_MAX - 1)
+      {  /* buffer full: keep what is typed, ignore the key */  }
       else if (c >= 32 && c < 127)
       {  sustr[nsu] = c;  sustr[++nsu] = '\0';
 	 if(fw->srcha < 0)

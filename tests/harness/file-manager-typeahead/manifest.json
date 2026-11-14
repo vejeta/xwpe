@@ -1,0 +1,9 @@
+{
+ "capability": "file-manager-typeahead",
+ "scenarios": [
+  {"id": "SC-fm-typeahead-01", "requirement": "Typing a long name in the Files panel selects it and never writes past the type-ahead buffer", "layer": "ncurses", "test": "tests/test_file_manager_typeahead.py::test_long_name_typed_in_files_panel_lands_on_it", "status": "new", "needs": ["python3"], "note": "red on 11bc939 under wpe-asan: stack-buffer-overflow of sustr[18], the editor dies"},
+  {"id": "SC-fm-typeahead-02", "requirement": "A short name typed in the Files panel still selects it", "layer": "ncurses", "test": "tests/test_file_manager_typeahead.py::test_short_name_control", "status": "new", "needs": ["python3"]},
+  {"id": "SC-fm-typeahead-03", "requirement": "Typing a long text in the DirTree panel never writes past the type-ahead buffer", "layer": "ncurses", "test": "tests/test_file_manager_typeahead.py::test_long_text_typed_in_dirtree_panel_keeps_editor_alive", "status": "new", "needs": ["python3"], "note": "red on 11bc939 under wpe-asan: stack-buffer-overflow of sustr[18]"},
+  {"id": "SC-fm-typeahead-04", "requirement": "Keys typed after the type-ahead buffer is full are ignored", "layer": "ncurses", "test": "tests/test_file_manager_typeahead.py::test_typing_past_the_buffer_keeps_editor_alive", "status": "new", "needs": ["python3"], "note": "red under wpe-asan when the full-buffer check is off by one (nsu >= WPE_TYPEAHEAD_MAX)"}
+ ]
+}
