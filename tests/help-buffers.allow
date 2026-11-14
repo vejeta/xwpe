@@ -16,6 +16,7 @@ R1|we_edit.c|e_zlsplt|1|two numbers into 20 bytes; a line number of ten digits w
 R1|we_opt.c|e_about_box_draw|1|the version string
 R1|we_prog.c|e_run_program|1|one number into 256 bytes
 R1|WeXterm.c|x_palette_resource_names|1|fixed text into 8 bytes
+R2|we_errpat.c|note_variable|1|the loop stops at NAME_BYTES and the array holds NAME_BYTES + 1 for the terminator
 R2|we_progn.c|e_find_def_scan|1|the include word is copied out of a line read into an array of the same 256 bytes, so it ends at that line's terminator
 # Unbounded on input from the environment: a PATH entry of 256 bytes or more
 # overflows tmp when a C file is opened, and a long command name overflows
