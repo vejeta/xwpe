@@ -863,6 +863,11 @@ EXTRA_DIST = \
   tests/check-keymap-docs.sh \
   tests/test_keymap_docs.py \
   docs/chapters/keys-cua-1.6.txt \
+  docs/chapters/keys-borland-1.6.txt \
+  docs/chapters/keys-modern-changes.texi \
+  docs/chapters/keys-delivery.txt \
+  tests/test_keys_session.py \
+  tests/test_keys_delivery.py \
   tests/stubs/a68g/a68g \
   tests/stubs/gdb \
   tests/stubs/full-pipe/lldb-dap \

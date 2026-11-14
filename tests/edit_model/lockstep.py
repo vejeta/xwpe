@@ -295,6 +295,9 @@ class Walk:
             weights = weights or LEGACY_WEIGHTS
         else:
             self.rng = random.Random("%s-%s-%d" % (row.name, self.style, seed))
+        # a style draws only what it has keys for
+        weights = {k: v for k, v in (weights or walk.WEIGHTS).items()
+                   if keymap.available(self.style, k)}
         self.drawer = walk.Drawer(self.rng, weights)
         self.coverage = coverage if coverage is not None else walk.Coverage()
         self.levels = row.levels() if row is not None else {}
@@ -314,6 +317,8 @@ class Walk:
         self.start_mismatch = None
 
     def keys_of(self, name, arg):
+        if name == "toggle_breakpoint" and self.style == keymap.STYLE_CUA:
+            return list(option_row.BREAKPOINT_KEYS_MODERN)
         if name in PRELUDE_ONLY:
             return list(PRELUDE_ONLY[name])
         return keymap.keys_for(self.style, name, arg)

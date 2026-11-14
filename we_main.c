@@ -291,6 +291,55 @@ static char *e_xdg_config_file(void)
 }
 
 /**
+ * e_binding_trace - Append one dispatch of the key table to the file
+ * XWPE_UI_TRACE names, for the tests that drive every key of a table.
+ */
+static void e_binding_trace(int code, int style, int context, int action)
+{
+ const char *path = getenv("XWPE_UI_TRACE");
+ FILE *tf;
+
+ (void)style;
+ if (!path)
+  return;
+ tf = fopen(path, "a");
+ if (!tf)
+  return;
+ fprintf(tf, "binding context=%s code=%d action=%s\n", wpe_context_name(context), code,
+         wpe_action_name((WpeAction)action));
+ fclose(tf);
+}
+
+/**
+ * e_profile_is_new - Has this user never run the editor?
+ *
+ * The editor creates its configuration folder at every start, so "no option
+ * file" is not enough: a profile is new only when there is no xwperc in the
+ * configuration folder or in the legacy ~/.xwpe, and neither folder exists.
+ * An installation of 1.6 has the first, an older one the second, and neither
+ * is ever asked which keys it wants, so an existing user's style never
+ * changes under him.  It must run before e_xdg_config_file creates the
+ * folder.  An xwperc in the folder the editor was started in is a project's
+ * decision, not a new profile.
+ * Return: 1 when the profile is new.
+ */
+static int e_profile_is_new(void)
+{
+ const char *home = getenv("HOME");
+ char dir[WPE_PATH_SIZE], xdgfile[WPE_PATH_SIZE], legacy[WPE_PATH_SIZE], legacydir[WPE_PATH_SIZE];
+
+ if (!home || !*home) home = ".";
+ if (e_xdg_config_paths(getenv("XDG_CONFIG_HOME"), home, dir, xdgfile, legacy) != 0)
+  return 0;
+ if (wpe_path_join(legacydir, WPE_PATH_SIZE, home, XWPE_HOME) != 0)
+  return 0;
+ if (access(OPTION_FILE, F_OK) == 0)
+  return 0;
+ return access(xdgfile, F_OK) != 0 && access(legacy, F_OK) != 0 &&
+        access(dir, F_OK) != 0 && access(legacydir, F_OK) != 0;
+}
+
+/**
  * e_xdg_config_file_or_none - The user's own option file, or "" when its
  * folder's path is longer than the system allows.
  *
@@ -318,6 +367,8 @@ int main(int argc, char **argv)
  int i, err = 0, g[4];
  int so = 0, sd = 1;
  char *tp;
+ const char *bad_keys = NULL;
+ int new_profile;
 
  /* Non-interactive query flags, answered before any terminal/UI setup so they
     work with no controlling tty -- in scripts, pipes and packaging test suites.
@@ -334,11 +385,19 @@ int main(int argc, char **argv)
    printf("Usage: %s [file ...]\n"
           "Wpe/Xwpe programming editor.  With no file it starts the full-screen\n"
           "editor; file arguments are opened on start.\n"
+          "  --keys STYLE    key style for this run: borland or modern\n"
+          "                  (also $XWPE_KEYS; the option file is not changed)\n"
           "  --version, -V   print the version and exit\n"
           "  --help          print this help and exit\n", argv[0]);
    return 0;
   }
  }
+ if (e_keys_session_read(argc, argv, &bad_keys) != 0)
+ {
+  fprintf(stderr, "%s: unknown key style '%s' (borland or modern)\n", argv[0], bad_keys);
+  return 2;
+ }
+ new_profile = e_profile_is_new();   /* before anything makes the configuration folder */
 
  if ((cn = (ECNT *)MALLOC(sizeof(ECNT))) == NULL) {
   printf(" Fatal Error: %s\n", e_msg[ERR_LOWMEM]);
@@ -414,6 +473,13 @@ int main(int argc, char **argv)
   }
  }
  if (so == 0) err = e_opt_read(cn);
+ e_keys_migrate(cn);          /* a 1.6 CUA profile becomes Modern, once */
+ e_keys_session_apply(cn);    /* --keys and $XWPE_KEYS over the file, this run only */
+#ifdef DEBUGGER
+ wpe_binding_set_session_probe(e_d_session_runs);   /* F10 steps while a session is open */
+#endif
+ if (getenv("XWPE_UI_TRACE"))
+  wpe_binding_set_trace(e_binding_trace);
 #ifdef WPE_AI
  wpe_ai_config_init();  /* bake defaults + apply XWPE_AI_* env over the config */
 #endif
@@ -436,6 +502,8 @@ int main(int argc, char **argv)
  if (err > 0) e_error(e_msg[err], 0, cn->fb);
  e_opt_say_ignored_keys(cn);
  e_opt_say_file_missing(cn, E_OPT_NOT_READ);
+ if (e_keys_notice_wanted()) e_keys_notice_shown(cn);
+ if (new_profile && e_keys_ask_allowed()) e_keys_first_run(cn);
  if (WpeIsProg()) WpeSyntaxReadFile(cn);
 #ifdef UNIX
  for (i = 1; i < argc; i++)
@@ -446,6 +514,7 @@ int main(int argc, char **argv)
   if (*argv[i] == '-')
   {
    if (*(argv[i]+1) == 's' && *(argv[i]+2) == 'f') i++;
+   else if (e_keys_arg_takes_value(argv[i])) i++;   /* the style, not a file */
 #if defined(UNIX) && defined(PROG)
    else if (*(argv[i]+1) == 'p' && *(argv[i]+2) == 'm') e_we_sw |= 8;
 #endif
@@ -539,8 +608,6 @@ void e_use_editor_bar(FENSTER *f, WOPT *bar)
  */
 WOPT *e_plain_editor_bar(int style)
 {
- if (style == WPE_STYLE_CUA)
-  return(eblst_bar);
  if (WpeIsProg())
   return(eblst_prog_bar);
  return(eblst_bar);
@@ -654,9 +721,8 @@ static WOPT *e_editor_bar_for(FENSTER *f, int style)
  * e_debug_bar_wanted - Should the editor windows show the debugger's bar?
  * @cn: the editor.
  *
- * Only while a session runs and only in the Borland style: the CUA style has
- * no decided debugger keys yet, and a bar that names a key doing nothing
- * sends the user to a dead end.
+ * Only while a session runs; both key styles have decided debugger keys and
+ * the bar names the ones of the style in use.
  * Return: 1 when the debugger's bar is the one to show.
  */
 static int e_debug_bar_wanted(ECNT *cn)
@@ -664,8 +730,7 @@ static int e_debug_bar_wanted(ECNT *cn)
 #ifndef DEBUGGER
  return(0);
 #else
- if (wpe_binding_style(cn->edopt) == WPE_STYLE_CUA)
-  return(0);
+ (void)cn;
  return(e_d_session_runs());
 #endif
 }

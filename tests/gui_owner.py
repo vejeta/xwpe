@@ -639,9 +639,14 @@ def _check_socket_name(socket):
 
 
 def _apply_extra(env, extra_env):
-    """The row's own variables last, never the terminal size ones."""
+    """The row's own variables last, never the terminal size ones.  A value
+    of None removes the variable (a row that asks the first-run question)."""
     for name, value in (extra_env or {}).items():
-        if name not in NEVER_PASSED:
+        if name in NEVER_PASSED:
+            continue
+        if value is None:
+            env.pop(name, None)
+        else:
             env[name] = value
     for name in NEVER_PASSED:
         env.pop(name, None)
@@ -652,6 +657,10 @@ def _editor_env(env):
     """What every editor gets on top of the base: the checkout's data, a
     known font size, no eager language server."""
     env.update(XWPE_LIB=TOP, XWPE_FONT_SIZE=FONT_SIZE, XWPE_LSP_NO_EAGER="1")
+    # A row starts in an empty HOME, a new profile, which is asked which keys
+    # it wants; nobody answers there, so rows run the Borland keys unless the
+    # row's own environment names another style (or removes this variable).
+    env.setdefault("XWPE_KEYS", "borland")
     return env
 
 

@@ -133,6 +133,46 @@ layout of the keyboard, so Ctrl-S saves on a Cyrillic or Greek layout too;
 a Latin layout (German, French, Dvorak) keeps its own letters.  The reason
 is one decision for every display.
 
+@item The second key style is Modern
+@cindex CUA style
+@cindex Modern style
+@cindex key styles
+The original's second style, kept in 1.4 to 1.6 as CUA (@kbd{Alt-F2} saves,
+@kbd{F2} opens a file), is now the Modern style: @kbd{Ctrl-S} saves,
+@kbd{Ctrl-O} opens, @kbd{Ctrl-Z} and @kbd{Ctrl-Y} undo and redo.  A key it
+kept does what it did; the keys that now do something else (@kbd{F5},
+@kbd{Ctrl-F5}, @kbd{F2}, @kbd{Ctrl-F6} among them) and the keys that do nothing
+are two generated lists in the key reference.  The first start after the
+upgrade turns an option file of the old style into the new one, once, and says
+so on the status row.  Few people used the old style in a terminal, where most
+of its keys did not arrive, and a third style would have left a dead one in the
+dialog.
+
+@item Control letters in the Modern style
+@cindex Ctrl-P, Ctrl-N, Ctrl-B, Ctrl-F
+@cindex Ctrl-K, chords
+The original gave Ctrl-P, Ctrl-N, Ctrl-B, Ctrl-F, Ctrl-A, Ctrl-E, Ctrl-T,
+Ctrl-Z, Ctrl-Y and Ctrl-D to the cursor and to deleting, and Ctrl-O started a
+prefix.  The Modern style gives those letters to the commands they name in
+other editors (Ctrl-F finds, Ctrl-A selects all) and has no Ctrl-O or Ctrl-G
+prefix, so Ctrl-K is the only one left: a letter after it is a WordStar block
+command, and a control letter after it is a chord of its own, not the letter.
+The Borland style is unchanged.  A key means one thing in a style.
+
+@item Which keys to use, asked once
+@cindex first run
+@cindex --keys
+@cindex XWPE_KEYS
+The original had one key set.  A new profile (no option file and no
+configuration folder) is now asked which keys it wants, in a box where Enter
+picks Modern; the answer is written to the option file at once.  An existing
+installation is never asked, so no one's keys change under them.  @samp{--keys
+borland} and @samp{--keys modern} on the command line, or @env{XWPE_KEYS},
+choose the keys for one run and never write them to the option file, and a
+run whose input is not a terminal is never asked.  A new profile started from a
+script or as another program's editor would otherwise stop on a question
+nobody can answer.
+
 @item Keypad Enter in a terminal
 @cindex keypad Enter
 The original ignored the keypad's @key{Enter} in a terminal that sends it

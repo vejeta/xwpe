@@ -1,0 +1,137 @@
+What each terminal sends for the keys of the Modern style
+=========================================================
+
+Measured on one machine, 2026-11-14, with a raw reader in the terminal (put
+the tty in raw mode, send the two keyboard-protocol requests the editor
+sends, then log every burst of bytes), the key pressed with xdotool under
+Xvfb with a window manager.  "legacy" is the terminal with no request sent;
+"pushed" is after "CSI > 4 ; 2 m" (xterm modifyOtherKeys 2) and
+"CSI > 5 u" (kitty flags 1 and 4).  The reader then asks "CSI ? u" (kitty)
+and "CSI ? 4 m" (xterm) and records the reply.  wpe_key_delivery[] in
+we_bindings.c is filled from this file and from nothing else.
+
+The reader and its driver are test scaffolding, not shipped; the editor's own
+decoder was then fed the byte strings below (tests/test_keys_delivery.py,
+the konsole and tmux rows).
+
+Terminals and versions
+----------------------
+xterm 412, kitty 0.48.2, Konsole 26.08.3, GNOME Terminal 3.60.0 (VTE
+0.84.1), xfce4-terminal 1.2.0 (VTE), tmux 3.7c, GNU screen 5.0.2.
+
+Not run: the Linux console (no console to drive; the editor sends no request
+there, see TIOCLINUX in we_term.c), macOS Terminal.app and iTerm2 (no Mac),
+foot (it needs a Wayland compositor; Wayland is a display of its own, not a
+terminal here).
+
+What could not be driven, said plainly
+--------------------------------------
+- kitty: the window never received the key events under Xvfb (a window
+  manager and an explicit focus were both tried), so only its replies to the
+  two requests are measured.  Its key forms are the kitty protocol's, from
+  its specification, not from this machine.
+- GNOME Terminal and xfce4-terminal: they started and ran the reader, but no
+  key event reached them under Xvfb, so only their replies are measured: none
+  to either request, which means neither protocol.  Their Ctrl-PgUp/PgDn,
+  Ctrl-Shift-C/V/T/W/N/Q/F and F1/F10/F11 are the tab and menu keys the
+  reference chapter already names; they are DOCUMENTED here, not measured.
+- tmux without extended-keys: the log lost its alignment (tmux answers its own
+  start-up queries first), so the "legacy" column of tmux is not used.
+- screen: Ctrl-S is its flow control (XOFF) and nothing arrives for it; the
+  rows after it are shifted by one in the log.  Read as: screen answered
+  neither request, and Ctrl-Shift-letter arrives as Ctrl-letter.
+- Every function key carries a modifier 3 in the X terminals here (xterm and
+  Konsole alike), and Ctrl-F5, Ctrl-F10 and Ctrl-Alt-Down never arrive: that
+  is the Xvfb keymap and the window manager, not the terminals.  The F-key
+  rows are therefore not used as measurements of the terminals; the decoder's
+  rows for them stand on the xterm tables (we_keymap.c).
+
+Which protocol each terminal implements (the replies)
+-----------------------------------------------------
+  xterm 412          modifyOtherKeys: yes.  Reply to "CSI ? 4 m" is
+                     "CSI > 4 ; 0 m" before the request and "CSI > 4 ; 2 m"
+                     after it.  Kitty protocol: no reply.
+  kitty 0.48.2       kitty protocol: yes.  Reply "CSI ? 0 u" before,
+                     "CSI ? 5 u" after the request.  modifyOtherKeys: no
+                     reply.
+  Konsole 26.08.3    kitty protocol: yes ("CSI ? 0 u" before, "CSI ? 5 u"
+                     after).  modifyOtherKeys: no reply.
+  GNOME Terminal     neither (no reply to either).
+  3.60.0 / VTE 0.84
+  xfce4-terminal     neither (VTE, no reply to either).
+  1.2.0
+  tmux 3.7c          no reply to either request, but with extended-keys on
+                     (and terminal-features extkeys) it passes the xterm
+                     form "CSI 27 ; m ; c ~" to an application that asked for
+                     modifyOtherKeys 2.  With extended-keys off it passes the
+                     legacy bytes.
+  GNU screen 5.0.2   neither (no reply); legacy bytes only.
+
+What arrives, key by key (xterm and Konsole; K = Konsole)
+----------------------------------------------------------
+Key                 legacy               xterm pushed        Konsole pushed
+Ctrl-S              ^S                   CSI 27;5;115~       CSI 115::59;5u
+Ctrl-Z              ^Z                   CSI 27;5;122~       CSI 122::46;5u
+Ctrl-K              ^K                   CSI 27;5;107~       CSI 107::120;5u
+Ctrl-B              ^B                   CSI 27;5;98~        CSI 98;5u
+Ctrl-L              ^L                   CSI 27;5;108~       CSI 108::99;5u
+Ctrl-T              ^T                   CSI 27;5;116~       CSI 116::13;5u
+Ctrl-H              ^H                   CSI 27;5;104~       CSI 104::92;5u
+Ctrl-\              ^\                   CSI 27;5;92~        CSI 92::44;5u
+Ctrl-]              ^]                   CSI 27;5;93~        CSI 93::104;5u
+Ctrl-[              ESC                  CSI 27;5;91~        CSI 91::103;5u
+Ctrl-/              ^_ (0x1f)            CSI 27;5;47~        CSI 47;5u
+Ctrl-_              ^_ (0x1f)            CSI 27;6;95~        CSI 95::116;6u
+Ctrl-Space          NUL                  CSI 27;5;32~        CSI 32;5u
+Ctrl-`              NUL                  CSI 27;5;96~        CSI 96::110;5u
+Ctrl-.              ".", no Ctrl         CSI 27;5;46~        CSI 46;5u
+Ctrl-Tab            TAB                  CSI 27;5;9~         taken by Konsole
+Ctrl-Enter          CR                   CSI 27;5;13~        CSI 13;5u
+Ctrl-Backspace      ^H (0x08)            ^H (0x08)           CSI 127;5u
+Ctrl-Delete         CSI 3;5~             CSI 3;5~            CSI 3;5~
+Ctrl-PgUp/PgDn      CSI 5;5~ / 6;5~      the same            the same
+Ctrl-Home/End       CSI 1;5H / 1;5F      the same            the same
+Ctrl-Left           CSI 1;5D             the same            the same
+Shift-Left          CSI 1;2D             the same            CSI 1;2D (legacy: taken)
+Shift-Home/Down     CSI 1;2H / 1;2B      the same            CSI 1;2H / 1;2B (legacy: taken)
+Shift-Tab           CSI Z                CSI Z               CSI 9;2u
+Esc                 ESC                  ESC                 ESC
+Ctrl-Shift-S        ^S (as Ctrl-S)       CSI 27;6;83~        taken by Konsole
+Ctrl-Shift-P        ^P (as Ctrl-P)       CSI 27;6;80~        taken by Konsole
+Ctrl-Shift-F/B/I/O/Z/K/Space             CSI 27;6;<code>~    taken by Konsole
+Ctrl-Shift-C/V/N/T/W/Q                   CSI 27;6;<code>~    taken by Konsole
+Alt-X, Alt-1 (xterm metaSendsEscape)     ESC x, ESC 1        CSI 27;3;120~ / 27;3;49~
+Alt-Backspace       ESC DEL              CSI 27;3;127~       not measured
+Alt-Left/Up/Down    CSI 1;3D / A / B     the same            not measured
+Ctrl-Shift-Left     CSI 1;6D             the same            CSI 1;6D
+
+Two facts the table shows that the design did not know:
+- Konsole in the kitty protocol reports "CSI 115::59;5u": the shifted-key
+  field is empty and the third field is the key of the base layout.  The
+  decoder reads the first field and ignores the other two, which the
+  decoder's rows (tests/test_keys_delivery.py) prove on these exact bytes.
+- Konsole and xterm differ on the plain Backspace chords: xterm keeps Ctrl-
+  Backspace as 0x08 even under modifyOtherKeys, Konsole reports it as
+  "CSI 127;5u".  The Modern map therefore binds Ctrl-Backspace from the
+  protocol form and keeps Alt-Backspace as the fallback (it is a legacy byte
+  pair, ESC DEL, in every terminal).
+
+How this fills wpe_key_delivery[]
+---------------------------------
+ALWAYS (a legacy byte or a plain CSI every terminal sends, unaffected by the
+protocols): Ctrl-S, Ctrl-Z, Ctrl-Y, Ctrl-O, Ctrl-A, Ctrl-D, Ctrl-F, Ctrl-G,
+Ctrl-R, Ctrl-N, Ctrl-Q, Ctrl-W, Ctrl-/ (as 0x1f), Ctrl-Space (as NUL), the
+cursor block with Shift, Ctrl and Alt, Ctrl-Delete, Ctrl-Home/End, Ctrl-PgUp/
+PgDn, Esc, Alt-letter.
+PROTOCOL (a distinct key only where the terminal implements a protocol, which
+among the terminals measured is xterm (modifyOtherKeys), Konsole and kitty
+(kitty): every Ctrl-Shift-letter, Ctrl-Tab, Ctrl-`, Ctrl-H and Ctrl-[ as
+keys of their own, Ctrl-Backspace).  tmux passes the xterm form with
+extended-keys on.  GNOME Terminal, xfce4-terminal and screen implement
+neither, so these keys are TAKEN there by lack of a protocol.
+TAKEN (the terminal keeps the key): Konsole takes every Ctrl-Shift-letter and
+Ctrl-Tab (measured); GNOME Terminal and xfce4-terminal take Ctrl-PgUp/PgDn,
+Ctrl-Shift-C/V/T/W/N/Q/F, F1, F10, F11 and Alt-1..9 (documented, not
+measured); kitty takes its own Ctrl-Shift set and Ctrl-Tab (documented); tmux
+takes Ctrl-B (its prefix, documented); screen takes Ctrl-S (measured, XOFF);
+the window manager takes Alt-F4.

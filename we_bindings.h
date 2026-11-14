@@ -18,12 +18,12 @@
     ED_CUA_STYLE of the editor options. */
 typedef enum {
  WPE_STYLE_BORLAND = 0,
- WPE_STYLE_CUA,
+ WPE_STYLE_MODERN,
  WPE_STYLE_COUNT
 } WpeStyle;
 
 #define WPE_STYLE_BIT(s) (1u << (s))
-#define WPE_STYLES_BOTH (WPE_STYLE_BIT(WPE_STYLE_BORLAND) | WPE_STYLE_BIT(WPE_STYLE_CUA))
+#define WPE_STYLES_BOTH (WPE_STYLE_BIT(WPE_STYLE_BORLAND) | WPE_STYLE_BIT(WPE_STYLE_MODERN))
 
 /** The places that read a key and choose what it does.  The four editor
     contexts are consulted one after the other, in this order, for a key in an
@@ -42,6 +42,8 @@ typedef enum {
  WPE_CTX_HELP,          /* the Help viewer's page keys */
  WPE_CTX_LIST,          /* the file manager's list windows: the key that closes one */
  WPE_CTX_DIALOG_MOVE,   /* a dialog or drop-down: the key that starts the move mode */
+ WPE_CTX_CURSOR,        /* the control letters that move the cursor or delete a word, a line */
+ WPE_CTX_BOX,           /* a dialog, menu or message box: binds no key, so every distinct key folds */
  WPE_CTX_COUNT
 } WpeContext;
 
@@ -184,7 +186,17 @@ typedef enum {
  X(AI_READ_FOLDERS, "Read folders", "Withdraw a folder the assistant may read") \
  X(AI_NEW_SESSION, "Clear conversation", "Start a new conversation") \
  X(AI_SETTINGS, "AI settings", "Open the assistant's settings") \
- X(CLOSE_LIST, "Close list", "Close the file manager's list window")
+ X(CLOSE_LIST, "Close list", "Close the file manager's list window") \
+ X(CURSOR_UP, "Cursor up", "Move the cursor up one line") \
+ X(CURSOR_DOWN, "Cursor down", "Move the cursor down one line") \
+ X(CURSOR_LEFT, "Cursor left", "Move the cursor left one character") \
+ X(CURSOR_RIGHT, "Cursor right", "Move the cursor right one character") \
+ X(LINE_START, "Start of line", "Move the cursor to the start of the line") \
+ X(LINE_END, "End of line", "Move the cursor to the end of the line") \
+ X(DELETE_WORD_RIGHT, "Delete word right", "Delete from the cursor to the start of the next word") \
+ X(DELETE_LINE, "Delete line", "Delete the cursor's line") \
+ X(SELECT_WORD, "Select word", "Select the word at the cursor") \
+ X(DELETE_CHAR, "Delete character", "Delete the character at the cursor")
 
 typedef enum {
 #define WPE_ACT_ENUM(id, name, text) WPE_ACT_##id,
@@ -206,6 +218,8 @@ typedef enum {
 #define WPE_ROW_MENU   0x02u  /* a key the menus show beside the item */
 #define WPE_ROW_HIDDEN 0x04u  /* a code no key sends (a click on a bottom-bar entry) */
 #define WPE_ROW_CTRL   0x08u  /* a letter row: the letter's control code also matches */
+#define WPE_ROW_NO_SESSION 0x10u  /* only while no debugger session is open (F10 opens the menu) */
+#define WPE_ROW_IN_SESSION 0x20u  /* only while a debugger session is open (F10 steps over) */
 
 /** One binding.  A key code, or the range @code..@code_last, in the styles of
     @styles, in @context, does @action. */
@@ -217,7 +231,33 @@ typedef struct {
  unsigned char context;
  unsigned char flags;
  const char *name;   /* the key, Ctrl-F4 style; NULL for a letter after a prefix */
+ const char *fallback; /* what to press where a terminal keeps this key; NULL when it always arrives */
 } WpeBinding;
+
+/**
+ * wpe_binding_set_session_probe - Tell the table how to ask whether a debugger
+ * session is open.
+ * @probe: returns non-zero while a session is open; NULL (the default) means
+ *   none is ever open, as in the unit test and the reference generator.
+ *
+ * The rows flagged WPE_ROW_NO_SESSION and WPE_ROW_IN_SESSION apply only in
+ * the state they name, so one key (F10, F8) can open the menu or step over
+ * according to what the user is doing, with no state test in a dispatcher.
+ */
+void wpe_binding_set_session_probe(int (*probe)(void));
+
+/**
+ * wpe_binding_set_trace - Have every dispatch of a key to an action reported.
+ * @hook: called with the key, the style, the context and the action each time
+ *   a dispatcher gets an action from the table; NULL (the default) reports
+ *   nothing.
+ *
+ * For tests: a row can send a key and read which action the table gave, so
+ * "every key of the Modern table drives its action" is checked on the running
+ * editor, one row per table line.  The queries the fold makes to ask whether
+ * a key is bound are not dispatches and are not reported.
+ */
+void wpe_binding_set_trace(void (*hook)(int code, int style, int context, int action));
 
 /**
  * wpe_binding_style - The key style an editor's options select.
@@ -234,6 +274,16 @@ int wpe_binding_style(int edopt);
  * Return: the action, WPE_ACT_NONE when the key is not bound there.
  */
 WpeAction wpe_binding_action(int code, int style, int context);
+
+/**
+ * wpe_binding_prefix_folds_control - Does Ctrl-K B read as Ctrl-K Ctrl-B?
+ * @style: WPE_STYLE_*.
+ * Return: 1 in the Borland style, where a control letter after Ctrl-K is the
+ * letter (WordStar's Ctrl-K Ctrl-B); 0 in the Modern style, where it is a
+ * chord of its own (Ctrl-K Ctrl-C), so the letter commands and the chords
+ * cannot take each other's keys.
+ */
+int wpe_binding_prefix_folds_control(int style);
 
 /**
  * wpe_binding_first_code - The first key code that does an action in a context.
@@ -351,5 +401,67 @@ const char *wpe_bar_entry_text(char *buf, size_t n, WpeAction action, int style,
 const char *wpe_menu_item_text(char *buf, size_t n, const char *stem,
                                WpeAction action, int style, unsigned contexts,
                                int width, const char *sep);
+
+/* ---- Which terminals deliver which key ---------------------------------
+   The fourth column of the generated reference.  Everything here is filled
+   from docs/chapters/keys-delivery.txt, which records what each terminal was
+   measured to send (or says plainly that a terminal could not be driven). */
+
+/** The terminals the delivery table names. */
+typedef enum {
+ WPE_EMU_XTERM = 0,
+ WPE_EMU_VTE,       /* GNOME Terminal, xfce4-terminal, Tilix, Terminator */
+ WPE_EMU_KONSOLE,
+ WPE_EMU_KITTY,
+ WPE_EMU_TMUX,
+ WPE_EMU_SCREEN,
+ WPE_EMU_CONSOLE,   /* the Linux console */
+ WPE_EMU_COUNT
+} WpeEmulator;
+
+/** The two keyboard protocols a terminal may implement. */
+#define WPE_PROTO_MODIFY_OTHER_KEYS 0x01u   /* xterm: CSI 27 ; m ; c ~ */
+#define WPE_PROTO_KITTY             0x02u   /* kitty: CSI c ; m u */
+
+/** How a key reaches the editor. */
+typedef enum {
+ WPE_DELIVER_ALWAYS = 0,   /* a legacy byte or plain CSI: every terminal sends it */
+ WPE_DELIVER_PROTOCOL      /* a key of its own only where a protocol is implemented */
+} WpeDeliveryClass;
+
+/** The key codes @code..@code_last arrive as @klass, and the terminals of
+    the mask @taken keep them for themselves.  @why is "measured" or
+    "documented", then the reason. */
+typedef struct {
+ int code;
+ int code_last;
+ unsigned char klass;
+ unsigned char taken;     /* bits: 1 << WpeEmulator */
+ const char *why;
+} WpeDelivery;
+
+/** The delivery rows, in the order the reference prints them. */
+const WpeDelivery *wpe_key_delivery(size_t *n);
+
+/** The name of a terminal, as the reference titles it. */
+const char *wpe_emulator_name(int emu);
+
+/** The protocols a terminal implements (WPE_PROTO_* bits), as measured. */
+unsigned wpe_emulator_protocols(int emu);
+
+/**
+ * wpe_key_reaches - Does the editor receive the key @code from @emu?
+ * Return: 1 when it arrives; 0 when the terminal keeps it, or when the key
+ * needs a protocol the terminal does not implement.  tmux counts as
+ * implementing modifyOtherKeys, which it passes with extended-keys on.
+ */
+int wpe_key_reaches(int code, int emu);
+
+/**
+ * wpe_binding_key_class - How the key of a binding reaches the editor.
+ * Return: a WpeDeliveryClass, WPE_DELIVER_PROTOCOL when any delivery row that
+ * contains @code says so.
+ */
+int wpe_binding_key_class(int code);
 
 #endif /* WE_BINDINGS_H */

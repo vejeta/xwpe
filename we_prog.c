@@ -202,13 +202,25 @@ char *e_p_msg[] = {
 
 extern int e_lsp_ui_key(FENSTER *f);   /* Alt-Q prefix (direct/menu), in we_debug.c */
 extern int e_lsp_ui_menu(FENSTER *f);  /* LSP action menu, defined in we_debug.c */
+extern int e_lsp_ui_direct(FENSTER *f, int action);   /* a language-server action on its own key */
 
 int e_prog_switch(FENSTER *f, int c)
 {
- switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PROGRAM))
+ int action = wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PROGRAM);
+
+ switch (action)
  {
   case WPE_ACT_RUN:
    e_run(f);
+   break;
+  case WPE_ACT_LSP_DEFINITION:
+  case WPE_ACT_LSP_REFERENCES:
+  case WPE_ACT_LSP_RENAME:
+  case WPE_ACT_LSP_COMPLETE:
+  case WPE_ACT_LSP_FORMAT:
+  case WPE_ACT_LSP_OUTLINE:
+  case WPE_ACT_LSP_WORKSPACE_SYMBOLS:
+   e_lsp_ui_direct(f, action);   /* the Modern style's single keys for what Alt-Q letters do */
    break;
   case WPE_ACT_LSP_PREFIX:   /*  language-server prefix: the letter after it runs
                                  the action directly (silent, no flicker); ? (or any

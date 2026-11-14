@@ -16,17 +16,24 @@
 #include "we_bindings.h"
 
 #define BO WPE_STYLE_BIT(WPE_STYLE_BORLAND)
-#define CU WPE_STYLE_BIT(WPE_STYLE_CUA)
+#define MO WPE_STYLE_BIT(WPE_STYLE_MODERN)
 #define BOTH WPE_STYLES_BOTH
 #define B WPE_ROW_BAR
 #define M WPE_ROW_MENU
 #define H WPE_ROW_HIDDEN
 #define CT WPE_ROW_CTRL
+#define NOS WPE_ROW_NO_SESSION
+#define INS WPE_ROW_IN_SESSION
 
 #define RANGE(act, lo, hi, st, ctx, fl, nm) \
- { WPE_ACT_##act, (lo), (hi), (st), (ctx), (fl), (nm) }
+ { WPE_ACT_##act, (lo), (hi), (st), (ctx), (fl), (nm), NULL }
 #define KEY(act, code, st, ctx, fl, nm) RANGE(act, code, code, st, ctx, fl, nm)
+/* A key with the words to give where a terminal keeps it from the editor. */
+#define KEYF(act, code, st, ctx, fl, nm, fb) \
+ { WPE_ACT_##act, (code), (code), (st), (ctx), (fl), (nm), (fb) }
 #define LETTER(act, ch, ctx, fl) KEY(act, ch, BOTH, ctx, fl, NULL)
+/* Ctrl-Shift-letter, a key of its own only under a keyboard protocol. */
+#define CS(ch) (WPE_CS_FIRST + ((ch) - 'A'))
 
 /* The rows are in the order the reference prints them, and within one action
    in the order a menu names the keys.  The order of the contexts is the order
@@ -40,27 +47,25 @@ static const WpeBinding wpe_bindings[] = {
  KEY(TOPIC_SEARCH, CF1, BOTH, WPE_CTX_WINDOW, M, "Ctrl-F1"),
  KEY(FUNCTION_INDEX, AF1, BOTH, WPE_CTX_WINDOW, M, "Alt-F1"),
  KEY(ESCAPE, WPE_ESC, BOTH, WPE_CTX_WINDOW, 0, "Esc"),
- KEY(MENU_BAR, F10, BOTH, WPE_CTX_WINDOW, 0, "F10"),
+ KEY(MENU_BAR, F10, BO, WPE_CTX_WINDOW, 0, "F10"),
+ KEYF(MENU_BAR, F10, MO, WPE_CTX_WINDOW, NOS, "F10", "Alt-letter opens a menu; Alt-Space"),
  KEY(MENU_BAR, AltBl, BOTH, WPE_CTX_WINDOW, 0, "Alt-Space"),
  KEY(LIST_WINDOWS, Alt0, BOTH, WPE_CTX_WINDOW, M, "Alt-0"),
  KEY(USER_SCREEN, AF5, BOTH, WPE_CTX_WINDOW, M, "Alt-F5"),
- /* the CUA style */
- KEY(SIZE_MOVE, CtrlL, CU, WPE_CTX_WINDOW, M, "Ctrl-L"),
- KEY(FILE_MANAGER, F2, CU, WPE_CTX_WINDOW, B | M, "F2"),
- KEY(FILE_MANAGER, OPEN, CU, WPE_CTX_WINDOW, 0, "Sun Open"),
- KEY(FILE_MANAGER_FIRST, SF2, CU, WPE_CTX_WINDOW, 0, "Shift-F2"),
- KEY(CLOSE_WINDOW, CtrlW, CU, WPE_CTX_WINDOW, M, "Ctrl-W"),
- KEY(CLOSE_WINDOW, CF4, CU, WPE_CTX_WINDOW, B | M, "Ctrl-F4"),
- KEY(CLOSE_WINDOW, AltX, CU, WPE_CTX_WINDOW, 0, "Alt-X"),
- KEY(CASCADE, FRONT, CU, WPE_CTX_WINDOW, 0, "Sun Front"),
- KEY(CASCADE, AltZ, CU, WPE_CTX_WINDOW, 0, "Alt-Z"),
- KEY(CASCADE, SF4, CU, WPE_CTX_WINDOW, M, "Shift-F4"),
- KEY(TILE, SF5, CU, WPE_CTX_WINDOW, M, "Shift-F5"),
- KEY(ZOOM, SF6, CU, WPE_CTX_WINDOW, M, "Shift-F6"),
- KEY(NEXT_WINDOW, CF6, CU, WPE_CTX_WINDOW, M, "Ctrl-F6"),
- KEY(NEXT_WINDOW, AltN, CU, WPE_CTX_WINDOW, M, "Alt-N"),
- KEY(QUIT, STOP, CU, WPE_CTX_WINDOW, 0, "Sun Stop"),
- KEY(QUIT, AF4, CU, WPE_CTX_WINDOW, B | M, "Alt-F4"),
+ /* the Modern style */
+ KEY(SIZE_MOVE, AF2, MO, WPE_CTX_WINDOW, M, "Alt-F2"),
+ KEY(FILE_MANAGER, CtrlO, MO, WPE_CTX_WINDOW, B | M, "Ctrl-O"),
+ KEY(FILE_MANAGER, OPEN, MO, WPE_CTX_WINDOW, 0, "Sun Open"),
+ KEY(CLOSE_WINDOW, CtrlW, MO, WPE_CTX_WINDOW, B | M, "Ctrl-W"),
+ KEY(CLOSE_WINDOW, CF4, MO, WPE_CTX_WINDOW, M, "Ctrl-F4"),
+ KEY(CASCADE, FRONT, MO, WPE_CTX_WINDOW, 0, "Sun Front"),
+ KEY(NEXT_WINDOW, F6, MO, WPE_CTX_WINDOW, M, "F6"),
+ KEY(NEXT_WINDOW, AltN, MO, WPE_CTX_WINDOW, M, "Alt-N"),
+ KEYF(NEXT_WINDOW, WPE_CTRL_TAB, MO, WPE_CTX_WINDOW, 0, "Ctrl-Tab", "F6 or Alt-N"),
+ KEY(QUIT, STOP, MO, WPE_CTX_WINDOW, 0, "Sun Stop"),
+ KEY(QUIT, CtrlQ, MO, WPE_CTX_WINDOW, B | M, "Ctrl-Q"),
+ KEY(QUIT, AltX, MO, WPE_CTX_WINDOW, M, "Alt-X"),
+ KEYF(QUIT, AF4, MO, WPE_CTX_WINDOW, 0, "Alt-F4", "Ctrl-Q; the window manager keeps Alt-F4"),
  /* the Borland style */
  KEY(SIZE_MOVE, AF2, BO, WPE_CTX_WINDOW, M, "Alt-F2"),
  KEY(SIZE_MOVE, CF5, BO, WPE_CTX_WINDOW, 0, "Ctrl-F5"),
@@ -77,51 +82,77 @@ static const WpeBinding wpe_bindings[] = {
  KEY(QUIT, STOP, BO, WPE_CTX_WINDOW, 0, "Sun Stop"),
 
  /* ---- WPE_CTX_PROGRAM: programming modes ---- */
+ KEY(RUN, CF5, MO, WPE_CTX_PROGRAM, M, "Ctrl-F5"),
  KEY(RUN, CF9, BOTH, WPE_CTX_PROGRAM, M, "Ctrl-F9"),
  KEY(RUN, AltU, BOTH, WPE_CTX_PROGRAM, M, "Alt-U"),
  KEY(LSP_PREFIX, AltQ, BOTH, WPE_CTX_PROGRAM, 0, "Alt-Q"),
  KEY(LSP_MENU, WPE_LSP_MENU, BOTH, WPE_CTX_PROGRAM, H, NULL),
- KEY(MAKE, F9, BOTH, WPE_CTX_PROGRAM, B | M, "F9"),
- KEY(MAKE, AltM, BOTH, WPE_CTX_PROGRAM, M, "Alt-M"),
+ KEY(MAKE, F9, BO, WPE_CTX_PROGRAM, B | M, "F9"),
+ KEY(MAKE, AltM, BO, WPE_CTX_PROGRAM, M, "Alt-M"),
+ KEY(MAKE, AltM, MO, WPE_CTX_PROGRAM, B | M, "Alt-M"),
+ KEYF(MAKE, CS('B'), MO, WPE_CTX_PROGRAM, 0, "Ctrl-Shift-B", "Alt-M"),
  KEY(COMPILE, AltC, BOTH, WPE_CTX_PROGRAM, M, "Alt-C"),
  KEY(COMPILE, AF9, BOTH, WPE_CTX_PROGRAM, 0, "Alt-F9"),
  KEY(INSTALL, AltL, BOTH, WPE_CTX_PROGRAM, M, "Alt-L"),
  KEY(EXEC_MAKE, AltA, BOTH, WPE_CTX_PROGRAM, M, "Alt-A"),
  KEY(AI_PREFIX, AltG, BOTH, WPE_CTX_PROGRAM, 0, "Alt-G"),
  KEY(AI_MENU, WPE_AI_MENU, BOTH, WPE_CTX_PROGRAM, H, NULL),
+ KEY(NEXT_ERROR, F8, MO, WPE_CTX_PROGRAM, NOS | M, "F8"),
  KEY(NEXT_ERROR, AltT, BOTH, WPE_CTX_PROGRAM, M, "Alt-T"),
  KEY(NEXT_ERROR, AF8, BOTH, WPE_CTX_PROGRAM, 0, "Alt-F8"),
+ KEY(PREV_ERROR, SF8, MO, WPE_CTX_PROGRAM, NOS | M, "Shift-F8"),
  KEY(PREV_ERROR, AltV, BOTH, WPE_CTX_PROGRAM, M, "Alt-V"),
  KEY(PREV_ERROR, AF7, BOTH, WPE_CTX_PROGRAM, 0, "Alt-F7"),
- KEY(DEBUG_PREFIX, CtrlG, BOTH, WPE_CTX_PROGRAM, 0, "Ctrl-G"),
+ KEY(DEBUG_PREFIX, CtrlG, BO, WPE_CTX_PROGRAM, 0, "Ctrl-G"),
+ /* the language server on one key, in the Modern style (Alt-Q and a letter
+    stays in both): a key the terminal keeps has its Alt-Q letter as fallback */
+ KEYF(LSP_DEFINITION, F12, MO, WPE_CTX_PROGRAM, M, "F12", "Alt-Q d"),
+ KEYF(LSP_REFERENCES, SF12, MO, WPE_CTX_PROGRAM, M, "Shift-F12", "Alt-Q r"),
+ KEYF(LSP_RENAME, F2, MO, WPE_CTX_PROGRAM, M, "F2", "Alt-Q n"),
+ KEYF(LSP_COMPLETE, WPE_CTRL_SPACE, MO, WPE_CTX_PROGRAM, M, "Ctrl-Space", "Alt-Q c"),
+ KEYF(LSP_FORMAT, CS('I'), MO, WPE_CTX_PROGRAM, M, "Ctrl-Shift-I", "Alt-Q f"),
+ KEYF(LSP_OUTLINE, CS('O'), MO, WPE_CTX_PROGRAM, M, "Ctrl-Shift-O", "Alt-Q o"),
+ KEYF(LSP_WORKSPACE_SYMBOLS, CtrlT, MO, WPE_CTX_PROGRAM, M, "Ctrl-T", "Alt-Q w"),
 
  /* ---- WPE_CTX_DEBUG ---- */
- KEY(DEBUG_TRACE, F7, BOTH, WPE_CTX_DEBUG, B | M, "F7"),
- KEY(DEBUG_STEP, F8, BOTH, WPE_CTX_DEBUG, B | M, "F8"),
- KEY(DEBUG_RUN, CF10, BOTH, WPE_CTX_DEBUG, B | M, "Ctrl-F10"),
- KEY(DEBUG_QUIT, CF2, BOTH, WPE_CTX_DEBUG, B | M, "Ctrl-F2"),
+ KEY(DEBUG_TRACE, F7, BO, WPE_CTX_DEBUG, B | M, "F7"),
+ KEYF(DEBUG_TRACE, F11, MO, WPE_CTX_DEBUG, B | M, "F11", "F7"),
+ KEY(DEBUG_TRACE, F7, MO, WPE_CTX_DEBUG, 0, "F7"),
+ KEY(DEBUG_STEP, F8, BO, WPE_CTX_DEBUG, B | M, "F8"),
+ KEYF(DEBUG_STEP, F10, MO, WPE_CTX_DEBUG, INS | B | M, "F10", "F8"),
+ KEY(DEBUG_STEP, F8, MO, WPE_CTX_DEBUG, 0, "F8"),
+ KEY(DEBUG_RUN, CF10, BO, WPE_CTX_DEBUG, B | M, "Ctrl-F10"),
+ KEY(DEBUG_RUN, F5, MO, WPE_CTX_DEBUG, B | M, "F5"),
+ KEY(DEBUG_QUIT, CF2, BO, WPE_CTX_DEBUG, B | M, "Ctrl-F2"),
+ KEY(DEBUG_QUIT, SF5, MO, WPE_CTX_DEBUG, B | M, "Shift-F5"),
+ KEY(DEBUG_QUIT, CF2, MO, WPE_CTX_DEBUG, 0, "Ctrl-F2"),
  KEY(DEBUG_PAUSE, CtrlBrk, BOTH, WPE_CTX_DEBUG, B | M, "Ctrl-Brk"),
- KEY(DEBUG_BREAKPOINT, F5, CU, WPE_CTX_DEBUG, M, "F5"),
- KEY(DEBUG_WATCH, CF5, CU, WPE_CTX_DEBUG, B | M, "Ctrl-F5"),
- KEY(DEBUG_STACK, CF3, CU, WPE_CTX_DEBUG, M, "Ctrl-F3"),
  KEY(DEBUG_GOTO_CURSOR, F4, BO, WPE_CTX_DEBUG, B, "F4"),
+ KEY(DEBUG_GOTO_CURSOR, CF10, MO, WPE_CTX_DEBUG, B | M, "Ctrl-F10"),
+ KEY(DEBUG_GOTO_CURSOR, F4, MO, WPE_CTX_DEBUG, 0, "F4"),
  KEY(DEBUG_BREAKPOINT, CF8, BO, WPE_CTX_DEBUG, M, "Ctrl-F8"),
- KEY(DEBUG_WATCH, CF7, BO, WPE_CTX_DEBUG, B | M, "Ctrl-F7"),
- KEY(DEBUG_STACK, CF6, BO, WPE_CTX_DEBUG, M, "Ctrl-F6"),
+ KEY(DEBUG_BREAKPOINT, F9, MO, WPE_CTX_DEBUG, M, "F9"),
+ KEY(DEBUG_WATCH, CF7, BOTH, WPE_CTX_DEBUG, B | M, "Ctrl-F7"),
+ KEY(DEBUG_STACK, CF6, BOTH, WPE_CTX_DEBUG, M, "Ctrl-F6"),
+ KEYF(DEBUG_FINISH, SF11, MO, WPE_CTX_DEBUG, M, "Shift-F11", "Debug menu"),
 
  /* ---- WPE_CTX_EDIT ---- */
  KEY(K_PREFIX, CtrlK, BOTH, WPE_CTX_EDIT, 0, "Ctrl-K"),
- KEY(O_PREFIX, CtrlO, BOTH, WPE_CTX_EDIT, 0, "Ctrl-O"),
+ KEY(O_PREFIX, CtrlO, BO, WPE_CTX_EDIT, 0, "Ctrl-O"),
  KEY(GOTO_LINE, AltG, BOTH, WPE_CTX_EDIT, M, "Alt-G"),
+ KEY(GOTO_LINE, CtrlG, MO, WPE_CTX_EDIT, M, "Ctrl-G"),
  KEY(SHOW_CLIPBOARD, CF10, BOTH, WPE_CTX_EDIT, 0, "Ctrl-F10"),
  KEY(SHOW_CLIPBOARD, AltY, BOTH, WPE_CTX_EDIT, M, "Alt-Y"),
  KEY(BLOCK_DELETE, CtrlDel, BOTH, WPE_CTX_EDIT, M, "Ctrl-Del"),
  KEY(EDIT_UNDO, UNDO, BOTH, WPE_CTX_EDIT, 0, "Sun Undo"),
  KEY(EDIT_UNDO, AltBS, BOTH, WPE_CTX_EDIT, 0, "Alt-Backspace"),
+ KEY(EDIT_UNDO, CtrlZ, MO, WPE_CTX_EDIT, M, "Ctrl-Z"),
  KEY(EDIT_UNDO, CtrlU, BOTH, WPE_CTX_EDIT, M, "Ctrl-U"),
  KEY(EDIT_REDO, AGAIN, BOTH, WPE_CTX_EDIT, 0, "Sun Again"),
  KEY(EDIT_REDO, SABS, BOTH, WPE_CTX_EDIT, 0, "Alt-Shift-Backspace"),
- KEY(EDIT_REDO, CtrlR, BOTH, WPE_CTX_EDIT, M, "Ctrl-R"),
+ KEY(EDIT_REDO, CtrlY, MO, WPE_CTX_EDIT, M, "Ctrl-Y"),
+ KEYF(EDIT_REDO, CS('Z'), MO, WPE_CTX_EDIT, 0, "Ctrl-Shift-Z", "Ctrl-Y"),
+ KEY(EDIT_REDO, CtrlR, BO, WPE_CTX_EDIT, M, "Ctrl-R"),
  KEY(EDIT_CUT, CUT, BOTH, WPE_CTX_EDIT, 0, "Sun Cut"),
  KEY(EDIT_CUT, ShiftDel, BOTH, WPE_CTX_EDIT, M, "Shift-Del"),
  KEY(EDIT_CUT, CtrlX, BOTH, WPE_CTX_EDIT, M, "Ctrl-X"),
@@ -133,12 +164,17 @@ static const WpeBinding wpe_bindings[] = {
  KEY(EDIT_COPY, CtrlEin, BOTH, WPE_CTX_EDIT, M, "Ctrl-Ins"),
  KEY(EDIT_COPY, AltDel, BOTH, WPE_CTX_EDIT, 0, "Alt-Del"),
  KEY(EDIT_COPY, CtrlC, BOTH, WPE_CTX_EDIT, M, "Ctrl-C"),
- /* the CUA style */
- KEY(SAVE, AF2, CU, WPE_CTX_EDIT, B | M, "Alt-F2"),
- KEY(FIND, FID, CU, WPE_CTX_EDIT, 0, "Sun Find"),
- KEY(FIND, AF3, CU, WPE_CTX_EDIT, B | M, "Alt-F3"),
- KEY(REPLACE, SF3, CU, WPE_CTX_EDIT, M, "Shift-F3"),
- KEY(SEARCH_AGAIN, F3, CU, WPE_CTX_EDIT, B | M, "F3"),
+ /* the Modern style */
+ KEY(SAVE, CtrlS, MO, WPE_CTX_EDIT, B | M, "Ctrl-S"),
+ KEY(FIND, FID, MO, WPE_CTX_EDIT, 0, "Sun Find"),
+ KEY(FIND, CtrlF, MO, WPE_CTX_EDIT, B | M, "Ctrl-F"),
+ KEY(FIND, F4, MO, WPE_CTX_EDIT, 0, "F4"),
+ KEY(REPLACE, CtrlR, MO, WPE_CTX_EDIT, M, "Ctrl-R"),
+ KEYF(REPLACE, WPE_CTRL_H, MO, WPE_CTX_EDIT, 0, "Ctrl-H", "Ctrl-R"),
+ KEY(SEARCH_AGAIN, F3, MO, WPE_CTX_EDIT, B | M, "F3"),
+ KEY(BLOCK_ALL, CtrlA, MO, WPE_CTX_EDIT, M, "Ctrl-A"),
+ KEY(BLOCK_LINE, CtrlL, MO, WPE_CTX_EDIT, M, "Ctrl-L"),
+ KEY(SELECT_WORD, CtrlD, MO, WPE_CTX_EDIT, M, "Ctrl-D"),
  /* the Borland style */
  KEY(SAVE, F2, BO, WPE_CTX_EDIT, B | M, "F2"),
  KEY(FIND, FID, BO, WPE_CTX_EDIT, 0, "Sun Find"),
@@ -166,7 +202,9 @@ static const WpeBinding wpe_bindings[] = {
  LETTER(BLOCK_GOTO_END, 'Z', WPE_CTX_PREFIX_K, M),
  RANGE(MARKER_SET, '0', '9', BOTH, WPE_CTX_PREFIX_K, M, NULL),
 
- /* ---- WPE_CTX_PREFIX_O: the letter after Ctrl-O ---- */
+ /* ---- WPE_CTX_PREFIX_O: the letter after Ctrl-O (Borland only: Ctrl-O opens a file in Modern) ---- */
+#undef LETTER
+#define LETTER(act, ch, ctx, fl) KEY(act, ch, BO, ctx, fl, NULL)
  LETTER(DELETE_TO_EOL, 'Y', WPE_CTX_PREFIX_O, M),
  LETTER(DELETE_WORD_LEFT, 'T', WPE_CTX_PREFIX_O, M),
  LETTER(FIND, 'F', WPE_CTX_PREFIX_O, M),
@@ -181,9 +219,10 @@ static const WpeBinding wpe_bindings[] = {
  LETTER(HELP_MARK_END, 'E', WPE_CTX_PREFIX_O, M),
  LETTER(HELP_MARKS_DELETE, 'L', WPE_CTX_PREFIX_O, M),
  LETTER(HELP_CHECK, 'C', WPE_CTX_PREFIX_O, M),
- RANGE(MARKER_GOTO, '0', '9', BOTH, WPE_CTX_PREFIX_O, M, NULL),
+ RANGE(MARKER_GOTO, '0', '9', BO, WPE_CTX_PREFIX_O, M, NULL),
 
- /* ---- WPE_CTX_PREFIX_DEBUG: the letter after Ctrl-G, lower case or control ---- */
+ /* ---- WPE_CTX_PREFIX_DEBUG: the letter after Ctrl-G, lower case or control (Borland only:
+        Ctrl-G is Go to line in Modern, and the Debug menu names every command) ---- */
  LETTER(DEBUG_BREAKPOINT, 'b', WPE_CTX_PREFIX_DEBUG, M | CT),
  LETTER(DEBUG_REMOVE_BREAKPOINTS, 'm', WPE_CTX_PREFIX_DEBUG, M | CT),
  LETTER(DEBUG_WATCH, 'w', WPE_CTX_PREFIX_DEBUG, M | CT),
@@ -201,6 +240,8 @@ static const WpeBinding wpe_bindings[] = {
  LETTER(DEBUG_OUTPUT, 'p', WPE_CTX_PREFIX_DEBUG, M | CT),
  LETTER(DEBUG_OPTIONS, 'o', WPE_CTX_PREFIX_DEBUG, M | CT),
  LETTER(DEBUG_QUIT, 'q', WPE_CTX_PREFIX_DEBUG, M | CT),
+#undef LETTER
+#define LETTER(act, ch, ctx, fl) KEY(act, ch, BOTH, ctx, fl, NULL)
 
  /* ---- WPE_CTX_PREFIX_LSP: the letter after Alt-Q, lower case or control ---- */
  LETTER(LSP_DEFINITION, 'd', WPE_CTX_PREFIX_LSP, CT),
@@ -253,21 +294,36 @@ static const WpeBinding wpe_bindings[] = {
 
  /* ---- WPE_CTX_LIST: the file manager's list windows ---- */
  KEY(CLOSE_LIST, AF3, BO, WPE_CTX_LIST, 0, "Alt-F3"),
- KEY(CLOSE_LIST, CF4, CU, WPE_CTX_LIST, 0, "Ctrl-F4"),
+ KEY(CLOSE_LIST, CF4, MO, WPE_CTX_LIST, 0, "Ctrl-F4"),
 
  /* ---- WPE_CTX_DIALOG_MOVE: a dialog's move mode ---- */
- KEY(SIZE_MOVE, AF2, BO, WPE_CTX_DIALOG_MOVE, 0, "Alt-F2"),
- KEY(SIZE_MOVE, CtrlL, CU, WPE_CTX_DIALOG_MOVE, 0, "Ctrl-L")
+ KEY(SIZE_MOVE, AF2, BOTH, WPE_CTX_DIALOG_MOVE, 0, "Alt-F2"),
+
+ /* ---- WPE_CTX_CURSOR: control letters that move the cursor or delete (Borland only:
+        in Modern each of these letters is a VS Code command) ---- */
+ KEY(CURSOR_UP, CtrlP, BO, WPE_CTX_CURSOR, 0, "Ctrl-P"),
+ KEY(CURSOR_DOWN, CtrlN, BO, WPE_CTX_CURSOR, 0, "Ctrl-N"),
+ KEY(CURSOR_LEFT, CtrlB, BO, WPE_CTX_CURSOR, 0, "Ctrl-B"),
+ KEY(CURSOR_RIGHT, CtrlF, BO, WPE_CTX_CURSOR, 0, "Ctrl-F"),
+ KEY(LINE_START, CtrlA, BO, WPE_CTX_CURSOR, 0, "Ctrl-A"),
+ KEY(LINE_END, CtrlE, BO, WPE_CTX_CURSOR, 0, "Ctrl-E"),
+ KEY(DELETE_WORD_RIGHT, CtrlT, BO, WPE_CTX_CURSOR, 0, "Ctrl-T"),
+ KEY(DELETE_TO_EOL, CtrlZ, BO, WPE_CTX_CURSOR, 0, "Ctrl-Z"),
+ KEY(DELETE_LINE, DGZ, BO, WPE_CTX_CURSOR, 0, "Ctrl-Y"),
+ KEY(DELETE_CHAR, CtrlD, BO, WPE_CTX_CURSOR, 0, "Ctrl-D")
 };
 
 #undef BO
-#undef CU
+#undef MO
 #undef BOTH
 #undef B
 #undef M
 #undef H
 #undef CT
+#undef NOS
+#undef INS
 #undef KEY
+#undef KEYF
 #undef RANGE
 #undef LETTER
 
@@ -298,12 +354,14 @@ static const char *const wpe_context_names[WPE_CTX_COUNT] = {
  "Watches window",
  "Help viewer",
  "File manager lists",
- "Dialog move"
+ "Dialog move",
+ "Cursor keys",
+ "Boxes"
 };
 
 static const char *const wpe_context_prefixes[WPE_CTX_COUNT] = {
  NULL, NULL, NULL, NULL, "Ctrl-K", "Ctrl-O", "Ctrl-G", "Alt-Q", "Alt-G",
- NULL, NULL, NULL, NULL
+ NULL, NULL, NULL, NULL, NULL, NULL
 };
 
 /** The control code of a lower-case letter: 'p' gives 16. */
@@ -312,10 +370,35 @@ static int wpe_control_of(int letter)
  return(letter - 'a' + 1);
 }
 
+static int (*wpe_session_probe)(void);
+
+void wpe_binding_set_session_probe(int (*probe)(void))
+{
+ wpe_session_probe = probe;
+}
+
+/** Is a debugger session open?  Never, until the editor says how to ask. */
+static int wpe_session_runs(void)
+{
+ return(wpe_session_probe != NULL && wpe_session_probe() != 0);
+}
+
+/** Does the state the row names (no session, a session) hold now? */
+static int wpe_row_state_holds(const WpeBinding *row)
+{
+ if ((row->flags & WPE_ROW_NO_SESSION) && wpe_session_runs())
+  return(0);
+ if ((row->flags & WPE_ROW_IN_SESSION) && !wpe_session_runs())
+  return(0);
+ return(1);
+}
+
 /** Does the row bind @code in @style and @context? */
 static int wpe_row_matches(const WpeBinding *row, int code, int style, int context)
 {
  if (row->context != context || !(row->styles & WPE_STYLE_BIT(style)))
+  return(0);
+ if (!wpe_row_state_holds(row))
   return(0);
  if (code >= row->code && code <= row->code_last)
   return(1);
@@ -326,7 +409,15 @@ static int wpe_row_matches(const WpeBinding *row, int code, int style, int conte
 
 int wpe_binding_style(int edopt)
 {
- return((edopt & ED_CUA_STYLE) ? WPE_STYLE_CUA : WPE_STYLE_BORLAND);
+ return((edopt & ED_CUA_STYLE) ? WPE_STYLE_MODERN : WPE_STYLE_BORLAND);
+}
+
+static void (*wpe_trace_hook)(int code, int style, int context, int action);
+static int wpe_trace_paused;   /* the fold asks; asking is not dispatching */
+
+void wpe_binding_set_trace(void (*hook)(int code, int style, int context, int action))
+{
+ wpe_trace_hook = hook;
 }
 
 WpeAction wpe_binding_action(int code, int style, int context)
@@ -334,9 +425,17 @@ WpeAction wpe_binding_action(int code, int style, int context)
  size_t i;
 
  for (i = 0; i < WPE_BINDING_COUNT; i++)
-  if (wpe_row_matches(&wpe_bindings[i], code, style, context))
+  if (wpe_row_matches(&wpe_bindings[i], code, style, context)) {
+   if (wpe_trace_hook && !wpe_trace_paused)
+    wpe_trace_hook(code, style, context, wpe_bindings[i].action);
    return((WpeAction)wpe_bindings[i].action);
+  }
  return(WPE_ACT_NONE);
+}
+
+int wpe_binding_prefix_folds_control(int style)
+{
+ return(style == WPE_STYLE_BORLAND);
 }
 
 int wpe_binding_first_code(WpeAction action, int style, int context)
@@ -378,11 +477,143 @@ static int wpe_legacy_key(int code)
  return(code);
 }
 
+/** Does any of the contexts an editor window reads bind @code? */
+static int wpe_bound_in_editor(int code, int style)
+{
+ static const int contexts[] = {
+  WPE_CTX_WINDOW, WPE_CTX_PROGRAM, WPE_CTX_DEBUG, WPE_CTX_EDIT, WPE_CTX_CURSOR
+ };
+ size_t i;
+ int bound = 0;
+
+ wpe_trace_paused++;
+ for (i = 0; i < sizeof(contexts) / sizeof(contexts[0]) && !bound; i++)
+  bound = wpe_binding_action(code, style, contexts[i]) != WPE_ACT_NONE;
+ wpe_trace_paused--;
+ return(bound);
+}
+
 int wpe_binding_fold(int code, int style, int context)
 {
- if (wpe_binding_action(code, style, context) != WPE_ACT_NONE)
-  return(code);
- return(wpe_legacy_key(code));
+ int bound;
+
+ if (context == WPE_CTX_EDIT) {
+  bound = wpe_bound_in_editor(code, style);
+ } else {
+  wpe_trace_paused++;
+  bound = wpe_binding_action(code, style, context) != WPE_ACT_NONE;
+  wpe_trace_paused--;
+ }
+ return(bound ? code : wpe_legacy_key(code));
+}
+
+/* ---- Which terminals deliver which key ----
+   Filled from docs/chapters/keys-delivery.txt, measured on 2026-11-14 with a
+   raw reader in each terminal.  "measured" says the bytes were seen,
+   "documented" that the terminal could not be driven here and the entry is
+   what its own documentation says. */
+
+#define EMU(e) (1u << (e))
+#define ALL_X_TERMS (EMU(WPE_EMU_XTERM) | EMU(WPE_EMU_VTE) | EMU(WPE_EMU_KONSOLE) | EMU(WPE_EMU_KITTY))
+
+static const WpeDelivery wpe_deliveries[] = {
+ /* a key of its own only under a protocol */
+ { WPE_CS_FIRST, WPE_CS_LAST, WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_KONSOLE),
+   "measured: Konsole keeps every Ctrl-Shift-letter for itself; others send it as Ctrl-letter without a protocol" },
+ { CS('C'), CS('C'), WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_VTE) | EMU(WPE_EMU_KITTY),
+   "documented: copy in GNOME Terminal and kitty" },
+ { CS('V'), CS('V'), WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_VTE) | EMU(WPE_EMU_KITTY),
+   "documented: paste in GNOME Terminal and kitty" },
+ { CS('T'), CS('T'), WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_VTE) | EMU(WPE_EMU_KITTY),
+   "documented: new tab" },
+ { CS('W'), CS('W'), WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_VTE) | EMU(WPE_EMU_KITTY),
+   "documented: close tab" },
+ { CS('N'), CS('N'), WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_VTE) | EMU(WPE_EMU_KITTY),
+   "documented: new window" },
+ { CS('Q'), CS('Q'), WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_VTE) | EMU(WPE_EMU_KITTY),
+   "documented: quit the terminal" },
+ { CS('F'), CS('F'), WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_VTE),
+   "documented: find in GNOME Terminal" },
+ { WPE_CTRL_TAB, WPE_CTRL_TAB, WPE_DELIVER_PROTOCOL, EMU(WPE_EMU_KONSOLE) | EMU(WPE_EMU_KITTY) | EMU(WPE_EMU_VTE),
+   "measured in Konsole: next tab; documented in kitty and GNOME Terminal" },
+ { WPE_CTRL_BACKQUOTE, WPE_CTRL_SPACE, WPE_DELIVER_PROTOCOL, 0,
+   "measured: the legacy bytes are NUL for Ctrl-` and Ctrl-Space, so the distinct key exists only under a protocol" },
+ { WPE_CTRL_H, WPE_CTRL_H, WPE_DELIVER_PROTOCOL, 0,
+   "measured: the legacy byte is 0x08, Backspace" },
+ /* a legacy byte or a plain CSI, but a terminal keeps it */
+ { CBUP, CBDO, WPE_DELIVER_ALWAYS, EMU(WPE_EMU_VTE),
+   "documented: GNOME Terminal and xfce4-terminal switch tabs with Ctrl-PgUp and Ctrl-PgDn" },
+ { F1, F1, WPE_DELIVER_ALWAYS, EMU(WPE_EMU_VTE),
+   "documented: GNOME Terminal's help" },
+ { F10, F10, WPE_DELIVER_ALWAYS, EMU(WPE_EMU_VTE),
+   "documented: GNOME Terminal's menu" },
+ { F11, F11, WPE_DELIVER_ALWAYS, EMU(WPE_EMU_VTE),
+   "documented: GNOME Terminal's full screen" },
+ { Alt1, Alt9, WPE_DELIVER_ALWAYS, EMU(WPE_EMU_VTE),
+   "documented: GNOME Terminal switches tabs with Alt-1 to Alt-9" },
+ { AF4, AF4, WPE_DELIVER_ALWAYS, ALL_X_TERMS | EMU(WPE_EMU_CONSOLE),
+   "documented: the window manager closes the window; the Linux console switches screens" },
+ { CtrlB, CtrlB, WPE_DELIVER_ALWAYS, EMU(WPE_EMU_TMUX),
+   "documented: tmux's prefix" },
+ { CtrlS, CtrlS, WPE_DELIVER_ALWAYS, EMU(WPE_EMU_SCREEN),
+   "measured: screen takes Ctrl-S as XOFF, flow control" }
+};
+
+#define WPE_DELIVERY_COUNT (sizeof(wpe_deliveries) / sizeof(wpe_deliveries[0]))
+
+static const char *const wpe_emulator_names[WPE_EMU_COUNT] = {
+ "xterm", "GNOME Terminal", "Konsole", "kitty", "tmux", "screen", "Linux console"
+};
+
+/* Measured: xterm answers modifyOtherKeys, Konsole and kitty answer the kitty
+   protocol, GNOME Terminal (VTE), xfce4-terminal and screen answer neither, tmux
+   passes the xterm form on with extended-keys on, the console has no protocol. */
+static const unsigned wpe_emulator_proto[WPE_EMU_COUNT] = {
+ WPE_PROTO_MODIFY_OTHER_KEYS, 0, WPE_PROTO_KITTY, WPE_PROTO_KITTY,
+ WPE_PROTO_MODIFY_OTHER_KEYS, 0, 0
+};
+
+const WpeDelivery *wpe_key_delivery(size_t *n)
+{
+ *n = WPE_DELIVERY_COUNT;
+ return(wpe_deliveries);
+}
+
+const char *wpe_emulator_name(int emu)
+{
+ return((emu >= 0 && emu < WPE_EMU_COUNT) ? wpe_emulator_names[emu] : "");
+}
+
+unsigned wpe_emulator_protocols(int emu)
+{
+ return((emu >= 0 && emu < WPE_EMU_COUNT) ? wpe_emulator_proto[emu] : 0);
+}
+
+int wpe_binding_key_class(int code)
+{
+ size_t i;
+
+ for (i = 0; i < WPE_DELIVERY_COUNT; i++)
+  if (code >= wpe_deliveries[i].code && code <= wpe_deliveries[i].code_last &&
+      wpe_deliveries[i].klass == WPE_DELIVER_PROTOCOL)
+   return(WPE_DELIVER_PROTOCOL);
+ return(WPE_DELIVER_ALWAYS);
+}
+
+int wpe_key_reaches(int code, int emu)
+{
+ size_t i;
+ int needs_protocol = wpe_binding_key_class(code) == WPE_DELIVER_PROTOCOL;
+
+ if (emu < 0 || emu >= WPE_EMU_COUNT)
+  return(0);
+ for (i = 0; i < WPE_DELIVERY_COUNT; i++)
+  if (code >= wpe_deliveries[i].code && code <= wpe_deliveries[i].code_last &&
+      (wpe_deliveries[i].taken & EMU(emu)))
+   return(0);
+ if (needs_protocol && wpe_emulator_proto[emu] == 0)
+  return(0);
+ return(1);
 }
 
 const WpeBinding *wpe_binding_table(size_t *n)

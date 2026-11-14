@@ -558,6 +558,7 @@ int e_tst_dfkt(FENSTER *f, int c);
 int e_blk(int anz, int xa, int ya, int col);
 int e_car_ret(BUFFER *b, SCHIRM *s);
 void e_selection_collapse(FENSTER *f);
+void e_select_word_at_cursor(BUFFER *b);
 void e_selection_end(FENSTER *f);
 void e_selection_redo_ends_here(FENSTER *f, int n);
 int e_opt_block_wordstar(int edopt);
@@ -851,6 +852,26 @@ int e_opt_read(ECNT *cn);
 void e_opt_use_user_file(char *path);
 /* Say on the status line which keys the start-folder xwperc could not set. */
 void e_opt_say_ignored_keys(ECNT *cn);
+
+/* The key style of one session (--keys, XWPE_KEYS) and the one place that
+   decides which option bits a key style brings with it.  See we_opt.c. */
+#define E_KEYS_ENV "XWPE_KEYS"
+#define E_KEYS_OPTION "--keys"
+#define E_KEYS_STYLE_NONE (-1)
+#define E_KEYS_TEXT_BORLAND "borland"
+#define E_KEYS_TEXT_MODERN "modern"
+int e_keys_style_from_text(const char *text);
+int e_keys_session_read(int argc, char **argv, const char **bad);
+int e_keys_session_wanted(void);
+void e_keys_session_apply(ECNT *cn);
+int e_keys_edopt_for_file(const ECNT *cn);
+int e_keys_preset(int edopt, int modern);
+int e_keys_arg_takes_value(const char *arg);
+void e_keys_migrate(ECNT *cn);
+int e_keys_notice_wanted(void);
+void e_keys_notice_shown(ECNT *cn);
+int e_keys_ask_allowed(void);
+void e_keys_first_run(ECNT *cn);
 /* No option file: the configuration folder's path does not fit (optfile is
    ""); the status row says why the options were not read or not saved. */
 #define E_OPT_NOT_READ  "Options not read"

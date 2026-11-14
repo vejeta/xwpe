@@ -61,14 +61,22 @@ terminal it was started from; it never stops for want of colours.
 @cindex key styles
 @cindex Borland key style
 Every key below is a row of the editor's key table, in the Borland style
-(the default) and in the CUA style (@samp{Options @result{} Editor
-@result{} Keys}).  The same rows name the keys on the bottom bar and in
+and in the Modern style (VS Code's keys; @samp{Options @result{} Editor
+@result{} Keys}, or @samp{--keys borland} and @samp{--keys modern} for one
+run).  The same rows name the keys on the bottom bar and in
 the menus, and this section is generated from them, so a key named
 anywhere in the editor is a key that works.  Whether a key reaches xwpe
 at all depends on the terminal; the next subsection says which ones.
 
 @c The tables below are generated from we_bindings.c by tools/keymap-texi.
 @include chapters/keys-generated.texi
+
+@subsection What the Modern style did to the keys of the 1.6 CUA style
+
+The style that 1.6 called CUA is now the Modern style.  A key it kept
+does what it did; these are the keys that changed.
+
+@include chapters/keys-modern-changes.texi
 
 A few notes on the tables.  @kbd{Alt-F9}, @kbd{Alt-F8} and @kbd{Alt-F7}
 (Compile, Next error, Previous error) work where they reach the editor
@@ -202,7 +210,7 @@ Every essential command also has a key that is not a function key.  The
 @item Run program @tab @kbd{Ctrl-F9} @tab @kbd{Alt-U}
 @item Find / Replace @tab @key{F4} / @kbd{Alt-F4} @tab @kbd{Ctrl-O F} / @kbd{Ctrl-O A}
 @item Save @tab @key{F2} @tab File menu (@kbd{Alt-F}, then @kbd{S})
-@item Quit @tab @kbd{Alt-F4} (CUA style) @tab @kbd{Alt-X} (Borland style)
+@item Quit @tab @kbd{Ctrl-Q} (Modern style) @tab @kbd{Alt-X} (both styles)
 @item Debugger (all) @tab @kbd{F7}/@kbd{F8}/@kbd{Ctrl-F@var{n}} @tab the @kbd{Ctrl-G} prefix: @kbd{Ctrl-G R} run, @kbd{Ctrl-G S} step, @kbd{Ctrl-G T} trace, @kbd{Ctrl-G B} breakpoint, @kbd{Ctrl-G K} stack, @kbd{Ctrl-G W} watch, @kbd{Ctrl-G Q} quit
 @end multitable
 
@@ -272,26 +280,31 @@ and the editor's clipboard otherwise (as @kbd{Ctrl-V}).
 
 @table @kbd
 @item Alt-X
-Quit from xwpe in the Borland style (@kbd{Alt-F4} in the CUA style).  If
+Quit from xwpe (@kbd{Ctrl-Q} in the Modern style as well).  If
 files have unsaved changes, xwpe prompts for each: @samp{Yes} to save,
 @samp{No} to discard, @key{ESC} to cancel the quit (no further files are
 closed).  When a file cannot be written, the error is shown and the quit
 stops there, with that window still open.  (Documented since v1.4.)
 @end table
 
-@section Common User Access (CUA) keybindings
+@section The Modern keybindings
 
+@cindex Modern keys
 @cindex CUA
 @cindex Common User Access
 @cindex keybinding variant
-@cindex OSF Motif
+@cindex VS Code keys
 
-xwpe supports a second keybinding set compatible with OSF Motif and
-MS-Windows conventions (Common User Access).  Select it in
-@samp{Options @result{} Editor @result{} Keys @result{} CUA}.  The
-tables of the key bindings above give every key in both styles, side by
-side, so a key that differs between them is a row whose two columns
-differ.  (Documented since v1.4.)
+xwpe has a second keybinding set that uses the keys of today's editors:
+@kbd{Ctrl-S} saves, @kbd{Ctrl-Z} and @kbd{Ctrl-Y} undo and redo,
+@kbd{Ctrl-F} finds, @kbd{F5} starts the debugger.  Version 1.4 called it
+CUA.  Select it in @samp{Options @result{} Editor @result{} Keys
+@result{} Modern}, with @samp{--keys modern}, or with @env{XWPE_KEYS=modern}
+(the last two last for one run and never change your option file).  A new
+profile is asked once which keys it wants.  The tables of the key bindings
+above give every key in both styles, side by side, with what to press where
+a terminal keeps a Modern key, so a key that differs between them is a row
+whose columns differ.
 
 @section Alt and ESC on non-X11 terminals
 

@@ -4083,7 +4083,7 @@ def test_a_debugger_without_watches_says_so(tmp_path):
 
 F4 = "\033OS"         # Search; Go to cursor while a debug session runs
 ALT_2 = "\0332"       # window 2
-ALT_C = "\033c"       # in Options > Editor: the CUA-Style entry
+ALT_C = "\033c"       # in Options > Editor: the Modern (VS Code) key style entry
 # What the source window's bottom row names while a session runs.
 DEBUG_BAR_LABELS = ("F7 Trace", "F8 Step", "F4 Go to cursor",
                     "^F7 Make Watch", "^F2 Quit", "Alt-X Quit")
@@ -4117,7 +4117,7 @@ def _click_bottom_bar(w, label):
 
 
 def _switch_to_cua(w):
-    """Options > Editor > CUA-Style, Ok."""
+    """Options > Editor > the second style (Modern; 1.6 called it CUA), Ok."""
     w.key(ALT.OPTIONS, delay=0.7)
     w.key("e", delay=0.9)
     w.key(ALT_C, delay=0.5)
@@ -4165,23 +4165,26 @@ def test_the_source_bar_names_the_debugger_keys_while_a_session_runs(tmp_path):
 
 
 # @scenario SC-debug-02
-def test_the_cua_bar_is_left_alone_by_a_session(tmp_path):
-    """The CUA style keeps its editing bar while a session runs: its debugger
-    keys are not decided yet, so the bar must not name keys that do nothing."""
+def test_the_modern_bar_names_the_modern_debugger_keys_in_a_session(tmp_path):
+    """The Modern style (1.6's CUA) decided its debugger keys: while a session
+    runs the source window's bar names them (F11 Into, F10 Over, ^F10 Go to
+    cursor), and not the Borland ones."""
     _need("gcc", "gdb")
     with _c_session(tmp_path) as w:
-        _switch_to_cua(w)
-        assert "Alt-F2" in _bottom_bar(w), \
-            "the CUA bar did not take effect:\n%s" % _screen(w)
+        assert "^S Save" not in _bottom_bar(w), \
+            "the session should start in the Borland style:\n%s" % _screen(w)
+        # the session starts with the Borland keys (Ctrl-G R: the Modern style
+        # has no debugger prefix), then the user switches the style in it
         _start_c_session(w)
         _source_window_on_top(w)
+        _switch_to_cua(w)
+        _source_window_on_top(w)
         bar = _bottom_bar(w)
-        assert "Alt-F2" in bar, \
-            "the CUA style should keep its editing bar in a session:\n%s" \
-            % _screen(w)
+        for label in ("F11 Into", "F10 Over", "^F10 Go to cursor"):
+            assert label in bar, \
+                "the Modern bar should name %r in a session:\n%s" % (label, _screen(w))
         assert "F7 Trace" not in bar, \
-            "the CUA bar named a debugger key that is not decided:\n%s" \
-            % _screen(w)
+            "the Modern bar named a Borland debugger key:\n%s" % _screen(w)
 
 
 # @scenario SC-debug-06
@@ -4232,17 +4235,18 @@ def test_a_click_on_the_run_entry_of_the_watches_bar_runs(tmp_path):
 
 
 # @scenario SC-debug-27
-def test_a_click_on_the_cua_make_watch_entry_makes_a_watch(tmp_path):
-    """In the CUA style, clicking "^F5 Make Watch" opens the Add Watch dialog:
-    the entry sends ^F5, the key its label names."""
+def test_a_click_on_the_modern_make_watch_entry_makes_a_watch(tmp_path):
+    """In the Modern style, clicking "^F7 Make Watch" opens the Add Watch
+    dialog: the entry sends ^F7, the key its label names (1.6's CUA style
+    named ^F5, which is Run now)."""
     _need("gcc", "gdb")
     with _c_session(tmp_path) as w:
-        _switch_to_cua(w)
         _start_c_session(w)
-        _add_watch(w, "x")
+        _add_watch(w, "x")          # Ctrl-G W: the Borland debugger prefix
         assert _wait_for(w, lambda: "Watches" in _screen(w), STEP_TIMEOUT_S), \
             "the Watches window should be open:\n%s" % _screen(w)
-        _click_bottom_bar(w, "^F5 Make Watch")
+        _switch_to_cua(w)
+        _click_bottom_bar(w, "^F7 Make Watch")
         assert _wait_for(w, lambda: "Add Watch" in _screen(w),
                          STEP_TIMEOUT_S), \
             "the click should open the Add Watch dialog:\n%s" % _screen(w)

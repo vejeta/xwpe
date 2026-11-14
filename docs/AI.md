@@ -153,8 +153,8 @@ in the Save As dialog, titled `Save transcript`; the file is UTF-8 text, each
 line as the pane shows it (`You: `, `AI: `, the bracketed machinery lines), one
 per line and not wrapped. The status row says `saved <name>`, and a later `F2`
 saves there again without asking until the pane is closed. *File > Save As*
-asks every time; Esc in the dialog writes nothing. In the CUA key set the same
-save is `Alt-F2`; in the default key set `Alt-F2` stays Window > Size/Move.
+asks every time; Esc in the dialog writes nothing. In the Modern key set the
+same save is `Ctrl-S`; in both key sets `Alt-F2` is Window > Size/Move.
 
 A pane line with less room than its text (the agent's or a Multi-file run's
 task line, the echo of a task sent to the hosted engine) ends with `...`; the

@@ -267,9 +267,13 @@ class EditSession:
                 fh.write(seed)
         if file_mode is not None:
             os.chmod(self.path, file_mode)
+        # The session's HOME has a configuration folder, so it is an existing
+        # profile: a new one is asked which keys it wants (and these rows have
+        # no one to answer).  The editor runs the Borland keys unless the
+        # xwperc says another style.
+        cfg = os.path.join(workdir, ".config", "xwpe")
+        os.makedirs(cfg, exist_ok=True)
         if xwperc is not None:
-            cfg = os.path.join(workdir, ".config", "xwpe")
-            os.makedirs(cfg, exist_ok=True)
             with open(os.path.join(cfg, "xwperc"), "w") as fh:
                 fh.write(xwperc)
         self.screen = SafeScreen(cols, rows)
@@ -283,8 +287,11 @@ class EditSession:
         dump_r, dump_w = os.pipe()
         self.dump_fd = dump_r
         env = strip_size_env(os.environ.copy())
+        # XWPE_KEYS goes too: the row's xwperc names its key style, and a
+        # session style would override it (the suite sets XWPE_KEYS=borland
+        # for every editor, which would run every "cua" row as Borland).
         for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XWPE_AI_ENABLE",
-                     "XWPE_AI_BACKEND", "WAYLAND_DISPLAY", "DISPLAY"):
+                     "XWPE_AI_BACKEND", "WAYLAND_DISPLAY", "DISPLAY", "XWPE_KEYS"):
             env.pop(name, None)
         env.update(TERM="xterm-256color", LC_ALL="en_US.UTF-8", HOME=workdir,
                    XDG_CONFIG_HOME="", XDG_STATE_HOME="", XWPE_LIB=XWPE_LIB_DIR,

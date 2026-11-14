@@ -833,12 +833,14 @@
      Changing the Control-character sequences
           (Common User Access):
 
-     Some function-keys may be used in a  second  form  which  is
-     compatible to OSF-Motif and MS-Windows.  Choose it in
-     Options / Editor / Keys.  The menus and the bar at the bottom
-     of the screen show the keys of the style in use.  The key
-     tables of the manual list every key in both styles, side by
-     side (Help / Info).
+     The keys have a second form, the Modern style (called CUA
+     in 1.6): Ctrl-S saves, Ctrl-Z and Ctrl-Y undo and redo, F5
+     starts the debugger.  Choose it in Options / Editor / Keys,
+     or run xwpe --keys modern for one run.  The menus and the
+     bar at the bottom of the screen show the keys of the style
+     in use.  The key tables of the manual list every key in
+     both styles, side by side, and what to press where a
+     terminal keeps a key (Help / Info).
 
 
 
@@ -1540,8 +1542,8 @@
           sion < 1.2.0 (Turbo C alike).
 
      Alt-C
-          The 'Common User Access' function key binding  will  be
-          used (MS-Windows alike).
+          The Modern key bindings (formerly called 'Common User
+          Access') will be used: Ctrl-S saves, F5 debugs.
 
 
      Auto-Indent (Automatic Indentation):

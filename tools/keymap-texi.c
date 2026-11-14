@@ -1,7 +1,7 @@
 /* keymap-texi.c -- print the key bindings (we_bindings.c) as the key reference.
  *
  *   keymap-texi            the Texinfo chapter, on standard output
- *   keymap-texi --dump S   one line per binding of style S (borland or cua):
+ *   keymap-texi --dump S   one line per binding of style S (borland or modern):
  *                          context, key code, key, action, separated by " | "
  *
  * The reference chapter (docs/chapters/keys-generated.texi) is this program's
@@ -19,7 +19,7 @@
 #define DOC_NAME_LEN 64
 
 static const char *const style_titles[WPE_STYLE_COUNT] = {
-	"Borland style", "CUA style"
+	"Borland style", "Modern style"
 };
 
 /** Print @s with the three characters Texinfo reads as markup escaped. */
@@ -52,6 +52,25 @@ static void put_cell(FILE *out, const WpeBinding *t, size_t n, int action, int s
 			fputs(", @kbd{", out);
 		put_texi(out, name);
 		fputc('}', out);
+		first = 0;
+	}
+}
+
+/** Print the fourth column of a context table: what to press where a terminal
+    keeps a Modern key, one phrase per Modern row that names one.  A row that
+    needs a keyboard protocol and names nothing says so. */
+static void put_fallback_cell(FILE *out, const WpeBinding *t, size_t n, int action, int context)
+{
+	size_t i;
+	int first = 1;
+
+	fputs(" @tab", out);
+	for (i = 0; i < n; i++) {
+		if (t[i].action != action || t[i].context != context ||
+		    !(t[i].styles & WPE_STYLE_BIT(WPE_STYLE_MODERN)) || !t[i].fallback)
+			continue;
+		fputs(first ? " " : "; ", out);
+		put_texi(out, t[i].fallback);
 		first = 0;
 	}
 }
@@ -109,11 +128,11 @@ static void print_context(FILE *out, const WpeBinding *t, size_t n, int context)
 	fprintf(out, "\n@subsection %s\n\n", wpe_context_name(context));
 	if (note)
 		fprintf(out, "%s\n\n", note);
-	fprintf(out, "@multitable @columnfractions .20 .32 .24 .24\n");
+	fprintf(out, "@multitable @columnfractions .16 .26 .18 .18 .22\n");
 	fprintf(out, "@headitem Action @tab What it does");
 	for (style = 0; style < WPE_STYLE_COUNT; style++)
 		fprintf(out, " @tab %s", style_titles[style]);
-	fputc('\n', out);
+	fprintf(out, " @tab Where a terminal keeps the Modern key\n");
 	for (i = 0; i < n; i++) {
 		if (t[i].context != context || !first_row_of_action(t, i))
 			continue;
@@ -125,9 +144,212 @@ static void print_context(FILE *out, const WpeBinding *t, size_t n, int context)
 		put_texi(out, wpe_action_text(t[i].action));
 		for (style = 0; style < WPE_STYLE_COUNT; style++)
 			put_cell(out, t, n, t[i].action, style, context);
+		put_fallback_cell(out, t, n, t[i].action, context);
 		fputc('\n', out);
 	}
 	fputs("@end multitable\n", out);
+}
+
+/** The contexts an editor window reads for a key that acts on its own. */
+static int is_direct_context(int context)
+{
+	return(context == WPE_CTX_WINDOW || context == WPE_CTX_PROGRAM ||
+	       context == WPE_CTX_DEBUG || context == WPE_CTX_EDIT || context == WPE_CTX_CURSOR);
+}
+
+/** Does the Modern row need a keyboard protocol, or does some terminal keep it? */
+static int row_is_delivery_noted(const WpeBinding *r)
+{
+	int emu;
+
+	if (wpe_binding_key_class(r->code) == WPE_DELIVER_PROTOCOL)
+		return(1);
+	for (emu = 0; emu < WPE_EMU_COUNT; emu++)
+		if (!wpe_key_reaches(r->code, emu))
+			return(1);
+	return(0);
+}
+
+/** Is row @i the first Modern row of the delivery table with its key?  A key
+    bound in two contexts (F10: the menu, or a step in a session) is one line,
+    since what a terminal delivers does not depend on what the key does. */
+static int row_is_first_noted_with_code(const WpeBinding *t, size_t i)
+{
+	size_t j;
+
+	for (j = 0; j < i; j++)
+		if (t[j].code == t[i].code && (t[j].styles & WPE_STYLE_BIT(WPE_STYLE_MODERN)) &&
+		    is_direct_context(t[j].context) && !(t[j].flags & WPE_ROW_HIDDEN))
+			return(0);
+	return(1);
+}
+
+/** One table of what each terminal does with the Modern keys that do not
+    arrive everywhere: yes when the editor receives the key from that terminal. */
+static void print_delivery(FILE *out, const WpeBinding *t, size_t n)
+{
+	size_t i;
+	int emu;
+	char name[DOC_NAME_LEN];
+
+	fputs("\n@subsection Which terminals deliver the Modern keys\n\n", out);
+	fputs("A key marked protocol is a key of its own only in a terminal that\n", out);
+	fputs("implements xterm's modifyOtherKeys or kitty's keyboard protocol, which\n", out);
+	fputs("the editor asks for.  The record of what each terminal was measured to\n", out);
+	fputs("send is docs/chapters/keys-delivery.txt in the source.\n\n", out);
+	fputs("@multitable @columnfractions .17 .09 .10 .10 .10 .10 .10 .09 .10\n", out);
+	fputs("@headitem Key @tab Arrives", out);
+	for (emu = 0; emu < WPE_EMU_COUNT; emu++) {
+		fputs(" @tab ", out);
+		put_texi(out, wpe_emulator_name(emu));
+	}
+	fputc('\n', out);
+	for (i = 0; i < n; i++) {
+		if (!(t[i].styles & WPE_STYLE_BIT(WPE_STYLE_MODERN)) || !is_direct_context(t[i].context) ||
+		    (t[i].flags & WPE_ROW_HIDDEN) || !row_is_delivery_noted(&t[i]) ||
+		    !row_is_first_noted_with_code(t, i))
+			continue;
+		wpe_binding_row_name(&t[i], WPE_NAME_DOC, name, sizeof name);
+		fputs("@item @kbd{", out);
+		put_texi(out, name);
+		fputs("} @tab ", out);
+		fputs(wpe_binding_key_class(t[i].code) == WPE_DELIVER_PROTOCOL ? "protocol" : "always", out);
+		for (emu = 0; emu < WPE_EMU_COUNT; emu++)
+			fputs(wpe_key_reaches(t[i].code, emu) ? " @tab yes" : " @tab no", out);
+		fputc('\n', out);
+	}
+	fputs("@end multitable\n", out);
+}
+
+#define DUMP_LINE_LEN 256
+#define DUMP_FIELDS 4
+
+/** One line of a dump: context, code, key, action. */
+typedef struct {
+	char context[64];
+	char key[64];
+	char action[96];
+} DumpLine;
+
+/** Split a dump line "context | code | key | action"; 0 when it is not one. */
+static int parse_dump_line(char *line, DumpLine *d)
+{
+	char *field[DUMP_FIELDS];
+	int k = 0;
+	char *p = line;
+
+	field[k++] = p;
+	while (k < DUMP_FIELDS && (p = strstr(p, " | ")) != NULL) {
+		*p = '\0';
+		p += 3;
+		field[k++] = p;
+	}
+	if (k != DUMP_FIELDS)
+		return(0);
+	p = field[3] + strlen(field[3]);
+	while (p > field[3] && (p[-1] == '\n' || p[-1] == '\r'))
+		*--p = '\0';
+	snprintf(d->context, sizeof d->context, "%s", field[0]);
+	snprintf(d->key, sizeof d->key, "%s", field[2]);
+	snprintf(d->action, sizeof d->action, "%s", field[3]);
+	return(1);
+}
+
+/** The Modern row of the same key name in any context an editor window reads
+    directly, NULL when the Modern style leaves the key alone. */
+static const WpeBinding *modern_row_of_key(const WpeBinding *t, size_t n, const char *key,
+                                           const char *old_action, int *same_action)
+{
+	size_t i;
+	const WpeBinding *first = NULL;
+	char name[DOC_NAME_LEN];
+
+	*same_action = 0;
+	for (i = 0; i < n; i++) {
+		if (!(t[i].styles & WPE_STYLE_BIT(WPE_STYLE_MODERN)) || !is_direct_context(t[i].context) ||
+		    (t[i].flags & WPE_ROW_HIDDEN))
+			continue;
+		wpe_binding_row_name(&t[i], WPE_NAME_DOC, name, sizeof name);
+		if (strcmp(name, key) != 0)
+			continue;
+		if (strcmp(wpe_action_name(t[i].action), old_action) == 0)
+			*same_action = 1;
+		if (!first)
+			first = &t[i];
+	}
+	return(first);
+}
+
+/** Is the context of a dump line one of the direct ones (by its title)? */
+static int dump_context_is_direct(const char *title)
+{
+	int c;
+
+	for (c = 0; c < WPE_CTX_COUNT; c++)
+		if (is_direct_context(c) && strcmp(title, wpe_context_name(c)) == 0)
+			return(1);
+	return(0);
+}
+
+/**
+ * print_changes - The two lists of what the Modern style did to the keys of
+ * the 1.6 CUA style: reassigned (the same key, another command) and lost
+ * (the key does nothing now), from the frozen dump of that style.
+ * @frozen: the file docs/chapters/keys-cua-1.6.txt.
+ *
+ * A reassigned key is the worse change, because the hand does something
+ * else, so it is listed first.
+ */
+static int print_changes(FILE *out, const char *frozen)
+{
+	size_t n;
+	const WpeBinding *t = wpe_binding_table(&n);
+	FILE *in = fopen(frozen, "r");
+	char line[DUMP_LINE_LEN];
+	DumpLine d;
+	int pass;
+
+	if (!in) {
+		fprintf(stderr, "keymap-texi: cannot read %s\n", frozen);
+		return(1);
+	}
+	fputs("@c Generated by tools/keymap-texi --changes from we_bindings.c and the\n", out);
+	fputs("@c frozen dump docs/chapters/keys-cua-1.6.txt.  Do not edit.\n", out);
+	for (pass = 0; pass < 2; pass++) {
+		fputs(pass == 0 ? "\n@subsection Keys that do something else\n\n" :
+		      "\n@subsection Keys that do nothing now\n\n", out);
+		fputs(pass == 0 ?
+		      "@multitable @columnfractions .20 .38 .42\n@headitem Key @tab 1.6 (the CUA style) @tab Modern\n" :
+		      "@multitable @columnfractions .20 .38 .42\n@headitem Key @tab 1.6 (the CUA style) @tab Where it is now\n", out);
+		rewind(in);
+		while (fgets(line, sizeof line, in)) {
+			const WpeBinding *m;
+			int same;
+
+			if (!parse_dump_line(line, &d) || !dump_context_is_direct(d.context) ||
+			    strcmp(d.key, "(click)") == 0)
+				continue;
+			m = modern_row_of_key(t, n, d.key, d.action, &same);
+			if (pass == 0 && m && !same) {
+				fputs("@item @kbd{", out);
+				put_texi(out, d.key);
+				fputs("} @tab ", out);
+				put_texi(out, d.action);
+				fputs(" @tab ", out);
+				put_texi(out, wpe_action_name(m->action));
+				fputc('\n', out);
+			} else if (pass == 1 && !m) {
+				fputs("@item @kbd{", out);
+				put_texi(out, d.key);
+				fputs("} @tab ", out);
+				put_texi(out, d.action);
+				fputs(" @tab its menu entry\n", out);
+			}
+		}
+		fputs("@end multitable\n", out);
+	}
+	fclose(in);
+	return(0);
 }
 
 static void print_texi(FILE *out)
@@ -147,6 +369,7 @@ static void print_texi(FILE *out)
 	for (context = 0; context < WPE_CTX_COUNT; context++)
 		if (context_has_visible_rows(t, n, context))
 			print_context(out, t, n, context);
+	print_delivery(out, t, n);
 }
 
 static void print_dump(FILE *out, int style)
@@ -168,6 +391,17 @@ static void print_dump(FILE *out, int style)
 
 int main(int argc, char **argv)
 {
+	/* "-o FILE" first: write there instead of to standard output, so a maintainer
+	   regenerates a tracked file without a shell redirection. */
+	if (argc >= 3 && strcmp(argv[1], "-o") == 0) {
+		if (!freopen(argv[2], "w", stdout)) {
+			fprintf(stderr, "keymap-texi: cannot write %s\n", argv[2]);
+			return 1;
+		}
+		argc -= 2;
+		argv += 2;
+		argv[0] = "keymap-texi";
+	}
 	if (argc == 1) {
 		print_texi(stdout);
 		return 0;
@@ -177,11 +411,13 @@ int main(int argc, char **argv)
 			print_dump(stdout, WPE_STYLE_BORLAND);
 			return 0;
 		}
-		if (strcmp(argv[2], "cua") == 0) {
-			print_dump(stdout, WPE_STYLE_CUA);
+		if (strcmp(argv[2], "modern") == 0) {
+			print_dump(stdout, WPE_STYLE_MODERN);
 			return 0;
 		}
 	}
-	fprintf(stderr, "usage: keymap-texi [--dump borland|cua]\n");
+	if (argc == 3 && strcmp(argv[1], "--changes") == 0)
+		return(print_changes(stdout, argv[2]));
+	fprintf(stderr, "usage: keymap-texi [-o FILE] [--dump borland|modern | --changes FROZEN-DUMP]\n");
 	return 2;
 }

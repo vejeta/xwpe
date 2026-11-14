@@ -1,12 +1,16 @@
 """The keys that make each action of the model, per key style.
 
-Two key styles today (Options > Editor > Keys): the old Turbo C style and
-CUA.  For the key loop's own actions they differ only in Save: F2 in the
-old style, Alt-F2 under CUA (we_edit.c e_tst_fkt, where CUA's F2 opens the
-file manager).  For the file ends (Ctrl-PgUp/PgDn) and the window ends
-(Ctrl-Home/End) the manual's alternative is used and the primary key is a
-separate action of the same effect, so a terminal that drops the primary
-key shows as a finding.
+Two key styles (Options > Editor > Keys): the old Turbo C style, and the
+second style, which 1.6 called CUA and which is now the Modern style (the
+level is still named "cua" here; the rename of the levels is the
+regeneration of the array and is not done).  In the Modern style Save is
+Ctrl-S and Redo is Ctrl-Y; Ctrl-T, Ctrl-Z and Ctrl-Y no longer delete a word,
+to the end of the row and a line, and Ctrl-O is Open and no longer a prefix,
+so the actions that used those keys have no key there (UNAVAILABLE) and a
+walk of that style never draws them.  For the file ends (Ctrl-PgUp/PgDn) and
+the window ends (Ctrl-Home/End) the manual's alternative is used and the
+primary key is a separate action of the same effect, so a terminal that drops
+the primary key shows as a finding.
 No assistant key and no programming-layer key is here.
 """
 from .oracle import (BACKSPACE, CTRL_DEL, CTRL_END, CTRL_HOME, CTRL_INS,
@@ -20,6 +24,22 @@ STYLE_CUA = "cua"
 STYLES = (STYLE_OLD, STYLE_CUA)
 
 ALT_F2 = "\033[1;3Q"
+
+# Actions with no key in the Modern style: the Borland control letters it
+# gave up (the walk's alternates for the file and window ends are
+# Ctrl-Alt-letter chords, bound to nothing there) and the Ctrl-O prefix.
+UNAVAILABLE = {
+    STYLE_CUA: frozenset((
+        "delete_word", "kill_to_eol", "delete_line",
+        "file_start", "file_end", "window_top", "window_bottom",
+        "marker_goto", "help_button", "help_highlight", "help_header", "help_end",
+    )),
+}
+
+
+def available(style, action_name):
+    """Can a walk of @style draw @action_name (does the style have a key)?"""
+    return action_name not in UNAVAILABLE.get(style, ())
 
 # action name -> keys, the old style.
 _OLD = {
@@ -116,7 +136,9 @@ def keys_for(style, action_name, arg=None):
     if action_name in PRIMARY_ALIASES:
         return list(PRIMARY_ALIASES[action_name][1])
     if style == STYLE_CUA and action_name == "save":
-        return [ALT_F2]
+        return [ctrl("s")]
+    if style == STYLE_CUA and action_name == "redo":
+        return [ctrl("y")]
     if action_name == "replace_all":
         search, repl = arg
         return (REPLACE_PRELUDE + _text_keys(search) + [alt("n")] + _text_keys(repl)
@@ -150,5 +172,5 @@ def model_action(action_name):
 def xwperc_for(style):
     """The options file a session of @style starts with."""
     if style == STYLE_CUA:
-        return "[General]\nOptions2 : 153\n"
+        return "[General]\nOptions2 : 153\nKeysNotice : 1\n"
     return None

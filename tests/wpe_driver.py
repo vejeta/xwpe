@@ -668,8 +668,14 @@ class WpeSession:
 
     def __init__(self, workdir, seed, filename="t.c", cols=COLS, rows=ROWS,
                  wait=1.3, env_extra=None, real_login=False,
-                 stdin_is_terminal=True, answer_server_start=False):
-        """``stdin_is_terminal=False`` feeds the editor's keys through a
+                 stdin_is_terminal=True, answer_server_start=False,
+                 args=(), new_profile=False):
+        """``args`` are command-line options put before the file name.
+        ``new_profile=True`` leaves the session's HOME with nothing in it
+        (the driver otherwise drops a syntax_def under ~/.xwpe, which makes
+        it an existing profile), as the rows of the first-run question need.
+
+        ``stdin_is_terminal=False`` feeds the editor's keys through a
         pipe while its screen stays on the pty, as under a desktop
         launcher: the editor's input is then not a terminal, so it has no
         terminal of its own to name.
@@ -737,16 +743,25 @@ class WpeSession:
         # window operations, ...).  Opt out of the eager-on-open boot here;
         # the LSP-specific tests use their own driver and override this.
         env.setdefault("XWPE_LSP_NO_EAGER", "1")
+        # A session starts in an empty HOME, which is a new profile, and a new
+        # profile is asked which keys it wants.  A row has nobody to answer, so
+        # every row runs with the Borland keys unless it says otherwise; the
+        # rows of the question itself, and rows that write their own xwperc to
+        # run another style, pass XWPE_KEYS=None (or a style) in env_extra.
+        env.setdefault("XWPE_KEYS", "borland")
         # Tests that exercise locale-dependent behaviour (e.g. the non-UTF-8
         # chrome fallback) pass env_extra to override LC_ALL/LANG; applied last
-        # so the override wins over the UTF-8 default above.
+        # so the override wins over the UTF-8 default above.  A value of None
+        # removes the variable.
         if env_extra:
             env.update(strip_size_env(dict(env_extra)))
+            for name in [n for n, v in env.items() if v is None]:
+                del env[name]
         # Make the editor under test use THIS repo's syntax_def, not whatever
         # stale copy is installed on the machine: it reads $HOME/.xwpe/syntax_def
         # first and we set HOME=workdir, so drop the build-tree copy there.
         _synt = os.path.join(os.path.dirname(os.path.abspath(WPE_BIN)), "syntax_def")
-        if os.path.exists(_synt):
+        if os.path.exists(_synt) and not new_profile:
             _xd = os.path.join(workdir, ".xwpe")
             os.makedirs(_xd, exist_ok=True)
             shutil.copyfile(_synt, os.path.join(_xd, "syntax_def"))
@@ -755,7 +770,7 @@ class WpeSession:
         if not stdin_is_terminal:
             stdin_arg, self.input_fd = os.pipe()
         self.proc = subprocess.Popen(
-            [WPE_BIN, filename], stdin=stdin_arg, stdout=slave_fd,
+            [WPE_BIN] + list(args) + [filename], stdin=stdin_arg, stdout=slave_fd,
             stderr=slave_fd, cwd=workdir, env=env,
             preexec_fn=adopt_pty_as_controlling_tty)
         os.close(slave_fd)

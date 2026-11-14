@@ -6,9 +6,9 @@ rows prove it from the outside, in both key styles:
 
   * every key a drop-down menu shows beside an item is a key the style binds;
   * the Help file names no function key that the style does not bind;
-  * the corrected texts of the Window menu: the CUA style names Shift-F5 for
-    Tile and Shift-F4 for Cascade, and the Borland style, which binds neither,
-    names no key for them.
+  * the Window menu: neither style binds a key for Tile and Cascade (the
+    1.6 CUA style bound Shift-F5 and Shift-F4; the Modern style leaves them to
+    the menu), so the menu names none.
 
 The table is read from the dump of tools/keymap-texi, so a row added to the
 table is checked without a line of this file changing.
@@ -26,8 +26,9 @@ TOOL = os.path.join(ROOT, "tools", "keymap-texi")
 HELP = os.path.join(ROOT, "help.xwpe_eng")
 ESC = "\033"
 
-# xwperc Options2: the default editor options, with the CUA bit for CUA.
-OPTIONS2 = {"borland": 152, "cua": 153}
+# xwperc Options2: the default editor options; the second style has the style
+# bit and the three bits Modern brings, and says it was upgraded.
+OPTIONS2 = {"borland": 152, "modern": 153 + 0x400 + 0x800 + 0x1000}
 
 # Keys a menu may show that are not bindings: the Help viewer's own.
 VIEWER_KEYS = {"<CR>", "<BSP>"}
@@ -62,8 +63,10 @@ def menu_spelling(name):
 def open_session(tmp_path, style):
     conf = tmp_path / ".config" / "xwpe"
     conf.mkdir(parents=True, exist_ok=True)
-    (conf / "xwperc").write_text("[General]\nOptions2 : %d\n" % OPTIONS2[style])
-    return WpeSession(str(tmp_path), "int main(void)\n{\n    return 0;\n}\n")
+    (conf / "xwperc").write_text("[General]\nOptions2 : %d\nKeysNotice : 1\n" % OPTIONS2[style])
+    # the style comes from the file, so the drivers' default style is removed
+    return WpeSession(str(tmp_path), "int main(void)\n{\n    return 0;\n}\n",
+                      env_extra={"XWPE_KEYS": None})
 
 
 def drop_down_rows(screen):
@@ -96,7 +99,7 @@ def split_item(text):
 
 
 @pytest.mark.skipif(not os.access(TOOL, os.X_OK), reason="tools/keymap-texi is not built")
-@pytest.mark.parametrize("style", ["borland", "cua"])
+@pytest.mark.parametrize("style", ["borland", "modern"])
 def test_every_key_a_menu_names_is_bound_in_that_style(tmp_path, style):
     bound = {menu_spelling(n) for n in bound_keys(style)} | VIEWER_KEYS
     unbound = []
@@ -115,12 +118,12 @@ def test_every_key_a_menu_names_is_bound_in_that_style(tmp_path, style):
 
 
 @pytest.mark.skipif(not os.access(TOOL, os.X_OK), reason="tools/keymap-texi is not built")
-@pytest.mark.parametrize("style,tile,cascade", [("cua", "Shift F5", "Shift F4"),
+@pytest.mark.parametrize("style,tile,cascade", [("modern", None, None),
                                                 ("borland", None, None)])
 def test_the_window_menu_names_the_keys_of_tile_and_cascade(tmp_path, style, tile, cascade):
     """The Window menu used to say Shift-F4 for Tile and Shift-F5 for Cascade
-    in both styles; the CUA style binds them the other way round and the
-    Borland style binds neither."""
+    in both styles, keys nobody bound the way it said; neither style binds
+    them now, so the menu names none."""
     with open_session(tmp_path, style) as s:
         s.key(ALT.WINDOW, delay=0.6)
         items = {split_item(t)[0]: split_item(t)[1] for t in drop_down_rows(s.display())}
@@ -132,7 +135,9 @@ def help_cua_section():
     """The lines of the Help file's page on the second key style."""
     with open(HELP, "rb") as fh:
         lines = fh.read().decode("utf-8", "replace").split("\n")
-    start = next(i for i, l in enumerate(lines) if "Common User Access" in l)
+    start = next(i for i, l in enumerate(lines) if "Common User Access" in l and "(" in l
+                 and "Alt-C" not in l)
+    start = max(start, next(i for i, l in enumerate(lines) if "The keys have a second form" in l) - 3)
     end = next(i for i in range(start, len(lines)) if lines[i].startswith("\x06"))
     return lines[start:end]
 
@@ -143,7 +148,7 @@ def test_the_help_page_on_the_second_style_names_no_key_the_table_does_not_bind(
     it said Replace was Ctrl-F3 where the code binds Shift-F3.  The page now
     points to the generated tables; a key named there again must be one the
     table binds in some style."""
-    bound = bound_keys("borland") | bound_keys("cua")
+    bound = bound_keys("borland") | bound_keys("modern")
     spelled = {n.replace("-", " ") for n in bound}
     named = []
     for line in help_cua_section():

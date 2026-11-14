@@ -3535,6 +3535,9 @@ int e_debug_switch(FENSTER *f, int c)
   case WPE_ACT_DEBUG_STACK:
    e_deb_stack(f);
    break;
+  case WPE_ACT_DEBUG_FINISH:
+   e_d_finish_func(f);
+   break;
   case WPE_ACT_DEBUG_GOTO_CURSOR:
    /* Borland's F4 is Go to cursor while a program is stopped and Search
       the rest of the time, so the key does what the bar under it says:
@@ -32977,9 +32980,30 @@ int e_lsp_ui_menu(FENSTER *f)
    signature / problem tooltip is up, pressing Alt-Q <letter> closes it and runs
    that action in one motion, instead of just eating the keystroke.  '?' / F1 /
    anything unknown opens the action menu; ESC cancels. */
+static int e_lsp_ui_run(FENSTER *f, int action);   /* run a language-server action */
+
 static int e_lsp_ui_dispatch(FENSTER *f, int c)
 {
- switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PREFIX_LSP))
+ return(e_lsp_ui_run(f, wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PREFIX_LSP)));
+}
+
+/**
+ * e_lsp_ui_direct - Run a language-server action that has a key of its own.
+ * @f: the window; @action: a WPE_ACT_LSP_* the key table bound.
+ *
+ * The Modern style binds the common ones to single keys (F12 definition, F2
+ * rename, Ctrl-Space complete) beside the Alt-Q letters; both end in the same
+ * function, so a key and its letter cannot do different things.
+ * Return: as the action.
+ */
+int e_lsp_ui_direct(FENSTER *f, int action)
+{
+ return(e_lsp_ui_run(f, action));
+}
+
+static int e_lsp_ui_run(FENSTER *f, int action)
+{
+ switch (action)
  {
   case WPE_ACT_LSP_DEFINITION:
    return(e_lsp_ui_definition(f));

@@ -1199,10 +1199,14 @@ static void e_mouse_select_line(BUFFER *b)
 }
 
 /**
- * e_mouse_select_word - A click that does not move the cursor selects the
- * word under it: the letters, digits and underscores on both sides.
+ * e_select_word_at_cursor - Select the word under the cursor: the letters,
+ * digits and underscores on both sides.
+ *
+ * The one owner of "which word": a click that does not move the cursor and
+ * the keyboard's select-word key both end here, so the two cannot disagree
+ * about where a word starts.
  */
-static void e_mouse_select_word(BUFFER *b)
+void e_select_word_at_cursor(BUFFER *b)
 {
  const STRING *row = &b->bf[b->b.y];
  POINT first, last;
@@ -1258,7 +1262,7 @@ void e_cur_mouse(f)
 		&& s->mark_begin.x <= b->b.x && s->mark_end.x > b->b.x)
 	    e_mouse_select_line(b);
 	 else
-	    e_mouse_select_word(b);
+	    e_select_word_at_cursor(b);
 	 e_schirm(f, 1);
       }
       else

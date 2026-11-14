@@ -106,5 +106,7 @@ def test_bar_entry_sits_in_the_slot_of_the_plain_and_the_cua_bar(tmp_path):
         cua = cua_bar.find(BAR_ENTRY)
         s._drain(0.5)
     assert plain == PLAIN_BAR_SLOT_COLUMN, "plain bar column %d, expected %d" % (plain, PLAIN_BAR_SLOT_COLUMN)
-    assert "Alt-F2" in cua_bar, "the CUA bar did not take effect: %r" % cua_bar
+    # the second style is the Modern style now: its bar names Ctrl-S for Save
+    # (1.6's CUA bar named Alt-F2)
+    assert "^S Save" in cua_bar, "the Modern bar did not take effect: %r" % cua_bar
     assert cua == CUA_BAR_SLOT_COLUMN, "CUA bar column %d, expected %d" % (cua, CUA_BAR_SLOT_COLUMN)

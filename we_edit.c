@@ -312,6 +312,7 @@ static void e_selection_type(FENSTER *f, int c);
 static void e_selection_break(FENSTER *f);
 static void e_selection_delete(FENSTER *f);
 static int e_selection_tab(FENSTER *f);
+static int e_key_is_delete_char_letter(int c, int edopt);
 static int e_auto_indent_pending_row(BUFFER *b);
 static void e_auto_indent_take_off(BUFFER *b, SCHIRM *s);
 
@@ -928,17 +929,30 @@ static int e_paint_text_on_top(void)
  * read the same code and no reader folds for itself.  The fold itself is
  * the key table's (wpe_binding_fold).
  */
-static int e_fold_key(int c)
+static int e_fold_key_for(int c, int context)
 {
  int style = WpeEditor ? wpe_binding_style(WpeEditor->edopt) : WPE_STYLE_BORLAND;
 
- return(wpe_binding_fold(c, style, WPE_CTX_EDIT));
+ return(wpe_binding_fold(c, style, context));
+}
+
+/** e_fold_key - The key an editor window reads: what its style binds stays. */
+static int e_fold_key(int c)
+{
+ return(e_fold_key_for(c, WPE_CTX_EDIT));
+}
+
+/** e_fold_box_key - The key a box reads: a distinct key is always the key it
+    stands for, so Ctrl-H is Backspace in a dialog whatever the style binds. */
+static int e_fold_box_key(int c)
+{
+ return(e_fold_key_for(c, WPE_CTX_BOX));
 }
 
 /** e_paint_read_key - The display's key reader, for a box's key. */
 static int e_paint_read_key(void)
 {
- return(e_fold_key(e_getch()));
+ return(e_fold_box_key(e_getch()));
 }
 
 /**
@@ -950,7 +964,7 @@ static int e_paint_take_key(int want)
 {
  if (!e_u_key_take)
   return(0);
- return(e_fold_key((*e_u_key_take)(want)));
+ return(e_fold_box_key((*e_u_key_take)(want)));
 }
 
 /**
@@ -1262,7 +1276,7 @@ int e_eingabe(ECNT *e)
     e_schirm(f, 1);
    }
   }
-  else if (c == ENTF || c == 4)
+  else if (c == ENTF || e_key_is_delete_char_letter(c, e->edopt))
   {
    if (e_window_text_locked(f))
    {
@@ -1534,6 +1548,77 @@ static void e_shift_extend_block(BUFFER *b, SCHIRM *s)
  e_buffer_block_between(b, fixed, E_BUFFER_POS_CURSOR);
 }
 
+/**
+ * e_key_is_delete_char_letter - Is @c the control letter that deletes the
+ * character at the cursor (Ctrl-D, in the Borland style)?
+ *
+ * In the Modern style Ctrl-D selects the word, so the key loop asks the table
+ * instead of reading the byte itself.
+ */
+static int e_key_is_delete_char_letter(int c, int edopt)
+{
+ return(wpe_binding_action(c, wpe_binding_style(edopt), WPE_CTX_CURSOR) == WPE_ACT_DELETE_CHAR);
+}
+
+/**
+ * e_cursor_letter_deletes - Run the delete a control letter stands for.
+ * @f: the window; @action: what the table says the letter does.
+ *
+ * Ctrl-T (to the next word), Ctrl-Z (to the end of the row) and Ctrl-Y (the
+ * line) in the Borland style.  Nothing in a window whose text the user may not
+ * change.
+ * Return: 1 when @action was one of the three, so the key is used.
+ */
+static int e_cursor_letter_deletes(FENSTER *f, int action)
+{
+ BUFFER *b = f->b;
+ SCHIRM *s = f->s;
+
+ if (action != WPE_ACT_DELETE_WORD_RIGHT && action != WPE_ACT_DELETE_TO_EOL &&
+     action != WPE_ACT_DELETE_LINE)
+  return(0);
+ if (e_window_text_locked(f))
+  return(1);
+ if (action == WPE_ACT_DELETE_WORD_RIGHT)
+  e_delete_word_right(b, s);
+ else if (action == WPE_ACT_DELETE_TO_EOL)
+  e_delete_to_end_of_row(b, s);
+ else
+  e_delete_line_key(b, s);
+ e_schirm(f, 1);
+ return(1);
+}
+
+/**
+ * e_cursor_letter_key - The cursor-block key a control letter stands for.
+ * @c: the key; @edopt: the editor's options.
+ *
+ * Ctrl-P, N, B, F, A and E move the cursor in the Borland style (as the
+ * arrows, Home and End do); in the Modern style they are other commands and
+ * the table binds them to none of these, so the key comes back unchanged.
+ * Return: CUP, CDO, CLE, CRI, POS1 or ENDE, or @c.
+ */
+static int e_cursor_letter_key(int c, int edopt)
+{
+ switch (wpe_binding_action(c, wpe_binding_style(edopt), WPE_CTX_CURSOR))
+ {
+  case WPE_ACT_CURSOR_UP:
+   return(CUP);
+  case WPE_ACT_CURSOR_DOWN:
+   return(CDO);
+  case WPE_ACT_CURSOR_LEFT:
+   return(CLE);
+  case WPE_ACT_CURSOR_RIGHT:
+   return(CRI);
+  case WPE_ACT_LINE_START:
+   return(POS1);
+  case WPE_ACT_LINE_END:
+   return(ENDE);
+  default:
+   return(c);
+ }
+}
+
 /*              Interpretation of cursor keys
                      ( Primitive editor )                    */
 int e_tst_cur(int c, ECNT *e)
@@ -1543,23 +1628,22 @@ int e_tst_cur(int c, ECNT *e)
    SCHIRM *s = f->s;
    int moved = 1;              /* the key moved the cursor: it ends a selection */
 
+   if (e_cursor_letter_deletes(f, wpe_binding_action(c, wpe_binding_style(e->edopt), WPE_CTX_CURSOR)))
+      return(0);
+   c = e_cursor_letter_key(c, e->edopt);
    switch (c)
-   {  case CtrlP:
-      case CUP:
+   {  case CUP:
       case CUP+512:
 	 e_cursor_up(b);
 	 break;
-      case CtrlN:
       case CDO:
       case CDO+512:
 	 e_cursor_down(b);
 	 break;
-      case CtrlB:
       case CLE:
       case CLE+512:
 	 e_cursor_left(b);
 	 break;
-      case CtrlF:
       case CRI:
       case CRI+512:
 	 e_cursor_right(b);
@@ -1631,33 +1715,13 @@ int e_tst_cur(int c, ECNT *e)
 	 e_pr_filetype(f);
 #endif
 	 break;
-      case CtrlA:
       case POS1:
       case POS1+512:
 	 e_buffer_cursor_set(b, b->b.y, 0);
 	 break;
-      case CtrlE:
       case ENDE:
       case ENDE+512:
 	 e_buffer_cursor_set(b, b->b.y, b->bf[b->b.y].len);
-	 break;
-      case CtrlT:
-	 moved = 0;
-	 if(e_window_text_locked(f)) break;
-	 e_delete_word_right(b, s);
-	 e_schirm(f, 1);
-	 break;
-      case CtrlZ:
-	 moved = 0;
-	 if(e_window_text_locked(f)) break;
-	 e_delete_to_end_of_row(b, s);
-	 e_schirm(f, 1);
-	 break;
-      case DGZ:
-	 moved = 0;
-	 if(e_window_text_locked(f)) break;
-	 e_delete_line_key(b, s);
-	 e_schirm(f, 1);
 	 break;
       default:
 	 moved = 0;
@@ -1768,6 +1832,18 @@ int e_tst_fkt(int c, ECNT *e)
   case WPE_ACT_SEARCH_AGAIN:
    e_rep_search(f);
    break;
+  case WPE_ACT_BLOCK_ALL:
+   e_buffer_block_all(f->b);
+   e_schirm(f, 1);
+   break;
+  case WPE_ACT_BLOCK_LINE:
+   e_buffer_block_line(f->b);
+   e_schirm(f, 1);
+   break;
+  case WPE_ACT_SELECT_WORD:
+   e_select_word_at_cursor(f->b);
+   e_schirm(f, 1);
+   break;
   default:
    return(c);
  }
@@ -1808,7 +1884,7 @@ int e_ctrl_k(FENSTER *f)
  int c;
 
  c = e_prefix_read_letter();
- if (c < 32)
+ if (c < 32 && wpe_binding_prefix_folds_control(wpe_binding_style(f->ed->edopt)))
   c = c + 'A' - 1;
  switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PREFIX_K))
  {
@@ -2130,6 +2206,11 @@ int e_tst_dfkt(FENSTER *f, int c)
       with the editor on top and nothing open, Esc is a no-op.  (It must not
       fall through to the default branch, which would insert it as text.)
       In Messages it lets go of the list, back to the source window. */
+   if (e_selection_active(f))
+   {
+    e_selection_collapse(f);   /* Esc drops a selection and is used up by it */
+    break;
+   }
 #if defined(PROG)
    if (WpeIsProg())
     e_messages_return(f);

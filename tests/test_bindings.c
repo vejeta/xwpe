@@ -678,12 +678,18 @@ static void test_dispatch(void)
 	int style, prog, c;
 	char what[64];
 
+	/* The oracle is the Borland dispatchers as they were before the keys became
+	   data, and the Borland style must still be exactly that.  The second style
+	   changed on purpose when it became Modern: test_modern_table() lists what
+	   it binds now. */
 	for (style = 0; style < WPE_STYLE_COUNT; style++) {
+		if (style == WPE_STYLE_MODERN)
+			continue;
 		for (prog = 0; prog <= 1; prog++) {
 			snprintf(what, sizeof what, "editor style %d prog %d", style, prog);
 			for (c = CODE_LOW; c < CODE_HIGH; c++)
 				same(what, c, table_editor(c, style, prog),
-				     oracle_editor(c, style == WPE_STYLE_CUA, prog));
+				     oracle_editor(c, 0, prog));
 		}
 		snprintf(what, sizeof what, "Ctrl-K style %d", style);
 		for (c = CODE_LOW; c < CODE_HIGH; c++)
@@ -710,17 +716,185 @@ static void test_dispatch(void)
 			int list = wpe_binding_action(c, style, WPE_CTX_LIST) == WPE_ACT_CLOSE_LIST;
 			int move = wpe_binding_action(c, style, WPE_CTX_DIALOG_MOVE) == WPE_ACT_SIZE_MOVE;
 
-			if (list != oracle_list_close(c, style == WPE_STYLE_CUA))
+			if (list != oracle_list_close(c, 0))
 				fail("list close", c, list ? "yes" : "no", "the other");
-			if (move != oracle_dialog_move(c, style == WPE_STYLE_CUA))
+			if (move != oracle_dialog_move(c, 0))
 				fail("dialog move", c, move ? "yes" : "no", "the other");
 		}
 	}
 	/* The key that closes a list is the one the first-code reader names. */
 	if (wpe_binding_first_code(WPE_ACT_CLOSE_LIST, WPE_STYLE_BORLAND, WPE_CTX_LIST) != AF3)
 		fail("list close code", 0, "?", "Alt-F3");
-	if (wpe_binding_first_code(WPE_ACT_CLOSE_LIST, WPE_STYLE_CUA, WPE_CTX_LIST) != CF4)
+	if (wpe_binding_first_code(WPE_ACT_CLOSE_LIST, WPE_STYLE_MODERN, WPE_CTX_LIST) != CF4)
 		fail("list close code", 0, "?", "Ctrl-F4");
+}
+
+/* ------------------------------------------------------------------ */
+/* the Modern style's own rows                                         */
+
+typedef struct {
+	int code;
+	int context;
+	int action;
+	int session;        /* 0 no session, 1 a session is open, -1 either */
+} ModernRow;
+
+static int session_open;
+static int probe_session(void) { return session_open; }
+
+/* Every key of the Modern table of the design (3.2) that has an action in this
+   build, in the context the editor reads it, and what it must do. */
+static const ModernRow modern_rows[] = {
+	{ CtrlS, WPE_CTX_EDIT, WPE_ACT_SAVE, -1 },
+	{ CtrlZ, WPE_CTX_EDIT, WPE_ACT_EDIT_UNDO, -1 },
+	{ CtrlU, WPE_CTX_EDIT, WPE_ACT_EDIT_UNDO, -1 },
+	{ CtrlY, WPE_CTX_EDIT, WPE_ACT_EDIT_REDO, -1 },
+	{ CtrlX, WPE_CTX_EDIT, WPE_ACT_EDIT_CUT, -1 },
+	{ CtrlC, WPE_CTX_EDIT, WPE_ACT_EDIT_COPY, -1 },
+	{ CtrlV, WPE_CTX_EDIT, WPE_ACT_EDIT_PASTE, -1 },
+	{ CtrlA, WPE_CTX_EDIT, WPE_ACT_BLOCK_ALL, -1 },
+	{ CtrlL, WPE_CTX_EDIT, WPE_ACT_BLOCK_LINE, -1 },
+	{ CtrlD, WPE_CTX_EDIT, WPE_ACT_SELECT_WORD, -1 },
+	{ CtrlF, WPE_CTX_EDIT, WPE_ACT_FIND, -1 },
+	{ F4, WPE_CTX_EDIT, WPE_ACT_FIND, -1 },
+	{ F3, WPE_CTX_EDIT, WPE_ACT_SEARCH_AGAIN, -1 },
+	{ CtrlR, WPE_CTX_EDIT, WPE_ACT_REPLACE, -1 },
+	{ WPE_CTRL_H, WPE_CTX_EDIT, WPE_ACT_REPLACE, -1 },
+	{ CtrlG, WPE_CTX_EDIT, WPE_ACT_GOTO_LINE, -1 },
+	{ CtrlK, WPE_CTX_EDIT, WPE_ACT_K_PREFIX, -1 },
+	{ CtrlO, WPE_CTX_WINDOW, WPE_ACT_FILE_MANAGER, -1 },
+	{ CtrlW, WPE_CTX_WINDOW, WPE_ACT_CLOSE_WINDOW, -1 },
+	{ CF4, WPE_CTX_WINDOW, WPE_ACT_CLOSE_WINDOW, -1 },
+	{ CtrlQ, WPE_CTX_WINDOW, WPE_ACT_QUIT, -1 },
+	{ AltX, WPE_CTX_WINDOW, WPE_ACT_QUIT, -1 },
+	{ F6, WPE_CTX_WINDOW, WPE_ACT_NEXT_WINDOW, -1 },
+	{ WPE_CTRL_TAB, WPE_CTX_WINDOW, WPE_ACT_NEXT_WINDOW, -1 },
+	{ F10, WPE_CTX_WINDOW, WPE_ACT_MENU_BAR, 0 },
+	{ F10, WPE_CTX_DEBUG, WPE_ACT_DEBUG_STEP, 1 },
+	{ F5, WPE_CTX_DEBUG, WPE_ACT_DEBUG_RUN, -1 },
+	{ SF5, WPE_CTX_DEBUG, WPE_ACT_DEBUG_QUIT, -1 },
+	{ F9, WPE_CTX_DEBUG, WPE_ACT_DEBUG_BREAKPOINT, -1 },
+	{ F11, WPE_CTX_DEBUG, WPE_ACT_DEBUG_TRACE, -1 },
+	{ SF11, WPE_CTX_DEBUG, WPE_ACT_DEBUG_FINISH, -1 },
+	{ CF10, WPE_CTX_DEBUG, WPE_ACT_DEBUG_GOTO_CURSOR, -1 },
+	{ F8, WPE_CTX_PROGRAM, WPE_ACT_NEXT_ERROR, 0 },
+	{ SF8, WPE_CTX_PROGRAM, WPE_ACT_PREV_ERROR, 0 },
+	{ F8, WPE_CTX_DEBUG, WPE_ACT_DEBUG_STEP, -1 },
+	{ CF5, WPE_CTX_PROGRAM, WPE_ACT_RUN, -1 },
+	{ AltM, WPE_CTX_PROGRAM, WPE_ACT_MAKE, -1 },
+	{ F12, WPE_CTX_PROGRAM, WPE_ACT_LSP_DEFINITION, -1 },
+	{ SF12, WPE_CTX_PROGRAM, WPE_ACT_LSP_REFERENCES, -1 },
+	{ F2, WPE_CTX_PROGRAM, WPE_ACT_LSP_RENAME, -1 },
+	{ WPE_CTRL_SPACE, WPE_CTX_PROGRAM, WPE_ACT_LSP_COMPLETE, -1 },
+	{ AltQ, WPE_CTX_PROGRAM, WPE_ACT_LSP_PREFIX, -1 },
+	{ AltG, WPE_CTX_PROGRAM, WPE_ACT_AI_PREFIX, -1 }
+};
+
+/** Keys the Modern style gives up, so they are bound to nothing in it. */
+static const ModernRow modern_unbound[] = {
+	{ CtrlP, WPE_CTX_CURSOR, WPE_ACT_NONE, -1 },
+	{ CtrlN, WPE_CTX_CURSOR, WPE_ACT_NONE, -1 },
+	{ CtrlB, WPE_CTX_CURSOR, WPE_ACT_NONE, -1 },
+	{ CtrlA, WPE_CTX_CURSOR, WPE_ACT_NONE, -1 },
+	{ CtrlT, WPE_CTX_CURSOR, WPE_ACT_NONE, -1 },
+	{ CtrlZ, WPE_CTX_CURSOR, WPE_ACT_NONE, -1 },
+	{ CtrlO, WPE_CTX_EDIT, WPE_ACT_NONE, -1 },
+	{ F9, WPE_CTX_PROGRAM, WPE_ACT_NONE, -1 },
+	{ F2, WPE_CTX_WINDOW, WPE_ACT_NONE, -1 }
+};
+
+static void test_modern_table(void)
+{
+	size_t i;
+	int state;
+	char what[64];
+
+	wpe_binding_set_session_probe(probe_session);
+	for (i = 0; i < sizeof(modern_rows) / sizeof(modern_rows[0]); i++) {
+		const ModernRow *r = &modern_rows[i];
+
+		for (state = 0; state <= 1; state++) {
+			session_open = state;
+			if (r->session != -1 && r->session != state)
+				continue;
+			if (wpe_binding_action(r->code, WPE_STYLE_MODERN, r->context) != r->action) {
+				snprintf(what, sizeof what, "Modern code in context %d, session %d", r->context, state);
+				fail(what, r->code, wpe_action_name(wpe_binding_action(r->code, WPE_STYLE_MODERN, r->context)),
+				     wpe_action_name(r->action));
+			}
+		}
+	}
+	session_open = 0;
+	for (i = 0; i < sizeof(modern_unbound) / sizeof(modern_unbound[0]); i++) {
+		const ModernRow *r = &modern_unbound[i];
+
+		if (wpe_binding_action(r->code, WPE_STYLE_MODERN, r->context) != WPE_ACT_NONE)
+			fail("Modern key that must be free", r->code, "an action", "none");
+	}
+	/* a key that is state-bound does the other thing in the other state */
+	session_open = 1;
+	if (wpe_binding_action(F10, WPE_STYLE_MODERN, WPE_CTX_WINDOW) != WPE_ACT_NONE)
+		fail("F10 with a session open still opens the menu", F10, "menu", "none");
+	if (wpe_binding_action(F8, WPE_STYLE_MODERN, WPE_CTX_PROGRAM) != WPE_ACT_NONE)
+		fail("F8 with a session open still goes to an error", F8, "next error", "none");
+	session_open = 0;
+	if (wpe_binding_action(F10, WPE_STYLE_MODERN, WPE_CTX_DEBUG) != WPE_ACT_NONE)
+		fail("F10 with no session steps over", F10, "step", "none");
+	/* the Borland style never sees the state: F10 is the menu either way */
+	session_open = 1;
+	if (wpe_binding_action(F10, WPE_STYLE_BORLAND, WPE_CTX_WINDOW) != WPE_ACT_MENU_BAR)
+		fail("Borland F10 with a session open", F10, "none", "menu");
+	session_open = 0;
+	wpe_binding_set_session_probe(NULL);
+	/* the Ctrl-K letter and chord rule */
+	if (!wpe_binding_prefix_folds_control(WPE_STYLE_BORLAND) ||
+	    wpe_binding_prefix_folds_control(WPE_STYLE_MODERN))
+		fail("Ctrl-K control letter fold", 0, "wrong style", "Borland folds, Modern does not");
+	/* the fold: Ctrl-Shift-letter reaches the editor as itself where Modern binds it, and as Ctrl-letter where it does not */
+	if (wpe_binding_fold(WPE_CS_FIRST + 'B' - 'A', WPE_STYLE_MODERN, WPE_CTX_EDIT) != WPE_CS_FIRST + 'B' - 'A')
+		fail("Modern Ctrl-Shift-B stays", 0, "folded", "kept");
+	if (wpe_binding_fold(WPE_CS_FIRST + 'B' - 'A', WPE_STYLE_BORLAND, WPE_CTX_EDIT) != CtrlB)
+		fail("Borland Ctrl-Shift-B folds", 0, "kept", "Ctrl-B");
+	if (wpe_binding_fold(WPE_CTRL_H, WPE_STYLE_MODERN, WPE_CTX_BOX) != CtrlH)
+		fail("Ctrl-H in a box is Backspace", 0, "kept", "Ctrl-H");
+	if (wpe_binding_fold(WPE_CTRL_H, WPE_STYLE_MODERN, WPE_CTX_EDIT) != WPE_CTRL_H)
+		fail("Modern Ctrl-H in the editor is its own key", 0, "folded", "kept");
+	if (wpe_binding_fold(WPE_CTRL_H, WPE_STYLE_BORLAND, WPE_CTX_EDIT) != CtrlH)
+		fail("Borland Ctrl-H in the editor is Backspace", 0, "kept", "Ctrl-H");
+}
+
+/* ------------------------------------------------------------------ */
+/* the delivery table                                                  */
+
+static void test_delivery(void)
+{
+	size_t n, i;
+	const WpeDelivery *d = wpe_key_delivery(&n);
+
+	if (n == 0)
+		fail("delivery table", 0, "empty", "rows");
+	for (i = 0; i < n; i++)
+		if (!d[i].why || (strncmp(d[i].why, "measured", 8) && strncmp(d[i].why, "documented", 10)))
+			fail("delivery row without a source", d[i].code, d[i].why ? d[i].why : "(none)", "measured or documented");
+	/* measured: xterm answers modifyOtherKeys, Konsole and kitty the kitty protocol */
+	if (wpe_emulator_protocols(WPE_EMU_XTERM) != WPE_PROTO_MODIFY_OTHER_KEYS)
+		fail("xterm protocol", 0, "other", "modifyOtherKeys");
+	if (wpe_emulator_protocols(WPE_EMU_KONSOLE) != WPE_PROTO_KITTY)
+		fail("Konsole protocol", 0, "other", "kitty");
+	if (wpe_emulator_protocols(WPE_EMU_VTE) != 0 || wpe_emulator_protocols(WPE_EMU_SCREEN) != 0)
+		fail("VTE and screen implement neither", 0, "one", "none");
+	/* Ctrl-Shift-S needs a protocol, so GNOME Terminal (VTE) cannot deliver it */
+	if (wpe_binding_key_class(WPE_CS_FIRST + 'S' - 'A') != WPE_DELIVER_PROTOCOL)
+		fail("Ctrl-Shift-S class", 0, "always", "protocol");
+	if (wpe_key_reaches(WPE_CS_FIRST + 'S' - 'A', WPE_EMU_VTE) || !wpe_key_reaches(WPE_CS_FIRST + 'S' - 'A', WPE_EMU_XTERM))
+		fail("Ctrl-Shift-S delivery", 0, "wrong", "xterm yes, VTE no");
+	/* Konsole keeps Ctrl-Shift-letter even though it has a protocol */
+	if (wpe_key_reaches(WPE_CS_FIRST + 'P' - 'A', WPE_EMU_KONSOLE))
+		fail("Konsole Ctrl-Shift-P", 0, "delivered", "taken");
+	if (wpe_binding_key_class(CtrlS) != WPE_DELIVER_ALWAYS || !wpe_key_reaches(CtrlS, WPE_EMU_VTE))
+		fail("Ctrl-S arrives everywhere", 0, "no", "yes");
+	if (wpe_key_reaches(CtrlS, WPE_EMU_SCREEN))
+		fail("screen keeps Ctrl-S", 0, "delivered", "taken");
 }
 
 /* ------------------------------------------------------------------ */
@@ -740,9 +914,14 @@ static const OldEntry old_eblst_o[] = {
 	   Ctrl-F4 it sent before */
 	ROW("^L S.Again", 56, 0, 2, CtrlL), ROW("Alt-X Quit", 68, 0, 5, AltX) };
 static const OldEntry old_eblst_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Alt-F2 Save", 9, 0, 6, AF2), ROW("F2 Files", 22, 0, 2, F2),
-	ROW("^F4 Close ", 32, 0, 3, CF4), ROW("Alt-F3 Srch", 44, 0, 6, AF3),
-	ROW("F3 S.Ag.", 57, 0, 2, F3), ROW("Alt-F4 Quit", 67, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("^S Save", 9, 0, 2, CtrlS), ROW("^O Open", 18, 0, 2, CtrlO),
+	ROW("^W Close", 27, 0, 2, CtrlW), ROW("^F Find", 37, 0, 2, CtrlF),
+	ROW("F3 Next", 46, 0, 2, F3), ROW("^Q Quit", 67, 0, 2, CtrlQ) };
+static const OldEntry modern_eblst_prog[] = {
+	ROW("F1 Help", 0, 0, 2, F1), ROW("^S Save", 9, 0, 2, CtrlS), ROW("^O Open", 18, 0, 2, CtrlO),
+	ROW("^W Close", 27, 0, 2, CtrlW), ROW("^F Find", 37, 0, 2, CtrlF),
+	ROW("F3 Next", 46, 0, 2, F3), ROW("Alt-M Make", 55, 0, 5, AltM),
+	ROW("^Q Quit", 67, 0, 2, CtrlQ) };
 static const OldEntry old_eblst_prog_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("F2 Save", 9, 0, 2, F2), ROW("F3 Files", 18, 0, 2, F3),
 	ROW("^W Close", 28, 0, 2, CtrlW), ROW("F4 Search", 37, 0, 2, F4),
@@ -754,27 +933,27 @@ static const OldEntry old_eblst_lsp_o[] = {
 	ROW("Alt-Q ? Metals", 44, 0, 7, WPE_LSP_MENU), ROW("F9 Build", 59, 0, 2, F9),
 	ROW("Alt-X Quit", 68, 0, 5, AltX) };
 static const OldEntry old_eblst_lsp_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Alt-F2 Save", 8, 0, 6, AF2), ROW("F2 Files", 20, 0, 2, F2),
-	ROW("^F4 Close ", 29, 0, 3, CF4), ROW("Alt-F3 Srch", 40, 0, 6, AF3),
-	ROW("Alt-Q ? Metals", 52, 0, 7, WPE_LSP_MENU), ROW("Alt-F4 Quit", 67, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("^S Save", 8, 0, 2, CtrlS), ROW("^O Open", 20, 0, 2, CtrlO),
+	ROW("^W Close", 29, 0, 2, CtrlW), ROW("^F Find", 40, 0, 2, CtrlF),
+	ROW("Alt-Q ? Metals", 52, 0, 7, WPE_LSP_MENU), ROW("^Q Quit", 67, 0, 2, CtrlQ) };
 #ifdef WPE_AI
 static const OldEntry old_eblst_ai_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("F2 Save", 9, 0, 2, F2), ROW("F3 Files", 18, 0, 2, F3),
 	ROW("^W Close", 28, 0, 2, CtrlW), ROW("F4 Search", 37, 0, 2, F4), ROW("F9 Build", 47, 0, 2, F9),
 	ROW("Alt-G AI", 56, 0, 5, WPE_AI_MENU), ROW("Alt-X Quit", 66, 0, 5, AltX) };
 static const OldEntry old_eblst_ai_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Alt-F2 Save", 9, 0, 6, AF2), ROW("F2 Files", 22, 0, 2, F2),
-	ROW("^F4 Close ", 32, 0, 3, CF4), ROW("Alt-F3 Srch", 44, 0, 6, AF3),
-	ROW("Alt-G AI", 57, 0, 5, WPE_AI_MENU), ROW("Alt-F4 Quit", 67, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("^S Save", 9, 0, 2, CtrlS), ROW("^O Open", 22, 0, 2, CtrlO),
+	ROW("^W Close", 32, 0, 2, CtrlW), ROW("^F Find", 44, 0, 2, CtrlF),
+	ROW("Alt-G AI", 57, 0, 5, WPE_AI_MENU), ROW("^Q Quit", 67, 0, 2, CtrlQ) };
 static const OldEntry old_eblst_lspai_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("F2 Save", 8, 0, 2, F2), ROW("F3 Files", 16, 0, 2, F3),
 	ROW("^W Close", 25, 0, 2, CtrlW), ROW("Alt-Q ? LSP", 34, 0, 7, WPE_LSP_MENU),
 	ROW("Alt-G AI", 46, 0, 5, WPE_AI_MENU), ROW("F9 Build", 55, 0, 2, F9),
 	ROW("Alt-X Quit", 64, 0, 5, AltX) };
 static const OldEntry old_eblst_lspai_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Alt-F2 Save", 8, 0, 6, AF2), ROW("F2 Files", 20, 0, 2, F2),
-	ROW("^F4 Close", 30, 0, 3, CF4), ROW("Alt-Q ? LSP", 40, 0, 7, WPE_LSP_MENU),
-	ROW("Alt-G AI", 54, 0, 5, WPE_AI_MENU), ROW("Alt-F4 Quit", 67, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("^S Save", 8, 0, 2, CtrlS), ROW("^O Open", 20, 0, 2, CtrlO),
+	ROW("^W Close", 30, 0, 2, CtrlW), ROW("Alt-Q ? LSP", 40, 0, 7, WPE_LSP_MENU),
+	ROW("Alt-G AI", 54, 0, 5, WPE_AI_MENU), ROW("^Q Quit", 67, 0, 2, CtrlQ) };
 #endif
 static const OldEntry old_fblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Edit", 10, 0, 1, AltE), ROW("Attributes", 17, 0, 1, AltA),
@@ -783,7 +962,7 @@ static const OldEntry old_fblst_o[] = {
 static const OldEntry old_fblst_u[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Edit", 9, 0, 1, AltE), ROW("RePlace", 15, 2, 1, AltP),
 	ROW("Move", 24, 0, 1, AltM), ROW("DUplicate", 30, 1, 1, AltU), ROW("Remove", 41, 0, 1, AltR),
-	ROW("^F4 Close W.", 49, 0, 3, CF4), ROW("Alt-F4 Quit", 63, 0, 6, AF4) };
+	ROW("^W Close W.", 49, 0, 2, CtrlW), ROW("^Q Quit", 63, 0, 2, CtrlQ) };
 static const OldEntry old_mblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("PreV. Err.", 9, 3, 1, AltV), ROW("NexT Err.", 21, 3, 1, AltT),
 	ROW("Compile", 32, 0, 1, AltC), ROW("Make", 41, 0, 1, AltM), ROW("RUn", 47, 1, 1, AltU),
@@ -791,15 +970,23 @@ static const OldEntry old_mblst_o[] = {
 static const OldEntry old_mblst_u[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("PreV. Err.", 9, 3, 1, AltV), ROW("NexT Err.", 21, 3, 1, AltT),
 	ROW("Compile", 32, 0, 1, AltC), ROW("Make", 41, 0, 1, AltM), ROW("RUn", 47, 1, 1, AltU),
-	ROW("^F4 Close", 52, 0, 3, CF4), ROW("Alt-F4 Quit", 63, 0, 6, AF4) };
+	ROW("^W Close", 52, 0, 2, CtrlW), ROW("^Q Quit", 63, 0, 2, CtrlQ) };
 static const OldEntry old_dblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("^F7 Make Watch", 9, 0, 3, CF7), ROW("F7 Trace", 25, 0, 2, F7),
 	ROW("F8 Step", 34, 0, 2, F8), ROW("^F10 Run", 43, 0, 4, CF10), ROW("^W Close", 53, 0, 2, CtrlW),
 	ROW("Alt-X Quit", 67, 0, 5, AltX) };
 static const OldEntry old_dblst_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("^F5 Make Watch", 9, 0, 3, CF5), ROW("F7 Trace", 25, 0, 2, F7),
-	ROW("F8 Step", 34, 0, 2, F8), ROW("^F10 Run", 43, 0, 4, CF10), ROW("^F4 Close", 53, 0, 3, CF4),
-	ROW("Alt-F4 Quit", 64, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("^F7 Make Watch", 9, 0, 3, CF7), ROW("F11 Trace", 25, 0, 3, F11),
+	ROW("F10 Step", 34, 0, 3, F10), ROW("F5 Run", 43, 0, 2, F5), ROW("^W Close", 53, 0, 2, CtrlW),
+	ROW("^Q Quit", 64, 0, 2, CtrlQ) };
+/* The Modern style's bar for a source window while a session runs. */
+static const OldEntry modern_dblst_src[] = {
+	ROW("F1 Help", 0, 0, 2, F1), ROW("F11 Into", 9, 0, 3, F11), ROW("F10 Over", 19, 0, 3, F10),
+	ROW("^F10 Go to cursor", 29, 0, 4, CF10), ROW("^F7 Make Watch", 48, 0, 3, CF7),
+	ROW("Shift-F5 Stop", 64, 0, 8, SF5) };
+static const OldEntry modern_dblst_run[] = {
+	ROW("F1 Help", 0, 0, 2, F1), ROW("^Brk Pause", 9, 0, 4, CtrlBrk),
+	ROW("Shift-F5 Stop", 21, 0, 8, SF5) };
 static const OldEntry old_dblst_src_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("F7 Trace", 8, 0, 2, F7), ROW("F8 Step", 17, 0, 2, F8),
 	ROW("F4 Go to cursor", 25, 0, 2, F4), ROW("^F7 Make Watch", 41, 0, 3, CF7),
@@ -810,52 +997,52 @@ static const OldEntry old_xblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Execute", 19, 0, 1, AltE), ROW("^W Close W.", 38, 0, 2, CtrlW),
 	ROW("Alt-X Quit", 66, 0, 5, AltX) };
 static const OldEntry old_xblst_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Execute", 19, 0, 1, AltE), ROW("^F4 Close W.", 38, 0, 3, CF4),
-	ROW("Alt-F4 Quit", 63, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("Execute", 19, 0, 1, AltE), ROW("^W Close W.", 38, 0, 2, CtrlW),
+	ROW("^Q Quit", 63, 0, 2, CtrlQ) };
 static const OldEntry old_wblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Write", 19, 0, 1, AltW), ROW("^W Close W.", 38, 0, 2, CtrlW),
 	ROW("Alt-X Quit", 66, 0, 5, AltX) };
 static const OldEntry old_wblst_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Write", 19, 0, 1, AltW), ROW("^F4 Close W.", 38, 0, 3, CF4),
-	ROW("Alt-F4 Quit", 63, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("Write", 19, 0, 1, AltW), ROW("^W Close W.", 38, 0, 2, CtrlW),
+	ROW("^Q Quit", 63, 0, 2, CtrlQ) };
 static const OldEntry old_rblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Read", 19, 0, 1, AltR), ROW("^W Close W.", 38, 0, 2, CtrlW),
 	ROW("Alt-X Quit", 66, 0, 5, AltX) };
 static const OldEntry old_rblst_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Read", 19, 0, 1, AltR), ROW("^F4 Close W.", 38, 0, 3, CF4),
-	ROW("Alt-F4 Quit", 63, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("Read", 19, 0, 1, AltR), ROW("^W Close W.", 38, 0, 2, CtrlW),
+	ROW("^Q Quit", 63, 0, 2, CtrlQ) };
 static const OldEntry old_ablst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Add", 19, 0, 1, AltA), ROW("^W Close W.", 38, 0, 2, CtrlW),
 	ROW("Alt-X Quit", 66, 0, 5, AltX) };
 static const OldEntry old_ablst_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Add", 19, 0, 1, AltA), ROW("^F4 Close W.", 38, 0, 3, CF4),
-	ROW("Alt-F4 Quit", 63, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("Add", 19, 0, 1, AltA), ROW("^W Close W.", 38, 0, 2, CtrlW),
+	ROW("^Q Quit", 63, 0, 2, CtrlQ) };
 static const OldEntry old_sblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Save", 14, 0, 1, AltS), ROW("Change Dir", 25, 0, 1, AltC),
 	ROW("^W Close W.", 42, 0, 2, CtrlW), ROW("Alt-X Quit", 66, 0, 5, AltX) };
 static const OldEntry old_sblst_u[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Save", 14, 0, 1, AltS), ROW("Change Dir", 25, 0, 1, AltC),
-	ROW("^F4 Close W.", 42, 0, 3, CF4), ROW("Alt-F4 Quit", 66, 0, 6, AF4) };
+	ROW("^W Close W.", 42, 0, 2, CtrlW), ROW("^Q Quit", 66, 0, 2, CtrlQ) };
 static const OldEntry old_hblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("<BSP> Back", 9, 0, 5, WPE_DC), ROW("<CR> Goto", 21, 0, 4, WPE_CR),
 	ROW(" PreVious", 32, 4, 1, AltV), ROW(" NexT", 45, 4, 1, AltT), ROW("^W Close", 54, 0, 2, CtrlW),
 	ROW("Alt-X Quit", 68, 0, 5, AltX) };
 static const OldEntry old_hblst_u[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("<BSP> Back", 9, 0, 5, WPE_DC), ROW("<CR> Goto", 21, 0, 4, WPE_CR),
-	ROW(" PreVious", 32, 4, 1, AltV), ROW(" NexT", 45, 4, 1, AltT), ROW("^F4 Close", 54, 0, 3, CF4),
-	ROW("Alt-F4 Quit", 65, 0, 6, AF4) };
+	ROW(" PreVious", 32, 4, 1, AltV), ROW(" NexT", 45, 4, 1, AltT), ROW("^W Close", 54, 0, 2, CtrlW),
+	ROW("^Q Quit", 65, 0, 2, CtrlQ) };
 static const OldEntry old_gblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Show", 19, 0, 1, AltS), ROW("^W Close W.", 38, 0, 2, CtrlW),
 	ROW("Alt-X Quit", 66, 0, 5, AltX) };
 static const OldEntry old_gblst_u[] = {
-	ROW("F1 Help", 0, 0, 2, F1), ROW("Show", 19, 0, 1, AltS), ROW("^F4 Close W.", 38, 0, 3, CF4),
-	ROW("Alt-F4 Quit", 63, 0, 6, AF4) };
+	ROW("F1 Help", 0, 0, 2, F1), ROW("Show", 19, 0, 1, AltS), ROW("^W Close W.", 38, 0, 2, CtrlW),
+	ROW("^Q Quit", 63, 0, 2, CtrlQ) };
 static const OldEntry old_oblst_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Add", 14, 0, 1, AltA), ROW("Delete", 25, 0, 1, AltD),
 	ROW("^W Close W.", 42, 0, 2, CtrlW), ROW("Alt-X Quit", 66, 0, 5, AltX) };
 static const OldEntry old_oblst_u[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("Add", 14, 0, 1, AltA), ROW("Delete", 25, 0, 1, AltD),
-	ROW("^F4 Close W.", 42, 0, 3, CF4), ROW("Alt-F4 Quit", 63, 0, 6, AF4) };
+	ROW("^W Close W.", 42, 0, 2, CtrlW), ROW("^Q Quit", 63, 0, 2, CtrlQ) };
 
 #define LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
 /* A bar in both styles: the old array of each. */
@@ -870,7 +1057,7 @@ static const struct {
 	int n[WPE_STYLE_COUNT];
 } bars[] = {
 	BARS("eblst", eblst_bar, old_eblst_o, old_eblst_u),
-	BARB("eblst_prog", eblst_prog_bar, old_eblst_prog_o),
+	BARS("eblst_prog", eblst_prog_bar, old_eblst_prog_o, modern_eblst_prog),
 	BARS("eblst_lsp", eblst_lsp_bar, old_eblst_lsp_o, old_eblst_lsp_u),
 #ifdef WPE_AI
 	BARS("eblst_ai", eblst_ai_bar, old_eblst_ai_o, old_eblst_ai_u),
@@ -879,8 +1066,8 @@ static const struct {
 	BARS("fblst", fblst_bar, old_fblst_o, old_fblst_u),
 	BARS("mblst", mblst_bar, old_mblst_o, old_mblst_u),
 	BARS("dblst", dblst_bar, old_dblst_o, old_dblst_u),
-	BARB("dblst_src", dblst_src_bar, old_dblst_src_o),
-	BARB("dblst_run", dblst_run_bar, old_dblst_run_o),
+	BARS("dblst_src", dblst_src_bar, old_dblst_src_o, modern_dblst_src),
+	BARS("dblst_run", dblst_run_bar, old_dblst_run_o, modern_dblst_run),
 	BARS("xblst", xblst_bar, old_xblst_o, old_xblst_u),
 	BARS("wblst", wblst_bar, old_wblst_o, old_wblst_u),
 	BARS("rblst", rblst_bar, old_rblst_o, old_rblst_u),
@@ -986,7 +1173,7 @@ static void test_table_rules(void)
 		const WpeBinding *r = NULL;
 
 		for (i = 0; i < n; i++)
-			if (t[i].code == AF2 && t[i].context == WPE_CTX_EDIT)
+			if (t[i].code == AF2 && t[i].context == WPE_CTX_WINDOW)
 				r = &t[i];
 		if (!r || strcmp(wpe_binding_row_name(r, WPE_NAME_DOC, b, sizeof b), "Alt-F2"))
 			fail("doc spelling", 0, "?", "Alt-F2");
@@ -998,8 +1185,10 @@ static void test_table_rules(void)
 	{
 		char b[96];
 
-		wpe_menu_item_text(b, sizeof b, "Save", WPE_ACT_SAVE, WPE_STYLE_CUA, WPE_CTXM_MENU, 19, NULL);
-		same("menu item", 0, b, "Save         Alt F2");
+		wpe_menu_item_text(b, sizeof b, "Save", WPE_ACT_SAVE, WPE_STYLE_MODERN, WPE_CTXM_MENU, 19, NULL);
+		same("menu item", 0, b, "Save             ^S");
+		wpe_menu_item_text(b, sizeof b, "Save", WPE_ACT_SAVE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 19, NULL);
+		same("Borland menu item", 0, b, "Save             F2");
 		wpe_menu_item_text(b, sizeof b, "Tile", WPE_ACT_TILE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 23, NULL);
 		same("menu item without a key", 0, b, "Tile");
 		wpe_menu_item_text(b, sizeof b, "Replace", WPE_ACT_REPLACE, WPE_STYLE_BORLAND, WPE_CTXM_MENU, 23, NULL);
@@ -1008,13 +1197,16 @@ static void test_table_rules(void)
 	/* an action with no key in a style names none */
 	if (wpe_binding_key_name(WPE_ACT_TILE, WPE_STYLE_BORLAND) != NULL)
 		fail("Tile has a Borland key", 0, "a key", "none");
-	if (strcmp(wpe_binding_key_name(WPE_ACT_TILE, WPE_STYLE_CUA), "Shift-F5") != 0)
-		fail("Tile CUA key", 0, wpe_binding_key_name(WPE_ACT_TILE, WPE_STYLE_CUA), "Shift-F5");
+	/* the Modern style leaves Tile to the Window menu, as the Borland style does */
+	if (wpe_binding_key_name(WPE_ACT_TILE, WPE_STYLE_MODERN) != NULL)
+		fail("Tile has a Modern key", 0, "a key", "none");
 }
 
 int main(void)
 {
 	test_dispatch();
+	test_modern_table();
+	test_delivery();
 	test_bars();
 	test_table_rules();
 	if (fails) {

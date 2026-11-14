@@ -11,7 +11,7 @@
 #include "edit.h"
 
 #define STYLE_B WPE_STYLE_BIT(WPE_STYLE_BORLAND)
-#define STYLE_C WPE_STYLE_BIT(WPE_STYLE_CUA)
+#define STYLE_C WPE_STYLE_BIT(WPE_STYLE_MODERN)
 #define STYLE_BOTH WPE_STYLES_BOTH
 
 /** One entry of a bar, in the styles of @styles.  An entry bound to an action
@@ -55,23 +55,25 @@ typedef struct {
 /* The editor bar. */
 static const WpeBarSpec eblst_spec[] = {
  BAR(HELP_EDITOR, "Help", 0), BAR(SAVE, "Save", 9),
- BAR2(FILE_MANAGER, "Files", 18, "Files", 22),
- BAR2(CLOSE_WINDOW, "Close W.", 28, "Close ", 32),
- BAR2(FIND, "Search", 45, "Srch", 44),
- BAR2(SEARCH_AGAIN, "S.Again", 56, "S.Ag.", 57),
+ BAR2(FILE_MANAGER, "Files", 18, "Open", 18),
+ BAR2(CLOSE_WINDOW, "Close W.", 28, "Close", 27),
+ BAR2(FIND, "Search", 45, "Find", 37),
+ BAR2(SEARCH_AGAIN, "S.Again", 56, "Next", 46),
  BAR2(QUIT, "Quit", 68, "Quit", 67)
 };
 
 /* The editor bar of the programming modes (wpe, xwpe): F9 builds, as Turbo
    C's bar said, so the bar names it.  "Close" and "Again" are shortened to
    keep every key on an 80-column row; the plain editor (we) has no F9 and
-   keeps the bar above.  The CUA bars have no room for one more entry, so
-   the CUA style uses the bar above in the programming modes too.  The
-   Messages bar is the one that offers Compile and Make by name. */
+   keeps the bar above.  The Modern style names Alt-M for Make, and its
+   keys are shorter, so it has room for the entry too.  The Messages bar is
+   the one that offers Compile and Make by name. */
 static const WpeBarSpec eblst_prog_spec[] = {
- BAR_B(HELP_EDITOR, "Help", 0), BAR_B(SAVE, "Save", 9), BAR_B(FILE_MANAGER, "Files", 18),
- BAR_B(CLOSE_WINDOW, "Close", 28), BAR_B(FIND, "Search", 37),
- BAR_B(SEARCH_AGAIN, "Again", 48), BAR_B(MAKE, "Build", 58), BAR_B(QUIT, "Quit", 68)
+ BAR2(HELP_EDITOR, "Help", 0, "Help", 0), BAR2(SAVE, "Save", 9, "Save", 9),
+ BAR2(FILE_MANAGER, "Files", 18, "Open", 18),
+ BAR2(CLOSE_WINDOW, "Close", 28, "Close", 27), BAR2(FIND, "Search", 37, "Find", 37),
+ BAR2(SEARCH_AGAIN, "Again", 48, "Next", 46), BAR2(MAKE, "Build", 58, "Make", 55),
+ BAR2(QUIT, "Quit", 68, "Quit", 67)
 };
 
 /* Editor bottom bar shown ONLY while an LSP-supported file is the active window
@@ -90,9 +92,9 @@ static const WpeBarSpec eblst_prog_spec[] = {
    for the Build entry. */
 static const WpeBarSpec eblst_lsp_spec[] = {
  BAR(HELP_EDITOR, "Help", 0), BAR(SAVE, "Save", 8),
- BAR2(FILE_MANAGER, "Files", 16, "Files", 20),
- BAR2(CLOSE_WINDOW, "Close", 25, "Close ", 29),
- BAR2(FIND, "Search", 34, "Srch", 40),
+ BAR2(FILE_MANAGER, "Files", 16, "Open", 20),
+ BAR2(CLOSE_WINDOW, "Close", 25, "Close", 29),
+ BAR2(FIND, "Search", 34, "Find", 40),
  FIX2("Alt-Q ? Metals", 44, 52, 0, 7, WPE_LSP_MENU),
  BAR_B(MAKE, "Build", 59),
  BAR2(QUIT, "Quit", 68, "Quit", 67)
@@ -108,9 +110,9 @@ static const WpeBarSpec eblst_lsp_spec[] = {
    "F9 Build" sits right before it (the CUA style has no room for it). */
 static const WpeBarSpec eblst_ai_spec[] = {
  BAR(HELP_EDITOR, "Help", 0), BAR(SAVE, "Save", 9),
- BAR2(FILE_MANAGER, "Files", 18, "Files", 22),
- BAR2(CLOSE_WINDOW, "Close", 28, "Close ", 32),
- BAR2(FIND, "Search", 37, "Srch", 44),
+ BAR2(FILE_MANAGER, "Files", 18, "Open", 22),
+ BAR2(CLOSE_WINDOW, "Close", 28, "Close", 32),
+ BAR2(FIND, "Search", 37, "Find", 44),
  BAR_B(MAKE, "Build", 47),
  FIX2("Alt-G AI", 56, 57, 0, 5, WPE_AI_MENU),
  BAR2(QUIT, "Quit", 66, "Quit", 67)
@@ -127,7 +129,7 @@ static const WpeBarSpec eblst_ai_spec[] = {
    e_lsp_bar_label renames. */
 static const WpeBarSpec eblst_lspai_spec[] = {
  BAR(HELP_EDITOR, "Help", 0), BAR(SAVE, "Save", 8),
- BAR2(FILE_MANAGER, "Files", 16, "Files", 20),
+ BAR2(FILE_MANAGER, "Files", 16, "Open", 20),
  BAR2(CLOSE_WINDOW, "Close", 25, "Close", 30),
  FIX2("Alt-Q ? LSP", 34, 40, 0, 7, WPE_LSP_MENU),
  FIX2("Alt-G AI", 46, 54, 0, 5, WPE_AI_MENU),
@@ -165,14 +167,15 @@ static const WpeBarSpec dblst_spec[] = {
 /* The bar a source window shows while a debug session runs: the keys that
    drive the session, the way Turbo C's bar named them, so the user does not
    have to remember them.  A click sends the key the label names, so "^F10
-   Run" would continue and "^F2 Quit" ends the debugger; "F4 Go to cursor" is
-   the Borland style's, which is the only style that has one.  The CUA style
-   keeps its editing bar: its debugger keys are not decided yet, and a bar
-   that names a key doing nothing is worse than one that names none. */
+   Run" would continue and "^F2 Quit" ends the debugger.  The Modern style
+   names its own keys (F11 Into, F10 Over, ^F10 Go to cursor, Shift-F5 Stop)
+   and has no room for the editor's own Quit, which Ctrl-Q still does. */
 static const WpeBarSpec dblst_src_spec[] = {
- BAR_B(HELP_EDITOR, "Help", 0), BAR_B(DEBUG_TRACE, "Trace", 8),
- BAR_B(DEBUG_STEP, "Step", 17), BAR_B(DEBUG_GOTO_CURSOR, "Go to cursor", 25),
- BAR_B(DEBUG_WATCH, "Make Watch", 41), BAR_B(DEBUG_QUIT, "Quit", 56),
+ BAR2(HELP_EDITOR, "Help", 0, "Help", 0), BAR2(DEBUG_TRACE, "Trace", 8, "Into", 9),
+ BAR2(DEBUG_STEP, "Step", 17, "Over", 19),
+ BAR2(DEBUG_GOTO_CURSOR, "Go to cursor", 25, "Go to cursor", 29),
+ BAR2(DEBUG_WATCH, "Make Watch", 41, "Make Watch", 48),
+ BAR2(DEBUG_QUIT, "Quit", 56, "Stop", 64),
  BAR_B(QUIT, "Quit", 66)
 };
 
@@ -183,8 +186,8 @@ static const WpeBarSpec dblst_src_spec[] = {
    "^Brk Pause" sends Ctrl-Break, so a terminal that never sends that key can
    still pause the program. */
 static const WpeBarSpec dblst_run_spec[] = {
- BAR_B(HELP_EDITOR, "Help", 0), BAR_B(DEBUG_PAUSE, "Pause", 9),
- BAR_B(DEBUG_QUIT, "Quit", 21)
+ BAR(HELP_EDITOR, "Help", 0), BAR(DEBUG_PAUSE, "Pause", 9),
+ BAR2(DEBUG_QUIT, "Quit", 21, "Stop", 21)
 };
 
 /* The Execute, Write, Read, Add and Show bars. */

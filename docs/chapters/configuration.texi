@@ -308,8 +308,20 @@ normal exit.
 @item Alt-L
 Use the default keybindings (Turbo C style, xwpe < 1.2.0 compatible).
 @item Alt-C
-Use Common User Access (CUA) keybindings (MS-Windows / OSF Motif style).
+Use the Modern keybindings (VS Code's keys: @kbd{Ctrl-S} saves, @kbd{F5}
+debugs).  Choosing a style also sets the selection block mode, Trim
+Auto-indent and Keep Final newline below; a box set in the same dialog wins.
+The first start after an upgrade from 1.6 turns the old CUA style into
+this one, once, and says so on the status row (@samp{KeysNotice : 1} in
+the option file records it).
 @end table
+
+For one run, @samp{--keys borland} or @samp{--keys modern} on the command
+line, or @env{XWPE_KEYS} in the environment, sets the style without
+reading or writing the option file; the command line wins over the
+variable, and either wins over the option file.  A new profile (no option
+file and no configuration folder) is asked which keys it wants, once, unless
+one of these is set or the input is not a terminal.
 
 @subsubheading Blocks, indent and file ending
 

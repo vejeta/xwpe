@@ -162,6 +162,162 @@
    "test": "tests/wayland/test_short_command_cancel.py::test_ctrl_bracket_ends_a_short_command_the_editor_waits_for",
    "status": "covered",
    "needs": ["weston"]
+  },
+  {
+   "id": "SC-keymap-20",
+   "requirement": "A key arrives as each terminal measured it sends it (xterm, Konsole's kitty form with its empty fields, tmux) and leaks no tail",
+   "layer": "ncurses",
+   "test": "tests/test_keys_delivery.py::test_ctrl_z_arrives_as_each_terminal_sends_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-keymap-20",
+   "requirement": "A key arrives as each terminal measured it sends it (xterm, Konsole's kitty form with its empty fields, tmux) and leaks no tail",
+   "layer": "ncurses",
+   "test": "tests/test_keys_delivery.py::test_a_measured_report_leaks_no_tail",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-01",
+   "requirement": "--keys and XWPE_KEYS choose the key style of one run, the command line over the variable, neither written to xwperc",
+   "layer": "ncurses",
+   "test": "tests/test_keys_session.py::test_keys_option_takes_the_style",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-02",
+   "requirement": "A word that is no key style is refused before the editor starts",
+   "layer": "ncurses",
+   "test": "tests/test_keys_session.py::test_an_unknown_style_is_refused",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-03",
+   "requirement": "A 1.6 CUA profile is upgraded once to Modern with a notice and KeysNotice in xwperc",
+   "layer": "config-file",
+   "test": "tests/test_keys_session.py::test_a_cua_profile_is_upgraded_once_with_a_notice",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-04",
+   "requirement": "A new profile is asked which keys it wants, Enter picks Modern, and the answer is kept",
+   "layer": "ncurses",
+   "test": "tests/test_first_run.py::test_a_new_profile_is_asked_and_enter_picks_modern",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-05",
+   "requirement": "Every key of the Modern table reaches its action, one row per table line generated from the dump",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_the_key_reaches_its_action",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-06",
+   "requirement": "Ctrl-S saves and Ctrl-Z and Ctrl-Y undo and redo in the Modern style",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_ctrl_s_saves",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-06",
+   "requirement": "Ctrl-S saves and Ctrl-Z and Ctrl-Y undo and redo in the Modern style",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_ctrl_z_undoes_and_ctrl_y_redoes",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-07",
+   "requirement": "Ctrl-A, Ctrl-L, Ctrl-D select, typing and Delete replace the selection, Esc drops it",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_ctrl_a_selects_everything_and_typing_replaces_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-07",
+   "requirement": "Ctrl-A, Ctrl-L, Ctrl-D select, typing and Delete replace the selection, Esc drops it",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_ctrl_l_selects_the_line_and_delete_takes_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-07",
+   "requirement": "Ctrl-A, Ctrl-L, Ctrl-D select, typing and Delete replace the selection, Esc drops it",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_ctrl_d_selects_the_word_and_typing_replaces_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-07",
+   "requirement": "Ctrl-A, Ctrl-L, Ctrl-D select, typing and Delete replace the selection, Esc drops it",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_esc_drops_the_selection_and_is_used_up_by_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-08",
+   "requirement": "Ctrl-K then a control letter is a chord in Modern and the letter in Borland",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_ctrl_k_then_a_control_letter_is_a_chord_in_modern_and_a_letter_in_borland",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-09",
+   "requirement": "The Borland control letters keep their meaning in Borland and are free in Modern",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_ctrl_p_moves_up_in_borland_and_is_free_in_modern",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-09",
+   "requirement": "The Borland control letters keep their meaning in Borland and are free in Modern",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_the_borland_control_letters_still_work_in_borland",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-10",
+   "requirement": "Ctrl-Q quits and F10 opens the menu with no session in Modern, F2 still saves in Borland",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_ctrl_q_quits",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-10",
+   "requirement": "Ctrl-Q quits and F10 opens the menu with no session in Modern, F2 still saves in Borland",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_f10_opens_the_menu_when_no_session_is_open",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-10",
+   "requirement": "Ctrl-Q quits and F10 opens the menu with no session in Modern, F2 still saves in Borland",
+   "layer": "ncurses",
+   "test": "tests/test_modern_keys.py::test_the_borland_f2_still_saves",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-12",
+   "requirement": "Choosing Modern in the Keys radio brings the selection mode and Keep Final newline with it",
+   "layer": "ncurses",
+   "test": "tests/test_keys_session.py::test_the_keys_radio_brings_the_modern_options_with_it",
+   "status": "covered"
+  },
+  {
+   "id": "SC-modern-keymap-11",
+   "requirement": "The Modern F-keys and Ctrl-Shift chords reach their actions on the graphical display",
+   "layer": "x11",
+   "test": "tests/x11/test_modern_keys.py::test_the_modern_key_reaches_its_action_on_the_graphical_display",
+   "status": "covered",
+   "needs": ["Xvfb", "xdotool"]
+  },
+  {
+   "id": "SC-modern-keymap-11",
+   "requirement": "The Modern F-keys and Ctrl-Shift chords reach their actions on the graphical display",
+   "layer": "wayland",
+   "test": "tests/wayland/test_modern_keys.py::test_the_modern_key_reaches_its_action_on_the_graphical_display",
+   "status": "covered",
+   "needs": ["weston"]
   }
  ]
 }

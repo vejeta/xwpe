@@ -286,6 +286,27 @@ Changes
   start-command answers already were; a state folder of yours that others
   could write is made yours alone again.
 
+* The second key style is now the Modern style: the keys of today's
+  editors.  Ctrl-S saves, Ctrl-Z and Ctrl-Y undo and redo, Ctrl-F finds,
+  Ctrl-R replaces, Ctrl-G goes to a line, Ctrl-O opens a file, Ctrl-Q quits,
+  Ctrl-A, Ctrl-L and Ctrl-D select all, the line and the word, F3 finds the
+  next one, F5 starts the debugger, F9 sets a breakpoint, F10 and F11 step
+  while a session is open (F10 opens the menu the rest of the time) and F12
+  goes to a definition.  The Options > Editor > Keys radio is now Borland or
+  Modern, and a change of it sets the selection mode, Trim Auto-indent and
+  Keep Final newline with it.  The Borland style is unchanged.  The key
+  tables in the manual are generated from the editor's own table, say what
+  to press where a terminal keeps a key (GNOME Terminal and Konsole keep
+  several), and list the 1.6 CUA keys that now do something else (F5, Ctrl-F5,
+  F2, Ctrl-F6) or nothing.  What each terminal sends was measured and is
+  recorded in docs/chapters/keys-delivery.txt.
+
+* A 1.6 profile that used the CUA style is upgraded to Modern once, with a
+  note on the status row.  A new profile is asked which keys it wants, in a
+  box where Enter picks Modern.  "xwpe --keys borland" and "xwpe --keys
+  modern" (or XWPE_KEYS) choose the keys for one run and never change the
+  option file.
+
 * Security fix: Build & fix no longer runs a command hidden in a file name.
   With no makefile, it checks the current C file with gcc, and a name such
   as a'; touch x; '.c ended the quotes and ran the second command.  The name

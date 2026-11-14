@@ -107,6 +107,9 @@ FILE_TEXT = {
 # Keys that belong to the programming layer, used only to put breakpoints
 # on a row's file: the debugger's prefix and B for toggle.
 BREAKPOINT_KEYS = ["\x07", "b"]
+# The Modern style has no debugger prefix (Ctrl-G is Go to line there): F9
+# toggles the breakpoint.
+BREAKPOINT_KEYS_MODERN = ["\x1b[20~"]
 # The file level the breakpoints go in (a C file with enough rows).
 BREAKPOINT_FILE = "mixed.c"
 # The rows of the file the breakpoints go on, 0-based.
@@ -195,6 +198,10 @@ class Row:
         if self.lv["autosave"] == "changes":
             lines.append("Autosave : %d" % AUTOSAVE_CHANGES_BIT)
             lines.append("MaxChanges : %d" % AUTOSAVE_MAXCHG)
+        if self.lv["keys"] == "cua":
+            # a row names every bit it means; a profile that already says so
+            # is not upgraded (the one-time CUA to Modern migration)
+            lines.append("KeysNotice : 1")
         return "\n".join(lines) + "\n"
 
     def prelude(self):

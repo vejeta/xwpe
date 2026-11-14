@@ -343,8 +343,10 @@ Under gdb the program's output makes Messages the window you type in,
 so Messages shows this bar too while the program runs.  A click on an
 entry sends the key it names; a click on @samp{^Brk Pause} pauses the
 program, also in a terminal that sends no Ctrl-Break.  When the session
-ends, the editing keys come back.  In the CUA key style the source
-window keeps its editing bar.  The Watches and Stack windows have their
+ends, the editing keys come back.  In the Modern key style the bar names
+the Modern keys: @samp{F11 Into}, @samp{F10 Over}, @samp{^F10 Go to cursor},
+@samp{Shift-F5 Stop}; @key{F10} steps over only while a session is open and
+opens the menu otherwise.  The Watches and Stack windows have their
 own bar, where @samp{^F10 Run} continues the program.
 
 @section Starting a session

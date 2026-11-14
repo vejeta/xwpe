@@ -1019,6 +1019,332 @@ char *WpeValueToString(const char *value)
  return answer;
 }
 
+/* ---- The key style: one place decides what each style brings ---- */
+
+/** The option bits the Modern keys bring with them: the style bit, and the
+    three that make a block a selection that typing replaces, that take back
+    an auto-indent nobody used and that keep the file's last line break. */
+#define E_KEYS_MODERN_BITS \
+ (ED_CUA_STYLE | ED_BLOCK_SELECTION | ED_TRIM_AUTO_INDENT | ED_KEEP_FILE_ENDING)
+
+#define E_KEYS_NOTICE_FMT \
+ "Keys are now Modern: %s debugs, %s runs. Change: Options > Editor > Keys"
+#define E_KEYS_NOTICE_LEN 160
+#define E_KEYS_NAME_LEN 32
+
+static int e_keys_session_style = E_KEYS_STYLE_NONE;  /* --keys / XWPE_KEYS for this run */
+static int e_keys_file_edopt = 0;      /* the options as the file gave them, while a session style overrides */
+static int e_keys_notice_seen = 0;     /* the file says KeysNotice : 1 */
+static int e_keys_notice_pending = 0;  /* the file was migrated at this start */
+
+/**
+ * e_keys_style_from_text - The key style a word names.
+ * @text: "borland" or "modern", in any case.
+ * Return: WPE_STYLE_BORLAND or WPE_STYLE_MODERN, E_KEYS_STYLE_NONE for any
+ * other word.  The one parser of --keys and XWPE_KEYS.
+ */
+int e_keys_style_from_text(const char *text)
+{
+ if (text && WpeStrccmp(E_KEYS_TEXT_BORLAND, (char *)text) == 0)
+  return(WPE_STYLE_BORLAND);
+ if (text && WpeStrccmp(E_KEYS_TEXT_MODERN, (char *)text) == 0)
+  return(WPE_STYLE_MODERN);
+ return(E_KEYS_STYLE_NONE);
+}
+
+/**
+ * e_keys_arg_takes_value - Is @arg the form of --keys whose style is the
+ * next argument?
+ *
+ * The argument loops of main skip the word that follows it, so a style name
+ * is never opened as a file.
+ */
+int e_keys_arg_takes_value(const char *arg)
+{
+ return(arg && strcmp(arg, E_KEYS_OPTION) == 0);
+}
+
+/**
+ * e_keys_session_read - Take the key style a run is asked for.
+ * @argc, @argv: the command line; @bad: out, the word that is no style.
+ *
+ * "--keys borland|modern" (or "--keys=...") wins over $XWPE_KEYS, which wins
+ * over the option file.  The style is for this run only: it is never written
+ * to xwperc (e_keys_edopt_for_file), so a README line like "xwpe --keys
+ * modern file.c" cannot change a user's file.  Setting either also means the
+ * first-run question is not asked.
+ * Return: 0, or -1 with *@bad set when the word names no style.
+ */
+int e_keys_session_read(int argc, char **argv, const char **bad)
+{
+ const char *env = getenv(E_KEYS_ENV);
+ const char *word = NULL;
+ size_t len = strlen(E_KEYS_OPTION);
+ int i, style;
+
+ e_keys_session_style = E_KEYS_STYLE_NONE;
+ if (env && env[0])
+  word = env;
+ for (i = 1; i < argc; i++)
+ {
+  if (e_keys_arg_takes_value(argv[i]) && i + 1 < argc)
+   word = argv[i + 1];
+  else if (strncmp(argv[i], E_KEYS_OPTION "=", len + 1) == 0)
+   word = argv[i] + len + 1;
+  else if (e_keys_arg_takes_value(argv[i]))
+   word = "";
+ }
+ if (!word)
+  return(0);
+ style = e_keys_style_from_text(word);
+ if (style == E_KEYS_STYLE_NONE)
+ {
+  *bad = word;
+  return(-1);
+ }
+ e_keys_session_style = style;
+ return(0);
+}
+
+/** e_keys_session_wanted - Was this run given a key style (so no question is asked)? */
+int e_keys_session_wanted(void)
+{
+ return(e_keys_session_style != E_KEYS_STYLE_NONE);
+}
+
+/**
+ * e_keys_session_apply - Put the style this run was asked for over the file's.
+ * @cn: the editor, its options read.
+ *
+ * Modern brings its option bits with it (the selection that typing replaces,
+ * the trimmed auto-indent, the kept last line break); Borland takes only the
+ * style bit away, so a profile that also chose a block mode keeps it.  The
+ * file's own bits are kept for e_keys_edopt_for_file.
+ */
+void e_keys_session_apply(ECNT *cn)
+{
+ if (e_keys_session_style == E_KEYS_STYLE_NONE)
+  return;
+ e_keys_file_edopt = cn->edopt;
+ if (e_keys_session_style == WPE_STYLE_MODERN)
+  cn->edopt |= E_KEYS_MODERN_BITS;
+ else
+  cn->edopt &= ~ED_CUA_STYLE;
+}
+
+/**
+ * e_keys_edopt_for_file - The editor options to write to xwperc.
+ * @cn: the editor.
+ *
+ * While a session style overrides the file, the file keeps the style bits it
+ * had: only what the user sets in Options > Editor > Keys is written.
+ */
+int e_keys_edopt_for_file(const ECNT *cn)
+{
+ if (e_keys_session_style == E_KEYS_STYLE_NONE)
+  return(cn->edopt);
+ return((cn->edopt & ~E_KEYS_MODERN_BITS) | (e_keys_file_edopt & E_KEYS_MODERN_BITS));
+}
+
+/** e_keys_session_release - The user chose keys in the dialog: the session style ends. */
+static void e_keys_session_release(void)
+{
+ e_keys_session_style = E_KEYS_STYLE_NONE;
+}
+
+/**
+ * e_keys_preset - The option bits a key style sets together.
+ * @edopt: the options now; @modern: 1 for Modern, 0 for Borland.
+ *
+ * What the first-run question, the one-time upgrade of an old CUA profile and
+ * the Keys radio of the dialog all apply: Modern is the style bit plus the
+ * selection, trim and kept-ending bits; Borland clears those four, and keeps
+ * a WordStar block mode a user chose.
+ * Return: the new options.
+ */
+int e_keys_preset(int edopt, int modern)
+{
+ if (modern)
+  return(edopt | E_KEYS_MODERN_BITS);
+ return(edopt & ~E_KEYS_MODERN_BITS);
+}
+
+/**
+ * e_keys_migrate - Take an options file from the CUA key style to Modern, once.
+ * @cn: the editor, its own options file just read.
+ *
+ * The style the 1.6 versions called CUA is now Modern.  A file that has its
+ * bit and none of the bits Modern added, and does not yet say it was
+ * upgraded, gets those bits set: without them the user would have Modern keys
+ * with the old block marks, no replace-on-type and no trim.  Only the user's
+ * own file is upgraded (a project's xwperc is not rewritten), and not on a
+ * run that was given a style: the upgrade waits for a normal start.
+ */
+void e_keys_migrate(ECNT *cn)
+{
+ int added = ED_BLOCK_SELECTION | ED_TRIM_AUTO_INDENT | ED_KEEP_FILE_ENDING;
+
+ if (e_keys_session_style != E_KEYS_STYLE_NONE || e_keys_notice_seen)
+  return;
+ if (e_opt_user_file || e_opt_file_missing(cn))
+  return;
+ if (!(cn->edopt & ED_CUA_STYLE) || (cn->edopt & added))
+  return;
+ cn->edopt = e_keys_preset(cn->edopt, 1);
+ e_keys_notice_pending = 1;
+}
+
+/** e_keys_notice_wanted - Was the file upgraded at this start, and not yet said so? */
+int e_keys_notice_wanted(void)
+{
+ return(e_keys_notice_pending);
+}
+
+/**
+ * e_keys_notice_shown - Say once that the keys changed, and record that it was said.
+ * @cn: the editor, its first window open.
+ *
+ * The status row names the two keys whose meaning moved furthest (F5 and
+ * Ctrl-F5 both start the program); the file gets KeysNotice : 1 by the same
+ * save, so the notice and the upgrade never come back.
+ */
+void e_keys_notice_shown(ECNT *cn)
+{
+ char line[E_KEYS_NOTICE_LEN];
+ char debug_key[E_KEYS_NAME_LEN];
+ const char *name;
+
+ if (!e_keys_notice_pending)
+  return;
+ e_keys_notice_pending = 0;
+ e_keys_notice_seen = 1;
+ if (cn->mxedt >= 0 && cn->f[0])
+  e_save_opt(cn->f[0]);
+ if (!cn->fb)
+  return;
+ name = wpe_binding_key_name(WPE_ACT_DEBUG_RUN, WPE_STYLE_MODERN);
+ snprintf(debug_key, sizeof debug_key, "%s", name ? name : "Debug");
+ name = wpe_binding_key_name(WPE_ACT_RUN, WPE_STYLE_MODERN);
+ snprintf(line, sizeof line, E_KEYS_NOTICE_FMT, debug_key, name ? name : "Run");
+ e_status_hold(line);
+ e_status_paint(cn->fb, line);
+ e_refresh();
+}
+
+/* ---- The first-run question: which keys does a new profile want? ---- */
+
+#define E_KEYS_ASK_NAME "Keys"
+#define E_KEYS_ASK_LINES 5
+#define E_KEYS_ASK_MODERN_FMT "Modern: %s saves, %s undoes, %s debugs, as in VS Code"
+#define E_KEYS_ASK_BORLAND_FMT "Borland: %s saves, %s builds, as in Turbo C"
+#define E_KEYS_ASK_LINE_MAX 96
+#define E_KEYS_ASK_MARGIN 6          /* the frame and the room around the text */
+#define E_KEYS_ASK_BUTTON_ROW_UP 2   /* rows from the box's bottom to its buttons */
+#define E_KEYS_ASK_BOX_BOTTOM 6      /* rows the box keeps clear below it */
+#define E_KEYS_ASK_BOX_PAD 5         /* rows the frame and blanks take besides the text */
+#define E_KEYS_ASK_MODERN_X 4
+#define E_KEYS_ASK_BORLAND_X 24
+#define E_KEYS_ASK_CANCEL_BACK 9     /* columns from the right edge to Cancel */
+#define E_KEYS_CHOSEN_FMT "Keys: %s. Options > Editor > Keys changes it"
+
+/**
+ * e_keys_ask_allowed - May the first-run question be put now?
+ *
+ * Not when the run was given a style (--keys, XWPE_KEYS), and on the terminal
+ * path not when the input or the screen is not a terminal: a pipe or a
+ * script, and "git commit" with this editor as $EDITOR on a terminal that has
+ * been redirected, never meet a box with nobody to answer it.  X11 and
+ * Wayland show the box as a dialog.
+ */
+int e_keys_ask_allowed(void)
+{
+ if (e_keys_session_wanted())
+  return(0);
+ if (WpeIsXwin())
+  return(1);
+ return(isatty(0) && isatty(1));
+}
+
+/**
+ * e_keys_ask_box - Put the question and read the answer.
+ * @f: a window of the editor.
+ * Return: WPE_STYLE_MODERN or WPE_STYLE_BORLAND; Esc is Borland, the style the
+ * editor started in, and the question is not asked again (the configuration
+ * folder exists from now on).
+ *
+ * Enter takes the focused button, which is Modern: the choice a user who
+ * presses Enter without reading gets is the style most people already know.
+ * The keys the two lines name come from the key table, so the box cannot
+ * promise a key the style does not have.
+ */
+static int e_keys_ask_box(FENSTER *f)
+{
+ W_OPTSTR *o = e_init_opt_kst(f);
+ char text[E_KEYS_ASK_LINES][E_KEYS_ASK_LINE_MAX];
+ char a[E_KEYS_NAME_LEN], b[E_KEYS_NAME_LEN], c[E_KEYS_NAME_LEN];
+ int i, ret, mxlen = 0, len;
+
+ if (!o)
+  return(E_KEYS_STYLE_NONE);
+ snprintf(a, sizeof a, "%s", wpe_binding_key_name(WPE_ACT_SAVE, WPE_STYLE_MODERN));
+ snprintf(b, sizeof b, "%s", wpe_binding_key_name(WPE_ACT_EDIT_UNDO, WPE_STYLE_MODERN));
+ snprintf(c, sizeof c, "%s", wpe_binding_key_name(WPE_ACT_DEBUG_RUN, WPE_STYLE_MODERN));
+ snprintf(text[0], sizeof text[0], "%s", "Which keys do you want?");
+ text[1][0] = '\0';
+ snprintf(text[2], sizeof text[2], E_KEYS_ASK_MODERN_FMT, a, b, c);
+ snprintf(a, sizeof a, "%s", wpe_binding_key_name(WPE_ACT_SAVE, WPE_STYLE_BORLAND));
+ snprintf(b, sizeof b, "%s", wpe_binding_key_name(WPE_ACT_MAKE, WPE_STYLE_BORLAND));
+ snprintf(text[3], sizeof text[3], E_KEYS_ASK_BORLAND_FMT, a, b);
+ snprintf(text[4], sizeof text[4], "%s", "Options > Editor > Keys changes it later");
+ for (i = 0; i < E_KEYS_ASK_LINES; i++)
+ {
+  len = (int)strlen(text[i]);
+  if (len > mxlen)
+   mxlen = len;
+ }
+ o->ye = MAXSLNS - E_KEYS_ASK_BOX_BOTTOM;
+ o->ya = o->ye - E_KEYS_ASK_LINES - E_KEYS_ASK_BOX_PAD;
+ o->xa = (MAXSCOL - mxlen - E_KEYS_ASK_MARGIN) / 2;
+ o->xe = o->xa + mxlen + E_KEYS_ASK_MARGIN;
+ o->bgsw = 0;
+ o->name = E_KEYS_ASK_NAME;
+ for (i = 0; i < E_KEYS_ASK_LINES; i++)
+  e_add_txtstr((o->xe - o->xa - (int)strlen(text[i])) / 2, 2 + i, text[i], o);
+ o->crsw = AltM;
+ e_add_bttstr(E_KEYS_ASK_MODERN_X, o->ye - o->ya - E_KEYS_ASK_BUTTON_ROW_UP, 0, AltM, "Modern", NULL, o);
+ e_add_bttstr(E_KEYS_ASK_BORLAND_X, o->ye - o->ya - E_KEYS_ASK_BUTTON_ROW_UP, 0, AltB, "Borland", NULL, o);
+ e_add_bttstr(o->xe - o->xa - E_KEYS_ASK_CANCEL_BACK, o->ye - o->ya - E_KEYS_ASK_BUTTON_ROW_UP, -1,
+              WPE_ESC, "Cancel", NULL, o);
+ ret = e_opt_kst_message(o);
+ freeostr(o);
+ if (ret == AltM)
+  return(WPE_STYLE_MODERN);
+ return(WPE_STYLE_BORLAND);   /* Borland, or Esc: the editor makes its folder at every start, so it cannot ask twice */
+}
+
+/**
+ * e_keys_first_run - Ask a new profile which keys it wants, and keep the answer.
+ * @cn: the editor, its desk drawn.
+ *
+ * The answer is written to the user's option file at once, so the question is
+ * asked once; the status row says which keys are in force and where to change
+ * them.  Esc keeps the Borland keys.
+ */
+void e_keys_first_run(ECNT *cn)
+{
+ char line[E_KEYS_NOTICE_LEN];
+ int style = e_keys_ask_box(cn->f[0]);
+
+ cn->edopt = e_keys_preset(cn->edopt, style == WPE_STYLE_MODERN);
+ e_switch_blst(cn);
+ e_save_opt(cn->f[0]);
+ snprintf(line, sizeof line, E_KEYS_CHOSEN_FMT,
+          style == WPE_STYLE_MODERN ? "Modern" : "Borland");
+ e_status_hold(line);
+ e_status_paint(cn->fb, line);
+ e_refresh();
+}
+
 int WpeReadGeneral(ECNT *cn, char *section, char *option, char *value)
 {
  if (WpeStrccmp("Data", option) == 0)
@@ -1037,6 +1363,8 @@ int WpeReadGeneral(ECNT *cn, char *section, char *option, char *value)
   cn->flopt = atoi(value);
  else if (WpeStrccmp("Options2", option) == 0)
   cn->edopt = atoi(value);
+ else if (WpeStrccmp("KeysNotice", option) == 0)
+  e_keys_notice_seen = atoi(value) != 0;
  else if (WpeStrccmp("InfoDir", option) == 0)
   info_file = WpeStrdup(value);
  else if (WpeStrccmp("AutoIndent", option) == 0)
@@ -1060,7 +1388,9 @@ int WpeWriteGeneral(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "MaxChanges : %d\n", cn->maxchg);
  fprintf(opt_file, "NumUndo : %d\n", cn->numundo);
  fprintf(opt_file, "Options1 : %d\n", cn->flopt);
- fprintf(opt_file, "Options2 : %d\n", cn->edopt);
+ fprintf(opt_file, "Options2 : %d\n", e_keys_edopt_for_file(cn));
+ if (e_keys_notice_seen)
+  fprintf(opt_file, "KeysNotice : 1\n");
  fprintf(opt_file, "InfoDir : %s\n", info_file);
  fprintf(opt_file, "AutoIndent : %d\n", cn->autoindent);
  fprintf(opt_file, "PrintCmd : %s\n", cn->print_cmd);
@@ -4358,6 +4688,26 @@ static int e_opt_block_mode_bits(int before, int wordstar, int selection)
  return(0);
 }
 
+/**
+ * e_opt_keys_radio_preset - Let a change of the Keys radio bring its preset.
+ * @before: the options the dialog opened on; @taken: what the boxes say at Ok.
+ *
+ * A user who switches the Keys radio gets the bits that style comes with
+ * (e_keys_preset); one who also sets the selection, trim or last-line-break
+ * box in the same dialog keeps exactly what he set.
+ * Return: the options to keep.
+ */
+static int e_opt_keys_radio_preset(int before, int taken)
+{
+ int boxes = ED_BLOCK_SELECTION | ED_TRIM_AUTO_INDENT | ED_KEEP_FILE_ENDING;
+
+ if (((before ^ taken) & ED_CUA_STYLE) == 0)
+  return(taken);
+ if (((before ^ taken) & boxes) != 0)
+  return(taken);
+ return(e_keys_preset(taken, (taken & ED_CUA_STYLE) != 0));
+}
+
 int e_edt_options(FENSTER *f)
 {
  int i, ret, edopt = f->ed->edopt;
@@ -4387,8 +4737,8 @@ int e_edt_options(FENSTER *f)
  e_add_sswstr(4, 7, 3, AltE, f->ed->edopt & ED_BLOCK_SELECTION ? 1 : 0, "SelEction blocK", o);
  e_add_sswstr(4, 13, 5, AltA, f->ed->edopt & ED_TRIM_AUTO_INDENT ? 1 : 0, "Trim Auto-indent", o);
  e_add_sswstr(4, 16, 5, AltF, f->ed->edopt & ED_KEEP_FILE_ENDING ? 1 : 0, "Keep Final newline", o);
- e_add_pswstr(0, 26, 7, 1, AltL, 0, "OLd-Style       ", o);
- e_add_pswstr(0, 26, 8, 0, AltC, f->ed->edopt & ED_CUA_STYLE, "CUA-Style       ", o);
+ e_add_pswstr(0, 26, 7, 3, AltL, 0, "BorLand-Style    ", o);
+ e_add_pswstr(0, 26, 8, 12, AltC, f->ed->edopt & ED_CUA_STYLE, "Modern (VS Code) ", o);
  e_add_pswstr(1, 26, 11, 3, AltY, 0, "OnlY Source-Text", o);
  e_add_pswstr(1, 26, 12, 2, AltW, 0, "AlWays          ", o);
  e_add_pswstr(1, 26, 13, 2, AltV,
@@ -4415,6 +4765,9 @@ int e_edt_options(FENSTER *f)
     e_opt_block_mode_bits(edopt, o->sstr[4]->num, o->sstr[5]->num) |
     (o->sstr[6]->num ? ED_TRIM_AUTO_INDENT : 0) |
     (o->sstr[7]->num ? ED_KEEP_FILE_ENDING : 0);
+  f->ed->edopt = e_opt_keys_radio_preset(edopt, f->ed->edopt);
+  if ((edopt ^ f->ed->edopt) & E_KEYS_MODERN_BITS)
+   e_keys_session_release();   /* what he sets here is his, and is saved */
   e_opt_take_print_cmd(f->ed, o->wstr[0]->txt);
   if (edopt != f->ed->edopt)
   {

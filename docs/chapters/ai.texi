@@ -398,8 +398,8 @@ other bracketed lines the machinery), one per line and not wrapped at the
 pane's width.  The status row says @samp{saved @var{name}}.  The pane keeps the
 name until it is closed, so a later @key{F2} saves there again without asking.
 @samp{File}, @samp{Save As} asks every time; @key{Esc} in the dialog writes
-nothing.  In the CUA key set the same save is @kbd{Alt-F2}; in the default key
-set @kbd{Alt-F2} stays the Window menu's Size/Move.
+nothing.  In the Modern key set the same save is @kbd{Ctrl-S}; in both
+key sets @kbd{Alt-F2} is the Window menu's Size/Move.
 
 A pane line that has less room than its text (the agent's or a Multi-file
 run's task line, the echo of a task sent to a hosted engine) is shown cut and

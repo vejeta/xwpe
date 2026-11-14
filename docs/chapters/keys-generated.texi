@@ -10,235 +10,285 @@ cell with no key means the style binds none.
 
 @subsection Windows and menus
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Switch window @tab Bring window 1 to 35 to the front @tab @kbd{Alt-1..9}, @kbd{Alt-Shift-A..Z} @tab @kbd{Alt-1..9}, @kbd{Alt-Shift-A..Z}
-@item Help @tab Open the help for the editor @tab @kbd{F1}, @kbd{Sun Help} @tab @kbd{F1}, @kbd{Sun Help}
-@item Topic search @tab Search the help for the word at the cursor @tab @kbd{Ctrl-F1} @tab @kbd{Ctrl-F1}
-@item Function index @tab Open the manual page index @tab @kbd{Alt-F1} @tab @kbd{Alt-F1}
-@item Escape @tab Leave the Messages list; nothing in a file window @tab @kbd{Esc} @tab @kbd{Esc}
-@item Menu bar @tab Open the menu bar @tab @kbd{F10}, @kbd{Alt-Space} @tab @kbd{F10}, @kbd{Alt-Space}
-@item List all windows @tab Open the window list @tab @kbd{Alt-0} @tab @kbd{Alt-0}
-@item User screen @tab Show the screen of the program that was run @tab @kbd{Alt-F5} @tab @kbd{Alt-F5}
-@item Size/Move @tab Move or resize the window with the cursor keys @tab @kbd{Alt-F2}, @kbd{Ctrl-F5} @tab @kbd{Ctrl-L}
-@item File manager @tab Open the file manager @tab @kbd{F3}, @kbd{Sun Open} @tab @kbd{F2}, @kbd{Sun Open}
-@item File manager (home) @tab Open the file manager at the first directory @tab @kbd{Ctrl-F3} @tab @kbd{Shift-F2}
-@item Close window @tab Close the window @tab @kbd{Ctrl-W} @tab @kbd{Ctrl-W}, @kbd{Ctrl-F4}, @kbd{Alt-X}
-@item Cascade @tab Stack the windows @tab @tab @kbd{Sun Front}, @kbd{Alt-Z}, @kbd{Shift-F4}
-@item Tile @tab Tile the windows @tab @tab @kbd{Shift-F5}
-@item Zoom @tab Enlarge the window or restore it @tab @kbd{F5}, @kbd{Sun Front}, @kbd{Alt-Z} @tab @kbd{Shift-F6}
-@item Next window @tab Bring the next window to the front @tab @kbd{F6}, @kbd{Alt-N} @tab @kbd{Ctrl-F6}, @kbd{Alt-N}
-@item Quit @tab Leave the editor @tab @kbd{Alt-X}, @kbd{Sun Stop} @tab @kbd{Sun Stop}, @kbd{Alt-F4}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Switch window @tab Bring window 1 to 35 to the front @tab @kbd{Alt-1..9}, @kbd{Alt-Shift-A..Z} @tab @kbd{Alt-1..9}, @kbd{Alt-Shift-A..Z} @tab
+@item Help @tab Open the help for the editor @tab @kbd{F1}, @kbd{Sun Help} @tab @kbd{F1}, @kbd{Sun Help} @tab
+@item Topic search @tab Search the help for the word at the cursor @tab @kbd{Ctrl-F1} @tab @kbd{Ctrl-F1} @tab
+@item Function index @tab Open the manual page index @tab @kbd{Alt-F1} @tab @kbd{Alt-F1} @tab
+@item Escape @tab Leave the Messages list; nothing in a file window @tab @kbd{Esc} @tab @kbd{Esc} @tab
+@item Menu bar @tab Open the menu bar @tab @kbd{F10}, @kbd{Alt-Space} @tab @kbd{F10}, @kbd{Alt-Space} @tab Alt-letter opens a menu; Alt-Space
+@item List all windows @tab Open the window list @tab @kbd{Alt-0} @tab @kbd{Alt-0} @tab
+@item User screen @tab Show the screen of the program that was run @tab @kbd{Alt-F5} @tab @kbd{Alt-F5} @tab
+@item Size/Move @tab Move or resize the window with the cursor keys @tab @kbd{Alt-F2}, @kbd{Ctrl-F5} @tab @kbd{Alt-F2} @tab
+@item File manager @tab Open the file manager @tab @kbd{F3}, @kbd{Sun Open} @tab @kbd{Ctrl-O}, @kbd{Sun Open} @tab
+@item Close window @tab Close the window @tab @kbd{Ctrl-W} @tab @kbd{Ctrl-W}, @kbd{Ctrl-F4} @tab
+@item Cascade @tab Stack the windows @tab @tab @kbd{Sun Front} @tab
+@item Next window @tab Bring the next window to the front @tab @kbd{F6}, @kbd{Alt-N} @tab @kbd{F6}, @kbd{Alt-N}, @kbd{Ctrl-Tab} @tab F6 or Alt-N
+@item Quit @tab Leave the editor @tab @kbd{Alt-X}, @kbd{Sun Stop} @tab @kbd{Sun Stop}, @kbd{Ctrl-Q}, @kbd{Alt-X}, @kbd{Alt-F4} @tab Ctrl-Q; the window manager keeps Alt-F4
+@item File manager (home) @tab Open the file manager at the first directory @tab @kbd{Ctrl-F3} @tab @tab
+@item Zoom @tab Enlarge the window or restore it @tab @kbd{F5}, @kbd{Sun Front}, @kbd{Alt-Z} @tab @tab
 @end multitable
 
 @subsection Programming
 
 These keys work in wpe and xwpe, the programming modes, and not in we.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Run @tab Run the program @tab @kbd{Ctrl-F9}, @kbd{Alt-U} @tab @kbd{Ctrl-F9}, @kbd{Alt-U}
-@item Language server @tab Alt-Q starts a language-server command @tab @kbd{Alt-Q} @tab @kbd{Alt-Q}
-@item Make @tab Run make @tab @kbd{F9}, @kbd{Alt-M} @tab @kbd{F9}, @kbd{Alt-M}
-@item Compile @tab Compile the file @tab @kbd{Alt-C}, @kbd{Alt-F9} @tab @kbd{Alt-C}, @kbd{Alt-F9}
-@item Install @tab Run make install @tab @kbd{Alt-L} @tab @kbd{Alt-L}
-@item Execute make @tab Run a make target @tab @kbd{Alt-A} @tab @kbd{Alt-A}
-@item Assistant @tab Alt-G opens the assistant menu @tab @kbd{Alt-G} @tab @kbd{Alt-G}
-@item Next error @tab Go to the next error @tab @kbd{Alt-T}, @kbd{Alt-F8} @tab @kbd{Alt-T}, @kbd{Alt-F8}
-@item Previous error @tab Go to the previous error @tab @kbd{Alt-V}, @kbd{Alt-F7} @tab @kbd{Alt-V}, @kbd{Alt-F7}
-@item Debugger @tab Ctrl-G starts a debugger command @tab @kbd{Ctrl-G} @tab @kbd{Ctrl-G}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Run @tab Run the program @tab @kbd{Ctrl-F9}, @kbd{Alt-U} @tab @kbd{Ctrl-F5}, @kbd{Ctrl-F9}, @kbd{Alt-U} @tab
+@item Language server @tab Alt-Q starts a language-server command @tab @kbd{Alt-Q} @tab @kbd{Alt-Q} @tab
+@item Make @tab Run make @tab @kbd{F9}, @kbd{Alt-M} @tab @kbd{Alt-M}, @kbd{Ctrl-Shift-B} @tab Alt-M
+@item Compile @tab Compile the file @tab @kbd{Alt-C}, @kbd{Alt-F9} @tab @kbd{Alt-C}, @kbd{Alt-F9} @tab
+@item Install @tab Run make install @tab @kbd{Alt-L} @tab @kbd{Alt-L} @tab
+@item Execute make @tab Run a make target @tab @kbd{Alt-A} @tab @kbd{Alt-A} @tab
+@item Assistant @tab Alt-G opens the assistant menu @tab @kbd{Alt-G} @tab @kbd{Alt-G} @tab
+@item Next error @tab Go to the next error @tab @kbd{Alt-T}, @kbd{Alt-F8} @tab @kbd{F8}, @kbd{Alt-T}, @kbd{Alt-F8} @tab
+@item Previous error @tab Go to the previous error @tab @kbd{Alt-V}, @kbd{Alt-F7} @tab @kbd{Shift-F8}, @kbd{Alt-V}, @kbd{Alt-F7} @tab
+@item Debugger @tab Ctrl-G starts a debugger command @tab @kbd{Ctrl-G} @tab @tab
+@item Go to definition @tab Jump to the definition of the symbol @tab @tab @kbd{F12} @tab Alt-Q d
+@item References @tab List the places that use the symbol @tab @tab @kbd{Shift-F12} @tab Alt-Q r
+@item Rename @tab Rename the symbol @tab @tab @kbd{F2} @tab Alt-Q n
+@item Complete @tab Complete the word at the cursor @tab @tab @kbd{Ctrl-Space} @tab Alt-Q c
+@item Format @tab Format the file @tab @tab @kbd{Ctrl-Shift-I} @tab Alt-Q f
+@item Outline @tab List the symbols of the file @tab @tab @kbd{Ctrl-Shift-O} @tab Alt-Q o
+@item Workspace symbols @tab Search the symbols of the project @tab @tab @kbd{Ctrl-T} @tab Alt-Q w
 @end multitable
 
 @subsection Debugger
 
 These keys work in wpe and xwpe, the programming modes, and not in we.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Trace @tab Step into the next line @tab @kbd{F7} @tab @kbd{F7}
-@item Step @tab Step over the next line @tab @kbd{F8} @tab @kbd{F8}
-@item Run/Continue @tab Run the program or continue it @tab @kbd{Ctrl-F10} @tab @kbd{Ctrl-F10}
-@item Quit debugger @tab End the debug session @tab @kbd{Ctrl-F2} @tab @kbd{Ctrl-F2}
-@item Interrupt @tab Pause the running program @tab @kbd{Ctrl-Brk} @tab @kbd{Ctrl-Brk}
-@item Toggle breakpoint @tab Set or clear a breakpoint on the line @tab @kbd{Ctrl-F8} @tab @kbd{F5}
-@item Make watch @tab Watch the expression under the cursor @tab @kbd{Ctrl-F7} @tab @kbd{Ctrl-F5}
-@item Show stack @tab Show the call stack @tab @kbd{Ctrl-F6} @tab @kbd{Ctrl-F3}
-@item Go to cursor @tab Run to the cursor @tab @kbd{F4} @tab
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Trace @tab Step into the next line @tab @kbd{F7} @tab @kbd{F11}, @kbd{F7} @tab F7
+@item Step @tab Step over the next line @tab @kbd{F8} @tab @kbd{F10}, @kbd{F8} @tab F8
+@item Run/Continue @tab Run the program or continue it @tab @kbd{Ctrl-F10} @tab @kbd{F5} @tab
+@item Quit debugger @tab End the debug session @tab @kbd{Ctrl-F2} @tab @kbd{Shift-F5}, @kbd{Ctrl-F2} @tab
+@item Interrupt @tab Pause the running program @tab @kbd{Ctrl-Brk} @tab @kbd{Ctrl-Brk} @tab
+@item Go to cursor @tab Run to the cursor @tab @kbd{F4} @tab @kbd{Ctrl-F10}, @kbd{F4} @tab
+@item Toggle breakpoint @tab Set or clear a breakpoint on the line @tab @kbd{Ctrl-F8} @tab @kbd{F9} @tab
+@item Make watch @tab Watch the expression under the cursor @tab @kbd{Ctrl-F7} @tab @kbd{Ctrl-F7} @tab
+@item Show stack @tab Show the call stack @tab @kbd{Ctrl-F6} @tab @kbd{Ctrl-F6} @tab
+@item Finish function @tab Run until the function returns @tab @tab @kbd{Shift-F11} @tab Debug menu
 @end multitable
 
 @subsection Editing
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Block commands @tab Ctrl-K starts a block command @tab @kbd{Ctrl-K} @tab @kbd{Ctrl-K}
-@item Editing commands @tab Ctrl-O starts an editing command @tab @kbd{Ctrl-O} @tab @kbd{Ctrl-O}
-@item Go to line @tab Jump to a line number @tab @kbd{Alt-G} @tab @kbd{Alt-G}
-@item Show buffer @tab Show the paste buffer @tab @kbd{Ctrl-F10}, @kbd{Alt-Y} @tab @kbd{Ctrl-F10}, @kbd{Alt-Y}
-@item Delete block @tab Delete the marked block @tab @kbd{Ctrl-Del} @tab @kbd{Ctrl-Del}
-@item Undo @tab Undo the last change @tab @kbd{Sun Undo}, @kbd{Alt-Backspace}, @kbd{Ctrl-U} @tab @kbd{Sun Undo}, @kbd{Alt-Backspace}, @kbd{Ctrl-U}
-@item Redo @tab Redo the change that was undone @tab @kbd{Sun Again}, @kbd{Alt-Shift-Backspace}, @kbd{Ctrl-R} @tab @kbd{Sun Again}, @kbd{Alt-Shift-Backspace}, @kbd{Ctrl-R}
-@item Cut @tab Cut the block to the clipboard @tab @kbd{Sun Cut}, @kbd{Shift-Del}, @kbd{Ctrl-X} @tab @kbd{Sun Cut}, @kbd{Shift-Del}, @kbd{Ctrl-X}
-@item Paste @tab Paste the clipboard @tab @kbd{Sun Paste}, @kbd{Shift-Ins}, @kbd{Alt-Ins}, @kbd{Ctrl-V} @tab @kbd{Sun Paste}, @kbd{Shift-Ins}, @kbd{Alt-Ins}, @kbd{Ctrl-V}
-@item Copy @tab Copy the block to the clipboard @tab @kbd{Sun Copy}, @kbd{Ctrl-Ins}, @kbd{Alt-Del}, @kbd{Ctrl-C} @tab @kbd{Sun Copy}, @kbd{Ctrl-Ins}, @kbd{Alt-Del}, @kbd{Ctrl-C}
-@item Save @tab Write the file @tab @kbd{F2} @tab @kbd{Alt-F2}
-@item Find @tab Search for text @tab @kbd{Sun Find}, @kbd{F4} @tab @kbd{Sun Find}, @kbd{Alt-F3}
-@item Replace @tab Search and replace text @tab @kbd{Alt-F4} @tab @kbd{Shift-F3}
-@item Search again @tab Repeat the last search @tab @kbd{Ctrl-L}, @kbd{Ctrl-F4} @tab @kbd{F3}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Block commands @tab Ctrl-K starts a block command @tab @kbd{Ctrl-K} @tab @kbd{Ctrl-K} @tab
+@item Editing commands @tab Ctrl-O starts an editing command @tab @kbd{Ctrl-O} @tab @tab
+@item Go to line @tab Jump to a line number @tab @kbd{Alt-G} @tab @kbd{Alt-G}, @kbd{Ctrl-G} @tab
+@item Show buffer @tab Show the paste buffer @tab @kbd{Ctrl-F10}, @kbd{Alt-Y} @tab @kbd{Ctrl-F10}, @kbd{Alt-Y} @tab
+@item Delete block @tab Delete the marked block @tab @kbd{Ctrl-Del} @tab @kbd{Ctrl-Del} @tab
+@item Undo @tab Undo the last change @tab @kbd{Sun Undo}, @kbd{Alt-Backspace}, @kbd{Ctrl-U} @tab @kbd{Sun Undo}, @kbd{Alt-Backspace}, @kbd{Ctrl-Z}, @kbd{Ctrl-U} @tab
+@item Redo @tab Redo the change that was undone @tab @kbd{Sun Again}, @kbd{Alt-Shift-Backspace}, @kbd{Ctrl-R} @tab @kbd{Sun Again}, @kbd{Alt-Shift-Backspace}, @kbd{Ctrl-Y}, @kbd{Ctrl-Shift-Z} @tab Ctrl-Y
+@item Cut @tab Cut the block to the clipboard @tab @kbd{Sun Cut}, @kbd{Shift-Del}, @kbd{Ctrl-X} @tab @kbd{Sun Cut}, @kbd{Shift-Del}, @kbd{Ctrl-X} @tab
+@item Paste @tab Paste the clipboard @tab @kbd{Sun Paste}, @kbd{Shift-Ins}, @kbd{Alt-Ins}, @kbd{Ctrl-V} @tab @kbd{Sun Paste}, @kbd{Shift-Ins}, @kbd{Alt-Ins}, @kbd{Ctrl-V} @tab
+@item Copy @tab Copy the block to the clipboard @tab @kbd{Sun Copy}, @kbd{Ctrl-Ins}, @kbd{Alt-Del}, @kbd{Ctrl-C} @tab @kbd{Sun Copy}, @kbd{Ctrl-Ins}, @kbd{Alt-Del}, @kbd{Ctrl-C} @tab
+@item Save @tab Write the file @tab @kbd{F2} @tab @kbd{Ctrl-S} @tab
+@item Find @tab Search for text @tab @kbd{Sun Find}, @kbd{F4} @tab @kbd{Sun Find}, @kbd{Ctrl-F}, @kbd{F4} @tab
+@item Replace @tab Search and replace text @tab @kbd{Alt-F4} @tab @kbd{Ctrl-R}, @kbd{Ctrl-H} @tab Ctrl-R
+@item Search again @tab Repeat the last search @tab @kbd{Ctrl-L}, @kbd{Ctrl-F4} @tab @kbd{F3} @tab
+@item Mark whole text @tab Mark the whole text as a block @tab @tab @kbd{Ctrl-A} @tab
+@item Mark line @tab Mark the cursor's line as a block @tab @tab @kbd{Ctrl-L} @tab
+@item Select word @tab Select the word at the cursor @tab @tab @kbd{Ctrl-D} @tab
 @end multitable
 
 @subsection After Ctrl-K
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Go to block start @tab Move the cursor to the start of the block @tab @kbd{Ctrl-K A} @tab @kbd{Ctrl-K A}
-@item Begin mark @tab Mark the start of a block @tab @kbd{Ctrl-K B} @tab @kbd{Ctrl-K B}
-@item Copy block @tab Copy the block to the cursor @tab @kbd{Ctrl-K C} @tab @kbd{Ctrl-K C}
-@item Change case @tab Change the case of the block @tab @kbd{Ctrl-K D} @tab @kbd{Ctrl-K D}
-@item Beautify block @tab Format the block @tab @kbd{Ctrl-K F} @tab @kbd{Ctrl-K F}
-@item Hide block @tab Hide the block marks @tab @kbd{Ctrl-K H} @tab @kbd{Ctrl-K H}
-@item Move block right @tab Indent the block @tab @kbd{Ctrl-K I} @tab @kbd{Ctrl-K I}
-@item End mark @tab Mark the end of a block @tab @kbd{Ctrl-K K} @tab @kbd{Ctrl-K K}
-@item Mark line @tab Mark the cursor's line as a block @tab @kbd{Ctrl-K L} @tab @kbd{Ctrl-K L}
-@item Read block @tab Read a file into the text @tab @kbd{Ctrl-K R} @tab @kbd{Ctrl-K R}
-@item Move block left @tab Unindent the block @tab @kbd{Ctrl-K U} @tab @kbd{Ctrl-K U}
-@item Move block @tab Move the block to the cursor @tab @kbd{Ctrl-K V} @tab @kbd{Ctrl-K V}
-@item Write block @tab Write the block to a file @tab @kbd{Ctrl-K W} @tab @kbd{Ctrl-K W}
-@item Mark whole text @tab Mark the whole text as a block @tab @kbd{Ctrl-K X} @tab @kbd{Ctrl-K X}
-@item Delete block @tab Delete the marked block @tab @kbd{Ctrl-K Y} @tab @kbd{Ctrl-K Y}
-@item Go to block end @tab Move the cursor to the end of the block @tab @kbd{Ctrl-K Z} @tab @kbd{Ctrl-K Z}
-@item Set marker @tab Set marker 0 to 9 at the cursor @tab @kbd{Ctrl-K 0..9} @tab @kbd{Ctrl-K 0..9}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Go to block start @tab Move the cursor to the start of the block @tab @kbd{Ctrl-K A} @tab @kbd{Ctrl-K A} @tab
+@item Begin mark @tab Mark the start of a block @tab @kbd{Ctrl-K B} @tab @kbd{Ctrl-K B} @tab
+@item Copy block @tab Copy the block to the cursor @tab @kbd{Ctrl-K C} @tab @kbd{Ctrl-K C} @tab
+@item Change case @tab Change the case of the block @tab @kbd{Ctrl-K D} @tab @kbd{Ctrl-K D} @tab
+@item Beautify block @tab Format the block @tab @kbd{Ctrl-K F} @tab @kbd{Ctrl-K F} @tab
+@item Hide block @tab Hide the block marks @tab @kbd{Ctrl-K H} @tab @kbd{Ctrl-K H} @tab
+@item Move block right @tab Indent the block @tab @kbd{Ctrl-K I} @tab @kbd{Ctrl-K I} @tab
+@item End mark @tab Mark the end of a block @tab @kbd{Ctrl-K K} @tab @kbd{Ctrl-K K} @tab
+@item Mark line @tab Mark the cursor's line as a block @tab @kbd{Ctrl-K L} @tab @kbd{Ctrl-K L} @tab
+@item Read block @tab Read a file into the text @tab @kbd{Ctrl-K R} @tab @kbd{Ctrl-K R} @tab
+@item Move block left @tab Unindent the block @tab @kbd{Ctrl-K U} @tab @kbd{Ctrl-K U} @tab
+@item Move block @tab Move the block to the cursor @tab @kbd{Ctrl-K V} @tab @kbd{Ctrl-K V} @tab
+@item Write block @tab Write the block to a file @tab @kbd{Ctrl-K W} @tab @kbd{Ctrl-K W} @tab
+@item Mark whole text @tab Mark the whole text as a block @tab @kbd{Ctrl-K X} @tab @kbd{Ctrl-K X} @tab
+@item Delete block @tab Delete the marked block @tab @kbd{Ctrl-K Y} @tab @kbd{Ctrl-K Y} @tab
+@item Go to block end @tab Move the cursor to the end of the block @tab @kbd{Ctrl-K Z} @tab @kbd{Ctrl-K Z} @tab
+@item Set marker @tab Set marker 0 to 9 at the cursor @tab @kbd{Ctrl-K 0..9} @tab @kbd{Ctrl-K 0..9} @tab
 @end multitable
 
 @subsection After Ctrl-O
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Delete to end of line @tab Delete from the cursor to the end of the line @tab @kbd{Ctrl-O Y} @tab @kbd{Ctrl-O Y}
-@item Delete word left @tab Delete from the cursor back to the start of the word @tab @kbd{Ctrl-O T} @tab @kbd{Ctrl-O T}
-@item Find @tab Search for text @tab @kbd{Ctrl-O F} @tab @kbd{Ctrl-O F}
-@item Replace @tab Search and replace text @tab @kbd{Ctrl-O A} @tab @kbd{Ctrl-O A}
-@item Show definition @tab Go to the definition of the word @tab @kbd{Ctrl-O S} @tab @kbd{Ctrl-O S}
-@item Show next definition @tab Go to the next definition of the word @tab @kbd{Ctrl-O N} @tab @kbd{Ctrl-O N}
-@item Matching bracket @tab Go to the matching bracket @tab @kbd{Ctrl-O K} @tab @kbd{Ctrl-O K}
-@item Beautify @tab Format the text @tab @kbd{Ctrl-O B} @tab @kbd{Ctrl-O B}
-@item Help button @tab Make the block a help button @tab @kbd{Ctrl-O U} @tab @kbd{Ctrl-O U}
-@item Help highlight @tab Make the block a help highlight @tab @kbd{Ctrl-O M} @tab @kbd{Ctrl-O M}
-@item Help header @tab Make the block a help header @tab @kbd{Ctrl-O H} @tab @kbd{Ctrl-O H}
-@item Help page end @tab Put a help page end above the line @tab @kbd{Ctrl-O E} @tab @kbd{Ctrl-O E}
-@item Delete help marks @tab Delete the help marks from the line @tab @kbd{Ctrl-O L} @tab @kbd{Ctrl-O L}
-@item Check help file @tab Check the help file @tab @kbd{Ctrl-O C} @tab @kbd{Ctrl-O C}
-@item Go to marker @tab Jump to marker 0 to 9 @tab @kbd{Ctrl-O 0..9} @tab @kbd{Ctrl-O 0..9}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Delete to end of line @tab Delete from the cursor to the end of the line @tab @kbd{Ctrl-O Y} @tab @tab
+@item Delete word left @tab Delete from the cursor back to the start of the word @tab @kbd{Ctrl-O T} @tab @tab
+@item Find @tab Search for text @tab @kbd{Ctrl-O F} @tab @tab
+@item Replace @tab Search and replace text @tab @kbd{Ctrl-O A} @tab @tab
+@item Show definition @tab Go to the definition of the word @tab @kbd{Ctrl-O S} @tab @tab
+@item Show next definition @tab Go to the next definition of the word @tab @kbd{Ctrl-O N} @tab @tab
+@item Matching bracket @tab Go to the matching bracket @tab @kbd{Ctrl-O K} @tab @tab
+@item Beautify @tab Format the text @tab @kbd{Ctrl-O B} @tab @tab
+@item Help button @tab Make the block a help button @tab @kbd{Ctrl-O U} @tab @tab
+@item Help highlight @tab Make the block a help highlight @tab @kbd{Ctrl-O M} @tab @tab
+@item Help header @tab Make the block a help header @tab @kbd{Ctrl-O H} @tab @tab
+@item Help page end @tab Put a help page end above the line @tab @kbd{Ctrl-O E} @tab @tab
+@item Delete help marks @tab Delete the help marks from the line @tab @kbd{Ctrl-O L} @tab @tab
+@item Check help file @tab Check the help file @tab @kbd{Ctrl-O C} @tab @tab
+@item Go to marker @tab Jump to marker 0 to 9 @tab @kbd{Ctrl-O 0..9} @tab @tab
 @end multitable
 
 @subsection After Ctrl-G
 
 These keys work in wpe and xwpe, the programming modes, and not in we.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Toggle breakpoint @tab Set or clear a breakpoint on the line @tab @kbd{Ctrl-G B} @tab @kbd{Ctrl-G B}
-@item Remove all breakpoints @tab Clear every breakpoint @tab @kbd{Ctrl-G M} @tab @kbd{Ctrl-G M}
-@item Make watch @tab Watch the expression under the cursor @tab @kbd{Ctrl-G W} @tab @kbd{Ctrl-G W}
-@item Edit watch @tab Change a watch @tab @kbd{Ctrl-G E} @tab @kbd{Ctrl-G E}
-@item Delete watch @tab Delete one watch @tab @kbd{Ctrl-G D} @tab @kbd{Ctrl-G D}
-@item Remove all watches @tab Delete every watch @tab @kbd{Ctrl-G A} @tab @kbd{Ctrl-G A}
-@item Show stack @tab Show the call stack @tab @kbd{Ctrl-G K} @tab @kbd{Ctrl-G K}
-@item Go to cursor @tab Run to the cursor @tab @kbd{Ctrl-G U} @tab @kbd{Ctrl-G U}
-@item Finish function @tab Run until the function returns @tab @kbd{Ctrl-G F} @tab @kbd{Ctrl-G F}
-@item Trace @tab Step into the next line @tab @kbd{Ctrl-G T} @tab @kbd{Ctrl-G T}
-@item Step @tab Step over the next line @tab @kbd{Ctrl-G S} @tab @kbd{Ctrl-G S}
-@item Run/Continue @tab Run the program or continue it @tab @kbd{Ctrl-G R}, @kbd{Ctrl-G C} @tab @kbd{Ctrl-G R}, @kbd{Ctrl-G C}
-@item Interrupt @tab Pause the running program @tab @kbd{Ctrl-G I} @tab @kbd{Ctrl-G I}
-@item Program output @tab Show the program's output @tab @kbd{Ctrl-G P} @tab @kbd{Ctrl-G P}
-@item Debugger options @tab Open the debugger options @tab @kbd{Ctrl-G O} @tab @kbd{Ctrl-G O}
-@item Quit debugger @tab End the debug session @tab @kbd{Ctrl-G Q} @tab @kbd{Ctrl-G Q}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Toggle breakpoint @tab Set or clear a breakpoint on the line @tab @kbd{Ctrl-G B} @tab @tab
+@item Remove all breakpoints @tab Clear every breakpoint @tab @kbd{Ctrl-G M} @tab @tab
+@item Make watch @tab Watch the expression under the cursor @tab @kbd{Ctrl-G W} @tab @tab
+@item Edit watch @tab Change a watch @tab @kbd{Ctrl-G E} @tab @tab
+@item Delete watch @tab Delete one watch @tab @kbd{Ctrl-G D} @tab @tab
+@item Remove all watches @tab Delete every watch @tab @kbd{Ctrl-G A} @tab @tab
+@item Show stack @tab Show the call stack @tab @kbd{Ctrl-G K} @tab @tab
+@item Go to cursor @tab Run to the cursor @tab @kbd{Ctrl-G U} @tab @tab
+@item Finish function @tab Run until the function returns @tab @kbd{Ctrl-G F} @tab @tab
+@item Trace @tab Step into the next line @tab @kbd{Ctrl-G T} @tab @tab
+@item Step @tab Step over the next line @tab @kbd{Ctrl-G S} @tab @tab
+@item Run/Continue @tab Run the program or continue it @tab @kbd{Ctrl-G R}, @kbd{Ctrl-G C} @tab @tab
+@item Interrupt @tab Pause the running program @tab @kbd{Ctrl-G I} @tab @tab
+@item Program output @tab Show the program's output @tab @kbd{Ctrl-G P} @tab @tab
+@item Debugger options @tab Open the debugger options @tab @kbd{Ctrl-G O} @tab @tab
+@item Quit debugger @tab End the debug session @tab @kbd{Ctrl-G Q} @tab @tab
 @end multitable
 
 @subsection After Alt-Q
 
 These keys work in wpe and xwpe, the programming modes, and not in we.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Go to definition @tab Jump to the definition of the symbol @tab @kbd{Alt-Q D} @tab @kbd{Alt-Q D}
-@item Go to implementation @tab Jump to the implementation of the symbol @tab @kbd{Alt-Q I} @tab @kbd{Alt-Q I}
-@item Go to type @tab Jump to the type of the symbol @tab @kbd{Alt-Q T} @tab @kbd{Alt-Q T}
-@item Hover @tab Show the type and documentation of the symbol @tab @kbd{Alt-Q H} @tab @kbd{Alt-Q H}
-@item Complete @tab Complete the word at the cursor @tab @kbd{Alt-Q C} @tab @kbd{Alt-Q C}
-@item References @tab List the places that use the symbol @tab @kbd{Alt-Q R} @tab @kbd{Alt-Q R}
-@item Callers @tab List the functions that call this one @tab @kbd{Alt-Q B} @tab @kbd{Alt-Q B}
-@item Callees @tab List the functions this one calls @tab @kbd{Alt-Q G} @tab @kbd{Alt-Q G}
-@item Supertypes @tab List the supertypes of the symbol @tab @kbd{Alt-Q K} @tab @kbd{Alt-Q K}
-@item Subtypes @tab List the subtypes of the symbol @tab @kbd{Alt-Q J} @tab @kbd{Alt-Q J}
-@item Expand selection @tab Grow the selection to the enclosing construct @tab @kbd{Alt-Q V} @tab @kbd{Alt-Q V}
-@item Highlight uses @tab Mark the uses of the symbol in the file @tab @kbd{Alt-Q U} @tab @kbd{Alt-Q U}
-@item Inlay hints @tab Show or hide the inlay hints @tab @kbd{Alt-Q Y} @tab @kbd{Alt-Q Y}
-@item Semantic colours @tab Show or hide the semantic colours @tab @kbd{Alt-Q M} @tab @kbd{Alt-Q M}
-@item Code lens @tab Show the code lenses @tab @kbd{Alt-Q L} @tab @kbd{Alt-Q L}
-@item Signature help @tab Show the signature of the call @tab @kbd{Alt-Q S} @tab @kbd{Alt-Q S}
-@item Workspace symbols @tab Search the symbols of the project @tab @kbd{Alt-Q W} @tab @kbd{Alt-Q W}
-@item Code actions @tab Offer the code actions at the cursor @tab @kbd{Alt-Q A} @tab @kbd{Alt-Q A}
-@item Format @tab Format the file @tab @kbd{Alt-Q F} @tab @kbd{Alt-Q F}
-@item Rename @tab Rename the symbol @tab @kbd{Alt-Q N} @tab @kbd{Alt-Q N}
-@item Outline @tab List the symbols of the file @tab @kbd{Alt-Q O} @tab @kbd{Alt-Q O}
-@item Diagnostics @tab Restart the server and show the diagnostics @tab @kbd{Alt-Q E} @tab @kbd{Alt-Q E}
-@item Next problem @tab Go to the next problem @tab @kbd{Alt-Q .} @tab @kbd{Alt-Q .}
-@item Previous problem @tab Go to the previous problem @tab @kbd{Alt-Q ,} @tab @kbd{Alt-Q ,}
-@item Cancel @tab Leave the language-server prefix @tab @kbd{Alt-Q Esc} @tab @kbd{Alt-Q Esc}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Go to definition @tab Jump to the definition of the symbol @tab @kbd{Alt-Q D} @tab @kbd{Alt-Q D} @tab
+@item Go to implementation @tab Jump to the implementation of the symbol @tab @kbd{Alt-Q I} @tab @kbd{Alt-Q I} @tab
+@item Go to type @tab Jump to the type of the symbol @tab @kbd{Alt-Q T} @tab @kbd{Alt-Q T} @tab
+@item Hover @tab Show the type and documentation of the symbol @tab @kbd{Alt-Q H} @tab @kbd{Alt-Q H} @tab
+@item Complete @tab Complete the word at the cursor @tab @kbd{Alt-Q C} @tab @kbd{Alt-Q C} @tab
+@item References @tab List the places that use the symbol @tab @kbd{Alt-Q R} @tab @kbd{Alt-Q R} @tab
+@item Callers @tab List the functions that call this one @tab @kbd{Alt-Q B} @tab @kbd{Alt-Q B} @tab
+@item Callees @tab List the functions this one calls @tab @kbd{Alt-Q G} @tab @kbd{Alt-Q G} @tab
+@item Supertypes @tab List the supertypes of the symbol @tab @kbd{Alt-Q K} @tab @kbd{Alt-Q K} @tab
+@item Subtypes @tab List the subtypes of the symbol @tab @kbd{Alt-Q J} @tab @kbd{Alt-Q J} @tab
+@item Expand selection @tab Grow the selection to the enclosing construct @tab @kbd{Alt-Q V} @tab @kbd{Alt-Q V} @tab
+@item Highlight uses @tab Mark the uses of the symbol in the file @tab @kbd{Alt-Q U} @tab @kbd{Alt-Q U} @tab
+@item Inlay hints @tab Show or hide the inlay hints @tab @kbd{Alt-Q Y} @tab @kbd{Alt-Q Y} @tab
+@item Semantic colours @tab Show or hide the semantic colours @tab @kbd{Alt-Q M} @tab @kbd{Alt-Q M} @tab
+@item Code lens @tab Show the code lenses @tab @kbd{Alt-Q L} @tab @kbd{Alt-Q L} @tab
+@item Signature help @tab Show the signature of the call @tab @kbd{Alt-Q S} @tab @kbd{Alt-Q S} @tab
+@item Workspace symbols @tab Search the symbols of the project @tab @kbd{Alt-Q W} @tab @kbd{Alt-Q W} @tab
+@item Code actions @tab Offer the code actions at the cursor @tab @kbd{Alt-Q A} @tab @kbd{Alt-Q A} @tab
+@item Format @tab Format the file @tab @kbd{Alt-Q F} @tab @kbd{Alt-Q F} @tab
+@item Rename @tab Rename the symbol @tab @kbd{Alt-Q N} @tab @kbd{Alt-Q N} @tab
+@item Outline @tab List the symbols of the file @tab @kbd{Alt-Q O} @tab @kbd{Alt-Q O} @tab
+@item Diagnostics @tab Restart the server and show the diagnostics @tab @kbd{Alt-Q E} @tab @kbd{Alt-Q E} @tab
+@item Next problem @tab Go to the next problem @tab @kbd{Alt-Q .} @tab @kbd{Alt-Q .} @tab
+@item Previous problem @tab Go to the previous problem @tab @kbd{Alt-Q ,} @tab @kbd{Alt-Q ,} @tab
+@item Cancel @tab Leave the language-server prefix @tab @kbd{Alt-Q Esc} @tab @kbd{Alt-Q Esc} @tab
 @end multitable
 
 @subsection After Alt-G
 
 These keys work in wpe and xwpe, the programming modes, and not in we.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Ask (chat) @tab Ask the assistant @tab @kbd{Alt-G A} @tab @kbd{Alt-G A}
-@item Edit current file @tab Have the assistant edit the file @tab @kbd{Alt-G E} @tab @kbd{Alt-G E}
-@item Complete at cursor @tab Have the assistant complete at the cursor @tab @kbd{Alt-G C} @tab @kbd{Alt-G C}
-@item Multi-file edit @tab Plan an edit over several files @tab @kbd{Alt-G F} @tab @kbd{Alt-G F}
-@item Agent (tools) @tab Let the assistant use its tools @tab @kbd{Alt-G G} @tab @kbd{Alt-G G}
-@item Build and fix (agent) @tab Let the assistant build and fix the errors @tab @kbd{Alt-G B} @tab @kbd{Alt-G B}
-@item Permissions @tab Change what the assistant may do @tab @kbd{Alt-G Y} @tab @kbd{Alt-G Y}
-@item Read folders @tab Withdraw a folder the assistant may read @tab @kbd{Alt-G R} @tab @kbd{Alt-G R}
-@item Clear conversation @tab Start a new conversation @tab @kbd{Alt-G N} @tab @kbd{Alt-G N}
-@item AI settings @tab Open the assistant's settings @tab @kbd{Alt-G S} @tab @kbd{Alt-G S}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Ask (chat) @tab Ask the assistant @tab @kbd{Alt-G A} @tab @kbd{Alt-G A} @tab
+@item Edit current file @tab Have the assistant edit the file @tab @kbd{Alt-G E} @tab @kbd{Alt-G E} @tab
+@item Complete at cursor @tab Have the assistant complete at the cursor @tab @kbd{Alt-G C} @tab @kbd{Alt-G C} @tab
+@item Multi-file edit @tab Plan an edit over several files @tab @kbd{Alt-G F} @tab @kbd{Alt-G F} @tab
+@item Agent (tools) @tab Let the assistant use its tools @tab @kbd{Alt-G G} @tab @kbd{Alt-G G} @tab
+@item Build and fix (agent) @tab Let the assistant build and fix the errors @tab @kbd{Alt-G B} @tab @kbd{Alt-G B} @tab
+@item Permissions @tab Change what the assistant may do @tab @kbd{Alt-G Y} @tab @kbd{Alt-G Y} @tab
+@item Read folders @tab Withdraw a folder the assistant may read @tab @kbd{Alt-G R} @tab @kbd{Alt-G R} @tab
+@item Clear conversation @tab Start a new conversation @tab @kbd{Alt-G N} @tab @kbd{Alt-G N} @tab
+@item AI settings @tab Open the assistant's settings @tab @kbd{Alt-G S} @tab @kbd{Alt-G S} @tab
 @end multitable
 
 @subsection Watches window
 
 In the Watches window these keys are read before the tables above, and win.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Make watch @tab Watch the expression under the cursor @tab @kbd{Ins} @tab @kbd{Ins}
-@item Delete watch @tab Delete one watch @tab @kbd{Del} @tab @kbd{Del}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Make watch @tab Watch the expression under the cursor @tab @kbd{Ins} @tab @kbd{Ins} @tab
+@item Delete watch @tab Delete one watch @tab @kbd{Del} @tab @kbd{Del} @tab
 @end multitable
 
 @subsection Help viewer
 
 In a Help window these keys are read before the tables above, and win.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Help: next link @tab Go to the next link in the help page @tab @kbd{Alt-F8}, @kbd{Alt-T} @tab @kbd{Alt-F8}, @kbd{Alt-T}
-@item Help: previous link @tab Go to the previous link in the help page @tab @kbd{Alt-F7}, @kbd{Alt-V} @tab @kbd{Alt-F7}, @kbd{Alt-V}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Help: next link @tab Go to the next link in the help page @tab @kbd{Alt-F8}, @kbd{Alt-T} @tab @kbd{Alt-F8}, @kbd{Alt-T} @tab
+@item Help: previous link @tab Go to the previous link in the help page @tab @kbd{Alt-F7}, @kbd{Alt-V} @tab @kbd{Alt-F7}, @kbd{Alt-V} @tab
 @end multitable
 
 @subsection File manager lists
 
 These keys are read by the window or dialog named, not by an editor window.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Close list @tab Close the file manager's list window @tab @kbd{Alt-F3} @tab @kbd{Ctrl-F4}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Close list @tab Close the file manager's list window @tab @kbd{Alt-F3} @tab @kbd{Ctrl-F4} @tab
 @end multitable
 
 @subsection Dialog move
 
 These keys are read by the window or dialog named, not by an editor window.
 
-@multitable @columnfractions .20 .32 .24 .24
-@headitem Action @tab What it does @tab Borland style @tab CUA style
-@item Size/Move @tab Move or resize the window with the cursor keys @tab @kbd{Alt-F2} @tab @kbd{Ctrl-L}
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Size/Move @tab Move or resize the window with the cursor keys @tab @kbd{Alt-F2} @tab @kbd{Alt-F2} @tab
+@end multitable
+
+@subsection Cursor keys
+
+@multitable @columnfractions .16 .26 .18 .18 .22
+@headitem Action @tab What it does @tab Borland style @tab Modern style @tab Where a terminal keeps the Modern key
+@item Cursor up @tab Move the cursor up one line @tab @kbd{Ctrl-P} @tab @tab
+@item Cursor down @tab Move the cursor down one line @tab @kbd{Ctrl-N} @tab @tab
+@item Cursor left @tab Move the cursor left one character @tab @kbd{Ctrl-B} @tab @tab
+@item Cursor right @tab Move the cursor right one character @tab @kbd{Ctrl-F} @tab @tab
+@item Start of line @tab Move the cursor to the start of the line @tab @kbd{Ctrl-A} @tab @tab
+@item End of line @tab Move the cursor to the end of the line @tab @kbd{Ctrl-E} @tab @tab
+@item Delete word right @tab Delete from the cursor to the start of the next word @tab @kbd{Ctrl-T} @tab @tab
+@item Delete to end of line @tab Delete from the cursor to the end of the line @tab @kbd{Ctrl-Z} @tab @tab
+@item Delete line @tab Delete the cursor's line @tab @kbd{Ctrl-Y} @tab @tab
+@item Delete character @tab Delete the character at the cursor @tab @kbd{Ctrl-D} @tab @tab
+@end multitable
+
+@subsection Which terminals deliver the Modern keys
+
+A key marked protocol is a key of its own only in a terminal that
+implements xterm's modifyOtherKeys or kitty's keyboard protocol, which
+the editor asks for.  The record of what each terminal was measured to
+send is docs/chapters/keys-delivery.txt in the source.
+
+@multitable @columnfractions .17 .09 .10 .10 .10 .10 .10 .09 .10
+@headitem Key @tab Arrives @tab xterm @tab GNOME Terminal @tab Konsole @tab kitty @tab tmux @tab screen @tab Linux console
+@item @kbd{Alt-1..9} @tab always @tab yes @tab no @tab yes @tab yes @tab yes @tab yes @tab yes
+@item @kbd{F1} @tab always @tab yes @tab no @tab yes @tab yes @tab yes @tab yes @tab yes
+@item @kbd{F10} @tab always @tab yes @tab no @tab yes @tab yes @tab yes @tab yes @tab yes
+@item @kbd{Ctrl-Tab} @tab protocol @tab yes @tab no @tab no @tab no @tab yes @tab no @tab no
+@item @kbd{Alt-F4} @tab always @tab no @tab no @tab no @tab no @tab yes @tab yes @tab no
+@item @kbd{Ctrl-Shift-B} @tab protocol @tab yes @tab no @tab no @tab yes @tab yes @tab no @tab no
+@item @kbd{Ctrl-Space} @tab protocol @tab yes @tab no @tab yes @tab yes @tab yes @tab no @tab no
+@item @kbd{Ctrl-Shift-I} @tab protocol @tab yes @tab no @tab no @tab yes @tab yes @tab no @tab no
+@item @kbd{Ctrl-Shift-O} @tab protocol @tab yes @tab no @tab no @tab yes @tab yes @tab no @tab no
+@item @kbd{F11} @tab always @tab yes @tab no @tab yes @tab yes @tab yes @tab yes @tab yes
+@item @kbd{Ctrl-Shift-Z} @tab protocol @tab yes @tab no @tab no @tab yes @tab yes @tab no @tab no
+@item @kbd{Ctrl-S} @tab always @tab yes @tab yes @tab yes @tab yes @tab yes @tab no @tab yes
+@item @kbd{Ctrl-H} @tab protocol @tab yes @tab no @tab yes @tab yes @tab yes @tab no @tab no
 @end multitable

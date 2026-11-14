@@ -85,6 +85,7 @@ we_mouse.c:e_opt_ck_mouse:* 1 dialog field editing
 we_mouse.c:e_opt_cw_mouse:* 3 dialog field editing
 we_mouse.c:e_opt_mouse:* 1 dialog field editing
 we_mouse.c:e_rahmen_mouse:* 1 dialog field editing
+we_opt.c:e_keys_ask_box:* 5 dialog field editing
 we_opt.c:e_ad_colors:* 1 dialog field editing
 we_opt.c:e_ad_colors_md:* 1 dialog field editing
 we_opt.c:e_add_arguments:* 6 dialog field editing
@@ -181,14 +182,12 @@ we_edit.c:e_tst_cur:CEND 2 not yet in the table, context editing (K-d1)
 we_edit.c:e_tst_cur:CLE 2 not yet in the table, context editing (K-d1)
 we_edit.c:e_tst_cur:CPS1 2 not yet in the table, context editing (K-d1)
 we_edit.c:e_tst_cur:CRI 2 not yet in the table, context editing (K-d1)
-we_edit.c:e_tst_cur:CtrlA 1 not yet in the table, context editing (K-d1)
-we_edit.c:e_tst_cur:CtrlB 1 not yet in the table, context editing (K-d1)
-we_edit.c:e_tst_cur:CtrlE 1 not yet in the table, context editing (K-d1)
-we_edit.c:e_tst_cur:CtrlF 1 not yet in the table, context editing (K-d1)
-we_edit.c:e_tst_cur:CtrlN 1 not yet in the table, context editing (K-d1)
-we_edit.c:e_tst_cur:CtrlP 1 not yet in the table, context editing (K-d1)
-we_edit.c:e_tst_cur:CtrlT 1 not yet in the table, context editing (K-d1)
-we_edit.c:e_tst_cur:CtrlZ 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_cursor_letter_key:CDO 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_cursor_letter_key:CLE 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_cursor_letter_key:CRI 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_cursor_letter_key:CUP 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_cursor_letter_key:ENDE 1 not yet in the table, context editing (K-d1)
+we_edit.c:e_cursor_letter_key:POS1 1 not yet in the table, context editing (K-d1)
 we_edit.c:e_tst_cur:CUP 2 not yet in the table, context editing (K-d1)
 we_edit.c:e_tst_cur:EINFG 1 not yet in the table, context editing (K-d1)
 we_edit.c:e_tst_cur:ENDE 2 not yet in the table, context editing (K-d1)
