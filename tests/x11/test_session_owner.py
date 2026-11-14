@@ -143,17 +143,11 @@ import test_debugger_command_length as pdb_shapes  # noqa: E402
 cjk_folder = pdb_shapes.cjk_folder
 
 DETACHED = {"XWPE_TEST_DETACHED": "1"}
-DETACHED_REASON = ("editor without a controlling terminal: tty ownership, "
-                   "product design pending")
 
 
 # An editor started the way a desktop launcher starts it is a session leader
-# with no controlling terminal.  The debugger starts below fail then (the
-# program is refused a terminal, or the editor is hung up) though they pass
-# when it is started from a terminal.  This is a product defect; the rows are
-# strict expected failures, so the day the product is fixed they turn red and
-# the marks come off.
-@pytest.mark.xfail(strict=True, reason=DETACHED_REASON)
+# with no controlling terminal.  The debugger starts below work then as they
+# do when it is started from a terminal.
 @pytest.mark.skipif(not shutil.which("jdb") or not shutil.which("javac"),
                     reason="no jdb or javac")
 @pytest.mark.parametrize("xwpe", [{**jdb_shapes.JDB_STUB_ENV, **DETACHED}],
@@ -163,7 +157,6 @@ def test_a_detached_editor_runs_the_jdb_keys_shape(xwpe):
     jdb_shapes.test_jdb_keys_reach_the_editor_while_it_answers(xwpe)
 
 
-@pytest.mark.xfail(strict=True, reason=DETACHED_REASON)
 @pytest.mark.skipif(not shutil.which("python3"), reason="python3 not on PATH")
 @pytest.mark.parametrize("xwpe", [{**pdb_shapes.PDB_SESSION, **DETACHED}],
                          indirect=True)

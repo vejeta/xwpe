@@ -488,9 +488,13 @@ def xwpe(wlserver, tmp_path, request):
     if name is not None:
         src = tmp_path / name
         src.write_text(source or "")
+    # XWPE_TEST_DETACHED: start the editor as a desktop launcher would, a
+    # session leader with no controlling terminal (present means detached).
+    detached = param.pop("XWPE_TEST_DETACHED", None) is not None
     env.update(param)   # optional per-test env (e.g. AI)
     proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
-                  stderr=_logfile("xwpe-%s.log" % request.node.name))
+                  stderr=_logfile("xwpe-%s.log" % request.node.name),
+                  start_new_session=detached)
     # Wait for the weston X window (the xdotool target) and the first frame dump.
     wid = None
     for _ in range(60):

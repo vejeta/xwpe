@@ -717,6 +717,10 @@ TESTS += tests/check-path-buffers.sh
 # counts may only fall.
 TESTS += tests/check-program-name.sh
 
+# The editor never takes a terminal as its own: tests/check-tty-open.sh
+# fails on an open() of a tty or pty name without O_NOCTTY.
+TESTS += tests/check-tty-open.sh
+
 # One layout path for every box: the layout owner (we_layout.c).
 # tests/check-box-layout.sh fails when a box's place is computed outside
 # the owner, a display lays the windows out on its own, or a background is
@@ -810,6 +814,7 @@ EXTRA_DIST = \
   tests/check-chain-outcome.sh \
   tests/check-path-buffers.sh \
   tests/check-program-name.sh \
+  tests/check-tty-open.sh \
   tests/program-name.allow \
   tests/check-box-layout.sh \
   tests/box-layout.allow \

@@ -533,6 +533,13 @@
   {"id": "SC-debug-134", "requirement": "The outcome of a debugger request chain is said", "layer": "ncurses", "test": "tests/test_legacy_debuggers.py::test_a_breakpoint_set_at_a_stop_that_is_too_long_stays_hollow[xdb]", "status": "new", "needs": ["gcc"]},
   {"id": "SC-debug-135", "requirement": "The outcome of a debugger request chain is said", "layer": "x11", "test": "tests/x11/test_legacy_debuggers.py::test_dbx_is_run_after_a_breakpoint_too_long_to_send", "status": "new", "needs": ["Xvfb", "xdotool", "gcc"]},
   {"id": "SC-debug-136", "requirement": "The outcome of a debugger request chain is said", "layer": "c-unit", "test": "test_debreq", "status": "new"},
-  {"id": "SC-debug-137", "requirement": "The outcome of a debugger request chain is said", "layer": "c-unit", "test": "tests/check-chain-outcome.sh", "status": "new"}
+  {"id": "SC-debug-137", "requirement": "The outcome of a debugger request chain is said", "layer": "c-unit", "test": "tests/check-chain-outcome.sh", "status": "new"},
+  {"id": "SC-debug-18", "requirement": "Starting and ending a session", "layer": "x11", "test": "tests/x11/test_debug_no_ctty.py::test_jdb_starts_and_keys_reach_the_editor_without_a_controlling_tty", "status": "new", "needs": ["jdb", "javac", "Xvfb", "xdotool"]},
+  {"id": "SC-debug-18", "requirement": "Starting and ending a session", "layer": "x11", "test": "tests/x11/test_debug_no_ctty.py::test_ctrl_f2_ends_a_gdb_session_without_a_controlling_tty", "status": "new", "needs": ["gcc", "gdb", "Xvfb", "xdotool"]},
+  {"id": "SC-debug-18", "requirement": "Starting and ending a session", "layer": "x11", "test": "tests/x11/test_debug_no_ctty.py::test_debug_quit_while_the_program_runs_without_a_controlling_tty", "status": "new", "needs": ["gcc", "gdb", "Xvfb", "xdotool"]},
+  {"id": "SC-debug-18", "requirement": "Starting and ending a session", "layer": "wayland", "test": "tests/wayland/test_debug_no_ctty.py::test_jdb_starts_and_keys_reach_the_editor_without_a_controlling_tty", "status": "new", "needs": ["weston"]},
+  {"id": "SC-debug-18", "requirement": "Starting and ending a session", "layer": "wayland", "test": "tests/wayland/test_debug_no_ctty.py::test_ctrl_f2_ends_a_gdb_session_without_a_controlling_tty", "status": "new", "needs": ["weston"]},
+  {"id": "SC-debug-18", "requirement": "Starting and ending a session", "layer": "wayland", "test": "tests/wayland/test_debug_no_ctty.py::test_debug_quit_while_the_program_runs_without_a_controlling_tty", "status": "new", "needs": ["weston"]},
+  {"id": "SC-debug-18", "requirement": "Starting and ending a session", "layer": "c-unit", "test": "tests/check-tty-open.sh", "status": "new"}
  ]
 }

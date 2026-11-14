@@ -8312,8 +8312,14 @@ static int e_d_script_connect(FENSTER *f)
  if (e_d_tty[i] == '\n')
   e_d_tty[i] = '\0';
  close(wfildes[0]);
- if ((rfildes[0] = open(e_d_tty, O_RDONLY | O_CLOEXEC)) < 0 ||
-   (wfildes[1] = open(e_d_tty, O_WRONLY | O_CLOEXEC)) < 0)
+ /* O_NOCTTY: the editor never takes as its controlling terminal a terminal
+    it hands to a child.  Started from a desktop launcher it is a session
+    leader without one, and opening the slave without this flag would make it
+    its own: jdb's VM could not take the terminal (TIOCSCTTY refused), and
+    closing the master at the end of the session would send the editor
+    SIGHUP. */
+ if ((rfildes[0] = open(e_d_tty, O_RDONLY | O_CLOEXEC | O_NOCTTY)) < 0 ||
+   (wfildes[1] = open(e_d_tty, O_WRONLY | O_CLOEXEC | O_NOCTTY)) < 0)
  {
   e_error(e_p_msg[ERR_PIPEOPEN], 0, f->fb);
   return(-1);
