@@ -275,7 +275,8 @@ and the editor's clipboard otherwise (as @kbd{Ctrl-V}).
 Quit from xwpe in the Borland style (@kbd{Alt-F4} in the CUA style).  If
 files have unsaved changes, xwpe prompts for each: @samp{Yes} to save,
 @samp{No} to discard, @key{ESC} to cancel the quit (no further files are
-closed).  (Documented since v1.4.)
+closed).  When a file cannot be written, the error is shown and the quit
+stops there, with that window still open.  (Documented since v1.4.)
 @end table
 
 @section Common User Access (CUA) keybindings

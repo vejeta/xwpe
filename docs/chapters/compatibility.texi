@@ -536,6 +536,12 @@ and its line break are kept.  The status row says how many were left out,
 Block > Read says the same, and the first Save of such a file asks before
 it writes the file without them (No leaves the file on disk as it is).
 
+@item Closing a window whose save fails
+@cindex close, failed save
+The original closed the window after Yes to @samp{Do you want to save File ?}
+even when the file could not be written, and the edits were lost.  The
+window now stays open with its text, and Quit stops at it.
+
 @item The @samp{Data} key of the options file
 @cindex options file, Data
 The original read the number after @samp{Data} into the kind of every new

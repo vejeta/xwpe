@@ -2426,6 +2426,23 @@ int e_close_buffer(BUFFER *b)
  return(0);
 }
 
+/**
+ * e_close_save_failed - Save a window the user agreed to save before closing.
+ * @f: the window being closed.
+ *
+ * When the write fails (a read-only folder, a full disk) the editor has
+ * already shown the reason, and when the user answers No to the question
+ * about NUL bytes the file was left as it was on purpose.  Either way the
+ * text exists only in this window, so the caller must keep the window open
+ * and the edits with it.
+ *
+ * Return: nonzero when the file was not written, 0 when it was.
+ */
+static int e_close_save_failed(FENSTER *f)
+{
+ return(e_save(f) != 0);
+}
+
 /*    close window */
 int e_close_window(FENSTER *f)
 {
@@ -2503,7 +2520,7 @@ int e_close_window(FENSTER *f)
    c = e_message(1, text, f);
    if (c == WPE_ESC)
     return(c);
-   else if (c == 'Y' && e_save(f) == E_SAVE_DECLINED)
+   if (c == 'Y' && e_close_save_failed(f))
     return(WPE_ESC);
   }
 #ifdef WPE_AI
