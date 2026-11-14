@@ -6891,6 +6891,7 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
    return(-1);
   i = cn->mxedt;
   e_buffer_mark_view(cn->f[i]->b);
+  cn->f[i]->ins = WPE_INS_READONLY;   /* a view the editor writes, never the user */
  }
  wf = cn->f[i];
  b = wf->b;

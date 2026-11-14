@@ -271,10 +271,10 @@ static int e_blk_refuse_unmarked(FENSTER *f, int changes_text)
 {
  if (!e_blk_marks_empty(f->s))
   return(0);
- if (changes_text && e_window_text_locked(f))
+ if (changes_text && wpe_window_locked_for_now(f))
  {
-  if (f->ins == WPE_INS_READONLY)
-   wpe_buffer_say_read_only(f->b);
+  if (wpe_window_read_only(f))
+   wpe_closed_say(f, WPE_CLOSED_READ_ONLY);
  }
  else
   e_blk_say_nothing_marked(f);
@@ -338,7 +338,7 @@ int e_block_delete_marked(FENSTER *f)
  SCHIRM *s = f->s;
  int r = E_BLOCK_MOVED, in_line;
 
- if (e_blk_marks_empty(s) || e_window_text_locked(f))
+ if (e_blk_marks_empty(s) || wpe_window_locked_for_now(f))
   return(E_BLOCK_NOT_MOVED);
  in_line = (s->mark_begin.y == s->mark_end.y);
  if (in_line)
@@ -358,7 +358,7 @@ int e_blck_del(FENSTER *f)
 {
  if ((f = e_blk_text_window(f)) == NULL || e_blk_refuse_unmarked(f, 1))
   return(0);
- if (e_window_text_locked(f))
+ if (wpe_window_locked_for_now(f))
   return(WPE_ESC);
  if (e_block_delete_marked(f) == E_BLOCK_NOMEM)
   wpe_buffer_say_nomem(f->b, "the block deletion");
@@ -378,7 +378,7 @@ int e_blck_dup(char *dup, FENSTER *f)
   return(0);
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
- if (e_window_text_locked(f))
+ if (wpe_window_locked_for_now(f))
   return(0);
  b = f->b;  s = f->s;
  i=s->mark_end.x - s->mark_begin.x;
@@ -423,7 +423,7 @@ int e_show_clipboard(FENSTER *f)
  cn->edt[cn->mxedt]=j;
 
  f = cn->f[cn->mxedt] = cn->f[0];
- f->ins = 8;   /* the Show Buffer is a read-only viewer: no typing/paste/copy,
+ f->ins = WPE_INS_READONLY;   /* the Show Buffer is a read-only viewer: no typing/paste/copy,
                   and it wears the read-only padlock (see e_win_kind_of) */
 #ifdef PROG
  if (WpeIsProg())
@@ -712,7 +712,7 @@ int e_edt_einf(FENSTER *f)
     no sense.  (The check further down runs only after
     e_clip_pull_os_into_buffer has already rebuilt window 0, so it is too late
     to guard here.) */
- if (e_window_text_locked(f))
+ if (wpe_window_locked_for_now(f))
   return(0);
 
  e_clip_pull_os_into_buffer(f->ed->f[0]);   /* merge: ^V from the OS clipboard */
@@ -724,7 +724,7 @@ int e_edt_einf(FENSTER *f)
  e_switch_window(f->ed->edt[i], f);
  f = f->ed->f[f->ed->mxedt];
  b = f->b;
- if (e_window_text_locked(f))
+ if (wpe_window_locked_for_now(f))
   return(0);
  if (e_clip_is_empty(f->ed->f[0]))
  {
@@ -1469,7 +1469,7 @@ static int e_move_block_prepare(WpeBlockOp *op, int x, int y, BUFFER *bv, BUFFER
                                 FENSTER *f, int kind)
 {
  e_blk_op_begin(op, f->ed->f[f->ed->mxedt]->s, bv, bz, kind);
- if (e_blk_is_empty(&op->k) || e_window_text_locked(f) || e_blk_cursor_inside(op, x, y))
+ if (e_blk_is_empty(&op->k) || wpe_window_locked_for_now(f) || e_blk_cursor_inside(op, x, y))
   return(E_BLOCK_NOT_MOVED);
  op->y = y;
  op->x = e_blk_column_on_line(bz, x, y);
@@ -1757,7 +1757,7 @@ int e_blck_copy(FENSTER *f)
     waiting for an assistant reply).  Rather than do nothing, treat it there as
     a clipboard copy, so the instinctive "Copy" pulls the selected text out
     like Edit > Copy does. */
- if (e_window_text_locked(f))
+ if (wpe_window_locked_for_now(f))
  {
   e_edt_copy_block(f);
   return(0);
@@ -2510,7 +2510,7 @@ int e_blck_to_right(FENSTER *f)
 /*            Read block from file   */
 int e_blck_read(FENSTER *f)
 {
- if (e_window_text_locked(f))
+ if (wpe_window_locked_for_now(f))
   return(WPE_ESC);
  WpeCreateFileManager(1, f->ed, "");
  f->save = f->ed->maxchg + 1;

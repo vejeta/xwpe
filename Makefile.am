@@ -72,6 +72,7 @@ we_SOURCES = \
   we_e_aus.c \
   we_edit.c \
   we_buffer.c \
+  we_closed.c \
   we_lineend.c \
   we_write.c \
   we_fl_fkt.c \
@@ -256,6 +257,7 @@ noinst_HEADERS = \
   we_layout.h \
   we_testdump.h \
   we_buffer.h \
+  we_closed.h \
   we_lineend.h \
   we_write.h \
   we_rowfind.h \

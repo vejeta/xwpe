@@ -86,10 +86,11 @@ struct mouse {
 /* FENSTER.ins value that marks a window whose text the user cannot change:
    the Help viewer, the clipboard/Show Buffer viewer, a locked file on disk and
    every tool/output pane (Messages, Watches, the AI pane).  Asked through
-   e_window_text_locked, never compared by hand in new code. */
+   wpe_window_closed_why, never compared by hand in new code. */
 #define WPE_INS_READONLY   8
 
 #include "we_listsel.h"     /* struct dirfile and the owner of a list's selected entry */
+#include "we_closed.h"      /* the owner of "this window refuses this edit" */
 
 typedef struct PNT {
  int x;
@@ -586,6 +587,8 @@ void e_cursor(FENSTER *f, int sw);
 #define E_CHAR_REFUSED (-1)
 /* What the user is told when a command meets such a window. */
 #define E_SAY_READ_ONLY "Read-only window: the text is unchanged"
+/* What the user is told when a window waits for an assistant reply. */
+#define E_SAY_ASSISTANT_BUSY "The assistant is working on this window (Esc cancels)"
 /* What the user is told when a command finds nothing to act on.  One line on
    the bottom row, the same from a key, a menu or the palette, never a box. */
 #define E_SAY_NOTHING_MARKED "Nothing is marked: the text is unchanged"
@@ -978,7 +981,6 @@ int e_frb_x_menue(int sw, int xa, int ya, FENSTER *f, int md);
 void e_pr_x_col_kasten(int xa, int ya, int x, int y, FENSTER *f, int sw);
 
 /*   we_wind.c   */
-int e_window_text_locked(FENSTER *f);
 int e_error(char *text, int sw, FARBE *f);
 int e_message(int sw, char *str, FENSTER *f);
 /* A command a start-folder xwperc or a project file names, about to run. */

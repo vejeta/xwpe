@@ -2127,42 +2127,12 @@ void e_free_view(PIC **pp)
  *pp = NULL;
 }
 
-/**
- * e_window_text_locked - May the user change this window's text right now?
- * @f: the window about to receive an inserting, deleting or replacing key.
- * Return: 1 when the key must be refused, 0 when the window is editable.
- *
- * The editor has always had windows whose text is closed to editing: the Help
- * viewer, the clipboard viewer, a read-only file and the tool/output panes all
- * carry WPE_INS_READONLY.  A window waiting for an assistant reply is closed
- * for the same reason -- its lines are about to be written back from a copy
- * taken when the request left -- so it answers the same question, and the user
- * is told why on the status row instead of the key disappearing in silence.
- *
- * Every text-changing path asks this one predicate, so the three backends and
- * every route to the buffer (typing, the block operations, paste) agree.
- */
-int e_window_text_locked(FENSTER *f)
-{
- if (!f)
-  return(0);
- if (f->ins == WPE_INS_READONLY)
-  return(1);
-#ifdef WPE_AI
- if (wpe_ai_window_locked(f))
- {
-  wpe_ai_report_window_locked(f);
-  return(1);
- }
-#endif
- return(0);
-}
-
 /* e_win_backs_file - True only when the window's title names a real file on
    disk -- the one thing the read-only padlock should mark.  The synthetic
    tool/output panes (Messages, Watches, Stack, "Metals Doctor", and any other
-   e_d_p_named output window) reuse the read-only flag (ins == 8) to mean "not
-   editable", but they back no file -- so checking the file exists keeps the
+   e_d_p_named output window, which sets the flag when it creates one) carry
+   the read-only flag (WPE_INS_READONLY) to mean "not editable", but they back
+   no file -- so checking the file exists keeps the
    padlock honest without enumerating every pane name (a new pane would
    otherwise sprout a spurious lock, as "Metals Doctor" did).  A locked library
    source (.metals/readonly, /usr/include header, a 0444 file) DOES exist, so it

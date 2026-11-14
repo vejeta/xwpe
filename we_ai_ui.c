@@ -1156,7 +1156,7 @@ static FENSTER *ai_pane_win(FENSTER *f)
      never offered for saving on quit and wears the gear marker, not the padlock.
      The chat input still works -- e_ai_chat_key consumes those keys before the
      ins-gated editing path (we_edit.c). */
-  cn->f[i]->ins = 8;
+  cn->f[i]->ins = WPE_INS_READONLY;
   e_position_ai_window(cn->f[i], cn);   /* dock at the bottom, not over the editor */
   /* Free every window's save-under before the relayout repaint: docking moves
      the editor's bottom edge, and a stale save-under would restore an old strip
@@ -7392,7 +7392,10 @@ static void ai_op_detach(ai_async_op *op)
  wpe_ai_stream_free(op->st);
  op->st = NULL;
  op->fd = -1;
- if (g_ai_op == op) g_ai_op = NULL;
+ if (g_ai_op == op) {
+  g_ai_op = NULL;
+  wpe_closed_reason_over(WPE_CLOSED_ASSISTANT);   /* the window is free again */
+ }
  g_ai_bg_win = NULL;          /* pane caret handling returns to normal */
 }
 
@@ -8536,7 +8539,10 @@ static void ai_conv_finish(ai_async_op *op)
  ai_op_stream_close(op);
  ai_spin_end(&op->spin, op->cn);    /* nothing waits any more: finish() writes here */
  ai_hb_release();                   /* stop the heartbeat before finish() modals */
- if (g_ai_op == op) g_ai_op = NULL;
+ if (g_ai_op == op) {
+  g_ai_op = NULL;
+  wpe_closed_reason_over(WPE_CLOSED_ASSISTANT);   /* the window is free again */
+ }
  g_ai_bg_win = NULL;
  if (op->finish && ai_window_alive(op->cn, op->f))
   op->finish(op);

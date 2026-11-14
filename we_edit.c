@@ -714,7 +714,7 @@ int e_edit(ECNT *cn, char *filename)
  {
   complete_fname = e_lib_file(HELP_FILE);
   f->dtmd = DTMD_HELP;
-  f->ins = 8;
+  f->ins = WPE_INS_READONLY;
   f->hlp_str = e_hlp_str[25];
   f->nblst = 7;
   f->blst = hblst;
@@ -727,7 +727,7 @@ int e_edit(ECNT *cn, char *filename)
  {
   if (!strcmp(filename, "Messages"))
   {
-   f->ins = 8;
+   f->ins = WPE_INS_READONLY;
    f->hlp_str = e_hlp_str[3];
    f->nblst = 8;
    f->blst = mblst;
@@ -735,14 +735,14 @@ int e_edit(ECNT *cn, char *filename)
   }
   else if (!strcmp(filename, "Watches"))
   {
-   f->ins = 8;
+   f->ins = WPE_INS_READONLY;
    f->hlp_str = e_hlp_str[1];
    f->blst = dblst;
    ftype = 3;
   }
   else if (!strcmp(filename, "Stack"))
   {
-   f->ins = 8;
+   f->ins = WPE_INS_READONLY;
    f->hlp_str = e_hlp_str[2];
    f->blst = dblst;
    ftype = 4;
@@ -785,14 +785,14 @@ int e_edit(ECNT *cn, char *filename)
  if (ftype != 1)
   fp = fopen(complete_fname, "rb");
  if (fp != NULL && access(complete_fname, 2) != 0)
-  f->ins = 8;
+  f->ins = WPE_INS_READONLY;
  /* A file we could not even OPEN for reading but which EXISTS and is not
     writable (mode 000) is still a locked file -- mark it read-only so the title
     shows the lock, instead of a silently-empty editable buffer that would fail
     to save.  access(,2) is W_OK; access(,0) is F_OK (exists). */
  else if (fp == NULL && ftype != 1 &&
           access(complete_fname, 0) == 0 && access(complete_fname, 2) != 0)
-  f->ins = 8;
+  f->ins = WPE_INS_READONLY;
 #ifdef UNIX
  if (fp != NULL)
  {
@@ -831,7 +831,7 @@ int e_edit(ECNT *cn, char *filename)
    {
     e_buffer_mark_view(f->b);    /* compiler lines appended later stay one row each */
     e_make_error_list(f);
-    f->ins = 8;
+    f->ins = WPE_INS_READONLY;
    }
   }
 #endif
@@ -1147,6 +1147,7 @@ int e_eingabe(ECNT *e)
    e_buffer_depth_check(f->b);
    e_buffer_marks_inside(f->b);   /* no mark or Shift anchor past a row's end */
    e_find_resume_check(f->b);     /* a cursor that left a search hit no longer goes on from it */
+   wpe_closed_key_wait();         /* a refusal said while waiting always says */
    c = e_fold_key(e_getch());
    /* A build ending while the editor waited for this key may have put
       another window on top (the jump to its first error): the key belongs
@@ -1154,7 +1155,10 @@ int e_eingabe(ECNT *e)
    f = e->f[e->mxedt];
    b = f->b;
    s = f->s;
-   e_status_key_pressed(f);       /* a line kept until a key has been read */
+   /* The next refusal may say its line again; the rest of a paste that was
+      refused keeps the line said for it on the row. */
+   if (!wpe_closed_key_read())
+    e_status_key_pressed(f);      /* a line kept until a key has been read */
 #if  MOUSE
    if (c < 0) cc = c = e_edt_mouse(c, f);
    else cc = c;
@@ -1239,7 +1243,7 @@ int e_eingabe(ECNT *e)
   if ((c > 31 || (c == WPE_TAB && !(f->flg & 1)) ||
     (f->ins > 1 && f->ins != WPE_INS_READONLY)) && (c < E_KEY_TEXT_LIMIT || e_input_was_char))
   {
-   if (e_window_text_locked(f)) continue;
+   if (wpe_window_locked_for_now(f)) continue;
    if (e_window_full(f, e_key_text_bytes(c))) continue;
    if (e_selection_takes_char(f, c))
     e_selection_type(f, c);
@@ -1256,7 +1260,7 @@ int e_eingabe(ECNT *e)
   }
   else if (c == WPE_DC)
   {
-   if (e_window_text_locked(f))
+   if (wpe_window_locked_for_now(f))
    {
     /* In the Help viewer Backspace is "go back one page", not a deletion. */
     if (f->dtmd == DTMD_HELP) e_help_last(f);
@@ -1280,7 +1284,7 @@ int e_eingabe(ECNT *e)
   }
   else if (c == ENTF || e_key_is_delete_char_letter(c, e->edopt))
   {
-   if (e_window_text_locked(f))
+   if (wpe_window_locked_for_now(f))
    {
 #ifdef DEBUGGER
     /* Del removes an entry in the read-only Watches pane; a file window
@@ -1304,7 +1308,7 @@ int e_eingabe(ECNT *e)
   else if (c == WPE_CR)
   {
 #ifdef PROG
-   if (e_window_text_locked(f))
+   if (wpe_window_locked_for_now(f))
    {
     /* Enter follows a link in Help and submits a line to a running program
        in the console pane; neither inserts a line break. */
@@ -1314,7 +1318,7 @@ int e_eingabe(ECNT *e)
     else continue;
    }
 #else
-   if (e_window_text_locked(f)) continue;
+   if (wpe_window_locked_for_now(f)) continue;
 #endif
    if (e_window_full(f, E_LINE_BREAK_BYTES)) continue;
    if (e_selection_active(f))
@@ -1325,7 +1329,7 @@ int e_eingabe(ECNT *e)
   }
   else if (c == WPE_TAB)
   {
-   if (e_window_text_locked(f)) continue;
+   if (wpe_window_locked_for_now(f)) continue;
    if (e_window_full(f, E_TAB_KEY_BYTES)) continue;
    if (!e_selection_tab(f))
     e_tab_a_ind(b, s);
@@ -1567,7 +1571,7 @@ static int e_cursor_letter_deletes(FENSTER *f, int action)
  if (action != WPE_ACT_DELETE_WORD_RIGHT && action != WPE_ACT_DELETE_TO_EOL &&
      action != WPE_ACT_DELETE_LINE)
   return(0);
- if (e_window_text_locked(f))
+ if (wpe_window_locked_for_now(f))
   return(1);
  if (action == WPE_ACT_DELETE_WORD_RIGHT)
   e_delete_word_right(b, s);
@@ -1811,11 +1815,11 @@ int e_tst_fkt(int c, ECNT *e)
    e_blck_del(f);
    break;
   case WPE_ACT_EDIT_UNDO:
-   if (e_window_text_locked(f)) break;
+   if (wpe_window_locked_for_now(f)) break;
    e_make_undo(f);
    break;
   case WPE_ACT_EDIT_REDO:
-   if (e_window_text_locked(f)) break;
+   if (wpe_window_locked_for_now(f)) break;
    e_make_redo(f);
    break;
   case WPE_ACT_EDIT_CUT:          /*  Delete to the clipboard  */
@@ -2119,13 +2123,13 @@ int e_ctrl_o(FENSTER *f)
  switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_PREFIX_O))
  {
   case WPE_ACT_DELETE_TO_EOL:
-   if (e_window_text_locked(f)) break;
+   if (wpe_window_locked_for_now(f)) break;
    e_delete_to_end_of_row(b, s);
    e_schirm(f, 1);
    e_cursor(f, 1);
    break;
   case WPE_ACT_DELETE_WORD_LEFT:     /*  up to beginning of the word  */
-   if (e_window_text_locked(f)) break;
+   if (wpe_window_locked_for_now(f)) break;
    e_delete_word_left(b, s);
    e_schirm(f, 1);
    break;
@@ -4914,22 +4918,6 @@ void wpe_buffer_syntax_changed(BUFFER *b, int y)
    break;
   b->f->c_sw[i+1] = out;
  }
-}
-
-/**
- * wpe_buffer_say_read_only - Say on the status row that a command was not
- * made because its window is closed to changes (a file opened read-only,
- * the clipboard viewer); the text is as it was.
- * @b: the buffer the command would have changed.
- *
- * The line stays until the next key, so the redraw that follows the
- * command does not take it away before the user has read it.
- */
-void wpe_buffer_say_read_only(BUFFER *b)
-{
- (void) b;
- if (WpeEditor != NULL && WpeEditor->mxedt >= 0)
-  e_status_say_until_key(WpeEditor->f[WpeEditor->mxedt], E_SAY_READ_ONLY);
 }
 
 /**

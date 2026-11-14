@@ -1488,7 +1488,7 @@ int WpeHandleFileManager(ECNT * cn)
               break;
             }
             if(access(filen, 2) != 0)
-              f->ins = 8;
+              f->ins = WPE_INS_READONLY;
             e_close_window(f);
             e_switch_window(winnum, fe);
             fe = cn->f[cn->mxedt];
@@ -4259,6 +4259,7 @@ int e_ed_man(char *str, FENSTER * f)
     f = f->ed->f[f->ed->mxedt];
     b = f->b;
     e_buffer_mark_view(b);
+    f->ins = WPE_INS_READONLY;     /* a man page is closed whoever runs it */
     if(b->mxlines > 1 || !nstr[1])
       break;
     nstr[1] = '\0';

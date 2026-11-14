@@ -273,18 +273,11 @@ static int dump_window_is_text(FENSTER *f)
 /**
  * dump_window_locked - Does window @f refuse typing, as the padlock says?
  *
- * Asked without e_window_text_locked, which also says the reason on the
- * status row: the dump must not draw.
+ * Asked through the owner's silent predicate: the dump must not draw.
  */
 static int dump_window_locked(FENSTER *f)
 {
- if (f->ins == WPE_INS_READONLY)
-  return 1;
-#ifdef WPE_AI
- if (wpe_ai_window_locked(f))
-  return 1;
-#endif
- return 0;
+ return wpe_window_closed(f);
 }
 
 /**
