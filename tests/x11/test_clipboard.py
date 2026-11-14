@@ -76,7 +76,7 @@ def test_paste_of_windows_line_breaks_leaves_no_carriage_returns(xwpe):
     lines: the paste reads each CR LF as one break, so no row of the text
     ends in a stray carriage return that would be saved with it."""
     subprocess.run(["xclip", "-selection", "clipboard"], input=b"X\r\nY\r\n",
-                   env={**os.environ, "DISPLAY": DISPLAY})
+                   env=xtool_env())
     time.sleep(0.3)
     xwpe.key("ctrl+v")
     xwpe.save()

@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from conftest import DISPLAY
+from conftest import xtool_env
 
 
 def _lock(xwpe):
@@ -44,7 +44,7 @@ def _release(letter):
     """The editor ends on the answer's key press: the server may keep that
     key down (auto-repeat) into the next session's window, so lift it."""
     subprocess.run(["xdotool", "keyup", letter],
-                   env={**os.environ, "DISPLAY": DISPLAY},
+                   env=xtool_env(),
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
