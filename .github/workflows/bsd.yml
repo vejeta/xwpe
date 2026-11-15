@@ -97,6 +97,10 @@ jobs:
             fi
           run: |
             mkdir -p bsd-out
+            # The VM step must end with status 0 so its logs are copied back;
+            # every way out records its status for the step after the upload.
+            set +e
+            trap 'st=$?; cp test-suite.log tests/*.log bsd-out/ 2>/dev/null; echo "$st" > bsd-out/rc; exit 0' EXIT
             PY=python3.12
             rc=0
             autoreconf -fi > bsd-out/autoreconf.log 2>&1 || { tail -20 bsd-out/autoreconf.log; exit 1; }
@@ -124,6 +128,13 @@ jobs:
               tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
             cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
             exit $rc
+
+      - name: Fail when the run in the VM failed
+        if: always()
+        run: |
+          st=$(cat bsd-out/rc 2>/dev/null || echo "no status: the VM step did not finish")
+          echo "status in the VM: $st"
+          test "$st" = 0
 
       - name: Upload logs
         if: always()
@@ -170,6 +181,10 @@ jobs:
             # twm, Xvfb and xdpyinfo are in OpenBSD's base X sets, not packages.
           run: |
             mkdir -p bsd-out
+            # The VM step must end with status 0 so its logs are copied back;
+            # every way out records its status for the step after the upload.
+            set +e
+            trap 'st=$?; cp test-suite.log tests/*.log bsd-out/ 2>/dev/null; echo "$st" > bsd-out/rc; exit 0' EXIT
             # The python package installs python3.12; take python3 only if a
             # link by that name exists.
             PY=$(command -v python3 || command -v python3.12)
@@ -204,6 +219,13 @@ jobs:
               tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
             cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
             exit $rc
+
+      - name: Fail when the run in the VM failed
+        if: always()
+        run: |
+          st=$(cat bsd-out/rc 2>/dev/null || echo "no status: the VM step did not finish")
+          echo "status in the VM: $st"
+          test "$st" = 0
 
       - name: Upload logs
         if: always()
@@ -242,6 +264,9 @@ jobs:
           prepare: |
             uname -a
             export PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH
+            # The image has pkg_add but not pkgin (the action's own README
+            # installs with /usr/sbin/pkg_add); pkgin comes first from it.
+            command -v pkgin >/dev/null 2>&1 || /usr/sbin/pkg_add pkgin
             pkgin -y update
             pkgin -y install gmake autoconf automake pkgconf cairo pango json-c \
               ncurses openssl python313 py313-test py313-pyte py313-wcwidth \
@@ -250,6 +275,10 @@ jobs:
             # (both libvterm01 and libvterm03 are in the 10.0_2026Q3 index).
           run: |
             mkdir -p bsd-out
+            # The VM step must end with status 0 so its logs are copied back;
+            # every way out records its status for the step after the upload.
+            set +e
+            trap 'st=$?; cp test-suite.log tests/*.log bsd-out/ 2>/dev/null; echo "$st" > bsd-out/rc; exit 0' EXIT
             PY=python3.13
             rc=0
             export PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH
@@ -279,6 +308,13 @@ jobs:
               tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
             cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
             exit $rc
+
+      - name: Fail when the run in the VM failed
+        if: always()
+        run: |
+          st=$(cat bsd-out/rc 2>/dev/null || echo "no status: the VM step did not finish")
+          echo "status in the VM: $st"
+          test "$st" = 0
 
       - name: Upload logs
         if: always()
