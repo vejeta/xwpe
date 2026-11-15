@@ -1178,7 +1178,7 @@ void e_keys_notice_shown(ECNT *cn)
  e_keys_notice_pending = 0;
  e_keys_notice_seen = 1;
  if (cn->mxedt >= 0 && cn->f[0])
-  e_save_opt(cn->f[0]);
+  e_opt_save_unasked(cn->f[0]);
  if (!cn->fb)
   return;
  name = wpe_binding_key_name(WPE_ACT_DEBUG_RUN, WPE_STYLE_MODERN);
@@ -1300,7 +1300,7 @@ void e_keys_first_run(ECNT *cn)
 
  cn->edopt = e_keys_preset(cn->edopt, style == WPE_STYLE_MODERN);
  e_switch_blst(cn);
- e_save_opt(cn->f[0]);
+ e_opt_save_unasked(cn->f[0]);
  snprintf(line, sizeof line, E_KEYS_CHOSEN_FMT,
           style == WPE_STYLE_MODERN ? "Modern" : "Borland");
  e_status_hold(line);
@@ -1893,6 +1893,7 @@ int WpeWriteLanguage(ECNT *cn, char *section, FILE *opt_file)
 }
 
 static void e_opt_move_user_only_keys(ECNT *cn);
+static void e_opt_bad_forgive(void);
 
 /**
  * e_opt_file_missing - Is there no option file to read or write?
@@ -1990,6 +1991,7 @@ int e_save_opt(FENSTER *f)
  FREE(str_line);
  fclose(fp);
  e_opt_move_user_only_keys(cn);
+ e_opt_bad_forgive();
  return 0;
 }
 
@@ -2768,32 +2770,30 @@ typedef struct {
  int n;
 } e_opt_lines;
 
-/* How much a line buffer grows at a time while one long line is read. */
-#define E_OPT_LINE_CHUNK 256
-
 /**
  * e_opt_read_line - Read one line of any length, without its newline.
- * @fp: the file.
+ * @fp: the file; @has_nul: receives 1 when the line holds a NUL byte (NULL
+ * when the caller does not care).
+ *
+ * The line is read by its length, so a NUL byte in it cannot end it early
+ * and glue it to the next line: the caller is told, and can refuse it.
  * Return: the malloc'd line, or NULL at the end of the file.
  */
-static char *e_opt_read_line(FILE *fp)
+static char *e_opt_read_line(FILE *fp, int *has_nul)
 {
- size_t room = E_OPT_LINE_CHUNK, used = 0;
- char *buf = malloc(room), *grown;
- if (!buf) return NULL;
- buf[0] = '\0';
- while (fgets(buf + used, (int)(room - used), fp))
+ char *buf = NULL;
+ size_t room = 0;
+ ssize_t got = getline(&buf, &room, fp);
+ if (got < 0)
  {
-  used += strlen(buf + used);
-  if (used > 0 && buf[used - 1] == '\n') { buf[used - 1] = '\0'; return buf; }
-  grown = realloc(buf, room + E_OPT_LINE_CHUNK);
-  if (!grown) break;
-  buf = grown;
-  room += E_OPT_LINE_CHUNK;
+  free(buf);
+  return NULL;
  }
- if (used > 0) return buf;
- free(buf);
- return NULL;
+ if (got > 0 && buf[got - 1] == '\n')
+  buf[--got] = '\0';
+ if (has_nul)
+  *has_nul = memchr(buf, '\0', (size_t)got) != NULL;
+ return buf;
 }
 
 /**
@@ -2845,7 +2845,7 @@ static int e_opt_lines_load(const char *path, e_opt_lines *l)
  l->line = NULL;
  l->n = 0;
  if (!fp) return 0;
- while ((text = e_opt_read_line(fp)) != NULL)
+ while ((text = e_opt_read_line(fp, NULL)) != NULL)
   if (e_opt_lines_add(l, text) < 0) { fclose(fp); return -1; }
  fclose(fp);
  return 0;
@@ -3013,119 +3013,343 @@ static void e_opt_move_user_only_keys(ECNT *cn)
  e_opt_lines_free(&merged);
 }
 
+/* How the option files of this run were read: the first line that could not
+   be placed, how many there were in all, and whether one of them sits in a
+   file the editor writes back. */
+#define E_OPT_BAD_NONE 0
+static struct {
+ char path[WPE_PATH_SIZE];
+ int line;
+ int count;
+ int in_saved_file;
+} e_opt_bad;
+
+/* The sentences of the box that names an unreadable line.  The file name
+   has its own row; the box wraps a row at 0.8 of the screen width (see
+   StringToStringArray), so a name is cut from the left only when it would
+   not fit that row, less E_OPT_BAD_ROW_SLACK columns. */
+#define E_OPT_BAD_BOX_FMT   "Can't read Option-File, line %d:\n%s"
+#define E_OPT_BAD_MORE_FMT  "\n%d more lines could not be read"
+#define E_OPT_BAD_HELD_TEXT "\nOptions are not saved at quit until this file is fixed or saved with Options > Save"
+#define E_OPT_ELLIPSIS      "..."
+#define E_OPT_ROW_PERCENT   0.8
+#define E_OPT_BAD_ROW_SLACK 4
+#define E_OPT_BAD_ROW_MIN   12
+#define E_OPT_INT_DIGITS    11
+/* The longest box text: the fixed sentences, two numbers and a whole path. */
+#define E_OPT_BAD_BOX_MAX   (sizeof E_OPT_BAD_BOX_FMT + sizeof E_OPT_BAD_MORE_FMT + \
+                             sizeof E_OPT_BAD_HELD_TEXT + 2 * E_OPT_INT_DIGITS + WPE_PATH_SIZE)
+
+/** e_opt_bad_reset - Forget the bad lines of an earlier read. */
+static void e_opt_bad_reset(void)
+{
+ e_opt_bad.path[0] = '\0';
+ e_opt_bad.line = E_OPT_BAD_NONE;
+ e_opt_bad.count = 0;
+ e_opt_bad.in_saved_file = 0;
+}
+
+/**
+ * e_opt_bad_forgive - The option file was written again, whole.
+ *
+ * Called when a save has succeeded: the file now holds the settings in force
+ * and none of the lines that could not be read, so the saves the user did
+ * not ask for may write it again.
+ */
+static void e_opt_bad_forgive(void)
+{
+ e_opt_bad.in_saved_file = 0;
+}
+
+/**
+ * e_opt_file_is_written_back - Does a save of the options write this file?
+ * @cn: the editor; @path: a file the options were read from.
+ * Return: 1 for the editor's option file and the user's own one.
+ */
+static int e_opt_file_is_written_back(ECNT *cn, const char *path)
+{
+ if (e_opt_same_file(path, cn->optfile)) return 1;
+ return e_opt_user_file != NULL && e_opt_same_file(path, e_opt_user_file);
+}
+
+/**
+ * e_opt_note_unreadable - Remember a line of an option file that could not be placed.
+ * @cn: the editor; @path: the file; @lineno: the line's number, from 1.
+ *
+ * The first one names the box the user sees at start, so he can open the file
+ * on that line; the count says whether more follow.  A bad line in a file the
+ * editor writes back holds the quit-time save, which would otherwise rewrite
+ * the file without it.
+ */
+static void e_opt_note_unreadable(ECNT *cn, const char *path, int lineno)
+{
+ if (e_opt_bad.count == 0)
+ {
+  snprintf(e_opt_bad.path, sizeof e_opt_bad.path, "%s", path);
+  e_opt_bad.line = lineno;
+ }
+ e_opt_bad.count++;
+ if (e_opt_file_is_written_back(cn, path))
+  e_opt_bad.in_saved_file = 1;
+}
+
+/**
+ * e_opt_autosave_allowed - May a save the user did not ask for write the option file?
+ *
+ * An option file with lines the editor could not read is left as the user
+ * wrote it: a save at quit, at the first start with a new keyboard profile,
+ * or after a key's choice would rewrite it from the settings in force and
+ * lose those lines.  Options > Save still writes it, on purpose.
+ * Return: 1 to save, 0 to leave the file.
+ */
+int e_opt_autosave_allowed(void)
+{
+ return !e_opt_bad.in_saved_file;
+}
+
+/**
+ * e_opt_save_unasked - Save the options for a change the user did not ask to save.
+ * @f: the editor's first window.
+ *
+ * The one door for every automatic save: the Autosave at quit, the keyboard
+ * profile written at start, the first-run answer and the assistant's own
+ * switches.  It leaves an option file with unreadable lines as it is, so a
+ * typo in one line never costs the user the rest of his file.
+ * Return: what e_save_opt returns, or 0 when the file was left alone.
+ */
+int e_opt_save_unasked(FENSTER *f)
+{
+ if (!e_opt_autosave_allowed()) return 0;
+ return e_save_opt(f);
+}
+
+/**
+ * e_opt_bad_path_room - The columns a file name gets in the box.
+ * Return: what fits one wrapped row of the box on this screen.
+ */
+static int e_opt_bad_path_room(void)
+{
+ int room = (int)(E_OPT_ROW_PERCENT * MAXSCOL) - E_OPT_BAD_ROW_SLACK;
+ return room < E_OPT_BAD_ROW_MIN ? E_OPT_BAD_ROW_MIN : room;
+}
+
+/**
+ * e_opt_cut_path - The tail of a file name that fits a row.
+ * @path: the name; @room: the columns; @out/@sz: receive it, cut from the
+ * left with "..." only when it is longer than @room.
+ */
+static void e_opt_cut_path(const char *path, int room, char *out, size_t sz)
+{
+ size_t len = strlen(path), keep = (size_t)room - strlen(E_OPT_ELLIPSIS);
+ if (len <= (size_t)room) snprintf(out, sz, "%s", path);
+ else snprintf(out, sz, "%s%s", E_OPT_ELLIPSIS, path + len - keep);
+}
+
+/**
+ * e_opt_report_unreadable - Tell the user which option-file line could not be read.
+ * @cn: the editor.
+ *
+ * The box names the line and the file, so a typo is found at once, says how
+ * many more there are, and says when the options will not be saved at quit
+ * because of it.  Every other line of the files was still read.
+ */
+void e_opt_report_unreadable(ECNT *cn)
+{
+ char path[WPE_PATH_SIZE], text[E_OPT_BAD_BOX_MAX];
+ size_t used;
+ e_opt_cut_path(e_opt_bad.path, e_opt_bad_path_room(), path, sizeof path);
+ used = (size_t)snprintf(text, sizeof text, E_OPT_BAD_BOX_FMT, e_opt_bad.line, path);
+ if (e_opt_bad.count > 1)
+  used += (size_t)snprintf(text + used, sizeof text - used, E_OPT_BAD_MORE_FMT, e_opt_bad.count - 1);
+ if (e_opt_bad.in_saved_file)
+  snprintf(text + used, sizeof text - used, "%s", E_OPT_BAD_HELD_TEXT);
+ e_message(0, text, cn->f[0]);
+}
+
+/** What one read of an option file keeps from line to line. */
+typedef struct {
+ ECNT *cn;
+ int mode;            /* which keys to take (E_OPT_READ_*) */
+ const char *path;    /* the file, for the report */
+ char *section;       /* the open [Section]'s name, or NULL */
+ int skipping;        /* lines up to the next good header are not placed */
+ int lineno;          /* the number of the line being read, from 1 */
+ int bad;             /* lines that could not be placed in this file */
+} e_opt_reader;
+
+/**
+ * e_opt_reader_reject - Count a line that cannot be placed, and go on.
+ * @rd: the reader.
+ */
+static void e_opt_reader_reject(e_opt_reader *rd)
+{
+ e_opt_note_unreadable(rd->cn, rd->path, rd->lineno);
+ rd->bad++;
+}
+
+/**
+ * e_opt_reader_close_section - Leave the open section.
+ * @rd: the reader.
+ *
+ * The pointer is cleared with the memory, so a line that follows can never be
+ * given to a section that is gone.
+ */
+static void e_opt_reader_close_section(e_opt_reader *rd)
+{
+ WpeFree(rd->section);
+ rd->section = NULL;
+}
+
+/**
+ * e_opt_reader_take_header - Open the section a "[name]" line names.
+ * @rd: the reader; @option: the line from its "[".
+ *
+ * A header that does not close is bad, and so are the lines under it up to
+ * the next good header: they belong to no section, and the previous one must
+ * not receive them.
+ */
+static void e_opt_reader_take_header(e_opt_reader *rd, char *option)
+{
+ char *end = strchr(option + 1, ']');
+ e_opt_reader_close_section(rd);
+ if (end == NULL)
+ {
+  rd->skipping = 1;
+  e_opt_reader_reject(rd);
+  return;
+ }
+ *end = '\0';
+ rd->section = WpeStrdup(option + 1);
+ rd->skipping = 0;
+}
+
+/**
+ * e_opt_reader_section_index - Which reader of the section table takes a section.
+ * @section: the section's name.
+ * Return: the table's index, or OPTION_SECTIONS when no entry knows the name.
+ */
+static int e_opt_reader_section_index(const char *section)
+{
+ int i;
+ for (i = 0; i < OPTION_SECTIONS; i++)
+  if (strncmp(WpeSectionRead[i].section, section, strlen(WpeSectionRead[i].section)) == 0)
+   break;
+ return i;
+}
+
+/**
+ * e_opt_reader_apply - Hand one "key : value" to the open section's reader.
+ * @rd: the reader; @option/@value: the key and its value.
+ */
+static void e_opt_reader_apply(e_opt_reader *rd, char *option, char *value)
+{
+ int i = e_opt_reader_section_index(rd->section);
+ if (i >= OPTION_SECTIONS)
+ {
+  /* A section the editor does not know: its lines are not placed either. */
+  e_opt_reader_close_section(rd);
+  rd->skipping = 1;
+  e_opt_reader_reject(rd);
+  return;
+ }
+ if (rd->mode == E_OPT_READ_SHARED)
+  e_opt_note_named(rd->section, option, value);
+ if (e_opt_line_applies(rd->section, option, rd->mode))
+  (*WpeSectionRead[i].function)(rd->cn, rd->section, option, value);
+ else if (rd->mode == E_OPT_READ_USER_ONLY)
+  e_opt_capture_own(rd->section, option, value);
+}
+
+/**
+ * e_opt_reader_take_option - Take one "key : value" line.
+ * @rd: the reader; @option: the line, from its first non-blank byte.
+ *
+ * A line with no colon is bad and skipped alone.  A key before any
+ * [Section] line has no section to belong to, and is reported like a line
+ * the reader cannot place.
+ */
+static void e_opt_reader_take_option(e_opt_reader *rd, char *option)
+{
+ char *value = strchr(option, ':'), *key_end;
+ if (value == NULL || value == option)
+ {
+  if (!rd->skipping) e_opt_reader_reject(rd);
+  return;
+ }
+ for (key_end = value; key_end > option && isspace((unsigned char)key_end[-1]); key_end--)
+  ;
+ for (value++; isspace((unsigned char)*value); value++)
+  ;
+ *key_end = '\0';
+ if (rd->section == NULL)
+ {
+  if (!rd->skipping) e_opt_reader_reject(rd);
+  return;
+ }
+ e_opt_reader_apply(rd, option, value);
+}
+
+/**
+ * e_opt_reader_take_line - Take one line of an option file, whatever it is.
+ * @rd: the reader; @text: the line without its newline (changed in place).
+ */
+static void e_opt_reader_take_line(e_opt_reader *rd, char *text)
+{
+ char *option = text;
+ while (isspace((unsigned char)*option)) option++;
+ if (*option == '\0' || *option == '#') return;
+ if (*option == '[') e_opt_reader_take_header(rd, option);
+ else e_opt_reader_take_option(rd, option);
+}
+
 /**
  * e_opt_read_stream - Take the options of one open file.
- * @cn: the editor; @fp: the file; @mode: which keys to take (E_OPT_READ_*).
- * Return: 0, or ERR_READ_OPF for a line that is not "key : value" or a
- * section header that does not close.
+ * @cn: the editor; @fp: the file; @mode: which keys to take (E_OPT_READ_*);
+ * @path: the file's name, for the report.
+ *
+ * Every line is read whole, however long, into a buffer of its own that is
+ * freed before the next, and a line that cannot be placed is counted and
+ * passed over: one typo no longer drops the settings after it.  A line with a
+ * NUL byte is one such line; it never runs into the one after it.  The open
+ * section's name is freed once, at the end, whatever the file held.
+ * Return: 0, or ERR_READ_OPF when a line was not "key : value", a header did
+ * not close, or a section was unknown (e_opt_report_unreadable names it).
  */
-static int e_opt_read_stream(ECNT *cn, FILE *fp, int mode)
+static int e_opt_read_stream(ECNT *cn, FILE *fp, int mode, const char *path)
 {
- char *str_line;
- char *section;
- char *option;
- char *value;
- char *str_tmp;
- int sz;
- int i;
+ e_opt_reader rd = {.cn = cn, .mode = mode, .path = path};
+ char *text;
+ int has_nul;
 
- sz = 256;
- str_line = (char *)WpeMalloc(256 * sizeof(char));
- section = NULL;
- while (!feof(fp))
+ while ((text = e_opt_read_line(fp, &has_nul)) != NULL)
  {
-  if (sz != 256)
-  {
-   sz = 256;
-   str_line = (char *)WpeRealloc(str_line, sz * sizeof(char));
-  }
-  str_line[0] = 0;
-  fgets(str_line, sz, fp);
-  while ((!feof(fp)) &&
-    ((str_line[0] == 0) || (str_line[strlen(str_line) - 1] != '\n')))
-  {
-   sz += 255;
-   str_line = (char *)WpeRealloc(str_line, sz * sizeof(char));
-   fgets(str_line + sz - 256, 256, fp);
-  }
-  i = strlen(str_line);
-  if (i && (str_line[i - 1] == '\n'))
-   str_line[i - 1] = 0;
-  for (option = str_line; isspace(*option); option++)
-   ;
-  if ((*option) && (*option != '#'))
-  {
-   if (*option == '[')
-   {
-    if (section)
-     WpeFree(section);
-    for (value = option + 1; (*value) && (*value != ']'); value++)
-     ;
-    if (*value != ']')
-    {
-     WpeFree(str_line);
-     return ERR_READ_OPF;
-    }
-    *value = 0;
-    section = WpeStrdup(option + 1);
-   }
-   else
-   {
-    value = strchr(option, ':');
-    if ((value == NULL) || (value == option))
-    {
-     WpeFree(str_line);
-     return ERR_READ_OPF;
-    }
-    for (str_tmp = value - 1; isspace(*str_tmp); str_tmp--)
-     ;
-    for (value++; isspace(*value); value++)
-     ;
-    str_tmp++;
-    *str_tmp = 0;
-    /* An option before any [Section] line has no section to belong to:
-       reported like a line the reader cannot place. */
-    if (section == NULL)
-    {
-     WpeFree(str_line);
-     return ERR_READ_OPF;
-    }
-    for (i = 0;
-      (i < OPTION_SECTIONS) &&
-        (strncmp(WpeSectionRead[i].section, section, strlen(WpeSectionRead[i].section)) != 0);
-      i++)
-     ;
-    if (i >= OPTION_SECTIONS)
-    {
-     WpeFree(str_line);
-     WpeFree(section);
-     return ERR_READ_OPF;
-    }
-    if (mode == E_OPT_READ_SHARED)
-     e_opt_note_named(section, option, value);
-    if (e_opt_line_applies(section, option, mode))
-     (*WpeSectionRead[i].function)(cn, section, option, value);
-    else if (mode == E_OPT_READ_USER_ONLY)
-     e_opt_capture_own(section, option, value);
-   }
-  }
+  rd.lineno++;
+  if (has_nul) e_opt_reader_reject(&rd);
+  else e_opt_reader_take_line(&rd, text);
+  WpeFree(text);
  }
- return 0;
+ e_opt_reader_close_section(&rd);
+ return rd.bad > 0 ? ERR_READ_OPF : 0;
 }
 
 /**
  * e_opt_open_options - Open the file the options come from.
- * @cn: the editor.
+ * @cn: the editor; @path/@sz: receive the name of the file opened.
  * Return: the editor's option file, else the copy installed with the
  * editor, else NULL.
  */
-static FILE *e_opt_open_options(ECNT *cn)
+static FILE *e_opt_open_options(ECNT *cn, char *path, size_t sz)
 {
  FILE *fp = fopen(cn->optfile, "r");
  char *file;
- if (fp != NULL) return fp;
+ if (fp != NULL)
+ {
+  snprintf(path, sz, "%s", cn->optfile);
+  return fp;
+ }
  file = e_mkfilename((char *)e_lib_dir(), OPTION_FILE);
  fp = fopen(file, "r");
+ snprintf(path, sz, "%s", file);
  FREE(file);
  return fp;
 }
@@ -3142,7 +3366,7 @@ static void e_opt_read_user_only(ECNT *cn)
 {
  FILE *fp = fopen(e_opt_user_file, "r");
  if (fp == NULL) return;
- e_opt_read_stream(cn, fp, E_OPT_READ_USER_ONLY);
+ e_opt_read_stream(cn, fp, E_OPT_READ_USER_ONLY, e_opt_user_file);
  fclose(fp);
 }
 
@@ -3156,14 +3380,17 @@ static void e_opt_read_user_only(ECNT *cn)
  * except the user-only ones (e_opt_user_only_keys), which come from the
  * user's own file instead; the ones it named are said once on the status
  * line (e_opt_say_ignored_keys).
- * Return: 0, or ERR_READ_OPF when the file the options come from is malformed.
+ * Return: 0, or ERR_READ_OPF when a line of the file the options come from,
+ * or of the user's own one, could not be read (e_opt_report_unreadable says which).
  */
 int e_opt_read(ECNT *cn)
 {
  FILE *fp;
+ char path[WPE_PATH_SIZE];
  int mode = E_OPT_READ_ALL, err;
 
  e_opt_ignored_keys[0] = '\0';
+ e_opt_bad_reset();
  if (e_opt_file_missing(cn)) return 0;   /* said at start by e_opt_say_file_missing */
  if (e_opt_user_file && e_opt_same_file(e_opt_user_file, cn->optfile))
   e_opt_use_user_file(NULL);
@@ -3174,11 +3401,10 @@ int e_opt_read(ECNT *cn)
   e_opt_note_folder(cn);
   e_opt_own_from_defaults(cn);
  }
- fp = e_opt_open_options(cn);
- if (fp == NULL) err = 0;
- else
+ fp = e_opt_open_options(cn, path, sizeof path);
+ if (fp != NULL)
  {
-  err = e_opt_read_stream(cn, fp, mode);
+  e_opt_read_stream(cn, fp, mode, path);
   fclose(fp);
  }
  if (e_opt_user_file)
@@ -3186,7 +3412,7 @@ int e_opt_read(ECNT *cn)
  e_opt_lang_finish();
  if (e_opt_user_file)
   e_opt_note_own_values();
- return err;
+ return e_opt_bad.count > 0 ? ERR_READ_OPF : 0;
 }
 
 /**

@@ -469,7 +469,8 @@ int main(int argc, char **argv)
  fk_mouse(g);
 #endif
  /* this error comes from reading the options file */
- if (err > 0) e_error(e_msg[err], 0, cn->fb);
+ if (err == ERR_READ_OPF) e_opt_report_unreadable(cn);
+ else if (err > 0) e_error(e_msg[err], 0, cn->fb);
  e_opt_say_ignored_keys(cn);
  e_opt_say_file_missing(cn, E_OPT_NOT_READ);
  if (e_keys_notice_wanted()) e_keys_notice_shown(cn);

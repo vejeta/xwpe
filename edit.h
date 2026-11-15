@@ -871,6 +871,12 @@ void e_pr_ed_beispiel(int xa, int ya, FENSTER *f, int sw, int md);
 int e_opt_save(FENSTER *f);
 int e_save_opt(FENSTER *f);
 int e_opt_read(ECNT *cn);
+/* Show the box that names the first option-file line the editor could not read. */
+void e_opt_report_unreadable(ECNT *cn);
+/* 0 when an option file had unreadable lines, so a save the user did not ask for must not rewrite it. */
+int e_opt_autosave_allowed(void);
+/* The one door for saves the user did not ask for (quit, start, first run, assistant switches). */
+int e_opt_save_unasked(FENSTER *f);
 /* The user's own config (malloc'd, taken), read for the keys a start-folder
    xwperc may not set; NULL when the options come from the user's own file. */
 void e_opt_use_user_file(char *path);

@@ -10896,7 +10896,7 @@ static void ai_agent_report_timeout(FENSTER *f, const char *tool, const char *re
 /* Persist the current settings (the working mode) so choices stick across
  * sessions without a manual "Save Options".  e_save_opt writes the active config
  * -- the same file the option dialog saves to. */
-static void ai_persist_settings(FENSTER *f) { e_save_opt(f); }
+static void ai_persist_settings(FENSTER *f) { e_opt_save_unasked(f); }
 
 /* One-shot flash message on the bottom status line: it takes the whole bar row
  * (which is otherwise full of key hints) and the next keystroke restores it.  A

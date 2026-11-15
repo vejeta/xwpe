@@ -141,7 +141,7 @@ int e_quit(FENSTER *f)
    return(WPE_ESC);
  }
  if (cn->autosv & 1)
-  e_save_opt(cn->f[0]);
+  e_opt_save_unasked(cn->f[0]);
 #ifdef UNIX
  if (WpeQuitWastebasket(cn->f[0]))
   return(0);
