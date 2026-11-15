@@ -391,6 +391,27 @@ static void test_the_debuggers_side_pty_is_still_the_programs(void)
 	}
 }
 
+/**
+ * make_room_for_high_descriptor - Let this process hold descriptor HIGH_LEAK_FD.
+ *
+ * The row below leaks a descriptor numbered above the soft limit it will set
+ * later.  A system whose default soft limit is already under that number
+ * (OpenBSD gives some login classes fewer than 300) refuses the dup2 onto it,
+ * so the row first raises the soft limit to one more than the number, which
+ * any user may do up to the hard limit.  The caller has checked the hard limit.
+ *
+ * Return: 0 when the soft limit allows the number, the setrlimit result if not.
+ */
+static int make_room_for_high_descriptor(const struct rlimit *old)
+{
+	struct rlimit raised = *old;
+
+	if (old->rlim_cur == RLIM_INFINITY || old->rlim_cur > HIGH_LEAK_FD)
+		return 0;
+	raised.rlim_cur = HIGH_LEAK_FD + 1;
+	return setrlimit(RLIMIT_NOFILE, &raised);
+}
+
 /* @scenario SC-child-fds-03 */
 static void test_a_leaked_descriptor_above_the_soft_limit_is_closed(void)
 {
@@ -406,6 +427,8 @@ static void test_a_leaked_descriptor_above_the_soft_limit_is_closed(void)
 	}
 	leak = open("/dev/null", O_RDONLY);
 	chk("a leak", leak >= 0, 1);
+	chk("room for a descriptor above the soft limit to come",
+	    make_room_for_high_descriptor(&old), 0);
 	chk("moved above the soft limit to come", dup2(leak, HIGH_LEAK_FD),
 	    HIGH_LEAK_FD);
 	close(leak);

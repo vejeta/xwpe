@@ -45,6 +45,7 @@
 
 #include "../we_child.h"
 #include "../we_fdloop.h"
+#include "../we_path.h"
 #include "test_watchdog.h"
 
 #ifndef MAP_ANONYMOUS
@@ -565,7 +566,7 @@ static void test_a_refusal_is_said_while_another_thread_holds_a_lock(void)
 			} else
 				wpe_fd_poll(LOOP_SLICE_MS);
 		}
-		chk_true("the folder is named on its terminal",
+		chk_true("the folder is named on its terminal (lock held)",
 		         strstr(buf, "cannot enter " NO_SUCH_DIR ": " REASON_ENOENT) != NULL);
 		chk("it ended as a command that cannot run", exit_code(r.status),
 		    SAID_FAILED_EXIT);
@@ -752,7 +753,7 @@ static void words_jdb_folder(void)
 	chk("the start", wpe_child_start(&spec, &r.c, on_ended, &r), 0);
 	close(slave);
 	read_master(master, buf, sizeof buf, ENDED_WAIT_MS);
-	chk_true("the folder is named on its terminal",
+	chk_true("the folder is named on its terminal (plain)",
 	         strstr(buf, "cannot enter " NO_SUCH_DIR ": " REASON_ENOENT "\r") != NULL);
 	chk_true("it ended", loop_until_ended(&r, ENDED_WAIT_MS));
 	chk("as a command that cannot run", exit_code(r.status), SAID_FAILED_EXIT);
@@ -834,8 +835,13 @@ static void words_terminal_path(void)
 
 #define LONG_BUF           8192
 #define LONG_COMPONENT     199      /* one folder name, under the system's limit */
-#define LONG_FOLDER_FITS   4000     /* a path that fits a head whole */
-#define LONG_FOLDER_REFUSED 4151    /* one the system refuses for its length */
+/* The two lengths that depend on the system's own limit come from the
+ * platform owner's number (we_path.h), not from Linux's 4096: the BSDs and
+ * macOS refuse a path over 1024 bytes, so a fixed 4000 is refused there. */
+#define LONG_FOLDER_FITS_UNDER 96   /* bytes below the limit: a path that fits a head whole */
+#define LONG_FOLDER_REFUSED_OVER 55 /* bytes over the limit: one the system refuses for its length */
+#define LONG_FOLDER_FITS   (WPE_PLATFORM_PATH_MAX - LONG_FOLDER_FITS_UNDER)
+#define LONG_FOLDER_REFUSED (WPE_PLATFORM_PATH_MAX + LONG_FOLDER_REFUSED_OVER)
 #define LONG_FOLDER_TOO    4300     /* one that does not fit the head either */
 #define LONG_ROOT          "/xwpe-test-no-such"
 #define REASON_TOO_LONG    "File name too long"
@@ -855,6 +861,16 @@ static void make_long_path(char *out, size_t total)
 	out[total] = '\0';
 }
 
+/** say_long_folder_lengths - Print the three path lengths the row below used.
+ * A failure on another system then shows whether the lengths were the ones
+ * that system's limit asks for. */
+static void say_long_folder_lengths(void)
+{
+	printf("note: long folder lengths used: fits %d, refused %d, too long %d (the system's path limit is %d)\n",
+	       LONG_FOLDER_FITS, LONG_FOLDER_REFUSED, LONG_FOLDER_TOO,
+	       (int)WPE_PLATFORM_PATH_MAX);
+}
+
 /** words_long_folder - A folder name as long as a path can be: a name that
  * fits is said whole, with the reason after its ": "; one too long for the
  * head is cut, never the fixed words, so the reader sees where the reason
@@ -869,6 +885,7 @@ static void words_long_folder(void)
 	int master, slave, i;
 	size_t totals[3] = { LONG_FOLDER_FITS, LONG_FOLDER_REFUSED, LONG_FOLDER_TOO };
 
+	say_long_folder_lengths();
 	for (i = 0; i < 3; i++) {
 		make_long_path(cwd, totals[i]);
 		memset(&r, 0, sizeof r);

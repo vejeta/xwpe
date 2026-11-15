@@ -868,6 +868,10 @@ TESTS += tests/check-maintainability.sh
 # The test hang guard and the per-test deadline runner (see test_watchdog).
 TESTS += test_watchdog tests/check-with-deadline.sh
 
+# The BSD CI's list of known failures reports what it must (NEW, STALE, NO ROW
+# LOG, NO SUMMARY, CHECK FAILED), so Linux runs its own self-test.
+TESTS += tests/check-bsd-known-failures.sh
+
 # One owner of what the editor decides about a program it starts: the
 # start plan (we_startplan.c).  Every line of the start sites that builds a
 # command line, a working folder or a shell line, or names a folder's
@@ -1075,6 +1079,7 @@ EXTRA_DIST = \
   contrib/xwpe-env \
   contrib/setup.sh \
   contrib/bsd-test/README.md \
+  contrib/bsd-test/ci-run.sh \
   contrib/bsd-test/sgr_mouse_probe.c \
   contrib/bsd-test/freebsd/Vagrantfile \
   contrib/bsd-test/freebsd/provision.sh \
@@ -1110,6 +1115,7 @@ EXTRA_DIST = \
   tests/frames_compare.py \
   tests/with-deadline.sh \
   tests/bsd-known-failures.sh \
+  tests/check-bsd-known-failures.sh \
   tests/check-with-deadline.sh \
   tests/test_watchdog.h \
   tests/check-start-plan.sh \

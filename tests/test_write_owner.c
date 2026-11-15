@@ -152,6 +152,75 @@ static void put_file(const char *name, const char *text, mode_t mode)
  chmod(p, mode);
 }
 
+/**
+ * folder_refuses_new_files - Ask the system whether a 0500 folder keeps files out.
+ *
+ * Two rows below need a folder that says no to a new file.  A user who is
+ * root, or holds the capability that overrides file modes, can create the
+ * file anyway, and the rows would then fail for a reason that has nothing to
+ * do with the editor.  This tries it in the current test folder, so the rows
+ * skip by name on such a user and run for everybody else.
+ *
+ * Return: 1 when the create was refused, 0 when it succeeded.
+ */
+static int folder_refuses_new_files(void)
+{
+ char p[512];
+ int fd, refused;
+
+ path_of(p, sizeof p, "probe_new");
+ chmod(dir, 0500);
+ fd = open(p, O_WRONLY | O_CREAT | O_EXCL, 0600);
+ chmod(dir, 0700);
+ refused = (fd < 0);
+ if (fd >= 0)
+ {
+  close(fd);
+  unlink(p);
+ }
+ return(refused);
+}
+
+/**
+ * write_only_file_is_unreadable - Ask the system whether a 0200 file keeps its reader out.
+ *
+ * The row that writes a file the user can write but not read needs the read
+ * to fail.  A user whose file modes are overridden reads it, a backup is made,
+ * and the row would fail for the wrong reason.  This tries it in the current
+ * test folder.
+ *
+ * Return: 1 when the read was refused, 0 when it succeeded.
+ */
+static int write_only_file_is_unreadable(void)
+{
+ char p[512];
+ int fd, refused;
+
+ put_file("probe_read", "x\n", 0200);
+ path_of(p, sizeof p, "probe_read");
+ fd = open(p, O_RDONLY);
+ refused = (fd < 0);
+ if (fd >= 0)
+  close(fd);
+ unlink(p);
+ return(refused);
+}
+
+/**
+ * premise_holds - Say by name why a row is skipped when what it needs is missing.
+ *
+ * A skipped row shows in the log with its reason, so a run that cannot test a
+ * permission row says so instead of failing or passing silently.
+ *
+ * Return: HOLDS, so the caller can write "if (!premise_holds(...)) return;".
+ */
+static int premise_holds(int holds, const char *row, const char *missing)
+{
+ if (!holds)
+  printf("SKIP: %s: %s\n", row, missing);
+ return(holds);
+}
+
 static char *get_file(const char *name, char *buf, size_t n)
 {
  char p[512];
@@ -378,6 +447,9 @@ static void test_backup_not_made_in_a_folder_that_refuses(void)
  char p[512], buf[256], s[WPE_WRITE_SENTENCE_MAX];
 
  make_dir();
+ if (!premise_holds(folder_refuses_new_files(), "a backup is not made in a folder that refuses",
+                    "this user can create files in a 0500 folder (root, or a capability that overrides file modes)"))
+  return;
  put_file("t.c", "old\n", 0644);
  chmod(dir, 0500);
  set_rows("new\n");
@@ -661,6 +733,9 @@ static void test_a_failure_with_no_backup_says_the_file_may_be_cut_short(void)
  char s[WPE_WRITE_SENTENCE_MAX];
 
  make_dir();
+ if (!premise_holds(write_only_file_is_unreadable(), "a failure with no backup says the file may be cut short",
+                    "this user can read a 0200 file (root, or a capability that overrides file modes)"))
+  return;
  put_file("t.c", "old\n", 0200);
  write_past_limit(f, "t.c", &o, 2048, 4096);
  chk_int("no backup was made", o.bak_path[0], '\0');
