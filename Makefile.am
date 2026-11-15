@@ -398,7 +398,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
+check_PROGRAMS = test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -616,6 +616,25 @@ test_childfds_loop_SOURCES = tests/test_childfds.c we_child.c we_fdloop.c
 test_childfds_loop_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST -DWPE_CHILD_CLOSE_LOOP_ONLY
 test_childfds_loop_LDADD = $(UTIL_LIBS)
 
+# What the child of the editor may do between fork and exec: the graphical
+# editor runs a library thread, so the child formats and allocates nothing.
+# The rows that stage a lock held by another thread put the linker's --wrap
+# around the calls a child must not make (stdio, the formatting calls,
+# strerror) and around chdir, which a row uses to raise a signal inside the
+# child.  Without a linker that has --wrap (Apple's ld) the test is built
+# without those rows and reports them as SKIP.
+test_childsafe_SOURCES = tests/test_childsafe.c we_child.c we_fdloop.c
+test_childsafe_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST
+test_childsafe_LDADD = $(UTIL_LIBS) $(PTHREAD_LIBS)
+if HAVE_LD_WRAP
+test_childsafe_CFLAGS += -DWPE_TEST_LD_WRAP=1
+test_childsafe_LDFLAGS = -Wl,--wrap=fprintf -Wl,--wrap=__fprintf_chk -Wl,--wrap=fputc \
+  -Wl,--wrap=fputs -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=putc \
+  -Wl,--wrap=snprintf -Wl,--wrap=__snprintf_chk -Wl,--wrap=vsnprintf \
+  -Wl,--wrap=__vsnprintf_chk -Wl,--wrap=strerror -Wl,--wrap=strerror_r \
+  -Wl,--wrap=__xpg_strerror_r -Wl,--wrap=chdir
+endif
+
 # The hang guard every C test that starts a child arms (tests/test_watchdog.h),
 # tested: an alarm names what did not finish, XWPE_TEST_WAIT_SCALE (a float)
 # stretches it, earlier output survives it, and the two waits it offers
@@ -821,7 +840,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_shtok test_child test_childsig test_childfds test_childfds_loop test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
+  test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)

@@ -113,9 +113,13 @@ typedef struct {
                                     by name, not made the controlling one */
  int say_failed;                 /* a terminal, directory or program that fails
                                     is named on the child's stderr, "cannot run
-                                    java: ...", where the user reads its output */
- int echo_argv;                  /* the command line first on stdout (the build's Messages) */
- const char *exec_failed;        /* written before argv when exec fails, or NULL */
+                                    java: ...", where the user reads its output;
+                                    the child writes bytes the editor prepared
+                                    before the fork, and formats nothing */
+ int echo_argv;                  /* the command line first on stderr (the build's
+                                    Messages): bytes the editor prepares */
+ const char *exec_failed;        /* written before argv when exec fails, or NULL
+                                    (the same: prepared bytes) */
  const char *what;               /* "the build": every line the user reads names it */
  const struct WpeStartPlan *plan; /* what the editor decided this child is (we_startplan.c),
                                     or NULL for a start not converted yet */

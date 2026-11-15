@@ -1,0 +1,12 @@
+{
+ "capability": "child-exec-safe",
+ "scenarios": [
+  {"id": "SC-child-exec-01", "requirement": "A build step runs, with its command line first in the output, while another thread holds a lock at the moment of the fork: the child calls nothing that takes a lock (the staging is proved live first)", "layer": "c-unit", "test": "test_childsafe", "status": "new"},
+  {"id": "SC-child-exec-02", "requirement": "A folder the child cannot enter is named on its terminal, as a shell names it, while another thread holds a lock at the moment of the fork", "layer": "c-unit", "test": "test_childsafe", "status": "new"},
+  {"id": "SC-child-exec-02b", "requirement": "A terminal the system refuses a child (it belongs to another session) is named on that terminal, and the child ends as a command that cannot run, while another thread holds a lock at the moment of the fork", "layer": "c-unit", "test": "test_childsafe", "status": "new"},
+  {"id": "SC-child-exec-03", "requirement": "The words of a start that failed are the same in each stream: the build's command line then its failed line, a program or folder named on a terminal (127), a terminal named by path on the editor's own stderr, a child's own error pipe, and nothing for a child whose errors go nowhere", "layer": "c-unit", "test": "test_childsafe", "status": "new"},
+  {"id": "SC-child-exec-05", "requirement": "A child that cannot run tells the editor the stage and errno on a report pipe, which the editor traces when the end is delivered; one that runs is traced as having run; no descriptor is left open either way", "layer": "c-unit", "test": "test_childsafe", "status": "new"},
+  {"id": "SC-child-exec-05b", "requirement": "An editor whose 0, 1 and 2 are closed still gets the report of a start that cannot run: the editor traces the stage and errno, and the record never reaches the program's file", "layer": "c-unit", "test": "test_childsafe", "status": "new"},
+  {"id": "SC-child-exec-10", "requirement": "A signal a child receives before its exec never runs a handler of the editor's: one ignored by default reaches no handler, and a fault ends the child by the signal", "layer": "c-unit", "test": "test_childsafe", "status": "new"}
+ ]
+}

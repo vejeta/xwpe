@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -40,14 +41,22 @@
 
 #define WPE_CHILD_EXEC_FAILED 1          /* a command that could not run */
 #define WPE_CHILD_SAID_FAILED 127        /* one that said why, as a shell's */
-#define WPE_CHILD_SAY_MAX     (WPE_PATH_SIZE + 128)
 #define WPE_CHILD_TTY_PATH_SIZE   WPE_PATH_SIZE  /* a terminal's path */
-#define WPE_CHILD_TTY_FAILED_TEXT "cannot give %s a terminal: %s"
-#define WPE_CHILD_TTY_FAILED_FMT  WPE_CHILD_TTY_FAILED_TEXT "\r\n"
-#define WPE_CHILD_TTY_WITHOUT_TEXT "%s runs without a controlling terminal: %s"
-#define WPE_CHILD_TTY_WITHOUT_FMT WPE_CHILD_TTY_WITHOUT_TEXT "\r\n"
-#define WPE_CHILD_DIR_FAILED_FMT  "cannot enter %s: %s\r\n"
-#define WPE_CHILD_RUN_FAILED_FMT  "cannot run %s: %s\r\n"
+/* The first half of every sentence a child says about itself: what could not
+   be done.  The reason follows, then a line end; the parent prepares the
+   heads (WpeChildSaid) and the child only copies them. */
+#define WPE_CHILD_TTY_FAILED_PRE   "cannot give "
+#define WPE_CHILD_TTY_FAILED_POST  " a terminal: "
+#define WPE_CHILD_TTY_FAILED_TEXT \
+ WPE_CHILD_TTY_FAILED_PRE "%s" WPE_CHILD_TTY_FAILED_POST "%s"
+#define WPE_CHILD_TTY_WITHOUT_PRE  ""
+#define WPE_CHILD_TTY_WITHOUT_POST " runs without a controlling terminal: "
+#define WPE_CHILD_DIR_FAILED_PRE   "cannot enter "
+#define WPE_CHILD_DIR_FAILED_POST  ": "
+#define WPE_CHILD_RUN_FAILED_PRE   "cannot run "
+#define WPE_CHILD_RUN_FAILED_POST  ": "
+#define WPE_CHILD_SAID_END         "\r\n"
+#define WPE_CHILD_REASON_FALLBACK  "error "   /* an errno with no prepared text */
 #define WPE_CHILD_LINE_MAX    128        /* a line for the status row */
 #define WPE_CHILD_NOT_STARTED_FMT "%s not started: too many programs running"
 #define WPE_CHILD_DID_NOT_END_FMT "%s did not end"
@@ -69,6 +78,10 @@ typedef struct {
  WpeChildEndedFn child_ended;
  void *child_data;
  const char *what;
+ int report_rd;                  /* the editor's end of the child's report pipe
+                                    (main loop only), or WPE_CHILD_NO_FD:
+                                    read once, when its end is delivered, and
+                                    closed with the slot */
 } WpeChildSlot;
 
 static WpeChildSlot wpe_child_table[WPE_CHILD_MAX];
@@ -515,6 +528,18 @@ static int wpe_child_any(void)
 }
 
 /**
+ * wpe_child_slot_report_close - Close the report pipe a slot in use holds.
+ * @w: a slot that is someone's (never one that was never taken: its field
+ * is still zero, a valid descriptor number).
+ */
+static void wpe_child_slot_report_close(WpeChildSlot *w)
+{
+ if (w->report_rd != WPE_CHILD_NO_FD)
+  close(w->report_rd);
+ w->report_rd = WPE_CHILD_NO_FD;
+}
+
+/**
  * wpe_child_slot_free - Empty a slot.  pid goes last: the handler matches
  * on it alone, so a slot is either someone's with its fields set, or free.
  */
@@ -527,6 +552,7 @@ static void wpe_child_slot_free(WpeChildSlot *w)
  w->child_data = NULL;
  w->what = NULL;
  w->group = 0;
+ wpe_child_slot_report_close(w);
  w->pid = 0;
 }
 
@@ -682,13 +708,102 @@ static int wpe_child_ladder_outlives_leader(const WpeChild *c)
  return(c->leads_group && c->end_stage == WPE_CHILD_END_POLITE);
 }
 
+/* ---- what a child says about a failed start ------------------------------ */
+
+/* Where a start stopped, as the child tells the editor: one record of two
+   integers on the report pipe, written by the child before it ends or goes on
+   without what failed.  A start that reached the exec leaves no record: the
+   exec closes the pipe, and the editor reads the end of file as "it ran". */
+#define WPE_CHILD_STAGE_EDITOR_GONE 1   /* die_with_editor: the editor was gone */
+#define WPE_CHILD_STAGE_TTY_OPEN    2   /* the terminal named by path would not open */
+#define WPE_CHILD_STAGE_TTY_REFUSED 3   /* the terminal was not given: not run */
+#define WPE_CHILD_STAGE_TTY_WITHOUT 4   /* the same, and the child goes on without */
+#define WPE_CHILD_STAGE_OUT_FILE    5   /* the file for its output would not open */
+#define WPE_CHILD_STAGE_DIR         6   /* its working folder could not be entered */
+#define WPE_CHILD_STAGE_EXEC        7   /* nothing ran: the exec failed */
+#define WPE_CHILD_REPORT_FMT "child report %s %s %d"
+#define WPE_CHILD_RAN_FMT    "child ran %s"
+
+typedef struct {
+ int stage;                      /* WPE_CHILD_STAGE_* */
+ int err;                        /* errno at that step */
+} WpeChildReport;
+
+/** wpe_child_stage_name - A stage as one word of the trace. */
+static const char *wpe_child_stage_name(int stage)
+{
+ static const char *const names[] = { "none", "editor-gone", "tty-open", "tty",
+                                      "tty-without", "out-file", "dir", "exec" };
+
+ if (stage < 0 || stage >= (int)(sizeof names / sizeof names[0]))
+  return("unknown");
+ return(names[stage]);
+}
+
+/**
+ * wpe_child_report_trace - Trace one thing a child reported, for a test or a
+ * user who asks why a program never started.
+ * @what: the child; @r: its record, or NULL for "it ran".
+ */
+static void wpe_child_report_trace(const char *what, const WpeChildReport *r)
+{
+ char line[WPE_CHILD_LINE_MAX];
+
+ if (!wpe_child_trace_hook)
+  return;
+ if (r)
+  snprintf(line, sizeof line, WPE_CHILD_REPORT_FMT, what,
+           wpe_child_stage_name(r->stage), r->err);
+ else
+  snprintf(line, sizeof line, WPE_CHILD_RAN_FMT, what);
+ wpe_child_trace_hook(line);
+}
+
+/**
+ * wpe_child_report_serve - Read what the ended child of @w told the editor
+ * about its start, and trace it.
+ * @w: a slot whose child the handler reaped.
+ *
+ * The child is dead, so its end of the pipe is closed and a non-blocking
+ * read answers at once: each record, then the end of file.  Nothing waits
+ * and nothing is registered on the loop.  A record is a stage and an errno:
+ * the sentence the user reads is the child's own, written where the program's
+ * output goes.  An end of file with no record that stopped the child is "it
+ * ran".  A read that finds the pipe empty but open (a stray copy of the write
+ * end) reports nothing.
+ */
+static void wpe_child_report_serve(const WpeChildSlot *w)
+{
+ const char *what = w->what ? w->what : WPE_CHILD_UNNAMED;
+ WpeChildReport rec;
+ int stopped = 0;
+ ssize_t n;
+
+ if (w->report_rd == WPE_CHILD_NO_FD)
+  return;
+ for (;;)
+ {
+  n = read(w->report_rd, &rec, sizeof rec);
+  if (n < 0 && errno == EINTR)
+   continue;
+  if (n != (ssize_t)sizeof rec)
+   break;
+  wpe_child_report_trace(what, &rec);
+  if (rec.stage != WPE_CHILD_STAGE_TTY_WITHOUT)
+   stopped = 1;
+ }
+ if (n == 0 && !stopped)
+  wpe_child_report_trace(what, NULL);
+}
+
 /**
  * wpe_child_deliver - Call back the owner of an ended child.
  * @w: a slot whose child the handler reaped.
  *
  * The slot is freed before the callback runs, so the callback may start
  * another child, or open a dialog whose own loop polls again, and find the
- * table consistent.
+ * table consistent.  What the child reported about its start is read first,
+ * while the slot still holds the pipe.
  */
 static void wpe_child_deliver(WpeChildSlot *w)
 {
@@ -699,6 +814,7 @@ static void wpe_child_deliver(WpeChildSlot *w)
  void *child_data = w->child_data;
  int pid = w->pid, status = w->status;
 
+ wpe_child_report_serve(w);
  wpe_child_slot_free(w);
  if (c)
  {
@@ -752,6 +868,7 @@ static void wpe_child_on_wake(int fd, void *data)
 static WpeChildSlot *wpe_child_slot_take(int pid)
 {
  WpeChildSlot *w = wpe_child_find(pid);
+ const int reused = (w != NULL);   /* a number given out again before its report */
 
  if (!w)
   w = wpe_child_free_slot();
@@ -759,6 +876,8 @@ static WpeChildSlot *wpe_child_slot_take(int pid)
   return(NULL);
  if (wpe_fd_add(wpe_child_wake_rd, POLLIN, wpe_child_on_wake, NULL) != 0)
   return(NULL);
+ if (reused)
+  wpe_child_slot_report_close(w);
  w->ended = 0;
  w->status = 0;
  w->group = 0;
@@ -768,6 +887,7 @@ static WpeChildSlot *wpe_child_slot_take(int pid)
  w->child_ended = NULL;
  w->child_data = NULL;
  w->what = NULL;
+ w->report_rd = WPE_CHILD_NO_FD;
  return(w);
 }
 
@@ -1133,18 +1253,372 @@ static int wpe_child_pipes_open(const WpeChildSpec *spec, int (*p)[2])
  return(0);
 }
 
-/** wpe_child_print_argv - In the child: one line of @prefix and the words. */
-static void wpe_child_print_argv(FILE *fp, const char *prefix,
-                                 char *const *argv)
+/* ---- the bytes the parent prepares, the child only carries ---------------- */
+
+/* Between fork and exec the editor's child may call only what takes no lock
+   and allocates nothing: the graphical editor runs a library thread (Pango's
+   font loader), and a lock that thread holds at the fork stays held in the
+   child, for a thread that does not exist there.  So the child formats
+   nothing and looks nothing up.  Every sentence it says and every line it
+   writes is made here, in the parent, before the fork; the child copies the
+   bytes and writes them once. */
+#define WPE_CHILD_HEAD_SIZE      (WPE_PATH_SIZE + 128) /* a head: a whole path
+                                                         and the longest fixed text */
+#define WPE_CHILD_REASON_SIZE    96      /* a reason: strerror's text, cut to fit */
+#define WPE_CHILD_DIGITS_MAX     12      /* the digits of an int */
+#define WPE_CHILD_SENTENCE_MAX \
+ (WPE_CHILD_HEAD_SIZE + WPE_CHILD_REASON_SIZE + sizeof(WPE_CHILD_SAID_END))
+
+/* The errnos a child's sentence names with the system's own words; any other
+   reads "error <number>". */
+static const int wpe_child_said_errnos[] = {
+ EPERM, ENOENT, ENOTDIR, EACCES, ENOEXEC, E2BIG, ENOMEM, ETXTBSY, ELOOP,
+ ENAMETOOLONG, EIO, ENOTTY, ENXIO, EBADF, EINVAL, EISDIR
+};
+#define WPE_CHILD_REASONS ((int)(sizeof wpe_child_said_errnos / sizeof wpe_child_said_errnos[0]))
+
+typedef struct {
+ size_t len;
+ char text[WPE_CHILD_HEAD_SIZE];
+} WpeChildHead;
+
+typedef struct {
+ int err;
+ size_t len;
+ char text[WPE_CHILD_REASON_SIZE];
+} WpeChildReason;
+
+/* Everything a child can say about itself, in the words the user reads: the
+   four heads and the reason of each errno above. */
+typedef struct {
+ WpeChildHead dir;               /* "cannot enter <folder>: " */
+ WpeChildHead run;               /* "cannot run <program>: " */
+ WpeChildHead tty_failed;        /* "cannot give <what> a terminal: " */
+ WpeChildHead tty_without;       /* "<what> runs without a controlling terminal: " */
+ WpeChildReason reason[WPE_CHILD_REASONS];
+} WpeChildSaid;
+
+/* What the child is handed, made before the fork and freed in the parent right
+   after it: the child has its own copy of it. */
+typedef struct {
+ char *echo;                     /* the command line and "\n", or NULL */
+ size_t echo_len;
+ char *failed;                   /* "<exec_failed> <command line>\n", or NULL */
+ size_t failed_len;
+ WpeChildSaid *said;             /* NULL for a child that says nothing */
+ int fail_code;                  /* the exit of a command that cannot run */
+ int report_wr;                  /* the child's end of the report pipe */
+} WpeChildWords;
+
+/**
+ * wpe_child_line_make - In the parent: the command line as the user reads it,
+ * after @prefix when there is one: each word and a space, then a line end.
+ * @prefix: what comes first, or NULL or empty; @argv: the words;
+ * @len: receives the byte count.
+ * Return: the bytes (malloc'd, not a string), or NULL when out of memory.
+ */
+static char *wpe_child_line_make(const char *prefix, char *const *argv,
+                                 size_t *len)
 {
+ size_t n = 1, plen = 0, wlen;
+ char *line, *at;
  int i;
 
  if (prefix && prefix[0])
-  fprintf(fp, "%s ", prefix);
+  plen = strlen(prefix);
+ if (plen)
+  n += plen + 1;
  for (i = 0; argv[i]; i++)
-  fprintf(fp, "%s ", argv[i]);
- fprintf(fp, "\n");
- fflush(fp);
+  n += strlen(argv[i]) + 1;
+ line = malloc(n);
+ if (!line)
+  return(NULL);
+ at = line;
+ if (plen)
+ {
+  memcpy(at, prefix, plen);
+  at += plen;
+  *at++ = ' ';
+ }
+ for (i = 0; argv[i]; i++)
+ {
+  wlen = strlen(argv[i]);
+  memcpy(at, argv[i], wlen);
+  at += wlen;
+  *at++ = ' ';
+ }
+ *at++ = '\n';
+ *len = (size_t)(at - line);
+ return(line);
+}
+
+/**
+ * wpe_child_head_make - In the parent: one head of a sentence, the fixed
+ * words around the subject.
+ * @h: receives it; @pre, @post: the fixed text before and after the subject
+ * (@post ends in ": ", where the reason follows); @subject: what it is about,
+ * or NULL for "a program".
+ *
+ * A subject too long for the head is cut, never the fixed text: the reader
+ * always sees where the reason begins.
+ */
+static void wpe_child_head_make(WpeChildHead *h, const char *pre,
+                                const char *post, const char *subject)
+{
+ size_t pre_len = strlen(pre), post_len = strlen(post), room, n;
+
+ if (!subject)
+  subject = WPE_CHILD_UNNAMED;
+ room = sizeof h->text - 1 - pre_len - post_len;
+ n = strlen(subject);
+ if (n > room)
+  n = room;
+ memcpy(h->text, pre, pre_len);
+ memcpy(h->text + pre_len, subject, n);
+ memcpy(h->text + pre_len + n, post, post_len);
+ h->len = pre_len + n + post_len;
+}
+
+/** wpe_child_reason_make - In the parent: the system's words for @err. */
+static void wpe_child_reason_make(WpeChildReason *r, int err)
+{
+ int n = snprintf(r->text, sizeof r->text, "%s", strerror(err));
+
+ r->err = err;
+ if (n < 0)
+  n = 0;
+ if ((size_t)n >= sizeof r->text)
+  n = (int)sizeof r->text - 1;
+ r->len = (size_t)n;
+}
+
+/**
+ * wpe_child_said_make - In the parent: the sentences a child may say, for a
+ * program that is to have a terminal or whose failures are named to the user
+ * (a debugger's Java VM, the Run menu's program).
+ * @spec: the child.
+ * Return: the table (malloc'd), or NULL when out of memory.
+ */
+static WpeChildSaid *wpe_child_said_make(const WpeChildSpec *spec)
+{
+ WpeChildSaid *s = malloc(sizeof *s);
+ int i;
+
+ if (!s)
+  return(NULL);
+ wpe_child_head_make(&s->dir, WPE_CHILD_DIR_FAILED_PRE,
+                     WPE_CHILD_DIR_FAILED_POST, spec->cwd ? spec->cwd : "");
+ wpe_child_head_make(&s->run, WPE_CHILD_RUN_FAILED_PRE,
+                     WPE_CHILD_RUN_FAILED_POST, spec->argv[0]);
+ wpe_child_head_make(&s->tty_failed, WPE_CHILD_TTY_FAILED_PRE,
+                     WPE_CHILD_TTY_FAILED_POST, spec->what);
+ wpe_child_head_make(&s->tty_without, WPE_CHILD_TTY_WITHOUT_PRE,
+                     WPE_CHILD_TTY_WITHOUT_POST, spec->what);
+ for (i = 0; i < WPE_CHILD_REASONS; i++)
+  wpe_child_reason_make(&s->reason[i], wpe_child_said_errnos[i]);
+ return(s);
+}
+
+/**
+ * wpe_child_words_free - In the parent: let go of what the child was handed.
+ * @w: the words, empty afterwards.
+ */
+static void wpe_child_words_free(WpeChildWords *w)
+{
+ free(w->echo);
+ free(w->failed);
+ free(w->said);
+ w->echo = w->failed = NULL;
+ w->said = NULL;
+}
+
+/**
+ * wpe_child_spec_says - Does the child say anything about itself?  A terminal
+ * it may be refused, a folder or program it may not reach and a spec that
+ * names its failures (say_failed): the sentences are prepared for those only.
+ */
+static int wpe_child_spec_says(const WpeChildSpec *spec)
+{
+ return(wpe_child_spec_wants_tty(spec) || spec->say_failed);
+}
+
+/**
+ * wpe_child_words_make - In the parent, before the fork: the command line the
+ * build shows first, the line of a command that cannot run, and the sentences.
+ * @spec: the child; @w: receives them.
+ * Return: 0, or -1 (ENOMEM, nothing held) when out of memory.
+ */
+static int wpe_child_words_make(const WpeChildSpec *spec, WpeChildWords *w)
+{
+ memset(w, 0, sizeof *w);
+ w->report_wr = WPE_CHILD_NO_FD;
+ w->fail_code = spec->say_failed ? WPE_CHILD_SAID_FAILED : WPE_CHILD_EXEC_FAILED;
+ if (spec->echo_argv)
+  w->echo = wpe_child_line_make("", spec->argv, &w->echo_len);
+ if (spec->exec_failed)
+  w->failed = wpe_child_line_make(spec->exec_failed, spec->argv, &w->failed_len);
+ if (wpe_child_spec_says(spec))
+  w->said = wpe_child_said_make(spec);
+ if ((spec->echo_argv && !w->echo) || (spec->exec_failed && !w->failed) ||
+     (wpe_child_spec_says(spec) && !w->said))
+ {
+  wpe_child_words_free(w);
+  errno = ENOMEM;
+  return(-1);
+ }
+ return(0);
+}
+
+/**
+ * wpe_child_write_all - In the child: write @len bytes to @fd, resuming after
+ * a signal and a partial write, and giving up on anything else (a full
+ * non-blocking pipe, a closed stream): what cannot be said is not waited for.
+ */
+static void wpe_child_write_all(int fd, const char *buf, size_t len)
+{
+ ssize_t n;
+
+ while (len > 0)
+ {
+  n = write(fd, buf, len);
+  if (n < 0 && errno == EINTR)
+   continue;
+  if (n <= 0)
+   return;
+  buf += n;
+  len -= (size_t)n;
+ }
+}
+
+/**
+ * wpe_child_digits - In the child: the decimal digits of @value, by stores.
+ * @out: room for WPE_CHILD_DIGITS_MAX bytes; no terminator.
+ * Return: how many.
+ */
+static size_t wpe_child_digits(int value, char *out)
+{
+ char rev[WPE_CHILD_DIGITS_MAX];
+ unsigned int v = value < 0 ? 0u : (unsigned int)value;
+ size_t n = 0, i;
+
+ do
+ {
+  rev[n++] = (char)('0' + v % 10u);
+  v /= 10u;
+ } while (v);
+ for (i = 0; i < n; i++)
+  out[i] = rev[n - 1 - i];
+ return(n);
+}
+
+/**
+ * wpe_child_reason_copy - In the child: the words for @err, from the table
+ * the parent prepared, or "error <number>" for any other errno.
+ * @out: room for WPE_CHILD_REASON_SIZE bytes.
+ * Return: how many bytes.
+ */
+static size_t wpe_child_reason_copy(char *out, const WpeChildSaid *s, int err)
+{
+ size_t n = sizeof(WPE_CHILD_REASON_FALLBACK) - 1;
+ int i;
+
+ for (i = 0; i < WPE_CHILD_REASONS; i++)
+ {
+  if (s->reason[i].err != err)
+   continue;
+  memcpy(out, s->reason[i].text, s->reason[i].len);
+  return(s->reason[i].len);
+ }
+ memcpy(out, WPE_CHILD_REASON_FALLBACK, n);
+ return(n + wpe_child_digits(err, out + n));
+}
+
+/**
+ * wpe_child_utter - In the child: say what could not be done, and why, on
+ * its fd 2, where the user reads the program's own output (Messages, for a
+ * debugger's program).  One write of bytes the parent prepared.
+ * @w: the words; @head: the sentence's head; @err: why.
+ */
+static void wpe_child_utter(const WpeChildWords *w, const WpeChildHead *head,
+                            int err)
+{
+ char buf[WPE_CHILD_SENTENCE_MAX];
+ size_t n;
+
+ if (!w->said || !head)
+  return;
+ n = head->len;
+ memcpy(buf, head->text, n);
+ n += wpe_child_reason_copy(buf + n, w->said, err);
+ memcpy(buf + n, WPE_CHILD_SAID_END, sizeof(WPE_CHILD_SAID_END) - 1);
+ n += sizeof(WPE_CHILD_SAID_END) - 1;
+ wpe_child_write_all(STDERR_FILENO, buf, n);
+}
+
+/**
+ * wpe_child_report_send - In the child: tell the editor where the start
+ * stopped and why, as one record on the report pipe.
+ * @w: the words (the pipe's end); @stage: WPE_CHILD_STAGE_*; @err: errno.
+ *
+ * Nothing waits: a record is two integers, far below the pipe's capacity,
+ * and the editor reads it only when the child has ended.  The editor may
+ * have let go of its end already (the child was forgotten, so its read end
+ * was closed with nobody else holding it): the write then fails with EPIPE,
+ * which only means nobody listens, so SIGPIPE is ignored around this one
+ * write: the child must not die of it before it has said why it cannot run.
+ * The one place a record is written.
+ */
+static void wpe_child_report_send(const WpeChildWords *w, int stage, int err)
+{
+ WpeChildReport rec;
+ struct sigaction ignore, before;
+
+ rec.stage = stage;
+ rec.err = err;
+ if (w->report_wr == WPE_CHILD_NO_FD)
+  return;
+ ignore.sa_handler = SIG_IGN;
+ sigemptyset(&ignore.sa_mask);
+ ignore.sa_flags = 0;
+ sigaction(SIGPIPE, &ignore, &before);
+ if (write(w->report_wr, &rec, sizeof rec) < 0)
+ {
+  /* nobody listens: nothing more to do */
+ }
+ sigaction(SIGPIPE, &before, NULL);
+}
+
+/**
+ * wpe_child_stop - In the child: a step failed, with nothing to say about
+ * it.  The editor is told, and the child ends as a command that cannot run.
+ * @w: the words; @stage: WPE_CHILD_STAGE_*.
+ */
+static WPE_CHILD_NORETURN void wpe_child_stop(const WpeChildWords *w, int stage)
+{
+ wpe_child_report_send(w, stage, errno);
+ _exit(WPE_CHILD_EXEC_FAILED);
+}
+
+/**
+ * wpe_child_stop_saying - In the child: a step failed.  The editor is told;
+ * a spec that names its failures (say_failed) has the sentence written where
+ * the user reads the program's output and ends as a shell ends a command it
+ * cannot run (127), any other spec ends silently (1).
+ * @spec: the child; @w: the words; @stage: WPE_CHILD_STAGE_*; @head: the
+ * sentence's head.
+ */
+static WPE_CHILD_NORETURN void wpe_child_stop_saying(const WpeChildSpec *spec,
+                                                     const WpeChildWords *w,
+                                                     int stage,
+                                                     const WpeChildHead *head)
+{
+ int err = errno;
+
+ wpe_child_report_send(w, stage, err);
+ if (!spec->say_failed)
+  _exit(WPE_CHILD_EXEC_FAILED);
+ wpe_child_utter(w, head, err);
+ _exit(WPE_CHILD_SAID_FAILED);
 }
 
 /** wpe_child_dup_null - In the child: /dev/null on @fd, opened @flags. */
@@ -1169,12 +1643,12 @@ static void wpe_child_dup_null(int fd, int flags)
  * A file the child cannot open ends it as a program that cannot run, so
  * the editor never reads an empty result as a good one.
  */
-static void wpe_child_stdout_to_file(const char *path)
+static void wpe_child_stdout_to_file(const char *path, const WpeChildWords *w)
 {
  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, WPE_CHILD_OUT_FILE_MODE);
 
  if (fd < 0)
-  _exit(WPE_CHILD_EXEC_FAILED);
+  wpe_child_stop(w, WPE_CHILD_STAGE_OUT_FILE);
  dup2(fd, STDOUT_FILENO);
  if (fd > STDERR_FILENO)
   close(fd);
@@ -1182,9 +1656,10 @@ static void wpe_child_stdout_to_file(const char *path)
 
 /**
  * wpe_child_io_pipes - In the child: the pipes on 0, 1 and 2 as @spec says.
- * @spec: the child; @p: the pipes.
+ * @spec: the child; @p: the pipes; @w: the words.
  */
-static void wpe_child_io_pipes(const WpeChildSpec *spec, int (*p)[2])
+static void wpe_child_io_pipes(const WpeChildSpec *spec, int (*p)[2],
+                               const WpeChildWords *w)
 {
  if (spec->stdin_null)
   wpe_child_dup_null(WPE_CHILD_FD_IN, O_RDONLY);
@@ -1193,7 +1668,7 @@ static void wpe_child_io_pipes(const WpeChildSpec *spec, int (*p)[2])
  if (spec->stdout_to_null)
   wpe_child_dup_null(STDOUT_FILENO, O_WRONLY);
  else if (spec->stdout_path)
-  wpe_child_stdout_to_file(spec->stdout_path);
+  wpe_child_stdout_to_file(spec->stdout_path, w);
  else
   dup2(p[WPE_CHILD_P_OUT][WPE_CHILD_PIPE_WR], STDOUT_FILENO);
  if (spec->stderr_to_stdout)
@@ -1208,51 +1683,30 @@ static void wpe_child_io_pipes(const WpeChildSpec *spec, int (*p)[2])
 }
 
 /**
- * wpe_child_say_failed - In the child: name what could not be done, and
- * why, on its stderr, then end it as a shell ends a command it cannot run.
- * @spec: the child (nothing is said unless say_failed); @fmt: the sentence,
- * with the subject and the reason as its two %s; @subject: what failed.
- *
- * The user reads the line where the program's own output goes (Messages,
- * for jdb's program), instead of a session that never starts unexplained.
- */
-static void wpe_child_say_failed(const WpeChildSpec *spec, const char *fmt,
-                                 const char *subject)
-{
- char line[WPE_CHILD_SAY_MAX];
- int err = errno, len;
-
- if (!spec->say_failed)
-  _exit(WPE_CHILD_EXEC_FAILED);
- len = snprintf(line, sizeof line, fmt, subject, strerror(err));
- if (len > 0 && write(STDERR_FILENO, line, strlen(line)) < 0)
-  _exit(WPE_CHILD_SAID_FAILED);
- _exit(WPE_CHILD_SAID_FAILED);
-}
-
-/**
  * wpe_child_tty_refuse - In the child: a terminal the system would not give
  * it, said on fd 2 (the terminal by then), where the user reads it in
  * Messages.  The child ends as a command that cannot run (127), unless the
  * spec asks for it to run without (tty_or_without): then it returns.
- * @spec: the child; @err: why.
+ * @spec: the child; @w: the words; @err: why.
  *
  * Always said, whatever say_failed: nothing else of the editor reads this
- * terminal, and a program that silently has none is the worse failure.
+ * terminal, and a program that silently has none is the worse failure.  The
+ * editor is told too, which stage it was.
  */
-static void wpe_child_tty_refuse(const WpeChildSpec *spec, int err)
+static void wpe_child_tty_refuse(const WpeChildSpec *spec,
+                                 const WpeChildWords *w, int err)
 {
- char line[WPE_CHILD_SAY_MAX];
- const char *fmt = WPE_CHILD_TTY_FAILED_FMT;
- const char *what = spec->what ? spec->what : WPE_CHILD_UNNAMED;
-
  if (spec->tty_or_without)
-  fmt = WPE_CHILD_TTY_WITHOUT_FMT;
- snprintf(line, sizeof line, fmt, what, strerror(err));
- if (write(STDERR_FILENO, line, strlen(line)) < 0)
-  line[0] = '\0';   /* nowhere to say it: the end below is still the answer */
- if (!spec->tty_or_without)
-  _exit(WPE_CHILD_SAID_FAILED);
+ {
+  wpe_child_report_send(w, WPE_CHILD_STAGE_TTY_WITHOUT, err);
+  if (w->said)
+   wpe_child_utter(w, &w->said->tty_without, err);
+  return;
+ }
+ wpe_child_report_send(w, WPE_CHILD_STAGE_TTY_REFUSED, err);
+ if (w->said)
+  wpe_child_utter(w, &w->said->tty_failed, err);
+ _exit(WPE_CHILD_SAID_FAILED);
 }
 
 /**
@@ -1286,7 +1740,8 @@ static int wpe_child_tty_open_named(const char *slave_name, int carrier)
 /**
  * wpe_child_tty_take - In the child, a session leader by now: the terminal
  * named in @t becomes its controlling terminal and its 0, 1 and 2.
- * @spec: the child; @t: the pty (the name; the slave of an IO_PTY child).
+ * @spec: the child; @t: the pty (the name; the slave of an IO_PTY child);
+ * @w: the words.
  *
  * The OpenSSH order with the dup2 before the ioctl, so that a refusal is
  * said on the terminal: the name is opened (System V, Linux and Darwin give
@@ -1296,7 +1751,8 @@ static int wpe_child_tty_open_named(const char *slave_name, int carrier)
  * terminal is the child's own.  The child that cannot is refused
  * (wpe_child_tty_refuse).
  */
-static void wpe_child_tty_take(const WpeChildSpec *spec, WpeChildPty *t)
+static void wpe_child_tty_take(const WpeChildSpec *spec, WpeChildPty *t,
+                               const WpeChildWords *w)
 {
  int carrier = wpe_child_tty_carrier(spec, t);
  int fd = wpe_child_tty_open_named(t->slave_name, carrier);
@@ -1312,24 +1768,29 @@ static void wpe_child_tty_take(const WpeChildSpec *spec, WpeChildPty *t)
   close(carrier);
  t->slave = WPE_CHILD_NO_FD;
  if (ioctl(WPE_CHILD_FD_IN, TIOCSCTTY, 0) != 0)
-  wpe_child_tty_refuse(spec, errno);
+  wpe_child_tty_refuse(spec, w, errno);
  else if (tcgetpgrp(WPE_CHILD_FD_IN) != getpgrp())
-  wpe_child_tty_refuse(spec, ENOTTY);
+  wpe_child_tty_refuse(spec, w, ENOTTY);
 }
 
 /**
  * wpe_child_io_tty_path - In the child: the terminal the spec names by its
  * path (the editor's own) on 0, 1 and 2, only written and read, never taken
  * as the controlling one.
- * @spec: the child.
+ * @spec: the child; @w: the words.
  */
-static void wpe_child_io_tty_path(const WpeChildSpec *spec)
+static void wpe_child_io_tty_path(const WpeChildSpec *spec,
+                                  const WpeChildWords *w)
 {
  int fd;
 
  fd = open(spec->tty_path, O_RDWR | O_NOCTTY);
  if (fd < 0)
-  wpe_child_say_failed(spec, WPE_CHILD_TTY_FAILED_FMT, spec->what);
+ {
+  /* Said on the editor's own fd 2, where the child still is: no dup2 has run. */
+  wpe_child_stop_saying(spec, w, WPE_CHILD_STAGE_TTY_OPEN,
+                        w->said ? &w->said->tty_failed : NULL);
+ }
  dup2(fd, WPE_CHILD_FD_IN);
  dup2(fd, STDOUT_FILENO);
  dup2(fd, STDERR_FILENO);
@@ -1351,22 +1812,23 @@ static void wpe_child_side_pty(const WpeChildSpec *spec)
 
 /**
  * wpe_child_io - In the child: 0, 1 and 2 as the spec says.
- * @spec: the child; @p: the pipes; @t: the pty.
+ * @spec: the child; @p: the pipes; @t: the pty; @w: the words.
  */
-static void wpe_child_io(const WpeChildSpec *spec, int (*p)[2], WpeChildPty *t)
+static void wpe_child_io(const WpeChildSpec *spec, int (*p)[2], WpeChildPty *t,
+                         const WpeChildWords *w)
 {
  if (wpe_child_spec_wants_tty(spec))
  {
   if (t->master != WPE_CHILD_NO_FD)
    close(t->master);   /* never the child's */
-  wpe_child_tty_take(spec, t);
+  wpe_child_tty_take(spec, t, w);
  }
  else if (spec->io == WPE_CHILD_IO_TTY_PATH)
-  wpe_child_io_tty_path(spec);
+  wpe_child_io_tty_path(spec, w);
  else if (wpe_child_io_has_side_pty(spec->io))
   wpe_child_side_pty(spec);
  if (wpe_child_io_has_pipes(spec->io))
-  wpe_child_io_pipes(spec, p);
+  wpe_child_io_pipes(spec, p, w);
  wpe_child_pipes_close(p, WPE_CHILD_P_N);
 }
 
@@ -1392,9 +1854,12 @@ static void wpe_child_take_group(const WpeChildSpec *spec)
    loader), so between fork and exec only calls that are safe in a child of
    a threaded process are made by the step below: close, close_range,
    closefrom, clock_gettime and plain stores.  Everything it needs to look
-   up (the limit, the kept numbers) is read in the parent, before the fork. */
-#define WPE_CHILD_KEEP_MAX     1      /* kept descriptors a spec can name: the
-                                         side pty.  Grows with the spec, never
+   up (the limit, the kept numbers) is read in the parent, before the fork.
+   The owner's own report pipe is kept too: the child's end of it, closed by
+   the exec itself (close-on-exec), so it is never the program's. */
+#define WPE_CHILD_KEEP_MAX     2      /* kept descriptors: the side pty a spec
+                                         can name, and the owner's report
+                                         pipe.  Grows with the spec, never
                                          for a caller's convenience */
 #define WPE_CHILD_FD_FIRST     3      /* the first descriptor above 0, 1, 2 */
 #define WPE_CHILD_FD_TO_END    (-1)   /* wpe_child_close_span: all above @lo */
@@ -1402,9 +1867,9 @@ static void wpe_child_take_group(const WpeChildSpec *spec)
                                          is larger, infinite or unknown: 18 ms
                                          of closes at 0.27 us each */
 
-/* The table holds the side pty: a build with room for none is refused here,
-   not at run time between fork and exec. */
-typedef char wpe_child_keep_holds_side_pty[(WPE_CHILD_KEEP_MAX >= 1) ? 1 : -1];
+/* The table holds the side pty and the report pipe: a build with room for
+   fewer is refused here, not at run time between fork and exec. */
+typedef char wpe_child_keep_holds_both[(WPE_CHILD_KEEP_MAX >= 2) ? 1 : -1];
 
 typedef struct {
  int fd[WPE_CHILD_KEEP_MAX];  /* ascending, every one above 2 */
@@ -1466,17 +1931,27 @@ static int wpe_child_fd_ceiling(const WpeChildKeep *k)
  *
  * The one place a kept descriptor is named: the program's side of the
  * debugger's pty for _PIPES_AND_PTY and _INHERIT_AND_PTY, none for any
- * other kind.  A debugger whose program has no such side (jdb's VM, whose
- * side_pty_slave is WPE_CHILD_NO_FD) keeps nothing, and a number of 2 or
- * below is never listed: the step starts at 3.  A caller cannot ask for a
- * descriptor by number; a new kind that needs one adds a line here.
+ * other kind, and the owner's report pipe @report_wr for every child.  A
+ * debugger whose program has no such side (jdb's VM, whose side_pty_slave is
+ * WPE_CHILD_NO_FD) keeps only the pipe, and a number of 2 or below is never
+ * listed: the step starts at 3 (the report pipe is made above 2).  The list
+ * is ascending.  A caller cannot ask for a descriptor by number; a new kind
+ * that needs one adds a line here.
  */
-static void wpe_child_keep_list(const WpeChildSpec *spec, WpeChildKeep *k)
+static void wpe_child_keep_list(const WpeChildSpec *spec, int report_wr,
+                                WpeChildKeep *k)
 {
+ int side = WPE_CHILD_NO_FD;
+
  k->n = 0;
  if (wpe_child_io_has_side_pty(spec->io) &&
      spec->side_pty_slave >= WPE_CHILD_FD_FIRST)
-  k->fd[k->n++] = spec->side_pty_slave;
+  side = spec->side_pty_slave;
+ if (side != WPE_CHILD_NO_FD && side < report_wr)
+  k->fd[k->n++] = side;
+ k->fd[k->n++] = report_wr;
+ if (side != WPE_CHILD_NO_FD && side > report_wr)
+  k->fd[k->n++] = side;
  k->ceiling = wpe_child_fd_ceiling(k);
 }
 
@@ -1555,34 +2030,48 @@ static void wpe_child_close_others(const WpeChildKeep *k)
 /**
  * wpe_child_exec - In the child: set it up as @spec says and run it.
  * @spec: the child; @p: the pipes; @t: the pty; @k: the descriptors it
- * keeps; @editor: the editor's process ID, read before the fork.
+ * keeps; @w: the bytes the parent prepared; @editor: the editor's process
+ * ID, read before the fork.
  *
  * Does not return.  The program gets the signal state a shell would give
- * it, its own group or session, and only the descriptors 0, 1 and 2 and
- * those its spec names (the program's side of a debugger's pty).  It
- * never holds the master of its own pty: the hangup that ends it when the
- * editor dies comes only once every master is closed.  The directory is
- * entered once 0, 1 and 2 are set, so a directory that is gone is named
- * where the program's output goes.
+ * it (none of the editor's handlers), its own group or session, and only
+ * the descriptors 0, 1 and 2 and those its spec names (the program's side
+ * of a debugger's pty).  It never holds the master of its own pty: the
+ * hangup that ends it when the editor dies comes only once every master is
+ * closed.  The directory is entered once 0, 1 and 2 are set, so a directory
+ * that is gone is named where the program's output goes.
+ *
+ * Between the fork and the exec this calls only what takes no lock and
+ * allocates nothing (system calls, the signal calls, memcpy, and execvp,
+ * which only reads the environment and builds its paths on the stack), reads
+ * only @w and descriptors, and formats nothing: the command line and every
+ * sentence are bytes the parent made.  A failure is also told to the editor
+ * on the report pipe, as a stage and an errno.
  */
-static void wpe_child_exec(const WpeChildSpec *spec, int (*p)[2],
-                           WpeChildPty *t, const WpeChildKeep *k,
-                           pid_t editor)
+static WPE_CHILD_NOINLINE WPE_CHILD_NORETURN void
+wpe_child_exec(const WpeChildSpec *spec, int (*p)[2], WpeChildPty *t,
+               const WpeChildKeep *k, const WpeChildWords *w, pid_t editor)
 {
+ int exec_err;
+
  wpe_child_default_signals();
  wpe_child_take_group(spec);
  if (spec->die_with_editor && wpe_child_die_with_editor(editor) != 0)
-  _exit(WPE_CHILD_EXEC_FAILED);
- wpe_child_io(spec, p, t);
+  wpe_child_stop(w, WPE_CHILD_STAGE_EDITOR_GONE);
+ wpe_child_io(spec, p, t, w);
  wpe_child_close_others(k);
  if (spec->cwd && chdir(spec->cwd) != 0)
-  wpe_child_say_failed(spec, WPE_CHILD_DIR_FAILED_FMT, spec->cwd);
- if (spec->echo_argv)
-  wpe_child_print_argv(stderr, "", spec->argv);
+  wpe_child_stop_saying(spec, w, WPE_CHILD_STAGE_DIR,
+                        w->said ? &w->said->dir : NULL);
+ if (w->echo)
+  wpe_child_write_all(STDERR_FILENO, w->echo, w->echo_len);
  execvp(spec->argv[0], spec->argv);
- if (spec->exec_failed)
-  wpe_child_print_argv(stderr, spec->exec_failed, spec->argv);
- wpe_child_say_failed(spec, WPE_CHILD_RUN_FAILED_FMT, spec->argv[0]);
+ exec_err = errno;
+ if (w->failed)
+  wpe_child_write_all(STDERR_FILENO, w->failed, w->failed_len);
+ errno = exec_err;
+ wpe_child_stop_saying(spec, w, WPE_CHILD_STAGE_EXEC,
+                       w->said ? &w->said->run : NULL);
 }
 
 /**
@@ -1735,6 +2224,102 @@ static int wpe_child_spec_leads_group(const WpeChildSpec *spec)
 }
 
 /**
+ * wpe_child_fd_above - Put a descriptor at a number above 2, closed on exec.
+ * @fd: the descriptor, changed to its new number when it was 0, 1 or 2.
+ *
+ * An editor started with 0, 1 or 2 closed gets those numbers back from
+ * pipe(); the child's dup2 onto them would then replace the report pipe.
+ * Return: 0, or -1 when the system refused (the descriptor is unchanged).
+ */
+static int wpe_child_fd_above(int *fd)
+{
+ int moved;
+
+ if (*fd >= WPE_CHILD_FD_FIRST)
+  return(fcntl(*fd, F_SETFD, FD_CLOEXEC));
+ moved = fcntl(*fd, F_DUPFD_CLOEXEC, WPE_CHILD_FD_FIRST);
+ if (moved < 0)
+  return(-1);
+ close(*fd);
+ *fd = moved;
+ return(0);
+}
+
+/**
+ * wpe_child_report_open - In the parent, before the fork: the pipe a child
+ * tells the editor where its start stopped on.
+ * @rd: receives the editor's end (non-blocking, closed on exec); @wr: the
+ * child's (closed on exec, so a successful exec ends it and the editor reads
+ * the end of file as "it ran").  Both are above 2.
+ * Return: 0, or -1 with nothing open and errno set.
+ */
+static int wpe_child_report_open(int *rd, int *wr)
+{
+ int fds[2];
+
+ if (pipe(fds) < 0)
+  return(-1);
+ if (wpe_child_fd_above(&fds[WPE_CHILD_PIPE_RD]) < 0 ||
+     wpe_child_fd_above(&fds[WPE_CHILD_PIPE_WR]) < 0 ||
+     wpe_child_fd_private(fds[WPE_CHILD_PIPE_RD]) < 0)
+ {
+  int err = errno;
+
+  close(fds[WPE_CHILD_PIPE_RD]);
+  close(fds[WPE_CHILD_PIPE_WR]);
+  errno = err;
+  return(-1);
+ }
+ *rd = fds[WPE_CHILD_PIPE_RD];
+ *wr = fds[WPE_CHILD_PIPE_WR];
+ return(0);
+}
+
+/**
+ * wpe_child_fork_gate_close - Block every signal in this thread across the
+ * fork, so no handler of the editor's runs in the child before it has set
+ * its signals to the program's (a handler that interrupts the copy would run
+ * on memory it cannot use).
+ * @held: receives the mask to give back (the caller's, SIGCHLD held).
+ */
+static void wpe_child_fork_gate_close(sigset_t *held)
+{
+ sigset_t all;
+
+ sigfillset(&all);
+ pthread_sigmask(SIG_SETMASK, &all, held);
+}
+
+/** wpe_child_fork_gate_open - Give back the mask wpe_child_fork_gate_close kept. */
+static void wpe_child_fork_gate_open(const sigset_t *held)
+{
+ pthread_sigmask(SIG_SETMASK, held, NULL);
+}
+
+/**
+ * wpe_child_prepare_words - In the parent, before the fork: the bytes the
+ * child carries and the pipe it reports on.
+ * @spec: the child; @w: receives the words, @w->report_wr the child's end of
+ * the pipe; @report_rd: receives the editor's end.
+ * Return: 0, or -1 with nothing held and errno set (ENOMEM, or the pipe's).
+ */
+static int wpe_child_prepare_words(const WpeChildSpec *spec, WpeChildWords *w,
+                                   int *report_rd)
+{
+ if (wpe_child_words_make(spec, w) < 0)
+  return(-1);
+ if (wpe_child_report_open(report_rd, &w->report_wr) < 0)
+ {
+  int err = errno;
+
+  wpe_child_words_free(w);
+  errno = err;
+  return(-1);
+ }
+ return(0);
+}
+
+/**
  * wpe_child_start - Start a program for the editor, its end watched.
  * @spec: what to run and how; @c: receives the process and its descriptors
  * (the caller's, valid until the end is reported); @ended: called once,
@@ -1753,9 +2338,11 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
  int p[WPE_CHILD_P_N][2];
  WpeChildPty t;
  WpeChildKeep keep;
+ WpeChildWords words;
  WpeChildSlot *w;
- sigset_t saved;
+ sigset_t saved, held;
  const pid_t editor = getpid();
+ int report_rd = WPE_CHILD_NO_FD;
  pid_t pid;
 
  wpe_child_reset(c);
@@ -1774,12 +2361,23 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
   wpe_child_pty_close(&t);
   return(wpe_child_start_failed(&saved));
  }
- wpe_child_keep_list(spec, &keep);
+ if (wpe_child_prepare_words(spec, &words, &report_rd) < 0)
+ {
+  wpe_child_pipes_close(p, WPE_CHILD_P_N);
+  wpe_child_pty_close(&t);
+  return(wpe_child_start_failed(&saved));
+ }
+ wpe_child_keep_list(spec, words.report_wr, &keep);
+ wpe_child_fork_gate_close(&held);
  pid = fork();
  if (pid == 0)
-  wpe_child_exec(spec, p, &t, &keep, editor);
+  wpe_child_exec(spec, p, &t, &keep, &words, editor);
+ wpe_child_fork_gate_open(&held);
+ wpe_child_words_free(&words);   /* the child has its own copy */
+ close(words.report_wr);
  if (pid < 0)
  {
+  close(report_rd);
   wpe_child_pipes_close(p, WPE_CHILD_P_N);
   wpe_child_pty_close(&t);
   return(wpe_child_start_failed(&saved));
@@ -1792,11 +2390,13 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
  if (!w)
  {
   /* Not reached: wpe_child_room took the slot's room before the fork. */
+  close(report_rd);
   kill(-pid, SIGKILL);
   kill(pid, SIGKILL);
   wpe_child_drop_ends(c);
   return(wpe_child_refuse(spec, &saved));
  }
+ w->report_rd = report_rd;
  c->pid = pid;
  c->leads_group = wpe_child_spec_leads_group(spec);
  w->child = c;

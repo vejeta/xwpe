@@ -42,15 +42,61 @@ static inline int wpe_child_die_with_editor(pid_t editor)
  return getppid() == editor ? 0 : -1;
 }
 
+/* The child path of the owner (we_child.c) keeps its own symbol, so the
+   check of what it may call can read it (an inlined entry would be folded
+   into the parent's start function), and it never returns: it ends in
+   _exit, or in an exec that replaces it. */
+#if defined(__GNUC__)
+# define WPE_CHILD_NOINLINE __attribute__((noinline))
+# define WPE_CHILD_NORETURN __attribute__((noreturn))
+#else
+# define WPE_CHILD_NOINLINE
+# define WPE_CHILD_NORETURN
+#endif
+
+#ifndef NSIG
+# define NSIG 65   /* a system that does not say: more than any has */
+#endif
+
+/**
+ * wpe_child_drop_editor_handlers - In a forked child, before anything else:
+ * no handler of the editor's runs in it.
+ *
+ * The child is a copy of the editor, so every function the editor installed
+ * for a signal is still installed in it, and runs on the child's memory: the
+ * crash handler would rewrite the editor's crash report and draw, the end
+ * handlers would act for an editor that this process is not.  A signal that
+ * arrives before the exec, or a fault in the child itself, must end the child
+ * the way it ends any program.  Each signal whose action is a function goes
+ * back to its default; a signal set to be ignored is left (the next step
+ * decides it, as a shell would).
+ */
+static inline void wpe_child_drop_editor_handlers(void)
+{
+ struct sigaction old;
+ int sig;
+
+ for (sig = 1; sig < NSIG; sig++)
+ {
+  if (sigaction(sig, NULL, &old) != 0)
+   continue;
+  if ((old.sa_flags & SA_SIGINFO) ||
+      (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN))
+   signal(sig, SIG_DFL);
+ }
+}
+
 /**
  * wpe_child_default_signals - In a forked child, before exec: give the
  * program the signal state a program started from a shell has.
  *
- * The editor ignores SIGINT and SIGPIPE (and handles others), and a signal
- * set to ignore stays ignored through exec: without this the program cannot
- * be stopped with Ctrl-C or Pause, and one that relies on SIGPIPE behaves
- * differently than outside the editor.  The signal mask is emptied too, so
- * nothing the editor blocks stays blocked in the program.
+ * No handler of the editor's survives (wpe_child_drop_editor_handlers).  The
+ * editor ignores SIGINT and SIGPIPE, and a signal set to ignore stays
+ * ignored through exec: without this the program cannot be stopped with
+ * Ctrl-C or Pause, and one that relies on SIGPIPE behaves differently than
+ * outside the editor.  The signal mask is emptied too, so nothing the editor
+ * blocks (the owner blocks every signal around the fork) stays blocked in
+ * the program.
  */
 static inline void wpe_child_default_signals(void)
 {
@@ -59,6 +105,7 @@ static inline void wpe_child_default_signals(void)
  sigset_t none;
  unsigned int i;
 
+ wpe_child_drop_editor_handlers();
  for (i = 0; i < sizeof sigs / sizeof sigs[0]; i++)
   signal(sigs[i], SIG_DFL);
  sigemptyset(&none);
