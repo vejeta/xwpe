@@ -20,6 +20,10 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* With both Algol 68 toolchains installed, a folder's xwperc no longer makes
+  F9 ask about Compiler = ga68 or Ctrl-F9 say the folder chose the program
+  for a ga68 file, and "Use mine" keeps the file's toolchain (it compiled a
+  ga68 file with a68g and failed).
 * An option file whose first setting comes before any [Section] line no
   longer crashes the editor at start; the line is reported like any other
   line the editor cannot place.

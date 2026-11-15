@@ -43,6 +43,16 @@
 #     that is not fails, whatever it is called.  A function that reads the
 #     style to decide what Run starts is how Rust, Java and Go once ran their
 #     compiler twice.
+#  7. (we_prog.c, we_debug.c, we_opt.c) Who judges a language's value and who
+#     picks a toolchain, a closed rule with no allow lines: a language's key
+#     is judged only by e_opt_lang_value_from, against the user's own entry
+#     for the file; a per-file toolchain pick is applied only by
+#     e_prog_switch_apply; a language's value is noted as the user's own only
+#     when he types it; and only e_opt_value_from, e_opt_lang_value_from and
+#     e_prj_part_from ask whether a value is his.  Its symbol half reads
+#     `nm -u` of we_prog.o and we_debug.o as the debugger's does: with no
+#     objects named the half is skipped with a message, and an object that is
+#     not built fails.
 #
 # tests/program-name.allow lists each function that still offends, with its
 # count and the pass that moves it onto the owner ("owner") or the reason it
@@ -103,14 +113,16 @@ trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
 problem() { echo "$*" >> "$WORK/problems"; }
 
-# count_by_function FILE PATH PATTERN - "file function count" for each
-# function whose lines match PATTERN, comments blanked, string and character
-# literals kept.  A function starts at a line in column 0 that names an
-# identifier followed by "(" and does not end with ";".  A #define is its own
+# count_by_function FILE PATH PATTERN [SKIP [OK]] - "file function count" for
+# each function whose lines match PATTERN, comments blanked, string and
+# character literals kept.  A function starts at a line in column 0 that names
+# an identifier followed by "(" and does not end with ";".  A #define is its own
 # function, named "#define NAME".  "#fn file function" lines list the
-# functions seen.
+# functions seen.  A line that matches SKIP counts nothing (a definition or a
+# prototype starts in column 0, a call does not), and what matches OK is cut
+# out of a line before it is counted (the call the owner allows).
 count_by_function() {
-  awk -v file="$1" -v re="$3" '
+  awk -v file="$1" -v re="$3" -v skip="$4" -v okre="$5" '
     BEGIN { incom = 0; fn = "(file scope)" }
     {
       line = $0; out = ""; n = length(line); i = 1; instr = 0; inchr = 0
@@ -144,6 +156,8 @@ count_by_function() {
         if (name != "") { fn = name; here = fn; seen[fn] = 1 }
       }
       s = out
+      if (skip != "" && out ~ skip) s = ""
+      else if (okre != "") gsub(okre, "", s)
       while (match(s, re)) { cnt[here]++; s = substr(s, RSTART + RLENGTH) }
     }
     END {
@@ -253,13 +267,150 @@ while IFS='|' read -r dfile dfn dcount; do
   problem "offender: $dfile: $dfn writes the name of an output in a literal ($dcount): the debugger names files through we_progname, and no allow line can say otherwise"
 done < "$WORK/debug-literals"
 
+# Rule 7, who judges a language's value and who picks a toolchain.  A closed
+# rule with no allow lines, scanned in we_prog.c, we_debug.c and we_opt.c:
+#
+#  a. e_opt_value_from( whose first argument is not the literal
+#     E_OPT_SCOPE_PROGRAMMING.  A language's key is judged against the user's
+#     own entry for the file by e_opt_lang_value_from alone.
+#  b. e_algol68_apply( outside e_prog_switch_apply: the one place a per-file
+#     toolchain pick is applied, so the user's own copy can be given it.
+#  c. e_opt_note_own_field( with a first argument other than
+#     E_OPT_SCOPE_PROGRAMMING outside e_opt_value_typed_in: a language's
+#     value is noted as his only when he types it, never at load, where the
+#     note was a second copy of the baseline that could not follow the file.
+#  d. e_opt_field_is_his( outside e_opt_value_from, e_opt_lang_value_from and
+#     e_prj_part_from: no other site may judge a value without the baseline.
+#
+# A definition or a prototype starts in column 0 and counts nothing.
+R7_FILES="we_prog.c we_debug.c we_opt.c"
+R7_SKIP='^[A-Za-z_]'
+R7_A_RE='(^|[^A-Za-z0-9_])e_opt_value_from[ \t]*[(]'
+R7_A_OK='(^|[^A-Za-z0-9_])e_opt_value_from[ \t]*[(][ \t]*E_OPT_SCOPE_PROGRAMMING[ \t]*,'
+R7_B_RE='(^|[^A-Za-z0-9_])e_algol68_apply[ \t]*[(]'
+R7_C_RE='(^|[^A-Za-z0-9_])e_opt_note_own_field[ \t]*[(]'
+R7_C_OK='(^|[^A-Za-z0-9_])e_opt_note_own_field[ \t]*[(][ \t]*E_OPT_SCOPE_PROGRAMMING[ \t]*,'
+R7_D_RE='(^|[^A-Za-z0-9_])e_opt_field_is_his[ \t]*[(]'
+
+# r7_rule TAG DIR RE OK ALLOWED - "TAG|file|function|count" for each function
+# of the rule 7 files under DIR that matches RE, except the ALLOWED functions.
+r7_rule() {
+  for f in $R7_FILES; do
+    [ -f "$2/$f" ] || continue
+    count_by_function "$f" "$2/$f" "$3" "$R7_SKIP" "$4" | grep -v '^#fn|' |
+      awk -F'|' -v tag="$1" -v allowed=" $5 " 'index(allowed, " " $2 " ") == 0 { print tag "|" $0 }'
+  done
+}
+
+# rule7_scan DIR - every offender of rule 7 under DIR.
+rule7_scan() {
+  r7_rule 7a "$1" "$R7_A_RE" "$R7_A_OK" ""
+  r7_rule 7b "$1" "$R7_B_RE" "" "e_prog_switch_apply"
+  r7_rule 7c "$1" "$R7_C_RE" "$R7_C_OK" "e_opt_value_typed_in"
+  r7_rule 7d "$1" "$R7_D_RE" "" "e_opt_value_from e_opt_lang_value_from e_prj_part_from"
+}
+
+# canary7 TAG FILE FUNCTION CODE - plant CODE in a copy of FILE alone and fail
+# unless rule 7 names FUNCTION under TAG.
+canary7() {
+  c=$(mktemp -d "$WORK/canary.XXXXXX")
+  printf '%s\n' "$4" > "$c/$2"
+  if ! rule7_scan "$c" | grep -qF "$1|$2|$3|"; then
+    echo "canary R7 ($1): a planted offender was not found: $4"
+    return 1
+  fi
+  return 0
+}
+
+# allowed_canary7 FILE FUNCTION CODE - the owner's way of doing the same
+# thing: rule 7 must NOT name FUNCTION, or the rule is too wide.
+allowed_canary7() {
+  c=$(mktemp -d "$WORK/canary.XXXXXX")
+  printf '%s\n' "$3" > "$c/$1"
+  if rule7_scan "$c" | grep -qF "|$1|$2|"; then
+    echo "allowed canary R7: the owner's own way was reported: $3"
+    return 1
+  fi
+  return 0
+}
+
+# The planted code is laid out as the sources are: the definition in column 0
+# and the body indented.
+canary7 7a we_prog.c e_run_planted 'static void e_run_planted(const char *x)
+{
+ e_opt_value_from(e_s_prog.language, "Compiler", x);
+}' || blind=1
+canary7 7a we_debug.c e_d_planted 'static void e_d_planted(const char *x)
+{
+ if (e_opt_value_from(
+      E_OPT_SCOPE_PROGRAMMING, "Exedir", x))
+  return;
+}' || blind=1
+allowed_canary7 we_prog.c e_run_prog_from 'static int e_run_prog_from(const char *k, const char *x)
+{
+ return(e_opt_value_from(E_OPT_SCOPE_PROGRAMMING, k, x));
+}' || blind=1
+canary7 7b we_prog.c planted 'static void planted(void)
+{
+ e_algol68_apply(&e_s_prog, 1);
+}' || blind=1
+allowed_canary7 we_prog.c e_prog_switch_apply 'static void e_algol68_apply(struct e_s_prog *cp, int use_ga68);
+static void e_prog_switch_apply(struct e_s_prog *entry, int which)
+{
+ e_algol68_apply(entry, which == 2);
+}' || blind=1
+canary7 7c we_opt.c planted 'static void planted(struct e_s_prog *p)
+{
+ e_opt_note_own_field(p->language, "Run", "program");
+}' || blind=1
+allowed_canary7 we_opt.c e_opt_value_typed_in 'void e_opt_value_typed_in(const char *scope, const char *key, const char *value)
+{
+ e_opt_note_own_field(scope, key, value);
+}' || blind=1
+allowed_canary7 we_opt.c e_opt_note_own_prog 'static void e_opt_note_own_prog(void)
+{
+ e_opt_note_own_field(E_OPT_SCOPE_PROGRAMMING, k, v);
+}' || blind=1
+canary7 7d we_opt.c planted 'static void planted(const char *l, const char *v)
+{
+ if (e_opt_field_is_his(l, "Compiler", v, 0))
+  return;
+}' || blind=1
+allowed_canary7 we_prog.c e_prj_part_from 'static int e_prj_part_from(const char *name, const char *value)
+{
+ return(e_opt_field_is_his(name, name, value, 0));
+}' || blind=1
+allowed_canary7 we_opt.c e_opt_lang_value_from 'int e_opt_lang_value_from(const struct e_s_prog *base, const char *language,
+                          const char *key, const char *value)
+{
+ if (e_opt_field_is_his(language, key, value, 0))
+  return(0);
+ return(1);
+}' || blind=1
+
+for f in $R7_FILES; do
+  [ -f "$SRCDIR/$f" ] || problem "canary: $f not found under $SRCDIR (rule 7 is blind)"
+done
+rule7_scan "$SRCDIR" > "$WORK/rule7"
+while IFS='|' read -r r7tag r7file r7fn r7count; do
+  [ -n "$r7fn" ] || continue
+  case $r7tag in
+    7a) r7why="judges a language's value by e_opt_value_from: a language's key goes through e_opt_lang_value_from, against the user's own entry for the file" ;;
+    7b) r7why="applies a toolchain pick by itself: e_prog_switch_apply is the one place, so the user's own copy gets the same pick" ;;
+    7c) r7why="notes a language's value as the user's own: only a value he types is noted (e_opt_value_typed_in)" ;;
+    7d) r7why="judges a value as the user's own without the baseline: only e_opt_value_from, e_opt_lang_value_from and e_prj_part_from may" ;;
+  esac
+  problem "offender: rule $r7tag: $r7file: $r7fn ($r7count) $r7why, and no allow line can say otherwise"
+done < "$WORK/rule7"
+
 # The symbol half: the debugger's object imports the owner's functions, so a
 # debugger that names the program or the debug binary by its own rule cannot
 # pass by having no literal left.  Read from the objects make check names.
 NMTOOL=${NM:-nm}
 DEBUG_OBJ=
+PROG_OBJ=
 for o in $ONE_OWNER_OBJECTS; do
-  case $o in *we_debug.o) DEBUG_OBJ=$o ;; esac
+  case $o in *we_debug.o) DEBUG_OBJ=$o ;; *we_prog.o) PROG_OBJ=$o ;; esac
 done
 SYMBOL_SKIPPED=0
 if [ -z "$ONE_OWNER_OBJECTS" ]; then
@@ -277,6 +428,22 @@ else
     grep -qx "$sym" "$WORK/debug-imports" ||
       problem "symbol: $DEBUG_OBJ does not import $sym: the debugger names a program, a debug binary or a class by a rule of its own"
   done
+  grep -qx e_opt_lang_value_from "$WORK/debug-imports" ||
+    problem "symbol: $DEBUG_OBJ does not import e_opt_lang_value_from: the debugger judges the language's Executable by a rule of its own"
+  # Rule 7, the symbol half: Run, the build, the project and the dialog take
+  # the user's own entry for the file, and no caller is left on the old
+  # name (which no longer exists, so one fails to link before this runs).
+  if [ -z "$PROG_OBJ" ] || [ ! -f "$PROG_OBJ" ]; then
+    problem "symbol: ONE_OWNER_OBJECTS names no built we_prog.o: the symbol half cannot read rule 7's imports"
+  else
+    "$NMTOOL" -u "$PROG_OBJ" 2>/dev/null | awk '{ print $NF }' > "$WORK/prog-imports"
+    for sym in e_opt_own_language_for e_opt_lang_value_from; do
+      grep -qx "$sym" "$WORK/prog-imports" ||
+        problem "symbol: $PROG_OBJ does not import $sym: Run and the build judge a language's value by a rule of their own"
+    done
+    ! grep -qx e_opt_own_language "$WORK/prog-imports" ||
+      problem "symbol: $PROG_OBJ imports e_opt_own_language: the unswitched copy of a language is back"
+  fi
 fi
 
 scan_tree "$SRCDIR" "$WORK/found"

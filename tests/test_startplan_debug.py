@@ -537,6 +537,51 @@ def test_startplan_a_folders_executable_outside_the_folder_asks(tmp_path):
     assert "startcmd answer debug/gdb cancel" in folder.traced(), folder.traced()
 
 
+# @scenario SC-program-name-31m
+@needs_gdb
+def test_startplan_a_folder_that_repeats_his_executable_asks_nothing(tmp_path):
+    """His own xwperc names the C Executable ../elsewhere/myprog and the
+    start folder's xwperc repeats it: the program lies outside the folder,
+    but the value is his, so neither the build nor gdb asks."""
+    folder = Folder(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    own = folder.home / ".config" / "xwpe"
+    own.mkdir(parents=True)
+    line = "[Language/C]\nExecutable : ../elsewhere/myprog\n"
+    (own / "xwperc").write_text(line)
+    (folder.ws / "xwperc").write_text(line)
+    with folder.session("t.c", SEED_C) as s:
+        s.key(CTRL_G, "r", delay=1.0)
+        judged = _wait(lambda: "startplan judge debug/gdb" in folder.traced(), BOX_WAIT)
+        s._drain(SETTLE)
+    assert judged, folder.traced()
+    assert "startcmd ask" not in folder.traced(), folder.traced()
+    assert (tmp_path / "elsewhere" / "myprog").exists(), folder.traced()
+
+
+# @scenario SC-program-name-31n
+@needs_gdb
+def test_startplan_a_folder_executable_other_than_his_still_asks(tmp_path):
+    """The control of the row above: the folder names ../elsewhere/other
+    while his own is ../elsewhere/myprog, so the program is the folder's and
+    gdb's start asks, Esc starting nothing."""
+    folder = Folder(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    own = folder.home / ".config" / "xwpe"
+    own.mkdir(parents=True)
+    (own / "xwperc").write_text("[Language/C]\nExecutable : ../elsewhere/myprog\n")
+    (folder.ws / "xwperc").write_text("[Language/C]\nExecutable : ../elsewhere/other\n")
+    with folder.session("t.c", SEED_C) as s:
+        _debug_box(s, "Command from ./xwperc")
+        s.key(RUN_IT, delay=1.0)
+        judged = _wait(lambda: "startplan judge debug/gdb" in folder.traced(), BOX_WAIT)
+        s.key(ESC, delay=0.8)
+        s._drain(SETTLE)
+    assert judged, folder.traced()
+    assert "startcmd ask debug/gdb" in folder.traced(), folder.traced()
+    assert "startcmd answer debug/gdb cancel" in folder.traced(), folder.traced()
+
+
 # @scenario SC-compile-29
 @needs_gdb
 def test_startplan_folder_arguments_reach_gdb_only_after_the_box(tmp_path):

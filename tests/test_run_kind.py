@@ -539,18 +539,14 @@ def test_ga68_runs_the_program_it_linked(tmp_path):
 @needs_sh
 @pytest.mark.skipif(not (tool_usable("ga68", "--version") and tool_usable("a68g", "--version")),
                     reason="ga68 and a68g not both usable")
-@pytest.mark.xfail(strict=True, reason="the per-file Algol 68 toolchain's values are judged "
-                   "against the default toolchain's, so a folder with any xwperc is said to "
-                   "have chosen them (Run = program, CompilerSwitch = 0); its owner is "
-                   "the user's own copy, which needs a design")
 def test_a_ga68_file_in_a_folder_with_an_xwperc_is_not_said_to_be_the_folders_choice(tmp_path):
     """Both toolchains installed (a68g is the default), a ga68 dialect file,
     and a folder xwperc that sets only a default value: Run's box must not say
-    the folder chose the program, since the editor's dialect check did."""
+    the folder chose the program, since the editor's dialect check did, and
+    the file builds and runs with ga68."""
     kit = Kit(tmp_path)
     kit.folder_rc("[Language/C]\nCompilerOptions : -g\n")
-    src = "{ ga68 }\nbegin\n  puts (\"hello\\n\")\nend\n"
-    with kit.session(filename="t.a68", seed=src, env={"PATH": os.environ["PATH"]}) as s:
+    with kit.session(filename="t.a68", seed=GA68_SRC, env={"PATH": os.environ["PATH"]}) as s:
         s.key(CTRL_F9, delay=3.0)
         for _ in range(2):
             if not _asked(s):
@@ -558,8 +554,219 @@ def test_a_ga68_file_in_a_folder_with_an_xwperc_is_not_said_to_be_the_folders_ch
             s.key(RUN_IT, delay=3.0)
             s._drain(2.0)
         pn._until(s, lambda: "Return-Code" in pn._text(s), 30)
+        shown = pn._text(s)
         pn._intact(s, "a ga68 file in a folder with an xwperc")
     assert not any("Program chosen by" in l for l in kit.box_lines()), kit.box_lines()
+    assert "Return-Code: 0" in shown and "hello" in shown, shown
+
+
+# ---- Rows 31c-31n: the user's own copy of a language, for the file's toolchain ----
+#
+# The editor picks an Algol 68 file's toolchain from its content (a68g or
+# ga68).  A folder's xwperc is asked about only for what the folder chose, so
+# every value the pick sets is the editor's, never the folder's.  The tools
+# are stand-ins: a68g logs its words, ga68 logs them and writes its -o target
+# (an empty object, or a program that logs the word it started as).
+
+GA68_SRC = '{ ga68 }\nbegin\n  puts ("hello\\n")\nend\n'
+A68G_SRC = '# a68g #\nprint(("hello", newline))\n'
+FOLDER_C_DEFAULT = "[Language/C]\nCompilerOptions : -g\n"
+LOG_GA68 = ('#!/bin/sh\n' + LOG_WORDS.replace("NAME", "ga68") +
+            'out=\nprev=\nfor a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done\n'
+            'case "$out" in\n "") ;;\n *.o) : > "$out" ;;\n'
+            ' *) cat > "$out" <<\'EOF\'\n' + STAND_IN_PROGRAM + 'EOF\n chmod +x "$out" ;;\nesac\nexit 0\n')
+
+
+def _algol_kit(tmp_path):
+    """A start folder, and a68g and ga68 stand-ins both on PATH."""
+    kit = Kit(tmp_path)
+    kit.interpreter("a68g")
+    kit.tool("ga68", LOG_GA68)
+    return kit
+
+
+def _ran_algol(kit, last):
+    """Has the build and the run ended: the log holds @last's word?"""
+    return any(l.startswith(last) for l in kit.lines())
+
+
+def _unasked_run(kit, s, last):
+    """Ctrl-F9 and wait for @last in the log or for a box; returns the screen."""
+    s.key(CTRL_F9, delay=2.0)
+    pn._until(s, lambda: _ran_algol(kit, last) or BOX in pn._text(s), 25)
+    s._drain(1.0)
+    return pn._text(s)
+
+
+def _judged(kit, what, verdict):
+    return ("judge %s %d" % (what, verdict)) in kit.trace()
+
+
+def _ga68_ran_unasked(kit, s):
+    screen = _unasked_run(kit, s, "run [./t.e]")
+    pn._intact(s, "a ga68 file")
+    assert BOX not in screen and not kit.box_lines(), (kit.box_lines(), screen)
+    assert _judged(kit, "build/Algol68", 1) and _judged(kit, "run/Algol68", 1), kit.trace()
+    ga68 = kit.starts("ga68")
+    assert len(ga68) == 2 and ga68[0].startswith("ga68 [-c]"), kit.lines()
+    assert ga68[1].startswith("ga68 [-o] [./t.e] [./t.o]"), kit.lines()
+    assert kit.starts("run") == ["run [./t.e]"] and not kit.starts("a68g"), kit.lines()
+
+
+# @scenario SC-program-name-31c
+@needs_sh
+def test_a_file_whose_toolchain_the_editor_picked_asks_nothing(tmp_path):
+    """Both toolchains found, a ga68 file, a folder xwperc that only repeats
+    a C default: Ctrl-F9 builds with ga68 and starts ./t.e, and neither the
+    build nor Run asks, since the compiler, its options, the style and the
+    kind are the editor's pick for this file."""
+    kit = _algol_kit(tmp_path)
+    kit.folder_rc(FOLDER_C_DEFAULT)
+    with kit.session(filename="t.a68", seed=GA68_SRC) as s:
+        _ga68_ran_unasked(kit, s)
+    assert "[-g]" in kit.starts("ga68")[0], kit.lines()
+
+
+# @scenario SC-program-name-31d
+@needs_sh
+def test_the_default_toolchains_file_asks_nothing_either(tmp_path):
+    """Control: an a68g file in the same folder builds with `a68g --norun`
+    and runs `a68g <source>`, and asks nothing."""
+    kit = _algol_kit(tmp_path)
+    kit.folder_rc(FOLDER_C_DEFAULT)
+    with kit.session(filename="t.a68", seed=A68G_SRC) as s:
+        screen = _unasked_run(kit, s, "a68g [/")
+        pn._intact(s, "an a68g file")
+    src = str(kit.ws / "t.a68")
+    assert BOX not in screen and not kit.box_lines(), (kit.box_lines(), screen)
+    assert kit.starts("a68g") == ["a68g [--norun] [%s]" % src, "a68g [%s]" % src], kit.lines()
+    assert not kit.starts("ga68"), kit.lines()
+
+
+# @scenario SC-program-name-31e
+@needs_sh
+def test_a_ga68_file_without_a_folder_file_asks_nothing(tmp_path):
+    """Control: no folder xwperc at all, a ga68 file: the same build and run."""
+    kit = _algol_kit(tmp_path)
+    with kit.session(filename="t.a68", seed=GA68_SRC) as s:
+        _ga68_ran_unasked(kit, s)
+
+
+def _libraries_box(kit, s):
+    """Ctrl-F9 on the ga68 file in a folder that sets Libraries: the lines of
+    the build's box."""
+    s.key(CTRL_F9, delay=2.0)
+    assert _asked(s), "no question:\n" + pn._text(s)
+    return list(kit.box_lines()), pn._text(s)
+
+
+# @scenario SC-program-name-31f
+@needs_sh
+def test_a_real_folder_value_still_asks_and_only_it(tmp_path):
+    """A folder sets Libraries for Algol 68 and nothing else: the box names
+    Libraries and neither the compiler nor its options (the editor's pick),
+    shows the user's own setting as ga68, and Run it links with -L/x."""
+    kit = _algol_kit(tmp_path)
+    kit.folder_rc("[Language/Algol68]\nLibraries : -L/x\n")
+    with kit.session(filename="t.a68", seed=GA68_SRC) as s:
+        lines, screen = _libraries_box(kit, s)
+        s.key(RUN_IT, delay=2.0)
+        pn._until(s, lambda: _ran_algol(kit, "run [./t.e]") or _asked(s, 2), 25)
+        s._drain(1.0)
+        pn._intact(s, "a folder's Libraries")
+    assert any("Libraries = -L/x" in l for l in lines), lines
+    assert not any("Compiler = " in l or "CompilerOptions = " in l for l in lines), lines
+    assert "Your own setting: ga68" in screen and "a68g" not in screen, screen
+    assert kit.starts("ga68")[-1] == "ga68 [-o] [./t.e] [./t.o] [-L/x]", kit.lines()
+
+
+# @scenario SC-program-name-31g
+@needs_sh
+def test_use_mine_keeps_the_files_toolchain(tmp_path):
+    """The same folder, Use mine: his own Libraries (none) with the file's
+    toolchain, so ga68 compiles and links and a68g is never started, and
+    ./t.e runs."""
+    kit = _algol_kit(tmp_path)
+    kit.folder_rc("[Language/Algol68]\nLibraries : -L/x\n")
+    with kit.session(filename="t.a68", seed=GA68_SRC) as s:
+        _libraries_box(kit, s)
+        s.key(USE_MINE, delay=2.0)
+        pn._until(s, lambda: _ran_algol(kit, "run [./t.e]") or _asked(s, 2), 25)
+        s._drain(1.0)
+        pn._intact(s, "Use mine on a ga68 file")
+    ga68 = kit.starts("ga68")
+    assert [l.split()[0:2] for l in ga68] == [["ga68", "[-c]"], ["ga68", "[-o]"]], kit.lines()
+    assert not any("-L/x" in l for l in ga68), kit.lines()
+    assert not kit.starts("a68g"), kit.lines()
+    assert kit.starts("run") == ["run [./t.e]"], kit.lines()
+
+
+# @scenario SC-program-name-31h
+@needs_sh
+def test_a_folder_cannot_pin_the_toolchain_and_is_not_said_to(tmp_path):
+    """Control (green before and after): an a68g file in a folder that says
+    Run : program and CompilerSwitch : 0 still runs `a68g <source>`: the
+    pick's fields are the editor's whatever the folder wrote."""
+    kit = _algol_kit(tmp_path)
+    kit.folder_rc("[Language/Algol68]\nRun : program\nCompilerSwitch : 0\n")
+    with kit.session(filename="t.a68", seed=A68G_SRC) as s:
+        screen = _unasked_run(kit, s, "a68g [/")
+        pn._intact(s, "a folder that pins the toolchain")
+    src = str(kit.ws / "t.a68")
+    assert BOX not in screen and not kit.box_lines(), (kit.box_lines(), screen)
+    assert kit.starts("a68g")[-1] == "a68g [%s]" % src, kit.lines()
+    assert not kit.starts("run"), kit.lines()
+
+
+# @scenario SC-program-name-31i
+@needs_sh
+def test_his_own_saved_file_is_switched_too(tmp_path):
+    """His own xwperc as Options > Save writes Algol 68 (the default
+    toolchain's values), a ga68 file, and a folder that repeats a C default:
+    nothing is asked and ./t.e runs."""
+    kit = _algol_kit(tmp_path)
+    kit.own_config("[Language/Algol68]\nCompiler : a68g\nCompilerOptions : --norun\n"
+                   "CompilerSwitch : 1\nRun : interpreter\n")
+    kit.folder_rc(FOLDER_C_DEFAULT)
+    with kit.session(filename="t.a68", seed=GA68_SRC) as s:
+        _ga68_ran_unasked(kit, s)
+
+
+# @scenario SC-program-name-31j
+@needs_sh
+@pytest.mark.xfail(strict=True, reason="a folder's FileExtension that moves a file into "
+                   "Algol 68 is the question of which language a file is, not of this "
+                   "owner: it asks nothing once the pick's fields are the editor's")
+def test_a_folder_that_moves_a_file_into_algol_68_is_asked(tmp_path):
+    """Recorded change: a folder's [Language/Algol68] FileExtension : .rs
+    makes t.rs an Algol 68 file.  Before the owner it asked only through the
+    pick's spurious lines; now it asks nothing, and ga68 compiles t.rs."""
+    kit = _algol_kit(tmp_path)
+    kit.folder_rc("[Language/Algol68]\nFileExtension : .rs\n")
+    with kit.session(filename="t.rs", seed="{ x }\nfn main() { }\n") as s:
+        s.key(CTRL_F9, delay=2.0)
+        asked = _asked(s)
+    assert asked, kit.lines()
+
+
+# @scenario SC-program-name-31k
+@needs_sh
+def test_a_folder_that_repeats_the_built_in_value_asks_nothing_whoever_owns_a_file(tmp_path):
+    """His own file sets C's options to -O2 and the folder repeats the
+    built-in -g: F9 compiles with -g and asks nothing, since the built-in
+    value is his as well (a folder that repeats a default is never asked)."""
+    kit = Kit(tmp_path)
+    kit.own_config("[Language/C]\nCompilerOptions : -O2\n")
+    kit.folder_rc(FOLDER_C_DEFAULT)
+    with kit.session() as s:
+        s.key(F9, delay=2.0)
+        pn._until(s, lambda: kit.starts("gcc") or BOX in pn._text(s), 25)
+        s._drain(1.5)
+        screen = pn._text(s)
+        pn._intact(s, "a folder that repeats the built-in options")
+    assert BOX not in screen and not kit.box_lines(), (kit.box_lines(), screen)
+    assert _judged(kit, "build/C", 1), kit.trace()
+    assert any(" -g " in l for l in kit.starts("gcc")), kit.lines()
 
 
 # @scenario SC-program-name-37

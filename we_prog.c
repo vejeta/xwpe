@@ -724,6 +724,9 @@ void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const struct e_s_prog *en
  s->class_object = entry->comp_sw & 1;
 }
 
+/* The toolchain pick of an entry (defined with the Algol 68 pick below). */
+static void e_prog_switch_apply(struct e_s_prog *entry, int which);
+
 /**
  * e_prog_switch_text - A language's compiler style, as its xwperc writes it.
  * @entry: the language's entry; @out/@n: receive "0" or "1".
@@ -1625,6 +1628,9 @@ typedef struct {
  const char *exedir;     /* the folder the program was built into          */
  const char *exe_name;   /* its name (Executable), or NULL for the default */
  const char *args;       /* Arguments                                      */
+ const struct e_s_prog *base; /* the user's own entry for this file, which a
+                            folder's value is compared with; NULL when he
+                            has none for the language                      */
  int own;                /* 1: the user's own plan, every value his        */
 } e_run_values;
 
@@ -1645,18 +1651,16 @@ static const char *e_run_vm_name(const e_run_values *v)
 }
 
 /**
- * e_run_from - Whose a value of a Run is.
- * @v: the values; @scope/@key: the key, as e_opt_value_from names it;
- * @value: the value.
+ * e_run_prog_from - Whose a [Programming] value of a Run is.
+ * @v: the values; @key: the [Programming] key; @value: the value.
  * Return: WPE_FROM_USER for every value of his own plan; else as
  * e_opt_value_from.
  */
-static int e_run_from(const e_run_values *v, const char *scope, const char *key,
-                      const char *value)
+static int e_run_prog_from(const e_run_values *v, const char *key, const char *value)
 {
- if (v->own || !scope)
+ if (v->own)
   return(WPE_FROM_USER);
- return(e_opt_value_from(scope, key, value));
+ return(e_opt_value_from(E_OPT_SCOPE_PROGRAMMING, key, value));
 }
 
 /**
@@ -1678,14 +1682,17 @@ static int e_run_kind_in_force(const struct e_s_prog *p)
  * e_run_values_of - The values a Run takes from a language's entry.
  * @v: filled in; @p: the entry, or NULL for a user who has none for the
  * language (the open file's entry then gives the kind and the style, and
- * nothing else of it is his); @exedir/@args: the output folder and the
+ * nothing else of it is his); @base: his entry for this file, which a
+ * folder's value is compared with, or NULL; @exedir/@args: the output folder and the
  * Arguments; @own: 1 when they are the user's own.
  */
-static void e_run_values_of(e_run_values *v, const struct e_s_prog *p, const char *exedir,
+static void e_run_values_of(e_run_values *v, const struct e_s_prog *p,
+                            const struct e_s_prog *base, const char *exedir,
                             const char *args, int own)
 {
  memset(v, 0, sizeof *v);
  v->language = e_s_prog.language;
+ v->base = base;
  v->entry = p ? p : &e_s_prog;
  v->kind = e_run_kind_in_force(v->entry);
  if (p)
@@ -1865,6 +1872,27 @@ static char *e_run_line(const e_run_values *v, int args_as_text)
 #define E_RUN_CHOICE_ROOM    (WPE_PATH_SIZE + 32)
 
 /**
+ * e_run_lang_from - Whose a value of a Run, from the language's entry, is.
+ * @v: the values; @key: the xwperc key (Run, Compiler, CompilerSwitch,
+ * Executable); @value: the value in force.
+ *
+ * His when it is his own entry's value for this file (Run read by the rule
+ * that starts a project's program, as the value in force is), the built-in
+ * one, or one he typed or answered for; the folder's otherwise.
+ * Return: WPE_FROM_USER for every value of his own plan; else as
+ * e_opt_lang_value_from.
+ */
+static int e_run_lang_from(const e_run_values *v, const char *key, const char *value)
+{
+ if (v->own || !v->language)
+  return(WPE_FROM_USER);
+ if (v->base && value && strcmp(key, E_RUN_KEY_RUN) == 0 &&
+     strcmp(value, e_run_kind_name(e_run_kind_in_force(v->base))) == 0)
+  return(WPE_FROM_USER);
+ return(e_opt_lang_value_from(v->base, v->language, key, value));
+}
+
+/**
  * e_run_kind_from - Whose the kind of a Run is.
  * @v: the values.
  * Return: WPE_FROM_FOLDER when a folder's xwperc named it, else
@@ -1872,7 +1900,7 @@ static char *e_run_line(const e_run_values *v, int args_as_text)
  */
 static int e_run_kind_from(const e_run_values *v)
 {
- return(e_run_from(v, v->language, E_RUN_KEY_RUN, e_run_kind_name(v->kind)));
+ return(e_run_lang_from(v, E_RUN_KEY_RUN, e_run_kind_name(v->kind)));
 }
 
 /**
@@ -1885,7 +1913,7 @@ static int e_run_kind_from(const e_run_values *v)
  */
 static int e_run_interp_from(const e_run_values *v)
 {
- if (e_run_from(v, v->language, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER)
+ if (e_run_lang_from(v, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER)
   return(WPE_FROM_FOLDER);
  return(e_run_kind_from(v));
 }
@@ -1903,7 +1931,7 @@ static int e_run_switch_from(const e_run_values *v)
  char text[E_RUN_SWITCH_ROOM];
 
  e_prog_switch_text(v->entry, text, sizeof text);
- return(e_run_from(v, v->language, E_RUN_KEY_SWITCH, text));
+ return(e_run_lang_from(v, E_RUN_KEY_SWITCH, text));
 }
 
 /**
@@ -1916,11 +1944,11 @@ static int e_run_switch_from(const e_run_values *v)
  */
 static int e_run_vm_from(FENSTER *f, const e_run_values *v)
 {
- if (e_run_from(v, v->language, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER ||
+ if (e_run_lang_from(v, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER ||
      e_run_kind_from(v) == WPE_FROM_FOLDER || e_run_switch_from(v) == WPE_FROM_FOLDER)
   return(WPE_FROM_FOLDER);
  if (e_run_self_linked(f, v) &&
-     e_run_from(v, v->language, E_RUN_KEY_EXECUTABLE, v->exe_name) == WPE_FROM_FOLDER)
+     e_run_lang_from(v, E_RUN_KEY_EXECUTABLE, v->exe_name) == WPE_FROM_FOLDER)
   return(WPE_FROM_FOLDER);
  return(WPE_FROM_USER);
 }
@@ -1991,7 +2019,7 @@ static void e_run_note_choices(WpeStartPlan *plan, FENSTER *f, const e_run_value
   e_run_note_choice(plan, E_RUN_KEY_SWITCH, text);
  }
  if (v->exe_name && v->exe_name[0] && e_run_self_linked(f, v) &&
-     e_run_from(v, v->language, E_RUN_KEY_EXECUTABLE, v->exe_name) == WPE_FROM_FOLDER)
+     e_run_lang_from(v, E_RUN_KEY_EXECUTABLE, v->exe_name) == WPE_FROM_FOLDER)
   e_run_note_choice(plan, E_RUN_KEY_EXECUTABLE, v->exe_name);
 }
 
@@ -2032,8 +2060,8 @@ static int e_run_plan_program(WpeStartPlan *plan, FENSTER *f, const e_run_values
   e_build_path_too_long(f, "program");
   return(-1);
  }
- from_dir = e_run_from(v, E_OPT_SCOPE_PROGRAMMING, "Exedir", v->exedir);
- from_exe = e_run_from(v, v->language, E_RUN_KEY_EXECUTABLE, v->exe_name);
+ from_dir = e_run_prog_from(v, "Exedir", v->exedir);
+ from_exe = e_run_lang_from(v, E_RUN_KEY_EXECUTABLE, v->exe_name);
  if (from_dir == WPE_FROM_FOLDER || from_exe == WPE_FROM_FOLDER)
   from = WPE_FROM_FOLDER;
  wpe_startplan_word(plan, path, WPE_WORD_OPERAND, from, E_RUN_PROG_SOURCE);
@@ -2142,7 +2170,7 @@ static WpeStartPlan *e_run_plan_make(FENSTER *f, const e_run_values *v)
 {
  const char *name = v->language ? v->language : E_RUN_NAME;
  WpeStartPlan *plan = wpe_startplan_new(WPE_START_RUN, name);
- int from_args = e_run_from(v, E_OPT_SCOPE_PROGRAMMING, E_ARGS_KEY, v->args);
+ int from_args = e_run_prog_from(v, E_ARGS_KEY, v->args);
  int from_interp = WPE_FROM_USER;
  int args_as_text = v->args && v->args[0] && from_args == WPE_FROM_USER;
  char *line, *dir;
@@ -2161,7 +2189,7 @@ static WpeStartPlan *e_run_plan_make(FENSTER *f, const e_run_values *v)
  wpe_startplan_shell(plan, line ? line : "", from_interp, E_RUN_INTERP_SOURCE);
  if (line)
   FREE(line);
- if (e_run_from(v, v->language, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER &&
+ if (e_run_lang_from(v, E_RUN_KEY_COMPILER, v->runner) == WPE_FROM_FOLDER &&
      v->kind == E_RUN_INTERPRETER)
   wpe_startplan_value(plan, E_STARTCMD_XWPERC, E_RUN_KEY_COMPILER, v->runner, NULL);
  if (e_run_plan_first(plan, f, v))
@@ -2261,33 +2289,40 @@ static int e_run_own_plan_offered(FENSTER *f, const e_run_values *mine, int has_
  */
 static WpeStartPlan *e_run_plan_approve(FENSTER *f)
 {
- struct e_s_prog *own = NULL;
+ struct e_s_prog base;
  char *shown, *own_shown = NULL;
  E_STARTPLAN_SHOW show;
  e_run_values v;
  WpeStartPlan *plan;
- int verdict;
+ int verdict, has_base = 0;
 
- e_run_values_of(&v, &e_s_prog, e_prog.exedir, e_prog.arguments, 0);
+ memset(&base, 0, sizeof base);
+ if (e_opt_start_folder() && e_s_prog.language)
+  has_base = e_opt_own_language_for(e_s_prog.language, &e_s_prog, &base) == 0;
+ e_run_values_of(&v, &e_s_prog, has_base ? &base : NULL, e_prog.exedir, e_prog.arguments, 0);
  if (v.kind == E_RUN_NONE)
  {
   e_run_say_nothing(f);
+  e_prog_entry_free(&base);
   return(NULL);
  }
  if (!(plan = e_run_plan_make(f, &v)))
+ {
+  e_prog_entry_free(&base);
   return(NULL);
+ }
  shown = e_run_shown(f, &v);
  if (e_opt_start_folder())
  {
-  if (e_s_prog.language)
-   own = e_opt_own_language(e_s_prog.language);
-  e_run_values_of(&v, own, e_opt_own_value("Exedir"), e_opt_own_value(E_ARGS_KEY), 1);
-  if (e_run_own_plan_offered(f, &v, own != NULL))
+  e_run_values_of(&v, has_base ? &base : NULL, has_base ? &base : NULL,
+                  e_opt_own_value("Exedir"), e_opt_own_value(E_ARGS_KEY), 1);
+  if (e_run_own_plan_offered(f, &v, has_base))
   {
    wpe_startplan_set_own(plan, e_run_plan_make(f, &v));
    own_shown = e_run_shown(f, &v);
   }
  }
+ e_prog_entry_free(&base);
  show.who = E_STARTCMD_XWPERC_WHO;
  show.what = E_RUN_WHAT_ASKED;
  show.shown = shown ? shown : "";
@@ -2533,11 +2568,15 @@ char *e_prog_command_text(const struct e_s_prog *p)
 
 /**
  * e_prog_take_own - Put the user's own compile line in force for a language.
- * @own: his entry.
+ * @own: his entry for the open file (e_opt_own_language_for): his own
+ * values with the file's toolchain.
  *
  * After "Use mine" (or a remembered one) his line replaces the folder's in
  * the language's entry, so every later compile, link and run of this
- * session uses it, whichever path copies the entry.
+ * session uses it, whichever path copies the entry.  The open file keeps
+ * its toolchain (a ga68 file is still built by ga68), and the language's
+ * global entry is given back the pick it carries, so the Compiler dialog
+ * shows a compiler that goes with its style.
  */
 static void e_prog_take_own(const struct e_s_prog *own)
 {
@@ -2556,6 +2595,7 @@ static void e_prog_take_own(const struct e_s_prog *own)
   p->comp_str = WpeStrdup(own->comp_str);
   p->libraries = WpeStrdup(own->libraries);
   p->exe_name = WpeStrdup(own->exe_name);
+  e_prog_switch_apply(p, p->file_switch);
  }
  if (e_s_prog.compiler) FREE(e_s_prog.compiler);
  if (e_s_prog.comp_str) FREE(e_s_prog.comp_str);
@@ -2580,16 +2620,24 @@ static void e_prog_take_own(const struct e_s_prog *own)
 int e_prog_approve_compile(FENSTER *f)
 {
  char key[WPE_STARTCMD_KEY_MAX], what[E_PROG_WHAT_MAX];
- struct e_s_prog *own;
+ struct e_s_prog base;
  char *text, *own_text;
  E_STARTCMD c;
- int verdict;
+ int verdict, has_base;
 
  if (!e_opt_start_folder() || !e_s_prog.language)
   return(0);
- own = e_opt_own_language(e_s_prog.language);
+ has_base = e_opt_own_language_for(e_s_prog.language, &e_s_prog, &base) == 0;
  text = e_prog_command_text(&e_s_prog);
- own_text = e_prog_command_text(own);
+ own_text = has_base ? e_prog_command_text(&base) : NULL;
+ if (text && own_text && strcmp(text, own_text) == 0)
+ {
+  /* The line is the user's own for this file: nothing to ask. */
+  FREE(text);
+  FREE(own_text);
+  e_prog_entry_free(&base);
+  return(0);
+ }
  snprintf(key, sizeof key, "%s%s", WPE_STARTCMD_KEY_COMPILER, e_s_prog.language);
  snprintf(what, sizeof what, E_PROG_WHAT_FMT, e_s_prog.language);
  c.folder = e_opt_start_folder();
@@ -2600,13 +2648,14 @@ int e_prog_approve_compile(FENSTER *f)
  c.text = text;
  c.own = own_text;
  verdict = e_startcmd_approve(f, &c);
- if (verdict == WPE_STARTCMD_USE_OWN && own)
-  e_prog_take_own(own);
+ if (verdict == WPE_STARTCMD_USE_OWN && has_base)
+  e_prog_take_own(&base);
  if (text) FREE(text);
  if (own_text) FREE(own_text);
+ e_prog_entry_free(&base);
  if (verdict == WPE_STARTCMD_CANCEL)
   return(-1);
- if (verdict == WPE_STARTCMD_USE_OWN && !own)
+ if (verdict == WPE_STARTCMD_USE_OWN && !has_base)
   return(-1);              /* a language only the folder knows: none of his to run */
  return(0);
 }
@@ -2625,17 +2674,20 @@ typedef struct {
  const char *language;
  const char *compiler, *comp_str, *libraries, *exe_name;
  const char *exedir;
+ const struct e_s_prog *base; /* the user's own entry for this file, which a
+                        folder's value is compared with; NULL if none   */
  int own;            /* 1: the user's own plan, every value his          */
 } e_build_values;
 
 /**
  * e_build_values_of - The values of a language's entry, for a plan.
- * @v: filled in; @p: the entry; @exedir: the output folder; @own: 1 when
- * they are the user's own.
+ * @v: filled in; @p: the entry; @base: the user's own entry for this file,
+ * or NULL; @exedir: the output folder; @own: 1 when they are the user's own.
  */
 static void e_build_values_of(e_build_values *v, const struct e_s_prog *p,
-                              const char *exedir, int own)
+                              const struct e_s_prog *base, const char *exedir, int own)
 {
+ v->base = base;
  v->language = e_s_prog.language;
  v->compiler = p->compiler;
  v->comp_str = p->comp_str;
@@ -2646,18 +2698,30 @@ static void e_build_values_of(e_build_values *v, const struct e_s_prog *p,
 }
 
 /**
- * e_build_from - Whose a value of a build is.
- * @v: the values; @scope/@key: the key, as e_opt_value_from names it;
- * @value: the value.
+ * e_build_lang_from - Whose a value of a build, from the language's entry, is.
+ * @v: the values; @key: the xwperc key (Compiler, CompilerOptions, Libraries,
+ * Executable); @value: the value.
  * Return: WPE_FROM_USER for every value of his own plan; else as
- * e_opt_value_from.
+ * e_opt_lang_value_from, against his own entry for this file.
  */
-static int e_build_from(const e_build_values *v, const char *scope, const char *key,
-                        const char *value)
+static int e_build_lang_from(const e_build_values *v, const char *key, const char *value)
 {
  if (v->own)
   return(WPE_FROM_USER);
- return(e_opt_value_from(scope, key, value));
+ return(e_opt_lang_value_from(v->base, v->language, key, value));
+}
+
+/**
+ * e_build_prog_from - Whose a [Programming] value of a build is.
+ * @v: the values; @key: the [Programming] key; @value: the value.
+ * Return: WPE_FROM_USER for every value of his own plan; else as
+ * e_opt_value_from.
+ */
+static int e_build_prog_from(const e_build_values *v, const char *key, const char *value)
+{
+ if (v->own)
+  return(WPE_FROM_USER);
+ return(e_opt_value_from(E_OPT_SCOPE_PROGRAMMING, key, value));
 }
 
 /**
@@ -2683,7 +2747,7 @@ static void e_build_plan_options(WpeStartPlan *plan, const e_build_values *v,
                                  const char *key, const char *value)
 {
  char source[E_BUILD_SRC_MAX];
- int from = e_build_from(v, v->language, key, value);
+ int from = e_build_lang_from(v, key, value);
 
  snprintf(source, sizeof source, E_BUILD_SRC_FMT, key);
  if (from == WPE_FROM_FOLDER)
@@ -2700,7 +2764,7 @@ static void e_build_plan_options(WpeStartPlan *plan, const e_build_values *v,
 static void e_build_plan_words(WpeStartPlan *plan, const e_build_values *v)
 {
  char source[E_BUILD_SRC_MAX];
- int from = e_build_from(v, v->language, "Compiler", v->compiler);
+ int from = e_build_lang_from(v, "Compiler", v->compiler);
  const char *compiler = v->compiler;
 
  if (!compiler)
@@ -2774,8 +2838,8 @@ static int e_build_plan_paths(WpeStartPlan *plan, FENSTER *f, const e_build_valu
 {
  char fstr[WPE_PATH_SIZE], ostr[WPE_PATH_SIZE];
  char estr[WPE_PATH_SIZE], lostr[WPE_PATH_SIZE];
- int from_dir = e_build_from(v, E_OPT_SCOPE_PROGRAMMING, "Exedir", v->exedir);
- int from_exe = e_build_from(v, v->language, "Executable", v->exe_name);
+ int from_dir = e_build_prog_from(v, "Exedir", v->exedir);
+ int from_exe = e_build_lang_from(v, "Executable", v->exe_name);
  int from_prog = WPE_FROM_USER;
 
  if (from_dir == WPE_FROM_FOLDER || from_exe == WPE_FROM_FOLDER)
@@ -2863,24 +2927,28 @@ static void e_build_take_own_exedir(void)
  */
 static int e_build_plan_approve(FENSTER *f)
 {
- struct e_s_prog *own = NULL;
+ struct e_s_prog base;
  char what[E_PROG_WHAT_MAX];
  char *shown, *own_text = NULL;
  E_STARTPLAN_SHOW show;
  e_build_values v;
- int verdict;
+ int verdict, has_base = 0;
 
+ memset(&base, 0, sizeof base);
  if (e_s_prog.language)
-  own = e_opt_own_language(e_s_prog.language);
+  has_base = e_opt_own_language_for(e_s_prog.language, &e_s_prog, &base) == 0;
  e_build_plan_drop();
- e_build_values_of(&v, &e_s_prog, e_prog.exedir, 0);
+ e_build_values_of(&v, &e_s_prog, has_base ? &base : NULL, e_prog.exedir, 0);
  if (!(e_build_plan = e_build_plan_make(f, &v)))
-  return(-1);
- if (own)
  {
-  e_build_values_of(&v, own, e_opt_own_value("Exedir"), 1);
+  e_prog_entry_free(&base);
+  return(-1);
+ }
+ if (has_base)
+ {
+  e_build_values_of(&v, &base, &base, e_opt_own_value("Exedir"), 1);
   wpe_startplan_set_own(e_build_plan, e_build_plan_make(f, &v));
-  own_text = e_prog_command_text(own);
+  own_text = e_prog_command_text(&base);
  }
  shown = e_prog_command_text(&e_s_prog);
  what[0] = '\0';
@@ -2893,16 +2961,17 @@ static int e_build_plan_approve(FENSTER *f)
   show.shown = shown;
  show.own = own_text;
  verdict = e_startplan_approve(f, e_build_plan, &show);
- if (verdict == WPE_STARTCMD_USE_OWN && own)
+ if (verdict == WPE_STARTCMD_USE_OWN && has_base)
  {
-  e_prog_take_own(own);
+  e_prog_take_own(&base);
   e_build_take_own_exedir();
  }
  if (shown) FREE(shown);
  if (own_text) FREE(own_text);
+ e_prog_entry_free(&base);
  if (verdict == WPE_STARTCMD_CANCEL)
   return(-1);
- if (verdict == WPE_STARTCMD_USE_OWN && !own)
+ if (verdict == WPE_STARTCMD_USE_OWN && !has_base)
   return(-1);
  return(0);
 }
@@ -5131,9 +5200,7 @@ int e_check_c_file(char *name)
      e_copy_prog(&e_s_prog, e_prog.comp[i]);
      /* Algol 68: drive the compiler that matches THIS file's dialect (a68g
         vs ga68), detected from its content -- the two are incompatible. */
-     if (e_prog.comp[i]->language &&
-         !strcmp(e_prog.comp[i]->language, "Algol68"))
-      e_algol68_apply(&e_s_prog, e_algol68_use_ga68(name));
+     e_prog_switch_for_file(&e_s_prog, name);
      return(i+1);
     }
  }
@@ -5422,6 +5489,131 @@ static void e_algol68_apply(struct e_s_prog *cp, int use_ga68)
  }
 }
 
+/** The language whose toolchain the editor picks by the file's content. */
+#define E_ALGOL68_LANGUAGE "Algol68"
+
+/**
+ * e_prog_switch_apply - Put one toolchain pick in force on an entry.
+ * @entry: the language's entry; @which: E_FILE_SWITCH_*.
+ *
+ * The one place a pick is applied: the compiler, its options, the message
+ * pattern, the start symbol, the style and the kind change together, and
+ * the entry records the pick so a copy of the user's own entry can be given
+ * the same one.  NONE records itself and changes nothing else.
+ */
+static void e_prog_switch_apply(struct e_s_prog *entry, int which)
+{
+ if (which == E_FILE_SWITCH_A68G || which == E_FILE_SWITCH_GA68)
+  e_algol68_apply(entry, which == E_FILE_SWITCH_GA68);
+ entry->file_switch = which;
+}
+
+/**
+ * e_prog_language_picks - Does the editor pick this language's toolchain?
+ * @entry: the language's entry.
+ * Return: 1 for Algol 68, whose a68g and ga68 are told apart by the file.
+ */
+static int e_prog_language_picks(const struct e_s_prog *entry)
+{
+ return(entry->language && WpeStrccmp(entry->language, E_ALGOL68_LANGUAGE) == 0);
+}
+
+/**
+ * e_prog_switch_for_file - Give an entry the toolchain its language picks
+ * for one file.
+ * @entry: a copy of the language's entry; @path: the file.
+ *
+ * An Algol 68 file is built by the compiler that matches its dialect, so a
+ * ga68 file in a folder with an xwperc is not asked about, and no folder
+ * file can make it a68g's.  A language with one toolchain gets NONE.
+ */
+void e_prog_switch_for_file(struct e_s_prog *entry, const char *path)
+{
+ int which = E_FILE_SWITCH_NONE;
+
+ if (e_prog_language_picks(entry))
+ {
+  if (e_algol68_use_ga68(path))
+   which = E_FILE_SWITCH_GA68;
+  else
+   which = E_FILE_SWITCH_A68G;
+ }
+ e_prog_switch_apply(entry, which);
+}
+
+/**
+ * e_prog_switch_like - Give an entry the pick another entry carries.
+ * @entry: a copy of the user's own entry; @like: the entry in force for the
+ * file, or NULL.
+ *
+ * The user's own copy then holds what he would get for this file with no
+ * folder file read, without reading the file a second time.  A pick never
+ * crosses languages: another language's @like gives NONE.
+ */
+void e_prog_switch_like(struct e_s_prog *entry, const struct e_s_prog *like)
+{
+ int which = E_FILE_SWITCH_NONE;
+
+ if (like && e_prog_language_picks(entry) && e_prog_language_picks(like) &&
+     WpeStrccmp(entry->language, like->language) == 0)
+  which = like->file_switch;
+ e_prog_switch_apply(entry, which);
+}
+
+/**
+ * e_prog_entry_free - Free what e_copy_prog filled and zero the entry.
+ * @p: the entry; all zero is fine.
+ */
+void e_prog_entry_free(struct e_s_prog *p)
+{
+ int i;
+
+ if (p->language) FREE(p->language);
+ if (p->compiler) FREE(p->compiler);
+ if (p->comp_str) FREE(p->comp_str);
+ if (p->libraries) FREE(p->libraries);
+ if (p->exe_name) FREE(p->exe_name);
+ if (p->intstr) FREE(p->intstr);
+ if (p->start_symbol) FREE(p->start_symbol);
+ if (p->filepostfix)
+ {
+  for (i = WpeExpArrayGetSize(p->filepostfix); i; i--)
+   WpeFree(p->filepostfix[i - 1]);
+  WpeExpArrayDestroy(p->filepostfix);
+ }
+ memset(p, 0, sizeof *p);
+}
+
+/**
+ * e_prog_field_text - One value of a language's entry as its xwperc writes it.
+ * @p: the entry; @key: "Compiler", "CompilerOptions", "Libraries",
+ * "Executable", "CompilerSwitch" or "Run"; @out/@n: receive the value.
+ *
+ * What a folder's value is compared with, so the comparison and the
+ * file the xwperc is read from agree on the words.
+ * Return: 0, or -1 for another key.
+ */
+int e_prog_field_text(const struct e_s_prog *p, const char *key, char *out, size_t n)
+{
+ const char *text = NULL;
+
+ if (WpeStrccmp(key, "Compiler") == 0) text = p->compiler;
+ else if (WpeStrccmp(key, "CompilerOptions") == 0) text = p->comp_str;
+ else if (WpeStrccmp(key, "Libraries") == 0) text = p->libraries;
+ else if (WpeStrccmp(key, "Executable") == 0) text = p->exe_name;
+ else if (WpeStrccmp(key, "CompilerSwitch") == 0)
+ {
+  e_prog_switch_text(p, out, n);
+  return(0);
+ }
+ else if (WpeStrccmp(key, "Run") == 0)
+  text = e_run_kind_name(e_run_kind_of(p));
+ else
+  return(-1);
+ snprintf(out, n, "%s", text ? text : "");
+ return(0);
+}
+
 /* e_algol68_sniff - Guess FILE's dialect from its first lines.  The regimes are
    mutually exclusive, so one strong marker decides: a { } comment or a lowercase
    bold word means ga68; a # comment or an UPPER bold word means a68g.  Returns 1
@@ -5708,7 +5900,10 @@ int e_ini_prog(ECNT *cn)
     is the only one).  Each .a68 file's actual compiler is then chosen by its
     detected dialect at compile/debug time (e_check_c_file and e_start_debug via
     e_algol68_use_ga68), so both dialects build with no manual switch. */
- e_algol68_apply(e_prog.comp[9], e_cmd_in_path("ga68") && !e_cmd_in_path("a68g"));
+ if (e_cmd_in_path("ga68") && !e_cmd_in_path("a68g"))
+  e_prog_switch_apply(e_prog.comp[9], E_FILE_SWITCH_GA68);
+ else
+  e_prog_switch_apply(e_prog.comp[9], E_FILE_SWITCH_A68G);
  e_copy_prog(&e_s_prog, e_prog.comp[0]);
  return(0);
 }
@@ -5743,6 +5938,7 @@ int e_copy_prog(struct e_s_prog *out, struct e_s_prog *in)
  out->key = in->key;
  out->comp_sw = in->comp_sw;
  out->run_kind = in->run_kind;
+ out->file_switch = in->file_switch;
  return(0);
 }
 
@@ -6015,12 +6211,13 @@ static char *e_prog_postfix_word(const char *list, size_t len)
 
 int e_run_c_options(FENSTER *f)
 {
- int i, j, ret, his;
+ int i, j, ret, his, has_base;
  W_OPTSTR *o = e_init_opt_kst(f);
  char filepostfix[E_PROG_FIELD_ROOM + 1];
  char *newpostfix;
  char *messagestring;
  e_prog_field fld[E_PROG_LINE_FIELDS];
+ struct e_s_prog base;
 
  if (!o)
   return(-1);
@@ -6053,8 +6250,12 @@ int e_run_c_options(FENSTER *f)
  ret = e_opt_kst(o);
  if (ret != WPE_ESC)
  {
-  e_prog_fields_of(fld, o, e_opt_own_language(e_s_prog.language));
+  memset(&base, 0, sizeof base);
+  has_base = e_s_prog.language &&
+             e_opt_own_language_for(e_s_prog.language, &e_s_prog, &base) == 0;
+  e_prog_fields_of(fld, o, has_base ? &base : NULL);
   his = e_prog_fields_are_his(fld, E_PROG_LINE_FIELDS);
+  e_prog_entry_free(&base);
   if (e_s_prog.language) FREE(e_s_prog.language);
   e_s_prog.language = WpeStrdup(o->wstr[0]->txt);
   if (e_s_prog.compiler) FREE(e_s_prog.compiler);
@@ -6132,6 +6333,8 @@ int e_run_options(FENSTER *f)
    /* A new language is what its own style says, not what the language the
       dialog was opened from runs. */
    e_prog.comp[e_prog.num-1]->run_kind = e_run_kind_default(e_prog.comp[e_prog.num-1]);
+   /* ... and carries no toolchain pick of the language it was copied from. */
+   e_prog.comp[e_prog.num-1]->file_switch = E_FILE_SWITCH_NONE;
    for (n = 0; e_prog.comp[e_prog.num-1]->language[n]; n++)
    {
     for (i = 0; i <= e_prog.num &&
@@ -8003,8 +8206,10 @@ static void e_prj_run(void);
 #define E_PRJ_WHAT         "compiler"
 
 /* The user's own C compile line, while he answered "Use mine" for the
-   project being built; NULL while the project's own line runs. */
+   project being built; NULL while the project's own line runs.  It points
+   at e_prj_own_entry, the copy the build owns until the next project plan. */
 static struct e_s_prog *e_prj_own;
+static struct e_s_prog e_prj_own_entry;
 
 /**
  * e_prj_text_add_words - Append a project variable's words to a command.
@@ -8369,17 +8574,24 @@ static WpeStartPlan *e_prj_plan_make(const struct e_s_prog *own, int mine, const
  */
 static int e_prj_approve(FENSTER *f)
 {
- struct e_s_prog *own = e_opt_own_language(E_PRJ_OWN_LANGUAGE);
+ struct e_s_prog base;
+ struct e_s_prog *own;
  char *text, *own_text = NULL;
  E_STARTPLAN_SHOW show;
  int verdict;
 
  e_prj_own = NULL;
+ e_prog_entry_free(&e_prj_own_entry);
+ own = e_opt_own_language_for(E_PRJ_OWN_LANGUAGE, NULL, &base) == 0 ? &base : NULL;
  e_build_plan_drop();
  if (!e_prog.project || !e_prog.project[0])
+ {
+  e_prog_entry_free(&base);
   return(-1);
+ }
  if (!(e_build_plan = e_prj_plan_make(own, 0, e_prog.exedir)))
  {
+  e_prog_entry_free(&base);
   e_build_path_too_long(f, "program");
   return(-1);
  }
@@ -8397,9 +8609,12 @@ static int e_prj_approve(FENSTER *f)
  verdict = e_startplan_approve(f, e_build_plan, &show);
  if (verdict == WPE_STARTCMD_USE_OWN && own)
  {
-  e_prj_own = own;
+  e_prj_own_entry = base;              /* the build keeps this copy: it owns it now */
+  memset(&base, 0, sizeof base);
+  e_prj_own = &e_prj_own_entry;
   e_build_take_own_exedir();
  }
+ e_prog_entry_free(&base);
  FREE(text);
  if (own_text) FREE(own_text);
  if (verdict == WPE_STARTCMD_CANCEL)
@@ -8416,8 +8631,9 @@ static int e_prj_approve(FENSTER *f)
  */
 static int e_prj_fields_are_his(W_OPTSTR *o)
 {
- struct e_s_prog *own = e_opt_own_language(E_PRJ_OWN_LANGUAGE);
+ struct e_s_prog base;
  e_prog_field fld[E_PRJ_LINE_FIELDS];
+ int his;
 
  fld[0].before = e_s_prog.compiler;  fld[0].after = o->wstr[0]->txt;
  fld[1].before = e_s_prog.comp_str;  fld[1].after = o->wstr[1]->txt;
@@ -8425,13 +8641,15 @@ static int e_prj_fields_are_his(W_OPTSTR *o)
  fld[0].room = E_PROG_FIELD_ROOM;
  fld[1].room = fld[2].room = E_PROG_PRJ_FIELD_ROOM;
  fld[0].own = fld[1].own = fld[2].own = NULL;
- if (own)
+ if (e_opt_own_language_for(E_PRJ_OWN_LANGUAGE, NULL, &base) == 0)
  {
-  fld[0].own = own->compiler;
-  fld[1].own = own->comp_str;
-  fld[2].own = own->libraries;
+  fld[0].own = base.compiler;
+  fld[1].own = base.comp_str;
+  fld[2].own = base.libraries;
  }
- return(e_prog_fields_are_his(fld, E_PRJ_LINE_FIELDS));
+ his = e_prog_fields_are_his(fld, E_PRJ_LINE_FIELDS);
+ e_prog_entry_free(&base);
+ return(his);
 }
 
 /**

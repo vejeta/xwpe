@@ -99,7 +99,10 @@ project file (@file{.prj}) its @code{CMP}, @code{CMPFLAGS} and
 command xwpe's own @command{scala-cli setup-ide} wrote in this session
 are spared the question).  The first time such a command is about to run and it
 is not your own (the one your own file sets, or the built-in one),
-xwpe shows it whole and asks:
+xwpe shows it whole and asks.  A value the folder repeats from your own
+file or the built-in one, or one the editor would pick for the file by
+itself (the Algol 68 dialect), is yours and is not asked about.  The
+question looks like this:
 
 @example
 +------------- Command from ./xwperc -------------+

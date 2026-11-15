@@ -203,6 +203,26 @@ def _ctrl_f9_project(s):
     _answer_the_project_box(s)
 
 
+# @scenario SC-program-name-31p
+@needs_sh
+def test_a_projects_use_mine_builds_with_his_own_c_line(tmp_path):
+    """His own xwperc sets C's options to -O2, the project says -g: F9 asks
+    about the project's line, and Use mine compiles with -O2 and never -g
+    (the copy of his entry the project build keeps until the next plan)."""
+    build = Build(tmp_path)
+    build.own_config("[Language/C]\nCompilerOptions : -O2\n")
+    _project(build, "p")
+    with build.session() as s:
+        s.key(F9, delay=2.0)
+        asked = _until(s, lambda: BOX in _text(s), 15)
+        s.key("\033u", delay=2.0)
+        _until(s, lambda: build.links(), 25)
+        _intact(s, "Use mine on a project's line")
+    assert asked, build.lines()
+    gcc = [l for l in build.lines() if l.startswith("gcc ")]
+    assert gcc and all(" -O2 " in l and " -g " not in l for l in gcc if " -c " in l), gcc
+
+
 def _project_options_save(s):
     s.key(ALT.PROJECT, "o", delay=1.5)
     s.key(ALT_S, delay=1.5)

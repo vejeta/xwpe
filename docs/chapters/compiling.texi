@@ -622,7 +622,10 @@ interprets the program.  Uses the @emph{classic} regime.
 You do not choose between them: xwpe reads each @file{.a68}/@file{.alg}
 file's first lines, detects its dialect, and drives the matching
 toolchain for both compiling and debugging.  If only one of the two is
-installed, that one is always used.
+installed, that one is always used.  The choice is the editor's, so a
+folder's @file{xwperc} is never asked about the compiler, its options, its
+style or what @kbd{Ctrl-F9} starts for an Algol 68 file, and cannot set
+them.
 
 @noindent
 The same ``Hello'' program in each dialect (both ship as samples under

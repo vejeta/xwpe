@@ -117,6 +117,11 @@ static char *e_opt_own_print;
 static int e_opt_own_deb = E_OPT_DEBUGGER_UNSET;
 static struct e_s_prog **e_opt_own_lang;
 static int e_opt_own_nlang;
+/* The built-in entries as they stood before any option file was read: a
+   value that is the built-in one is the user's too, so a folder that
+   repeats a default asks nothing even when his own file changed it. */
+static struct e_s_prog **e_opt_built_lang;
+static int e_opt_built_nlang;
 
 /* The debugger the start-folder xwperc names, or E_OPT_DEBUGGER_UNSET. */
 static int e_opt_named_deb = E_OPT_DEBUGGER_UNSET;
@@ -1724,8 +1729,6 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
 
 /** The key a language's entry names what Ctrl-F9 starts with. */
 #define E_OPT_KEY_RUN "Run"
-/** The room of a CompilerSwitch value written as a number. */
-#define E_OPT_SWITCH_ROOM 16
 
 /**
  * e_opt_take_run_kind - Take the "Run" value of a language's entry.
@@ -2149,24 +2152,56 @@ const char *e_opt_start_folder(void)
  return(e_opt_folder_dir);
 }
 
-/** e_opt_own_free_lang - Free the user's own language entries. */
-static void e_opt_own_free_lang(void)
+/**
+ * e_opt_free_lang_list - Free a list of language entries.
+ * @list/@n: the list and its length; both are cleared.
+ */
+static void e_opt_free_lang_list(struct e_s_prog ***list, int *n)
 {
  int i;
 
- for (i = 0; i < e_opt_own_nlang; i++)
+ for (i = 0; i < *n; i++)
  {
-  struct e_s_prog *p = e_opt_own_lang[i];
-  if (p->language) FREE(p->language);
-  if (p->compiler) FREE(p->compiler);
-  if (p->comp_str) FREE(p->comp_str);
-  if (p->libraries) FREE(p->libraries);
-  if (p->exe_name) FREE(p->exe_name);
-  FREE(p);
+  e_prog_entry_free((*list)[i]);
+  FREE((*list)[i]);
  }
- if (e_opt_own_lang) FREE(e_opt_own_lang);
- e_opt_own_lang = NULL;
- e_opt_own_nlang = 0;
+ if (*list) FREE(*list);
+ *list = NULL;
+ *n = 0;
+}
+
+/** e_opt_own_free_lang - Free the user's own and the built-in language entries. */
+static void e_opt_own_free_lang(void)
+{
+ e_opt_free_lang_list(&e_opt_own_lang, &e_opt_own_nlang);
+ e_opt_free_lang_list(&e_opt_built_lang, &e_opt_built_nlang);
+}
+
+/**
+ * e_opt_new_lang_entry - A complete, empty entry for a language.
+ * @language: its name.
+ * Return: the entry (every string set, the kind undecided), or NULL.
+ *
+ * Complete so a copy of it (e_copy_prog) reads no missing string, and
+ * e_prog_entry_free frees all of it.
+ */
+static struct e_s_prog *e_opt_new_lang_entry(const char *language)
+{
+ struct e_s_prog *p;
+
+ if (!(p = calloc(1, sizeof *p)))
+  return(NULL);
+ p->language = WpeStrdup(language);
+ p->compiler = WpeStrdup("");
+ p->comp_str = WpeStrdup("");
+ p->libraries = WpeStrdup("");
+ p->exe_name = WpeStrdup("");
+ p->intstr = WpeStrdup("");
+ p->start_symbol = NULL;
+ p->filepostfix = (char **)WpeExpArrayCreate(0, sizeof(char *), 1);
+ p->run_kind = E_RUN_KIND_UNSET;   /* calloc's 0 is no kind by accident */
+ p->file_switch = E_FILE_SWITCH_NONE;
+ return(p);
 }
 
 /**
@@ -2184,20 +2219,15 @@ static struct e_s_prog *e_opt_own_find_lang(const char *language, int create)
    return(e_opt_own_lang[i]);
  if (!create)
   return(NULL);
- if (!(p = calloc(1, sizeof *p)))
+ if (!(p = e_opt_new_lang_entry(language)))
   return(NULL);
  if (!(grown = realloc(e_opt_own_lang, (e_opt_own_nlang + 1) * sizeof *grown)))
  {
+  e_prog_entry_free(p);
   free(p);
   return(NULL);
  }
  e_opt_own_lang = grown;
- p->language = WpeStrdup(language);
- p->compiler = WpeStrdup("");
- p->comp_str = WpeStrdup("");
- p->libraries = WpeStrdup("");
- p->exe_name = WpeStrdup("");
- p->run_kind = E_RUN_KIND_UNSET;   /* calloc's 0 is no kind by accident */
  e_opt_own_lang[e_opt_own_nlang++] = p;
  return(p);
 }
@@ -2258,43 +2288,6 @@ static void e_opt_note_own_field(const char *scope, const char *key, const char 
   return;
  e_opt_own_field_key(scope, key, field, sizeof field);
  wpe_startcmd_note_own(field, value);
-}
-
-/**
- * e_opt_note_own_switch_and_kind - Count a language's compiler style and
- * Run kind as the user's own.
- * @p: the entry.
- *
- * They decide which file Ctrl-F9 starts, so a folder's xwperc that sets
- * either to another value is asked about, and one that repeats his own (or
- * the built-in) value is not.  A kind not yet decided is not noted: the
- * file is still being read.
- */
-static void e_opt_note_own_switch_and_kind(const struct e_s_prog *p)
-{
- char text[E_OPT_SWITCH_ROOM];
-
- snprintf(text, sizeof text, "%d", p->comp_sw);
- e_opt_note_own_field(p->language, "CompilerSwitch", text);
- if (p->run_kind != E_RUN_KIND_UNSET)
-  e_opt_note_own_field(p->language, E_OPT_KEY_RUN, e_run_kind_name(p->run_kind));
-}
-
-/**
- * e_opt_note_own_lang_fields - Count each value of a language's line as his.
- * @p: the entry.
- *
- * A start plan asks about each value a folder sets on its own: a folder that
- * sets only the compiler's options is asked about the options, and a folder
- * whose compiler is his is not asked about the compiler.
- */
-static void e_opt_note_own_lang_fields(const struct e_s_prog *p)
-{
- e_opt_note_own_field(p->language, "Compiler", p->compiler);
- e_opt_note_own_field(p->language, "CompilerOptions", p->comp_str);
- e_opt_note_own_field(p->language, "Libraries", p->libraries);
- e_opt_note_own_field(p->language, "Executable", p->exe_name);
- e_opt_note_own_switch_and_kind(p);
 }
 
 /**
@@ -2440,6 +2433,28 @@ void e_opt_value_typed(const char *scope, const char *key, const char *value)
 }
 
 /**
+ * e_opt_built_add - Keep a built-in language entry as it is before any
+ * option file is read.
+ * @entry: the language's entry in force at start.
+ */
+static void e_opt_built_add(struct e_s_prog *entry)
+{
+ struct e_s_prog *copy, **grown;
+
+ if (!(copy = e_opt_new_lang_entry(entry->language)))
+  return;
+ if (!(grown = realloc(e_opt_built_lang, (e_opt_built_nlang + 1) * sizeof *grown)))
+ {
+  e_prog_entry_free(copy);
+  free(copy);
+  return;
+ }
+ e_copy_prog(copy, entry);
+ e_opt_built_lang = grown;
+ e_opt_built_lang[e_opt_built_nlang++] = copy;
+}
+
+/**
  * e_opt_own_from_defaults - Start the user's own program keys from the
  * built-in ones.
  * @cn: the editor, before any option file is read.
@@ -2472,7 +2487,7 @@ static void e_opt_own_from_defaults(ECNT *cn)
   p->comp_sw = e_prog.comp[i]->comp_sw;
   p->run_kind = e_run_kind_of(e_prog.comp[i]);
   e_opt_note_own_lang(p);
-  e_opt_note_own_lang_fields(p);
+  e_opt_built_add(e_prog.comp[i]);
  }
  e_opt_own_prog_from_defaults();
  e_opt_note_own_prog();
@@ -2574,7 +2589,6 @@ static void e_opt_note_own_values(void)
  for (i = 0; i < e_opt_own_nlang; i++)
  {
   e_opt_note_own_lang(e_opt_own_lang[i]);
-  e_opt_note_own_lang_fields(e_opt_own_lang[i]);
  }
  e_opt_note_own_prog();
 }
@@ -2593,13 +2607,13 @@ const char *e_opt_own_print_cmd(ECNT *cn)
 }
 
 /**
- * e_opt_own_language - The user's own entry for a language.
+ * e_opt_own_source - The entry the user's own entry for a language starts from.
  * @language: its name.
  * Return: his own (or the default) while a start-folder xwperc sets the
  * one in force, else the entry in force, which is his; NULL when the
  * language is unknown.
  */
-struct e_s_prog *e_opt_own_language(const char *language)
+static const struct e_s_prog *e_opt_own_source(const char *language)
 {
  int i;
 
@@ -2609,6 +2623,107 @@ struct e_s_prog *e_opt_own_language(const char *language)
   if (WpeStrccmp(e_prog.comp[i]->language, language) == 0)
    return(e_prog.comp[i]);
  return(NULL);
+}
+
+/**
+ * e_opt_own_language_for - The user's own entry for a language, as it would
+ * be in force for one file.
+ * @language: its name; @like: the entry in force for the file (its
+ * toolchain pick is given to the copy), or NULL for none.
+ * @out: receives the entry, which the caller frees with e_prog_entry_free.
+ *
+ * His own copy (the built-in entry plus his own file, never a folder's)
+ * given the file's toolchain pick: what he would get if no folder file had
+ * been read.  A ga68 file is then ga68's in his entry as in the entry in
+ * force, so the editor's own pick is never read as the folder's choice, and
+ * "Use mine" keeps the file's toolchain.
+ * Return: 0; -1 when he has no entry for the language (@out is zeroed, so
+ * freeing it is always safe).
+ */
+int e_opt_own_language_for(const char *language, const struct e_s_prog *like,
+                           struct e_s_prog *out)
+{
+ const struct e_s_prog *own;
+
+ memset(out, 0, sizeof *out);
+ if (!language || !(own = e_opt_own_source(language)))
+  return(-1);
+ e_copy_prog(out, (struct e_s_prog *)own);
+ e_prog_switch_like(out, like);
+ return(0);
+}
+
+/** The room of a value a folder's key is compared with the user's own in. */
+#define E_OPT_LANG_ROOM (WPE_PATH_SIZE + 64)
+
+/**
+ * e_opt_entry_has_value - Does an entry hold a value for a key?
+ * @entry: the entry; @key/@value: the key and the value.
+ * Return: 1 when it equals the entry's, 0 when it differs or does not fit.
+ */
+static int e_opt_entry_has_value(const struct e_s_prog *entry, const char *key,
+                                 const char *value)
+{
+ char text[E_OPT_LANG_ROOM];
+
+ if (strlen(value) + 1 >= sizeof text)
+  return(0);
+ if (e_prog_field_text(entry, key, text, sizeof text) != 0)
+  return(0);
+ return(strcmp(text, value) == 0);
+}
+
+/**
+ * e_opt_built_has_value - Does the built-in entry, given the same toolchain
+ * pick as @base, hold a value for a key?
+ * @base: the user's entry for the file; @key/@value: the key and the value.
+ * Return: 1 when it does.
+ */
+static int e_opt_built_has_value(const struct e_s_prog *base, const char *key,
+                                 const char *value)
+{
+ struct e_s_prog copy;
+ int i, equal = 0;
+
+ for (i = 0; i < e_opt_built_nlang && !equal; i++)
+ {
+  if (WpeStrccmp(e_opt_built_lang[i]->language, base->language) != 0)
+   continue;
+  memset(&copy, 0, sizeof copy);
+  e_copy_prog(&copy, e_opt_built_lang[i]);
+  e_prog_switch_like(&copy, base);
+  equal = e_opt_entry_has_value(&copy, key, value);
+  e_prog_entry_free(&copy);
+ }
+ return(equal);
+}
+
+/**
+ * e_opt_lang_value_from - Whose a value of a language's entry in force is.
+ * @base: the user's entry for the file (e_opt_own_language_for), or NULL for
+ * a language only the folder's file knows; @language/@key: the key as the
+ * xwperc writes it; @value: the value in force.
+ *
+ * A folder's value is asked about only when the user would not have had it
+ * anyway: the one in his own entry for this file, the built-in one given the
+ * same toolchain pick, one he typed this session or answered for in this
+ * folder before.  So a folder that repeats a default asks nothing, and the
+ * toolchain the editor picked for a file is never the folder's.
+ * Return: WPE_FROM_USER when no start-folder xwperc gives the options, the
+ * value is empty, or it is his as above; else WPE_FROM_FOLDER.
+ */
+int e_opt_lang_value_from(const struct e_s_prog *base, const char *language,
+                          const char *key, const char *value)
+{
+ if (!e_opt_folder_dir || !value || !*value)
+  return(WPE_FROM_USER);
+ if (base && e_opt_entry_has_value(base, key, value))
+  return(WPE_FROM_USER);
+ if (base && e_opt_built_has_value(base, key, value))
+  return(WPE_FROM_USER);
+ if (e_opt_field_is_his(language ? language : "", key, value, e_opt_folder_dir))
+  return(WPE_FROM_USER);
+ return(WPE_FROM_FOLDER);
 }
 
 /**

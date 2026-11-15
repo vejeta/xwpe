@@ -920,7 +920,17 @@ const char *e_opt_start_folder(void);
 void e_opt_note_launch_dir(const char *dir);
 const char *e_opt_launch_dir(void);
 const char *e_opt_own_print_cmd(ECNT *cn);
-struct e_s_prog *e_opt_own_language(const char *language);
+/* The user's own entry for a language, as it would be in force for the file
+   @like is in force for (his own copy given its toolchain pick); the caller
+   frees @out with e_prog_entry_free.  0, or -1 with @out zeroed. */
+int e_opt_own_language_for(const char *language, const struct e_s_prog *like,
+                           struct e_s_prog *out);
+/* Whose a value of a language's entry in force is: his when it equals his own
+   entry's (@base) or the built-in one's for the file, or he typed it or
+   answered for it; the folder's otherwise.  @base NULL for a language only
+   the folder knows. */
+int e_opt_lang_value_from(const struct e_s_prog *base, const char *language,
+                          const char *key, const char *value);
 int e_opt_own_debugger(void);
 /* Where a value in force came from, for a start plan (we_startplan.h). */
 #define E_OPT_SCOPE_PROGRAMMING "Programming"

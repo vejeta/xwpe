@@ -23,6 +23,14 @@
 #define E_RUN_VM           3   /* java <class>, in the build folder: Java, Scala */
 #define E_RUN_NONE         4   /* nothing: LaTeX makes no program */
 
+/* The toolchain the editor itself picked for one file by its content,
+   carried by the entry it was applied to so the user's own copy of the
+   language can be given the same one.  NONE is a language with a single
+   toolchain. */
+#define E_FILE_SWITCH_NONE 0
+#define E_FILE_SWITCH_A68G 1   /* Algol 68 Genie: interprets, classic stropping */
+#define E_FILE_SWITCH_GA68 2   /* GNU Algol 68: compiles and links, modern stropping */
+
 struct e_s_prog {
  char *language, *compiler, *comp_str, *libraries,
    *exe_name, *intstr, key;
@@ -30,6 +38,7 @@ struct e_s_prog {
  char **filepostfix; /* Expandable array */
  int	comp_sw, x;
  int	run_kind;           /* E_RUN_*: what Ctrl-F9 starts */
+ int	file_switch;        /* E_FILE_SWITCH_*: the pick this entry carries */
 };
 
 struct e_prog {
@@ -96,6 +105,21 @@ char *e_cat_string(char *p, char *str);
 int e_make_arg(char ***arg, char *str);
 int e_ini_prog(ECNT *cn);
 int e_copy_prog(struct e_s_prog *out, struct e_s_prog *in);
+/* Free every field e_copy_prog fills and zero @p, so a copy that was never
+   filled (all zero) is freed as safely as a full one. */
+void e_prog_entry_free(struct e_s_prog *p);
+/* Give @entry the toolchain its language picks for the file at @path (the
+   Algol 68 dialect); a language with one toolchain gets NONE.  The one
+   caller of the pick. */
+void e_prog_switch_for_file(struct e_s_prog *entry, const char *path);
+/* Give @entry the pick @like carries, so a copy of the user's own entry is
+   in force for the same file as @like without reading the file again.  The
+   pick never crosses languages: another language's @like gives NONE. */
+void e_prog_switch_like(struct e_s_prog *entry, const struct e_s_prog *like);
+/* @p's value for an xwperc key ("Compiler", "CompilerOptions", "Libraries",
+   "Executable", "CompilerSwitch" as "0"/"1", "Run" as its word) into
+   @out[@n].  Return: 0; -1 for a key that is none of these. */
+int e_prog_field_text(const struct e_s_prog *p, const char *key, char *out, size_t n);
 /* What Ctrl-F9 starts for a language's entry (E_RUN_*), the name its xwperc
    writes for it ("interpreter", "program", "vm", "none"), the kind a name
    means (E_RUN_KIND_UNSET for a word that is none), and the kind an entry

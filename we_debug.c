@@ -12835,6 +12835,29 @@ static int e_d_exe_name_of(char *out, size_t n, FENSTER *f, const char *executab
 }
 
 /**
+ * e_d_exe_origin - Whose the language's Executable is, for the program the
+ * debugger loads.
+ * @exe: the Executable in force for the open file.
+ *
+ * Judged as Run and the build judge it, against the user's own entry for
+ * this file: an Executable a folder repeats from his own file asks nothing.
+ * Return: WPE_FROM_FOLDER or WPE_FROM_USER.
+ */
+static int e_d_exe_origin(const char *exe)
+{
+ struct e_s_prog base;
+ int from;
+
+ memset(&base, 0, sizeof base);
+ if (e_s_prog.language)
+  e_opt_own_language_for(e_s_prog.language, &e_s_prog, &base);
+ from = e_opt_lang_value_from(base.language ? &base : NULL, e_s_prog.language,
+                              E_D_PLAN_KEY_EXE, exe);
+ e_prog_entry_free(&base);
+ return(from);
+}
+
+/**
  * e_d_pick_start_arg - Choose the argument the debugger is started on when
  * no project is open: the built program, or for pdb/a68g the source's path.
  *
@@ -12851,7 +12874,7 @@ static int e_d_pick_start_arg(ECNT *cn, FENSTER *f, char *estr, size_t n)
   e_d_prog_origin = WPE_FROM_FOLDER;
  if (exe && exe[0])
  {
-  if (e_opt_value_from(e_s_prog.language, E_D_PLAN_KEY_EXE, exe) == WPE_FROM_FOLDER)
+  if (e_d_exe_origin(exe) == WPE_FROM_FOLDER)
    e_d_prog_origin = WPE_FROM_FOLDER;
   if (e_deb_type == DEB_PDB || e_deb_type == DEB_A68G)
    return(e_d_copy_arg(estr, n, exe));
