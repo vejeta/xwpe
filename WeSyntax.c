@@ -138,48 +138,52 @@ static FILE *WpeSyntaxOpenSystem(char *buf, size_t n)
  return fopen(buf, "r");
 }
 
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
-  WpeSyntaxReadFile - Reads the programming language syntax file.
-
-    Parameters:
-      cn           (In)  Part of old code needed for e_error
-\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-void WpeSyntaxReadFile(ECNT *cn)
+/**
+ * WpeSyntaxAddBuiltinRules - The C and C++ rules the editor carries, for a
+ * machine with no syntax_def file at all, so a source file is still
+ * highlighted.
+ */
+static void WpeSyntaxAddBuiltinRules(void)
 {
- FILE *syntax_file;
+ WpeSyntaxExt *new_syntax;
+
+ /* C Syntax (".c" extension) */
+ new_syntax = WpeMalloc(sizeof(WpeSyntaxExt));
+ new_syntax->extension = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
+ new_syntax->extension[0] = strdup(".c");
+ new_syntax->syntax_rule = &WpeCSyntaxRule;
+ WpeExpArrayAdd((void **)&WpeSyntaxDef, &new_syntax);
+ /* C++ Syntax (".C", ".cpp", ".cxx", ".cc", ".h", and ".hpp" extensions) */
+ new_syntax = WpeMalloc(sizeof(WpeSyntaxExt));
+ new_syntax->extension = (char **)WpeExpArrayCreate(6, sizeof(char *), 1);
+ new_syntax->extension[0] = strdup(".C");
+ new_syntax->extension[1] = strdup(".cpp");
+ new_syntax->extension[2] = strdup(".cxx");
+ new_syntax->extension[3] = strdup(".cc");
+ new_syntax->extension[4] = strdup(".h");
+ new_syntax->extension[5] = strdup(".hpp");
+ new_syntax->syntax_rule = &WpeCxxSyntaxRule;
+ WpeExpArrayAdd((void **)&WpeSyntaxDef, &new_syntax);
+ /*WpeSyntaxDef[2] = &WpeHSyntaxExt;*/
+}
+
+/**
+ * WpeSyntaxParseFile - Read every language of an open syntax_def into
+ * WpeSyntaxDef.
+ * @cn: part of the old code e_error needs; @syntax_file: the open file.
+ *
+ * Stops at the first entry that is cut short and says so.  Does not close
+ * the file: whoever opened it does, once, so no return path can leave the
+ * editor holding the file for as long as it runs (and handing it to every
+ * program it starts).
+ */
+static void WpeSyntaxParseFile(ECNT *cn, FILE *syntax_file)
+{
  WpeSyntaxExt *new_syntax;
  char tmp[WPE_PATH_SIZE];
  int reserved_num, long_op_num;
  int i, k;
 
- WpeSyntaxDef = (WpeSyntaxExt **)WpeExpArrayCreate(0, sizeof(WpeSyntaxExt *), 4);
- syntax_file = WpeSyntaxOpenPersonal(tmp, sizeof tmp);
- if (syntax_file == NULL)
- {
-  syntax_file = WpeSyntaxOpenSystem(tmp, sizeof tmp);
-  if (syntax_file == NULL)
-  {
-   /* C Syntax (".c" extension) */
-   new_syntax = WpeMalloc(sizeof(WpeSyntaxExt));
-   new_syntax->extension = (char **)WpeExpArrayCreate(1, sizeof(char *), 1);
-   new_syntax->extension[0] = strdup(".c");
-   new_syntax->syntax_rule = &WpeCSyntaxRule;
-   WpeExpArrayAdd((void **)&WpeSyntaxDef, &new_syntax);
-   /* C++ Syntax (".C", ".cpp", ".cxx", ".cc", ".h", and ".hpp" extensions) */
-   new_syntax = WpeMalloc(sizeof(WpeSyntaxExt));
-   new_syntax->extension = (char **)WpeExpArrayCreate(6, sizeof(char *), 1);
-   new_syntax->extension[0] = strdup(".C");
-   new_syntax->extension[1] = strdup(".cpp");
-   new_syntax->extension[2] = strdup(".cxx");
-   new_syntax->extension[3] = strdup(".cc");
-   new_syntax->extension[4] = strdup(".h");
-   new_syntax->extension[5] = strdup(".hpp");
-   new_syntax->syntax_rule = &WpeCxxSyntaxRule;
-   WpeExpArrayAdd((void **)&WpeSyntaxDef, &new_syntax);
-   /*WpeSyntaxDef[2] = &WpeHSyntaxExt;*/
-   return ;
-  }
- }
  while (fscanf(syntax_file, "%s", tmp) == 1)
  {
   new_syntax = WpeMalloc(sizeof(WpeSyntaxExt));
@@ -330,5 +334,31 @@ void WpeSyntaxReadFile(ECNT *cn)
         WpeReservedWordCompare);
   WpeExpArrayAdd((void **)&WpeSyntaxDef, &new_syntax);
  }
+}
+
+/**
+ * WpeSyntaxReadFile - Read the programming language syntax file at start-up:
+ * the user's own, else the one installed, else the built-in C and C++ rules.
+ * @cn: part of the old code e_error needs.
+ *
+ * The file is closed here, once, however the parser ends, so the editor does
+ * not keep it open while it runs.
+ */
+void WpeSyntaxReadFile(ECNT *cn)
+{
+ FILE *syntax_file;
+ char tmp[WPE_PATH_SIZE];
+
+ WpeSyntaxDef = (WpeSyntaxExt **)WpeExpArrayCreate(0, sizeof(WpeSyntaxExt *), 4);
+ syntax_file = WpeSyntaxOpenPersonal(tmp, sizeof tmp);
+ if (syntax_file == NULL)
+  syntax_file = WpeSyntaxOpenSystem(tmp, sizeof tmp);
+ if (syntax_file == NULL)
+ {
+  WpeSyntaxAddBuiltinRules();
+  return ;
+ }
+ WpeSyntaxParseFile(cn, syntax_file);
+ fclose(syntax_file);
 }
 

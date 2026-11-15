@@ -25,6 +25,9 @@ Bugs fixed in 1.6.x:
   whatever started the editor left open; it starts with 0, 1 and 2 and, for a
   debugger, the program's side of its pty.  Seen on macOS, where the CI
   runner's sockets reached the Run program.
+* The editor closes the syntax definition it reads at start-up; it used to
+  keep it open for as long as it ran, and every program it started inherited
+  it.
 * With both Algol 68 toolchains installed, a folder's xwperc no longer makes
   F9 ask about Compiler = ga68 or Ctrl-F9 say the folder chose the program
   for a ga68 file, and "Use mine" keeps the file's toolchain (it compiled a

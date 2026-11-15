@@ -877,6 +877,8 @@ with `WPE_CHILD_CLOSE_LOOP_ONLY`, so Linux proves the loop; the loop build
 prints what the step cost, which is how a macOS run measures it.
 `tests/check-child-fds.sh` fails on a second exec site, on a start that can
 skip the step, and on a `close_range` or `closefrom` outside the one function.
+The editor's own habit of keeping a start-up file open is a separate row
+(`tests/test_child_fds.py`): a file read once is closed once.
 
 ## File Manager geometry (1.6.5)
 

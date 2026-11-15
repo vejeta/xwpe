@@ -1076,6 +1076,9 @@ EXTRA_DIST = \
   tests/test_option_codec.py \
   tests/x11/test_option_codec.py \
   tests/wayland/test_option_codec.py \
+  tests/test_child_fds.py \
+  tests/x11/test_child_fds.py \
+  tests/wayland/test_child_fds.py \
   tests/test_help_buffers.py \
   tests/x11/test_help_buffers.py \
   tests/wayland/test_help_buffers.py \

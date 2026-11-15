@@ -4,6 +4,9 @@
   {"id": "SC-child-fds-01", "requirement": "Every kind of program the editor starts holds 0, 1 and 2 and what its io kind names (the program's side of a debugger's pty), none of the descriptors the editor inherited", "layer": "c-unit", "test": "test_childfds", "status": "new"},
   {"id": "SC-child-fds-02", "requirement": "A debugger's program keeps the side of the pty named to it: the same device, still a terminal, and never the editor's master", "layer": "c-unit", "test": "test_childfds", "status": "new"},
   {"id": "SC-child-fds-03", "requirement": "A descriptor left open above the soft descriptor limit is closed in the child too: the close loop reaches the hard limit, not the soft one", "layer": "c-unit", "test": "test_childfds", "status": "new"},
-  {"id": "SC-child-fds-04", "requirement": "The descriptor-by-descriptor close loop (macOS) gives rows 01-03 the same answers and prints what the close step cost", "layer": "c-unit", "test": "test_childfds_loop", "status": "new"}
+  {"id": "SC-child-fds-04", "requirement": "The descriptor-by-descriptor close loop (macOS) gives rows 01-03 the same answers and prints what the close step cost", "layer": "c-unit", "test": "test_childfds_loop", "status": "new"},
+  {"id": "SC-child-fds-05", "requirement": "After start-up the terminal editor holds no descriptor that names the syntax_def it read", "layer": "ncurses", "test": "tests/test_child_fds.py::test_after_start_up_no_descriptor_names_the_syntax_def_it_read", "status": "new"},
+  {"id": "SC-child-fds-05x", "requirement": "After start-up the X11 editor holds no descriptor that names the syntax_def it read", "layer": "x11", "test": "tests/x11/test_child_fds.py::test_x11_after_start_up_no_descriptor_names_the_syntax_def_it_read", "status": "new"},
+  {"id": "SC-child-fds-05w", "requirement": "After start-up the Wayland editor holds no descriptor that names the syntax_def it read", "layer": "wayland", "test": "tests/wayland/test_child_fds.py::test_x11_after_start_up_no_descriptor_names_the_syntax_def_it_read", "status": "new"}
  ]
 }
