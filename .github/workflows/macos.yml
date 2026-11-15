@@ -25,6 +25,13 @@ name: macOS (manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      tests:
+        description: >-
+          Test ids for the UI step to run alone, one pass, full tracebacks
+          (empty: the whole suite)
+        required: false
+        default: ""
 
 jobs:
   macos:
@@ -141,6 +148,7 @@ jobs:
           # A login-shell TERM the macOS-smoke sanity check expects (CI shells
           # have none); the editor under test always gets its own TERM regardless.
           TERM: "xterm-256color"
+          SELECTED_TESTS: ${{ inputs.tests }}
         run: |
           python3 -m venv /tmp/ptenv
           /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pytest-xdist
@@ -155,6 +163,18 @@ jobs:
           # (Xvfb+matchbox / weston) absent on macOS, and they share test-module
           # basenames with tests/ -- collecting them here is an import-file-mismatch
           # error, not a real failure.
+          # Asked for chosen test ids: run only those, one at a time, once,
+          # with every traceback, and print the facts of this system the
+          # rows depend on, so a macOS-only failure can be read in one run.
+          if [ -n "$SELECTED_TESTS" ]; then
+            # The ids hold [param] parts: split on blanks, never glob.
+            set -f
+            getconf PATH_MAX / ; getconf NAME_MAX /
+            infocmp -1 xterm-256color | grep -E 'acsc|rmcup|rmkx|cnorm|sgr0' || true
+            cc --version | head -1
+            WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -v --tb=long -p no:cacheprovider $SELECTED_TESTS
+            exit $?
+          fi
           # -v names each test as it ends, so a step that runs out of time
           # still says which rows failed; one rerun keeps a flake from
           # costing three runs of a row that really fails.
