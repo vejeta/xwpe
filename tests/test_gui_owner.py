@@ -7,12 +7,19 @@ named; what the row started itself is left alone; a display the owner did
 not start is refused; a wait that runs out names its event and its scale.
 """
 import ctypes
+import errno
+import fcntl
 import os
+import pty
 import re
 import select
+import shlex
+import shutil
 import signal
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 
@@ -154,9 +161,82 @@ def _standin_env_names():
     _wait_forever()
 
 
+# What the recording stand-in shows the value of: where it may draw and how
+# it was set up.  Every other variable is recorded by name only.
+RECORD_SHOWN = ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "HOME",
+                "XWPE_BACKEND", "XDG_CONFIG_HOME", "TERM",
+                "XWPE_GDB_INTERFACE", "XWPE_KEYS")
+STAT_TTY_NR = 4         # field of /proc/<pid>/stat after the state: tty_nr
+WINCH_LINE = "winch"
+
+
+def _stdio_size():
+    """The window size of the terminal on stdout (else stdin), or None."""
+    for fd in (1, 0):
+        try:
+            packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8)
+        except OSError:
+            continue
+        rows, cols = struct.unpack("HHHH", packed)[:2]
+        return cols, rows
+    return None
+
+
+def _record_header(args):
+    """The facts a recording stand-in writes about how it was started."""
+    fields = gui_owner._stat_fields(os.getpid())
+    size = _stdio_size()
+    lines = ["pid %d ppid %d sid %d pgid %d" % (os.getpid(), os.getppid(),
+                                                os.getsid(0), os.getpgid(0)),
+             "tty_nr %s" % fields[STAT_TTY_NR],
+             "stdin_tty %d" % os.isatty(0),
+             "size %s" % ("none" if size is None else "%dx%d" % size),
+             "argv %r" % (args,)]
+    for name in sorted(os.environ):
+        if name in RECORD_SHOWN:
+            lines.append("env %s=%s" % (name, os.environ[name]))
+        else:
+            lines.append("env " + name)
+    return lines
+
+
+def _standin_record(out_dir, args):
+    """A stand-in for the editor binary: write <out_dir>/<pid>.txt (the pid,
+    how its terminal is set up, the names of its environment, the value only
+    of the display and style ones), note each SIGWINCH in it, and wait to be
+    ended.  The file appears whole or not at all."""
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "%d.txt" % os.getpid())
+
+    def note_winch(signum, frame):
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(WINCH_LINE + "\n")
+    # Before the record exists: a row that sees it may resize at once.
+    signal.signal(signal.SIGWINCH, note_winch)
+    with open(path + ".part", "w", encoding="utf-8") as fh:
+        fh.write("\n".join(_record_header(args)) + "\n")
+    os.replace(path + ".part", path)
+    _wait_forever()
+
+
+def _standin_print_env(names):
+    """Print NAME=value for each variable that is set, NAME unset for the
+    rest, then end."""
+    for name in names:
+        if name in os.environ:
+            _say("%s=%s" % (name, os.environ[name]))
+        else:
+            _say(name + " unset")
+    sys.exit(0)
+
+
 def _run_standin(argv):
     """Dispatch this file run as a program."""
-    if argv[:1] == ["--leaker"] and len(argv) == 2:
+    if argv[:1] == ["--record"] and len(argv) >= 2:
+        _standin_record(argv[1], argv[2:])
+    elif argv[:1] == ["--print-env"]:
+        _standin_print_env(argv[1:])
+    elif argv[:1] == ["--leaker"] and len(argv) == 2:
         _standin_leaker(argv[1])
     elif argv[:1] == ["--crasher"] and len(argv) == 2:
         _standin_crasher(argv[1])
@@ -175,7 +255,8 @@ def _run_standin(argv):
     sys.stderr.write("usage: test_gui_owner.py --leaker COMM | --crasher COMM "
                      "| --crasher-apart COMM GO | --orphan-maker SEEN GO "
                      "| --orphan-in-group COMM "
-                     "| --sleeper | --env-names\n")
+                     "| --sleeper | --env-names | --record DIR [ARG...] "
+                     "| --print-env NAME...\n")
     sys.exit(2)
 
 
@@ -354,12 +435,15 @@ def test_the_editor_gets_the_whitelist_and_the_owners_display(owner, tmp_path, r
     names = {line[len("env "):] for line in lines if line.startswith("env ")}
     pinned = {"LC_ALL", "LANG", "SHELL", "HOME", "XDG_CONFIG_HOME",
               "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "DISPLAY", "XWPE_BACKEND",
-              "XWPE_LIB", "XWPE_FONT_SIZE", "XWPE_LSP_NO_EAGER", "XWPE_X_DUMP"}
+              "XWPE_LIB", "XWPE_FONT_SIZE", "XWPE_LSP_NO_EAGER", "XWPE_X_DUMP",
+              "XWPE_KEYS"}
     # The interpreter may add its own (LC_CTYPE when it coerces a locale).
     interpreter_own = {"LC_CTYPE"}
     assert names - pinned - interpreter_own - set(gui_owner.PASS_THROUGH) == set()
     assert "DISPLAY=%s" % FAKE_X_DISPLAY in lines
     assert editor.env["XWPE_BACKEND"] == "x11"
+    # A new profile is asked which keys it wants and nobody answers in a row.
+    assert editor.env["XWPE_KEYS"] == "borland"
     assert not editor.env["XDG_RUNTIME_DIR"].startswith(gui_owner.REAL_SESSION_RUNTIME)
     editor.end()
 
@@ -605,6 +689,26 @@ def test_a_launch_whose_death_signal_is_refused_starts_nothing(owner, tmp_path, 
     assert children <= children_before, "a refused start left a child behind"
 
 
+# @scenario SC-harness-owner-61
+def test_a_launch_that_cannot_take_its_terminal_says_so(owner, tmp_path):
+    """A process asked to have a controlling terminal whose streams are no
+    terminal is not started, and the row is told it was the terminal, not
+    the death signal; one asked to be detached too is refused before any
+    start."""
+    with pytest.raises(gui_owner.OwnerRefused) as raised:
+        owner.launch(STANDIN + ["--sleeper"], {"PATH": os.environ["PATH"]},
+                     str(tmp_path), str(tmp_path), "probe", "no terminal",
+                     controlling_tty=True)
+    assert "controlling terminal" in str(raised.value)
+    assert "PR_SET_PDEATHSIG" not in str(raised.value)
+    with pytest.raises(gui_owner.OwnerRefused) as raised:
+        owner.launch(STANDIN + ["--sleeper"], {"PATH": os.environ["PATH"]},
+                     str(tmp_path), str(tmp_path), "probe", "both",
+                     controlling_tty=True, detached_from_terminal=True)
+    assert "detached" in str(raised.value)
+    assert not owner.ledger.pids(), "a refused start is still in the ledger"
+
+
 # @scenario SC-harness-owner-18
 def test_a_row_cannot_hand_a_process_the_machines_home_or_compositor(owner, tmp_path, request):
     """The editor reads its settings and keys from HOME, and libwayland
@@ -827,6 +931,812 @@ def test_no_x11_module_reads_a_display_constant_and_both_conftests_have_the_acce
         with open(path, encoding="utf-8") as fh:
             assert "def display_name():" in fh.read(), \
                 "tests/%s/conftest.py has no display_name()" % suite
+
+
+# ---------------------------------------------------------------------------
+# What a test may start, and what an editor is given (the process owner)
+
+# The Wayland suite and the terminal driver still start their processes by
+# hand; the rows that show it are red there until each is moved onto the
+# owner, and they are marked so the run is green and the move turns each into
+# an unexpected pass that must have its mark removed.
+PASS_B = pytest.mark.xfail(
+    strict=True, raises=AssertionError,
+    reason="the Wayland conftest still starts its processes by hand "
+           "(moved onto the owner by the Wayland pass)")
+PASS_C = pytest.mark.xfail(
+    strict=True, raises=AssertionError,
+    reason="WpeSession still starts its editor by hand (moved onto the "
+           "owner by the terminal pass)")
+SUITES = ["x11", pytest.param("wayland", marks=PASS_B)]
+
+CANARY_VALUES = {"DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9",
+                 "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent/bus",
+                 "XAUTHORITY": "/nonexistent/Xauthority",
+                 "SSH_AUTH_SOCK": "/nonexistent/agent",
+                 "TPAS_FAKE_API_KEY": "canary-value"}
+# The names a graphical editor, or one on a terminal, may be given: the
+# owner's own, what it passes through, and what the interpreter or the shell
+# of the stand-in's launcher adds by itself.
+EDITOR_PINNED = {"LC_ALL", "LANG", "SHELL", "HOME", "XDG_CONFIG_HOME",
+                 "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "XWPE_LIB",
+                 "XWPE_LSP_NO_EAGER", "XWPE_KEYS", "TERM"}
+LAUNCHER_OWN = {"LC_CTYPE", "PWD", "OLDPWD", "SHLVL", "_"}
+INNER_START_S = 90.0
+INNER_END_S = 120.0
+SETTLE_S = 8.0
+SERVER_FILES = ("/tmp/.X%d-lock", "/tmp/.X11-unix/X%d")
+FIRST_FREE_DISPLAY = 110
+LAST_FREE_DISPLAY = 199
+INNER_ROW = "test_block_marking.py"
+RUNTIME_PREFIX = "xwpe-wl-"
+
+
+def _write_launcher(folder, record_dir):
+    """An executable the suites take for the editor binary: it records how
+    it was started in record_dir and waits to be ended."""
+    path = os.path.join(str(folder), "standin-editor")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\nexec %s -E -s %s --record %s \"$@\"\n" % (
+            shlex.quote(sys.executable), shlex.quote(THIS),
+            shlex.quote(str(record_dir))))
+    os.chmod(path, 0o755)
+    return path
+
+
+def _parse_record(text):
+    """The facts one recording stand-in wrote, as a dict."""
+    rec = {"names": set(), "values": {}, "winch": 0}
+    for line in text.splitlines():
+        words = line.split()
+        if line.startswith("pid "):
+            rec.update(pid=int(words[1]), ppid=int(words[3]),
+                       sid=int(words[5]), pgid=int(words[7]))
+        elif line.startswith("tty_nr "):
+            rec["tty_nr"] = int(words[1])
+        elif line.startswith("stdin_tty "):
+            rec["stdin_tty"] = int(words[1])
+        elif line.startswith("size "):
+            rec["size"] = words[1]
+        elif line.startswith("env "):
+            name, equals, value = line[len("env "):].partition("=")
+            rec["names"].add(name)
+            if equals:
+                rec["values"][name] = value
+        elif line == WINCH_LINE:
+            rec["winch"] += 1
+    return rec
+
+
+def _read_record(record_dir):
+    """The first record in record_dir, or None while there is none."""
+    try:
+        names = sorted(n for n in os.listdir(str(record_dir)) if n.endswith(".txt"))
+    except OSError:
+        return None
+    if not names:
+        return None
+    with open(os.path.join(str(record_dir), names[0]), encoding="utf-8") as fh:
+        return _parse_record(fh.read())
+
+
+def _wait_record(record_dir):
+    """Wait for the stand-in's record and return it parsed."""
+    return gui_owner.wait_for(lambda: _read_record(record_dir),
+                              "the recording stand-in to start", READY_S)
+
+
+def _free_display_number():
+    """A display number with no lock file and no socket, for the legacy
+    fixture that takes one from its environment."""
+    for number in range(FIRST_FREE_DISPLAY, LAST_FREE_DISPLAY):
+        if not any(os.path.exists(path % number) for path in SERVER_FILES):
+            return number
+    raise RuntimeError("no free display number to give the legacy fixture")
+
+
+def _under(folder, cwd):
+    """True when cwd is folder or inside it."""
+    return cwd is not None and (cwd == folder or cwd.startswith(folder + os.sep))
+
+
+def _processes_under(folder):
+    """(pid, command name) of every process whose working directory is
+    under folder: what a run started there and left.  Only stat and cwd
+    are read."""
+    found = []
+    for entry in os.listdir(gui_owner.PROC_ROOT):
+        if entry.isdigit() and int(entry) != os.getpid() \
+                and _under(folder, gui_owner.working_dir(int(entry))):
+            found.append((int(entry), gui_owner.command_name(int(entry))))
+    return found
+
+
+def _kill_by_pid(pid, folder):
+    """SIGKILL pid through a pidfd, after its working directory was seen
+    under folder again, so a pid the kernel reused is never touched."""
+    try:
+        pidfd = os.pidfd_open(pid)
+    except OSError:
+        return
+    try:
+        if _under(folder, gui_owner.working_dir(pid)):
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            select.select([pidfd], [], [], gui_owner.scaled(gui_owner.KILL_WAIT_S))
+    except ProcessLookupError:
+        pass
+    finally:
+        os.close(pidfd)
+
+
+def _running(pid):
+    """True while the editor the stand-in recorded is still there."""
+    return gui_owner.process_running(pid)
+
+
+class _InnerRun:
+    """One pytest of its own, started by a row, running one graphical row of
+    a suite against the recording stand-in, with the caller's session and
+    some keys in its environment.  The row ends what a red run leaves by the
+    pids it finds, so a red run of the row itself leaves nothing."""
+
+    def __init__(self, root, suite):
+        self.suite = suite
+        self.work = os.path.join(str(root), "work")
+        self.records = os.path.join(str(root), "records")
+        for folder in (self.work, self.records, os.path.join(str(root), "home")):
+            os.makedirs(folder)
+        self.exit_code = None
+        self.wl_number = _free_display_number() if suite == "wayland" else None
+        env = {"PATH": os.environ.get("PATH", ""),
+               "HOME": os.path.join(str(root), "home"), "TERM": "xterm",
+               "XWPE_BIN": _write_launcher(root, self.records)}
+        env["WPE_BIN"] = env["XWPE_BIN"]
+        env.update(CANARY_VALUES)
+        if self.wl_number is not None:
+            env["XWPE_TEST_WL_DISPLAY"] = ":%d" % self.wl_number
+        self.log = os.path.join(str(root), "inner.log")
+        argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                "--basetemp", os.path.join(self.work, "base"), "-x",
+                os.path.join(gui_owner.HERE, suite, INNER_ROW)]
+        with open(self.log, "wb") as log:
+            self.proc = subprocess.Popen(argv, cwd=self.work, env=env,
+                                         stdin=subprocess.DEVNULL, stdout=log,
+                                         stderr=subprocess.STDOUT,
+                                         start_new_session=True)
+
+    def text(self):
+        """The end of what the inner pytest printed, for a failure message."""
+        with open(self.log, encoding="utf-8", errors="replace") as fh:
+            return "exit %s:\n%s" % (self.proc.poll(), fh.read()[-1500:])
+
+    def wait_record(self):
+        """The stand-in's record, once it exists; fails if the run ended
+        without starting one."""
+        return gui_owner.wait_for(
+            lambda: _read_record(self.records) or self.proc.poll() is not None,
+            "the inner run to start its editor", INNER_START_S,
+            state_fn=self.text) and _read_record(self.records)
+
+    def wait_exit(self):
+        """Wait for the inner pytest to end, and note how."""
+        try:
+            self.exit_code = self.proc.wait(timeout=gui_owner.scaled(INNER_END_S))
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.exit_code = self.proc.wait()
+        return self.exit_code
+
+    def settle(self, editor_pid):
+        """What is left SETTLE_S (scaled) after the inner pytest ended: the
+        editor still running, other processes it started and left, and the
+        X server files of its display."""
+        def state():
+            return {"editor_alive": _running(editor_pid),
+                    "leftovers": [p for p in _processes_under(self.work)
+                                  if p[0] != editor_pid],
+                    "server_files": self.server_files()}
+
+        def settled():
+            now = state()
+            return not now["editor_alive"] and not now["leftovers"] \
+                and not now["server_files"]
+        try:
+            gui_owner.wait_for(settled, "the run's processes and display to be gone",
+                               SETTLE_S)
+        except gui_owner.OwnerTimeout:
+            pass
+        return state()
+
+    def server_files(self):
+        """The lock file and socket of the run's display that still exist
+        (known only for the Wayland suite's fixed number, or from a record)."""
+        number = self.wl_number
+        if number is None:
+            rec = _read_record(self.records)
+            display = (rec or {}).get("values", {}).get("DISPLAY", "")
+            number = int(display[1:]) if re.fullmatch(r":\d+", display) else None
+        if number is None:
+            return []
+        return [path % number for path in SERVER_FILES
+                if os.path.exists(path % number)]
+
+    def end(self):
+        """End what the run left: the inner pytest, then every process still
+        under its folder, each by its pid, then the files its servers and
+        its runtime folder left on a hard kill."""
+        rec = _read_record(self.records)
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=gui_owner.scaled(INNER_END_S))
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        for pid, _ in _processes_under(self.work):
+            _kill_by_pid(pid, self.work)
+        for path in self.server_files():
+            os.unlink(path)
+        runtime = (rec or {"values": {}})["values"].get("XDG_RUNTIME_DIR", "")
+        if os.path.basename(runtime).startswith(RUNTIME_PREFIX) and os.path.isdir(runtime):
+            gui_owner._remove_tree(runtime)
+
+
+class _InnerRuns:
+    """The plain failing run of each suite, made once for the rows that
+    only read what it left."""
+
+    def __init__(self, root):
+        self.root = root
+        self.runs = {}
+
+    def get(self, suite):
+        """The finished run of suite (its editor never showed a window), with
+        what was left after it."""
+        if suite not in self.runs:
+            run = _InnerRun(self.root / suite, suite)
+            self.runs[suite] = run
+            run.record = run.wait_record()
+            run.wait_exit()
+            run.after = run.settle(run.record["pid"]) if run.record else None
+        return self.runs[suite]
+
+    def end(self):
+        """End everything the runs left."""
+        for run in self.runs.values():
+            run.end()
+
+
+@pytest.fixture(scope="module")
+def inner_runs(tmp_path_factory):
+    """The failing runs of the graphical suites, for the rows below."""
+    runs = _InnerRuns(tmp_path_factory.mktemp("inner"))
+    yield runs
+    runs.end()
+
+
+def _signalled_run(tmp_path, request, suite, sig):
+    """A run of suite, sent sig once its editor has started, and what it
+    left after it was gone."""
+    run = _InnerRun(tmp_path, suite)
+    request.addfinalizer(run.end)
+    run.record = run.wait_record()
+    assert run.record, "the editor never started: " + run.text()
+    run.proc.send_signal(sig)
+    run.wait_exit()
+    run.after = run.settle(run.record["pid"])
+    return run
+
+
+def _describe_after(run):
+    """What the run left, for a failure message."""
+    return "editor %d %s, other processes %s, server files %s; inner run %s" % (
+        run.record["pid"], "STILL RUNNING" if run.after["editor_alive"] else "gone",
+        run.after["leftovers"], run.after["server_files"], run.text())
+
+
+# @scenario SC-harness-owner-33
+@pytest.mark.parametrize("suite", SUITES)
+def test_a_graphical_row_that_fails_before_yield_leaves_no_editor(suite, inner_runs):
+    """A row whose fixture fails before its first yield (the window never
+    appears) must still have its editor ended."""
+    run = inner_runs.get(suite)
+    assert run.record, "the editor never started: " + run.text()
+    assert run.exit_code != 0, "the inner row did not fail: " + run.text()
+    assert not run.after["editor_alive"], \
+        "the editor outlived its failed row: " + _describe_after(run)
+
+
+# @scenario SC-harness-owner-34
+@pytest.mark.parametrize("suite", SUITES)
+def test_a_gui_editor_never_sees_the_callers_display(suite, inner_runs):
+    """The caller's display and session variables, and a key in its
+    environment, do not reach the editor; the display it has is the run's
+    own."""
+    rec = inner_runs.get(suite).record
+    assert rec, "the editor never started: " + inner_runs.get(suite).text()
+    names, values = rec["names"], rec["values"]
+    assert values.get("DISPLAY") != CANARY_VALUES["DISPLAY"], \
+        "the editor was given the caller's DISPLAY"
+    assert values.get("WAYLAND_DISPLAY") != CANARY_VALUES["WAYLAND_DISPLAY"], \
+        "the editor was given the caller's WAYLAND_DISPLAY"
+    carried = sorted(set(CANARY_VALUES) - {"DISPLAY", "WAYLAND_DISPLAY"} & names)
+    assert not carried, "the machine's variables reached the editor: %s" % carried
+
+
+# @scenario SC-harness-owner-35
+@pytest.mark.parametrize("suite", SUITES)
+def test_a_killed_run_leaves_no_server_and_no_editor(suite, tmp_path, request):
+    """A pytest that is killed outright takes its display server, its
+    compositor and its editor along, and the display files with them."""
+    run = _signalled_run(tmp_path, request, suite, signal.SIGKILL)
+    assert not run.after["editor_alive"] and not run.after["leftovers"] \
+        and not run.after["server_files"], _describe_after(run)
+
+
+# @scenario SC-harness-owner-36
+@pytest.mark.parametrize("suite", SUITES)
+def test_an_interrupted_run_leaves_no_editor(suite, tmp_path, request):
+    """An interrupt that lands while the fixture waits for the window ends
+    the editor the fixture had started."""
+    run = _signalled_run(tmp_path, request, suite, signal.SIGINT)
+    assert not run.after["editor_alive"] and not run.after["leftovers"], \
+        _describe_after(run)
+
+
+def _scan(folder, pattern, skip=()):
+    """The lines of the .py files under folder that match pattern, as
+    "path:line: text"; folders in skip are not entered."""
+    found = []
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
+        for name in sorted(files):
+            if not name.endswith(".py") or os.path.join(root, name) == THIS:
+                continue
+            with open(os.path.join(root, name), encoding="utf-8") as fh:
+                for number, line in enumerate(fh, 1):
+                    if pattern.search(line):
+                        found.append("%s:%d: %s" % (os.path.relpath(
+                            os.path.join(root, name), gui_owner.HERE), number,
+                            line.strip()))
+    return found
+
+
+WL_DISPLAY_VARIABLE = re.compile(r"XWPE_TEST_WL_DISPLAY")
+
+
+# @scenario SC-harness-owner-37
+@pytest.mark.parametrize("suite", SUITES)
+def test_a_fixed_display_number_is_not_used(suite):
+    """No suite reads a constant display number, and none takes one from the
+    environment: the X server picks its own."""
+    found = _scan(os.path.join(gui_owner.HERE, suite), BARE_DISPLAY)
+    if suite == "wayland":
+        found += _scan(gui_owner.HERE, WL_DISPLAY_VARIABLE, ("harness",))
+    assert not found, "a fixed display is still used:\n  " + "\n  ".join(found)
+
+
+@pytest.fixture
+def current_owner(owner):
+    """The row's owner as the process's current one, for the module-level
+    helpers (tool_env, run_tool), put back afterwards."""
+    previous = gui_owner._CURRENT
+    gui_owner.install(owner)
+    yield owner
+    gui_owner.install(previous)
+
+
+def _pty_pair(request):
+    """A pty whose master the row reads or sizes; both ends are closed with
+    the row."""
+    master, slave = pty.openpty()
+    request.addfinalizer(lambda: _close_quietly(master))
+    request.addfinalizer(lambda: _close_quietly(slave))
+    return master, slave
+
+
+def _close_quietly(fd):
+    """Close fd; closing it twice is not an error."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _start_terminal_standin(owner, tmp_path, request, **kwargs):
+    """Start the recording stand-in as a terminal editor; return the owned
+    process, the pty master and the parsed record."""
+    master, slave = _pty_pair(request)
+    records = tmp_path / "records"
+    home = tmp_path / "home"
+    home.mkdir()
+    owned = gui_owner.Terminal.start(
+        owner, _write_launcher(tmp_path, records), [], str(tmp_path), str(home),
+        master, slave, label=request.node.nodeid, request=request, **kwargs)
+    return owned, master, _wait_record(records)
+
+
+# @scenario SC-harness-owner-38
+def test_a_terminal_editor_gets_only_the_allow_list(owner, tmp_path, request, monkeypatch):
+    for name, value in CANARY_VALUES.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LINES", "40")
+    monkeypatch.setenv("COLUMNS", "100")
+    owned, master, rec = _start_terminal_standin(owner, tmp_path, request)
+    allowed = EDITOR_PINNED | LAUNCHER_OWN | set(gui_owner.PASS_THROUGH)
+    assert rec["names"] - allowed == set(), \
+        "names outside the allow-list: %s" % sorted(rec["names"] - allowed)
+    assert not rec["names"] & {"DISPLAY", "WAYLAND_DISPLAY", "LINES", "COLUMNS"}
+    assert rec["values"]["TERM"] == gui_owner.TERM_NAME
+    assert rec["values"]["XWPE_KEYS"] == "borland"
+    assert not os.path.exists(tmp_path / "home" / gui_owner.INHERITED_FILE)
+
+
+# @scenario SC-harness-owner-39
+def test_a_terminal_editor_has_the_pty_as_its_size_and_controlling_terminal(
+        owner, tmp_path, request):
+    """The pty gets its size before the start, the editor leads a session of
+    its own with the pty as its controlling terminal, and a size set later
+    reaches it as SIGWINCH."""
+    owned, master, rec = _start_terminal_standin(owner, tmp_path, request,
+                                                 size=(100, 40))
+    assert rec["size"] == "100x40"
+    assert rec["sid"] == rec["pid"] and rec["tty_nr"] != 0
+    gui_owner.set_pty_size(master, 90, 25)
+    gui_owner.wait_for(lambda: _read_record(tmp_path / "records")["winch"],
+                       "the editor to see the new size", READY_S)
+
+
+# @scenario SC-harness-owner-40
+def test_a_terminal_editor_whose_input_is_a_pipe_still_has_its_terminal(
+        owner, tmp_path, request):
+    """A row that feeds the editor a pipe keeps the pty for the screen: the
+    terminal is then taken from stdout."""
+    reader, writer = os.pipe()
+    request.addfinalizer(lambda: _close_quietly(writer))
+    try:
+        owned, master, rec = _start_terminal_standin(owner, tmp_path, request,
+                                                     stdin_fd=reader)
+    finally:
+        os.close(reader)
+    assert rec["stdin_tty"] == 0 and rec["tty_nr"] != 0 and rec["size"] == "80x30"
+
+
+# @scenario SC-harness-owner-41
+def test_a_row_env_reaches_the_editor_under_the_rows_own_extra_env(
+        owner, tmp_path, request):
+    """A fixture's variables (a debugger interface) reach every editor of
+    the row, the row's own extra_env wins over them, and they are gone
+    when the row ends."""
+    owner.row_env(request)["XWPE_GDB_INTERFACE"] = "mi"
+    owned, master, rec = _start_terminal_standin(owner, tmp_path, request)
+    assert rec["values"]["XWPE_GDB_INTERFACE"] == "mi"
+    other = tmp_path / "second"
+    other.mkdir()
+    owned, master, rec = _start_terminal_standin(
+        owner, other, request, extra_env={"XWPE_GDB_INTERFACE": "cli"})
+    assert rec["values"]["XWPE_GDB_INTERFACE"] == "cli"
+
+
+class _FakeRow:
+    """What the owner takes from a pytest request: its id and finalizers."""
+
+    class node:
+        nodeid = "tests/test_fake.py::row"
+
+    def __init__(self):
+        self.finalizers = []
+
+    def addfinalizer(self, function):
+        """Record a finalizer, as pytest does."""
+        self.finalizers.append(function)
+
+
+# @scenario SC-harness-owner-42
+def test_the_row_env_is_cleared_when_the_row_ends(owner):
+    row = _FakeRow()
+    owner.row_env(row)["XWPE_UI_TRACE"] = "/x"
+    assert owner.merged_env({"A": "1"}) == {"XWPE_UI_TRACE": "/x", "A": "1"}
+    for function in row.finalizers:
+        function()
+    assert owner.merged_env(None) == {}
+
+
+# @scenario SC-harness-owner-43
+def test_a_row_can_inherit_one_more_variable_and_only_its_name_is_recorded(
+        owner, tmp_path, monkeypatch):
+    monkeypatch.setenv("TPAS_KEY", "s3cret-value")
+    home = tmp_path / "home"
+    home.mkdir()
+    done = gui_owner.Terminal.run(
+        owner, sys.executable, ["-E", "-s", THIS, "--print-env", "TPAS_KEY",
+                                "TPAS_UNSET", "DISPLAY"], READY_S,
+        inherit=("TPAS_KEY", "TPAS_UNSET"), home=str(home))
+    assert done.stdout.decode().split("\n")[:3] == [
+        "TPAS_KEY=s3cret-value", "TPAS_UNSET unset", "DISPLAY unset"]
+    with open(home / gui_owner.INHERITED_FILE, encoding="utf-8") as fh:
+        recorded = fh.read()
+    assert recorded.split() == ["TPAS_KEY"] and "s3cret" not in recorded
+
+
+# @scenario SC-harness-owner-44
+def test_a_row_cannot_inherit_the_machines_session_or_home(current_owner):
+    for name in gui_owner.NEVER_INHERITED + gui_owner.NEVER_PASSED:
+        with pytest.raises(gui_owner.OwnerRefused):
+            gui_owner.tool_env(inherit=(name,))
+        with pytest.raises(gui_owner.OwnerRefused):
+            gui_owner.run_tool(STANDIN + ["--sleeper"], READY_S, inherit=(name,))
+    assert not current_owner.ledger.pids(), "a refused run still started something"
+
+
+# @scenario SC-harness-owner-45
+def test_tool_env_is_built_from_the_allow_list_with_the_owners_home(
+        current_owner, tmp_path, monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":77")
+    for name, value in CANARY_VALUES.items():
+        monkeypatch.setenv(name, value)
+    env = gui_owner.tool_env()
+    assert set(env) - set(gui_owner.PASS_THROUGH) <= {
+        "LC_ALL", "LANG", "SHELL", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"}
+    assert env["HOME"] == current_owner.tool_home()
+    assert os.path.realpath(env["HOME"]) != os.path.realpath(os.path.expanduser("~"))
+    display = _fake_x_display(current_owner, tmp_path)
+    assert gui_owner.tool_env(display)["DISPLAY"] == FAKE_X_DISPLAY
+    for extra in ({"HOME": os.path.expanduser("~")}, {"DISPLAY": ":77"},
+                  {"WAYLAND_SOCKET": "3"}):
+        with pytest.raises(gui_owner.OwnerRefused):
+            gui_owner.tool_env(extra_env=extra)
+    with pytest.raises(gui_owner.OwnerRefused):
+        gui_owner.tool_env(":77")
+
+
+# @scenario SC-harness-owner-46
+def test_run_tool_returns_the_output_and_takes_a_home_and_extra_variables(
+        current_owner, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    done = gui_owner.run_tool(STANDIN + ["--print-env", "HOME", "TPAS_X"],
+                              READY_S, home=str(home),
+                              extra_env={"TPAS_X": "1"})
+    assert done.returncode == 0
+    assert done.stdout.decode().split("\n")[:2] == ["HOME=%s" % home, "TPAS_X=1"]
+    assert not current_owner.ledger.pids(), "an ended tool is still on the ledger"
+
+
+# @scenario SC-harness-owner-47
+def test_run_tool_ends_a_tool_that_outlives_its_deadline_and_names_it(current_owner):
+    with pytest.raises(gui_owner.OwnerTimeout) as raised:
+        gui_owner.run_tool(STANDIN + ["--sleeper"], 0.5)
+    assert "python" in str(raised.value) and "0.5 s" in str(raised.value)
+    assert not current_owner.ledger.pids(), "the late tool is still running"
+
+
+# @scenario SC-harness-owner-48
+def test_run_tool_check_raises_on_a_failing_tool(current_owner):
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        gui_owner.run_tool(STANDIN + ["--no-such-mode"], READY_S, check=True)
+    assert raised.value.returncode == 2 and b"usage" in raised.value.stderr
+
+
+# @scenario SC-harness-owner-49
+def test_run_nested_passes_the_harness_variables_and_nothing_of_the_session(
+        current_owner, monkeypatch):
+    monkeypatch.setenv("XWPE_BIN", "/the/editor")
+    monkeypatch.setenv("XWPE_TEST_OS", "somewhere")
+    monkeypatch.setenv("DISPLAY", ":77")
+    done = gui_owner.run_nested(
+        STANDIN + ["--print-env", "XWPE_BIN", "XWPE_TEST_OS", "DISPLAY"], READY_S)
+    assert done.stdout.decode().split("\n")[:3] == [
+        "XWPE_BIN=/the/editor", "XWPE_TEST_OS=somewhere", "DISPLAY unset"]
+
+
+# @scenario SC-harness-owner-50
+def test_process_running_says_ended_for_a_zombie_and_a_reused_pid(tmp_path):
+    live = subprocess.Popen(STANDIN + ["--sleeper"])
+    done = subprocess.Popen(["true"])
+    try:
+        started = gui_owner.start_ticks(live.pid)
+        assert gui_owner.process_running(live.pid)
+        assert gui_owner.process_running(live.pid, started)
+        assert not gui_owner.process_running(live.pid, started + 1), \
+            "a pid with another start time was taken for the same process"
+        gui_owner.wait_for(lambda: procinfo.run_state(done.pid) == procinfo.ZOMBIE,
+                           "the short process to end", READY_S)
+        assert not gui_owner.process_running(done.pid), "a zombie counts as running"
+        assert procinfo.run_state(done.pid) == procinfo.ZOMBIE, \
+            "a zombie was reaped though the caller did not name its start time"
+        assert done.wait() == 0, "the row's own child lost its exit status"
+    finally:
+        live.kill()
+        live.wait()
+        done.wait()
+    assert not gui_owner.process_running(live.pid)
+
+
+# @scenario SC-harness-owner-51
+def test_process_running_reaps_an_adopted_orphan_by_its_pid_and_start_time(
+        owner, tmp_path, request):
+    editor, orphan = _orphan_zombie(owner, tmp_path, request)
+    started = editor.tree.started[orphan]
+    own = subprocess.Popen(["true"])
+    try:
+        gui_owner.wait_for(lambda: procinfo.run_state(own.pid) == procinfo.ZOMBIE,
+                           "the row's own child to end", READY_S)
+        assert not gui_owner.process_running(orphan)
+        assert procinfo.run_state(orphan) == procinfo.ZOMBIE
+        assert not gui_owner.process_running(orphan, started)
+        assert procinfo.run_state(orphan) == procinfo.GONE
+        assert procinfo.run_state(own.pid) == procinfo.ZOMBIE, \
+            "another child of pytest was reaped"
+    finally:
+        own.wait()
+
+
+# @scenario SC-harness-owner-52
+def test_a_host_without_pidfd_gets_a_poll_watch_and_the_same_sweep(
+        owner, tmp_path, request, monkeypatch):
+    """A container may filter pidfd_open: no row errors with an OSError, the
+    owner watches by the process table, and a leftover is found, named and
+    ended as with a pidfd."""
+    def refused(pid, flags=0):
+        raise OSError(errno.ENOSYS, "pidfd_open filtered")
+    grandchild = None
+    try:
+        with monkeypatch.context() as filtered:
+            filtered.setattr(os, "pidfd_open", refused)
+            assert isinstance(gui_owner.watch_process(os.getpid()),
+                              gui_owner._PollWatch)
+            editor = _start_standin(owner, tmp_path, request,
+                                    ["--leaker", LEAK_COMM])
+            assert isinstance(editor.watch, gui_owner._PollWatch)
+            grandchild = _wait_grandchild(editor)
+            with pytest.raises(gui_owner.LeakedProcesses) as raised:
+                editor.end()
+            assert "pid %d comm %s" % (grandchild, LEAK_COMM) in str(raised.value)
+        assert procinfo.run_state(grandchild) == procinfo.GONE, \
+            "the grandchild survived its row"
+        assert not editor.running()
+    finally:
+        if grandchild is not None and procinfo.run_state(grandchild) != procinfo.GONE:
+            _end_leftover(os.pidfd_open(grandchild))
+
+
+# @scenario SC-harness-owner-53
+def test_a_pidfd_error_that_is_not_unavailability_is_still_an_error(monkeypatch):
+    def gone(pid, flags=0):
+        raise OSError(errno.ESRCH, "no such process")
+    monkeypatch.setattr(os, "pidfd_open", gone)
+    with pytest.raises(OSError):
+        gui_owner.watch_process(os.getpid())
+
+
+# @scenario SC-harness-owner-54
+def test_current_is_the_installed_owner_and_a_script_gets_one_of_its_own(owner):
+    previous = gui_owner._CURRENT
+    try:
+        gui_owner.install(owner)
+        assert gui_owner.current() is owner
+    finally:
+        gui_owner.install(previous)
+    report = subprocess.run([sys.executable, "-E", "-s", gui_owner.__file__,
+                             "--report-current"], capture_output=True,
+                            text=True, timeout=gui_owner.scaled(READY_S))
+    assert report.stdout.strip() == "current begun 1 same 1", report.stderr
+
+
+# @scenario SC-harness-owner-62
+def test_process_running_does_not_reap_a_process_the_owner_started(
+        owner, tmp_path, request):
+    previous = gui_owner._CURRENT
+    gui_owner.install(owner)
+    try:
+        owned = owner.start_service(
+            [sys.executable, "-E", "-s", "-c", "raise SystemExit(3)"],
+            "exits 3", str(tmp_path), str(tmp_path), request=request)
+        started = gui_owner.start_ticks(owned.pid)
+        gui_owner.wait_for(
+            lambda: procinfo.run_state(owned.pid) == procinfo.ZOMBIE,
+            "the owned process to end", READY_S)
+        assert not gui_owner.process_running(owned.pid, started)
+        assert procinfo.run_state(owned.pid) == procinfo.ZOMBIE, \
+            "the owner's own child was reaped by process_running"
+        assert owned.proc.wait() == 3, "the owned process lost its exit status"
+    finally:
+        gui_owner.install(previous)
+
+
+# @scenario SC-harness-owner-55
+def test_running_and_entries_since_name_what_a_row_started_and_end_since_ends_it(
+        owner, tmp_path, request):
+    before = owner.ledger.pids()
+    first = _start_standin(owner, tmp_path, request, ["--sleeper"])
+    second = _start_standin(owner, tmp_path, request, ["--sleeper"])
+    assert {o.pid for o in owner.entries_since(before)} >= {first.pid, second.pid}
+    assert {first.pid, second.pid} <= {o.pid for o in owner.running("xwpe")}
+    owner.end_since(before)
+    assert not first.running() and not second.running()
+    assert not owner.entries_since(before)
+
+
+# @scenario SC-harness-owner-56
+def test_end_since_errors_the_row_naming_what_a_process_left(owner, tmp_path, request):
+    before = owner.ledger.pids()
+    editor = _start_standin(owner, tmp_path, request, ["--leaker", LEAK_COMM])
+    grandchild = _wait_grandchild(editor)
+    pidfd = os.pidfd_open(grandchild)
+    try:
+        with pytest.raises(gui_owner.LeakedProcesses) as raised:
+            owner.end_since(before)
+        assert "pid %d comm %s" % (grandchild, LEAK_COMM) in str(raised.value)
+        assert _ended(pidfd)
+    finally:
+        _end_leftover(pidfd)
+
+
+# @scenario SC-harness-owner-57
+def test_the_root_fixtures_are_written_and_not_installed():
+    """The owner's session and row fixtures exist in tests/conftest.py but
+    are not autouse: turning them on puts every terminal row under the
+    subreaper, which the terminal suite's pass does after its liveness
+    checks moved to process_running."""
+    with open(os.path.join(gui_owner.HERE, "conftest.py"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert "def process_owner(" in text and "def end_row_processes(" in text
+    assert not re.search(r"@pytest\.fixture\([^)]*autouse", text)
+
+
+# @scenario SC-harness-owner-58
+@pytest.mark.skipif(not all(shutil.which(b) for b in ("Xvfb", "weston", "xdotool")),
+                    reason="Xvfb, weston and xdotool are needed")
+def test_the_owner_starts_an_x_server_and_a_compositor_it_registers(
+        current_owner, tmp_path, request):
+    """The starters both graphical suites use: Xvfb on a number of its own,
+    weston on it in a runtime folder the owner made, both registered and
+    ended with the row."""
+    display = gui_owner.start_x_server(current_owner, request, str(tmp_path))
+    assert re.fullmatch(r":\d+", display.name)
+    assert current_owner.x_display(display.name) is display
+    done = gui_owner.run_tool(["xdotool", "getdisplaygeometry"], READY_S,
+                              display=display)
+    assert done.stdout.split() == [b"1024", b"768"]
+    wayland = gui_owner.start_compositor(current_owner, request, display,
+                                         str(tmp_path), 640, 480)
+    assert os.path.exists(wayland.socket_path())
+    assert wayland.runtime_dir in current_owner.runtime_dirs()
+    assert current_owner.wayland_display(wayland) is wayland
+    env = gui_owner.tool_env(wayland)
+    assert env["WAYLAND_DISPLAY"] == wayland.socket
+    assert env["DISPLAY"] == display.name
+
+
+# @scenario SC-harness-owner-60
+def test_the_x11_conftest_takes_the_starters_from_the_owner():
+    """The X11 suite keeps its names for the moved code, so a row that
+    imports PreviousRowLeft from it still gets the one class."""
+    with open(os.path.join(gui_owner.HERE, "x11", "conftest.py"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert "owner_api.start_x_server(" in text
+    assert "from gui_owner import PreviousRowLeft" in text
+    assert "subprocess.Popen" not in text
+
+
+# @scenario SC-harness-owner-59
+@PASS_C
+def test_a_wpe_session_editor_gets_only_the_allow_list(tmp_path, monkeypatch):
+    """The terminal driver gives its editor the allow-list and no display."""
+    wpe_driver = pytest.importorskip("wpe_driver")
+    records = tmp_path / "records"
+    monkeypatch.setattr(wpe_driver, "WPE_BIN", _write_launcher(tmp_path, records))
+    for name, value in CANARY_VALUES.items():
+        monkeypatch.setenv(name, value)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    with wpe_driver.WpeSession(str(workdir), "int main(){}\n", wait=0.2):
+        rec = _wait_record(records)
+        allowed = EDITOR_PINNED | LAUNCHER_OWN | set(gui_owner.PASS_THROUGH)
+        assert rec["names"] - allowed == set(), \
+            "names outside the allow-list: %s" % sorted(rec["names"] - allowed)
+        assert not rec["names"] & {"DISPLAY", "WAYLAND_DISPLAY"}
 
 
 if __name__ == "__main__":

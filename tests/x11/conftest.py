@@ -31,7 +31,6 @@ display_name(), never by a constant.
 """
 import os
 import pty
-import select
 import shutil
 import subprocess
 import sys
@@ -45,6 +44,7 @@ if TESTS_DIR not in sys.path:
 
 import gui_owner as owner_api  # noqa: E402
 from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
+from gui_owner import PreviousRowLeft  # noqa: E402,F401  (rows import it from here)
 
 # The window manager and the XWD-to-PNG converter are platform-dependent:
 # matchbox + convert (ImageMagick 6) on Debian/Ubuntu CI, twm + magick +
@@ -90,7 +90,7 @@ def pytest_collection_modifyitems(config, items):
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 XWPE_BIN = os.environ.get("XWPE_BIN") or os.path.normpath(os.path.join(HERE, "..", "..", "xwpe"))
-SCREEN = "1024x768x24"
+SCREEN = owner_api.SCREEN
 SCREEN_W, SCREEN_H = (int(v) for v in SCREEN.split("x")[:2])
 WINDOW_NAME = "Programming Environment"
 # WM_CLASS res_name set by WeXterm.c::WpeXInit -- used to locate the window via
@@ -100,7 +100,6 @@ WINDOW_CLASS = "xwpe"
 # Deadlines, in seconds before XWPE_TEST_WAIT_SCALE, of the events the
 # fixtures wait for.  Each is how long a loaded host may need, not how long
 # the event takes: a wait ends the moment its event happens.
-SERVER_START_S = 20.0
 WM_START_S = 20.0
 WINDOW_S = 10.0
 GEOMETRY_S = 10.0
@@ -111,8 +110,6 @@ TWM_SETTLE_S = 1.5
 # The line xprop prints for a root property that is set.
 WM_CHECK_PROPERTY = "_NET_SUPPORTING_WM_CHECK"
 WM_CHECK_SET = "window id"
-# How many bytes the server's display-number pipe is read in.
-DISPLAY_LINE_MAX = 64
 
 
 # A loaded CI runner is 3-5x slower than a dev box, so the fixed settle times
@@ -417,44 +414,6 @@ def xwd_to_image(xwd_bytes):
     return Image.open(io.BytesIO(png)).convert("RGB")
 
 
-def _display_number(fd, chunks):
-    """The display number the server wrote to fd, once its line is whole."""
-    if not select.select([fd], [], [], 0)[0]:
-        return None
-    data = os.read(fd, DISPLAY_LINE_MAX)
-    chunks.append(data)
-    text = b"".join(chunks)
-    if not data or not text.endswith(b"\n"):
-        return None
-    return int(text.strip())
-
-
-def _start_xvfb(owner, request, log_dir):
-    """Start Xvfb on the display number it picks; return the owner's
-    record of that display.
-
-    The server writes its number to the pipe once it is listening, so the
-    read is the ready event: no fixed number, no lock file looked at or
-    removed, and two runs at once never meet on one display."""
-    read_fd, write_fd = os.pipe()
-    try:
-        server = owner.start_service(
-            ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", SCREEN,
-             "-nolisten", "tcp"],
-            "Xvfb of the X11 suite", log_dir, log_dir, kind="server",
-            request=request, pass_fds=(write_fd,))
-    finally:
-        os.close(write_fd)
-    chunks = []
-    try:
-        number = wait_for(lambda: _display_number(read_fd, chunks),
-                          "Xvfb to print its display number", SERVER_START_S,
-                          state_fn=server.log_text)
-    finally:
-        os.close(read_fd)
-    return owner.register_x_display(":%d" % number, server)
-
-
 def _wm_argv(log_dir):
     """The window manager's command line for this platform."""
     if _WM_BIN == "matchbox-window-manager":
@@ -513,7 +472,7 @@ def xserver(gui_owner, tmp_path_factory, request):
     and ended by it when the session ends, so a failed start leaves nothing
     running and nothing of another run is touched."""
     log_dir = str(tmp_path_factory.mktemp("x11-session"))
-    display = _start_xvfb(gui_owner, request, log_dir)
+    display = owner_api.start_x_server(gui_owner, request, log_dir, SCREEN)
     _SERVED["display"] = display
     try:
         _start_window_manager(gui_owner, request, display, log_dir)
@@ -527,13 +486,9 @@ def pytest_configure(config):
     owner_api.reject_reruns(config)
 
 
-class PreviousRowLeft(AssertionError):
-    """A row started while the one before it had left something behind."""
-
-
 def _running_editors(owner):
     """The editors the owner still has running."""
-    return [owned for owned in owner.ledger.entries() if owned.kind == "xwpe"]
+    return owner.running("xwpe")
 
 
 def _previous_row():
@@ -604,7 +559,7 @@ def launch_editor(owner, workdir, request, args, extra_env=None,
         str(workdir), extra_env=extra_env, label=request.node.nodeid,
         request=request, dump=False,
         detached_from_terminal=detached_from_terminal,
-        terminal_fd=terminal_fd)
+        stdio=owner_api.LOG if terminal_fd is None else terminal_fd)
 
 
 def launch_client(owner, workdir, request, argv):

@@ -27,18 +27,30 @@ lived on).  This module is where all of that is decided once:
   like any other, so a row can be run under a known CPU load.
 - ``reject_reruns``: a graphical conftest calls it from
   ``pytest_configure`` so a run cannot hide a flaky row behind a rerun.
+- ``Terminal.start`` / ``Terminal.run``: the editor on a pty, or run to
+  completion, with the same whitelist and no display variable at all.
+- ``tool_env`` / ``run_tool`` / ``run_nested``: a short tool, bounded, on the
+  ledger, with an environment built from the whitelist and never a copy of the
+  machine's; ``inherit=`` names the one more variable a row needs.
+- ``current`` / ``install``: the process's owner, for code that is not a
+  fixture.
 
 Only /proc/<pid>/stat and /proc/<pid>/cwd of other processes are read,
 never their command lines or environments.
 """
+import atexit
 import ctypes
+import errno
+import fcntl
 import os
 import re
 import select
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
 
@@ -114,6 +126,45 @@ PASS_THROUGH = ("PATH", "TMPDIR", "RUSTUP_HOME", "CARGO_HOME", "JAVA_HOME",
                 "UBSAN_OPTIONS", "LSAN_OPTIONS")
 # The terminal size variables would override the window's own size.
 NEVER_PASSED = ("LINES", "COLUMNS")
+# Names a row may never inherit from the machine, whatever it asks for: the
+# display, bus, authority and agent sockets lead a process to the user's own
+# session, and HOME is the row's folder.
+NEVER_INHERITED = ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET",
+                   "XDG_RUNTIME_DIR", "HOME", "XAUTHORITY",
+                   "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GPG_AGENT_INFO")
+# What a nested run of the harness needs from the machine: which editor it
+# tests and how it scales its waits.
+HARNESS_VARS = ("WPE_BIN", "XWPE_BIN", "XWPE_TEST_WAIT_SCALE",
+                "XWPE_TEST_SETTLE_MS", "XWPE_TEST_OS")
+# The row's folder holds the names (never the values) it inherited.
+INHERITED_FILE = "env-inherited.txt"
+
+TERM_NAME = "xterm-256color"
+COLS, ROWS = 80, 30
+# struct winsize: rows, cols, xpixel, ypixel.
+PTY_WINSIZE_FORMAT = "HHHH"
+STDIN_FD, STDOUT_FD = 0, 1
+
+# How a launched process's standard streams are wired (see Owner.launch);
+# the third way is an int: the slave side of a pty the row reads.
+LOG = "log"          # stdout and stderr to <log_dir>/<kind>.log, stdin empty
+PIPES = "pipes"      # stdin and stdout pipes for the row, stderr to the log
+
+# Which step of the child's setup failed, written by the child to a pipe the
+# launcher reads, so each failure is reported in its own words.
+STAGE_DEATH_SIGNAL = b"d"
+STAGE_CONTROLLING_TTY = b"t"
+
+SCREEN = "1024x768x24"
+SERVER_START_S = 20.0
+COMPOSITOR_START_S = 20.0
+# How many bytes the server's display-number pipe is read in.
+DISPLAY_LINE_MAX = 64
+# Errors of pidfd_open that mean "not here" (an old kernel, a container's
+# filter), not "that process is gone".
+PIDFD_UNAVAILABLE = (errno.ENOSYS, errno.EPERM, errno.EACCES, errno.EINVAL)
+POLL_WATCH_INTERVAL_S = 0.01
+TOOL_HOME_PREFIX = "xwpe-tool-"
 
 
 class OwnerTimeout(AssertionError):
@@ -393,23 +444,120 @@ def _release_subreaper():
             _set_subreaper(False)
 
 
-def _child_setup(parent_pid):
+def _note_stage(stage_fd, stage):
+    """Tell the launcher which step of the child's setup failed."""
+    if stage_fd is None:
+        return
+    try:
+        os.write(stage_fd, stage)
+    except OSError:
+        pass
+
+
+def _take_controlling_tty():
+    """Make the terminal on stdin (else on stdout) this session's controlling
+    terminal, so TIOCSWINSZ on its master reaches the process as SIGWINCH.
+
+    The caller is already a session leader (start_new_session); the pty is
+    what the standard streams were set to.  stdout is the fallback for a row
+    whose stdin is a pipe (an input that ends)."""
+    if not hasattr(termios, "TIOCSCTTY"):
+        return
+    try:
+        fcntl.ioctl(STDIN_FD, termios.TIOCSCTTY, 0)
+    except OSError:
+        fcntl.ioctl(STDOUT_FD, termios.TIOCSCTTY, 0)
+
+
+def _child_setup(parent_pid, controlling_tty=False, stage_fd=None):
     """Return the function a new child runs before exec.
 
     On Linux it asks for SIGTERM when pytest's main thread dies, so a
     pytest that was killed takes its displays and editors with it, and it
     gives up at once if pytest died before the request was in place.  When
     the request is refused the launch fails: a process that would outlive a
-    killed pytest is never started."""
+    killed pytest is never started.  With controlling_tty it then takes the
+    terminal on its standard streams as its controlling terminal; a failure
+    of either step is written to stage_fd before it is raised."""
     prctl = _LIBC.prctl if IS_LINUX else None
 
     def setup():
         if prctl is not None \
                 and prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) != 0:
+            _note_stage(stage_fd, STAGE_DEATH_SIGNAL)
             raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG)")
         if os.getppid() != parent_pid:
             os._exit(1)
+        if controlling_tty:
+            try:
+                _take_controlling_tty()
+            except OSError:
+                _note_stage(stage_fd, STAGE_CONTROLLING_TTY)
+                raise
     return setup
+
+
+def _read_stage(stage_fd):
+    """The step the child said failed, or b"" when it said nothing."""
+    os.set_blocking(stage_fd, False)
+    try:
+        return os.read(stage_fd, 1)
+    except (BlockingIOError, OSError):
+        return b""
+
+
+def _start_failure_text(kind, label, stage):
+    """The launcher's words for a child that could not be set up."""
+    if stage == STAGE_CONTROLLING_TTY:
+        return ("%s for %s was not started: its terminal could not be made "
+                "its controlling terminal (TIOCSCTTY on stdin, then stdout)"
+                % (kind, label))
+    return ("%s for %s was not started: its death signal "
+            "(PR_SET_PDEATHSIG) could not be set" % (kind, label))
+
+
+def process_running(pid, started=None):
+    """True while pid is a live process, False once it has ended.
+
+    A zombie has ended: kill(pid, 0) finds it, which is why a row must ask
+    here.  With started (the start time start_ticks(pid) gave when the row
+    first saw the process) a pid the kernel has handed to a newer process is
+    not taken for the old one, and an ended orphan that pytest adopted (it is
+    the subreaper while an owner is begun) is collected by its exact pid;
+    without it nothing is collected, because the zombie may be the exit
+    status of a child the row's own Popen still owes a wait.  A pid the
+    current owner started is never collected here either; pid must not be a
+    child the row started with its own Popen."""
+    if IS_LINUX:
+        fields = _stat_fields(pid)
+        if fields is None:
+            return False
+        if started is not None and int(fields[STAT_STARTTIME]) != started:
+            return False
+        if fields[STAT_STATE] != ZOMBIE:
+            return True
+        _collect_adopted_zombie(pid, fields, started)
+        return False
+    return procinfo.run_state(pid) not in (procinfo.GONE, procinfo.ZOMBIE)
+
+
+def _collect_adopted_zombie(pid, fields, started):
+    """Reap one zombie that is a child of pytest and is, by start time, the
+    process the caller named; never waitpid(-1).
+
+    A pid in the current owner's ledger is never reaped: its own Popen owes
+    the wait and would get 0 instead of the exit status.  The caller must
+    not pass a child the row started with its own Popen either; this cannot
+    tell it from an adopted orphan (it is exact once the row has no Popen of
+    its own)."""
+    if started is None or int(fields[STAT_PPID]) != os.getpid():
+        return
+    if _CURRENT is not None and pid in _CURRENT.ledger.pids():
+        return
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -488,11 +636,79 @@ class _KqueueWatch:
             self.kq = None
 
 
-def watch_process(pid):
-    """A watch on pid for this platform (pidfd, else kqueue)."""
-    if hasattr(os, "pidfd_open"):
+class _PollWatch:
+    """A watch that looks at the process table: for a kernel without
+    pidfd_open or a container whose filter refuses it, where nothing better
+    is there.  A pid is only trusted while its start time is the one seen
+    first, so a number the kernel hands to a new process is never signalled."""
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.started = start_ticks(pid)
+        self.ended = False
+
+    def _same_and_alive(self):
+        """True while the process is the one first seen and has not ended."""
+        if self.ended:
+            return False
+        if procinfo.run_state(self.pid) in (procinfo.GONE, procinfo.ZOMBIE) \
+                or start_ticks(self.pid) != self.started:
+            self.ended = True
+        return not self.ended
+
+    def signal(self, sig):
+        """Send sig while the process is the one watched; an ended process is
+        not an error."""
+        if not self._same_and_alive():
+            return
+        try:
+            os.kill(self.pid, sig)
+        except ProcessLookupError:
+            pass
+
+    def wait(self, timeout_s):
+        """True once the process has ended, waiting at most timeout_s."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while self._same_and_alive():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(POLL_WATCH_INTERVAL_S)
+        return True
+
+    def reap(self):
+        """Collect the ended process's status (only for an adopted one)."""
+        try:
+            os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+
+    def close(self):
+        """Nothing is held: calling it again does nothing."""
+
+
+def _open_pidfd_watch(pid):
+    """A pidfd watch, or None where this host does not give pidfds (the
+    error says "not here", not "that process is gone")."""
+    if not hasattr(os, "pidfd_open"):
+        return None
+    try:
         return _PidfdWatch(pid)
-    return _KqueueWatch(pid)
+    except OSError as error:
+        if error.errno in PIDFD_UNAVAILABLE:
+            return None
+        raise
+
+
+def watch_process(pid):
+    """A watch on pid for this platform: pidfd, else kqueue, else a poll of
+    the process table (a host that filters pidfd_open), never an error in
+    every row."""
+    watch = _open_pidfd_watch(pid)
+    if watch is not None:
+        return watch
+    if hasattr(select, "kqueue"):
+        return _KqueueWatch(pid)
+    return _PollWatch(pid)
 
 
 # ---------------------------------------------------------------------------
@@ -656,11 +872,62 @@ def _apply_extra(env, extra_env):
 def _editor_env(env):
     """What every editor gets on top of the base: the checkout's data, a
     known font size, no eager language server."""
-    env.update(XWPE_LIB=TOP, XWPE_FONT_SIZE=FONT_SIZE, XWPE_LSP_NO_EAGER="1")
+    env.update(XWPE_FONT_SIZE=FONT_SIZE)
+    return _common_editor_env(env)
+
+
+def _common_editor_env(env):
+    """What every editor gets, graphical or on a terminal: the checkout's
+    data and no eager language server."""
+    env.update(XWPE_LIB=TOP, XWPE_LSP_NO_EAGER="1")
     # A row starts in an empty HOME, a new profile, which is asked which keys
     # it wants; nobody answers there, so rows run the Borland keys unless the
     # row's own environment names another style (or removes this variable).
     env.setdefault("XWPE_KEYS", "borland")
+    return env
+
+
+def _terminal_env(env):
+    """What an editor on a terminal gets on top of the base: the terminal
+    type, and no display variable (there is none in the base)."""
+    env["TERM"] = TERM_NAME
+    return _common_editor_env(env)
+
+
+def _inherit(env, names, log_dir):
+    """Copy the machine's variables a row named, when they are set.
+
+    A row that needs one more variable of the machine (an API key for a live
+    row) names it here; the names in NEVER_INHERITED and the terminal size
+    are refused.  Only the names are recorded, in the row's folder, never a
+    value."""
+    taken = []
+    for name in names:
+        if name in NEVER_INHERITED or name in NEVER_PASSED:
+            raise OwnerRefused("%s is never inherited from the machine" % name)
+        value = os.environ.get(name)
+        if value is not None:
+            env[name] = value
+            taken.append(name)
+    if taken:
+        with open(os.path.join(log_dir, INHERITED_FILE), "a",
+                  encoding="utf-8") as fh:
+            fh.write("\n".join(taken) + "\n")
+    return env
+
+
+def _display_env(owner, env, display):
+    """Point env at one display the owner started: an XDisplay gives DISPLAY,
+    a WaylandDisplay its socket, runtime folder and the X display behind it."""
+    if display is None:
+        return env
+    if isinstance(display, WaylandDisplay):
+        wayland = owner.wayland_display(display)
+        env.update(DISPLAY=wayland.x_display.name,
+                   WAYLAND_DISPLAY=wayland.socket,
+                   XDG_RUNTIME_DIR=wayland.runtime_dir)
+        return env
+    env["DISPLAY"] = owner.x_display(display).name
     return env
 
 
@@ -697,6 +964,9 @@ class Owner:
         self._x_runtime_dir = None
         self._ended_trees = []
         self._begun = False
+        self._tool_home = None
+        self._row_env = {}
+        self._row_env_node = None
         self.sweep_enabled = _sweep_enabled()
 
     # -- session lifetime ---------------------------------------------------
@@ -716,6 +986,7 @@ class Owner:
             late.extend(owned.end_collect())
         late.extend(self._final_sweep())
         self._remove_runtime_dirs()
+        self._remove_tool_home()
         if self._begun:
             _release_subreaper()
             self._begun = False
@@ -802,13 +1073,23 @@ class Owner:
 
     def launch(self, argv, env, cwd, log_dir, kind, label, request=None,
                daemons=None, ladder_s=SERVICE_GRACE_S, pass_fds=(),
-               detached_from_terminal=False, terminal_fd=None):
+               detached_from_terminal=False, stdio=LOG, stdin_fd=None,
+               controlling_tty=False):
         """Start argv as an owned process and return it.
 
-        With terminal_fd (the slave side of a pty the row reads) the
-        process's standard streams are that terminal, as when it is
-        started from a shell, so the row sees every byte it writes there;
-        otherwise its output goes to its log and its input is empty.
+        stdio says where the standard streams go.  LOG (the default): the
+        output goes to the process's log and its input is empty.  PIPES:
+        stdin and stdout are pipes the row talks to (proc.stdin,
+        proc.stdout), stderr goes to the log.  An int: the slave side of a
+        pty the row reads, as when it is started from a shell, so the row
+        sees every byte it writes there.  stdin_fd replaces the standard
+        input alone (a row that feeds a pipe and closes it).
+
+        controlling_tty makes the pty the process's controlling terminal,
+        as a shell does: the process is a session leader and takes the
+        terminal on stdin (else stdout) with TIOCSCTTY, so a size set on the
+        pty's master reaches it as SIGWINCH.  It keeps the session basis of
+        the sweep, and it excludes detached_from_terminal.
 
         Every process of a row goes through here: its own process group
         (as a job started from a shell has), the death signal, its log in
@@ -830,25 +1111,31 @@ class Owner:
         if threading.current_thread() is not threading.main_thread():
             raise OwnerRefused("the owner launches only from the main thread: "
                                "the death signal follows the thread that forks")
+        if controlling_tty and detached_from_terminal:
+            raise OwnerRefused("%s for %s: a process cannot be both detached "
+                               "from the terminal and have one as its "
+                               "controlling terminal" % (kind, label))
         log_path = _free_log_path(log_dir, kind)
         log = open(log_path, "wb")
-        stdin_arg, stdout_arg, stderr_arg = (subprocess.DEVNULL, log,
-                                             subprocess.STDOUT)
-        if terminal_fd is not None:
-            stdin_arg = stdout_arg = stderr_arg = terminal_fd
+        stage_read, stage_write = os.pipe()
+        new_session = detached_from_terminal or controlling_tty
         try:
+            stdin_arg, stdout_arg, stderr_arg = _stream_args(stdio, stdin_fd, log)
             proc = subprocess.Popen(argv, env=env, cwd=cwd, stdin=stdin_arg,
                                     stdout=stdout_arg, stderr=stderr_arg,
-                                    start_new_session=detached_from_terminal,
-                                    process_group=None if detached_from_terminal else 0,
+                                    start_new_session=new_session,
+                                    process_group=None if new_session else 0,
                                     pass_fds=pass_fds,
-                                    preexec_fn=_child_setup(os.getpid()))
+                                    preexec_fn=_child_setup(os.getpid(),
+                                                            controlling_tty,
+                                                            stage_write))
         except subprocess.SubprocessError as error:
-            raise OwnerRefused("%s for %s was not started: its death signal "
-                               "(PR_SET_PDEATHSIG) could not be set"
-                               % (kind, label)) from error
+            raise OwnerRefused(_start_failure_text(kind, label,
+                                                   _read_stage(stage_read))) from error
         finally:
             log.close()
+            os.close(stage_read)
+            os.close(stage_write)
         owned = OwnedProcess(self, proc, kind, label, log_path, daemons, ladder_s)
         self.ledger.add(owned)
         if request is not None:
@@ -877,6 +1164,78 @@ class Owner:
         env = _base_env(log_dir, None)
         return [self.launch(argv, env, log_dir, log_dir, "hog", label)
                 for _ in range(count)]
+
+    # -- the row's view of the ledger ---------------------------------------
+
+    def running(self, kind):
+        """The owned processes of that kind not yet ended by their row.
+
+        A row checks it before it starts its own editor, so one the row
+        before left (running, or crashed and never ended) is named instead
+        of found by accident."""
+        return [owned for owned in self.ledger.entries() if owned.kind == kind]
+
+    def entries_since(self, pids):
+        """The owned processes that are not in pids (a set taken from
+        ledger.pids() before a row): what the row started."""
+        return [owned for owned in self.ledger.entries()
+                if owned.pid not in pids]
+
+    def end_since(self, pids):
+        """End every process the row started since pids was taken, and error
+        the row, naming them, when any left something behind.
+
+        It is the row's last word for a process started outside a fixture
+        (a driver built in the test body): the row's end is registered
+        nowhere else."""
+        leaks = []
+        for owned in self.entries_since(pids):
+            leaks.extend(leak for leak in owned.end_collect()
+                         if not leak.declared)
+        if leaks:
+            raise LeakedProcesses("the row left %d process(es) behind, now "
+                                  "ended:\n  %s" % (len(leaks), "\n  ".join(
+                                      leak.describe() for leak in leaks)))
+
+    # -- the row's environment ----------------------------------------------
+
+    def row_env(self, request):
+        """The variables the row's fixtures give every editor it starts.
+
+        A fixture writes here what it used to put in os.environ (a debugger
+        interface, a trace file), and the launchers apply it under the row's
+        own extra_env; the dict is emptied when the row ends, so nothing
+        reaches the next row or the machine's environment."""
+        if self._row_env_node != request.node.nodeid:
+            self._row_env.clear()
+            self._row_env_node = request.node.nodeid
+            request.addfinalizer(self._clear_row_env)
+        return self._row_env
+
+    def _clear_row_env(self):
+        """Forget the row's variables."""
+        self._row_env.clear()
+        self._row_env_node = None
+
+    def merged_env(self, extra_env):
+        """The row's variables (row_env) with extra_env over them."""
+        merged = dict(self._row_env)
+        merged.update(extra_env or {})
+        return merged
+
+    def tool_home(self):
+        """A private folder, made on first use, that is the HOME and the log
+        folder of every short tool a row runs."""
+        if self._tool_home is None:
+            self._tool_home = tempfile.mkdtemp(prefix=TOOL_HOME_PREFIX,
+                                               dir=_short_tmp_base())
+        return self._tool_home
+
+    def _remove_tool_home(self):
+        """Remove the tool folder, if one was made, by its exact path."""
+        if self._tool_home is not None:
+            _remove_tree(self._tool_home)
+            self._tool_home = None
 
     # -- ending -------------------------------------------------------------
 
@@ -925,6 +1284,23 @@ def _remove_tree(path):
         for name in dirs:
             os.rmdir(os.path.join(root, name))
     os.rmdir(path)
+
+
+def _stream_args(stdio, stdin_fd, log):
+    """(stdin, stdout, stderr) for Popen, from the launcher's stdio."""
+    if stdio == PIPES:
+        stdin_arg, stdout_arg, stderr_arg = subprocess.PIPE, subprocess.PIPE, log
+    elif stdio == LOG:
+        stdin_arg, stdout_arg, stderr_arg = (subprocess.DEVNULL, log,
+                                             subprocess.STDOUT)
+    elif isinstance(stdio, int):
+        stdin_arg = stdout_arg = stderr_arg = stdio
+    else:
+        raise OwnerRefused("stdio must be LOG, PIPES or a descriptor, not %r"
+                           % (stdio,))
+    if stdin_fd is not None:
+        stdin_arg = stdin_fd
+    return stdin_arg, stdout_arg, stderr_arg
 
 
 def _free_log_path(log_dir, kind):
@@ -1029,7 +1405,7 @@ def _end_adopted(tree, pid, fields, daemons):
     comm = _stat_comm(pid)
     cwd = working_dir(pid)
     state = fields[STAT_STATE]
-    watch = _PidfdWatch(pid)
+    watch = watch_process(pid)
     try:
         tree.extend(pid)
         watch.signal(signal.SIGKILL)
@@ -1266,12 +1642,12 @@ class Editor:
     @staticmethod
     def start(owner, binary, args, backend, display, cwd, home, log_dir=None,
               extra_env=None, label="", request=None, daemons=None, dump=None,
-              detached_from_terminal=False, terminal_fd=None):
+              detached_from_terminal=False, stdio=LOG, inherit=()):
         """Start the editor on a display this owner started.
 
-        With terminal_fd the editor's standard streams are that pty's slave
-        side (see Owner.launch), so a row can read what a graphical editor
-        writes to the terminal it was started from.
+        With stdio an int (the slave side of a pty, see Owner.launch) the
+        editor's standard streams are that terminal, so a row can read what
+        a graphical editor writes to the terminal it was started from.
 
         With detached_from_terminal the editor is a session leader with no
         controlling terminal, as when a desktop launcher starts it; by
@@ -1283,6 +1659,7 @@ class Editor:
         if backend not in BACKENDS:
             raise OwnerRefused("backend must be one of %s, not %r"
                                % (", ".join(BACKENDS), backend))
+        extra_env = owner.merged_env(extra_env)
         _check_extra_displays(owner, extra_env)
         log_dir = log_dir or home
         if dump is False and backend != "x11":
@@ -1290,13 +1667,14 @@ class Editor:
         env = _editor_env(_backend_env(owner, backend, display, home))
         if dump is not False:
             _add_dump(env, backend, dump or os.path.join(log_dir, "frame.ppm"))
+        _inherit(env, inherit, log_dir)
         _apply_extra(env, extra_env)
         env["XWPE_BACKEND"] = backend
         owned = owner.launch([binary] + list(args), env, cwd, log_dir, "xwpe",
                              label, request=request, daemons=daemons,
                              ladder_s=editor_end_ladder_s(),
                              detached_from_terminal=detached_from_terminal,
-                             terminal_fd=terminal_fd)
+                             stdio=stdio)
         owned.env = env
         return owned
 
@@ -1341,6 +1719,265 @@ def _add_dump(env, backend, dump):
 
 
 # ---------------------------------------------------------------------------
+# The editor on a terminal, and the short tools
+
+
+def set_pty_size(master_fd, cols, rows):
+    """Set the window size of the pty behind master_fd (TIOCSWINSZ), so a
+    process started on it afterwards inherits that size.  The terminal's own
+    ioctl number is used: they differ by architecture."""
+    winsize = struct.pack(PTY_WINSIZE_FORMAT, rows, cols, 0, 0)
+    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+
+
+def _terminal_editor_env(owner, home, log_dir, extra_env, inherit):
+    """The environment of an editor with no display: the whitelist, the
+    terminal's own variables, what the row inherited, then the row's own."""
+    merged = owner.merged_env(extra_env)
+    _check_extra_displays(owner, merged)
+    env = _terminal_env(_base_env(home, owner.x_runtime_dir()))
+    _inherit(env, inherit, log_dir)
+    return _apply_extra(env, merged)
+
+
+class Terminal:
+    """The one way a test starts the editor on a terminal."""
+
+    @staticmethod
+    def start(owner, binary, args, cwd, home, master_fd, slave_fd,
+              size=(COLS, ROWS), stdin_fd=None, extra_env=None, inherit=(),
+              label="", request=None, daemons=None, log_dir=None,
+              pass_fds=()):
+        """Start the editor on the pty (master_fd, slave_fd) and return the
+        owned process; its .proc is the Popen a driver exposes.
+
+        The pty gets its size before the start so the editor inherits it
+        (a row never sizes a terminal by LINES or COLUMNS), the slave side
+        is the editor's standard streams and its controlling terminal (a
+        later resize reaches it as SIGWINCH), and the environment is the
+        whitelist plus TERM, the checkout's data and the row's own variables.
+        There is no display variable, so nothing the editor starts (a
+        debugger, a shell, a terminal window) can reach the user's session.
+        A row that needs one more variable of the machine names it in
+        inherit."""
+        log_dir = log_dir or home
+        env = _terminal_editor_env(owner, home, log_dir, extra_env, inherit)
+        set_pty_size(master_fd, *size)
+        owned = owner.launch([binary] + list(args), env, cwd, log_dir, "wpe",
+                             label, request=request, daemons=daemons,
+                             ladder_s=editor_end_ladder_s(), pass_fds=pass_fds,
+                             stdio=slave_fd, stdin_fd=stdin_fd,
+                             controlling_tty=True)
+        owned.env = env
+        return owned
+
+    @staticmethod
+    def run(owner, binary, args, timeout, extra_env=None, inherit=(),
+            cwd=None, home=None, label="", input=None):
+        """Run the editor to completion (a `--version`, a batch mode) with
+        the editor's environment and no terminal; return a CompletedProcess
+        whose stderr is what the editor wrote to its log.  A run that
+        outlives its deadline is ended and the row fails naming it."""
+        home = home or owner.tool_home()
+        env = _terminal_editor_env(owner, home, home, extra_env, inherit)
+        return _run_bounded(owner, [binary] + list(args), env, cwd, home,
+                            "wpe-run", label or os.path.basename(binary),
+                            timeout, input, False)
+
+
+def tool_env(display=None, inherit=(), home=None, extra_env=None):
+    """The environment of a short tool a row runs to completion.
+
+    The whitelist with the locale, HOME the owner's private tool folder
+    (or the home given) and, for a display the owner started, DISPLAY (and
+    for a Wayland one its socket and runtime folder).  Never a copy of
+    os.environ: a row that needs one more variable of the machine names it
+    in inherit."""
+    owner = current()
+    home = home or owner.tool_home()
+    merged = dict(extra_env or {})
+    _check_extra_displays(owner, merged)
+    env = _display_env(owner, _base_env(home, None), display)
+    _inherit(env, inherit, home)
+    return _apply_extra(env, merged)
+
+
+def _run_bounded(owner, argv, env, cwd, log_dir, kind, label, timeout, input,
+                 check):
+    """Start argv as an owned process, wait for it at most timeout (scaled),
+    end it and return what it printed.  A tool that outlives its deadline is
+    ended and the row fails naming the tool and the deadline; one that left
+    a process behind errors the row, as an editor does."""
+    owned = owner.launch(argv, env, cwd, log_dir, kind, label, stdio=PIPES)
+    deadline = scaled(timeout)
+    try:
+        out, _ = owned.proc.communicate(input=input, timeout=deadline)
+    except subprocess.TimeoutExpired:
+        owned.end_collect()
+        _close_pipes(owned.proc)
+        raise OwnerTimeout("%s ran past its deadline of %.1f s (scale %.1f)"
+                           % (label, deadline, wait_scale())) from None
+    except BaseException:
+        owned.end_collect()
+        _close_pipes(owned.proc)
+        raise
+    owned.end()
+    return _finish_run(argv, owned, out, check)
+
+
+def _close_pipes(proc):
+    """Close the row's ends of a process's pipes."""
+    for pipe in (proc.stdin, proc.stdout):
+        if pipe is not None:
+            pipe.close()
+
+
+def _finish_run(argv, owned, out, check):
+    """The CompletedProcess of an ended tool; its log (stderr) is kept only
+    when it holds something."""
+    code = owned.proc.returncode
+    with open(owned.log, "rb") as fh:
+        errors = fh.read()
+    if not errors:
+        os.unlink(owned.log)
+    if check and code != 0:
+        raise subprocess.CalledProcessError(code, argv, out, errors)
+    return subprocess.CompletedProcess(argv, code, out, errors)
+
+
+def run_tool(argv, timeout, display=None, input=None, cwd=None, inherit=(),
+             check=False, home=None, extra_env=None):
+    """Run a short tool (xdotool, xwd, git, a probe) to completion.
+
+    The one door for tools: the tool is on the owner's ledger, bounded by
+    timeout (scaled), its environment comes from tool_env (home= and
+    extra_env= for a probe that sets HOME or PATH for a canary), stdout is
+    returned and stderr goes to the row's log.  A row benefits by never
+    hanging on a tool and by never leaking the machine's session to one."""
+    owner = current()
+    env = tool_env(display, inherit, home, extra_env)
+    return _run_bounded(owner, list(argv), env, cwd, owner.tool_home(), "tool",
+                        os.path.basename(str(argv[0])), timeout, input, check)
+
+
+def run_nested(argv, timeout, input=None, cwd=None, check=False,
+               extra_env=None):
+    """Run another python or pytest of the harness to completion: like
+    run_tool, with the names of HARNESS_VARS passed from the machine, which
+    the inner run needs to find the editor and scale its waits."""
+    return run_tool(argv, timeout, input=input, cwd=cwd, check=check,
+                    inherit=HARNESS_VARS, extra_env=extra_env)
+
+
+# ---------------------------------------------------------------------------
+# The display servers, moved here from the graphical conftests
+
+
+def _display_number(fd, chunks):
+    """The display number the server wrote to fd, once its line is whole."""
+    if not select.select([fd], [], [], 0)[0]:
+        return None
+    data = os.read(fd, DISPLAY_LINE_MAX)
+    chunks.append(data)
+    text = b"".join(chunks)
+    if not data or not text.endswith(b"\n"):
+        return None
+    return int(text.strip())
+
+
+def start_x_server(owner, request, log_dir, screen=SCREEN):
+    """Start Xvfb on the display number it picks; return the owner's record
+    of that display.
+
+    The server writes its number to the pipe once it is listening, so the
+    read is the ready event: no fixed number, no lock file looked at or
+    removed, and two runs at once never meet on one display."""
+    read_fd, write_fd = os.pipe()
+    try:
+        server = owner.start_service(
+            ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", screen,
+             "-nolisten", "tcp"],
+            "Xvfb of the test run", log_dir, log_dir, kind="server",
+            request=request, pass_fds=(write_fd,))
+    finally:
+        os.close(write_fd)
+    chunks = []
+    try:
+        number = wait_for(lambda: _display_number(read_fd, chunks),
+                          "Xvfb to print its display number", SERVER_START_S,
+                          state_fn=server.log_text)
+    finally:
+        os.close(read_fd)
+    return owner.register_x_display(":%d" % number, server)
+
+
+def start_compositor(owner, request, x_display, log_dir, width, height):
+    """Start weston on x_display (the owner's X server) in a runtime folder
+    of its own, and return the registered WaylandDisplay once its socket is
+    there.
+
+    weston's x11 backend takes its keyboard and pointer from the X server,
+    so a synthetic key sent to that server reaches the editor as a wl_keyboard
+    event.  kiosk-shell fullscreens the single client at the output's (0,0)
+    with no panel, so the editor's surface origin is the weston window's
+    origin and a click relative to that window lands on the matching cell
+    (the default desktop shell centres the surface and breaks that).  The
+    socket is named after this process, in a short folder the owner removes."""
+    runtime = owner.make_runtime_dir()
+    socket = "wl-%d" % os.getpid()
+    compositor = owner.start_service(
+        ["weston", "--backend=x11-backend.so", "--shell=kiosk-shell.so",
+         "--width=%d" % width, "--height=%d" % height, "--socket=" + socket,
+         "--idle-time=0"],
+        "weston of the test run", log_dir, log_dir, kind="compositor",
+        extra_env={"DISPLAY": x_display.name}, request=request,
+        runtime_dir=runtime)
+    path = os.path.join(runtime, socket)
+    wait_for(lambda: os.path.exists(path),
+             "weston's socket %s to appear" % path, COMPOSITOR_START_S,
+             state_fn=compositor.log_text)
+    return owner.register_wayland(runtime, socket, compositor, x_display)
+
+
+# ---------------------------------------------------------------------------
+# The process's owner, for code that is not a fixture
+
+_CURRENT = None
+
+
+class PreviousRowLeft(AssertionError):
+    """A row started while the one before it had left something behind."""
+
+
+def install(owner):
+    """Make owner the one current() returns (the session fixture does it);
+    None puts nothing there, so the next current() begins a new owner."""
+    global _CURRENT
+    _CURRENT = owner
+
+
+def _finish_at_exit(owner):
+    """End what a lazily made owner still owns when the process ends."""
+    late = owner.finish()
+    if late:
+        sys.stderr.write("left at the end, now ended:\n  %s\n"
+                         % "\n  ".join(leak.describe() for leak in late))
+
+
+def current():
+    """The process's owner: the one a session fixture installed, or, outside
+    pytest (a script, the standalone smoke), one made and begun now and
+    finished when the process ends.  A driver built in a test body uses it,
+    so the files that build one themselves need no fixture."""
+    if _CURRENT is None:
+        owner = Owner(OUT_DIR)
+        owner.begin()
+        atexit.register(_finish_at_exit, owner)
+        install(owner)
+    return _CURRENT
+
+
+# ---------------------------------------------------------------------------
 # Fixtures and the configure helper
 
 
@@ -1349,10 +1986,18 @@ OUT_DIR = os.path.join(HERE, "harness", "out")
 
 @pytest.fixture(scope="session")
 def gui_owner():
-    """The session's owner; errors the session on leaks no row reported."""
+    """The session's owner; errors the session on leaks no row reported.
+
+    It is the owner current() returns while the session runs; when another
+    fixture already installed one, that one is used and left to its maker."""
+    if _CURRENT is not None:
+        yield _CURRENT
+        return
     owner = Owner(OUT_DIR)
     owner.begin()
+    install(owner)
     yield owner
+    install(None)
     late = owner.finish()
     if late:
         raise LeakedProcesses("left at the session's end, now ended:\n  %s"
@@ -1418,11 +2063,21 @@ def _report_subreaper():
           % (after_import, after_begin, subreaper_set()))
 
 
+def _report_current():
+    """Print whether current() made a begun owner outside pytest and gives
+    the same one again; the owner is finished when the process ends."""
+    first = current()
+    print("current begun %d same %d" % (first.is_begun(), current() is first))
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["--hog"]:
         _busy_loop()
     elif sys.argv[1:] == ["--report-subreaper"]:
         _report_subreaper()
+    elif sys.argv[1:] == ["--report-current"]:
+        _report_current()
     else:
-        sys.stderr.write("usage: gui_owner.py --hog | --report-subreaper\n")
+        sys.stderr.write("usage: gui_owner.py --hog | --report-subreaper "
+                         "| --report-current\n")
         sys.exit(2)
