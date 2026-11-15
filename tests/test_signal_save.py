@@ -9,7 +9,6 @@ dialog.  A window with nothing unsaved writes no file, and a second signal
 still ends an editor whose save hangs.
 """
 import os
-import shutil
 import signal
 import stat
 import subprocess
@@ -17,6 +16,7 @@ import time
 
 import pytest
 
+from host_tools import require
 from wpe_driver import ALT, WpeSession, WAIT_SCALE
 
 # The editor must be gone this long after the signal.
@@ -444,9 +444,7 @@ def test_sigterm_in_a_debug_session_leaves_no_program(tmp_path, adapter,
     paused lldb-dap end the program when their client leaves.  They stay
     as guards."""
     spec = LEFT_BEHIND_PROGS[adapter]
-    for tool in spec["need"]:
-        if shutil.which(tool) is None:
-            pytest.skip("no %s" % tool)
+    require(*spec["need"])
     if adapter == "dlv":
         (tmp_path / "go.mod").write_text("module leftbehind\n\ngo 1.21\n")
     prog = spec["prog"] % str(tmp_path / PROG_PID_FILE)

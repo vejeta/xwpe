@@ -13,10 +13,10 @@ and logs what the editor sent it, so the row reads the word the debugger was
 told to load and nothing else.
 """
 import os
-import shutil
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep
 
@@ -71,7 +71,7 @@ def _loads(log):
 
 
 # @scenario SC-program-name-01
-@pytest.mark.skipif(not shutil.which("gcc"), reason="gcc not on PATH")
+@needs("gcc")
 def test_debugger_loads_what_f9_wrote_under_exedir(tmp_path, exedir_with_stand_in_gdb, xwpe):
     """Exedir out.d, F9 links out.d/t.e; Ctrl-G R tells gdb to load that
     file, not the bare t.e."""

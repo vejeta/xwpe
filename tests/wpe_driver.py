@@ -32,14 +32,31 @@ import struct
 import termios
 import shutil
 import subprocess
-import sys
 import time
 
 import pytest
 import pyte
 
 import build_config
+import procinfo
 from test_utf8_border import SafeScreen
+
+# How many of the last lines of the editor's trace a failure message shows.
+TRACE_TAIL_LINES = 20
+
+
+def ui_trace_tail(path):
+    """The last TRACE_TAIL_LINES lines of the trace file at @path, as text
+    for a failure message; says so when there is no trace to read."""
+    if not path:
+        return "ui trace: the session writes none (XWPE_UI_TRACE is not set)"
+    try:
+        with open(path, errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError as exc:
+        return "ui trace: %s cannot be read (%s)" % (path, exc.strerror)
+    return "ui trace (last %d lines of %s):\n%s" % (
+        TRACE_TAIL_LINES, path, "\n".join(lines[-TRACE_TAIL_LINES:]))
 
 WPE_BIN = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "..", "wpe")
 
@@ -58,30 +75,6 @@ SERVER_PROGRAM_SUFFIXES = (".scala", ".sc")
 SERVER_PROGRAM_COMM = "java"
 SERVER_PROGRAM_GONE_S = 10      # the server reaps a killed program well within this
 SERVER_PROGRAM_POLL_S = 0.1
-
-# macOS reserves the F1-F12 keys at the OS / terminal layer, so they never reach
-# wpe -- macOS users drive those actions from the menu instead, which is the
-# supported path there. Map each advertised function-key accelerator the tests
-# send to its menu route, applied ONLY on macOS so every Linux scenario stays
-# byte-for-byte unchanged. (The letters match we_menue.c in programming mode.)
-MACOS = sys.platform == "darwin" or os.environ.get("XWPE_TEST_OS") == "macos"
-
-_MACOS_KEY_ROUTE = {
-    "\033OP": ["\033h", "e"],    # F1 -> Help -> Editor (manual viewer)
-    "\033OQ": ["\033f", "s"],    # F2 -> File -> Save
-    "\033OR": ["\033f", "m"],    # F3 -> File -> File-Manager
-    "\033OS": ["\033s", "f"],    # F4 -> Search -> Find
-    "\033[20~": ["\033r", "m"],  # F9 -> Run -> Make
-    "\x0c": ["\033s", "s"],      # ^L -> Search -> Search again
-}
-
-
-def macos_key_route(k):
-    """The keystrokes to actually send for one logical key. Identity on Linux;
-    on macOS a dead function-key accelerator becomes its equivalent menu route."""
-    if MACOS and k in _MACOS_KEY_ROUTE:
-        return _MACOS_KEY_ROUTE[k]
-    return [k]
 
 # A loaded CI runner is 3-5x slower than a dev box, so the fixed wait/timeout
 # budgets that pass in-tree flake under autopkgtest. XWPE_TEST_WAIT_SCALE
@@ -383,32 +376,6 @@ def checkbox_mark(session, label):
     assert label in row, "no %r checkbox on screen:\n%s" % (label, "\n".join(session.display()))
     at = row.index(label)
     return row[at - 4:at - 1]
-
-
-def tool_usable(name, *args):
-    """True only if `name` is on PATH AND actually runs (exit 0).
-
-    shutil.which() finds the executable file, but a rustup / asdf / mise shim
-    can sit on PATH and still fail at *runtime* -- no default toolchain set, a
-    rust-toolchain.toml pinning a toolchain that is not installed, a component
-    (e.g. rust-analyzer) not added.  A which()-only skip guard then lets the
-    test RUN and FAIL with a confusing toolchain error instead of self-skipping.
-    Probing `name --version` (or the given args) and checking the exit status is
-    what distinguishes "installed and usable" from "a shim that errors", so a
-    misconfigured toolchain skips with a precise reason -- matching the rest of
-    the suite, which self-skips when a tool is absent."""
-    path = shutil.which(name)
-    if path is None:
-        return False
-    probe = list(args) if args else ["--version"]
-    try:
-        return subprocess.run(
-            [path, *probe],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=30,
-        ).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
 
 
 STATE_DIR_MODE = 0o700      # the editor keeps its state folder the user's alone
@@ -763,6 +730,7 @@ class WpeSession:
             _xd = os.path.join(workdir, ".xwpe")
             os.makedirs(_xd, exist_ok=True)
             shutil.copyfile(_synt, os.path.join(_xd, "syntax_def"))
+        self.ui_trace = env.get("XWPE_UI_TRACE")   # None: no trace to read
         self.input_fd = self.master_fd
         stdin_arg = slave_fd
         if not stdin_is_terminal:
@@ -848,13 +816,12 @@ class WpeSession:
 
     # -- input ---------------------------------------------------------------
     def key(self, *keys, delay=0.45):
-        """Send raw key strings, draining wpe output after each. On macOS a
-        function-key accelerator is replaced by its menu route (see
-        macos_key_route); on Linux every key is sent verbatim."""
+        """Send raw key strings, draining wpe output after each. Every key is
+        written to the pty as given: no keyboard layer lies between the
+        harness and the editor, on any system."""
         for k in keys:
-            for stroke in macos_key_route(k):
-                os.write(self.input_fd, stroke.encode())
-                self._drain(delay)
+            os.write(self.input_fd, k.encode())
+            self._drain(delay)
         return self
 
     def paste(self, text, when_stalled):
@@ -1017,6 +984,16 @@ class WpeSession:
     def alive(self):
         """True while wpe is still running healthily."""
         return self.proc.poll() is None
+
+    def process_report(self):
+        """What to add to the message of a check that looked for a child of
+        the editor and did not find it: the processes below the editor as
+        the helpers and the system's table describe them, and the last lines
+        of the editor's own trace (when the session writes one, the file
+        XWPE_UI_TRACE names), where a program that could not be started says
+        which step failed and why."""
+        return "%s\n%s" % (procinfo.describe_children(self.proc.pid),
+                           ui_trace_tail(self.ui_trace))
 
     def exit_code(self):
         return self.proc.poll()

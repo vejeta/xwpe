@@ -13,16 +13,14 @@ launch directory.  The assertions are on the filesystem, so they are exact and
 deterministic (no screen scraping).  Execute-Make is covered separately in
 tests/test_make_output.py.
 """
-import shutil
 
-import pytest
+from host_tools import needs
 from wpe_driver import WpeSession
 
 ALT_C = "\033c"           # Compile
 CTRL_F9 = "\033[20;5~"    # Run (compile + link + run)
 
-requires_gcc = pytest.mark.skipif(shutil.which("gcc") is None,
-                                  reason="gcc not installed")
+requires_gcc = needs("gcc")
 
 
 @requires_gcc

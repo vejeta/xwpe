@@ -11,17 +11,16 @@ so each key answers with a dump: ``says`` counts the status lines said since
 the dump before, ``ro`` is the window's lock as the padlock shows it.
 """
 import os
-import shutil
 import sys
 import time
-
-import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+from build_config import requires  # noqa: E402
 from edit_model.oracle import ENTER, ESC, EditSession, alt  # noqa: E402
+from host_tools import needs  # noqa: E402
 
 READ_ONLY_LINE = "Read-only window: the text is unchanged"
 ASSISTANT_LINE = "The assistant is working on this window (Esc cancels)"
@@ -51,6 +50,7 @@ def _assistant_env():
 
 
 # @scenario SC-window-closed-11
+@requires("enable-ai")
 def test_a_typed_letter_in_a_window_waiting_for_the_assistant_says_so_once(tmp_path):
     """While an Edit waits for its reply the window's text must stay as sent:
     a typed letter changes nothing and the status row says why, counted as one
@@ -70,6 +70,7 @@ def test_a_typed_letter_in_a_window_waiting_for_the_assistant_says_so_once(tmp_p
 
 
 # @scenario SC-window-closed-11
+@requires("enable-ai")
 def test_each_refused_letter_in_a_waiting_window_says_its_line(tmp_path):
     """One line per key, not one per wait: the second refused letter says
     its line again, so the latch that keeps a command to one line is
@@ -87,6 +88,7 @@ def test_each_refused_letter_in_a_waiting_window_says_its_line(tmp_path):
 
 
 # @scenario SC-window-closed-11
+@requires("enable-ai")
 def test_the_assistant_line_goes_when_the_reply_lands(tmp_path):
     """The line said for a refused letter names a wait that is over once the
     reply is in: when the review of the change is up, the status row no
@@ -113,6 +115,7 @@ PASTE_BEG = ESC + "[200~"
 
 
 # @scenario SC-window-closed-11
+@requires("enable-ai")
 def test_a_paste_after_a_refused_letter_in_a_waiting_window_says_so(tmp_path):
     """A refused letter, then a paste into the same waiting window: the paste
     is refused too and its line is on the status row while it streams.
@@ -134,6 +137,7 @@ def test_a_paste_after_a_refused_letter_in_a_waiting_window_says_so(tmp_path):
 
 
 # @scenario SC-window-closed-11
+@requires("enable-ai")
 def test_a_paste_after_a_refused_letter_says_its_own_line_once(tmp_path):
     """The paste's own line, counted: its first character says once and the
     rest of the paste says nothing.  The row above sees the letter's line
@@ -171,7 +175,7 @@ def test_a_typed_letter_in_the_same_window_after_esc_changes_the_text(tmp_path):
 
 
 # @scenario SC-window-closed-14
-@pytest.mark.skipif(shutil.which("man") is None, reason="needs man")
+@needs("man")
 def test_a_man_page_window_is_read_only_by_its_nature(tmp_path):
     """The man page is closed because the editor marks it so, not because its
     temporary file happened to be written 0400 (a process that may write

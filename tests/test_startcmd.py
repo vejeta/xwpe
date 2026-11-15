@@ -15,12 +15,12 @@ the folder's command without the question.
 """
 import json
 import os
-import shutil
 import stat
 import time
 
 import pytest
-from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen, tool_usable, write_user_store
+from host_tools import needs
+from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen, write_user_store
 
 F9 = "\033[20~"            # Make: compile and link
 ESC = "\033"
@@ -42,7 +42,7 @@ touch "%(marker)s"
 exit 1
 '''
 
-needs_gcc = pytest.mark.skipif(not tool_usable("gcc", "--version"), reason="gcc not usable")
+needs_gcc = needs("gcc")
 
 
 def _executable(path, text):
@@ -431,7 +431,7 @@ DEBUG_COMPILE_LINE = "Compiling for debug"
 
 
 # @scenario SC-compile-28
-@pytest.mark.skipif(shutil.which("rustc") is None, reason="rustc not on PATH")
+@needs("rustc")
 def test_a_file_name_never_runs_at_the_compile_for_debug(tmp_path):
     """A cloned folder holds a Rust file whose name closes a shell quote
     and runs `touch pwned`: Ctrl-G R compiles it for debug, and the name

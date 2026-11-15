@@ -15,6 +15,7 @@ import pytest
 
 import build_config
 import gui_owner
+import host_tools
 
 os.environ.setdefault("XWPE_KEYS", "borland")
 
@@ -24,16 +25,30 @@ def pytest_configure(config):
         "markers",
         "wpe_requires(*words): skip, by name, unless the binary under test was "
         "built with every word (tests/build_config.py, requires())")
+    config.addinivalue_line(
+        "markers",
+        "wpe_needs(*tools): skip, naming the tool, unless every host tool is "
+        "usable and not switched off by this job (tests/host_tools.py, needs())")
+
+
+def pytest_report_header(config):
+    """Say, at the top of the log, which host tools this job switched off."""
+    line = host_tools.report_line()
+    return [line] if line else []
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
-    """Resolve requires() when the row is about to run, never at collection.
+    """Resolve requires() and needs() when the row is about to run, never at
+    collection.
 
-    The binary is asked once (`--version`).  A row on a build without what it
-    needs skips as "not built here: --enable-ai"; a binary that cannot say
-    what it has is an error of the row, not a skip.  This runs before any
-    fixture, so nothing is started for a row that cannot run.
+    requires(): the binary is asked once (`--version`).  A row on a build
+    without what it needs skips as "not built here: --enable-ai"; a binary
+    that cannot say what it has is an error of the row, not a skip.
+    needs(): a row whose host tool is missing, does not run, or is switched
+    off by this job skips naming the tool.  This is the only place a
+    declaration becomes a skip.  It runs before any fixture, so nothing is
+    started for a row that cannot run.
     """
     for mark in item.iter_markers("wpe_requires"):
         try:
@@ -42,6 +57,10 @@ def pytest_runtest_setup(item):
             pytest.fail(str(err), pytrace=False)
         if lacking:
             pytest.skip(build_config.skip_reason(lacking))
+    for mark in item.iter_markers("wpe_needs"):
+        reason = host_tools.unmet(mark.args)
+        if reason:
+            pytest.skip(reason)
 
 
 # The two fixtures below are the process owner of every test (tests/gui_owner.py).

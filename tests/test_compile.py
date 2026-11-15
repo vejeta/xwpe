@@ -21,6 +21,7 @@ import tempfile
 import pyte
 import pytest
 
+from host_tools import require
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -173,8 +174,9 @@ def compile_dir():
 
 @pytest.fixture(scope='module')
 def has_gcc():
-    """Check if gcc is available."""
-    return shutil.which('gcc') is not None
+    """Skip the rows that ask for it, naming gcc, where gcc is not usable."""
+    require("gcc")
+    return True
 
 
 class TestF9CompileSuccess:
@@ -182,8 +184,6 @@ class TestF9CompileSuccess:
 
     def test_compile_produces_output(self, compile_dir, has_gcc):
         """F9 on a valid program should compile without errors."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'hello.c',
             cols=80, rows=30, wait=1.5,
@@ -203,8 +203,6 @@ class TestF9CompileSuccess:
 
     def test_object_file_created(self, compile_dir, has_gcc):
         """F9 should create .o and executable files."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         # Clean any previous build artifacts
         for ext in ['.o', '.e']:
             path = os.path.join(compile_dir, 'hello' + ext)
@@ -230,8 +228,6 @@ class TestF9CompileSuccess:
 
     def test_cursor_returns_to_source(self, compile_dir, has_gcc):
         """After successful F9, cursor should be in source file, not Messages."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'hello.c',
             cols=80, rows=30, wait=1.5,
@@ -262,8 +258,6 @@ class TestF9CompileSuccess:
         """The Messages output pane is non-editable but is NOT a file on disk, so
         it must not wear the read-only padlock -- that glyph means 'locked file'
         and belongs only to real read-only files (0444 / library sources)."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         LOCK = "\U0001f512"        # the read-only padlock glyph
         lines = run_wpe_in_dir(
             compile_dir, 'hello.c',
@@ -283,8 +277,6 @@ class TestF9CompileErrors:
 
     def test_errors_shown_in_messages(self, compile_dir, has_gcc):
         """F9 on a file with errors should show error messages."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'errors.c',
             cols=80, rows=30, wait=1.5,
@@ -300,8 +292,6 @@ class TestF9CompileErrors:
 
     def test_alt_t_jumps_to_error(self, compile_dir, has_gcc):
         """Alt-T after compile errors should navigate to an error line."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'errors.c',
             cols=80, rows=30, wait=1.5,
@@ -323,8 +313,6 @@ class TestSingleErrorNavigation:
 
     def test_alt_t_shows_single_error(self, compile_dir, has_gcc):
         """Alt-T with one error should navigate to it, not say 'no more'."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'one_error.c',
             cols=80, rows=30, wait=1.5,
@@ -341,8 +329,6 @@ class TestSingleErrorNavigation:
 
     def test_alt_t_twice_still_shows_error(self, compile_dir, has_gcc):
         """Alt-T twice with one error: second press re-shows same error."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'one_error.c',
             cols=80, rows=30, wait=1.5,
@@ -378,8 +364,7 @@ class TestPerlCompile:
 
     def test_perl_syntax_ok(self, compile_dir):
         """F9 on valid Perl should show no errors."""
-        if not shutil.which('perl'):
-            pytest.skip("perl not installed")
+        require("perl")
         lines = run_wpe_in_dir(
             compile_dir, 'good.pl',
             cols=80, rows=30, wait=1.5,
@@ -396,8 +381,7 @@ class TestPerlCompile:
 
     def test_perl_syntax_error(self, compile_dir):
         """F9 on Perl with syntax error should show error in Messages."""
-        if not shutil.which('perl'):
-            pytest.skip("perl not installed")
+        require("perl")
         lines = run_wpe_in_dir(
             compile_dir, 'bad.pl',
             cols=80, rows=30, wait=1.5,
@@ -499,8 +483,6 @@ class TestCompilePopup:
 
     def test_compile_popup_dismissed_cleanly(self, compile_dir, has_gcc):
         """After F9 + keypress to dismiss, popup is gone and editor restored."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'hello.c',
             cols=80, rows=30, wait=1.5,
@@ -523,8 +505,6 @@ class TestCompilePopup:
 
     def test_no_null_bytes_after_compile(self, compile_dir, has_gcc):
         """No null bytes should appear after compilation."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'hello.c',
             cols=80, rows=30, wait=1.5,
@@ -573,8 +553,6 @@ class TestMultipleMenuCycles:
 
     def test_compile_then_menu_no_artefacts(self, compile_dir, has_gcc):
         """Compile, then open/close menu, no artefacts."""
-        if not has_gcc:
-            pytest.skip("gcc not installed")
         lines = run_wpe_in_dir(
             compile_dir, 'hello.c',
             cols=80, rows=30, wait=1.5,

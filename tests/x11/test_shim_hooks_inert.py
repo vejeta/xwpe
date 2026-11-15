@@ -14,11 +14,10 @@ run the same resize path on Xvfb with no shim present.
 Run: XWPE_BIN=$PWD/xwpe tests/.venv/bin/python -m pytest -q tests/x11/test_shim_hooks_inert.py
 """
 import os
-import shutil
 import subprocess
 import sys
 
-import pytest
+from host_tools import require
 
 from conftest import XWPE_BIN
 
@@ -73,8 +72,7 @@ def _nm_letter(binary, symbol):
 def test_the_shim_hook_is_a_weak_undefined_symbol():
     """Against a real libX11 the shim's registration hook is weak and
     undefined, so it is never called."""
-    if shutil.which("nm") is None:
-        pytest.skip("nm is not installed")
+    require("nm")
     assert os.path.exists(XWPE_BIN), "no xwpe binary at %s" % XWPE_BIN
     letter = _nm_letter(XWPE_BIN, SHIM_HOOK)
     assert letter is not None, \

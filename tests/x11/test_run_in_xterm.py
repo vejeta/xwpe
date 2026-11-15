@@ -6,10 +6,10 @@ it, it is drawn again at once, instead of staying a blank rectangle until
 the xterm is closed.
 """
 import os
-import shutil
 import subprocess
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep, changed_pixels, xtool_env
 
@@ -42,7 +42,7 @@ def _hide_the_xterm():
     return ids
 
 
-@pytest.mark.skipif(not shutil.which("xterm"), reason="no xterm")
+@needs("xterm")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": SCRIPT,
                                    "XWPE_TEST_FILE": "t.sh"}],
                          indirect=True)

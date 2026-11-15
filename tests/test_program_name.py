@@ -22,7 +22,8 @@ import shutil
 import time
 
 import pytest
-from wpe_driver import ALT, WAIT_SCALE, WpeSession, tool_usable
+from host_tools import needs
+from wpe_driver import ALT, WAIT_SCALE, WpeSession
 
 F9 = "\033[20~"             # Make: compile and link
 CTRL_F9 = "\033[20;5~"      # Run
@@ -36,7 +37,7 @@ SEED = "int main(void){return 0;}\n"
 BUILD_WAIT = 30             # seconds a small build and run has to finish in
 STEM_BYTES = 250            # a stem that fits with ".c" in a 255 byte name
 
-needs_sh = pytest.mark.skipif(not tool_usable("sh", "-c", "exit 0"), reason="sh not usable")
+needs_sh = needs("sh")
 
 # The stand-in compiler.  It never compiles: the name it was given is the
 # whole observation.
@@ -505,8 +506,7 @@ def test_executable_under_exedir_reaches_the_debugger(tmp_path):
 
 # jdb gets the class, never a path, with an Exedir set.
 # @scenario SC-program-name-12
-@pytest.mark.skipif(not (tool_usable("javac", "-version") and tool_usable("jdb", "-version")),
-                    reason="javac and jdb not usable")
+@needs("javac", "jdb")
 def test_jdb_still_gets_the_class_with_an_exedir(tmp_path):
     """Exedir out.d, T.java, Ctrl-G r: javac writes T.class where it ran and
     jdb starts the class T.  Green before the owner and after it: the class
@@ -533,7 +533,7 @@ def test_jdb_still_gets_the_class_with_an_exedir(tmp_path):
 # fpc's program is loaded from the build folder, whatever Exedir says.
 # @scenario SC-program-name-13
 @needs_sh
-@pytest.mark.skipif(not tool_usable("fpc", "-iV"), reason="fpc not usable")
+@needs("fpc")
 def test_fpc_program_is_loaded_from_the_build_folder_with_an_exedir(tmp_path):
     """Exedir out.d, a.pas, Ctrl-G r: fpc writes `a` where it ran, so gdb is
     told to load <folder>/a.  Green before the owner and after it."""

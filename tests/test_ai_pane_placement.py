@@ -8,9 +8,9 @@ tests read the title rows from the screen, before and after the command.
 Scenarios: SC-ai-chat-04, SC-ai-chat-07.
 """
 import os
-import shutil
 import subprocess
 import pytest
+from host_tools import needs
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
 
@@ -43,9 +43,8 @@ def _title_row(disp, name):
 
 
 # @scenario SC-ai-chat-04
+@needs("gcc")
 def test_messages_opened_after_the_pane_shares_the_strip(tmp_path):
-    if not shutil.which("gcc"):
-        pytest.skip("gcc not installed")
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=AGENT_ENV, filename="t.c") as s:
         s.key(ALT.AI); s.key("a", delay=0.8)

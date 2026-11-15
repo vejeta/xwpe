@@ -18,7 +18,6 @@ import pyte
 import pytest
 
 from test_utf8_border import SafeScreen
-from wpe_driver import MACOS
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 COLS, ROWS = 80, 30
@@ -104,13 +103,19 @@ def test_lone_esc_in_editor_is_a_noop(workdir):
 def test_f10_still_enters_the_menu(workdir):
     """The other half of the Borland model: F10 DOES enter the menu bar.  Proven
     by contrast with the Esc no-op -- keys typed after F10 are consumed by menu
-    mode (not inserted), whereas after Esc they land in the buffer.
-
-    macOS reserves F10 at the OS layer, so there the menu bar is entered with
-    Alt-<letter> (the supported path); an open menu likewise swallows the
-    following non-hotkey keys, so the same contrast holds."""
-    enter_menu = '\033f' if MACOS else '\033[21~'   # Alt-F on macOS, else F10
-    screen = _run(workdir, [enter_menu, 'Z', 'Z', 'Z'])
+    mode (not inserted), whereas after Esc they land in the buffer."""
+    screen = _run(workdir, ['\033[21~', 'Z', 'Z', 'Z'])
     assert 'ZZZ' not in "\n".join(screen.display), \
-        'Entering the menu must swallow the following keys, but they were typed ' \
-        'into the buffer -- menu entry no longer works'
+        'Entering the menu with F10 must swallow the following keys, but they ' \
+        'were typed into the buffer -- menu entry no longer works'
+
+
+def test_alt_letter_enters_the_menu_and_swallows_the_keys(workdir):
+    """The menu route to the same place: Alt-F opens the File menu, and an
+    open menu swallows the following non-hotkey keys.  It is the way in for a
+    user whose system keeps F10 for itself, so it is checked beside F10 on
+    every system."""
+    screen = _run(workdir, ['\033f', 'Z', 'Z', 'Z'])
+    assert 'ZZZ' not in "\n".join(screen.display), \
+        'Entering the menu with Alt-F must swallow the following keys, but ' \
+        'they were typed into the buffer -- menu entry no longer works'

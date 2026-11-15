@@ -11,14 +11,12 @@ mouse and keyboard modes switched on again, a full reset at the end.
 Run: WPE_BIN=$PWD/wpe tests/.venv/bin/python -m pytest -q tests/test_terminal_owner.py
 """
 import os
-import shutil
 import signal
 import stat
 import subprocess
 import time
 
-import pytest
-
+from host_tools import needs
 from wpe_driver import WpeSession, ALT, wait_screen
 from test_file_shell import SHELL_ENTRY
 
@@ -67,8 +65,8 @@ def release_string():
             + terminfo_string("rmcup"))
 
 
-needs_tput = pytest.mark.skipif(not shutil.which("tput"), reason="no tput")
-needs_gcc = pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+needs_tput = needs("tput")
+needs_gcc = needs("gcc")
 
 
 def wait_for_exit(w, seconds=EXIT_WAIT_S):

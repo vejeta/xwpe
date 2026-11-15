@@ -10,10 +10,9 @@ work with gdb 18: -ex runs its argument as an ordinary command and gdb
 answers 'Undefined command: "-list-features"'.
 """
 import re
-import shutil
 import subprocess
 
-import pytest
+from host_tools import require
 
 # The oldest gdb the editor drives over MI: fullname in frames,
 # -inferior-tty-set, -break-insert -f and =breakpoint-modified all exist
@@ -32,8 +31,7 @@ PROBE_FIRST_TOKEN = 1
 
 
 def _need_gdb():
-    if shutil.which("gdb") is None:
-        pytest.skip("gdb is not installed: nothing to probe")
+    require("gdb")      # without gdb there is nothing to probe
 
 
 def _probe_input():

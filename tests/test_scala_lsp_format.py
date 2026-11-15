@@ -9,10 +9,8 @@ clean way to trigger the rebuild.
 
 Requires metals + scala-cli.  Skips otherwise.  Slow (boots Metals).
 """
-import shutil
+from host_tools import needs
 import time
-
-import pytest
 
 from wpe_driver import WpeSession
 
@@ -26,9 +24,7 @@ PROG = (
 
 ALT_Q = "\033q"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("metals") is None or shutil.which("scala-cli") is None,
-    reason="metals and scala-cli required")
+pytestmark = needs("metals", "scala-cli")
 
 
 def test_scala_lsp_format_buffer(tmp_path):

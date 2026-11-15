@@ -11,11 +11,11 @@ the debugger, so the stand-in was never hit; the row holds the new end to
 the same result.  The Wayland twin runs the same body.
 """
 import os
-import shutil
 import signal
 import time
 
 import pytest
+from host_tools import needs
 
 from test_debug_answer_wait import (
     DBX_BREAK_LINE, DBX_STUB_ENV, DBX_STUB_LOG, MIN_BAR_PIXELS, STOP_GREEN,
@@ -52,7 +52,7 @@ def _gone(pid):
 
 
 # @scenario SC-debug-57
-@pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+@needs("gcc")
 @pytest.mark.parametrize("xwpe", [EXIT_STUB_ENV], indirect=True)
 def test_the_editors_exit_ends_the_debugger_and_its_program(dbx_stub, xwpe):
     """SIGTERM to xwpe at a stop under dbx: xwpe ends, dbx goes, and dbx

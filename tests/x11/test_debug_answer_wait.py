@@ -18,6 +18,7 @@ import sys
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep
 
@@ -95,8 +96,7 @@ def _go_to_line(xwpe, line):
 
 
 # @scenario SC-debug-49
-@pytest.mark.skipif(not shutil.which("gdb") or not shutil.which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", [STUB_ENV], indirect=True)
 def test_gdb_keys_reach_the_editor_while_it_answers(xwpe):
     """gdb holds back its answer to `where` at the first stop.  Ctrl-G K,
@@ -141,8 +141,7 @@ START_STUB_ENV = dict(STUB_ENV, XWPE_STUB_STALL=SET_UP_FIRST,
 
 
 # @scenario SC-debug-49
-@pytest.mark.skipif(not shutil.which("gdb") or not shutil.which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", [START_STUB_ENV], indirect=True)
 def test_gdb_keys_typed_during_the_start_are_kept_or_refused(xwpe):
     """gdb holds back its answer to the first command of the start.  F8
@@ -209,7 +208,7 @@ def _pdb_stub_log(home):
 
 
 # @scenario SC-debug-49
-@pytest.mark.skipif(not shutil.which("python3"), reason="no python3")
+@needs("python3")
 @pytest.mark.parametrize("xwpe", [PDB_STUB_ENV], indirect=True)
 def test_pdb_keys_reach_the_editor_while_it_answers(xwpe):
     """pdb holds back its answer to a breakpoint set at a stop.  Ctrl-G K,
@@ -293,8 +292,7 @@ def _jdb_stub_log(home):
 
 
 # @scenario SC-debug-49
-@pytest.mark.skipif(not shutil.which("jdb") or not shutil.which("javac"),
-                    reason="no jdb or javac")
+@needs("jdb", "javac")
 @pytest.mark.parametrize("xwpe", [JDB_STUB_ENV], indirect=True)
 def test_jdb_keys_reach_the_editor_while_it_answers(xwpe):
     """jdb holds back its answer to a breakpoint set at a stop.  Ctrl-G K,
@@ -372,7 +370,7 @@ def _a68g_stub_log(home):
 
 
 # @scenario SC-debug-49
-@pytest.mark.skipif(not shutil.which("a68g"), reason="no a68g")
+@needs("a68g")
 @pytest.mark.parametrize("xwpe", [A68G_STUB_ENV], indirect=True)
 def test_a68g_keys_reach_the_editor_while_it_answers(xwpe):
     """a68g holds back its answer to a breakpoint set at a stop.  Ctrl-G K,
@@ -473,7 +471,7 @@ def _dbx_stub_log(home):
 
 
 # @scenario SC-debug-49
-@pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+@needs("gcc")
 @pytest.mark.parametrize("xwpe", [DBX_STUB_ENV], indirect=True)
 def test_dbx_keys_reach_the_editor_while_it_answers(dbx_stub, xwpe):
     """dbx holds back its answer to a breakpoint set at a stop.  Ctrl-G K,

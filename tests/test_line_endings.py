@@ -23,6 +23,7 @@ from wpe_driver import XWPE_LIB_DIR  # noqa: E402
 
 BLOCK_READ = [ctrl("k"), "r"]
 F1 = "\033OP"
+END_WAIT_S = 10          # an editor told to end finishes its emergency save within this
 
 
 def _folder(tmp_path, name):
@@ -179,7 +180,7 @@ def test_an_emergency_save_of_a_crlf_file_is_crlf(tmp_path):
     with EditSession(str(tmp_path), b"a\r\nb\r\n", filename="t.txt") as s:
         s.send(["x"])
         s.proc.send_signal(signal.SIGTERM)
-        s.proc.wait(timeout=10)
+        s.wait_exit(END_WAIT_S)
         got = s.disk("t.txt.ESV")
     assert got == b"xa\r\nb\r\n", got
 

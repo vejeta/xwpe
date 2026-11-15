@@ -12,6 +12,7 @@ import sys
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import changed_pixels, _sleep
 
@@ -79,9 +80,7 @@ def _run_until_blocked(xwpe):
 
 # The graphical twin of the terminal test; the Wayland twin runs this body
 # too, and WAYLAND-TESTING.txt keeps the same check on a real desktop.
-@pytest.mark.skipif(not __import__("shutil").which("gdb")
-                    or not __import__("shutil").which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": BLOCKED_PROG}],
                          indirect=True)
 def test_debug_quit_from_the_menu_while_the_program_runs(xwpe):
@@ -94,9 +93,7 @@ def test_debug_quit_from_the_menu_while_the_program_runs(xwpe):
     assert xwpe.proc.poll() is None, "xwpe died ending the session"
 
 
-@pytest.mark.skipif(not __import__("shutil").which("gdb")
-                    or not __import__("shutil").which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": BLOCKED_PROG}],
                          indirect=True)
 def test_text_typed_while_the_program_runs_reaches_the_program(xwpe):
@@ -156,9 +153,7 @@ def _ticks_move(xwpe):
     return before is not None and after is not None and after != before
 
 
-@pytest.mark.skipif(not __import__("shutil").which("gdb")
-                    or not __import__("shutil").which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": TICK_PROG}],
                          indirect=True)
 @pytest.mark.parametrize("keystroke", ["ctrl+Pause", "Break"])
@@ -197,9 +192,7 @@ JDB_START_TIMEOUT_S = 60
 JDB_SETTLE_S = 3.0
 
 
-@pytest.mark.skipif(not __import__("shutil").which("jdb")
-                    or not __import__("shutil").which("javac"),
-                    reason="no jdb or javac")
+@needs("jdb", "javac")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": JDB_SLEEP_PROG,
                                    "XWPE_TEST_FILE": "P.java"}],
                          indirect=True)
@@ -251,9 +244,7 @@ JDB_PRINT_AFTER_S = 6.0       # the sleep ended and the block was printed
 JDB_PRINT_PIXELS = 3000       # six rows of '#' change far more than this
 
 
-@pytest.mark.skipif(not __import__("shutil").which("jdb")
-                    or not __import__("shutil").which("javac"),
-                    reason="no jdb or javac")
+@needs("jdb", "javac")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": JDB_PRINT_PROG,
                                    "XWPE_TEST_FILE": "P.java"}],
                          indirect=True)

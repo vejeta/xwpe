@@ -26,8 +26,8 @@ row is red on an editor that starts the debugger without the question.
 import os
 import time
 
-import pytest
-from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen, tool_usable
+from host_tools import needs
+from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen
 
 CTRL_G = "\x07"            # the debugger prefix
 ESC = "\033"
@@ -42,14 +42,9 @@ BOX_WAIT = 30              # a build and the debugger's plan are done by then
 RAN_WAIT = 12              # a debugger that runs a folder file has run it by then
 SETTLE = 2.0               # whatever an answer leads to has started by then
 
-needs_python = pytest.mark.skipif(not tool_usable("python3", "--version"),
-                                  reason="python3 not usable")
-needs_gdb = pytest.mark.skipif(not (tool_usable("gcc", "--version") and
-                                    tool_usable("gdb", "--version")),
-                               reason="gcc and gdb not usable")
-needs_jdb = pytest.mark.skipif(not (tool_usable("javac", "-version") and
-                                    tool_usable("jdb", "-version")),
-                               reason="javac and jdb not usable")
+needs_python = needs("python3")
+needs_gdb = needs("gcc", "gdb")
+needs_jdb = needs("javac", "jdb")
 
 
 class Folder:

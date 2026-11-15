@@ -18,6 +18,7 @@ import time
 
 import pytest
 
+from host_tools import require
 from wpe_driver import WpeSession, ALT, WPE_BIN
 from edit_model.oracle import EditSession
 import test_ai_edit_hook_contracts as hook_contracts
@@ -853,8 +854,7 @@ STACK_LEFT_COL = STACK_COLS * 2 // 3 + 1
 
 
 def _need_gdb():
-    if not dbg.shutil.which("gcc") or not dbg.shutil.which("gdb"):
-        pytest.skip("no gcc or gdb")
+    require("gcc", "gdb")
 
 
 def _stack_session(tmp_path):
@@ -1038,8 +1038,7 @@ RATE_BUDGET_S = 2.0
 def test_messages_output_rate_is_unchanged(tmp_path):
     """A build that prints about 10000 lines reaches Messages in the time it
     took before the lines went through the buffer owner."""
-    if not dbg.shutil.which("gcc"):
-        pytest.skip("no gcc")
+    require("gcc")
     with WpeSession(str(tmp_path), RATE_SEED, filename="p.c", cols=RATE_COLS) as s:
         done = "%d warnings" % RATE_WARNINGS
         start = time.time()

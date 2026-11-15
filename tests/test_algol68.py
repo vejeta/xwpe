@@ -7,18 +7,15 @@ passes --norun so a68g only checks the syntax.
 
 Requires a68g installed.  Skips otherwise.
 """
-import shutil
 import time
 
-import pytest
-
+from host_tools import needs
 from wpe_driver import WpeSession, wait_screen
 from test_compile_and_messages import active_position, active_title
 
 HELLO = 'BEGIN\n  print(("Hello, Algol 68!", new line))\nEND\n'
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("a68g") is None, reason="a68g (Algol 68 Genie) not installed")
+pytestmark = needs("a68g")
 
 
 def _screen_text(w):

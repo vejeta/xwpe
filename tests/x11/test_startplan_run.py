@@ -9,10 +9,10 @@ and Wayland share: Alt-A draws it, Escape runs nothing.  The Wayland twin
 (tests/wayland/test_startplan_run.py) runs these same bodies; the terminal
 rows are in tests/test_startplan_run.py.
 """
-import shutil
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep, changed_pixels
 
@@ -44,7 +44,7 @@ def _trace(tmp_path):
 
 
 # @scenario SC-compile-30
-@pytest.mark.skipif(not shutil.which("xterm"), reason="no xterm")
+@needs("xterm")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": SCRIPT, "XWPE_TEST_FILE": SCRIPT_NAME,
                                    **SESSION}], indirect=True)
 def test_startplan_script_named_like_a_command_runs_alone(xwpe, tmp_path):
@@ -80,7 +80,7 @@ def csh_like_login_shell(tmp_path, monkeypatch):
 
 
 # @scenario SC-compile-30
-@pytest.mark.skipif(not shutil.which("xterm"), reason="no xterm")
+@needs("xterm")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": SCRIPT, "XWPE_TEST_FILE": "t.sh",
                                    **SESSION}], indirect=True)
 def test_startplan_run_in_a_terminal_under_a_csh_login_shell(csh_like_login_shell, xwpe,
@@ -108,7 +108,7 @@ def folder_make_arguments(tmp_path):
 
 
 # @scenario SC-compile-30
-@pytest.mark.skipif(not shutil.which("make"), reason="make not on PATH")
+@needs("make")
 @pytest.mark.parametrize("xwpe", [SESSION], indirect=True)
 def test_startplan_make_arguments_from_the_folder_ask(folder_make_arguments, xwpe):
     """Alt-A: the box is drawn, with the folder's Arguments and the line

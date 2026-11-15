@@ -10,7 +10,6 @@ and read the screen and the editor's trace (XWPE_UI_TRACE).
 """
 import os
 import re
-import shutil
 import signal
 import stat
 import sys
@@ -19,6 +18,7 @@ import time
 import pytest
 
 import procinfo
+from host_tools import require
 from wpe_driver import WpeSession, ALT, WAIT_SCALE, assistant_build
 
 CTRL_G = "\x07"
@@ -50,9 +50,9 @@ FIND_TITLE = "Find"
 
 
 def _need(*tools):
-    for tool in tools:
-        if shutil.which(tool) is None:
-            pytest.skip("no %s" % tool)
+    """Skip the row, naming the first tool that is missing, broken or
+    switched off by the job (tests/host_tools.py, require())."""
+    require(*tools)
 
 
 def _screen(w):

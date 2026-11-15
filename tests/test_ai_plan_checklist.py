@@ -20,11 +20,11 @@ Scenarios: SC-ai-agent-66, 67, 68, 69.
 import glob
 import os
 import re
-import shutil
 import subprocess
 import time
 
 import pytest
+from host_tools import needs
 from wpe_driver import (ALT, WAIT_SCALE, WPE_BIN, WpeSession, pane_rows,
                         pane_text_with_history, title_row, wait_screen)
 from test_ai_changeset import _messages_rows, _trace_text, _wait_trace
@@ -455,6 +455,7 @@ def _settled_messages(s, tmo=20):
 
 
 # @scenario SC-ai-agent-69
+@needs("gcc")
 def test_a_run_that_writes_nothing_to_messages_leaves_the_compile_output(tmp_path):
     """A run that writes no Messages row leaves the window as it found it.
 
@@ -464,8 +465,6 @@ def test_a_run_that_writes_nothing_to_messages_leaves_the_compile_output(tmp_pat
     an open, empty Messages window for nothing.  The window is emptied by the
     run's first row instead, so this run leaves the compiler's rows alone.
     """
-    if not shutil.which("gcc"):
-        pytest.skip("gcc not installed")
     trace = _trace_path(tmp_path)
     env = _env(tmp_path, "DONE nothing to say", policy="ask")
     with WpeSession(str(tmp_path), SEED, env_extra=env, cols=CHECK_COLS,

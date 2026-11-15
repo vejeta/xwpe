@@ -30,14 +30,13 @@ import subprocess
 
 import pytest
 
-from wpe_driver import ALT, WAIT_SCALE, WpeSession, tool_usable, write_user_store
+from host_tools import needs
+from wpe_driver import ALT, WAIT_SCALE, WpeSession, write_user_store
 from test_startplan_debug import (CTRL_G, ENTER, ESC, RUN_IT, SEED_C, USE_MINE,
                                   RAN_WAIT, SETTLE, BOX_WAIT, Folder, _debug_box,
                                   _own_line_joined, _plan_lines, _screen, _wait)
 
-needs_gdb = pytest.mark.skipif(not (tool_usable("gcc", "--version") and
-                                    tool_usable("gdb", "--version")),
-                               reason="gcc and gdb not usable")
+needs_gdb = needs("gcc", "gdb")
 
 INTERFACES = ["cli", "mi"]
 CANARY_S = 40              # a direct gdb run is far inside this

@@ -12,15 +12,14 @@ folder, which is the editor's HOME: nothing of the machine's is read.
 import glob
 import gzip
 import os
-import shutil
 import signal
 import stat
-import subprocess
 import sys
 import time
 
 import pytest
 
+from host_tools import needs
 from wpe_driver import WpeSession, WAIT_SCALE, WPE_BIN, XWPE_LIB_DIR, ALT
 
 F1 = "\033OP"                      # Help
@@ -181,57 +180,42 @@ def test_exit_removes_the_temp_folder_and_not_what_a_link_points_at(tmp_path):
         "what the link pointed at must be left alone"
 
 
-SHIM_C = '''#include <errno.h>
-#include <stdio.h>
-int openpty(int *a, int *b, char *c, const void *d, const void *e)
-{
-    FILE *fp = fopen("%(dir)s/openpty.refused", "a");
-    (void)a; (void)b; (void)c; (void)d; (void)e;
-    if (fp) { fputs("refused\\n", fp); fclose(fp); }
-    errno = ENOENT;
-    return -1;
-}
-'''
+# The editor's own test knob: it makes the one openpty of the editor fail, so
+# the machine has no terminal to give the program.  The same on every system.
+NO_PTY_ENV = {"XWPE_TEST_FAIL": "openpty"}
+# What the programs below print of their output when it was given no
+# terminal: computed by the program (the source shows only "tty=%d"), so it
+# is on the screen only when the program ran and had none.
+NO_TERMINAL_SAYS = "tty=0"
+# What the editor says on its status row when it could not make the terminal.
+REFUSED_SAYS = "cannot give the program a terminal"
 
 RUN_SRC = '''#include <stdio.h>
+#include <unistd.h>
 int main(void)
 {
     printf("first line\\n");
     printf("second line\\n");
+    printf("tty=%d\\n", isatty(1));
     return 3;
 }
 '''
 
 
-def _no_pty_shim(tmp_path):
-    """A library that makes openpty fail: the machine has no terminal to give
-    the program."""
-    if shutil.which("gcc") is None:
-        pytest.skip("no compiler to build the openpty stand-in")
-    src = str(tmp_path / "nopty.c")
-    with open(src, "w") as fh:
-        fh.write(SHIM_C % {"dir": str(tmp_path)})
-    lib = str(tmp_path / "nopty.so")
-    subprocess.run(["gcc", "-shared", "-fPIC", "-o", lib, src], check=True)
-    return lib
-
-
 # @scenario SC-debug-108
+@needs("gcc")
 def test_run_without_a_terminal_shows_the_output_and_the_code(tmp_path):
     """Run when no terminal can be made for the program: its output goes to
     Messages line by line and its exit code is reported, as before."""
-    if shutil.which("gcc") is None:
-        pytest.skip("no compiler to build the program")
-    lib = _no_pty_shim(tmp_path)
     with WpeSession(str(tmp_path), RUN_SRC, filename="t.c", wait=1.5,
-                    env_extra={"LD_PRELOAD": lib}) as w:
+                    env_extra=NO_PTY_ENV) as w:
         w.key(CTRL_F9, delay=1.0)
         assert _wait_for(w, lambda: "Return-Code: 3" in _screen(w), RUN_END_S), \
             "Run should report the program's code:\n%s" % _screen(w)
         screen = _screen(w)
         assert "first line" in screen and "second line" in screen, screen
-        assert _read(str(tmp_path / "openpty.refused")), \
-            "the terminal was never asked for, so the fallback did not run"
+        assert NO_TERMINAL_SAYS in screen, \
+            "the program was given a terminal, so the fallback did not run:\n%s" % screen
 
 
 FAKE_JAVA = '''#!/bin/sh
@@ -299,12 +283,14 @@ CTRL_C = "\x03"
 SIGINT_CODE = 130                 # 128 + SIGINT, as a shell reports it
 STOP_S = 15
 TICK = "tick"
+# Each tick says whether the program had a terminal, so the last lines of
+# Messages (which is all that shows once it has run a while) still say it.
 RUN_FOREVER_SRC = '''#include <stdio.h>
 #include <unistd.h>
 int main(void)
 {
     for (;;) {
-        printf("%s\\n");
+        printf("%s tty=%%d\\n", isatty(1));
         fflush(stdout);
         sleep(1);
     }
@@ -313,24 +299,24 @@ int main(void)
 
 
 # @scenario SC-debug-112
+@needs("gcc")
 def test_ctrl_c_stops_a_program_run_without_a_terminal(tmp_path):
     """Run when no terminal can be made, of a program that never ends:
     Ctrl-C stops it, as it does on a terminal, and its code is the one a
     shell reports for SIGINT."""
-    if shutil.which("gcc") is None:
-        pytest.skip("no compiler to build the program")
-    lib = _no_pty_shim(tmp_path)
     with WpeSession(str(tmp_path), RUN_FOREVER_SRC, filename="t.c", wait=1.5,
-                    env_extra={"LD_PRELOAD": lib}) as w:
+                    env_extra=NO_PTY_ENV) as w:
         w.key(CTRL_F9, delay=1.0)
-        assert _wait_for(w, lambda: TICK in _screen(w), RUN_END_S), \
-            "the program's output should show while it runs:\n%s" % _screen(w)
-        assert _read(str(tmp_path / "openpty.refused")), \
-            "the terminal was never asked for, so the fallback did not run"
+        assert _wait_for(w, lambda: REFUSED_SAYS in _screen(w), RUN_END_S), \
+            "the editor should say it could not give the program a " \
+            "terminal:\n%s" % _screen(w)
         w.key(CTRL_C, delay=0.1)
         line = "Return-Code: %d" % SIGINT_CODE
         assert _wait_for(w, lambda: line in _screen(w), STOP_S), \
             "Ctrl-C should stop the program:\n%s" % _screen(w)
+        assert TICK + " " + NO_TERMINAL_SAYS in _screen(w), \
+            "the program's output should show, and say it had no " \
+            "terminal:\n%s" % _screen(w)
         assert w.alive()
 
 

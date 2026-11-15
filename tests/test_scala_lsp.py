@@ -10,10 +10,8 @@ Requires metals + scala-cli.  Skips otherwise.  Slow: Alt-Q E boots a JVM
 language server and imports the build (the UI blocks until it is ready).
 """
 import re
-import shutil
+from host_tools import needs
 import time
-
-import pytest
 
 from wpe_driver import WpeSession
 
@@ -30,9 +28,7 @@ PROG = (
 
 ALT_Q = "\033q"     # the LSP prefix (Alt-Q)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("metals") is None or shutil.which("scala-cli") is None,
-    reason="metals and scala-cli required")
+pytestmark = needs("metals", "scala-cli")
 
 
 def _text(w):

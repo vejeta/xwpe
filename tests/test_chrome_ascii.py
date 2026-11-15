@@ -16,7 +16,8 @@ the VT100/ASCII line set on its own.
 pyte decodes the pty byte stream, so in the C locale it sees the literal ASCII
 stand-ins and in UTF-8 it sees the real codepoints; both are asserted here.
 """
-from wpe_driver import WpeSession, MACOS
+from wpe_driver import WpeSession
+from procinfo import MACOS
 
 SEED = "int main(void){\n  return 0;\n}\n"
 

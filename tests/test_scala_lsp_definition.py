@@ -13,9 +13,7 @@ not decoded as movement under the pyte pty, so we never rely on them.
 
 Requires metals + scala-cli.  Skips otherwise.  Slow (boots Metals).
 """
-import shutil
-
-import pytest
+from host_tools import needs
 
 from wpe_driver import WpeSession
 
@@ -30,9 +28,7 @@ ALT_Q = "\033q"
 ALT_S = "\033s"
 F6 = "\033[17~"    # switch window (Messages -> source)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("metals") is None or shutil.which("scala-cli") is None,
-    reason="metals and scala-cli required")
+pytestmark = needs("metals", "scala-cli")
 
 
 def _find(w, term):

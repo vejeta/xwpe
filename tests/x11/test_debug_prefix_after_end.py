@@ -7,11 +7,11 @@ program runs to its end, so Ctrl-G I, Ctrl-G K or Alt-Q typed right after
 Ctrl-G R run or are refused and their letter is not typed into the source.
 """
 import os
-import shutil
 import sys
 import time
 
 import pytest
+from host_tools import require
 
 from conftest import _sleep
 
@@ -84,8 +84,7 @@ def _assert_untouched(xwpe, what):
 
 
 def _need_gdb(xwpe):
-    if not shutil.which("gdb") or not shutil.which("gcc"):
-        pytest.skip("no gdb or gcc")
+    require("gdb", "gcc")
 
 
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": C_PROG}],

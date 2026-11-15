@@ -11,18 +11,15 @@ This test pins the ga68 side: a modern-stropped program must compile to a
 native binary and run, even when a68g is ALSO installed (the dialect sniff,
 not install order, must decide).  Requires ga68; skips otherwise.
 """
-import shutil
 import time
 
-import pytest
-
+from host_tools import needs, require
 from wpe_driver import WpeSession
 
 # Modern (ga68) stropping: lowercase keywords, { } comment, puts with 'n newline.
 HELLO = 'begin\n   { GNU Algol 68 -- modern stropping }\n   puts ("Hello, ga68!\'n")\nend\n'
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("ga68") is None, reason="ga68 (GNU Algol 68) not installed")
+pytestmark = needs("ga68")
 
 
 def _screen_text(w):
@@ -56,8 +53,7 @@ def test_ga68_run_from_subdirectory(tmp_path):
     (The compile path that originally misdetected this -- Make/Compile via
     e_comp -- was verified with an instrumented red/green run; here we assert
     the user-visible outcome through Run, which must not regress.)"""
-    if shutil.which("a68g") is None:
-        pytest.skip("needs BOTH ga68 and a68g installed to exercise the choice")
+    require("a68g")      # needs BOTH ga68 and a68g to exercise the choice
     (tmp_path / "src").mkdir()
     with WpeSession(str(tmp_path), HELLO, filename="src/hello.a68", wait=2.0) as w:
         w.key("\033u", delay=1.0)        # Alt-U = Run (compile + run)

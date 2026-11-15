@@ -1210,6 +1210,8 @@ EXTRA_DIST = \
   tests/test_block_asan.py \
   tests/test_clipboard_osc52.py \
   tests/wpe_driver.py \
+  tests/host_tools.py \
+  tests/procinfo.py \
   tests/build_config.py \
   tests/test_config_aware_menu.py \
   tests/test_menu_edit.py \

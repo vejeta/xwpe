@@ -12,9 +12,8 @@ any buffer. It is that the editor never substitutes a different file name for
 the one it was given, and says so when the name does not fit.
 """
 import os
-import shutil
 
-import pytest
+from host_tools import needs
 from wpe_driver import WpeSession
 
 PROG = "int main(void){return 0;}\n"
@@ -25,7 +24,7 @@ CUT_PATH_ERROR = "linker input file not found"
 F9 = "\033[20~"          # Make
 
 
-@pytest.mark.skipif(shutil.which("gcc") is None, reason="needs gcc")
+@needs("gcc")
 def test_a_build_from_a_long_path_does_not_report_a_cut_path(tmp_path):
     deep = tmp_path / DEEP
     deep.mkdir(parents=True)

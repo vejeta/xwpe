@@ -17,6 +17,7 @@ import tempfile
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep
 
@@ -96,7 +97,7 @@ def _wait(predicate, timeout):
 
 
 # @scenario SC-debug-135
-@pytest.mark.skipif(not shutil.which("gcc"), reason="gcc not on PATH")
+@needs("gcc")
 @pytest.mark.parametrize("xwpe", [SESSION], indirect=True)
 def test_dbx_is_run_after_a_breakpoint_too_long_to_send(dbx_chosen, xwpe):
     """Ctrl-G R with a breakpoint on line 8 of a source named 252 bytes:

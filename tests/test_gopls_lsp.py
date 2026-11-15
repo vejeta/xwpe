@@ -9,10 +9,8 @@ the eager start, the status-bar label, and the Alt-Q dispatch.
 A go.mod is written so gopls loads the file as a module (full features).
 Skips when gopls (or go) is absent.
 """
-import shutil
+from host_tools import needs
 import time
-
-import pytest
 
 from wpe_driver import WpeSession
 
@@ -35,9 +33,7 @@ PROG = (
 
 ALT_Q = "\033q"     # the LSP prefix (Alt-Q)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("gopls") is None or shutil.which("go") is None,
-    reason="gopls and go are required")
+pytestmark = needs("gopls", "go")
 
 
 def _text(w):

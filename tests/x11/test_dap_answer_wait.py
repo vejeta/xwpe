@@ -11,12 +11,12 @@ The Wayland twin (tests/wayland/test_dap_answer_wait.py) runs the same
 body.
 """
 import os
-import shutil
 import signal
 import sys
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep
 
@@ -93,8 +93,7 @@ def _let_go(pid):
 
 
 # @scenario SC-debug-69
-@pytest.mark.skipif(not shutil.which("dlv") or not shutil.which("go"),
-                    reason="no dlv or go")
+@needs("dlv", "go")
 @pytest.mark.parametrize("xwpe", [DLV_ENV], indirect=True)
 def test_dlv_keys_reach_the_editor_while_it_answers(xwpe):
     """dlv is held while it owes a watch's value at a stop.  Ctrl-G K,

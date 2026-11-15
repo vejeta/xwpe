@@ -315,7 +315,8 @@ def test_quit_returns_at_once_and_the_end_line_comes_after(tmp_path,
     w = _start_any(tmp_path, debugger)
     try:
         pids = _children(w, name)
-        assert len(pids) == 1, "the editor's one %s: %s" % (name, pids)
+        assert len(pids) == 1, "the editor's one %s: %s\n%s" \
+            % (name, pids, w.process_report())
         took = _quit_and_time(w)
         assert took is not None and took < QUIT_RETURNS_S * WAIT_SCALE, \
             "Quit took %s s to say %r:\n%s" % (took, END_LINE, _screen(w))

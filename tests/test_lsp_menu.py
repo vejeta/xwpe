@@ -26,13 +26,12 @@ Run: WPE_BIN=../wpe python -m pytest -v tests/test_lsp_menu.py
 import os
 import pty
 import select
-import shutil
 import subprocess
 import time
 
-import pytest
 import pyte
 
+from host_tools import needs
 from test_utf8_border import SafeScreen
 from wpe_driver import SERVER_START_HEADING, SERVER_START_RUN_IT
 
@@ -239,8 +238,7 @@ def test_mouse_click_opens_action_dropdown(tmp_path):
 # --------------------------------------------------------------------------
 # Group 4: keyboard -- Alt-Q + letter runs an action (needs a real Metals)
 # --------------------------------------------------------------------------
-@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
-                    reason="metals and scala-cli required")
+@needs("metals", "scala-cli")
 def test_keyboard_altq_definition_jumps(tmp_path):
     """The keyboard equivalent of the menu: Alt-Q E to start Metals, then Alt-Q D
     on a use of a symbol jumps to its definition (same file here, for speed)."""
@@ -271,8 +269,7 @@ def test_keyboard_altq_definition_jumps(tmp_path):
         w.close()
 
 
-@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
-                    reason="metals and scala-cli required")
+@needs("metals", "scala-cli")
 def test_keyboard_altq_inlay_hints(tmp_path):
     """Alt-Q Y toggles end-of-line inlay hints: the inferred type of an
     un-annotated `val` shows up at the end of its line.  Self-contained file
@@ -302,8 +299,7 @@ def test_keyboard_altq_inlay_hints(tmp_path):
         w.close()
 
 
-@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
-                    reason="metals and scala-cli required")
+@needs("metals", "scala-cli")
 def test_worksheet_shows_evaluation_results(tmp_path):
     """#187: open a .worksheet.sc, start Metals, and the per-line EVALUATION
     results appear at end-of-line -- automatic, no Alt-Q Y.  Metals delivers
@@ -331,8 +327,7 @@ def test_worksheet_shows_evaluation_results(tmp_path):
         w.close()
 
 
-@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
-                    reason="metals and scala-cli required")
+@needs("metals", "scala-cli")
 def test_worksheet_opened_with_project_file_evaluates(tmp_path):
     """#187 multi-file: opening a worksheet ALONGSIDE the project file (the
     natural flow -- the project file is opened first and eager-starts Metals for
@@ -357,8 +352,7 @@ def test_worksheet_opened_with_project_file_evaluates(tmp_path):
         w.close()
 
 
-@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
-                    reason="metals and scala-cli required")
+@needs("metals", "scala-cli")
 def test_async_start_keeps_editor_responsive(tmp_path):
     """#196 (the headline): the first LSP action starts Metals in the BACKGROUND
     and returns at once -- the editor must keep accepting keystrokes while the
@@ -470,8 +464,7 @@ def test_error_box_brackets_the_lsp_modal_guard(tmp_path, monkeypatch):
         w.close()
 
 
-@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
-                    reason="metals and scala-cli required")
+@needs("metals", "scala-cli")
 def test_eager_start_on_open_boots_metals(tmp_path):
     """#210 (the '3' of 3+1): just OPENING a .scala boots Metals in the
     background -- NO Alt-Q.  We press no LSP key at all; the 'Starting language
@@ -493,8 +486,7 @@ def test_eager_start_on_open_boots_metals(tmp_path):
         w.close()
 
 
-@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
-                    reason="metals and scala-cli required")
+@needs("metals", "scala-cli")
 def test_code_action_resolve_named_arguments(tmp_path):
     """#214 + #215 end to end, BY KEYBOARD: Metals delivers 'Convert to named
     arguments' UNRESOLVED (only a `data` field), so xwpe must run a
@@ -558,8 +550,7 @@ def test_code_action_resolve_named_arguments(tmp_path):
         w.close()
 
 
-@pytest.mark.skipif(shutil.which("metals") is None or shutil.which("scala-cli") is None,
-                    reason="metals and scala-cli required")
+@needs("metals", "scala-cli")
 def test_definition_into_library_source(tmp_path):
     """#213: go-to-definition (Alt-Q D) on a stdlib symbol jumps INTO the library
     source.  Metals extracts those under .metals/readonly (0444), so the window

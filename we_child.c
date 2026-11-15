@@ -1051,6 +1051,49 @@ static int wpe_child_tty_name_is(const char *name, int fd)
         by_name.st_rdev == by_fd.st_rdev);
 }
 
+/** XWPE_TEST_FAIL: a comma-separated list of the steps a test makes fail, as
+    in the file operations and the writer.  Here: WPE_CHILD_HOOK_OPENPTY. */
+#define WPE_CHILD_TEST_FAIL_ENV  "XWPE_TEST_FAIL"
+#define WPE_CHILD_HOOK_OPENPTY   "openpty"
+
+/**
+ * wpe_child_test_hook - Is @name among the steps the test asked to fail?
+ * Read only in the parent, never between fork and exec.  It lets a test show
+ * what the user sees when the system has no terminal to give a program (the
+ * output still reaches Messages and the exit code is still reported), on
+ * every system and without replacing a library function.
+ * Return: 1 when XWPE_TEST_FAIL names @name, else 0.
+ */
+static int wpe_child_test_hook(const char *name)
+{
+ const char *v = getenv(WPE_CHILD_TEST_FAIL_ENV);
+ size_t len = strlen(name);
+
+ while (v != NULL && *v != '\0')
+ {
+  if (strncmp(v, name, len) == 0 && (v[len] == '\0' || v[len] == ','))
+   return(1);
+  v = strchr(v, ',');
+  if (v != NULL)
+   v++;
+ }
+ return(0);
+}
+
+/**
+ * wpe_child_openpty - openpty, or its refusal when a test asked for one.
+ * Return: what openpty returns; -1 with errno ENOENT for the test's refusal.
+ */
+static int wpe_child_openpty(int *master, int *slave, char *path)
+{
+ if (wpe_child_test_hook(WPE_CHILD_HOOK_OPENPTY))
+ {
+  errno = ENOENT;
+  return(-1);
+ }
+ return(openpty(master, slave, path, NULL, NULL));
+}
+
 /**
  * wpe_child_pty_pair - The one openpty of the tree: both ends and the
  * slave's name.
@@ -1073,7 +1116,7 @@ static int wpe_child_pty_pair(int *master, int *slave, char *name, size_t n,
  if (unproved)
   unproved[0] = '\0';
  *master = *slave = WPE_CHILD_NO_FD;
- if (openpty(master, slave, path, NULL, NULL) != 0)
+ if (wpe_child_openpty(master, slave, path) != 0)
  {
   *master = *slave = WPE_CHILD_NO_FD;
   return(-1);

@@ -22,20 +22,16 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, tool_usable
+from host_tools import needs
+from wpe_driver import WpeSession
 from test_startplan_debug import CTRL_G, RAN_WAIT, RUN_IT, SETTLE, Folder, _screen, _wait
 from test_startplan_pdb_jdb_apart import (DOWN, JAVA_INI_LINE, JdbFolder, _break_in_the_script,
                                           _clean_env, _jdb_canary, _run_on, _start_jdb,
                                           _stopped, _traced_sends)
 
-needs_gdb = pytest.mark.skipif(not (tool_usable("gcc", "--version") and
-                                    tool_usable("gdb", "--version")),
-                               reason="gcc and gdb not usable")
-needs_pdb = pytest.mark.skipif(not tool_usable("python3", "--version"),
-                               reason="python3 not usable")
-needs_jdb = pytest.mark.skipif(not (tool_usable("javac", "-version") and
-                                    tool_usable("jdb", "-version")),
-                               reason="javac and jdb not usable")
+needs_gdb = needs("gcc", "gdb")
+needs_pdb = needs("python3")
+needs_jdb = needs("javac", "jdb")
 
 INTERFACES = ["cli", "mi"]
 CANARY_S = 40              # a direct debugger run is far inside this
@@ -287,7 +283,7 @@ def _program_prints(path):
 
 
 # @scenario SC-debug-130
-@pytest.mark.skipif(not tool_usable("gcc", "--version"), reason="gcc not usable")
+@needs("gcc")
 @pytest.mark.parametrize("stem", STEM_BYTES, ids=["%d-byte-stem" % n for n in STEM_BYTES])
 def test_a_source_with_a_long_name_builds_and_the_program_runs(tmp_path, stem):
     """The link names the program from the source's name without its

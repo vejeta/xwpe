@@ -21,7 +21,7 @@ import sys
 
 import pytest
 
-from wpe_driver import WpeSession, tool_usable, wait_screen
+from wpe_driver import WpeSession, wait_screen
 from test_startplan_debug import (CTRL_G, SEED_C, RUN_IT, USE_MINE, RAN_WAIT, SETTLE,
                                   _debug_box, _screen, _wait)
 from test_startplan_pdb_jdb_apart import (PdbFolder, STOP_S, ENTER, _stopped,
@@ -208,7 +208,8 @@ def test_pdb_left_at_another_prompt_at_a_stop_refuses_every_resume(tmp_path):
             s.key("\033OB", delay=0.1)
         s.key(CTRL_G, "b", delay=0.4)
         s.key(CTRL_G, "r", delay=1.0)
-        assert _wait(lambda: s.mark_line() == STOP_LINE, STOP_S), _screen(s)
+        assert _wait(lambda: s.mark_line() == STOP_LINE, STOP_S), \
+            "%s\n%s" % (_screen(s), s.process_report())
         pids = _pdb_pids(str(tmp_path))
         s.key(CTRL_G, "w", delay=1.0)
         s.key("f()", delay=0.3)

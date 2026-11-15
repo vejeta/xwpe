@@ -19,11 +19,11 @@ The Java rows with real tools (35, 36) run the system's JDK.
 Run: WPE_BIN=$PWD/wpe pytest tests/test_run_kind.py (and wpe-asan).
 """
 import os
-import shutil
 import time
 
 import pytest
-from wpe_driver import ALT, WpeSession, tool_usable, wait_screen
+from host_tools import needs
+from wpe_driver import ALT, WpeSession, wait_screen
 
 import test_program_name as pn
 
@@ -310,9 +310,7 @@ def test_a_folders_scala_compiler_asks_again_before_its_scala_starts(tmp_path):
     assert not kit.starts("fscala"), "the folder's scala started: %r" % kit.lines()
 
 
-real_scala = pytest.mark.skipif(
-    not (tool_usable("scalac", "-version") and tool_usable("scala", "-version")),
-    reason="scalac and scala are not usable")
+real_scala = needs("scalac", "scala")
 
 
 # @scenario SC-program-name-24b
@@ -516,8 +514,7 @@ def test_a_users_own_interpreter_entry_keeps_running(tmp_path):
 
 # @scenario SC-program-name-31
 @needs_sh
-@pytest.mark.skipif(not (tool_usable("ga68", "--version")),
-                    reason="ga68 not usable")
+@needs("ga68")
 def test_ga68_runs_the_program_it_linked(tmp_path):
     """Control, with the real ga68: a ga68 dialect file (a { } comment) builds
     ./t.e and Ctrl-F9 starts it, where a68g would have been handed the
@@ -537,8 +534,7 @@ def test_ga68_runs_the_program_it_linked(tmp_path):
 
 # @scenario SC-program-name-31b
 @needs_sh
-@pytest.mark.skipif(not (tool_usable("ga68", "--version") and tool_usable("a68g", "--version")),
-                    reason="ga68 and a68g not both usable")
+@needs("ga68", "a68g")
 def test_a_ga68_file_in_a_folder_with_an_xwperc_is_not_said_to_be_the_folders_choice(tmp_path):
     """Both toolchains installed (a68g is the default), a ga68 dialect file,
     and a folder xwperc that sets only a default value: Run's box must not say
@@ -1102,10 +1098,7 @@ def test_a_shipped_class_is_compiled_and_then_run(tmp_path):
 
 # ---- Rows 35, 36: Run and the Java debugger share one VM start (real JDK) ----
 
-real_jdk = pytest.mark.skipif(
-    not (tool_usable("javac", "-version") and tool_usable("java", "-version")
-         and tool_usable("jdb", "-version")),
-    reason="a JDK with javac, java and jdb is not usable")
+real_jdk = needs("javac", "java", "jdb")
 
 NO_CLASS = "Could not find or load main class T"
 

@@ -18,21 +18,18 @@ tests/wayland/test_screen_owner.py drives a debug stop there).  Both rows skip
 by name when the window manager sets no _NET_ACTIVE_WINDOW (twm).
 """
 import os
-import shutil
 import subprocess
 import sys
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep, launch_client, xtool_env
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_menu_debug import BLOCKED_PROG, BREAK_LINE, RUN_TIMEOUT_S, _gdb, _wait  # noqa: E402
 
-needs_tools = pytest.mark.skipif(
-    not (shutil.which("gdb") and shutil.which("gcc") and shutil.which("xlogo")
-         and shutil.which("xdotool")),
-    reason="no gdb, gcc, xlogo or xdotool")
+needs_tools = needs("gdb", "gcc", "xlogo", "xdotool")
 
 XLOGO_WAIT_S = 10
 

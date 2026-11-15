@@ -14,11 +14,11 @@ test (the control, which has always worked).  The Wayland twin
 (tests/wayland/test_debug_no_ctty.py) runs the same body.
 """
 import os
-import shutil
 import sys
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep
 
@@ -113,12 +113,8 @@ def _run_gdb_until_blocked(xwpe):
     _sleep(1.0)
 
 
-def _have(*tools):
-    return all(shutil.which(t) for t in tools)
-
-
 # @scenario SC-debug-18
-@pytest.mark.skipif(not _have("jdb", "javac"), reason="no jdb or javac")
+@needs("jdb", "javac")
 @pytest.mark.parametrize("xwpe", JDB_LAUNCHES, ids=LAUNCH_IDS, indirect=True)
 def test_jdb_starts_and_keys_reach_the_editor_without_a_controlling_tty(xwpe):
     """jdb starts, its VM stays up and keys typed meanwhile reach the
@@ -145,7 +141,7 @@ def test_jdb_starts_and_keys_reach_the_editor_without_a_controlling_tty(xwpe):
 
 
 # @scenario SC-debug-18
-@pytest.mark.skipif(not _have("gdb", "gcc"), reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", GDB_LAUNCHES, ids=LAUNCH_IDS, indirect=True)
 def test_ctrl_f2_ends_a_gdb_session_without_a_controlling_tty(xwpe):
     """Ctrl-F2 ends the gdb session while the program runs, and the editor
@@ -160,7 +156,7 @@ def test_ctrl_f2_ends_a_gdb_session_without_a_controlling_tty(xwpe):
 
 
 # @scenario SC-debug-18
-@pytest.mark.skipif(not _have("gdb", "gcc"), reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", GDB_LAUNCHES, ids=LAUNCH_IDS, indirect=True)
 def test_debug_quit_while_the_program_runs_without_a_controlling_tty(xwpe):
     """Debug > Quit ends the session while the program runs, and the editor

@@ -13,7 +13,6 @@ leaves bytes that are no UTF-8.
 """
 import os
 import select
-import shutil
 import subprocess
 import time
 
@@ -23,6 +22,7 @@ pytest.importorskip("pyte")
 
 from edit_model import selfcheck  # noqa: E402
 from edit_model.oracle import DOWN, HOME, RIGHT, EditSession, alt, ctrl  # noqa: E402
+from host_tools import require  # noqa: E402
 from wpe_driver import ALT, WPE_BIN, WpeSession, wait_screen  # noqa: E402
 
 F9 = "\033[20~"
@@ -43,8 +43,7 @@ def _assert_no_position_trace(s):
 
 
 def _need_gcc():
-    if shutil.which("gcc") is None:
-        pytest.skip("no gcc")
+    require("gcc")
 
 
 # The line a compiler blames, as gcc counts it: the third `é` ends at screen

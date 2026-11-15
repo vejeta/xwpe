@@ -14,6 +14,8 @@ import time
 
 import pytest
 
+from host_tools import needs
+
 from wpe_driver import WpeSession
 
 # `undefined_name` guarantees a diagnostic from either server.
@@ -31,9 +33,7 @@ PROG = (
 
 ALT_Q = "\033q"     # the LSP prefix (Alt-Q)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("pyright-langserver") is None and shutil.which("pylsp") is None,
-    reason="a Python language server (pyright or pylsp) is required")
+pytestmark = needs("pyright-langserver|pylsp")
 
 
 def _server_label():

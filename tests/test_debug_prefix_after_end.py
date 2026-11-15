@@ -9,7 +9,6 @@ loop took the first byte, the letter would be typed into the source.
 Every row checks the file on disk, not only the screen.
 """
 import os
-import shutil
 import sys
 
 import pytest
@@ -17,6 +16,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_config import requires
+from host_tools import require
 from wpe_driver import WpeSession, WAIT_SCALE
 import time
 
@@ -76,9 +76,9 @@ EDITOR_SEQUENCES = {
 
 
 def _need(*tools):
-    for tool in tools:
-        if shutil.which(tool) is None:
-            pytest.skip("no %s" % tool)
+    """Skip the row, naming the first tool that is missing, broken or
+    switched off by the job (tests/host_tools.py, require())."""
+    require(*tools)
 
 
 def _screen(w):

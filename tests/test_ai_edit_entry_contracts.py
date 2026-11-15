@@ -256,7 +256,7 @@ def test_complete_spinner_in_text_window(tmp_path):
 
 
 def test_complete_refuses_a_real_non_text_window(tmp_path):
-    F3 = "\033OR"      # File -> File-Manager (macos_key_route maps this on macOS)
+    F3 = "\033OR"      # File -> File-Manager
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path), filename="t.c") as s:
         s.key(F3, delay=0.8)
         disp = "\n".join(s.display())

@@ -23,6 +23,7 @@ import re
 import pytest
 
 import wpe_driver
+from build_config import requires
 from wpe_driver import ALT, WpeSession
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -99,7 +100,10 @@ def _check_or_record(style, mode, dumped):
         style, mode, ", ".join(wrong))
 
 
+# The goldens are recorded on a build with the assistant: the Options menu of
+# that build has the AI row, and a build without it hides the row.
 # @scenario SC-menus-01
+@requires("enable-ai")
 @pytest.mark.parametrize("blocks", sorted(BLOCK_BITS))
 @pytest.mark.parametrize("style", STYLES)
 def test_every_menu_matches_its_golden(tmp_path, style, blocks):
@@ -109,6 +113,7 @@ def test_every_menu_matches_its_golden(tmp_path, style, blocks):
 
 
 # @scenario SC-menus-02
+@requires("enable-ai")
 @pytest.mark.parametrize("style", STYLES)
 def test_we_menus_match_their_golden(tmp_path, monkeypatch, style):
     """The mode without the programming layer: a bar of eight, Go to Line

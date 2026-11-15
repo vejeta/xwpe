@@ -13,11 +13,11 @@ script, which no box lists, never runs.  The Wayland twin
 rows, start-up files among them, are in tests/test_startplan_debug.py.
 """
 import os
-import shutil
 import subprocess
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep, changed_pixels
 
@@ -57,8 +57,7 @@ def folder_arguments(tmp_path):
 
 
 # @scenario SC-compile-29
-@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
-                    reason="gcc and gdb not on PATH")
+@needs("gcc", "gdb")
 @pytest.mark.parametrize("xwpe", [SESSION], indirect=True)
 def test_startplan_folder_arguments_reach_gdb_only_after_the_box(folder_arguments, xwpe):
     """Ctrl-G R: the box is drawn, with the run command the folder's
@@ -108,8 +107,7 @@ def folder_debugger(tmp_path):
 
 
 # @scenario SC-compile-29
-@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("python3")),
-                    reason="gcc and python3 not on PATH")
+@needs("gcc", "python3")
 @pytest.mark.parametrize("xwpe", [SUB_SESSION], indirect=True)
 def test_startplan_folder_debugger_and_its_startup_file_ask_once(folder_debugger, xwpe):
     """Ctrl-G R: one box is drawn, naming the folder's debugger and the
@@ -145,8 +143,7 @@ def program_script(tmp_path):
 
 
 # @scenario SC-compile-29
-@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
-                    reason="gcc and gdb not on PATH")
+@needs("gcc", "gdb")
 @pytest.mark.parametrize("xwpe", [SUB_SESSION], indirect=True)
 def test_startplan_program_gdb_script_use_mine_stops_it(program_script, xwpe):
     """Ctrl-G R shows the script beside the program; Use mine starts gdb,
@@ -168,8 +165,7 @@ def test_startplan_program_gdb_script_use_mine_stops_it(program_script, xwpe):
 
 
 # @scenario SC-debug-116
-@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
-                    reason="gcc and gdb not on PATH")
+@needs("gcc", "gdb")
 @pytest.mark.parametrize("xwpe", [SUB_SESSION], indirect=True)
 def test_startplan_program_gdb_script_run_it_loads_it(program_script, xwpe):
     """Run it on that box: the graphical editor's helper script starts gdb
@@ -210,8 +206,7 @@ def embedded_script(tmp_path):
 
 
 # @scenario SC-compile-29
-@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
-                    reason="gcc and gdb not on PATH")
+@needs("gcc", "gdb")
 @pytest.mark.parametrize("xwpe", [EMBEDDED_SESSION], indirect=True)
 def test_startplan_gdb_script_inside_the_program_use_mine_stops_it(embedded_script, xwpe):
     """Ctrl-G R lists the script the program carries inside itself; Use mine
@@ -272,8 +267,7 @@ def library_script(tmp_path):
 
 
 # @scenario SC-debug-116
-@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
-                    reason="gcc and gdb not on PATH")
+@needs("gcc", "gdb")
 @pytest.mark.parametrize("xwpe", [LIBRARY_SESSION], indirect=True)
 def test_startplan_a_library_script_is_not_run_by_a_clean_start(library_script, xwpe):
     """Nothing is listed, so no box opens; the program loads a library of the
@@ -322,7 +316,7 @@ def pdb_startup_file(tmp_path):
 
 
 # @scenario SC-debug-119
-@pytest.mark.skipif(not shutil.which("python3"), reason="python3 not on PATH")
+@needs("python3")
 @pytest.mark.parametrize("xwpe", [PY_SESSION], indirect=True)
 def test_startplan_pdbrc_use_mine_stops_it(pdb_startup_file, xwpe):
     """Ctrl-G R lists the folder's .pdbrc; Use mine starts pdb, through the
@@ -345,7 +339,7 @@ def test_startplan_pdbrc_use_mine_stops_it(pdb_startup_file, xwpe):
 
 
 # @scenario SC-debug-119
-@pytest.mark.skipif(not shutil.which("python3"), reason="python3 not on PATH")
+@needs("python3")
 @pytest.mark.parametrize("xwpe", [PY_SESSION], indirect=True)
 def test_startplan_pdbrc_run_it_loads_it(pdb_startup_file, xwpe):
     """Run it on that box: pdb starts apart through the helper script, the

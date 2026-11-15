@@ -6,18 +6,17 @@ server (the `xwpe` fixture) and read the selections back with `xclip`.
 Skips cleanly when `xclip` is not installed.
 """
 import os
-import shutil
 import subprocess
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import changed_pixels, xtool_env
 from test_selection_keys import (SAME_FIELD_PIXELS, close_dialog,
                                  copy_two_lines, field_image, open_find)
 
-pytestmark = pytest.mark.skipif(shutil.which("xclip") is None,
-                                reason="xclip not installed")
+pytestmark = needs("xclip")
 
 
 def _xclip(selection, target=None):

@@ -7,19 +7,17 @@ reads the X selections with xclip), this drives the selection with wl-clipboard
 (wl-copy / wl-paste) against the same headless weston the `xwpe` fixture uses.
 
 Skips cleanly when wl-clipboard is not installed."""
-import shutil
 import subprocess
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import changed_pixels
 from test_selection_keys import (SAME_FIELD_PIXELS, close_dialog,
                                  copy_two_lines, field_image, open_find)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("wl-paste") is None or shutil.which("wl-copy") is None,
-    reason="wl-clipboard (wl-copy/wl-paste) not installed")
+pytestmark = needs("wl-copy", "wl-paste")      # the wl-clipboard package
 
 
 def _wl_paste(env):

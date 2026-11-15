@@ -17,11 +17,11 @@ the half-width border (the words past column 37 of each row are gone).
 Scenarios: SC-ai-chat-04, SC-ai-chat-06, SC-ai-chat-35.
 """
 import os
-import shutil
 import subprocess
 import time
 
 import pytest
+from host_tools import needs
 from wpe_driver import (WpeSession, ALT, WPE_BIN, title_row, pane_frame, pane_rows,
                         pane_rows_with_history)
 
@@ -99,9 +99,8 @@ def _assert_whole_at_width(rows, words, width, what):
 
 
 # @scenario SC-ai-chat-04
+@needs("gcc")
 def test_reply_written_at_full_width_is_whole_after_messages_opens(tmp_path):
-    if not shutil.which("gcc"):
-        pytest.skip("gcc not installed")
     with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path, LONG_REPLY),
                     filename="t.c") as s:
         _ask(s, "q", "w29")

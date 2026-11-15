@@ -14,10 +14,10 @@ review's summary nor the trace claims work that did not happen.
 """
 import os
 import re
-import shutil
 import subprocess
 import time
 import pytest
+from host_tools import needs
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, pane_text_with_history
 
 
@@ -32,7 +32,7 @@ def _ai_build():
 
 pytestmark = [
     pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
-    pytest.mark.skipif(shutil.which("git") is None, reason="no git"),
+    needs("git"),
 ]
 
 ORIG = "int main(void){return 0;}\n"

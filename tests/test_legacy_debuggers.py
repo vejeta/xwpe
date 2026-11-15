@@ -29,13 +29,13 @@ and that choosing Dbx and Xdb starts "dbx -i" and "xdb -L" respectively.
 """
 import os
 import re
-import shutil
 import sys
 import time
 
 import pytest
 
 import procinfo
+from host_tools import require
 from wpe_driver import WpeSession, ALT, WAIT_SCALE
 
 CTRL_G = "\x07"         # debugger command prefix
@@ -111,10 +111,9 @@ STUB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def _need(*tools):
-    """Skip the test, naming the first missing binary."""
-    for tool in tools:
-        if shutil.which(tool) is None:
-            pytest.skip("no %s" % tool)
+    """Skip the test, naming the first tool that is missing, broken or
+    switched off by the job (tests/host_tools.py, require())."""
+    require(*tools)
 
 
 def _stub_body():
@@ -421,7 +420,8 @@ def _quit_while_the_program_runs(tmp_path, backend):
             "Ctrl-G R should have told %s to go on; it sent %r" \
             % (backend, _sent(tmp_path, backend)[before:])
         assert _stub_running(w, backend), \
-            "%s should be running the program:\n%s" % (backend, _screen(w))
+            "%s should be running the program:\n%s\n%s" \
+            % (backend, _screen(w), w.process_report())
         w.menu(ALT.DEBUG, "q", delay=0.5)
         assert _wait_for(w, lambda: not _stub_running(w, backend),
                          STEP_TIMEOUT_S), \
@@ -492,7 +492,8 @@ def test_closing_the_window_while_the_program_runs_keeps_the_editor(
                _screen(w))
         assert w.alive(), "the editor should still run"
         assert _stub_running(w, backend), \
-            "%s should still run the session:\n%s" % (backend, _screen(w))
+            "%s should still run the session:\n%s\n%s" \
+            % (backend, _screen(w), w.process_report())
 
 
 IDLE_CPU_TICKS = 20       # below this per wall second the editor is idle
@@ -557,7 +558,8 @@ def _pause_marks_where_the_program_is(tmp_path, backend):
         assert _wait_for(w, lambda: _stub_running(w, backend)
                          and CONTINUE_COMMAND[backend]
                          in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
-            "%s should be running the program:\n%s" % (backend, _screen(w))
+            "%s should be running the program:\n%s\n%s" \
+            % (backend, _screen(w), w.process_report())
         w.key(CTRL_G, "i", delay=0.5)
         assert _wait_for(w, lambda: _mark_line(w) == C_CURSOR_LINE,
                          STEP_TIMEOUT_S), \
@@ -649,7 +651,8 @@ def test_a_breakpoint_set_while_running_is_hollow_then_solid_at_the_next_stop(
         assert _wait_for(w, lambda: _stub_running(w, backend)
                          and CONTINUE_COMMAND[backend]
                          in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
-            "%s should be running the program:\n%s" % (backend, _screen(w))
+            "%s should be running the program:\n%s\n%s" \
+            % (backend, _screen(w), w.process_report())
         before = len(_commands(tmp_path, backend))
         _move_down(w, C_LATER_LINE - C_BREAK_LINE)
         w.key(CTRL_G, "b", delay=0.6)
@@ -727,7 +730,8 @@ def test_a_watch_added_while_running_shows_at_the_next_stop(tmp_path,
         assert _wait_for(w, lambda: _stub_running(w, backend)
                          and CONTINUE_COMMAND[backend]
                          in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
-            "%s should be running the program:\n%s" % (backend, _screen(w))
+            "%s should be running the program:\n%s\n%s" \
+            % (backend, _screen(w), w.process_report())
         before = len(_commands(tmp_path, backend))
         w.key(CTRL_G, "w", delay=0.8)
         w.key("x", delay=0.1)
@@ -807,7 +811,8 @@ def test_a_breakpoint_set_while_running_stops_the_program_there(tmp_path,
         assert _wait_for(w, lambda: _stub_running(w, backend)
                          and CONTINUE_COMMAND[backend]
                          in _sent(tmp_path, backend), STEP_TIMEOUT_S), \
-            "%s should be running the program:\n%s" % (backend, _screen(w))
+            "%s should be running the program:\n%s\n%s" \
+            % (backend, _screen(w), w.process_report())
         before = len(_commands(tmp_path, backend))
         _move_down(w, C_LATER_LINE - C_BREAK_LINE)
         w.key(CTRL_G, "b", delay=0.6)
@@ -884,7 +889,8 @@ def _quit_and_see_the_stub_gone(w, backend):
     w.menu(ALT.DEBUG, "q", delay=0.5)
     assert _wait_for(w, lambda: not _stub_running(w, backend),
                      STEP_TIMEOUT_S), \
-        "Debug > Quit should end %s:\n%s" % (backend, _screen(w))
+        "Debug > Quit should end %s:\n%s\n%s" \
+        % (backend, _screen(w), w.process_report())
 
 
 def _armed_at_last(tmp_path, backend):

@@ -13,10 +13,10 @@ bodies; the one that needs a debug session skips there, as the Pause row of
 test_menu_debug.py does, and the dialog row runs on both.
 """
 import os
-import shutil
 import sys
 
 import pytest
+from host_tools import needs
 from PIL import Image, ImageChops
 
 from conftest import _sleep
@@ -101,8 +101,7 @@ def _go_to_line(xwpe, line):
     xwpe.key("Return", delay=0.6)
 
 
-@pytest.mark.skipif(not shutil.which("gdb") or not shutil.which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": TICK_PROG}],
                          indirect=True)
 def test_a_breakpoint_set_while_running_stops_the_program_there(xwpe):

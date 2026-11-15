@@ -26,11 +26,11 @@ The mock backend makes every reply deterministic; nothing here talks to a
 live provider.
 """
 import os
-import shutil
 import subprocess
 import time
 
 import pytest
+from host_tools import needs
 from wpe_driver import (
     ALT,
     WPE_BIN,
@@ -146,13 +146,12 @@ def test_alt_g_a_opens_input_row_with_no_popup_and_ctrl_j_inserts_newline(tmp_pa
 
 
 # @scenario SC-ai-chat-03
+@needs("gcc")
 def test_messages_already_open_shares_the_strip_with_the_pane(tmp_path):
     """When Messages is already docked (a compile ran first), opening the
     pane with Alt-G a splits the strip with it -- Messages on the left half,
     the pane on the right -- instead of one covering the other.
     """
-    if not shutil.which("gcc"):
-        pytest.skip("gcc not installed")
     with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path, "SPLITREPLY"),
                     filename="t.c") as s:
         s.key(F9, delay=3.0)                   # Run -> Make: opens Messages

@@ -15,10 +15,10 @@ the rows at the end drive that sentence.
 Run: WPE_BIN=$PWD/wpe pytest tests/test_path_cuts.py (and wpe-asan).
 """
 import os
-import shutil
 
 import pytest
 
+from host_tools import needs
 from wpe_driver import WpeSession
 
 CTRL_F9 = "\033[20;5~"      # Run
@@ -105,7 +105,7 @@ def _save_project_options(w):
 
 # Ctrl-F9 on a script in a folder deeper than 255 bytes.
 # @scenario SC-path-cuts-01
-@pytest.mark.skipif(shutil.which("python3") is None, reason="python3 not installed")
+@needs("python3")
 def test_run_of_a_script_in_a_deep_folder_runs_it(tmp_path):
     """Ctrl-F9 on t.py in a 420 byte folder runs the script there.  The
     folder was kept in 255 bytes for the run after the build, so python was
@@ -343,7 +343,7 @@ def test_info_path_longer_than_the_old_field_is_offered(tmp_path):
 
 # The manual page's file is named by the path owner.
 # @scenario SC-path-cuts-12
-@pytest.mark.skipif(shutil.which("man") is None, reason="man not installed")
+@needs("man")
 def test_manual_page_opens_from_its_temporary_file(tmp_path):
     """Topic Search on `printf` shows the page.  A control, not a red row:
     the page's file is built by the path owner now, but a build with mkdtemp

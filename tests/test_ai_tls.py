@@ -16,12 +16,12 @@ import os
 import ssl
 import time
 import socket
-import shutil
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from host_tools import needs
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
 MARKER = "TLS_MARKER_OK"
@@ -42,9 +42,10 @@ def _tls_build():
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _tls_build() or shutil.which("openssl") is None,
-    reason="wpe built without --enable-ai-tls, or openssl missing")
+pytestmark = [
+    pytest.mark.skipif(not _tls_build(), reason="wpe built without --enable-ai-tls"),
+    needs("openssl"),
+]
 
 
 class _Handler(BaseHTTPRequestHandler):

@@ -13,9 +13,8 @@ first run, so this is the slowest bridge test.
 """
 import time
 
-import pytest
-
-from wpe_driver import WpeSession, tool_usable
+from host_tools import needs
+from wpe_driver import WpeSession
 
 PROG = (
     "fn add(a: i32, b: i32) -> i32 {\n"
@@ -30,11 +29,9 @@ PROG = (
 
 ALT_Q = "\033q"     # the LSP prefix (Alt-Q)
 
-pytestmark = pytest.mark.skipif(
-    not tool_usable("rust-analyzer") or not tool_usable("cargo"),
-    reason="a usable rust-analyzer and cargo are required "
-           "(both must run, not just be on PATH; e.g. rustup needs a default "
-           "toolchain and the rust-analyzer component installed)")
+# Both must run, not just be on PATH: rustup needs a default toolchain and
+# the rust-analyzer component installed.
+pytestmark = needs("rust-analyzer", "cargo")
 
 
 def _text(w):

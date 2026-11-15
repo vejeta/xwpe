@@ -12,10 +12,10 @@ Scenarios: SC-ai-agent-33, 34, 35, 59, 65.
 """
 import os
 import re
-import shutil
 import subprocess
 
 import pytest
+from host_tools import needs
 from wpe_driver import (ALT, FRAME_HLINE_RUN, WPE_BIN, WpeSession, pane_rows,
                         pane_text_with_history, title_row, wait_screen)
 from test_ai_changeset import (CHANGED_LINE, ORIG, TEN_CHANGED, TWENTY, U_ORIG,
@@ -33,7 +33,7 @@ def _ai_build():
 
 pytestmark = [
     pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
-    pytest.mark.skipif(shutil.which("git") is None, reason="no git"),
+    needs("git"),
 ]
 
 FOLLOWUP_LINE = "type a follow-up"

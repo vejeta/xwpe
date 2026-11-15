@@ -14,10 +14,8 @@ is what exercises the truecolor path.
 
 Skips when clangd is absent (same as the other clangd bridge tests).
 """
-import shutil
+from host_tools import needs
 import time
-
-import pytest
 
 from wpe_driver import WpeSession
 
@@ -40,8 +38,7 @@ DIRECT_TERM = {"TERM": "xterm-direct"}   # terminfo with the RGB capability
 # field: ESC [ 38 : 2 : : R : G : B m.  #FF8C00 == 255;140;0.
 ORANGE_SGR = b"38:2::255:140:0"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("clangd") is None, reason="clangd required")
+pytestmark = needs("clangd")
 
 
 def test_function_token_is_truecolor_orange(tmp_path):

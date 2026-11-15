@@ -17,7 +17,8 @@ import os
 import time
 
 import pytest
-from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen, tool_usable
+from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen
+from host_tools import needs
 
 F9 = "\033[20~"            # Make: compile and link
 ESC = "\033"
@@ -30,7 +31,7 @@ BUILD_WAIT = 30            # gcc has built a small project by then
 SETTLE = 1.5               # whatever an answer leads to has started by then
 OLD = 1000                 # seconds an object is made older than its source
 
-needs_gcc = pytest.mark.skipif(not tool_usable("gcc", "--version"), reason="gcc not usable")
+needs_gcc = needs("gcc")
 
 
 class Folder:
@@ -408,7 +409,9 @@ def test_startplan_project_in_home_builds_and_rebuilds_its_program(tmp_path):
         built = _wait(demo.exists, BUILD_WAIT)
         screen = _screen(s)
     assert built, "the project did not build:\n" + screen
-    assert demo.read_bytes()[:4] == b"\x7fELF", "the program is not what the link made"
+    assert os.access(str(demo), os.X_OK), "the link did not make a program"
+    assert demo.stat().st_mtime >= (folder.home / "main.c").stat().st_mtime, \
+        "the program is older than its source, so the link did not make it"
     _older(demo)
     _older(folder.home / "main.o")
     (folder.home / "main.c").write_text("int main(void){return 1;}\n")
@@ -478,7 +481,7 @@ ALT_A = "\033a"            # Run > Execute Make
 
 
 # @scenario SC-compile-29
-@pytest.mark.skipif(not tool_usable("make", "--version"), reason="make not usable")
+@needs("make")
 def test_startplan_make_starts_from_its_plan(tmp_path):
     """Execute Make starts from a start plan of its own: it runs, its plan
     is judged, and the children's owner has no unplanned start to trace

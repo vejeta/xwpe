@@ -53,8 +53,10 @@ Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
                                      disagreements by class; exit 1 while a
                                      cell or a tuple is empty
 
-Verdicts are PASS, FAIL, BLOCKED (manifest says so) or MISSING (the test did
-not run).  A skipped test counts as FAIL unless its scenario is ``blocked``,
+Verdicts are PASS, FAIL, BLOCKED (manifest says so), NOT_EXERCISED (a job
+switched the row's host tool off, XWPE_TEST_TOOLS_OFF; the report fails on it,
+so a capability a job stopped checking never reads green) or MISSING (the test
+did not run).  A skipped test counts as FAIL unless its scenario is ``blocked``,
 its layer is ``live``, or the row declares what the test needs and the skip
 says that is what was missing: a silent skip must never read as coverage.
 
@@ -179,6 +181,22 @@ def skip_names_a_need(scenario, reasons):
     return all(any(n in r.lower() for n in needs) for r in reasons)
 
 
+# The tail of the skip a job gives a row whose host tool it switched off
+# (tests/host_tools.py, NOT_EXERCISED; tests/test_host_tools.py keeps the two
+# equal).  This file takes no third-party import, so it repeats the text.
+NOT_EXERCISED = "not exercised by this job"
+
+
+def skip_says_not_exercised(reasons):
+    """Did a job switch the row's tool off (the row never ran on purpose)?
+
+    That is not an absence of the tool and it is not a block: the capability
+    went unchecked because the job chose not to check it, and the report must
+    say so, so that a job cannot turn a capability off and still read green.
+    """
+    return any(NOT_EXERCISED in r.lower() for r in reasons or [])
+
+
 def verdict(scenario, raw, reasons=None):
     """Fold a raw test result into the scenario's verdict."""
     if scenario["status"] == "blocked":
@@ -189,6 +207,8 @@ def verdict(scenario, raw, reasons=None):
         return "PASS"
     if raw == "SKIP" and scenario["layer"] == "live":
         return "BLOCKED"
+    if raw == "SKIP" and skip_says_not_exercised(reasons):
+        return "NOT_EXERCISED"
     if raw == "SKIP" and skip_names_a_need(scenario, reasons):
         return "BLOCKED"
     return "FAIL"
@@ -274,7 +294,7 @@ def cmd_report(capability, layer, source):
         lookup = lambda test_id: junit_lookup(raw, test_id)
     # A scenario may be pinned by several tests (several rows with one id);
     # the scenario's verdict is the worst of them, never the last one listed.
-    severity = {"FAIL": 0, "MISSING": 1, "BLOCKED": 2, "PASS": 3}
+    severity = {"FAIL": 0, "MISSING": 1, "NOT_EXERCISED": 2, "BLOCKED": 3, "PASS": 4}
     report = {}
     for scenario in scenarios_for_layer(manifest, layer):
         result = lookup(scenario["test"]) if scenario.get("test") else None

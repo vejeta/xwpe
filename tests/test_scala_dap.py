@@ -12,7 +12,7 @@ build server and (on a cold coursier cache) resolves the Scala toolchain.
 """
 import os
 import re
-import shutil
+from host_tools import needs
 import signal
 import time
 
@@ -38,9 +38,7 @@ CTRL_G = "\x07"
 CTRL_N = "\x0e"     # Emacs "down a line" -- pyte delivers it reliably
 F8 = "\033[19~"     # Step (over)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("scala-cli") is None,
-    reason="scala-cli required (bundles Bloop / scala-debug-adapter)")
+pytestmark = needs("scala-cli")
 
 
 def _text(w):

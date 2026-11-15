@@ -14,7 +14,6 @@ import pty
 import re
 import select
 import shlex
-import shutil
 import signal
 import struct
 import subprocess
@@ -27,6 +26,7 @@ import pytest
 
 import gui_owner
 import procinfo
+from host_tools import needs
 
 THIS = os.path.abspath(__file__)
 # The stand-in runs with the interpreter of the suite, ignoring the
@@ -1668,8 +1668,7 @@ def test_the_root_fixtures_are_written_and_not_installed():
 
 
 # @scenario SC-harness-owner-58
-@pytest.mark.skipif(not all(shutil.which(b) for b in ("Xvfb", "weston", "xdotool")),
-                    reason="Xvfb, weston and xdotool are needed")
+@needs("Xvfb", "weston", "xdotool")
 def test_the_owner_starts_an_x_server_and_a_compositor_it_registers(
         current_owner, tmp_path, request):
     """The starters both graphical suites use: Xvfb on a number of its own,

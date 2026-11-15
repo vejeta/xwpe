@@ -11,9 +11,8 @@ Requires `rustc` and `gdb`.  Skips otherwise.
 import re
 import time
 
-import pytest
-
-from wpe_driver import WpeSession, tool_usable
+from host_tools import needs
+from wpe_driver import WpeSession
 
 # Iterative factorial; `fact` grows 1 -> 2 -> 6 -> 24 -> 120.  The breakpoint
 # goes on line 6 (the multiply), reached every loop iteration.
@@ -33,10 +32,8 @@ PROG = (
 CTRL_G = "\x07"
 CTRL_N = "\x0e"     # Emacs "down a line" -- pyte delivers it reliably (unlike \033[B)
 
-pytestmark = pytest.mark.skipif(
-    not tool_usable("rustc") or not tool_usable("gdb"),
-    reason="a usable rustc toolchain and gdb are required "
-           "(rustc/gdb must run, not just be on PATH)")
+# rustc and gdb must run, not just be on PATH.
+pytestmark = needs("rustc", "gdb")
 
 
 def _text(w):

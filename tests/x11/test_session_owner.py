@@ -11,11 +11,11 @@ open until the other has its own; the rows they run are the probe at the
 end of this file, which skips itself unless a parent asks for it.
 """
 import os
-import shutil
 import subprocess
 import sys
 
 import pytest
+from host_tools import needs
 
 from conftest import PreviousRowLeft, launch_editor
 from gui_owner import scaled, wait_for
@@ -148,8 +148,7 @@ DETACHED = {"XWPE_TEST_DETACHED": "1"}
 # An editor started the way a desktop launcher starts it is a session leader
 # with no controlling terminal.  The debugger starts below work then as they
 # do when it is started from a terminal.
-@pytest.mark.skipif(not shutil.which("jdb") or not shutil.which("javac"),
-                    reason="no jdb or javac")
+@needs("jdb", "javac")
 @pytest.mark.parametrize("xwpe", [{**jdb_shapes.JDB_STUB_ENV, **DETACHED}],
                          indirect=True)
 # @scenario SC-harness-owner-29
@@ -157,7 +156,7 @@ def test_a_detached_editor_runs_the_jdb_keys_shape(xwpe):
     jdb_shapes.test_jdb_keys_reach_the_editor_while_it_answers(xwpe)
 
 
-@pytest.mark.skipif(not shutil.which("python3"), reason="python3 not on PATH")
+@needs("python3")
 @pytest.mark.parametrize("xwpe", [{**pdb_shapes.PDB_SESSION, **DETACHED}],
                          indirect=True)
 # @scenario SC-harness-owner-30

@@ -18,10 +18,10 @@ The Wayland twin (tests/wayland/test_box_layout.py) runs the same body.
 """
 import os
 import re
-import shutil
 import subprocess
 
 import pytest
+from host_tools import needs
 
 from conftest import changed_pixels, _sleep, xtool_env
 
@@ -117,7 +117,7 @@ def test_a_window_closed_after_a_resize_leaves_the_desk_drawn_afresh(xwpe):
         _size(xwpe, START_W, START_H)
 
 
-@pytest.mark.skipif(not shutil.which("xterm"), reason="no xterm")
+@needs("xterm")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": SCRIPT,
                                    "XWPE_TEST_FILE": "t.sh"}],
                          indirect=True)
@@ -152,7 +152,7 @@ def test_a_command_window_does_not_bring_back_the_old_screen(xwpe):
         _size(xwpe, START_W, START_H)
 
 
-@pytest.mark.skipif(not shutil.which("xterm"), reason="no xterm")
+@needs("xterm")
 @pytest.mark.parametrize("how", ["ctrl+F9", "the Run menu"])
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": SCRIPT,
                                    "XWPE_TEST_FILE": "t.sh"}],

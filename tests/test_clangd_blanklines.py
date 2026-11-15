@@ -21,7 +21,7 @@ rewrite the buffer in this environment (so it asserts only when the rebuild path
 really ran -- it never goes spuriously red).  The buffer-rebuild logic itself is
 proven independently by the e_buffer_replace_all round-trip red-green.
 """
-import shutil
+from host_tools import needs
 import time
 
 import pytest
@@ -43,8 +43,7 @@ PROG = (
 
 ALT_Q = "\033q"     # the LSP prefix (Alt-Q)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("clangd") is None, reason="clangd required")
+pytestmark = needs("clangd")
 
 
 def _editor_rows(lines):

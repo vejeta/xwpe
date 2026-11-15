@@ -10,11 +10,9 @@ binary and F8 single-steps through the SOURCE lines via DWARF.
 Requires ga68 and gdb.  Skips otherwise.
 """
 import re
-import shutil
 import time
 
-import pytest
-
+from host_tools import needs
 from wpe_driver import WpeSession
 
 # Modern (ga68) stropping: lowercase, { } comment, 'n newline.  Several simple
@@ -32,9 +30,7 @@ PROG = (
 CTRL_G = "\x07"
 F8 = "\033[19~"     # Step (over)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("ga68") is None or shutil.which("gdb") is None,
-    reason="ga68 and gdb required")
+pytestmark = needs("ga68", "gdb")
 
 
 def _text(w):

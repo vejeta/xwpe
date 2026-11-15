@@ -63,8 +63,8 @@ if HERE not in sys.path:
 
 import procinfo  # noqa: E402  (needs HERE on the path)
 
-IS_LINUX = sys.platform.startswith("linux")
-IS_MACOS = sys.platform == "darwin"
+IS_LINUX = procinfo.IS_LINUX
+IS_MACOS = procinfo.IS_MACOS
 
 # prctl(2) options this module uses (linux/prctl.h).
 PR_SET_PDEATHSIG = 1

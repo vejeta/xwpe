@@ -9,6 +9,7 @@ Every row reads the editor's own state, never the screen.
 """
 import pytest
 
+from build_config import built
 from edit_model.oracle import EditSession
 
 SEED = "hello world\nsecond line\nthird\n"
@@ -16,13 +17,27 @@ FRESH = 0x98            # a fresh profile's Options2
 MODERN = 0x0001
 SELECTION = 0x0400
 ALT_BLOCK, ALT_WINDOW, ALT_EDIT, ALT_FILE = "\033b", "\033w", "\033e", "\033f"
+ALT_OPTIONS = "\033o"
 ESC = "\033"
 
 # The rows every menu of the programming bar has on a terminal, with the
-# debugger built in; the bar entry is its place in that bar.
+# debugger built in; the bar entry is its place in that bar.  The Options menu
+# is listed without its AI row: the build shows that row only when the
+# assistant is compiled in (see expected_rows).
 MENU_ROWS = [("\033#", 0, 6), (ALT_FILE, 1, 11), (ALT_EDIT, 2, 7), ("\033s", 3, 4),
              (ALT_BLOCK, 4, 15), ("\033r", 5, 12), ("\033d", 6, 16),
-             ("\033p", 7, 6), ("\033o", 8, 9), (ALT_WINDOW, 9, 11), ("\033h", 10, 8)]
+             ("\033p", 7, 6), (ALT_OPTIONS, 8, 8), (ALT_WINDOW, 9, 11), ("\033h", 10, 8)]
+
+
+def expected_rows(alt, rows):
+    """How many rows the dropdown opened by `alt` has in the binary under test.
+
+    The Options menu carries one more row, AI, in a build with the assistant;
+    a build without it hides that row, so the count follows the build.
+    """
+    if alt == ALT_OPTIONS:
+        return rows + int(built("enable-ai"))
+    return rows
 
 
 def _session(tmp_path, options2):
@@ -40,7 +55,7 @@ def test_the_open_dropdown_names_its_rows(tmp_path, alt, bar, rows):
         assert d.ctx == "menu"
         assert d.menu is not None, d.raw
         assert d.menu[0] == bar
-        assert len(d.menu[1]) == rows, d.menu[1]
+        assert len(d.menu[1]) == expected_rows(alt, rows), d.menu[1]
 
 
 # @scenario SC-menus-21

@@ -13,6 +13,7 @@ the session reads it at once.
 import os
 import pty
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -23,6 +24,9 @@ if TESTS not in sys.path:
     sys.path.insert(0, TESTS)
 
 import pyte  # noqa: E402
+
+import gui_owner  # noqa: E402
+import procinfo  # noqa: E402
 
 from test_utf8_border import SafeScreen  # noqa: E402
 from wpe_driver import (WPE_BIN, XWPE_LIB_DIR, _RepStream,  # noqa: E402
@@ -80,6 +84,25 @@ READ_CHUNK = 65536
 # The context the editor reports while it waits for something other than a
 # key (a command, a program): a dump of that context is not an answer.
 CTX_WAIT = "wait"
+
+
+class EndTimeout(subprocess.TimeoutExpired):
+    """The editor did not end when asked to: the text says where it is
+    stuck (see EditSession.wait_exit), and is part of the message."""
+
+    def __init__(self, cmd, timeout, why):
+        super().__init__(cmd, timeout)
+        self.why = why
+
+    def __str__(self):
+        return ("the editor did not end within %s s\n%s"
+                % (self.timeout, self.why))
+
+
+# How often the end of the editor is looked for while its output is read, and
+# how long a second SIGTERM is given to end it (both stretched by the scale).
+EXIT_POLL_S = 0.1
+SECOND_SIGNAL_S = 2
 
 
 class ChannelTimeout(AssertionError):
@@ -431,6 +454,66 @@ class EditSession:
         except subprocess.TimeoutExpired:
             return False
         return True
+
+    def _pump(self, fds, seconds, counts):
+        """Read the terminal and the dump pipe for at most @seconds, into the
+        screen and the reader, adding the bytes taken to @counts (a dict with
+        "pty" and "dump").  A descriptor that reached its end leaves @fds."""
+        r, _, _ = select.select(fds, [], [], seconds)
+        for fd in r:
+            try:
+                data = os.read(fd, READ_CHUNK)
+            except OSError:
+                data = b""
+            if not data:
+                fds.remove(fd)
+                continue
+            if fd == self.dump_fd:
+                counts["dump"] += len(data)
+                self.reader.feed(data)
+            else:
+                counts["pty"] += len(data)
+                self._feed_screen(data)
+
+    def _pump_until_ended(self, fds, seconds, counts):
+        """Keep reading until the editor has ended or @seconds have passed;
+        True when it has ended."""
+        deadline = time.monotonic() + seconds
+        while self.proc.poll() is None and time.monotonic() < deadline:
+            self._pump(fds, EXIT_POLL_S, counts)
+        return self.proc.poll() is not None
+
+    def _why_it_did_not_end(self, fds, counts):
+        """The facts that tell where an editor that was asked to end is
+        stuck: whether its emergency save ran, what it has been writing,
+        its run state, and whether a second signal ends it (the second takes
+        the shortest way out, so it does only if the first was handled)."""
+        saved = os.path.exists(self.path + ".ESV")
+        state = procinfo.run_state(self.proc.pid)
+        self.proc.send_signal(signal.SIGTERM)
+        waited = gui_owner.scaled(SECOND_SIGNAL_S)
+        second = self._pump_until_ended(fds, waited, counts)
+        return (".ESV present: %s   drained during the wait: %d bytes (pty) "
+                "%d bytes (dump)\nrun state: %s\nsecond SIGTERM: %s"
+                % ("yes" if saved else "no", counts["pty"], counts["dump"],
+                   state, "ended within %d s" % waited if second
+                   else "still alive"))
+
+    def wait_exit(self, timeout):
+        """Wait for the editor to end after a signal, reading its terminal
+        and its dump pipe the whole time, and return its exit status.
+
+        An editor that has written more than the terminal holds blocks in
+        that write and cannot end; reading while waiting is what lets a
+        healthy editor finish its emergency save and leave.  When it does not
+        end within @timeout (stretched by the wait scale), the error says
+        where it is stuck: see _why_it_did_not_end."""
+        fds = [self.master_fd, self.dump_fd]
+        counts = {"pty": 0, "dump": 0}
+        if self._pump_until_ended(fds, gui_owner.scaled(timeout), counts):
+            return self.proc.returncode
+        raise EndTimeout(self.proc.args, timeout,
+                         self._why_it_did_not_end(fds, counts))
 
     def close(self):
         if self.proc.poll() is None:

@@ -35,6 +35,7 @@ import shutil
 
 import pytest
 
+from host_tools import needs
 from wpe_driver import ALT, WpeSession, wait_screen
 
 HBG = "\x01"            # start of a link
@@ -350,7 +351,7 @@ def _onto_row(s, top, needle):
 
 
 # @scenario SC-help-buffers-12
-@pytest.mark.skipif(shutil.which("man") is None, reason="needs man")
+@needs("man")
 @pytest.mark.parametrize("which", ["long", "short"])
 def test_man_page_button_with_a_long_name_is_refused(tmp_path, which):
     """In a man window (rows as wide as MaxColumn) a SEE ALSO button of 300
@@ -381,7 +382,7 @@ def test_man_page_button_with_a_long_name_is_refused(tmp_path, which):
 
 
 # @scenario SC-platform-08
-@pytest.mark.skipif(shutil.which("man") is None, reason="needs man")
+@needs("man")
 def test_the_manual_viewer_gives_man_the_section_as_a_word(tmp_path):
     """Following a SEE ALSO button calls `man 1 vfbother`: the form every
     man accepts.  `man -s 1 vfbother` is man-db's and OpenBSD's; FreeBSD's

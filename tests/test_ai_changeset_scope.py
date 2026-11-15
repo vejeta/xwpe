@@ -9,9 +9,9 @@ the run never made, and reverting a "new file" deletes it.  Each case below
 asserts the ground truth on disk first, then what the review listed.
 """
 import os
-import shutil
 import subprocess
 import pytest
+from host_tools import needs
 from wpe_driver import WpeSession, ALT, WPE_BIN
 from test_ai_changeset import (_ai_build, _git, _git_commit, _wait_trace,
                                _trace_text, _messages_rows, _cursor_line,
@@ -20,7 +20,7 @@ from test_ai_changeset import (_ai_build, _git, _git_commit, _wait_trace,
 
 pytestmark = [
     pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
-    pytest.mark.skipif(shutil.which("git") is None, reason="no git"),
+    needs("git"),
 ]
 
 # names that break a line-oriented parse: a leading blank and a newline

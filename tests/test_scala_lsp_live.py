@@ -6,10 +6,8 @@ e_lsp_poll drains diagnostics non-blocking on each keystroke, so the
 
 Requires metals + scala-cli.  Skips otherwise.  Slow (boots Metals).
 """
-import shutil
+from host_tools import needs
 import time
-
-import pytest
 
 from wpe_driver import WpeSession
 
@@ -25,9 +23,7 @@ ALT_1 = "\0331"    # jump to window 1 (the source: deterministic across the
                    #  e.g. the Doctor -- which F6's cycle would skip past)
 ALT_2 = "\0332"    # jump to window 2 (Messages)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("metals") is None or shutil.which("scala-cli") is None,
-    reason="metals and scala-cli required")
+pytestmark = needs("metals", "scala-cli")
 
 
 def test_scala_lsp_live_diagnostics(tmp_path):

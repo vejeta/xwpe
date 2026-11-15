@@ -58,15 +58,21 @@ jobs:
           sw_vers || true
 
       - name: Install deps
-        run: brew install autoconf automake pkgconf ncurses json-c libvterm texinfo
+        run: brew install autoconf automake pkgconf ncurses json-c libvterm texinfo openssl@3
 
-      - name: Build (--without-x)
+      - name: Build (--enable-ai --enable-ai-agent-host --without-x)
+        # The same build the Linux job tests: the assistant and its agent host
+        # are compiled in, so the rows that drive them run here instead of
+        # skipping.  ncurses and openssl@3 are keg-only on macOS: both
+        # pkg-config directories are named, joined with ":", or configure
+        # finds neither (a missing openssl would build without TLS and only
+        # warn; WPE_EXPECT_BUILT below makes that fail by name).
         run: |
-          # ncurses is keg-only on macOS: point pkg-config at its ncursesw.pc.
-          export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig"
           autoreconf -fi
-          ./configure --without-x --without-gpm
+          ./configure --enable-ai --enable-ai-agent-host --without-x --without-gpm
           make -j"$(sysctl -n hw.ncpu)"
+          ./we --version
 
       - name: Build every check program (names each that does not compile)
         timeout-minutes: 15
@@ -91,10 +97,17 @@ jobs:
           # Stretch every wait by 3x, as the pyte suite below and the Debian
           # autopkgtest do, instead of weakening the assertions.
           XWPE_TEST_WAIT_SCALE: "3"
+          # What this job configured.  A library the runner image loses (here
+          # openssl) fails tests/check-build-config.sh by name, instead of
+          # turning a capability into "not built here" and a green run.  This
+          # is also the first run of that script under the BSD sed and grep.
+          WPE_EXPECT_BUILT: >-
+            enable-ai=yes enable-ai-agent-host=yes enable-ai-tls=yes
+            with-x=no with-wayland=no with-gpm=no
         run: >-
           make check
           LOG_COMPILER="$PWD/tests/with-deadline.sh 600"
-          TESTS="test_watchdog tests/check-with-deadline.sh test_checkheader
+          TESTS="tests/check-build-config.sh test_watchdog tests/check-with-deadline.sh test_checkheader
           test_syntax_def test_fdloop test_child test_childsig test_dap
           test_bsp_close test_lsp_requests test_startplan test_clipboard
           test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor
@@ -122,19 +135,27 @@ jobs:
           || { cat test-suite.log; exit 1; }
 
       - name: pyte UI regression suite (keystrokes, menus, editing, rendering)
-        # The whole suite needs about four hours on these runners; the job's
-        # own six-hour limit is the bound above this one.
+        # The terminal files of this suite, without the assistant's files and
+        # the compile and debugger files: those run in the `assistant` job
+        # below, with their own time limit, so that neither half can stop the
+        # other at the job's six-hour limit.  The two halves are one workflow
+        # run.
         timeout-minutes: 300
         # The terminal UI is what users actually touch, and "simple" key/render
         # regressions -- like Backspace not erasing on macOS terminals, which send
         # DEL (0x7f) rather than BS -- slip straight past a C-only `make check`.
         # Drive the real ncurses UI through a pseudo-terminal with pyte and assert
-        # on the screen and the file written to disk. Scope: the deterministic
-        # key / menu / editing / rendering scenarios. The language-server, DAP
-        # debugger and compile+run pipelines are toolchain-bound and timing-heavy;
-        # they are covered by the Linux CI and the C `make check` above, so they
-        # are excluded here to keep this gate fast and flake-free.
+        # on the screen and the file written to disk.  No row is dropped by name
+        # here: a row that needs a language server, a debugger adapter or a
+        # runtime the runners are too slow for declares the tool it needs, and
+        # XWPE_TEST_TOOLS_OFF below switches those tools off, so the row skips
+        # naming the tool.  The Linux CI exercises them.
         env:
+          # The tools this job does not exercise (tests/host_tools.py).  Each
+          # row that needs one skips as "<tool>: not exercised by this job".
+          XWPE_TEST_TOOLS_OFF: >-
+            clangd gopls rust-analyzer cargo rustc lldb-dap pyright-langserver
+            pylsp scala-cli scalac scala metals dlv a68g ga68 gdb
           # GitHub's macOS runners are markedly slower than the Linux ones (the
           # suite takes ~10x longer here), so the per-scenario wait budgets that
           # pass in-tree flake at the default scale. Stretch every wait by 3x,
@@ -155,20 +176,28 @@ jobs:
           # Load the in-app help from the checkout (the editor's "_eng" fallback)
           # so the Help/manual scenarios pass without a `make install`.
           export XWPE_LIB="$PWD"
-          # The function-key UI actions (Save/Find/Make/Help/File-Manager/menu
-          # entry) are driven through their macOS menu routes by the harness,
-          # since macOS reserves F1-F12; only the toolchain-bound language-server,
-          # DAP and broader compile/debug pipeline tests stay on the Linux CI.
+          # Every editor the rows start appends its keystroke trace here; the
+          # file is uploaded with the logs, so a row that fails reads what
+          # the editor received.  One file per run and attempt.
+          export XWPE_UI_TRACE="$RUNNER_TEMP/ui-trace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          # The harness writes the bytes of every key into a pseudo-terminal;
+          # no macOS keyboard layer sits between it and the editor, so every
+          # function key is sent as on Linux.
           # Ignore tests/x11 AND tests/wayland: both need a Linux display stack
           # (Xvfb+matchbox / weston) absent on macOS, and they share test-module
           # basenames with tests/ -- collecting them here is an import-file-mismatch
           # error, not a real failure.
+          # Say what this job switched off, so the log of a run that stopped
+          # exercising a tool says so.
+          echo "XWPE_TEST_TOOLS_OFF=$XWPE_TEST_TOOLS_OFF"
           # Asked for chosen test ids: run only those, one at a time, once,
           # with every traceback, and print the facts of this system the
           # rows depend on, so a macOS-only failure can be read in one run.
           if [ -n "$SELECTED_TESTS" ]; then
             # The ids hold [param] parts: split on blanks, never glob.
             set -f
+            # Chosen ids run with every tool on: an id that needs gdb runs.
+            unset XWPE_TEST_TOOLS_OFF
             getconf PATH_MAX / ; getconf NAME_MAX /
             infocmp -1 xterm-256color | grep -E 'acsc|rmcup|rmkx|cnorm|sgr0' || true
             cc --version | head -1
@@ -178,7 +207,17 @@ jobs:
           # -v names each test as it ends, so a step that runs out of time
           # still says which rows failed; one rerun keeps a flake from
           # costing three runs of a row that really fails.
-          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -v tests -n 3 --reruns 1 --reruns-delay 3 -rf --ignore=tests/x11 --ignore=tests/wayland -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
+          # The live rows (never part of a gate) are the only rows left out by name.
+          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -v tests -n 3 --reruns 1 --reruns-delay 3 -rf \
+            --ignore=tests/x11 --ignore=tests/wayland \
+            --ignore-glob='tests/test_ai_*.py' \
+            --ignore=tests/test_debugger_integration.py --ignore=tests/test_compile_and_messages.py \
+            --ignore=tests/test_compile.py --ignore=tests/test_run_kind.py \
+            --ignore=tests/test_program_name.py --ignore=tests/test_build_cwd.py \
+            --ignore=tests/test_path_debugger.py --ignore=tests/test_debugger_ends.py \
+            --ignore=tests/test_debugger_watchdog.py --ignore=tests/test_make_output.py \
+            --ignore=tests/test_user_screen.py \
+            -k "not _live"
 
       - name: Homebrew test-block reproduction (installed binary, on-disk A/B/C)
         if: always()   # validate the formula fix even if a pyte UI test flaked
@@ -397,4 +436,86 @@ jobs:
             test_*.log
             *.log
             tests/*.log
+            ${{ runner.temp }}/ui-trace-${{ github.run_id }}-${{ github.run_attempt }}.log
+          if-no-files-found: ignore
+
+  assistant:
+    # The assistant's terminal files and the compile and debugger files, on
+    # their own runner and time limit, in the same workflow run as the job
+    # above (one run at a time).  They were left out of the macOS suite while
+    # the build had no assistant and rows were dropped by name; now the build
+    # has it, and these rows run.  Measure before adding more here: a job
+    # stopped by the six-hour limit keeps no logs.
+    name: macOS assistant and compile rows (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15         # Apple Silicon (arm64)
+          - runner: macos-15-intel   # Intel (x86_64)
+    runs-on: ${{ matrix.runner }}
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install deps
+        run: brew install autoconf automake pkgconf ncurses json-c libvterm texinfo openssl@3
+
+      - name: Build (--enable-ai --enable-ai-agent-host --without-x)
+        run: |
+          export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig"
+          autoreconf -fi
+          ./configure --enable-ai --enable-ai-agent-host --without-x --without-gpm
+          make -j"$(sysctl -n hw.ncpu)"
+          ./we --version
+
+      - name: pyte UI suite, assistant and compile rows
+        # Its own limit, so a slow half cannot take the other's logs with it.
+        # Without the `tests` input only this job's files run; with it, the
+        # chosen ids run in the job above and this step has nothing to do.
+        timeout-minutes: 300
+        env:
+          # The tools this job does not exercise: the same list as the job
+          # above, printed below.
+          XWPE_TEST_TOOLS_OFF: >-
+            clangd gopls rust-analyzer cargo rustc lldb-dap pyright-langserver
+            pylsp scala-cli scalac scala metals dlv a68g ga68 gdb
+          XWPE_TEST_WAIT_SCALE: "3"
+          XWPE_TEST_SETTLE_MS: "400"
+          TERM: "xterm-256color"
+          SELECTED_TESTS: ${{ inputs.tests }}
+        run: |
+          if [ -n "$SELECTED_TESTS" ]; then
+            echo "chosen ids run in the macOS console job"
+            exit 0
+          fi
+          python3 -m venv /tmp/ptenv
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pytest-xdist
+          export XWPE_LIB="$PWD"
+          export XWPE_UI_TRACE="$RUNNER_TEMP/ui-trace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
+          echo "XWPE_TEST_TOOLS_OFF=$XWPE_TEST_TOOLS_OFF"
+          # The live rows (never part of a gate) are the only rows left out by name.
+          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -v -n 3 --reruns 1 --reruns-delay 3 -rf \
+            tests/test_ai_*.py \
+            tests/test_debugger_integration.py tests/test_compile_and_messages.py \
+            tests/test_compile.py tests/test_run_kind.py \
+            tests/test_program_name.py tests/test_build_cwd.py \
+            tests/test_path_debugger.py tests/test_debugger_ends.py \
+            tests/test_debugger_watchdog.py tests/test_make_output.py \
+            tests/test_user_screen.py \
+            -k "not _live"
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: assistant-logs-${{ matrix.runner }}
+          path: |
+            test-suite.log
+            *.log
+            tests/*.log
+            ${{ runner.temp }}/ui-trace-${{ github.run_id }}-${{ github.run_attempt }}.log
           if-no-files-found: ignore

@@ -16,12 +16,10 @@ shell's entry.
 Run: WPE_BIN=$PWD/wpe tests/.venv/bin/python -m pytest -q tests/test_private_modes.py
 """
 import os
-import shutil
 import signal
 import time
 
-import pytest
-
+from host_tools import needs
 from wpe_driver import WpeSession, ALT, wait_screen
 from test_file_shell import SHELL_MARK, SHELL_ENTRY, write_marker_shell
 from test_terminal_owner import release_string
@@ -124,7 +122,7 @@ def test_sigterm_gives_the_modes_back(tmp_path):
     assert KEYS_ON not in raw[raw.find(MODES_OFF):]
 
 
-@pytest.mark.skipif(not shutil.which("tput"), reason="no tput")
+@needs("tput")
 def test_a_crash_gives_the_modes_back_as_the_last_thing_written(tmp_path):
     """XWPE_TEST_CRASH=1 raises SIGSEGV at the first wait for a key: the
     handler writes the modes off, in the order the exit writes them, and then
@@ -188,7 +186,7 @@ def _handed_over_and_back(raw):
         "the protocols were left off after the hand-over"
 
 
-@pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+@needs("gcc")
 def test_a_build_hands_the_terminal_over_without_the_protocols(tmp_path):
     """F9: the compiler runs with the terminal handed over (the compile and
     the link each leave the editor's screen), so the protocols are off
@@ -202,7 +200,7 @@ def test_a_build_hands_the_terminal_over_without_the_protocols(tmp_path):
     _handed_over_and_back(raw)
 
 
-@pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+@needs("gcc")
 def test_the_user_screen_hands_the_terminal_over_without_the_protocols(tmp_path):
     """Alt-F5 after a Run: the User Screen shows the program's output on
     the shell's screen with the protocols off, and a key brings the editor

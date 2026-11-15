@@ -3,9 +3,9 @@ subprocess, using the user's own Claude Code login -- no API key, no TLS, no
 extra dependency).  Self-skips unless the `claude` binary is on PATH.
 """
 import os
-import shutil
 import subprocess
 import pytest
+from host_tools import needs
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
 
@@ -20,7 +20,7 @@ def _ai_build():
 
 pytestmark = [
     pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
-    pytest.mark.skipif(shutil.which("claude") is None, reason="no `claude` CLI"),
+    needs("claude"),
 ]
 
 

@@ -16,15 +16,14 @@ Notes learned empirically (kept here so the test is not fragile by accident):
     "Algol 68 file: switching to a68g monitor." notice (like pdb/jdb); it is
     dismissed with Return before the monitor runs.
 """
-import shutil
 import time
 
 import pytest
 
+from host_tools import needs
 from wpe_driver import WpeSession
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("a68g") is None, reason="a68g (Algol 68 Genie) not installed")
+pytestmark = needs("a68g")
 
 # factorial(5) = 120; line 3 ("ELSE n * factorial(n - 1)") is the recursive
 # body, hit with n = 5 on the first stop.

@@ -10,10 +10,10 @@ The Wayland twin (tests/wayland/test_screen_owner.py) runs the same body.  Its
 live check is a line in WAYLAND-TESTING.txt.
 """
 import os
-import shutil
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import changed_pixels, _sleep
 
@@ -69,8 +69,7 @@ def _screen_moves(xwpe):
 
 
 # @scenario SC-screen-01
-@pytest.mark.skipif(not shutil.which("gdb") or not shutil.which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": PRINTER_PROG,
                                    "XWPE_UI_TRACE": TRACE}], indirect=True)
 def test_program_output_under_a_dialog_paints_nothing_under_it_and_shows_when_it_closes(xwpe):
@@ -143,8 +142,7 @@ def _has_vterm():
 
 
 # @scenario SC-screen-02
-@pytest.mark.skipif(not shutil.which("gdb") or not shutil.which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.skipif(not _has_vterm(), reason="no libvterm: no User Screen")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": STOP_PROG,
                                    "XWPE_UI_TRACE": TRACE}], indirect=True)

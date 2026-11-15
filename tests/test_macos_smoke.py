@@ -14,6 +14,8 @@ Two entry points:
 from __future__ import annotations
 import os, sys, pty, select, subprocess, time, tempfile, shutil, signal
 
+from host_tools import tool_usable
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.dirname(HERE)
 WPE = os.environ.get('WPE_BIN') or os.path.join(TOP, 'wpe')
@@ -54,11 +56,13 @@ def open_wpe(files, workdir, term='xterm-256color', extra_env=None):
 # scenario waits funnel through drain(), so scaling its deadline covers them.
 WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
 
-# macOS reserves the F1-F12 keys at the OS / terminal layer, so they never reach
-# wpe; the menu accelerators are the supported path there. This smoke is the
-# trusted Darwin entry point, so on macOS it drives the same actions via their
-# menu routes.
-MACOS = sys.platform == 'darwin' or os.environ.get('XWPE_TEST_OS') == 'macos'
+# Every action is checked by both of its routes on every system: the function
+# key, which this script writes to the pty as bytes (no keyboard layer lies
+# between it and the editor), and the menu route, which is how a user whose
+# system keeps F1-F12 for itself reaches the same action.
+KEY_ROUTE = 'function key'
+MENU_ROUTE = 'menu route'
+ROUTES = (KEY_ROUTE, MENU_ROUTE)
 
 
 def drain(master, stream, timeout):
@@ -91,11 +95,11 @@ def screen_has(screen, s):
     return any(s in line for line in screen.display)
 
 
-def action(m, st, fkey, *menu, wait=0.7):
-    """Trigger an action: its function key on Linux, its menu route on macOS
-    (where F-keys are reserved by the OS). The menu strokes are sent one at a
-    time with a drain so each dropdown renders before the next keypress."""
-    if MACOS and menu:
+def action(m, st, route, fkey, *menu, wait=0.7):
+    """Trigger an action by one of its two routes: its function key, or its
+    menu route (the strokes are sent one at a time with a drain so each
+    dropdown renders before the next keypress)."""
+    if route == MENU_ROUTE:
         for b in menu:
             os.write(m, b); drain(m, st, wait)
     else:
@@ -134,23 +138,23 @@ def _run_checks():
     wd = tempfile.mkdtemp(prefix='xwpe-smoke-')
     open(os.path.join(wd, 'e.c'), 'w').write('int main(void){return 0;}\n')
 
-    # System menu items appear: F10 highlights the menu bar (Enter expands the
-    # first dropdown) on Linux; on macOS F10 is reserved, so open the System
-    # menu directly with Alt-#.
-    proc, m, scr, st = open_wpe(['e.c'], wd)
-    drain(m, st, 1.5)
-    if MACOS:
-        os.write(m, b'\x1b#'); drain(m, st, 0.5)        # Alt-# -> System menu
-        label = 'Alt-# opens System menu'
-    else:
-        os.write(m, b'\x1b[21~'); drain(m, st, 0.5)     # F10 highlights menu bar
-        os.write(m, b'\r'); drain(m, st, 0.5)           # Enter expands first dropdown
-        label = 'F10 opens menu bar (Enter expands)'
-    opened = screen_has(scr, 'About WE') or screen_has(scr, 'System Info')
-    rec('§3', label,
-        'PASS' if opened else 'FAIL',
-        '' if opened else 'no System-menu items found')
-    cleanup(proc, m)
+    # System menu items appear by both routes: F10 highlights the menu bar
+    # (Enter expands the first dropdown); Alt-# opens the System menu directly.
+    for route in ROUTES:
+        proc, m, scr, st = open_wpe(['e.c'], wd)
+        drain(m, st, 1.5)
+        if route == MENU_ROUTE:
+            os.write(m, b'\x1b#'); drain(m, st, 0.5)        # Alt-# -> System menu
+            label = 'Alt-# opens System menu'
+        else:
+            os.write(m, b'\x1b[21~'); drain(m, st, 0.5)     # F10 highlights menu bar
+            os.write(m, b'\r'); drain(m, st, 0.5)           # Enter expands first dropdown
+            label = 'F10 opens menu bar (Enter expands)'
+        opened = screen_has(scr, 'About WE') or screen_has(scr, 'System Info')
+        rec('§3', label,
+            'PASS' if opened else 'FAIL',
+            '' if opened else 'no System-menu items found')
+        cleanup(proc, m)
 
     # bare Esc is a no-op
     proc, m, scr, st = open_wpe(['e.c'], wd)
@@ -212,51 +216,59 @@ def _run_checks():
     cleanup(proc, m)
 
     fp = os.path.join(wd, 's.c')
-    open(fp, 'w').write('int s(){return 0;}\n')
-    proc, m, scr, st = open_wpe(['s.c'], wd)
-    drain(m, st, 1.5)
-    action(m, st, b'\x1bOQ', b'\x1bf', b's')   # F2 / File -> Save
-    os.write(m, b'\x1bx')
-    t0 = time.time()
-    while time.time() - t0 < 3 and proc.poll() is None:
-        drain(m, st, 0.2)
-    rec('§4', 'F2 save then Alt-X quit',
-        'PASS' if 'int s()' in open(fp).read() else 'FAIL')
-    cleanup(proc, m)
-
-    if shutil.which('gcc'):
-        open(os.path.join(wd, 'hello.c'), 'w').write(
-            '#include <stdio.h>\nint main(){puts("hi");return 0;}\n')
-        proc, m, scr, st = open_wpe(['hello.c'], wd)
+    for route in ROUTES:
+        open(fp, 'w').write('int s(){return 0;}\n')
+        proc, m, scr, st = open_wpe(['s.c'], wd)
         drain(m, st, 1.5)
-        action(m, st, b'\x1b[20~', b'\x1br', b'm', wait=4.0)   # F9 / Run -> Make
-        has_o = any(os.path.exists(os.path.join(wd, n))
-                    for n in ('hello.o', 'hello.e', 'hello'))
-        rec('§1', 'F9 compile produces output',
-            'PASS' if has_o else 'FAIL',
-            '' if has_o else 'no compiled artefact under workdir')
+        os.write(m, b'zz'); drain(m, st, 0.3)      # change the file so Save has work
+        action(m, st, route, b'\x1bOQ', b'\x1bf', b's')   # F2 / File -> Save
+        os.write(m, b'\x1bx')
+        t0 = time.time()
+        while time.time() - t0 < 3 and proc.poll() is None:
+            drain(m, st, 0.2)
+        rec('§4', f'F2 save then Alt-X quit ({route})',
+            'PASS' if open(fp).read().startswith('zzint s()') else 'FAIL')
         cleanup(proc, m)
-    else:
-        rec('§1', 'F9 compile', 'SKIP', 'gcc not on PATH')
 
-    proc, m, scr, st = open_wpe(['e.c'], wd)
-    drain(m, st, 1.5)
-    action(m, st, b'\x1bOR', b'\x1bf', b'm', wait=0.8)   # F3 / File -> File-Manager
-    fm_open = screen_has(scr, 'Name') and (
-        screen_has(scr, 'Files') or screen_has(scr, 'DirTree'))
-    rec('§3', 'F3 opens the File Manager dialog',
-        'PASS' if fm_open else 'FAIL',
-        '' if fm_open else 'no Files/DirTree/Name in screen after F3')
-    cleanup(proc, m)
+    for route in ROUTES:
+        if tool_usable('gcc'):
+            for n in ('hello.o', 'hello.e', 'hello'):
+                if os.path.exists(os.path.join(wd, n)):
+                    os.unlink(os.path.join(wd, n))
+            open(os.path.join(wd, 'hello.c'), 'w').write(
+                '#include <stdio.h>\nint main(){puts("hi");return 0;}\n')
+            proc, m, scr, st = open_wpe(['hello.c'], wd)
+            drain(m, st, 1.5)
+            action(m, st, route, b'\x1b[20~', b'\x1br', b'm', wait=4.0)   # F9 / Run -> Make
+            has_o = any(os.path.exists(os.path.join(wd, n))
+                        for n in ('hello.o', 'hello.e', 'hello'))
+            rec('§1', f'F9 compile produces output ({route})',
+                'PASS' if has_o else 'FAIL',
+                '' if has_o else 'no compiled artefact under workdir')
+            cleanup(proc, m)
+        else:
+            rec('§1', f'F9 compile ({route})', 'SKIP', 'gcc not on PATH')
 
-    proc, m, scr, st = open_wpe(['e.c'], wd)
-    drain(m, st, 1.5)
-    action(m, st, b'\x1bOP', b'\x1bh', b'e', wait=1.5)   # F1 / Help -> Editor
-    help_open = any(screen_has(scr, s)
-                    for s in ('Help', 'Topic', 'WPE', 'XWPE'))
-    rec('§3', 'F1 Help opens a viewer',
-        'PASS' if help_open else 'FAIL')
-    cleanup(proc, m)
+    for route in ROUTES:
+        proc, m, scr, st = open_wpe(['e.c'], wd)
+        drain(m, st, 1.5)
+        action(m, st, route, b'\x1bOR', b'\x1bf', b'm', wait=0.8)   # F3 / File -> File-Manager
+        fm_open = screen_has(scr, 'Name') and (
+            screen_has(scr, 'Files') or screen_has(scr, 'DirTree'))
+        rec('§3', f'F3 opens the File Manager dialog ({route})',
+            'PASS' if fm_open else 'FAIL',
+            '' if fm_open else 'no Files/DirTree/Name in screen after F3')
+        cleanup(proc, m)
+
+    for route in ROUTES:
+        proc, m, scr, st = open_wpe(['e.c'], wd)
+        drain(m, st, 1.5)
+        action(m, st, route, b'\x1bOP', b'\x1bh', b'e', wait=1.5)   # F1 / Help -> Editor
+        help_open = any(screen_has(scr, s)
+                        for s in ('Help', 'Topic', 'WPE', 'XWPE'))
+        rec('§3', f'F1 Help opens a viewer ({route})',
+            'PASS' if help_open else 'FAIL')
+        cleanup(proc, m)
 
     print('\n== §5 macOS-specific ==', flush=True)
     # Measured, not assumed: with no display variable at all the editor

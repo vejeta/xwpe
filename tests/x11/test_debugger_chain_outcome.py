@@ -18,6 +18,7 @@ import tempfile
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep
 
@@ -62,7 +63,7 @@ def home_pdbrc(tmp_path):
 
 
 # @scenario SC-debug-138
-@pytest.mark.skipif(not shutil.which("python3"), reason="python3 not on PATH")
+@needs("python3")
 @pytest.mark.parametrize("xwpe", [SESSION], indirect=True)
 def test_pdb_left_at_another_prompt_by_the_home_pdbrc_is_said(home_pdbrc, xwpe):
     """Ctrl-G R with an interact in ~/.pdbrc: the start says pdb answered with

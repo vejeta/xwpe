@@ -7,10 +7,8 @@ editor with candidates.
 
 Requires metals + scala-cli.  Skips otherwise.  Slow (boots Metals).
 """
-import shutil
+from host_tools import needs
 import time
-
-import pytest
 
 from wpe_driver import WpeSession
 
@@ -31,9 +29,7 @@ ARROW_R = "\033[C"  # right one character (arrow key escape: xwpe's Ctrl-D
                     #  is DELETE, not WordStar-right, so use the canonical
                     #  cursor-right sequence to avoid corrupting the buffer)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("metals") is None or shutil.which("scala-cli") is None,
-    reason="metals and scala-cli required")
+pytestmark = needs("metals", "scala-cli")
 
 
 def test_scala_lsp_completion_popup(tmp_path):

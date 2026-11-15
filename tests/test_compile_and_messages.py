@@ -16,7 +16,8 @@ import time
 
 import pytest
 
-from wpe_driver import (WAIT_SCALE, WpeSession, tool_usable, wait_screen,
+from host_tools import require
+from wpe_driver import (WAIT_SCALE, WpeSession, wait_screen,
                         late_reader_c_program, paste_text, end_paste_until,
                         PASTE_LINES,
                         PASTE_BYTES_PER_LINE)
@@ -56,10 +57,11 @@ def session(workdir, src, filename):
     return WpeSession(str(workdir), src, filename=filename, cols=WIDE)
 
 
-def need(tool, *probe):
-    """Skip the test, naming the binary, when ``tool`` is not usable."""
-    if not tool_usable(tool, *probe):
-        pytest.skip("no %s" % tool)
+def need(tool):
+    """Skip the test, naming the tool, when ``tool`` is not usable here or the
+    job switched it off.  The tool is learned by the row's own helper, so
+    this is the owner's imperative form (tests/host_tools.py, require())."""
+    require(tool)
 
 
 def active_position(session):
@@ -279,7 +281,7 @@ def test_fortran_error_row_jumps_to_its_line(tmp_path):
 
 # @scenario SC-compile-14
 def test_java_error_row_jumps_to_its_line(tmp_path):
-    need("javac", "-version")
+    need("javac")
     src = ("public class T {\n  public static void main(String[] a) {\n"
            "    int x = undefinedThing;\n  }\n}\n")                  # line 3
     with session(tmp_path, src, "T.java") as w:
@@ -298,7 +300,7 @@ def test_rust_error_row_jumps_to_its_line(tmp_path):
 
 # @scenario SC-compile-17
 def test_go_error_row_jumps_to_its_line(tmp_path):
-    need("go", "version")
+    need("go")
     src = "package main\n\nfunc main() {\n\tx := undefinedThing\n\t_ = x\n}\n"   # line 4
     with session(tmp_path, src, "t.go") as w:
         build(w, slow=True)
@@ -470,7 +472,7 @@ def test_pascal_error_line_reaches_messages_and_enter_jumps(tmp_path):
     ends inside the error line.  The whole line still reaches Messages, it
     is made a row, and the build's jump to the first error lands on the
     line it names."""
-    need("fpc", "-iV")
+    need("fpc")
     src = "program t;\nbegin\n  y := 1;\nend.\n"                  # line 3
     with session(tmp_path, src, "t.pas") as w:
         w.key(F9, delay=BUILD_WAIT)
@@ -1049,7 +1051,7 @@ def test_algol68_error_row_jumps_to_its_line(tmp_path):
     "a68g: error: 1: tag "yy" has not been declared properly ...": the
     message reaches Messages with no key pressed, a row is made, and Enter
     on it lands on line 3."""
-    need("a68g", "--version")
+    need("a68g")
     with session(tmp_path, A68_ONE_ERROR, "t.a68") as w:
         build(w)
         assert wait_screen(w, "has not been declared", tmo=scaled(FIND_TIMEOUT)), \
@@ -1065,7 +1067,7 @@ def need_scalac(tmp_path):
     """Skip, naming scalac, unless it compiles a one-line object: a scalac
     whose libraries are incomplete prints its version and then fails every
     compile."""
-    need("scalac", "-version")
+    need("scalac")
     probe = tmp_path / "probe"
     probe.mkdir()
     (probe / "P.scala").write_text("object P\n")

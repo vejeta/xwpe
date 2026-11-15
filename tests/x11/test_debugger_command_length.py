@@ -12,10 +12,10 @@ so the row reads what the editor wrote and that the start was not refused.
 The Wayland twin runs this same body.
 """
 import os
-import shutil
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep
 
@@ -81,8 +81,7 @@ def cjk_folder(tmp_path):
 
 
 # @scenario SC-debug-126
-@pytest.mark.skipif(not (shutil.which("gcc") and shutil.which("gdb")),
-                    reason="gcc and gdb not on PATH")
+@needs("gcc", "gdb")
 @pytest.mark.parametrize("xwpe", [GDB_SESSION], indirect=True)
 def test_gdb_starts_in_a_folder_named_with_the_longest_name(longest_name_folder, tmp_path, xwpe):
     """Ctrl-G R on a program in a folder with one 255-byte name: the editor
@@ -101,7 +100,7 @@ def test_gdb_starts_in_a_folder_named_with_the_longest_name(longest_name_folder,
 
 
 # @scenario SC-debug-127
-@pytest.mark.skipif(not (shutil.which("python3")), reason="python3 not on PATH")
+@needs("python3")
 @pytest.mark.parametrize("xwpe", [PDB_SESSION], indirect=True)
 def test_pdb_starts_in_a_folder_named_in_cjk_letters(cjk_folder, tmp_path, xwpe):
     """Ctrl-G R on a script in a folder of 20 CJK letters: pdb's first input
@@ -120,7 +119,7 @@ def test_pdb_starts_in_a_folder_named_in_cjk_letters(cjk_folder, tmp_path, xwpe)
 
 
 # @scenario SC-debug-132
-@pytest.mark.skipif(not shutil.which("gcc"), reason="gcc not on PATH")
+@needs("gcc")
 @pytest.mark.parametrize("xwpe", [LONG_STEM_SESSION], indirect=True)
 def test_a_source_with_a_long_name_builds(tmp_path, xwpe):
     """F9 on a source whose name is 200 bytes: the link takes the program's

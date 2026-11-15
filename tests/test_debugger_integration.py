@@ -24,7 +24,8 @@ import time
 import pytest
 
 import procinfo
-from wpe_driver import (WpeSession, ALT, WAIT_SCALE, tool_usable,
+from host_tools import require, require_absent
+from wpe_driver import (WpeSession, ALT, WAIT_SCALE,
                         CURRENT_LINE_BG, BREAKPOINT_BG,
                         UNCONFIRMED_BREAKPOINT_FG, incoherence,
                         late_reader_c_program, paste_text, end_paste_until,
@@ -218,10 +219,9 @@ PY_CALLEE_LINE = 1        # pdb stops on the "def" line of a called function
 
 
 def _need(*tools):
-    """Skip the test, naming the first missing binary."""
-    for tool in tools:
-        if shutil.which(tool) is None:
-            pytest.skip("no %s" % tool)
+    """Skip the test, naming the first tool that is missing, broken or
+    switched off by the job (tests/host_tools.py, require())."""
+    require(*tools)
 
 
 def _source_rows(w):
@@ -533,8 +533,7 @@ def test_a_debugger_not_installed_is_named_and_nothing_hangs(tmp_path):
     """Debug > Options set to Sdb, which is not installed: Ctrl-G R says
     which debugger is missing, and the editor takes keys again."""
     _need("gcc")
-    if shutil.which("sdb") is not None:
-        pytest.skip("sdb is installed here")
+    require_absent("sdb")
     with _c_session(tmp_path) as w:
         w.key(CTRL_G, "o", delay=0.6)
         w.key(DOWN, delay=0.3)          # focus moves to Sdb
@@ -940,7 +939,7 @@ def _start_py_session(w):
     w.key(CTRL_G, "r", delay=1.0)
     assert _status_row_says(w, "switching to pdb", STEP_TIMEOUT_S)
     assert _wait_for(w, lambda: _children(w, "python3"), START_TIMEOUT_S), \
-        "pdb should be running:\n%s" % _screen(w)
+        "pdb should be running:\n%s\n%s" % (_screen(w), w.process_report())
 
 
 # @scenario SC-debug-19
@@ -1072,7 +1071,7 @@ def _start_py_session_on(w, line):
     w.key(CTRL_G, "b", delay=0.4)
     w.key(CTRL_G, "r", delay=1.0)
     assert _wait_for(w, lambda: _children(w, "python3"), START_TIMEOUT_S), \
-        "pdb should be running:\n%s" % _screen(w)
+        "pdb should be running:\n%s\n%s" % (_screen(w), w.process_report())
     assert _wait_for(w, lambda: _mark_line(w) == line, STEP_TIMEOUT_S), \
         "pdb should stop on line %d; mark is on %s:\n%s" \
         % (line, _mark_line(w), _screen(w))
@@ -1093,7 +1092,8 @@ def test_pdb_steps_over_a_line_that_prints_more_than_the_reader_holds(
             "F8 over the long output should stop on line %d; mark is on " \
             "%s:\n%s" % (PY_FLOOD_NEXT_LINE, _mark_line(w), _screen(w))
         assert _children(w, "python3"), \
-            "pdb should still run after the long output:\n%s" % _screen(w)
+            "pdb should still run after the long output:\n%s\n%s" \
+            % (_screen(w), w.process_report())
         assert _step(w, F8, PY_FLOOD_LAST_LINE), \
             "the next F8 should stop on line %d:\n%s" \
             % (PY_FLOOD_LAST_LINE, _screen(w))
@@ -1137,7 +1137,8 @@ def test_pdb_watch_reads_an_answer_ended_by_a_prompt_after_a_long_line(
         assert _wait_for(w, lambda: _watch_value(w, "y") == 9,
                          STEP_TIMEOUT_S), \
             "after y = x * x ran, the watch should read 9:\n%s" % _screen(w)
-        assert _children(w, "python3"), "pdb should still be running"
+        assert _children(w, "python3"), \
+            "pdb should still be running:\n%s" % w.process_report()
 
 
 def _deep_dir(tmp_path, total):
@@ -2123,7 +2124,8 @@ def test_a_build_declined_at_a_pdb_stop_keeps_the_session(tmp_path):
             "pdb should stop on line %d:\n%s" % (PY_BREAK_LINE, _screen(w))
         _ask_to_build_and_answer(w, F9, "n")
         assert _children(w, "python3"), \
-            "No should leave pdb running:\n%s" % _screen(w)
+            "No should leave pdb running:\n%s\n%s" \
+            % (_screen(w), w.process_report())
         assert _step(w, F8, PY_NEXT_LINE), \
             "F8 should mark line %d (mark on %s):\n%s" \
             % (PY_NEXT_LINE, _mark_line(w), _screen(w))
@@ -3724,7 +3726,7 @@ def _start_java_session(w):
     w.key(CTRL_G, "r", delay=1.0)
     assert _status_row_says(w, "switching to jdb", STEP_TIMEOUT_S)
     assert _wait_for(w, lambda: _children(w, "jdb"), START_TIMEOUT_S), \
-        "jdb should be running:\n%s" % _screen(w)
+        "jdb should be running:\n%s\n%s" % (_screen(w), w.process_report())
     assert _wait_for(w, lambda: _mark_line(w) == JAVA_BREAK_LINE,
                      JDB_START_TIMEOUT_S), \
         "jdb stopped; line %d of P.java should be marked:\n%s" \
@@ -3914,9 +3916,7 @@ def test_a_debugger_that_dies_is_named_with_its_exit_status(tmp_path):
 def test_dap_program_output_has_no_carriage_return_mark(tmp_path):
     """Under lldb-dap the program's lines reach Messages without the "^M"
     the pty's CR LF used to leave at their end."""
-    if not tool_usable("rustc"):
-        pytest.skip("no rustc")
-    _need("lldb-dap")
+    _need("rustc", "lldb-dap")
     with WpeSession(str(tmp_path), RUST_PROG, filename="main.rs", wait=2.0,
                     env_extra={"XWPE_DAP_ADAPTER": "lldb"}) as w:
         _move_down(w, RUST_ONCE_LINE - 1)
@@ -4265,7 +4265,8 @@ def test_a_backend_switch_is_a_status_line_not_a_box(tmp_path):
             "the status row should name the debugger that starts:\n%s" \
             % _screen(w)
         assert _wait_for(w, lambda: _children(w, "python3"), START_TIMEOUT_S), \
-            "pdb should start with no box to dismiss:\n%s" % _screen(w)
+            "pdb should start with no box to dismiss:\n%s\n%s" \
+            % (_screen(w), w.process_report())
         assert _wait_for(w, lambda: _mark_line(w) == PY_BREAK_LINE,
                          START_TIMEOUT_S), \
             "the session should go on to the breakpoint:\n%s" % _screen(w)
@@ -4285,8 +4286,7 @@ def test_a_debugger_that_never_started_prints_no_end_line(tmp_path):
     """A debugger that is not on PATH: only the reason is printed, never
     "End of Debugging", because no session ever ran."""
     _need("gcc")
-    if shutil.which("sdb") is not None:
-        pytest.skip("sdb is installed here")
+    require_absent("sdb")
     with _c_session(tmp_path) as w:
         _select_sdb(w)
         _move_down(w, C_BREAK_LINE - 1)
@@ -4521,7 +4521,8 @@ def _go_to_cursor_and_run_on(w, break_line, cursor_line, ended, start_timeout):
     w.key(CTRL_G, "b", delay=0.5)
     w.key(CTRL_G, "r", delay=1.0)
     assert _wait_for(w, lambda: _mark_line(w) == break_line, start_timeout), \
-        "Ctrl-G R should stop on line %d:\n%s" % (break_line, _screen(w))
+        "Ctrl-G R should stop on line %d:\n%s\n%s" \
+        % (break_line, _screen(w), w.process_report())
     _go_to_line(w, cursor_line)
     assert _wait_for(w, lambda: "F4 Go to cursor" in _bottom_bar(w),
                      STEP_TIMEOUT_S), \
@@ -7372,8 +7373,8 @@ def test_the_script_under_pdb_does_not_inherit_ignored_sigint(tmp_path):
         w.key(CTRL_G, "r", delay=1.0)
         assert _wait_for(w, lambda: _mark_line(w) == PY_SIGMASK_RUN_LINE,
                          START_TIMEOUT_S), \
-            "pdb should stop on line %d:\n%s" \
-            % (PY_SIGMASK_RUN_LINE, _screen(w))
+            "pdb should stop on line %d:\n%s\n%s" \
+            % (PY_SIGMASK_RUN_LINE, _screen(w), w.process_report())
         # Stepped, not continued: pdb takes SIGINT itself while it continues.
         assert _step(w, F8, PY_SIGMASK_PRINT_LINE - 1), \
             "F8 over the shell should mark line %d:\n%s" \
@@ -10061,9 +10062,7 @@ def test_typing_goes_on_when_the_debug_adapter_stops_reading(tmp_path):
     presses F8: the editor goes on, the status row names the adapter as not
     reading its input, and once it reads again the `next` reaches it whole
     and the step lands on the next line."""
-    if not tool_usable("rustc"):
-        pytest.skip("no rustc")
-    _need("lldb-dap")
+    _need("rustc", "lldb-dap")
     _need_a_pipe_the_stub_can_fill()
     try:
         with WpeSession(str(tmp_path), RUST_PROG, filename="main.rs",

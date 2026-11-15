@@ -9,7 +9,7 @@ regardless of backend -- so no model/network is needed.  Skips without clangd.
 """
 import os
 import time
-import shutil
+from host_tools import needs
 import subprocess
 import pytest
 from wpe_driver import WpeSession, ALT, WPE_BIN
@@ -26,7 +26,7 @@ def _ai_build():
 
 pytestmark = [
     pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai"),
-    pytest.mark.skipif(shutil.which("clangd") is None, reason="no clangd"),
+    needs("clangd"),
 ]
 
 

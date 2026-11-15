@@ -18,7 +18,8 @@ import os
 import stat
 
 import pytest
-from wpe_driver import ALT, WpeSession, wait_screen, tool_usable
+from host_tools import needs
+from wpe_driver import ALT, WpeSession, wait_screen
 from test_startplan import Folder, _screen, _wait
 
 CTRL_F9 = "\033[20;5~"     # Run: build, then run
@@ -47,8 +48,8 @@ int main(int argc, char **argv)
 }
 '''
 
-needs_gcc = pytest.mark.skipif(not tool_usable("gcc", "--version"), reason="gcc not usable")
-needs_make = pytest.mark.skipif(not tool_usable("make", "--version"), reason="make not usable")
+needs_gcc = needs("gcc")
+needs_make = needs("make")
 
 # A folder's Arguments whose tab the shell splits and make's word cut keeps.
 FOLDER_ARGS = ";touch\tran"

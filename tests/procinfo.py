@@ -20,7 +20,17 @@ import subprocess
 import sys
 
 PROC_ROOT = "/proc"
-GONE = "gone"            # run state of a process no longer in the table
+
+# The system the tests run on: the one place a platform name is read.
+# IS_LINUX and IS_MACOS are the real system.  MACOS also answers true on any
+# system when XWPE_TEST_OS=macos, so a row that depends on macOS (the name of
+# a locale, say) can be exercised on Linux; no key and no process is ever
+# treated differently because of it.
+IS_LINUX = sys.platform.startswith("linux")
+IS_MACOS = sys.platform == "darwin"
+MACOS = IS_MACOS or os.environ.get("XWPE_TEST_OS") == "macos"
+
+GONE = "gone"           # run state of a process no longer in the table
 ZOMBIE = "Z"             # run state of a child that ended but is not reaped
 RUNNING = "R"            # run state of a process on a CPU or ready for one
 
@@ -317,6 +327,51 @@ def descendants(ppid):
             found.append(pid)
             pending.append(pid)
     return found
+
+
+def _ps_table_rows():
+    """Every row of the process table as ps(1) prints it: a list of
+    (pid, ppid, state, comm) with the pids as integers; [] when ps fails."""
+    result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,state=,comm="],
+                            capture_output=True, text=True)
+    rows = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2], parts[3]))
+    return rows
+
+
+def _first_word(text):
+    """The first blank-separated word of text, or '' for None or blank."""
+    words = (text or "").split(None, 1)
+    return words[0] if words else ""
+
+
+def describe_children(ppid):
+    """A listing of the processes below ppid, for the message of a check
+    that found none of the child it was looking for.
+
+    When a debugger row fails on a system that prints its process table
+    differently, the question is whether the child never ran, ran under
+    another name, or ran and was not recognised.  One line per live
+    descendant says what the helpers concluded (state, the name it runs
+    under, the program it was executed as) beside what ps(1) printed for it.
+    Only the program's own path is shown, never the rest of its command
+    line and never its environment."""
+    below = descendants(ppid)
+    lines = ["descendants of %d: %d" % (ppid, len(below))]
+    for pid, parent, state, comm in _ps_table_rows():
+        if pid in below:
+            lines.append(
+                "pid=%d ppid=%d state=%s run_as=%r argv0=%r ps_comm=%r"
+                % (pid, parent, run_state(pid), command_run(pid),
+                   _first_word(command_line(pid)), comm))
+    kernel = ["%d %d %s %s" % row for row in _ps_table_rows()
+              if row[1] == ppid or row[0] in below]
+    lines.append("ps rows in the tree (pid ppid state comm): "
+                 + ("; ".join(kernel) if kernel else "none"))
+    return "\n".join(lines)
 
 
 def all_ended(pids):

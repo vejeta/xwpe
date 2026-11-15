@@ -5,12 +5,12 @@ the page.  A window that another one covered and uncovered meanwhile must
 be drawn again at once, not left blank until the command ends.
 """
 import os
-import shutil
 import stat
 import subprocess
 import time
 
 import pytest
+from host_tools import needs
 
 import procinfo
 from conftest import changed_pixels, launch_client, xtool_env
@@ -62,7 +62,7 @@ def cover(gui_owner, tmp_path, request):
     return launch_client(gui_owner, tmp_path, request, ["xlogo"])
 
 
-@pytest.mark.skipif(not shutil.which("xlogo"), reason="no xlogo")
+@needs("xlogo")
 # @scenario SC-debug-114
 def test_the_window_is_drawn_again_while_a_manual_page_is_made(
         slow_man, xwpe, request):

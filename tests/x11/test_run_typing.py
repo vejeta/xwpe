@@ -9,10 +9,10 @@ the Wayland harness cannot type characters above Latin-1.
 The Wayland twin (tests/wayland/test_run_typing.py) runs the same body.
 """
 import os
-import shutil
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import _sleep
 
@@ -69,7 +69,7 @@ def _read(path):
 
 
 # @scenario SC-screen-07
-@pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+@needs("gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": READER_PROG}],
                          indirect=True)
 def test_a_line_and_ctrl_c_typed_for_a_running_program_reach_it(xwpe):
@@ -124,7 +124,7 @@ RAW_KEYS_WANTED = "27 91 65 27 91 49 53 126 27 91 51 126 113"
 
 
 # @scenario SC-keymap-17
-@pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+@needs("gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": RAW_READER_PROG}],
                          indirect=True)
 def test_the_cursor_and_function_keys_reach_a_running_program(xwpe):

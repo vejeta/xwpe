@@ -27,16 +27,14 @@ import subprocess
 
 import pytest
 
-from wpe_driver import ALT, WpeSession, tool_usable, wait_screen, write_user_store
+from host_tools import needs
+from wpe_driver import ALT, WpeSession, wait_screen, write_user_store
 from test_startplan_debug import (CTRL_G, ESC, RUN_IT, USE_MINE, RAN_WAIT, SETTLE,
                                   BOX_WAIT, Folder, _debug_box, _plan_lines, _screen,
                                   _wait)
 
-needs_pdb = pytest.mark.skipif(not tool_usable("python3", "--version"),
-                               reason="python3 not usable")
-needs_jdb = pytest.mark.skipif(not (tool_usable("javac", "-version") and
-                                    tool_usable("jdb", "-version")),
-                               reason="javac and jdb not usable")
+needs_pdb = needs("python3")
+needs_jdb = needs("javac", "jdb")
 
 CANARY_S = 40              # a direct debugger run is far inside this
 STOP_S = 25                # the debugger's start and its first stop

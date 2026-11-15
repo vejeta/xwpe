@@ -8,11 +8,11 @@ decoder is also covered by the compositor-free selftest
 (tests/test_wayland_keysym.py).
 """
 import os
-import shutil
 import sys
 import time
 
 import pytest
+from host_tools import needs
 
 from conftest import changed_pixels, _sleep
 
@@ -166,8 +166,7 @@ def test_f11_does_not_quit_the_editor(xwpe):
 
 
 # @scenario SC-debug-26
-@pytest.mark.skipif(not shutil.which("gdb") or not shutil.which("gcc"),
-                    reason="no gdb or gcc")
+@needs("gdb", "gcc")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": BLOCKED_PROG}],
                          indirect=True)
 def test_ctrl_f2_asks_to_quit_the_debugger_and_yes_ends_it(xwpe):

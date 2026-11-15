@@ -16,6 +16,7 @@ import time
 import pytest
 
 import procinfo
+from host_tools import require
 from wpe_driver import WpeSession, WAIT_SCALE, ALT
 
 DEL = "\x7f"                 # what Terminal.app, iTerm2 and kitty send for Backspace
@@ -31,8 +32,7 @@ def _terminfo_where_backspace_is_ctrl_h(tmp_path):
     which hides the editor's own handling of the raw byte.  The entry is the
     system's own with that one capability changed, built in the test's
     directory.  The test skips when infocmp or tic is missing."""
-    if not (shutil.which("infocmp") and shutil.which("tic")):
-        pytest.skip("infocmp and tic are needed to build the macOS-style entry")
+    require("infocmp", "tic")      # both build the macOS-style entry
     source = subprocess.check_output(["infocmp", "-x", "xterm-256color"],
                                      text=True)
     # macOS' own database already says kbs=^H; a current one says kbs=^?.

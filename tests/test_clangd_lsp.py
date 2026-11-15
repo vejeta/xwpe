@@ -14,7 +14,7 @@ clangd needs no JVM and no build server, so unlike the Metals bridge test this
 runs in a few seconds -- fast enough for CI where clangd is packaged.  Skips
 when clangd is absent.
 """
-import shutil
+from host_tools import needs
 import time
 
 import pytest
@@ -39,8 +39,7 @@ ALT_Q = "\033q"     # the LSP prefix (Alt-Q)
 ALT_S = "\033s"     # Search menu (for Find -- arrow keys are not decoded under pyte)
 LOCK = "\U0001f512" # the read-only padlock glyph
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("clangd") is None, reason="clangd required")
+pytestmark = needs("clangd")
 
 
 def _text(w):

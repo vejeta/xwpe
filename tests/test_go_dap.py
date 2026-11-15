@@ -12,10 +12,8 @@ advances it through the DWARF line table, and a watch RE-EVALUATES on each step
 Requires `dlv` (delve) and `go`.  Skips otherwise.
 """
 import re
-import shutil
+from host_tools import needs
 import time
-
-import pytest
 
 from wpe_driver import WpeSession
 
@@ -39,9 +37,7 @@ PROG = (
 CTRL_G = "\x07"
 F8 = "\033[19~"     # Step (over)
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("dlv") is None or shutil.which("go") is None,
-    reason="dlv (delve) and go required")
+pytestmark = needs("dlv", "go")
 
 
 def _text(w):
