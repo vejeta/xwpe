@@ -399,12 +399,12 @@ for f in "$SRCDIR"/*.c "$SRCDIR"/*.h "$SRCDIR/configure.ac"; do
   [ -f "$f" ] || continue
   case ${f##*/} in we_child.c) continue ;; esac
   if grep -q "$MECHANICS" "$f"; then
-    problem "$MECHANICS named in ${f##*/}: only test_child may build with unplanned starts allowed"
+    problem "$MECHANICS named in ${f##*/}: only the children's owner's unit tests (test_child, test_childfds) may build with unplanned starts allowed"
   fi
 done
 if [ -f "$SRCDIR/Makefile.am" ]; then
-  grep -n "$MECHANICS" "$SRCDIR/Makefile.am" | grep -v -e ':test_child_CFLAGS[ \t]*=' -e '^[0-9]*:#' | while IFS= read -r hit; do
-    echo "$MECHANICS named in Makefile.am:${hit%%:*} outside test_child_CFLAGS"
+  grep -n "$MECHANICS" "$SRCDIR/Makefile.am" | grep -v -e ':test_child_CFLAGS[ \t]*=' -e ':test_childfds_CFLAGS[ \t]*=' -e ':test_childfds_loop_CFLAGS[ \t]*=' -e '^[0-9]*:#' | while IFS= read -r hit; do
+    echo "$MECHANICS named in Makefile.am:${hit%%:*} outside the children's owner's unit tests (test_child, test_childfds, test_childfds_loop)"
   done >> "$WORK/problems"
 fi
 

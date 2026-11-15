@@ -4,6 +4,7 @@ AC_INIT([xwpe], [1.7.0], [juan.mendezr@proton.me], [xwpe],
 AC_CONFIG_SRCDIR([Xwpe.h])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_HEADERS([config.h])
+AC_CANONICAL_HOST
 AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
 
 # Compiler
@@ -134,6 +135,41 @@ WPE_FACT([MEMFD_CREATE], [test "x$xwpe_cv_memfd_create" = xyes], [the system has
 xwpe_say_memfd=$xwpe_cv_memfd_create
 AS_IF([test "x$xwpe_cv_memfd_create" != xyes],
   [xwpe_say_memfd="no (the Wayland shm pool is an unlinked file in XDG_RUNTIME_DIR)"])
+
+# Closing the descriptors a program inherits: close_range (Linux 5.9 with
+# glibc 2.34, FreeBSD 13) closes a span in one call, closefrom (the BSDs,
+# glibc 2.34 as a library routine) everything above a number.  The probe
+# compiles against the declaration, so a library that has the symbol and no
+# prototype counts as "no".
+AC_CACHE_CHECK([for close_range], [xwpe_cv_close_range],
+  [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <unistd.h>]],
+     [[return close_range(3, ~0U, 0);]])],
+    [xwpe_cv_close_range=yes], [xwpe_cv_close_range=no])])
+WPE_FACT([CLOSE_RANGE], [test "x$xwpe_cv_close_range" = xyes], [the system has close_range])
+xwpe_say_close_range=$xwpe_cv_close_range
+AS_IF([test "x$xwpe_cv_close_range" != xyes],
+  [xwpe_say_close_range="no (a loop over the descriptor table closes a child's inherited descriptors, closefrom for its tail where the system has it)"])
+
+# closefrom counts only where it is a thin call into the kernel: on Solaris
+# and illumos it walks /proc and may allocate memory, which a child of a
+# threaded process must not do between fork and exec; Linux has no such
+# system call, and glibc's library routine lists /proc and aborts the child
+# when it cannot close.
+AC_CACHE_CHECK([for closefrom], [xwpe_cv_closefrom],
+  [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <unistd.h>]],
+     [[closefrom(3); return 0;]])],
+    [xwpe_cv_closefrom=yes], [xwpe_cv_closefrom=no])])
+AS_CASE([$host_os],
+  [solaris*|illumos*|*linux*], [xwpe_closefrom_thin=no],
+  [xwpe_closefrom_thin=yes])
+WPE_FACT([CLOSEFROM],
+  [test "x$xwpe_cv_closefrom" = xyes && test "x$xwpe_closefrom_thin" = xyes],
+  [the system has a closefrom that is a thin call into the kernel])
+xwpe_say_closefrom=$xwpe_cv_closefrom
+AS_IF([test "x$xwpe_cv_closefrom" != xyes],
+  [xwpe_say_closefrom="no (a loop over the descriptor table closes a child's inherited descriptors)"],
+  [test "x$xwpe_closefrom_thin" != xyes],
+  [xwpe_say_closefrom="not used (a library routine that walks /proc here; close_range, else a loop, closes a child's inherited descriptors)"])
 
 # The Linux virtual console's ioctls: the keyboard-state probe and GPM's
 # console check.  The headers are the Linux kernel's own.
@@ -739,6 +775,8 @@ AC_MSG_RESULT([
       library feature macros: $xwpe_say_libmacros
       parent-death signal: $xwpe_say_pdeath
       memfd_create:      $xwpe_say_memfd
+      close_range:       $xwpe_say_close_range
+      closefrom:         $xwpe_say_closefrom
       timerfd:           $xwpe_say_timerfd
       linux console:     $xwpe_say_console
       openpty header:    $xwpe_say_pty

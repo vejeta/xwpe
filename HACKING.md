@@ -850,6 +850,34 @@ the start plan treats that as "longer than the system allows", never as a
 missing tail (`startplan_system_refused_path`). `test_startplan` simulates
 that system with the linker's `--wrap`.
 
+## Starting programs: one owner (`we_child.c`)
+
+Every program the editor starts (a build, the Run program, a debugger, a
+language server, an assistant tool) is started, watched and ended by
+`we_child.c`: one `fork`, one `exec`, in `wpe_child_exec`. The owner also
+decides which descriptors the program keeps. Without that, a program inherits
+everything the editor has without close-on-exec: what a desktop launcher or a
+CI runner left open when it started the editor, and what the editor's libraries
+and the assistant's and debug adapter's connections opened later.
+
+Who decides which descriptors a child keeps: one list, one step, after the
+`dup2`s. `wpe_child_keep_list` names, from the spec's io kind, the descriptors
+above 2 the child keeps (today only the program's side of a debugger's pty).
+`wpe_child_close_others` then closes every other descriptor above 2, after
+`wpe_child_io` set 0, 1 and 2 and before the exec. `close_range` does it where
+the system has it, `closefrom` where it has only that (never on glibc, whose
+`closefrom` lists `/proc`), and a loop up to the hard descriptor limit (at most
+65536) otherwise, which is macOS. A caller never names a descriptor by number;
+a kind that needs one adds a line to the keep list. Between `fork` and `exec`
+the step calls nothing that is unsafe in a child of a threaded process (the
+graphical build runs Pango's font thread): the limit is read before the fork.
+
+`tests/test_childfds.c` is built twice, once with the system's calls and once
+with `WPE_CHILD_CLOSE_LOOP_ONLY`, so Linux proves the loop; the loop build
+prints what the step cost, which is how a macOS run measures it.
+`tests/check-child-fds.sh` fails on a second exec site, on a start that can
+skip the step, and on a `close_range` or `closefrom` outside the one function.
+
 ## File Manager geometry (1.6.5)
 
 The File Manager box used to be hardcoded (`f->a=(11,2)`, `f->e=+55,+20`) --

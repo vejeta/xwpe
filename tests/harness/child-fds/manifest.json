@@ -1,0 +1,9 @@
+{
+ "capability": "child-fds",
+ "scenarios": [
+  {"id": "SC-child-fds-01", "requirement": "Every kind of program the editor starts holds 0, 1 and 2 and what its io kind names (the program's side of a debugger's pty), none of the descriptors the editor inherited", "layer": "c-unit", "test": "test_childfds", "status": "new"},
+  {"id": "SC-child-fds-02", "requirement": "A debugger's program keeps the side of the pty named to it: the same device, still a terminal, and never the editor's master", "layer": "c-unit", "test": "test_childfds", "status": "new"},
+  {"id": "SC-child-fds-03", "requirement": "A descriptor left open above the soft descriptor limit is closed in the child too: the close loop reaches the hard limit, not the soft one", "layer": "c-unit", "test": "test_childfds", "status": "new"},
+  {"id": "SC-child-fds-04", "requirement": "The descriptor-by-descriptor close loop (macOS) gives rows 01-03 the same answers and prints what the close step cost", "layer": "c-unit", "test": "test_childfds_loop", "status": "new"}
+ ]
+}

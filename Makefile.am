@@ -397,7 +397,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -594,6 +594,19 @@ test_child_LDADD = $(UTIL_LIBS)
 test_childsig_SOURCES = tests/test_childsig.c we_child.c we_fdloop.c
 test_childsig_CFLAGS = $(TEST_CFLAGS)
 test_childsig_LDADD = $(UTIL_LIBS)
+
+# Which descriptors a program the editor starts holds: the owner's close step
+# (we_child.c) leaves it 0, 1 and 2 and what its spec names, whatever the
+# editor inherited from what started it.  Built twice, as test_rowfind is:
+# the second build takes the descriptor-by-descriptor loop that macOS runs, on
+# any system, so Linux proves the loop and its ceiling, and it prints what the
+# close step cost.
+test_childfds_SOURCES = tests/test_childfds.c we_child.c we_fdloop.c
+test_childfds_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST
+test_childfds_LDADD = $(UTIL_LIBS)
+test_childfds_loop_SOURCES = tests/test_childfds.c we_child.c we_fdloop.c
+test_childfds_loop_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST -DWPE_CHILD_CLOSE_LOOP_ONLY
+test_childfds_loop_LDADD = $(UTIL_LIBS)
 
 # The hang guard every C test that starts a child arms (tests/test_watchdog.h),
 # tested: an alarm names what did not finish, XWPE_TEST_WAIT_SCALE (a float)
@@ -800,7 +813,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
+  test_child test_childsig test_childfds test_childfds_loop test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -904,6 +917,12 @@ TESTS += tests/check-program-name.sh
 # The editor never takes a terminal as its own: tests/check-tty-open.sh
 # fails on an open() of a tty or pty name without O_NOCTTY.
 TESTS += tests/check-tty-open.sh
+
+# One exec site, one close step, one closer: tests/check-child-fds.sh fails
+# on an exec outside the owner, on a child start that can skip the step that
+# closes what the editor inherited, and on a close_range or closefrom
+# outside it.
+TESTS += tests/check-child-fds.sh
 
 # One owner of the selected entry of a list window (we_listsel.h):
 # tests/check-list-entry.sh counts, per function, the indexings of a list's
@@ -1064,6 +1083,8 @@ EXTRA_DIST = \
   tests/check-program-name.sh \
   tests/check-tty-open.sh \
   tests/tty-open.allow \
+  tests/check-child-fds.sh \
+  tests/child-fds.allow \
   tests/program-name.allow \
   tests/check-box-layout.sh \
   tests/box-layout.allow \

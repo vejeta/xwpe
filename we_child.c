@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -1382,26 +1383,198 @@ static void wpe_child_take_group(const WpeChildSpec *spec)
   wpe_child_apart_from_terminal();
 }
 
+/* The descriptors a child may keep above 0, 1 and 2, and the numbers its
+   close step must reach.  What the editor's own libraries, or whatever
+   started the editor (a desktop launcher, a CI runner, a shell with a
+   coprocess), left open is none of a program's business: a socket that
+   reached the Run program kept a connection alive after the editor had
+   closed it.  The graphical build runs a library thread (Pango's font
+   loader), so between fork and exec only calls that are safe in a child of
+   a threaded process are made by the step below: close, close_range,
+   closefrom, clock_gettime and plain stores.  Everything it needs to look
+   up (the limit, the kept numbers) is read in the parent, before the fork. */
+#define WPE_CHILD_KEEP_MAX     1      /* kept descriptors a spec can name: the
+                                         side pty.  Grows with the spec, never
+                                         for a caller's convenience */
+#define WPE_CHILD_FD_FIRST     3      /* the first descriptor above 0, 1, 2 */
+#define WPE_CHILD_FD_TO_END    (-1)   /* wpe_child_close_span: all above @lo */
+#define WPE_CHILD_FD_CEILING   65536  /* the loop's bound when the hard limit
+                                         is larger, infinite or unknown: 18 ms
+                                         of closes at 0.27 us each */
+
+/* The table holds the side pty: a build with room for none is refused here,
+   not at run time between fork and exec. */
+typedef char wpe_child_keep_holds_side_pty[(WPE_CHILD_KEEP_MAX >= 1) ? 1 : -1];
+
+typedef struct {
+ int fd[WPE_CHILD_KEEP_MAX];  /* ascending, every one above 2 */
+ int n;
+ int ceiling;                 /* the highest number a close loop must reach,
+                                 read in the parent */
+} WpeChildKeep;
+
+#ifdef WPE_CHILD_CLOSE_LOOP_ONLY
+/* The loop build of the owner's test points this at memory it shares with
+   the child: the microseconds the close step took, so a run on another
+   system (Darwin has neither call) measures what the loop costs there. */
+long *wpe_child_close_timing;
+
+/** wpe_child_close_now_us - A monotonic clock in microseconds, for the loop
+ * build's timing of the close step. */
+static long wpe_child_close_now_us(void)
+{
+ struct timespec ts;
+
+ clock_gettime(CLOCK_MONOTONIC, &ts);
+ return((long)ts.tv_sec * 1000000L + ts.tv_nsec / 1000L);
+}
+#endif
+
+/**
+ * wpe_child_fd_ceiling - In the parent: the number above which the close
+ * loop need not look.
+ * @k: the kept descriptors, the ceiling never below the highest of them.
+ *
+ * The hard RLIMIT_NOFILE when it is finite (a descriptor can sit above the
+ * soft limit when the limit was lowered after it was opened), else, and
+ * never above, WPE_CHILD_FD_CEILING.  Never the soft limit and never
+ * sysconf(_SC_OPEN_MAX), which report the soft limit: where the loop runs
+ * (macOS, whose hard limit is unlimited) a leaked descriptor above a lowered
+ * soft limit would be left open.
+ * Return: the highest descriptor number the loop closes.
+ */
+static int wpe_child_fd_ceiling(const WpeChildKeep *k)
+{
+ struct rlimit rl;
+ int ceiling = WPE_CHILD_FD_CEILING;
+ int i;
+
+ if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_max != RLIM_INFINITY &&
+     rl.rlim_max < (rlim_t)WPE_CHILD_FD_CEILING)
+  ceiling = (int)rl.rlim_max;
+ for (i = 0; i < k->n; i++)
+  if (k->fd[i] > ceiling)
+   ceiling = k->fd[i];
+ return(ceiling);
+}
+
+/**
+ * wpe_child_keep_list - In the parent, before the fork: the descriptors
+ * above 2 this child keeps at exec, by its io kind, and how far the close
+ * step must look.
+ * @spec: the child; @k: receives the list.
+ *
+ * The one place a kept descriptor is named: the program's side of the
+ * debugger's pty for _PIPES_AND_PTY and _INHERIT_AND_PTY, none for any
+ * other kind.  A debugger whose program has no such side (jdb's VM, whose
+ * side_pty_slave is WPE_CHILD_NO_FD) keeps nothing, and a number of 2 or
+ * below is never listed: the step starts at 3.  A caller cannot ask for a
+ * descriptor by number; a new kind that needs one adds a line here.
+ */
+static void wpe_child_keep_list(const WpeChildSpec *spec, WpeChildKeep *k)
+{
+ k->n = 0;
+ if (wpe_child_io_has_side_pty(spec->io) &&
+     spec->side_pty_slave >= WPE_CHILD_FD_FIRST)
+  k->fd[k->n++] = spec->side_pty_slave;
+ k->ceiling = wpe_child_fd_ceiling(k);
+}
+
+/**
+ * wpe_child_close_span - In the child: close every descriptor from @lo to
+ * @hi, or all above @lo for WPE_CHILD_FD_TO_END.
+ * @lo, @hi: the span, @lo <= @hi unless @hi is WPE_CHILD_FD_TO_END;
+ * @ceiling: how far the loop looks.
+ *
+ * close_range where the system has it, falling through on any failure (a
+ * seccomp filter in a container answers EPERM, a glibc newer than its
+ * kernel ENOSYS).  closefrom for an open end where the system has that and
+ * no close_range, its return never read (void on some systems, int on
+ * others).  A loop to @ceiling otherwise: macOS, and any system where the
+ * two fail.  Never closefrom on glibc: it is not a system call there, it
+ * lists /proc and aborts the process when it cannot close, which would end
+ * the child in a chroot without /proc instead of running it; on glibc
+ * close_range runs first.  WPE_CHILD_CLOSE_LOOP_ONLY, set by the test's
+ * second build, takes the loop on any system.
+ */
+static void wpe_child_close_span(int lo, int hi, int ceiling)
+{
+ int fd, last = ceiling;
+
+#if !defined(WPE_CHILD_CLOSE_LOOP_ONLY) && WPE_HAS_CLOSE_RANGE
+ if (close_range((unsigned int)lo,
+                 hi == WPE_CHILD_FD_TO_END ? ~0U : (unsigned int)hi, 0) == 0)
+  return;
+#endif
+#if !defined(WPE_CHILD_CLOSE_LOOP_ONLY) && WPE_HAS_CLOSEFROM && !WPE_HAS_CLOSE_RANGE
+ if (hi == WPE_CHILD_FD_TO_END)
+ {
+  closefrom(lo);
+  return;
+ }
+#endif
+ if (hi != WPE_CHILD_FD_TO_END && hi < last)
+  last = hi;
+ for (fd = lo; fd <= last; fd++)
+  close(fd);
+}
+
+/**
+ * wpe_child_close_others - In the child, after 0, 1 and 2 are set and
+ * before exec: every descriptor above 2 not in @k is closed, so the
+ * program starts with what its spec names and nothing that whatever
+ * started the editor left open.
+ * @k: the kept descriptors.
+ *
+ * Walks the spans between the kept numbers, one wpe_child_close_span each,
+ * so a kept descriptor is never touched and no flag is read after the fork.
+ * A span with no member (the kept number is 3, or two are adjacent) is
+ * skipped: close_range refuses it.
+ */
+static void wpe_child_close_others(const WpeChildKeep *k)
+{
+ int lo = WPE_CHILD_FD_FIRST;
+ int i;
+#ifdef WPE_CHILD_CLOSE_LOOP_ONLY
+ const long began = wpe_child_close_now_us();
+#endif
+
+ for (i = 0; i < k->n; i++)
+ {
+  if (k->fd[i] > lo)
+   wpe_child_close_span(lo, k->fd[i] - 1, k->ceiling);
+  lo = k->fd[i] + 1;
+ }
+ wpe_child_close_span(lo, WPE_CHILD_FD_TO_END, k->ceiling);
+#ifdef WPE_CHILD_CLOSE_LOOP_ONLY
+ if (wpe_child_close_timing)
+  *wpe_child_close_timing = wpe_child_close_now_us() - began;
+#endif
+}
+
 /**
  * wpe_child_exec - In the child: set it up as @spec says and run it.
- * @spec: the child; @p: the pipes; @t: the pty; @editor: the editor's
- * process ID, read before the fork.
+ * @spec: the child; @p: the pipes; @t: the pty; @k: the descriptors it
+ * keeps; @editor: the editor's process ID, read before the fork.
  *
  * Does not return.  The program gets the signal state a shell would give
- * it, its own group or session, and only the descriptors 0, 1 and 2.  It
+ * it, its own group or session, and only the descriptors 0, 1 and 2 and
+ * those its spec names (the program's side of a debugger's pty).  It
  * never holds the master of its own pty: the hangup that ends it when the
  * editor dies comes only once every master is closed.  The directory is
  * entered once 0, 1 and 2 are set, so a directory that is gone is named
  * where the program's output goes.
  */
 static void wpe_child_exec(const WpeChildSpec *spec, int (*p)[2],
-                           WpeChildPty *t, pid_t editor)
+                           WpeChildPty *t, const WpeChildKeep *k,
+                           pid_t editor)
 {
  wpe_child_default_signals();
  wpe_child_take_group(spec);
  if (spec->die_with_editor && wpe_child_die_with_editor(editor) != 0)
   _exit(WPE_CHILD_EXEC_FAILED);
  wpe_child_io(spec, p, t);
+ wpe_child_close_others(k);
  if (spec->cwd && chdir(spec->cwd) != 0)
   wpe_child_say_failed(spec, WPE_CHILD_DIR_FAILED_FMT, spec->cwd);
  if (spec->echo_argv)
@@ -1579,6 +1752,7 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
 {
  int p[WPE_CHILD_P_N][2];
  WpeChildPty t;
+ WpeChildKeep keep;
  WpeChildSlot *w;
  sigset_t saved;
  const pid_t editor = getpid();
@@ -1600,9 +1774,10 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
   wpe_child_pty_close(&t);
   return(wpe_child_start_failed(&saved));
  }
+ wpe_child_keep_list(spec, &keep);
  pid = fork();
  if (pid == 0)
-  wpe_child_exec(spec, p, &t, editor);
+  wpe_child_exec(spec, p, &t, &keep, editor);
  if (pid < 0)
  {
   wpe_child_pipes_close(p, WPE_CHILD_P_N);

@@ -20,6 +20,11 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* A program the editor starts (the Run program, a compiler, a debugger, a
+  language server, an assistant tool) no longer inherits descriptors that
+  whatever started the editor left open; it starts with 0, 1 and 2 and, for a
+  debugger, the program's side of its pty.  Seen on macOS, where the CI
+  runner's sockets reached the Run program.
 * With both Algol 68 toolchains installed, a folder's xwperc no longer makes
   F9 ask about Compiler = ga68 or Ctrl-F9 say the folder chose the program
   for a ga68 file, and "Use mine" keeps the file's toolchain (it compiled a

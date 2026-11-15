@@ -24,6 +24,7 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/types.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #ifdef F_GETPATH
@@ -42,6 +43,7 @@
 #include "test_watchdog.h"
 
 #define HANG_SECONDS       30
+#define ROWS_FD_TABLE      1024  /* the hard descriptor limit the rows run under */
 #define MANY_WATCHED       16
 #define MANY_UNWATCHED     4     /* ending together with the watched: twenty */
 #define FD_LOOP_FILL_MAX   64    /* more than the loop has room for */
@@ -1871,6 +1873,33 @@ static void test_a_reaper_for_the_loop_wakes_it_when_a_child_ends(void)
 	chk("with its status", exit_code(st), OWN_CHILD_EXIT);
 }
 
+/**
+ * bound_the_descriptor_table - Run the rows under a hard descriptor limit of
+ * ROWS_FD_TABLE where the system allows more.
+ *
+ * Where the owner closes a child's inherited descriptors with its loop
+ * (macOS, or a system without close_range), every start walks the table up
+ * to the hard limit, as far as 65536 closes; the two thousand quick starts
+ * of row 4 would then take most of a minute, past the hang guard, and no
+ * longer race the reaper.  These rows are about the start, the signal and
+ * the end of a child; test_childfds owns the loop and its ceiling.  Every
+ * descriptor a row plants or scans is below ROWS_FD_TABLE.
+ */
+static void bound_the_descriptor_table(void)
+{
+	struct rlimit rl;
+
+	if (getrlimit(RLIMIT_NOFILE, &rl) != 0)
+		return;
+	if (rl.rlim_max != RLIM_INFINITY && rl.rlim_max <= ROWS_FD_TABLE)
+		return;
+	rl.rlim_max = ROWS_FD_TABLE;
+	if (rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur > ROWS_FD_TABLE)
+		rl.rlim_cur = ROWS_FD_TABLE;
+	chk("the descriptor table is bounded for the rows",
+	    setrlimit(RLIMIT_NOFILE, &rl), 0);
+}
+
 /* @scenario SC-debug-111 */
 int main(int argc, char **argv)
 {
@@ -1879,6 +1908,7 @@ int main(int argc, char **argv)
 	if (argc > 1 && strcmp(argv[1], TTY_PROBE_ARG) == 0)
 		return tty_probe_main();
 	self_path = realpath(argv[0], resolved) ? strdup(resolved) : argv[0];
+	bound_the_descriptor_table();
 	test_watchdog_case("test_child (the owner's start, signal and end of a "
 	                   "child): a child's end never came", HANG_SECONDS);
 	WpeChildWakeOpen();
