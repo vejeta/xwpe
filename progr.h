@@ -212,6 +212,13 @@ char *e_sh_walk(int kind, char *sp, char *str, E_AFILE *fp, int *n);
    closes it; the walkers skip the unused side. */
 #define ispelse(s) ( !strncmp(s, "#else", 5) || !strncmp(s, "#elif", 5) )
 #define ispendif(s) ( !strncmp(s, "#endif", 6) )
+/* A preprocessor line that opens an #if block. */
+#define ispif(s) ( !strncmp(s, "#if", 3) || !strncmp(s, "#ifdef", 6)  \
+			|| !strncmp(s, "#ifndef", 7) )
+/*   we_brkmatch.c  */
+/* The partner of the bracket at b->b.  Return: 0 and its row and column, or
+   -1 when there is none. */
+int e_brk_match(BUFFER *b, int *my, int *mx);
 struct dirfile *e_c_add_df(char *str, struct dirfile *df);
 /* @file receives the path of the file the definition is in and must hold
    WPE_PATH_SIZE bytes. */

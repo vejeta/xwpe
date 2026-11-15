@@ -103,6 +103,7 @@ we_SOURCES = \
   we_prog.c \
   we_progn.c \
   we_shtok.c \
+  we_brkmatch.c \
   we_debug.c \
   we_debprompt.c \
   we_debpath.c \
@@ -400,7 +401,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
+check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -421,6 +422,12 @@ test_helpbuf_CFLAGS = $(TEST_CFLAGS)
 # The unit brings its own line reader; the editor's reads a window as well.
 test_shtok_SOURCES = tests/test_shtok.c we_shtok.c
 test_shtok_CFLAGS = $(TEST_CFLAGS)
+
+# The bracket matcher (we_brkmatch.c): golden text of where Matching BracKet
+# lands over each pair, quoted text, comments, a // tail and an #else side, so
+# splitting the matcher into steps cannot move the cursor to another bracket.
+test_brkmatch_SOURCES = tests/test_brkmatch.c we_brkmatch.c
+test_brkmatch_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of a compiler's message pattern (we_errpat.c): a pattern is read
 # once into rows and warning tests, a text cut inside a token is refused with
@@ -842,7 +849,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
+  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -1127,6 +1134,7 @@ EXTRA_DIST = \
   tests/test_listsel.c \
   tests/test_helpbuf.c \
   tests/test_shtok.c \
+  tests/test_brkmatch.c \
   tests/test_errpat.c \
   tests/test_optval.c \
   tests/test_option_codec.py \

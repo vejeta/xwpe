@@ -28,8 +28,6 @@ extern char *e_p_msg[];
 		 || (!strncmp(s, "default", 7) && !isalnum1(*(s+7))) )
 #define isstatus(s) ( !strncmp(s, "private:", 8) || !strncmp(s, "public:", 7) \
                  || !strncmp(s, "protected:", 10) )
-#define ispif(s) ( !strncmp(s, "#if", 3) || !strncmp(s, "#ifdef", 6)  \
-			|| !strncmp(s, "#ifndef", 7) )
 #define iscop(c) ( c == '<' || c == '>' || c == '+' || c == '-' ||    \
 		   c == '/' || c == '*' || c == '%' || c == '=' ||    \
 		   c == '|' || c == '&' || c == '!' || c == ':' ||    \
@@ -1303,243 +1301,23 @@ int e_sh_nxt_def(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_nxt_brk - Jump to the bracket that goes with the one under the cursor.
+ * @f: the window
+ *
+ * Behind Run > Matching BracKet: the cursor lands on the partner of the
+ * brace, parenthesis or bracket it stands on (or on the enclosing opener when
+ * it stands on anything else).  When there is none a message says so and the
+ * cursor stays where it is.  The search is e_brk_match() in we_brkmatch.c.
+ */
 int e_nxt_brk(FENSTER *f)
 {
- int c = f->b->bf[f->b->b.y].s[f->b->b.x];
- int i, j, ob, cb, bsp, brk, nif;
+ int y, x;
 
- if (c == '{' || c == '(' || c == '[')
+ if (e_brk_match(f->b, &y, &x) == 0)
  {
-  if (c == '{')
-  {
-   ob = '{';  cb = '}';
-  }
-  else if (c == '(')
-  {
-   ob = '(';  cb = ')';
-  }
-  else
-  {
-   ob = '[';  cb = ']';
-  }
-  for (brk = 1, i = f->b->b.y; i < f->b->mxlines; i++)
-   for (j = i == f->b->b.y ? f->b->b.x+1 : 0; j < f->b->bf[i].len; j++)
-   {
-    if (f->b->bf[i].s[j] == '\"')
-    {
-     for (bsp = 0, j++;
-       j < f->b->bf[i].len && (f->b->bf[i].s[j] != '\"' || bsp); j++)
-     {
-      if (f->b->bf[i].s[j] == '\\')
-       bsp = !bsp;
-      else
-       bsp = 0;
-      if (j == f->b->bf[i].len - 1 && bsp && i < f->b->mxlines-1)
-      {
-       i++;
-       j = -1;
-       bsp = 0;
-      }
-     }
-    }
-    else if (f->b->bf[i].s[j] == '\'')
-    {
-     for (bsp = 0, j++;
-       j < f->b->bf[i].len && (f->b->bf[i].s[j] != '\'' || bsp); j++)
-     {
-      if (f->b->bf[i].s[j] == '\\')
-       bsp = !bsp;
-      else
-       bsp = 0;
-      if (j == f->b->bf[i].len - 1 && bsp && i < f->b->mxlines-1)
-      {
-       i++;
-       j = -1;
-       bsp = 0;
-      }
-     }
-    }
-    else if (f->b->bf[i].s[j] == '/' && f->b->bf[i].s[j+1] == '*')
-    {
-     for (j += 2; f->b->bf[i].s[j] != '*' || f->b->bf[i].s[j+1] != '/'; j++)
-     {
-      if (j >= f->b->bf[i].len - 1)
-      {
-       if (i < f->b->mxlines-1)
-       {
-        i++;
-        j = -1;
-       }
-       else
-        break;
-      }
-     }
-    }
-    else if (f->b->bf[i].s[j] == '/' && f->b->bf[i].s[j+1] == '/')
-     break;
-    else if (f->b->bf[i].s[j] == '#' && ispelse(f->b->bf[i].s))
-    {
-     for (nif = 1, i++; i < f->b->mxlines-1; i++)
-     {
-      for (j = 0; isspace(f->b->bf[i].s[j]); j++)
-       ;
-      if (ispendif(f->b->bf[i].s+j))
-       nif--;
-      else if(ispif(f->b->bf[i].s+j))
-       nif++;
-      if (!nif)
-       break;
-     }
-     continue;
-    }
-    else if (f->b->bf[i].s[j] == ob)
-     brk++;
-    else if (f->b->bf[i].s[j] == cb)
-    {
-     brk--;
-     if (!brk)
-     {
-      e_buffer_cursor_set(f->b, i, j);  return(0);
-     }
-    }
-   }
- }
- else
- {
-  if (c == '}')
-  {
-   ob = '{';  cb = '}';
-  }
-  else if (c == ')')
-  {
-   ob = '(';  cb = ')';
-  }
-  else if (c == ']')
-  {
-   ob = '[';  cb = ']';
-  }
-  else
-  {
-   ob = 0;  cb = 0;
-  }
-  for (brk = -1, i = f->b->b.y; i >= 0; i--)
-  {
-   if (i == f->b->b.y)
-    for (j = 0;
-      j < f->b->b.x && (f->b->bf[i].s[j] != '/' || f->b->bf[i].s[j+1] != '/');
-      j++)
-     ;
-   else
-    for (j = 0;
-      j < f->b->bf[i].len && (f->b->bf[i].s[j] != '/' || f->b->bf[i].s[j+1] != '/');
-      j++)
-     ;
-   for (j--; j >= 0; j--)
-   {
-    if (f->b->bf[i].s[j] == '\"')
-    {
-     for (j--; j >= 0; j--)
-     {
-      if (f->b->bf[i].s[j] == '\"')
-      {
-       for (bsp = 0, j--; j >= 0 && f->b->bf[i].s[j] == '\\'; j--)
-        bsp = !bsp;
-       j++;
-       if (!bsp)
-        break;
-      }
-      if (j == 0 && i > 0 && f->b->bf[i-1].s[f->b->bf[i-1].len] == '\\')
-      {
-       i--;
-       j = f->b->bf[i].len;
-      }
-     }
-    }
-    else if (f->b->bf[i].s[j] == '\'')
-    {
-     for (j--; j >= 0; j--)
-     {
-      if (f->b->bf[i].s[j] == '\'')
-      {
-       for (bsp = 0, j--; j >= 0 && f->b->bf[i].s[j] == '\\'; j--)
-        bsp = !bsp;
-       j++;
-       if (!bsp)
-        break;
-      }
-      if (j == 0 && i > 0 && f->b->bf[i-1].s[f->b->bf[i-1].len] == '\\')
-      {
-       i--;
-       j = f->b->bf[i].len;
-      }
-     }
-    }
-    else if (f->b->bf[i].s[j] == '/' && f->b->bf[i].s[j-1] == '*')
-    {
-     for (j -= 2; f->b->bf[i].s[j] != '*' || f->b->bf[i].s[j-1] != '/'; j--)
-     {
-      if (j <= 0)
-      {
-       if (i > 0)
-       {
-        i--;
-        j = f->b->bf[i].len;
-       }
-       else
-        break;
-      }
-     }
-    }
-    else if (f->b->bf[i].s[j] == '#' && ispelse(f->b->bf[i].s))
-    {
-     for (nif = 1, i--; i > 0; i--)
-     {
-      for (j = 0; isspace(f->b->bf[i].s[j]); j++)
-       ;
-      if (ispendif(f->b->bf[i].s+j))
-       nif++;
-      else if (ispif(f->b->bf[i].s+j))
-       nif--;
-      if (!nif)
-       break;
-     }
-     continue;
-    }
-    else if (!ob)
-    {
-     if (f->b->bf[i].s[j] == '{' || f->b->bf[i].s[j] == '(' || f->b->bf[i].s[j] == '[')
-     {
-      brk++;
-      if (!brk)
-      {
-       e_buffer_cursor_set(f->b, i, j);
-       return(0);
-      }
-     }
-     else if (f->b->bf[i].s[j] == '}' || f->b->bf[i].s[j] == ')' || f->b->bf[i].s[j] == ']')
-      brk--;
-     else if (i == 0 && j == 0)
-     {
-      e_buffer_cursor_set(f->b, i, j);
-      return(0);
-     }
-    }
-    else
-    {
-     if (f->b->bf[i].s[j] == ob)
-     {
-      brk++;
-      if (!brk)
-      {
-       e_buffer_cursor_set(f->b, i, j);
-       return(0);
-      }
-     }
-     else if (f->b->bf[i].s[j] == cb)
-      brk--;
-    }
-   }
-  }
+  e_buffer_cursor_set(f->b, y, x);
+  return(0);
  }
  return(e_error("No Matching Bracket!", 0, f->ed->fb));
 }

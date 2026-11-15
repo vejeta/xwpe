@@ -91,6 +91,7 @@ ceiling we_ai_ws.c 97 6 1 0 14
 ceiling we_bars.c 23 2 0 0 1
 ceiling we_bindings.c 33 3 2 0 1
 ceiling we_block.c 82 5 5 41 0
+ceiling we_brkmatch.c 25 4 0 0 0
 ceiling we_bsp.c 42 3 0 4 1
 ceiling we_buffer.c 69 4 22 3 4
 ceiling we_child.c 59 3 3 1 6
@@ -135,7 +136,7 @@ ceiling we_optval.c 30 3 0 0 0
 ceiling we_paint.c 22 3 0 3 8
 ceiling we_path.c 24 2 0 0 0
 ceiling we_prog.c 171 6 2 11 22
-ceiling we_progn.c 282 8 1 11 2
+ceiling we_progn.c 282 7 1 10 2
 ceiling we_progname.c 13 2 0 0 0
 ceiling we_render_cairo.c 51 4 2 2 15
 ceiling we_render_wayland.c 24 2 1 0 4
