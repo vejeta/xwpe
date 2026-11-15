@@ -16,12 +16,15 @@ char *e_ai_cafile = NULL;
 /* How long the connect and the handshake to the live host may take. */
 #define LIVE_OPEN_DEADLINE_MS 15000
 
+/* The exit status automake reads as "skipped". */
+#define TEST_SKIPPED 77
+
 int main(int argc, char **argv)
 {
-#ifndef WPE_AI_TLS
+#if !WPE_BUILT_AI_TLS
  (void)argc; (void)argv;
- printf("SKIP: built without --enable-ai-tls\n");
- return 0;
+ printf("SKIP: not built here: --enable-ai-tls\n");
+ return TEST_SKIPPED;
 #else
  const char *url  = argc > 1 ? argv[1] : "https://api.github.com";
  const char *path = argc > 2 ? argv[2] : "/zen";

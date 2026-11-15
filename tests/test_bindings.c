@@ -182,7 +182,7 @@ static const char *oracle_program(int c, int cua)
 		return "e_install";
 	case AltA:
 		return "e_exec_make";
-#ifdef WPE_AI
+#if WPE_BUILT_AI
 	case AltG:
 		return "e_ai_ui_key";
 	case WPE_AI_MENU:
@@ -528,7 +528,7 @@ static const char *run_name(int act)
 	case WPE_ACT_COMPILE: return "e_compile";
 	case WPE_ACT_INSTALL: return "e_install";
 	case WPE_ACT_EXEC_MAKE: return "e_exec_make";
-#ifdef WPE_AI
+#if WPE_BUILT_AI
 	case WPE_ACT_AI_PREFIX: return "e_ai_ui_key";
 	case WPE_ACT_AI_MENU: return "e_ai_ui_key";
 #endif
@@ -936,7 +936,7 @@ static const OldEntry old_eblst_lsp_u[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("^S Save", 8, 0, 2, CtrlS), ROW("^O Open", 20, 0, 2, CtrlO),
 	ROW("^W Close", 29, 0, 2, CtrlW), ROW("^F Find", 40, 0, 2, CtrlF),
 	ROW("Alt-Q ? Metals", 52, 0, 7, WPE_LSP_MENU), ROW("^Q Quit", 67, 0, 2, CtrlQ) };
-#ifdef WPE_AI
+#if WPE_BUILT_AI
 static const OldEntry old_eblst_ai_o[] = {
 	ROW("F1 Help", 0, 0, 2, F1), ROW("F2 Save", 9, 0, 2, F2), ROW("F3 Files", 18, 0, 2, F3),
 	ROW("^W Close", 28, 0, 2, CtrlW), ROW("F4 Search", 37, 0, 2, F4), ROW("F9 Build", 47, 0, 2, F9),
@@ -1059,7 +1059,7 @@ static const struct {
 	BARS("eblst", eblst_bar, old_eblst_o, old_eblst_u),
 	BARS("eblst_prog", eblst_prog_bar, old_eblst_prog_o, modern_eblst_prog),
 	BARS("eblst_lsp", eblst_lsp_bar, old_eblst_lsp_o, old_eblst_lsp_u),
-#ifdef WPE_AI
+#if WPE_BUILT_AI
 	BARS("eblst_ai", eblst_ai_bar, old_eblst_ai_o, old_eblst_ai_u),
 	BARS("eblst_lspai", eblst_lspai_bar, old_eblst_lspai_o, old_eblst_lspai_u),
 #endif
@@ -1231,8 +1231,21 @@ static void test_menu_key_shadowing(void)
 	}
 }
 
+/** Say which bars this build could not check.  A build without the
+    assistant has no assistant bars, so test_bindings has nothing to compare
+    for them; whoever reads its log learns that from this line, and a
+    full build's log (which has no such line) reads differently. */
+/* @scenario SC-config-13 */
+static void report_unbuilt_bars(void)
+{
+#if !WPE_BUILT_AI
+	printf("SKIP: eblst_ai, eblst_lspai bars: not built here: --enable-ai\n");
+#endif
+}
+
 int main(void)
 {
+	report_unbuilt_bars();
 	test_menu_key_shadowing();
 	test_dispatch();
 	test_modern_table();

@@ -80,6 +80,14 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ALLOW" ] || ALLOW=$HERE/number-fields.allow
 
+# What this build contains (tests/build-config.sh asks the binary once): only
+# a run that reads objects needs it, to tell an object of a feature the build
+# lacks from an object that is missing.  Sourcing prints the build's line.
+if [ -n "$OBJECTS" ]; then
+  [ $LIST -eq 1 ] && WPE_BUILD_QUIET=1
+  . "$HERE/build-config.sh"
+fi
+
 OWNER=we_number.c
 OWNER_HEADER=we_number.h
 # The files whose object may not import a parser (rule 1).
@@ -344,15 +352,42 @@ probe_attribute() {
   return 0
 }
 
-# object_of FILE - the object of a source among OBJECTS, by its name.
+: > "$WORK/problems"
+problem() { echo "$*" >> "$WORK/problems"; }
+: > "$WORK/notbuilt"       # one word per line, for what this build lacks
+
+# object_of FILE - the path of the object of a source among OBJECTS.
+#
+# A build only reads what it has.  An object of a feature this build lacks is
+# named as not built here and left out of the scan; an object every build has
+# (or one of a feature this build has) that is missing from the list means
+# the list is wrong and the scan would be blind, which is a problem.  Returns
+# 1 after saying which, so the caller moves on.
 object_of() {
-  base=${1%.c}.o
+  res=$(wpe_object_of "$(basename "${1%.c}").o" "$OBJECTS")
+  case $res in
+    unknown)
+      problem "object list has no $(basename "${1%.c}").o (the scan of $1 is blind)"
+      return 1 ;;
+    "not-built "*)
+      echo "check-number-fields: skip $1: $(wpe_not_built_reason "${res#not-built }")" >&2
+      echo "${res#not-built }" >> "$WORK/notbuilt"
+      return 1 ;;
+  esac
+  echo "$res"
+}
+
+# each_listed_object - the objects of this run, every one of them on disk.
+# One listed object that is not there is a problem of its own: the scan that
+# reads it would otherwise pass without having looked.
+each_listed_object() {
   for o in $OBJECTS; do
-    case $(basename "$o") in
-      "$base"|*-"$base") [ -f "$o" ] && { echo "$o"; return 0; } ;;
-    esac
+    if [ -f "$o" ]; then
+      echo "$o"
+    else
+      problem "listed object $o is not on disk: build the editor first (the scan is blind)"
+    fi
   done
-  return 1
 }
 
 # nm_names OBJ - the undefined symbols of an object that are a parser.
@@ -381,8 +416,7 @@ if [ -n "$OBJECTS" ] && command -v "$NMTOOL" >/dev/null 2>&1 && [ "$NMTOOL" != "
   done
   # Rule 5, as linked: no object defines the deleted symbol; the owner's
   # symbols are seen, so a scanner that sees nothing fails.
-  for o in $OBJECTS; do
-    [ -f "$o" ] || continue
+  for o in $(each_listed_object); do
     if "$NMTOOL" -g --defined-only "$o" 2>/dev/null | awk '$NF == "WpeStringToNumber" { f = 1 } END { exit !f }'; then
       echo "R5|$(basename "$o")|(linked)|1|the object defines WpeStringToNumber" >> "$WORK/found"
     fi
@@ -390,9 +424,6 @@ if [ -n "$OBJECTS" ] && command -v "$NMTOOL" >/dev/null 2>&1 && [ "$NMTOOL" != "
 fi
 
 # --- the allow file
-: > "$WORK/problems"
-problem() { echo "$*" >> "$WORK/problems"; }
-
 # allow lines: rule|file|function|count|pass|reason
 if [ -f "$ALLOW" ]; then
   grep -v '^[ \t]*#' "$ALLOW" | grep -v '^[ \t]*$' > "$WORK/allow" || true
@@ -505,9 +536,11 @@ fi
 if [ "$blind" -ne 0 ]; then
   exit $BAD
 fi
+not_built_note=
+[ -n "$OBJECTS" ] && not_built_note=$(wpe_not_built_note "$WORK/notbuilt")
 if [ "$nm_checked" -eq 0 ]; then
-  echo "check-number-fields: clean (source rules only; no objects to read with nm)"
+  echo "check-number-fields: clean (source rules only; no objects to read with nm)$not_built_note"
 else
-  echo "check-number-fields: clean"
+  echo "check-number-fields: clean$not_built_note"
 fi
 exit 0

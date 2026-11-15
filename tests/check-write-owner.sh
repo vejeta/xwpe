@@ -98,6 +98,45 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/write-owner.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 : > "$WORK/problems"
 problem() { echo "$*" >> "$WORK/problems"; }
+: > "$WORK/notbuilt"       # one word per line, for what this build lacks
+
+# What this build contains (tests/build-config.sh asks the binary once): an
+# object of a feature the build lacks is not built, which is not the same as
+# a scan that cannot see it.  Sourcing prints the build's line.
+if [ -n "$OBJECTS" ]; then
+  [ $LIST -eq 1 ] && WPE_BUILD_QUIET=1
+  . "$HERE/build-config.sh"
+fi
+
+# listed_objects - the path of each object of this run, as nm can read it.
+# An object that is listed and not on disk is a problem of its own: the scan
+# that reads it would otherwise pass without having looked.
+listed_objects() {
+  for o in $OBJECTS; do
+    if [ -f "$o" ]; then
+      echo "$o"
+    elif [ -f "$SRCDIR/$o" ]; then
+      echo "$SRCDIR/$o"
+    else
+      problem "listed object $o is not on disk: build the editor first (the scan is blind)"
+    fi
+  done
+}
+
+# require_owner_object NAME - the two owners this scan judges every other
+# object against.  One that is not among the objects of this run means the
+# list is wrong and the scan is blind; one of a feature this build lacks is
+# named as not built here.
+require_owner_object() {
+  res=$(wpe_object_of "$1" "$OBJECTS")
+  case $res in
+    unknown)
+      problem "object list has no $1 (the scan is blind)" ;;
+    "not-built "*)
+      echo "check-write-owner: skip $1: $(wpe_not_built_reason "${res#not-built }")" >&2
+      echo "${res#not-built }" >> "$WORK/notbuilt" ;;
+  esac
+}
 
 # scan FILE - one line "rule file function count" for each offence of the
 # rules 2, 4, 5 and 6 in FILE.  Comments are blanked, string literals kept;
@@ -376,9 +415,9 @@ fi
 # Rule 1: the symbols.
 : > "$WORK/symfound"
 if command -v "$NMTOOL" >/dev/null 2>&1 && [ -n "$OBJECTS" ]; then
-  for o in $OBJECTS; do
-    [ -f "$o" ] || [ -f "$SRCDIR/$o" ] || continue
-    [ -f "$o" ] || o=$SRCDIR/$o
+  require_owner_object we_write.o
+  require_owner_object we_fileop.o
+  for o in $(listed_objects); do
     base=$(basename "$o")
     # what the file operations owner may call of the write owner, and what
     # no object defines any more (the File Manager's old copy loop and the
@@ -483,5 +522,7 @@ if [ -s "$WORK/problems" ] || [ $status -ne 0 ]; then
   cat "$WORK/problems" "$WORK/report"
   exit $BAD
 fi
-echo "check-write-owner: ok ($(wc -l < "$WORK/found" | tr -d ' ') counted site(s), all in the allow file)"
+not_built_note=
+[ -n "$OBJECTS" ] && not_built_note=$(wpe_not_built_note "$WORK/notbuilt")
+echo "check-write-owner: ok ($(wc -l < "$WORK/found" | tr -d ' ') counted site(s), all in the allow file$not_built_note)"
 exit 0

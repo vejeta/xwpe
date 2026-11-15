@@ -23,7 +23,10 @@
 #  R5e every WPE_BUILT_* a source, a header or a test names is defined, by
 #      config.h or by a #define of the tree: a misspelt name in
 #      "#if WPE_BUILT_AIX" is a silent 0, and -Wundef does not reach the
-#      test programs.
+#      test programs;
+#  R5f test_bindings, run beside the binary, prints its one SKIP line for
+#      the assistant bars exactly when the build has no assistant, so the
+#      log of a partial build cannot read like a full one.
 #
 # And one expectation: WPE_EXPECT_BUILT ("enable-ai=yes with-wayland=yes"),
 # when set, must equal the binary's answer for each word it names.  A CI job
@@ -31,7 +34,8 @@
 # makes the job fail instead of turning a capability into "not built here".
 #
 # Environment (set by `make check`): WPE_BUILD_BINARY, WPE_FEATURE_SOURCES,
-# WPE_FEATURE_TESTS, ONE_OWNER_OBJECTS, srcdir.
+# WPE_FEATURE_TESTS, ONE_OWNER_OBJECTS, srcdir.  Needs test_bindings built
+# beside WPE_BUILD_BINARY (`make check` builds it before the tests run).
 # Exit: 0 clean, 1 a disagreement, 99 a binary that cannot say what it has.
 
 SRCDIR=${srcdir:-.}
@@ -142,6 +146,21 @@ if [ -n "$WPE_EXPECT_BUILT" ]; then
       problem "this job expects $eword=$evalue but the binary says $eword=$actual (a library missing from the image?)"
   done
 fi
+
+# --- R5f: test_bindings says what it could not check
+#     A build without the assistant has no assistant bars; the program then
+#     prints one SKIP line naming them, and a build with the assistant prints
+#     none.  Without the line a log of a partial build reads like a full one.
+check_bindings_skip_line() {
+  bindings=$(dirname "$wpe_bc_binary")/test_bindings
+  [ -x "$bindings" ] || { problem "no test_bindings beside $wpe_bc_binary: build it (make check builds it first)"; return; }
+  "$bindings" > "$WORK/bindings.out" 2>&1
+  if grep -q '^SKIP: eblst_ai, eblst_lspai bars: not built here: --enable-ai$' "$WORK/bindings.out"; then said=yes; else said=no; fi
+  if wpe_built enable-ai; then wanted=no; else wanted=yes; fi
+  [ "$said" = "$wanted" ] ||
+    problem "test_bindings skip line for the assistant bars: said=$said, this build (enable-ai=$(wpe_built enable-ai && echo yes || echo no)) wants $wanted"
+}
+check_bindings_skip_line
 
 if [ -s "$WORK/problems" ]; then
   echo "check-build-config: FAIL"
