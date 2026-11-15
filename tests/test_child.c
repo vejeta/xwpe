@@ -16,17 +16,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <dlfcn.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
-#include <pty.h>
 #include <termios.h>
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+/* The interposer below needs glibc's ELF symbol interposition and its
+ * openpty prototype; the configure fact that names glibc's header says
+ * where that holds. */
+#if defined(HAVE_PTY_H)
+# include <dlfcn.h>
+# include <pty.h>
+#endif
 
 #include "../we_child.h"
 #include "../we_fdloop.h"
@@ -96,6 +101,7 @@ static pid_t read_pid(int fd);
  * executable's own definitions come before the library's in the lookup, so
  * the owner's calls reach these, which pass to the library's and then say
  * the name. */
+#if defined(HAVE_PTY_H)
 static const char *fake_tty_name;
 
 int openpty(int *master, int *slave, char *name, const struct termios *tio,
@@ -121,6 +127,7 @@ int ttyname_r(int fd, char *buf, size_t n)
 	strcpy(buf, fake_tty_name);
 	return 0;
 }
+#endif /* HAVE_PTY_H */
 
 static void chk(const char *what, long got, long want)
 {
@@ -1163,6 +1170,13 @@ static void test_a_run_menu_program_owns_its_terminal(void)
  * nobody holds, which an open would give the leader) is not acquired, and
  * the child has its own through the carrier. */
 /* @scenario SC-child-tty-10 */
+#if !defined(HAVE_PTY_H)
+static void test_a_name_of_another_terminal_is_never_opened_by_the_child(void)
+{
+	printf("SKIP: SC-child-tty-10: needs ELF symbol interposition of "
+	       "openpty (glibc)\n");
+}
+#else
 static void test_a_name_of_another_terminal_is_never_opened_by_the_child(void)
 {
 	static Run r;
@@ -1190,6 +1204,7 @@ static void test_a_name_of_another_terminal_is_never_opened_by_the_child(void)
 	close(other_slave);
 	close(other_master);
 }
+#endif /* HAVE_PTY_H */
 
 /* jdb's program: the pty slave the editor kept is its terminal on 0, 1 and
  * 2, and the editor's copy is closed once the start returned. */
