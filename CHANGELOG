@@ -20,6 +20,14 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* In the graphical editor (X11 and Wayland) a program the editor starts (a
+  compile, the Run program, a debugger, a language server) could stop before
+  it ever ran, with nothing in Messages, when a library thread held a lock at
+  the moment it was started (seen through message translation, and on C
+  libraries that do not reset stdio locks at fork).  The child now does
+  nothing that can wait on another thread: it writes the failure sentence
+  itself, from words the editor prepared before starting the program, and
+  with XWPE_UI_TRACE set the editor says why a program did not start.
 * A program the editor starts (the Run program, a compiler, a debugger, a
   language server, an assistant tool) no longer inherits descriptors that
   whatever started the editor left open; it starts with 0, 1 and 2 and, for a

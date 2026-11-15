@@ -872,6 +872,33 @@ a kind that needs one adds a line to the keep list. Between `fork` and `exec`
 the step calls nothing that is unsafe in a child of a threaded process (the
 graphical build runs Pango's font thread): the limit is read before the fork.
 
+What a child may call between `fork` and `exec`: only what
+`tests/child-exec-safe.allow` names, that is system calls, the signal calls,
+`memcpy` and `execvp` (which takes no lock and allocates nothing: measured on
+glibc, a stack buffer on musl and the BSDs; a libc whose `execvp` allocates
+brings the PATH search back into the parent), and the compiler's and the
+libc's own symbols (`__errno_location`, `__stack_chk_fail`, marked RUNTIME).
+The parent prepares every byte (the command line a build echoes, every
+sentence the child may have to say with the text of each reason; for an errno
+with no prepared text the child composes `error <digits>` with plain stores)
+and every descriptor. The child carries them, writes
+each sentence itself from those bytes, and reports a start that failed as two
+integers on a pipe; the editor reads that pipe when the child's end is
+delivered and traces it (`child report <program> <stage> <errno>`, with
+`XWPE_UI_TRACE` set). The child also takes no handler of the editor's: the
+parent blocks every signal around the fork, and the child's first step sets
+every signal that has a handler to its default. The graphical build runs
+Pango's font thread, so this is a present requirement, not discipline: a lock
+that thread held at the fork stays held in the child, and a child that waits on
+it never runs its program. `tests/check-child-exec.sh` reads every symbol
+reachable from `wpe_child_exec`, the helpers it calls included. A line of the
+allow file is marked optional only for a safe call whose spelling depends on
+how the compiler inlines (`memcpy`, and the checked twins of `memcpy` and `open`); every
+other line is checked for staleness, except one whose fact is false in this
+build (a `close_range` line on a system without it), which is exempt and
+printed. `tests/test_child_exec.py` and its X11 and Wayland twins
+run a failed start and show the font thread in each backend.
+
 `tests/test_childfds.c` is built twice, once with the system's calls and once
 with `WPE_CHILD_CLOSE_LOOP_ONLY`, so Linux proves the loop; the loop build
 prints what the step cost, which is how a macOS run measures it.
