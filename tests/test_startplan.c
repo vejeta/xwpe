@@ -570,6 +570,19 @@ static void case_short_command(void)
             WPE_CAPTURE_NOT_STARTED);
  wpe_startplan_free(p);
 
+ expect_int("a build is never a fixed plan", wpe_startplan_fixed(WPE_START_BUILD, "echo", echo) == NULL, 1);
+ expect_int("a project's build is never a fixed plan", wpe_startplan_fixed(WPE_START_PROJECT, "echo", echo) == NULL, 1);
+ expect_int("a debugger is never a fixed plan", wpe_startplan_fixed(WPE_START_DEBUGGER, "echo", echo) == NULL, 1);
+ expect_int("a debuggee is never a fixed plan", wpe_startplan_fixed(WPE_START_DEBUGGEE, "echo", echo) == NULL, 1);
+ expect_int("a run is never a fixed plan", wpe_startplan_fixed(WPE_START_RUN, "echo", echo) == NULL, 1);
+ expect_int("a script is never a fixed plan", wpe_startplan_fixed(WPE_START_SCRIPT, "echo", echo) == NULL, 1);
+ expect_int("make is never a fixed plan", wpe_startplan_fixed(WPE_START_MAKE, "echo", echo) == NULL, 1);
+ expect_int("a shell is never a fixed plan", wpe_startplan_fixed(WPE_START_SHELL, "echo", echo) == NULL, 1);
+ expect_int("install lines are never a fixed plan", wpe_startplan_fixed(WPE_START_INSTALL, "echo", echo) == NULL, 1);
+ p = wpe_startplan_fixed(WPE_START_BUILD_SERVER, "echo", echo);
+ expect_int("a build server is a fixed plan", p != NULL, 1);
+ wpe_startplan_free(p);
+
  traced[0] = '\0';
  wpe_child_capture(echo, out, sizeof out, SHORT_DEADLINE_MS, &status, "echo");
  expect_has("a start with no plan is traced", traced, "child unplanned echo");

@@ -1932,6 +1932,36 @@ int wpe_startplan_remove(WpeStartPlan *p, const char *path)
 }
 
 /**
+ * startplan_kind_needs_origins - Whether a kind of start builds, runs or
+ * debugs a program.
+ * @kind: WPE_START_*.
+ *
+ * Such a start carries words and paths a folder chose, so it is planned
+ * word by word and never as a fixed command.  DEBUG_COMPILE is not refused
+ * yet: the debug compile still builds its plan as a fixed one, and the pass
+ * that gives it a plan of its own removes this exception.
+ * Return: 1 for a kind that may not be a fixed plan.
+ */
+static int startplan_kind_needs_origins(int kind)
+{
+ switch (kind)
+ {
+ case WPE_START_BUILD:
+ case WPE_START_PROJECT:
+ case WPE_START_DEBUGGER:
+ case WPE_START_DEBUGGEE:
+ case WPE_START_RUN:
+ case WPE_START_SCRIPT:
+ case WPE_START_MAKE:
+ case WPE_START_SHELL:
+ case WPE_START_INSTALL:
+  return 1;
+ default:
+  return 0;
+ }
+}
+
+/**
  * wpe_startplan_fixed - The plan of a short command whose words the editor
  * chose.
  * @kind: WPE_START_*; @name: the key's second part; @argv: the command
@@ -1941,13 +1971,20 @@ int wpe_startplan_remove(WpeStartPlan *p, const char *path)
  * font, the print command once its question was answered: no word comes
  * from a folder file here, so the plan is clean and runs without a
  * question, and the child still carries a plan like every other start.
- * Return: the judged plan (the caller frees it), or NULL out of memory.
+ * A start that builds, runs or debugs a program is never a fixed plan: its
+ * words come from a folder, so its plan is built word by word with the
+ * origin of each.  Those kinds are refused here.
+ * Return: the judged plan (the caller frees it), or NULL out of memory or
+ * for a kind that builds, runs or debugs a program.
  */
 WpeStartPlan *wpe_startplan_fixed(int kind, const char *name, char *const argv[])
 {
- WpeStartPlan *p = wpe_startplan_new(kind, name);
+ WpeStartPlan *p;
  int i, role = WPE_WORD_PROGRAM;
 
+ if (startplan_kind_needs_origins(kind))
+  return NULL;
+ p = wpe_startplan_new(kind, name);
  if (!p || !argv || !argv[0])
  {
   wpe_startplan_free(p);

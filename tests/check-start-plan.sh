@@ -38,6 +38,30 @@
 # an option (WPE_WORD_OPTION with WPE_FROM_FOLDER on one line) fails with no
 # allow line possible.  --list prints what was found, as allow lines.
 #
+# Rule 1, a fixed plan is never a build (scanned over every *.c but the
+# owner's): wpe_startplan_fixed is for PRINT, MAN, UNPACK, PROBE, SETUP_IDE,
+# BUILD_SERVER and LANGUAGE_SERVER only, read from the call's first argument
+# (on the call's line or the next; a kind that is not a literal is a
+# problem).  Any other kind counts under "<function>/fixed" and no allow line
+# is possible, but for the one fixed DEBUG_COMPILE plan the debug compile
+# builds today: we_debug.c e_d_compile_plan/fixed with pass P3c, deleted
+# when the debug compile gets its plan, so its count can only fall.
+# DEBUG_ADAPTER counts under "<function>/adapter" with its keep line.  The
+# owner refuses the same kinds (wpe_startplan_fixed, tests/test_startplan.c),
+# DEBUG_COMPILE excepted until that pass.
+#
+# Rule 2, the editor removes a file of a start only through
+# wpe_startplan_remove: unlink( and remove( count under "<function>/remove",
+# a key of their own, with an allow line and its reason for each function
+# that removes a file that is not a start's.
+#
+# The canaries of both rules run on a planted C file in every run, and
+# --selftest runs only them and names each: a planted fixed DEBUG_COMPILE,
+# a kind on the next line, a "(" and a kind on later lines, a variable
+# kind, an adapter, an unlink and a
+# remove are named; BUILD_SERVER and the other permitted kinds, the owner's
+# remove, longer names and a comment are not.
+#
 # The symbol half (who imports wpe_child_start and the capture calls) is a
 # rule of tests/check-one-owner.sh, with its own allow file.
 #
@@ -49,6 +73,7 @@ ALLOW=
 LIST=0
 BAD=1
 CONTAIN=1
+SELFTEST=0
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -56,6 +81,7 @@ while [ $# -gt 0 ]; do
     --srcdir) shift; SRCDIR=$1 ;;
     --list) LIST=1 ;;
     --contain) CONTAIN=1 ;;
+    --selftest) SELFTEST=1 ;;
     *) echo "check-start-plan: unknown argument $1" >&2; exit $BAD ;;
   esac
   shift
@@ -78,6 +104,12 @@ CWD_PATTERN='wpe_startplan_set_cwd[ \t]*[(]'
 CWD_FILES="we_debug.c we_dap.c"
 ROWS_FILE=we_startplan.c
 
+# Rule 2: the editor removes a file of a start only through
+# wpe_startplan_remove.  The boundary keeps wpe_startplan_remove( and
+# e_build_remove_stale( out.  Counted under "<function>/remove", a key of its
+# own, so a function's build lines and its removals are never one count.
+REMOVE_PATTERN='(^|[^A-Za-z0-9_])(unlink|remove)[ \t]*[(]'
+
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/start-plan.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 : > "$WORK/found"
@@ -90,9 +122,15 @@ problem() { echo "$*" >> "$WORK/problems"; }
 # comments blanked, string literals kept (a shell's path is a literal).  A
 # function starts at a line in column 0 that names an identifier followed by
 # "(" and does not end with ";" (a prototype).
+#
+# With MODE "fixed" (4th argument) it reads the calls of wpe_startplan_fixed
+# instead: the kind of each call is the first argument, on the call's line or
+# a later one, with the "(" on the name's line or a later one.  A kind outside the permitted fixed kinds counts under
+# "<function>/fixed", DEBUG_ADAPTER under "<function>/adapter", and a first
+# argument that is not a literal kind prints "#var file function".
 count_by_function() {
-  awk -v file="$1" -v re="${3:-$PATTERN}" '
-    BEGIN { incom = 0; fn = "(file scope)" }
+  awk -v file="$1" -v re="${3:-$PATTERN}" -v mode="$4" '
+    BEGIN { incom = 0; fn = "(file scope)"; pend = 0 }
     {
       line = $0; out = ""; n = length(line); i = 1; instr = 0
       while (i <= n) {
@@ -114,11 +152,32 @@ count_by_function() {
         if (name != "") { fn = name; seen[fn] = 1 }
       }
       s = out
+      if (mode == "fixed") {
+        if (pend == 1) s = "wpe_startplan_fixed(" s
+        else if (pend == 2) s = "wpe_startplan_fixed" s
+        pend = 0
+        while (match(s, /(^|[^A-Za-z0-9_])wpe_startplan_fixed[ \t]*[(]/)) {
+          s = substr(s, RSTART + RLENGTH)
+          sub(/^[ \t]+/, "", s)
+          if (s == "") { pend = 1; break }
+          kind = "?"
+          if (match(s, /^[A-Za-z_][A-Za-z0-9_]*[ \t]*,/)) {
+            kind = substr(s, 1, RLENGTH); sub(/[ \t]*,$/, "", kind)
+          }
+          if (kind ~ /^WPE_START_(PRINT|MAN|UNPACK|PROBE|SETUP_IDE|BUILD_SERVER|LANGUAGE_SERVER)$/) continue
+          if (kind == "WPE_START_DEBUG_ADAPTER") cnt[fn "/adapter"]++
+          else if (kind ~ /^WPE_START_[A-Z_]+$/) cnt[fn "/fixed"]++
+          else var[fn] = 1
+        }
+        if (!pend && match(s, /(^|[^A-Za-z0-9_])wpe_startplan_fixed[ \t]*$/)) pend = 2
+        next
+      }
       while (match(s, re)) { cnt[fn]++; s = substr(s, RSTART + RLENGTH) }
     }
     END {
       for (f in cnt) print file, f, cnt[f]
-      for (f in seen) print "#fn", file, f
+      for (f in var) print "#var", file, f
+      if (mode != "fixed") for (f in seen) print "#fn", file, f
     }' "$2"
 }
 
@@ -131,12 +190,24 @@ for f in $FILES; do
     *" $f "*) count_by_function "$f" "$SRCDIR/$f" "$PATTERN|$CWD_PATTERN" >> "$WORK/scan" ;;
     *) count_by_function "$f" "$SRCDIR/$f" >> "$WORK/scan" ;;
   esac
+  # Rule 2: a file removed by the editor, under its own key per function.
+  count_by_function "$f" "$SRCDIR/$f" "$REMOVE_PATTERN" | grep -v '^#' |
+    awk '{ print $1, $2 "/remove", $3 }' >> "$WORK/scan"
   # A folder value made an option, on one line: never allowed.
   grep -n 'WPE_WORD_OPTION' "$SRCDIR/$f" | grep 'WPE_FROM_FOLDER' | while IFS= read -r hit; do
     echo "a folder value made an option: $f:${hit%%:*}"
   done >> "$WORK/problems"
 done
-grep -v '^#fn ' "$WORK/scan" | sort > "$WORK/found"
+# Rule 1: every call of wpe_startplan_fixed outside its owner, in every *.c.
+for path in "$SRCDIR"/*.c; do
+  [ -f "$path" ] || continue
+  case ${path##*/} in we_startplan.c) continue ;; esac
+  count_by_function "${path##*/}" "$path" "" fixed >> "$WORK/scan"
+done
+grep '^#var ' "$WORK/scan" | while read -r _ vfile vfn; do
+  echo "wpe_startplan_fixed with a kind that is not a literal: $vfile: $vfn"
+done >> "$WORK/problems"
+grep -v '^#' "$WORK/scan" | sort > "$WORK/found"
 grep '^#fn ' "$WORK/scan" > "$WORK/functions"
 
 # The canaries: a scanner that names no functions, or misses the build's
@@ -145,6 +216,108 @@ grep -q '^#fn we_prog.c e_comp_start$' "$WORK/functions" ||
   problem "canary: e_comp_start not seen as a function of we_prog.c (the function scan is blind)"
 grep -q '^we_prog.c e_add_arg ' "$WORK/found" ||
   problem "canary: the definition of e_add_arg not counted in we_prog.c (the pattern scan is blind)"
+
+# The canaries of the two rules, on a C file planted in the scratch folder: a
+# fixed plan of a build-like kind, a kind on the next line, a kind that is a
+# variable, an adapter, and a removal must each be named; a fixed plan of a
+# permitted kind, the owner's remove, a longer name and a comment must not.
+canary_say() {
+  if [ "$1" = ok ]; then
+    [ $SELFTEST -eq 0 ] || echo "canary ok: $2"
+  else
+    problem "canary: $2 (the rule is blind or wrong)"
+  fi
+}
+
+canary_expect() {
+  # canary_expect WHAT FILE:FN_KEY COUNT - the scan of the planted file names KEY COUNT times
+  if grep -qx "canary.c $2 $3" "$WORK/planted"; then canary_say ok "$1"; else canary_say bad "$1"; fi
+}
+
+canary_expect_silent() {
+  if grep -q "^canary.c $2[/ ]" "$WORK/planted" || grep -q "^#var canary.c $2\$" "$WORK/planted"; then
+    canary_say bad "$1"
+  else
+    canary_say ok "$1"
+  fi
+}
+
+check_canaries() {
+  cat > "$WORK/canary.c" <<'EOF'
+void planted_debug(void)
+{
+ wpe_startplan_fixed(WPE_START_DEBUG_COMPILE, "x", argv);
+ wpe_startplan_fixed(WPE_START_BUILD, "x", argv);
+ unlink(p);
+}
+void planted_next_line(void)
+{
+ plan = wpe_startplan_fixed(
+   WPE_START_RUN, "x", argv);
+}
+void planted_paren_next_line(void)
+{
+ plan = wpe_startplan_fixed
+   /* a comment between */
+   (
+   WPE_START_SHELL, "x", argv);
+}
+void planted_variable(void)
+{
+ plan = wpe_startplan_fixed(kind, "x", argv);
+}
+void planted_adapter(void)
+{
+ plan = wpe_startplan_fixed(WPE_START_DEBUG_ADAPTER, "x", argv);
+}
+void planted_removes(void)
+{
+ x = remove(p);
+ y = unlink(q);
+}
+void planted_permitted(void)
+{
+ wpe_startplan_fixed(WPE_START_BUILD_SERVER, "x", argv);
+ wpe_startplan_fixed(WPE_START_PRINT, "x", argv);
+ wpe_startplan_fixed(WPE_START_PROBE, "x", argv);
+ wpe_startplan_fixed(WPE_START_MAN, "x", argv);
+ wpe_startplan_fixed(WPE_START_UNPACK, "x", argv);
+ wpe_startplan_fixed(WPE_START_SETUP_IDE, "x", argv);
+ wpe_startplan_fixed(WPE_START_LANGUAGE_SERVER, "x", argv);
+ /* wpe_startplan_fixed(WPE_START_RUN, "x", argv); unlink(p); */
+}
+void planted_owner_remove(void)
+{
+ wpe_startplan_remove(plan, p);
+ e_build_remove_stale(p);
+ my_unlink(p);
+ e_remove_x(p);
+}
+EOF
+  : > "$WORK/planted"
+  count_by_function canary.c "$WORK/canary.c" "$REMOVE_PATTERN" |
+    awk '/^#/ { next } { print $1, $2 "/remove", $3 }' >> "$WORK/planted"
+  count_by_function canary.c "$WORK/canary.c" "" fixed >> "$WORK/planted"
+  canary_expect "rule 1 names a planted DEBUG_COMPILE fixed plan (and BUILD with it)" planted_debug/fixed 2
+  canary_expect "rule 1 names a fixed plan whose kind is on the next line" planted_next_line/fixed 1
+  canary_expect "rule 1 names a fixed plan whose ( and kind are on later lines" planted_paren_next_line/fixed 1
+  canary_expect "rule 1 counts a planted adapter under its own key" planted_adapter/adapter 1
+  if grep -qx '#var canary.c planted_variable' "$WORK/planted"; then
+    canary_say ok "rule 1 names a fixed plan whose kind is a variable"
+  else
+    canary_say bad "rule 1 names a fixed plan whose kind is a variable"
+  fi
+  canary_expect_silent "rule 1 is silent on a planted BUILD_SERVER, PRINT, PROBE, MAN, UNPACK, SETUP_IDE, LANGUAGE_SERVER and a comment" planted_permitted
+  canary_expect "rule 2 names a planted unlink next to a fixed plan" planted_debug/remove 1
+  canary_expect "rule 2 names a planted remove and unlink" planted_removes/remove 2
+  canary_expect_silent "rule 2 is silent on wpe_startplan_remove, e_build_remove_stale and longer names" planted_owner_remove
+}
+check_canaries
+if [ $SELFTEST -eq 1 ]; then
+  if [ -s "$WORK/problems" ]; then cat "$WORK/problems"; echo "check-start-plan: selftest FAIL"; exit $BAD; fi
+  echo "check-start-plan: selftest ok"
+  exit 0
+fi
 
 # The debugger rows: every debugger and every adapter the editor can start
 # has a row in the owner's table, which says how it starts apart from the
@@ -258,11 +431,22 @@ else
   problem "no allow file at $ALLOW"
 fi
 
+# Rule 1 has no allow line, but for the one fixed DEBUG_COMPILE plan the debug
+# compile builds today, with the pass that removes it.
+awk '$2 ~ /\/fixed$/ && !($1 == "we_debug.c" && $2 == "e_d_compile_plan/fixed" && $4 == "P3c") { print "no allow line is possible for a fixed plan of a build-like kind: " $1 " " $2 }' \
+  "$WORK/allowed" >> "$WORK/problems"
+
 awk '
   FILENAME == ARGV[1] { al[$1 " " $2] = $3; pass[$1 " " $2] = $4; next }
   {
     key = $1 " " $2; got[key] = 1
-    if (!(key in al)) {
+    if (!(key in al) && $2 ~ /\/fixed$/) {
+      print "offender: " $1 ": " $2 " is a fixed plan of a start that builds, runs or debugs a program (" $3 " call(s)): plan it word by word; no allow line is possible"; bad = 1
+    } else if (!(key in al) && $2 ~ /\/adapter$/) {
+      print "offender: " $1 ": " $2 " is a fixed plan of a debug adapter (" $3 " call(s)): list it with its reason"; bad = 1
+    } else if (!(key in al) && $2 ~ /\/remove$/) {
+      print "offender: " $1 ": " $2 " removes a file (" $3 " call(s)) outside wpe_startplan_remove: remove it through the plan, or list it with its reason"; bad = 1
+    } else if (!(key in al)) {
       print "offender: " $1 ": " $2 " builds a start outside the plan (" $3 " line(s)): put it in a plan, or list it with its pass"; bad = 1
     } else if ($3 + 0 > al[key] + 0) {
       print "more than allowed: " $1 ": " $2 " has " $3 ", the allow file says " al[key] " (" pass[key] ")"; bad = 1
