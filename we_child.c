@@ -29,13 +29,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#if defined(HAVE_PTY_H)
-# include <pty.h>          /* glibc: openpty */
-#elif defined(HAVE_UTIL_H)
-# include <util.h>         /* macOS, *BSD */
-#elif defined(HAVE_LIBUTIL_H)
-# include <libutil.h>      /* some BSDs */
-#endif
+#define WPE_PLATFORM_WANTS_OPENPTY   /* openpty: the header differs per system */
+#include "we_platform.h"
 
 #include "we_child.h"
 #include "we_childsig.h"

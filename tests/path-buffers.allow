@@ -116,7 +116,7 @@ COPY|we_hfkt.c|e_status_paint|3|sized|the destination is allocated at its source
 COPY|we_listsel.c|listsel_copy|1|sized|the destination is allocated at its sources' length just before
 COPY|we_main.c|ECNT_Init|3|text|fixed words into the Find fields
 COPY|we_main.c|e_info_search_path|2|sized|the destination is allocated at its sources' length just before
-COPY|we_main.c|main|2|checked|the process number into the 128 bytes of the temporary folder's name, and the option file's name into a copy allocated at its length
+COPY|we_main.c|main|1|checked|the option file's name into a copy allocated at its length
 COPY|we_opt.c|e_about_box_draw|1|text|the version string into 60 bytes
 COPY|we_opt.c|e_opt_save|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_save_opt|7|sized|the destination is allocated at its sources' length just before

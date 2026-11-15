@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "we_platform.h"
 
 #ifndef O_NOFOLLOW
 #define O_NOFOLLOW 0
@@ -697,13 +698,8 @@ int wpe_startcmd_remember(const char *folder, const char *key, const char *text,
 /* A record: folder, output, dev, ino, size, mtime s and ns, ctime s and ns. */
 #define BUILT_FIELDS 9
 
-#ifdef __APPLE__
-#define BUILT_MTIM(st) ((st)->st_mtimespec)
-#define BUILT_CTIM(st) ((st)->st_ctimespec)
-#else
-#define BUILT_MTIM(st) ((st)->st_mtim)
-#define BUILT_CTIM(st) ((st)->st_ctim)
-#endif
+#define BUILT_MTIM(st) WPE_STAT_MTIM(st)
+#define BUILT_CTIM(st) WPE_STAT_CTIM(st)
 
 /** built_rec_free - Free the texts of one record. */
 static void built_rec_free(WpeBuiltRec *r)

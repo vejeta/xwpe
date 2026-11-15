@@ -30,7 +30,7 @@ void wpe_render_cairo_start_threads(void);
 #include <dirent.h>
 #include <signal.h>
 #include <pthread.h>
-#include <execinfo.h>
+#include "we_platform.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <locale.h>
@@ -606,8 +606,16 @@ void WpeSignalUnknown(int sig)
 
   len = snprintf(line, sizeof(line), "CRASH: signal %d\n", sig);
   write(fd, line, len);
+#if WPE_HAS_BACKTRACE
   n = backtrace(bt, 32);
   backtrace_symbols_fd(bt, n, fd);
+#else
+  /* No backtrace on this system: the crash file names the signal only. */
+  (void) bt;
+  (void) n;
+  len = snprintf(line, sizeof(line), "no backtrace on this system\n");
+  write(fd, line, len);
+#endif
   len = snprintf(line, sizeof(line), "MAXSLNS=%d MAXSCOL=%d\n", MAXSLNS, MAXSCOL);
   write(fd, line, len);
   close(fd);

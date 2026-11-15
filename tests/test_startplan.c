@@ -27,6 +27,7 @@
 
 #include "../we_startplan.h"
 #include "../we_startcmd.h"
+#include "../we_path.h"
 
 #define PATH_ROOM         4096
 #define TEST_DIR_PARENT   "/tmp"                 /* when $TMPDIR is not set */
@@ -73,6 +74,40 @@ void *__wrap_realloc(void *p, size_t n)
  if (allocation_fails_now())
   return NULL;
  return __real_realloc(p, n);
+}
+/* A system whose path limit is lower than the editor's buffers (macOS and the
+   BSDs: 1024; the buffers hold 4096).  While @simulated_system_limit is not
+   0, realpath and lstat answer ENAMETOOLONG for a path that does not fit it,
+   as that system's calls do, so a Linux run sees what a Mac sees.  The rows
+   count the answers in @simulated_limit_answers: a row that never reached
+   the wrapper proves nothing and says so. */
+static size_t simulated_system_limit;
+static int simulated_limit_answers;
+char *__real_realpath(const char *path, char *resolved);
+int __real_lstat(const char *path, struct stat *st);
+
+/* Whether the simulated system refuses @path for its length. */
+static int simulated_system_refuses(const char *path)
+{
+ if (!simulated_system_limit || strlen(path) + 1 <= simulated_system_limit)
+  return 0;
+ simulated_limit_answers++;
+ errno = ENAMETOOLONG;
+ return 1;
+}
+
+char *__wrap_realpath(const char *path, char *resolved)
+{
+ if (simulated_system_refuses(path))
+  return NULL;
+ return __real_realpath(path, resolved);
+}
+
+int __wrap_lstat(const char *path, struct stat *st)
+{
+ if (simulated_system_refuses(path))
+  return -1;
+ return __real_lstat(path, st);
 }
 #endif /* WPE_TEST_LD_WRAP */
 
@@ -2160,11 +2195,13 @@ static size_t path_limit(void)
 {
  long limit = pathconf(proj, _PC_PATH_MAX);
 
-#ifdef PATH_MAX
- if (limit < 0)
-  limit = PATH_MAX;
+#ifdef WPE_TEST_LD_WRAP
+ if (simulated_system_limit)
+  return simulated_system_limit;
 #endif
- if (limit < 0 || limit > PATH_ROOM)
+ if (limit < 0)
+  limit = WPE_PLATFORM_PATH_MAX;
+ if (limit > PATH_ROOM)
   limit = PATH_ROOM;
  return (size_t)limit;
 }
@@ -2294,6 +2331,8 @@ static void case_pdb_deepest_folder(void)
  WpeStartPlan *p;
  int levels = levels_that_fit(2 * 127);
 
+ /* the length row below is relative to the levels: with none it proves nothing */
+ expect_int("pdb: the folder is at least one level of two-byte letters deep", levels >= 1, 1);
  repeat_unit(name, sizeof name, E_ACUTE, 127);
  deep_folder(deep, sizeof deep, proj, name, levels);
  snprintf(prog, sizeof prog, "%s/t.py", deep);
@@ -2303,7 +2342,11 @@ static void case_pdb_deepest_folder(void)
             p->contain_refused == NULL, 1);
  expect_int("pdb: one move line", p->ninput, 1);
  line = input_at(p, 0);
- expect_int("pdb: the line is far over the old 255", strlen(line) > 3000, 1);
+ /* every byte of a two-byte letter is written as four characters, so the
+    line is about 4 bytes per folder byte whatever the system's limit is
+    (3.8 KB of folder on Linux, 0.7 KB on macOS): far over the old 255 */
+ expect_int("pdb: the line is far over the old 255",
+            strlen(line) > (size_t)levels * 2 * 127 * 3, 1);
  expect_int("pdb: and the engine takes it", e_d_req_cmd_fits("pdb", line), 1);
  expect_int("pdb: the plan is judged clean", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
  end_plan(p);
@@ -2355,12 +2398,62 @@ static void case_gdb_long_folder(void)
  deep_remove(deep, proj);
 }
 
+/* A program in a folder near the system's limit: a path of the limit's last
+   byte is taken, and one more name byte past it is refused for being longer
+   than the system allows (never taken as a missing tail).  The first half
+   catches a start that refuses early; the second a start that goes by its
+   own buffers when the system's limit is lower. */
+#define AT_LIMIT_PROGRAM   "program"     /* the folder plus this is the longest path */
+#define PAST_LIMIT_PROGRAM "programs"    /* one byte more */
+static void rows_program_at_and_past_the_limit(void)
+{
+ char deep[PATH_ROOM];
+ const size_t fits = path_limit() - 1;      /* the longest path, terminator aside */
+ const size_t folder = fits - 1 - strlen(AT_LIMIT_PROGRAM);
+ WpeStartPlan *p;
+
+ deep_folder_of_size(deep, sizeof deep, proj, folder);
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, AT_LIMIT_PROGRAM);
+ expect_int("a program whose path is the system's longest is not refused",
+            p->contain_refused == NULL, 1);
+ end_plan(p);
+ deep_remove(deep, proj);
+
+ deep_folder_of_size(deep, sizeof deep, proj, folder);
+ p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, PAST_LIMIT_PROGRAM);
+ expect_str("a program whose path passes the limit: the reason", p->contain_refused,
+            WPE_STARTPLAN_REFUSE_DEBUG_LONG);
+ expect_int("the plan is refused", wpe_startplan_judge(p), WPE_PLAN_REFUSED);
+ end_plan(p);
+ deep_remove(deep, proj);
+}
+
+/* The same rows on a system whose limit (1024) is below the editor's buffers
+   (4096): what a Mac or a BSD answers, made on any system whose linker can
+   take over realpath and lstat. */
+static void case_long_path_on_a_lower_system_limit(void)
+{
+#ifndef WPE_TEST_LD_WRAP
+ printf("SKIP a system limit lower than the editor's: the linker has no --wrap\n");
+#else
+ const size_t mac_and_bsd_limit = 1024;
+
+ simulated_system_limit = mac_and_bsd_limit;
+ simulated_limit_answers = 0;
+ printf("long-path rows: simulated system limit %zu bytes\n", path_limit());
+ rows_program_at_and_past_the_limit();
+ case_pdb_deepest_folder();    /* sized by the limit: 0.7 KB of folder here */
+ expect_int("the simulated system's limit was reached", simulated_limit_answers > 0, 1);
+ simulated_system_limit = 0;
+#endif
+}
+
 /* S9, S10: a path longer than the system allows is refused for that reason,
    and a path that is merely unsafe still says so. */
 static void case_long_path_refusals(void)
 {
  static char long_folder[PATH_ROOM + 16];
- char deep[PATH_ROOM], name[NAME_ROOM], bad[PATH_ROOM];
+ char bad[PATH_ROOM];
  WpeStartPlan *p;
  int rc;
 
@@ -2377,18 +2470,8 @@ static void case_long_path_refusals(void)
  expect_str("with that reason", p->refused, WPE_STARTPLAN_REFUSE_DEBUG_LONG);
  end_plan(p);
 
- /* a folder near the limit and a program name that does not fit under it;
-    the log says which limit the long-path rows were built against */
  printf("long-path rows: the path limit under the test folder is %zu bytes\n", path_limit());
- deep_folder_of_size(deep, sizeof deep, proj, path_limit() - 60);
- memset(name, 'p', 100);
- name[100] = '\0';
- p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, name);
- expect_str("a program whose path passes the limit: the reason", p->contain_refused,
-            WPE_STARTPLAN_REFUSE_DEBUG_LONG);
- expect_int("the plan is refused", wpe_startplan_judge(p), WPE_PLAN_REFUSED);
- end_plan(p);
- deep_remove(deep, proj);
+ rows_program_at_and_past_the_limit();
 
  /* the positive control: an unsafe path keeps its own reason */
  snprintf(bad, sizeof bad, "%s/bad\001dir", proj);
@@ -3025,6 +3108,7 @@ int main(void)
  case_pdb_deepest_folder();
  case_gdb_folder_at_the_limit();
  case_long_path_refusals();
+ case_long_path_on_a_lower_system_limit();
  case_allocation_failures();
  case_load_lines();
  case_load_pdbrc();

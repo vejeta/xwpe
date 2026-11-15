@@ -92,7 +92,6 @@ we_fl_unix.c|r8:e_ed_man|5|keep|the temporary output of the man command
 we_fl_unix.c|r8:e_man_give_up|2|keep|the temporary output of the man command
 we_fl_unix.c|r8:WpePrintFile|1|keep|the print copy, the write owner's temporary
 we_main.c|r8:e_mkdirs|2|keep|the configuration folders
-we_main.c|r8:main|1|keep|the configuration folders
 we_opt.c|r8:e_save_opt|1|keep|the options file's folder
 we_prog.c|r8:e_new_message|1|keep|the build's message file
 we_prog.c|r8:e_run_sh_make_runnable|1|keep|the script the editor wrote to run

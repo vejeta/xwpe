@@ -33,6 +33,18 @@
 #error "NAME_MAX is longer than WPE_NAME_MAX: a buffer could not hold a name of this system"
 #endif
 
+/* The longest path this system takes, for a test that builds a path near the
+   limit.  PATH_MAX is 4096 on Linux and 1024 on macOS and the BSDs, and
+   absent on GNU/Hurd, which has no limit; there the editor's own bound
+   stands.  The editor's buffers are WPE_PATH_SIZE; this is the system's
+   number, which decides when the system itself answers "File name too
+   long".  Its owner is this header, as the other path numbers' is. */
+#ifdef PATH_MAX
+#define WPE_PLATFORM_PATH_MAX PATH_MAX
+#else
+#define WPE_PLATFORM_PATH_MAX WPE_PATH_MAX
+#endif
+
 /* A refusal nobody reads leaves @out empty and lets "" reach chdir, fopen or
    a command, so the result of the writers below must be looked at. */
 #ifdef __GNUC__

@@ -299,6 +299,14 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The manual viewer calls man the same way on every system (man 1 ls):
+  FreeBSD and macOS could not open a page from a SEE ALSO button.
+
+* configure now says which system facilities it found and what their
+  absence turns off.  A program path longer than the system allows (1024
+  bytes on macOS and the BSDs) is refused for that reason when a debugger
+  is started, instead of being accepted and failing later.
+
 * A language set up without an error-message pattern no longer reads past
   memory when F9 reports errors.
 

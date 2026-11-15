@@ -399,19 +399,8 @@ int main(int argc, char **argv)
  e_read_help_str();
  e_hlp = e_hlp_str[0];
  if (!(user_shell = getenv("SHELL"))) user_shell = DEF_SHELL;
-#ifdef HAVE_MKDTEMP
  e_tmp_dir = strdup("/tmp/xwpe_XXXXXX");
- if (mkdtemp(e_tmp_dir) == NULL)
-#else
-#if defined(HAVE_TEMPNAM)
- e_tmp_dir = tempnam(NULL, "xwpe_");
-#else
- e_tmp_dir = MALLOC(128);
- sprintf(e_tmp_dir, "/tmp/we_%u", (unsigned) getpid());
- e_tmp_dir = REALLOC(e_tmp_dir, (strlen(e_tmp_dir)+1)*sizeof(char));
-#endif
- if ((e_tmp_dir == NULL) || (mkdir(e_tmp_dir, 0700) != 0))
-#endif
+ if (e_tmp_dir == NULL || mkdtemp(e_tmp_dir) == NULL)
  {
   perror("Xwpe: ");
   return 1;

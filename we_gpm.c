@@ -12,10 +12,8 @@
 #include <string.h>
 #include <time.h>
 #include <sys/ioctl.h>
-#ifdef __linux__
-#include <linux/kd.h>
-#include <linux/vt.h>
-#endif
+#define WPE_PLATFORM_WANTS_CONSOLE_IOCTLS   /* KDGETMODE, VT_GETSTATE */
+#include "we_platform.h"
 
 /* GPM packs the three mouse buttons into the low bits of ep->buttons
    (4=left, 2=middle, 1=right); this masks "any button down". */
@@ -48,7 +46,7 @@ int WpeGpmHandler(Gpm_Event *ep, void *data);
  */
 static int WpeGpmTtyIsConsole(int fd)
 {
-#ifdef __linux__
+#if WPE_HAS_LINUX_CONSOLE
  int mode = 0;
  struct vt_stat vts;
 #endif
@@ -56,7 +54,7 @@ static int WpeGpmTtyIsConsole(int fd)
 
  if (fd < 0 || !isatty(fd))
   return(0);
-#ifdef __linux__
+#if WPE_HAS_LINUX_CONSOLE
  if (ioctl(fd, KDGETMODE, &mode) == 0)
   return(1);
  memset(&vts, 0, sizeof vts);

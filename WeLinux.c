@@ -1,4 +1,5 @@
-#ifdef __linux__
+#include "we_platform.h"
+#if WPE_HAS_LINUX_CONSOLE
 /*-------------------------------------------------------------------------*\
   <WeLinux.c> -- Linux specific routines for Xwpe
 

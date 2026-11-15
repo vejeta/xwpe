@@ -4014,16 +4014,10 @@ static int e_man_run(const char *nstr, const char *hstr, const char *tstr)
   if(hstr[0] != '-')
   {
     argv[n++] = "man";
-#ifdef MAN_S_OPT
-    if(nstr[0])
-    {
-      argv[n++] = "-s";
-      argv[n++] = (char *)nstr;
-    }
-#else
+    /* "man <section> <name>" is the form every man accepts; the "-s" form
+       is man-db's and OpenBSD's, and FreeBSD's and macOS's man refuse it. */
     if(nstr[0])
       argv[n++] = (char *)nstr;
-#endif
     argv[n++] = (char *)hstr;
     argv[n] = NULL;
     ran = e_man_run_plan(argv, tstr, &status);

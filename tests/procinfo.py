@@ -37,6 +37,46 @@ SECONDS_PER_HOUR = 3600
 HOURS_PER_DAY = 24
 
 
+def _build_config_h():
+    """The config.h of the build the tests run: the one beside the editor
+    binary (WPE_BIN, or ../wpe).  None for an installed binary (autopkgtest),
+    which has no build folder."""
+    binary = os.environ.get("WPE_BIN") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "wpe")
+    path = os.path.join(os.path.dirname(os.path.abspath(binary)), "config.h")
+    return path if os.path.isfile(path) else None
+
+
+def build_has(name):
+    """Whether the build has the system fact @name (a WPE_HAS_* or
+    WPE_REGEX_* line of config.h, the words configure's summary prints).
+
+    True when the fact is on, False when configure found it missing, None
+    when there is no config.h beside the binary: the caller then runs the
+    row instead of skipping it.  A name config.h does not define is a
+    misspelling and raises, never a silent False."""
+    path = _build_config_h()
+    if path is None:
+        return None
+    with open(path) as fh:
+        for line in fh:
+            words = line.split(None, 2)
+            if len(words) >= 2 and words[0] == "#define" and words[1] == name:
+                value = words[2].strip() if len(words) > 2 else "1"
+                return value not in ("0", "")
+    raise KeyError("config.h defines no %s" % name)
+
+
+def parent_death_signal():
+    """Whether the system ends a child when its parent dies (prctl on Linux,
+    procctl on FreeBSD): the fact the editor was built with, or, with no
+    build folder, what those two systems are known to have."""
+    built = build_has("WPE_HAS_PARENT_DEATH_SIGNAL")
+    if built is not None:
+        return built
+    return sys.platform.startswith(("linux", "freebsd"))
+
+
 def has_procfs():
     """True where /proc describes processes the Linux way, i.e. on Linux;
     elsewhere the answers come from ps(1).  NetBSD mounts a /proc with a

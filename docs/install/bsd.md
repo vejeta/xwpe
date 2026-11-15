@@ -3,7 +3,9 @@
 Since 1.6.6 xwpe builds and links the **full X11 build** on **FreeBSD 14**,
 **OpenBSD 7.x** and **NetBSD 9** (verified in Vagrant VMs), and the console mouse
 in `wpe` works over SSH on all three. The portability lives in `configure.ac`
-(it links `libexecinfo` for `backtrace()`, falls back to the base `curses` /
+(it links `libexecinfo` for `backtrace()` when the system has it -- on
+OpenBSD `pkg_add libexecinfo` gives the crash file a backtrace, without it the
+crash file names the signal only -- falls back to the base `curses` /
 accepts `ncurses.pc`, detects a usable `-std` flag, and takes the `vterm03`
 module name) plus a `<sys/ioctl.h>` include and a terminfo-independent SGR mouse
 decoder -- all no-ops on Linux.

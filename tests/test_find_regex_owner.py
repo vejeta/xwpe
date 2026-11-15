@@ -21,6 +21,15 @@ pytest.importorskip("pyte")
 from edit_model.oracle import (DOWN, END, ENTER, F2, RIGHT, SHIFT_RIGHT, UP,  # noqa: E402
                                EditSession, alt, ctrl)
 from wpe_driver import ALT, WpeSession  # noqa: E402
+import procinfo  # noqa: E402
+
+# \w \b \< \> are GNU regex escapes: the system's regular expression engine
+# either has them (glibc, macOS with REG_ENHANCED) or does not (FreeBSD,
+# OpenBSD), and configure's summary says which ("regex word escapes").
+needs_word_escapes = pytest.mark.skipif(
+    procinfo.build_has("WPE_HAS_REGEX_WORD_ESCAPES") is False,
+    reason="this system's regex has no word escapes (configure: "
+           "'regex word escapes: no'); a \\w \\b or \\< in Find matches nothing")
 
 ALT_R = alt("r")     # Regular expression
 ALT_B = alt("b")     # Backward
@@ -61,6 +70,7 @@ def _screen(s):
 # ---- what the engine sees: the whole row, the case of the text ----
 
 # @scenario SC-edit-model-56
+@needs_word_escapes
 def test_w_survives_a_case_insensitive_search(tmp_path):
     """`\\w+` with Case sensitive off is still a word: it used to turn into
     `\\W+` and find the space."""
@@ -70,6 +80,7 @@ def test_w_survives_a_case_insensitive_search(tmp_path):
 
 
 # @scenario SC-edit-model-56
+@needs_word_escapes
 def test_a_word_boundary_sees_the_text_before_where_the_search_starts(tmp_path):
     """The cursor is in the middle of "xab": `\\ba` has no word start at it."""
     with EditSession(str(tmp_path), "xab\n") as s:
@@ -227,6 +238,7 @@ def test_one_undo_takes_back_a_change_all_of_an_empty_hit(tmp_path, prompt):
 
 
 # @scenario SC-edit-model-56
+@needs_word_escapes
 def test_change_all_reads_the_text_it_has_made(tmp_path):
     """Change All looks on the rows as the replacements leave them, as
     Replace does one at a time: after the first `a` is gone the next one

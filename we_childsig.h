@@ -14,13 +14,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#ifdef HAVE_SYS_PRCTL_H
-# include <sys/prctl.h>
-#endif
-#ifdef HAVE_SYS_PROCCTL_H
-# include <sys/types.h>
-# include <sys/procctl.h>
-#endif
+#include "we_platform.h"
 
 /**
  * wpe_child_die_with_editor - In a forked child, before exec: have the
@@ -31,9 +25,10 @@
  * sends when the editor's session ends no longer reaches it.  When the
  * editor is killed outright (SIGKILL, the out-of-memory killer) nothing
  * else would stop it, and a debugger stuck in its program's loop would keep
- * a core busy until someone found it.  Linux (PR_SET_PDEATHSIG) and FreeBSD
- * (PROC_PDEATHSIG_CTL) send the child SIGKILL then.  Elsewhere nothing is
- * set and the debugger ends only when it sees its input pipe close.
+ * a core busy until someone found it.  Where the system has a parent-death
+ * signal (WPE_HAS_PARENT_DEATH_SIGNAL: Linux, FreeBSD) the child gets
+ * SIGKILL then.  Elsewhere (macOS, NetBSD, OpenBSD) nothing is set and the
+ * debugger ends only when it sees its input pipe close.
  *
  * The signal only follows a parent that dies after the call, so the editor's
  * ID is checked right after it: a parent that died between fork and here is
@@ -43,13 +38,7 @@
  */
 static inline int wpe_child_die_with_editor(pid_t editor)
 {
-#if defined(HAVE_SYS_PRCTL_H) && defined(PR_SET_PDEATHSIG)
- prctl(PR_SET_PDEATHSIG, SIGKILL);
-#elif defined(HAVE_SYS_PROCCTL_H) && defined(PROC_PDEATHSIG_CTL)
- int sig = SIGKILL;
-
- procctl(P_PID, 0, PROC_PDEATHSIG_CTL, &sig);
-#endif
+ (void)wpe_platform_die_with_parent(SIGKILL);
  return getppid() == editor ? 0 : -1;
 }
 

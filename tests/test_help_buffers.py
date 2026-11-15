@@ -378,3 +378,37 @@ def test_man_page_button_with_a_long_name_is_refused(tmp_path, which):
             assert "No manual entry" not in _text(s)
         else:
             assert _shows(s, "OTHER-PAGE-MARKER"), _text(s)
+
+
+# @scenario SC-platform-08
+@pytest.mark.skipif(shutil.which("man") is None, reason="needs man")
+def test_the_manual_viewer_gives_man_the_section_as_a_word(tmp_path):
+    """Following a SEE ALSO button calls `man 1 vfbother`: the form every
+    man accepts.  `man -s 1 vfbother` is man-db's and OpenBSD's; FreeBSD's
+    and macOS's man refuse it and the viewer then showed "No manual
+    entry".  A stand-in first on PATH records its arguments and hands them
+    to the real man, so the row sees what the editor asked for."""
+    workdir = str(tmp_path)
+    mandir = os.path.join(workdir, "man")
+    bindir = os.path.join(workdir, "bin")
+    log = os.path.join(workdir, "man-argv.log")
+    os.makedirs(bindir)
+    standin = os.path.join(bindir, "man")
+    _write(standin, '#!/bin/sh\necho "$*" >> "%s"\nexec "%s" "$@"\n'
+           % (log, shutil.which("man")))
+    os.chmod(standin, 0o755)
+    _man_page(mandir, "vfbpage", 'MAN-BODY-MARKER\n.SH "SEE ALSO"\n'
+              "vfbother(1)")
+    _man_page(mandir, "vfbother", "OTHER-PAGE-MARKER")
+    _write_xwperc(workdir, maxcol=400)
+    env = {"MANPATH": mandir, "MANWIDTH": "80",
+           "PATH": bindir + os.pathsep + os.environ["PATH"]}
+    with WpeSession(workdir, "vfbpage\n", env_extra=env) as s:
+        s.key(ALT.HELP, "t", delay=2.0)
+        assert _shows(s, "MAN-BODY-MARKER"), _text(s)
+        _onto_row(s, "VFBPAGE(1) ", "vfbother(1)")
+        s.key("\r", delay=2.0)
+        assert _shows(s, "OTHER-PAGE-MARKER"), _text(s)
+    with open(log) as fh:
+        argvs = [line.strip() for line in fh]
+    assert argvs[-1] == "1 vfbother", argvs

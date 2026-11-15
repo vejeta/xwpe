@@ -62,6 +62,25 @@ sudo make install
 and the man page. **Skip it and you get only the built-in C/C++ highlighting and
 no Help.**
 
+## What configure reports
+
+The summary at the end of `./configure` has a `platform:` section. Each line
+is a system facility configure looked for, and a "no" says what turns off:
+
+- `parent-death signal`: none means a debugger keeps running if the editor is
+  killed outright (macOS, NetBSD, OpenBSD).
+- `memfd_create`, `timerfd`: no means the Wayland shared-memory pool is an
+  unlinked file, or the Wayland backend is not built.
+- `linux console`: no means no console keyboard probe and no GPM console check.
+- `backtrace`: no means the crash file names the signal only.
+- `regex word escapes`: no means `\<`, `\>` and `\b` in Find match nothing
+  (FreeBSD, OpenBSD).
+- `library feature macros`: a library's own flags that carry feature macros;
+  a WARNING there means they hide declarations on this system.
+
+`libvterm: not probed (needs X11)` means the library was not looked for, not
+that it is missing.
+
 ## Running from the build tree without installing
 
 Point `XWPE_LIB` at the build directory -- xwpe then loads its data files from

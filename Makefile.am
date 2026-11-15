@@ -267,6 +267,7 @@ noinst_HEADERS = \
   we_render_glyphs.h \
   we_palette.h \
   we_childsig.h \
+  we_platform.h \
   we_child.h \
   we_startcmd.h \
   we_startplan.h \
@@ -468,7 +469,7 @@ test_startplan_CFLAGS = $(TEST_CFLAGS)
 # without them and reports those rows as SKIP.
 if HAVE_LD_WRAP
 test_startplan_CFLAGS += -DWPE_TEST_LD_WRAP=1
-test_startplan_LDFLAGS = -Wl,--wrap=malloc -Wl,--wrap=realloc
+test_startplan_LDFLAGS = -Wl,--wrap=malloc -Wl,--wrap=realloc -Wl,--wrap=realpath -Wl,--wrap=lstat
 endif
 test_startplan_LDADD = $(UTIL_LIBS)
 

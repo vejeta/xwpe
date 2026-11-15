@@ -665,6 +665,23 @@ static int startplan_resolve_at(const char *path, const char *cwd, char *out, si
                                 int depth);
 
 /**
+ * startplan_system_refused_path - Did the system itself say the path is too long?
+ *
+ * Called right after realpath or lstat failed.  The system's limit is its
+ * own (4096 on Linux, 1024 on macOS and the BSDs) and may be lower than the
+ * editor's buffers, so a program path the buffers hold can still be one the
+ * system will not take.  That answer, ENAMETOOLONG, is a refusal with its
+ * own reason ("longer than the system allows"), never a component that is
+ * "not made yet": taking it for missing would let a path through that the
+ * debugger then cannot open.
+ * Return: 1 when the last failure was ENAMETOOLONG (errno is left as it is).
+ */
+static int startplan_system_refused_path(void)
+{
+ return errno == ENAMETOOLONG;
+}
+
+/**
  * startplan_follow_dangling - Follow a link whose target is not there yet.
  * @out/@sz: the resolved path so far, ending in the missing component;
  * @depth: how many links were followed to get here.
@@ -682,7 +699,9 @@ static int startplan_follow_dangling(char *out, size_t sz, int depth)
  struct stat st;
  ssize_t n;
 
- if (lstat(out, &st) != 0 || !S_ISLNK(st.st_mode))
+ if (lstat(out, &st) != 0)
+  return startplan_system_refused_path() ? -1 : 0;
+ if (!S_ISLNK(st.st_mode))
   return 0;
  if (depth >= STARTPLAN_LINKS_MAX)
   return -1;
@@ -729,6 +748,8 @@ static int startplan_step(char *out, size_t sz, const char *comp, int *exists, i
   return 0;
  if (!realpath(out, real))
  {
+  if (startplan_system_refused_path())
+   return -1;
   *exists = 0;
   return startplan_follow_dangling(out, sz, depth);
  }

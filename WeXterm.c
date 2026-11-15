@@ -32,13 +32,7 @@
 #include "edit.h"
 #include "we_lsp.h"           /* e_lsp_sem_slot_rgb: semantic-token truecolor */
 
-#ifndef DEFAULT_ALTMASK
-#if defined(__linux__) || defined(__osf__)			/* a.r. */
-#define DEFAULT_ALTMASK Mod1Mask
-#else
-#define DEFAULT_ALTMASK Mod4Mask
-#endif
-#endif
+#include "we_platform.h"     /* WPE_X11_DEFAULT_ALTMASK */
 
 /* Information from X that is needed throughout execution */
 WpeXStruct WpeXInfo;
@@ -1197,7 +1191,7 @@ void WpeXOptionsGet(XrmDatabase xresdb, XrmQuark *name_list,
  XrmRepresentation return_value;
  XrmValue xval;
 
- WpeXInfo.altmask = DEFAULT_ALTMASK;
+ WpeXInfo.altmask = WPE_X11_DEFAULT_ALTMASK;
  name_list[1] = XrmStringToQuark("altMask");
  class_list[1] = XrmStringToQuark("AltMask");
  if (XrmQGetResource(xresdb, name_list, class_list, &return_value, &xval))

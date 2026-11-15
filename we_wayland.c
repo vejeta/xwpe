@@ -28,8 +28,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/mman.h>
-#include <sys/timerfd.h>
 #include <stdint.h>
+#include "we_platform.h"     /* timerfd: configure builds this file only where it exists */
 
 #include <poll.h>
 #include <wayland-cursor.h>
@@ -108,7 +108,7 @@ static int wl_anon_file(size_t size)
 {
  int fd = -1;
 
-#ifdef __linux__
+#if WPE_HAS_MEMFD_CREATE
  fd = memfd_create("xwpe-wl-shm", MFD_CLOEXEC);
 #endif
  if (fd < 0)

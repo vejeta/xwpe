@@ -105,6 +105,94 @@ AC_MSG_RESULT([${XWPE_DECLFLAG:-none}])
 xwpe_say_decl=${XWPE_DECLFLAG:-"none (a missing header is only a warning)"}
 AC_SUBST([XWPE_DECLFLAG])
 
+# What this system provides, as facts.  Each fact is probed once here, written
+# into config.h as WPE_HAS_<NAME> (always defined, to 0 or 1) and printed in
+# the summary with what its absence turns off.  Sources read the fact through
+# we_platform.h and never name an operating system or a system header's
+# presence themselves.
+AC_DEFUN([WPE_FACT],
+  [AS_IF([$2], [wpe_fact_$1=1], [wpe_fact_$1=0])
+   AC_DEFINE_UNQUOTED([WPE_HAS_$1], [$wpe_fact_$1],
+     [1 when $3, 0 when it does not])])
+
+# The system's own timer descriptors: the Wayland key-repeat timer is one.
+AC_CACHE_CHECK([for timerfd], [xwpe_cv_timerfd],
+  [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <time.h>
+#include <sys/timerfd.h>]], [[return timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);]])],
+    [xwpe_cv_timerfd=yes], [xwpe_cv_timerfd=no])])
+WPE_FACT([TIMERFD], [test "x$xwpe_cv_timerfd" = xyes], [the system has timerfd])
+xwpe_say_timerfd=$xwpe_cv_timerfd
+AS_IF([test "x$xwpe_cv_timerfd" != xyes],
+  [xwpe_say_timerfd="no (the Wayland backend is not built)"])
+
+# A memory file with no name in the file system: the Wayland shm pool.
+AC_CACHE_CHECK([for memfd_create], [xwpe_cv_memfd_create],
+  [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <sys/mman.h>]],
+     [[return memfd_create("x", MFD_CLOEXEC);]])],
+    [xwpe_cv_memfd_create=yes], [xwpe_cv_memfd_create=no])])
+WPE_FACT([MEMFD_CREATE], [test "x$xwpe_cv_memfd_create" = xyes], [the system has memfd_create])
+xwpe_say_memfd=$xwpe_cv_memfd_create
+AS_IF([test "x$xwpe_cv_memfd_create" != xyes],
+  [xwpe_say_memfd="no (the Wayland shm pool is an unlinked file in XDG_RUNTIME_DIR)"])
+
+# The Linux virtual console's ioctls: the keyboard-state probe and GPM's
+# console check.  The headers are the Linux kernel's own.
+AC_CACHE_CHECK([for the Linux console ioctls], [xwpe_cv_linux_console],
+  [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <sys/ioctl.h>
+#include <linux/kd.h>
+#include <linux/vt.h>]], [[struct vt_stat s; char c = 6;
+ (void) s; (void) c; return KDGETMODE + VT_GETSTATE + TIOCLINUX;]])],
+    [xwpe_cv_linux_console=yes], [xwpe_cv_linux_console=no])])
+WPE_FACT([LINUX_CONSOLE], [test "x$xwpe_cv_linux_console" = xyes], [the system has the Linux console ioctls])
+xwpe_say_console=$xwpe_cv_linux_console
+AS_IF([test "x$xwpe_cv_linux_console" != xyes],
+  [xwpe_say_console="no (no console keyboard probe, no GPM console check)"])
+
+# The time fields of struct stat: POSIX 2008 names them st_mtim and st_ctim,
+# macOS st_mtimespec and st_ctimespec.  The built-outputs store keeps the
+# nanoseconds; where neither exists it keeps whole seconds.
+AC_CHECK_MEMBERS([struct stat.st_mtim, struct stat.st_ctim,
+                  struct stat.st_mtimespec, struct stat.st_ctimespec],
+                 [], [], [[#include <sys/types.h>
+#include <sys/stat.h>]])
+AS_IF([test "x$ac_cv_member_struct_stat_st_mtim" = xyes],
+  [xwpe_say_stat="st_mtim (nanoseconds)"],
+  [test "x$ac_cv_member_struct_stat_st_mtimespec" = xyes],
+  [xwpe_say_stat="st_mtimespec (nanoseconds)"],
+  [xwpe_say_stat="whole seconds only (a build in the same second as an edit looks current)"])
+
+# Whether a regular expression understands \< \> and \b.  glibc does by
+# itself; macOS needs REG_ENHANCED and some others REG_GNU; FreeBSD's and
+# OpenBSD's engines have no such escapes.  WPE_REGEX_WORD_ESCAPES is the
+# flag the search owner passes (0 where none is needed or none exists) and
+# WPE_HAS_REGEX_WORD_ESCAPES says whether the engine then understands the
+# escape, measured by running it.
+AC_CHECK_DECLS([REG_ENHANCED, REG_GNU], [], [], [[#include <sys/types.h>
+#include <regex.h>]])
+AS_IF([test "x$ac_cv_have_decl_REG_ENHANCED" = xyes],
+  [xwpe_regex_flag=REG_ENHANCED],
+  [test "x$ac_cv_have_decl_REG_GNU" = xyes],
+  [xwpe_regex_flag=REG_GNU],
+  [xwpe_regex_flag=0])
+AC_DEFINE_UNQUOTED([WPE_REGEX_WORD_ESCAPES], [$xwpe_regex_flag],
+  [The regcomp flag that turns on the word-boundary escapes, or 0])
+AC_CACHE_CHECK([whether regcomp has word-boundary escapes (flag $xwpe_regex_flag)],
+  [xwpe_cv_regex_word_escapes],
+  [AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <sys/types.h>
+#include <regex.h>]], [[regex_t re; regmatch_t m[1];
+ if (regcomp(&re, "\\\\<ab", REG_EXTENDED | $xwpe_regex_flag)) return 1;
+ if (regexec(&re, " ab", 1, m, 0)) return 1;
+ return regexec(&re, "xab", 1, m, 0) == 0;]])],
+    [xwpe_cv_regex_word_escapes=yes], [xwpe_cv_regex_word_escapes=no],
+    [AS_IF([test "x$xwpe_regex_flag" = x0],
+       [xwpe_cv_regex_word_escapes="no (cross build, no flag known)"],
+       [xwpe_cv_regex_word_escapes=yes])])])
+WPE_FACT([REGEX_WORD_ESCAPES], [test "x$xwpe_cv_regex_word_escapes" = xyes],
+  [the regular expression engine has word-boundary escapes])
+AS_IF([test "x$xwpe_cv_regex_word_escapes" = xyes],
+  [xwpe_say_regex="yes (flag: $xwpe_regex_flag)"],
+  [xwpe_say_regex="no (a word-boundary escape in Find matches nothing)"])
+
 # The math library.  we_render_cairo.c calls floor and ceil.  Linux and
 # FreeBSD find them through libcairo's own dependency on libm, but OpenBSD's
 # linker does not look through a dependency (the same reason freetype2 is
@@ -273,7 +361,16 @@ AC_ARG_WITH([wayland],
   [], [with_wayland=auto])
 
 have_wayland=no
-AS_IF([test "x$with_wayland" != xno], [
+# The key-repeat timer is a timerfd: a system without one cannot build the
+# backend, and says so by name instead of failing in the compiler.
+xwpe_wayland_probe=$with_wayland
+AS_IF([test "x$with_wayland" != xno && test "x$xwpe_cv_timerfd" != xyes], [
+  AS_IF([test "x$with_wayland" = xyes],
+    [AC_MSG_ERROR([Wayland requested but this system has no timerfd (sys/timerfd.h)])],
+    [AC_MSG_NOTICE([the native Wayland backend is skipped: this system has no timerfd])])
+  xwpe_wayland_probe=no
+])
+AS_IF([test "x$xwpe_wayland_probe" != xno], [
   AS_IF([test "x$have_pango" = xyes], [
     PKG_CHECK_MODULES([WAYLAND], [wayland-client wayland-cursor xkbcommon], [
       AC_CHECK_PROG([WAYLAND_SCANNER], [wayland-scanner], [wayland-scanner], [:])
@@ -297,6 +394,7 @@ AC_SUBST([WAYLAND_PROTOCOLS_DIR])
 # Wayland; a Wayland build also links the X11 objects).  Without it the
 # Alt-F5 User Screen falls back to focusing the Messages panel (1.6.3 behaviour).
 have_vterm=no
+xwpe_say_vterm=no
 AS_IF([test "x$have_x11" = xyes && test "x$with_libx11_compat" = xno], [
   # NetBSD pkgsrc names the module 'vterm03' (versioned); everywhere else it is
   # 'vterm'. Try both.
@@ -307,6 +405,13 @@ AS_IF([test "x$have_x11" = xyes && test "x$with_libx11_compat" = xno], [
        have_vterm=yes
        AC_DEFINE([HAVE_VTERM], [1], [Define if libvterm is available])
      ], [have_vterm=no])])
+  xwpe_say_vterm=$have_vterm
+], [
+  # A probe that did not run says why, instead of printing a "no" that
+  # looks like a library that is missing.
+  AS_IF([test "x$have_x11" != xyes],
+    [xwpe_say_vterm="not probed (needs X11)"],
+    [xwpe_say_vterm="not probed (the libx11-compat build has no Cairo stack)"])
 ])
 AM_CONDITIONAL([HAVE_VTERM], [test "x$have_vterm" = xyes])
 
@@ -342,11 +447,13 @@ AC_SUBST([UTIL_LIBS])
 
 # openpty()'s declaration lives in a different header per platform:
 #   <pty.h> on glibc, <util.h> on macOS/BSD, <libutil.h> on some BSDs.
-# The sources pick the right one from these HAVE_*_H defines.  <utmp.h> is
-# where glibc declares login_tty(), which the debugger's child uses to take
-# the pty as its terminal; the other platforms declare it in the header
-# above.
-AC_CHECK_HEADERS([pty.h util.h libutil.h utmp.h])
+# we_platform.h picks the right one from these HAVE_*_H defines, so no
+# other file names a header that exists on only some systems.
+AC_CHECK_HEADERS([pty.h util.h libutil.h])
+AS_IF([test "x$ac_cv_header_pty_h" = xyes], [xwpe_say_pty="pty.h"],
+  [test "x$ac_cv_header_util_h" = xyes], [xwpe_say_pty="util.h"],
+  [test "x$ac_cv_header_libutil_h" = xyes], [xwpe_say_pty="libutil.h"],
+  [xwpe_say_pty="none (openpty is used undeclared)"])
 
 # --- backtrace() for the crash handler ---
 # backtrace()/backtrace_symbols_fd() are in libc on glibc but in libexecinfo
@@ -358,6 +465,13 @@ AC_SEARCH_LIBS([backtrace], [execinfo],
      [EXECINFO_LIBS=""], [EXECINFO_LIBS="$ac_cv_search_backtrace"])])
 LIBS="$ace_save_LIBS"
 AC_SUBST([EXECINFO_LIBS])
+AC_CHECK_HEADERS([execinfo.h])
+WPE_FACT([BACKTRACE],
+  [test "x$ac_cv_header_execinfo_h" = xyes && test "x$ac_cv_search_backtrace" != xno],
+  [the system can write a backtrace (execinfo.h and backtrace)])
+AS_IF([test "x$wpe_fact_BACKTRACE" = x1],
+  [xwpe_say_backtrace="yes${EXECINFO_LIBS:+ ($EXECINFO_LIBS)}"],
+  [xwpe_say_backtrace="no (the crash file carries the signal only)"])
 
 # --- Required: pthread_kill() / pthread_sigmask() ---
 # The SIGCHLD handler hands a signal that a library's thread took (Pango's
@@ -376,9 +490,6 @@ AC_SUBST([PTHREAD_LIBS])
 # --- Required: zlib ---
 AC_CHECK_LIB([z], [inflate], [],
   [AC_MSG_ERROR([zlib is required. Install zlib1g-dev or zlib-devel.])])
-
-# --- Feature checks ---
-AC_CHECK_FUNCS([mkdtemp])
 
 # --- A name put where none is (we_fileop.c) ---
 # A copy or a move that is not to replace a name must not replace one that
@@ -412,8 +523,26 @@ AC_CHECK_FUNCS([newlocale uselocale])
 # --- A debugger that dies with the editor ---
 # Linux has prctl(PR_SET_PDEATHSIG) and FreeBSD procctl(PROC_PDEATHSIG_CTL):
 # the system sends the child a signal when its parent is killed.  The other
-# systems have no such call; the sources check the macro each header gives.
+# systems have no such call.  we_platform.h picks the call from the
+# declarations found here.
 AC_CHECK_HEADERS([sys/prctl.h sys/procctl.h])
+AC_CHECK_DECLS([PR_SET_PDEATHSIG], [], [],
+  [[#ifdef HAVE_SYS_PRCTL_H
+#include <sys/prctl.h>
+#endif]])
+AC_CHECK_DECLS([PROC_PDEATHSIG_CTL], [], [],
+  [[#include <sys/types.h>
+#ifdef HAVE_SYS_PROCCTL_H
+#include <sys/procctl.h>
+#endif]])
+AS_IF([test "x$ac_cv_have_decl_PR_SET_PDEATHSIG" = xyes],
+  [xwpe_say_pdeath=prctl],
+  [test "x$ac_cv_have_decl_PROC_PDEATHSIG_CTL" = xyes],
+  [xwpe_say_pdeath=procctl],
+  [xwpe_say_pdeath="none (a debugger outlives an editor that is killed outright)"])
+WPE_FACT([PARENT_DEATH_SIGNAL],
+  [test "x$xwpe_say_pdeath" = xprctl || test "x$xwpe_say_pdeath" = xprocctl],
+  [the system signals a child when its parent dies])
 
 # --- Optional: WPE_TRACE debug logging (off by default, zero-cost) ---
 AC_ARG_ENABLE([trace],
@@ -536,12 +665,49 @@ AC_DEFINE([NCURSES], [1], [Using ncurses library])
 AC_DEFINE([_XOPEN_SOURCE_EXTENDED], [1], [Enable wide character curses support])
 AC_DEFINE([NCURSES_WIDECHAR], [1], [Enable ncurses wide character API])
 AC_DEFINE([SELECTION], [1], [Use X Selection events])
-AC_DEFINE([MAN_S_OPT], [1], [man accepts -s to select section])
 
 # --- Print command (configurable) ---
 AC_ARG_VAR([PRNTCMD], [Print command (default: lpr)])
 test -z "$PRNTCMD" && PRNTCMD="lpr"
 AC_DEFINE_UNQUOTED([PRNTCMD], ["$PRNTCMD"], [Command to print files])
+
+# --- Feature macros that the libraries' own flags carry ---
+# A library's pkg-config flags may carry feature macros of their own (Debian's
+# ncursesw.pc: -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=600; NetBSD's:
+# -D_NETBSD_SOURCE; Homebrew's: -D_DARWIN_C_SOURCE).  config.h's macros win
+# over them on glibc, macOS and NetBSD.  FreeBSD and OpenBSD have no such
+# override, so a strict macro from a library file hides declarations the
+# editor uses.  The flags are not stripped (the library's headers may need
+# them); configure lists them and tries a declaration they could hide.
+xwpe_libmacros=
+xwpe_libflags=
+for ace_lib in NCURSESW JSONC X XFT CAIRO PANGO WAYLAND VTERM AITLS; do
+  eval ace_flags=\$${ace_lib}_CFLAGS
+  for ace_f in $ace_flags; do
+    case $ace_f in
+      -D_*_SOURCE|-D_*_SOURCE=*|-D__EXTENSIONS__|-D__BSD_VISIBLE|-D__BSD_VISIBLE=*)
+        xwpe_libmacros="$xwpe_libmacros $ace_f ($ace_lib)"
+        xwpe_libflags="$xwpe_libflags $ace_f" ;;
+    esac
+  done
+done
+xwpe_say_libmacros=none
+AS_IF([test -n "$xwpe_libflags"], [
+  ace_save_CPPFLAGS="$CPPFLAGS"
+  ace_save_CFLAGS="$CFLAGS"
+  CPPFLAGS="$CPPFLAGS $xwpe_libflags"
+  CFLAGS="$CFLAGS $XWPE_DECLFLAG"
+  AC_MSG_CHECKING([whether the libraries' feature macros hide declarations the editor uses])
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdlib.h>]],
+      [[char t[] = "/tmp/xwpeXXXXXX"; return mkdtemp(t) == 0;]])],
+    [AC_MSG_RESULT([no])
+     xwpe_say_libmacros="${xwpe_libmacros# } (config.h's macros override them)"],
+    [AC_MSG_RESULT([yes])
+     xwpe_say_libmacros="${xwpe_libmacros# } WARNING: they hide declarations the editor uses on this system"
+     AC_MSG_WARN([a library's feature macros ($xwpe_libflags) hide declarations on this system; the build may fail on an undeclared function])])
+  CPPFLAGS="$ace_save_CPPFLAGS"
+  CFLAGS="$ace_save_CFLAGS"
+])
 
 # --- Output ---
 AC_CONFIG_FILES([Makefile docs/Makefile])
@@ -556,7 +722,7 @@ AC_MSG_RESULT([
     Cairo:     $have_cairo
     Pango:     $have_pango
     Wayland:   $have_wayland
-    libvterm:  $have_vterm
+    libvterm:  $xwpe_say_vterm
     GPM:       $have_gpm
     AI:        $enable_ai
     AI TLS:    $have_ai_tls
@@ -570,4 +736,14 @@ AC_MSG_RESULT([
       warning flags:     $xwpe_say_warn
       format checks:     $XWPE_FORMATFLAGS
       declaration check: $xwpe_say_decl
+      library feature macros: $xwpe_say_libmacros
+      parent-death signal: $xwpe_say_pdeath
+      memfd_create:      $xwpe_say_memfd
+      timerfd:           $xwpe_say_timerfd
+      linux console:     $xwpe_say_console
+      openpty header:    $xwpe_say_pty
+      backtrace:         $xwpe_say_backtrace
+      stat times:        $xwpe_say_stat
+      regex word escapes: $xwpe_say_regex
+      linker --wrap:     $have_ld_wrap
 ])

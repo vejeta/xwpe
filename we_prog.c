@@ -27,13 +27,6 @@
 #include <signal.h>
 #include <poll.h>
 #include <errno.h>
-#if defined(HAVE_PTY_H)
-# include <pty.h>          /* glibc: openpty/forkpty */
-#elif defined(HAVE_UTIL_H)
-# include <util.h>         /* macOS, *BSD */
-#elif defined(HAVE_LIBUTIL_H)
-# include <libutil.h>      /* some BSDs */
-#endif
 #include "we_fdloop.h"
 #include "we_childsig.h"
 #include <stdint.h>

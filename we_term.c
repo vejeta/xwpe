@@ -21,6 +21,7 @@
 #include "we_clip.h"
 #include "we_layout.h"
 #include "we_termrelease.h"
+#include "we_platform.h"
 
 #include<signal.h>
 #include<pthread.h>
@@ -343,7 +344,7 @@ int WpeDllInit(int *argc, char **argv)
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeMouseRestoreShape = WpeNullFunction;
  WpeDisplayEnd = e_t_terminal_release;
-#ifdef __linux__
+#if WPE_HAS_LINUX_CONSOLE
  u_bioskey = WpeLinuxBioskey;
 #else
  u_bioskey = WpeZeroFunction;
@@ -868,7 +869,7 @@ static int e_t_is_linux_console(void)
 
  if (!probed)
  {
-#ifdef __linux__
+#if WPE_HAS_LINUX_CONSOLE
   console = WpeLinuxIsConsole();
 #endif
   probed = 1;

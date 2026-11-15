@@ -819,6 +819,37 @@ fixed geometry so coordinate scans match under either WM, finds the window by
 WM_CLASS (the Homebrew `xdotool --name` regex is broken), and probes
 `otool`/`ldd` for the libvterm linkage.  66/66 pass on both XQuartz and matchbox.
 
+## Platform differences have one owner
+
+Three parts. `configure.ac` sets the feature macros (`AC_USE_SYSTEM_EXTENSIONS`
+writes them into `config.h`, which the build force-includes before every file)
+and probes each system fact once, as `WPE_HAS_<NAME>` (always 0 or 1) with a
+line in the summary that says what a "no" turns off. `we_platform.h` turns the
+facts into the vocabulary the sources use: the header that declares `openpty`,
+the time fields of `struct stat` (`WPE_STAT_MTIM`), the longest path the system
+takes (`WPE_PLATFORM_PATH_MAX`), `wpe_platform_die_with_parent`. `tests/procinfo.py`
+is the Python side (`build_has`, `parent_death_signal`), reading the same
+`config.h`.
+
+No file outside `we_platform.h` names an operating system, includes a header
+that exists on only some systems, sets a feature macro, or tests a fact with
+`#ifdef`; `tests/check-platform.sh` checks the first three. To add a fact:
+probe it in `configure.ac` with `WPE_FACT`, add its `xwpe_say_*` summary line,
+read it as `#if WPE_HAS_X`, and write in the `#else` what the user loses. A
+test that needs a facility some system lacks compiles everywhere and prints
+`SKIP: <row>: needs <fact>`.
+
+Note: under `_GNU_SOURCE`, glibc 2.38 and later bind `strtol`, `sscanf` and
+friends to the C23 versions, which read `0b...` as binary for base 0 or 2 and
+add `%b`. A base-0 `strtol` or a `%i` scan on user text would take that
+spelling; none does today.
+
+A system whose path limit is lower than the editor's buffers (1024 on macOS
+and the BSDs, 4096 here) answers ENAMETOOLONG from `realpath` and `lstat`;
+the start plan treats that as "longer than the system allows", never as a
+missing tail (`startplan_system_refused_path`). `test_startplan` simulates
+that system with the linker's `--wrap`.
+
 ## File Manager geometry (1.6.5)
 
 The File Manager box used to be hardcoded (`f->a=(11,2)`, `f->e=+55,+20`) --

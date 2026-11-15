@@ -20,7 +20,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include <poll.h>
 #include "../we_child.h"
+#include "../we_childsig.h"
 #include "test_watchdog.h"
 
 #define HANG_SECONDS      30
@@ -121,6 +123,84 @@ static void test_the_reaper_leaves_a_foreign_siginfo_handler_alone(void)
 	sigaction(SIGCHLD, &none, NULL);
 }
 
+#define DEATH_WAIT_MS 5000
+#define MIDDLE_NOT_ARMED 2     /* the middle's exit status: the grandchild never armed */
+
+/* The grandchild of a row: arms the death signal on its middle parent, tells
+   the middle through @armed_wr, and waits, holding @alive_wr open until it
+   dies.  The alarm bounds its life, so a system (or a regression) that sends
+   no signal leaves no process behind holding the test's output open. */
+static void grandchild_waits_for_its_parent(pid_t middle, int alive_rd, int alive_wr,
+                                            int armed_rd, int armed_wr)
+{
+	close(alive_rd);
+	close(armed_rd);
+	signal(SIGALRM, SIG_DFL);     /* not the watchdog's: it would report a hang */
+	alarm(HANG_SECONDS);
+	if (wpe_child_die_with_editor(middle) != 0)
+		_exit(1);
+	if (write(armed_wr, "a", 1) != 1)
+		_exit(1);
+	close(armed_wr);
+	pause();
+	(void)alive_wr;
+	_exit(0);
+}
+
+/* The middle process: starts the grandchild and ends once the grandchild has
+   armed the signal.  Ending earlier would race it: a grandchild that arms
+   after its parent is gone sees another parent, gives up and closes the pipe,
+   and the row would pass with no signal at all. */
+static void middle_leaves_its_child(int alive_rd, int alive_wr)
+{
+	pid_t middle = getpid();
+	int armed[2];
+	char c;
+
+	if (pipe(armed) != 0)
+		_exit(1);
+	if (fork() == 0)
+		grandchild_waits_for_its_parent(middle, alive_rd, alive_wr, armed[0], armed[1]);
+	close(armed[1]);
+	close(alive_wr);
+	if (read(armed[0], &c, 1) != 1)
+		_exit(MIDDLE_NOT_ARMED);
+	_exit(0);
+}
+
+/* @scenario SC-platform-05 */
+
+/* Where the system has a parent-death signal (WPE_HAS_PARENT_DEATH_SIGNAL),
+   a child that armed it ends when its parent does: the descriptor it holds
+   open reaches end of file.  Where it has none, the row says so, which is
+   what a macOS, NetBSD or OpenBSD run shows instead of silence. */
+static void test_a_child_ends_with_the_parent_where_the_system_says_so(void)
+{
+	int pfd[2];
+	pid_t middle;
+	struct pollfd p;
+	char c;
+	int status = 0;
+
+#if !WPE_HAS_PARENT_DEATH_SIGNAL
+	printf("SKIP: SC-platform-05: no parent-death signal on this system\n");
+	return;
+#endif
+	chk("a pipe for the row", pipe(pfd), 0);
+	middle = fork();
+	if (middle == 0)
+		middle_leaves_its_child(pfd[0], pfd[1]);
+	close(pfd[1]);
+	waitpid(middle, &status, 0);
+	chk("the child armed the signal before its parent ended",
+	    WIFEXITED(status) && WEXITSTATUS(status) == 0, 1);
+	p.fd = pfd[0];
+	p.events = POLLIN;
+	chk("the child ended with its parent",
+	    poll(&p, 1, DEATH_WAIT_MS) == 1 && read(pfd[0], &c, 1) == 0, 1);
+	close(pfd[0]);
+}
+
 int main(void)
 {
 	test_watchdog_case("test_a_pipe_read_survives_a_sigchld_storm: the read "
@@ -128,6 +208,7 @@ int main(void)
 	test_the_reaper_leaves_a_foreign_siginfo_handler_alone();
 	chk("the handler is installed", wpe_child_sigchld_install(on_child), 0);
 	test_a_pipe_read_survives_a_sigchld_storm();
+	test_a_child_ends_with_the_parent_where_the_system_says_so();
 	if (fails) {
 		printf("%d failure(s)\n", fails);
 		return 1;

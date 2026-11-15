@@ -1254,11 +1254,10 @@ int WpeGpmMouseInit(void);
 int WpeGpmMouse(int *g);
 #endif
 
-/* WeLinux.c */
-#ifdef __linux__
+/* WeLinux.c: defined where configure found the Linux console ioctls
+   (WPE_HAS_LINUX_CONSOLE); a caller asks the same fact before it calls. */
 int WpeLinuxBioskey(void);
 int WpeLinuxIsConsole(void);
-#endif
 
 extern char *e_msg[];
 extern char e_we_sw;

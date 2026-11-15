@@ -33,6 +33,10 @@
 #  7. A program that calls floor and ceil links with configure's LIBM where
 #     it does not link without it (OpenBSD: libcairo's own dependency on
 #     libm is not followed by the linker).
+#  8. No product source names an operating system, includes a header that
+#     exists on only some systems, or tests a platform fact (WPE_HAS_*,
+#     always 0 or 1) with #ifdef: we_platform.h owns those.
+#  9. Every fact configure writes with WPE_FACT has a line in its summary.
 #
 # Exit: 0 clean, 1 a row failed, 2 the script could not run.
 
@@ -203,6 +207,44 @@ else
 	fail "floor and ceil need libm and configure's LIBM ($LIBM) does not provide it:"
 	head -5 "$WORK/libm.out"
 fi
+
+# Row 8: no product source names an operating system, includes a header that
+# exists on only some systems, or tests a platform fact with #ifdef.  They
+# live in we_platform.h, the one place that may.
+PRODUCT=$(cd "$SRCDIR" && ls ./*.c ./*.h tools/*.c tools/*.h 2>/dev/null | grep -v '^\./we_platform\.h$' | grep -v '^\./config\.h$')
+OSHITS=$(cd "$SRCDIR" && grep -nE '__(linux|linux__|gnu_linux|APPLE|MACH|FreeBSD|NetBSD|OpenBSD|DragonFly|sun|osf|CYGWIN|GLIBC)__|_AIX' $PRODUCT 2>/dev/null)
+if [ -n "$OSHITS" ]; then
+	fail "a product source names an operating system (we_platform.h owns that):"
+	echo "$OSHITS"
+fi
+HDRHITS=$(cd "$SRCDIR" && grep -nE '^[[:space:]]*#[[:space:]]*include[[:space:]]*<(linux/|sys/prctl\.h|sys/procctl\.h|sys/event\.h|sys/syscall\.h|pty\.h|util\.h|libutil\.h|execinfo\.h|sys/timerfd\.h|sys/epoll\.h|sys/inotify\.h|sys/sysmacros\.h)' $PRODUCT 2>/dev/null)
+if [ -n "$HDRHITS" ]; then
+	fail "a product source includes a header that exists on only some systems (we_platform.h owns that):"
+	echo "$HDRHITS"
+fi
+IFDEFHITS=$(cd "$SRCDIR" && grep -nE '#[[:space:]]*(ifdef|ifndef)[[:space:]]+WPE_(HAS|REGEX)_|defined[[:space:]]*\(?[[:space:]]*WPE_(HAS|REGEX)_' $PRODUCT tests/*.c tests/*.h 2>/dev/null)
+if [ -n "$IFDEFHITS" ]; then
+	fail "a platform fact is tested with #ifdef; it is always defined, use #if:"
+	echo "$IFDEFHITS"
+fi
+ROWS=$((ROWS + 1))
+
+# Row 9: every fact configure writes into config.h (WPE_FACT) has a line in
+# its summary, so a "no" always says what it turns off.
+for fact in $(sed -n 's/.*WPE_FACT(\[\([A-Z_]*\)\].*/\1/p' "$SRCDIR/configure.ac"); do
+	say=$(echo "$fact" | tr 'A-Z' 'a-z')
+	case $fact in
+	PARENT_DEATH_SIGNAL) say=pdeath ;;
+	LINUX_CONSOLE) say=console ;;
+	MEMFD_CREATE) say=memfd ;;
+	REGEX_WORD_ESCAPES) say=regex ;;
+	esac
+	if ! grep -q "xwpe_say_$say" "$SRCDIR/configure.ac" ||
+	   ! sed -n '/^AC_MSG_RESULT(\[$/,$p' "$SRCDIR/configure.ac" | grep -q "xwpe_say_$say"; then
+		fail "configure's summary has no line for the fact WPE_HAS_$fact"
+	fi
+done
+ROWS=$((ROWS + 1))
 
 if [ $FAIL -eq 0 ]; then
 	echo "PASS: platform decisions have one owner ($ROWS rows)"

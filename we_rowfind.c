@@ -44,14 +44,9 @@
 #define WPE_ROWFIND_STARTEND 1
 #endif
 
-/* The escapes `\b \< \> \w \s` are on by a flag in some libraries. */
-#ifdef REG_ENHANCED
-#define ENGINE_ESCAPES REG_ENHANCED
-#elif defined(REG_GNU)
-#define ENGINE_ESCAPES REG_GNU
-#else
-#define ENGINE_ESCAPES 0
-#endif
+/* The escapes `\b \< \> \w \s` are on by a flag in some libraries; configure
+   names the flag (0 where none is needed or none exists). */
+#define ENGINE_ESCAPES WPE_REGEX_WORD_ESCAPES
 
 /* Only the BSDs' and macOS's multibyte engines answer an invalid byte with
    REG_ILLSEQ; glibc matches it as itself.  Where the name does not exist no

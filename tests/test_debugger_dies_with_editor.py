@@ -30,8 +30,9 @@ from test_debugger_integration import (
     _dlv_pid, _need, _run_go, _stop_then_run_on, _write_script)
 
 pytestmark = pytest.mark.skipif(
-    not sys.platform.startswith(("linux", "freebsd")),
-    reason="only Linux and FreeBSD can end a child with its parent")
+    not procinfo.parent_death_signal(),
+    reason="no parent-death signal on this system (configure's summary: "
+           "'parent-death signal: none')")
 
 GONE_WITHIN_S = 5            # after the kill, before scaling
 POLL_S = 0.1
