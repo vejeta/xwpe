@@ -42,6 +42,19 @@
 #     condition is feof, outside we_write.c, we_fileop.c and we_lineend.c.
 # 10. The File Manager's option word assigned (flopt =, |=, &=): the options
 #     are the user's, so an operation keeps its own copy by value.
+#  1c. we_fileop.o does not import opendir: the only way it lists a folder is
+#     fdopendir, on a descriptor it opened by name.
+# 11. In we_fileop.c a path is resolved at the boundary and nowhere else: the
+#     calls that take a path (open, opendir, fopen, stat, lstat, access,
+#     realpath, mkdir, rmdir, rename, unlink, link, symlink, readlink,
+#     chmod, remove, chdir, truncate), the token AT_FDCWD (an *at call on
+#     the working folder is a path call), and the owner's own entry points
+#     that take a path (wpe_fileop_copy, _move, _link, _remove and their
+#     _tree forms, wpe_fileop_wastebasket_slot, fileop_parent_open), counted
+#     per function with strings and comments blanked; a function's own
+#     definition is not a call.  A walk addresses every entry by a folder's
+#     descriptor and its name, so a link met on the way is never followed.
+#     The functions that may resolve a path are lines of the allow file.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -176,6 +189,19 @@ scan() {
       while (match(t, /(^|[^A-Za-z0-9_.>])(rename|renameat|renameat2|renamex_np|renameatx_np|link|linkat|symlink|symlinkat|unlink|unlinkat|remove|rmdir|mkdir|mkdirat|chmod|fchmod|fchmodat|chown|fchown|lchown|readlink|readlinkat)[ \t]*[(]/)) {
         note("r8", 1); t = substr(t, RSTART + RLENGTH)
       }
+      # rule 11 (we_fileop.c only): a path is resolved at the boundary
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])(open|opendir|fopen|stat|lstat|access|realpath|mkdir|rmdir|rename|unlink|link|symlink|readlink|chmod|remove|chdir|truncate)[ \t]*[(]/)) {
+        note("r11", 1); t = substr(t, RSTART + RLENGTH)
+      }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])AT_FDCWD([^A-Za-z0-9_]|$)/)) { note("r11", 1); t = substr(t, RSTART + RLENGTH) }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_fileop_(copy|move|link|remove)(_tree)?|wpe_fileop_wastebasket_slot|fileop_parent_open)[ \t]*[(]/)) {
+        ident = substr(t, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", ident); sub(/[ \t]*[(]$/, "", ident)
+        if (ident != fn) note("r11", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
       # rule 9: the byte loop of a copy
       t = m
       while (match(t, /(^|[^A-Za-z0-9_])(fread|fwrite)[ \t]*[(]/)) { note("r9", 1); t = substr(t, RSTART + RLENGTH) }
@@ -301,18 +327,48 @@ int fake_options(FENSTER *f)
   return(1);
  return(0);
 }
+
+int fake_walk(int dfd, char *s, char *x)
+{
+ DIR *d = opendir(s);
+ char *say = "stat( and unlinkat(AT_FDCWD, and opendir( in a string";
+ /* opendir(x) and stat(x, &st) in a comment */
+ int fine = j->open(x) + t.stat(x) + fstatat(dfd, x, &st, 0);
+ DIR *e = fdopendir(dfd);
+ int fd = openat(dfd, x, O_RDONLY) + mkdirat(dfd, x, 0700);
+ stat(x, &st);
+ return(unlinkat(AT_FDCWD, s, 0));
+}
+
+int wpe_fileop_copy(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
+{
+ return(0);
+}
+
+int fake_entry(WalkLevel *ent)
+{
+ int rc = wpe_fileop_copy(ent->spath, ent->dpath, t->p, &e);
+ return(rc + fileop_parent_open(a, &fd, n, 9));
+}
 EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
   for want in "r2 we_fake.c fake_open 2" "r4 we_fake.c fake_dropped 5" \
               "r5 we_fake.c fake_numbers 2" "r5 we_fake.c fake_message 1" \
               "r6 we_fake.c fake_message 2" "r8 we_fake.c fake_names 3" \
-              "r9 we_fake.c fake_loop 2" "r10 we_fake.c fake_options 2"; do
+              "r9 we_fake.c fake_loop 2" "r10 we_fake.c fake_options 2" \
+              "r11 we_fake.c fake_walk 3" "r11 we_fake.c fake_entry 2"; do
     grep -qx "$want" "$WORK/fake.found" || {
       echo "check-write-owner: FAIL (selftest: the scan does not name \"$want\"; it found:)"
       cat "$WORK/fake.found"
       exit $BAD
     }
   done
+  # a function's own definition is not a call of it
+  if grep -q "^r11 we_fake.c wpe_fileop_copy " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: a definition was counted as a path call; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
   echo "check-write-owner: selftest ok"
   exit 0
 fi
@@ -341,6 +397,14 @@ if command -v "$NMTOOL" >/dev/null 2>&1 && [ -n "$OBJECTS" ]; then
         n = $0; sub(/@.*/, "", n)
         if (n == "e_write" || n == "e_eol_write") print "r1", obj, n, 1
       }'
+    # rule 1c: the names owner lists a folder only through a descriptor it
+    # opened by name.  Mach-O spells the symbol _opendir$INODE64 on x86_64.
+    [ "$base" != we_fileop.o ] ||
+    "$NMTOOL" -u "$o" 2>/dev/null | nm_undefined_source_names | awk -v obj="$base" '
+      {
+        n = $0; sub(/[@$].*/, "", n)
+        if (n == "opendir") print "r1c", obj, n, 1
+      }'
     "$NMTOOL" "$o" 2>/dev/null | awk -v obj="$base" '
       NF >= 2 && $(NF-1) == "T" {
         n = $NF; sub(/^_/, "", n)
@@ -362,9 +426,9 @@ for f in "$SRCDIR"/we_*.c "$SRCDIR"/We*.c; do
   case ${f##*/} in
     we_write.c) continue ;;
     we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10"' >> "$WORK/srcfound"; continue ;;
-    we_lineend.c) scan "$f" | awk '$1 != "r9"' >> "$WORK/srcfound"; continue ;;
+    we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11"' >> "$WORK/srcfound"; continue ;;
   esac
-  scan "$f" >> "$WORK/srcfound"
+  scan "$f" | awk '$1 != "r11"' >> "$WORK/srcfound"
 done
 {
   awk '{ print $2 "|" $1 ":" $3 "|" $4 }' "$WORK/srcfound"

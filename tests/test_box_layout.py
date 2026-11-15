@@ -9,8 +9,9 @@ middle of the new screen (grown) or an old text row on the last row
 (shrunk).  The owner stamps every saved view with the screen's size and
 puts back only a current one.
 
-The dialogs, the error box, the About and System Info boxes and the box of
-a long file operation are the owner's too (second half of the rows): each
+The dialogs, the error box and the About and System Info boxes are the
+owner's too (second half of the rows; a long file operation shows no box
+now, it names the file on the status row): each
 is placed by a rule for the screen as it is now, so a resize centres it
 again, the About and System Info boxes are centred and never reach the
 status row, a dialog the user moved keeps its place until the next resize,
@@ -267,7 +268,7 @@ def test_the_error_box_keeps_its_corner_and_follows_a_resize(tmp_path, size):
         "Return should close the error box:\n" + _screen(closed)
 
 
-# ---- the box of a long file operation -------------------------------------
+# ---- a long file operation ------------------------------------------------
 
 F3 = "\033[13~"
 ALT_M = "\033m"
@@ -276,14 +277,12 @@ ALT_R = "\033r"
 DOWN = "\033[B"
 CTRL_C_HEADER = "Remove"
 CTRL_C_NAMES = ("victim/a.txt", "victim/b.txt")
-CTRL_C_MIN_TEXT = 14           # the header's width plus eight: what the box is at least wide for
-CTRL_C_LINES = 1
 
 
 def _start_a_removal(w):
     """Options > File-Manager > Remove: No Prompt, then the file manager's
-    tree on the folder `victim` and Remove: the box of the operation says
-    which file it is on and waits for a key, once per file."""
+    tree on the folder `victim` and Remove: the operation names each file on
+    the status row and goes on by itself."""
     w.key(ALT.OPTIONS, delay=0.6)
     w.key("f", delay=0.8)
     w.key(ALT_M, delay=0.6)
@@ -294,24 +293,15 @@ def _start_a_removal(w):
     w.key(ALT_R, delay=1.0)
 
 
-def _ctrl_c_corner(rows, name):
-    """(top, left) of the Ctrl-C box that shows `name`: the frame's top row
-    carries its header, and the text starts three columns in, two rows down."""
-    for i, row in enumerate(rows):
-        col = row.find(name)
-        if col >= 0:
-            return i - 2, col - 3
-    raise AssertionError("no box names %r:\n%s" % (name, _screen(rows)))
-
-
 # @scenario SC-box-04
 @pytest.mark.parametrize("size", [(80, 30), (100, 40), (60, 20)])
-def test_the_box_of_a_file_operation_keeps_its_corner_across_a_resize(tmp_path, size):
-    """A control: removing a folder file by file shows a box that names the
-    file and waits for a key.  On the terminal a resize ends that wait (the
-    operation goes on to the next file), and the box of the next file is
-    where it was centred since 1.5.30a, for the new screen.  The files are
-    removed and no box is left behind."""
+def test_a_folder_removal_shows_no_box_and_a_resize_leaves_the_screen_whole(tmp_path, size):
+    """Removing a folder file by file no longer opens a box that waits for a
+    key per file: the earlier row asserted that box and its corner, but the
+    per-file wait was a 2026 debug leftover (1.5.30a polled for a key and
+    went on).  Now the files are removed without a key, no box with the
+    operation's header or the file names stands on the screen, and a resize
+    right after leaves the file manager whole."""
     cols, rows = size
     work = tmp_path / "work"
     (work / "victim").mkdir(parents=True)
@@ -321,20 +311,14 @@ def test_the_box_of_a_file_operation_keeps_its_corner_across_a_resize(tmp_path, 
         _start_a_removal(w)
         if size != (80, 30):
             w.resize(cols, rows, delay=1.0)
-        name = CTRL_C_NAMES[0] if size == (80, 30) else CTRL_C_NAMES[1]
-        shown = w.display()
-        w.key("x", delay=1.0)
-        w.key("x", delay=1.0)
         final = w.display()
-    top, left = _ctrl_c_corner(shown, name)
-    assert top == (rows - CTRL_C_LINES - 6) // 2, \
-        "the box is at row %d on %d rows:\n%s" % (top, rows, _screen(shown))
-    assert left == (cols - CTRL_C_MIN_TEXT - 6) // 2, \
-        "the box is at column %d on %d columns:\n%s" % (left, cols, _screen(shown))
-    assert any(CTRL_C_HEADER in r for r in shown), _screen(shown)
-    assert not os.path.exists(str(work / "victim")), "the folder was not removed"
+    assert not os.path.exists(str(work / "victim")), "the folder was not removed without a key"
     assert not any(CTRL_C_NAMES[0] in r or CTRL_C_NAMES[1] in r for r in final), \
-        "a box was left behind:\n" + _screen(final)
+        "a box naming the files stands on the screen:\n" + _screen(final)
+    assert not any(re.search("%sq+ %s q+%s" % (CORNER_TL, CTRL_C_HEADER, CORNER_TR), r) for r in final), \
+        "a box with the operation's header stands on the screen:\n" + _screen(final)
+    assert any("Directory" in r or "File-Manager" in r for r in final), \
+        "the file manager is gone after the resize:\n" + _screen(final)
 
 
 # ---- a dialog the user moved ----------------------------------------------
@@ -550,8 +534,7 @@ def test_the_boxes_on_the_owner_open_no_frame_outside_its_path(tmp_path):
         w.resize(100, 40, delay=1.0)
         w.key(ENTER, delay=0.8)
         w.key(ESC, delay=0.6)
-        _start_a_removal(w)                           # the box of a long file operation
-        w.key("x", delay=1.0)
+        _start_a_removal(w)                           # a long file operation: no box now
         w.key("x", delay=1.0)
         assert w.alive()
     around ={b: n for b, n in _outside_frames_by_box(trace).items() if b in OWNER_BOXES}

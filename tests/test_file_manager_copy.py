@@ -195,7 +195,12 @@ def test_overwrite_replaces_and_keeps_the_old_file_in_the_wastebasket(tmp_path):
 # @scenario SC-unsaved-text-30b
 def test_stopping_a_folder_copy_leaves_the_users_options(tmp_path):
     """An Esc at the replace question of a folder copy used to return with the
-    Remove question switched off for the rest of the session."""
+    Remove question switched off for the rest of the session.
+
+    Two Escapes: one answers the replace question, one closes the box that
+    says how far the copy got.  The third Escape of the earlier row ended the
+    per-file wait of the progress box, which was a 2026 debug leftover
+    (1.5.30a polled for a key and went on), and is gone."""
     wd = str(tmp_path)
     _seed(wd, PROMPT_ASK_REMOVE, {"aaa.txt": "a\n", "zz.txt": "KEEP ME\n"})
     for d in ("sd", "sdcopy"):
@@ -206,7 +211,6 @@ def test_stopping_a_folder_copy_leaves_the_users_options(tmp_path):
         _open_tree_panel(s)
         _typed(s, "sd")
         _op_to(s, ALT_O, "sdcopy")
-        s.key(ESC)
         s.key(ESC)
         s.key(ESC)
         _open_files_panel(s)

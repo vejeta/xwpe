@@ -15,6 +15,7 @@
    The bytes are the write owner's (we_write.c).  No drawing, no key reads:
    the questions go through the policy's callback. */
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -214,24 +215,36 @@ static int fileop_rename_noreplace_at(int fromfd, const char *from, int tofd, co
 
 /* --- one operation's state ------------------------------------------------ */
 
+/* One file operation works on two places and never on a path: the source is
+   the name @sname in the open folder @spfd, the destination is the name
+   @name in the open folder @dirfd.  The paths @src and @dst are words, for
+   the questions, the outcome and the text of a symbolic link; no system
+   call is given them.  A folder walk lends its descriptors to each entry's
+   job (@own_* is 0); a single file operation opens its own and closes them
+   in fileop_job_end. */
 typedef struct {
  WpeFileOpOutcome       *o;
  const WpeFileOpPolicy  *p;
- char                    src[WPE_PATH_SIZE];
- char                    dst[WPE_PATH_SIZE];   /* with a destination folder resolved */
- char                    dir[WPE_PATH_SIZE];   /* the destination's folder */
- char                    name[WPE_NAME_SIZE];  /* and its name in it */
+ char                    src[WPE_PATH_SIZE];   /* words: the source as named */
+ char                    dst[WPE_PATH_SIZE];   /* words: with a destination folder resolved */
+ char                    sname[WPE_NAME_SIZE]; /* the source's name in spfd */
+ char                    name[WPE_NAME_SIZE];  /* the destination's name in dirfd */
+ int                     spfd;
  int                     dirfd;
+ int                     own_spfd;             /* closed by fileop_job_end */
+ int                     own_dirfd;
+ int                     follow;               /* a link named as the source is followed (a single Copy) */
  struct stat             sst;                  /* the source */
  int                     dst_exists;
  int                     replace;              /* the existing destination is to be replaced */
 } FileJob;
 
-/** fileop_job_begin - Start an operation: the outcome, the policy and the source. */
+/** fileop_job_begin - Start an operation: the outcome, the policy and the words. */
 static void fileop_job_begin(FileJob *j, WpeFileOpKind kind, const char *src, const char *dst,
                              const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
 {
  memset(j, 0, sizeof *j);
+ j->spfd = -1;
  j->dirfd = -1;
  j->o = o;
  j->p = p;
@@ -240,12 +253,77 @@ static void fileop_job_begin(FileJob *j, WpeFileOpKind kind, const char *src, co
  fileop_begin(o, kind, src, dst);
 }
 
-/** fileop_job_end - Close what the operation holds. */
+/**
+ * fileop_job_aim - Point a job at two names in two open folders it does not own.
+ * Used by a folder walk, which keeps its folders open from entry to entry.
+ */
+static void fileop_job_aim(FileJob *j, int spfd, const char *sname, int dirfd, const char *name)
+{
+ j->spfd = spfd;
+ snprintf(j->sname, sizeof j->sname, "%s", sname);
+ j->dirfd = dirfd;
+ snprintf(j->name, sizeof j->name, "%s", name);
+}
+
+/** fileop_job_end - Close what the operation opened itself. */
 static void fileop_job_end(FileJob *j)
 {
- if (j->dirfd >= 0)
+ if (j->own_dirfd && j->dirfd >= 0)
   close(j->dirfd);
+ if (j->own_spfd && j->spfd >= 0)
+  close(j->spfd);
  j->dirfd = -1;
+ j->spfd = -1;
+}
+
+/**
+ * fileop_parent_open - Open the folder that holds the last name of a path the
+ * user typed, and give the name.
+ * @path: what the user typed; @fd: receives the folder; @name, @n: the name.
+ * Return: 0, or the errno.
+ *
+ * The one place a typed path is resolved (links in it are followed, the user
+ * named them).  Everything below is reached by descriptor and name.
+ */
+static int fileop_parent_open(const char *path, int *fd, char *name, size_t n)
+{
+ char dir[WPE_PATH_SIZE];
+ int err = fileop_split(path, dir, sizeof dir, name, n);
+
+ if (err != 0)
+  return(err);
+ *fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+ return(*fd < 0 ? errno : 0);
+}
+
+/**
+ * fileop_job_open_src_path - Open the folder of a source the user typed.
+ * Return: 0, or -1 (outcome set).
+ */
+static int fileop_job_open_src_path(FileJob *j)
+{
+ int err = fileop_parent_open(j->src, &j->spfd, j->sname, sizeof j->sname);
+
+ if (err != 0)
+  return(fileop_fail(j->o, WPE_FILEOP_STEP_SOURCE, err));
+ j->own_spfd = 1;
+ return(0);
+}
+
+/**
+ * fileop_job_judge_src - Judge a source that is not opened: a name, not a folder.
+ * Return: 0, or -1 (outcome set).
+ *
+ * Move and Link take a link as the name it is, so the source is looked at
+ * without following.
+ */
+static int fileop_job_judge_src(FileJob *j)
+{
+ if (fstatat(j->spfd, j->sname, &j->sst, AT_SYMLINK_NOFOLLOW) != 0)
+  return(fileop_fail(j->o, WPE_FILEOP_STEP_SOURCE, errno));
+ if (S_ISDIR(j->sst.st_mode))
+  return(fileop_not_a_file(j->o, j->src));
+ return(0);
 }
 
 /**
@@ -268,24 +346,72 @@ static int fileop_job_ask_replace(FileJob *j)
 }
 
 /**
- * fileop_job_resolve_dst - A destination that is a folder takes the file inside.
+ * fileop_job_dst_is_folder - Is the destination the user typed a folder to
+ * put the file in?
+ * @pfd, @name: the typed destination as a name in its folder.
+ * Return: 0 no (a name), 1 yes (j->dirfd is that folder), -1 (outcome set).
+ *
+ * The typed name is resolved once, here: a link that points to a folder is
+ * the folder it points to, so the file goes inside it (a name the user
+ * typed, never one a walk found); a link that points to nothing is a name
+ * and is replaced like any other.  A name written with a slash at its end
+ * can only be a folder: when there is none, nothing is made under that name.
+ */
+static int fileop_job_dst_is_folder(FileJob *j, int pfd, const char *name)
+{
+ size_t len = strlen(j->dst);
+ int fd = openat(pfd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+ int err = errno;
+
+ if (fd >= 0)
+ {
+  j->dirfd = fd;
+  return(1);
+ }
+ if (err == ENOENT || err == ENOTDIR || err == ELOOP)
+ {
+  if (len > 1 && j->dst[len - 1] == '/')
+   return(fileop_fail(j->o, WPE_FILEOP_STEP_CREATE, err == ELOOP ? ENOTDIR : err));
+  return(0);
+ }
+ return(fileop_fail(j->o, WPE_FILEOP_STEP_CREATE, err));
+}
+
+/**
+ * fileop_job_open_dst_path - Open the destination the user typed.
  * Return: 0, or -1 (outcome set).
  *
  * As cp, mv and Midnight Commander do: naming a folder as the place for a
  * file puts the file in it under its own name, and never replaces the
- * folder.  A link to a folder is a name, and is replaced like any other.
+ * folder.  The typed destination's folder is opened once; when the name is
+ * a folder, that folder is.
  */
-static int fileop_job_resolve_dst(FileJob *j)
+static int fileop_job_open_dst_path(FileJob *j)
 {
- struct stat st;
  char base[WPE_NAME_SIZE], folder[WPE_PATH_SIZE], joined[WPE_PATH_SIZE];
- int err;
+ int pfd, err, rc;
 
- if (lstat(j->dst, &st) != 0 || !S_ISDIR(st.st_mode))
+ err = fileop_parent_open(j->dst, &pfd, j->name, sizeof j->name);
+ if (err != 0)
+  return(fileop_fail(j->o, WPE_FILEOP_STEP_CREATE, err));
+ rc = fileop_job_dst_is_folder(j, pfd, j->name);
+ if (rc < 0)
+ {
+  close(pfd);
+  return(-1);
+ }
+ j->own_dirfd = 1;
+ if (rc == 0)
+ {
+  j->dirfd = pfd;
   return(0);
+ }
+ close(pfd);
  err = fileop_split(j->src, folder, sizeof folder, base, sizeof base);
  if (err == 0 && wpe_path_join(joined, sizeof joined, j->dst, base) != 0)
   err = ENAMETOOLONG;
+ if (err == 0)
+  snprintf(j->name, sizeof j->name, "%s", base);
  if (err != 0)
   return(fileop_fail(j->o, WPE_FILEOP_STEP_CREATE, err));
  snprintf(j->dst, sizeof j->dst, "%s", joined);
@@ -294,30 +420,41 @@ static int fileop_job_resolve_dst(FileJob *j)
 }
 
 /**
- * fileop_job_open_dst - Decide what the destination is and whether it goes.
+ * fileop_job_names_target_of_source - Is the destination the file the
+ * source link points to?
+ * @st: the destination's own status.
+ *
+ * A Move or a Link of a link onto the file it points to would replace that
+ * file with the link, which then points to itself and the data is gone; it
+ * is the same file, as GNU mv says.  A Copy of a file opened its source
+ * already, so its status is the target's and the plain comparison caught
+ * it; only a source judged as a link needs this.  The target is only looked
+ * at, never written.
+ */
+static int fileop_job_names_target_of_source(const FileJob *j, const struct stat *st)
+{
+ struct stat target;
+
+ if (!S_ISLNK(j->sst.st_mode))
+  return(0);
+ if (fstatat(j->spfd, j->sname, &target, 0) != 0)
+  return(0);
+ return(target.st_dev == st->st_dev && target.st_ino == st->st_ino);
+}
+
+/**
+ * fileop_job_judge_dst - Decide what the destination is and whether it goes.
  * Return: 0 to go on, -1 when the operation ended (outcome set).
  *
- * Opens the destination's folder once and works through it from here on.
- * The same file as the source, a device, a pipe or a socket in the way,
+ * Looks at the name in the destination's folder without following it.  The
+ * same file as the source, a device, a pipe or a socket in the way,
  * "Don't overwrite" and the user's answer end the operation before
  * anything is written.
  */
-static int fileop_job_open_dst(FileJob *j)
+static int fileop_job_judge_dst(FileJob *j)
 {
  struct stat st;
- int err;
 
- if (fileop_job_resolve_dst(j) != 0)
-  return(-1);
- err = fileop_split(j->dst, j->dir, sizeof j->dir, j->name, sizeof j->name);
- if (err == 0)
- {
-  j->dirfd = open(j->dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (j->dirfd < 0)
-   err = errno;
- }
- if (err != 0)
-  return(fileop_fail(j->o, WPE_FILEOP_STEP_CREATE, err));
  if (fstatat(j->dirfd, j->name, &st, AT_SYMLINK_NOFOLLOW) != 0)
  {
   if (errno != ENOENT)
@@ -326,6 +463,8 @@ static int fileop_job_open_dst(FileJob *j)
  }
  j->dst_exists = 1;
  if (st.st_dev == j->sst.st_dev && st.st_ino == j->sst.st_ino)
+  return(fileop_fail(j->o, WPE_FILEOP_STEP_SAME_FILE, 0));
+ if (fileop_job_names_target_of_source(j, &st))
   return(fileop_fail(j->o, WPE_FILEOP_STEP_SAME_FILE, 0));
  if (!S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode))
   return(fileop_not_a_file(j->o, j->dst));
@@ -339,10 +478,10 @@ static int fileop_job_open_dst(FileJob *j)
 
 /* --- links and the wastebasket -------------------------------------------- */
 
-/** fileop_link_text - What the link at @path points to.  Return: 0 or the errno. */
-static int fileop_link_text(const char *path, char *out, size_t n)
+/** fileop_link_text - What the link @sname in the open folder @sfd points to.  Return: 0 or the errno. */
+static int fileop_link_text(int sfd, const char *sname, char *out, size_t n)
 {
- ssize_t got = readlink(path, out, n - 1);
+ ssize_t got = readlinkat(sfd, sname, out, n - 1);
 
  if (got < 0)
   return(errno);
@@ -352,11 +491,15 @@ static int fileop_link_text(const char *path, char *out, size_t n)
  return(0);
 }
 
-/** fileop_copy_link - Make the link @path again as @name in a folder, with the same text. */
-static int fileop_copy_link(const char *path, int dirfd, const char *name)
+/**
+ * fileop_copy_link - Make the link (@sfd, @sname) again as (@dirfd, @name),
+ * with the same text.
+ * Return: 0, or the errno.
+ */
+static int fileop_copy_link(int sfd, const char *sname, int dirfd, const char *name)
 {
  char text[WPE_PATH_SIZE];
- int err = fileop_link_text(path, text, sizeof text);
+ int err = fileop_link_text(sfd, sname, text, sizeof text);
 
  if (err != 0)
   return(err);
@@ -366,17 +509,23 @@ static int fileop_copy_link(const char *path, int dirfd, const char *name)
 }
 
 /**
- * fileop_wastebasket_name - The try-th name for @name in the wastebasket:
+ * fileop_wastebasket_leaf - The try-th name for @name in the wastebasket:
  * `name`, `name.1`, `name.2`, ...
  */
+static void fileop_wastebasket_leaf(char *leaf, size_t n, const char *name, int try)
+{
+ if (try == 0)
+  snprintf(leaf, n, "%s", name);
+ else
+  snprintf(leaf, n, "%s.%d", name, try);
+}
+
+/** fileop_wastebasket_name - The try-th path for @name in the wastebasket. */
 static int fileop_wastebasket_name(char *out, size_t n, const char *wb, const char *name, int try)
 {
  char leaf[WPE_NAME_SIZE + 16];
 
- if (try == 0)
-  snprintf(leaf, sizeof leaf, "%s", name);
- else
-  snprintf(leaf, sizeof leaf, "%s.%d", name, try);
+ fileop_wastebasket_leaf(leaf, sizeof leaf, name, try);
  return(wpe_path_join(out, n, wb, leaf));
 }
 
@@ -459,6 +608,89 @@ int wpe_fileop_in_wastebasket(const char *path)
  return(strncmp(real_dir, real_wb, len) == 0 && (real_dir[len] == '\0' || real_dir[len] == '/'));
 }
 
+static int fileop_entry_copy(FileJob *j);
+
+/** The wastebasket's open folder and the name taken in it. */
+typedef struct {
+ int  fd;
+ char leaf[WPE_NAME_SIZE + 16];
+} WasteSlot;
+
+/**
+ * fileop_wastebasket_open - Open the wastebasket, made and checked as ours,
+ * without following a link.
+ * Return: 0, or the errno.
+ */
+static int fileop_wastebasket_open(char *wb, size_t n, int *fd)
+{
+ WpeFileOpOutcome w;
+
+ if (wpe_fileop_wastebasket(wb, n, &w) != 0)
+  return(w.err != 0 ? w.err : EIO);
+ *fd = open(wb, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+ return(*fd < 0 ? errno : 0);
+}
+
+/**
+ * fileop_stash_link - Give the destination a second name in the wastebasket.
+ * Return: 0, EEXIST when every name is taken, else the errno that says a
+ * link cannot be made there (another file system).
+ */
+static int fileop_stash_link(FileJob *j, WasteSlot *w)
+{
+ int i, err = EEXIST;
+
+ for (i = 0; i < FILEOP_TRIES; i++)
+ {
+  fileop_wastebasket_leaf(w->leaf, sizeof w->leaf, j->name, i);
+  if (linkat(j->dirfd, j->name, w->fd, w->leaf, 0) == 0)
+   return(0);
+  err = errno;
+  if (err != EEXIST)
+   break;
+ }
+ return(err);
+}
+
+/**
+ * fileop_stash_copy - Keep a copy of the destination in the wastebasket when
+ * a link cannot be made: the link again, or the file's bytes.
+ * Return: 0, or the errno.
+ *
+ * The destination is read by its name in its folder and without following
+ * a link, so a folder swapped for a link meanwhile is not read through.
+ */
+static int fileop_stash_copy(FileJob *j, WasteSlot *w)
+{
+ FileJob c;
+ WpeFileOpOutcome oc;
+ WpeFileOpPolicy inner;
+ struct stat st;
+ int i, err;
+
+ for (i = 0; i < FILEOP_TRIES; i++)
+ {
+  fileop_wastebasket_leaf(w->leaf, sizeof w->leaf, j->name, i);
+  if (fstatat(w->fd, w->leaf, &st, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT)
+   break;
+ }
+ if (i == FILEOP_TRIES)
+  return(EEXIST);
+ if (fstatat(j->dirfd, j->name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+  return(errno);
+ if (S_ISLNK(st.st_mode))
+  return(fileop_copy_link(j->dirfd, j->name, w->fd, w->leaf));
+ memset(&inner, 0, sizeof inner);
+ inner.replace = WPE_REPLACE_NEVER;
+ inner.remove = WPE_REMOVE_NOW;
+ fileop_job_begin(&c, WPE_FILEOP_COPY, j->dst, w->leaf, &inner, &oc);
+ fileop_job_aim(&c, j->dirfd, j->name, w->fd, w->leaf);
+ err = fileop_entry_copy(&c);
+ if (err != 0)
+  return(oc.err != 0 ? oc.err : EIO);
+ return(0);
+}
+
 /**
  * fileop_job_stash - Keep the destination about to be replaced in the wastebasket.
  * @aside: receives the name it was kept under.
@@ -467,43 +699,29 @@ int wpe_fileop_in_wastebasket(const char *path)
  * The old file is given a second name there before the new one takes its
  * name (a link, or a copy when the wastebasket is on another file system),
  * so that a failed replacement can drop that name again and leave
- * everything as it was.  Never over an earlier file of the same name.
+ * everything as it was.  Never over an earlier file of the same name.  The
+ * old file is addressed as its name in its folder; only the wastebasket,
+ * which the owner names itself, is a path.
  */
 static int fileop_job_stash(FileJob *j, char *aside, size_t n)
 {
  char wb[WPE_PATH_SIZE];
- WpeFileOpOutcome w, c;
- WpeFileOpPolicy inner;
- int i, err = 0;
+ WasteSlot w;
+ int err;
 
- if (wpe_fileop_wastebasket(wb, sizeof wb, &w) != 0)
-  return(w.err != 0 ? w.err : EIO);
- for (i = 0; i < FILEOP_TRIES; i++)
- {
-  if (fileop_wastebasket_name(aside, n, wb, j->name, i) != 0)
-   return(ENAMETOOLONG);
-  if (linkat(j->dirfd, j->name, AT_FDCWD, aside, 0) == 0)
-   return(0);
-  err = errno;
-  if (err != EEXIST)
-   break;
- }
- if (err == EEXIST)
+ err = fileop_wastebasket_open(wb, sizeof wb, &w.fd);
+ if (err != 0)
   return(err);
- if (wpe_fileop_wastebasket_slot(j->dst, aside, n, &w) != 0)
-  return(w.err != 0 ? w.err : EIO);
- memset(&inner, 0, sizeof inner);
- inner.replace = WPE_REPLACE_NEVER;
- inner.remove = WPE_REMOVE_NOW;
+ err = fileop_stash_link(j, &w);
+ if (err != 0 && err != EEXIST)
+  err = fileop_stash_copy(j, &w);
+ if (err == 0 && wpe_path_join(aside, n, wb, w.leaf) != 0)
  {
-  struct stat st;
-
-  if (fstatat(j->dirfd, j->name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(st.st_mode))
-   return(fileop_copy_link(j->dst, AT_FDCWD, aside));
+  (void)unlinkat(w.fd, w.leaf, 0);
+  err = ENAMETOOLONG;
  }
- if (wpe_fileop_copy(j->dst, aside, &inner, &c) != 0)
-  return(c.err != 0 ? c.err : EIO);
- return(0);
+ close(w.fd);
+ return(err);
 }
 
 /**
@@ -583,9 +801,9 @@ static int fileop_job_place(FileJob *j, int fromfd, const char *from, int is_tem
  */
 static int fileop_open_source(FileJob *j, int *fd)
 {
- int flags;
+ int flags, nofollow = (j->follow ? 0 : O_NOFOLLOW);
 
- *fd = open(j->src, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+ *fd = openat(j->spfd, j->sname, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC | nofollow);
  if (*fd < 0)
   return(fileop_fail(j->o, WPE_FILEOP_STEP_SOURCE, errno));
  if (fstat(*fd, &j->sst) != 0)
@@ -693,22 +911,59 @@ static int fileop_job_copy_in(FileJob *j, int sfd, int durable)
  return(rc == 0 ? 0 : -1);
 }
 
+/**
+ * fileop_entry_copy_from - Copy an opened source over what is at the
+ * destination name, under the policy.
+ * @sfd: the open source; it is closed here.
+ * Return: 0, or -1 (outcome set).
+ */
+static int fileop_entry_copy_from(FileJob *j, int sfd)
+{
+ int rc = fileop_job_judge_dst(j);
+
+ if (rc == 0)
+  rc = fileop_job_copy_in(j, sfd, 0);
+ close(sfd);
+ return(rc == 0 ? 0 : -1);
+}
+
+/**
+ * fileop_entry_copy - Copy the file (j->spfd, j->sname) to (j->dirfd, j->name).
+ * Return: 0, or -1 (outcome set).
+ *
+ * The source is opened by its name in its folder without following a link
+ * (a single Copy of a link the user named follows it, once).
+ */
+static int fileop_entry_copy(FileJob *j)
+{
+ int sfd;
+
+ if (fileop_open_source(j, &sfd) != 0)
+  return(-1);
+ return(fileop_entry_copy_from(j, sfd));
+}
+
 int wpe_fileop_copy(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
 {
  FileJob j;
  int sfd, rc;
 
  fileop_job_begin(&j, WPE_FILEOP_COPY, src, dst, p, o);
- if (fileop_open_source(&j, &sfd) != 0)
+ j.follow = 1;
+ if (fileop_job_open_src_path(&j) != 0)
   return(-1);
- if (fileop_job_open_dst(&j) != 0)
+ if (fileop_open_source(&j, &sfd) != 0)
+ {
+  fileop_job_end(&j);
+  return(-1);
+ }
+ if (fileop_job_open_dst_path(&j) != 0)
  {
   close(sfd);
   fileop_job_end(&j);
   return(-1);
  }
- rc = fileop_job_copy_in(&j, sfd, 0);
- close(sfd);
+ rc = fileop_entry_copy_from(&j, sfd);
  fileop_job_end(&j);
  return(rc);
 }
@@ -729,7 +984,7 @@ static int fileop_job_copy_link_in(FileJob *j)
  {
   err = fileop_temp_name(tmp, sizeof tmp, j->name, serial++);
   if (err == 0)
-   err = fileop_copy_link(j->src, j->dirfd, tmp);
+   err = fileop_copy_link(j->spfd, j->sname, j->dirfd, tmp);
  }
  if (err != 0)
   return(fileop_fail(j->o, WPE_FILEOP_STEP_CREATE, err));
@@ -753,7 +1008,7 @@ static int fileop_job_finish_move(FileJob *j)
   return(fileop_fail(o, WPE_FILEOP_STEP_CLOSE, errno));
  if (fileop_test_hook(FILEOP_HOOK_REMOVE_SOURCE))
   return(fileop_fail(o, WPE_FILEOP_STEP_REMOVE_SOURCE, EACCES));
- if (unlinkat(AT_FDCWD, j->src, 0) != 0)
+ if (unlinkat(j->spfd, j->sname, 0) != 0)
   return(fileop_fail(o, WPE_FILEOP_STEP_REMOVE_SOURCE, errno));
  o->src_kept = 0;
  return(0);
@@ -781,28 +1036,44 @@ static int fileop_job_move_across(FileJob *j)
  return(fileop_job_finish_move(j));
 }
 
+/**
+ * fileop_entry_move - Move the entry (j->spfd, j->sname) to (j->dirfd, j->name).
+ * Return: 0, or -1 (outcome set).
+ *
+ * @j->sst is what the entry was judged to be.  On one file system the name
+ * is renamed from its folder to the destination's folder; across file
+ * systems it is copied and then removed, by the same folder and name.
+ */
+static int fileop_entry_move(FileJob *j)
+{
+ int rc = fileop_job_judge_dst(j);
+
+ if (rc != 0)
+  return(-1);
+ rc = fileop_job_place(j, j->spfd, j->sname, 0);
+ if (rc == 0)
+  j->o->src_kept = 0;
+ else if (rc == 1)
+  rc = fileop_job_move_across(j);
+ return(rc == 0 ? 0 : -1);
+}
+
 int wpe_fileop_move(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
 {
  FileJob j;
  int rc;
 
  fileop_job_begin(&j, WPE_FILEOP_MOVE, src, dst, p, o);
- if (lstat(j.src, &j.sst) != 0)
-  return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, errno));
- if (S_ISDIR(j.sst.st_mode))
-  return(fileop_not_a_file(o, j.src));
- if (fileop_job_open_dst(&j) != 0)
+ if (fileop_job_open_src_path(&j) != 0)
+  return(-1);
+ if (fileop_job_judge_src(&j) != 0 || fileop_job_open_dst_path(&j) != 0)
  {
   fileop_job_end(&j);
   return(-1);
  }
- rc = fileop_job_place(&j, AT_FDCWD, j.src, 0);
- if (rc == 0)
-  o->src_kept = 0;
- else if (rc == 1)
-  rc = fileop_job_move_across(&j);
+ rc = fileop_entry_move(&j);
  fileop_job_end(&j);
- return(rc == 0 ? 0 : -1);
+ return(rc);
 }
 
 /* --- the link ------------------------------------------------------------- */
@@ -814,9 +1085,16 @@ int wpe_fileop_move(const char *src, const char *dst, const WpeFileOpPolicy *p, 
  */
 static int fileop_try_link(FileJob *j, const char *tmp)
 {
+#ifdef NOSYMLINKS
+ /* a system without symbolic links: a hard link, or the reason it was not made */
+ if (linkat(j->spfd, j->sname, j->dirfd, tmp, 0) != 0)
+  return(errno);
+ return(0);
+#else
  if (j->p->hardlink_first)
  {
-  if (linkat(AT_FDCWD, j->src, j->dirfd, tmp, 0) == 0)
+  /* no AT_SYMLINK_FOLLOW: a link gives a hard link to the link, never to its target */
+  if (linkat(j->spfd, j->sname, j->dirfd, tmp, 0) == 0)
    return(0);
   if (errno == EEXIST)
    return(EEXIST);
@@ -825,6 +1103,7 @@ static int fileop_try_link(FileJob *j, const char *tmp)
  if (symlinkat(j->src, j->dirfd, tmp) != 0)
   return(errno);
  return(0);
+#endif
 }
 
 /**
@@ -855,25 +1134,41 @@ static int fileop_job_make_link(FileJob *j, char *tmp, size_t n)
  return(0);
 }
 
+/**
+ * fileop_entry_link - Link the entry (j->spfd, j->sname) at (j->dirfd, j->name).
+ * Return: 0, or -1 (outcome set).
+ *
+ * @j->sst is what the entry was judged to be.  A hard link to a link is a
+ * link to the link itself, never to what it points to.
+ */
+static int fileop_entry_link(FileJob *j)
+{
+ char tmp[WPE_NAME_SIZE];
+ int rc = fileop_job_judge_dst(j);
+
+ if (rc == 0)
+  rc = fileop_job_make_link(j, tmp, sizeof tmp);
+ if (rc == 0)
+  rc = fileop_job_place(j, j->dirfd, tmp, 1);
+ return(rc == 0 ? 0 : -1);
+}
+
 int wpe_fileop_link(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
 {
  FileJob j;
- char tmp[WPE_NAME_SIZE];
  int rc;
 
  fileop_job_begin(&j, WPE_FILEOP_LINK, src, dst, p, o);
- if (lstat(j.src, &j.sst) != 0)
-  return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, errno));
- if (fileop_job_open_dst(&j) != 0)
+ if (fileop_job_open_src_path(&j) != 0)
+  return(-1);
+ if (fileop_job_judge_src(&j) != 0 || fileop_job_open_dst_path(&j) != 0)
  {
   fileop_job_end(&j);
   return(-1);
  }
- rc = fileop_job_make_link(&j, tmp, sizeof tmp);
- if (rc == 0)
-  rc = fileop_job_place(&j, j.dirfd, tmp, 1);
+ rc = fileop_entry_link(&j);
  fileop_job_end(&j);
- return(rc == 0 ? 0 : -1);
+ return(rc);
 }
 
 /* --- remove, folders, permissions ----------------------------------------- */
@@ -900,32 +1195,63 @@ static int fileop_remove_into_wastebasket(const char *path, WpeFileOpOutcome *o)
  return(0);
 }
 
+/**
+ * fileop_remove_answer - May this file go?  What the Remove rule and the
+ * user say.
+ * Return: a WPE_FILEOP_ANSWER_*; YES without a question unless the rule asks.
+ */
+static int fileop_remove_answer(const WpeFileOpPolicy *p, const char *path)
+{
+ char question[WPE_PATH_SIZE + 32];
+
+ if (p->remove != WPE_REMOVE_ASK)
+  return(WPE_FILEOP_ANSWER_YES);
+ snprintf(question, sizeof question, "Remove File:\n%s", path);
+ if (p->ask == NULL)
+  return(WPE_FILEOP_ANSWER_NO);
+ return(p->ask(p->ctx, question));
+}
+
 int wpe_fileop_remove(const char *path, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
 {
  struct stat st;
- char question[WPE_PATH_SIZE + 32];
- int answer;
+ char name[WPE_NAME_SIZE];
+ int pfd, err, answer;
 
  fileop_begin(o, WPE_FILEOP_REMOVE, path, "");
- if (lstat(path, &st) != 0)
-  return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, errno));
- if (S_ISDIR(st.st_mode))
-  return(fileop_not_a_file(o, path));
- if (p->remove == WPE_REMOVE_WASTEBASKET && !wpe_fileop_in_wastebasket(path))
-  return(fileop_remove_into_wastebasket(path, o));
- if (p->remove == WPE_REMOVE_ASK)
+ err = fileop_parent_open(path, &pfd, name, sizeof name);
+ if (err != 0)
+  return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, err));
+ if (fstatat(pfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
  {
-  snprintf(question, sizeof question, "Remove File:\n%s", path);
-  answer = (p->ask != NULL ? p->ask(p->ctx, question) : WPE_FILEOP_ANSWER_NO);
-  if (answer == WPE_FILEOP_ANSWER_STOP)
-   return(fileop_fail(o, WPE_FILEOP_STEP_CANCELLED, 0));
-  if (answer != WPE_FILEOP_ANSWER_YES)
-   return(fileop_decline(o, WPE_FILEOP_STEP_NONE));
+  err = errno;
+  close(pfd);
+  return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, err));
  }
- if (unlink(path) != 0)
-  return(fileop_fail(o, WPE_FILEOP_STEP_REMOVE, errno));
- o->src_kept = 0;
- return(0);
+ if (S_ISDIR(st.st_mode))
+ {
+  close(pfd);
+  return(fileop_not_a_file(o, path));
+ }
+ if (p->remove == WPE_REMOVE_WASTEBASKET && !wpe_fileop_in_wastebasket(path))
+ {
+  close(pfd);
+  return(fileop_remove_into_wastebasket(path, o));
+ }
+ answer = fileop_remove_answer(p, path);
+ if (answer == WPE_FILEOP_ANSWER_STOP)
+  err = fileop_fail(o, WPE_FILEOP_STEP_CANCELLED, 0);
+ else if (answer != WPE_FILEOP_ANSWER_YES)
+  err = fileop_decline(o, WPE_FILEOP_STEP_NONE);
+ else if (unlinkat(pfd, name, 0) != 0)
+  err = fileop_fail(o, WPE_FILEOP_STEP_REMOVE, errno);
+ else
+ {
+  o->src_kept = 0;
+  err = 0;
+ }
+ close(pfd);
+ return(err);
 }
 
 int wpe_fileop_mkdir(const char *path, mode_t mode, WpeFileOpOutcome *o)
@@ -968,6 +1294,998 @@ int wpe_fileop_rename_noreplace(const char *src, const char *dst, WpeFileOpOutco
  return(0);
 }
 
+/* --- folders -------------------------------------------------------------- */
+
+/* A folder operation takes the folder whole.  One walker (fileop_walk)
+   enters every folder, for Copy, Move, Link, Remove and for the count that
+   comes first.  The two folders the user named are opened once, from the
+   paths typed; below them every folder is opened by its name in its parent
+   with O_DIRECTORY | O_NOFOLLOW, and every entry is judged and used by that
+   folder's descriptor and its name, never by a path.  So a link, wherever
+   it sits (source or destination) and whenever it appears, is a name:
+   copied, moved, linked or removed as a name, never entered and never
+   written through.  The paths of a walk are words, for the progress line
+   and the sentence (tests/check-write-owner.sh, rule 11). */
+
+typedef struct {
+ const WpeFileOpPolicy *p;
+ WpeFileOpOutcome      *o;
+ WpeFileOpKind          kind;
+ int                    counting;   /* the walk only counts, and changes nothing */
+ long                   done, skipped, total;
+} FileTree;
+
+/** One folder, or one entry, of a walk: where it is and where it goes. */
+typedef struct {
+ int  spfd;                   /* the open folder that holds the source */
+ int  dpfd;                   /* the open folder that holds the destination, or -1 */
+ int  sfd;                    /* the source folder itself, once opened */
+ int  dfd;                    /* the destination folder itself, once opened (-1: not yet) */
+ int  made;                   /* this walk made the destination folder */
+ int  follow;                 /* the top level source is a link to follow, once */
+ int  depth;                  /* folders above this one */
+ char sname[WPE_NAME_SIZE];   /* the source's name in spfd */
+ char dname[WPE_NAME_SIZE];   /* the destination's name in dpfd */
+ char spath[WPE_PATH_SIZE];   /* words: the source's path */
+ char dpath[WPE_PATH_SIZE];   /* words: the destination's path, "" for a Remove */
+} WalkLevel;
+
+/** The names of one folder, sorted, without "." and "..". */
+typedef struct {
+ char **name;
+ int    n;
+} NameList;
+
+/** fileop_tree_verb - The word the progress callback is given. */
+static const char *fileop_tree_verb(WpeFileOpKind kind)
+{
+ switch (kind)
+ {
+ case WPE_FILEOP_MOVE:   return("Move");
+ case WPE_FILEOP_LINK:   return("Link");
+ case WPE_FILEOP_REMOVE: return("Remove");
+ default:                return("Copy");
+ }
+}
+
+/** fileop_names_free - Give back a list of names. */
+static void fileop_names_free(NameList *l)
+{
+ int i;
+
+ for (i = 0; i < l->n; i++)
+  free(l->name[i]);
+ free(l->name);
+ l->name = NULL;
+ l->n = 0;
+}
+
+static int fileop_names_cmp(const void *a, const void *b)
+{
+ return(strcmp(*(char *const *)a, *(char *const *)b));
+}
+
+/**
+ * fileop_names_read - Read all the names of an open folder, before any is
+ * changed, so that removing entries does not disturb the reading.
+ * Return: 0, or the errno.
+ */
+static int fileop_names_read(DIR *d, NameList *l)
+{
+ struct dirent *e;
+ char **grown;
+ int cap = 0;
+
+ l->name = NULL;
+ l->n = 0;
+ for (;;)
+ {
+  errno = 0;
+  e = readdir(d);
+  if (e == NULL)
+   break;
+  if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+   continue;
+  if (l->n == cap)
+  {
+   cap = (cap != 0 ? 2 * cap : 32);
+   grown = realloc(l->name, (size_t)cap * sizeof *grown);
+   if (grown == NULL)
+   {
+    fileop_names_free(l);
+    return(ENOMEM);
+   }
+   l->name = grown;
+  }
+  l->name[l->n] = strdup(e->d_name);
+  if (l->name[l->n] == NULL)
+  {
+   fileop_names_free(l);
+   return(ENOMEM);
+  }
+  l->n++;
+ }
+ if (errno != 0)
+ {
+  int err = errno;
+
+  fileop_names_free(l);
+  return(err);
+ }
+ if (l->n > 1)
+  qsort(l->name, (size_t)l->n, sizeof *l->name, fileop_names_cmp);
+ return(0);
+}
+
+/**
+ * fileop_tree_fail - A step of a folder operation failed on an entry.
+ * Return: -1.
+ */
+static int fileop_tree_fail(FileTree *t, WpeFileOpStep step, int err, const char *src, const char *dst)
+{
+ snprintf(t->o->src, sizeof t->o->src, "%s", src);
+ snprintf(t->o->dst, sizeof t->o->dst, "%s", dst);
+ t->o->src_kept = 0;
+ t->o->dst_kept = 0;
+ return(fileop_fail(t->o, step, err));
+}
+
+/** fileop_tree_stop - The user ended the folder operation.  Return: -1. */
+static int fileop_tree_stop(FileTree *t, const char *src, const char *dst)
+{
+ return(fileop_tree_fail(t, WPE_FILEOP_STEP_STOPPED, 0, src, dst));
+}
+
+/** fileop_tree_not_a_folder - @path is not the folder it should be.  Return: -1. */
+static int fileop_tree_not_a_folder(WpeFileOpOutcome *o, const char *path)
+{
+ snprintf(o->bad, sizeof o->bad, "%s", path);
+ return(fileop_fail(o, WPE_FILEOP_STEP_NOT_A_FOLDER, 0));
+}
+
+/**
+ * fileop_names_read_fd - Read all the names of the open folder @fd.
+ * Return: 0, or the errno.
+ *
+ * The folder is read through a copy of the descriptor, which the reading
+ * closes; @fd stays open for the calls that name entries relative to it.
+ */
+static int fileop_names_read_fd(int fd, NameList *l)
+{
+ DIR *d;
+ int err, copy = dup(fd);
+
+ if (copy < 0)
+  return(errno);
+ d = fdopendir(copy);
+ if (d == NULL)
+ {
+  err = errno;
+  close(copy);
+  return(err);
+ }
+ err = fileop_names_read(d, l);
+ closedir(d);
+ return(err);
+}
+
+/**
+ * fileop_tree_inside - Is @dst the folder @src or a place inside it?
+ * Return: 0 no, 1 the same folder, 2 inside it.
+ *
+ * Judged on the real paths, so a link in the way does not hide it.  A
+ * destination that is not there yet is its folder's real path and its name.
+ */
+static int fileop_tree_inside(const char *src, const char *dst)
+{
+ char rs[WPE_PATH_SIZE], rd[WPE_PATH_SIZE], dir[WPE_PATH_SIZE], parent[WPE_PATH_SIZE];
+ char name[WPE_NAME_SIZE];
+ size_t len;
+
+ if (realpath(src, rs) == NULL)
+  return(0);
+ if (realpath(dst, rd) == NULL)
+ {
+  if (fileop_split(dst, dir, sizeof dir, name, sizeof name) != 0 || realpath(dir, parent) == NULL ||
+      wpe_path_join(rd, sizeof rd, parent, name) != 0)
+   return(0);
+ }
+ len = strlen(rs);
+ if (strcmp(rs, rd) == 0)
+  return(1);
+ if (strncmp(rd, rs, len) == 0 && (len == 1 || rd[len] == '/'))
+  return(2);
+ return(0);
+}
+
+/**
+ * fileop_walk_fail - A step of the walk failed on the folder or entry @lv.
+ * Return: -1.
+ *
+ * The count that comes first says why it failed and leaves the paths of the
+ * outcome as the user typed them.
+ */
+static int fileop_walk_fail(FileTree *t, WpeFileOpStep step, int err, const WalkLevel *lv)
+{
+ if (t->counting)
+  return(fileop_fail(t->o, step, err));
+ return(fileop_tree_fail(t, step, err, lv->spath, lv->dpath));
+}
+
+/** fileop_level_init - A level that holds nothing yet. */
+static void fileop_level_init(WalkLevel *lv, int depth)
+{
+ lv->spfd = -1;
+ lv->dpfd = -1;
+ lv->sfd = -1;
+ lv->dfd = -1;
+ lv->made = 0;
+ lv->follow = 0;
+ lv->depth = depth;
+ lv->sname[0] = '\0';
+ lv->dname[0] = '\0';
+ lv->spath[0] = '\0';
+ lv->dpath[0] = '\0';
+}
+
+/** fileop_level_close - Close the folders this level opened itself. */
+static void fileop_level_close(WalkLevel *lv)
+{
+ if (lv->sfd >= 0)
+  close(lv->sfd);
+ if (lv->dfd >= 0)
+  close(lv->dfd);
+ lv->sfd = -1;
+ lv->dfd = -1;
+}
+
+/** fileop_level_release - Close the folders the top level was handed. */
+static void fileop_level_release(WalkLevel *lv)
+{
+ if (lv->spfd >= 0)
+  close(lv->spfd);
+ if (lv->dpfd >= 0)
+  close(lv->dpfd);
+ lv->spfd = -1;
+ lv->dpfd = -1;
+}
+
+/**
+ * fileop_level_child - Make the level of the entry @name of the open folder @lv.
+ * Return: 0, or -1 when a path would be too long.
+ */
+static int fileop_level_child(WalkLevel *c, const WalkLevel *lv, const char *name)
+{
+ int bad;
+
+ fileop_level_init(c, lv->depth + 1);
+ c->spfd = lv->sfd;
+ c->dpfd = lv->dfd;
+ snprintf(c->sname, sizeof c->sname, "%s", name);
+ snprintf(c->dname, sizeof c->dname, "%s", name);
+ bad = wpe_path_join(c->spath, sizeof c->spath, lv->spath, name);
+ if (lv->dpath[0] != '\0' && wpe_path_join(c->dpath, sizeof c->dpath, lv->dpath, name) != 0)
+  bad = 1;
+ return(bad != 0 ? -1 : 0);
+}
+
+/**
+ * fileop_entry_changed - Is the entry another kind than it was judged to be, or gone?
+ * @judged: its mode when it was judged.
+ */
+static int fileop_entry_changed(int pfd, const char *name, mode_t judged)
+{
+ struct stat now;
+
+ if (fstatat(pfd, name, &now, AT_SYMLINK_NOFOLLOW) != 0)
+  return(errno == ENOENT);
+ return((now.st_mode & S_IFMT) != (judged & S_IFMT));
+}
+
+/**
+ * fileop_walk_source_failed - The source entry could not be opened after it
+ * was judged.
+ * @judged: its mode when it was judged; @err: why the open failed.
+ * Return: -1 (outcome set).
+ *
+ * When it is now another kind of thing, or gone, someone changed the folder
+ * while it was being walked: the walk stops, says so, and has touched
+ * nothing it was not given.  Otherwise it is the plain error.
+ */
+static int fileop_walk_source_failed(FileTree *t, const WalkLevel *lv, mode_t judged, int err)
+{
+ if (!lv->follow && fileop_entry_changed(lv->spfd, lv->sname, judged))
+  return(fileop_walk_fail(t, WPE_FILEOP_STEP_CHANGED, err, lv));
+ return(fileop_walk_fail(t, WPE_FILEOP_STEP_SOURCE, err, lv));
+}
+
+/**
+ * fileop_folder_open - Open the source folder by its name in its parent
+ * without following a link.
+ * Return: 0, or -1 (outcome set).
+ */
+static int fileop_folder_open(FileTree *t, WalkLevel *lv)
+{
+ int nofollow = (lv->follow ? 0 : O_NOFOLLOW);
+
+ lv->sfd = openat(lv->spfd, lv->sname, O_RDONLY | O_DIRECTORY | O_CLOEXEC | nofollow);
+ if (lv->sfd < 0)
+  return(fileop_walk_source_failed(t, lv, S_IFDIR, errno));
+ return(0);
+}
+
+/**
+ * fileop_folder_dst_failed - The destination folder could not be opened.
+ * @err: why.
+ * Return: -1 (outcome set).
+ *
+ * Only a name that is not a folder, a link included, says "is not a
+ * folder"; a folder that cannot be searched or a full table of open files
+ * says what it is.
+ */
+static int fileop_folder_dst_failed(FileTree *t, const WalkLevel *lv, int err)
+{
+ struct stat st;
+
+ if (fstatat(lv->dpfd, lv->dname, &st, AT_SYMLINK_NOFOLLOW) == 0 && !S_ISDIR(st.st_mode))
+  return(fileop_tree_not_a_folder(t->o, lv->dpath));
+ return(fileop_walk_fail(t, WPE_FILEOP_STEP_MKDIR, err, lv));
+}
+
+/**
+ * fileop_folder_enter_dst - Make the folder an entry's contents go into, or
+ * merge into the one that is there, and open it.
+ * Return: 0, or -1 (outcome set).
+ *
+ * The kernel judges the name: it is opened without following a link, so a
+ * link in the destination is not a folder to merge into and nothing is
+ * written through it.  A new folder is made private; it gets the source's
+ * permissions when it is filled.
+ */
+static int fileop_folder_enter_dst(FileTree *t, WalkLevel *lv)
+{
+ if (mkdirat(lv->dpfd, lv->dname, 0700) == 0)
+  lv->made = 1;
+ else if (errno != EEXIST)
+  return(fileop_walk_fail(t, WPE_FILEOP_STEP_MKDIR, errno, lv));
+ lv->dfd = openat(lv->dpfd, lv->dname, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+ if (lv->dfd < 0)
+  return(fileop_folder_dst_failed(t, lv, errno));
+ return(0);
+}
+
+/**
+ * fileop_root_dst_follow - The destination the user typed is a link: it is
+ * the folder it points to, once.
+ * Return: 0, or -1 (outcome set).
+ *
+ * A link to a file or to nothing is not a folder to merge into.
+ */
+static int fileop_root_dst_follow(FileTree *t, WalkLevel *lv)
+{
+ int err;
+
+ lv->dfd = openat(lv->dpfd, lv->dname, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+ if (lv->dfd >= 0)
+  return(0);
+ err = errno;
+ if (err == ENOTDIR || err == ENOENT || err == ELOOP)
+  return(fileop_tree_not_a_folder(t->o, lv->dpath));
+ return(fileop_walk_fail(t, WPE_FILEOP_STEP_MKDIR, err, lv));
+}
+
+/**
+ * fileop_root_dst_open - Open the destination folder the user named: made
+ * when it is not there, merged into when it is, followed once when it is a
+ * link to a folder.
+ * Return: 0, or -1 (outcome set).
+ *
+ * The one name where a link means "the folder it points to" for a whole
+ * folder operation; below it a link is only a name.
+ */
+static int fileop_root_dst_open(FileTree *t, WalkLevel *lv)
+{
+ struct stat st;
+ int is_link = (fstatat(lv->dpfd, lv->dname, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(st.st_mode));
+
+ if (is_link)
+  return(fileop_root_dst_follow(t, lv));
+ return(fileop_folder_enter_dst(t, lv));
+}
+
+/**
+ * fileop_folder_finish_dst - Give a folder this operation made the source's
+ * permissions, setgid included, once it is filled (a read only folder can
+ * be filled first).
+ * @quiet: the operation already ended; try, and say nothing more.
+ * Return: 0, or -1 (outcome set).
+ *
+ * A folder that was there is left as the user had it.
+ */
+static int fileop_folder_finish_dst(FileTree *t, const WalkLevel *lv, int quiet)
+{
+ struct stat st;
+
+ if (!lv->made)
+  return(0);
+ if (fstat(lv->sfd, &st) != 0)
+  return(quiet ? 0 : fileop_walk_fail(t, WPE_FILEOP_STEP_SOURCE, errno, lv));
+ if (fchmod(lv->dfd, st.st_mode & 07777) != 0 && !quiet)
+  return(fileop_walk_fail(t, WPE_FILEOP_STEP_MODE, errno, lv));
+ return(0);
+}
+
+/**
+ * fileop_folder_remove_source - Remove an emptied source folder, by its name
+ * in its parent.
+ * Return: 0, or -1 (outcome set).
+ *
+ * A name that is no longer a folder (swapped for a link meanwhile) is not
+ * removed; the walk says it changed.
+ */
+static int fileop_folder_remove_source(FileTree *t, const WalkLevel *lv)
+{
+ int err;
+
+ if (unlinkat(lv->spfd, lv->sname, AT_REMOVEDIR) == 0)
+  return(0);
+ err = errno;
+ if (fileop_entry_changed(lv->spfd, lv->sname, S_IFDIR))
+  return(fileop_walk_fail(t, WPE_FILEOP_STEP_CHANGED, err, lv));
+ return(fileop_walk_fail(t, WPE_FILEOP_STEP_RMDIR, err, lv));
+}
+
+/**
+ * fileop_folder_rename_whole - Move a folder to a name that is free with one rename.
+ * @renamed: receives 1 when it was done.
+ * Return: 0 (renamed, or the folder has to be walked: another file system,
+ * or a destination that is there), -1 (outcome set).
+ *
+ * The rename cannot replace a folder that appeared meanwhile, which
+ * rename(2) would do silently for an empty one.  A folder moved on its own
+ * file system to a free name is one rename, whatever its depth.
+ */
+static int fileop_folder_rename_whole(FileTree *t, const WalkLevel *lv, int *renamed)
+{
+ struct stat st;
+ int err;
+
+ *renamed = 0;
+ if (fstatat(lv->dpfd, lv->dname, &st, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
+  return(0);
+ err = fileop_rename_noreplace_at(lv->spfd, lv->sname, lv->dpfd, lv->dname);
+ if (err == 0)
+ {
+  *renamed = 1;
+  return(0);
+ }
+ if (err == EXDEV || err == EEXIST)
+  return(0);
+ return(fileop_walk_fail(t, WPE_FILEOP_STEP_RENAME, err, lv));
+}
+
+/** fileop_entry_copy_link - Make the link (j->spfd, j->sname) again at the destination. */
+static int fileop_entry_copy_link(FileJob *j)
+{
+ int rc = fileop_job_judge_dst(j);
+
+ if (rc == 0)
+  rc = fileop_job_copy_link_in(j);
+ return(rc == 0 ? 0 : -1);
+}
+
+/**
+ * fileop_entry_transfer - One entry of a folder copied, moved or linked.
+ * @j: the job, aimed at the entry and its destination, @j->sst judged;
+ * @kind: what the operation is; @st: what the entry is, not following links.
+ * Return: 0, or -1 (outcome set).
+ *
+ * A link inside a copied folder is copied as a link, never as what it points to.
+ */
+static int fileop_entry_transfer(FileJob *j, WpeFileOpKind kind, const struct stat *st)
+{
+ if (kind == WPE_FILEOP_MOVE)
+  return(fileop_entry_move(j));
+ if (kind == WPE_FILEOP_LINK)
+  return(fileop_entry_link(j));
+ if (S_ISLNK(st->st_mode))
+  return(fileop_entry_copy_link(j));
+ return(fileop_entry_copy(j));
+}
+
+/**
+ * fileop_walk_progress - Tell the progress callback what comes next, and
+ * stop when the user said to.
+ * Return: 0 to go on, -1 when the operation was stopped (outcome set).
+ *
+ * Asked before each entry and before entering each subfolder, so a tree of
+ * many empty folders can be stopped too; never for the top folder and
+ * never while only counting.
+ */
+static int fileop_walk_progress(FileTree *t, const WalkLevel *lv)
+{
+ if (t->counting || t->p->progress == NULL)
+  return(0);
+ if (!t->p->progress(t->p->ctx, fileop_tree_verb(t->kind), lv->spath, lv->dpath))
+  return(0);
+ return(fileop_tree_stop(t, lv->spath, lv->dpath));
+}
+
+/**
+ * fileop_walk_transfer - Copy, move or link one entry that is not a folder.
+ * @st: what the entry was judged to be.
+ * Return: 0 done, 1 left alone (the policy or the user said no), -1 the
+ * operation ended (outcome set).
+ */
+static int fileop_walk_transfer(FileTree *t, const WalkLevel *ent, const struct stat *st)
+{
+ FileJob j;
+ WpeFileOpOutcome e;
+ int rc;
+
+ fileop_job_begin(&j, t->kind, ent->spath, ent->dpath, t->p, &e);
+ fileop_job_aim(&j, ent->spfd, ent->sname, ent->dpfd, ent->dname);
+ j.sst = *st;
+ rc = fileop_entry_transfer(&j, t->kind, st);
+ if (rc == 0)
+ {
+  t->done++;
+  return(0);
+ }
+ if (e.status == WPE_FILEOP_DECLINED)
+ {
+  t->skipped++;
+  return(1);
+ }
+ if (e.step == WPE_FILEOP_STEP_CANCELLED)
+  return(fileop_tree_stop(t, ent->spath, ent->dpath));
+ if (e.step == WPE_FILEOP_STEP_SOURCE)
+  return(fileop_walk_source_failed(t, ent, st->st_mode, e.err));
+ *t->o = e;
+ return(-1);
+}
+
+/**
+ * fileop_walk_remove - Remove one entry that is not a folder, by its name in
+ * its folder.
+ * Return: 0 done, 1 left alone (the answer was no), -1 ended (outcome set).
+ *
+ * A link, a pipe, a socket and a device are names: they are unlinked, never
+ * opened or followed.
+ */
+static int fileop_walk_remove(FileTree *t, const WalkLevel *ent)
+{
+ int answer = fileop_remove_answer(t->p, ent->spath);
+
+ if (answer == WPE_FILEOP_ANSWER_STOP)
+  return(fileop_tree_stop(t, ent->spath, ""));
+ if (answer != WPE_FILEOP_ANSWER_YES)
+ {
+  t->skipped++;
+  return(1);
+ }
+ if (unlinkat(ent->spfd, ent->sname, 0) != 0)
+  return(fileop_tree_fail(t, WPE_FILEOP_STEP_REMOVE, errno, ent->spath, ""));
+ t->done++;
+ return(0);
+}
+
+/**
+ * fileop_walk_entry - One entry that is not a folder: counted, or done.
+ * Return: 0 done, 1 left alone, -1 the operation ended (outcome set).
+ */
+static int fileop_walk_entry(FileTree *t, const WalkLevel *ent, const struct stat *st)
+{
+ if (t->counting)
+ {
+  t->total++;
+  return(0);
+ }
+ if (fileop_walk_progress(t, ent) != 0)
+  return(-1);
+ if (t->kind == WPE_FILEOP_REMOVE)
+  return(fileop_walk_remove(t, ent));
+ return(fileop_walk_transfer(t, ent, st));
+}
+
+static int fileop_walk(FileTree *t, WalkLevel *lv, int *kept);
+
+/** fileop_walk_descends - Does this operation go into subfolders?  Remove always does. */
+static int fileop_walk_descends(const FileTree *t)
+{
+ return(t->kind == WPE_FILEOP_REMOVE || t->p->recursive);
+}
+
+/**
+ * fileop_walk_subfolder - Enter one subfolder of the folder being walked.
+ * @ent: the subfolder's level; @kept: set when something stays where it was.
+ * Return: 0, or -1 (outcome set).
+ */
+static int fileop_walk_subfolder(FileTree *t, WalkLevel *ent, int *kept)
+{
+ int k = 0;
+
+ if (!fileop_walk_descends(t))
+ {
+  if (!t->counting)
+   *kept = 1;
+  return(0);
+ }
+ if (fileop_walk_progress(t, ent) != 0)
+  return(-1);
+ if (fileop_walk(t, ent, &k) != 0)
+  return(-1);
+ if (k)
+  *kept = 1;
+ return(0);
+}
+
+/**
+ * fileop_walk_names - The entries of an open source folder, in order.
+ * @l: its names; @kept: set when something stays where it was.
+ * Return: 0, or -1 (outcome set).
+ *
+ * Each entry is judged by what it is, without following it, through the
+ * folder's descriptor; the judgement is used as it stands.
+ */
+static int fileop_walk_names(FileTree *t, const WalkLevel *lv, const NameList *l, int *kept)
+{
+ WalkLevel ent;
+ struct stat st;
+ int i, rc;
+
+ for (i = 0; i < l->n; i++)
+ {
+  if (fileop_level_child(&ent, lv, l->name[i]) != 0)
+   return(fileop_walk_fail(t, WPE_FILEOP_STEP_CREATE, ENAMETOOLONG, lv));
+  if (fstatat(lv->sfd, l->name[i], &st, AT_SYMLINK_NOFOLLOW) != 0)
+   return(fileop_walk_fail(t, WPE_FILEOP_STEP_SOURCE, errno, &ent));
+  if (S_ISDIR(st.st_mode))
+   rc = fileop_walk_subfolder(t, &ent, kept);
+  else
+   rc = fileop_walk_entry(t, &ent, &st);
+  if (rc < 0)
+   return(-1);
+  if (rc > 0)
+   *kept = 1;
+ }
+ return(0);
+}
+
+/**
+ * fileop_walk_count_renamed - Count what a whole rename moved, through the
+ * descriptor of the folder, which still names it after its name is gone.
+ */
+static void fileop_walk_count_renamed(FileTree *t, WalkLevel *lv)
+{
+ FileTree c = *t;
+ WpeFileOpOutcome scratch;
+ WpeFileOpPolicy deep = *t->p;
+ NameList l;
+ int kept = 0;
+
+ deep.recursive = 1;
+ c.p = &deep;
+ c.o = &scratch;
+ c.counting = 1;
+ c.total = 0;
+ if (fileop_names_read_fd(lv->sfd, &l) != 0)
+  return;
+ if (fileop_walk_names(&c, lv, &l, &kept) == 0)
+  t->done += c.total;
+ fileop_names_free(&l);
+}
+
+/**
+ * fileop_walk_start - What comes before a folder's entries.
+ * @renamed: receives 1 when a Move did the whole folder with one rename.
+ * Return: 0, or -1 (outcome set).
+ *
+ * A subfolder that is moved to a free name on its file system is one
+ * rename; otherwise the destination is made or merged into.
+ */
+static int fileop_walk_start(FileTree *t, WalkLevel *lv, int *renamed)
+{
+ *renamed = 0;
+ if (t->counting || t->kind == WPE_FILEOP_REMOVE)
+  return(0);
+ if (t->kind == WPE_FILEOP_MOVE && lv->depth > 0)
+ {
+  if (fileop_folder_rename_whole(t, lv, renamed) != 0)
+   return(-1);
+  if (*renamed)
+  {
+   fileop_walk_count_renamed(t, lv);
+   return(0);
+  }
+ }
+ if (lv->dfd >= 0)
+  return(0);
+ return(fileop_folder_enter_dst(t, lv));
+}
+
+/**
+ * fileop_walk_entries - Do every entry of the open source folder.
+ * Return: 0, or -1 (outcome set; a folder this walk made is still given
+ * its permissions, quietly).
+ */
+static int fileop_walk_entries(FileTree *t, WalkLevel *lv, int *kept)
+{
+ NameList l;
+ int rc, err = fileop_names_read_fd(lv->sfd, &l);
+
+ if (err != 0)
+  rc = fileop_walk_fail(t, WPE_FILEOP_STEP_SOURCE, err, lv);
+ else
+ {
+  rc = fileop_walk_names(t, lv, &l, kept);
+  fileop_names_free(&l);
+ }
+ if (rc != 0 && !t->counting)
+  (void)fileop_folder_finish_dst(t, lv, 1);
+ return(rc);
+}
+
+/**
+ * fileop_walk_finish - What comes after a folder's entries: its permissions
+ * on a folder this walk made, and a moved or removed source folder taken
+ * away once it is empty.
+ * @here_kept: something stays in it.
+ * Return: 0, or -1 (outcome set).
+ */
+static int fileop_walk_finish(FileTree *t, WalkLevel *lv, int here_kept)
+{
+ if (t->counting)
+  return(0);
+ if (fileop_folder_finish_dst(t, lv, 0) != 0)
+  return(-1);
+ if ((t->kind == WPE_FILEOP_MOVE || t->kind == WPE_FILEOP_REMOVE) && !here_kept)
+  return(fileop_folder_remove_source(t, lv));
+ return(0);
+}
+
+/**
+ * fileop_walk - Copy, move, link, remove or count one folder and what is in it.
+ * @lv: the folder, as a name in its parent, and where it goes.
+ * @kept: set when an entry stays where it was (left alone, or not walked
+ * because the options are not recursive).
+ * Return: 0, or -1 (outcome set).
+ *
+ * The only function that enters a folder.  It opens the folder by its name
+ * with O_NOFOLLOW and keeps it open, so what is used afterwards is the
+ * folder that was judged, whatever happens to its name meanwhile.
+ */
+static int fileop_walk(FileTree *t, WalkLevel *lv, int *kept)
+{
+ int rc, here_kept = 0, renamed = 0;
+
+ if (lv->depth > WPE_FILEOP_MAX_DEPTH)
+  return(fileop_walk_fail(t, WPE_FILEOP_STEP_TOO_DEEP, ELOOP, lv));
+ if (fileop_folder_open(t, lv) != 0)
+ {
+  fileop_level_close(lv);
+  return(-1);
+ }
+ rc = fileop_walk_start(t, lv, &renamed);
+ if (rc == 0 && !renamed)
+  rc = fileop_walk_entries(t, lv, &here_kept);
+ if (rc == 0 && !renamed)
+  rc = fileop_walk_finish(t, lv, here_kept);
+ fileop_level_close(lv);
+ if (rc == 0 && here_kept)
+  *kept = 1;
+ return(rc);
+}
+
+/**
+ * fileop_tree_conclude - Set the counts and the status of a folder operation.
+ * @rc: what the walk returned; @kept: something stayed where it was.
+ * Return: 0 for DONE, -1 otherwise.
+ */
+static int fileop_tree_conclude(FileTree *t, int rc, int kept)
+{
+ WpeFileOpOutcome *o = t->o;
+
+ o->done = t->done;
+ o->skipped = t->skipped;
+ o->total = t->total;
+ if (rc != 0)
+  return(-1);
+ if (t->skipped > 0)
+ {
+  o->src_kept = 1;
+  o->dst_kept = 1;
+  return(fileop_decline(o, WPE_FILEOP_STEP_EXISTS));
+ }
+ o->src_kept = 1;
+ if ((t->kind == WPE_FILEOP_MOVE || t->kind == WPE_FILEOP_REMOVE) && !kept)
+  o->src_kept = 0;
+ o->dst_kept = 0;
+ return(0);
+}
+
+/**
+ * fileop_root_source_open - Open the folder the user named as the source,
+ * and check that it is one.
+ * @src: what the user typed.
+ * Return: 0, or -1 (outcome set).
+ *
+ * The folder's own folder is opened by the typed path once.  A Copy or a
+ * Link takes a link to a folder as the folder it points to, once (the
+ * DirTree shows it as a folder); a Move or a Remove takes a link as a name,
+ * as mv and rm do, so `lnk/` with a link `lnk` is refused, not followed.
+ */
+static int fileop_root_source_open(FileTree *t, WalkLevel *lv, const char *src)
+{
+ struct stat st;
+ int err = fileop_parent_open(src, &lv->spfd, lv->sname, sizeof lv->sname);
+ int follows = (t->kind == WPE_FILEOP_COPY || t->kind == WPE_FILEOP_LINK);
+
+ if (err != 0)
+  return(fileop_fail(t->o, WPE_FILEOP_STEP_SOURCE, err));
+ snprintf(lv->spath, sizeof lv->spath, "%s", src);
+ lv->follow = follows;
+ if (fstatat(lv->spfd, lv->sname, &st, follows ? 0 : AT_SYMLINK_NOFOLLOW) != 0)
+  return(fileop_fail(t->o, WPE_FILEOP_STEP_SOURCE, errno));
+ if (!S_ISDIR(st.st_mode))
+  return(fileop_tree_not_a_folder(t->o, src));
+ return(0);
+}
+
+/**
+ * fileop_root_dst_parent - Open the folder that holds the destination the
+ * user named.
+ * Return: 0, or -1 (outcome set).
+ */
+static int fileop_root_dst_parent(FileTree *t, WalkLevel *lv, const char *dst)
+{
+ int err = fileop_parent_open(dst, &lv->dpfd, lv->dname, sizeof lv->dname);
+
+ if (err != 0)
+  return(fileop_fail(t->o, WPE_FILEOP_STEP_MKDIR, err));
+ snprintf(lv->dpath, sizeof lv->dpath, "%s", dst);
+ return(0);
+}
+
+/**
+ * fileop_tree_roots - Open the two folders the user named, and refuse a
+ * folder put inside itself.
+ * Return: 0, or -1 (outcome set).
+ *
+ * The only paths a folder operation resolves.
+ */
+static int fileop_tree_roots(FileTree *t, WalkLevel *lv, const char *src, const char *dst)
+{
+ int inside;
+
+ if (fileop_root_source_open(t, lv, src) != 0)
+  return(-1);
+ if (t->kind == WPE_FILEOP_REMOVE)
+  return(0);
+ inside = fileop_tree_inside(src, dst);
+ if (inside != 0)
+  return(fileop_fail(t->o, inside == 1 ? WPE_FILEOP_STEP_SAME_FILE : WPE_FILEOP_STEP_INSIDE, 0));
+ return(fileop_root_dst_parent(t, lv, dst));
+}
+
+/**
+ * fileop_tree_count - How many entries that are not folders the tree holds.
+ * Return: 0, or -1 (outcome set: TOO_DEEP for a tree deeper than the limit).
+ *
+ * Asked before anything is changed, so a tree that is too deep or cannot
+ * be read is refused whole and the progress can say "n of total".
+ */
+static int fileop_tree_count(FileTree *t, const WalkLevel *root)
+{
+ FileTree c = *t;
+ WalkLevel lv = *root;
+ int kept = 0;
+
+ c.counting = 1;
+ c.total = 0;
+ if (fileop_walk(&c, &lv, &kept) != 0)
+  return(-1);
+ t->total = c.total;
+ return(0);
+}
+
+/**
+ * fileop_tree_link_text - Make the source of a Link the folder's real path.
+ *
+ * The links of a folder of links sit in another folder: a relative source
+ * would point somewhere else from there.
+ */
+static void fileop_tree_link_text(WalkLevel *lv)
+{
+ char whole[WPE_PATH_SIZE];
+
+ if (realpath(lv->spath, whole) != NULL)
+  snprintf(lv->spath, sizeof lv->spath, "%s", whole);
+}
+
+/**
+ * fileop_tree_work - What a folder operation does once its two folders are open.
+ * @kept: set when something stays where it was.
+ * Return: 0 done, 1 done by one rename (the outcome is final), -1 failed.
+ */
+static int fileop_tree_work(FileTree *t, WalkLevel *lv, int *kept)
+{
+ int renamed = 0;
+
+ if (t->kind == WPE_FILEOP_MOVE)
+ {
+  if (fileop_folder_rename_whole(t, lv, &renamed) != 0)
+   return(-1);
+  if (renamed)
+   return(1);
+ }
+ if (fileop_tree_count(t, lv) != 0)
+ {
+  t->total = 0;
+  return(-1);
+ }
+ if (t->kind != WPE_FILEOP_REMOVE && fileop_root_dst_open(t, lv) != 0)
+  return(-1);
+ if (t->kind == WPE_FILEOP_LINK)
+  fileop_tree_link_text(lv);
+ return(fileop_walk(t, lv, kept));
+}
+
+/**
+ * fileop_tree_run - Copy, move, link or remove a folder: the checks, the
+ * count, the walk.
+ * @dst: "" for a Remove.
+ * Return: 0 for DONE, -1 otherwise.
+ */
+static int fileop_tree_run(WpeFileOpKind kind, const char *src, const char *dst,
+                           const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
+{
+ FileTree t;
+ WalkLevel lv;
+ int rc, kept = 0;
+
+ fileop_begin(o, kind, src, dst);
+ memset(&t, 0, sizeof t);
+ t.p = p;
+ t.o = o;
+ t.kind = kind;
+ fileop_level_init(&lv, 0);
+ if (fileop_tree_roots(&t, &lv, src, dst) != 0)
+ {
+  fileop_level_release(&lv);
+  return(-1);
+ }
+ rc = fileop_tree_work(&t, &lv, &kept);
+ fileop_level_release(&lv);
+ if (rc > 0)
+ {
+  o->src_kept = 0;
+  o->dst_kept = 0;
+  return(0);
+ }
+ return(fileop_tree_conclude(&t, rc, kept));
+}
+
+int wpe_fileop_copy_tree(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
+{
+ return(fileop_tree_run(WPE_FILEOP_COPY, src, dst, p, o));
+}
+
+int wpe_fileop_move_tree(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
+{
+ return(fileop_tree_run(WPE_FILEOP_MOVE, src, dst, p, o));
+}
+
+int wpe_fileop_link_tree(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
+{
+ return(fileop_tree_run(WPE_FILEOP_LINK, src, dst, p, o));
+}
+
+int wpe_fileop_remove_tree(const char *path, const WpeFileOpPolicy *p, WpeFileOpOutcome *o)
+{
+ return(fileop_tree_run(WPE_FILEOP_REMOVE, path, "", p, o));
+}
+
 /* --- the sentence --------------------------------------------------------- */
 
 /** fileop_verb - What the operation was, for "Cannot <verb> ...". */
@@ -1005,6 +2323,8 @@ static const char *fileop_step_text(WpeFileOpStep step)
  }
 }
 
+static const char *fileop_past(WpeFileOpKind kind);
+
 /** fileop_reason - The reason half of the sentence, for a FAILED outcome. */
 static void fileop_reason(char *out, size_t n, const WpeFileOpOutcome *o)
 {
@@ -1014,6 +2334,14 @@ static void fileop_reason(char *out, size_t n, const WpeFileOpOutcome *o)
   snprintf(out, n, "%s and %s are the same file", o->src, o->dst);
  else if (o->step == WPE_FILEOP_STEP_NOT_A_FILE)
   snprintf(out, n, "%s is not a file", o->bad);
+ else if (o->step == WPE_FILEOP_STEP_NOT_A_FOLDER)
+  snprintf(out, n, "%s is not a folder", o->bad);
+ else if (o->step == WPE_FILEOP_STEP_INSIDE)
+  snprintf(out, n, "%s is inside %s", o->dst, o->src);
+ else if (o->step == WPE_FILEOP_STEP_TOO_DEEP)
+  snprintf(out, n, "%s is deeper than %d folders", o->src, WPE_FILEOP_MAX_DEPTH);
+ else if (o->step == WPE_FILEOP_STEP_CHANGED)
+  snprintf(out, n, "%s changed while the folder was being %s", o->src, fileop_past(o->kind));
  else if (o->kind == WPE_FILEOP_LINK && o->err_link != 0 && o->step == WPE_FILEOP_STEP_LINK)
  {
   char first[128];
@@ -1027,11 +2355,26 @@ static void fileop_reason(char *out, size_t n, const WpeFileOpOutcome *o)
   snprintf(out, n, "%s", strerror(o->err != 0 ? o->err : EIO));
 }
 
+/** fileop_past - What was done to the entries of a folder, for the counts. */
+static const char *fileop_past(WpeFileOpKind kind)
+{
+ switch (kind)
+ {
+ case WPE_FILEOP_MOVE:   return("moved");
+ case WPE_FILEOP_LINK:   return("linked");
+ case WPE_FILEOP_REMOVE: return("removed");
+ default:                return("copied");
+ }
+}
+
 /** fileop_left - What is left, for a FAILED outcome; "" when nothing needs saying. */
 static void fileop_left(char *out, size_t n, const WpeFileOpOutcome *o)
 {
  out[0] = '\0';
- if (o->step == WPE_FILEOP_STEP_REMOVE_SOURCE)
+ if (o->total > 0)
+  snprintf(out, n, "  %ld of %ld entries were %s.", o->done, o->total, fileop_past(o->kind));
+ else if (o->step == WPE_FILEOP_STEP_REMOVE_SOURCE ||
+     (o->step == WPE_FILEOP_STEP_CLOSE && o->kind == WPE_FILEOP_MOVE && !o->dst_kept))
   snprintf(out, n, "  %s holds the copy; %s is still in place.", o->dst, o->src);
  else if (o->aside[0] != '\0')
   snprintf(out, n, "  %s is in the wastebasket as %s.", o->dst, o->aside);
@@ -1044,8 +2387,16 @@ int wpe_fileop_sentence(char *out, size_t n, const WpeFileOpOutcome *o)
  char reason[2 * WPE_PATH_SIZE + 160], left[2 * WPE_PATH_SIZE + 64];
 
  out[0] = '\0';
- if (o->status == WPE_FILEOP_DECLINED && o->step == WPE_FILEOP_STEP_EXISTS)
+ if (o->status == WPE_FILEOP_DECLINED && o->step == WPE_FILEOP_STEP_EXISTS && o->total > 0)
+  snprintf(out, n, "%ld of %ld entries were %s; %ld left as they were.", o->done, o->total,
+           fileop_past(o->kind), o->skipped);
+ else if (o->status == WPE_FILEOP_DECLINED && o->step == WPE_FILEOP_STEP_EXISTS)
   snprintf(out, n, "%s exists; not overwritten.", o->dst);
+ if (o->status == WPE_FILEOP_FAILED && o->step == WPE_FILEOP_STEP_STOPPED)
+ {
+  snprintf(out, n, "Stopped: %ld of %ld entries were %s.", o->done, o->total, fileop_past(o->kind));
+  return((int)strlen(out));
+ }
  if (o->status != WPE_FILEOP_FAILED || o->step == WPE_FILEOP_STEP_CANCELLED)
   return((int)strlen(out));
  if (o->step == WPE_FILEOP_STEP_WASTEBASKET && o->kind == WPE_FILEOP_MKDIR)

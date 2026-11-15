@@ -67,9 +67,8 @@ we_fl_unix.c:WpeFileDirAttributes:* 14 dialog field editing
 we_fl_unix.c:WpeFileManagerOptions:* 24 dialog field editing
 we_fl_unix.c:WpeFindWindow:* 10 dialog field editing
 we_fl_unix.c:WpeGrepWindow:* 14 dialog field editing
-we_fl_unix.c:fm_remove_dir:* 1 dialog field editing
-we_fl_unix.c:fm_remove_dir_entries:* 2 dialog field editing
 we_fl_unix.c:fm_ask:* 1 dialog field editing
+we_fl_unix.c:fm_progress:* 3 compose
 we_hfkt.c:e_num_kst:* 4 dialog field editing
 we_mouse.c:e_ccp_mouse:* 5 dialog field editing
 we_mouse.c:e_edt_mouse:* 4 dialog field editing
@@ -145,9 +144,6 @@ we_wind.c:e_ed_zoom:* 1 dialog field editing
 we_wind.c:e_error_read_answer:* 1 dialog field editing
 we_wind.c:e_error_run:* 2 dialog field editing
 we_wind.c:e_message:* 11 dialog field editing
-we_wind.c:e_mess_box_init:* 1 dialog field editing
-we_wind.c:e_mess_box_new_frame:* 1 dialog field editing
-we_wind.c:e_mess_win:* 1 dialog field editing
 we_wind.c:e_opt_sec_box:* 13 dialog field editing
 we_wind.c:e_pr_line:* 3 dialog field editing
 we_wind.c:e_schr_lst_wsv:* 4 dialog field editing
@@ -335,7 +331,6 @@ we_prog.c:e_run_text_serve_key:* 1 compose
 we_term.c:e_find_key:* 74 compose
 we_term.c:e_t_csi_paste_marker:* 2 compose
 we_term.c:e_t_decode_key:* 11 compose
-we_term.c:e_t_drain_keys_after_box:* 3 compose
 we_term.c:e_t_getch:* 11 compose
 we_term.c:e_t_key_is_mouse_event:* 2 compose
 we_term.c:e_t_mouse_wheel_key:* 2 compose

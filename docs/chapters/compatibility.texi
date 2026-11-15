@@ -1093,8 +1093,95 @@ not a file.
 @item A file copied onto a folder
 The original, asked to copy a file onto the name of a folder, could replace
 the whole folder with the file.  xwpe puts the file inside the folder under
-its own name, as @command{cp} does.  The reason: a folder with its files is
-not what the user meant to replace.
+its own name, as @command{cp} does, also when the name typed is a link that
+points to a folder (the file goes inside the folder it points to, and the
+link stays).  This holds for the name the user typed and for no other: a
+link found inside a destination folder while a folder is copied, moved or
+linked is a name, and is never entered (see @samp{A link inside the
+destination}).  A name written with a slash at its end can only be a
+folder: when there is none, nothing is made.  The reason: a folder with its
+files is not what the user meant to replace.
+
+@item A folder is copied, moved or linked whole
+The original took what the panel showed: the files that matched the Files
+pattern, hidden ones only when the option was on, so a copy dropped files
+without a word and a move could not remove the folder it had half emptied.
+xwpe takes every entry of the folder, hidden ones and the ones the pattern
+hides included.  The reason: a folder is one thing, and what the user sees
+in a panel is not what is in it.
+
+@item The permissions of a folder
+The original made the destination folder with the umask applied, which
+cleared the setgid bit.  xwpe gives a folder it made the permissions of the
+source folder, setgid included, once the folder is filled (a read only
+folder can be filled first).  A destination folder that was already there
+keeps the permissions it had.  The reason: the same as for a file.
+
+@item A link inside a folder is a name
+The original copied the file a link pointed to and entered a link to a
+folder as if it were a subfolder, so a copy could walk outside the folder
+and a Remove deleted the files of the folder the link pointed to.  xwpe
+judges every entry by what it is: a link is copied, moved, linked or
+removed as a link, with the text of its target as it was, and a link to a
+folder is never entered.  The reason: no operation may reach a file outside
+the folder it was started on.  The two folders the user named are the only
+names looked up by path; every folder below them is opened by its name in
+the folder above, without following a link, and every entry is used through
+that folder, so a link is a name also when it appears while the folder is
+being walked.  If an entry of the source changes while the folder is being
+copied, moved or linked, the operation stops, says which entry changed and
+how many entries were done, and touches nothing it was not given.  A link
+named with a slash at its end (@file{lnk/}) is a link to a Move or a Remove,
+as for @command{mv} and @command{rm}, and is refused as not a folder.
+
+@item A link inside the destination
+When a folder is copied or moved into one that exists, a link in the
+destination where the source has a subfolder (@file{dst/lib} pointing to
+@file{/usr/lib}) is refused, as @command{cp} refuses it: the operation stops
+at that entry with @samp{dst/lib is not a folder} and the number of entries
+done, and nothing behind the link is touched.  The original merged the
+copy into the folder the link pointed to.  A file whose name is a link in
+the destination (to a folder or to a file) is a name under the Move/Copy
+option: asked about, left alone or replaced by the file, with the link going
+to the wastebasket when the Remove option says so; what the link pointed to
+is never written.  The reason: a link in the destination is part of the
+user's tree, and no operation may write through it.
+
+@item The links made by Link of a folder
+A folder of links made with Link has links that point to the real path of
+each file, so they work from the new folder.  The original used the folder
+as it was named, so a link in that name stayed in every link made.
+
+@item A folder that is there is merged into
+Copying or moving a folder onto the name of a folder that exists puts the
+entries in it, one by one, under the Move/Copy option (the entries that are
+there are kept with @samp{Don'T overwrite}, and the status row says how many
+were copied and how many were left), as the original did.  A folder xwpe
+makes in it gets the source's permissions; the folder that was there is left
+as it was.  A folder cannot be put inside itself.  A folder moved on its own
+file system to a name that is free is one rename, whatever its depth; the
+limit of 15 folders is for what is walked.
+
+@item Remove of a folder
+The original removed what the Files pattern and the hidden option showed and
+then failed at the folder itself, leaving it half removed.  xwpe removes the
+folder whole, after the existing @samp{Delete Directory} dialog when the
+Remove option asks, and Cancel there removes nothing.  A folder that goes
+into the wastebasket goes whole, under a free name (@file{name.1}), never
+merged into an earlier one.  The reason: a removal must either happen or
+not.
+
+@item A long operation on a folder
+The original polled the keyboard between files and went on.  xwpe names the
+entry on the status row and goes on by itself; Ctrl-C or Esc stops it
+between two entries and the box says how many entries were done (@samp{Stopped:
+7 of 50 entries were copied.}).  The reason: a folder with thousands of files
+must not need a key per file, and must still be stoppable.
+
+@item A link moved or linked onto its own target
+The original moved the target to the wastebasket and left a link that pointed
+to itself.  xwpe refuses it as the same file, as @command{mv} does.  The
+reason: the data would be lost.
 
 @item Attributes
 The original rebuilt the permissions from the nine switches of the dialog,

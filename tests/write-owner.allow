@@ -28,10 +28,6 @@ we_ai_path.c|r2:wpe_path_open_write|1|P4|the judged write into the user's own fi
 we_ai_ui.c|r2:ai_transcript_write|1|P4|the transcript
 we_ai_ws.c|r2:ws_write_file|1|P4|the workspace's copies
 we_ai_ws.c|r2:ws_write_pathspec|1|P4|the conversation
-we_fl_unix.o|r1:WpeRenameCopyDir|1|P5b|the folder walk of Copy, Move and Link, still its own until its pass moves it onto the owner
-we_fl_unix.o|r1:WpeRemoveDir|1|P5b|the folder walk of Remove
-we_fl_unix.o|r1:e_rename_dir|1|P5b|the wrapper of the folder walk
-we_wind.o|r1:e_mess_win|1|P5b|the folder walk's progress box
 we_wind.c|r8:e_close_window|2|P2|the .ASV and .ESV copies by name, until the pass that makes the copies
 we_ai_ws.c|r8:ws_revert_path|1|P4|the assistant's revert of its own write: the pass of the assistant's writers decides whether it moves
 we_ai_ws.c|r9:ws_write_file|1|P4|the workspace's copies
@@ -107,6 +103,29 @@ we_wayland.c|r8:wl_anon_file|1|keep|the compositor's anonymous buffer file
 we_xterm.c|r8:e_x_refresh|1|keep|a test screen dump's name
 we_xterm.c|r8:e_x_system|1|keep|the external terminal's own script
 we_xterm.c|r8:e_x_system_script|1|keep|the external terminal's own script
+
+# rule 11: where we_fileop.c resolves a path.  The walk of a folder resolves
+# none: every entry is a folder's descriptor and a name.  These are the
+# paths the user typed (opened once, at the boundary) and the wastebasket,
+# a folder of ours the owner names itself, 0700 and checked before use.
+we_fileop.c|r11:fileop_parent_open|1|keep|the folder of a path the user typed, opened once
+we_fileop.c|r11:fileop_job_open_src_path|1|keep|a single file's typed source, through its one opener
+we_fileop.c|r11:fileop_job_open_dst_path|1|keep|a single file's typed destination, through its one opener
+we_fileop.c|r11:fileop_root_source_open|1|keep|the typed source folder, through its one opener
+we_fileop.c|r11:fileop_root_dst_parent|1|keep|the typed destination folder, through its one opener
+we_fileop.c|r11:wpe_fileop_remove|1|keep|a single file's typed path, through its one opener
+we_fileop.c|r11:fileop_tree_inside|3|keep|the real paths of the two typed names, read only
+we_fileop.c|r11:fileop_tree_link_text|1|keep|the real path of the typed source, read only, for the text of the links
+we_fileop.c|r11:fileop_job_place|1|keep|drops the second name of a replaced file in the wastebasket
+we_fileop.c|r11:fileop_wastebasket_open|1|keep|opens the wastebasket without following a link
+we_fileop.c|r11:fileop_remove_into_wastebasket|2|keep|the typed path into the wastebasket's free name
+we_fileop.c|r11:wpe_fileop_wastebasket|3|keep|makes and checks the wastebasket (mkdir, open, access)
+we_fileop.c|r11:wpe_fileop_wastebasket_slot|1|keep|looks for a free name in the wastebasket
+we_fileop.c|r11:wpe_fileop_in_wastebasket|3|keep|the real paths of the wastebasket and the typed name, read only
+we_fileop.c|r11:wpe_fileop_mkdir|1|keep|the File Manager's dialog, on a name the user typed; a later pass may move it onto (parent, name)
+we_fileop.c|r11:wpe_fileop_rmdir|1|keep|the File Manager's dialog, on a name the user typed
+we_fileop.c|r11:wpe_fileop_chmod|2|keep|the File Manager's dialog, on a name the user typed
+we_fileop.c|r11:wpe_fileop_rename_noreplace|2|keep|a folder's rename the File Manager asks for by two typed names
 
 # rule 9: a byte loop that is not a copy of the user's file (it reads, or
 # writes something that is not the user's)

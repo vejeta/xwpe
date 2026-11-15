@@ -680,15 +680,11 @@ int WpeFileManagerOptions(FENSTER *f);
 int WpeShowWastebasket(FENSTER *f);
 int WpeDelWastebasket(FENSTER *f);
 int WpeQuitWastebasket(FENSTER *f);
-int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec);
 int e_copy(char *file, char *newname, FENSTER *f);
 int e_link(char *file, char *newname, FENSTER *f);
 int e_duplicate(char *file, FENSTER *f);
 int WpeMakeNewDir(FENSTER *f);
 int WpeFileDirAttributes(char *filen, FENSTER *f);
-int WpeRenameCopyDir(char *dirct, char *file, char *newname, 
-                     FENSTER *f, int rec, int sw);
-
 int WpeDirDelOptions(FENSTER *f);
 int e_ed_man(char *str, FENSTER *f);
 #endif
@@ -1039,7 +1035,6 @@ int e_ed_zoom(FENSTER *f);
 int e_ed_cascade(FENSTER *f);
 int e_ed_tile(FENSTER *f);
 int e_ed_next(FENSTER *f);
-int e_mess_win(char *header, char *str, PIC **pic, FENSTER *f);
 PIC *e_change_pic(int xa, int ya, int xe, int ye, PIC *pic, int sw, int frb);
 struct dirfile *e_add_df(char *str, struct dirfile *df);
 int e_schr_nchar_wsv(char *str, int x, int y, int n, int max, int col,
@@ -1155,7 +1150,6 @@ extern void (*WpeDisplayEnd)(void);
    terminal. */
 extern void (*WpeDisplayReleaseFromHandler)(void);
 void e_t_wait_for_enter_on_raw_terminal(void);
-int e_t_drain_keys_after_box(int xa, int xe, int ye);
 
 int e_put_pic_xrect(PIC *pic);
 int e_get_pic_xrect(int xa, int ya, int xe, int ye, PIC *pic);

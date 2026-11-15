@@ -1742,59 +1742,6 @@ static int e_t_key_take(int want)
 #endif
 }
 
-#ifndef NO_XWINDOWS
-/* Where a message box's Cancel button sits: its row above the bottom
-   border, and its span either side of the box's middle. */
-#define E_T_BOX_BUTTON_ROW_UP     2
-#define E_T_BOX_CANCEL_LEFT_OFF  10
-#define E_T_BOX_CANCEL_RIGHT_OFF  6
-
-/**
- * e_t_box_click_is_cancel - Did the user click the Cancel half of a box's
- * bottom row?
- * @xa: the box's left column; @xe: its right column; @ye: its bottom row.
- */
-static int e_t_box_click_is_cancel(int xa, int xe, int ye)
-{
- extern struct mouse e_mouse;
-
- return e_mouse.y == ye - E_T_BOX_BUTTON_ROW_UP &&
-        e_mouse.x > (xe + xa - E_T_BOX_CANCEL_LEFT_OFF) / 2 &&
-        e_mouse.x < (xe + xa + E_T_BOX_CANCEL_RIGHT_OFF) / 2;
-}
-#endif
-
-/**
- * e_t_drain_keys_after_box - Take the keys typed while a message box was up.
- * @xa: the box's left column; @xe: its right column; @ye: its bottom row.
- *
- * Keys the user typed ahead do not leak into the editor after the box; a
- * Ctrl-C, or on a graphical display a click on the box's Cancel half, says
- * the user cancelled.
- * Return: CtrlC when the user cancelled, else 0.
- */
-int e_t_drain_keys_after_box(int xa, int xe, int ye)
-{
- int i;
-
-#ifndef NO_XWINDOWS
- if (WpeIsXwin())
- {
-  while ((i = wpe_paint_take_key(WPE_PAINT_ANY_KEY)))
-  {
-   if (i == -1 && e_t_box_click_is_cancel(xa, xe, ye))
-    i = CtrlC;
-   if (i == CtrlC)
-    break;
-  }
-  return i;
- }
-#endif
- while ((i = wpe_paint_take_key(WPE_PAINT_ANY_KEY)) && i != CtrlC)
-  ;
- return i;
-}
-
 #ifdef NCURSES
 static int e_t_utf8_assemble(int first)
 {

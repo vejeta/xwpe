@@ -14,6 +14,26 @@
 /* @scenario SC-unsaved-text-48d */
 /* @scenario SC-unsaved-text-48e */
 /* @scenario SC-unsaved-text-48f */
+/* @scenario SC-unsaved-text-50c */
+/* @scenario SC-unsaved-text-51c */
+/* @scenario SC-unsaved-text-52c */
+/* @scenario SC-unsaved-text-53c */
+/* @scenario SC-unsaved-text-54c */
+/* @scenario SC-unsaved-text-56 */
+/* @scenario SC-unsaved-text-57 */
+/* @scenario SC-unsaved-text-58 */
+/* @scenario SC-unsaved-text-59 */
+/* @scenario SC-unsaved-text-60 */
+/* @scenario SC-unsaved-text-61 */
+/* @scenario SC-unsaved-text-62 */
+/* @scenario SC-unsaved-text-63 */
+/* @scenario SC-unsaved-text-64 */
+/* @scenario SC-unsaved-text-65 */
+/* @scenario SC-unsaved-text-66 */
+/* Manual, not a row: the nondeterministic race (a folder renamed for a link
+ * while it is walked, RENAME_EXCHANGE, Linux only) is a verifier probe, not
+ * a repository test; after the fd-relative walk it leaks and loses nothing
+ * in 0 of 40 runs on Copy, Move, a merging Move and Remove. */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -669,8 +689,927 @@ static void test_remove(void)
  clean();
 }
 
+/* ---- folders ---- */
+
+static int progress_calls;
+static int progress_stop_at;
+
+static int progress(void *ctx, const char *verb, const char *src, const char *dst)
+{
+ (void)ctx; (void)verb; (void)src; (void)dst;
+ progress_calls++;
+ return(progress_stop_at > 0 && progress_calls >= progress_stop_at);
+}
+
+static void tree_policy(WpeFileOpPolicy *p, WpeReplaceRule r, WpeRemoveRule m)
+{
+ policy(p, r, m);
+ p->recursive = 1;
+ p->progress = progress;
+ progress_calls = 0;
+ progress_stop_at = 0;
+}
+
+static int is_link(const char *name)
+{
+ struct stat st;
+
+ return(lstat(name, &st) == 0 && S_ISLNK(st.st_mode));
+}
+
+static int mode_of(const char *name)
+{
+ struct stat st;
+
+ return(lstat(name, &st) == 0 ? (int)(st.st_mode & 07777) : -1);
+}
+
+static void link_text_is(const char *what, const char *name, const char *want)
+{
+ char buf[256];
+ ssize_t n = readlink(name, buf, sizeof buf - 1);
+
+ if (n < 0) {
+  printf("FAIL: %s: %s is not a link\n", what, name);
+  fails++;
+  return;
+ }
+ buf[n] = '\0';
+ chk_str(what, buf, want);
+}
+
+/* A folder with a link to a folder outside it: no walk reaches the outside
+   (Remove deleted its files before), the link is a name. */
+static void test_tree_never_enters_a_link(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char dst[512];
+
+ make_dir();
+ make_other();
+ chdir(dir);
+ mkdir("precious", 0755);
+ put("precious/keep.txt", "KEEP\n", 0644);
+ mkdir("rd", 0755);
+ put("rd/a.txt", "A\n", 0644);
+ chk_int("link", symlink("../precious", "rd/lnk"), 0);
+
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ chk_int("copy", wpe_fileop_copy_tree("rd", "cp", &p, &o), 0);
+ chk_int("the link is a link", is_link("cp/lnk"), 1);
+ link_text_is("with its text", "cp/lnk", "../precious");
+ chk_file("a file", "cp/a.txt", "A\n");
+ chk_file("outside, copy", "precious/keep.txt", "KEEP\n");
+ chk_absent("nothing was made outside", "precious/lnk");
+
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ chk_int("link of the folder", wpe_fileop_link_tree("rd", "lk", &p, &o), 0);
+ chk_int("link to the link", is_link("lk/lnk"), 1);
+ chk_file("outside, link", "precious/keep.txt", "KEEP\n");
+
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ chk_int("move, same file system", wpe_fileop_move_tree("cp", "mv", &p, &o), 0);
+ chk_int("moved as a name", is_link("mv/lnk"), 1);
+ chk_absent("source gone", "cp");
+ chk_file("outside, move", "precious/keep.txt", "KEEP\n");
+
+ if (other[0]) {
+  snprintf(dst, sizeof dst, "%s/rd", other);
+  tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+  chk_int("move across file systems", wpe_fileop_move_tree("mv", dst, &p, &o), 0);
+  chk_absent("source gone, across", "mv");
+  snprintf(dst, sizeof dst, "%s/rd/lnk", other);
+  chk_int("a link across file systems", is_link(dst), 1);
+  link_text_is("its text across", dst, "../precious");
+  chk_file("outside, move across", "precious/keep.txt", "KEEP\n");
+ }
+
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ chk_int("remove", wpe_fileop_remove_tree("rd", &p, &o), 0);
+ chk_absent("the folder is gone", "rd");
+ chk_file("outside, remove", "precious/keep.txt", "KEEP\n");
+ chk_int("remove of a link inside a link-only folder", wpe_fileop_remove_tree("lk", &p, &o), 0);
+ chk_file("outside, remove of the folder of links", "precious/keep.txt", "KEEP\n");
+ clean();
+}
+
+/* A folder is taken whole: hidden entries, permissions, the existing
+   destination merged into and left as it was. */
+static void test_tree_whole_and_permissions(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ mkdir("sd", 0777);
+ chmod("sd", 0777);
+ mkdir("sg", 02755);
+ chmod("sg", 02755);
+ put("sg/.hidden", "H\n", 0600);
+ put("sg/a.c", "C\n", 0644);
+ put("sg/note.txt", "N\n", 0644);
+ mkdir("sg/sub", 0711);
+ chmod("sg/sub", 0711);          /* a folder made in a setgid folder is setgid */
+ put("sg/sub/deep.txt", "D\n", 0644);
+
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ chk_int("copy", wpe_fileop_copy_tree("sd", "sdcopy", &p, &o), 0);
+ chk_int("0777 kept", mode_of("sdcopy"), 0777);
+ chk_int("copy 2755", wpe_fileop_copy_tree("sg", "sgcopy", &p, &o), 0);
+ chk_int("setgid kept", mode_of("sgcopy"), 02755);
+ chk_file("hidden entry", "sgcopy/.hidden", "H\n");
+ chk_file("an entry any pattern hides", "sgcopy/note.txt", "N\n");
+ chk_file("a subfolder's entry", "sgcopy/sub/deep.txt", "D\n");
+ chk_int("subfolder mode", mode_of("sgcopy/sub"), 0711);
+ chk_int("the file's own mode", mode_of("sgcopy/.hidden"), 0600);
+
+ /* an existing destination: merged into, its mode and its files kept */
+ mkdir("ex", 0700);
+ put("ex/mine.txt", "MINE\n", 0644);
+ put("ex/a.c", "OLD\n", 0644);
+ tree_policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ chk_int("merge under Don't overwrite", wpe_fileop_copy_tree("sg", "ex", &p, &o), -1);
+ chk_int("declined", o.status, WPE_FILEOP_DECLINED);
+ chk_int("one left alone", o.skipped, 1);
+ chk_int("the rest done", o.done, 3);
+ chk_int("of four", o.total, 4);
+ chk_file("the old file", "ex/a.c", "OLD\n");
+ chk_file("the other's file", "ex/mine.txt", "MINE\n");
+ chk_file("merged in", "ex/note.txt", "N\n");
+ chk_int("an existing folder keeps its mode", mode_of("ex"), 0700);
+ chk_int("the folder made inside gets the source's", mode_of("ex/sub"), 0711);
+
+ /* non recursive: the subfolder stays behind */
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ p.recursive = 0;
+ chk_int("not recursive", wpe_fileop_copy_tree("sg", "flat", &p, &o), 0);
+ chk_absent("no subfolder", "flat/sub");
+ chk_file("its files", "flat/note.txt", "N\n");
+ chk_int("a folder that is a file", wpe_fileop_copy_tree("sg", "flat/note.txt", &p, &o), -1);
+ chk_int("says so", o.step, WPE_FILEOP_STEP_NOT_A_FOLDER);
+ clean();
+}
+
+/* Move of a folder: one rename on one file system, merged into an
+   existing folder, the source removed only when everything moved. */
+static void test_tree_move(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ struct stat a, b;
+
+ make_dir();
+ chdir(dir);
+ mkdir("m", 0755);
+ put("m/f.txt", "F\n", 0644);
+ mkdir("m/s", 0755);
+ put("m/s/g.txt", "G\n", 0644);
+ stat("m", &a);
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ chk_int("move", wpe_fileop_move_tree("m", "n", &p, &o), 0);
+ stat("n", &b);
+ chk_int("one rename keeps the folder", a.st_ino == b.st_ino, 1);
+ chk_int("no progress for a rename", progress_calls, 0);
+
+ mkdir("e", 0700);
+ put("e/old.txt", "OLD\n", 0644);
+ chk_int("merge", wpe_fileop_move_tree("n", "e", &p, &o), 0);
+ chk_file("merged", "e/f.txt", "F\n");
+ chk_file("merged, deep", "e/s/g.txt", "G\n");
+ chk_file("kept", "e/old.txt", "OLD\n");
+ chk_absent("source removed when it was all moved", "n");
+
+ /* a declined entry keeps its folder */
+ mkdir("k", 0755);
+ put("k/x.txt", "NEW\n", 0644);
+ put("k/y.txt", "Y\n", 0644);
+ mkdir("t", 0755);
+ put("t/x.txt", "THERE\n", 0644);
+ tree_policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ chk_int("move under Don't overwrite", wpe_fileop_move_tree("k", "t", &p, &o), -1);
+ chk_int("declined", o.status, WPE_FILEOP_DECLINED);
+ chk_file("not replaced", "t/x.txt", "THERE\n");
+ chk_file("the other moved", "t/y.txt", "Y\n");
+ chk_file("the declined one stays in the source", "k/x.txt", "NEW\n");
+
+ /* a folder into itself, onto itself */
+ mkdir("q", 0755);
+ put("q/f.txt", "F\n", 0644);
+ chk_int("into itself", wpe_fileop_copy_tree("q", "q/in", &p, &o), -1);
+ chk_int("refused", o.step, WPE_FILEOP_STEP_INSIDE);
+ chk_absent("nothing made", "q/in");
+ chk_int("onto itself", wpe_fileop_move_tree("q", "q", &p, &o), -1);
+ chk_int("the same folder", o.step, WPE_FILEOP_STEP_SAME_FILE);
+ clean();
+}
+
+/* Ctrl-C between entries: the count is kept, nothing half is left. */
+static void test_tree_stop_and_depth(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char name[64], buf[1024];
+ int i;
+
+ make_dir();
+ chdir(dir);
+ mkdir("fifty", 0755);
+ for (i = 0; i < 50; i++) {
+  snprintf(name, sizeof name, "fifty/f%02d.txt", i);
+  put(name, "x\n", 0644);
+ }
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ progress_stop_at = 8;
+ chk_int("stopped", wpe_fileop_copy_tree("fifty", "out", &p, &o), -1);
+ chk_int("status", o.status, WPE_FILEOP_FAILED);
+ chk_int("step", o.step, WPE_FILEOP_STEP_STOPPED);
+ chk_int("seven done", o.done, 7);
+ chk_int("of fifty", o.total, 50);
+ wpe_fileop_sentence(buf, sizeof buf, &o);
+ chk_str("the sentence", buf, "Stopped: 7 of 50 entries were copied.");
+ chk_file("the seventh", "out/f06.txt", "x\n");
+ chk_absent("not the eighth", "out/f07.txt");
+ chk_int("no temporary", count_temp("out"), 0);
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ chk_int("without a key, all", wpe_fileop_copy_tree("fifty", "all", &p, &o), 0);
+ chk_int("fifty calls", progress_calls, 50);
+ chk_file("the last", "all/f49.txt", "x\n");
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ progress_stop_at = 3;
+ chk_int("remove stopped", wpe_fileop_remove_tree("all", &p, &o), -1);
+ chk_int("two removed", o.done, 2);
+ wpe_fileop_sentence(buf, sizeof buf, &o);
+ chk_str("said", buf, "Stopped: 2 of 50 entries were removed.");
+
+ /* one folder too many: refused before anything is made or removed */
+ mkdir("tall", 0755);
+ chdir("tall");
+ for (i = 0; i < WPE_FILEOP_MAX_DEPTH + 1; i++) {
+  mkdir("d", 0755);
+  chdir("d");
+ }
+ put("leaf.txt", "L\n", 0644);
+ chdir(dir);
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ chk_int("too deep to copy", wpe_fileop_copy_tree("tall", "tallcopy", &p, &o), -1);
+ chk_int("refused", o.step, WPE_FILEOP_STEP_TOO_DEEP);
+ chk_absent("nothing made", "tallcopy");
+ chk_int("too deep to remove", wpe_fileop_remove_tree("tall", &p, &o), -1);
+ chk_int("refused too", o.step, WPE_FILEOP_STEP_TOO_DEEP);
+ chk_int("nothing removed", mode_of("tall") >= 0, 1);
+ clean();
+}
+
+/* Remove of a folder asks per file under the Remove rule, and a no keeps it. */
+static void test_tree_remove_asks(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ mkdir("rd", 0755);
+ put("rd/a.txt", "A\n", 0644);
+ put("rd/.b", "B\n", 0644);
+ mkdir("rd/s", 0755);
+ put("rd/s/c", "C\n", 0644);
+ tree_policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_ASK);
+ answer = WPE_FILEOP_ANSWER_NO;
+ asked = 0;
+ chk_int("asked, no", wpe_fileop_remove_tree("rd", &p, &o), -1);
+ chk_int("declined", o.status, WPE_FILEOP_DECLINED);
+ chk_int("asked for each file", asked, 3);
+ chk_file("kept", "rd/a.txt", "A\n");
+ chk_file("kept, deep", "rd/s/c", "C\n");
+ answer = WPE_FILEOP_ANSWER_YES;
+ chk_int("asked, yes", wpe_fileop_remove_tree("rd", &p, &o), 0);
+ chk_absent("whole, hidden files too", "rd");
+ clean();
+}
+
+/* A Move or a Link of a link onto the file it points to is the same file;
+   a file copied onto a link to a folder goes inside the folder; a name
+   written with a slash is a folder or nothing. */
+static void test_same_file_by_link_and_folder_link(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char buf[1024];
+
+ make_dir();
+ chdir(dir);
+ put("t.txt", "TARGET\n", 0644);
+ chk_int("link", symlink("t.txt", "l.lnk"), 0);
+ policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("move a link onto its target", wpe_fileop_move("l.lnk", "t.txt", &p, &o), -1);
+ chk_int("the same file", o.step, WPE_FILEOP_STEP_SAME_FILE);
+ chk_int("link a link onto its target", wpe_fileop_link("l.lnk", "t.txt", &p, &o), -1);
+ chk_int("the same file, link", o.step, WPE_FILEOP_STEP_SAME_FILE);
+ chk_file("the data is there", "t.txt", "TARGET\n");
+ chk_int("the target is no link", is_link("t.txt"), 0);
+ chk_int("the link is still there", is_link("l.lnk"), 1);
+
+ mkdir("box", 0755);
+ chk_int("link to a folder", symlink("box", "boxlink"), 0);
+ put("src.txt", "SRC\n", 0644);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ chk_int("copy onto a link to a folder", wpe_fileop_copy("src.txt", "boxlink", &p, &o), 0);
+ chk_file("inside the folder", "box/src.txt", "SRC\n");
+ chk_int("the link is still a link", is_link("boxlink"), 1);
+ chk_int("move onto it", wpe_fileop_move("t.txt", "boxlink", &p, &o), 0);
+ chk_file("moved inside", "box/t.txt", "TARGET\n");
+
+ put("plain.txt", "P\n", 0644);
+ chk_int("onto a name with a slash", wpe_fileop_copy("src.txt", "nodir/", &p, &o), -1);
+ chk_absent("no file under that name", "nodir");
+ wpe_fileop_sentence(buf, sizeof buf, &o);
+ chk_has("says why", buf, "No such file or directory");
+ chk_int("onto a file with a slash", wpe_fileop_copy("src.txt", "plain.txt/", &p, &o), -1);
+ chk_file("the file is as it was", "plain.txt", "P\n");
+
+ /* the fsync of a move across file systems that fails says where things are */
+ memset(&o, 0, sizeof o);
+ o.status = WPE_FILEOP_FAILED;
+ o.kind = WPE_FILEOP_MOVE;
+ o.step = WPE_FILEOP_STEP_CLOSE;
+ o.err = EIO;
+ snprintf(o.src, sizeof o.src, "%s", "/a/src");
+ snprintf(o.dst, sizeof o.dst, "%s", "/b/dst");
+ o.src_kept = 1;
+ o.dst_kept = 0;
+ wpe_fileop_sentence(buf, sizeof buf, &o);
+ chk_has("where the copy is", buf, "/b/dst holds the copy; /a/src is still in place.");
+ clean();
+}
+
+/* ---- a link in the destination, a folder that changes under the walk ---- */
+
+static int outside_found;
+
+static int look_for_outside(const char *path, const struct stat *sb, int type, struct FTW *ftw)
+{
+ char buf[64];
+
+ (void)sb; (void)ftw;
+ if (type == FTW_F && get(path, buf, sizeof buf) == 0 && strstr(buf, "OUTSIDE"))
+  outside_found++;
+ return(0);
+}
+
+/* How many files under @name hold the text only the folder outside holds. */
+static int count_outside(const char *name)
+{
+ char p[512];
+
+ path_of(p, sizeof p, name);
+ outside_found = 0;
+ nftw(p, look_for_outside, 8, FTW_PHYS);
+ return(outside_found);
+}
+
+static char swap_entry[512], swap_out[512];
+static int swap_at;
+
+/* At the swap_at-th call, the entry being walked becomes a link to
+   something outside: someone else changed the source meanwhile.  The
+   progress callback runs after an entry was judged and before it is used,
+   which is the window a walk by path would lose. */
+static int swap_progress(void *ctx, const char *verb, const char *src, const char *dst)
+{
+ char aside[600];
+
+ (void)ctx; (void)verb; (void)src; (void)dst;
+ if (++progress_calls == swap_at) {
+  snprintf(aside, sizeof aside, "%s.real", swap_entry);
+  if (rename(swap_entry, aside) != 0 || symlink(swap_out, swap_entry) != 0)
+   perror("swap");
+ }
+ return(0);
+}
+
+static void swap_plan(WpeFileOpPolicy *p, const char *entry, const char *outside, int at)
+{
+ snprintf(swap_entry, sizeof swap_entry, "%s/%s", dir, entry);
+ snprintf(swap_out, sizeof swap_out, "%s/%s", dir, outside);
+ swap_at = at;
+ p->progress = swap_progress;
+ progress_calls = 0;
+}
+
+/* src/sub holds f0..f3 (INSIDE), out holds f0..f3 (OUTSIDE). */
+static void swap_fixture(void)
+{
+ char name[64];
+ int i;
+
+ mkdir("out", 0755);
+ mkdir("src", 0755);
+ mkdir("src/sub", 0755);
+ for (i = 0; i < 4; i++) {
+  snprintf(name, sizeof name, "src/sub/f%d", i);
+  put(name, "INSIDE\n", 0644);
+  snprintf(name, sizeof name, "out/f%d", i);
+  put(name, "OUTSIDE\n", 0644);
+ }
+}
+
+/* The four files outside are as they were. */
+static void chk_outside_whole(const char *what)
+{
+ char name[64];
+ int i;
+
+ for (i = 0; i < 4; i++) {
+  snprintf(name, sizeof name, "out/f%d", i);
+  chk_file(what, name, "OUTSIDE\n");
+ }
+}
+
+/* The four files moved or copied from the folder that was held. */
+static void chk_inside_arrived(const char *what, const char *folder)
+{
+ char name[96];
+ int i;
+
+ for (i = 0; i < 4; i++) {
+  snprintf(name, sizeof name, "%s/f%d", folder, i);
+  chk_file(what, name, "INSIDE\n");
+ }
+}
+
+/* A link in the destination where the source has a folder is refused, as
+   GNU cp does: the walk stops at that entry with its counts and nothing
+   behind the link is touched.  A real folder there is merged into. */
+static void test_tree_refuses_a_destination_link_where_a_folder_goes(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char buf[1024];
+
+ make_dir();
+ chdir(dir);
+ mkdir("out", 0755);
+ mkdir("out/inner", 0755);
+ put("out/inner/b.txt", "OUTSIDE\n", 0644);
+ mkdir("src", 0755);
+ mkdir("src/sub", 0755);
+ put("src/sub/b.txt", "NEW\n", 0644);
+ put("src/a.txt", "NEW\n", 0644);
+ mkdir("dst", 0755);
+ chk_int("link sub", symlink("../out/inner", "dst/sub"), 0);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("refused", wpe_fileop_copy_tree("src", "dst", &p, &o), -1);
+ chk_int("failed", o.status, WPE_FILEOP_FAILED);
+ chk_int("not a folder", o.step, WPE_FILEOP_STEP_NOT_A_FOLDER);
+ chk_str("names the link", o.bad, "dst/sub");
+ wpe_fileop_sentence(buf, sizeof buf, &o);
+ chk_has("says it", buf, "dst/sub is not a folder");
+ chk_has("with the counts", buf, "1 of 2 entries were copied.");
+ chk_file("the file before it went", "dst/a.txt", "NEW\n");
+ chk_file("outside, untouched", "out/inner/b.txt", "OUTSIDE\n");
+ chk_absent("nothing made outside", "out/sub");
+ chk_int("the link is still a link", is_link("dst/sub"), 1);
+
+ /* the control: a real folder there is merged into */
+ chk_int("remove the link", unlink("dst/sub"), 0);
+ mkdir("dst/sub", 0755);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("merged", wpe_fileop_copy_tree("src", "dst", &p, &o), 0);
+ chk_file("merged in", "dst/sub/b.txt", "NEW\n");
+ chk_file("outside, still", "out/inner/b.txt", "OUTSIDE\n");
+ clean();
+}
+
+/* A file onto a link to a folder inside the destination is a name under the
+   replace rule: never written through, never put inside the folder (the
+   name the user typed is the only one that means "inside"). */
+static void test_tree_file_onto_a_destination_link_is_replaced_as_a_name(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ struct stat st;
+
+ make_dir();
+ chdir(dir);
+ mkdir("out", 0755);
+ put("out/a.txt", "OUTSIDE\n", 0644);
+ mkdir("src", 0755);
+ put("src/a.txt", "NEW\n", 0644);
+ mkdir("dst", 0755);
+
+ /* ALWAYS: the link goes, a file takes its name */
+ chk_int("link", symlink("../out", "dst/a.txt"), 0);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("replaced", wpe_fileop_copy_tree("src", "dst", &p, &o), 0);
+ chk_int("a file now", lstat("dst/a.txt", &st) == 0 && S_ISREG(st.st_mode), 1);
+ chk_file("with the new text", "dst/a.txt", "NEW\n");
+ chk_file("outside, untouched", "out/a.txt", "OUTSIDE\n");
+
+ /* NEVER: the entry is left, counted, the link stays */
+ chk_int("remove the file", unlink("dst/a.txt"), 0);
+ chk_int("link again", symlink("../out", "dst/a.txt"), 0);
+ tree_policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ chk_int("declined", wpe_fileop_copy_tree("src", "dst", &p, &o), -1);
+ chk_int("status", o.status, WPE_FILEOP_DECLINED);
+ chk_int("one left alone", o.skipped, 1);
+ chk_int("the link stays", is_link("dst/a.txt"), 1);
+ chk_file("outside, untouched, never", "out/a.txt", "OUTSIDE\n");
+
+ /* ASK, answered no: the link stays */
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ answer = WPE_FILEOP_ANSWER_NO;
+ asked = 0;
+ chk_int("asked, no", wpe_fileop_copy_tree("src", "dst", &p, &o), -1);
+ chk_int("it asked", asked, 1);
+ chk_int("the link stays, asked", is_link("dst/a.txt"), 1);
+ chk_file("outside, untouched, asked", "out/a.txt", "OUTSIDE\n");
+
+ /* with the wastebasket: the link goes there as a link */
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_WASTEBASKET);
+ chk_int("replaced, wastebasket", wpe_fileop_copy_tree("src", "dst", &p, &o), 0);
+ chk_int("the link is in the wastebasket as a link", is_link(".wastebasket/a.txt"), 1);
+ chk_int("a file took its name", is_link("dst/a.txt"), 0);
+ chk_file("outside, untouched, wastebasket", "out/a.txt", "OUTSIDE\n");
+
+ /* the control: a regular file there is replaced as before */
+ chk_int("replace a file", wpe_fileop_copy_tree("src", "dst", &p, &o), 0);
+ chk_file("replaced", "dst/a.txt", "NEW\n");
+ clean();
+}
+
+/* A link to a file inside the destination is a name too: replaced, never
+   written through (cp would write through it). */
+static void test_tree_file_onto_a_link_to_a_file_is_replaced_as_a_name(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ put("ofile.txt", "OUTSIDE\n", 0644);
+ mkdir("src", 0755);
+ put("src/.hid", "NEW\n", 0644);
+ mkdir("dst", 0755);
+ chk_int("link", symlink("../ofile.txt", "dst/.hid"), 0);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("replaced", wpe_fileop_copy_tree("src", "dst", &p, &o), 0);
+ chk_int("the name is a file now", is_link("dst/.hid"), 0);
+ chk_file("with the new text", "dst/.hid", "NEW\n");
+ chk_file("the file the link named is intact", "ofile.txt", "OUTSIDE\n");
+ clean();
+}
+
+/* A Copy keeps reading the folder it opened, whatever its name becomes. */
+static void test_tree_copy_survives_a_swap_for_a_link(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ swap_fixture();
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ swap_plan(&p, "src/sub", "out", 2);
+ chk_int("copied", wpe_fileop_copy_tree("src", "dst", &p, &o), 0);
+ chk_int("done", o.status, WPE_FILEOP_DONE);
+ chk_int("the swap happened", is_link("src/sub"), 1);
+ chk_inside_arrived("what was held arrived", "dst/sub");
+ chk_int("nothing from outside in the copy", count_outside("dst"), 0);
+ chk_outside_whole("outside, untouched");
+ clean();
+
+ /* the control: no swap, four copied */
+ make_dir();
+ chdir(dir);
+ swap_fixture();
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("no swap", wpe_fileop_copy_tree("src", "dst", &p, &o), 0);
+ chk_int("four copied", o.done, 4);
+ clean();
+}
+
+/* A Move into a folder that exists walks the subfolder by its descriptor:
+   the files move from the folder that was held, and the swapped name is
+   neither entered nor removed. */
+static void test_tree_move_survives_a_swap_for_a_link(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char buf[1024];
+
+ make_dir();
+ chdir(dir);
+ swap_fixture();
+ mkdir("dst", 0755);
+ mkdir("dst/sub", 0755);          /* a merge: the subfolder is walked, not renamed */
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ swap_plan(&p, "src/sub", "out", 2);
+ chk_int("moved", wpe_fileop_move_tree("src", "dst", &p, &o), -1);
+ chk_int("failed", o.status, WPE_FILEOP_FAILED);
+ chk_int("the folder changed", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_int("four moved first", o.done, 4);
+ wpe_fileop_sentence(buf, sizeof buf, &o);
+ chk_has("says it", buf, "changed while the folder was being moved");
+ chk_outside_whole("outside, untouched");
+ chk_inside_arrived("what was held moved", "dst/sub");
+ chk_int("the swapped name is still a link", is_link("src/sub"), 1);
+ chk_int("nothing from outside in the destination", count_outside("dst"), 0);
+ clean();
+
+ /* the control: no swap, moved, the source gone */
+ make_dir();
+ chdir(dir);
+ swap_fixture();
+ mkdir("dst", 0755);
+ mkdir("dst/sub", 0755);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("no swap", wpe_fileop_move_tree("src", "dst", &p, &o), 0);
+ chk_absent("source gone", "src");
+ clean();
+}
+
+/* The same across file systems: copied durably from the descriptor, the
+   source entry unlinked through the folder it was read from. */
+static void test_tree_move_across_survives_a_swap_for_a_link(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char dst[512], sub[512], name[600];
+ int i;
+
+ make_dir();
+ make_other();
+ if (!other[0]) {
+  clean();
+  return;
+ }
+ chdir(dir);
+ swap_fixture();
+ snprintf(dst, sizeof dst, "%s/dst", other);
+ snprintf(sub, sizeof sub, "%s/dst/sub", other);
+ mkdir(dst, 0755);
+ mkdir(sub, 0755);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ swap_plan(&p, "src/sub", "out", 2);
+ chk_int("moved across", wpe_fileop_move_tree("src", dst, &p, &o), -1);
+ chk_int("the folder changed", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_outside_whole("outside, untouched, across");
+ for (i = 0; i < 4; i++) {
+  snprintf(name, sizeof name, "%s/f%d", sub, i);
+  chk_int("what was held arrived", access(name, F_OK), 0);
+ }
+ outside_found = 0;
+ nftw(dst, look_for_outside, 8, FTW_PHYS);
+ chk_int("nothing from outside over there", outside_found, 0);
+ clean();
+}
+
+enum { OP_COPY, OP_MOVE, OP_MOVE_ACROSS, OP_LINK, OP_REMOVE };
+
+static int run_tree_op(int op, WpeFileOpPolicy *p, WpeFileOpOutcome *o)
+{
+ char dst[512];
+
+ if (op == OP_COPY)
+  return(wpe_fileop_copy_tree("src", "dst", p, o));
+ if (op == OP_LINK)
+  return(wpe_fileop_link_tree("src", "dst", p, o));
+ if (op == OP_REMOVE)
+  return(wpe_fileop_remove_tree("src", p, o));
+ if (op == OP_MOVE_ACROSS) {
+  snprintf(dst, sizeof dst, "%s/dst", other);
+  return(wpe_fileop_move_tree("src", dst, p, o));
+ }
+ return(wpe_fileop_move_tree("src", "dst", p, o));
+}
+
+/* The destination of a swap row: an existing folder holding `sub`, so a
+   Move merges and walks it, on this file system or on the other. */
+static void make_swap_destination(int op)
+{
+ char sub[512];
+
+ if (op == OP_MOVE_ACROSS) {
+  snprintf(sub, sizeof sub, "%s/dst", other);
+  mkdir(sub, 0755);
+  snprintf(sub, sizeof sub, "%s/dst/sub", other);
+  mkdir(sub, 0755);
+  return;
+ }
+ mkdir("dst", 0755);
+ mkdir("dst/sub", 0755);
+}
+
+/* Nothing of the folder outside reached the destination of a swap row. */
+static void chk_nothing_outside_in_destination(int op)
+{
+ char dst[512];
+
+ snprintf(dst, sizeof dst, "%s/dst", other);
+ outside_found = 0;
+ if (op == OP_MOVE_ACROSS)
+  nftw(dst, look_for_outside, 8, FTW_PHYS);
+ chk_int("nothing from outside over there", outside_found, 0);
+ chk_int("nothing from outside in the destination", count_outside("dst"), 0);
+}
+
+/* The subfolder becomes a link after it was judged to be a folder and
+   before it is opened: the open does not follow the link, so the walk says
+   the source changed and nothing outside is read, moved, linked or removed. */
+static void test_tree_swapped_before_the_folder_is_opened(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int op;
+
+ for (op = OP_COPY; op <= OP_REMOVE; op++) {
+  make_dir();
+  make_other();
+  if (op == OP_MOVE_ACROSS && !other[0]) {
+   clean();
+   continue;
+  }
+  chdir(dir);
+  swap_fixture();
+  make_swap_destination(op);
+  tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+  swap_plan(&p, "src/sub", "out", 1);
+  chk_int("stopped", run_tree_op(op, &p, &o), -1);
+  chk_int("the folder changed", o.step, WPE_FILEOP_STEP_CHANGED);
+  chk_outside_whole("outside, untouched, before the open");
+  chk_int("the swapped name is a link", is_link("src/sub"), 1);
+  chk_nothing_outside_in_destination(op);
+  clean();
+ }
+}
+
+/* A Link of a tree never makes a link to what a swapped name points to, hard
+   or symbolic, and a link inside is linked as the link it is. */
+static void link_swap_row(int hard)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ struct stat st;
+
+ make_dir();
+ chdir(dir);
+ swap_fixture();
+ chk_int("a link inside", symlink("../../out/f0", "src/sub/l"), 0);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ p.hardlink_first = hard;
+ swap_plan(&p, "src/sub", "out", 2);
+ chk_int("linked", wpe_fileop_link_tree("src", "lk", &p, &o), 0);
+ chk_outside_whole("outside, untouched, link");
+ chk_int("outside has no more names", lstat("out/f0", &st) == 0 && st.st_nlink == 1, 1);
+ chk_int("the link inside is a link, not a name of what it points to", is_link("lk/sub/l"), 1);
+ clean();
+}
+
+static void test_tree_link_survives_a_swap_for_a_link(void)
+{
+ link_swap_row(1);
+ link_swap_row(0);
+}
+
+/* A Remove keeps removing the folder it opened; the swapped name stays. */
+static void test_tree_remove_survives_a_swap_for_a_link(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ swap_fixture();
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ swap_plan(&p, "src/sub", "out", 2);
+ chk_int("removed", wpe_fileop_remove_tree("src", &p, &o), -1);
+ chk_int("the folder changed", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_outside_whole("outside, untouched, remove");
+ chk_int("the swapped name stays", is_link("src/sub"), 1);
+ clean();
+}
+
+/* An entry that becomes a link between being judged and being used is not
+   read through: the walk stops, says so, and the copy holds nothing from
+   outside. */
+static void test_tree_copy_says_an_entry_changed(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char buf[1024];
+
+ make_dir();
+ chdir(dir);
+ swap_fixture();
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ swap_plan(&p, "src/sub/f1", "out/f1", 3);
+ chk_int("stopped", wpe_fileop_copy_tree("src", "dst", &p, &o), -1);
+ chk_int("failed", o.status, WPE_FILEOP_FAILED);
+ chk_int("the entry changed", o.step, WPE_FILEOP_STEP_CHANGED);
+ wpe_fileop_sentence(buf, sizeof buf, &o);
+ chk_has("says it", buf, "changed while the folder was being copied");
+ chk_has("with the counts", buf, "1 of 4 entries were copied.");
+ chk_outside_whole("outside, untouched");
+ chk_absent("the swapped entry was not copied", "dst/sub/f1");
+ chk_int("nothing from outside in the copy", count_outside("dst"), 0);
+ clean();
+}
+
+/* A name written with a slash after a link is not followed: a Remove or a
+   Move of `lnk/` refuses it as the folder it is not. */
+static void test_tree_a_link_with_a_slash_is_not_followed(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ make_other();
+ chdir(dir);
+ mkdir("out", 0755);
+ put("out/keep.txt", "OUTSIDE\n", 0644);
+ chk_int("link", symlink("out", "lnk"), 0);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("remove lnk/", wpe_fileop_remove_tree("lnk/", &p, &o), -1);
+ chk_int("not a folder", o.step, WPE_FILEOP_STEP_NOT_A_FOLDER);
+ chk_file("outside, untouched", "out/keep.txt", "OUTSIDE\n");
+ chk_int("the link stays", is_link("lnk"), 1);
+ chk_int("move lnk/", wpe_fileop_move_tree("lnk/", "mv", &p, &o), -1);
+ chk_int("not a folder, move", o.step, WPE_FILEOP_STEP_NOT_A_FOLDER);
+ chk_file("outside, untouched, move", "out/keep.txt", "OUTSIDE\n");
+ chk_int("the link stays, move", is_link("lnk"), 1);
+ chk_absent("nothing made", "mv");
+ if (other[0]) {
+  char dst[512];
+
+  snprintf(dst, sizeof dst, "%s/mv", other);
+  chk_int("move lnk/ across", wpe_fileop_move_tree("lnk/", dst, &p, &o), -1);
+  chk_file("outside, untouched, across", "out/keep.txt", "OUTSIDE\n");
+  chk_int("the link stays, across", is_link("lnk"), 1);
+ }
+
+ /* the control: a real folder with a slash goes as before */
+ mkdir("rd", 0755);
+ put("rd/x", "X\n", 0644);
+ chk_int("remove rd/", wpe_fileop_remove_tree("rd/", &p, &o), 0);
+ chk_absent("gone", "rd");
+ clean();
+}
+
+/* The folder the user names is followed once when it is a link and the
+   operation is a Copy or a Link (the DirTree shows it as a folder); the
+   links inside it are names.  A Move or a Remove of the link is the
+   File Manager's own dispatch (the file operation), never the tree's. */
+static void test_tree_a_named_link_to_a_folder_is_followed_once(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ mkdir("elsewhere", 0755);
+ put("elsewhere/e.txt", "ELSE\n", 0644);
+ mkdir("target", 0755);
+ put("target/t.txt", "T\n", 0644);
+ chk_int("inner link", symlink("../elsewhere", "target/inner"), 0);
+ chk_int("the named link", symlink("target", "lnk"), 0);
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("copy", wpe_fileop_copy_tree("lnk", "cp", &p, &o), 0);
+ chk_file("the folder's file", "cp/t.txt", "T\n");
+ chk_int("the inner link is a link", is_link("cp/inner"), 1);
+ chk_file("elsewhere, untouched", "elsewhere/e.txt", "ELSE\n");
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("link of it", wpe_fileop_link_tree("lnk", "lk", &p, &o), 0);
+ chk_int("the inner link is linked as a link", is_link("lk/inner"), 1);
+ chk_file("elsewhere, untouched, link", "elsewhere/e.txt", "ELSE\n");
+ tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
+ chk_int("a Move of the link as a tree", wpe_fileop_move_tree("lnk", "mv", &p, &o), -1);
+ chk_int("is not a folder", o.step, WPE_FILEOP_STEP_NOT_A_FOLDER);
+ chk_int("the link stays", is_link("lnk"), 1);
+ clean();
+}
+
 int main(void)
 {
+ test_tree_refuses_a_destination_link_where_a_folder_goes();
+ test_tree_file_onto_a_destination_link_is_replaced_as_a_name();
+ test_tree_file_onto_a_link_to_a_file_is_replaced_as_a_name();
+ test_tree_copy_survives_a_swap_for_a_link();
+ test_tree_move_survives_a_swap_for_a_link();
+ test_tree_move_across_survives_a_swap_for_a_link();
+ test_tree_swapped_before_the_folder_is_opened();
+ test_tree_link_survives_a_swap_for_a_link();
+ test_tree_remove_survives_a_swap_for_a_link();
+ test_tree_copy_says_an_entry_changed();
+ test_tree_a_link_with_a_slash_is_not_followed();
+ test_tree_a_named_link_to_a_folder_is_followed_once();
+ test_tree_never_enters_a_link();
+ test_tree_whole_and_permissions();
+ test_tree_move();
+ test_tree_stop_and_depth();
+ test_tree_remove_asks();
+ test_same_file_by_link_and_folder_link();
  test_private_and_special_bits();
  test_create_private();
  test_same_file();

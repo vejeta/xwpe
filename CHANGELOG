@@ -443,6 +443,26 @@ Changes
 * An Esc at the overwrite question while copying a folder no longer turns
   off the Remove question for the rest of the session.
 
+* File Manager folders: Remove of a folder no longer deletes the files of a
+  folder that a link inside it points to; a link is a name, copied, moved,
+  linked or removed as a link, and a link to a folder is never entered.  A
+  folder is copied, moved and linked whole, hidden files included, with its
+  permissions (setgid too), and merged into a folder that exists under the
+  Move/Copy option.  Remove of a folder removes it whole after the Delete
+  Directory dialog, and a folder in the wastebasket never replaces an earlier
+  one.  A long operation on a folder no longer waits for a key per file: the
+  status row names the file, and Ctrl-C stops it and says how far it got.
+  A file copied onto a name you type that is a link to a folder goes inside
+  that folder, and a link found inside the destination is never followed; a
+  link moved onto its own target is refused as the same file.  Only the two
+  folders you name are looked up by path: below them a link is a name,
+  whenever it appears, and nothing is written through it.  A link in the
+  destination where the source has a folder is refused ("dst/lib is not a
+  folder", with the counts) as cp does; a file onto a link there replaces
+  the link under the Move/Copy option.  If the source changes while a
+  folder is copied, moved or linked, the operation stops and says so.  The
+  links made by Link of a folder point to the real path of each file.
+
 * The macOS install pages now put the libx11-compat build first and
   XQuartz second, and say what the libx11-compat build leaves out: no
   Alt-F5 User Screen (it focuses Messages), no Cairo renderer, no native

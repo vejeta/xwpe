@@ -60,6 +60,11 @@ typedef enum {
  WPE_FILEOP_STEP_EXISTS,        /* DECLINED by "Don't overwrite": said on the status row */
  WPE_FILEOP_STEP_SAME_FILE,
  WPE_FILEOP_STEP_NOT_A_FILE,
+ WPE_FILEOP_STEP_NOT_A_FOLDER,  /* a folder is wanted and the path, or an entry inside the destination, is something else, a link included */
+ WPE_FILEOP_STEP_INSIDE,        /* a folder to be put inside itself */
+ WPE_FILEOP_STEP_TOO_DEEP,      /* a tree deeper than WPE_FILEOP_MAX_DEPTH folders */
+ WPE_FILEOP_STEP_CHANGED,       /* an entry changed between being judged and being used: the walk stopped, the counts are said */
+ WPE_FILEOP_STEP_STOPPED,       /* a folder operation the user ended: the count is said */
  WPE_FILEOP_STEP_CANCELLED      /* the user answered Esc: no sentence */
 } WpeFileOpStep;
 
@@ -75,6 +80,7 @@ typedef struct {
  char            aside[WPE_PATH_SIZE];     /* where a replaced destination went, else "" */
  int             src_kept;                 /* the source is as it was */
  int             dst_kept;                 /* an existing destination is as it was */
+ long            done, skipped, total;     /* a folder: entries done, left alone by the policy, all */
 } WpeFileOpOutcome;
 
 typedef enum { WPE_REPLACE_ASK, WPE_REPLACE_ALWAYS, WPE_REPLACE_NEVER } WpeReplaceRule;
@@ -91,9 +97,17 @@ typedef struct {
  WpeReplaceRule replace;
  WpeRemoveRule  remove;
  int            hardlink_first;            /* a Link tries a hard link before a symbolic one */
+ int            recursive;                 /* a folder operation goes into subfolders; Remove always does */
  int          (*ask)(void *ctx, const char *question);  /* an answer above; NULL answers no */
+ int          (*progress)(void *ctx, const char *verb, const char *src, const char *dst);
+                                           /* before each entry of a folder: 1 stops; NULL never */
  void          *ctx;
 } WpeFileOpPolicy;
+
+/** The deepest tree a folder operation takes: deeper is refused before
+    anything is changed, and said.  A Move that is one rename (a free name
+    on the same file system) walks nothing and has no depth. */
+#define WPE_FILEOP_MAX_DEPTH 15
 
 /** Whoever drops the outcome of a file operation has lost the news that it
     did not happen. */
@@ -109,6 +123,27 @@ WPE_FILEOP_RESULT int wpe_fileop_link(const char *src, const char *dst, const Wp
 WPE_FILEOP_RESULT int wpe_fileop_remove(const char *path, const WpeFileOpPolicy *p, WpeFileOpOutcome *o);
 WPE_FILEOP_RESULT int wpe_fileop_mkdir(const char *path, mode_t mode, WpeFileOpOutcome *o);
 WPE_FILEOP_RESULT int wpe_fileop_rmdir(const char *path, WpeFileOpOutcome *o);
+/* A folder, whole: every entry, hidden ones and those the panel's pattern
+   hides included.  The two names given are the only paths resolved; below
+   them every entry is addressed by its folder's descriptor and its name, so
+   a link, wherever it sits and whenever it appears, is a name and never a
+   place: copied, moved, linked or removed as a name, never entered and
+   never written through.  A link inside the destination where the source
+   has a folder is refused (NOT_A_FOLDER, the walk stops with its counts);
+   a file onto a link there is replaced as a name under the replace rule.  A
+   source that changes under the walk gives CHANGED with the counts.  An
+   existing destination folder is merged into, entry by entry, under the
+   policy; permissions go on a folder only when the operation made it.  A
+   policy that left entries alone gives DECLINED with the counts; a stop or
+   a failure says how far it got. */
+WPE_FILEOP_RESULT int wpe_fileop_copy_tree(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o);
+WPE_FILEOP_RESULT int wpe_fileop_move_tree(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o);
+WPE_FILEOP_RESULT int wpe_fileop_link_tree(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o);
+/* The tree and the folder itself, for good: the policy's Remove rule says
+   whether each file is asked about (ASK) or not; it never goes to the
+   wastebasket (a Move of the folder does that). */
+WPE_FILEOP_RESULT int wpe_fileop_remove_tree(const char *path, const WpeFileOpPolicy *p, WpeFileOpOutcome *o);
+
 /* perm: the nine permission bits; the file's setuid, setgid and sticky bits are kept */
 WPE_FILEOP_RESULT int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpOutcome *o);
 /* A name moved where none is: a folder's rename, which rename(2) would let

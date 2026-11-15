@@ -424,8 +424,12 @@ Show hidden files.
 @item Alt-D
 Show hidden directories.
 @item Alt-K
-Make all actions (Move, Link, Copy, Remove) recursive (include
-sub-directories).
+Make Move, Link and Copy of a folder recursive (include sub-directories).
+A folder is always taken whole, hidden files included, and a link inside it
+is a name that is never entered, in the source or in the destination: a
+link where the source has a folder is refused, and a file onto a link
+replaces the link under the overwrite option below.  Remove of a folder
+always removes it with everything in it.
 @end table
 
 @subsubheading Sort files by
@@ -449,17 +453,21 @@ Ask for confirmation before overwriting an existing file.
 @item Alt-V
 Overwrite existing files without confirmation.
 @item Alt-T
-Never overwrite existing files, and say so on the status row.
+Never overwrite existing files, and say so on the status row.  When a folder
+is copied or moved into a folder that exists, the entries that are there are
+kept and the status row says how many were copied and how many were left.
 @end table
 
 @subsubheading Remove behaviour
 
 @table @kbd
 @item Alt-W
-Deleted files are moved to the wastebasket.  A file of the same name
-already there is kept, and the new one is named @file{a.txt.1}.
+Deleted files and folders are moved to the wastebasket.  A file or folder of
+the same name already there is kept, and the new one is named
+@file{a.txt.1}.
 @item Alt-A
-Files are permanently deleted (with confirmation).
+Files are permanently deleted (with confirmation).  A folder asks once in
+the @samp{Delete Directory} dialog whether to ask for each file.
 @item Alt-M
 Files are permanently deleted (no confirmation).
 @end table
