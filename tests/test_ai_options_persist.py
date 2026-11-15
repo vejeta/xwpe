@@ -639,3 +639,17 @@ def test_provider_name_refused_when_unusable(tmp_path, name):
         "the refused name was made the active provider:\n" + saved
     assert sorted(os.listdir(cfg_dir(home))) == ["xwperc"], \
         "a stray file appeared next to xwperc: %s" % sorted(os.listdir(cfg_dir(home)))
+
+
+# @scenario SC-number-fields-NF4b
+def test_ok_keeps_a_number_the_editor_refused_as_the_file_had_it(tmp_path):
+    # NumUndo : 500 is above the range the editor works with, so it is not used;
+    # the file is the user's, and the save this Ok makes writes it back as it was.
+    home = str(tmp_path / "home")
+    write_xwperc(home, ["AIBackend : 4", "AIPolicy : ask"], general=["NumUndo : 500"])
+    with session(tmp_path, home) as s:
+        open_dialog(s)
+        press_ok(s)
+    saved = read_xwperc(home)
+    assert "NumUndo : 500\n" in saved and "[General]" in saved, \
+        "Ok did not keep the refused number:\n" + saved

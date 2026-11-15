@@ -130,6 +130,18 @@ POINT e_set_pnt(int x, int y)
 static char *e_status_held_line;
 
 /**
+ * e_status_room - How many characters of a status line the bottom row shows.
+ *
+ * A caller that composes a line from parts asks first, so the part the user
+ * must read is the one that fits.
+ * Return: the columns, less the margin.
+ */
+int e_status_room(void)
+{
+ return MAXSCOL - E_STATUS_MARGIN;
+}
+
+/**
  * e_status_paint - Write one line of text over the bottom row.
  * @fb: the colours; @text: the line.
  *
@@ -139,7 +151,7 @@ static char *e_status_held_line;
  */
 void e_status_paint(FARBE *fb, const char *text)
 {
- int room = MAXSCOL - E_STATUS_MARGIN, len = (int)strlen(text);
+ int room = e_status_room(), len = (int)strlen(text);
  char *shown;
 
  if (!fb || room <= (int)strlen(E_STATUS_CUT_MARK))

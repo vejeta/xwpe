@@ -10,9 +10,8 @@
 # until its last parser is gone.  --strict ignores every line but the keep
 # ones.
 
-# --- the option file reader, moved onto the owner with the file pass (P2) ---
-R1|we_opt.c|(file)|22|P2|five of these are the editor numbers (P2); the other seventeen are the option file's other integer keys, moved in P4 (CompilerSwitch is read twice: the language entry and the user's own copy)
-R2|we_opt.c|WpeReadGeneral|5|P2|the five editor numbers are read with atoi and written into the editor
+# --- the option file reader: the editor numbers are on the owner, the other keys move in P4 ---
+R1|we_opt.c|(file)|17|P4|the option file's other integer keys, moved in P4 (CompilerSwitch is read twice: the language entry and the user's own copy); the five editor numbers are read through the owner
 
 # --- a buffer built without an editor ---
 R4|we_buffer.c|buffer_tab_width|2|keep|the buffer owner is pure and unit tested without an editor: it falls back to its own default for a tab width of 0 or less

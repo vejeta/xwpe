@@ -506,8 +506,13 @@ is typed: the range is said on the bottom row, and the box stays open with
 the field in focus until the number can be used or you cancel.  Max.@:
 Columns goes up to 9999, in a field of four places.  Go to Line takes any
 run of digits, and a number past the end, however large, goes to the last
-line.  Reason: a number the editor divides by, or sizes a row with, must be
-one it can use.
+line.  The same holds for the number keys of @file{xwperc}: the original
+took any value written there with @code{atoi}, so @code{Tab : 0} ended the
+editor at start.  A value outside the range is not used (the default is,
+and a line at start says so), but the file keeps it, and Save Options
+writes it back as it was until you give that option a different number in
+the dialog.  Reason: a number the editor divides by, or sizes a row with, must
+be one it can use, and what you wrote in your file is yours.
 
 @item Overwrite over a character outside ASCII
 @cindex overwrite, multibyte characters

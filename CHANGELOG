@@ -59,6 +59,10 @@ Bugs fixed in 1.6.x:
   a key that is not a digit no longer makes the next digit append.  Max.
   Columns goes up to 9999.  A Go to Line number larger than the editor can
   count goes to the last line.
+* A number key of xwperc (MaxColumn, Tab, MaxChanges, NumUndo, AutoIndent)
+  outside its range is not used: the default is, a line at start names the
+  key and the value, and the file keeps it, also when xwpe saves the
+  options.  Tab : 0 no longer ends the editor at start.
 * Quitting, a signal (SIGTERM, SIGHUP) or a crash now hands the terminal
   back as the shell had it, on every terminal: the alternate screen is
   left and stays left, and the mouse, bracketed paste and keyboard modes

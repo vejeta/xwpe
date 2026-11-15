@@ -28,6 +28,45 @@ void e_status_say(FENSTER *f, const char *text)
 	snprintf(said, sizeof said, "%s", text);
 }
 
+/* The line about keys a project's xwperc may not set, as the option reader
+   gives it: its long and its short sentence (both empty: no such keys), and
+   what the owner said on the bottom row after it. */
+static char held[1024];          /* the long sentence */
+static char held_short[1024];    /* the short one */
+static char held_by_owner[1024];
+
+static int room_columns = 78;    /* what the bottom row shows */
+
+int e_status_room(void)
+{
+	return room_columns;
+}
+
+/* The same choice as the reader's: long, short, or the short one cut. */
+int e_opt_ignored_line(char *buf, size_t n, int room)
+{
+	size_t width;
+
+	buf[0] = '\0';
+	if (!held[0])
+		return E_OPT_IGNORED_NONE;
+	snprintf(buf, n, "%s", held);
+	if ((int)strlen(buf) <= room)
+		return E_OPT_IGNORED_LONG;
+	snprintf(buf, n, "%s", held_short);
+	if ((int)strlen(buf) <= room)
+		return E_OPT_IGNORED_SHORT;
+	width = room > 3 ? (size_t)room - 3 : 0;
+	snprintf(buf + width, n - width, "...");
+	return E_OPT_IGNORED_CUT;
+}
+
+void e_status_say_until_key(FENSTER *f, const char *text)
+{
+	(void)f;
+	snprintf(held_by_owner, sizeof held_by_owner, "%s", text);
+}
+
 static void chk_int(const char *what, long got, long want)
 {
 	if (got != want) {
@@ -239,9 +278,170 @@ static void the_field(void)
 	chk_int("-5 on Go to Line is not saturated", e_number_field_accept(&n, text, NULL), -1);
 }
 
+/* What Save writes for one kind, as one line of text. */
+static void written(ECNT *cn, const WpeNumberType *t, char *out, size_t n)
+{
+	FILE *fp = tmpfile();
+	size_t got;
+
+	out[0] = '\0';
+	if (!fp)
+		return;
+	e_number_write(cn, t, fp);
+	rewind(fp);
+	got = fread(out, 1, n - 1, fp);
+	out[got] = '\0';
+	fclose(fp);
+}
+
+/* Five refused numbers on a row too narrow for their values: the keys alone,
+   then the end cut when not even they fit, the held line's head always whole. */
+static void narrow_rows(ECNT *cn)
+{
+	const char *keys = "xwperc not used: MaxColumn, Tab, MaxChanges, NumUndo, AutoIndent";
+
+	chk_int("load MaxChanges 1000", e_number_load(cn, WPE_NUM(WPE_NUM_MAXCHG), "1000"), -1);
+	held[0] = '\0';
+	room_columns = 78;
+	e_number_say_refused(cn);
+	chk_str("the keys alone", held_by_owner, keys);
+	room_columns = 40;
+	e_number_say_refused(cn);
+	chk_str("whole keys, the rest counted", held_by_owner, "xwperc not used: MaxColumn, Tab +3");
+
+	snprintf(held, sizeof held, "keys line");
+	snprintf(held_short, sizeof held_short, "keys");
+	room_columns = 78;
+	e_number_say_refused(cn);
+	chk_str("the keys after the long keys line", held_by_owner,
+	        "keys line; not used: MaxColumn, Tab, MaxChanges, NumUndo, AutoIndent");
+
+	snprintf(held, sizeof held, "./xwperc may not set (only your own config may): AIBackend");
+	snprintf(held_short, sizeof held_short, "./xwperc may not set: AIBackend");
+	e_number_say_refused(cn);
+	chk_str("the short keys line when the long one would not fit", held_by_owner,
+	        "./xwperc may not set: AIBackend; not used: MaxColumn, Tab, MaxChanges +2");
+	room_columns = 52;
+	e_number_say_refused(cn);
+	chk_str("only a count fits", held_by_owner, "./xwperc may not set: AIBackend; 5 numbers not used");
+	room_columns = 50;
+	e_number_say_refused(cn);
+	chk_str("the numbers are left out", held_by_owner, "./xwperc may not set: AIBackend");
+	room_columns = 20;
+	e_number_say_refused(cn);
+	chk_str("the keys line is cut from the right", held_by_owner, "./xwperc may not ...");
+	held[0] = '\0';
+	held_short[0] = '\0';
+}
+
+/* A DOS line end behind a number is not part of it. */
+static void dos_line_end(ECNT *cn)
+{
+	char out[64];
+	int v;
+
+	chk_int("4 and a CR", wpe_number_parse("4\r", WPE_NUM(WPE_NUM_TAB), &v), WPE_NUMBER_OK);
+	chk_int("the value", v, 4);
+	chk_int("0 and a CR", e_number_load(cn, WPE_NUM(WPE_NUM_TAB), "0\r"), -1);
+	written(cn, WPE_NUM(WPE_NUM_TAB), out, sizeof out);
+	chk_str("the CR is not kept", out, "Tab : 0\n");
+}
+
+/* The option file: a number in range is used, any other is kept as the file
+   wrote it, said once, and written back until the user stores another. */
+static void the_file(void)
+{
+	ECNT cn;
+	char out[128];
+	int k;
+
+	memset(&cn, 0, sizeof cn);
+	e_number_defaults(&cn);
+
+	chk_int("load Tab 3", e_number_load(&cn, WPE_NUM(WPE_NUM_TAB), "3"), 0);
+	chk_int("tabn is 3", cn.tabn, 3);
+	written(&cn, WPE_NUM(WPE_NUM_TAB), out, sizeof out);
+	chk_str("write Tab 3", out, "Tab : 3\n");
+
+	chk_int("load Tab 0", e_number_load(&cn, WPE_NUM(WPE_NUM_TAB), "0"), -1);
+	chk_int("tabn stays 3", cn.tabn, 3);
+	chk_int("load Tab text", e_number_load(&cn, WPE_NUM(WPE_NUM_TAB), "8x"), -1);
+	chk_int("load Tab past an int", e_number_load(&cn, WPE_NUM(WPE_NUM_TAB), "99999999999"), -1);
+	written(&cn, WPE_NUM(WPE_NUM_TAB), out, sizeof out);
+	chk_str("write the refused text", out, "Tab : 99999999999\n");
+
+	chk_int("a later good value", e_number_load(&cn, WPE_NUM(WPE_NUM_TAB), "5"), 0);
+	written(&cn, WPE_NUM(WPE_NUM_TAB), out, sizeof out);
+	chk_str("write the good value again", out, "Tab : 5\n");
+
+	chk_int("load NumUndo 500", e_number_load(&cn, WPE_NUM(WPE_NUM_NUMUNDO), "500"), -1);
+	chk_int("numundo stays 10", cn.numundo, 10);
+	chk_int("store the value in force is not a choice",
+	        e_number_store(&cn, WPE_NUM(WPE_NUM_NUMUNDO), 10), 0);
+	written(&cn, WPE_NUM(WPE_NUM_NUMUNDO), out, sizeof out);
+	chk_str("still the file's text", out, "NumUndo : 500\n");
+	chk_int("store 20", e_number_store(&cn, WPE_NUM(WPE_NUM_NUMUNDO), 20), 0);
+	written(&cn, WPE_NUM(WPE_NUM_NUMUNDO), out, sizeof out);
+	chk_str("the user's number is written", out, "NumUndo : 20\n");
+
+	written(&cn, WPE_NUM(WPE_NUM_LINE), out, sizeof out);
+	chk_str("Go to Line has no key", out, "");
+
+	/* the start-up line: one, joined to what is held, naming each number */
+	cn.f[0] = &window;
+	held[0] = '\0';
+	held_by_owner[0] = '\0';
+	e_number_say_refused(&cn);
+	chk_str("nothing refused, nothing said", held_by_owner, "");
+
+	room_columns = 200;
+	chk_int("load Tab 0 again", e_number_load(&cn, WPE_NUM(WPE_NUM_TAB), "0"), -1);
+	chk_int("load AutoIndent -1", e_number_load(&cn, WPE_NUM(WPE_NUM_AUTOINDENT), "-1"), -1);
+	snprintf(held, sizeof held, "keys line");
+	snprintf(held_short, sizeof held_short, "keys");
+	e_number_say_refused(&cn);
+	chk_str("the joined line", held_by_owner,
+	        "keys line; xwperc: Tab : 0 is not 1 to 99, 5 used (the file keeps 0); "
+	        "AutoIndent : -1 is not 0 to 99, 3 used (the file keeps -1)");
+
+	/* a narrow row: the compact form names every key, with a short value */
+	room_columns = 78;
+	held[0] = '\0';
+	held_short[0] = '\0';
+	chk_int("load MaxColumn 0", e_number_load(&cn, WPE_NUM(WPE_NUM_MAXCOL), "0"), -1);
+	chk_int("load NumUndo 100", e_number_load(&cn, WPE_NUM(WPE_NUM_NUMUNDO), "100"), -1);
+	e_number_say_refused(&cn);
+	chk_str("compact", held_by_owner,
+	        "xwperc not used: MaxColumn 0, Tab 0, NumUndo 100, AutoIndent -1");
+	chk_int("load Tab with 60 digits",
+	        e_number_load(&cn, WPE_NUM(WPE_NUM_TAB),
+	                      "123456789012345678901234567890123456789012345678901234567890"), -1);
+	e_number_say_refused(&cn);
+	chk_str("a long value is cut", held_by_owner,
+	        "xwperc not used: MaxColumn 0, Tab 12345678..., NumUndo 100, AutoIndent -1");
+	snprintf(held, sizeof held, "keys line");
+	snprintf(held_short, sizeof held_short, "keys");
+	e_number_say_refused(&cn);
+	chk_str("after a held line", held_by_owner,
+	        "keys line; not used: MaxColumn 0, Tab 12345678..., NumUndo 100, AutoIndent -1");
+
+	narrow_rows(&cn);
+	dos_line_end(&cn);
+
+	e_number_defaults(&cn);
+	for (k = 0; k < WPE_NUM_KINDS; k++) {
+		if (WPE_NUM(k)->key == NULL)
+			continue;
+		written(&cn, WPE_NUM(k), out, sizeof out);
+		snprintf(held, sizeof held, "%s : %d\n", WPE_NUM(k)->key, WPE_NUM(k)->fallback);
+		chk_str("defaults clear the refused texts", out, held);
+	}
+}
+
 int main(void)
 {
 	every_kind();
+	the_file();
 	the_table();
 	range_words();
 	the_store();

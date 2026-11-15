@@ -100,6 +100,8 @@ static char *e_opt_user_file;
 
 /* What the status line says when a start-folder xwperc named user-only keys. */
 #define E_OPT_IGNORED_FMT "./xwperc may not set (only your own config may): %s"
+#define E_OPT_IGNORED_SHORT_FMT "./xwperc may not set: %s"
+#define E_OPT_IGNORED_CUT_MARK "..."
 #define E_OPT_IGNORED_LINE_MAX (E_OPT_IGNORED_MAX + 80)
 
 /* The room of the print command's field in Options > Editor. */
@@ -1315,13 +1317,13 @@ int WpeReadGeneral(ECNT *cn, char *section, char *option, char *value)
  else if (WpeStrccmp("Autosave", option) == 0)
   cn->autosv = atoi(value);
  else if (WpeStrccmp("MaxColumn", option) == 0)
-  cn->maxcol = atoi(value);
+  e_number_load(cn, WPE_NUM(WPE_NUM_MAXCOL), value);
  else if (WpeStrccmp("Tab", option) == 0)
-  cn->tabn = atoi(value);
+  e_number_load(cn, WPE_NUM(WPE_NUM_TAB), value);
  else if (WpeStrccmp("MaxChanges", option) == 0)
-  cn->maxchg = atoi(value);
+  e_number_load(cn, WPE_NUM(WPE_NUM_MAXCHG), value);
  else if (WpeStrccmp("NumUndo", option) == 0)
-  cn->numundo = atoi(value);
+  e_number_load(cn, WPE_NUM(WPE_NUM_NUMUNDO), value);
  else if (WpeStrccmp("Options1", option) == 0)
   cn->flopt = atoi(value);
  else if (WpeStrccmp("Options2", option) == 0)
@@ -1331,7 +1333,7 @@ int WpeReadGeneral(ECNT *cn, char *section, char *option, char *value)
  else if (WpeStrccmp("InfoDir", option) == 0)
   info_file = WpeStrdup(value);
  else if (WpeStrccmp("AutoIndent", option) == 0)
-  cn->autoindent = atoi(value);
+  e_number_load(cn, WPE_NUM(WPE_NUM_AUTOINDENT), value);
  else if (WpeStrccmp("PrintCmd", option) == 0)
   cn->print_cmd = WpeStrdup(value);
  else if (WpeStrccmp("Version", option) == 0)
@@ -1346,16 +1348,16 @@ int WpeWriteGeneral(ECNT *cn, char *section, FILE *opt_file)
  fprintf(opt_file, "Version : %s\n", VERSION);
  fprintf(opt_file, "Data : %d\n", e_eol_data_key(cn));
  fprintf(opt_file, "Autosave : %d\n", cn->autosv);
- fprintf(opt_file, "MaxColumn : %d\n", cn->maxcol);
- fprintf(opt_file, "Tab : %d\n", cn->tabn);
- fprintf(opt_file, "MaxChanges : %d\n", cn->maxchg);
- fprintf(opt_file, "NumUndo : %d\n", cn->numundo);
+ e_number_write(cn, WPE_NUM(WPE_NUM_MAXCOL), opt_file);
+ e_number_write(cn, WPE_NUM(WPE_NUM_TAB), opt_file);
+ e_number_write(cn, WPE_NUM(WPE_NUM_MAXCHG), opt_file);
+ e_number_write(cn, WPE_NUM(WPE_NUM_NUMUNDO), opt_file);
  fprintf(opt_file, "Options1 : %d\n", cn->flopt);
  fprintf(opt_file, "Options2 : %d\n", e_keys_edopt_for_file(cn));
  if (e_keys_notice_seen)
   fprintf(opt_file, "KeysNotice : 1\n");
  fprintf(opt_file, "InfoDir : %s\n", info_file);
- fprintf(opt_file, "AutoIndent : %d\n", cn->autoindent);
+ e_number_write(cn, WPE_NUM(WPE_NUM_AUTOINDENT), opt_file);
  fprintf(opt_file, "PrintCmd : %s\n", cn->print_cmd);
  return 0;
 }
@@ -3416,6 +3418,33 @@ int e_opt_read(ECNT *cn)
 }
 
 /**
+ * e_opt_ignored_line - The line about keys the start-folder xwperc may not set.
+ * @buf/@n: receive it; @room: the columns the line may take.
+ *
+ * The long sentence says why (only your own config may); on a narrow row, or
+ * when something must follow it, the short one keeps the names.  When even
+ * that is too wide its end is cut with "...", so the first words, which say
+ * what the line is about, are always read.
+ * Return: E_OPT_IGNORED_NONE when no key was ignored (@buf is empty),
+ * E_OPT_IGNORED_LONG, E_OPT_IGNORED_SHORT, or E_OPT_IGNORED_CUT.
+ */
+int e_opt_ignored_line(char *buf, size_t n, int room)
+{
+ size_t mark = strlen(E_OPT_IGNORED_CUT_MARK), width;
+
+ buf[0] = '\0';
+ if (!e_opt_ignored_keys[0]) return E_OPT_IGNORED_NONE;
+ snprintf(buf, n, E_OPT_IGNORED_FMT, e_opt_ignored_keys);
+ if ((int)strlen(buf) <= room) return E_OPT_IGNORED_LONG;
+ snprintf(buf, n, E_OPT_IGNORED_SHORT_FMT, e_opt_ignored_keys);
+ if ((int)strlen(buf) <= room) return E_OPT_IGNORED_SHORT;
+ width = room > (int)mark ? (size_t)room - mark : 0;
+ if (width >= strlen(buf)) width = strlen(buf);
+ snprintf(buf + width, n - width, "%s", E_OPT_IGNORED_CUT_MARK);
+ return E_OPT_IGNORED_CUT;
+}
+
+/**
  * e_opt_say_ignored_keys - Tell the user which keys of the start-folder xwperc did not apply.
  * @cn: the editor.
  *
@@ -3428,7 +3457,7 @@ void e_opt_say_ignored_keys(ECNT *cn)
 {
  char line[E_OPT_IGNORED_LINE_MAX];
  if (!e_opt_ignored_keys[0] || !cn || !cn->fb) return;
- snprintf(line, sizeof line, E_OPT_IGNORED_FMT, e_opt_ignored_keys);
+ e_opt_ignored_line(line, sizeof line, e_status_room());
  e_status_hold(line);
  e_status_paint(cn->fb, line);
  e_refresh();

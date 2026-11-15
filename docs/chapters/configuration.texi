@@ -40,6 +40,28 @@ It is normally written by xwpe itself when you choose
 @strong{Warning}: if you hand-edit @file{xwperc}, any comments you add
 will be erased the next time xwpe saves the options.
 
+@cindex xwperc, a number outside its range
+@cindex Tab, xwperc key
+A number key (@code{MaxColumn}, @code{Tab}, @code{MaxChanges},
+@code{NumUndo}, @code{AutoIndent}) outside its range
+(@pxref{Editor options dialog}) is not used: xwpe works with the default
+and says so on the bottom row at start, naming the key, the value it
+read and the one it uses.  On a screen too narrow for that, the line is
+shortened to the keys and their values (a long value to its first
+digits), and when that is still too long, to the keys alone, so every key
+still shows on a screen 66 columns wide or more.  On a narrower screen as
+many whole keys as fit are named and the rest are counted (@samp{+2}), and
+when not even one key fits, only how many numbers were not used.  A key
+name is never cut.  When a project's @file{xwperc} also set keys it may not,
+that line comes first, in a shorter wording when the long one and the
+numbers would not fit together; when the numbers do not fit behind it at
+all they are left out, and a keys line wider than the screen is cut at its
+end, so its beginning is always read.  The file keeps your value.  Saving the
+options, by hand or at quit, writes it back as you wrote it, until you give
+that option a different number in the Editor options dialog (the number
+already in force is not a different one).  A line end of CR LF behind a
+number is not part of it.
+
 @subsection A folder's own xwperc
 @anchor{Folder xwperc}
 

@@ -312,3 +312,25 @@ def test_a_row_that_did_not_get_its_labels_covers_nothing():
     assert bad == [ROWS[1].name]
     never_checked = [result(r, checked=False) if r is ROWS[2] else result(r) for r in ROWS]
     assert covering.effective_missing(never_checked)[1] == [ROWS[2].name]
+
+
+# @scenario SC-number-fields-15
+def test_the_model_does_not_use_an_option_number_the_editor_refuses():
+    """The editor keeps its default for a number outside its range, so the
+    model must too, or a row with Tab : 0 would be a gap on the model's side:
+    Tab 0 and Tab 100 leave Tabstops 8, Tab 4 is used, and so are the least
+    and the most of each key."""
+    assert model.Options.from_xwperc("[General]\nTab : 0\n").tabn == 8
+    assert model.Options.from_xwperc("[General]\nTab : 100\n").tabn == 8
+    assert model.Options.from_xwperc("[General]\nTab : -3\n").tabn == 8
+    assert model.Options.from_xwperc("[General]\nTab : 4\n").tabn == 4
+    assert model.Options.from_xwperc("[General]\nTab : 1\n").tabn == 1
+    assert model.Options.from_xwperc("[General]\nTab : 99\n").tabn == 99
+    assert model.Options.from_xwperc("[General]\nMaxColumn : 3\n").maxcol == 120
+    assert model.Options.from_xwperc("[General]\nMaxColumn : 10000\n").maxcol == 120
+    assert model.Options.from_xwperc("[General]\nMaxColumn : 9999\n").maxcol == 9999
+    assert model.Options.from_xwperc("[General]\nNumUndo : 100\n").numundo == 10
+    assert model.Options.from_xwperc("[General]\nNumUndo : 0\n").numundo == 0
+    assert model.Options.from_xwperc("[General]\nMaxChanges : 1000\n").maxchg == 999
+    assert model.Options.from_xwperc("[General]\nAutoIndent : -1\n").autoindent_col == 3
+    assert model.Options.from_xwperc("[General]\nAutoIndent : 0\n").autoindent_col == 0

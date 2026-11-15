@@ -416,6 +416,24 @@ def rule_counts():
 
 # ---- options -------------------------------------------------------------------
 
+# The range of each xwperc key that holds a number the editor divides by, sizes
+# a row with or counts with (we_number.c's table).  A value outside it is not
+# used: the editor keeps its default, so the model does the same.
+NUMBER_RANGES = {
+    "MaxColumn": (4, 9999),
+    "Tab": (1, 99),
+    "MaxChanges": (0, 999),
+    "NumUndo": (0, 99),
+    "AutoIndent": (0, 99),
+}
+
+
+def number_in_range(key, value):
+    """True when @value is usable for @key; every key without a range is."""
+    low, high = NUMBER_RANGES.get(key, (value, value))
+    return low <= value <= high
+
+
 class Options:
     """The options the key loop reads, as an xwperc's [General] sets them."""
 
@@ -449,6 +467,8 @@ class Options:
             if not value.lstrip("-").isdigit():
                 continue
             v = int(value)
+            if not number_in_range(key, v):
+                continue      # the editor keeps the default of a refused number
             if key == "Tab":
                 o.tabn = v
             elif key == "AutoIndent":

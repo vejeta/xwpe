@@ -759,6 +759,7 @@ POINT e_set_pnt(int x, int y);
 int e_pr_uul(FARBE *fb);
 void e_status_paint(FARBE *fb, const char *text);
 void e_status_hold(const char *text);
+int e_status_room(void);
 int e_status_keep_until_free(const char *text);
 int e_status_drop_held(void);
 int e_status_drop_held_line(const char *text);
@@ -882,6 +883,12 @@ int e_opt_save_unasked(FENSTER *f);
 void e_opt_use_user_file(char *path);
 /* Say on the status line which keys the start-folder xwperc could not set. */
 void e_opt_say_ignored_keys(ECNT *cn);
+/* What e_opt_ignored_line gives: nothing, the long sentence, the short one, or a cut one. */
+#define E_OPT_IGNORED_NONE  0
+#define E_OPT_IGNORED_LONG  1
+#define E_OPT_IGNORED_SHORT 2
+#define E_OPT_IGNORED_CUT   3
+int e_opt_ignored_line(char *buf, size_t n, int room);
 
 /* The key style of one session (--keys, XWPE_KEYS) and the one place that
    decides which option bits a key style brings with it.  See we_opt.c. */
@@ -962,6 +969,9 @@ W_O_NUMSTR **e_add_numstr(int xt, int yt, int xw, int yw, const WpeNumberType *t
 /* The owner of a number the user gives the editor (we_number.c). */
 void e_number_defaults(ECNT *cn);
 int e_number_store(ECNT *cn, const WpeNumberType *t, int value) WPE_NUMBER_RESULT;
+int e_number_load(ECNT *cn, const WpeNumberType *t, const char *value);
+void e_number_write(ECNT *cn, const WpeNumberType *t, FILE *fp);
+void e_number_say_refused(ECNT *cn);
 void e_number_field_init(W_O_NUMSTR *n, const WpeNumberType *type, int value);
 int e_number_field_accept(W_O_NUMSTR *n, char *text, FENSTER *f) WPE_NUMBER_RESULT;
 W_O_SSWSTR **e_add_sswstr(int x, int y, int nc, int sw, int num,
