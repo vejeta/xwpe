@@ -24,7 +24,11 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#ifdef F_GETPATH
+# include <sys/param.h>   /* MAXPATHLEN: the room F_GETPATH writes into */
+#endif
 /* The interposer below needs glibc's ELF symbol interposition and its
  * openpty prototype; the configure fact that names glibc's header says
  * where that holds. */
@@ -908,6 +912,97 @@ static void test_a_side_pty_is_the_debuggers_and_no_other_childs(void)
 	close(slave);
 }
 
+#define PROBE_LEAKS_MAX    400   /* room for the leak report on the probe line */
+#define PROBE_PATH_MAX     128
+#define PROBE_ENTRY_MAX    (PROBE_PATH_MAX + 96)
+
+/** probe_fd_type - The kind of object a descriptor is, as one word, so a
+ * leak in the CI log says whether it is a file, a socket or a terminal.
+ * @st is NULL for a descriptor fstat refused (a kqueue on some systems):
+ * it is still open and counted, so it is still named. */
+static const char *probe_fd_type(const struct stat *st)
+{
+	if (st == NULL)
+		return "nostat";
+	if (S_ISREG(st->st_mode))
+		return "reg";
+	if (S_ISDIR(st->st_mode))
+		return "dir";
+	if (S_ISCHR(st->st_mode))
+		return "chr";
+	if (S_ISFIFO(st->st_mode))
+		return "fifo";
+	if (S_ISSOCK(st->st_mode))
+		return "sock";
+	return "other";
+}
+
+/** probe_fd_path - The path behind a descriptor where the system can say
+ * it (F_GETPATH on macOS, /proc/self/fd on Linux); "-" where it cannot. */
+static void probe_fd_path(int fd, char *out, size_t n)
+{
+	out[0] = '\0';
+#ifdef F_GETPATH
+	{
+		char path[MAXPATHLEN];
+
+		if (fcntl(fd, F_GETPATH, path) != -1)
+			snprintf(out, n, "%s", path);
+	}
+#else
+	{
+		char link[PROBE_PATH_MAX];
+		ssize_t len;
+
+		snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+		len = readlink(link, out, n - 1);
+		out[len > 0 ? len : 0] = '\0';
+	}
+#endif
+	if (out[0] == '\0')
+		snprintf(out, n, "-");
+}
+
+/** probe_fd_entry - One descriptor, described for the probe line. */
+static void probe_fd_entry(int fd, int flags, const struct stat *st,
+                           char *out, size_t n)
+{
+	char path[PROBE_PATH_MAX], dev[64];
+
+	probe_fd_path(fd, path, sizeof path);
+	dev[0] = '\0';
+	if (st != NULL && S_ISCHR(st->st_mode))
+		snprintf(dev, sizeof dev, " rdev=0x%lx ino=%lu",
+		         (unsigned long)st->st_rdev, (unsigned long)st->st_ino);
+	snprintf(out, n, " [fd=%d type=%s%s cloexec=%d path=%s]", fd,
+	         probe_fd_type(st), dev, (flags & FD_CLOEXEC) != 0, path);
+}
+
+/** describe_extra_fds - Name every open descriptor above 2: its number,
+ * type, device and inode for a terminal, close-on-exec flag and path.
+ * When the probe line says extra is not 0, the log then says which
+ * descriptor the child was handed and what it is, not only how many. */
+static void describe_extra_fds(char *out, size_t n)
+{
+	char entry[PROBE_ENTRY_MAX];
+	struct stat st;
+	int fd, flags;
+
+	out[0] = '\0';
+	for (fd = 3; fd < FD_SCAN_MAX; fd++) {
+		flags = fcntl(fd, F_GETFD);
+		if (flags < 0)
+			continue;
+		if (fstat(fd, &st) == 0)
+			probe_fd_entry(fd, flags, &st, entry, sizeof entry);
+		else
+			probe_fd_entry(fd, flags, NULL, entry, sizeof entry);
+		if (strlen(out) + strlen(entry) + 1 > n)
+			break;
+		strcat(out, entry);
+	}
+}
+
 /* The program the terminal rows start: this test, run again with
  * --tty-probe, says what its terminal is. */
 static const char *self_path;
@@ -921,14 +1016,19 @@ static const char *self_path;
  * closed its own). */
 static int tty_probe_main(void)
 {
+	char leaks[PROBE_LEAKS_MAX];
 	int extra = open_fds() - 3;   /* counted before anything is opened */
-	const char *name = ttyname(STDIN_FILENO);
-	int tty = open("/dev/tty", O_RDWR | O_NOCTTY);
+	const char *name;
+	int tty;
 
-	printf("isatty=%d%d%d leader=%d fg=%d devtty=%s name=%s extra=%d\n",
+	describe_extra_fds(leaks, sizeof leaks);
+	name = ttyname(STDIN_FILENO);
+	tty = open("/dev/tty", O_RDWR | O_NOCTTY);
+	/* The line ends with extra=N; a leak is named after it. */
+	printf("isatty=%d%d%d leader=%d fg=%d devtty=%s name=%s extra=%d%s\n",
 	       isatty(STDIN_FILENO), isatty(STDOUT_FILENO), isatty(STDERR_FILENO),
 	       getsid(0) == getpid(), tcgetpgrp(STDIN_FILENO) == getpgrp(),
-	       tty >= 0 ? "yes" : "no", name ? name : "-", extra);
+	       tty >= 0 ? "yes" : "no", name ? name : "-", extra, leaks);
 	return 0;
 }
 
@@ -1160,6 +1260,8 @@ static void test_a_run_menu_program_owns_its_terminal(void)
 	chk_true("the terminal is the pty the editor made", strstr(buf, want) != NULL);
 	chk_true("it holds 0, 1 and 2 and no other descriptor",
 	         strstr(buf, " extra=0\n") != NULL);
+	if (strstr(buf, " extra=0\n") == NULL)
+		printf("probe said: %s", buf);
 	chk("it ended well", exit_code(r.status), 0);
 	close(r.c.pty_fd);
 }
