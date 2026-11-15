@@ -22,6 +22,24 @@ Wayland fixture, so the two suites cannot drift) and adds Wayland-specific
 tests: resize/relayout, a wl_pointer scrollbar drag, and wl_data_device
 clipboard interop.
 
+The size of the committed frame has its own rows (tests/wayland/
+test_surface_bound.py): one starts the editor on a headless weston whose output
+is smaller than the editor's own window (a fullscreen bound), the other shrinks
+and grows the output under CPU load (busy processes started through the
+owner, gui_owner.start_hogs: XWPE_TEST_LOAD=<n> if larger, at least 4) and
+judges the editor by libwayland's own wire log (WAYLAND_DEBUG=1), which must
+also show the 30x6 minimum size announced and no refused present in the frame
+trace.  Two more rows run the editor on a weston of their own over a larger X
+screen and resize the output by a few pixels with the pointer left alone: the
+configure must be acked on the wire within a deadline, and SIGTERM after it
+must still end the editor with its work in the .ESV file.  Whether libwayland's
+dispatch loop waits for a default-queue event depends on how the compositor
+batches its events, so those rows are end-to-end evidence; the deterministic
+guard of that wait is tests/test_wlframe.c.  XWPE_WL_FRAME_TRACE=/path makes the editor write one line
+per configure, apply, ack and commit, for chasing a window of the wrong size;
+tests/test_wlframe.c (make check) runs the same state machine with no
+compositor.
+
 Run it:
 
     tests/run-tests.sh --wayland
@@ -66,6 +84,14 @@ things the emulated pipeline does not cover:
       200% and at 150% fractional scale; the grid refits on a scale change.
   [ ] Interactive resize is smooth -- no flicker, no line shear, no crash --
       including a fast drag and a maximize/unmaximize.
+  [ ] Maximize and unmaximize on weston's desktop shell and on KWin/Mutter:
+      the editor fills the window to its edge (a black strip past the last
+      cell is right), nothing is cut, and the editor survives.
+  [ ] Drag the window narrower than 30 cells: the grid stops shrinking, the
+      right edge is cut, nothing crashes.
+  [ ] Resize the window while File > Shell runs a command: the frame stays as
+      it was and the compositor does not disconnect the editor; it refits when
+      the command ends.
   [ ] Clipboard interoperates with other Wayland apps in both directions:
       copy in xwpe -> paste in a browser/terminal, and back.  Both CLIPBOARD
       (Ctrl-C/V) and PRIMARY (middle-click) selections.

@@ -28,6 +28,11 @@ Bugs fixed in 1.6.x:
   nothing that can wait on another thread: it writes the failure sentence
   itself, from words the editor prepared before starting the program, and
   with XWPE_UI_TRACE set the editor says why a program did not start.
+* xwpe on Wayland: the window now opens at the size the compositor gives it,
+  also on a small or fullscreen output, and a maximized or fast-shrunk window
+  no longer makes the compositor close the editor.  The window announces
+  30x6 cells as its smallest size, and a window forced below it keeps that
+  grid, clipped, without a scroll copying past the frame.
 * A program the editor starts (the Run program, a compiler, a debugger, a
   language server, an assistant tool) no longer inherits descriptors that
   whatever started the editor left open; it starts with 0, 1 and 2 and, for a

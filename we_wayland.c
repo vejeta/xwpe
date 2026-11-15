@@ -40,6 +40,7 @@
                                 WpeNullFunction/WpeZeroFunction */
 #include "we_render.h"
 #include "we_wayland.h"
+#include "we_wlframe.h"     /* the one owner of the surface's size and commits */
 #include "we_fdloop.h"
 #include "we_layout.h"
 #include "we_clip.h"        /* e_clip_os_set / e_clip_os_get function pointers */
@@ -79,10 +80,6 @@ static const char *g_wl_dump_path;/* XWPE_WL_DUMP: mirror each frame to this PPM
 
 WpeWlInfo WpeWl;
 
-/* The xwpe desktop background (classic Borland blue) used for the W1 flat
-   paint; once the renderer lands it is replaced by per-cell drawing. */
-#define WPE_WL_BG_ARGB 0xff0000a8u   /* XRGB: opaque, R=00 G=00 B=a8         */
-
 /* Default surface size while the font cell is not yet known (W2 sets the real
    cell metrics): 80x24 cells at a nominal 8x16 px cell. */
 #define WPE_WL_DEF_COLS 80
@@ -97,102 +94,17 @@ static void e_w_render_dirty_cells(int force);
 static void wl_selftest_fill_grid(void);
 static void wl_pump_once(int block);
 
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
-  Shared-memory backing file
-\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
-/* wl_anon_file - create an anonymous, CLOEXEC, `size`-byte file for a wl_shm
-   pool.  Prefers memfd (no filesystem name at all); falls back to an unlinked
-   temp file in XDG_RUNTIME_DIR for kernels/libcs without memfd_create. */
-static int wl_anon_file(size_t size)
+/**
+ * wl_read_available_events - Take what the compositor has sent, without waiting.
+ *
+ * Called when the connection is known to be readable: the frame owner reads
+ * it once (never through libwayland's dispatch loop, which would wait for an
+ * event of the default queue), then the default queue is dispatched.
+ */
+static void wl_read_available_events(void)
 {
- int fd = -1;
-
-#if WPE_HAS_MEMFD_CREATE
- fd = memfd_create("xwpe-wl-shm", MFD_CLOEXEC);
-#endif
- if (fd < 0)
- {
-  const char *dir = getenv("XDG_RUNTIME_DIR");
-  char name[WPE_PATH_SIZE];
-
-  if (!dir || !*dir)
-   dir = "/tmp";
-  snprintf(name, sizeof name, "%s/xwpe-wl-XXXXXX", dir);
-  fd = mkostemp(name, O_CLOEXEC);
-  if (fd >= 0)
-   unlink(name);
- }
- if (fd < 0)
-  return -1;
-
- if (ftruncate(fd, (off_t)size) < 0)
- {
-  close(fd);
-  return -1;
- }
- return fd;
-}
-
-/* wl_alloc_buffer - (re)allocate the single shm frame buffer at w x h and map
-   it.  Sets WpeWl.pixels/stride/size and creates the wl_buffer.  Returns 0 on
-   success. */
-static int wl_alloc_buffer(int w, int h)
-{
- struct wl_shm_pool *pool;
- int stride = w * 4;
- size_t size = (size_t)stride * h;
-
- if (WpeWl.buffer)
- {
-  wl_buffer_destroy(WpeWl.buffer);
-  WpeWl.buffer = NULL;
- }
- if (WpeWl.pixels && WpeWl.pixels != MAP_FAILED)
-  munmap(WpeWl.pixels, WpeWl.shm_size);
- WpeWl.pixels = NULL;
- if (WpeWl.shm_fd >= 0)
- {
-  close(WpeWl.shm_fd);
-  WpeWl.shm_fd = -1;
- }
-
- WpeWl.shm_fd = wl_anon_file(size);
- if (WpeWl.shm_fd < 0)
- {
-  WPE_TRACE("wayland", "shm: cannot create %zu-byte pool: %s\n", size, strerror(errno));
-  return -1;
- }
- WpeWl.pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, WpeWl.shm_fd, 0);
- if (WpeWl.pixels == MAP_FAILED)
- {
-  WPE_TRACE("wayland", "shm: mmap failed: %s\n", strerror(errno));
-  WpeWl.pixels = NULL;
-  return -1;
- }
-
- pool = wl_shm_create_pool(WpeWl.shm, WpeWl.shm_fd, (int32_t)size);
- WpeWl.buffer = wl_shm_pool_create_buffer(pool, 0, w, h, stride,
-                                          WL_SHM_FORMAT_XRGB8888);
- wl_shm_pool_destroy(pool);
-
- WpeWl.width = w;
- WpeWl.height = h;
- WpeWl.stride = stride;
- WpeWl.shm_size = size;
- return 0;
-}
-
-/* wl_paint_flat - fill the whole buffer with one XRGB pixel value. */
-static void wl_paint_flat(uint32_t argb)
-{
- size_t n = (size_t)WpeWl.width * WpeWl.height;
- size_t i;
-
- if (!WpeWl.pixels)
-  return;
- for (i = 0; i < n; i++)
-  WpeWl.pixels[i] = argb;
+ wpe_wlframe_read_events();
+ wl_display_dispatch_pending(WpeWl.display);
 }
 
 /* wpe_wl_dump_ppm - write the current buffer as a binary PPM (P6).  Diagnostic
@@ -240,37 +152,16 @@ static void e_w_render_dirty_cells(int force);   /* full repaint after a realloc
 
 /* --- Interactive resize (compositor-driven) ---------------------------- *\
    During an interactive resize the compositor streams a configure event per
-   pointer motion.  Re-laying-out the editor from inside each callback backs up
-   a queue that then plays out in slow motion.  So the configure handlers only
-   RECORD the latest requested size (cheap); the grid re-fit + repaint happen
-   ONCE per event-dispatch cycle, in wl_apply_pending_resize, coalescing a whole
-   burst into a single relayout.  This is the Wayland equivalent of what the X11
+   pointer motion.  The configure listeners only RECORD the newest one (the
+   frame owner, we_wlframe.c); the grid re-fit + repaint happen ONCE per pass
+   of the key loop, in wl_apply_pending_resize, coalescing a whole burst into a
+   single relayout.  This is the Wayland equivalent of what the X11
    ConfigureNotify handler does by draining the queue to the final size with
    XCheckTypedWindowEvent (we_xterm.c), and of the ncurses KEY_RESIZE drain
-   (we_term.c).
+   (we_term.c).  The surface's configure events come through the frame
+   owner's private queue, so a nested read of the connection (a pointer poll
+   inside a repaint) can never deliver one in the middle of a relayout.
 \* ----------------------------------------------------------------------- */
-
-static int g_pending_w, g_pending_h;    /* latest size the compositor asked for */
-static int g_resize_pending;            /* a size change is waiting to be applied */
-static int g_last_conf_w, g_last_conf_h;/* last size actually configured (dedup) */
-
-/* Record the latest requested size (called from xdg_toplevel.configure).  Flags
-   a resize only when the size differs from the LAST configured one, so a
-   compositor that re-sends the same size (focus/re-map, or its sub-cell output
-   size every frame) is not mistaken for a new resize -- otherwise every repeat
-   would re-arm the pending flag and stall presentation. */
-static void wl_note_configure_size(int w, int h)
-{
- if (w <= 0 || h <= 0)
-  return;
- if (w == g_last_conf_w && h == g_last_conf_h)
-  return;
- g_last_conf_w = w;
- g_last_conf_h = h;
- g_pending_w = w;
- g_pending_h = h;
- g_resize_pending = 1;
-}
 
 /**
  * e_w_repaint_resized - Wayland's repaint of the desk after a resize.
@@ -298,116 +189,57 @@ static void e_w_repaint_resized(void)
   WpeRender.flush_all();
 }
 
-/* Apply the latest pending size exactly once, after the event-dispatch batch.
-   Derives the cell grid from the pixel size (clamped to a usable minimum) and,
-   only when the grid actually changes, re-lays-out the windows and repaints --
-   e_repaint_desk (WpeIsXwin) reallocates the grid and the wl_shm buffer through
-   e_w_ini_size, re-points Cairo, and presents.  When only the sub-cell remainder
-   changed, the existing buffer is already correct and we just re-present.
-   Returns 1 when the grid changed and the desk was laid out again: the key
-   reader then hands WPE_RESIZE to whoever reads keys, as X11's ConfigureNotify
-   and the terminal's KEY_RESIZE do, so a box that is up lays itself out again
-   over the new desk instead of vanishing until its next key. */
+/**
+ * wl_apply_pending_resize - Take the newest configure at the top of the key loop.
+ *
+ * The frame owner fits the buffer to the compositor's configure and answers
+ * it.  When the cell grid changed, the layout owner lays the windows and
+ * every box out again here (see e_w_repaint_resized for the repaint), at the
+ * top of the input loop and never from inside a paint.  The owner is not
+ * re-entrant: the relayout's repaint can poll the pointer, but that pump
+ * only queues the surface's events, so no second application starts under
+ * the first.  (X11 handles ConfigureNotify at a single point of its event
+ * loop for the same reason.)
+ *
+ * Return: 1 when the grid changed and the desk was laid out again: the key
+ * reader then hands WPE_RESIZE to whoever reads keys, as X11's ConfigureNotify
+ * and the terminal's KEY_RESIZE do, so a box that is up lays itself out again
+ * over the new desk instead of vanishing until its next key.  0 otherwise.
+ */
 static int wl_apply_pending_resize(void)
 {
- static int in_progress;
- int old_scol, old_slns, cols, rows, relaid = 0;
+ int old_scol, old_slns, cols, rows;
 
- /* Non-reentrant: the relayout below repaints the desktop, and that repaint can
-    poll the pointer (fk_w_mouse -> wl_pump_once), which would call back into
-    this function.  A nested run would reallocate the cell grid while the outer
-    e_repaint_desk is still walking it -> use-after-free.  A configure that
-    arrives mid-repaint just leaves g_resize_pending set for the next top-level
-    call.  (The X11 backend cannot hit this: it handles ConfigureNotify at a
-    single point in its event loop, never from inside a repaint.) */
- if (!g_resize_pending || in_progress)
-  return(0);
- if (WpeRender.font_width <= 0 || WpeRender.font_height <= 0 || !WpeRender.draw_text)
-  return(0);
- in_progress = 1;
- g_resize_pending = 0;
-
- cols = g_pending_w / WpeRender.font_width;
- rows = g_pending_h / WpeRender.font_height;
- if (cols < 30) cols = 30;
- if (rows < 6)  rows = 6;
+ if (!wpe_wlframe_apply(&cols, &rows))
+  return 0;
  old_scol = MAXSCOL;
  old_slns = MAXSLNS;
-
- /* Only a real change of cell dimensions needs a relayout + repaint (which also
-    reallocates the buffer and presents).  A sub-cell size change leaves the grid
-    and its buffer correct -- xdg_surface_configure has already re-presented the
-    current frame -- so there is nothing to do. */
- if (cols != old_scol || rows != old_slns)
- {
-  MAXSCOL = cols;
-  MAXSLNS = rows;
-  /* The layout owner lays the windows and every box out again (see
-     e_w_repaint_resized for the repaint), here at the top of the input loop
-     and never from inside a paint. */
-  wpe_layout_screen_resized(old_scol, old_slns);
-  relaid = 1;
- }
- in_progress = 0;
- return(relaid);
+ MAXSCOL = cols;
+ MAXSLNS = rows;
+ wpe_layout_screen_resized(old_scol, old_slns);
+ wpe_wlframe_finish();
+ return 1;
 }
 
-/* xdg_surface.configure: the compositor is ready for content.  Acknowledge,
-   make sure a buffer exists, and present the current frame.  The expensive part
-   of a resize (re-fitting the grid and repainting) is NOT done here: a pending
-   size change is applied once, after the whole event batch, by
-   wl_apply_pending_resize -- so a burst of configures does not play back in slow
-   motion.  When a resize is pending we skip presenting the current (old-size)
-   buffer here and let the apply step present the correctly-sized frame. */
+/* xdg_surface.configure: a configure sequence is complete.  Record only: the
+   frame owner answers it, with a buffer that fits, at the next top-level
+   point.  A listener that acknowledged or committed here is how the editor
+   once answered a new size with the old buffer. */
 static void xdg_surface_configure(void *data, struct xdg_surface *xs, uint32_t serial)
 {
- (void)data;
- xdg_surface_ack_configure(xs, serial);
-
- if (!WpeWl.pixels)
- {
-  /* First map (or a re-map after the buffer was released): allocate at the
-     current size and re-point Cairo, or the next paint fills through a dangling
-     pointer into freed memory. */
-  if (wl_alloc_buffer(WpeWl.width, WpeWl.height) < 0)
-   return;
-  if (WpeRender.resize)
-   WpeRender.resize(WpeWl.width, WpeWl.height);
- }
-
- /* Editor up + a real resize queued: do NOT commit the current (old-size) buffer
-    against the just-acknowledged new size -- committing a mismatched buffer stalls
-    the compositor's configure sequence.  wl_apply_pending_resize (after this
-    dispatch batch) reallocates to the new size and presents the correct frame.
-    (The very first configure -- configured==0 -- must still paint the bring-up.) */
- if (WpeRender.draw_text && WpeWl.configured && g_resize_pending)
-  return;
-
- /* Only flat-fill as a bring-up splash BEFORE the cell renderer is installed.
-    Once it is, the buffer holds the editor's rendered cells and a configure
-    (focus/raise/re-map) must re-present them, never repaint over them. */
- if (!WpeRender.draw_text)
-  wl_paint_flat(WPE_WL_BG_ARGB);
- wl_surface_attach(WpeWl.surface, WpeWl.buffer, 0, 0);
- if (WpeWl.compositor_version >= 4)
-  wl_surface_damage_buffer(WpeWl.surface, 0, 0, WpeWl.width, WpeWl.height);
- else
-  wl_surface_damage(WpeWl.surface, 0, 0, WpeWl.width, WpeWl.height);
- wl_surface_commit(WpeWl.surface);
-
- WpeWl.configured = 1;
- WpeWl.painted = 1;
+ (void)data; (void)xs;
+ wpe_wlframe_note_configure(serial);
 }
 static const struct xdg_surface_listener xdg_surface_listener = { xdg_surface_configure };
 
-/* xdg_toplevel.configure: a size suggestion (and window state).  Record-only --
-   just note the requested size (wl_apply_pending_resize acts on it once the
-   dispatch batch is done).  Headless and first-map often give 0x0; ignored. */
+/* xdg_toplevel.configure: a size suggestion and the window's states.  Record
+   only.  Headless and first-map often give 0x0, which means the editor
+   chooses its own size. */
 static void xdg_toplevel_configure(void *data, struct xdg_toplevel *tl,
                                    int32_t w, int32_t h, struct wl_array *states)
 {
- (void)data; (void)tl; (void)states;
- wl_note_configure_size(w, h);
+ (void)data; (void)tl;
+ wpe_wlframe_note_toplevel(w, h, states);
 }
 static void xdg_toplevel_close(void *data, struct xdg_toplevel *tl)
 {
@@ -1267,7 +1099,7 @@ static char *clip_pipe_drain(int read_fd, int *len)
   if (poll(pf, 2, 2000) <= 0)
    break;                        /* timeout / error: stop with what we have */
   if (pf[1].revents & POLLIN)
-   wl_display_dispatch(WpeWl.display);
+   wl_read_available_events();
   if (pf[0].revents & (POLLIN | POLLHUP))
   {
    n = read(read_fd, chunk, sizeof chunk);
@@ -1372,9 +1204,7 @@ static char *e_clip_w_get(int *len)
 static int wl_connect_and_bind(void)
 {
  memset(&WpeWl, 0, sizeof WpeWl);
- WpeWl.shm_fd = -1;
- WpeWl.width = WPE_WL_DEF_COLS * WPE_WL_DEF_CW;
- WpeWl.height = WPE_WL_DEF_ROWS * WPE_WL_DEF_CH;
+ wpe_wlframe_forget_buffer();
  WpeWl.running = 1;
 
  WpeWl.display = wl_display_connect(NULL);
@@ -1428,11 +1258,14 @@ static void wl_create_window(void)
 {
  WpeWl.surface = wl_compositor_create_surface(WpeWl.compositor);
  WpeWl.xdg_surface = xdg_wm_base_get_xdg_surface(WpeWl.wm_base, WpeWl.surface);
+ wpe_wlframe_claim_proxy(WpeWl.xdg_surface);
  xdg_surface_add_listener(WpeWl.xdg_surface, &xdg_surface_listener, NULL);
  WpeWl.xdg_toplevel = xdg_surface_get_toplevel(WpeWl.xdg_surface);
+ wpe_wlframe_claim_proxy(WpeWl.xdg_toplevel);
  xdg_toplevel_add_listener(WpeWl.xdg_toplevel, &xdg_toplevel_listener, NULL);
  xdg_toplevel_set_title(WpeWl.xdg_toplevel, "xwpe");
  xdg_toplevel_set_app_id(WpeWl.xdg_toplevel, "io.codeberg.mendezr.xwpe");
+ wpe_wlframe_announce_floor();
 
  /* Ask the compositor to draw the window frame (title bar + resize borders).
     xwpe paints no client-side decoration, so without this the toplevel is
@@ -1445,7 +1278,7 @@ static void wl_create_window(void)
     ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
  }
 
- wl_surface_commit(WpeWl.surface);
+ wpe_wlframe_request_configure();
 }
 
 static void wl_teardown(void)
@@ -1467,18 +1300,38 @@ static void wl_teardown(void)
  if (g_cursor_theme)   { wl_cursor_theme_destroy(g_cursor_theme); g_cursor_theme = NULL; g_cursor = NULL; }
  if (WpeWl.keyboard)   wl_keyboard_release(WpeWl.keyboard);
  if (WpeWl.pointer)    wl_pointer_release(WpeWl.pointer);
- if (WpeWl.buffer)        wl_buffer_destroy(WpeWl.buffer);
- if (WpeWl.pixels && WpeWl.pixels != MAP_FAILED) munmap(WpeWl.pixels, WpeWl.shm_size);
- if (WpeWl.shm_fd >= 0)   close(WpeWl.shm_fd);
+ wpe_wlframe_teardown_buffer();
  if (WpeWl.toplevel_deco) zxdg_toplevel_decoration_v1_destroy(WpeWl.toplevel_deco);
  if (WpeWl.deco_manager)  zxdg_decoration_manager_v1_destroy(WpeWl.deco_manager);
  if (WpeWl.xdg_toplevel)  xdg_toplevel_destroy(WpeWl.xdg_toplevel);
  if (WpeWl.xdg_surface)   xdg_surface_destroy(WpeWl.xdg_surface);
+ wpe_wlframe_teardown_queue();
  if (WpeWl.surface)       wl_surface_destroy(WpeWl.surface);
  if (WpeWl.wm_base)       xdg_wm_base_destroy(WpeWl.wm_base);
  if (WpeWl.display)       wl_display_disconnect(WpeWl.display);
  memset(&WpeWl, 0, sizeof WpeWl);
- WpeWl.shm_fd = -1;
+ wpe_wlframe_forget_buffer();
+}
+
+/**
+ * wl_show_first_frame - Take the compositor's first configure and show the
+ * bring-up frame.
+ *
+ * The window then opens at the size the compositor gives it, also on a small
+ * or fullscreen output, and the first commit already fits.
+ *
+ * Return: 0 once a frame is shown, -1 when the window was closed, the
+ * connection failed or no buffer could be made.
+ */
+static int wl_show_first_frame(void)
+{
+ int cols, rows;
+
+ if (wpe_wlframe_wait_configure() != 0)
+  return -1;
+ wpe_wlframe_apply(&cols, &rows);
+ wpe_wlframe_finish();
+ return wpe_wlframe_shown() ? 0 : -1;
 }
 
 /* wl_selftest - connect, map a window, paint, dump the buffer, tear down and
@@ -1495,6 +1348,8 @@ static void wl_selftest(const char *dump_path)
   fprintf(stderr, "xwpe wayland selftest: no usable compositor\n");
   _exit(2);
  }
+ wpe_wlframe_init(WPE_WL_DEF_COLS * WPE_WL_DEF_CW, WPE_WL_DEF_ROWS * WPE_WL_DEF_CH,
+                  WPE_WL_DEF_CW, WPE_WL_DEF_CH);
  wl_create_window();
 
  /* Keyboard came up during connect/bind (seat + keymap roundtrips). */
@@ -1504,10 +1359,7 @@ static void wl_selftest(const char *dump_path)
          WpeWl.pointer ? "yes" : "no");
 
  /* Drive the protocol until the first frame is painted. */
- while (WpeWl.running && !WpeWl.painted && wl_display_dispatch(WpeWl.display) != -1)
-  ;
-
- if (WpeWl.painted)
+ if (wl_show_first_frame() == 0)
  {
   /* Bring up the Cairo/wl_shm renderer and paint a real cell grid, so the dump
      verifies glyph rendering (W2), not just the flat fill (W1). */
@@ -1674,6 +1526,22 @@ static void e_w_show_cursor(void)
  old_cursor_y = cur_y;
 }
 
+/**
+ * e_w_repaint_frame - Draw every screen cell again into the current buffer.
+ *
+ * Used by the frame owner when it replaced the buffer without the grid
+ * changing, so a user who nudges a maximized window by a few pixels still
+ * sees the whole editor, cursor included, and not a black frame.
+ */
+static void e_w_repaint_frame(void)
+{
+ if (!schirm || !altschirm)
+  return;
+ e_w_render_dirty_cells(1);
+ if (cur_on)
+  e_w_render_one(cur_x, cur_y, 1);
+}
+
 static int e_w_refresh(void)
 {
  if (!schirm || !WpeWl.pixels)
@@ -1789,8 +1657,8 @@ static int e_w_getch(void)
  {
   wl_display_dispatch_pending(WpeWl.display);
   /* The ONE place a pending resize is applied: the top of the input loop, never
-     from inside a pump/repaint (see wl_pump_once).  A configure dispatched by
-     any nested pump just leaves g_resize_pending set for the next pass here. */
+     from inside a pump/repaint (see wl_pump_once).  A configure read by any
+     nested pump waits on the frame owner's queue for the next pass here. */
   if (wl_apply_pending_resize())
   {
    e_input_was_char = 0;
@@ -1857,15 +1725,7 @@ static int e_w_ini_size(void)
 #endif
 
  if (WpeWl.shm && WpeRender.font_width > 0)
- {
-  int pw = WpeRender.font_width  * MAXSCOL;
-  int ph = WpeRender.font_height * MAXSLNS;
-  if (!WpeWl.pixels || pw != WpeWl.width || ph != WpeWl.height)
-  {
-   if (wl_alloc_buffer(pw, ph) == 0 && WpeRender.resize)
-    WpeRender.resize(pw, ph);
-  }
- }
+  wpe_wlframe_fit_buffer(MAXSCOL, MAXSLNS);
  return 0;
 }
 
@@ -1878,8 +1738,10 @@ static int e_w_ini_size(void)
  */
 static void e_w_serve_display(void)
 {
- if (WpeWl.display)
-  wl_pump_once(0);
+ if (!WpeWl.display)
+  return;
+ wl_pump_once(0);
+ wpe_wlframe_serve();
 }
 
 /**
@@ -1919,7 +1781,7 @@ static void wl_pump_once(int block)
  if (block)
   e_fd_key_wait(g_wl_keyboard_watched);
  if (wpe_fd_readable_now(wl_display_get_fd(WpeWl.display)) == WPE_FD_READABLE)
-  wl_display_dispatch(WpeWl.display);
+  wl_read_available_events();
  else
   wl_display_dispatch_pending(WpeWl.display);
 
@@ -2156,17 +2018,15 @@ int WpeWaylandInit(int *argc, char **argv)
  {
   const char *ew = getenv("XWPE_WL_WIDTH");
   const char *eh = getenv("XWPE_WL_HEIGHT");
-  WpeWl.width  = (ew && *ew) ? atoi(ew) : 80 * cw;
-  WpeWl.height = (eh && *eh) ? atoi(eh) : 30 * ch;
-  if (WpeWl.width  < cw * 8) WpeWl.width  = cw * 8;
-  if (WpeWl.height < ch * 4) WpeWl.height = ch * 4;
+  int own_w = (ew && *ew) ? atoi(ew) : 80 * cw;
+  int own_h = (eh && *eh) ? atoi(eh) : 30 * ch;
+  if (own_w < cw * 8) own_w = cw * 8;
+  if (own_h < ch * 4) own_h = ch * 4;
+  wpe_wlframe_init(own_w, own_h, cw, ch);
  }
 
  wl_create_window();
- while (WpeWl.running && !WpeWl.configured
-        && wl_display_dispatch(WpeWl.display) != -1)
-  ;
- if (!WpeWl.configured || wpe_render_wayland_init() != 0)
+ if (wl_show_first_frame() != 0 || wpe_render_wayland_init() != 0)
  {
   WPE_TRACE("wayland", "surface/renderer bring-up failed; falling back to X11\n");
   wl_teardown();
@@ -2174,8 +2034,10 @@ int WpeWaylandInit(int *argc, char **argv)
  }
 
  /* Grid from the actual surface size and the now-known cell metrics. */
- cols = WpeWl.width  / (WpeRender.font_width  > 0 ? WpeRender.font_width  : cw);
- rows = WpeWl.height / (WpeRender.font_height > 0 ? WpeRender.font_height : ch);
+ if (WpeRender.font_width > 0 && WpeRender.font_height > 0)
+  wpe_wlframe_set_cell(WpeRender.font_width, WpeRender.font_height);
+ wpe_wlframe_set_repaint(e_w_repaint_frame);
+ wpe_wlframe_grid(&cols, &rows);
  MAXSCOL = cols;
  MAXSLNS = rows;
  if (e_w_ini_size() != 0)
@@ -2183,6 +2045,7 @@ int WpeWaylandInit(int *argc, char **argv)
   wl_teardown();
   return 1;
  }
+ wpe_wlframe_paint_remainder();
 
  /* Publish the backend.  Reuse the audited schirm-only X functions; override
     the I/O (refresh/getch/kbhit/mouse/display/resize) with the Wayland ones.

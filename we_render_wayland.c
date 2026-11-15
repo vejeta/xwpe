@@ -24,7 +24,8 @@
 
 #include "we_render.h"
 #include "we_wayland.h"
-#include "we_lsp.h"        /* e_lsp_sem_slot_rgb, LSP_SEM_TC_MAX */
+#include "we_wlframe.h"    /* wpe_wlframe_present: the one commit of the surface */
+#include "we_lsp.h"       /* e_lsp_sem_slot_rgb, LSP_SEM_TC_MAX */
 #include "we_render_glyphs.h"  /* wpe_glyph_acs / wpe_glyph_lock (shared with X11) */
 
 static cairo_surface_t      *wcr_surface;   /* image surface over WpeWl.pixels */
@@ -163,35 +164,57 @@ static void wr_draw_lock(int px, int py, int cw, int fg_idx, int bg_idx)
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 /* The image surface writes straight into the displayed wl_shm buffer, so a
-   "present" is: make sure Cairo has flushed its writes, then tell the
-   compositor which rectangle changed and commit.  (Proper buffer-release /
-   double-buffering against tearing is added with the frame-callback work.) */
+   "present" is: make sure Cairo has flushed its writes, then hand the changed
+   rectangle to the frame owner, the only code that commits the surface (it
+   acknowledges the compositor's configure with the first frame that fits it).
+   (Proper buffer-release / double-buffering against tearing is added with the
+   frame-callback work.) */
 static void wr_present(int x, int y, int w, int h)
 {
- if (!WpeWl.surface || !WpeWl.buffer)
+ if (!wcr_surface)
   return;
  cairo_surface_flush(wcr_surface);
- wl_surface_attach(WpeWl.surface, WpeWl.buffer, 0, 0);
- if (WpeWl.compositor_version >= 4)
-  wl_surface_damage_buffer(WpeWl.surface, x, y, w, h);
- else
-  wl_surface_damage(WpeWl.surface, x, y, w, h);
- wl_surface_commit(WpeWl.surface);
- if (WpeWl.display)
-  wl_display_flush(WpeWl.display);
+ wpe_wlframe_present(x, y, w, h);
 }
 
 static void wr_flush(int x, int y, int w, int h) { wr_present(x, y, w, h); }
-static void wr_flush_all(void) { wr_present(0, 0, WpeWl.width, WpeWl.height); }
+static void wr_flush_all(void)
+{
+ wr_present(0, 0, wpe_wlframe_width(), wpe_wlframe_height());
+}
+
+/**
+ * wr_clip_blit - Keep a blit's rectangles inside the buffer.
+ * @sx: source left; @sy: source top; @dx: destination left; @dy: destination top.
+ * @w: width, shortened in place; @h: height, shortened in place.
+ *
+ * The grid can be larger than the buffer when the window is below the
+ * minimum grid (the buffer is then the window's own size): Cairo clips its
+ * drawing, a memmove does not, so a scroll there would copy past the buffer.
+ */
+static void wr_clip_blit(int sx, int sy, int dx, int dy, int *w, int *h)
+{
+ int right = sx > dx ? sx : dx;
+ int bottom = sy > dy ? sy : dy;
+
+ if (*w > wpe_wlframe_width() - right)
+  *w = wpe_wlframe_width() - right;
+ if (*h > wpe_wlframe_height() - bottom)
+  *h = wpe_wlframe_height() - bottom;
+}
 
 /* Copy a pixel rectangle within the single buffer (used by smooth scroll).
    Row-wise memmove handles vertical overlap in both directions. */
 static void wr_blit(int sx, int sy, int dx, int dy, int w, int h)
 {
- int row, bytes = w * 4;
+ int row, bytes;
 
- if (!WpeWl.pixels || w <= 0 || h <= 0)
+ if (!WpeWl.pixels || w <= 0 || h <= 0 || sx < 0 || sy < 0 || dx < 0 || dy < 0)
   return;
+ wr_clip_blit(sx, sy, dx, dy, &w, &h);
+ if (w <= 0 || h <= 0)
+  return;
+ bytes = w * 4;
  cairo_surface_flush(wcr_surface);
  if (dy <= sy)
   for (row = 0; row < h; row++)

@@ -41,7 +41,8 @@ typedef struct WpeWlInfo {
  struct zxdg_decoration_manager_v1    *deco_manager;
  struct zxdg_toplevel_decoration_v1   *toplevel_deco;
 
- /* Single shared-memory frame buffer (XRGB8888). */
+ /* Single shared-memory frame buffer (XRGB8888).  Written only by the frame
+    owner, we_wlframe.c; everything else reads. */
  struct wl_buffer *buffer;
  uint32_t         *pixels;     /* mmap'd, width*height words                 */
  int               shm_fd;
@@ -76,9 +77,8 @@ typedef struct WpeWlInfo {
  int key_tail;
  int kbd_focus;                /* surface currently has keyboard focus       */
 
- /* Lifecycle flags. */
- int configured;               /* first xdg_surface.configure acknowledged   */
- int painted;                  /* at least one frame committed               */
+ /* Lifecycle flags (what has been configured and shown is the frame
+    owner's state: wpe_wlframe_pending, wpe_wlframe_shown). */
  int running;                  /* cleared on xdg_toplevel.close              */
 } WpeWlInfo;
 

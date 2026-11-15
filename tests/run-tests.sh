@@ -136,6 +136,7 @@ build_asan_binary() {
         LDFLAGS="-fsanitize=address" >/dev/null)
   cp "$asan_src/we" "$top/we-asan"
   ln -sfn we-asan "$top/wpe-asan"  # the name turns programming mode on (see above)
+  ln -sfn we-asan "$top/xwpe-asan" # and the graphical rows need the graphical name
 }
 
 mode=functional

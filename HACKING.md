@@ -164,7 +164,8 @@ compositor:
 
 No intermediate refreshes.  The Pixmap is fully composed before one
 XCopyArea copies it to the window.  Same pattern for Wayland:
-`wl_surface.commit` replaces XCopyArea.
+`wl_surface.commit` replaces XCopyArea, through `wpe_wlframe_present`, the
+only commit of the editor's surface.
 
 ### Single-flush architecture
 
@@ -906,6 +907,57 @@ prints what the step cost, which is how a macOS run measures it.
 skip the step, and on a `close_range` or `closefrom` outside the one function.
 The editor's own habit of keeping a start-up file open is a separate row
 (`tests/test_child_fds.py`): a file read once is closed once.
+
+## The Wayland surface: one owner of its size (`we_wlframe.c`)
+
+The compositor closes an editor whose frame does not fit the configure it
+answers: weston requires a maximized buffer to be the configured size and a
+fullscreen one to be no larger, and a window that nothing acknowledged never
+appears. `we_wlframe.c` is the only code that allocates the wl_shm buffer,
+acknowledges a configure, attaches, damages and commits the editor's surface,
+and owns the queue the surface's events arrive on. The listeners in
+`we_wayland.c` only record (`wpe_wlframe_note_toplevel`, `wpe_wlframe_note_configure`).
+
+States: UNBOUND (no configure yet), PENDING (a configure waits), FITTED (the
+buffer fits, not shown), APPLIED (shown). The invariant: a buffer is committed
+only if it fits the configure it answers, and the acknowledgement and the first
+conforming commit are one step (`wpe_wlframe_present` in state FITTED), taken at
+a top-level point, never inside a listener.
+
+Why a private queue: the editor polls the pointer from inside a repaint
+(`fk_w_mouse`), and that read of the connection used to deliver a configure in
+the middle of a relayout. The `xdg_surface` and `xdg_toplevel` events now wait on
+the frame owner's own `wl_event_queue`, and only `wpe_wlframe_apply` (the top of
+the key loop, the bring-up) and `wpe_wlframe_serve` (the editor waiting for a
+command run in a window of its own) dispatch it. `xdg_wm_base` ping and pong stay
+on the default queue. The pump reads the connection through
+`wpe_wlframe_read_events` (one `prepare_read` and `read_events`), never through
+libwayland's dispatch loop: that loop polls again until an event for the default
+queue arrives, so a configure that comes alone would leave the editor blocked in
+it, with the window unanswered and the end request unserved. A present that still finds a configure waiting is withheld
+and counted (`withheld` in the trace); a count above 0 is a bug, except after a wait
+(File > Shell) that left a size change pending, whose closing repaint is withheld and
+shown again by the next apply. `serve` answers a
+configure that leaves the buffer's size alone (a focus change) at once and leaves
+a size change for the key loop, as X11 notes a `ConfigureNotify` and lays out at
+its loop top.
+
+What size is committed, `wpe_wlframe_fit_size`: MAXIMIZED and FULLSCREEN get the
+bound exactly, with a black strip past the last cell (X11's `BlackPixel`
+remainder); RESIZING is snapped to whole cells, never above the bound; a window
+with no state is snapped, at least 30x6 cells (X11's `PResizeInc` and `PMinSize`,
+announced here with `xdg_toplevel.set_min_size`); a 0x0 configure or none at all
+means the editor's own size. A buffer that is replaced without the grid changing
+is drawn again before it is shown.
+
+Evidence: `XWPE_WL_FRAME_TRACE=/path` appends one line per configure, apply, ack,
+commit and refusal. `WAYLAND_DEBUG=1` on the editor gives libwayland's own wire
+log, which `tests/wayland/test_surface_bound.py` parses for the protocol's
+invariants. `tests/test_wlframe.c` runs the state machine with the compositor
+replaced by a recorder. `tests/check-wayland-frame.sh` fails when another file
+commits, acknowledges, sizes the buffer or owns the queue, or when a configure
+listener does more than record; the cursor's own surface, which has no xdg role,
+is the one line of `tests/wayland-frame.allow`.
 
 ## File Manager geometry (1.6.5)
 

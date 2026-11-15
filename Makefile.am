@@ -138,7 +138,7 @@ X11_SOURCES     = we_xterm.c WeXterm.c
 CAIRO_SOURCES   = we_render_cairo.c
 GPM_SOURCES     = we_gpm.c
 VTERM_SOURCES   = we_vterm.c
-WAYLAND_SOURCES = we_wayland.c we_render_wayland.c
+WAYLAND_SOURCES = we_wayland.c we_render_wayland.c we_wlframe.c
 AI_SOURCES      = we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_ws.c we_ai_path.c
 AI_HOST_SOURCES = we_ai_host.c
 AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope
@@ -222,7 +222,8 @@ xdg-decoration-unstable-v1-protocol.c:
 # BUILT_SOURCES only fires for the default `all` target; this explicit
 # dependency guarantees the generated client headers exist before we_wayland.c
 # is compiled even for `make we` or a parallel `make -j`.
-we_wayland.$(OBJEXT): xdg-shell-client-protocol.h \
+we_wayland.$(OBJEXT) we_wlframe.$(OBJEXT) we_render_wayland.$(OBJEXT): \
+  xdg-shell-client-protocol.h \
   primary-selection-unstable-v1-client-protocol.h \
   xdg-decoration-unstable-v1-client-protocol.h
 endif
@@ -281,6 +282,7 @@ noinst_HEADERS = \
   we_optval.h \
   we_fieldtake.h \
   we_wayland.h \
+  we_wlframe.h \
   we_fdloop.h \
   we_paint.h \
   we_layout.h \
@@ -945,6 +947,23 @@ TESTS += tests/check-program-name.sh
 # fails on an open() of a tty or pty name without O_NOCTTY.
 TESTS += tests/check-tty-open.sh
 
+# One owner of the size the Wayland surface may commit: the frame owner
+# (we_wlframe.c).  tests/check-wayland-frame.sh fails when another file
+# attaches, damages, commits, acknowledges a configure, sizes the buffer or
+# owns the surface's event queue, and when a configure listener does more than
+# record.  It scans sources, so it runs on a build without the backend too.
+# test_wlframe runs the owner's state machine with the compositor replaced by a
+# recorder (no display); it defines the two globals the owner reads (WpeWl,
+# WpeRender).
+TESTS += tests/check-wayland-frame.sh
+if HAVE_WAYLAND
+check_PROGRAMS += test_wlframe
+TESTS += test_wlframe
+test_wlframe_SOURCES = tests/test_wlframe.c we_wlframe.c
+test_wlframe_CFLAGS = $(TEST_CFLAGS) $(WAYLAND_CFLAGS)
+test_wlframe_LDADD = $(WAYLAND_LIBS)
+endif
+
 # One exec site, one close step, one closer: tests/check-child-fds.sh fails
 # on an exec outside the owner, on a child start that can skip the step that
 # closes what the editor inherited, and on a close_range or closefrom
@@ -1123,6 +1142,10 @@ EXTRA_DIST = \
   tests/check-program-name.sh \
   tests/check-tty-open.sh \
   tests/tty-open.allow \
+  tests/check-wayland-frame.sh \
+  tests/wayland-frame.allow \
+  tests/test_wlframe.c \
+  tests/wayland/test_surface_bound.py \
   tests/check-child-fds.sh \
   tests/child-fds.allow \
   tests/check-child-exec.sh \

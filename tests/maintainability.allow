@@ -72,6 +72,7 @@ getenv we_render_wayland.c 1 C6
 getenv we_term.c 2 C6
 getenv we_unix.c 2 C6
 getenv we_wayland.c 8 C6
+getenv we_wlframe.c 1 C6
 getenv we_xterm.c 1 C6
 
 # rows 1 and 2: report only

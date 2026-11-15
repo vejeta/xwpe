@@ -1,0 +1,9 @@
+# The Wayland surface calls made outside the frame owner (we_wlframe.c) that
+# are meant.  Checked by tests/check-wayland-frame.sh.
+#
+#   file|rule:function|count|pass|reason
+#
+# "count" is how many such identifiers the function has: more or fewer fails,
+# and a line that matches nothing is stale.  "keep" is a permanent exception.
+
+we_wayland.c|r1:wl_cursor_apply|3|keep|the cursor's own surface has no xdg role and no configure to answer: attach, damage and commit of a fixed image

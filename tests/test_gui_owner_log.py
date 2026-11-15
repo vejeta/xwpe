@@ -1,0 +1,254 @@
+"""The log and exit rules of the graphical owner, checked without a display.
+
+A graphical row used to pass over an editor that its compositor or X server
+had cut off: the editor lingered with no window, or exited, and a row that
+looked only at the saved file or at "still running" was green.  The owner
+now reads the editor's own log for a lost-display line and looks at how the
+editor ended.  The rows here feed the scanner planted logs, and end small
+stand-in processes (python, no display) as an editor to see the two rules
+fire, stay quiet, and obey a declaration.
+
+The libwayland text the scanner matches is pinned to libwayland-client 1.26.
+"""
+import os
+import signal
+import sys
+
+import pytest
+
+import gui_owner
+
+PLANT_PROTOCOL = ("xdg_toplevel#9: error 4: buffer size (1024 x 768) does not "
+                  "match the configured size (1000 x 750)")
+PLANT_DESTROYED = "[destroyed object]: error 1: invalid method 3"
+PLANT_X_BROKEN = ("X connection to :94 broken (explicit kill or server "
+                  "shutdown).")
+PLANT_XIO = 'XIO:  fatal IO error 11 (Resource temporarily unavailable) on X server ":94"'
+PLANT_OWN = "xwpe: connection to the Wayland compositor lost: broken pipe"
+# What a clipboard helper that inherited the editor's standard error would
+# print about its own connection; it is not the editor's own failure.
+PLANT_SEND = "Error sending request for wl_surface.damage_buffer: Broken pipe"
+PLANT_MARSHAL = "Error marshalling request for wl_surface.commit: Broken pipe"
+PLANT_CHILD ="wl-copy: failed to connect to a Wayland server"
+CLEAN_LOG = "xwpe: started\nredraw 80x30\nFile t.c saved!\n"
+READY_S = 20.0
+SEGV_AT_ONCE = "import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n"
+
+
+# @scenario SC-harness-owner-70
+def test_each_lost_display_line_form_is_found():
+    """The libwayland protocol error (and its destroyed-object form), the
+    two Xlib forms and the editor's own line are each reported."""
+    for planted in (PLANT_PROTOCOL, PLANT_DESTROYED, PLANT_X_BROKEN,
+                    PLANT_XIO, PLANT_OWN, PLANT_SEND, PLANT_MARSHAL):
+        text = "first\n%s\nlast\n" % planted
+        assert gui_owner.display_errors(text) == [planted]
+
+
+# @scenario SC-harness-owner-70
+def test_a_clean_log_and_lines_that_only_mention_an_error_are_clean():
+    """A normal log, a child's own line and a line that has the words in the
+    middle are not reported: the rule matches whole forms at the line start."""
+    text = CLEAN_LOG + PLANT_CHILD + "\nnote: error 4: not a protocol line\n"
+    text += "saw xdg_toplevel#9: error 4: indented\n"
+    assert gui_owner.display_errors(text) == []
+    assert gui_owner.display_errors("") == []
+
+
+# @scenario SC-harness-owner-70
+def test_several_lines_come_back_in_order():
+    text = "\n".join([PLANT_OWN, CLEAN_LOG.strip(), PLANT_PROTOCOL])
+    assert gui_owner.display_errors(text) == [PLANT_OWN, PLANT_PROTOCOL]
+
+
+# @scenario SC-harness-owner-71
+def test_the_exit_rule_flags_crashes_and_failure_codes_only():
+    """Crash signals and a non-zero code are flagged; exit 0, SIGTERM,
+    SIGHUP and an editor that has not ended are not."""
+    flagged = gui_owner.unexpected_exit_text
+    for crash in (signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS,
+                  signal.SIGFPE, signal.SIGILL):
+        assert crash.name in flagged(-crash)
+    assert "code 1" in flagged(1)
+    for quiet in (0, -signal.SIGTERM, -signal.SIGHUP, None):
+        assert flagged(quiet) is None
+    for other in (signal.SIGQUIT, signal.SIGKILL, signal.SIGPIPE):
+        assert other.name in flagged(-other)
+    assert flagged(-signal.SIGKILL, by_ladder=True) is None
+    assert "SIGSEGV" in flagged(-signal.SIGSEGV, by_ladder=True)
+
+
+@pytest.fixture
+def owner(tmp_path):
+    """An owner of the row's own, begun as a session fixture would."""
+    own = gui_owner.Owner(str(tmp_path / "out"))
+    own.begin()
+    yield own
+    late = own.finish()
+    assert not late, "left at the owner's end: %s" % [l.describe() for l in late]
+
+
+def _standin_editor(owner, tmp_path, name, code):
+    """Start a python stand-in as an "xwpe" process whose log gets one
+    line, ready for the row to end or find ended.  code is its program."""
+    log_dir = str(tmp_path / name)
+    os.makedirs(log_dir)
+    return owner.launch([sys.executable, "-E", "-s", "-c", code],
+                        {"PATH": os.environ["PATH"]}, log_dir, log_dir,
+                        "xwpe", name)
+
+
+def _wait_log(editor, text):
+    """Wait until the stand-in has written text, so the row reads a log
+    that has it."""
+    gui_owner.wait_for(lambda: text in editor.log_text(),
+                       "the stand-in to write its line", READY_S,
+                       state_fn=editor.log_text)
+
+
+def _print_then_sleep(line):
+    return ("import sys, time\nprint(%r); sys.stdout.flush()\n"
+            "time.sleep(60)\n" % line)
+
+
+def _end_by_itself(owner, tmp_path, name, body):
+    """A stand-in that runs body and ends; returned once it has ended."""
+    editor = _standin_editor(owner, tmp_path, name, body)
+    gui_owner.wait_for(lambda: not editor.running(),
+                       "the stand-in to end by itself", READY_S,
+                       state_fn=editor.log_text)
+    return editor
+
+
+# @scenario SC-harness-owner-72
+def test_a_protocol_line_in_the_editors_log_fails_the_row(owner, tmp_path):
+    editor = _standin_editor(owner, tmp_path, "m1",
+                             _print_then_sleep(PLANT_PROTOCOL))
+    _wait_log(editor, PLANT_PROTOCOL)
+    with pytest.raises(gui_owner.DisplayProtocolError) as raised:
+        editor.end()
+    assert PLANT_PROTOCOL in str(raised.value)
+    assert editor.log in str(raised.value)
+
+
+# @scenario SC-harness-owner-72
+def test_a_declared_display_loss_passes(owner, tmp_path):
+    editor = _standin_editor(owner, tmp_path, "declared",
+                             _print_then_sleep(PLANT_OWN))
+    editor.expect_display_loss()
+    _wait_log(editor, PLANT_OWN)
+    editor.end()
+
+
+# @scenario SC-harness-owner-72
+def test_a_clean_log_passes(owner, tmp_path):
+    editor = _standin_editor(owner, tmp_path, "clean",
+                             _print_then_sleep("redraw 80x30"))
+    _wait_log(editor, "redraw")
+    editor.end()
+
+
+# @scenario SC-harness-owner-73
+def test_a_child_line_in_the_editors_log_is_the_editors(owner, tmp_path):
+    """A helper that inherits the editor's standard error writes into the
+    editor's log, so a protocol line it prints is found there and must be
+    declared by the row that expects it; the helper's own log, when the
+    owner keeps one, is never scanned."""
+    child = "print(%r)" % PLANT_PROTOCOL
+    code = ("import subprocess, sys, time\n"
+            "subprocess.run([sys.executable, '-E', '-s', '-c', %r], check=True)\n"
+            "time.sleep(60)\n" % child)
+    editor = _standin_editor(owner, tmp_path, "child", code)
+    _wait_log(editor, PLANT_PROTOCOL)
+    with pytest.raises(gui_owner.DisplayProtocolError):
+        editor.end()
+    helper = _standin_editor(owner, tmp_path, "helper",
+                             _print_then_sleep(PLANT_PROTOCOL))
+    helper.kind = "client"
+    _wait_log(helper, PLANT_PROTOCOL)
+    helper.end()
+
+
+# @scenario SC-harness-owner-74
+def test_a_crash_the_row_did_not_ask_for_fails_it(owner, tmp_path):
+    editor = _end_by_itself(owner, tmp_path, "crash",
+                            "import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n")
+    with pytest.raises(gui_owner.UnexpectedExit) as raised:
+        editor.end()
+    assert "SIGSEGV" in str(raised.value)
+
+
+# @scenario SC-harness-owner-74
+def test_a_failure_exit_fails_unless_declared(owner, tmp_path):
+    undeclared = _end_by_itself(owner, tmp_path, "code3", "raise SystemExit(3)\n")
+    with pytest.raises(gui_owner.UnexpectedExit) as raised:
+        undeclared.end()
+    assert "code 3" in str(raised.value)
+    declared = _end_by_itself(owner, tmp_path, "declared3", "raise SystemExit(3)\n")
+    declared.expect_exit(code=3)
+    declared.end()
+    wrong = _end_by_itself(owner, tmp_path, "wrong", "raise SystemExit(4)\n")
+    wrong.expect_exit(code=3)
+    with pytest.raises(gui_owner.UnexpectedExit):
+        wrong.end()
+    anything = _end_by_itself(owner, tmp_path, "any", "raise SystemExit(5)\n")
+    anything.expect_exit()
+    anything.end()
+
+
+# @scenario SC-harness-owner-74
+def test_a_quiet_exit_and_a_row_sent_sigterm_pass(owner, tmp_path):
+    quit_zero = _end_by_itself(owner, tmp_path, "zero", "raise SystemExit(0)\n")
+    quit_zero.end()
+    termed = _standin_editor(owner, tmp_path, "term",
+                             _print_then_sleep("redraw"))
+    _wait_log(termed, "redraw")
+    termed.watch.signal(signal.SIGTERM)
+    gui_owner.wait_for(lambda: not termed.running(), "the SIGTERM to end it",
+                       READY_S, state_fn=termed.log_text)
+    termed.end()
+
+
+# @scenario SC-harness-owner-75
+def test_a_second_end_after_a_failed_one_does_nothing(owner, tmp_path):
+    """The row's own end() raising must not make the finalizer's end() raise
+    again as a teardown error."""
+    editor = _end_by_itself(owner, tmp_path, "twice", "raise SystemExit(3)\n")
+    with pytest.raises(gui_owner.UnexpectedExit):
+        editor.end()
+    editor.end()
+
+
+# @scenario SC-harness-owner-75
+def test_a_declaration_never_accepts_a_signal(owner, tmp_path):
+    editor = _end_by_itself(owner, tmp_path, "declared-crash", SEGV_AT_ONCE)
+    editor.expect_exit()
+    with pytest.raises(gui_owner.UnexpectedExit) as raised:
+        editor.end()
+    assert "SIGSEGV" in str(raised.value)
+
+
+# @scenario SC-harness-owner-75
+@pytest.mark.parametrize("sig", [signal.SIGQUIT, signal.SIGKILL])
+def test_a_death_by_another_signal_fails_the_row(owner, tmp_path, sig):
+    editor = _end_by_itself(owner, tmp_path, "sig%d" % sig,
+                            "import os\nos.kill(os.getpid(), %d)\n" % sig)
+    with pytest.raises(gui_owner.UnexpectedExit) as raised:
+        editor.end()
+    assert sig.name in str(raised.value)
+
+
+# @scenario SC-harness-owner-75
+def test_a_crash_while_the_owner_ends_the_editor_fails_the_row(owner, tmp_path):
+    """A stand-in that crashes when the owner's SIGTERM arrives."""
+    code = ("import os, signal, time\n"
+            "def crash(*args):\n"
+            "    signal.signal(signal.SIGSEGV, signal.SIG_DFL)\n"
+            "    os.kill(os.getpid(), signal.SIGSEGV)\n"
+            "signal.signal(signal.SIGTERM, crash)\n"
+            "print('ready', flush=True)\ntime.sleep(60)\n")
+    editor = _standin_editor(owner, tmp_path, "ladder-crash", code)
+    _wait_log(editor, "ready")
+    with pytest.raises(gui_owner.UnexpectedExit) as raised:
+        editor.end()
+    assert "SIGSEGV" in str(raised.value)

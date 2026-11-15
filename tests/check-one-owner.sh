@@ -73,7 +73,8 @@ poll|ppoll|select|pselect|epoll_wait|epoll_pwait|kevent|nanosleep|usleep|sleep w
 getch|wgetch|get_wch|wget_wch|ungetch we_term.o
 XNextEvent|XPeekEvent|XWindowEvent|XMaskEvent|XIfEvent|XCheckMaskEvent|XCheckTypedEvent|XCheckTypedWindowEvent|XPutBackEvent we_xterm.o
 XPending|XEventsQueued|XCheckWindowEvent|XCheckIfEvent|XFlush we_xterm.o WeXterm.o
-wl_display_dispatch|wl_display_dispatch_queue|wl_display_roundtrip|wl_display_dispatch_pending|wl_display_prepare_read|wl_display_read_events we_wayland.o
+wl_display_dispatch|wl_display_roundtrip|wl_display_dispatch_pending we_wayland.o
+wl_display_dispatch_queue|wl_display_dispatch_queue_pending|wl_display_roundtrip_queue|wl_display_prepare_read_queue|wl_display_prepare_read|wl_display_read_events we_wayland.o we_wlframe.o
 fork|vfork|forkpty|openpty|posix_spawn|posix_spawnp|popen|pclose|system|execv|execvp|execve|execl|execlp|execle|setsid|setpgid|setpgrp|waitpid|wait|wait3|wait4|pidfd_open|killpg|kill we_child.o
 close_range|closefrom we_child.o
 WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o

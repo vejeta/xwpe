@@ -60,6 +60,7 @@ we_term.c|r2:e_t_flush_input|1|keep|a behaviour trace
 we_trace.c|r2:wpe_trace_file|1|keep|the trace owner
 we_unix.c|r2:WpeSignalUnknown|1|keep|the crash log
 we_wayland.c|r2:wpe_wl_dump_ppm|1|keep|a test screen dump
+we_wlframe.c|r2:wlf_trace|1|keep|a frame trace
 we_xterm.c|r2:e_x_system_script|1|keep|the script of the external terminal
 we_xterm.c|r2:wpe_x_dump_ppm|1|keep|a test screen dump
 
@@ -99,7 +100,7 @@ we_startplan.c|r8:wpe_startplan_debug_dir_end|1|keep|the debug run's own folder
 we_startplan.c|r8:wpe_startplan_debug_dir_new|1|keep|the debug run's own folder
 we_startplan.c|r8:wpe_startplan_remove|1|keep|the plan's own file
 we_wayland.c|r8:e_w_refresh|1|keep|a test screen dump's name
-we_wayland.c|r8:wl_anon_file|1|keep|the compositor's anonymous buffer file
+we_wlframe.c|r8:wlf_anon_file|1|keep|the compositor's anonymous buffer file
 we_xterm.c|r8:e_x_refresh|1|keep|a test screen dump's name
 we_xterm.c|r8:e_x_system|1|keep|the external terminal's own script
 we_xterm.c|r8:e_x_system_script|1|keep|the external terminal's own script

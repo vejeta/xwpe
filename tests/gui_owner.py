@@ -183,6 +183,79 @@ class EndFailed(AssertionError):
     """A process the owner started did not end even after SIGKILL."""
 
 
+class DisplayProtocolError(AssertionError):
+    """An editor's log holds a display protocol error or a lost-display line."""
+
+
+class UnexpectedExit(AssertionError):
+    """An editor ended by itself with a crash signal or a non-zero code."""
+
+
+# Lines that say an editor lost its display, as the display libraries and
+# the editor itself print them, at the start of a line of the editor's log.
+# The libwayland text is pinned to libwayland-client 1.26.0
+# (display_handle_error: "%s#%u: error %d: %s", and
+# "[destroyed object]: error %d: %s" when the object is gone; the send
+# failures "Error sending request for wl_surface.damage_buffer: Broken
+# pipe" and "Error marshalling request for ...", which are all a client
+# prints when the compositor cut it off mid-request); Xlib's are
+# "X connection to %s broken" and "XIO:  fatal IO error"; the last is the
+# editor's own line when it ends because the display went away.  Check them
+# again when the libwayland major or minor version changes.
+DISPLAY_ERROR_LINE = re.compile(
+    r"^(?:(?:\S+#\d+|\[destroyed object\]): error \d+: "
+    r"|Error (?:sending|marshalling) request for \S+: "
+    r"|X connection to .* broken"
+    r"|XIO: "
+    r"|xwpe: connection to .* lost: )")
+
+# Signals that mean the editor crashed, whoever sent the end.
+CRASH_SIGNALS = (signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS,
+                 signal.SIGFPE, signal.SIGILL)
+# The only signals a row or the user sends to end an editor on purpose; an
+# editor found dead by any other signal before the row ended it is flagged.
+QUIET_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+def display_errors(text):
+    """The lines of an editor's log that report a lost display.
+
+    A graphical row is only honest when its editor never had its display
+    taken away by a protocol error or a broken connection: such an editor
+    lingers with no window and a row that only checks "still running" or
+    "text saved" passes over it.  This reads text, the editor's own log,
+    and returns the matching lines in order; a process that only inherited
+    the editor's standard error (a clipboard helper) writes into the same
+    file and is not told apart, so a row whose child is expected to print
+    such a line says so with ``expect_display_loss``.  A line of a log the
+    owner keeps for another process is never given to this function.  A row
+    whose editor writes to a pty (stdio=<pty>, the XWPE_TEST_PTY rows) has
+    an empty log, so nothing is scanned for it."""
+    return [line for line in text.splitlines()
+            if DISPLAY_ERROR_LINE.match(line)]
+
+
+def unexpected_exit_text(returncode, by_ladder=False):
+    """A phrase naming the exit when a row did not ask for it, else None.
+
+    An editor found dead before the row ended it is flagged for a non-zero
+    code and for every signal but SIGTERM and SIGHUP; exit 0 is a normal
+    quit.  An editor the owner's ladder ended (by_ladder) is flagged only
+    for a crash signal, since SIGKILL is the ladder's own last step."""
+    if returncode is None or returncode == 0:
+        return None
+    if returncode < 0:
+        number = -returncode
+        name = signal.Signals(number).name
+        if by_ladder:
+            return "killed by %s" % name if number in CRASH_SIGNALS else None
+        if number in QUIET_SIGNALS:
+            return None
+        return "killed by %s" % name
+    if by_ladder:
+        return None
+    return "exited with code %d" % returncode
+
 # ---------------------------------------------------------------------------
 # Waiting by event
 
@@ -1522,6 +1595,30 @@ class OwnedProcess:
         self.abrupt = False
         self.env = None
         self.tree = Tree(self.pid, label)
+        self.display_loss_expected = False
+        self.exit_declared = False
+        self.exit_code_declared = None
+        self.early_returncode = None
+        self.final_returncode = None
+
+    def expect_display_loss(self):
+        """Declare that this row ends the editor's display on purpose.
+
+        A row that stops its compositor or X server to see the editor save
+        and exit has a display-loss line in the log by design; without this
+        the log rule would fail it."""
+        self.display_loss_expected = True
+
+    def expect_exit(self, code=None):
+        """Declare that this editor ends by itself with a non-zero exit.
+
+        With code the exit must be exactly that code; without it any
+        non-zero exit code is accepted.  A signal is never accepted, so a
+        declared row still fails when the editor crashes.  A row that has an editor leave on its own with a
+        failure code (a lost display, a refused save) says so here, so
+        that a crash or an exit nobody asked for still fails the row."""
+        self.exit_declared = True
+        self.exit_code_declared = code
 
     def refresh_tree(self):
         """Note what the process has started so far, while it runs.
@@ -1608,8 +1705,10 @@ class OwnedProcess:
         tree = self.tree
         tree.extend(self.pid)
         try:
+            if self.watch.wait(0):
+                self.early_returncode = self.proc.wait()
             self.abrupt = self._ladder()
-            self.proc.wait()
+            self.final_returncode = self.proc.wait()
         finally:
             self.watch.close()
             self.owner.ledger.forget(self.pid)
@@ -1625,11 +1724,62 @@ class OwnedProcess:
         Registered as the row's finalizer by the launcher, so it runs even
         when the row failed before its first wait was over.  Calling it a
         second time does nothing."""
+        first = not self.ended
         undeclared = [leak for leak in self.end_collect() if not leak.declared]
         if undeclared:
             raise LeakedProcesses("%s left %d process(es) behind, now ended:\n  %s"
                                   % (self.label, len(undeclared),
                                      "\n  ".join(l.describe() for l in undeclared)))
+        if first and self.kind == "xwpe":
+            self._check_display_log()
+            self._check_exit()
+
+    def _check_display_log(self):
+        """Error the row when the editor's log reports a lost display.
+
+        It protects a row from passing over an editor whose compositor or
+        X server cut it off: that editor has no window and a row that only
+        looks at the file or at "still running" would be green."""
+        if self.display_loss_expected:
+            return
+        try:
+            lines = display_errors(self.log_text())
+        except OSError:
+            return
+        if lines:
+            raise DisplayProtocolError(
+                "%s: the editor's log reports a lost display:\n  %s\n(log %s)"
+                % (self.label, "\n  ".join(lines), self.log))
+
+    def _check_exit(self):
+        """Error the row when the editor ended by itself and badly.
+
+        An editor found already ended before the row ended it crashed or
+        left with a failure code unless the row declared that exit (a
+        declaration accepts a non-zero code, never a signal); a quiet exit
+        0 or a SIGTERM the row sent is how rows end it.  An editor the
+        owner's ladder ended is flagged only when it died of a crash
+        signal."""
+        if self.early_returncode is not None:
+            self._check_early_exit()
+        else:
+            what = unexpected_exit_text(self.final_returncode, by_ladder=True)
+            if what is not None:
+                raise UnexpectedExit("%s: the editor %s while the owner "
+                                     "ended it (log %s)"
+                                     % (self.label, what, self.log))
+
+    def _check_early_exit(self):
+        """The rule for an editor that was already dead when the row ended it."""
+        code = self.early_returncode
+        what = unexpected_exit_text(code)
+        if what is None:
+            return
+        if self.exit_declared and code > 0 and self.exit_code_declared in (
+                None, code):
+            return
+        raise UnexpectedExit("%s: the editor %s before the row ended it "
+                             "(log %s)" % (self.label, what, self.log))
 
 
 # ---------------------------------------------------------------------------
