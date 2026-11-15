@@ -1294,9 +1294,11 @@ EXTRA_DIST = \
   tests/wayland/test_keymap.py \
   tests/wayland/test_menu_nav.py \
   tests/wayland/test_editor_options.py \
+  tests/wayland/test_number_fields.py \
   tests/x11/conftest.py \
   tests/x11/matchbox-kbdconfig \
   tests/x11/test_editor_options.py \
+  tests/x11/test_number_fields.py \
   tests/x11/test_block_marking.py \
   tests/x11/test_clipboard.py \
   tests/x11/test_menu_edit.py \
