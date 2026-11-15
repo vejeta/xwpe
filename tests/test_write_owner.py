@@ -15,6 +15,7 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_write_owner.py
 """
 import os
 import stat
+import subprocess
 import re
 import time
 
@@ -366,6 +367,25 @@ def test_a_block_written_to_a_writable_folder_holds_the_block(tmp_path):
         assert _read(os.path.join(work, "blk.c")) == SEED.rstrip("\n").encode()
 
 
+def _sigstate_binary(tmp_path):
+    """tests/sigstate, which names the signals it ignores (no /proc: only
+    Linux has it).  `make check` builds it beside the sources; when it is
+    missing it is compiled into @tmp_path with the build's config.h."""
+    top = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    built = os.path.join(top, "sigstate")
+    if os.path.exists(built):
+        return built
+    out = str(tmp_path / "sigstate")
+    cmd = [os.environ.get("CC", "cc"), "-o", out]
+    config_h = os.path.join(top, "config.h")
+    if os.path.exists(config_h):
+        cmd += ["-include", config_h]
+    cmd.append(os.path.join(top, "tests", "sigstate.c"))
+    if subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+        pytest.skip("tests/sigstate.c does not build here: no C compiler")
+    return out
+
+
 # @scenario SC-unsaved-text-26
 def test_a_program_the_editor_starts_does_not_inherit_ignored_sigxfsz(tmp_path):
     """The owner ignores SIGXFSZ only around its own writes: after a save,
@@ -374,9 +394,10 @@ def test_a_program_the_editor_starts_does_not_inherit_ignored_sigxfsz(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = str(tmp_path / "sigign.log")
+    sigstate = _sigstate_binary(tmp_path)
     for name in ("gcc", "cc"):
         _write_executable(str(bindir / name),
-                          "#!/bin/sh\ngrep SigIgn /proc/self/status > \"%s\"\n" % log)
+                          "#!/bin/sh\n\"%s\" > \"%s\"\n" % (sigstate, log))
     env["PATH"] = "%s:%s" % (bindir, os.environ["PATH"])
     with WpeSession(work, "int main(void)\n{\n return 0;\n}\n", env_extra=env) as s:
         s.key("X")
@@ -386,5 +407,6 @@ def test_a_program_the_editor_starts_does_not_inherit_ignored_sigxfsz(tmp_path):
             s._drain(POLL_S)
         assert os.path.exists(log), "the compiler stand-in did not run:\n%s" % \
             "\n".join(s.display())
-        ignored = int(_read(log).split()[1], 16)
-        assert ignored & (1 << 24) == 0, "SIGXFSZ is ignored in the child: %x" % ignored
+        ignored = _read(log).decode().split()
+        assert ignored[:1] == ["IGNORED:"], "sigstate said: %r" % ignored
+        assert "XFSZ" not in ignored, "SIGXFSZ is ignored in the child: %s" % ignored

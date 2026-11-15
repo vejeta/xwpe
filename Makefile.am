@@ -424,6 +424,12 @@ test_errpat_CFLAGS = $(TEST_CFLAGS)
 test_optval_SOURCES = tests/test_optval.c we_optval.c
 test_optval_CFLAGS = $(TEST_CFLAGS)
 
+# Names the signals it ignores; the pyte rows run it as a program the editor
+# started.  Built by `make check`, not run by it.
+check_PROGRAMS += sigstate
+sigstate_SOURCES = tests/sigstate.c
+sigstate_CFLAGS = $(TEST_CFLAGS)
+
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
 test_path_SOURCES = tests/test_path.c we_path.c

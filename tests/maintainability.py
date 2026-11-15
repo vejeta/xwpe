@@ -33,13 +33,17 @@ behind a feature the build lacks is not counted.
 
 Environment (set by `make check`): MAINT_CC, MAINT_FLAGS, MAINT_SOURCES,
 WPE_FEATURE_SOURCES; MAINT_BUILT_WITH is set by check-maintainability.sh from
-tests/build-config.sh.  A hand run may leave them: CC (or cc), config.h if
-present, every top-level .c, and an unknown configuration (not the reference).
+tests/build-config.sh.  The tree is measured only with MAINT_FLAGS and
+MAINT_SOURCES set: without the build's flags the sources that need a
+library's include folder (cairo, pango, X11) do not preprocess, and the run
+would judge another configuration under the binary's words.  A hand run is
+told to go through make; --selftest needs neither.
 
   maintainability.py [--srcdir DIR] [--allow FILE] [--strict] [--list]
                      [--selftest]
 
-Exit: 0 clean, 1 offenders or a blind scanner, 77 no compiler.
+Exit: 0 clean, 1 offenders or a blind scanner, 2 run outside `make check`,
+77 no compiler.
 """
 import bisect
 import multiprocessing
@@ -53,6 +57,10 @@ from collections import defaultdict
 
 SKIP = 77
 BAD = 1
+HAND_RUN = 2
+
+# What make passes (AM_TESTS_ENVIRONMENT) and a measurement of the tree needs.
+MAKE_ENVIRONMENT = ("MAINT_FLAGS", "MAINT_SOURCES")
 
 # Tree ceilings of row 2 (reported while the sweep is running).
 TREE_LONGEST = 120
@@ -631,6 +639,23 @@ class Measure:
                                             "dup": 0, "statics": 0})
 
 
+def hand_run_refusal(environ):
+    """Why the tree cannot be measured in @environ, or None when it can.
+
+    The flags and the source list are the build's own only when make sets
+    them.  A run without them misses the include folders of the libraries,
+    the sources that need them are refused by the preprocessor and dropped,
+    and their allow lines read as stale in the reference configuration
+    while an offence in them goes unseen: a verdict that differs from
+    `make check`'s on the same tree.  The maintainer is sent to make."""
+    missing = [name for name in MAKE_ENVIRONMENT if name not in environ]
+    if not missing:
+        return None
+    return ("%s not set, so this run cannot use the build's own flags and "
+            "sources; run it through make: make check "
+            "TESTS=tests/check-maintainability.sh" % " and ".join(missing))
+
+
 def build_config(srcdir):
     """The Config of this run, from make's environment or from the folder."""
     cc = shlex.split(os.environ.get("MAINT_CC") or os.environ.get("CC") or "cc")
@@ -640,8 +665,6 @@ def build_config(srcdir):
     features = parse_words(built_with) if built_with else None
     feature_of = parse_feature_sources(os.environ.get("WPE_FEATURE_SOURCES", ""))
     config = Config(srcdir, cc, flags, [], bool(named), features, feature_of)
-    if not flags and os.path.exists("config.h"):
-        config.flags = ["-DHAVE_CONFIG_H", "-I.", "-I" + srcdir, "-include", "config.h"]
     if named:
         config.sources = sorted({s for s in shlex.split(named) if s.endswith(".c")})
     else:
@@ -1034,6 +1057,10 @@ def selftest_configurations(result, built):
             or reference_state(ref, {"with-x": "no"})[0] is not False \
             or not reference_state(ref, {"with-x": "yes", "new-word": "no"})[2]:
         failures.append("the reference line was not judged word by word")
+    if hand_run_refusal({}) is None \
+            or hand_run_refusal({"MAINT_FLAGS": "-I."}) is None \
+            or hand_run_refusal({"MAINT_FLAGS": "-I.", "MAINT_SOURCES": "a.c"}) is not None:
+        failures.append("a run without make's flags and sources was not refused")
     return failures
 
 
@@ -1075,6 +1102,10 @@ def main(argv):
         if not failures:
             print("check-maintainability: selftest ok, every row names its planted offence")
         return BAD if failures else 0
+    refusal = hand_run_refusal(os.environ)
+    if refusal:
+        print("check-maintainability: " + refusal)
+        return HAND_RUN
     result = measure_tree(config)
     if listing:
         if config.features is not None:

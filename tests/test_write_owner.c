@@ -298,6 +298,23 @@ static void test_sentence(void)
 
 /* ---- text ---- */
 
+/* Writing onto a device that is always full ends as a failure with ENOSPC.
+   Only Linux and the systems that copy it have /dev/full; where it is not a
+   character device (OpenBSD) the row is skipped, the assertion is the same. */
+static void test_text_onto_full_device(WpeWriteOutcome *o)
+{
+ struct stat st;
+
+ if (stat("/dev/full", &st) != 0 || !S_ISCHR(st.st_mode))
+ {
+  printf("SKIP: text onto /dev/full: this system has no /dev/full device\n");
+  return;
+ }
+ chk_int("text onto /dev/full fails", wpe_write_text("/dev/full", "x", o), -1);
+ chk_int("text onto /dev/full: status", o->status, WPE_WRITE_FAILED);
+ chk_int("text onto /dev/full: ENOSPC", o->err, ENOSPC);
+}
+
 static void test_text(void)
 {
  WpeWriteOutcome o;
@@ -311,9 +328,7 @@ static void test_text(void)
  get_file("plain.txt", buf, sizeof buf);
  chk_has("text: content", buf, "hello\n");
 
- chk_int("text onto /dev/full fails", wpe_write_text("/dev/full", "x", &o), -1);
- chk_int("text onto /dev/full: status", o.status, WPE_WRITE_FAILED);
- chk_int("text onto /dev/full: ENOSPC", o.err, ENOSPC);
+ test_text_onto_full_device(&o);
 
  path_of(p, sizeof p, "no/such/dir/x");
  chk_int("text in a missing folder fails", wpe_write_text(p, "x", &o), -1);

@@ -36,9 +36,13 @@
 # allow lines the tree needs today.
 #
 # Environment (set by `make check`): MAINT_CC, MAINT_FLAGS, MAINT_SOURCES,
-# WPE_BUILD_BINARY, WPE_FEATURE_SOURCES, srcdir.  Exit: 0 clean, 1 offenders
-# or a blind scanner, 77 no python3 or no compiler, 99 a binary that cannot
-# say what it was built with.
+# WPE_BUILD_BINARY, WPE_FEATURE_SOURCES, srcdir.  Run by hand without them,
+# it measures nothing and says to use `make check
+# TESTS=tests/check-maintainability.sh` (exit 2): the build's flags live in
+# the Makefile, and a run with other flags measures another configuration.
+# Exit: 0 clean, 1 offenders or a blind scanner, 2 run outside make check,
+# 77 no python3 or no compiler, 99 a binary that cannot say what it was
+# built with.
 
 HERE=$(dirname "$0")
 PYTHON=${PYTHON:-python3}

@@ -70,7 +70,11 @@ def build(dest_dir):
     if os.path.exists(built) and is_current(built):
         return built
     out = os.path.join(dest_dir, "edit_driver")
-    cmd = ["gcc", "-std=gnu17", "-I", TOP, "-o", out,
+    # make compiles every source with -include config.h (AM_CPPFLAGS); a
+    # build made here must see the same feature macros.
+    config_h = os.path.join(TOP, "config.h")
+    forced = ["-include", config_h] if os.path.exists(config_h) else []
+    cmd = ["gcc", "-std=gnu17"] + forced + ["-I", TOP, "-o", out,
            os.path.join(TOP, "tests", "edit_driver.c"), os.path.join(TOP, "we_buffer.c")]
     try:
         subprocess.run(cmd, check=True, timeout=BUILD_TIMEOUT, stdout=subprocess.DEVNULL,

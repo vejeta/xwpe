@@ -2151,11 +2151,29 @@ static void deep_remove(char *folder, const char *stop)
  }
 }
 
+/* The longest path this system takes under the test folder, terminator
+   included: what pathconf says for it, else the header's PATH_MAX, else
+   PATH_ROOM; never more than the test's own buffers hold.  Linux says 4096,
+   macOS and the BSDs 1024: a row that builds "a folder near the limit" must
+   use the limit of the system it runs on. */
+static size_t path_limit(void)
+{
+ long limit = pathconf(proj, _PC_PATH_MAX);
+
+#ifdef PATH_MAX
+ if (limit < 0)
+  limit = PATH_MAX;
+#endif
+ if (limit < 0 || limit > PATH_ROOM)
+  limit = PATH_ROOM;
+ return (size_t)limit;
+}
+
 /* How many levels of names of @name_bytes a folder can have under @proj
    and keep PATH_HEADROOM bytes to spare. */
 static int levels_that_fit(size_t name_bytes)
 {
- return (int)((PATH_ROOM - PATH_HEADROOM - strlen(proj)) / (name_bytes + 1));
+ return (int)((path_limit() - PATH_HEADROOM - strlen(proj)) / (name_bytes + 1));
 }
 
 /* How many times @needle is in @text. */
@@ -2359,8 +2377,10 @@ static void case_long_path_refusals(void)
  expect_str("with that reason", p->refused, WPE_STARTPLAN_REFUSE_DEBUG_LONG);
  end_plan(p);
 
- /* a folder near the limit and a program name that does not fit under it */
- deep_folder_of_size(deep, sizeof deep, proj, PATH_ROOM - 60);
+ /* a folder near the limit and a program name that does not fit under it;
+    the log says which limit the long-path rows were built against */
+ printf("long-path rows: the path limit under the test folder is %zu bytes\n", path_limit());
+ deep_folder_of_size(deep, sizeof deep, proj, path_limit() - 60);
  memset(name, 'p', 100);
  name[100] = '\0';
  p = contained_plan(WPE_START_DEBUGGER, "gdb", "gdb", NULL, deep, name);
@@ -2445,7 +2465,7 @@ static void case_gdb_folder_at_the_limit(void)
 {
  char deep[PATH_ROOM];
  static char want[HISTORY_FIX_ROOM], ask[HISTORY_FIX_ROOM], fix[HISTORY_FIX_ROOM];
- const size_t total = PATH_ROOM - 8;
+ const size_t total = path_limit() - 8;
  WpeStartPlan *p;
 
  deep_folder_of_size(deep, sizeof deep, proj, total);
@@ -2454,7 +2474,7 @@ static void case_gdb_folder_at_the_limit(void)
  expect_int("a folder near the system's limit is not refused", p->contain_refused == NULL, 1);
  expect_int("one cd of the whole folder", lines_with(p, "cd "), 1);
  expect_int("the history file's path passes the limit",
-            (int)(strlen(deep) + strlen("/.gdb_history")) >= PATH_ROOM, 1);
+            (int)(strlen(deep) + strlen("/.gdb_history")) >= (int)path_limit(), 1);
  expect_int("and the rule has its command anyway", wpe_startplan_history_lines(p, ask, sizeof ask,
             fix, sizeof fix), 0);
  snprintf(want, sizeof want, "set history filename %s/.gdb_history", deep);
