@@ -421,6 +421,20 @@ static void case_home_is_never_a_root(void)
  wpe_startplan_free(p);
 
  home_product_case("an ELF program beside it is rebuilt unasked", "\177ELF\002\001", WPE_PLAN_CLEAN);
+ home_product_case("a 32-bit Mach-O program is rebuilt unasked", "\xfe\xed\xfa\xce" "xx", WPE_PLAN_CLEAN);
+ home_product_case("a 32-bit Mach-O program, swapped, is rebuilt unasked", "\xce\xfa\xed\xfe" "xx",
+                   WPE_PLAN_CLEAN);
+ home_product_case("a 64-bit Mach-O program is rebuilt unasked", "\xfe\xed\xfa\xcf" "xx", WPE_PLAN_CLEAN);
+ home_product_case("a 64-bit Mach-O program, swapped, is rebuilt unasked", "\xcf\xfa\xed\xfe" "xx",
+                   WPE_PLAN_CLEAN);
+ home_product_case("a universal Mach-O program is rebuilt unasked", "\xca\xfe\xba\xbe" "xx", WPE_PLAN_CLEAN);
+ home_product_case("a 64-bit universal Mach-O program is rebuilt unasked", "\xca\xfe\xba\xbf" "xx",
+                   WPE_PLAN_CLEAN);
+ home_object_case("a Mach-O object a compile made before is rebuilt unasked", "\xcf\xfa\xed\xfe" "xx",
+                  WPE_PLAN_CLEAN);
+ home_object_case("a Java class file (same first bytes as a universal Mach-O) is rebuilt unasked",
+                  "\xca\xfe\xba\xbe" "xx", WPE_PLAN_CLEAN);
+ home_product_case("a text starting like a magic but cut short asks", "\xfe\xed\xfa", WPE_PLAN_ASK);
  home_named_product_case("a library named *.a beside it is rebuilt unasked", "libp.a",
                          "!<arch>\nx", WPE_PLAN_CLEAN);
  home_named_product_case("a downloaded package (an ar archive) beside it asks", "tool.deb",

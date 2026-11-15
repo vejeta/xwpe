@@ -891,10 +891,22 @@ static int startplan_is_home(const char *dir)
  return startplan_home(home) && strcmp(home, dir) == 0;
 }
 
-/* The first bytes of what a link writes: an executable or object (ELF),
-   or a library (ar). */
+/* The first bytes of what a compile or a link writes on a system.
+   ELF: elf(5), Linux and the BSDs.  ar: ar(5), a static library.
+   Mach-O: <mach-o/loader.h> and <mach-o/fat.h>, macOS; a thin file starts
+   with MH_MAGIC (0xfeedface), MH_MAGIC_64 (0xfeedfacf) or the same
+   numbers byte-swapped (MH_CIGAM, MH_CIGAM_64), a universal file with
+   FAT_MAGIC (0xcafebabe) or FAT_MAGIC_64 (0xcafebabf), always big-endian.
+   0xcafebabe also starts a Java class file, which a compile of Java
+   writes too; both are build output, so the plan need not tell them apart. */
 #define STARTPLAN_ELF_MAGIC "\177ELF"
 #define STARTPLAN_AR_MAGIC  "!<arch>\n"
+#define STARTPLAN_MACHO_MAGIC_32     "\xfe\xed\xfa\xce"
+#define STARTPLAN_MACHO_MAGIC_32_SW  "\xce\xfa\xed\xfe"
+#define STARTPLAN_MACHO_MAGIC_64     "\xfe\xed\xfa\xcf"
+#define STARTPLAN_MACHO_MAGIC_64_SW  "\xcf\xfa\xed\xfe"
+#define STARTPLAN_FAT_MAGIC          "\xca\xfe\xba\xbe"
+#define STARTPLAN_FAT_MAGIC_64       "\xca\xfe\xba\xbf"
 #define STARTPLAN_MAGIC_MAX 8
 #define STARTPLAN_LIB_SUFFIX ".a"
 #define STARTPLAN_LIB_SUFFIX_LEN 2
@@ -931,15 +943,36 @@ static int startplan_starts_with(int fd, const char *magic)
 }
 
 /**
+ * startplan_is_program_or_object - Is an open file a program or an object
+ * that a compiler or a linker writes on this system?
+ * @fd: the file.
+ *
+ * ELF on Linux and the BSDs, Mach-O on macOS (thin, either byte order, 32
+ * or 64 bit, or universal).  This is why a second F9 on any of them does
+ * not ask about the program and the objects the first F9 wrote.
+ * Return: 1 when it starts like one.
+ */
+static int startplan_is_program_or_object(int fd)
+{
+ return startplan_starts_with(fd, STARTPLAN_ELF_MAGIC) ||
+        startplan_starts_with(fd, STARTPLAN_MACHO_MAGIC_32) ||
+        startplan_starts_with(fd, STARTPLAN_MACHO_MAGIC_32_SW) ||
+        startplan_starts_with(fd, STARTPLAN_MACHO_MAGIC_64) ||
+        startplan_starts_with(fd, STARTPLAN_MACHO_MAGIC_64_SW) ||
+        startplan_starts_with(fd, STARTPLAN_FAT_MAGIC) ||
+        startplan_starts_with(fd, STARTPLAN_FAT_MAGIC_64);
+}
+
+/**
  * startplan_is_build_output - May a compile or a link write this path over
  * what is there?
  * @path: the resolved path.
  *
  * Only when nothing is there yet, or a regular file (not a link) that a
- * compile or a link made before: an executable or object (ELF), or, for a
- * library named `*.a`, an ar archive.  A text, a script, a downloaded
+ * compile or a link made before: a program or object (ELF or Mach-O), or,
+ * for a library named `*.a`, an ar archive.  A text, a script, a downloaded
  * package (a .deb is an ar archive too) or anything else the user keeps
- * there is not the build's to overwrite.
+ * there is not the build's to overwrite, so only that is asked about.
  * @library: 1 when the path is a library the build makes, named `*.a`.
  * Return: 1 when it may.
  */
@@ -954,7 +987,7 @@ static int startplan_is_build_output(const char *path, int library)
   return 0;
  if ((fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)) < 0)
   return 0;
- ok = startplan_starts_with(fd, STARTPLAN_ELF_MAGIC);
+ ok = startplan_is_program_or_object(fd);
  if (!ok && library)
   ok = startplan_starts_with(fd, STARTPLAN_AR_MAGIC);
  close(fd);
@@ -966,7 +999,8 @@ static int startplan_is_build_output(const char *path, int library)
  * @path: the resolved path.
  *
  * Only a product named `*.a` may be found as an ar archive: a program
- * named like a package (`tool.deb`) or anything else stays ELF-only, so a
+ * named like a package (`tool.deb`) or anything else must be a program or
+ * an object (ELF or Mach-O), so a
  * project can never overwrite a downloaded archive the user keeps beside it.
  * Return: 1 for a name ending in ".a".
  */
@@ -2515,8 +2549,9 @@ static int startplan_add_program_startup(WpeStartPlan *p, const startplan_startu
 }
 
 /* The parts of an ELF file the section reader reads (elf(5)).  Both classes,
-   both byte orders; a number is read byte by byte, never through a cast. */
-#define STARTPLAN_ELF_MAGIC       "\177ELF"
+   both byte orders; a number is read byte by byte, never through a cast.
+   It decides which names a program carries, so it reads ELF only (the magic
+   is the one defined above); a Mach-O file is not parsed here. */
 #define STARTPLAN_ELF_MAGIC_LEN   4
 #define STARTPLAN_ELF_IDENT_LEN   16
 #define STARTPLAN_ELF_CLASS_AT    4
