@@ -1072,6 +1072,7 @@ EXTRA_DIST = \
   tests/maintainability.allow \
   tests/frames_compare.py \
   tests/with-deadline.sh \
+  tests/bsd-known-failures.sh \
   tests/check-with-deadline.sh \
   tests/test_watchdog.h \
   tests/check-start-plan.sh \
