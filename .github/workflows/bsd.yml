@@ -1,0 +1,287 @@
+# BSD CI for xwpe: FreeBSD, OpenBSD and NetBSD, manual and weekly.
+#
+# Codeberg/Forgejo has no BSD runners, so the BSDs run on the GitHub
+# push-mirror (github.com/vejeta/xwpe), like macOS (macos.yml). Each system is a
+# real virtual machine started by a vmactions action on an ubuntu-latest runner:
+#     gh workflow run bsd.yml --repo vejeta/xwpe -f os=openbsd
+#     gh workflow run bsd.yml --repo vejeta/xwpe -f tests="tests/test_menu_file.py"
+# It never runs on push: a run is 30 to 60 minutes of emulated machine.
+#
+# What it guards: the editor configures and links with the BSD toolchains and
+# libraries (the strict-linker and nm-format classes that cost the first BSD
+# runs hours), `gmake check` passes except for the failures listed in
+# tests/bsd-known-failures.sh, the console-mouse probe and the Xvfb smoke
+# (contrib/bsd-test) run, and a small pyte smoke drives the terminal UI.
+# The whole pyte suite is NOT run here: it adds 30 to 90 minutes per system.
+#
+# It is built like the Linux job (--enable-ai --enable-ai-agent-host): with the
+# assistant off, test_menus and four check scripts fail on every system for a
+# reason that has nothing to do with the BSD.
+#
+# Action inputs used (checked against memory of each README, not against the
+# README itself, so a first run may refuse one):
+#   release   the OS version; the action refuses a version it does not know
+#   usesh     run the scripts with /bin/sh instead of bash (not installed)
+#   envs      names of the environment variables passed into the VM
+#   mem, cpu  VM size (freebsd-vm: cpu; openbsd-vm and netbsd-vm: cpu)
+#   sync      how the checkout reaches the VM (rsync)
+#   copyback  copy files the VM wrote under the workspace back to the runner
+#   prepare   one script, run first, as root, with the network (packages)
+#   run       the script that builds and tests
+# The three jobs repeat the same `run` body because a workflow cannot share a
+# step between jobs; change one, change all three.
+
+name: BSD (manual + weekly)
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Which system to run"
+        type: choice
+        options: [all, freebsd, openbsd, netbsd]
+        default: all
+      tests:
+        description: >-
+          Test ids for the pyte step to run alone, one pass, full tracebacks
+          (empty: make check and the small smoke)
+        required: false
+        default: ""
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays, 03:17 UTC: all three systems
+
+env:
+  # What a build with the assistant must say it has (tests/check-build-config.sh).
+  # A library missing from a VM image then fails the job instead of turning a
+  # capability into "not built here" and a green run.
+  WPE_EXPECT_BUILT: "enable-ai=yes enable-ai-agent-host=yes enable-ai-tls=yes"
+
+jobs:
+  freebsd:
+    name: FreeBSD 14
+    # A scheduled run has no inputs: it runs everything.
+    if: github.event_name != 'workflow_dispatch' || inputs.os == 'all' || inputs.os == 'freebsd'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Test on FreeBSD
+        # Packages, build, tests and probes all run inside this one VM step.
+        timeout-minutes: 100
+        uses: vmactions/freebsd-vm@v1.6.0
+        env:
+          SELECTED_TESTS: ${{ inputs.tests }}
+          WPE_EXPECT_BUILT: ${{ env.WPE_EXPECT_BUILT }}
+        with:
+          release: "14.3"          # a 14.x release the action lists; pin it
+          usesh: true
+          mem: 4096
+          cpu: 4
+          sync: rsync
+          copyback: true
+          envs: "SELECTED_TESTS WPE_EXPECT_BUILT"
+          prepare: |
+            uname -a
+            pkg install -y autoconf automake libtool gmake pkgconf ncurses \
+              libX11 libXft cairo pango libvterm json-c texinfo openssl \
+              xorg-vfbserver twm xdpyinfo python3 \
+              py311-pytest py311-pyte py311-wcwidth
+            # freetype2.pc requires bzip2, which the base system does not ship a
+            # .pc for: without this stub configure reports "Xft: no".
+            if ! pkg-config --exists bzip2 2>/dev/null; then
+              printf 'Name: bzip2\nDescription: bzip2\nVersion: 1.0.8\nLibs: -lbz2\n' \
+                > /usr/local/libdata/pkgconfig/bzip2.pc
+            fi
+          run: |
+            mkdir -p bsd-out
+            PY=python3.11
+            rc=0
+            autoreconf -fi > bsd-out/autoreconf.log 2>&1 || { tail -20 bsd-out/autoreconf.log; exit 1; }
+            ./configure --without-gpm --disable-dependency-tracking \
+              --enable-ai --enable-ai-agent-host > bsd-out/configure.log 2>&1 \
+              || { tail -30 bsd-out/configure.log; exit 1; }
+            grep -E 'math library|libvterm|X11|ncursesw|AI' bsd-out/configure.log
+            tests/with-deadline.sh 600 gmake -j"$(sysctl -n hw.ncpu)" > bsd-out/build.log 2>&1 \
+              || { grep -nE 'error:|undefined|ld:' bsd-out/build.log | head -40; exit 1; }
+            if [ -n "$SELECTED_TESTS" ]; then
+              # Chosen ids: split on blanks, never glob.
+              set -f
+              getconf PATH_MAX / ; getconf NAME_MAX /
+              WPE_BIN="$PWD/wpe" tests/with-deadline.sh 2400 $PY -m pytest -v --tb=long -p no:cacheprovider $SELECTED_TESTS
+              exit $?
+            fi
+            # Every test runs under with-deadline.sh: base timeout(1) has no KILL.
+            tests/with-deadline.sh 2700 gmake check LOG_COMPILER="$PWD/tests/with-deadline.sh 300" > bsd-out/check.log 2>&1
+            grep -cE '^(PASS|FAIL|SKIP|ERROR|TIMEOUT):' bsd-out/check.log
+            sh tests/bsd-known-failures.sh freebsd bsd-out/check.log || rc=1
+            cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
+              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color || rc=1
+            tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" || rc=1
+            WPE_BIN="$PWD/wpe" tests/with-deadline.sh 600 $PY -m pytest -q -p no:cacheprovider \
+              tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
+            cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
+            exit $rc
+
+      - name: Upload logs
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v7
+        with:
+          name: bsd-freebsd-logs
+          path: |
+            bsd-out/
+            test-suite.log
+            test_*.log
+          if-no-files-found: ignore
+
+  openbsd:
+    name: OpenBSD 7.7
+    if: github.event_name != 'workflow_dispatch' || inputs.os == 'all' || inputs.os == 'openbsd'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Test on OpenBSD
+        timeout-minutes: 100
+        uses: vmactions/openbsd-vm@v1.4.9
+        env:
+          SELECTED_TESTS: ${{ inputs.tests }}
+          WPE_EXPECT_BUILT: ${{ env.WPE_EXPECT_BUILT }}
+        with:
+          release: "7.7"           # or the newest the action lists; older ones are pruned from the mirrors
+          usesh: true
+          mem: 4096
+          cpu: 4
+          sync: rsync
+          copyback: true
+          envs: "SELECTED_TESTS WPE_EXPECT_BUILT"
+          prepare: |
+            uname -a
+            # metaauto wraps autoconf and automake: the versions are named below.
+            # OpenBSD has no ncurses package (wide curses is in base) and its
+            # TLS is libtls in base, so openssl is not installed.
+            pkg_add -I gmake metaauto autoconf%2.72 automake%1.16 pkgconf \
+              cairo pango json-c libvterm python3 twm \
+              py3-test py3-pyte py3-wcwidth
+          run: |
+            mkdir -p bsd-out
+            PY=python3
+            rc=0
+            AUTOCONF_VERSION="$(ls /usr/local/bin/autoconf-* 2>/dev/null | sed 's/.*autoconf-//' | sort -V | tail -1)"
+            AUTOMAKE_VERSION="$(ls -d /usr/local/share/automake-* 2>/dev/null | sed 's/.*automake-//' | sort -V | tail -1)"
+            export AUTOCONF_VERSION AUTOMAKE_VERSION
+            export PKG_CONFIG_PATH=/usr/X11R6/lib/pkgconfig:/usr/local/lib/pkgconfig
+            ldconfig /usr/X11R6/lib /usr/local/lib
+            autoreconf -fi > bsd-out/autoreconf.log 2>&1 || { tail -20 bsd-out/autoreconf.log; exit 1; }
+            ./configure --without-gpm --disable-dependency-tracking \
+              --enable-ai --enable-ai-agent-host > bsd-out/configure.log 2>&1 \
+              || { tail -30 bsd-out/configure.log; exit 1; }
+            grep -E 'math library|libvterm|X11|ncursesw|AI' bsd-out/configure.log
+            tests/with-deadline.sh 600 gmake -j"$(sysctl -n hw.ncpu)" > bsd-out/build.log 2>&1 \
+              || { grep -nE 'error:|undefined|ld:' bsd-out/build.log | head -40; exit 1; }
+            if [ -n "$SELECTED_TESTS" ]; then
+              set -f
+              getconf PATH_MAX / ; getconf NAME_MAX /
+              WPE_BIN="$PWD/wpe" tests/with-deadline.sh 2400 $PY -m pytest -v --tb=long -p no:cacheprovider $SELECTED_TESTS
+              exit $?
+            fi
+            tests/with-deadline.sh 2700 gmake check LOG_COMPILER="$PWD/tests/with-deadline.sh 300" > bsd-out/check.log 2>&1
+            grep -cE '^(PASS|FAIL|SKIP|ERROR|TIMEOUT):' bsd-out/check.log
+            sh tests/bsd-known-failures.sh openbsd bsd-out/check.log || rc=1
+            cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
+              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color || rc=1
+            if command -v Xvfb >/dev/null 2>&1; then
+              tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" || rc=1
+            fi
+            WPE_BIN="$PWD/wpe" tests/with-deadline.sh 600 $PY -m pytest -q -p no:cacheprovider \
+              tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
+            cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
+            exit $rc
+
+      - name: Upload logs
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v7
+        with:
+          name: bsd-openbsd-logs
+          path: |
+            bsd-out/
+            test-suite.log
+            test_*.log
+          if-no-files-found: ignore
+
+  netbsd:
+    name: NetBSD 10
+    if: github.event_name != 'workflow_dispatch' || inputs.os == 'all' || inputs.os == 'netbsd'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Test on NetBSD
+        timeout-minutes: 100
+        uses: vmactions/netbsd-vm@v1.5.3
+        env:
+          SELECTED_TESTS: ${{ inputs.tests }}
+          WPE_EXPECT_BUILT: ${{ env.WPE_EXPECT_BUILT }}
+        with:
+          release: "10.1"          # NetBSD 9.x package repositories are pruned: 10.x only
+          usesh: true
+          mem: 4096
+          cpu: 4
+          sync: rsync
+          copyback: true
+          envs: "SELECTED_TESTS WPE_EXPECT_BUILT"
+          prepare: |
+            uname -a
+            export PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH
+            pkgin -y update
+            pkgin -y install gmake autoconf automake pkgconf cairo pango json-c \
+              ncurses openssl python313 py313-test py313-pyte py313-wcwidth
+            # The libvterm package name follows the pkgsrc module version.
+            pkgin -y install libvterm01 || pkgin -y install libvterm03 || true
+          run: |
+            mkdir -p bsd-out
+            PY=python3.13
+            rc=0
+            export PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH
+            export PKG_CONFIG_PATH=/usr/pkg/lib/pkgconfig:/usr/X11R7/lib/pkgconfig:/usr/lib/pkgconfig
+            autoreconf -fi > bsd-out/autoreconf.log 2>&1 || { tail -20 bsd-out/autoreconf.log; exit 1; }
+            ./configure --without-gpm --disable-dependency-tracking \
+              --enable-ai --enable-ai-agent-host > bsd-out/configure.log 2>&1 \
+              || { tail -30 bsd-out/configure.log; exit 1; }
+            grep -E 'math library|libvterm|X11|ncursesw|AI' bsd-out/configure.log
+            tests/with-deadline.sh 600 gmake -j"$(sysctl -n hw.ncpu)" > bsd-out/build.log 2>&1 \
+              || { grep -nE 'error:|undefined|ld:' bsd-out/build.log | head -40; exit 1; }
+            if [ -n "$SELECTED_TESTS" ]; then
+              set -f
+              getconf PATH_MAX / ; getconf NAME_MAX /
+              WPE_BIN="$PWD/wpe" tests/with-deadline.sh 2400 $PY -m pytest -v --tb=long -p no:cacheprovider $SELECTED_TESTS
+              exit $?
+            fi
+            tests/with-deadline.sh 2700 gmake check LOG_COMPILER="$PWD/tests/with-deadline.sh 300" > bsd-out/check.log 2>&1
+            grep -cE '^(PASS|FAIL|SKIP|ERROR|TIMEOUT):' bsd-out/check.log
+            sh tests/bsd-known-failures.sh netbsd bsd-out/check.log || rc=1
+            cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
+              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color || rc=1
+            if command -v Xvfb >/dev/null 2>&1; then
+              tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" || rc=1
+            fi
+            WPE_BIN="$PWD/wpe" tests/with-deadline.sh 600 $PY -m pytest -q -p no:cacheprovider \
+              tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
+            cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
+            exit $rc
+
+      - name: Upload logs
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v7
+        with:
+          name: bsd-netbsd-logs
+          path: |
+            bsd-out/
+            test-suite.log
+            test_*.log
+          if-no-files-found: ignore
