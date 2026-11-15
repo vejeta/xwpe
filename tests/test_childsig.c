@@ -27,7 +27,8 @@
 
 #define HANG_SECONDS      30
 #define STORM_CHILDREN    40
-#define STORM_STEP_US     20000      /* one child ends every 20 ms */
+#define US_PER_MS         1000L      /* the delays below are whole milliseconds */
+#define STORM_STEP_US     20000     /* one child ends every 20 ms */
 #define WRITER_DELAY_US   (STORM_CHILDREN * STORM_STEP_US + 200000)
 #define MESSAGE           "all the data\n"
 #define MESSAGE_LEN       13
@@ -53,7 +54,7 @@ static void on_child(int sig)
 static void start_ender(useconds_t after_us)
 {
 	if (fork() == 0) {
-		usleep(after_us);
+		test_sleep_ms((long)after_us / US_PER_MS);
 		_exit(0);
 	}
 }
@@ -62,7 +63,7 @@ static void start_ender(useconds_t after_us)
 static void start_writer(int wr, useconds_t after_us)
 {
 	if (fork() == 0) {
-		usleep(after_us);
+		test_sleep_ms((long)after_us / US_PER_MS);
 		if (write(wr, MESSAGE, MESSAGE_LEN) < 0)
 			_exit(1);
 		_exit(0);
@@ -135,8 +136,7 @@ static void grandchild_waits_for_its_parent(pid_t middle, int alive_rd, int aliv
 {
 	close(alive_rd);
 	close(armed_rd);
-	signal(SIGALRM, SIG_DFL);     /* not the watchdog's: it would report a hang */
-	alarm(HANG_SECONDS);
+	test_lifetime_arm(HANG_SECONDS);   /* quiet: a fake's end is no failure */
 	if (wpe_child_die_with_editor(middle) != 0)
 		_exit(1);
 	if (write(armed_wr, "a", 1) != 1)

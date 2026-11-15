@@ -49,7 +49,14 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$OBJECTS" ] || OBJECTS=$ONE_OWNER_OBJECTS
+WAIT_OBJECTS=
+if [ -z "$OBJECTS" ]; then
+  OBJECTS=$ONE_OWNER_OBJECTS
+  # The sync layers (we_dap_sync.c, we_lsp_sync.c, we_bsp_sync.c) are not in
+  # the editor: the tests link them, one object per test program.  Make names
+  # them CHILD_WAIT_OBJECTS, and they are read with the editor's rules.
+  WAIT_OBJECTS=$CHILD_WAIT_OBJECTS
+fi
 [ -n "$ALLOW" ] || ALLOW=$HERE/one-owner.allow
 
 if [ "$NMTOOL" = ":" ] || ! command -v "$NMTOOL" >/dev/null 2>&1; then
@@ -69,7 +76,7 @@ trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 # Who may import what.  "symbol-regex  objects allowed to import it".
 # Kept as one table so the rule and the exceptions read together.
 cat > "$WORK/rules" <<'EOF'
-poll|ppoll|select|pselect|epoll_wait|epoll_pwait|kevent|nanosleep|usleep|sleep we_fdloop.o
+poll|ppoll|select|pselect|epoll_wait|epoll_pwait|kevent|kqueue|kqueue1|nanosleep|usleep|sleep we_fdloop.o
 getch|wgetch|get_wch|wget_wch|ungetch we_term.o
 XNextEvent|XPeekEvent|XWindowEvent|XMaskEvent|XIfEvent|XCheckMaskEvent|XCheckTypedEvent|XCheckTypedWindowEvent|XPutBackEvent we_xterm.o
 XPending|XEventsQueued|XCheckWindowEvent|XCheckIfEvent|XFlush we_xterm.o WeXterm.o
@@ -686,14 +693,30 @@ stripped_source() {
   echo "$out"
 }
 
+# sync_layer_name OBJECT - the name the rules and the allow file know an
+# object by.  A test links a source under its own name (automake names the
+# object test_dap-we_dap_sync.o), so the prefix of the program is dropped:
+# the sync layer's rules are those of we_dap_sync.o, whichever test it is in.
+sync_layer_name() {
+  name=$(basename "$1")
+  case $name in
+    test_*-we_*) echo "we_${name#*-we_}" ;;
+    *) echo "$name" ;;
+  esac
+}
+
 # --- 1. the symbol scan
-for obj in $OBJECTS; do
-  base=$(basename "$obj")
+: > "$WORK/waits"       # sync layer objects whose imports were read and that wait on the loop
+for obj in $OBJECTS $WAIT_OBJECTS; do
+  base=$(sync_layer_name "$obj")
   if [ ! -f "$obj" ]; then
     problem "missing object $obj: build the editor first"
     continue
   fi
   "$NMTOOL" -u "$obj" 2>/dev/null | normalise | sort -u > "$WORK/syms"
+  if grep -qxE "wpe_fd_wait_for|wpe_fd_poll" "$WORK/syms"; then
+    echo "$base" >> "$WORK/waits"
+  fi
   while read -r re allowed; do
     for sym in $(printf '%s\n' "$re" | tr '|' ' '); do
       grep -qx "$sym" "$WORK/syms" || continue
@@ -728,6 +751,22 @@ for obj in $OBJECTS; do
 done
 
 # --- the canary: a scanner that sees nothing must fail, not pass
+# The sync layers wait through the loop's calls, so an object of each that was
+# read shows wpe_fd_wait_for or wpe_fd_poll among its imports; one that does
+# not was never read (CHILD_WAIT_OBJECTS empty, wrong names, or the layer
+# stopped waiting on the loop).  Only when the objects came from make.
+if [ -n "$WAIT_OBJECTS" ] || { [ -n "$ONE_OWNER_OBJECTS" ] && [ "$OBJECTS" = "$ONE_OWNER_OBJECTS" ]; }; then
+  # Every top level we_*_sync.c is a layer, except the file that waits for
+  # something else (an HTTP socket): a new layer left out of
+  # CHILD_WAIT_OBJECTS is named here and by check-child-wait.sh.
+  for src in "$SRCDIR"/we_*_sync.c; do
+    [ -f "$src" ] || continue
+    layer=$(basename "$src" .c).o
+    [ "$layer" = we_ai_http_sync.o ] && continue
+    grep -qx "$layer" "$WORK/waits" ||
+      problem "canary: no object of $layer was read for a wait (CHILD_WAIT_OBJECTS, or the layer no longer waits on the loop)"
+  done
+fi
 grep -qx "we_fdloop.o poll" "$WORK/imports" ||
   problem "canary: poll not seen in we_fdloop.o (LTO objects, wrong nm, or an empty object list)"
 grep -qx "we_term.o wgetch" "$WORK/imports" ||

@@ -28,7 +28,9 @@
 #include "../we_startplan.h"
 #include "../we_startcmd.h"
 #include "../we_path.h"
+#include "test_watchdog.h"
 
+#define MAIN_GUARD_S      120   /* the whole test, with the short commands it runs */
 #define PATH_ROOM         4096
 #define TEST_DIR_PARENT   "/tmp"                 /* when $TMPDIR is not set */
 #define TEST_DIR_NAME     "xwpe-test-startplan-XXXXXX"
@@ -3069,6 +3071,7 @@ static void teardown(void)
 
 int main(void)
 {
+ test_watchdog_arm("test_startplan", MAIN_GUARD_S);
  setup();
  case_operand();
  case_folder_option();

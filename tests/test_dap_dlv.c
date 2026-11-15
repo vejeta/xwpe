@@ -12,6 +12,9 @@
 #include <time.h>
 
 #include "../we_dap.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S 600        /* the sum of the waits below (build, start, run, stop) with room; a hang is reported by name */
 
 static const char *GO_SRC =
  "package main\n"
@@ -199,6 +202,7 @@ int main(void)
   printf("SKIP: dlv and go are required for the DAP integration test\n");
   return 77;
  }
+ test_watchdog_arm("test_dap_dlv (the adapter session)", MAIN_GUARD_S);
  if (!mkdtemp(dir))
   return fail("mkdtemp");
 

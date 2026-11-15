@@ -11,6 +11,9 @@
 #include <string.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S 60         /* the whole test, pure and fast: a hang is a bug */
 
 static int fails;
 
@@ -28,6 +31,8 @@ static void check(const char *name, int got, int want)
 int main(void)
 {
  char *last = NULL;                       /* the caller's per-session store */
+
+ test_watchdog_arm("test_lsp_doctor", MAIN_GUARD_S);
 
  /* 1. first push of a session: new -> render, and *last adopts the body. */
  check("first push is new", e_lsp_doc_is_new(&last, "Doctor v1"), 1);

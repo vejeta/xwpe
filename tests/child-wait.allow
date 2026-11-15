@@ -1,0 +1,21 @@
+# The waits, reaps and alarms of the sync layers and of the tests that start
+# children that are meant.  Checked by tests/check-child-wait.sh.
+#
+#   file|call|count|pass|reason
+#
+# "count" is how many such calls the file has: more or fewer fails, and a line
+# that matches nothing is stale.  "keep" is a permanent exception.  A test
+# that only has to pause calls test_sleep_ms, and one that waits for a child
+# calls test_wait_child or test_wait_gone (tests/test_watchdog.h); the lines
+# below are the rows that test the owner of children itself, or play a child
+# or an adapter, where the wait is what is under test or has no owner to ask.
+
+sigstate.c|SIGALRM|1|keep|names the signal in a table of the signals it reports as ignored; it arms no alarm
+test_child.c|waitid|1|keep|peeks at an ended child with WNOWAIT to see that the owner has not reaped it yet
+test_child.c|waitpid|3|keep|the rows of the owner itself: that a child it was not told about is still there, that a forgotten one is reaped, that one the test started is left for the test's own wait
+test_childsafe.c|waitpid|5|keep|reaps the children the test forked itself, to read how the program ended after the child path ran
+test_childsig.c|poll|1|keep|bounded wait (DEATH_WAIT_MS) for the pipe a dead parent's child holds, the row that checks the parent-death signal
+test_childsig.c|wait|1|keep|collects the fakes of the row after the read under test returned
+test_childsig.c|waitpid|1|keep|reaps the middle process of the parent-death row to read its status
+test_dap.c|poll|3|keep|the test plays the adapter on a socket or a pipe: it waits, bounded, for the engine's request
+test_dap.c|waitid|1|keep|peeks at the killed adapter with WNOWAIT so that the handler under test reaps it, not the test

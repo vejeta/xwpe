@@ -10,6 +10,9 @@
 #include <string.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S 60         /* the whole test, pure and fast: a hang is a bug */
 
 static int fails;
 
@@ -28,6 +31,7 @@ static void check(const char *name, char *got, const char *want)
 
 int main(void)
 {
+  test_watchdog_arm("test_lsp_buffer", MAIN_GUARD_S);
  /* 1. plain lines (no terminator): one '\n' each, including a trailing one. */
  {
   char *l[] = { "object Demo", "  def x = 1" };

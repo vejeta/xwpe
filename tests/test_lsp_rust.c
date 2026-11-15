@@ -18,6 +18,10 @@
 #include <unistd.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S   900      /* rust-analyzer loads a cargo project first */
+#define RETRY_PAUSE_MS 2000L    /* between two asks of a server still indexing */
 
 /* add() is defined on line 0 and called on line 5. */
 static const char *RUST_SRC =
@@ -81,6 +85,7 @@ int main(void)
  {  printf("SKIP: rust-analyzer and cargo are required "
            "(apt install rust-analyzer cargo)\n");
     return 77;  }
+ test_watchdog_arm("test_lsp_rust (rust-analyzer session)", MAIN_GUARD_S);
  if (!mkdtemp(dir))
   return fail("mkdtemp");
  snprintf(toml, sizeof(toml), "%s/Cargo.toml", dir);
@@ -118,7 +123,7 @@ int main(void)
                         &defline, &defchar) == 0 && defline == 0)
     ok = 1;
    else
-    sleep(2);
+    test_sleep_ms(RETRY_PAUSE_MS);
   }
   if (!ok) { rc = fail("definition of add never resolved to line 0"); goto close; }
   printf("  DEFINITION add -> line %d\n", defline);

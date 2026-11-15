@@ -14,6 +14,11 @@
 #include <unistd.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S   1800     /* Metals imports a build first: minutes per request on a cold start */
+#define RETRY_PAUSE_MS 2000L    /* between two asks of a server still indexing */
+#define HOVER_PAUSE_MS 3000L    /* between two hovers while the first build import runs */
 
 static const char *SCALA_SRC =
  "object Factorial:\n"
@@ -83,6 +88,7 @@ int main(void)
   printf("SKIP: metals and scala-cli are required for the LSP test\n");
   return 77;
  }
+ test_watchdog_arm("test_lsp_scala (Metals session)", MAIN_GUARD_S);
  if (!mkdtemp(dir))
   return fail("mkdtemp");
  snprintf(scala, sizeof(scala), "%s/Factorial.scala", dir);
@@ -110,7 +116,7 @@ int main(void)
  for (int t = 0; t < 8 && !hov; t++)
  {
   hov = e_lsp_hover(s, scala, 2, COL(8));
-  if (!hov) sleep(3);
+  if (!hov) test_sleep_ms(HOVER_PAUSE_MS);
  }
  if (!hov) { rc = fail("hover on f returned nothing"); goto close; }
  printf("  HOVER f: %s\n", hov);
@@ -150,7 +156,7 @@ int main(void)
  {
   char *sg = NULL;
   for (int t = 0; t < 5 && !sg; t++)
-  { sg = e_lsp_signature_help(s, scala, 7, COL(12)); if (!sg) sleep(2); }
+  { sg = e_lsp_signature_help(s, scala, 7, COL(12)); if (!sg) test_sleep_ms(RETRY_PAUSE_MS); }
   if (sg) { printf("  SIGNATURE: %s\n", sg); free(sg); }
   else printf("  SIGNATURE: (none -- not fatal)\n");
  }
@@ -200,7 +206,7 @@ int main(void)
   e_lsp_units ic = COL(0);
   for (t = 0; t < 6 && !ok; t++)
   { ok = (e_lsp_implementation(s, scala, 10, COL(6), ip, sizeof(ip), &il, &ic) == 0);
-    if (!ok) sleep(2); }
+    if (!ok) test_sleep_ms(RETRY_PAUSE_MS); }
   if (!ok) { rc = fail("implementation of Greeter.greet returned nothing"); goto close; }
   printf("  IMPLEMENTATION greet -> %s:%d\n", ip, il);
  }
@@ -212,7 +218,7 @@ int main(void)
   e_lsp_units tc = COL(0);
   for (t = 0; t < 6 && !ok; t++)
   { ok = (e_lsp_type_definition(s, scala, 15, COL(4), tp, sizeof(tp), &tl, &tc) == 0);
-    if (!ok) sleep(2); }
+    if (!ok) test_sleep_ms(RETRY_PAUSE_MS); }
   if (!ok) { rc = fail("type definition of theGreeter returned nothing"); goto close; }
   printf("  TYPE-DEFINITION theGreeter -> %s:%d\n", tp, tl);
  }
@@ -266,7 +272,7 @@ int main(void)
   /* the run/debug lens only appears once the build server (Bloop) has imported
      the build and resolved the main class -- retry while that warms up. */
   for (t = 0; t < 8 && nl < 1; t++)
-  { nl = e_lsp_code_lenses(s, scala, cl, 32); if (nl < 1) sleep(2); }
+  { nl = e_lsp_code_lenses(s, scala, cl, 32); if (nl < 1) test_sleep_ms(RETRY_PAUSE_MS); }
   printf("  CODE-LENSES: %d%s%s\n", nl, nl > 0 ? ", e.g. " : "",
          nl > 0 ? cl[0].title : "");
   if (nl < 1) { rc = fail("expected at least one code lens (run main)"); goto close; }
@@ -300,7 +306,7 @@ int main(void)
   int nc = 0, t, k, found = 0;
   for (t = 0; t < 8 && nc < 1; t++)
   { nc = e_lsp_call_hierarchy(s, scala, 16, COL(4), 1/*outgoing*/, ch, 64);
-    if (nc < 1) sleep(2); }
+    if (nc < 1) test_sleep_ms(RETRY_PAUSE_MS); }
   printf("  CALL-HIERARCHY caller outgoing: %d%s%s\n", nc, nc > 0 ? ", e.g. " : "",
          nc > 0 ? ch[0].name : "");
   if (nc < 1) { rc = fail("caller() should have an outgoing call to helper()"); goto close; }
@@ -331,7 +337,7 @@ int main(void)
   int nt = 0, t, k, found = 0;
   for (t = 0; t < 8 && nt < 1; t++)
   { nt = e_lsp_type_hierarchy(s, scala, 12, COL(6), 0/*supertypes*/, th, 64);
-    if (nt < 1) sleep(2); }
+    if (nt < 1) test_sleep_ms(RETRY_PAUSE_MS); }
   printf("  TYPE-HIERARCHY Hello supertypes: %d%s%s\n", nt, nt > 0 ? ", e.g. " : "",
          nt > 0 ? th[0].name : "");
   if (nt < 1) { rc = fail("Hello should have a supertype Greeter"); goto close; }
@@ -361,7 +367,7 @@ int main(void)
   e_lsp_range sr[64];
   int ns = 0, t, k, nested = 1;
   for (t = 0; t < 6 && ns < 1; t++)
-  { ns = e_lsp_selection_range(s, scala, 5, COL(6), sr, 64); if (ns < 1) sleep(2); }
+  { ns = e_lsp_selection_range(s, scala, 5, COL(6), sr, 64); if (ns < 1) test_sleep_ms(RETRY_PAUSE_MS); }
   printf("  SELECTION-RANGE at f: %d range(s)\n", ns);
   if (ns < 1) { rc = fail("selection range returned nothing at f"); goto close; }
   for (k = 1; k < ns; k++)

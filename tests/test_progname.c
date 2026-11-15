@@ -19,8 +19,10 @@
 
 #include "../we_path.h"
 #include "../we_progname.h"
+#include "test_watchdog.h"
 
-#define LONG_STEM     250       /* a long file name that every file system takes */
+#define MAIN_GUARD_S  60        /* the whole test, pure and fast: a hang is a bug */
+#define LONG_STEM     250      /* a long file name that every file system takes */
 #define TINY_ROOM     5         /* "ab.o" and its terminator, to the byte */
 #define A_OUT_ROOM    6         /* "a.out" and its terminator, to the byte */
 #define EXEDIR_LONG   100
@@ -345,6 +347,7 @@ static void test_project(void)
 
 int main(void)
 {
+	test_watchdog_arm("test_progname", MAIN_GUARD_S);
 	test_table();
 	test_extension_and_stem();
 	test_long_names();

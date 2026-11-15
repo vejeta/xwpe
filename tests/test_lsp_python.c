@@ -15,6 +15,9 @@
 #include <unistd.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S 300        /* one small file; a hang is reported by name */
 
 /* `undefined_name` on line 6 is undefined -> guarantees a diagnostic from both
  * pyright and pylsp (pyflakes).  add() is defined on line 0 and called on 4. */
@@ -70,6 +73,7 @@ int main(void)
  e_lsp_completion_item items[64];
  FILE *f;
 
+ test_watchdog_arm("test_lsp_python (language server session)", MAIN_GUARD_S);
  if (!argv)
  {
   printf("SKIP: a Python LSP is required (pip install pyright, or "

@@ -61,6 +61,7 @@ static int fail(const char *msg) { printf("FAIL: %s\n", msg); return 1; }
    fails `make check` with a line instead of holding it.  A slower machine
    sets TEST_DEADLINE_ENV. */
 #define TEST_DEADLINE_S    600
+#define MAIN_GUARD_SLACK_S 120  /* beyond the session's deadline: its end and the clean up */
 #define TEST_DEADLINE_ENV  "XWPE_TEST_DAP_SCALA_DEADLINE_S"
 /* After the session, its program gets this long to end by itself. */
 #define PROGRAM_END_MS     5000
@@ -229,6 +230,8 @@ int main(void)
   printf("SKIP: scala-cli is required for the Scala BSP/DAP test\n");
   return 77;
  }
+ test_watchdog_arm("test_dap_scala (the session and its clean up)",
+                   test_deadline_s() + MAIN_GUARD_SLACK_S);
  if (!mkdtemp(dir))
   return fail("mkdtemp");
  rc = run_within_deadline(dir);

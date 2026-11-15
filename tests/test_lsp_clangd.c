@@ -17,6 +17,10 @@
 #include <unistd.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S   300      /* clangd parses one small file; a hang is reported by name */
+#define RETRY_PAUSE_MS 1000L    /* between two asks of a server still indexing */
 
 /* A tiny C translation unit.  Line numbers are 0-based (as LSP positions are):
  *   2  definition of add()
@@ -86,6 +90,7 @@ int main(void)
   printf("SKIP: clangd is required for the LSP C test (apt install clangd)\n");
   return 77;
  }
+ test_watchdog_arm("test_lsp_clangd (clangd session)", MAIN_GUARD_S);
  if (!mkdtemp(dir))
   return fail("mkdtemp");
  snprintf(cpath, sizeof(cpath), "%s/add.c", dir);
@@ -109,7 +114,7 @@ int main(void)
     Retry briefly while the AST settles. */
  hov = NULL;
  { int t; for (t = 0; t < 8 && !hov; t++)
-   { hov = e_lsp_hover(s, cpath, 7, COL(8)); if (!hov) sleep(1); } }
+   { hov = e_lsp_hover(s, cpath, 7, COL(8)); if (!hov) test_sleep_ms(RETRY_PAUSE_MS); } }
  if (!hov) { rc = fail("hover on total returned nothing"); goto close; }
  printf("  HOVER total: %s\n", hov);
  if (!strstr(hov, "int")) { free(hov); rc = fail("hover did not mention int"); goto close; }
@@ -166,7 +171,7 @@ int main(void)
   e_lsp_inlay_hint hints[64];
   int ni = 0, t, on7 = 0, i;
   for (t = 0; t < 8 && ni <= 0; t++)
-  { ni = e_lsp_inlay_hints(s, cpath, 0, 10, hints, 64); if (ni <= 0) sleep(1); }
+  { ni = e_lsp_inlay_hints(s, cpath, 0, 10, hints, 64); if (ni <= 0) test_sleep_ms(RETRY_PAUSE_MS); }
   printf("  INLAY: %d hint(s)%s%s\n", ni, ni > 0 ? ", e.g. " : "",
          ni > 0 ? hints[0].label : "");
   if (ni <= 0) { rc = fail("inlay hints returned nothing for add(2, 3)"); goto close; }
@@ -197,7 +202,7 @@ int main(void)
   if (!e_lsp_wait_diagnostics(s, upath, 30000))
   { rc = fail("no diagnostics for uni.c"); goto close; }
   for (t = 0; t < 8 && !uh; t++)
-  { uh = e_lsp_hover(s, upath, U_LINE, u); if (!uh) sleep(1); }
+  { uh = e_lsp_hover(s, upath, U_LINE, u); if (!uh) test_sleep_ms(RETRY_PAUSE_MS); }
   if (!uh || !strstr(uh, "int"))
   { free(uh); rc = fail("hover on total, after non-ASCII text, did not say int"); goto close; }
   free(uh);

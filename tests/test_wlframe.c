@@ -35,6 +35,7 @@
 #include "../we_wayland.h"
 #include "../we_render.h"
 #include "../we_wlframe.h"
+#include "test_watchdog.h"
 
 #define CELL_W 9
 #define CELL_H 18
@@ -459,16 +460,6 @@ static const struct wl_registry_listener registry_listener = {
 	on_global, on_global_remove
 };
 
-static void on_alarm(int sig)
-{
-	static const char msg[] = "FAIL: the pump blocked inside libwayland "
-	                          "waiting for an event of the default queue\n";
-
-	(void)sig;
-	if (write(1, msg, sizeof msg - 1) < 0)
-		_exit(2);
-	_exit(1);
-}
 
 /* The compositor sends one event for an object the owner's queue holds and
    nothing else: the shape of a configure that comes alone. */
@@ -511,11 +502,11 @@ static void test_lone_frame_event_is_read_without_blocking(void)
 	wl_registry_add_listener(reg, &registry_listener, NULL);
 	send_lone_event(sv[1]);
 	registry_globals = 0;
-	signal(SIGALRM, on_alarm);
-	alarm(PUMP_DEADLINE_S);
+	test_watchdog_arm("the pump (it blocked inside libwayland waiting for "
+	                  "an event of the default queue)", PUMP_DEADLINE_S);
 	wpe_wlframe_read_events();
 	wl_display_dispatch_pending(d);
-	alarm(0);
+	test_watchdog_disarm();
 	chk("the read left the frame event queued", registry_globals, 0);
 	wpe_wlframe_dispatch_frame_events();
 	chk("the frame event is delivered when the owner chooses", registry_globals, 1);

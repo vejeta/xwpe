@@ -15,6 +15,9 @@
 #include <time.h>
 
 #include "../we_dap.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S 300        /* the sum of the waits below (rustc, start, run, stop) with room; a hang is reported by name */
 
 /* Line 4 is the loop body; `f` is in scope and grows 1,1,2,6,24,120. */
 static const char *RUST_SRC =
@@ -191,6 +194,7 @@ int main(void)
   printf("SKIP: gdb and rustc are required for the DAP stdio (Rust) test\n");
   return 77;
  }
+ test_watchdog_arm("test_dap_gdb (the adapter session)", MAIN_GUARD_S);
  if (!mkdtemp(dir))
   return fail("mkdtemp");
 

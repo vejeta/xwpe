@@ -985,6 +985,16 @@ TESTS += tests/check-child-fds.sh
 # tests/child-exec-safe.allow, with its reason.
 TESTS += tests/check-child-exec.sh
 
+# How a program waits for a child: the sync layers and the tests that start
+# children wait on the editor's loop (we_fdloop.c), reap through the owner
+# (we_child.c) and are bounded by the one hang guard (tests/test_watchdog.h),
+# with a deadline on every wait and no second death notice per platform.
+# tests/check-child-wait.sh fails on a wait, a reap or an alarm of its own, on
+# a pidfd or kqueue, on a test of the owner that does not arm the guard and on
+# a sync-layer wait with no deadline; the exceptions that are meant are in
+# tests/child-wait.allow, with their reasons.
+TESTS += tests/check-child-wait.sh
+
 # One owner of the selected entry of a list window (we_listsel.h):
 # tests/check-list-entry.sh counts, per function, the indexings of a list's
 # names by the highlighted row outside the owner; the file manager's panels
@@ -1022,6 +1032,7 @@ AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
   CC='$(CC)'; export CC; NCURSESW_CFLAGS='$(NCURSESW_CFLAGS)'; export NCURSESW_CFLAGS; \
   KEYMAP_TEXI='$(top_builddir)/tools/keymap-texi$(EXEEXT)'; export KEYMAP_TEXI; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS; \
+  CHILD_WAIT_OBJECTS='test_dap-we_dap_sync.$(OBJEXT) test_lsp_buffer-we_lsp_sync.$(OBJEXT) test_bsp_close-we_bsp_sync.$(OBJEXT)'; export CHILD_WAIT_OBJECTS; \
   MAINT_CC='$(CC)'; export MAINT_CC; \
   MAINT_FLAGS='$(DEFS) $(DEFAULT_INCLUDES) -I$(srcdir) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)'; export MAINT_FLAGS; \
   MAINT_SOURCES='$(we_SOURCES)'; export MAINT_SOURCES; \
@@ -1158,6 +1169,8 @@ EXTRA_DIST = \
   tests/child-fds.allow \
   tests/check-child-exec.sh \
   tests/child-exec-safe.allow \
+  tests/check-child-wait.sh \
+  tests/child-wait.allow \
   tests/program-name.allow \
   tests/check-box-layout.sh \
   tests/box-layout.allow \

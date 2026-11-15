@@ -14,6 +14,9 @@
 #include <unistd.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S 300        /* gopls loads one small module; a hang is reported by name */
 
 /* Go indents with TABS (\t).  add() is defined on line 4 and called on line 9;
  * `undefinedName` on line 11 is undefined -> gopls reports a hard error. */
@@ -69,6 +72,7 @@ int main(void)
  if (!have_tools())
  {  printf("SKIP: gopls and go are required (apt install gopls golang-go)\n");
     return 77;  }
+ test_watchdog_arm("test_lsp_gopls (gopls session)", MAIN_GUARD_S);
  if (!mkdtemp(dir))
   return fail("mkdtemp");
  snprintf(gopath, sizeof(gopath), "%s/main.go", dir);

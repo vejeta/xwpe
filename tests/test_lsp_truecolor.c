@@ -9,6 +9,9 @@
 #include <string.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S 60         /* the whole test, pure and fast: a hang is a bug */
 
 static int fails;
 
@@ -23,6 +26,8 @@ static void chk(const char *name, int got, int want)
 int main(void)
 {
  int r, g, b;
+
+ test_watchdog_arm("test_lsp_truecolor", MAIN_GUARD_S);
 
  /* method / function / macro share the one orange slot (slot 0). */
  chk("method -> slot 0",   e_lsp_sem_truecolor("method"),   0);

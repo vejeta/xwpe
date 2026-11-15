@@ -9,6 +9,9 @@
 #include <string.h>
 
 #include "../we_lsp.h"
+#include "test_watchdog.h"
+
+#define MAIN_GUARD_S 60         /* the whole test, pure and fast: a hang is a bug */
 
 static int fails;
 
@@ -31,6 +34,8 @@ int main(void)
 {
  e_lsp_sem_token t[8];
  int n;
+
+ test_watchdog_arm("test_lsp_semantic", MAIN_GUARD_S);
 
  /* three tokens: keyword(0,0,5), variable on the same line (+6 -> 6,3),
     method two lines down (absolute start 4). */
