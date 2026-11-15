@@ -134,7 +134,6 @@ we_ai_ui.c|r9:ai_slurp_file|1|keep|reads a file, copies nothing
 we_ai_ws.c|r9:ws_git_list|1|keep|reads the git command's output
 we_debug.c|r9:e_lsp_read_file_text|1|keep|reads a file, copies nothing
 we_main.c|r9:e_copy_file|2|keep|the XDG migration copy; the next change to it moves it onto wpe_write_copy_fd
-we_opt.c|r9:e_opt_read_stream|2|keep|reads the options file
 we_term.c|r9:e_t_user_screen|1|keep|a screen dump
 we_wayland.c|r9:wpe_wl_dump_ppm|1|keep|a test screen dump
 we_xterm.c|r9:wpe_x_dump_ppm|1|keep|a test screen dump
