@@ -27,6 +27,7 @@ import time
 
 import pytest
 
+import deep_folder
 from wpe_driver import WpeSession, WAIT_SCALE
 from test_find_regex_owner import _grep
 from test_legacy_debuggers import _screen, _wait_for
@@ -36,10 +37,8 @@ CTRL_G = "\x07"            # the debugger's prefix
 RUN_IT = "\033r"           # Alt-R: Run it, in the box a folder's compiler asks
 SANITIZER = "AddressSanitizer"
 ASAN_ENV = {"ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1"}
-COMPONENT = 60             # bytes of each folder name in a deep folder
 DEEP_FOLDER = 1100         # over the 1023 bytes the compile for debug kept
 LONG_ENTRY = 300           # a PATH entry over the 255 bytes the lookup held
-HUGE_ENTRY = 5000          # a PATH entry no system can hold
 LONG_COMMAND = 300         # a compiler name over what the lookup held
 RECORD_S = 15              # time for the stand-in compiler to be started
 ARGS_FILE = "rustc.args"
@@ -62,20 +61,6 @@ def _intact(w, what):
     """The editor is alive and no sanitizer report was printed."""
     assert w.alive(), "the editor died: %s\n%s" % (what, _screen(w))
     assert SANITIZER not in _raw(w), "sanitizer report: %s\n%s" % (what, _raw(w)[-1500:])
-
-
-def _folder_of_length(base, total):
-    """A folder under @base whose absolute path is exactly @total bytes."""
-    path = str(base)
-    # Stop while at least two bytes are left, so the last name is never empty.
-    while len(path) + 1 + COMPONENT <= total - 2:
-        path = os.path.join(path, "d" * COMPONENT)
-    last = total - len(path) - 1
-    if last > 0:
-        path = os.path.join(path, "e" * last)
-    os.makedirs(path, exist_ok=True)
-    assert len(path) == total
-    return path
 
 
 def _recording_env(tmp_path, front):
@@ -104,14 +89,14 @@ def _compiler_started(w, tmp_path):
                      RECORD_S)
 
 
-def _path_prefix(kind):
+def _path_prefix(kind, base):
     """What goes in front of PATH: nothing, an entry over the old buffer, or
-    one over what the system holds."""
+    one over what the system holds under @base."""
     if kind == "none":
         return ""
     if kind == "long":
         return "/" + "a" * LONG_ENTRY + ":"
-    return "/" + "a" * HUGE_ENTRY + ":"
+    return "/" + "a" * (deep_folder.over_the_limit(base) - 1) + ":"
 
 
 # Ctrl-G R on a Rust file in a folder deeper than 1023 bytes.
@@ -120,8 +105,10 @@ def test_compile_for_debug_in_a_deep_folder_gives_the_compiler_whole_paths(tmp_p
     """The compiler is started with the whole binary path, the whole source
     path and an error file path, each the folder's own and 1100 bytes deep.
     The three were kept in 1024 bytes each, so the compiler was told a cut
-    path and the binary was written nowhere the session looked."""
-    folder = _folder_of_length(tmp_path / "work", DEEP_FOLDER)
+    path and the binary was written nowhere the session looked.  A system
+    that holds no path of that length cannot have the cut and the row skips."""
+    deep_folder.held(tmp_path, DEEP_FOLDER)
+    folder = deep_folder.folder_of_length(tmp_path / "work", DEEP_FOLDER)
     env = _recording_env(tmp_path, "")
     with WpeSession(folder, DAP_RUST_PROG, filename="main.rs", wait=1.5,
                     env_extra=env) as w:
@@ -145,11 +132,12 @@ def test_compile_for_debug_in_a_deep_folder_gives_the_compiler_whole_paths(tmp_p
 @pytest.mark.parametrize("kind", ["long", "huge"])
 def test_an_unusable_path_entry_is_skipped_and_the_compiler_still_found(tmp_path, kind):
     """A PATH whose first entry is 300 bytes (a folder a system can hold but
-    the lookup's array could not) or 5000 bytes (one it cannot) does not end
+    the lookup's array could not) or one over the system's limit (which no
+    system can hold) does not end
     the editor when a Rust debug session looks for its compiler and adapter:
     the entry is skipped, the next one finds them and the compiler runs.
     The lookup copied each entry into 256 bytes and wrote past them."""
-    env = _recording_env(tmp_path, _path_prefix(kind))
+    env = _recording_env(tmp_path, _path_prefix(kind, tmp_path))
     with WpeSession(str(tmp_path), DAP_RUST_PROG, filename="main.rs", wait=1.5,
                     env_extra=env) as w:
         _intact(w, "start with a %s PATH entry" % kind)
@@ -168,7 +156,7 @@ def test_a_long_path_entry_does_not_end_the_editor_at_start(tmp_path, kind):
     server up on PATH.  A 300 byte entry wrote past the lookup's 256 byte
     array and ended the editor before the first key, so a PATH set by a
     wrapper script (or a hostile environment) made the editor unusable."""
-    env = {"PATH": _path_prefix(kind) + os.environ.get("PATH", "")}
+    env = {"PATH": _path_prefix(kind, tmp_path) + os.environ.get("PATH", "")}
     env.update(ASAN_ENV)
     with WpeSession(str(tmp_path), "int main(void) { return 0; }\n", filename="t.c",
                     wait=2.0, env_extra=env) as w:

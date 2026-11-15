@@ -14,6 +14,7 @@ import shutil
 
 import pytest
 
+import procinfo
 from wpe_driver import WpeSession
 from test_debugger_integration import (C_PROG, _children, _need,
                                        _start_c_session, _wait_for, _screen,
@@ -83,7 +84,7 @@ def test_a_legacy_debugger_runs_the_program_on_its_pty_without_a_terminal(
         legacy._start_session(w, tmp_path, backend)
         runs = [c for c in legacy._commands(tmp_path, backend)
                 if legacy._plain(c) == legacy.START_RUN_COMMAND[backend]]
-        assert runs and runs[0].split(" > ")[1].startswith("/dev/pts/"), \
+        assert runs and procinfo.is_pty_path(runs[0].split(" > ")[1]), \
             "%s should run the program on a pty; it got %r" \
             % (backend, legacy._commands(tmp_path, backend))
         w.key(legacy.ALT_X, delay=0.5)

@@ -988,7 +988,7 @@ def _capped_path_bytes(tmp_path, total, extra=0):
     BSD, 4096 on Linux) if that is shorter, so the row tests a path at the
     limit and not past it.  `extra` keeps that many bytes free for files the
     tool writes beside the source."""
-    limit = os.pathconf(str(tmp_path), "PC_PATH_MAX")
+    limit = procinfo.path_max(tmp_path)
     return min(total, limit - DEEP_NAME_SLACK - 1 - extra)
 
 
@@ -7346,15 +7346,15 @@ def test_the_program_under_gdb_does_not_inherit_ignored_signals(tmp_path):
             % _screen(w)
 
 
-# The script runs a shell and prints the shell's ignored-signal mask: Python
-# gives its children SIGPIPE back, but a SIGINT the script was started with as
-# ignored stays ignored in them.
+# The script runs sigstate (the program that names the signals it ignores)
+# and writes whether SIGINT is one: Python gives its children SIGPIPE back,
+# but a SIGINT the script was started with as ignored stays ignored in them.
+# {sigstate} is the program's path.
 PY_SIGMASK_PROG = (
     "import subprocess\n"
-    "out = subprocess.run(['sh', '-c', 'grep SigIgn /proc/self/status'], "
-    "capture_output=True, text=True).stdout\n"
-    "mask = int(out.split()[1], 16)\n"
-    "open('sigmask.txt', 'w').write('SIGINT_IGNORED=%d' % ((mask >> 1) & 1))\n"
+    "out = subprocess.run([{sigstate!r}], capture_output=True, text=True).stdout\n"
+    "ignored = [l for l in out.splitlines() if l.startswith('IGNORED:')][0].split()\n"
+    "open('sigmask.txt', 'w').write('SIGINT_IGNORED=%d' % int('INT' in ignored))\n"
     "x = 1\n"
 )
 PY_SIGMASK_RUN_LINE = 2           # the line that runs the shell
@@ -7366,7 +7366,8 @@ def test_the_script_under_pdb_does_not_inherit_ignored_sigint(tmp_path):
     """The script's children start with SIGINT as the shell would give it:
     not ignored."""
     _need("python3")
-    with WpeSession(str(tmp_path), PY_SIGMASK_PROG, filename="p.py",
+    script = PY_SIGMASK_PROG.format(sigstate=procinfo.sigstate_program(tmp_path))
+    with WpeSession(str(tmp_path), script, filename="p.py",
                     wait=1.5) as w:
         _go_to_line(w, PY_SIGMASK_RUN_LINE)
         w.key(CTRL_G, "b", delay=0.4)

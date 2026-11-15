@@ -16,6 +16,7 @@ import time
 import pytest
 
 import procinfo
+import terminfo
 from host_tools import require
 from wpe_driver import WpeSession, WAIT_SCALE, ALT
 
@@ -23,32 +24,27 @@ DEL = "\x7f"                 # what Terminal.app, iTerm2 and kitty send for Back
 ALT_A = "\033a"              # Run > Execute Make
 
 
-def _terminfo_where_backspace_is_ctrl_h(tmp_path):
-    """Return the TERMINFO directory of an xterm-256color whose kbs is ^H.
+def _backspace_is_ctrl_h(source):
+    """The terminfo source of an xterm-256color whose kbs is ^H.
 
     Older macOS terminfo databases say kbs=^H for xterm-256color while the
     terminal itself sends 0x7f, so ncurses never folds the byte into
     KEY_BACKSPACE.  The terminfo of a current Linux says kbs=^? and folds it,
     which hides the editor's own handling of the raw byte.  The entry is the
-    system's own with that one capability changed, built in the test's
-    directory.  The test skips when infocmp or tic is missing."""
-    require("infocmp", "tic")      # both build the macOS-style entry
-    source = subprocess.check_output(["infocmp", "-x", "xterm-256color"],
-                                     text=True)
+    system's own with that one capability changed."""
     # macOS' own database already says kbs=^H; a current one says kbs=^?.
     if "kbs=^?" in source:
         source = source.replace("kbs=^?", "kbs=^H")
     assert "kbs=^H" in source, "this host's xterm-256color has no kbs at all"
-    src_file = tmp_path / "xterm-kbs-bs.ti"
-    src_file.write_text(source)
-    tidir = tmp_path / "terminfo"
-    tidir.mkdir()
-    subprocess.check_call(["tic", "-x", "-o", str(tidir), str(src_file)])
-    shown = subprocess.check_output(
-        ["infocmp", "-x", "xterm-256color"],
-        env=dict(os.environ, TERMINFO=str(tidir)), text=True)
-    assert "kbs=^H" in shown, "the scratch terminfo entry was not picked up"
-    return str(tidir)
+    return source
+
+
+def _terminfo_where_backspace_is_ctrl_h(tmp_path):
+    """Return the TERMINFO directory of an xterm-256color whose kbs is ^H,
+    built in the test's directory.  The test skips when infocmp or tic is
+    missing."""
+    require("infocmp", "tic")      # both build the macOS-style entry
+    return terminfo.private_database(tmp_path, edit=_backspace_is_ctrl_h)
 
 
 # @scenario SC-macos-06
@@ -57,7 +53,7 @@ def test_raw_del_deletes_when_terminfo_says_kbs_is_ctrl_h(tmp_path):
     terminfo entry says Backspace is ^H (macOS Terminal.app with its older
     database), so ncurses leaves the byte raw.  Typing ABC, DEL, DEL leaves A."""
     tidir = _terminfo_where_backspace_is_ctrl_h(tmp_path)
-    with WpeSession(str(tmp_path), "", env_extra={"TERMINFO": tidir}) as w:
+    with WpeSession(str(tmp_path), "", env_extra=terminfo.environment(tidir)) as w:
         w.key("A", "B", "C")
         w.key(DEL, DEL)
         w.save()

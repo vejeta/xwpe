@@ -13,9 +13,9 @@ Run: WPE_BIN=$PWD/wpe tests/.venv/bin/python -m pytest -q tests/test_terminal_ow
 import os
 import signal
 import stat
-import subprocess
 import time
 
+import terminfo
 from host_tools import needs
 from wpe_driver import WpeSession, ALT, wait_screen
 from test_file_shell import SHELL_ENTRY
@@ -40,7 +40,6 @@ SWITCHED_ON = (ALT_SCREEN_ON, b"\x1b[?1000h", b"\x1b[?1002h", b"\x1b[?1006h",
 SEED = "AAAAA\nBBBBB\n"
 EXIT_WAIT_S = 8
 SETTLE_S = 0.3
-TERM_NAME = "xterm-256color"
 PROG = ('#include <stdio.h>\n'
         'int main(void){ printf("USERSCR%d\\n", 6 * 7); return 0; }\n')
 CTRL_F9 = "\x1b[20;5~"
@@ -50,22 +49,18 @@ SLEEP_MARK = b"SLEEPMARK"
 SLEEP_S = 30
 
 
-def terminfo_string(cap):
-    """What terminfo gives for @cap on the terminal the rows run under."""
-    return subprocess.run(["tput", "-T", TERM_NAME, cap], check=True,
-                          stdout=subprocess.PIPE).stdout
-
-
-def release_string():
+def release_string(database):
     """What a signal handler writes to give the terminal back: the modes off,
     the pointer, then the terminal's own reset strings, the alternate screen
-    last."""
-    return (CRASH_OFF + POINTER_RESET + terminfo_string("sgr0")
-            + terminfo_string("cnorm") + terminfo_string("rmkx")
-            + terminfo_string("rmcup"))
+    last.  The strings come from @database, the one the editor was started
+    with."""
+    def cap(name):
+        return terminfo.string(name, database=database)
+    return (CRASH_OFF + POINTER_RESET + cap("sgr0") + cap("cnorm")
+            + cap("rmkx") + cap("rmcup"))
 
 
-needs_tput = needs("tput")
+needs_tput = needs("tput", "infocmp", "tic")
 needs_gcc = needs("gcc")
 
 
@@ -143,13 +138,15 @@ def test_a_crash_writes_the_whole_release_string_last(tmp_path):
     handler writes the modes off in the order the exit does, the pointer reset
     and the terminal's own reset strings, so the alternate screen is left and
     the shell is back."""
-    with WpeSession(str(tmp_path), SEED, env_extra={"XWPE_TEST_CRASH": "1"}) as w:
+    database = terminfo.private_database(tmp_path)
+    env = dict(terminfo.environment(database), XWPE_TEST_CRASH="1")
+    with WpeSession(str(tmp_path), SEED, env_extra=env) as w:
         w._drain(2.0)
         raw = bytes(w.raw)
         assert not w.alive(), "the editor did not crash"
     assert raw.rfind(CRASH_OFF) > raw.rfind(KEYS_ON), \
         "the crash left the protocols on:\n%r" % raw[-200:]
-    assert raw.endswith(release_string()), \
+    assert raw.endswith(release_string(database)), \
         "the release string is not the last thing written:\n%r" % raw[-160:]
     assert raw.rfind(ALT_SCREEN_OFF) > raw.rfind(ALT_SCREEN_ON), \
         "the crash left the shell in the alternate screen"
@@ -164,13 +161,14 @@ def test_the_crash_string_is_what_the_normal_exit_writes(tmp_path):
     attributes and the cursor only when they are not already plain, so the
     handler's attribute and cursor resets are the safe superset, not a
     copy."""
-    with WpeSession(str(tmp_path), SEED) as w:
+    database = terminfo.private_database(tmp_path)
+    with WpeSession(str(tmp_path), SEED, env_extra=terminfo.environment(database)) as w:
         raw, _ = end_the_editor(w, lambda s: s.key("\x1bx", delay=1.0))
     tail = raw[raw.find(MODES_OFF) + len(MODES_OFF):]
     at = tail.find(POINTER_RESET)
     assert at >= 0, "the quit did not give the pointer back:\n%r" % tail[:300]
     for cap in ("rmkx", "rmcup"):
-        piece = terminfo_string(cap)
+        piece = terminfo.string(cap, database=database)
         assert tail.find(piece, at) >= 0, \
             "the quit did not write %s (%r) after the pointer:\n%r" % (cap, piece, tail)
 

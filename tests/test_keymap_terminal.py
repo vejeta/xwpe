@@ -18,11 +18,11 @@ and tests/wayland/test_keymap.py; the table itself is test_keymap in
 `make check`.
 """
 import os
-import subprocess
 import time
 
 import pytest
 
+import terminfo
 from wpe_driver import WpeSession, incoherence, wait_screen
 from edit_model.oracle import EditSession
 from test_debugger_integration import (
@@ -410,16 +410,9 @@ RXVT_SHIFT_RIGHT = "\x1b[c"
 RXVT_CTRL_DEL = "\x1b[3^"
 
 
-def _has_terminfo(term):
-    """True when this machine has a terminfo entry for ``term``."""
-    found = subprocess.run(["infocmp", term], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-    return found.returncode == 0
-
-
 def _need_terminfo(term):
     """Skip the row when this machine has no terminfo entry for ``term``."""
-    if not _has_terminfo(term):
+    if not terminfo.has_entry(term):
         pytest.skip("no %s terminfo entry here" % term)
 
 
@@ -428,8 +421,7 @@ def test_ctrl_delete_deletes_a_block_under_rxvt(tmp_path):
     """Shift-Right twice then Ctrl-Delete as rxvt-unicode sends them delete
     the first two characters: "abcdef" is "cdef" on disk.  Ctrl-Delete is
     the key ncurses numbers KEY_MAX there, which the decoder missed."""
-    if not _has_terminfo(RXVT_TERM):
-        pytest.skip("no %s terminfo entry here" % RXVT_TERM)
+    _need_terminfo(RXVT_TERM)
     with _mod_session(tmp_path, "abcdef\nsecond\n", RXVT_TERM) as s:
         s.send([RXVT_SHIFT_RIGHT, RXVT_SHIFT_RIGHT])
         s.send([RXVT_CTRL_DEL])

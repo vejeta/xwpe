@@ -66,6 +66,7 @@ PROBES = {
     "infocmp": PRESENCE_ONLY,
     "tic": PRESENCE_ONLY,
     "ldd": PRESENCE_ONLY,
+    "lsof": PRESENCE_ONLY,              # -v prints to stderr and exits 1
     "openssl": PRESENCE_ONLY,
     "sdb": PRESENCE_ONLY,
     "Xvfb": PRESENCE_ONLY,

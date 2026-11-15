@@ -18,6 +18,8 @@ import os
 
 import pytest
 
+import deep_folder
+from deep_folder import folder_of_length
 from host_tools import needs
 from wpe_driver import WpeSession
 
@@ -36,17 +38,14 @@ SANITIZER = "AddressSanitizer"
 SENTENCE = "longer than the system allows"
 ASAN_ENV = {"ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1"}
 
-COMPONENT = 60              # bytes of each folder name in a deep folder
 DEEP_RUN = 420              # over the 255 bytes Run kept the source's folder in
 DEEP_MANAGER = 2117         # over the 2047 bytes the manager's buffers held
-DEEP_JOIN = 4040            # a folder that fits, with a name that makes it not
+JOIN_ROOM = 56              # a folder that fits with less room than the name and its slash
 LIBRARY_BYTES = 98          # over the 79 bytes the project's library was kept in
 EXECUTABLE_BYTES = 150      # over the 128 bytes the Executable field took
 NAME_BYTES = 200            # a name over the 128 bytes Move offered
 INFO_FOLDER_BYTES = 200     # an Info-Path over the 128 bytes its entry took
-XDG_TOO_LONG = 4300         # a configuration folder no system can hold
 XDG_OVER_OLD = 1105         # over the 1023 bytes the config folder was kept in
-INCLUDE_TOO_LONG = 4300     # an include folder no system can hold
 NAME_FIELD_BYTES = 70       # what New Project's Name field takes (79) minus ".prj"
 
 
@@ -64,18 +63,9 @@ def _intact(w, what):
         "sanitizer report: %s" % what
 
 
-def _folder_of_length(base, total):
-    """A folder under @base whose absolute path is exactly @total bytes."""
-    path = str(base)
-    # Stop while at least two bytes are left, so the last name is never empty.
-    while len(path) + 1 + COMPONENT <= total - 2:
-        path = os.path.join(path, "d" * COMPONENT)
-    last = total - len(path) - 1
-    if last > 0:
-        path = os.path.join(path, "e" * last)
-    os.makedirs(path, exist_ok=True)
-    assert len(path) == total
-    return path
+def _path_no_system_holds(base):
+    """A path that is not made, of a length the system refuses under @base."""
+    return "/" + "x" * (deep_folder.over_the_limit(base) - 1)
 
 
 def _project(folder, lines):
@@ -110,7 +100,7 @@ def test_run_of_a_script_in_a_deep_folder_runs_it(tmp_path):
     """Ctrl-F9 on t.py in a 420 byte folder runs the script there.  The
     folder was kept in 255 bytes for the run after the build, so python was
     handed the file of a folder that does not exist."""
-    folder = _folder_of_length(tmp_path, DEEP_RUN)
+    folder = folder_of_length(tmp_path, DEEP_RUN)
     script = "open('ran_here.txt', 'w').write('X')\n"
     with WpeSession(folder, script, filename="t.py", wait=2.0, cols=150, rows=40,
                     env_extra=ASAN_ENV) as w:
@@ -179,10 +169,11 @@ def test_project_options_keep_an_executable_name_whole(tmp_path):
 # Save Options with a configuration folder that cannot be held.
 # @scenario SC-path-cuts-04
 def test_save_options_in_a_configuration_folder_too_long_says_so(tmp_path):
-    """$XDG_CONFIG_HOME of 4300 bytes, which no system can hold: Options >
-    Save Options writes nothing and the status row says why.  The editor
-    used to create the 1023 byte cut of such a folder and save there."""
-    xdg = "/" + "x" * (XDG_TOO_LONG - 1)
+    """$XDG_CONFIG_HOME longer than the system holds (its limit and 60 bytes
+    more): Options > Save Options writes nothing and the status row says why.
+    The editor used to create the 1023 byte cut of such a folder and save
+    there."""
+    xdg = _path_no_system_holds(tmp_path)
     work = tmp_path / "work"
     work.mkdir()
     with WpeSession(str(work), "int x;\n", filename="t.c", wait=2.0, cols=140, rows=40,
@@ -200,14 +191,14 @@ def test_save_options_in_a_configuration_folder_too_long_says_so(tmp_path):
 # @scenario SC-path-cuts-14
 def test_folder_xwperc_may_not_set_user_keys_beside_a_configuration_folder_too_long(tmp_path):
     """A start folder's xwperc names AIEditHook, a key only the user's own
-    file may set; $XDG_CONFIG_HOME is 4300 bytes, so the user's own file
-    cannot be named.  The folder's key is still refused and said on the
+    file may set; $XDG_CONFIG_HOME is longer than the system holds, so the
+    user's own file cannot be named.  The folder's key is still refused and said on the
     status row.  With no user file the folder's xwperc was read as if it
     were the user's own, every key taken."""
     work = tmp_path / "work"
     work.mkdir()
     (work / "xwperc").write_text("[Programming]\nAIEditHook : true\n")
-    xdg = "/" + "x" * (XDG_TOO_LONG - 1)
+    xdg = _path_no_system_holds(tmp_path)
     with WpeSession(str(work), "int x;\n", filename="t.c", wait=2.0, cols=140, rows=40,
                     env_extra={"XDG_CONFIG_HOME": xdg}) as w:
         text = _text(w)
@@ -222,7 +213,8 @@ def test_save_options_in_a_deep_configuration_folder_saves_there(tmp_path, folde
     one of 1105 (over the 1023 it was kept in), is held whole, and Save
     Options (after the question for a path over the field's width) writes
     xwperc under the folder the user named, not under a cut of it."""
-    xdg = _folder_of_length(tmp_path / "cfg", folder_bytes)
+    deep_folder.held(tmp_path, folder_bytes)
+    xdg = folder_of_length(tmp_path / "cfg", folder_bytes)
     work = tmp_path / "work"
     work.mkdir()
     with WpeSession(str(work), "int x;\n", filename="t.c", wait=2.0, cols=140, rows=40,
@@ -243,8 +235,10 @@ def test_file_manager_directory_field_keeps_a_deep_folder(tmp_path):
     "Can't open directory" and replaced the window's folder by the cut.
     The owner's first pass already holds the folder whole, so this row is
     green on that commit too; it stays as the control for the deep folder
-    that the New Project row below uses."""
-    folder = _folder_of_length(tmp_path, DEEP_MANAGER)
+    that the New Project row below uses.  A system that holds no path of
+    that length cannot have the cut, so the row skips there."""
+    deep_folder.held(tmp_path, DEEP_MANAGER)
+    folder = folder_of_length(tmp_path, DEEP_MANAGER)
     with open(os.path.join(folder, "deepmarker.c"), "w") as fh:
         fh.write("int x;\n")
     with WpeSession(folder, "int x;\n", filename="t.c", wait=2.0, cols=140, rows=40,
@@ -281,8 +275,10 @@ def test_move_offers_a_long_file_name_whole(tmp_path):
 # @scenario SC-path-cuts-08
 def test_new_project_in_a_deep_folder_writes_it_there(tmp_path):
     """Project > New Project in a 2117 byte folder, name q.prj: the project
-    is written in the folder.  Its path was built in 2047 bytes."""
-    folder = _folder_of_length(tmp_path, DEEP_MANAGER)
+    is written in the folder.  Its path was built in 2047 bytes, so a system
+    that holds no path of that length cannot have the cut and the row skips."""
+    deep_folder.held(tmp_path, DEEP_MANAGER)
+    folder = folder_of_length(tmp_path, DEEP_MANAGER)
     with WpeSession(folder, "int main(void){return 0;}\n", filename="t.c", wait=2.0,
                     cols=140, rows=40, env_extra=ASAN_ENV) as w:
         w.key(ALT_P, delay=1.0)
@@ -311,9 +307,10 @@ def test_new_project_names_its_program_up_to_the_last_dot(tmp_path):
 # A folder and a name that each fit, joined, do not.
 # @scenario SC-path-cuts-09
 def test_new_project_whose_path_cannot_be_held_says_so(tmp_path):
-    """A 4040 byte folder fits and so does a 74 byte name; the project's path
-    does not.  The user is told, and no project is written at a cut path."""
-    folder = _folder_of_length(tmp_path, DEEP_JOIN)
+    """A folder that fits the system's limit with 56 bytes to spare and a
+    74 byte name that fits too: the project's path does not.  The user is
+    told, and no project is written at a cut path."""
+    folder = folder_of_length(tmp_path, deep_folder.under_the_limit(tmp_path, JOIN_ROOM))
     name = "q" * NAME_FIELD_BYTES + ".prj"
     with WpeSession(folder, "int main(void){return 0;}\n", filename="t.c", wait=2.0,
                     cols=140, rows=40, env_extra=ASAN_ENV) as w:
@@ -331,7 +328,7 @@ def test_new_project_whose_path_cannot_be_held_says_so(tmp_path):
 def test_info_path_longer_than_the_old_field_is_offered(tmp_path):
     """INFOPATH of 200 bytes: Options > Help opens the Info-Path entry with
     the whole path.  The entry took 128 bytes and refused to open."""
-    info = _folder_of_length(tmp_path / "info", INFO_FOLDER_BYTES)
+    info = folder_of_length(tmp_path / "info", INFO_FOLDER_BYTES)
     with WpeSession(str(tmp_path), "int x;\n", filename="t.c", wait=2.0, cols=140, rows=40,
                     env_extra={"INFOPATH": info}) as w:
         w.key(ALT_O, delay=1.0)
@@ -363,7 +360,7 @@ def test_a_long_include_folder_is_said_once_per_search(tmp_path):
     """Three headers that are not found and an include folder no system can
     hold: Show Definition says the folder is too long once, not once for each
     header."""
-    inc = "/" + "i" * (INCLUDE_TOO_LONG - 1)
+    inc = _path_no_system_holds(tmp_path)
     (tmp_path / "xwperc").write_text("[Programming]\nIncludePath : %s\n" % inc)
     source = "#include <a.h>\n#include <b.h>\n#include <c.h>\nint x = ZZ;\n"
     said = 0

@@ -27,7 +27,7 @@ import re
 import pytest
 
 from wpe_driver import WpeSession, ALT
-from test_path_cuts import _folder_of_length
+import deep_folder
 from build_config import requires
 from test_opt_dialog_move import ENV as AI_ENV
 
@@ -446,8 +446,11 @@ def test_a_question_longer_than_the_screen_still_shows_its_buttons(tmp_path):
     to <the path>?": the path is 55 lines on 80 columns, more than a 40 row
     screen holds.  The text is cut and says so, and Yes, No and Cancel stay
     on the screen, so Y answers.  The buttons used to fall below the screen
-    and only Esc was left."""
-    xdg = _folder_of_length(tmp_path / "cfg", LONG_FOLDER_BYTES)
+    and only Esc was left.  A folder of 1000 bytes is 13 lines on 80 columns
+    and fits a 40 row screen, so a system that holds less than 3500 bytes of
+    path cannot show the defect and the row skips there."""
+    deep_folder.held(tmp_path, LONG_FOLDER_BYTES)
+    xdg = deep_folder.folder_of_length(tmp_path / "cfg", LONG_FOLDER_BYTES)
     work = tmp_path / "work"
     work.mkdir()
     with WpeSession(str(work), SEED, filename="t.c", cols=80, rows=40,

@@ -33,6 +33,7 @@ import pytest
 
 pytest.importorskip("pyte")
 
+import procinfo                            # noqa: E402
 import wpe_driver                          # noqa: E402
 from wpe_driver import WpeSession          # noqa: E402
 
@@ -324,31 +325,31 @@ def test_a_pipe_as_the_source_is_refused_at_once(tmp_path):
 # --- a copy that fails -----------------------------------------------------------
 
 
-def _cpu_seconds(pid):
-    try:
-        with open("/proc/%d/stat" % pid) as fh:
-            fields = fh.read().rsplit(")", 1)[1].split()
-    except OSError:
-        return None
-    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+def skip_without_cpu_time():
+    """Skip the row, naming why, when this system cannot say how much CPU a
+    process has used."""
+    if procinfo.cpu_seconds(os.getpid()) is None:
+        pytest.skip("needs a CPU time per process: /proc or ps")
 
 
 # @scenario SC-unsaved-text-33
 def test_a_source_read_error_ends_the_copy_with_a_box(tmp_path):
-    if _cpu_seconds(os.getpid()) is None:
-        pytest.skip("no procfs")
+    skip_without_cpu_time()
+    unreadable = procinfo.self_memory_file()
+    if unreadable is None:
+        pytest.skip("needs a file whose read fails: the process's own memory in /proc")
     wd = str(tmp_path)
     _seed(wd, DONT_OVERWRITE, {"src.txt": "SOURCE\n"})
-    os.symlink("/proc/self/mem", os.path.join(wd, "badlink"))
+    os.symlink(unreadable, os.path.join(wd, "badlink"))
     with WpeSession(wd, "int main;\n") as s:
         _open_files_panel(s)
         _typed(s, "badlink")
         s.key(ALT_O)
-        before = _cpu_seconds(s.proc.pid)
+        before = procinfo.cpu_seconds(s.proc.pid)
         _typed(s, "out.bin")
         s.key(CR)
         time.sleep(2.0)
-        after = _cpu_seconds(s.proc.pid)
+        after = procinfo.cpu_seconds(s.proc.pid)
         screen = _squash(s)
         assert after - before < 1.0, "the copy loop spun: %.2f CPU s" % (after - before)
         assert "readingthesource:Input/outputerror" in screen, "\n".join(s.display())
@@ -384,16 +385,18 @@ def test_a_failed_destination_says_so_and_leaks_no_descriptor(tmp_path):
     wd = str(tmp_path)
     _seed(wd, DONT_OVERWRITE, {"src.txt": "SOURCE DATA\n"})
     with WpeSession(wd, "int main;\n") as s:
-        fddir = "/proc/%d/fd" % s.proc.pid
         _open_files_panel(s)
         _typed(s, "src.txt")
-        before = sorted(os.listdir(fddir))
+        before = procinfo.open_descriptors(s.proc.pid)
+        if before is None:
+            pytest.skip("needs a descriptor table: /proc, lsof or fstat")
         _op_to(s, ALT_O, "nodir/out.txt")
         screen = _squash(s)
         assert "creatingthecopy:Nosuchfileordirectory" in screen, "\n".join(s.display())
         s.key(CR)
-        after = sorted(os.listdir(fddir))
         assert s.alive()
+        after = procinfo.open_descriptors(s.proc.pid)
+        assert after is not None, "the editor's descriptor table was unreadable"
         assert after == before, "leaked %d descriptor(s)" % (len(after) - len(before))
 
 

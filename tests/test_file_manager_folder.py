@@ -29,12 +29,14 @@ import pytest
 
 pytest.importorskip("pyte")
 
+import procinfo                            # noqa: E402
 from wpe_driver import WpeSession          # noqa: E402
 from test_file_manager_copy import (        # noqa: E402
     ALT_L, ALT_M, ALT_O, ALT_R, CR, ESC, DEFAULT, DONT_OVERWRITE,
     OVERWRITE_ABSOLUTE, PROMPT_ASK_REMOVE, OPT_ALWAYS_SYMBOLIC,
-    _cpu_seconds, _make_other_fs_folder, _op_to, _open_files_panel,
-    _open_tree_panel, _read, _seed, _squash, _typed, _wastebasket)
+    _make_other_fs_folder, _op_to, _open_files_panel,
+    _open_tree_panel, _read, _seed, _squash, _typed, _wastebasket,
+    skip_without_cpu_time)
 
 ALT_D = "\033d"          # Delete without Prompt
 ALT_OK = "\033o"
@@ -213,17 +215,18 @@ def test_copy_of_a_folder_with_a_link_keeps_the_link_and_does_not_spin(tmp_path)
     """The link is copied as a link with its text, the folder it points to is
     not walked (the earlier copy followed it until the depth limit), and the
     editor does not spin."""
+    skip_without_cpu_time()
     wd = str(tmp_path)
     _seed(wd, DEFAULT, {"aaa.txt": "a\n"})
     _outside(wd)
     before = _snapshot(os.path.join(wd, "precious"))
     _folder_with_a_link(wd)
     with WpeSession(wd, "int main;\n") as s:
-        cpu = _cpu_seconds(s.proc.pid)
+        cpu = procinfo.cpu_seconds(s.proc.pid)
         _folder_op(s, ALT_O, "rd", "rdcopy")
         _wait_for(lambda: os.path.islink(os.path.join(wd, "rdcopy", "lnk")), "the link to be copied")
         time.sleep(SETTLE_S)
-        spent = _cpu_seconds(s.proc.pid) - cpu
+        spent = procinfo.cpu_seconds(s.proc.pid) - cpu
         assert spent < 1.5, "the copy spun: %.2f CPU s" % spent
         assert s.alive()
     assert os.readlink(os.path.join(wd, "rdcopy", "lnk")) == "../precious"

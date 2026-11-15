@@ -19,6 +19,7 @@ import os
 import signal
 import time
 
+import terminfo
 from host_tools import needs
 from wpe_driver import WpeSession, ALT, wait_screen
 from test_file_shell import SHELL_MARK, SHELL_ENTRY, write_marker_shell
@@ -122,19 +123,21 @@ def test_sigterm_gives_the_modes_back(tmp_path):
     assert KEYS_ON not in raw[raw.find(MODES_OFF):]
 
 
-@needs("tput")
+@needs("tput", "infocmp", "tic")
 def test_a_crash_gives_the_modes_back_as_the_last_thing_written(tmp_path):
     """XWPE_TEST_CRASH=1 raises SIGSEGV at the first wait for a key: the
     handler writes the modes off, in the order the exit writes them, and then
     the pointer and the terminal's own strings that leave the alternate
     screen: the release string is the last thing written."""
-    with WpeSession(str(tmp_path), SEED, env_extra={"XWPE_TEST_CRASH": "1"}) as w:
+    database = terminfo.private_database(tmp_path)
+    env = dict(terminfo.environment(database), XWPE_TEST_CRASH="1")
+    with WpeSession(str(tmp_path), SEED, env_extra=env) as w:
         w._drain(2.0)
         raw = bytes(w.raw)
         assert not w.alive(), "the editor did not crash"
     assert raw.rfind(CRASH_OFF) > raw.rfind(KEYS_ON), \
         "the crash left the protocols on:\n%r" % raw[-200:]
-    assert raw.endswith(release_string()), \
+    assert raw.endswith(release_string(database)), \
         "the release string is not the last thing written:\n%r" % raw[-160:]
 
 

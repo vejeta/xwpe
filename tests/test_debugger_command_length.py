@@ -18,10 +18,12 @@ do what the row expects of it, or the row is skipped naming the broken
 probe, so a failure means the editor's command and not a dead probe.
 """
 import os
+import pathlib
 import subprocess
 
 import pytest
 
+import deep_folder
 from host_tools import needs
 from wpe_driver import WpeSession
 from test_startplan_debug import CTRL_G, RAN_WAIT, RUN_IT, SETTLE, Folder, _screen, _wait
@@ -38,7 +40,10 @@ CANARY_S = 40              # a direct debugger run is far inside this
 STOP_S = 25                # a build, the debugger's start and its first stop
 NAME_BYTES = 255           # the longest name a file system takes
 DEEP_NAME = "d" * 200      # one level of a deep folder
-DEEP_TOTAL = 3800          # about how long the deep folder is, in bytes
+# How deep the deep folder is, in bytes.  What it must exceed is the 255 byte
+# command the editor used to cut at, so it is as deep as the system holds,
+# up to 3800 (see deep_folder.as_deep_as_allowed).
+DEEP_TOTAL = 3800
 BOX_TOTAL = 700            # a folder the question box can still show whole
 
 # A program that writes the folder it runs in.
@@ -60,10 +65,17 @@ def _mkdirs(tmp_path, names):
     return path
 
 
-def _deep_names(tmp_path, total=DEEP_TOTAL):
-    """Names that make a folder of about @total bytes under @tmp_path."""
-    count = (total - len(str(tmp_path))) // (len(DEEP_NAME) + 1)
-    return [DEEP_NAME] * count
+def _deep_folder(tmp_path, total):
+    """Make the folder of exactly @total bytes under @tmp_path, its names
+    DEEP_NAME's length, and return it."""
+    return pathlib.Path(deep_folder.folder_of_length(tmp_path, total,
+                                                    component=len(DEEP_NAME)))
+
+
+def _very_deep_folder(tmp_path):
+    """The deepest folder these rows need: far over the 255 bytes a command
+    used to be cut at, so as deep as this system holds, up to DEEP_TOTAL."""
+    return _deep_folder(tmp_path, deep_folder.as_deep_as_allowed(tmp_path, DEEP_TOTAL))
 
 
 class LongFolder(Folder):
@@ -182,9 +194,9 @@ def test_gdb_history_is_moved_for_a_very_deep_folder(tmp_path):
     """The editor moves gdb's history file out of its own folder, into the
     program's.  For a folder over about 220 bytes the command did not fit and
     the move was skipped without a word, so a user who keeps a history lost
-    it with the session's folder.  The command is now sent for a folder of
-    3.8 KB."""
-    ws = _mkdirs(tmp_path, _deep_names(tmp_path))
+    it with the session's folder.  The command is now sent for a folder as
+    deep as the system holds, up to 3.8 KB."""
+    ws = _very_deep_folder(tmp_path)
     folder = LongFolder(tmp_path, ws)
     (folder.home / ".gdbinit").write_text("set history save on\n")
     seed = CWD_C % folder.cwd_file
@@ -206,7 +218,8 @@ def test_jdb_run_it_is_offered_for_a_deep_folder(tmp_path):
     """A jdb.ini in a folder of 700 bytes (the longest the question box shows
     whole): the editor's read command was longer than 255 and Run it was not
     offered.  It is now, and the breakpoint the file names takes."""
-    ws = _mkdirs(tmp_path, _deep_names(tmp_path, BOX_TOTAL))
+    deep_folder.held(tmp_path, BOX_TOTAL)
+    ws = _deep_folder(tmp_path, BOX_TOTAL)
     folder = JdbFolder(tmp_path)
     folder.ws = ws
     title = folder.folder_ini()
@@ -227,7 +240,7 @@ def test_pdb_a_breakpoint_in_a_script_under_a_very_deep_folder_stops_there(tmp_p
     """The editor names the script by its full path in pdb's break command,
     however deep the folder is: the breakpoint is set before the start and
     pdb stops on it."""
-    ws = _mkdirs(tmp_path, _deep_names(tmp_path))
+    ws = _very_deep_folder(tmp_path)
     folder = LongFolder(tmp_path, ws)
     script = CWD_PY % str(folder.cwd_file)
     _pdb_canary(folder, script)
@@ -253,7 +266,7 @@ def test_pdb_go_to_cursor_in_a_script_under_a_very_deep_folder_stops_there(tmp_p
     """Go to cursor names the script by its full path in the breakpoint it
     sets for itself, however deep the folder is: from a stop on line 2,
     Ctrl-G U on line 4 stops there."""
-    ws = _mkdirs(tmp_path, _deep_names(tmp_path))
+    ws = _very_deep_folder(tmp_path)
     folder = LongFolder(tmp_path, ws)
     script = GOTO_PY % str(folder.cwd_file)
     _pdb_canary(folder, script)

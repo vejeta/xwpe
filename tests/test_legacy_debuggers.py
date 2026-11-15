@@ -87,7 +87,7 @@ DISARM_COMMAND = {
 REMOVE_ALL_COMMAND = {"sdb": "D", "dbx": "delete all", "xdb": "db *"}
 # What each backend is sent to go on running after a stop.
 CONTINUE_COMMAND = {"sdb": "c", "dbx": "cont", "xdb": "c"}
-# The command that starts the program, without its "> /dev/pts/N" redirect.
+# The command that starts the program, without its "> <pty>" redirect.
 START_RUN_COMMAND = {"sdb": "r", "dbx": "run", "xdb": "r"}
 # Everything sent before the run: the breakpoint, plus xdb's "sm".
 START_COMMANDS = {
@@ -192,7 +192,7 @@ def _commands(tmp_path, backend):
 
 
 def _plain(command):
-    """A command without the "> /dev/pts/N" redirect, whose number varies."""
+    """A command without the "> <pty>" redirect, whose name varies."""
     return command.split(" > ")[0].strip()
 
 

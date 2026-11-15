@@ -22,9 +22,9 @@ assertion reads the file on disk or the rendered screen, never the sources.
 import ctypes
 import os
 import subprocess
-import sys
 
 import pytest
+import procinfo
 from build_config import requires
 from wpe_driver import WpeSession, ALT, WPE_BIN, title_pos
 
@@ -414,7 +414,7 @@ def test_agent_engine_radio_persists(tmp_path):
         "Ok did not keep AIAgentEngine : claude-code:\n" + saved
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="rewrite counting uses inotify")
+@pytest.mark.skipif(not procinfo.IS_LINUX,reason="rewrite counting uses inotify")
 # @scenario SC-ai-options-47
 def test_ok_rewrites_xwperc_once(tmp_path):
     # One Ok = exactly one rewrite of xwperc.  Counted with inotify

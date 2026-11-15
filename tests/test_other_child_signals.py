@@ -5,29 +5,27 @@ ignored through fork and exec.  A language server, a command the assistant
 runs, or a script run from the Run menu must not inherit that: an ignored
 SIGPIPE makes a program print broken-pipe errors or spin after the editor
 closes its pipe, and an ignored SIGINT makes Ctrl-C do nothing.  Each stand-in
-here records the SigIgn line of its own /proc status; neither signal may be
-in it.  (The build and Run children are covered in test_child_signals.py.)
+here runs the sigstate program, which records the names of the signals it
+ignores; neither signal may be among them.  (The build and Run children are
+covered in test_child_signals.py.)
 """
 import os
-import re
 import stat
 import subprocess
 import time
 
 import pytest
 
+import gui_owner
+import procinfo
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
 LSP_ALT_Q = "\033q"
 SCRIPT_CTRL_F9 = "\033[20;5~"
 ENTER = "\r"
-SIGINT_MASK_BIT = 1 << (2 - 1)
-SIGPIPE_MASK_BIT = 1 << (13 - 1)
 RECORD_WAIT_S = 20
 RECORD_POLL_S = 0.25
 SEED_C_SOURCE = "int main(void){return 0;}\n"
-SIGIGN_LINE = re.compile(r"^SigIgn:\s*([0-9a-fA-F]+)", re.M)
-STANDIN_RECORD = "grep '^SigIgn' /proc/$$/status > \"$STANDIN_OUT\"\n"
 FILES_F3 = "\033OR"
 CTRL_C = "\x03"
 CTRL_C_SETTLE_S = 2.0
@@ -59,21 +57,18 @@ def _record_arrives(w, path):
     return False
 
 
-def _ignored_signals(path):
-    """The SigIgn mask a stand-in recorded."""
-    with open(path) as fh:
-        found = SIGIGN_LINE.search(fh.read())
-    assert found, "no SigIgn line recorded in %s" % path
-    return int(found.group(1), 16)
+def _standin_record(tmp_path):
+    """The shell line a stand-in runs to write the signals it started with
+    ignored to $STANDIN_OUT: the sigstate program, which names them."""
+    return "\"%s\" > \"$STANDIN_OUT\"\n" % procinfo.sigstate_program(tmp_path)
 
 
 def _assert_defaults(path, who):
     """Neither SIGINT nor SIGPIPE is ignored in what `who` recorded."""
-    mask = _ignored_signals(path)
-    assert not mask & SIGINT_MASK_BIT, \
-        "%s inherited SIGINT ignored (%x)" % (who, mask)
-    assert not mask & SIGPIPE_MASK_BIT, \
-        "%s inherited SIGPIPE ignored (%x)" % (who, mask)
+    with open(path) as fh:
+        ignored = procinfo.signal_names(fh.read(), procinfo.SIGSTATE_IGNORED)
+    assert "INT" not in ignored, "%s inherited SIGINT ignored (%s)" % (who, ignored)
+    assert "PIPE" not in ignored, "%s inherited SIGPIPE ignored (%s)" % (who, ignored)
 
 
 def test_a_language_server_starts_with_default_signals(tmp_path):
@@ -83,7 +78,7 @@ def test_a_language_server_starts_with_default_signals(tmp_path):
     bindir.mkdir()
     out = tmp_path / "lsp-sigign.txt"
     _write_executable(str(bindir / "clangd"),
-                      "#!/bin/sh\n" + STANDIN_RECORD + "cat > /dev/null\n")
+                      "#!/bin/sh\n" + _standin_record(tmp_path) + "cat > /dev/null\n")
     env = {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", "")),
            "STANDIN_OUT": str(out)}
     with WpeSession(str(tmp_path), SEED_C_SOURCE, filename="demo.c",
@@ -100,8 +95,8 @@ def test_a_command_the_assistant_runs_starts_with_default_signals(tmp_path):
     """The assistant's run_command tool runs a shell command; it records the
     dispositions it was started with."""
     out = tmp_path / "tool-sigign.txt"
-    reply = ("TOOL run_command grep '^SigIgn' /proc/self/status > %s"
-             "@@TURN@@DONE recorded" % out)
+    reply = ("TOOL run_command \"%s\" > %s"
+             "@@TURN@@DONE recorded" % (procinfo.sigstate_program(tmp_path), out))
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
            "XWPE_AI_MOCK_REPLY": reply, "XWPE_AI_POLICY": "auto"}
     with WpeSession(str(tmp_path), SEED_C_SOURCE, env_extra=env) as w:
@@ -118,22 +113,13 @@ def test_a_script_run_from_the_editor_starts_with_default_signals(tmp_path):
     """Ctrl-F9 on a shell script runs it in the terminal; the script records
     the dispositions it was started with."""
     out = tmp_path / "script-sigign.txt"
-    script = "#!/bin/sh\ngrep '^SigIgn' /proc/$$/status > %s\n" % out
+    script = "#!/bin/sh\n\"%s\" > %s\n" % (procinfo.sigstate_program(tmp_path), out)
     with WpeSession(str(tmp_path), script, filename="run.sh",
                     wait=1.5) as w:
         w.key(SCRIPT_CTRL_F9, delay=0.8)
         assert _record_arrives(w, str(out)), "the script never ran"
         w.key(ENTER, delay=0.4)
     _assert_defaults(str(out), "the script")
-
-
-def _running(pid):
-    """True while `pid` exists and is not a zombie."""
-    try:
-        with open("/proc/%d/status" % pid) as fh:
-            return "State:\tZ" not in fh.read()
-    except OSError:
-        return False
 
 
 def _kill_quietly(pid):
@@ -171,11 +157,11 @@ def test_ctrl_c_that_stops_a_script_leaves_the_language_server_running(
         w.key(SCRIPT_CTRL_F9, delay=0.5)
         assert _record_arrives(w, str(script_pid)), "the script never ran"
         script = int(script_pid.read_text())
-        assert _running(server), "the server ended before the Ctrl-C"
+        assert gui_owner.process_running(server), "the server ended before the Ctrl-C"
         w.key(CTRL_C, delay=0.5)
         w._drain(CTRL_C_SETTLE_S)
-        script_ran_on = _running(script)
-        server_ran_on = _running(server)
+        script_ran_on = gui_owner.process_running(script)
+        server_ran_on = gui_owner.process_running(server)
         w.key(ENTER, delay=0.5)
         _kill_quietly(script)
         _kill_quietly(server)

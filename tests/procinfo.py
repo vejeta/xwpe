@@ -16,6 +16,9 @@ without /proc a word that holds a blank is taken as two words when the
 name is worked out from it.
 """
 import os
+import re
+import signal
+import stat
 import subprocess
 import sys
 
@@ -430,3 +433,247 @@ def children_in(ppid, workdir, comm):
         return []
     return [pid for pid in _proc_child_pids(ppid)
             if _live_comm_in(pid, comm, workdir)]
+
+
+# ---------------------------------------------------------------- path limit
+
+# What the smallest system (macOS and the BSDs) holds, used when the system
+# will not say.
+PATH_MAX_FALLBACK = 1024
+
+
+def _existing_ancestor(path):
+    """The deepest folder of @path that exists, so pathconf has something to
+    ask about when the row has not made its folder yet."""
+    path = os.path.abspath(str(path))
+    while not os.path.exists(path) and path != os.path.dirname(path):
+        path = os.path.dirname(path)
+    return path
+
+
+def path_max(path):
+    """The longest path, in bytes with its end mark, that the system holds
+    under @path: 4096 on Linux, 1024 on macOS and the BSDs.
+
+    A row that builds a deep folder asks it, so the folder is as deep as
+    this system can make it instead of as deep as Linux can, and a row about
+    the editor's own old cut at N bytes knows it cannot exist where N is
+    over the limit."""
+    try:
+        limit = os.pathconf(_existing_ancestor(path), "PC_PATH_MAX")
+    except (OSError, ValueError):
+        return PATH_MAX_FALLBACK
+    return limit if limit > 0 else PATH_MAX_FALLBACK
+
+
+# ------------------------------------------------------- open descriptors
+
+TOOL_TIMEOUT_S = 30
+LSOF_NUMBER_FIELD = "f"     # lsof -F f: one "f<fd>" line per descriptor
+LSOF_PROCESS_FIELD = "p"    # lsof -F f: one "p<pid>" line per process
+
+
+def _tool_output(argv):
+    """What the tool printed, or None when it is not installed or hung."""
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True,
+                                timeout=TOOL_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout
+
+
+def _proc_descriptors(pid):
+    """The descriptor numbers of pid from /proc, or None once it is gone."""
+    try:
+        names = os.listdir(os.path.join(PROC_ROOT, str(pid), "fd"))
+    except OSError:
+        return None
+    return sorted(int(name) for name in names if name.isdigit())
+
+
+def _lsof_descriptors(pid):
+    """The descriptor numbers of pid from lsof(8), or None when lsof is not
+    installed or knows no such process.  The current directory, the program
+    and the mapped files lsof also lists have no number and are left out."""
+    out = _tool_output(["lsof", "-p", str(pid), "-F", LSOF_NUMBER_FIELD])
+    if not out:
+        return None
+    lines = out.splitlines()
+    if not any(line.startswith(LSOF_PROCESS_FIELD) for line in lines):
+        return None
+    return sorted(int(line[1:]) for line in lines
+                  if line.startswith(LSOF_NUMBER_FIELD) and line[1:].isdigit())
+
+
+def _fstat_descriptors(pid):
+    """The descriptor numbers of pid from fstat(1), the tool the BSDs ship
+    in their base system (lsof is not there), or None when fstat is not
+    installed or knows no such process.  A row reads
+    "USER CMD PID FD MOUNT INUM MODE ..."; the working folder and the
+    program have a word in the FD column, not a number."""
+    out = _tool_output(["fstat", "-p", str(pid)])
+    if not out:
+        return None
+    row = re.compile(r"^\S+\s+.*?\s%d\s+(\S+?)\*?\s" % pid)
+    found = [row.match(line) for line in out.splitlines()]
+    found = [match.group(1) for match in found if match]
+    if not found:
+        return None
+    return sorted(int(fd) for fd in found if fd.isdigit())
+
+
+def open_descriptors(pid):
+    """The numbers of the descriptors pid holds open, sorted, or None when
+    this system cannot say.
+
+    A test that shows an error path leaves no descriptor behind lists them
+    before and after.  Linux answers from /proc; elsewhere lsof(8), then the
+    BSDs' own fstat(1).  None (no tool answers, or the process is gone) is
+    for the row to skip by name: "needs a descriptor table: /proc, lsof or
+    fstat"."""
+    if has_procfs():
+        return _proc_descriptors(pid)
+    for ask in (_lsof_descriptors, _fstat_descriptors):
+        found = ask(pid)
+        if found is not None:
+            return found
+    return None
+
+
+def cpu_seconds(pid):
+    """User plus system CPU time of pid in seconds, or None once it is gone
+    or this system cannot say.
+
+    A test samples it twice around a wait to show the editor did not spin
+    while it copied a file."""
+    ticks = cpu_ticks(pid)
+    if ticks is None:
+        return None
+    return ticks / os.sysconf("SC_CLK_TCK")
+
+
+# --------------------------------------------------------- signal states
+
+SIGSTATE_IGNORED = "IGNORED"
+SIGSTATE_BLOCKED = "BLOCKED"
+SIGSTATE_SOURCE = "sigstate.c"
+STATUS_MASK_LINES = {"SigIgn": SIGSTATE_IGNORED, "SigBlk": SIGSTATE_BLOCKED}
+SIGNAL_NUMBERS = range(1, 65)
+
+
+def sigstate_program(tmp_path):
+    """The path of tests/sigstate, which prints "IGNORED: INT PIPE ..." and
+    "BLOCKED: CHLD ..." for the signals the process it is started as ignores
+    and blocks.
+
+    A test that asks whether a program the editor started inherited an
+    ignored or blocked signal runs this as that program, on any system, by
+    names instead of the mask bits a /proc status shows (only Linux has them,
+    and bit numbers differ).  `make check` builds it beside the sources;
+    when it is missing it is compiled into @tmp_path with the build's
+    config.h, and the row skips by name when there is no C compiler."""
+    import pytest
+    tests = os.path.dirname(os.path.abspath(__file__))
+    top = os.path.join(tests, "..")
+    built = os.path.join(top, "sigstate")
+    source = os.path.join(tests, SIGSTATE_SOURCE)
+    if os.path.exists(built) and os.path.getmtime(built) >= os.path.getmtime(source):
+        return built
+    out = str(tmp_path / "sigstate")
+    cmd = [os.environ.get("CC", "cc"), "-o", out]
+    config_h = os.path.join(top, "config.h")
+    if os.path.exists(config_h):
+        cmd += ["-include", config_h]
+    cmd.append(source)
+    try:
+        built_ok = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode == 0
+    except OSError:
+        built_ok = False
+    if not built_ok:
+        pytest.skip("tests/sigstate.c does not build here: no C compiler")
+    return out
+
+
+def signal_names(text, which):
+    """The signal names on the @which line (SIGSTATE_IGNORED or
+    SIGSTATE_BLOCKED) of what sigstate printed.  A text with no such line is
+    a defect of the row, not an empty set, so it asserts."""
+    for line in text.splitlines():
+        head, _, names = line.partition(":")
+        if head == which:
+            return names.split()
+    raise AssertionError("no %s line in the signal state:\n%s" % (which, text))
+
+
+def _names_in_mask(mask):
+    """The names (without SIG) of the signals whose bit is set in a /proc
+    status mask."""
+    names = []
+    for number in SIGNAL_NUMBERS:
+        if mask >> (number - 1) & 1:
+            try:
+                names.append(signal.Signals(number).name[len("SIG"):])
+            except ValueError:
+                continue
+    return names
+
+
+def signal_state_of(pid):
+    """The signal state of a running pid, in the text sigstate prints, or
+    None once it is gone or when this system has no /proc to read it from.
+
+    Only a process that is already running needs it (gdb, jdb and the VM
+    under it); a program the editor starts is asked with sigstate_program,
+    which answers on every system."""
+    if not has_procfs():
+        return None
+    try:
+        with open(os.path.join(PROC_ROOT, str(pid), "status")) as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    out = []
+    for line in lines:
+        key, _, value = line.partition(":")
+        if key in STATUS_MASK_LINES:
+            names = _names_in_mask(int(value.strip(), 16))
+            out.append("%s: %s" % (STATUS_MASK_LINES[key], " ".join(names)))
+    return "\n".join(out) + "\n"
+
+
+def self_memory_file():
+    """The path of a file whose read fails with an input/output error (the
+    process's own memory at its start), or None where this system has none.
+
+    A copy of it shows the file manager ends a failed read with a box
+    instead of spinning."""
+    path = os.path.join(PROC_ROOT, "self", "mem")
+    return path if has_procfs() and os.path.exists(path) else None
+
+
+# ------------------------------------------------------------ the pty name
+
+# The names a pty's slave has: /dev/pts/N (Linux, FreeBSD), /dev/ttysNNN
+# (macOS), /dev/tty[p-z]N and /dev/tty[P-T]N (NetBSD, OpenBSD).  Not
+# /dev/ttyS0, a serial line.  The letters are the ones OpenBSD and NetBSD give
+# their ptys; on FreeBSD /dev/ttyu0 and /dev/ttyv0 are serial lines and the
+# console, but FreeBSD's ptys are /dev/pts/N, so those two are never passed as
+# a pty's name there.
+PTY_NAME_PREFIXES = ("/dev/pts/",) + tuple("/dev/tty" + letter
+                                           for letter in "pqrstuvwxyzPQRT")
+
+
+def is_pty_path(path):
+    """True when @path names a pty's slave on some system.
+
+    A test that shows a program was given a terminal of its own asks it of
+    the name the editor passed, instead of expecting Linux's /dev/pts/N.  A
+    name that exists must also be a character device, so an ordinary file
+    called like one is not taken for it."""
+    if not path.startswith(PTY_NAME_PREFIXES):
+        return False
+    if not os.path.exists(path):
+        return True
+    return stat.S_ISCHR(os.stat(path).st_mode)
