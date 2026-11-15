@@ -86,7 +86,9 @@ jobs:
             pkg install -y autoconf automake libtool gmake pkgconf ncurses \
               libX11 libXft cairo pango libvterm json-c texinfo openssl \
               xorg-vfbserver twm xdpyinfo python3 \
-              py311-pytest py311-pyte py311-wcwidth
+              py312-pytest py312-pyte py312-wcwidth
+            # FreeBSD's default Python is 3.12: the py312- flavours are the ones
+            # the package index carries (checked in packagesite, 2026-11-15).
             # freetype2.pc requires bzip2, which the base system does not ship a
             # .pc for: without this stub configure reports "Xft: no".
             if ! pkg-config --exists bzip2 2>/dev/null; then
@@ -95,7 +97,7 @@ jobs:
             fi
           run: |
             mkdir -p bsd-out
-            PY=python3.11
+            PY=python3.12
             rc=0
             autoreconf -fi > bsd-out/autoreconf.log 2>&1 || { tail -20 bsd-out/autoreconf.log; exit 1; }
             ./configure --without-gpm --disable-dependency-tracking \
@@ -163,11 +165,14 @@ jobs:
             # OpenBSD has no ncurses package (wide curses is in base) and its
             # TLS is libtls in base, so openssl is not installed.
             pkg_add -I gmake metaauto autoconf%2.72 automake%1.16 pkgconf \
-              cairo pango json-c libvterm python3 twm \
+              cairo pango json-c libvterm python%3.12 \
               py3-test py3-pyte py3-wcwidth
+            # twm, Xvfb and xdpyinfo are in OpenBSD's base X sets, not packages.
           run: |
             mkdir -p bsd-out
-            PY=python3
+            # The python package installs python3.12; take python3 only if a
+            # link by that name exists.
+            PY=$(command -v python3 || command -v python3.12)
             rc=0
             AUTOCONF_VERSION="$(ls /usr/local/bin/autoconf-* 2>/dev/null | sed 's/.*autoconf-//' | sort -V | tail -1)"
             AUTOMAKE_VERSION="$(ls -d /usr/local/share/automake-* 2>/dev/null | sed 's/.*automake-//' | sort -V | tail -1)"
@@ -239,9 +244,10 @@ jobs:
             export PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH
             pkgin -y update
             pkgin -y install gmake autoconf automake pkgconf cairo pango json-c \
-              ncurses openssl python313 py313-test py313-pyte py313-wcwidth
-            # The libvterm package name follows the pkgsrc module version.
-            pkgin -y install libvterm01 || pkgin -y install libvterm03 || true
+              ncurses openssl python313 py313-test py313-pyte py313-wcwidth \
+              libvterm03
+            # libvterm03 is libvterm 0.3, the version the other systems build with
+            # (both libvterm01 and libvterm03 are in the 10.0_2026Q3 index).
           run: |
             mkdir -p bsd-out
             PY=python3.13
