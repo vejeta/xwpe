@@ -1,0 +1,154 @@
+# Sites of tests/check-maintainability.sh that still stand, and the ceilings
+# it reports.
+#
+#   reference WORD=yes|no ...   the configuration the counts were measured in
+#   noproto FILE COUNT PASS     f() declarations of FILE (row 3)
+#   extern  FILE COUNT PASS     extern lines of a header's symbol in FILE (row 4)
+#   getenv  FILE COUNT PASS     getenv("XWPE_...") calls in FILE (row 5)
+#   ceiling FILE LONGEST NEST PARAMS6 DUP STATICS
+#
+# COUNT is the number of places in FILE; it may only fall.  The script fails
+# when a count is above its line, in every build.  PASS is the pass that
+# removes the sites: T14 prototypes and extern lines, C6 the readers of the
+# environment.  Each pass deletes the lines it clears; --strict ignores the
+# file.
+#
+# A line above the measurement is stale (lower it in the same change), but
+# only in the reference configuration: the build whose `we --version` line
+# ("built with: ...", read through tests/build-config.sh) has exactly the
+# words of the reference line below.  The reference line names every word the
+# binary prints, and the script fails when the two lists differ, so a word
+# configure gains is added here, not silently treated as another build.  Any
+# other build (--without-x, no assistant, macOS, the BSDs) compiles less, so
+# there a line above the measurement is reported, not failed, and a line for
+# a file of a feature the build lacks (make's feature source lists) is
+# reported as not built here.
+reference cairo=yes enable-ai=yes enable-ai-agent-host=yes enable-ai-tls=yes enable-trace=no libvterm=yes pango=yes with-gpm=yes with-wayland=yes with-x=yes with-xdb=no xft=yes
+#
+# A ceiling line holds, for a file, its longest function in lines, its deepest
+# nesting, the functions over six parameters, the duplicated blocks of six
+# lines or more, and the file-scope statics two functions share.  Ceilings are
+# REPORT ONLY for now: a measure above its line is printed and never fails; a
+# file's lines become strict when the sweep has finished the file.  Measured on
+# the reference configuration (--enable-ai --with-wayland
+# --enable-ai-agent-host, with X11).
+
+# row 3: a call is checked against nothing
+noproto WeXterm.h 1 T14
+noproto edit.h 2 T14
+noproto we_edit.c 3 T14
+noproto we_fl_fkt.c 2 T14
+noproto we_mouse.c 1 T14
+noproto we_term.c 2 T14
+noproto we_wayland.c 5 T14
+
+# row 4: the header is the one place a declaration lives
+extern we_ai_http.c 1 T14
+extern we_debug.c 4 T14
+extern we_e_aus.c 5 T14
+extern we_edit.c 1 T14
+extern we_fl_unix.c 1 T14
+extern we_hfkt.c 1 T14
+extern we_main.c 1 T14
+extern we_mouse.c 2 T14
+extern we_prog.c 1 T14
+extern we_render_cairo.c 5 T14
+extern we_term.c 6 T14
+extern we_unix.c 1 T14
+extern we_wayland.c 2 T14
+extern we_wind.c 2 T14
+extern we_xterm.c 4 T14
+
+# row 5: the trace is wpe_ui_trace (we_paint.c); the rest read the environment
+# where they use it
+getenv we_ai_host.c 1 C6
+getenv we_ai_ui.c 3 C6
+getenv we_debug.c 4 C6
+getenv we_edit.c 2 C6
+getenv we_lsp.c 1 C6
+getenv we_prog.c 3 C6
+getenv we_render_cairo.c 2 C6
+getenv we_render_wayland.c 1 C6
+getenv we_term.c 2 C6
+getenv we_unix.c 2 C6
+getenv we_wayland.c 8 C6
+getenv we_xterm.c 1 C6
+
+# rows 1 and 2: report only
+ceiling WeExpArr.c 21 3 0 0 0
+ceiling WeLinux.c 27 3 0 0 0
+ceiling WeString.c 21 3 0 0 0
+ceiling WeSyntax.c 187 5 0 0 0
+ceiling WeXterm.c 282 4 0 0 11
+ceiling we_ai.c 88 6 0 4 4
+ceiling we_ai_diff.c 67 5 0 0 0
+ceiling we_ai_host.c 78 4 1 1 0
+ceiling we_ai_http.c 49 4 4 0 0
+ceiling we_ai_path.c 22 3 1 0 0
+ceiling we_ai_ui.c 161 5 5 7 46
+ceiling we_ai_ws.c 97 6 1 0 14
+ceiling we_bars.c 23 2 0 0 1
+ceiling we_bindings.c 33 3 2 0 1
+ceiling we_block.c 82 5 5 41 0
+ceiling we_bsp.c 42 3 0 4 1
+ceiling we_buffer.c 69 4 22 3 4
+ceiling we_child.c 59 3 3 1 6
+ceiling we_child.h 0 0 0 3 0
+ceiling we_clip.c 37 2 0 0 0
+ceiling we_closed.c 18 2 0 0 2
+ceiling we_dap.c 38 3 1 3 1
+ceiling we_dap_proto.c 48 4 0 0 0
+ceiling we_debpath.c 11 2 0 0 0
+ceiling we_debprompt.c 35 3 0 0 3
+ceiling we_debreq.c 46 3 0 0 0
+ceiling we_debsess.c 35 3 0 0 0
+ceiling we_debug.c 135 6 2 46 107
+ceiling we_e_aus.c 210 6 5 1 1
+ceiling we_edit.c 410 5 5 5 0
+ceiling we_errpat.c 54 4 0 0 0
+ceiling we_fdloop.c 28 3 0 0 7
+ceiling we_features.c 21 2 0 0 0
+ceiling we_fileop.c 51 4 0 0 0
+ceiling we_fl_fkt.c 130 5 1 12 1
+ceiling we_fl_unix.c 1047 6 1 33 1
+ceiling we_gdbmi.c 30 3 0 0 0
+ceiling we_gpm.c 58 3 0 0 0
+ceiling we_helpbuf.c 19 2 1 0 0
+ceiling we_hfkt.c 34 2 0 0 1
+ceiling we_keymap.c 54 3 1 0 0
+ceiling we_layout.c 41 3 1 0 10
+ceiling we_layout_desk.c 14 2 0 0 0
+ceiling we_lineend.c 42 3 6 1 0
+ceiling we_listsel.c 36 2 0 0 0
+ceiling we_lsp.c 102 5 12 31 1
+ceiling we_lsp_pos.c 28 3 0 0 0
+ceiling we_main.c 186 4 0 0 0
+ceiling we_menue.c 199 4 5 1 0
+ceiling we_menurows.c 17 2 0 0 0
+ceiling we_menus.c 20 2 0 0 2
+ceiling we_mouse.c 152 4 0 3 0
+ceiling we_mousedrain.c 13 2 0 0 0
+ceiling we_number.c 20 2 0 0 0
+ceiling we_opt.c 148 5 10 5 17
+ceiling we_optval.c 30 3 0 0 0
+ceiling we_paint.c 22 3 0 3 8
+ceiling we_path.c 24 2 0 0 0
+ceiling we_prog.c 171 6 2 11 22
+ceiling we_progn.c 282 8 1 20 2
+ceiling we_progname.c 13 2 0 0 0
+ceiling we_render_cairo.c 51 4 2 2 15
+ceiling we_render_wayland.c 24 2 1 0 4
+ceiling we_rowfind.c 45 3 3 0 5
+ceiling we_startcmd.c 22 3 0 2 3
+ceiling we_startplan.c 61 4 0 4 4
+ceiling we_startplan.h 0 0 0 3 0
+ceiling we_term.c 201 5 0 0 12
+ceiling we_termrelease.c 28 4 1 0 0
+ceiling we_testdump.c 41 3 0 0 9
+ceiling we_trace.c 14 2 0 0 0
+ceiling we_unix.c 143 5 0 3 7
+ceiling we_vterm.c 34 2 0 0 0
+ceiling we_wayland.c 124 4 3 5 24
+ceiling we_wind.c 221 6 6 11 1
+ceiling we_write.c 52 4 3 0 2
+ceiling we_xterm.c 196 6 0 7 8

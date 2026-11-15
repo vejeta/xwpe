@@ -44,6 +44,12 @@ wpe_built() {
   exit 99
 }
 
+# wpe_built_with -- the whole "word=yes word=no ..." line, for a check
+# written in another language that judges the words itself.
+wpe_built_with() {
+  printf '%s\n' "$_wpe_features"
+}
+
 # wpe_option_of WORD -- what the user typed: --enable-ai, --with-x; a
 # library's name stays as it is.
 wpe_option_of() {

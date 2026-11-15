@@ -801,6 +801,14 @@ TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_
 # its own.  Offenders still to go are in tests/one-owner.allow.
 TESTS += tests/check-one-owner.sh
 
+# The editor's own C stays readable as the sweep changes it:
+# tests/check-maintainability.sh measures the preprocessed sources with this
+# build's own flags.  No f() declaration, no extern of a header's symbol, no
+# getenv("XWPE_...") outside its owners and the terminal's mouse symbols in
+# we_term.c are counted per file in tests/maintainability.allow (a count may
+# only fall); the per-file and tree ceilings are reported, not enforced yet.
+TESTS += tests/check-maintainability.sh
+
 # The test hang guard and the per-test deadline runner (see test_watchdog).
 TESTS += test_watchdog tests/check-with-deadline.sh
 
@@ -927,6 +935,9 @@ AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
   CC='$(CC)'; export CC; NCURSESW_CFLAGS='$(NCURSESW_CFLAGS)'; export NCURSESW_CFLAGS; \
   KEYMAP_TEXI='$(top_builddir)/tools/keymap-texi$(EXEEXT)'; export KEYMAP_TEXI; \
   ONE_OWNER_OBJECTS='$(we_OBJECTS)'; export ONE_OWNER_OBJECTS; \
+  MAINT_CC='$(CC)'; export MAINT_CC; \
+  MAINT_FLAGS='$(DEFS) $(DEFAULT_INCLUDES) -I$(srcdir) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)'; export MAINT_FLAGS; \
+  MAINT_SOURCES='$(we_SOURCES)'; export MAINT_SOURCES; \
   WPE_BUILD_BINARY='$(top_builddir)/we$(EXEEXT)'; export WPE_BUILD_BINARY; \
   WPE_FEATURE_SOURCES='with-x:$(X11_SOURCES);cairo:$(CAIRO_SOURCES);with-gpm:$(GPM_SOURCES);libvterm:$(VTERM_SOURCES);with-wayland:$(WAYLAND_SOURCES);enable-ai:$(AI_SOURCES);enable-ai-agent-host:$(AI_HOST_SOURCES)'; export WPE_FEATURE_SOURCES; \
   WPE_FEATURE_TESTS='enable-ai:$(AI_TESTS);enable-ai-tls:$(AI_TLS_CHECK)'; export WPE_FEATURE_TESTS;
@@ -995,6 +1006,10 @@ EXTRA_DIST = \
   tests/run-tests.sh \
   tests/check-one-owner.sh \
   tests/one-owner.allow \
+  tests/check-maintainability.sh \
+  tests/maintainability.py \
+  tests/maintainability.allow \
+  tests/frames_compare.py \
   tests/with-deadline.sh \
   tests/check-with-deadline.sh \
   tests/test_watchdog.h \

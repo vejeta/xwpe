@@ -230,6 +230,48 @@ is how the X11-repaint use-after-free and the Ctrl-K V block-move overflow
 were found.  `tests/run-tests.sh --asan` does it for you; see HACKING.md
 ("Debugging crashes and memory bugs") for valgrind and the `we-asan` recipe.
 
+### Parent against candidate (`tests/frames_compare.py`)
+
+A change that must not alter what the editor draws is proved by identical
+output.  Pixels depend on the installed fonts, so no frame is stored in the
+repository: build the parent commit and the candidate on this host, then
+
+```bash
+tests/.venv/bin/python tests/frames_compare.py PARENT_BUILD CANDIDATE_BUILD \
+    [--sessions x11,wayland,pyte] [--out DIR] [--keep]
+```
+
+A build is a folder with the built `xwpe` and `wpe` and the data files beside
+them.  The script builds nothing.  It replays the same four steps (start, the
+File menu, Escape, typed text) under each tree: on a private Xvfb with
+matchbox (the editor's `XWPE_X_DUMP` frame), on a private weston (its
+`XWPE_WL_DUMP` frame), and under a pty (pyte's screen text plus every cell's
+colours).  A frame is taken only when it has stopped changing for a whole
+quiet period, never after a fixed sleep, and a session whose menu step left
+the frame as it was is refused, so two blank windows cannot compare equal.
+The servers belong to the `gui_owner.py` owner and use displays of their own.
+
+Exit 0 means every frame is byte-identical.  Exit 1 names the first differing
+step with its first differing pixel or cell.  The frames and logs go to a
+scratch folder, removed when every frame is identical unless `--keep` or
+`--out DIR` was given; an `--out` inside the repository is refused.
+
+## Maintainability (`tests/check-maintainability.sh`)
+
+`make check` also runs `tests/check-maintainability.sh`, which measures the
+preprocessed sources with the build's own flags (`tests/maintainability.py`).
+It fails on a `f()` declaration, an `extern` of a header's symbol, or a
+`getenv("XWPE_...")` outside its owners beyond the counts in
+`tests/maintainability.allow` (counts only fall), and when the console mouse
+symbols leave `we_term.c`.  A count above its line fails in every build; a
+line above the measurement (stale) fails only in the reference configuration,
+the `reference` line of the allow file, compared with the `built with:` words
+of `we --version`.  Other builds compile less (`--without-x`, no assistant,
+macOS, the BSDs), so there a stale line is reported and a line for a file of a
+missing feature is reported as not built here.  The per-file and tree
+ceilings are printed, not enforced yet.  `--selftest` plants one offence per
+row; `--list` prints the allow lines, and the reference line, of this build.
+
 ## The scenario harness (`tests/harness/`)
 
 Some areas of the editor are covered scenario by scenario instead of file by
