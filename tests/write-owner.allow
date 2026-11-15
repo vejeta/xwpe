@@ -36,7 +36,8 @@ we_main.c|r6:e_msg|1|keep|the message table: the entry stays for e_prj_say_open_
 we_ai.c|r2:wpe_ai_trace|1|keep|a behaviour trace
 we_ai.c|r2:wpe_ai_write_openai_key|2|keep|the key file, written with its own mode
 we_ai_ui.c|r2:ai_consent_remember|1|keep|the consent marker
-we_child.c|r2:wpe_child_io_tty|1|keep|a child's terminal
+we_child.c|r2:wpe_child_io_tty_path|1|keep|the editor's terminal, handed to a child
+we_child.c|r2:wpe_child_tty_open_named|1|keep|a child's terminal, opened by its name
 we_child.c|r2:wpe_child_stdout_to_file|1|keep|a child's output file
 we_debug.c|r2:e_d_script_connect|2|keep|the debugger's own pty and pipe
 we_debug.c|r2:e_d_script_write|1|keep|the script handed to the debugger

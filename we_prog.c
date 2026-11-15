@@ -1137,6 +1137,8 @@ static int e_run_start(WpeStartPlan *plan)
  io.group = WPE_CHILD_OWN_SESSION;
  io.side_pty_slave = WPE_CHILD_NO_FD;
  io.tty_fd = WPE_CHILD_NO_FD;
+ io.tty_or_without = 1;   /* a system that refuses the terminal is told in
+                             Messages, and the program still runs */
  io.what = E_RUN_WHAT;
  e_run_prog.ended = 0;
  e_run_prog.status = 0;

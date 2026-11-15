@@ -1,0 +1,15 @@
+{
+ "capability": "child-tty",
+ "scenarios": [
+  {"id": "SC-child-tty-01", "requirement": "A child that is to have a terminal but not a session of its own is refused before the fork, with the sentence on the status row and EINVAL", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-02", "requirement": "A child whose terminal the system refuses says so on that terminal, where the user reads it, and ends as a command that cannot run", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-03", "requirement": "The terminal refusal is said also when the spec does not ask for failures to be named", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-04", "requirement": "A tty_fd that is a closed descriptor (EBADF) or no terminal (ENOTTY) is refused before the fork, said on the status row, no child", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-05", "requirement": "The Run menu's program leads its own session with the pty its controlling terminal on 0, 1 and 2 and no other descriptor, and the name kept from the pair to the child", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-06", "requirement": "A child given the editor's pty slave by tty_fd has it as its terminal and names a directory it cannot enter there, each on a pty of its own", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-07", "requirement": "After a pty start the editor holds the master and no copy of the program's end", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-08", "requirement": "A program that may run without a controlling terminal, refused one by the system, says so on the pty and runs on it", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-09", "requirement": "A tty_fd stays the caller's: the owner neither closes it nor keeps a copy of it", "layer": "c-unit", "test": "test_child", "status": "new"},
+  {"id": "SC-child-tty-10", "requirement": "A pty name that leads to another terminal and cannot be proved by the parent is handed to the child, which does not open it and has its own terminal through the carrier", "layer": "c-unit", "test": "test_child", "status": "new"}
+ ]
+}

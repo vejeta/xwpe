@@ -213,6 +213,7 @@ typedef struct {
  int stderr_nonblocking;
  int side_pty_slave;
  int tty_fd;
+ int tty_or_without;
  const char *tty_path;
  int say_failed;
  int echo_argv;

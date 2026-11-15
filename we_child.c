@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #if defined(HAVE_PTY_H)
@@ -44,7 +45,11 @@
 #define WPE_CHILD_EXEC_FAILED 1          /* a command that could not run */
 #define WPE_CHILD_SAID_FAILED 127        /* one that said why, as a shell's */
 #define WPE_CHILD_SAY_MAX     (WPE_PATH_SIZE + 128)
-#define WPE_CHILD_TTY_FAILED_FMT  "cannot give %s a terminal: %s\r\n"
+#define WPE_CHILD_TTY_PATH_SIZE   WPE_PATH_SIZE  /* a terminal's path */
+#define WPE_CHILD_TTY_FAILED_TEXT "cannot give %s a terminal: %s"
+#define WPE_CHILD_TTY_FAILED_FMT  WPE_CHILD_TTY_FAILED_TEXT "\r\n"
+#define WPE_CHILD_TTY_WITHOUT_TEXT "%s runs without a controlling terminal: %s"
+#define WPE_CHILD_TTY_WITHOUT_FMT WPE_CHILD_TTY_WITHOUT_TEXT "\r\n"
 #define WPE_CHILD_DIR_FAILED_FMT  "cannot enter %s: %s\r\n"
 #define WPE_CHILD_RUN_FAILED_FMT  "cannot run %s: %s\r\n"
 #define WPE_CHILD_LINE_MAX    128        /* a line for the status row */
@@ -181,6 +186,28 @@ static void wpe_child_say(const char *fmt, const char *what)
   what = WPE_CHILD_UNNAMED;
  snprintf(line, sizeof line, fmt, what);
  wpe_child_say_hook(line);
+}
+
+/**
+ * wpe_child_say_reason - Tell the user why a child could not be started,
+ * naming it.
+ * @fmt: a format with two %s, what the child is and the reason; @what: that;
+ * @err: the errno of the refusal.
+ *
+ * errno is @err when it returns: the editor's hook draws, and the caller
+ * hands the refusal's errno on to its own caller.
+ */
+static void wpe_child_say_reason(const char *fmt, const char *what, int err)
+{
+ char line[WPE_CHILD_LINE_MAX];
+
+ if (wpe_child_say_hook)
+ {
+  snprintf(line, sizeof line, fmt, what ? what : WPE_CHILD_UNNAMED,
+           strerror(err));
+  wpe_child_say_hook(line);
+ }
+ errno = err;
 }
 
 /**
@@ -851,10 +878,16 @@ static int wpe_child_spec_wants_err_pipe(const WpeChildSpec *spec)
         !spec->stderr_inherit);
 }
 
-/* The two ends of a child's pty, WPE_CHILD_NO_FD where it has none. */
+/* The two ends of a child's pty, WPE_CHILD_NO_FD where it has none, and the
+   slave's path. */
 typedef struct {
  int master;                     /* the editor's: what the program writes */
- int slave;                      /* the child's terminal */
+ int slave;                      /* WPE_CHILD_IO_PTY: the parent's copy of the
+                                    program's end, a carrier of the name, closed
+                                    in the parent after the fork.  Never set for
+                                    a tty_fd: that descriptor is the caller's */
+ char slave_name[WPE_CHILD_TTY_PATH_SIZE];  /* what the child opens, as a
+                                    session leader; empty when unknown */
 } WpeChildPty;
 
 /**
@@ -883,33 +916,172 @@ static void wpe_child_pty_close(WpeChildPty *t)
 }
 
 /**
- * wpe_child_pty_open - The pty the spec asks for.
- * @spec: the child; @t: receives it, both ends WPE_CHILD_NO_FD when none
- * is wanted.
- *
- * With pty_raw the terminal does no output processing, so what the program
- * prints reaches the editor as it wrote it, with no carriage return added
- * to each line end.
- * Return: 0, or -1 (and nothing open) when no pty could be had.
+ * wpe_child_tty_name_is - Does the path @name lead to the terminal open on
+ * @fd?  Device, inode and device number all agree: a name from another
+ * instance of the terminal filesystem (a mount namespace's) can repeat the
+ * number of a terminal that is not this one, and opening it would give a
+ * session leader that other terminal.  The answer is read without opening
+ * the name.
  */
-static int wpe_child_pty_open(const WpeChildSpec *spec, WpeChildPty *t)
+static int wpe_child_tty_name_is(const char *name, int fd)
+{
+ struct stat by_name, by_fd;
+
+ if (name[0] == '\0')
+  return(0);
+ if (stat(name, &by_name) != 0 || fstat(fd, &by_fd) != 0)
+  return(0);
+ return(by_name.st_dev == by_fd.st_dev && by_name.st_ino == by_fd.st_ino &&
+        by_name.st_rdev == by_fd.st_rdev);
+}
+
+/**
+ * wpe_child_pty_pair - The one openpty of the tree: both ends and the
+ * slave's name.
+ * @master, @slave: receive the ends; @name, @n: receive the slave's path,
+ * proved to lead to the slave: openpty's name, else ttyname_r's (a mount
+ * namespace's instance of the terminal filesystem can make openpty's name
+ * lead to another terminal).  Empty when neither is proved.
+ * @unproved: when not NULL and nothing is proved, receives openpty's own
+ * name (empty when it gave none), for a caller that lets the child prove it.
+ * Return: 0, or -1 with both ends WPE_CHILD_NO_FD and an empty name.
+ */
+static int wpe_child_pty_pair(int *master, int *slave, char *name, size_t n,
+                              char *unproved, size_t unproved_n)
+{
+ char path[WPE_CHILD_TTY_PATH_SIZE];
+ char by_fd[WPE_CHILD_TTY_PATH_SIZE];
+
+ path[0] = '\0';
+ name[0] = '\0';
+ if (unproved)
+  unproved[0] = '\0';
+ *master = *slave = WPE_CHILD_NO_FD;
+ if (openpty(master, slave, path, NULL, NULL) != 0)
+ {
+  *master = *slave = WPE_CHILD_NO_FD;
+  return(-1);
+ }
+ if (wpe_child_tty_name_is(path, *slave))
+  snprintf(name, n, "%s", path);
+ else if (ttyname_r(*slave, by_fd, sizeof by_fd) == 0 &&
+          wpe_child_tty_name_is(by_fd, *slave))
+  snprintf(name, n, "%s", by_fd);
+ else if (unproved)
+  snprintf(unproved, unproved_n, "%s", path);
+ return(0);
+}
+
+/**
+ * wpe_child_spec_wants_tty - Is this child to have a controlling terminal?
+ * IO_PTY, or IO_TTY_PATH with a tty_fd (tty_path alone is the editor's own
+ * terminal, written and read, never taken).
+ */
+static int wpe_child_spec_wants_tty(const WpeChildSpec *spec)
+{
+ if (spec->io == WPE_CHILD_IO_PTY)
+  return(1);
+ return(spec->io == WPE_CHILD_IO_TTY_PATH && spec->tty_fd != WPE_CHILD_NO_FD);
+}
+
+/**
+ * wpe_child_tty_refused - A child that is to have a terminal and cannot: the
+ * reason is kept in errno for wpe_child_tty_start_refused, which says it on
+ * the status row once SIGCHLD is given back.
+ * @err: why.
+ * Return: -1, errno @err.
+ */
+static int wpe_child_tty_refused(int err)
+{
+ errno = err;
+ return(-1);
+}
+
+/**
+ * wpe_child_pty_raw - Make the editor's end of a pty raw: the terminal then
+ * does no output processing, so what the program prints reaches the editor
+ * as it wrote it, with no carriage return added to each line end.
+ */
+static void wpe_child_pty_raw(int master)
 {
  struct termios tio;
 
- t->master = t->slave = WPE_CHILD_NO_FD;
- if (spec->io != WPE_CHILD_IO_PTY)
-  return(0);
- if (openpty(&t->master, &t->slave, NULL, NULL, NULL) != 0)
- {
-  t->master = t->slave = WPE_CHILD_NO_FD;
-  return(-1);
- }
- if (spec->pty_raw && tcgetattr(t->master, &tio) == 0)
+ if (tcgetattr(master, &tio) == 0)
  {
   cfmakeraw(&tio);
-  tcsetattr(t->master, TCSANOW, &tio);
+  tcsetattr(master, TCSANOW, &tio);
  }
+}
+
+/**
+ * wpe_child_tty_prepare_pty - In the parent: the pty of an IO_PTY child,
+ * with the slave's name kept for the child to open.  The name is proved when
+ * it can be; one that cannot be proved here is still handed over, since the
+ * child proves it by stat before it opens it and takes the carrier when it
+ * fails.  Refused (ENODEV) only when the system gave no name at all.
+ * Return: 0, or -1 with nothing open, said on the status row.
+ */
+static int wpe_child_tty_prepare_pty(const WpeChildSpec *spec, WpeChildPty *t)
+{
+ char unproved[WPE_CHILD_TTY_PATH_SIZE];
+
+ if (wpe_child_pty_pair(&t->master, &t->slave, t->slave_name,
+                        sizeof t->slave_name, unproved, sizeof unproved) != 0)
+  return(wpe_child_tty_refused(errno));
+ if (t->slave_name[0] == '\0' && unproved[0] == '\0')
+ {
+  wpe_child_pty_close(t);
+  return(wpe_child_tty_refused(ENODEV));
+ }
+ if (t->slave_name[0] == '\0')   /* the child proves it before it opens it */
+  snprintf(t->slave_name, sizeof t->slave_name, "%s", unproved);
+ if (spec->pty_raw)
+  wpe_child_pty_raw(t->master);
  return(0);
+}
+
+/**
+ * wpe_child_tty_prepare_fd - In the parent: the terminal a caller handed
+ * over in tty_fd.  Its name is read for the child to open; a name that
+ * cannot be read (another instance of the terminal filesystem) leaves the
+ * name empty and the child takes the descriptor itself.  The descriptor
+ * stays the caller's: t->slave is not set.
+ * Return: 0, or -1 for a descriptor that is closed (EBADF) or no terminal
+ * (ENOTTY), said on the status row.
+ */
+static int wpe_child_tty_prepare_fd(const WpeChildSpec *spec, WpeChildPty *t)
+{
+ if (fcntl(spec->tty_fd, F_GETFD) < 0)
+  return(wpe_child_tty_refused(EBADF));
+ if (!isatty(spec->tty_fd))
+  return(wpe_child_tty_refused(ENOTTY));
+ if (ttyname_r(spec->tty_fd, t->slave_name, sizeof t->slave_name) != 0)
+  t->slave_name[0] = '\0';
+ return(0);
+}
+
+/**
+ * wpe_child_tty_prepare - In the parent, before the fork: everything the
+ * terminal step needs, or a refusal the status row explains.
+ * @spec: the child; @t: receives the pty, nothing open when none is wanted.
+ *
+ * A child that is to have a terminal but not a session of its own cannot
+ * take it (EINVAL).  An IO_PTY child gets a pty with its slave's name kept
+ * (pty_raw as ever); a tty_fd child, its descriptor's name.  Said once, as
+ * "cannot give <what> a terminal: <reason>", before any process exists.
+ * Return: 0, or -1 with nothing open and errno set.
+ */
+static int wpe_child_tty_prepare(const WpeChildSpec *spec, WpeChildPty *t)
+{
+ t->master = t->slave = WPE_CHILD_NO_FD;
+ t->slave_name[0] = '\0';
+ if (!wpe_child_spec_wants_tty(spec))
+  return(0);
+ if (spec->group != WPE_CHILD_OWN_SESSION)
+  return(wpe_child_tty_refused(EINVAL));
+ if (spec->io == WPE_CHILD_IO_PTY)
+  return(wpe_child_tty_prepare_pty(spec, t));
+ return(wpe_child_tty_prepare_fd(spec, t));
 }
 
 /**
@@ -926,14 +1098,8 @@ static int wpe_child_pty_open(const WpeChildSpec *spec, WpeChildPty *t)
  */
 int wpe_child_pty_make(int *master, int *slave, char *name, size_t n)
 {
- *master = *slave = WPE_CHILD_NO_FD;
- if (openpty(master, slave, NULL, NULL, NULL) != 0)
- {
-  *master = *slave = WPE_CHILD_NO_FD;
+ if (wpe_child_pty_pair(master, slave, name, n, NULL, 0) != 0)
   return(-1);
- }
- if (ttyname_r(*slave, name, n) != 0)
-  name[0] = '\0';
  wpe_child_fd_private(*master);
  fcntl(*slave, F_SETFD, FD_CLOEXEC);
  return(0);
@@ -1068,29 +1234,103 @@ static void wpe_child_say_failed(const WpeChildSpec *spec, const char *fmt,
  _exit(WPE_CHILD_SAID_FAILED);
 }
 
-static void wpe_child_io_pty(WpeChildPty *t);   /* (below) */
+/**
+ * wpe_child_tty_refuse - In the child: a terminal the system would not give
+ * it, said on fd 2 (the terminal by then), where the user reads it in
+ * Messages.  The child ends as a command that cannot run (127), unless the
+ * spec asks for it to run without (tty_or_without): then it returns.
+ * @spec: the child; @err: why.
+ *
+ * Always said, whatever say_failed: nothing else of the editor reads this
+ * terminal, and a program that silently has none is the worse failure.
+ */
+static void wpe_child_tty_refuse(const WpeChildSpec *spec, int err)
+{
+ char line[WPE_CHILD_SAY_MAX];
+ const char *fmt = WPE_CHILD_TTY_FAILED_FMT;
+ const char *what = spec->what ? spec->what : WPE_CHILD_UNNAMED;
+
+ if (spec->tty_or_without)
+  fmt = WPE_CHILD_TTY_WITHOUT_FMT;
+ snprintf(line, sizeof line, fmt, what, strerror(err));
+ if (write(STDERR_FILENO, line, strlen(line)) < 0)
+  line[0] = '\0';   /* nowhere to say it: the end below is still the answer */
+ if (!spec->tty_or_without)
+  _exit(WPE_CHILD_SAID_FAILED);
+}
 
 /**
- * wpe_child_io_tty - In the child: the terminal the spec names on 0, 1 and
- * 2.  A pty slave of the editor's (tty_fd) becomes its controlling terminal,
- * so the program reads what the user types and a hangup ends it; a terminal
- * named by its path (the editor's own) is only written and read.
+ * wpe_child_tty_carrier - In the child: the descriptor the terminal can be
+ * had from without its name: the pair's slave, or the caller's tty_fd.
+ */
+static int wpe_child_tty_carrier(const WpeChildSpec *spec, const WpeChildPty *t)
+{
+ if (spec->io == WPE_CHILD_IO_PTY)
+  return(t->slave);
+ return(spec->tty_fd);
+}
+
+/**
+ * wpe_child_tty_open_named - In the child, a session leader by now: open
+ * the terminal by its name, so that the system that gives a leader its
+ * terminal on an open does.
+ * @slave_name: the path; @carrier: the descriptor the parent made it with.
+ * Return: the descriptor, or -1 when the name is unknown, names another
+ * terminal than the carrier (a mount namespace's) or cannot be opened.
+ * The name is proved by stat BEFORE the open, since the open itself gives a
+ * leader the terminal it names: a wrong one cannot be given back.
+ */
+static int wpe_child_tty_open_named(const char *slave_name, int carrier)
+{
+ if (!wpe_child_tty_name_is(slave_name, carrier))
+  return(-1);
+ return(open(slave_name, O_RDWR));   /* no O_NOCTTY, as login does */
+}
+
+/**
+ * wpe_child_tty_take - In the child, a session leader by now: the terminal
+ * named in @t becomes its controlling terminal and its 0, 1 and 2.
+ * @spec: the child; @t: the pty (the name; the slave of an IO_PTY child).
+ *
+ * The OpenSSH order with the dup2 before the ioctl, so that a refusal is
+ * said on the terminal: the name is opened (System V, Linux and Darwin give
+ * a leader its terminal on this open; the BSDs only by the ioctl below),
+ * the carrier is used when the name cannot be, TIOCSCTTY is issued (a
+ * confirmation where the open already acquired), and tcgetpgrp proves the
+ * terminal is the child's own.  The child that cannot is refused
+ * (wpe_child_tty_refuse).
+ */
+static void wpe_child_tty_take(const WpeChildSpec *spec, WpeChildPty *t)
+{
+ int carrier = wpe_child_tty_carrier(spec, t);
+ int fd = wpe_child_tty_open_named(t->slave_name, carrier);
+
+ if (fd < 0)
+  fd = carrier;
+ dup2(fd, WPE_CHILD_FD_IN);
+ dup2(fd, STDOUT_FILENO);
+ dup2(fd, STDERR_FILENO);
+ if (fd > STDERR_FILENO)
+  close(fd);
+ if (carrier != fd && carrier > STDERR_FILENO)
+  close(carrier);
+ t->slave = WPE_CHILD_NO_FD;
+ if (ioctl(WPE_CHILD_FD_IN, TIOCSCTTY, 0) != 0)
+  wpe_child_tty_refuse(spec, errno);
+ else if (tcgetpgrp(WPE_CHILD_FD_IN) != getpgrp())
+  wpe_child_tty_refuse(spec, ENOTTY);
+}
+
+/**
+ * wpe_child_io_tty_path - In the child: the terminal the spec names by its
+ * path (the editor's own) on 0, 1 and 2, only written and read, never taken
+ * as the controlling one.
  * @spec: the child.
  */
-static void wpe_child_io_tty(const WpeChildSpec *spec)
+static void wpe_child_io_tty_path(const WpeChildSpec *spec)
 {
- WpeChildPty t;
  int fd;
 
- if (spec->tty_fd != WPE_CHILD_NO_FD)
- {
-  t.master = WPE_CHILD_NO_FD;
-  t.slave = spec->tty_fd;
-  if (ioctl(t.slave, TIOCSCTTY, 0) != 0)
-   wpe_child_say_failed(spec, WPE_CHILD_TTY_FAILED_FMT, spec->what);
-  wpe_child_io_pty(&t);
-  return;
- }
  fd = open(spec->tty_path, O_RDWR | O_NOCTTY);
  if (fd < 0)
   wpe_child_say_failed(spec, WPE_CHILD_TTY_FAILED_FMT, spec->what);
@@ -1119,13 +1359,14 @@ static void wpe_child_side_pty(const WpeChildSpec *spec)
  */
 static void wpe_child_io(const WpeChildSpec *spec, int (*p)[2], WpeChildPty *t)
 {
- if (spec->io == WPE_CHILD_IO_PTY)
+ if (wpe_child_spec_wants_tty(spec))
  {
-  close(t->master);
-  wpe_child_io_pty(t);
+  if (t->master != WPE_CHILD_NO_FD)
+   close(t->master);   /* never the child's */
+  wpe_child_tty_take(spec, t);
  }
  else if (spec->io == WPE_CHILD_IO_TTY_PATH)
-  wpe_child_io_tty(spec);
+  wpe_child_io_tty_path(spec);
  else if (wpe_child_io_has_side_pty(spec->io))
   wpe_child_side_pty(spec);
  if (wpe_child_io_has_pipes(spec->io))
@@ -1144,25 +1385,6 @@ static void wpe_child_take_group(const WpeChildSpec *spec)
   setpgid(0, 0);
  else if (spec->group == WPE_CHILD_OWN_SESSION)
   wpe_child_apart_from_terminal();
-}
-
-/**
- * wpe_child_io_pty - In the child, in a session of its own: the pty
- * becomes its controlling terminal and its 0, 1 and 2.
- * @t: the pty; the slave is closed here once on 0, 1 and 2.
- *
- * dlv runs its program in the foreground of that terminal, which a pipe
- * cannot be, and the program's output then reaches the editor's master.
- */
-static void wpe_child_io_pty(WpeChildPty *t)
-{
- ioctl(t->slave, TIOCSCTTY, 0);
- dup2(t->slave, WPE_CHILD_FD_IN);
- dup2(t->slave, STDOUT_FILENO);
- dup2(t->slave, STDERR_FILENO);
- if (t->slave > STDERR_FILENO)
-  close(t->slave);
- t->slave = WPE_CHILD_NO_FD;
 }
 
 /**
@@ -1315,6 +1537,22 @@ static int wpe_child_start_failed(const sigset_t *saved)
 }
 
 /**
+ * wpe_child_tty_start_refused - The terminal step refused (errno says why):
+ * nothing runs.  SIGCHLD is given back first, then the status row says it.
+ * @spec: the child; @saved: the mask to restore.
+ * Return: -1, errno as the refusal left it.
+ */
+static int wpe_child_tty_start_refused(const WpeChildSpec *spec,
+                                       const sigset_t *saved)
+{
+ int err = errno;
+
+ wpe_child_start_failed(saved);
+ wpe_child_say_reason(WPE_CHILD_TTY_FAILED_TEXT, spec->what, err);
+ return(-1);
+}
+
+/**
  * wpe_child_spec_leads_group - Do the child's signals go to its group?
  *
  * Not for one whose group may hold what others share (the build server's
@@ -1360,8 +1598,8 @@ int wpe_child_start(const WpeChildSpec *spec, WpeChild *c,
  WpeChildSignalBlock(&saved);
  if (!wpe_child_room())
   return(wpe_child_refuse(spec, &saved));
- if (wpe_child_pty_open(spec, &t) < 0)
-  return(wpe_child_start_failed(&saved));
+ if (wpe_child_tty_prepare(spec, &t) < 0)
+  return(wpe_child_tty_start_refused(spec, &saved));
  if (wpe_child_pipes_open(spec, p) < 0)
  {
   wpe_child_pty_close(&t);

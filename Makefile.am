@@ -1030,6 +1030,7 @@ EXTRA_DIST = \
   tests/test_list_entry.py \
   tests/check-program-name.sh \
   tests/check-tty-open.sh \
+  tests/tty-open.allow \
   tests/program-name.allow \
   tests/check-box-layout.sh \
   tests/box-layout.allow \

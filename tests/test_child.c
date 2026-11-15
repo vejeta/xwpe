@@ -16,8 +16,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <dlfcn.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
+#include <pty.h>
+#include <termios.h>
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
@@ -66,6 +70,15 @@
 #define SIDE_PTY_NAME_MAX  64
 #define NO_SUCH_DIR        "/nonexistent/xwpe-test-no-such-dir"
 #define SAID_FAILED_EXIT   127   /* the child named why it could not run */
+#define TTY_PROBE_ARG      "--tty-probe"
+#define TTY_WAIT_MS        test_scaled_ms(3000)
+#define TTY_SAYS_FAILED    "cannot give the test child a terminal: "
+#define TTY_SAYS_WITHOUT   "the test child runs without a controlling terminal: "
+#define TTY_TAKEN_REASON   "Operation not permitted"
+#define DEAD_FD            200   /* a descriptor number nothing opens */
+/* A child that holds its pty as its controlling terminal until it is ended. */
+#define TTY_HOLDER_SCRIPT  "echo up; sleep 30"
+#define HOLDER_SAYS        "up"
 /* A shell that starts a sleeper in its group, says its pid, and waits. */
 #define BACKGROUND_SLEEPER "sleep 30 & echo $!; wait"
 /* A child that ends after the first one's report has begun to wait. */
@@ -76,6 +89,38 @@
 
 static int fails;
 static pid_t read_pid(int fd);
+
+/* A name the system's terminal calls say for every pty while a row sets it:
+ * what a mount namespace's other instance of the terminal filesystem does
+ * (the name leads to another terminal than the one just made).  The
+ * executable's own definitions come before the library's in the lookup, so
+ * the owner's calls reach these, which pass to the library's and then say
+ * the name. */
+static const char *fake_tty_name;
+
+int openpty(int *master, int *slave, char *name, const struct termios *tio,
+            const struct winsize *ws)
+{
+	int (*real)(int *, int *, char *, const struct termios *,
+	            const struct winsize *) = dlsym(RTLD_NEXT, "openpty");
+	int r = real(master, slave, name, tio, ws);
+
+	if (r == 0 && name && fake_tty_name)
+		strcpy(name, fake_tty_name);
+	return r;
+}
+
+int ttyname_r(int fd, char *buf, size_t n)
+{
+	int (*real)(int, char *, size_t) = dlsym(RTLD_NEXT, "ttyname_r");
+
+	if (!fake_tty_name)
+		return real(fd, buf, n);
+	if (strlen(fake_tty_name) >= n)
+		return ERANGE;
+	strcpy(buf, fake_tty_name);
+	return 0;
+}
 
 static void chk(const char *what, long got, long want)
 {
@@ -91,13 +136,6 @@ static void chk_true(const char *what, int cond)
 		printf("FAIL: %s\n", what);
 		fails++;
 	}
-}
-
-/* The handler the editor installs (WpeSignalChild), in its essentials. */
-static void on_child(int sig)
-{
-	(void)sig;
-	wpe_child_reap_now();
 }
 
 static long now_ms(void)
@@ -231,6 +269,11 @@ static void test_twenty_children_ending_at_once_each_report_their_status(void)
 		chk("ended, status known", runs[i].how, WPE_CHILD_ENDED);
 		close_ends(&runs[i]);
 	}
+	/* The owner's reaper takes only the children it follows: the four the
+	   test forked are the test's to wait for. */
+	for (i = 0; i < MANY_UNWATCHED; i++)
+		chk("an unwatched process is left for its own wait",
+		    waitpid(other[i], NULL, WNOHANG) == other[i], 1);
 }
 
 /* 2: a child that ignores SIGTERM is killed after the grace; the callback
@@ -388,12 +431,13 @@ static void test_forget_leaves_no_callback_no_timer_and_no_slot(void)
 {
 	static Run r;
 	static Run runs[WPE_CHILD_MAX];
-	pid_t pid;
+	pid_t pid, forgotten;
 	int i;
 
 	chk("start", start_sh(&r, DEAF_TO_TERM), 0);
 	pid = read_pid(r.c.out_fd);
 	chk_true("it said it is deaf to SIGTERM", pid > 0);
+	forgotten = r.c.pid;
 	wpe_child_end(&r.c, SIGTERM);
 	wpe_child_forget(&r.c);
 	chk("pid is 0", r.c.pid, 0);
@@ -404,6 +448,9 @@ static void test_forget_leaves_no_callback_no_timer_and_no_slot(void)
 	loop_for(WPE_CHILD_END_GRACE_MS + SLACK_MS);
 	chk("no callback", r.calls, 0);
 	chk_true("no line", said[0] == '\0');
+	/* Forgotten, it is no longer the owner's reaper's to take. */
+	chk("the forgotten child is left for the caller's wait",
+	    waitpid(forgotten, NULL, WNOHANG) == forgotten, 1);
 	close_ends(&r);
 	for (i = 0; i < WPE_CHILD_MAX; i++)
 		chk("every slot is free again", start_sh(&runs[i], "exit 0"), 0);
@@ -854,12 +901,302 @@ static void test_a_side_pty_is_the_debuggers_and_no_other_childs(void)
 	close(slave);
 }
 
-/* jdb's program: the pty slave the editor kept is its terminal on 0, 1 and
- * 2; a directory it cannot enter is named there, and it ends as a shell
- * ends a command it cannot run. */
-static void test_a_tty_path_child_has_the_editors_pty_and_says_why_it_failed(void)
+/* The program the terminal rows start: this test, run again with
+ * --tty-probe, says what its terminal is. */
+static const char *self_path;
+
+/** tty_probe_main - What a child learns of its terminal, on its stdout:
+ * which of 0, 1 and 2 are terminals, whether it leads a session, whether
+ * its terminal is its own (the foreground group of its controlling one),
+ * whether /dev/tty opens (OpenSSH's proof of a controlling terminal), the
+ * terminal's name, and how many descriptors it was handed besides 0, 1
+ * and 2 (none: a copy of its terminal would keep the pty open after it
+ * closed its own). */
+static int tty_probe_main(void)
 {
-	static Run ok, bad;
+	int extra = open_fds() - 3;   /* counted before anything is opened */
+	const char *name = ttyname(STDIN_FILENO);
+	int tty = open("/dev/tty", O_RDWR | O_NOCTTY);
+
+	printf("isatty=%d%d%d leader=%d fg=%d devtty=%s name=%s extra=%d\n",
+	       isatty(STDIN_FILENO), isatty(STDOUT_FILENO), isatty(STDERR_FILENO),
+	       getsid(0) == getpid(), tcgetpgrp(STDIN_FILENO) == getpgrp(),
+	       tty >= 0 ? "yes" : "no", name ? name : "-", extra);
+	return 0;
+}
+
+static void spec_probe(WpeChildSpec *spec, char **argv)
+{
+	spec_sh(spec, argv, "");
+	argv[0] = (char *)self_path;
+	argv[1] = (char *)TTY_PROBE_ARG;
+	argv[2] = NULL;
+}
+
+/* Read what a child wrote on @fd until @needle is in @buf, or @ms. */
+static void read_until(int fd, char *buf, size_t n, const char *needle, long ms)
+{
+	long deadline = now_ms() + ms;
+	size_t len = 0;
+	ssize_t got;
+
+	buf[0] = '\0';
+	while (now_ms() < deadline && strstr(buf, needle) == NULL) {
+		got = len + 1 < n ? read(fd, buf + len, n - 1 - len) : 0;
+		if (got > 0) {
+			len += got;
+			buf[len] = '\0';
+		} else
+			wpe_fd_poll(LOOP_SLICE_MS);
+	}
+}
+
+/* A start that should have been refused and was not: end what ran. */
+static void end_if_started(Run *r, int rc)
+{
+	if (rc != 0)
+		return;
+	wpe_child_end(&r->c, SIGKILL);
+	loop_until_ended(r, 1, WPE_CHILD_END_GRACE_MS + SLACK_MS);
+	if (r->c.pty_fd >= 0)
+		close(r->c.pty_fd);
+}
+
+/* A start refused before the fork: nothing runs, nothing is left open, and
+ * the status row says why with @reason. */
+static void check_refused_before_the_fork(const char *what, WpeChildSpec *spec,
+                                          int want_errno)
+{
+	static Run r;
+	char line[READ_PID_MAX * 8];
+	int rc, err, before = open_fds();
+
+	memset(&r, 0, sizeof r);
+	said[0] = '\0';
+	rc = wpe_child_start(spec, &r.c, on_ended, &r);
+	err = errno;
+	snprintf(line, sizeof line, "%s: refused", what);
+	chk(line, rc, -1);
+	snprintf(line, sizeof line, "%s: the reason", what);
+	chk(line, err, want_errno);
+	snprintf(line, sizeof line, TTY_SAYS_FAILED "%s", strerror(want_errno));
+	chk_true("the status row says why", strcmp(said, line) == 0);
+	chk("no process", r.c.pid, 0);
+	end_if_started(&r, rc);
+	chk("nothing left open", open_fds(), before);
+}
+
+/* @scenario SC-child-tty-01 */
+static void test_a_pty_child_without_a_session_is_refused_before_the_fork(void)
+{
+	WpeChildSpec spec;
+	char *argv[4];
+
+	spec_probe(&spec, argv);
+	spec.io = WPE_CHILD_IO_PTY;
+	spec.group = WPE_CHILD_OWN_GROUP;
+	check_refused_before_the_fork("in its own group", &spec, EINVAL);
+	spec.group = WPE_CHILD_EDITORS_GROUP;
+	check_refused_before_the_fork("in the editor's group", &spec, EINVAL);
+}
+
+/* A pty whose terminal a first child, the holder, has as its controlling
+ * one: the master, the slave the test keeps, and the holder. */
+typedef struct {
+	int master, slave;
+	Run holder;
+} Taken;
+
+static void taken_open(Taken *k)
+{
+	WpeChildSpec spec;
+	char *argv[4], buf[READ_PID_MAX * 4], name[SIDE_PTY_NAME_MAX];
+
+	chk("a pty", wpe_child_pty_make(&k->master, &k->slave, name, sizeof name), 0);
+	memset(&k->holder, 0, sizeof k->holder);
+	spec_sh(&spec, argv, TTY_HOLDER_SCRIPT);
+	spec.io = WPE_CHILD_IO_TTY_PATH;
+	spec.tty_fd = k->slave;
+	chk("the holder starts", wpe_child_start(&spec, &k->holder.c, on_ended,
+	                                         &k->holder), 0);
+	read_until(k->master, buf, sizeof buf, HOLDER_SAYS, TTY_WAIT_MS);
+	chk_true("the holder runs on it", strstr(buf, HOLDER_SAYS) != NULL);
+}
+
+static void taken_close(Taken *k)
+{
+	wpe_child_end(&k->holder.c, SIGTERM);
+	loop_until_ended(&k->holder, 1, WPE_CHILD_END_GRACE_MS + SLACK_MS);
+	close(k->master);
+	close(k->slave);
+}
+
+/* A second child on the taken pty, the probe: what its terminal (the
+ * master) reads until @needle goes into @buf; @r is called back. */
+static void taken_second(Taken *k, Run *r, int say_failed, int without,
+                         char *buf, size_t n, const char *needle)
+{
+	WpeChildSpec spec;
+	char *argv[4];
+
+	memset(r, 0, sizeof *r);
+	spec_probe(&spec, argv);
+	spec.io = WPE_CHILD_IO_TTY_PATH;
+	spec.tty_fd = k->slave;
+	spec.say_failed = say_failed;
+	spec.tty_or_without = without;
+	chk("the second starts", wpe_child_start(&spec, &r->c, on_ended, r), 0);
+	read_until(k->master, buf, n, needle, TTY_WAIT_MS);
+	loop_until_ended(r, 1, TTY_WAIT_MS);
+}
+
+/* A terminal the kernel refuses is said on that terminal and the child ends
+ * as a command that cannot run, whatever say_failed says. */
+static void check_taken_pty_is_said_on_it(int say_failed)
+{
+	static Run second;
+	static Taken k;
+	char buf[READ_PID_MAX * 16];
+
+	taken_open(&k);
+	taken_second(&k, &second, say_failed, 0, buf, sizeof buf, TTY_TAKEN_REASON);
+	chk_true("the refusal is read on the terminal",
+	         strstr(buf, TTY_SAYS_FAILED TTY_TAKEN_REASON) != NULL);
+	chk("it ended as a command that cannot run", exit_code(second.status),
+	    SAID_FAILED_EXIT);
+	taken_close(&k);
+}
+
+/* @scenario SC-child-tty-02 */
+static void test_a_child_whose_terminal_is_taken_says_so_on_it(void)
+{
+	check_taken_pty_is_said_on_it(1);
+}
+
+/* @scenario SC-child-tty-03 */
+static void test_the_terminal_refusal_is_said_with_say_failed_off(void)
+{
+	check_taken_pty_is_said_on_it(0);
+}
+
+/* @scenario SC-child-tty-04 */
+static void test_a_dead_tty_fd_is_refused_before_the_fork(void)
+{
+	WpeChildSpec spec;
+	char *argv[4];
+
+	/* A high number known to be closed: the lowest ones are reused by the
+	 * owner's own first start (its wake pipe). */
+	dup2(STDIN_FILENO, DEAD_FD);
+	close(DEAD_FD);
+	spec_probe(&spec, argv);
+	spec.io = WPE_CHILD_IO_TTY_PATH;
+	spec.tty_fd = DEAD_FD;
+	spec.say_failed = 1;
+	check_refused_before_the_fork("a closed descriptor", &spec, EBADF);
+}
+
+/* A tty_fd that is open but no terminal (a pipe) is refused before the
+ * fork too, with its own reason: the child would only fail on it. */
+/* @scenario SC-child-tty-04 */
+static void test_a_tty_fd_that_is_no_terminal_is_refused_before_the_fork(void)
+{
+	WpeChildSpec spec;
+	char *argv[4];
+	int p[2];
+
+	chk("a pipe", pipe(p), 0);
+	spec_probe(&spec, argv);
+	spec.io = WPE_CHILD_IO_TTY_PATH;
+	spec.tty_fd = p[0];
+	spec.say_failed = 1;
+	check_refused_before_the_fork("a pipe", &spec, ENOTTY);
+	chk("the caller's pipe is still open", fcntl(p[0], F_GETFD) >= 0, 1);
+	close(p[0]);
+	close(p[1]);
+}
+
+/* Start @spec and read what its probe says on the master (@master, or the
+ * start's own pty when negative) into @buf, then wait for its end. */
+static void run_probe_on_pty(WpeChildSpec *spec, Run *r, int master, char *buf,
+                             size_t n)
+{
+	chk("start", wpe_child_start(spec, &r->c, on_ended, r), 0);
+	if (master < 0)
+		master = r->c.pty_fd;
+	read_until(master, buf, n, "\n", TTY_WAIT_MS);
+	loop_until_ended(r, 1, TTY_WAIT_MS);
+}
+
+/* The Run menu's program: its own session, the pty its controlling terminal
+ * and its 0, 1 and 2, the name kept from the pair to the child.  Green where
+ * the system accepts the parent's open of the slave, as Linux does; red on
+ * the BSDs today, which is why the row exists.  On Linux it cannot tell a
+ * child that acquired the terminal by the open from one that took it by the
+ * ioctl, or one that used the carrier only: those mutations stay green here
+ * and a BSD run catches them. */
+/* @scenario SC-child-tty-05 */
+static void test_a_run_menu_program_owns_its_terminal(void)
+{
+	static Run r;
+	WpeChildSpec spec;
+	char *argv[4], buf[READ_PID_MAX * 16], want[SIDE_PTY_NAME_MAX + 16];
+
+	memset(&r, 0, sizeof r);
+	spec_probe(&spec, argv);
+	spec.io = WPE_CHILD_IO_PTY;
+	spec.pty_raw = 1;
+	run_probe_on_pty(&spec, &r, -1, buf, sizeof buf);
+	chk_true("a session leader whose terminal is its own, /dev/tty opens",
+	         strstr(buf, "isatty=111 leader=1 fg=1 devtty=yes") != NULL);
+	snprintf(want, sizeof want, "name=%s ", ptsname(r.c.pty_fd));
+	chk_true("the terminal is the pty the editor made", strstr(buf, want) != NULL);
+	chk_true("it holds 0, 1 and 2 and no other descriptor",
+	         strstr(buf, " extra=0\n") != NULL);
+	chk("it ended well", exit_code(r.status), 0);
+	close(r.c.pty_fd);
+}
+
+/* A name that leads to another terminal than the slave, neither the pair's
+ * nor ttyname_r's provable by the parent, is still handed to the child,
+ * which proves it by stat before it opens it: the other terminal (here one
+ * nobody holds, which an open would give the leader) is not acquired, and
+ * the child has its own through the carrier. */
+/* @scenario SC-child-tty-10 */
+static void test_a_name_of_another_terminal_is_never_opened_by_the_child(void)
+{
+	static Run r;
+	WpeChildSpec spec;
+	char *argv[4], buf[READ_PID_MAX * 16], other[SIDE_PTY_NAME_MAX];
+	char want[SIDE_PTY_NAME_MAX + 16];
+	int other_master, other_slave;
+
+	chk("another pty", wpe_child_pty_make(&other_master, &other_slave, other,
+	                                      sizeof other), 0);
+	memset(&r, 0, sizeof r);
+	spec_probe(&spec, argv);
+	spec.io = WPE_CHILD_IO_PTY;
+	spec.pty_raw = 1;
+	fake_tty_name = other;
+	run_probe_on_pty(&spec, &r, -1, buf, sizeof buf);
+	fake_tty_name = NULL;
+	chk_true("the child has a terminal of its own through the carrier",
+	         strstr(buf, "isatty=111 leader=1 fg=1 devtty=yes") != NULL);
+	snprintf(want, sizeof want, "name=%s ", ptsname(r.c.pty_fd));
+	chk_true("it is the pty made for it", strstr(buf, want) != NULL);
+	chk_true("the other terminal is no session's", tcgetsid(other_slave) < 0);
+	chk("it ended well", exit_code(r.status), 0);
+	close(r.c.pty_fd);
+	close(other_slave);
+	close(other_master);
+}
+
+/* jdb's program: the pty slave the editor kept is its terminal on 0, 1 and
+ * 2, and the editor's copy is closed once the start returned. */
+/* @scenario SC-child-tty-06 */
+static void test_a_tty_fd_child_has_the_editors_pty(void)
+{
+	static Run ok;
 	WpeChildSpec spec;
 	char *argv[4], buf[READ_PID_MAX * 4], name[SIDE_PTY_NAME_MAX];
 	int master, slave;
@@ -871,12 +1208,33 @@ static void test_a_tty_path_child_has_the_editors_pty_and_says_why_it_failed(voi
 	spec.tty_fd = slave;
 	spec.say_failed = 1;
 	chk("start", wpe_child_start(&spec, &ok.c, on_ended, &ok), 0);
+	close(slave);
 	read_line(master, buf, sizeof buf);
 	chk_true("0, 1 and 2 are the pty", strstr(buf, "tty") != NULL);
 	loop_until_ended(&ok, 1, SLACK_MS);
+	close(master);
+}
+
+/* A directory it cannot enter is named on that terminal, and the child ends
+ * as a shell ends a command it cannot run.  Its own pty: the editor never
+ * gives two sessions one slave descriptor. */
+/* @scenario SC-child-tty-06 */
+static void test_a_tty_fd_child_names_the_directory_on_its_terminal(void)
+{
+	static Run bad;
+	WpeChildSpec spec;
+	char *argv[4], buf[READ_PID_MAX * 4], name[SIDE_PTY_NAME_MAX];
+	int master, slave;
+
+	chk("a pty", wpe_child_pty_make(&master, &slave, name, sizeof name), 0);
 	memset(&bad, 0, sizeof bad);
+	spec_sh(&spec, argv, PTY_PROBE);
+	spec.io = WPE_CHILD_IO_TTY_PATH;
+	spec.tty_fd = slave;
+	spec.say_failed = 1;
 	spec.cwd = NO_SUCH_DIR;
 	chk("start in no directory", wpe_child_start(&spec, &bad.c, on_ended, &bad), 0);
+	close(slave);
 	read_line(master, buf, sizeof buf);
 	chk_true("the directory is named on its terminal",
 	         strstr(buf, "cannot enter " NO_SUCH_DIR) != NULL);
@@ -884,7 +1242,71 @@ static void test_a_tty_path_child_has_the_editors_pty_and_says_why_it_failed(voi
 	chk("it ended as a command that cannot run", exit_code(bad.status),
 	    SAID_FAILED_EXIT);
 	close(master);
+}
+
+/* After a pty start the editor holds the master and nothing else: no copy
+ * of the program's end.  Warmed by one start first, which opens the owner's
+ * wake pipe. */
+/* @scenario SC-child-tty-07 */
+static void test_the_parent_keeps_no_slave_after_a_pty_start(void)
+{
+	static Run warm, r;
+	WpeChildSpec spec;
+	char *argv[4], buf[READ_PID_MAX * 16];
+	int before;
+
+	chk("the warm-up starts", start_sh(&warm, "exit 0"), 0);
+	loop_until_ended(&warm, 1, SLACK_MS);
+	close_ends(&warm);
+	before = open_fds();
+	memset(&r, 0, sizeof r);
+	spec_probe(&spec, argv);
+	spec.io = WPE_CHILD_IO_PTY;
+	run_probe_on_pty(&spec, &r, -1, buf, sizeof buf);
+	close(r.c.pty_fd);
+	chk("no descriptor of the pty is left", open_fds(), before);
+}
+
+/* A tty_fd is the caller's: the owner never closes it, so the caller's own
+ * close, as jdb does, cannot reach a descriptor that reused the number. */
+/* @scenario SC-child-tty-09 */
+static void test_a_tty_fd_is_left_open_for_its_caller(void)
+{
+	static Run r;
+	WpeChildSpec spec;
+	char *argv[4], buf[READ_PID_MAX * 16], name[SIDE_PTY_NAME_MAX];
+	int master, slave, before;
+
+	chk("a pty", wpe_child_pty_make(&master, &slave, name, sizeof name), 0);
+	before = open_fds();
+	memset(&r, 0, sizeof r);
+	spec_probe(&spec, argv);
+	spec.io = WPE_CHILD_IO_TTY_PATH;
+	spec.tty_fd = slave;
+	run_probe_on_pty(&spec, &r, master, buf, sizeof buf);
+	chk("the caller's descriptor is still open", fcntl(slave, F_GETFD) >= 0, 1);
+	chk("the owner opened and kept nothing", open_fds(), before);
 	close(slave);
+	close(master);
+}
+
+/* The Run menu's program on a terminal the kernel refuses it still runs, on
+ * the pty, and the refusal is read there first: Messages says why. */
+/* @scenario SC-child-tty-08 */
+static void test_a_program_that_may_run_without_says_so_and_runs(void)
+{
+	static Run second;
+	static Taken k;
+	char buf[READ_PID_MAX * 16];
+
+	taken_open(&k);
+	taken_second(&k, &second, 0, 1, buf, sizeof buf, "name=");
+	chk_true("the refusal is read on the terminal first",
+	         strstr(buf, TTY_SAYS_WITHOUT TTY_TAKEN_REASON) != NULL);
+	chk_true("then the program runs on the pty without owning it",
+	         strstr(buf, "isatty=111 leader=1 fg=0 devtty=no") != NULL);
+	chk("it ended well", exit_code(second.status), 0);
+	taken_close(&k);
 }
 
 /* The crash and end handlers' call: every child the editor follows is
@@ -1333,16 +1755,23 @@ static void test_a_reaper_for_the_loop_wakes_it_when_a_child_ends(void)
 }
 
 /* @scenario SC-debug-111 */
-int main(void)
+int main(int argc, char **argv)
 {
+	char resolved[PATH_MAX];
+
+	if (argc > 1 && strcmp(argv[1], TTY_PROBE_ARG) == 0)
+		return tty_probe_main();
+	self_path = realpath(argv[0], resolved) ? strdup(resolved) : argv[0];
 	test_watchdog_case("test_child (the owner's start, signal and end of a "
 	                   "child): a child's end never came", HANG_SECONDS);
 	WpeChildWakeOpen();
 	wpe_child_say_set(on_say);
+	/* First, before anything installs a SIGCHLD handler: the reaper row
+	   installs the owner's reaper (wpe_child_reap_install refuses where a
+	   handler exists), and every row after it relies on that one. */
 	test_a_reaper_for_the_loop_wakes_it_when_a_child_ends();
 	test_watchdog_case("test_child (the owner's start, signal and end of a "
 	                   "child): a child's end never came", HANG_SECONDS);
-	wpe_child_sigchld_install(on_child);
 
 	test_twenty_children_ending_at_once_each_report_their_status();
 	test_a_child_that_ignores_sigterm_is_killed_after_the_grace();
@@ -1362,7 +1791,18 @@ int main(void)
 	test_a_child_on_a_pty_has_it_as_its_terminal();
 	test_signals_reach_only_the_leader_when_asked();
 	test_a_side_pty_is_the_debuggers_and_no_other_childs();
-	test_a_tty_path_child_has_the_editors_pty_and_says_why_it_failed();
+	test_a_pty_child_without_a_session_is_refused_before_the_fork();
+	test_a_child_whose_terminal_is_taken_says_so_on_it();
+	test_the_terminal_refusal_is_said_with_say_failed_off();
+	test_a_dead_tty_fd_is_refused_before_the_fork();
+	test_a_tty_fd_that_is_no_terminal_is_refused_before_the_fork();
+	test_a_run_menu_program_owns_its_terminal();
+	test_a_name_of_another_terminal_is_never_opened_by_the_child();
+	test_a_tty_fd_child_has_the_editors_pty();
+	test_a_tty_fd_child_names_the_directory_on_its_terminal();
+	test_the_parent_keeps_no_slave_after_a_pty_start();
+	test_a_tty_fd_is_left_open_for_its_caller();
+	test_a_program_that_may_run_without_says_so_and_runs();
 	test_the_handlers_end_every_child_and_its_group();
 	test_a_child_in_the_editors_group_is_signalled_alone();
 	test_a_named_process_is_signalled_only_while_its_child_runs();

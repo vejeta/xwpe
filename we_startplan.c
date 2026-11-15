@@ -1647,6 +1647,7 @@ static void startplan_spec(WpeChildSpec *spec, const WpeStartIo *io, char *const
  spec->stderr_nonblocking = io->stderr_nonblocking;
  spec->side_pty_slave = io->side_pty_slave;
  spec->tty_fd = io->tty_fd;
+ spec->tty_or_without = io->tty_or_without;
  spec->tty_path = io->tty_path;
  spec->say_failed = io->say_failed;
  spec->echo_argv = io->echo_argv;

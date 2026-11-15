@@ -1,0 +1,9 @@
+# The opens of a terminal without O_NOCTTY that are meant.  Checked by
+# tests/check-tty-open.sh.
+#
+#   file|call|count|pass|reason
+#
+# "count" is how many such calls the file has: more or fewer fails, and a line
+# that matches nothing is stale.  "keep" is a permanent exception.
+
+we_child.c|open|1|keep|the child's own terminal, opened by the new session leader after the fork

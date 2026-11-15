@@ -28,14 +28,22 @@
 
 SRCDIR=${srcdir:-.}
 BAD=1
+ALLOW=
 
 while [ $# -gt 0 ]; do
   case $1 in
     --srcdir) shift; SRCDIR=$1 ;;
+    --allow) shift; ALLOW=$1 ;;
     *) echo "check-tty-open: unknown argument $1" >&2; exit $BAD ;;
   esac
   shift
 done
+
+[ -n "$ALLOW" ] || ALLOW=$SRCDIR/tests/tty-open.allow
+if [ ! -f "$ALLOW" ]; then
+  echo "check-tty-open: no allow file at $ALLOW" >&2
+  exit $BAD
+fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/tty-open.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
@@ -103,6 +111,39 @@ scan() {
     END { if (nl) flush() }' "$@"
 }
 
+# judge ALLOWFILE FOUND - what is left of the scan's FOUND lines once the
+# counted exceptions of ALLOWFILE are taken off: a call the file does not
+# list, more calls than it says, fewer than it says (lower or delete the
+# line), and a line that matches nothing.  Prints one problem a line.
+judge() {
+  printf '%s\n' "$2" | awk -F'|' -v allow="$1" '
+    function base(s) { sub(/:[0-9]+: .*$/, "", s); sub(/^.*\//, "", s); return s }
+    function callname(s,   c) { c = s; sub(/^[^ ]*: /, "", c); sub(/[^A-Za-z0-9_].*$/, "", c); return c }
+    BEGIN {
+      while ((getline line < allow) > 0) {
+        if (line ~ /^[ \t]*(#|$)/) continue
+        n = split(line, f, "|")
+        if (n < 5 || f[3] !~ /^[0-9]+$/ || f[4] == "" || f[5] == "") { print "bad line in the allow file: " line; continue }
+        key = f[1] "|" f[2]
+        if (key in al) { print "duplicate allow line for " key; continue }
+        al[key] = f[3]; why[key] = f[4]
+      }
+    }
+    NF == 0 { next }
+    {
+      key = base($0) "|" callname($0)
+      seen[key]++
+      if (!(key in al)) print "open() of a terminal without O_NOCTTY: " $0
+    }
+    END {
+      for (k in seen) if (k in al) {
+        if (seen[k] > al[k] + 0) print "more than allowed: " k " has " seen[k] ", the allow file says " al[k]
+        else if (seen[k] < al[k] + 0) print "fewer than the allow file says: " k " has " seen[k] ", lower the line"
+      }
+      for (k in al) if (!(k in seen)) print "stale allow line, delete it: " k
+    }' | sort
+}
+
 fail=0
 files=$(ls "$SRCDIR"/*.c "$SRCDIR"/*.h 2>/dev/null)
 if [ -z "$files" ]; then
@@ -111,9 +152,10 @@ if [ -z "$files" ]; then
 fi
 # shellcheck disable=SC2086
 found=$(scan $files)
-if [ -n "$found" ]; then
-  echo "check-tty-open: open() of a terminal without O_NOCTTY:"
-  echo "$found"
+left=$(judge "$ALLOW" "$found")
+if [ -n "$left" ]; then
+  echo "check-tty-open: a terminal opened without O_NOCTTY, or an allow line that is off:"
+  echo "$left"
   fail=1
 fi
 
@@ -145,10 +187,24 @@ canary openpt 'int f(void) { return posix_openpt(O_RDWR); }' 1 || blind=1
 canary openpt-guarded 'int f(void) { return posix_openpt(O_RDWR | O_NOCTTY); }' 0 || blind=1
 canary empty 'int f(void) { return open(empty_file, O_RDONLY); }' 0 || blind=1
 canary member 'int f(void) { return box->open(tty) + w.open(tty); }' 0 || blind=1
-canary guarded'int f(void) { return open(spec->tty_path, O_RDWR | O_NOCTTY); }' 0 || blind=1
+canary guarded 'int f(void) { return open(spec->tty_path, O_RDWR | O_NOCTTY); }' 0 || blind=1
 canary null 'int f(void) { return open("/dev/null", O_RDONLY); }' 0 || blind=1
 canary comment 'int f(void) { /* open(tty, O_RDWR) */ return 0; }' 0 || blind=1
 canary fopen 'int f(void) { return fopen(tty_name, "r") != 0; }' 0 || blind=1
+# The counted exception: exactly the child's own open, found by the scan,
+# is silent with its allow line, named without it, and named when the file
+# allows fewer or more than it finds.
+printf '%s\n' 'int f(const char *slave_name) { return open(slave_name, O_RDWR); }' > "$WORK/we_child.c"
+planted=$(scan "$WORK/we_child.c")
+printf '%s\n' 'we_child.c|open|1|keep|planted' > "$WORK/allow1"
+printf '%s\n' 'we_child.c|open|0|keep|planted' > "$WORK/allow0"
+printf '%s\n' 'we_child.c|open|2|keep|planted' > "$WORK/allow2"
+printf '%s\n' 'we_other.c|open|1|keep|planted' > "$WORK/allowx"
+[ -n "$planted" ] && [ -z "$(judge "$WORK/allow1" "$planted")" ] || { echo "canary allow: a listed call was named or not found"; blind=1; }
+[ -n "$(judge "$WORK/allow0" "$planted")" ] || { echo "canary allow: a call above its count was not named"; blind=1; }
+[ -n "$(judge "$WORK/allow2" "$planted")" ] || { echo "canary allow: a count above the calls was not named"; blind=1; }
+[ -n "$(judge "$WORK/allowx" "$planted")" ] || { echo "canary allow: a call in another file was not named"; blind=1; }
+[ -n "$(judge "$WORK/allow1" "")" ] || { echo "canary allow: a stale line was not named"; blind=1; }
 if [ $blind -ne 0 ]; then
   echo "check-tty-open: the scanner is blind"
   exit $BAD

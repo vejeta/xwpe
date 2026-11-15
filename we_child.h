@@ -98,7 +98,17 @@ typedef struct {
  int tty_fd;                     /* _TTY_PATH (set by its callers): a pty
                                     slave of the editor's, made the child's
                                     controlling terminal; or WPE_CHILD_NO_FD,
-                                    and then tty_path */
+                                    and then tty_path.  The caller closes its
+                                    copy once the start returned: the owner
+                                    never closes it.  A terminal the system
+                                    refuses the child is said, and the child
+                                    is not run (see tty_or_without) */
+ int tty_or_without;             /* _PTY, _TTY_PATH with tty_fd: when the
+                                    system refuses the child its controlling
+                                    terminal, say so on that terminal and run
+                                    it with the terminal on 0, 1 and 2 anyway
+                                    (the Run menu's program); otherwise the
+                                    child is not run */
  const char *tty_path;           /* _TTY_PATH without tty_fd: a terminal opened
                                     by name, not made the controlling one */
  int say_failed;                 /* a terminal, directory or program that fails
