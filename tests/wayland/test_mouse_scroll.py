@@ -8,16 +8,9 @@ pointer path (wl_pointer button PRESS -> motion* -> RELEASE) via the conftest
 drag() helper and assert on disk (saved_text) that the view+cursor moved -- and,
 crucially, that xwpe did NOT die during the drag.
 """
-import os
-import subprocess
 import time
 
-from conftest import DISPLAY
-
-
-def _xdo(*a):
-    subprocess.run(["xdotool", *a], env={**os.environ, "DISPLAY": DISPLAY},
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+from conftest import _xdo
 
 
 def _seed_lines(xwpe, n=50):

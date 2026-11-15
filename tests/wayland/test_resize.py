@@ -8,16 +8,9 @@ smaller wl_shm buffer (a crash).  This drives a shrink then a grow of the weston
 output (the surface is fullscreen under kiosk, so it follows the output size)
 and checks xwpe survives and the dumped buffer tracks the window both ways.
 """
-import os
-import subprocess
 import time
 
-from conftest import DISPLAY
-
-
-def _xdo(*a):
-    subprocess.run(["xdotool", *a], env={**os.environ, "DISPLAY": DISPLAY},
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+from conftest import _xdo
 
 
 def test_resize_refits_grid(xwpe):

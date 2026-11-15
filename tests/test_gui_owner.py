@@ -905,7 +905,6 @@ def test_an_editor_is_not_a_session_leader_unless_detached(owner, tmp_path, requ
     assert gui_owner.session_of(detached.pid) == detached.pid
 
 
-X11_DIR = os.path.join(gui_owner.HERE, "x11")
 # A bare DISPLAY: not inside quotes (an environment variable's name) and not
 # the start of a longer name.
 BARE_DISPLAY = re.compile(r"(?<![\"\w])DISPLAY(?![\"\w])")
@@ -918,13 +917,16 @@ def test_no_x11_module_reads_a_display_constant_and_both_conftests_have_the_acce
     it needs it, by the one accessor both suites share, and imports no
     constant."""
     found = []
-    for name in sorted(os.listdir(X11_DIR)):
-        if not name.endswith(".py"):
-            continue
-        with open(os.path.join(X11_DIR, name), encoding="utf-8") as fh:
-            for number, line in enumerate(fh, 1):
-                if BARE_DISPLAY.search(line):
-                    found.append("tests/x11/%s:%d: %s" % (name, number, line.strip()))
+    for suite in CONFTESTS:
+        folder = os.path.join(gui_owner.HERE, suite)
+        for name in sorted(os.listdir(folder)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                for number, line in enumerate(fh, 1):
+                    if BARE_DISPLAY.search(line):
+                        found.append("tests/%s/%s:%d: %s"
+                                     % (suite, name, number, line.strip()))
     assert not found, "a constant display is still read:\n  " + "\n  ".join(found)
     for suite in CONFTESTS:
         path = os.path.join(gui_owner.HERE, suite, "conftest.py")
@@ -936,19 +938,15 @@ def test_no_x11_module_reads_a_display_constant_and_both_conftests_have_the_acce
 # ---------------------------------------------------------------------------
 # What a test may start, and what an editor is given (the process owner)
 
-# The Wayland suite and the terminal driver still start their processes by
-# hand; the rows that show it are red there until each is moved onto the
-# owner, and they are marked so the run is green and the move turns each into
-# an unexpected pass that must have its mark removed.
-PASS_B = pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="the Wayland conftest still starts its processes by hand "
-           "(moved onto the owner by the Wayland pass)")
+# The terminal driver still starts its editor by hand; the rows that show it
+# are red there until it is moved onto the owner, and they are marked so the
+# run is green and the move turns each into an unexpected pass that must have
+# its mark removed.
 PASS_C = pytest.mark.xfail(
     strict=True, raises=AssertionError,
     reason="WpeSession still starts its editor by hand (moved onto the "
            "owner by the terminal pass)")
-SUITES = ["x11", pytest.param("wayland", marks=PASS_B)]
+SUITES = ["x11", "wayland"]
 
 CANARY_VALUES = {"DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9",
                  "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent/bus",
@@ -966,8 +964,6 @@ INNER_START_S = 90.0
 INNER_END_S = 120.0
 SETTLE_S = 8.0
 SERVER_FILES = ("/tmp/.X%d-lock", "/tmp/.X11-unix/X%d")
-FIRST_FREE_DISPLAY = 110
-LAST_FREE_DISPLAY = 199
 INNER_ROW = "test_block_marking.py"
 RUNTIME_PREFIX = "xwpe-wl-"
 
@@ -1026,15 +1022,6 @@ def _wait_record(record_dir):
                               "the recording stand-in to start", READY_S)
 
 
-def _free_display_number():
-    """A display number with no lock file and no socket, for the legacy
-    fixture that takes one from its environment."""
-    for number in range(FIRST_FREE_DISPLAY, LAST_FREE_DISPLAY):
-        if not any(os.path.exists(path % number) for path in SERVER_FILES):
-            return number
-    raise RuntimeError("no free display number to give the legacy fixture")
-
-
 def _under(folder, cwd):
     """True when cwd is folder or inside it."""
     return cwd is not None and (cwd == folder or cwd.startswith(folder + os.sep))
@@ -1087,14 +1074,11 @@ class _InnerRun:
         for folder in (self.work, self.records, os.path.join(str(root), "home")):
             os.makedirs(folder)
         self.exit_code = None
-        self.wl_number = _free_display_number() if suite == "wayland" else None
         env = {"PATH": os.environ.get("PATH", ""),
                "HOME": os.path.join(str(root), "home"), "TERM": "xterm",
                "XWPE_BIN": _write_launcher(root, self.records)}
         env["WPE_BIN"] = env["XWPE_BIN"]
         env.update(CANARY_VALUES)
-        if self.wl_number is not None:
-            env["XWPE_TEST_WL_DISPLAY"] = ":%d" % self.wl_number
         self.log = os.path.join(str(root), "inner.log")
         argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
                 "--basetemp", os.path.join(self.work, "base"), "-x",
@@ -1150,12 +1134,10 @@ class _InnerRun:
 
     def server_files(self):
         """The lock file and socket of the run's display that still exist
-        (known only for the Wayland suite's fixed number, or from a record)."""
-        number = self.wl_number
-        if number is None:
-            rec = _read_record(self.records)
-            display = (rec or {}).get("values", {}).get("DISPLAY", "")
-            number = int(display[1:]) if re.fullmatch(r":\d+", display) else None
+        (known from the editor's record, which names the run's X display)."""
+        rec = _read_record(self.records)
+        display = (rec or {}).get("values", {}).get("DISPLAY", "")
+        number = int(display[1:]) if re.fullmatch(r":\d+", display) else None
         if number is None:
             return []
         return [path % number for path in SERVER_FILES

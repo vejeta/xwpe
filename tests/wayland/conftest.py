@@ -23,16 +23,31 @@ Pipeline
 Most tests assert on the file written to disk (ground truth); a few assert on
 the dumped pixels.  If any binary is missing the whole module skips cleanly.
 Set XWPE_BIN to point at the xwpe binary (defaults to ../../xwpe).
+
+Every process of the suite (the X server, the compositor, each editor, each
+xdotool call) is started and ended by the owner in tests/gui_owner.py, as in
+the X11 suite: the X server takes a free display number by itself, the
+compositor's socket lives in a folder the owner made, an editor gets a
+whitelisted environment and only this suite's display and socket, each wait
+is for an event, and an editor a failed row leaves behind is ended and
+reported as an error of that row.  A row asks for the display by
+display_name(), never by a constant.
 """
 import os
 import pty
 import shutil
-import subprocess
 import sys
-import tempfile
 import time
 
 import pytest
+
+TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+import gui_owner as owner_api  # noqa: E402
+from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
+from gui_owner import PreviousRowLeft  # noqa: E402,F401  (rows import it from here)
 
 REQUIRED_BINS = ["Xvfb", "xdotool", "weston"]
 _MISSING = [b for b in REQUIRED_BINS if shutil.which(b) is None]
@@ -80,21 +95,21 @@ def pytest_collection_modifyitems(config, items):
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 XWPE_BIN = os.environ.get("XWPE_BIN") or os.path.normpath(os.path.join(HERE, "..", "..", "xwpe"))
-TREE = os.path.normpath(os.path.join(HERE, "..", ".."))
-DISPLAY = os.environ.get("XWPE_TEST_WL_DISPLAY", ":91")
-# The compositor's socket is this run's own: a name made of this process's
-# id, in a short runtime folder made for the run and removed after it, so a
-# run never unlinks or connects to a socket another run (or the desktop)
-# started, and the path stays inside the 108 bytes a socket name may have.
-WL_SOCKET = "wl-%d" % os.getpid()
-WL_RUNTIME_PARENT = "/tmp"
-WL_RUNTIME_PREFIX = "xwpe-wl-"
-SCREEN = "1024x768x24"
+# The size of the X server's screen and of weston's output window.
+SCREEN = owner_api.SCREEN
+WL_WIDTH, WL_HEIGHT = int(owner_api.WL_WIDTH), int(owner_api.WL_HEIGHT)
+
+# Deadlines, in seconds before XWPE_TEST_WAIT_SCALE, of the events the
+# fixtures wait for.  Each is how long a loaded host may need, not how long
+# the event takes: a wait ends the moment its event happens.
+WINDOW_S = 20.0
+TOOL_S = 30.0
+DUMP_STOP_S = 10.0
 
 import hashlib
 
 # A loaded CI runner is slower; stretch every settle without slowing local runs.
-_WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+_WAIT_SCALE = owner_api.wait_scale()
 _real_sleep = time.sleep
 
 
@@ -102,15 +117,32 @@ def _sleep(seconds):
     _real_sleep(seconds * _WAIT_SCALE)
 
 
+# The compositor of this run (a WaylandDisplay of the owner) and the id of the
+# row that last started an editor: set by the xserver fixture once the
+# servers are up, cleared when the session ends.
+_SERVED = {"display": None, "row": None}
+
+
+def _served_display():
+    """The compositor this run started, or an error naming what is missing."""
+    served = _SERVED["display"]
+    if served is None:
+        raise RuntimeError("no Wayland display yet: ask for it from a row "
+                           "that uses the xserver or xwpe fixture")
+    return served
+
+
 def display_name():
     """The X display this suite's weston runs on: the same accessor the X11
-    suite has, so a module both suites run reads its display one way."""
-    return DISPLAY
+    suite has, so a module both suites run reads its display one way.  The
+    X server picks its own number, so there is no constant to import."""
+    return _served_display().x_display.name
 
 
 def xtool_env():
-    """The environment for a short X tool a row runs, as the X11 suite's."""
-    return {**os.environ, "DISPLAY": display_name()}
+    """The environment for a short tool a row runs: the whitelist, pointed at
+    this run's X display and compositor.  Never a copy of the machine's."""
+    return owner_api.tool_env(_served_display())
 
 
 def _frame_digest(path):
@@ -146,25 +178,17 @@ def wait_frame_quiet(dump, floor, quiet=0.3, cap=3.0):
             return
 
 
-# Optional diagnostics dir: when set, capture weston and per-test xwpe stderr so
-# a CI failure can be explained (e.g. a real crash vs a slow-runner mistime).
-_LOGDIR = os.environ.get("XWPE_WL_LOGDIR")
+def _run_tool(argv):
+    """Run a short tool (xdotool, xmodmap) against this run's display, bounded,
+    on the owner's ledger; return its CompletedProcess.  Its standard output
+    is the CompletedProcess's; its errors go to the row's log, which the
+    owner keeps in the row's folder."""
+    return owner_api.run_tool(argv, TOOL_S, display=_served_display())
 
 
-def _logfile(name):
-    if not _LOGDIR:
-        return subprocess.DEVNULL
-    os.makedirs(_LOGDIR, exist_ok=True)
-    return open(os.path.join(_LOGDIR, name), "ab")
-
-
-def _spawn(cmd, stderr=subprocess.DEVNULL, **kw):
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr, **kw)
-
-
-def _xdo(*args, env=None):
-    subprocess.run(["xdotool", *args], env=env,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def _xdo(*args):
+    """One xdotool call against this run's display."""
+    _run_tool(["xdotool", *args])
 
 
 _FKEY_KEYCODE = {}
@@ -181,9 +205,7 @@ def _fkey_keycodes():
     the resolver and lands the true function key.  Cached after first lookup."""
     if _FKEY_KEYCODE:
         return _FKEY_KEYCODE
-    out = subprocess.run(["xmodmap", "-pke"],
-                         env={**os.environ, "DISPLAY": DISPLAY},
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
+    out = _run_tool(["xmodmap", "-pke"]).stdout.decode()
     for line in out.splitlines():
         parts = line.split()
         if len(parts) >= 4 and parts[0] == "keycode" and parts[2] == "=":
@@ -258,30 +280,48 @@ class WaylandSession:
     helper API as the X11 suite's XwpeSession (key/click/type/menu/save/
     screenshot/saved_text), so test bodies can be shared."""
 
-    def __init__(self, proc, env, wid, dump):
+    def __init__(self, proc, env, wid, dump, owned=None):
         self.proc = proc
         self.env = env
         self.wid = wid          # the weston X11 window (xdotool target)
         self.dump = dump        # XWPE_WL_DUMP path (continuously refreshed PPM)
+        self.owned = owned      # the owner's record of the editor
 
-    def _key(self, env_display, k):
-        _xdo("key", "--window", self.wid, "--clearmodifiers", _to_keycodes(k),
-             env={**os.environ, "DISPLAY": DISPLAY})
+    def _note_children(self):
+        """Tell the owner what the editor has started so far.
+
+        Called before each input, which is what makes the editor start a
+        program or a language server: if the editor crashes later, the
+        owner still knows its children, also those it moved to a session
+        of their own, and ends them with the row."""
+        if self.owned is not None:
+            self.owned.reap_zombies()
+            self.owned.refresh_tree()
+
+    def reap_zombies(self):
+        """Collect the editor's orphaned programs that have ended, so a
+        check that a program is gone does not see its zombie."""
+        if self.owned is not None:
+            self.owned.reap_zombies()
+
+    def _key(self, k):
+        _xdo("key", "--window", self.wid, "--clearmodifiers", _to_keycodes(k))
 
     def focus(self):
-        _xdo("windowfocus", self.wid, env={**os.environ, "DISPLAY": DISPLAY})
-        _xdo("windowactivate", self.wid, env={**os.environ, "DISPLAY": DISPLAY})
+        _xdo("windowfocus", self.wid)
+        _xdo("windowactivate", self.wid)
         _sleep(0.3)
 
     def key(self, *keys, delay=0.5):
         for k in keys:
-            self._key(DISPLAY, k)
+            self._note_children()
+            self._key(k)
             wait_frame_quiet(self.dump, floor=delay)  # wait for the paint to settle
         return self
 
     def type(self, text, delay=0.4):
-        _xdo("type", "--window", self.wid, "--clearmodifiers", text,
-             env={**os.environ, "DISPLAY": DISPLAY})
+        self._note_children()
+        _xdo("type", "--window", self.wid, "--clearmodifiers", text)
         wait_frame_quiet(self.dump, floor=delay)
         return self
 
@@ -289,17 +329,17 @@ class WaylandSession:
         """Click at (px,py) with `button` (1 left, 2 middle, 3 right).  `hold`
         names a modifier key (an xdotool key name such as "alt") kept down
         for the click, so a test can drive Alt-click."""
-        d = {**os.environ, "DISPLAY": DISPLAY}
-        _xdo("mousemove", "--window", self.wid, str(px), str(py), env=d)
+        self._note_children()
+        _xdo("mousemove", "--window", self.wid, str(px), str(py))
         _sleep(0.15)
-        _xdo("mousemove", "--window", self.wid, str(px + 1), str(py), env=d)  # real motion
+        _xdo("mousemove", "--window", self.wid, str(px + 1), str(py))  # real motion
         _sleep(0.1)
         if hold:
-            _xdo("keydown", hold, env=d)
+            _xdo("keydown", hold)
             _sleep(0.1)
-        _xdo("click", str(button), env=d)
+        _xdo("click", str(button))
         if hold:
-            _xdo("keyup", hold, env=d)
+            _xdo("keyup", hold)
         wait_frame_quiet(self.dump, floor=delay)
         return self
 
@@ -309,29 +349,29 @@ class WaylandSession:
         Drives the real Wayland pointer path (wl_pointer button PRESS ->
         motion* -> RELEASE) so the scrollbar-thumb drag (e_scroll_drag_v/h)
         runs end to end -- the mirror of the X11 suite's drag()."""
-        d = {**os.environ, "DISPLAY": DISPLAY}
-        _xdo("mousemove", "--window", self.wid, str(x1), str(y1), env=d)
+        self._note_children()
+        _xdo("mousemove", "--window", self.wid, str(x1), str(y1))
         _sleep(0.15)
-        _xdo("mousedown", "1", env=d)
+        _xdo("mousedown", "1")
         _sleep(0.1)
         for i in range(1, steps + 1):
             ix = x1 + (x2 - x1) * i // steps
             iy = y1 + (y2 - y1) * i // steps
-            _xdo("mousemove", "--window", self.wid, str(ix), str(iy), env=d)
+            _xdo("mousemove", "--window", self.wid, str(ix), str(iy))
             _sleep(0.03)
         _sleep(0.1)
-        _xdo("mouseup", "1", env=d)
+        _xdo("mouseup", "1")
         wait_frame_quiet(self.dump, floor=delay)
         return self
 
     def wheel(self, direction, count=3, px=512, py=300, delay=0.4):
         """Scroll the wheel `count` steps at (px,py). button 4 = up, 5 = down."""
-        d = {**os.environ, "DISPLAY": DISPLAY}
-        _xdo("mousemove", "--window", self.wid, str(px), str(py), env=d)
+        self._note_children()
+        _xdo("mousemove", "--window", self.wid, str(px), str(py))
         _sleep(0.1)
         btn = "4" if direction == "up" else "5"
         for _ in range(count):
-            _xdo("click", btn, env=d)
+            _xdo("click", btn)
             _sleep(0.05)
         wait_frame_quiet(self.dump, floor=delay)
         return self
@@ -389,69 +429,126 @@ class WaylandSession:
 
 
 @pytest.fixture(scope="session")
-def wlserver():
+def xserver(gui_owner, tmp_path_factory, request):
     """Start Xvfb + weston (x11-backend) once for the whole test session.
 
-    A display whose lock file exists belongs to someone else: it is never
-    taken over and its lock never removed.  Every server and the runtime
-    folder are made inside the try whose finally ends and removes them."""
-    lock = "/tmp/.X%s-lock" % DISPLAY.lstrip(":")
-    if os.path.exists(lock):
-        pytest.exit("X display %s is in use (%s exists): set XWPE_TEST_WL_DISPLAY "
-                    "to a free display" % (DISPLAY, lock), returncode=2)
-    started = []
-    runtime = None
+    Both are started by the owner: the X server on a display number it
+    picked itself, weston on that display with a socket in a folder the
+    owner made.  The owner ends them, the compositor first, when the
+    session ends, so a failed start leaves nothing running and nothing of
+    another run, or of the desktop, is touched.  The compositor's reasons
+    (kiosk-shell, the x11 backend) are in owner_api.start_compositor."""
+    log_dir = str(tmp_path_factory.mktemp("wayland-session"))
+    x_display = owner_api.start_x_server(gui_owner, request, log_dir, SCREEN)
+    compositor = owner_api.start_compositor(gui_owner, request, x_display,
+                                            log_dir, WL_WIDTH, WL_HEIGHT)
+    _SERVED["display"] = compositor
     try:
-        xvfb = _spawn(["Xvfb", DISPLAY, "-screen", "0", SCREEN])
-        started.append(xvfb)
-        _sleep(2.0)
-        runtime = tempfile.mkdtemp(prefix=WL_RUNTIME_PREFIX, dir=WL_RUNTIME_PARENT)
-        yield from _wlserver_run(runtime, started)
+        yield compositor
     finally:
-        # The servers this run started, by their own process objects, the
-        # last first, and the runtime folder it made, by its exact path.
-        for proc in reversed(started):
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-        if runtime:
-            shutil.rmtree(runtime, ignore_errors=True)
+        _SERVED["display"] = None
 
 
-def _wlserver_run(runtime, started):
-    """Start weston on @runtime, noting it in @started; yield the runtime
-    folder while the session runs."""
-    sockpath = os.path.join(runtime, WL_SOCKET)
-    # kiosk-shell fullscreens the single client at the output's (0,0) with no
-    # panel, so the xwpe surface origin == the weston window origin: an xdotool
-    # click relative to that window lands on the matching surface cell.  (The
-    # default desktop-shell centres/offsets the surface, breaking click-coord
-    # tests.)  Keyboard focus works under kiosk once the fk_w_mouse startup spin
-    # is fixed -- the earlier "kiosk breaks input" was that bug, not the shell.
-    weston = _spawn(
-        ["weston", "--backend=x11-backend.so", "--shell=kiosk-shell.so",
-         "--width=1024", "--height=768", "--socket=" + WL_SOCKET, "--idle-time=0"],
-        env={**os.environ, "DISPLAY": DISPLAY, "XDG_RUNTIME_DIR": runtime},
-        stderr=_logfile("weston.log"))
-    started.append(weston)
-    # Wait for the wl socket to appear.
-    for _ in range(60):
-        if os.path.exists(sockpath):
-            break
-        _real_sleep(0.2)
-    assert os.path.exists(sockpath), "weston wl socket did not appear"
-    _sleep(1.0)
-    yield runtime
+def pytest_configure(config):
+    """Refuse --reruns: a row that fails under load must fail."""
+    owner_api.reject_reruns(config)
+
+
+def _weston_window():
+    """The id of weston's X window (the xdotool target), or None before it
+    exists.  Under the kiosk shell it is the one window of the output."""
+    ids = _run_tool(["xdotool", "search", "--class", "weston"]).stdout.decode().split()
+    return ids[-1] if ids else None
+
+
+def _require_clean_compositor(owner):
+    """Check no editor of the row before is still running when a row starts
+    its own, and name that row when one is, instead of letting this row
+    talk to the old surface by accident."""
+    running = owner.running("xwpe")
+    if running:
+        raise PreviousRowLeft("%s left an editor running: %s"
+                              % (_SERVED["row"] or "an earlier row",
+                                 "; ".join(o.describe() for o in running)))
+
+
+def launch_editor(owner, workdir, request, args, extra_env=None,
+                  detached_from_terminal=False, terminal_fd=None):
+    """Start the native-Wayland xwpe with `args` on this run's compositor,
+    in `workdir`, which is also its HOME, and return the owner's record.
+
+    Its end is registered with the row before anything waits on it, so a row
+    that fails to start it, or never sees its first frame, still ends it.
+    The row's id is kept so the next row can name it if it leaves an editor
+    behind.  The owner sets the frame dump and the window size."""
+    _require_clean_compositor(owner)
+    _SERVED["row"] = request.node.nodeid
+    return owner_api.Editor.start(
+        owner, XWPE_BIN, args, "wayland", _SERVED["display"], str(workdir),
+        str(workdir), extra_env=extra_env, label=request.node.nodeid,
+        request=request,
+        detached_from_terminal=detached_from_terminal,
+        stdio=owner_api.LOG if terminal_fd is None else terminal_fd)
+
+
+def _window_size(wid):
+    """(width, height) of weston's X window as xdotool reports it, or None."""
+    out = _run_tool(["xdotool", "getwindowgeometry", "--shell", wid])
+    values = dict(line.split("=", 1) for line in out.stdout.decode().split()
+                  if "=" in line)
+    if "WIDTH" not in values or "HEIGHT" not in values:
+        return None
+    return int(values["WIDTH"]), int(values["HEIGHT"])
+
+
+def _force_output_size():
+    """Give weston's output window the size every editor of the suite is
+    started for, and wait until the server reports it.
+
+    A resize row leaves the output at another size.  An editor commits a
+    surface of WL_WIDTH x WL_HEIGHT, and a fullscreen surface larger than
+    the output makes the compositor disconnect it with a protocol error, so
+    the next row would get an editor that dies at once.  The fixture owns
+    the output's state, not each resize row (as the X11 fixture does for its
+    window)."""
+    wid = wait_for(_weston_window, "weston's window to exist", WINDOW_S)
+    _xdo("windowsize", wid, str(WL_WIDTH), str(WL_HEIGHT))
+    wait_for(lambda: _window_size(wid) == (WL_WIDTH, WL_HEIGHT),
+             "weston's window to be %dx%d" % (WL_WIDTH, WL_HEIGHT), WINDOW_S,
+             state_fn=lambda: _window_size(wid))
+
+
+def _dump_has_stopped(dump):
+    """An event function: true once the frame dump is the same as it was at
+    the previous poll.  It observes only the dump file: that the ended
+    editor writes no more frames.  It does not observe the compositor
+    dropping the surface."""
+    last = [_frame_digest(dump)]
+
+    def stopped():
+        now = _frame_digest(dump)
+        same = now == last[0]
+        last[0] = now
+        return same
+    return stopped
+
+
+def _wait_dump_stopped(dump):
+    """Wait, after a row's editor has ended, for its frame dump to stop
+    changing, so the row's last frame is the file the next row finds gone or
+    rewritten, never one still being written."""
+    wait_for(_dump_has_stopped(dump), "the ended editor's frame dump to stop "
+             "changing", DUMP_STOP_S)
 
 
 @pytest.fixture
-def xwpe(wlserver, tmp_path, request):
-    """Launch a fresh NATIVE-WAYLAND xwpe editing a small C file; tear down after."""
+def xwpe(xserver, gui_owner, tmp_path, request):
+    """Launch a fresh NATIVE-WAYLAND xwpe editing a small C file; tear down after.
+
+    The editor is started by the owner with its end registered before the
+    first wait, so a row that fails to start never leaves it running, and the
+    compositor must hold no editor of an earlier row when it starts."""
     assert os.path.exists(XWPE_BIN), "xwpe binary not found at %s (set XWPE_BIN)" % XWPE_BIN
-    runtime = wlserver
     src = tmp_path / "t.c"
     src.write_text(
         "int main(){\n"
@@ -463,21 +560,13 @@ def xwpe(wlserver, tmp_path, request):
         "  int f = 6;\n"
         "  return 0;\n"
         "}\n")
+    # The launcher pins everything else: HOME is the row's folder, the
+    # backend is wayland on this suite's compositor only (never the user's
+    # session), the font size, the eager-server opt-out and the 1024x768
+    # window size the X11 suite also forces (so centered dialogs land at the
+    # same window fraction and coordinate-based pixel scans stay calibrated)
+    # are set, and the frame dump is the row's frame.ppm.
     dump = str(tmp_path / "frame.ppm")
-    env = {**os.environ,
-           "WAYLAND_DISPLAY": WL_SOCKET,
-           "XDG_RUNTIME_DIR": runtime,
-           "XWPE_BACKEND": "wayland",
-           "XWPE_LIB": TREE,
-           "XWPE_LSP_NO_EAGER": "1",
-           "XWPE_FONT_SIZE": "10",
-           # Match the X11 suite's forced 1024x768 geometry so the centered
-           # dialogs land at the same window fraction (coordinate-based pixel
-           # scans -- e.g. the popup close [X] -- are calibrated for it).
-           "XWPE_WL_WIDTH": "1024",
-           "XWPE_WL_HEIGHT": "768",
-           "XWPE_WL_DUMP": dump,
-           "HOME": str(tmp_path)}
     param = dict(getattr(request, "param", None) or {})
     # XWPE_TEST_SOURCE: a test that needs its own program in t.c, not env.
     source = param.pop("XWPE_TEST_SOURCE", None)
@@ -496,50 +585,30 @@ def xwpe(wlserver, tmp_path, request):
     # as when xwpe is started from a terminal; every byte it writes to that
     # terminal is then visible (session.pty_master).
     on_pty = param.pop("XWPE_TEST_PTY", False)
-    env.update(param)   # optional per-test env (e.g. AI)
-    pty_master = None
+    pty_master = pty_slave = None
     if on_pty:
         pty_master, pty_slave = pty.openpty()
-        proc = subprocess.Popen([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
-                                stdin=pty_slave, stdout=pty_slave,
-                                stderr=pty_slave)
-        os.close(pty_slave)
-    else:
-        proc = _spawn([XWPE_BIN, str(src)], env=env, cwd=str(tmp_path),
-                      stderr=_logfile("xwpe-%s.log" % request.node.name),
-                      start_new_session=detached)
-    # Wait for the weston X window (the xdotool target) and the first frame dump.
-    wid = None
-    for _ in range(60):
-        out = subprocess.run(["xdotool", "search", "--class", "weston"],
-                             env={**os.environ, "DISPLAY": DISPLAY},
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        ids = out.stdout.decode().split()
-        if ids and os.path.exists(dump):
-            wid = ids[-1]
-            break
-        _real_sleep(0.25)
-    assert wid, "weston window / first xwpe frame did not appear"
-    _sleep(1.0)
-    session = WaylandSession(proc, env, wid, dump)
+        request.addfinalizer(lambda: os.close(pty_master))
+    # Registered before the editor, so it runs after the owner has ended it
+    # (and so fully reaped it): the last frame is complete before the row
+    # is over.
+    request.addfinalizer(lambda: _wait_dump_stopped(dump))
+    _force_output_size()
+    try:
+        owned = launch_editor(gui_owner, tmp_path, request, [str(src)], param,
+                              detached_from_terminal=detached,
+                              terminal_fd=pty_slave)
+    finally:
+        if pty_slave is not None:
+            os.close(pty_slave)
+    # Wait for the weston X window (the xdotool target) and the first frame
+    # dump, then for the first paint to settle.
+    wid = wait_for(lambda: _weston_window() if os.path.exists(dump) else None,
+                   "weston's window and the first frame of the editor",
+                   WINDOW_S, state_fn=owned.log_text)
+    wait_frame_quiet(dump, floor=0.1)
+    session = WaylandSession(owned.proc, owned.env, wid, dump, owned)
     session.srcfile = str(src)
     session.pty_master = pty_master
     session.focus()
     yield session
-    if pty_master is not None:
-        os.close(pty_master)
-    # Fully reap this xwpe AND let weston process its surface-destroy before the
-    # next test spawns a client.  Otherwise, under load, the dying client's
-    # surface can still hold the seat focus when the next xwpe starts, so its
-    # keystrokes land on the wrong (departing) surface -- the cross-test flake
-    # that makes an unrelated later test "die".
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except Exception:
-        proc.kill()
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            pass
-    _sleep(0.4)

@@ -6,16 +6,9 @@ and reallocated the cell grid under the outer repaint (a use-after-free).  This
 drives a resize sweep while jiggling the pointer inside the window -- the
 combination that crashed on a real kwin session (and under ASAN headless).
 """
-import os
-import subprocess
 import time
 
-from conftest import DISPLAY
-
-
-def _xdo(*a):
-    subprocess.run(["xdotool", *a], env={**os.environ, "DISPLAY": DISPLAY},
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+from conftest import _xdo
 
 
 def test_resize_with_pointer_motion(xwpe):

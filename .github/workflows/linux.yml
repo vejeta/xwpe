@@ -193,20 +193,21 @@ jobs:
         # The one cross-cutting concern that has silently regressed before (the
         # Messages-window relayout on shrink went unnoticed for weeks).  Gate the
         # job HARD on the deterministic resize/relayout parity tests only: few
-        # enough to run reliably even on a slow shared runner, and wrapped in
-        # --reruns so a pure timing wobble retries and self-heals while a real
-        # code fault -- which fails every rerun -- fails the job.  This is the
-        # genuine red/green guard for the Wayland backend; the full suite below
-        # stays visible for breadth but does not gate (it is too large to run
-        # flake-free as a hard gate on this runner).
+        # enough to run reliably even on a slow shared runner, and run without
+        # a rerun: the harness owner refuses --reruns, because a retry turns a
+        # row that fails under load into a pass and hides the failure it names.
+        # This is the genuine red/green guard for the Wayland backend; the full
+        # suite below stays visible for breadth but does not gate (it is too
+        # large to run flake-free as a hard gate on this runner).  The owner
+        # keeps every process's log in the row's folder under --basetemp, which
+        # the log upload below collects.
         if: always()
         env:
           XDG_RUNTIME_DIR: /tmp/xdg
-          XWPE_WL_LOGDIR: ${{ github.workspace }}/wl-logs
         run: >-
           XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q
           tests/wayland/test_resize.py tests/wayland/test_resize_mouse.py
-          --reruns 3 --reruns-delay 5 -rxX
+          --basetemp "$PWD/wl-logs/gate" -rxX
 
       - name: Native Wayland GUI suite -- full breadth (Xvfb + weston)
         # The conftest starts its own Xvfb + weston (x11-backend, kiosk-shell) and
@@ -229,10 +230,12 @@ jobs:
         if: always()
         env:
           XDG_RUNTIME_DIR: /tmp/xdg
-          # Capture weston + per-test xwpe stderr so a failure on a loaded runner
-          # is explainable (a real crash vs a slow-runner mistime).
-          XWPE_WL_LOGDIR: ${{ github.workspace }}/wl-logs
-        run: XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland -rxX
+        # The weston log and each row's editor log stay under --basetemp, so a
+        # failure on a loaded runner is explainable (a real crash vs a
+        # slow-runner mistime).
+        run: >-
+          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland
+          --basetemp "$PWD/wl-logs/full" -rxX
 
       - name: Upload test logs
         if: always()
