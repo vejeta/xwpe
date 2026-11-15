@@ -133,7 +133,8 @@ COPY|we_prog.c|e_p_make_link|1|sized|the destination is allocated at its sources
 COPY|we_prog.c|e_run_line|5|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_run_program|1|text|one number into 256 bytes
 COPY|we_prog.c|e_comp_start|1|sized|the destination is allocated at its sources' length just before
-COPY|we_prog.c|e_make_error_list|2|sized|the destination is allocated at its sources' length just before
+COPY|we_prog.c|e_p_scan_messages|2|sized|the destination is allocated at its sources' length just before
+COPY|we_prog.c|e_p_file_hit|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_arguments|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_cat_string|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_make_arg|2|sized|the destination is allocated at its sources' length just before
@@ -148,8 +149,6 @@ COPY|we_prog.c|e_prj_setup|8|sized|the destination is allocated at its sources' 
 COPY|we_prog.c|e_prj_finish|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_make_prj_opt|3|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_p_mess_win|2|sized|the destination is allocated at its sources' length just before
-COPY|we_prog.c|e_p_konv_mess|3|sized|the message row's piece into buffers sized from the row and the pattern
-COPY|we_prog.c|e_p_cmp_mess|4|sized|the destination is allocated at its sources' length just before
 COPY|we_progn.c|e_c_add_df|1|sized|the destination is allocated at its sources' length just before
 COPY|we_progn.c|e_sh_def|1|sized|the destination is allocated at its sources' length just before
 COPY|we_rowfind.c|cache_build|2|checked|the Find text cut at the array's size
@@ -171,5 +170,9 @@ COPY|WeXterm.c|x_palette_resource_names|1|text|a fixed text into 8 bytes
 COPY|we_errpat.c|add_note|2|checked|the note's length is tested against the notes array just before
 COPY|we_errpat.c|lex_copy|1|sized|the destination is allocated at its sources' length just before
 COPY|we_errpat.c|wpe_errpat_compile|3|text|a fixed text, or the reader's diagnostic of the same WPE_ERRPAT_DIAG size
+COPY|we_errpat.c|take_variable|1|sized|the row's piece into a buffer sized from the longest row and the pattern
+COPY|we_errpat.c|take_column|2|sized|the row's piece into a buffer sized from the longest row and the pattern
+COPY|we_errpat.c|clear_message|1|sized|the source's name into a buffer sized from the longest row, the pattern and the name
+COPY|we_errpat.c|search_text|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_run_line_words|2|sized|the text is allocated at E_RUN_WORD_REF_ROOM bytes a word just before
 COPY|we_startplan.c|wpe_startplan_folder_chose|2|sized|the destination is grown to the joined length just before

@@ -16,24 +16,33 @@ the build never ran.
 """
 import pytest
 
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, wait_screen
 
 F9 = "\033[20~"
 BUILD_WAIT = 5.0
+# The word the count line of a finished build carries ("1 error, 0 warnings").
+COUNT_WORD = " warnings"
+COUNT_WAIT = 25.0
 SANITIZER = "AddressSanitizer"
 COMPILER_ROW = "t.lua:1: syntax error near ="
 NO_ROWS = "0 errors, 0 warnings"
 ONE_ROW = "1 error, 0 warnings"
 
 
-def run_f9_with_pattern(tmp_path, pattern_line):
+def run_f9_with_pattern(tmp_path, pattern_line, output=(COMPILER_ROW,),
+                        count_wait=0.0):
     """F9 on a Lua file whose language has ``pattern_line`` as its pattern.
+
+    ``output`` is what the fake compiler prints, one row per item.  With a
+    ``count_wait`` the test waits up to that many seconds for the count line
+    (a build that never ends then fails by timeout, never by a sleep).
 
     Returns the text of every sanitizer log the editor wrote and the screen
     after the build.
     """
     fake = tmp_path / "fake-lua"
-    fake.write_text("#!/bin/sh\necho 't.lua:1: syntax error near ='\nexit 1\n")
+    rows = "".join("printf '%%s\\n' '%s'\n" % row for row in output)
+    fake.write_text("#!/bin/sh\n%sexit 1\n" % rows)
     fake.chmod(0o755)
     cfg = tmp_path / ".config" / "xwpe"
     cfg.mkdir(parents=True)
@@ -45,6 +54,8 @@ def run_f9_with_pattern(tmp_path, pattern_line):
     with WpeSession(str(tmp_path), "x = = 1\n", filename="t.lua", cols=200,
                     env_extra=env) as w:
         w.key(F9, delay=BUILD_WAIT)
+        if count_wait:
+            wait_screen(w, COUNT_WORD, tmo=count_wait)
         screen = "\n".join(w.display())
     logs = [p for p in tmp_path.iterdir() if p.name.startswith("asan.log")]
     return "".join(p.read_text() for p in logs), screen
@@ -73,5 +84,31 @@ def test_one_row_pattern_does_not_overflow(tmp_path):
     """A one-row pattern leaves rows 2 to 4 empty and they are never read."""
     text, screen = run_f9_with_pattern(
         tmp_path, "MessageString : ${FILE}:${LINE}:*\n")
+    assert SANITIZER not in text, text
+    assert ONE_ROW in screen, screen
+
+
+# @scenario SC-error-pattern-06
+def test_two_row_pattern_whose_first_row_matches_the_last_row_ends(tmp_path):
+    """F9 ends with its count line when a two-row pattern's first row is
+    the last row of Messages.  The message has no second row, so the walk
+    used to give the row back past where it began and F9 stayed on
+    "building ..." for good."""
+    text, screen = run_f9_with_pattern(
+        tmp_path, "MessageString : *${FILE}\\n${LINE}\n",
+        count_wait=COUNT_WAIT)
+    assert SANITIZER not in text, text
+    assert COMPILER_ROW in screen, screen
+    assert COUNT_WORD in screen, screen
+
+
+# @scenario SC-error-pattern-07
+def test_rows_that_end_in_a_backslash_stay_inside_messages(tmp_path):
+    """A build whose last rows end in a backslash is read to its end: the
+    rows that go on with a row stop at the last row of Messages, where the
+    walk used to read past the buffer."""
+    text, screen = run_f9_with_pattern(
+        tmp_path, "MessageString : ${FILE}:${LINE}:*\n",
+        output=("t.lua:1: x\\", "a\\", "b\\"), count_wait=COUNT_WAIT)
     assert SANITIZER not in text, text
     assert ONE_ROW in screen, screen

@@ -45,7 +45,7 @@ we_prog.c|e_run_kind_default|1|keep|the kind of an entry that names none, from i
 we_prog.c|e_p_make_note_program_current|1|keep|build step: a compiler that writes its own program has no link to note
 we_prog.c|e_p_make_link|1|keep|build step: a compiler of the "other" style links nothing
 we_prog.c|e_comp_start|2|keep|build step: the compile flags and the object of a compiler of the "other" style
-we_prog.c|e_make_error_list|1|keep|message format: GNU diagnostics or the entry's own
+we_prog.c|e_p_run_begin|1|keep|message format: GNU diagnostics or the entry's own
 we_prog.c|e_run_c_options|2|keep|Options dialog: the style radio of a language
 we_prog.c|e_make_prj_opt|2|keep|Options dialog: the style radio of a project
 we_prog.c|e_prj_options_take|1|keep|Options dialog: the style of a project's compiler

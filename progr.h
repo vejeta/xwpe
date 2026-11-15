@@ -182,8 +182,6 @@ void e_d_note_messages_focus_click(FENSTER *f);
 int e_messages_return(FENSTER *f);
 int e_add_arg(char ***arg, char *str, int n, int argc);
 int e_new_message(FENSTER *f);
-int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret,
-                 size_t row_max);
 int e_project_name(FENSTER *f);
 int e_wrt_prj_fl(FENSTER *f);
 int e_p_update_prj_fl(FENSTER *f);

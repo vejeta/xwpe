@@ -10,6 +10,7 @@
 #include "WeExpArr.h"
 #include "we_ai.h"       /* AI assistant entry point (guarded by WPE_AI) */
 #include "we_buffer.h"
+#include "we_errpat.h"
 #include "we_lineend.h"
 #include "we_progname.h"
 #include "we_startcmd.h"
@@ -4814,7 +4815,22 @@ static void e_p_attach_context(int k_before, int k, int *ctx_y)
  *ctx_y = -1;
 }
 
-static size_t e_p_longest_row(BUFFER *b);
+/* What one run of e_make_error_list over Messages holds: the compiler's
+   message pattern, the rows of Messages as the pattern reads them, and the
+   room for the entries one message makes.  pat and walk are NULL when the
+   pattern cannot be read, and the run then matches no rows. */
+struct e_p_run
+{
+ WpeErrPat *pat;
+ WpeErrWalk *walk;
+ WpeErrRow *rows;
+ WpeErrHit *hits;
+};
+
+static void e_p_run_begin(BUFFER *b, struct e_p_run *run);
+static void e_p_run_end(struct e_p_run *run);
+static int e_p_match_message(BUFFER *b, struct e_p_run *run, int *ii, int *kk,
+  int ret);
 
 /**
  * e_p_row_starts_with - Does @row start, after a directory, with @word
@@ -4858,27 +4874,21 @@ static int e_p_unmatched_row_verdict(const char *row)
  return(verdict);
 }
 
-int e_make_error_list(FENSTER *f)
+/**
+ * e_p_scan_messages - Turn the rows of Messages into entries of the error list.
+ * @f: the window; @b: the Messages buffer; @run: the pattern run.
+ *
+ * Make's and the linker's own rows are read here; every other row goes to the
+ * compiler's pattern.
+ * Return: -1 when the build failed at a place the user can jump to, -2 when
+ * it failed with nothing to jump to, E_LIST_COMPILER_FAILED when the compiler
+ * itself said so, 0 for a build that passed.
+ */
+static int e_p_scan_messages(FENSTER *f, BUFFER *b, struct e_p_run *run)
 {
- ECNT *cn = f->ed;
- BUFFER *b = cn->f[cn->mxedt]->b;
  int i, j, k = 0, ret = 0, ctx_y = -1;
- size_t row_max = e_p_longest_row(b);
  char *spt;
 
- if (err_li)
- {
-  for (i = 0; i < err_num; i++)
-  {
-   if(err_li[i].file) FREE(err_li[i].file);
-   if(err_li[i].text) FREE(err_li[i].text);
-   if(err_li[i].srch) FREE(err_li[i].srch);
-  }
-  FREE(err_li);
- }
- err_li = MALLOC(sizeof(struct ERR_LI) * b->mxlines);
- err_num = 0;
- err_walked = 0;
  for (i = 0; i < b->mxlines; i++)
  {
   if (!strncmp((char *)b->bf[i].s, "Error at Command:", 17))
@@ -4941,10 +4951,9 @@ int e_make_error_list(FENSTER *f)
   }
   else
   {
-   char *tststr = e_s_prog.comp_sw ? e_s_prog.intstr : gnu_intstr;
    int k_before = k;
 
-   ret = e_p_cmp_mess(tststr, b, &i, &k, ret, row_max);
+   ret = e_p_match_message(b, run, &i, &k, ret);
    e_p_attach_context(k_before, k, &ctx_y);
    if (!ret)
     ret = e_p_unmatched_row_verdict((char *)b->bf[i].s);
@@ -4953,6 +4962,32 @@ int e_make_error_list(FENSTER *f)
  if (!(f->ed->edopt & (ED_ERRORS_STOP_AT | ED_MESSAGES_STOP_AT)) &&
    ret == -1)
   ret = 0;
+ return(ret);
+}
+
+int e_make_error_list(FENSTER *f)
+{
+ ECNT *cn = f->ed;
+ BUFFER *b = cn->f[cn->mxedt]->b;
+ struct e_p_run run;
+ int i, ret;
+
+ if (err_li)
+ {
+  for (i = 0; i < err_num; i++)
+  {
+   if(err_li[i].file) FREE(err_li[i].file);
+   if(err_li[i].text) FREE(err_li[i].text);
+   if(err_li[i].srch) FREE(err_li[i].srch);
+  }
+  FREE(err_li);
+ }
+ err_li = MALLOC(sizeof(struct ERR_LI) * b->mxlines);
+ err_num = 0;
+ err_walked = 0;
+ e_p_run_begin(b, &run);
+ ret = e_p_scan_messages(f, b, &run);
+ e_p_run_end(&run);
  return(ret);
 }
 
@@ -9851,306 +9886,6 @@ int e_p_show_program_output(FENSTER *f)
 }
 
 /**
- * e_strip_quotes - Remove surrounding double quotes from a string in place.
- * @s: The string to modify.
- *
- * If @s is surrounded by double quotes (e.g. "filename.py"), they are
- * removed.  Used by the error pattern matcher to handle Python-style
- * error output: File "name.py", line N.
- */
-static void e_strip_quotes(char *s)
-{
- int len = strlen(s);
- if (len >= 2 && s[0] == '"' && s[len-1] == '"')
- {
-  memmove(s, s+1, len-2);
-  s[len-2] = '\0';
- }
-}
-
-/**
- * e_p_take_file_token - Copy the text a pattern's ${FILE} delimits.
- * @file: where the name goes, at least as long as @str plus one;
- * @str: the text between the pattern's delimiters.
- *
- * The whole token is kept, blanks included, so a row naming "my file.c"
- * jumps into that file instead of a new, empty "file.c".  Only the blanks
- * around the token and the quotes some compilers put around a name are
- * taken off.  e_p_row_file decides later which part names a real file.
- */
-static void e_p_take_file_token(char *file, const char *str)
-{
- size_t len;
-
- while (isspace((unsigned char)*str))
-  str++;
- len = strlen(str);
- while (len > 0 && isspace((unsigned char)str[len - 1]))
-  len--;
- memcpy(file, str, len);
- file[len] = '\0';
- e_strip_quotes(file);
-}
-
-int e_p_konv_mess(char *var, char *str, char *txt, char *file, char *cmp,
-  int *y, int *x)
-{
- int i;
- char *cp;
-
- if (!strncmp(var, "FILE", 4) && !isalnum(var[4]))
-  e_p_take_file_token(file, str);
- else if (!strncmp(var, "CMPTEXT", 7) && !isalnum(var[7]))
-  strcpy(cmp, str);
- else if (!strncmp(var, "LINE", 4) && !isalnum(var[4]))
- {
-  if (!isdigit(str[0]))
-   return(1);
-  *y = atoi(str);
-  if (var[4] == '+')
-   *y += atoi(var+5);
-  else if (var[4] == '-')
-   *y -= atoi(var+5);
- }
- else if (!strncmp(var, "COLUMN", 6) && !isalnum(var[6]))
- {
-  if (!strncmp(var+6, "=BEFORE", 7))
-  {
-   txt[0] = 'B';
-   strcpy(txt+1, str);
-   *x = 0;
-   var += 13;
-  }
-  else if (!strncmp(var+6, "=AFTER", 6))
-  {
-   txt[0] = 'A';
-   strcpy(txt+1, str);
-   *x = strlen(str);
-   var += 12;
-  }
-  else if (!strncmp(var+6, "=PREVIOUS?", 10))
-  {
-   if (!str[0])
-    return(1);
-   for (i = 0; (txt[i] = var[16+i]) && txt[i] != '+' && txt[i] != '-'; i++)
-    ;
-   txt[i] = '\0';
-   var += (16+i);
-   cp = strstr(str, txt);
-   for (i = 0; str+i < cp; i++)
-    ;
-   *x = i;
-   txt[0] = 'P'; txt[1] = '\0';
-  }
-  else if (!isdigit(str[0]))
-   return(1);
-  else
-  {
-   *x = atoi(str);
-   txt[0] = '\0';
-   var += 6;
-  }
-  if (var[0] == '+')
-   *x += atoi(var+1);
-  else if (var[0] == '-')
-   *x -= atoi(var+1);
- }
- return(0);
-}
-
-int e_p_comp_mess(char *a, char *b, char *c, char *txt, char *file, char *cmp,
-  int *y, int *x)
-{
- int i, n, k = 0, bsl = 0;
- char *ctmp, *cp, *var = NULL, *str = NULL;
-
- if (c > b)
-  return(0);
- if (a[0] == '*' && !a[1])
-  return(2);
- if (!a[0] && !b[0])
-  return(2);
- if (!a[0] || !b[0])
-  return(0);
- if (a[0] == '*' && (a[1] == '*' || a[1] == '$'))
-  return(e_p_comp_mess(++a, b, c, txt, file, cmp, y, x));
- if (a[0] == '$' && a[1] == '{')
- {
-  for (k = 2; a[k] && a[k] != '}'; k++);
-  var = MALLOC((k-1) * sizeof(char));
-  for (i = 2; i < k; i++)
-   var[i-2] = a[i];
-  var[k-2] = '\0';
-  if (a[k])
-   k++;
-  if (!a[k])
-   return(!e_p_konv_mess(var, b, txt, file, cmp, y, x));
-  n = a[k] == '\\' ? k : k+1;
- }
- else if (a[0] == '*'&& a[1] != '\\')
- {
-  k = 1;
-  n = 2;
- }
- else
-  n = 1;
- for(; bsl || (a[n] && a[n] != '*' && a[n] != '?' && a[n] != '[' &&
-   (a[n] != '$' || a[n+1] != '{' )); n++)
-  bsl = a[n] == '\\' ? !bsl : 0;
- if (a[0] == '*' || a[0] == '$')
- {
-  if (a[k] == '?')
-  {
-   cp = MALLOC((strlen(a)+1)*sizeof(char));
-   for (i = 0; i < k && (cp[i] = a[i]); i++);
-   for (i++; (cp[i-1] = a[i]) != '\0'; i++);
-   FREE(var);
-   n = e_p_comp_mess(cp, ++b, ++c, txt, file, cmp, y, x);
-   FREE(cp);
-   return(n);
-  }
-  if (a[k] == '[')
-  {
-   for (i = 0; b[i] &&
-     !(n = e_p_comp_mess(a+k, b+i, c+i, txt, file, cmp, y, x)); i++)
-    ;
-   if (!b[i])
-    return(0);
-   if (a[0] == '$')
-   {
-    str = MALLOC((i+1)*sizeof(char));
-    for (k = 0; k < i; k++)
-     str[k] = b[k];
-    str[i] = '\0';
-    e_p_konv_mess(var, str, txt, file, cmp, y, x);
-    FREE(var);
-    FREE(str);
-   }
-   return(n);
-  }
-  n -= k;
-  ctmp = MALLOC(n+1);
-  for (i = 0; i < n; i++)
-   ctmp[i] = a[i+k];
-  ctmp[n] = '\0';
-  cp = strstr(b, ctmp);
-  FREE(ctmp);
-  if (cp == NULL)
-   return(0);
-  if (a[0] == '$')
-  {
-   for (i = 0; c + i < cp; i++);
-   str = MALLOC((i+1)*sizeof(char));
-   for (i = 0; c + i < cp; i++)
-    str[i] = c[i];
-   str[i] = '\0';
-   i = e_p_konv_mess(var, str, txt, file, cmp, y, x);
-   FREE(var);
-   FREE(str);
-   if (i)
-    return(0);
-  }
-  if (!a[k+n] && !cp[n])
-   return(2);
-  if (!a[k+n])
-   return(e_p_comp_mess(a, cp+1, cp+1, txt, file, cmp, y, x));
-  if ((i = e_p_comp_mess(a+k+n, cp+n, cp+n, txt, file, cmp, y, x)))
-   return(i);
-  if (file[0] && *y > -1)
-   return(0);
-  return(e_p_comp_mess(a, cp+1, a[0] == '$' ? c : cp+1, txt, file, cmp, y, x));
- }
- else if (a[0] == '?')
- {
-  n--;
-  a++;
-  b++;
- }
- else if (a[0] == '[')
- {
-  if (a[1] == '!')
-  {
-   for (k = 2; a[k] && (a[k] != ']' || k == 2) && a[k] != b[0]; k++)
-    if (a[k+1] == '-' && b[0] >= a[k] && b[0] <= a[k+2])
-     return(-b[0]);
-   if (a[k] != ']')
-    return(-b[0]);
-   n-=(k+1);
-   a+=(k+1);
-   b++;
-  }
-  else
-  {
-   for (k = 1; a[k] && (a[k] != ']' || k == 1) && a[k] != b[0]; k++)
-    if (a[k+1] == '-' && b[0] >= a[k] && b[0] <= a[k+2])
-     break;
-   if (a[k] == ']' || a[k] == '\0')
-    return(0);
-   for(; a[k] && (a[k] != ']'); k++);
-   n-=(k+1);
-   a+=(k+1);
-   b++;
-  }
- }
- if (n <= 0)
-  return(e_p_comp_mess(a, b, c, txt, file, cmp, y, x));
- if ((k = strncmp(a, b, n)) != 0)
-  return(0);
- return(e_p_comp_mess(a+n, b+n, c+n, txt, file, cmp, y, x));
-}
-
-/* The word a compiler's row says when the compiler's own pattern carries no
-   warning marker. */
-#define E_P_WARNING_WORD "warning"
-
-/**
- * e_p_row_is_warning - Did the compiler call this row a warning?
- * @row: the Messages row; @wtxt, @wn, @wnum: the warning markers of the
- * compiler's pattern (the text, and the column it must start at, -1 for
- * anywhere).
- *
- * The count at the end of a build and the mark on each warning row come
- * from this, so the user sees at once which rows stop the build and which
- * only advise.  A pattern with no marker falls back to the word itself, in
- * any case.
- * Return: 1 for a warning row.
- */
-static int e_p_row_is_warning(char *row, char **wtxt, int *wn, int wnum)
-{
- int m;
- size_t n = strlen(E_P_WARNING_WORD);
- char *p;
-
- for (m = 0; m < wnum; m++)
- {
-  if (wn[m] == -1 && strstr(row, wtxt[m]))
-   return(1);
-  if (wn[m] > -1 && (int)strlen(row) > wn[m] &&
-      !strncmp(row + wn[m], wtxt[m], strlen(wtxt[m])))
-   return(1);
- }
- if (wnum > 0)
-  return(0);
- for (p = row; *p; p++)
-  if (!strncasecmp(p, E_P_WARNING_WORD, n))
-   return(1);
- return(0);
-}
-
-/**
- * e_p_row_kind - Is this row an error or a warning?
- * @row: the Messages row; @wtxt, @wn, @wnum: the warning markers of the
- * compiler's pattern.
- * Return: E_ROW_ERROR or E_ROW_WARNING.
- */
-static int e_p_row_kind(char *row, char **wtxt, int *wn, int wnum)
-{
- if (e_p_row_is_warning(row, wtxt, wn, wnum))
-  return(E_ROW_WARNING);
- return(E_ROW_ERROR);
-}
-
-/**
  * e_p_file_exists - Is there a file by this name where the build ran?
  * @name: a name as a compiler printed it.
  */
@@ -10172,7 +9907,7 @@ static char *e_p_unquoted_copy(const char *s)
 {
  char *copy = MALLOC(strlen(s) + 1);
 
- e_p_take_file_token(copy, s);
+ wpe_errpat_file_token(copy, s);
  return(copy);
 }
 
@@ -10233,209 +9968,130 @@ static void e_p_set_compiled_source(const char *name)
 }
 
 /**
- * e_p_pattern_names_file - Does the message pattern carry ${FILE}?
- * @srch: the pattern.
- */
-static int e_p_pattern_names_file(const char *srch)
-{
- return(strstr(srch, "${FILE}") != NULL);
-}
-
-/**
- * e_p_longest_row - The length of the longest row of @b.
+ * e_p_run_begin - Read the compiler's pattern and index the rows of Messages.
+ * @b: the Messages buffer; @run: filled in.
  *
- * Every name, column text and compiler text a pattern takes from a row is
- * a piece of that row, so a buffer of this size (plus the pattern's own
- * length) holds any of them, however long the path a compiler printed.
+ * The pattern is the one of the language being compiled, or GNU's when the
+ * language has none.  When it cannot be read the run holds no pattern and
+ * every row of the build output stays unrecognised, so the build still ends
+ * with its count line.
  */
-static size_t e_p_longest_row(BUFFER *b)
+static void e_p_run_begin(BUFFER *b, struct e_p_run *run)
 {
- size_t longest = 0;
+ const char *text = e_s_prog.comp_sw ? e_s_prog.intstr : gnu_intstr;
+ char diag[WPE_ERRPAT_DIAG];
  int i;
 
+ memset(run, 0, sizeof *run);
+ run->pat = wpe_errpat_compile(text ? text : "", diag);
+ if (!run->pat)
+  return;
+ run->rows = MALLOC(sizeof(WpeErrRow) * (b->mxlines + 1));
+ run->hits = MALLOC(sizeof(WpeErrHit) * (b->mxlines + 1));
+ if (!run->rows || !run->hits)
+ {
+  e_p_run_end(run);
+  return;
+ }
  for (i = 0; i < b->mxlines; i++)
-  if ((size_t)b->bf[i].len > longest)
-   longest = b->bf[i].len;
- return(longest);
+ {
+  run->rows[i].s = (const char *)b->bf[i].s;
+  run->rows[i].len = b->bf[i].len;
+ }
+ run->walk = wpe_errpat_walk_begin(run->pat, run->rows, b->mxlines,
+   e_p_compiled_source, (b->cn->edopt & ED_MESSAGES_STOP_AT) != 0);
+ if (!run->walk)
+  e_p_run_end(run);
 }
 
-/* A pattern is cut into at most this many rows, one per line of output. */
-#define E_P_PATTERN_ROWS 4
+/** Give back everything a run holds; a run that holds nothing stays empty. */
+static void e_p_run_end(struct e_p_run *run)
+{
+ wpe_errpat_walk_end(run->walk);
+ wpe_errpat_free(run->pat);
+ FREE(run->rows);
+ FREE(run->hits);
+ memset(run, 0, sizeof *run);
+}
+
+/** The kind of an error-list row for the kind the pattern gave an entry. */
+static int e_p_kind_of_hit(const WpeErrHit *hit)
+{
+ if (hit->kind == WPE_ERRPAT_WARNING)
+  return(E_ROW_WARNING);
+ return(E_ROW_ERROR);
+}
 
 /**
- * e_p_alloc_pattern_rows - Allocate the row buffers of one error pattern.
+ * e_p_file_hit - File one entry the pattern made in the error list.
+ * @k: the slot; @hit: the entry, whose file and search text pass to the list;
+ * @b: the Messages buffer, which holds the row the entry shows.
  *
- * A language set up without a MessageString has an empty pattern, and a
- * pattern may have fewer rows than E_P_PATTERN_ROWS. Every row starts as an
- * empty string, so F9 on such a language reports "no error rows recognised"
- * instead of reading memory nobody filled.
+ * Alt-T and Enter on the row take the user to the file, line and column
+ * filed here.  The file is the part of the pattern's ${FILE} that names a
+ * file that exists, or the whole text so the jump can say what is missing.
  */
-static void e_p_alloc_pattern_rows(char *rows[E_P_PATTERN_ROWS], size_t cap)
+static void e_p_file_hit(int k, WpeErrHit *hit, BUFFER *b)
 {
- int n;
+ const char *row = (const char *)b->bf[hit->text_row].s;
 
- for (n = 0; n < E_P_PATTERN_ROWS; n++)
- {
-  rows[n] = MALLOC(cap);
-  rows[n][0] = '\0';
- }
+ err_li[k].file = e_p_row_file(hit->file);
+ FREE(hit->file);
+ hit->file = NULL;
+ err_li[k].line = hit->line;
+ err_li[k].srch = hit->srch;
+ hit->srch = NULL;
+ err_li[k].x = hit->x;
+ err_li[k].y = err_li[k].row = hit->row;
+ err_li[k].kind = e_p_kind_of_hit(hit);
+ err_li[k].text = MALLOC(strlen(row) + 1);
+ strcpy(err_li[k].text, row);
+ err_li[k].text[b->bf[hit->text_row].len] = '\0';
+ err_num++;
 }
 
-int e_p_cmp_mess(char *srch, BUFFER *b, int *ii, int *kk, int ret,
-                 size_t row_max)
+/**
+ * e_p_hits_verdict - What the entries of one message say about the build.
+ * @ret: the verdict so far; @hits, @nhits: the entries just made.
+ *
+ * The build fails at the first entry that stops it; a build that only made
+ * warnings the pattern marks passes.
+ * Return: @ret when it is already set, else -1 or 0.
+ */
+static int e_p_hits_verdict(int ret, const WpeErrHit *hits, int nhits)
 {
- char *cp, *cmp, *file, *search, *tmp[E_P_PATTERN_ROWS], **wtxt = NULL;
- int j, l, m, n, iy, iorig, i = *ii, k = *kk, x = 0, y = -1, wnum = 0;
- int *wn = NULL;
- size_t cap = row_max + strlen(srch) + 2;
+ int h;
 
- if (e_p_compiled_source)
-  cap += strlen(e_p_compiled_source);
- cmp = MALLOC(cap);
- file = MALLOC(cap);
- search = MALLOC(cap);
- e_p_alloc_pattern_rows(tmp, cap);       /* a row takes text of the message row, not of the pattern */
- cmp[0] = search[0] = file[0] = '\0';
- if (!e_p_pattern_names_file(srch) && e_p_compiled_source)
-  strcpy(file, e_p_compiled_source);
- wtxt = MALLOC(1);
- wn = MALLOC(1);
- for (j = 0, n = 0; n < E_P_PATTERN_ROWS && srch[j]; n++)
- {
-  for (l = 0; (tmp[n][l] = srch[j]); j++, l++)
-  {
-   if (j > 1 && srch[j] == '?' && srch[j-1] == '{' && srch[j-2] == '$')
-   {
-    wnum++;
-    wn = REALLOC(wn, wnum * sizeof(int));
-    wtxt = REALLOC(wtxt, wnum * sizeof(char *));
-    if (srch[j+1] == '*')
-     wn[wnum-1] = -1;
-    else
-     wn[wnum-1] = atoi(srch+j+1);
-    for (j++; srch[j] && srch[j] != ':'; j++);
-    if (!srch[j])
-    {
-     wnum--;
-     tmp[n][l] = '\0';
-     break;
-    }
-    for (m = 0; srch[j+m] && srch[j+m] != '}'; m++);
-    wtxt[wnum-1] = MALLOC((m+1) * sizeof(char));
-    for (m = 0, j++; (wtxt[wnum-1][m] = srch[j]) && srch[j] != '}'; j++, m++);
-    wtxt[wnum-1][m] = '\0';
-    l -= 3;
-   }
-   else if (srch[j] == '\r' || srch[j] == '\n')
-   {
-    if (srch[j+1] == '\r' || srch[j+1] == '\n')
-    {
-     tmp[n][l] = '\n';
-     tmp[n][l+1] = '\0';
-     j++;
-    }
-    else
-     tmp[n][l] = '\0';
-    j++;
-    break;
-   }
-  }
- }
- e_p_comp_mess(tmp[0], b->bf[i].s, b->bf[i].s, search, file, cmp, &y, &x);
- iy = i;
- iorig = i;
- do
- {
-  if (n > 1 && file[0] && i < b->mxlines-1)
-  {
-   y = -1;
-   while (b->bf[i].s[b->bf[i].len-1] == '\\')
-    i++;
-   i++;
-   e_p_comp_mess(tmp[1], b->bf[i].s, b->bf[i].s, search, file, cmp, &y, &x);
-   iy = i;
-  }
-  do
-  {
-   if (n > 2 && file[0] && y >= 0 && i < b->mxlines-1)
-   {
-    while (b->bf[i].s[b->bf[i].len-1] == '\\')
-     i++;
-    i++;
-    l = e_p_comp_mess(tmp[2], b->bf[i].s, b->bf[i].s, search, file, cmp, &y, &x);
-    if (!l && n > 3)
-     l = e_p_comp_mess(tmp[3], b->bf[i].s, b->bf[i].s, search, file, cmp, &y, &x);
-   }
-   else
-    l = 1;
-   if (file[0] && y >= 0 && l != 0)
-   {
-    err_li[k].file = e_p_row_file(file);
-    err_li[k].line = y;
-    if (search[0] == 'P')
-    {
-     cp = strstr(b->bf[iy].s, cmp);
-     if (!cp)
-      x = 0;
-     else
-     {
-      for (m = 0; b->bf[iy].s + m < (unsigned char *)cp; m++);
-      x -= m;
-     }
-     err_li[k].srch = MALLOC((strlen(cmp)+2)*sizeof(char));
-     err_li[k].srch[0] = 'P';
-     strcpy(err_li[k].srch+1, cmp);
-    }
-    else if (search[0])
-    {
-     err_li[k].srch = MALLOC((strlen(search)+1)*sizeof(char));
-     strcpy(err_li[k].srch, search);
-    }
-    else
-     err_li[k].srch = NULL;
-    err_li[k].x = x;
-    err_li[k].y = err_li[k].row = iorig;
-    err_li[k].kind = e_p_row_kind((char *)b->bf[i].s, wtxt, wn, wnum);
-    err_li[k].text = MALLOC(strlen((char *)b->bf[i].s) + 1);
-    strcpy(err_li[k].text, (char *)b->bf[i].s);
-    err_li[k].text[b->bf[i].len] = '\0';
-    k++;
-    err_num++;
-    if (!ret)
-    {
-     for (ret = -1, m = 0; ret && m < wnum; m++)
-     {
-      if (wn[m] == -1 && !(b->cn->edopt & ED_MESSAGES_STOP_AT) &&
-        strstr(b->bf[i].s, wtxt[m]))
-       ret = 0;
-      else if (wn[m] > -1 && !(b->cn->edopt & ED_MESSAGES_STOP_AT) &&
-        !strncmp(b->bf[i].s+wn[m], wtxt[m], strlen(wtxt[m])))
-       ret = 0;
-     }
-    }
-    if (!ret && wnum <= 0)
-     ret = -1;
-    while (b->bf[i].s[b->bf[i].len-1] == '\\')
-     i++;
-   }
-  } while (n > 2 && file[0] && y >= 0 && l != 0 && i < b->mxlines-1);
-  if (n > 2 && file[0] && y >= 0 && l == 0)
-   i--;
- } while (n > 1 && file[0] && y >= 0 && i < b->mxlines-1);
- if (n > 1 && file[0] && y < 0)
-  i--;
- *ii = i;
- *kk = k;
- for (m = 0; m < wnum; m++)
-  FREE(wtxt[m]);
- FREE(wn);
- FREE(wtxt);
- for (m = 0; m < E_P_PATTERN_ROWS; m++)
-  FREE(tmp[m]);
- FREE(cmp);
- FREE(file);
- FREE(search);
- return(ret);
+ if (ret)
+  return(ret);
+ for (h = 0; h < nhits; h++)
+  if (hits[h].stops)
+   return(-1);
+ return(0);
+}
+
+/**
+ * e_p_match_message - Read the message that starts at Messages row *@ii.
+ * @b: the Messages buffer; @run: the pattern run; @ii: the row, moved to the
+ * last row the message used; @kk: the next free slot of the error list;
+ * @ret: the verdict so far.
+ *
+ * Each error the compiler printed becomes an entry of the list, so the user
+ * can step through them with Alt-T.
+ * Return: the verdict, -1 once an entry stops the build.
+ */
+static int e_p_match_message(BUFFER *b, struct e_p_run *run, int *ii, int *kk,
+  int ret)
+{
+ int nh = 0, h;
+
+ if (!run->walk)
+  return(ret);
+ *ii = wpe_errpat_walk_from(run->walk, *ii, run->hits, &nh);
+ for (h = 0; h < nh; h++)
+  e_p_file_hit(*kk + h, &run->hits[h], b);
+ *kk += nh;
+ return(e_p_hits_verdict(ret, run->hits, nh));
 }
 
 #endif
