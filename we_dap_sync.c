@@ -9,8 +9,11 @@
    waits on the fd loop (we_fdloop.c), the transport registered with the
    engine's own pump as its callback, until the engine has handed the answer
    over, the adapter has gone, or the wait's budget has passed.  The start,
-   the requests and the run do so; Quit's waits (below) still poll.  The
-   editor does not link it, so no wait of its can hold the editor's keys.
+   the requests, the run and Quit all do so: Quit's own waits are the
+   editor's ladder (we_child.c) seen from a caller with no editor, and the
+   adapter's end reaches them through the owner's SIGCHLD reaper, the same on
+   every system.  The editor does not link it, so no wait of its can hold the
+   editor's keys.
    See we_dap.h for what each call does and for the budgets. */
 
 #include <stdlib.h>
@@ -23,12 +26,6 @@
 #include <poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#if defined(__linux__)
-# include <sys/syscall.h>
-#endif
-#if defined(HAVE_KQUEUE) && defined(HAVE_SYS_EVENT_H)
-# include <sys/event.h>
-#endif
 
 #include "we_dap.h"
 #include "we_child.h"
@@ -40,22 +37,9 @@
 #define SYNC_REQUEST_MS   30000   /* a request the adapter answers */
 #define SYNC_RUN_MS       60000   /* a run to its next stop */
 #define SYNC_LEARN_EXIT_MS 300    /* how long a failure line waits to learn how the adapter ended */
-#define SYNC_POLL_FOREVER (-1)
-#define SYNC_NO_DEADLINE  (-1L)
 #define SYNC_MS_PER_SEC   1000L
 #define SYNC_NS_PER_MS    1000000L
 #define SYNC_CMD_MAX      64      /* a DAP command's name */
-
-/* What a wait found (sync_wait_readable). */
-#define SYNC_WAIT_READY     0    /* the descriptor is readable           */
-#define SYNC_WAIT_TIMED_OUT 1    /* the deadline passed                  */
-#define SYNC_WAIT_GAVE_UP   2    /* poll failed or the editor is ending  */
-
-/* Poll set size of a session wait: the transport, the pty, the end request. */
-#define SYNC_WAIT_FDS 3
-/* Of the wait for the adapter's exit: its exit descriptor (pidfd or
-   kqueue), the pty, the transport and the end request. */
-#define SYNC_EXIT_FDS 4
 
 /* ---- the end request ---------------------------------------------------- */
 
@@ -76,25 +60,6 @@ void e_dap_set_end_watch(int fd, int (*requested)(void), void (*save)(void))
 }
 
 /**
- * sync_end_watch_add - Put the end request's descriptor in a wait's poll set.
- * @p: the set; @np: how many entries it has, raised by one when added.
- *
- * With it in the set, a SIGTERM or SIGHUP that lands just before the wait
- * starts still wakes it, so a caller is never left waiting for a program
- * that runs for ever.
- * Return: its index in @p, or -1 when there is no end request to watch.
- */
-static int sync_end_watch_add(struct pollfd *p, int *np)
-{
- if (dap_end_fd == SYNC_NO_FD)
-  return -1;
- p[*np].fd = dap_end_fd;
- p[*np].events = POLLIN;
- p[*np].revents = 0;
- return (*np)++;
-}
-
-/**
  * sync_end_pending - Must a wait give up because the end was asked for?
  * Return: 1 when it was, else 0.
  */
@@ -103,34 +68,6 @@ static int sync_end_pending(void)
  if (!dap_end_requested)
   return 0;
  return dap_end_requested() != 0;
-}
-
-/**
- * sync_poll_fired - Did entry @i of a poll set wake the poll?
- * @p: the set; @i: the entry, or -1 when it was not in the set; @pret:
- * what poll() returned.
- */
-static int sync_poll_fired(const struct pollfd *p, int i, int pret)
-{
- if (i < 0 || pret <= 0)
-  return 0;
- return p[i].revents != 0;
-}
-
-/**
- * sync_quit_end_watch_add - Watch the end request during Quit's waits,
- * until it has been handled.
- * @p, @np: the poll set, as for sync_end_watch_add.
- *
- * Once handled the descriptor stays readable, so it is left out of the
- * later polls, which would otherwise return at once until their deadline.
- * Return: its index in @p, or -1 when it is not watched.
- */
-static int sync_quit_end_watch_add(struct pollfd *p, int *np)
-{
- if (dap_end_handled)
-  return -1;
- return sync_end_watch_add(p, np);
 }
 
 /**
@@ -168,80 +105,6 @@ static long sync_now_ms(void)
 
  clock_gettime(CLOCK_MONOTONIC, &ts);
  return (long)ts.tv_sec * SYNC_MS_PER_SEC + ts.tv_nsec / SYNC_NS_PER_MS;
-}
-
-/**
- * sync_ms_left - What remains of @deadline, as a poll() timeout.
- * @deadline: a sync_now_ms() instant, or SYNC_NO_DEADLINE.
- * Return: the milliseconds left (0 once passed), or SYNC_POLL_FOREVER.
- */
-static int sync_ms_left(long deadline)
-{
- long left;
-
- if (deadline == SYNC_NO_DEADLINE)
-  return SYNC_POLL_FOREVER;
- left = deadline - sync_now_ms();
- if (left < 0)
-  return 0;
- return (int)left;
-}
-
-/**
- * sync_wait_readable - Wait until @fd is readable, passing on the program's
- * output meanwhile.
- * @s: the session; @fd: the descriptor waited on (the transport, or the
- * listening socket while dlv has not dialled in); @deadline: a
- * sync_now_ms() instant, or SYNC_NO_DEADLINE; @quitting: Quit's own wait.
- *
- * dlv's pty is drained here, so a program that prints a lot never stalls
- * on a full pty while the caller waits; the end request is watched, so a
- * SIGTERM or SIGHUP ends the wait at once.  Quit's own waits are the
- * exception: they are bounded, and cutting them short sends lldb-dap
- * SIGTERM before it has acted on `disconnect`, which leaves its running
- * program behind (measured: 5 of 5 times; SIGTERM or SIGKILL alone never
- * ends it).
- * Return: SYNC_WAIT_READY, SYNC_WAIT_TIMED_OUT or SYNC_WAIT_GAVE_UP.
- */
-static int sync_wait_readable(e_dap_session *s, int fd, long deadline,
-                              int quitting)
-{
- for (;;)
- {
-  struct pollfd p[SYNC_WAIT_FDS];
-  int np = 0, pty_i = -1, end_i, pret, pty = e_dap_output_fd(s);
-
-  if (fd < 0)
-   return SYNC_WAIT_GAVE_UP;
-  if (deadline != SYNC_NO_DEADLINE && sync_ms_left(deadline) == 0)
-   return SYNC_WAIT_TIMED_OUT;
-  p[np].fd = fd; p[np].events = POLLIN; p[np].revents = 0; np++;
-  if (pty >= 0)
-  {
-   pty_i = np;
-   p[np].fd = pty; p[np].events = POLLIN; p[np].revents = 0;
-   np++;
-  }
-  if (quitting)
-   end_i = sync_quit_end_watch_add(p, &np);
-  else
-   end_i = sync_end_watch_add(p, &np);
-  pret = poll(p, np, sync_ms_left(deadline));
-  if (!quitting && sync_end_pending())
-   return SYNC_WAIT_GAVE_UP;
-  if (quitting)
-   sync_quit_end_check(sync_poll_fired(p, end_i, pret));
-  if (pret < 0 && errno == EINTR)
-   continue;
-  if (pret < 0)
-   return SYNC_WAIT_GAVE_UP;
-  if (pret == 0)
-   return SYNC_WAIT_TIMED_OUT;
-  if (pty_i >= 0 && (p[pty_i].revents & (POLLIN | POLLHUP | POLLERR)))
-   e_dap_drain_output(s);
-  if (p[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))
-   return SYNC_WAIT_READY;
- }
 }
 
 /* What a waited request was told. */
@@ -328,6 +191,18 @@ static long sync_budget(int which)
 #define SYNC_ON_START 0    /* the start's answers, pumped by e_dap_start_pump */
 #define SYNC_ON_CALL  1    /* a request's answer, read by e_dap_read_now      */
 #define SYNC_ON_RUN   2    /* the run's next stop, pumped by e_dap_run_pump   */
+/* Quit's two waits.  An end request does not cut them short: it makes the
+   save run once (sync_quit_end_check) and Quit goes on, because lldb-dap ends
+   a running program only on `disconnect` (measured: 5 of 5 times, SIGTERM or
+   SIGKILL alone leave it behind). */
+#define SYNC_ON_QUIT  3    /* the answer to `disconnect`, pumped as a run     */
+#define SYNC_ON_EXIT  4    /* the adapter's exit; what it writes is dropped   */
+
+/** sync_quitting - Is the wait that runs one of Quit's? */
+static int sync_quitting(int mode)
+{
+ return mode == SYNC_ON_QUIT || mode == SYNC_ON_EXIT;
+}
 
 /* The start's phases, each with its own budget. */
 #define SYNC_PHASE_DIAL   0   /* a reverse-TCP adapter has not dialled in */
@@ -407,10 +282,20 @@ static void sync_on_transport(int fd, void *data)
   sync_follow_start_fd();
   return;
  }
- if (sl.mode == SYNC_ON_RUN)
+ if (sl.mode == SYNC_ON_RUN || sl.mode == SYNC_ON_QUIT)
  {
   sl.st = e_dap_run_pump(sl.s);
   if (sl.st != E_DAP_RUN_GOING || e_dap_fd(sl.s) < 0)
+   sync_unwatch(&sl.fd);
+  return;
+ }
+ if (sl.mode == SYNC_ON_EXIT)
+ {
+  /* Read and drop, so the adapter never blocks on a full pipe while it
+     exits; at the end of the transport read it to it and leave the loop,
+     else its hang-up wakes the loop for the whole grace. */
+  e_dap_discard_input(sl.s);
+  if (e_dap_fd(sl.s) < 0)
    sync_unwatch(&sl.fd);
   return;
  }
@@ -439,6 +324,8 @@ static void sync_on_end_request(int fd, void *data)
 {
  (void)fd;
  (void)data;
+ if (sync_quitting(sl.mode))
+  sync_quit_end_check(1);        /* save the work, once; Quit goes on */
  sync_unwatch(&sl.end_fd);
 }
 
@@ -463,7 +350,7 @@ static int sync_resolved(void)
  if (sl.mode == SYNC_ON_START)
   return sl.st != E_DAP_START_WAITING ||
          sync_start_phase(sl.s) != sl.phase;
- if (sl.mode == SYNC_ON_RUN)
+ if (sl.mode == SYNC_ON_RUN || sl.mode == SYNC_ON_QUIT)
   return sl.st != E_DAP_RUN_GOING;
  return sl.call->done;
 }
@@ -499,11 +386,16 @@ static int sync_adapter_left(void)
  * start and after each callback the loop runs.
  *
  * Over when the engine has what it waited for, the end was requested, the
- * transport is no longer watched (it ended), or the adapter has gone.
+ * transport is no longer watched (it ended), or the adapter has gone.  Quit's
+ * waits ignore the end request (the save ran in its callback), and the exit
+ * wait ignores the transport too: it is over when the adapter is.
  */
 static int sync_pred(void)
 {
- if (sync_end_pending() || sl.fd == SYNC_NO_FD || sync_resolved())
+ if (sl.mode == SYNC_ON_EXIT)
+  return e_dap_adapter_gone(sl.s);
+ if ((!sync_quitting(sl.mode) && sync_end_pending()) ||
+     sl.fd == SYNC_NO_FD || sync_resolved())
   return 1;
  if (!sync_adapter_left())
   return 0;
@@ -535,7 +427,9 @@ static void sync_loop_begin(e_dap_session *s, int mode, int fd,
   sl.fd = fd;
  if (pty >= 0 && wpe_fd_add(pty, POLLIN, sync_on_pty, NULL) == 0)
   sl.pty_fd = pty;
- if (dap_end_fd != SYNC_NO_FD &&
+ /* Once handled the descriptor stays readable: Quit leaves it off the loop,
+    which it would wake at once until the budget. */
+ if (dap_end_fd != SYNC_NO_FD && !(sync_quitting(mode) && dap_end_handled) &&
      wpe_fd_add(dap_end_fd, POLLIN, sync_on_end_request, NULL) == 0)
   sl.end_fd = dap_end_fd;
 }
@@ -806,30 +700,6 @@ int e_dap_set_file_breakpoints(e_dap_session *s, const char *file,
 
 /* ---- the run, waited for ------------------------------------------------ */
 
-/**
- * sync_run_wait - Quit's wait for the run to stop or end, by poll().
- * @s: the session; @deadline: a sync_now_ms() instant, or SYNC_NO_DEADLINE;
- * @quitting: Quit's own wait (see sync_wait_readable).
- * Return: E_DAP_RUN_STOPPED, E_DAP_RUN_ENDED, or E_DAP_RUN_GOING when the
- * wait gave up (deadline, end request).
- */
-static int sync_run_wait(e_dap_session *s, long deadline, int quitting)
-{
- int st = e_dap_run_pump(s);
-
- while (st == E_DAP_RUN_GOING)
- {
-  int fd = e_dap_fd(s);
-
-  if (fd < 0)
-   break;
-  if (sync_wait_readable(s, fd, deadline, quitting) != SYNC_WAIT_READY)
-   break;
-  st = e_dap_run_pump(s);
- }
- return st;
-}
-
 int e_dap_wait_stop(e_dap_session *s, long budget_ms)
 {
  long budget = budget_ms > 0 ? sync_scaled(budget_ms)
@@ -1000,228 +870,55 @@ int e_dap_run(e_dap_session *s)
  * @s: the session.
  *
  * Used when the caller closes a session it did not disconnect itself.  The
- * wait ends at the adapter's answer or the end of its transport, or at
- * E_DAP_DISCONNECT_MS.  The end request does not cut it short: lldb-dap
- * ends a running program only on `disconnect`, and giving up here sends it
- * SIGTERM before it has acted on it, so the program stays behind
- * (measured on a running lldb-dap program, 5 of 5).
+ * wait, on the loop, ends at the adapter's answer or the end of its
+ * transport, or at E_DAP_DISCONNECT_MS (not scaled: the editor's own bound).
+ * The end request does not cut it short (see SYNC_ON_QUIT).
  */
 static void sync_quit_and_wait(e_dap_session *s)
 {
+ int st;
+
  if (e_dap_disconnect_sent(s))
   return;                        /* the caller disconnected and waited */
  if (e_dap_disconnect(s) != 0)
   return;
- sync_run_wait(s, sync_now_ms() + E_DAP_DISCONNECT_MS, 1);
+ st = e_dap_run_pump(s);
+ if (st == E_DAP_RUN_GOING && e_dap_fd(s) >= 0)
+  sync_wait_on_loop(s, SYNC_ON_QUIT, e_dap_fd(s), NULL, 0, st,
+                    E_DAP_DISCONNECT_MS, "the adapter's answer to disconnect");
+ sync_quit_end_check(0);
 }
 
-/* The waits below mirror the editor's ladder (we_child.h): after the answer
-   the owner's grace to exit, after SIGTERM its kill grace. */
-#define SYNC_EXIT_MS WPE_CHILD_END_GRACE_MS
-#define SYNC_TERM_MS WPE_CHILD_END_KILL_MS
+/* The slack the exit wait has beyond the ladder's own bounds: the ladder
+   reports its end by itself, this is only so a lost report cannot hang. */
+#define SYNC_EXIT_SLACK_MS 1000
 
 /**
- * sync_adapter_gone - Has the adapter exited?  Reap it if so.
+ * sync_reap_adapter - Make sure the adapter is gone, on the owner's ladder.
  * @s: the session.
  *
- * A caller of these waits has no SIGCHLD handler of the editor's, so the
- * adapter is reaped here, and the children's owner then stops following it.
- * Return: 1 once it is gone (and reaped), else 0.
- */
-static int sync_adapter_gone(e_dap_session *s)
-{
- pid_t pid = e_dap_adapter_pid(s), r;
- int st;
-
- if (pid <= 0)
-  return 1;
- r = waitpid(pid, &st, WNOHANG);
- if (r != pid && !(r < 0 && errno == ECHILD))
-  return 0;
- e_dap_adapter_reaped(s);
- return 1;
-}
-
-#if defined(DAP_NO_PIDFD)
-/* The test build of a system with neither pidfd nor kqueue. */
-#elif defined(__linux__) && defined(SYS_pidfd_open)
-# define SYNC_EXIT_BY_PIDFD 1
-#elif defined(HAVE_KQUEUE) && defined(HAVE_SYS_EVENT_H)
-# define SYNC_EXIT_BY_KQUEUE 1
-#endif
-
-#if defined(SYNC_EXIT_BY_KQUEUE)
-/**
- * sync_kqueue_exit_open - The BSD and macOS form of a pidfd: a kqueue that
- * becomes readable when @pid exits (EVFILT_PROC, NOTE_EXIT).
- * @pid: the adapter, this process's own child.
- * Return: the descriptor, or -1 (the adapter already exited, or no room).
- */
-static int sync_kqueue_exit_open(pid_t pid)
-{
- struct kevent ev;
- int kq = kqueue();
-
- if (kq < 0)
-  return SYNC_NO_FD;
- EV_SET(&ev, pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
- if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0)
- {
-  close(kq);
-  return SYNC_NO_FD;
- }
- return kq;
-}
-#endif
-
-/**
- * sync_exit_fd_open - A descriptor that becomes readable when @pid exits:
- * a pidfd on Linux, a kqueue on the BSDs and macOS, or -1 where the system
- * has neither (then the end of the adapter's output is waited for).
- * @pid: the adapter, this process's own child.
- */
-static int sync_exit_fd_open(pid_t pid)
-{
-#if defined(SYNC_EXIT_BY_PIDFD)
- return (int)syscall(SYS_pidfd_open, pid, 0);
-#elif defined(SYNC_EXIT_BY_KQUEUE)
- return sync_kqueue_exit_open(pid);
-#else
- (void)pid;
- return SYNC_NO_FD;
-#endif
-}
-
-/**
- * sync_exit_grace_wait - With no exit descriptor, the adapter has closed
- * every descriptor it held: it may be exiting, or still cleaning up after
- * SIGTERM.  Give it what is left of @deadline, then look once.
- * @s: the session; @deadline: a sync_now_ms() instant.
- *
- * Only systems with neither pidfd nor kqueue reach this, and only after the
- * adapter closed all its descriptors: there a Quit can take the whole bound.
- * Return: 1 once the adapter is gone (and reaped), else 0.
- */
-static int sync_exit_grace_wait(e_dap_session *s, long deadline)
-{
- for (;;)
- {
-  struct pollfd p[1];
-  int np = 0, end_i, r;
-
-  if (sync_adapter_gone(s))
-   return 1;
-  end_i = sync_quit_end_watch_add(p, &np);
-  r = poll(p, np, sync_ms_left(deadline));
-  if (r < 0 && errno == EINTR)
-   continue;
-  sync_quit_end_check(sync_poll_fired(p, end_i, r));
-  if (r <= 0)
-   return sync_adapter_gone(s);
- }
-}
-
-/**
- * sync_exit_watch - Wait until the adapter has exited, or @deadline.
- * @s: the session; @exit_fd: from sync_exit_fd_open, or -1; @deadline: a
- * sync_now_ms() instant.
- *
- * What the adapter still writes meanwhile is read and dropped, so it never
- * blocks on a full pipe while it exits; an adapter that writes without end
- * still cannot hold the wait past @deadline.  Without an exit descriptor,
- * the end of every descriptor the adapter holds stands for "may have
- * exited", and the rest of the bound is given by sync_exit_grace_wait.
- * Return: 1 once the adapter is gone (and reaped), 0 at the deadline.
- */
-static int sync_exit_watch(e_dap_session *s, int exit_fd, long deadline)
-{
- for (;;)
- {
-  struct pollfd p[SYNC_EXIT_FDS];
-  int np = 0, pty_i = -1, rd_i = -1, end_i, r;
-  int pty = e_dap_output_fd(s), rd = e_dap_fd(s);
-
-  if (sync_adapter_gone(s))
-   return 1;
-  if (sync_ms_left(deadline) == 0)
-   return 0;
-  if (exit_fd >= 0)
-  {
-   p[np].fd = exit_fd; p[np].events = POLLIN; p[np].revents = 0; np++;
-  }
-  if (pty >= 0)
-  {
-   pty_i = np;
-   p[np].fd = pty; p[np].events = POLLIN; p[np].revents = 0;
-   np++;
-  }
-  if (rd >= 0)
-  {
-   rd_i = np;
-   p[np].fd = rd; p[np].events = POLLIN; p[np].revents = 0; np++;
-  }
-  if (np == 0)
-   return sync_exit_grace_wait(s, deadline);
-  end_i = sync_quit_end_watch_add(p, &np);
-  r = poll(p, np, sync_ms_left(deadline));
-  if (r < 0 && errno == EINTR)
-   continue;
-  sync_quit_end_check(sync_poll_fired(p, end_i, r));
-  if (r <= 0)
-   return sync_adapter_gone(s);
-  if (pty_i >= 0 && p[pty_i].revents)
-   e_dap_drain_output(s);
-  if (rd_i >= 0 && p[rd_i].revents)
-   e_dap_discard_input(s);
- }
-}
-
-/**
- * sync_wait_adapter_exit - Give the adapter up to @ms to exit by itself.
- * @s: the session; @ms: the bound.
- * Return: 1 once it is gone and reaped, else 0.
- */
-static int sync_wait_adapter_exit(e_dap_session *s, int ms)
-{
- int exit_fd = sync_exit_fd_open(e_dap_adapter_pid(s));
- int gone = sync_exit_watch(s, exit_fd, sync_now_ms() + ms);
-
- if (exit_fd >= 0)
-  close(exit_fd);
- return gone;
-}
-
-/**
- * sync_reap_adapter - Make sure the adapter is gone, and reap it.
- * @s: the session.
- *
- * An adapter that answered Quit is given SYNC_EXIT_MS to exit by itself
- * and is then only reaped: dlv closes its socket before it is done, so the
- * end of the transport is not taken for its exit.  One still there gets
- * SIGTERM and SYNC_TERM_MS, a chance to end by itself, and SIGKILL after
- * that.
- * Every wait is a poll on the adapter's exit, bounded, never a sleep.
+ * Skipped for a session with no adapter of its own (a loopback or TCP peer:
+ * e_dap_adapter_pid is 0) and for one already gone.  Otherwise its input
+ * closes (some adapters exit on that), then e_dap_end_adapter hands it to the
+ * editor's ladder: one that answered `disconnect` gets WPE_CHILD_END_GRACE_MS
+ * to exit by itself and then SIGKILL, one that did not gets SIGTERM, the
+ * grace and SIGKILL.  The wait is on the loop and ends when the owner's
+ * reaper says the adapter is gone, also when a grandchild holds its pipes;
+ * what the adapter writes meanwhile is read and dropped.  Bounded by the
+ * ladder's own constants (not scaled) and a slack, so Quit takes at most
+ * E_DAP_CLOSE_MAX_MS plus that.
  */
 static void sync_reap_adapter(e_dap_session *s)
 {
- pid_t pid = e_dap_adapter_pid(s);
- int st;
-
- if (pid <= 0)
+ if (e_dap_adapter_pid(s) <= 0 || e_dap_adapter_gone(s))
   return;
  e_dap_hang_up(s);
- if (e_dap_disconnect_answered(s) &&
-     sync_wait_adapter_exit(s, SYNC_EXIT_MS))
-  return;
- if (sync_adapter_gone(s))
-  return;
- e_dap_signal(s, SIGTERM);
- if (sync_wait_adapter_exit(s, SYNC_TERM_MS))
-  return;
- e_dap_signal(s, SIGKILL);
- while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
-  ;
- e_dap_adapter_reaped(s);
+ e_dap_end_adapter(s, e_dap_disconnect_answered(s) ? WPE_CHILD_NO_SIGNAL
+                                                   : SIGTERM);
+ sync_wait_on_loop(s, SYNC_ON_EXIT, e_dap_fd(s), NULL, 0, 0,
+                   WPE_CHILD_END_GRACE_MS + WPE_CHILD_END_KILL_MS +
+                   SYNC_EXIT_SLACK_MS, "the adapter's end");
+ sync_quit_end_check(0);
 }
 
 void e_dap_close(e_dap_session *s)

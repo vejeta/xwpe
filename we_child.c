@@ -375,8 +375,10 @@ int wpe_child_reap_install(void)
  WpeChildWakeOpen();
  if (sigaction(SIGCHLD, NULL, &old) != 0)
   return(-1);
- if (!(old.sa_flags & SA_SIGINFO) && old.sa_handler != SIG_DFL &&
-     old.sa_handler != SIG_IGN)
+ /* Any handler that is not the default or ignore is somebody else's (or
+    ours from an earlier call), a three-argument one included. */
+ if ((old.sa_flags & SA_SIGINFO) ||
+     (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN))
   return(0);
  if (wpe_child_sigchld_install(wpe_child_on_sigchld) != 0)
   return(-1);

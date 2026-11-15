@@ -394,7 +394,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
+check_PROGRAMS = test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner edit_driver test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -715,13 +715,6 @@ test_dap_SOURCES = tests/test_dap.c we_dap.c we_dap_sync.c we_child.c we_debreq.
 test_dap_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
-# The same test with the engine built as on a system without pidfd (the
-# BSDs, macOS), so the wait for an adapter that closed every descriptor is
-# tested on Linux too.
-test_dap_nopidfd_SOURCES = tests/test_dap.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
-test_dap_nopidfd_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS) -DDAP_NO_PIDFD
-test_dap_nopidfd_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
-
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
 test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
 test_dap_dlv_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
@@ -787,7 +780,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 # What this build contains: tests/check-build-config.sh is first, so a run's
 # log opens with the line `we --version` prints, and fails when configure, the
 # binary and the feature lists above do not say the same thing.
-TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_nopidfd test_dap_dlv \
+TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
   test_child test_childsig test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_startcmd test_startplan test_path test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_listsel test_helpbuf test_number_parse test_errpat test_optval

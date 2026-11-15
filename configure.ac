@@ -390,13 +390,6 @@ AC_CHECK_DECLS([REG_STARTEND], [], [], [[#include <sys/types.h>
 #include <regex.h>]])
 AC_CHECK_FUNCS([newlocale uselocale])
 
-# --- A pollable wait for a child's exit, for Quit under a debug adapter ---
-# Linux has pidfd_open (no check needed: the sources use SYS_pidfd_open when
-# the kernel headers name it).  The BSDs and macOS have kqueue with
-# EVFILT_PROC / NOTE_EXIT, whose descriptor poll() can watch the same way.
-AC_CHECK_HEADERS([sys/event.h])
-AC_CHECK_FUNCS([kqueue])
-
 # --- A debugger that dies with the editor ---
 # Linux has prctl(PR_SET_PDEATHSIG) and FreeBSD procctl(PROC_PDEATHSIG_CTL):
 # the system sends the child a signal when its parent is killed.  The other

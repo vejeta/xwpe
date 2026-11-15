@@ -17,6 +17,7 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -495,8 +496,20 @@ static void test_start_refused(void)
 #define FAKE_EXIT_DELAY_MS   100   /* exits a moment after its input ends  */
 #define FAKE_TERM    "term"        /* closes its pipes, cleans up on SIGTERM */
 #define FAKE_TERM_CLEANUP_MS 200   /* well inside the engine's grace        */
+#define FAKE_LINGER  "linger"      /* answers disconnect, closes its pipes, stays */
+#define FAKE_EOF     "eof"         /* never answers, ignores SIGTERM, ends at its input's end */
+#define QUIT_CPU_MAX_MS      50    /* CPU a Quit may use while it waits     */
+
+/** cpu_ms - The CPU time this process has used so far, in milliseconds. */
+static long cpu_ms(void)
+{
+ struct rusage ru;
+
+ getrusage(RUSAGE_SELF, &ru);
+ return (ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000L +
+        (ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000L;
+}
 #define PUMP_BLOCK_GUARD_S   2     /* a pump that blocks is a failure       */
-#define QUIT_EXIT_MS         2000  /* the engine's wait for the exit        */
 #define FAKE_MUTE    "mute"        /* reads its input, never writes, keeps stdout open */
 #define FAKE_LIFETIME_S      30    /* a fake ends by itself after this      */
 #define FAKE_REAP_MS         5000  /* wait for a fake that was killed       */
@@ -509,16 +522,15 @@ static void test_start_refused(void)
 #define BIG_REQUEST_BYTES    (256 * 1024)   /* more than a pipe holds       */
 #define FAKE_FLOOD  "flood"       /* never answers, writes output for ever */
 #define FLOOD_GUARD_S        15    /* a Quit that never ends is a failure   */
-/* An answered Quit: with an exit descriptor (pidfd, kqueue) the adapter is
-   reaped as it exits, well inside the answer wait.  Without one (the
-   DAP_NO_PIDFD build) its exit can be seen only by the bound, so the
-   documented bound is the answer plus the whole exit wait. */
-#if defined(DAP_NO_PIDFD)
-# define ANSWERED_QUIT_BOUND_MS \
-  (FAKE_ANSWER_DELAY_MS + QUIT_EXIT_MS + QUIT_SLACK_MS)
-#else
-# define ANSWERED_QUIT_BOUND_MS QUIT_DEADLINE_MS
-#endif
+/* An answered Quit: the owner's SIGCHLD reaper reports the adapter as it
+   exits, well inside the answer wait. */
+#define ANSWERED_QUIT_BOUND_MS QUIT_DEADLINE_MS
+/* An adapter that never answers: since Quit runs on the owner's ladder (the
+   editor's own, we_child.h) the documented bound is the editor's, the wait
+   for `disconnect`, the grace after SIGTERM and the kill grace, plus slack
+   (E_DAP_CLOSE_MAX_MS).  The earlier private bound, 4 s, is not kept: the
+   ladder waits the whole grace after SIGTERM before SIGKILL.  Not scaled. */
+#define UNANSWERED_QUIT_BOUND_MS (E_DAP_CLOSE_MAX_MS + QUIT_SLACK_MS)
 
 static char self_path[PATH_MAX];   /* this program: the fake adapter */
 
@@ -1676,8 +1688,28 @@ static int fake_disconnect(const char *mode, int seq, const char *marker,
   e_dap_reader_free(rd);
   return fake_flood();
  }
+ if (!strcmp(mode, FAKE_EOF))
+ {
+  /* Never answers and ignores SIGTERM: only the end of its input ends it
+     cleanly, the marker saying so. */
+  while ((m = next_request(STDIN_FILENO, rd)) != NULL)
+   json_object_put(m);
+  e_dap_reader_free(rd);
+  fake_mark(marker);
+  return 0;
+ }
  test_sleep_ms(FAKE_ANSWER_DELAY_MS);   /* an adapter that takes its time */
  fake_reply(seq, "disconnect");
+ if (!strcmp(mode, FAKE_LINGER))
+ {
+  /* Answered, then both pipes closed, and it stays: only the owner's
+     ladder (SIGKILL after the grace) ends it. */
+  e_dap_reader_free(rd);
+  close(STDIN_FILENO);
+  close(STDOUT_FILENO);
+  for (;;)
+   pause();
+ }
  while ((m = next_request(STDIN_FILENO, rd)) != NULL)
   json_object_put(m);
  e_dap_reader_free(rd);
@@ -1757,7 +1789,7 @@ static int fake_adapter(const char *mode, const char *marker)
  int seq;
 
  test_lifetime_arm(FAKE_LIFETIME_S);   /* a child's own guard */
- if (!strcmp(mode, FAKE_SILENT))
+ if (!strcmp(mode, FAKE_SILENT) || !strcmp(mode, FAKE_EOF))
   signal(SIGTERM, SIG_IGN);
  if (!strcmp(mode, FAKE_TERM))
   signal(SIGTERM, fake_on_term);
@@ -1852,8 +1884,8 @@ static void test_close_waits_for_the_disconnect_answer(void)
 }
 
 /* An adapter still there after Quit gets SIGTERM and time to end its
-   program before SIGKILL, also when it has closed every descriptor (on a
-   system without pidfd that is the only sign it gives).
+   program before SIGKILL, also when it has closed every descriptor (only
+   the owner's SIGCHLD reaper then tells Quit it has gone).
    @scenario SC-debug-18 */
 static void test_close_terms_before_it_kills(void)
 {
@@ -1882,6 +1914,90 @@ static void test_close_terms_before_it_kills(void)
 }
 
 
+/* An adapter that answered Quit, closed every pipe and stays is ended by the
+   owner's ladder (SIGKILL after the grace).  Its pipes hang up at once: Quit
+   must leave the transport at the end of file and sleep until the ladder is
+   done, not spin on the hang-up for the whole grace.
+   @scenario SC-debug-18 */
+static void test_close_does_not_spin_on_an_adapter_that_closed_its_pipes(void)
+{
+ e_dap_session *s;
+ pid_t pid;
+ long t0, took, cpu0, cpu;
+
+ s = fake_session(FAKE_LINGER, "/nonexistent");
+ CHECK(s != NULL, "the fake adapter did not answer initialize");
+ if (!s)
+  return;
+ pid = e_dap_adapter_pid(s);
+ t0 = ms_now();
+ cpu0 = cpu_ms();
+ e_dap_close(s);
+ cpu = cpu_ms() - cpu0;
+ took = ms_now() - t0;
+ CHECK(cpu < QUIT_CPU_MAX_MS, "Quit spun on the closed pipes while it waited");
+ CHECK(took < UNANSWERED_QUIT_BOUND_MS, "close went past the ladder's bound");
+ CHECK(kill(pid, 0) != 0 && errno == ESRCH,
+       "the lingering adapter was left running or unreaped");
+ fake_gone_or_killed(pid);
+}
+
+/* An adapter that never answers Quit and ignores SIGTERM but ends at the
+   end of its input: Quit closes its input before the ladder, so it ends
+   cleanly instead of by SIGKILL after the grace.
+   @scenario SC-debug-18 */
+static void test_close_hangs_up_before_the_ladder(void)
+{
+ char dir[] = "/tmp/xwpe-dapeof-XXXXXX", marker[PATH_MAX];
+ e_dap_session *s;
+ pid_t pid;
+
+ CHECK(mkdtemp(dir) != NULL, "mkdtemp");
+ snprintf(marker, sizeof marker, "%s/ended-at-eof", dir);
+ s = fake_session(FAKE_EOF, marker);
+ CHECK(s != NULL, "the fake adapter did not answer initialize");
+ if (!s)
+  return;
+ pid = e_dap_adapter_pid(s);
+ e_dap_close(s);
+ CHECK(access(marker, F_OK) == 0,
+       "Quit did not close the adapter's input before ending it");
+ CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the adapter was not reaped");
+ fake_gone_or_killed(pid);
+ unlink(marker);
+ rmdir(dir);
+}
+
+/* A session with no adapter of its own (a socket peer that stays connected
+   and does not answer) is not waited for: Quit is over at the wait for
+   `disconnect`, not after the exit wait's bound as well.
+   @scenario SC-debug-18 */
+#define PEER_QUIT_MAX_MS (E_DAP_DISCONNECT_MS + QUIT_SLACK_MS)
+static void test_close_does_not_wait_for_a_peer_it_did_not_start(void)
+{
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ e_dap_session *s;
+ int conn = -1, lfd = -1;
+ long t0, took;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = ready_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ CHECK(e_dap_adapter_pid(s) <= 0, "a socket peer counted as the session's own");
+ t0 = ms_now();
+ e_dap_close(s);
+ took = ms_now() - t0;
+ CHECK(took < PEER_QUIT_MAX_MS,
+       "Quit waited for the exit of an adapter it did not start");
+ close(conn);
+ close(lfd);
+ e_dap_reader_free(&rd);
+}
+
 /* An adapter that never answers Quit and writes output without end cannot
    hold Quit past its bound: the deadline holds while data keeps coming.
    @scenario SC-debug-18 */
@@ -1905,7 +2021,7 @@ static void test_close_ends_under_an_adapter_that_floods(void)
  e_dap_close(s);
  took = ms_now() - t0;
  test_watchdog_rearm_case();
- CHECK(took < QUIT_DEADLINE_MS + QUIT_TERM_MS + QUIT_SLACK_MS,
+ CHECK(took < UNANSWERED_QUIT_BOUND_MS,
        "Quit under a flooding adapter went past its bound");
  CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the adapter was not reaped");
  fake_gone_or_killed(pid);
@@ -1926,7 +2042,7 @@ static void test_close_kills_an_adapter_that_never_answers(void)
  t0 = ms_now();
  e_dap_close(s);
  took = ms_now() - t0;
- CHECK(took < QUIT_DEADLINE_MS + QUIT_TERM_MS + QUIT_SLACK_MS,
+ CHECK(took < UNANSWERED_QUIT_BOUND_MS,
        "close did not give up on a silent adapter");
  CHECK(kill(pid, 0) != 0 && errno == ESRCH,
        "a silent adapter was left running or unreaped");
@@ -2782,6 +2898,9 @@ int main(int argc, char **argv)
  RUN(test_close_waits_for_the_disconnect_answer);
  RUN(test_close_kills_an_adapter_that_never_answers);
  RUN(test_close_terms_before_it_kills);
+ RUN(test_close_does_not_spin_on_an_adapter_that_closed_its_pipes);
+ RUN(test_close_hangs_up_before_the_ladder);
+ RUN(test_close_does_not_wait_for_a_peer_it_did_not_start);
  RUN(test_close_ends_under_an_adapter_that_floods);
  RUN(test_an_adapter_reaped_but_not_reported_is_known_gone_with_its_status);
  RUN(test_evaluate_answered_by_callback_while_events_come);

@@ -402,19 +402,21 @@ char *e_dap_answer_result(const E_D_ANSWER *ans);
 int  e_dap_answer_frames(const E_D_ANSWER *ans, e_dap_frame *frames, int max);
 
 /* Disconnect and reap the adapter; frees the session (we_dap_sync.c).  It
- * WAITS, outside any event loop and with nothing on the screen, each wait a
- * poll bounded by its own deadline:
+ * WAITS, with nothing on the screen, each wait on the fd loop with its own
+ * bound, the adapter's end reaching it through the owner's SIGCHLD reaper
+ * (we_child.h), the same on every system, and the editor's own ladder
+ * (e_dap_end_adapter) doing the ending:
  *   - when no disconnect was sent yet: for its answer, up to 2 s;
  *   - after an answer: for the adapter to exit by itself, up to 2 s
- *     (lldb-dap takes about a second);
- *   - for an adapter still there: SIGTERM and up to 1 s for it to exit,
+ *     (lldb-dap takes about a second), then SIGKILL;
+ *   - for an adapter that did not answer: SIGTERM, up to 2 s for it to exit,
  *     then SIGKILL.
+ * All of it within E_DAP_CLOSE_MAX_MS.  A session with no adapter of its
+ * own (a socket peer) is not waited for.
  * The editor's end request does not cut these waits short: lldb-dap ends a
  * running program only on `disconnect` (killed by SIGTERM or SIGKILL it
  * leaves the program running), and giving up sends it SIGTERM before it
  * has acted on `disconnect`, which leaves the program behind (measured).
- * Systems with neither pidfd nor kqueue may wait out the 2 s exit bound on
- * an adapter that closed its descriptors before it exited.
  * When the end request comes during them, the save given to
  * e_dap_set_end_watch runs at once instead.  Either way the adapter is
  * reaped, so no adapter and no program is left behind.  A host that must

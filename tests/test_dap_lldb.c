@@ -116,34 +116,8 @@ static void live_breakpoints(const char *file, const int *line,
    live_note(ud, verified[i]);
 }
 
-static long now_ms(void)
-{
- struct timespec ts;
-
- clock_gettime(CLOCK_MONOTONIC, &ts);
- return (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
-}
-
-/* Follow the run as the editor's loop does, until it stops or ends. */
-static int pump_to_stop(e_dap_session *s, int budget_ms)
-{
- long end = now_ms() + budget_ms;
- int st = E_DAP_RUN_GOING;
-
- while (st == E_DAP_RUN_GOING && now_ms() < end)
- {
-  struct pollfd p;
-
-  p.fd = e_dap_fd(s);
-  p.events = POLLIN;
-  p.revents = 0;
-  if (p.fd < 0)
-   return E_DAP_RUN_ENDED;
-  if (poll(&p, 1, (int)(end - now_ms())) > 0)
-   st = e_dap_run_pump(s);
- }
- return st;
-}
+/* The run is followed on the loop as the editor does, until it stops or
+   ends or the budget passes: e_dap_wait_stop (we_dap_sync.c). */
 
 /* ---- the editor ends while the program runs ------------------------------ */
 
@@ -224,7 +198,7 @@ static int ending_editor_row(const char *dir)
    goto out; }
  pid = read_program_pid(pidf);
  if (pid <= 1 || e_dap_resume(s, "continue") != 0 ||
-     pump_to_stop(s, RUNNING_MS) != E_DAP_RUN_GOING)
+     e_dap_wait_stop(s,RUNNING_MS) != E_DAP_RUN_GOING)
  { e_dap_close(s); rc = fail("the program did not run"); goto out; }
  if (pipe(endp) != 0 || write(endp[1], "x", 1) != 1)
  { e_dap_close(s); rc = fail("pipe"); goto out; }
@@ -276,12 +250,12 @@ static int live_breakpoint_row(const char *dir)
  { rc = fail("the live row did not stop at its start line"); goto close; }
  if (e_dap_resume(s, "continue") != 0)
  { rc = fail("resume refused at a stop"); goto close; }
- if (pump_to_stop(s, RUNNING_MS) != E_DAP_RUN_GOING || !e_dap_running(s))
+ if (e_dap_wait_stop(s,RUNNING_MS) != E_DAP_RUN_GOING || !e_dap_running(s))
  { rc = fail("the program was not running when the breakpoint was set");
    goto close; }
  if (e_dap_set_file_breakpoints_async(s, src, lines, 1) != 0)
  { rc = fail("setBreakpoints refused while running"); goto close; }
- if (pump_to_stop(s, LIVE_BUDGET_MS) != E_DAP_RUN_STOPPED ||
+ if (e_dap_wait_stop(s,LIVE_BUDGET_MS) != E_DAP_RUN_STOPPED ||
      l.line != LIVE_LINE)
  { printf("  (stopped at %d)\n", l.line);
    rc = fail("the program did not stop on the breakpoint set while it ran");

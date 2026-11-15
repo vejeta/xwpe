@@ -120,45 +120,9 @@ static void live_breakpoints(const char *file, const int *line,
    live_note(ud, verified[i]);
 }
 
-static long now_ms(void)
-{
- struct timespec ts;
-
- clock_gettime(CLOCK_MONOTONIC, &ts);
- return (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
-}
-
-/* Follow the run as the editor's loop does, until it stops or ends; dlv's
-   pty is drained as Messages would be. */
-static int pump_to_stop(e_dap_session *s, int budget_ms)
-{
- long end = now_ms() + budget_ms;
- int st = E_DAP_RUN_GOING;
-
- while (st == E_DAP_RUN_GOING && now_ms() < end)
- {
-  struct pollfd p[2];
-  int np = 1;
-
-  p[0].fd = e_dap_fd(s);
-  p[0].events = POLLIN;
-  p[0].revents = 0;
-  if (p[0].fd < 0)
-   return E_DAP_RUN_ENDED;
-  p[1].fd = e_dap_output_fd(s);
-  p[1].events = POLLIN;
-  p[1].revents = 0;
-  if (p[1].fd >= 0)
-   np = 2;
-  if (poll(p, np, (int)(end - now_ms())) <= 0)
-   continue;
-  if (np == 2 && p[1].revents)
-   e_dap_drain_output(s);
-  if (p[0].revents)
-   st = e_dap_run_pump(s);
- }
- return st;
-}
+/* The run is followed on the loop as the editor does, until it stops or
+   ends or the budget passes; dlv's pty is drained as Messages would be:
+   e_dap_wait_stop (we_dap_sync.c). */
 
 /* @scenario SC-debug-08 */
 static int live_breakpoint_row(void)
@@ -193,12 +157,12 @@ static int live_breakpoint_row(void)
  { rc = fail("the live row did not stop at main.main"); goto close; }
  if (e_dap_resume(s, "continue") != 0)
  { rc = fail("resume refused at a stop"); goto close; }
- if (pump_to_stop(s, RUNNING_MS) != E_DAP_RUN_GOING || !e_dap_running(s))
+ if (e_dap_wait_stop(s,RUNNING_MS) != E_DAP_RUN_GOING || !e_dap_running(s))
  { rc = fail("the program was not running when the breakpoint was set");
    goto close; }
  if (e_dap_set_file_breakpoints_async(s, gofile, lines, 1) != 0)
  { rc = fail("setBreakpoints refused while running"); goto close; }
- if (pump_to_stop(s, LIVE_BUDGET_MS) != E_DAP_RUN_STOPPED ||
+ if (e_dap_wait_stop(s,LIVE_BUDGET_MS) != E_DAP_RUN_STOPPED ||
      l.line != LIVE_LINE)
  { printf("  (stopped at %d)\n", l.line);
    rc = fail("the program did not stop on the breakpoint set while it ran");

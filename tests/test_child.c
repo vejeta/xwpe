@@ -1263,8 +1263,10 @@ static void test_a_probe_is_not_ended_by_the_users_cancel(void)
  * reaper, so a followed child's end ends a wait on the loop at once, also
  * when a grandchild keeps the child's pipes open and no end of file comes.
  */
-#define WAKE_DEADLINE_MS   5000   /* what the wait is given */
-#define WAKE_PROMPT_MS     200    /* how soon the end must be noticed */
+/* Both follow XWPE_TEST_WAIT_SCALE, so the end stays far inside the deadline
+   on a slow runner. */
+#define WAKE_DEADLINE_MS   test_scaled_ms(5000)  /* what the wait is given */
+#define WAKE_PROMPT_MS     test_scaled_ms(200)   /* how soon the end must be noticed */
 /* A shell that leaves a grandchild holding its output pipe, and ends. */
 #define HOLDER_SCRIPT      "sleep 3 & exit 0"
 #define OWN_CHILD_EXIT     5

@@ -91,10 +91,41 @@ static void test_a_pipe_read_survives_a_sigchld_storm(void)
 		;
 }
 
+static void foreign_info_handler(int sig, siginfo_t *info, void *ctx)
+{
+	(void)sig;
+	(void)info;
+	(void)ctx;
+}
+
+/* A SIGCHLD handler somebody else took, in the three-argument form, is not
+   replaced by wpe_child_reap_install (the plain form is the other row of
+   the same rule, in test_child.c). */
+static void test_the_reaper_leaves_a_foreign_siginfo_handler_alone(void)
+{
+	struct sigaction mine, now, none;
+
+	memset(&mine, 0, sizeof mine);
+	mine.sa_sigaction = foreign_info_handler;
+	mine.sa_flags = SA_SIGINFO;
+	sigemptyset(&mine.sa_mask);
+	chk("a foreign handler is installed", sigaction(SIGCHLD, &mine, NULL), 0);
+	chk("reap_install accepts it", wpe_child_reap_install(), 0);
+	chk("reading SIGCHLD back", sigaction(SIGCHLD, NULL, &now), 0);
+	chk("it is still the foreign one",
+	    (now.sa_flags & SA_SIGINFO) &&
+	    now.sa_sigaction == foreign_info_handler, 1);
+	memset(&none, 0, sizeof none);
+	none.sa_handler = SIG_DFL;
+	sigemptyset(&none.sa_mask);
+	sigaction(SIGCHLD, &none, NULL);
+}
+
 int main(void)
 {
 	test_watchdog_case("test_a_pipe_read_survives_a_sigchld_storm: the read "
 	                   "never returned", HANG_SECONDS);
+	test_the_reaper_leaves_a_foreign_siginfo_handler_alone();
 	chk("the handler is installed", wpe_child_sigchld_install(on_child), 0);
 	test_a_pipe_read_survives_a_sigchld_storm();
 	if (fails) {
