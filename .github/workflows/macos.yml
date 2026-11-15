@@ -59,7 +59,7 @@ jobs:
           export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
           autoreconf -fi
           ./configure --without-x --without-gpm
-          make
+          make -j"$(sysctl -n hw.ncpu)"
 
       - name: Build every check program (names each that does not compile)
         timeout-minutes: 15
@@ -131,12 +131,16 @@ jobs:
           # exactly as the Debian autopkgtest does, instead of weakening the
           # assertions.
           XWPE_TEST_WAIT_SCALE: "3"
+          # A key's wait ends once the editor has painted and been quiet for
+          # this many ms, instead of always costing the full budget (as in
+          # linux.yml).
+          XWPE_TEST_SETTLE_MS: "400"
           # A login-shell TERM the macOS-smoke sanity check expects (CI shells
           # have none); the editor under test always gets its own TERM regardless.
           TERM: "xterm-256color"
         run: |
           python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pytest-xdist
           # Load the in-app help from the checkout (the editor's "_eng" fallback)
           # so the Help/manual scenarios pass without a `make install`.
           export XWPE_LIB="$PWD"
@@ -148,7 +152,7 @@ jobs:
           # (Xvfb+matchbox / weston) absent on macOS, and they share test-module
           # basenames with tests/ -- collecting them here is an import-file-mismatch
           # error, not a real failure.
-          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests --ignore=tests/x11 --ignore=tests/wayland -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
+          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests -n 3 --reruns 2 --reruns-delay 3 -rf --ignore=tests/x11 --ignore=tests/wayland -k "not (clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
 
       - name: Homebrew test-block reproduction (installed binary, on-disk A/B/C)
         if: always()   # validate the formula fix even if a pyte UI test flaked
@@ -167,7 +171,7 @@ jobs:
         run: |
           export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
           ./configure --prefix=/tmp/xp --without-x --without-gpm >/tmp/cf3.log 2>&1
-          make >/tmp/mk3.log 2>&1
+          make -j"$(sysctl -n hw.ncpu)" >/tmp/mk3.log 2>&1
           make install >/tmp/inst3.log 2>&1
           cat > /tmp/brew_abc.rb <<'RUBY'
           require "pty"
@@ -256,7 +260,7 @@ jobs:
           set +e   # diagnostic step: gather everything; never fail the job on a sub-command
           export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig"
           ./configure --prefix=/tmp/xp --without-x --without-gpm >/tmp/cf2.log 2>&1
-          make >/tmp/mk2.log 2>&1
+          make -j"$(sysctl -n hw.ncpu)" >/tmp/mk2.log 2>&1
           make install >/tmp/inst.log 2>&1 || { echo "INSTALL FAILED"; tail -20 /tmp/inst.log; }
           echo "=== installed tree ==="; ls -l /tmp/xp/bin/ ; echo "--- share ---"; ls -R /tmp/xp/share 2>/dev/null | head -20; echo "--- lib/xwpe ---"; ls /tmp/xp/lib/xwpe 2>/dev/null
           echo "=== otool -L installed we (dylib resolution) ==="; otool -L /tmp/xp/bin/we 2>/dev/null
