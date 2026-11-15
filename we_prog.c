@@ -3422,6 +3422,7 @@ static int g_build_chain_ran;          /* at least one step ran a child      */
 static int g_build_chain_cancelled;
 static int g_build_chain_list;         /* the last step's list verdict       */
 static int g_build_chain_exit;         /* the last step's exit status        */
+static int g_build_chain_pattern_said; /* the pattern row was written already */
 static e_build_cont g_build_final;
 static void *g_build_final_data;
 
@@ -4271,6 +4272,7 @@ static int e_build_chain_begin(FENSTER *f, e_build_cont done, void *data)
  g_build_chain_cancelled = 0;
  g_build_chain_list = 0;
  g_build_chain_exit = 0;
+ g_build_chain_pattern_said = 0;
  g_build_up_to_date[0] = '\0';
  g_build_final = done;
  g_build_final_data = data;
@@ -4365,6 +4367,29 @@ static void e_build_print_count(BUFFER *b, int result)
  snprintf(g_build_count_line, sizeof g_build_count_line, "%s", line);
 }
 
+/* What the last e_make_error_list found to say about the compiler's message
+   pattern, as one row, or "" when the pattern was read as written. */
+#define E_BUILD_PATTERN_SAY_SIZE 512
+static char g_build_pattern_say[E_BUILD_PATTERN_SAY_SIZE];
+
+/**
+ * e_build_say_pattern - Tell the user why a build's rows were not all
+ * recognised: the compiler's message pattern was refused, was read
+ * differently from how it was written, or was too costly for a row.
+ * @b: the Messages buffer.
+ *
+ * Without this row a build with an unusable pattern ends with "0 errors"
+ * and no hint that the pattern, not the code, is the reason.  The row is
+ * written once per build, just before its count line.
+ */
+static void e_build_say_pattern(BUFFER *b)
+{
+ if (g_build_chain_pattern_said || !g_build_pattern_say[0])
+  return;
+ g_build_chain_pattern_said = 1;
+ e_view_append(b, g_build_pattern_say);
+}
+
 /**
  * e_build_tally - Read the whole build's rows again and end Messages with
  * their count, every warning row marked.
@@ -4374,6 +4399,7 @@ static void e_build_tally(FENSTER *mf, int result)
 {
  e_make_error_list(mf);
  e_build_mark_warnings(mf->b);
+ e_build_say_pattern(mf->b);
  e_build_print_count(mf->b, result);
  e_buffer_cursor_set(mf->b, mf->b->mxlines - 1, mf->b->b.x);
  e_messages_scroll_to_bottom(mf);
@@ -4819,8 +4845,10 @@ static void e_p_attach_context(int k_before, int k, int *ctx_y)
    message pattern, the rows of Messages as the pattern reads them, and the
    room for the entries one message makes.  pat and walk are NULL when the
    pattern cannot be read, and the run then matches no rows. */
+#define E_P_PATTERN_NAME_SIZE 128
 struct e_p_run
 {
+ char name[E_P_PATTERN_NAME_SIZE];   /* what the build calls the pattern */
  WpeErrPat *pat;
  WpeErrWalk *walk;
  WpeErrRow *rows;
@@ -4829,6 +4857,7 @@ struct e_p_run
 
 static void e_p_run_begin(BUFFER *b, struct e_p_run *run);
 static void e_p_run_end(struct e_p_run *run);
+static void e_p_say_costly_row(const struct e_p_run *run);
 static int e_p_match_message(BUFFER *b, struct e_p_run *run, int *ii, int *kk,
   int ret);
 
@@ -4985,8 +5014,10 @@ int e_make_error_list(FENSTER *f)
  err_li = MALLOC(sizeof(struct ERR_LI) * b->mxlines);
  err_num = 0;
  err_walked = 0;
+ g_build_pattern_say[0] = '\0';
  e_p_run_begin(b, &run);
  ret = e_p_scan_messages(f, b, &run);
+ e_p_say_costly_row(&run);
  e_p_run_end(&run);
  return(ret);
 }
@@ -9968,24 +9999,113 @@ static void e_p_set_compiled_source(const char *name)
 }
 
 /**
+ * e_p_pattern_name - Name the pattern a build is using.
+ * @own: 1 when the pattern is the one the user wrote (the "other" style),
+ * 0 when it is the built-in GNU pattern;
+ * @name: room for E_P_PATTERN_NAME_SIZE bytes.
+ *
+ * The row the build writes names the pattern, so the user knows which
+ * setting to fix: a project's CMPMESSAGE, a language's MessageString, or,
+ * when the GNU style is in use, the built-in pattern, which the user
+ * replaces by switching the style to Other.
+ */
+static void e_p_pattern_name(int own, char name[E_P_PATTERN_NAME_SIZE])
+{
+ if (!own)
+  snprintf(name, E_P_PATTERN_NAME_SIZE, "the built-in GNU pattern "
+    "(switch the style to Other to use your own)");
+ else if (e__project)
+  snprintf(name, E_P_PATTERN_NAME_SIZE, "the project's CMPMESSAGE");
+ else if (e_s_prog.language)
+  snprintf(name, E_P_PATTERN_NAME_SIZE, "MessageString of %s",
+    e_s_prog.language);
+ else
+  snprintf(name, E_P_PATTERN_NAME_SIZE, "the compiler's MessageString");
+}
+
+/**
+ * e_p_say_refused - Record that the pattern cannot be used and why.
+ * @name: what e_p_pattern_name made for the run; @reason: the owner's
+ * reason, naming the token.
+ *
+ * The build output still reaches Messages; the row says no error row of it
+ * could be recognised because of the pattern.
+ */
+static void e_p_say_refused(const char *name, const char *reason)
+{
+ snprintf(g_build_pattern_say, sizeof g_build_pattern_say,
+   "%s not used: %s; no error rows recognised", name, reason);
+}
+
+/**
+ * e_p_say_piece - Add one remark about how the pattern was read to the row.
+ * @name: what e_p_pattern_name made for the run; @piece: the remark.
+ *
+ * The first remark starts the row with the pattern's name; later ones follow
+ * it after a semicolon, so one row says everything.
+ */
+static void e_p_say_piece(const char *name, const char *piece)
+{
+ size_t have = strlen(g_build_pattern_say);
+
+ if (have == 0)
+ {
+  snprintf(g_build_pattern_say, sizeof g_build_pattern_say, "%s: %s",
+    name, piece);
+  return;
+ }
+ snprintf(g_build_pattern_say + have, sizeof g_build_pattern_say - have,
+   "; %s", piece);
+}
+
+/**
+ * e_p_say_costly_row - Record the row the pattern was too costly for.
+ * @run: the run that has just walked Messages.
+ *
+ * A row that takes the pattern more steps than the budget allows is left
+ * unrecognised; the user learns which Messages row it was, so a pattern
+ * that backtracks too much can be simplified.
+ */
+static void e_p_say_costly_row(const struct e_p_run *run)
+{
+ char piece[E_P_PATTERN_NAME_SIZE];
+ int row;
+
+ if (!run->walk)
+  return;
+ row = wpe_errpat_walk_costly_row(run->walk);
+ if (row < 0)
+  return;
+ snprintf(piece, sizeof piece, "pattern too costly for row %d", row + 1);
+ e_p_say_piece(run->name, piece);
+}
+
+/**
  * e_p_run_begin - Read the compiler's pattern and index the rows of Messages.
  * @b: the Messages buffer; @run: filled in.
  *
  * The pattern is the one of the language being compiled, or GNU's when the
  * language has none.  When it cannot be read the run holds no pattern and
  * every row of the build output stays unrecognised, so the build still ends
- * with its count line.
+ * with its count line and the row that says why.
  */
 static void e_p_run_begin(BUFFER *b, struct e_p_run *run)
 {
- const char *text = e_s_prog.comp_sw ? e_s_prog.intstr : gnu_intstr;
+ int own = e_s_prog.comp_sw != 0;
+ const char *text = own ? e_s_prog.intstr : gnu_intstr;
  char diag[WPE_ERRPAT_DIAG];
  int i;
 
  memset(run, 0, sizeof *run);
+ e_p_pattern_name(own, run->name);
  run->pat = wpe_errpat_compile(text ? text : "", diag);
  if (!run->pat)
+ {
+  e_p_say_refused(run->name, diag);
   return;
+ }
+ if (wpe_errpat_note_count(run->pat))
+  e_p_say_piece(run->name, wpe_errpat_notes(run->pat));
  run->rows = MALLOC(sizeof(WpeErrRow) * (b->mxlines + 1));
  run->hits = MALLOC(sizeof(WpeErrHit) * (b->mxlines + 1));
  if (!run->rows || !run->hits)
