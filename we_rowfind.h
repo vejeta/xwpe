@@ -25,6 +25,15 @@ typedef struct {
  int eo;
 } WpeRowHit;
 
+/* Whether the owner can run the engine under a UTF-8 ctype of its own
+   (newlocale and uselocale, POSIX 2008; NetBSD has no uselocale).  0 or 1.
+   The owner and its test read this one decision and never the HAVE_ names. */
+#if defined(HAVE_NEWLOCALE) && defined(HAVE_USELOCALE)
+#define WPE_ROWFIND_HAS_LOCALES 1
+#else
+#define WPE_ROWFIND_HAS_LOCALES 0
+#endif
+
 /* What a row is in its line (a line longer than Max. Columns is several
    rows, and ^ and $ belong to the line, not to the row). */
 #define WPE_ROW_STARTS_LINE  1u   /* the first row, or the row before ends with a line break */

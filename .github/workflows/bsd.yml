@@ -119,13 +119,16 @@ jobs:
             fi
             # Every test runs under with-deadline.sh: base timeout(1) has no KILL.
             tests/with-deadline.sh 2700 gmake check LOG_COMPILER="$PWD/tests/with-deadline.sh 300" > bsd-out/check.log 2>&1
+            check_rc=$?
+            echo "gmake check exit status: $check_rc"
             grep -cE '^(PASS|FAIL|SKIP|ERROR|TIMEOUT):' bsd-out/check.log
-            sh tests/bsd-known-failures.sh freebsd bsd-out/check.log || rc=1
-            cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
-              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color || rc=1
-            tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" || rc=1
+            sh tests/bsd-known-failures.sh freebsd bsd-out/check.log "$check_rc" || rc=1
+            { cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
+              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color; } \
+              > bsd-out/probe.log 2>&1 || { rc=1; tail -20 bsd-out/probe.log; }
+            tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" > bsd-out/xvfb.log 2>&1 || { rc=1; tail -20 bsd-out/xvfb.log; }
             WPE_BIN="$PWD/wpe" tests/with-deadline.sh 600 $PY -m pytest -q -p no:cacheprovider \
-              tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
+              tests/test_menu_file.py tests/test_option_file_sections.py > bsd-out/pytest.log 2>&1 || { rc=1; tail -20 bsd-out/pytest.log; }
             cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
             exit $rc
 
@@ -208,15 +211,18 @@ jobs:
               exit $?
             fi
             tests/with-deadline.sh 2700 gmake check LOG_COMPILER="$PWD/tests/with-deadline.sh 300" > bsd-out/check.log 2>&1
+            check_rc=$?
+            echo "gmake check exit status: $check_rc"
             grep -cE '^(PASS|FAIL|SKIP|ERROR|TIMEOUT):' bsd-out/check.log
-            sh tests/bsd-known-failures.sh openbsd bsd-out/check.log || rc=1
-            cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
-              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color || rc=1
+            sh tests/bsd-known-failures.sh openbsd bsd-out/check.log "$check_rc" || rc=1
+            { cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
+              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color; } \
+              > bsd-out/probe.log 2>&1 || { rc=1; tail -20 bsd-out/probe.log; }
             if command -v Xvfb >/dev/null 2>&1; then
-              tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" || rc=1
+              tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" > bsd-out/xvfb.log 2>&1 || { rc=1; tail -20 bsd-out/xvfb.log; }
             fi
             WPE_BIN="$PWD/wpe" tests/with-deadline.sh 600 $PY -m pytest -q -p no:cacheprovider \
-              tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
+              tests/test_menu_file.py tests/test_option_file_sections.py > bsd-out/pytest.log 2>&1 || { rc=1; tail -20 bsd-out/pytest.log; }
             cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
             exit $rc
 
@@ -297,15 +303,18 @@ jobs:
               exit $?
             fi
             tests/with-deadline.sh 2700 gmake check LOG_COMPILER="$PWD/tests/with-deadline.sh 300" > bsd-out/check.log 2>&1
+            check_rc=$?
+            echo "gmake check exit status: $check_rc"
             grep -cE '^(PASS|FAIL|SKIP|ERROR|TIMEOUT):' bsd-out/check.log
-            sh tests/bsd-known-failures.sh netbsd bsd-out/check.log || rc=1
-            cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
-              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color || rc=1
+            sh tests/bsd-known-failures.sh netbsd bsd-out/check.log "$check_rc" || rc=1
+            { cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
+              && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color; } \
+              > bsd-out/probe.log 2>&1 || { rc=1; tail -20 bsd-out/probe.log; }
             if command -v Xvfb >/dev/null 2>&1; then
-              tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" || rc=1
+              tests/with-deadline.sh 300 sh contrib/bsd-test/xvfb_smoke.sh "$PWD" > bsd-out/xvfb.log 2>&1 || { rc=1; tail -20 bsd-out/xvfb.log; }
             fi
             WPE_BIN="$PWD/wpe" tests/with-deadline.sh 600 $PY -m pytest -q -p no:cacheprovider \
-              tests/test_menu_file.py tests/test_option_file_sections.py || rc=1
+              tests/test_menu_file.py tests/test_option_file_sections.py > bsd-out/pytest.log 2>&1 || { rc=1; tail -20 bsd-out/pytest.log; }
             cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
             exit $rc
 

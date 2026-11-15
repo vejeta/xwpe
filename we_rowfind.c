@@ -29,7 +29,7 @@
 #include "we_rowfind.h"
 #include "we_utf8.h"
 
-#if defined(HAVE_NEWLOCALE) && defined(HAVE_USELOCALE)
+#if WPE_ROWFIND_HAS_LOCALES
 #define WPE_ROWFIND_LOCALES 1
 #include <langinfo.h>
 #include <locale.h>

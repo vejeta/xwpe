@@ -1,5 +1,5 @@
 #!/bin/sh
-# bsd-known-failures.sh OS LOG
+# bsd-known-failures.sh OS LOG [CHECK_RC]
 #
 # Why this exists: the BSD CI job (.github/workflows/bsd.yml) runs `make check`
 # on emulated machines, and a job that is red for a reason everybody knows is
@@ -10,9 +10,10 @@
 #
 #   OS   freebsd, openbsd or netbsd
 #   LOG  the output of `gmake check` (lines "PASS: name", "FAIL: name", ...)
+#   CHECK_EXIT_STATUS  optional, the exit status of that `gmake check`
 #
-# Exit: 0 nothing new, 1 an unlisted failure or a listed one that passes,
-#       2 bad usage.
+# Exit: 0 nothing new, 1 an unlisted failure, a listed one that passes, or a
+#       log with no "# TOTAL:" summary (nothing ran), 2 bad usage.
 #
 # To change a list: edit known_failures() below.  Each line is
 # "name|reason|finding".  Remove the line in the same change that fixes it.
@@ -22,8 +23,8 @@ known_failures() {
   case $1 in
     freebsd | openbsd)
       cat <<'EOF'
-test_child|the child's controlling terminal: TIOCSCTTY ended with ENOTTY on the last BSD run, which predates the child-tty and child-fds passes; not yet run again|B8 (EVIDENCE-platform-bsd.md)
-test_rowfind|libc regex folds case differently on bytes 0x80 and above than glibc|B9 (EVIDENCE-platform-bsd.md)
+test_child|the child's controlling terminal and start still fail on OpenBSD although the child-tty and child-fds passes have landed|B8 (EVIDENCE-platform-bsd.md)
+test_rowfind|case folding differs from glibc, also ASCII \w and ICASE|B9 (EVIDENCE-platform-bsd.md)
 test_rowfind_copy|same as test_rowfind, the copy-match build of the engine|B9 (EVIDENCE-platform-bsd.md)
 test_rowfind_reject|same as test_rowfind, the reject build of the engine|B9 (EVIDENCE-platform-bsd.md)
 EOF
@@ -63,11 +64,30 @@ check_listed() {
   done
 }
 
-[ $# -eq 2 ] && [ -r "$2" ] && known_failures "$1" >/dev/null || {
-  echo "usage: bsd-known-failures.sh freebsd|openbsd|netbsd LOG" >&2
+[ $# -ge 2 ] && [ $# -le 3 ] && [ -r "$2" ] && known_failures "$1" >/dev/null || {
+  echo "usage: bsd-known-failures.sh freebsd|openbsd|netbsd LOG [CHECK_EXIT_STATUS]" >&2
   exit 2
 }
+
+# has_summary LOG: automake ends a run that happened with "# TOTAL: n".  A log
+# without it is a build that stopped or a check that never started, which has
+# no failures to list and must not read as "nothing new".
+has_summary() {
+  grep '^# TOTAL:' "$1" | grep -qv '^# TOTAL: *0$'
+}
+
+if ! has_summary "$2"; then
+  echo "NO SUMMARY: $2 has no '# TOTAL:' line, or it says 0, so no test ran (the build or check stopped early)"
+  exit 1
+fi
 status=0
+# The exit status of `gmake check`, when the caller passes it: non-zero with
+# no FAIL or ERROR line in the log means the check broke for a reason the
+# list cannot name (a make error, a killed run), so it fails here.
+if [ -n "$3" ] && [ "$3" != 0 ] && [ -z "$(failed_names "$2")" ]; then
+  echo "CHECK FAILED: gmake check exited $3 and the log lists no failing test"
+  status=1
+fi
 check_unlisted "$1" "$2"
 listed=$(check_listed "$1" "$2")
 [ -n "$listed" ] && echo "$listed"

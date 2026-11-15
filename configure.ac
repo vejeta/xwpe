@@ -509,17 +509,31 @@ AS_IF([test "x$wpe_fact_BACKTRACE" = x1],
   [xwpe_say_backtrace="yes${EXECINFO_LIBS:+ ($EXECINFO_LIBS)}"],
   [xwpe_say_backtrace="no (the crash file carries the signal only)"])
 
-# --- Required: pthread_kill() / pthread_sigmask() ---
+# --- Required: pthread_create(), pthread_kill() and pthread_sigmask() ---
 # The SIGCHLD handler hands a signal that a library's thread took (Pango's
-# font loader) to the editor's own thread.  Both calls are in libc on glibc
-# 2.34+, macOS and the BSDs (FreeBSD's libc stubs give way to libthr when a
-# library pulls it in), and in libpthread on older glibc.  Routed through
-# PTHREAD_LIBS like UTIL_LIBS.
+# font loader) to the editor's own thread, and the child-safety test starts a
+# thread of its own.  The library that holds them differs: glibc 2.34+ and
+# macOS have all three in libc, older glibc and NetBSD put them in
+# libpthread, and FreeBSD's libc carries only stubs of pthread_kill and
+# pthread_sigmask while pthread_create lives in libthr (-lpthread).  So the
+# search asks for the call a program cannot link without, pthread_create,
+# and then requires the other two to resolve with what it found.  A search
+# on pthread_kill alone came back "none required" on FreeBSD and left
+# PTHREAD_LIBS empty.  Routed through PTHREAD_LIBS like UTIL_LIBS.
 ace_save_LIBS="$LIBS"
-AC_SEARCH_LIBS([pthread_kill], [pthread],
-  [AS_IF([test "x$ac_cv_search_pthread_kill" = "xnone required"],
-     [PTHREAD_LIBS=""], [PTHREAD_LIBS="$ac_cv_search_pthread_kill"])],
-  [AC_MSG_ERROR([pthread_kill() is required (libc, or libpthread on older glibc).])])
+AC_SEARCH_LIBS([pthread_create], [pthread],
+  [AS_IF([test "x$ac_cv_search_pthread_create" = "xnone required"],
+     [PTHREAD_LIBS=""], [PTHREAD_LIBS="$ac_cv_search_pthread_create"])],
+  [AC_MSG_ERROR([pthread_create() is required (libc, or libpthread/libthr).])])
+LIBS="$PTHREAD_LIBS $LIBS"
+AC_MSG_CHECKING([for pthread_kill and pthread_sigmask])
+AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <pthread.h>
+#include <signal.h>]],
+    [[sigset_t s; sigemptyset(&s);
+      return pthread_sigmask(SIG_BLOCK, &s, 0) + pthread_kill(pthread_self(), 0);]])],
+  [AC_MSG_RESULT([yes])],
+  [AC_MSG_RESULT([no])
+   AC_MSG_ERROR([pthread_kill() and pthread_sigmask() are required (searched with ${PTHREAD_LIBS:-libc}).])])
 LIBS="$ace_save_LIBS"
 AC_SUBST([PTHREAD_LIBS])
 
@@ -554,6 +568,9 @@ AS_IF([test "x$xwpe_cv_renameatx_np_excl" = xyes],
 # UTF-8, so the engine and the editor agree on what a character is.
 AC_CHECK_DECLS([REG_STARTEND], [], [], [[#include <sys/types.h>
 #include <regex.h>]])
+# NetBSD has no uselocale(3) at all, so HAVE_USELOCALE stays undefined there
+# and we_rowfind.h exports "no UTF-8 ctype of its own" to the owner and its
+# test.
 AC_CHECK_FUNCS([newlocale uselocale])
 
 # --- A debugger that dies with the editor ---

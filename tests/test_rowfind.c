@@ -46,7 +46,15 @@
 #include "../we_rowfind.h"
 #include "../we_utf8.h"
 
-#ifdef WPE_ROWFIND_NO_UTF8_CTYPE
+/* newlocale and uselocale are POSIX 2008 and not on every system: NetBSD has
+   no uselocale.  The owner then runs the engine under the process locale and
+   never under a UTF-8 ctype of its own, so the pass that needs the reference
+   to do the same cannot exist: it is skipped by name below, and the build is
+   the same as test_rowfind_reject.  The decision is the owner's, read from
+   we_rowfind.h. */
+#define TEST_HAS_LOCALES WPE_ROWFIND_HAS_LOCALES
+
+#if defined(WPE_ROWFIND_NO_UTF8_CTYPE) || !TEST_HAS_LOCALES
 #define OWNER_HAS_UTF8_CTYPE 0
 #else
 #define OWNER_HAS_UTF8_CTYPE 1
@@ -110,7 +118,20 @@ static int engine_reads_chars(void)
  return(OWNER_HAS_UTF8_CTYPE || process_utf8());
 }
 
-static locale_t ref_utf8_ctype(void)
+/* The reference's ctype: a locale_t where the system has newlocale and
+   uselocale, and a plain 0 that is never entered where it has not. */
+#if TEST_HAS_LOCALES
+typedef locale_t ref_ctype_t;
+#else
+typedef int ref_ctype_t;
+#endif
+#define REF_NO_CTYPE ((ref_ctype_t)0)
+
+#if TEST_HAS_LOCALES
+/** ref_utf8_ctype - the UTF-8 ctype the reference runs the engine under when
+ * the process locale is not UTF-8, so it reads characters as the owner does.
+ * Returns REF_NO_CTYPE when the system has no such locale. */
+static ref_ctype_t ref_utf8_ctype(void)
 {
  static locale_t loc;
  static int made;
@@ -124,6 +145,39 @@ static locale_t ref_utf8_ctype(void)
  }
  return(loc);
 }
+
+/** ref_ctype_enter - switch the calling thread to LOC and give back what it
+ * ran under, for ref_ctype_leave.  A LOC of REF_NO_CTYPE changes nothing. */
+static ref_ctype_t ref_ctype_enter(ref_ctype_t loc)
+{
+ if (loc == REF_NO_CTYPE)
+  return(REF_NO_CTYPE);
+ return(uselocale(loc));
+}
+
+/** ref_ctype_leave - undo ref_ctype_enter. */
+static void ref_ctype_leave(ref_ctype_t loc, ref_ctype_t prev)
+{
+ if (loc != REF_NO_CTYPE)
+  uselocale(prev);
+}
+#else
+static ref_ctype_t ref_utf8_ctype(void)
+{
+ return(REF_NO_CTYPE);
+}
+
+static ref_ctype_t ref_ctype_enter(ref_ctype_t loc)
+{
+ return(loc);
+}
+
+static void ref_ctype_leave(ref_ctype_t loc, ref_ctype_t prev)
+{
+ (void)loc;
+ (void)prev;
+}
+#endif
 
 /* ---- the reference: the engine run by hand on every character start ---- */
 
@@ -156,8 +210,8 @@ static int ref_find(const FIND *fd, const unsigned char *row, int len, unsigned 
  char pat[2 * E_FIND_TEXT_MAX + 4];
  int cflags = REG_EXTENDED | ((fd->sw & SW_CASE) ? 0 : REG_ICASE);
  int rc, p, found = 0, f, t;
- locale_t loc = (OWNER_HAS_UTF8_CTYPE && !process_utf8()) ? ref_utf8_ctype() : (locale_t)0;
- locale_t prev = (locale_t)0;
+ ref_ctype_t loc = (OWNER_HAS_UTF8_CTYPE && !process_utf8()) ? ref_utf8_ctype() : REF_NO_CTYPE;
+ ref_ctype_t prev;
 
  if (fd->search[0] == '\0')
   return(0);
@@ -165,13 +219,11 @@ static int ref_find(const FIND *fd, const unsigned char *row, int len, unsigned 
   strcpy(pat, fd->search);
  else
   ref_escape(fd->search, pat);
- if (loc != (locale_t)0)
-  prev = uselocale(loc);
+ prev = ref_ctype_enter(loc);
  rc = regcomp(&re, pat, cflags);
  if (rc != 0)
  {
-  if (loc != (locale_t)0)
-   uselocale(prev);
+  ref_ctype_leave(loc, prev);
   return(-1);
  }
  if (from < 0)
@@ -224,8 +276,7 @@ static int ref_find(const FIND *fd, const unsigned char *row, int len, unsigned 
    break;
  }
  regfree(&re);
- if (loc != (locale_t)0)
-  uselocale(prev);
+ ref_ctype_leave(loc, prev);
  return(found);
 }
 
@@ -504,14 +555,13 @@ static int engine_self_inconsistent(const FIND *fd, const unsigned char *row, in
  char pat[2 * E_FIND_TEXT_MAX + 4];
  int cflags = REG_EXTENDED | ((fd->sw & SW_CASE) ? 0 : REG_ICASE);
  int p, so, eo, so2, eo2, odd = 0;
- locale_t loc = (OWNER_HAS_UTF8_CTYPE && !process_utf8()) ? ref_utf8_ctype() : (locale_t)0;
- locale_t prev = (locale_t)0;
+ ref_ctype_t loc = (OWNER_HAS_UTF8_CTYPE && !process_utf8()) ? ref_utf8_ctype() : REF_NO_CTYPE;
+ ref_ctype_t prev;
 
  if (!(fd->sw & SW_REGEX))
   return(0);
  strcpy(pat, fd->search);
- if (loc != (locale_t)0)
-  prev = uselocale(loc);
+ prev = ref_ctype_enter(loc);
  if (regcomp(&re, pat, cflags) == 0)
  {
   for (p = 0; p <= len && !odd; p++)
@@ -523,8 +573,7 @@ static int engine_self_inconsistent(const FIND *fd, const unsigned char *row, in
   }
   regfree(&re);
  }
- if (loc != (locale_t)0)
-  uselocale(prev);
+ ref_ctype_leave(loc, prev);
  return(odd);
 }
 
@@ -1177,6 +1226,9 @@ int main(void)
  const char *e = getenv("ROWFIND_ITERS");
  int iterations = (e != NULL && atoi(e) > 0) ? atoi(e) : 20000;
 
+ if (!TEST_HAS_LOCALES)
+  printf("skip: the pass that runs the reference under its own UTF-8 ctype "
+         "(this system has no uselocale, as NetBSD); the owner uses the process locale here\n");
  one_pass("C", 0, iterations);
  one_pass("C.UTF-8", 1, iterations);
  one_pass("en_US.iso885915", 0, iterations);
