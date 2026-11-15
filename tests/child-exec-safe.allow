@@ -1,0 +1,75 @@
+# What the program-start path of we_child.c may reach between the fork and the
+# exec: every symbol that leaves wpe_child_exec's object, through every helper
+# it calls.  Checked by tests/check-child-exec.sh.
+#
+#   symbol|mark|reason[|fact]
+#
+# The reason for each is that it takes no lock and allocates nothing, which is
+# what a child may rely on when another thread of the editor held a lock at
+# the moment of the fork (the graphical editor has one: Pango's font thread).
+#
+# marks:
+#   SAFE     in signal-safety(7) (POSIX.1-2008 TC2 list)
+#   SYSCALL  not in that list, a thin wrapper of one system call
+#   EXEC     the exec call
+#   RUNTIME  the compiler's or the C library's own symbol, a variable of the C
+#            library (environ) included
+#   DATA     a variable of the tree's own objects (we_child.c itself), read
+#            from .data or .bss (none today: the child reads only its
+#            arguments)
+#
+# The fourth field may instead be the word "optional", on a SAFE line only: the
+# line permits the symbol when it is reached and is silent when it is not.  It
+# is for spellings that depend on how a compiler inlines (memcpy and its
+# fortified twin, open's checked twin), which no fact can follow.  A dead SAFE
+# line permits nothing unsafe: it names a call that is on the list anyway.  On
+# SYSCALL, EXEC, RUNTIME or DATA the word is a malformed line, and an optional
+# line carries no fact.
+#
+# A symbol the path reaches with no line here fails the check; a line that
+# nothing reaches is stale and fails it too, except where the optional fact (a
+# preprocessor expression, read with the build's flags and config.h and
+# -Werror=undef) is false in the build: another optimisation level, another
+# compiler or another system reaches a different spelling of the same call,
+# and the fact says exactly when the symbol is reached.  When the fact is
+# false the symbol must not be reached; a fact that does not evaluate or is
+# the literal 0 fails.  A fact
+# cannot hold a vertical bar (it separates the fields): write "a or b" as
+# "defined(a) + defined(b) > 0".
+
+# --- system calls and the signal-safety(7) list ---
+_exit|SAFE|ends the child without running any handler or flush
+chdir|SAFE|in the list
+close|SAFE|in the list
+dup2|SAFE|in the list
+fcntl|SAFE|in the list
+fstat|SAFE|in the list
+getpgrp|SAFE|in the list
+getppid|SAFE|in the list
+memcpy|SAFE|in the list (POSIX.1-2008 TC2): copies the prepared sentence onto the stack|optional
+open|SAFE|in the list
+setpgid|SAFE|in the list
+setsid|SAFE|in the list
+sigaction|SAFE|in the list
+sigemptyset|SAFE|in the list
+signal|SAFE|in the list
+sigprocmask|SAFE|in the list (the child is single threaded)
+stat|SAFE|in the list
+tcgetpgrp|SAFE|in the list
+write|SAFE|in the list
+
+# --- thin wrappers of one system call, not in the list ---
+ioctl|SYSCALL|one system call: the controlling terminal step (TIOCSCTTY)
+close_range|SYSCALL|one system call, tried first and followed by a loop of close on failure|WPE_HAS_CLOSE_RANGE
+closefrom|SYSCALL|one system call where the system has it and not close_range (never on glibc, where it lists /proc)|WPE_HAS_CLOSEFROM && !WPE_HAS_CLOSE_RANGE
+prctl|SYSCALL|one system call: the parent-death signal on Linux|WPE_HAS_PARENT_DEATH_SIGNAL && HAVE_DECL_PR_SET_PDEATHSIG
+procctl|SYSCALL|one system call: the parent-death signal on FreeBSD|WPE_HAS_PARENT_DEATH_SIGNAL && HAVE_DECL_PROC_PDEATHSIG_CTL
+
+# --- the exec ---
+execvp|EXEC|takes no lock and allocates nothing: measured on glibc 2.43 (getenv, string functions, alloca cutoff, execve); musl and the BSDs build the path on the stack
+
+# --- the fortified spellings of the above, and the compiler's own ---
+__memcpy_chk|SAFE|memcpy with a length check against the destination's size, under _FORTIFY_SOURCE|optional
+__open_2|SAFE|open with a check that no mode was needed, under _FORTIFY_SOURCE|optional
+__errno_location|RUNTIME|the address of the thread's errno: reads thread-local storage, takes no lock
+__stack_chk_fail|RUNTIME|ends the process on a smashed stack, which is what a child that cannot trust its stack must do|defined(__SSP_STRONG__) + defined(__SSP_ALL__) > 0

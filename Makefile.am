@@ -951,6 +951,14 @@ TESTS += tests/check-tty-open.sh
 # outside it.
 TESTS += tests/check-child-fds.sh
 
+# What the child may do between the fork and the exec: only what takes no
+# lock and allocates nothing (the graphical editor has a font thread whose
+# lock a fork can freeze).  tests/check-child-exec.sh compiles we_child.c with
+# the build's flags (MAINT_CC, MAINT_FLAGS), follows every symbol reachable
+# from wpe_child_exec and fails on any that is not in
+# tests/child-exec-safe.allow, with its reason.
+TESTS += tests/check-child-exec.sh
+
 # One owner of the selected entry of a list window (we_listsel.h):
 # tests/check-list-entry.sh counts, per function, the indexings of a list's
 # names by the highlighted row outside the owner; the file manager's panels
@@ -1116,6 +1124,8 @@ EXTRA_DIST = \
   tests/tty-open.allow \
   tests/check-child-fds.sh \
   tests/child-fds.allow \
+  tests/check-child-exec.sh \
+  tests/child-exec-safe.allow \
   tests/program-name.allow \
   tests/check-box-layout.sh \
   tests/box-layout.allow \
