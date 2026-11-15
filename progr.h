@@ -202,11 +202,18 @@ int e_add_synt_tl(char *filename, FENSTER *f);
 E_AFILE *e_aopen(char *name, char *path, int mode, char **found);
 int e_aclose(E_AFILE *ep);
 char *e_agets(char *str, int n, E_AFILE *ep);
-char *e_sh_spl1(char *sp, char *str, E_AFILE *fp, int *n);
-char *e_sh_spl2(char *sp, char *str, E_AFILE *fp, int *n);
-char *e_sh_spl3(char *sp, char *str, E_AFILE *fp, int *n);
-char *e_sh_spl4(char *sp, char *str, E_AFILE *fp, int *n);
-char *e_sh_spl5(char *sp, char *str, E_AFILE *fp, int *n);
+/*   we_shtok.c  */
+/* What e_sh_walk looks for (the index into the table of we_shtok.c). */
+#define E_SH_NEXT_TOKEN      0  /* the next token; a backslash joins a line */
+#define E_SH_NEXT_TOKEN_EOL  1  /* the same; the end of a line joins too */
+#define E_SH_CLOSE_BRACE     2  /* the matching close brace */
+#define E_SH_LIST_END        3  /* the next top-level comma, ; or ( */
+#define E_SH_CLOSE_PAREN     4  /* the matching close parenthesis */
+char *e_sh_walk(int kind, char *sp, char *str, E_AFILE *fp, int *n);
+/* A preprocessor line that opens the other side of an #if, and the one that
+   closes it; the walkers skip the unused side. */
+#define ispelse(s) ( !strncmp(s, "#else", 5) || !strncmp(s, "#elif", 5) )
+#define ispendif(s) ( !strncmp(s, "#endif", 6) )
 struct dirfile *e_c_add_df(char *str, struct dirfile *df);
 /* @file receives the path of the file the definition is in and must hold
    WPE_PATH_SIZE bytes. */

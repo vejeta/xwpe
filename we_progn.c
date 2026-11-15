@@ -30,8 +30,6 @@ extern char *e_p_msg[];
                  || !strncmp(s, "protected:", 10) )
 #define ispif(s) ( !strncmp(s, "#if", 3) || !strncmp(s, "#ifdef", 6)  \
 			|| !strncmp(s, "#ifndef", 7) )
-#define ispelse(s) ( !strncmp(s, "#else", 5) || !strncmp(s, "#elif", 5) )
-#define ispendif(s) ( !strncmp(s, "#endif", 6) )
 #define iscop(c) ( c == '<' || c == '>' || c == '+' || c == '-' ||    \
 		   c == '/' || c == '*' || c == '%' || c == '=' ||    \
 		   c == '|' || c == '&' || c == '!' || c == ':' ||    \
@@ -845,183 +843,6 @@ char *e_agets(char *str, int n, E_AFILE *ep)
  return(str);
 }
 
-char *e_sh_spl1(char *sp, char *str, E_AFILE *fp, int *n)
-{
- while (1)
- {
-  while (isspace(*++sp))
-   ;
-  if (sp[0] == '\\')
-  {
-   (*n)++;
-   if (!e_agets((sp = str), 256, fp))
-    return(NULL);
-   --sp;
-  }
-  else if (sp[0] == '/' && sp[1] == '*')
-  {
-   while (!(sp = strstr(sp, "*/")))
-   {
-    (*n)++;
-    if (!e_agets((sp = str), 256, fp))
-     return(NULL);
-   }
-   sp++;
-  }
-  else
-   break;
- }
- return(sp);
-}
-
-char *e_sh_spl2(char *sp, char *str, E_AFILE *fp, int *n)
-{
- while (1)
- {
-  while (isspace(*++sp))
-   ;
-  if (!sp[0] || sp[0] == '\n' || sp[0] == '\\')
-  {
-   (*n)++;
-   if (!e_agets((sp = str), 256, fp))
-    return(NULL);
-   --sp;
-  }
-  else if (sp[0] == '/' && sp[1] == '*')
-  {
-   while (!(sp = strstr(sp, "*/")))
-   {
-    (*n)++;
-    if (!e_agets((sp = str), 256, fp))
-     return(NULL);
-   }
-   sp++;
-  }
-  else
-   break;
- }
- return(sp);
-}
-
-char *e_sh_spl3(sp, str, fp, n)
-     char *sp;
-     char *str;
-     E_AFILE *fp;
-     int *n;
-{   
-    int brk = 1;
-    while(*++sp != '}' || brk > 1)
-    { if(!sp[0] || sp[0] == '\n')
-      { (*n)++; if(!e_agets((sp = str), 256, fp)) return(NULL);
-	if(isspace(*sp)) while(isspace(*++sp));
-	if(sp[0] == '#' && ispelse(sp))
-	{ do
-	  {  (*n)++; if(!e_agets((sp = str), 256, fp)) return(NULL);
-	     if(isspace(*sp)) while(isspace(*++sp));
-	  } while(sp[0] != '#' || !ispendif(sp));
-	}
-	sp--;
-      }
-      else if(sp[0] == '/' && sp[1] == '*')
-      { while(!(sp = strstr(sp, "*/")))
-        { (*n)++; if(!e_agets((sp = str), 256, fp)) return(NULL);  }
-	sp++;
-      }
-      else if(sp[0] == '{') brk++;
-      else if(sp[0] == '}') brk--;
-      else if(sp[0] == '\'')
-      { int bsl = 0;
-	while(*++sp && (sp[0] != '\'' || bsl))
-	{  bsl = *sp == '\\' ? !bsl : 0;  }
-	if(!*sp) sp--;
-      }
-      else if(sp[0] == '\"')
-      { int bsl = 0;
-	while(*++sp && ( *sp != '\"' || bsl))
-	{  bsl = *sp == '\\' ? !bsl : 0;  }
-	if(!*sp) sp--;
-      }
-    }
-    return(sp);
-}
-
-char *e_sh_spl5(sp, str, fp, n)
-     char *sp;
-     char *str;
-     E_AFILE *fp;
-     int *n;
-{   
-    int brk = 1;
-    while(*++sp != ')' || brk > 1)
-    { if(!sp[0] || sp[0] == '\n')
-      { (*n)++; if(!e_agets((sp = str), 256, fp)) return(NULL);
-	if(isspace(*sp)) while(isspace(*++sp));
-	if(sp[0] == '#' && ispelse(sp))
-	{ do
-	  {  (*n)++; if(!e_agets((sp = str), 256, fp)) return(NULL);
-	     if(isspace(*sp)) while(isspace(*++sp));
-	  } while(sp[0] != '#' || !ispendif(sp));
-	}
-	sp--;
-      }
-      else if(sp[0] == '/' && sp[1] == '*')
-      { while(!(sp = strstr(sp, "*/")))
-        { (*n)++; if(!e_agets((sp = str), 256, fp)) return(NULL);  }
-	sp++;
-      }
-      else if(sp[0] == '(') brk++;
-      else if(sp[0] == ')') brk--;
-      else if(sp[0] == '\'')
-      { int bsl = 0;
-	while(*++sp && (sp[0] != '\'' || bsl))
-	{  bsl = *sp == '\\' ? !bsl : 0;  }
-	if(!*sp) sp--;
-      }
-      else if(sp[0] == '\"')
-      { int bsl = 0;
-	while(*++sp && (*sp != '\"' || bsl))
-	{  bsl = *sp == '\\' ? !bsl : 0;  }
-	if(!*sp) sp--;
-      }
-    }
-    return(sp);
-}
-
-char *e_sh_spl4(sp, str, fp, n)
-     char *sp;
-     char *str;
-     E_AFILE *fp;
-     int *n;
-{   
-    int brk = 0;
-    while((*++sp != ',' && *sp != ';' && *sp != '(') || brk)
-    { if(!sp[0] || sp[0] == '\n')
-      {  (*n)++;  if(!e_agets((sp = str), 256, fp)) return(NULL);
-	 --sp;
-      }
-      else if(sp[0] == '/' && sp[1] == '*')
-      { while(!(sp = strstr(sp, "*/")))
-        { (*n)++; if(!e_agets((sp = str), 256, fp)) return(NULL);  }
-	sp++;
-      }
-      else if(sp[0] == '\"')
-      { int bsl = 0;
-	while(*++sp && (sp[0] != '\"' || bsl))
-	{  bsl = *sp == '\\' ? !bsl : 0;  }
-	if(!*sp) sp--;
-      }
-      else if(sp[0] == '\'')
-      { int bsl = 0;
-	while(*++sp && (sp[0] != '\'' || bsl))
-	{  bsl = *sp == '\\' ? !bsl : 0;  }
-	if(!*sp) sp--;
-      }
-      else if(sp[0] == '{') brk++;
-      else if(sp[0] == '}') brk--;
-    }
-    return(sp);
-}
-
 struct dirfile *e_c_add_df(char *str, struct dirfile *df)
 {
  if (df == NULL)
@@ -1074,17 +895,17 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
       {  if(com == 1 && !(sp = strstr(sp, "*/"))) continue;
 	 else com = 0;
       }
-      if(isspace(*sp) && !(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+      if(isspace(*sp) && !(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
       if(sp[0] == '/' && sp[1] == '*')
       {  if(!(sp = strstr(sp, "*/"))) com = 1;
 	 else {  n--;  com = 2;  sp += 2;  }
 	 continue;
       }
       else if(*sp == '#')
-      {  if(!(sp = e_sh_spl1(sp, str, fp, &n))) goto b_end;
+      {  if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN, sp, str, fp, &n))) goto b_end;
 	 if(!strncmp(sp, "define", 6))
 	 {  while(isalpha(*++sp));
-	    if(isspace(*sp) && !(sp = e_sh_spl1(sp, str, fp, &n))) goto b_end;
+	    if(isspace(*sp) && !(sp = e_sh_walk(E_SH_NEXT_TOKEN, sp, str, fp, &n))) goto b_end;
 	    if(!strncmp(sp, name, len) && !isalnum1(sp[len]))
 	    {  if(*first)
 	       {  e_aclose(fp);  e_find_def_found(file, startfile);
@@ -1096,7 +917,7 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
 #ifndef TESTSDEF
 	 else if(!strncmp(sp, "include", 7))
 	 {  while(isalpha(*++sp));
-	    if(isspace(*sp) && !(sp = e_sh_spl1(sp, str, fp, &n))) goto b_end;
+	    if(isspace(*sp) && !(sp = e_sh_walk(E_SH_NEXT_TOKEN, sp, str, fp, &n))) goto b_end;
 	    for(i = 1; (word[i-1] = sp[i])
 			&& sp[i] != '\"' && sp[i] != '>'; i++);
 	    word[i-1] = '\0';
@@ -1109,21 +930,21 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
 	 {  n++; if(!e_agets((sp = str), 256, fp)) goto b_end;  }
       }
       else if(*sp == '{')
-      {  if(!(sp = e_sh_spl3(sp, str, fp, &n))) goto b_end;
+      {  if(!(sp = e_sh_walk(E_SH_CLOSE_BRACE, sp, str, fp, &n))) goto b_end;
 	 sp++;  com = 2;  n--;
       }
       else if(!strncmp(sp, "extern", 6)) continue;
       else if(!strncmp(sp, "typedef", 7))
       {  while(!isspace(*++sp));
-	 if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	 if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	 if(!strncmp(sp, "struct", 6) || !strncmp(sp, "class", 5) ||
 		!strncmp(sp, "union", 5))
 	 {  while(!isspace(*++sp));
-	    if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	    if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	    if(*sp == ';') {  sp++;  com = 2;  n--;  continue;  }
 	    if(!strncmp(sp, name, len) && !isalnum1(sp[len]))
 	    {  while(!isspace(*++sp));
-	       if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	       if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	       if(*sp == '{')
 	       {  if(*first)
 		  {  e_aclose(fp);  e_find_def_found(file, startfile);
@@ -1137,7 +958,7 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
 	 {  if(isalpha1(*sp))
 	    {  for(w = word; isalnum1(*w = *sp); w++, sp++);
 	       *w = '\0';
-	       if(isspace(*sp) && !(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	       if(isspace(*sp) && !(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	       if(*sp == ';')
 	       {  if(!strncmp(word, name, len))
 		  {  if(*first)
@@ -1150,21 +971,21 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
 	       }
 	    }
 	    else if(*sp == '{')
-	    {  if(!(sp = e_sh_spl3(sp, str, fp, &n))) goto b_end;
-	       if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	    {  if(!(sp = e_sh_walk(E_SH_CLOSE_BRACE, sp, str, fp, &n))) goto b_end;
+	       if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	       if(*sp == ';') {  sp++;  com = 2;  n--;  break;  }
 	    }
-	    else if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	    else if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	 }
       }
       else if(!strncmp(sp, "struct", 6) || !strncmp(sp, "class", 5) ||
 		!strncmp(sp, "union", 5))
       {  while(!isspace(*++sp));
-	 if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	 if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	 if(*sp == ';') {  sp++;  com = 2;  n--;  continue;  }
 	 if(!strncmp(sp, name, len) && !isalnum1(sp[len]))
 	 {  while(!isspace(*++sp));
-	    if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	    if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	    if(*sp == '{')
 	    {  if(*first)
 	       {  e_aclose(fp);  e_find_def_found(file, startfile);
@@ -1175,20 +996,20 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
 	 }
 	 else if(*sp != '{')
 	 {  while(!isspace(*++sp));
-	    if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	    if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	 }
 	 if(*sp == ';') {  sp++;  com = 2;  n--;  continue;  }
 	 if(*sp == '{')
-	 {  if(!(sp = e_sh_spl3(sp, str, fp, &n))) goto b_end;
-	    if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	 {  if(!(sp = e_sh_walk(E_SH_CLOSE_BRACE, sp, str, fp, &n))) goto b_end;
+	    if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	    if(*sp == ';') {  sp++;  com = 2;  n--;  continue;  }
 	 }
 	 while(1)
 	 {  while (*sp == '*') sp++;
-	    if(isspace(*sp) && !(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	    if(isspace(*sp) && !(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	    if(!strncmp(sp, name, len) && !isalnum1(sp[len]))
 	    {  while(isalnum1(*sp)) sp++;
-	       if(isspace(*sp) && !(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	       if(isspace(*sp) && !(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	       if((*sp == ';' || *sp == ',' || *sp == '='
 					 || *sp == '[' || *sp == ')'))
 	       {  if(*first)
@@ -1201,8 +1022,8 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
 		  }
 	       }
 	       else if(*sp == '(')
-	       {  if(!(sp = e_sh_spl5(sp, str, fp, &n))) goto b_end;
-		  if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	       {  if(!(sp = e_sh_walk(E_SH_CLOSE_PAREN, sp, str, fp, &n))) goto b_end;
+		  if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 		  if(*sp == '{')
 		  {  if(*first)
 		     {  e_aclose(fp);  e_find_def_found(file, startfile);
@@ -1218,15 +1039,15 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
 	    else if(*sp == '*') {  while (*sp == '*') sp++;  continue;  }
 	    else if(*sp == ';') {  sp++;  com = 2;  n--;  break;  }
 	    else if(*sp == '{')
-	    {  if(!(sp = e_sh_spl3(sp, str, fp, &n))) goto b_end;
+	    {  if(!(sp = e_sh_walk(E_SH_CLOSE_BRACE, sp, str, fp, &n))) goto b_end;
 	       sp++;  com = 2;  n--;
 	       break;
 	    }
 	    else
-	    {  if(!(sp = e_sh_spl4(sp, str, fp, &n))) goto b_end;
+	    {  if(!(sp = e_sh_walk(E_SH_LIST_END, sp, str, fp, &n))) goto b_end;
 	       if(*sp == '(') break;
 	       else if(*sp == ';') {  sp++;  com = 2;  n--;  break;  }
-	       if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	       if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	    }
 	    if(*sp == ';') {  sp++;  com = 2;  n--;  break;  }
 	 }
@@ -1235,10 +1056,10 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
       {  while(isalnum1(*sp)) sp++;
 	 while(1)
 	 {  while (*sp == '*') sp++;
-	    if(isspace(*sp) && !(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	    if(isspace(*sp) && !(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	    if(!strncmp(sp, name, len) && !isalnum1(sp[len]))
 	    {  while(isalnum1(*sp)) sp++;
-	       if(isspace(*sp) && !(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	       if(isspace(*sp) && !(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	       if(*sp == ';' || *sp == ',' || *sp == '='
 					 || *sp == '[' || *sp == ')')
 	       {  if(*first)
@@ -1249,8 +1070,8 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
 		  {  *first = 1;  break;  }
 	       }
 	       else if(*sp == '(')
-	       {  if(!(sp = e_sh_spl5(sp, str, fp, &n))) goto b_end;
-		  if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	       {  if(!(sp = e_sh_walk(E_SH_CLOSE_PAREN, sp, str, fp, &n))) goto b_end;
+		  if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 		  if(*sp == '{')
 		  {  if(*first)
 		     {  e_aclose(fp);  e_find_def_found(file, startfile);
@@ -1267,20 +1088,20 @@ static int e_find_def_scan(name, startfile, mode, file, num, xn, nold, oldfile, 
             {  while (*sp == '*') sp++;  continue;  }
 	    else if(*sp == ';') {  sp++;  com = 2;  n--;  break;  }
 	    else if(*sp == '{')
-	    {  if(!(sp = e_sh_spl3(sp, str, fp, &n))) goto b_end;
+	    {  if(!(sp = e_sh_walk(E_SH_CLOSE_BRACE, sp, str, fp, &n))) goto b_end;
 	       sp++;  com = 2;  n--;
 	       break;
 	    }
 	    else
-	    {  if(!(sp = e_sh_spl4(sp, str, fp, &n))) goto b_end;
+	    {  if(!(sp = e_sh_walk(E_SH_LIST_END, sp, str, fp, &n))) goto b_end;
 	       if(*sp == '(')
-	       {  if(!(sp = e_sh_spl5(sp, str, fp, &n))) goto b_end;
-		  if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
-		  if(*sp == '{' && !(sp = e_sh_spl3(sp, str, fp, &n))) goto b_end;
+	       {  if(!(sp = e_sh_walk(E_SH_CLOSE_PAREN, sp, str, fp, &n))) goto b_end;
+		  if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
+		  if(*sp == '{' && !(sp = e_sh_walk(E_SH_CLOSE_BRACE, sp, str, fp, &n))) goto b_end;
 		  sp++;  com = 2;  n--;  break;
 	       }
 	       else if(*sp == ';') {  sp++;  com = 2;  n--;  break;  }
-	       if(!(sp = e_sh_spl2(sp, str, fp, &n))) goto b_end;
+	       if(!(sp = e_sh_walk(E_SH_NEXT_TOKEN_EOL, sp, str, fp, &n))) goto b_end;
 	    }
 	    if(*sp == ';') {  sp++;  com = 2;  n--;  break;  }
 	 }

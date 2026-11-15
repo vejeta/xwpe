@@ -134,11 +134,12 @@ ceiling we_optval.c 30 3 0 0 0
 ceiling we_paint.c 22 3 0 3 8
 ceiling we_path.c 24 2 0 0 0
 ceiling we_prog.c 171 6 2 11 22
-ceiling we_progn.c 282 8 1 20 2
+ceiling we_progn.c 282 8 1 11 2
 ceiling we_progname.c 13 2 0 0 0
 ceiling we_render_cairo.c 51 4 2 2 15
 ceiling we_render_wayland.c 24 2 1 0 4
 ceiling we_rowfind.c 45 3 3 0 5
+ceiling we_shtok.c 22 3 0 0 0
 ceiling we_startcmd.c 22 3 0 2 3
 ceiling we_startplan.c 61 4 0 4 4
 ceiling we_startplan.h 0 0 0 3 0
