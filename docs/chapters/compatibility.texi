@@ -1020,3 +1020,85 @@ half way refuses the save and leaves the file untouched, because the same
 disk would refuse the new text.  The reason: a short backup must never be
 trusted, and a private file's backup must never be readable by others.
 @end table
+
+@section The file manager's Copy, Move, Link and Remove
+
+@table @asis
+@item "Don't overwrite"
+@cindex don't overwrite
+The original overwrote an existing file with the option set to
+@samp{Don'T overwrite}, without a word.  xwpe leaves the file alone and
+says so on the status row (@samp{dst.txt exists; not overwritten.}).  The
+reason: the option is documented as never overwriting, and a copy that did
+nothing must not look like a copy that vanished.
+
+@item A copy that fails
+The original showed @samp{Cannot open file for writing} or
+@samp{Inconsistent copying} with no path, counted a failed close as a
+success, left half a file after a full disk, and could be ended by the file
+size limit.  xwpe leaves no half file and says once the paths, the step and
+the reason (@samp{Cannot copy a to b: writing: No space left on device.
+Nothing was changed.}).  The reason: the user must know what is on disk.
+
+@item A move to another file system
+The original removed the source as soon as the copy returned, even when
+nothing had reached the disk.  xwpe removes it only after the copy is
+whole and flushed, and when the removal itself fails the box says where
+the copy is and that the source is still in place.  The reason: the only
+copy of the data must not change hands before the new one is safe.
+
+@item The destination is a new file
+The original opened the destination for writing, so a link there was
+written through, into a file the user had not named.  xwpe makes the copy
+under a hidden name in the destination's folder and puts it in place with
+one rename: a link there is replaced as a name, and a name that appeared
+meanwhile is not replaced.  The reason: a copy must not change a file other
+than the one named.
+
+@item A copy of a private file is private
+The original's copy had the permissions of the umask until the copy was
+done.  xwpe's copy has the source's permissions before it holds a byte,
+and the setuid and setgid bits are put on after the data, so that they
+stay.  The reason: the contents of a private file must never be readable
+by others, not even for a moment.
+
+@item A moved link
+The original rewrote a link's relative target as a path under the panel's
+folder when it moved the link to another file system.  xwpe keeps the text
+of the target as it was, as @command{mv} does.  The reason: the link
+points where its owner wrote it.
+
+@item The wastebasket
+The original replaced a file of the same name already in the wastebasket,
+and a file removed from inside the wastebasket went nowhere.  xwpe keeps
+the earlier file and names the new one @samp{a.txt.1}, removes for good
+what is removed from inside the wastebasket, and closes a wastebasket of
+its owner that was open to others.  The reason: a removed file must always
+be recoverable until the wastebasket is emptied.
+
+@item Replacing asks once
+The original could ask @samp{Remove File ?} and then @samp{Remove File:}
+for one replaced file.  xwpe asks once, @samp{File dst exists.  Replace
+it?}, and then moves the old file where the Remove option says.  The
+reason: one decision needs one question.
+
+@item A read error, a pipe, a device
+The original looped forever on a read error and waited forever for a pipe
+named as the source, and wrote into a pipe or device named as the
+destination.  xwpe stops at the read error, refuses a source or
+destination that is not a file (@samp{/dev/full is not a file.}) and
+changes nothing.  The reason: no copy may hang the editor or damage what is
+not a file.
+
+@item A file copied onto a folder
+The original, asked to copy a file onto the name of a folder, could replace
+the whole folder with the file.  xwpe puts the file inside the folder under
+its own name, as @command{cp} does.  The reason: a folder with its files is
+not what the user meant to replace.
+
+@item Attributes
+The original rebuilt the permissions from the nine switches of the dialog,
+so changing one cleared setuid, setgid and the sticky bit.  xwpe keeps the
+bits the dialog does not show.  The reason: changing who may read a
+file must not change who it runs as.
+@end table

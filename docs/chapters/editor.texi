@@ -335,10 +335,10 @@ for opening, copying, moving, renaming, and deleting files.
 @item @kbd{Alt-T} @tab Tree @tab Display the directory tree.
 @item @kbd{Alt-C} @tab Change @tab Change to the entered directory.
 @item @kbd{Alt-E} @tab Edit @tab Open the selected file for editing.
-@item @kbd{Alt-M} @tab Move @tab Rename or move a file.
+@item @kbd{Alt-M} @tab Move @tab Rename or move a file; a link moves as a link.
 @item @kbd{Alt-R} @tab Remove @tab Delete a file (to wastebasket or disk).
 @item @kbd{Alt-L} @tab Link @tab Create a hard or symbolic link.
-@item @kbd{Alt-O} @tab Copy @tab Copy a file.
+@item @kbd{Alt-O} @tab Copy @tab Copy a file; onto the name of a folder it goes inside the folder.
 @item @kbd{Alt-K} @tab Make Dir @tab Create a new directory.
 @item @kbd{Alt-A} @tab Attributes @tab Change file permissions.
 @item @kbd{Alt-S} @tab Save @tab Save with the name in the Name field.

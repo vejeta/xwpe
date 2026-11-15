@@ -24,8 +24,24 @@
 #  5. A save compared with numbers: on the call (== / != WPE_ESC, 0 or
 #     E_SAVE_DECLINED) or through the variable that took its result, and any
 #     E_SAVE_DECLINED.  A caller tests WPE_WRITE_WRITTEN, DECLINED or FAILED.
-#  6. The old message: ERR_FOPEN and the literal "Can't open File" outside
+#  6. The old messages: ERR_FOPEN, the File Manager's ERR_OREADFILE,
+#     ERR_OWRITEFILE, ERR_ALLOC_CBUF, ERR_INCONSCOPY, ERR_RENFILE,
+#     ERR_LINKFILE and ERR_NOWASTE, and the literal "Can't open File" outside
 #     we_write.c.
+#  1b. Symbols again: the File Manager's old copy, link, wastebasket and
+#     folder functions are defined nowhere (a T in nm), and the write
+#     owner's exports for a copy (wpe_write_create_private, _copy_fd,
+#     _set_special_bits, the SIGXFSZ guard) are undefined only in
+#     we_fileop.o.
+#  8. A name of a file made, moved, linked or removed outside we_fileop.c
+#     and we_write.c: rename, renameat, link, linkat, symlink, symlinkat,
+#     unlink, unlinkat, remove, rmdir, mkdir, mkdirat, chmod, fchmod,
+#     fchmodat, chown, fchown, lchown, readlink, readlinkat, renameat2,
+#     renamex_np.  Counted per function, strings and comments blanked.
+#  9. The byte loop of a copy: fread, fwrite and a while loop whose
+#     condition is feof, outside we_write.c, we_fileop.c and we_lineend.c.
+# 10. The File Manager's option word assigned (flopt =, |=, &=): the options
+#     are the user's, so an operation keeps its own copy by value.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -124,7 +140,7 @@ scan() {
       }
       # rules 4 and 5: the saves
       t = s; gsub(/\([ \t]*void[ \t]*\)/, " ", t)
-      while (match(t, /(^|[^A-Za-z0-9_])(e_save|e_write|wpe_write_file|wpe_write_range|wpe_write_save|wpe_write_text|wpe_write_fd)[ \t]*[(]/)) {
+      while (match(t, /(^|[^A-Za-z0-9_])(e_save|e_write|wpe_write_file|wpe_write_range|wpe_write_save|wpe_write_text|wpe_write_fd|wpe_fileop_(copy|move|link|remove|mkdir|rmdir|chmod|rename_noreplace|wastebasket_slot|wastebasket))[ \t]*[(]/)) {
         name = substr(t, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", name); sub(/[ \t]*[(]$/, "", name)
         q = RSTART; p = RSTART + RLENGTH - 1; e = close_paren(t, p)
         np = q
@@ -150,9 +166,24 @@ scan() {
       while (match(m, /(^|[^A-Za-z0-9_])E_SAVE_DECLINED([^A-Za-z0-9_]|$)/)) { note("r5", 1); m = substr(m, RSTART + RLENGTH) }
       # rule 6: the old message
       m = s
-      while (match(m, /(^|[^A-Za-z0-9_])ERR_FOPEN([^A-Za-z0-9_]|$)/)) { note("r6", 1); m = substr(m, RSTART + RLENGTH) }
+      while (match(m, /(^|[^A-Za-z0-9_])ERR_(FOPEN|OREADFILE|OWRITEFILE|ALLOC_CBUF|INCONSCOPY|RENFILE|LINKFILE|NOWASTE)([^A-Za-z0-9_]|$)/)) { note("r6", 1); m = substr(m, RSTART + RLENGTH) }
       m = s
       while (match(m, /Can[\\\047]*t open File/)) { note("r6", 1); m = substr(m, RSTART + RLENGTH) }
+      # rules 8, 9 and 10 look at code: the strings are blanked
+      m = s; gsub(/"([^"\\]|\\.)*"/, "\"\"", m)
+      # rule 8: a name of the user'"'"'s files made, moved or removed outside the owners
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])(rename|renameat|renameat2|renamex_np|renameatx_np|link|linkat|symlink|symlinkat|unlink|unlinkat|remove|rmdir|mkdir|mkdirat|chmod|fchmod|fchmodat|chown|fchown|lchown|readlink|readlinkat)[ \t]*[(]/)) {
+        note("r8", 1); t = substr(t, RSTART + RLENGTH)
+      }
+      # rule 9: the byte loop of a copy
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])(fread|fwrite)[ \t]*[(]/)) { note("r9", 1); t = substr(t, RSTART + RLENGTH) }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])while[ \t]*[(][^;{]*feof[ \t]*[(]/)) { note("r9", 1); t = substr(t, RSTART + RLENGTH) }
+      # rule 10: the File Manager'"'"'s options changed by assignment
+      t = m
+      while (match(t, /flopt[ \t]*(\|=|&=|=[^=])/)) { note("r10", 1); t = substr(t, RSTART + RLENGTH) }
     }
     BEGIN { incom = 0; fn = "-"; stmt = "" }
     {
@@ -216,6 +247,7 @@ int fake_dropped(FENSTER *f)
   e_save(f);
  wpe_write_range(f, "p",
                  0, 0, 1, 1, 0, &o);
+ wpe_fileop_copy(a, b, &p, &o);
  return(e_save(f));
 }
 
@@ -236,13 +268,45 @@ int fake_numbers(FENSTER *f)
 int fake_message(FENSTER *f)
 {
  e_error(e_msg[ERR_FOPEN], 0, f->fb);
+ e_error(e_msg[ERR_INCONSCOPY], 0, f->fb);
  return(E_SAVE_DECLINED);
+}
+
+int fake_names(char *a, char *b)
+{
+ char *say = "remove( is in a string, rename( too";
+ int fine = e_rename(a, b, 0) + f->unlink(a) + wpe_fileop_remove(a, 0, 0);
+ rename(a, b);
+ unlink(a);
+ return(mkdir(b, 0700));
+}
+
+int fake_loop(FILE *fp, FILE *to)
+{
+ char buf[10];
+ int n;
+
+ while (!feof(fp))
+ {
+  n = fread(buf, 1, sizeof buf, fp);
+ }
+ return(n);
+}
+
+int fake_options(FENSTER *f)
+{
+ f->ed->flopt = 1;
+ f->ed->flopt &= ~2;
+ if (f->ed->flopt == 3)
+  return(1);
+ return(0);
 }
 EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
-  for want in "r2 we_fake.c fake_open 2" "r4 we_fake.c fake_dropped 4" \
+  for want in "r2 we_fake.c fake_open 2" "r4 we_fake.c fake_dropped 5" \
               "r5 we_fake.c fake_numbers 2" "r5 we_fake.c fake_message 1" \
-              "r6 we_fake.c fake_message 1"; do
+              "r6 we_fake.c fake_message 2" "r8 we_fake.c fake_names 3" \
+              "r9 we_fake.c fake_loop 2" "r10 we_fake.c fake_options 2"; do
     grep -qx "$want" "$WORK/fake.found" || {
       echo "check-write-owner: FAIL (selftest: the scan does not name \"$want\"; it found:)"
       cat "$WORK/fake.found"
@@ -260,11 +324,30 @@ if command -v "$NMTOOL" >/dev/null 2>&1 && [ -n "$OBJECTS" ]; then
     [ -f "$o" ] || [ -f "$SRCDIR/$o" ] || continue
     [ -f "$o" ] || o=$SRCDIR/$o
     base=$(basename "$o")
-    [ "$base" = we_write.o ] && continue
+    # what the file operations owner may call of the write owner, and what
+    # no object defines any more (the File Manager's old copy loop and the
+    # folder code that P5b replaces: their allow lines say so)
+    [ "$base" = we_write.o ] || [ "$base" = we_fileop.o ] ||
+    "$NMTOOL" -u "$o" 2>/dev/null | nm_undefined_source_names | awk -v obj="$base" '
+      {
+        n = $0; sub(/@.*/, "", n)
+        if (n == "wpe_write_create_private" || n == "wpe_write_copy_fd" ||
+            n == "wpe_write_set_special_bits" || n == "wpe_write_guard_enter" ||
+            n == "wpe_write_guard_leave") print "r1", obj, n, 1
+      }'
+    [ "$base" = we_write.o ] ||
     "$NMTOOL" -u "$o" 2>/dev/null | nm_undefined_source_names | awk -v obj="$base" '
       {
         n = $0; sub(/@.*/, "", n)
         if (n == "e_write" || n == "e_eol_write") print "r1", obj, n, 1
+      }'
+    "$NMTOOL" "$o" 2>/dev/null | awk -v obj="$base" '
+      NF >= 2 && $(NF-1) == "T" {
+        n = $NF; sub(/^_/, "", n)
+        if (n == "WpeCopyFileCont" || n == "WpeRenameCopy" || n == "WpeRenameCopyDir" ||
+            n == "WpeRemoveDir" || n == "WpeLinkFile" || n == "WpeRenameLink" ||
+            n == "WpeGetWastefile" || n == "e_mess_win" || n == "e_rename_dir")
+          print "r1", obj, n, 1
       }'
   done > "$WORK/symfound"
 fi
@@ -273,7 +356,14 @@ fi
 : > "$WORK/srcfound"
 for f in "$SRCDIR"/we_*.c "$SRCDIR"/We*.c; do
   [ -f "$f" ] || continue
-  case ${f##*/} in we_write.c) continue ;; esac
+  # the owners: the write owner is no offender; the names owner (we_fileop.c)
+  # makes and moves names and copies bytes, and the line endings owner
+  # (we_lineend.c) walks rows, so each is exempt from the rule it is the owner of
+  case ${f##*/} in
+    we_write.c) continue ;;
+    we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10"' >> "$WORK/srcfound"; continue ;;
+    we_lineend.c) scan "$f" | awk '$1 != "r9"' >> "$WORK/srcfound"; continue ;;
+  esac
   scan "$f" >> "$WORK/srcfound"
 done
 {

@@ -107,10 +107,6 @@ we_debug.c|e_d_debugger_pid_forget/remove|1|keep|the debug session's own pid fil
 we_debug.c|e_d_quit_basic/remove|5|keep|the debug session's own fifos
 we_debug.c|e_d_fifos_make/remove|1|keep|the debug session's own fifo, made again
 we_debug.c|e_d_start_in_script/remove|1|keep|the debug session's own start script
-we_fl_unix.c|WpeRemoveDir/remove|1|keep|the file manager removes the file the user chose
-we_fl_unix.c|WpeRemove/remove|1|keep|the file manager removes the file the user chose
-we_fl_unix.c|WpeRenameCopy/remove|1|keep|the file manager's move removes its source
-we_fl_unix.c|WpeRenameLink/remove|1|keep|the file manager's move removes its source
 we_fl_unix.c|WpePrintFile/remove|1|keep|the print's copy of the file
 we_fl_unix.c|e_man_give_up/remove|1|keep|the man page's copy
 we_fl_unix.c|e_ed_man/remove|2|keep|the man page's copy

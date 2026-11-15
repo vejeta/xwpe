@@ -449,14 +449,15 @@ Ask for confirmation before overwriting an existing file.
 @item Alt-V
 Overwrite existing files without confirmation.
 @item Alt-T
-Never overwrite existing files.
+Never overwrite existing files, and say so on the status row.
 @end table
 
 @subsubheading Remove behaviour
 
 @table @kbd
 @item Alt-W
-Deleted files are moved to the wastebasket.
+Deleted files are moved to the wastebasket.  A file of the same name
+already there is kept, and the new one is named @file{a.txt.1}.
 @item Alt-A
 Files are permanently deleted (with confirmation).
 @item Alt-M

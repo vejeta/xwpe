@@ -14,6 +14,7 @@
 #include "we_child.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
+#include "we_fileop.h"
 
 #ifdef UNIX
 
@@ -25,9 +26,6 @@ struct dirfile *e_make_win_list(FENSTER * f);
 extern char    *e_tmp_dir;
 
 #ifdef NOSYMLINKS
-#define readlink(x, y, z) -1
-#define WpeRenameLink(x, y, z, f) 0
-#define WpeLinkFile(x, y, sw, f) link(x, y)
 #define lstat(x,y)  stat(x,y)
 #undef S_ISLNK
 #define S_ISLNK(x)  0
@@ -35,8 +33,20 @@ extern char    *e_tmp_dir;
 #include <unistd.h>
 #endif
 
-/* buffer size for copying */
-#define E_C_BUFFERSIZE 524288        /*   1/2  Mega Byte   */
+/** The three transfers; the numbers are the folder walk's `sw`. */
+#define FM_TRANSFER_MOVE 0
+#define FM_TRANSFER_COPY 1
+#define FM_TRANSFER_LINK 2
+
+/* The file operations below, in the order they are used (the owner of names
+   is we_fileop.c; this file is its File Manager side). */
+static WpeFileOpKind fm_kind_of_transfer(int sw);
+static int fm_run(FENSTER *f, WpeFileOpKind kind, const char *src, const char *dst, int opt);
+static void fm_say(FENSTER *f, const WpeFileOpOutcome *o);
+static int fm_copy_dir(char *dirct, char *file, char *newname, FENSTER *f,
+                       int rec, int sw, int opt);
+static int fm_remove_dir(char *dirct, char *file, FENSTER * f, int rec, int *opt);
+static char *WpeWastebasketDir(ECNT *cn);
 
 int e_select_project(ECNT *cn, char *path);   /* we_prog.c */
 int e_create_project(ECNT *cn, char *path);   /* we_prog.c */
@@ -512,17 +522,14 @@ int WpeCallFileManager(int sw, FENSTER * f)
     {
       char *tmp;
 
-      if ((tmp = WpeGetWastefile("")))
+      if ((tmp = WpeWastebasketDir(f->ed)))
       {
         ret = WpeCreateFileManager(sw, f->ed, tmp);
         FREE(tmp);
         return(ret);
       }
       else
-      {
-        e_error(e_msg[ERR_NOWASTE], 0, f->ed->fb);
-        return 0;                /* Error -- no wastebasket */
-      }
+        return 0;                /* Error -- no wastebasket, said */
     }
     /* create the required style file manager */
     return(WpeCreateFileManager(sw, f->ed, ""));
@@ -1270,8 +1277,7 @@ int WpeHandleFileManager(ECNT * cn)
             if(j == AltM)
               e_rename(*(b->df->name + b->fw->nf), ftmp, f); /* move */
             else if(j == AltL)
-              WpeLinkFile(*(b->df->name + b->fw->nf), ftmp, /* link */
-                          f->ed->flopt & FM_TRY_HARDLINK, f);
+              e_link(*(b->df->name + b->fw->nf), ftmp, f); /* link */
             else if(j == AltO)
               e_copy(*(b->df->name + b->fw->nf), ftmp, f); /* copy */
 
@@ -2013,6 +2019,7 @@ int WpeMakeNewDir(FENSTER *f)
   char           *dirct;
   int             msk, mode, ret;
   struct stat     buf;
+  WpeFileOpOutcome o;
 
   umask(msk = umask(077));
   mode = 0777 & ~msk;
@@ -2028,8 +2035,8 @@ int WpeMakeNewDir(FENSTER *f)
   /* check existence and status (whether it is directory) */
   if(stat(dirct, &buf))
   {
-    if((ret = mkdir(dirct, mode)) != 0)
-      e_error(e_msg[ERR_NONEWDIR], 0, f->ed->fb);
+    if((ret = wpe_fileop_mkdir(dirct, mode, &o)) != 0)
+      fm_say(f, &o);
   }
   else
   {
@@ -2052,6 +2059,7 @@ int WpeFileDirAttributes(char *filen, FENSTER * f)
   struct stat     buf[1];
   int             mode, ret;
   W_OPTSTR       *o = e_init_opt_kst(f);
+  WpeFileOpOutcome fo;
 
   /* if cannot access or error */
   if(stat(filen, buf))
@@ -2091,9 +2099,9 @@ int WpeFileDirAttributes(char *filen, FENSTER * f)
       (o->sstr[4]->num << 4) + (o->sstr[5]->num << 3) +
       (o->sstr[6]->num << 2) + (o->sstr[7]->num << 1) +
       o->sstr[8]->num;
-    if(chmod(filen, mode))
+    if(wpe_fileop_chmod(filen, (mode_t)mode, &fo) != 0)
     {
-      e_error(e_msg[ERR_CHGPERM], 0, f->ed->fb);
+      fm_say(f, &fo);
       freeostr(o);
       return(1);
     }
@@ -2182,7 +2190,7 @@ char *WpeAssemblePath(char *pth, struct dirfile *cd, struct dirfile *dd, int n,
 #ifdef UNIX
   if (!strcmp(cd->name[0], "Wastebasket"))
   {
-    if ((adir = WpeGetWastefile("")))
+    if ((adir = WpeWastebasketDir(f->ed)))
     {
       totall = strlen(adir) + 16;
       if ((adir = REALLOC(adir, totall)) == NULL)
@@ -2193,11 +2201,7 @@ char *WpeAssemblePath(char *pth, struct dirfile *cd, struct dirfile *dd, int n,
       k++;
     }
     else
-    {
-      /* Error failed to find wastebasket */
-      e_error(e_msg[ERR_NOWASTE], 0, f->ed->fb);
-      return NULL;
-    }
+      return NULL;       /* no wastebasket, said */
   }
 #endif
   for(; k <= n && k < cd->anz; i++, j++)
@@ -2277,11 +2281,8 @@ struct dirfile *WpeCreateWorkingDirTree(int sw, ECNT *cn)
   {
     /* instead of saving the real wastebasket dir into the structure
        the "Wastebasket" name will appear */
-    if((tmp2 = WpeGetWastefile("")) == NULL)
-    {
-      e_error(e_msg[ERR_NOWASTE], 0, cn->fb);    /* more error check ??? */
-      i = 0;
-    }
+    if((tmp2 = WpeWastebasketDir(cn)) == NULL)
+      i = 0;                                     /* no wastebasket, said */
     else
     {
       i = strlen(tmp2);
@@ -2346,78 +2347,6 @@ struct dirfile *WpeCreateWorkingDirTree(int sw, ECNT *cn)
   FREE(buf);
   FREE(tmp);
   return(df);
-}
-
-/* This function creates a wastebasket directory if needed, then returns a
-   string made up of the last filename in the string pointed to by 'file' and
-   the wastebasket path.  It returns NULL if there is a memory allocation
-   error or the pointer to 'path' otherwise.  The original function did no
-   error checking on wastebasket path creation.  The modified version does --
-   it also returns NULL on an error in the chdir function or mkdir
-   function. */
-char  *WpeGetWastefile(char *file)
-{
-  static char    *wastebasket = NULL;
-  int             i, lw;
-  char           *tmp;             /* storage for wastebasket path */
-  char           *tmp2;
-
-  if(!wastebasket)  /* setup and test access to wastebasket directory */
-  {
-    if((tmp2 = getenv("HOME")) == NULL)
-      return NULL;
-
-    lw = strlen(tmp2) + 1 + strlen(WASTEBASKET) + 1;
-    /*    HOME          /     WASTEBASKET       \0    */
-    if((tmp = (char *)MALLOC(lw)) == NULL)
-      return NULL;
-
-    sprintf(tmp, "%s/%s", tmp2, WASTEBASKET);
-
-    /* if wastebasket dir does not exist, create it with error checking */
-    if(access(tmp, F_OK))
-    {
-      if(mkdir(tmp, 0700))
-      {
-        FREE(tmp);
-        return NULL;
-      }
-    }
-    /* check for wastebasket's permissions */
-    if(access(tmp, R_OK | W_OK | X_OK))
-    {
-      FREE(tmp);
-      return NULL;
-    }
-    wastebasket = tmp;
-  }
-
-  /* verify that wastebasket directory still exists before proceeding */
-  if(access(wastebasket, F_OK | R_OK | W_OK | X_OK))
-  {
-    /* try to recreate it */
-    if(mkdir(wastebasket, 0700))
-      return NULL;
-  }
-
-  /* return wastebasket directory path if no filename in 'file' */
-  if(file[0] == '\0')
-  {
-    if((tmp2 = MALLOC(strlen(wastebasket)+1)) == NULL)
-      return NULL;
-    strcpy(tmp2, wastebasket);
-    return(tmp2);
-  }
-
-  /* else get filename from end of 'file' string, 
-     append to wastebasket sting */
-  for(i = strlen(file) - 1; i >= 0 && file[i] != DIRC; i--)
-    ;
-  if((tmp2 = MALLOC(strlen(wastebasket) + strlen(file + 1 + i) + 2)) == NULL)
-    return NULL;
-
-  sprintf(tmp2, "%s/%s", wastebasket, file + 1 + i);
-  return(tmp2);
 }
 
 struct dirfile *WpeGraphicalFileList(struct dirfile *df, int sw, ECNT *cn)
@@ -2582,39 +2511,67 @@ struct dirfile *WpeGraphicalDirTree(struct dirfile *cd, struct dirfile *dd, ECNT
   return(edf);
 }
 
+/**
+ * WpeWastebasketDir - The folder of the removed files, made when it is not there.
+ * @cn: the desktop the failure is shown on.
+ * Return: its name in new memory, or NULL after telling the user why not.
+ *
+ * The folder is the owner's (we_fileop.c): made private, opened without
+ * following a link, and checked to be the user's own.
+ */
+static char *WpeWastebasketDir(ECNT *cn)
+{
+  char             path[WPE_PATH_SIZE], text[WPE_FILEOP_SENTENCE_MAX];
+  WpeFileOpOutcome o;
+  char            *copy;
+
+  if(wpe_fileop_wastebasket(path, sizeof path, &o) != 0)
+  {
+    if(wpe_fileop_sentence(text, sizeof text, &o) != 0)
+      e_error(text, 0, cn->fb);
+    return(NULL);
+  }
+  if((copy = MALLOC(strlen(path) + 1)) == NULL)
+  {
+    e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
+    return(NULL);
+  }
+  memcpy(copy, path, strlen(path) + 1);
+  return(copy);
+}
+
+/**
+ * WpeDelWastebasket - Empty the wastebasket for good.
+ * @f: the window.
+ * Return: 0, or 1 when something failed.
+ *
+ * Runs under options of its own (hidden files too, no questions, no second
+ * trip to the wastebasket) without changing the user's.
+ */
 int WpeDelWastebasket(FENSTER *f)
 {
   char            *tmp;
-  int             ret, mode = f->ed->flopt;
+  int             ret, opt = FM_SHOW_HIDDEN_FILES | FM_SHOW_HIDDEN_DIRS |
+                             FM_MOVE_OVERWRITE | FM_REKURSIVE_ACTIONS;
 
   WpeMouseChangeShape(WpeWorkingShape);
-  f->ed->flopt = FM_SHOW_HIDDEN_FILES | FM_SHOW_HIDDEN_DIRS |
-                 FM_MOVE_OVERWRITE | FM_REKURSIVE_ACTIONS;
-  if ((tmp = WpeGetWastefile("")))
+  if ((tmp = WpeWastebasketDir(f->ed)))
   {
-    ret = WpeRemoveDir(tmp, "*", f, 0);
+    ret = fm_remove_dir(tmp, "*", f, 0, &opt);
     FREE(tmp);
 
     /* Unfortunately there is this racing condition, so
        this is necessary to get back the deleted wastebasket. */
-    if ((tmp = WpeGetWastefile("")))
+    if ((tmp = WpeWastebasketDir(f->ed)))
     {
       FREE(tmp);
       ret = 0;
     }
     else
-    {
-      e_error(e_msg[ERR_NOWASTE], 0, f->ed->fb);
       ret = 1;
-    }
   }
   else
-  {
-    /* Error failed to find wastebasket */
-    e_error(e_msg[ERR_NOWASTE], 0, f->ed->fb);
     ret = 1;
-  }
-  f->ed->flopt = mode;
   WpeMouseRestoreShape();
   return(ret);
 }
@@ -2627,80 +2584,78 @@ int WpeShowWastebasket(FENSTER *f)
 int WpeQuitWastebasket(FENSTER * f)
 {
   char            *tmp;
-  int             ret = 0, mode = f->ed->flopt;
+  int             ret = 0, mode = f->ed->flopt, opt = mode;
 
   if(mode & FM_PROMPT_DELETE)
-    f->ed->flopt = FM_SHOW_HIDDEN_FILES | FM_SHOW_HIDDEN_DIRS |
-                   FM_REMOVE_PROMPT | FM_MOVE_OVERWRITE | FM_REKURSIVE_ACTIONS;
+    opt = FM_SHOW_HIDDEN_FILES | FM_SHOW_HIDDEN_DIRS |
+          FM_REMOVE_PROMPT | FM_MOVE_OVERWRITE | FM_REKURSIVE_ACTIONS;
   else if(mode & FM_DELETE_AT_EXIT)
-    f->ed->flopt = FM_SHOW_HIDDEN_FILES | FM_SHOW_HIDDEN_DIRS |
-                   FM_MOVE_OVERWRITE | FM_REKURSIVE_ACTIONS;
+    opt = FM_SHOW_HIDDEN_FILES | FM_SHOW_HIDDEN_DIRS |
+          FM_MOVE_OVERWRITE | FM_REKURSIVE_ACTIONS;
 
   if((mode & FM_PROMPT_DELETE) || (mode & FM_DELETE_AT_EXIT))
   {
     WpeMouseChangeShape(WpeWorkingShape);
-    if ((tmp = WpeGetWastefile("")))
+    if ((tmp = WpeWastebasketDir(f->ed)))
     {
-      ret = WpeRemoveDir(tmp, "*", f, 0);
+      ret = fm_remove_dir(tmp, "*", f, 0, &opt);
       FREE(tmp);
     }
     else
-    {
-      /* Error failed to find wastebasket */
-      e_error(e_msg[ERR_NOWASTE], 0, f->ed->fb);
       ret = 0;
-    }
     WpeMouseRestoreShape();
   }
 
-  f->ed->flopt = mode;
   return(ret);
 }
 
 
-int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
+/**
+ * fm_dir_into_wastebasket - Move a folder into the wastebasket under a free name.
+ * @dirct, @file: the folder and the pattern of what is taken; @f: the
+ * window; @opt: the options the removal runs under.
+ * Return: 0, or 1 when it failed (the user has been told).
+ *
+ * Never over an earlier folder of the same name there: the second one is
+ * `name.1`.
+ */
+static int fm_dir_into_wastebasket(char *dirct, char *file, FENSTER *f, int opt)
+{
+  char             slot[WPE_PATH_SIZE];
+  WpeFileOpOutcome o;
+
+  if(wpe_fileop_wastebasket_slot(dirct, slot, sizeof slot, &o) != 0)
+  {
+    fm_say(f, &o);
+    return(1);
+  }
+  return(fm_copy_dir(dirct, file, slot, f, 0, FM_TRANSFER_MOVE, opt));
+}
+
+/**
+ * fm_remove_dir_entries - Remove the files of one folder that the pattern names.
+ * @dirct, @file: the folder and the pattern; @f: the window; @opt: the
+ * options of this removal, which the "Delete Directory" dialog may change
+ * for the rest of the walk; @rec: the depth, -1 once the user was asked.
+ * Return: 0, or 1 when the user stopped it or a removal failed.
+ */
+static int fm_remove_dir_entries(char *dirct, char *file, FENSTER *f, int *rec, int *opt)
 {
   PIC            *pic = NULL;
   char           *tmp;
-  int             i, ret, svmode = f->ed->flopt;
+  int             i, ret;
   struct dirfile *dd;
-
-  if(rec > MAXREC)
-    return(0);
-
-  /* only copy it to the wastebasket */
-  if(f->ed->flopt & FM_REMOVE_INTO_WB)
-  {
-    if ((tmp = WpeGetWastefile(dirct)))
-    {
-      i = strlen(tmp);
-      /* we should not use the fact, that the wasbasket is always something
-         meaningful !!! */
-      if(strncmp(tmp, dirct, i))
-      {
-        ret = WpeRenameCopyDir(dirct, file, tmp, f, 0, 0);
-        FREE(tmp);
-        return(ret);
-      }
-      FREE(tmp);
-    }
-    else
-    {
-      e_error(e_msg[ERR_NOWASTE], 0, f->ed->fb);
-      return 1;
-    }
-  }
 
   if((tmp = MALLOC(strlen(dirct) + strlen(file)+2)) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
   /* search for files in the directory */
   sprintf(tmp, "%s%c%s", dirct, DIRC, file);
-  dd = e_find_files(tmp, f->ed->flopt & FM_SHOW_HIDDEN_FILES ? 1 : 0);
+  dd = e_find_files(tmp, *opt & FM_SHOW_HIDDEN_FILES ? 1 : 0);
 
   /* it is called for the first time and the user should be asked about
      the deletion */
-  if(!rec && (f->ed->flopt & FM_REMOVE_PROMPT) && dd->anz > 0)
+  if(!*rec && (*opt & FM_REMOVE_PROMPT) && dd->anz > 0)
   {
     if((ret = WpeDirDelOptions(f)) < 0)
     {
@@ -2709,10 +2664,10 @@ int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
       return(ret == WPE_ESC ? 1 : 0);
     }
     if(ret)
-      f->ed->flopt |= FM_REMOVE_PROMPT;
+      *opt |= FM_REMOVE_PROMPT;
     else
-      f->ed->flopt &= ~FM_REMOVE_PROMPT;
-    rec = -1;
+      *opt &= ~FM_REMOVE_PROMPT;
+    *rec = -1;
   }
   FREE(tmp);
 
@@ -2723,7 +2678,7 @@ int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
       e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
     sprintf(tmp, "Remove File:\n%s%c%s", dirct, DIRC, dd->name[i]);
-    if(f->ed->flopt & FM_REMOVE_PROMPT)
+    if(*opt & FM_REMOVE_PROMPT)
     {
       ret = e_message(1, tmp, f);
     }
@@ -2733,7 +2688,6 @@ int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
     {
       freedf(dd);
       FREE(tmp);
-      f->ed->flopt = svmode;
       return(1);
     }
     else if(ret == 'Y')
@@ -2754,13 +2708,12 @@ int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
         pic = NULL;
       }
 
-      /* try to remove it */
-      if(remove(tmp))
+      /* remove it for good: the walk has asked already, and what is not
+         into the wastebasket here is already in it or was not meant to go */
+      if(fm_run(f, WPE_FILEOP_REMOVE, tmp, NULL, *opt & ~(FM_REMOVE_INTO_WB | FM_REMOVE_PROMPT)))
       {
-        e_error(e_msg[ERR_DELFILE], 0, f->ed->fb);
         freedf(dd);
         FREE(tmp);
-        f->ed->flopt = svmode;
         return(1);
       }
     }
@@ -2770,20 +2723,47 @@ int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
   if(pic)
     e_close_view(pic, 1);
   freedf(dd);
+  return(0);
+}
 
-  /* if recursive action is specified clean up the 
+/**
+ * fm_remove_dir - The folder walk of a Remove: the files, the subfolders, the folder.
+ * @dirct, @file: the folder and the pattern; @f: the window; @rec: the depth;
+ * @opt: the options of this removal, shared down the walk.  The user's own
+ * options are never changed here: the answer of the "Delete Directory"
+ * dialog lives in @opt and ends with the walk.
+ * Return: 0, or 1 when the user stopped it or something failed.
+ */
+static int fm_remove_dir(char *dirct, char *file, FENSTER * f, int rec, int *opt)
+{
+  char           *tmp;
+  int             i, ret;
+  struct dirfile *dd;
+  WpeFileOpOutcome o;
+
+  if(rec > MAXREC)
+    return(0);
+
+  /* only copy it to the wastebasket */
+  if((*opt & FM_REMOVE_INTO_WB) && !wpe_fileop_in_wastebasket(dirct))
+    return(fm_dir_into_wastebasket(dirct, file, f, *opt));
+
+  if(fm_remove_dir_entries(dirct, file, f, &rec, opt))
+    return(1);
+
+  /* if recursive action is specified clean up the
      subdirectories as well */
-  if(f->ed->flopt & FM_REKURSIVE_ACTIONS)
+  if(*opt & FM_REKURSIVE_ACTIONS)
   {
     if((tmp = MALLOC(strlen(dirct) + strlen(SUDIR)+2)) == NULL)
       e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
     /* search for subdirectories */
     sprintf(tmp, "%s%c%s", dirct, DIRC, SUDIR);
-    dd = e_find_dir(tmp, f->ed->flopt & FM_SHOW_HIDDEN_DIRS ? 1 : 0);
+    dd = e_find_dir(tmp, *opt & FM_SHOW_HIDDEN_DIRS ? 1 : 0);
 
     /* should the user be asked about deletion ? */
-    if(!rec && (f->ed->flopt & FM_REMOVE_PROMPT) && dd->anz > 0)
+    if(!rec && (*opt & FM_REMOVE_PROMPT) && dd->anz > 0)
     {
       if((ret = WpeDirDelOptions(f)) < 0)
       {
@@ -2792,9 +2772,9 @@ int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
         return(ret == WPE_ESC ? 1 : 0);
       }
       if(ret)
-        f->ed->flopt |= FM_REMOVE_PROMPT;
+        *opt |= FM_REMOVE_PROMPT;
       else
-        f->ed->flopt &= ~FM_REMOVE_PROMPT;
+        *opt &= ~FM_REMOVE_PROMPT;
     }
     else if(rec < 0)
       rec = 0;
@@ -2808,11 +2788,10 @@ int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
         e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
       sprintf(tmp, "%s%c%s", dirct, DIRC, dd->name[i]);
-      if(WpeRemoveDir(tmp, file, f, rec))
+      if(fm_remove_dir(tmp, file, f, rec, opt))
       {
         freedf(dd);
         FREE(tmp);
-        f->ed->flopt = svmode;
         return(1);
       }
       FREE(tmp);
@@ -2820,23 +2799,34 @@ int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
     freedf(dd);
   }
 
-  f->ed->flopt = svmode;
-
   /* remove finally the directory itself */
-  if(rmdir(dirct))
+  if(wpe_fileop_rmdir(dirct, &o) != 0)
   {
-    e_error(e_msg[ERR_DELFILE], 0, f->ed->fb);
+    fm_say(f, &o);
     return(1);
   }
-  else
-    return(0);
+  return(0);
 }
 
+int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec)
+{
+  int opt = f->ed->flopt;
+
+  return(fm_remove_dir(dirct, file, f, rec, &opt));
+}
+
+/**
+ * WpeRemove - Remove the file or folder the user chose in a panel.
+ * @file: its name; @f: the window.
+ * Return: 0, or 1 when it failed or the user stopped it.
+ *
+ * A file, a link or anything that is not a folder is one operation of the
+ * owner of names (into the wastebasket, after a question, or for good as
+ * the Remove option says).  A folder goes through the folder walk.
+ */
 int WpeRemove(char *file, FENSTER * f)
 {
-  struct stat     buf;
   struct stat     lbuf;
-  char           *tmp2;
   int             ret;
 
   if(lstat(file, &lbuf))
@@ -2846,63 +2836,10 @@ int WpeRemove(char *file, FENSTER * f)
   }
 
   WpeMouseChangeShape(WpeWorkingShape);
-
-  /* this is important, first we check whether it is a file,
-     this check works even when it is a pointer, if it is not
-     a file, then it can be an "invalid" symbolic link, check for that */
-  if(((stat(file, &buf) == 0) && S_ISREG(buf.st_mode)) || S_ISLNK(lbuf.st_mode))
-  {
-    if((f->ed->flopt & FM_REMOVE_INTO_WB))
-    {
-      if ((tmp2 = WpeGetWastefile(file)))
-      {
-        ret = strlen(tmp2);
-        if(strncmp(tmp2, file, ret))
-        {
-          e_rename(file, tmp2, f);
-        }
-        FREE(tmp2);
-        ret = 0;
-      }
-      else
-      {
-        e_error(e_msg[ERR_NOWASTE], 0, f->ed->fb);
-        ret = 1;
-      }
-    }
-    else
-    {
-      if(f->ed->flopt & FM_REMOVE_PROMPT)
-      {
-        if((tmp2 = MALLOC(strlen(file) + 14)) == NULL)
-          e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-        sprintf(tmp2, "Remove File:\n%s", file);
-        ret = e_message(1, tmp2, f);
-        FREE(tmp2);
-      }
-      else
-        ret = 'Y';
-
-      if(ret == 'Y')
-      {
-        if(remove(file))
-        {
-          e_error(e_msg[ERR_DELFILE], 0, f->ed->fb);
-          ret = 1;
-        }
-        else
-          ret = 0;
-      }
-      else
-        ret = 0;
-    }
-  }
-  else
-  {
+  if(S_ISDIR(lbuf.st_mode))
     ret = WpeRemoveDir(file, f->fd.file, f, 0);
-  }
-
+  else
+    ret = fm_run(f, WPE_FILEOP_REMOVE, file, NULL, f->ed->flopt);
   WpeMouseRestoreShape();
   return(ret);
 }
@@ -2910,14 +2847,86 @@ int WpeRemove(char *file, FENSTER * f)
 /* sw = 0  -> renames the directory
    sw = 1  -> copies the directory
    sw = 2  -> links directory */
+/**
+ * fm_rename_whole_dir - Rename a folder to a name that is free, in one step.
+ * @dirct, @newname: the folder and its new name; @f: the window.
+ * Return: 0, or 1 when it failed (the user has been told).
+ *
+ * The rename refuses to replace a folder that appeared meanwhile, which
+ * rename(2) would do silently for an empty one.
+ */
+static int fm_rename_whole_dir(char *dirct, char *newname, FENSTER *f)
+{
+  WpeFileOpOutcome o;
+
+  if(wpe_fileop_rename_noreplace(dirct, newname, &o) == 0)
+    return(0);
+  fm_say(f, &o);
+  return(1);
+}
+
+/**
+ * fm_make_dir_like - Make the destination folder with the source folder's mode.
+ * @dirct, @newname: the source and the new folder; @f: the window.
+ * Return: 0, or 1 when it failed (the user has been told).
+ */
+static int fm_make_dir_like(char *dirct, char *newname, FENSTER *f)
+{
+  struct stat      buf;
+  WpeFileOpOutcome o;
+
+  /* get the permissions */
+  if (stat(dirct, &buf))
+  {
+    e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
+    return(1);
+  }
+  /* with that permission create the new dir */
+  if(wpe_fileop_mkdir(newname, buf.st_mode, &o) != 0)
+  {
+    fm_say(f, &o);
+    return(1);
+  }
+  return(0);
+}
+
+/**
+ * fm_walk_entry - One file of a folder copied, moved or linked.
+ * @tmp, @ntmp: the file and where it goes; @sw: the transfer; @opt: the
+ * options of this walk; @f: the window.
+ * Return: 0, or 1 when it failed or the user stopped it.
+ *
+ * The walk's questions are the owner's, asked under a policy built here from
+ * the walk's own copy of the options, with no Remove prompt of its own: a
+ * file that goes to the wastebasket does so without asking, as before.
+ * The user's options are not touched.
+ */
+static int fm_walk_entry(char *tmp, char *ntmp, int sw, int opt, FENSTER *f)
+{
+  return(fm_run(f, fm_kind_of_transfer(sw), tmp, ntmp, opt & ~FM_REMOVE_PROMPT));
+}
+
 int WpeRenameCopyDir(char *dirct, char *file, char *newname, FENSTER *f,
                      int rec, int sw)
 {
+  return(fm_copy_dir(dirct, file, newname, f, rec, sw, f->ed->flopt));
+}
+
+/**
+ * fm_copy_dir - The folder walk of a Copy, Move or Link.
+ * @dirct, @file: the folder and the pattern of the files taken; @newname:
+ * where it goes; @f: the window; @rec: the depth; @sw: the transfer;
+ * @opt: the options of this walk, by value.
+ * Return: 0, or 1 when it failed or the user stopped it.
+ */
+static int fm_copy_dir(char *dirct, char *file, char *newname, FENSTER *f,
+                       int rec, int sw, int opt)
+{
   char            *tmp, *ntmp, *mtmp;
-  int             i, ret, mode;
+  int             i, ret;
   struct dirfile *dd;
-  struct stat     buf;
   PIC            *pic = NULL;
+  WpeFileOpOutcome o;
 
   if(rec > MAXREC)
     return(0);
@@ -2925,37 +2934,20 @@ int WpeRenameCopyDir(char *dirct, char *file, char *newname, FENSTER *f,
   /* check whether the dir already exist */
   ret = access(newname, F_OK);
   /* rename mode and dir does not exist */
-  if (sw == 0 && ret && file[0] == '*' && file[1] == '\0')
-  {
-    if ((ret = rename(dirct, newname)))
-      e_error(e_msg[ERR_RENFILE], 0, f->ed->fb);
-    return(ret);
-  }
+  if (sw == FM_TRANSFER_MOVE && ret && file[0] == '*' && file[1] == '\0')
+    return(fm_rename_whole_dir(dirct, newname, f));
 
   /* directory does not exist */
-  if (ret != 0)
-  {
-    /* get the permissions */
-    if (stat(dirct, &buf))
-    {
-      e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
-      return(1);
-    }
-    /* with that permission create the new dir */
-    if(mkdir(newname, buf.st_mode))
-    {
-      e_error(e_msg[ERR_NONEWDIR], 0, f->ed->fb);
-      return(1);
-    }
-  }
+  if (ret != 0 && fm_make_dir_like(dirct, newname, f))
+    return(1);
 
-  if(f->ed->flopt & FM_REKURSIVE_ACTIONS)
+  if(opt & FM_REKURSIVE_ACTIONS)
   {
     if((tmp = MALLOC(strlen(dirct) + 2 + strlen(SUDIR))) == NULL)
       e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
     sprintf(tmp, "%s%c%s", dirct, DIRC, SUDIR);
-    dd = e_find_dir(tmp, f->ed->flopt & FM_SHOW_HIDDEN_DIRS ? 1 : 0);
+    dd = e_find_dir(tmp, opt & FM_SHOW_HIDDEN_DIRS ? 1 : 0);
     FREE(tmp);
 
     for(rec++, i = 0; i < dd->anz; i++)
@@ -2970,7 +2962,7 @@ int WpeRenameCopyDir(char *dirct, char *file, char *newname, FENSTER *f,
       sprintf(tmp, "%s%c%s", dirct, DIRC, dd->name[i]);
       sprintf(ntmp, "%s%c%s", newname, DIRC, dd->name[i]);
 
-      if(WpeRenameCopyDir(tmp, file, ntmp, f, rec, sw))
+      if(fm_copy_dir(tmp, file, ntmp, f, rec, sw, opt))
       {
         FREE(tmp);
         FREE(ntmp);
@@ -2986,11 +2978,8 @@ int WpeRenameCopyDir(char *dirct, char *file, char *newname, FENSTER *f,
   if((tmp = MALLOC(strlen(dirct) + 2 + strlen(file))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
   sprintf(tmp, "%s%c%s", dirct, DIRC, file);
-  dd = e_find_files(tmp, f->ed->flopt & FM_SHOW_HIDDEN_FILES ? 1 : 0);
+  dd = e_find_files(tmp, opt & FM_SHOW_HIDDEN_FILES ? 1 : 0);
   FREE(tmp);
-
-  mode = f->ed->flopt;
-  f->ed->flopt &= ~FM_REMOVE_PROMPT;
 
   for(i = 0; i < dd->anz; i++)
   {
@@ -2998,102 +2987,38 @@ int WpeRenameCopyDir(char *dirct, char *file, char *newname, FENSTER *f,
       e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
     sprintf(ntmp, "%s%c%s", newname, DIRC, dd->name[i]);
-    ret = 'Y';
-
-    if(access(ntmp, 0) == 0)
-    {
-      if(f->ed->flopt & FM_MOVE_PROMPT)
-      {
-        if((tmp = MALLOC(strlen(ntmp) + 31)) == NULL)
-          e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-        sprintf(tmp, "File %s exist !\nOverwrite File ?", ntmp);
-        if(pic)
-        {
-          e_close_view(pic, 1);
-          pic = NULL;
-        }
-        ret = e_message(1, tmp, f);
-        FREE(tmp);
-
-        if(ret == 'Y')
-        {
-          if(WpeRemove(ntmp, f))
-          {
-            FREE(ntmp);
-            freedf(dd);
-            return(1);
-          }
-        }
-        else if(ret == WPE_ESC)
-        {
-          FREE(ntmp);
-          freedf(dd);
-          return(1);
-        }
-      }
-      else if(f->ed->flopt & FM_MOVE_OVERWRITE)
-      {
-        if(WpeRemove(ntmp, f))
-        {
-          FREE(ntmp);
-          freedf(dd);
-          return(1);
-        }
-      }
-    }
 
     if((tmp = MALLOC(strlen(dirct) + 2 + strlen(dd->name[i]))) == NULL)
       e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
     sprintf(tmp, "%s%c%s", dirct, DIRC, dd->name[i]);
 
-    if(ret == 'Y')
+    if((mtmp = MALLOC(strlen(tmp) + 2 + strlen(ntmp))) == NULL)
+      e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
+
+    sprintf(mtmp, "%s %s", tmp, ntmp);
+    if(e_mess_win(!sw ? "Rename" : "Copy", mtmp, &pic, f))
     {
-      if((mtmp = MALLOC(strlen(tmp) + 2 + strlen(ntmp))) == NULL)
-        e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-      sprintf(mtmp, "%s %s", tmp, ntmp);
-      if(e_mess_win(!sw ? "Rename" : "Copy", mtmp, &pic, f))
-      {
-        FREE(tmp);
-        FREE(ntmp);
-        FREE(mtmp);
-        break;
-      }
+      FREE(tmp);
+      FREE(ntmp);
       FREE(mtmp);
+      break;
+    }
+    FREE(mtmp);
 
-      if (sw == 0)
-      {
-        if ((ret = rename(tmp, ntmp)))
-        {
-          e_error(e_msg[ERR_RENFILE], 0, f->ed->fb);
-          FREE(tmp);
-          FREE(ntmp);
-          freedf(dd);
-          return(1);
-        }
-      }
-      else if (sw == 1)
-      {
-        if (WpeCopyFileCont(tmp, ntmp, f))
-        {
-          FREE(tmp);
-          FREE(ntmp);
-          freedf(dd);
-          return(1);
-        }
-      }
-      else if(sw == 2)
-      {
-        if(WpeLinkFile(tmp, ntmp, f->ed->flopt & FM_TRY_HARDLINK, f))
-        {
-          FREE(tmp);
-          FREE(ntmp);
-          freedf(dd);
-          return(1);
-        }
-      }
+    /* the box's background goes back before the owner asks or says anything */
+    if(pic)
+    {
+      e_close_view(pic, 1);
+      pic = NULL;
+    }
+
+    if(fm_walk_entry(tmp, ntmp, sw, opt, f))
+    {
+      FREE(tmp);
+      FREE(ntmp);
+      freedf(dd);
+      return(1);
     }
 
     FREE(tmp);
@@ -3103,267 +3028,183 @@ int WpeRenameCopyDir(char *dirct, char *file, char *newname, FENSTER *f,
   if(pic)
     e_close_view(pic, 1);
 
-  f->ed->flopt = mode;
-
-  if(sw == 0)
-  {
-    if(rmdir(dirct))
-      e_error(e_msg[ERR_DELFILE], 0, f->ed->fb);
-  }
+  if(sw == FM_TRANSFER_MOVE && wpe_fileop_rmdir(dirct, &o) != 0)
+    fm_say(f, &o);
 
   freedf(dd);
   return(0);
 }
 
 
-int WpeRenameCopy(char *file, char *newname, FENSTER *f, int sw)
+/* --- The File Manager's side of the owner of names (we_fileop.c) -----------
+   The owner copies, moves, links and removes a file and says what became
+   of it; these functions give it the user's options as a policy, the
+   dialog that asks, and the place where the sentence is shown. */
+
+/**
+ * fm_ask - The owner's question as the File Manager's Yes/No dialog.
+ * @ctx: the window; @question: the text.
+ * Return: the owner's answer.  Esc stops the operation.
+ */
+static int fm_ask(void *ctx, const char *question)
 {
- struct stat     buf;
- struct stat     lbuf;
- char           *tmp, *tmpl;
- int             ln = -1, ret = 'Y';
- int             allocate_size, retl = 0;
+  int key = e_message(1, (char *)question, (FENSTER *)ctx);
 
- WpeMouseChangeShape(WpeWorkingShape);
-
- /* in copy mode check whether it is a link */
- if (sw == 0)
- {
-  if (lstat(file, &lbuf))
-  {
-   e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
-   return 1;
-  }
-
-  if (S_ISLNK(lbuf.st_mode))
-   ln = 1;
- }
-
- if ((stat(file, &buf) == 0) && S_ISDIR(buf.st_mode) && ln < 0)
-  retl = WpeRenameCopyDir(file, f->fd.file, newname, f, 0, sw);
- else
- {
-  /* check whether file exist */
-  if (access(newname, 0) == 0)
-  {
-   if (f->ed->flopt & FM_MOVE_OVERWRITE)
-   {
-    if (WpeRemove(newname, f))
-    {
-     WpeMouseRestoreShape();
-     return(1);
-    }
-   }
-   else if (f->ed->flopt & FM_MOVE_PROMPT)
-   {
-    if ((tmp = MALLOC(strlen(newname) + 26)) == NULL)
-     e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-    sprintf(tmp, "File %s exist\nRemove File ?", newname);
-    ret = e_message(1, tmp, f);
-    FREE(tmp);
-    if (ret == 'Y')
-    {
-     if (WpeRemove(newname, f))
-     {
-      WpeMouseRestoreShape();
-      return(1);
-     }
-    }
-   }
-  }
-
-  if (ret == 'Y')
-  {
-   if (sw == 1)
-   {
-    retl = WpeCopyFileCont(file, newname, f);
-   }
-   else if (sw == 2)
-   {
-    retl = WpeLinkFile(file, newname, f->ed->flopt & FM_TRY_HARDLINK, f);
-   }
-   else if (sw == 0 && ln < 0) /* rename mode, no softlink */
-   {
-    if ((retl = rename(file, newname)) == -1)
-    {
-     if (errno == EXDEV)
-     {
-      if ((retl = WpeCopyFileCont(file, newname, f)) == 0)
-      {
-       if ((retl = remove(file)))
-        e_error(e_msg[ERR_DELFILE], 0, f->ed->fb);
-      }
-     }
-     else
-     {
-      e_error(e_msg[ERR_RENFILE], 0, f->ed->fb);
-      retl = 1;
-     }
-    }
-   }
-   else if (sw == 0)
-   {
-    allocate_size = 2;
-    tmp = NULL;
-    do
-    {
-     if (tmp)
-      FREE(tmp);
-     allocate_size += 4;
-     if ((tmp = MALLOC(allocate_size)) == NULL)
-      e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-      ln = readlink(file, tmp, allocate_size-1);
-    } while (!(ln < allocate_size-1));
-    tmp[ln] = '\0';
-
-    for (; ln >= 0 && tmp[ln] != DIRC; ln--)
-     ;
-    if (ln < 0)
-    {
-     if ((tmpl = MALLOC(strlen(f->dirct) + 2 + strlen(tmp))) == NULL)
-      e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-     sprintf(tmpl, "%s%c%s", f->dirct, DIRC, tmp);
-     retl = WpeRenameLink(file, newname, tmpl, f);
-     FREE(tmpl);
-    }
-    else
-    {
-     retl = WpeRenameLink(file, newname, tmp, f);
-    }
-   }
-  }
- }
- WpeMouseRestoreShape();
- return(retl);
+  if(key == 'Y')
+    return(WPE_FILEOP_ANSWER_YES);
+  if(key == WPE_ESC)
+    return(WPE_FILEOP_ANSWER_STOP);
+  return(WPE_FILEOP_ANSWER_NO);
 }
 
-int WpeCopyFileCont(char *oldfile, char *newfile, FENSTER *f)
+/**
+ * fm_policy - The owner's policy from the File Manager's option word.
+ * @p: receives it; @f: the window the questions are asked in; @opt: the
+ * FM_ flags, a copy: nothing here changes the user's options.
+ *
+ * What a user chose in Options > File Manager becomes what a Copy, Move or
+ * Link does with a name that is taken (ask, replace, leave it) and where a
+ * replaced or removed file goes.  The bit named FM_TRY_HARDLINK is the row
+ * "Always Symbolic Link" of the dialog.
+ */
+static void fm_policy(WpeFileOpPolicy *p, FENSTER *f, int opt)
+{
+  memset(p, 0, sizeof *p);
+  if(opt & FM_MOVE_OVERWRITE)
+    p->replace = WPE_REPLACE_ALWAYS;
+  else if(opt & FM_MOVE_PROMPT)
+    p->replace = WPE_REPLACE_ASK;
+  else
+    p->replace = WPE_REPLACE_NEVER;
+  if(opt & FM_REMOVE_INTO_WB)
+    p->remove = WPE_REMOVE_WASTEBASKET;
+  else if(opt & FM_REMOVE_PROMPT)
+    p->remove = WPE_REMOVE_ASK;
+  else
+    p->remove = WPE_REMOVE_NOW;
+  p->hardlink_first = (opt & FM_TRY_HARDLINK) == 0;
+  p->ask = fm_ask;
+  p->ctx = f;
+}
+
+/**
+ * fm_say - Tell the user how a file operation ended.
+ * @f: the window; @o: the outcome.
+ *
+ * A failure is a box with the paths, the step and the reason, and what is
+ * left.  A "Don't overwrite" that left a file alone is one line on the
+ * status row, so a copy that did nothing is not mistaken for a copy that
+ * vanished.  Nothing while the editor is ending and saving its copies.
+ */
+static void fm_say(FENSTER *f, const WpeFileOpOutcome *o)
+{
+  char text[WPE_FILEOP_SENTENCE_MAX];
+
+  if(e_emergency_save_running())
+    return;
+  if(wpe_fileop_sentence(text, sizeof text, o) == 0)
+    return;
+  if(o->status == WPE_FILEOP_FAILED)
+    e_message(0, text, f);
+  else
+    e_status_say_until_key(f, text);
+}
+
+/**
+ * fm_run - One file operation under a copy of the options, then tell the user.
+ * @f: the window; @kind: what to do; @src, @dst: the names (@dst unused by
+ * Remove); @opt: the FM_ flags this operation runs under.
+ * Return: 0 when it is done or the policy left things alone, 1 when it
+ * failed or the user stopped it.
+ *
+ * The one place a Copy, Move, Link or Remove of a file starts, from the
+ * panels, the mouse and the folder walk alike.
+ */
+static int fm_run(FENSTER *f, WpeFileOpKind kind, const char *src, const char *dst, int opt)
+{
+  WpeFileOpPolicy p;
+  WpeFileOpOutcome o;
+  int             rc;
+
+  fm_policy(&p, f, opt);
+  switch(kind)
+  {
+    case WPE_FILEOP_COPY:
+      rc = wpe_fileop_copy(src, dst, &p, &o);
+      break;
+    case WPE_FILEOP_MOVE:
+      rc = wpe_fileop_move(src, dst, &p, &o);
+      break;
+    case WPE_FILEOP_LINK:
+      rc = wpe_fileop_link(src, dst, &p, &o);
+      break;
+    default:
+      rc = wpe_fileop_remove(src, &p, &o);
+      break;
+  }
+  fm_say(f, &o);
+  return(rc != 0 && o.status == WPE_FILEOP_FAILED ? 1 : 0);
+}
+
+/**
+ * fm_kind_of_transfer - The owner's operation for a transfer number.
+ * @sw: FM_TRANSFER_MOVE, _COPY or _LINK.
+ */
+static WpeFileOpKind fm_kind_of_transfer(int sw)
+{
+  if(sw == FM_TRANSFER_COPY)
+    return(WPE_FILEOP_COPY);
+  if(sw == FM_TRANSFER_LINK)
+    return(WPE_FILEOP_LINK);
+  return(WPE_FILEOP_MOVE);
+}
+
+/**
+ * fm_transfer - Copy, move or link what the user named onto the name typed.
+ * @file, @newname: the names; @f: the window; @sw: the transfer.
+ * Return: 0 or 1 as fm_run.
+ *
+ * A folder goes through the folder walk; a moved link is a file and moves
+ * as a link.  Everything else is one file operation under the user's
+ * options.
+ */
+static int fm_transfer(char *file, char *newname, FENSTER *f, int sw)
 {
   struct stat     buf;
-  int             ret;
-  char           *buffer;
-  FILE           *fpo, *fpn;
+  struct stat     lbuf;
+  int             moved_link = 0, ret;
 
-  /* get the status of the file */
-  if(stat(oldfile, &buf))
-  {
-    e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
-    return(1);
-  }
-
-  /* open files for copying */
-  if((fpo = fopen(oldfile, "rb")) == NULL)
-  {
-    e_error(e_msg[ERR_OREADFILE], 0, f->ed->fb);
-    return(1);
-  }
-  if((fpn = fopen(newfile, "wb")) == NULL)
-  {
-    e_error(e_msg[ERR_OWRITEFILE], 0, f->ed->fb);
-    return(1);
-  }
-
-  /* allocate buffer for copying */
-  if((buffer = malloc(E_C_BUFFERSIZE)) == NULL)
-  {
-    e_error(e_msg[ERR_ALLOC_CBUF], 0, f->ed->fb);
-    return(1);
-  }
-
-  /* copy until end of file */
-  do
-  {
-    ret = fread(buffer, 1, E_C_BUFFERSIZE, fpo);
-    /* we should be able to write the same amount of info */
-    if (fwrite(buffer, 1, ret, fpn) != ret)
-    {
-      fclose(fpo);
-      fclose(fpn);
-      free(buffer);
-      e_error(e_msg[ERR_INCONSCOPY], 0, f->ed->fb);
-      return(1);
-    }
-  } while(!feof(fpo));
-
-  fclose(fpo);
-  fclose(fpn);
-  free(buffer);
-
-  /* Well, we just created the file, so theoretically this 
-     should succed. Of course this is a racing condition !!! */
-  if(chmod(newfile, buf.st_mode))
-    e_error(e_msg[ERR_CHGPERM], 0, f->ed->fb);
-  return(0);
-}
-
-#ifndef NOSYMLINKS
-/* Link a file according to the required mode
-   sw != 0 -> symbolic link
-   sw == 0 -> hard link
-   When hard linking does not work, it tries to do
-   symbolic linking
-*/
-int WpeLinkFile(char *fl, char *ln, int sw, FENSTER *f)
-{
-  int ret;
-
-  if(sw || link(fl, ln))
-  {
-    ret = symlink(fl, ln);
-    if (ret)
-    {
-      e_error(e_msg[ERR_LINKFILE], 0, f->ed->fb);
-    }
-    return(ret);
-  }
-  return(0);
-}
-
-int WpeRenameLink(char *old, char *ln, char *fl, FENSTER *f)
-{
-  int ret;
-
-  ret = symlink(fl, ln);
-  if(ret)
-  {
-    e_error(e_msg[ERR_LINKFILE], 0, f->ed->fb);
-    return(1);
-  }
+  WpeMouseChangeShape(WpeWorkingShape);
+  if(sw == FM_TRANSFER_MOVE && lstat(file, &lbuf) == 0 && S_ISLNK(lbuf.st_mode))
+    moved_link = 1;
+  if((stat(file, &buf) == 0) && S_ISDIR(buf.st_mode) && !moved_link)
+    ret = WpeRenameCopyDir(file, f->fd.file, newname, f, 0, sw);
   else
-  {
-    if(remove(old))
-    {
-      e_error(e_msg[ERR_DELFILE], 0, f->ed->fb);
-      return(1);
-    }
-    else
-      return(0);
-  }
+    ret = fm_run(f, fm_kind_of_transfer(sw), file, newname, f->ed->flopt);
+  WpeMouseRestoreShape();
+  return(ret);
 }
-#endif
 
 int e_rename(char *file, char *newname, FENSTER * f)
 {
-  return(WpeRenameCopy(file, newname, f, 0));
+  return(fm_transfer(file, newname, f, FM_TRANSFER_MOVE));
 }
 
 int e_rename_dir(char *dirct, char *file, char *newname, FENSTER * f, int rec)
 {
-  return(WpeRenameCopyDir(dirct, file, newname, f, rec, 0));
+  return(WpeRenameCopyDir(dirct, file, newname, f, rec, FM_TRANSFER_MOVE));
 }
 
 
 int e_link(char *file, char *newname, FENSTER *f)
 {
-  return(WpeRenameCopy(file, newname, f, 2));
+  return(fm_transfer(file, newname, f, FM_TRANSFER_LINK));
 }
 
 
 int e_copy(char *file, char *newname, FENSTER * f)
 {
-  return(WpeRenameCopy(file, newname, f, 1));
+  return(fm_transfer(file, newname, f, FM_TRANSFER_COPY));
 }
 
 

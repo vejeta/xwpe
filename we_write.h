@@ -17,6 +17,7 @@
 #define WE_WRITE_H
 
 #include <stddef.h>
+#include <sys/types.h>
 #include "we_path.h"
 
 /* A caller tests the status, never a number: WRITTEN is 0, so `!= WRITTEN`
@@ -76,6 +77,15 @@ int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_name);
 /* Text that is not a window's rows. */
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o);
+
+/* The bytes of a copy, for the owner of names (we_fileop.c): the one byte
+   loop, a private new file in a folder, the special bits put on after the
+   data, and the file size limit as an error. */
+int  wpe_write_copy_fd(int from, int to, int *read_failed);
+int  wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd);
+int  wpe_write_set_special_bits(int fd, mode_t mode);
+void wpe_write_guard_enter(void);
+void wpe_write_guard_leave(void);
 
 /* The one message. */
 void wpe_write_say(struct FNST *f, const WpeWriteOutcome *o, WpeWriteThen then);

@@ -45,14 +45,15 @@ static int write_fsize_depth;
 static struct sigaction write_fsize_old;
 
 /**
- * write_guard_enter - Ignore SIGXFSZ for the length of the owner's write.
+ * wpe_write_guard_enter - Ignore SIGXFSZ for the length of the owner's write.
  *
  * A write past the file size limit would kill the editor with the text in
  * it; ignored, it is EFBIG, a failed outcome the user is told about.  Only
  * around the owner's own writes and put back after, so a program the editor
- * starts later does not inherit an ignored signal.
+ * starts later does not inherit an ignored signal.  The File Manager's copy
+ * (we_fileop.c) wears the same guard around its bytes.
  */
-static void write_guard_enter(void)
+void wpe_write_guard_enter(void)
 {
  struct sigaction ign;
 
@@ -64,8 +65,8 @@ static void write_guard_enter(void)
  sigaction(SIGXFSZ, &ign, &write_fsize_old);
 }
 
-/** write_guard_leave - Put SIGXFSZ back as write_guard_enter found it. */
-static void write_guard_leave(void)
+/** wpe_write_guard_leave - Put SIGXFSZ back as wpe_write_guard_enter found it. */
+void wpe_write_guard_leave(void)
 {
  if (--write_fsize_depth > 0)
   return;
@@ -95,23 +96,35 @@ static int write_error_number(int err)
 }
 
 /**
- * write_copy_fd - Copy what is left of one descriptor to another.
- * @from, @to: open descriptors.
+ * wpe_write_copy_fd - Copy what is left of one descriptor to another.
+ * @from, @to: open descriptors; @read_failed: receives 1 when the error
+ * was the read's, 0 when it was the write's, or NULL when the caller does
+ * not care.
  * Return: 0, or the errno of the read or the write that failed.
+ *
+ * The one byte loop of the editor's copies: the backup, the restore and
+ * the File Manager's Copy and Move all go through it, so a read error, a
+ * full disk and a size limit end the loop at once and say which.
  */
-static int write_copy_fd(int from, int to)
+int wpe_write_copy_fd(int from, int to, int *read_failed)
 {
  char buf[WPE_WRITE_COPY_CHUNK];
  ssize_t got, put;
  size_t done;
 
+ if (read_failed != NULL)
+  *read_failed = 0;
  for (;;)
  {
   got = read(from, buf, sizeof buf);
   if (got < 0 && errno == EINTR)
    continue;
   if (got < 0)
+  {
+   if (read_failed != NULL)
+    *read_failed = 1;
    return(errno);
+  }
   if (got == 0)
    return(0);
   for (done = 0; done < (size_t)got; done += (size_t)put)
@@ -128,6 +141,68 @@ static int write_copy_fd(int from, int to)
     return(EIO);
   }
  }
+}
+
+/**
+ * wpe_write_create_private - Create a new file in a folder, private to the user.
+ * @dirfd: the folder's descriptor, or AT_FDCWD; @name: the new file's name in it;
+ * @mode: the permission bits the file is to have when it is complete;
+ * @fd: receives the descriptor.
+ * Return: 0, or the errno.
+ *
+ * The file is made with O_EXCL and O_NOFOLLOW, so it is new and a link of
+ * that name is never written through, and it has the nine permission bits
+ * of @mode before it holds a byte: a private file's copy is never readable
+ * by others, not even for a moment.  The setuid, setgid and sticky bits
+ * are not set here, because the kernel clears them on the first write;
+ * wpe_write_set_special_bits puts them on after the data.  A file that
+ * turns out not to be a regular file of ours is closed, removed and
+ * refused with EEXIST.
+ */
+int wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
+{
+ struct stat st;
+ int made;
+
+ made = openat(dirfd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+               WPE_WRITE_COPY_MODE);
+ if (made < 0)
+  return(errno);
+ if (fstat(made, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid())
+ {
+  close(made);
+  unlinkat(dirfd, name, 0);
+  return(EEXIST);
+ }
+ if (fchmod(made, mode & 0777) != 0)
+ {
+  int err = errno;
+
+  close(made);
+  unlinkat(dirfd, name, 0);
+  return(err);
+ }
+ *fd = made;
+ return(0);
+}
+
+/**
+ * wpe_write_set_special_bits - Put the setuid, setgid and sticky bits on a
+ * finished copy.
+ * @fd: the copy, whole and not yet closed; @mode: the original's mode.
+ * Return: 0, or the errno.
+ *
+ * Called after the last write: the kernel clears these bits when a file is
+ * written, so setting them earlier would lose them.  A copy of a setgid
+ * file is setgid, as 1.5.30a's chmod after the data made it.
+ */
+int wpe_write_set_special_bits(int fd, mode_t mode)
+{
+ if ((mode & 07000) == 0)
+  return(0);
+ if (fchmod(fd, mode & 07777) != 0)
+  return(errno);
+ return(0);
 }
 
 /* --- the backup copy ------------------------------------------------------ */
@@ -258,7 +333,7 @@ static BackupResult write_backup(const char *path, WpeWriteOutcome *o)
   FREE(bak);
   return(r);
  }
- err = write_copy_fd(src, dst);
+ err = wpe_write_copy_fd(src, dst, NULL);
  close(src);
  if (close(dst) != 0 && err == 0)
   err = errno;
@@ -302,7 +377,7 @@ static int write_back_through_fd(int to, const char *bak)
  if (ftruncate(to, 0) != 0 || lseek(to, 0, SEEK_SET) < 0)
   err = errno;
  if (err == 0)
-  err = write_copy_fd(from, to);
+  err = wpe_write_copy_fd(from, to, NULL);
  close(from);
  if (close(to) != 0 && err == 0)
   err = errno;
@@ -469,12 +544,12 @@ static void write_run(FENSTER *f, const char *path, int xa, int ya, int xe, int 
   o->read_only = 1;
   return;
  }
- write_guard_enter();
+ wpe_write_guard_enter();
  if (backup)
   bk = write_backup(path, o);
  if (bk == BACKUP_STOPPED)
  {
-  write_guard_leave();
+  wpe_write_guard_leave();
   return;
  }
  errno = 0;
@@ -482,7 +557,7 @@ static void write_run(FENSTER *f, const char *path, int xa, int ya, int xe, int 
  if (fp == NULL)
  {
   o->err = write_error_number(errno);
-  write_guard_leave();
+  wpe_write_guard_leave();
   return;
  }
  /* A mode that did not change is not a lost save: the text is written. */
@@ -496,12 +571,12 @@ static void write_run(FENSTER *f, const char *path, int xa, int ya, int xe, int 
  {
   o->err = err;
   write_after_failure(o, path, bk, &written, have_written, again);
-  write_guard_leave();
+  wpe_write_guard_leave();
   return;
  }
  if (again >= 0)
   close(again);
- write_guard_leave();
+ wpe_write_guard_leave();
  o->status = WPE_WRITE_WRITTEN;
 }
 
@@ -636,7 +711,7 @@ static void write_fd_into(int fd, const char *text, WpeWriteOutcome *o)
  ssize_t put;
  int err = 0;
 
- write_guard_enter();
+ wpe_write_guard_enter();
  while (done < len)
  {
   put = write(fd, text + done, len - done);
@@ -651,7 +726,7 @@ static void write_fd_into(int fd, const char *text, WpeWriteOutcome *o)
  }
  if (close(fd) != 0 && err == 0)
   err = errno;
- write_guard_leave();
+ wpe_write_guard_leave();
  o->err = err;
  o->status = (err == 0 ? WPE_WRITE_WRITTEN : WPE_WRITE_FAILED);
 }

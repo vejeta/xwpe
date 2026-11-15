@@ -28,7 +28,14 @@ we_ai_path.c|r2:wpe_path_open_write|1|P4|the judged write into the user's own fi
 we_ai_ui.c|r2:ai_transcript_write|1|P4|the transcript
 we_ai_ws.c|r2:ws_write_file|1|P4|the workspace's copies
 we_ai_ws.c|r2:ws_write_pathspec|1|P4|the conversation
-we_fl_unix.c|r2:WpeCopyFileCont|1|P5|the File Manager's Copy and its Move across file systems: both closes unjudged, the source removed after; a pass of its own
+we_fl_unix.o|r1:WpeRenameCopyDir|1|P5b|the folder walk of Copy, Move and Link, still its own until its pass moves it onto the owner
+we_fl_unix.o|r1:WpeRemoveDir|1|P5b|the folder walk of Remove
+we_fl_unix.o|r1:e_rename_dir|1|P5b|the wrapper of the folder walk
+we_wind.o|r1:e_mess_win|1|P5b|the folder walk's progress box
+we_wind.c|r8:e_close_window|2|P2|the .ASV and .ESV copies by name, until the pass that makes the copies
+we_ai_ws.c|r8:ws_revert_path|1|P4|the assistant's revert of its own write: the pass of the assistant's writers decides whether it moves
+we_ai_ws.c|r9:ws_write_file|1|P4|the workspace's copies
+we_ai_ws.c|r9:ws_write_pathspec|1|P4|the conversation
 
 # not the user's text
 we_prog.c|r6:e_prj_say_open_failed|2|keep|formats the message for the reads of the project machine
@@ -59,3 +66,66 @@ we_unix.c|r2:WpeSignalUnknown|1|keep|the crash log
 we_wayland.c|r2:wpe_wl_dump_ppm|1|keep|a test screen dump
 we_xterm.c|r2:e_x_system_script|1|keep|the script of the external terminal
 we_xterm.c|r2:wpe_x_dump_ppm|1|keep|a test screen dump
+
+# rule 8: names of files that are not the user's files
+we_ai.c|r8:ai_mock_reply_file|1|keep|the mock backend's own reply file
+we_ai.c|r8:wpe_ai_write_openai_key|1|keep|the key file, written with its own mode
+we_ai_path.c|r8:path_follow_link|1|keep|reads a link to judge a path, writes nothing
+we_ai_ui.c|r8:ai_consent_remember|1|keep|the consent marker's folder
+we_ai_ui.c|r8:ai_hook_after_accept|1|keep|the hook's own marker file
+we_ai_ws.c|r8:wpe_ai_session_reset|1|keep|the assistant's own session file
+we_ai_ws.c|r8:ws_commit_changeset_steps|1|keep|the assistant's own change set
+we_ai_ws.c|r8:ws_git_list|3|keep|the temporary lists of the git command it runs
+we_ai_ws.c|r8:ws_make_dir_parents|2|keep|the folders of a file the assistant writes
+we_ai_ws.c|r8:ws_write_pathspec|1|keep|the temporary pathspec file
+we_debug.c|r8:e_d_compile_drop|1|keep|the debugger's own marker
+we_debug.c|r8:e_d_compile_tell|2|keep|the debugger's own marker
+we_debug.c|r8:e_d_debugger_pid_forget|1|keep|the debugger's own pid file
+we_debug.c|r8:e_d_fifos_make|1|keep|the debugger's own pipes
+we_debug.c|r8:e_d_quit_basic|5|keep|the debugger's own pipes and scripts
+we_debug.c|r8:e_d_script_write|1|keep|the script handed to the debugger
+we_debug.c|r8:e_d_start_in_script|1|keep|the script handed to the debugger
+we_fl_fkt.c|r8:e_mkdir_path|1|keep|the folders of an unpacked help archive
+we_fl_fkt.c|r8:e_tmp_remove_entry|1|keep|the editor's own temporary folder
+we_fl_fkt.c|r8:e_unpack_to_file|1|keep|the editor's own help archive
+we_fl_unix.c|r8:e_ed_man|5|keep|the temporary output of the man command
+we_fl_unix.c|r8:e_man_give_up|2|keep|the temporary output of the man command
+we_fl_unix.c|r8:WpePrintFile|1|keep|the print copy, the write owner's temporary
+we_main.c|r8:e_mkdirs|2|keep|the configuration folders
+we_main.c|r8:main|1|keep|the configuration folders
+we_opt.c|r8:e_save_opt|1|keep|the options file's folder
+we_prog.c|r8:e_new_message|1|keep|the build's message file
+we_prog.c|r8:e_run_sh_make_runnable|1|keep|the script the editor wrote to run
+we_startcmd.c|r8:startcmd_dir_trusted|1|keep|the start command's own private folder
+we_startcmd.c|r8:startcmd_make_dirs|2|keep|the start command's own private folder
+we_startcmd.c|r8:startcmd_save_file|4|keep|the start command's own file
+we_startplan.c|r8:startplan_follow_dangling|1|keep|reads a link, writes nothing
+we_startplan.c|r8:wpe_startplan_debug_dir_end|1|keep|the debug run's own folder
+we_startplan.c|r8:wpe_startplan_debug_dir_new|1|keep|the debug run's own folder
+we_startplan.c|r8:wpe_startplan_remove|1|keep|the plan's own file
+we_wayland.c|r8:e_w_refresh|1|keep|a test screen dump's name
+we_wayland.c|r8:wl_anon_file|1|keep|the compositor's anonymous buffer file
+we_xterm.c|r8:e_x_refresh|1|keep|a test screen dump's name
+we_xterm.c|r8:e_x_system|1|keep|the external terminal's own script
+we_xterm.c|r8:e_x_system_script|1|keep|the external terminal's own script
+
+# rule 9: a byte loop that is not a copy of the user's file (it reads, or
+# writes something that is not the user's)
+we_ai_ui.c|r9:ai_project_memory|1|keep|reads a file, copies nothing
+we_ai_ui.c|r9:ai_slurp_file|1|keep|reads a file, copies nothing
+we_ai_ws.c|r9:ws_git_list|1|keep|reads the git command's output
+we_debug.c|r9:e_lsp_read_file_text|1|keep|reads a file, copies nothing
+we_main.c|r9:e_copy_file|2|keep|the XDG migration copy; the next change to it moves it onto wpe_write_copy_fd
+we_opt.c|r9:e_opt_read_stream|2|keep|reads the options file
+we_term.c|r9:e_t_user_screen|1|keep|a screen dump
+we_wayland.c|r9:wpe_wl_dump_ppm|1|keep|a test screen dump
+we_xterm.c|r9:wpe_x_dump_ppm|1|keep|a test screen dump
+
+# rule 10: the File Manager's options assigned.  The options dialog and the
+# reader of the saved options own the word; the other rows give a dialog its
+# own options for its lifetime and put them back in the same function.
+we_fl_unix.c|r10:WpeFileManagerOptions|1|keep|the options dialog
+we_fl_unix.c|r10:WpeFileManagerReturnHome|1|keep|the options of one dialog, put back by the same function
+we_fl_unix.c|r10:WpeHandleFileManager|8|keep|the options of one dialog, put back by the same function
+we_main.c|r10:ECNT_Init|1|keep|the defaults
+we_opt.c|r10:WpeReadGeneral|1|keep|the saved options

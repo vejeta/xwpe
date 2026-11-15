@@ -681,7 +681,6 @@ int WpeShowWastebasket(FENSTER *f);
 int WpeDelWastebasket(FENSTER *f);
 int WpeQuitWastebasket(FENSTER *f);
 int WpeRemoveDir(char *dirct, char *file, FENSTER * f, int rec);
-char  *WpeGetWastefile(char *file);
 int e_copy(char *file, char *newname, FENSTER *f);
 int e_link(char *file, char *newname, FENSTER *f);
 int e_duplicate(char *file, FENSTER *f);
@@ -689,14 +688,8 @@ int WpeMakeNewDir(FENSTER *f);
 int WpeFileDirAttributes(char *filen, FENSTER *f);
 int WpeRenameCopyDir(char *dirct, char *file, char *newname, 
                      FENSTER *f, int rec, int sw);
-int WpeRenameCopy(char *file, char *newname, FENSTER *f, int sw);
-int WpeCopyFileCont(char *oldfile, char *newfile, FENSTER *f);
 
 int WpeDirDelOptions(FENSTER *f);
-#ifndef NOSYMLINKS
-int WpeLinkFile(char *fl, char *ln, int sw, FENSTER *f);
-int WpeRenameLink(char *old, char *ln, char *fl, FENSTER *f);
-#endif
 int e_ed_man(char *str, FENSTER *f);
 #endif
 char *WpeGetCurrentDir(ECNT *cn);

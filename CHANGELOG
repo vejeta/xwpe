@@ -411,6 +411,30 @@ Changes
   file's backup is private.  A backup that stops half way (a full disk)
   refuses the save and leaves the file untouched.
 
+* File Manager Copy, Move, Link and Remove of a file now either finish or
+  leave everything as it was, and say why once, with the paths ("Cannot
+  copy /home/u/a to /mnt/b: writing: No space left on device.  Nothing was
+  changed.").  Before, a failed close counted as a copy, a full disk or the
+  file size limit left half a file (and the limit ended the editor), a
+  read error ran forever, and a Move to another file system removed the
+  source before anything reached the disk.  A copy is made under a hidden
+  name in the destination's folder and renamed into place, so it never
+  writes through a link at the destination, is never readable by others
+  while a private file is being copied, and keeps setuid and setgid.
+
+* "Don't overwrite" now leaves the existing file alone and says so on the
+  status row; it used to overwrite it.  Replacing a file asks once, a name
+  that appears while a copy runs is not replaced, a file copied onto a
+  folder goes inside it, a device, pipe or socket is never replaced, and
+  the wastebasket never replaces an earlier file of the same name (it
+  keeps `a.txt`, `a.txt.1`, ...) and is closed to others when it was open.
+  A moved link keeps the target it had, a Link from the Files panel obeys
+  the overwrite option, and the Attributes dialog keeps setuid, setgid
+  and the sticky bit.
+
+* An Esc at the overwrite question while copying a folder no longer turns
+  off the Remove question for the rest of the session.
+
 * The macOS install pages now put the libx11-compat build first and
   XQuartz second, and say what the libx11-compat build leaves out: no
   Alt-F5 User Screen (it focuses Messages), no Cairo renderer, no native

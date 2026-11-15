@@ -67,8 +67,9 @@ we_fl_unix.c:WpeFileDirAttributes:* 14 dialog field editing
 we_fl_unix.c:WpeFileManagerOptions:* 24 dialog field editing
 we_fl_unix.c:WpeFindWindow:* 10 dialog field editing
 we_fl_unix.c:WpeGrepWindow:* 14 dialog field editing
-we_fl_unix.c:WpeRemoveDir:* 3 dialog field editing
-we_fl_unix.c:WpeRenameCopyDir:* 1 dialog field editing
+we_fl_unix.c:fm_remove_dir:* 1 dialog field editing
+we_fl_unix.c:fm_remove_dir_entries:* 2 dialog field editing
+we_fl_unix.c:fm_ask:* 1 dialog field editing
 we_hfkt.c:e_num_kst:* 4 dialog field editing
 we_mouse.c:e_ccp_mouse:* 5 dialog field editing
 we_mouse.c:e_edt_mouse:* 4 dialog field editing

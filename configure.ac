@@ -380,6 +380,25 @@ AC_CHECK_LIB([z], [inflate], [],
 # --- Feature checks ---
 AC_CHECK_FUNCS([mkdtemp])
 
+# --- A name put where none is (we_fileop.c) ---
+# A copy or a move that is not to replace a name must not replace one that
+# appeared meanwhile.  The owner asks the system for a rename that refuses:
+# renameat2 with RENAME_NOREPLACE (Linux, glibc 2.28 and musl) or
+# renameatx_np with RENAME_EXCL (macOS); where neither exists it links and
+# unlinks, and as the last resort looks before it renames.
+AC_CACHE_CHECK([for renameat2 with RENAME_NOREPLACE], [xwpe_cv_renameat2_noreplace],
+  [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>
+#include <fcntl.h>]], [[return renameat2(AT_FDCWD, "a", AT_FDCWD, "b", RENAME_NOREPLACE);]])],
+    [xwpe_cv_renameat2_noreplace=yes], [xwpe_cv_renameat2_noreplace=no])])
+AS_IF([test "x$xwpe_cv_renameat2_noreplace" = xyes],
+  [AC_DEFINE([HAVE_RENAMEAT2_NOREPLACE], [1], [Define if renameat2 takes RENAME_NOREPLACE])])
+AC_CACHE_CHECK([for renameatx_np with RENAME_EXCL], [xwpe_cv_renameatx_np_excl],
+  [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>
+#include <fcntl.h>]], [[return renameatx_np(AT_FDCWD, "a", AT_FDCWD, "b", RENAME_EXCL);]])],
+    [xwpe_cv_renameatx_np_excl=yes], [xwpe_cv_renameatx_np_excl=no])])
+AS_IF([test "x$xwpe_cv_renameatx_np_excl" = xyes],
+  [AC_DEFINE([HAVE_RENAMEATX_NP_EXCL], [1], [Define if renameatx_np takes RENAME_EXCL])])
+
 # --- The search over a row (we_rowfind.c) ---
 # REG_STARTEND lets the engine see the whole row and start inside it, so a
 # word boundary looks at the byte before the start; musl has no such flag and

@@ -102,13 +102,11 @@ COPY|we_fl_unix.c|WpeMakeNewDir|2|sized|the destination is allocated at its sour
 COPY|we_fl_unix.c|WpeGetCurrentDir|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeAssemblePath|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeCreateWorkingDirTree|2|sized|the destination is allocated at its sources' length just before
-COPY|we_fl_unix.c|WpeGetWastefile|3|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeGraphicalFileList|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeTreeLabel|1|sized|the destination is allocated at its sources' length just before
-COPY|we_fl_unix.c|WpeRemoveDir|5|sized|the destination is allocated at its sources' length just before
-COPY|we_fl_unix.c|WpeRemove|1|sized|the destination is allocated at its sources' length just before
-COPY|we_fl_unix.c|WpeRenameCopyDir|8|sized|the destination is allocated at its sources' length just before
-COPY|we_fl_unix.c|WpeRenameCopy|2|sized|the destination is allocated at its sources' length just before
+COPY|we_fl_unix.c|fm_remove_dir|2|sized|the destination is allocated at its sources' length just before
+COPY|we_fl_unix.c|fm_remove_dir_entries|3|sized|the destination is allocated at its sources' length just before
+COPY|we_fl_unix.c|fm_copy_dir|7|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeSearchFiles|11|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeGrepWindow|1|text|the selected text of under 80 bytes into the Find text of 129
 COPY|we_fl_unix.c|e_make_funct|1|sized|the destination is allocated at its sources' length just before
