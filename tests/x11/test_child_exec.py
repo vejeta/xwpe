@@ -17,7 +17,6 @@ Wayland twin runs these same bodies.
 """
 import glob
 import os
-import shutil
 import sys
 import time
 
@@ -29,6 +28,7 @@ from conftest import _sleep
 # put tests/ on the path.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import procinfo  # noqa: E402  (the tests/ directory is added just above)
+from host_tools import needs  # noqa: E402
 
 TRACE = "ui.trace"
 SESSION = {"XWPE_UI_TRACE": TRACE, "XDG_STATE_HOME": ""}
@@ -46,7 +46,7 @@ EMPTY_PATH = "/nonexistent-path-for-test"
 needs_procfs = pytest.mark.skipif(
     not procinfo.has_procfs(),
     reason="reads the editor's threads from /proc, which only Linux has")
-needs_gcc = pytest.mark.skipif(not shutil.which("gcc"), reason="no gcc")
+needs_gcc = needs("gcc")
 
 
 def _wait(predicate, timeout):

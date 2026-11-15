@@ -22,7 +22,8 @@ import os
 import pytest
 
 import procinfo
-from wpe_driver import WpeSession, tool_usable, wait_screen
+from host_tools import needs
+from wpe_driver import WpeSession, wait_screen
 
 F9 = "\033[20~"            # Make: compile and link
 F6 = "\033[17~"            # next window
@@ -94,6 +95,7 @@ def thread_names(pid):
 
 
 # @scenario SC-child-exec-07
+@needs("gcc")
 def test_f9_puts_the_command_line_first_in_messages(tmp_path):
     """F9 on a C file the compiler complains about: the command the
     compiler was started with is in Messages, ahead of the compiler's own
@@ -101,8 +103,6 @@ def test_f9_puts_the_command_line_first_in_messages(tmp_path):
     writes the command line before the program runs; a line written after
     the program's output would leave the user unable to tell which command
     said what.  The window is tall enough to keep every row on screen."""
-    if not tool_usable("gcc", "--version"):
-        pytest.skip("no gcc")
     with session(tmp_path, BAD_C, rows=TALL) as w:
         w.key(F9, delay=BUILD_WAIT)
         assert wait_screen(w, SUMMARY, tmo=FIND_TIMEOUT), \
