@@ -13,12 +13,14 @@
 The rows read the style from the bottom bar: Borland names F2 Save.
 """
 import os
-import subprocess
 
 import pytest
 
+import gui_owner
 from wpe_driver import WPE_BIN, WpeSession
 
+# A run that is refused at its start ends at once; this is its bound.
+REFUSAL_TIMEOUT_S = 20
 CUA_BIT = 1
 OPTIONS2_CUA = 153                      # CUA bit, syntax, errors, source indent
 MODERN_BITS = 0x400 + 0x800 + 0x1000    # selection, trim, keep final newline
@@ -41,6 +43,14 @@ def _screen(s):
 def _borland(s):
     """Does the bottom bar name the Borland Save key?"""
     return " F2 Save" in _screen(s)
+
+
+def _run_editor(args, extra_env=None):
+    """The editor, run to completion with its arguments and the owner's
+    environment (nothing of the machine's), no terminal: what it said on its
+    error output is in ``stderr``."""
+    return gui_owner.Terminal.run(gui_owner.current(), WPE_BIN, args,
+                                  REFUSAL_TIMEOUT_S, extra_env=extra_env)
 
 
 def _run(tmp_path, extra=None, args=(), seed="abc\n", rc=None):
@@ -160,18 +170,15 @@ def test_save_options_in_a_styled_run_keeps_the_files_style(tmp_path, how):
 
 # @scenario SC-modern-keymap-02
 def test_an_unknown_style_is_refused():
-    done = subprocess.run([WPE_BIN, "--keys", "nonsense"], capture_output=True,
-                          text=True, timeout=20, stdin=subprocess.DEVNULL)
+    done = _run_editor(["--keys", "nonsense"])
     assert done.returncode == 2
-    assert "unknown key style 'nonsense'" in done.stderr
+    assert "unknown key style 'nonsense'" in done.stderr.decode()
 
 
 def test_an_unknown_style_in_the_environment_is_refused():
-    env = dict(os.environ, XWPE_KEYS="vi")
-    done = subprocess.run([WPE_BIN], capture_output=True, text=True, timeout=20,
-                          stdin=subprocess.DEVNULL, env=env)
+    done = _run_editor([], extra_env={"XWPE_KEYS": "vi"})
     assert done.returncode == 2
-    assert "unknown key style 'vi'" in done.stderr
+    assert "unknown key style 'vi'" in done.stderr.decode()
 
 
 # @scenario SC-modern-keymap-03

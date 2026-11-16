@@ -55,7 +55,7 @@ def test_ai_plan_live_fixes_cross_file_bug(tmp_path):
     trace = tmp_path.parent / (tmp_path.name + ".trace")
     env = live_ai.session_env(trace)
     with WpeSession(str(tmp_path), main_c, filename="main.c",
-                    env_extra=env) as s:
+                    env_extra=env, inherit=live_ai.KEY_INHERIT) as s:
         s.key(ALT.AI)
         s.key("f")                       # Multi-file edit (the plan)
         s.key("This program must print 5 but it prints -1: add() in add.c "

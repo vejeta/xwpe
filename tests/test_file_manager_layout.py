@@ -13,15 +13,12 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_file_manager_layout.py
 import os
 import pty
 import select
-import struct
-import fcntl
-import termios
-import subprocess
 import time
 
 import pyte
 import pytest
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 # Honour $WPE_BIN like the rest of the suite, so this runs against the installed
@@ -36,11 +33,11 @@ def _open_fm(cols, rows):
     screen = SafeScreen(cols, rows)
     stream = pyte.Stream(screen)
     mfd, sfd = pty.openpty()
-    fcntl.ioctl(sfd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    env = dict(os.environ, TERM="xterm-256color", COLUMNS=str(cols),
-               LINES=str(rows), LC_ALL="en_US.UTF-8", HOME="/tmp")
-    p = subprocess.Popen([WE], stdin=sfd, stdout=sfd, stderr=sfd, env=env,
-                         close_fds=True)
+    owner = gui_owner.current()
+    # The owner sizes the pty before the start and gives the editor a folder
+    # of its own as HOME and working directory.
+    owned = gui_owner.Terminal.start(owner, WE, [], owner.tool_home(),
+                                     owner.tool_home(), mfd, sfd, (cols, rows))
     os.close(sfd)
     try:
         time.sleep(2.0)
@@ -57,11 +54,7 @@ def _open_fm(cols, rows):
             stream.feed(data.decode("utf-8", "replace"))
         return list(screen.display)
     finally:
-        p.terminate()
-        try:
-            p.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            p.kill()
+        owned.end_for_row()
         os.close(mfd)
 
 

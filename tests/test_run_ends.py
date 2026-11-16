@@ -14,6 +14,7 @@ check is on an exact process.
 import os
 import time
 
+import gui_owner
 from wpe_driver import WpeSession, WAIT_SCALE
 
 CTRL_F9 = "\033[20;5~"            # Run
@@ -104,11 +105,8 @@ def _wait_for(w, predicate, timeout):
 
 
 def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    """True while pid runs; a zombie pytest has adopted is gone."""
+    return gui_owner.process_running(pid)
 
 
 def _read_pid(path):

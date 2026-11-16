@@ -14,6 +14,7 @@ import pty
 import subprocess
 import time
 
+import gui_owner
 from wpe_driver import WPE_BIN, WAIT_SCALE, XWPE_LIB_DIR
 
 # The editor must be gone this long after its input ended.
@@ -29,19 +30,17 @@ TYPED = "hello eof"
 
 
 def start_wpe(workdir, keyboard):
-    """Start wpe on t.c with ``keyboard`` as stdin and a pty as its screen.
-    Returns (process, screen master fd)."""
+    """Start wpe on t.c with the descriptor ``keyboard`` as stdin and a pty
+    as its screen.  The owner starts it, so it is ended with the row.
+    Returns (owned process, screen master fd)."""
     with open(os.path.join(workdir, "t.c"), "w") as fh:
         fh.write("")
     master, slave = pty.openpty()
-    env = os.environ.copy()
-    env.update(TERM="xterm-256color", LC_ALL="en_US.UTF-8", HOME=workdir,
-               XDG_CONFIG_HOME="", XDG_STATE_HOME="", XWPE_LSP_NO_EAGER="1")
-    env.setdefault("XWPE_LIB", XWPE_LIB_DIR)
-    proc = subprocess.Popen([WPE_BIN, "t.c"], stdin=keyboard, stdout=slave,
-                            stderr=slave, cwd=workdir, env=env)
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, ["t.c"], workdir, workdir, master, slave,
+        stdin_fd=keyboard, extra_env={"XWPE_LIB": XWPE_LIB_DIR})
     os.close(slave)
-    return proc, master
+    return owned, master
 
 
 def drain_screen(master, seconds):
@@ -56,40 +55,43 @@ def drain_screen(master, seconds):
         time.sleep(0.05)
 
 
-def wait_for_exit(proc, master, seconds):
+def wait_for_exit(owned, master, seconds):
     """The exit code, or None when the process is still running."""
     deadline = time.time() + seconds
     while time.time() < deadline:
-        code = proc.poll()
+        code = owned.proc.poll()
         if code is not None:
             return code
         drain_screen(master, 0.1)
     return None
 
 
-def stop(proc, master):
-    """Remove a process this test started and is sure is its own."""
-    if proc.poll() is None:
-        proc.kill()
-        proc.wait()
+def stop(owned, master):
+    """End a process this test started (the owner ends what is still
+    running, and what it left) and close its screen."""
+    owned.end_for_row()
     os.close(master)
 
 
 # @scenario SC-input-eof-01
 def test_wpe_exits_when_its_stdin_is_at_end_of_file(tmp_path):
-    proc, master = start_wpe(str(tmp_path), subprocess.DEVNULL)
+    keyboard = os.open(os.devnull, os.O_RDONLY)
     try:
-        code = wait_for_exit(proc, master, EXIT_DEADLINE_S)
+        owned, master = start_wpe(str(tmp_path), keyboard)
+    finally:
+        os.close(keyboard)
+    try:
+        code = wait_for_exit(owned, master, EXIT_DEADLINE_S)
         assert code is not None, "wpe still running %ds after its input ended" % EXIT_DEADLINE_S
         assert code != 0
     finally:
-        stop(proc, master)
+        stop(owned, master)
 
 
 # @scenario SC-input-eof-02
 def test_typed_work_is_kept_when_the_input_ends_after_it(tmp_path):
     read_end, write_end = os.pipe()
-    proc, master = start_wpe(str(tmp_path), read_end)
+    owned, master = start_wpe(str(tmp_path), read_end)
     os.close(read_end)
     try:
         drain_screen(master, 1.5 * WAIT_SCALE)
@@ -97,7 +99,7 @@ def test_typed_work_is_kept_when_the_input_ends_after_it(tmp_path):
         drain_screen(master, TYPING_SETTLE_S)
         os.close(write_end)
         write_end = None
-        code = wait_for_exit(proc, master, EXIT_DEADLINE_S)
+        code = wait_for_exit(owned, master, EXIT_DEADLINE_S)
         assert code is not None, "wpe still running after its input ended"
         saved = tmp_path / "t.c.ESV"
         assert saved.exists(), sorted(p.name for p in tmp_path.iterdir())
@@ -105,7 +107,7 @@ def test_typed_work_is_kept_when_the_input_ends_after_it(tmp_path):
     finally:
         if write_end is not None:
             os.close(write_end)
-        stop(proc, master)
+        stop(owned, master)
 
 
 # @scenario SC-input-eof-03
@@ -114,7 +116,8 @@ def test_an_idle_wpe_with_a_live_keyboard_uses_no_cpu(tmp_path):
     a closed one: a pipe nobody writes to, and nobody has closed, leaves the
     editor running and idle."""
     read_end, write_end = os.pipe()
-    proc, master = start_wpe(str(tmp_path), read_end)
+    owned, master = start_wpe(str(tmp_path), read_end)
+    proc = owned.proc
     os.close(read_end)
     try:
         drain_screen(master, 1.5 * WAIT_SCALE)
@@ -126,7 +129,7 @@ def test_an_idle_wpe_with_a_live_keyboard_uses_no_cpu(tmp_path):
         assert used < IDLE_CPU_BUDGET_S, "idle editor used %.2fs of CPU in %.1fs" % (used, IDLE_WATCH_S)
     finally:
         os.close(write_end)
-        stop(proc, master)
+        stop(owned, master)
 
 
 def cpu_seconds(pid):

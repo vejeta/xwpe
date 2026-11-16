@@ -25,6 +25,7 @@ import stat
 import sys
 import time
 
+import gui_owner
 import procinfo
 from wpe_driver import WpeSession, WAIT_SCALE
 
@@ -104,11 +105,8 @@ def test_build_end_is_reported_when_many_children_end_at_once(tmp_path):
 
 
 def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    """True while pid runs; a zombie pytest has adopted is gone."""
+    return gui_owner.process_running(pid)
 
 
 def _read_pid(path):
@@ -230,8 +228,10 @@ while True:
 
 
 def _gone(pid):
-    """Not in the process table: ended and reaped, not a zombie."""
-    return procinfo.run_state(pid) == procinfo.GONE
+    """Ended and reaped by whoever owed the wait: not in the process table,
+    or an orphan zombie pytest adopted.  A zombie of the editor itself is
+    not gone (the editor must wait for the children it ends)."""
+    return gui_owner.process_gone(pid)
 
 
 def _pids(tmp_path, prefix):

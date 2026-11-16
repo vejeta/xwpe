@@ -31,9 +31,14 @@ TOP = os.path.dirname(TESTS)
 if TESTS not in sys.path:
     sys.path.insert(0, TESTS)
 
+import gui_owner  # noqa: E402
 from edit_model import blocks  # noqa: E402
 
 HARD, SOFT = "H", "S"
+# How long the driver, whose input is closed, has to end by itself before the
+# owner ends it (before the scale).
+DRIVER_END_S = 10
+DRIVER_KIND = "edit_driver"
 RC_OK = 0
 RC_NOMEM = -1
 RC_RANGE = -2
@@ -157,30 +162,40 @@ class Driver:
     """A running ``edit_driver``."""
 
     def __init__(self, binary):
-        self.proc = subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     universal_newlines=True, bufsize=1)
+        owner = gui_owner.current()
+        # The owner starts it, with pipes the walk talks to, the allow-listed
+        # environment and its end on the ledger.
+        self.owned = owner.launch([binary], gui_owner.tool_env(),
+                                  owner.tool_home(), owner.tool_home(),
+                                  DRIVER_KIND, os.path.basename(binary),
+                                  stdio=gui_owner.PIPES)
+        self.proc = self.owned.proc
         self.sent = 0
 
     def run(self, line):
-        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.write((line + "\n").encode("utf-8"))
         self.proc.stdin.flush()
         self.sent += 1
         lines = []
         while True:
-            ln = self.proc.stdout.readline()
-            if ln == "":
+            raw = self.proc.stdout.readline()
+            if raw == b"":
                 raise EOFError("the driver ended after %r" % line)
-            ln = ln.rstrip("\n")
+            ln = raw.decode("utf-8").rstrip("\n")
             if ln == "E":
                 return Result(lines)
             lines.append(ln)
 
     def close(self):
+        """Close its input, give it DRIVER_END_S to end by itself, then let
+        the owner end it and close its output."""
         try:
             self.proc.stdin.close()
         except OSError:
             pass
-        self.proc.wait(timeout=10)
+        self.owned.watch.wait(gui_owner.scaled(DRIVER_END_S))
+        self.owned.end()
+        self.proc.stdout.close()
 
 
 class OwnerModel:

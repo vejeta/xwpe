@@ -55,7 +55,7 @@ def test_ai_edit_is_background(tmp_path):
     trace = tmp_path / "ai.trace"
     env = live_ai.session_env(trace)
     with WpeSession(str(tmp_path), "AAA\n", filename="stack.c",
-                    env_extra=env) as s:
+                    env_extra=env, inherit=live_ai.KEY_INHERIT) as s:
         s.key(ALT.AI); s.key("e", delay=0.8)
         s.key("append a trailing comment line")
         s.key("\r", delay=1.0)                 # async edit starts

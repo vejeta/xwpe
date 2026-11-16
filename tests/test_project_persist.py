@@ -11,12 +11,12 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_project_persist.py
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 import pytest
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -43,13 +43,9 @@ def test_add_file_persists_to_disk_without_closing(project_dir):
     screen = SafeScreen(COLS, ROWS)
     stream = pyte.Stream(screen)
     master_fd, slave_fd = pty.openpty()
-    env = os.environ.copy()
-    env.update(TERM='xterm-256color', COLUMNS=str(COLS), LINES=str(ROWS),
-               LC_ALL='en_US.UTF-8', HOME=str(project_dir))
-    proc = subprocess.Popen(
-        [WPE_BIN, 'main.c'],
-        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        cwd=str(project_dir), env=env, preexec_fn=os.setsid)
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, ['main.c'], str(project_dir),
+        str(project_dir), master_fd, slave_fd, (COLS, ROWS))
     os.close(slave_fd)
 
     def drain(timeout):
@@ -88,9 +84,5 @@ def test_add_file_persists_to_disk_without_closing(project_dir):
             'window (#137 regression): FILES line is %r' % line)
         assert 'main.c' in line, 'existing file lost on Add: %r' % line
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()

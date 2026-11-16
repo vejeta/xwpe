@@ -19,9 +19,10 @@ skip: a skip that hides a broken build is the failure this module exists to
 prevent.
 """
 import os
-import subprocess
 
 import pytest
+
+import gui_owner
 
 NOT_BUILT = "not built here: "     # every skip reason of this kind starts so
 LINE_PREFIX = "built with:"
@@ -39,20 +40,23 @@ def default_binary():
     return os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "..", "wpe")
 
 
-def _probe_env():
-    env = dict(os.environ)
-    asan = env.get("ASAN_OPTIONS", "")
-    env["ASAN_OPTIONS"] = (asan + ":" if asan else "") + "detect_leaks=0"
-    return env
+def _probe_extra_env():
+    """What the version probe adds to the editor's environment: a sanitizer
+    build is not asked to report leaks of a process that only prints."""
+    asan = os.environ.get("ASAN_OPTIONS", "")
+    return {"ASAN_OPTIONS": (asan + ":" if asan else "") + "detect_leaks=0"}
 
 
 def _ask(path):
-    """Run `path --version` and return the words of its "built with:" line."""
+    """Run `path --version` and return the words of its "built with:" line.
+
+    The owner runs it, bounded, with the editor's environment and no
+    terminal."""
     try:
-        out = subprocess.run([path, "--version"], stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                             timeout=ASK_TIMEOUT_S, env=_probe_env()).stdout
-    except (OSError, subprocess.TimeoutExpired) as err:
+        out = gui_owner.Terminal.run(gui_owner.current(), path, ["--version"],
+                                     ASK_TIMEOUT_S,
+                                     extra_env=_probe_extra_env()).stdout
+    except (OSError, gui_owner.OwnerTimeout, gui_owner.OwnerRefused) as err:
         raise BuildUnknown("cannot ask %s what it was built with: %s" % (path, err))
     for line in out.decode("utf-8", "replace").splitlines():
         if line.startswith(LINE_PREFIX):

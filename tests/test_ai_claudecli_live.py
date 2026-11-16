@@ -5,6 +5,7 @@ extra dependency).  Self-skips unless the `claude` binary is on PATH.
 import os
 import subprocess
 import pytest
+import live_ai
 from host_tools import needs
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
@@ -32,7 +33,8 @@ def test_ai_claudecli_chat(tmp_path):
         "XWPE_AI_TRACE": str(trace),
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=env, real_login=True) as s:
+                    env_extra=env, real_login=True,
+                    inherit=live_ai.KEY_INHERIT) as s:
         s.key(ALT.AI)
         s.key("a")
         s.key("Reply with exactly the single word PONG")
@@ -68,7 +70,8 @@ def test_ai_claudecli_agent_uses_tool_protocol(tmp_path):
         "XWPE_AI_TRACE": str(trace),
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=env, filename="t.c", real_login=True) as s:
+                    env_extra=env, filename="t.c", real_login=True,
+                    inherit=live_ai.KEY_INHERIT) as s:
         s.key(ALT.AI); s.key("g")
         s.key("Run list_dir on the current directory, then reply DONE. Change nothing.")
         s.key("\r", delay=2.0)

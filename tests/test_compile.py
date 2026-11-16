@@ -12,8 +12,6 @@ Requires: gcc installed (for compile tests).
 import os
 import pty
 import select
-import signal
-import subprocess
 import time
 import shutil
 import tempfile
@@ -21,6 +19,7 @@ import tempfile
 import pyte
 import pytest
 
+import gui_owner
 from host_tools import require
 from test_utf8_border import SafeScreen
 
@@ -56,23 +55,10 @@ def run_wpe_in_dir(workdir, filename, cols=80, rows=30, wait=1.5, keys=None,
 
     master_fd, slave_fd = pty.openpty()
 
-    env = os.environ.copy()
-    env['TERM'] = 'xterm-256color'
-    env['COLUMNS'] = str(cols)
-    env['LINES'] = str(rows)
-    env['LC_ALL'] = 'en_US.UTF-8'
-    # Prevent xwpe from reading user's config
-    env['HOME'] = workdir
-
-    proc = subprocess.Popen(
-        [WPE_BIN, filename],
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=slave_fd,
-        cwd=workdir,
-        env=env,
-        preexec_fn=os.setsid
-    )
+    # HOME is the row's folder, so xwpe never reads the user's config.
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, [filename], workdir, workdir,
+        master_fd, slave_fd, (cols, rows))
     os.close(slave_fd)
 
     def drain(timeout):
@@ -101,19 +87,8 @@ def run_wpe_in_dir(workdir, filename, cols=80, rows=30, wait=1.5, keys=None,
     # Final drain
     drain(read_timeout)
 
-    # Kill wpe
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait(timeout=3)
+    # End wpe (SIGTERM, the editor's own ladder, SIGKILL) and what it started.
+    owned.end_for_row()
     os.close(master_fd)
 
     # Extract screen lines

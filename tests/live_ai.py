@@ -10,8 +10,10 @@ machine can give a slow model more time.
   CLAUDE_MODEL=<id>            Claude model (default claude-sonnet-5-5)
   ANTHROPIC_API_KEY            read by the editor itself from the environment
 
-The API key is never read, logged or copied here: WpeSession starts the editor
-with the caller's environment, and the editor looks the key up on its own.
+The API key is never read, logged or copied here: a live row starts its
+session with ``inherit=KEY_INHERIT``, which lets the variable through the
+owner's allow-list (nothing else of the machine's environment reaches the
+editor), and the editor looks the key up on its own.
 """
 import json
 import os
@@ -27,6 +29,13 @@ PREFERRED = ["qwen2.5-coder:32b", "deepseek-coder:33b", "codellama:34b",
              "qwen3.8:27b", "gemma4:31b"]
 
 PROVIDER = (os.environ.get("XWPE_LIVE_AI") or "ollama").strip().lower()
+
+# The one variable of the machine a live row's editor may have: the API key
+# the editor reads itself.  Passed as WpeSession(..., inherit=KEY_INHERIT).
+KEY_INHERIT = ("ANTHROPIC_API_KEY",)
+# The key of an OpenAI-compatible endpoint that asks for one (a local server
+# needs none): only the row that talks to such an endpoint inherits it.
+OPENAI_KEY_INHERIT = ("OPENAI_API_KEY",)
 
 
 def _ollama_model():

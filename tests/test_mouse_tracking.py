@@ -14,9 +14,9 @@ import os
 import pty
 import re
 import select
-import subprocess
 import time
 
+import gui_owner
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
 ENABLE_MOTION = b'\x1b[?1002h'
@@ -27,13 +27,9 @@ KEY_F9 = b'\033[20~'
 def _read_raw(workdir, pre_keys_wait, action, action_wait):
     """Run wpe, capture raw output; return bytes emitted after `action`."""
     master_fd, slave_fd = pty.openpty()
-    env = os.environ.copy()
-    env.update(TERM='xterm-256color', COLUMNS='80', LINES='30',
-               LC_ALL='en_US.UTF-8', HOME=workdir)
-    proc = subprocess.Popen(
-        [WPE_BIN, 'main.c'],
-        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        cwd=workdir, env=env, preexec_fn=os.setsid)
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, ['main.c'], workdir, workdir,
+        master_fd, slave_fd, (80, 30))
     os.close(slave_fd)
 
     buf = bytearray()
@@ -58,12 +54,8 @@ def _read_raw(workdir, pre_keys_wait, action, action_wait):
         drain(action_wait)
         return bytes(buf[mark:])
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()
 
 
 def test_motion_tracking_reenabled_after_f9(tmp_path):

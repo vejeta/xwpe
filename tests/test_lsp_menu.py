@@ -26,11 +26,11 @@ Run: WPE_BIN=../wpe python -m pytest -v tests/test_lsp_menu.py
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 
+import gui_owner
 from host_tools import needs
 from test_utf8_border import SafeScreen
 from wpe_driver import SERVER_START_HEADING, SERVER_START_RUN_IT
@@ -68,14 +68,13 @@ class _Wpe:
         self.screen = SafeScreen(COLS, ROWS)
         self.stream = pyte.Stream(self.screen)
         self.master_fd, slave = pty.openpty()
-        env = os.environ.copy()
-        env.update(TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS),
-                   LC_ALL="en_US.UTF-8", HOME=workdir)
-        if not eager:
-            env["XWPE_LSP_NO_EAGER"] = "1"
-        self.proc = subprocess.Popen(
-            [WPE_BIN] + [n for n, _ in files], stdin=slave, stdout=slave,
-            stderr=slave, cwd=workdir, env=env, preexec_fn=os.setsid)
+        # The owner starts the editor with no eager language server; the
+        # eager row removes that variable.
+        extra_env = {} if not eager else {"XWPE_LSP_NO_EAGER": None}
+        self.owned = gui_owner.Terminal.start(
+            gui_owner.current(), WPE_BIN, [n for n, _ in files], workdir,
+            workdir, self.master_fd, slave, (COLS, ROWS), extra_env=extra_env)
+        self.proc = self.owned.proc
         os.close(slave)
         self.drain(1.6)
 
@@ -136,15 +135,11 @@ class _Wpe:
         return self.proc.poll() is None
 
     def close(self):
-        try:
-            os.killpg(os.getpgid(self.proc.pid), 9)
-        except Exception:
-            pass
+        self.owned.end_for_row()
         try:
             os.close(self.master_fd)
         except Exception:
             pass
-        self.proc.wait()
 
 
 # --------------------------------------------------------------------------
@@ -430,7 +425,7 @@ def test_eager_start_skips_non_lsp_file(tmp_path):
         w.close()
 
 
-def test_error_box_brackets_the_lsp_modal_guard(tmp_path, monkeypatch):
+def test_error_box_brackets_the_lsp_modal_guard(tmp_path, request):
     """A message box (e_error) suspends the async LSP fd-loop's painting too.
 
     Most LSP actions report an empty result through an e_error box ("No references
@@ -443,7 +438,8 @@ def test_error_box_brackets_the_lsp_modal_guard(tmp_path, monkeypatch):
     pops the "unsupported file type" e_error box.  Assert via XWPE_UI_TRACE that
     opening it enters the guard and dismissing it leaves, balanced."""
     trace = tmp_path / "ui.trace"
-    monkeypatch.setenv("XWPE_UI_TRACE", str(trace))
+    # The row's environment channel: every editor this row starts has the trace.
+    gui_owner.current().row_env(request)["XWPE_UI_TRACE"] = str(trace)
     w = _Wpe(str(tmp_path), [("hello.pl", "print \"hi\\n\";\n")])
     try:
         w.key("\033q", delay=0.3)          # Alt-Q prefix

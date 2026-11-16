@@ -23,21 +23,18 @@ Incoherence flagging:
        manual review (turns green/XPASS when the behaviour is fixed).
 """
 import base64
-import fcntl
 import os
 import pty
 import re
 import select
-import struct
-import termios
 import shutil
-import subprocess
 import time
 
 import pytest
 import pyte
 
 import build_config
+import gui_owner
 import procinfo
 from test_utf8_border import SafeScreen
 
@@ -179,66 +176,34 @@ def late_reader_c_program(go_path):
         "  return 0;\n"
         "}\n" % (go_path, PASTE_END_LINE))
 
-# How the editor learns its screen size, and why the harness must not get in
-# the way:
+# How the editor learns its screen size, and what the owner does for it
+# (gui_owner.Terminal.start; the one place a test starts the editor):
 #
 # * ncurses reads the pty size with TIOCGWINSZ on stdout, both at initscr()
 #   and again on every SIGWINCH (resizeterm -> KEY_RESIZE).  A fresh pty is
-#   0x0, so the driver sets the size on the master BEFORE spawning; the slave
+#   0x0, so the owner sets the size on the master BEFORE spawning; the slave
 #   shares it.
 # * The kernel raises SIGWINCH from TIOCSWINSZ only towards the foreground
-#   process group of the pty's CONTROLLING terminal.  A child that merely
-#   setsid()s has no controlling terminal and never hears about a resize, so
-#   the child adopts the pty with TIOCSCTTY right after setsid().
+#   process group of the pty's CONTROLLING terminal, so the owner makes the
+#   pty the editor's controlling terminal (TIOCSCTTY); resize() below then
+#   needs no signal of its own.
 # * LINES / COLUMNS in the environment override the pty size inside ncurses
-#   (use_env(TRUE) is the default), for the initial size AND every relayout:
-#   with them set, a resize re-lays-out to the OLD size.  They are never
-#   exported to the child; any inherited copy is dropped.
-PTY_WINSIZE_FORMAT = "HHHH"             # struct winsize: rows, cols, xpixel, ypixel
-SIZE_ENV_VARS = ("LINES", "COLUMNS")
-# In the forked child fd 0 is already the pty slave.  The number, not
-# sys.stdin.fileno(): under pytest sys.stdin is a capture stub whose fileno()
-# raises, and an exception in the pre-exec step aborts the spawn.
-CHILD_TTY_FD = 0
-CHILD_OUTPUT_FD = 1
+#   for the initial size AND every relayout: with them set, a resize
+#   re-lays-out to the OLD size.  The owner never passes them, whatever a
+#   row's env_extra holds.
+# The ioctl numbers of the terminal differ by architecture, which is why the
+# owner uses termios.TIOCSWINSZ and not a constant.
 
 
-def set_pty_size(master_fd, cols, rows):
-    """Set the window size of the pty behind ``master_fd`` (TIOCSWINSZ).
-
-    Use ``termios.TIOCSWINSZ`` rather than a hardcoded number: the terminal
-    ioctl numbers differ by architecture (ppc64el, mips, alpha, sparc use the
-    BSD-style encoding) and a wrong constant fails with ENOTTY there.
-    Once the pty is the child's controlling terminal this ioctl alone makes
-    the kernel send SIGWINCH to the child; no explicit signal is needed."""
-    winsize = struct.pack(PTY_WINSIZE_FORMAT, rows, cols, 0, 0)
-    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
-
-
-def adopt_pty_as_controlling_tty():
-    """Pre-exec step for the child: start a new session, then make the pty on
-    stdin its controlling terminal (TIOCSCTTY) so TIOCSWINSZ on the master
-    reaches it as SIGWINCH and ncurses turns it into KEY_RESIZE.
-
-    Runs in the forked child between the fd setup (stdin is already the pty
-    slave) and the exec.  TIOCSCTTY exists on Linux, the BSDs and macOS; the
-    guard only keeps the harness importable elsewhere."""
-    os.setsid()
-    if not hasattr(termios, "TIOCSCTTY"):
-        return
-    try:
-        fcntl.ioctl(CHILD_TTY_FD, termios.TIOCSCTTY, 0)
-    except OSError:
-        # Input is not the pty (a desktop-style start): the screen is.
-        fcntl.ioctl(CHILD_OUTPUT_FD, termios.TIOCSCTTY, 0)
-
-
-def strip_size_env(env):
-    """Remove LINES / COLUMNS from ``env`` so ncurses sizes itself from the
-    pty (see SIZE_ENV_VARS above); returns ``env`` for chaining."""
-    for name in SIZE_ENV_VARS:
-        env.pop(name, None)
-    return env
+def session_env_extra(env_extra):
+    """The variables a session passes to its editor on top of the owner's
+    allow-list: the data files of this checkout (not a system-installed copy
+    that happens to exist on the dev box), then the row's own ``env_extra``,
+    which wins.  A value of None removes the variable (a row of the first-run
+    question removes XWPE_KEYS; a locale row removes LC_ALL)."""
+    extra = {"XWPE_LIB": XWPE_LIB_DIR}
+    extra.update(env_extra or {})
+    return extra
 
 
 class _RepStream(pyte.Stream):
@@ -634,8 +599,11 @@ class WpeSession:
     def __init__(self, workdir, seed, filename="t.c", cols=COLS, rows=ROWS,
                  wait=1.3, env_extra=None, real_login=False,
                  stdin_is_terminal=True, answer_server_start=False,
-                 args=(), new_profile=False):
+                 args=(), new_profile=False, inherit=()):
         """``args`` are command-line options put before the file name.
+        ``inherit`` names the variables of the machine this row's editor may
+        have on top of the owner's allow-list (an API key for a live row);
+        everything else of the machine's environment stays out.
         ``new_profile=True`` leaves the session's HOME with nothing in it
         (the driver otherwise drops a syntax_def under ~/.xwpe, which makes
         it an existing profile), as the rows of the first-run question need.
@@ -651,6 +619,7 @@ class WpeSession:
         starts it, and these rows answer that box with Run it, as the user
         would once.  The box itself is tested by test_startplan_run.py."""
         self.answer_server_start = answer_server_start
+        self._fds_closed = False
         self.workdir = workdir
         self.path = os.path.join(workdir, filename)
         # A bytes seed is written as it is (a row about line endings or a
@@ -667,31 +636,6 @@ class WpeSession:
                                                 # (pyte swallows OSC 52, so the
                                                 # clipboard test scans this)
         self.master_fd, slave_fd = pty.openpty()
-        set_pty_size(self.master_fd, cols, rows)    # the child inherits it
-        env = strip_size_env(os.environ.copy())
-        env.update(TERM="xterm-256color", LC_ALL="en_US.UTF-8", HOME=workdir)
-        # The editor reads $XDG_CONFIG_HOME and $XDG_STATE_HOME before $HOME,
-        # so a value inherited from the machine (GitHub's runner exports
-        # XDG_CONFIG_HOME) would make every session share one xwperc, one
-        # key file and one session store, and tests would fail on what an
-        # earlier test saved.  An empty value is "unset" to the editor, so
-        # both fall back under this session's HOME; a test that passes its
-        # own value in env_extra still wins.
-        env.update(XDG_CONFIG_HOME="", XDG_STATE_HOME="")
-        # Load help/data from the checkout (hermetic), not a system-installed
-        # copy; an explicit caller-set XWPE_LIB still wins.
-        env.setdefault("XWPE_LIB", XWPE_LIB_DIR)
-        # HOME=workdir gives xwpe a clean ~/.xwpe, but it also HIDES per-HOME
-        # toolchain config: the rustup `rustc` / `cargo` / `rust-analyzer` shims
-        # resolve the default toolchain from $HOME/.rustup, so under workdir they
-        # die with "rustup could not choose a version of rustc ... one wasn't
-        # configured" and every Rust compile/debug/LSP test breaks -- even though
-        # the toolchain is installed and works in a normal shell. Point the
-        # toolchain managers back at the real home (only if the user has not set
-        # them) so the shims keep resolving under the test HOME.
-        _real_home = os.path.expanduser("~")
-        env.setdefault("RUSTUP_HOME", os.path.join(_real_home, ".rustup"))
-        env.setdefault("CARGO_HOME", os.path.join(_real_home, ".cargo"))
         # The claude CLI backend reads its credentials from $HOME/.claude/ +
         # $HOME/.claude.json, so under HOME=workdir a real login is invisible
         # and a turn against the real CLI comes back "Not logged in".  Only a
@@ -700,28 +644,7 @@ class WpeSession:
         # self-skips.  Every other test keeps a HOME with nothing of the
         # user's in it.  ~/.xwpe stays isolated either way.
         if real_login:
-            self._link_real_login(_real_home, workdir)
-        # The menu/file/etc. tests do not exercise the LSP, but opening t.c
-        # on a box with clangd installed (e.g. Homebrew on macOS) pops up a
-        # "Starting language server..." Messages window that overlays the
-        # editor and breaks tests that screenshot the chrome (Help viewer,
-        # window operations, ...).  Opt out of the eager-on-open boot here;
-        # the LSP-specific tests use their own driver and override this.
-        env.setdefault("XWPE_LSP_NO_EAGER", "1")
-        # A session starts in an empty HOME, which is a new profile, and a new
-        # profile is asked which keys it wants.  A row has nobody to answer, so
-        # every row runs with the Borland keys unless it says otherwise; the
-        # rows of the question itself, and rows that write their own xwperc to
-        # run another style, pass XWPE_KEYS=None (or a style) in env_extra.
-        env.setdefault("XWPE_KEYS", "borland")
-        # Tests that exercise locale-dependent behaviour (e.g. the non-UTF-8
-        # chrome fallback) pass env_extra to override LC_ALL/LANG; applied last
-        # so the override wins over the UTF-8 default above.  A value of None
-        # removes the variable.
-        if env_extra:
-            env.update(strip_size_env(dict(env_extra)))
-            for name in [n for n, v in env.items() if v is None]:
-                del env[name]
+            self._link_real_login(os.path.expanduser("~"), workdir)
         # Make the editor under test use THIS repo's syntax_def, not whatever
         # stale copy is installed on the machine: it reads $HOME/.xwpe/syntax_def
         # first and we set HOME=workdir, so drop the build-tree copy there.
@@ -730,19 +653,38 @@ class WpeSession:
             _xd = os.path.join(workdir, ".xwpe")
             os.makedirs(_xd, exist_ok=True)
             shutil.copyfile(_synt, os.path.join(_xd, "syntax_def"))
-        self.ui_trace = env.get("XWPE_UI_TRACE")   # None: no trace to read
+        extra_env = session_env_extra(env_extra)
+        owner = gui_owner.current()
         self.input_fd = self.master_fd
-        stdin_arg = slave_fd
+        stdin_arg = None            # the pty: the editor's input is a terminal
         if not stdin_is_terminal:
             stdin_arg, self.input_fd = os.pipe()
-        self.proc = subprocess.Popen(
-            [WPE_BIN] + list(args) + [filename], stdin=stdin_arg, stdout=slave_fd,
-            stderr=slave_fd, cwd=workdir, env=env,
-            preexec_fn=adopt_pty_as_controlling_tty)
+        # The owner starts the editor: the pty is sized before the start and
+        # is its controlling terminal, the environment is the owner's
+        # allow-list (no display, no key of the machine's) and the row's own
+        # extra_env, and the editor is ended, and what it left found, when
+        # the session closes or the row ends.
+        self.owned = gui_owner.Terminal.start(
+            owner, WPE_BIN, list(args) + [filename], workdir, workdir,
+            self.master_fd, slave_fd, (cols, rows), stdin_fd=stdin_arg,
+            extra_env=extra_env, inherit=inherit,
+            label="%s %s" % (os.path.basename(workdir), filename),
+            on_output=self._take_output)
+        self.proc = self.owned.proc
+        # The trace the editor was given (the row's, else the machine's);
+        # None: there is no trace to read.
+        self.ui_trace = self.owned.env.get("XWPE_UI_TRACE")
         os.close(slave_fd)
         if not stdin_is_terminal:
             os.close(stdin_arg)
         self._drain(wait)
+
+    def _take_output(self, data):
+        """Keep what the editor wrote: the raw bytes and the screen.  The
+        session's own reads and the owner's, while the editor is ended, both
+        come here, so nothing the editor says on its way out is lost."""
+        self.raw.extend(data)
+        self.stream.feed(data.decode("utf-8", "replace"))
 
     def _answer_server_box(self):
         """Run it, when the language server's start box is up and this
@@ -864,7 +806,7 @@ class WpeSession:
         e_relayout_windows path, the terminal peer of an X11 ConfigureNotify /
         a Wayland xdg configure; do not kill(SIGWINCH) on top of it, a second
         KEY_RESIZE can double the relayout and hide ordering bugs."""
-        set_pty_size(self.master_fd, cols, rows)
+        gui_owner.set_pty_size(self.master_fd, cols, rows)
         try:
             self.screen.resize(rows, cols)
         except Exception:
@@ -999,23 +941,32 @@ class WpeSession:
         return self.proc.poll()
 
     def close(self):
+        """End the editor through the owner and return its exit status as it
+        was before (None while it ran).
+
+        The owner ends it (SIGTERM, the editor's own ladder, SIGKILL), reading
+        its terminal meanwhile, then finds and ends what it left.  What it
+        left errors the row when the row ends, not here: close() runs in the
+        exit of a ``with`` block, where an error would replace the failure
+        the row itself had."""
         code = self.proc.poll()
-        try:
-            os.killpg(os.getpgid(self.proc.pid), 9)
-        except Exception:
-            pass
-        try:
-            os.close(self.master_fd)
-        except Exception:
-            pass
-        if self.input_fd != self.master_fd:
-            try:
-                os.close(self.input_fd)
-            except Exception:
-                pass
-        self.proc.wait()
+        self.owned.end_for_row()
+        self._close_terminal_fds()
         self._end_programs_left_under_a_server()
         return code
+
+    def _close_terminal_fds(self):
+        """Close the terminal's master side and the keys' pipe, once: a
+        second close() must not close a number the process has since been
+        given for something else."""
+        if self._fds_closed:
+            return
+        self._fds_closed = True
+        for fd in {self.master_fd, self.input_fd}:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     def _end_programs_left_under_a_server(self):
         """End the program a shared build server ran for this session.

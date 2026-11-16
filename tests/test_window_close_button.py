@@ -18,11 +18,11 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_window_close_button.py
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 
+import gui_owner
 from test_utf8_border import SafeScreen
 from wpe_driver import XWPE_LIB_DIR
 
@@ -51,13 +51,11 @@ class _Wpe:
         self.screen = SafeScreen(COLS, ROWS)
         self.stream = pyte.Stream(self.screen)
         self.master_fd, slave = pty.openpty()
-        env = os.environ.copy()
-        env.update(TERM='xterm-256color', COLUMNS=str(COLS), LINES=str(ROWS),
-                   LC_ALL='en_US.UTF-8', HOME=workdir)
-        env.setdefault('XWPE_LIB', XWPE_LIB_DIR)
-        self.proc = subprocess.Popen(
-            [WPE_BIN, fname], stdin=slave, stdout=slave, stderr=slave,
-            cwd=workdir, env=env, preexec_fn=os.setsid)
+        self.owned = gui_owner.Terminal.start(
+            gui_owner.current(), WPE_BIN, [fname], workdir, workdir,
+            self.master_fd, slave, (COLS, ROWS),
+            extra_env={'XWPE_LIB': XWPE_LIB_DIR})
+        self.proc = self.owned.proc
         os.close(slave)
 
     def drain(self, timeout):
@@ -98,12 +96,8 @@ class _Wpe:
         return self.proc.poll() is None
 
     def close(self):
-        try:
-            os.killpg(os.getpgid(self.proc.pid), 9)
-        except Exception:
-            pass
+        self.owned.end_for_row()
         os.close(self.master_fd)
-        self.proc.wait()
 
 
 # @scenario SC-dialog-engine-34

@@ -23,17 +23,25 @@ import glob
 import os
 import re
 import shutil
-import subprocess
+import sys
 
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.normpath(os.path.join(HERE, "..", ".."))
+# The owner of every process a test starts lives one folder up.
+if os.path.dirname(HERE) not in sys.path:
+    sys.path.insert(0, os.path.dirname(HERE))
+
+import gui_owner  # noqa: E402
 SRC = os.path.join(TOP, "we_gpm.c")
 # Both halves of the decision, in dependency order: the pure per-descriptor
 # test, then the chooser that decides which descriptor to ask about.
 PREDICATES = ["WpeGpmTtyIsConsole", "WpeGpmIsConsoleTty"]
 BOOT_TIMEOUT = 180
+COMPILE_TIMEOUT = 300
+FIND_TIMEOUT = 60
+CPIO_TIMEOUT = 120
 
 REQUIRED = ["qemu-system-x86_64", "gcc", "cpio"]
 _MISSING = [b for b in REQUIRED if shutil.which(b) is None]
@@ -106,11 +114,12 @@ def _build(workdir):
     with open(os.path.join(workdir, "pred.inc"), "w") as fh:
         fh.write(extract_predicate())
     probe = os.path.join(workdir, "vtprobe")
-    cc = subprocess.run(
+    cc = gui_owner.run_tool(
         ["gcc", "-static", "-O2", "-Wall", "-Wno-unused-result",
          "-I", workdir, "-o", probe, os.path.join(HERE, "vtprobe.c")],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
-    assert cc.returncode == 0, "the console probe did not build:\n%s" % cc.stdout.decode()
+        COMPILE_TIMEOUT)
+    assert cc.returncode == 0, "the console probe did not build:\n%s" % (
+        (cc.stdout + cc.stderr).decode())
 
     root = os.path.join(workdir, "root")
     os.makedirs(os.path.join(root, "dev", "pts"), exist_ok=True)
@@ -118,11 +127,13 @@ def _build(workdir):
     shutil.copyfile(probe, os.path.join(root, "init"))
     os.chmod(os.path.join(root, "init"), 0o755)
     initrd = os.path.join(workdir, "initrd.cpio")
+    # Two bounded runs, the names then the archive, not a pipe between two
+    # processes: each is on the owner's ledger and has its own deadline.
+    names = gui_owner.run_tool(["find", "."], FIND_TIMEOUT, cwd=root).stdout
+    packed = gui_owner.run_tool(["cpio", "-o", "-H", "newc", "--quiet"],
+                                CPIO_TIMEOUT, cwd=root, input=names)
     with open(initrd, "wb") as out:
-        find = subprocess.Popen(["find", "."], cwd=root, stdout=subprocess.PIPE)
-        subprocess.run(["cpio", "-o", "-H", "newc", "--quiet"], cwd=root,
-                       stdin=find.stdout, stdout=out, timeout=120)
-        find.wait()
+        out.write(packed.stdout)
     return initrd
 
 
@@ -136,15 +147,15 @@ def _boot(workdir, initrd):
            "-serial", "file:%s" % serial, "-no-reboot"]
     if _kvm_usable():
         cmd[1:1] = ["-enable-kvm", "-cpu", "host"]
-    run = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         timeout=BOOT_TIMEOUT)
+    run = gui_owner.run_tool(cmd, BOOT_TIMEOUT)
+    said = (run.stdout + run.stderr).decode(errors="replace")
     text = ""
     if os.path.exists(serial):
         with open(serial, errors="replace") as fh:
             text = fh.read()
     assert "VTPROBE DONE" in text, (
         "the console probe did not finish (qemu exit %d). Serial output:\n%s\n"
-        "qemu said:\n%s" % (run.returncode, text[-3000:], run.stdout.decode()[-2000:]))
+        "qemu said:\n%s" % (run.returncode, text[-3000:], said[-2000:]))
     return text
 
 

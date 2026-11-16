@@ -26,12 +26,12 @@ import glob
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 import pytest
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 ASAN_BIN = os.path.join(os.path.dirname(__file__), '..', 'we-asan')
@@ -70,19 +70,13 @@ def run_asan(workdir, seed, keys, wait=1.3, key_delay=0.4, settle=0.8,
     stream = pyte.Stream(screen)
     master_fd, slave_fd = pty.openpty()
 
-    env = os.environ.copy()
-    env['TERM'] = 'xterm-256color'
-    env['COLUMNS'] = str(COLS)
-    env['LINES'] = str(ROWS)
-    env['LC_ALL'] = 'en_US.UTF-8'
-    env['HOME'] = workdir
-    env['ASAN_OPTIONS'] = (
+    asan_options = (
         'detect_leaks=0:abort_on_error=1:log_path=%s' % log_prefix)
-
-    proc = subprocess.Popen(
-        [binary, filename],
-        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        cwd=workdir, env=env, preexec_fn=os.setsid)
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), binary, [filename], workdir, workdir,
+        master_fd, slave_fd, (COLS, ROWS),
+        extra_env={'ASAN_OPTIONS': asan_options})
+    proc = owned.proc
     os.close(slave_fd)
 
     def drain(timeout):
@@ -106,12 +100,8 @@ def run_asan(workdir, seed, keys, wait=1.3, key_delay=0.4, settle=0.8,
         drain(settle)
         exit_code = proc.poll()
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()
 
     reports = glob.glob(log_prefix + '.*')
     text = None

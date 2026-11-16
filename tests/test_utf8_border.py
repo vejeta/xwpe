@@ -11,12 +11,12 @@ Run: cd tests && source .venv/bin/activate && pytest -v test_utf8_border.py
 import os
 import pty
 import select
-import signal
-import subprocess
 import time
 
 import pyte
 import pytest
+
+import gui_owner
 
 # Workaround for pyte bug with ncurses CSI sequences
 class SafeScreen(pyte.Screen):
@@ -102,20 +102,12 @@ def run_wpe_capture(filename, cols=80, rows=30, wait=1.0, keys=None):
 
     master_fd, slave_fd = pty.openpty()
 
-    env = os.environ.copy()
-    env['TERM'] = 'xterm-256color'
-    env['COLUMNS'] = str(cols)
-    env['LINES'] = str(rows)
-    env['LC_ALL'] = 'en_US.UTF-8'
-
-    proc = subprocess.Popen(
-        [WPE_BIN, filename],
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=slave_fd,
-        env=env,
-        preexec_fn=os.setsid
-    )
+    # The owner starts the editor on a pty of this size, in a folder of its
+    # own (the files named here are absolute), and ends it below.
+    owner = gui_owner.current()
+    owned = gui_owner.Terminal.start(
+        owner, WPE_BIN, [filename], owner.tool_home(), owner.tool_home(),
+        master_fd, slave_fd, (cols, rows))
     os.close(slave_fd)
 
     # Read initial output
@@ -142,12 +134,9 @@ def run_wpe_capture(filename, cols=80, rows=30, wait=1.0, keys=None):
                 except OSError:
                     break
 
-    # Kill wpe
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    proc.wait(timeout=3)
+    # End wpe (SIGTERM, the editor's own ladder, SIGKILL), reading its terminal
+    # while it ends so a full terminal never blocks it.
+    owned.end_for_row()
     os.close(master_fd)
 
     # Extract screen lines

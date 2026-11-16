@@ -14,6 +14,7 @@ mismatch -- including the is-char flag for the multibyte and Alt-key cases.
 import os
 import subprocess
 import pytest
+import gui_owner
 from wpe_driver import WPE_BIN
 
 # The keysym selftest lives on the graphical startup path, so it runs only when
@@ -34,17 +35,24 @@ def _wayland_build():
 pytestmark = pytest.mark.skipif(not _wayland_build(),
                                 reason="built without the Wayland backend")
 
+SELFTEST_TIMEOUT_S = 30
+
+
+def _run_selftest():
+    """Run the keysym selftest once: the exit code and everything the editor
+    printed.  The owner runs it, bounded, with the editor's environment and
+    no display variable at all, which the selftest does not need."""
+    done = gui_owner.Terminal.run(
+        gui_owner.current(), XWPE_BIN, [], SELFTEST_TIMEOUT_S,
+        extra_env={"XWPE_BACKEND": "wayland", "XWPE_WL_KEYTEST": "1"})
+    return done.returncode, (done.stdout + done.stderr).decode("utf-8", "replace")
+
 
 def test_wayland_keysym_selftest():
     # Force the Wayland path so WpeWaylandInit runs the selftest; it _exit()s
     # before touching a compositor, so no WAYLAND_DISPLAY is required.
-    env = dict(os.environ, XWPE_BACKEND="wayland", XWPE_WL_KEYTEST="1")
-    env.pop("WAYLAND_DISPLAY", None)
-    r = subprocess.run([XWPE_BIN], env=env,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       timeout=30)
-    out = r.stdout.decode("utf-8", "replace")
-    assert r.returncode == 0, "keysym selftest failed:\n" + out
+    code, out = _run_selftest()
+    assert code == 0, "keysym selftest failed:\n" + out
     # Prove the multibyte + collision cases actually ran and passed.
     for needle in ("U+0130 (=Alt-N)", "CJK U+65E5", "Alt+n is not a char"):
         assert needle in out and "FAIL" not in out, \
@@ -56,13 +64,8 @@ def test_wayland_break_and_ctrl_pause_are_ctrl_break():
     """The keysym Break, with or without Control, and Ctrl+Pause translate
     to the editor's Ctrl-Break key (CtrlBrk in keys.h); a plain Pause key
     does not.  The compositor-free peer of the X11 Ctrl-Break row."""
-    env = dict(os.environ, XWPE_BACKEND="wayland", XWPE_WL_KEYTEST="1")
-    env.pop("WAYLAND_DISPLAY", None)
-    r = subprocess.run([XWPE_BIN], env=env,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       timeout=30)
-    out = r.stdout.decode("utf-8", "replace")
-    assert r.returncode == 0, "keysym selftest failed:\n" + out
+    code, out = _run_selftest()
+    assert code == 0, "keysym selftest failed:\n" + out
     for name in ("Break", "Ctrl+Break", "Ctrl+Pause", "Pause alone"):
         rows = [line for line in out.splitlines()
                 if line.strip().startswith(name + " ")]
@@ -81,13 +84,8 @@ def test_wayland_reads_the_debug_chords_and_the_sun_keys_like_the_others():
     terminal and X11 give.  F11, whose symbol is also the Sun Stop key, does
     nothing, as in the terminal.  A debug session cannot start under the
     headless compositor, so the keys are fed to keysym_to_xwpe directly."""
-    env = dict(os.environ, XWPE_BACKEND="wayland", XWPE_WL_KEYTEST="1")
-    env.pop("WAYLAND_DISPLAY", None)
-    r = subprocess.run([XWPE_BIN], env=env,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       timeout=30)
-    out = r.stdout.decode("utf-8", "replace")
-    assert r.returncode == 0, "keysym selftest failed:\n" + out
+    code, out = _run_selftest()
+    assert code == 0, "keysym selftest failed:\n" + out
     for name in ("Ctrl+F2", "Ctrl+F7", "Ctrl+F8", "Ctrl+F10", "Shift+F10",
                  "Alt+F5", "F11", "Sun Front", "Sun Cut", "Alt+Left",
                  "Ctrl+Shift+Delete", "Shift+BackSpace"):

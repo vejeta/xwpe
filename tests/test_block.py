@@ -15,11 +15,11 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_block.py
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -48,17 +48,10 @@ def run_block(workdir, seed, ops, wait=1.3, key_delay=0.45, settle=0.6):
     stream = pyte.Stream(screen)
     master_fd, slave_fd = pty.openpty()
 
-    env = os.environ.copy()
-    env['TERM'] = 'xterm-256color'
-    env['COLUMNS'] = str(COLS)
-    env['LINES'] = str(ROWS)
-    env['LC_ALL'] = 'en_US.UTF-8'
-    env['HOME'] = workdir
-
-    proc = subprocess.Popen(
-        [WPE_BIN, 't.c'],
-        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        cwd=workdir, env=env, preexec_fn=os.setsid)
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, ['t.c'], workdir, workdir,
+        master_fd, slave_fd, (COLS, ROWS))
+    proc = owned.proc
     os.close(slave_fd)
 
     def drain(timeout):
@@ -85,12 +78,8 @@ def run_block(workdir, seed, ops, wait=1.3, key_delay=0.45, settle=0.6):
         drain(settle)
         exit_code = proc.poll()
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()
 
     with open(path) as fh:
         return fh.read(), exit_code

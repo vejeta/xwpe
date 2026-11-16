@@ -12,14 +12,20 @@ Two entry points:
     exit==0, so pytest's own EIO race cannot poison it.
 """
 from __future__ import annotations
-import os, sys, pty, select, subprocess, time, tempfile, shutil, signal
+import os, sys, pty, select, time, tempfile, shutil
 
+import gui_owner
 from host_tools import tool_usable
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.dirname(HERE)
 WPE = os.environ.get('WPE_BIN') or os.path.join(TOP, 'wpe')
 COLS, ROWS = 100, 30
+# The whole script, started by the pytest entry point, runs at most this long
+# (before the scale): its own waits add up to a few minutes on a slow runner.
+SMOKE_TIMEOUT_S = 900
+# A short probe of the system (ps, file) is bounded by this (before the scale).
+PROBE_TIMEOUT_S = 30
 
 
 def _import_pyte():
@@ -33,22 +39,18 @@ def open_wpe(files, workdir, term='xterm-256color', extra_env=None):
     pyte, SafeScreen = _import_pyte()
     screen = SafeScreen(COLS, ROWS); stream = pyte.Stream(screen)
     master, slave = pty.openpty()
-    env = os.environ.copy()
-    env.update(TERM=term, COLUMNS=str(COLS), LINES=str(ROWS),
-               LC_ALL='en_US.UTF-8', HOME=workdir)
     # Load the in-app help from the checkout so the F1/Help check works from a
     # plain build tree (no `make install`), via the editor's "_eng" fallback.
-    env.setdefault('XWPE_LIB', os.path.dirname(os.path.abspath(WPE)))
-    for name, value in (extra_env or {}).items():
-        if value is None:
-            env.pop(name, None)        # None removes the variable
-        else:
-            env[name] = value
-    proc = subprocess.Popen([WPE, *files], stdin=slave, stdout=slave,
-                            stderr=slave, cwd=workdir, env=env,
-                            preexec_fn=os.setsid)
+    # The owner starts the editor: the pty is sized and is its controlling
+    # terminal, the environment is its allow-list (no display variable) and
+    # these variables, None removes one.
+    env = {'TERM': term, 'XWPE_LIB': os.path.dirname(os.path.abspath(WPE))}
+    env.update(extra_env or {})
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE, list(files), workdir, workdir, master, slave,
+        (COLS, ROWS), extra_env=env)
     os.close(slave)
-    return proc, master, screen, stream
+    return owned.proc, master, screen, stream
 
 
 # A loaded CI runner is slow; XWPE_TEST_WAIT_SCALE stretches every wait so the
@@ -79,15 +81,21 @@ def drain(master, stream, timeout):
             stream.feed(data.decode('utf-8', 'replace'))
 
 
+def _owned_by(proc):
+    """The owner's entry for the editor process open_wpe returned."""
+    for owned in gui_owner.current().ledger.entries():
+        if owned.proc is proc:
+            return owned
+    return None
+
+
 def cleanup(proc, master):
-    try: os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except Exception: pass
-    time.sleep(0.1)
-    try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except Exception: pass
+    """End the editor through the owner (SIGTERM, its own ladder, SIGKILL,
+    what it left found and ended) and close its terminal."""
+    owned = _owned_by(proc)
+    if owned is not None:
+        owned.end_for_row()
     try: os.close(master)
-    except Exception: pass
-    try: proc.wait(timeout=2)
     except Exception: pass
 
 
@@ -108,9 +116,9 @@ def action(m, st, route, fkey, *menu, wait=0.7):
 
 def cpu_percent(pid):
     try:
-        out = subprocess.check_output(['ps', '-p', str(pid), '-o', '%cpu='],
-                                      text=True).strip()
-        return float(out)
+        out = gui_owner.run_tool(['ps', '-p', str(pid), '-o', '%cpu='],
+                                 PROBE_TIMEOUT_S, check=True).stdout
+        return float(out.decode().strip())
     except Exception:
         return None
 
@@ -125,9 +133,9 @@ def _run_checks():
 
     print('== §0 setup / sanity ==', flush=True)
     if os.path.exists(WPE):
-        rec('§0', 'binary exists', 'PASS',
-            subprocess.check_output(['file', WPE], text=True)
-            .split(':', 1)[1].strip())
+        kind = gui_owner.run_tool(['file', WPE], PROBE_TIMEOUT_S,
+                                  check=True).stdout.decode()
+        rec('§0', 'binary exists', 'PASS', kind.split(':', 1)[1].strip())
     else:
         rec('§0', 'binary exists', 'FAIL', f'not found: {WPE}')
         return results
@@ -273,8 +281,8 @@ def _run_checks():
     print('\n== §5 macOS-specific ==', flush=True)
     # Measured, not assumed: with no display variable at all the editor
     # starts, draws the file, and quits on Alt-X with status 0.
-    no_display = {'DISPLAY': None, 'WAYLAND_DISPLAY': None}
-    proc, m, scr, st = open_wpe(['e.c'], wd, extra_env=no_display)
+    # The owner passes no display variable to an editor on a terminal.
+    proc, m, scr, st = open_wpe(['e.c'], wd)
     drain(m, st, 1.5)
     drew = screen_has(scr, 'int main')
     os.write(m, b'\x1bx')
@@ -319,10 +327,13 @@ def test_macos_smoke():  # noqa: D401
     import pytest
     if not os.path.exists(WPE):
         pytest.skip(f'wpe binary not built at {WPE}')
-    env = os.environ.copy()
-    env['WPE_BIN'] = WPE
-    rc = subprocess.call([sys.executable, os.path.abspath(__file__)], env=env)
-    assert rc == 0, f'standalone smoke exited with rc={rc}'
+    done = gui_owner.run_nested([sys.executable, os.path.abspath(__file__)],
+                                SMOKE_TIMEOUT_S,
+                                extra_env={'WPE_BIN': WPE,
+                                           'TERM': os.environ.get('TERM')})
+    assert done.returncode == 0, (f'standalone smoke exited with '
+                                  f'rc={done.returncode}:\n'
+                                  f'{done.stdout.decode(errors="replace")[-2000:]}')
 
 
 if __name__ == '__main__':

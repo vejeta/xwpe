@@ -23,6 +23,7 @@ import time
 
 import pytest
 
+import gui_owner
 import procinfo
 from host_tools import require, require_absent
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE,
@@ -169,12 +170,14 @@ def pytest_generate_tests(metafunc):
 
 
 @pytest.fixture
-def gdb_interface(request, monkeypatch):
-    """The interface this run drives gdb over, set in the editor's
-    environment; None for a run under another debugger."""
+def gdb_interface(request):
+    """The interface this run drives gdb over, set in the environment of
+    every editor the row starts (the owner's per-row channel: an editor is
+    given nothing of the test process's own environment); None for a run
+    under another debugger."""
     interface = getattr(request, "param", None)
     if interface is not None:
-        monkeypatch.setenv(GDB_INTERFACE_ENV, interface)
+        gui_owner.current().row_env(request)[GDB_INTERFACE_ENV] = interface
     return interface
 
 

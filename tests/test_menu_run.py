@@ -17,11 +17,11 @@ Requires: gcc.
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -44,14 +44,11 @@ def _session(workdir, fname='t.c'):
     screen = SafeScreen(80, 30)
     stream = pyte.Stream(screen)
     master_fd, slave = pty.openpty()
-    env = os.environ.copy()
-    env.update(TERM='xterm-256color', COLUMNS='80', LINES='30',
-               LC_ALL='en_US.UTF-8', HOME=workdir)
-    proc = subprocess.Popen([WPE_BIN, fname], stdin=slave, stdout=slave,
-                            stderr=slave, cwd=workdir, env=env,
-                            preexec_fn=os.setsid)
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, [fname], workdir, workdir,
+        master_fd, slave, (80, 30))
     os.close(slave)
-    return proc, master_fd, screen, stream
+    return owned, master_fd, screen, stream
 
 
 def _drain(master_fd, stream, timeout):
@@ -69,7 +66,7 @@ def _drain(master_fd, stream, timeout):
 
 
 def _run_keys(workdir, keys, settle=3.0):
-    proc, fd, screen, stream = _session(workdir)
+    owned, fd, screen, stream = _session(workdir)
     try:
         _drain(fd, stream, 1.0)
         for k in keys:
@@ -77,15 +74,11 @@ def _run_keys(workdir, keys, settle=3.0):
             _drain(fd, stream, 0.5)
         _drain(fd, stream, settle)
         ran = any(RAN in line for line in screen.display)
-        alive = proc.poll() is None
+        alive = owned.proc.poll() is None
         return ran, alive, screen
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(fd)
-        proc.wait()
 
 
 def test_run_via_ctrl_f9(tmp_path):
@@ -105,21 +98,17 @@ def test_run_via_alt_u(tmp_path):
 
 def test_make_via_f9_builds_executable(tmp_path):
     """F9 (Make) compiles and links -- the executable appears on disk."""
-    proc, fd, screen, stream = _session(str(tmp_path))
+    owned, fd, screen, stream = _session(str(tmp_path))
     try:
         _drain(fd, stream, 1.0)
         os.write(fd, F9.encode())
         _drain(fd, stream, 4.0)
-        assert proc.poll() is None, "wpe died on F9 (Make)"
+        assert owned.proc.poll() is None, "wpe died on F9 (Make)"
         # xwpe builds "<basename>.e" next to the source (gcc -o ./t.e ./t.o).
         exe = os.path.join(str(tmp_path), 't.e')
         built = os.path.exists(exe) and os.access(exe, os.X_OK)
         assert built, "F9 (Make) should build the executable 't.e', dir=%s" % \
             os.listdir(str(tmp_path))
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(fd)
-        proc.wait()

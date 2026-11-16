@@ -16,6 +16,7 @@ import time
 
 import pytest
 
+import gui_owner
 from host_tools import require
 from wpe_driver import ALT, WpeSession, WAIT_SCALE
 
@@ -411,11 +412,8 @@ def program_pid(tmp_path):
 
 
 def pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    """True while pid runs; a zombie pytest has adopted is gone."""
+    return gui_owner.process_running(pid)
 
 
 def wait_program_gone(pid):

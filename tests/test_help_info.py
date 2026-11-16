@@ -15,12 +15,12 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_help_info.py
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pytest
 import pyte
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -44,17 +44,16 @@ def _open_info(workdir, with_infopath=True):
     screen = SafeScreen(80, 30)
     stream = pyte.Stream(screen)
     master_fd, slave_fd = pty.openpty()
-    env = os.environ.copy()
-    env.update(TERM='xterm-256color', COLUMNS='80', LINES='30',
-               LC_ALL='en_US.UTF-8', HOME=workdir)
+    # The owner passes no INFOPATH and points XWPE_LIB at the checkout; the
+    # row that wants the compiled-in infodir removes XWPE_LIB too.
     if with_infopath:
-        env['INFOPATH'] = os.path.abspath(DOCS)
+        extra_env = {'INFOPATH': os.path.abspath(DOCS)}
     else:
-        env.pop('INFOPATH', None)
-        env.pop('XWPE_LIB', None)
-    proc = subprocess.Popen([WPE_BIN, 't.c'], stdin=slave_fd, stdout=slave_fd,
-                            stderr=slave_fd, cwd=workdir, env=env,
-                            preexec_fn=os.setsid)
+        extra_env = {'XWPE_LIB': None}
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, ['t.c'], workdir, workdir,
+        master_fd, slave_fd, (80, 30), extra_env=extra_env)
+    proc = owned.proc
     os.close(slave_fd)
 
     def drain(timeout):
@@ -78,12 +77,8 @@ def _open_info(workdir, with_infopath=True):
         text = "\n".join(screen.display)
         alive = proc.poll() is None
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()
     return text, alive
 
 

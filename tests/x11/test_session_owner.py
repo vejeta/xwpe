@@ -11,12 +11,12 @@ open until the other has its own; the rows they run are the probe at the
 end of this file, which skips itself unless a parent asks for it.
 """
 import os
-import subprocess
 import sys
 
 import pytest
 from host_tools import needs
 
+import gui_owner
 from conftest import PreviousRowLeft, launch_editor
 from gui_owner import scaled, wait_for
 
@@ -37,52 +37,45 @@ X_SOCKET = "/tmp/.X11-unix/X%s"
 
 
 def _child_env(out, release):
-    """The environment of one run of the probe: the machine's, asked to
-    write its display to `out` and to hold its session until `release`."""
-    env = dict(os.environ)
-    env[PROBE_OUT] = str(out)
-    env[PROBE_RELEASE] = str(release)
-    return env
+    """The variables one run of the probe is given on top of the owner's
+    allow-list and the harness's own names (which editor it tests, how it
+    scales its waits): where to write its display and what to hold its
+    session until."""
+    return {PROBE_OUT: str(out), PROBE_RELEASE: str(release)}
 
 
 def _start_run(tmp_path, name, release):
-    """Start one run of the probe in a pytest of its own."""
+    """Start one run of the probe, in a pytest of its own, through the
+    owner: it is ended with the row, its environment is the allow-list's,
+    and it has as long as the run needs to end its own display server."""
     out = tmp_path / (name + ".display")
-    log = open(tmp_path / (name + ".log"), "wb")
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-             "--basetemp", str(tmp_path / ("base-" + name)), PROBE_NODE],
-            cwd=TOP, env=_child_env(out, release), stdin=subprocess.DEVNULL,
-            stdout=log, stderr=subprocess.STDOUT)
-    finally:
-        log.close()
-    return proc, out, tmp_path / (name + ".log")
+    owner = gui_owner.current()
+    env = gui_owner.tool_env(inherit=gui_owner.HARNESS_VARS,
+                             extra_env=_child_env(out, release))
+    owned = owner.launch(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         "--basetemp", str(tmp_path / ("base-" + name)), PROBE_NODE],
+        env, TOP, str(tmp_path), "pytest", name, ladder_s=RUN_END_S)
+    return owned, out, owned.log
 
 
-def _said_or_ended(proc, out):
+def _said_or_ended(owned, out):
     """True once the run wrote its display or has ended."""
-    return out.exists() or proc.poll() is not None
+    return out.exists() or owned.proc.poll() is not None
 
 
-def _describe(proc, out, log):
+def _describe(owned, out, log):
     """What the run did, for a failure message."""
-    text = log.read_text(errors="replace")[-1500:]
+    text = open(log, errors="replace").read()[-1500:]
     return "exit %s, display %s, output:\n%s" % (
-        proc.poll(), out.read_text().strip() if out.exists() else None, text)
+        owned.proc.poll(), out.read_text().strip() if out.exists() else None, text)
 
 
 def _end_runs(runs):
-    """End the runs this row started, by their own process objects."""
-    for proc, _, _ in runs:
-        if proc.poll() is None:
-            proc.terminate()
-    for proc, _, _ in runs:
-        try:
-            proc.wait(timeout=scaled(RUN_END_S))
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+    """End the runs this row started: SIGTERM, as long as a run needs to end
+    its own server, SIGKILL; what a run left errors the row when it ends."""
+    for owned, _, _ in runs:
+        owned.end_for_row()
 
 
 # @scenario SC-harness-owner-22
@@ -92,12 +85,12 @@ def test_two_runs_at_once_each_have_a_display_of_their_own(tmp_path):
     try:
         for name in ("first", "second"):
             runs.append(_start_run(tmp_path, name, release))
-            proc, out, log = runs[-1]
-            wait_for(lambda: _said_or_ended(proc, out),
+            owned, out, log = runs[-1]
+            wait_for(lambda: _said_or_ended(owned, out),
                      "the %s run to say which display it has" % name,
-                     RUN_START_S, state_fn=lambda: _describe(proc, out, log))
+                     RUN_START_S, state_fn=lambda: _describe(owned, out, log))
             assert out.exists(), "the %s run ended without a display: %s" % (
-                name, _describe(proc, out, log))
+                name, _describe(owned, out, log))
         displays = [out.read_text().strip() for _, out, _ in runs]
         assert displays[0] != displays[1], \
             "both runs have the display %s" % displays[0]
@@ -105,22 +98,21 @@ def test_two_runs_at_once_each_have_a_display_of_their_own(tmp_path):
             assert os.path.exists(X_SOCKET % display.lstrip(":")), \
                 "the server of %s is gone while its run holds its session" % display
         release.write_text("")
-        for name, (proc, out, log) in zip(("first", "second"), runs):
-            assert proc.wait(timeout=scaled(RUN_END_S)) == 0, \
-                "the %s run failed: %s" % (name, _describe(proc, out, log))
+        for name, (owned, out, log) in zip(("first", "second"), runs):
+            assert owned.proc.wait(timeout=scaled(RUN_END_S)) == 0, \
+                "the %s run failed: %s" % (name, _describe(owned, out, log))
     finally:
         _end_runs(runs)
 
 
 # @scenario SC-harness-owner-25
 def test_a_run_asked_to_rerun_failed_rows_is_refused(tmp_path):
-    done = subprocess.run(
+    done = gui_owner.run_nested(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
          "--basetemp", str(tmp_path / "base"), "--reruns", "1",
          "--collect-only", "tests/x11/test_session_owner.py"],
-        cwd=TOP, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, timeout=scaled(RUN_END_S))
-    text = done.stdout.decode(errors="replace")
+        RUN_END_S, cwd=TOP)
+    text = (done.stdout + done.stderr).decode(errors="replace")
     assert done.returncode != 0 and RERUNS_REFUSED in text, \
         "a run with --reruns 1 was not refused (exit %d): %s" % (
             done.returncode, text[-800:])

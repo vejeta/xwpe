@@ -27,6 +27,7 @@ import signal
 import time
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WAIT_SCALE, WPE_BIN, assistant_build, wait_screen
 
 pytestmark = pytest.mark.skipif(not assistant_build(),
@@ -76,25 +77,17 @@ def _pids_from(path):
 
 
 def _alive(pid):
-    """Is the process `pid` there?  Only ever asked for a PID a stand-in wrote."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    """Is the process `pid` running?  Only ever asked for a PID a stand-in
+    wrote.  An ended process pytest has adopted and not yet collected (a
+    zombie) is gone, though kill(pid, 0) still finds it."""
+    return gui_owner.process_running(pid)
 
 
 def _group_alive(pgid):
-    """Has the group `pgid` any member left?  Asked only for a stand-in's group."""
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    """Has the group `pgid` any member still running?  Asked only for a
+    stand-in's group.  A member that ended and awaits its collection by
+    pytest (the subreaper) is gone, though killpg(pgid, 0) still finds it."""
+    return gui_owner.group_running(pgid)
 
 
 def _gone_within(s, pid, limit):

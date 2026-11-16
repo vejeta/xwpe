@@ -34,6 +34,13 @@ lived on).  This module is where all of that is decided once:
   machine's; ``inherit=`` names the one more variable a row needs.
 - ``current`` / ``install``: the process's owner, for code that is not a
   fixture.
+- ``OwnedProcess.end_for_row``: the end a driver calls where an error would
+  hide the row's own failure (the exit of a ``with`` block); what the process
+  left is held and the row's last word (``Owner.end_since``, run by the root
+  fixtures) names it.
+- ``is_shared_server``: the build server an editor starts for a language
+  server is shared with the user's tools and the next row, so the sweep never
+  signals it.
 
 Only /proc/<pid>/stat and /proc/<pid>/cwd of other processes are read,
 never their command lines or environments.
@@ -43,6 +50,7 @@ import ctypes
 import errno
 import fcntl
 import os
+import pwd
 import re
 import select
 import signal
@@ -124,6 +132,11 @@ BACKENDS = ("x11", "wayland")
 PASS_THROUGH = ("PATH", "TMPDIR", "RUSTUP_HOME", "CARGO_HOME", "JAVA_HOME",
                 "GOPATH", "GOMODCACHE", "LD_LIBRARY_PATH", "ASAN_OPTIONS",
                 "UBSAN_OPTIONS", "LSAN_OPTIONS")
+# The editor's trace files, passed to an editor on a terminal when set in the
+# machine's environment (CI and developers trace a whole run that way) and not
+# set by the row itself.
+TRACE_PASS_THROUGH = ("XWPE_UI_TRACE", "XWPE_LSP_TRACE", "XWPE_AI_TRACE",
+                      "WPE_TRACE_FILE")
 # The terminal size variables would override the window's own size.
 NEVER_PASSED = ("LINES", "COLUMNS")
 # Names a row may never inherit from the machine, whatever it asks for: the
@@ -165,6 +178,21 @@ DISPLAY_LINE_MAX = 64
 PIDFD_UNAVAILABLE = (errno.ENOSYS, errno.EPERM, errno.EACCES, errno.EINVAL)
 POLL_WATCH_INTERVAL_S = 0.01
 TOOL_HOME_PREFIX = "xwpe-tool-"
+# How often an editor that is being ended has its terminal read, so what it
+# writes on its way out never fills the terminal and blocks it.
+TERMINAL_DRAIN_POLL_S = 0.02
+TERMINAL_READ_CHUNK = 65536
+# After a process has ended, what it wrote last is read for at most this long
+# (before the scale).
+FINAL_DRAIN_S = 1.0
+# A build server the editor starts for a language server or a program (the
+# Scala build server, Bloop) is shared with the user's own tools and with the
+# next row; it is not what a row leaves behind and the sweep never signals
+# it.  It is the process with this command name whose working directory is
+# under this folder of the user's real home (Java ignores HOME, so the folder
+# is the same whatever HOME a row has).
+SHARED_SERVER_COMM = "java"
+SHARED_SERVER_FOLDER = os.path.join(".local", "share", "scalacli", "bloop")
 
 
 class OwnerTimeout(AssertionError):
@@ -177,6 +205,11 @@ class OwnerRefused(RuntimeError):
 
 class LeakedProcesses(AssertionError):
     """A row ended and left processes behind; the sweep ended them."""
+
+
+class OutputHandlerFailed(AssertionError):
+    """A driver's handler for what an editor wrote raised an error while the
+    owner was ending the editor; reported at the row's end."""
 
 
 class EndFailed(AssertionError):
@@ -453,6 +486,31 @@ def _direct_children_linux(ppid):
     return found
 
 
+def shared_server_folder():
+    """The folder a shared build server runs in: under the home the system
+    names for this user, not the HOME of the environment, which a row
+    changes."""
+    return os.path.join(pwd.getpwuid(os.getuid()).pw_dir, SHARED_SERVER_FOLDER)
+
+
+def is_shared_server(pid):
+    """True when pid is the shared build server, which the sweep leaves
+    running.
+
+    An editor that starts the Scala build server leaves it orphaned, and
+    the next row (and the user's own scala-cli) uses it again; ending it
+    after every row would make each Scala row start it cold and end the
+    user's server with the test run.  The programs the server runs for a
+    row are not it: their working directory is the row's folder, and the
+    driver ends them by that."""
+    if command_name(pid) != SHARED_SERVER_COMM:
+        return False
+    folder = shared_server_folder()
+    where = working_dir(pid)
+    return where is not None and (where == folder
+                                  or where.startswith(folder + os.sep))
+
+
 # ---------------------------------------------------------------------------
 # prctl and the subreaper
 
@@ -612,6 +670,52 @@ def process_running(pid, started=None):
         _collect_adopted_zombie(pid, fields, started)
         return False
     return procinfo.run_state(pid) not in (procinfo.GONE, procinfo.ZOMBIE)
+
+
+def process_gone(pid):
+    """True when nothing of pid is left that a row still has to wait for.
+
+    The process is absent, or it is a zombie that pytest itself adopted: an
+    orphan whose parent ended first (the editor killed the server a helper
+    belonged to), which pytest, the child subreaper, collects when the row
+    ends.  A zombie whose parent is another process is NOT gone: it is an
+    editor that never waited for a child it ended, which is the defect a row
+    that asks this is looking for.  Without a subreaper an orphan goes to the
+    system's init and is collected at once, so the two cases read the same on
+    every system."""
+    if IS_LINUX:
+        fields = _stat_fields(pid)
+        if fields is None:
+            return True
+        if fields[STAT_STATE] != ZOMBIE:
+            return False
+        return int(fields[STAT_PPID]) == os.getpid()
+    return procinfo.run_state(pid) == procinfo.GONE
+
+
+def group_running(pgid):
+    """True while any member of process group pgid is still running.
+
+    A member that has ended and waits to be collected (a zombie) is not
+    running, though kill(-pgid, 0) still finds it: under the subreaper the
+    orphans of an ended process group stay zombies of pytest until the row's
+    sweep, so a row that asks whether a group is gone asks here."""
+    if not IS_LINUX:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    for entry in os.listdir(PROC_ROOT):
+        if not entry.isdigit():
+            continue
+        fields = _stat_fields(int(entry))
+        if fields is not None and int(fields[STAT_PGRP]) == pgid \
+                and fields[STAT_STATE] != ZOMBIE:
+            return True
+    return False
 
 
 def _collect_adopted_zombie(pid, fields, started):
@@ -1037,9 +1141,12 @@ class Owner:
         self._x_runtime_dir = None
         self._ended_trees = []
         self._begun = False
+        self._finished = False
         self._tool_home = None
         self._row_env = {}
         self._row_env_node = None
+        self._row_leaks = []
+        self._row_errors = []
         self.sweep_enabled = _sweep_enabled()
 
     # -- session lifetime ---------------------------------------------------
@@ -1054,6 +1161,9 @@ class Owner:
 
         Returns the leaks found only now, after every row has ended: those
         no row reported, so the session fixture errors on them."""
+        if self._finished:
+            return []
+        self._finished = True
         late = []
         for owned in self.ledger.entries():
             late.extend(owned.end_collect())
@@ -1260,15 +1370,38 @@ class Owner:
 
         It is the row's last word for a process started outside a fixture
         (a driver built in the test body): the row's end is registered
-        nowhere else."""
-        leaks = []
+        nowhere else.  What a driver's own close left (hold_for_row) is
+        reported here too."""
+        leaks = self._row_leaks
+        self._row_leaks = []
+        errors = self._row_errors
+        self._row_errors = []
         for owned in self.entries_since(pids):
             leaks.extend(leak for leak in owned.end_collect()
                          if not leak.declared)
+        errors.extend(self._row_errors)
+        self._row_errors = []
+        if errors:
+            raise errors[0]
         if leaks:
             raise LeakedProcesses("the row left %d process(es) behind, now "
                                   "ended:\n  %s" % (len(leaks), "\n  ".join(
                                       leak.describe() for leak in leaks)))
+
+    def hold_error(self, error):
+        """Keep an error found while a process was being ended (a driver's
+        output handler raised), so the row's last word reports it; raising
+        it where it was found would leave the process running."""
+        self._row_errors.append(error)
+
+    def hold_for_row(self, leaks):
+        """Keep the leaks a driver found when it ended its editor, so the
+        row's last word (end_since) reports them.
+
+        A driver ends its editor inside a `with` block's exit, where a raised
+        error would replace the failure the row itself had; it records here
+        and the row errors, naming the leaks, when it ends."""
+        self._row_leaks.extend(leaks)
 
     # -- the row's environment ----------------------------------------------
 
@@ -1458,10 +1591,13 @@ class Tree:
 
 def _is_candidate(owner, tree, pid, fields):
     """A direct child of pytest that this tree left: in the snapshot or in
-    one of its sessions, and not a process the owner itself started."""
+    one of its sessions, and neither a process the owner itself started nor
+    the shared build server."""
     if pid in owner.ledger.pids():
         return False
-    return tree.holds(pid, fields)
+    if not tree.holds(pid, fields):
+        return False
+    return not is_shared_server(pid)
 
 
 def _candidates_linux(owner, tree):
@@ -1543,6 +1679,8 @@ def _sweep_ppid_walk(owner, tree, daemons):
     for pid in sorted(tree.pids):
         if pid in owner.ledger.pids() or not _still_same(tree, pid):
             continue
+        if is_shared_server(pid):
+            continue
         comm = command_name(pid)
         state = procinfo.run_state(pid)
         watch = watch_process(pid)
@@ -1594,6 +1732,10 @@ class OwnedProcess:
         self.ended = False
         self.abrupt = False
         self.env = None
+        # What is read while the editor is ended: (fd, callback) pairs, the
+        # master side of the terminal an editor runs on first (Terminal.start).
+        # The callback gets every chunk, so no byte is thrown away.
+        self.drain_sources = []
         self.tree = Tree(self.pid, label)
         self.display_loss_expected = False
         self.exit_declared = False
@@ -1683,14 +1825,107 @@ class OwnedProcess:
         with open(self.log, "rb") as fh:
             return fh.read().decode("utf-8", "replace")
 
+    def add_drain_source(self, fd, on_output=None):
+        """Have fd read, and each chunk handed to on_output (when given),
+        while the process is ended."""
+        self.drain_sources.append([fd, on_output])
+
+    def _hand_over(self, source, data):
+        """Give a chunk to the source's callback.  A callback that raises is
+        not called again, and its first error is held for the row's end
+        (Owner.hold_error): the ladder, the sweep and the ledger must still
+        finish, and an error here must not leave the editor running."""
+        if source[1] is None:
+            return
+        try:
+            source[1](data)
+        except Exception as error:      # held, reported by the row's end
+            source[1] = None
+            self.owner.hold_error(OutputHandlerFailed(
+                "the output handler for %s raised %s: %s"
+                % (self.describe(), type(error).__name__, error)))
+
+    def _drain_source(self, source, deadline, to_end=False):
+        """Read the source until the deadline; True while it can still be
+        read.  By default it stops when nothing is ready.  With to_end it
+        waits for more, up to the deadline, until the end of the stream
+        (EOF, or EIO on a terminal whose last writer left), so data still on
+        its way from the writer to the reader is not missed."""
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return True
+            try:
+                ready = select.select([source[0]], [], [],
+                                      left if to_end else 0)[0]
+                data = os.read(source[0], TERMINAL_READ_CHUNK) if ready else None
+            except (OSError, ValueError):
+                return False
+            if data is None:
+                return True
+            if not data:
+                return False
+            self._hand_over(source, data)
+
+    def _drain_terminal(self, deadline, to_end=False):
+        """Read what the editor has written to its terminal (and any other
+        source the row named), handing every byte to its owner.
+
+        An editor ending writes (it releases the screen, reports an
+        emergency save), and a terminal nobody reads holds only so much: on
+        a system whose terminals hold little the editor then blocks in that
+        write and never reaches its end, and the ladder kills a healthy
+        editor.  Reading while it ends lets it finish.  A source that
+        cannot be read any more is dropped.  The reading stops at the
+        ladder's deadline, so a flood cannot hold the ladder."""
+        self.drain_sources = [
+            source for source in self.drain_sources
+            if self._drain_source(source, deadline, to_end)]
+
+    def _drain_last(self):
+        """Read each source once more, now that the process has ended.
+
+        What an editor writes just before it exits (the escape that leaves
+        the alternate screen, the last dump) is still in the terminal or the
+        pipe when the process is seen to end; this takes it, until the end
+        of the stream or a short deadline (a grandchild that still holds the
+        terminal costs that deadline and no more), so the driver that keeps
+        the screen has all of it."""
+        deadline = time.monotonic() + scaled(FINAL_DRAIN_S)
+        self._drain_terminal(deadline)      # everything ready, from every source
+        self._drain_terminal(deadline, to_end=True)
+
+    def _wait_ended(self, timeout_s):
+        """True when the process ended within timeout_s, its terminal read
+        meanwhile (see _drain_terminal) and once more after it ended."""
+        ended = self._wait_ended_reading(timeout_s)
+        if ended:
+            self._drain_last()
+        return ended
+
+    def _wait_ended_reading(self, timeout_s):
+        """The wait itself: True once the process ended, its sources read
+        every TERMINAL_DRAIN_POLL_S."""
+        if not self.drain_sources:
+            return self.watch.wait(timeout_s)
+        deadline = time.monotonic() + timeout_s
+        while True:
+            self._drain_terminal(deadline)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return self.watch.wait(0)
+            if self.watch.wait(min(left, TERMINAL_DRAIN_POLL_S)):
+                return True
+
     def _ladder(self):
         """SIGTERM, the grace, then SIGKILL; True when SIGKILL was needed."""
         self.watch.signal(signal.SIGTERM)
-        if self.watch.wait(scaled(self.ladder_s)):
+        if self._wait_ended(scaled(self.ladder_s)):
             return False
         self.watch.signal(signal.SIGKILL)
         if not self.watch.wait(scaled(KILL_WAIT_S)):
             raise EndFailed("%s did not end after SIGKILL" % self.describe())
+        self._drain_last()
         return True
 
     def end_collect(self):
@@ -1733,6 +1968,17 @@ class OwnedProcess:
         if first and self.kind == "xwpe":
             self._check_display_log()
             self._check_exit()
+
+    def end_for_row(self):
+        """End the process and leave what it left to the row's own end.
+
+        For a driver that ends its editor where an error would hide the
+        row's own failure (the exit of a `with` block): the leaks are kept
+        (Owner.hold_for_row) and the row errors, naming them, when it ends.
+        Returns the leaks."""
+        leaks = [leak for leak in self.end_collect() if not leak.declared]
+        self.owner.hold_for_row(leaks)
+        return leaks
 
     def _check_display_log(self):
         """Error the row when the editor's log reports a lost display.
@@ -1887,7 +2133,18 @@ def _terminal_editor_env(owner, home, log_dir, extra_env, inherit):
     _check_extra_displays(owner, merged)
     env = _terminal_env(_base_env(home, owner.x_runtime_dir()))
     _inherit(env, inherit, log_dir)
+    _pass_traces(env, merged)
     return _apply_extra(env, merged)
+
+
+def _pass_traces(env, merged):
+    """Give the editor the trace files the machine's environment names, for
+    a developer or a CI step that asks for a trace of a whole run; a trace
+    the row sets itself (row_env or extra_env) wins."""
+    for name in TRACE_PASS_THROUGH:
+        value = os.environ.get(name)
+        if value is not None and name not in merged:
+            env[name] = value
 
 
 class Terminal:
@@ -1897,9 +2154,15 @@ class Terminal:
     def start(owner, binary, args, cwd, home, master_fd, slave_fd,
               size=(COLS, ROWS), stdin_fd=None, extra_env=None, inherit=(),
               label="", request=None, daemons=None, log_dir=None,
-              pass_fds=()):
+              pass_fds=(), on_output=None, extra_drains=()):
         """Start the editor on the pty (master_fd, slave_fd) and return the
         owned process; its .proc is the Popen a driver exposes.
+
+        While the editor is ended the owner reads the pty's master, and each
+        (fd, callback) of extra_drains, so a full terminal or pipe never
+        blocks an editor that is leaving; on_output gets every chunk read
+        from the master, so a driver that keeps the screen or the raw bytes
+        loses none of them.
 
         The pty gets its size before the start so the editor inherits it
         (a row never sizes a terminal by LINES or COLUMNS), the slave side
@@ -1919,6 +2182,9 @@ class Terminal:
                              stdio=slave_fd, stdin_fd=stdin_fd,
                              controlling_tty=True)
         owned.env = env
+        owned.add_drain_source(master_fd, on_output)
+        for fd, callback in extra_drains:
+            owned.add_drain_source(fd, callback)
         return owned
 
     @staticmethod

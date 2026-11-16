@@ -25,12 +25,12 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_window_views.py
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 import pytest
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -55,17 +55,11 @@ def run_wpe(workdir, files, keys, wait=1.5, key_delay=0.6, settle=0.8):
     stream = pyte.Stream(screen)
     master_fd, slave_fd = pty.openpty()
 
-    env = os.environ.copy()
-    env['TERM'] = 'xterm-256color'
-    env['COLUMNS'] = str(COLS)
-    env['LINES'] = str(ROWS)
-    env['LC_ALL'] = 'en_US.UTF-8'
-    env['HOME'] = workdir          # isolate from the user's ~/.xwpe config
-
-    proc = subprocess.Popen(
-        [WPE_BIN] + list(files),
-        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        cwd=workdir, env=env, preexec_fn=os.setsid)
+    # HOME is the row's folder: isolated from the user's ~/.xwpe config.
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, list(files), workdir, workdir,
+        master_fd, slave_fd, (COLS, ROWS))
+    proc = owned.proc
     os.close(slave_fd)
 
     def drain(timeout):
@@ -89,12 +83,8 @@ def run_wpe(workdir, files, keys, wait=1.5, key_delay=0.6, settle=0.8):
         drain(settle)
         exit_code = proc.poll()
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()
     return screen, exit_code
 
 

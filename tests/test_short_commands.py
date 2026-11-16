@@ -19,6 +19,7 @@ import time
 
 import pytest
 
+import gui_owner
 from host_tools import needs
 from wpe_driver import WpeSession, WAIT_SCALE, WPE_BIN, XWPE_LIB_DIR, ALT
 
@@ -332,13 +333,9 @@ SAYS_S = 8
 
 
 def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    """True while pid runs.  An ended process pytest has adopted and not yet
+    collected (a zombie) is gone, though kill(pid, 0) still finds it."""
+    return gui_owner.process_running(pid)
 
 
 # @scenario SC-debug-113

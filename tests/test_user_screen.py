@@ -18,11 +18,11 @@ Requires: gcc.
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -46,12 +46,10 @@ def _run_keys(workdir, keys, settle=0.6):
     screen = SafeScreen(80, 30)
     stream = pyte.Stream(screen)
     master_fd, slave_fd = pty.openpty()
-    env = os.environ.copy()
-    env.update(TERM='xterm-256color', COLUMNS='80', LINES='30',
-               LC_ALL='en_US.UTF-8', HOME=workdir)
-    proc = subprocess.Popen([WPE_BIN, 't.c'], stdin=slave_fd, stdout=slave_fd,
-                            stderr=slave_fd, cwd=workdir, env=env,
-                            preexec_fn=os.setsid)
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, ['t.c'], workdir, workdir,
+        master_fd, slave_fd, (80, 30))
+    proc = owned.proc
     os.close(slave_fd)
 
     def drain(timeout):
@@ -76,12 +74,8 @@ def _run_keys(workdir, keys, settle=0.6):
         text = "\n".join(screen.display)
         alive = proc.poll() is None
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()
     return text, alive
 
 

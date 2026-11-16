@@ -71,15 +71,109 @@ def _wait_forever():
         signal.pause()
 
 
-def _standin_leaker(comm):
+def _standin_leaker(comm, folder=None):
     """An editor that leaves a child behind: the child moves to its own
-    session, ignores SIGTERM and outlives the editor."""
+    session (and to ``folder`` when one is given), ignores SIGTERM and
+    outlives the editor."""
     if os.fork() == 0:
         os.setsid()
+        if folder is not None:
+            os.chdir(folder)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         _set_comm(comm)
         _say(GRANDCHILD_LINE + str(os.getpid()))
         _wait_forever()
+    _wait_forever()
+
+
+def _standin_zombie_maker():
+    """A process that starts a child which ends at once and is never waited
+    for, so the child stays a zombie of this process; it says the child's
+    pid."""
+    child = os.fork()
+    if child == 0:
+        os._exit(0)
+    _say(GRANDCHILD_LINE + str(child))
+    _wait_forever()
+
+
+def _standin_writes_on_term(count, ready):
+    """An editor that, when asked to end, writes ``count`` bytes to its
+    terminal before it leaves, as one that reports an emergency save does.
+    ``ready`` is created once the handler is in place."""
+    def on_term(signum, frame):
+        _write_all(1, b"x" * count)
+        os._exit(0)
+    signal.signal(signal.SIGTERM, on_term)
+    with open(ready, "w", encoding="utf-8") as fh:
+        fh.write(READY_LINE + "\n")
+    _wait_forever()
+
+
+# The last thing an ending stand-in writes: a row that gets it has got
+# everything before it.
+LAST_MARK = b"LASTFRAME-MARK"
+
+
+def _write_all(fd, data):
+    """Write every byte of data to fd, which may take several writes."""
+    while data:
+        data = data[os.write(fd, data):]
+
+
+def _wait_for_release(fifo):
+    """Block until the row writes a byte to the named pipe."""
+    with open(fifo, "rb") as fh:
+        fh.read(1)
+
+
+def _standin_exits_on_release(count, ready, bulk_done, fifo):
+    """An editor that, when asked to end, writes ``count`` bytes to its
+    terminal, says so (``bulk_done`` is created), waits for the row to
+    release it through the named pipe, then writes the last mark and leaves
+    at once.  The row decides when the last write happens, so it comes after
+    whatever the owner has read, however slow the owner is."""
+    def on_term(signum, frame):
+        _write_all(1, b"x" * count)
+        with open(bulk_done, "w", encoding="utf-8") as fh:
+            fh.write(READY_LINE + "\n")
+        _wait_for_release(fifo)
+        _write_all(1, LAST_MARK)
+        os._exit(0)
+    signal.signal(signal.SIGTERM, on_term)
+    with open(ready, "w", encoding="utf-8") as fh:
+        fh.write(READY_LINE + "\n")
+    _wait_forever()
+
+
+def _standin_ignores_term_after_writing(ready):
+    """An editor that writes a line when asked to end and then keeps
+    running, so that only SIGKILL ends it."""
+    def on_term(signum, frame):
+        _write_all(1, b"ending\n" + LAST_MARK)
+    signal.signal(signal.SIGTERM, on_term)
+    with open(ready, "w", encoding="utf-8") as fh:
+        fh.write(READY_LINE + "\n")
+    _wait_forever()
+
+
+DUMP_FIRST = b"S 0 ctx=key top=0 autosaved=0\nE 0\n"
+DUMP_LAST = b"S 1 ctx=key top=0 autosaved=0\nE 1\n"
+
+
+def _standin_dump_editor(fifo):
+    """A stand-in for the editor of the edit-model channel: it writes its
+    first dump to the pipe named by XWPE_TEST_DUMP_FD once its end handler
+    is in place; asked to end, it waits for the row's release through the
+    named pipe, writes one more dump and leaves at once."""
+    fd = int(os.environ["XWPE_TEST_DUMP_FD"])
+
+    def on_term(signum, frame):
+        _wait_for_release(fifo)
+        _write_all(fd, DUMP_LAST)
+        os._exit(0)
+    signal.signal(signal.SIGTERM, on_term)
+    _write_all(fd, DUMP_FIRST)
     _wait_forever()
 
 
@@ -236,8 +330,21 @@ def _run_standin(argv):
         _standin_record(argv[1], argv[2:])
     elif argv[:1] == ["--print-env"]:
         _standin_print_env(argv[1:])
-    elif argv[:1] == ["--leaker"] and len(argv) == 2:
-        _standin_leaker(argv[1])
+    elif argv[:1] == ["--leaker"] and len(argv) in (2, 3):
+        _standin_leaker(*argv[1:])
+    elif argv[:1] == ["--dump-editor"] and len(argv) == 2:
+        _standin_dump_editor(argv[1])
+    elif argv[:1] == ["--exits-on-release"] and len(argv) == 5:
+        _standin_exits_on_release(int(argv[1]), *argv[2:])
+    elif argv[:1] == ["--ignores-term"] and len(argv) == 2:
+        _standin_ignores_term_after_writing(argv[1])
+    elif argv == ["--zombie-maker"]:
+        _standin_zombie_maker()
+    elif argv == ["--exits"]:
+        _say("bye")
+        sys.exit(0)
+    elif argv[:1] == ["--writes-on-term"] and len(argv) == 3:
+        _standin_writes_on_term(int(argv[1]), argv[2])
     elif argv[:1] == ["--crasher"] and len(argv) == 2:
         _standin_crasher(argv[1])
     elif argv[:1] == ["--crasher-apart"] and len(argv) == 3:
@@ -252,7 +359,11 @@ def _run_standin(argv):
         _wait_forever()
     elif argv == ["--env-names"]:
         _standin_env_names()
-    sys.stderr.write("usage: test_gui_owner.py --leaker COMM | --crasher COMM "
+    sys.stderr.write("usage: test_gui_owner.py --leaker COMM [FOLDER] "
+                     "| --writes-on-term BYTES READY | --zombie-maker "
+                     "| --dump-editor FIFO | --ignores-term READY | --exits "
+                     "| --exits-on-release BYTES READY BULK_DONE FIFO "
+                     "| --crasher COMM "
                      "| --crasher-apart COMM GO | --orphan-maker SEEN GO "
                      "| --orphan-in-group COMM "
                      "| --sleeper | --env-names | --record DIR [ARG...] "
@@ -938,14 +1049,6 @@ def test_no_x11_module_reads_a_display_constant_and_both_conftests_have_the_acce
 # ---------------------------------------------------------------------------
 # What a test may start, and what an editor is given (the process owner)
 
-# The terminal driver still starts its editor by hand; the rows that show it
-# are red there until it is moved onto the owner, and they are marked so the
-# run is green and the move turns each into an unexpected pass that must have
-# its mark removed.
-PASS_C = pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="WpeSession still starts its editor by hand (moved onto the "
-           "owner by the terminal pass)")
 SUITES = ["x11", "wayland"]
 
 CANARY_VALUES = {"DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9",
@@ -959,7 +1062,8 @@ CANARY_VALUES = {"DISPLAY": ":99", "WAYLAND_DISPLAY": "wayland-9",
 EDITOR_PINNED = {"LC_ALL", "LANG", "SHELL", "HOME", "XDG_CONFIG_HOME",
                  "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "XWPE_LIB",
                  "XWPE_LSP_NO_EAGER", "XWPE_KEYS", "TERM"}
-LAUNCHER_OWN = {"LC_CTYPE", "PWD", "OLDPWD", "SHLVL", "_"}
+LAUNCHER_OWN = {"LC_CTYPE", "PWD", "OLDPWD", "SHLVL", "_"} | set(
+    gui_owner.TRACE_PASS_THROUGH)
 INNER_START_S = 90.0
 INNER_END_S = 120.0
 SETTLE_S = 8.0
@@ -1306,6 +1410,15 @@ def current_owner(owner):
     gui_owner.install(owner)
     yield owner
     gui_owner.install(previous)
+
+
+def _pty_for_a_session(request):
+    """A pty whose slave side the row closes itself right after the start, as
+    a session does, so that only the editor (and what it starts) holds it;
+    only the master is closed with the row."""
+    master, slave = pty.openpty()
+    request.addfinalizer(lambda: _close_quietly(master))
+    return master, slave
 
 
 def _pty_pair(request):
@@ -1656,15 +1769,23 @@ def test_end_since_errors_the_row_naming_what_a_process_left(owner, tmp_path, re
 
 
 # @scenario SC-harness-owner-57
-def test_the_root_fixtures_are_written_and_not_installed():
-    """The owner's session and row fixtures exist in tests/conftest.py but
-    are not autouse: turning them on puts every terminal row under the
-    subreaper, which the terminal suite's pass does after its liveness
-    checks moved to process_running."""
+def test_the_root_fixtures_are_installed_for_every_row():
+    """The owner's session and row fixtures in tests/conftest.py are autouse,
+    so every row, terminal or graphical, runs under the one owner and the
+    subreaper, and a row that started an editor in its body has it ended."""
     with open(os.path.join(gui_owner.HERE, "conftest.py"), encoding="utf-8") as fh:
         text = fh.read()
-    assert "def process_owner(" in text and "def end_row_processes(" in text
-    assert not re.search(r"@pytest\.fixture\([^)]*autouse", text)
+    for name in ("process_owner", "end_row_processes"):
+        assert re.search(r"@pytest\.fixture\([^)]*autouse=True[^)]*\)\s*def %s\("
+                         % name, text), "%s is not an autouse fixture" % name
+
+
+# @scenario SC-harness-owner-63
+def test_a_row_that_asks_for_no_owner_runs_under_the_session_owner():
+    """With no fixture of its own, a row finds the session's owner current
+    and begun: pytest is the child subreaper, which the sweep relies on."""
+    assert gui_owner.subreaper_set(), "pytest is not the child subreaper"
+    assert gui_owner.current().is_begun()
 
 
 # @scenario SC-harness-owner-58
@@ -1702,7 +1823,6 @@ def test_the_x11_conftest_takes_the_starters_from_the_owner():
 
 
 # @scenario SC-harness-owner-59
-@PASS_C
 def test_a_wpe_session_editor_gets_only_the_allow_list(tmp_path, monkeypatch):
     """The terminal driver gives its editor the allow-list and no display."""
     wpe_driver = pytest.importorskip("wpe_driver")
@@ -1718,6 +1838,408 @@ def test_a_wpe_session_editor_gets_only_the_allow_list(tmp_path, monkeypatch):
         assert rec["names"] - allowed == set(), \
             "names outside the allow-list: %s" % sorted(rec["names"] - allowed)
         assert not rec["names"] & {"DISPLAY", "WAYLAND_DISPLAY"}
+
+
+# What an ending editor writes to its terminal in the row below: far more than
+# a terminal holds, so an editor nobody reads blocks in the write.
+PTY_FLOOD_BYTES = 262144
+
+
+# @scenario SC-harness-owner-64
+def test_an_editor_that_writes_when_ended_is_read_and_not_killed_for_it(
+        owner, tmp_path, request):
+    """The owner reads an ending editor's terminal, so one that writes more
+    than the terminal holds (a report of its emergency save) finishes and
+    leaves by itself instead of being killed after the ladder."""
+    master, slave = _pty_pair(request)
+    ready = tmp_path / "ready"
+    home = tmp_path / "home"
+    home.mkdir()
+    owned = gui_owner.Terminal.start(
+        owner, sys.executable,
+        ["-E", "-s", THIS, "--writes-on-term", str(PTY_FLOOD_BYTES), str(ready)],
+        str(tmp_path), str(home), master, slave, label=request.node.nodeid,
+        request=request)
+    gui_owner.wait_for(ready.exists, "the stand-in to be ready to end", READY_S)
+    owned.end()
+    assert not owned.abrupt, "the editor was killed while it wrote its report"
+    assert owned.final_returncode == 0, \
+        "the editor did not leave by itself: %r" % owned.final_returncode
+
+
+def hold_the_last_write(owned, fifo, bulk_done=None):
+    """Make the stand-in's last write come after the owner's last read.
+
+    The owner's watch is wrapped: at its first wait after SIGTERM (and, when
+    bulk_done is named, once the stand-in has said it wrote its bulk), the
+    stand-in is released through the named pipe, and the wrapper waits for
+    it to exit before it returns to the owner.  So the last bytes are
+    written and the process ends inside that one wait, with no read of the
+    owner's in between: whatever the owner then gets, it gets from its read
+    after the process has ended.  The release is not sent from the owner's
+    output callback, which would let the owner's own pass pick the bytes up
+    and make the order a matter of timing again."""
+    real_wait, real_signal = owned.watch.wait, owned.watch.signal
+    state = {"term": False, "released": False}
+
+    def signal_(sig):
+        if sig == signal.SIGTERM:
+            state["term"] = True
+        real_signal(sig)
+
+    def wait_(timeout_s):
+        ready = bulk_done is None or os.path.exists(bulk_done)
+        if state["term"] and not state["released"] and ready:
+            state["released"] = True
+            if _release_stand_in(real_wait, fifo):
+                real_wait(gui_owner.scaled(READY_S))
+        return real_wait(timeout_s)
+    owned.watch.signal = signal_
+    owned.watch.wait = wait_
+
+
+def _release_stand_in(real_wait, fifo):
+    """Write the release byte to the named pipe once the stand-in has it
+    open for reading; False when the stand-in ended (or never opened it
+    within READY_S) and there is nobody to release.  Opening without
+    blocking and trying again while the process runs (real_wait is the
+    watch's own wait, which says when it ended) keeps a stand-in that died
+    early from hanging the row in the open."""
+    deadline = time.monotonic() + gui_owner.scaled(READY_S)
+    while not real_wait(0) and time.monotonic() < deadline:
+        try:
+            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as error:
+            if error.errno != errno.ENXIO:      # no reader yet
+                raise
+            time.sleep(gui_owner.DEFAULT_POLL_S)
+            continue
+        try:
+            os.write(fd, b"x")
+        finally:
+            os.close(fd)
+        return True
+    return False
+
+
+# @scenario SC-harness-owner-78
+@pytest.mark.parametrize("written", [16, PTY_FLOOD_BYTES])
+def test_every_byte_an_editor_writes_when_ended_reaches_the_drivers_callback(
+        owner, tmp_path, request, written):
+    """What an editor writes on its way out, up to its very last byte, is
+    handed to the driver that keeps the screen: the owner reads the terminal
+    once more after the process has ended.  The last write is made by the
+    stand-in when the owner waits for its end (see hold_the_last_write), so
+    it is after every read the owner makes before that wait, on any machine."""
+    master, slave = _pty_pair(request)
+    ready, bulk_done, fifo = (tmp_path / "ready", tmp_path / "bulk", tmp_path / "go")
+    os.mkfifo(str(fifo))
+    home = tmp_path / "home"
+    home.mkdir()
+    chunks = []
+    owned = gui_owner.Terminal.start(
+        owner, sys.executable,
+        ["-E", "-s", THIS, "--exits-on-release", str(written), str(ready),
+         str(bulk_done), str(fifo)],
+        str(tmp_path), str(home), master, slave, label=request.node.nodeid,
+        request=request, on_output=chunks.append)
+    gui_owner.wait_for(ready.exists, "the stand-in to be ready to end", READY_S)
+    hold_the_last_write(owned, str(fifo), str(bulk_done))
+    owned.end()
+    got = b"".join(chunks)
+    assert len(got) == written + len(LAST_MARK), \
+        "%d bytes arrived of %d" % (len(got), written + len(LAST_MARK))
+    assert got.endswith(LAST_MARK)
+
+
+# @scenario SC-harness-owner-81
+def test_a_grandchild_that_keeps_the_terminal_costs_the_final_read_its_bound_only(
+        owner, tmp_path, request):
+    """The final read waits for the end of the terminal's stream, but a
+    process the editor left holding the terminal costs it no more than the
+    deadline the row owns (FINAL_READ_CEILING_S, not the owner's own
+    constant, which is itself held to FINAL_DRAIN_CEILING_S); the end then
+    names and ends the leftover.  A final read with no deadline fails the
+    row instead of hanging it."""
+    assert gui_owner.FINAL_DRAIN_S <= FINAL_DRAIN_CEILING_S
+    owned, master, final_read = _start_timed_standin(
+        owner, tmp_path, request, ["--leaker", LEAK_COMM])
+    seen = bytearray()
+    gui_owner.wait_for(lambda: _terminal_says(master, seen, GRANDCHILD_LINE),
+                       "the stand-in's child to say it started", READY_S)
+    grandchild = int(seen.split(GRANDCHILD_LINE.encode())[1].split()[0])
+    leaks = _end_or_kill(owned, grandchild)
+    assert [leak.comm for leak in leaks] == [LEAK_COMM]
+    assert final_read and final_read[0] <= gui_owner.scaled(FINAL_READ_CEILING_S), \
+        "the final read took %s s, ceiling %.1f s" % (
+            final_read, gui_owner.scaled(FINAL_READ_CEILING_S))
+
+
+# @scenario SC-harness-owner-82
+def test_a_final_read_with_no_grandchild_ends_with_the_stream_not_the_deadline(
+        owner, tmp_path, request):
+    """Nobody holds the terminal once the editor has left, so the final read
+    sees the end of the stream at once and does not wait out its deadline.
+    The editor leaves inside the owner's wait (hold_the_last_write), so the
+    end of the stream is first met by the final read."""
+    ready, bulk_done, fifo = (tmp_path / "ready", tmp_path / "bulk", tmp_path / "go")
+    os.mkfifo(str(fifo))
+    owned, master, final_read = _start_timed_standin(
+        owner, tmp_path, request,
+        ["--exits-on-release", "16", str(ready), str(bulk_done), str(fifo)])
+    gui_owner.wait_for(ready.exists, "the stand-in to be ready to end", READY_S)
+    hold_the_last_write(owned, str(fifo), str(bulk_done))
+    owned.end_collect()
+    assert final_read and final_read[0] <= gui_owner.scaled(FINAL_READ_CLEAN_MAX_S), \
+        "the final read took %s s with nothing holding the terminal" % final_read
+
+
+# @scenario SC-harness-owner-83
+def test_a_stand_in_that_died_before_the_release_does_not_hang_the_end(
+        owner, tmp_path, request):
+    """The release helper opens its pipe without blocking: an editor killed
+    before it opened the other end leaves nobody to release, and the end
+    returns."""
+    master, slave = _pty_for_a_session(request)
+    ready, fifo = tmp_path / "ready", tmp_path / "go"
+    os.mkfifo(str(fifo))
+    home = tmp_path / "home"
+    home.mkdir()
+    owned = gui_owner.Terminal.start(
+        owner, sys.executable,
+        ["-E", "-s", THIS, "--exits-on-release", "16", str(ready),
+         str(tmp_path / "bulk"), str(fifo)],
+        str(tmp_path), str(home), master, slave, label=request.node.nodeid)
+    os.close(slave)
+    gui_owner.wait_for(ready.exists, "the stand-in to be ready to end", READY_S)
+    hold_the_last_write(owned, str(fifo))
+    os.kill(owned.pid, signal.SIGKILL)
+    gui_owner.wait_for(lambda: not owned.running(), "the stand-in to die", READY_S)
+    runner = threading.Thread(target=owned.end_collect, daemon=True)
+    runner.start()
+    runner.join(gui_owner.scaled(HELPER_END_CEILING_S))
+    assert not runner.is_alive(), "the end hung in the release helper"
+
+
+# What the rows above own, whatever the code under test says: the owner's
+# deadline for the final read may not exceed FINAL_DRAIN_CEILING_S; a final
+# read with a grandchild holding the terminal may take FINAL_READ_CEILING_S,
+# one with nothing holding it FINAL_READ_CLEAN_MAX_S; an end that never
+# returns is given THREAD_JOIN_S, and the release helper's end
+# HELPER_END_CEILING_S (all but the first scaled).
+FINAL_DRAIN_CEILING_S = 2.0
+FINAL_READ_CEILING_S = 3.0
+FINAL_READ_CLEAN_MAX_S = 0.5
+THREAD_JOIN_S = 30.0
+HELPER_END_CEILING_S = 8.0
+
+
+def _start_timed_standin(owner, tmp_path, request, mode):
+    """Start a stand-in on a terminal whose slave side only the stand-in
+    holds (as a session has it), with its final read timed.  Returns the
+    owned process, the master, and the list the duration goes to."""
+    master, slave = _pty_for_a_session(request)
+    home = tmp_path / "home"
+    home.mkdir()
+    owned = gui_owner.Terminal.start(
+        owner, sys.executable, ["-E", "-s", THIS] + mode, str(tmp_path),
+        str(home), master, slave, label=request.node.nodeid)
+    os.close(slave)
+    final_read = []
+    real = owned._drain_last
+
+    def timed():
+        started = time.monotonic()
+        real()
+        final_read.append(time.monotonic() - started)
+    owned._drain_last = timed
+    return owned, master, final_read
+
+
+def _end_or_kill(owned, grandchild):
+    """End the process in a thread; when it has not returned within
+    THREAD_JOIN_S (a final read with no deadline), kill the grandchild that
+    holds it up and fail the row instead of hanging it."""
+    result = []
+    runner = threading.Thread(target=lambda: result.append(owned.end_collect()))
+    runner.start()
+    runner.join(gui_owner.scaled(THREAD_JOIN_S))
+    if runner.is_alive():
+        os.kill(grandchild, signal.SIGKILL)
+        runner.join()
+        pytest.fail("the end did not return: the final read has no deadline")
+    return result[0]
+
+
+def _terminal_says(master, seen, text):
+    """Read what the terminal holds into seen; True once it has said text."""
+    while select.select([master], [], [], 0)[0]:
+        try:
+            seen.extend(os.read(master, 4096))
+        except OSError:
+            break
+    return text.encode() in bytes(seen)
+
+
+# @scenario SC-harness-owner-79
+def test_a_callback_that_raises_does_not_leave_the_editor_or_escape_the_end(
+        owner, tmp_path, request):
+    """An error in the driver's output handler is held for the row's end: the
+    editor is still ended (SIGKILL, here, as it ignores SIGTERM), the end
+    raises nothing, and the row's last word names the error."""
+    master, slave = _pty_pair(request)
+    ready = tmp_path / "ready"
+    home = tmp_path / "home"
+    home.mkdir()
+    calls = []
+
+    def failing(data):
+        calls.append(data)
+        raise RuntimeError("handler broke")
+    before = owner.ledger.pids()
+    owned = gui_owner.Terminal.start(
+        owner, sys.executable, ["-E", "-s", THIS, "--ignores-term", str(ready)],
+        str(tmp_path), str(home), master, slave, label=request.node.nodeid,
+        on_output=failing)
+    gui_owner.wait_for(ready.exists, "the stand-in to be ready to end", READY_S)
+    owned.end_for_row()
+    assert not owned.running(), "the editor was left running"
+    assert owned.pid not in owner.ledger.pids()
+    assert len(calls) == 1, "a callback that failed was called again"
+    with pytest.raises(gui_owner.OutputHandlerFailed) as raised:
+        owner.end_since(before)
+    assert "handler broke" in str(raised.value)
+    owner.end_since(before)         # reported once
+
+
+# @scenario SC-harness-owner-65
+def test_end_for_row_keeps_what_the_process_left_for_the_rows_own_end(
+        owner, tmp_path, request):
+    """A driver that ends its editor where an error would hide the row's own
+    failure does not raise: the leaks are held, and the row's end names
+    them once."""
+    before = owner.ledger.pids()
+    editor = _start_standin(owner, tmp_path, request, ["--leaker", LEAK_COMM])
+    grandchild = _wait_grandchild(editor)
+    pidfd = os.pidfd_open(grandchild)
+    try:
+        leaks = editor.end_for_row()
+        assert [leak.pid for leak in leaks] == [grandchild]
+        with pytest.raises(gui_owner.LeakedProcesses) as raised:
+            owner.end_since(before)
+        assert "pid %d comm %s" % (grandchild, LEAK_COMM) in str(raised.value)
+        owner.end_since(before)         # reported once, then nothing is held
+    finally:
+        _end_leftover(pidfd)
+
+
+def _start_server_standin(owner, tmp_path, request, comm, folder):
+    """A stand-in editor that leaves a child named comm, running in folder,
+    which ignores SIGTERM."""
+    return _start_standin(owner, tmp_path, request,
+                          ["--leaker", comm, str(folder)])
+
+
+# @scenario SC-harness-owner-66
+def test_the_shared_build_server_is_left_running_and_is_no_leak(
+        owner, tmp_path, request, monkeypatch):
+    """The Scala build server an editor started is shared with the user's own
+    tools and with the next row: the sweep does not signal it and the row
+    does not error for it."""
+    folder = tmp_path / "bloop"
+    folder.mkdir()
+    monkeypatch.setattr(gui_owner, "shared_server_folder", lambda: str(folder))
+    editor = _start_server_standin(owner, tmp_path, request,
+                                   gui_owner.SHARED_SERVER_COMM, folder)
+    grandchild = _wait_grandchild(editor)
+    pidfd = os.pidfd_open(grandchild)
+    try:
+        editor.end()
+        assert not _ended(pidfd), "the shared build server was ended by the sweep"
+    finally:
+        _end_leftover(pidfd)
+
+
+# @scenario SC-harness-owner-67
+def test_a_java_process_that_is_not_the_shared_server_is_still_a_leak(
+        owner, tmp_path, request, monkeypatch):
+    """Only the server in its own folder is kept: a program with the same
+    command name that runs anywhere else is what the row left."""
+    folder = tmp_path / "bloop"
+    elsewhere = tmp_path / "elsewhere"
+    folder.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.setattr(gui_owner, "shared_server_folder", lambda: str(folder))
+    editor = _start_server_standin(owner, tmp_path, request,
+                                   gui_owner.SHARED_SERVER_COMM, elsewhere)
+    grandchild = _wait_grandchild(editor)
+    pidfd = os.pidfd_open(grandchild)
+    try:
+        with pytest.raises(gui_owner.LeakedProcesses) as raised:
+            editor.end()
+        assert "pid %d comm %s" % (grandchild, gui_owner.SHARED_SERVER_COMM) \
+            in str(raised.value)
+        assert _ended(pidfd)
+    finally:
+        _end_leftover(pidfd)
+
+
+def _start_zombie_maker():
+    """Start the zombie-making stand-in in a group of its own; return it and
+    the pid of its zombie child."""
+    maker = subprocess.Popen(STANDIN + ["--zombie-maker"], stdout=subprocess.PIPE,
+                             start_new_session=True)
+    line = maker.stdout.readline().decode()
+    assert line.startswith(GRANDCHILD_LINE), "the stand-in said %r" % line
+    child = int(line[len(GRANDCHILD_LINE):])
+    gui_owner.wait_for(lambda: procinfo.run_state(child) == procinfo.ZOMBIE,
+                       "the stand-in's child to end", READY_S)
+    return maker, child
+
+
+# @scenario SC-harness-owner-74
+def test_process_gone_counts_an_orphan_pytest_adopted_but_not_a_zombie_of_the_editor(
+        owner):
+    """A zombie whose parent still runs is not gone (that parent never waited
+    for it); once its parent ends pytest adopts it and it is."""
+    maker, child = _start_zombie_maker()
+    try:
+        assert not gui_owner.process_gone(child), \
+            "a zombie its own parent never waited for was taken for gone"
+        maker.kill()
+        maker.wait()
+        gui_owner.wait_for(lambda: gui_owner.process_gone(child),
+                           "pytest to adopt the orphan", READY_S)
+        os.waitpid(child, 0)
+        assert gui_owner.process_gone(child), "a collected process is not gone"
+    finally:
+        maker.stdout.close()
+        if maker.poll() is None:
+            maker.kill()
+            maker.wait()
+
+
+# @scenario SC-harness-owner-75
+def test_group_running_ignores_members_that_have_ended(owner):
+    """A group whose only members ended, and wait to be collected, is not
+    running, though killpg(pgid, 0) still finds them."""
+    maker, child = _start_zombie_maker()
+    pgid = maker.pid
+    try:
+        assert gui_owner.group_running(pgid), "a running member was not counted"
+        maker.kill()
+        gui_owner.wait_for(lambda: not gui_owner.group_running(pgid),
+                           "the group to have no running member", READY_S)
+        os.killpg(pgid, 0)          # the zombies are still in the group
+        maker.wait()
+        gui_owner.wait_for(lambda: gui_owner.process_gone(child),
+                           "pytest to adopt the orphan", READY_S)
+        os.waitpid(child, 0)
+    finally:
+        maker.stdout.close()
+        if maker.poll() is None:
+            maker.kill()
+            maker.wait()
 
 
 if __name__ == "__main__":

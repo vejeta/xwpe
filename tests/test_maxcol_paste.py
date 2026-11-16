@@ -13,11 +13,11 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_maxcol_paste.py
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
 
+import gui_owner
 from test_utf8_border import SafeScreen
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -39,12 +39,10 @@ def test_small_maxcolumns_paste_does_not_crash(tmp_path):
     screen = SafeScreen(COLS, ROWS)
     stream = pyte.Stream(screen)
     master_fd, slave_fd = pty.openpty()
-    env = os.environ.copy()
-    env.update(TERM='xterm-256color', COLUMNS=str(COLS), LINES=str(ROWS),
-               LC_ALL='en_US.UTF-8', HOME=str(tmp_path))
-    proc = subprocess.Popen(
-        [WPE_BIN, 'big.c'], stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        cwd=str(tmp_path), env=env, preexec_fn=os.setsid)
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, ['big.c'], str(tmp_path), str(tmp_path),
+        master_fd, slave_fd, (COLS, ROWS))
+    proc = owned.proc
     os.close(slave_fd)
 
     def drain(timeout):
@@ -85,9 +83,5 @@ def test_small_maxcolumns_paste_does_not_crash(tmp_path):
                    for line in screen.display), \
             'editor menu bar gone after the stress -- xwpe is not responsive'
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()

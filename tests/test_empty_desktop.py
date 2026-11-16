@@ -25,10 +25,11 @@ Run: tests/.venv/bin/python -m pytest -v tests/test_empty_desktop.py
 import os
 import pty
 import select
-import subprocess
 import time
 
 import pyte
+
+import gui_owner
 
 # SafeScreen tolerates the private-mode CSI sequences (e.g. set_margins with
 # private=True) that some pyte versions reject on a raw pyte.Screen; the rest of
@@ -55,12 +56,10 @@ class _Wpe:
         self.screen = SafeScreen(COLS, ROWS)
         self.stream = pyte.Stream(self.screen)
         self.master_fd, slave = pty.openpty()
-        env = os.environ.copy()
-        env.update(TERM='xterm-256color', COLUMNS=str(COLS), LINES=str(ROWS),
-                   LC_ALL='en_US.UTF-8', HOME=workdir)
-        self.proc = subprocess.Popen(
-            [WPE_BIN], stdin=slave, stdout=slave, stderr=slave,
-            cwd=workdir, env=env, preexec_fn=os.setsid)
+        self.owned = gui_owner.Terminal.start(
+            gui_owner.current(), WPE_BIN, [], workdir, workdir,
+            self.master_fd, slave, (COLS, ROWS))
+        self.proc = self.owned.proc
         os.close(slave)
 
     def drain(self, timeout):
@@ -85,15 +84,11 @@ class _Wpe:
         return self.proc.poll() is None
 
     def close(self):
-        try:
-            os.killpg(os.getpgid(self.proc.pid), 9)
-        except Exception:
-            pass
+        self.owned.end_for_row()
         try:
             os.close(self.master_fd)
         except OSError:
             pass
-        self.proc.wait()
 
 
 def _reach_empty_desk(w):

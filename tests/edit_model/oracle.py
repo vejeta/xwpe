@@ -29,9 +29,7 @@ import gui_owner  # noqa: E402
 import procinfo  # noqa: E402
 
 from test_utf8_border import SafeScreen  # noqa: E402
-from wpe_driver import (WPE_BIN, XWPE_LIB_DIR, _RepStream,  # noqa: E402
-                        adopt_pty_as_controlling_tty, set_pty_size,
-                        strip_size_env)
+from wpe_driver import WPE_BIN, XWPE_LIB_DIR, _RepStream  # noqa: E402
 
 # ---- keys, as an xterm sends them -----------------------------------------
 
@@ -312,28 +310,28 @@ class EditSession:
         self.keys_sent = 0
         self.answers_ms = []
         self.trace_offset = 0
+        self._fds_closed = False
         self.master_fd, slave_fd = pty.openpty()
-        set_pty_size(self.master_fd, cols, rows)
         dump_r, dump_w = os.pipe()
         self.dump_fd = dump_r
-        env = strip_size_env(os.environ.copy())
-        # XWPE_KEYS goes too: the row's xwperc names its key style, and a
-        # session style would override it (the suite sets XWPE_KEYS=borland
-        # for every editor, which would run every "cua" row as Borland).
-        for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XWPE_AI_ENABLE",
-                     "XWPE_AI_BACKEND", "WAYLAND_DISPLAY", "DISPLAY", "XWPE_KEYS"):
-            env.pop(name, None)
-        env.update(TERM="xterm-256color", LC_ALL="en_US.UTF-8", HOME=workdir,
-                   XDG_CONFIG_HOME="", XDG_STATE_HOME="", XWPE_LIB=XWPE_LIB_DIR,
-                   XWPE_LSP_NO_EAGER="1", XWPE_UI_TRACE=self.trace_path,
-                   XWPE_TEST_DUMP_FD=str(dump_w))
-        if env_extra:
-            env.update(env_extra)
+        # The owner gives the editor its allow-list, no key of the machine's
+        # and no assistant.  XWPE_KEYS is removed: the row's xwperc names its
+        # key style, and a session style would override it (the owner runs
+        # the Borland keys by default, which would run every "cua" row as
+        # Borland).
+        extra_env = {"XWPE_KEYS": None, "XWPE_LIB": XWPE_LIB_DIR,
+                     "XWPE_UI_TRACE": self.trace_path,
+                     "XWPE_TEST_DUMP_FD": str(dump_w)}
+        extra_env.update(env_extra or {})
         start = time.monotonic()
-        self.proc = subprocess.Popen(
-            [binary or WPE_BIN, filename], stdin=slave_fd, stdout=slave_fd,
-            stderr=slave_fd, cwd=workdir, env=env, pass_fds=(dump_w,),
-            preexec_fn=adopt_pty_as_controlling_tty)
+        self.owned = gui_owner.Terminal.start(
+            gui_owner.current(), binary or WPE_BIN, [filename], workdir,
+            workdir, self.master_fd, slave_fd, (cols, rows),
+            extra_env=extra_env, pass_fds=(dump_w,),
+            on_output=self._feed_screen,
+            extra_drains=((dump_r, self.reader.feed),),
+            label="%s %s" % (os.path.basename(workdir), filename))
+        self.proc = self.owned.proc
         os.close(slave_fd)
         os.close(dump_w)
         try:
@@ -516,13 +514,13 @@ class EditSession:
                          self._why_it_did_not_end(fds, counts))
 
     def close(self):
-        if self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=5)
+        """End the editor through the owner (SIGTERM, its own ladder, SIGKILL,
+        its terminal read meanwhile) and close the descriptors, once.  What
+        the editor left errors the row when the row ends."""
+        self.owned.end_for_row()
+        if self._fds_closed:
+            return
+        self._fds_closed = True
         for fd in (self.master_fd, self.dump_fd):
             try:
                 os.close(fd)

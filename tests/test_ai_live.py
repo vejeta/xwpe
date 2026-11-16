@@ -27,6 +27,15 @@ PROMPT = live_ai.CHAT_PROMPT
 _reply_shows_answer = live_ai.reply_shows_answer
 
 
+def _key_names(backend):
+    """The variables of the machine a chat against this backend may read: the
+    editor looks its API key up itself, so the key's name is let through the
+    owner's allow-list and nothing else is."""
+    if backend == "openai":
+        return live_ai.KEY_INHERIT + live_ai.OPENAI_KEY_INHERIT
+    return live_ai.KEY_INHERIT
+
+
 def _chat(tmp_path, backend, endpoint, model):
     trace = tmp_path / "ai.trace"
     env = {
@@ -37,7 +46,7 @@ def _chat(tmp_path, backend, endpoint, model):
         "XWPE_AI_TRACE": str(trace),
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    env_extra=env) as s:
+                    env_extra=env, inherit=_key_names(backend)) as s:
         s.key(ALT.AI)                 # Alt-G
         s.key("a")                       # Ask
         s.key(PROMPT)
