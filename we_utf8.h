@@ -129,6 +129,43 @@ static inline int e_utf8_to_codepoint(unsigned char *buf, int len)
 }
 
 /**
+ * e_utf8_encode - The UTF-8 bytes of the code point @cp.
+ * @cp: 0 to E_UTF8_LAST_CODEPOINT, not a surrogate; @out: receives the bytes.
+ *
+ * The one place that knows the shape of a sequence going out, as
+ * e_utf8_to_codepoint is the one that knows it coming in, so a code point the
+ * editor makes up (the search owner's stand-in for a stray byte) is written
+ * exactly as e_utf8_glyph_at reads it back.
+ * Return: the bytes written, 1 to E_UTF8_MAX_BYTES.
+ */
+static inline int e_utf8_encode(int cp, unsigned char out[E_UTF8_MAX_BYTES])
+{
+ if (cp < E_UTF8_MIN_2_BYTES)
+ {
+  out[0] = (unsigned char)cp;
+  return(1);
+ }
+ if (cp < E_UTF8_MIN_3_BYTES)
+ {
+  out[0] = (unsigned char)(0xC0 | (cp >> 6));
+  out[1] = (unsigned char)(0x80 | (cp & 0x3F));
+  return(2);
+ }
+ if (cp < E_UTF8_MIN_4_BYTES)
+ {
+  out[0] = (unsigned char)(0xE0 | (cp >> 12));
+  out[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+  out[2] = (unsigned char)(0x80 | (cp & 0x3F));
+  return(3);
+ }
+ out[0] = (unsigned char)(0xF0 | (cp >> 18));
+ out[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+ out[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+ out[3] = (unsigned char)(0x80 | (cp & 0x3F));
+ return(4);
+}
+
+/**
  * e_utf8_scalar_is_valid - Is @cp, decoded from @n bytes, a character UTF-8
  * allows in that many bytes?
  *

@@ -311,20 +311,43 @@ escapes} and @samp{regex reads UTF-8} say which answer this build has:
 @headitem System @tab @code{\b}, @code{\B}, @code{\w}, @code{\s} and non-ASCII letters
 @item Linux (glibc)
 @tab The four escapes work.  Case Sensitive off folds non-ASCII letters
-(@samp{@'e} finds @samp{@'E}) and @code{.} is one character.
+(@samp{@'e} finds @samp{@'E}) and @code{.} is one character.  A byte
+that is no UTF-8 is one character too (see below).
 @item NetBSD
 @tab The four escapes work, in the engine's own mode, which Find turns on.
+A byte that is no UTF-8 is one character (see below).
 @item FreeBSD
 @tab The escapes are refused: Find reports a bad expression.  Use
-@code{\<} and @code{\>} for word edges.
+@code{\<} and @code{\>} for word edges.  A byte that is no UTF-8 is one
+character (see below).
 @item OpenBSD
 @tab The escapes are read as the letters @samp{b}, @samp{w} and so on, and
 find nothing else.  The engine reads bytes, so Case Sensitive off folds
 ASCII letters only; a hit is still kept to whole characters, so @code{.}
-does not stop inside an accented letter.
+does not stop inside an accented letter.  A byte that is no UTF-8 is one
+byte, so one character, as on the other systems.
 @end multitable
 
 On any other system the two configure lines give the answer.
+
+@cindex Find, bytes that are no UTF-8
+@cindex Latin-1 file, Find
+A byte that is no UTF-8 (a Latin-1 file opened under a UTF-8 locale) is
+one character to Find on every system, and one of its own: @code{.} finds
+it, the same byte in the Find text finds it, a bracket that holds it
+matches it and no other such byte, Case Sensitive off does not fold it
+with another character, and it is not the letter it would be in Latin-1,
+so a typed @samp{@'e} does not find it.  @code{\b} sees no letter in it,
+but Whole Words keeps the original's rule that such a byte is part of a
+word.  On a system whose engine reads UTF-8 (the configure line
+@samp{regex reads UTF-8}), a sequence of the right shape that is no
+UTF-8 either (an overlong form such as @samp{C0 80}, a surrogate) is one
+such character too, and all of them are the same character to Find, so a
+Find text that holds one finds any other.  On OpenBSD the engine reads
+bytes: only a single stray byte is one character there, and an overlong
+form stays two bytes and a surrogate three.  A range in a bracket with
+such a byte at either end is refused by the engine in its own words;
+name the bytes one by one.
 
 One difference stays for now: Change All searches the text as its own
 replacements leave it, so @code{\<a} replaced by nothing turns

@@ -8,7 +8,10 @@
  *   <<FAR>>  a match 2114 bytes past the end (NetBSD's 2119..2121 on 5 bytes);
  *   <<PRE>>  the match [pos - 1, pos): before where the call starts;
  *   <<NEG>>  the match [pos + 2, pos + 1): its end before its start;
- *   <<END>>  the match [pos, end + 1): one byte past the range.
+ *   <<END>>  the match [pos, end + 1): one byte past the range;
+ *   <<MID>>  a match that starts one byte after the first F4 byte of the range
+ *            (the lead of a stand-in for a byte that is no UTF-8, four bytes
+ *            for one character), so inside that character.
  * Everything else goes to the C library.  See mock_badengine.h. */
 #include <signal.h>
 #include <stdio.h>
@@ -27,6 +30,7 @@
 #define MOCK_PATTERNS 64        /* compiled patterns alive at once, owner and reference */
 #define MOCK_PATTERN_MAX 600
 #define MOCK_FAR_OFFSET 2114
+#define MOCK_STAND_IN_LEAD 0xF4   /* the first byte of U+10FE00 to U+10FFFF in UTF-8 */
 
 static struct {
  const regex_t *re;
@@ -138,11 +142,34 @@ void mock_regfree(regex_t *re)
  regfree(re);
 }
 
+/** stand_in_lead - Where the first F4 byte (the lead of a stand-in for a byte
+ * that is no UTF-8) is in [@s, @s + @n), or -1. */
+static long stand_in_lead(const unsigned char *s, size_t n)
+{
+ size_t i;
+
+ for (i = 0; i < n; i++)
+  if (s[i] == MOCK_STAND_IN_LEAD)
+   return((long)i);
+ return(-1);
+}
+
 /** marker_answer - Answer a call outside the range when the row asks for it.
  * @pos: where the call starts; @end: the range's end.
  * Return: 1 the answer was given in @m, 0 no marker. */
 static int marker_answer(const char *text, regoff_t pos, regoff_t end, regmatch_t *m)
 {
+ if (range_has(text + pos, (size_t)(end - pos), "<<MID>>"))
+ {
+  long lead = stand_in_lead((const unsigned char *)text + pos, (size_t)(end - pos));
+
+  if (lead >= 0)
+  {
+   m->rm_so = pos + lead + 1;
+   m->rm_eo = pos + lead + 2;
+   return(1);
+  }
+ }
  if (range_has(text + pos, (size_t)(end - pos), "<<FAR>>"))
  {
   m->rm_so = end + MOCK_FAR_OFFSET;

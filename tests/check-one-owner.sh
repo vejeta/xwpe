@@ -90,6 +90,7 @@ wpe_child_start we_child.o we_startplan.o
 wpe_child_capture|wpe_child_probe|wpe_child_run_to_file|wpe_child_capture_plan|wpe_child_probe_plan|wpe_child_run_to_file_plan we_child.o we_startplan.o
 regcomp|regexec|regfree|regerror we_rowfind.o
 wpe_rowfind_row we_block.o we_fl_unix.o
+setlocale we_unix.o
 e_strstr|e_ustrstr|e_rstrstr|e_urstrstr
 refresh|wrefresh|doupdate|endwin|resizeterm|def_prog_mode|reset_prog_mode|reset_shell_mode we_term.o
 tcsetattr|tcgetattr we_term.o we_child.o
@@ -188,6 +189,9 @@ REG_NOTEOL we_rowfind.c
 isalnum we_rowfind.c we_fl_fkt.c we_prog.c we_progn.c we_errpat.c
 uselocale we_rowfind.c
 newlocale we_rowfind.c
+c_locale_name
+WPE_ROWFIND_STANDIN_BASE we_rowfind.c
+WPE_ROWFIND_STANDIN_BAD_GLYPH we_rowfind.c
 EOF
 
 # The language server's columns have one owner (we_lsp_pos.c): the units a
@@ -1117,6 +1121,24 @@ unflagged_regcomp "$WORK/regcompfixture.stripped" > "$WORK/regcompfixture.named"
   grep -q 'pat, cflags has 0' "$WORK/regcompfixture.named" &&
   grep -q 'pat, REG_EXTENDED has 0' "$WORK/regcompfixture.named" ||
   problem "canary: the test-reference rule does not name exactly the three planted calls (literal flags, a variable, the split name) in its fixture (the rule is blind or too wide)"
+# The search owner keeps no reading of a row of its own beside the UTF-8 one:
+# it never names the C locale, whether to make a ctype of it (newlocale), to
+# switch to it (setlocale), or to compile a second engine under it, so a bytes
+# engine cannot come back through a locale the symbol rules above allow
+# (uselocale and newlocale are the owner's, for its one UTF-8 ctype).  The
+# rule is the strings "C" and "POSIX" in its source, comments blanked.  The
+# canary: a fixture with two planted names (and a comment, and "C.UTF-8",
+# which are not names of the C locale) is counted exactly.
+C_LOCALE_NAME_RE='"(C|POSIX)"'
+cat > "$WORK/clocalefixture.c" <<'EOF'
+ loc = newlocale(LC_CTYPE_MASK, "C", (locale_t)0);
+ setlocale(LC_CTYPE, "POSIX");
+ /* "C" in a comment */
+ loc = newlocale(LC_CTYPE_MASK, "C.UTF-8", (locale_t)0);
+EOF
+strip_comments "$WORK/clocalefixture.c" > "$WORK/clocalefixture.stripped"
+[ "$(count_uses_re "$C_LOCALE_NAME_RE" "$WORK/clocalefixture.stripped")" -eq 2 ] ||
+  problem "canary: the C-locale rule counts $(count_uses_re "$C_LOCALE_NAME_RE" "$WORK/clocalefixture.stripped") names in its fixture, not 2 (the rule is blind or too wide)"
 if [ -f "$SRCDIR/tests/test_rowfind.c" ]; then
   strip_c "$SRCDIR/tests/test_rowfind.c" > "$WORK/rowfindtest.stripped"
   [ "$(count_words regcomp "$WORK/rowfindtest.stripped")" -gt 0 ] ||
@@ -1162,6 +1184,9 @@ for obj in $OBJECTS; do
       term_output)
         [ "$c" = we_term.c ] || continue
         n=$(count_term_output "$file") ;;
+      c_locale_name)
+        [ "$c" = we_rowfind.c ] || continue
+        n=$(count_uses_re "$C_LOCALE_NAME_RE" "$(commented_source "$c")") ;;
       ris_literal) n=$(count_uses_re "$RIS_LITERAL_RE" "$(commented_source "$c")") ;;
       mouse_mode_call) n=$(count_mouse_mode_calls "$file") ;;
       *) n=$(count_words "$word" "$file") ;;

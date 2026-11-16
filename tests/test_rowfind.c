@@ -20,7 +20,13 @@
  *                        leaves the engine reading bytes and the owner has
  *                        to reject a match that covers part of a character.
  *   test_rowfind_illseq  WPE_ROWFIND_MOCK_ILLSEQ: a mock engine that refuses
- *                        invalid UTF-8 as FreeBSD's does (REG_ILLSEQ);
+ *                        invalid UTF-8 as FreeBSD's does (REG_ILLSEQ) and
+ *                        counts each refusal: the owner must hand the
+ *                        engine none, so the run fails on a count above 0;
+ *   test_rowfind_illseq_copy  the same on the copy path (no REG_STARTEND),
+ *                        where the engine reads a copy the owner makes;
+ *   test_rowfind_nolocale  the same mock, on the configuration of a system
+ *                        with no uselocale (NetBSD, WPE_ROWFIND_NO_LOCALES);
  *   test_rowfind_badengine  WPE_ROWFIND_MOCK_BADENGINE and
  *                        WPE_ROWFIND_UNSAFE_BOUNDARY_GROUP: a mock engine
  *                        that crashes on a word-boundary escape beside an
@@ -121,12 +127,6 @@
 
 static int fails, checks;
 static int copy_differences;       /* owner != reference, on a word boundary pattern */
-/* A backward search over a row the engine refuses part of: the owner decides
-   "bytes from here" at the start of each window it looks at, the reference at
-   the first refused start of the whole row, so a word boundary can be judged
-   by characters in one and by bytes in the other.  Counted, not failed: which
-   of the two is right for the user is an open question for the search owner. */
-static int window_differences;
 /* glibc judges \B after an atom that may match empty differently when a call
    starts before the place and when it starts there, on ASCII rows too
    (measured with a bare regexec: ".*\B" on " ..e" from 2 gives 3..3, from 3
@@ -204,22 +204,6 @@ static ref_ctype_t ref_utf8_ctype(void)
  return(loc);
 }
 
-/** ref_c_ctype - the C ctype the owner falls back to when the engine refuses
- * a byte (Latin-1 text from a file): the reference must read bytes the same
- * way.  Returns REF_NO_CTYPE when the system cannot make one. */
-static ref_ctype_t ref_c_ctype(void)
-{
- static locale_t loc;
- static int made;
-
- if (!made)
- {
-  made = 1;
-  loc = newlocale(LC_CTYPE_MASK, "C", (locale_t)0);
- }
- return(loc);
-}
-
 /** ref_ctype_enter - switch the calling thread to LOC and give back what it
  * ran under, for ref_ctype_leave.  A LOC of REF_NO_CTYPE changes nothing. */
 static ref_ctype_t ref_ctype_enter(ref_ctype_t loc)
@@ -237,11 +221,6 @@ static void ref_ctype_leave(ref_ctype_t loc, ref_ctype_t prev)
 }
 #else
 static ref_ctype_t ref_utf8_ctype(void)
-{
- return(REF_NO_CTYPE);
-}
-
-static ref_ctype_t ref_c_ctype(void)
 {
  return(REF_NO_CTYPE);
 }
@@ -281,19 +260,122 @@ static void ref_escape(const char *text, char *out)
  *out = '\0';
 }
 
-/* Only the BSDs' and macOS's multibyte engines answer an invalid byte with
-   REG_ILLSEQ; glibc matches it as itself.  The owner names it the same way. */
-#ifndef REG_ILLSEQ
-#define REG_ILLSEQ (-1)
-#endif
+/* ---- what the engine reads: the reference's own stand-ins ---- */
 
-/* The owner falls back to bytes in two places, and the reference counts each
-   time it takes the same one, so a log shows the path ran: the engine
-   refused a plain text at compile time, or refused a row at exec time. */
-static int ref_compile_fallbacks, ref_exec_fallbacks;
+/* How many rows the reference gave the engine with a stand-in in them (the
+   row or the Find text), so a log shows the path ran: 0 on a system whose
+   engine reads bytes (OpenBSD), more than 0 everywhere else. */
+static int ref_standin_rows;
 
-/* Where the owner has a C ctype to fall back to, the reference does too. */
-#define REF_HAS_BYTE_FALLBACK TEST_HAS_LOCALES
+/* The engine's text of a row or a Find text, with the tables between the two
+   sets of columns.  Written here on its own, from the glyph rule of we_utf8.h
+   and the constants of we_rowfind.h, and not from the owner's code: the
+   loop and the tables are what a mistake of the owner's would be caught by. */
+typedef struct {
+ unsigned char *eng;
+ int eng_len;
+ int *to_engine;     /* row column -> engine column, defined on every column */
+ int *to_row;        /* engine column -> row column, -1 inside a stand-in */
+ int count;          /* the glyphs that were replaced */
+} RefText;
+
+/** ref_standin_for - The code point that stands for the glyph at @s, or 0 when
+ * the glyph is read as it is.  @n receives the glyph's bytes. */
+static int ref_standin_for(const unsigned char *s, int avail, int *n)
+{
+ int cp, cols;
+
+ *n = e_utf8_glyph_at(s, avail, &cp, &cols);
+ if (cp != 0 || s[0] < 0x80)
+  return(0);
+ if (*n == 1)
+  return(WPE_ROWFIND_STANDIN_BASE + s[0]);
+ return(WPE_ROWFIND_STANDIN_BAD_GLYPH);
+}
+
+/** ref_text_alloc - The buffers for a text of @len bytes: up to
+ * E_UTF8_MAX_BYTES engine bytes for each. */
+static void ref_text_alloc(RefText *t, int len)
+{
+ size_t n = (size_t)(len > 0 ? len : 0);
+
+ t->eng = malloc(E_UTF8_MAX_BYTES * n + 1);
+ t->to_engine = malloc(sizeof(int) * (n + 1));
+ t->to_row = malloc(sizeof(int) * (E_UTF8_MAX_BYTES * n + 1));
+ t->count = 0;
+}
+
+/** ref_text_same - The text as it is: where the engine reads bytes, a byte is one unit. */
+static void ref_text_same(const unsigned char *in, int len, RefText *t)
+{
+ int i;
+
+ for (i = 0; i < len; i++)
+ {
+  t->eng[i] = in[i];
+  t->to_engine[i] = i;
+  t->to_row[i] = i;
+ }
+ t->eng[len] = '\0';
+ t->to_engine[len] = len;
+ t->to_row[len] = len;
+ t->eng_len = len;
+}
+
+/** ref_text_standins - The text with a stand-in for each glyph that is no UTF-8. */
+static void ref_text_standins(const unsigned char *in, int len, RefText *t)
+{
+ int i = 0, e = 0, n, k, m, cp;
+ unsigned char bytes[E_UTF8_MAX_BYTES];
+
+ while (i < len)
+ {
+  cp = ref_standin_for(in + i, len - i, &n);
+  if (cp != 0)
+  {
+   m = e_utf8_encode(cp, bytes);
+   t->count++;
+  }
+  else
+  {
+   memcpy(bytes, in + i, (size_t)n);
+   m = n;
+  }
+  for (k = 0; k < n; k++)
+   t->to_engine[i + k] = (cp != 0) ? e : e + k;
+  for (k = 0; k < m; k++)
+  {
+   t->eng[e + k] = bytes[k];
+   t->to_row[e + k] = (cp != 0 && k > 0) ? -1 : i + k;
+  }
+  e += m;
+  i += n;
+ }
+ t->eng[e] = '\0';
+ t->to_engine[len] = e;
+ t->to_row[e] = len;
+ t->eng_len = e;
+}
+
+/** ref_text_make - Make the engine's text of the @len bytes at @in. */
+static void ref_text_make(const unsigned char *in, int len, RefText *t)
+{
+ if (len < 0)
+  len = 0;
+ ref_text_alloc(t, len);
+ if (engine_reads_chars())
+  ref_text_standins(in, len, t);
+ else
+  ref_text_same(in, len, t);
+}
+
+/** ref_text_free - Free what ref_text_make made. */
+static void ref_text_free(RefText *t)
+{
+ free(t->eng);
+ free(t->to_engine);
+ free(t->to_row);
+}
 
 /** ref_regcomp - Compile @pat as the owner compiles a search with option bits
  * @sw, under the ctype @loc.  The one place the reference compiles, so its
@@ -314,90 +396,34 @@ static int ref_regcomp(regex_t *re, const char *pat, unsigned sw, ref_ctype_t lo
  return(rc);
 }
 
-/** ref_compile - Compile as the owner does, including its first byte
- * fallback: a plain text that a multibyte engine refuses (REG_ILLSEQ, a
- * Latin-1 byte from a file) is compiled again under the C ctype and matched
- * as bytes.  @loc is the ctype the exec then runs under.
+/** ref_exec - One regexec of the reference from the engine column @epos of the
+ * engine's text @t, with the whole text and the range to look in.
+ * Return: 1 a match (in @m), 0 none.  An engine that refuses the text is no
+ * match here: the owner never hands it one, and the mock counts it if it does. */
+static int ref_exec(const regex_t *re, const RefText *t, int epos, int flags, regmatch_t *m)
+{
+ m->rm_so = epos;
+ m->rm_eo = t->eng_len;
+ return(regexec(re, (const char *)t->eng, 1, m, flags | REG_STARTEND) == 0);
+}
+
+/** ref_compile_text - Compile the Find text @fd as the owner does: escaped
+ * when it is a plain text, with its stand-ins where the engine reads
+ * characters, under the ctype @loc.
+ * @pt: receives the pattern's engine text, for the caller to free.
  * Return: regcomp's code. */
-static int ref_compile(regex_t *re, const char *pat, unsigned sw, ref_ctype_t *loc)
+static int ref_compile_text(regex_t *re, const FIND *fd, ref_ctype_t loc, RefText *pt)
 {
- int rc = ref_regcomp(re, pat, sw, *loc);
-
- if (rc == REG_ILLSEQ && !(sw & SW_REGEX) && REF_HAS_BYTE_FALLBACK && ref_c_ctype() != REF_NO_CTYPE)
- {
-  ref_compile_fallbacks++;
-  *loc = ref_c_ctype();
-  rc = ref_regcomp(re, pat, sw, *loc);
- }
- return(rc);
-}
-
-/* The byte engine of the owner's second fallback, compiled when first needed. */
-typedef struct {
- regex_t re;
- int tried;
- int ok;
- int from_here;  /* a call was refused: the rest of the row is matched by bytes */
-} RefBytes;
-
-/** ref_exec_bytes - The owner's exec fallback: an answer that is neither a
- * match nor "no match" is tried again under the C ctype, and the row is a
- * match only if that matches.
- * Return: regexec's code of the byte engine, REG_NOMATCH when it is not there. */
-static int ref_exec_bytes(RefBytes *rb, const char *pat, unsigned sw, const unsigned char *row,
-                          int p, int len, int flags, regmatch_t *m)
-{
- ref_ctype_t cloc = ref_c_ctype(), prev;
+ char pat[2 * E_FIND_TEXT_MAX + 4];
  int rc;
 
- if (!rb->tried)
- {
-  rb->tried = 1;
-  rb->ok = (ref_regcomp(&rb->re, pat, sw, cloc) == 0);
- }
- if (!rb->ok)
-  return(REG_NOMATCH);
- ref_exec_fallbacks++;
- m->rm_so = p;
- m->rm_eo = len;
- prev = ref_ctype_enter(cloc);
- rc = regexec(&rb->re, (const char *)row, 1, m, flags | REG_STARTEND);
- ref_ctype_leave(cloc, prev);
+ if (fd->sw & SW_REGEX)
+  strcpy(pat, fd->search);
+ else
+  ref_escape(fd->search, pat);
+ ref_text_make((const unsigned char *)pat, (int)strlen(pat), pt);
+ rc = ref_regcomp(re, (const char *)pt->eng, fd->sw, loc);
  return(rc);
-}
-
-/** ref_exec - One regexec of the reference from byte @p, as the owner's
- * engine_match answers it.
- *
- * The owner's present rule, which this models and does not judge: a call
- * the engine refuses (neither a match nor "no match") is answered by the
- * byte engine, and that engine looks at the rest of the row from that
- * start, so the reference goes on by bytes from the first refused start
- * and does not decide again at each later start.  Whether that is right
- * for the user (a refused byte early in a row changes how a later start is
- * judged) is an open question for the search owner's design, not for this
- * test.  Revisit when a FreeBSD or macOS log says "exec N" with N > 0 in
- * the "reference: byte fallback taken" line.
- * Return: 1 a match (in @m), 0 none. */
-static int ref_exec(regex_t *re, ref_ctype_t loc, RefBytes *rb, const char *pat, unsigned sw,
-                    const unsigned char *row, int p, int len, int flags, regmatch_t *m)
-{
- int rc;
-
- if (!rb->from_here)
- {
-  m->rm_so = p;
-  m->rm_eo = len;
-  rc = regexec(re, (const char *)row, 1, m, flags | REG_STARTEND);
-  if (rc == 0)
-   return(1);
-  if (rc == REG_NOMATCH)
-   return(0);
-  if (!REF_HAS_BYTE_FALLBACK || ref_c_ctype() == REF_NO_CTYPE || loc == ref_c_ctype())
-   return(0);
-  rb->from_here = 1;
- }
- return(ref_exec_bytes(rb, pat, sw, row, p, len, flags, m) == 0);
 }
 
 /* 1 a hit, 0 none, -1 the text does not compile. */
@@ -405,22 +431,22 @@ static int ref_find(const FIND *fd, const unsigned char *row, int len, unsigned 
                     int from, int to, unsigned how, WpeRowHit *hit)
 {
  regex_t re;
- RefBytes rb;
- char pat[2 * E_FIND_TEXT_MAX + 4];
+ RefText pt, rt;
  int rc, p, found = 0, f, t;
  ref_ctype_t loc = (OWNER_HAS_UTF8_CTYPE && !process_utf8()) ? ref_utf8_ctype() : REF_NO_CTYPE;
  ref_ctype_t prev;
 
  if (fd->search[0] == '\0')
   return(0);
- if (fd->sw & SW_REGEX)
-  strcpy(pat, fd->search);
- else
-  ref_escape(fd->search, pat);
- memset(&rb, 0, sizeof rb);
- rc = ref_compile(&re, pat, fd->sw, &loc);
+ rc = ref_compile_text(&re, fd, loc, &pt);
  if (rc != 0)
+ {
+  ref_text_free(&pt);
   return(-1);
+ }
+ ref_text_make(row, len, &rt);
+ if (pt.count > 0 || rt.count > 0)
+  ref_standin_rows++;
  prev = ref_ctype_enter(loc);
  if (from < 0)
   from = 0;
@@ -441,11 +467,11 @@ static int ref_find(const FIND *fd, const unsigned char *row, int len, unsigned 
    flags |= REG_NOTBOL;
   if (!(kind & WPE_ROW_ENDS_LINE))
    flags |= REG_NOTEOL;
-  if (!ref_exec(&re, loc, &rb, pat, fd->sw, row, p, len, flags, &m))
+  if (!ref_exec(&re, &rt, rt.to_engine[p], flags, &m))
    continue;
-  so = (int)m.rm_so;
-  eo = (int)m.rm_eo;
-  if (so != p || eo > t || !ref_is_start(row, len, eo))
+  so = rt.to_row[m.rm_so];
+  eo = rt.to_row[m.rm_eo];
+  if (so != p || eo < 0 || eo > t || !ref_is_start(row, len, eo))
    continue;
   if (so == eo)
   {
@@ -470,8 +496,8 @@ static int ref_find(const FIND *fd, const unsigned char *row, int len, unsigned 
    break;
  }
  regfree(&re);
- if (rb.tried && rb.ok)
-  regfree(&rb.re);
+ ref_text_free(&pt);
+ ref_text_free(&rt);
  ref_ctype_leave(loc, prev);
  return(found);
 }
@@ -1144,6 +1170,12 @@ static void badengine_rows(void)
  run_marker("aaa<<PRE>> aaaa");
  run_marker("aaa<<NEG>> aaaa");
  run_marker("aaa<<END>> aaaa");
+ /* an answer that starts inside the stand-in of a stray byte has no column of
+    the row: no hit, never a hit inside a character the owner made up */
+ if (engine_reads_chars())
+  run_marker("aaa<<MID>> \xE9 aaaa");
+ else
+  skip_row("answer inside a stand-in", "an engine that reads UTF-8 characters here");
 }
 #endif
 
@@ -1251,8 +1283,7 @@ static int has_boundary_escape(const char *text, unsigned sw)
 
 /* One bare call of the engine from @p with the owner's flags for the row.
    1 a match (its columns in *so, *eo), 0 none. */
-static int bare_match(regex_t *re, const unsigned char *row, int len, unsigned kind,
-                      int p, int *so, int *eo)
+static int bare_match(regex_t *re, const RefText *t, unsigned kind, int p, int *so, int *eo)
 {
  regmatch_t m;
  int flags = 0;
@@ -1261,13 +1292,11 @@ static int bare_match(regex_t *re, const unsigned char *row, int len, unsigned k
   flags |= REG_NOTBOL;
  if (!(kind & WPE_ROW_ENDS_LINE))
   flags |= REG_NOTEOL;
- m.rm_so = p;
- m.rm_eo = len;
- if (regexec(re, (const char *)row, 1, &m, flags | REG_STARTEND) != 0)
+ if (!ref_exec(re, t, t->to_engine[p], flags, &m))
   return(0);
- *so = (int)m.rm_so;
- *eo = (int)m.rm_eo;
- return(1);
+ *so = t->to_row[m.rm_so];
+ *eo = t->to_row[m.rm_eo];
+ return(*so >= 0 && *eo >= 0);
 }
 
 /* Does the engine disagree with itself on this row: a call from p gives a
@@ -1278,26 +1307,28 @@ static int engine_self_inconsistent(const FIND *fd, const unsigned char *row, in
                                     unsigned kind)
 {
  regex_t re;
- char pat[2 * E_FIND_TEXT_MAX + 4];
+ RefText pt, rt;
  int p, so, eo, so2, eo2, odd = 0;
  ref_ctype_t loc = (OWNER_HAS_UTF8_CTYPE && !process_utf8()) ? ref_utf8_ctype() : REF_NO_CTYPE;
  ref_ctype_t prev;
 
  if (!(fd->sw & SW_REGEX))
   return(0);
- strcpy(pat, fd->search);
  prev = ref_ctype_enter(loc);
- if (ref_regcomp(&re, pat, fd->sw, REF_NO_CTYPE) == 0)
+ ref_text_make(row, len, &rt);
+ if (ref_compile_text(&re, fd, REF_NO_CTYPE, &pt) == 0)
  {
   for (p = 0; p <= len && !odd; p++)
   {
-   if (!bare_match(&re, row, len, kind, p, &so, &eo))
+   if (!bare_match(&re, &rt, kind, p, &so, &eo))
     continue;
-   if (!bare_match(&re, row, len, kind, so, &so2, &eo2) || so2 != so || eo2 != eo)
+   if (!bare_match(&re, &rt, kind, so, &so2, &eo2) || so2 != so || eo2 != eo)
     odd = 1;
   }
   regfree(&re);
  }
+ ref_text_free(&pt);
+ ref_text_free(&rt);
  ref_ctype_leave(loc, prev);
  return(odd);
 }
@@ -1350,7 +1381,7 @@ static void compare_case(const char *text, unsigned sw, const unsigned char *tmp
                          unsigned kind, int from, int to, unsigned how, int it)
 {
  unsigned char *row, *before;
- int rc_own, rc_ref, exec_before = ref_exec_fallbacks;
+ int rc_own, rc_ref;
  WpeRowHit own = { -1, -1 }, ref = { -1, -1 };
  const FIND *fd;
  char label[300];
@@ -1371,15 +1402,6 @@ static void compare_case(const char *text, unsigned sw, const unsigned char *tmp
  {
   if (!OWNER_SEES_BEFORE && has_boundary_escape(text, sw))
    copy_differences++;
-  else if (ref_exec_fallbacks > exec_before && (how & BWD) && has_boundary_escape(text, sw) &&
-           rc_own == rc_ref)
-  {
-   /* two hits at different places: the windows' byte rule; a hit on one
-      side and none on the other is a real difference and fails below */
-   window_differences++;
-   printf("exempt [%s]: %s (owner %d..%d, reference %d..%d)\n", pass_name, label,
-          own.so, own.eo, ref.so, ref.eo);
-  }
   else if (has_boundary_escape(text, sw) && engine_self_inconsistent(fd, row, len, kind))
    byte_engine_quirks++;
   else
@@ -1431,6 +1453,52 @@ static void differential(int iterations, int long_rows)
   }
   compare_case(text, sw, tmp, len, kind, from, to, how, it);
  }
+}
+
+/* The FreeBSD row that read differently from the owner and from glibc: a
+   backward Find of a bracket with `?` over a row whose stray byte E9 stands
+   before an accented capital. */
+static const unsigned char fb_row[] = { 0x5F, 0x78, 0x62, 0x2D, 0x61, 0xE9, 0x2E, 0x61, 0x41, 0xC3, 0x89, 0x00 };
+#define FB_ROW_LEN 11   /* the bytes before the zero, which makes it a C string for expect() */
+#define FB_ROW_FROM 5
+#define FB_ROW_TO 12
+#define FB_ROW_SW (SW_CASE | SW_WORD | SW_REGEX)
+
+/** stray_byte_rows - What Find does with a byte that is no UTF-8.
+ *
+ * A user who opens a Latin-1 file under a UTF-8 locale sees each such byte
+ * as one replacement glyph, and Find treats it as one character of its own
+ * on every system: `.` finds it, the same byte in the Find text finds it,
+ * and it is neither the letter it would be in Latin-1 nor another stray
+ * byte.  A glyph of the right shape that is no character (an overlong form,
+ * a surrogate) is one such character too, and all of them are the same one
+ * to Find.  The rows run where the engine reads UTF-8; where it reads bytes
+ * the byte is already one unit for it and the rows say so by name. */
+static void stray_byte_rows(void)
+{
+ if (!engine_reads_chars())
+ {
+  skip_row("a stray byte is one character", "an engine that reads UTF-8 characters here");
+  return;
+ }
+ expect(". finds e acute before a stray byte", ".", SW_REGEX, "\xC3\xA9\xE9", KIND_BOTH, 0, -1, 0, 1, 0, 2);
+ expect("e acute ICASE finds E acute before a stray byte", "\xC3\xA9", 0, "\xC3\x89\xFF", KIND_BOTH,
+        0, -1, 0, 1, 0, 2);
+ expect(". finds a stray byte", ".", SW_REGEX, "x\xE9", KIND_BOTH, 1, -1, 0, 1, 1, 2);
+ expect("[stray] finds itself", "[\xE9]", SW_REGEX, "x\xE9y", KIND_BOTH, 0, -1, 0, 1, 1, 2);
+ expect("[stray] is not another stray", "[\xE9]", SW_REGEX, "x\xFFy", KIND_BOTH, 0, -1, 0, 0, 0, 0);
+ expect(". takes an overlong glyph whole", ".", SW_REGEX, "\xC0\x80" "a", KIND_BOTH, 0, -1, 0, 1, 0, 2);
+ expect(". takes a surrogate glyph whole", ".", SW_REGEX, "\xED\xA0\x80" "a", KIND_BOTH, 0, -1, 0, 1, 0, 3);
+ /* all glyphs that are no character are the one same character to Find:
+    a surrogate in the Find text finds an overlong form (documented) */
+ expect("a bad glyph in the text finds another bad glyph", "\xED\xA0\x80", SW_CASE, "x\xC0\x80y", KIND_BOTH,
+        0, -1, 0, 1, 1, 3);
+ /* the backward search with an optional bracket over a stray byte reads the
+    row once, so the owner and the reference agree with glibc's own answer */
+ expect("backward [e acute]? over a stray byte", "[\xC3\xA9]?", FB_ROW_SW, (const char *)fb_row,
+        WPE_ROW_ENDS_LINE, FB_ROW_FROM, FB_ROW_TO, BWD | AFT, 1, 9, 9);
+ compare_case("[\xC3\xA9]?", FB_ROW_SW, fb_row, FB_ROW_LEN, WPE_ROW_ENDS_LINE, FB_ROW_FROM, FB_ROW_TO,
+              BWD | AFT, -1);
 }
 
 /* Pinned rows of the differential: glibc's \B over plain ASCII disagrees
@@ -1837,6 +1905,45 @@ static int exhaust_backward(const FIND *fd, const unsigned char *row, int len, i
  }
 }
 
+#define PERF_UNIT_BYTES 5
+#define PERF_UNIT_ROW_LEN 20000
+#define PERF_UNIT_HITS 4000
+#define PERF_EXHAUST_BOUND_MS 50.0
+
+/** perf_unit_row - Backward to exhaustion over a long row made of one unit.
+ * @what: names the row in the log; @unit: PERF_UNIT_BYTES bytes, the last one
+ * the `a` that is found once per unit.
+ *
+ * A Change All from the end of a long Latin-1 file, or of one with accented
+ * letters, must cost the window of each step and not the whole row: the same
+ * bound as the ASCII row, whatever the row holds. */
+static void perf_unit_row(const char *what, const unsigned char unit[PERF_UNIT_BYTES])
+{
+ unsigned char *row = malloc((size_t)PERF_UNIT_ROW_LEN + 2);
+ int i, calls = 0, hits;
+ double t0, ms;
+ char msg[200];
+
+ for (i = 0; i < PERF_UNIT_ROW_LEN; i++)
+  row[i] = unit[i % PERF_UNIT_BYTES];
+ row[PERF_UNIT_ROW_LEN] = '\n';
+ row[PERF_UNIT_ROW_LEN + 1] = '\0';
+ t0 = now_ms();
+ hits = exhaust_backward(fd_for("a", SW_CASE), row, PERF_UNIT_ROW_LEN, &calls);
+ ms = now_ms() - t0;
+ printf("perf [%s]: backward to exhaustion, 20000 bytes, %s: %d hits in %.1f ms\n",
+        pass_name, what, hits, ms);
+ checks++;
+ if (hits != PERF_UNIT_HITS)
+  fail("perf: wrong number of hits");
+ if (perf_wanted() && ms > PERF_EXHAUST_BOUND_MS)
+ {
+  snprintf(msg, sizeof msg, "perf: backward over %s took %.1f ms, bound 50", what, ms);
+  fail(msg);
+ }
+ free(row);
+}
+
 static void perf_rows(void)
 {
  unsigned char *row;
@@ -1874,6 +1981,13 @@ static void perf_rows(void)
   }
  }
  free(row);
+ {
+  static const unsigned char latin1_unit[PERF_UNIT_BYTES] = { 0xE9, 'b', 'b', 'b', 'a' };
+  static const unsigned char utf8_unit[PERF_UNIT_BYTES] = { 0xC3, 0xA9, 'b', 'b', 'a' };
+
+  perf_unit_row("Latin-1 bytes", latin1_unit);
+  perf_unit_row("accented letters", utf8_unit);
+ }
  /* the 2000-byte shape: every byte a hit of `.`, and `a*` on a row of a */
  len = 2000;
  row = malloc((size_t)len + 2);
@@ -1971,6 +2085,10 @@ static void one_pass(const char *locale, int with_perf, int iterations)
 #endif
  diagnostic_reads_behind();
  pinned_rows();
+ stray_byte_rows();
+ row_mode = ROW_GUARDED;
+ stray_byte_rows();
+ row_mode = ROW_COPY;
  differential(iterations, 0);
  differential(iterations / 200 + 5, 1);
  progress_models(iterations / 4);
@@ -2029,6 +2147,24 @@ static void check_copy_difference(void)
   printf("copy path: 0 differential rows differ on a word boundary, as expected\n");
 }
 
+#ifdef WPE_ROWFIND_MOCK_ILLSEQ
+/** check_engine_saw_only_utf8 - The engine is never handed a byte that is no UTF-8.
+ *
+ * A Find on a Latin-1 file must give the same hits on every system, and the
+ * systems whose engine refuses such a byte (FreeBSD, macOS) or faults on it
+ * (NetBSD) can only be served if the owner never hands it one.  The mock
+ * counts every call that did; one is a failure, whichever row it was. */
+static void check_engine_saw_only_utf8(void)
+{
+ checks++;
+ if (mock_illseq_refusals != 0)
+ {
+  printf("FAIL: the engine was handed %d texts that are not UTF-8\n", mock_illseq_refusals);
+  fails++;
+ }
+}
+#endif
+
 int main(void)
 {
  const char *e = getenv("ROWFIND_ITERS");
@@ -2044,14 +2180,12 @@ int main(void)
  one_pass("C.UTF-8", 1, iterations);
  one_pass("en_US.iso885915", 0, iterations);
  check_copy_difference();
- printf("reference: byte fallback taken %d times (compile %d, exec %d)\n",
-        ref_compile_fallbacks + ref_exec_fallbacks, ref_compile_fallbacks, ref_exec_fallbacks);
+#ifdef WPE_ROWFIND_MOCK_ILLSEQ
+ check_engine_saw_only_utf8();
+#endif
+ printf("reference: %d rows carried a stand-in\n", ref_standin_rows);
  printf("refused: %d differential rows (the engine is measured unsafe for them)\n",
         differential_refused);
- if (window_differences > 0)
-  printf("owner rule: %d backward word-boundary rows differ where the engine refused part of the row "
-         "(the owner goes by bytes from each window's start; open question for the search owner)\n",
-         window_differences);
  if (byte_engine_quirks > 0)
   printf("engine quirk: %d differential rows skipped, the engine disagrees with itself on a word boundary\n",
          byte_engine_quirks);

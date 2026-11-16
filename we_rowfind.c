@@ -19,22 +19,33 @@
      a line longer than Max. Columns is several rows.
 
    A plain text is escaped and goes through the same engine, so the rules are
-   the same with and without "Regular expression". */
+   the same with and without "Regular expression".
+
+   The engine reads a row one way only.  A byte that is no UTF-8 (a Latin-1
+   file under a UTF-8 locale) is one character of its own to Find, as it is one
+   glyph on the screen: before the engine sees the Find text or a row, the
+   owner stands a code point of its own in for each such glyph
+   (WPE_ROWFIND_STANDIN_BASE), and maps the engine's columns back to the
+   row's.  So there is no second engine, no switch of the locale and no
+   difference between a system whose engine refuses such a byte, one that
+   faults on it and one that matches it as itself. */
 
 #include <ctype.h>
+#include <langinfo.h>
+#include <limits.h>
 #include <regex.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "we_rowfind.h"
 #include "we_utf8.h"
 
 #if WPE_ROWFIND_HAS_LOCALES
 #define WPE_ROWFIND_LOCALES 1
-#include <langinfo.h>
 #include <locale.h>
-#include <strings.h>
 #endif
 
 /* The engine runs REG_STARTEND (the row, whole, with the range to look in)
@@ -45,9 +56,10 @@
 #define WPE_ROWFIND_STARTEND 1
 #endif
 
-/* Only the BSDs' and macOS's multibyte engines answer an invalid byte with
-   REG_ILLSEQ; glibc matches it as itself.  Where the name does not exist no
-   answer is it. */
+/* Only the BSDs' and macOS's multibyte engines have REG_ILLSEQ; the owner
+   never hands them a byte that would earn it, and the name is here so that
+   ROWFIND_BAD_ANSWER below is checked against it.  Where the name does not
+   exist no answer is it. */
 #ifndef REG_ILLSEQ
 #define REG_ILLSEQ (-1)
 #endif
@@ -74,12 +86,28 @@ typedef char rowfind_bad_answer_is_new[
 #define WORD_BYTE_HIGH 0x80
 
 #define ROWFIND_WINDOW_FIRST 16     /* bytes a backward search looks at first */
-#define ROWFIND_ESCAPED_MAX (2 * E_FIND_TEXT_MAX + 2)
 #define ROWFIND_ERROR_MAX 160
+#define ROWFIND_FIRST_NON_ASCII 0x80   /* the first byte that is no ASCII character */
 
-#define ENGINE_PRIMARY 0   /* the ctype the editor's text asks for */
-#define ENGINE_BYTES   1   /* the C ctype: byte matching, for a row the first refuses */
-#define ENGINE_COUNT   2
+/* The Find text, escaped: two bytes for each of the ASCII characters that
+   mean something in an expression, and the end. */
+#define ROWFIND_ESCAPED_MAX (2 * E_FIND_TEXT_MAX + 2)
+
+/* The Find text as the engine reads it: a stray byte is E_UTF8_MAX_BYTES
+   bytes as a stand-in, and an escaped byte is two, never both for one byte of
+   the text, so the larger bound is four bytes for each byte of the text and
+   the end (513 for a text of E_FIND_TEXT_MAX bytes). */
+#define ROWFIND_PATTERN_MAX (E_UTF8_MAX_BYTES * E_FIND_TEXT_MAX + 1)
+
+/* The longest row the owner makes an engine text of: the engine's columns are
+   ints and a stand-in row is up to E_UTF8_MAX_BYTES bytes for each byte of
+   the row, so a longer row (half a gigabyte) is no hit instead of a wrapped
+   size. */
+#define ROWFIND_ROW_MAX (INT_MAX / E_UTF8_MAX_BYTES - 1)
+
+/* The row column of an engine column that is inside a stand-in: there is
+   none, and an answer that starts or ends there is no answer. */
+#define ROWFIND_NO_COLUMN (-1)
 
 /* The one compiled search the owner keeps, keyed by the text and the three
    option bits. */
@@ -88,22 +116,42 @@ typedef struct {
  char text[E_FIND_TEXT_MAX + 1];
  unsigned bits;
  int utf8_process;                  /* the process codeset was UTF-8 when it was compiled */
- int failed;                        /* the primary engine refused the text */
- int compiled[ENGINE_COUNT];
+ int reads_utf8;                    /* the engine reads UTF-8 characters: stand-ins are in use */
+ int failed;                        /* the engine refused the text */
+ int compiled;
  int cflags;
- char pattern[ROWFIND_ESCAPED_MAX];
+ char pattern[ROWFIND_PATTERN_MAX];
 #ifdef WPE_ROWFIND_LOCALES
- locale_t ctype[ENGINE_COUNT];      /* ctype to run the engine under, or 0 for the process's */
+ locale_t ctype;                    /* ctype to run the engine under, or 0 for the process's */
 #endif
- regex_t re[ENGINE_COUNT];
+ regex_t re;
 } RowfindCache;
 
+/* The last row the owner made an engine text of, and what it made.  A
+   backward search calls the owner once for each hit of one row, so the row
+   is compared with the saved copy (a memcmp) instead of being read again. */
+typedef struct {
+ int valid;                         /* src holds the row the rest was made from */
+ int mapped;                        /* some glyph needed a stand-in: eng differs from src */
+ unsigned char *src;
+ size_t src_size;
+ int src_len;
+ unsigned char *eng;                /* the engine's bytes, with a zero after them */
+ size_t eng_size;
+ int eng_len;
+ int *to_engine;                    /* row column -> engine column, 0 to src_len */
+ size_t to_engine_size;
+ int *to_row;                       /* engine column -> row column, or ROWFIND_NO_COLUMN */
+ size_t to_row_size;
+} EngineText;
+
 static RowfindCache g_cache;
+static EngineText g_text;
 static char g_error[ROWFIND_ERROR_MAX];
 static int g_has_error;
 #ifndef WPE_ROWFIND_STARTEND
 static char *g_scratch;
-static int g_scratch_size;
+static size_t g_scratch_size;
 #endif
 
 /* Where the last hit left the cursor. */
@@ -116,20 +164,21 @@ typedef struct {
  unsigned kind;
  unsigned how;
  int words;
+ const unsigned char *eng;          /* what the engine reads: the row, or its stand-in text */
+ int eng_len;
+ const int *to_engine;              /* NULL when the engine reads the row itself */
+ const int *to_row;
 } RowSearch;
 
 /* ---- the ctype the engine runs under ---- */
-
-#ifdef WPE_ROWFIND_LOCALES
-static locale_t g_utf8_ctype, g_c_ctype;
-static int g_ctype_probed;
 
 /**
  * process_codeset_is_utf8 - Does the process's own locale say UTF-8?
  *
  * The editor's text is UTF-8 in every locale; the engine reads characters by
  * the locale it runs under, so when the process runs under another codeset
- * the owner runs the engine under a UTF-8 ctype of its own.
+ * the owner runs the engine under a UTF-8 ctype of its own where the system
+ * has the calls, and reads bytes where it has not.
  */
 static int process_codeset_is_utf8(void)
 {
@@ -138,7 +187,11 @@ static int process_codeset_is_utf8(void)
  return(cs != NULL && (strcasecmp(cs, "UTF-8") == 0 || strcasecmp(cs, "UTF8") == 0));
 }
 
-/** probe_ctypes - Make the UTF-8 and the C ctype once; 0 where a system has none. */
+#ifdef WPE_ROWFIND_LOCALES
+static locale_t g_utf8_ctype;
+static int g_ctype_probed;
+
+/** probe_ctypes - Make the UTF-8 ctype once; 0 where a system has none. */
 static void probe_ctypes(void)
 {
  if (g_ctype_probed)
@@ -154,7 +207,6 @@ static void probe_ctypes(void)
  if (g_utf8_ctype == (locale_t)0)
   g_utf8_ctype = newlocale(LC_CTYPE_MASK, "en_US.UTF-8", (locale_t)0);
 #endif
- g_c_ctype = newlocale(LC_CTYPE_MASK, "C", (locale_t)0);
 }
 
 /**
@@ -180,14 +232,11 @@ static void ctype_leave(int entered, locale_t prev)
 
 /* ---- the compiled search ---- */
 
-/** cache_clear - Free the compiled engines; the text stays unset. */
+/** cache_clear - Free the compiled engine; the text stays unset. */
 static void cache_clear(RowfindCache *c)
 {
- int i;
-
- for (i = 0; i < ENGINE_COUNT; i++)
-  if (c->compiled[i])
-   regfree(&c->re[i]);
+ if (c->compiled)
+  regfree(&c->re);
  memset(c, 0, sizeof(*c));
 }
 
@@ -369,27 +418,331 @@ int wpe_rowfind_refuses(const char *text, unsigned sw)
                                  WPE_ROWFIND_BOUNDARY_SAFE));
 }
 
+/* ---- what the engine reads: a stand-in for each glyph that is no UTF-8 ---- */
+
 /**
- * engine_compile - Compile the cache's pattern for one engine.
- * @which: ENGINE_PRIMARY or ENGINE_BYTES.
+ * standin_of_glyph - Does the glyph at @s need a stand-in for the engine?
+ * @s: the first byte; @avail: the bytes that may be read.
+ * @n: receives the bytes of the glyph.
+ * @cp: receives the stand-in's code point when one is needed.
+ *
+ * A Latin-1 byte in a UTF-8 file is one glyph on the screen, and so it is one
+ * character to Find: a stray byte becomes WPE_ROWFIND_STANDIN_BASE plus its
+ * value, and a sequence of the right shape that is no character (an overlong
+ * form, a surrogate, a lead above F4) becomes one WPE_ROWFIND_STANDIN_BAD_GLYPH.
+ * Whatever is a character, and ASCII, goes to the engine as it is.  This is
+ * the one place that says which glyph is which.
+ * Return: 1 a stand-in is needed, 0 the glyph is read as it is.
+ */
+static int standin_of_glyph(const unsigned char *s, int avail, int *n, int *cp)
+{
+ int codepoint, cols;
+
+ if (s[0] < ROWFIND_FIRST_NON_ASCII)
+ {
+  *n = 1;
+  return(0);
+ }
+ *n = e_utf8_glyph_at(s, avail, &codepoint, &cols);
+ if (codepoint != 0)
+  return(0);
+ if (*n == 1)
+  *cp = WPE_ROWFIND_STANDIN_BASE + s[0];
+ else
+  *cp = WPE_ROWFIND_STANDIN_BAD_GLYPH;
+ return(1);
+}
+
+/**
+ * pattern_standins - The Find text as the engine reads it.
+ * @in: the escaped text; @out: ROWFIND_PATTERN_MAX bytes.
+ *
+ * A Find text that holds a Latin-1 byte finds that byte on every system, and
+ * `[x]` with such a byte is a bracket of one character, because the byte is
+ * replaced wherever it stands: bytes from 0x80 are never expression syntax.
+ */
+static void pattern_standins(const char *in, char *out)
+{
+ int len = (int)strlen(in), i = 0, o = 0, n, cp;
+
+ while (i < len)
+ {
+  if (standin_of_glyph((const unsigned char *)in + i, len - i, &n, &cp))
+   o += e_utf8_encode(cp, (unsigned char *)out + o);
+  else
+  {
+   memcpy(out + o, in + i, (size_t)n);
+   o += n;
+  }
+  i += n;
+ }
+ out[o] = '\0';
+}
+
+/**
+ * pattern_for_engine - Make the cache's pattern: the Find text, escaped when
+ * it is a plain text, and with its stand-ins when the engine reads UTF-8.
+ */
+static void pattern_for_engine(RowfindCache *c)
+{
+ char plain[ROWFIND_ESCAPED_MAX];
+
+ if (c->bits & FIND_REGULAR)
+  snprintf(plain, sizeof(plain), "%s", c->text);
+ else
+  pattern_escape(c->text, plain);
+ if (c->reads_utf8)
+  pattern_standins(plain, c->pattern);
+ else
+  snprintf(c->pattern, sizeof(c->pattern), "%s", plain);
+}
+
+/**
+ * grown - A buffer of @want units of @unit bytes, kept when it is big enough.
+ * @buf, @have: the buffer and its units; @have is raised on success.
+ * Return: the buffer, or NULL when the size does not fit or memory is short
+ * (@buf is then still valid).
+ */
+static void *grown(void *buf, size_t *have, size_t want, size_t unit)
+{
+ void *bigger;
+
+ if (want == 0)
+  want = 1;                /* a buffer even for nothing, so NULL always means failure */
+ if (want <= *have)
+  return(buf);
+ if (want > SIZE_MAX / unit)
+  return(NULL);
+ bigger = realloc(buf, want * unit);
+ if (bigger != NULL)
+  *have = want;
+ return(bigger);
+}
+
+/**
+ * standins_measure - The bytes the engine's text of a row has.
+ * @count: receives the glyphs that need a stand-in.
+ * The row must be no longer than ROWFIND_ROW_MAX.
+ */
+static int standins_measure(const unsigned char *row, int len, int *count)
+{
+ int i = 0, e = 0, n, cp;
+
+ *count = 0;
+ while (i < len)
+ {
+  if (standin_of_glyph(row + i, len - i, &n, &cp))
+  {
+   e += E_UTF8_MAX_BYTES;
+   (*count)++;
+  }
+  else
+   e += n;
+  i += n;
+ }
+ return(e);
+}
+
+/**
+ * standins_write - Write the engine's text of a row and its two column tables.
+ *
+ * A column inside a glyph that was replaced is the glyph's start for the
+ * engine; a column inside a stand-in is no column of the row.  The buffers
+ * hold what standins_measure said.
+ */
+static void standins_write(EngineText *t, const unsigned char *row, int len)
+{
+ int i = 0, e = 0, n, cp, k, m;
+ unsigned char bytes[E_UTF8_MAX_BYTES];
+
+ while (i < len)
+ {
+  if (standin_of_glyph(row + i, len - i, &n, &cp))
+  {
+   m = e_utf8_encode(cp, bytes);
+   for (k = 0; k < n; k++)
+    t->to_engine[i + k] = e;
+   for (k = 0; k < m; k++)
+   {
+    t->eng[e + k] = bytes[k];
+    t->to_row[e + k] = (k == 0) ? i : ROWFIND_NO_COLUMN;
+   }
+   e += m;
+  }
+  else
+  {
+   for (k = 0; k < n; k++)
+   {
+    t->to_engine[i + k] = e + k;
+    t->eng[e + k] = row[i + k];
+    t->to_row[e + k] = i + k;
+   }
+   e += n;
+  }
+  i += n;
+ }
+ t->to_engine[len] = e;
+ t->to_row[e] = len;
+ t->eng[e] = 0;
+ t->eng_len = e;
+}
+
+/** text_keep_source - Save the row, for the next call to compare with. */
+static int text_keep_source(EngineText *t, const unsigned char *row, int len)
+{
+ void *p = grown(t->src, &t->src_size, (size_t)len, 1);
+
+ if (p == NULL)
+  return(0);
+ t->src = p;
+ if (len > 0)
+  memcpy(t->src, row, (size_t)len);
+ t->src_len = len;
+ return(1);
+}
+
+/** text_make_engine - Make the engine's text and the tables of a row that has stand-ins. */
+static int text_make_engine(EngineText *t, const unsigned char *row, int len, int eng_len)
+{
+ void *eng = grown(t->eng, &t->eng_size, (size_t)eng_len + 1, 1);
+ void *to_engine, *to_row;
+
+ if (eng == NULL)
+  return(0);
+ t->eng = eng;
+ to_engine = grown(t->to_engine, &t->to_engine_size, (size_t)len + 1, sizeof(int));
+ if (to_engine == NULL)
+  return(0);
+ t->to_engine = to_engine;
+ to_row = grown(t->to_row, &t->to_row_size, (size_t)eng_len + 1, sizeof(int));
+ if (to_row == NULL)
+  return(0);
+ t->to_row = to_row;
+ standins_write(t, row, len);
+ return(1);
+}
+
+/**
+ * text_rebuild - Make the engine's text of a row the saved one is not of.
+ * Return: 1 made, 0 when the row is too long for its columns or memory is
+ * short: Find then says "no hit on this row" and does not stop.
+ */
+static int text_rebuild(EngineText *t, const unsigned char *row, int len)
+{
+ int count, eng_len;
+
+ t->valid = 0;
+ if (len > ROWFIND_ROW_MAX)
+  return(0);
+ eng_len = standins_measure(row, len, &count);
+ if (!text_keep_source(t, row, len))
+  return(0);
+ t->mapped = (count > 0);
+ if (t->mapped && !text_make_engine(t, row, len, eng_len))
+  return(0);
+ t->valid = 1;
+ return(1);
+}
+
+/** text_is_current - Is the saved engine text the one of exactly this row? */
+static int text_is_current(const EngineText *t, const unsigned char *row, int len)
+{
+ if (!t->valid || t->src_len != len)
+  return(0);
+ return(len == 0 || memcmp(t->src, row, (size_t)len) == 0);
+}
+
+/** text_forget - Drop the saved engine text; its buffers stay for the next row. */
+static void text_forget(EngineText *t)
+{
+ t->valid = 0;
+}
+
+/** text_release - Free the engine text's buffers. */
+static void text_release(EngineText *t)
+{
+ free(t->src);
+ free(t->eng);
+ free(t->to_engine);
+ free(t->to_row);
+ memset(t, 0, sizeof(*t));
+}
+
+/**
+ * row_for_engine - Set what the engine reads of a row, once for the search.
+ * @x: receives the engine's text and, when it is not the row, the two column
+ * tables.
+ *
+ * Every call of the engine on the row, every window of a backward search,
+ * reads this one text, so a row never reads two ways.  A row with no glyph that
+ * needs a stand-in, and every row where the engine reads bytes, is read as it
+ * is.
+ * Return: 1 ready, 0 no hit on this row (too long, or memory is short).
+ */
+static int row_for_engine(const RowfindCache *c, const unsigned char *row, int len, RowSearch *x)
+{
+ x->eng = row;
+ x->eng_len = len;
+ x->to_engine = NULL;
+ x->to_row = NULL;
+ if (!c->reads_utf8)
+  return(1);
+ if (!text_is_current(&g_text, row, len) && !text_rebuild(&g_text, row, len))
+  return(0);
+ if (!g_text.mapped)
+  return(1);
+ x->eng = g_text.eng;
+ x->eng_len = g_text.eng_len;
+ x->to_engine = g_text.to_engine;
+ x->to_row = g_text.to_row;
+ return(1);
+}
+
+/* ---- the compiled search ---- */
+
+/**
+ * engine_choose_reading - Decide how the engine reads, once for a compiled search.
+ *
+ * It reads UTF-8 characters where the system's engine does (configure
+ * measured it) and either the process locale says UTF-8 or the owner has a
+ * UTF-8 ctype to run it under.  Under a process locale that is not UTF-8 the
+ * owner runs the engine under a UTF-8 ctype of its own where the system has
+ * one.  The answer is kept in the cache and never asked again per row.
+ */
+static void engine_choose_reading(RowfindCache *c)
+{
+ int own_ctype = 0;
+
+ c->utf8_process = process_codeset_is_utf8();
+#ifdef WPE_ROWFIND_LOCALES
+ probe_ctypes();
+ if (!c->utf8_process)
+  c->ctype = g_utf8_ctype;
+ own_ctype = (c->ctype != (locale_t)0);
+#endif
+ c->reads_utf8 = WPE_HAS_REGEX_MULTIBYTE && (c->utf8_process || own_ctype);
+}
+
+/**
+ * engine_compile - Compile the cache's pattern.
  * Return: 0 compiled, else regcomp's code.
  */
-static int engine_compile(RowfindCache *c, int which)
+static int engine_compile(RowfindCache *c)
 {
  int rc;
 #ifdef WPE_ROWFIND_LOCALES
  locale_t prev = (locale_t)0;
- int entered = ctype_enter(c->ctype[which], &prev);
+ int entered = ctype_enter(c->ctype, &prev);
 #endif
 
- rc = regcomp(&c->re[which], c->pattern, c->cflags);
+ rc = regcomp(&c->re, c->pattern, c->cflags);
 #ifdef WPE_ROWFIND_LOCALES
  ctype_leave(entered, prev);
 #endif
  if (rc == 0)
-  c->compiled[which] = 1;
- else if (which == ENGINE_PRIMARY)
-  error_note(rc, &c->re[which]);
+  c->compiled = 1;
+ else
+  error_note(rc, &c->re);
  return(rc);
 }
 
@@ -397,39 +750,29 @@ static int engine_compile(RowfindCache *c, int which)
  * cache_build - Compile the Find text of @fd into the cache.
  *
  * A regular expression gets the platform's escapes flag; a plain text is
- * escaped.  Under a process locale that is not UTF-8 the primary engine runs
- * under a UTF-8 ctype of the owner's where the system has one.  A plain text
- * that a multibyte engine refuses (Latin-1 bytes from a file, REG_ILLSEQ) is
- * compiled under the C ctype and matched as bytes, as it always was.
- * A regular expression the engine is measured to crash on (see
+ * escaped.  Where the engine reads UTF-8 the text carries a stand-in for each
+ * glyph that is no UTF-8, so a Latin-1 byte in the Find text is found on every
+ * system.  A regular expression the engine is measured to crash on (see
  * wpe_rowfind_refuses) is not compiled: the refusal is kept as the error and
  * the text is cached as failed, so Change All over a hundred thousand rows
  * asks once.
- * Return: 1 when the primary engine is there, 0 when the text does not compile
- * or is refused.
+ * Return: 1 when the engine is there, 0 when the text does not compile or is
+ * refused.
  */
 static int cache_build(RowfindCache *c, const FIND *fd)
 {
  int rc, refusal;
 
  cache_clear(c);
+ text_forget(&g_text);
  g_has_error = 0;
  strncpy(c->text, fd->search, E_FIND_TEXT_MAX);
  c->text[E_FIND_TEXT_MAX] = '\0';
  c->bits = fd->sw & FIND_COMPILE_BITS;
  c->valid = 1;
  c->cflags = WPE_ROWFIND_CFLAGS(c->bits);
- if (c->bits & FIND_REGULAR)
-  strcpy(c->pattern, c->text);
- else
-  pattern_escape(c->text, c->pattern);
-#ifdef WPE_ROWFIND_LOCALES
- probe_ctypes();
- c->utf8_process = process_codeset_is_utf8();
- if (!c->utf8_process)
-  c->ctype[ENGINE_PRIMARY] = g_utf8_ctype;
- c->ctype[ENGINE_BYTES] = g_c_ctype;
-#endif
+ engine_choose_reading(c);
+ pattern_for_engine(c);
  refusal = wpe_rowfind_refuses(c->text, c->bits);
  if (refusal != 0)
  {
@@ -440,15 +783,7 @@ static int cache_build(RowfindCache *c, const FIND *fd)
   c->failed = 1;
   return(0);
  }
- rc = engine_compile(c, ENGINE_PRIMARY);
-#ifdef WPE_ROWFIND_LOCALES
- if (rc == REG_ILLSEQ && !(c->bits & FIND_REGULAR) && g_c_ctype != (locale_t)0)
- {
-  c->ctype[ENGINE_PRIMARY] = g_c_ctype;
-  g_has_error = 0;
-  rc = engine_compile(c, ENGINE_PRIMARY);
- }
-#endif
+ rc = engine_compile(c);
  c->failed = (rc != 0);
  return(rc == 0);
 }
@@ -457,7 +792,8 @@ static int cache_build(RowfindCache *c, const FIND *fd)
  * cache_ensure - Make the cache hold the search @fd asks for.
  *
  * The text, the three option bits and the process's codeset are the key; a
- * Change All over a hundred thousand rows compiles once.
+ * Change All over a hundred thousand rows compiles once.  The codeset is part
+ * of the key on every system, since it decides how the engine reads.
  * Return: 1 when the search can run, 0 when the text does not compile.
  */
 static int cache_ensure(const FIND *fd)
@@ -467,10 +803,8 @@ static int cache_ensure(const FIND *fd)
  int same;
 
  same = c->valid && c->bits == bits && strncmp(c->text, fd->search, E_FIND_TEXT_MAX) == 0;
-#ifdef WPE_ROWFIND_LOCALES
  if (same && c->utf8_process != process_codeset_is_utf8())
   same = 0;
-#endif
  if (!same)
   return(cache_build(c, fd));
  return(!c->failed);
@@ -492,69 +826,92 @@ static int answer_in_range(regoff_t so, regoff_t eo, regoff_t lowest, regoff_t h
  return(so >= lowest && so <= eo && eo <= highest);
 }
 
+/** engine_column - The engine's column of the row's column @pos. */
+static int engine_column(const RowSearch *x, int pos)
+{
+ if (x->to_engine == NULL)
+  return(pos);
+ return(x->to_engine[pos]);
+}
+
 /**
- * engine_exec - Match from byte @pos of the row with one engine.
+ * answer_to_row - Turn the engine's match into columns of the row.
+ * @base: the engine column the match's columns count from (0 with a range, the
+ * start of the copy without one).
+ *
+ * An engine column inside a stand-in has no column of the row: an answer that
+ * starts or ends there is no answer, so a hit never lies inside a character the
+ * owner made up.  The columns are in the range the caller checked.
+ * Return: 0 the columns are in @so and @eo, else ROWFIND_BAD_ANSWER.
+ */
+static int answer_to_row(const RowSearch *x, int base, const regmatch_t *m, int *so, int *eo)
+{
+ int ecol_so = base + (int)m->rm_so, ecol_eo = base + (int)m->rm_eo;
+
+ if (x->to_row != NULL)
+ {
+  *so = x->to_row[ecol_so];
+  *eo = x->to_row[ecol_eo];
+  if (*so == ROWFIND_NO_COLUMN || *eo == ROWFIND_NO_COLUMN)
+   return(ROWFIND_BAD_ANSWER);
+  return(0);
+ }
+ *so = ecol_so;
+ *eo = ecol_eo;
+ return(0);
+}
+
+/**
+ * engine_exec - Match from byte @pos of the row with the engine.
  * @flags: REG_NOTBOL and REG_NOTEOL as the row's kind says.
  * @so, @eo: receive the match's columns of the whole row.
  * Return: 0 a match, else regexec's code (REG_NOMATCH or a refusal), or
- * ROWFIND_BAD_ANSWER when the engine said it matched outside the range.
+ * ROWFIND_BAD_ANSWER when the engine said it matched outside the range or
+ * inside a stand-in.
  */
-static int engine_exec(RowfindCache *c, int which, const RowSearch *x, int pos,
-                       int flags, int *so, int *eo)
+static int engine_exec(RowfindCache *c, const RowSearch *x, int pos, int flags, int *so, int *eo)
 {
  regmatch_t m;
- int rc;
+ int rc, epos = engine_column(x, pos);
 #ifdef WPE_ROWFIND_LOCALES
  locale_t prev = (locale_t)0;
- int entered = ctype_enter(c->ctype[which], &prev);
+ int entered = ctype_enter(c->ctype, &prev);
 #endif
 
 #ifdef WPE_ROWFIND_STARTEND
- m.rm_so = pos;
- m.rm_eo = x->len;
- rc = regexec(&c->re[which], (const char *)x->row, 1, &m, flags | REG_STARTEND);
+ m.rm_so = epos;
+ m.rm_eo = x->eng_len;
+ rc = regexec(&c->re, (const char *)x->eng, 1, &m, flags | REG_STARTEND);
  /* the check is on the engine's own type, before the cast to int */
- if (rc == 0 && !answer_in_range(m.rm_so, m.rm_eo, pos, x->len))
+ if (rc == 0 && !answer_in_range(m.rm_so, m.rm_eo, epos, x->eng_len))
   rc = ROWFIND_BAD_ANSWER;
  if (rc == 0)
- {
-  *so = (int)m.rm_so;
-  *eo = (int)m.rm_eo;
- }
- else
-  *so = *eo = 0;
+  rc = answer_to_row(x, 0, &m, so, eo);
 #else
- /* No REG_STARTEND: the engine sees a NUL-terminated copy from @pos on.  The
-    byte before @pos is out of its sight, so a \b or \< at @pos is judged
+ /* No REG_STARTEND: the engine sees a NUL-terminated copy from @epos on.  The
+    byte before it is out of its sight, so a \b or \< at @pos is judged
     without it. */
- if (g_scratch_size < x->len + 1)
- {
-  char *grown = realloc(g_scratch, x->len + 1);
+ size_t tail = (size_t)(x->eng_len - epos);
+ void *copy = grown(g_scratch, &g_scratch_size, tail + 1, 1);
 
-  if (grown == NULL)
-  {
-   *so = *eo = 0;
-   rc = REG_ESPACE;
-   goto done;
-  }
-  g_scratch = grown;
-  g_scratch_size = x->len + 1;
+ if (copy == NULL)
+ {
+  rc = REG_ESPACE;
+  goto done;
  }
- memcpy(g_scratch, x->row, x->len);
- g_scratch[x->len] = '\0';
- rc = regexec(&c->re[which], g_scratch + pos, 1, &m, flags);
- /* the copy starts at @pos, so the columns are relative to it */
- if (rc == 0 && !answer_in_range(m.rm_so, m.rm_eo, 0, x->len - pos))
+ g_scratch = copy;
+ memcpy(g_scratch, x->eng + epos, tail);
+ g_scratch[tail] = '\0';
+ rc = regexec(&c->re, g_scratch, 1, &m, flags);
+ /* the copy starts at @epos, so the columns are relative to it */
+ if (rc == 0 && !answer_in_range(m.rm_so, m.rm_eo, 0, (regoff_t)tail))
   rc = ROWFIND_BAD_ANSWER;
  if (rc == 0)
- {
-  *so = pos + (int)m.rm_so;
-  *eo = pos + (int)m.rm_eo;
- }
- else
-  *so = *eo = 0;
+  rc = answer_to_row(x, epos, &m, so, eo);
 done:
 #endif
+ if (rc != 0)
+  *so = *eo = 0;
 #ifdef WPE_ROWFIND_LOCALES
  ctype_leave(entered, prev);
 #endif
@@ -574,34 +931,20 @@ static int goes_on_forward(const RowSearch *x)
  * forward search that goes on from a hit has passed the start of the line,
  * so ^ is not there for it either: Change All of `^a` with nothing on "aab"
  * leaves "ab", as sed and Vim do, and `^.` takes one character, not the line.
- * An answer that is neither a match nor "no match" (a multibyte engine
- * refusing a byte, REG_ILLSEQ, or a match outside the row) is no "nothing
- * here": the row is tried again by bytes where the system has them, and is
- * no match where it has not.
+ * Any answer that is neither a match nor "no match" (a match outside the row
+ * or inside a stand-in) is no match on this row: the engine reads the row one
+ * way, so there is no other reading to try.
  * Return: 1 a match, 0 none.
  */
 static int engine_match(RowfindCache *c, const RowSearch *x, int pos, int *so, int *eo)
 {
- int flags = 0, rc;
+ int flags = 0;
 
  if (pos > 0 || !(x->kind & WPE_ROW_STARTS_LINE) || goes_on_forward(x))
   flags |= REG_NOTBOL;
  if (!(x->kind & WPE_ROW_ENDS_LINE))
   flags |= REG_NOTEOL;
- rc = engine_exec(c, ENGINE_PRIMARY, x, pos, flags, so, eo);
- if (rc == 0)
-  return(1);
- if (rc == REG_NOMATCH)
-  return(0);
-#ifdef WPE_ROWFIND_LOCALES
- if (c->ctype[ENGINE_BYTES] == (locale_t)0 || c->ctype[ENGINE_PRIMARY] == c->ctype[ENGINE_BYTES])
-  return(0);
- if (!c->compiled[ENGINE_BYTES] && engine_compile(c, ENGINE_BYTES) != 0)
-  return(0);
- return(engine_exec(c, ENGINE_BYTES, x, pos, flags, so, eo) == 0);
-#else
- return(0);
-#endif
+ return(engine_exec(c, x, pos, flags, so, eo) == 0);
 }
 
 /* ---- what a hit may be ---- */
@@ -767,7 +1110,9 @@ static int search_backward(RowfindCache *c, const RowSearch *x, int from, int to
  * A user sees the Find text found where it is a word, a character and a case
  * of its own, never inside an accented letter, never across the edge of a
  * block, and `^` and `$` only at the ends of a line.  An empty Find text
- * finds nothing.
+ * finds nothing, and neither does a row too long, or memory too short, to
+ * make the text the engine reads of it (a row with a Latin-1 byte in it is
+ * read with a stand-in for each, see row_for_engine).
  * Return: 1 a hit, 0 none on this row, -1 the text does not compile as an
  * expression (wpe_rowfind_error says why).
  */
@@ -801,6 +1146,8 @@ int wpe_rowfind_row(const FIND *fd, const unsigned char *row, int row_len,
  to = e_utf8_glyph_floor(row, row_len, to);
  if (from > to)
   return(0);
+ if (!row_for_engine(&g_cache, row, row_len, &x))
+  return(0);
  if (how & WPE_ROWFIND_BACKWARD)
   return(search_backward(&g_cache, &x, from, to, hit));
  return(walk(&g_cache, &x, from, from, to, 0, hit));
@@ -818,11 +1165,13 @@ const char *wpe_rowfind_error(void)
 
 /**
  * wpe_rowfind_release - Free what the owner keeps: the compiled search, the
- * copy row and the ctypes.  The editor calls it once when it ends.
+ * engine's text of the last row, the copy row and the ctype.  The editor
+ * calls it once when it ends.
  */
 void wpe_rowfind_release(void)
 {
  cache_clear(&g_cache);
+ text_release(&g_text);
  g_has_error = 0;
  g_resume.valid = 0;
 #ifndef WPE_ROWFIND_STARTEND
@@ -833,9 +1182,7 @@ void wpe_rowfind_release(void)
 #ifdef WPE_ROWFIND_LOCALES
  if (g_utf8_ctype != (locale_t)0)
   freelocale(g_utf8_ctype);
- if (g_c_ctype != (locale_t)0)
-  freelocale(g_c_ctype);
- g_utf8_ctype = g_c_ctype = (locale_t)0;
+ g_utf8_ctype = (locale_t)0;
  g_ctype_probed = 0;
 #endif
 }

@@ -27,8 +27,10 @@ typedef struct {
 
 /* Whether the owner can run the engine under a UTF-8 ctype of its own
    (newlocale and uselocale, POSIX 2008; NetBSD has no uselocale).  0 or 1.
-   The owner and its test read this one decision and never the HAVE_ names. */
-#if defined(HAVE_NEWLOCALE) && defined(HAVE_USELOCALE)
+   The owner and its test read this one decision and never the HAVE_ names.
+   WPE_ROWFIND_NO_LOCALES forces 0, so a test can build the NetBSD
+   configuration on a system that has both calls. */
+#if defined(HAVE_NEWLOCALE) && defined(HAVE_USELOCALE) && !defined(WPE_ROWFIND_NO_LOCALES)
 #define WPE_ROWFIND_HAS_LOCALES 1
 #else
 #define WPE_ROWFIND_HAS_LOCALES 0
@@ -56,6 +58,20 @@ typedef struct {
 #else
 #define WPE_ROWFIND_BOUNDARY_SAFE 0
 #endif
+
+/* The engine never sees a byte that is not UTF-8.  A glyph the editor shows
+   as no character (a stray byte, a bad-scalar sequence: we_utf8.h,
+   e_utf8_glyph_at) is handed to the engine as a code point of its own in the
+   last private-use plane, one character to the engine as it is one glyph on
+   the screen, the same on every system.  A stray byte b (0x80 to 0xFF) is
+   BASE + b, U+10FE80 to U+10FEFF; the sequences of the right shape that are
+   no scalar (an overlong form, a surrogate, a lead above F4) are all
+   BAD_GLYPH, U+10FE7F, so a Find text that holds one finds any other.  The
+   range stays clear of the plane's last code points (U+10FFFE and U+10FFFF
+   are noncharacters, and the end of some engines' range).  A file that holds
+   these code points itself reads the same as the byte it stands for. */
+#define WPE_ROWFIND_STANDIN_BASE      0x10FE00
+#define WPE_ROWFIND_STANDIN_BAD_GLYPH 0x10FE7F
 
 /* What wpe_rowfind_refuses answers: 0 the text may go to the engine. */
 #define WPE_ROWFIND_REFUSES_GROUP  1   /* an escape beside an alternation */

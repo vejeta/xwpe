@@ -401,7 +401,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
+check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -617,6 +617,19 @@ test_rowfind_boundary_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_UNSAFE_BOUNDARY
 test_rowfind_boundary_copy_SOURCES = tests/test_rowfind.c we_rowfind.c
 test_rowfind_boundary_copy_CFLAGS = $(TEST_CFLAGS)
 test_rowfind_boundary_copy_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_NO_STARTEND -DWPE_ROWFIND_UNSAFE_BOUNDARY
+# The ninth build is the fourth on the configuration of a system with no
+# uselocale (NetBSD): the owner has no ctype of its own to run the engine
+# under, so a row or a Find text that holds a byte which is not UTF-8 must
+# still reach the engine as characters, which only the owner can make of it.
+test_rowfind_nolocale_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_illseq.c tests/mock_illseq.h
+test_rowfind_nolocale_CFLAGS = $(TEST_CFLAGS)
+test_rowfind_nolocale_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_ILLSEQ -DWPE_ROWFIND_NO_LOCALES -include $(srcdir)/tests/mock_illseq.h
+# The tenth build is the fourth on the copy path (no REG_STARTEND): the copy
+# the engine reads is a second piece of code that could hand it a byte which
+# is not UTF-8, and only a build with the strict mock under it proves it does not.
+test_rowfind_illseq_copy_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_illseq.c tests/mock_illseq.h
+test_rowfind_illseq_copy_CFLAGS = $(TEST_CFLAGS)
+test_rowfind_illseq_copy_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_ILLSEQ -DWPE_ROWFIND_NO_STARTEND -include $(srcdir)/tests/mock_illseq.h
 
 # The key decoder's table: we_keymap.c alone, no editor and no display
 # library.  Every bound pair has one row, the curses, keysym and escape
@@ -901,7 +914,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
+  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)

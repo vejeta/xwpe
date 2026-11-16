@@ -165,7 +165,7 @@ COPY|we_prog.c|e_make_prj_opt|3|sized|the destination is allocated at its source
 COPY|we_prog.c|e_p_mess_win|2|sized|the destination is allocated at its sources' length just before
 COPY|we_progn.c|e_c_add_df|1|sized|the destination is allocated at its sources' length just before
 COPY|we_progn.c|e_sh_def|1|sized|the destination is allocated at its sources' length just before
-COPY|we_rowfind.c|cache_build|2|checked|the Find text cut at the array's size
+COPY|we_rowfind.c|cache_build|1|checked|the Find text cut at the array's size
 COPY|we_startplan.c|startplan_put|1|sized|the destination is allocated at its sources' length just before
 COPY|WeString.c|WpeStrdup|1|sized|the destination is allocated at its sources' length just before
 COPY|we_term.c|init_key|1|sized|the destination is allocated at its sources' length just before

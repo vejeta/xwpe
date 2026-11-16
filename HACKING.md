@@ -867,6 +867,24 @@ more than it protects). The search owner refuses what a 0 covers. The probe
 compares each answer with the same call over a row whose multibyte characters
 are plain letters ("wrong"), only on an engine that reads characters.
 
+The engine never sees a byte that is not UTF-8: the search owner stands a code
+point of its own in for every glyph the screen shows as no character
+(`standin_of_glyph`), on every system whose engine reads UTF-8, so there is no
+second engine and no locale switch; `tests/mock_illseq.c` counts every such
+byte that reaches it and the test fails on one. A byte that is no UTF-8 is one
+character to Find, its own and not its Latin-1 letter, on every system. The
+stand-ins are U+10FE80 to U+10FEFF for the bytes 0x80 to 0xFF and U+10FE7F for
+every sequence of the right shape that is no scalar (so a Find text that
+holds an overlong form finds a surrogate, by design); a file that holds those
+code points itself reads as the byte they stand for. Where the engine reads
+bytes (OpenBSD, `WPE_HAS_REGEX_MULTIBYTE` 0) the owner substitutes nothing: a
+byte is already one character, and an overlong form stays two bytes and a
+surrogate three, so only the single stray byte holds there. The engine's text and its
+column tables are kept for the last row and compared with a `memcmp`, so a
+backward search over a long row pays for the window of each step. A range in
+a bracket with a stand-in at either end is refused by the engine; the user
+names the bytes one by one.
+
 The check scripts read an object's symbols through one file, `tests/objsyms.sh`
 (the old name `tests/nm-undefined.sh` is a one-line shim to it):
 `nm_undefined_names`, `nm_defined_names`, `symbol_source_name` (`__error`,

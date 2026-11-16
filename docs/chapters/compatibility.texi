@@ -574,7 +574,10 @@ never takes two glyphs the screen shows apart.  Bytes of the right shape
 that are still no UTF-8 (an overlong form such as @samp{C0 80}, a
 surrogate, a lead byte above @samp{F4}) are one glyph too, shown the same
 way, so the cursor, the mouse and the keys agree on where it starts and
-ends.
+ends.  Find treats such a byte as one character of its own, as the
+original treated every byte; unlike the original it is not the Latin-1
+letter, so a typed @samp{é} does not find it and Case Sensitive off does
+not fold it.
 
 @item The block Undo marks around a line break
 @cindex undo, block marks
