@@ -401,7 +401,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_listsel test_helpbuf test_number_parse test_errpat test_optval
+check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -588,6 +588,27 @@ test_rowfind_reject_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_NO_UTF8_CTYPE
 test_rowfind_illseq_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_illseq.c tests/mock_illseq.h
 test_rowfind_illseq_CFLAGS = $(TEST_CFLAGS)
 test_rowfind_illseq_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_ILLSEQ -include $(srcdir)/tests/mock_illseq.h
+# The fifth build puts a mock engine under the owner that crashes on a
+# word-boundary escape beside an alternation over a multibyte row (NetBSD
+# 10's regexec does) and answers matches outside the row, with the owner's
+# refusal forced on: the refusal must keep the crash out of reach, and no
+# answer outside the row may become a hit or a search that never ends.
+test_rowfind_badengine_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_badengine.c tests/mock_badengine.h
+test_rowfind_badengine_CFLAGS = $(TEST_CFLAGS)
+test_rowfind_badengine_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_BADENGINE -DWPE_ROWFIND_UNSAFE_BOUNDARY_GROUP -include $(srcdir)/tests/mock_badengine.h
+# The sixth build is the fifth on the copy path (no REG_STARTEND), where the
+# check of the engine's answer is a second piece of code with its own rows.
+test_rowfind_badengine_copy_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_badengine.c tests/mock_badengine.h
+test_rowfind_badengine_copy_CFLAGS = $(TEST_CFLAGS)
+test_rowfind_badengine_copy_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_BADENGINE -DWPE_ROWFIND_NO_STARTEND -DWPE_ROWFIND_UNSAFE_BOUNDARY_GROUP -include $(srcdir)/tests/mock_badengine.h
+# The seventh build forces the refusal of every word-boundary escape, as a
+# system whose probe saw a control fail (FreeBSD 14's walk() crashes on \>. and
+# misjudges \<b, with no alternation) gets it, on the real engine.  It is a
+# build of its own, not part of the fifth, so that the fifth keeps running
+# an escape with no bar through the engine and the group-only path.
+test_rowfind_boundary_SOURCES = tests/test_rowfind.c we_rowfind.c
+test_rowfind_boundary_CFLAGS = $(TEST_CFLAGS)
+test_rowfind_boundary_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_UNSAFE_BOUNDARY
 
 # The key decoder's table: we_keymap.c alone, no editor and no display
 # library.  Every bound pair has one row, the curses, keysym and escape
@@ -872,7 +893,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_listsel test_helpbuf test_number_parse test_errpat test_optval
+  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)

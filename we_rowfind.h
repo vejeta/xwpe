@@ -34,6 +34,33 @@ typedef struct {
 #define WPE_ROWFIND_HAS_LOCALES 0
 #endif
 
+/* Whether this system's regular expression engine survives a word-boundary
+   escape (\b \B \< \>) beside an alternation (WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP)
+   and beside anything at all (WPE_HAS_REGEX_SAFE_BOUNDARY), as configure
+   measured by running the shapes in a child: NetBSD 10's faults in mbrtowc on
+   `\B(a|b)[ab]` over a row with a multibyte character.  Where the engine is
+   not safe the owner refuses the expression and says so, so Find never hands
+   it to the engine.  WPE_ROWFIND_UNSAFE_BOUNDARY_GROUP and
+   WPE_ROWFIND_UNSAFE_BOUNDARY force the refusal (the second forces both, as
+   a failed control of the probe does), so a test can build it on a system
+   whose engine is safe.  The owner and its test read these two
+   decisions and never the WPE_HAS_ names. */
+#if WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP && !defined(WPE_ROWFIND_UNSAFE_BOUNDARY_GROUP) && \
+    !defined(WPE_ROWFIND_UNSAFE_BOUNDARY)
+#define WPE_ROWFIND_BOUNDARY_GROUP_SAFE 1
+#else
+#define WPE_ROWFIND_BOUNDARY_GROUP_SAFE 0
+#endif
+#if WPE_HAS_REGEX_SAFE_BOUNDARY && !defined(WPE_ROWFIND_UNSAFE_BOUNDARY)
+#define WPE_ROWFIND_BOUNDARY_SAFE 1
+#else
+#define WPE_ROWFIND_BOUNDARY_SAFE 0
+#endif
+
+/* What wpe_rowfind_refuses answers: 0 the text may go to the engine. */
+#define WPE_ROWFIND_REFUSES_GROUP  1   /* an escape beside an alternation */
+#define WPE_ROWFIND_REFUSES_ESCAPE 2   /* any word-boundary escape */
+
 /* The option bits of FIND.sw that decide how a search is compiled. */
 #define FIND_CASE_SENSITIVE 128
 #define FIND_WHOLE_WORDS     64
@@ -62,10 +89,22 @@ typedef struct {
 #define WPE_ROWFIND_BACKWARD   4u /* the hit that starts last, with eo <= to */
 #define WPE_ROWFIND_AFTER_HIT  8u /* the search goes on from a hit: no zero-width hit where it starts */
 
+/* The caller's contract for @row: the byte at row[row_len] must exist and be
+   readable.  The C library's engine may look at the byte behind the range it
+   is given (NetBSD 10 does), and the owner never reads past it.  The editor's
+   rows have one (the line break after them), Grep's line buffer a zero. */
 int wpe_rowfind_row(const FIND *fd, const unsigned char *row, int row_len,
                     unsigned kind, int from, int to, unsigned how,
                     WpeRowHit *hit);
 const char *wpe_rowfind_error(void);
+
+/* Would the owner refuse this Find text for the engine's measured safety?
+   0, WPE_ROWFIND_REFUSES_GROUP or WPE_ROWFIND_REFUSES_ESCAPE.  The test's
+   reference asks the same function, so it cannot restate the rule.  The
+   second form takes the two decisions, for a test that checks the rule on a
+   system where both are safe. */
+int wpe_rowfind_refuses(const char *text, unsigned sw);
+int wpe_rowfind_refuses_when(const char *text, unsigned sw, int group_safe, int boundary_safe);
 void wpe_rowfind_release(void);
 
 /* Where the last search left the cursor, so that the next one knows it goes

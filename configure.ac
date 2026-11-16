@@ -292,6 +292,271 @@ AS_IF([test "x$wpe_fact_REGEX_MULTIBYTE" = x1],
   [xwpe_say_regex_multibyte="$xwpe_cv_regex_multibyte (Find's Case sensitive off folds beyond ASCII)"],
   [xwpe_say_regex_multibyte="no (the engine reads bytes: Case sensitive off folds ASCII only, and a hit is kept to whole characters)"])
 
+# Whether the engine survives a word-boundary escape.  NetBSD 10's regexec
+# faults in mbrtowc on `\B(a|b)[ab]` over a row that holds a multibyte
+# character (and with REG_ICASE answers a match far outside the row), so the
+# class "an escape beside an alternation" is measured by running it, each shape
+# in a child of the probe (a crash, a hang or an answer outside the range is
+# then a word, not the end of configure).  Two facts come out of one run:
+# WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP, 1 when every shape and every control
+# answers in range, and WPE_HAS_REGEX_SAFE_BOUNDARY, 0 only when a control (a
+# shape outside the class: no alternation, a repeat, a longer group) fails,
+# because then the escape alone is the danger.  A cross build, a host with no
+# UTF-8 locale, or an answer that is none of ok, refused, range, crash and hang
+# is not measured, and the group fact says 0.  A shape is also "wrong" when its
+# answer differs from the same call over a row whose multibyte characters are
+# plain letters (FreeBSD 14 misjudges \< beside a character, and crashes on
+# \> . with no alternation at all, so those are controls).  The row is placed
+# before an unmapped page so a read past it crashes.  The probe repeats the set under
+# the C ctype and reports it; only the UTF-8 part is judged.
+AC_CACHE_CHECK([what regexec does with a word-boundary escape beside |],
+  [xwpe_cv_regex_boundary],
+  [AS_IF([test "x$cross_compiling" = xyes],
+     [xwpe_cv_regex_boundary="unknown (cross build)"],
+     [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <locale.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <regex.h>
+
+/* The rows: a space, U+00C3, "bb", and the 9 bytes of the call that killed
+   the editor (tab, space, U+00C3, "bb", space, "ba"). */
+#define ROW5 "\\040\\303\\203bb"
+#define ROW9 "\\011\\040\\303\\203bb ba"
+/* FreeBSD 14's walk() crashes on \\> . over U+00C3, space, "b" and answers \\< b
+   wrong (a match at 3..4) over a space, U+00C3, "bb"; no alternation is needed. */
+#define ROW4 "\\303\\203 b"
+
+struct shape { const char *name; const char *pat; int icase; const char *row; int len; int so; int eflags; int control; };
+
+static const struct shape shapes[] = {
+ { "B-group", "\\\\B(a|b)[ab]", 0, ROW5, 5, 1, 0, 0 },
+ { "B-group-b", "\\\\B(a|b)b", 0, ROW5, 5, 1, 0, 0 },
+ { "b-group", "\\\\b(a|b)[ab]", 0, ROW5, 5, 1, 0, 0 },
+ { "group-B", "(a|b)\\\\B", 0, ROW5, 5, 1, 0, 0 },
+ { "group-b", "(a|b)\\\\b", 0, ROW5, 5, 1, 0, 0 },
+ { "top-alt", "\\\\Ba|\\\\Bb", 0, ROW5, 5, 1, 0, 0 },
+ { "lt-group", "\\\\<(a|b)\\\\>", 0, ROW5, 5, 1, 0, 0 },
+ { "B-icase", "\\\\B(a|b)[ab]", REG_ICASE, ROW5, 5, 1, 0, 0 },
+ { "editor-call", "\\\\B(a|b)[ab]", REG_ICASE, ROW9, 9, 1, REG_NOTBOL | REG_NOTEOL, 0 },
+ { "ctl-group", "(a|b)[ab]", 0, ROW5, 5, 1, 0, 1 },
+ { "ctl-B", "\\\\B(b)b", 0, ROW5, 5, 1, 0, 1 },
+ { "ctl-B-opt", "\\\\B(b)?b", 0, ROW5, 5, 1, 0, 1 },
+ { "ctl-B-star", "\\\\B(b)*b", 0, ROW5, 5, 1, 0, 1 },
+ { "ctl-B-rep", "\\\\Bb*b", 0, ROW5, 5, 1, 0, 1 },
+ { "ctl-B-seq", "\\\\B(ab)b", 0, ROW5, 5, 1, 0, 1 },
+ { "gt-dot", "\\\\>.", 0, ROW4, 4, 0, 0, 1 },
+ { "gt-dot-1", "\\\\>.", 0, ROW4, 4, 1, 0, 1 },
+ { "lt-b", "\\\\<b", 0, ROW5, 5, 0, 0, 1 },
+ { "lt-b-1", "\\\\<b", 0, ROW5, 5, 1, 0, 1 },
+ { "gt-br-dot", "[[:>:]].", 0, ROW4, 4, 0, 0, 1 },
+ { "lt-br-b", "[[:<:]]b", 0, ROW5, 5, 0, 0, 1 }
+};
+#define SHAPES ((int) (sizeof shapes / sizeof shapes[0]))
+
+#ifndef MAP_ANON
+#define MAP_ANON MAP_ANONYMOUS
+#endif
+
+/* The row put right before an unmapped page, with only the byte after it
+   (row[len], a zero) readable, so a read past it is a crash.  With @swap each
+   byte of a multibyte character is a letter that is in no pattern, so the
+   word and non-word classes and the byte offsets stay the same. */
+static const char *place_row(const char *row, int len, int swap)
+{
+ long page = sysconf(_SC_PAGESIZE);
+ char *base;
+ int i;
+ base = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+ if (base == MAP_FAILED) _exit(3);
+ if (mprotect(base + page, page, PROT_NONE) != 0) _exit(3);
+ base += page - len - 1;
+ for (i = 0; i < len; i++)
+ {
+  base[i] = row[i];
+  if (swap && (unsigned char) row[i] >= 0x80) base[i] = 'x';
+ }
+ base[len] = 0;
+ return base;
+}
+
+struct answer { int rc; long so; long eo; };
+
+/* Under the C ctype, and on an engine that reads bytes whatever the locale
+   (OpenBSD: WPE_HAS_REGEX_MULTIBYTE is 0), a byte of 0x80 or more is no
+   letter, so the swap changes the classes by design and says nothing: there
+   the probe does not compare.  The first value is the measured fact. */
+static int compare_swapped = $wpe_fact_REGEX_MULTIBYTE;
+
+/* One call, as the editor makes it (REG_STARTEND from @so to the row's end). */
+static void ask(const regex_t *re, const struct shape *s, const char *row, int so, int eflags, struct answer *a)
+{
+ regmatch_t m;
+ m.rm_so = so;
+ m.rm_eo = s->len;
+ a->rc = regexec(re, row, 1, &m, eflags | REG_STARTEND);
+ a->so = m.rm_so;
+ a->eo = m.rm_eo;
+}
+
+/* 0 an answer inside the range (or no match), 2 a match outside it, 3 any
+   other answer, 4 an answer that differs from the one the same call gives
+   when every byte of a multibyte character is a plain letter ("wrong": the
+   engine misjudged a boundary beside a character, and a hit inside the range
+   is no proof). */
+static int one_call(const regex_t *re, const struct shape *s, int so, int eflags)
+{
+ struct answer a, b;
+ ask(re, s, place_row(s->row, s->len, 0), so, eflags, &a);
+ if (a.rc == REG_NOMATCH) a.so = a.eo = -1;
+ else if (a.rc != 0) return 3;
+ else if (a.so < so || a.so > a.eo || a.eo > s->len) return 2;
+ if (!compare_swapped) return 0;
+ ask(re, s, place_row(s->row, s->len, 1), so, eflags, &b);
+ if (b.rc == REG_NOMATCH) b.so = b.eo = -1;
+ if (a.rc != b.rc || a.so != b.so || a.eo != b.eo) return 4;
+ return 0;
+}
+
+/* The child: no core file, five seconds, then the shape's two calls.  Its exit
+   status is the answer: 0 ok, 42 refused by regcomp, 2 range, 3 other, 4 wrong.
+   Refused is 42 because a sanitizer that catches a crash in the child ends it
+   with an exit status of its own (AddressSanitizer and UBSan 1, LeakSanitizer
+   23), and that must read as a crash, not as a refusal. */
+#define EXIT_REFUSED 42
+static int child_answer(const struct shape *s)
+{
+ regex_t re;
+ struct rlimit rl;
+ int first, second;
+ rl.rlim_cur = 0;
+ rl.rlim_max = 0;
+ setrlimit(RLIMIT_CORE, &rl);
+ alarm(5);
+ if (regcomp(&re, s->pat, REG_EXTENDED | s->icase | $xwpe_regex_flag)) return EXIT_REFUSED;
+ first = one_call(&re, s, s->so, s->eflags);
+ second = one_call(&re, s, 0, REG_NOTBOL | REG_NOTEOL);
+ if (first == 2 || second == 2) return 2;
+ if (first == 3 || second == 3) return 3;
+ if (first == 4 || second == 4) return 4;
+ return 0;
+}
+
+static const char *measure(const struct shape *s)
+{
+ pid_t pid;
+ int st;
+ fflush(stdout);
+ pid = fork();
+ if (pid < 0) return "fork-failed";
+ if (pid == 0) _exit(child_answer(s));
+ if (waitpid(pid, &st, 0) != pid) return "other";
+ if (WIFSIGNALED(st) && WTERMSIG(st) == SIGALRM) return "hang";
+ if (WIFSIGNALED(st)) return "crash";
+ if (!WIFEXITED(st)) return "other";
+ if (WEXITSTATUS(st) == 0) return "ok";
+ if (WEXITSTATUS(st) == EXIT_REFUSED) return "refused";
+ if (WEXITSTATUS(st) == 2) return "range";
+ if (WEXITSTATUS(st) == 3) return "other";
+ if (WEXITSTATUS(st) == 4) return "wrong";
+ return "crash";
+}
+
+/* An answer the probe could not read: another status, a failed wait, or no
+   child at all.  It counts like "other" (both facts 0), and the summary names
+   which. */
+static int unreadable(const char *o)
+{
+ return strcmp(o, "other") == 0 || strcmp(o, "fork-failed") == 0;
+}
+
+static int failed(const char *o)
+{
+ return strcmp(o, "crash") == 0 || strcmp(o, "range") == 0 || strcmp(o, "hang") == 0 ||
+        strcmp(o, "wrong") == 0;
+}
+
+static const char *verdict(int bad, int unknown)
+{
+ if (bad) return "unsafe";
+ if (unknown) return "unknown";
+ return "safe";
+}
+
+/* A shape that already hung is not run again for the report-only pass: a hang
+   costs five seconds a call. */
+static void measure_all(const char **answer, const char **before)
+{
+ int i;
+ for (i = 0; i < SHAPES; i++)
+ {
+  if (before != 0 && strcmp(before[i], "hang") == 0) answer[i] = "skipped";
+  else answer[i] = measure(&shapes[i]);
+ }
+}]], [[const char *answer[SHAPES], *again[SHAPES];
+ int i, shape_bad = 0, shape_unknown = 0, control_bad = 0, control_unknown = 0;
+ if (!setlocale(LC_CTYPE, "C.UTF-8") && !setlocale(LC_CTYPE, "en_US.UTF-8"))
+ {
+  printf("group=unknown boundary=unknown no-utf8-locale\\n");
+  return 0;
+ }
+ measure_all(answer, 0);
+ for (i = 0; i < SHAPES; i++)
+ {
+  if (shapes[i].control)
+  {
+   if (failed(answer[i])) control_bad = 1;
+   if (unreadable(answer[i])) control_unknown = 1;
+  }
+  else
+  {
+   if (failed(answer[i])) shape_bad = 1;
+   if (unreadable(answer[i])) shape_unknown = 1;
+  }
+ }
+ printf("group=%s boundary=%s", verdict(shape_bad || control_bad, shape_unknown || control_unknown),
+        verdict(control_bad, control_unknown));
+ for (i = 0; i < SHAPES; i++) printf(" %s=%s", shapes[i].name, answer[i]);
+ setlocale(LC_CTYPE, "C");
+ compare_swapped = 0;
+ measure_all(again, answer);
+ printf(" C:");
+ for (i = 0; i < SHAPES; i++) printf(" %s=%s", shapes[i].name, again[i]);
+ printf("\\n");
+ return 0;]])],
+       [xwpe_cv_regex_boundary=`./conftest$ac_exeext 2>/dev/null`
+        test -n "$xwpe_cv_regex_boundary" || xwpe_cv_regex_boundary="unknown (the probe printed nothing)"],
+       [xwpe_cv_regex_boundary="unknown (the probe did not build)"])])])
+AS_CASE([$xwpe_cv_regex_boundary],
+  ["group=safe boundary=safe "*],
+    [xwpe_boundary_group_ok=yes; xwpe_boundary_ok=yes],
+  [*"boundary=unsafe "*],
+    [xwpe_boundary_group_ok=no; xwpe_boundary_ok=no],
+  ["group=unknown boundary=unknown no-utf8-locale"],
+    [xwpe_boundary_group_ok=no; xwpe_boundary_ok=yes],
+  [*"boundary=unknown "*],
+    [xwpe_boundary_group_ok=no; xwpe_boundary_ok=no],
+  ["group=unsafe boundary=safe "*],
+    [xwpe_boundary_group_ok=no; xwpe_boundary_ok=yes],
+  [xwpe_boundary_group_ok=no; xwpe_boundary_ok=yes])
+WPE_FACT([REGEX_SAFE_BOUNDARY_GROUP], [test "x$xwpe_boundary_group_ok" = xyes],
+  [the regular expression engine survives a word-boundary escape beside |])
+WPE_FACT([REGEX_SAFE_BOUNDARY], [test "x$xwpe_boundary_ok" = xyes],
+  [the regular expression engine survives a word-boundary escape alone])
+AS_IF([test "x$xwpe_boundary_ok" != xyes],
+  [xwpe_say_regex_safe_boundary="no ($xwpe_cv_regex_boundary; Find refuses any word-boundary escape)"],
+  [xwpe_say_regex_safe_boundary="yes (\\b \\B \\< \\> alone are not refused)"])
+AS_IF([test "x$xwpe_boundary_group_ok" = xyes],
+  [xwpe_say_regex_safe_boundary_group="yes (\\b \\B \\< \\> beside | are safe)"],
+  [test "x$xwpe_boundary_ok" != xyes],
+  [xwpe_say_regex_safe_boundary_group="no (as above)"],
+  [xwpe_say_regex_safe_boundary_group="no ($xwpe_cv_regex_boundary; Find refuses a word-boundary escape together with |)"])
+
 # The math library.  we_render_cairo.c calls floor and ceil.  Linux and
 # FreeBSD find them through libcairo's own dependency on libm, but OpenBSD's
 # linker does not look through a dependency (the same reason freetype2 is
@@ -876,5 +1141,7 @@ AC_MSG_RESULT([
       regex word escapes: $xwpe_say_regex
       regex GNU escapes: $xwpe_say_regex_gnu_escapes
       regex reads UTF-8: $xwpe_say_regex_multibyte
+      regex boundary groups: $xwpe_say_regex_safe_boundary_group
+      regex boundary escapes: $xwpe_say_regex_safe_boundary
       linker --wrap:     $have_ld_wrap
 ])

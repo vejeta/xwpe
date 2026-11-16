@@ -23,6 +23,7 @@
 
 #include <ctype.h>
 #include <regex.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,6 +51,22 @@
 #ifndef REG_ILLSEQ
 #define REG_ILLSEQ (-1)
 #endif
+
+/* The answer the owner gives itself when the engine reports a match outside
+   the range it was given.  No REG_* code is this large (glibc's are 0 to 16,
+   BSD's up to 256, REG_ILLSEQ is 17 or the fallback -1 above), so it is never
+   taken for the engine's own; the check below fails the build if one is. */
+#define ROWFIND_BAD_ANSWER 0x4000
+typedef char rowfind_bad_answer_is_new[
+ (ROWFIND_BAD_ANSWER != REG_NOMATCH && ROWFIND_BAD_ANSWER != REG_ESPACE &&
+  ROWFIND_BAD_ANSWER != REG_ILLSEQ && ROWFIND_BAD_ANSWER != 0) ? 1 : -1];
+
+/* The sentences Find says when the owner refuses a text the engine is
+   measured to crash on (see we_rowfind.h); under 70 columns. */
+#define ROWFIND_UNSAFE_GROUP_SENTENCE \
+ "\\b \\B \\< \\> beside | can crash this system's regex: search refused"
+#define ROWFIND_UNSAFE_ESCAPE_SENTENCE \
+ "\\b \\B \\< \\> can crash this system's regex: search refused"
 
 /* The first byte that is part of a word whatever the locale says: a letter
    beyond ASCII is a word letter, as it was in the Latin-1 locale of the
@@ -203,6 +220,155 @@ static void error_note(int rc, const regex_t *re)
  g_has_error = 1;
 }
 
+/** refusal_note - Keep the owner's own sentence for a text it did not compile. */
+static void refusal_note(const char *sentence)
+{
+ snprintf(g_error, sizeof(g_error), "%s", sentence);
+ g_has_error = 1;
+}
+
+/* ---- what the owner refuses: the text, read as an extended expression ---- */
+
+#define ERE_PLAIN  0   /* nothing the refusal looks for */
+#define ERE_BOUND  1   /* \b \B \< or \> */
+#define ERE_ALT    2   /* an alternation bar */
+
+/* FreeBSD's (and, by its sources, NetBSD's and macOS's) libc also spell the
+   start and the end of a word as bracket expressions; they reach the same
+   engine code as \< and \>, so they count as word-boundary escapes. */
+#define ERE_WORD_START "[[:<:]]"
+#define ERE_WORD_END   "[[:>:]]"
+#define ERE_WORD_EDGE_LEN 7
+
+/**
+ * ere_skip_bracket - Step over a bracket expression.
+ * @p: points at the `[`.
+ * Return: the byte after the closing `]`, or the terminating zero when the
+ * bracket is not closed (regcomp refuses such a text anyway).
+ *
+ * A `]` right after `[` or `[^` is a member; `[:name:]`, `[=x=]` and `[.x.]`
+ * are one member each; a backslash inside is a plain character.
+ */
+static const char *ere_skip_bracket(const char *p)
+{
+ p++;
+ if (*p == '^')
+  p++;
+ if (*p == ']')
+  p++;
+ while (*p != '\0')
+ {
+  if (*p == '[' && (p[1] == ':' || p[1] == '=' || p[1] == '.'))
+  {
+   char member_end = p[1];
+
+   p += 2;
+   while (*p != '\0' && !(*p == member_end && p[1] == ']'))
+    p++;
+   if (*p == '\0')
+    return(p);
+   p += 2;
+   continue;
+  }
+  if (*p == ']')
+   return(p + 1);
+  p++;
+ }
+ return(p);
+}
+
+/**
+ * ere_next - Read one piece of an extended expression.
+ * @p: where to read, not at the terminating zero.
+ * @kind: receives ERE_BOUND for a word-boundary escape (or [[:<:]], [[:>:]]), ERE_ALT for an
+ * unescaped bar outside a bracket, else ERE_PLAIN.
+ * Return: where the next piece starts.
+ *
+ * A backslash and the byte after it are one piece, so an escaped backslash
+ * (`\\`) is not the start of an escape, and `\|` is a bar that is no
+ * alternation; a backslash before the end stops the text.
+ */
+static const char *ere_next(const char *p, int *kind)
+{
+ *kind = ERE_PLAIN;
+ if (strncmp(p, ERE_WORD_START, ERE_WORD_EDGE_LEN) == 0 ||
+     strncmp(p, ERE_WORD_END, ERE_WORD_EDGE_LEN) == 0)
+ {
+  *kind = ERE_BOUND;
+  return(p + ERE_WORD_EDGE_LEN);
+ }
+ if (*p == '[')
+  return(ere_skip_bracket(p));
+ if (*p == '\\')
+ {
+  if (p[1] == '\0')
+   return(p + 1);
+  if (strchr("bB<>", p[1]) != NULL)
+   *kind = ERE_BOUND;
+  return(p + 2);
+ }
+ if (*p == '|')
+  *kind = ERE_ALT;
+ return(p + 1);
+}
+
+/** ere_has - Does the expression @text hold a piece of @want outside brackets? */
+static int ere_has(const char *text, int want)
+{
+ const char *p = text;
+ int kind;
+
+ while (*p != '\0')
+ {
+  p = ere_next(p, &kind);
+  if (kind == want)
+   return(1);
+ }
+ return(0);
+}
+
+/** ere_has_boundary_escape - Is there a \b, \B, \< or \> in the expression? */
+static int ere_has_boundary_escape(const char *text)
+{
+ return(ere_has(text, ERE_BOUND));
+}
+
+/** ere_has_alternation - Is there an alternation bar in the expression? */
+static int ere_has_alternation(const char *text)
+{
+ return(ere_has(text, ERE_ALT));
+}
+
+/**
+ * wpe_rowfind_refuses_when - Would Find refuse @text, given what the engine is
+ * measured to survive?
+ * @group_safe: the engine survives an escape beside an alternation.
+ * @boundary_safe: the engine survives an escape at all.
+ *
+ * A user searching on a system whose C library crashes on such a pattern gets
+ * a sentence instead of a dead editor.  Only a regular expression is refused;
+ * a plain text has its backslashes escaped and never reaches this.
+ * Return: 0 the text may go to the engine, else WPE_ROWFIND_REFUSES_ESCAPE or
+ * WPE_ROWFIND_REFUSES_GROUP.
+ */
+int wpe_rowfind_refuses_when(const char *text, unsigned sw, int group_safe, int boundary_safe)
+{
+ if (!(sw & FIND_REGULAR))
+  return(0);
+ if (!boundary_safe && ere_has_boundary_escape(text))
+  return(WPE_ROWFIND_REFUSES_ESCAPE);
+ if (!group_safe && ere_has_boundary_escape(text) && ere_has_alternation(text))
+  return(WPE_ROWFIND_REFUSES_GROUP);
+ return(0);
+}
+
+/** wpe_rowfind_refuses - wpe_rowfind_refuses_when with this system's measure. */
+int wpe_rowfind_refuses(const char *text, unsigned sw)
+{
+ return(wpe_rowfind_refuses_when(text, sw, WPE_ROWFIND_BOUNDARY_GROUP_SAFE,
+                                 WPE_ROWFIND_BOUNDARY_SAFE));
+}
+
 /**
  * engine_compile - Compile the cache's pattern for one engine.
  * @which: ENGINE_PRIMARY or ENGINE_BYTES.
@@ -235,11 +401,16 @@ static int engine_compile(RowfindCache *c, int which)
  * under a UTF-8 ctype of the owner's where the system has one.  A plain text
  * that a multibyte engine refuses (Latin-1 bytes from a file, REG_ILLSEQ) is
  * compiled under the C ctype and matched as bytes, as it always was.
- * Return: 1 when the primary engine is there, 0 when the text does not compile.
+ * A regular expression the engine is measured to crash on (see
+ * wpe_rowfind_refuses) is not compiled: the refusal is kept as the error and
+ * the text is cached as failed, so Change All over a hundred thousand rows
+ * asks once.
+ * Return: 1 when the primary engine is there, 0 when the text does not compile
+ * or is refused.
  */
 static int cache_build(RowfindCache *c, const FIND *fd)
 {
- int rc;
+ int rc, refusal;
 
  cache_clear(c);
  g_has_error = 0;
@@ -259,6 +430,16 @@ static int cache_build(RowfindCache *c, const FIND *fd)
   c->ctype[ENGINE_PRIMARY] = g_utf8_ctype;
  c->ctype[ENGINE_BYTES] = g_c_ctype;
 #endif
+ refusal = wpe_rowfind_refuses(c->text, c->bits);
+ if (refusal != 0)
+ {
+  if (refusal == WPE_ROWFIND_REFUSES_ESCAPE)
+   refusal_note(ROWFIND_UNSAFE_ESCAPE_SENTENCE);
+  else
+   refusal_note(ROWFIND_UNSAFE_GROUP_SENTENCE);
+  c->failed = 1;
+  return(0);
+ }
  rc = engine_compile(c, ENGINE_PRIMARY);
 #ifdef WPE_ROWFIND_LOCALES
  if (rc == REG_ILLSEQ && !(c->bits & FIND_REGULAR) && g_c_ctype != (locale_t)0)
@@ -298,10 +479,25 @@ static int cache_ensure(const FIND *fd)
 /* ---- one call of the engine ---- */
 
 /**
+ * answer_in_range - Is a match [@so, @eo) inside [@lowest, @highest]?
+ *
+ * Find never uses an answer the engine gives outside the range it was asked
+ * to look in: such an answer is no hit, never a replacement of a negative
+ * length and never a search that stands still on one place.  The values are
+ * the engine's own type (regoff_t is wider than int on some systems), so a
+ * wild value cannot be cut into the range by a cast.
+ */
+static int answer_in_range(regoff_t so, regoff_t eo, regoff_t lowest, regoff_t highest)
+{
+ return(so >= lowest && so <= eo && eo <= highest);
+}
+
+/**
  * engine_exec - Match from byte @pos of the row with one engine.
  * @flags: REG_NOTBOL and REG_NOTEOL as the row's kind says.
  * @so, @eo: receive the match's columns of the whole row.
- * Return: 0 a match, else regexec's code (REG_NOMATCH or a refusal).
+ * Return: 0 a match, else regexec's code (REG_NOMATCH or a refusal), or
+ * ROWFIND_BAD_ANSWER when the engine said it matched outside the range.
  */
 static int engine_exec(RowfindCache *c, int which, const RowSearch *x, int pos,
                        int flags, int *so, int *eo)
@@ -317,8 +513,16 @@ static int engine_exec(RowfindCache *c, int which, const RowSearch *x, int pos,
  m.rm_so = pos;
  m.rm_eo = x->len;
  rc = regexec(&c->re[which], (const char *)x->row, 1, &m, flags | REG_STARTEND);
- *so = (int)m.rm_so;
- *eo = (int)m.rm_eo;
+ /* the check is on the engine's own type, before the cast to int */
+ if (rc == 0 && !answer_in_range(m.rm_so, m.rm_eo, pos, x->len))
+  rc = ROWFIND_BAD_ANSWER;
+ if (rc == 0)
+ {
+  *so = (int)m.rm_so;
+  *eo = (int)m.rm_eo;
+ }
+ else
+  *so = *eo = 0;
 #else
  /* No REG_STARTEND: the engine sees a NUL-terminated copy from @pos on.  The
     byte before @pos is out of its sight, so a \b or \< at @pos is judged
@@ -339,8 +543,16 @@ static int engine_exec(RowfindCache *c, int which, const RowSearch *x, int pos,
  memcpy(g_scratch, x->row, x->len);
  g_scratch[x->len] = '\0';
  rc = regexec(&c->re[which], g_scratch + pos, 1, &m, flags);
- *so = pos + (int)m.rm_so;
- *eo = pos + (int)m.rm_eo;
+ /* the copy starts at @pos, so the columns are relative to it */
+ if (rc == 0 && !answer_in_range(m.rm_so, m.rm_eo, 0, x->len - pos))
+  rc = ROWFIND_BAD_ANSWER;
+ if (rc == 0)
+ {
+  *so = pos + (int)m.rm_so;
+  *eo = pos + (int)m.rm_eo;
+ }
+ else
+  *so = *eo = 0;
 done:
 #endif
 #ifdef WPE_ROWFIND_LOCALES
@@ -363,8 +575,9 @@ static int goes_on_forward(const RowSearch *x)
  * so ^ is not there for it either: Change All of `^a` with nothing on "aab"
  * leaves "ab", as sed and Vim do, and `^.` takes one character, not the line.
  * An answer that is neither a match nor "no match" (a multibyte engine
- * refusing a byte, REG_ILLSEQ) is no "nothing here": the row is tried again
- * by bytes.
+ * refusing a byte, REG_ILLSEQ, or a match outside the row) is no "nothing
+ * here": the row is tried again by bytes where the system has them, and is
+ * no match where it has not.
  * Return: 1 a match, 0 none.
  */
 static int engine_match(RowfindCache *c, const RowSearch *x, int pos, int *so, int *eo)
@@ -540,7 +753,10 @@ static int search_backward(RowfindCache *c, const RowSearch *x, int from, int to
 
 /**
  * wpe_rowfind_row - Find the Find text of @fd on one row.
- * @row, @row_len: the row's bytes, without its line break.
+ * @row, @row_len: the row's bytes, without its line break.  The byte at
+ * row[row_len] must exist and be readable (the row's line break, or a zero):
+ * the C library's engine may look at the byte behind the range it is given
+ * (NetBSD 10 does), and the owner never reads past it.
  * @kind: WPE_ROW_STARTS_LINE and WPE_ROW_ENDS_LINE as they hold for this row.
  * @from, @to: the byte columns a hit must lie in (the cursor and the block's
  * edges); a hit starts at or after @from and ends at or before @to.

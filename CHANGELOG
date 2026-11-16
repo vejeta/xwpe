@@ -20,6 +20,15 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* Find no longer crashes on NetBSD and FreeBSD with a word-boundary search
+  (\B, \b, \<, \>, [[:<:]], [[:>:]]) over a row with a UTF-8 character
+  before the match.  Their libc regexec reads the character before the
+  search start as one byte and can then read past the row
+  (https://gnats.netbsd.org/61017; reported to FreeBSD).  configure runs
+  the faulty shapes in a child process and, where the engine crashes,
+  hangs or answers wrongly, Find refuses those searches with a sentence
+  that says why; every engine answer is also checked against the row
+  before it is used.
 * configure now says whether this system's regular expressions understand
   \b, \B, \w and \s and whether they read UTF-8 characters, and the Find
   chapter of the manual names what each system does (FreeBSD refuses the

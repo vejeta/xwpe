@@ -309,7 +309,7 @@ case $MBPROBE in
 *regexec*rm_eo*) ;;
 *) fail "configure's probe of WPE_HAS_REGEX_MULTIBYTE does not run the engine and read rm_eo" ;;
 esac
-for fact in REGEX_GNU_ESCAPES REGEX_MULTIBYTE; do
+for fact in REGEX_GNU_ESCAPES REGEX_MULTIBYTE REGEX_SAFE_BOUNDARY_GROUP REGEX_SAFE_BOUNDARY; do
 	if ! grep -qE "^#define WPE_HAS_$fact [01]\$" "$CONFIG"; then
 		fail "config.h does not define WPE_HAS_$fact as 0 or 1"
 	fi
@@ -355,6 +355,170 @@ if ! grep -q 'WPE_HAS_REGEX_GNU_ESCAPES' "$WORK/test_rowfind.nocomment"; then
 	fail "tests/test_rowfind.c does not read WPE_HAS_REGEX_GNU_ESCAPES outside a comment: a row would run where the engine cannot pass it"
 fi
 ROWS=$((ROWS + 1))
+
+# Row 11: whether the engine survives a word-boundary escape beside an
+# alternation is measured by running the class in a child of the probe, and
+# the search owner reads the two facts.  NetBSD 10's regexec faults on
+# `\B(a|b)[ab]` over a row with a multibyte character, so the probe must run
+# those shapes (and their twins with \b, \< and the group before the escape),
+# the editor's own 9-byte call, and controls outside the class, and must tell
+# "crash", "range" and "hang" apart from "ok": a probe that cannot print a
+# crash would call every system safe.  config.h carries both facts as 0 or 1
+# (row 10's loop).  The decision is made once, in we_rowfind.h, from the two
+# facts in an #if; the owner and the test read the decision, never the facts.
+BNDPROBE=$(sed -n '/what regexec does with a word-boundary escape/,/^WPE_FACT(\[REGEX_SAFE_BOUNDARY_GROUP\]/p' "$SRCDIR/configure.ac")
+if [ -z "$BNDPROBE" ]; then
+	fail "configure.ac has no probe of what regexec does with a word-boundary escape"
+fi
+for word in crash range hang wrong; do
+	case $BNDPROBE in
+	*"return \"$word\""*) ;;
+	*) fail "configure's probe of the word-boundary escapes never answers \"$word\" (no return \"$word\"): a crash of the engine would read as safe" ;;
+	esac
+done
+for shape in '\\\\B(a|b)' '\\\\b(a|b)' '(a|b)\\\\B' '\\\\<(a|b)' '\\\\B(b)b' '"editor-call"' '\\\\>.' '\\\\<b' '[[:>:]].' '[[:<:]]b' '"gt-dot-1"' '"lt-b-1"'; do
+	case $BNDPROBE in
+	*"$shape"*) ;;
+	*) fail "configure's probe of the word-boundary escapes does not run the shape spelt $shape in configure.ac" ;;
+	esac
+done
+case $BNDPROBE in
+*fork*waitpid*) ;;
+*) fail "configure's probe of the word-boundary escapes does not run each shape in a child (fork, waitpid): a crash would end configure" ;;
+esac
+strip_comments "$SRCDIR/we_rowfind.h" | blank_strings /dev/stdin > "$WORK/we_rowfind_h.nocomment"
+if ! grep -qE '^[[:space:]]*#[[:space:]]*(if|elif).*WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP' "$WORK/we_rowfind_h.nocomment"; then
+	fail "we_rowfind.h does not test WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP in an #if: the owner would let an escape beside | reach an engine measured to fault"
+fi
+if ! grep -qE '^[[:space:]]*#[[:space:]]*(if|elif).*WPE_HAS_REGEX_SAFE_BOUNDARY([^_A-Z]|$)' "$WORK/we_rowfind_h.nocomment"; then
+	fail "we_rowfind.h does not test WPE_HAS_REGEX_SAFE_BOUNDARY in an #if: the owner would let any word-boundary escape reach an engine measured to fault"
+fi
+if ! grep -q 'WPE_ROWFIND_BOUNDARY_GROUP_SAFE' "$WORK/test_rowfind.nocomment"; then
+	fail "tests/test_rowfind.c does not read WPE_ROWFIND_BOUNDARY_GROUP_SAFE outside a comment: its rows would run where the owner refuses, or refuse where it runs"
+fi
+ROWS=$((ROWS + 1))
+
+# Row 12: the probe of row 11 is run, not read.  Its C program is taken out
+# of configure.ac, put through the shell as configure does (a here-document
+# with $xwpe_regex_flag and $wpe_fact_REGEX_MULTIBYTE), built against a stub
+# that runs the real engine and plants one fault, and its verdict is asserted:
+#   no fault                          group=safe   boundary=safe
+#   a crash on a control's row        group=unsafe boundary=unsafe
+#   a wrong in-range answer           group=unsafe boundary=unsafe
+#   a match outside the range         group=unsafe boundary=safe
+#   a hang                            group=unsafe boundary=safe
+#   an engine that reads bytes        group=safe   boundary=safe  (the multibyte
+#       fact is 0, as on OpenBSD: the swap of a multibyte character for
+#       letters changes the word classes there by design, so it is not compared)
+# So a probe that stops counting "wrong", never reaches the compare, or
+# compares where the engine reads bytes, turns this row red.
+BNDPROG=$(printf '%s\n' "$BNDPROBE" | awk '
+	/AC_LANG_PROGRAM\(\[\[/ { sub(/.*AC_LANG_PROGRAM\(\[\[/, ""); on = 1 }
+	on == 0 { next }
+	{
+		line = $0
+		if (on == 1 && (i = index(line, "]], [["))) {
+			print substr(line, 1, i - 1); print "int main(void)"; print "{"
+			line = substr(line, i + 6); on = 2
+		}
+		if (on == 2 && (j = index(line, "]])"))) { print substr(line, 1, j - 1); print "}"; exit }
+		print line
+	}')
+bnd_probe_source() { # 1|0: the multibyte fact; the C source as configure would write it
+	xwpe_regex_flag=0
+	wpe_fact_REGEX_MULTIBYTE=$1
+	eval "cat <<_BND_EOF
+$BNDPROG
+_BND_EOF"
+}
+cat > "$WORK/bndstub.h" <<'EOF'
+#include <locale.h>
+#include <regex.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+static int stub_regcomp(regex_t *re, const char *pat, int fl)
+{
+	const char *f = getenv("STUB_FAULT");
+	if (f != NULL && strcmp(f, "byte") == 0) setlocale(LC_CTYPE, "C");
+	return regcomp(re, pat, fl);
+}
+static int stub_regexec(const regex_t *re, const char *s, size_t n, regmatch_t *m, int fl)
+{
+	const char *f = getenv("STUB_FAULT");
+	int rc;
+	if (f == NULL) f = "none";
+	if (strcmp(f, "byte") == 0) setlocale(LC_CTYPE, "C");
+	rc = regexec(re, s, n, m, fl);
+	if (strcmp(f, "crash") == 0 && s[0] == (char) 0xC3) raise(SIGSEGV);
+	if (strcmp(f, "hang") == 0 && s[0] == 0x09) for (;;) ;
+	if (strcmp(f, "range") == 0 && s[0] == 0x09) { m[0].rm_so = 0; m[0].rm_eo = 500; return 0; }
+	if (strcmp(f, "wrong") == 0 && (unsigned char) s[1] >= 0x80) { m[0].rm_so = 3; m[0].rm_eo = 4; return 0; }
+	return rc;
+}
+#define regcomp stub_regcomp
+#define regexec stub_regexec
+EOF
+bnd_expect() { # name multibyte-fact fault want
+	bnd_probe_source "$2" > "$WORK/bndprobe.c"
+	if ! "$CC" -include "$WORK/bndstub.h" -o "$WORK/bndprobe" "$WORK/bndprobe.c" > "$WORK/bndprobe.log" 2>&1; then
+		fail "row 12: the probe taken out of configure.ac does not build against the stub ($1): $(head -n 3 "$WORK/bndprobe.log" | tr '\n' ' ')"
+		return
+	fi
+	got=$(STUB_FAULT=$3 "$WORK/bndprobe" 2>/dev/null | cut -d' ' -f1,2)
+	case $got in
+	"group=unknown boundary=unknown") echo "SKIP: row 12 ($1): no UTF-8 locale here to run the probe in"; return ;;
+	esac
+	if [ "$got" != "$4" ]; then
+		fail "row 12: the probe says \"$got\" for $1, wanted \"$4\" (a probe that does not count it, or compares where it must not)"
+	fi
+}
+case $BNDPROG in
+*'compare_swapped = $wpe_fact_REGEX_MULTIBYTE;'*) ;;
+*) fail "row 12: the probe does not start compare_swapped from the measured multibyte fact" ;;
+esac
+# The stub runs the host's real engine and adds one fault, so the cases only
+# mean something where the host engine itself passes the probe: configure's
+# measure of this host is in config.h.  Where it fails (FreeBSD and NetBSD
+# crash on \>. and the group shapes, OpenBSD's single-byte engine answers
+# "wrong" against the swapped row) the row says SKIP and runs no case that
+# needs a clean host.  The byte case needs a host clean of the two safety
+# facts only: it makes the stub read bytes and seeds the multibyte fact 0.
+bnd_fact() { # name: the value of WPE_HAS_<name> in config.h, 0 when absent
+	sed -n "s/^#define WPE_HAS_$1 \([01]\)\$/\1/p" "$CONFIG" | head -n 1
+}
+FACT_BOUNDARY=$(bnd_fact REGEX_SAFE_BOUNDARY)
+FACT_GROUP=$(bnd_fact REGEX_SAFE_BOUNDARY_GROUP)
+FACT_MULTIBYTE=$(bnd_fact REGEX_MULTIBYTE)
+FACT_VALUES="WPE_HAS_REGEX_SAFE_BOUNDARY=${FACT_BOUNDARY:-0} WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP=${FACT_GROUP:-0} WPE_HAS_REGEX_MULTIBYTE=${FACT_MULTIBYTE:-0}"
+if [ "$FACT_BOUNDARY" = 1 ] && [ "$FACT_GROUP" = 1 ]; then
+	HOST_CLEAN_BYTES=1
+else
+	HOST_CLEAN_BYTES=0
+fi
+if [ "$HOST_CLEAN_BYTES" = 1 ] && [ "$FACT_MULTIBYTE" = 1 ]; then
+	HOST_CLEAN_CHARS=1
+else
+	HOST_CLEAN_CHARS=0
+fi
+if [ "$HOST_CLEAN_CHARS" = 1 ]; then
+	bnd_expect "an engine with no fault" 1 none "group=safe boundary=safe"
+	bnd_expect "a crash on a control" 1 crash "group=unsafe boundary=unsafe"
+	bnd_expect "a wrong in-range answer" 1 wrong "group=unsafe boundary=unsafe"
+	bnd_expect "a match outside the range" 1 range "group=unsafe boundary=safe"
+	bnd_expect "a hang" 1 hang "group=unsafe boundary=safe"
+else
+	echo "SKIP: row 12: the host engine fails the probe or reads bytes ($FACT_VALUES)"
+fi
+if [ "$HOST_CLEAN_BYTES" = 1 ]; then
+	bnd_expect "an engine that reads bytes" 0 byte "group=safe boundary=safe"
+else
+	echo "SKIP: row 12: the host engine fails the probe, no byte case ($FACT_VALUES)"
+fi
+# A row whose two halves both skipped proved nothing here: it is not counted.
+if [ "$HOST_CLEAN_CHARS" = 1 ] || [ "$HOST_CLEAN_BYTES" = 1 ]; then
+	ROWS=$((ROWS + 1))
+fi
 
 if [ $FAIL -eq 0 ]; then
 	echo "PASS: platform decisions have one owner ($ROWS rows)"

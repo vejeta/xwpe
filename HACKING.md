@@ -854,6 +854,19 @@ that need `\w` and `\b` print `SKIP` by name where the engine lacks them, and
 the test's reference compiles with the owner's own flags
 (`WPE_ROWFIND_CFLAGS`), which `tests/check-one-owner.sh` enforces.
 
+A fact that guards a crash is measured by running the crashing class in a
+child of the probe, and a build that cannot measure it (a cross build, no UTF-8
+locale) says 0. `WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP` runs a word-boundary escape
+beside `|` that way, and `WPE_HAS_REGEX_SAFE_BOUNDARY` stays 1 unless a shape
+outside the class also fails or answers something the probe cannot read (a
+control that answered "other", or whose child could not be forked, is 0; the
+summary names which, and configure can be run again once processes are free);
+a cross build or a host with no UTF-8
+locale measured nothing, so it keeps 1 (refusing every `\b` there would cost
+more than it protects). The search owner refuses what a 0 covers. The probe
+compares each answer with the same call over a row whose multibyte characters
+are plain letters ("wrong"), only on an engine that reads characters.
+
 The check scripts read an object's symbols through one file, `tests/objsyms.sh`
 (the old name `tests/nm-undefined.sh` is a one-line shim to it):
 `nm_undefined_names`, `nm_defined_names`, `symbol_source_name` (`__error`,

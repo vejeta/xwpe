@@ -19,8 +19,26 @@
  *                        engine under, so a process locale that is not UTF-8
  *                        leaves the engine reading bytes and the owner has
  *                        to reject a match that covers part of a character.
+ *   test_rowfind_illseq  WPE_ROWFIND_MOCK_ILLSEQ: a mock engine that refuses
+ *                        invalid UTF-8 as FreeBSD's does (REG_ILLSEQ);
+ *   test_rowfind_badengine  WPE_ROWFIND_MOCK_BADENGINE and
+ *                        WPE_ROWFIND_UNSAFE_BOUNDARY_GROUP: a mock engine
+ *                        that crashes on a word-boundary escape beside an
+ *                        alternation over a multibyte row (NetBSD 10's) and
+ *                        answers outside the row, with the owner's refusal
+ *                        forced on;
+ *   test_rowfind_badengine_copy  the same on the copy path (no REG_STARTEND),
+ *                        where the check of the engine's answer is separate;
+ *   test_rowfind_boundary  WPE_ROWFIND_UNSAFE_BOUNDARY: the real engine, with
+ *                        the refusal of every word-boundary escape forced on.
  * Each runs its passes under the C locale, C.UTF-8 and en_US.iso885915 (a
  * pass whose locale is missing says so and is skipped).
+ *
+ * Rows that can kill or hang the engine run in a child (run_isolated), so a
+ * crash is a FAIL that names the row (a search that never ends is the hang
+ * guard's line, tests/test_watchdog.h); a row is also run on a row placed so
+ * that the byte after it is on an unmapped page (the contract is one byte,
+ * the line break), and the byte-behind-the-range read is reported as a note.
  *
  * The differential: for every character start p of a random row the engine
  * is run by hand with rm_so = p and the match taken only if it starts at p;
@@ -38,13 +56,22 @@
 #include <regex.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "../we_rowfind.h"
 #include "../we_utf8.h"
+#include "test_watchdog.h"
+
+#ifndef MAP_ANON
+#define MAP_ANON MAP_ANONYMOUS
+#endif
 
 /* newlocale and uselocale are POSIX 2008 and not on every system: NetBSD has
    no uselocale.  The owner then runs the engine under the process locale and
@@ -100,6 +127,10 @@ static int window_differences;
    reference; engine_self_inconsistent finds those rows, which are counted
    and said, and every other row is compared. */
 static int byte_engine_quirks;
+/* Rows where owner and reference both said "refused" because the engine is
+   measured unsafe for the text (wpe_rowfind_refuses): the log shows the path
+   ran on a system that has it (NetBSD 10) and 0 on one that has not. */
+static int differential_refused;
 static const char *pass_name = "";
 
 static void fail(const char *what)
@@ -262,9 +293,16 @@ static int ref_compile_fallbacks, ref_exec_fallbacks;
  * flags are the owner's. */
 static int ref_regcomp(regex_t *re, const char *pat, unsigned sw, ref_ctype_t loc)
 {
- ref_ctype_t prev = ref_ctype_enter(loc);
- int rc = regcomp(re, pat, WPE_ROWFIND_CFLAGS(sw));
+ ref_ctype_t prev;
+ int rc;
 
+ /* Every compile of the reference comes here, so the reference never hands
+    the engine a text the owner refuses for its measured safety: the owner
+    is asked, the rule is not restated. */
+ if (wpe_rowfind_refuses(pat, sw))
+  return(REG_BADPAT);
+ prev = ref_ctype_enter(loc);
+ rc = regcomp(re, pat, WPE_ROWFIND_CFLAGS(sw));
  ref_ctype_leave(loc, prev);
  return(rc);
 }
@@ -462,16 +500,163 @@ static unsigned char *row_copy(const void *bytes, int len)
  return(r);
 }
 
+/* ---- a row at the edge of a mapping ---- */
+
+/* Where a row's bytes live: a heap block with the line break and a NUL
+   behind it (ROW_COPY), or a mapping whose next byte after the line break is
+   on an unmapped page (ROW_GUARDED), so a read at row[len + 1] is a fault. */
+#define ROW_COPY    0
+#define ROW_GUARDED 1
+#define ROW_NO_BREAK 2   /* the byte after the range is unmapped too (the diagnostic) */
+
+/* The bytes readable behind a guarded row: the line break, which is the
+   contract.  A sanitizer's regexec check also reads up to a NUL (the editor's
+   rows are not NUL-terminated in the REG_STARTEND call), so its build keeps
+   a NUL after the break, as row_copy does. */
+#ifdef __SANITIZE_ADDRESS__
+#define GUARD_TAIL 2
+#else
+#define GUARD_TAIL 1
+#endif
+
+static int row_mode = ROW_COPY;
+
+typedef struct {
+ unsigned char *bytes;
+ void *map;          /* the mapping of a guarded row, else NULL */
+ size_t map_len;
+} TestRow;
+
+/** test_page_size - The system's page size. */
+static size_t test_page_size(void)
+{
+ long n = sysconf(_SC_PAGESIZE);
+
+ return(n > 0 ? (size_t)n : 4096u);
+}
+
+/** row_guarded - Place a row with @tail bytes (1: the line break) behind it
+ * and the next page unmapped, so that only the contract's byte is readable.
+ * @row: receives the row and what row_drop needs. */
+static void row_guarded(TestRow *row, const void *bytes, int len, int tail)
+{
+ size_t page = test_page_size(), at;
+ unsigned char *base;
+
+ base = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+ if (base == MAP_FAILED || mprotect(base + page, page, PROT_NONE) != 0)
+ {
+  printf("FAIL: cannot map a guard page\n");
+  exit(1);
+ }
+ row->map = base;
+ row->map_len = 2 * page;
+ at = page - (size_t)len - (size_t)tail;
+ row->bytes = base + at;
+ if (len > 0)
+  memcpy(row->bytes, bytes, (size_t)len);
+ if (tail > 0)
+  row->bytes[len] = '\n';
+ if (tail > 1)
+  row->bytes[len + 1] = '\0';
+}
+
+/** row_make - A row of the current mode's kind holding @len bytes. */
+static void row_make(TestRow *row, const void *bytes, int len)
+{
+ row->map = NULL;
+ row->map_len = 0;
+ if (row_mode == ROW_GUARDED)
+  row_guarded(row, bytes, len > 0 ? len : 0, GUARD_TAIL);
+ else if (row_mode == ROW_NO_BREAK)
+  row_guarded(row, bytes, len > 0 ? len : 0, 0);
+ else
+  row->bytes = row_copy(bytes, len);
+}
+
+/** row_drop - Free what row_make made. */
+static void row_drop(TestRow *row)
+{
+ if (row->map != NULL)
+  munmap(row->map, row->map_len);
+ else
+  free(row->bytes);
+}
+
+/* ---- a child for the rows that may kill or hang ---- */
+
+#define ISOLATED_SECONDS 5   /* a row that has not ended by then is a hang */
+
+/** spawn_body - Run @body in a child and wait for it.
+ * @name: what the child runs, for the hang guard's line.
+ * @st: receives the wait status; the child's exit status is 1 when a check
+ * failed in it (the body's own FAIL lines are printed there) or the guard
+ * ended it, else 0.  A child that has not ended in ISOLATED_SECONDS is ended
+ * by the one hang guard of the C tests, which prints "FAIL: @name did not
+ * finish within 5 s".
+ * Return: 0 the child ran and was waited for, -1 fork or waitpid failed. */
+static int spawn_body(const char *name, void (*body)(void), int *st)
+{
+ int before = fails;
+ pid_t pid;
+
+ fflush(stdout);
+ pid = fork();
+ if (pid < 0)
+  return(-1);
+ if (pid == 0)
+ {
+  test_watchdog_arm(name, ISOLATED_SECONDS);
+  body();
+  fflush(stdout);
+  _exit(fails > before ? 1 : 0);
+ }
+ if (waitpid(pid, st, 0) != pid)
+  return(-1);
+ return(0);
+}
+
+/** run_isolated - Run @body in a child and fail @name when the child dies or fails.
+ *
+ * A crash of the engine, or a search that never ends, must be a FAIL that
+ * names the row, not the end of the test.  The child's stdout is flushed
+ * before the fork and its status says whether any check in it failed.  Any
+ * non-zero status fails, whatever the signal or the exit code (a sanitizer
+ * ends a crash with exit 1).
+ * Return: 0 the child ended cleanly, else the wait status. */
+static int run_isolated(const char *name, void (*body)(void))
+{
+ int st;
+ char msg[300];
+
+ checks++;
+ if (spawn_body(name, body, &st) != 0)
+ {
+  fail("fork or waitpid failed");
+  return(-1);
+ }
+ if (WIFSIGNALED(st))
+  snprintf(msg, sizeof msg, "%s: the engine or the owner died with signal %d", name, WTERMSIG(st));
+ else if (WIFEXITED(st) && WEXITSTATUS(st) != 0)
+  snprintf(msg, sizeof msg, "%s: a check failed in the child or it did not end in %d s (exit %d; its own line says which)",
+           name, ISOLATED_SECONDS, WEXITSTATUS(st));
+ else
+  return(0);
+ fail(msg);
+ return(st != 0 ? st : -1);
+}
+
 /* One search; the result is rc, and the columns when rc == 1. */
 static int run(const char *text, unsigned sw, const char *row, unsigned kind,
                int from, int to, unsigned how, int *so, int *eo)
 {
  WpeRowHit h = { -7, -7 };
  int len = (int)strlen(row), rc;
- unsigned char *r = row_copy(row, len);
+ TestRow r;
 
- rc = wpe_rowfind_row(fd_for(text, sw), r, len, kind, from, to < 0 ? len : to, how, &h);
- free(r);
+ row_make(&r, row, len);
+ rc = wpe_rowfind_row(fd_for(text, sw), r.bytes, len, kind, from, to < 0 ? len : to, how, &h);
+ row_drop(&r);
  if (so != NULL)
   *so = h.so;
  if (eo != NULL)
@@ -519,6 +704,14 @@ static void gnu_escape_rows(void)
  }
  /* case: a regular expression keeps its meaning with Case sensitive off */
  expect("w ICASE", "\\w+", SW_REGEX, "ab cd", KIND_BOTH, 0, -1, 0, 1, 0, 2);
+ /* On an engine measured unsafe for any word-boundary escape the owner
+    refuses these two texts (rc -1, the escape sentence); the engine is not asked. */
+ if (!WPE_ROWFIND_BOUNDARY_SAFE)
+ {
+  expect("ba from 1", "\\ba", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, -1, 0, 0);
+  expect("b boundary at to", "b\\b", SW_REGEX | SW_CASE, "abc", KIND_BOTH, 0, 2, 0, -1, 0, 0);
+  return;
+ }
  /* look-behind at the start of the call: the owner sees the byte before */
  expect("ba from 1", "\\ba", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0,
         OWNER_SEES_BEFORE ? 0 : 1, 1, 2);
@@ -632,6 +825,320 @@ static void named_rows(void)
   expect("backward doubles, none", "x", SW_CASE | SW_REGEX, row, KIND_BOTH, 0, -1, BWD, 0, 0, 0);
  }
 }
+
+/* ---- the engine's safety: what the owner refuses, a crash in a child ---- */
+
+/* What the user reads when the owner refuses a text (user-visible, so the
+   rows pin the words). */
+#define TEST_GROUP_SENTENCE "\\b \\B \\< \\> beside | can crash this system's regex: search refused"
+#define TEST_ESCAPE_SENTENCE "\\b \\B \\< \\> can crash this system's regex: search refused"
+#define GROUP WPE_ROWFIND_REFUSES_GROUP
+#define ESCAPE WPE_ROWFIND_REFUSES_ESCAPE
+
+/** refuses_row - One row of the refusal predicate, whatever this system's engine.
+ * @group_safe, @boundary_safe: the two decisions the predicate is asked with. */
+static void refuses_row(const char *name, const char *text, unsigned sw, int group_safe,
+                        int boundary_safe, int want)
+{
+ int got = wpe_rowfind_refuses_when(text, sw, group_safe, boundary_safe);
+ char msg[300];
+
+ checks++;
+ if (got != want)
+ {
+  snprintf(msg, sizeof msg, "refusal %s: \"%s\" sw %u (group_safe %d, boundary_safe %d): got %d, want %d",
+           name, text, sw, group_safe, boundary_safe, got, want);
+  fail(msg);
+ }
+}
+
+/** refusal_predicate_rows - The edges of "an escape beside |": each is a text
+ * the user could type, and what Find does with it when the engine is unsafe. */
+static void refusal_predicate_rows(void)
+{
+ /* the class: an escape and an alternation outside a bracket (group unsafe) */
+ refuses_row("B group", "\\B(a|b)[ab]", SW_REGEX, 0, 1, GROUP);
+ refuses_row("b group", "\\b(a|b)[ab]", SW_REGEX, 0, 1, GROUP);
+ refuses_row("group B", "(a|b)\\B", SW_REGEX, 0, 1, GROUP);
+ refuses_row("top alternation", "\\Ba|\\Bb", SW_REGEX, 0, 1, GROUP);
+ refuses_row("lt group gt", "\\<(a|b)\\>", SW_REGEX, 0, 1, GROUP);
+ refuses_row("escape then a bare bar", "\\b|", SW_REGEX, 0, 1, GROUP);
+ refuses_row("bar then gt", "a|\\>", SW_REGEX, 0, 1, GROUP);
+ refuses_row("case sensitive", "\\b(a|b)", SW_REGEX | SW_CASE, 0, 1, GROUP);
+ /* the bracket spellings of the word edges are the same operators */
+ refuses_row("word start bracket, group", "[[:<:]](a|b)", SW_REGEX, 0, 1, GROUP);
+ refuses_row("word end bracket, group", "(a|b)[[:>:]]", SW_REGEX, 0, 1, GROUP);
+ refuses_row("word start bracket alone", "[[:<:]]b", SW_REGEX, 0, 1, 0);
+ refuses_row("word start bracket, any escape", "[[:<:]]b", SW_REGEX, 0, 0, ESCAPE);
+ refuses_row("word end bracket, any escape", "[[:>:]].", SW_REGEX, 0, 0, ESCAPE);
+ refuses_row("word end bracket, safe", "[[:>:]].", SW_REGEX, 1, 1, 0);
+ /* not the class */
+ refuses_row("group without a bar", "\\B(b)b", SW_REGEX, 0, 1, 0);
+ refuses_row("a bar only", "(a|b)[ab]", SW_REGEX, 0, 1, 0);
+ refuses_row("bar in a bracket", "[|]\\b", SW_REGEX, 0, 1, 0);
+ refuses_row("escaped backslash then b", "\\\\b|x", SW_REGEX, 0, 1, 0);
+ refuses_row("escaped bar", "\\|\\b", SW_REGEX, 0, 1, 0);
+ refuses_row("plain text is escaped", "\\b|", 0, 0, 0, 0);
+ refuses_row("plain text, word", "\\b|", SW_WORD, 0, 0, 0);
+ /* brackets: a backslash inside is a plain character, a leading ] is a member */
+ refuses_row("backslash closes nothing", "[\\]|\\b", SW_REGEX, 0, 1, GROUP);
+ refuses_row("escape inside brackets", "[\\b]|x", SW_REGEX, 0, 1, 0);
+ refuses_row("leading ] is a member", "[]|]\\b", SW_REGEX, 0, 1, 0);
+ refuses_row("negated leading ]", "[^]|]\\b|x", SW_REGEX, 0, 1, GROUP);
+ refuses_row("character class", "[[:alpha:]|]\\b", SW_REGEX, 0, 1, 0);
+ refuses_row("equivalence class", "[[=a=]|]\\b", SW_REGEX, 0, 1, 0);
+ refuses_row("collating symbol", "[[.-.]|]\\b", SW_REGEX, 0, 1, 0);
+ refuses_row("backslash before the end", "a|\\", SW_REGEX, 0, 1, 0);
+ refuses_row("unclosed bracket", "\\b[|", SW_REGEX, 0, 1, 0);
+ /* any escape, when a control of the probe failed (boundary unsafe) */
+ refuses_row("escape alone", "\\bfoo", SW_REGEX, 0, 0, ESCAPE);
+ refuses_row("escape alone, B", "x\\B", SW_REGEX, 0, 0, ESCAPE);
+ refuses_row("no escape", "foo|bar", SW_REGEX, 0, 0, 0);
+ refuses_row("escape in a bracket", "[\\b]", SW_REGEX, 0, 0, 0);
+ refuses_row("escaped backslash", "\\\\b", SW_REGEX, 0, 0, 0);
+ refuses_row("escape alone, plain text", "\\bfoo", 0, 0, 0, 0);
+ /* the engine is safe: nothing is refused */
+ refuses_row("safe, class", "\\B(a|b)[ab]", SW_REGEX, 1, 1, 0);
+ refuses_row("safe, escape", "\\b", SW_REGEX, 1, 1, 0);
+}
+
+/* The call that killed the editor on NetBSD 10 (the 9-byte row, Case
+   sensitive off, backward after a hit): a \B before an alternation over a row
+   that holds a multibyte character.  Its engine faults in mbrtowc. */
+static const unsigned char nb_row[] = { 0x09, 0x20, 0xC3, 0x83, 0x62, 0x62, 0x20, 0x62, 0x61 };
+#define NB_ROW_LEN 9
+
+/** nb_expect - Check one call of the NetBSD row against what this build owes.
+ * @sw: Find's option bits. */
+static void nb_expect(unsigned sw)
+{
+ WpeRowHit h = { -7, -7 };
+ TestRow r;
+ const char *err;
+ int rc;
+
+ row_make(&r, nb_row, NB_ROW_LEN);
+ rc = wpe_rowfind_row(fd_for("\\B(a|b)[ab]", sw), r.bytes, NB_ROW_LEN, WPE_ROW_STARTS_LINE, 1, 3,
+                      BWD | AFT, &h);
+ row_drop(&r);
+ err = wpe_rowfind_error();
+ checks++;
+#if WPE_ROWFIND_BOUNDARY_GROUP_SAFE
+ if (rc != 0)
+  fail("nb_row: the engine is measured safe, and the row \\B(a|b)[ab] over the NetBSD bytes gave a hit");
+#else
+ if (rc != -1)
+  fail("nb_row: the owner did not refuse \\B(a|b)[ab]");
+ else if (err == NULL)
+  fail("nb_row: the refusal says nothing");
+ else if (strcmp(err, WPE_ROWFIND_BOUNDARY_SAFE ? TEST_GROUP_SENTENCE : TEST_ESCAPE_SENTENCE) != 0)
+  fail("nb_row: the refusal's words are not the sentence Find shows");
+#endif
+}
+
+/** body_nb_row - The NetBSD row, Case sensitive off and on, in the child. */
+static void body_nb_row(void)
+{
+ nb_expect(SW_REGEX);
+ nb_expect(SW_REGEX | SW_CASE);
+}
+
+/** expect_refused - A text Find must refuse here, with the sentence for this build. */
+static void expect_refused(const char *name, const char *text)
+{
+ const char *err, *want;
+ int rc = run(text, SW_REGEX, "ab", KIND_BOTH, 0, -1, 0, NULL, NULL);
+ char msg[300];
+
+ if (WPE_ROWFIND_BOUNDARY_SAFE)
+  want = TEST_GROUP_SENTENCE;
+ else
+  want = TEST_ESCAPE_SENTENCE;
+ err = wpe_rowfind_error();
+ checks++;
+ if (rc != -1 || err == NULL || strcmp(err, want) != 0)
+ {
+  snprintf(msg, sizeof msg, "refused %s: Find \"%s\": rc %d, error \"%s\"", name, text, rc,
+           err != NULL ? err : "(none)");
+  fail(msg);
+ }
+}
+
+/** safe_boundary_rows - The engine is measured safe for an escape beside |:
+ * the call that killed NetBSD runs on the real engine, and its forward twin hits. */
+static void safe_boundary_rows(void)
+{
+ if (!engine_reads_chars())
+ {
+  skip_row("forward B group over a multibyte row", "an engine that reads characters here");
+  return;
+ }
+ expect("forward B group over a multibyte row", "\\B(a|b)b", SW_REGEX | SW_CASE, "\x20\xC3\x83" "bb",
+        KIND_BOTH, 0, -1, 0, 1, 3, 5);
+}
+
+/** boundary_rows - The engine's safety rows of this build.
+ *
+ * Where configure measured the engine safe for an escape beside |, the
+ * NetBSD call runs on the engine and the owner finds nothing there; where it
+ * measured it unsafe (NetBSD 10, or the build that forces it) the owner
+ * refuses the text with the sentence and never calls the engine, whatever
+ * the row.  The call runs in a child, so a crash is a FAIL by name. */
+static void boundary_rows(void)
+{
+ run_isolated("nb_row (the call that killed the editor on NetBSD 10)", body_nb_row);
+ refusal_predicate_rows();
+#if WPE_ROWFIND_BOUNDARY_GROUP_SAFE
+ safe_boundary_rows();
+ skip_row("refusal of an escape beside |", "an engine measured unsafe (WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP is 0, or test_rowfind_badengine)");
+#else
+ skip_row("forward twin on the engine", "an engine measured safe for an escape beside |");
+ expect_refused("B group", "\\B(a|b)[ab]");
+ expect_refused("B group, no bracket", "\\B(a|b)b");
+ expect_refused("b group", "\\b(a|b)[ab]");
+ expect_refused("group B", "(a|b)\\B");
+ expect_refused("top alternation", "\\Ba|\\Bb");
+ expect_refused("lt group gt", "\\<(a|b)\\>");
+ expect_refused("bar then gt", "a|\\>");
+#if WPE_ROWFIND_BOUNDARY_SAFE
+ /* not refused: no bar, a bar in a bracket, an escaped backslash */
+ checks++;
+ if (run("\\B(b)b", SW_REGEX, "ab", KIND_BOTH, 0, -1, 0, NULL, NULL) == -1)
+  fail("refused \\B(b)b: it has no alternation");
+ checks++;
+ if (run("[|]\\b", SW_REGEX, "ab", KIND_BOTH, 0, -1, 0, NULL, NULL) == -1)
+  fail("refused [|]\\b: the bar is in a bracket");
+ checks++;
+ if (run("\\\\b|x", SW_REGEX, "ab", KIND_BOTH, 0, -1, 0, NULL, NULL) == -1)
+  fail("refused \\\\b|x: the backslash is escaped");
+#else
+ /* a failed control: any word-boundary escape is refused, with no bar needed */
+ expect_refused("escape alone", "\\bfoo");
+ expect_refused("gt then dot", "\\>.");
+ expect_refused("lt then b", "\\<b");
+ expect_refused("word start bracket", "[[:<:]]b");
+ expect_refused("word end bracket", "[[:>:]].");
+ checks++;
+ if (run("[|]x", SW_REGEX, "ab", KIND_BOTH, 0, -1, 0, NULL, NULL) == -1)
+  fail("refused [|]x: it has no word-boundary escape");
+#endif
+#endif
+}
+
+/** diag_body_word - \b at the end of a row that has no byte behind it. */
+static void diag_body_word(void)
+{
+ WpeRowHit h = { -7, -7 };
+ TestRow r;
+
+ row_make(&r, "ab", 2);
+ wpe_rowfind_row(fd_for("b\\b", SW_REGEX | SW_CASE), r.bytes, 2, KIND_BOTH, 0, 2, 0, &h);
+ _exit(0);
+}
+
+/** diag_body_group - \B before a group over the NetBSD bytes, no byte behind the row. */
+static void diag_body_group(void)
+{
+ WpeRowHit h = { -7, -7 };
+ TestRow r;
+
+ row_make(&r, "\x20\xC3\x83" "bb", 5);
+ wpe_rowfind_row(fd_for("\\B(a|b)[ab]", SW_REGEX | SW_CASE), r.bytes, 5, KIND_BOTH, 0, 5, 0, &h);
+ _exit(0);
+}
+
+/** diag_one - Run a body on a row with no byte behind it; 1 when it died. */
+static int diag_one(void (*body)(void))
+{
+ int st;
+
+ row_mode = ROW_NO_BREAK;
+ if (spawn_body("the byte behind the range", body, &st) != 0)
+  st = 0;
+ row_mode = ROW_COPY;
+ return(WIFSIGNALED(st));
+}
+
+/** diagnostic_reads_behind - The byte behind the range, as a note.
+ *
+ * The C library's engine may read row[rm_eo] although REG_STARTEND gives it
+ * the range [rm_so, rm_eo) (NetBSD 10 does).  A row placed so that the byte
+ * after it is unmapped shows it: when the child dies the note says so, and on
+ * a system whose engine reads nothing there the line stays silent.  This is a
+ * report, not a FAIL: the contract (we_rowfind.h) is that the byte exists. */
+static void diagnostic_reads_behind(void)
+{
+ int died = 0;
+
+#ifdef __SANITIZE_ADDRESS__
+ skip_row("the byte behind the range", "a build without a sanitizer (its regexec check reads to a NUL)");
+ return;
+#endif
+ if (WPE_HAS_REGEX_GNU_ESCAPES)
+  died |= diag_one(diag_body_word);
+ if (WPE_HAS_REGEX_GNU_ESCAPES && !wpe_rowfind_refuses("\\B(a|b)[ab]", SW_REGEX))
+  died |= diag_one(diag_body_group);
+ row_mode = ROW_COPY;
+ if (died)
+  printf("note [%s]: the engine reads the byte behind the range (rm_eo); the row's line break must stand there\n",
+         pass_name);
+}
+
+#ifdef WPE_ROWFIND_MOCK_BADENGINE
+/* ---- the mock engine's answers outside the row ---- */
+
+static const char *marker_row;
+
+/** body_marker_row - Find on a row the mock answers outside the range for.
+ *
+ * Plain and regular, forward and backward, from the start and from 3 (the
+ * marker starts at 3, so it is in the range of both): the answer is no hit
+ * and the search ends (a hang is the hang guard's line from the child). */
+static void body_marker_row(void)
+{
+ static const char *texts[] = { "a", "x+" };
+ static const unsigned sws[] = { SW_CASE, SW_CASE | SW_REGEX };
+ int t, backward, start;
+
+ for (t = 0; t < 2; t++)
+  for (backward = 0; backward < 2; backward++)
+   for (start = 0; start <= 3; start += 3)
+   {
+    int rc = run(texts[t], sws[t], marker_row, KIND_BOTH, start, -1, backward ? BWD : 0, NULL, NULL);
+    char msg[300];
+
+    checks++;
+    if (rc != 0)
+    {
+     snprintf(msg, sizeof msg, "answer outside the range: Find \"%s\" %s from %d on \"%s\": rc %d, want 0",
+              texts[t], backward ? "backward" : "forward", start, marker_row, rc);
+     fail(msg);
+    }
+   }
+}
+
+/** run_marker - body_marker_row on one marker row, in a child named by the row. */
+static void run_marker(const char *row)
+{
+ marker_row = row;
+ run_isolated(row, body_marker_row);
+}
+
+/** badengine_rows - An engine that answers a match outside the row is no hit.
+ *
+ * The three markers make mock_badengine answer far past the row, one byte
+ * before where the search starts, with the end before the start, and with the
+ * end one byte past the row (the check on the end alone): Find
+ * says "nothing here" for each, never a hit with a negative length and never
+ * a search that stands on one place. */
+static void badengine_rows(void)
+{
+ run_marker("aaa<<FAR>> aaaa");
+ run_marker("aaa<<PRE>> aaaa");
+ run_marker("aaa<<NEG>> aaaa");
+ run_marker("aaa<<END>> aaaa");
+}
+#endif
 
 /* ---- the differential and the invariants ---- */
 
@@ -840,8 +1347,10 @@ static void compare_case(const char *text, unsigned sw, const unsigned char *tmp
  WpeRowHit own = { -1, -1 }, ref = { -1, -1 };
  const FIND *fd;
  char label[300];
+ TestRow placed;
 
- row = row_copy(tmp, len);
+ row_make(&placed, tmp, len);
+ row = placed.bytes;
  before = row_copy(tmp, len);
  fd = fd_for(text, sw);
  rc_own = wpe_rowfind_row(fd, row, len, kind, from, to, how, &own);
@@ -880,9 +1389,11 @@ static void compare_case(const char *text, unsigned sw, const unsigned char *tmp
     exit(1);
   }
  }
+ if (rc_own == -1 && rc_ref == -1 && wpe_rowfind_refuses(text, sw))
+  differential_refused++;
  if (rc_own == 1)
   check_hit(label, fd, row, len, from, to, how, &own);
- free(row);
+ row_drop(&placed);
  free(before);
 }
 
@@ -1293,7 +1804,7 @@ static int perf_wanted(void)
 {
  const char *e = getenv("ROWFIND_NO_PERF");
 
-#if defined(__SANITIZE_ADDRESS__) || defined(WPE_ROWFIND_MOCK_ILLSEQ)
+#if defined(__SANITIZE_ADDRESS__) || defined(WPE_ROWFIND_MOCK_ILLSEQ) || defined(WPE_ROWFIND_MOCK_BADENGINE)
  return(0);   /* the mock engine reads each row to check it, which is no speed to bound */
 #endif
  return(!(e != NULL && e[0] == '1'));
@@ -1421,6 +1932,18 @@ static void perf_rows(void)
 
 /* ---- the passes ---- */
 
+#define GUARDED_DIFFERENTIAL_ROWS 500
+
+/** differential_guarded - The differential on rows with only the line break
+ * readable behind them: a read at row[len + 1] by the owner, the engine or the
+ * reference is a fault that stops the test. */
+static void differential_guarded(int iterations)
+{
+ row_mode = ROW_GUARDED;
+ differential(iterations, 0);
+ row_mode = ROW_COPY;
+}
+
 static void one_pass(const char *locale, int with_perf, int iterations)
 {
  pass_name = locale;
@@ -1432,10 +1955,19 @@ static void one_pass(const char *locale, int with_perf, int iterations)
  wpe_rowfind_release();
  rng_state = 88172645463325252ULL;
  named_rows();
+ row_mode = ROW_GUARDED;
+ named_rows();
+ row_mode = ROW_COPY;
+ boundary_rows();
+#ifdef WPE_ROWFIND_MOCK_BADENGINE
+ badengine_rows();
+#endif
+ diagnostic_reads_behind();
  pinned_rows();
  differential(iterations, 0);
  differential(iterations / 200 + 5, 1);
  progress_models(iterations / 4);
+ differential_guarded(GUARDED_DIFFERENTIAL_ROWS);
  if (with_perf)
   perf_rows();
  wpe_rowfind_release();
@@ -1464,6 +1996,8 @@ int main(void)
   printf("copy path: %d differential rows differ on a word boundary, as expected\n", copy_differences);
  printf("reference: byte fallback taken %d times (compile %d, exec %d)\n",
         ref_compile_fallbacks + ref_exec_fallbacks, ref_compile_fallbacks, ref_exec_fallbacks);
+ printf("refused: %d differential rows (the engine is measured unsafe for them)\n",
+        differential_refused);
  if (window_differences > 0)
   printf("owner rule: %d backward word-boundary rows differ where the engine refused part of the row "
          "(the owner goes by bytes from each window's start; open question for the search owner)\n",
