@@ -1487,24 +1487,52 @@ int wpe_fileop_rmdir(const char *path, WpeFileOpOutcome *o)
  return(0);
 }
 
+/**
+ * fileop_chmod_failed - Record why the permissions of a name were not changed.
+ * @o: the outcome; @k: what the mode owner said; @err: its errno.
+ * Return: -1.
+ *
+ * The user reads where it stopped: a name that leads nowhere, another file
+ * that took the name while the dialog was open (nothing of the user's file
+ * was touched), or the permissions refused.  A failure after a call that took
+ * the nine bits is not "nothing was changed".
+ */
+static int fileop_chmod_failed(WpeFileOpOutcome *o, const WpeModeKept *k, int err)
+{
+ if (k->changed)
+  o->src_kept = 0;
+ if (k->unreached)
+  return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, err));
+ if (k->replaced)
+  return(fileop_fail(o, WPE_FILEOP_STEP_CHANGED, err));
+ return(fileop_fail(o, WPE_FILEOP_STEP_MODE, err));
+}
+
 int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpOutcome *o)
 {
- struct stat st;
+ return(wpe_fileop_chmod_shown(path, NULL, perm, o));
+}
+
+/**
+ * wpe_fileop_chmod_shown - Change the permissions of the file the user was shown.
+ * @path: the name; @shown: the stat the Attributes dialog showed; @perm: the
+ * nine bits; @o: the outcome.
+ *
+ * The dialog can stay open for as long as the user likes.  The file it
+ * showed is the only one changed: a name that now leads to another file
+ * (a link, a socket, another file) is refused as replaced and nothing is
+ * changed.
+ */
+int wpe_fileop_chmod_shown(const char *path, const struct stat *shown, mode_t perm, WpeFileOpOutcome *o)
+{
  WpeModeKept kept;
  int err;
 
  fileop_begin(o, WPE_FILEOP_CHMOD, path, "");
- if (stat(path, &st) != 0)
-  return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, errno));
- err = wpe_write_set_mode_path(path, (mode_t)((st.st_mode & 07000) | (perm & 0777)), &kept);
+ err = wpe_write_set_perm(path, shown, perm, &kept);
  if (err != 0)
- {
-  /* a failure after a call that took the nine bits is not "nothing was changed" */
-  if (kept.changed)
-   o->src_kept = 0;
-  return(fileop_fail(o, WPE_FILEOP_STEP_MODE, err));
- }
- fileop_hook_refuse_special(&kept, st.st_mode, EPERM);
+  return(fileop_chmod_failed(o, &kept, err));
+ fileop_hook_refuse_special(&kept, kept.asked, EPERM);
  fileop_note_bits_lost(&o->note, path, &kept);
  return(0);
 }
@@ -2576,6 +2604,9 @@ static void fileop_reason(char *out, size_t n, const WpeFileOpOutcome *o)
   snprintf(out, n, "%s is inside %s", o->dst, o->src);
  else if (o->step == WPE_FILEOP_STEP_TOO_DEEP)
   snprintf(out, n, "%s is deeper than %d folders", o->src, WPE_FILEOP_MAX_DEPTH);
+ else if (o->step == WPE_FILEOP_STEP_CHANGED && o->kind == WPE_FILEOP_CHMOD)
+  snprintf(out, n, "%s was replaced by another file%s", o->src,
+           o->src_kept ? "" : "; the file now under that name may have been changed");
  else if (o->step == WPE_FILEOP_STEP_CHANGED)
   snprintf(out, n, "%s changed while the folder was being %s", o->src, fileop_past(o->kind));
  else if (o->kind == WPE_FILEOP_LINK && o->err_link != 0 && o->step == WPE_FILEOP_STEP_LINK)

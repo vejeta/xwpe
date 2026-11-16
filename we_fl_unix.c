@@ -2167,7 +2167,7 @@ int WpeFileDirAttributes(char *filen, FENSTER * f)
       (o->sstr[4]->num << 4) + (o->sstr[5]->num << 3) +
       (o->sstr[6]->num << 2) + (o->sstr[7]->num << 1) +
       o->sstr[8]->num;
-    rc = wpe_fileop_chmod(filen, (mode_t)mode, &fo);
+    rc = wpe_fileop_chmod_shown(filen, buf, (mode_t)mode, &fo);
     fm_say(f, &fo);
     freeostr(o);
     return(rc != 0 ? 1 : 0);

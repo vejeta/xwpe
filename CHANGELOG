@@ -517,6 +517,16 @@ Changes
   Operation not permitted."); a folder copy says how many entries it
   concerns.
 
+* Attributes (Alt-A in the File Manager) changes the permissions of the
+  file the dialog showed, however long the dialog stayed open: when another
+  file (a link, a socket, any other file) has taken the name by the time
+  you press Ok, nothing is changed and the status row says the file was
+  replaced by another file.  A file you can write but not read, or a
+  folder you cannot read, is still changed, and a link you named is
+  followed once.  Ctrl-F9 on a shell script makes it executable on the file
+  it opened, keeping the special bits the script had, and never through a
+  link that takes the name while the change is made.
+
 * The .bak copy is made once the save has opened the file, and from that
   very file: a file that cannot be written leaves no new .bak, and a name
   that leads to another file by then refuses the save with "it was replaced

@@ -1316,6 +1316,16 @@ The original rebuilt the permissions from the nine switches of the dialog,
 so changing one cleared setuid, setgid and the sticky bit.  xwpe keeps the
 bits the dialog does not show, and when the system does not let this user
 keep one of them, the nine bits are applied and the status row names the
-bit.  The reason: changing who may read a file must not change who it runs
-as, and a bit that is lost must not be lost in silence.
+bit.  The permissions are changed on the file the dialog showed (the same
+device and inode), however long the dialog stayed open: when another file has
+taken the name by the time Ok is pressed, nothing is changed and the status
+row says @samp{replaced by another file}; a link the dialog named is followed
+once, as before.  If a change did reach a file that was swapped in during the
+call itself, the sentence says that file may have been changed.  The reason:
+changing who may read a file must not change who it runs as, a bit that is
+lost must not be lost in silence, and a name that changes hands must not make
+another file a program.  Ctrl-F9 on a shell script makes it executable on the
+file it opened, keeping the special bits it had, and never through a link that
+takes the name while the change is made; it does not yet compare against the
+file the window read.
 @end table

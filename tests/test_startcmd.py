@@ -20,6 +20,7 @@ import time
 
 import pytest
 from host_tools import needs
+from mode_premise import special_bits_settable, workdir_in_my_group
 from wpe_driver import ALT, WAIT_SCALE, WpeSession, wait_screen, write_user_store
 
 F9 = "\033[20~"            # Make: compile and link
@@ -737,6 +738,25 @@ def test_run_of_a_script_with_long_arguments(tmp_path):
         s.key(RUN_IT, delay=1.0)
         assert _wait(out.exists, BUILD_WAIT), "the script did not run:\n" + _screen(s)
         assert _wait_alive(s, 0.5), "the editor died running the script"
+
+
+def test_ctrl_f9_on_a_script_adds_x_and_keeps_its_special_bits(tmp_path):
+    """Ctrl-F9 on a shell script that is not executable and has a setgid
+    bit on disk makes it executable through the mode owner, which keeps the
+    bit (a save of it keeps it too).  The mode is read from the disk, not
+    from the window, which read the file before the bit was there."""
+    folder = Folder(tmp_path)
+    out = folder.ws / "ran.txt"
+    script = "#!/bin/sh\necho ran > %s\n" % out
+    path = folder.ws / "t.sh"
+    workdir_in_my_group(str(folder.ws))
+    special_bits_settable(str(folder.ws), stat.S_ISGID)
+    with folder.session(filename="t.sh", seed=script) as s:
+        os.chmod(path, 0o2644)
+        s.key("\033[20;5~", delay=1.0)        # Ctrl-F9: Run
+        assert _wait(out.exists, BUILD_WAIT), "the script did not run:\n" + _screen(s)
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o2744, \
+            "x added and setgid kept: %o" % stat.S_IMODE(os.stat(path).st_mode)
 
 
 # @scenario SC-compile-28

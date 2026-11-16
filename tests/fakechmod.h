@@ -15,6 +15,12 @@
  * face for one row sets it with fakechmod_set and puts it back to
  * FAKECHMOD_OFF.  Off, both functions are transparent.
  *
+ * fchmod, chmod and fchmodat are all faked, so a change of mode reaches the
+ * face whether the editor makes it through a descriptor (fchmod) or through
+ * a name (fchmodat, the owner's face for a file it cannot open, and chmod).
+ * The calls are counted by kind (fakechmod_by_fd, fakechmod_by_name) so a row
+ * can say which way a change went.
+ *
  * It defines functions with external linkage: include it from exactly one
  * file of a program.  An unknown face, or a C library that has no fchmod to
  * pass on to, ends the program with a message: a run that silently did
@@ -30,15 +36,56 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #define FAKECHMOD_ENV "XWPE_TEST_FAKE_FCHMOD"
 
 /* FAKECHMOD_VANISH: a chmod by name succeeds, and the name is gone right
-   after, so the read-back of the mode that follows fails. */
+   after, so the read-back of the mode that follows fails; a chmod by
+   descriptor succeeds and the descriptor is closed right after, so the
+   read-back through it fails the same way. */
 typedef enum { FAKECHMOD_OFF, FAKECHMOD_REFUSE, FAKECHMOD_DROP, FAKECHMOD_VANISH } FakeChmodFace;
 
 typedef int (*fakechmod_fchmod_fn)(int, mode_t);
 typedef int (*fakechmod_chmod_fn)(const char *, mode_t);
+typedef int (*fakechmod_fchmodat_fn)(int, const char *, mode_t, int);
+
+static int fakechmod_by_fd;             /* changes of mode through a descriptor since fakechmod_count_reset */
+static int fakechmod_by_name;           /* changes of mode through a name since fakechmod_count_reset */
+static char fakechmod_swap_name[512];   /* the name a link takes just before the next change through it */
+static char fakechmod_swap_target[512]; /* ... a link to this */
+
+/** fakechmod_count_reset - Start counting the changes of mode again. */
+static void fakechmod_count_reset(void)
+{
+ fakechmod_by_fd = 0;
+ fakechmod_by_name = 0;
+}
+
+/**
+ * fakechmod_swap_at - Put a link under a name just before the next change of
+ * mode through that name.
+ * @name: the name the editor will change; @target: where the link leads.
+ *
+ * The moment between the editor looking at a file and changing it, which
+ * another user of the folder can use.  Armed once; it fires for the next
+ * fchmodat or chmod of exactly that name.
+ */
+static void fakechmod_swap_at(const char *name, const char *target)
+{
+ snprintf(fakechmod_swap_name, sizeof fakechmod_swap_name, "%s", name);
+ snprintf(fakechmod_swap_target, sizeof fakechmod_swap_target, "%s", target);
+}
+
+/** fakechmod_swap_fire - Make the armed swap, when this is its name. */
+static void fakechmod_swap_fire(const char *path)
+{
+ if (fakechmod_swap_name[0] == '\0' || strcmp(path, fakechmod_swap_name) != 0)
+  return;
+ fakechmod_swap_name[0] = '\0';
+ if (unlink(path) != 0 || symlink(fakechmod_swap_target, path) != 0)
+  perror("fakechmod swap");
+}
 
 static FakeChmodFace fakechmod_face = FAKECHMOD_OFF;
 static mode_t fakechmod_bits = 0;
@@ -138,10 +185,19 @@ int fchmod(int fd, mode_t mode)
  fakechmod_arm_from_env();
  if (real == NULL)
   *(void **)&real = fakechmod_next("fchmod");
+ fakechmod_by_fd++;
  if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
   return(fakechmod_refuse());
  if (fakechmod_face == FAKECHMOD_DROP)
   mode &= ~fakechmod_bits;
+ if (fakechmod_face == FAKECHMOD_VANISH)
+ {
+  int rc = real(fd, mode);
+
+  if (rc == 0)
+   (void)close(fd);
+  return(rc);
+ }
  return(real(fd, mode));
 }
 
@@ -152,6 +208,8 @@ int chmod(const char *path, mode_t mode)
  fakechmod_arm_from_env();
  if (real == NULL)
   *(void **)&real = fakechmod_next("chmod");
+ fakechmod_by_name++;
+ fakechmod_swap_fire(path);
  if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
   return(fakechmod_refuse());
  if (fakechmod_face == FAKECHMOD_DROP)
@@ -165,6 +223,30 @@ int chmod(const char *path, mode_t mode)
   return(rc);
  }
  return(real(path, mode));
+}
+
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags)
+{
+ static fakechmod_fchmodat_fn real;
+
+ fakechmod_arm_from_env();
+ if (real == NULL)
+  *(void **)&real = fakechmod_next("fchmodat");
+ fakechmod_by_name++;
+ fakechmod_swap_fire(path);
+ if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
+  return(fakechmod_refuse());
+ if (fakechmod_face == FAKECHMOD_DROP)
+  mode &= ~fakechmod_bits;
+ if (fakechmod_face == FAKECHMOD_VANISH)
+ {
+  int rc = real(dirfd, path, mode, flags);
+
+  if (rc == 0)
+   (void)remove(path);
+  return(rc);
+ }
+ return(real(dirfd, path, mode, flags));
 }
 
 #endif

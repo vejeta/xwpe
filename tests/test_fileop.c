@@ -2617,6 +2617,173 @@ static void test_a_copy_whose_owner_cannot_be_read_gets_no_set_id_bit(void)
  clean();
 }
 
+/* Attributes changes a mode through the mode owner's descriptor: the file is
+   opened once and that file is changed, never the name.  The counters of
+   tests/fakechmod.h say which way a change went. */
+
+/* Red on a tree whose Attributes dialog calls chmod by name. */
+static void test_attributes_on_a_regular_file_changes_the_mode_by_descriptor(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ put("f", "x\n", 0644);
+ fakechmod_count_reset();
+ chk_int("changed", wpe_fileop_chmod("f", 0600, &o), 0);
+ chk_int("the mode", mode_of("f"), 0600);
+ chk_int("by descriptor", fakechmod_by_fd, 1);
+ chk_int("not by name", fakechmod_by_name, 0);
+ clean();
+}
+
+/* A file this user may write but not read works through the write-only
+   open.  Mutation that turns it red: drop the O_WRONLY retry. */
+static void test_attributes_on_a_write_only_file_works_through_the_write_open(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "attributes on a write-only file",
+                   "this user reads a 0200 file")) {
+  clean();
+  return;
+ }
+ put("w", "x\n", 0200);
+ fakechmod_count_reset();
+ chk_int("changed", wpe_fileop_chmod("w", 0600, &o), 0);
+ chk_int("the mode", mode_of("w"), 0600);
+ chk_int("by descriptor", fakechmod_by_fd, 1);
+ chk_int("not by name", fakechmod_by_name, 0);
+ clean();
+}
+
+/* A FIFO is changed by its name and never opened: an open for reading, even
+   O_NONBLOCK, releases a writer waiting in its own open (the row with the
+   blocked writer is in tests/test_write_owner.c).  Mutation that turns it
+   red: send FIFOs through a descriptor. */
+static void test_attributes_on_a_fifo_does_not_wait_for_a_writer(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ mkfifo("p", 0644);
+ fakechmod_count_reset();
+ chk_int("changed", wpe_fileop_chmod("p", 0600, &o), 0);
+ chk_int("the mode", mode_of("p"), 0600);
+ chk_int("by name", fakechmod_by_name, 1);
+ chk_int("not by descriptor", fakechmod_by_fd, 0);
+ clean();
+}
+
+/* The dialog showed a file; a link to a victim took its name while the
+   dialog was open.  The victim keeps its mode and the sentence says the file
+   was replaced and that nothing was changed. */
+static void test_attributes_refuses_a_name_that_changed_hands_after_the_dialog(void)
+{
+ WpeFileOpOutcome o;
+ struct stat shown;
+
+ make_dir();
+ chdir(dir);
+ put("f", "x\n", 0644);
+ put("victim", "y\n", 0600);
+ stat("f", &shown);
+ unlink("f");
+ symlink("victim", "f");
+ chk_int("refused", wpe_fileop_chmod_shown("f", &shown, 0666, &o), -1);
+ chk_int("as changed", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_int("the victim is as it was", mode_of("victim"), 0600);
+ chk_str("the sentence", said(&o),
+         "Cannot change the permissions of f: f was replaced by another file.  Nothing was changed.");
+ clean();
+}
+
+/* A link the user named is followed once: the file it leads to changes.
+   Guard; the mutation "do not follow" turns it red. */
+static void test_attributes_on_a_link_the_user_named_follows_it_once(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ put("f.target", "x\n", 0644);
+ symlink("f.target", "f");
+ chk_int("changed", wpe_fileop_chmod("f", 0600, &o), 0);
+ chk_int("the file the link leads to", mode_of("f.target"), 0600);
+ chk_int("the link is still a link", is_link("f"), 1);
+ clean();
+}
+
+/* A file that can be neither read nor written keeps its setgid bit and is
+   changed by name, so refuse-sgid and the kill-priv shadow see the
+   fchmodat face.  Mutation that turns it red: leave the fchmodat face out of
+   tests/fakechmod.h (the real kernel then keeps the bit). */
+static void test_attributes_on_an_unopenable_file_names_a_refused_bit(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "attributes on an unopenable file",
+                   "this user opens a file with no permission") ||
+     !setgid_row_ready("attributes on an unopenable file")) {
+  clean();
+  return;
+ }
+ put("z", "x\n", 02000);
+ chk_int("kept with no face", wpe_fileop_chmod("z", 0600, &o), 0);
+ chk_int("by its name", fakechmod_by_name > 0, 1);
+ chk_int("the bit kept", mode_of("z"), 02600);
+ put("y", "x\n", 02000);
+ refuse_setgid();
+ chk_int("the nine bits are applied", wpe_fileop_chmod("y", 0600, &o), 0);
+ fake_off();
+ chk_int("without the bit", mode_of("y"), 0600);
+ chk_has("the bit named", said(&o), "Permissions of y changed, but the setgid bit was not kept");
+ clean();
+}
+
+/* A link put under the name between the look and the change by name is not
+   followed, and the sentence says the file was replaced.  The file it
+   leads to keeps its mode. */
+static void test_attributes_says_a_file_that_took_the_name_replaced_it(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "attributes after a swap",
+                   "this user opens a file with no permission")) {
+  clean();
+  return;
+ }
+ put("z", "x\n", 0000);
+ put("z.target", "y\n", 0644);
+ fakechmod_swap_at("z", "z.target");
+ chk_int("refused", wpe_fileop_chmod("z", 0600, &o), -1);
+ fakechmod_swap_at("", "");
+ chk_int("at the change of mode", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_int("the file it led to is as it was", mode_of("z.target"), 0644);
+ chk_has("the sentence", said(&o), "Cannot change the permissions of z: z was replaced by another file.");
+ clean();
+}
+
+/* A name that leads nowhere is the source that could not be read, as before. */
+static void test_attributes_on_a_missing_name_says_so(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ chk_int("refused", wpe_fileop_chmod("none", 0600, &o), -1);
+ chk_int("at the source", o.step, WPE_FILEOP_STEP_SOURCE);
+ chk_int("no such file", o.err, ENOENT);
+ clean();
+}
+
 int main(void)
 {
  test_a_copy_of_a_setgid_file_syncs_before_the_bit();
@@ -2682,6 +2849,14 @@ int main(void)
  test_a_move_across_file_systems_with_another_owner_drops_setuid();
  test_a_replaced_setuid_file_stashed_in_the_wastebasket_drops_the_bit();
  test_a_bit_dropped_on_purpose_is_not_named_a_second_time_as_refused();
+ test_attributes_on_a_regular_file_changes_the_mode_by_descriptor();
+ test_attributes_on_a_write_only_file_works_through_the_write_open();
+ test_attributes_on_a_fifo_does_not_wait_for_a_writer();
+ test_attributes_on_a_link_the_user_named_follows_it_once();
+ test_attributes_on_an_unopenable_file_names_a_refused_bit();
+ test_attributes_says_a_file_that_took_the_name_replaced_it();
+ test_attributes_on_a_missing_name_says_so();
+ test_attributes_refuses_a_name_that_changed_hands_after_the_dialog();
  fails += test_dir_failures;
  if (fails) {
   printf("test_fileop: %d failure(s)\n", fails);

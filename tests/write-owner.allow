@@ -85,7 +85,6 @@ we_fl_unix.c|r8:WpePrintFile|1|keep|the print copy, the write owner's temporary
 we_main.c|r8:e_mkdirs|2|keep|the configuration folders
 we_opt.c|r8:e_save_opt|1|keep|the options file's folder
 we_prog.c|r8:e_new_message|1|keep|the build's message file
-we_prog.c|r8:e_run_sh_make_runnable|1|keep|the script the editor wrote to run
 we_startcmd.c|r8:startcmd_dir_trusted|1|keep|the start command's own private folder
 we_startcmd.c|r8:startcmd_make_dirs|2|keep|the start command's own private folder
 we_startcmd.c|r8:startcmd_save_file|4|keep|the start command's own file
@@ -119,7 +118,7 @@ we_fileop.c|r11:wpe_fileop_wastebasket_slot|1|keep|looks for a free name in the 
 we_fileop.c|r11:wpe_fileop_in_wastebasket|3|keep|the real paths of the wastebasket and the typed name, read only
 we_fileop.c|r11:wpe_fileop_mkdir|1|keep|the File Manager's dialog, on a name the user typed; a later pass may move it onto (parent, name)
 we_fileop.c|r11:wpe_fileop_rmdir|1|keep|the File Manager's dialog, on a name the user typed
-we_fileop.c|r11:wpe_fileop_chmod|1|keep|the File Manager's dialog, on a name the user typed
+we_fileop.c|r11:wpe_fileop_chmod_shown|1|keep|the File Manager's dialog, on a name the user typed and the file it showed
 we_fileop.c|r11:wpe_fileop_rename_noreplace|2|keep|a folder's rename the File Manager asks for by two typed names
 
 # rule 9: a byte loop that is not a copy of the user's file (it reads, or
@@ -168,3 +167,14 @@ we_prog.c|r14:e_prj_anchor_path|2|keep|the same project made absolute
 we_prog.c|r14:e_ini_prog|2|keep|the empty name at start, before any window
 we_prog.c|r14:e_open_project_file|1|keep|cleared after a refused open
 we_opt.c|r14:WpeReadProgramming|1|keep|the saved option, read at start before any window
+
+# rule 16: a mode changed by name outside the owner (we_write.c).  The two
+# of a user's files (Attributes, Ctrl-F9) went through wpe_write_set_perm and
+# wpe_write_add_perm.  These are inside folders the editor made itself, 0700,
+# on files it made a moment before; P2e moves them onto the owner's faces
+# so that this list becomes empty.
+we_debug.c|r16:e_d_script_write|1|P2e|the debugger script, in the editor's own 0700 folder
+we_fl_unix.c|r16:e_ed_man|3|P2e|the man page's temporary output, in the editor's own 0700 folder
+we_fl_unix.c|r16:e_man_give_up|1|P2e|the man page's temporary output, in the editor's own 0700 folder
+we_startcmd.c|r16:startcmd_make_dirs|1|P2e|the start command's folder under the user's own state folder; an existing folder may be chmod'ed
+we_xterm.c|r16:e_x_system_script|1|P2e|the external terminal's script, in the editor's own 0700 folder

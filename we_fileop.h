@@ -165,6 +165,12 @@ WPE_FILEOP_RESULT int wpe_fileop_remove_tree(const char *path, const WpeFileOpPo
    kept when the system lets this user keep them, and the outcome's note names
    the one it did not.  The nine bits being refused is a failure. */
 WPE_FILEOP_RESULT int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpOutcome *o);
+/* The same for the Attributes dialog: @shown is the stat the dialog showed
+   (a link followed); only that file, by device and inode, is changed, however
+   long the dialog stayed open.  Another file under the name is "replaced" and
+   nothing is changed. */
+struct stat;
+WPE_FILEOP_RESULT int wpe_fileop_chmod_shown(const char *path, const struct stat *shown, mode_t perm, WpeFileOpOutcome *o);
 /* A name moved where none is: a folder's rename, which rename(2) would let
    replace an empty folder that appeared in between. */
 WPE_FILEOP_RESULT int wpe_fileop_rename_noreplace(const char *src, const char *dst, WpeFileOpOutcome *o);

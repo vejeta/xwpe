@@ -31,7 +31,7 @@
 #  1b. Symbols again: the File Manager's old copy, link, wastebasket and
 #     folder functions are defined nowhere (a T in nm), and the write
 #     owner's exports for a copy (wpe_write_create_private, _copy_fd,
-#     _set_special_bits, _set_mode_fd, _set_mode_path, the SIGXFSZ guard) are
+#     _set_special_bits, _set_mode_fd, _set_perm, the SIGXFSZ guard) are
 #     undefined only in we_fileop.o.
 #  8. A name of a file made, moved, linked or removed outside we_fileop.c
 #     and we_write.c: rename, renameat, link, linkat, symlink, symlinkat,
@@ -50,7 +50,8 @@
 #     chmod, remove, chdir, truncate), the token AT_FDCWD (an *at call on
 #     the working folder is a path call), and the owner's own entry points
 #     that take a path (wpe_fileop_copy, _move, _link, _remove and their
-#     _tree forms, wpe_fileop_wastebasket_slot, fileop_parent_open), counted
+#     _tree forms, wpe_fileop_wastebasket_slot, fileop_parent_open and
+#     wpe_write_set_perm), counted
 #     per function with strings and comments blanked; a function's own
 #     definition is not a call.  A walk addresses every entry by a folder's
 #     descriptor and its name, so a link met on the way is never followed.
@@ -81,6 +82,21 @@
 #     The token `filemode` also counts on preprocessor lines, where a macro
 #     could carry it anywhere.  So the special bits of a write come from the
 #     file it opened, never from a mode recorded at load.
+# 16. A mode is never changed by name outside the owner.  chmod, lchmod and
+#     fchmodat (the faces that take a path, a link followed or not) appear
+#     only inside write_mode_set (we_write.c), which reaches a file through
+#     the descriptor it opened and compared with what lstat saw, or, for a
+#     file that cannot be opened, through the name without following a link
+#     and checks afterwards that the name still led to the same inode.  The
+#     path faces of the owner are wpe_write_set_perm (the Attributes
+#     dialog) and wpe_write_add_perm (Ctrl-F9).  A site that is still to
+#     move is a line of the allow file marked with its pass (P2e), so it
+#     stays visible.  Word-bounded like rule 12: wpe_fileop_chmod( and
+#     fchmod( (by descriptor) are not sites.
+# 19. No file but we_fileop.c calls wpe_fileop_chmod( (the face with no
+#     identity, kept for the owner's own tests).  A caller that names a file
+#     the user was shown calls wpe_fileop_chmod_shown with the stat it showed,
+#     so a later caller cannot drop the identity by mistake.  No allow line.
 # 17. The special bits a File Manager copy is given are decided in one place.
 #     Outside we_write.c, wpe_write_set_special_bits( is called only in
 #     fileop_job_fill_temp, its second argument is the variable `keep`, `keep`
@@ -323,7 +339,7 @@ scan() {
       t = m
       while (match(t, /(^|[^A-Za-z0-9_])AT_FDCWD([^A-Za-z0-9_]|$)/)) { note("r11", 1); t = substr(t, RSTART + RLENGTH) }
       t = m
-      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_fileop_(copy|move|link|remove)(_tree)?|wpe_fileop_wastebasket_slot|fileop_parent_open)[ \t]*[(]/)) {
+      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_fileop_(copy|move|link|remove)(_tree)?|wpe_fileop_wastebasket_slot|fileop_parent_open|wpe_write_set_perm)[ \t]*[(]/)) {
         ident = substr(t, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", ident); sub(/[ \t]*[(]$/, "", ident)
         if (ident != fn) note("r11", 1)
         t = substr(t, RSTART + RLENGTH)
@@ -334,6 +350,19 @@ scan() {
       while (match(t, /(^|[^A-Za-z0-9_.>])(chmod|fchmod|fchmodat)[ \t]*[(]/)) {
         if (fn != "write_mode_set") note("r12", 1)
         t = substr(t, RSTART + RLENGTH)
+      }
+      # rule 16 (every file): no mode is changed by name outside the owner
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])(chmod|lchmod|fchmodat)[ \t]*[(]/)) {
+        if (fn != "write_mode_set") note("r16", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
+      # rule 19 (every file but we_fileop.c): the Attributes dialog and any
+      # other caller go through wpe_fileop_chmod_shown, which carries the
+      # identity of the file the user was shown
+      t = m
+      while (file != "we_fileop.c" && match(t, /(^|[^A-Za-z0-9_.>])wpe_fileop_chmod[ \t]*[(]/)) {
+        note("r19", 1); t = substr(t, RSTART + RLENGTH)
       }
       # rule 17 (every file but we_write.c): the set-ID bits of a copy are
       # the ones fileop_bits_for_copy returned
@@ -529,6 +558,22 @@ static int write_mode_set(const WriteModeTarget *t, mode_t mode)
  return(t->path != 0 ? chmod(t->path, mode) : fchmod(t->fd, mode));
 }
 
+int fake_by_name(int fd, char *a)
+{
+ char *say = "chmod( and lchmod( in a string";
+ /* fchmodat(AT_FDCWD, a, 0600, 0) in a comment */
+ int fine = wpe_fileop_chmod_shown(a, &st, 0600, 0) + t.chmod(a) + f->chmod(a) + fchmod(fd, 0600);
+ chmod(a, 0644);
+ lchmod(a, 0644);
+ return(fchmodat(fd, a, 0644, 0));
+}
+
+int fake_no_identity(char *a)
+{
+ char *say = "wpe_fileop_chmod( in a string";
+ return(wpe_fileop_chmod(a, 0600, 0) + wpe_fileop_chmod_shown(a, &st, 0600, 0));
+}
+
 int fake_close(FENSTER *f, int c)
 {
  e_close_window(f);
@@ -697,7 +742,8 @@ EOF
               "r6 we_fake.c fake_message 3" "r8 we_fake.c fake_names 3" \
               "r9 we_fake.c fake_loop 2" "r10 we_fake.c fake_options 2" \
               "r11 we_fake.c fake_walk 3" "r11 we_fake.c fake_entry 2" \
-              "r12 we_fake.c fake_mode 1" "r13 we_fake.c fake_close 8" \
+              "r12 we_fake.c fake_mode 1" "r16 we_fake.c fake_by_name 3" "r19 we_fake.c fake_no_identity 1" \
+              "r13 we_fake.c fake_close 8" \
               "r14 we_fake.c fake_project 7" \
               "r17 we_fake_r17a.c fileop_job_fill_temp 1" \
               "r17 we_fake_r17b.c fileop_job_fill_temp 2" \
@@ -731,6 +777,11 @@ EOF
   # write_mode_set is the one place a chmod may stand
   if grep -q "^r12 we_fake.c write_mode_set " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: the chmod inside write_mode_set was counted; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  if grep -q "^r16 we_fake.c write_mode_set " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: the chmod inside write_mode_set was counted by rule 16; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
@@ -768,7 +819,7 @@ if command -v "$NMTOOL" >/dev/null 2>&1 && [ -n "$OBJECTS" ]; then
         n = $0; sub(/@.*/, "", n)
         if (n == "wpe_write_create_private" || n == "wpe_write_copy_fd" ||
             n == "wpe_write_set_special_bits" || n == "wpe_write_set_mode_fd" ||
-            n == "wpe_write_set_mode_path" || n == "wpe_write_guard_enter" ||
+            n == "wpe_write_set_perm" || n == "wpe_write_guard_enter" ||
             n == "wpe_write_guard_leave") print "r1", obj, n, 1
       }'
     [ "$base" = we_write.o ] ||
@@ -812,7 +863,7 @@ for f in "$SRCDIR"/we_*.c "$SRCDIR"/We*.c; do
   # makes and moves names and copies bytes, and the line endings owner
   # (we_lineend.c) walks rows, so each is exempt from the rule it is the owner of
   case ${f##*/} in
-    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15"' >> "$WORK/srcfound"; continue ;;
+    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15" || $1 == "r16"' >> "$WORK/srcfound"; continue ;;
     we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
     we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11" && $1 != "r12" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
   esac
@@ -863,6 +914,10 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": the result of e_close_window is dropped; it says WPE_ESC when the window stays (a text window the user keeps, a project list its file refuses): read it, or list the function with its reason"
       else if (rule == "r15")
         print "offender: " $1 " " $2 ": the window'"'"'s recorded mode is read outside write_mode_before_data, or there as more than its nine bits, or that function names a special bit: the special bits of a write come from the file it opened, never from a mode recorded at load"
+      else if (rule == "r16")
+        print "offender: " $1 " " $2 ": a mode is changed by name outside write_mode_set (we_write.c): go through wpe_write_set_perm or wpe_write_add_perm, which open the file once and change that descriptor, or list the function with its pass"
+      else if (rule == "r19")
+        print "offender: " $1 " " $2 ": wpe_fileop_chmod has no identity of the file the user was shown: call wpe_fileop_chmod_shown with the stat the dialog took"
       else if (rule == "r17")
         print "offender: " $1 " " $2 ": the set-ID bits of a copy are not the ones fileop_bits_for_copy returned: it compares the owner and group of the copy with the original'"'"'s, so give wpe_write_set_special_bits the variable keep it assigned, and never the original'"'"'s mode (also not through wpe_write_set_mode_fd)"
       else if (rule == "r14")

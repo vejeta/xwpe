@@ -177,27 +177,41 @@ int wpe_write_copy_fd(int from, int to, int *read_failed)
 /** Room for "user <name>" or "group <name>" in a sentence. */
 #define WRITE_WHO_WORDS 96
 
-/** The place a mode is applied to: an open file, or a name (a file that
-    cannot be opened for reading and writing, a folder the user names). */
+/** How a mode reaches its file: through a descriptor that was opened, or,
+    for a file that cannot be opened, through its name. */
+typedef enum { WRITE_MODE_BY_FD, WRITE_MODE_BY_NAME } WriteModeHow;
+
+/** The place a mode is applied to.  By descriptor it is an open file or
+    folder.  By name it is a file the user named, with what lstat said of it
+    before anything was opened, so that the name can be checked afterwards. */
 typedef struct {
- int         fd;      /* the descriptor, used when path is NULL */
- const char *path;    /* the name, or NULL */
+ WriteModeHow how;
+ int          fd;        /* the descriptor, for BY_FD; -1 when none was opened */
+ const char  *name;      /* the name, for BY_NAME and for the open */
+ struct stat  first;     /* what lstat said of the name before it was opened */
+ char         real[WPE_PATH_SIZE];  /* where a link the user named leads */
+ int          replaced;  /* the name stopped leading to the file `first` describes */
 } WriteModeTarget;
 
 /**
- * write_mode_set - The one chmod or fchmod of the editor's files.
+ * write_mode_set - The one chmod, fchmod or fchmodat of the editor's files.
  * @t: the file or the name; @mode: the bits to ask for.
  * Return: 0, or the errno.
  *
  * Every change of a file's permissions the write and the file owners make
- * goes through here, so a bit the system refuses is met in one place.
+ * goes through here, so a bit the system refuses is met in one place.  A
+ * name is changed without following a link (AT_SYMLINK_NOFOLLOW): Linux and
+ * glibc refuse such a call on a link with EOPNOTSUPP, nothing changed; the
+ * BSDs and macOS give lchmod's meaning and change the link itself.  Either
+ * way a link that took the name is never followed, and the caller checks
+ * afterwards that the name still led to the file it read.
  */
 static int write_mode_set(const WriteModeTarget *t, mode_t mode)
 {
  int rc;
 
- if (t->path != NULL)
-  rc = chmod(t->path, mode);
+ if (t->how == WRITE_MODE_BY_NAME)
+  rc = fchmodat(AT_FDCWD, t->name, mode, AT_SYMLINK_NOFOLLOW);
  else
   rc = fchmod(t->fd, mode);
  return(rc == 0 ? 0 : errno);
@@ -208,8 +222,8 @@ static int write_mode_read(const WriteModeTarget *t, struct stat *st)
 {
  int rc;
 
- if (t->path != NULL)
-  rc = stat(t->path, st);
+ if (t->how == WRITE_MODE_BY_NAME)
+  rc = lstat(t->name, st);
  else
   rc = fstat(t->fd, st);
  return(rc == 0 ? 0 : errno);
@@ -340,6 +354,7 @@ static int write_mode_apply(const WriteModeTarget *t, mode_t mode, WpeModeKept *
  int err;
 
  memset(k, 0, sizeof *k);
+ k->asked = mode & WRITE_SPECIAL_BITS;
  if ((mode & WRITE_SPECIAL_BITS) == 0)
   return(write_mode_set(t, mode & WRITE_NINE_BITS));
  err = write_mode_set(t, mode & WRITE_TWELVE_BITS);
@@ -366,28 +381,286 @@ int wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k)
 {
  WriteModeTarget t;
 
+ t.how = WRITE_MODE_BY_FD;
  t.fd = fd;
- t.path = NULL;
+ t.name = NULL;
  return(write_mode_apply(&t, mode, k));
 }
 
+/** The flags every descriptor taken for a change of mode shares: a link is
+    never followed, a FIFO is never waited on, and nothing becomes the
+    terminal of the editor. */
+#define WRITE_MODE_OPEN_FLAGS (O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
+
 /**
- * wpe_write_set_mode_path - The same by name, for the Attributes dialog.
- * @path: the file or folder; @mode: the twelve bits; @k: receives what was
- * not kept.
- * Return: 0, or the errno when even the nine bits were refused.
- *
- * A file the user cannot open (write only, a folder) still gets its
- * permissions changed, and the special bits it had are kept when the
- * system allows it and named when it does not.
+ * write_mode_same_file - Is this the file the name led to the first time?
+ * @first: what lstat said then; @now: what the file in hand says.
+ * Return: 1 for the same device, inode and kind of file, and not a link.
  */
-int wpe_write_set_mode_path(const char *path, mode_t mode, WpeModeKept *k)
+static int write_mode_same_file(const struct stat *first, const struct stat *now)
+{
+ if (S_ISLNK(now->st_mode))
+  return(0);
+ if (first->st_dev != now->st_dev || first->st_ino != now->st_ino)
+  return(0);
+ return((first->st_mode & S_IFMT) == (now->st_mode & S_IFMT));
+}
+
+/**
+ * write_mode_name_first - Look at the name the user gave, once.
+ * @path: the name; @t: receives what lstat says and the name to open.
+ * Return: 0, or the errno.
+ *
+ * A link the user named is followed here, once, as the Attributes dialog
+ * and a single Copy always followed one: it leads to the file the user
+ * means.  Everything after this treats a link as a file that was swapped in.
+ */
+static int write_mode_name_first(const char *path, WriteModeTarget *t)
+{
+ t->name = path;
+ if (lstat(path, &t->first) != 0)
+  return(errno);
+ if (!S_ISLNK(t->first.st_mode))
+  return(0);
+ if (realpath(path, t->real) == NULL)
+  return(errno);
+ t->name = t->real;
+ return(lstat(t->name, &t->first) == 0 ? 0 : errno);
+}
+
+/**
+ * write_mode_open_descriptor - Open the file whose mode is to change.
+ * @t: the target, with its first lstat.
+ * Return: 0 with t->fd open, or the errno of the last open that failed.
+ *
+ * Read only first, which every file of ours allows.  A regular file the
+ * user may write but not read (mode 0200) is opened write only after
+ * EACCES: a descriptor of either kind takes fchmod.  A folder cannot be
+ * opened for writing, so it has no second try.
+ */
+static int write_mode_open_descriptor(WriteModeTarget *t)
+{
+ int err;
+
+ t->fd = open(t->name, O_RDONLY | WRITE_MODE_OPEN_FLAGS);
+ if (t->fd >= 0)
+  return(0);
+ err = errno;
+ if (err != EACCES || !S_ISREG(t->first.st_mode))
+  return(err);
+ t->fd = open(t->name, O_WRONLY | WRITE_MODE_OPEN_FLAGS);
+ if (t->fd >= 0)
+  return(0);
+ return(errno);
+}
+
+/**
+ * write_mode_check_descriptor - Is the open file the one lstat saw?
+ * @t: the target with t->fd open.
+ * Return: 0, or ESTALE (and t->replaced, the descriptor closed) when the
+ * name had been given to another file between the lstat and the open.
+ */
+static int write_mode_check_descriptor(WriteModeTarget *t)
+{
+ struct stat now;
+
+ if (fstat(t->fd, &now) == 0 && write_mode_same_file(&t->first, &now))
+  return(0);
+ close(t->fd);
+ t->fd = -1;
+ t->replaced = 1;
+ return(ESTALE);
+}
+
+/**
+ * write_mode_open_failed - What a failed open says of the name.
+ * @t: the target; @err: the errno of the open.
+ * Return: 1 when the file can still be changed through its name, 0 when
+ * the open's failure is the answer.
+ *
+ * Only a system saying "not for you" (EACCES, EPERM) sends a file to the
+ * name.  A link where a file was (ELOOP) or a socket where a file was
+ * (ENXIO) is another file under the name: refused, never worked around.
+ */
+static int write_mode_open_failed(WriteModeTarget *t, int err)
+{
+ if (err == EACCES || err == EPERM)
+  return(1);
+ if (err == ELOOP || err == ENXIO)
+  t->replaced = 1;
+ return(0);
+}
+
+/**
+ * write_mode_target_open - Reach the file the user named, for a change of mode.
+ * @path: the name; @t: receives the target.
+ * Return: 0, or the errno.
+ *
+ * @shown: what the user was shown when naming the file (the Attributes
+ * dialog's stat), or NULL when nothing was shown.  When given, the file the
+ * name leads to must be that file (device and inode): a name that changed
+ * hands while the dialog was open is refused before anything is opened.
+ *
+ * A regular file or a folder is opened (never through a link that took the
+ * name since lstat) and compared by device and inode with what lstat saw:
+ * the mode that is read and the mode that is given are the same file's.  A
+ * FIFO, a socket or a device is changed by name, because opening one has
+ * effects on others: a tape rewinds when closed, and a FIFO opened for
+ * reading, even O_NONBLOCK, counts as a reader, so a writer blocked in its
+ * open is released and then killed by SIGPIPE when the descriptor closes.
+ * A change of mode must not release or kill another process.  A file this
+ * user may neither read nor write, or a folder with no read permission,
+ * cannot be opened but its owner may still change it, also by name.  No
+ * O_PATH is used: it is Linux's, and fchmod on such a descriptor is
+ * refused there.
+ */
+static int write_mode_target_open(const char *path, const struct stat *shown, WriteModeTarget *t)
+{
+ int err;
+
+ t->how = WRITE_MODE_BY_FD;
+ t->fd = -1;
+ t->replaced = 0;
+ err = write_mode_name_first(path, t);
+ if (err != 0)
+  return(err);
+ if (shown != NULL && !write_mode_same_file(shown, &t->first))
+ {
+  t->replaced = 1;
+  return(ESTALE);
+ }
+ if (!S_ISREG(t->first.st_mode) && !S_ISDIR(t->first.st_mode))
+ {
+  t->how = WRITE_MODE_BY_NAME;
+  return(0);
+ }
+ err = write_mode_open_descriptor(t);
+ if (err == 0)
+  return(write_mode_check_descriptor(t));
+ if (!write_mode_open_failed(t, err))
+  return(err);
+ t->how = WRITE_MODE_BY_NAME;
+ return(0);
+}
+
+/** write_mode_target_close - Let go of the descriptor a target holds. */
+static void write_mode_target_close(WriteModeTarget *t)
+{
+ if (t->fd >= 0)
+  close(t->fd);
+ t->fd = -1;
+}
+
+/**
+ * write_mode_name_still_leads - After a change by name, is it the same file?
+ * @t: the target; @err: what the change returned.
+ * Return: @err, or ESTALE (with t->replaced) when the name leads to another
+ * file than the one lstat saw, a link included.
+ *
+ * Nothing is trusted that was done through a name: a file swapped in
+ * after the first lstat is told, not reported as changed.  On a system
+ * whose fchmodat acts on a link the swapped file is a link; here too the
+ * name no longer leads to what was read.  What the call did to a file
+ * that was swapped in cannot be undone; it can only be said.
+ */
+static int write_mode_name_still_leads(WriteModeTarget *t, int err)
+{
+ struct stat now;
+
+ if (t->how != WRITE_MODE_BY_NAME)
+  return(err);
+ if (lstat(t->name, &now) == 0 && write_mode_same_file(&t->first, &now))
+  return(err);
+ t->replaced = 1;
+ return(ESTALE);
+}
+
+/** How a name's mode is to be made from the mode the file has now. */
+typedef enum {
+ WRITE_CHANGE_NINE,  /* the nine permission bits are these; the special bits stay */
+ WRITE_CHANGE_ADD    /* these bits are added to the twelve */
+} WriteModeChange;
+
+/** write_mode_wanted - The twelve bits a change asks for.  Return: the mode. */
+static mode_t write_mode_wanted(WriteModeChange how, mode_t current, mode_t bits)
+{
+ if (how == WRITE_CHANGE_NINE)
+  return((current & WRITE_SPECIAL_BITS) | (bits & WRITE_NINE_BITS));
+ return((current & WRITE_TWELVE_BITS) | bits);
+}
+
+/**
+ * write_mode_change - Change the mode of a file the user named.
+ * @path: the name; @shown: the file the user was shown, or NULL;
+ * @how and @bits: what to ask for; @k: what was not kept.
+ * Return: 0, or the errno.
+ *
+ * The file is opened once; its special bits are read from that open file
+ * and the new mode is given to it.  Another file that has taken the name
+ * in between never gets the bits or the change: a link put there is not
+ * followed, and the caller reads k->replaced.  k->unreached says no call
+ * was made at all (the name leads nowhere).
+ */
+static int write_mode_change(const char *path, const struct stat *shown, WriteModeChange how,
+                             mode_t bits, WpeModeKept *k)
 {
  WriteModeTarget t;
+ struct stat now;
+ int err, after;
 
- t.fd = -1;
- t.path = path;
- return(write_mode_apply(&t, mode, k));
+ memset(k, 0, sizeof *k);
+ err = write_mode_target_open(path, shown, &t);
+ k->replaced = t.replaced;
+ if (err != 0)
+ {
+  k->unreached = !t.replaced;
+  return(err);
+ }
+ err = write_mode_name_still_leads(&t, 0);
+ if (err == 0)
+  err = write_mode_read(&t, &now);
+ if (err == 0)
+  err = write_mode_apply(&t, write_mode_wanted(how, now.st_mode, bits), k);
+ after = write_mode_name_still_leads(&t, err);
+ if (err == 0 && after != 0)
+  k->changed = 1;
+ k->replaced = t.replaced;
+ write_mode_target_close(&t);
+ return(after);
+}
+
+/**
+ * wpe_write_set_perm - Give a file the user named these permissions.
+ * @path: the file or folder; @shown: the stat the dialog showed the user
+ * (a link already followed), or NULL; @nine: the nine permission bits; @k:
+ * receives what was not kept.
+ * Return: 0, or the errno when even the nine bits were refused.
+ *
+ * For the Attributes dialog.  A file the user may write but not read, or a
+ * folder with no read permission, still gets its permissions changed, and
+ * its setuid, setgid and sticky bits are kept when the system allows it
+ * and named when it does not.  The permissions are changed only on the file
+ * the dialog showed, however long the dialog stayed open: a file that took
+ * its name meanwhile is refused with k->replaced and nothing changed.
+ */
+int wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, WpeModeKept *k)
+{
+ return(write_mode_change(path, shown, WRITE_CHANGE_NINE, nine, k));
+}
+
+/**
+ * wpe_write_add_perm - Add permission bits to a file the user named.
+ * @path: the file; @add: the bits; @k: receives what was not kept.
+ * Return: 0, or the errno.
+ *
+ * For Ctrl-F9 on a script: the script becomes executable on disk with the
+ * special bits it had, as a save of it keeps them, and never through a link
+ * that took its name after the call began.  The window's own file identity
+ * is not passed yet: the window does not record it (class F).
+ */
+int wpe_write_add_perm(const char *path, mode_t add, WpeModeKept *k)
+{
+ return(write_mode_change(path, NULL, WRITE_CHANGE_ADD, add, k));
 }
 
 /**
@@ -567,8 +840,9 @@ int wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
   unlinkat(dirfd, name, 0);
   return(EEXIST);
  }
+ target.how = WRITE_MODE_BY_FD;
  target.fd = made;
- target.path = NULL;
+ target.name = NULL;
  err = write_mode_set(&target, mode & WRITE_NINE_BITS);
  if (err != 0)
  {

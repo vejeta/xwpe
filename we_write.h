@@ -58,6 +58,10 @@ typedef struct {
  int    in_group;   /* the caller is in that group */
  int    changed;    /* a call succeeded: a failure after it is not "nothing was changed" */
  WpeModeOwners owners;  /* a bit dropped on purpose because the copy has another owner or group */
+ mode_t asked;      /* the special bits the call asked for */
+ int    unreached;  /* a change of mode by name: the name could not be reached, no call was made */
+ int    replaced;   /* a change of mode by name: another file had taken the name since it was
+                       read; that file was not the one whose bits were read */
 } WpeModeKept;
 
 typedef struct {
@@ -150,11 +154,20 @@ int  wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
    a caller does first, so the text is on disk before the bits are (0 when
    there is no bit to give, else the sync's errno, and then the bits are not
    set).  set_mode_fd is for an
-   open file or folder, set_mode_path for a name (the Attributes dialog). */
+   open file or folder.  set_perm and add_perm are for a name the user gave
+   (the Attributes dialog, Ctrl-F9): the file is opened once, never through a
+   link that took the name since, and the mode is read from and given to that
+   very file, so its special bits are the ones it had.  set_perm replaces the
+   nine permission bits; add_perm adds bits to the twelve.  set_perm takes the
+   stat the dialog showed (NULL when none): only that file, by device and
+   inode, is changed.  When another file has taken the name, k->replaced says
+   so and the errno is not 0. */
+struct stat;
 int  wpe_write_sync_before_bits(int fd, mode_t mode, int durable);
 int  wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k);
-int  wpe_write_set_mode_path(const char *path, mode_t mode, WpeModeKept *k);
+int  wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, WpeModeKept *k);
+int  wpe_write_add_perm(const char *path, mode_t add, WpeModeKept *k);
 int  wpe_write_caller_in_group(gid_t gid);
 void wpe_write_kept_merge(WpeModeKept *to, const WpeModeKept *from);
 /* "setgid bit", "setuid and setgid bits"; and why they were not kept. */

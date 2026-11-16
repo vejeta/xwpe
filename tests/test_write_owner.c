@@ -21,7 +21,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/un.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -29,6 +32,17 @@
 #include "../we_write.h"
 #include "testdir.h"
 #include "fakechmod.h"
+#include "test_watchdog.h"
+
+/** How long the FIFO row's writer may live, whatever happens to the row. */
+#define WRITER_LIFETIME_S 30
+/** How long the row waits for the writer to be inside its open. */
+#define WRITER_BLOCK_WAIT_MS 5000
+/** How long the row watches the writer after the change of mode: a writer
+    released by an open for reading leaves its open within this. */
+#define WRITER_WATCH_MS 300
+/** How long the row gives the ended writer to be reaped. */
+#define WRITER_END_MS 5000
 
 static int fails;
 
@@ -789,6 +803,27 @@ int fsync(int fd)
  return(real(fd));
 }
 
+/* plant_socket - A socket file at this name (nothing listens on it).  Returns
+   0, or -1 after saying why. */
+static int plant_socket(const char *path)
+{
+ struct sockaddr_un addr;
+ int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+ if (fd < 0)
+  return(-1);
+ memset(&addr, 0, sizeof addr);
+ addr.sun_family = AF_UNIX;
+ snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path);
+ if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+  perror("bind");
+  close(fd);
+  return(-1);
+ }
+ close(fd);
+ return(0);
+}
+
 /* open, watched: a read-only open of the armed name, the first one only, is
    preceded by a second file taking that name.  It is the moment between the
    owner opening the file it will overwrite and opening the same name to copy
@@ -800,6 +835,10 @@ static char open_swap_from[512];  /* ... for this file, or is removed when "", a
                                      read-only open */
 static char open_plant_at[512];   /* a file appears under this name just before the next
                                      exclusive create of it */
+static char open_link_at[512];    /* a link to open_link_to takes this name just before
+                                     its next open, whatever the flags */
+static char open_link_to[512];
+static char open_socket_at[512];  /* a socket takes this name just before its next open */
 
 int open(const char *path, int flags, ...)
 {
@@ -822,6 +861,18 @@ int open(const char *path, int flags, ...)
    unlink(path);
   else if (rename(open_swap_from, path) != 0)
    perror("rename");
+ }
+ if (open_link_at[0] != '\0' && strcmp(path, open_link_at) == 0)
+ {
+  open_link_at[0] = '\0';
+  if (unlink(path) != 0 || symlink(open_link_to, path) != 0)
+   perror("link swap");
+ }
+ if (open_socket_at[0] != '\0' && strcmp(path, open_socket_at) == 0)
+ {
+  open_socket_at[0] = '\0';
+  if (unlink(path) != 0 || plant_socket(path) != 0)
+   perror("socket swap");
  }
  if (open_plant_at[0] != '\0' && (flags & O_EXCL) && strcmp(path, open_plant_at) == 0)
  {
@@ -2063,6 +2114,396 @@ static void test_a_backup_with_no_descriptor_to_keep_stops_the_save(void)
  same_descriptors("no descriptor to keep", before);
 }
 
+/* ---- a mode changed by name: Attributes and Ctrl-F9 ---- */
+
+/* The Attributes dialog changes the mode through the descriptor it opened,
+   not through the name.  Red on a tree that calls chmod by name. */
+static void test_set_perm_changes_the_mode_by_descriptor(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ put_file("f", "x\n", 0644);
+ path_of(p, sizeof p, "f");
+ fakechmod_count_reset();
+ chk_int("changed", wpe_write_set_perm(p, NULL, 0600, &k), 0);
+ chk_int("the mode", mode_of("f"), 0600);
+ chk_int("by descriptor", fakechmod_by_fd, 1);
+ chk_int("not by name", fakechmod_by_name, 0);
+}
+
+/* A file the user may write but not read is opened write only: the
+   descriptor takes the change.  Mutation that turns it red: drop the retry
+   with O_WRONLY (the change then goes by name). */
+static void test_set_perm_on_a_write_only_file_uses_the_write_descriptor(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "a write-only file is changed by descriptor",
+                   "this user reads a 0200 file"))
+  return;
+ put_file("w", "x\n", 0200);
+ path_of(p, sizeof p, "w");
+ fakechmod_count_reset();
+ chk_int("changed", wpe_write_set_perm(p, NULL, 0600, &k), 0);
+ chk_int("the mode", mode_of("w"), 0600);
+ chk_int("by descriptor", fakechmod_by_fd, 1);
+ chk_int("not by name", fakechmod_by_name, 0);
+}
+
+/* A file that can be neither read nor written is changed by its name, and
+   keeps the special bits it had.  Mutation that turns it red: no fallback. */
+static void test_set_perm_on_a_file_that_cannot_be_opened_goes_by_name(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "an unopenable file is changed by name",
+                   "this user opens a file with no permission") ||
+     !test_premise(test_premise_special_bits_settable(dir, S_ISGID), "an unopenable file is changed by name",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("z", "x\n", 02000);
+ path_of(p, sizeof p, "z");
+ fakechmod_count_reset();
+ chk_int("changed", wpe_write_set_perm(p, NULL, 0600, &k), 0);
+ chk_int("the mode, with its bit", mode_of("z"), 02600);
+ chk_int("by name", fakechmod_by_name, 1);
+ chk_int("the name was not unreached", k.unreached, 0);
+}
+
+/* A link put under the name after the dialog looked at the file is not
+   followed: the file it leads to keeps its mode and the change is reported
+   as replaced.  Red on a tree that changes the mode by name. */
+static void test_set_perm_does_not_follow_a_link_put_in_place(void)
+{
+ WpeModeKept k;
+ char p[512], to[512];
+
+ make_dir();
+ put_file("f", "x\n", 0644);
+ put_file("f.target", "y\n", 0644);
+ path_of(p, sizeof p, "f");
+ path_of(to, sizeof to, "f.target");
+ snprintf(open_link_at, sizeof open_link_at, "%s", p);
+ snprintf(open_link_to, sizeof open_link_to, "%s", to);
+ chk_int("refused as a link", wpe_write_set_perm(p, NULL, 0600, &k), ELOOP);
+ open_link_at[0] = '\0';
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("the file the link leads to is as it was", mode_of("f.target"), 0644);
+}
+
+/* Another regular file renamed into place between the look and the open is
+   caught by the inode compare: it keeps its mode too. */
+static void test_set_perm_does_not_change_a_file_that_took_the_name(void)
+{
+ WpeModeKept k;
+ char p[512], from[512];
+
+ make_dir();
+ put_file("f", "x\n", 0644);
+ put_file("g", "y\n", 0644);
+ path_of(p, sizeof p, "f");
+ path_of(from, sizeof from, "g");
+ snprintf(open_swap_at, sizeof open_swap_at, "%s", p);
+ snprintf(open_swap_from, sizeof open_swap_from, "%s", from);
+ chk_int("refused as replaced", wpe_write_set_perm(p, NULL, 0600, &k), ESTALE);
+ open_swap_at[0] = '\0';
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("the file now under the name is as it was", mode_of("f"), 0644);
+}
+
+/* A link swapped in just before the change by name is not followed either,
+   and the name that no longer leads to the file is reported.  Needs a file
+   this user cannot open, so the change goes by name. */
+static void test_a_link_swapped_in_before_a_change_by_name_is_reported(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "a swap before a change by name",
+                   "this user opens a file with no permission"))
+  return;
+ put_file("z", "x\n", 0000);
+ put_file("z.target", "y\n", 0644);
+ path_of(p, sizeof p, "z");
+ fakechmod_swap_at(p, "z.target");
+ chk_int("refused as replaced", wpe_write_set_perm(p, NULL, 0600, &k), ESTALE);
+ fakechmod_swap_at("", "");
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("the file the link leads to is as it was", mode_of("z.target"), 0644);
+}
+
+/* The dialog showed one file; the name was given to another while the dialog
+   was open.  The owner changes only the file it was shown.  Each row swaps
+   after the dialog's stat and before the owner looks.  Mutation that turns
+   them red: ignore the shown stat. */
+
+/* A regular file replaced by a link to a victim: not followed, victim
+   untouched, reported as replaced. */
+static void test_a_link_swapped_in_after_the_dialog_is_not_followed(void)
+{
+ WpeModeKept k;
+ struct stat shown;
+ char p[512], v[512];
+
+ make_dir();
+ put_file("f", "x\n", 0644);
+ put_file("victim", "y\n", 0600);
+ path_of(p, sizeof p, "f");
+ path_of(v, sizeof v, "victim");
+ stat(p, &shown);
+ unlink(p);
+ if (symlink(v, p) != 0)
+  perror("symlink");
+ chk_int("refused as replaced", wpe_write_set_perm(p, &shown, 0666, &k), ESTALE);
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("nothing was changed", k.changed, 0);
+ chk_int("the victim is as it was", mode_of("victim"), 0600);
+}
+
+/* A link the user named is followed once, and the dialog's stat followed it
+   too: the shown file is the target, which changes. */
+static void test_a_named_link_shown_by_the_dialog_is_changed(void)
+{
+ WpeModeKept k;
+ struct stat shown;
+ char p[512], to[512];
+
+ make_dir();
+ put_file("real", "x\n", 0644);
+ path_of(p, sizeof p, "ln");
+ path_of(to, sizeof to, "real");
+ if (symlink(to, p) != 0)
+  perror("symlink");
+ stat(p, &shown);
+ chk_int("changed", wpe_write_set_perm(p, &shown, 0600, &k), 0);
+ chk_int("the target changed", mode_of("real"), 0600);
+}
+
+/* A name that goes through a folder, swapped for a link to another folder
+   after the name was resolved by the dialog: the file at the end of it is
+   another file. */
+static void test_a_folder_swapped_after_the_dialog_is_refused(void)
+{
+ WpeModeKept k;
+ struct stat shown;
+ char p[512], d[512], d_away[512], e[512];
+
+ make_dir();
+ path_of(d, sizeof d, "d");
+ path_of(d_away, sizeof d_away, "d.away");
+ path_of(e, sizeof e, "e");
+ mkdir(d, 0700);
+ mkdir(e, 0700);
+ put_file("d/T", "x\n", 0644);
+ put_file("e/T", "y\n", 0644);
+ path_of(p, sizeof p, "L");
+ if (symlink("d/T", p) != 0)
+  perror("symlink");
+ stat(p, &shown);
+ rename(d, d_away);
+ if (symlink(e, d) != 0)
+  perror("symlink");
+ chk_int("refused as replaced", wpe_write_set_perm(p, &shown, 0600, &k), ESTALE);
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("the other file is as it was", mode_of("e/T"), 0644);
+}
+
+/* A socket planted at the name before the dialog, swapped for a hard link to
+   a victim: the name used to go by name and change the victim.  It is
+   refused before any call. */
+static void test_a_socket_swapped_for_a_hard_link_changes_nothing(void)
+{
+ WpeModeKept k;
+ struct stat shown;
+ char p[512], v[512];
+
+ make_dir();
+ put_file("victim", "y\n", 0600);
+ path_of(p, sizeof p, "s");
+ path_of(v, sizeof v, "victim");
+ if (plant_socket(p) != 0) {
+  printf("FAIL: a socket could not be planted\n");
+  fails++;
+  return;
+ }
+ stat(p, &shown);
+ unlink(p);
+ if (link(v, p) != 0)
+  perror("link");
+ fakechmod_count_reset();
+ chk_int("refused as replaced", wpe_write_set_perm(p, &shown, 0666, &k), ESTALE);
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("no call was made", fakechmod_by_name + fakechmod_by_fd, 0);
+ chk_int("the victim is as it was", mode_of("victim"), 0600);
+}
+
+/* A socket that takes the name between the owner's lstat and its open is
+   ENXIO: another file, never worked around by name. */
+static void test_a_socket_swapped_in_before_the_open_is_replaced(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ put_file("f", "x\n", 0644);
+ path_of(p, sizeof p, "f");
+ snprintf(open_socket_at, sizeof open_socket_at, "%s", p);
+ fakechmod_count_reset();
+ chk_int("refused", wpe_write_set_perm(p, NULL, 0600, &k), ENXIO);
+ open_socket_at[0] = '\0';
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("no change by name", fakechmod_by_name, 0);
+}
+
+/* blocked_in_open - Is this process waiting inside openat?  Reads
+   /proc/<pid>/syscall (Linux).  Return: 1 yes, 0 no, -1 cannot be read. */
+static int blocked_in_open(pid_t pid)
+{
+ char path[64], text[128];
+ FILE *fp;
+ long number = -1;
+ int got;
+
+ snprintf(path, sizeof path, "/proc/%ld/syscall", (long)pid);
+ fp = fopen(path, "r");
+ if (fp == NULL)
+  return(-1);
+ got = fscanf(fp, "%127s", text);
+ fclose(fp);
+ if (got != 1)
+  return(-1);
+ if (sscanf(text, "%ld", &number) != 1)
+  return(0);
+ return(number == (long)SYS_openat);
+}
+
+/* The writer's side of the FIFO row: it opens the FIFO for writing, which
+   blocks until a reader opens it, then writes one byte.  Lives at most the
+   watchdog's lifetime. */
+static void blocked_writer_child(const char *fifo)
+{
+ int fd;
+
+ test_lifetime_arm(WRITER_LIFETIME_S);
+ fd = open(fifo, O_WRONLY);
+ if (fd >= 0)
+  (void)write(fd, "x", 1);
+ _exit(0);
+}
+
+/* A FIFO is changed by its name and never opened.  A writer waiting in its
+   open must still be waiting, and alive, after the change of mode: an open
+   for reading, even O_NONBLOCK, counts as a reader, releases the writer and
+   kills it with SIGPIPE when the descriptor closes.  The writer is a child
+   of the row, found waiting in openat through /proc (a bounded poll of that
+   state, not a sleep), observed for a fixed window after the change and
+   ended by its own PID.  Red on a tree that sends FIFOs through a descriptor. */
+static void test_a_writer_waiting_on_a_fifo_is_not_released_by_a_change_of_mode(void)
+{
+ WpeModeKept k;
+ char p[512];
+ pid_t pid;
+ long waited;
+
+ make_dir();
+ path_of(p, sizeof p, "pipe");
+ mkfifo(p, 0644);
+ pid = fork();
+ if (pid == 0)
+  blocked_writer_child(p);
+ for (waited = 0; waited < WRITER_BLOCK_WAIT_MS && blocked_in_open(pid) == 0; waited += TEST_WAIT_STEP_MS)
+  test_sleep_ms(TEST_WAIT_STEP_MS);
+ if (!test_premise(blocked_in_open(pid) == 1, "a blocked writer is not released",
+                   "/proc/<pid>/syscall does not show the writer waiting in openat")) {
+  kill(pid, SIGKILL);
+  test_wait_child(pid, WRITER_END_MS);
+  return;
+ }
+ chk_int("changed", wpe_write_set_perm(p, NULL, 0600, &k), 0);
+ for (waited = 0; waited < WRITER_WATCH_MS && blocked_in_open(pid) == 1; waited += TEST_WAIT_STEP_MS)
+  test_sleep_ms(TEST_WAIT_STEP_MS);
+ chk_int("the writer is still waiting in its open", blocked_in_open(pid), 1);
+ chk_int("the writer is alive", kill(pid, 0), 0);
+ kill(pid, SIGKILL);
+ test_wait_child(pid, WRITER_END_MS);
+}
+
+/* A FIFO is changed by its name: opening it would have effects on others.
+   Red on a tree that sends FIFOs through a descriptor. */
+static void test_a_fifo_is_changed_by_name(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ path_of(p, sizeof p, "pipe");
+ mkfifo(p, 0644);
+ fakechmod_count_reset();
+ chk_int("changed", wpe_write_set_perm(p, NULL, 0600, &k), 0);
+ chk_int("the mode", mode_of("pipe"), 0600);
+ chk_int("by name", fakechmod_by_name, 1);
+ chk_int("not by descriptor", fakechmod_by_fd, 0);
+}
+
+/* Ctrl-F9 adds the executable bit and keeps the special bits the script had.
+   The dialog's own change keeps them as well. */
+static void test_add_perm_adds_x_and_keeps_the_special_bits(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "Ctrl-F9 keeps the special bits",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("s.sh", "echo\n", 02644);
+ path_of(p, sizeof p, "s.sh");
+ chk_int("added", wpe_write_add_perm(p, S_IXUSR, &k), 0);
+ chk_int("x added, setgid kept", mode_of("s.sh"), 02744);
+ chk_int("nothing lost", (long)k.lost, 0);
+ chk_int("replaced the nine bits", wpe_write_set_perm(p, NULL, 0600, &k), 0);
+ chk_int("setgid kept", mode_of("s.sh"), 02600);
+}
+
+/* A link the user named is followed once: the file it leads to changes. */
+static void test_add_perm_on_a_link_the_user_named_follows_it_once(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ put_file("real.sh", "echo\n", 0644);
+ path_of(p, sizeof p, "l.sh");
+ {
+  char to[512];
+
+  path_of(to, sizeof to, "real.sh");
+  if (symlink(to, p) != 0)
+   perror("symlink");
+ }
+ chk_int("added", wpe_write_add_perm(p, S_IXUSR, &k), 0);
+ chk_int("the file changed", mode_of("real.sh"), 0744);
+}
+
+/* A name that leads nowhere is reported as not reached, nothing changed. */
+static void test_a_name_that_leads_nowhere_is_not_reached(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ path_of(p, sizeof p, "none");
+ chk_int("refused", wpe_write_set_perm(p, NULL, 0600, &k), ENOENT);
+ chk_int("not reached", k.unreached, 1);
+}
+
 static void stub_mouse_shape(WpeMouseShape s) { (void)s; }
 static void stub_mouse_restore(void) { }
 
@@ -2126,6 +2567,22 @@ int main(void)
  test_a_name_planted_where_the_old_backup_was_is_not_written();
  test_a_failure_with_no_backup_says_the_file_may_be_cut_short();
  test_a_restore_keeps_the_files_group();
+ test_set_perm_changes_the_mode_by_descriptor();
+ test_set_perm_on_a_write_only_file_uses_the_write_descriptor();
+ test_set_perm_on_a_file_that_cannot_be_opened_goes_by_name();
+ test_set_perm_does_not_follow_a_link_put_in_place();
+ test_set_perm_does_not_change_a_file_that_took_the_name();
+ test_a_link_swapped_in_before_a_change_by_name_is_reported();
+ test_a_link_swapped_in_after_the_dialog_is_not_followed();
+ test_a_named_link_shown_by_the_dialog_is_changed();
+ test_a_folder_swapped_after_the_dialog_is_refused();
+ test_a_socket_swapped_for_a_hard_link_changes_nothing();
+ test_a_socket_swapped_in_before_the_open_is_replaced();
+ test_a_fifo_is_changed_by_name();
+ test_a_writer_waiting_on_a_fifo_is_not_released_by_a_change_of_mode();
+ test_add_perm_adds_x_and_keeps_the_special_bits();
+ test_add_perm_on_a_link_the_user_named_follows_it_once();
+ test_a_name_that_leads_nowhere_is_not_reached();
  free_garbage();
  remove_made_dirs();
  fails += test_dir_failures;
