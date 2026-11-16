@@ -87,7 +87,7 @@ jobs:
             uname -a
             pkg install -y autoconf automake libtool gmake pkgconf ncurses \
               libX11 libXft cairo pango libvterm json-c texinfo openssl \
-              xorg-vfbserver twm xdpyinfo python3 \
+              xorg-vfbserver twm xdpyinfo python3 dejavu \
               py312-pytest py312-pyte py312-wcwidth
             # FreeBSD's default Python is 3.12: the py312- flavours are the ones
             # the package index carries (checked in packagesite, 2026-11-15).

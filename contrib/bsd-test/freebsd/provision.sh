@@ -26,6 +26,9 @@ pkg install -y autoconf automake libtool gmake pkgconf ncurses \
 # headless X11 smoke (contrib/bsd-test/xvfb_smoke.sh); python3 checks the frame.
 # Non-fatal: if any is unavailable the smoke skips cleanly rather than aborting.
 pkg install -y xorg-vfbserver twm xdpyinfo python3 || true
+# A fontconfig-visible monospace font: without it Xft font init fails and xwpe
+# paints with the flat core-font path.
+pkg install -y dejavu || true
 
 # FreeBSD's freetype2.pc has "Requires.private: ... bzip2 ...", but base bzip2
 # (libbz2 + bzlib.h are in the base system) ships no bzip2.pc, so pkg-config

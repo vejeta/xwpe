@@ -10,13 +10,195 @@
 #
 # Usage: xvfb_smoke.sh /path/to/build-tree   (the dir holding the xwpe binary)
 # Exits 0 = PASS or SKIP (tooling absent), 1 = FAIL (ran but did not paint).
+#        xvfb_smoke.sh --selftest   (checks the PASS rule on generated frames)
 set -u
 
-BUILDDIR="${1:?usage: xvfb_smoke.sh /path/to/build-tree}"
 D="${XWPE_SMOKE_DISPLAY:-:97}"
 PPM="/tmp/xwpe-xsmoke.ppm"
+XLOG=/tmp/xsmoke-xwpe.log
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# ppm_check FILE | --selftest
+#
+# PASS rule: a painted UI, not a blank frame, independent of antialiasing.
+#   1. at least 3 distinct colours (background, text, and a bar);
+#   2. no single colour covers more than 95% of the pixels;
+#   3. the frame is at least 480x144 px (80x24 cells of 6 px). The width is
+#      not tied to a column count: a window manager may maximize the window
+#      or resize it, and the dump is clamped to the screen;
+#   4. the top band, the middle band and the bottom band (3% of the rows
+#      each) must each hold more than one colour. A half-painted frame or
+#      solid stripes fail here; a real frame has a menu row at the top, the
+#      editor in the middle and a status row at the bottom.
+# The flat core-font painter (no Xft font, e.g. FreeBSD without fonts) uses
+# about 5 solid colours and passes. A black frame (1 colour) and a frame of
+# background plus cursor (2 colours) fail. The count is not capped.
+ppm_check() {
+python3 - "$@" <<'PY'
+import sys, os, tempfile
+
+MIN_COLOURS = 3
+MAX_SHARE = 0.95
+MIN_W = 80 * 6
+MIN_H = 24 * 6
+BAND_SHARE = 0.03
+
+def read_ppm(path):
+    d = open(path, "rb").read()
+    if d[:2] != b"P6":
+        return None
+    i = 2; tok = []
+    while len(tok) < 3:
+        while d[i] in b" \t\n\r": i += 1
+        s = i
+        while d[i] not in b" \t\n\r": i += 1
+        tok.append(d[s:i])
+    i += 1
+    return int(tok[0]), int(tok[1]), d[i:]
+
+def judge(w, h, px):
+    counts = {}
+    for p in range(0, w * h * 3, 3):
+        c = px[p:p+3]
+        counts[c] = counts.get(c, 0) + 1
+    n = len(counts)
+    total = w * h
+    share = max(counts.values()) / total if total else 1.0
+    why = []
+    if n < MIN_COLOURS: why.append("only %d colours" % n)
+    if share > MAX_SHARE: why.append("one colour covers %.1f%%" % (share * 100))
+    if w < MIN_W or h < MIN_H:
+        why.append("frame %dx%d is smaller than %dx%d" % (w, h, MIN_W, MIN_H))
+    else:
+        why.extend(band_problems(w, h, px))
+    return not why, n, share, why
+
+def band_colours(w, px, first_row, rows):
+    start = first_row * w * 3
+    end = (first_row + rows) * w * 3
+    return len(set(px[p:p+3] for p in range(start, end, 3)))
+
+def band_problems(w, h, px):
+    rows = max(1, int(h * BAND_SHARE))
+    bands = (("top", 0), ("middle", h // 2 - rows // 2), ("bottom", h - rows))
+    why = []
+    for name, first in bands:
+        if band_colours(w, px, first, rows) < 2:
+            why.append("%s band is one solid colour" % name)
+    return why
+
+def check(path):
+    r = read_ppm(path)
+    if r is None:
+        print("xvfb-smoke: FAIL (dump is not a PPM)"); return False
+    w, h, px = r
+    ok, n, share, why = judge(w, h, px)
+    print("xvfb-smoke: %s (%dx%d, %d colours, top colour %.1f%%%s)"
+          % ("PASS" if ok else "FAIL", w, h, n, share * 100,
+             "" if ok else "; " + ", ".join(why)))
+    return ok
+
+def make_row(w, spans):
+    """spans: list of (rgb, fraction of the width); the last takes the rest."""
+    row = b""
+    for k, (rgb, frac) in enumerate(spans):
+        n = w - len(row) // 3 if k == len(spans) - 1 else int(w * frac)
+        row += bytes(rgb) * n
+    return row
+
+def make(path, w, h, bands):
+    """bands: list of (fraction of rows, spans); the last takes the rest."""
+    rows = []; used = 0
+    for k, (frac, spans) in enumerate(bands):
+        n = h - used if k == len(bands) - 1 else int(h * frac)
+        rows.append(make_row(w, spans) * n); used += n
+    with open(path, "wb") as f:
+        f.write(b"P6\n%d %d\n255\n" % (w, h) + b"".join(rows))
+
+BLACK = (0, 0, 0); WHITE = (255, 255, 255); GREY = (170, 170, 170)
+BLUE = (0, 0, 170); CYAN = (0, 170, 170)
+
+# A flat frame: menu row, body (background, window border, scrollbar), status row.
+MENU = (.04, [(GREY, .9), (WHITE, .1)])
+STATUS = (.04, [(GREY, .85), (WHITE, .15)])
+BODY = (.92, [(BLACK, .95), (BLUE, .03), (CYAN, .02)])
+FLAT = [MENU, BODY, STATUS]
+# An antialiased frame: many shades in every band.
+SHADES = [((i * 6, i * 5, 255 - i * 6), 1.0 / 40) for i in range(40)]
+CAIRO = [(.04, SHADES), (.92, SHADES), (.04, SHADES)]
+HALF = [MENU, (.46, [(BLACK, .95), (BLUE, .05)]), (.5, [(BLACK, 1.0)])]
+STRIPES = [(.33, [((200, 0, 0), 1.0)]), (.33, [((0, 200, 0), 1.0)]),
+           (.34, [((0, 0, 200), 1.0)])]
+
+def selftest():
+    tmp = tempfile.mkdtemp(prefix="xsmoke-self.")
+    cases = [
+        ("flat-5-colours-640x572", True, 640, 572, FLAT),
+        ("wm-maximized-1024x768", True, 1024, 768, FLAT),
+        ("81-columns-648x572", True, 648, 572, FLAT),
+        ("cairo-many-colours", True, 640, 572, CAIRO),
+        ("black-1-colour", False, 640, 572, [(1.0, [(BLACK, 1.0)])]),
+        ("bg-plus-cursor-2-colours", False, 640, 572,
+         [(1.0, [(BLACK, .99), (WHITE, .01)])]),
+        ("half-painted", False, 640, 572, HALF),
+        ("three-solid-stripes", False, 640, 572, STRIPES),
+    ]
+    bad = 0
+    try:
+        for name, want, w, h, bands in cases:
+            p = os.path.join(tmp, name + ".ppm")
+            make(p, w, h, bands)
+            got = check(p)
+            print("selftest %s: expected %s, got %s -> %s"
+                  % (name, "PASS" if want else "FAIL", "PASS" if got else "FAIL",
+                     "ok" if got == want else "WRONG"))
+            if got != want: bad += 1
+    finally:
+        for fn in os.listdir(tmp): os.remove(os.path.join(tmp, fn))
+        os.rmdir(tmp)
+    return bad == 0
+
+if sys.argv[1] == "--selftest":
+    sys.exit(0 if selftest() else 1)
+sys.exit(0 if check(sys.argv[1]) else 1)
+PY
+}
+
+# print_xwpe_log: always show xwpe's own stderr and which painter ran, so a
+# failure explains itself.
+print_xwpe_log() {
+  echo "xvfb-smoke: --- last lines of $XLOG ---"
+  tail -n 10 "$XLOG" 2>/dev/null
+  echo "xvfb-smoke: --- end of log ---"
+  if grep -q "Xft font init failed" "$XLOG" 2>/dev/null; then
+    echo "xvfb-smoke: painter: FLAT core X font (Xft font init failed; no fontconfig font installed?)"
+  elif build_has_xft_and_cairo; then
+    echo "xvfb-smoke: painter: Xft/cairo (build has both; no Xft failure message in the log)"
+  else
+    echo "xvfb-smoke: painter: no Xft in this build (core X font path)"
+  fi
+}
+
+# build_has_xft_and_cairo: true when config.h defines HAVE_XFT and HAVE_CAIRO,
+# or, without a config.h, when the binary links libXft and libcairo.
+build_has_xft_and_cairo() {
+  if [ -f "$BUILDDIR/config.h" ]; then
+    grep -q '^#define HAVE_XFT 1' "$BUILDDIR/config.h" &&
+      grep -q '^#define HAVE_CAIRO 1' "$BUILDDIR/config.h"
+    return $?
+  fi
+  have ldd || return 1
+  _libs=$(ldd "$XWPE" 2>/dev/null)
+  echo "$_libs" | grep -q 'libXft' && echo "$_libs" | grep -q 'libcairo'
+}
+
+if [ "${1:-}" = "--selftest" ]; then
+  ppm_check --selftest
+  exit $?
+fi
+
+BUILDDIR="${1:?usage: xvfb_smoke.sh /path/to/build-tree | --selftest}"
 
 # The mode is chosen by argv[0]: a name starting with 'x' selects X11.  Use the
 # xwpe symlink if the build made one, else create it next to the binary.
@@ -64,9 +246,17 @@ sleep 1
 
 mkdir -p /tmp/xsmoke-home
 printf 'int main(void){return 0;}\n' > /tmp/xsmoke-home/t.c
-env XWPE_LIB="$BUILDDIR" HOME=/tmp/xsmoke-home XWPE_FONT_SIZE=10 \
-    XWPE_X_DUMP="$PPM" DISPLAY="$D" \
-    "$XWPE" /tmp/xsmoke-home/t.c >/tmp/xsmoke-xwpe.log 2>&1 &
+# This is an X11 test: xwpe picks the Wayland backend when WAYLAND_DISPLAY is
+# set, so force X11 and hide the Wayland socket from the child.
+# exec keeps $! the PID of xwpe itself.
+(
+  unset WAYLAND_DISPLAY
+  XWPE_BACKEND=x11; export XWPE_BACKEND
+  XWPE_LIB="$BUILDDIR"; HOME=/tmp/xsmoke-home; XWPE_FONT_SIZE=10
+  XWPE_X_DUMP="$PPM"; DISPLAY="$D"
+  export XWPE_LIB HOME XWPE_FONT_SIZE XWPE_X_DUMP DISPLAY
+  exec "$XWPE" /tmp/xsmoke-home/t.c >/tmp/xsmoke-xwpe.log 2>&1
+) &
 XW=$!
 sleep 1
 # A window manager may place the window partly off-screen, which makes xwpe's
@@ -95,35 +285,12 @@ kill "$XW" 2>/dev/null
 sleep 0.6
 kill "$WMPID" "$XVFB" 2>/dev/null
 
+print_xwpe_log
+
 if [ ! -f "$PPM" ]; then
   echo "xvfb-smoke: FAIL (xwpe produced no XWPE_X_DUMP frame -- console fallback?)"
-  head -n 5 /tmp/xsmoke-xwpe.log 2>/dev/null
-  echo
   exit 1
 fi
 
-# PASS if the captured frame has clearly more than a couple of colours: a blank
-# or all-black frame has 1, a real painted UI has hundreds.
-python3 - "$PPM" <<'PY'
-import sys
-d = open(sys.argv[1], "rb").read()
-if d[:2] != b"P6":
-    print("xvfb-smoke: FAIL (dump is not a PPM)"); sys.exit(1)
-i = 2; tok = []
-while len(tok) < 3:
-    while d[i] in b" \t\n\r": i += 1
-    s = i
-    while d[i] not in b" \t\n\r": i += 1
-    tok.append(d[s:i])
-i += 1
-w, h = int(tok[0]), int(tok[1]); px = d[i:]
-cols = set()
-for p in range(0, w * h * 3, 3):
-    cols.add(px[p:p+3])
-    if len(cols) > 16:
-        break
-ok = len(cols) > 8
-print("xvfb-smoke: %s (%dx%d, %s%d colours)"
-      % ("PASS" if ok else "FAIL", w, h, ">" if len(cols) > 16 else "", len(cols)))
-sys.exit(0 if ok else 1)
-PY
+ppm_check "$PPM"
+exit $?
