@@ -9,7 +9,7 @@
  * text, a whole word search that takes `a_foo` for `foo`, Replace All on a
  * row of twenty thousand bytes taking seconds.
  *
- * Built three times from this file:
+ * Built several times from this file:
  *   test_rowfind         the engine runs on the whole row (REG_STARTEND);
  *   test_rowfind_copy    WPE_ROWFIND_NO_STARTEND: the engine runs on a copy
  *                        from the start of each call, which cannot see the
@@ -30,7 +30,14 @@
  *   test_rowfind_badengine_copy  the same on the copy path (no REG_STARTEND),
  *                        where the check of the engine's answer is separate;
  *   test_rowfind_boundary  WPE_ROWFIND_UNSAFE_BOUNDARY: the real engine, with
- *                        the refusal of every word-boundary escape forced on.
+ *                        the refusal of every word-boundary escape forced on;
+ *   test_rowfind_boundary_copy  the same on the copy path
+ *                        (WPE_ROWFIND_NO_STARTEND with
+ *                        WPE_ROWFIND_UNSAFE_BOUNDARY): no word-boundary
+ *                        escape reaches the engine, as on a system whose
+ *                        engine is measured unsafe, so the copy path must
+ *                        show no look-behind difference at all (the other
+ *                        side of the copy build's expectation).
  * Each runs its passes under the C locale, C.UTF-8 and en_US.iso885915 (a
  * pass whose locale is missing says so and is skipped).
  *
@@ -1973,6 +1980,55 @@ static void one_pass(const char *locale, int with_perf, int iterations)
  wpe_rowfind_release();
 }
 
+/* Whether the copy build must differ from the reference.  The copy path
+   differs from the REG_STARTEND path in one thing only: the byte before the
+   call's start, which only \b \B \< \> read.  So the difference exists only
+   where such an escape reaches the engine: the engine understands the word
+   escapes at all (WPE_HAS_REGEX_WORD_ESCAPES) and the owner does not refuse
+   them (WPE_ROWFIND_BOUNDARY_SAFE).  Everywhere else the two paths are the
+   same by design and the copy build must show no difference. */
+#if !OWNER_SEES_BEFORE && WPE_HAS_REGEX_WORD_ESCAPES && WPE_ROWFIND_BOUNDARY_SAFE
+#define COPY_DIFFERENCE_EXPECTED 1
+#else
+#define COPY_DIFFERENCE_EXPECTED 0
+#endif
+
+/** check_copy_difference - Prove the copy path's look-behind difference where it can exist.
+ *
+ * Find on a system without REG_STARTEND runs the engine on a copy of the row,
+ * so a word boundary at the start of a call is judged without the byte before
+ * it.  This says, at the end of the run, whether the build showed that
+ * difference when it had to, and showed none when no word-boundary escape
+ * could reach the engine, so a copy path that drifts from the reference where
+ * nothing should differ is a failure too and not a silence.  Reads
+ * copy_differences, counted by the differential. */
+static void check_copy_difference(void)
+{
+ if (OWNER_SEES_BEFORE)
+  return;
+ if (COPY_DIFFERENCE_EXPECTED)
+ {
+  if (copy_differences == 0)
+  {
+   printf("FAIL: the copy build shows no look-behind difference (the expected one is untested)\n");
+   fails++;
+  }
+  else
+   printf("copy path: %d differential rows differ on a word boundary, as expected\n", copy_differences);
+  return;
+ }
+ printf("SKIP: the copy build's look-behind difference: needs a word-boundary escape the engine is measured "
+        "safe for (WPE_HAS_REGEX_WORD_ESCAPES, WPE_ROWFIND_BOUNDARY_SAFE)\n");
+ if (copy_differences != 0)
+ {
+  printf("FAIL: the copy build differs from the reference on %d rows with no word-boundary escape in play\n",
+         copy_differences);
+  fails++;
+ }
+ else
+  printf("copy path: 0 differential rows differ on a word boundary, as expected\n");
+}
+
 int main(void)
 {
  const char *e = getenv("ROWFIND_ITERS");
@@ -1987,13 +2043,7 @@ int main(void)
  one_pass("C", 0, iterations);
  one_pass("C.UTF-8", 1, iterations);
  one_pass("en_US.iso885915", 0, iterations);
- if (!OWNER_SEES_BEFORE && copy_differences == 0)
- {
-  printf("FAIL: the copy build shows no look-behind difference (the expected one is untested)\n");
-  fails++;
- }
- if (!OWNER_SEES_BEFORE)
-  printf("copy path: %d differential rows differ on a word boundary, as expected\n", copy_differences);
+ check_copy_difference();
  printf("reference: byte fallback taken %d times (compile %d, exec %d)\n",
         ref_compile_fallbacks + ref_exec_fallbacks, ref_compile_fallbacks, ref_exec_fallbacks);
  printf("refused: %d differential rows (the engine is measured unsafe for them)\n",
