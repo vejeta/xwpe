@@ -512,6 +512,16 @@ Changes
   Operation not permitted."); a folder copy says how many entries it
   concerns.
 
+* Saving a file keeps the setuid, setgid and sticky bits it has on disk
+  when it is saved.  The write used to clear them without a word; they are
+  now put back after the text.  A bit you removed since the file was
+  opened stays removed.  Only a write onto the window's own file (the same
+  file, also through Save As or a hard link) puts them back: Save As onto
+  another file, a block written to a file, the autosave and emergency
+  copies and the print copy never give a bit to the file they write, even
+  over a file that had them, and the .bak copy never gets them.  A write
+  that fails half way and is undone puts back the bits the file had.
+
 * "Don't overwrite" now leaves the existing file alone and says so on the
   status row; it used to overwrite it.  Replacing a file asks once, a name
   that appears while a copy runs is not replaced, a file copied onto a

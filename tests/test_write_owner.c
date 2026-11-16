@@ -21,11 +21,13 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "../edit.h"
 #include "../we_write.h"
 #include "testdir.h"
+#include "fakechmod.h"
 
 static int fails;
 
@@ -655,6 +657,40 @@ static int write_shared_bits;     /* group/other bits seen on such a file */
 static char plant_at[512];        /* after this name is unlinked ... */
 static char plant_from[512];      /* ... a hard link to this file takes it */
 
+/* Which special bits each file had when text was written into it, by inode. */
+#define WATCHED_FILES 8
+static ino_t watched_ino[WATCHED_FILES];
+static mode_t watched_special[WATCHED_FILES];
+static int watched_n;
+
+static void watch_special_bits(const struct stat *st)
+{
+ int i;
+
+ for (i = 0; i < watched_n; i++)
+  if (watched_ino[i] == st->st_ino)
+  {
+   watched_special[i] |= st->st_mode & 07000;
+   return;
+  }
+ if (watched_n < WATCHED_FILES)
+ {
+  watched_ino[watched_n] = st->st_ino;
+  watched_special[watched_n++] = st->st_mode & 07000;
+ }
+}
+
+/* The special bits the file of this inode had at any write; -1: never written. */
+static int special_bits_seen(ino_t ino)
+{
+ int i;
+
+ for (i = 0; i < watched_n; i++)
+  if (watched_ino[i] == ino)
+   return((int)watched_special[i]);
+ return(-1);
+}
+
 static write_fn real_write(void)
 {
  static write_fn fn;
@@ -678,7 +714,10 @@ ssize_t write(int fd, const void *buf, size_t n)
  struct stat st;
 
  if (watch_writes && fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+ {
   write_shared_bits |= (int)(st.st_mode & 077);
+  watch_special_bits(&st);
+ }
  return(real_write()(fd, buf, n));
 }
 
@@ -800,8 +839,511 @@ static void test_a_restore_keeps_the_files_group(void)
  chk_int("the file keeps its mode", mode_of("t.c"), 0640);
 }
 
+/* ---- a save keeps the file's special bits; the .bak never has them ---- */
+
+/* The window of a file read with this whole mode, as Save sees it. */
+static FENSTER *window_of_file_with_mode(mode_t mode)
+{
+ FENSTER *f = make_window();
+
+ f->filemode = (int)(S_IFREG | mode);
+ return(f);
+}
+
+static void save_sentence(const WpeWriteOutcome *o, char *out, size_t n)
+{
+ (void)wpe_write_sentence(out, n, o, WPE_WRITE_THEN_KEPT);
+}
+
+/* Save the window onto the file NAME of the test folder, as File > Save does
+   (the one writer that gives a file back its special bits). */
+static int save_window(FENSTER *f, const char *name, WpeWriteOutcome *o)
+{
+ f->dirct = dir;
+ f->datnam = (char *)name;
+ f->dtmd = DTMD_NORMAL;
+ f->ed->mxedt = 1;
+ f->ed->f[1] = f;
+ return(wpe_write_file(f, o));
+}
+
+/* Save As: the window, which read the file OLD_DIR/OLD_NAME, is written under
+   NEW_DIR/NEW_NAME, as the file manager's Save As does. */
+static int save_window_as(FENSTER *f, char *new_dir, const char *new_name, char *old_dir,
+                          const char *old_name)
+{
+ f->dirct = new_dir;
+ f->datnam = (char *)new_name;
+ f->dtmd = DTMD_NORMAL;
+ f->ed->mxedt = 1;
+ f->ed->f[1] = f;
+ return(wpe_write_save(f, WPE_WRITE_THEN_NAME_KEPT, old_dir, old_name));
+}
+
+/* A Save that fails half way: the limit is below what it writes. */
+static void save_past_limit(FENSTER *f, const char *name, WpeWriteOutcome *o, size_t limit,
+                            size_t write_bytes)
+{
+ char *text = big(write_bytes, 'n');
+
+ set_rows(text);
+ limit_file_size(limit);
+ chk_int("the save fails", save_window(f, name, o), -1);
+ no_file_size_limit();
+}
+
+/* A setgid program saved by its owner is still setgid: the write clears the
+   bit and the save puts it back. */
+static void test_a_saved_setgid_file_keeps_its_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a saved setgid file keeps its bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_int("the saved file keeps setgid", mode_of("t.c"), 02755);
+ save_sentence(&o, say, sizeof say);
+ chk_int("nothing to say when the bit was kept", (long)strlen(say), 0);
+}
+
+/* A system that refuses or drops the bit: the text is saved, and the status
+   row names the bit and why. */
+static void test_a_save_names_the_bit_the_system_refuses(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a save names a refused bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, S_ISGID);
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("written", o.status, WPE_WRITE_WRITTEN);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_int("the nine bits are on", mode_of("t.c"), 0755);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the bit is named", say, "t.c written, but the setgid bit was not kept: ");
+ chk_has("the reason is the system's", say, "Operation not permitted");
+
+ put_file("u.c", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ fakechmod_set(FAKECHMOD_DROP, S_ISGID);
+ chk_int("write, bit dropped", save_window(f, "u.c", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ save_sentence(&o, say, sizeof say);
+ chk_has("a dropped bit is named", say, "u.c written, but the setgid bit was not kept: ");
+ chk_has("a dropped bit has its reason", say, "the system cleared it");
+}
+
+/* The nine permission bits refused after the text is on disk is a mode that
+   did not change, not a lost save. */
+static void test_a_save_whose_modes_are_all_refused_is_still_written(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a refused mode is not a lost save",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("written", o.status, WPE_WRITE_WRITTEN);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ save_sentence(&o, say, sizeof say);
+ chk_has("the bit is named", say, "setgid bit was not kept");
+}
+
+/* The backup is a copy of old text: no setuid, setgid or sticky bit at any
+   moment, whatever the file had. */
+static void test_the_backup_never_has_the_special_bits(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char bakp[512];
+ struct stat st;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "the backup has no special bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ path_of(bakp, sizeof bakp, "t.bak");
+ watched_n = 0;
+ watch_writes = 1;
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ watch_writes = 0;
+ chk_int("stat the backup", stat(bakp, &st), 0);
+ chk_int("the backup held no special bit while it was written", special_bits_seen(st.st_ino), 0);
+ chk_int("the backup ends with the nine bits", mode_of("t.bak"), 0755);
+}
+
+/* A file with no special bit is saved and backed up as before. */
+static void test_the_nine_bits_of_a_save_are_unchanged(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], say[1024];
+
+ make_dir();
+ put_file("t.c", "old\n", 0640);
+ f = window_of_file_with_mode(0640);
+ set_rows("new\n");
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_int("the file keeps its nine bits", mode_of("t.c"), 0640);
+ chk_int("the backup has the nine bits", mode_of("t.bak"), 0640);
+ save_sentence(&o, say, sizeof say);
+ chk_int("nothing to say", (long)strlen(say), 0);
+}
+
+/* A save that fails half way puts the old text back with the file's special
+   bits, which the failed write had cleared. */
+static void test_a_restore_keeps_the_special_bits(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char *old = big(1024, 'o'), buf[8192];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a restore keeps setgid",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", old, 02755);
+ f = window_of_file_with_mode(02755);
+ save_past_limit(f, "t.c", &o, 2048, 4096);
+ chk_int("restored", o.restore_err, 0);
+ chk_int("the file is as it was", strcmp(get_file("t.c", buf, sizeof buf), old), 0);
+ chk_int("the restored file keeps setgid", mode_of("t.c"), 02755);
+}
+
+/* ---- where the bits come from: the file the write overwrites ---- */
+
+/* The bits a write puts back are the ones the inode had when the write opened
+   it, never the window's mode and never for a copy.  One row for the four
+   copies that go through wpe_write_range (Block Write, the autosave, the
+   emergency save and the print copy): a new name has no bit to give back.  The
+   window says 02755 on purpose, as a window of a setgid program does. */
+static void test_a_block_write_to_a_new_name_gets_no_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a copy to a new name gets no bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ f = window_of_file_with_mode(02755);
+ set_rows("block\n");
+ path_of(p, sizeof p, "blk.txt");
+ chk_int("block write with a backup", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+ chk_int("the block's file has no special bit", mode_of("blk.txt"), 0755);
+ chk_int("nothing was kept or lost", (long)o.file_kept.lost, 0);
+ save_sentence(&o, say, sizeof say);
+ chk_int("nothing to say", (long)strlen(say), 0);
+ path_of(p, sizeof p, "blk2.txt");
+ chk_int("copy with no backup", wpe_write_range(f, p, 0, 0, 1, 1, 0, &o), 0);
+ chk_int("that file has no special bit", mode_of("blk2.txt"), 0755);
+}
+
+/* Over an existing setgid file a copy is still a copy: the file it overwrites
+   loses the bit and the write does not give it back, a Block Write and the
+   autosave of the file alike. */
+static void test_a_copy_over_an_existing_setgid_file_gets_no_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a copy over a setgid file gets no bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("blk.txt", "old\n", 02755);
+ put_file("t.c.ASV", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ set_rows("block\n");
+ path_of(p, sizeof p, "blk.txt");
+ chk_int("block write onto it", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+ chk_int("the block's file ends with the nine bits", mode_of("blk.txt"), 0755);
+ save_sentence(&o, say, sizeof say);
+ chk_int("nothing to say for the block", (long)strlen(say), 0);
+ path_of(p, sizeof p, "t.c.ASV");
+ chk_int("autosave onto it", wpe_write_range(f, p, 0, 0, 1, 1, 0, &o), 0);
+ chk_int("the autosave ends with the nine bits", mode_of("t.c.ASV"), 0755);
+ save_sentence(&o, say, sizeof say);
+ chk_int("nothing to say for the autosave", (long)strlen(say), 0);
+}
+
+/* A user who took setuid off a program to make it safe does not get it back
+   at the next Save, whatever the window read when it loaded the file. */
+static void test_a_bit_removed_on_disk_is_not_restored(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISUID), "a removed bit stays removed",
+                   "this user cannot set setuid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 0755);
+ f = window_of_file_with_mode(04755);
+ set_rows("new\n");
+ chk_int("save", save_window(f, "t.c", &o), 0);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_int("the bit removed on disk stays removed", mode_of("t.c"), 0755);
+ save_sentence(&o, say, sizeof say);
+ chk_int("nothing to say", (long)strlen(say), 0);
+}
+
+/* The other direction: a bit put on the file since the window loaded it is on
+   the file that is overwritten, so it is kept. */
+static void test_a_bit_added_on_disk_since_loading_is_kept(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a bit added on disk is kept",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(0755);
+ set_rows("new\n");
+ chk_int("save", save_window(f, "t.c", &o), 0);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_int("the bit on disk is kept", mode_of("t.c"), 02755);
+}
+
+/* The truncation has no size condition: an empty file saved with no text is
+   still cut, so its modification time moves (the build's up-to-date checks
+   read it).  A truncation skipped for an empty file leaves the time alone. */
+static void test_saving_an_empty_file_over_an_empty_file_marks_it_changed(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512];
+ struct timeval old[2];
+ struct stat st;
+
+ make_dir();
+ put_file("t.c", "", 0644);
+ path_of(p, sizeof p, "t.c");
+ old[0].tv_sec = old[1].tv_sec = 946684800;
+ old[0].tv_usec = old[1].tv_usec = 0;
+ chk_int("set the old time", utimes(p, old), 0);
+ f = window_of_file_with_mode(0644);
+ set_rows("");
+ chk_int("save", save_window(f, "t.c", &o), 0);
+ chk_int("stat", stat(p, &st), 0);
+ chk_int("the empty file was cut, so its time moved", st.st_mtime > 946684800, 1);
+}
+
+/* Save As writes a different file.  Over an existing setgid program it is a
+   copy for the bits: the program keeps its mode of nine bits, never a setgid
+   text nobody can run.  A Save of the same window onto its own file keeps the
+   bit (test_a_saved_setgid_file_keeps_its_bit). */
+static void test_save_as_over_an_existing_setgid_file_gets_no_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "Save As over a setgid file gets no bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("u.c", "program\n", 02755);
+ f = window_of_file_with_mode(0644);
+ set_rows("text\n");
+ put_file("t.c", "window's file\n", 0644);
+ chk_int("Save As", save_window_as(f, dir, "u.c", dir, "t.c"), WPE_WRITE_WRITTEN);
+ chk_has("file written", get_file("u.c", buf, sizeof buf), "text\n");
+ chk_int("the file Save As overwrote has no special bit", mode_of("u.c"), 0644);
+}
+
+/* Save As onto the window's own file, by the same folder and name, is a Save
+   for the bits: a setgid program saved as itself is still one. */
+static void test_save_as_onto_the_windows_own_file_keeps_its_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "Save As onto its own file keeps the bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ chk_int("Save As", save_window_as(f, dir, "t.c", dir, "t.c"), WPE_WRITE_WRITTEN);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_int("the window's own file keeps setgid", mode_of("t.c"), 02755);
+}
+
+/* The same name in another folder is another file: a copy for the bits, so
+   a name match alone does not give the bit. */
+static void test_save_as_to_the_same_name_in_another_folder_gets_no_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char sub[512], buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "the same name elsewhere gets no bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ path_of(sub, sizeof sub, "sub");
+ chk_int("make the other folder", mkdir(sub, 0755), 0);
+ put_file("t.c", "window's file\n", 0755);
+ put_file("sub/t.c", "other\n", 02755);
+ f = window_of_file_with_mode(0755);
+ set_rows("new\n");
+ chk_int("Save As", save_window_as(f, sub, "t.c", dir, "t.c"), WPE_WRITE_WRITTEN);
+ chk_has("file written", get_file("sub/t.c", buf, sizeof buf), "new\n");
+ chk_int("the other folder's file has no special bit", mode_of("sub/t.c"), 0755);
+ chk_int("the window's own file is untouched", mode_of("t.c"), 0755);
+}
+
+/* A hard link to the window's own file is the same inode, so it is the same
+   file for the bits: the bit stays on the program whichever name saved it. */
+static void test_save_as_through_a_hard_link_to_its_own_file_keeps_the_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char own[512], link_to[512], buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a hard link to its own file keeps the bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ path_of(own, sizeof own, "t.c");
+ path_of(link_to, sizeof link_to, "l.c");
+ chk_int("hard link", link(own, link_to), 0);
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ chk_int("Save As", save_window_as(f, dir, "l.c", dir, "t.c"), WPE_WRITE_WRITTEN);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_int("the one inode keeps setgid", mode_of("t.c"), 02755);
+}
+
+/* A write that fails half way and is undone gives back what the overwritten
+   file had, a copy's target included: the restore undoes the write, it does
+   not give the copy a bit. */
+static void test_a_failed_block_write_over_a_setgid_file_restores_its_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char *old = big(1024, 'o'), buf[8192];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a failed copy restores the bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("blk.txt", old, 02755);
+ f = window_of_file_with_mode(0755);
+ write_past_limit(f, "blk.txt", &o, 2048, 4096);
+ chk_int("restored", o.restore_err, 0);
+ chk_int("the file is as it was", strcmp(get_file("blk.txt", buf, sizeof buf), old), 0);
+ chk_int("the restored file has its setgid bit again", mode_of("blk.txt"), 02755);
+}
+
+/* The file is no longer truncated by the open, so the truncation is its own
+   step: a longer file saved short leaves no tail of the old text. */
+static void test_a_longer_file_saved_short_leaves_no_tail(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char *old = big(4096, 'o'), buf[8192];
+
+ make_dir();
+ put_file("t.c", old, 0644);
+ f = window_of_file_with_mode(0644);
+ set_rows("new\n");
+ chk_int("save", save_window(f, "t.c", &o), 0);
+ chk_int("the file is the new text and nothing else", strcmp(get_file("t.c", buf, sizeof buf), "new\n"), 0);
+}
+
+/* The sentence for an outcome built by hand: the reasons that need a system
+   this one is not (a group the user is not in, no descriptor to ask on). */
+static void test_the_sentence_of_a_save_that_lost_a_bit(void)
+{
+ WpeWriteOutcome o;
+ char say[1024];
+
+ memset(&o, 0, sizeof o);
+ o.status = WPE_WRITE_WRITTEN;
+ snprintf(o.path, sizeof o.path, "%s/t.c", "/x");
+ o.file_kept.lost = S_ISGID;
+ o.file_kept.err = EPERM;
+ o.file_kept.gid = 12;
+ o.file_kept.in_group = 0;
+ save_sentence(&o, say, sizeof say);
+ chk_has("the group is the reason", say, "t.c written, but the setgid bit was not kept: "
+         "this user is not in group 12.");
+ o.file_kept.lost = S_ISUID | S_ISGID;
+ o.file_kept.in_group = 1;
+ save_sentence(&o, say, sizeof say);
+ chk_has("two bits", say, "the setuid and setgid bits were not kept: Operation not permitted.");
+ o.file_kept.err = EMFILE;
+ save_sentence(&o, say, sizeof say);
+ chk_has("no descriptor to ask on", say, "Too many open files");
+ o.file_kept.lost = 0;
+ save_sentence(&o, say, sizeof say);
+ chk_int("nothing lost, nothing said", (long)strlen(say), 0);
+}
+
+static void stub_mouse_shape(WpeMouseShape s) { (void)s; }
+static void stub_mouse_restore(void) { }
+
 int main(void)
 {
+ WpeMouseChangeShape = stub_mouse_shape;
+ WpeMouseRestoreShape = stub_mouse_restore;
+ test_a_block_write_to_a_new_name_gets_no_bit();
+ test_a_copy_over_an_existing_setgid_file_gets_no_bit();
+ test_a_bit_removed_on_disk_is_not_restored();
+ test_a_bit_added_on_disk_since_loading_is_kept();
+ test_a_longer_file_saved_short_leaves_no_tail();
+ test_saving_an_empty_file_over_an_empty_file_marks_it_changed();
+ test_save_as_over_an_existing_setgid_file_gets_no_bit();
+ test_save_as_onto_the_windows_own_file_keeps_its_bit();
+ test_save_as_to_the_same_name_in_another_folder_gets_no_bit();
+ test_save_as_through_a_hard_link_to_its_own_file_keeps_the_bit();
+ test_a_failed_block_write_over_a_setgid_file_restores_its_bit();
+ test_the_sentence_of_a_save_that_lost_a_bit();
+ test_a_saved_setgid_file_keeps_its_bit();
+ test_a_save_names_the_bit_the_system_refuses();
+ test_a_save_whose_modes_are_all_refused_is_still_written();
+ test_the_backup_never_has_the_special_bits();
+ test_the_nine_bits_of_a_save_are_unchanged();
+ test_a_restore_keeps_the_special_bits();
  test_sentence();
  test_text();
  test_follow_ups_after_a_name_the_system_refuses();

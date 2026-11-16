@@ -1065,11 +1065,30 @@ The original showed a second box, @samp{Can't open file for writing}, when
 the backup copy could not be made in a read-only folder, and then wrote
 the file anyway.  A save that works shows no box: the status row says
 @samp{t.c written; no backup was made: Permission denied.}.  The backup
-copy takes the file's own permissions before it holds any of its text, and
+copy takes the file's nine permission bits (never setuid, setgid or sticky)
+before it holds any of its text, and
 counts as made only when every byte reached the disk; a backup that stops
 half way refuses the save and leaves the file untouched, because the same
 disk would refuse the new text.  The reason: a short backup must never be
 trusted, and a private file's backup must never be readable by others.
+
+@item A saved program keeps its bits
+@cindex setuid, setgid and sticky bits on Save
+On most systems writing a file clears its setuid and setgid bits (Linux
+keeps setgid on a file its group cannot run, and keeps both for root), and
+the original never put them back, so a setgid program saved from the editor
+was usually an ordinary file afterwards.  xwpe puts back, after the text,
+the special bits the file had on disk when the save opened it: not the bits
+it had when the window read it, so a bit removed since then stays removed.
+Only a write onto the window's own file puts them back, and that is the
+same file (the same inode), also when Save As names it again or names a
+hard link to it.  Save As onto another file, Block Write, the autosave and
+emergency copies and the print copy write another file, so they never give
+it a bit, even when they overwrite a file that had them; a file saved under
+a new name has none to get.  A write that fails
+half way and is undone puts back the bits the overwritten file had.  The
+backup copy never gets the bits.  The reason: saving a file must not change
+what kind of file it is, and must not make a second program out of a copy.
 @end table
 
 @section The file manager's Copy, Move, Link and Remove

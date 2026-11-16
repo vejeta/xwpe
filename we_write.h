@@ -32,6 +32,20 @@ typedef enum {
  WPE_WRITE_FAILED       /* err and path say why and where */
 } WpeWriteStatus;
 
+/* What a change of mode could not keep.  The editor gives a file every
+   permission bit the system takes and names the special bit (setuid, setgid,
+   sticky) it does not, instead of failing the copy or losing the bit in
+   silence.  A bit the system refuses and a bit it drops are told apart by
+   @err, and said alike. */
+typedef struct {
+ mode_t lost;       /* the special bits asked for and not on the file afterwards */
+ int    err;        /* errno of the call that refused them; 0 when a call returned 0
+                       and the bit was absent anyway */
+ gid_t  gid;        /* the file's group, read back */
+ int    in_group;   /* the caller is in that group */
+ int    changed;    /* a call succeeded: a failure after it is not "nothing was changed" */
+} WpeModeKept;
+
 typedef struct {
  WpeWriteStatus status;
  int err;                        /* errno of the failure, else 0 */
@@ -46,6 +60,10 @@ typedef struct {
  char kept_path[WPE_PATH_SIZE];
  char bak_path[WPE_PATH_SIZE];   /* the .bak made in this call, else "" */
  char keep_name[WPE_PATH_SIZE];  /* the name the window keeps (Save As), else "" */
+ WpeModeKept file_kept;          /* the special bits the saved file did not keep
+                                    (lost == 0: all kept, or it had none).  The
+                                    .bak is never given them, so it has no such
+                                    record. */
 } WpeWriteOutcome;
 
 /* What the user is told after the failure, beside the path and the reason. */
@@ -77,27 +95,16 @@ WPE_WRITE_RESULT int wpe_write_file(struct FNST *f, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_range(struct FNST *f, const char *path,
                                      int xa, int ya, int xe, int ye,
                                      int backup, WpeWriteOutcome *o);
-/* The window saved and the user told: what F2 does.  @keep_name is the name a
-   failed Save As leaves the window under, or NULL. */
-int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_name);
+/* The window saved and the user told: what F2 does.  @keep_dir and @keep_name
+   are the folder and name the window had before a Save As, which a failed
+   Save As leaves it under and which say whether the target is the window's
+   own file; NULL and NULL for a plain Save. */
+int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_dir,
+                   const char *keep_name);
 
 /* Text that is not a window's rows. */
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o);
-
-/* What a change of mode could not keep.  The editor gives a file every
-   permission bit the system takes and names the special bit (setuid, setgid,
-   sticky) it does not, instead of failing the copy or losing the bit in
-   silence.  A bit the system refuses and a bit it drops are told apart by
-   @err, and said alike. */
-typedef struct {
- mode_t lost;       /* the special bits asked for and not on the file afterwards */
- int    err;        /* errno of the call that refused them; 0 when a call returned 0
-                       and the bit was absent anyway */
- gid_t  gid;        /* the file's group, read back */
- int    in_group;   /* the caller is in that group */
- int    changed;    /* a call succeeded: a failure after it is not "nothing was changed" */
-} WpeModeKept;
 
 /* A file that is printed line by line (a project list, the options): the
    stream is opened here and closed here, and the outcome of the close says

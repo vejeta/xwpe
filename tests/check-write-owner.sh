@@ -70,6 +70,17 @@
 #     (assignment, strcpy and the like, REALLOC, FREE) is in a function the
 #     allow file names (e_select_project, e_project_name, e_prj_anchor_path,
 #     e_ini_prog, WpeReadProgramming, e_open_project_file).
+# 15. In we_write.c the window's recorded mode (`filemode`, what the window
+#     read when it loaded the file) is read inside one function,
+#     write_mode_before_data, only as `filemode & WRITE_NINE_BITS` or in a
+#     sign test (`filemode >= 0`, `< 0`), and that function names no special
+#     bit: not WRITE_TWELVE_BITS, WRITE_SPECIAL_BITS, WRITE_NINE_BITS
+#     complemented, S_ISUID, S_ISGID, S_ISVTX, wpe_write_set_special_bits,
+#     write_keep_special_bits, nor an octal constant of four digits or more
+#     with a digit above 0 in front of the permission digits (01000 ... 07777).
+#     The token `filemode` also counts on preprocessor lines, where a macro
+#     could carry it anywhere.  So the special bits of a write come from the
+#     file it opened, never from a mode recorded at load.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -186,6 +197,36 @@ scan() {
       head = substr(s, 1, p - 1); sub(/[ \t]+$/, "", head)
       return head ~ /(^|[^A-Za-z0-9_])else$/
     }
+    # rule 15 for the code of one statement, strings blanked.  Outside
+    # write_mode_before_data every `filemode` counts.  Inside it a `filemode`
+    # counts unless it is masked with WRITE_NINE_BITS or tested against 0, and
+    # every token of a special bit counts.
+    function note15(m,   t, rest) {
+      t = m
+      # the member declaration of the window is no read of it
+      gsub(/(^|[^A-Za-z0-9_])int[ \t]+filemode([^A-Za-z0-9_]|$)/, " ", t)
+      while (match(t, /(^|[^A-Za-z0-9_])filemode([^A-Za-z0-9_]|$)/)) {
+        rest = substr(t, RSTART + RLENGTH - 1)
+        if (fn != "write_mode_before_data") note("r15", 1)
+        else if (rest !~ /^[ \t]*&[ \t]*WRITE_NINE_BITS([^A-Za-z0-9_]|$)/ && rest !~ /^[ \t]*(>=|<)[ \t]*0([^A-Za-z0-9_]|$)/) note("r15", 1)
+        t = substr(t, RSTART + RLENGTH - 1)
+      }
+      if (fn != "write_mode_before_data") return
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])(WRITE_TWELVE_BITS|WRITE_SPECIAL_BITS|S_ISUID|S_ISGID|S_ISVTX|wpe_write_set_special_bits|write_keep_special_bits)([^A-Za-z0-9_]|$)/)) { note("r15", 1); t = substr(t, RSTART + RLENGTH - 1) }
+      t = m
+      while (match(t, /~[ \t]*[(]?[ \t]*WRITE_NINE_BITS/)) { note("r15", 1); t = substr(t, RSTART + RLENGTH) }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])0+[1-7][0-7][0-7][0-7]([^A-Za-z0-9_]|$)/)) { note("r15", 1); t = substr(t, RSTART + RLENGTH - 1) }
+      # the same bits spelled in hex or decimal, or built by a shift: the
+      # owner of the nine bits needs no number but the mask
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])0[xX][0-9A-Fa-f]+/)) { note("r15", 1); t = substr(t, RSTART + RLENGTH) }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.])[1-9][0-9][0-9]+([^A-Za-z0-9_]|$)/)) { note("r15", 1); t = substr(t, RSTART + RLENGTH - 1) }
+      t = m
+      while (match(t, /<</)) { note("r15", 1); t = substr(t, RSTART + RLENGTH) }
+    }
     function statement(s,   t, p, q, e, rest, name, v, c, m, ident) {
       # rule 2: every way to open a file for writing
       t = s
@@ -263,6 +304,9 @@ scan() {
         if (fn != "write_mode_set") note("r12", 1)
         t = substr(t, RSTART + RLENGTH)
       }
+      # rule 15 (we_write.c only): the recorded mode of a window is read in one
+      # function, as its nine bits, and that function names no special bit
+      note15(m)
       # rule 9: the byte loop of a copy
       t = m
       while (match(t, /(^|[^A-Za-z0-9_])(fread|fwrite)[ \t]*[(]/)) { note("r9", 1); t = substr(t, RSTART + RLENGTH) }
@@ -323,7 +367,13 @@ scan() {
         if (c == "\"") instr = 1
         out = out c; i++
       }
-      if (out ~ /^#/) next
+      if (out ~ /^#/) {
+        # rule 15: a macro can carry the window'"'"'s mode anywhere, so the
+        # token counts on a preprocessor line, as a site of its own
+        pp = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", pp)
+        while (match(pp, /(^|[^A-Za-z0-9_])filemode([^A-Za-z0-9_]|$)/)) { pp15++; pp = substr(pp, RSTART + RLENGTH - 1) }
+        next
+      }
       # a table of strings at file scope is named by its array, not by the
       # function above it
       if (out ~ /^(static[ \t]+)?(const[ \t]+)?char[ \t]*[*][ \t]*[A-Za-z_0-9]+\[\][ \t]*=/) {
@@ -338,7 +388,15 @@ scan() {
       stmt = stmt " " out
       if (out ~ /[;{}][ \t]*$/) { statement(stmt); stmt = "" }
     }
-    END { statement(stmt); flush_fn() }' "$1"
+    END { statement(stmt); flush_fn(); if (pp15 > 0) print "r15", file, "(preprocessor)", pp15 }' "$1"
+}
+
+# scan_header_mode FILE - rule 15 for a header: every `filemode` of a header
+# is a site, whatever carries it (a macro, one split by a backslash, a static
+# inline function), except the member declaration of the window (`int
+# filemode`), which scan leaves out.
+scan_header_mode() {
+  scan "$1" | awk '$1 == "r15"'
 }
 
 # --selftest: each rule must name its offence in a fixture.
@@ -491,15 +549,87 @@ int fake_project(char *p)
  p = e_prog.project;
  return(access(e_prog.project, 0));
 }
+
+int fake_save(FENSTER *f, int fd)
+{
+ WpeModeKept k;
+ return(wpe_write_set_mode_fd(fd, f->filemode & WRITE_TWELVE_BITS, &k));
+}
+
+#define WINDOW_MODE(f) ((f)->filemode)
+EOF
+  # rule 15: the owner of the window's mode, three ways to leave its rule
+  cat > "$WORK/we_fake_r15a.c" <<'EOF'
+static void write_mode_before_data(const WriteTarget *t, FENSTER *f)
+{
+ if (f->filemode >= 0)
+  write_mode_set(t, f->filemode);
+}
+EOF
+  cat > "$WORK/we_fake_r15b.c" <<'EOF'
+static void write_mode_before_data(const WriteTarget *t, FENSTER *f)
+{
+ if (f->filemode >= 0)
+  write_mode_set(t, (f->filemode & WRITE_NINE_BITS) | S_ISGID | 04000 | 01777);
+}
+EOF
+  cat > "$WORK/we_fake_r15c.c" <<'EOF'
+static void write_mode_before_data(const WriteTarget *t, FENSTER *f)
+{
+ WpeModeKept kept;
+
+ if (f->filemode >= 0)
+  (void)wpe_write_set_mode_fd(t->fd, (mode_t)f->filemode & WRITE_NINE_BITS, &kept);
+ if (f->filemode < 0)
+  return;
+ write_mode_set(t, 0755);
+}
+EOF
+  cat > "$WORK/we_fake_r15d.c" <<'EOF'
+static void write_mode_before_data(const WriteTarget *t, FENSTER *f)
+{
+ write_mode_set(t, (f->filemode & WRITE_NINE_BITS) | 0xC00 | 1024 | (1 << 9));
+}
+EOF
+  cat > "$WORK/we_fake.h" <<'EOF'
+typedef struct {
+ int filemode, flg;
+} FakeWindow;
+#define WPE_WINDOW_MODE(f) ((f)->filemode)
 EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
+  scan "$WORK/we_fake_r15d.c" >> "$WORK/fake.found"
+  scan_header_mode "$WORK/we_fake.h" >> "$WORK/fake.found"
+  # the other two shapes a header can carry the mode in: a macro split by a
+  # backslash, and a static inline function
+  cat > "$WORK/we_fake2.h" <<'EOF'
+#define WPE_WINDOW_MODE(f) \
+ ((f)->filemode)
+EOF
+  cat > "$WORK/we_fake3.h" <<'EOF'
+static inline int window_mode(FENSTER *f)
+{
+ return(f->filemode);
+}
+EOF
+  scan_header_mode "$WORK/we_fake2.h" >> "$WORK/fake.found"
+  scan_header_mode "$WORK/we_fake3.h" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r15a.c" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r15b.c" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r15c.c" >> "$WORK/fake.found"
   for want in "r2 we_fake.c fake_open 2" "r4 we_fake.c fake_dropped 7" \
               "r5 we_fake.c fake_numbers 2" "r5 we_fake.c fake_message 1" \
               "r6 we_fake.c fake_message 3" "r8 we_fake.c fake_names 3" \
               "r9 we_fake.c fake_loop 2" "r10 we_fake.c fake_options 2" \
               "r11 we_fake.c fake_walk 3" "r11 we_fake.c fake_entry 2" \
               "r12 we_fake.c fake_mode 1" "r13 we_fake.c fake_close 8" \
-              "r14 we_fake.c fake_project 7"; do
+              "r14 we_fake.c fake_project 7" \
+              "r15 we_fake.c fake_save 1" "r15 we_fake.c (preprocessor) 1" \
+              "r15 we_fake_r15a.c write_mode_before_data 1" \
+              "r15 we_fake_r15b.c write_mode_before_data 3" \
+              "r15 we_fake_r15d.c write_mode_before_data 3" \
+              "r15 we_fake.h (preprocessor) 1" \
+              "r15 we_fake2.h - 1" "r15 we_fake3.h window_mode 1"; do
     grep -qx "$want" "$WORK/fake.found" || {
       echo "check-write-owner: FAIL (selftest: the scan does not name \"$want\"; it found:)"
       cat "$WORK/fake.found"
@@ -515,6 +645,20 @@ EOF
   # write_mode_set is the one place a chmod may stand
   if grep -q "^r12 we_fake.c write_mode_set " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: the chmod inside write_mode_set was counted; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  # the member declaration in a header is no site: the fixture's struct has
+  # one beside its macro, and only the macro is named
+  if [ "$(grep -c "^r15 we_fake.h " "$WORK/fake.found")" != 1 ]; then
+    echo "check-write-owner: FAIL (selftest: the member declaration of a header was counted; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  # the owner of the window's mode, reading it as its nine bits and a sign
+  # test and naming no special bit, is no offender (the 0755 there is not one)
+  if grep -q "^r15 we_fake_r15c.c " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: the masked read in write_mode_before_data was counted; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
@@ -582,11 +726,16 @@ for f in "$SRCDIR"/we_*.c "$SRCDIR"/We*.c; do
   # makes and moves names and copies bytes, and the line endings owner
   # (we_lineend.c) walks rows, so each is exempt from the rule it is the owner of
   case ${f##*/} in
-    we_write.c) scan "$f" | awk '$1 == "r12"' >> "$WORK/srcfound"; continue ;;
-    we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10"' >> "$WORK/srcfound"; continue ;;
-    we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11" && $1 != "r12"' >> "$WORK/srcfound"; continue ;;
+    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15"' >> "$WORK/srcfound"; continue ;;
+    we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
+    we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11" && $1 != "r12" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
   esac
-  scan "$f" | awk '$1 != "r11" && $1 != "r12"' >> "$WORK/srcfound"
+  scan "$f" | awk '$1 != "r11" && $1 != "r12" && $1 != "r15"' >> "$WORK/srcfound"
+done
+# rule 15 in the headers: a macro cannot carry the window's recorded mode
+for f in "$SRCDIR"/*.h; do
+  [ -f "$f" ] || continue
+  scan_header_mode "$f" >> "$WORK/srcfound"
 done
 {
   awk '{ print $2 "|" $1 ":" $3 "|" $4 }' "$WORK/srcfound"
@@ -626,6 +775,8 @@ awk -F'|' '
     if (!(key in al)) {
       if (rule == "r13")
         print "offender: " $1 " " $2 ": the result of e_close_window is dropped; it says WPE_ESC when the window stays (a text window the user keeps, a project list its file refuses): read it, or list the function with its reason"
+      else if (rule == "r15")
+        print "offender: " $1 " " $2 ": the window'"'"'s recorded mode is read outside write_mode_before_data, or there as more than its nine bits, or that function names a special bit: the special bits of a write come from the file it opened, never from a mode recorded at load"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else

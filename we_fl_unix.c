@@ -1606,7 +1606,7 @@ int WpeHandleFileManager(ECNT * cn)
           dtp = fe->dirct;
           ftp = fe->datnam;
           WpeFilenameToPathFile(filen, &fe->dirct, &fe->datnam);
-          WpeSaveAsSettleName(fe, dtp, ftp, wpe_write_save(fe, WPE_WRITE_THEN_NAME_KEPT, ftp));
+          WpeSaveAsSettleName(fe, dtp, ftp, wpe_write_save(fe, WPE_WRITE_THEN_NAME_KEPT, dtp, ftp));
         }
         else
           WpeWriteBlockToFile(fe, se, filen);
