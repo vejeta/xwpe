@@ -60,6 +60,8 @@
 
 SRCDIR=${srcdir:-.}
 HERE=$(dirname "$0")
+# The one blanker of comments and literals (tests/blank-c.awk).
+BLANK_C=$(cat "$HERE/blank-c.awk")
 ALLOW=
 LIST=0
 STRICT=0
@@ -106,25 +108,9 @@ trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 # strip_c FILE - the file's lines with comments, strings and characters
 # blanked, one output line per input line.
 strip_c() {
-  awk -v sq="'" '
-    BEGIN { incom = 0 }
-    {
-      line = $0; out = ""; n = length(line); i = 1; instr = 0
-      while (i <= n) {
-        c = substr(line, i, 1); d = substr(line, i, 2)
-        if (incom) { if (d == "*/") { incom = 0; i += 2 } else i++; continue }
-        if (instr) {
-          if (c == "\\") i += 2
-          else { if (c == q) instr = 0; i++ }
-          continue
-        }
-        if (d == "/*") { incom = 1; out = out " "; i += 2; continue }
-        if (d == "//") break
-        if (c == "\"" || c == sq) { instr = 1; q = c; out = out " "; i++; continue }
-        out = out c; i++
-      }
-      print out
-    }' "$1"
+  awk "$BLANK_C"'
+    FNR == 1 { blank_incom = 0 }
+    { print blank_c($0, 2) }' "$1"
 }
 
 # statements FILE REL - "rel|line|statement" for each statement of the
@@ -174,15 +160,15 @@ function cut_stmt(rec,    p, rest, q) {
   p = index(rec, "|"); REL = substr(rec, 1, p - 1); rest = substr(rec, p + 1)
   q = index(rest, "|"); LN = substr(rest, 1, q - 1); S = substr(rest, q + 1)
 }
-function strip_heads(s,    done, i, depth, c) {
+function strip_heads(s,    done, i, len, depth, c) {
   done = 0
   while (!done) {
     done = 1
     sub(/^[ \t]+/, "", s)
     if (s ~ /^(else|do)([ \t]|$)/) { sub(/^(else|do)[ \t]*/, "", s); done = 0; continue }
     if (s ~ /^(if|while|for)[ \t]*\(/) {
-      depth = 0
-      for (i = index(s, "("); i <= length(s); i++) {
+      depth = 0; len = length(s)
+      for (i = index(s, "("); i <= len; i++) {
         c = substr(s, i, 1)
         if (c == "(") depth++
         else if (c == ")") { depth--; if (depth == 0) break }

@@ -1078,6 +1078,14 @@ TESTS += tests/check-child-exec.sh
 # tests/child-wait.allow, with their reasons.
 TESTS += tests/check-child-wait.sh
 
+# The awk inside the check scripts is linear in the size of the file it
+# reads, on every awk: the comments and literals are blanked one line at a
+# time by the one blanker, tests/blank-c.awk, and a whole-file walk indexes an
+# array of characters.  tests/check-sh-idiom.sh names a character walk over a
+# string built across lines, a copy of the rest of it, and a length( in a loop
+# condition, in any tests/check-*.sh.
+TESTS += tests/check-sh-idiom.sh
+
 # One owner of the selected entry of a list window (we_listsel.h):
 # tests/check-list-entry.sh counts, per function, the indexings of a list's
 # names by the highlighted row outside the owner; the file manager's panels
@@ -1261,6 +1269,8 @@ EXTRA_DIST = \
   tests/check-child-exec.sh \
   tests/child-exec-safe.allow \
   tests/check-child-wait.sh \
+  tests/check-sh-idiom.sh \
+  tests/blank-c.awk \
   tests/child-wait.allow \
   tests/program-name.allow \
   tests/check-box-layout.sh \

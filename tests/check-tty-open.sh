@@ -48,10 +48,19 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/tty-open.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
+# The scan reads C as bytes (substr and length count characters in a UTF-8
+# locale, which costs the size of the file at every step on some awks).
+LC_ALL=C
+export LC_ALL
+# The one blanker of comments and literals (tests/blank-c.awk).
+BLANK_C=$(cat "$(dirname "$0")/blank-c.awk")
+
 # scan FILE... - "file:line: call" for each open() of a terminal that does
-# not pass O_NOCTTY.
+# not pass O_NOCTTY.  The blanked lines of a file are kept as an array of
+# pieces and walked as an array of characters (blank-c.awk), never joined
+# into one string.
 scan() {
-  awk '
+  awk "$BLANK_C"'
     function report(at,   lo, hi, mid) {
       lo = 1; hi = nl
       while (lo < hi) {
@@ -60,53 +69,60 @@ scan() {
       }
       print file ":" lo ": " fname call
     }
-    function flush(   n, i, c, depth, j, low, rest, base, from) {
-      n = length(all)
+    function opener(name) {
+      return (name == "open" || name == "open64" || name == "openat" || name == "openat64" || name == "posix_openpt")
+    }
+    # after_call(from, n) - the index just past the ")" that closes the "("
+    # at from.
+    function after_call(from, n,   j, depth, c) {
+      j = from + 1
+      depth = 1
+      while (j <= n && depth > 0) {
+        c = ch[j]
+        if (c == "(") depth++
+        else if (c == ")") depth--
+        j++
+      }
+      return j
+    }
+    # judge_call(name, from, n) - report the call of NAME whose "(" is at
+    # from when it names a terminal and passes no O_NOCTTY; returns the
+    # index to go on from.
+    function judge_call(name, from, n,   j, low) {   # report() prints the global call
+      fname = name
+      j = after_call(from, n)
+      call = chars_span(ch, from, j - 1)
+      low = tolower(call)
+      if (call !~ /O_NOCTTY/ && (fname == "posix_openpt" ||
+          low ~ /tty|(^|[^a-z])pty|slave|\/dev\/(pts|console|vc)/))
+        report(from)
+      return j
+    }
+    function flush(   n, i, j, m, name) {
+      if (!mentioned) return
+      n = chars_load(seg, nl, ch)
       i = 1
       while (i <= n) {
-        rest = substr(all, i)
-        if (!match(rest, /(^|[^A-Za-z0-9_.>])(open|open64|openat|openat64|posix_openpt)[ \t]*\(/)) break
-        base = i + RSTART - 1
-        from = base + RLENGTH - 1
-        fname = substr(all, base, from - base)
-        sub(/^[^A-Za-z_]/, "", fname)
-        sub(/[ \t]+$/, "", fname)
-        j = from + 1
-        depth = 1
-        while (j <= n && depth > 0) {
-          c = substr(all, j, 1)
-          if (c == "(") depth++
-          else if (c == ")") depth--
-          j++
+        if (ch[i] !~ /[A-Za-z0-9_]/) { i++; continue }
+        j = i; name = ""
+        while (j <= n && ch[j] ~ /[A-Za-z0-9_]/) { name = name ch[j]; j++ }
+        m = j
+        while (m <= n && ch[m] ~ /[ \t]/) m++
+        if (opener(name) && ch[i - 1] != "." && ch[i - 1] != ">" && m <= n && ch[m] == "(") {
+          i = judge_call(name, m, n)
+          continue
         }
-        call = substr(all, from, j - from)
-        low = tolower(call)
-        if (call !~ /O_NOCTTY/ && (fname == "posix_openpt" ||
-            low ~ /tty|(^|[^a-z])pty|slave|\/dev\/(pts|console|vc)/))
-          report(from)
         i = j
       }
     }
-    FNR == 1 { if (nl) flush(); all = ""; nl = 0; incom = 0; file = FILENAME }
+    FNR == 1 { if (nl) flush(); delete seg; nl = 0; alln = 0; blank_incom = 0; mentioned = 0; file = FILENAME }
     {
-      line = $0; out = ""; n = length(line); i = 1; instr = 0
-      while (i <= n) {
-        c = substr(line, i, 1); d = substr(line, i, 2)
-        if (incom) { if (d == "*/") { incom = 0; i += 2 } else i++; continue }
-        if (instr) {
-          out = out c
-          if (c == "\\") { out = out substr(line, i + 1, 1); i += 2; continue }
-          if (c == "\"") instr = 0
-          i++; continue
-        }
-        if (d == "/*") { incom = 1; i += 2; continue }
-        if (d == "//") break
-        if (c == "\"") instr = 1
-        out = out c; i++
-      }
+      out = blank_c($0, 1)
+      if (index(out, "open")) mentioned = 1
       nl++
-      start[nl] = length(all) + 1
-      all = all out " "
+      start[nl] = alln + 1
+      seg[nl] = out " "
+      alln += length(seg[nl])
     }
     END { if (nl) flush() }' "$@"
 }

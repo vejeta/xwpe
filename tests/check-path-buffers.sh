@@ -67,6 +67,8 @@
 
 SRCDIR=${srcdir:-.}
 HERE=$(dirname "$0")
+# The one blanker of comments and literals (tests/blank-c.awk).
+BLANK_C=$(cat "$HERE/blank-c.awk")
 ALLOW=
 LIST=0
 BAD=1
@@ -90,26 +92,9 @@ trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 # strip_comments FILE - the file's lines with comments blanked, string
 # literals kept, one output line per input line.
 strip_comments() {
-  awk '
-    BEGIN { incom = 0 }
-    {
-      line = $0; out = ""; n = length(line); i = 1; instr = 0
-      while (i <= n) {
-        c = substr(line, i, 1); d = substr(line, i, 2)
-        if (incom) { if (d == "*/") { incom = 0; i += 2 } else i++; continue }
-        if (instr) {
-          out = out c
-          if (c == "\\") { out = out substr(line, i + 1, 1); i += 2; continue }
-          if (c == "\"") instr = 0
-          i++; continue
-        }
-        if (d == "/*") { incom = 1; i += 2; continue }
-        if (d == "//") break
-        if (c == "\"") instr = 1
-        out = out c; i++
-      }
-      print out
-    }' "$1"
+  awk "$BLANK_C"'
+    FNR == 1 { blank_incom = 0 }
+    { print blank_c($0, 1) }' "$1"
 }
 
 # statements FILE REL - "rel|line|statement" for each statement of the
@@ -159,9 +144,9 @@ function cut_stmt(rec,    p, rest, q) {
 }
 # arg_split(s, from) - the top level arguments of the call whose "(" comes
 # just before position @from, in ARGS[1..n]; n, or 0 when the call is open.
-function arg_split(s, from,    i, n, depth, c, cur, instr, q) {
-  n = 0; depth = 1; cur = ""; instr = 0
-  for (i = from; i <= length(s); i++) {
+function arg_split(s, from,    i, n, len, depth, c, cur, instr, q) {
+  n = 0; depth = 1; cur = ""; instr = 0; len = length(s)
+  for (i = from; i <= len; i++) {
     c = substr(s, i, 1)
     if (instr) {
       cur = cur c
@@ -182,15 +167,15 @@ function arg_split(s, from,    i, n, depth, c, cur, instr, q) {
 # strip_heads(s) - @s without the "else", "do", "if (...)", "while (...)"
 # and "for (...)" that only decide whether or how often the statement after
 # them runs.
-function strip_heads(s,    done, i, depth, c) {
+function strip_heads(s,    done, i, len, depth, c) {
   done = 0
   while (!done) {
     done = 1
     sub(/^[ \t]+/, "", s)
     if (s ~ /^(else|do)([ \t]|$)/) { sub(/^(else|do)[ \t]*/, "", s); done = 0; continue }
     if (s ~ /^(if|while|for)[ \t]*\(/) {
-      depth = 0
-      for (i = index(s, "("); i <= length(s); i++) {
+      depth = 0; len = length(s)
+      for (i = index(s, "("); i <= len; i++) {
         c = substr(s, i, 1)
         if (c == "(") depth++
         else if (c == ")") { depth--; if (depth == 0) break }

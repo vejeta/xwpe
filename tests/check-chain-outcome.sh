@@ -80,29 +80,15 @@ trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
 problem() { echo "$*" >> "$WORK/problems"; }
 
+# The one blanker of comments and literals (tests/blank-c.awk).
+BLANK_C=$(cat "$HERE/blank-c.awk")
+
 # strip_comments FILE - the file's lines with comments blanked, string
 # literals kept, one output line per input line.
 strip_comments() {
-  awk '
-    BEGIN { incom = 0 }
-    {
-      line = $0; out = ""; n = length(line); i = 1; instr = 0
-      while (i <= n) {
-        c = substr(line, i, 1); d = substr(line, i, 2)
-        if (incom) { if (d == "*/") { incom = 0; i += 2 } else i++; continue }
-        if (instr) {
-          out = out c
-          if (c == "\\") { out = out substr(line, i + 1, 1); i += 2; continue }
-          if (c == "\"") instr = 0
-          i++; continue
-        }
-        if (d == "/*") { incom = 1; i += 2; continue }
-        if (d == "//") break
-        if (c == "\"") instr = 1
-        out = out c; i++
-      }
-      print out
-    }' "$1"
+  awk "$BLANK_C"'
+    FNR == 1 { blank_incom = 0 }
+    { print blank_c($0, 1) }' "$1"
 }
 
 # calls_in FILE CALLEE... - "line TAB function TAB callee TAB rest" for each

@@ -67,8 +67,8 @@ scan() {
       fn = "(file scope)"; lastname = ""; prevcode = ""
     }
     {
-      line = $0; out = ""; i = 1
-      while (i <= length(line)) {
+      line = $0; out = ""; i = 1; len = length(line)
+      while (i <= len) {
         c = substr(line, i, 1); d = substr(line, i, 2)
         if (incomment) {
           if (d == "*/") { incomment = 0; i += 2; out = out "  " }
@@ -79,7 +79,7 @@ scan() {
         if (d == "//") break
         if (c == "\"" || c == "\x27") {
           q = c; i++; out = out " "
-          while (i <= length(line) && substr(line, i, 1) != q) {
+          while (i <= len && substr(line, i, 1) != q) {
             if (substr(line, i, 1) == "\\") i++
             i++; out = out " "
           }

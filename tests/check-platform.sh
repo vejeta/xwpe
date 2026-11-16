@@ -322,7 +322,7 @@ strip_comments() { # file: C comments replaced by nothing (strings are not parse
 	awk '
 		{
 			line = $0; out = ""
-			while (length(line) > 0) {
+			while (length(line) > 0) {	# linear: one source line, cut down piece by piece
 				if (incom) {
 					i = index(line, "*/")
 					if (i == 0) { line = ""; break }

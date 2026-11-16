@@ -50,29 +50,15 @@ ROW_OWNER_SOURCE=we_buffer.c
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/help-buffers.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
+# The one blanker of comments and literals (tests/blank-c.awk).
+BLANK_C=$(cat "$(dirname "$0")/blank-c.awk")
+
 # strip_comments FILE - the file's lines with comments blanked, string
 # literals kept, one output line per input line.
 strip_comments() {
-  awk '
-    BEGIN { incom = 0 }
-    {
-      line = $0; out = ""; n = length(line); i = 1; instr = 0
-      while (i <= n) {
-        c = substr(line, i, 1); d = substr(line, i, 2)
-        if (incom) { if (d == "*/") { incom = 0; i += 2 } else i++; continue }
-        if (instr) {
-          out = out c
-          if (c == "\\") { out = out substr(line, i + 1, 1); i += 2; continue }
-          if (c == "\"") instr = 0
-          i++; continue
-        }
-        if (d == "/*") { incom = 1; i += 2; continue }
-        if (d == "//") break
-        if (c == "\"") instr = 1
-        out = out c; i++
-      }
-      print out
-    }' "$1"
+  awk "$BLANK_C"'
+    FNR == 1 { blank_incom = 0 }
+    { print blank_c($0, 1) }' "$1"
 }
 
 # scan_file FILE REL ROWRULE - the findings of the four rules in one
@@ -90,9 +76,9 @@ scan_file() {
     function squeeze(s) { gsub(/[ \t]+/, "", s); return s }
     # arg1_of(s, from) - the first argument of the call whose "(" comes just
     # before position from, with its leading blanks, "&" and "(" removed.
-    function arg1_of(s, from,    i, depth, c, cur) {
-      depth = 1; cur = ""
-      for (i = from; i <= length(s); i++) {
+    function arg1_of(s, from,    i, n, depth, c, cur) {
+      depth = 1; cur = ""; n = length(s)
+      for (i = from; i <= n; i++) {
         c = substr(s, i, 1)
         if (c == "(" || c == "[") depth++
         else if (c == ")" || c == "]") { depth--; if (depth == 0) break }
@@ -110,12 +96,12 @@ scan_file() {
       print rule ": " rel ":" unitline ": " (fname == "" ? "-" : fname) ": " what
     }
     # note_arrays(u) - remember the char arrays a declaration unit declares.
-    function note_arrays(u,    body, i, depth, c, cur, n, parts, k, d) {
+    function note_arrays(u,    body, i, len, depth, c, cur, n, parts, k, d) {
       body = u
       sub(/^((static|const|unsigned|signed|register)[ \t]+)*char[ \t]+/, "", body)
       sub(/;[ \t]*$/, "", body)
-      depth = 0; cur = ""; n = 0
-      for (i = 1; i <= length(body); i++) {
+      depth = 0; cur = ""; n = 0; len = length(body)
+      for (i = 1; i <= len; i++) {
         c = substr(body, i, 1)
         if (c == "(" || c == "[" || c == "{") depth++
         else if (c == ")" || c == "]" || c == "}") depth--
@@ -215,7 +201,7 @@ scan_file() {
     function note_function(u,    t) {
       if (u ~ /^[A-Za-z_][^;]*\(/) {
         t = u; sub(/\(.*$/, "", t); sub(/[ \t]+$/, "", t)
-        if (match(t, /[A-Za-z_][A-Za-z0-9_]*$/)) cand = substr(t, RSTART)
+        if (match(t, /[A-Za-z_][A-Za-z0-9_]*$/)) cand = substr(t, RSTART)   # linear: the tail of one function header
       }
       fname = cand
       delete loc

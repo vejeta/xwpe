@@ -82,9 +82,19 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/wayland-frame.XXXXXX") || exit $BAD
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
+# The scan reads C as bytes: in a UTF-8 locale substr and length count
+# characters, which costs the size of the file at every step on some awks.
+LC_ALL=C
+export LC_ALL
+# The one blanker of comments and literals (tests/blank-c.awk).
+BLANK_C=$(cat "$(dirname "$0")/blank-c.awk")
+
 # scan FILE... - "file:line: rN function identifier" for each offender.
+#
+# The text of a file is one string, `all`, split once into the array `ch` of
+# its characters when the file ends; every walk indexes that array.
 scan() {
-  awk '
+  awk "$BLANK_C"'
     function report(at, rule, tok,   lo, hi, mid, f, name) {
       lo = 1; hi = nl
       while (lo < hi) {
@@ -111,33 +121,26 @@ scan() {
       }
       return ""
     }
-    function blank(line,   out, n, i, c, d, q) {
-      out = ""; n = length(line); i = 1
-      while (i <= n) {
-        c = substr(line, i, 1); d = substr(line, i, 2)
-        if (incom) { if (d == "*/") { incom = 0; i += 2 } else i++; continue }
-        if (d == "/*") { incom = 1; i += 2; continue }
-        if (d == "//") break
-        if (c == "\"") {
-          i++
-          while (i <= n && substr(line, i, 1) != "\"") {
-            if (substr(line, i, 1) == "\\") i++
-            i++
-          }
-          i++
-          out = out "\"\""
-          continue
+    # next_call(from, last) - the first "identifier (" in ch[from..last]:
+    # sets call_id, call_at (where the identifier starts) and call_end (just
+    # past the "("), and returns 1; or returns 0 when there is none.
+    function next_call(from, last,   i, j, k, m) {
+      i = from
+      while (i <= last) {
+        if (ch[i] !~ /[A-Za-z0-9_]/) { i++; continue }
+        j = i
+        while (j <= last && ch[j] ~ /[A-Za-z0-9_]/) j++
+        k = i
+        while (k < j && ch[k] ~ /[0-9]/) k++
+        m = j
+        while (m <= last && ch[m] ~ /[ \t]/) m++
+        if (k < j && m <= last && ch[m] == "(") {
+          call_id = chars_span(ch, k, j - 1); call_at = k; call_end = m + 1
+          return 1
         }
-        if (c == "\047") {
-          i++
-          if (substr(line, i, 1) == "\\") i++
-          i += 2
-          out = out "\047\047"
-          continue
-        }
-        out = out c; i++
+        i = j
       }
-      return out
+      return 0
     }
     function banned1(id) {
       return (id in r1)
@@ -153,9 +156,9 @@ scan() {
     }
     function address_of(at,   j) {
       j = at - 1
-      while (j >= 1 && substr(all, j, 1) ~ /[ \t]/) j--
-      if (j < 1 || substr(all, j, 1) != "&") return 0
-      return substr(all, j - 1, 1) != "&"
+      while (j >= 1 && ch[j] ~ /[ \t]/) j--
+      if (j < 1 || ch[j] != "&") return 0
+      return ch[j - 1] != "&"
     }
     function conn_function(at,   k) {
       k = funcat(at)
@@ -174,27 +177,27 @@ scan() {
       }
       if (!owner && id == "WpeWlInfo" && after ~ /^[ \t]*\*/) report(at, "r3", "WpeWlInfo*")
     }
-    function scan_listener(k,   body, pos, rest, id) {
-      body = substr(all, fs[k] + 1, fe[k] - fs[k] - 1)
-      pos = 1
-      while (pos <= length(body)) {
-        rest = substr(body, pos)
-        if (!match(rest, /[A-Za-z_][A-Za-z0-9_]*[ \t]*\(/)) break
-        id = substr(rest, RSTART, RLENGTH)
-        sub(/[ \t]*\($/, "", id)
-        if (!allowed_in_listener(id)) report(fs[k] + pos + RSTART - 1, "r6", id)
-        pos = pos + RSTART - 1 + RLENGTH
+    function scan_listener(k,   from) {
+      from = fs[k] + 1
+      while (next_call(from, fe[k] - 1)) {
+        if (!allowed_in_listener(call_id)) report(call_at, "r6", call_id)
+        from = call_end
       }
     }
-    function finish(   i, n, c, depth, seg, segstart, pos, rest, id, at, k, seen_s, seen_t) {
-      n = length(all)
+    # watched(id) - an identifier some rule has an opinion on.
+    function watched(id) {
+      return (id in r1 || id in r3 || id in r4 || id in r5 || id ~ /^wl_proxy_marshal/ || id == "WpeWlInfo" || id == "WpeWl")
+    }
+    function finish(   i, j, n, c, depth, head, segstart, id, k, seen_s, seen_t) {
+      if (!mentioned && base != "we_wayland.c") return
+      n = chars_load(seg, nl, ch)
       depth = 0; segstart = 1; nf = 0
       for (i = 1; i <= n; i++) {
-        c = substr(all, i, 1)
+        c = ch[i]
         if (c == "{") {
           if (depth == 0) {
-            seg = substr(all, segstart, i - segstart)
-            nf++; fs[nf] = i; fn[nf] = funcname(seg); fe[nf] = n + 1
+            head = chars_span(ch, segstart, i - 1)
+            nf++; fs[nf] = i; fn[nf] = funcname(head); fe[nf] = n + 1
           }
           depth++
         } else if (c == "}") {
@@ -202,17 +205,13 @@ scan() {
           if (depth == 0) { fe[nf] = i; segstart = i + 1 }
         } else if (c == ";" && depth == 0) segstart = i + 1
       }
-      pos = 1
-      while (pos <= n) {
-        rest = substr(all, pos)
-        if (!match(rest, idre)) break
-        id = substr(rest, RSTART, RLENGTH)
-        at = pos + RSTART - 1
-        sub(/^[^A-Za-z_]/, "", id)
-        if (substr(rest, RSTART, 1) !~ /[A-Za-z_]/) at++
-        sub(/[^A-Za-z0-9_]$/, "", id)
-        pos = at + length(id)
-        check(id, at, substr(all, pos, 160))
+      i = 1
+      while (i <= n) {
+        if (ch[i] !~ /[A-Za-z0-9_]/) { i++; continue }
+        j = i; id = ""
+        while (j <= n && ch[j] ~ /[A-Za-z0-9_]/) { id = id ch[j]; j++ }
+        if (watched(id)) check(id, i, chars_span(ch, j, j + 159))
+        i = j
       }
       for (k = 1; k <= nf; k++) if (listener(fn[k])) scan_listener(k)
       if (base == "we_wayland.c") {
@@ -239,35 +238,39 @@ scan() {
       fields = "(width|height|pixels|buffer|stride|shm_fd|shm_size)"
       field_any = "^[ \t]*\\.[ \t]*" fields "([^A-Za-z0-9_]|$)"
       field_write = "^[ \t]*\\.[ \t]*" fields "[ \t]*(=([^=]|$)|\\+\\+|--|[-+*/|&^]=|<<=|>>=)"
-      alt = ""
-      for (k in l1) alt = alt l1[k] "|"
-      for (k in l3) alt = alt l3[k] "|"
-      for (k in l4) alt = alt l4[k] "|"
-      for (k in l5) alt = alt l5[k] "|"
-      idre = "(^|[^A-Za-z0-9_])(" alt "wl_proxy_marshal[A-Za-z0-9_]*|WpeWlInfo|WpeWl)([^A-Za-z0-9_]|$)"
+    }
+    # may_mention(line) - the line may hold a watched identifier or a
+    # listener: every one of them starts with one of these five prefixes.
+    # A file with no such line has nothing for finish() to find, so it is
+    # not walked.  (Plain index(): a regular expression held in a variable
+    # is compiled again at every line by some awks.)
+    function may_mention(line) {
+      return (index(line, "wl_") || index(line, "xdg_") || index(line, "WpeWl") || index(line, "XSetIOErrorHandler") || index(line, "e_display_lost"))
     }
     FNR == 1 {
       if (file != "") finish()
       file = FILENAME; base = file; sub(/^.*\//, "", base)
       owner = (base == "we_wlframe.c" || base == "we_wlframe.h")
-      all = ""; nl = 0; incom = 0; inmacro = 0; nf = 0
+      delete seg; alln = 0; nl = 0; blank_incom = 0; inmacro = 0; nf = 0; mentioned = 0
     }
     {
-      line = blank($0)
+      line = blank_c($0, 0)
+      if (may_mention(line)) mentioned = 1
       nl++
-      start[nl] = length(all) + 1
+      start[nl] = alln + 1
       if (inmacro || line ~ /^[ \t]*#/) {
         macro_line(line)
         inmacro = ($0 ~ /\\[ \t]*$/)
-        all = all "; "
+        seg[nl] = "; "
       } else {
-        all = all line " "
+        seg[nl] = line " "
       }
+      alln += length(seg[nl])
     }
-    function macro_line(line,   rest, id, pos) {
-      pos = 1
+    function macro_line(line,   rest, id, pos, n) {
+      pos = 1; n = length(line)
       if (line ~ /(wl|xdg)_[A-Za-z0-9_]*[ \t]*##/ || line ~ /##[ \t]*[A-Za-z0-9_]*(wl|xdg)_/) say_macro(line, "r7", "##")
-      while (pos <= length(line)) {
+      while (pos <= n) {
         rest = substr(line, pos)
         if (!match(rest, /[A-Za-z_][A-Za-z0-9_]*/)) break
         id = substr(rest, RSTART, RLENGTH)

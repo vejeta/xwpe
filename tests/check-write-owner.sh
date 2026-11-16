@@ -97,6 +97,8 @@
 
 SRCDIR=${srcdir:-.}
 HERE=$(dirname "$0")
+# The one blanker of comments and literals (tests/blank-c.awk).
+BLANK_C=$(cat "$HERE/blank-c.awk")
 ALLOW=
 LIST=0
 SELFTEST=0
@@ -170,14 +172,14 @@ require_owner_object() {
 # by "(" and does not end with ";" (a prototype); a statement is the text up
 # to the next ; { or }.
 scan() {
-  awk -v file="$(basename "$1")" '
-    function ident_end(s, i) { while (i <= length(s) && substr(s, i, 1) ~ /[A-Za-z0-9_]/) i++; return i }
+  awk -v file="$(basename "$1")" "$BLANK_C"'
+    function ident_end(s, i,   n) { n = length(s); while (i <= n && substr(s, i, 1) ~ /[A-Za-z0-9_]/) i++; return i }
     # the index just past the ")" that closes the "(" at position p
-    function close_paren(s, p,   depth, i, c) {
-      depth = 0
-      for (i = p; i <= length(s); i++) {
+    function close_paren(s, p,   depth, i, n, c) {
+      depth = 0; n = length(s)
+      for (i = p; i <= n; i++) {
         c = substr(s, i, 1)
-        if (c == "\"") { i++; while (i <= length(s) && substr(s, i, 1) != "\"") { if (substr(s, i, 1) == "\\") i++; i++ } continue }
+        if (c == "\"") { i++; while (i <= n && substr(s, i, 1) != "\"") { if (substr(s, i, 1) == "\\") i++; i++ } continue }
         if (c == "(") depth++
         else if (c == ")") { depth--; if (depth == 0) return i + 1 }
       }
@@ -345,28 +347,9 @@ scan() {
       t = m
       while (match(t, /(strcpy|strncpy|strcat|memcpy|snprintf|sprintf|wpe_path_copy|wpe_path_join|wpe_path_cat|REALLOC|realloc|FREE|free|WpeFree)[ \t]*[(][ \t]*e_prog[ \t]*\.[ \t]*project[ \t]*[,)]/)) { note("r14", 1); t = substr(t, RSTART + RLENGTH) }
     }
-    BEGIN { incom = 0; fn = "-"; stmt = "" }
+    BEGIN { blank_incom = 0; fn = "-"; stmt = "" }
     {
-      line = $0; out = ""; n = length(line); i = 1; instr = 0
-      while (i <= n) {
-        c = substr(line, i, 1); d = substr(line, i, 2)
-        if (incom) { if (d == "*/") { incom = 0; i += 2 } else i++; continue }
-        if (instr) {
-          out = out c
-          if (c == "\\") { out = out substr(line, i + 1, 1); i += 2; continue }
-          if (c == "\"") instr = 0
-          i++; continue
-        }
-        if (d == "/*") { incom = 1; out = out " "; i += 2; continue }
-        if (d == "//") break
-        if (c == "\047") {
-          j = index(substr(line, i + 1), "\047")
-          if (substr(line, i + 1, 1) == "\\") j = index(substr(line, i + 3), "\047") + 2
-          out = out substr(line, i, j + 1); i += j + 1; continue
-        }
-        if (c == "\"") instr = 1
-        out = out c; i++
-      }
+      out = blank_c($0, 1)
       if (out ~ /^#/) {
         # rule 15: a macro can carry the window'"'"'s mode anywhere, so the
         # token counts on a preprocessor line, as a site of its own
