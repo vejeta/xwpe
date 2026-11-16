@@ -488,6 +488,52 @@ int wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k)
  return(wpe_write_set_mode_fd(fd, mode, k));
 }
 
+/**
+ * wpe_write_sync_before_bits - Make the text of a file reach the disk before
+ * its setuid, setgid or sticky bit goes back on.
+ * @fd: the file, whose text is complete; @mode: the mode about to be given;
+ * @durable: the caller owes the text on disk even with no special bit (a
+ * copy that is the only one).
+ * Return: 0 (also when nothing is owed, which costs no call), or the errno
+ * of the sync that failed.
+ *
+ * The kernel clears these bits on a write so that a half-written program is
+ * not a program.  Putting them back while the text may still be in memory
+ * would let a power cut leave a setuid or setgid file with the bits on and
+ * the text lost.  A file with no special bit keeps the cost it always had.
+ * One call covers both reasons: a file with a bit gets one fsync, which
+ * also satisfies @durable.  A caller whose sync fails does not set the
+ * bits, and says the write failed.
+ */
+int wpe_write_sync_before_bits(int fd, mode_t mode, int durable)
+{
+ if ((mode & WRITE_SPECIAL_BITS) != 0)
+ {
+  if (fsync(fd) != 0)
+   return(errno);
+  return(0);
+ }
+ if (durable && fdatasync(fd) != 0)
+  return(errno);
+ return(0);
+}
+
+/**
+ * write_bits_mark_lost - Record that special bits could not be put back.
+ * @k: receives the record; @bits: the bits; @err: the errno that stopped them.
+ *
+ * Shared by the save and the restore, so a bit lost on either way is named
+ * in the same words (wpe_write_bits_reason): the errno is the system's own
+ * reason, never a group, because no read-back was possible.
+ */
+static void write_bits_mark_lost(WpeModeKept *k, mode_t bits, int err)
+{
+ memset(k, 0, sizeof *k);
+ k->lost = bits & WRITE_SPECIAL_BITS;
+ k->err = err;
+ k->in_group = 1;
+}
+
 /* --- the backup copy ------------------------------------------------------ */
 
 typedef enum {
@@ -640,11 +686,32 @@ static BackupResult write_backup(const char *path, WpeWriteOutcome *o)
 /* --- putting the old content back ----------------------------------------- */
 
 /**
+ * write_back_give_bits - Put the special bits on a file that holds its old
+ * text again, and record the ones that could not go.
+ * @to: the file; @keep: the mode to give back (the nine bits and the special
+ * ones), or 0; @k: receives the bits not put back.
+ *
+ * The text is synced first, as in a save.  A sync that fails, or a bit the
+ * system refuses, leaves the old text on disk and the bit off: the restore
+ * itself worked, and the failure box names the bit.
+ */
+static void write_back_give_bits(int to, mode_t keep, WpeModeKept *k)
+{
+ int err = wpe_write_sync_before_bits(to, keep, 0);
+
+ if (err == 0)
+  err = wpe_write_set_special_bits(to, keep, k);
+ if (err != 0)
+  write_bits_mark_lost(k, keep, err);
+}
+
+/**
  * write_back_through_fd - Write the .bak's bytes into the very file the
  * failed write went to.
  * @to: a second descriptor of that file, closed here; @bak: the .bak;
  * @keep: the mode to give back with the text when it has special bits (the
- * nine bits and those), else 0.
+ * nine bits and those), else 0; @restore_kept: receives the special bits
+ * that could not be put back.
  * Return: 0, or the errno of what failed.
  *
  * The inode, the links, the owner and the group stay as they are, which a
@@ -653,11 +720,10 @@ static BackupResult write_backup(const char *path, WpeWriteOutcome *o)
  * The failed write cleared the file's setuid and setgid bits; they go back
  * with the text, so a program whose save failed is still the program it was.
  * A bit the system will not give back is not a reason to fail the restore:
- * the old text is on disk again.
+ * the old text is on disk again, and the user is told which bit is not.
  */
-static int write_back_through_fd(int to, const char *bak, mode_t keep)
+static int write_back_through_fd(int to, const char *bak, mode_t keep, WpeModeKept *restore_kept)
 {
- WpeModeKept kept;
  int from, err;
 
  from = open(bak, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -673,7 +739,7 @@ static int write_back_through_fd(int to, const char *bak, mode_t keep)
  if (err == 0)
   err = wpe_write_copy_fd(from, to, NULL);
  if (err == 0)
-  (void)wpe_write_set_special_bits(to, keep, &kept);
+  write_back_give_bits(to, keep, restore_kept);
  close(from);
  if (close(to) != 0 && err == 0)
   err = errno;
@@ -724,7 +790,8 @@ static int write_restore_by_rename_ok(const char *path, const char *bak,
  * the descriptor the write used, or NULL when it could not be taken;
  * @again: a second descriptor of the written file, closed here, or -1;
  * @keep: the mode with special bits to give back with the text, or 0 (the
- * .bak never has them, so a file with one is written back, not renamed over).
+ * .bak never has them, so a file with one is written back, not renamed over);
+ * @restore_kept: receives the special bits a write-back could not put back.
  * Return: 0 when the file holds its old content again, else an errno.
  *
  * The .bak is renamed over the file when that changes nothing but the
@@ -733,7 +800,7 @@ static int write_restore_by_rename_ok(const char *path, const char *bak,
  * makes this fail with EIO.
  */
 static int write_restore(const char *path, const char *bak, const struct stat *written,
-                         int again, mode_t keep)
+                         int again, mode_t keep, WpeModeKept *restore_kept)
 {
  const char *hook = getenv(WPE_WRITE_TEST_FAIL_ENV);
 
@@ -751,7 +818,7 @@ static int write_restore(const char *path, const char *bak, const struct stat *w
  }
  if (again < 0)
   return(EBADF);
- return(write_back_through_fd(again, bak, keep));
+ return(write_back_through_fd(again, bak, keep, restore_kept));
 }
 
 /* --- the write ------------------------------------------------------------ */
@@ -824,7 +891,9 @@ static void write_after_failure(WpeWriteOutcome *o, const char *path, BackupResu
   return;
  }
  o->restore_err = write_restore(path, o->bak_path, have_written ? written : NULL, again,
-                                keep);
+                                keep, &o->restore_kept);
+ if (o->restore_err != 0)
+  memset(&o->restore_kept, 0, sizeof o->restore_kept);
 }
 
 /* --- the file a write goes to --------------------------------------------- */
@@ -1011,12 +1080,8 @@ static void write_keep_special_bits(int fd, int fd_err, const WriteTarget *t, Wp
   err = write_give_back_bits(fd, t->keep, k);
  else
   err = (fd_err != 0 ? fd_err : EBADF);
- if (err == 0)
-  return;
- memset(k, 0, sizeof *k);
- k->lost = t->keep;
- k->err = err;
- k->in_group = 1;
+ if (err != 0)
+  write_bits_mark_lost(k, t->keep, err);
 }
 
 /** The part of a window's text a write takes: from (xa, ya) to (xe, ye). */
@@ -1061,7 +1126,10 @@ static int write_run_open(FENSTER *f, const char *path, const WriteOwnFile *own,
  *
  * The restore, and the special bits after the text, go through a second
  * descriptor of this same file, never through whatever the name points at by
- * then.
+ * then.  A file that is to get a special bit back is synced first; a sync
+ * that fails is a failed save, like a write that fails: the window stays
+ * modified and the old content goes back, because bytes that may not have
+ * reached the disk must not wear the bits of a program.
  */
 static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, WriteTarget *t,
                              BackupResult bk, WpeWriteOutcome *o)
@@ -1072,9 +1140,11 @@ static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, 
  again = fcntl(t->fd, F_DUPFD_CLOEXEC, 0);
  again_err = errno;
  err = write_rows(t->fp, f, f->b, r->xa, r->ya, r->xe, r->ye, &written, &have_written);
+ if (err == 0 && again >= 0)
+  err = wpe_write_sync_before_bits(again, t->keep, 0);
  if (err != 0)
  {
-  o->err = err;
+  o->err = write_error_number(err);
   write_after_failure(o, path, bk, &written, have_written, again, write_restore_mode(t));
   return;
  }
@@ -1220,6 +1290,32 @@ static const WriteOwnFile *write_own_file(const char *dir, const char *name, Wri
  ok = (stat(path, &own->st) == 0 && S_ISREG(own->st.st_mode));
  FREE(path);
  return(ok ? own : NULL);
+}
+
+/**
+ * wpe_write_overwrite_drops - The special bits a write onto an existing file
+ * would not keep.
+ * @path: the file the user picked; @own_dir, @own_name: the folder and name of
+ * the window's own file, or NULL and NULL for a block (always a copy).
+ * Return: the setuid, setgid and sticky bits of @path, or 0 when it is not a
+ * regular file, has none, or is the window's own file (which keeps them).
+ *
+ * Asked before Save As or Write Block replaces a file, so the user is told
+ * that the copy will not be a program before answering, not after.  It uses
+ * the identity rule of the write itself (write_purpose_for_target), so the
+ * question and the write cannot disagree about which file is the window's.
+ * A link is followed, as the write follows it.
+ */
+mode_t wpe_write_overwrite_drops(const char *path, const char *own_dir, const char *own_name)
+{
+ WriteOwnFile own;
+ struct stat st;
+
+ if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+  return(0);
+ if (write_purpose_for_target(write_own_file(own_dir, own_name, &own), &st) == WRITE_PURPOSE_SAVE)
+  return(0);
+ return(st.st_mode & WRITE_SPECIAL_BITS);
 }
 
 /**
@@ -1469,17 +1565,41 @@ static const char *write_then_text(const WpeWriteOutcome *o, WpeWriteThen then, 
  }
 }
 
+/** Room for "the setuid, setgid and sticky bits were not kept: <reason>". */
+#define WRITE_BITS_CLAUSE_MAX (WPE_PATH_SIZE + 128)
+
+/**
+ * write_bits_clause - Name the special bits a file did not keep, and why.
+ * @out, @n: the room; @k: what was not kept.
+ *
+ * "the setgid bit was not kept: this user is not in group 12", with no
+ * capital and no full stop, so the one sentence of a save and the one of a
+ * failed save's restore can each carry it in their own place.
+ */
+static void write_bits_clause(char *out, size_t n, const WpeModeKept *k)
+{
+ char words[64], reason[WPE_PATH_SIZE];
+ int several = ((k->lost & (k->lost - 1)) != 0);
+
+ wpe_write_bits_words(words, sizeof words, k->lost);
+ wpe_write_bits_reason(reason, sizeof reason, k);
+ snprintf(out, n, "the %s %s not kept: %s", words, several ? "were" : "was", reason);
+}
+
 /**
  * write_failed_head - The first sentence of a failed write.
  * @out, @n: the room; @o: the outcome.
  *
  * A read-only window, a backup copy that stopped and a restore that failed
- * each say what the user must know about the file on disk; every other
- * failure says the path and the reason.
+ * each say what the user must know about the file on disk; a restore that
+ * put the old content back but not a special bit says which bit, so the
+ * user knows the program is no longer one; every other failure says the
+ * path and the reason.
  */
 static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
 {
  const char *path = (o->path[0] != '\0' ? o->path : "the file");
+ char bits[WRITE_BITS_CLAUSE_MAX];
 
  if (o->read_only)
   snprintf(out, n, "%s is read-only.", write_base_name(path));
@@ -1492,27 +1612,50 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
  else if (o->restore_err != 0)
   snprintf(out, n, "Cannot write %s: %s.  The file on disk may be cut short; no backup copy "
            "was made.", path, strerror(o->err));
+ else if (o->restore_kept.lost != 0)
+ {
+  write_bits_clause(bits, sizeof bits, &o->restore_kept);
+  snprintf(out, n, "Cannot write %s: %s.  The file holds its previous content, but %s.", path,
+           strerror(o->err), bits);
+ }
  else
   snprintf(out, n, "Cannot write %s: %s.", path, strerror(o->err));
 }
 
 /**
- * write_bits_lost_sentence - Say that a saved file lost a special bit, and why.
- * @out, @n: the room; @base: the file's name; @k: what was not kept.
+ * write_written_sentence - Say how a save that worked left the file, when
+ * there is something to say.
+ * @out, @n: the room; @o: the outcome.
  *
- * Shown on the status row after a save that worked, so the user who saves a
- * setgid program learns at once that it no longer is one, instead of when
- * it stops working.
+ * Two things can need saying, and one sentence says both so that neither
+ * hides the other: a special bit the file did not keep (a setgid program
+ * saved from the editor learns at once that it no longer is one, instead of
+ * when it stops working) and the backup that could not be made.  A save
+ * with neither says nothing, and a copy that went elsewhere says where.
  */
-static void write_bits_lost_sentence(char *out, size_t n, const char *base, const WpeModeKept *k)
+static void write_written_sentence(char *out, size_t n, const WpeWriteOutcome *o)
 {
- char words[64], reason[WPE_PATH_SIZE];
- int several = ((k->lost & (k->lost - 1)) != 0);
+ const char *base = write_base_name(o->path);
+ char bits[WRITE_BITS_CLAUSE_MAX];
 
- wpe_write_bits_words(words, sizeof words, k->lost);
- wpe_write_bits_reason(reason, sizeof reason, k);
- snprintf(out, n, "%s written, but the %s %s not kept: %s.", base, words,
-          several ? "were" : "was", reason);
+ if (o->backup_err == 0 && o->file_kept.lost == 0)
+ {
+  if (o->kept)
+   snprintf(out, n, "%s's copy could not go beside the file (%s); it is in %s.", base,
+            strerror(o->err), o->kept_path);
+  return;
+ }
+ if (o->file_kept.lost == 0)
+ {
+  snprintf(out, n, "%s written; no backup was made: %s.", base, strerror(o->backup_err));
+  return;
+ }
+ write_bits_clause(bits, sizeof bits, &o->file_kept);
+ if (o->backup_err == 0)
+  snprintf(out, n, "%s written, but %s.", base, bits);
+ else
+  snprintf(out, n, "%s written, but %s; no backup was made: %s.", base, bits,
+           strerror(o->backup_err));
 }
 
 /**
@@ -1522,12 +1665,12 @@ static void write_bits_lost_sentence(char *out, size_t n, const char *base, cons
  *
  * A failure names the path and the reason and what is kept, so the user
  * knows whether the text is on disk and where it still is.  A save that
- * worked says something only when it made no backup.
+ * worked says something only when it made no backup or the file did not
+ * keep a special bit it had, and then says both in one sentence.
  */
 int wpe_write_sentence(char *out, size_t n, const WpeWriteOutcome *o, WpeWriteThen then)
 {
  char head[WPE_WRITE_SENTENCE_MAX], name[WPE_PATH_SIZE + 64];
- const char *base = write_base_name(o->path);
 
  if (n == 0)
   return(0);
@@ -1536,13 +1679,7 @@ int wpe_write_sentence(char *out, size_t n, const WpeWriteOutcome *o, WpeWriteTh
   return(0);
  if (o->status == WPE_WRITE_WRITTEN)
  {
-  if (o->backup_err != 0)
-   snprintf(out, n, "%s written; no backup was made: %s.", base, strerror(o->backup_err));
-  else if (o->kept)
-   snprintf(out, n, "%s's copy could not go beside the file (%s); it is in %s.", base,
-            strerror(o->err), o->kept_path);
-  else if (o->file_kept.lost != 0)
-   write_bits_lost_sentence(out, n, base, &o->file_kept);
+  write_written_sentence(out, n, o);
   return((int)strlen(out));
  }
  write_failed_head(head, sizeof head, o);

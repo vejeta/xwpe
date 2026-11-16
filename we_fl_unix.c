@@ -656,6 +656,74 @@ static int WpeSaveAsTranscript(FENSTER *f, FENSTER *fe, char *filen,
   return(0);
 }
 
+/** Room for the overwrite question: a file name, its sentence and the line
+    that names the special bits. */
+#define WPE_OVERWRITE_QUESTION_MAX (WPE_NAME_SIZE + 192)
+
+/**
+ * WpeOverwriteQuestion - The question asked before Save As or Write Block
+ * replaces a file that exists.
+ * @out, @n: the room; @filen: the file; @dropped: the special bits the file
+ * has and the write will not give back, or 0.
+ *
+ * When the file is a setuid, setgid or sticky program the question says so,
+ * so the user who is about to overwrite one with a copy learns that the
+ * copy will not be a program, before the answer and not after.
+ */
+static void WpeOverwriteQuestion(char *out, size_t n, const char *filen, mode_t dropped)
+{
+  char words[64];
+  const char *them;
+
+  if(dropped == 0)
+  {
+    snprintf(out, n, "%s already exists. Overwrite it?", filen);
+    return;
+  }
+  wpe_write_bits_words(words, sizeof words, dropped);
+  if((dropped & (dropped - 1)) != 0)
+    them = "those bits";
+  else
+    them = "that bit";
+  snprintf(out, n, "%s already exists. Overwrite it?\nIt has the %s; the copy will not keep %s.",
+           filen, words, them);
+}
+
+/**
+ * WpeOverwriteDrops - The special bits an overwrite of @filen would not keep.
+ * @b: the file manager's buffer (what it is for); @fe: the window being
+ * saved; @filen: the file that exists.
+ * Return: the bits, or 0 when the file has none or is the window's own file
+ * (Save As onto itself keeps them).
+ *
+ * Save As and Write Block are asked alike; the owner of writing decides
+ * which file is the window's own, by identity and not by name.  The
+ * assistant's transcript is never a window's own file (the pane holds no
+ * file), so writing it over a program is always a copy that loses the bits.
+ */
+static mode_t WpeOverwriteDrops(FLBFFR *b, FENSTER *fe, const char *filen)
+{
+  if(WpeSaveAsIsTranscript(b, fe))
+    return(wpe_write_overwrite_drops(filen, NULL, NULL));
+  if(b->sw == 4)
+    return(wpe_write_overwrite_drops(filen, fe->dirct, fe->datnam));
+  return(wpe_write_overwrite_drops(filen, NULL, NULL));
+}
+
+/**
+ * WpeAskOverwrite - Ask whether to replace the file the user picked.
+ * @f: the file manager's window; @b: its buffer; @fe: the window being saved;
+ * @filen: the file, which exists.
+ * Return: the answer of the box: 'Y', 'N' or WPE_ESC.
+ */
+static int WpeAskOverwrite(FENSTER *f, FLBFFR *b, FENSTER *fe, const char *filen)
+{
+  char question[WPE_OVERWRITE_QUESTION_MAX];
+
+  WpeOverwriteQuestion(question, sizeof question, filen, WpeOverwriteDrops(b, fe, filen));
+  return(e_message(1, question, f));
+}
+
 int e_prj_add_file_unique(FLWND *fw, char *ftmp, FENSTER *f)
 {
   int i, row;
@@ -1580,13 +1648,7 @@ int WpeHandleFileManager(ECNT * cn)
         /* check whether the file exist */
         if(!access(filen, F_OK))
         {
-          if((ftmp = MALLOC(strlen(filen) + 42)) == NULL)
-            e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
-
-          sprintf(ftmp, "File %s exist\nDo you want to overwrite it ?", filen);
-          i = e_message(1, ftmp, f);
-          FREE(ftmp);
-
+          i = WpeAskOverwrite(f, b, fe, filen);
           if(i == WPE_ESC)
           {
             c = WPE_ESC;

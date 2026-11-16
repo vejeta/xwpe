@@ -521,6 +521,18 @@ Changes
   copies and the print copy never give a bit to the file they write, even
   over a file that had them, and the .bak copy never gets them.  A write
   that fails half way and is undone puts back the bits the file had.
+  A bit the system does not let you keep is named on the status row with
+  the reason, in the same sentence as a missing backup ("t.c written, but
+  the setgid bit was not kept: Operation not permitted; no backup was made:
+  File exists."), and a restore that could not put a bit back says so in
+  the failure box.  The text is synced to disk before a special bit goes
+  back on a file (a plain file costs no sync), and a sync that fails is a
+  failed save: the window stays modified and the old text comes back from
+  the backup copy when one was made; the
+  File Manager's Copy of a setuid or setgid file syncs the same way.  Save
+  As and Write Block over a file that has such a bit ask "x.c already
+  exists. Overwrite it?" and say that the copy will not keep the bit; Save
+  As onto the window's own file does not, because the bit stays.
 
 * "Don't overwrite" now leaves the existing file alone and says so on the
   status row; it used to overwrite it.  Replacing a file asks once, a name

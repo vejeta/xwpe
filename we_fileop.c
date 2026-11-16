@@ -960,7 +960,8 @@ static int fileop_job_make_temp(FileJob *j, char *tmp, size_t n, int *fd)
  *
  * Every write, the flush and the close are judged: the copy counts as made
  * only when each returned 0.  The special permission bits go on after the
- * data, because the kernel clears them on the first write.
+ * data, because the kernel clears them on the first write, and after the
+ * data is on disk.
  */
 static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
 {
@@ -974,9 +975,9 @@ static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
   wpe_write_guard_leave();
   return(fileop_fail(j->o, read_failed ? WPE_FILEOP_STEP_SOURCE : WPE_FILEOP_STEP_WRITE, err));
  }
- if (durable && fdatasync(fd) != 0)
+ err = wpe_write_sync_before_bits(fd, j->sst.st_mode, durable);
+ if (err != 0)
  {
-  err = errno;
   close(fd);
   wpe_write_guard_leave();
   return(fileop_fail(j->o, WPE_FILEOP_STEP_WRITE, err));

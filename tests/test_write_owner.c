@@ -734,6 +734,60 @@ int unlink(const char *path)
  return(r);
 }
 
+/* fsync, watched: the calls on regular files are counted, the special bits
+   the first one found on its file are remembered, and an armed call fails
+   with EIO.  Off, it passes every call on. */
+typedef int (*fsync_fn)(int);
+
+static int fsync_calls;           /* calls on regular files since the last reset */
+static ino_t fsync_last_ino;      /* the inode of the last such call */
+static int fsync_first_special;   /* special bits the first such file had, -1: none yet */
+static int fsync_fails;           /* 1: a call on a regular file fails with EIO */
+static int fdatasync_calls;       /* fdatasync calls on regular files since the last reset */
+
+static void fsync_reset(void)
+{
+ fsync_calls = 0;
+ fsync_last_ino = 0;
+ fsync_first_special = -1;
+ fsync_fails = 0;
+ fdatasync_calls = 0;
+}
+
+/* fdatasync, watched the same way: the calls on regular files are counted. */
+int fdatasync(int fd)
+{
+ static fsync_fn real;
+ struct stat st;
+
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "fdatasync");
+ if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+  fdatasync_calls++;
+ return(real(fd));
+}
+
+int fsync(int fd)
+{
+ static fsync_fn real;
+ struct stat st;
+
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "fsync");
+ if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+ {
+  if (fsync_calls++ == 0)
+   fsync_first_special = (int)(st.st_mode & 07000);
+  fsync_last_ino = st.st_ino;
+  if (fsync_fails)
+  {
+   errno = EIO;
+   return(-1);
+  }
+ }
+ return(real(fd));
+}
+
 /* A 0600 file's backup never holds its text while others may read it, under
    any umask: the mode is narrowed before the first byte, not after the last. */
 static void test_the_backup_is_private_while_it_holds_text(void)
@@ -1290,6 +1344,156 @@ static void test_a_longer_file_saved_short_leaves_no_tail(void)
  chk_int("the file is the new text and nothing else", strcmp(get_file("t.c", buf, sizeof buf), "new\n"), 0);
 }
 
+/* ---- what the user is told ---- */
+
+/* A save that lost a bit and made no backup says both in one sentence: the
+   backup note must not hide the bit. */
+static void test_the_bit_loss_and_the_backup_note_share_one_sentence(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024], target[512], link[512];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "one sentence for the bit and the backup",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ put_file("victim", "keep me\n", 0644);
+ path_of(target, sizeof target, "victim");
+ path_of(link, sizeof link, "t.bak");
+ if (symlink(target, link) != 0)
+  perror("symlink");
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, S_ISGID);
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ save_sentence(&o, say, sizeof say);
+ chk_int("both clauses, one sentence",
+         strcmp(say, "t.c written, but the setgid bit was not kept: Operation not permitted; "
+                "no backup was made: File exists."), 0);
+}
+
+/* A save that fails half way and is undone names a bit the undo could not put
+   back, in the same box as the failure.  Only the restore's call carries a
+   special bit, so refusing setgid refuses only it. */
+static void test_a_restore_that_cannot_put_the_bits_back_names_them(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char *old = big(1024, 'o'), buf[8192], say[2048];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a restore names a bit it could not put back",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", old, 02755);
+ f = window_of_file_with_mode(0755);
+ fakechmod_set(FAKECHMOD_REFUSE, S_ISGID);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("restored", o.restore_err, 0);
+ chk_int("the file is as it was", strcmp(get_file("t.c", buf, sizeof buf), old), 0);
+ chk_int("without the bit", mode_of("t.c"), 0755);
+ chk_int("the bit is recorded", o.restore_kept.lost, S_ISGID);
+ chk_int("the save itself lost nothing", o.file_kept.lost, 0);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_has("the failure", say, "File too large.");
+ chk_has("the bit is named", say, "The file holds its previous content, but the setgid bit was not kept: "
+         "Operation not permitted.");
+ chk_has("and what stays", say, "Your text is still in the window.");
+}
+
+/* The kernel clears the bits on a write so a half-written program is not one.
+   They go back only after the text is on disk: one sync on the saved file for
+   a setgid save, none for a plain one, and a sync that fails is a failed save
+   (the window stays modified, the old text and no bit come back). */
+static void test_the_bits_go_back_only_after_the_bytes_are_on_disk(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char *old = big(1024, 'o'), buf[8192], say[2048], p[512];
+ struct stat st;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "the bits go back after the bytes",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", old, 02755);
+ path_of(p, sizeof p, "t.c");
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ fsync_reset();
+ chk_int("a setgid save", save_window(f, "t.c", &o), 0);
+ stat(p, &st);
+ chk_int("one sync", fsync_calls, 1);
+ chk_int("on the saved file", (long)(fsync_last_ino == st.st_ino), 1);
+ chk_int("before the bit was on it", fsync_first_special, 0);
+ chk_int("the bit is on after", mode_of("t.c"), 02755);
+
+ put_file("u.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ fsync_reset();
+ chk_int("a plain save", save_window(f, "u.c", &o), 0);
+ chk_int("costs no sync", fsync_calls, 0);
+ chk_int("and no data sync", fdatasync_calls, 0);
+
+ put_file("v.c", old, 02755);
+ f = window_of_file_with_mode(02755);
+ f->save = 1;
+ fsync_reset();
+ fsync_fails = 1;
+ chk_int("a save whose sync fails", save_window(f, "v.c", &o), -1);
+ fsync_reset();
+ chk_int("is FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("with the sync's errno", o.err, EIO);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_has("and says so", say, "Input/output error");
+ chk_has("with the path", say, "Cannot write ");
+ chk_int("the window is still modified", f->save, 1);
+ chk_int("the old text is back", strcmp(get_file("v.c", buf, sizeof buf), old), 0);
+ chk_int("the bit did not go back", mode_of("v.c"), 0755);
+}
+
+/* What the sync owner calls for each of the four cases, asked directly: a
+   plain file that is not owed costs nothing, a plain durable one costs one
+   data sync, a file about to get a special bit costs one full sync, and a
+   durable one with a bit costs that one sync and not a data sync as well. */
+static void test_the_sync_owner_syncs_once_and_only_when_owed(void)
+{
+ char p[512];
+ int fd;
+
+ make_dir();
+ put_file("s.c", "text\n", 0644);
+ path_of(p, sizeof p, "s.c");
+ fd = open(p, O_WRONLY);
+ if (fd < 0)
+ {
+  printf("FAIL: the sync owner: cannot open its file\n");
+  fails++;
+  return;
+ }
+ fsync_reset();
+ chk_int("plain, not durable: ok", wpe_write_sync_before_bits(fd, 0644, 0), 0);
+ chk_int("plain, not durable: no fsync", fsync_calls, 0);
+ chk_int("plain, not durable: no fdatasync", fdatasync_calls, 0);
+ fsync_reset();
+ chk_int("plain, durable: ok", wpe_write_sync_before_bits(fd, 0644, 1), 0);
+ chk_int("plain, durable: no fsync", fsync_calls, 0);
+ chk_int("plain, durable: one fdatasync", fdatasync_calls, 1);
+ fsync_reset();
+ chk_int("special, not durable: ok", wpe_write_sync_before_bits(fd, 02755, 0), 0);
+ chk_int("special, not durable: one fsync", fsync_calls, 1);
+ chk_int("special, not durable: no fdatasync", fdatasync_calls, 0);
+ fsync_reset();
+ chk_int("special, durable: ok", wpe_write_sync_before_bits(fd, 02755, 1), 0);
+ chk_int("special, durable: one fsync", fsync_calls, 1);
+ chk_int("special, durable: no fdatasync", fdatasync_calls, 0);
+ close(fd);
+}
+
 /* The sentence for an outcome built by hand: the reasons that need a system
    this one is not (a group the user is not in, no descriptor to ask on). */
 static void test_the_sentence_of_a_save_that_lost_a_bit(void)
@@ -1317,6 +1521,22 @@ static void test_the_sentence_of_a_save_that_lost_a_bit(void)
  o.file_kept.lost = 0;
  save_sentence(&o, say, sizeof say);
  chk_int("nothing lost, nothing said", (long)strlen(say), 0);
+
+ /* a failed write, undone, that could not put the bit back */
+ o.status = WPE_WRITE_FAILED;
+ o.err = EFBIG;
+ o.restore_kept.lost = S_ISGID;
+ o.restore_kept.err = EPERM;
+ o.restore_kept.gid = 12;
+ o.restore_kept.in_group = 0;
+ save_sentence(&o, say, sizeof say);
+ chk_int("the restore names the bit and the group",
+         strcmp(say, "Cannot write /x/t.c: File too large.  The file holds its previous content, "
+                "but the setgid bit was not kept: this user is not in group 12.  "
+                "Your text is still in the window."), 0);
+ o.restore_err = EIO;
+ save_sentence(&o, say, sizeof say);
+ chk_lacks("a restore that failed says no bit", say, "was not kept");
 }
 
 static void stub_mouse_shape(WpeMouseShape s) { (void)s; }
@@ -1338,6 +1558,10 @@ int main(void)
  test_save_as_through_a_hard_link_to_its_own_file_keeps_the_bit();
  test_a_failed_block_write_over_a_setgid_file_restores_its_bit();
  test_the_sentence_of_a_save_that_lost_a_bit();
+ test_the_bit_loss_and_the_backup_note_share_one_sentence();
+ test_a_restore_that_cannot_put_the_bits_back_names_them();
+ test_the_bits_go_back_only_after_the_bytes_are_on_disk();
+ test_the_sync_owner_syncs_once_and_only_when_owed();
  test_a_saved_setgid_file_keeps_its_bit();
  test_a_save_names_the_bit_the_system_refuses();
  test_a_save_whose_modes_are_all_refused_is_still_written();

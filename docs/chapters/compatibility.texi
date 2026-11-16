@@ -1085,10 +1085,32 @@ same file (the same inode), also when Save As names it again or names a
 hard link to it.  Save As onto another file, Block Write, the autosave and
 emergency copies and the print copy write another file, so they never give
 it a bit, even when they overwrite a file that had them; a file saved under
-a new name has none to get.  A write that fails
+a new name has none to get.  Before Save As or Block Write replaces a file
+that has a setuid, setgid or sticky bit, the question says so
+(@samp{x.c already exists. Overwrite it?} and a second line,
+@samp{It has the setgid bit; the copy will not keep that bit.}), so the
+answer is given knowing it; Save As onto the window's own file does not
+say it, because the bit stays.  A write that fails
 half way and is undone puts back the bits the overwritten file had.  The
-backup copy never gets the bits.  The reason: saving a file must not change
-what kind of file it is, and must not make a second program out of a copy.
+backup copy never gets the bits.
+
+When the system does not let this user keep a bit, the status row names it
+and why (@samp{t.c written, but the setgid bit was not kept: Operation not
+permitted.}), in the same sentence as the note that no backup was made when
+there is one (@samp{t.c written, but the setgid bit was not kept: Operation
+not permitted; no backup was made: File exists.}).  A save that fails half
+way and is undone says in its box when the old text is back but a bit could
+not be put with it (@samp{The file holds its previous content, but the setgid
+bit was not kept: Operation not permitted.}).  The text is made to reach the
+disk (@code{fsync}) before a special bit goes back on it, and only then, so a
+power cut cannot leave a setuid or setgid file with the bits on and the text
+lost; a file with no such bit costs no sync.  A sync that fails is a failed
+save: the box says so, the bits are not set and the window stays modified,
+and the old text is put back from the backup copy when one was made (without
+one, the box says the file may be cut short).  The File Manager's Copy of a program syncs the same
+way.  The reason: saving a file must not change what kind of file it is, and
+must not make a second program out of a copy; and a bit that is lost must not
+be lost in silence.
 @end table
 
 @section The file manager's Copy, Move, Link and Remove

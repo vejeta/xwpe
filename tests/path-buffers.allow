@@ -112,7 +112,7 @@ COPY|we_fl_fkt.c|e_read_xwpe_info|1|sized|the destination is allocated at its so
 COPY|we_fl_fkt.c|e_help_loc|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_fkt.c|e_help_options|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeCreateFileManager|9|text|fixed words into the Find fields, and the name pattern into a field of its own size
-COPY|we_fl_unix.c|WpeHandleFileManager|11|checked|the Name field's 79 bytes into the Find file path, and a folder copied at its own length
+COPY|we_fl_unix.c|WpeHandleFileManager|10|checked|the Name field's 79 bytes into the Find file path, and a folder copied at its own length
 COPY|we_fl_unix.c|WpeMakeNewDir|2|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeGetCurrentDir|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeAssemblePath|1|sized|the destination is allocated at its sources' length just before

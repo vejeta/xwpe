@@ -64,6 +64,11 @@ typedef struct {
                                     (lost == 0: all kept, or it had none).  The
                                     .bak is never given them, so it has no such
                                     record. */
+ WpeModeKept restore_kept;       /* the same for a restore by write-back after a
+                                    failed write: the old content is back and
+                                    these bits could not be put with it (lost == 0
+                                    when restored by rename, when the restore
+                                    failed, or when the file had none) */
 } WpeWriteOutcome;
 
 /* What the user is told after the failure, beside the path and the reason. */
@@ -101,6 +106,10 @@ WPE_WRITE_RESULT int wpe_write_range(struct FNST *f, const char *path,
    own file; NULL and NULL for a plain Save. */
 int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_dir,
                    const char *keep_name);
+/* The special bits that a write onto the existing file @path would not keep
+   (0: none, not a regular file, or the window's own file, given by folder and
+   name, or NULL and NULL for a block): what the overwrite question names. */
+mode_t wpe_write_overwrite_drops(const char *path, const char *own_dir, const char *own_name);
 
 /* Text that is not a window's rows. */
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
@@ -121,8 +130,12 @@ int  wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
 /* The one place the editor changes a file's permissions.  Each returns 0 when
    the nine bits are on, whatever happened to the special bits (@k says), and
    the errno of a real failure otherwise.  set_special_bits is the copy's:
-   no call at all when the mode has no special bit.  set_mode_fd is for an
+   no call at all when the mode has no special bit; sync_before_bits is what
+   a caller does first, so the text is on disk before the bits are (0 when
+   there is no bit to give, else the sync's errno, and then the bits are not
+   set).  set_mode_fd is for an
    open file or folder, set_mode_path for a name (the Attributes dialog). */
+int  wpe_write_sync_before_bits(int fd, mode_t mode, int durable);
 int  wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_mode_path(const char *path, mode_t mode, WpeModeKept *k);

@@ -2102,6 +2102,93 @@ static void test_a_real_error_on_a_special_bit_is_a_failure(void)
  clean();
 }
 
+/* ---- the text reaches the disk before a special bit goes back ----
+ *
+ * fsync is defined here, in the test program, where it takes the place of the
+ * C library's for the copy's code; it counts the calls on regular files and,
+ * when armed, fails them with EIO.  Off, it passes every call on. */
+
+typedef int (*fsync_fn)(int);
+
+static int fsync_calls;          /* calls on regular files since the last reset */
+static int fsync_fails;          /* 1: a call on a regular file fails with EIO */
+
+int fsync(int fd)
+{
+ static fsync_fn real;
+ struct stat st;
+
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "fsync");
+ if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+ {
+  fsync_calls++;
+  if (fsync_fails)
+  {
+   errno = EIO;
+   return(-1);
+  }
+ }
+ return(real(fd));
+}
+
+static int fdatasync_calls;      /* fdatasync calls on regular files since the last reset */
+
+int fdatasync(int fd)
+{
+ static fsync_fn real;
+ struct stat st;
+
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "fdatasync");
+ if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+  fdatasync_calls++;
+ return(real(fd));
+}
+
+/* A copy of a setgid file syncs its text before the bit goes on, and a copy
+   whose sync fails is not made: the user never holds a setgid file whose text
+   may be lost.  A plain copy costs no sync.  The failure is a failed write,
+   as a failed sync of a durable copy already is (STEP_WRITE), not a refused
+   mode.  Red on a tree that never syncs: no failure, and no call. */
+static void test_a_copy_of_a_setgid_file_syncs_before_the_bit(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!setgid_row_ready("a copy of a setgid file syncs before the bit") ||
+     put("sg.txt", "setgid\n", 02755) != 0 || put("plain.txt", "plain\n", 0644) != 0) {
+  clean();
+  return;
+ }
+ fsync_calls = 0;
+ fdatasync_calls = 0;
+ rc = wpe_fileop_copy("sg.txt", "sg.copy", &p, &o);
+ chk_int("the copy is made", rc, 0);
+ chk_int("one sync before the bit", fsync_calls, 1);
+ chk_int("and no data sync besides", fdatasync_calls, 0);
+ chk_int("the bit is on", mode_of("sg.copy"), 02755);
+ fsync_calls = 0;
+ fdatasync_calls = 0;
+ rc = wpe_fileop_copy("plain.txt", "plain.copy", &p, &o);
+ chk_int("a plain copy is made", rc, 0);
+ chk_int("a plain copy costs no sync", fsync_calls, 0);
+ chk_int("and no data sync", fdatasync_calls, 0);
+ fsync_fails = 1;
+ rc = wpe_fileop_copy("sg.txt", "eio.copy", &p, &o);
+ fsync_fails = 0;
+ chk_int("a copy whose sync fails is refused", rc, -1);
+ chk_int("as a failed write", o.step, WPE_FILEOP_STEP_WRITE);
+ chk_has("with the real reason", said(&o), "Input/output error");
+ chk_absent("no copy", "eio.copy");
+ chk_int("no temporary left", count_temp(dir), 0);
+ clean();
+}
+
 /* A folder copy that the user stopped after an entry lost a bit says both.
    HEAD fails the entry before there is a count. */
 static void test_the_stopped_sentence_carries_the_note(void)
@@ -2218,6 +2305,7 @@ static void test_the_copy_is_named_before_the_stashed_file(void)
 
 int main(void)
 {
+ test_a_copy_of_a_setgid_file_syncs_before_the_bit();
  test_tree_refuses_a_destination_link_where_a_folder_goes();
  test_tree_file_onto_a_destination_link_is_replaced_as_a_name();
  test_tree_file_onto_a_link_to_a_file_is_replaced_as_a_name();
