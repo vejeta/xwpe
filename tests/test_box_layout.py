@@ -468,6 +468,71 @@ def test_a_question_longer_than_the_screen_still_shows_its_buttons(tmp_path):
         "Y did not save the options under the folder"
 
 
+SMALL_SCREEN_COLS = 80
+SMALL_SCREEN_ROWS = 24          # the smallest screen the editor supports
+QUESTION_FRAME_ROWS = 8         # E_MESSAGE_FRAME_ROWS in we_wind.c
+QUESTION_FORMAT = "Save the options to\n%s\n?"      # E_OPT_SAVE_LONG_FMT
+
+
+def _question_line_count(text, cols):
+    """How many lines the editor's question wrap makes of @text on a screen
+    @cols wide: StringToStringArray in we_wind.c.  A line breaks at a newline
+    or once it holds 0.8 * cols + 1 bytes, at the last space if it has one."""
+    width = int(0.8 * cols)
+    lines = 0
+    start = 0
+    i = 0
+    while i < len(text):
+        if i - start == width or text[i] == "\n":
+            j = i - 1
+            if text[i] != "\n":
+                while j > 0 and not text[j].isspace():
+                    j -= 1
+            if j > start:
+                i = j
+            lines += 1
+            start = i + 1
+        i += 1
+    return lines + 1
+
+
+# @scenario SC-box-08
+def test_a_question_as_deep_as_the_system_allows_is_cut_on_a_small_screen(
+        tmp_path):
+    """The same defect as the row above, on the smallest screen: Save Options
+    in the deepest configuration folder the system holds (3500 bytes on Linux,
+    924 on macOS) asks a question longer than the 24 rows hold.  The text is
+    cut and says so, and Yes, No and Cancel stay on the screen, so Y answers.
+    The row works out from the real question text how many lines it wraps to
+    and fails if that is not more than the screen has room for, so a folder
+    that is too short cannot make it pass without testing anything."""
+    xdg = deep_folder.folder_of_length(
+        tmp_path / "cfg",
+        deep_folder.as_deep_as_allowed(tmp_path, LONG_FOLDER_BYTES))
+    question = QUESTION_FORMAT % os.path.join(xdg, "xwpe", "xwperc")
+    wrapped = _question_line_count(question, SMALL_SCREEN_COLS)
+    room = SMALL_SCREEN_ROWS - QUESTION_FRAME_ROWS
+    assert wrapped > room, (
+        "the premise fails: the question wraps to %d lines and the screen "
+        "has room for %d, so nothing is cut" % (wrapped, room))
+    work = tmp_path / "work"
+    work.mkdir()
+    with WpeSession(str(work), SEED, filename="t.c", cols=SMALL_SCREEN_COLS,
+                    rows=SMALL_SCREEN_ROWS,
+                    env_extra={"XDG_CONFIG_HOME": xdg}) as w:
+        w.key(ALT.OPTIONS, delay=1.0)
+        w.key("s", delay=1.5)
+        shown = w.display()
+        w.key("y", delay=1.5)
+    text = _screen(shown)
+    assert "Save the options to" in text, text
+    for button in QUESTION_BUTTONS:
+        assert button in text, "%r is not on the screen:\n%s" % (button, text)
+    assert QUESTION_CUT in text, "the cut text does not say so:\n" + text
+    assert os.path.exists(os.path.join(xdg, "xwpe", "xwperc")), \
+        "Y did not save the options under the folder"
+
+
 # ---- every frame is opened by the owner -------------------------------------
 
 MODAL_ENTER = re.compile(r"modal enter depth=(\d+) (.*)$")
