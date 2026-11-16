@@ -20,6 +20,8 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* The box that refuses an over-long path names the system's limit, not 4096
+  on every system.
 * Run > Matching Bracket no longer crashes when the first row starts with
   #else and holds another '#', and no longer reads beyond the text when an
   #else row is the last row or a comment starts or ends at column 0; it

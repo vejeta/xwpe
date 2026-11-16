@@ -727,7 +727,7 @@ static void e_aopen_say_too_long(void)
  if (e_aopen_said_too_long)
   return;
  e_aopen_said_too_long = 1;
- snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "include folder", WPE_PATH_MAX);
+ wpe_path_say_too_long(msg, sizeof msg, "include folder");
  e_error(msg, 0, WpeEditor->fb);
 }
 
@@ -1160,7 +1160,7 @@ static void e_say_file_path_too_long(FENSTER *f)
 {
  char msg[WPE_PATH_MSG_MAX];
 
- snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "project file", WPE_PATH_MAX);
+ wpe_path_say_too_long(msg, sizeof msg, "project file");
  e_error(msg, 0, f->fb);
 }
 

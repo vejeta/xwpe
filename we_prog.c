@@ -2501,7 +2501,7 @@ static void e_build_path_too_long(FENSTER *f, const char *what)
 {
  char msg[WPE_PATH_MSG_MAX];
 
- snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, what, WPE_PATH_MAX);
+ wpe_path_say_too_long(msg, sizeof msg, what);
  e_message(0, msg, f);
 }
 

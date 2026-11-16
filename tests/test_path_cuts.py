@@ -19,6 +19,7 @@ import os
 import pytest
 
 import deep_folder
+import procinfo
 from deep_folder import folder_of_length
 from host_tools import needs
 from wpe_driver import WpeSession
@@ -376,3 +377,22 @@ def test_a_long_include_folder_is_said_once_per_search(tmp_path):
             w.key(ENTER, delay=1.0)
         _intact(w, "Show Definition through three missing headers")
     assert said == 1, "the include folder was said %d times" % said
+
+
+# The number in the sentence is the system's, said at start.
+# @scenario SC-path-cuts-17
+def test_a_configuration_folder_the_editor_refuses_names_the_systems_limit(tmp_path):
+    """$XDG_CONFIG_HOME of 4200 bytes is longer than the editor's room and
+    than any system's, so the editor refuses it at start, with no folder to
+    build.  The status row says the configuration folder's path is longer
+    than the system allows, and the number is this system's limit (4096 on
+    Linux, 1024 on macOS and the BSDs), not the editor's own."""
+    xdg = "/" + "x" * 4199
+    work = tmp_path / "work"
+    work.mkdir()
+    with WpeSession(str(work), "int x;\n", filename="t.c", wait=2.0, cols=140, rows=40,
+                    env_extra={"XDG_CONFIG_HOME": xdg}) as w:
+        text = _text(w)
+        _intact(w, "a configuration folder over the editor's room at start")
+    assert "configuration folder" in text and SENTENCE in text, text
+    assert "(%d bytes)" % procinfo.path_max(tmp_path) in text, text

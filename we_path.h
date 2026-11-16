@@ -7,13 +7,14 @@
    cannot open.  The debugger's command length (we_debreq.h) multiplies this
    number.
 
-   Plain C: <limits.h> and <stddef.h> only, no curses and no
+   Plain C: <limits.h>, <stddef.h> and <stdio.h> only, no curses and no
    editor header, so a unit test links it alone. */
 #ifndef WE_PATH_H
 #define WE_PATH_H
 
 #include <limits.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #define WPE_PATH_MAX   4096          /* PATH_MAX of Linux; the BSDs' and macOS's 1024 are within it */
 #define WPE_NAME_MAX   511           /* the largest NAME_MAX of the systems built on: NetBSD's; Linux, FreeBSD, OpenBSD and macOS have 255 */
@@ -34,7 +35,8 @@
 #endif
 
 /* The longest path this system takes, for a test that builds a path near the
-   limit.  PATH_MAX is 4096 on Linux and 1024 on macOS and the BSDs, and
+   limit, and the number the refusal sentence prints
+   (wpe_path_say_too_long).  PATH_MAX is 4096 on Linux and 1024 on macOS and the BSDs, and
    absent on GNU/Hurd, which has no limit; there the editor's own bound
    stands.  The editor's buffers are WPE_PATH_SIZE; this is the system's
    number, which decides when the system itself answers "File name too
@@ -43,6 +45,15 @@
 #define WPE_PLATFORM_PATH_MAX PATH_MAX
 #else
 #define WPE_PLATFORM_PATH_MAX WPE_PATH_MAX
+#endif
+
+/* The longest file name this system takes: NAME_MAX where the system declares
+   it, the editor's own bound where it does not.  The number a refused name's
+   sentence prints. */
+#ifdef NAME_MAX
+#define WPE_PLATFORM_NAME_MAX NAME_MAX
+#else
+#define WPE_PLATFORM_NAME_MAX WPE_NAME_MAX
 #endif
 
 /* A refusal nobody reads leaves @out empty and lets "" reach chdir, fopen or
@@ -54,10 +65,31 @@
 #endif
 
 /* What a site says when a value does not fit; @what names the value ("file",
-   "folder", "include folder") and the number is WPE_PATH_MAX. */
+   "folder", "include folder") and the number is the system's, which the
+   helpers below fill in.  No site formats this itself. */
 #define WPE_PATH_TOO_LONG_FMT "The %s path is longer than the system allows (%d bytes)."
 /* Room for that sentence with its words and number filled in. */
 #define WPE_PATH_MSG_MAX 160
+
+/** wpe_path_say_too_long - The sentence a user reads when the editor refuses
+ *  a path; @what names it ("project", "include folder").
+ *
+ *  The number is the system's own limit, because every path the editor
+ *  refuses is longer than the editor's room, which is never smaller than the
+ *  system's: the user is told the bound their system really has (1024 on
+ *  macOS and the BSDs), not the editor's 4096.
+ *  @out holds @n bytes, WPE_PATH_MSG_MAX is enough. */
+static inline void wpe_path_say_too_long(char *out, size_t n, const char *what)
+{
+  snprintf(out, n, WPE_PATH_TOO_LONG_FMT, what, (int)WPE_PLATFORM_PATH_MAX);
+}
+
+/** wpe_path_say_name_too_long - The same sentence for one file name, with
+ *  the system's limit for a name (255 on most systems), not the editor's. */
+static inline void wpe_path_say_name_too_long(char *out, size_t n, const char *what)
+{
+  snprintf(out, n, WPE_PATH_TOO_LONG_FMT, what, (int)WPE_PLATFORM_NAME_MAX);
+}
 
 /* The only writers of a path into fixed storage.  Each returns 0, or -1 and
    leaves @out empty when the result would not fit: a path is whole or it is

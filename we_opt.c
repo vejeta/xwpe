@@ -1928,8 +1928,7 @@ int e_opt_say_file_missing(ECNT *cn, const char *what)
 
  if (!e_opt_file_missing(cn)) return(0);
  if (!cn || !cn->fb) return(1);
- snprintf(sentence, sizeof sentence, WPE_PATH_TOO_LONG_FMT,
-          "configuration folder", WPE_PATH_MAX);
+ wpe_path_say_too_long(sentence, sizeof sentence, "configuration folder");
  snprintf(line, sizeof line, "%s: %s", what, sentence);
  e_status_hold(line);
  e_status_paint(cn->fb, line);

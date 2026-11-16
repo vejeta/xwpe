@@ -8995,7 +8995,7 @@ static void e_d_compile_too_long(FENSTER *f, const char *what)
 {
  char msg[WPE_PATH_MSG_MAX];
 
- snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, what, WPE_PATH_MAX);
+ wpe_path_say_too_long(msg, sizeof msg, what);
  e_error(msg, 0, f->fb);
 }
 
@@ -28439,7 +28439,7 @@ static void e_lsp_say_path_too_long(FENSTER *f)
 {
  char msg[WPE_PATH_MSG_MAX];
 
- snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "file", WPE_PATH_MAX);
+ wpe_path_say_too_long(msg, sizeof msg, "file");
  e_error(msg, 0, f->fb);
 }
 

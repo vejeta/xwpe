@@ -57,7 +57,11 @@
 #     the buffers they moved are named in no source, and no string literal but
 #     the owner's WPE_PATH_TOO_LONG_FMT says a path is longer than the system
 #     allows (the allow file names the few sentences that are another
-#     owner's).
+#     owner's).  The owner's sentence and its number stay the owner's:
+#     WPE_PATH_TOO_LONG_FMT is named in no source but we_path.h, and no
+#     snprintf or sprintf takes WPE_PATH_MAX, WPE_NAME_MAX,
+#     WPE_PLATFORM_PATH_MAX or WPE_PLATFORM_NAME_MAX as an argument (a site
+#     says wpe_path_say_too_long or wpe_path_say_name_too_long).
 #
 # Exit: 0 clean, 1 offenders or a blind scanner.
 
@@ -389,13 +393,45 @@ scan_tree() {
         print "R10: " rel ":" FNR ": a path is cut by strncpy into a buffer the owner sized"
       if (l ~ /"[^"]*(path is longer than|path is too long)[^"]*"/) {
         if (rel in sent) sentused[rel] = 1
-        else print "R10: " rel ":" FNR ": a sentence about a path\047s length of its own: say WPE_PATH_TOO_LONG_FMT"
+        else print "R10: " rel ":" FNR ": a sentence about a path\047s length of its own: say wpe_path_say_too_long or wpe_path_say_name_too_long"
       }
     }
     END {
       for (k in sent) if (!(k in sentused))
         print "R10: stale allow line: " k " has no sentence about a path\047s length of its own"
     }' "$allow" "$t"/s/*.c "$t"/s/*.h >> "$out"
+
+  # Rule 10, the sentence and its number, over whole statements (a call split
+  # over lines is one statement).  WPE_PATH_TOO_LONG_FMT is named only in the
+  # owner's header, and no snprintf or sprintf takes one of the path numbers
+  # as an argument: a site that prints a number says its own, and it is the
+  # editor's room, not the system's.  Whole words only: WPE_PATH_MAX_HOPS is
+  # another number.
+  awk -v owner="$OWNER_HEADER" "$AWK_LIB"'
+    BEGIN {
+      word = "(^|[^A-Za-z0-9_])"
+      endw = "([^A-Za-z0-9_]|$)"
+      numbers = word "(WPE_PATH_MAX|WPE_NAME_MAX|WPE_PLATFORM_PATH_MAX|WPE_PLATFORM_NAME_MAX)" endw
+      fmt = word "WPE_PATH_TOO_LONG_FMT" endw
+      fn = word "(snprintf|sprintf)[ \t]*\\("
+    }
+    {
+      cut_stmt($0)
+      if (REL == owner) next
+      if (S ~ fmt)
+        print "R10: " REL ":" LN ": WPE_PATH_TOO_LONG_FMT is named outside " owner ": say wpe_path_say_too_long or wpe_path_say_name_too_long"
+      rest = S
+      while (match(rest, fn)) {
+        start = RSTART + RLENGTH
+        n = arg_split(rest, start)
+        for (k = 1; k <= n; k++)
+          if (ARGS[k] ~ numbers) {
+            print "R10: " REL ":" LN ": a path number is an argument of snprintf or sprintf: the sentence and its number are the owner\047s"
+            break
+          }
+        rest = substr(rest, start)
+      }
+    }' "$t/stmts" >> "$out"
 
   # Rule 9: copies counted per function, against the allow file.  A function
   # starts at a line in column 0 that names an identifier followed by "(" and
@@ -584,6 +620,17 @@ canary R10 'const char *planted = "Name path is too long";' || blind=1
 quiet_canary R10 'const char *planted = "The file path is too long";' 'SENTENCE|we_planted.c|the debugger'\''s own line' || blind=1
 canary R10 'int planted;' 'SENTENCE|we_planted.c|stale' || blind=1
 quiet_canary R10 '/* the path is longer than */ int planted;' || blind=1
+# Rule 10, the owner's sentence and number: a site formatting the sentence
+# itself (split over two lines, as one is), and a site printing a path number.
+canary R10 'void planted(char *m, int n) { snprintf(m, n, WPE_PATH_TOO_LONG_FMT, "file", 4096); }' || blind=1
+canary R10 'void planted(char *m, int n) {
+ snprintf(m, n, "the %s limit is %d",
+          "file", WPE_PATH_MAX);
+}' || blind=1
+canary R10 'void planted(char *m, int n) { sprintf(m, "%d", WPE_NAME_MAX); }' || blind=1
+canary R10 'void planted(char *m, int n) { snprintf(m, n, "%d", WPE_PLATFORM_PATH_MAX); }' || blind=1
+quiet_canary R10 'void planted(char *m, int n) { snprintf(m, n, "%d", WPE_PATH_MAX_HOPS); }' || blind=1
+quiet_canary R10 'void planted(char *m, int n) { wpe_path_say_too_long(m, n, "file"); }' || blind=1
 
 if [ ! -f "$ALLOW" ]; then
   echo "check-path-buffers: no allow file at $ALLOW"

@@ -2323,7 +2323,7 @@ static int e_x_system_script(char *file, size_t sz)
  {
   char msg[WPE_PATH_MSG_MAX];
 
-  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "temporary folder", WPE_PATH_MAX);
+  wpe_path_say_too_long(msg, sizeof msg, "temporary folder");
   if (WpeEditor && WpeEditor->mxedt >= 0)
    e_message(0, msg, WpeEditor->f[WpeEditor->mxedt]);
   return(-1);

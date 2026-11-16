@@ -705,7 +705,7 @@ static void WpeFileNameTake(FENSTER *f, char *filen, const char *name)
 
   if(wpe_path_copy(filen, WPE_NAME_SIZE, name) == 0)
     return;
-  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "file name", WPE_NAME_MAX);
+  wpe_path_say_name_too_long(msg, sizeof msg, "file name");
   e_error(msg, 0, f->fb);
 }
 
@@ -755,7 +755,7 @@ static int WpeProjectPathOf(FENSTER *f, char *out, size_t n, const char *name)
     refused = wpe_path_join(out, n, f->dirct, name);
   if(refused == 0)
     return(0);
-  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "project", WPE_PATH_MAX);
+  wpe_path_say_too_long(msg, sizeof msg, "project");
   e_error(msg, 0, f->fb);
   return(-1);
 }
@@ -784,7 +784,7 @@ static char *WpeTargetNameNew(FENSTER *f, const char *name)
   if(wpe_path_copy(buf, WPE_PATH_SIZE, name) == 0)
     return(buf);
   FREE(buf);
-  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "file name", WPE_PATH_MAX);
+  wpe_path_say_too_long(msg, sizeof msg, "file name");
   e_error(msg, 0, f->fb);
   return(NULL);
 }
@@ -3823,7 +3823,7 @@ int e_ed_man(char *str, FENSTER * f)
   WpeMouseChangeShape(WpeWorkingShape);
   if(e_man_outfile(tstr, sizeof tstr, str) != 0)
   {
-    snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "temporary folder", WPE_PATH_MAX);
+    wpe_path_say_too_long(msg, sizeof msg, "temporary folder");
     e_error(msg, 0, f->fb);
     WpeMouseRestoreShape();
     return(0);

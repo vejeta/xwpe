@@ -408,7 +408,7 @@ static int WpeDragTarget(FENSTER *f, char *tmp, size_t n, const char *dirct, con
 
   if(wpe_path_join(tmp, n, dirct, name) == 0)
     return(0);
-  snprintf(msg, sizeof msg, WPE_PATH_TOO_LONG_FMT, "target file", WPE_PATH_MAX);
+  wpe_path_say_too_long(msg, sizeof msg, "target file");
   e_error(msg, 0, f->fb);
   return(-1);
 }
