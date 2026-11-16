@@ -221,6 +221,12 @@ check_listed() {
 # (WPE_TEST_UNPRIVILEGED=1, set by contrib/bsd-test/ci-run.sh) must find file
 # modes honoured, so test_write_owner must not skip its two permission rows.
 # A probe that always skips would otherwise let those rows pass silently.
+#
+# This is a backstop for a probe that is bypassed.  The probes of
+# tests/testdir.h now print a FAIL themselves, and count it, when the run
+# says it is unprivileged, so this check cannot fire for them.  It stays for
+# a row that prints the SKIP line by hand instead of going through
+# test_premise.
 check_unprivileged_skips() {
   [ "$WPE_TEST_UNPRIVILEGED" = 1 ] || return 0
   rowlog=$(row_log_of test_write_owner "$1")

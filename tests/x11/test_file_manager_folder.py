@@ -14,6 +14,8 @@ import time
 
 import pytest
 
+from mode_premise import special_bits_settable, workdir_in_my_group
+
 PTY = {"XWPE_TEST_PTY": True}
 WAIT_S = 20.0
 
@@ -62,6 +64,8 @@ def _copy_folder(xwpe, wd, name, dest):
 @pytest.mark.parametrize("xwpe", [PTY], indirect=True)
 def test_x11_a_folder_copy_is_whole_keeps_its_modes_and_needs_no_key(xwpe):
     wd = os.path.dirname(xwpe.srcfile)
+    workdir_in_my_group(wd)
+    special_bits_settable(wd, stat.S_ISGID)
     _make_folders(wd)
     _copy_folder(xwpe, wd, "sd", "sdcopy")
     time.sleep(0.5)

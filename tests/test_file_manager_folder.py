@@ -30,6 +30,7 @@ import pytest
 pytest.importorskip("pyte")
 
 import procinfo                            # noqa: E402
+from mode_premise import special_bits_settable, workdir_in_my_group   # noqa: E402
 from wpe_driver import WpeSession          # noqa: E402
 from test_file_manager_copy import (        # noqa: E402
     ALT_L, ALT_M, ALT_O, ALT_R, CR, ESC, DEFAULT, DONT_OVERWRITE,
@@ -127,6 +128,8 @@ def test_a_folder_copy_is_whole_and_keeps_its_modes(tmp_path, hidden_and_odd):
     no key was needed.  The earlier copy gave 0775 and 0755, left the hidden
     file behind, and its box stood waiting for a key."""
     wd = str(tmp_path)
+    workdir_in_my_group(wd)
+    special_bits_settable(wd, stat.S_ISGID)
     _seed(wd, DEFAULT, {"aaa.txt": "a\n"})
     for name, mode in (("sd", 0o777), ("sg", 0o2755)):
         folder = os.path.join(wd, name)

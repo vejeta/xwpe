@@ -533,6 +533,17 @@ test_write_owner_CFLAGS = $(TEST_CFLAGS)
 test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c
 test_fileop_CFLAGS = $(TEST_CFLAGS)
 
+# The one place a C test makes its folder and states what it assumes about
+# the user running it (tests/testdir.h): the folder is in a group of the
+# user's, a mode is read back, a premise that does not hold is a SKIP by name
+# or, in an unprivileged run, a counted FAIL.  The refusals of a BSD are made
+# on any system by the fake chown and fchmod (tests/fakechmod.h).
+# tests/check-mode-premise.sh fails a test that sets a special-bit mode
+# without it.
+check_PROGRAMS += test_testdir
+test_testdir_SOURCES = tests/test_testdir.c tests/testdir.h tests/fakechmod.h
+test_testdir_CFLAGS = $(TEST_CFLAGS)
+
 # The same owner behind a line protocol, for the edit model's walks
 # (tests/edit_model/cdriver.py).  Built by `make check`, not run by it.
 edit_driver_SOURCES = tests/edit_driver.c we_buffer.c
@@ -878,6 +889,12 @@ TESTS += test_watchdog tests/check-with-deadline.sh
 # LOG, NO SUMMARY, CHECK FAILED), so Linux runs its own self-test.
 TESTS += tests/check-bsd-known-failures.sh
 
+# The folder and the premises of a test that sets a special bit or a mode
+# that keeps a user out come from one helper (tests/testdir.h, tested by
+# test_testdir); tests/check-mode-premise.sh fails a test that does it
+# without.
+TESTS += test_testdir tests/check-mode-premise.sh
+
 # One owner of what the editor decides about a program it starts: the
 # start plan (we_startplan.c).  Every line of the start sites that builds a
 # command line, a working folder or a shell line, or names a folder's
@@ -1130,6 +1147,8 @@ EXTRA_DIST = \
   tests/with-deadline.sh \
   tests/bsd-known-failures.sh \
   tests/check-bsd-known-failures.sh \
+  tests/check-mode-premise.sh \
+  tests/mode_premise.py \
   tests/check-with-deadline.sh \
   tests/test_watchdog.h \
   tests/check-start-plan.sh \

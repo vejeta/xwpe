@@ -25,6 +25,7 @@
 
 #include "../edit.h"
 #include "../we_write.h"
+#include "testdir.h"
 
 static int fails;
 
@@ -111,11 +112,8 @@ static int made_n;
 
 static void make_dir(void)
 {
- snprintf(dir, sizeof dir, "%s/wo.XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
- if (!mkdtemp(dir)) {
-  perror("mkdtemp");
+ if (test_dir_make(dir, sizeof dir, "wo") != 0 && dir[0] == '\0')
   exit(2);
- }
  if (made_n < 32)
   snprintf(made[made_n++], sizeof made[0], "%s", dir);
 }
@@ -139,86 +137,11 @@ static void path_of(char *out, size_t n, const char *name)
  snprintf(out, n, "%s/%s", dir, name);
 }
 
+/* A file of the test folder with this text and exactly this mode; a setup
+   that cannot be made says which step failed and counts as a failure. */
 static void put_file(const char *name, const char *text, mode_t mode)
 {
- char p[512];
- FILE *fp;
-
- path_of(p, sizeof p, name);
- unlink(p);
- fp = fopen(p, "w");
- fputs(text, fp);
- fclose(fp);
- chmod(p, mode);
-}
-
-/**
- * folder_refuses_new_files - Ask the system whether a 0500 folder keeps files out.
- *
- * Two rows below need a folder that says no to a new file.  A user who is
- * root, or holds the capability that overrides file modes, can create the
- * file anyway, and the rows would then fail for a reason that has nothing to
- * do with the editor.  This tries it in the current test folder, so the rows
- * skip by name on such a user and run for everybody else.
- *
- * Return: 1 when the create was refused, 0 when it succeeded.
- */
-static int folder_refuses_new_files(void)
-{
- char p[512];
- int fd, refused;
-
- path_of(p, sizeof p, "probe_new");
- chmod(dir, 0500);
- fd = open(p, O_WRONLY | O_CREAT | O_EXCL, 0600);
- chmod(dir, 0700);
- refused = (fd < 0);
- if (fd >= 0)
- {
-  close(fd);
-  unlink(p);
- }
- return(refused);
-}
-
-/**
- * write_only_file_is_unreadable - Ask the system whether a 0200 file keeps its reader out.
- *
- * The row that writes a file the user can write but not read needs the read
- * to fail.  A user whose file modes are overridden reads it, a backup is made,
- * and the row would fail for the wrong reason.  This tries it in the current
- * test folder.
- *
- * Return: 1 when the read was refused, 0 when it succeeded.
- */
-static int write_only_file_is_unreadable(void)
-{
- char p[512];
- int fd, refused;
-
- put_file("probe_read", "x\n", 0200);
- path_of(p, sizeof p, "probe_read");
- fd = open(p, O_RDONLY);
- refused = (fd < 0);
- if (fd >= 0)
-  close(fd);
- unlink(p);
- return(refused);
-}
-
-/**
- * premise_holds - Say by name why a row is skipped when what it needs is missing.
- *
- * A skipped row shows in the log with its reason, so a run that cannot test a
- * permission row says so instead of failing or passing silently.
- *
- * Return: HOLDS, so the caller can write "if (!premise_holds(...)) return;".
- */
-static int premise_holds(int holds, const char *row, const char *missing)
-{
- if (!holds)
-  printf("SKIP: %s: %s\n", row, missing);
- return(holds);
+ test_put_mode(dir, name, text, mode);
 }
 
 static char *get_file(const char *name, char *buf, size_t n)
@@ -447,8 +370,8 @@ static void test_backup_not_made_in_a_folder_that_refuses(void)
  char p[512], buf[256], s[WPE_WRITE_SENTENCE_MAX];
 
  make_dir();
- if (!premise_holds(folder_refuses_new_files(), "a backup is not made in a folder that refuses",
-                    "this user can create files in a 0500 folder (root, or a capability that overrides file modes)"))
+ if (!test_premise(test_premise_folder_refuses_new_files(dir), "a backup is not made in a folder that refuses",
+                   "this user can create files in a 0500 folder (root, or a capability that overrides file modes)"))
   return;
  put_file("t.c", "old\n", 0644);
  chmod(dir, 0500);
@@ -733,8 +656,8 @@ static void test_a_failure_with_no_backup_says_the_file_may_be_cut_short(void)
  char s[WPE_WRITE_SENTENCE_MAX];
 
  make_dir();
- if (!premise_holds(write_only_file_is_unreadable(), "a failure with no backup says the file may be cut short",
-                    "this user can read a 0200 file (root, or a capability that overrides file modes)"))
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "a failure with no backup says the file may be cut short",
+                   "this user can read a 0200 file (root, or a capability that overrides file modes)"))
   return;
  put_file("t.c", "old\n", 0200);
  write_past_limit(f, "t.c", &o, 2048, 4096);
@@ -752,15 +675,10 @@ static void test_a_restore_keeps_the_files_group(void)
  WpeWriteOutcome o;
  FENSTER *f = make_window();
  char *old = big(1024, 'o'), p[512];
- gid_t groups[64], other = (gid_t)-1;
+ gid_t other = test_other_group();
  struct stat st;
- int n, i;
 
- n = getgroups((int)(sizeof groups / sizeof groups[0]), groups);
- for (i = 0; i < n && other == (gid_t)-1; i++)
-  if (groups[i] != getegid())
-   other = groups[i];
- if (other == (gid_t)-1)
+ if (other == TEST_DIR_NO_GROUP)
  {
   printf("SKIP: a restore keeps the file's group: no second group\n");
   return;
@@ -799,6 +717,7 @@ int main(void)
  test_a_restore_keeps_the_files_group();
  free_garbage();
  remove_made_dirs();
+ fails += test_dir_failures;
  if (fails) {
   printf("test_write_owner: %d failure(s)\n", fails);
   return(1);

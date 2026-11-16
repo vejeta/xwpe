@@ -35,6 +35,7 @@ pytest.importorskip("pyte")
 
 import procinfo                            # noqa: E402
 import wpe_driver                          # noqa: E402
+from mode_premise import special_bits_settable, workdir_in_my_group   # noqa: E402
 from wpe_driver import WpeSession          # noqa: E402
 
 F3 = "\033OR"
@@ -676,6 +677,8 @@ def test_remove_into_a_wastebasket_open_to_others_closes_it(tmp_path):
 # @scenario SC-unsaved-text-45
 def test_attributes_keep_the_bits_the_dialog_does_not_show(tmp_path):
     wd = str(tmp_path)
+    workdir_in_my_group(wd)
+    special_bits_settable(wd, stat.S_ISGID)
     _seed(wd, DEFAULT, {"aaa.txt": "a\n"})
     folder = os.path.join(wd, "sg")
     os.makedirs(folder)

@@ -48,6 +48,8 @@
 #include "../edit.h"
 #include "../we_write.h"
 #include "../we_fileop.h"
+#include "testdir.h"
+#include "fakechmod.h"
 
 static int fails;
 
@@ -105,11 +107,8 @@ static int remove_entry(const char *path, const struct stat *sb, int type, struc
 
 static void make_dir(void)
 {
- snprintf(dir, sizeof dir, "%s/fo.XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
- if (!mkdtemp(dir)) {
-  perror("mkdtemp");
+ if (test_dir_make(dir, sizeof dir, "fo") != 0 && dir[0] == '\0')
   exit(2);
- }
  setenv("HOME", dir, 1);
  unsetenv("XWPE_TEST_FAIL");
 }
@@ -118,12 +117,8 @@ static void make_other(void)
 {
  struct stat a, b;
 
- other[0] = '\0';
- snprintf(other, sizeof other, "/dev/shm/fo.XXXXXX");
- if (!mkdtemp(other)) {
-  other[0] = '\0';
+ if (test_dir_make_under("/dev/shm", other, sizeof other, "fo") != 0 && other[0] == '\0')
   return;
- }
  if (stat(dir, &a) == 0 && stat(other, &b) == 0 && a.st_dev == b.st_dev) {
   nftw(other, remove_entry, 8, FTW_DEPTH | FTW_PHYS);
   other[0] = '\0';
@@ -143,18 +138,12 @@ static void path_of(char *out, size_t n, const char *name)
  snprintf(out, n, "%s/%s", dir, name);
 }
 
-static void put(const char *name, const char *text, mode_t mode)
+/* A file of the test folder with this text and exactly this mode.  A setup
+   that cannot be made says which step failed and counts as a failure; the
+   rows after it still run.  Returns 0, or -1. */
+static int put(const char *name, const char *text, mode_t mode)
 {
- char p[512];
- int fd;
-
- path_of(p, sizeof p, name);
- fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0600);
- if (fd < 0 || write(fd, text, strlen(text)) < 0 || fchmod(fd, mode) != 0) {
-  perror("put");
-  exit(2);
- }
- close(fd);
+ return(test_put_mode(dir, name, text, mode));
 }
 
 static int get(const char *path, char *buf, size_t n)
@@ -253,19 +242,25 @@ static void test_private_and_special_bits(void)
  char path[512];
 
  make_dir();
- put("suid.txt", "setuid\n", 04755);
- put("sgid.txt", "setgid\n", 02755);
- put("priv.txt", "private\n", 0600);
  policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
  chdir(dir);
- chk_int("copy setuid", wpe_fileop_copy("suid.txt", "suid.copy", &p, &o), 0);
- path_of(path, sizeof path, "suid.copy");
- stat(path, &st);
- chk_int("setuid kept after the data", st.st_mode & 07777, 04755);
- chk_int("copy setgid", wpe_fileop_copy("sgid.txt", "sgid.copy", &p, &o), 0);
- path_of(path, sizeof path, "sgid.copy");
- stat(path, &st);
- chk_int("setgid kept after the data", st.st_mode & 07777, 02755);
+ if (test_premise(test_premise_special_bits_settable(dir, S_ISUID), "a copy keeps setuid",
+                  "this user cannot set setuid in the test folder")) {
+  put("suid.txt", "setuid\n", 04755);
+  chk_int("copy setuid", wpe_fileop_copy("suid.txt", "suid.copy", &p, &o), 0);
+  path_of(path, sizeof path, "suid.copy");
+  stat(path, &st);
+  chk_int("setuid kept after the data", st.st_mode & 07777, 04755);
+ }
+ if (test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a copy keeps setgid",
+                  "this user cannot set setgid in the test folder")) {
+  put("sgid.txt", "setgid\n", 02755);
+  chk_int("copy setgid", wpe_fileop_copy("sgid.txt", "sgid.copy", &p, &o), 0);
+  path_of(path, sizeof path, "sgid.copy");
+  stat(path, &st);
+  chk_int("setgid kept after the data", st.st_mode & 07777, 02755);
+ }
+ put("priv.txt", "private\n", 0600);
  chk_int("copy private", wpe_fileop_copy("priv.txt", "priv.copy", &p, &o), 0);
  path_of(path, sizeof path, "priv.copy");
  stat(path, &st);
@@ -640,6 +635,22 @@ static void test_link(void)
  clean();
 }
 
+/* Permissions keep the special bits the dialog does not show.  Needs a
+   folder in which this user may set setgid; skipped by name without one. */
+static void test_chmod_keeps_the_special_bits(WpeFileOpOutcome *o)
+{
+ struct stat st;
+
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "chmod keeps the special bits",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ if (test_mkdir_mode(dir, "g", 02755) != 0)
+  return;
+ chk_int("chmod", wpe_fileop_chmod("g", 0750, o), 0);
+ stat("g", &st);
+ chk_int("setgid kept", st.st_mode & 07777, 02750);
+}
+
 /* Remove, the wastebasket and the permissions. */
 static void test_remove(void)
 {
@@ -680,12 +691,7 @@ static void test_remove(void)
  chk_int("a name that is not there", wpe_fileop_remove("b.txt", &p, &o), -1);
  wpe_fileop_sentence(buf, sizeof buf, &o);
  chk_has("says it", buf, "Cannot remove");
- /* permissions keep the special bits the dialog does not show */
- mkdir("g", 02755);
- chmod("g", 02755);
- chk_int("chmod", wpe_fileop_chmod("g", 0750, &o), 0);
- stat("g", &st);
- chk_int("setgid kept", st.st_mode & 07777, 02750);
+ test_chmod_keeps_the_special_bits(&o);
  clean();
 }
 
@@ -800,25 +806,29 @@ static void test_tree_whole_and_permissions(void)
 {
  WpeFileOpPolicy p;
  WpeFileOpOutcome o;
+ int setgid_ok;
+ mode_t sg_mode;
 
  make_dir();
+ setgid_ok = test_premise_special_bits_settable(dir, S_ISGID);
+ sg_mode = setgid_ok ? 02755 : 0755;     /* only the "setgid kept" row needs the bit */
  chdir(dir);
- mkdir("sd", 0777);
- chmod("sd", 0777);
- mkdir("sg", 02755);
- chmod("sg", 02755);
+ if (test_mkdir_mode(dir, "sd", 0777) != 0 || test_mkdir_mode(dir, "sg", sg_mode) != 0) {
+  clean();
+  return;
+ }
  put("sg/.hidden", "H\n", 0600);
  put("sg/a.c", "C\n", 0644);
  put("sg/note.txt", "N\n", 0644);
- mkdir("sg/sub", 0711);
- chmod("sg/sub", 0711);          /* a folder made in a setgid folder is setgid */
+ test_mkdir_mode(dir, "sg/sub", 0711);   /* a folder made in a setgid folder is setgid */
  put("sg/sub/deep.txt", "D\n", 0644);
 
  tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
  chk_int("copy", wpe_fileop_copy_tree("sd", "sdcopy", &p, &o), 0);
  chk_int("0777 kept", mode_of("sdcopy"), 0777);
  chk_int("copy 2755", wpe_fileop_copy_tree("sg", "sgcopy", &p, &o), 0);
- chk_int("setgid kept", mode_of("sgcopy"), 02755);
+ if (test_premise(setgid_ok, "a copied folder keeps setgid", "this user cannot set setgid in the test folder"))
+  chk_int("setgid kept", mode_of("sgcopy"), 02755);
  chk_file("hidden entry", "sgcopy/.hidden", "H\n");
  chk_file("an entry any pattern hides", "sgcopy/note.txt", "N\n");
  chk_file("a subfolder's entry", "sgcopy/sub/deep.txt", "D\n");
@@ -826,7 +836,7 @@ static void test_tree_whole_and_permissions(void)
  chk_int("the file's own mode", mode_of("sgcopy/.hidden"), 0600);
 
  /* an existing destination: merged into, its mode and its files kept */
- mkdir("ex", 0700);
+ test_mkdir_mode(dir, "ex", 0700);
  put("ex/mine.txt", "MINE\n", 0644);
  put("ex/a.c", "OLD\n", 0644);
  tree_policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
@@ -1622,6 +1632,7 @@ int main(void)
  test_move();
  test_link();
  test_remove();
+ fails += test_dir_failures;
  if (fails) {
   printf("test_fileop: %d failure(s)\n", fails);
   return(1);

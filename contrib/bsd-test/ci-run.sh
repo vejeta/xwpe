@@ -145,7 +145,7 @@ sh tests/bsd-known-failures.sh "$os" bsd-out/check.log "$check_rc" || rc=1
   > bsd-out/probe.log 2>&1 || { rc=1; tail -20 bsd-out/probe.log; }
 run_xvfb_smoke
 WPE_BIN="$PWD/wpe" tests/with-deadline.sh 600 $PY -m pytest -q -p no:cacheprovider \
-  tests/test_menu_file.py tests/test_option_file_sections.py > bsd-out/pytest.log 2>&1 \
+  tests/test_menu_file.py tests/test_option_file_sections.py tests/test_file_manager_folder.py > bsd-out/pytest.log 2>&1 \
   || { rc=1; tail -20 bsd-out/pytest.log; }
 cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
 exit $rc
