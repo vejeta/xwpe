@@ -81,6 +81,13 @@
 #     The token `filemode` also counts on preprocessor lines, where a macro
 #     could carry it anywhere.  So the special bits of a write come from the
 #     file it opened, never from a mode recorded at load.
+# 17. The special bits a File Manager copy is given are decided in one place.
+#     Outside we_write.c, wpe_write_set_special_bits( is called only in
+#     fileop_job_fill_temp, its second argument is the variable `keep`, `keep`
+#     is assigned once, from fileop_bits_for_copy( (which compares the owner
+#     and group of the copy with the original's), and never changed after.
+#     Passing the original's mode, or that mode masked, gives a program of
+#     another user to whoever copies it.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -189,7 +196,29 @@ scan() {
     function flush_fn(   r) {
       if (fn == "") return
       for (r in cnt) if (cnt[r] > 0) print r, file, fn, cnt[r]
-      delete cnt; delete taken
+      delete cnt; delete taken; bound17 = 0
+    }
+    # rule 17 for the code of one statement, strings blanked.  The set-ID bits
+    # a copy is given are the value fileop_bits_for_copy returned, held in
+    # `keep` and never changed: the call that puts them on is in
+    # fileop_job_fill_temp and its second argument is that `keep`.  The
+    # definition (we_write.c) is no call.
+    function note17(m,   t, rest, arg) {
+      t = m
+      if (fn != "fileop_job_fill_temp") { }
+      else if (match(t, /(^|[^A-Za-z0-9_.>])keep[ \t]*=[ \t]*fileop_bits_for_copy[ \t]*[(]/)) bound17 = 1
+      else if (match(t, /(^|[^A-Za-z0-9_.>])keep[ \t]*(\|=|&=|\^=|<<=|>>=|=[^=])/)) note("r17", 1)
+      t = m
+      while (fn == "fileop_job_fill_temp" && match(t, /(^|[^A-Za-z0-9_.>])wpe_write_set_mode_fd[ \t]*[(]/)) {
+        note("r17", 1); t = substr(t, RSTART + RLENGTH)
+      }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])wpe_write_set_special_bits[ \t]*[(]/)) {
+        rest = substr(t, RSTART + RLENGTH)
+        arg = rest; sub(/^[^,]*,[ \t]*/, "", arg); sub(/[ \t]*[,)].*/, "", arg)
+        if (fn != "fileop_job_fill_temp" || arg != "keep" || !bound17) note("r17", 1)
+        t = rest
+      }
     }
     function prev_char(s, p,   i, c) {
       for (i = p - 1; i >= 1; i--) { c = substr(s, i, 1); if (c != " " && c != "\t") return c }
@@ -306,6 +335,9 @@ scan() {
         if (fn != "write_mode_set") note("r12", 1)
         t = substr(t, RSTART + RLENGTH)
       }
+      # rule 17 (every file but we_write.c): the set-ID bits of a copy are
+      # the ones fileop_bits_for_copy returned
+      if (file != "we_write.c") note17(m)
       # rule 15 (we_write.c only): the recorded mode of a window is read in one
       # function, as its nine bits, and that function names no special bit
       note15(m)
@@ -574,6 +606,61 @@ static void write_mode_before_data(const WriteTarget *t, FENSTER *f)
  write_mode_set(t, (f->filemode & WRITE_NINE_BITS) | 0xC00 | 1024 | (1 << 9));
 }
 EOF
+  # rule 17: the original's mode given to a copy, that mode masked, a
+  # `keep` changed after the owner returned it, and the right shape
+  cat > "$WORK/we_fake_r17a.c" <<'EOF'
+static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
+{
+ err = wpe_write_set_special_bits(fd, j->sst.st_mode, &j->kept);
+ return(err);
+}
+EOF
+  cat > "$WORK/we_fake_r17b.c" <<'EOF'
+static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
+{
+ mode_t keep = j->sst.st_mode & 07777;
+
+ err = wpe_write_set_special_bits(fd, keep, &j->kept);
+ return(err);
+}
+EOF
+  cat > "$WORK/we_fake_r17c.c" <<'EOF'
+static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
+{
+ mode_t keep;
+
+ keep = fileop_bits_for_copy(j, fd, &dropped);
+ keep |= S_ISUID;
+ err = wpe_write_set_special_bits(fd, keep, &j->kept);
+ return(err);
+}
+static int fileop_stash(FileJob *j, int fd)
+{
+ return(wpe_write_set_special_bits(fd, j->sst.st_mode, &j->kept));
+}
+EOF
+  cat > "$WORK/we_fake_r17d.c" <<'EOF'
+static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
+{
+ mode_t keep;
+
+ keep = fileop_bits_for_copy(j, fd, &dropped);
+ err = wpe_write_set_mode_fd(fd, j->sst.st_mode, &j->kept);
+ err = wpe_write_set_special_bits(fd, keep, &j->kept);
+ return(err);
+}
+EOF
+  cat > "$WORK/we_fake_r17ok.c" <<'EOF'
+static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
+{
+ mode_t keep;
+
+ keep = fileop_bits_for_copy(j, fd, &dropped);
+ err = wpe_write_sync_before_bits(fd, keep, durable);
+ err = wpe_write_set_special_bits(fd, keep, &j->kept);
+ return(err);
+}
+EOF
   cat > "$WORK/we_fake.h" <<'EOF'
 typedef struct {
  int filemode, flg;
@@ -582,6 +669,11 @@ typedef struct {
 EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
   scan "$WORK/we_fake_r15d.c" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r17a.c" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r17b.c" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r17c.c" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r17d.c" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r17ok.c" >> "$WORK/fake.found"
   scan_header_mode "$WORK/we_fake.h" >> "$WORK/fake.found"
   # the other two shapes a header can carry the mode in: a macro split by a
   # backslash, and a static inline function
@@ -607,6 +699,11 @@ EOF
               "r11 we_fake.c fake_walk 3" "r11 we_fake.c fake_entry 2" \
               "r12 we_fake.c fake_mode 1" "r13 we_fake.c fake_close 8" \
               "r14 we_fake.c fake_project 7" \
+              "r17 we_fake_r17a.c fileop_job_fill_temp 1" \
+              "r17 we_fake_r17b.c fileop_job_fill_temp 2" \
+              "r17 we_fake_r17c.c fileop_job_fill_temp 1" \
+              "r17 we_fake_r17c.c fileop_stash 1" \
+              "r17 we_fake_r17d.c fileop_job_fill_temp 1" \
               "r15 we_fake.c fake_save 1" "r15 we_fake.c (preprocessor) 1" \
               "r15 we_fake_r15a.c write_mode_before_data 1" \
               "r15 we_fake_r15b.c write_mode_before_data 3" \
@@ -619,6 +716,12 @@ EOF
       exit $BAD
     }
   done
+  # the right shape of the copy's mode is no offence
+  if grep -q "^r17 we_fake_r17ok.c " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: the mode fileop_bits_for_copy returned was counted; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
   # a function's own definition is not a call of it
   if grep -q "^r11 we_fake.c wpe_fileop_copy " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: a definition was counted as a path call; it found:)"
@@ -760,6 +863,8 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": the result of e_close_window is dropped; it says WPE_ESC when the window stays (a text window the user keeps, a project list its file refuses): read it, or list the function with its reason"
       else if (rule == "r15")
         print "offender: " $1 " " $2 ": the window'"'"'s recorded mode is read outside write_mode_before_data, or there as more than its nine bits, or that function names a special bit: the special bits of a write come from the file it opened, never from a mode recorded at load"
+      else if (rule == "r17")
+        print "offender: " $1 " " $2 ": the set-ID bits of a copy are not the ones fileop_bits_for_copy returned: it compares the owner and group of the copy with the original'"'"'s, so give wpe_write_set_special_bits the variable keep it assigned, and never the original'"'"'s mode (also not through wpe_write_set_mode_fd)"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else

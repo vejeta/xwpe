@@ -11,6 +11,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -171,6 +173,9 @@ int wpe_write_copy_fd(int from, int to, int *read_failed)
 
 /** getgroups with no list says how many groups the caller is in. */
 #define WRITE_NO_GROUPS 0
+
+/** Room for "user <name>" or "group <name>" in a sentence. */
+#define WRITE_WHO_WORDS 96
 
 /** The place a mode is applied to: an open file, or a name (a file that
     cannot be opened for reading and writing, a folder the user names). */
@@ -413,17 +418,116 @@ void wpe_write_bits_words(char *out, size_t n, mode_t bits)
 }
 
 /**
+ * write_user_words - "user alice", or "user 1001" when the system has no name for it.
+ * @out, @n: receive the words; @uid: the user.
+ */
+static void write_user_words(char *out, size_t n, uid_t uid)
+{
+ const struct passwd *pw = getpwuid(uid);
+
+ if (pw != NULL && pw->pw_name[0] != '\0')
+  snprintf(out, n, "user %s", pw->pw_name);
+ else
+  snprintf(out, n, "user %lu", (unsigned long)uid);
+}
+
+/**
+ * write_group_words - "group devs", or "group 50" when the system has no name for it.
+ * @out, @n: receive the words; @gid: the group.
+ */
+static void write_group_words(char *out, size_t n, gid_t gid)
+{
+ const struct group *gr = getgrgid(gid);
+
+ if (gr != NULL && gr->gr_name[0] != '\0')
+  snprintf(out, n, "group %s", gr->gr_name);
+ else
+  snprintf(out, n, "group %lu", (unsigned long)gid);
+}
+
+/**
+ * write_owners_reason - Why a copy was not given a set-ID bit of its original.
+ * @out, @n: receive the words; @o: who owned the copy and who the original.
+ *
+ * Tells the user who to ask: "the copy belongs to user root, the original
+ * to user alice" when a program of another user would otherwise have become
+ * the copier's, "the copy belongs to group users, the original to group
+ * devs" when only the group differs.
+ */
+static void write_owners_reason(char *out, size_t n, const WpeModeOwners *o)
+{
+ char copy[WRITE_WHO_WORDS], src[WRITE_WHO_WORDS];
+
+ if (o->other_owner)
+ {
+  write_user_words(copy, sizeof copy, o->uid_copy);
+  write_user_words(src, sizeof src, o->uid_src);
+ }
+ else
+ {
+  write_group_words(copy, sizeof copy, o->gid_copy);
+  write_group_words(src, sizeof src, o->gid_src);
+ }
+ snprintf(out, n, "the copy belongs to %s, the original to %s", copy, src);
+}
+
+/**
+ * wpe_write_kept_merge - Add what one change of mode did not keep to another's.
+ * @to: the record that goes on; @from: the one to add.
+ *
+ * A copy's set-ID bit dropped on purpose (another owner) and a bit the
+ * system refused are two records of one copy; the sentence the user reads
+ * names both bits and the first reason.
+ */
+void wpe_write_kept_merge(WpeModeKept *to, const WpeModeKept *from)
+{
+ if (from->lost == 0)
+  return;
+ if (to->lost == 0)
+ {
+  to->gid = from->gid;
+  to->in_group = from->in_group;
+ }
+ to->lost |= from->lost;
+ if (to->err == 0)
+  to->err = from->err;
+ to->changed |= from->changed;
+ if (from->owners.dropped != 0)
+  to->owners = from->owners;
+}
+
+/**
  * wpe_write_bits_reason - Why a special bit was not kept, in words.
  * @out, @n: receive the words; @k: what the mode owner reported.
  *
- * The same words on every system: a setgid bit the user could not have kept
- * because the file's group is not theirs says so (the BSDs refuse it with
- * EPERM, Linux drops it in silence, and both mean this); else the system's
- * own reason; else that the system cleared the bit.
+ * The same words on every system: a bit left off because the copy has
+ * another owner or group than its original says whose they are, and only
+ * for the bits it explains; a bit another way lost is explained after it.
+ * A setgid bit the user could not have kept because the file's group is not
+ * theirs says so (the BSDs refuse it with EPERM, Linux drops it in silence,
+ * and both mean this); else the system's own reason; else that the system
+ * cleared the bit.
  */
 void wpe_write_bits_reason(char *out, size_t n, const WpeModeKept *k)
 {
- if ((k->lost & S_ISGID) && !k->in_group)
+ WpeModeKept rest;
+ char first[WPE_PATH_SIZE], more[WPE_PATH_SIZE];
+
+ if (k->owners.dropped != 0)
+ {
+  rest = *k;
+  memset(&rest.owners, 0, sizeof rest.owners);
+  rest.lost &= ~k->owners.dropped;
+  write_owners_reason(first, sizeof first, &k->owners);
+  if (rest.lost == 0)
+   snprintf(out, n, "%s", first);
+  else
+  {
+   wpe_write_bits_reason(more, sizeof more, &rest);
+   snprintf(out, n, "%s; the rest: %s", first, more);
+  }
+ }
+ else if ((k->lost & S_ISGID) && !k->in_group)
   snprintf(out, n, "this user is not in group %lu", (unsigned long)k->gid);
  else if (k->err != 0)
   snprintf(out, n, "%s", strerror(k->err));

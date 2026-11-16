@@ -44,6 +44,8 @@
 #define FILEOP_HOOK_NO_RENAMEAT2   "fileop-no-renameat2"
 #define FILEOP_HOOK_NO_LINK        "fileop-no-link"
 #define FILEOP_HOOK_REFUSE_SPECIAL "fileop-refuse-special"
+#define FILEOP_HOOK_OTHER_OWNER    "fileop-other-owner"
+#define FILEOP_HOOK_OWNER_UNREADABLE "fileop-owner-unreadable"
 
 /** The wastebasket is the user's alone. */
 #define FILEOP_WASTEBASKET_MODE 0700
@@ -145,6 +147,7 @@ static void fileop_note_bits_lost(WpeFileOpBitsNote *n, const char *path, const 
  n->bits_err = k->err;
  n->bits_gid = k->gid;
  n->bits_in_group = k->in_group;
+ n->bits_owners = k->owners;
  snprintf(n->bits_path, sizeof n->bits_path, "%s", path);
 }
 
@@ -953,6 +956,104 @@ static int fileop_job_make_temp(FileJob *j, char *tmp, size_t n, int *fd)
  return(fileop_fail(j->o, WPE_FILEOP_STEP_CREATE, err));
 }
 
+/** The bits that make a program run as its owner or its group. */
+#define FILEOP_SETID_BITS (S_ISUID | S_ISGID)
+
+/**
+ * wpe_fileop_copy_mode - The mode a copy may be given, from who owns it and
+ * who owned the original.
+ * @wanted: the original's mode; @src_uid, @src_gid: the original's owner and
+ * group; @copy_uid, @copy_gid: the copy's; @dropped: receives the set-ID
+ * bits left off and why.
+ * Return: @wanted less the set-ID bits the copy may not have.
+ *
+ * Setuid stays only when the copy has the original's owner.  Setgid stays
+ * only when it has the original's owner and group.  The sticky bit says
+ * nothing about who owns a file and stays.  So a program of another user
+ * never runs as the user who copied it, which matters most when root copies
+ * a user's setuid program.  Pure: no file is read, so a test can give it any
+ * pair of owners.
+ */
+mode_t wpe_fileop_copy_mode(mode_t wanted, uid_t src_uid, gid_t src_gid, uid_t copy_uid, gid_t copy_gid, WpeModeKept *dropped)
+{
+ int owner_differs = (copy_uid != src_uid);
+ int group_differs = (copy_gid != src_gid);
+
+ memset(dropped, 0, sizeof *dropped);
+ if ((wanted & FILEOP_SETID_BITS) == 0)
+  return(wanted);
+ if ((wanted & S_ISUID) && owner_differs)
+  dropped->lost |= S_ISUID;
+ if ((wanted & S_ISGID) && (owner_differs || group_differs))
+  dropped->lost |= S_ISGID;
+ if (dropped->lost == 0)
+  return(wanted);
+ dropped->owners.dropped = dropped->lost;
+ dropped->owners.other_owner = owner_differs;
+ dropped->owners.other_group = !owner_differs;
+ dropped->owners.uid_copy = copy_uid;
+ dropped->owners.uid_src = src_uid;
+ dropped->owners.gid_copy = copy_gid;
+ dropped->owners.gid_src = src_gid;
+ dropped->gid = copy_gid;
+ dropped->in_group = wpe_write_caller_in_group(copy_gid);
+ return(wanted & ~dropped->lost);
+}
+
+/**
+ * fileop_read_copy_owner - Read who owns the copy this job made.
+ * @fd: the copy; @copy: receives its status.
+ * Return: 0, or -1 with errno.
+ *
+ * Two test hooks play the cases a user's machine cannot make: another owner
+ * (root copying another user's file) and an owner that cannot be read.
+ */
+static int fileop_read_copy_owner(const FileJob *j, int fd, struct stat *copy)
+{
+ if (fileop_test_hook(FILEOP_HOOK_OWNER_UNREADABLE))
+ {
+  errno = EIO;
+  return(-1);
+ }
+ if (fstat(fd, copy) != 0)
+  return(-1);
+ if (fileop_test_hook(FILEOP_HOOK_OTHER_OWNER))
+  copy->st_uid = j->sst.st_uid + 1;
+ return(0);
+}
+
+/**
+ * fileop_bits_for_copy - The mode a finished copy may be given.
+ * @fd: the copy, made by this job and not yet closed; @dropped: receives the
+ * set-ID bits that were left off and why.
+ * Return: the original's mode less the set-ID bits the copy may not have.
+ *
+ * Decided from the owner and group the system gave the copy (read from its
+ * descriptor), never from a name.  When root copies another user's setuid
+ * program, the copy belongs to root and would be a program that runs as
+ * root with text another user wrote; it is given no setuid bit, and the
+ * status row names the user and group involved.  A plain file costs no
+ * call.  A copy whose owner cannot be read gets no set-ID bit either, and
+ * the status row says why.
+ */
+static mode_t fileop_bits_for_copy(const FileJob *j, int fd, WpeModeKept *dropped)
+{
+ struct stat copy;
+ mode_t wanted = j->sst.st_mode;
+
+ memset(dropped, 0, sizeof *dropped);
+ if ((wanted & FILEOP_SETID_BITS) == 0)
+  return(wanted);
+ if (fileop_read_copy_owner(j, fd, &copy) != 0)
+ {
+  dropped->lost = (wanted & FILEOP_SETID_BITS);
+  dropped->err = errno;
+  dropped->in_group = 1;    /* the reason is the failed read, never a group */
+  return(wanted & ~dropped->lost);
+ }
+ return(wpe_fileop_copy_mode(wanted, j->sst.st_uid, j->sst.st_gid, copy.st_uid, copy.st_gid, dropped));
+}
+
 /**
  * fileop_job_fill_temp - Write the source into the copy and finish it.
  * @durable: the data is flushed to disk before the close.
@@ -966,6 +1067,8 @@ static int fileop_job_make_temp(FileJob *j, char *tmp, size_t n, int *fd)
 static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
 {
  int err, read_failed;
+ mode_t keep;
+ WpeModeKept dropped;
 
  wpe_write_guard_enter();
  err = wpe_write_copy_fd(sfd, fd, &read_failed);
@@ -975,21 +1078,23 @@ static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
   wpe_write_guard_leave();
   return(fileop_fail(j->o, read_failed ? WPE_FILEOP_STEP_SOURCE : WPE_FILEOP_STEP_WRITE, err));
  }
- err = wpe_write_sync_before_bits(fd, j->sst.st_mode, durable);
+ keep = fileop_bits_for_copy(j, fd, &dropped);
+ err = wpe_write_sync_before_bits(fd, keep, durable);
  if (err != 0)
  {
   close(fd);
   wpe_write_guard_leave();
   return(fileop_fail(j->o, WPE_FILEOP_STEP_WRITE, err));
  }
- err = wpe_write_set_special_bits(fd, j->sst.st_mode, &j->kept);
+ err = wpe_write_set_special_bits(fd, keep, &j->kept);
  if (err != 0)
  {
   close(fd);
   wpe_write_guard_leave();
   return(fileop_fail(j->o, WPE_FILEOP_STEP_MODE, err));
  }
- fileop_hook_refuse_special(&j->kept, j->sst.st_mode, EPERM);
+ wpe_write_kept_merge(&j->kept, &dropped);
+ fileop_hook_refuse_special(&j->kept, keep, EPERM);
  err = (close(fd) == 0 ? 0 : errno);
  if (err == 0 && fileop_test_hook(FILEOP_HOOK_CLOSE))
   err = EIO;
@@ -2576,6 +2681,7 @@ static void fileop_bits_clause(char *out, size_t n, const WpeFileOpBitsNote *b, 
  k.err = b->bits_err;
  k.gid = b->bits_gid;
  k.in_group = b->bits_in_group;
+ k.owners = b->bits_owners;
  wpe_write_bits_words(words, sizeof words, b->bits_lost);
  wpe_write_bits_reason(reason, sizeof reason, &k);
  if (target[0] != '\0')

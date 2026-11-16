@@ -504,7 +504,12 @@ Changes
   name in the destination's folder and renamed into place, so it never
   writes through a link at the destination, is never readable by others
   while a private file is being copied, and keeps setuid and setgid when
-  the system lets this user keep them.  A bit it does not let you keep (a
+  the system lets this user keep them and the copy has the original's
+  owner (setuid) or owner and group (setgid): root's copy of another
+  user's setuid program is no longer a program that runs as root, and the
+  status row names the bit with both identities ("the copy belongs to user
+  root, the original to user alice"), also for a Move to another file
+  system.  A bit it does not let you keep (a
   setgid file copied into a folder of a group you are not in) no longer
   fails the copy on FreeBSD, OpenBSD, NetBSD and macOS or goes in silence on
   Linux: the copy is made without it and the status row says which bit was

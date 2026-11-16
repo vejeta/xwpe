@@ -25,6 +25,7 @@
 #include <stddef.h>
 #include <sys/types.h>
 #include "we_path.h"
+#include "we_write.h"
 
 /** The folder of the files the user removed, under the home folder. */
 #define WPE_FILEOP_WASTEBASKET ".wastebasket"
@@ -77,6 +78,7 @@ typedef struct {
  int    bits_err;                  /* errno of the refusal, 0 for a silent drop */
  gid_t  bits_gid;                  /* that entry's group */
  int    bits_in_group;             /* the user is in that group */
+ WpeModeOwners bits_owners;        /* the copy had another owner or group than its original */
  long   bits_lost_count;           /* entries with a bit not kept; 0 = nothing to say */
  char   bits_path[WPE_PATH_SIZE];  /* the first such entry */
 } WpeFileOpBitsNote;
@@ -175,6 +177,11 @@ WPE_FILEOP_RESULT int wpe_fileop_wastebasket(char *out, size_t n, WpeFileOpOutco
 WPE_FILEOP_RESULT int wpe_fileop_wastebasket_slot(const char *path, char *out, size_t n, WpeFileOpOutcome *o);
 /* @path is the wastebasket or lies inside it. */
 int wpe_fileop_in_wastebasket(const char *path);
+
+/** The mode a copy may be given from who owns it and who owned its original:
+    setuid needs the same owner, setgid the same owner and group.  Pure, so a
+    test can give it any pair of owners; the copy itself decides through it. */
+mode_t wpe_fileop_copy_mode(mode_t wanted, uid_t src_uid, gid_t src_gid, uid_t copy_uid, gid_t copy_gid, WpeModeKept *dropped);
 
 /* The one sentence, from the outcome alone.  Returns the length, 0 when
    there is nothing to say (DONE with every special bit kept, a question

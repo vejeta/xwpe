@@ -1175,6 +1175,19 @@ same words on every system.  The reason: a bit the user could not have kept
 must not cost the copy, and a bit that is missing must not be missing in
 silence.
 
+@item A copy that changes hands
+The original gave a copy the source's whole mode after the data, so root's
+copy of another user's setuid program was a program that runs as root.
+xwpe keeps setuid on a copy only when the copy has the owner of the
+original, and setgid only when it has the owner and the group of the
+original.  This holds for a Copy, for a Move to another file system and
+for the copy of a replaced file that goes to the wastebasket.  A bit left
+off for that reason is named with both identities
+(@samp{Copied, but the setuid bit was not kept on tool: the copy belongs to
+user root, the original to user alice}).  The sticky bit says nothing about
+who owns a file and is kept.  The reason: a program must not run as a user
+who did not write it.
+
 @item A moved link
 The original rewrote a link's relative target as a path under the panel's
 folder when it moved the link to another file system.  xwpe keeps the text

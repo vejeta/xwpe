@@ -671,6 +671,42 @@ def test_remove_into_a_wastebasket_open_to_others_closes_it(tmp_path):
         assert stat.S_IMODE(os.stat(_wastebasket(wd)).st_mode) == 0o700
 
 
+# --- a copy that changes hands ---------------------------------------------------
+
+
+# @scenario SC-unsaved-text-48d
+def test_a_copy_into_another_group_is_named_on_the_status_row(tmp_path):
+    """A setgid file copied into a folder of another group of the user is a
+    copy with another group than its original: it gets no setgid bit and the
+    status row names both groups.  A real group of the user and a real
+    folder, no hook: the copy's group is the one the system gave it.  Skips
+    by name when the user has no second group.  The X11 and Wayland twins
+    are not needed: the sentence is made by shared code and shown by the
+    same status row on every backend."""
+    wd = str(tmp_path)
+    workdir_in_my_group(wd)
+    special_bits_settable(wd, stat.S_ISGID)
+    others = [g for g in os.getgroups() if g != os.getegid()]
+    if not others:
+        pytest.skip("this user has no second group to copy into")
+    _seed(wd, DEFAULT, {"a.txt": "prog\n"})
+    os.chmod(os.path.join(wd, "a.txt"), 0o2755)
+    folder = os.path.join(wd, "g2")
+    os.makedirs(folder)
+    os.chown(folder, -1, others[0])
+    os.chmod(folder, 0o2770)
+    with WpeSession(wd, "int main;\n") as s:
+        _open_files_panel(s)
+        _typed(s, "a.txt")
+        _op_to(s, ALT_O, "g2/a.txt")
+        time.sleep(0.8)
+        screen = _squash(s)
+        assert "thesetgidbitwasnotkept" in screen, "\n".join(s.display())
+        assert "thecopybelongstogroup" in screen, "\n".join(s.display())
+    assert _read(os.path.join(folder, "a.txt")) == "prog\n"
+    assert stat.S_IMODE(os.stat(os.path.join(folder, "a.txt")).st_mode) == 0o755
+
+
 # --- attributes ------------------------------------------------------------------
 
 

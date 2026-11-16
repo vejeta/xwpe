@@ -32,6 +32,19 @@ typedef enum {
  WPE_WRITE_FAILED       /* err and path say why and where */
 } WpeWriteStatus;
 
+/* Who owned a copy and who owned its original, when a copy was not given a
+   setuid or setgid bit because they differ.  other_owner: the user differs
+   (setuid and setgid are both dropped); other_group: the user is the same and
+   the group differs (setgid is dropped).  The ids are the two that were
+   compared. */
+typedef struct {
+ mode_t dropped;      /* the set-ID bits left off for this reason; 0 = none */
+ int   other_owner;
+ int   other_group;
+ uid_t uid_copy, uid_src;
+ gid_t gid_copy, gid_src;
+} WpeModeOwners;
+
 /* What a change of mode could not keep.  The editor gives a file every
    permission bit the system takes and names the special bit (setuid, setgid,
    sticky) it does not, instead of failing the copy or losing the bit in
@@ -44,6 +57,7 @@ typedef struct {
  gid_t  gid;        /* the file's group, read back */
  int    in_group;   /* the caller is in that group */
  int    changed;    /* a call succeeded: a failure after it is not "nothing was changed" */
+ WpeModeOwners owners;  /* a bit dropped on purpose because the copy has another owner or group */
 } WpeModeKept;
 
 typedef struct {
@@ -142,6 +156,7 @@ int  wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_mode_path(const char *path, mode_t mode, WpeModeKept *k);
 int  wpe_write_caller_in_group(gid_t gid);
+void wpe_write_kept_merge(WpeModeKept *to, const WpeModeKept *from);
 /* "setgid bit", "setuid and setgid bits"; and why they were not kept. */
 void wpe_write_bits_words(char *out, size_t n, mode_t bits);
 void wpe_write_bits_reason(char *out, size_t n, const WpeModeKept *k);

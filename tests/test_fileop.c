@@ -2303,6 +2303,320 @@ static void test_the_copy_is_named_before_the_stashed_file(void)
  clean();
 }
 
+/* ---- a copy keeps a set-ID bit only with its original's owner ----
+ *
+ * Root copying another user's setuid program, or a user copying one into a
+ * folder of another of their groups, makes a file whose owner or group is
+ * not the original's.  Setuid stays only with the same owner, setgid only
+ * with the same owner and group; sticky has no identity in it and stays.
+ * The decision is a pure function (wpe_fileop_copy_mode), so the rows that
+ * judge it give it any pair of owners and need no second user.  The rows
+ * that need a real copy (a move to another file system, the wastebasket,
+ * the one that cannot read the copy's owner) use the owner hooks of the
+ * file operations, which make the comparison see another owner; a copy by
+ * the same owner and group is a real file.  Rows marked "red" fail on a
+ * tree that gives the copy the original's whole mode (the pure rows do not
+ * link there); "guard" rows are green on it and name the mutation that
+ * turns them red. */
+
+#define OWNER_HOOK_OTHER "fileop-other-owner"
+#define OWNER_HOOK_UNREADABLE "fileop-owner-unreadable"
+
+/* The copy is to be judged as another user's, or unreadable, until
+   owner_hook_off. */
+static void owner_hook(const char *names)
+{
+ setenv("XWPE_TEST_FAIL", names, 1);
+}
+
+static void owner_hook_off(void)
+{
+ unsetenv("XWPE_TEST_FAIL");
+}
+
+/* A row that needs these bits on a file of the test folder. */
+static int owner_row_ready(const char *row, mode_t bits)
+{
+ return(test_premise(test_premise_special_bits_settable(dir, bits), row,
+                     "this user cannot set these special bits in the test folder"));
+}
+
+/* red: root's copy of another user's setuid program is not a setuid file.
+   A tree that gives the copy the original's mode keeps the bit.  Mutation
+   that turns the fixed tree red: compare nothing in fileop_bits_for_copy. */
+static void test_a_copy_of_another_users_file_drops_setuid_and_says_so(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ const char *row = "a copy of another user's file drops setuid";
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!owner_row_ready(row, S_ISUID) || put("t.txt", "tool\n", 04755) != 0) {
+  clean();
+  return;
+ }
+ owner_hook(OWNER_HOOK_OTHER);
+ chk_int("the copy is made", wpe_fileop_copy("t.txt", "t.copy", &p, &o), 0);
+ owner_hook_off();
+ chk_int("done", o.status, WPE_FILEOP_DONE);
+ chk_file("with every byte", "t.copy", "tool\n");
+ chk_int("without the bit, with the nine", mode_of("t.copy"), 0755);
+ chk_int("the original is as it was", mode_of("t.txt"), 04755);
+ chk_int("the bit named", o.note.bits_lost, S_ISUID);
+ chk_int("one entry", o.note.bits_lost_count, 1);
+ chk_has("says which bit", said(&o), "Copied, but the setuid bit was not kept on ");
+ chk_has("says where", said(&o), "t.copy");
+ chk_has("says whose the copy is", said(&o), "the copy belongs to user ");
+ chk_has("says whose the original is", said(&o), ", the original to user ");
+ clean();
+}
+
+/* red: the same owner and another group keeps setuid and drops setgid, and
+   says it is the group.  Mutation: compare the owner for setgid too (the
+   sentence then names a user). */
+static void test_a_copy_in_another_group_drops_setgid_only(void)
+{
+ WpeModeKept d;
+ char why[256];
+ mode_t got = wpe_fileop_copy_mode(06755, 1001, 50, 1001, 60, &d);
+
+ chk_int("setuid kept, setgid not", got, 04755);
+ chk_int("only setgid dropped", d.lost, S_ISGID);
+ chk_int("the group is the reason", d.owners.other_group, 1);
+ chk_int("not the owner", d.owners.other_owner, 0);
+ chk_int("the groups are recorded", (int)(d.owners.gid_copy * 1000 + d.owners.gid_src), 60 * 1000 + 50);
+ wpe_write_bits_reason(why, sizeof why, &d);
+ chk_has("says whose the copy is", why, "the copy belongs to group ");
+ chk_has("says whose the original is", why, ", the original to group ");
+}
+
+/* red: setgid needs the owner as well as the group: another user's file in
+   the copier's own group loses both bits. */
+static void test_a_copy_of_another_users_file_in_the_same_group_drops_both(void)
+{
+ WpeModeKept d;
+ char why[256];
+ mode_t got = wpe_fileop_copy_mode(06755, 1001, 50, 0, 50, &d);
+
+ chk_int("neither bit", got, 0755);
+ chk_int("both dropped", d.lost, S_ISUID | S_ISGID);
+ chk_int("the owner is the reason", d.owners.other_owner, 1);
+ wpe_write_bits_reason(why, sizeof why, &d);
+ chk_has("says whose the copy is", why, "the copy belongs to user ");
+ chk_has("says whose the original is", why, ", the original to user ");
+}
+
+/* red: a plain file, and a file with only the sticky bit, have no set-ID bit
+   to lose: whoever owns the copy, the mode comes back as it was and nothing
+   is named.  The same pair of owners as the rows above. */
+static void test_a_file_with_no_set_id_bit_loses_nothing_whoever_owns_the_copy(void)
+{
+ WpeModeKept d;
+
+ chk_int("a plain file", wpe_fileop_copy_mode(0644, 1001, 50, 0, 0, &d), 0644);
+ chk_int("nothing dropped", d.lost, 0);
+ chk_int("only sticky", wpe_fileop_copy_mode(01755, 1001, 50, 0, 0, &d), 01755);
+ chk_int("nothing dropped, sticky", d.lost, 0);
+}
+
+/* red: the same owner and group give the copy both bits and nothing is
+   named, for every mix of the two bits. */
+static void test_the_same_owner_and_group_drop_nothing_for_any_bit(void)
+{
+ WpeModeKept d;
+
+ chk_int("both", wpe_fileop_copy_mode(06755, 7, 8, 7, 8, &d), 06755);
+ chk_int("nothing dropped", d.lost, 0);
+ chk_int("no reason recorded", d.owners.dropped, 0);
+ chk_int("setuid alone", wpe_fileop_copy_mode(04755, 7, 8, 7, 8, &d), 04755);
+ chk_int("setgid alone", wpe_fileop_copy_mode(02755, 7, 8, 7, 8, &d), 02755);
+ chk_int("setgid alone, another group", wpe_fileop_copy_mode(02755, 7, 8, 7, 9, &d), 0755);
+ chk_int("setuid alone, another group keeps it", wpe_fileop_copy_mode(04755, 7, 8, 7, 9, &d), 04755);
+ chk_int("setuid alone, another owner", wpe_fileop_copy_mode(04755, 7, 8, 6, 8, &d), 0755);
+}
+
+/* A bit dropped on purpose is explained by its own reason, and a bit lost
+   another way keeps its own: the reason of one never stands for the other.
+   Mutation: let the owners' reason win whatever bit was lost. */
+static void test_a_reason_explains_only_the_bits_it_dropped(void)
+{
+ WpeModeKept to, d;
+ char why[512];
+
+ wpe_fileop_copy_mode(04755, 1001, 50, 0, 50, &d);
+ memset(&to, 0, sizeof to);
+ to.lost = S_ISGID;
+ to.err = EPERM;
+ to.in_group = 1;
+ wpe_write_kept_merge(&to, &d);
+ chk_int("both bits are lost", to.lost, S_ISUID | S_ISGID);
+ wpe_write_bits_reason(why, sizeof why, &to);
+ chk_has("the owners are named for setuid", why, "the copy belongs to user ");
+ chk_has("the refusal is named for the other bit", why, "Operation not permitted");
+ memset(&to, 0, sizeof to);
+ to.lost = S_ISGID;
+ to.err = EPERM;
+ to.in_group = 1;
+ memset(&d, 0, sizeof d);
+ wpe_write_kept_merge(&to, &d);
+ wpe_write_bits_reason(why, sizeof why, &to);
+ chk_str("a bit nothing dropped is explained by the system", why, "Operation not permitted");
+}
+
+/* guard: the sticky bit says nothing about who owns a file, so it stays when
+   the set-ID bit goes.  Mutation: clear every special bit. */
+static void test_the_sticky_bit_stays_when_the_owner_differs(void)
+{
+ WpeModeKept d;
+
+ chk_int("sticky kept, setuid not", wpe_fileop_copy_mode(05755, 1001, 50, 0, 50, &d), 01755);
+ chk_int("only setuid dropped", d.lost, S_ISUID);
+ chk_int("all three, another owner", wpe_fileop_copy_mode(07755, 1001, 50, 0, 0, &d), 01755);
+ chk_int("setuid and setgid dropped", d.lost, S_ISUID | S_ISGID);
+}
+
+/* guard: the same owner and group keep both bits and the sentence is empty.
+   Mutation: drop both always. */
+static void test_a_copy_by_the_same_owner_and_group_keeps_both_bits(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ const char *row = "a copy by the same owner and group keeps both bits";
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!owner_row_ready(row, S_ISUID | S_ISGID) || put("t.txt", "tool\n", 06755) != 0) {
+  clean();
+  return;
+ }
+ chk_int("the copy is made", wpe_fileop_copy("t.txt", "t.copy", &p, &o), 0);
+ chk_int("both bits kept", mode_of("t.copy"), 06755);
+ chk_int("nothing named", o.note.bits_lost_count, 0);
+ chk_str("and nothing said", said(&o), "");
+ clean();
+}
+
+/* red: a Move to another file system is a copy and the source removal; the
+   copy follows the same rule and the sentence says Moved. */
+static void test_a_move_across_file_systems_with_another_owner_drops_setuid(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char dst[512];
+ struct stat st;
+ const char *row = "a move across file systems with another owner drops setuid";
+
+ make_dir();
+ make_other();
+ chdir(dir);
+ if (!second_file_system_ready(row) || !owner_row_ready(row, S_ISUID) ||
+     put("t.txt", "tool\n", 04755) != 0) {
+  clean();
+  return;
+ }
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ snprintf(dst, sizeof dst, "%s/t.moved", other);
+ owner_hook(OWNER_HOOK_OTHER);
+ chk_int("the move is made", wpe_fileop_move("t.txt", dst, &p, &o), 0);
+ owner_hook_off();
+ chk_absent("the source is gone", "t.txt");
+ chk_int("the destination is there", stat(dst, &st), 0);
+ chk_int("without the bit", (int)(st.st_mode & 07777), 0755);
+ chk_has("says it was a move", said(&o), "Moved, but the setuid bit was not kept on ");
+ chk_has("says whose the copy is", said(&o), "the copy belongs to user ");
+ clean();
+}
+
+/* red: the copy a replaced file leaves in the wastebasket is a copy too. */
+static void test_a_replaced_setuid_file_stashed_in_the_wastebasket_drops_the_bit(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ struct stat st;
+ const char *row = "a replaced setuid file stashed in the wastebasket drops the bit";
+
+ make_dir();
+ make_other();
+ chdir(dir);
+ if (!second_file_system_ready(row) || !owner_row_ready(row, S_ISUID)) {
+  clean();
+  return;
+ }
+ setenv("HOME", other, 1);
+ policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_WASTEBASKET);
+ put("src.txt", "NEW\n", 0644);
+ if (put("dst.txt", "OLD\n", 04755) != 0) {
+  clean();
+  return;
+ }
+ owner_hook(OWNER_HOOK_OTHER);
+ chk_int("replaced", wpe_fileop_copy("src.txt", "dst.txt", &p, &o), 0);
+ owner_hook_off();
+ chk_int("the old file is aside", o.aside[0] != '\0', 1);
+ chk_int("the aside copy is there", stat(o.aside, &st), 0);
+ chk_int("without the bit", (int)(st.st_mode & 07777), 0755);
+ chk_int("one entry noted", o.note.bits_lost_count, 1);
+ chk_has("names the wastebasket copy", said(&o), o.aside);
+ chk_has("and the bit", said(&o), "the setuid bit was not kept on ");
+ clean();
+}
+
+/* red: a bit dropped on purpose is named once.  The refusal hook asks for
+   setgid on the copy; the copy was given none, so there is nothing to
+   refuse and the reason stays the owner's, with no errno.  Mutation: pass
+   the original's mode to the hook (the row then names a refusal). */
+static void test_a_bit_dropped_on_purpose_is_not_named_a_second_time_as_refused(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ const char *row = "a bit dropped on purpose is not named again as refused";
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!owner_row_ready(row, S_ISGID) || put("t.txt", "tool\n", 02755) != 0) {
+  clean();
+  return;
+ }
+ owner_hook(OWNER_HOOK_OTHER ",fileop-refuse-special");
+ chk_int("the copy is made", wpe_fileop_copy("t.txt", "t.copy", &p, &o), 0);
+ owner_hook_off();
+ chk_int("without the bit", mode_of("t.copy"), 0755);
+ chk_int("no refusal to name", o.note.bits_err, 0);
+ chk_int("one entry", o.note.bits_lost_count, 1);
+ chk_has("the reason is the owner's", said(&o), "the copy belongs to user ");
+ clean();
+}
+
+/* red: a copy whose owner cannot be read is given no set-ID bit, and the
+   status row says why instead of keeping a bit nobody checked. */
+static void test_a_copy_whose_owner_cannot_be_read_gets_no_set_id_bit(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ const char *row = "a copy whose owner cannot be read gets no set-ID bit";
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!owner_row_ready(row, S_ISUID | S_ISGID) || put("t.txt", "tool\n", 06755) != 0) {
+  clean();
+  return;
+ }
+ owner_hook(OWNER_HOOK_UNREADABLE);
+ chk_int("the copy is made", wpe_fileop_copy("t.txt", "t.copy", &p, &o), 0);
+ owner_hook_off();
+ chk_int("neither bit", mode_of("t.copy"), 0755);
+ chk_int("both named", o.note.bits_lost, S_ISUID | S_ISGID);
+ chk_int("the reason is the read's errno", o.note.bits_err, EIO);
+ chk_has("says which bits", said(&o), "the setuid and setgid bits were not kept on ");
+ chk_has("says why", said(&o), "Input/output error");
+ clean();
+}
+
 int main(void)
 {
  test_a_copy_of_a_setgid_file_syncs_before_the_bit();
@@ -2356,6 +2670,18 @@ int main(void)
  test_a_folder_of_one_file_says_one_entry();
  test_chmod_read_back_failure_is_not_nothing_changed();
  test_the_copy_is_named_before_the_stashed_file();
+ test_a_copy_of_another_users_file_drops_setuid_and_says_so();
+ test_a_copy_in_another_group_drops_setgid_only();
+ test_a_copy_of_another_users_file_in_the_same_group_drops_both();
+ test_the_sticky_bit_stays_when_the_owner_differs();
+ test_a_file_with_no_set_id_bit_loses_nothing_whoever_owns_the_copy();
+ test_the_same_owner_and_group_drop_nothing_for_any_bit();
+ test_a_reason_explains_only_the_bits_it_dropped();
+ test_a_copy_whose_owner_cannot_be_read_gets_no_set_id_bit();
+ test_a_copy_by_the_same_owner_and_group_keeps_both_bits();
+ test_a_move_across_file_systems_with_another_owner_drops_setuid();
+ test_a_replaced_setuid_file_stashed_in_the_wastebasket_drops_the_bit();
+ test_a_bit_dropped_on_purpose_is_not_named_a_second_time_as_refused();
  fails += test_dir_failures;
  if (fails) {
   printf("test_fileop: %d failure(s)\n", fails);
