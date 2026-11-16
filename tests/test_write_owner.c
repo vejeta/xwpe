@@ -344,6 +344,108 @@ static void test_text(void)
  chk_int("SIGXFSZ not ignored afterwards", after.sa_handler == SIG_IGN, 0);
 }
 
+/* ---- the project's and the options' follow-up sentences ---- */
+
+/* A name longer than the system holds is refused by the system on the write;
+   the sentence the user reads is the system's reason plus what the caller
+   keeps.  On Linux the name is over NAME_MAX, the same reason macOS gives for
+   a path over its limit. */
+static void test_follow_ups_after_a_name_the_system_refuses(void)
+{
+ WpeWriteOutcome o;
+ char long_path[512], s[WPE_WRITE_SENTENCE_MAX];
+
+ memset(long_path, 'q', sizeof long_path);
+ memcpy(long_path, "/tmp/", 5);
+ long_path[5 + 300] = '\0';
+ chk_int("long name: refused", wpe_write_text(long_path, "x", &o), -1);
+ chk_int("long name: ENAMETOOLONG", o.err, ENAMETOOLONG);
+ wpe_write_sentence(s, sizeof s, &o, WPE_WRITE_THEN_NO_PROJECT);
+ chk_has("no project: the reason", s, "File name too long");
+ chk_has("no project: what stays", s, "  No project was created.");
+ wpe_write_sentence(s, sizeof s, &o, WPE_WRITE_THEN_PROJECT_KEPT);
+ chk_has("project kept", s, "  The project list is still in its window.");
+ wpe_write_sentence(s, sizeof s, &o, WPE_WRITE_THEN_NO_OPTIONS);
+ chk_has("no options", s, "  The options were not saved.");
+ wpe_write_sentence(s, sizeof s, &o, WPE_WRITE_THEN_USER_KEYS_STAY);
+ chk_has("user keys stay", s, "Your own settings (hook, engine command, endpoints, dial) are still in it;");
+ chk_has("user keys stay: what to do", s, "take them out before you share the file.");
+ chk_lacks("user keys stay: not the window", s, "still in the window");
+}
+
+/* ---- the stream pair ---- */
+
+static void test_stream_in_a_folder_that_refuses(void)
+{
+ WpeWriteOutcome o;
+ char p[512];
+ FILE *fp;
+
+ make_dir();
+ if (!test_premise(test_premise_folder_refuses_new_files(dir), "stream in a closed folder",
+                    "this user can create files in a 0500 folder (root, or a capability that overrides file modes)"))
+  return;
+ path_of(p, sizeof p, "new.prj");
+ chmod(dir, 0500);
+ fp = wpe_write_stream_open(p, &o);
+ chmod(dir, 0700);
+ chk_int("stream open refused", fp == NULL, 1);
+ chk_int("stream open: FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("stream open: EACCES", o.err, EACCES);
+ chk_has("stream open: path", o.path, "new.prj");
+}
+
+static void test_stream_onto_full_device(void)
+{
+ WpeWriteOutcome o;
+ struct stat st;
+ FILE *fp;
+ char s[WPE_WRITE_SENTENCE_MAX];
+
+ if (stat("/dev/full", &st) != 0 || !S_ISCHR(st.st_mode))
+ {
+  printf("SKIP: stream onto /dev/full: this system has no /dev/full device\n");
+  return;
+ }
+ fp = wpe_write_stream_open("/dev/full", &o);
+ chk_int("stream /dev/full opens", fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ fputs("x\n", fp);
+ chk_int("stream /dev/full: close fails", wpe_write_stream_close(fp, &o), -1);
+ chk_int("stream /dev/full: FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("stream /dev/full: ENOSPC", o.err, ENOSPC);
+ /* the open emptied the file: the sentence must not say the text is safe */
+ wpe_write_sentence(s, sizeof s, &o, WPE_WRITE_THEN_NO_OPTIONS);
+ chk_has("stream close: may be cut short", s, "may be cut short; no backup copy was made.");
+}
+
+static void test_stream_written_and_empty(void)
+{
+ WpeWriteOutcome o;
+ char buf[64], p[512];
+ FILE *fp;
+
+ make_dir();
+ path_of(p, sizeof p, "list.prj");
+ fp = wpe_write_stream_open(p, &o);
+ chk_int("stream opens", fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ fprintf(fp, "a\n%s\n", "b");
+ chk_int("stream close ok", wpe_write_stream_close(fp, &o), 0);
+ chk_int("stream: WRITTEN", o.status, WPE_WRITE_WRITTEN);
+ get_file("list.prj", buf, sizeof buf);
+ chk_has("stream: content", buf, "a\nb\n");
+ path_of(p, sizeof p, "empty.prj");
+ fp = wpe_write_stream_open(p, &o);
+ chk_int("empty stream opens", fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ chk_int("empty stream close ok", wpe_write_stream_close(fp, &o), 0);
+ chk_int("empty stream: WRITTEN", o.status, WPE_WRITE_WRITTEN);
+}
+
 /* ---- the user's file and its backup ---- */
 
 static void test_backup_made_private_then_file_mode(void)
@@ -702,6 +804,10 @@ int main(void)
 {
  test_sentence();
  test_text();
+ test_follow_ups_after_a_name_the_system_refuses();
+ test_stream_in_a_folder_that_refuses();
+ test_stream_onto_full_device();
+ test_stream_written_and_empty();
  test_backup_made_private_then_file_mode();
  test_backup_not_made_in_a_folder_that_refuses();
  test_old_bak_that_is_a_link_is_left_alone();

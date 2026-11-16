@@ -2609,8 +2609,9 @@ int e_close_window(FENSTER *f)
   int swt = f->ins;
 
 #ifdef PROG
-  if (swt == 4 && f->save)
-   e_p_update_prj_fl(f);
+  /* A project list the file refuses stays in its window; the box said why. */
+  if (swt == 4 && e_prj_save_before_close(f) != 0)
+   return(WPE_ESC);
 #endif
   if (f->dirct)
    FREE(f->dirct);

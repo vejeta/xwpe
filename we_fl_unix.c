@@ -682,7 +682,13 @@ int e_prj_add_file_unique(FLWND *fw, char *ftmp, FENSTER *f)
   /* Persist immediately (before the notification, which is modal) so the
      on-disk .prj never drifts from the project window (#137: save on each
      Add, not only on window close). */
-  e_wrt_prj_fl(f);
+  if (e_prj_persist(f) != 0)
+  {
+    /* The box that said why the file refused is the whole answer; "Added
+       to project" would contradict it.  The entry stays in the window. */
+    FREE(ftmp);
+    return -1;
+  }
   snprintf(msg, sizeof(msg), "Added to project: %s", ftmp);
   e_message(0, msg, f);
   FREE(ftmp);   /* the list holds its own copy */
@@ -1481,8 +1487,8 @@ int WpeHandleFileManager(ECNT * cn)
             {
               e_close_window(f);
             }
-            /* editing the file */
-            e_edit(cn, filen);
+            /* editing the file, or opening it as a project when it is a .prj */
+            e_open_named_file(cn, filen);
           }
           else
           {
@@ -1914,7 +1920,7 @@ int WpeHandleFileManager(ECNT * cn)
       if(new_prj)
         e_create_project(cn, prj_path);
       else
-        e_select_project(cn, prj_path);
+        e_open_picked_project(cn, prj_path);
     }
     return(0);
   }
@@ -4353,7 +4359,10 @@ int e_data_eingabe(ECNT * cn)
     else if(action == WPE_LIST_DELETE)
     {
       e_p_del_df(fw, f->ins);
-      e_wrt_prj_fl(f);   /* persist on each Delete, same as the menu path (#137) */
+      /* persist on each Delete, same as the menu path (#137).  A refusal
+         was said by the writer and the window stays marked unsaved below,
+         so closing it writes again. */
+      e_prj_persist(f);
       c = AltF;
       f->save = 1;
     }
@@ -4390,9 +4399,10 @@ int e_data_eingabe(ECNT * cn)
         FENSTER        *pf = f->ed->f[f->ed->mxedt];
         FLWND          *fw = (FLWND *) pf->b;
         /* Persist added/removed files to the .prj on close, otherwise the
-           in-memory list is lost when the project window is reopened. */
-        if(pf->save)
-          e_wrt_prj_fl(pf);
+           in-memory list is lost when the project window is reopened.  A
+           file that refuses keeps the window open, with the box shown. */
+        if(e_prj_save_before_close(pf) != 0)
+          return(0);
         fw->df = NULL;
         e_close_window(pf);
         return(0);

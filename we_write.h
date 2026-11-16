@@ -17,6 +17,7 @@
 #define WE_WRITE_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include "we_path.h"
 
@@ -52,7 +53,13 @@ typedef enum {
  WPE_WRITE_THEN_KEPT,        /* "Your text is still in the window." */
  WPE_WRITE_THEN_NAME_KEPT,   /* "The window keeps its name t.c." */
  WPE_WRITE_THEN_NO_BUILD,    /* "The build was not started." */
- WPE_WRITE_THEN_NO_PRINT     /* "Nothing was printed." */
+ WPE_WRITE_THEN_NO_PRINT,    /* "Nothing was printed." */
+ WPE_WRITE_THEN_NO_PROJECT,  /* "No project was created." */
+ WPE_WRITE_THEN_PROJECT_KEPT,/* "The project list is still in its window." */
+ WPE_WRITE_THEN_NO_OPTIONS,  /* "The options were not saved." */
+ WPE_WRITE_THEN_USER_KEYS_STAY /* "Your own settings (hook, engine command,
+                                  endpoints, dial) are still in it; take them
+                                  out before you share the file." */
 } WpeWriteThen;
 
 /* Whoever drops the outcome of a write has lost the news that the text is
@@ -91,6 +98,13 @@ typedef struct {
  int    in_group;   /* the caller is in that group */
  int    changed;    /* a call succeeded: a failure after it is not "nothing was changed" */
 } WpeModeKept;
+
+/* A file that is printed line by line (a project list, the options): the
+   stream is opened here and closed here, and the outcome of the close says
+   whether the last byte reached the disk.  A caller that goes through
+   fprintf in between never judges the stream itself. */
+WPE_WRITE_RESULT FILE *wpe_write_stream_open(const char *path, WpeWriteOutcome *o);
+WPE_WRITE_RESULT int wpe_write_stream_close(FILE *fp, WpeWriteOutcome *o);
 
 /* The bytes of a copy, for the owner of names (we_fileop.c): the one byte
    loop, a private new file in a folder, the special bits put on after the

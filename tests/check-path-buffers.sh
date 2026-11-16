@@ -479,6 +479,69 @@ scan_tree() {
     END {
       for (k in al) if (!(k in got)) print "R9: stale allow line, delete it: " k
     }' "$allow" "$t/copies.sorted" >> "$out"
+
+  # Rule 11: the system's reason is said, not guessed.  Per function, over
+  # the comment stripped sources (strings kept): "P" when it holds a word of
+  # the project's "did not open" sentences, "G" when it asks the system about
+  # a path (access, stat, lstat, fopen, open, opendir, realpath), holds a
+  # string that says "not found" or "cannot open", and names neither errno
+  # nor strerror: a cause the editor guessed after the system answered.
+  : > "$t/words"
+  for f in "$t"/s/*.c; do
+    [ -f "$f" ] || continue
+    rel=${f#"$t"/s/}
+    awk -v rel="$rel" '
+      function flush() {
+        if (fn == "") return
+        if (proj) print "P|" rel "|" fn
+        if (call && lit && !named) print "G|" rel "|" fn
+      }
+      {
+        out = $0
+        if (out ~ /^}/) { flush(); fn = ""; next }
+        if (out ~ /^[A-Za-z_]/ && out ~ /[(]/ && out !~ /;[ \t]*$/ && out !~ /^(typedef|struct[^(]*[{])/) {
+          name = out; sub(/[ \t]*[(].*/, "", name); sub(/.*[^A-Za-z0-9_]/, "", name)
+          if (name != "") { flush(); fn = name; call = 0; lit = 0; named = 0; proj = 0 }
+        }
+        if (fn == "") next
+        code = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
+        if (code ~ /(^|[^A-Za-z0-9_.>])(access|stat|lstat|fopen|open|opendir|realpath)[ \t]*[(]/) call = 1
+        if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) named = 1
+        if (out ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) lit = 1
+        if (out ~ /"[^"]*(Project file not found|Cannot open project)[^"]*"/) proj = 1
+      }
+      END { flush() }' "$f" >> "$t/words"
+  done
+  sort "$t/words" > "$t/words.sorted"
+  cp "$t/words.sorted" "$WORK/last-words"
+  awk -F'|' '
+    FILENAME == ARGV[1] {
+      if ($1 == "PROJECTWORDS") {
+        if (NF < 4) { print "R11a: malformed allow line: " $0; next }
+        pw[$2 "|" $3] = 1; next
+      }
+      if ($1 == "GUESS") {
+        if (NF < 5 || $4 == "") { print "R11b: malformed allow line: " $0; next }
+        gs[$2 "|" $3] = 1
+      }
+      next
+    }
+    {
+      key = $2 "|" $3
+      if ($1 == "P") {
+        pwseen[key] = 1
+        if (!(key in pw))
+          print "R11a: " $2 ": " $3 " says the project did not open in words of its own: the reporter e_prj_say_not_opened is the one place for them"
+      } else {
+        gsseen[key] = 1
+        if (!(key in gs))
+          print "R11b: " $2 ": " $3 " asks the system about a path and then says a cause it guessed (not found, cannot open) without the system\047s errno or strerror"
+      }
+    }
+    END {
+      for (k in pw) if (!(k in pwseen)) print "R11a: stale allow line, delete it: PROJECTWORDS " k
+      for (k in gs) if (!(k in gsseen)) print "R11b: stale allow line, delete it: GUESS " k
+    }' "$allow" "$t/words.sorted" >> "$out"
 }
 
 # plant_tree CODE ALLOWLINES - a tree of its own (the owner's header and one
@@ -631,6 +694,18 @@ canary R10 'void planted(char *m, int n) { sprintf(m, "%d", WPE_NAME_MAX); }' ||
 canary R10 'void planted(char *m, int n) { snprintf(m, n, "%d", WPE_PLATFORM_PATH_MAX); }' || blind=1
 quiet_canary R10 'void planted(char *m, int n) { snprintf(m, n, "%d", WPE_PATH_MAX_HOPS); }' || blind=1
 quiet_canary R10 'void planted(char *m, int n) { wpe_path_say_too_long(m, n, "file"); }' || blind=1
+# Rule 11: the system's reason is said, not guessed.
+canary R11b 'void planted(FENSTER *f, const char *p) { if (access(p, F_OK) != 0) e_error("X not found", 0, f->fb); }' || blind=1
+canary R11b 'void planted(FENSTER *f, const char *p) { if (fopen(p, "r") == NULL) e_error("Can\'"'"'t open X", 0, f->fb); }' || blind=1
+quiet_canary R11b 'void planted(char *b, const char *p) { if (access(p, F_OK) != 0) snprintf(b, 99, "Cannot open %s: %s", p, strerror(errno)); }' || blind=1
+quiet_canary R11b 'void planted(FENSTER *f) { e_error("X not found", 0, f->fb); }' || blind=1
+quiet_canary R11b 'void planted(FENSTER *f, const char *p) { if (access(p, F_OK) != 0) e_error("X not found", 0, f->fb); }' 'GUESS|we_planted.c|planted|keep|the word is about a symbol' || blind=1
+canary R11b 'int planted;' 'GUESS|we_planted.c|planted|keep|stale' || blind=1
+canary R11b 'void planted(void) { }' 'GUESS|we_planted.c|planted' || blind=1
+canary R11a 'void planted(FENSTER *f) { e_error("Project file not found", 0, f->fb); }' || blind=1
+canary R11a 'void planted(FENSTER *f) { e_error("Cannot open project x", 0, f->fb); }' || blind=1
+quiet_canary R11a 'void planted(FENSTER *f) { e_error("Project file not found", 0, f->fb); }' 'PROJECTWORDS|we_planted.c|planted|the reporter' || blind=1
+canary R11a 'void planted(FENSTER *f) { }' 'PROJECTWORDS|we_planted.c|planted|stale' || blind=1
 
 if [ ! -f "$ALLOW" ]; then
   echo "check-path-buffers: no allow file at $ALLOW"
@@ -639,6 +714,7 @@ fi
 scan_tree "$SRCDIR" "$WORK/problems" "$ALLOW"
 if [ "$LIST" -eq 1 ]; then
   awk -F'|' '{ print "COPY|" $1 "|" $2 "|" $3 "|sized|reason" }' "$WORK/last-copies"
+  awk -F'|' '$1 == "G" { print "GUESS|" $2 "|" $3 "|keep|reason" }' "$WORK/last-words"
   exit 0
 fi
 if [ -s "$WORK/problems" ]; then

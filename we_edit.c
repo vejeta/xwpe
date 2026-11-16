@@ -504,36 +504,6 @@ int e_edit(ECNT *cn, char *filename)
  int ftype = 0, i, j, st = 0;
  struct stat buf[1];
 
- /* Allows project files to be open automatically */
- j = strlen(filename);
- if ((WpeIsProg()) && (j > 4) && (!strcmp(&filename[j - 4], ".prj")))
- {
-  if (!e_prog.project)
-  {
-   e_prog.project = MALLOC(1);
-   e_prog.project[0] = '\0';
-  }
-  else
-  {
-   for (i = cn->mxedt; i > 0 &&
-     (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4); i--)
-    ;
-   if (i > 0)
-   {
-    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-    e_close_window(cn->f[cn->mxedt]);
-   }
-  }
-  e_prog.project = REALLOC(e_prog.project, j + 1);
-  strcpy(e_prog.project, filename);
-  e_make_prj_opt(cn->f[cn->mxedt]);
-/************************************/  
-  e_rel_brkwtch(cn->f[cn->mxedt]);
-/************************************/  
-  e_prj_ob_file(cn->f[cn->mxedt]);
-  return 0;
- }
-
  /* Check to see if the file is already opened BD */
  WpeFilenameToPathFile(filename, &path, &file);
  /* Should check for error here */

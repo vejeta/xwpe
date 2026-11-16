@@ -6129,7 +6129,8 @@ int e_project_options(FENSTER *f)
  if (ret != WPE_ESC)
  {
   e_prj_options_take(o, messagestring);
-  e_wrt_prj_fl(f);
+  /* A refusal was said by the writer; the settings stay in memory. */
+  e_prj_persist(f);
  }
  WpeFree(messagestring);
  freeostr(o);
@@ -6514,6 +6515,52 @@ int e_find_dirty_project_window(ECNT *cn)
 }
 
 /**
+ * e_prj_say_not_opened - Tell the user why the project file could not be opened.
+ * @f: the window the box belongs to; @path: the project's path (may be empty);
+ * @err: the system's errno for the failed open or access.
+ *
+ * Says "not found" only when the system says the file does not exist; any
+ * other refusal (a folder closed to reading, a path too long for the system)
+ * says the system's own reason, so the user does not look for a typo that is
+ * not there.  The path is named whatever its length (a folder's Project key
+ * can make it far longer than a line buffer) and the box wraps it, so the
+ * reason after a long path is not cut off.
+ */
+static void e_prj_say_not_opened(FENSTER *f, const char *path, int err)
+{
+ size_t size = strlen(path) + strlen(strerror(err)) + 64;
+ char *text = MALLOC(size);
+
+ if (!text)
+ {
+  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+  return;
+ }
+ if (err == ENOENT && path[0] == '\0')
+  snprintf(text, size, "Project file not found");
+ else if (err == ENOENT)
+  snprintf(text, size, "Project file not found: %s", path);
+ else
+  snprintf(text, size, "Cannot open project %s: %s.", path, strerror(err));
+ e_message(0, text, f);
+ FREE(text);
+}
+
+/**
+ * e_project_open_error - Why the open project is not available, as an errno.
+ * Return: 0 when a project path is set and the file exists; ENOENT when no
+ * path is set; otherwise the errno the system gave for the path.
+ */
+static int e_project_open_error(void)
+{
+ if (e_prog.project[0] == '\0')
+  return(ENOENT);
+ if (access(e_prog.project, F_OK) != 0)
+  return(errno);
+ return(0);
+}
+
+/**
  * e_project_is_open - Tell whether the user currently has a project loaded.
  *
  * Used to gate project-only actions (Window->Project, Add/Delete member,
@@ -6526,30 +6573,26 @@ int e_find_dirty_project_window(ECNT *cn)
  */
 int e_project_is_open(void)
 {
- return(e_prog.project[0] && access(e_prog.project, F_OK) == 0);
+ return(e_project_open_error() == 0);
 }
 
-/* Open the project named in e_prog.project: validate, replace any open
-   project window, parse the .prj, and show the file list. Shared by the
-   File-Manager selection path and any caller that has set e_prog.project. */
+/* Open the project named in e_prog.project: validate, parse the .prj, and
+   show the file list.  The previous project's window is already gone: the
+   callers (e_select_project, e_create_project) release it first, while
+   e_prog.project still names that project. */
 int e_open_project_file(ECNT *cn)
 {
  FENSTER *f;
- int i;
+ int err;
 
- if (!e_project_is_open())
+ err = e_project_open_error();
+ if (err != 0)
  {
-  e_error("Project file not found", 0, cn->fb);
+  e_prj_say_not_opened(cn->f[cn->mxedt], e_prog.project, err);
   e_prog.project[0] = '\0';
   return(WPE_ESC);
  }
  e__project = 1;
- i = e_find_project_window(cn);
- if (i > 0)
- {
-  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-  e_close_window(cn->f[cn->mxedt]);
- }
  f = cn->f[cn->mxedt];
  e_make_prj_opt(f);
  e_rel_brkwtch(f);
@@ -6562,43 +6605,281 @@ int e_open_project_file(ECNT *cn)
    named after the project by the owner, as a source's is: "my.app.prj"
    builds "my.app".  A name too long for the room would leave EXENAME empty,
    never cut. */
-static void e_write_default_prj(char *path)
+/**
+ * e_write_default_prj - Write the skeleton of a new project, and say why when it cannot.
+ * @f: the window the box belongs to; @path: the new project's file.
+ * Return: 0 when the file holds the skeleton, -1 when not (the user was told
+ * the system's reason and that no project was created).
+ *
+ * New Project in a folder that refuses the file ends here with a box that
+ * names the file and the reason, never with an empty project that opens as
+ * if nothing had happened.
+ */
+static int e_write_default_prj(FENSTER *f, const char *path)
 {
- FILE *fp = fopen(path, "w");
+ WpeWriteOutcome o;
  char exe[WPE_NAME_SIZE];
+ char text[WPE_PATH_SIZE + WPE_NAME_SIZE + 256];
+ int room;
 
- if (!fp)
-  return;
  wpe_progname_project_default(exe, sizeof exe, path);
-
- fprintf(fp, "#\n# xwpe - project-file: %s\n", path);
- fprintf(fp, "# created by xwpe version %s\n#\n\n", VERSION);
- fprintf(fp, "CMP=\tgcc\n");
- fprintf(fp, "CMPFLAGS=\t-g\n");
- fprintf(fp, "LDFLAGS=\t\n");
- fprintf(fp, "EXENAME=\t%s\n", exe);
- fprintf(fp, "CMPSWTCH=\tgnu\n\n");
- fprintf(fp, "FILES=\t\n");
- fclose(fp);
+ room = snprintf(text, sizeof text,
+                 "#\n# xwpe - project-file: %s\n"
+                 "# created by xwpe version %s\n#\n\n"
+                 "CMP=\tgcc\n"
+                 "CMPFLAGS=\t-g\n"
+                 "LDFLAGS=\t\n"
+                 "EXENAME=\t%s\n"
+                 "CMPSWTCH=\tgnu\n\n"
+                 "FILES=\t\n", path, VERSION, exe);
+ if (room < 0 || (size_t)room >= sizeof text)
+ {
+  memset(&o, 0, sizeof o);
+  o.status = WPE_WRITE_FAILED;
+  o.err = ENAMETOOLONG;
+  snprintf(o.path, sizeof o.path, "%s", path);
+ }
+ else if (wpe_write_text(path, text, &o) == 0)
+  return(0);
+ wpe_write_say(f, &o, WPE_WRITE_THEN_NO_PROJECT);
+ return(-1);
 }
 
 /**
- * e_select_project - Open an EXISTING project the user picked.
+ * e_prj_close_window - Close the project window, writing its list first.
+ * @cn: the editor.
+ * Return: 0 when the window is gone or there was none, WPE_ESC when the
+ * close was refused (the list could not be written; the writer's box said
+ * why, and the window, the project and the Project option are unchanged).
  *
- * Used by the "Open Project" picker. Strictly opens what the user chose: if the
- * file does not exist (e.g. a typo), e_open_project_file reports "Project file
- * not found" rather than silently creating an empty project. Use
- * e_create_project for the "New Project" path.
+ * The one way the project's window is closed for Close Project and for
+ * opening another project, so both stop at a refusal the same way.
+ */
+static int e_prj_close_window(ECNT *cn)
+{
+ int i = e_find_project_window(cn);
+
+ if (i == 0)
+  return(0);
+ e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ if (e_close_window(cn->f[cn->mxedt]) == WPE_ESC)
+  return(WPE_ESC);
+ return(0);
+}
+
+/**
+ * e_prj_release_old - Close the open project's window before another project opens.
+ * @cn: the editor; @path: the project the user is opening.
+ * Return: 0 when no project window is left, -1 when the old one stays (its
+ * list could not be written; the writer's box said why).
+ *
+ * Runs while e_prog.project still names the old project, so its list is
+ * written into its own file and never into the new one.  When the old
+ * window stays, nothing else changes: the project, the Project option and
+ * the windows are the old project's, and the box says the new one was not
+ * opened.
+ */
+static int e_prj_release_old(ECNT *cn, const char *path)
+{
+ FENSTER *f;
+ char *text;
+ size_t size;
+
+ if (e_prj_close_window(cn) == 0)
+  return(0);
+ f = cn->f[cn->mxedt];
+ size = strlen(path) + 64;
+ text = MALLOC(size);
+ if (!text)
+ {
+  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+  return(-1);
+ }
+ snprintf(text, size, "%s was not opened.", path);
+ e_message(0, text, f);
+ FREE(text);
+ return(-1);
+}
+
+/**
+ * e_prj_open_path - Where the open project's file is, in a form that does not
+ * depend on the folder the editor is in now.
+ * @cn: the editor.
+ * Return: a new string (the caller frees it), or NULL when out of memory.
+ *
+ * The project may be held under a relative name (the Project key of xwperc,
+ * Project Options' name field); it names the file in the folder of the
+ * project's window.  Saving the list and asking whether another path is the
+ * open project both use this, so they cannot disagree about which file the
+ * open project is.  The stored name stays as it is: Options > Save writes it
+ * back as the user gave it.
+ */
+static char *e_prj_open_path(ECNT *cn)
+{
+ int i = e_find_project_window(cn);
+
+ if (i == 0 || e_prog.project[0] == DIRC)
+  return(WpeStrdup(e_prog.project));
+ return(e_mkfilename(cn->f[i]->dirct, e_prog.project));
+}
+
+/**
+ * e_prj_same_file - Are these two paths one project file?
+ * @a, @b: paths.
+ * Return: 1 when both resolve (realpath) to the same name, or both can be
+ * examined (stat) and are the same device and inode; 0 otherwise, a path
+ * that cannot be resolved or examined counting as another file.
+ *
+ * Opening the project that is already open must bring its window forward,
+ * not release it: realpath covers a relative name against an absolute one,
+ * a link, and a file replaced on disk (a new inode under the same name);
+ * device and inode cover a hard link.
+ */
+static int e_prj_same_file(const char *a, const char *b)
+{
+ char ra[WPE_PATH_SIZE], rb[WPE_PATH_SIZE];
+ struct stat sa, sb;
+
+ if (realpath(a, ra) != NULL && realpath(b, rb) != NULL && strcmp(ra, rb) == 0)
+  return(1);
+ if (stat(a, &sa) != 0 || stat(b, &sb) != 0)
+  return(0);
+ return(sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino);
+}
+
+/**
+ * e_prj_show_open - Bring the open project's window to the front when @path is it.
+ * @cn: the editor; @path: the project asked for.
+ * Return: 1 when @path is the open project and its window was brought
+ * forward (nothing is released or reread, a dirty list stays dirty), else 0.
+ */
+static int e_prj_show_open(ECNT *cn, const char *path)
+{
+ int i = e_find_project_window(cn);
+ char *open;
+ int same;
+
+ if (i == 0 || e_prog.project[0] == '\0')
+  return(0);
+ open = e_prj_open_path(cn);
+ if (open == NULL)
+  return(0);
+ same = e_prj_same_file(path, open);
+ FREE(open);
+ if (!same)
+  return(0);
+ e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+ return(1);
+}
+
+/**
+ * e_prj_make_absolute - The project's path against the current folder.
+ * @f: the window a refusal is said in; @path: the name as given; @out, @n:
+ * the room for the whole path.
+ * Return: 0, or -1 when it could not be made (the user was told why).
+ *
+ * A project named by a bare file name (the command line, the File Manager)
+ * is that file in the folder the user is in.  Kept relative, it would later
+ * lead to another folder's file once the File Manager moves, and Open
+ * Project could take another folder's project for the open one.  A path that
+ * does not fit the editor's room is refused with the path owner's sentence.
+ */
+static int e_prj_make_absolute(FENSTER *f, const char *path, char *out, size_t n)
+{
+ char cwd[WPE_PATH_SIZE], msg[WPE_PATH_MSG_MAX];
+
+ if (path[0] == DIRC)
+ {
+  if (wpe_path_copy(out, n, path) == 0)
+   return(0);
+ }
+ else if (getcwd(cwd, sizeof cwd) == NULL)
+ {
+  e_prj_say_not_opened(f, path, errno);
+  return(-1);
+ }
+ else if (wpe_path_join(out, n, cwd, path) == 0)
+  return(0);
+ wpe_path_say_too_long(msg, sizeof msg, "project");
+ e_message(0, msg, f);
+ return(-1);
+}
+
+/**
+ * e_select_project - Open an EXISTING project file.
+ *
+ * Used by the "Open Project" picker, by a .prj named on the command line and
+ * by the File Manager's open of a .prj.  Strictly opens what the user named:
+ * a file that does not exist reports "Project file not found: <path>" and
+ * nothing opens or changes, because a mistyped name must not become a project
+ * nobody asked for; only e_create_project makes a project.  The project is
+ * kept under its absolute path.
+ * The old project's window is released first, while the old project is still
+ * current; a refusal keeps it.  Asking for the open project brings its
+ * window forward.
  *
  * @cn:   editor context.
- * @path: chosen .prj path.
+ * @path: the .prj path.
+ * Return: 0 when the project is open, WPE_ESC when not.
  */
 int e_select_project(ECNT *cn, char *path)
 {
- e_prog.project = REALLOC(e_prog.project, strlen(path) + 1);
- strcpy(e_prog.project, path);
- e_opt_value_typed(E_OPT_SCOPE_PROGRAMMING, "Project", e_prog.project);
+ FENSTER *f = cn->f[cn->mxedt];
+ char whole[WPE_PATH_SIZE];
+
+ if (access(path, F_OK) != 0)
+ {
+  /* Nothing changes: the open project, its window and the Project option
+     stay as they were. */
+  e_prj_say_not_opened(f, path, errno);
+  return(WPE_ESC);
+ }
+ if (e_prj_make_absolute(f, path, whole, sizeof whole) != 0)
+  return(WPE_ESC);
+ if (e_prj_show_open(cn, whole))
+  return(0);
+ if (e_prj_release_old(cn, whole) != 0)
+  return(WPE_ESC);
+ e_prog.project = REALLOC(e_prog.project, strlen(whole) + 1);
+ strcpy(e_prog.project, whole);
  return(e_open_project_file(cn));
+}
+
+/**
+ * e_open_picked_project - Open the project the user picked in Open Project.
+ * @cn: the editor; @path: the .prj.
+ * Return: as e_select_project.
+ *
+ * The name the user chose is remembered as his own Project option, only when
+ * it opened; a name given on the command line or opened from the File
+ * Manager is not recorded, so it writes nothing to the start-command store.
+ */
+int e_open_picked_project(ECNT *cn, char *path)
+{
+ int ret = e_select_project(cn, path);
+
+ if (ret == 0)
+  e_opt_value_typed(E_OPT_SCOPE_PROGRAMMING, "Project", e_prog.project);
+ return(ret);
+}
+
+/**
+ * e_open_named_file - Open a file the user named: a .prj as a project, any
+ * other as a text window.
+ * @cn: the editor; @name: the file.
+ * Return: 0 when opened, non-zero when not.
+ *
+ * For the command line and the File Manager's open.  A .prj that does not
+ * exist is refused, not made up; every other way of reaching a .prj opens it
+ * as the text it is.
+ */
+int e_open_named_file(ECNT *cn, char *name)
+{
+ size_t n = strlen(name);
+
+ if (WpeIsProg() && n > 4 && strcmp(name + n - 4, ".prj") == 0)
+  return(e_select_project(cn, name) == 0 ? 0 : -1);
+ return(e_edit(cn, name));
 }
 
 /**
@@ -6614,12 +6895,11 @@ int e_select_project(ECNT *cn, char *path)
  */
 int e_create_project(ECNT *cn, char *path)
 {
- e_prog.project = REALLOC(e_prog.project, strlen(path) + 1);
- strcpy(e_prog.project, path);
- e_opt_value_typed(E_OPT_SCOPE_PROGRAMMING, "Project", e_prog.project);
- if (access(path, F_OK) != 0)
-  e_write_default_prj(path);
- return(e_open_project_file(cn));
+ FENSTER *f = cn->f[cn->mxedt];
+
+ if (access(path, F_OK) != 0 && e_write_default_prj(f, path) != 0)
+  return(WPE_ESC);
+ return(e_open_picked_project(cn, path));
 }
 
 /**
@@ -6673,15 +6953,12 @@ int e_show_project(FENSTER *f)
 int e_cl_project(FENSTER *f)
 {
  ECNT *cn = f->ed;
- int i;
 
+ /* The project stays open while its window refuses to close; the writer's
+    box said why. */
+ if (e_prj_close_window(cn) == WPE_ESC)
+  return(WPE_ESC);
  e__project = 0;
- i = e_find_project_window(cn);
- if (i > 0)
- {
-  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-  e_close_window(cn->f[cn->mxedt]);
- }
  e_pr_uul(cn->fb);
  return(0);
 }
@@ -6727,8 +7004,9 @@ int e_p_del_item(FENSTER *f)
  f = cn->f[cn->mxedt];
  f->save = 1;
  e_p_del_df((FLWND *) f->b, f->ins);
- /* Persist immediately, symmetrically with Add (#137: keep disk in sync). */
- e_wrt_prj_fl(f);
+ /* Persist immediately, symmetrically with Add (#137: keep disk in sync).
+    A refusal was said by the writer; the window stays marked unsaved. */
+ e_prj_persist(f);
  return 0;
 }
 
@@ -7775,6 +8053,16 @@ char *e_expand_var(char *string, FENSTER *f)
  return(string);
 }
 
+/**
+ * e_read_var - Read the open project's variables into p_v.
+ * @f: a window of the desktop.
+ * Return: 0 when read; E_PRJ_READ_NOT_OPENED when the file could not be
+ * opened (errno is then the system's reason, nothing was said); or
+ * E_PRJ_READ_LOWMEM when memory ran out (the box was already shown).
+ *
+ * A caller that tells the user the file was not opened reads errno on the
+ * very next statement, so the box carries the system's reason.
+ */
 int e_read_var(FENSTER *f)
 {
  struct proj_var **tmp;
@@ -7782,7 +8070,7 @@ int e_read_var(FENSTER *f)
  char str[256], *sp1, *sp2, *stmp;
  int i;
 
- if ((fp = fopen(e_prog.project, "r")) == NULL) return(-1);
+ if ((fp = fopen(e_prog.project, "r")) == NULL) return(E_PRJ_READ_NOT_OPENED);
  if (p_v)
  {
   for (i = 0; i < p_v_n; i++)
@@ -7799,7 +8087,7 @@ int e_read_var(FENSTER *f)
  }
  p_v_n = 0;
  if (!(p_v = MALLOC(sizeof(struct proj_var *))))
- {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
+ {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
  while (fgets(str, 256, fp))
  {
   for (i = 0; isspace(str[i]); i++);
@@ -7819,15 +8107,15 @@ int e_read_var(FENSTER *f)
   for (sp2++; isspace(*sp2) && *sp2 != '\n'; sp2++);
   p_v_n++;
   if (!(p_v = REALLOC(tmp = p_v, sizeof(struct proj_var *) * p_v_n)))
-  {  p_v = tmp;  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
+  {  p_v = tmp;  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   if (!(p_v[p_v_n-1] = MALLOC(sizeof(struct proj_var))))
-  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
+  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   p_v[p_v_n-1]->raw = NULL;
   if (!(p_v[p_v_n-1]->var = MALLOC((strlen(sp1)+1) * sizeof(char))))
-  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
+  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   strcpy(p_v[p_v_n-1]->var, sp1);
   if (!(p_v[p_v_n-1]->string = MALLOC((strlen(sp2)+1) * sizeof(char))))
-  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
+  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   strcpy(p_v[p_v_n-1]->string, sp2);
   while (p_v[p_v_n-1]->string[i = strlen(p_v[p_v_n-1]->string) - 1] != '\n' || (i && p_v[p_v_n-1]->string[i-1] == '\\'))
   {
@@ -7837,7 +8125,7 @@ int e_read_var(FENSTER *f)
 		(strlen(p_v[p_v_n-1]->string)+strlen(str)+1) * sizeof(char))))
    {
     p_v[p_v_n-1]->string = stmp;
-    fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);
+    fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);
    }
    strcat(p_v[p_v_n-1]->string, str);
   }
@@ -7872,25 +8160,6 @@ static void e_install_after_make(FENSTER *f, int result, void *data)
 int e_install(FENSTER *f)
 {
  return(e_p_make_then(f, e_install_after_make, NULL));
-}
-
-/**
- * e_prj_say_open_failed - Say that the open project file could not be opened.
- * @f: the window the box belongs to.
- *
- * The message names the project's path whatever its length: a folder's
- * Project key can make it far longer than a line buffer.
- */
-static void e_prj_say_open_failed(FENSTER *f)
-{
- size_t size = strlen(e_msg[ERR_FOPEN]) + strlen(e_prog.project) + 1;
- char *text = MALLOC(size);
-
- if (!text)
-  return;
- snprintf(text, size, e_msg[ERR_FOPEN], e_prog.project);
- e_error(text, 0, f->fb);
- FREE(text);
 }
 
 /* The "install:" lines of a project, each expanded, in order. */
@@ -8067,7 +8336,7 @@ static int e_install_run(FENSTER *f)
  if (!e__project) return(0);
  if ((fp = fopen(e_prog.project, "r")) == NULL)
  {
-  e_prj_say_open_failed(f);
+  e_prj_say_not_opened(f, e_prog.project, errno);
   return(WPE_ESC);
  }
  while ((tp = fgets(text, 256, fp)))
@@ -8784,7 +9053,7 @@ static int e_prj_setup(FENSTER *f)
  ECNT *cn = f->ed;
  struct dirfile *df = NULL;
  char **arg;
- int i, j, k, argc, exlib = 0, lib_remove = 0;
+ int i, j, k, argc, ret, exlib = 0, lib_remove = 0;
  char ofile[WPE_PATH_SIZE];
  struct stat lbuf;
 
@@ -8801,12 +9070,14 @@ static int e_prj_setup(FENSTER *f)
  e_argc = 1;
  argc = 1;
  i = e_find_dirty_project_window(f->ed);
- if (i > 0) e_p_update_prj_fl(f);
- if (e_read_var(f))
- {
-  e_prj_say_open_failed(f);
+ /* A list the file refuses was said by the writer; the build does not run
+    on the old list after that. */
+ if (i > 0 && e_p_update_prj_fl(f) != 0) return(WPE_ESC);
+ ret = e_read_var(f);
+ if (ret == E_PRJ_READ_NOT_OPENED)
+  e_prj_say_not_opened(f, e_prog.project, errno);
+ if (ret != 0)
   return(-1);
- }
  if (e_prj_approve(f))
   return(WPE_ESC);
  e_build_record_begin(f);
@@ -9479,6 +9750,8 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  for (i = 0; i < 3; i++) e_p_df[i] = NULL;
  e_s_prog.comp_sw = 0;
  ret = e_read_var(f);
+ if (ret == E_PRJ_READ_NOT_OPENED)
+  e_prj_say_not_opened(f, e_prog.project, errno);
  if (ret)
  {
   if (e_s_prog.compiler) FREE(e_s_prog.compiler);
@@ -9576,7 +9849,7 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
   e_s_prog.intstr = WpeStrdup(cc_intstr);
  if ((fp = fopen(e_prog.project, "r")) == NULL)
  {
-  e_prj_say_open_failed(f);
+  e_prj_say_not_opened(f, e_prog.project, errno);
   return(e_make_prj_opt_finish(save_df));
  }
  while ((tp = fgets(text, 256, fp)))
@@ -9647,23 +9920,34 @@ int freedfN(struct dirfile **df, int n)
  return(0);
 }
 
+/**
+ * e_wrt_prj_fl - Write the open project's list and settings to its .prj.
+ * @f: a window of the desktop.
+ * Return: 0 when the file holds the project, -1 when not.
+ *
+ * A file the system refuses is told with its reason (a read-only .prj, a
+ * full disk) and "The project list is still in its window.", so the user
+ * knows the edits are not lost.  The caller keeps the project window open
+ * on -1.  Running out of memory for the path says so and writes nothing.
+ */
 int e_wrt_prj_fl(FENSTER *f)
 {
  int i, len;
  FILE *fp;
  char *path;
+ WpeWriteOutcome o;
 
- i = e_find_project_window(f->ed);
- if (i == 0 || e_prog.project[0] == DIRC)
-  path = WpeStrdup(e_prog.project);
- else
-  path = e_mkfilename(f->ed->f[i]->dirct, e_prog.project);
- fp = path ? fopen(path, "w") : NULL;
- if (path)
-  FREE(path);
+ path = e_prj_open_path(f->ed);
+ if (path == NULL)
+ {
+  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+  return(-1);
+ }
+ fp = wpe_write_stream_open(path, &o);
+ FREE(path);
  if (fp == NULL)
  {
-  e_prj_say_open_failed(f);
+  wpe_write_say(f, &o, WPE_WRITE_THEN_PROJECT_KEPT);
   return(-1);
  }
  fprintf(fp, "#\n# xwpe - project-file: %s\n", e_prog.project);
@@ -9734,7 +10018,11 @@ int e_wrt_prj_fl(FENSTER *f)
   fprintf(fp, "\ninstall:\n");
  for (i = 0; i < wpe_listsel_count(e_p_df[2], 1); i++)
   fprintf(fp, "\t%s\n", wpe_listsel_entry(e_p_df[2], i, 1));
- fclose(fp);
+ if (wpe_write_stream_close(fp, &o) != 0)
+ {
+  wpe_write_say(f, &o, WPE_WRITE_THEN_PROJECT_KEPT);
+  return(-1);
+ }
  return(0);
 }
 
@@ -9744,6 +10032,48 @@ int e_p_update_prj_fl(FENSTER *f)
   return(-1);
  if(e_wrt_prj_fl(f))
   return(-1);
+ return(0);
+}
+
+/**
+ * e_prj_persist - Write the project list now, and keep it marked unsaved if that fails.
+ * @f: a window of the desktop.
+ * Return: 0 when the .prj holds the list, -1 when not (the user was told why).
+ *
+ * Add, Delete and Project Options save at once so the file never drifts
+ * from the project window.  When the file refuses, the project window is
+ * left marked unsaved so closing it tries again and the list is not lost
+ * silently.
+ */
+int e_prj_persist(FENSTER *f)
+{
+ int i;
+
+ if (e_wrt_prj_fl(f) == 0)
+  return(0);
+ i = e_find_project_window(f->ed);
+ if (i > 0)
+  f->ed->f[i]->save = 1;
+ return(-1);
+}
+
+/**
+ * e_prj_save_before_close - Write an unsaved project list before its window closes.
+ * @f: the project window.
+ * Return: 0 when the window may close (nothing was unsaved, or the file now
+ * holds the list); -1 when the write failed and the window must stay.
+ *
+ * The window stays open on a failure, with the box already shown, so the
+ * edits are not thrown away; fixing the file and closing again writes them.
+ * Called by both close paths, so the list is written once per close.
+ */
+int e_prj_save_before_close(FENSTER *f)
+{
+ if (!f->save)
+  return(0);
+ if (e_p_update_prj_fl(f) != 0)
+  return(-1);
+ f->save = 0;
  return(0);
 }
 

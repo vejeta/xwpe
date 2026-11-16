@@ -20,11 +20,11 @@
 #     flags name O_WRONLY, O_RDWR, O_CREAT or O_TRUNC; creat.  Comments are
 #     stripped and a call split over lines is joined.
 #  4. A statement that is a save (e_save, e_write, wpe_write_file, _range,
-#     _save, _text, _fd) alone or under (void): its outcome is dropped.
+#     _save, _text, _fd, _stream_open, _stream_close, e_opt_lines_store) alone or under (void): its outcome is dropped.
 #  5. A save compared with numbers: on the call (== / != WPE_ESC, 0 or
 #     E_SAVE_DECLINED) or through the variable that took its result, and any
 #     E_SAVE_DECLINED.  A caller tests WPE_WRITE_WRITTEN, DECLINED or FAILED.
-#  6. The old messages: ERR_FOPEN, the File Manager's ERR_OREADFILE,
+#  6. The old messages: ERR_FOPEN, ERR_OPEN_OPF, the File Manager's ERR_OREADFILE,
 #     ERR_OWRITEFILE, ERR_ALLOC_CBUF, ERR_INCONSCOPY, ERR_RENFILE,
 #     ERR_LINKFILE and ERR_NOWASTE, and the literal "Can't open File" outside
 #     we_write.c.
@@ -60,6 +60,16 @@
 #     (we_write.c), under every face of the mode owner (wpe_write_set_mode_fd,
 #     _path, _special_bits).  A call anywhere else is a site that meets a
 #     refused special bit on its own.  Strings and comments are blanked.
+# 13. The result of e_close_window is read.  A close can be refused (a text
+#     window the user keeps, a project list the file refuses) and says so with
+#     WPE_ESC; a statement that is e_close_window(...) alone, under (void) or
+#     after a case label drops that, so a loop goes on as if the window were
+#     gone.  The functions where the window cannot refuse are lines of the
+#     allow file with their reason.
+# 14. The open project is switched in one place.  A write of e_prog.project
+#     (assignment, strcpy and the like, REALLOC, FREE) is in a function the
+#     allow file names (e_select_project, e_project_name, e_prj_anchor_path,
+#     e_ini_prog, WpeReadProgramming, e_open_project_file).
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -197,7 +207,7 @@ scan() {
       }
       # rules 4 and 5: the saves
       t = s; gsub(/\([ \t]*void[ \t]*\)/, " ", t)
-      while (match(t, /(^|[^A-Za-z0-9_])(e_save|e_write|wpe_write_file|wpe_write_range|wpe_write_save|wpe_write_text|wpe_write_fd|wpe_fileop_(copy|move|link|remove|mkdir|rmdir|chmod|rename_noreplace|wastebasket_slot|wastebasket))[ \t]*[(]/)) {
+      while (match(t, /(^|[^A-Za-z0-9_])(e_save|e_write|wpe_write_file|wpe_write_range|wpe_write_save|wpe_write_text|wpe_write_fd|wpe_write_stream_open|wpe_write_stream_close|e_opt_lines_store|wpe_fileop_(copy|move|link|remove|mkdir|rmdir|chmod|rename_noreplace|wastebasket_slot|wastebasket))[ \t]*[(]/)) {
         name = substr(t, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", name); sub(/[ \t]*[(]$/, "", name)
         q = RSTART; p = RSTART + RLENGTH - 1; e = close_paren(t, p)
         np = q
@@ -223,7 +233,7 @@ scan() {
       while (match(m, /(^|[^A-Za-z0-9_])E_SAVE_DECLINED([^A-Za-z0-9_]|$)/)) { note("r5", 1); m = substr(m, RSTART + RLENGTH) }
       # rule 6: the old message
       m = s
-      while (match(m, /(^|[^A-Za-z0-9_])ERR_(FOPEN|OREADFILE|OWRITEFILE|ALLOC_CBUF|INCONSCOPY|RENFILE|LINKFILE|NOWASTE)([^A-Za-z0-9_]|$)/)) { note("r6", 1); m = substr(m, RSTART + RLENGTH) }
+      while (match(m, /(^|[^A-Za-z0-9_])ERR_(FOPEN|OPEN_OPF|OREADFILE|OWRITEFILE|ALLOC_CBUF|INCONSCOPY|RENFILE|LINKFILE|NOWASTE)([^A-Za-z0-9_]|$)/)) { note("r6", 1); m = substr(m, RSTART + RLENGTH) }
       m = s
       while (match(m, /Can[\\\047]*t open File/)) { note("r6", 1); m = substr(m, RSTART + RLENGTH) }
       # rules 8, 9 and 10 look at code: the strings are blanked
@@ -261,6 +271,35 @@ scan() {
       # rule 10: the File Manager'"'"'s options changed by assignment
       t = m
       while (match(t, /flopt[ \t]*(\|=|&=|=[^=])/)) { note("r10", 1); t = substr(t, RSTART + RLENGTH) }
+      # rule 13: a window close that can be refused (the project window, a
+      # text window the user keeps) is read; a case label ends with a colon
+      # and the statement after it starts there
+      t = m; gsub(/\([ \t]*void[ \t]*\)/, " ", t)
+      # a character constant is a number here (case 0x71 and a colon inside
+      # one must not look like labels), then every label colon (case X:,
+      # default:, again:) becomes a statement end; a ?: colon is not at a
+      # statement start and stays
+      gsub(/\047([^\047\\]|\\.)*\047/, "0", t)
+      while (match(t, /(^|[;{}])[ \t]*(case[^:;{}?]*|default|[A-Za-z_][A-Za-z0-9_]*)[ \t]*:/))
+        t = substr(t, 1, RSTART + RLENGTH - 2) ";" substr(t, RSTART + RLENGTH)
+      while (match(t, /(^|[^A-Za-z0-9_])e_close_window[ \t]*[(]/)) {
+        q = RSTART; p = RSTART + RLENGTH - 1; e = close_paren(t, p)
+        np = q
+        if (substr(t, q, 1) !~ /[A-Za-z_]/) np = q + 1
+        if (e > 0) {
+          rest = substr(t, e); c = prev_char(t, np)
+          if (rest ~ /^[ \t]*;/ && (c == "" || c == ";" || c == "{" || c == "}" || c == ")" || prev_word_else(t, np))) note("r13", 1)
+          # the third clause of a for, which drops its value
+          else if ((c == "" || c == ";") && rest ~ /^[ \t]*[,)]/) note("r13", 1)
+        }
+        t = substr(t, p + 1)
+      }
+      # rule 14: the open project is switched in one place; any write of
+      # e_prog.project, its release included, is a named function
+      t = m
+      while (match(t, /e_prog[ \t]*\.[ \t]*project[ \t]*(\[[^]]*\][ \t]*)?=[^=]/)) { note("r14", 1); t = substr(t, RSTART + RLENGTH) }
+      t = m
+      while (match(t, /(strcpy|strncpy|strcat|memcpy|snprintf|sprintf|wpe_path_copy|wpe_path_join|wpe_path_cat|REALLOC|realloc|FREE|free|WpeFree)[ \t]*[(][ \t]*e_prog[ \t]*\.[ \t]*project[ \t]*[,)]/)) { note("r14", 1); t = substr(t, RSTART + RLENGTH) }
     }
     BEGIN { incom = 0; fn = "-"; stmt = "" }
     {
@@ -325,6 +364,8 @@ int fake_dropped(FENSTER *f)
  wpe_write_range(f, "p",
                  0, 0, 1, 1, 0, &o);
  wpe_fileop_copy(a, b, &p, &o);
+ wpe_write_stream_close(fp, &o);
+ e_opt_lines_store(path, &lines, &o);
  return(e_save(f));
 }
 
@@ -346,6 +387,7 @@ int fake_message(FENSTER *f)
 {
  e_error(e_msg[ERR_FOPEN], 0, f->fb);
  e_error(e_msg[ERR_INCONSCOPY], 0, f->fb);
+ e_error(e_msg[ERR_OPEN_OPF], 0, f->fb);
  return(E_SAVE_DECLINED);
 }
 
@@ -413,14 +455,51 @@ static int write_mode_set(const WriteModeTarget *t, mode_t mode)
 {
  return(t->path != 0 ? chmod(t->path, mode) : fchmod(t->fd, mode));
 }
+
+int fake_close(FENSTER *f, int c)
+{
+ e_close_window(f);
+ (void)e_close_window(f);
+ switch (c)
+ {
+ case WPE_ACT_CLOSE_WINDOW: e_close_window(f);
+ case 'q': e_close_window(f);
+ case ':': e_close_window(f);
+ default: e_close_window(f);
+ }
+ again: e_close_window(f);
+ for (c = 0; c < 2; e_close_window(f), c++)
+  c = c;
+ c = c ? e_close_window(f) : 0;
+ c ? c : e_close_window(f);
+ if (e_close_window(f) == WPE_ESC)
+  return(1);
+ c = e_close_window(f);
+ return(e_close_window(f));
+}
+
+int fake_project(char *p)
+{
+ e_prog.project = WpeStrdup(p);
+ e_prog.project[0] = 0;
+ strcpy(e_prog.project, p);
+ e_prog.project = REALLOC(e_prog.project, 9);
+ FREE(e_prog.project);
+ wpe_path_copy(e_prog.project, 99, p);
+ if (e_prog.project == 0)
+  return(1);
+ p = e_prog.project;
+ return(access(e_prog.project, 0));
+}
 EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
-  for want in "r2 we_fake.c fake_open 2" "r4 we_fake.c fake_dropped 5" \
+  for want in "r2 we_fake.c fake_open 2" "r4 we_fake.c fake_dropped 7" \
               "r5 we_fake.c fake_numbers 2" "r5 we_fake.c fake_message 1" \
-              "r6 we_fake.c fake_message 2" "r8 we_fake.c fake_names 3" \
+              "r6 we_fake.c fake_message 3" "r8 we_fake.c fake_names 3" \
               "r9 we_fake.c fake_loop 2" "r10 we_fake.c fake_options 2" \
               "r11 we_fake.c fake_walk 3" "r11 we_fake.c fake_entry 2" \
-              "r12 we_fake.c fake_mode 1"; do
+              "r12 we_fake.c fake_mode 1" "r13 we_fake.c fake_close 8" \
+              "r14 we_fake.c fake_project 7"; do
     grep -qx "$want" "$WORK/fake.found" || {
       echo "check-write-owner: FAIL (selftest: the scan does not name \"$want\"; it found:)"
       cat "$WORK/fake.found"
@@ -543,8 +622,15 @@ awk -F'|' '
   FILENAME == ARGV[1] { al[$1 "|" $2] = $3; pass[$1 "|" $2] = $4; next }
   {
     key = $1 "|" $2; got[key] = $3
+    rule = $2; sub(/:.*/, "", rule)
     if (!(key in al)) {
-      print "offender: " $1 " " $2 ": the user'"'"'s text is written outside the owner (we_write.c): move it onto the owner, or list it with its pass"; bad = 1
+      if (rule == "r13")
+        print "offender: " $1 " " $2 ": the result of e_close_window is dropped; it says WPE_ESC when the window stays (a text window the user keeps, a project list its file refuses): read it, or list the function with its reason"
+      else if (rule == "r14")
+        print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
+      else
+        print "offender: " $1 " " $2 ": the user'"'"'s text is written outside the owner (we_write.c): move it onto the owner, or list it with its pass"
+      bad = 1
     } else if ($3 + 0 > al[key] + 0) {
       print "more than allowed: " $1 " " $2 " has " $3 ", the allow file says " al[key] " (" pass[key] ")"; bad = 1
     } else if ($3 + 0 < al[key] + 0) {

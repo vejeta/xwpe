@@ -1943,6 +1943,7 @@ int e_save_opt(FENSTER *f)
  FILE *fp;
  int i;
  char *str_line;
+ WpeWriteOutcome o;
 
  if (e_opt_say_file_missing(cn, E_OPT_NOT_SAVED))
   return(-1);
@@ -1952,10 +1953,10 @@ int e_save_opt(FENSTER *f)
  str_line[i] = '\0';
  if (access(str_line, 0)) mkdir(str_line, 0700);
  FREE(str_line);
- fp = fopen(cn->optfile, "w");
+ fp = wpe_write_stream_open(cn->optfile, &o);
  if (fp == NULL)
  {
-  e_error(e_msg[ERR_OPEN_OPF], 0, f->fb);
+  wpe_write_say(f, &o, WPE_WRITE_THEN_NO_OPTIONS);
   return(-1);
  }
  str_line = OPT_SECTION_GENERAL;
@@ -1990,7 +1991,14 @@ int e_save_opt(FENSTER *f)
   WpeWriteLanguage(cn, str_line, fp);
  }
  FREE(str_line);
- fclose(fp);
+ if (wpe_write_stream_close(fp, &o) != 0)
+ {
+  /* The file was emptied by the open: the sentence says it may be cut
+     short, and the user-only keys are not moved out of a file that did
+     not get written. */
+  wpe_write_say(f, &o, WPE_WRITE_THEN_NO_OPTIONS);
+  return(-1);
+ }
  e_opt_move_user_only_keys(cn);
  e_opt_bad_forgive();
  return 0;
@@ -2854,17 +2862,18 @@ static int e_opt_lines_load(const char *path, e_opt_lines *l)
 
 /**
  * e_opt_lines_store - Write lines to a file, each with its newline.
- * @path: the file; @l: the lines.
+ * @path: the file; @l: the lines; @o: receives the outcome (path and the
+ * system's reason when the write failed).
  * Return: 0, or -1 when the file could not be written.
  */
-static int e_opt_lines_store(const char *path, const e_opt_lines *l)
+static WPE_WRITE_RESULT int e_opt_lines_store(const char *path, const e_opt_lines *l,
+                                              WpeWriteOutcome *o)
 {
- FILE *fp = fopen(path, "w");
+ FILE *fp = wpe_write_stream_open(path, o);
  int i;
  if (!fp) return -1;
  for (i = 0; i < l->n; i++) fprintf(fp, "%s\n", l->line[i]);
- if (fclose(fp) != 0) return -1;
- return 0;
+ return wpe_write_stream_close(fp, o);
 }
 
 /**
@@ -2977,6 +2986,21 @@ static void e_opt_say_move_failed(ECNT *cn)
 }
 
 /**
+ * e_opt_say_keys_stay - Say that the project's xwperc could not be rewritten
+ * without the user's own keys.
+ * @cn: the editor; @o: the outcome of the rewrite (the file and the reason).
+ *
+ * The save the user asked for has just put keys he may push into that file,
+ * and the rewrite that would take them out was refused.  A box, not the
+ * status row: the file is on disk that way, and he must act on it.
+ */
+static void e_opt_say_keys_stay(ECNT *cn, const WpeWriteOutcome *o)
+{
+ if (!cn || !cn->f[cn->mxedt]) return;
+ wpe_write_say(cn->f[cn->mxedt], o, WPE_WRITE_THEN_USER_KEYS_STAY);
+}
+
+/**
  * e_opt_move_user_only_keys - After a save into a start-folder xwperc, put the user-only keys in the user's own file.
  * @cn: the editor.
  *
@@ -2994,6 +3018,7 @@ static void e_opt_move_user_only_keys(ECNT *cn)
 {
  e_opt_lines saved = {NULL, 0}, kept = {NULL, 0}, mine = {NULL, 0};
  e_opt_lines own = {NULL, 0}, merged = {NULL, 0};
+ WpeWriteOutcome o_user, o_folder;
  int stored;
  if (!e_opt_user_file || !e_opt_folder_file) return;
  if (!e_opt_same_file(e_opt_folder_file, cn->optfile)) return;
@@ -3002,8 +3027,9 @@ static void e_opt_move_user_only_keys(ECNT *cn)
  {
   stored = e_opt_lines_load(e_opt_user_file, &own) == 0 &&
            e_opt_merge_user_only(&own, &mine, &merged) == 0 &&
-           e_opt_lines_store(e_opt_user_file, &merged) == 0;
-  e_opt_lines_store(cn->optfile, &kept);
+           e_opt_lines_store(e_opt_user_file, &merged, &o_user) == 0;
+  if (e_opt_lines_store(cn->optfile, &kept, &o_folder) != 0)
+   e_opt_say_keys_stay(cn, &o_folder);
   if (!stored && mine.n > 0)
    e_opt_say_move_failed(cn);
  }

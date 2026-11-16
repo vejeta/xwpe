@@ -1,4 +1,5 @@
-# What tests/check-path-buffers.sh lets stand.  Three kinds of line:
+# What tests/check-path-buffers.sh lets stand.  Five kinds of line (NUMBER,
+# SENTENCE and COPY below; PROJECTWORDS and GUESS before COPY):
 #
 #   NUMBER|name|reason
 #       A #define whose name ends like a path number (PATH_MAX, DIR_MAX,
@@ -39,6 +40,21 @@ NUMBER|E_ESV_MIN_NAME_MAX|the shortest file name the emergency save needs
 SENTENCE|we_ai_ui.c|the assistant's fix-build line: the file's path does not go into a command
 SENTENCE|we_debug.c|the debugger's own line when a file path does not fit its request
 SENTENCE|we_startplan.h|the start plan's reason for refusing a folder or program
+
+# --- PROJECTWORDS and GUESS: the system's reason is said, not guessed ---
+# PROJECTWORDS|file|function|reason
+#     The one function that holds the words "Project file not found" and
+#     "Cannot open project": no other function says the project did not open.
+#     A line whose function holds none of them is stale.
+# GUESS|file|function|pass-or-keep|reason
+#     A function that asks the system about a path (access, stat, fopen ...)
+#     and holds a "not found" or "cannot open" string without errno or
+#     strerror.  "keep" says why the words are not about that path; a pass
+#     names the design that moves the site onto the owner of the system's
+#     reason.  A line that matches no such function is stale.
+PROJECTWORDS|we_prog.c|e_prj_say_not_opened|the reporter: ENOENT says not found, every other errno says the system's reason
+GUESS|we_progn.c|e_show_nm_f|keep|the word is about the symbol searched; the access only chooses the project's files over the window's
+GUESS|we_startplan.c|startplan_embedded_file|read-refused|"(not found)" stands for any failed access of the script file; the read side's owner takes it over
 
 # --- COPY ---
 COPY|we_ai.c|ai_mock_open|1|text|the fixed word mock into a host name array
@@ -82,7 +98,6 @@ COPY|we_debug.c|e_d_dap_watch_put|1|sized|the destination is allocated at its so
 COPY|we_debug.c|e_d_start_end|1|checked|cut at the label's size minus one, a label
 COPY|we_debug.c|e_deb_run|10|text|command words into a line buffer sized for them
 COPY|we_e_aus.c|e_schreib_leiste_lines|5|sized|copies between a field's buffer and a copy of the field's own size plus one
-COPY|we_edit.c|e_edit|1|sized|the destination is allocated at its sources' length just before
 COPY|we_edit.c|e_zlsplt|1|text|two numbers into 20 bytes
 COPY|we_edit.c|WpeFilenameToPathFile|3|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_fkt.c|e_new_qual|4|sized|the caller allocates the name, a dot and the ending
@@ -141,7 +156,6 @@ COPY|we_prog.c|e_make_arg|2|sized|the destination is allocated at its sources' l
 COPY|we_prog.c|e_add_arg|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_project_name|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_select_project|1|sized|the destination is allocated at its sources' length just before
-COPY|we_prog.c|e_create_project|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_read_var|3|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_install_text|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_install_run|2|sized|the destination is allocated at its sources' length just before

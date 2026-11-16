@@ -35,6 +35,27 @@ Bugs fixed in 1.6.x:
   escapes, OpenBSD reads them as letters and reads bytes).
 * The box that refuses an over-long path names the system's limit, not 4096
   on every system.
+* New Project in a folder the system will not write to said 'Project file
+  not found' and set the typed name as the project; it now says the file and
+  the system's reason ('Cannot write .../ok.prj: Permission denied.  No
+  project was created.') and creates and sets no project.  Saving the
+  project list or the options into a file the system refuses says the same
+  with what is kept instead of 'Can't open File ...', closing a project
+  window whose file refuses keeps it open with its list, a write that stopped
+  after the file was emptied says the file may be cut short, and Open Project
+  on a file you cannot read says why instead of opening an empty project.
+  Opening or creating another project while the open one cannot be written
+  keeps the open one (a box says the new project's path was not opened) instead of leaving two project
+  windows, a failed Open Project no longer leaves the typed name as the
+  Project option, the old project's list is no longer written into the
+  project being opened, and a build does not run on a list the file refused.
+  Quit (Alt-X), Clear Desktop and Close Project stop at a project list the
+  file refuses and keep the editor, the project and any unsaved text;
+  opening the open project again brings its window forward.  A .prj named on
+  the command line or opened from the File Manager must exist ('Project file
+  not found: <path>' otherwise; the File Manager's F3 no longer creates one,
+  New Project does), and a .prj reached any other way (a member of a project
+  list, a file an assistant proposes to edit) opens as text.
 * Run > Matching Bracket no longer crashes when the first row starts with
   #else and holds another '#', and no longer reads beyond the text when an
   #else row is the last row or a comment starts or ends at column 0; it

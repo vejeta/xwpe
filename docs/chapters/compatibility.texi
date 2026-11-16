@@ -924,6 +924,38 @@ blank, @key{Delete} could remove it, and a Save wrote it into the
 that had none.  xwpe says ``No entry in this list'' on the blank row,
 keeps it when you delete, and writes none of it.  The reason: a blank row
 is where an entry goes, not an entry.
+
+@item Starting a project from a name
+@cindex project, started from a name
+@cindex command line, project file
+The original took any @file{.prj} named on the command line or opened from
+the File Manager as the project, even one that did not exist: the project
+started empty from the defaults, and saving its list created the file.  xwpe
+opens only a @file{.prj} that exists and says @samp{Project file not found:
+<path>} otherwise; Project @result{} New Project is the one way to start a
+project, and it writes the file at once.  A @file{.prj} reached any other way
+(a member of a project list, a file an assistant proposes to edit) opens as
+text.  The reason: a typing mistake in a file name made a project nobody
+asked for, and a project that ``opens'' a name it never read cannot say why
+it is empty.
+
+@item A project or options file that cannot be written
+@cindex project file, write fails
+@cindex options file, write fails
+The original wrote the new project file, the project list and the options
+file without judging the write.  A folder that refused the new project file
+gave an empty project and no word, and a read-only project or options file
+gave @samp{Can't open File %s} or @samp{Can't open Option-File}, with no
+reason, while closing the project window threw its list away.  xwpe says
+the file and the system's reason and what is kept (@samp{Cannot write
+/home/u/p.prj: Permission denied.  No project was created.}), makes no
+project when its file cannot be written, keeps the project window open
+with its list when closing it cannot write, and says when a write that
+stopped after the file was emptied may have left it cut short.  Open
+Project on a file the system will not let you read says the system's reason
+instead of @samp{Project file not found}.  The reason: the user must know
+the file is not on disk and that the list or the options are still in the
+editor.
 @end table
 
 @section Search

@@ -11,9 +11,24 @@ and how to build the executable.
 
 @section Creating a project
 
-Open @samp{Project @result{} Open Project} (@kbd{Alt-P P}) and enter
-a filename (e.g.@: @file{myproject}).  xwpe creates the project file
-and opens the project options dialog.
+Choose @samp{Project @result{} New Project} (@kbd{Alt-P N}) and enter a
+filename (e.g.@: @file{myproject.prj}).  xwpe creates the project file and
+opens the project.  @samp{Project @result{} Open Project} (@kbd{Alt-P P})
+opens a project file that exists and says so when it does not.  A
+@file{.prj} named on the command line (@samp{wpe my.prj}) or opened from the
+File Manager is opened the same way: it must exist
+(@samp{Project file not found: my.prj} otherwise), and only New Project makes
+one.  A @file{.prj} reached any other way, such as a member of a project list
+or a file an assistant proposes to edit, opens as the text it is.  Opening the
+project that is already open brings its window to the front.
+
+A project file the system cannot create or read is not made up: the box
+names the file and the system's reason (@samp{Permission denied}, for
+example) and, for New Project, says that no project was created.  Saving
+the project list into a file the system refuses says the same and keeps the
+list in its window; closing the window then leaves it open until the file
+can be written.  A path longer than the system allows is refused by the
+system when the file is written, in the same words.
 
 @section Project file syntax
 

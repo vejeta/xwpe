@@ -1050,6 +1050,74 @@ int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o)
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
 }
 
+/**
+ * wpe_write_stream_open - Create or replace a file the caller prints into.
+ * @path: the file; @o: receives the outcome, with the path.
+ * Return: the stream, or NULL when the file could not be opened (the outcome
+ * is FAILED and says why).
+ *
+ * For a list of unknown length (the project's lines, the options): the user
+ * who names a folder that refuses the file hears the system's reason instead
+ * of a guess.  The caller must end with wpe_write_stream_close and read its
+ * result; the file size limit is ignored until then, so a full limit is a
+ * failed outcome and not the end of the editor.
+ */
+FILE *wpe_write_stream_open(const char *path, WpeWriteOutcome *o)
+{
+ FILE *fp;
+ int fd;
+
+ memset(o, 0, sizeof *o);
+ write_set_path(o, path);
+ fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+ if (fd < 0)
+ {
+  o->status = WPE_WRITE_FAILED;
+  o->err = errno;
+  return(NULL);
+ }
+ fp = fdopen(fd, "w");
+ if (fp == NULL)
+ {
+  o->status = WPE_WRITE_FAILED;
+  o->err = write_error_number(errno);
+  close(fd);
+  return(NULL);
+ }
+ wpe_write_guard_enter();
+ o->status = WPE_WRITE_WRITTEN;
+ return(fp);
+}
+
+/**
+ * wpe_write_stream_close - End a stream of wpe_write_stream_open, judged.
+ * @fp: the stream, closed here; @o: the outcome of the open, updated.
+ * Return: 0 when every byte reached the file, else -1.
+ *
+ * The file was emptied when it was opened, so a failure here leaves it cut
+ * short: the outcome says so (no backup copy exists for a stream), and the
+ * sentence the user reads says the file may be cut short.
+ */
+int wpe_write_stream_close(FILE *fp, WpeWriteOutcome *o)
+{
+ int err = 0;
+
+ if (fflush(fp) != 0)
+  err = write_error_number(errno);
+ if (err == 0 && ferror(fp))
+  err = EIO;
+ if (fclose(fp) != 0 && err == 0)
+  err = write_error_number(errno);
+ wpe_write_guard_leave();
+ if (err == 0)
+  return(0);
+ o->status = WPE_WRITE_FAILED;
+ o->err = err;
+ o->restore_err = ENOENT;
+ o->bak_path[0] = '\0';
+ return(-1);
+}
+
 /* --- the one message ------------------------------------------------------ */
 
 /**
@@ -1073,6 +1141,15 @@ static const char *write_then_text(const WpeWriteOutcome *o, WpeWriteThen then, 
   return("The build was not started.");
  case WPE_WRITE_THEN_NO_PRINT:
   return("Nothing was printed.");
+ case WPE_WRITE_THEN_NO_PROJECT:
+  return("No project was created.");
+ case WPE_WRITE_THEN_PROJECT_KEPT:
+  return("The project list is still in its window.");
+ case WPE_WRITE_THEN_NO_OPTIONS:
+  return("The options were not saved.");
+ case WPE_WRITE_THEN_USER_KEYS_STAY:
+  return("Your own settings (hook, engine command, endpoints, dial) are still in it; "
+         "take them out before you share the file.");
  case WPE_WRITE_THEN_KEPT:
  default:
   return("Your text is still in the window.");

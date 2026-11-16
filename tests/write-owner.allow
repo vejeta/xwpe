@@ -20,10 +20,6 @@ we_prog.c|r4:e_comp_start|1|P3|a build save
 we_prog.c|r4:e_exec_make|1|P3|a build save
 we_prog.c|r4:e_prj_save_file|1|P3|a build save
 we_prog.c|r4:e_run_sh|1|P3|a build save
-we_prog.c|r2:e_write_default_prj|1|P1b|the new .prj, a stream write
-we_prog.c|r2:e_wrt_prj_fl|1|P1b|the project file, a stream write
-we_opt.c|r2:e_save_opt|1|P1b|the options file, a stream write
-we_opt.c|r2:e_opt_lines_store|1|P1b|the options lines, a stream write
 we_ai_path.c|r2:wpe_path_open_write|1|P4|the judged write into the user's own file
 we_ai_ui.c|r2:ai_transcript_write|1|P4|the transcript
 we_ai_ws.c|r2:ws_write_file|1|P4|the workspace's copies
@@ -34,8 +30,6 @@ we_ai_ws.c|r9:ws_write_file|1|P4|the workspace's copies
 we_ai_ws.c|r9:ws_write_pathspec|1|P4|the conversation
 
 # not the user's text
-we_prog.c|r6:e_prj_say_open_failed|2|keep|formats the message for the reads of the project machine
-we_main.c|r6:e_msg|1|keep|the message table: the entry stays for e_prj_say_open_failed
 we_ai.c|r2:wpe_ai_trace|1|keep|a behaviour trace
 we_ai.c|r2:wpe_ai_write_openai_key|2|keep|the key file, written with its own mode
 we_ai_ui.c|r2:ai_consent_remember|1|keep|the consent marker
@@ -147,3 +141,30 @@ we_fl_unix.c|r10:WpeFileManagerReturnHome|1|keep|the options of one dialog, put 
 we_fl_unix.c|r10:WpeHandleFileManager|8|keep|the options of one dialog, put back by the same function
 we_main.c|r10:ECNT_Init|1|keep|the defaults
 we_opt.c|r10:WpeReadGeneral|1|keep|the saved options
+
+# rule 13: a close whose result is not read.  e_close_window says WPE_ESC when
+# the window stays (a text window the user keeps, the project list its file
+# refuses); these are the sites where the window cannot refuse, or where one
+# close is the whole action and nothing follows it.
+we_edit.c|r13:e_tst_dfkt|1|keep|Close (Alt-F3), a single close that nothing follows
+we_fl_fkt.c|r13:e_help_loc|1|keep|the Help window, which never asks to be saved
+we_ai_ui.c|r13:ai_compose_run|1|keep|the compose window, closed with its save mark cleared
+we_unix.c|r13:e_recover|1|keep|a window just opened by the recovery
+we_prog.c|r13:e_new_message|1|keep|the Messages window, filled by the editor
+we_prog.c|r13:e_prj_ob_btt|1|keep|a list of the project dialog, filled by the editor
+we_debug.c|r13:e_d_dap_start_close_messages|1|keep|the Messages window, filled by the editor
+we_debug.c|r13:e_remove_all_watches|1|keep|the Watches window, filled by the editor
+we_fl_unix.c|r13:e_data_eingabe|2|keep|the window list, and the project window after its list was written
+we_fl_unix.c|r13:e_ed_man|1|keep|the manual page, a read-only window
+we_fl_unix.c|r13:WpeHandleFileManager|7|keep|the file manager, which closes whole
+we_fl_unix.c|r13:WpeSaveAsTranscript|1|keep|the file manager that asked for the name
+
+# rule 14: the open project is named in one place.  e_select_project switches
+# it; the others rename it, make it absolute, clear it after a refused open,
+# or set it at start, before any window exists.
+we_prog.c|r14:e_select_project|3|keep|the one switch: release the old project, then name the new one
+we_prog.c|r14:e_project_name|5|keep|Project Options' name field: a rename, the list follows it
+we_prog.c|r14:e_prj_anchor_path|2|keep|the same project made absolute
+we_prog.c|r14:e_ini_prog|2|keep|the empty name at start, before any window
+we_prog.c|r14:e_open_project_file|1|keep|cleared after a refused open
+we_opt.c|r14:WpeReadProgramming|1|keep|the saved option, read at start before any window

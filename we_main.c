@@ -69,14 +69,14 @@ char *e_msg[] = {  "Not Enough Memory",
 		   "Can\'t read Option-File",
 		   "More Than 35 Windows",
 		   "String NOT found",
-		   "Can\'t open File %s",             /*  Number 5  */
+		   "",                               /*  Number 5, unused: the write owner and the project reporter say it  */
 		   "Can\'t close File",
 		   "No more Undo",
 		   "Execute Command: %s\n",
 		   "Command not found",
 		   "\nStrike <Return> to continue\n", /*  Number 10 */
 		   "Not Installed",
-		   "Can\'t open Option-File",
+		   "",                               /*  Number 12, unused: the write owner says it  */
 		   "Can\'t write to Option-File",
 		   "File failed to save",
 		   "Not all files saved",             /*  Number 15  */
@@ -492,7 +492,7 @@ int main(int argc, char **argv)
 #endif
    continue;
   }
-  else e_edit(cn, argv[i]);
+  else e_open_named_file(cn, argv[i]);
  }
  if (cn->mxedt == 0) WpeManager(cn->f[cn->mxedt]);
  do

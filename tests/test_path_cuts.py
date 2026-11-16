@@ -15,6 +15,7 @@ the rows at the end drive that sentence.
 Run: WPE_BIN=$PWD/wpe pytest tests/test_path_cuts.py (and wpe-asan).
 """
 import os
+import re
 
 import pytest
 
@@ -56,6 +57,18 @@ def _screen(w):
 
 def _text(w):
     return "\n".join(_screen(w))
+
+
+def _flat(text):
+    """The words of a screen with the box borders gone and the white space
+    collapsed: a box wraps its sentence at a width that depends on the length
+    of the scratch path in it, so a phrase may be split over two rows."""
+    rows = []
+    for row in text.splitlines():
+        row = re.sub(r"^(x\s+)+", "", row)
+        row = re.sub(r"(\s+x)+(\s+\S)?\s*$", "", row)
+        rows.append(row.strip())
+    return re.sub(r"\s+", " ", " ".join(rows))
 
 
 def _intact(w, what):
@@ -322,6 +335,69 @@ def test_new_project_whose_path_cannot_be_held_says_so(tmp_path):
         _intact(w, "New Project whose path is over the limit")
     assert SENTENCE in text and "project" in text, text
     assert not [n for n in os.listdir(folder) if n.endswith(".prj")], os.listdir(folder)
+
+
+def _folder_refuses_new_files(folder):
+    """Does the system keep a new file out of @folder when it is 0500?  Root,
+    or a user whose file modes are overridden, makes the file anyway, and the
+    row would fail for a reason that has nothing to do with the editor."""
+    probe = os.path.join(folder, "probe_new")
+    os.chmod(folder, 0o500)
+    try:
+        with open(probe, "x"):
+            pass
+        made = True
+    except OSError:
+        made = False
+    finally:
+        os.chmod(folder, 0o700)
+    if made:
+        os.remove(probe)
+    return not made
+
+
+def _saved_project_option(home):
+    """The Project value Options > Save wrote into the session's xwperc."""
+    with open(os.path.join(home, ".config", "xwpe", "xwperc")) as fh:
+        for line in fh:
+            if line.startswith("Project"):
+                return line.split(":", 1)[1].strip()
+    return None
+
+
+# A folder closed to writing: the system's reason, and no project.
+# @scenario SC-path-cuts-17
+def test_new_project_in_a_folder_closed_to_writing_says_why(tmp_path):
+    """New Project in a folder the user cannot write to: the box names the
+    file and the system's reason and says no project was created.  The box
+    was "Project file not found" with no .prj on disk, and the typed path
+    stayed as the Project option.  After the refusal Options > Save must hold
+    no project: the failed name is neither the project nor the option."""
+    folder = str(tmp_path)
+    with WpeSession(folder, "int main(void){return 0;}\n", filename="t.c", wait=2.0,
+                    cols=140, rows=40, env_extra=ASAN_ENV) as w:
+        if not _folder_refuses_new_files(folder):
+            pytest.skip("this user can create files in a 0500 folder "
+                        "(root, or a capability that overrides file modes)")
+        os.chmod(folder, 0o500)
+        try:
+            w.key(ALT_P, delay=1.0)
+            w.key("n", delay=1.5)
+            w.key("ok.prj" + ENTER, delay=2.0)
+            text = _flat(_text(w))
+            _intact(w, "New Project in a folder closed to writing")
+        finally:
+            os.chmod(folder, 0o700)
+        w.key(ENTER, delay=1.0)             # dismiss the box
+        w.key(ALT_O, delay=1.0)
+        w.key("s", delay=1.5)
+        w.key(ENTER, delay=1.5)             # Options > Save, into the home's xwperc
+        _intact(w, "Options > Save after the refusal")
+    assert "Cannot write" in text and "Permission denied" in text, text
+    assert "No project was created." in text, text
+    assert "not found" not in text, text
+    assert not os.path.exists(os.path.join(folder, "ok.prj"))
+    assert _saved_project_option(folder) == "", _saved_project_option(folder)
 
 
 # An Info-Path over the old field width can be edited.

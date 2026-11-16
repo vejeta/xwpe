@@ -165,6 +165,8 @@ int e_run_sh(FENSTER *f);
 int e_project(FENSTER *f);
 int e_open_project_file(ECNT *cn);
 int e_select_project(ECNT *cn, char *path);
+int e_open_picked_project(ECNT *cn, char *path);
+int e_open_named_file(ECNT *cn, char *name);
 int e_create_project(ECNT *cn, char *path);
 int e_new_project(FENSTER *f);
 int e_find_project_window(ECNT *cn);
@@ -185,8 +187,14 @@ int e_new_message(FENSTER *f);
 int e_project_name(FENSTER *f);
 int e_wrt_prj_fl(FENSTER *f);
 int e_p_update_prj_fl(FENSTER *f);
+int e_prj_persist(FENSTER *f);
+int e_prj_save_before_close(FENSTER *f);
 int freedfN(struct dirfile **df, int n);
 int e_read_var(FENSTER *f);
+/* The two ways e_read_var fails: the file did not open (errno says why,
+   nothing was said) and memory ran out (said). */
+#define E_PRJ_READ_NOT_OPENED (-1)
+#define E_PRJ_READ_LOWMEM     (-2)
 
 /*   we_progn.c  */
 

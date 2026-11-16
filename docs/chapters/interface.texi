@@ -251,8 +251,11 @@ Exit the debugger.
 @subsection Project menu (@kbd{Alt-P}) -- programming mode only
 
 @table @kbd
+@item N -- New Project
+Create a project file at the name you type and open it.  When the system
+refuses the file, the box says why and no project is created.
 @item P -- Open Project
-Load a project file.
+Load a project file that exists.
 @item C -- Close Project
 Stop using the current project.
 @item A -- Add Item
