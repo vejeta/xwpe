@@ -171,5 +171,18 @@ print `^[[20~` (not switch a Space or dim the screen).
 - **Install prefix / running the tests / `XWPE_LIB`**: see
   [BUILDING.md](../../BUILDING.md). On macOS, `--prefix="$HOME/.local"` keeps the
   whole install under your home directory with no sudo.
+- **The terminal test suite runs on macOS.** Configure with
+  `./configure --without-x --without-gpm`, run `make`, then run
+  `tests/run-tests.sh`. A row that needs something this host cannot give skips
+  and names what it needed, so a skip is not a failure. macOS holds 1024 bytes of
+  path where Linux holds 4096, and a row about the editor's cut at a longer path
+  says `needs a system path limit over N bytes (this one: 1024)`. A language
+  server, debugger or compiler that is absent, or that is on `PATH` and does not
+  run, gives `no <tool> on this host`. The Wayland suite needs weston and does
+  not run here. The X11 suite runs under XQuartz with a tool chain of its own
+  (`twm`, `magick`, `xwdtopnm`), and skips when that stack is absent.
+  [tests/README.md](../../tests/README.md) carries the per-tool tables, how a
+  row declares its tools with `needs()`, and how to run chosen test ids on the
+  manual macOS CI workflow.
 - **GPM is Linux-only**; use `--without-gpm` on macOS. The mouse still works
   through the terminal emulator -- see [docs/terminals.md](../terminals.md).

@@ -69,6 +69,115 @@ still **skips** when its tool is absent:
 xwpe uses `lldb-dap` for Rust on macOS instead.  Scala tests pin the build JVM
 (`//> using jvm temurin:21`) so a too-new system JDK does not break them.
 
+### How a row says which tool it needs (`needs()`)
+
+A row declares the host tools it needs and one resolver turns the declaration
+into a skip.  `tests/host_tools.py` owns the declaration, and
+`tests/conftest.py` is the only place that turns a `needs()` mark into a skip.
+No row decides on its own whether a tool is usable.  The two helpers that skip
+inside a running row, `require()` and `require_absent()` below, call
+`pytest.skip` themselves.
+
+```python
+from host_tools import needs
+
+pytestmark = needs("git")        # every row of the module
+
+needs_gdb = needs("gcc", "gdb")  # a mark a row or a class carries
+
+@needs("clangd")                 # one row
+def test_the_diagnostics_arrive(tmp_path):
+    ...
+```
+
+A tool is usable when it is on `PATH` **and** it runs.  `shutil.which` alone
+takes a rustup shim, a macOS stub or a launcher with no toolchain behind it for
+an installed tool, and the row then starts and fails with a toolchain error
+instead of skipping.  `host_tools.PROBES` gives each tool whose version flag is
+not `--version` its own (`javac -version`, `fpc -iV`), and a tool that starts a
+server or a window when run bare is checked by presence alone.  One name may
+list alternatives: `needs("pyright-langserver|pylsp")` is met when either is
+usable.
+
+The two skips both name the tool, and they say which of the two happened:
+
+```
+no gdb on this host                 it is missing, or on PATH and does not run
+gdb: not exercised by this job      this job switched it off
+```
+
+**Switch a tool off on purpose** with `XWPE_TEST_TOOLS_OFF`, a blank-separated
+list of names.  That is how a job keeps a slow or flaky server out, and how you
+check that a row skips by name instead of failing:
+
+```bash
+XWPE_TEST_TOOLS_OFF=gdb tests/run-tests.sh
+XWPE_TEST_TOOLS_OFF="gcc gdb" WPE_BIN=$PWD/wpe \
+    tests/.venv/bin/python -m pytest -q tests/test_startplan_gdb_apart.py
+```
+
+A job that sets the variable gets it printed in the pytest header
+(`host_tools.report_line()`, which returns nothing while every tool is on), and
+the two macOS jobs also echo it in their own log.  So a run that stopped
+exercising a capability says so where it can be read.  In the scenario harness
+such a skip is the `NOT_EXERCISED` verdict, and the report fails on it: a
+capability nobody checked never reads green.
+
+Three more shapes live in `tests/host_tools.py`:
+
+- `require("dlv")` skips the running row, for the few rows that learn their tool
+  only while running (a tool chosen by a parameter or by a helper's argument).
+- `require_absent("gdb")` skips the row when the tool **is** installed, for a row
+  about the debugger the editor must name and cannot start.
+- `usable(*tools)` answers a question about the host for a row that builds its
+  own data from what is installed.  It never decides a skip.
+
+The display gates of `tests/x11/conftest.py`, `tests/wayland/conftest.py` and
+`tests/console/conftest.py` (Xvfb, weston, a window manager, qemu) are the one
+named exception.  They decide once whether a whole graphical or console layer
+can run at all, which is a layer gate and not the skip of a row.
+
+**Function keys are not special on macOS in the harness.**  The harness writes
+the bytes of every key into a pseudo-terminal.  No macOS keyboard layer sits
+between it and the editor, so a row sends `F2` or `F9` exactly as on Linux.  The
+top row belongs to the system on a real Mac (see
+[docs/install/macos.md](../docs/install/macos.md)), and that is a fact about a
+keyboard and a terminal emulator, not about the harness.  Do not route a
+function key through a menu to work around it.  Checking the menu route as well
+is fine, and `tests/test_macos_smoke.py` and `tests/test_esc_key.py` do: a row
+that covers both also covers the way a user whose system keeps the top row
+reaches the same action.  What is not fine is a row that means to press `F9` and
+sends only menu strokes.
+
+### Running chosen ids on the macOS workflow
+
+macOS CI never runs on a push.  `.github/workflows/macos.yml` is
+`workflow_dispatch` only, on the GitHub mirror, and one dispatch runs both
+architectures (`macos-15` for Apple Silicon, `macos-15-intel` for Intel).  Its
+`tests` input names the ids the UI step runs alone:
+
+```bash
+gh workflow run macos.yml --repo vejeta/xwpe
+gh workflow run macos.yml --repo vejeta/xwpe -f tests=tests/test_modern_keys.py
+gh workflow run macos.yml --repo vejeta/xwpe \
+    -f tests='tests/test_modern_keys.py::test_the_key_reaches_its_action[F2] tests/test_esc_key.py'
+```
+
+**Write the ids without quotes.**  The quotes in the last example belong to your
+shell, which strips them, and they protect the `[F2]` from your own glob.  The
+step splits `$SELECTED_TESTS` on blanks under `set -f` and passes it to pytest
+unquoted, so a `"` character that reaches the input becomes part of the id.
+pytest then stops with `ERROR: file or directory not found: ...` or
+`ERROR: not found: ...`, exits with status 4, no test runs, and the step fails.
+Several ids go in one value, separated by spaces.
+
+With the input set, that step runs the ids in one pass with full tracebacks and
+no reruns, prints the facts of the runner the rows depend on first
+(`getconf PATH_MAX /`, `getconf NAME_MAX /`, `infocmp -1 xterm-256color`,
+`cc --version`), and unsets `XWPE_TEST_TOOLS_OFF`, so an id that needs `gdb`
+runs.  The ids run in the `macos` job; the `assistant` job prints that they do
+and exits.  Leave the input empty for the whole suite.
+
 ## X11 GUI tests (xwpe)
 
 `pyte` emulates a VT100 text terminal, so it covers `wpe` (ncurses) but
@@ -287,10 +396,21 @@ PY=tests/.venv/bin/python tests/harness/run.sh dialog-engine ncurses
 ```
 
 The verdicts land in `tests/harness/out/<capability>-<layer>-<timestamp>.json`
-as `PASS`, `FAIL`, `BLOCKED` or `MISSING`. A test that did not run is `MISSING`,
-and a skipped test counts as `FAIL` unless the manifest marks the scenario
-blocked. The exit status is non-zero if any scenario is not `PASS` or
-`BLOCKED`, so the script can gate a build.
+as `PASS`, `FAIL`, `BLOCKED`, `NOT_EXERCISED` or `MISSING`. A test that did not
+run is `MISSING`. A skipped test counts as `FAIL` unless one of these holds, and
+they are tried in this order: the manifest marks the scenario `blocked` (then
+`BLOCKED`), its layer is `live` (also `BLOCKED`), the skip says `not exercised
+by this job` (then `NOT_EXERCISED`, which is a job that switched the row's tool
+off with `XWPE_TEST_TOOLS_OFF`, so the capability went unchecked on purpose and
+not for want of a tool), or the manifest row lists the tools in `"needs"` and
+every skip message of the test names one of them (then `BLOCKED`). That last one
+reads the `"needs"` field of the manifest row, not the `needs()` mark of the
+test. The not-exercised check runs before it, so a tool a job switched off is
+never read as a tool that is missing. A scenario several rows pin takes the
+worst of their verdicts, never the last one listed.
+The exit status is non-zero if any scenario is not `PASS` or `BLOCKED`, so a job
+that stops exercising a capability cannot read green, and the script can still
+gate a build.
 
 Layers `run.sh` runs: `ncurses`, `asan`, `x11`, `wayland`, `console` and
 `c-unit`. A manifest row may also say `config-file` (a pyte test that seeds
@@ -551,3 +671,53 @@ or debugging a pyte test -- they are easy to relearn the slow way.
   a frame corner on the new last column, a dialog re-centred), never just
   `alive()`; prove it fails against a build whose `KEY_RESIZE` case is a
   no-op before trusting it.
+
+- **Ask the system how long a path it holds.** `procinfo.path_max(base)` is
+  4096 on Linux and 1024 on macOS and the BSDs, so a folder that is deep on one
+  host is refused by `os.makedirs` on another before the row reaches the editor.
+  `tests/deep_folder.py` owns "a folder of a given length":
+  `folder_of_length(base, total)` makes it, `held(base, total)` skips the row by
+  name where this system holds no path that long, `over_the_limit(base)` is a
+  length this system refuses, and `as_deep_as_allowed(base, wanted)` and
+  `under_the_limit(base, room)` give a row that only needs "far over an old,
+  smaller buffer" the deepest folder this host can make. A row about the
+  editor's own old cut at N bytes calls `held()` first, because a system that
+  holds no path of N+1 bytes cannot have the defect. Do not write a byte count
+  of your own and do not `os.makedirs` a `"d" * N` path.
+
+- **A pty is not called `/dev/pts/N` everywhere.** `procinfo.is_pty_path(path)`
+  knows each system's slave names: `/dev/pts/N` on Linux and FreeBSD,
+  `/dev/ttysNNN` on macOS, `/dev/tty[p-z]N` and `/dev/tty[PQRT]N` on NetBSD and
+  OpenBSD. The `S` is left out on purpose, so `/dev/ttyS0`, a serial line, is
+  not taken for a pty. A row that shows a program was given a terminal of its
+  own asks it of the name the editor passed, instead of comparing that name
+  with a literal.
+
+- **`/proc` is Linux's.** Read a child through `procinfo`:
+  `open_descriptors(pid)` (the `/proc` table, else `lsof -p`, else the BSDs'
+  `fstat -p`, else `None`, and the row then skips "needs a descriptor table:
+  /proc, lsof or fstat"), `cpu_seconds(pid)`, `run_state(pid)`,
+  `command_run(pid)`, and `sigstate_program(tmp_path)` for the signals a child
+  ignores or blocks. The `sigstate` helper asks `sigaction` and `sigprocmask`
+  and prints `IGNORED:` and `BLOCKED:` lines of names; the `SigIgn` line of
+  `/proc/<pid>/status` exists on Linux only.
+
+- **One terminfo database for the editor and for the row.** macOS has two:
+  Homebrew's ncurses carries its own, newer entries than the system's, so a row
+  that compares what the editor wrote with the host's `tput` compares two
+  databases and fails on neither of them. `tests/terminfo.py` gives the row one
+  database: `private_database(tmp_path)` copies the host's entry with `infocmp`
+  and compiles it with `tic` into the row's folder, `environment(database)` is
+  the `env_extra` that makes the editor read it, and
+  `string(cap, database=database)` asks the same one for the bytes to compare
+  with. `has_entry(term)` asks first for a terminal the host may not know, and
+  the row then skips "no rxvt-unicode terminfo entry here".
+
+- **Make `openpty` fail on purpose.** `XWPE_TEST_FAIL=openpty` makes the
+  editor's one `openpty` return `ENOENT`, so a row shows what the user sees when
+  the system has no terminal to give a program: the output still reaches
+  Messages and the exit code is still reported. It is the editor's own test knob,
+  in the child owner (`we_child.c`), and it behaves the same on every system, so
+  no row needs `LD_PRELOAD`, a `DYLD_` interposition section, or a library built
+  for the occasion. `NO_PTY_ENV` in `tests/test_short_commands.py` is the
+  environment to pass.
