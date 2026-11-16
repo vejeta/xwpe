@@ -446,9 +446,27 @@ def start_ticks(pid):
     return int(fields[STAT_STARTTIME])
 
 
+def _boot_seconds():
+    """Seconds since boot on the clock /proc start times count from.
+
+    CLOCK_BOOTTIME where Python has it; /proc/uptime otherwise (the same
+    kernel clock, so the two stay comparable)."""
+    if hasattr(time, "CLOCK_BOOTTIME"):
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    with open(os.path.join(PROC_ROOT, "uptime")) as uptime:
+        return float(uptime.read().split()[0])
+
+
 def now_ticks():
-    """The current time in the same clock ticks since boot (Linux)."""
-    return int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
+    """The current time in the clock ticks start_ticks counts in, or None.
+
+    Only Linux has such a pair: /proc start times are ticks since boot, so
+    the mark must be read on the boot clock.  Elsewhere start_ticks gives
+    None (no process start time is compared), so the mark is None too and
+    no other clock is guessed at.  Callers never pick a clock of their own."""
+    if not IS_LINUX:
+        return None
+    return int(_boot_seconds() * os.sysconf("SC_CLK_TCK"))
 
 
 def group_of(pid):

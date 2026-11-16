@@ -2242,5 +2242,41 @@ def test_group_running_ignores_members_that_have_ended(owner):
             maker.wait()
 
 
+# Ticks (10 ms) a child may start after the mark: spawning and reading its
+# stat take well under a second; the bound only has to be far below the
+# hour-scale error of a wrong clock.
+CLOCK_MARK_SLACK_TICKS = 300
+
+
+# @scenario SC-harness-owner-84
+def test_tree_close_marks_on_the_kernel_start_clock_without_clock_boottime(monkeypatch):
+    """A Python with no time.CLOCK_BOOTTIME (NetBSD's) still closes a tree,
+    and the mark is on the clock /proc start times use (measured against
+    the kernel's own start times, not against now_ticks itself)."""
+    monkeypatch.delattr(time, "CLOCK_BOOTTIME", raising=False)
+    tree = gui_owner.Tree(os.getpid(), "no boot clock")
+    tree.close()
+    assert tree.closed_at is not None, "the sweep was not marked closed"
+    assert gui_owner.start_ticks(os.getpid()) < tree.closed_at, \
+        "the mark is before this process started: wrong clock"
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        late = gui_owner.start_ticks(child.pid) - tree.closed_at
+        assert 0 <= late <= CLOCK_MARK_SLACK_TICKS, \
+            "a child started after the mark is %d ticks from it" % late
+    finally:
+        child.kill()
+        child.wait()
+
+
+# @scenario SC-harness-owner-85
+def test_tree_close_makes_no_mark_where_start_times_are_not_ticks(monkeypatch):
+    """Off Linux no start time is compared, so the mark stays None."""
+    monkeypatch.setattr(gui_owner, "IS_LINUX", False)
+    tree = gui_owner.Tree(os.getpid(), "bsd")
+    tree.close()
+    assert tree.closed_at is None, "a mark was made where no start time exists"
+
+
 if __name__ == "__main__":
     _run_standin(sys.argv[1:])
