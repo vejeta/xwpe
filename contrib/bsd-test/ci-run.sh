@@ -139,7 +139,10 @@ grep -cE '^(PASS|FAIL|SKIP|ERROR|TIMEOUT):' bsd-out/check.log
 # check.log, so the logs must be there before it runs; the copy at the end
 # picks up whatever the probes and pytest wrote after.
 cp test-suite.log test_*.log tests/*.log bsd-out/ 2>/dev/null
-sh tests/bsd-known-failures.sh "$os" bsd-out/check.log "$check_rc" || rc=1
+# The verdict goes to a file first so the script's exit status is not lost in
+# a pipe; the file is then shown, and the artifact carries it.
+sh tests/bsd-known-failures.sh "$os" bsd-out/check.log "$check_rc" > bsd-out/known-failures.log 2>&1 || rc=1
+cat bsd-out/known-failures.log
 { cc -O2 -o /tmp/probe contrib/bsd-test/sgr_mouse_probe.c -lutil \
   && tests/with-deadline.sh 300 /tmp/probe ./we xterm-256color; } \
   > bsd-out/probe.log 2>&1 || { rc=1; tail -20 bsd-out/probe.log; }

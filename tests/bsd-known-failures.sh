@@ -45,6 +45,16 @@
 # To change a list: edit known_failures() below.  Each line is
 # "name|label|reason|finding", with no "|" in the label.  Remove the line in
 # the same change that fixes it.
+#
+# A fifth field "flaky" marks a row of a race that fails on some runs only:
+# a flaky row that passes is not STALE, one that fails is a "known flaky
+# failure", and both are printed on every run.  The kind is bounded: the
+# finding must be in the process-end race class (BT11, BT12, BT13a, BT20) and
+# the reason must say "listed YYYY-MM-DD", the label must have 8 characters at
+# least, or the line is refused.  A sixth field "needs" lists cause labels
+# separated by ";": the row is then known only when one of them fails in the
+# same log, so a consequence row that fails alone is NEW.  A label ending in
+# "$" matches the whole row text, not just its start.
 
 # The logs hold Latin-1 bytes and labels with accented text; read them as
 # bytes so no awk warns about a locale mismatch.
@@ -80,7 +90,15 @@ EOF
     netbsd)
       cat <<'EOF'
 test_childsafe|the folder is named on its terminal|the refusal written to the pty may be lost when the child exits at once (hypothesis, evidence pending)|BT13a
-test_rowfind_copy|ba from 1: Find "\ba"|the copy build reads a \b at the start of the copy as no word edge when REG_NOTBOL is set (NetBSD understands \b, so the GNU-escapes fact does not explain it; hypothesis, evidence pending)|unclassified (P5 evidence)
+test_bsp_close|the launcher is gone and reaped (launcher that ignores SIGTERM)|loop_until_gone saw the launcher gone at 2006 ms, then process_alive (kill(pid,0), where there is no /proc) said alive; cause unknown, one run (43841645667), evidence pending; listed 2026-11-16|BT20|flaky
+test_child|ended on SIGTERM: got |a child's end arrives late or never (run 43792053014; evidence pending); listed 2026-11-16|BT11|flaky
+test_child|by SIGTERM, not given up on: got |a child's end arrives late or never (run 43792053014; evidence pending); listed 2026-11-16|BT11|flaky
+test_child|by SIGTERM itself|a child's end arrives late or never (run 43792053014; evidence pending); listed 2026-11-16|BT11|flaky
+test_child|the start is refused: got |the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-16|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
+test_child|with nothing running: got |the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-16|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
+test_child|and no descriptor: got |the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-16|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
+test_child|none left open: got |the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-16|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
+test_child|the user reads why$|the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-16|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
 EOF
       ;;
     selftest)
@@ -92,6 +110,41 @@ fx_c|row c2|reason c2|FX2
 tests/fx_s.sh|(exit status: 124)|reason s|FX3
 fx_p|row p|reason p|FX4
 tests/fx_k.sh|reaches known (from .text.wpe_child_exec): not in the allow file|reason k|FX5
+fx_f|flaky row f1|reason f1 (listed 2026-11-16)|BT11|flaky
+fx_g|flaky row g1|reason g1 (listed 2026-11-16)|BT11|flaky
+fx_h|flaky cause h|reason h (listed 2026-11-16)|BT11|flaky
+fx_h|flaky effect h1|reason h1 (listed 2026-11-16)|BT11|flaky|flaky cause h
+fx_h|flaky effect h2$|reason h2 (listed 2026-11-16)|BT11|flaky|flaky cause h;other cause
+EOF
+      ;;
+    selftest_badflaky)
+      # Fixture list: a flaky line whose finding is not a process-end race.
+      cat <<'EOF'
+fx_b|flaky row b|reason b (listed 2026-11-16)|FX6|flaky
+EOF
+      ;;
+    selftest_nodate)
+      # Fixture list: a flaky line with no listing date.
+      cat <<'EOF'
+fx_b|flaky row b|reason b|BT11|flaky
+EOF
+      ;;
+    selftest_notflaky)
+      # Fixture list: a fifth field that is not "flaky".
+      cat <<'EOF'
+fx_b|flaky row b|reason b (listed 2026-11-16)|BT11|flakey
+EOF
+      ;;
+    selftest_toomany)
+      # Fixture list: a flaky line with a seventh field.
+      cat <<'EOF'
+fx_b|flaky row b|reason b (listed 2026-11-16)|BT11|flaky|a cause|extra
+EOF
+      ;;
+    selftest_shortlabel)
+      # Fixture list: a flaky line whose label is too short to be bounded.
+      cat <<'EOF'
+fx_b|row b|reason b (listed 2026-11-16)|BT11|flaky
 EOF
       ;;
     *) return 1 ;;
@@ -131,23 +184,58 @@ failing_rows() {
   ' "$1"
 }
 
-# row_is_listed OS NAME TEXT: succeed when a line listed for NAME on OS has a
-# label that starts TEXT.  The text goes in through the environment: awk -v
-# would read its backslashes as escapes.
+# The one definition of "a label matches a row's text", shared by the awk
+# programs below: the label is the start of the text, or, when it ends in "$",
+# the whole text.  A "$" label is for a row whose text has no number to stop
+# before, so that a longer row with the same start is not covered by it.
+LABEL_MATCH_AWK='
+  function label_matches(t, l,   n) {
+    n = length(l)
+    if (n == 0) return 0
+    if (substr(l, n, 1) == "$") return t == substr(l, 1, n - 1)
+    return index(t, l) == 1
+  }
+'
+
+# row_is_listed OS NAME TEXT ROWLOG: succeed when a line listed for NAME on OS
+# covers the failing row TEXT of ROWLOG.  A line with a "needs" field (its
+# sixth) covers it only when one of the cause rows it names also fails in
+# ROWLOG: a consequence row without its cause is a new failure.  The text goes
+# in through the environment: awk -v would read its backslashes as escapes.
 row_is_listed() {
-  known_failures "$1" | NAME="$2" TEXT="$3" awk -F'|' '
+  known_failures "$1" | NAME="$2" TEXT="$3" awk -F'|' "$LABEL_MATCH_AWK"'
     BEGIN { n = ENVIRON["NAME"]; t = ENVIRON["TEXT"] }
-    $1 == n && length($2) > 0 && index(t, $2) == 1 { ok = 1 }
-    END { exit !ok }
-  '
+    $1 == n && label_matches(t, $2) { print ($6 == "" ? "-" : $6) }
+  ' | {
+    while IFS= read -r needs; do
+      if [ "$needs" = - ] || causes_fail "$4" "$needs"; then
+        exit 0
+      fi
+    done
+    exit 1
+  }
+}
+
+# causes_fail ROWLOG NEEDS: succeed when NEEDS is empty or when some cause
+# label of NEEDS (labels separated by ";") is a failing row of ROWLOG.
+causes_fail() {
+  [ -z "$2" ] && return 0
+  printf '%s\n' "$2" | tr ';' '\n' | {
+    while IFS= read -r cause; do
+      if label_still_fails "$1" "$cause"; then
+        exit 0
+      fi
+    done
+    exit 1
+  }
 }
 
 # label_still_fails ROWLOG LABEL: succeed when some failing row of ROWLOG
-# starts with LABEL.
+# is matched by LABEL.
 label_still_fails() {
-  failing_rows "$1" | LABEL="$2" awk '
+  failing_rows "$1" | LABEL="$2" awk "$LABEL_MATCH_AWK"'
     BEGIN { l = ENVIRON["LABEL"] }
-    index($0, l) == 1 { ok = 1 }
+    label_matches($0, l) { ok = 1 }
     END { exit !ok }
   '
 }
@@ -166,7 +254,7 @@ check_unlisted() {
       continue
     fi
     failing_rows "$rowlog" | while IFS= read -r text; do
-      row_is_listed "$1" "$name" "$text" || printf 'NEW FAILURE: %s: %s\n' "$name" "$text"
+      row_is_listed "$1" "$name" "$text" "$rowlog" || printf 'NEW FAILURE: %s: %s\n' "$name" "$text"
     done
   done
 }
@@ -174,7 +262,11 @@ check_unlisted() {
 # check_listed OS LOG: print each listed row; report when its test now passes
 # or when the row is no longer among the failing rows.
 check_listed() {
-  known_failures "$1" | while IFS='|' read -r name label reason finding; do
+  known_failures "$1" | while IFS='|' read -r name label reason finding flaky needs; do
+    if [ "$flaky" = flaky ]; then
+      check_flaky_row "$1" "$2" "$name" "$label" "$reason" "$finding" "$needs"
+      continue
+    fi
     case $(outcome "$2" "$name") in
       FAIL | ERROR)
         rowlog=$(row_log_of "$name" "$2")
@@ -190,6 +282,55 @@ check_listed() {
       PASS) echo "STALE ENTRY: $name passes on $1: remove it from tests/bsd-known-failures.sh [$finding]" ;;
     esac
   done
+}
+
+# check_flaky_row OS LOG NAME LABEL REASON FINDING NEEDS: print what a flaky
+# row did in this run.  A race that sometimes passes is not stale, so a pass
+# is only said ("known flaky pass"), never an error; a failure is "known flaky
+# failure".  Both lines are printed every run, so the log of each run shows
+# how often the row fails and a verifier can retire the line when the owner's
+# design has landed.  A failing row whose NEEDS cause rows do not fail is not
+# known (check_unlisted reports it as NEW), so it is not printed here.
+check_flaky_row() {
+  case $(outcome "$2" "$3") in
+    FAIL | ERROR)
+      rowlog=$(row_log_of "$3" "$2")
+      if [ ! -r "$rowlog" ]; then
+        : # check_unlisted already said NO ROW LOG
+      elif label_still_fails "$rowlog" "$4"; then
+        if causes_fail "$rowlog" "$7"; then
+          printf 'known flaky failure: %s: %s: %s [%s]\n' "$3" "$4" "$5" "$6"
+        fi
+      else
+        printf 'known flaky pass: %s: %s: the row did not fail this run [%s]\n' "$3" "$4" "$6"
+      fi
+      ;;
+    PASS) printf 'known flaky pass: %s: %s: the test passed this run [%s]\n' "$3" "$4" "$6" ;;
+  esac
+}
+
+# check_flaky_lines OS: refuse each list line that is flaky without being
+# allowed to be.  A flaky line matches by label prefix, so a real regression
+# that prints the same label would read as "known flaky" for ever.  The kind
+# is therefore bounded: the fifth field must be exactly "flaky", the finding
+# must be one of the process-end race class (a child's end that arrives late
+# or is lost: BT11, BT12, BT13a, BT20), and the reason must carry the date the
+# line was listed ("listed YYYY-MM-DD") so that it can be retired.  The
+# optional sixth field names the cause rows (separated by ";") that must fail
+# in the same log for a consequence row to count as known; there is no
+# seventh.  A label under 8 characters is too short to be bounded.
+check_flaky_lines() {
+  known_failures "$1" | awk -F'|' '
+    NF >= 5 {
+      why = ""
+      if ($5 != "flaky") why = "the fifth field must be flaky"
+      else if (NF > 6) why = "too many fields (name|label|reason|finding|flaky[|needs])"
+      else if (length($2) < 8) why = "the label is shorter than 8 characters"
+      else if ($4 !~ /^(BT11|BT12|BT13a|BT20)$/) why = "the finding " $4 " is not in the process-end race class (BT11, BT12, BT13a, BT20)"
+      else if ($3 !~ /listed [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) why = "the reason lacks the listing date (listed YYYY-MM-DD)"
+      if (why != "") printf "REFUSED LIST LINE: %s: %s: %s\n", $1, $2, why
+    }
+  '
 }
 
 # check_unprivileged_skips LOG: a run that says it is unprivileged
@@ -238,12 +379,21 @@ selftest_expect() {
   fi
 }
 
+# selftest_flaky_lines_refused LIST WHAT PATTERN: the fixture list
+# selftest_LIST holds one malformed flaky line; the script must refuse it.
+selftest_flaky_lines_refused() {
+  selftest_logs "$T/$1"
+  out=$(sh "$0" "selftest_$1" "$T/$1/check.log" 1); st=$?
+  selftest_expect "flaky: $2 is refused" "$st" 1 "$out" "REFUSED LIST LINE: fx_b:" "$3"
+}
+
 # selftest_logs DIR: the fixture logs every case starts from, written to DIR.
 # The state is the clean one: every listed row fails and nothing else does.
 selftest_logs() {
   d=$1
   mkdir -p "$d"
-  printf '%s\n' 'FAIL: fx_a' 'FAIL: fx_c' 'FAIL: tests/fx_s.sh' 'FAIL: tests/fx_k.sh' '# TOTAL: 4' > "$d/check.log"
+  printf '%s\n' 'FAIL: fx_a' 'FAIL: fx_c' 'FAIL: tests/fx_s.sh' 'FAIL: tests/fx_k.sh' 'FAIL: fx_f' 'PASS: fx_g' '# TOTAL: 6' > "$d/check.log"
+  printf '%s\n' 'FAIL: flaky row f1: x' 'FAIL fx_f (exit status: 1)' > "$d/fx_f.log"
   printf '%s\n' 'check-fx: the problems' '  reaches known (from .text.wpe_child_exec): not in the allow file' \
     'note: something' 'FAIL tests/fx_k.sh (exit status: 1)' > "$d/fx_k.sh.log"
   printf '%s\n' 'FAIL: row one: got 3 want 4' 'FAIL fx_a (exit status: 1)' > "$d/fx_a.log"
@@ -282,6 +432,41 @@ selftest() {
   out=$(sh "$0" selftest "$T/clean/check.log" 1); st=$?
   selftest_expect "clean: nothing new" "$st" 0 "$out" \
     "bsd-known-failures: nothing new on selftest" "known failure: fx_c: row c2"
+  selftest_expect "flaky: a listed flaky row that passes is not STALE and one that fails is known" "$st" 0 "$out" \
+    "known flaky failure: fx_f: flaky row f1" "known flaky pass: fx_g: flaky row g1"
+
+  selftest_flaky_lines_refused "badflaky" "a finding that is not a process-end race" "FX6"
+  selftest_flaky_lines_refused "nodate" "a reason without the listing date" "lacks the listing date"
+  selftest_flaky_lines_refused "notflaky" "a fifth field that is not flaky" "the fifth field must be flaky"
+  selftest_flaky_lines_refused "toomany" "a seventh field" "too many fields"
+  selftest_flaky_lines_refused "shortlabel" "a label under 8 characters" "label is shorter than"
+
+  for os in freebsd openbsd netbsd; do
+    out=$(check_flaky_lines "$os")
+    if [ -z "$out" ]; then
+      echo "ok: flaky: the $os list has no refused line"
+    else
+      echo "FAIL: flaky: the $os list has a refused line"
+      printf '%s\n' "$out" | sed 's/^/    | /'
+      selftest_failed=1
+    fi
+  done
+
+  selftest_logs "$T/needs"
+  printf '%s\n' 'FAIL: fx_h' '# TOTAL: 1' > "$T/needs/check.log"
+  printf '%s\n' 'FAIL: flaky effect h1: got 0' 'FAIL fx_h (exit status: 1)' > "$T/needs/fx_h.log"
+  out=$(sh "$0" selftest "$T/needs/check.log" 1); st=$?
+  selftest_expect "flaky: a consequence row without its cause row is NEW" "$st" 1 "$out" \
+    "NEW FAILURE: fx_h: flaky effect h1: got 0"
+  printf '%s\n' 'FAIL: flaky cause h: late' 'FAIL: flaky effect h1: got 0' 'FAIL: flaky effect h2' \
+    'FAIL fx_h (exit status: 1)' > "$T/needs/fx_h.log"
+  out=$(sh "$0" selftest "$T/needs/check.log" 1); st=$?
+  selftest_expect "flaky: a consequence row with its cause row is a known flaky failure" "$st" 0 "$out" \
+    "known flaky failure: fx_h: flaky effect h1" "known flaky failure: fx_h: flaky effect h2"
+  printf '%s\n' 'FAIL: flaky cause h: late' 'FAIL: flaky effect h2 and more' 'FAIL fx_h (exit status: 1)' > "$T/needs/fx_h.log"
+  out=$(sh "$0" selftest "$T/needs/check.log" 1); st=$?
+  selftest_expect "flaky: a label ending in \$ matches the whole row only" "$st" 1 "$out" \
+    "NEW FAILURE: fx_h: flaky effect h2 and more"
 
   selftest_logs "$T/new"
   printf '%s\n' 'FAIL: fx_a' 'FAIL: fx_c' 'FAIL: tests/fx_s.sh' 'FAIL: fx_x' '# TOTAL: 4' > "$T/new/check.log"
@@ -375,6 +560,11 @@ if ! has_summary "$2"; then
   exit 1
 fi
 status=0
+refused=$(check_flaky_lines "$1")
+if [ -n "$refused" ]; then
+  printf '%s\n' "$refused"
+  status=1
+fi
 # The exit status of `gmake check`, when the caller passes it: non-zero with
 # no FAIL or ERROR line in the log means the check broke for a reason the
 # list cannot name (a make error, a killed run), so it fails here.

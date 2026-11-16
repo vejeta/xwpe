@@ -448,7 +448,7 @@ static void test_close_ends_a_launcher_that_ignores_sigterm(void)
  check(c.gone_ms < WPE_CHILD_END_GRACE_MS + CLOSE_SLACK_MS,
        "and is then killed: its end stays bounded");
  check(c.launcher > 0 && !process_alive(c.launcher),
-       "the launcher is gone and reaped");
+       "the launcher is gone and reaped (launcher that ignores SIGTERM)");
  check(c.daemon > 0 && process_alive(c.daemon),
        "the launcher's own child (the shared server) is not signalled");
  end_daemon(c.daemon);
