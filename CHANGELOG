@@ -20,6 +20,10 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* Run > Matching Bracket no longer crashes when the first row starts with
+  #else and holds another '#', and no longer reads beyond the text when an
+  #else row is the last row or a comment starts or ends at column 0; it
+  says No Matching Bracket! where it used to die.
 * In the graphical editor (X11 and Wayland) a program the editor starts (a
   compile, the Run program, a debugger, a language server) could stop before
   it ever ran, with nothing in Messages, when a library thread held a lock at

@@ -11,7 +11,15 @@
    a comment, a // line or the unused side of an #else.  e_brk_match() holds
    the two walks (forward from an opener, backward from a closer); each of
    them calls one named step per character, and the steps that skip quoted
-   text, a comment or an #else side are shared by both directions. */
+   text, a comment or an #else side are shared by both directions.
+
+   The four readers just below (brk_has_row, brk_row_len, brk_char,
+   brk_row_text) are the only lines of the file that index a row, index its
+   bytes or know how many rows the text has.  A row holds len+2 bytes from
+   s[0] (the text, the line break, a NUL) and there is nothing before it;
+   a read outside the text is "no character", so a skip that leaves a walk
+   off the text ends the walk instead of reading memory the row does not
+   own. */
 
 #include <ctype.h>
 #include <string.h>
@@ -36,10 +44,63 @@ struct brk_scan {
  int depth;     /* openers minus closers still to be matched */
 };
 
-/* The character at (i, j), read as the unsigned byte the buffer holds. */
+/* What a read outside the text gives: not a bracket, not a quote, not a
+   slash, not a hash, not a space, so no step acts on it. */
+#define BRK_NONE      (-1)
+
+/**
+ * brk_has_row - Whether the text has a row @i.
+ * The one place the walks learn where the text begins and ends: the loops
+ * run while the row they are on exists, and a skip over an #else side goes
+ * on while there is a row beyond the one it reads.  A walk that a skip left
+ * above row 0 or below the last row stops at its next test.
+ */
+static int brk_has_row(BUFFER *b, int i)
+{
+ return i >= 0 && i < b->mxlines;
+}
+
+/**
+ * brk_row_len - The length of a row's text, 0 when the text has no row @i.
+ * A row the text does not have is empty, so a walk left there has nothing to
+ * read.
+ */
+static int brk_row_len(BUFFER *b, int i)
+{
+ if (!brk_has_row(b, i))
+  return 0;
+ return b->bf[i].len;
+}
+
+/**
+ * brk_char - The byte at (i, j), BRK_NONE when there is none.
+ * @j: the column, 0..len+1 to read the text, the line break or the NUL
+ * The one way a step looks at a character.  A column before the row or past
+ * its NUL, or a row the buffer does not have, is BRK_NONE: a slash at column
+ * 0 cannot close a comment, and a skip that ran off the text has nothing
+ * left to read.
+ */
 static int brk_char(BUFFER *b, int i, int j)
 {
+ if (!brk_has_row(b, i))
+  return BRK_NONE;
+ if (j < 0 || j > b->bf[i].len + 1)
+  return BRK_NONE;
  return b->bf[i].s[j];
+}
+
+/**
+ * brk_row_text - The text of a row from a column on, as a C string.
+ * For the preprocessor tests (ispif, ispelse, ispendif) that read a few bytes
+ * of a row; outside the text they get "", which is no directive.
+ */
+static const char *brk_row_text(BUFFER *b, int i, int j)
+{
+ if (!brk_has_row(b, i))
+  return "";
+ if (j < 0 || j > b->bf[i].len + 1)
+  return "";
+ return (const char *) b->bf[i].s + j;
 }
 
 /**
@@ -99,7 +160,7 @@ static void brk_skip_quoted_forward(struct brk_scan *sc, int quote)
  int bsp;
 
  for (bsp = 0, sc->j++;
-   sc->j < b->bf[sc->i].len
+   sc->j < brk_row_len(b, sc->i)
      && (brk_char(b, sc->i, sc->j) != quote || bsp);
    sc->j++)
  {
@@ -107,7 +168,7 @@ static void brk_skip_quoted_forward(struct brk_scan *sc, int quote)
    bsp = !bsp;
   else
    bsp = 0;
-  if (sc->j == b->bf[sc->i].len - 1 && bsp && sc->i < b->mxlines - 1)
+  if (sc->j == brk_row_len(b, sc->i) - 1 && bsp && brk_has_row(b, sc->i + 1))
   {
    sc->i++;
    sc->j = -1;
@@ -132,9 +193,9 @@ static void brk_skip_comment_forward(struct brk_scan *sc)
    brk_char(b, sc->i, sc->j) != '*' || brk_char(b, sc->i, sc->j + 1) != '/';
    sc->j++)
  {
-  if (sc->j >= b->bf[sc->i].len - 1)
+  if (sc->j >= brk_row_len(b, sc->i) - 1)
   {
-   if (sc->i < b->mxlines - 1)
+   if (brk_has_row(b, sc->i + 1))
    {
     sc->i++;
     sc->j = -1;
@@ -172,11 +233,11 @@ static void brk_skip_quoted_backward(struct brk_scan *sc, int quote)
    if (!bsp)
     break;
   }
-  if (sc->j == 0 && sc->i > 0
-    && brk_char(b, sc->i - 1, b->bf[sc->i - 1].len) == '\\')
+  if (sc->j == 0 && brk_has_row(b, sc->i - 1)
+    && brk_char(b, sc->i - 1, brk_row_len(b, sc->i - 1)) == '\\')
   {
    sc->i--;
-   sc->j = b->bf[sc->i].len;
+   sc->j = brk_row_len(b, sc->i);
   }
  }
 }
@@ -199,10 +260,10 @@ static void brk_skip_comment_backward(struct brk_scan *sc)
  {
   if (sc->j <= 0)
   {
-   if (sc->i > 0)
+   if (brk_has_row(b, sc->i - 1))
    {
     sc->i--;
-    sc->j = b->bf[sc->i].len;
+    sc->j = brk_row_len(b, sc->i);
    }
    else
     break;
@@ -218,21 +279,22 @@ static void brk_skip_comment_backward(struct brk_scan *sc)
  * Only one side of an #if is compiled, so a bracket in the other side must not
  * be counted: a jump from the "{" before an #else lands on the "}" of the same
  * side, not on one past the #endif.  Nested #if blocks are skipped whole.
+ * The skip reads a row only while a row lies beyond it, so the first or last
+ * row is left to the walk.  With no #endif (or #if) in the way the walk is
+ * left off the text and ends there.
  */
 static void brk_skip_conditional(struct brk_scan *sc, int dir)
 {
  BUFFER *b = sc->b;
  int nif = 1;
 
- for (sc->i += dir;
-   dir == BRK_FORWARD ? sc->i < b->mxlines - 1 : sc->i > 0;
-   sc->i += dir)
+ for (sc->i += dir; brk_has_row(b, sc->i + dir); sc->i += dir)
  {
   for (sc->j = 0; isspace(brk_char(b, sc->i, sc->j)); sc->j++)
    ;
-  if (ispendif(b->bf[sc->i].s + sc->j))
+  if (ispendif(brk_row_text(b, sc->i, sc->j)))
    nif -= dir;
-  else if (ispif(b->bf[sc->i].s + sc->j))
+  else if (ispif(brk_row_text(b, sc->i, sc->j)))
    nif += dir;
   if (!nif)
    break;
@@ -260,7 +322,7 @@ static int brk_step_forward(struct brk_scan *sc)
   brk_skip_comment_forward(sc);
  else if (c == '/' && brk_char(b, sc->i, sc->j + 1) == '/')
   return BRK_LINE_DONE;
- else if (c == '#' && ispelse(b->bf[sc->i].s))
+ else if (c == '#' && ispelse(brk_row_text(b, sc->i, 0)))
   brk_skip_conditional(sc, BRK_FORWARD);
  else if (c == sc->ob)
   sc->depth++;
@@ -339,7 +401,7 @@ static int brk_step_backward(struct brk_scan *sc)
   brk_skip_quoted_backward(sc, c);
  else if (c == '/' && brk_char(b, sc->i, sc->j - 1) == '*')
   brk_skip_comment_backward(sc);
- else if (c == '#' && ispelse(b->bf[sc->i].s))
+ else if (c == '#' && ispelse(brk_row_text(b, sc->i, 0)))
   brk_skip_conditional(sc, BRK_BACKWARD);
  else if (!sc->ob)
   return brk_step_backward_any(sc, c);
@@ -382,8 +444,8 @@ static int brk_walk_forward(struct brk_scan *sc, int x)
  BUFFER *b = sc->b;
  int y = sc->i;
 
- for (sc->depth = 1, sc->i = y; sc->i < b->mxlines; sc->i++)
-  for (sc->j = sc->i == y ? x + 1 : 0; sc->j < b->bf[sc->i].len; sc->j++)
+ for (sc->depth = 1, sc->i = y; brk_has_row(b, sc->i); sc->i++)
+  for (sc->j = sc->i == y ? x + 1 : 0; sc->j < brk_row_len(b, sc->i); sc->j++)
   {
    int step = brk_step_forward(sc);
 
@@ -408,9 +470,9 @@ static int brk_walk_backward(struct brk_scan *sc, int y, int x)
 {
  BUFFER *b = sc->b;
 
- for (sc->depth = -1, sc->i = y; sc->i >= 0; sc->i--)
+ for (sc->depth = -1, sc->i = y; brk_has_row(b, sc->i); sc->i--)
  {
-  sc->j = brk_code_end(b, sc->i, sc->i == y ? x : b->bf[sc->i].len);
+  sc->j = brk_code_end(b, sc->i, sc->i == y ? x : brk_row_len(b, sc->i));
   for (sc->j--; sc->j >= 0; sc->j--)
   {
    if (brk_step_backward(sc) == BRK_FOUND)

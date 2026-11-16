@@ -897,6 +897,12 @@ TESTS += tests/check-line-ends.sh
 # tests/write-owner.allow, each with the pass that moves it.
 TESTS += tests/check-write-owner.sh
 
+# One owner of what the bracket matcher reads (we_brkmatch.c): four readers
+# are the only code that indexes a row, its bytes or the number of rows.
+# tests/check-brk-bounds.sh fails when any other function does, or when a
+# macro or a pointer walk carries a raw read out of a reader.
+TESTS += tests/check-brk-bounds.sh
+
 # One owner of how long a command to a debugger may be: the request engine
 # (we_debreq.h).  tests/check-debug-command.sh fails when a site sizes a
 # debugger command by a number of its own; the caps that are not debugger
@@ -1130,6 +1136,7 @@ EXTRA_DIST = \
   tests/check-build-config.sh \
   we_ai_agent.c \
   tests/check-write-owner.sh \
+  tests/check-brk-bounds.sh \
   tests/write-owner.allow \
   tests/test_write_owner.c \
   tests/test_fileop.c \

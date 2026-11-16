@@ -204,6 +204,13 @@ asan)
   # ~20-50x does not -- valgrind stays a targeted, custom-timeout tool; see
   # HACKING.md and the autopkgtest plan).
   build_asan_binary
+  # The bracket matcher's unit builds rows exactly as the editor does, so
+  # under ASan every read outside a row or outside the text is a report.
+  echo "== bracket matcher unit under AddressSanitizer =="
+  (cd "$top" && ${CC:-cc} -std=gnu17 -g -O1 -fsanitize=address,undefined \
+     -fno-omit-frame-pointer -include config.h -I. \
+     tests/test_brkmatch.c we_brkmatch.c -o "$asan_src/test_brkmatch-asan" &&
+   ASAN_OPTIONS=detect_leaks=0 "$asan_src/test_brkmatch-asan")
   echo "== pyte suite under AddressSanitizer (WPE_BIN=./wpe-asan) =="
   # ASan runs about twice as slow, so stretch every wait unless the caller
   # already chose a scale.
