@@ -512,6 +512,15 @@ Changes
   Operation not permitted."); a folder copy says how many entries it
   concerns.
 
+* The .bak copy is made once the save has opened the file, and from that
+  very file: a file that cannot be written leaves no new .bak, and a name
+  that leads to another file by then refuses the save with "it was replaced
+  by another file while it was being saved", nothing written and the text
+  still in the window.  A failed save puts the old text back from the .bak
+  it made, never from a file that took the .bak's name since.
+* Saving an empty text over an empty file moves the file's modification
+  time again, as it did before, so a build that compares times sees the
+  save.
 * Saving a file keeps the setuid, setgid and sticky bits it has on disk
   when it is saved.  The write used to clear them without a word; they are
   now put back after the text.  A bit you removed since the file was

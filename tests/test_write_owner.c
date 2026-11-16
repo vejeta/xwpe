@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <ftw.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -788,6 +789,108 @@ int fsync(int fd)
  return(real(fd));
 }
 
+/* open, watched: a read-only open of the armed name, the first one only, is
+   preceded by a second file taking that name.  It is the moment between the
+   owner opening the file it will overwrite and opening the same name to copy
+   it, which another user of the folder can use. */
+typedef int (*open_fn)(const char *, int, ...);
+
+static char open_swap_at[512];    /* the name that changes hands ... */
+static char open_swap_from[512];  /* ... for this file, or is removed when "", at its next
+                                     read-only open */
+static char open_plant_at[512];   /* a file appears under this name just before the next
+                                     exclusive create of it */
+
+int open(const char *path, int flags, ...)
+{
+ static open_fn real;
+ mode_t mode = 0;
+ va_list ap;
+
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "open");
+ if (flags & O_CREAT)
+ {
+  va_start(ap, flags);
+  mode = (mode_t)va_arg(ap, int);
+  va_end(ap);
+ }
+ if (open_swap_at[0] != '\0' && (flags & O_ACCMODE) == O_RDONLY && strcmp(path, open_swap_at) == 0)
+ {
+  open_swap_at[0] = '\0';
+  if (open_swap_from[0] == '\0')
+   unlink(path);
+  else if (rename(open_swap_from, path) != 0)
+   perror("rename");
+ }
+ if (open_plant_at[0] != '\0' && (flags & O_EXCL) && strcmp(path, open_plant_at) == 0)
+ {
+  FILE *planted;
+
+  open_plant_at[0] = '\0';
+  planted = fopen(path, "w");
+  if (planted != NULL)
+  {
+   fputs("planted\n", planted);
+   fclose(planted);
+  }
+ }
+ return(real(path, flags, mode));
+}
+
+/* ftruncate and fcntl, watched: an armed ftruncate fails with EPERM, and the
+   Nth duplication of a descriptor (F_DUPFD_CLOEXEC) fails with EMFILE, so a
+   row can reach what a full descriptor table or a file that refuses to be cut
+   would do. */
+typedef int (*ftruncate_fn)(int, off_t);
+typedef int (*fcntl_fn)(int, int, ...);
+
+static int ftruncate_fails;       /* 1: ftruncate fails with EPERM */
+static int ftruncate_spares_empty_time; /* 1: cutting an empty file to nothing does
+                                     nothing at all, its time included, as POSIX allows */
+static int dup_fails_at;          /* N > 0: the Nth F_DUPFD_CLOEXEC from now fails */
+
+int ftruncate(int fd, off_t length)
+{
+ static ftruncate_fn real;
+
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "ftruncate");
+ if (ftruncate_fails)
+ {
+  errno = EPERM;
+  return(-1);
+ }
+ if (ftruncate_spares_empty_time && length == 0)
+ {
+  struct stat st;
+
+  /* A system that marks the file changed only when the size changes. */
+  if (fstat(fd, &st) == 0 && st.st_size == 0)
+   return(0);
+ }
+ return(real(fd, length));
+}
+
+int fcntl(int fd, int cmd, ...)
+{
+ static fcntl_fn real;
+ va_list ap;
+ void *arg;
+
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "fcntl");
+ va_start(ap, cmd);
+ arg = va_arg(ap, void *);
+ va_end(ap);
+ if (cmd == F_DUPFD_CLOEXEC && dup_fails_at > 0 && --dup_fails_at == 0)
+ {
+  errno = EMFILE;
+  return(-1);
+ }
+ return(real(fd, cmd, arg));
+}
+
 /* A 0600 file's backup never holds its text while others may read it, under
    any umask: the mode is narrowed before the first byte, not after the last. */
 static void test_the_backup_is_private_while_it_holds_text(void)
@@ -1539,6 +1642,427 @@ static void test_the_sentence_of_a_save_that_lost_a_bit(void)
  chk_lacks("a restore that failed says no bit", say, "was not kept");
 }
 
+/* ---- the .bak's identity and the descriptors ---- */
+
+/* @scenario SC-unsaved-text-19 */
+/* A .bak that someone put in the name's place between the write's making and
+   its undoing is not what the undo copies from: the undo reads the .bak the
+   owner made, through the descriptor it kept.  The planted file would
+   otherwise become the user's text, and with the special bits back on it. */
+static void test_a_swapped_backup_is_not_written_back(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char *old = big(1024, 'o'), buf[8192];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a swapped backup is not written back",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", old, 02755);
+ put_file("t.bak.swap", "evil\n", 0644);
+ f = window_of_file_with_mode(02755);
+ setenv("XWPE_TEST_FAIL", "swap-bak", 1);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ unsetenv("XWPE_TEST_FAIL");
+ chk_int("restored", o.restore_err, 0);
+ chk_int("the file is as it was", strcmp(get_file("t.c", buf, sizeof buf), old), 0);
+ chk_lacks("the planted text is not in the file", get_file("t.c", buf, sizeof buf), "evil");
+ chk_int("with its bit", mode_of("t.c"), 02755);
+ chk_int("the planted file was put in the .bak's place", mode_of("t.bak.swap"), -1);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* The same for a file with no special bit, which the undo would rename into
+   place: a name that is no longer the .bak the owner made is left alone, and
+   the undo writes back through the file. */
+static void test_a_swapped_backup_is_not_renamed_into_place(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char *old = big(1024, 'o'), buf[8192];
+
+ make_dir();
+ put_file("t.c", old, 0644);
+ put_file("t.bak.swap", "evil\n", 0644);
+ setenv("XWPE_TEST_FAIL", "swap-bak", 1);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ unsetenv("XWPE_TEST_FAIL");
+ chk_int("restored", o.restore_err, 0);
+ chk_int("the file is as it was", strcmp(get_file("t.c", buf, sizeof buf), old), 0);
+ chk_int("with its mode", mode_of("t.c"), 0644);
+ chk_has("the planted file is still in the .bak's place", get_file("t.bak", buf, sizeof buf), "evil\n");
+ chk_int("the planted file was put there", mode_of("t.bak.swap"), -1);
+}
+
+static int open_fd_count(void);
+static void same_descriptors(const char *what, int before);
+
+/* The save of the window's file t.c, the name having changed hands (to the
+   file SWAP_FROM, or removed when that is NULL) between the write opening the
+   file and the backup reading it; says what the user is told. */
+static void save_with_the_name_changing_hands(const char *swap_from, WpeWriteOutcome *o,
+                                              FENSTER *f, char *say, size_t n)
+{
+ char p[512];
+
+ path_of(p, sizeof p, "t.c");
+ snprintf(open_swap_at, sizeof open_swap_at, "%s", p);
+ if (swap_from != NULL)
+  path_of(open_swap_from, sizeof open_swap_from, swap_from);
+ else
+  open_swap_from[0] = '\0';
+ set_rows("new\n");
+ f->save = 1;
+ chk_int("the save is refused", save_window(f, "t.c", o), -1);
+ open_swap_at[0] = '\0';
+ save_sentence(o, say, n);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* The .bak is copied from the file the write opened, and from no other.  A
+   name that changed hands before the backup read it refuses the save: the text
+   would go into a file no longer at that name while the window said saved. */
+static void test_a_name_that_changed_hands_refuses_the_save(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char buf[256], say[1024];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ put_file("swap.c", "evil\n", 0644);
+ save_with_the_name_changing_hands("swap.c", &o, f, say, sizeof say);
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("replaced is said", o.replaced, 1);
+ chk_int("no backup was made", o.bak_path[0], '\0');
+ chk_int("no .bak holds the other file's text", mode_of("t.bak"), -1);
+ chk_has("the other file is untouched", get_file("t.c", buf, sizeof buf), "evil\n");
+ chk_int("the window is still modified", f->save, 1);
+ chk_has("the editor's own sentence", say,
+         ": it was replaced by another file while it was being saved.  Nothing was written.  "
+         "Your text is still in the window.");
+ chk_has("it begins as a failure does", say, "Cannot write ");
+ chk_lacks("and gives no errno text", say, "Stale");
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* The same when the name was removed: nothing is written, the text stays in
+   the window. */
+static void test_a_name_that_was_removed_refuses_the_save(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char say[1024];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ save_with_the_name_changing_hands(NULL, &o, f, say, sizeof say);
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("replaced is said", o.replaced, 1);
+ chk_int("no .bak", mode_of("t.bak"), -1);
+ chk_int("nothing was made under the name", mode_of("t.c"), -1);
+ chk_int("the window is still modified", f->save, 1);
+ chk_has("the sentence", say, "it was replaced by another file while it was being saved.");
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* A name that is new gets a file and no .bak: there is no old text to keep,
+   and a save must not leave an empty .bak beside every new file. */
+static void test_a_new_name_leaves_no_backup(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char p[512], buf[64];
+
+ make_dir();
+ path_of(p, sizeof p, "fresh.c");
+ set_rows("new\n");
+ chk_int("written", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+ chk_has("the text", get_file("fresh.c", buf, sizeof buf), "new\n");
+ chk_int("no .bak", mode_of("fresh.bak"), -1);
+ chk_int("none named", o.bak_path[0], '\0');
+ chk_int("and no reason given", o.backup_err, 0);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* A name that is a link to a file not yet made is saved as it always was: the
+   file the link names is made and holds the text, the link stays a link, and
+   no .bak is made for a file that did not exist. */
+static void test_a_dangling_link_is_saved_into_the_file_it_names(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char p[512], made_path[512], buf[64];
+ struct stat st;
+
+ make_dir();
+ path_of(p, sizeof p, "link.c");
+ path_of(made_path, sizeof made_path, "made.c");
+ if (symlink(made_path, p) != 0)
+  perror("symlink");
+ set_rows("new\n");
+ chk_int("written", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+ chk_has("the file the link names holds the text", get_file("made.c", buf, sizeof buf), "new\n");
+ chk_int("lstat", lstat(p, &st), 0);
+ chk_int("the name is still a link", S_ISLNK(st.st_mode) != 0, 1);
+ chk_int("no .bak", mode_of("link.bak"), -1);
+ chk_int("none named", o.bak_path[0], '\0');
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* A file that appears between the owner finding the name free and making it is
+   the user's file and not the owner's: it is backed up, not taken for new. */
+static void test_a_file_that_appears_as_the_name_is_made_is_backed_up(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char p[512], buf[64];
+
+ make_dir();
+ path_of(p, sizeof p, "t.c");
+ snprintf(open_plant_at, sizeof open_plant_at, "%s", p);
+ set_rows("new\n");
+ chk_int("written", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+ open_plant_at[0] = '\0';
+ chk_has("the text", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_has("the planted file's text is in the .bak", get_file("t.bak", buf, sizeof buf), "planted\n");
+ chk_int("the .bak is named", o.bak_path[0] != '\0', 1);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* A file that was backed up and then cannot be cut is left whole, with its
+   .bak, and nothing stays open. */
+static void test_a_file_that_cannot_be_cut_keeps_its_text_and_its_backup(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char p[512], buf[64], say[1024];
+ int before;
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ set_rows("new\n");
+ before = open_fd_count();
+ ftruncate_fails = 1;
+ chk_int("refused", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), -1);
+ ftruncate_fails = 0;
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("with the system's reason", o.err, EPERM);
+ chk_has("the old text is in the file", get_file("t.c", buf, sizeof buf), "old\n");
+ chk_has("and in the .bak", get_file("t.bak", buf, sizeof buf), "old\n");
+ save_sentence(&o, say, sizeof say);
+ chk_has("the reason is said", say, "Operation not permitted");
+ same_descriptors("a file that cannot be cut", before);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* A failed write that finds no descriptor for the undo says the file may be
+   cut short and names the .bak that holds the old text; nothing stays open. */
+static void test_an_undo_with_no_descriptor_names_the_backup(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char *old = big(1024, 'o'), a[512], b[512], say[2048], buf[8192];
+ int before;
+
+ make_dir();
+ put_file("t.c", old, 0644);
+ path_of(a, sizeof a, "t.c");
+ path_of(b, sizeof b, "other");
+ if (link(a, b) != 0)
+  perror("link");
+ before = open_fd_count();
+ dup_fails_at = 2;
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ dup_fails_at = 0;
+ chk_int("the undo has no descriptor", o.restore_err, EBADF);
+ chk_has("the .bak is named", o.bak_path, "t.bak");
+ chk_int("the .bak holds the old text", strcmp(get_file("t.bak", buf, sizeof buf), old), 0);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "may be cut short");
+ same_descriptors("an undo with no descriptor", before);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* A file that cannot be opened for writing leaves no new .bak behind: the
+   backup is made only once the write has the file. */
+static void test_a_file_that_refuses_the_write_leaves_no_new_backup(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char p[512];
+
+ make_dir();
+ put_file("t.c", "old\n", 0444);
+ path_of(p, sizeof p, "t.c");
+ if (access(p, W_OK) == 0)
+ {
+  printf("SKIP: a file that refuses the write leaves no new backup: this user can write a 0444 file\n");
+  return;
+ }
+ set_rows("new\n");
+ chk_int("the write fails", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), -1);
+ chk_int("with the open's error", o.err, EACCES);
+ chk_int("no .bak was made", mode_of("t.bak"), -1);
+}
+
+/* The lowest descriptor number the process would get next, and the nth such
+   number counting from the lowest (1 is the lowest). */
+static int nth_free_fd(int n)
+{
+ int fd, found = 0;
+
+ for (fd = 0; fd < 1024; fd++)
+ {
+  struct stat st;
+
+  if (fstat(fd, &st) != 0 && errno == EBADF && ++found == n)
+   return(fd);
+ }
+ return(-1);
+}
+
+/* How many descriptors the process holds.  A descriptor left open raises it
+   even when it is above the lowest free number, which the next open would
+   not show. */
+static int open_fd_count(void)
+{
+ int fd, held = 0;
+
+ for (fd = 0; fd < 1024; fd++)
+ {
+  struct stat st;
+
+  if (fstat(fd, &st) == 0)
+   held++;
+ }
+ return(held);
+}
+
+static void same_descriptors(const char *what, int before)
+{
+ chk_int(what, open_fd_count(), before);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* A write, whatever happens to it, ends with the descriptors it started
+   with: not a copy of the file, nor of its .bak, stays open.  Every outcome
+   that has no special bit, and so needs no premise. */
+static void test_every_plain_outcome_closes_what_it_opened(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char *old = big(1024, 'o'), p[512];
+ int before;
+
+ make_dir();
+ put_file("t.c", old, 0644);
+ path_of(p, sizeof p, "t.c");
+ set_rows("new\n");
+ before = open_fd_count();
+ chk_int("written, with a backup", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+ same_descriptors("written, with a backup", before);
+ chk_int("written, no backup", wpe_write_range(f, p, 0, 0, 1, 1, 0, &o), 0);
+ same_descriptors("written, no backup", before);
+ f->ins = 8;
+ chk_int("read-only", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), -1);
+ same_descriptors("read-only", before);
+ f->ins = 0;
+ {
+  char d[512];
+
+  path_of(d, sizeof d, "dir");
+  if (mkdir(d, 0755) != 0)
+   perror("mkdir");
+  chk_int("a folder as the target", wpe_write_range(f, d, 0, 0, 1, 1, 1, &o), -1);
+  same_descriptors("target does not open", before);
+ }
+ put_file("t.c", old, 0644);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ chk_int("undone by rename", o.restore_err, 0);
+ same_descriptors("restore by rename", before);
+ put_file("t.c", big(4096, 'o'), 0644);
+ set_rows("X");
+ limit_file_size(1024);
+ chk_int("backup stopped", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), -1);
+ no_file_size_limit();
+ chk_int("by the size limit", o.backup_stopped, 1);
+ same_descriptors("backup stopped", before);
+ put_file("t.c", old, 0644);
+ setenv("XWPE_TEST_FAIL", "restore", 1);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ unsetenv("XWPE_TEST_FAIL");
+ chk_int("restore refused by the hook", o.restore_err, EIO);
+ same_descriptors("restore hook", before);
+ put_file("t.bak.swap", "evil\n", 0644);
+ setenv("XWPE_TEST_FAIL", "swap-bak", 1);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ unsetenv("XWPE_TEST_FAIL");
+ chk_int("undone by the file", o.restore_err, 0);
+ same_descriptors("swapped backup", before);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* The same for the outcomes of a file with a special bit, whose undo writes
+   back through the file and whose save syncs it. */
+static void test_every_special_bit_outcome_closes_what_it_opened(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char *old = big(1024, 'o');
+ int before;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "special-bit outcomes close their descriptors",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", old, 02755);
+ f = window_of_file_with_mode(02755);
+ set_rows("new\n");
+ before = open_fd_count();
+ chk_int("saved with its bit", save_window(f, "t.c", &o), 0);
+ same_descriptors("saved with its bit", before);
+ put_file("t.c", old, 02755);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ chk_int("written back", o.restore_err, 0);
+ same_descriptors("written back through the file", before);
+ setenv("XWPE_TEST_FAIL", "restore", 1);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ unsetenv("XWPE_TEST_FAIL");
+ same_descriptors("restore hook, with a bit", before);
+}
+
+/* @scenario SC-unsaved-text-19 */
+/* The .bak is made, and the descriptor kept, even when the system has no
+   descriptor left for the keeping: the backup is then stopped and the file
+   is not touched, as for a full disk. */
+static void test_a_backup_with_no_descriptor_to_keep_stops_the_save(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char *old = big(1024, 'o'), buf[8192], p[512];
+ struct rlimit was, tight;
+ int before = open_fd_count();
+
+ make_dir();
+ put_file("t.c", old, 0644);
+ path_of(p, sizeof p, "t.c");
+ set_rows("new\n");
+ getrlimit(RLIMIT_NOFILE, &was);
+ tight = was;
+ tight.rlim_cur = (rlim_t)nth_free_fd(4);
+ setrlimit(RLIMIT_NOFILE, &tight);
+ chk_int("the save is refused", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), -1);
+ setrlimit(RLIMIT_NOFILE, &was);
+ chk_int("the backup stopped", o.backup_stopped, 1);
+ chk_int("for want of a descriptor", o.err, EMFILE);
+ chk_int("the file was not touched", strcmp(get_file("t.c", buf, sizeof buf), old), 0);
+ chk_int("no .bak is left", mode_of("t.bak"), -1);
+ same_descriptors("no descriptor to keep", before);
+}
+
 static void stub_mouse_shape(WpeMouseShape s) { (void)s; }
 static void stub_mouse_restore(void) { }
 
@@ -1546,12 +2070,27 @@ int main(void)
 {
  WpeMouseChangeShape = stub_mouse_shape;
  WpeMouseRestoreShape = stub_mouse_restore;
+ test_a_swapped_backup_is_not_written_back();
+ test_a_swapped_backup_is_not_renamed_into_place();
+ test_a_name_that_changed_hands_refuses_the_save();
+ test_a_name_that_was_removed_refuses_the_save();
+ test_a_new_name_leaves_no_backup();
+ test_a_dangling_link_is_saved_into_the_file_it_names();
+ test_a_file_that_appears_as_the_name_is_made_is_backed_up();
+ test_a_file_that_cannot_be_cut_keeps_its_text_and_its_backup();
+ test_an_undo_with_no_descriptor_names_the_backup();
+ test_a_file_that_refuses_the_write_leaves_no_new_backup();
+ test_every_plain_outcome_closes_what_it_opened();
+ test_every_special_bit_outcome_closes_what_it_opened();
+ test_a_backup_with_no_descriptor_to_keep_stops_the_save();
  test_a_block_write_to_a_new_name_gets_no_bit();
  test_a_copy_over_an_existing_setgid_file_gets_no_bit();
  test_a_bit_removed_on_disk_is_not_restored();
  test_a_bit_added_on_disk_since_loading_is_kept();
  test_a_longer_file_saved_short_leaves_no_tail();
+ ftruncate_spares_empty_time = 1;
  test_saving_an_empty_file_over_an_empty_file_marks_it_changed();
+ ftruncate_spares_empty_time = 0;
  test_save_as_over_an_existing_setgid_file_gets_no_bit();
  test_save_as_onto_the_windows_own_file_keeps_its_bit();
  test_save_as_to_the_same_name_in_another_folder_gets_no_bit();

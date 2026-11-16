@@ -40,6 +40,17 @@
 #define WPE_WRITE_TEST_FAIL_ENV     "XWPE_TEST_FAIL"
 #define WPE_WRITE_TEST_FAIL_RESTORE "restore"
 
+/** XWPE_TEST_FAIL=swap-bak: before the restore looks at the .bak's name, a
+    file called <bak>.swap takes that name, as another user of the folder
+    could do between the backup and the restore. */
+#define WPE_WRITE_TEST_FAIL_SWAP_BAK "swap-bak"
+#define WPE_WRITE_TEST_SWAP_SUFFIX   ".swap"
+
+/** The errno a refused save carries when its name leads to another file by
+    the time the backup reads it.  Callers that test err see a failure; the
+    user is told the editor's own sentence (write_failed_head), never this. */
+#define WPE_WRITE_REPLACED_ERR EBUSY
+
 /* --- SIGXFSZ -------------------------------------------------------------- */
 
 static int write_fsize_depth;
@@ -540,6 +551,8 @@ typedef enum {
  BACKUP_NONE,      /* nothing to back up: no such file, or not a regular file */
  BACKUP_MADE,      /* the .bak holds the file as it is, every byte on disk */
  BACKUP_SKIPPED,   /* it could not be made; the write goes on (backup_err) */
+ BACKUP_REPLACED,  /* the name leads to another file than the one the write opened:
+                      the save is refused before anything is written */
  BACKUP_STOPPED    /* it was begun and not finished: the save is refused */
 } BackupResult;
 
@@ -571,44 +584,78 @@ static int write_backup_clear_old(const char *bak, WpeWriteOutcome *o)
 }
 
 /**
- * write_backup_open - Open the source and create the .bak, private.
- * @path: the file; @bak: the .bak's name; @src, @dst: receive the
- * descriptors; @o: receives backup_err.
- * Return: BACKUP_NONE (no regular file to copy), BACKUP_SKIPPED (the .bak
- * cannot be created) or BACKUP_MADE (both are open).
+ * write_backup_source - Open the file to copy, and only if it is the file
+ * the write opened.
+ * @path: the file's name; @target: fstat of the descriptor the write opened;
+ * @src: receives the source; @o: receives backup_err.
+ * Return: 0 when @src is open on that very inode; BACKUP_REPLACED when the
+ * name is gone or leads to another file; BACKUP_SKIPPED for any other
+ * failure (backup_err says why).  Nothing is open unless 0.
  *
- * The .bak is created with O_EXCL and O_NOFOLLOW, mode 0600, and takes the
- * file's nine permission bits before it holds any of its text, so a private
- * file's backup is never readable by others, not even for a moment.  It is
- * never given the setuid, setgid or sticky bit: a second copy of a program
- * with the old text must not be a program that runs with another user's
- * rights.
+ * The name was looked up a moment after the write opened the file, and
+ * another user of the folder may have put something else under it by then.
+ * The copy that would follow would hold that other file's bytes, and a
+ * restore would write them into the user's file.  And the text would go into
+ * a file no longer at that name while the status said it was saved, so the
+ * save is refused: nothing has been cut yet.  The open does not wait on a
+ * pipe somebody put there, and never makes it the terminal.
  */
-static BackupResult write_backup_open(const char *path, const char *bak, int *src, int *dst,
-                                      WpeWriteOutcome *o)
+static int write_backup_source(const char *path, const struct stat *target, int *src,
+                               WpeWriteOutcome *o)
 {
  struct stat st;
- WpeModeKept kept;
+ int result = 0;
 
- *src = open(path, O_RDONLY | O_CLOEXEC);
+ *src = open(path, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
  if (*src < 0)
  {
   if (errno == ENOENT || errno == ENOTDIR)
-   return(BACKUP_NONE);
+   return(BACKUP_REPLACED);
   o->backup_err = errno;
   return(BACKUP_SKIPPED);
  }
- if (fstat(*src, &st) != 0 || !S_ISREG(st.st_mode))
+ if (fstat(*src, &st) != 0)
  {
-  close(*src);
-  return(BACKUP_NONE);
+  o->backup_err = errno;
+  result = BACKUP_SKIPPED;
  }
+ else if (!S_ISREG(st.st_mode) || st.st_dev != target->st_dev || st.st_ino != target->st_ino)
+  result = BACKUP_REPLACED;
+ if (result != 0)
+  close(*src);
+ return(result);
+}
+
+/**
+ * write_backup_open - Open the source and create the .bak, private.
+ * @path: the file; @bak: the .bak's name; @target: fstat of the descriptor
+ * the write opened; @src, @dst: receive the descriptors; @o: receives backup_err.
+ * Return: BACKUP_REPLACED (the name leads to another file than the one being
+ * written), BACKUP_SKIPPED (the source cannot be read, or the .bak cannot be
+ * created) or BACKUP_MADE (both are open).
+ *
+ * The .bak is created with O_EXCL and O_NOFOLLOW, mode 0600, open for reading
+ * and writing so the restore can read it through the same descriptor, and
+ * takes the file's nine permission bits before it holds any of its text, so a
+ * private file's backup is never readable by others, not even for a moment.
+ * It is never given the setuid, setgid or sticky bit: a second copy of a
+ * program with the old text must not be a program that runs with another
+ * user's rights.
+ */
+static BackupResult write_backup_open(const char *path, const char *bak, const struct stat *target,
+                                      int *src, int *dst, WpeWriteOutcome *o)
+{
+ WpeModeKept kept;
+ int refused = write_backup_source(path, target, src, o);
+
+ if (refused != 0)
+  return((BackupResult)refused);
  if (write_backup_clear_old(bak, o) != 0)
  {
   close(*src);
   return(BACKUP_SKIPPED);
  }
- *dst = open(bak, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, WPE_WRITE_COPY_MODE);
+ *dst = open(bak, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, WPE_WRITE_COPY_MODE);
  if (*dst < 0)
  {
   o->backup_err = errno;
@@ -619,31 +666,38 @@ static BackupResult write_backup_open(const char *path, const char *bak, int *sr
     fails the .bak stays narrower than the file (0600, our group) and the
     restore writes it back through the file instead of renaming it into
     place. */
- if (fchown(*dst, (uid_t)-1, st.st_gid) != 0)
+ if (fchown(*dst, (uid_t)-1, target->st_gid) != 0)
   errno = 0;
- (void)wpe_write_set_mode_fd(*dst, st.st_mode & WRITE_NINE_BITS, &kept);
+ (void)wpe_write_set_mode_fd(*dst, target->st_mode & WRITE_NINE_BITS, &kept);
  return(BACKUP_MADE);
 }
 
 /**
  * write_backup - Copy the file to its .bak before the write truncates it.
- * @path: the file; @o: receives bak_path, backup_err and backup_stopped.
+ * @path: the file; @target: fstat of the descriptor the write opened, so the
+ * copy is of that inode; @bak_fd: receives a descriptor of the .bak, open
+ * for reading, or -1 unless the result is BACKUP_MADE; @o: receives
+ * bak_path, backup_err and backup_stopped.
  * Return: the BackupResult.
  *
  * Shows no box and asks no question.  The copy counts as made only when
  * every write and the close returned 0: a short .bak put back over the
  * user's file would be the loss the .bak exists to prevent.  A .bak that
  * cannot be created lets the write go on (the status row says so); one
- * that was begun and stopped (a full disk, a size limit) refuses the save,
- * because the same disk would refuse the new text and nothing could be put
- * back.
+ * that was begun and stopped (a full disk, a size limit, no descriptor left
+ * to keep it) refuses the save, because the same disk would refuse the new
+ * text and nothing could be put back.  The descriptor is kept so a restore
+ * reads the very file made here, never whatever the name leads to later; the
+ * caller closes it.
  */
-static BackupResult write_backup(const char *path, WpeWriteOutcome *o)
+static BackupResult write_backup(const char *path, const struct stat *target, int *bak_fd,
+                                 WpeWriteOutcome *o)
 {
  char *bak = e_bakfilename((char *)path);
- int src = -1, dst = -1, err;
+ int src = -1, dst = -1, kept = -1, err;
  BackupResult r;
 
+ *bak_fd = -1;
  if (!bak)
  {
   o->backup_err = ENOMEM;
@@ -660,18 +714,26 @@ static BackupResult write_backup(const char *path, WpeWriteOutcome *o)
   o->backup_err = ENAMETOOLONG;
   return(BACKUP_SKIPPED);
  }
- r = write_backup_open(path, bak, &src, &dst, o);
+ r = write_backup_open(path, bak, target, &src, &dst, o);
  if (r != BACKUP_MADE)
  {
   FREE(bak);
   return(r);
  }
  err = wpe_write_copy_fd(src, dst, NULL);
+ if (err == 0)
+ {
+  kept = fcntl(dst, F_DUPFD_CLOEXEC, 0);
+  if (kept < 0)
+   err = errno;
+ }
  close(src);
  if (close(dst) != 0 && err == 0)
   err = errno;
  if (err != 0)
  {
+  if (kept >= 0)
+   close(kept);
   unlink(bak);
   FREE(bak);
   o->err = err;
@@ -680,6 +742,7 @@ static BackupResult write_backup(const char *path, WpeWriteOutcome *o)
  }
  snprintf(o->bak_path, sizeof o->bak_path, "%s", bak);
  FREE(bak);
+ *bak_fd = kept;
  return(BACKUP_MADE);
 }
 
@@ -708,33 +771,26 @@ static void write_back_give_bits(int to, mode_t keep, WpeModeKept *k)
 /**
  * write_back_through_fd - Write the .bak's bytes into the very file the
  * failed write went to.
- * @to: a second descriptor of that file, closed here; @bak: the .bak;
- * @keep: the mode to give back with the text when it has special bits (the
- * nine bits and those), else 0; @restore_kept: receives the special bits
- * that could not be put back.
+ * @to: a second descriptor of that file, closed here; @from: the descriptor
+ * of the .bak the backup made, closed here; @keep: the mode to give back with
+ * the text when it has special bits (the nine bits and those), else 0;
+ * @restore_kept: receives the special bits that could not be put back.
  * Return: 0, or the errno of what failed.
  *
  * The inode, the links, the owner and the group stay as they are, which a
- * rename could not promise; and the name is not looked up again, so a link
- * put in its place since the write cannot send the old content elsewhere.
- * The failed write cleared the file's setuid and setgid bits; they go back
- * with the text, so a program whose save failed is still the program it was.
- * A bit the system will not give back is not a reason to fail the restore:
- * the old text is on disk again, and the user is told which bit is not.
+ * rename could not promise; and no name is looked up again, neither the
+ * file's nor the .bak's, so a link or a file put in either place since the
+ * write cannot send other content into the user's file.  The failed write
+ * cleared the file's setuid and setgid bits; they go back with the text, so
+ * a program whose save failed is still the program it was.  A bit the system
+ * will not give back is not a reason to fail the restore: the old text is on
+ * disk again, and the user is told which bit is not.
  */
-static int write_back_through_fd(int to, const char *bak, mode_t keep, WpeModeKept *restore_kept)
+static int write_back_through_fd(int to, int from, mode_t keep, WpeModeKept *restore_kept)
 {
- int from, err;
+ int err = 0;
 
- from = open(bak, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
- if (from < 0)
- {
-  err = errno;
-  close(to);
-  return(err);
- }
- err = 0;
- if (ftruncate(to, 0) != 0 || lseek(to, 0, SEEK_SET) < 0)
+ if (lseek(from, 0, SEEK_SET) < 0 || ftruncate(to, 0) != 0 || lseek(to, 0, SEEK_SET) < 0)
   err = errno;
  if (err == 0)
   err = wpe_write_copy_fd(from, to, NULL);
@@ -747,14 +803,65 @@ static int write_back_through_fd(int to, const char *bak, mode_t keep, WpeModeKe
 }
 
 /**
+ * write_bak_is_ours - Is the name still the .bak this write made?
+ * @bak: the .bak's name; @bak_fd: the descriptor the backup kept; @named:
+ * receives lstat of the name.
+ * Return: 1 when the name and the descriptor are one regular file, owned by
+ * this user, with one link; 0 for anything else, a failed lstat or fstat
+ * included.
+ *
+ * Decides whether a rename may put the .bak over the user's file.  A "no" is
+ * never a refusal to restore: the restore then writes the old text back
+ * through the file, which needs no name.  Where the answer is unreliable
+ * (a mount that reports another owner, a file system with no stable inode
+ * numbers) the cost is only that the slower way is taken.
+ */
+static int write_bak_is_ours(const char *bak, int bak_fd, struct stat *named)
+{
+ struct stat held;
+
+ if (lstat(bak, named) != 0 || fstat(bak_fd, &held) != 0)
+  return(0);
+ if (!S_ISREG(named->st_mode) || named->st_dev != held.st_dev || named->st_ino != held.st_ino)
+  return(0);
+ return(named->st_uid == geteuid() && named->st_nlink == 1);
+}
+
+/**
+ * write_test_swap_bak - Let a second file take the .bak's name.
+ * @bak: the .bak's name.
+ *
+ * Only for XWPE_TEST_FAIL=swap-bak: what a user who may write the folder
+ * could do between the backup and the restore, so the test can show the
+ * restore does not trust the name.  Nothing happens when no such file waits.
+ */
+static void write_test_swap_bak(const char *bak)
+{
+ char swap[WPE_PATH_SIZE];
+
+ if (snprintf(swap, sizeof swap, "%s%s", bak, WPE_WRITE_TEST_SWAP_SUFFIX) < (int)sizeof swap)
+  (void)rename(swap, bak);
+}
+
+/** write_close_both - Close two descriptors of a restore, either of which may be -1. */
+static void write_close_both(int a, int b)
+{
+ if (a >= 0)
+  close(a);
+ if (b >= 0)
+  close(b);
+}
+
+/**
  * write_restore_by_rename_ok - May the .bak replace the file by rename?
  * @path: the file as the user named it; @written: what fstat said of the
  * descriptor the write used.
- * @bak: the .bak; @keep: the mode with special bits the restore gives
- * back, or 0.
+ * @bak: the .bak's name; @bak_fd: the descriptor the backup kept; @keep: the
+ * mode with special bits the restore gives back, or 0.
  * Return: 1 when the name is that very regular file, with one link, ours,
- * not writable by others, has no special bit to give back, and the .bak has
- * its group and its mode.
+ * not writable by others, has no special bit to give back, and the .bak is
+ * still the file the backup made (write_bak_is_ours) with the file's group
+ * and mode.
  *
  * A symlinked file, a hard link, another user's file and a shared one would
  * each be broken by a rename: the link replaced, the other names left on the
@@ -764,7 +871,7 @@ static int write_back_through_fd(int to, const char *bak, mode_t keep, WpeModeKe
  * cleared them on the file, so only a write back through the file can give
  * them back.
  */
-static int write_restore_by_rename_ok(const char *path, const char *bak,
+static int write_restore_by_rename_ok(const char *path, const char *bak, int bak_fd,
                                       const struct stat *written, mode_t keep)
 {
  struct stat now, copy;
@@ -779,15 +886,16 @@ static int write_restore_by_rename_ok(const char *path, const char *bak,
   return(0);
  if ((now.st_mode & WPE_WRITE_SHARED_BITS) != 0)
   return(0);
- if (lstat(bak, &copy) != 0 || !S_ISREG(copy.st_mode))
+ if (!write_bak_is_ours(bak, bak_fd, &copy))
   return(0);
  return(copy.st_gid == now.st_gid && (copy.st_mode & 07777) == (now.st_mode & 07777));
 }
 
 /**
  * write_restore - Put the file back as it was after a write failed half way.
- * @path: the file; @bak: the .bak made before the write; @written: fstat of
- * the descriptor the write used, or NULL when it could not be taken;
+ * @path: the file; @bak: the .bak made before the write; @bak_fd: the
+ * descriptor the backup kept for it, closed here; @written: fstat of the
+ * descriptor the write used, or NULL when it could not be taken;
  * @again: a second descriptor of the written file, closed here, or -1;
  * @keep: the mode with special bits to give back with the text, or 0 (the
  * .bak never has them, so a file with one is written back, not renamed over);
@@ -795,30 +903,35 @@ static int write_restore_by_rename_ok(const char *path, const char *bak,
  * Return: 0 when the file holds its old content again, else an errno.
  *
  * The .bak is renamed over the file when that changes nothing but the
- * content; otherwise its bytes are written back into the file the write
- * went to, with the special bits the file had.  XWPE_TEST_FAIL=restore
- * makes this fail with EIO.
+ * content and the name still leads to the .bak this write made; otherwise
+ * its bytes are written back into the file the write went to, from the
+ * descriptor kept, with the special bits the file had.  Both descriptors are
+ * closed on every way out.  XWPE_TEST_FAIL=restore makes this fail with EIO;
+ * XWPE_TEST_FAIL=swap-bak puts another file under the .bak's name first.
  */
-static int write_restore(const char *path, const char *bak, const struct stat *written,
+static int write_restore(const char *path, const char *bak, int bak_fd, const struct stat *written,
                          int again, mode_t keep, WpeModeKept *restore_kept)
 {
  const char *hook = getenv(WPE_WRITE_TEST_FAIL_ENV);
 
  if (hook && strcmp(hook, WPE_WRITE_TEST_FAIL_RESTORE) == 0)
  {
-  if (again >= 0)
-   close(again);
+  write_close_both(again, bak_fd);
   return(EIO);
  }
- if (written && write_restore_by_rename_ok(path, bak, written, keep) && rename(bak, path) == 0)
+ if (hook && strcmp(hook, WPE_WRITE_TEST_FAIL_SWAP_BAK) == 0)
+  write_test_swap_bak(bak);
+ if (written && write_restore_by_rename_ok(path, bak, bak_fd, written, keep) && rename(bak, path) == 0)
  {
-  if (again >= 0)
-   close(again);
+  write_close_both(again, bak_fd);
   return(0);
  }
  if (again < 0)
+ {
+  write_close_both(-1, bak_fd);
   return(EBADF);
- return(write_back_through_fd(again, bak, keep, restore_kept));
+ }
+ return(write_back_through_fd(again, bak_fd, keep, restore_kept));
 }
 
 /* --- the write ------------------------------------------------------------ */
@@ -869,9 +982,10 @@ static int write_rows(FILE *fp, FENSTER *f, BUFFER *b, int xa, int ya, int xe, i
 
 /**
  * write_after_failure - Say how a failed write left the file.
- * @o: the outcome; @path: the file; @bk: what the backup did; @written:
- * what the write's descriptor showed; @keep: the mode with special bits the
- * restore gives back, or 0.
+ * @o: the outcome; @path: the file; @bk: what the backup did; @bak_fd: the
+ * descriptor it kept (closed here), or -1; @written: what the write's
+ * descriptor showed; @again: a second descriptor of the file (closed here), or
+ * -1; @keep: the mode with special bits the restore gives back, or 0.
  *
  * With a .bak made in this call the file is put back; when that fails too
  * the outcome says so and names the .bak that holds the old content.  With
@@ -879,18 +993,17 @@ static int write_rows(FILE *fp, FENSTER *f, BUFFER *b, int xa, int ya, int xe, i
  * the outcome says the file may be cut short (restore_err ENOENT, no
  * bak_path).
  */
-static void write_after_failure(WpeWriteOutcome *o, const char *path, BackupResult bk,
+static void write_after_failure(WpeWriteOutcome *o, const char *path, BackupResult bk, int bak_fd,
                                 const struct stat *written, int have_written, int again,
                                 mode_t keep)
 {
  if (bk != BACKUP_MADE)
  {
-  if (again >= 0)
-   close(again);
+  write_close_both(again, bak_fd);
   o->restore_err = ENOENT;
   return;
  }
- o->restore_err = write_restore(path, o->bak_path, have_written ? written : NULL, again,
+ o->restore_err = write_restore(path, o->bak_path, bak_fd, have_written ? written : NULL, again,
                                 keep, &o->restore_kept);
  if (o->restore_err != 0)
   memset(&o->restore_kept, 0, sizeof o->restore_kept);
@@ -944,7 +1057,79 @@ typedef struct {
                          or was just made */
  mode_t      keep;    /* the special bits this write gives back: those of @before for a
                          Save, none for a copy */
+ int         created; /* the name did not exist: this open made the file, so there is
+                         nothing to back up */
 } WriteTarget;
+
+/** What the backup left a write holding: what it did, and the descriptor of the
+    .bak when it was made (else -1).  Whoever ends the write closes it. */
+typedef struct {
+ BackupResult result;
+ int          fd;
+} WriteBackup;
+
+/** write_backup_release - Close the .bak's descriptor once nothing can need it. */
+static void write_backup_release(WriteBackup *b)
+{
+ if (b->fd >= 0)
+  close(b->fd);
+ b->fd = -1;
+}
+
+/**
+ * write_backup_refuses_save - Did the backup leave a reason not to write?
+ * @bk: what the backup did; @o: receives err and replaced.
+ * Return: 1 when the save is refused (the backup stopped, or the name leads
+ * to another file), 0 when the write goes on.
+ *
+ * Nothing is cut when this says 1, so the file is as the user had it and the
+ * window keeps the text.
+ */
+static int write_backup_refuses_save(const WriteBackup *bk, WpeWriteOutcome *o)
+{
+ if (bk->result == BACKUP_REPLACED)
+ {
+  o->replaced = 1;
+  o->err = WPE_WRITE_REPLACED_ERR;
+  return(1);
+ }
+ return(bk->result == BACKUP_STOPPED);
+}
+
+/**
+ * write_target_open_fd - Open the file for writing, and say whether this made it.
+ * @path: the file; @created: receives 1 when the name did not exist.
+ * Return: the descriptor, or -1 with errno.
+ *
+ * Looking for the file first, and making it only when it is not there, is
+ * what tells a file the user had from one that is new: a new file has no old
+ * text to back up, and the save must not leave a .bak of nothing.  The file
+ * is made with O_EXCL, so one that appeared in between is opened as the
+ * user's file and backed up, not taken for ours.  A name that leads nowhere
+ * (a link to a file to be made) cannot be made with O_EXCL and is made
+ * without, as before.
+ */
+static int write_target_open_fd(const char *path, int *created)
+{
+ int fd = open(path, O_WRONLY | O_NOCTTY | O_CLOEXEC);
+
+ *created = 0;
+ if (fd >= 0 || errno != ENOENT)
+  return(fd);
+ fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, WRITE_NEW_FILE_MODE);
+ if (fd >= 0)
+ {
+  *created = 1;
+  return(fd);
+ }
+ if (errno != EEXIST)
+  return(-1);
+ fd = open(path, O_WRONLY | O_NOCTTY | O_CLOEXEC);
+ if (fd >= 0 || errno != ENOENT)
+  return(fd);
+ *created = 1;
+ return(open(path, O_WRONLY | O_CREAT | O_NOCTTY | O_CLOEXEC, WRITE_NEW_FILE_MODE));
+}
 
 /**
  * write_target_open - Open the file a write goes to, without cutting it.
@@ -963,7 +1148,7 @@ static int write_target_open(const char *path, const WriteOwnFile *own, WriteTar
  int err;
 
  memset(t, 0, sizeof *t);
- t->fd = open(path, O_WRONLY | O_CREAT | O_NOCTTY | O_CLOEXEC, WRITE_NEW_FILE_MODE);
+ t->fd = write_target_open_fd(path, &t->created);
  if (t->fd < 0)
   return(errno);
  if (fstat(t->fd, &t->st) == 0)
@@ -991,6 +1176,13 @@ static int write_target_open(const char *path, const WriteOwnFile *own, WriteTar
  * Every regular file is cut, whatever its size: a file that grew since it
  * was read would otherwise keep a tail of the old text after the new one.
  * A device or a pipe is not cut, as the open with O_TRUNC never cut it.
+ *
+ * POSIX makes open with O_TRUNC always mark the file as changed, but
+ * ftruncate only when the size changes, and some systems (OpenBSD) keep to
+ * that.  A file that was already empty is therefore marked explicitly, so a
+ * save moves the file's time as the original's did and the build's
+ * up-to-date checks see the save.  A time that cannot be set is not a
+ * failed save.
  */
 static int write_target_truncate(const WriteTarget *t)
 {
@@ -998,6 +1190,8 @@ static int write_target_truncate(const WriteTarget *t)
   return(0);
  if (ftruncate(t->fd, 0) != 0)
   return(errno);
+ if (t->st.st_size == 0)
+  (void)futimens(t->fd, NULL);
  return(0);
 }
 
@@ -1091,27 +1285,46 @@ typedef struct {
 
 /**
  * write_run_open - Open the file a write goes to and make it ready for text.
- * @f: the window; @path: the file; @own: the window's own file, or NULL; @t:
- * receives the target; @o: receives err when it fails.
+ * @f: the window; @path: the file; @backup: 1 to copy an existing file to its
+ * .bak; @own: the window's own file, or NULL; @t: receives the target; @bk:
+ * receives what the backup did and holds the .bak's descriptor; @o: receives
+ * err when it fails.
  * Return: 0 when the file is open, cut to nothing and has the window's nine
- * permission bits; -1 when not (nothing was written, the old file is as it was).
+ * permission bits; -1 when not (nothing was written, the old file is as it
+ * was, and nothing stays open).
  *
- * The bits of the file being overwritten are read here, before the cut.
+ * The order is the point.  The file is opened first, its bits are read from
+ * that descriptor, and only a regular file that was already there is backed
+ * up, from the same inode; so a file that cannot be opened leaves no new
+ * .bak, a pipe is never opened by the backup, and the .bak is never of a
+ * file the save will not overwrite.  The cut comes last, when the old text is
+ * safe.
  */
-static int write_run_open(FENSTER *f, const char *path, const WriteOwnFile *own, WriteTarget *t,
-                          WpeWriteOutcome *o)
+static int write_run_open(FENSTER *f, const char *path, int backup, const WriteOwnFile *own,
+                          WriteTarget *t, WriteBackup *bk, WpeWriteOutcome *o)
 {
  int err = write_target_open(path, own, t);
 
- if (err == 0)
- {
-  err = write_target_truncate(t);
-  if (err != 0)
-   fclose(t->fp);
- }
+ bk->result = BACKUP_NONE;
+ bk->fd = -1;
  if (err != 0)
  {
   o->err = write_error_number(err);
+  return(-1);
+ }
+ if (backup && !t->created && S_ISREG(t->st.st_mode))
+  bk->result = write_backup(path, &t->st, &bk->fd, o);
+ if (write_backup_refuses_save(bk, o))
+ {
+  fclose(t->fp);
+  return(-1);
+ }
+ err = write_target_truncate(t);
+ if (err != 0)
+ {
+  o->err = write_error_number(err);
+  write_backup_release(bk);
+  fclose(t->fp);
   return(-1);
  }
  write_mode_before_data(t, f);
@@ -1122,7 +1335,8 @@ static int write_run_open(FENSTER *f, const char *path, const WriteOwnFile *own,
  * write_run_finish - Put the rows into the open target, then give a Save's
  * file its special bits back, or put the old content back when it failed.
  * @f: the window; @path: the file; @r: the range; @t: the open target,
- * closed here; @bk: what the backup did; @o: receives the outcome.
+ * closed here; @bk: what the backup did and the .bak's descriptor, closed
+ * here; @o: receives the outcome.
  *
  * The restore, and the special bits after the text, go through a second
  * descriptor of this same file, never through whatever the name points at by
@@ -1132,7 +1346,7 @@ static int write_run_open(FENSTER *f, const char *path, const WriteOwnFile *own,
  * reached the disk must not wear the bits of a program.
  */
 static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, WriteTarget *t,
-                             BackupResult bk, WpeWriteOutcome *o)
+                             WriteBackup *bk, WpeWriteOutcome *o)
 {
  struct stat written;
  int have_written = 0, err, again, again_err;
@@ -1145,12 +1359,15 @@ static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, 
  if (err != 0)
  {
   o->err = write_error_number(err);
-  write_after_failure(o, path, bk, &written, have_written, again, write_restore_mode(t));
+  write_after_failure(o, path, bk->result, bk->fd, &written, have_written, again,
+                      write_restore_mode(t));
+  bk->fd = -1;
   return;
  }
  write_keep_special_bits(again, again_err, t, &o->file_kept);
  if (again >= 0)
   close(again);
+ write_backup_release(bk);
  o->status = WPE_WRITE_WRITTEN;
 }
 
@@ -1168,7 +1385,7 @@ static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, 
 static void write_run(FENSTER *f, const char *path, const WriteRange *r, int backup,
                       const WriteOwnFile *own, WpeWriteOutcome *o)
 {
- BackupResult bk = BACKUP_NONE;
+ WriteBackup bk;
  WriteTarget t;
 
  memset(o, 0, sizeof *o);
@@ -1181,10 +1398,8 @@ static void write_run(FENSTER *f, const char *path, const WriteRange *r, int bac
   return;
  }
  wpe_write_guard_enter();
- if (backup)
-  bk = write_backup(path, o);
- if (bk != BACKUP_STOPPED && write_run_open(f, path, own, &t, o) == 0)
-  write_run_finish(f, path, r, &t, bk, o);
+ if (write_run_open(f, path, backup, own, &t, &bk, o) == 0)
+  write_run_finish(f, path, r, &t, &bk, o);
  wpe_write_guard_leave();
 }
 
@@ -1603,6 +1818,9 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
 
  if (o->read_only)
   snprintf(out, n, "%s is read-only.", write_base_name(path));
+ else if (o->replaced)
+  snprintf(out, n, "Cannot write %s: it was replaced by another file while it was being saved.  "
+           "Nothing was written.", path);
  else if (o->backup_stopped)
   snprintf(out, n, "Cannot write %s: the backup copy stopped at %s; the file was not touched.",
            path, strerror(o->err));

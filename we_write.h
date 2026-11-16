@@ -52,6 +52,8 @@ typedef struct {
  char path[WPE_PATH_SIZE];       /* where the text went, or the file that refused it */
  int backup_err;                 /* the .bak could not be opened; the write went on */
  int backup_stopped;             /* the .bak was opened and not completed: the save was refused */
+ int replaced;                   /* the name led to another file by the time the backup read
+                                    it: nothing was written, the save is refused */
  int restore_err;                /* the write failed after the open and the old content
                                     is not back: the restore's errno, or ENOENT when
                                     no .bak was made (bak_path is then "") */

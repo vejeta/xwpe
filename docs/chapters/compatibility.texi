@@ -1069,8 +1069,17 @@ copy takes the file's nine permission bits (never setuid, setgid or sticky)
 before it holds any of its text, and
 counts as made only when every byte reached the disk; a backup that stops
 half way refuses the save and leaves the file untouched, because the same
-disk would refuse the new text.  The reason: a short backup must never be
-trusted, and a private file's backup must never be readable by others.
+disk would refuse the new text.  The backup is made only once the save has
+opened the file, and from that very file: a file that cannot be opened for
+writing gets no new backup, and when the name leads to another file (or to
+none) by the time the backup is read, the save is refused: nothing is
+written, the window keeps its text and stays modified, and the box says
+@samp{Cannot write t.c: it was replaced by another file while it was being
+saved.  Nothing was written.}  A
+failed save puts the old text back from the backup it made, never from a
+file that has taken the backup's name since.  The reason: a short backup
+must never be trusted, a private file's backup must never be readable by
+others, and a backup must be of the file that is replaced and no other.
 
 @item A saved program keeps its bits
 @cindex setuid, setgid and sticky bits on Save
