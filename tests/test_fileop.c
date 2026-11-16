@@ -274,6 +274,7 @@ static void test_create_private(void)
 {
  struct stat st;
  char path[512], buf[16];
+ WpeModeKept kept;
  int dfd, fd = -1, err, rd;
  int src;
 
@@ -284,7 +285,7 @@ static void test_create_private(void)
  chk_int("create_private", err, 0);
  fstat(fd, &st);
  chk_int("nine bits before any byte, special bits not yet", st.st_mode & 07777, 0755);
- chk_int("then the special bits after the data", wpe_write_set_special_bits(fd, 04755), 0);
+ chk_int("then the special bits after the data", wpe_write_set_special_bits(fd, 04755, &kept), 0);
  fstat(fd, &st);
  chk_int("special bits set", st.st_mode & 07777, 04755);
  close(fd);
@@ -1600,6 +1601,621 @@ static void test_tree_a_named_link_to_a_folder_is_followed_once(void)
  clean();
 }
 
+/* ---- a special bit the system does not let this user keep ----
+ *
+ * The BSDs refuse a setgid bit for a user outside the file's group, Linux
+ * drops it in silence; the fake of tests/fakechmod.h makes either happen on
+ * any system.  A copy is made without the bit and the sentence says which
+ * bit and why.  Each row arms the fake after its setup and puts it off at
+ * its end.  Rows marked "guard" are green on a tree that fails the copy as
+ * well as on one that does not; each names the mutation that turns it red. */
+
+#define SENTENCE_ROOM 4096
+
+/* A row that needs setgid on a file or folder of the test folder. */
+static int setgid_row_ready(const char *row)
+{
+ return(test_premise(test_premise_special_bits_settable(dir, S_ISGID), row,
+                     "this user cannot set setgid in the test folder"));
+}
+
+static void refuse_setgid(void)
+{
+ fakechmod_set(FAKECHMOD_REFUSE, S_ISGID);
+}
+
+static void drop_setgid(void)
+{
+ fakechmod_set(FAKECHMOD_DROP, S_ISGID);
+}
+
+static void fake_off(void)
+{
+ fakechmod_set(FAKECHMOD_OFF, 0);
+}
+
+/* The sentence of an outcome. */
+static const char *said(const WpeFileOpOutcome *o)
+{
+ static char buf[SENTENCE_ROOM];
+
+ wpe_fileop_sentence(buf, sizeof buf, o);
+ return(buf);
+}
+
+/* One refused setgid bit: the copy is made, whole, without it, and the
+   sentence names the bit, the copy and the system's reason.  HEAD fails the
+   copy at its permissions step. */
+static void test_a_refused_setgid_bit_is_dropped_and_said(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!setgid_row_ready("a refused setgid bit is dropped and said") || put("sg.txt", "setgid\n", 02755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ rc = wpe_fileop_copy("sg.txt", "sg.copy", &p, &o);
+ fake_off();
+ chk_int("the copy is made", rc, 0);
+ chk_int("done", o.status, WPE_FILEOP_DONE);
+ chk_file("with every byte", "sg.copy", "setgid\n");
+ chk_int("without the bit, with the nine", mode_of("sg.copy"), 0755);
+ chk_int("the bit named", o.note.bits_lost, S_ISGID);
+ chk_int("the refusal named", o.note.bits_err, EPERM);
+ chk_int("one entry", o.note.bits_lost_count, 1);
+ chk_has("says which bit", said(&o), "the setgid bit was not kept on ");
+ chk_has("says where", said(&o), "sg.copy");
+ chk_has("says why", said(&o), "Operation not permitted");
+ chk_int("no temporary left", count_temp(dir), 0);
+ clean();
+}
+
+/* The system that takes the call and drops the bit (Linux): the read-back
+   finds it, and the sentence says the system cleared it.  HEAD says
+   nothing. */
+static void test_a_silently_dropped_setgid_bit_is_said(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!setgid_row_ready("a silently dropped setgid bit is said") || put("sg.txt", "setgid\n", 02755) != 0) {
+  clean();
+  return;
+ }
+ drop_setgid();
+ rc = wpe_fileop_copy("sg.txt", "sg.copy", &p, &o);
+ fake_off();
+ chk_int("the copy is made", rc, 0);
+ chk_int("without the bit", mode_of("sg.copy"), 0755);
+ chk_int("no refusal to name", o.note.bits_err, 0);
+ chk_int("the bit named", o.note.bits_lost, S_ISGID);
+ chk_has("the system cleared it", said(&o), "the system cleared it");
+ clean();
+}
+
+/* The call is refused as a whole, so the bits are asked for one at a time
+   and setuid stays. */
+static void test_setuid_is_kept_when_setgid_is_refused(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISUID | S_ISGID), "setuid stays when setgid is refused",
+                   "this user cannot set setuid and setgid in the test folder") ||
+     put("both.txt", "both\n", 06755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ rc = wpe_fileop_copy("both.txt", "both.copy", &p, &o);
+ fake_off();
+ chk_int("the copy is made", rc, 0);
+ chk_int("setuid kept, setgid not", mode_of("both.copy"), 04755);
+ chk_int("only setgid named", o.note.bits_lost, S_ISGID);
+ clean();
+}
+
+/* A folder: every entry is copied, the entries that lost a bit are counted
+   and the first is named.  HEAD stops the walk at the first one. */
+static void test_a_folder_copy_counts_the_bits_it_could_not_keep(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ if (!setgid_row_ready("a folder copy counts the bits it could not keep") ||
+     test_mkdir_mode(dir, "sg", 02755) != 0 || test_mkdir_mode(dir, "sg/sub", 0711) != 0) {
+  clean();
+  return;
+ }
+ put("sg/a.c", "A\n", 0644);
+ put("sg/s1.c", "S1\n", 02755);
+ put("sg/s2.c", "S2\n", 02755);
+ put("sg/sub/deep.txt", "D\n", 0644);
+ refuse_setgid();
+ rc = wpe_fileop_copy_tree("sg", "sgcopy", &p, &o);
+ fake_off();
+ chk_int("the folder is copied", rc, 0);
+ chk_int("done", o.status, WPE_FILEOP_DONE);
+ chk_int("the folder and two files", o.note.bits_lost_count, 3);
+ chk_has("the first in walk order", o.note.bits_path, "s1.c");
+ chk_file("every entry", "sgcopy/s2.c", "S2\n");
+ chk_file("a subfolder's entry", "sgcopy/sub/deep.txt", "D\n");
+ chk_int("the folder without the bit", mode_of("sgcopy"), 0755);
+ chk_has("counted", said(&o), "entries copied, but the setgid bit was not kept on 3 entries (first: ");
+ clean();
+}
+
+/* The Attributes dialog applies the nine bits and names the special bit it
+   could not keep.  HEAD refuses the whole change. */
+static void test_chmod_keeps_what_it_can_and_says_the_rest(void)
+{
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ if (!setgid_row_ready("chmod keeps what it can") || test_mkdir_mode(dir, "g", 02755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ rc = wpe_fileop_chmod("g", 0750, &o);
+ fake_off();
+ chk_int("the nine bits are applied", rc, 0);
+ chk_int("as asked", mode_of("g"), 0750);
+ chk_has("the bit named", said(&o), "Permissions of g changed, but the setgid bit was not kept");
+ clean();
+}
+
+/* Guard: the nine bits refused stays a refusal and nothing is changed.
+   Mutation that turns it red: swallow the errno of the nine-bit step. */
+static void test_chmod_refused_nine_bits_is_a_refusal(void)
+{
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ if (!setgid_row_ready("chmod refused nine bits") || test_mkdir_mode(dir, "g", 02755) != 0) {
+  clean();
+  return;
+ }
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ rc = wpe_fileop_chmod("g", 0750, &o);
+ fake_off();
+ chk_int("refused", rc, -1);
+ chk_int("at the permissions", o.step, WPE_FILEOP_STEP_MODE);
+ chk_int("nothing changed", mode_of("g"), 02755);
+ chk_str("the sentence", said(&o),
+         "Cannot change the permissions of g: setting its permissions: Operation not permitted.  Nothing was changed.");
+ clean();
+}
+
+/* A real failure after the nine bits were taken is not "nothing was
+   changed": the nine bits are on. */
+static void test_chmod_failure_after_the_nine_bits_is_not_nothing_changed(void)
+{
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ if (!setgid_row_ready("chmod failure after the nine bits") || test_mkdir_mode(dir, "g", 02755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ fakechmod_set_errors(EPERM, EIO);
+ rc = wpe_fileop_chmod("g", 0750, &o);
+ fake_off();
+ chk_int("a failure", rc, -1);
+ chk_int("at the permissions", o.step, WPE_FILEOP_STEP_MODE);
+ chk_int("the nine bits are on", mode_of("g"), 0750);
+ chk_has("the reason", said(&o), "Input/output error");
+ if (strstr(said(&o), "Nothing was changed")) {
+  printf("FAIL: the nine bits were applied, yet the sentence says nothing was changed: \"%s\"\n", said(&o));
+  fails++;
+ }
+ clean();
+}
+
+/* A copy that was declined or failed after its bits were set says nothing
+   about them: the copy does not exist.  Guard: the note is committed only
+   when the copy is in place.  Mutation that turns it red: record the note
+   where the bits are set (fileop_job_fill_temp). */
+static void check_no_note_for_a_copy_that_is_not_there(const char *hook, WpeReplaceRule rule, const char *what)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ policy(&p, rule, WPE_REMOVE_NOW);
+ if (!setgid_row_ready(what) || put("sg.txt", "setgid\n", 02755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ setenv("XWPE_TEST_FAIL", hook, 1);
+ rc = wpe_fileop_copy("sg.txt", "sg.copy", &p, &o);
+ unsetenv("XWPE_TEST_FAIL");
+ fake_off();
+ chk_int(what, rc, -1);
+ chk_int("no entry noted", o.note.bits_lost_count, 0);
+ if (strstr(said(&o), "was not kept")) {
+  printf("FAIL: %s: the sentence speaks of a bit of a copy that is not there: \"%s\"\n", what, said(&o));
+  fails++;
+ }
+ chk_int("no temporary left", count_temp(dir), 0);
+ /* the planted name is a link; nothing else may be there */
+ chk_int("no copy, only what was planted", mode_of("sg.copy") < 0 || is_link("sg.copy"), 1);
+ clean();
+}
+
+static void test_a_declined_or_failed_copy_of_a_setgid_file_is_silent_about_the_bit(void)
+{
+ check_no_note_for_a_copy_that_is_not_there("fileop-plant", WPE_REPLACE_NEVER, "declined at the place");
+ check_no_note_for_a_copy_that_is_not_there("fileop-rename", WPE_REPLACE_ALWAYS, "failed at the rename");
+}
+
+/* Guard: a plain copy says nothing.  Mutation that turns it red: count an
+   entry whose bits all stayed (fileop_note_bits_lost without its early
+   return). */
+static void test_a_plain_copy_is_silent(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ put("plain.txt", "plain\n", 0644);
+ chk_int("copy a plain file", wpe_fileop_copy("plain.txt", "plain.copy", &p, &o), 0);
+ chk_int("silent", (long)strlen(said(&o)), 0);
+ chk_int("no entry noted", o.note.bits_lost_count, 0);
+ chk_int("mode kept", mode_of("plain.copy"), 0644);
+ if (setgid_row_ready("a plain copy of a setgid file in the user's group is silent") &&
+     put("sg.txt", "setgid\n", 02755) == 0) {
+  chk_int("copy a setgid file", wpe_fileop_copy("sg.txt", "sg.copy", &p, &o), 0);
+  chk_int("silent, the bit stayed", (long)strlen(said(&o)), 0);
+  chk_int("no entry noted, setgid", o.note.bits_lost_count, 0);
+  chk_int("setgid kept", mode_of("sg.copy"), 02755);
+ }
+ clean();
+}
+
+/* Guard: a plain folder copy says nothing.  Same mutation. */
+static void test_a_plain_tree_copy_is_silent(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ if (test_mkdir_mode(dir, "pl", 0755) != 0 || test_mkdir_mode(dir, "pl/sub", 0711) != 0) {
+  clean();
+  return;
+ }
+ put("pl/a.c", "A\n", 0644);
+ put("pl/sub/deep.txt", "D\n", 0600);
+ chk_int("copy a plain tree", wpe_fileop_copy_tree("pl", "plcopy", &p, &o), 0);
+ chk_int("silent", (long)strlen(said(&o)), 0);
+ chk_int("no entry noted", o.note.bits_lost_count, 0);
+ clean();
+}
+
+/* The two rows below need a second file system, so that the wastebasket
+   cannot be reached by a link and the replaced file is copied there. */
+static int second_file_system_ready(const char *row)
+{
+ if (other[0])
+  return(1);
+ printf("SKIP: %s: no second file system at /dev/shm\n", row);
+ return(0);
+}
+
+/* A file replaced under the wastebasket rule is copied into the
+   wastebasket on another file system; if that copy lost the bit, the
+   sentence names it.  HEAD says nothing of the copy it keeps. */
+static void test_a_stashed_file_that_lost_a_bit_is_named(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ make_other();
+ chdir(dir);
+ if (!second_file_system_ready("a stashed file that lost a bit is named") ||
+     !setgid_row_ready("a stashed file that lost a bit is named")) {
+  clean();
+  return;
+ }
+ setenv("HOME", other, 1);
+ policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_WASTEBASKET);
+ put("src.txt", "NEW\n", 0644);
+ if (put("dst.txt", "OLD\n", 02755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ rc = wpe_fileop_copy("src.txt", "dst.txt", &p, &o);
+ fake_off();
+ chk_int("replaced", rc, 0);
+ chk_file("with the new text", "dst.txt", "NEW\n");
+ chk_int("the old file is aside", o.aside[0] != '\0', 1);
+ chk_int("one entry noted", o.note.bits_lost_count, 1);
+ chk_has("names the wastebasket copy", said(&o), o.aside);
+ chk_has("and the bit", said(&o), "the setgid bit was not kept on ");
+ clean();
+}
+
+/* Removing into the wastebasket across file systems is a copy; its note
+   reaches the sentence.  HEAD says nothing. */
+static void test_a_remove_to_the_wastebasket_across_file_systems_names_the_bit(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ make_other();
+ chdir(dir);
+ if (!second_file_system_ready("a remove to the wastebasket names the bit") ||
+     !setgid_row_ready("a remove to the wastebasket names the bit")) {
+  clean();
+  return;
+ }
+ setenv("HOME", other, 1);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_WASTEBASKET);
+ if (put("gone.txt", "GONE\n", 02755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ rc = wpe_fileop_remove("gone.txt", &p, &o);
+ fake_off();
+ chk_int("removed", rc, 0);
+ chk_absent("the file is gone", "gone.txt");
+ chk_has("names the bit", said(&o), "Removed, but the setgid bit was not kept on ");
+ clean();
+}
+
+/* The reason is one for every system: a setgid bit of a group the user is
+   not in says so whether the system refused it (EPERM) or dropped it
+   (0).  Mutation that turns it red: put the system's reason first. */
+static void set_note(WpeFileOpOutcome *o, mode_t lost, int err, int in_group)
+{
+ memset(o, 0, sizeof *o);
+ o->status = WPE_FILEOP_DONE;
+ o->kind = WPE_FILEOP_COPY;
+ o->note.bits_lost = lost;
+ o->note.bits_err = err;
+ o->note.bits_gid = 0;
+ o->note.bits_in_group = in_group;
+ o->note.bits_lost_count = 1;
+ snprintf(o->note.bits_path, sizeof o->note.bits_path, "x/y");
+}
+
+static void test_the_group_reason_wins(void)
+{
+ WpeFileOpOutcome o;
+
+ set_note(&o, S_ISGID, EPERM, 0);
+ chk_has("refused, not in the group", said(&o), "this user is not in group 0");
+ set_note(&o, S_ISGID, 0, 0);
+ chk_has("dropped, not in the group", said(&o), "this user is not in group 0");
+ set_note(&o, S_ISUID, EPERM, 0);
+ chk_has("setuid, the system's reason", said(&o), "Operation not permitted");
+ set_note(&o, S_ISGID, 0, 1);
+ chk_has("in the group, cleared", said(&o), "the system cleared it");
+ set_note(&o, S_ISUID | S_ISGID, 0, 1);
+ chk_has("two bits", said(&o), "the setuid and setgid bits were not kept on x/y");
+}
+
+static int group_is_ours(gid_t gid)
+{
+ gid_t *list;
+ int count = getgroups(0, NULL), i, found = (getegid() == gid);
+
+ if (count <= 0)
+  return(found);
+ list = malloc((size_t)count * sizeof *list);
+ if (list == NULL)
+  return(1);
+ count = getgroups(count, list);
+ for (i = 0; i < count; i++)
+  if (list[i] == gid)
+   found = 1;
+ free(list);
+ return(found);
+}
+
+static void test_caller_in_group(void)
+{
+ gid_t g;
+
+ chk_int("the effective group", wpe_write_caller_in_group(getegid()), 1);
+ for (g = 50000; g < 50100; g++)
+  if (!group_is_ours(g)) {
+   chk_int("a group of nobody here", wpe_write_caller_in_group(g), 0);
+   return;
+  }
+ printf("SKIP: caller in group: every group from 50000 to 50099 is one of ours\n");
+}
+
+/* A failure that is not a refusal of a special bit stays a failure, and the
+   copy is not made.  Guard: HEAD fails the copy at this step too.  Mutation
+   that turns it red: treat every errno as a bit not kept. */
+static void test_a_real_error_on_a_special_bit_is_a_failure(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ if (!setgid_row_ready("a real error on a special bit is a failure") || put("sg.txt", "setgid\n", 02755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ fakechmod_set_errors(EIO, 0);
+ rc = wpe_fileop_copy("sg.txt", "eio.copy", &p, &o);
+ fake_off();
+ chk_int("failed", rc, -1);
+ chk_int("at the permissions", o.step, WPE_FILEOP_STEP_MODE);
+ chk_has("with the real reason", said(&o), "Input/output error");
+ chk_absent("no copy", "eio.copy");
+ chk_int("no temporary left", count_temp(dir), 0);
+#ifdef EFTYPE
+ /* the BSDs refuse a sticky bit on a file with EFTYPE: a bit not kept, like EPERM */
+ refuse_setgid();
+ fakechmod_set_errors(EFTYPE, 0);
+ rc = wpe_fileop_copy("sg.txt", "eftype.copy", &p, &o);
+ fake_off();
+ chk_int("EFTYPE is a bit not kept", rc, 0);
+ chk_int("done", o.status, WPE_FILEOP_DONE);
+ chk_has("with the system's reason", said(&o), strerror(EFTYPE));
+#endif
+ clean();
+}
+
+/* A folder copy that the user stopped after an entry lost a bit says both.
+   HEAD fails the entry before there is a count. */
+static void test_the_stopped_sentence_carries_the_note(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ if (!setgid_row_ready("the stopped sentence carries the note") || test_mkdir_mode(dir, "st", 0755) != 0) {
+  clean();
+  return;
+ }
+ put("st/s1.c", "S1\n", 02755);
+ put("st/s2.c", "S2\n", 02755);
+ progress_stop_at = 2;
+ refuse_setgid();
+ rc = wpe_fileop_copy_tree("st", "stcopy", &p, &o);
+ fake_off();
+ chk_int("stopped", rc, -1);
+ chk_int("at the stop", o.step, WPE_FILEOP_STEP_STOPPED);
+ chk_has("the count", said(&o), "Stopped: 1 of 2 entries were copied.");
+ chk_has("the note", said(&o), "The setgid bit was not kept on 1 entry");
+ clean();
+}
+
+/* One file in a folder: "1 entry copied", never "1 entries". */
+static void test_a_folder_of_one_file_says_one_entry(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
+ if (!setgid_row_ready("a folder of one file says one entry") || test_mkdir_mode(dir, "one", 02755) != 0) {
+  clean();
+  return;
+ }
+ put("one/a.c", "A\n", 0644);
+ refuse_setgid();
+ rc = wpe_fileop_copy_tree("one", "onecopy", &p, &o);
+ fake_off();
+ chk_int("copied", rc, 0);
+ chk_has("one entry", said(&o), "1 entry copied, but the setgid bit was not kept on 1 entry (first: onecopy)");
+ if (strstr(said(&o), "1 entries")) {
+  printf("FAIL: \"1 entries\" in \"%s\"\n", said(&o));
+  fails++;
+ }
+ clean();
+}
+
+/* The mode is taken and then the read-back fails (the name vanishes): a
+   failure, and the nine bits are on, so "nothing was changed" is false.
+   Mutation that turns it red: do not set k->changed after a full call that
+   succeeded. */
+static void test_chmod_read_back_failure_is_not_nothing_changed(void)
+{
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ chdir(dir);
+ if (!setgid_row_ready("chmod read-back failure") || test_mkdir_mode(dir, "g", 02755) != 0) {
+  clean();
+  return;
+ }
+ fakechmod_set(FAKECHMOD_VANISH, 0);
+ rc = wpe_fileop_chmod("g", 0750, &o);
+ fake_off();
+ chk_int("a failure", rc, -1);
+ chk_int("at the permissions", o.step, WPE_FILEOP_STEP_MODE);
+ if (strstr(said(&o), "Nothing was changed")) {
+  printf("FAIL: the mode was applied, yet the sentence says nothing was changed: \"%s\"\n", said(&o));
+  fails++;
+ }
+ clean();
+}
+
+/* The user's own copy is named first, the wastebasket copy of the file it
+   replaced after it, when both lost the bit. */
+static void test_the_copy_is_named_before_the_stashed_file(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ int rc;
+
+ make_dir();
+ make_other();
+ chdir(dir);
+ if (!second_file_system_ready("the copy is named before the stashed file") ||
+     !setgid_row_ready("the copy is named before the stashed file")) {
+  clean();
+  return;
+ }
+ setenv("HOME", other, 1);
+ policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_WASTEBASKET);
+ if (put("src.txt", "NEW\n", 02755) != 0 || put("dst.txt", "OLD\n", 02755) != 0) {
+  clean();
+  return;
+ }
+ refuse_setgid();
+ rc = wpe_fileop_copy("src.txt", "dst.txt", &p, &o);
+ fake_off();
+ chk_int("replaced", rc, 0);
+ chk_int("both counted", o.note.bits_lost_count, 2);
+ chk_str("the user's copy is first", o.note.bits_path, "dst.txt");
+ chk_has("said first", said(&o), "2 entries (first: dst.txt)");
+ clean();
+}
+
 int main(void)
 {
  test_tree_refuses_a_destination_link_where_a_folder_goes();
@@ -1632,6 +2248,26 @@ int main(void)
  test_move();
  test_link();
  test_remove();
+ /* the rows that arm the fake come last: they put it off when they end */
+ test_a_refused_setgid_bit_is_dropped_and_said();
+ test_a_silently_dropped_setgid_bit_is_said();
+ test_setuid_is_kept_when_setgid_is_refused();
+ test_a_folder_copy_counts_the_bits_it_could_not_keep();
+ test_chmod_keeps_what_it_can_and_says_the_rest();
+ test_chmod_refused_nine_bits_is_a_refusal();
+ test_chmod_failure_after_the_nine_bits_is_not_nothing_changed();
+ test_a_declined_or_failed_copy_of_a_setgid_file_is_silent_about_the_bit();
+ test_a_plain_copy_is_silent();
+ test_a_plain_tree_copy_is_silent();
+ test_a_stashed_file_that_lost_a_bit_is_named();
+ test_a_remove_to_the_wastebasket_across_file_systems_names_the_bit();
+ test_the_group_reason_wins();
+ test_caller_in_group();
+ test_a_real_error_on_a_special_bit_is_a_failure();
+ test_the_stopped_sentence_carries_the_note();
+ test_a_folder_of_one_file_says_one_entry();
+ test_chmod_read_back_failure_is_not_nothing_changed();
+ test_the_copy_is_named_before_the_stashed_file();
  fails += test_dir_failures;
  if (fails) {
   printf("test_fileop: %d failure(s)\n", fails);

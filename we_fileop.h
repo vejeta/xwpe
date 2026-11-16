@@ -68,6 +68,19 @@ typedef enum {
  WPE_FILEOP_STEP_CANCELLED      /* the user answered Esc: no sentence */
 } WpeFileOpStep;
 
+/** What a copy could not keep: the special bits (setuid, setgid, sticky) the
+    system did not let this user keep on what the operation made.  The
+    operation is complete without them and the sentence says so.  A folder
+    sums the entries it concerns and names the first. */
+typedef struct {
+ mode_t bits_lost;                 /* the bits missing on the first entry named in bits_path */
+ int    bits_err;                  /* errno of the refusal, 0 for a silent drop */
+ gid_t  bits_gid;                  /* that entry's group */
+ int    bits_in_group;             /* the user is in that group */
+ long   bits_lost_count;           /* entries with a bit not kept; 0 = nothing to say */
+ char   bits_path[WPE_PATH_SIZE];  /* the first such entry */
+} WpeFileOpBitsNote;
+
 typedef struct {
  WpeFileOpStatus status;
  WpeFileOpKind   kind;
@@ -81,6 +94,7 @@ typedef struct {
  int             src_kept;                 /* the source is as it was */
  int             dst_kept;                 /* an existing destination is as it was */
  long            done, skipped, total;     /* a folder: entries done, left alone by the policy, all */
+ WpeFileOpBitsNote note;                   /* the special bits the system did not keep, said after a DONE copy */
 } WpeFileOpOutcome;
 
 typedef enum { WPE_REPLACE_ASK, WPE_REPLACE_ALWAYS, WPE_REPLACE_NEVER } WpeReplaceRule;
@@ -113,8 +127,9 @@ typedef struct {
     did not happen. */
 #define WPE_FILEOP_RESULT __attribute__((warn_unused_result))
 
-/** The room for the sentence: three paths, a reason and the follow-up. */
-#define WPE_FILEOP_SENTENCE_MAX (3 * WPE_PATH_SIZE + 256)
+/** The room for the sentence: three paths, a fourth for the bits note, a
+    reason and the follow-up. */
+#define WPE_FILEOP_SENTENCE_MAX (4 * WPE_PATH_SIZE + 320)
 
 /* Each returns 0 for DONE and -1 otherwise; the outcome says which. */
 WPE_FILEOP_RESULT int wpe_fileop_copy(const char *src, const char *dst, const WpeFileOpPolicy *p, WpeFileOpOutcome *o);
@@ -144,7 +159,9 @@ WPE_FILEOP_RESULT int wpe_fileop_link_tree(const char *src, const char *dst, con
    wastebasket (a Move of the folder does that). */
 WPE_FILEOP_RESULT int wpe_fileop_remove_tree(const char *path, const WpeFileOpPolicy *p, WpeFileOpOutcome *o);
 
-/* perm: the nine permission bits; the file's setuid, setgid and sticky bits are kept */
+/* perm: the nine permission bits; the file's setuid, setgid and sticky bits are
+   kept when the system lets this user keep them, and the outcome's note names
+   the one it did not.  The nine bits being refused is a failure. */
 WPE_FILEOP_RESULT int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpOutcome *o);
 /* A name moved where none is: a folder's rename, which rename(2) would let
    replace an empty folder that appeared in between. */
@@ -160,7 +177,10 @@ WPE_FILEOP_RESULT int wpe_fileop_wastebasket_slot(const char *path, char *out, s
 int wpe_fileop_in_wastebasket(const char *path);
 
 /* The one sentence, from the outcome alone.  Returns the length, 0 when
-   there is nothing to say (DONE, a question answered no, Esc). */
+   there is nothing to say (DONE with every special bit kept, a question
+   answered no, Esc).  A DONE copy that could not keep a special bit says
+   which bit, where and why; a folder stopped or failed after such an entry
+   adds the same note. */
 int wpe_fileop_sentence(char *out, size_t n, const WpeFileOpOutcome *o);
 
 #endif /* WE_FILEOP_H */

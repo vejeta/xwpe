@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -143,6 +144,279 @@ int wpe_write_copy_fd(int from, int to, int *read_failed)
  }
 }
 
+/* --- the mode of a file: the one owner of chmod ----------------------------- */
+
+/** The special permission bits: setuid, setgid and sticky. */
+#define WRITE_SPECIAL_BITS (S_ISUID | S_ISGID | S_ISVTX)
+
+/** The nine permission bits a user can always ask for. */
+#define WRITE_NINE_BITS 0777
+
+/** The twelve bits of a mode. */
+#define WRITE_TWELVE_BITS 07777
+
+/** getgroups with no list says how many groups the caller is in. */
+#define WRITE_NO_GROUPS 0
+
+/** The place a mode is applied to: an open file, or a name (a file that
+    cannot be opened for reading and writing, a folder the user names). */
+typedef struct {
+ int         fd;      /* the descriptor, used when path is NULL */
+ const char *path;    /* the name, or NULL */
+} WriteModeTarget;
+
+/**
+ * write_mode_set - The one chmod or fchmod of the editor's files.
+ * @t: the file or the name; @mode: the bits to ask for.
+ * Return: 0, or the errno.
+ *
+ * Every change of a file's permissions the write and the file owners make
+ * goes through here, so a bit the system refuses is met in one place.
+ */
+static int write_mode_set(const WriteModeTarget *t, mode_t mode)
+{
+ int rc;
+
+ if (t->path != NULL)
+  rc = chmod(t->path, mode);
+ else
+  rc = fchmod(t->fd, mode);
+ return(rc == 0 ? 0 : errno);
+}
+
+/** write_mode_read - The mode the file has now.  Return: 0, or the errno. */
+static int write_mode_read(const WriteModeTarget *t, struct stat *st)
+{
+ int rc;
+
+ if (t->path != NULL)
+  rc = stat(t->path, st);
+ else
+  rc = fstat(t->fd, st);
+ return(rc == 0 ? 0 : errno);
+}
+
+/**
+ * write_mode_refusal - Is this errno a system saying "not this special bit"?
+ * @err: what a chmod returned.
+ * Return: 1 for EPERM, and for EFTYPE where the system has it (the BSDs
+ * refuse a sticky bit on a regular file with it); 0 for every other errno,
+ * which is a real failure (EIO, EROFS, ENOENT).
+ */
+static int write_mode_refusal(int err)
+{
+#ifdef EFTYPE
+ if (err == EFTYPE)
+  return(1);
+#endif
+ return(err == EPERM);
+}
+
+/**
+ * wpe_write_caller_in_group - Is the user in this group?
+ * @gid: a group number.
+ * Return: 1 when it is the effective group or one of the supplementary
+ * groups, else 0.
+ *
+ * Lets the sentence say "this user is not in group 12" when a setgid bit
+ * cannot be kept, the real reason on every system, without reading
+ * /etc/group.
+ */
+int wpe_write_caller_in_group(gid_t gid)
+{
+ gid_t *list;
+ int count, i, found = 0;
+
+ if (getegid() == gid)
+  return(1);
+ count = getgroups(WRITE_NO_GROUPS, NULL);
+ if (count <= 0)
+  return(0);
+ list = malloc((size_t)count * sizeof *list);
+ if (list == NULL)
+  return(0);
+ count = getgroups(count, list);
+ for (i = 0; i < count; i++)
+  if (list[i] == gid)
+   found = 1;
+ free(list);
+ return(found);
+}
+
+/**
+ * write_mode_read_back - Say which special bits the file does not have.
+ * @t: the file; @mode: what was asked for; @k: receives lost, gid, in_group.
+ * Return: 0, or the errno of the read.
+ *
+ * A system that returns 0 and drops the bit (Linux, for a user outside the
+ * file's group) and one that refuses it with EPERM end alike: the bit is not
+ * on the file, and the caller can say so.
+ */
+static int write_mode_read_back(const WriteModeTarget *t, mode_t mode, WpeModeKept *k)
+{
+ struct stat st;
+ int err = write_mode_read(t, &st);
+
+ if (err != 0)
+  return(err);
+ k->lost |= (mode & WRITE_SPECIAL_BITS) & ~(st.st_mode & WRITE_SPECIAL_BITS);
+ k->gid = st.st_gid;
+ k->in_group = wpe_write_caller_in_group(st.st_gid);
+ return(0);
+}
+
+/**
+ * write_mode_apart - Set the nine bits, then each special bit by itself.
+ * @t: the file; @mode: the twelve bits wanted; @k: receives lost, err, changed.
+ * Return: 0, or the errno of a call that is a real failure.
+ *
+ * A system that refuses one special bit refuses the whole call; asking for
+ * the bits one at a time keeps the ones it does take (setuid stays when
+ * setgid is refused).  The nine bits go first and alone: their refusal is the
+ * user's request refused, and nothing was changed.
+ */
+static int write_mode_apart(const WriteModeTarget *t, mode_t mode, WpeModeKept *k)
+{
+ static const mode_t bits[] = { S_ISUID, S_ISGID, S_ISVTX };
+ mode_t accepted = 0;
+ size_t i;
+ int err = write_mode_set(t, mode & WRITE_NINE_BITS);
+
+ if (err != 0)
+  return(err);
+ k->changed = 1;
+ for (i = 0; i < sizeof bits / sizeof bits[0]; i++)
+ {
+  if ((mode & bits[i]) == 0)
+   continue;
+  err = write_mode_set(t, (mode & WRITE_NINE_BITS) | accepted | bits[i]);
+  if (err == 0)
+   accepted |= bits[i];
+  else if (write_mode_refusal(err))
+  {
+   k->lost |= bits[i];
+   k->err = err;
+  }
+  else
+   return(err);
+ }
+ return(0);
+}
+
+/**
+ * write_mode_apply - Give a file the mode asked for, keeping what the system
+ * lets this user keep.
+ * @t: the file; @mode: the twelve bits wanted; @k: what was not kept.
+ * Return: 0 when the nine bits are on, whatever happened to the special bits
+ * (k says); else the errno of a real failure.
+ *
+ * With no special bit asked for this is one call and no read-back, as the
+ * editor always did.  With one, the whole mode is asked for first, which is
+ * what a system that takes it needs and leaves the file untouched when it
+ * refuses; only a refusal that names a special bit sends the call apart.
+ * The mode is read back after, so a bit dropped in silence is found too.
+ */
+static int write_mode_apply(const WriteModeTarget *t, mode_t mode, WpeModeKept *k)
+{
+ int err;
+
+ memset(k, 0, sizeof *k);
+ if ((mode & WRITE_SPECIAL_BITS) == 0)
+  return(write_mode_set(t, mode & WRITE_NINE_BITS));
+ err = write_mode_set(t, mode & WRITE_TWELVE_BITS);
+ if (err == 0)
+  k->changed = 1;
+ else if (write_mode_refusal(err))
+  err = write_mode_apart(t, mode, k);
+ if (err != 0)
+  return(err);
+ return(write_mode_read_back(t, mode, k));
+}
+
+/**
+ * wpe_write_set_mode_fd - Give an open file or folder its mode and say which
+ * special bits it could not keep.
+ * @fd: the file; @mode: the twelve bits; @k: receives what was not kept.
+ * Return: 0, or the errno when even the nine bits were refused.
+ *
+ * For the folder a copy made, the wastebasket and the saved text: the user
+ * gets every bit the system takes, and the caller can name the one it did
+ * not, instead of the whole operation failing on it.
+ */
+int wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k)
+{
+ WriteModeTarget t;
+
+ t.fd = fd;
+ t.path = NULL;
+ return(write_mode_apply(&t, mode, k));
+}
+
+/**
+ * wpe_write_set_mode_path - The same by name, for the Attributes dialog.
+ * @path: the file or folder; @mode: the twelve bits; @k: receives what was
+ * not kept.
+ * Return: 0, or the errno when even the nine bits were refused.
+ *
+ * A file the user cannot open (write only, a folder) still gets its
+ * permissions changed, and the special bits it had are kept when the
+ * system allows it and named when it does not.
+ */
+int wpe_write_set_mode_path(const char *path, mode_t mode, WpeModeKept *k)
+{
+ WriteModeTarget t;
+
+ t.fd = -1;
+ t.path = path;
+ return(write_mode_apply(&t, mode, k));
+}
+
+/**
+ * wpe_write_bits_words - Name special bits, for a sentence.
+ * @out, @n: receive the words; @bits: the special bits.
+ *
+ * "setgid bit", "setuid and setgid bits", "setuid, setgid and sticky bits".
+ */
+void wpe_write_bits_words(char *out, size_t n, mode_t bits)
+{
+ static const struct { mode_t bit; const char *name; } names[] = {
+  { S_ISUID, "setuid" }, { S_ISGID, "setgid" }, { S_ISVTX, "sticky" }
+ };
+ const char *found[3];
+ size_t i, count = 0;
+
+ for (i = 0; i < sizeof names / sizeof names[0]; i++)
+  if (bits & names[i].bit)
+   found[count++] = names[i].name;
+ if (count == 0)
+  snprintf(out, n, "special bits");
+ else if (count == 1)
+  snprintf(out, n, "%s bit", found[0]);
+ else if (count == 2)
+  snprintf(out, n, "%s and %s bits", found[0], found[1]);
+ else
+  snprintf(out, n, "%s, %s and %s bits", found[0], found[1], found[2]);
+}
+
+/**
+ * wpe_write_bits_reason - Why a special bit was not kept, in words.
+ * @out, @n: receive the words; @k: what the mode owner reported.
+ *
+ * The same words on every system: a setgid bit the user could not have kept
+ * because the file's group is not theirs says so (the BSDs refuse it with
+ * EPERM, Linux drops it in silence, and both mean this); else the system's
+ * own reason; else that the system cleared the bit.
+ */
+void wpe_write_bits_reason(char *out, size_t n, const WpeModeKept *k)
+{
+ if ((k->lost & S_ISGID) && !k->in_group)
+  snprintf(out, n, "this user is not in group %lu", (unsigned long)k->gid);
+ else if (k->err != 0)
+  snprintf(out, n, "%s", strerror(k->err));
+ else
+  snprintf(out, n, "the system cleared it");
+}
+
 /**
  * wpe_write_create_private - Create a new file in a folder, private to the user.
  * @dirfd: the folder's descriptor, or AT_FDCWD; @name: the new file's name in it;
@@ -162,7 +436,8 @@ int wpe_write_copy_fd(int from, int to, int *read_failed)
 int wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
 {
  struct stat st;
- int made;
+ WriteModeTarget target;
+ int made, err;
 
  made = openat(dirfd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
                WPE_WRITE_COPY_MODE);
@@ -174,10 +449,11 @@ int wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
   unlinkat(dirfd, name, 0);
   return(EEXIST);
  }
- if (fchmod(made, mode & 0777) != 0)
+ target.fd = made;
+ target.path = NULL;
+ err = write_mode_set(&target, mode & WRITE_NINE_BITS);
+ if (err != 0)
  {
-  int err = errno;
-
   close(made);
   unlinkat(dirfd, name, 0);
   return(err);
@@ -189,20 +465,24 @@ int wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
 /**
  * wpe_write_set_special_bits - Put the setuid, setgid and sticky bits on a
  * finished copy.
- * @fd: the copy, whole and not yet closed; @mode: the original's mode.
- * Return: 0, or the errno.
+ * @fd: the copy, whole and not yet closed; @mode: the original's mode;
+ * @k: receives the special bits the system did not keep.
+ * Return: 0, or the errno of a real failure (a refused special bit is not
+ * one: it is in @k).
  *
  * Called after the last write: the kernel clears these bits when a file is
  * written, so setting them earlier would lose them.  A copy of a setgid
- * file is setgid, as 1.5.30a's chmod after the data made it.
+ * file is setgid when the system lets this user keep the bit, as 1.5.30a's
+ * chmod after the data made it; when it does not, the copy is made without
+ * it and the caller says which bit and why.  A mode with no special bit
+ * costs no call: the nine bits are already on.
  */
-int wpe_write_set_special_bits(int fd, mode_t mode)
+int wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k)
 {
- if ((mode & 07000) == 0)
+ memset(k, 0, sizeof *k);
+ if ((mode & WRITE_SPECIAL_BITS) == 0)
   return(0);
- if (fchmod(fd, mode & 07777) != 0)
-  return(errno);
- return(0);
+ return(wpe_write_set_mode_fd(fd, mode, k));
 }
 
 /* --- the backup copy ------------------------------------------------------ */
@@ -257,6 +537,7 @@ static BackupResult write_backup_open(const char *path, const char *bak, int *sr
                                       WpeWriteOutcome *o)
 {
  struct stat st;
+ WpeModeKept kept;
 
  *src = open(path, O_RDONLY | O_CLOEXEC);
  if (*src < 0)
@@ -288,7 +569,7 @@ static BackupResult write_backup_open(const char *path, const char *bak, int *sr
     writes it back through the file instead of renaming it into place. */
  if (fchown(*dst, (uid_t)-1, st.st_gid) != 0)
   errno = 0;
- fchmod(*dst, st.st_mode & 07777);
+ (void)wpe_write_set_mode_fd(*dst, st.st_mode & WRITE_TWELVE_BITS, &kept);
  return(BACKUP_MADE);
 }
 
@@ -533,6 +814,7 @@ static void write_run(FENSTER *f, const char *path, int xa, int ya, int xe, int 
  BackupResult bk = BACKUP_NONE;
  struct stat written;
  int have_written = 0, err, again;
+ WpeModeKept kept;
  FILE *fp;
 
  memset(o, 0, sizeof *o);
@@ -562,7 +844,7 @@ static void write_run(FENSTER *f, const char *path, int xa, int ya, int xe, int 
  }
  /* A mode that did not change is not a lost save: the text is written. */
  if (f->filemode >= 0)
-  fchmod(fileno(fp), f->filemode);
+  (void)wpe_write_set_mode_fd(fileno(fp), (mode_t)f->filemode & WRITE_TWELVE_BITS, &kept);
  /* The restore writes into this same file, never into whatever the name
     points at by then. */
  again = fcntl(fileno(fp), F_DUPFD_CLOEXEC, 0);

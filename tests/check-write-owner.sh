@@ -31,8 +31,8 @@
 #  1b. Symbols again: the File Manager's old copy, link, wastebasket and
 #     folder functions are defined nowhere (a T in nm), and the write
 #     owner's exports for a copy (wpe_write_create_private, _copy_fd,
-#     _set_special_bits, the SIGXFSZ guard) are undefined only in
-#     we_fileop.o.
+#     _set_special_bits, _set_mode_fd, _set_mode_path, the SIGXFSZ guard) are
+#     undefined only in we_fileop.o.
 #  8. A name of a file made, moved, linked or removed outside we_fileop.c
 #     and we_write.c: rename, renameat, link, linkat, symlink, symlinkat,
 #     unlink, unlinkat, remove, rmdir, mkdir, mkdirat, chmod, fchmod,
@@ -55,6 +55,11 @@
 #     definition is not a call.  A walk addresses every entry by a folder's
 #     descriptor and its name, so a link met on the way is never followed.
 #     The functions that may resolve a path are lines of the allow file.
+# 12. In we_write.c and we_fileop.c the permissions of a file are changed in
+#     one place: chmod, fchmod and fchmodat appear only inside write_mode_set
+#     (we_write.c), under every face of the mode owner (wpe_write_set_mode_fd,
+#     _path, _special_bits).  A call anywhere else is a site that meets a
+#     refused special bit on its own.  Strings and comments are blanked.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -241,6 +246,13 @@ scan() {
         if (ident != fn) note("r11", 1)
         t = substr(t, RSTART + RLENGTH)
       }
+      # rule 12 (we_write.c and we_fileop.c): the permissions of a file are
+      # changed in one place, write_mode_set
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])(chmod|fchmod|fchmodat)[ \t]*[(]/)) {
+        if (fn != "write_mode_set") note("r12", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
       # rule 9: the byte loop of a copy
       t = m
       while (match(t, /(^|[^A-Za-z0-9_])(fread|fwrite)[ \t]*[(]/)) { note("r9", 1); t = substr(t, RSTART + RLENGTH) }
@@ -389,13 +401,26 @@ int fake_entry(WalkLevel *ent)
  int rc = wpe_fileop_copy(ent->spath, ent->dpath, t->p, &e);
  return(rc + fileop_parent_open(a, &fd, n, 9));
 }
+
+int fake_mode(int fd)
+{
+ char *say = "fchmod( in a string";
+ /* fchmod(fd, 0600) in a comment */
+ return(fchmod(fd, 02755));
+}
+
+static int write_mode_set(const WriteModeTarget *t, mode_t mode)
+{
+ return(t->path != 0 ? chmod(t->path, mode) : fchmod(t->fd, mode));
+}
 EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
   for want in "r2 we_fake.c fake_open 2" "r4 we_fake.c fake_dropped 5" \
               "r5 we_fake.c fake_numbers 2" "r5 we_fake.c fake_message 1" \
               "r6 we_fake.c fake_message 2" "r8 we_fake.c fake_names 3" \
               "r9 we_fake.c fake_loop 2" "r10 we_fake.c fake_options 2" \
-              "r11 we_fake.c fake_walk 3" "r11 we_fake.c fake_entry 2"; do
+              "r11 we_fake.c fake_walk 3" "r11 we_fake.c fake_entry 2" \
+              "r12 we_fake.c fake_mode 1"; do
     grep -qx "$want" "$WORK/fake.found" || {
       echo "check-write-owner: FAIL (selftest: the scan does not name \"$want\"; it found:)"
       cat "$WORK/fake.found"
@@ -405,6 +430,12 @@ EOF
   # a function's own definition is not a call of it
   if grep -q "^r11 we_fake.c wpe_fileop_copy " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: a definition was counted as a path call; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  # write_mode_set is the one place a chmod may stand
+  if grep -q "^r12 we_fake.c write_mode_set " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: the chmod inside write_mode_set was counted; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
@@ -427,7 +458,8 @@ if command -v "$NMTOOL" >/dev/null 2>&1 && [ -n "$OBJECTS" ]; then
       {
         n = $0; sub(/@.*/, "", n)
         if (n == "wpe_write_create_private" || n == "wpe_write_copy_fd" ||
-            n == "wpe_write_set_special_bits" || n == "wpe_write_guard_enter" ||
+            n == "wpe_write_set_special_bits" || n == "wpe_write_set_mode_fd" ||
+            n == "wpe_write_set_mode_path" || n == "wpe_write_guard_enter" ||
             n == "wpe_write_guard_leave") print "r1", obj, n, 1
       }'
     [ "$base" = we_write.o ] ||
@@ -471,11 +503,11 @@ for f in "$SRCDIR"/we_*.c "$SRCDIR"/We*.c; do
   # makes and moves names and copies bytes, and the line endings owner
   # (we_lineend.c) walks rows, so each is exempt from the rule it is the owner of
   case ${f##*/} in
-    we_write.c) continue ;;
+    we_write.c) scan "$f" | awk '$1 == "r12"' >> "$WORK/srcfound"; continue ;;
     we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10"' >> "$WORK/srcfound"; continue ;;
-    we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11"' >> "$WORK/srcfound"; continue ;;
+    we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11" && $1 != "r12"' >> "$WORK/srcfound"; continue ;;
   esac
-  scan "$f" | awk '$1 != "r11"' >> "$WORK/srcfound"
+  scan "$f" | awk '$1 != "r11" && $1 != "r12"' >> "$WORK/srcfound"
 done
 {
   awk '{ print $2 "|" $1 ":" $3 "|" $4 }' "$WORK/srcfound"

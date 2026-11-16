@@ -2057,7 +2057,7 @@ int WpeMakeNewDir(FENSTER *f)
 int WpeFileDirAttributes(char *filen, FENSTER * f)
 {
   struct stat     buf[1];
-  int             mode, ret;
+  int             mode, ret, rc;
   W_OPTSTR       *o = e_init_opt_kst(f);
   WpeFileOpOutcome fo;
 
@@ -2099,12 +2099,10 @@ int WpeFileDirAttributes(char *filen, FENSTER * f)
       (o->sstr[4]->num << 4) + (o->sstr[5]->num << 3) +
       (o->sstr[6]->num << 2) + (o->sstr[7]->num << 1) +
       o->sstr[8]->num;
-    if(wpe_fileop_chmod(filen, (mode_t)mode, &fo) != 0)
-    {
-      fm_say(f, &fo);
-      freeostr(o);
-      return(1);
-    }
+    rc = wpe_fileop_chmod(filen, (mode_t)mode, &fo);
+    fm_say(f, &fo);
+    freeostr(o);
+    return(rc != 0 ? 1 : 0);
   }
   freeostr(o);
   return(0);
@@ -2817,7 +2815,9 @@ static void fm_policy(WpeFileOpPolicy *p, FENSTER *f, int opt)
  * A failure is a box with the paths, the step and the reason, and what is
  * left.  A "Don't overwrite" that left a file alone is one line on the
  * status row, so a copy that did nothing is not mistaken for a copy that
- * vanished.  Nothing while the editor is ending and saving its copies.
+ * vanished.  A sentence longer than the status row shows would lose its
+ * start there (the row keeps the end), so it is a box too, which wraps.
+ * Nothing while the editor is ending and saving its copies.
  */
 static void fm_say(FENSTER *f, const WpeFileOpOutcome *o)
 {
@@ -2827,7 +2827,7 @@ static void fm_say(FENSTER *f, const WpeFileOpOutcome *o)
     return;
   if(wpe_fileop_sentence(text, sizeof text, o) == 0)
     return;
-  if(o->status == WPE_FILEOP_FAILED)
+  if(o->status == WPE_FILEOP_FAILED || (int)strlen(text) > e_status_room())
     e_message(0, text, f);
   else
     e_status_say_until_key(f, text);

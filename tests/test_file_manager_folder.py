@@ -157,6 +157,62 @@ def test_a_folder_copy_is_whole_and_keeps_its_modes(tmp_path, hidden_and_odd):
         assert _read(os.path.join(wd, "sgcopy", ".hidden")) == "H\n"
 
 
+# @scenario SC-unsaved-text-35
+def test_a_bit_the_system_refuses_is_named_on_the_status_row(tmp_path):
+    """A setgid folder copied by a user the system does not let keep the bit
+    (a BSD, for a group the user is not in): the folder is copied whole
+    without the bit and the status row says which bit was not kept, instead
+    of the copy failing or the bit going in silence.  The test hook makes the
+    owner report the refusal over a real kernel, so the editor's sentence is
+    what is shown.  The X11 and Wayland twins are not needed: the sentence is
+    made by shared code and shown by the same status row on every backend."""
+    wd = str(tmp_path)
+    workdir_in_my_group(wd)
+    special_bits_settable(wd, stat.S_ISGID)
+    _seed(wd, DEFAULT, {"aaa.txt": "a\n"})
+    folder = os.path.join(wd, "sg")
+    os.makedirs(os.path.join(folder, "sub"))
+    _write(os.path.join(folder, "inner.c"), "C\n")
+    _write(os.path.join(folder, "sub", "deep.txt"), "D\n")
+    os.chmod(folder, 0o2755)
+    env = {"XWPE_TEST_FAIL": "fileop-refuse-special"}
+    with WpeSession(wd, "int main;\n", env_extra=env) as s:
+        _folder_op(s, ALT_O, "sg", "sgcopy")
+        _wait_for(lambda: os.path.exists(os.path.join(wd, "sgcopy", "sub", "deep.txt")), "the copy")
+        time.sleep(SETTLE_S)
+        screen = _squash(s)
+        # longer than the status row: a box, which shows the whole sentence
+        assert ("2entriescopied,butthesetgidbitwasnotkepton1entry(first:sgcopy):"
+                "Operationnotpermitted.") in screen, "\n".join(s.display())
+        assert "Cannot" not in screen, "\n".join(s.display())
+    assert _read(os.path.join(wd, "sgcopy", "inner.c")) == "C\n"
+
+
+# @scenario SC-unsaved-text-35
+def test_a_sentence_longer_than_the_status_row_keeps_its_start(tmp_path):
+    """The same copy into a folder with a long name: the sentence is longer
+    than the 80 columns of the status row, which would keep only its end and
+    lose the word Copied and the bit's name.  It is shown in a box, whole, so
+    the start is on the screen."""
+    wd = str(tmp_path)
+    workdir_in_my_group(wd)
+    special_bits_settable(wd, stat.S_ISGID)
+    _seed(wd, DEFAULT, {"aaa.txt": "a\n"})
+    folder = os.path.join(wd, "sg")
+    os.makedirs(folder)
+    _write(os.path.join(folder, "inner.c"), "C\n")
+    os.chmod(folder, 0o2755)
+    long_name = "a_destination_folder_with_a_rather_long_name_" + "x" * 30
+    env = {"XWPE_TEST_FAIL": "fileop-refuse-special"}
+    with WpeSession(wd, "int main;\n", env_extra=env) as s:
+        _folder_op(s, ALT_O, "sg", long_name)
+        _wait_for(lambda: os.path.exists(os.path.join(wd, long_name, "inner.c")), "the copy")
+        time.sleep(SETTLE_S)
+        screen = _squash(s)
+        assert "1entrycopied,butthesetgidbitwasnotkepton1entry(first:" in screen, "\n".join(s.display())
+        assert "Operationnotpermitted." in screen, "\n".join(s.display())
+
+
 # @scenario SC-unsaved-text-50
 def test_ctrl_c_stops_a_folder_copy_and_says_how_far_it_got(tmp_path):
     """Fifty files, and a Ctrl-C already waiting when the copy starts: the

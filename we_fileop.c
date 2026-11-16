@@ -15,6 +15,7 @@
    The bytes are the write owner's (we_write.c).  No drawing, no key reads:
    the questions go through the policy's callback. */
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -42,6 +43,10 @@
 #define FILEOP_HOOK_PLANT          "fileop-plant"
 #define FILEOP_HOOK_NO_RENAMEAT2   "fileop-no-renameat2"
 #define FILEOP_HOOK_NO_LINK        "fileop-no-link"
+#define FILEOP_HOOK_REFUSE_SPECIAL "fileop-refuse-special"
+
+/** The wastebasket is the user's alone. */
+#define FILEOP_WASTEBASKET_MODE 0700
 
 /** What the planting hook puts at the destination: a link to nowhere. */
 #define FILEOP_PLANTED_TARGET "planted-target"
@@ -100,6 +105,82 @@ static int fileop_not_a_file(WpeFileOpOutcome *o, const char *path)
 {
  snprintf(o->bad, sizeof o->bad, "%s", path);
  return(fileop_fail(o, WPE_FILEOP_STEP_NOT_A_FILE, 0));
+}
+
+/* --- the special bits a copy could not keep -------------------------------- */
+
+/**
+ * fileop_hook_refuse_special - Let a test see a system that refuses setgid.
+ * @k: what the mode owner reported; @wanted: the mode asked for; @err: the
+ * errno the refusal is told with.
+ *
+ * Read after the owner returned, so the editor shows its sentence over a
+ * real kernel: the status row of a copy under a BSD's refusal can be driven
+ * from a terminal test on a system that has none.
+ */
+static void fileop_hook_refuse_special(WpeModeKept *k, mode_t wanted, int err)
+{
+ if (!fileop_test_hook(FILEOP_HOOK_REFUSE_SPECIAL) || (wanted & S_ISGID) == 0)
+  return;
+ k->lost |= S_ISGID;
+ k->err = err;
+}
+
+/**
+ * fileop_note_bits_lost - Record that an entry did not keep a special bit.
+ * @n: the note of the outcome or the folder; @path: the entry; @k: what the
+ * mode owner said.
+ *
+ * Nothing when every bit stayed.  The first entry is named; the others are
+ * counted.
+ */
+static void fileop_note_bits_lost(WpeFileOpBitsNote *n, const char *path, const WpeModeKept *k)
+{
+ if (k->lost == 0)
+  return;
+ n->bits_lost_count++;
+ if (n->bits_lost_count > 1)
+  return;
+ n->bits_lost = k->lost;
+ n->bits_err = k->err;
+ n->bits_gid = k->gid;
+ n->bits_in_group = k->in_group;
+ snprintf(n->bits_path, sizeof n->bits_path, "%s", path);
+}
+
+/**
+ * fileop_note_bits_lost_first - Record an entry that did not keep a bit and
+ * name it first, before any entry already noted.
+ *
+ * The user's own copy is what the sentence names first; the wastebasket
+ * copy of the file it replaced, noted while the name was put in place, is
+ * counted after it.
+ */
+static void fileop_note_bits_lost_first(WpeFileOpBitsNote *n, const char *path, const WpeModeKept *k)
+{
+ long later = n->bits_lost_count;
+
+ if (k->lost == 0)
+  return;
+ n->bits_lost_count = 0;
+ fileop_note_bits_lost(n, path, k);
+ n->bits_lost_count += later;
+}
+
+/**
+ * fileop_note_merge - Add the note of one entry to the note of its folder.
+ * @to: the folder's; @from: the entry's.  The first entry named stays.
+ */
+static void fileop_note_merge(WpeFileOpBitsNote *to, const WpeFileOpBitsNote *from)
+{
+ if (from->bits_lost_count == 0)
+  return;
+ if (to->bits_lost_count == 0)
+ {
+  *to = *from;
+  return;
+ }
+ to->bits_lost_count += from->bits_lost_count;
 }
 
 /* --- names ---------------------------------------------------------------- */
@@ -237,6 +318,8 @@ typedef struct {
  struct stat             sst;                  /* the source */
  int                     dst_exists;
  int                     replace;              /* the existing destination is to be replaced */
+ WpeModeKept             kept;                 /* the special bits the new copy did not keep */
+ WpeModeKept             stash_kept;           /* the same for the copy of the replaced file in the wastebasket */
 } FileJob;
 
 /** fileop_job_begin - Start an operation: the outcome, the policy and the words. */
@@ -552,12 +635,16 @@ int wpe_fileop_wastebasket(char *out, size_t n, WpeFileOpOutcome *o)
   close(fd);
   return(fileop_fail(o, WPE_FILEOP_STEP_WASTEBASKET, EPERM));
  }
- if ((st.st_mode & 077) != 0 && fchmod(fd, 0700) != 0)
+ if ((st.st_mode & 077) != 0)
  {
-  int err = errno;
+  WpeModeKept kept;
+  int err = wpe_write_set_mode_fd(fd, FILEOP_WASTEBASKET_MODE, &kept);
 
-  close(fd);
-  return(fileop_fail(o, WPE_FILEOP_STEP_WASTEBASKET, err));
+  if (err != 0)
+  {
+   close(fd);
+   return(fileop_fail(o, WPE_FILEOP_STEP_WASTEBASKET, err));
+  }
  }
  close(fd);
  if (access(path, R_OK | W_OK | X_OK) != 0)
@@ -688,6 +775,7 @@ static int fileop_stash_copy(FileJob *j, WasteSlot *w)
  err = fileop_entry_copy(&c);
  if (err != 0)
   return(oc.err != 0 ? oc.err : EIO);
+ j->stash_kept = c.kept;
  return(0);
 }
 
@@ -722,6 +810,26 @@ static int fileop_job_stash(FileJob *j, char *aside, size_t n)
  }
  close(w.fd);
  return(err);
+}
+
+/**
+ * fileop_job_placed - Record that the name is in place.
+ * @aside: where the replaced file was kept; @stashed: it was.
+ *
+ * The outcome says where the old file is, and, when its copy in the
+ * wastebasket lost a special bit, which one: the user who looks for the
+ * old file there finds it without the bit and was told so.
+ */
+static void fileop_job_placed(FileJob *j, const char *aside, int stashed)
+{
+ WpeFileOpOutcome *o = j->o;
+
+ if (stashed)
+ {
+  snprintf(o->aside, sizeof o->aside, "%s", aside);
+  fileop_note_bits_lost(&o->note, aside, &j->stash_kept);
+ }
+ o->dst_kept = (j->replace ? 0 : 1);
 }
 
 /**
@@ -773,9 +881,7 @@ static int fileop_job_place(FileJob *j, int fromfd, const char *from, int is_tem
  }
  if (err == 0)
  {
-  if (stashed)
-   snprintf(o->aside, sizeof o->aside, "%s", aside);
-  o->dst_kept = (j->replace ? 0 : 1);
+  fileop_job_placed(j, aside, stashed);
   return(0);
  }
  if (stashed && unlink(aside) != 0)
@@ -875,13 +981,14 @@ static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
   wpe_write_guard_leave();
   return(fileop_fail(j->o, WPE_FILEOP_STEP_WRITE, err));
  }
- err = wpe_write_set_special_bits(fd, j->sst.st_mode);
+ err = wpe_write_set_special_bits(fd, j->sst.st_mode, &j->kept);
  if (err != 0)
  {
   close(fd);
   wpe_write_guard_leave();
   return(fileop_fail(j->o, WPE_FILEOP_STEP_MODE, err));
  }
+ fileop_hook_refuse_special(&j->kept, j->sst.st_mode, EPERM);
  err = (close(fd) == 0 ? 0 : errno);
  if (err == 0 && fileop_test_hook(FILEOP_HOOK_CLOSE))
   err = EIO;
@@ -908,7 +1015,10 @@ static int fileop_job_copy_in(FileJob *j, int sfd, int durable)
   return(-1);
  }
  rc = fileop_job_place(j, j->dirfd, tmp, 1);
- return(rc == 0 ? 0 : -1);
+ if (rc != 0)
+  return(-1);
+ fileop_note_bits_lost_first(&j->o->note, j->dst, &j->kept);
+ return(0);
 }
 
 /**
@@ -1192,6 +1302,7 @@ static int fileop_remove_into_wastebasket(const char *path, WpeFileOpOutcome *o)
  if (wpe_fileop_move(path, slot, &move, &inner) != 0)
   return(fileop_fail(o, WPE_FILEOP_STEP_WASTEBASKET, inner.err));
  o->src_kept = 0;
+ o->note = inner.note;
  return(0);
 }
 
@@ -1273,12 +1384,22 @@ int wpe_fileop_rmdir(const char *path, WpeFileOpOutcome *o)
 int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpOutcome *o)
 {
  struct stat st;
+ WpeModeKept kept;
+ int err;
 
  fileop_begin(o, WPE_FILEOP_CHMOD, path, "");
  if (stat(path, &st) != 0)
   return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, errno));
- if (chmod(path, (mode_t)((st.st_mode & 07000) | (perm & 0777))) != 0)
-  return(fileop_fail(o, WPE_FILEOP_STEP_MODE, errno));
+ err = wpe_write_set_mode_path(path, (mode_t)((st.st_mode & 07000) | (perm & 0777)), &kept);
+ if (err != 0)
+ {
+  /* a failure after a call that took the nine bits is not "nothing was changed" */
+  if (kept.changed)
+   o->src_kept = 0;
+  return(fileop_fail(o, WPE_FILEOP_STEP_MODE, err));
+ }
+ fileop_hook_refuse_special(&kept, st.st_mode, EPERM);
+ fileop_note_bits_lost(&o->note, path, &kept);
  return(0);
 }
 
@@ -1313,6 +1434,7 @@ typedef struct {
  WpeFileOpKind          kind;
  int                    counting;   /* the walk only counts, and changes nothing */
  long                   done, skipped, total;
+ WpeFileOpBitsNote      note;       /* the entries that did not keep a special bit */
 } FileTree;
 
 /** One folder, or one entry, of a walk: where it is and where it goes. */
@@ -1705,13 +1827,18 @@ static int fileop_root_dst_open(FileTree *t, WalkLevel *lv)
 static int fileop_folder_finish_dst(FileTree *t, const WalkLevel *lv, int quiet)
 {
  struct stat st;
+ WpeModeKept kept;
+ int err;
 
  if (!lv->made)
   return(0);
  if (fstat(lv->sfd, &st) != 0)
   return(quiet ? 0 : fileop_walk_fail(t, WPE_FILEOP_STEP_SOURCE, errno, lv));
- if (fchmod(lv->dfd, st.st_mode & 07777) != 0 && !quiet)
-  return(fileop_walk_fail(t, WPE_FILEOP_STEP_MODE, errno, lv));
+ err = wpe_write_set_mode_fd(lv->dfd, st.st_mode, &kept);
+ if (err != 0)
+  return(quiet ? 0 : fileop_walk_fail(t, WPE_FILEOP_STEP_MODE, err, lv));
+ fileop_hook_refuse_special(&kept, st.st_mode, EPERM);
+ fileop_note_bits_lost(&t->note, lv->dpath, &kept);
  return(0);
 }
 
@@ -1830,6 +1957,7 @@ static int fileop_walk_transfer(FileTree *t, const WalkLevel *ent, const struct 
  if (rc == 0)
  {
   t->done++;
+  fileop_note_merge(&t->note, &e.note);
   return(0);
  }
  if (e.status == WPE_FILEOP_DECLINED)
@@ -1841,6 +1969,7 @@ static int fileop_walk_transfer(FileTree *t, const WalkLevel *ent, const struct 
   return(fileop_tree_stop(t, ent->spath, ent->dpath));
  if (e.step == WPE_FILEOP_STEP_SOURCE)
   return(fileop_walk_source_failed(t, ent, st->st_mode, e.err));
+ fileop_note_merge(&t->note, &e.note);
  *t->o = e;
  return(-1);
 }
@@ -2089,6 +2218,7 @@ static int fileop_tree_conclude(FileTree *t, int rc, int kept)
  o->done = t->done;
  o->skipped = t->skipped;
  o->total = t->total;
+ o->note = t->note;
  if (rc != 0)
   return(-1);
  if (t->skipped > 0)
@@ -2382,7 +2512,140 @@ static void fileop_left(char *out, size_t n, const WpeFileOpOutcome *o)
   snprintf(out, n, "  Nothing was changed.");
 }
 
-int wpe_fileop_sentence(char *out, size_t n, const WpeFileOpOutcome *o)
+/** The room for the words about the bits: the entry's path, its name and the reason. */
+#define FILEOP_BITS_CLAUSE_MAX (WPE_PATH_SIZE + 512)
+
+/** fileop_entries_words - "1 entry" or "N entries". */
+static void fileop_entries_words(char *out, size_t n, long count)
+{
+ if (count == 1)
+  snprintf(out, n, "1 entry");
+ else
+  snprintf(out, n, "%ld entries", count);
+}
+
+/** fileop_bits_are - "was" for one bit that was not kept, "were" for several. */
+static const char *fileop_bits_are(mode_t lost)
+{
+ mode_t one_less = lost - 1;
+
+ return((lost & one_less) != 0 ? "were" : "was");
+}
+
+/**
+ * fileop_bits_entry_target - What the note names when it concerns one entry:
+ * its path; several entries: their count and the first.
+ */
+static void fileop_bits_entry_target(char *out, size_t n, const WpeFileOpBitsNote *b)
+{
+ char entries[48];
+
+ if (b->bits_lost_count == 1)
+ {
+  snprintf(out, n, "%s", b->bits_path);
+  return;
+ }
+ fileop_entries_words(entries, sizeof entries, b->bits_lost_count);
+ snprintf(out, n, "%s (first: %s)", entries, b->bits_path);
+}
+
+/** fileop_bits_count_target - "N entries (first: path)", also for one entry. */
+static void fileop_bits_count_target(char *out, size_t n, const WpeFileOpBitsNote *b)
+{
+ char entries[48];
+
+ fileop_entries_words(entries, sizeof entries, b->bits_lost_count);
+ snprintf(out, n, "%s (first: %s)", entries, b->bits_path);
+}
+
+/**
+ * fileop_bits_clause - "setgid bit was not kept on <target>: <reason>".
+ * @target: where, or "" for the permissions of one named file.
+ *
+ * The words are the write owner's, so the sentence of a copy and the one of
+ * a save say the same thing in the same way.
+ */
+static void fileop_bits_clause(char *out, size_t n, const WpeFileOpBitsNote *b, const char *target)
+{
+ WpeModeKept k;
+ char words[64], reason[192];
+
+ memset(&k, 0, sizeof k);
+ k.lost = b->bits_lost;
+ k.err = b->bits_err;
+ k.gid = b->bits_gid;
+ k.in_group = b->bits_in_group;
+ wpe_write_bits_words(words, sizeof words, b->bits_lost);
+ wpe_write_bits_reason(reason, sizeof reason, &k);
+ if (target[0] != '\0')
+  snprintf(out, n, "%s %s not kept on %s: %s", words, fileop_bits_are(b->bits_lost), target, reason);
+ else
+  snprintf(out, n, "%s %s not kept: %s", words, fileop_bits_are(b->bits_lost), reason);
+}
+
+/**
+ * fileop_sentence_done - What a finished operation says when the system did
+ * not let this user keep a special bit.
+ *
+ * "Copied, but the setgid bit was not kept on sg/a.c: Operation not
+ * permitted."  A copy that is complete and a bit that is missing must not be
+ * missing in silence.  Nothing when every bit stayed.
+ */
+static void fileop_sentence_done(char *out, size_t n, const WpeFileOpOutcome *o)
+{
+ const WpeFileOpBitsNote *b = &o->note;
+ char target[WPE_PATH_SIZE + 64], clause[FILEOP_BITS_CLAUSE_MAX], lead[48];
+
+ if (b->bits_lost_count == 0)
+  return;
+ if (o->kind == WPE_FILEOP_CHMOD)
+ {
+  fileop_bits_clause(clause, sizeof clause, b, "");
+  snprintf(out, n, "Permissions of %s changed, but the %s.", o->src, clause);
+  return;
+ }
+ if (o->total > 0)
+ {
+  fileop_bits_count_target(target, sizeof target, b);
+  fileop_bits_clause(clause, sizeof clause, b, target);
+  fileop_entries_words(lead, sizeof lead, o->done);
+  snprintf(out, n, "%s %s, but the %s.", lead, fileop_past(o->kind), clause);
+  return;
+ }
+ fileop_bits_entry_target(target, sizeof target, b);
+ fileop_bits_clause(clause, sizeof clause, b, target);
+ snprintf(lead, sizeof lead, "%s", fileop_past(o->kind));
+ lead[0] = (char)toupper((unsigned char)lead[0]);
+ snprintf(out, n, "%s, but the %s.", lead, clause);
+}
+
+/**
+ * fileop_note_append - Add the bits note to the sentence of an operation
+ * that did not finish whole.
+ *
+ * A folder that was stopped or failed after some of its entries lost a
+ * bit says so too: the entries that were made are on the disk.
+ */
+static void fileop_note_append(char *out, size_t n, const WpeFileOpOutcome *o)
+{
+ char target[WPE_PATH_SIZE + 64], clause[FILEOP_BITS_CLAUSE_MAX];
+ size_t used = strlen(out);
+
+ if (o->note.bits_lost_count == 0 || used + 2 >= n)
+  return;
+ fileop_bits_count_target(target, sizeof target, &o->note);
+ fileop_bits_clause(clause, sizeof clause, &o->note, target);
+ if (used > 0)
+  snprintf(out + used, n - used, " The %s.", clause);
+ else
+  snprintf(out, n, "The %s.", clause);
+}
+
+/**
+ * fileop_sentence_text - The sentence of a DECLINED or FAILED outcome, without
+ * the note of the special bits; empty for DONE, a question answered no and Esc.
+ */
+static int fileop_sentence_text(char *out, size_t n, const WpeFileOpOutcome *o)
 {
  char reason[2 * WPE_PATH_SIZE + 160], left[2 * WPE_PATH_SIZE + 64];
 
@@ -2410,5 +2673,15 @@ int wpe_fileop_sentence(char *out, size_t n, const WpeFileOpOutcome *o)
   snprintf(out, n, "Cannot %s %s to %s: %s.%s", fileop_verb(o->kind), o->src, o->dst, reason, left);
  else
   snprintf(out, n, "Cannot %s %s: %s.%s", fileop_verb(o->kind), o->src, reason, left);
+ return((int)strlen(out));
+}
+
+int wpe_fileop_sentence(char *out, size_t n, const WpeFileOpOutcome *o)
+{
+ (void)fileop_sentence_text(out, n, o);
+ if (o->status == WPE_FILEOP_DONE)
+  fileop_sentence_done(out, n, o);
+ else if (o->step != WPE_FILEOP_STEP_CANCELLED)
+  fileop_note_append(out, n, o);
  return((int)strlen(out));
 }

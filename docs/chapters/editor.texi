@@ -338,9 +338,9 @@ for opening, copying, moving, renaming, and deleting files.
 @item @kbd{Alt-M} @tab Move @tab Rename or move a file or folder; a link moves as a link.
 @item @kbd{Alt-R} @tab Remove @tab Delete a file or folder (to wastebasket or disk); a folder goes whole.
 @item @kbd{Alt-L} @tab Link @tab Create a hard or symbolic link; a folder becomes a folder of links.
-@item @kbd{Alt-O} @tab Copy @tab Copy a file or a folder, whole and with its permissions, links in it kept as links; a file copied onto the name of a folder goes inside the folder.  Ctrl-C stops a folder copy and says how far it got.
+@item @kbd{Alt-O} @tab Copy @tab Copy a file or a folder, whole and with its permissions, links in it kept as links; a file copied onto the name of a folder goes inside the folder.  Ctrl-C stops a folder copy and says how far it got.  A permission bit the system does not let you keep is left off the copy and named on the status row.
 @item @kbd{Alt-K} @tab Make Dir @tab Create a new directory.
-@item @kbd{Alt-A} @tab Attributes @tab Change file permissions.
+@item @kbd{Alt-A} @tab Attributes @tab Change file permissions; the setuid, setgid and sticky bits the dialog does not show are kept when the system allows it, and named on the status row when it does not.
 @item @kbd{Alt-S} @tab Save @tab Save with the name in the Name field.
 @item @key{ESC} @tab @tab Close the file manager.
 @end multitable

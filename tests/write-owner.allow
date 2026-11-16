@@ -125,7 +125,7 @@ we_fileop.c|r11:wpe_fileop_wastebasket_slot|1|keep|looks for a free name in the 
 we_fileop.c|r11:wpe_fileop_in_wastebasket|3|keep|the real paths of the wastebasket and the typed name, read only
 we_fileop.c|r11:wpe_fileop_mkdir|1|keep|the File Manager's dialog, on a name the user typed; a later pass may move it onto (parent, name)
 we_fileop.c|r11:wpe_fileop_rmdir|1|keep|the File Manager's dialog, on a name the user typed
-we_fileop.c|r11:wpe_fileop_chmod|2|keep|the File Manager's dialog, on a name the user typed
+we_fileop.c|r11:wpe_fileop_chmod|1|keep|the File Manager's dialog, on a name the user typed
 we_fileop.c|r11:wpe_fileop_rename_noreplace|2|keep|a folder's rename the File Manager asks for by two typed names
 
 # rule 9: a byte loop that is not a copy of the user's file (it reads, or

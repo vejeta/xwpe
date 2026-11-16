@@ -33,7 +33,9 @@
 
 #define FAKECHMOD_ENV "XWPE_TEST_FAKE_FCHMOD"
 
-typedef enum { FAKECHMOD_OFF, FAKECHMOD_REFUSE, FAKECHMOD_DROP } FakeChmodFace;
+/* FAKECHMOD_VANISH: a chmod by name succeeds, and the name is gone right
+   after, so the read-back of the mode that follows fails. */
+typedef enum { FAKECHMOD_OFF, FAKECHMOD_REFUSE, FAKECHMOD_DROP, FAKECHMOD_VANISH } FakeChmodFace;
 
 typedef int (*fakechmod_fchmod_fn)(int, mode_t);
 typedef int (*fakechmod_chmod_fn)(const char *, mode_t);
@@ -41,6 +43,38 @@ typedef int (*fakechmod_chmod_fn)(const char *, mode_t);
 static FakeChmodFace fakechmod_face = FAKECHMOD_OFF;
 static mode_t fakechmod_bits = 0;
 static int fakechmod_ready;
+static int fakechmod_errno = EPERM;     /* what the first refused call fails with */
+static int fakechmod_errno_after;       /* what every later refused call fails with, 0: the same */
+static int fakechmod_refusals;          /* refused calls since fakechmod_set */
+
+/**
+ * fakechmod_refuse - Make the calling chmod or fchmod fail as a refused one.
+ *
+ * The first refusal is EPERM (the BSDs' answer for a setgid bit of a group the
+ * user is not in); fakechmod_set_errors can give it another errno and the
+ * refusals after it a different one, for a row that needs a real failure
+ * after the nine bits were taken.
+ */
+static int fakechmod_refuse(void)
+{
+ int err = fakechmod_errno;
+
+ if (fakechmod_refusals++ > 0 && fakechmod_errno_after != 0)
+  err = fakechmod_errno_after;
+ errno = err;
+ return(-1);
+}
+
+/**
+ * fakechmod_set_errors - Choose the errno of the refused calls.
+ * @first: the first refused call's; @after: every later one's, or 0 for the
+ * same.  Call it after fakechmod_set, which puts EPERM back.
+ */
+static void fakechmod_set_errors(int first, int after)
+{
+ fakechmod_errno = first;
+ fakechmod_errno_after = after;
+}
 
 /**
  * fakechmod_set - Make this user unable to keep the given special bits.
@@ -53,6 +87,9 @@ static void fakechmod_set(FakeChmodFace face, mode_t bits)
  fakechmod_face = face;
  fakechmod_bits = bits;
  fakechmod_ready = 1;
+ fakechmod_errno = EPERM;
+ fakechmod_errno_after = 0;
+ fakechmod_refusals = 0;
 }
 
 /**
@@ -102,10 +139,7 @@ int fchmod(int fd, mode_t mode)
  if (real == NULL)
   *(void **)&real = fakechmod_next("fchmod");
  if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
- {
-  errno = EPERM;
-  return(-1);
- }
+  return(fakechmod_refuse());
  if (fakechmod_face == FAKECHMOD_DROP)
   mode &= ~fakechmod_bits;
  return(real(fd, mode));
@@ -119,12 +153,17 @@ int chmod(const char *path, mode_t mode)
  if (real == NULL)
   *(void **)&real = fakechmod_next("chmod");
  if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
- {
-  errno = EPERM;
-  return(-1);
- }
+  return(fakechmod_refuse());
  if (fakechmod_face == FAKECHMOD_DROP)
   mode &= ~fakechmod_bits;
+ if (fakechmod_face == FAKECHMOD_VANISH)
+ {
+  int rc = real(path, mode);
+
+  if (rc == 0)
+   (void)remove(path);
+  return(rc);
+ }
  return(real(path, mode));
 }
 

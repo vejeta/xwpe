@@ -464,7 +464,14 @@ Changes
   source before anything reached the disk.  A copy is made under a hidden
   name in the destination's folder and renamed into place, so it never
   writes through a link at the destination, is never readable by others
-  while a private file is being copied, and keeps setuid and setgid.
+  while a private file is being copied, and keeps setuid and setgid when
+  the system lets this user keep them.  A bit it does not let you keep (a
+  setgid file copied into a folder of a group you are not in) no longer
+  fails the copy on FreeBSD, OpenBSD, NetBSD and macOS or goes in silence on
+  Linux: the copy is made without it and the status row says which bit was
+  not kept and why ("Copied, but the setgid bit was not kept on sg/a.c:
+  Operation not permitted."); a folder copy says how many entries it
+  concerns.
 
 * "Don't overwrite" now leaves the existing file alone and says so on the
   status row; it used to overwrite it.  Replacing a file asks once, a name
@@ -474,7 +481,7 @@ Changes
   keeps `a.txt`, `a.txt.1`, ...) and is closed to others when it was open.
   A moved link keeps the target it had, a Link from the Files panel obeys
   the overwrite option, and the Attributes dialog keeps setuid, setgid
-  and the sticky bit.
+  and the sticky bit, and names the bit it could not keep.
 
 * An Esc at the overwrite question while copying a folder no longer turns
   off the Remove question for the rest of the session.

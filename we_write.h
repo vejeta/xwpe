@@ -78,12 +78,37 @@ int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_name);
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o);
 
+/* What a change of mode could not keep.  The editor gives a file every
+   permission bit the system takes and names the special bit (setuid, setgid,
+   sticky) it does not, instead of failing the copy or losing the bit in
+   silence.  A bit the system refuses and a bit it drops are told apart by
+   @err, and said alike. */
+typedef struct {
+ mode_t lost;       /* the special bits asked for and not on the file afterwards */
+ int    err;        /* errno of the call that refused them; 0 when a call returned 0
+                       and the bit was absent anyway */
+ gid_t  gid;        /* the file's group, read back */
+ int    in_group;   /* the caller is in that group */
+ int    changed;    /* a call succeeded: a failure after it is not "nothing was changed" */
+} WpeModeKept;
+
 /* The bytes of a copy, for the owner of names (we_fileop.c): the one byte
    loop, a private new file in a folder, the special bits put on after the
    data, and the file size limit as an error. */
 int  wpe_write_copy_fd(int from, int to, int *read_failed);
 int  wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd);
-int  wpe_write_set_special_bits(int fd, mode_t mode);
+/* The one place the editor changes a file's permissions.  Each returns 0 when
+   the nine bits are on, whatever happened to the special bits (@k says), and
+   the errno of a real failure otherwise.  set_special_bits is the copy's:
+   no call at all when the mode has no special bit.  set_mode_fd is for an
+   open file or folder, set_mode_path for a name (the Attributes dialog). */
+int  wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k);
+int  wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k);
+int  wpe_write_set_mode_path(const char *path, mode_t mode, WpeModeKept *k);
+int  wpe_write_caller_in_group(gid_t gid);
+/* "setgid bit", "setuid and setgid bits"; and why they were not kept. */
+void wpe_write_bits_words(char *out, size_t n, mode_t bits);
+void wpe_write_bits_reason(char *out, size_t n, const WpeModeKept *k);
 void wpe_write_guard_enter(void);
 void wpe_write_guard_leave(void);
 

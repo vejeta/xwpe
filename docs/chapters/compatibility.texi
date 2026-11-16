@@ -1075,8 +1075,20 @@ than the one named.
 The original's copy had the permissions of the umask until the copy was
 done.  xwpe's copy has the source's permissions before it holds a byte,
 and the setuid and setgid bits are put on after the data, so that they
-stay.  The reason: the contents of a private file must never be readable
+stay (when the system lets this user keep them: see the next item).  The reason: the contents of a private file must never be readable
 by others, not even for a moment.
+
+@item A special bit the system refuses
+The original wrote the copy through @code{fopen}, so it had the umask's
+permissions, and then asked for the source's whole mode in one @code{chmod}.
+On the BSDs and macOS, when the source was setgid and the user not in its
+group, that call was refused whole: the copy kept the umask's permissions
+and a box said @samp{Cannot change permissions}.  On Linux the call
+succeeded and the setgid bit was dropped in silence.  xwpe gives the copy
+every bit the system takes and says which bit was not kept and why, in the
+same words on every system.  The reason: a bit the user could not have kept
+must not cost the copy, and a bit that is missing must not be missing in
+silence.
 
 @item A moved link
 The original rewrote a link's relative target as a path under the panel's
@@ -1127,11 +1139,13 @@ hides included.  The reason: a folder is one thing, and what the user sees
 in a panel is not what is in it.
 
 @item The permissions of a folder
-The original made the destination folder with the umask applied, which
-cleared the setgid bit.  xwpe gives a folder it made the permissions of the
+The original made the destination folder with @code{mkdir} and the source's
+mode; no system takes a setgid bit from that call (the folder gets its
+parent's, or none).  xwpe gives a folder it made the permissions of the
 source folder, setgid included, once the folder is filled (a read only
-folder can be filled first).  A destination folder that was already there
-keeps the permissions it had.  The reason: the same as for a file.
+folder can be filled first), and a bit its folder cannot keep is said.  A
+destination folder that was already there keeps the permissions it had.  The
+reason: the same as for a file.
 
 @item A link inside a folder is a name
 The original copied the file a link pointed to and entered a link to a
@@ -1202,6 +1216,8 @@ reason: the data would be lost.
 @item Attributes
 The original rebuilt the permissions from the nine switches of the dialog,
 so changing one cleared setuid, setgid and the sticky bit.  xwpe keeps the
-bits the dialog does not show.  The reason: changing who may read a
-file must not change who it runs as.
+bits the dialog does not show, and when the system does not let this user
+keep one of them, the nine bits are applied and the status row names the
+bit.  The reason: changing who may read a file must not change who it runs
+as, and a bit that is lost must not be lost in silence.
 @end table

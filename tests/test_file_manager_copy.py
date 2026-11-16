@@ -695,6 +695,37 @@ def test_attributes_keep_the_bits_the_dialog_does_not_show(tmp_path):
 
 
 # @scenario SC-unsaved-text-45
+def test_attributes_name_the_special_bit_the_system_would_not_keep(tmp_path):
+    """The Attributes dialog applies the nine bits it shows and, when the
+    system does not let this user keep the setgid bit the folder had, says
+    so on the status row instead of refusing the change or saying nothing.
+    The test hook makes the owner report the refusal over a real kernel.  The
+    X11 and Wayland twins are not needed: the sentence is made by shared code
+    and shown by the same status row on every backend."""
+    wd = str(tmp_path)
+    workdir_in_my_group(wd)
+    special_bits_settable(wd, stat.S_ISGID)
+    _seed(wd, DEFAULT, {"aaa.txt": "a\n"})
+    folder = os.path.join(wd, "sg")
+    os.makedirs(folder)
+    os.chmod(folder, 0o2755)
+    env = {"XWPE_TEST_FAIL": "fileop-refuse-special"}
+    with WpeSession(wd, "int main;\n", env_extra=env) as s:
+        _open_tree_panel(s)
+        _typed(s, "sg")
+        s.key(ALT_A)
+        s.key("\033d")      # Other: ReaD off
+        s.key("\033u")      # Other: ExecUte off
+        s.key(ALT_O)
+        time.sleep(0.8)
+        screen = _squash(s)
+        # longer than the status row: a box, which shows the whole sentence
+        assert ("Permissionsofsgchanged,butthesetgidbitwasnotkept:"
+                "Operationnotpermitted.") in screen, "\n".join(s.display())
+    assert stat.S_IMODE(os.stat(folder).st_mode) & 0o777 == 0o750
+
+
+# @scenario SC-unsaved-text-45
 def test_attributes_of_a_plain_file_change_its_permissions(tmp_path):
     wd = str(tmp_path)
     _seed(wd, DEFAULT, {"aaa.txt": "a\n"})
