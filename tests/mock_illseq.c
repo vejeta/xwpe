@@ -10,7 +10,14 @@
  * NUL-terminated string when the call has no range.  What counts as valid is
  * as strict as the BSD decoders: no overlong form, no surrogate, nothing
  * above U+10FFFF.  Under the C ctype everything goes to glibc, as a byte
- * engine would.  See mock_illseq.h. */
+ * engine would.
+ *
+ * The mock is a gate in front of the host's own engine, not an engine.  It
+ * refuses only where that engine reads UTF-8 characters
+ * (WPE_HAS_REGEX_MULTIBYTE, measured by configure).  On a host whose engine
+ * reads bytes (OpenBSD) the owner hands the row as it is, so refusing it
+ * would fail the owner for doing what it is meant to; there the mock
+ * forwards, as it does under the C ctype.  See mock_illseq.h. */
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -26,6 +33,16 @@
 #endif
 
 int mock_illseq_refusals;
+
+/* config.h is force-included into every source of the build and holds the
+   fact; a build without it fails to compile the function below. */
+/** engine_refuses_bad_utf8 - Does the engine under this call read UTF-8
+ * characters, so that a byte which is not UTF-8 is its to refuse?  False for a
+ * byte engine, and under the C ctype. */
+static int engine_refuses_bad_utf8(void)
+{
+ return(WPE_HAS_REGEX_MULTIBYTE && MB_CUR_MAX > 1);
+}
 
 /* The second byte of a sequence is limited by its lead byte: E0 takes A0 to
    BF (80 to 9F is an overlong form), ED takes 80 to 9F (A0 to BF is a
@@ -88,7 +105,7 @@ static int refuse(void)
 
 int mock_regcomp(regex_t *re, const char *pattern, int cflags)
 {
- if (MB_CUR_MAX > 1 && !utf8_valid((const unsigned char *)pattern, strlen(pattern)))
+ if (engine_refuses_bad_utf8() && !utf8_valid((const unsigned char *)pattern, strlen(pattern)))
   return(refuse());
  return(regcomp(re, pattern, cflags));
 }
@@ -105,7 +122,7 @@ static size_t readable_bytes(const char *text, size_t nmatch, const regmatch_t p
 int mock_regexec(const regex_t *re, const char *text, size_t nmatch,
                  regmatch_t pmatch[], int eflags)
 {
- if (MB_CUR_MAX > 1 &&
+ if (engine_refuses_bad_utf8() &&
      !utf8_valid((const unsigned char *)text, readable_bytes(text, nmatch, pmatch, eflags)))
   return(refuse());
  return(regexec(re, text, nmatch, pmatch, eflags));
