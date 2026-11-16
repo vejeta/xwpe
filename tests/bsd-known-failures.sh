@@ -67,7 +67,6 @@ known_failures() {
     freebsd)
       cat <<'EOF'
 test_childsafe|the folder is named on its terminal|the refusal written to the pty may be lost when the child exits at once (hypothesis, evidence pending)|BT13a
-tests/check-wayland-frame.sh|(exit status: 124)|runs past the 300 s deadline: the awk scan is quadratic in the file|BT10
 EOF
       ;;
     openbsd)
@@ -83,8 +82,6 @@ test_child|the user reads why|the rows after the late ends find the slots still 
 test_child|what it started was never signalled|the pid line came late|BT11
 test_child|test_child (the owner's start|the 30 s watchdog: a child's end never came|BT11
 test_childsafe|a refusal with a lock held by another thread: the child did not end within its bound|the child's end was not delivered within its bound (evidence pending, pass E)|BT12
-tests/check-chain-outcome.sh|(exit status: 124)|runs past the 300 s deadline, then its TERM trap removes its own work directory|BT9
-tests/check-wayland-frame.sh|(exit status: 124)|runs past the 300 s deadline: the awk scan is quadratic in the file|BT10
 EOF
       ;;
     netbsd)
