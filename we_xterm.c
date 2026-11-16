@@ -118,6 +118,12 @@ static void e_x_display_end(void)
 {
  if (!WpeXInfo.display)
   return;
+ /* Platform-forced divergence from the Wayland display's end: Xlib forbids
+    calling it from inside its I/O error handler, and XCloseDisplay on a
+    connection that broke is undefined, so a lost server's resources are left
+    to the process exit. */
+ if (WpeXInfo.lost)
+  return;
 
  if (WpeRender.cleanup)
   WpeRender.cleanup();
@@ -1923,8 +1929,14 @@ int e_x_getch()
  if (c > 0)
   return c;
 
- XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
-   &root_x, &root_y, &x, &y, &key_b);
+ /* A server that is gone sends no release: with the button reported held
+    every call here would return a click and the editor would spin without
+    reaching the wait that ends it.  A failed query holds no button either. */
+ key_b = 0;
+ if (WpeXInfo.lost
+   || !XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
+        &root_x, &root_y, &x, &y, &key_b))
+  key_b = 0;
  if (key_b & (Button1Mask | Button2Mask | Button3Mask))
  {
   e_mouse.x = x / WpeXInfo.font_width;
@@ -2435,8 +2447,11 @@ int fk_x_mouse(int *g)
  int root_x, root_y, x, y;
  unsigned int key_b;
 
- if (!XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
-   &root_x, &root_y, &x, &y, &key_b))
+ key_b = 0;
+ /* No release will come from a server that is gone: report no button. */
+ if (WpeXInfo.lost
+   || !XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
+        &root_x, &root_y, &x, &y, &key_b))
  {
   g[2] = e_mouse.x * 8;
   g[3] = e_mouse.y * 8;
@@ -2468,6 +2483,32 @@ int fk_x_grab_pointer(int on)
  return(0);
 }
 
+/**
+ * e_x_wait_for_event - Wait until an X event is queued, or the server is gone.
+ *
+ * Used by a drag, which blocks for the next pointer event.  XNextEvent would
+ * wait inside Xlib, and if the server dies there Xlib's handlers run and
+ * XNextEvent then crashes once they return.  So the wait is the editor's
+ * own, in the shared loop (which also serves the end request): flush, wait
+ * on the connection, and let XPending read it; the user whose server died
+ * mid-drag gets the emergency save instead of a crash.  Returns with
+ * WpeXInfo.lost set when the server is gone.
+ */
+static void e_x_wait_for_event(void)
+{
+ int watched;
+
+ watched = (e_fd_watch(ConnectionNumber(WpeXInfo.display), POLLIN, NULL, NULL,
+                       "the keyboard") == 0);
+ while (!WpeXInfo.lost && !XPending(WpeXInfo.display))
+ {
+  XFlush(WpeXInfo.display);
+  if (WpeXInfo.lost)
+   break;
+  e_fd_key_wait(watched);
+ }
+}
+
 /* X11 scrollbar-drag event step: 0 on release (done), -1 on an unrelated event,
    1 on motion with the pointer position (pixels) in *px/*py.  Queued motions are
    coalesced so the drag tracks the latest position, not every intermediate one. */
@@ -2475,6 +2516,12 @@ int fk_x_drag_next(int *px, int *py)
 {
  XEvent ev;
 
+ e_x_wait_for_event();
+ /* XNextEvent that reads from a connection that broke ends in a crash once
+    Xlib's exit handler has returned: the drag ends, and the next wait of
+    the editor serves the end request. */
+ if (WpeXInfo.lost)
+  return(0);
  XNextEvent(WpeXInfo.display, &ev);
  if (ev.type == ButtonRelease)
   return(0);

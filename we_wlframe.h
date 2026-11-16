@@ -68,7 +68,7 @@ void wpe_wlframe_set_cell(int cell_w, int cell_h);
 void wpe_wlframe_set_repaint(void (*repaint)(void));
 void wpe_wlframe_use_ops(const WpeWlFrameOps *ops);
 void wpe_wlframe_claim_proxy(void *proxy);
-void wpe_wlframe_read_events(void);
+int  wpe_wlframe_read_events(void);
 void wpe_wlframe_dispatch_frame_events(void);
 void wpe_wlframe_announce_floor(void);
 void wpe_wlframe_request_configure(void);
@@ -100,6 +100,10 @@ int  wpe_wlframe_width(void);
 int  wpe_wlframe_height(void);
 int  wpe_wlframe_withheld(void);
 WpeWlFrameState wpe_wlframe_state(void);
+
+/* Provided by the connection section of we_wayland.c: the only flush of the
+   connection (a broken one ends the editor through the lost-display way). */
+void wpe_wl_conn_flush(void);
 
 /* The pure fit rule: the buffer size for a configure.  Exposed so the unit
    test can walk its table. */

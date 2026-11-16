@@ -337,6 +337,17 @@ AS_IF([test "x$with_x" != xno], [
 AC_SUBST([X_CFLAGS])
 AC_SUBST([X_LIBS])
 
+# libX11 1.7 and later let a program give Xlib an exit handler that returns,
+# so the editor can save the user's windows before it ends when the X server
+# goes away.  Older libX11 and the libx11-compat shim may lack it: the I/O
+# error handler then saves and exits itself.
+AS_IF([test "x$have_x11" = xyes], [
+  xwpe_save_LIBS=$LIBS
+  LIBS="$X_LIBS $LIBS"
+  AC_CHECK_FUNCS([XSetIOErrorExitHandler])
+  LIBS=$xwpe_save_LIBS
+])
+
 AS_IF([test "x$have_x11" != xyes], [
   AC_DEFINE([NO_XWINDOWS], [1], [Define if X11 support is not available])
 ])

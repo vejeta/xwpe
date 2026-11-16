@@ -80,6 +80,14 @@ PID_FILE = os.environ.get("XWPE_STUB_PID_FILE", "")
 NOTED_SIGNALS = ("SIGBUS", "SIGSEGV", "SIGQUIT", "SIGABRT", "SIGILL",
                  "SIGFPE", "SIGTERM", "SIGHUP", "SIGUSR1", "SIGUSR2")
 SIGNAL_EXIT_BASE = 128
+# Seconds the debugger keeps answering "quit" with output lines, a few a
+# second, before it exits (0 exits at once).  A debugger that is slow to go
+# keeps the editor's end waiting for it while its output still arrives, so a
+# test sees what the editor does on the loop meanwhile.  Logged as
+# "QUIT FINISHED" when it ends by itself, which a debugger the editor's end
+# had to stop never logs.
+QUIT_NAP_S = float(os.environ.get("XWPE_STUB_QUIT_NAP_S", "0") or "0")
+QUIT_LINE_EVERY_S = 0.2
 # The line the running program is on when SIGINT interrupts it; 0 keeps the
 # line of the last stop.
 INTERRUPT_AT = int(os.environ.get("XWPE_STUB_INTERRUPT_AT", "0"))
@@ -358,6 +366,17 @@ def answer_sdb(cmd):
         sys.exit(0)
 
 
+def quit_slowly():
+    """Answer "quit" with output lines for QUIT_NAP_S seconds, then say so."""
+    if QUIT_NAP_S <= 0:
+        return
+    end = time.time() + QUIT_NAP_S
+    while time.time() < end:
+        line("still ending")
+        time.sleep(QUIT_LINE_EVERY_S)
+    note("QUIT FINISHED")
+
+
 def answer_dbx(cmd):
     if cmd.startswith("stop at ") or cmd.startswith("stop in "):
         num = arm(int(cmd.rsplit(":", 1)[1]))
@@ -399,6 +418,7 @@ def answer_dbx(cmd):
         line("%s = %d" % (expr, watch_value(expr)))
         return
     if cmd == "quit":
+        quit_slowly()
         sys.exit(0)
 
 

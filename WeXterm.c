@@ -1287,6 +1287,49 @@ void WpeXGCSetup()
  return ;
 }
 
+/**
+ * e_x_io_error - Xlib's handler for a connection to the X server that broke.
+ * @display: the display that broke (unused).
+ *
+ * The X server crashed, the session ended or the connection was cut: the
+ * window is gone.  The editor then saves the windows with unsaved changes to
+ * .ESV files and exits with code 1, as it does when its terminal is closed;
+ * Xlib's own handler would have exited at once and lost the text.  Xlib
+ * forbids any Xlib call from here, so the work is only asked for
+ * (e_display_lost) and done by the editor at its next wait, after Xlib's exit
+ * handler (e_x_io_exit) has returned.  Without that handler (libX11 before
+ * 1.7) this handler may not return, so the end is run here, the platform's
+ * forced divergence.
+ * Return: 0 (Xlib then calls the exit handler).
+ */
+static int e_x_io_error(Display *display)
+{
+ (void)display;
+ WpeXInfo.lost = 1;
+ e_display_lost("the X server", "connection broken");
+#ifndef HAVE_XSETIOERROREXITHANDLER
+ e_display_lost_exit();
+#endif
+ return 0;
+}
+
+#ifdef HAVE_XSETIOERROREXITHANDLER
+/**
+ * e_x_io_exit - Xlib's exit handler after a broken connection: let it return.
+ * @display: the display that broke (unused).
+ * @user_data: unused.
+ *
+ * Returning leaves the process running, so the editor can save the user's
+ * work on its own thread before it exits; Xlib calls here once, and every
+ * later Xlib call on the broken display does nothing.
+ */
+static void e_x_io_exit(Display *display, void *user_data)
+{
+ (void)display;
+ (void)user_data;
+}
+#endif
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeXInit - Initializes the X display.
 
@@ -1348,6 +1391,10 @@ void WpeXInit(int *argc, char **argv)
     XDisplayName(display_name));
   exit(-1);
  }
+ XSetIOErrorHandler(e_x_io_error);
+#ifdef HAVE_XSETIOERROREXITHANDLER
+ XSetIOErrorExitHandler(WpeXInfo.display, e_x_io_exit, NULL);
+#endif
  WpeXInfo.screen = DefaultScreen(WpeXInfo.display);
  XrmCombineDatabase(WpeXDefaults(), &xres, False);
  WpeXFontGet(xres, name_list, class_list);

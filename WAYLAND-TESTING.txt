@@ -40,6 +40,15 @@ per configure, apply, ack and commit, for chasing a window of the wrong size;
 tests/test_wlframe.c (make check) runs the same state machine with no
 compositor.
 
+The lost display has its own rows (tests/wayland/test_display_lost.py, and
+tests/x11/test_display_lost.py for the X server): each starts an X server (and
+a weston) of its own, types text, ends the compositor through the owner, and
+asserts that the editor exits with code 1 within a scaled deadline, prints
+"xwpe: connection to the Wayland compositor lost", and leaves the text in
+t.c.ESV.  A second row does the same at a stop under the stand-in dbx, which
+must be told to quit and go.  The rows declare the loss and the exit
+(expect_display_loss, expect_exit(code=1)).
+
 Run it:
 
     tests/run-tests.sh --wayland
@@ -92,6 +101,20 @@ things the emulated pipeline does not cover:
   [ ] Resize the window while File > Shell runs a command: the frame stays as
       it was and the compositor does not disconnect the editor; it refits when
       the command ends.
+  [ ] End the compositor from a TTY (kill its PID) while xwpe holds unsaved
+      text: in the terminal xwpe was started from, one line says the
+      connection to the compositor was lost and the .ESV file is named;
+      "xwpe -r" brings the text back.  A protocol error shows its interface
+      and code in that line.
+  [ ] The X11 fallback of the lost-display end (libX11 before 1.7, no exit
+      handler) is checked by hand: no committed row can force it, and none
+      can tell whether its last step (ending the children of an end already
+      running, wpe_child_end_from_handler in e_display_lost_exit) ran, because
+      the end ends them as well.  Copy the tree, run configure, change the line
+      "#define HAVE_XSETIOERROREXITHANDLER 1" of config.h to a comment, make,
+      and run tests/x11/test_display_lost.py with XWPE_BIN pointing at that
+      build: every row must pass.  Then, under a debugger stop, send SIGTERM to
+      xwpe and end the X server at once: the debugged program must be gone.
   [ ] Clipboard interoperates with other Wayland apps in both directions:
       copy in xwpe -> paste in a browser/terminal, and back.  Both CLIPBOARD
       (Ctrl-C/V) and PRIMARY (middle-click) selections.

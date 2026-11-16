@@ -11,9 +11,7 @@
 #
 #   check-wayland-frame.sh [--allow FILE] [--srcdir DIR] [--selftest]
 #
-# Rules (numbers 4 and 5 are left free for the compositor connection's one
-# dispatch function and the lost-display handlers, which this script will
-# check once they exist):
+# Rules:
 #  1. These identifiers occur only in we_wlframe.c: wl_surface_attach,
 #     wl_surface_damage, wl_surface_damage_buffer, wl_surface_commit,
 #     xdg_surface_ack_configure, xdg_surface_set_window_geometry and the
@@ -31,6 +29,16 @@
 #     assigned, changed (++, --, op=) or had their address taken;
 #     wl_shm_create_pool, wl_shm_pool_create_buffer and wl_buffer_destroy;
 #     and a pointer to WpeWlInfo (an alias that would write them).
+#  4. The compositor connection has one owner: wl_display_dispatch,
+#     wl_display_dispatch_pending, wl_display_roundtrip and wl_display_flush
+#     occur only inside wl_conn_dispatch, wl_conn_roundtrip, wl_conn_flush and
+#     wpe_wl_conn_flush of we_wayland.c, so a broken connection is noticed in
+#     one place and every other function is inert after it.
+#  5. The lost display has one owner: XSetIOErrorHandler occurs once, in
+#     WpeXInit of WeXterm.c, and e_display_lost is defined once (we_unix.c),
+#     declared once (edit.h) and called from exactly two functions
+#     (wl_conn_lost, e_x_io_error).  The counted places are lines of the
+#     allow file, so a third caller, or a second handler, is named.
 #  6. The listeners xdg_surface_configure and xdg_toplevel_configure call
 #     nothing but wpe_wlframe_note_configure and wpe_wlframe_note_toplevel.
 #  7. Token pasting that builds a wl_ or xdg_ name (a macro that would hide a
@@ -149,7 +157,14 @@ scan() {
       if (j < 1 || substr(all, j, 1) != "&") return 0
       return substr(all, j - 1, 1) != "&"
     }
+    function conn_function(at,   k) {
+      k = funcat(at)
+      if (k <= 0) return 0
+      return (base == "we_wayland.c" && (fn[k] in conn_ok))
+    }
     function check(id, at, after) {
+      if (id in r4 && !conn_function(at)) report(at, "r4", id)
+      if (id in r5) report(at, "r5", id)
       if (!owner && banned1(id)) report(at, "r1", id)
       if (id ~ /^wl_proxy_marshal/) report(at, "r2", id)
       if (!owner && banned3(id)) report(at, "r3", id)
@@ -215,12 +230,20 @@ scan() {
       for (k in l1) r1[l1[k]] = 1
       split("wl_shm_create_pool wl_shm_pool_create_buffer wl_buffer_destroy", l3, " ")
       for (k in l3) r3[l3[k]] = 1
+      split("wl_display_dispatch wl_display_dispatch_pending wl_display_roundtrip wl_display_flush", l4, " ")
+      for (k in l4) r4[l4[k]] = 1
+      split("wl_conn_dispatch wl_conn_roundtrip wl_conn_flush wpe_wl_conn_flush", l4f, " ")
+      for (k in l4f) conn_ok[l4f[k]] = 1
+      split("XSetIOErrorHandler e_display_lost", l5, " ")
+      for (k in l5) r5[l5[k]] = 1
       fields = "(width|height|pixels|buffer|stride|shm_fd|shm_size)"
       field_any = "^[ \t]*\\.[ \t]*" fields "([^A-Za-z0-9_]|$)"
       field_write = "^[ \t]*\\.[ \t]*" fields "[ \t]*(=([^=]|$)|\\+\\+|--|[-+*/|&^]=|<<=|>>=)"
       alt = ""
       for (k in l1) alt = alt l1[k] "|"
       for (k in l3) alt = alt l3[k] "|"
+      for (k in l4) alt = alt l4[k] "|"
+      for (k in l5) alt = alt l5[k] "|"
       idre = "(^|[^A-Za-z0-9_])(" alt "wl_proxy_marshal[A-Za-z0-9_]*|WpeWlInfo|WpeWl)([^A-Za-z0-9_]|$)"
     }
     FNR == 1 {
@@ -249,6 +272,8 @@ scan() {
         if (!match(rest, /[A-Za-z_][A-Za-z0-9_]*/)) break
         id = substr(rest, RSTART, RLENGTH)
         pos = pos + RSTART - 1 + RLENGTH
+        if (id in r4) say_macro(line, "r4", id)
+        if (id in r5) say_macro(line, "r5", id)
         if (!owner && banned1(id)) say_macro(line, "r1", id)
         if (id ~ /^wl_proxy_marshal/) say_macro(line, "r2", id)
         if (!owner && banned3(id)) say_macro(line, "r3", id)
@@ -264,6 +289,11 @@ scan() {
 judge() {
   printf '%s\n' "$2" | awk -v allow="$1" '
     function base(s) { sub(/:[0-9]+: .*$/, "", s); sub(/^.*\//, "", s); return s }
+    function explain(s) {
+      if (s ~ / r4 /) return "libwayland connection I/O outside the wl_conn functions"
+      if (s ~ / r5 /) return "lost-display handler or caller not on the allow file"
+      return "outside the frame owner"
+    }
     function rulefunc(s,   t) { t = s; sub(/^[^ ]*: /, "", t); split(t, p, " "); return p[1] ":" p[2] }
     BEGIN {
       while ((getline line < allow) > 0) {
@@ -279,7 +309,7 @@ judge() {
     {
       key = base($0) "|" rulefunc($0)
       seen[key]++
-      if (!(key in al)) print "outside the frame owner: " $0
+      if (!(key in al)) print explain($0) ": " $0
     }
     END {
       for (k in seen) if (k in al) {
@@ -346,10 +376,30 @@ static void xdg_toplevel_configure(void *d, void *t, int w, int h, void *st) { w
 canary r6-other we_wayland.c 'static void xdg_surface_configure(void *d, struct xdg_surface *x, unsigned s) { wpe_wlframe_note_configure(s); }
 static void xdg_toplevel_configure(void *d, void *t, int w, int h, void *st) { helper(w, h); wpe_wlframe_note_toplevel(w, h, st); }' ' r6 xdg_toplevel_configure helper' || blind=1
 canary r6-blind we_wayland.c 'static void other(void) { }' ' r6 - listener-xdg_surface_configure-not-found' || blind=1
+# rule 4: a call outside the connection functions, on one line and split, in
+# another function of we_wayland.c, and in any other file
+canary r4-flush we_wayland.c 'static void other(void) { wl_display_flush(d); }' ' r4 other wl_display_flush' || blind=1
+canary r4-split we_wayland.c 'static void other(void) { wl_display_roundtrip
+   (d); }' ' r4 other wl_display_roundtrip' || blind=1
+canary r4-dispatch c.c 'void f(void) { wl_display_dispatch(d); wl_display_dispatch_pending(d); }' ' r4 f wl_display_dispatch_pending' || blind=1
+canary r4-pointer we_wayland.c 'static int (*g)(struct wl_display *) = wl_display_flush; static void wl_conn_flush(void) { }' ' r4 - wl_display_flush' || blind=1
+canary r4-other-file we_wlframe.c 'void wl_conn_flush(void) { wl_display_flush(d); }' ' r4 wl_conn_flush wl_display_flush' || blind=1
+# rule 5: every use is named, the allow file counts the meant ones
+canary r5-handler c.c 'void f(void) { XSetIOErrorHandler(h); }' ' r5 f XSetIOErrorHandler' || blind=1
+canary r5-split c.c 'void f(void) { XSetIOErrorHandler
+   (h); }' ' r5 f XSetIOErrorHandler' || blind=1
+canary r5-lost c.c 'void f(void) { e_display_lost("x", "y"); }' ' r5 f e_display_lost' || blind=1
 # rule 7
 canary r7-paste c.c '#define COMMIT(x) wl_surface_##x(s)
 void f(void) { }' ' r7 \(macro\) ##' || blind=1
 # clean uses: nothing named
+canary clean-conn we_wayland.c 'static void wl_conn_flush(void) { wl_display_flush(d); }
+static void wl_conn_roundtrip(void) { wl_display_roundtrip(d); }
+static void wl_conn_dispatch(int b) { wl_display_dispatch_pending(d); wl_display_dispatch(d); }
+static void xdg_surface_configure(void *d, struct xdg_surface *x, unsigned s) { wpe_wlframe_note_configure(s); }
+static void xdg_toplevel_configure(void *d, void *t, int w, int h, struct wl_array *st) { wpe_wlframe_note_toplevel(w, h, st); }' none || blind=1
+got=$(planted clean-conn-name c.c 'void f(void) { wl_display_get_fd(d); wl_display_disconnect(d); e_display_lost_exit(); XSetIOErrorExitHandler(d, h, 0); }')
+[ -z "$got" ] || { echo "canary clean-conn-name: a neighbouring name was taken for a connection call or a handler: $got"; blind=1; }
 canary clean-listener we_wayland.c 'static void xdg_surface_configure(void *d, struct xdg_surface *x, unsigned s) { (void)d; (void)x; wpe_wlframe_note_configure(s); }
 static void xdg_toplevel_configure(void *d, void *t, int w, int h, struct wl_array *st) { (void)d; (void)t; wpe_wlframe_note_toplevel(w, h, st); }' none || blind=1
 canary clean-owner we_wlframe.c 'void f(void) { wl_surface_attach(s, b, 0, 0); wl_surface_damage_buffer(s, 0, 0, 1, 1); wl_surface_commit(s); xdg_surface_ack_configure(x, 1); WpeWl.width = 3; WpeWl.pixels = p; wl_proxy_set_queue(p, q); }' none || blind=1
@@ -379,6 +429,14 @@ only_r1=$(printf '%s\n' "$found" | grep ' r1 ')
 [ -n "$(judge "$WORK/allow4" "$only_r1")" ] || { echo "canary allow: a count above the identifiers was not named"; blind=1; }
 [ -n "$(judge "$WORK/allowx" "$only_r1")" ] || { echo "canary allow: an identifier in another file was not named"; blind=1; }
 [ -n "$(judge "$WORK/allow3" "")" ] || { echo "canary allow: a stale line was not named"; blind=1; }
+# rule 5's counted places: one handler install is meant, a second is named
+printf '%s\n' 'WeXterm.c|r5:WpeXInit|1|keep|planted' > "$WORK/allow5"
+printf '%s\n' 'WeXterm.c:10: r5 WpeXInit XSetIOErrorHandler' > "$WORK/one5"
+printf '%s\n' 'WeXterm.c:10: r5 WpeXInit XSetIOErrorHandler' 'WeXterm.c:20: r5 WpeXInit XSetIOErrorHandler' > "$WORK/two5"
+printf '%s\n' 'other.c:10: r5 other XSetIOErrorHandler' > "$WORK/else5"
+[ -z "$(judge "$WORK/allow5" "$(cat "$WORK/one5")")" ] || { echo "canary rule 5: the meant handler was named"; blind=1; }
+[ -n "$(judge "$WORK/allow5" "$(cat "$WORK/two5")")" ] || { echo "canary rule 5: a second handler was not named"; blind=1; }
+[ -n "$(judge "$WORK/allow5" "$(cat "$WORK/else5")")" ] || { echo "canary rule 5: a handler in another function was not named"; blind=1; }
 if [ $blind -ne 0 ]; then
   echo "check-wayland-frame: the scanner is blind"
   exit $BAD
@@ -397,7 +455,7 @@ fi
 found=$(scan $files)
 left=$(judge "$ALLOW" "$found")
 if [ -n "$left" ]; then
-  echo "check-wayland-frame: the surface is touched outside the frame owner, or an allow line is off:"
+  echo "check-wayland-frame: a rule is broken (surface, connection or lost display), or an allow line is off:"
   echo "$left"
   exit 1
 fi

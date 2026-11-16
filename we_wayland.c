@@ -94,17 +94,121 @@ static void e_w_render_dirty_cells(int force);
 static void wl_selftest_fill_grid(void);
 static void wl_pump_once(int block);
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
+  The compositor connection: the only code that does libwayland I/O
+\* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+/* Does the shared loop watch the compositor connection (keys, pointer)? */
+static int g_wl_keyboard_watched = 0;
+
+/* Set once the backend is published.  Before that a failed call keeps the
+   old way out (the caller falls back to X11); after it a broken connection
+   ends the editor through the lost-display owner. */
+static int g_wl_conn_armed = 0;
+
 /**
- * wl_read_available_events - Take what the compositor has sent, without waiting.
+ * wl_conn_lost - The connection broke: end the editor without losing the
+ * user's work.
  *
- * Called when the connection is known to be readable: the frame owner reads
- * it once (never through libwayland's dispatch loop, which would wait for an
- * event of the default queue), then the default queue is dispatched.
+ * The compositor crashed, the session ended or a protocol error closed the
+ * connection, so the window is gone.  The reason is read from libwayland
+ * (the protocol error's interface and code, else the system's text) and given
+ * to e_display_lost, which saves every window with unsaved changes to its
+ * .ESV file and exits with code 1 at the editor's next wait.  From here on
+ * no function of this section talks to the connection.  Returns, so it is
+ * safe where the editor is in the middle of a repaint.
  */
-static void wl_read_available_events(void)
+static void wl_conn_lost(void)
 {
- wpe_wlframe_read_events();
- wl_display_dispatch_pending(WpeWl.display);
+ char why[128];
+ const struct wl_interface *iface = NULL;
+ uint32_t id = 0;
+ int err;
+
+ if (WpeWl.lost || !g_wl_conn_armed)
+  return;
+ WpeWl.lost = 1;
+ err = wl_display_get_error(WpeWl.display);
+ if (err == EPROTO)
+ {
+  uint32_t code = wl_display_get_protocol_error(WpeWl.display, &iface, &id);
+
+  snprintf(why, sizeof why, "%s#%u: protocol error %u",
+           iface ? iface->name : "unknown", id, code);
+ }
+ else
+  snprintf(why, sizeof why, "%s", strerror(err ? err : errno));
+ e_display_lost("the Wayland compositor", why);
+}
+
+/**
+ * wpe_wl_conn_flush - Send what the editor has queued for the compositor.
+ *
+ * What the user gets: a frame or a request reaches the compositor at once.
+ * A full socket is not an error (the next flush sends the rest); a broken
+ * one ends the editor through wl_conn_lost.  Does nothing once the
+ * connection is lost.
+ */
+void wpe_wl_conn_flush(void)
+{
+ if (!WpeWl.display || WpeWl.lost)
+  return;
+ if (wl_display_flush(WpeWl.display) < 0 && errno != EAGAIN)
+  wl_conn_lost();
+}
+
+/**
+ * wl_conn_flush - Flush the connection (see wpe_wl_conn_flush).
+ */
+static void wl_conn_flush(void)
+{
+ wpe_wl_conn_flush();
+}
+
+/**
+ * wl_conn_roundtrip - Ask the compositor to answer everything sent so far.
+ *
+ * A broken connection ends the editor through wl_conn_lost.  Does nothing
+ * once the connection is lost.
+ */
+static void wl_conn_roundtrip(void)
+{
+ if (!WpeWl.display || WpeWl.lost)
+  return;
+ if (wl_display_roundtrip(WpeWl.display) < 0)
+  wl_conn_lost();
+}
+
+/**
+ * wl_conn_dispatch - Serve the compositor: send, optionally wait, read, deliver.
+ * @block: wait in the shared loop for something to happen first.
+ *
+ * What the user gets: keys, pointer events and the compositor's resize reach
+ * the editor, and a compositor that went away is noticed here.  When @block
+ * the wait is the editor's shared one, so a child's output, the end request
+ * and the debugger are served meanwhile; after a loss it still waits there
+ * (and nothing else), so the end request that e_display_lost made is served
+ * and the editor never spins.  The connection is read once through the frame
+ * owner (never through libwayland's own dispatch loop, which waits for an
+ * event of the default queue), then the default queue is delivered.
+ */
+static void wl_conn_dispatch(int block)
+{
+ if (!WpeWl.display)
+  return;
+ wl_conn_flush();
+ if (block)
+  e_fd_key_wait(g_wl_keyboard_watched);
+ if (WpeWl.lost)
+  return;
+ if (wpe_fd_readable_now(wl_display_get_fd(WpeWl.display)) == WPE_FD_READABLE
+   && wpe_wlframe_read_events() < 0)
+ {
+  wl_conn_lost();
+  return;
+ }
+ if (wl_display_dispatch_pending(WpeWl.display) < 0)
+  wl_conn_lost();
 }
 
 /* wpe_wl_dump_ppm - write the current buffer as a binary PPM (P6).  Diagnostic
@@ -1072,7 +1176,7 @@ static void e_clip_w_set(const char *utf8, int len)
     WpeWl.last_serial);
   g_pclip_we_own = 1;
  }
- wl_display_flush(WpeWl.display);
+ wl_conn_flush();
 }
 
 /* clip_pipe_drain - read a selection's bytes from read_fd until EOF/timeout.
@@ -1093,13 +1197,17 @@ static char *clip_pipe_drain(int read_fd, int *len)
   char chunk[4096];
   ssize_t n;
 
-  wl_display_flush(WpeWl.display);
+  wl_conn_flush();
+  if (WpeWl.lost)
+   break;                        /* the compositor is gone: nothing more comes */
   pf[0].fd = read_fd; pf[0].events = POLLIN; pf[0].revents = 0;
   pf[1].fd = wl_fd;   pf[1].events = POLLIN; pf[1].revents = 0;
   if (poll(pf, 2, 2000) <= 0)
    break;                        /* timeout / error: stop with what we have */
-  if (pf[1].revents & POLLIN)
-   wl_read_available_events();
+  if (pf[1].revents & (POLLIN | POLLHUP | POLLERR))
+   wl_conn_dispatch(0);
+  if (WpeWl.lost || (pf[1].revents & (POLLHUP | POLLERR)))
+   break;                        /* a hung-up display would wake every poll */
   if (pf[0].revents & (POLLIN | POLLHUP))
   {
    n = read(read_fd, chunk, sizeof chunk);
@@ -1141,7 +1249,7 @@ static char *e_clip_w_read_clipboard(int *len)
   return NULL;
  wl_data_offer_receive(g_clip_offer, WL_CLIP_MIME, fds[1]);
  close(fds[1]);
- wl_display_flush(WpeWl.display);   /* let the owner start writing */
+ wl_conn_flush();   /* let the owner start writing */
  res = clip_pipe_drain(fds[0], len);
  close(fds[0]);
  return res;
@@ -1158,7 +1266,7 @@ static char *e_clip_w_read_primary(int *len)
   return NULL;
  zwp_primary_selection_offer_v1_receive(g_pclip_offer, WL_CLIP_MIME, fds[1]);
  close(fds[1]);
- wl_display_flush(WpeWl.display);
+ wl_conn_flush();
  res = clip_pipe_drain(fds[0], len);
  close(fds[0]);
  return res;
@@ -1213,7 +1321,7 @@ static int wl_connect_and_bind(void)
 
  WpeWl.registry = wl_display_get_registry(WpeWl.display);
  wl_registry_add_listener(WpeWl.registry, &registry_listener, NULL);
- wl_display_roundtrip(WpeWl.display);   /* run registry_global for each global */
+ wl_conn_roundtrip();   /* run registry_global for each global */
 
  if (!WpeWl.compositor || !WpeWl.shm || !WpeWl.wm_base)
  {
@@ -1246,8 +1354,8 @@ static int wl_connect_and_bind(void)
    zwp_primary_selection_device_v1_add_listener(WpeWl.pdev, &pdev_listener,
                                                 NULL);
   }
-  wl_display_roundtrip(WpeWl.display);   /* seat capabilities -> get_keyboard */
-  wl_display_roundtrip(WpeWl.display);   /* wl_keyboard.keymap -> xkb_state    */
+  wl_conn_roundtrip();   /* seat capabilities -> get_keyboard */
+  wl_conn_roundtrip();   /* wl_keyboard.keymap -> xkb_state    */
  }
  return 0;
 }
@@ -1309,6 +1417,7 @@ static void wl_teardown(void)
  if (WpeWl.surface)       wl_surface_destroy(WpeWl.surface);
  if (WpeWl.wm_base)       xdg_wm_base_destroy(WpeWl.wm_base);
  if (WpeWl.display)       wl_display_disconnect(WpeWl.display);
+ g_wl_conn_armed = 0;
  memset(&WpeWl, 0, sizeof WpeWl);
  wpe_wlframe_forget_buffer();
 }
@@ -1369,7 +1478,7 @@ static void wl_selftest(const char *dump_path)
    e_w_render_dirty_cells(1);
    WpeRender.flush_all();
   }
-  wl_display_roundtrip(WpeWl.display);   /* let the commit reach the server */
+  wl_conn_roundtrip();   /* let the commit reach the server */
   rc = wpe_wl_dump_ppm(dump_path);
   WPE_TRACE("wayland", "selftest: %dx%d painted, dumped '%s' rc=%d\n",
             WpeWl.width, WpeWl.height, dump_path, rc);
@@ -1608,9 +1717,6 @@ static int e_w_key_take(int want)
  return wl_key_take(want);
 }
 
-/* Does the shared loop watch the compositor connection (keys, pointer)? */
-static int g_wl_keyboard_watched = 0;
-
 /**
  * wl_watch_display - Let the shared loop wake for the compositor's events.
  *
@@ -1643,7 +1749,7 @@ static int e_w_getch(void)
  {
   const char *path = g_wl_uidump;
   g_wl_uidump = NULL;
-  wl_display_roundtrip(WpeWl.display);
+  wl_conn_roundtrip();
   wpe_wl_dump_ppm(path);
   fprintf(stderr, "xwpe wayland UI dump -> %s (%dx%d, cell %dx%d, after %d keys)\n",
           path, WpeWl.width, WpeWl.height,
@@ -1655,7 +1761,7 @@ static int e_w_getch(void)
 
  for (;;)
  {
-  wl_display_dispatch_pending(WpeWl.display);
+  wl_conn_dispatch(0);
   /* The ONE place a pending resize is applied: the top of the input loop, never
      from inside a pump/repaint (see wl_pump_once).  A configure read by any
      nested pump waits on the frame owner's queue for the next pass here. */
@@ -1777,13 +1883,7 @@ static void e_w_raise_editor(void)
    (never blocking on the wl fd when the poll woke for another descriptor). */
 static void wl_pump_once(int block)
 {
- wl_display_flush(WpeWl.display);
- if (block)
-  e_fd_key_wait(g_wl_keyboard_watched);
- if (wpe_fd_readable_now(wl_display_get_fd(WpeWl.display)) == WPE_FD_READABLE)
-  wl_read_available_events();
- else
-  wl_display_dispatch_pending(WpeWl.display);
+ wl_conn_dispatch(block);
 
  /* Deliberately does NOT apply a pending resize here.  wl_pump_once is also
     reached from fk_w_mouse and fk_w_drag_next, which the editor calls from
@@ -1814,6 +1914,12 @@ static int fk_w_mouse(int *g)
  if (WpeWl.display)
   wl_pump_once(0);     /* absorb pending pointer events, never block */
  g_mouse_pending = 0;  /* a click handled here is not also an e_w_getch event */
+ /* No release will ever come from a compositor that is gone.  The editor
+    polls here in loops that wait for the button to be let go (a click on the
+    scrollbar's track); with the button reported held they would spin and
+    never reach the wait that ends the editor. */
+ if (WpeWl.lost)
+  g_ptr_btn = 0;
 
  g[0] = g_ptr_btn;
  g[1] = g_ptr_btn;
@@ -1839,6 +1945,8 @@ static int fk_w_drag_next(int *px, int *py)
  if (!WpeWl.display)
   return 0;
  wl_pump_once(1);            /* block in the shared poll until a wl event arrives */
+ if (WpeWl.lost)             /* the compositor is gone: the drag is over */
+  return 0;
  if (!(g_ptr_btn & 1))       /* left button no longer held -> drag finished */
   return 0;
  *px = g_ptr_px;
@@ -2078,6 +2186,7 @@ int WpeWaylandInit(int *argc, char **argv)
  WpeMouseRestoreShape = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeDisplayEnd     = e_w_display_end;
  WpeDisplayReleaseFromHandler = WpeNullFunction;   /* no terminal of the editor's to give back */
+ g_wl_conn_armed = 1;   /* from here a broken connection ends the editor, saving first */
  e_u_switch_screen = WpeZeroFunction;
  e_u_d_switch_out  = (int (*)(int))WpeZeroFunction;
  e_u_deb_out       = e_t_deb_out;

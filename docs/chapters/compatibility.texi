@@ -990,6 +990,17 @@ built-in colour for that entry, so one typing mistake costs one colour.
 @section Saving and the emergency save
 
 @table @asis
+@item The X server goes away
+@cindex X server lost
+@cindex compositor lost
+The original @command{xwpe} left through Xlib's own handler when the X
+server went away, with the line @samp{X connection to :0 broken}, and the
+text typed since the last save was lost.  Now the windows with unsaved
+changes are written to @file{.ESV} files first, one line says that the X
+server (or, on Wayland, the compositor) is gone, and the editor exits with
+the same code 1.  The reason: a crashed display must not cost the user's
+text.
+
 @item A write that fails
 @cindex save fails
 @cindex write fails

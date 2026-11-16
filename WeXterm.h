@@ -50,6 +50,8 @@ typedef struct wpeXStruct {
  int colors[16];
  WpeMouseShape shape_list[2];
  char *selection;
+ int lost;             /* the X server went away: Xlib is not to be called
+                          again except to be left alone (see e_x_io_error) */
 #ifdef HAVE_XFT
  XftFont *xftfont;
  XftDraw *xftdraw;

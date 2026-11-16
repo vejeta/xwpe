@@ -968,6 +968,69 @@ commits, acknowledges, sizes the buffer or owns the queue, or when a configure
 listener does more than record; the cursor's own surface, which has no xdg role,
 is the one line of `tests/wayland-frame.allow`.
 
+### The lost display: one owner of the connection's end
+
+The compositor (or the X server) can go away under a running editor: it
+crashes, the session ends, or a protocol error closes the connection. The
+editor then ends as it does on SIGHUP, so the user keeps the work.
+
+- `e_display_lost(what, why)` (`we_unix.c`) is one more reason for the end
+  request that SIGTERM and SIGHUP already use. It copies the two texts, sets
+  `wpe_end_signal = WPE_END_DISPLAY_LOST`, wakes the fd loop and returns, so a
+  display library may call it from inside its error handler. `wpe_end_on_wake`
+  then runs `e_exit_session(1)` (every window with unsaved changes goes to its
+  `.ESV` file), prints `xwpe: connection to <what> lost: <why>` and the
+  `File ... saved!` lines, and exits with code 1 (Xlib's own code). The end
+  runs at the editor's next wait, never in the middle of a paint or inside
+  Xlib. When the editor is not up yet, or cannot wait, the line is printed and
+  the editor exits at once. A second call while an end is under way only
+  keeps that end going.
+- Wayland: `wl_conn_dispatch`, `wl_conn_roundtrip` and `wl_conn_flush`
+  (`wpe_wl_conn_flush`, which the frame owner's commit also calls) in
+  `we_wayland.c` are the only code that does libwayland I/O. A failure there
+  goes to `wl_conn_lost`, which reads the reason from libwayland (the
+  protocol error's interface and code, else `strerror`) and sets
+  `WpeWl.lost`. After that every function of the section returns at once (the
+  blocking dispatch still waits in `e_fd_key_wait`, so the end request is
+  served and nothing spins), present commits nothing, and `clip_pipe_drain`
+  stops on `POLLHUP`. Before the backend is published a failure keeps the old
+  way out (fall back to X11).
+- X11: `XSetIOErrorHandler(e_x_io_error)` in `WpeXInit` (`WeXterm.c`) marks
+  `WpeXInfo.lost` and calls `e_display_lost`. With libX11 1.7 or later,
+  `XSetIOErrorExitHandler` (found by configure) installs an exit handler that
+  returns, so the process lives on to save; afterwards Xlib calls on the
+  broken display do nothing, with one exception: an `XNextEvent` that has to
+  read from the socket crashes once the handlers have returned. So the drag
+  (`fk_x_drag_next`) never lets it read: `e_x_wait_for_event` flushes and
+  waits in the shared loop until an event is queued (`XPending`) or the
+  display is lost, and the drag ends when lost.
+  The other thing a dead display must not do is report a held button: the
+  editor polls the pointer in loops that wait for a release (a click on the
+  menu bar, the text or a scrollbar track), and a release never comes. The
+  X11 pointer owners (`e_x_getch`, `fk_x_mouse`) report no button once
+  `WpeXInfo.lost` and when `XQueryPointer` fails (its result is checked and
+  the button state is initialised, so a failed query cannot leave stale
+  data); `fk_w_mouse` does the same on Wayland once `WpeWl.lost`. That is the
+  fix of the spin at full speed; `fk_w_drag_next` returning 0 when lost is
+  only defence for the drag. Without the exit handler the handler must not
+  return, so it runs the end itself (`e_display_lost_exit`, which also runs an
+  end a signal asked for and ends the children of an end already running): the
+  one platform-forced divergence. `e_x_display_end` does not call
+  `XCloseDisplay` on a lost connection.
+- `tests/check-wayland-frame.sh` rules 4 and 5 hold this: libwayland's
+  dispatch, roundtrip and flush only in the `wl_conn_*` functions,
+  `XSetIOErrorHandler` once, `e_display_lost` defined and declared once and
+  called from `wl_conn_lost` and `e_x_io_error` only (counted lines of
+  `tests/wayland-frame.allow`). Rows: `tests/wayland/test_display_lost.py` and
+  `tests/x11/test_display_lost.py`, each on a display of its own that the row
+  ends, with rows that lose the display at a debugger stop (also while the
+  debugger is slow to quit), during a scrollbar drag and with a button held on
+  the menu bar, the text and a scrollbar track. The path of
+  `e_display_lost_exit` is only run by a libX11 without the exit handler. The
+  X11 rows pass in a build made without `HAVE_XSETIOERROREXITHANDLER`, but no
+  row tells whether its last step (ending the children of an end already
+  running) ran, so that half is checked by hand (see `WAYLAND-TESTING.txt`).
+
 ## File Manager geometry (1.6.5)
 
 The File Manager box used to be hardcoded (`f->a=(11,2)`, `f->e=+55,+20`) --

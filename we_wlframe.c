@@ -377,8 +377,7 @@ static void wlf_wire_frame(int x, int y, int w, int h)
  else
   wl_surface_damage(WpeWl.surface, x, y, w, h);
  wl_surface_commit(WpeWl.surface);
- if (WpeWl.display)
-  wl_display_flush(WpeWl.display);
+ wpe_wl_conn_flush();
 }
 
 /**
@@ -514,11 +513,15 @@ void wpe_wlframe_claim_proxy(void *proxy)
  * holds events nothing is read: the caller dispatches them first and the data
  * waits in the socket for the next pump.  The events read are queued; the
  * caller dispatches its own queue.
+ * Return: 0 when the read worked or had nothing to do, -1 when the
+ * connection is broken (the compositor is gone); the caller then takes the
+ * lost-display way out.
  */
-void wpe_wlframe_read_events(void)
+int wpe_wlframe_read_events(void)
 {
  if (wl_display_prepare_read(WpeWl.display) == 0)
-  wl_display_read_events(WpeWl.display);
+  return wl_display_read_events(WpeWl.display) < 0 ? -1 : 0;
+ return 0;
 }
 
 /**
@@ -989,7 +992,7 @@ static void wlf_present_fitted(void)
  */
 void wpe_wlframe_present(int x, int y, int w, int h)
 {
- if (!WpeWl.pixels)
+ if (!WpeWl.pixels || WpeWl.lost)
   return;
  if (F.state == WPE_WLFRAME_FITTED)
  {

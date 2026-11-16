@@ -1,9 +1,14 @@
-# The Wayland surface calls made outside the frame owner (we_wlframe.c) that
-# are meant.  Checked by tests/check-wayland-frame.sh.
+# The Wayland surface calls made outside the frame owner (we_wlframe.c) and
+# the lost-display places that are meant.  Checked by tests/check-wayland-frame.sh.
 #
 #   file|rule:function|count|pass|reason
 #
 # "count" is how many such identifiers the function has: more or fewer fails,
 # and a line that matches nothing is stale.  "keep" is a permanent exception.
 
+edit.h|r5:-|1|keep|the declaration of the one lost-display end
+we_unix.c|r5:-|1|keep|the definition of the one lost-display end
+we_wayland.c|r5:wl_conn_lost|1|keep|the Wayland connection's way into the lost-display end
+WeXterm.c|r5:e_x_io_error|1|keep|the X connection's way into the lost-display end
+WeXterm.c|r5:WpeXInit|1|keep|the one XSetIOErrorHandler of the editor
 we_wayland.c|r1:wl_cursor_apply|3|keep|the cursor's own surface has no xdg role and no configure to answer: attach, damage and commit of a fixed image

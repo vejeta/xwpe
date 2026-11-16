@@ -80,6 +80,8 @@ typedef struct WpeWlInfo {
  /* Lifecycle flags (what has been configured and shown is the frame
     owner's state: wpe_wlframe_pending, wpe_wlframe_shown). */
  int running;                  /* cleared on xdg_toplevel.close              */
+ int lost;                     /* the compositor connection broke: the
+                                  connection section does no more I/O        */
 } WpeWlInfo;
 
 extern WpeWlInfo WpeWl;

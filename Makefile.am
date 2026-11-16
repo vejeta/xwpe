@@ -973,8 +973,10 @@ TESTS += tests/check-tty-open.sh
 # One owner of the size the Wayland surface may commit: the frame owner
 # (we_wlframe.c).  tests/check-wayland-frame.sh fails when another file
 # attaches, damages, commits, acknowledges a configure, sizes the buffer or
-# owns the surface's event queue, and when a configure listener does more than
-# record.  It scans sources, so it runs on a build without the backend too.
+# owns the surface's event queue, when a configure listener does more than
+# record, when libwayland's dispatch, roundtrip or flush is called outside the
+# connection functions of we_wayland.c, and when the lost-display end has a
+# third caller or a second X I/O handler.  It scans sources, so it runs on a build without the backend too.
 # test_wlframe runs the owner's state machine with the compositor replaced by a
 # recorder (no display); it defines the two globals the owner reads (WpeWl,
 # WpeRender).
@@ -1185,6 +1187,8 @@ EXTRA_DIST = \
   tests/wayland-frame.allow \
   tests/test_wlframe.c \
   tests/wayland/test_surface_bound.py \
+  tests/wayland/test_display_lost.py \
+  tests/x11/test_display_lost.py \
   tests/check-child-fds.sh \
   tests/child-fds.allow \
   tests/check-child-exec.sh \

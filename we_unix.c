@@ -692,9 +692,14 @@ static void wpe_end_now(int sig)
    editor once it ends).  The pipe never fires otherwise, so it never wakes
    an idle editor. */
 #define WPE_END_NONE 0
+/* The end request that is no signal: the display went away.  A signal
+   number is never negative, so this cannot be taken for one. */
+#define WPE_END_DISPLAY_LOST (-1)
 static volatile sig_atomic_t wpe_end_signal = WPE_END_NONE;
 static int wpe_end_wake_rd = WPE_CHILD_WAKE_NONE;
 static int wpe_end_wake_wr = WPE_CHILD_WAKE_NONE;
+/* Set once the editor's end has begun (the save runs first). */
+static int e_exit_started = 0;
 
 static void wpe_end_on_wake(int fd, void *data);
 
@@ -805,6 +810,60 @@ void WpeSignalTerm(int sig)
  wpe_end_signal = sig;
  wpe_end_wake();
  errno = saved_errno;
+}
+
+/* What the lost-display end tells the user: who went away and why.  Copied
+   when the end is asked for, because the library's text may not outlive the
+   handler that gave it. */
+#define E_DISPLAY_LOST_TEXT 160
+static char e_display_lost_what[E_DISPLAY_LOST_TEXT];
+static char e_display_lost_why[E_DISPLAY_LOST_TEXT];
+
+/**
+ * e_display_lost_line - Print the one line that says the display is gone.
+ *
+ * It goes to the terminal the editor was started from, the only thing a
+ * graphical editor prints there besides the .ESV lines, so the user who
+ * comes back to that terminal learns why the window vanished.
+ */
+static void e_display_lost_line(void)
+{
+ fprintf(stderr, "xwpe: connection to %s lost: %s\n",
+   e_display_lost_what, e_display_lost_why);
+}
+
+/**
+ * e_display_lost - End the editor because its display is gone, keeping the
+ * user's work.
+ * @what: "the X server" or "the Wayland compositor".
+ * @why: the library's reason, in a few words.
+ *
+ * The compositor crashed, the session ended or a protocol error closed the
+ * connection: the window is gone and no key will ever come.  The editor
+ * ends as it does on SIGHUP: at its next wait every window with unsaved
+ * changes is written to its .ESV file ("xwpe -r" reopens them), the line
+ * naming the lost display and the .ESV lines are printed on the terminal
+ * the editor was started from, and it exits with code 1, the code Xlib's own
+ * handler gave before.  It returns at once, so a display library may call it
+ * from inside its error handler; the end itself runs on the editor's own
+ * thread.  When the editor is not up yet, or cannot wait, it prints the line
+ * and exits at once, as there is nothing to save.  A second call while an
+ * end is under way only keeps that end going.
+ */
+void e_display_lost(const char *what, const char *why)
+{
+ if (wpe_end_signal != WPE_END_NONE || e_exit_started)
+  return;
+ snprintf(e_display_lost_what, sizeof e_display_lost_what, "%s", what);
+ snprintf(e_display_lost_why, sizeof e_display_lost_why, "%s", why);
+ if (!wpe_end_can_wait())
+ {
+  e_display_lost_line();
+  wpe_end_children_from_handler();
+  exit(1);
+ }
+ wpe_end_signal = WPE_END_DISPLAY_LOST;
+ wpe_end_wake();
 }
 
 /* The emergency save writes each window with unsaved changes to its .ESV
@@ -992,8 +1051,6 @@ static void e_exit_teardown(void)
  (*WpeDisplayEnd)();
 }
 
-static int e_exit_started = 0;
-
 /**
  * e_exit_session - The one way the editor ends.
  * @keep_work: write the windows with unsaved changes to .ESV files first.
@@ -1042,6 +1099,27 @@ static void wpe_end_by_default(int sig)
 }
 
 /**
+ * wpe_end_run - Run the end the request asked for: save, tell, leave.
+ * @sig: the SIGTERM or SIGHUP that asked, or WPE_END_DISPLAY_LOST.
+ *
+ * The windows with unsaved changes are written to .ESV files and named.  A
+ * signal's end finishes the way the signal would; a lost display's end prints
+ * the line that says so and exits with code 1.  Never returns.
+ */
+static void wpe_end_run(int sig)
+{
+ e_exit_session(1);
+ if (sig == WPE_END_DISPLAY_LOST)
+ {
+  e_display_lost_line();
+  e_err_save_report();
+  exit(1);
+ }
+ e_err_save_report();
+ wpe_end_by_default(sig);
+}
+
+/**
  * wpe_end_on_wake - The fd loop's callback for the end request.
  * @fd: the pipe's read end; @data: unused.
  *
@@ -1062,9 +1140,27 @@ static void wpe_end_on_wake(int fd, void *data)
  sig = wpe_end_signal;
  if (sig == WPE_END_NONE || e_exit_started)
   return;
- e_exit_session(1);
- e_err_save_report();
- wpe_end_by_default(sig);
+ wpe_end_run(sig);
+}
+
+/**
+ * e_display_lost_exit - End the editor now for a display that is gone.
+ *
+ * For a display library whose error handler must never return (Xlib older
+ * than 1.7 has no exit handler that may): the save and the end that the
+ * loop would run at the next wait run here, then the editor exits with code
+ * 1.  An end that a SIGTERM or SIGHUP asked for and that has not started is
+ * run here the same way, so the user's work is saved whichever came first.
+ * When an end is already running, the children it has not ended yet (the
+ * debugged program above all) are ended now, so none is left behind.  Never
+ * returns.
+ */
+void e_display_lost_exit(void)
+{
+ if (!e_exit_started && wpe_end_signal != WPE_END_NONE)
+  wpe_end_run(wpe_end_signal);
+ wpe_child_end_from_handler();
+ exit(1);
 }
 
 /**

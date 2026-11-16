@@ -39,6 +39,11 @@ Bugs fixed in 1.6.x:
   no longer makes the compositor close the editor.  The window announces
   30x6 cells as its smallest size, and a window forced below it keeps that
   grid, clipped, without a scroll copying past the frame.
+* When the compositor or the X server goes away, xwpe saves the windows with
+  unsaved changes to .ESV files, prints one line saying the connection was
+  lost, and exits, as it does when its terminal is closed; "xwpe -r" brings
+  the text back.  On X11 the text used to be lost, and on Wayland the editor
+  stayed running with no window.
 * A program the editor starts (the Run program, a compiler, a debugger, a
   language server, an assistant tool) no longer inherits descriptors that
   whatever started the editor left open; it starts with 0, 1 and 2 and, for a

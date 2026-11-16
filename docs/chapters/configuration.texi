@@ -815,7 +815,9 @@ Option key reaches xwpe as Alt at all.
 
 When the editor ends on an error, on a @code{SIGTERM} (@samp{kill PID},
 a logout or a system shutdown), on a @code{SIGHUP} (its terminal window
-was closed), or when @command{wpe} exits because its keyboard input
+was closed), when the graphical editor's X server or Wayland compositor
+goes away (it crashed, or the session ended), or when @command{wpe} exits
+because its keyboard input
 ended (it was started with input from @file{/dev/null}, or the pipe that
 feeds it was closed), every window with unsaved changes is written next
 to its file, with @file{.ESV} added to the name.  This happens even when
@@ -837,7 +839,10 @@ files were written, stay on the screen.  On a terminal without an
 alternate screen, the editor's last picture stays above the prompt.  The
 graphical editor sends no control sequence to the terminal it was started
 from; the lines about @file{.ESV} files are the only thing it prints
-there.
+there, with one more line when its display went away
+(@samp{xwpe: connection to the Wayland compositor lost: @dots{}} or
+@samp{@dots{} the X server lost: @dots{}}).  The editor then exits with
+code 1.
 
 During a session under a debug adapter (@command{dlv},
 @command{lldb-dap}, @command{gdb} in DAP mode) the save comes first, and

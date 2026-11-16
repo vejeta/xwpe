@@ -46,6 +46,12 @@
 WpeWlInfo WpeWl;
 WpeRenderBackend WpeRender;
 
+/* The connection section of the editor is not linked here; the owner's real
+   commit path is replaced by the recorder, so nothing flushes. */
+void wpe_wl_conn_flush(void)
+{
+}
+
 static int fails;
 
 static void chk(const char *what, int got, int want)
