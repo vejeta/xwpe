@@ -13,6 +13,7 @@ Run: tests/.venv/bin/python -m pytest -q tests/test_procinfo.py
 """
 import os
 import pty
+import shutil
 import signal
 import subprocess
 import time
@@ -266,3 +267,264 @@ def test_self_memory_file_is_a_file_whose_read_fails():
 
 def test_self_memory_file_is_none_without_a_procfs(no_procfs):
     assert procinfo.self_memory_file() is None
+
+
+# ------------------------------------------------------ program identity
+
+CHILD_ARGV_WAIT_S = 5
+GRANDCHILD_WAIT_S = 10
+GRANDCHILD_POLL_S = 0.05
+FAKE_PID = 4242
+BINARY_MAGIC = b"\x7fELF"
+
+
+def _write_script(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    path.chmod(0o755)
+    return path
+
+
+def _write_binary(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(BINARY_MAGIC)
+    path.chmod(0o755)
+    return path
+
+
+def _fake_table(monkeypatch, args, comm, state="S"):
+    """Make the process table answer as ps(1) does on a system with no /proc:
+    one process, FAKE_PID, with these words and command column, and no lsof."""
+    fields = {"state": state, "args": args, "comm": comm}
+    monkeypatch.setattr(procinfo, "has_procfs", lambda: False)
+    monkeypatch.setattr(
+        procinfo, "_ps_field",
+        lambda pid, field, *options: fields[field] if pid == FAKE_PID else None)
+    monkeypatch.setattr(procinfo, "_tool_output", lambda argv: None)
+    return FAKE_PID
+
+
+def _until(read, done):
+    """read() until done(value) holds or CHILD_ARGV_WAIT_S passes; the last
+    value.  A child that has just been exec'd shows an empty command line for
+    an instant, so a row that needs the line waits for it."""
+    deadline = time.time() + CHILD_ARGV_WAIT_S
+    value = read()
+    while not done(value) and time.time() < deadline:
+        time.sleep(GRANDCHILD_POLL_S)
+        value = read()
+    return value
+
+
+def test_a_script_is_the_program_whatever_interpreter_runs_it(tmp_path):
+    """An env shebang leaves python3 as argv[0] and the kernel's command name
+    python3, so no name tells the stub from any other python3."""
+    stub = _write_script(tmp_path / "bin" / "sdb",
+                         "#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+    child = subprocess.Popen([str(stub)])
+    try:
+        prog = procinfo.program("sdb", path=str(tmp_path / "bin"))
+        found = _until(lambda: procinfo.children_running(os.getpid(), prog),
+                       bool)
+    finally:
+        _end(child)
+    assert prog.kind == procinfo.SCRIPT, prog.describe()
+    assert found == [child.pid], prog.describe()
+
+
+def test_another_script_is_not_the_program(tmp_path):
+    stub = _write_script(tmp_path / "bin" / "sdb",
+                         "#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+    other = _write_script(tmp_path / "other" / "sdb",
+                          "#!/usr/bin/env python3\n")
+    child = subprocess.Popen([str(stub)])
+    try:
+        prog = procinfo.program("sdb", path=str(other.parent))
+        found = procinfo.children_running(os.getpid(), prog)
+    finally:
+        _end(child)
+    assert found == [], prog.describe()
+
+
+def test_the_legacy_stub_under_the_framework_python_is_its_backend(
+        tmp_path, monkeypatch):
+    """Recorded on macOS: a "#!" stub run by the framework Python shows the
+    Python.app as argv[0] and as the command column, the stub as argv[1]."""
+    stub = _write_script(tmp_path / "work" / "bin" / "sdb",
+                         "#!/tmp/ptenv/bin/python\n")
+    app = _write_binary(tmp_path / "opt" / "Python.framework" / "Versions"
+                        / "3.15" / "Resources" / "Python.app" / "Contents"
+                        / "MacOS" / "Python")
+    pid = _fake_table(monkeypatch, "%s %s" % (app, stub), str(app))
+    prog = procinfo.program("sdb", path=str(stub.parent))
+    facts = procinfo.child_facts(pid)
+    assert prog.runs(facts), (prog.describe(), prog.verdict(facts))
+    other = procinfo.program("dbx", path=str(stub.parent.parent))
+    assert other.kind == procinfo.MISSING and not other.runs(facts)
+
+
+def _framework_tree(tmp_path):
+    """A fake Homebrew layout: python3 -> python3.15 in the framework's bin,
+    and the Python.app beside it that the launcher re-executes."""
+    version = (tmp_path / "Cellar" / "Frameworks" / "Python.framework"
+               / "Versions" / "3.15")
+    real = _write_binary(version / "bin" / "python3.15")
+    (version / "bin" / "python3").symlink_to("python3.15")
+    app = _write_binary(version / "Resources" / "Python.app" / "Contents"
+                        / "MacOS" / "Python")
+    return version / "bin", real, app
+
+
+def test_pdb_under_the_framework_launcher_is_python3(tmp_path, monkeypatch):
+    """Recorded on macOS: python3 runs as the Python.app, whose path is the
+    command column, not as the python3.15 the PATH names."""
+    bindir, real, app = _framework_tree(tmp_path)
+    pid = _fake_table(monkeypatch, "%s -m pdb t.py" % app, str(app))
+    prog = procinfo.program("python3", path=str(bindir))
+    facts = procinfo.child_facts(pid)
+    assert os.path.realpath(real) in prog.executables
+    assert prog.runs(facts), (prog.describe(), prog.verdict(facts))
+
+
+def test_a_binary_is_known_by_its_executable_not_its_comm(tmp_path):
+    child = _sleeper()
+    try:
+        prog = procinfo.program("sleep")
+        facts = procinfo.child_facts(child.pid)
+        runs = prog.runs(facts)
+        # the same name, another file: not the program the editor would run
+        copy = tmp_path / "other" / "sleep"
+        copy.parent.mkdir()
+        shutil.copy2(shutil.which("sleep"), copy)
+        impostor = procinfo.program("sleep", path=str(copy.parent))
+        impostor_runs = impostor.runs(facts)
+    finally:
+        _end(child)
+    assert facts.exe == os.path.realpath(shutil.which("sleep"))
+    assert runs, prog.verdict(facts)
+    assert not impostor_runs, impostor.describe()
+
+
+def test_without_an_exe_a_bare_argv0_is_looked_up_on_the_editors_path(
+        tmp_path, monkeypatch):
+    """The BSDs print a base name as the command column and ship no lsof; the
+    editor's execvp left argv[0] as the bare word, so it is looked up on the
+    PATH the editor was given."""
+    tool = _write_binary(tmp_path / "bin" / "gdb")
+    pid = _fake_table(monkeypatch, "gdb --interpreter=mi", "gdb")
+    prog = procinfo.program("gdb", path=str(tool.parent))
+    facts = procinfo.child_facts(pid)
+    assert facts.exe is None
+    assert prog.runs(facts), prog.verdict(facts)
+    _write_binary(tmp_path / "bin" / "lldb")
+    other = procinfo.program("lldb", path=str(tool.parent))
+    assert not other.runs(facts), other.describe()
+
+
+def test_an_exe_found_by_lsof_is_resolved_to_its_real_path(tmp_path, monkeypatch):
+    real = _write_binary(tmp_path / "real" / "gdb")
+    link = tmp_path / "bin" / "gdb"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    pid = _fake_table(monkeypatch, "gdb", "gdb")
+    monkeypatch.setattr(procinfo, "_tool_output",
+                        lambda argv: "p%d\nftxt\nn%s\n" % (FAKE_PID, link))
+    facts = procinfo.child_facts(pid)
+    assert facts.exe == os.path.realpath(real)
+    assert procinfo.program("gdb", path=str(link.parent)).runs(facts)
+
+
+def test_the_command_column_is_resolved_to_its_real_path(tmp_path, monkeypatch):
+    """macOS prints the executable as the command column; a Homebrew link
+    in it points into the Cellar the PATH's own lookup also ends in."""
+    real = _write_binary(tmp_path / "cellar" / "gdb")
+    link = tmp_path / "bin" / "gdb"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    pid = _fake_table(monkeypatch, "%s --interpreter=mi" % link, str(link))
+    prog = procinfo.program("gdb", path=str(link.parent))
+    facts = procinfo.child_facts(pid)
+    assert facts.exe == os.path.realpath(real)
+    assert prog.runs(facts), prog.verdict(facts)
+
+
+def test_a_relative_argv0_is_never_looked_up_against_this_processes_folder(
+        tmp_path, monkeypatch):
+    """The child runs ./bin/gdb from its own folder B and the system names no
+    executable and no folder; the asked PATH is A/bin, where this process
+    stands in A.  The answer is no, not a match against A/bin/gdb."""
+    here = tmp_path / "A"
+    _write_binary(here / "bin" / "gdb")
+    monkeypatch.chdir(here)
+    pid = _fake_table(monkeypatch, "./bin/gdb --interpreter=mi", "gdb")
+    prog = procinfo.program("gdb", path=str(here / "bin"))
+    facts = procinfo.child_facts(pid)
+    assert facts.exe is None and facts.argv0_file is None
+    assert not prog.runs(facts), prog.verdict(facts)
+
+
+def test_children_running_leaves_out_a_grandchild_that_runs_the_program():
+    """The shell is the child; the sleep it started is below it."""
+    child = subprocess.Popen(["sh", "-c", "sleep %d; :" % SLEEP_S],
+                             start_new_session=True)
+    try:
+        prog = procinfo.program("sleep")
+        deadline = time.time() + GRANDCHILD_WAIT_S
+        below = procinfo.descendants_running(os.getpid(), prog)
+        while not below and time.time() < deadline:
+            time.sleep(GRANDCHILD_POLL_S)
+            below = procinfo.descendants_running(os.getpid(), prog)
+        direct = procinfo.children_running(os.getpid(), prog)
+    finally:
+        os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+    assert below, "the shell started no sleep"
+    assert child.pid not in below
+    assert direct == [], direct
+
+
+def test_an_ended_child_is_not_the_program(tmp_path, monkeypatch):
+    app = _write_binary(tmp_path / "bin" / "gdb")
+    pid = _fake_table(monkeypatch, "%s" % app, str(app), state=procinfo.ZOMBIE)
+    prog = procinfo.program("gdb", path=str(app.parent))
+    assert prog.verdict(procinfo.child_facts(pid)) == procinfo.VERDICT_ENDED
+    assert prog.verdict(None) == procinfo.VERDICT_ENDED
+
+
+def test_a_program_not_on_the_editors_path_matches_nothing_and_says_so(tmp_path):
+    child = _sleeper()
+    try:
+        prog = procinfo.program("nosuch", path=str(tmp_path))
+        facts = procinfo.child_facts(child.pid)
+        verdict = prog.verdict(facts)
+        found = procinfo.children_running(os.getpid(), prog)
+    finally:
+        _end(child)
+    assert prog.kind == procinfo.MISSING
+    assert found == [] and verdict == procinfo.VERDICT_NOT_ON_PATH
+    assert "not on the editor's PATH" in prog.describe()
+
+
+@pytest.mark.parametrize("path", ["bin", "", "/usr/bin" + os.pathsep + "bin"])
+def test_a_relative_path_entry_is_refused(path):
+    with pytest.raises(ValueError, match="not absolute"):
+        procinfo.program("sleep", path=path)
+
+
+def test_a_relative_argument_is_resolved_against_the_childs_folder(tmp_path):
+    """The child runs ./tool from its own folder; this process, in another
+    folder, must still find the file that word names."""
+    work = tmp_path / "work"
+    tool = _write_script(work / "tool", "#!/bin/sh\nread line\n")
+    assert os.path.realpath(os.getcwd()) != os.path.realpath(work)
+    child = subprocess.Popen(["./tool"], cwd=str(work), stdin=subprocess.PIPE)
+    try:
+        prog = procinfo.program("tool", path=str(work))
+        facts = _until(lambda: procinfo.child_facts(child.pid),
+                       lambda f: f and f.argv_files)
+        runs = prog.runs(facts)
+    finally:
+        child.stdin.close()
+        _end(child)
+    assert os.path.realpath(tool) in facts.argv_files, facts.argv_files
+    assert runs, prog.verdict(facts)
