@@ -20,6 +20,10 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* configure now says whether this system's regular expressions understand
+  \b, \B, \w and \s and whether they read UTF-8 characters, and the Find
+  chapter of the manual names what each system does (FreeBSD refuses the
+  escapes, OpenBSD reads them as letters and reads bytes).
 * The box that refuses an over-long path names the system's limit, not 4096
   on every system.
 * Run > Matching Bracket no longer crashes when the first row starts with

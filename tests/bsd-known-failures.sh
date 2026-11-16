@@ -57,18 +57,6 @@ known_failures() {
     freebsd)
       cat <<'EOF'
 test_childsafe|the folder is named on its terminal|the refusal written to the pty may be lost when the child exits at once (hypothesis, evidence pending)|BT13a
-test_rowfind|w ICASE: Find "\w+"|regcomp refuses \w on this system: it has no GNU escapes|BT3
-test_rowfind|ba from 1: Find "\ba"|regcomp refuses \b on this system: it has no GNU escapes|BT3
-test_rowfind|b boundary at to: Find "b\b"|regcomp refuses \b on this system: it has no GNU escapes|BT3
-test_rowfind|differential: Find |the reference has no byte fallback for a text the multibyte engine refuses (generated rows, all one reason)|BT5
-test_rowfind_copy|w ICASE: Find "\w+"|regcomp refuses \w on this system: it has no GNU escapes|BT3
-test_rowfind_copy|ba from 1: Find "\ba"|regcomp refuses \b on this system: it has no GNU escapes|BT3
-test_rowfind_copy|b boundary at to: Find "b\b"|regcomp refuses \b on this system: it has no GNU escapes|BT3
-test_rowfind_copy|differential: Find |the reference has no byte fallback for a text the multibyte engine refuses (generated rows, all one reason)|BT5
-test_rowfind_reject|w ICASE: Find "\w+"|regcomp refuses \w on this system: it has no GNU escapes|BT3
-test_rowfind_reject|ba from 1: Find "\ba"|regcomp refuses \b on this system: it has no GNU escapes|BT3
-test_rowfind_reject|b boundary at to: Find "b\b"|regcomp refuses \b on this system: it has no GNU escapes|BT3
-test_rowfind_reject|differential: Find |the reference has no byte fallback for a text the multibyte engine refuses (generated rows, all one reason)|BT5
 tests/check-wayland-frame.sh|(exit status: 124)|runs past the 300 s deadline: the awk scan is quadratic in the file|BT10
 EOF
       ;;
@@ -85,16 +73,6 @@ test_child|the user reads why|the rows after the late ends find the slots still 
 test_child|what it started was never signalled|the pid line came late|BT11
 test_child|test_child (the owner's start|the 30 s watchdog: a child's end never came|BT11
 test_childsafe|a refusal with a lock held by another thread: the child did not end within its bound|the child's end was not delivered within its bound (evidence pending, pass E)|BT12
-test_rowfind|w ICASE: Find "\w+"|OpenBSD takes \w as the letter w: no GNU escapes|BT3
-test_rowfind|. is a character: Find "."|OpenBSD's regex reads bytes whatever the locale|BT6
-test_rowfind|e acute ICASE finds E acute|OpenBSD's regex folds ASCII only|BT6
-test_rowfind_copy|w ICASE: Find "\w+"|OpenBSD takes \w as the letter w: no GNU escapes|BT3
-test_rowfind_copy|ba from 1: Find "\ba"|OpenBSD takes \b as the letter b: no GNU escapes|BT3
-test_rowfind_copy|. is a character: Find "."|OpenBSD's regex reads bytes whatever the locale|BT6
-test_rowfind_copy|e acute ICASE finds E acute|OpenBSD's regex folds ASCII only|BT6
-test_rowfind_reject|w ICASE: Find "\w+"|OpenBSD takes \w as the letter w: no GNU escapes|BT3
-test_rowfind_reject|. is a character: Find "."|OpenBSD's regex reads bytes whatever the locale|BT6
-test_rowfind_reject|e acute ICASE finds E acute|OpenBSD's regex folds ASCII only|BT6
 tests/check-chain-outcome.sh|(exit status: 124)|runs past the 300 s deadline, then its TERM trap removes its own work directory|BT9
 tests/check-wayland-frame.sh|(exit status: 124)|runs past the 300 s deadline: the awk scan is quadratic in the file|BT10
 EOF
@@ -102,10 +80,7 @@ EOF
     netbsd)
       cat <<'EOF'
 test_childsafe|the folder is named on its terminal|the refusal written to the pty may be lost when the child exits at once (hypothesis, evidence pending)|BT13a
-test_rowfind|differential: Find |the reference compiles without the engine's REG_GNU flag (generated rows, all one reason)|BT4
-test_rowfind_copy|differential: Find |the reference compiles without the engine's REG_GNU flag (generated rows, all one reason)|BT4
-test_rowfind_copy|ba from 1: Find "\ba"|a named row the design did not list: the copy build takes \b as a letter, cause not yet classified (evidence for P5)|unclassified (P5 evidence)
-test_rowfind_reject|differential: Find |the reference compiles without the engine's REG_GNU flag (generated rows, all one reason)|BT4
+test_rowfind_copy|ba from 1: Find "\ba"|the copy build reads a \b at the start of the copy as no word edge when REG_NOTBOL is set (NetBSD understands \b, so the GNU-escapes fact does not explain it; hypothesis, evidence pending)|unclassified (P5 evidence)
 EOF
       ;;
     selftest)

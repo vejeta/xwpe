@@ -229,6 +229,69 @@ AS_IF([test "x$xwpe_cv_regex_word_escapes" = xyes],
   [xwpe_say_regex="yes (flag: $xwpe_regex_flag)"],
   [xwpe_say_regex="no (a word-boundary escape in Find matches nothing)"])
 
+# The GNU escapes \b \B \w \s are a separate fact from \< \>: FreeBSD's and
+# OpenBSD's engines have \< \> and none of these, and the two systems differ
+# in what they do with one.  So each escape is run, and the engine's answer
+# is one of three: understood, refused by regcomp (Find then says "bad
+# expression"), or taken as the letter itself (Find looks for a "b").  The
+# fact is 1 only when all four are understood.  A cross build cannot run the
+# probe and says 0.
+AC_CACHE_CHECK([what regcomp does with the GNU escapes (flag $xwpe_regex_flag)],
+  [xwpe_cv_regex_gnu_escapes],
+  [AS_IF([test "x$cross_compiling" = xyes],
+     [xwpe_cv_regex_gnu_escapes="unknown (cross build)"],
+     [AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>
+#include <sys/types.h>
+#include <regex.h>
+static const char *probe(const char *pat, const char *yes, const char *no, const char *lit)
+{
+ regex_t re;
+ regmatch_t m[1];
+ const char *answer;
+ if (regcomp(&re, pat, REG_EXTENDED | $xwpe_regex_flag)) return "refused";
+ if (regexec(&re, yes, 1, m, 0) == 0 && regexec(&re, no, 1, m, 0) != 0) answer = "understood";
+ else if (regexec(&re, lit, 1, m, 0) == 0) answer = "literal";
+ else answer = "other";
+ regfree(&re);
+ return answer;
+}]], [[printf("b=%s B=%s w=%s s=%s\n",
+        probe("\\\\bab", " ab", "xab", "bab"), probe("\\\\Bab", "xab", " ab", "Bab"),
+        probe("^\\\\w\$", "a", " ", "w"), probe("^\\\\s\$", " ", "a", "s"));
+ return 0;]])],
+       [xwpe_cv_regex_gnu_escapes=`./conftest$ac_exeext 2>/dev/null`
+        test -n "$xwpe_cv_regex_gnu_escapes" || xwpe_cv_regex_gnu_escapes="unknown (the probe printed nothing)"],
+       [xwpe_cv_regex_gnu_escapes="unknown (the probe did not build)"])])])
+WPE_FACT([REGEX_GNU_ESCAPES],
+  [test "x$xwpe_cv_regex_gnu_escapes" = "xb=understood B=understood w=understood s=understood"],
+  [the regular expression engine understands the escapes \b \B \w \s])
+AS_IF([test "x$wpe_fact_REGEX_GNU_ESCAPES" = x1],
+  [xwpe_say_regex_gnu_escapes="yes (\\b \\B \\w \\s are understood)"],
+  [xwpe_say_regex_gnu_escapes="no ($xwpe_cv_regex_gnu_escapes; refused is a bad expression in Find, literal looks for the letter)"])
+
+# Whether the engine reads characters.  A UTF-8 locale existing is not that:
+# OpenBSD has C.UTF-8 and its regex is single-byte whatever the locale says.
+# So the engine is run: under a UTF-8 locale, does "." take the two bytes of
+# an e acute as one character?  A cross build cannot run it and keeps the
+# assumption the search owner always made, that it does.
+AC_CACHE_CHECK([whether regcomp reads UTF-8 characters],
+  [xwpe_cv_regex_multibyte],
+  [AS_IF([test "x$cross_compiling" = xyes],
+     [xwpe_cv_regex_multibyte="yes (assumed: cross build)"],
+     [AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <locale.h>
+#include <sys/types.h>
+#include <regex.h>]], [[regex_t re; regmatch_t m[1];
+ if (!setlocale(LC_CTYPE, "C.UTF-8") && !setlocale(LC_CTYPE, "en_US.UTF-8")) return 2;
+ if (regcomp(&re, ".", REG_EXTENDED)) return 3;
+ if (regexec(&re, "\\303\\251", 1, m, 0)) return 3;
+ return m[0].rm_eo != 2;]])],
+       [xwpe_cv_regex_multibyte=yes],
+       [xwpe_cv_regex_multibyte=no])])])
+WPE_FACT([REGEX_MULTIBYTE], [test "x$xwpe_cv_regex_multibyte" != xno],
+  [the regular expression engine reads UTF-8 characters])
+AS_IF([test "x$wpe_fact_REGEX_MULTIBYTE" = x1],
+  [xwpe_say_regex_multibyte="$xwpe_cv_regex_multibyte (Find's Case sensitive off folds beyond ASCII)"],
+  [xwpe_say_regex_multibyte="no (the engine reads bytes: Case sensitive off folds ASCII only, and a hit is kept to whole characters)"])
+
 # The math library.  we_render_cairo.c calls floor and ceil.  Linux and
 # FreeBSD find them through libcairo's own dependency on libm, but OpenBSD's
 # linker does not look through a dependency (the same reason freetype2 is
@@ -811,5 +874,7 @@ AC_MSG_RESULT([
       backtrace:         $xwpe_say_backtrace
       stat times:        $xwpe_say_stat
       regex word escapes: $xwpe_say_regex
+      regex GNU escapes: $xwpe_say_regex_gnu_escapes
+      regex reads UTF-8: $xwpe_say_regex_multibyte
       linker --wrap:     $have_ld_wrap
 ])

@@ -840,6 +840,20 @@ read it as `#if WPE_HAS_X`, and write in the `#else` what the user loses. A
 test that needs a facility some system lacks compiles everywhere and prints
 `SKIP: <row>: needs <fact>`.
 
+A fact about an engine is measured by running it, never inferred from a
+declaration or from a locale that exists. Two mistakes taught this. A probe
+that compiled `\<` called the escapes `\b` and `\w` understood, and FreeBSD's
+engine refuses them while OpenBSD's reads them as the letters `b` and `w`.
+And a UTF-8 locale on OpenBSD (`C.UTF-8` exists) made the search owner believe
+the engine reads characters, which it does not. So `WPE_HAS_REGEX_GNU_ESCAPES`
+runs each of `\b \B \w \s` and tells three answers apart (understood, refused
+by `regcomp`, taken as a letter), and `WPE_HAS_REGEX_MULTIBYTE` runs `.` over
+the two bytes of an `é` under a UTF-8 locale. The search owner
+(`we_rowfind.c`) and its test (`tests/test_rowfind.c`) read them: the rows
+that need `\w` and `\b` print `SKIP` by name where the engine lacks them, and
+the test's reference compiles with the owner's own flags
+(`WPE_ROWFIND_CFLAGS`), which `tests/check-one-owner.sh` enforces.
+
 The check scripts read an object's symbols through one file, `tests/objsyms.sh`
 (the old name `tests/nm-undefined.sh` is a one-line shim to it):
 `nm_undefined_names`, `nm_defined_names`, `symbol_source_name` (`__error`,

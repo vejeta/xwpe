@@ -1061,6 +1061,72 @@ else
   problem "canary: we_rowfind.c not found under $SRCDIR"
 fi
 
+# The search owner's test compiles its reference with the owner's own flags
+# (WPE_ROWFIND_CFLAGS, in we_rowfind.h) and with no flags of its own: a
+# reference that re-states REG_EXTENDED | REG_ICASE drifts from the owner
+# on the system whose engine needs a flag for \w (REG_GNU on NetBSD), and
+# every differential row then fails there and nowhere else.  The comment-
+# stripped file is read as one statement stream, so a call split over lines
+# (or with a space before its "(") is read whole, and each regcomp call must
+# hold exactly one WPE_ROWFIND_CFLAGS( among its arguments.  What this still
+# cannot see: a macro or a variable that stands for the flags, a function
+# pointer to regcomp, and extra flags ORed on beside WPE_ROWFIND_CFLAGS(.
+# The canaries: a fixture with planted literals, a split call and a split
+# name is judged right, and the file really holds regcomp calls.
+unflagged_regcomp() {
+  awk '
+    { all = all " " $0 }
+    END {
+      s = all
+      while (match(s, /(^|[^A-Za-z0-9_])regcomp[ \t]*[(]/)) {
+        rest = substr(s, RSTART + RLENGTH)
+        n = length(rest)
+        depth = 1
+        args = ""
+        for (i = 1; i <= n; i++) {
+          c = substr(rest, i, 1)
+          if (c == "(") depth++
+          else if (c == ")" && --depth == 0) break
+          args = args c
+        }
+        k = 0
+        t = args
+        while (match(t, /WPE_ROWFIND_CFLAGS[ \t]*[(]/)) { k++; t = substr(t, RSTART + RLENGTH) }
+        if (k != 1) print "call " ++calls ": regcomp(" substr(args, 1, 60) " has " k " WPE_ROWFIND_CFLAGS( where it needs 1"
+        s = rest
+      }
+    }' "$1"
+}
+cat > "$WORK/regcompfixture.c" <<'EOF'
+ rc = regcomp(&re, pat, WPE_ROWFIND_CFLAGS(sw));
+ rc = regcomp(&re, pat, REG_EXTENDED | REG_ICASE);
+ /* regcomp(&re, pat, 0) in a comment */
+ rc = regcomp(&re, pat, cflags);
+ rc = regcomp(&re,
+              pat,
+              WPE_ROWFIND_CFLAGS(sw));
+ rc = regcomp
+        (&re, pat, REG_EXTENDED);
+ rc = ref_regcomp(&re, pat, sw, loc);
+EOF
+strip_c "$WORK/regcompfixture.c" > "$WORK/regcompfixture.stripped"
+unflagged_regcomp "$WORK/regcompfixture.stripped" > "$WORK/regcompfixture.named"
+[ "$(wc -l < "$WORK/regcompfixture.named" | tr -d ' ')" -eq 3 ] &&
+  grep -q 'REG_EXTENDED | REG_ICASE has 0' "$WORK/regcompfixture.named" &&
+  grep -q 'pat, cflags has 0' "$WORK/regcompfixture.named" &&
+  grep -q 'pat, REG_EXTENDED has 0' "$WORK/regcompfixture.named" ||
+  problem "canary: the test-reference rule does not name exactly the three planted calls (literal flags, a variable, the split name) in its fixture (the rule is blind or too wide)"
+if [ -f "$SRCDIR/tests/test_rowfind.c" ]; then
+  strip_c "$SRCDIR/tests/test_rowfind.c" > "$WORK/rowfindtest.stripped"
+  [ "$(count_words regcomp "$WORK/rowfindtest.stripped")" -gt 0 ] ||
+    problem "canary: the source scan sees no regcomp in tests/test_rowfind.c (the test-reference rule is blind)"
+  unflagged_regcomp "$WORK/rowfindtest.stripped" | while IFS= read -r hit; do
+    problem "tests/test_rowfind.c $hit (the reference must compile with the owner's flags)"
+  done
+else
+  problem "canary: tests/test_rowfind.c not found under $SRCDIR"
+fi
+
 # The call-form branch of the source scan must see the writer's own write(.
 if fdloop=$(stripped_source we_fdloop.o); then
   [ "$(count_uses write "$fdloop")" -gt 0 ] ||

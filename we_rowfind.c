@@ -44,22 +44,12 @@
 #define WPE_ROWFIND_STARTEND 1
 #endif
 
-/* The escapes `\b \< \> \w \s` are on by a flag in some libraries; configure
-   names the flag (0 where none is needed or none exists). */
-#define ENGINE_ESCAPES WPE_REGEX_WORD_ESCAPES
-
 /* Only the BSDs' and macOS's multibyte engines answer an invalid byte with
    REG_ILLSEQ; glibc matches it as itself.  Where the name does not exist no
    answer is it. */
 #ifndef REG_ILLSEQ
 #define REG_ILLSEQ (-1)
 #endif
-
-/* The option bits of FIND.sw this owner reads. */
-#define FIND_CASE_SENSITIVE 128
-#define FIND_WHOLE_WORDS     64
-#define FIND_REGULAR         32
-#define FIND_COMPILE_BITS (FIND_CASE_SENSITIVE | FIND_WHOLE_WORDS | FIND_REGULAR)
 
 /* The first byte that is part of a word whatever the locale says: a letter
    beyond ASCII is a word letter, as it was in the Latin-1 locale of the
@@ -137,7 +127,12 @@ static void probe_ctypes(void)
  if (g_ctype_probed)
   return;
  g_ctype_probed = 1;
-#ifndef WPE_ROWFIND_NO_UTF8_CTYPE   /* the test builds a system that has none */
+/* A UTF-8 ctype is made only where the engine reads characters under it
+   (WPE_HAS_REGEX_MULTIBYTE, measured by configure: OpenBSD has a C.UTF-8
+   locale and a single-byte engine).  Without it the engine runs under the
+   process's own ctype and the owner keeps a hit to whole characters itself.
+   The test builds a system that has none. */
+#if WPE_HAS_REGEX_MULTIBYTE && !defined(WPE_ROWFIND_NO_UTF8_CTYPE)
  g_utf8_ctype = newlocale(LC_CTYPE_MASK, "C.UTF-8", (locale_t)0);
  if (g_utf8_ctype == (locale_t)0)
   g_utf8_ctype = newlocale(LC_CTYPE_MASK, "en_US.UTF-8", (locale_t)0);
@@ -252,12 +247,9 @@ static int cache_build(RowfindCache *c, const FIND *fd)
  c->text[E_FIND_TEXT_MAX] = '\0';
  c->bits = fd->sw & FIND_COMPILE_BITS;
  c->valid = 1;
- c->cflags = REG_EXTENDED | ((c->bits & FIND_CASE_SENSITIVE) ? 0 : REG_ICASE);
+ c->cflags = WPE_ROWFIND_CFLAGS(c->bits);
  if (c->bits & FIND_REGULAR)
- {
   strcpy(c->pattern, c->text);
-  c->cflags |= ENGINE_ESCAPES;
- }
  else
   pattern_escape(c->text, c->pattern);
 #ifdef WPE_ROWFIND_LOCALES

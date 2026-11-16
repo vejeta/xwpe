@@ -38,6 +38,9 @@
 #     exists on only some systems, or tests a platform fact (WPE_HAS_*,
 #     always 0 or 1) with #ifdef: we_platform.h owns those.
 #  9. Every fact configure writes with WPE_FACT has a line in its summary.
+# 10. The two regex facts (the GNU escapes, reading UTF-8) are measured by
+#     running the engine, three-valued for the escapes, and the search owner
+#     and its test read them.
 #
 # Exit: 0 clean, 1 a row failed, 2 the script could not run.
 
@@ -279,6 +282,78 @@ for fact in $(sed -n 's/.*WPE_FACT(\[\([A-Z_]*\)\].*/\1/p' "$SRCDIR/configure.ac
 		fail "configure's summary has no line for the fact WPE_HAS_$fact"
 	fi
 done
+ROWS=$((ROWS + 1))
+
+# Row 10: the two facts about the regular expression engine are measured by
+# running it, never inferred from a declaration or a locale that exists, and
+# the search owner and its test read them.  configure.ac must run \b \B \w \s
+# and tell "understood", "refused" and "literal" apart (FreeBSD refuses them,
+# OpenBSD takes them as letters), and must run "." on two bytes of UTF-8 to
+# learn whether the engine reads characters (OpenBSD has a UTF-8 locale and
+# a single-byte engine).  config.h carries each as 0 or 1.
+GNUPROBE=$(sed -n '/AC_CACHE_CHECK(\[what regcomp does with the GNU escapes/,/^WPE_FACT(\[REGEX_GNU_ESCAPES\]/p' "$SRCDIR/configure.ac")
+MBPROBE=$(sed -n '/AC_CACHE_CHECK(\[whether regcomp reads UTF-8 characters/,/^WPE_FACT(\[REGEX_MULTIBYTE\]/p' "$SRCDIR/configure.ac")
+for word in understood refused literal; do
+	case $GNUPROBE in
+	*"\"$word\""*) ;;
+	*) fail "configure's probe of the GNU escapes has no outcome \"$word\": it cannot tell the three answers apart" ;;
+	esac
+done
+for esc in '\\\\bab' '\\\\Bab' '\\\\w' '\\\\s'; do
+	case $GNUPROBE in
+	*"$esc"*) ;;
+	*) fail "configure's probe of the GNU escapes does not run the pattern spelt $esc in configure.ac" ;;
+	esac
+done
+case $MBPROBE in
+*regexec*rm_eo*) ;;
+*) fail "configure's probe of WPE_HAS_REGEX_MULTIBYTE does not run the engine and read rm_eo" ;;
+esac
+for fact in REGEX_GNU_ESCAPES REGEX_MULTIBYTE; do
+	if ! grep -qE "^#define WPE_HAS_$fact [01]\$" "$CONFIG"; then
+		fail "config.h does not define WPE_HAS_$fact as 0 or 1"
+	fi
+done
+# The readers are looked for in the source with its comments taken out, so
+# a comment that names a fact does not stand for reading it.  The owner and
+# the test decide on the multibyte fact in an #if line; the test reads the
+# escapes fact in plain code (an if), so it only has to be there.
+strip_comments() { # file: C comments replaced by nothing (strings are not parsed)
+	awk '
+		{
+			line = $0; out = ""
+			while (length(line) > 0) {
+				if (incom) {
+					i = index(line, "*/")
+					if (i == 0) { line = ""; break }
+					line = substr(line, i + 2); incom = 0
+				} else {
+					a = index(line, "/*"); b = index(line, "//")
+					if (b > 0 && (a == 0 || b < a)) { out = out substr(line, 1, b - 1); line = ""; break }
+					if (a == 0) { out = out line; line = ""; break }
+					out = out substr(line, 1, a - 1); line = substr(line, a + 2); incom = 1
+				}
+			}
+			print out
+		}' "$1"
+}
+blank_strings() { # file: the text of each "string literal" taken out, so a message that names a fact is no read of it
+	awk '{ gsub(/"([^"\\]|\\.)*"/, "\"\""); print }' "$1"
+}
+# This is a structural guard: it sees that the fact is named in code, not
+# that the code depends on it (an `#if 1 || WPE_HAS_REGEX_MULTIBYTE` would
+# still pass).  The BSD runs are what show the rows take the right branch.
+strip_comments "$SRCDIR/we_rowfind.c" | blank_strings /dev/stdin > "$WORK/rowfind.nocomment"
+strip_comments "$SRCDIR/tests/test_rowfind.c" | blank_strings /dev/stdin > "$WORK/test_rowfind.nocomment"
+if ! grep -qE '^[[:space:]]*#[[:space:]]*(if|elif).*WPE_HAS_REGEX_MULTIBYTE' "$WORK/rowfind.nocomment"; then
+	fail "we_rowfind.c does not test WPE_HAS_REGEX_MULTIBYTE in an #if: it would take a locale existing for an engine that reads characters"
+fi
+if ! grep -qE '^[[:space:]]*#[[:space:]]*(if|elif).*WPE_HAS_REGEX_MULTIBYTE' "$WORK/test_rowfind.nocomment"; then
+	fail "tests/test_rowfind.c does not test WPE_HAS_REGEX_MULTIBYTE in an #if: its rows would run where the engine cannot pass them"
+fi
+if ! grep -q 'WPE_HAS_REGEX_GNU_ESCAPES' "$WORK/test_rowfind.nocomment"; then
+	fail "tests/test_rowfind.c does not read WPE_HAS_REGEX_GNU_ESCAPES outside a comment: a row would run where the engine cannot pass it"
+fi
 ROWS=$((ROWS + 1))
 
 if [ $FAIL -eq 0 ]; then

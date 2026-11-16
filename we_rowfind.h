@@ -34,6 +34,25 @@ typedef struct {
 #define WPE_ROWFIND_HAS_LOCALES 0
 #endif
 
+/* The option bits of FIND.sw that decide how a search is compiled. */
+#define FIND_CASE_SENSITIVE 128
+#define FIND_WHOLE_WORDS     64
+#define FIND_REGULAR         32
+#define FIND_COMPILE_BITS (FIND_CASE_SENSITIVE | FIND_WHOLE_WORDS | FIND_REGULAR)
+
+/** WPE_ROWFIND_CFLAGS - The regcomp flags the owner compiles a search with.
+ * @bits: FIND.sw (only the compile bits are read).
+ *
+ * Find with Case sensitive off keeps a regular expression's meaning, and a
+ * regular expression gets the library's flag for the word escapes where
+ * configure names one (REG_GNU on NetBSD, REG_ENHANCED on macOS).  The owner
+ * compiles with this and so does anything that must compile the same
+ * search, so that a test's reference cannot drift from what Find runs.
+ * Needs <regex.h> and config.h. */
+#define WPE_ROWFIND_CFLAGS(bits) \
+ (REG_EXTENDED | (((bits) & FIND_CASE_SENSITIVE) ? 0 : REG_ICASE) | \
+  (((bits) & FIND_REGULAR) ? WPE_REGEX_WORD_ESCAPES : 0))
+
 /* What a row is in its line (a line longer than Max. Columns is several
    rows, and ^ and $ belong to the line, not to the row). */
 #define WPE_ROW_STARTS_LINE  1u   /* the first row, or the row before ends with a line break */
