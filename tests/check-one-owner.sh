@@ -36,7 +36,7 @@ OBJECTS=
 HERE=$(dirname "$0")
 BAD=1
 SKIP=77
-. "$HERE/nm-undefined.sh"
+. "$HERE/objsyms.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -849,14 +849,7 @@ DELETED_SYMBOLS="e_build_ui_idle e_lsp_ui_safe ai_editor_idle
   wpe_ai_deliver_held_reply e_build_deliver_held e_d_start_deliver_held
   e_d_run_deliver_held_stop e_u_kbhit"
 defined_names() {
-  "$NMTOOL" -g --defined-only "$1" 2>/dev/null | awk '
-    NF >= 2 && $(NF-1) != "U" {
-      n = $NF
-      sub(/@.*/, "", n)
-      sub(/\$.*/, "", n)
-      print n
-      if (n ~ /^_/) { m = n; sub(/^_/, "", m); print m }
-    }'
+  "$NMTOOL" -g "$1" 2>/dev/null | nm_defined_names
 }
 for obj in $OBJECTS; do
   [ -f "$obj" ] || continue
@@ -924,7 +917,7 @@ if obj=$(named_object we_buffer.o purity); then
 fi
 # Gone for good: the line primitives, the whole-buffer rebuilds, the output
 # appenders and the global undo covers the text's owner replaced.  No object
-# of the editor defines one again (`nm -g --defined-only`): a function that
+# of the editor defines one again (`nm -g`, read by nm_defined_names): a function that
 # adds or removes lines on its own beside the owner has come back.  A name
 # may stay as a file's own static function; it is not exported.
 DELETED_BUFFER_SYMBOLS="e_new_line e_del_line e_buffer_set_text

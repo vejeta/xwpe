@@ -840,6 +840,15 @@ read it as `#if WPE_HAS_X`, and write in the `#else` what the user loses. A
 test that needs a facility some system lacks compiles everywhere and prints
 `SKIP: <row>: needs <fact>`.
 
+The check scripts read an object's symbols through one file, `tests/objsyms.sh`
+(the old name `tests/nm-undefined.sh` is a one-line shim to it):
+`nm_undefined_names`, `nm_defined_names`, `symbol_source_name` (`__error`,
+`__errno` and `__errno_location` are all `errno_location`; NetBSD's
+`__fstat50` is `fstat`) and `section_kind`. No check script calls `nm` with an
+option beyond `-g` or `-u`, or parses `nm` lines itself: `nm --defined-only`
+does not exist on OpenBSD. `tests/check-platform.sh` row 3 holds a fixture of
+every format seen (GNU, FreeBSD, OpenBSD, NetBSD, llvm, Mach-O).
+
 Note: under `_GNU_SOURCE`, glibc 2.38 and later bind `strtol`, `sscanf` and
 friends to the C23 versions, which read `0b...` as binary for base 0 or 2 and
 add `%b`. A base-0 `strtol` or a `%i` scan on user text would take that

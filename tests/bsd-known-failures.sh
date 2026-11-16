@@ -70,8 +70,6 @@ test_rowfind_reject|ba from 1: Find "\ba"|regcomp refuses \b on this system: it 
 test_rowfind_reject|b boundary at to: Find "b\b"|regcomp refuses \b on this system: it has no GNU escapes|BT3
 test_rowfind_reject|differential: Find |the reference has no byte fallback for a text the multibyte engine refuses (generated rows, all one reason)|BT5
 tests/check-wayland-frame.sh|(exit status: 124)|runs past the 300 s deadline: the awk scan is quadratic in the file|BT10
-tests/check-child-exec.sh|reaches __error (from .text.wpe_child_exec): not in the allow file|FreeBSD spells errno __error; the allow file names only glibc's|BT8
-tests/check-child-exec.sh|stale allow line: __errno_location (nothing in the child path reaches it)|the allow line is for glibc's spelling of errno|BT8
 EOF
       ;;
     openbsd)
@@ -97,49 +95,17 @@ test_rowfind_copy|e acute ICASE finds E acute|OpenBSD's regex folds ASCII only|B
 test_rowfind_reject|w ICASE: Find "\w+"|OpenBSD takes \w as the letter w: no GNU escapes|BT3
 test_rowfind_reject|. is a character: Find "."|OpenBSD's regex reads bytes whatever the locale|BT6
 test_rowfind_reject|e acute ICASE finds E acute|OpenBSD's regex folds ASCII only|BT6
-tests/check-one-owner.sh|canary: wpe_paint_modal_getch not seen defined in we_paint.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
-tests/check-one-owner.sh|canary: e_buffer_splice not seen defined in we_buffer.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
-tests/check-one-owner.sh|canary: e_lsp_units_of not defined in we_lsp_pos.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
-tests/check-one-owner.sh|canary: e_lsp_col_of not defined in we_lsp_pos.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
-tests/check-one-owner.sh|canary: e_lsp_units_read not defined in we_lsp_pos.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
-tests/check-one-owner.sh|canary: e_lsp_position_json not defined in we_lsp_pos.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
-tests/check-one-owner.sh|canary: e_lsp_text_offset not defined in we_lsp_pos.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
-tests/check-one-owner.sh|canary: e_lsp_text_index_col not defined in we_lsp_pos.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
-tests/check-one-owner.sh|canary: e_lsp_semantic_decode not defined in we_lsp_pos.o|the defined-symbol reader uses a GNU nm option and sees nothing|BT7
 tests/check-chain-outcome.sh|(exit status: 124)|runs past the 300 s deadline, then its TERM trap removes its own work directory|BT9
 tests/check-wayland-frame.sh|(exit status: 124)|runs past the 300 s deadline: the awk scan is quadratic in the file|BT10
-tests/check-child-exec.sh|reaches __errno (from .text.wpe_child_exec): not in the allow file|OpenBSD and NetBSD spell errno __errno; the allow file names only glibc's|BT8
-tests/check-child-exec.sh|reaches a section of a kind this check does not read: .openbsd.randomdata.retguard.|retguard cookie sections (the number changes with the build, so only the start of the line is listed)|BT8
-tests/check-child-exec.sh|stale allow line: __errno_location (nothing in the child path reaches it)|the allow line is for glibc's spelling of errno|BT8
-tests/check-child-exec.sh|stale allow line: sigemptyset (nothing in the child path reaches it)|sigemptyset is a macro here, nothing imports it|BT8
 EOF
       ;;
     netbsd)
       cat <<'EOF'
-test_child|ended on SIGTERM: got |a child's end arrives late or never (evidence pending, pass E)|BT11
-test_child|by SIGTERM, not given up on: got |a child's end arrives late or never (evidence pending, pass E)|BT11
-test_child|by SIGTERM itself|a child's end arrives late or never (evidence pending, pass E)|BT11
-test_child|the start is refused: got |the rows after the late ends find the slots still taken|BT11
-test_child|with nothing running: got |the rows after the late ends find the slots still taken|BT11
-test_child|and no descriptor: got |the rows after the late ends find the slots still taken|BT11
-test_child|none left open: got |the rows after the late ends find the slots still taken|BT11
-test_child|the user reads why|the rows after the late ends find the slots still taken|BT11
 test_childsafe|the folder is named on its terminal|the refusal written to the pty may be lost when the child exits at once (hypothesis, evidence pending)|BT13a
 test_rowfind|differential: Find |the reference compiles without the engine's REG_GNU flag (generated rows, all one reason)|BT4
 test_rowfind_copy|differential: Find |the reference compiles without the engine's REG_GNU flag (generated rows, all one reason)|BT4
 test_rowfind_copy|ba from 1: Find "\ba"|a named row the design did not list: the copy build takes \b as a letter, cause not yet classified (evidence for P5)|unclassified (P5 evidence)
 test_rowfind_reject|differential: Find |the reference compiles without the engine's REG_GNU flag (generated rows, all one reason)|BT4
-tests/check-child-exec.sh|reaches __errno (from .text.wpe_child_exec): not in the allow file|NetBSD spells errno __errno; the allow file names only glibc's|BT8
-tests/check-child-exec.sh|reaches __fstat50 (from .text.wpe_child_tty_name_is.part.0): not in the allow file|NetBSD renames versioned system calls|BT8
-tests/check-child-exec.sh|reaches __sigaction_siginfo (from .text.wpe_child_exec): not in the allow file|NetBSD renames versioned system calls|BT8
-tests/check-child-exec.sh|reaches __sigprocmask14 (from .text.wpe_child_exec): not in the allow file|NetBSD renames versioned system calls|BT8
-tests/check-child-exec.sh|reaches __stat50 (from .text.wpe_child_tty_name_is.part.0): not in the allow file|NetBSD renames versioned system calls|BT8
-tests/check-child-exec.sh|stale allow line: __errno_location (nothing in the child path reaches it)|the allow line is for glibc's spelling of errno|BT8
-tests/check-child-exec.sh|stale allow line: fstat (nothing in the child path reaches it)|the object imports the versioned name|BT8
-tests/check-child-exec.sh|stale allow line: sigaction (nothing in the child path reaches it)|the object imports the versioned name|BT8
-tests/check-child-exec.sh|stale allow line: sigemptyset (nothing in the child path reaches it)|sigemptyset is an inline here, nothing imports it|BT8
-tests/check-child-exec.sh|stale allow line: sigprocmask (nothing in the child path reaches it)|the object imports the versioned name|BT8
-tests/check-child-exec.sh|stale allow line: stat (nothing in the child path reaches it)|the object imports the versioned name|BT8
 EOF
       ;;
     selftest)

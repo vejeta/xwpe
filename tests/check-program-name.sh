@@ -423,7 +423,8 @@ elif [ "$NMTOOL" = ":" ] || ! command -v "$NMTOOL" >/dev/null 2>&1; then
   echo "check-program-name: symbol half skipped: no nm ($NMTOOL)"
   SYMBOL_SKIPPED=1
 else
-  "$NMTOOL" -u "$DEBUG_OBJ" 2>/dev/null | awk '{ print $NF }' > "$WORK/debug-imports"
+  . "$HERE/objsyms.sh"
+  "$NMTOOL" -u "$DEBUG_OBJ" 2>/dev/null | nm_undefined_names > "$WORK/debug-imports"
   for sym in wpe_progname_program wpe_progname_debug_binary wpe_progname_debug_errors wpe_progname_stem wpe_progname_extension; do
     grep -qx "$sym" "$WORK/debug-imports" ||
       problem "symbol: $DEBUG_OBJ does not import $sym: the debugger names a program, a debug binary or a class by a rule of its own"
@@ -436,7 +437,7 @@ else
   if [ -z "$PROG_OBJ" ] || [ ! -f "$PROG_OBJ" ]; then
     problem "symbol: ONE_OWNER_OBJECTS names no built we_prog.o: the symbol half cannot read rule 7's imports"
   else
-    "$NMTOOL" -u "$PROG_OBJ" 2>/dev/null | awk '{ print $NF }' > "$WORK/prog-imports"
+    "$NMTOOL" -u "$PROG_OBJ" 2>/dev/null | nm_undefined_names > "$WORK/prog-imports"
     for sym in e_opt_own_language_for e_opt_lang_value_from; do
       grep -qx "$sym" "$WORK/prog-imports" ||
         problem "symbol: $PROG_OBJ does not import $sym: Run and the build judge a language's value by a rule of their own"

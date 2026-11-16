@@ -46,7 +46,7 @@ NMTOOL=${NM:-nm}
 OBJECTS=
 HERE=$(dirname "$0")
 BAD=1
-. "$HERE/nm-undefined.sh"
+. "$HERE/objsyms.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -171,8 +171,7 @@ done
 # --- the symbol scan (rules 4 and 5)
 normalise() { nm_undefined_source_names | awk '{ sub(/@.*/, ""); print }'; }
 defined_names() {
-  "$NMTOOL" -g --defined-only "$1" 2>/dev/null | awk '
-    NF >= 2 && $(NF-1) != "U" { n = $NF; sub(/@.*/, "", n); print n; if (n ~ /^_/) { sub(/^_/, "", n); print n } }'
+  "$NMTOOL" -g "$1" 2>/dev/null | nm_defined_names
 }
 if command -v "$NMTOOL" >/dev/null 2>&1 && [ "$NMTOOL" != ":" ]; then
   seen_displays=0
@@ -197,6 +196,8 @@ if command -v "$NMTOOL" >/dev/null 2>&1 && [ "$NMTOOL" != ":" ]; then
     fi
     case $base in
       we_layout.o)
+        grep -qx wpe_box_close "$WORK/defined" ||
+          problem "canary: wpe_box_close not seen defined in we_layout.o (the deleted-symbol scan is blind)"
         grep -qx wpe_paint_modal_enter "$WORK/imports" ||
           problem "canary: we_layout.o does not import wpe_paint_modal_enter (the stack is not the screen owner's)" ;;
     esac

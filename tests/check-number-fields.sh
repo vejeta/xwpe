@@ -66,7 +66,7 @@ STRICT=0
 BAD=1
 NMTOOL=${NM:-nm}
 OBJECTS=$ONE_OWNER_OBJECTS
-. "$HERE/nm-undefined.sh"
+. "$HERE/objsyms.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -416,11 +416,21 @@ if [ -n "$OBJECTS" ] && command -v "$NMTOOL" >/dev/null 2>&1 && [ "$NMTOOL" != "
   done
   # Rule 5, as linked: no object defines the deleted symbol; the owner's
   # symbols are seen, so a scanner that sees nothing fails.
+  owner_seen=0
   for o in $(each_listed_object); do
-    if "$NMTOOL" -g --defined-only "$o" 2>/dev/null | awk '$NF == "WpeStringToNumber" { f = 1 } END { exit !f }'; then
+    "$NMTOOL" -g "$o" 2>/dev/null | nm_defined_names > "$WORK/defined"
+    if grep -qx WpeStringToNumber "$WORK/defined"; then
       echo "R5|$(basename "$o")|(linked)|1|the object defines WpeStringToNumber" >> "$WORK/found"
     fi
+    case $(basename "$o") in
+      we_number.o)
+        owner_seen=1
+        grep -qx e_number_field_accept "$WORK/defined" ||
+          problem "canary: e_number_field_accept not seen defined in we_number.o (the deleted-symbol scan is blind)" ;;
+    esac
   done
+  [ "$owner_seen" -eq 1 ] ||
+    problem "canary: we_number.o is not among the objects scanned (the deleted-symbol scan is blind)"
 fi
 
 # --- the allow file

@@ -77,7 +77,7 @@ SELFTEST=0
 NMTOOL=${NM:-nm}
 OBJECTS=
 BAD=1
-. "$HERE/nm-undefined.sh"
+. "$HERE/objsyms.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -444,14 +444,22 @@ if command -v "$NMTOOL" >/dev/null 2>&1 && [ -n "$OBJECTS" ]; then
         n = $0; sub(/[@$].*/, "", n)
         if (n == "opendir") print "r1c", obj, n, 1
       }'
-    "$NMTOOL" "$o" 2>/dev/null | awk -v obj="$base" '
-      NF >= 2 && $(NF-1) == "T" {
-        n = $NF; sub(/^_/, "", n)
+    "$NMTOOL" -g "$o" 2>/dev/null | nm_defined_names > "$WORK/defined"
+    # the owners' own definitions must be seen, or the scan below is blind
+    case $base in
+      we_write.o) grep -qx wpe_write_copy_fd "$WORK/defined" ||
+        problem "canary: wpe_write_copy_fd not seen defined in we_write.o (the deleted-symbol scan is blind)" ;;
+      we_fileop.o) grep -qx wpe_fileop_copy "$WORK/defined" ||
+        problem "canary: wpe_fileop_copy not seen defined in we_fileop.o (the deleted-symbol scan is blind)" ;;
+    esac
+    awk -v obj="$base" '
+      {
+        n = $0
         if (n == "WpeCopyFileCont" || n == "WpeRenameCopy" || n == "WpeRenameCopyDir" ||
             n == "WpeRemoveDir" || n == "WpeLinkFile" || n == "WpeRenameLink" ||
             n == "WpeGetWastefile" || n == "e_mess_win" || n == "e_rename_dir")
           print "r1", obj, n, 1
-      }'
+      }' "$WORK/defined"
   done > "$WORK/symfound"
 fi
 

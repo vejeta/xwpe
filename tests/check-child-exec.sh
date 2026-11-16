@@ -111,6 +111,11 @@ done
 
 [ -n "$ALLOW" ] || ALLOW=$SRCDIR/tests/child-exec-safe.allow
 
+# The object reader: the table of section kinds and the spelling table that
+# the closure below judges every relocation by.
+HERE=$(dirname "$0")
+. "$HERE/objsyms.sh"
+
 if [ -z "${MAINT_CC:-}" ]; then
   echo "check-child-exec: run it as: make check TESTS=tests/check-child-exec.sh" >&2
   echo "  (the flags of the build live in the Makefile)" >&2
@@ -186,14 +191,22 @@ object_is_x86_64() {
 # reach OBJECT - the records of what the child path reaches, one per line:
 # "ENTRY section" for each entry section found, "LTO" when the object holds
 # LTO sections, "S section" for each section of the closure, "U symbol
-# section" for a symbol that leaves the object and "D symbol section" for a
-# variable of the object.
+# section spelling" for a symbol that leaves the object (the symbol as the C
+# source spells it, the spelling the object imports) and "D symbol section"
+# for a variable of the object.
 reach() {
   "$OBJDUMP" -t "$1" > "$WORK/t.txt" 2>/dev/null
   "$OBJDUMP" -h "$1" > "$WORK/h.txt" 2>/dev/null
   "$OBJDUMP" -r "$1" > "$WORK/r.txt" 2>/dev/null
-  LC_ALL=C awk -v tfile="$WORK/t.txt" -v hfile="$WORK/h.txt" \
-      -v rfile="$WORK/r.txt" '
+  reach_files "$WORK/t.txt" "$WORK/h.txt" "$WORK/r.txt"
+}
+
+# reach_files SYMBOLS SECTIONS RELOCATIONS - reach on the three listings
+# (objdump -t, -h, -r) of an object: what the object reader's tables make of
+# them (the kind of each section a relocation lands in, the source spelling
+# of each symbol that leaves).  The canaries feed it listings of their own.
+reach_files() {
+  LC_ALL=C awk -v tfile="$1" -v hfile="$2" -v rfile="$3" "$OBJSYMS_AWK_LIB"'
     function addend(t) {
       sub(/[-+](0x[0-9a-fA-F]+|[0-9]+)$/, "", t)
       return t
@@ -204,12 +217,12 @@ reach() {
       q[++qt] = s
       print "S " s
     }
-    function classify(from, s, name) {
+    function classify(from, s, name,   kind) {
       if (s == "*COM*") { print "D " name " " from; return }
-      if (s ~ /^\.text/) { visit(s); return }
-      if (s ~ /^\.rodata\.str/) return
-      if (s ~ /^\.data\.rel\.ro/ || s ~ /^\.rodata/) { visit(s); return }
-      if (s ~ /^\.(data|bss|tdata|tbss)/) {
+      kind = objsyms_section_kind(s)
+      if (kind == "skip") return
+      if (kind == "visit") { visit(s); return }
+      if (kind == "data") {
         if (name == "") {
           name = s
           sub(/^\.(data\.rel\.local|data\.rel|data|bss|tdata|tbss)\.?/, "", name)
@@ -231,7 +244,7 @@ reach() {
         return
       }
       if (t ~ /^\./) { classify(from, t, ""); return }
-      print "U " t " " from
+      print "U " objsyms_source_name(t) " " from " " t
     }
     FILENAME == tfile {
       if ($1 ~ /^[0-9a-fA-F]+$/ && NF >= 4) {
@@ -270,7 +283,7 @@ reach() {
         s = q[++qh]
         for (i = 1; i <= n[s]; i++) follow(s, e[s, i])
       }
-    }' "$WORK/t.txt" "$WORK/h.txt" "$WORK/r.txt" | sort -u
+    }' "$1" "$2" "$3" | sort -u
 }
 
 # indirect_calls OBJECT SECTION... - each indirect call or jump instruction
@@ -358,13 +371,17 @@ judge() {
       kind = $1; sym = $2
       if (sym in done) next
       done[sym] = 1
+      # A libc-private spelling is judged as the call it stands for and
+      # said as both: "fstat (spelt __fstat50)".
+      spelt = ""
+      if (kind == "U" && $4 != "" && $4 != sym) spelt = " (spelt " $4 ")"
       if (sym in off) {
-        print "reaches " sym " (from " $3 ") although its fact is false in this build"
+        print "reaches " sym spelt " (from " $3 ") although its fact is false in this build"
       } else if (!(sym in mark)) {
         if (kind == "D")
           print "reaches the variable " sym " (from " $3 "): not in the allow file as DATA"
         else
-          print "reaches " sym " (from " $3 "): not in the allow file"
+          print "reaches " sym spelt " (from " $3 "): not in the allow file"
       } else if (kind == "D" && mark[sym] != "DATA") {
         print "the variable " sym " is marked " mark[sym] ", it must be DATA"
       } else if (kind == "U" && mark[sym] == "DATA") {
@@ -703,7 +720,107 @@ run_canaries() {
     echo "note: this compiler does not take -flto, the LTO canary was not run"
   fi
 
+  run_reader_canaries
   run_source_canaries
+}
+
+# fixture_problems ALLOW STALE TARGET... - judge the child path of a listing
+# written by hand: the entry section holds one relocation to each TARGET.
+# What the objects of the systems this does not run on put in them (OpenBSD's
+# retguard cookies, NetBSD's versioned system calls, each libc's errno) is
+# read here from the names, so the reader is proved on every system.
+fixture_problems() {
+  fx_allow=$1; fx_stale=$2; shift 2
+  printf '%s\n' 'SYMBOL TABLE:' \
+    '0000000000000000 g     F .text.wpe_child_exec	0000001b wpe_child_exec' \
+    > "$WORK/fx-t.txt"
+  printf '%s\n' 'Sections:' \
+    'Idx Name          Size      VMA               LMA               File off  Algn' \
+    '  0 .text.wpe_child_exec 0000001b  0000000000000000  0000000000000000  00000040  2**4' \
+    > "$WORK/fx-h.txt"
+  printf '%s\n' 'RELOCATION RECORDS FOR [.text.wpe_child_exec]:' \
+    'OFFSET           TYPE              VALUE' > "$WORK/fx-r.txt"
+  fx_off=16
+  for fx_target in "$@"; do
+    printf '%016x R_X86_64_PLT32    %s-0x0000000000000004\n' "$fx_off" "$fx_target" \
+      >> "$WORK/fx-r.txt"
+    fx_off=$((fx_off + 16))
+  done
+  : > "$WORK/fx-exempt.txt"
+  fx_records=$(reach_files "$WORK/fx-t.txt" "$WORK/fx-h.txt" "$WORK/fx-r.txt")
+  judge "$fx_allow" "$fx_records" "$fx_stale" "$WORK/fx-exempt.txt"
+}
+
+# reader_canary LABEL EXPECT TEXT ALLOW STALE TARGET... - fixture_problems must
+# name TEXT (EXPECT named) or nothing (EXPECT silent).
+reader_canary() {
+  rc_label=$1; rc_expect=$2; rc_text=$3; rc_allow=$4; rc_stale=$5
+  shift 5
+  rc_got=$(fixture_problems "$rc_allow" "$rc_stale" "$@")
+  case $rc_expect in
+    named)
+      case $rc_got in
+        *"$rc_text"*) : ;;
+        *) echo "canary reader $rc_label: \"$rc_text\" was not named; got: ${rc_got:-nothing}"
+           BLINDNESS=1 ;;
+      esac ;;
+    silent)
+      if [ -n "$rc_got" ]; then
+        echo "canary reader $rc_label: a path that is fine was named:"
+        printf '%s\n' "$rc_got" | sed 's/^/  /'
+        BLINDNESS=1
+      fi ;;
+  esac
+}
+
+# run_reader_canaries - the section kinds and the spellings of every system.
+run_reader_canaries() {
+  allow_lines rd-none '_exit|SAFE|canary'
+  allow_lines rd-all '_exit|SAFE|canary' \
+    'errno_location|RUNTIME|canary' 'fstat|SAFE|canary' \
+    'sigprocmask|SAFE|canary' 'sigaction|SAFE|canary' 'stat|SAFE|canary'
+  allow_lines rd-no-fstat '_exit|SAFE|canary' 'errno_location|RUNTIME|canary'
+  allow_lines rd-memcpy '_exit|SAFE|canary' 'memcpy|SAFE|canary'
+  # a cookie of OpenBSD's retguard holds no code and no state
+  reader_canary retguard-cookie silent "" "$WORK/rd-none" 0 \
+    .openbsd.randomdata.retguard.1 .openbsd.randomdata.retguard.2246
+  # a section of a kind the table does not know is a problem
+  reader_canary unknown-section named ".mytext" "$WORK/rd-none" 0 .mytext
+  # the general random data is writable: a variable, judged as data
+  reader_canary randomdata-is-data named "the variable" "$WORK/rd-none" 0 \
+    .openbsd.randomdata
+  # one allow line per call, whatever each libc calls it
+  for rd_errno in __errno_location __error __errno; do
+    reader_canary "errno-$rd_errno" silent "" "$WORK/rd-all" 0 "$rd_errno"
+  done
+  reader_canary netbsd-versioned silent "" "$WORK/rd-all" 0 \
+    __errno __fstat50 __stat50 __sigprocmask14 __sigaction_siginfo
+  reader_canary spelling-said named "fstat (spelt __fstat50)" "$WORK/rd-no-fstat" 0 \
+    __fstat50
+  reader_canary errno-said named "errno_location (spelt __error)" "$WORK/rd-none" 0 \
+    __error
+  # a fortified twin is its own entry point and is not folded
+  reader_canary fortified-twin named "__memcpy_chk" "$WORK/rd-memcpy" 0 __memcpy_chk
+  # the spelling table itself, as the scripts ask it
+  for rd_pair in __error:errno_location __errno:errno_location \
+      __errno_location:errno_location __fstat50:fstat __sigprocmask14:sigprocmask \
+      __sigaction_siginfo:sigaction __open_2:__open_2 __memcpy_chk:__memcpy_chk \
+      poll:poll; do
+    rd_got=$(symbol_source_name "${rd_pair%%:*}")
+    if [ "$rd_got" != "${rd_pair#*:}" ]; then
+      echo "canary reader spelling: ${rd_pair%%:*} reads as $rd_got, want ${rd_pair#*:}"
+      BLINDNESS=1
+    fi
+  done
+  for rd_pair in .openbsd.randomdata.retguard.7:skip .openbsd.randomdata:data \
+      .text.f:visit .rodata.str1.1:skip .rodata:visit .data.rel.ro.x:visit \
+      .bss.x:data .mytext:unknown; do
+    rd_got=$(section_kind "${rd_pair%%:*}")
+    if [ "$rd_got" != "${rd_pair#*:}" ]; then
+      echo "canary reader section: ${rd_pair%%:*} is $rd_got, want ${rd_pair#*:}"
+      BLINDNESS=1
+    fi
+  done
 }
 
 # source_canary LABEL EXPECT TEXT... - child_branch_problems on TEXT.

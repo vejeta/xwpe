@@ -21,8 +21,9 @@
 #     library whose default is already the full level (macOS, the BSDs,
 #     musl) compiles the mutant too: there the row says SKIP, and only a
 #     macOS run proves the Darwin claim.
-#  3. tests/nm-undefined.sh reads the undefined symbols of every system's nm
-#     (GNU "addr U name", "U name", OpenBSD's bare "name") alike.
+#  3. tests/objsyms.sh reads the undefined and the defined symbols of every
+#     system's nm (GNU "addr U name", "U name", OpenBSD's bare "name", llvm's
+#     dashes, Mach-O's leading "_") alike.
 #  4. An undeclared function is an error on every compiler: Makefile.am does
 #     not hide it, and the configured flag wins over a compiler (gcc 7) that
 #     only warns by default.
@@ -108,7 +109,7 @@ elif ! grep -q 'nftw' "$WORK/mutant.out"; then
 fi
 
 # Row 3: nm -u is read the same on every system's nm output.
-. "$SRCDIR/tests/nm-undefined.sh"
+. "$SRCDIR/tests/objsyms.sh"
 printf '                 U poll\n                 U e_write@GLIBC_2.2.5\n0000000000000000 T main\n' > "$WORK/nm-gnu"
 printf 'U poll\nU e_write@GLIBC_2.2.5\n' > "$WORK/nm-ucol"
 printf 'poll\ne_write@GLIBC_2.2.5\n' > "$WORK/nm-bare"
@@ -131,6 +132,40 @@ for fmt in macho machou; do
 		if ! grep -qx "$want" "$WORK/nm-$fmt.out"; then
 			fail "nm_undefined_source_names gives no $want from the $fmt format of nm -u:"
 			cat "$WORK/nm-$fmt.out"
+		fi
+	done
+done
+# The defined side, from the lines each system's nm -g printed in the BSD CI
+# runs (FreeBSD and NetBSD: 16 hex digits and a type letter; OpenBSD: 8 hex
+# digits, weak retguard cookies among the definitions and an address-less
+# undefined column), and the formats of GNU, llvm and Mach-O.  A definition
+# is a line with a hex address and a type letter that is not U; a weak
+# undefined symbol (w, v) and an llvm undefined line (dashes) are not.
+printf '                 U fclose\n00000000000002c0 T wpe_paint_modal_getch\n0000000000000100 t wpe_paint_desk_set\n' > "$WORK/nmd-freebsd"
+printf '         U fclose\n00000000 W __retguard_1122\n00000000 T wpe_paint_modal_getch\n' > "$WORK/nmd-openbsd"
+printf '000000000000042d T wpe_paint_modal_getch\n                 U fopen\n' > "$WORK/nmd-netbsd"
+printf '                 U poll\n                 w __gmon_start__\n                 v __weak_ref\n0000000000000000 T main\n0000000000000010 B counter@@VER_1\n0000000000000020 W wpe_paint_modal_getch\n' > "$WORK/nmd-gnu"
+printf '0000000000000000 T main\n---------------- U poll\n---------------- w __gmon_start__\n0000000000000008 D wpe_paint_modal_getch\n' > "$WORK/nmd-llvm"
+printf '\nwe_paint.o:\n0000000000000000 T _main\n                 U _poll\n0000000000000040 T _wpe_paint_modal_getch\n' > "$WORK/nmd-macho"
+for fmt in freebsd openbsd netbsd gnu llvm macho; do
+	nm_defined_names < "$WORK/nmd-$fmt" > "$WORK/nmd-$fmt.out"
+	case $fmt in
+	macho) want="main _main wpe_paint_modal_getch" ;;
+	openbsd) want="__retguard_1122 wpe_paint_modal_getch" ;;
+	freebsd) want="wpe_paint_modal_getch wpe_paint_desk_set" ;;
+	gnu) want="main counter wpe_paint_modal_getch" ;;
+	llvm) want="main wpe_paint_modal_getch" ;;
+	*) want="wpe_paint_modal_getch" ;;
+	esac
+	for w in $want; do
+		if ! grep -qx "$w" "$WORK/nmd-$fmt.out"; then
+			fail "nm_defined_names gives no $w from the $fmt format of nm -g:"
+			cat "$WORK/nmd-$fmt.out"
+		fi
+	done
+	for u in fclose fopen poll _poll __gmon_start__ __weak_ref; do
+		if grep -qx "$u" "$WORK/nmd-$fmt.out"; then
+			fail "nm_defined_names reads the undefined $u as defined, in the $fmt format of nm -g"
 		fi
 	done
 done

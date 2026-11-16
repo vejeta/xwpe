@@ -51,7 +51,7 @@ open|SAFE|in the list
 setpgid|SAFE|in the list
 setsid|SAFE|in the list
 sigaction|SAFE|in the list
-sigemptyset|SAFE|in the list
+sigemptyset|SAFE|in the list (a macro on OpenBSD and an inline on NetBSD: no object imports it there)|optional
 signal|SAFE|in the list
 sigprocmask|SAFE|in the list (the child is single threaded)
 stat|SAFE|in the list
@@ -71,5 +71,5 @@ execvp|EXEC|takes no lock and allocates nothing: measured on glibc 2.43 (getenv,
 # --- the fortified spellings of the above, and the compiler's own ---
 __memcpy_chk|SAFE|memcpy with a length check against the destination's size, under _FORTIFY_SOURCE|optional
 __open_2|SAFE|open with a check that no mode was needed, under _FORTIFY_SOURCE|optional
-__errno_location|RUNTIME|the address of the thread's errno: reads thread-local storage, takes no lock
+errno_location|RUNTIME|the address of the thread's errno (spelt __errno_location on glibc and musl, __error on FreeBSD and macOS, __errno on OpenBSD and NetBSD): reads thread-local storage, takes no lock
 __stack_chk_fail|RUNTIME|ends the process on a smashed stack, which is what a child that cannot trust its stack must do|defined(__SSP_STRONG__) + defined(__SSP_ALL__) > 0
