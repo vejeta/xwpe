@@ -655,12 +655,22 @@ int wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, 
  *
  * For Ctrl-F9 on a script: the script becomes executable on disk with the
  * special bits it had, as a save of it keeps them, and never through a link
- * that took its name after the call began.  The window's own file identity
- * is not passed yet: the window does not record it (class F).
+ * that took its name after the call began.  @own is the file the window read
+ * (NULL, or not known, when it read none): when another file has since taken
+ * the name, the script is not touched and k->replaced says so, exactly as a
+ * Save refuses to write into it.
  */
-int wpe_write_add_perm(const char *path, mode_t add, WpeModeKept *k)
+int wpe_write_add_perm(const char *path, const WpeFileIdentity *own, mode_t add, WpeModeKept *k)
 {
- return(write_mode_change(path, NULL, WRITE_CHANGE_ADD, add, k));
+ struct stat shown;
+
+ if (own == NULL || !own->known)
+  return(write_mode_change(path, NULL, WRITE_CHANGE_ADD, add, k));
+ memset(&shown, 0, sizeof shown);
+ shown.st_dev = own->dev;
+ shown.st_ino = own->ino;
+ shown.st_mode = S_IFREG;
+ return(write_mode_change(path, &shown, WRITE_CHANGE_ADD, add, k));
 }
 
 /**
@@ -1392,36 +1402,39 @@ static void write_after_failure(WpeWriteOutcome *o, const char *path, BackupResu
 /** What a write is for.  A Save overwrites the user's file and gives it back
     the special bits it had; a copy (Block Write, the autosave, the emergency
     save, the print copy, Save As onto another file) is a second file and
-    never has them. */
-typedef enum { WRITE_PURPOSE_SAVE, WRITE_PURPOSE_COPY } WritePurpose;
-
-/** The file the window holds, as a caller knows it before the write: what
-    stat said of its folder and name.  A caller with no such file passes NULL
-    where a WriteOwnFile is asked for. */
-typedef struct {
- struct stat st;
-} WriteOwnFile;
+    never has them.  REPLACED is a regular file under the window's name
+    that is not the one the window read: the write must ask or refuse before
+    it touches it. */
+typedef enum { WRITE_PURPOSE_SAVE, WRITE_PURPOSE_COPY, WRITE_PURPOSE_REPLACED } WritePurpose;
 
 /**
  * write_purpose_for_target - Is the file this write opened the window's own?
- * @own: what the caller knows of the window's own file, or NULL.
+ * @own: the file the window read (FENSTER.file_id), or NULL.
  * @opened: fstat of the file the write opened.
+ * @created: this write made the file, so nothing was there to be replaced.
  * Return: Save when it is the same regular file (same device and inode),
- * else copy.
+ * Replaced when the window knows its file and this is another regular file
+ * that was already there, else copy.
  *
  * The one place that decides it, by identity and never by name: the same
  * folder and name, a hard link to it and a path through a symbolic link all
  * reach one inode and one program, which keeps its bits; the same name in
  * another folder is another file, which gets none.  Callers pass what they
  * know and never the purpose; no knowledge means a copy, which fails safe.
+ * A file this write created is never a replacement: the one the window read
+ * is gone, and the save makes it again.  Whatever else holds the name, of
+ * any type (a link to /dev/null, a device), is a replacement too, so the
+ * window's text is never poured into it unasked.  A FIFO under the name
+ * still blocks in open(O_WRONLY) before this is reached, as it always has.
  */
-static WritePurpose write_purpose_for_target(const WriteOwnFile *own, const struct stat *opened)
+static WritePurpose write_purpose_for_target(const WpeFileIdentity *own, const struct stat *opened,
+                                             int created)
 {
- if (own == NULL || !S_ISREG(opened->st_mode))
+ if (own == NULL || !own->known)
   return(WRITE_PURPOSE_COPY);
- if (own->st.st_dev != opened->st_dev || own->st.st_ino != opened->st_ino)
-  return(WRITE_PURPOSE_COPY);
- return(WRITE_PURPOSE_SAVE);
+ if (S_ISREG(opened->st_mode) && own->dev == opened->st_dev && own->ino == opened->st_ino)
+  return(WRITE_PURPOSE_SAVE);
+ return(created ? WRITE_PURPOSE_COPY : WRITE_PURPOSE_REPLACED);
 }
 
 /** The file a write goes to, as the owner opened it.  The bits it had are
@@ -1435,6 +1448,7 @@ typedef struct {
                          or was just made */
  mode_t      keep;    /* the special bits this write gives back: those of @before for a
                          Save, none for a copy */
+ WritePurpose purpose; /* what write_purpose_for_target said of this file */
  int         created; /* the name did not exist: this open made the file, so there is
                          nothing to back up */
 } WriteTarget;
@@ -1511,7 +1525,7 @@ static int write_target_open_fd(const char *path, int *created)
 
 /**
  * write_target_open - Open the file a write goes to, without cutting it.
- * @path: the file; @own: the window's own file, or NULL; @t: receives the
+ * @path: the file; @own: the file the window read, or NULL; @t: receives the
  * target.
  * Return: 0, or the errno of what failed (nothing was truncated).
  *
@@ -1521,7 +1535,7 @@ static int write_target_open_fd(const char *path, int *created)
  * before or a mode recorded when the window loaded the file, means a bit the
  * user took off since stays off and a file that is new has none to get.
  */
-static int write_target_open(const char *path, const WriteOwnFile *own, WriteTarget *t)
+static int write_target_open(const char *path, const WpeFileIdentity *own, WriteTarget *t)
 {
  int err;
 
@@ -1539,7 +1553,8 @@ static int write_target_open(const char *path, const WriteOwnFile *own, WriteTar
  }
  if (S_ISREG(t->st.st_mode))
   t->before = t->st.st_mode & WRITE_TWELVE_BITS;
- if (write_purpose_for_target(own, &t->st) == WRITE_PURPOSE_SAVE)
+ t->purpose = write_purpose_for_target(own, &t->st, t->created);
+ if (t->purpose == WRITE_PURPOSE_SAVE)
   t->keep = t->before & WRITE_SPECIAL_BITS;
  return(0);
 }
@@ -1661,12 +1676,106 @@ typedef struct {
  int xa, ya, xe, ye;
 } WriteRange;
 
+/** XWPE_TEST_FAIL=write-other-owner: the replaced file looks owned by another
+    user, the case a test run by one user cannot make with a real file. */
+#define WPE_WRITE_TEST_OTHER_OWNER "write-other-owner"
+
+/**
+ * write_replaced_is_ours - May the editor ask about overwriting this file?
+ * @st: fstat of the file that took the window's name.
+ * Return: 1 for a regular file with no setuid, setgid or sticky bit that
+ * belongs to the user running the editor, else 0.
+ *
+ * A file another user owns, one that is a program, and anything that is not
+ * a regular file (a device, a link to /dev/null) is never overwritten on a
+ * yes typed at a box: the user may not know what it is.
+ */
+static int write_replaced_is_ours(const struct stat *st)
+{
+ const char *hook = getenv(WPE_WRITE_TEST_FAIL_ENV);
+ uid_t owner = st->st_uid;
+
+ if (!S_ISREG(st->st_mode))
+  return(0);
+ if (hook != NULL && strstr(hook, WPE_WRITE_TEST_OTHER_OWNER) != NULL)
+  owner = (uid_t)(owner + 1);
+ if (st->st_mode & WRITE_SPECIAL_BITS)
+  return(0);
+ return(owner == geteuid());
+}
+
+/** What a write does when its name leads to another file than the window read. */
+typedef enum {
+ WRITE_REPLACED_AS_COPY,   /* Save As, Block Write, the autosave: a second file, no question */
+ WRITE_REPLACED_ASK,       /* a plain Save, first pass: stop, nothing touched, and say the
+                              user is to be asked (o->ask_overwrite) */
+ WRITE_REPLACED_ACCEPTED   /* a plain Save, after the user said Yes: write it as a copy */
+} WriteReplaced;
+
+/** The policy of one write for a name that leads to another file.  After a
+    Yes, @asked is the file the user was asked about: only that one may be
+    written, never another that took the name while the box was up. */
+typedef struct {
+ WriteReplaced   how;
+ WpeFileIdentity asked;
+} WriteReplacedPolicy;
+
+/** The policy of every write that never asks: a copy is a second file. */
+static const WriteReplacedPolicy write_replaced_as_copy = { WRITE_REPLACED_AS_COPY, { 0, 0, 0 } };
+/** The policy of a plain Save's first pass: stop and report the file to ask about. */
+static const WriteReplacedPolicy write_replaced_ask = { WRITE_REPLACED_ASK, { 0, 0, 0 } };
+
+/**
+ * write_replaced_may_go_on - Decide a write whose name leads to another file
+ * than the one the window read.
+ * @t: the target, open and not cut; @policy: what the caller does about it;
+ * @o: receives the refusal or the request to ask (and, with it, the file
+ * asked about).
+ * Return: 1 when the write goes on (as a copy: no special bit, and the window
+ * takes the new file as its own), 0 when it stops (@o says why).
+ *
+ * After a Yes only the file the user was asked about is written.  Another
+ * file that took the name while the box was up is refused, with Save As as
+ * the way out, not asked about again: the user never answers a question
+ * about one file with a write into another.
+ *
+ * An editor that saves by renaming (vim, sed -i, git checkout, rsync) gives
+ * the name a new file under the window's feet, and the user then sees one
+ * question instead of a refusal.  A replacement that is a program, belongs
+ * to another user or is not a regular file is refused with Save As as the
+ * way out, because the box cannot tell the user what it is.  The question
+ * itself is asked by the caller, outside the write, so no signal stays
+ * ignored and no range is computed while the box is up.
+ */
+static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *policy,
+                                    WpeWriteOutcome *o)
+{
+ int not_asked = (policy->how == WRITE_REPLACED_ACCEPTED &&
+                  (!policy->asked.known || policy->asked.dev != t->st.st_dev ||
+                   policy->asked.ino != t->st.st_ino));
+
+ if (not_asked || !write_replaced_is_ours(&t->st))
+ {
+  o->other_file = 1;
+  o->err = WPE_WRITE_REPLACED_ERR;
+  return(0);
+ }
+ if (policy->how == WRITE_REPLACED_ASK)
+ {
+  wpe_write_identity_take(&o->asked, &t->st);
+  o->ask_overwrite = 1;
+  return(0);
+ }
+ t->purpose = WRITE_PURPOSE_COPY;
+ return(1);
+}
+
 /**
  * write_run_open - Open the file a write goes to and make it ready for text.
  * @f: the window; @path: the file; @backup: 1 to copy an existing file to its
- * .bak; @own: the window's own file, or NULL; @t: receives the target; @bk:
- * receives what the backup did and holds the .bak's descriptor; @o: receives
- * err when it fails.
+ * .bak; @own: the file the window read, or NULL; @replaced: what to do when
+ * the name leads to another file; @t: receives the target; @bk: receives what the backup did and holds the .bak's
+ * descriptor; @o: receives err when it fails.
  * Return: 0 when the file is open, cut to nothing and has the window's nine
  * permission bits; -1 when not (nothing was written, the old file is as it
  * was, and nothing stays open).
@@ -1678,8 +1787,9 @@ typedef struct {
  * file the save will not overwrite.  The cut comes last, when the old text is
  * safe.
  */
-static int write_run_open(FENSTER *f, const char *path, int backup, const WriteOwnFile *own,
-                          WriteTarget *t, WriteBackup *bk, WpeWriteOutcome *o)
+static int write_run_open(FENSTER *f, const char *path, int backup, const WpeFileIdentity *own,
+                          const WriteReplacedPolicy *replaced, WriteTarget *t, WriteBackup *bk,
+                          WpeWriteOutcome *o)
 {
  int err = write_target_open(path, own, t);
 
@@ -1688,6 +1798,12 @@ static int write_run_open(FENSTER *f, const char *path, int backup, const WriteO
  if (err != 0)
  {
   o->err = write_error_number(err);
+  return(-1);
+ }
+ if (t->purpose == WRITE_PURPOSE_REPLACED && replaced->how != WRITE_REPLACED_AS_COPY &&
+     !write_replaced_may_go_on(t, replaced, o))
+ {
+  fclose(t->fp);
   return(-1);
  }
  if (backup && !t->created && S_ISREG(t->st.st_mode))
@@ -1746,22 +1862,25 @@ static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, 
  if (again >= 0)
   close(again);
  write_backup_release(bk);
+ wpe_write_identity_take(&o->written, &t->st);
  o->status = WPE_WRITE_WRITTEN;
 }
 
 /**
  * write_run - Write a range of a window's text to a path, judged.
  * @f: the window; @path: the file; @r: the range; @backup: 1 to copy an
- * existing file to its .bak first; @own: the window's own file, which gets
+ * existing file to its .bak first; @own: the file the window read, which gets
  * its special bits back, or NULL (every other file is a copy and gets none);
- * @o: receives the outcome.
+ * @replaced: what to do when the name now leads to another file; @o:
+ * receives the outcome.
  *
  * The one place a window's rows reach a file.  A write that fails after
  * the file was opened puts the old content back (write_restore) when a
  * .bak was made, and the outcome says what could not be done.
  */
 static void write_run(FENSTER *f, const char *path, const WriteRange *r, int backup,
-                      const WriteOwnFile *own, WpeWriteOutcome *o)
+                      const WpeFileIdentity *own, const WriteReplacedPolicy *replaced,
+                      WpeWriteOutcome *o)
 {
  WriteBackup bk;
  WriteTarget t;
@@ -1776,7 +1895,7 @@ static void write_run(FENSTER *f, const char *path, const WriteRange *r, int bac
   return;
  }
  wpe_write_guard_enter();
- if (write_run_open(f, path, backup, own, &t, &bk, o) == 0)
+ if (write_run_open(f, path, backup, own, replaced, &t, &bk, o) == 0)
   write_run_finish(f, path, r, &t, &bk, o);
  wpe_write_guard_leave();
 }
@@ -1802,7 +1921,7 @@ int wpe_write_range(FENSTER *f, const char *path, int xa, int ya, int xe, int ye
  r.ya = ya;
  r.xe = xe;
  r.ye = ye;
- write_run(f, path, &r, backup, NULL, o);
+ write_run(f, path, &r, backup, NULL, &write_replaced_as_copy, o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
 }
 
@@ -1863,33 +1982,65 @@ static int write_window_listed(FENSTER *f)
 }
 
 /**
- * write_own_file - Take what stat says of the window's own file, before the
- * write touches anything.
- * @dir, @name: the folder and the name the window holds, or NULL for none;
- * @own: receives it.
- * Return: @own, or NULL when there is no such regular file or it cannot be
- * stat'ed (which makes the write a copy for the bits: it fails safe).
+ * wpe_write_identity_take - Remember the file a window just read.
+ * @id: the window's FENSTER.file_id; @st: fstat of the descriptor that read it.
+ *
+ * Known when it is a regular file; anything else (a device, a pipe) leaves
+ * the window with no file to write into by identity.  Taken from the open
+ * descriptor, never from a second look at the name, so it is the file whose
+ * text the window holds.
  */
-static const WriteOwnFile *write_own_file(const char *dir, const char *name, WriteOwnFile *own)
+void wpe_write_identity_take(WpeFileIdentity *id, const struct stat *st)
 {
- char *path;
- int ok;
+ id->known = S_ISREG(st->st_mode) ? 1 : 0;
+ id->dev = id->known ? st->st_dev : 0;
+ id->ino = id->known ? st->st_ino : 0;
+}
 
+/**
+ * wpe_write_identity_forget - The window has read no file.
+ * @id: the window's FENSTER.file_id.
+ *
+ * A new window, the clipboard and a window of a file that did not exist have
+ * nothing to compare a later Save with: the save writes as a copy and the
+ * window then takes the file it made.
+ */
+void wpe_write_identity_forget(WpeFileIdentity *id)
+{
+ memset(id, 0, sizeof *id);
+}
+
+/**
+ * wpe_write_identity_of_name - Take the identity of the file at a folder and name.
+ * @dir, @name: where it is; @id: receives it.
+ * Return: 1 when it is a regular file and @id is known, else 0 (@id forgotten).
+ *
+ * The one take by name: for a window that read a copy of its file (the
+ * recovery reads the .ESV), whose own file is the one under the original
+ * name.  A swap in that moment is the recovery's own and not seen.
+ */
+int wpe_write_identity_of_name(const char *dir, const char *name, WpeFileIdentity *id)
+{
+ struct stat st;
+ char *path;
+
+ wpe_write_identity_forget(id);
  if (dir == NULL || name == NULL)
-  return(NULL);
+  return(0);
  path = e_mkfilename((char *)dir, (char *)name);
  if (path == NULL)
-  return(NULL);
- ok = (stat(path, &own->st) == 0 && S_ISREG(own->st.st_mode));
+  return(0);
+ if (stat(path, &st) == 0)
+  wpe_write_identity_take(id, &st);
  FREE(path);
- return(ok ? own : NULL);
+ return(id->known);
 }
 
 /**
  * wpe_write_overwrite_drops - The special bits a write onto an existing file
  * would not keep.
- * @path: the file the user picked; @own_dir, @own_name: the folder and name of
- * the window's own file, or NULL and NULL for a block (always a copy).
+ * @path: the file the user picked; @own: the file the window read (its
+ * FENSTER.file_id), or NULL for a block (always a copy).
  * Return: the setuid, setgid and sticky bits of @path, or 0 when it is not a
  * regular file, has none, or is the window's own file (which keeps them).
  *
@@ -1899,46 +2050,91 @@ static const WriteOwnFile *write_own_file(const char *dir, const char *name, Wri
  * question and the write cannot disagree about which file is the window's.
  * A link is followed, as the write follows it.
  */
-mode_t wpe_write_overwrite_drops(const char *path, const char *own_dir, const char *own_name)
+mode_t wpe_write_overwrite_drops(const char *path, const WpeFileIdentity *own)
 {
- WriteOwnFile own;
  struct stat st;
 
  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
   return(0);
- if (write_purpose_for_target(write_own_file(own_dir, own_name, &own), &st) == WRITE_PURPOSE_SAVE)
+ if (write_purpose_for_target(own, &st, 0) == WRITE_PURPOSE_SAVE)
   return(0);
  return(st.st_mode & WRITE_SPECIAL_BITS);
 }
 
 /**
+ * write_window_pass - One try to write the whole window to its file.
+ * @f: the window; @path: the file; @replaced: what to do when the name leads
+ * to another file than the window read; @o: receives the outcome.
+ *
+ * The range is taken from the window's text now, so a pass that follows a
+ * question writes what the window holds after the question, not before.
+ */
+static void write_window_pass(FENSTER *f, const char *path, const WriteReplacedPolicy *replaced,
+                              WpeWriteOutcome *o)
+{
+ WriteRange r;
+
+ r.xa = 0;
+ r.ya = 0;
+ r.xe = E_BUFFER_ROW_END(f->b);
+ r.ye = f->b->mxlines - 1;
+ write_run(f, path, &r, 1, &f->file_id, replaced, o);
+}
+
+/**
+ * write_window_after_question - A plain Save found another file under the
+ * name: ask, and write it as a copy on Yes.
+ * @f: the window; @path: the file; @o: the first pass's outcome, replaced by
+ * the outcome of the question.
+ *
+ * Asked while no write is open, so nothing is held and no signal is
+ * ignored while the box is up.  No and Esc write nothing.
+ */
+static void write_window_after_question(FENSTER *f, const char *path, WpeWriteOutcome *o)
+{
+ char question[WPE_PATH_SIZE + 128];
+ WriteReplacedPolicy accepted;
+
+ accepted.how = WRITE_REPLACED_ACCEPTED;
+ accepted.asked = o->asked;
+ snprintf(question, sizeof question, "%s was replaced on disk since this window read it. "
+          "Overwrite it?", write_base_name(path));
+ WpeMouseRestoreShape();
+ if (e_message(1, question, f) != 'Y')
+ {
+  WpeMouseChangeShape(WpeWorkingShape);
+  o->ask_overwrite = 0;
+  o->status = WPE_WRITE_DECLINED;
+  return;
+ }
+ WpeMouseChangeShape(WpeWorkingShape);
+ write_window_pass(f, path, &accepted, o);
+}
+
+/**
  * write_window_file - Write the whole window to the file its name says.
- * @f: the window; @own_dir, @own_name: the folder and name of the file the
- * window holds (they are its name too, except in a Save As); @o: receives the
- * outcome.
+ * @f: the window; @plain_save: a Save onto the window's own name, which asks
+ * or refuses when that name leads to another file (a Save As is a copy and
+ * never asks); @o: receives the outcome.
  * Return: 0 when the file holds the text (or there is nothing to write),
  * -1 when it does not (declined or failed; the outcome says which).
  *
  * Asks first when the file had NUL bytes the window cannot hold.  On success
- * the window no longer reads as modified; on any other outcome it stays as it
- * is, so the user still has the text and the next Save tries again.  The
- * window's own file is looked at once, before the write, so that the file the
- * write opens can be recognised as it (write_purpose_for_target).
+ * the window no longer reads as modified and takes the file it wrote as its
+ * own; on any other outcome it stays as it is, so the user still has the text
+ * and the next Save tries again.  The file the write opens is recognised as
+ * the window's by the identity the window recorded when it read it
+ * (write_purpose_for_target), never by looking at the name again.
  */
-static int write_window_file(FENSTER *f, const char *own_dir, const char *own_name,
-                             WpeWriteOutcome *o)
+static int write_window_file(FENSTER *f, int plain_save, WpeWriteOutcome *o)
 {
- WriteOwnFile own_file;
- BUFFER *b;
- WriteRange r;
  char *path;
 
  memset(o, 0, sizeof *o);
  o->status = WPE_WRITE_WRITTEN;           /* nothing to write is written */
  if (!write_window_listed(f))
   return(0);
- b = f->b;
- if (!write_nul_confirmed(f, b))
+ if (!write_nul_confirmed(f, f->b))
  {
   o->status = WPE_WRITE_DECLINED;
   return(-1);
@@ -1951,17 +2147,16 @@ static int write_window_file(FENSTER *f, const char *own_dir, const char *own_na
   return(-1);
  }
  WpeMouseChangeShape(WpeWorkingShape);
- r.xa = 0;
- r.ya = 0;
- r.xe = E_BUFFER_ROW_END(b);
- r.ye = b->mxlines - 1;
- write_run(f, path, &r, 1, write_own_file(own_dir, own_name, &own_file), o);
+ write_window_pass(f, path, plain_save ? &write_replaced_ask : &write_replaced_as_copy, o);
+ if (o->ask_overwrite)
+  write_window_after_question(f, path, o);
  FREE(path);
  if (o->status == WPE_WRITE_WRITTEN)
  {
+  f->file_id = o->written;
   f->save = 0;
-  write_final_break_after(f, b);
-  b->nul_dropped = 0;                   /* the user knew, and the file is written */
+  write_final_break_after(f, f->b);
+  f->b->nul_dropped = 0;                 /* the user knew, and the file is written */
  }
  WpeMouseRestoreShape();
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
@@ -1979,7 +2174,7 @@ static int write_window_file(FENSTER *f, const char *own_dir, const char *own_na
  */
 int wpe_write_file(FENSTER *f, WpeWriteOutcome *o)
 {
- return(write_window_file(f, f->dirct, f->datnam, o));
+ return(write_window_file(f, 1, o));
 }
 
 /* --- text that is not a window's rows ------------------------------------- */
@@ -2196,6 +2391,10 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
 
  if (o->read_only)
   snprintf(out, n, "%s is read-only.", write_base_name(path));
+ else if (o->other_file)
+  snprintf(out, n, "Cannot write %s: the name leads to a different file than the one this window "
+           "read.  Nothing was written.  Use Save As to write your text over that file.",
+           path);
  else if (o->replaced)
   snprintf(out, n, "Cannot write %s: it was replaced by another file while it was being saved.  "
            "Nothing was written.", path);
@@ -2314,22 +2513,23 @@ void wpe_write_say(FENSTER *f, const WpeWriteOutcome *o, WpeWriteThen then)
 /**
  * wpe_write_save - Save the window and tell the user how it went.
  * @f: the window; @then: what a failed save leaves (the text, or the name
- * Save As keeps); @keep_dir, @keep_name: the folder and name the window had
- * before a Save As, or NULL and NULL for a plain Save.
+ * Save As keeps); @keep_name: the name the window had before a Save As, or
+ * NULL for a plain Save.
  * Return: the WpeWriteStatus: the caller keeps the window, the name or the
  * build running only on WPE_WRITE_WRITTEN.
  *
- * A Save As that writes back onto the file the window holds (the same name,
+ * A Save As that writes back onto the file the window read (the same name,
  * or a hard link to it) is a Save, and the setgid program stays one; onto
- * any other file it is a copy and gives that file no special bit.
+ * any other file it is a copy and gives that file no special bit.  A plain
+ * Save onto a name that now leads to another file asks (a plain file of the
+ * same owner) or refuses, so it never writes into a file the window did not
+ * read without the user knowing.
  */
-int wpe_write_save(FENSTER *f, WpeWriteThen then, const char *keep_dir, const char *keep_name)
+int wpe_write_save(FENSTER *f, WpeWriteThen then, const char *keep_name)
 {
  WpeWriteOutcome o;
- const char *own_dir = (keep_name != NULL ? keep_dir : f->dirct);
- const char *own_name = (keep_name != NULL ? keep_name : f->datnam);
 
- if (write_window_file(f, own_dir, own_name, &o) != 0 && keep_name != NULL)
+ if (write_window_file(f, keep_name == NULL, &o) != 0 && keep_name != NULL)
   snprintf(o.keep_name, sizeof o.keep_name, "%s", keep_name);
  wpe_write_say(f, &o, then);
  return(o.status);
@@ -2343,7 +2543,7 @@ int wpe_write_save(FENSTER *f, WpeWriteThen then, const char *keep_dir, const ch
  */
 int e_save(FENSTER *f)
 {
- return(wpe_write_save(f, WPE_WRITE_THEN_KEPT, NULL, NULL));
+ return(wpe_write_save(f, WPE_WRITE_THEN_KEPT, NULL));
 }
 
 /**

@@ -1496,6 +1496,9 @@ int e_recover(ECNT *cn)
    continue;                    /* not opened: no window of it to recover into */
   f = cn->f[cn->mxedt];
   f->datnam[strlen(f->datnam)-4] = '\0';
+  /* The window read the .ESV copy; its own file is the one under the
+     original name, if there is one. */
+  (void)wpe_write_identity_of_name(f->dirct, f->datnam, &f->file_id);
   if (!strcmp(f->datnam, BUFFER_NAME))
   {
    b = cn->f[cn->mxedt]->b;

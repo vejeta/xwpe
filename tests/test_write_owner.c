@@ -76,7 +76,31 @@ void (*WpeMouseChangeShape)(WpeMouseShape s) = NULL;
 void (*WpeMouseRestoreShape)(void) = NULL;
 int e_emergency_save_running(void) { return(0); }
 void e_status_say_until_key(FENSTER *f, const char *t) { (void)f; (void)t; }
-int e_message(int sw, char *s, FENSTER *f) { (void)sw; (void)s; (void)f; return('Y'); }
+static int question_answer = 'Y';
+static int question_count;
+static char question_text[512];
+/* What the box can see while it is up: whether SIGXFSZ is ignored (the
+   owner's guard is held), and the text a program changes in the window. */
+static int question_saw_xfsz_ignored;
+static const char *question_changes_rows;
+/* What another program does to the folder while the box is up. */
+static void (*question_during)(void);
+static void set_rows(const char *text);
+int e_message(int sw, char *s, FENSTER *f)
+{
+ struct sigaction sa;
+
+ (void)sw; (void)f;
+ if (sigaction(SIGXFSZ, NULL, &sa) == 0)
+  question_saw_xfsz_ignored = (sa.sa_handler == SIG_IGN);
+ if (question_changes_rows != NULL)
+  set_rows(question_changes_rows);
+ if (question_during != NULL)
+  question_during();
+ question_count++;
+ snprintf(question_text, sizeof question_text, "%s", s);
+ return(question_answer);
+}
 void e_eol_nul_sentence(int count, char *buf, size_t size) { (void)count; snprintf(buf, size, "nul"); }
 
 char *e_mkfilename(char *dr, char *fn)
@@ -206,10 +230,20 @@ static void free_garbage(void)
  rows_text = NULL;
 }
 
+/* Set by a row whose window read no file: its saves have no identity. */
+static int window_reads_nothing;
+
 static FENSTER *make_window(void)
 {
  FENSTER *f = keep(calloc(1, sizeof *f));
 
+ window_reads_nothing = 0;
+ question_saw_xfsz_ignored = 0;
+ question_changes_rows = NULL;
+ question_during = NULL;
+ question_answer = 'Y';
+ question_count = 0;
+ question_text[0] = '\0';
  f->ed = keep(calloc(1, sizeof *f->ed));
  f->b = keep(calloc(1, sizeof *f->b));
  f->filemode = -1;
@@ -1063,6 +1097,28 @@ static void save_sentence(const WpeWriteOutcome *o, char *out, size_t n)
  (void)wpe_write_sentence(out, n, o, WPE_WRITE_THEN_KEPT);
 }
 
+/* The window has read the file DIR/NAME as it is now: what e_edit records
+   from the descriptor that read it. */
+static void window_reads_in(FENSTER *f, const char *folder, const char *name)
+{
+ chk_int("the window reads its file", wpe_write_identity_of_name(folder, name, &f->file_id), 1);
+}
+
+static void window_reads(FENSTER *f, const char *name)
+{
+ window_reads_in(f, dir, name);
+}
+
+/* A row that did not say what its window read reads the file it saves, as it
+   was when the row began, so a save is the window's own save; a row that
+   made the window read nothing keeps that. */
+static void window_reads_unless_said(FENSTER *f, const char *folder, const char *name)
+{
+ if (f->file_id.known || window_reads_nothing)
+  return;
+ (void)wpe_write_identity_of_name(folder, name, &f->file_id);
+}
+
 /* Save the window onto the file NAME of the test folder, as File > Save does
    (the one writer that gives a file back its special bits). */
 static int save_window(FENSTER *f, const char *name, WpeWriteOutcome *o)
@@ -1072,6 +1128,7 @@ static int save_window(FENSTER *f, const char *name, WpeWriteOutcome *o)
  f->dtmd = DTMD_NORMAL;
  f->ed->mxedt = 1;
  f->ed->f[1] = f;
+ window_reads_unless_said(f, dir, name);
  return(wpe_write_file(f, o));
 }
 
@@ -1085,7 +1142,8 @@ static int save_window_as(FENSTER *f, char *new_dir, const char *new_name, char 
  f->dtmd = DTMD_NORMAL;
  f->ed->mxedt = 1;
  f->ed->f[1] = f;
- return(wpe_write_save(f, WPE_WRITE_THEN_NAME_KEPT, old_dir, old_name));
+ window_reads_unless_said(f, old_dir, old_name);
+ return(wpe_write_save(f, WPE_WRITE_THEN_NAME_KEPT, old_name));
 }
 
 /* A Save that fails half way: the limit is below what it writes. */
@@ -1459,6 +1517,432 @@ static void test_save_as_through_a_hard_link_to_its_own_file_keeps_the_bit(void)
  chk_int("Save As", save_window_as(f, dir, "l.c", dir, "t.c"), WPE_WRITE_WRITTEN);
  chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
  chk_int("the one inode keeps setgid", mode_of("t.c"), 02755);
+}
+
+/* ---- class F: the file the window read, not the name it holds ---- */
+
+/* Another file takes the name, as vim (backupcopy=no), sed -i, git checkout
+   and rsync do: a new inode renamed over the old one. */
+static void another_file_takes_the_name(const char *name, const char *text, mode_t mode)
+{
+ char from[512], to[512];
+
+ put_file("incoming", text, mode);
+ path_of(from, sizeof from, "incoming");
+ path_of(to, sizeof to, name);
+ chk_int("rename the other file over the name", rename(from, to), 0);
+}
+
+/* Does the window hold exactly the file the name leads to now? */
+static int window_holds_the_file_at(const FENSTER *f, const char *name)
+{
+ char p[512];
+ struct stat st;
+
+ path_of(p, sizeof p, name);
+ if (stat(p, &st) != 0 || !f->file_id.known)
+  return(0);
+ return(f->file_id.dev == st.st_dev && f->file_id.ino == st.st_ino);
+}
+
+static int descriptors_open(void)
+{
+ int fd = dup(0), n;
+
+ n = fd;
+ close(fd);
+ return(n);
+}
+
+/* @scenario SC-write-owner-F-01: a Save writes into the inode the window
+   read, and keeps the bits it has. */
+static void test_a_save_into_the_inode_the_window_read_keeps_the_bits(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "the same inode keeps the bits",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ window_reads(f, "t.c");
+ set_rows("new\n");
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
+ chk_int("the saved file keeps setgid", mode_of("t.c"), 02755);
+ chk_int("nothing was asked", question_count, 0);
+ chk_int("the window still holds it", window_holds_the_file_at(f, "t.c"), 1);
+}
+
+/* @scenario SC-write-owner-F-02: a hard link to the window's file is its own
+   file, in the question and in the write. */
+static void test_a_hard_link_to_the_windows_file_is_its_own_file(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char own[512], link_to[512];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a hard link is its own file",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ path_of(own, sizeof own, "t.c");
+ path_of(link_to, sizeof link_to, "h.c");
+ chk_int("hard link", link(own, link_to), 0);
+ f = window_of_file_with_mode(02755);
+ window_reads(f, "t.c");
+ set_rows("new\n");
+ chk_int("the question names no bit", (long)wpe_write_overwrite_drops(link_to, &f->file_id), 0);
+ chk_int("Save As onto the link", save_window_as(f, dir, "h.c", dir, "t.c"), WPE_WRITE_WRITTEN);
+ chk_int("the link keeps setgid", mode_of("h.c"), 02755);
+ chk_int("nothing was asked", question_count, 0);
+}
+
+/* @scenario SC-write-owner-F-03: a plain file of the same owner took the name:
+   the Save asks, and Yes writes it as a copy and takes the new file. */
+static void test_a_replaced_plain_file_is_asked_about_and_yes_writes_a_copy(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a replaced plain file is asked about",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(02755);
+ window_reads(f, "t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ set_rows("mine\n");
+ question_answer = 'Y';
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_int("one question", question_count, 1);
+ chk_has("the question", question_text, "t.c was replaced on disk since this window read it. Overwrite it?");
+ chk_has("the text is on disk", get_file("t.c", buf, sizeof buf), "mine\n");
+ chk_int("a copy has no special bit", mode_of("t.c") & 07000, 0);
+ chk_int("the window takes the new file", window_holds_the_file_at(f, "t.c"), 1);
+ set_rows("again\n");
+ question_count = 0;
+ chk_int("the next Save asks nothing", save_window(f, "t.c", &o), 0);
+ chk_int("no second question", question_count, 0);
+}
+
+/* @scenario SC-write-owner-F-04: No and Escape write nothing. */
+static void test_no_and_escape_on_the_question_write_nothing(void)
+{
+ static const int answers[] = { 'N', WPE_ESC };
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], say[1024], bakp[512];
+ struct stat st;
+ size_t i;
+
+ make_dir();
+ for (i = 0; i < sizeof answers / sizeof answers[0]; i++)
+ {
+  put_file("t.c", "old\n", 0644);
+  f = window_of_file_with_mode(0644);
+  window_reads(f, "t.c");
+  another_file_takes_the_name("t.c", "theirs\n", 0644);
+  set_rows("mine\n");
+  question_answer = answers[i];
+  chk_int("declined", save_window(f, "t.c", &o), -1);
+  chk_int("status", o.status, WPE_WRITE_DECLINED);
+  chk_int("asked", question_count, 1);
+  chk_has("their text stays", get_file("t.c", buf, sizeof buf), "theirs\n");
+  path_of(bakp, sizeof bakp, "t.bak");
+  chk_int("no backup", stat(bakp, &st), -1);
+  save_sentence(&o, say, sizeof say);
+  chk_int("nothing to say", (long)strlen(say), 0);
+  chk_int("the window keeps its old file", window_holds_the_file_at(f, "t.c"), 0);
+ }
+}
+
+/* @scenario SC-write-owner-F-05: a replacement with a special bit is refused,
+   untouched, and Save As is the way out. */
+static void test_a_replaced_file_with_a_special_bit_is_refused(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], say[1024];
+ int open_before;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISUID), "a setuid replacement is refused",
+                   "this user cannot set setuid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 04755);
+ set_rows("mine\n");
+ open_before = descriptors_open();
+ chk_int("refused", save_window(f, "t.c", &o), -1);
+ chk_int("failed", o.status, WPE_WRITE_FAILED);
+ chk_int("says it is another file", o.other_file, 1);
+ chk_int("nothing was asked", question_count, 0);
+ chk_int("no descriptor left open", descriptors_open(), open_before);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "the name leads to a different file than the one this window read");
+ chk_has("nothing written", say, "Nothing was written.");
+ chk_has("the way out", say, "Save As");
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "theirs\n");
+ chk_int("their setuid is untouched", mode_of("t.c"), 04755);
+ chk_int("no backup", mode_of("t.bak"), -1);
+ chk_int("Save As over the same name works", save_window_as(f, dir, "t.c", dir, "t.c"), WPE_WRITE_WRITTEN);
+ chk_has("the text is on disk", get_file("t.c", buf, sizeof buf), "mine\n");
+ chk_int("a copy has no special bit", mode_of("t.c") & 07000, 0);
+ chk_int("the window takes the file", window_holds_the_file_at(f, "t.c"), 1);
+}
+
+/* @scenario SC-write-owner-F-06: a replacement owned by another user is
+   refused (the owner is played by a hook: a test cannot give a file away). */
+static void test_a_replaced_file_of_another_owner_is_refused(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ set_rows("mine\n");
+ setenv("XWPE_TEST_FAIL", "write-other-owner", 1);
+ chk_int("refused", save_window(f, "t.c", &o), -1);
+ unsetenv("XWPE_TEST_FAIL");
+ chk_int("says it is another file", o.other_file, 1);
+ chk_int("nothing was asked", question_count, 0);
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "theirs\n");
+}
+
+/* @scenario SC-write-owner-F-07: a window that read no file saves as a copy. */
+static void test_a_window_that_read_no_file_saves_as_a_copy(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a window with no file saves as a copy",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "program\n", 02755);
+ f = window_of_file_with_mode(0755);
+ window_reads_nothing = 1;
+ set_rows("text\n");
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_int("a copy has no special bit", mode_of("t.c"), 0755);
+ chk_int("nothing was asked", question_count, 0);
+ save_sentence(&o, say, sizeof say);
+ chk_int("nothing to say", (long)strlen(say), 0);
+}
+
+/* @scenario SC-write-owner-F-08: a file that was removed is made again and
+   the window takes the new file. */
+static void test_a_removed_file_is_made_again_and_the_window_takes_it(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512];
+ struct stat st;
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ path_of(p, sizeof p, "t.c");
+ chk_int("remove", unlink(p), 0);
+ set_rows("new\n");
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_int("nothing was asked", question_count, 0);
+ chk_int("stat", stat(p, &st), 0);
+ chk_int("the outcome names the new file", o.written.known && o.written.ino == st.st_ino, 1);
+ chk_int("the window takes it", window_holds_the_file_at(f, "t.c"), 1);
+}
+
+/* @scenario SC-write-owner-F-09: Save As onto the name of a replaced file is a
+   copy and asks nothing (the Save As box asked already). */
+static void test_save_as_onto_a_replaced_name_is_a_copy(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ set_rows("mine\n");
+ chk_int("Save As", save_window_as(f, dir, "t.c", dir, "t.c"), WPE_WRITE_WRITTEN);
+ chk_int("nothing was asked", question_count, 0);
+ chk_has("the text is on disk", get_file("t.c", buf, sizeof buf), "mine\n");
+ chk_int("the window takes the file", window_holds_the_file_at(f, "t.c"), 1);
+}
+
+/* @scenario SC-write-owner-F-10: Ctrl-F9 does not make a file executable that
+   took the script's name after the window read it. */
+static void test_ctrl_f9_on_a_replaced_script_is_refused(void)
+{
+ WpeModeKept k;
+ FENSTER *f;
+ char p[512];
+
+ make_dir();
+ put_file("s.sh", "echo\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "s.sh");
+ path_of(p, sizeof p, "s.sh");
+ chk_int("the script itself is made runnable", wpe_write_add_perm(p, &f->file_id, S_IXUSR, &k), 0);
+ chk_int("x added", mode_of("s.sh"), 0744);
+ another_file_takes_the_name("s.sh", "theirs\n", 0644);
+ chk_int("refused", wpe_write_add_perm(p, &f->file_id, S_IXUSR, &k) != 0, 1);
+ chk_int("says it was replaced", k.replaced, 1);
+ chk_int("their file is not made executable", mode_of("s.sh"), 0644);
+}
+
+/* @scenario SC-write-owner-F-14: a link to /dev/null took the name: the Save is
+   refused, the text stays in the window, and nothing is written into it. */
+static void test_a_device_under_the_name_is_refused(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512];
+ dev_t was_dev;
+ ino_t was_ino;
+ int open_before;
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ was_dev = f->file_id.dev;
+ was_ino = f->file_id.ino;
+ path_of(p, sizeof p, "t.c");
+ chk_int("remove", unlink(p), 0);
+ chk_int("link to the null device", symlink("/dev/null", p), 0);
+ f->save = 1;
+ set_rows("mine\n");
+ open_before = descriptors_open();
+ chk_int("refused", save_window(f, "t.c", &o), -1);
+ chk_int("failed", o.status, WPE_WRITE_FAILED);
+ chk_int("says it is another file", o.other_file, 1);
+ chk_int("nothing was asked", question_count, 0);
+ chk_int("no descriptor left open", descriptors_open(), open_before);
+ chk_int("the window still reads as modified", f->save, 1);
+ chk_int("the window still holds the file it read",
+         f->file_id.known && f->file_id.dev == was_dev && f->file_id.ino == was_ino, 1);
+}
+
+/* @scenario SC-write-owner-F-15: the question is asked with no write open:
+   SIGXFSZ is not ignored while the box is up, and what the window holds after
+   the question is what is written. */
+static void test_the_question_is_asked_outside_the_write(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ set_rows("before\n");
+ question_changes_rows = "changed\n";
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_int("asked once", question_count, 1);
+ chk_int("the guard was not held during the question", question_saw_xfsz_ignored, 0);
+ chk_has("the window's text after the question is on disk", get_file("t.c", buf, sizeof buf), "changed\n");
+}
+
+/* A second name for a file keeps its inode alive, so that a file made later
+   cannot be given the same inode number and look like it. */
+static void keep_alive(const char *name, const char *second_name)
+{
+ char from[512], to[512];
+
+ path_of(from, sizeof from, name);
+ path_of(to, sizeof to, second_name);
+ chk_int("keep the inode alive", link(from, to), 0);
+}
+
+/* A third program puts yet another file under the name while the box is up. */
+static void a_third_file_takes_the_name(void)
+{
+ another_file_takes_the_name("t.c", "third\n", 0644);
+}
+
+/* @scenario SC-write-owner-F-18: Yes reaches the file the user was asked
+   about and no other: a file that took the name while the box was up is
+   refused, untouched. */
+static void test_yes_does_not_reach_a_file_that_took_the_name_during_the_question(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ keep_alive("t.c", "old.keep");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ keep_alive("t.c", "theirs.keep");
+ set_rows("mine\n");
+ question_during = a_third_file_takes_the_name;
+ chk_int("refused", save_window(f, "t.c", &o), -1);
+ chk_int("failed", o.status, WPE_WRITE_FAILED);
+ chk_int("says it is another file", o.other_file, 1);
+ chk_int("asked once", question_count, 1);
+ chk_has("the third file is untouched", get_file("t.c", buf, sizeof buf), "third\n");
+ chk_int("the window keeps the file it read", window_holds_the_file_at(f, "t.c"), 0);
+}
+
+int posix_openpt(int flags);
+int grantpt(int fd);
+int unlockpt(int fd);
+char *ptsname(int fd);
+
+/* @scenario SC-write-owner-F-19: an object the user owns that is not a regular
+   file (the slave of a pty) under the name is refused by its type alone. */
+static void test_a_user_owned_non_regular_file_under_the_name_is_refused(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], *slave_name;
+ int master, slave;
+
+ make_dir();
+ master = posix_openpt(O_RDWR | O_NOCTTY);
+ if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 || (slave_name = ptsname(master)) == NULL)
+ {
+  printf("SKIP: a user-owned non-regular file is refused: no pty here\n");
+  if (master >= 0)
+   close(master);
+  return;
+ }
+ slave = open(slave_name, O_RDWR | O_NOCTTY);
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ path_of(p, sizeof p, "t.c");
+ chk_int("remove", unlink(p), 0);
+ chk_int("link to the pty slave", symlink(slave_name, p), 0);
+ set_rows("mine\n");
+ chk_int("refused", save_window(f, "t.c", &o), -1);
+ chk_int("says it is another file", o.other_file, 1);
+ chk_int("nothing was asked", question_count, 0);
+ if (slave >= 0)
+  close(slave);
+ close(master);
 }
 
 /* A write that fails half way and is undone gives back what the overwritten
@@ -2465,7 +2949,7 @@ static void test_add_perm_adds_x_and_keeps_the_special_bits(void)
   return;
  put_file("s.sh", "echo\n", 02644);
  path_of(p, sizeof p, "s.sh");
- chk_int("added", wpe_write_add_perm(p, S_IXUSR, &k), 0);
+ chk_int("added", wpe_write_add_perm(p, NULL, S_IXUSR, &k), 0);
  chk_int("x added, setgid kept", mode_of("s.sh"), 02744);
  chk_int("nothing lost", (long)k.lost, 0);
  chk_int("replaced the nine bits", wpe_write_set_perm(p, NULL, 0600, &k), 0);
@@ -2488,7 +2972,7 @@ static void test_add_perm_on_a_link_the_user_named_follows_it_once(void)
   if (symlink(to, p) != 0)
    perror("symlink");
  }
- chk_int("added", wpe_write_add_perm(p, S_IXUSR, &k), 0);
+ chk_int("added", wpe_write_add_perm(p, NULL, S_IXUSR, &k), 0);
  chk_int("the file changed", mode_of("real.sh"), 0744);
 }
 
@@ -2536,6 +3020,20 @@ int main(void)
  test_save_as_onto_the_windows_own_file_keeps_its_bit();
  test_save_as_to_the_same_name_in_another_folder_gets_no_bit();
  test_save_as_through_a_hard_link_to_its_own_file_keeps_the_bit();
+ test_a_save_into_the_inode_the_window_read_keeps_the_bits();
+ test_a_hard_link_to_the_windows_file_is_its_own_file();
+ test_a_replaced_plain_file_is_asked_about_and_yes_writes_a_copy();
+ test_no_and_escape_on_the_question_write_nothing();
+ test_a_replaced_file_with_a_special_bit_is_refused();
+ test_a_replaced_file_of_another_owner_is_refused();
+ test_a_window_that_read_no_file_saves_as_a_copy();
+ test_a_removed_file_is_made_again_and_the_window_takes_it();
+ test_save_as_onto_a_replaced_name_is_a_copy();
+ test_ctrl_f9_on_a_replaced_script_is_refused();
+ test_a_device_under_the_name_is_refused();
+ test_the_question_is_asked_outside_the_write();
+ test_yes_does_not_reach_a_file_that_took_the_name_during_the_question();
+ test_a_user_owned_non_regular_file_under_the_name_is_refused();
  test_a_failed_block_write_over_a_setgid_file_restores_its_bit();
  test_the_sentence_of_a_save_that_lost_a_bit();
  test_the_bit_loss_and_the_backup_note_share_one_sentence();

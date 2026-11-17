@@ -543,7 +543,8 @@ int e_edit(ECNT *cn, char *filename)
    
  if ((f = (FENSTER *)MALLOC(sizeof(FENSTER))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
-   
+ wpe_write_identity_forget(&f->file_id);
+
  f->fb = cn->fb;
  cn->f[cn->mxedt] = f;
 
@@ -764,10 +765,10 @@ int e_edit(ECNT *cn, char *filename)
           access(complete_fname, 0) == 0 && access(complete_fname, 2) != 0)
   f->ins = WPE_INS_READONLY;
 #ifdef UNIX
- if (fp != NULL)
+ if (fp != NULL && fstat(fileno(fp), buf) == 0)
  {
-  stat(complete_fname, buf);
   f->filemode = buf->st_mode;
+  wpe_write_identity_take(&f->file_id, buf);
  }
  else
  {

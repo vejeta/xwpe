@@ -104,6 +104,13 @@
 #     and group of the copy with the original's), and never changed after.
 #     Passing the original's mode, or that mode masked, gives a program of
 #     another user to whoever copies it.
+# 18. The file a window read (FENSTER.file_id) is written only by the owner
+#     of identities.  Outside we_write.c the token `file_id` appears only as
+#     the operand of `&` (`&f->file_id`, handed to wpe_write_identity_take,
+#     _forget or _of_name, which e_edit, e_recover and the allocation sites
+#     do, or to a question that reads it).  An assignment, a member write
+#     (`f->file_id.known = 1`) or any other read of it is a second place
+#     that decides which file is the window's own.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -234,6 +241,20 @@ scan() {
         arg = rest; sub(/^[^,]*,[ \t]*/, "", arg); sub(/[ \t]*[,)].*/, "", arg)
         if (fn != "fileop_job_fill_temp" || arg != "keep" || !bound17) note("r17", 1)
         t = rest
+      }
+    }
+    # rule 18 for the code of one statement, strings blanked: every `file_id`
+    # token that is not the operand of an address-of (`&` and not `&&`).
+    function note18(m,   off, p, i) {
+      off = 1
+      while ((p = index(substr(m, off), "file_id")) > 0) {
+        p += off - 1; off = p + 7
+        if (p > 1 && substr(m, p - 1, 1) ~ /[A-Za-z0-9_]/) continue
+        if (substr(m, p + 7, 1) ~ /[A-Za-z0-9_]/) continue
+        i = p - 1
+        while (i >= 1 && substr(m, i, 1) ~ /[A-Za-z0-9_.>-]/) i--
+        while (i >= 1 && substr(m, i, 1) ~ /[ \t]/) i--
+        if (i < 1 || substr(m, i, 1) != "&" || (i > 1 && substr(m, i - 1, 1) == "&")) note("r18", 1)
       }
     }
     function prev_char(s, p,   i, c) {
@@ -367,6 +388,9 @@ scan() {
       # rule 17 (every file but we_write.c): the set-ID bits of a copy are
       # the ones fileop_bits_for_copy returned
       if (file != "we_write.c") note17(m)
+      # rule 18 (every file but we_write.c): the identity of a window is only
+      # ever handed to the owner of identities by address
+      if (file != "we_write.c") note18(m)
       # rule 15 (we_write.c only): the recorded mode of a window is read in one
       # function, as its nine bits, and that function names no special bit
       note15(m)
@@ -706,6 +730,19 @@ static int fileop_job_fill_temp(FileJob *j, int sfd, int fd, int durable)
  return(err);
 }
 EOF
+  # rule 18: the window's identity written or read outside the owner, and
+  # the right shape (by address, to the owner of identities)
+  cat > "$WORK/we_fake_r18.c" <<'EOF'
+static void fake_identity(FENSTER *f, struct stat *st)
+{
+ f->file_id.known = 1;
+ f->file_id = other;
+ if (ok && f->file_id.known)
+  return;
+ wpe_write_identity_take(&f->file_id, st);
+ wpe_write_identity_forget(& f->file_id);
+}
+EOF
   cat > "$WORK/we_fake.h" <<'EOF'
 typedef struct {
  int filemode, flg;
@@ -719,6 +756,7 @@ EOF
   scan "$WORK/we_fake_r17c.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r17d.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r17ok.c" >> "$WORK/fake.found"
+  scan "$WORK/we_fake_r18.c" >> "$WORK/fake.found"
   scan_header_mode "$WORK/we_fake.h" >> "$WORK/fake.found"
   # the other two shapes a header can carry the mode in: a macro split by a
   # backslash, and a static inline function
@@ -750,6 +788,7 @@ EOF
               "r17 we_fake_r17c.c fileop_job_fill_temp 1" \
               "r17 we_fake_r17c.c fileop_stash 1" \
               "r17 we_fake_r17d.c fileop_job_fill_temp 1" \
+              "r18 we_fake_r18.c fake_identity 3" \
               "r15 we_fake.c fake_save 1" "r15 we_fake.c (preprocessor) 1" \
               "r15 we_fake_r15a.c write_mode_before_data 1" \
               "r15 we_fake_r15b.c write_mode_before_data 3" \

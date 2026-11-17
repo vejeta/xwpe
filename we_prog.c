@@ -7856,8 +7856,9 @@ static WpeStartPlan *e_run_sh_plan_approve(FENSTER *f)
  * The window's executable bit reaches the disk only on save, so a freshly
  * opened unmodified script would not run as "./name.sh".  The bit is added
  * by the mode owner to the file it opens, with the special bits the script
- * had, as the save keeps them; a file that took the script's name in
- * between is not touched.  A script the user cannot chmod fails to run with
+ * had, as the save keeps them; a file that took the script's name after the
+ * window read it (an editor that saves by renaming, say) is not touched, so
+ * Run never makes someone else's file executable.  A script the user cannot chmod fails to run with
  * its own message.
  */
 static void e_run_sh_make_runnable(FENSTER *f)
@@ -7867,7 +7868,7 @@ static void e_run_sh_make_runnable(FENSTER *f)
 
  if (!full)
   return;
- (void)wpe_write_add_perm(full, S_IXUSR, &kept);
+ (void)wpe_write_add_perm(full, &f->file_id, S_IXUSR, &kept);
  FREE(full);
 }
 

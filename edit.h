@@ -315,6 +315,7 @@ typedef struct {
  OPTK *menuitems;
 } MENU;
 
+#include "we_write.h"           /* WpeFileIdentity: the file a window read */
 typedef struct FNST {
  POINT a;         /* start corner of the box */
  POINT e;         /* other corner of the box */
@@ -333,6 +334,8 @@ typedef struct FNST {
  WOPT *blst;      /* status line text */
  int nblst;       /* no of options in the status line */
  int filemode, flg;
+ WpeFileIdentity file_id; /* the file this window read: set by e_edit, e_recover and
+                             a successful save, forgotten after each allocation */
  int *c_sw;
  struct wpeSyntaxRule *c_st;
  struct CNT *ed;  /* parent control structure ??? */
@@ -616,7 +619,6 @@ int e_lst_zeichen(int x, int y, int n, int sw, int frb, int max, int iold,
   int new);
 void e_mouse_bar(int x, int y, int n, int sw, int frb);
 #include "we_utf8.h"            /* what a character is: static inline, one rule */
-#include "we_write.h"           /* the outcome of writing the user's text */
 int e_add_undo(int sw, BUFFER *b, int x, int y, int n);
 int e_make_undo(FENSTER *f);
 int e_make_redo(FENSTER *f);

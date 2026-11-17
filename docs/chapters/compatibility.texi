@@ -1090,10 +1090,24 @@ was usually an ordinary file afterwards.  xwpe puts back, after the text,
 the special bits the file had on disk when the save opened it: not the bits
 it had when the window read it, so a bit removed since then stays removed.
 Only a write onto the window's own file puts them back, and that is the
-same file (the same inode), also when Save As names it again or names a
-hard link to it.  Save As onto another file, Block Write, the autosave and
-emergency copies and the print copy write another file, so they never give
-it a bit, even when they overwrite a file that had them; a file saved under
+file the window read, remembered by its device and inode (not looked up
+again by name), also when Save As names it again or names a hard link to it.
+When the name now leads to a different file, which is what an editor that
+saves by renaming (vim, @command{sed -i}, git checkout, rsync) leaves
+behind, F2 does not write into it unasked.  A plain file with no special
+bit and the same owner is asked about (@samp{t.c was replaced on disk since
+this window read it. Overwrite it?}): Yes writes your text as a copy, with
+no special bit, and the window takes that file as its own; No or Esc writes
+nothing.  A replacement that has a special bit, or belongs to another user,
+is refused (@samp{Cannot write t.c: the name leads to a different file than
+the one this window read.  Nothing was written.  Use Save As to write your
+text over that file.}), the text stays in the window, and Save As onto the
+same name writes it.  A window that read no file, or whose file did not
+exist, saves as a copy and then takes the file it made.  A name that now
+leads to something that is not a regular file (a link to @file{/dev/null},
+say) is refused the same way, never written into.  Save As onto another
+file, Block Write, the autosave and emergency copies and the print copy
+write another file, so they never give it a bit, even when they overwrite a file that had them; a file saved under
 a new name has none to get.  Before Save As or Block Write replaces a file
 that has a setuid, setgid or sticky bit, the question says so
 (@samp{x.c already exists. Overwrite it?} and a second line,
@@ -1326,6 +1340,7 @@ changing who may read a file must not change who it runs as, a bit that is
 lost must not be lost in silence, and a name that changes hands must not make
 another file a program.  Ctrl-F9 on a shell script makes it executable on the
 file it opened, keeping the special bits it had, and never through a link that
-takes the name while the change is made; it does not yet compare against the
-file the window read.
+takes the name while the change is made, and not at all when another file
+has taken the script's name since the window read it, so Ctrl-F9 never makes
+someone else's file executable.
 @end table

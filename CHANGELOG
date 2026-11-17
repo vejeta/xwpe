@@ -525,7 +525,18 @@ Changes
   folder you cannot read, is still changed, and a link you named is
   followed once.  Ctrl-F9 on a shell script makes it executable on the file
   it opened, keeping the special bits the script had, and never through a
-  link that takes the name while the change is made.
+  link that takes the name while the change is made, nor when another file
+  has taken the script's name since the window read it.
+* A window remembers which file it read (its device and inode), and Save
+  writes only into that file.  Before, Save looked the name up again, so a
+  setuid program put under the name by another program received your text
+  and kept its bit.  When an editor that saves by renaming (vim, sed -i,
+  git checkout, rsync) leaves a plain file of yours under the name, F2 asks
+  "t.c was replaced on disk since this window read it. Overwrite it?"; Yes
+  writes a copy with no special bit and the window follows the new file, No
+  or Esc writes nothing.  A replacement with a special bit, another owner
+  or no regular file at all (a link to /dev/null) is refused with the way
+  out (Save As), and the text stays in the window.
 
 * The .bak copy is made once the save has opened the file, and from that
   very file: a file that cannot be written leaves no new .bak, and a name

@@ -64,9 +64,30 @@ typedef struct {
                        read; that file was not the one whose bits were read */
 } WpeModeKept;
 
+/** The file a window read, as the system knows it: device and inode, which
+    stay the same under any name, hard link or path.  A window remembers it
+    from the moment it read its file, so a Save writes into that file or
+    asks, and never decides by looking at the name again.  known == 0 for a
+    window that read no file (a new one, a clipboard, a file that did not
+    exist). */
+typedef struct {
+ dev_t dev;
+ ino_t ino;
+ int   known;
+} WpeFileIdentity;
+
 typedef struct {
  WpeWriteStatus status;
  int err;                        /* errno of the failure, else 0 */
+ int other_file;                 /* the name leads to another file than the one the
+                                    window read: nothing was written, the save is
+                                    refused (the file is not the user's own) */
+ int ask_overwrite;              /* a plain Save found another file under the name and
+                                    wrote nothing: the caller asks the user (owner-internal
+                                    between the two passes of a Save) */
+ WpeFileIdentity asked;          /* with ask_overwrite: the file the user is asked about */
+ WpeFileIdentity written;        /* the file that holds the text after WRITTEN, new
+                                    or old: the window's file from now on */
  char path[WPE_PATH_SIZE];       /* where the text went, or the file that refused it */
  int backup_err;                 /* the .bak could not be opened; the write went on */
  int backup_stopped;             /* the .bak was opened and not completed: the save was refused */
@@ -114,22 +135,30 @@ typedef enum {
 #define WPE_WRITE_SENTENCE_MAX (2 * WPE_PATH_SIZE + 256)
 
 struct FNST;
+struct stat;
+
+/* The identity of the file a window read (FENSTER.file_id).  Taken from the
+   descriptor that read it (take), forgotten for a window that has no file
+   (forget), or by name for a window that read a copy of its file (of_name:
+   the recovery, which read the .ESV). */
+void wpe_write_identity_take(WpeFileIdentity *id, const struct stat *st);
+void wpe_write_identity_forget(WpeFileIdentity *id);
+int  wpe_write_identity_of_name(const char *dir, const char *name, WpeFileIdentity *id);
 
 /* The user's own file. */
 WPE_WRITE_RESULT int wpe_write_file(struct FNST *f, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_range(struct FNST *f, const char *path,
                                      int xa, int ya, int xe, int ye,
                                      int backup, WpeWriteOutcome *o);
-/* The window saved and the user told: what F2 does.  @keep_dir and @keep_name
-   are the folder and name the window had before a Save As, which a failed
-   Save As leaves it under and which say whether the target is the window's
-   own file; NULL and NULL for a plain Save. */
-int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_dir,
-                   const char *keep_name);
+/* The window saved and the user told: what F2 does.  @keep_name is the name
+   the window had before a Save As, which a failed Save As leaves it under;
+   NULL for a plain Save.  A plain Save writes into the file the window read
+   (f->file_id); when the name now leads to another file it asks or refuses. */
+int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_name);
 /* The special bits that a write onto the existing file @path would not keep
-   (0: none, not a regular file, or the window's own file, given by folder and
-   name, or NULL and NULL for a block): what the overwrite question names. */
-mode_t wpe_write_overwrite_drops(const char *path, const char *own_dir, const char *own_name);
+   (0: none, not a regular file, or the window's own file, given by its
+   identity, or NULL for a block): what the overwrite question names. */
+mode_t wpe_write_overwrite_drops(const char *path, const WpeFileIdentity *own);
 
 /* Text that is not a window's rows. */
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
@@ -159,15 +188,16 @@ int  wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
    link that took the name since, and the mode is read from and given to that
    very file, so its special bits are the ones it had.  set_perm replaces the
    nine permission bits; add_perm adds bits to the twelve.  set_perm takes the
-   stat the dialog showed (NULL when none): only that file, by device and
-   inode, is changed.  When another file has taken the name, k->replaced says
+   stat the dialog showed (NULL when none), add_perm the identity of the file
+   the window read (NULL when none): only that file, by device and inode, is
+   changed.  When another file has taken the name, k->replaced says
    so and the errno is not 0. */
 struct stat;
 int  wpe_write_sync_before_bits(int fd, mode_t mode, int durable);
 int  wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, WpeModeKept *k);
-int  wpe_write_add_perm(const char *path, mode_t add, WpeModeKept *k);
+int  wpe_write_add_perm(const char *path, const WpeFileIdentity *own, mode_t add, WpeModeKept *k);
 int  wpe_write_caller_in_group(gid_t gid);
 void wpe_write_kept_merge(WpeModeKept *to, const WpeModeKept *from);
 /* "setgid bit", "setuid and setgid bits"; and why they were not kept. */

@@ -3464,6 +3464,7 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
 
  if ((f = (FENSTER *) MALLOC(sizeof(FENSTER))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
+ wpe_write_identity_forget(&f->file_id);
  if (xe > MAXSCOL-3) {  xe = MAXSCOL - 3;  xa = xe - 21;  }
  if (ye > MAXSLNS-3) {  ye = MAXSLNS - 3;  ya = ye - 6;  }
  f->fb = cn->fb;

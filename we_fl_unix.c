@@ -148,6 +148,7 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   /* allocate window structure */
   if((f = (FENSTER *)MALLOC(sizeof(FENSTER))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
+  wpe_write_identity_forget(&f->file_id);
 
   /* allocate buffer related to the window (NOT proper type, later casted) */
   if((b = (FLBFFR *) MALLOC(sizeof(FLBFFR))) == NULL)
@@ -704,10 +705,10 @@ static void WpeOverwriteQuestion(char *out, size_t n, const char *filen, mode_t 
 static mode_t WpeOverwriteDrops(FLBFFR *b, FENSTER *fe, const char *filen)
 {
   if(WpeSaveAsIsTranscript(b, fe))
-    return(wpe_write_overwrite_drops(filen, NULL, NULL));
+    return(wpe_write_overwrite_drops(filen, NULL));
   if(b->sw == 4)
-    return(wpe_write_overwrite_drops(filen, fe->dirct, fe->datnam));
-  return(wpe_write_overwrite_drops(filen, NULL, NULL));
+    return(wpe_write_overwrite_drops(filen, &fe->file_id));
+  return(wpe_write_overwrite_drops(filen, NULL));
 }
 
 /**
@@ -1668,7 +1669,7 @@ int WpeHandleFileManager(ECNT * cn)
           dtp = fe->dirct;
           ftp = fe->datnam;
           WpeFilenameToPathFile(filen, &fe->dirct, &fe->datnam);
-          WpeSaveAsSettleName(fe, dtp, ftp, wpe_write_save(fe, WPE_WRITE_THEN_NAME_KEPT, dtp, ftp));
+          WpeSaveAsSettleName(fe, dtp, ftp, wpe_write_save(fe, WPE_WRITE_THEN_NAME_KEPT, ftp));
         }
         else
           WpeWriteBlockToFile(fe, se, filen);
@@ -4137,6 +4138,7 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
 
   if((f = (FENSTER *) MALLOC(sizeof(FENSTER))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
+  wpe_write_identity_forget(&f->file_id);
   if((fw = (FLWND *) MALLOC(sizeof(FLWND))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   f->fb = cn->fb;
