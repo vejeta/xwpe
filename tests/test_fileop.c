@@ -77,6 +77,14 @@ static void chk_has(const char *what, const char *got, const char *want)
  }
 }
 
+static void chk_lacks(const char *what, const char *got, const char *unwanted)
+{
+ if (strstr(got, unwanted)) {
+  printf("FAIL: %s: \"%s\" has \"%s\"\n", what, got, unwanted);
+  fails++;
+ }
+}
+
 /* ---- the editor's side, as stubs (what we_write.c reaches) ---- */
 
 void (*WpeMouseChangeShape)(WpeMouseShape s) = NULL;
@@ -309,7 +317,8 @@ static void test_create_private(void)
  close(src);
  src = open("/proc/self/mem", O_RDONLY);
  fd = open("/dev/null", O_WRONLY);
- if (src >= 0 && fd >= 0) {
+ if (test_observation(src >= 0 && fd >= 0, "copy_fd from an unreadable source",
+                      "this system has no /proc/self/mem to read from")) {
   err = wpe_write_copy_fd(src, fd, &rd);
   chk_int("copy_fd from an unreadable source", err != 0, 1);
   chk_int("the read's error", rd, 1);
@@ -2684,6 +2693,7 @@ static void test_attributes_on_a_fifo_does_not_wait_for_a_writer(void)
 static void test_attributes_refuses_a_name_that_changed_hands_after_the_dialog(void)
 {
  WpeFileOpOutcome o;
+ WpeNameSeen seen;
  struct stat shown;
 
  make_dir();
@@ -2691,13 +2701,42 @@ static void test_attributes_refuses_a_name_that_changed_hands_after_the_dialog(v
  put("f", "x\n", 0644);
  put("victim", "y\n", 0600);
  stat("f", &shown);
+ wpe_write_name_seen("f", &seen);
  unlink("f");
  symlink("victim", "f");
- chk_int("refused", wpe_fileop_chmod_shown("f", &shown, 0666, &o), -1);
+ chk_int("refused", wpe_fileop_chmod_shown("f", &shown, &seen, 0666, &o), -1);
  chk_int("as changed", o.step, WPE_FILEOP_STEP_CHANGED);
  chk_int("the victim is as it was", mode_of("victim"), 0600);
  chk_str("the sentence", said(&o),
-         "Cannot change the permissions of f: f was replaced by another file.  Nothing was changed.");
+         "Cannot change the permissions of f: f was replaced by a link; the file it leads to was not changed."
+         "  Nothing was changed.");
+ clean();
+}
+
+/* Attributes is opened on a link z -> t and shows t; t is then replaced by an
+   atomic save before Ok.  z was a link the whole time, so the sentence says
+   another file took the name, never that a link did, and nothing was
+   changed.  Red on a tree that says "a link" for any name that is a link. */
+static void test_attributes_on_a_named_link_whose_target_was_replaced_says_another_file(void)
+{
+ WpeFileOpOutcome o;
+ WpeNameSeen seen;
+ struct stat shown;
+
+ make_dir();
+ chdir(dir);
+ put("t", "x\n", 0644);
+ put("t.new", "y\n", 0644);
+ symlink("t", "z");
+ stat("z", &shown);
+ wpe_write_name_seen("z", &seen);
+ rename("t.new", "t");
+ chk_int("refused", wpe_fileop_chmod_shown("z", &shown, &seen, 0600, &o), -1);
+ chk_int("as changed", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_int("the file now at t is as it was", mode_of("t"), 0644);
+ chk_str("the sentence", said(&o),
+         "Cannot change the permissions of z: z was replaced by another file.  Nothing was changed.");
+ chk_lacks("not a link", said(&o), "by a link");
  clean();
 }
 
@@ -2746,10 +2785,24 @@ static void test_attributes_on_an_unopenable_file_names_a_refused_bit(void)
  clean();
 }
 
+/** The sentence a link that took the name gets after a change of mode by
+    name that really changed the link (the BSDs and macOS): the call
+    succeeded, so what held the name may have been changed. */
+#define LINK_HEDGE_SENTENCE \
+ "Cannot change the permissions of z: z was replaced by a link while its permissions were being " \
+ "changed; what held the name may have been changed."
+
+/** The sentence when no call changed anything (Linux refuses a change of
+    mode by name on a link): the link was not followed and nothing changed. */
+#define LINK_NOTHING_SENTENCE \
+ "Cannot change the permissions of z: z was replaced by a link; the file it leads to was not changed."
+
 /* A link put under the name between the look and the change by name is not
-   followed, and the sentence says the file was replaced.  The file it
-   leads to keeps its mode. */
-static void test_attributes_says_a_file_that_took_the_name_replaced_it(void)
+   followed.  What the user reads follows what the system did with the call,
+   read from the call's own return value: where it failed (Linux) nothing was
+   changed; where it succeeded on the link (the BSDs and macOS) what held the
+   name may have been.  The file it leads to keeps its mode either way. */
+static void test_attributes_says_a_link_that_took_the_name_replaced_it(void)
 {
  WpeFileOpOutcome o;
 
@@ -2763,11 +2816,82 @@ static void test_attributes_says_a_file_that_took_the_name_replaced_it(void)
  put("z", "x\n", 0000);
  put("z.target", "y\n", 0644);
  fakechmod_swap_at("z", "z.target");
+ fakechmod_count_reset();
  chk_int("refused", wpe_fileop_chmod("z", 0600, &o), -1);
  fakechmod_swap_at("", "");
  chk_int("at the change of mode", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_int("the change by name was made", fakechmod_by_name, 1);
  chk_int("the file it led to is as it was", mode_of("z.target"), 0644);
- chk_has("the sentence", said(&o), "Cannot change the permissions of z: z was replaced by another file.");
+ if (fakechmod_last_rc != 0) {
+  chk_has("the sentence", said(&o), LINK_NOTHING_SENTENCE);
+  chk_has("nothing was changed", said(&o), "Nothing was changed");
+  chk_lacks("no doubt", said(&o), "may have been changed");
+ } else {
+  chk_has("the sentence", said(&o), LINK_HEDGE_SENTENCE);
+  chk_lacks("nothing was changed is not said", said(&o), "Nothing was changed");
+ }
+ clean();
+}
+
+/* The same fixture where the change of mode by name on a link succeeds, as it
+   does on the BSDs and macOS: the link's own mode was changed, so the
+   sentence says what held the name may have been changed and never "Nothing
+   was changed".  Guard on Linux, where the face makes the call succeed; the
+   mutation "a link that took the name always says nothing was changed"
+   turns it red. */
+static void test_attributes_on_a_link_under_lchmod_says_the_name_may_have_been_changed(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "attributes after a swap, lchmod",
+                   "this user opens a file with no permission")) {
+  clean();
+  return;
+ }
+ put("z", "x\n", 0000);
+ put("z.target", "y\n", 0644);
+ fakechmod_swap_at("z", "z.target");
+ fakechmod_set(FAKECHMOD_LCHMOD, 0);
+ chk_int("refused", wpe_fileop_chmod("z", 0600, &o), -1);
+ fake_off();
+ fakechmod_swap_at("", "");
+ chk_int("at the change of mode", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_int("the call succeeded", fakechmod_last_rc, 0);
+ chk_int("the file it led to is as it was", mode_of("z.target"), 0644);
+ chk_has("the sentence", said(&o), LINK_HEDGE_SENTENCE);
+ chk_lacks("nothing was changed is not said", said(&o), "Nothing was changed");
+ chk_int("the source is not as it was", o.src_kept, 0);
+ clean();
+}
+
+/* A hard link put under the name takes the change itself: the victim's mode
+   did change, and the sentence says it may have been.  Guard (green before
+   this pass); the mutation "treat every replacement as a link" turns it red. */
+static void test_attributes_says_a_hard_link_that_took_the_name_may_be_changed(void)
+{
+ WpeFileOpOutcome o;
+
+ make_dir();
+ chdir(dir);
+ if (!test_premise(test_premise_file_0200_is_unreadable(dir), "attributes after a hard link swap",
+                   "this user opens a file with no permission")) {
+  clean();
+  return;
+ }
+ put("z", "x\n", 0000);
+ put("z.target", "y\n", 0644);
+ fakechmod_swap_hard_at("z", "z.target");
+ chk_int("refused", wpe_fileop_chmod("z", 0600, &o), -1);
+ fakechmod_swap_at("", "");
+ chk_int("at the change of mode", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_int("the victim's mode did change", mode_of("z.target"), 0600);
+ chk_has("the sentence", said(&o),
+         "Cannot change the permissions of z: z was replaced by another file; "
+         "the file now under that name may have been changed.");
+ chk_lacks("not a link", said(&o), "by a link");
+ chk_int("the source is not as it was", o.src_kept, 0);
  clean();
 }
 
@@ -2854,9 +2978,12 @@ int main(void)
  test_attributes_on_a_fifo_does_not_wait_for_a_writer();
  test_attributes_on_a_link_the_user_named_follows_it_once();
  test_attributes_on_an_unopenable_file_names_a_refused_bit();
- test_attributes_says_a_file_that_took_the_name_replaced_it();
+ test_attributes_says_a_link_that_took_the_name_replaced_it();
+ test_attributes_on_a_link_under_lchmod_says_the_name_may_have_been_changed();
+ test_attributes_says_a_hard_link_that_took_the_name_may_be_changed();
  test_attributes_on_a_missing_name_says_so();
  test_attributes_refuses_a_name_that_changed_hands_after_the_dialog();
+ test_attributes_on_a_named_link_whose_target_was_replaced_says_another_file();
  fails += test_dir_failures;
  if (fails) {
   printf("test_fileop: %d failure(s)\n", fails);

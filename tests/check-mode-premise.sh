@@ -31,6 +31,15 @@
 #     test_premise_folder_refuses_new_files( for the others.  The pytest rows
 #     that use 0o444, 0o555 and 0o400 are not covered yet: they are the same
 #     premise on the other side (BT1) and wait for their own pass.
+#  5. In a tests/*.c the first argument of test_premise( is a call of a
+#     test_premise_* probe (the permission the system must honour for this
+#     user), an integer literal (the harness testing itself), or an
+#     identifier that the same file assigns from such a probe.  Any other
+#     expression (a comparison, a call of a function of the test itself) is a
+#     way to watch the system, a /proc file or a call a test can intercept,
+#     and belongs to test_observation(, which is a SKIP by name whatever the
+#     run says of its privileges.  The first argument is read from the line
+#     of the call; the identifier is judged by the file, not the function.
 #
 # What the scan cannot see, and so does not judge: a mode that reaches a call
 # through a variable or a macro (mode_t m = 02755; chmod(p, m)), a mode
@@ -126,6 +135,52 @@ function unmasked(s, re,   t, off, st, before, pc) {
   return 0
 }
 function calls(s, re) { return match(s, re) > 0 }
+# The text of the first argument of the call whose "(" is just before
+# position p of s: up to the first comma or closing paren of its own level.
+function first_arg(s, p,   depth, i, n, c) {
+  depth = 0; n = length(s)
+  for (i = p; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (c == "(") depth++
+    else if (c == ")") { if (depth == 0) break; depth-- }
+    else if (c == "," && depth == 0) break
+  }
+  return substr(s, p, i - p)
+}
+# Rule 5 for one first argument of test_premise(.  A probe call is the
+# permission the premise states; an integer literal is the harness testing
+# itself; an identifier is judged at the end, when every assignment of the
+# file is known.  Anything else (a comparison, a call of a function of the
+# test itself) is a
+# way to watch the system, which is test_observation(.
+function premise_arg_ok(a,   v) {
+  gsub(/^[ \t]+/, "", a); gsub(/[ \t]+$/, "", a)
+  if (a ~ /^[0-9]+$/) return 1
+  if (a ~ /^test_premise_[A-Za-z0-9_]*[ \t]*[(]/) return 1
+  if (a ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+    if (!(a in used_at)) used_at[a] = FNR
+    return 1
+  }
+  return 0
+}
+# Rule 5 for one line: every test_premise( call on it, and every identifier
+# assigned from a probe.
+function note_premises(line,   t, off, a) {
+  t = line
+  while (match(t, /(^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*test_premise_[A-Za-z0-9_]*[ \t]*[(]/)) {
+    a = substr(t, RSTART, RLENGTH); sub(/[ \t]*=.*/, "", a); sub(/^[^A-Za-z_]/, "", a)
+    from_probe[a] = 1
+    t = substr(t, RSTART + RLENGTH)
+  }
+  t = line
+  while (match(t, /(^|[^A-Za-z0-9_])test_premise[ \t]*[(]/)) {
+    off = RSTART + RLENGTH
+    a = first_arg(t, off)
+    if (!premise_arg_ok(a))
+      say("rule 5: test_premise( takes a probe of a permission (test_premise_*); a way to watch the system is test_observation(", FNR)
+    t = substr(t, off)
+  }
+}
 function say(msg, ln) { print file ":" ln ": " msg; bad++ }
 BEGIN {
   if (kind == "c") {
@@ -160,6 +215,7 @@ BEGIN {
       if (line ~ /(^|[^0-9A-Za-z_])0[02]00([^0-9A-Za-z_]|$)/) need_file = 1
       if (line ~ /(^|[^0-9A-Za-z_])0[1345]00([^0-9A-Za-z_]|$)/) need_folder = 1
     }
+    note_premises(line)
     if (line ~ /(^|[^A-Za-z0-9_])test_premise[ \t]*[(]/) has_premise = 1
     if (line ~ /(^|[^A-Za-z0-9_])test_premise_special_bits_settable[ \t]*[(]/) has_bits_probe = 1
     if (line ~ /(^|[^A-Za-z0-9_])test_premise_file_0200_is_unreadable[ \t]*[(]/) has_file_probe = 1
@@ -172,6 +228,9 @@ BEGIN {
 }
 END {
   if (kind == "c") {
+    for (v in used_at)
+      if (!(v in from_probe))
+        say("rule 5: test_premise( is given " v ", which is not assigned from a test_premise_* probe in this file; a way to watch the system is test_observation(", used_at[v])
     if (has_special && !has_include) say("rule 1: sets a special-bit mode and does not include testdir.h", first_special)
     if (has_special && !has_bits_probe) say("rule 1: sets a special-bit mode and never calls test_premise_special_bits_settable(", first_special)
     if (has_special && mkd_lines != "") say("rule 1: calls mkdtemp itself (line" mkd_lines "); use test_dir_make or test_dir_make_under", 0)
@@ -243,7 +302,17 @@ selftest() {
     'def test_a(tmp_path):' '    workdir_in_my_group(str(tmp_path))' '    special_bits_settable(str(tmp_path), stat.S_ISGID)' \
     '    os.chmod(str(tmp_path), 0o2755)' > "$fx/good_py.py"
   printf '%s\n' '"""A 0o2755 folder, said in words."""' 'import os' 'def test_a(p):' '    return os.stat(p).st_mode & 0o7777' > "$fx/good_py_mask.py"
+  printf '%s\n' '#include "testdir.h"' \
+    'static void row(char *p) { if (!test_premise(fopen(p, "r") != NULL, "r", "m")) return; }' > "$fx/bad_observation.c"
+  printf '%s\n' '#include "testdir.h"' \
+    'static void row(char *d, int seen) { int ok = test_premise_special_bits_settable(d, S_ISGID);' \
+    'test_premise(ok, "r", "m"); test_premise(1, "r", "m"); test_premise(test_premise_file_0200_is_unreadable(d), "r", "m");' \
+    'if (!test_premise(test_premise_folder_refuses_new_files(d), "r", "m")) return; test_observation(seen, "r", "m"); }' > "$fx/good_premise_forms.c"
+  printf '%s\n' '#include "testdir.h"' \
+    'static void row(int seen) { test_premise(seen, "r", "m"); }' > "$fx/bad_identifier.c"
   out=$(scan_dir "$fx")
+  selftest_expect "a premise that watches the system" "$out" "bad_observation.c:2: rule 5"
+  selftest_expect "a premise given an identifier no probe assigned" "$out" "bad_identifier.c:2: rule 5"
   selftest_expect "a special-bit chmod with no helper" "$out" \
     "bad_none.c:2: rule 2" "bad_none.c:2: rule 1: sets a special-bit mode and does not include testdir.h"
   selftest_expect "a bare chmod with the include" "$out" "bad_raw.c:2: rule 2"
@@ -258,7 +327,7 @@ selftest() {
   selftest_expect "a pytest row with no helper" "$out" \
     "bad_py.py:3: rule 3: sets a special-bit mode and never calls workdir_in_my_group(" \
     "bad_py.py:3: rule 3: sets a special-bit mode and never calls special_bits_settable("
-  for good in good_helper.c good_mask.c good_deny.c good_py.py good_py_mask.py; do
+  for good in good_helper.c good_mask.c good_deny.c good_py.py good_py_mask.py good_premise_forms.c; do
     if printf '%s\n' "$out" | grep -q "^$good:"; then
       echo "FAIL: $good must pass, and the scan named it:"
       printf '%s\n' "$out" | grep "^$good:" | sed 's/^/    | /'

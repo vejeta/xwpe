@@ -191,7 +191,15 @@ typedef struct {
  struct stat  first;     /* what lstat said of the name before it was opened */
  char         real[WPE_PATH_SIZE];  /* where a link the user named leads */
  int          replaced;  /* the name stopped leading to the file `first` describes */
+ mode_t       replaced_kind;  /* S_IFMT of what holds the name then; 0 when none, or gone */
 } WriteModeTarget;
+
+/** What the name leads to now, compared with what lstat saw of it first. */
+typedef enum {
+ WRITE_NAME_GONE,    /* lstat fails: nothing is at the name */
+ WRITE_NAME_SAME,    /* the file lstat saw first, and not a link */
+ WRITE_NAME_CHANGED  /* another file, a link included, holds the name */
+} WriteNameNow;
 
 /**
  * write_mode_set - The one chmod, fchmod or fchmodat of the editor's files.
@@ -407,6 +415,108 @@ static int write_mode_same_file(const struct stat *first, const struct stat *now
 }
 
 /**
+ * write_name_look - Look at what holds a name right now, without following a link.
+ * @path: the name; @st: receives what lstat says.
+ * Return: 1 when something holds the name, 0 when lstat fails.
+ *
+ * The one look every decision of "another file took the name" is made
+ * from, in the mode owner and in the write owner (write_name_kind,
+ * write_mode_name_changed and write_mode_shown_kind all call it).  What a
+ * system's open or chmod answered for such a file (ELOOP, EMLINK, EFTYPE,
+ * ENXIO, EOPNOTSUPP) is one system's word for it and is never asked.
+ */
+static int write_name_look(const char *path, struct stat *st)
+{
+ return(lstat(path, st) == 0);
+}
+
+/**
+ * write_name_kind - What kind of thing holds this name right now.
+ * @path: the name.
+ * Return: S_IFMT of what write_name_look sees (S_IFLNK for a link), or 0
+ * when nothing holds the name.
+ */
+static mode_t write_name_kind(const char *path)
+{
+ struct stat now;
+
+ if (!write_name_look(path, &now))
+  return(0);
+ return(now.st_mode & S_IFMT);
+}
+
+/**
+ * wpe_write_name_seen - Remember what a name was when the user was shown it.
+ * @path: the name; @seen: receives its kind, device and inode, looked at
+ * without following a link.
+ *
+ * For the Attributes dialog, which shows the file a link leads to.  When the
+ * user presses Ok the owner can then tell a link that was there all along
+ * (only its target changed) from a link that took the name since, and the
+ * sentence the user reads is true of what happened to the name.  known stays
+ * 0 when the name cannot be looked at.
+ */
+void wpe_write_name_seen(const char *path, WpeNameSeen *seen)
+{
+ struct stat st;
+
+ memset(seen, 0, sizeof *seen);
+ if (!write_name_look(path, &st))
+  return;
+ seen->known = 1;
+ seen->kind = st.st_mode & S_IFMT;
+ seen->dev = st.st_dev;
+ seen->ino = st.st_ino;
+}
+
+/**
+ * write_mode_shown_kind - What kind of thing took the name after the dialog.
+ * @path: the name the user was shown; @seen: what it was then, or NULL.
+ * Return: S_IFMT of what holds the name now, but S_IFLNK only when that is
+ * true of the name: the name was not a link when it was shown, or it is
+ * another link than the one shown.  The same link with another target is 0
+ * ("another file", not "a link").  Without @seen a link is never claimed (0):
+ * the name may have been a link all along, and the sentence must not say
+ * otherwise.
+ */
+static mode_t write_mode_shown_kind(const char *path, const WpeNameSeen *seen)
+{
+ struct stat now;
+
+ if (!write_name_look(path, &now))
+  return(0);
+ if (!S_ISLNK(now.st_mode))
+  return(now.st_mode & S_IFMT);
+ if (seen == NULL || !seen->known)
+  return(0);
+ if (seen->kind == S_IFLNK && seen->dev == now.st_dev && seen->ino == now.st_ino)
+  return(0);
+ return(S_IFLNK);
+}
+
+/**
+ * write_mode_name_changed - Did the name change hands since the user named it?
+ * @t: the target; t->replaced_kind receives what holds the name now when
+ * another file does.
+ * Return: WRITE_NAME_CHANGED for a link, a socket, a hard link or any other
+ * file put under the name, whatever the system said when it refused to
+ * open it; WRITE_NAME_SAME for the file the first lstat saw;
+ * WRITE_NAME_GONE when nothing is at the name (the open's own errno then
+ * tells why).
+ */
+static WriteNameNow write_mode_name_changed(WriteModeTarget *t)
+{
+ struct stat now;
+
+ if (!write_name_look(t->name, &now))
+  return(WRITE_NAME_GONE);
+ if (write_mode_same_file(&t->first, &now))
+  return(WRITE_NAME_SAME);
+ t->replaced_kind = now.st_mode & S_IFMT;
+ return(WRITE_NAME_CHANGED);
+}
+
+/**
  * write_mode_name_first - Look at the name the user gave, once.
  * @path: the name; @t: receives what lstat says and the name to open.
  * Return: 0, or the errno.
@@ -469,26 +579,37 @@ static int write_mode_check_descriptor(WriteModeTarget *t)
  close(t->fd);
  t->fd = -1;
  t->replaced = 1;
+ (void)write_mode_name_changed(t);
  return(ESTALE);
 }
 
 /**
  * write_mode_open_failed - What a failed open says of the name.
  * @t: the target; @err: the errno of the open.
- * Return: 1 when the file can still be changed through its name, 0 when
- * the open's failure is the answer.
+ * Return: 0 when the file can still be changed through its name, else the
+ * errno to report (ESTALE with t->replaced when another file holds the
+ * name, the open's own errno otherwise).
  *
- * Only a system saying "not for you" (EACCES, EPERM) sends a file to the
- * name.  A link where a file was (ELOOP) or a socket where a file was
- * (ENXIO) is another file under the name: refused, never worked around.
+ * The name is looked at again, never the errno.  A link, a socket or any
+ * other file put where the file was is another file under the name:
+ * refused with ESTALE and never worked around, the same on every system,
+ * whatever each one calls the refusal.  Only when it is still the file
+ * the user named does a system saying "not for you" (EACCES, EPERM) send it
+ * to the name.  When nothing is at the name the open's errno stands: a
+ * closed parent folder is not "another file".
  */
 static int write_mode_open_failed(WriteModeTarget *t, int err)
 {
- if (err == EACCES || err == EPERM)
-  return(1);
- if (err == ELOOP || err == ENXIO)
+ WriteNameNow now = write_mode_name_changed(t);
+
+ if (now == WRITE_NAME_CHANGED)
+ {
   t->replaced = 1;
- return(0);
+  return(ESTALE);
+ }
+ if (now == WRITE_NAME_SAME && (err == EACCES || err == EPERM))
+  return(0);
+ return(err);
 }
 
 /**
@@ -500,6 +621,9 @@ static int write_mode_open_failed(WriteModeTarget *t, int err)
  * dialog's stat), or NULL when nothing was shown.  When given, the file the
  * name leads to must be that file (device and inode): a name that changed
  * hands while the dialog was open is refused before anything is opened.
+ * @seen: what the name itself was when it was shown (wpe_write_name_seen),
+ * or NULL when not known; it decides only whether the sentence may say a
+ * link took the name.
  *
  * A regular file or a folder is opened (never through a link that took the
  * name since lstat) and compared by device and inode with what lstat saw:
@@ -514,19 +638,22 @@ static int write_mode_open_failed(WriteModeTarget *t, int err)
  * O_PATH is used: it is Linux's, and fchmod on such a descriptor is
  * refused there.
  */
-static int write_mode_target_open(const char *path, const struct stat *shown, WriteModeTarget *t)
+static int write_mode_target_open(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+                                  WriteModeTarget *t)
 {
  int err;
 
  t->how = WRITE_MODE_BY_FD;
  t->fd = -1;
  t->replaced = 0;
+ t->replaced_kind = 0;
  err = write_mode_name_first(path, t);
  if (err != 0)
   return(err);
  if (shown != NULL && !write_mode_same_file(shown, &t->first))
  {
   t->replaced = 1;
+  t->replaced_kind = write_mode_shown_kind(path, seen);
   return(ESTALE);
  }
  if (!S_ISREG(t->first.st_mode) && !S_ISDIR(t->first.st_mode))
@@ -537,7 +664,8 @@ static int write_mode_target_open(const char *path, const struct stat *shown, Wr
  err = write_mode_open_descriptor(t);
  if (err == 0)
   return(write_mode_check_descriptor(t));
- if (!write_mode_open_failed(t, err))
+ err = write_mode_open_failed(t, err);
+ if (err != 0)
   return(err);
  t->how = WRITE_MODE_BY_NAME;
  return(0);
@@ -555,7 +683,7 @@ static void write_mode_target_close(WriteModeTarget *t)
  * write_mode_name_still_leads - After a change by name, is it the same file?
  * @t: the target; @err: what the change returned.
  * Return: @err, or ESTALE (with t->replaced) when the name leads to another
- * file than the one lstat saw, a link included.
+ * file than the one lstat saw, a link included, or to nothing.
  *
  * Nothing is trusted that was done through a name: a file swapped in
  * after the first lstat is told, not reported as changed.  On a system
@@ -565,11 +693,9 @@ static void write_mode_target_close(WriteModeTarget *t)
  */
 static int write_mode_name_still_leads(WriteModeTarget *t, int err)
 {
- struct stat now;
-
  if (t->how != WRITE_MODE_BY_NAME)
   return(err);
- if (lstat(t->name, &now) == 0 && write_mode_same_file(&t->first, &now))
+ if (write_mode_name_changed(t) == WRITE_NAME_SAME)
   return(err);
  t->replaced = 1;
  return(ESTALE);
@@ -592,6 +718,7 @@ static mode_t write_mode_wanted(WriteModeChange how, mode_t current, mode_t bits
 /**
  * write_mode_change - Change the mode of a file the user named.
  * @path: the name; @shown: the file the user was shown, or NULL;
+ * @seen: what the name was then, or NULL (not known);
  * @how and @bits: what to ask for; @k: what was not kept.
  * Return: 0, or the errno.
  *
@@ -601,16 +728,17 @@ static mode_t write_mode_wanted(WriteModeChange how, mode_t current, mode_t bits
  * followed, and the caller reads k->replaced.  k->unreached says no call
  * was made at all (the name leads nowhere).
  */
-static int write_mode_change(const char *path, const struct stat *shown, WriteModeChange how,
-                             mode_t bits, WpeModeKept *k)
+static int write_mode_change(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+                             WriteModeChange how, mode_t bits, WpeModeKept *k)
 {
  WriteModeTarget t;
  struct stat now;
  int err, after;
 
  memset(k, 0, sizeof *k);
- err = write_mode_target_open(path, shown, &t);
+ err = write_mode_target_open(path, shown, seen, &t);
  k->replaced = t.replaced;
+ k->replaced_kind = t.replaced_kind;
  if (err != 0)
  {
   k->unreached = !t.replaced;
@@ -625,6 +753,7 @@ static int write_mode_change(const char *path, const struct stat *shown, WriteMo
  if (err == 0 && after != 0)
   k->changed = 1;
  k->replaced = t.replaced;
+ k->replaced_kind = t.replaced_kind;
  write_mode_target_close(&t);
  return(after);
 }
@@ -645,7 +774,25 @@ static int write_mode_change(const char *path, const struct stat *shown, WriteMo
  */
 int wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, WpeModeKept *k)
 {
- return(write_mode_change(path, shown, WRITE_CHANGE_NINE, nine, k));
+ return(wpe_write_set_perm_seen(path, shown, NULL, nine, k));
+}
+
+/**
+ * wpe_write_set_perm_seen - wpe_write_set_perm for a dialog that also knows
+ * what the name was.
+ * @seen: wpe_write_name_seen of the name when the dialog opened; NULL, or
+ * not known, when there was no dialog.
+ *
+ * A name the dialog opened on a link shows the file the link leads to.  If
+ * that file is replaced while the dialog is open the name is still the same
+ * link, and the sentence says another file took it, not that a link did.
+ * Not known is the safe default: a link at the name is then never claimed to
+ * have taken it, because it may have been a link all along.
+ */
+int wpe_write_set_perm_seen(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+                            mode_t nine, WpeModeKept *k)
+{
+ return(write_mode_change(path, shown, seen, WRITE_CHANGE_NINE, nine, k));
 }
 
 /**
@@ -665,12 +812,12 @@ int wpe_write_add_perm(const char *path, const WpeFileIdentity *own, mode_t add,
  struct stat shown;
 
  if (own == NULL || !own->known)
-  return(write_mode_change(path, NULL, WRITE_CHANGE_ADD, add, k));
+  return(write_mode_change(path, NULL, NULL, WRITE_CHANGE_ADD, add, k));
  memset(&shown, 0, sizeof shown);
  shown.st_dev = own->dev;
  shown.st_ino = own->ino;
  shown.st_mode = S_IFREG;
- return(write_mode_change(path, &shown, WRITE_CHANGE_ADD, add, k));
+ return(write_mode_change(path, &shown, NULL, WRITE_CHANGE_ADD, add, k));
 }
 
 /**
@@ -1363,8 +1510,8 @@ typedef enum {
  WRITE_OPEN_NAMED,          /* the name the user typed: a link at its end is followed,
                                and one that leads nowhere is made */
  WRITE_OPEN_NAMED_NOFOLLOW  /* a name the caller has already resolved and judged: a
-                               link at its end is refused (the system's refusal of a
-                               link: ELOOP on Linux), never followed */
+                               link at its end is refused (ELOOP and
+                               replaced_by_link, on every system), never followed */
  /* A third way, for a name the editor chose itself (the autosave, the emergency
     copy), made new and never opened existing, arrives with the pass that moves
     those copies here. */
@@ -1628,8 +1775,8 @@ static int write_backup_refuses_save(const WriteBackup *bk, WpeWriteOutcome *o)
  * is followed (NAMED).  A name the caller already resolved and judged
  * (NAMED_NOFOLLOW) is opened with O_NOFOLLOW both times and never takes the
  * dangling-link way: a link found there was put there since, the open fails
- * with the system's refusal of a link (ELOOP on Linux), and nothing is
- * created through it.
+ * with the system's own errno, which write_open_failure turns into the one
+ * the owner reports for a link, and nothing is created through it.
  */
 static int write_target_open_fd(const char *path, WriteOpenHow how, int *created)
 {
@@ -1727,6 +1874,27 @@ static int write_target_open(const char *path, const WriteAim *aim, WriteTarget 
  t->purpose = write_aim_purpose(aim, &t->st, t->created);
  t->keep = write_aim_keep(aim, t);
  return(0);
+}
+
+/**
+ * write_open_failure - The one errno a failed open of the file is reported with.
+ * @path: the file; @aim: what the write is for; @err: the errno of the open;
+ * @o: receives replaced_by_link.
+ * Return: ELOOP when the open was one that never follows a link and a link
+ * holds the name now (the one value the owner reports for it: set here,
+ * never read), else @err (EIO when it left none).
+ *
+ * The name is looked at again, never the errno: FreeBSD says EMLINK for a
+ * link refused by O_NOFOLLOW, NetBSD EFTYPE, Linux ELOOP.  The caller reads
+ * o->replaced_by_link, the user sees "a link took the name" the same on
+ * every system.
+ */
+static int write_open_failure(const char *path, const WriteAim *aim, int err, WpeWriteOutcome *o)
+{
+ if (aim->open != WRITE_OPEN_NAMED_NOFOLLOW || write_name_kind(path) != S_IFLNK)
+  return(write_error_number(err));
+ o->replaced_by_link = 1;
+ return(ELOOP);
 }
 
 /**
@@ -1978,7 +2146,7 @@ static int write_run_open(const WriteSource *s, const char *path, int backup, co
  bk->fd = -1;
  if (err != 0)
  {
-  o->err = write_error_number(err);
+  o->err = write_open_failure(path, aim, err, o);
   return(-1);
  }
  if (t->purpose == WRITE_PURPOSE_REPLACED && aim->replaced.how != WRITE_REPLACED_AS_COPY &&

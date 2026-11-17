@@ -1493,9 +1493,10 @@ int wpe_fileop_rmdir(const char *path, WpeFileOpOutcome *o)
  * Return: -1.
  *
  * The user reads where it stopped: a name that leads nowhere, another file
- * that took the name while the dialog was open (nothing of the user's file
- * was touched), or the permissions refused.  A failure after a call that took
- * the nine bits is not "nothing was changed".
+ * or a link that took the name while the dialog was open (nothing of the
+ * user's file was touched), or the permissions refused.  A failure after a
+ * call that took the nine bits is not "nothing was changed", so the link
+ * sentence that says so is chosen only when no call changed anything.
  */
 static int fileop_chmod_failed(WpeFileOpOutcome *o, const WpeModeKept *k, int err)
 {
@@ -1504,32 +1505,39 @@ static int fileop_chmod_failed(WpeFileOpOutcome *o, const WpeModeKept *k, int er
  if (k->unreached)
   return(fileop_fail(o, WPE_FILEOP_STEP_SOURCE, err));
  if (k->replaced)
+ {
+  o->replaced_by_link = S_ISLNK(k->replaced_kind);
   return(fileop_fail(o, WPE_FILEOP_STEP_CHANGED, err));
+ }
  return(fileop_fail(o, WPE_FILEOP_STEP_MODE, err));
 }
 
 int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpOutcome *o)
 {
- return(wpe_fileop_chmod_shown(path, NULL, perm, o));
+ return(wpe_fileop_chmod_shown(path, NULL, NULL, perm, o));
 }
 
 /**
  * wpe_fileop_chmod_shown - Change the permissions of the file the user was shown.
- * @path: the name; @shown: the stat the Attributes dialog showed; @perm: the
- * nine bits; @o: the outcome.
+ * @path: the name; @shown: the stat the Attributes dialog showed; @seen:
+ * what the name itself was then (wpe_write_name_seen), or NULL when not
+ * known; @perm: the nine bits; @o: the outcome.
  *
  * The dialog can stay open for as long as the user likes.  The file it
  * showed is the only one changed: a name that now leads to another file
  * (a link, a socket, another file) is refused as replaced and nothing is
- * changed.
+ * changed.  @seen keeps the sentence true when the dialog was opened on a
+ * link: if only the file the link leads to was replaced, the user reads
+ * "another file", not "a link".  Not known never says "a link".
  */
-int wpe_fileop_chmod_shown(const char *path, const struct stat *shown, mode_t perm, WpeFileOpOutcome *o)
+int wpe_fileop_chmod_shown(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+                           mode_t perm, WpeFileOpOutcome *o)
 {
  WpeModeKept kept;
  int err;
 
  fileop_begin(o, WPE_FILEOP_CHMOD, path, "");
- err = wpe_write_set_perm(path, shown, perm, &kept);
+ err = wpe_write_set_perm_seen(path, shown, seen, perm, &kept);
  if (err != 0)
   return(fileop_chmod_failed(o, &kept, err));
  fileop_hook_refuse_special(&kept, kept.asked, EPERM);
@@ -2589,6 +2597,31 @@ static const char *fileop_step_text(WpeFileOpStep step)
 
 static const char *fileop_past(WpeFileOpKind kind);
 
+/**
+ * fileop_replaced_words - Say what took the name of a file whose permissions
+ * were being changed, and whether anything was changed.
+ * @out, @n: receive the words; @o: the outcome.
+ *
+ * A link that took the name while no call changed anything: the call never
+ * follows a link, so the file it leads to is as it was and the sentence
+ * says so.  When a call did succeed (the BSDs and macOS give a link its own
+ * permissions), what held the name may have been changed and the sentence
+ * says that, whatever holds the name now.
+ */
+static void fileop_replaced_words(char *out, size_t n, const WpeFileOpOutcome *o)
+{
+ if (o->replaced_by_link && o->src_kept)
+  snprintf(out, n, "%s was replaced by a link; the file it leads to was not changed", o->src);
+ else if (o->replaced_by_link)
+  snprintf(out, n, "%s was replaced by a link while its permissions were being changed; "
+           "what held the name may have been changed", o->src);
+ else if (o->src_kept)
+  snprintf(out, n, "%s was replaced by another file", o->src);
+ else
+  snprintf(out, n, "%s was replaced by another file; the file now under that name may have been changed",
+           o->src);
+}
+
 /** fileop_reason - The reason half of the sentence, for a FAILED outcome. */
 static void fileop_reason(char *out, size_t n, const WpeFileOpOutcome *o)
 {
@@ -2605,8 +2638,7 @@ static void fileop_reason(char *out, size_t n, const WpeFileOpOutcome *o)
  else if (o->step == WPE_FILEOP_STEP_TOO_DEEP)
   snprintf(out, n, "%s is deeper than %d folders", o->src, WPE_FILEOP_MAX_DEPTH);
  else if (o->step == WPE_FILEOP_STEP_CHANGED && o->kind == WPE_FILEOP_CHMOD)
-  snprintf(out, n, "%s was replaced by another file%s", o->src,
-           o->src_kept ? "" : "; the file now under that name may have been changed");
+  fileop_replaced_words(out, n, o);
  else if (o->step == WPE_FILEOP_STEP_CHANGED)
   snprintf(out, n, "%s changed while the folder was being %s", o->src, fileop_past(o->kind));
  else if (o->kind == WPE_FILEOP_LINK && o->err_link != 0 && o->step == WPE_FILEOP_STEP_LINK)

@@ -357,6 +357,30 @@ static void test_special_bits_probe_follows_the_system(void)
  drop_folder();
 }
 
+/* fakechmod_last_rc is the value of the call just made, on every path: a
+   call that succeeded before, then one the face refuses, leaves the refusal,
+   and a count reset leaves no earlier value to be inherited.  Red under the
+   mutation "a refused call does not set it". */
+static void test_fakechmod_last_rc_is_the_last_calls(void)
+{
+ char path[512];
+ mode_t refused_mode = S_ISGID | 0755;
+
+ make_folder();
+ snprintf(path, sizeof path, "%s/%s", folder, "plain.txt");
+ chk_int("put", test_put_mode(folder, "plain.txt", "x\n", 0644), 0);
+ chk_int("a call that succeeds", fchmodat(AT_FDCWD, path, 0600, 0), 0);
+ chk_int("its value", fakechmod_last_rc, 0);
+ fakechmod_set(FAKECHMOD_REFUSE, S_ISGID);
+ chk_int("a call the face refuses", fchmodat(AT_FDCWD, path, refused_mode, 0), -1);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("its value, not the earlier one", fakechmod_last_rc, -1);
+ chk_int("a call that succeeds again", fchmodat(AT_FDCWD, path, 0600, 0), 0);
+ fakechmod_count_reset();
+ chk_int("a count reset leaves none to inherit", fakechmod_last_rc, -1);
+ drop_folder();
+}
+
 /* A premise that does not hold is a SKIP by name for a user who cannot be
    expected to meet it, and a counted FAIL when the run says it is
    unprivileged.  The SKIP line is the one the BSD CI's list greps. */
@@ -389,6 +413,30 @@ static void test_premise_skips_or_fails_by_the_run(void)
  chk_lacks("it is not a SKIP", out_text, "SKIP");
  chk_int("and counted", test_dir_failures, 1);
  test_dir_failures = 0;
+}
+
+/* An observation the system does not let a row make is a SKIP by name even
+   when the run says it is unprivileged, and never a counted FAIL.  Red under
+   the mutation "test_observation calls test_premise". */
+static void test_an_observation_skips_under_the_unprivileged_flag(void)
+{
+ int rc;
+
+ setenv(TEST_DIR_UNPRIVILEGED_ENV, "1", 1);
+ collect_begin();
+ rc = test_observation(1, "a row", "what it needs");
+ collect_end();
+ chk_int("an observation that is there returns 1", rc, 1);
+ chk_int("and prints nothing", (long)strlen(out_text), 0);
+
+ collect_begin();
+ rc = test_observation(0, "a row", "what it needs");
+ collect_end();
+ unsetenv(TEST_DIR_UNPRIVILEGED_ENV);
+ chk_int("unprivileged: returns 0", rc, 0);
+ chk_has("the SKIP line", out_text, "SKIP: a row: cannot be observed here: what it needs\n");
+ chk_lacks("it is not a FAIL", out_text, "FAIL");
+ chk_int("and not counted", test_dir_failures, 0);
 }
 
 /* The two probes of a mode that keeps a user out leave the folder as it was. */
@@ -447,7 +495,9 @@ int main(void)
  test_put_mode_says_when_a_bit_was_dropped();
  test_mkdir_and_chmod_mode_read_back();
  test_special_bits_probe_follows_the_system();
+ test_fakechmod_last_rc_is_the_last_calls();
  test_premise_skips_or_fails_by_the_run();
+ test_an_observation_skips_under_the_unprivileged_flag();
  test_deny_mode_probes_leave_no_trace();
  test_other_group_is_a_group_of_ours();
  if (fails) {

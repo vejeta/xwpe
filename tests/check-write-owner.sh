@@ -111,6 +111,21 @@
 #     do, or to a question that reads it).  An assignment, a member write
 #     (`f->file_id.known = 1`) or any other read of it is a second place
 #     that decides which file is the window's own.
+# 20. Another file at the name is decided from the name, never from an
+#     errno.  Each system has its own word for a link, a socket or a FIFO
+#     met by an open or a chmod (ELOOP, EMLINK, EFTYPE, ENXIO, EOPNOTSUPP),
+#     so a list of them is right on one system and wrong on the next.
+#     Comments and strings are blanked and the names bounded by word, as in
+#     rule 12.  In we_write.c none of ELOOP, ENXIO, EMLINK, EOPNOTSUPP and
+#     ENOTSUP appears, except ELOOP in write_open_failure (the one value the
+#     owner reports for a link that took a name that is never followed: set
+#     there, never read), and EFTYPE appears only in write_mode_refusal (a
+#     refused sticky bit).  In we_fileop.c EOPNOTSUPP, ENOTSUP and EMLINK appear only
+#     in fileop_rename_noreplace_at (what a system without the rename or the
+#     link says of it), and ELOOP only in fileop_job_dst_is_folder and
+#     fileop_root_dst_follow (their opens follow links, so ELOOP is a cycle on
+#     every system) and fileop_walk (the depth limit, set and not read).
+#     ENXIO and EFTYPE appear nowhere in we_fileop.c.  No allow line.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -257,6 +272,24 @@ scan() {
         if (i < 1 || substr(m, i, 1) != "&" || (i > 1 && substr(m, i - 1, 1) == "&")) note("r18", 1)
       }
     }
+    # rule 20 for one name of an errno: is it allowed in this function?
+    function allowed20(id) {
+      if (file == "we_write.c") return((fn == "write_mode_refusal" && id == "EFTYPE") || (fn == "write_open_failure" && id == "ELOOP"))
+      if (id == "ELOOP") return(fn == "fileop_job_dst_is_folder" || fn == "fileop_root_dst_follow" || fn == "fileop_walk")
+      if (id == "EOPNOTSUPP" || id == "ENOTSUP" || id == "EMLINK") return(fn == "fileop_rename_noreplace_at")
+      return(0)
+    }
+    # rule 20 for the code of one statement, strings blanked: every errno
+    # that one system names for "another kind of file here", unless the
+    # function may.
+    function note20(m,   t, id) {
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])(ELOOP|ENXIO|EMLINK|EOPNOTSUPP|ENOTSUP|EFTYPE)([^A-Za-z0-9_]|$)/)) {
+        id = substr(t, RSTART, RLENGTH); gsub(/[^A-Z]/, "", id)
+        if (!allowed20(id)) note("r20", 1)
+        t = substr(t, RSTART + RLENGTH - 1)
+      }
+    }
     function prev_char(s, p,   i, c) {
       for (i = p - 1; i >= 1; i--) { c = substr(s, i, 1); if (c != " " && c != "\t") return c }
       return ""
@@ -360,7 +393,7 @@ scan() {
       t = m
       while (match(t, /(^|[^A-Za-z0-9_])AT_FDCWD([^A-Za-z0-9_]|$)/)) { note("r11", 1); t = substr(t, RSTART + RLENGTH) }
       t = m
-      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_fileop_(copy|move|link|remove)(_tree)?|wpe_fileop_wastebasket_slot|fileop_parent_open|wpe_write_set_perm)[ \t]*[(]/)) {
+      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_fileop_(copy|move|link|remove)(_tree)?|wpe_fileop_wastebasket_slot|fileop_parent_open|wpe_write_set_perm(_seen)?)[ \t]*[(]/)) {
         ident = substr(t, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", ident); sub(/[ \t]*[(]$/, "", ident)
         if (ident != fn) note("r11", 1)
         t = substr(t, RSTART + RLENGTH)
@@ -391,6 +424,9 @@ scan() {
       # rule 18 (every file but we_write.c): the identity of a window is only
       # ever handed to the owner of identities by address
       if (file != "we_write.c") note18(m)
+      # rule 20 (we_write.c and we_fileop.c): another file at the name is
+      # decided from the name, never from the errno of one system
+      if (file == "we_write.c" || file == "we_fileop.c") note20(m)
       # rule 15 (we_write.c only): the recorded mode of a window is read in one
       # function, as its nine bits, and that function names no special bit
       note15(m)
@@ -743,6 +779,62 @@ static void fake_identity(FENSTER *f, struct stat *st)
  wpe_write_identity_forget(& f->file_id);
 }
 EOF
+  # rule 20: the rule looks at we_write.c and we_fileop.c by name, so the
+  # fixtures are files of those names in a folder of their own
+  mkdir "$WORK/r20" || exit $BAD
+  cat > "$WORK/r20/we_write.c" <<'EOF'
+static int write_mode_refusal(int err)
+{
+#ifdef EFTYPE
+ if (err == EFTYPE)
+  return(1);
+#endif
+ return(err == EPERM);
+}
+static int write_open_failure(const char *path, const WriteAim *aim, int err, WpeWriteOutcome *o)
+{
+ if (aim->open != WRITE_OPEN_NAMED_NOFOLLOW)
+  return(err);
+ o->replaced_by_link = 1;
+ return(ELOOP);
+}
+static int write_target_open_check(int err)
+{
+ if (err == ELOOP)
+  return(1);
+ return(0);
+}
+static int write_mode_open_failed(WriteModeTarget *t, int err)
+{
+ /* ELOOP and ENXIO in a comment are no offence, nor are "EMLINK" in a string */
+ const char *s = "ELOOP";
+ int bound = MY_ELOOP + ELOOP_MAX;
+
+ if (err == ELOOP || err == ENXIO)
+  t->replaced = 1;
+ return(err == EMLINK || err == EOPNOTSUPP || err == ENOTSUP || err == EFTYPE);
+}
+EOF
+  cat > "$WORK/r20/we_fileop.c" <<'EOF'
+static int fileop_rename_noreplace_at(int fromfd, const char *from, int tofd, const char *to)
+{
+ int err = errno;
+
+ if (err != EOPNOTSUPP && err != ENOTSUP && err != EMLINK)
+  return(-1);
+ return(err == ELOOP);
+}
+static int fileop_job_dst_is_folder(FileJob *j, int pfd, const char *name)
+{
+ return(err == ELOOP ? ENOTDIR : err);
+}
+static int fileop_elsewhere(int err)
+{
+ if (err == ENXIO || err == EFTYPE)
+  return(1);
+ return(err == ELOOP || err == EMLINK);
+}
+EOF
   cat > "$WORK/we_fake.h" <<'EOF'
 typedef struct {
  int filemode, flg;
@@ -757,6 +849,8 @@ EOF
   scan "$WORK/we_fake_r17d.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r17ok.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r18.c" >> "$WORK/fake.found"
+  scan "$WORK/r20/we_write.c" >> "$WORK/fake.found"
+  scan "$WORK/r20/we_fileop.c" >> "$WORK/fake.found"
   scan_header_mode "$WORK/we_fake.h" >> "$WORK/fake.found"
   # the other two shapes a header can carry the mode in: a macro split by a
   # backslash, and a static inline function
@@ -789,6 +883,10 @@ EOF
               "r17 we_fake_r17c.c fileop_stash 1" \
               "r17 we_fake_r17d.c fileop_job_fill_temp 1" \
               "r18 we_fake_r18.c fake_identity 3" \
+              "r20 we_write.c write_mode_open_failed 6" \
+              "r20 we_write.c write_target_open_check 1" \
+              "r20 we_fileop.c fileop_rename_noreplace_at 1" \
+              "r20 we_fileop.c fileop_elsewhere 4" \
               "r15 we_fake.c fake_save 1" "r15 we_fake.c (preprocessor) 1" \
               "r15 we_fake_r15a.c write_mode_before_data 1" \
               "r15 we_fake_r15b.c write_mode_before_data 3" \
@@ -801,6 +899,12 @@ EOF
       exit $BAD
     }
   done
+  # the functions rule 20 allows, and the names it bounds by word, are no offence
+  if grep -q "^r20 we_write.c write_mode_refusal \|^r20 we_write.c write_open_failure \|^r20 we_fileop.c fileop_job_dst_is_folder " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: an errno where rule 20 allows it was counted; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
   # the right shape of the copy's mode is no offence
   if grep -q "^r17 we_fake_r17ok.c " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: the mode fileop_bits_for_copy returned was counted; it found:)"
@@ -902,7 +1006,7 @@ for f in "$SRCDIR"/we_*.c "$SRCDIR"/We*.c; do
   # makes and moves names and copies bytes, and the line endings owner
   # (we_lineend.c) walks rows, so each is exempt from the rule it is the owner of
   case ${f##*/} in
-    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15" || $1 == "r16"' >> "$WORK/srcfound"; continue ;;
+    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15" || $1 == "r16" || $1 == "r20"' >> "$WORK/srcfound"; continue ;;
     we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
     we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11" && $1 != "r12" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
   esac
@@ -959,6 +1063,8 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": wpe_fileop_chmod has no identity of the file the user was shown: call wpe_fileop_chmod_shown with the stat the dialog took"
       else if (rule == "r17")
         print "offender: " $1 " " $2 ": the set-ID bits of a copy are not the ones fileop_bits_for_copy returned: it compares the owner and group of the copy with the original'"'"'s, so give wpe_write_set_special_bits the variable keep it assigned, and never the original'"'"'s mode (also not through wpe_write_set_mode_fd)"
+      else if (rule == "r20")
+        print "offender: " $1 " " $2 ": another file at the name is decided from an errno (ELOOP, ENXIO, EMLINK, EOPNOTSUPP, ENOTSUP or EFTYPE), which each system spells differently: look at the name again (lstat and compare with what was first seen: write_mode_name_changed, write_name_kind) and never ask the errno.  No allow line"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else

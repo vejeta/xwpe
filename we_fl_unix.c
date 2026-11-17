@@ -2126,6 +2126,7 @@ int WpeMakeNewDir(FENSTER *f)
 int WpeFileDirAttributes(char *filen, FENSTER * f)
 {
   struct stat     buf[1];
+  WpeNameSeen     seen;
   int             mode, ret, rc;
   W_OPTSTR       *o = e_init_opt_kst(f);
   WpeFileOpOutcome fo;
@@ -2136,6 +2137,9 @@ int WpeFileDirAttributes(char *filen, FENSTER * f)
     e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
     return 1;
   }
+  /* the dialog shows the file a link leads to; what the name itself is
+     decides whether a later refusal may say a link took it */
+  wpe_write_name_seen(filen, &seen);
   mode = buf->st_mode;
   if(o == NULL)
     return(1);
@@ -2168,7 +2172,7 @@ int WpeFileDirAttributes(char *filen, FENSTER * f)
       (o->sstr[4]->num << 4) + (o->sstr[5]->num << 3) +
       (o->sstr[6]->num << 2) + (o->sstr[7]->num << 1) +
       o->sstr[8]->num;
-    rc = wpe_fileop_chmod_shown(filen, buf, (mode_t)mode, &fo);
+    rc = wpe_fileop_chmod_shown(filen, buf, &seen, (mode_t)mode, &fo);
     fm_say(f, &fo);
     freeostr(o);
     return(rc != 0 ? 1 : 0);

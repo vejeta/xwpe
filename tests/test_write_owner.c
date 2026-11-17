@@ -904,21 +904,26 @@ static char open_link_at[512];    /* a link to open_link_to takes this name just
                                      its next open, whatever the flags */
 static char open_link_to[512];
 static char open_socket_at[512];  /* a socket takes this name just before its next open */
+static char open_fail_at[512];    /* the next open of this name, after any swap above, fails with
+                                     open_fail_with and opens nothing: what another system calls
+                                     the refusal of a link or a socket (EMLINK, EFTYPE,
+                                     EOPNOTSUPP) */
+static int  open_fail_with;
 
-int open(const char *path, int flags, ...)
+/**
+ * open_hooked - The one open of this program, with every row's swap and failure.
+ * @path, @flags, @mode: as open.
+ *
+ * Both open and, under _FORTIFY_SOURCE, __open_2 end here: the C library
+ * routes an open with flags it cannot see and no mode to __open_2, which a
+ * hook of open alone never meets.
+ */
+static int open_hooked(const char *path, int flags, mode_t mode)
 {
  static open_fn real;
- mode_t mode = 0;
- va_list ap;
 
  if (real == NULL)
   *(void **)&real = dlsym(RTLD_NEXT, "open");
- if (flags & O_CREAT)
- {
-  va_start(ap, flags);
-  mode = (mode_t)va_arg(ap, int);
-  va_end(ap);
- }
  if (open_swap_at[0] != '\0' && (flags & O_ACCMODE) == O_RDONLY && strcmp(path, open_swap_at) == 0)
  {
   open_swap_at[0] = '\0';
@@ -951,8 +956,38 @@ int open(const char *path, int flags, ...)
    fclose(planted);
   }
  }
+ if (open_fail_at[0] != '\0' && strcmp(path, open_fail_at) == 0)
+ {
+  open_fail_at[0] = '\0';
+  errno = open_fail_with;
+  return(-1);
+ }
  return(real(path, flags, mode));
 }
+
+int open(const char *path, int flags, ...)
+{
+ mode_t mode = 0;
+ va_list ap;
+
+ if (flags & O_CREAT)
+ {
+  va_start(ap, flags);
+  mode = (mode_t)va_arg(ap, int);
+  va_end(ap);
+ }
+ return(open_hooked(path, flags, mode));
+}
+
+#ifdef __USE_FORTIFY_LEVEL
+#if __USE_FORTIFY_LEVEL > 0
+/** The fortified open with no mode: the same hook as open. */
+int __open_2(const char *path, int flags)
+{
+ return(open_hooked(path, flags, 0));
+}
+#endif
+#endif
 
 /* ftruncate and fcntl, watched: an armed ftruncate fails with EPERM, and the
    Nth duplication of a descriptor (F_DUPFD_CLOEXEC) fails with EMFILE, so a
@@ -2716,9 +2751,10 @@ static void test_set_perm_does_not_follow_a_link_put_in_place(void)
  path_of(to, sizeof to, "f.target");
  snprintf(open_link_at, sizeof open_link_at, "%s", p);
  snprintf(open_link_to, sizeof open_link_to, "%s", to);
- chk_int("refused as a link", wpe_write_set_perm(p, NULL, 0600, &k), ELOOP);
+ chk_int("refused as a link", wpe_write_set_perm(p, NULL, 0600, &k), ESTALE);
  open_link_at[0] = '\0';
  chk_int("said to be replaced", k.replaced, 1);
+ chk_int("by a link", k.replaced_kind, S_IFLNK);
  chk_int("the file the link leads to is as it was", mode_of("f.target"), 0644);
 }
 
@@ -2739,6 +2775,7 @@ static void test_set_perm_does_not_change_a_file_that_took_the_name(void)
  chk_int("refused as replaced", wpe_write_set_perm(p, NULL, 0600, &k), ESTALE);
  open_swap_at[0] = '\0';
  chk_int("said to be replaced", k.replaced, 1);
+ chk_int("by a regular file", k.replaced_kind, S_IFREG);
  chk_int("the file now under the name is as it was", mode_of("f"), 0644);
 }
 
@@ -2761,6 +2798,7 @@ static void test_a_link_swapped_in_before_a_change_by_name_is_reported(void)
  chk_int("refused as replaced", wpe_write_set_perm(p, NULL, 0600, &k), ESTALE);
  fakechmod_swap_at("", "");
  chk_int("said to be replaced", k.replaced, 1);
+ chk_int("by a link", k.replaced_kind, S_IFLNK);
  chk_int("the file the link leads to is as it was", mode_of("z.target"), 0644);
 }
 
@@ -2774,6 +2812,7 @@ static void test_a_link_swapped_in_before_a_change_by_name_is_reported(void)
 static void test_a_link_swapped_in_after_the_dialog_is_not_followed(void)
 {
  WpeModeKept k;
+ WpeNameSeen seen;
  struct stat shown;
  char p[512], v[512];
 
@@ -2783,11 +2822,13 @@ static void test_a_link_swapped_in_after_the_dialog_is_not_followed(void)
  path_of(p, sizeof p, "f");
  path_of(v, sizeof v, "victim");
  stat(p, &shown);
+ wpe_write_name_seen(p, &seen);
  unlink(p);
  if (symlink(v, p) != 0)
   perror("symlink");
- chk_int("refused as replaced", wpe_write_set_perm(p, &shown, 0666, &k), ESTALE);
+ chk_int("refused as replaced", wpe_write_set_perm_seen(p, &shown, &seen, 0666, &k), ESTALE);
  chk_int("said to be replaced", k.replaced, 1);
+ chk_int("by a link: the name was a file when shown", k.replaced_kind, S_IFLNK);
  chk_int("nothing was changed", k.changed, 0);
  chk_int("the victim is as it was", mode_of("victim"), 0600);
 }
@@ -2817,6 +2858,7 @@ static void test_a_named_link_shown_by_the_dialog_is_changed(void)
 static void test_a_folder_swapped_after_the_dialog_is_refused(void)
 {
  WpeModeKept k;
+ WpeNameSeen seen;
  struct stat shown;
  char p[512], d[512], d_away[512], e[512];
 
@@ -2832,12 +2874,55 @@ static void test_a_folder_swapped_after_the_dialog_is_refused(void)
  if (symlink("d/T", p) != 0)
   perror("symlink");
  stat(p, &shown);
+ wpe_write_name_seen(p, &seen);
  rename(d, d_away);
  if (symlink(e, d) != 0)
   perror("symlink");
- chk_int("refused as replaced", wpe_write_set_perm(p, &shown, 0600, &k), ESTALE);
+ chk_int("refused as replaced", wpe_write_set_perm_seen(p, &shown, &seen, 0600, &k), ESTALE);
  chk_int("said to be replaced", k.replaced, 1);
+ chk_int("L was a link all along: not said to be one that took the name", k.replaced_kind, 0);
  chk_int("the other file is as it was", mode_of("e/T"), 0644);
+}
+
+/* The dialog was opened on a link and showed the file it leads to; that file
+   was then replaced by an atomic save.  The name is the same link it always
+   was: the owner refuses, and does not say a link took the name.  A link
+   that is another link than the one shown is a link that took the name; with
+   no knowledge of the name a link is never claimed.  Red on a tree that
+   records S_IFLNK for any name that is a link now. */
+static void test_a_link_the_dialog_named_is_not_a_link_that_took_the_name(void)
+{
+ WpeModeKept k;
+ WpeNameSeen seen;
+ struct stat shown;
+ char p[512], t[512], t_new[512], u[512];
+
+ make_dir();
+ put_file("t", "x\n", 0644);
+ put_file("t.new", "y\n", 0644);
+ put_file("u", "z\n", 0644);
+ path_of(p, sizeof p, "z");
+ path_of(t, sizeof t, "t");
+ path_of(t_new, sizeof t_new, "t.new");
+ path_of(u, sizeof u, "u");
+ if (symlink(t, p) != 0)
+  perror("symlink");
+ stat(p, &shown);
+ wpe_write_name_seen(p, &seen);
+ chk_int("the name was a link when shown", seen.kind, S_IFLNK);
+ chk_int("known", seen.known, 1);
+ chk_int("the target is replaced", rename(t_new, t), 0);
+ chk_int("refused", wpe_write_set_perm_seen(p, &shown, &seen, 0600, &k), ESTALE);
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("not by a link: the same link as before", k.replaced_kind, 0);
+ chk_int("refused with no knowledge of the name", wpe_write_set_perm(p, &shown, 0600, &k), ESTALE);
+ chk_int("a link is never claimed without it", k.replaced_kind, 0);
+ unlink(p);
+ if (symlink(u, p) != 0)
+  perror("symlink");
+ chk_int("refused for another link", wpe_write_set_perm_seen(p, &shown, &seen, 0600, &k), ESTALE);
+ chk_int("by a link: it is another one", k.replaced_kind, S_IFLNK);
+ chk_int("the file it leads to is as it was", mode_of("u"), 0644);
 }
 
 /* A socket planted at the name before the dialog, swapped for a hard link to
@@ -2865,12 +2950,14 @@ static void test_a_socket_swapped_for_a_hard_link_changes_nothing(void)
  fakechmod_count_reset();
  chk_int("refused as replaced", wpe_write_set_perm(p, &shown, 0666, &k), ESTALE);
  chk_int("said to be replaced", k.replaced, 1);
+ chk_int("by a hard link, which is a regular file", k.replaced_kind, S_IFREG);
  chk_int("no call was made", fakechmod_by_name + fakechmod_by_fd, 0);
  chk_int("the victim is as it was", mode_of("victim"), 0600);
 }
 
 /* A socket that takes the name between the owner's lstat and its open is
-   ENXIO: another file, never worked around by name. */
+   another file, never worked around by name, whatever the system calls the
+   refusal of the open. */
 static void test_a_socket_swapped_in_before_the_open_is_replaced(void)
 {
  WpeModeKept k;
@@ -2881,10 +2968,103 @@ static void test_a_socket_swapped_in_before_the_open_is_replaced(void)
  path_of(p, sizeof p, "f");
  snprintf(open_socket_at, sizeof open_socket_at, "%s", p);
  fakechmod_count_reset();
- chk_int("refused", wpe_write_set_perm(p, NULL, 0600, &k), ENXIO);
+ chk_int("refused", wpe_write_set_perm(p, NULL, 0600, &k), ESTALE);
  open_socket_at[0] = '\0';
  chk_int("said to be replaced", k.replaced, 1);
+ chk_int("by a socket", k.replaced_kind, S_IFSOCK);
  chk_int("no change by name", fakechmod_by_name, 0);
+}
+
+/* What this system calls the refusal of an open of a file that took the name
+   is no matter: the owner looks at the name.  A link takes the name, and the
+   open fails with the word FreeBSD (EMLINK) or NetBSD (EFTYPE) uses.  Red
+   on a tree that decides from the errno: EMLINK goes through with nothing
+   said to be replaced. */
+static void test_a_link_put_in_place_is_replaced_whatever_the_system_says(void)
+{
+ static const int words[] = {
+#ifdef EMLINK
+  EMLINK,
+#endif
+#ifdef EFTYPE
+  EFTYPE,
+#endif
+  EOPNOTSUPP
+ };
+ WpeModeKept k;
+ char p[512], to[512];
+ size_t i;
+
+ make_dir();
+ put_file("f", "x\n", 0644);
+ put_file("f.target", "y\n", 0644);
+ path_of(p, sizeof p, "f");
+ path_of(to, sizeof to, "f.target");
+ for (i = 0; i < sizeof words / sizeof words[0]; i++)
+ {
+  snprintf(open_link_at, sizeof open_link_at, "%s", p);
+  snprintf(open_link_to, sizeof open_link_to, "%s", to);
+  snprintf(open_fail_at, sizeof open_fail_at, "%s", p);
+  open_fail_with = words[i];
+  chk_int("refused", wpe_write_set_perm(p, NULL, 0600, &k), ESTALE);
+  open_link_at[0] = '\0';
+  open_fail_at[0] = '\0';
+  chk_int("said to be replaced", k.replaced, 1);
+  chk_int("by a link", k.replaced_kind, S_IFLNK);
+  chk_int("no call was made", k.unreached, 0);
+  chk_int("the file it leads to is as it was", mode_of("f.target"), 0644);
+  unlink(p);
+  put_file("f", "x\n", 0644);
+ }
+}
+
+/* The same for a socket: the BSDs say EOPNOTSUPP for the open of one, Linux
+   ENXIO.  Another file under the name, by either word. */
+static void test_a_socket_put_in_place_is_replaced_whatever_the_system_says(void)
+{
+ static const int words[] = { EOPNOTSUPP, ENXIO };
+ WpeModeKept k;
+ char p[512];
+ size_t i;
+
+ make_dir();
+ path_of(p, sizeof p, "f");
+ for (i = 0; i < sizeof words / sizeof words[0]; i++)
+ {
+  put_file("f", "x\n", 0644);
+  snprintf(open_socket_at, sizeof open_socket_at, "%s", p);
+  snprintf(open_fail_at, sizeof open_fail_at, "%s", p);
+  open_fail_with = words[i];
+  fakechmod_count_reset();
+  chk_int("refused", wpe_write_set_perm(p, NULL, 0600, &k), ESTALE);
+  open_socket_at[0] = '\0';
+  open_fail_at[0] = '\0';
+  chk_int("said to be replaced", k.replaced, 1);
+  chk_int("by a socket", k.replaced_kind, S_IFSOCK);
+  chk_int("no change by name", fakechmod_by_name, 0);
+  unlink(p);
+ }
+}
+
+/* A name that is not there is not "another file": a failed open with nothing
+   at the name keeps the open's own errno and is not said to be replaced. */
+static void test_an_open_that_fails_with_nothing_at_the_name_keeps_its_errno(void)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_dir();
+ put_file("f", "x\n", 0644);
+ path_of(p, sizeof p, "f");
+ snprintf(open_swap_at, sizeof open_swap_at, "%s", p);
+ open_swap_from[0] = '\0';
+ snprintf(open_fail_at, sizeof open_fail_at, "%s", p);
+ open_fail_with = EMFILE;
+ chk_int("the open's errno", wpe_write_set_perm(p, NULL, 0600, &k), EMFILE);
+ open_swap_at[0] = '\0';
+ open_fail_at[0] = '\0';
+ chk_int("not said to be replaced", k.replaced, 0);
+ chk_int("the name was unreached", k.unreached, 1);
 }
 
 /* blocked_in_open - Is this process waiting inside openat?  Reads
@@ -2945,8 +3125,8 @@ static void test_a_writer_waiting_on_a_fifo_is_not_released_by_a_change_of_mode(
   blocked_writer_child(p);
  for (waited = 0; waited < WRITER_BLOCK_WAIT_MS && blocked_in_open(pid) == 0; waited += TEST_WAIT_STEP_MS)
   test_sleep_ms(TEST_WAIT_STEP_MS);
- if (!test_premise(blocked_in_open(pid) == 1, "a blocked writer is not released",
-                   "/proc/<pid>/syscall does not show the writer waiting in openat")) {
+ if (!test_observation(blocked_in_open(pid) == 1, "a blocked writer is not released",
+                       "/proc/<pid>/syscall does not show the writer waiting in openat")) {
   kill(pid, SIGKILL);
   test_wait_child(pid, WRITER_END_MS);
   return;
@@ -3041,23 +3221,6 @@ static WpeFileIdentity identity_of(const char *name)
  return(id);
 }
 
-/* Is this errno the system's refusal to open a link with O_NOFOLLOW?  Linux
-   says ELOOP, FreeBSD EMLINK and NetBSD EFTYPE. */
-static int system_refuses_a_link(int err)
-{
- if (err == ELOOP)
-  return(1);
-#ifdef EMLINK
- if (err == EMLINK)
-  return(1);
-#endif
-#ifdef EFTYPE
- if (err == EFTYPE)
-  return(1);
-#endif
- return(0);
-}
-
 /* @scenario SC-write-owner-A-01: the assistant's write is a Save: the old
    text in the .bak (which has no special bit), the new text on disk, the
    file's own bit back after one sync of the saved file. */
@@ -3102,7 +3265,8 @@ static void test_the_assistants_write_refuses_a_link_at_the_end(void)
  chk_int("the link", symlink(q, p), 0);
  chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), -1);
  chk_int("FAILED", o.status, WPE_WRITE_FAILED);
- chk_int("the reason is the system's refusal of a link", system_refuses_a_link(o.err), 1);
+ chk_int("a link took the name", o.replaced_by_link, 1);
+ chk_int("the reason", o.err, ELOOP);
  chk_int("the file it leads to is untouched", strcmp(get_file("other", buf, sizeof buf), "keep me\n"), 0);
  chk_int("no backup of it", mode_of("t.bak"), -1);
  chk_int("followed without the flag, as the user's own names are",
@@ -3199,8 +3363,54 @@ static void test_a_revert_gives_the_recorded_nine_bits_and_refuses_a_link(void)
  path_of(target, sizeof target, "other");
  chk_int("the link", symlink(target, q), 0);
  chk_int("refused", wpe_write_restore_text(q, "old\n", 0644, NULL, &o), -1);
- chk_int("the reason is the system's refusal of a link", system_refuses_a_link(o.err), 1);
+ chk_int("a link took the name", o.replaced_by_link, 1);
+ chk_int("the reason", o.err, ELOOP);
  chk_int("the target is untouched", strcmp(get_file("other", buf, sizeof buf), "keep me\n"), 0);
+}
+
+/* What this system calls the refusal of an open of a link is no matter: the
+   write owner looks at the name.  FreeBSD says EMLINK, NetBSD EFTYPE.  Red on
+   a tree that reports the open's errno as it came: EMLINK goes through and
+   no link is said to have taken the name.  Also a name that is a plain file
+   is not taken for a link whatever the open said. */
+static void test_the_assistants_write_says_a_link_took_the_name_whatever_the_system_says(void)
+{
+ static const int words[] = {
+#ifdef EMLINK
+  EMLINK,
+#endif
+#ifdef EFTYPE
+  EFTYPE,
+#endif
+  ELOOP
+ };
+ WpeWriteOutcome o;
+ char p[512], q[512], buf[256];
+ size_t i;
+
+ make_dir();
+ put_file("other", "keep me\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ path_of(q, sizeof q, "other");
+ chk_int("the link", symlink(q, p), 0);
+ for (i = 0; i < sizeof words / sizeof words[0]; i++)
+ {
+  snprintf(open_fail_at, sizeof open_fail_at, "%s", p);
+  open_fail_with = words[i];
+  chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), -1);
+  open_fail_at[0] = '\0';
+  chk_int("a link took the name", o.replaced_by_link, 1);
+  chk_int("one reason on every system", o.err, ELOOP);
+ }
+ chk_int("the file it leads to is untouched", strcmp(get_file("other", buf, sizeof buf), "keep me\n"), 0);
+ unlink(p);
+ put_file("t.c", "plain\n", 0644);
+ snprintf(open_fail_at, sizeof open_fail_at, "%s", p);
+ open_fail_with = EACCES;
+ chk_int("a plain file refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), -1);
+ open_fail_at[0] = '\0';
+ chk_int("no link took the name", o.replaced_by_link, 0);
+ chk_int("the system's own reason", o.err, EACCES);
 }
 
 /* @scenario SC-write-owner-A-05: a failed save that left no backup names the
@@ -3419,8 +3629,12 @@ int main(void)
  test_a_link_swapped_in_after_the_dialog_is_not_followed();
  test_a_named_link_shown_by_the_dialog_is_changed();
  test_a_folder_swapped_after_the_dialog_is_refused();
+ test_a_link_the_dialog_named_is_not_a_link_that_took_the_name();
  test_a_socket_swapped_for_a_hard_link_changes_nothing();
  test_a_socket_swapped_in_before_the_open_is_replaced();
+ test_a_link_put_in_place_is_replaced_whatever_the_system_says();
+ test_a_socket_put_in_place_is_replaced_whatever_the_system_says();
+ test_an_open_that_fails_with_nothing_at_the_name_keeps_its_errno();
  test_a_fifo_is_changed_by_name();
  test_a_writer_waiting_on_a_fifo_is_not_released_by_a_change_of_mode();
  test_add_perm_adds_x_and_keeps_the_special_bits();
@@ -3428,6 +3642,7 @@ int main(void)
  test_a_name_that_leads_nowhere_is_not_reached();
  test_the_assistants_write_is_a_save();
  test_the_assistants_write_refuses_a_link_at_the_end();
+ test_the_assistants_write_says_a_link_took_the_name_whatever_the_system_says();
  test_the_assistants_write_with_no_window_keeps_the_files_own_bits();
  test_the_assistants_write_over_a_different_file_than_the_windows_is_refused();
  test_the_assistants_write_makes_a_new_file();

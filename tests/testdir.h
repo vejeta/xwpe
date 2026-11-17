@@ -319,6 +319,26 @@ static int test_premise(int holds, const char *row, const char *missing)
 }
 
 /**
+ * test_observation - Say by name that a row cannot watch what it needs to watch.
+ *
+ * The unprivileged flag says modes are honoured; it says nothing about what
+ * the kernel lets a test see (a /proc file, a library call a test can
+ * intercept).  A row that cannot watch says so by name, so a system without
+ * the mechanism reads the reason instead of a failure.  Whatever the flag
+ * says, a miss is a SKIP and counts nothing.  The permission a row needs
+ * from the system is a test_premise.
+ *
+ * Return: AVAILABLE, so the caller can write "if (!test_observation(...)) return;".
+ */
+static int test_observation(int available, const char *row, const char *missing)
+{
+ if (available)
+  return(1);
+ test_dir_say("SKIP: %s: cannot be observed here: %s\n", row, missing);
+ return(0);
+}
+
+/**
  * test_premise_folder_refuses_new_files - Ask the system whether a 0500 folder keeps files out.
  *
  * Rows that need a folder that says no to a new file would fail for a reason

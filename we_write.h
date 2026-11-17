@@ -62,6 +62,10 @@ typedef struct {
  int    unreached;  /* a change of mode by name: the name could not be reached, no call was made */
  int    replaced;   /* a change of mode by name: another file had taken the name since it was
                        read; that file was not the one whose bits were read */
+ mode_t replaced_kind; /* with replaced: S_IFMT of what holds the name after the call (S_IFLNK
+                       for a link); 0 when nothing does or it is not known.  It says what is
+                       at the name now, not what the call reached: with changed set it is no
+                       proof of what was changed. */
 } WpeModeKept;
 
 /** The file a window read, as the system knows it: device and inode, which
@@ -75,6 +79,16 @@ typedef struct {
  ino_t ino;
  int   known;
 } WpeFileIdentity;
+
+/** What a name was, itself and not what it leads to, when the user was shown
+    it: its kind (S_IFLNK for a link), device and inode.  known == 0 when no
+    one looked (Ctrl-F9, a caller with no dialog). */
+typedef struct {
+ int    known;
+ mode_t kind;
+ dev_t  dev;
+ ino_t  ino;
+} WpeNameSeen;
 
 typedef struct {
  WpeWriteStatus status;
@@ -102,6 +116,9 @@ typedef struct {
  int backup_stopped;             /* the .bak was opened and not completed: the save was refused */
  int replaced;                   /* the name led to another file by the time the backup read
                                     it: nothing was written, the save is refused */
+ int replaced_by_link;           /* the open of a name that is never followed (WPE_WRITE_NOFOLLOW)
+                                    failed and the name is a link: err is ELOOP, whatever
+                                    the system called the refusal; nothing was created */
  int restore_err;                /* the write failed after the open and the old content
                                     is not back: the restore's errno, or ENOENT when
                                     no .bak was made (bak_path is then "") */
@@ -174,7 +191,9 @@ WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o);
 
 /** wpe_write_save_text flag: a link at the end of @path is refused (the
-    system's refusal of a link: ELOOP on Linux), never followed.  For a name
+    o->err is ELOOP, POSIX's word for O_NOFOLLOW on a link, and
+    o->replaced_by_link is 1, on every system; callers read the flag), never
+    followed.  For a name
     the caller has already resolved and judged, so that a link put there
     afterwards cannot lead the write elsewhere. */
 #define WPE_WRITE_NOFOLLOW 1
@@ -236,6 +255,12 @@ int  wpe_write_sync_before_bits(int fd, mode_t mode, int durable);
 int  wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, WpeModeKept *k);
+/* The same for a dialog that took wpe_write_name_seen of the name when it
+   opened (NULL: not known, and then a link at the name is never claimed to
+   have taken it). */
+void wpe_write_name_seen(const char *path, WpeNameSeen *seen);
+int  wpe_write_set_perm_seen(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+                             mode_t nine, WpeModeKept *k);
 int  wpe_write_add_perm(const char *path, const WpeFileIdentity *own, mode_t add, WpeModeKept *k);
 int  wpe_write_caller_in_group(gid_t gid);
 void wpe_write_kept_merge(WpeModeKept *to, const WpeModeKept *from);

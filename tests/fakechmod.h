@@ -10,6 +10,13 @@
  *
  *	refuse-sgid	a call that asks for S_ISGID fails with EPERM, nothing changes
  *	drop-sgid	the call is made without S_ISGID and returns 0
+ *	FAKECHMOD_LCHMOD	a fchmodat that does not follow links, on a name
+ *			that is a link, returns 0, as the BSDs and macOS
+ *			do (lchmod's meaning), and skips the change.  Those
+ *			systems do change the link's own bits; Linux refuses
+ *			the call.  Any other call is transparent.  chmod is
+ *			never faked this way: it follows links on every
+ *			system.
  *
  * XWPE_TEST_FAKE_FCHMOD names the face for a whole run; a test that needs a
  * face for one row sets it with fakechmod_set and puts it back to
@@ -44,7 +51,8 @@
    after, so the read-back of the mode that follows fails; a chmod by
    descriptor succeeds and the descriptor is closed right after, so the
    read-back through it fails the same way. */
-typedef enum { FAKECHMOD_OFF, FAKECHMOD_REFUSE, FAKECHMOD_DROP, FAKECHMOD_VANISH } FakeChmodFace;
+typedef enum { FAKECHMOD_OFF, FAKECHMOD_REFUSE, FAKECHMOD_DROP, FAKECHMOD_VANISH,
+               FAKECHMOD_LCHMOD } FakeChmodFace;
 
 typedef int (*fakechmod_fchmod_fn)(int, mode_t);
 typedef int (*fakechmod_chmod_fn)(const char *, mode_t);
@@ -54,12 +62,16 @@ static int fakechmod_by_fd;             /* changes of mode through a descriptor 
 static int fakechmod_by_name;           /* changes of mode through a name since fakechmod_count_reset */
 static char fakechmod_swap_name[512];   /* the name a link takes just before the next change through it */
 static char fakechmod_swap_target[512]; /* ... a link to this */
+static int fakechmod_swap_hard;         /* the swap is a hard link, not a symbolic one */
+static int fakechmod_last_rc;           /* what the last fchmodat returned: the real call's value,
+                                           or 0 where a face made the call succeed */
 
 /** fakechmod_count_reset - Start counting the changes of mode again. */
 static void fakechmod_count_reset(void)
 {
  fakechmod_by_fd = 0;
  fakechmod_by_name = 0;
+ fakechmod_last_rc = -1;
 }
 
 /**
@@ -75,16 +87,50 @@ static void fakechmod_swap_at(const char *name, const char *target)
 {
  snprintf(fakechmod_swap_name, sizeof fakechmod_swap_name, "%s", name);
  snprintf(fakechmod_swap_target, sizeof fakechmod_swap_target, "%s", target);
+ fakechmod_swap_hard = 0;
+}
+
+/**
+ * fakechmod_swap_hard_at - Put a hard link under a name just before the next
+ * change of mode through that name.
+ * @name: the name the editor will change; @target: the file it is linked to.
+ *
+ * The same moment as fakechmod_swap_at, with a file that is another name of
+ * an existing file: a change of mode through the name reaches that file.
+ */
+static void fakechmod_swap_hard_at(const char *name, const char *target)
+{
+ fakechmod_swap_at(name, target);
+ fakechmod_swap_hard = 1;
 }
 
 /** fakechmod_swap_fire - Make the armed swap, when this is its name. */
 static void fakechmod_swap_fire(const char *path)
 {
+ int rc;
+
  if (fakechmod_swap_name[0] == '\0' || strcmp(path, fakechmod_swap_name) != 0)
   return;
  fakechmod_swap_name[0] = '\0';
- if (unlink(path) != 0 || symlink(fakechmod_swap_target, path) != 0)
+ if (unlink(path) != 0)
+  rc = -1;
+ else if (fakechmod_swap_hard)
+  rc = link(fakechmod_swap_target, path);
+ else
+  rc = symlink(fakechmod_swap_target, path);
+ if (rc != 0)
   perror("fakechmod swap");
+}
+
+/**
+ * fakechmod_name_is_link - Does lstat say this name is a link?
+ * @path: the name.  Return: 1 for a link, 0 for anything else.
+ */
+static int fakechmod_name_is_link(const char *path)
+{
+ struct stat st;
+
+ return(lstat(path, &st) == 0 && S_ISLNK(st.st_mode));
 }
 
 static FakeChmodFace fakechmod_face = FAKECHMOD_OFF;
@@ -233,20 +279,21 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags)
  if (real == NULL)
   *(void **)&real = fakechmod_next("fchmodat");
  fakechmod_by_name++;
+ fakechmod_last_rc = -1;
  fakechmod_swap_fire(path);
+ if (fakechmod_face == FAKECHMOD_LCHMOD && (flags & AT_SYMLINK_NOFOLLOW) && fakechmod_name_is_link(path))
+ {
+  fakechmod_last_rc = 0;
+  return(0);
+ }
  if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
-  return(fakechmod_refuse());
+  return(fakechmod_last_rc = fakechmod_refuse());
  if (fakechmod_face == FAKECHMOD_DROP)
   mode &= ~fakechmod_bits;
- if (fakechmod_face == FAKECHMOD_VANISH)
- {
-  int rc = real(dirfd, path, mode, flags);
-
-  if (rc == 0)
-   (void)remove(path);
-  return(rc);
- }
- return(real(dirfd, path, mode, flags));
+ fakechmod_last_rc = real(dirfd, path, mode, flags);
+ if (fakechmod_face == FAKECHMOD_VANISH && fakechmod_last_rc == 0)
+  (void)remove(path);
+ return(fakechmod_last_rc);
 }
 
 #endif

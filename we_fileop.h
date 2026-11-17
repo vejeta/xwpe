@@ -95,6 +95,7 @@ typedef struct {
  char            aside[WPE_PATH_SIZE];     /* where a replaced destination went, else "" */
  int             src_kept;                 /* the source is as it was */
  int             dst_kept;                 /* an existing destination is as it was */
+ int             replaced_by_link;         /* STEP_CHANGED of a chmod: a link now holds the name */
  long            done, skipped, total;     /* a folder: entries done, left alone by the policy, all */
  WpeFileOpBitsNote note;                   /* the special bits the system did not keep, said after a DONE copy */
 } WpeFileOpOutcome;
@@ -168,9 +169,12 @@ WPE_FILEOP_RESULT int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpO
 /* The same for the Attributes dialog: @shown is the stat the dialog showed
    (a link followed); only that file, by device and inode, is changed, however
    long the dialog stayed open.  Another file under the name is "replaced" and
-   nothing is changed. */
+   nothing is changed.  @seen is what the name itself was then (wpe_write_name_seen), so that a
+   link the dialog was opened on is not called a link that took the name;
+   NULL when not known. */
 struct stat;
-WPE_FILEOP_RESULT int wpe_fileop_chmod_shown(const char *path, const struct stat *shown, mode_t perm, WpeFileOpOutcome *o);
+WPE_FILEOP_RESULT int wpe_fileop_chmod_shown(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+                                             mode_t perm, WpeFileOpOutcome *o);
 /* A name moved where none is: a folder's rename, which rename(2) would let
    replace an empty folder that appeared in between. */
 WPE_FILEOP_RESULT int wpe_fileop_rename_noreplace(const char *src, const char *dst, WpeFileOpOutcome *o);

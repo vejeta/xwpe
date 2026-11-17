@@ -1340,9 +1340,16 @@ keep one of them, the nine bits are applied and the status row names the
 bit.  The permissions are changed on the file the dialog showed (the same
 device and inode), however long the dialog stayed open: when another file has
 taken the name by the time Ok is pressed, nothing is changed and the status
-row says @samp{replaced by another file}; a link the dialog named is followed
-once, as before.  If a change did reach a file that was swapped in during the
-call itself, the sentence says that file may have been changed.  The reason:
+row says @samp{replaced by another file}, or @samp{replaced by a link} when a
+link took the name (a link is never followed: the file it leads to is not
+changed through the link); a link the dialog named is followed once, as
+before, and if only the file it leads to was replaced the row says
+@samp{replaced by another file}.  If a change
+did reach a file that was swapped in during the call itself, the sentence says
+that what held the name may have been changed.  Linux refuses to change the
+permissions of a link, so there nothing was changed; the BSDs and macOS give
+the link its own permissions, so there the sentence says it may have been
+changed.  The reason:
 changing who may read a file must not change who it runs as, a bit that is
 lost must not be lost in silence, and a name that changes hands must not make
 another file a program.  Ctrl-F9 on a shell script makes it executable on the

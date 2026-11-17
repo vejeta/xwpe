@@ -521,7 +521,12 @@ Changes
   file the dialog showed, however long the dialog stayed open: when another
   file (a link, a socket, any other file) has taken the name by the time
   you press Ok, nothing is changed and the status row says the file was
-  replaced by another file.  A file you can write but not read, or a
+  replaced by another file (or by a link, when a link took the name; the
+  file the link leads to is not changed through the link).  A link you
+  named, whose target alone was replaced, is still called another file.
+  The same word is used on every system, whatever error the system gave
+  for the swapped-in file.
+  A file you can write but not read, or a
   folder you cannot read, is still changed, and a link you named is
   followed once.  Ctrl-F9 on a shell script makes it executable on the file
   it opened, keeping the special bits the script had, and never through a
