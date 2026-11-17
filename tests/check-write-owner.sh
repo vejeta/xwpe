@@ -126,6 +126,12 @@
 #     fileop_root_dst_follow (their opens follow links, so ELOOP is a cycle on
 #     every system) and fileop_walk (the depth limit, set and not read).
 #     ENXIO and EFTYPE appear nowhere in we_fileop.c.  No allow line.
+# 21. The assistant writes a user's file in two places only.  In we_ai*.c
+#     wpe_write_save_text( and wpe_write_restore_text( appear only inside
+#     wpe_ai_write_judged_file (its writes) and ws_restore_before_image (the
+#     revert), and each call passes the expectation of a look (the last but
+#     one argument is a variable, never a literal NULL or 0), so the owner
+#     holds the write to the file the user was shown.  No allow line.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -270,6 +276,21 @@ scan() {
         while (i >= 1 && substr(m, i, 1) ~ /[A-Za-z0-9_.>-]/) i--
         while (i >= 1 && substr(m, i, 1) ~ /[ \t]/) i--
         if (i < 1 || substr(m, i, 1) != "&" || (i > 1 && substr(m, i - 1, 1) == "&")) note("r18", 1)
+      }
+    }
+    # rule 21 for the code of one statement, strings blanked: the assistant
+    # writes a user'"'"'s file in two places only, wpe_ai_write_judged_file (its
+    # writes) and ws_restore_before_image (the revert).  Each call passes the
+    # expectation of a look, a variable and never a literal NULL or 0 (the
+    # last but one argument), so the owner holds the write to the file the
+    # user was shown.
+    function note21(m,   t, rest) {
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_write_save_text|wpe_write_restore_text)[ \t]*[(]/)) {
+        rest = substr(t, RSTART + RLENGTH); sub(/;.*/, "", rest)
+        if (fn != "wpe_ai_write_judged_file" && fn != "ws_restore_before_image") note("r21", 1)
+        else if (rest ~ /(^|,)[ \t]*(NULL|0)[ \t]*,[^,]*$/) note("r21", 1)
+        t = substr(t, RSTART + RLENGTH)
       }
     }
     # rule 20 for one name of an errno: is it allowed in this function?
@@ -427,6 +448,9 @@ scan() {
       # rule 20 (we_write.c and we_fileop.c): another file at the name is
       # decided from the name, never from the errno of one system
       if (file == "we_write.c" || file == "we_fileop.c") note20(m)
+      # rule 21 (the assistant'"'"'s files, we_ai*.c): the owner'"'"'s text faces are
+      # called from the two functions that write for the assistant
+      if (file ~ /^we_ai/) note21(m)
       # rule 15 (we_write.c only): the recorded mode of a window is read in one
       # function, as its nine bits, and that function names no special bit
       note15(m)
@@ -779,6 +803,24 @@ static void fake_identity(FENSTER *f, struct stat *st)
  wpe_write_identity_forget(& f->file_id);
 }
 EOF
+  # rule 21: the assistant's files call the owner's text faces from two
+  # functions, each passing the expectation of a look
+  cat > "$WORK/we_ai_fake.c" <<'EOF'
+int wpe_ai_write_judged_file(FENSTER *f, const char *real, const char *text,
+                             const WpeWriteExpect *x, WpeWriteOutcome *o)
+{
+ return(wpe_write_save_text(real, text, w ? &w->file_id : NULL, WPE_WRITE_NOFOLLOW, x, o));
+}
+static int ws_restore_before_image(FENSTER *f, const char *path, const char *text, size_t len)
+{
+ int ok = wpe_write_restore_text(path, text, len, mode, w ? &w->file_id : NULL, &x, &o);
+ return(wpe_write_restore_text(path, text, len, mode, NULL, NULL, &o) + ok);
+}
+static int ai_sneaky(FENSTER *f)
+{
+ return(wpe_write_save_text(p, t, NULL, 0, &x, &o));
+}
+EOF
   # rule 20: the rule looks at we_write.c and we_fileop.c by name, so the
   # fixtures are files of those names in a folder of their own
   mkdir "$WORK/r20" || exit $BAD
@@ -851,6 +893,7 @@ EOF
   scan "$WORK/we_fake_r18.c" >> "$WORK/fake.found"
   scan "$WORK/r20/we_write.c" >> "$WORK/fake.found"
   scan "$WORK/r20/we_fileop.c" >> "$WORK/fake.found"
+  scan "$WORK/we_ai_fake.c" >> "$WORK/fake.found"
   scan_header_mode "$WORK/we_fake.h" >> "$WORK/fake.found"
   # the other two shapes a header can carry the mode in: a macro split by a
   # backslash, and a static inline function
@@ -883,6 +926,8 @@ EOF
               "r17 we_fake_r17c.c fileop_stash 1" \
               "r17 we_fake_r17d.c fileop_job_fill_temp 1" \
               "r18 we_fake_r18.c fake_identity 3" \
+              "r21 we_ai_fake.c ws_restore_before_image 1" \
+              "r21 we_ai_fake.c ai_sneaky 1" \
               "r20 we_write.c write_mode_open_failed 6" \
               "r20 we_write.c write_target_open_check 1" \
               "r20 we_fileop.c fileop_rename_noreplace_at 1" \
@@ -899,6 +944,12 @@ EOF
       exit $BAD
     }
   done
+  # the two functions rule 21 allows, with a look, are no offence
+  if grep -q "^r21 we_ai_fake.c wpe_ai_write_judged_file " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: the assistant's write with a look was counted by rule 21; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
   # the functions rule 20 allows, and the names it bounds by word, are no offence
   if grep -q "^r20 we_write.c write_mode_refusal \|^r20 we_write.c write_open_failure \|^r20 we_fileop.c fileop_job_dst_is_folder " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: an errno where rule 20 allows it was counted; it found:)"
@@ -1065,6 +1116,8 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": the set-ID bits of a copy are not the ones fileop_bits_for_copy returned: it compares the owner and group of the copy with the original'"'"'s, so give wpe_write_set_special_bits the variable keep it assigned, and never the original'"'"'s mode (also not through wpe_write_set_mode_fd)"
       else if (rule == "r20")
         print "offender: " $1 " " $2 ": another file at the name is decided from an errno (ELOOP, ENXIO, EMLINK, EOPNOTSUPP, ENOTSUP or EFTYPE), which each system spells differently: look at the name again (lstat and compare with what was first seen: write_mode_name_changed, write_name_kind) and never ask the errno.  No allow line"
+      else if (rule == "r21")
+        print "offender: " $1 " " $2 ": the assistant writes a user'"'"'s file outside wpe_ai_write_judged_file and ws_restore_before_image, or passes no look (a literal NULL or 0 for the expectation): take the look with wpe_path_look_write and write through those two.  No allow line"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else

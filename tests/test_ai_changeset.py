@@ -19,6 +19,7 @@ import time
 import pytest
 from host_tools import needs
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, pane_text_with_history
+from mode_premise import special_bits_settable, workdir_in_my_group
 
 
 def _ai_build():
@@ -221,16 +222,17 @@ def test_ai_changeset_revert_reports_a_git_restore_the_workspace_refused(tmp_pat
     """A git restore the workspace refused is said, not swallowed.
 
     The workspace is a git tree, so the checkpoint is a git ref and putting a
-    file back means handing `git checkout <ref> -- <file>` to a shell.  The
-    workspace directory is made read-only once the review waits for its key:
-    git cannot take the old file away, it refuses in its own words, and the
-    file keeps the change.  The pane must name the file and carry that reason,
-    and the review's summary must count the file instead of claiming that
+    file back means reading its old content from git (`git show <ref>:<file>`)
+    and writing it into the very file, which keeps its inode, its other names
+    and its permission bits.  The file is made read-only once the review waits
+    for its key: the write is refused in the system's own words, and the file
+    keeps the change.  The pane must name the file and carry that reason, and
+    the review's summary must count the file instead of claiming that
     everything went back.
 
-    A read-only FILE does not provoke this: git unlinks and recreates it, so
-    the restore succeeds and the mode comes back from the repository.  The
-    directory is what has to refuse.
+    A read-only DIRECTORY no longer provokes this: nothing is unlinked or
+    recreated, so the write into the file goes through.  The file is what has
+    to refuse.
     """
     _git_repo(tmp_path)
     t = tmp_path / "t.c"
@@ -253,7 +255,7 @@ def test_ai_changeset_revert_reports_a_git_restore_the_workspace_refused(tmp_pat
             s.key("\r", delay=2.0)           # submit -> checkpoint -> run -> review
             assert _wait_trace(trace, "changeset n=", 60), \
                 "the review never opened:\n" + _trace_text(trace)
-            os.chmod(tmp_path, 0o555)        # git cannot unlink the file now
+            t.chmod(0o444)                   # the restore cannot write the file now
             s.key("r", delay=1.0)            # r = revert all
             assert _wait_trace(trace, "changeset revert", 30), \
                 "the revert never ran:\n" + _trace_text(trace)
@@ -1002,3 +1004,440 @@ def test_a_refused_commit_says_the_files_stay_staged(tmp_path):
         "the listed file is not staged:\n" + _git_out(tmp_path, "status",
                                                       "--porcelain")
     assert alive, "a refused commit ended the editor"
+
+
+# --- the assistant's write is a Save; the revert puts back what the file was ---
+
+import contextlib
+import stat
+
+WORKSPACES = ["snapshot", "git"]
+REVERT_WAIT_S = 30
+
+
+@contextlib.contextmanager
+def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None):
+    """An unattended run over t.c, stopped at the review's prompt.
+
+    Yields (session, t.c, trace).  `workspace` is "git" (a committed t.c, so the
+    checkpoint is a git ref) or "snapshot" (a plain folder, so the checkpoint is
+    copies).  `prepare(t)` runs once the editor has read the file and before the
+    run starts: where a row sets up the file's bits or another name for it.  The
+    trace and the state folder stay outside the workspace, so neither is a change.
+    """
+    t = tmp_path / "t.c"
+    trace = tmp_path.parent / (tmp_path.name + ".trace")
+    state = tmp_path.parent / (tmp_path.name + ".state")
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": reply,
+           "XWPE_AI_POLICY": "auto", "XWPE_AI_TRACE": str(trace),
+           "XDG_STATE_HOME": str(state)}
+    if workspace == "git":
+        _git_repo(tmp_path)
+        if isinstance(seed, bytes):
+            raise ValueError("a git row seeds its file with the commit's own text")
+    with WpeSession(str(tmp_path), seed, env_extra=env) as s:
+        if prepare:
+            prepare(t)
+        s.key(ALT.AI)
+        s.key("g")
+        s.key("rewrite it")
+        s.key("\r", delay=2.0)
+        assert _wait_trace(trace, "changeset n=", 60), \
+            "the review never opened:\n" + _trace_text(trace)
+        yield s, t, trace
+
+
+def _revert_all(s, trace):
+    s.key("r", delay=1.0)
+    assert _wait_trace(trace, "changeset revert", REVERT_WAIT_S), \
+        "the revert never ran:\n" + _trace_text(trace)
+    s._drain(1.0)
+
+
+def _set_setgid(t):
+    """Make `t` a setgid program, or say by name why this user cannot."""
+    folder = os.path.dirname(t)
+    workdir_in_my_group(folder)
+    special_bits_settable(folder, stat.S_ISGID)
+    os.chmod(t, 0o2755)
+
+
+WRITE_REPLY = ("TOOL write_file %s\nint main(void){return 99;}\n@@END"
+               "@@TURN@@DONE rewrote it")
+
+
+# @scenario SC-write-owner-A-06
+@pytest.mark.parametrize("workspace", WORKSPACES)
+def test_revert_puts_back_the_bits_the_file_had(tmp_path, workspace):
+    """A program stays a program through the run and its revert.
+
+    The file is setgid before the run.  The assistant's write keeps the bit (it
+    is a Save); the revert puts the before image back wearing the bits recorded
+    before the first write, in the very same file, in a git workspace (the
+    content comes from git) as in a plain folder (from the checkpoint's copy).
+    """
+    ino = []
+
+    def prepare(t):
+        _set_setgid(t)
+        ino.append(os.stat(t).st_ino)
+
+    with _auto_run(tmp_path, workspace, WRITE_REPLY % (tmp_path / "t.c"),
+                   prepare=prepare) as (s, t, trace):
+        assert stat.S_IMODE(t.stat().st_mode) == 0o2755, \
+            "the write took the setgid bit off before the review: %o" % \
+            stat.S_IMODE(t.stat().st_mode)
+        _revert_all(s, trace)
+    assert t.read_text() == ORIG, "the revert did not restore the text:\n" + t.read_text()
+    assert stat.S_IMODE(t.stat().st_mode) == 0o2755, \
+        "the revert did not put the file's bits back: %o" % stat.S_IMODE(t.stat().st_mode)
+    assert t.stat().st_ino == ino[0], "the revert made a new file"
+
+
+# @scenario SC-write-owner-A-06
+@pytest.mark.parametrize("workspace", WORKSPACES)
+def test_revert_puts_back_the_recorded_bits_after_a_command_took_them_off(tmp_path, workspace):
+    """The bits come from the record made before the first write, not from what
+    the file has when the revert runs.
+
+    The run writes the setgid file (the record is made then) and then a command
+    of the run takes every special bit off.  The revert puts the text back and
+    the record's bits with it.
+    """
+    t = tmp_path / "t.c"
+    reply = (WRITE_REPLY % t).replace("@@TURN@@DONE rewrote it",
+                                      "@@TURN@@TOOL run_command chmod 0755 %s@@TURN@@DONE rewrote it" % t)
+    with _auto_run(tmp_path, workspace, reply, prepare=_set_setgid) as (s, t, trace):
+        assert stat.S_IMODE(t.stat().st_mode) == 0o755, \
+            "the command did not take the bits off: %o" % stat.S_IMODE(t.stat().st_mode)
+        _revert_all(s, trace)
+    assert t.read_text() == ORIG
+    assert stat.S_IMODE(t.stat().st_mode) == 0o2755, \
+        "the revert did not give back the recorded bits: %o" % stat.S_IMODE(t.stat().st_mode)
+
+
+# @scenario SC-write-owner-H2a-12
+@pytest.mark.parametrize("workspace", WORKSPACES)
+def test_revert_keeps_the_bits_of_a_file_only_a_command_changed(tmp_path, workspace):
+    """A file the run never wrote has no record: the revert leaves its bits as
+    they are (here 0600, which git's 100644 would have widened).  The command
+    changes the file's text; the assistant's own write goes to another file."""
+    t = tmp_path / "t.c"
+    reply = ("TOOL run_command printf 'int main(void){return 5;}\\n' > %s@@TURN@@DONE changed it" % t)
+    with _auto_run(tmp_path, workspace, reply, prepare=lambda p: os.chmod(p, 0o600)) as (s, t, trace):
+        assert "return 5" in t.read_text(), "the command did not change the file"
+        _revert_all(s, trace)
+    assert t.read_text() == ORIG
+    assert stat.S_IMODE(t.stat().st_mode) == 0o600, \
+        "the revert gave the file another file's bits: %o" % stat.S_IMODE(t.stat().st_mode)
+
+
+# @scenario SC-write-owner-A-07
+@pytest.mark.parametrize("workspace", WORKSPACES)
+def test_the_backup_of_an_agent_write_is_not_reviewed_and_survives_a_revert(tmp_path, workspace):
+    """The .bak a write makes (t.c becomes t.bak) is the price of a write being
+    a Save, not the run's work: the review lists one change (t.c) and never
+    t.bak, and a revert neither removes it nor restores it."""
+    with _auto_run(tmp_path, workspace, WRITE_REPLY % (tmp_path / "t.c")) as (s, t, trace):
+        bak = tmp_path / "t.bak"
+        assert bak.read_text() == ORIG, "the write kept no .bak of the old text"
+        txt = _trace_text(trace)
+        assert "changeset n=1" in txt, "the review lists more than the one file:\n" + txt
+        shown = "\n".join(s.display(drain=0))
+        assert "t.bak" not in shown, "the review lists the .bak:\n" + shown
+        _revert_all(s, trace)
+    assert t.read_text() == ORIG
+    assert bak.exists(), "the revert removed the .bak"
+    assert bak.read_text() == ORIG, "the revert changed the .bak:\n" + bak.read_text()
+
+
+# @scenario SC-write-owner-H2a-10
+def test_snapshot_revert_puts_back_a_before_image_that_holds_a_nul_byte(tmp_path):
+    """A before image with a NUL byte comes back whole: the checkpoint copied it
+    byte for byte and the revert writes all of it, never up to the first NUL."""
+    image = b"a\x00b\nint main(void){return 0;}\n"
+    with _auto_run(tmp_path, "snapshot", WRITE_REPLY % (tmp_path / "t.c"), seed=image) as (s, t, trace):
+        assert b"return 99" in t.read_bytes(), "the run did not write the file"
+        _revert_all(s, trace)
+    assert t.read_bytes() == image, "the revert cut the before image short: %r" % t.read_bytes()
+
+
+def _commit_all(tmp_path, message):
+    """Commit what a row set up after the workspace was made."""
+    for args in (("add", "-A"), ("commit", "-q", "-m", message)):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                        "-c", "commit.gpgsign=false", *args],
+                       cwd=tmp_path, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _victim(tmp_path):
+    """A file of the user's outside the workspace, which no revert may touch."""
+    victim = tmp_path.parent / (tmp_path.name + ".victim")
+    victim.write_text("USER DATA\n")
+    return victim
+
+
+# @scenario SC-write-owner-H2a-16
+def test_tracked_file_replaced_by_link_to_outside(tmp_path):
+    """A command of the run replaces the tracked t.c by a link to a file outside.
+    The revert must not write through the link: the outside file keeps its bytes
+    and t.c is a regular file with the committed text again."""
+    victim = _victim(tmp_path)
+    reply = "TOOL run_command ln -sf %s t.c@@TURN@@DONE ok" % victim
+    with _auto_run(tmp_path, "git", reply) as (s, t, trace):
+        _revert_all(s, trace)
+        s._drain(1.0)
+    assert victim.read_text() == "USER DATA\n", \
+        "the revert wrote into a file outside the workspace:\n" + victim.read_text()
+    assert not os.path.islink(t) and t.read_text() == ORIG, \
+        "t.c is not the committed file again"
+    assert "changeset revert failed" not in _trace_text(trace), _trace_text(trace)
+
+
+# @scenario SC-write-owner-H2a-17
+def test_tracked_symlink_retargeted(tmp_path):
+    """A tracked link retargeted by a command comes back as the link it was; the
+    file it was retargeted to is not written."""
+    def prepare(t):
+        (tmp_path / "other.c").write_text("OTHER\n")
+        os.symlink("t.c", tmp_path / "l.c")
+        _commit_all(tmp_path, "link")
+
+    reply = "TOOL run_command ln -sfn other.c l.c@@TURN@@DONE ok"
+    with _auto_run(tmp_path, "git", reply, prepare=prepare) as (s, t, trace):
+        _revert_all(s, trace)
+        s._drain(1.0)
+    assert (tmp_path / "other.c").read_text() == "OTHER\n", "the revert wrote into other.c"
+    link = tmp_path / "l.c"
+    assert os.path.islink(link) and os.readlink(link) == "t.c", \
+        "the link did not come back where it was"
+
+
+# @scenario SC-write-owner-H2a-18
+def test_tracked_symlink_replaced_by_file(tmp_path):
+    """A tracked link replaced by a regular file comes back as the link, not as a
+    file holding the link's target string."""
+    def prepare(t):
+        os.symlink("t.c", tmp_path / "l.c")
+        _commit_all(tmp_path, "link")
+
+    reply = "TOOL run_command rm l.c && printf 'x\\n' > l.c@@TURN@@DONE ok"
+    with _auto_run(tmp_path, "git", reply, prepare=prepare) as (s, t, trace):
+        _revert_all(s, trace)
+        s._drain(1.0)
+    link = tmp_path / "l.c"
+    assert os.path.islink(link) and os.readlink(link) == "t.c", \
+        "the link did not come back: %r" % (link.read_text() if link.exists() else None)
+
+
+# @scenario SC-write-owner-H2a-19
+def test_snapshot_revert_refuses_a_link_planted_at_the_name(tmp_path):
+    """In a plain folder a command plants a link to a file outside at t.c.  The
+    revert refuses it, says so by file and reason, counts the file as kept, and
+    the outside file keeps its bytes."""
+    victim = _victim(tmp_path)
+    reply = "TOOL run_command ln -sf %s t.c@@TURN@@DONE ok" % victim
+    with _auto_run(tmp_path, "snapshot", reply) as (s, t, trace):
+        s.key("r", delay=1.0)
+        assert _wait_trace(trace, "changeset revert", REVERT_WAIT_S), _trace_text(trace)
+        pane = "\n".join(pane_text_with_history(s, ["could not restore", "link"]))
+        shown = "\n".join(s.display(drain=0))
+    assert victim.read_text() == "USER DATA\n", \
+        "the revert wrote into a file outside the workspace:\n" + victim.read_text()
+    assert os.path.islink(t), "the planted link was replaced after all"
+    txt = _trace_text(trace)
+    assert "changeset revert failed" in txt, "the refused restore is not counted:\n" + txt
+    assert "could not restore" in pane and "link" in pane, \
+        "the pane does not name the refusal:\n" + pane
+    assert "ALL changes reverted" not in shown, \
+        "the review claims everything went back:\n" + shown
+
+
+FOLDER_LINK_WORDS = "link has taken the place of a folder"
+
+
+def _outside_folder(tmp_path):
+    """A folder of the user's outside the workspace, which no revert may touch."""
+    out = tmp_path.parent / (tmp_path.name + ".out")
+    out.mkdir()
+    return out
+
+
+def _seed_sub(tmp_path):
+    """A tracked sub/t.c, committed."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "t.c").write_text(ORIG)
+    _commit_all(tmp_path, "sub")
+
+
+def _plant_folder_link(out):
+    """The run's command: sub moves aside and a link to `out` takes its name."""
+    return "TOOL run_command mv sub sub.x && ln -s %s sub@@TURN@@DONE ok" % out
+
+
+# @scenario SC-write-owner-H2a-20
+def test_git_parent_link_regular(tmp_path):
+    """A command replaces the tracked folder sub by a link to a folder outside the
+    workspace, which holds its own t.c.  The revert of sub/t.c must not write
+    there: the outside file keeps its bytes, and the failure is counted and
+    named (git refuses a path beyond a link)."""
+    out = _outside_folder(tmp_path)
+    (out / "t.c").write_text("USER DATA\n")
+    with _auto_run(tmp_path, "git", _plant_folder_link(out),
+                   prepare=lambda t: _seed_sub(tmp_path)) as (s, t, trace):
+        _revert_all(s, trace)
+        pane = " ".join(pane_text_with_history(s, [FOLDER_LINK_WORDS]))
+    assert (out / "t.c").read_text() == "USER DATA\n", \
+        "the revert wrote through a link planted in place of a folder"
+    txt = _trace_text(trace)
+    assert "changeset revert failed %s" % (tmp_path / "sub" / "t.c") in txt, \
+        "the refused restore of sub/t.c is not counted:\n" + txt
+    assert FOLDER_LINK_WORDS in pane, "the pane does not name the refusal:\n" + pane
+
+
+# @scenario SC-write-owner-H2a-21
+def test_git_parent_link_leaf_link(tmp_path):
+    """The folder link leads to a folder where t.c is itself a link to a user's
+    file.  Neither the file nor the link outside is touched."""
+    out = _outside_folder(tmp_path)
+    (out / "victim").write_text("USER DATA\n")
+    os.symlink(out / "victim", out / "t.c")
+    with _auto_run(tmp_path, "git", _plant_folder_link(out),
+                   prepare=lambda t: _seed_sub(tmp_path)) as (s, t, trace):
+        _revert_all(s, trace)
+        pane = " ".join(pane_text_with_history(s, [FOLDER_LINK_WORDS]))
+    assert (out / "victim").read_text() == "USER DATA\n"
+    assert os.path.islink(out / "t.c"), "the revert replaced a file outside the workspace"
+    assert "changeset revert failed %s" % (tmp_path / "sub" / "t.c") in _trace_text(trace), \
+        _trace_text(trace)
+    assert FOLDER_LINK_WORDS in pane, pane
+
+
+ROOT_LINK_WORDS = "workspace folder was replaced by a link"
+ROOT_LINK_PANE_WORDS = "workspace folder was"
+
+
+def _plant_root_link(tmp_path, out):
+    """The run's command: the workspace folder moves aside and a link to `out`
+    takes its name."""
+    name = tmp_path.name
+    return "TOOL run_command cd .. && mv %s %s.x && ln -s %s %s@@TURN@@DONE ok" % (name, name, out, name)
+
+
+def _outside_with_files(tmp_path):
+    """A folder of the user's outside the workspace: a t.c with their bytes and a
+    v.txt that no revert may remove."""
+    out = _outside_folder(tmp_path)
+    (out / "t.c").write_text("USER DATA\n")
+    (out / "v.txt").write_text("VICTIM\n")
+    return out
+
+
+def _assert_root_swap_refused(out, trace, pane):
+    assert (out / "t.c").read_text() == "USER DATA\n", \
+        "the revert wrote into the folder the link leads to:\n" + (out / "t.c").read_text()
+    assert (out / "v.txt").exists(), "the revert removed a file of the folder the link leads to"
+    txt = _trace_text(trace)
+    assert "changeset revert failed" in txt, "the refused revert is not counted:\n" + txt
+    assert ROOT_LINK_WORDS in txt, "the trace does not name the refusal:\n" + txt
+    # the pane wraps the sentence at the window's width, so only its first
+    # words are looked for there
+    assert ROOT_LINK_PANE_WORDS in pane, "the pane does not name the refusal:\n" + pane
+
+
+# @scenario SC-write-owner-H2a-23
+def test_snapshot_workspace_root_swapped_for_link(tmp_path):
+    """Plain folder.  The run's command moves the workspace folder aside and puts
+    a link to a folder of the user's in its place.  The revert writes nothing
+    and removes nothing there, and says why."""
+    out = _outside_with_files(tmp_path)
+    with _auto_run(tmp_path, "snapshot", _plant_root_link(tmp_path, out)) as (s, t, trace):
+        _revert_all(s, trace)
+        pane = " ".join(pane_text_with_history(s, [ROOT_LINK_WORDS]))
+    _assert_root_swap_refused(out, trace, pane)
+
+
+# @scenario SC-write-owner-H2a-24
+def test_git_workspace_root_swapped_for_link(tmp_path):
+    """The same in a git workspace, where the folder the link leads to is a
+    repository of its own with a changed t.c and a new v.txt."""
+    out = _outside_with_files(tmp_path)
+    (out / "v.txt").unlink()
+    _git_repo(out)
+    (out / "t.c").write_text("USER DATA\n")
+    (out / "v.txt").write_text("VICTIM\n")
+    with _auto_run(tmp_path, "git", _plant_root_link(tmp_path, out)) as (s, t, trace):
+        _revert_all(s, trace)
+        pane = " ".join(pane_text_with_history(s, [ROOT_LINK_WORDS]))
+    _assert_root_swap_refused(out, trace, pane)
+
+
+# @scenario SC-write-owner-H2a-25
+def test_snapshot_workspace_link_retargeted(tmp_path):
+    """The workspace is opened through the user's own link ln -> real, on the
+    absolute name ln/t.c.  The run retargets ln to a folder of the user's
+    outside.  The workspace's real folder has not changed, so only the check
+    that every folder on the way still leads where the review listed it stands
+    between the revert and that folder: its t.c keeps its bytes, its v.txt is
+    not removed, and both refusals are counted and named."""
+    real = tmp_path / "real"
+    real.mkdir()
+    ln = tmp_path / "ln"
+    os.symlink(real, ln)
+    out = _outside_with_files(tmp_path)
+    reply = "TOOL run_command ln -sfn %s %s@@TURN@@DONE ok" % (out, ln)
+    trace = tmp_path / "retarget.trace"
+    state = tmp_path / "retarget.state"
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": reply,
+           "XWPE_AI_POLICY": "auto", "XWPE_AI_TRACE": str(trace),
+           "XDG_STATE_HOME": str(state)}
+    with WpeSession(str(ln), ORIG, filename=str(ln / "t.c"), env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("g")
+        s.key("rewrite it")
+        s.key("\r", delay=2.0)
+        assert _wait_trace(trace, "changeset n=", 60), \
+            "the review never opened:\n" + _trace_text(trace)
+        _revert_all(s, trace)
+        pane = " ".join(pane_text_with_history(s, [FOLDER_LINK_WORDS]))
+    assert (out / "t.c").read_text() == "USER DATA\n", \
+        "the revert wrote into the folder the retargeted link leads to"
+    assert (out / "v.txt").exists(), "the revert removed a file of the folder the link leads to"
+    txt = _trace_text(trace)
+    assert "changeset revert failed %s" % (ln / "t.c") in txt, txt
+    assert "changeset revert failed %s" % (ln / "v.txt") in txt, txt
+    assert FOLDER_LINK_WORDS in pane, "the pane does not name the refusal:\n" + pane
+
+
+# @scenario SC-write-owner-H2a-22
+def test_snapshot_parent_link(tmp_path):
+    """The same in a plain folder: the outside file keeps its bytes."""
+    out = _outside_folder(tmp_path)
+    (out / "t.c").write_text("USER DATA\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "t.c").write_text(ORIG)
+    with _auto_run(tmp_path, "snapshot", _plant_folder_link(out)) as (s, t, trace):
+        _revert_all(s, trace)
+    assert (out / "t.c").read_text() == "USER DATA\n", \
+        "the revert wrote through a link planted in place of a folder"
+
+
+# @scenario SC-write-owner-H2a-11
+def test_git_revert_keeps_the_inode_and_the_other_names(tmp_path):
+    """The git revert writes git's copy into the very file: the inode is the same
+    after it, and a second name of the file shows the restored text too (a
+    checkout would have made a new file and left the other name with the change)."""
+    ino = []
+
+    def prepare(t):
+        os.link(t, tmp_path / "h.c")
+        ino.append(os.stat(t).st_ino)
+
+    with _auto_run(tmp_path, "git", WRITE_REPLY % (tmp_path / "t.c"), prepare=prepare) as (s, t, trace):
+        _revert_all(s, trace)
+    assert t.read_text() == ORIG
+    assert t.stat().st_ino == ino[0], "the revert made a new file"
+    h = tmp_path / "h.c"
+    assert h.stat().st_ino == ino[0] and h.read_text() == ORIG, \
+        "the other name of the file does not show the restored text:\n" + h.read_text()

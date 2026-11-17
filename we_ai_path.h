@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include "we_path.h"
+#include "we_write.h"   /* WpeWriteExpect, the look a write is held to */
 
 /* Room for a resolved path; a path that does not fit is "outside". */
 #define WPE_PATH_RESOLVED_MAX WPE_PATH_SIZE
@@ -50,7 +51,8 @@ int wpe_scope_classify(const char *root, const char *const *grants, int ngrants,
 int wpe_path_lands_outside(const char *root, const char *path, char *real, size_t sz);
 int wpe_path_is_protected(const char *rroot, const char *rpath);
 int wpe_path_lies_in(const char *dir, const char *rpath);
-int wpe_path_open_write(const char *path);
+int wpe_path_look_write(const char *path, char *real, size_t sz, WpeWriteExpect *x);
+int wpe_path_look_name(const char *path, char *real, size_t sz, WpeWriteExpect *x);
 int wpe_path_count_outward_links(const char *start, int max_depth, int *truncated);
 
 #endif

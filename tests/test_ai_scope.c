@@ -157,7 +157,7 @@ static void remove_tree(void)
    "ws/sub/deepout", "ws/loopa", "ws/loopb", "grantlink", "out/inner", "ws/hooklink", NULL };
  static const char *files[] = { "ws/inside.txt", "ws2/x.txt", "out/f.txt", "inc/h.h",
    "inc2/h.h", "elsewhere/e.txt", "out/deep/d.txt", "out/new.txt", "ws/written.txt",
-   "ws/made.txt", "ws/.git/config", "ws/xwperc", "ws/sub/.git/config", "wt/.git", NULL };
+   "ws/made.txt", "ws/twice", "ws/pipe", "ws/.git/config", "ws/xwperc", "ws/sub/.git/config", "wt/.git", NULL };
  static const char *dirs[] = { "ws/.git/hooks", "ws/.git", "ws/.claude", "ws/sub/.git",
    "ws/.github", "ws/sub", "ws", "ws2", "out/deep", "out", "inc", "inc2",
    "elsewhere", "wt/inner/gd/hooks", "wt/inner/gd", "wt/inner", "wt", NULL };
@@ -343,39 +343,91 @@ static void scan_cases(void)
   fail("links out, no folder", "no folder has no links");
 }
 
-/* The fd opened for @rel written through must be the file at @placed. */
-static int opened_at_place(int fd, const char *placed_rel)
+/* Does the resolved @real end in @rel, below the test folder? */
+static int real_is_at(const char *real, const char *rel)
 {
- char p[PATH_ROOM];
- struct stat a, b;
- under_base(p, sizeof p, placed_rel);
- if (fd < 0 || fstat(fd, &a) != 0 || stat(p, &b) != 0) return 0;
- return a.st_ino == b.st_ino && a.st_dev == b.st_dev;
+ char want[PATH_ROOM];
+ under_base(want, sizeof want, rel);
+ return strcmp(real, want) == 0;
 }
 
-static void open_cases(void)
+/* Does the look say a file is there, which one, and how many names it has? */
+static int look_found(const WpeWriteExpect *x, const char *rel, int nlink)
 {
  char p[PATH_ROOM];
- int fd;
+ struct stat st;
+ under_base(p, sizeof p, rel);
+ if (!x->judged || !x->exists || stat(p, &st) != 0) return 0;
+ return x->dev == st.st_dev && x->ino == st.st_ino && x->nlink == (nlink_t)nlink;
+}
+
+/* @scenario SC-write-owner-A-06: the judge's look resolves the name once and
+   keeps what is there (the file, by device and inode, and its names), so the
+   write is held to that file. */
+static void look_cases(void)
+{
+ char p[PATH_ROOM], real[PATH_ROOM];
+ WpeWriteExpect x;
  under_base(p, sizeof p, "ws/made.txt");
- fd = wpe_path_open_write(p);
- if (!opened_at_place(fd, "ws/made.txt")) fail("open a new file", "not created where named");
- if (fd >= 0) close(fd);
+ if (wpe_path_look_write(p, real, sizeof real, &x) != 0 || !real_is_at(real, "ws/made.txt") ||
+     !x.judged || x.exists)
+  fail("look at a free name", "a name that is not there was not looked at as free");
  under_base(p, sizeof p, "ws/dang");
- fd = wpe_path_open_write(p);
- if (!opened_at_place(fd, "out/new.txt")) fail("open through a dangling link", "not created where the link leads");
- if (fd >= 0) close(fd);
+ if (wpe_path_look_write(p, real, sizeof real, &x) != 0 || !real_is_at(real, "out/new.txt") ||
+     !x.judged || x.exists)
+  fail("look through a dangling link", "the real place the link leads to was not given, free");
  under_base(p, sizeof p, "ws/fileout");
- fd = wpe_path_open_write(p);
- if (!opened_at_place(fd, "out/f.txt")) fail("open through a file link", "not opened where the link leads");
- if (fd >= 0) close(fd);
+ if (wpe_path_look_write(p, real, sizeof real, &x) != 0 || !real_is_at(real, "out/f.txt") ||
+     !look_found(&x, "out/f.txt", 1) || !x.regular)
+  fail("look through a file link", "the file the link leads to was not looked at");
  under_base(p, sizeof p, "ws/loopa");
  errno = 0;
- fd = wpe_path_open_write(p);
- if (fd >= 0 || errno != ELOOP) fail("open through a loop", "a loop was opened or gave another error");
- if (fd >= 0) close(fd);
+ if (wpe_path_look_write(p, real, sizeof real, &x) == 0 || errno != ELOOP)
+  fail("look through a loop", "a loop was looked at or gave another error");
  errno = 0;
- if (wpe_path_open_write("") >= 0 || errno != ENOENT) fail("open no name", "an empty name was opened");
+ if (wpe_path_look_write("", real, sizeof real, &x) == 0 || errno != ENOENT)
+  fail("look at no name", "an empty name was looked at");
+}
+
+/* A file with two names counts them; a pipe is not a regular file. */
+static void look_kinds_cases(void)
+{
+ char p[PATH_ROOM], other[PATH_ROOM], real[PATH_ROOM];
+ WpeWriteExpect x;
+ under_base(p, sizeof p, "out/f.txt");
+ under_base(other, sizeof other, "ws/twice");
+ if (link(p, other) != 0) { perror(other); exit(2); }
+ if (wpe_path_look_write(other, real, sizeof real, &x) != 0 || !look_found(&x, "out/f.txt", 2))
+  fail("look at a file with two names", "its two names were not counted");
+ under_base(p, sizeof p, "ws/pipe");
+ if (mkfifo(p, 0600) != 0) { perror(p); exit(2); }
+ if (wpe_path_look_write(p, real, sizeof real, &x) != 0 || !x.exists || x.regular)
+  fail("look at a pipe", "a pipe was not reported as not regular");
+}
+
+/* @scenario SC-write-owner-A-08: the look of a reviewed NAME does not follow a
+   link at its end: the link is what is there, not the file it leads to. */
+static void look_name_cases(void)
+{
+ char p[PATH_ROOM], real[PATH_ROOM];
+ struct stat st;
+ WpeWriteExpect x;
+ under_base(p, sizeof p, "ws/fileout");
+ if (wpe_path_look_name(p, real, sizeof real, &x) != 0 || !real_is_at(real, "ws/fileout") ||
+     !x.exists || x.regular)
+  fail("look at a link by name", "a link at the name was followed or taken for a regular file");
+ under_base(p, sizeof p, "ws/fileout");
+ if (lstat(p, &st) != 0 || x.ino != st.st_ino)
+  fail("look at a link by name", "the identity is not the link's own");
+ under_base(p, sizeof p, "ws/dang");
+ if (wpe_path_look_name(p, real, sizeof real, &x) != 0 || !real_is_at(real, "ws/dang") || !x.exists)
+  fail("look at a dangling link by name", "the link itself was not looked at");
+ under_base(p, sizeof p, "ws/inlink/x.txt");
+ if (wpe_path_look_name(p, real, sizeof real, &x) != 0 || !real_is_at(real, "ws/sub/x.txt") || x.exists)
+  fail("look below a linked folder", "the folder was not followed");
+ errno = 0;
+ if (wpe_path_look_name("", real, sizeof real, &x) == 0 || errno != ENOENT)
+  fail("look at no name", "an empty name was looked at");
 }
 
 /* @scenario SC-ai-agent-91 */
@@ -386,7 +438,9 @@ int main(void)
  protected_cases();
  hooks_path_cases();
  scan_cases();
- open_cases();
+ look_cases();
+ look_kinds_cases();
+ look_name_cases();
  remove_tree();
  if (failures) { printf("%d failure(s)\n", failures); return 1; }
  printf("test_ai_scope: all cases passed\n");

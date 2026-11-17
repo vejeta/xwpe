@@ -420,7 +420,12 @@ def test_failed_write_is_told_to_the_user(tmp_path):
     text = "\n".join(rows)
     assert len(captured) >= 2, "the run did not continue after the failed write:\n" + txt
     result = _tool_results(captured[1])
-    assert result and result[-1] == "TOOL RESULT:\n(write failed)", result
+    # the model reads the write owner's sentence (the path and the reason), so it
+    # can act on it, not a bare "(write failed)"
+    assert result and result[-1].startswith("TOOL RESULT:\n(write failed: Cannot write "), result
+    assert result[-1].endswith("No such file or directory.  Nothing was written.)") or \
+        result[-1].endswith("No such file or directory.)"), result
+    assert WRITE_FAILED_PATH in result[-1], result
     assert not (tmp_path / "nodir").exists(), "a directory was created for the failed write"
     assert "[agent] write failed: %s" % WRITE_FAILED_PATH in text, \
         "the pane does not say the write failed:\n" + text

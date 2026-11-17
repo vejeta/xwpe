@@ -12,6 +12,7 @@
 
 #include <stddef.h>   /* size_t */
 #include "we_ai_http.h"
+#include "we_write.h"  /* WpeWriteExpect, WpeWriteOutcome: what an assistant write is held to */
 
 /* ----- backend selection ------------------------------------------------- */
 enum {
@@ -515,9 +516,12 @@ void  wpe_ai_scope_folder_of(const char *path, char *dir, size_t sz);
  * folder); the depth is WPE_SCAN_ONE_LEVEL or WPE_SCAN_ALL_LEVELS and
  * *truncated says the look stopped at its entry bound. */
 int   wpe_ai_scope_count_skipped_links(const char *path, int depth, int *truncated);
-/* Write a whole file at the place the scope judged (the last link is not
- * followed); 0 when written, -1 with errno set. */
-int   wpe_ai_write_judged_file(const char *path, const char *text);
+/* Write a whole file the assistant's way: a Save, at the place the look
+ * resolved (@real, written as it is, the last link not followed) and into
+ * the file the look saw (@x).  0 when the file holds @text, -1 with the
+ * outcome @o saying why.  See we_ai_ws.c. */
+int   wpe_ai_write_judged_file(struct FNST *f, const char *real, const char *text,
+                               const WpeWriteExpect *x, WpeWriteOutcome *o);
 /* Checkpoint before an edits/auto run: a git ref (stash create / HEAD) when
  * the workspace is a git tree, else snapshot copies of the scope files.
  * Returns 0 when the checkpoint is active, -1 when it was not taken because it

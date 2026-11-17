@@ -1503,6 +1503,7 @@ typedef struct {
  FENSTER    *f;
  WriteRange  r;
  const char *text;
+ size_t      len;     /* the bytes of @text; a before image may hold NUL bytes */
 } WriteSource;
 
 /** How the file's name is opened. */
@@ -1556,17 +1557,20 @@ typedef struct {
  WriteOpenHow          open;
  int                   has_recorded;
  mode_t                recorded;
+ const WpeWriteExpect *expect;   /* what the caller saw at the name, or NULL: the file
+                                    opened must be that file (write_target_expected) */
 } WriteAim;
 
 /**
  * write_text_put - Put a text into an open stream.
- * @text: the bytes; @fp: the stream.
+ * @text: the bytes; @len: how many; @fp: the stream.
  * Return: 1 when it did not all go (errno says why, or is 0), else 0.
+ *
+ * The length is the caller's, so a before image that holds NUL bytes goes
+ * back whole.
  */
-static int write_text_put(const char *text, FILE *fp)
+static int write_text_put(const char *text, size_t len, FILE *fp)
 {
- size_t len = strlen(text);
-
  return(len > 0 && fwrite(text, 1, len, fp) != len);
 }
 
@@ -1585,7 +1589,7 @@ static int write_source_fill(const WriteSource *s, FILE *fp)
  int xa = s->r.xa, ya = s->r.ya, xe = s->r.xe, ye = s->r.ye;
 
  if (s->text != NULL)
-  return(write_text_put(s->text, fp));
+  return(write_text_put(s->text, s->len, fp));
  b = f->b;
  return(e_eol_write(fp, b, ya, xa, ye, xe, write_keeps_file_ending(f, b, xa, ya, xe, ye)) != 0);
 }
@@ -1776,16 +1780,24 @@ static int write_backup_refuses_save(const WriteBackup *bk, WpeWriteOutcome *o)
  * (NAMED_NOFOLLOW) is opened with O_NOFOLLOW both times and never takes the
  * dangling-link way: a link found there was put there since, the open fails
  * with the system's own errno, which write_open_failure turns into the one
- * the owner reports for a link, and nothing is created through it.
+ * the owner reports for a link, and nothing is created through it.  Such an
+ * open also never waits: a pipe with no reader would otherwise hold the
+ * editor in open() before the file's type could be looked at, so it is opened
+ * O_NONBLOCK, write_target_hold looks at the type from the descriptor, and
+ * the flag is cleared on a regular file before any byte is written.
+ *
+ * @may_create is 0 when the caller looked at a file there: a file removed
+ * since is not made again empty, the open fails and the owner says it was
+ * removed.
  */
-static int write_target_open_fd(const char *path, WriteOpenHow how, int *created)
+static int write_target_open_fd(const char *path, WriteOpenHow how, int may_create, int *created)
 {
- int follow = (how == WRITE_OPEN_NAMED_NOFOLLOW ? O_NOFOLLOW : 0);
+ int follow = (how == WRITE_OPEN_NAMED_NOFOLLOW ? (O_NOFOLLOW | O_NONBLOCK) : 0);
  int flags = O_NOCTTY | O_CLOEXEC | follow;
  int fd = open(path, O_WRONLY | flags);
 
  *created = 0;
- if (fd >= 0 || errno != ENOENT)
+ if (fd >= 0 || errno != ENOENT || !may_create)
   return(fd);
  fd = open(path, O_WRONLY | O_CREAT | O_EXCL | flags, WRITE_NEW_FILE_MODE);
  if (fd >= 0)
@@ -1843,8 +1855,103 @@ static mode_t write_aim_keep(const WriteAim *aim, const WriteTarget *t)
 }
 
 /**
+ * write_clear_nonblock - Make an opened file wait for the disk again.
+ * @fd: the descriptor.
+ * Return: 0, or the errno of what failed.
+ */
+static int write_clear_nonblock(int fd)
+{
+ int flags = fcntl(fd, F_GETFL);
+
+ if (flags < 0)
+  return(errno);
+ if (fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) != 0)
+  return(errno);
+ return(0);
+}
+
+/**
+ * write_note_not_regular - Record that the file opened is not a regular file.
+ * @o: receives not_regular, its kind and whether it is a terminal; @t: the
+ * target, opened and fstat'ed.
+ *
+ * What the user reads is "a pipe", "a socket", "a device" or "a terminal",
+ * from the file's own mode and from isatty on the descriptor, never from an
+ * errno.
+ */
+static void write_note_not_regular(WpeWriteOutcome *o, const WriteTarget *t)
+{
+ o->not_regular = 1;
+ o->not_regular_kind = t->st.st_mode & S_IFMT;
+ o->not_regular_tty = (o->not_regular_kind == S_IFCHR && isatty(t->fd));
+}
+
+/**
+ * write_target_expected - Is the file opened the one the caller looked at?
+ * @t: the target, opened and not cut; @expect: what the caller saw at the
+ * name, or NULL; @o: receives swapped or gained_name.
+ * Return: 0 when it is, else the errno the refusal carries.
+ *
+ * Decided on the opened descriptor, never on the name: the file must be the
+ * one with the device and inode the caller saw, with no more names than it
+ * had, and a name that was free must have been made by this very open.  A
+ * file swapped in under the name while the user was being asked, or a hard
+ * link made to it, is refused with nothing written; the sentence says so.
+ */
+static int write_target_expected(const WriteTarget *t, const WpeWriteExpect *expect,
+                                 WpeWriteOutcome *o)
+{
+ if (expect == NULL || !expect->judged)
+  return(0);
+ if (!expect->exists && t->created)
+  return(0);
+ if (!expect->exists || t->created || t->st.st_dev != expect->dev || t->st.st_ino != expect->ino)
+ {
+  o->swapped = 1;
+  return(WPE_WRITE_REPLACED_ERR);
+ }
+ if (t->st.st_nlink > expect->nlink)
+ {
+  o->gained_name = 1;
+  return(WPE_WRITE_REPLACED_ERR);
+ }
+ return(0);
+}
+
+/**
+ * write_target_hold - Judge the file just opened, before anything touches it.
+ * @t: the target, opened; @aim: what the write is for; @o: receives the
+ * refusal.
+ * Return: 0 when the write may go on, else the errno the refusal carries.
+ *
+ * A name the caller resolved and judged (NOFOLLOW) is written only when it is
+ * a regular file, decided from the file's own mode: a pipe, a socket, a
+ * device or a terminal is refused and named by its kind, never written to.
+ * Such a file was opened without waiting; a regular file waits for the disk
+ * again from here on.  Then the file must be the one the caller looked at.
+ */
+static int write_target_hold(const WriteTarget *t, const WriteAim *aim, WpeWriteOutcome *o)
+{
+ int err;
+
+ if (aim->open == WRITE_OPEN_NAMED_NOFOLLOW)
+ {
+  if (!S_ISREG(t->st.st_mode))
+  {
+   write_note_not_regular(o, t);
+   return(WPE_WRITE_REPLACED_ERR);
+  }
+  err = write_clear_nonblock(t->fd);
+  if (err != 0)
+   return(err);
+ }
+ return(write_target_expected(t, aim->expect, o));
+}
+
+/**
  * write_target_open - Open the file a write goes to, without cutting it.
- * @path: the file; @aim: what the write is for; @t: receives the target.
+ * @path: the file; @aim: what the write is for; @t: receives the target;
+ * @o: receives the reason the file was refused, when it is.
  * Return: 0, or the errno of what failed (nothing was truncated).
  *
  * The write clears a file's setuid and setgid bits in the open itself when
@@ -1853,19 +1960,23 @@ static mode_t write_aim_keep(const WriteAim *aim, const WriteTarget *t)
  * before or a mode recorded when the window loaded the file, means a bit the
  * user took off since stays off and a file that is new has none to get.
  */
-static int write_target_open(const char *path, const WriteAim *aim, WriteTarget *t)
+static int write_target_open(const char *path, const WriteAim *aim, WriteTarget *t,
+                             WpeWriteOutcome *o)
 {
  int err;
 
  memset(t, 0, sizeof *t);
- t->fd = write_target_open_fd(path, aim->open, &t->created);
+ t->fd = write_target_open_fd(path, aim->open, !(aim->expect != NULL && aim->expect->judged &&
+                                                    aim->expect->exists), &t->created);
  if (t->fd < 0)
   return(errno);
- if (fstat(t->fd, &t->st) == 0)
-  t->fp = fdopen(t->fd, "w");
- if (t->fp == NULL)
- {
+ err = (fstat(t->fd, &t->st) == 0 ? 0 : errno);
+ if (err == 0)
+  err = write_target_hold(t, aim, o);
+ if (err == 0 && (t->fp = fdopen(t->fd, "w")) == NULL)
   err = errno;
+ if (err != 0)
+ {
   close(t->fd);
   return(err);
  }
@@ -1882,19 +1993,41 @@ static int write_target_open(const char *path, const WriteAim *aim, WriteTarget 
  * @o: receives replaced_by_link.
  * Return: ELOOP when the open was one that never follows a link and a link
  * holds the name now (the one value the owner reports for it: set here,
- * never read), else @err (EIO when it left none).
+ * never read), the refusal's own value when the file was opened and refused
+ * (write_target_hold), else @err (EIO when it left none).
  *
  * The name is looked at again, never the errno: FreeBSD says EMLINK for a
- * link refused by O_NOFOLLOW, NetBSD EFTYPE, Linux ELOOP.  The caller reads
- * o->replaced_by_link, the user sees "a link took the name" the same on
- * every system.
+ * link refused by O_NOFOLLOW, NetBSD EFTYPE, Linux ELOOP, and a pipe with no
+ * reader or a socket is ENXIO here and something else elsewhere.  The caller
+ * reads o->replaced_by_link and o->not_regular, the user sees the same
+ * sentence on every system.
  */
 static int write_open_failure(const char *path, const WriteAim *aim, int err, WpeWriteOutcome *o)
 {
- if (aim->open != WRITE_OPEN_NAMED_NOFOLLOW || write_name_kind(path) != S_IFLNK)
+ mode_t kind;
+
+ if (o->not_regular || o->swapped || o->gained_name)
+  return(err);
+ kind = write_name_kind(path);
+ if (kind == 0 && aim->expect != NULL && aim->expect->judged && aim->expect->exists)
+ {
+  o->vanished = 1;
+  return(WPE_WRITE_REPLACED_ERR);
+ }
+ if (aim->open != WRITE_OPEN_NAMED_NOFOLLOW)
   return(write_error_number(err));
- o->replaced_by_link = 1;
- return(ELOOP);
+ if (kind == S_IFLNK)
+ {
+  o->replaced_by_link = 1;
+  return(ELOOP);
+ }
+ if (kind != 0 && kind != S_IFREG && kind != S_IFDIR)
+ {
+  o->not_regular = 1;
+  o->not_regular_kind = kind;
+  return(WPE_WRITE_REPLACED_ERR);
+ }
+ return(write_error_number(err));
 }
 
 /**
@@ -2098,7 +2231,7 @@ static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *p
 
  if (policy->how == WRITE_REPLACED_REFUSE && !S_ISREG(t->st.st_mode))
  {
-  o->not_regular = 1;
+  write_note_not_regular(o, t);
   o->err = WPE_WRITE_REPLACED_ERR;
   return(0);
  }
@@ -2140,7 +2273,7 @@ static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *p
 static int write_run_open(const WriteSource *s, const char *path, int backup, const WriteAim *aim,
                           WriteTarget *t, WriteBackup *bk, WpeWriteOutcome *o)
 {
- int err = write_target_open(path, aim, t);
+ int err = write_target_open(path, aim, t, o);
 
  bk->result = BACKUP_NONE;
  bk->fd = -1;
@@ -2285,11 +2418,12 @@ static void write_source_window(WriteSource *s, FENSTER *f, int xa, int ya, int 
  s->r.ye = ye;
 }
 
-/** write_source_text - A text, which has no window, as a source. */
-static void write_source_text(WriteSource *s, const char *text)
+/** write_source_text - A text of @len bytes, which has no window, as a source. */
+static void write_source_text(WriteSource *s, const char *text, size_t len)
 {
  memset(s, 0, sizeof *s);
  s->text = text;
+ s->len = len;
 }
 
 /**
@@ -2345,25 +2479,29 @@ static WriteAimKind write_text_kind(const WpeFileIdentity *own)
  * Save does.
  * @path: the file; @text: the bytes; @own: the identity of the window open on
  * that file, or NULL; @flags: WPE_WRITE_NOFOLLOW to refuse a link at the end
- * of @path; @o: receives the outcome.
+ * of @path; @expect: what the caller saw at the name, or NULL; @o: receives
+ * the outcome.
  * Return: 0 when the file holds the text, -1 when not (the outcome says why).
  *
  * What the user gets when the assistant changes a file: the old text kept in
  * its .bak, a program's setuid, setgid or sticky bit still on it after the
  * text is on disk (or named, when the system would not keep it), and, when
  * a window is open on the file, a refusal instead of a write into a different
- * file that took the name since the window read it.  This face refuses: it
- * has no one to ask.  A caller that can show the question asks first, as
- * Save does, and writes only on a Yes.
+ * file that took the name since the window read it.  A file that is not the
+ * one the caller looked at, or has gained a name since, is refused too, and
+ * so is a pipe or a device: the assistant never writes where the user was not
+ * shown.  This face refuses: it has no one to ask.  A caller that can show
+ * the question asks first, as Save does, and writes only on a Yes.
  */
 int wpe_write_save_text(const char *path, const char *text, const WpeFileIdentity *own, int flags,
-                        WpeWriteOutcome *o)
+                        const WpeWriteExpect *expect, WpeWriteOutcome *o)
 {
  WriteSource s;
  WriteAim aim;
 
- write_source_text(&s, text);
+ write_source_text(&s, text, strlen(text));
  write_aim_make(&aim, write_text_kind(own), own, &write_replaced_refuse, write_open_how_of(flags));
+ aim.expect = expect;
  write_run(&s, path, 1, &aim, o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
 }
@@ -2371,9 +2509,11 @@ int wpe_write_save_text(const char *path, const char *text, const WpeFileIdentit
 /**
  * wpe_write_restore_text - Put a before image's text back into a file, with
  * the permission bits recorded with it.
- * @path: the file, already resolved by the caller; @text: the bytes;
- * @recorded: the twelve bits to give back; @own: the identity of the window
- * open on the file, or NULL; @o: receives the outcome.
+ * @path: the file, already resolved by the caller; @text, @len: the bytes
+ * (which may hold NUL bytes); @recorded: the twelve bits to give back, or
+ * WPE_WRITE_NO_RECORDED_MODE; @own: the identity of the window open on the
+ * file, or NULL; @expect: what the caller saw at the name, or NULL; @o:
+ * receives the outcome.
  * Return: 0 when the file holds the text, -1 when not (the outcome says why).
  *
  * The name is opened without following a link at its end
@@ -2382,18 +2522,23 @@ int wpe_write_save_text(const char *path, const char *text, const WpeFileIdentit
  * WRITE_NEW_FILE_MODE (0666 less the umask) and then given the recorded nine
  * bits.  What the user gets: after a revert the file is what it was before
  * the assistant's run, a program still a program, and a bit the system would
- * not give back is named.  No .bak is made: the before image the text comes
+ * not give back is named.  A file that no mode was recorded for (only a
+ * command changed it) keeps the bits it has: its text goes back and nothing
+ * else about it changes.  No .bak is made: the before image the text comes
  * from is the copy, and a revert leaves no new file beside the user's.
  */
-int wpe_write_restore_text(const char *path, const char *text, mode_t recorded,
-                           const WpeFileIdentity *own, WpeWriteOutcome *o)
+int wpe_write_restore_text(const char *path, const char *text, size_t len, mode_t recorded,
+                           const WpeFileIdentity *own, const WpeWriteExpect *expect,
+                           WpeWriteOutcome *o)
 {
  WriteSource s;
  WriteAim aim;
 
- write_source_text(&s, text);
+ write_source_text(&s, text, len);
  write_aim_make(&aim, write_text_kind(own), own, &write_replaced_refuse, WRITE_OPEN_NAMED_NOFOLLOW);
- write_aim_record(&aim, recorded);
+ if (recorded != WPE_WRITE_NO_RECORDED_MODE)
+  write_aim_record(&aim, recorded);
+ aim.expect = expect;
  write_run(&s, path, 0, &aim, o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
 }
@@ -2481,6 +2626,33 @@ void wpe_write_identity_take(WpeFileIdentity *id, const struct stat *st)
 void wpe_write_identity_forget(WpeFileIdentity *id)
 {
  memset(id, 0, sizeof *id);
+}
+
+/**
+ * wpe_write_identity_set - A window now has the file another write made or kept.
+ * @id: the window's FENSTER.file_id; @from: the identity the write reported
+ * (WpeWriteOutcome.written).
+ *
+ * After the assistant's revert puts text back into a file, the window that
+ * shows it keeps its identity, even when the revert had to make the file
+ * again.
+ */
+void wpe_write_identity_set(WpeFileIdentity *id, const WpeFileIdentity *from)
+{
+ *id = *from;
+}
+
+/**
+ * wpe_write_identity_is - Is this the file with that device and inode?
+ * @id: a window's FENSTER.file_id; @dev, @ino: a file's.
+ * Return: 1 when the window read that very file.
+ *
+ * What finds the window that is open on a file the assistant is about to
+ * write, whatever name or link the window was opened by.
+ */
+int wpe_write_identity_is(const WpeFileIdentity *id, dev_t dev, ino_t ino)
+{
+ return(id->known && id->dev == dev && id->ino == ino);
 }
 
 /**
@@ -2652,13 +2824,13 @@ int wpe_write_file(FENSTER *f, WpeWriteOutcome *o)
 /* --- text that is not a window's rows ------------------------------------- */
 
 /**
- * write_fd_into - Write all of a string to a descriptor and close it, judged.
- * @fd: an open descriptor, closed here; @text: the bytes; @o: receives the
- * outcome (path and the rest are the caller's).
+ * write_fd_into - Write @len bytes to a descriptor and close it, judged.
+ * @fd: an open descriptor, closed here; @text, @len: the bytes; @o: receives
+ * the outcome (path and the rest are the caller's).
  */
-static void write_fd_into(int fd, const char *text, WpeWriteOutcome *o)
+static void write_fd_into(int fd, const char *text, size_t len, WpeWriteOutcome *o)
 {
- size_t len = strlen(text), done = 0;
+ size_t done = 0;
  ssize_t put;
  int err = 0;
 
@@ -2693,16 +2865,20 @@ static void write_fd_into(int fd, const char *text, WpeWriteOutcome *o)
 int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o)
 {
  memset(o, 0, sizeof *o);
- write_fd_into(fd, text, o);
+ write_fd_into(fd, text, strlen(text), o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
 }
 
 /**
- * wpe_write_text - Create or replace a file with a string, judged.
- * @path: the file; @text: the bytes; @o: receives the outcome, with the path.
+ * wpe_write_bytes - Create or replace a file with @len bytes, judged.
+ * @path: the file; @text, @len: the bytes, which may hold NUL bytes; @o:
+ * receives the outcome, with the path.
  * Return: 0 when written, else -1.
+ *
+ * For a copy of a file's content that must come back whole, a before image
+ * that holds a NUL byte included.
  */
-int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o)
+int wpe_write_bytes(const char *path, const char *text, size_t len, WpeWriteOutcome *o)
 {
  int fd;
 
@@ -2715,8 +2891,18 @@ int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o)
   o->err = errno;
   return(-1);
  }
- write_fd_into(fd, text, o);
+ write_fd_into(fd, text, len, o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+}
+
+/**
+ * wpe_write_text - Create or replace a file with a string, judged.
+ * @path: the file; @text: the bytes; @o: receives the outcome, with the path.
+ * Return: 0 when written, else -1.
+ */
+int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o)
+{
+ return(wpe_write_bytes(path, text, strlen(text), o));
 }
 
 /**
@@ -2819,6 +3005,8 @@ static const char *write_then_text(const WpeWriteOutcome *o, WpeWriteThen then, 
  case WPE_WRITE_THEN_USER_KEYS_STAY:
   return("Your own settings (hook, engine command, endpoints, dial) are still in it; "
          "take them out before you share the file.");
+ case WPE_WRITE_THEN_NOTHING_MORE:
+  return("");
  case WPE_WRITE_THEN_KEPT:
  default:
   return("Your text is still in the window.");
@@ -2871,6 +3059,30 @@ static void write_bits_off_clause(char *out, size_t n, mode_t off)
 }
 
 /**
+ * write_kind_words - What a file that is not regular is called to the user.
+ * @o: the outcome with not_regular set.
+ * Return: "a terminal", "a pipe", "a socket", "a device", or the generic
+ * list when the kind is not known.
+ */
+static const char *write_kind_words(const WpeWriteOutcome *o)
+{
+ if (o->not_regular_tty)
+  return("a terminal");
+ switch (o->not_regular_kind)
+ {
+ case S_IFIFO:
+  return("a pipe");
+ case S_IFSOCK:
+  return("a socket");
+ case S_IFCHR:
+ case S_IFBLK:
+  return("a device");
+ default:
+  return("a device, a terminal or a pipe");
+ }
+}
+
+/**
  * write_failed_head - The first sentence of a failed write.
  * @out, @n: the room; @o: the outcome.
  *
@@ -2888,8 +3100,19 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
  if (o->read_only)
   snprintf(out, n, "%s is read-only.", write_base_name(path));
  else if (o->not_regular)
-  snprintf(out, n, "Cannot write %s: it is not a regular file (a device, a terminal or a pipe).  "
-           "Nothing was written.", path);
+  snprintf(out, n, "Cannot write %s: it is not a regular file (%s).  Nothing was written.", path,
+           write_kind_words(o));
+ else if (o->vanished)
+  snprintf(out, n, "Cannot write %s: the file was removed after the check.  Nothing was "
+           "written.", path);
+ else if (o->replaced_by_link)
+  snprintf(out, n, "Cannot write %s: a link has taken the name.  Nothing was written.", path);
+ else if (o->swapped)
+  snprintf(out, n, "Cannot write %s: it is not the file that was checked; another file has taken "
+           "the name since.  Nothing was written.", path);
+ else if (o->gained_name)
+  snprintf(out, n, "Cannot write %s: the file gained another name after the check.  Nothing was "
+           "written.", path);
  else if (o->other_file && o->changed_while_asked)
   snprintf(out, n, "Cannot write %s: the name changed again while you were being asked, and now "
            "leads to yet another file.  Nothing was written.  Use Save As to write your text "
@@ -2960,6 +3183,34 @@ static void write_written_sentence(char *out, size_t n, const WpeWriteOutcome *o
 }
 
 /**
+ * wpe_write_written_clause - What a save that worked could not keep, as a clause.
+ * @out, @n: the room; @o: the outcome of a write that was WRITTEN.
+ * Return: its length; 0 (and an empty @out) when the file kept everything.
+ *
+ * "the setgid bit was not kept: Operation not permitted", and, joined by a
+ * semicolon, "no backup was made: Permission denied": the words a caller puts
+ * after "written, but" when it says the news in its own sentence (the
+ * assistant's result to the model) instead of the owner's.
+ */
+int wpe_write_written_clause(char *out, size_t n, const WpeWriteOutcome *o)
+{
+ size_t used = 0;
+
+ if (n == 0)
+  return(0);
+ out[0] = '\0';
+ if (o->status != WPE_WRITE_WRITTEN)
+  return(0);
+ if (o->file_kept.lost != 0)
+  write_bits_clause(out, n, &o->file_kept);
+ used = strlen(out);
+ if (o->backup_err != 0)
+  snprintf(out + used, n - used, "%sno backup was made: %s", used > 0 ? "; " : "",
+           strerror(o->backup_err));
+ return((int)strlen(out));
+}
+
+/**
  * wpe_write_sentence - The one sentence that tells the user how a write ended.
  * @out, @n: the room; @o: the outcome; @then: what the caller keeps.
  * Return: its length; 0 (and an empty @out) when there is nothing to say.
@@ -2984,7 +3235,10 @@ int wpe_write_sentence(char *out, size_t n, const WpeWriteOutcome *o, WpeWriteTh
   return((int)strlen(out));
  }
  write_failed_head(head, sizeof head, o);
- snprintf(out, n, "%s  %s", head, write_then_text(o, then, name, sizeof name));
+ if (then == WPE_WRITE_THEN_NOTHING_MORE)
+  snprintf(out, n, "%s", head);
+ else
+  snprintf(out, n, "%s  %s", head, write_then_text(o, then, name, sizeof name));
  return((int)strlen(out));
 }
 

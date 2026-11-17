@@ -3239,7 +3239,7 @@ static void test_the_assistants_write_is_a_save(void)
  id = identity_of("t.c");
  path_of(p, sizeof p, "t.c");
  fsync_reset();
- chk_int("written", wpe_write_save_text(p, "new\n", &id, 0, &o), 0);
+ chk_int("written", wpe_write_save_text(p, "new\n", &id, 0, NULL, &o), 0);
  chk_int("status", o.status, WPE_WRITE_WRITTEN);
  chk_int("the new text is on disk", strcmp(get_file("t.c", buf, sizeof buf), "new\n"), 0);
  chk_int("the file keeps its setgid bit", mode_of("t.c"), 02755);
@@ -3263,14 +3263,14 @@ static void test_the_assistants_write_refuses_a_link_at_the_end(void)
  path_of(p, sizeof p, "t.c");
  path_of(q, sizeof q, "other");
  chk_int("the link", symlink(q, p), 0);
- chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), -1);
+ chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, NULL, &o), -1);
  chk_int("FAILED", o.status, WPE_WRITE_FAILED);
  chk_int("a link took the name", o.replaced_by_link, 1);
  chk_int("the reason", o.err, ELOOP);
  chk_int("the file it leads to is untouched", strcmp(get_file("other", buf, sizeof buf), "keep me\n"), 0);
  chk_int("no backup of it", mode_of("t.bak"), -1);
  chk_int("followed without the flag, as the user's own names are",
-         wpe_write_save_text(p, "new\n", NULL, 0, &o), 0);
+         wpe_write_save_text(p, "new\n", NULL, 0, NULL, &o), 0);
  chk_int("then the file it leads to holds the text", strcmp(get_file("other", buf, sizeof buf), "new\n"), 0);
 }
 
@@ -3287,7 +3287,7 @@ static void test_the_assistants_write_with_no_window_keeps_the_files_own_bits(vo
   return;
  put_file("t.c", "old\n", 02755);
  path_of(p, sizeof p, "t.c");
- chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), 0);
+ chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, NULL, &o), 0);
  chk_int("the file keeps its setgid bit", mode_of("t.c"), 02755);
 }
 
@@ -3304,7 +3304,7 @@ static void test_the_assistants_write_over_a_different_file_than_the_windows_is_
  id = identity_of("t.c");
  another_file_takes_the_name("t.c", "theirs\n", 0644);
  path_of(p, sizeof p, "t.c");
- chk_int("refused", wpe_write_save_text(p, "new\n", &id, 0, &o), -1);
+ chk_int("refused", wpe_write_save_text(p, "new\n", &id, 0, NULL, &o), -1);
  chk_int("says it is another file", o.other_file, 1);
  chk_int("nothing was asked", question_count, 0);
  chk_int("their text is untouched", strcmp(get_file("t.c", buf, sizeof buf), "theirs\n"), 0);
@@ -3320,7 +3320,7 @@ static void test_the_assistants_write_makes_a_new_file(void)
 
  make_dir();
  path_of(p, sizeof p, "fresh.c");
- chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), 0);
+ chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, NULL, &o), 0);
  chk_int("the text is on disk", strcmp(get_file("fresh.c", buf, sizeof buf), "new\n"), 0);
  chk_int("no backup", mode_of("fresh.bak"), -1);
 }
@@ -3339,7 +3339,7 @@ static void test_a_revert_puts_back_the_recorded_bits(void)
  put_file("t.c", "agent\n", 0755);
  path_of(p, sizeof p, "t.c");
  fsync_reset();
- chk_int("restored", wpe_write_restore_text(p, "old\n", 02755, NULL, &o), 0);
+ chk_int("restored", wpe_write_restore_text(p, "old\n", 4, 02755, NULL, NULL, &o), 0);
  chk_int("the old text is back", strcmp(get_file("t.c", buf, sizeof buf), "old\n"), 0);
  chk_int("with the recorded bits", mode_of("t.c"), 02755);
  chk_int("one sync before the bit", fsync_calls, 1);
@@ -3356,13 +3356,13 @@ static void test_a_revert_gives_the_recorded_nine_bits_and_refuses_a_link(void)
  make_dir();
  put_file("t.c", "agent\n", 0600);
  path_of(p, sizeof p, "t.c");
- chk_int("restored", wpe_write_restore_text(p, "old\n", 0644, NULL, &o), 0);
+ chk_int("restored", wpe_write_restore_text(p, "old\n", 4, 0644, NULL, NULL, &o), 0);
  chk_int("the nine bits are the recorded ones", mode_of("t.c"), 0644);
  put_file("other", "keep me\n", 0644);
  path_of(q, sizeof q, "link.c");
  path_of(target, sizeof target, "other");
  chk_int("the link", symlink(target, q), 0);
- chk_int("refused", wpe_write_restore_text(q, "old\n", 0644, NULL, &o), -1);
+ chk_int("refused", wpe_write_restore_text(q, "old\n", 4, 0644, NULL, NULL, &o), -1);
  chk_int("a link took the name", o.replaced_by_link, 1);
  chk_int("the reason", o.err, ELOOP);
  chk_int("the target is untouched", strcmp(get_file("other", buf, sizeof buf), "keep me\n"), 0);
@@ -3397,7 +3397,7 @@ static void test_the_assistants_write_says_a_link_took_the_name_whatever_the_sys
  {
   snprintf(open_fail_at, sizeof open_fail_at, "%s", p);
   open_fail_with = words[i];
-  chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), -1);
+  chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, NULL, &o), -1);
   open_fail_at[0] = '\0';
   chk_int("a link took the name", o.replaced_by_link, 1);
   chk_int("one reason on every system", o.err, ELOOP);
@@ -3407,7 +3407,7 @@ static void test_the_assistants_write_says_a_link_took_the_name_whatever_the_sys
  put_file("t.c", "plain\n", 0644);
  snprintf(open_fail_at, sizeof open_fail_at, "%s", p);
  open_fail_with = EACCES;
- chk_int("a plain file refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), -1);
+ chk_int("a plain file refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, NULL, &o), -1);
  open_fail_at[0] = '\0';
  chk_int("no link took the name", o.replaced_by_link, 0);
  chk_int("the system's own reason", o.err, EACCES);
@@ -3506,7 +3506,7 @@ static void test_a_text_with_no_window_is_written_only_after_the_bit_is_off(void
  put_file("t.c", "old\n", 02644);
  path_of(p, sizeof p, "t.c");
  fsync_reset();
- chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), 0);
+ chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, NULL, &o), 0);
  chk_int("the first sync saw no special bit on the file", fsync_first_special, 0);
  chk_int("the bit is back after the text", mode_of("t.c"), 02644);
 }
@@ -3531,16 +3531,328 @@ static void test_the_assistants_write_refuses_a_file_that_is_not_regular(void)
   return;
  }
  slave = open(slave_name, O_RDWR | O_NOCTTY);
- chk_int("refused", wpe_write_save_text(slave_name, "new\n", NULL, 0, &o), -1);
+ chk_int("refused", wpe_write_save_text(slave_name, "new\n", NULL, 0, NULL, &o), -1);
  chk_int("FAILED", o.status, WPE_WRITE_FAILED);
  chk_int("says it is not a regular file", o.not_regular, 1);
  chk_int("nothing was asked", question_count, 0);
  save_sentence(&o, say, sizeof say);
- chk_has("the sentence", say, "it is not a regular file (a device, a terminal or a pipe).  Nothing was written.");
+ chk_has("the sentence", say, "it is not a regular file (a terminal).  Nothing was written.");
  chk_lacks("no word of a window", say, "this window read");
  if (slave >= 0)
   close(slave);
  close(master);
+}
+
+/* ---- the assistant's write held to the file the judge looked at ---- */
+
+/** How long a row that could wait on a pipe may take before it is a failure. */
+#define PIPE_ROW_LIFETIME_S 10
+
+/* What the judge's look would keep of DIR/NAME: the file there, by device and
+   inode, its names and whether it is regular; or that the name was free. */
+static WpeWriteExpect look_at(const char *name)
+{
+ WpeWriteExpect x;
+ struct stat st;
+ char p[512];
+
+ memset(&x, 0, sizeof x);
+ x.judged = 1;
+ path_of(p, sizeof p, name);
+ if (lstat(p, &st) != 0)
+  return(x);
+ x.exists = 1;
+ x.dev = st.st_dev;
+ x.ino = st.st_ino;
+ x.nlink = st.st_nlink;
+ x.regular = S_ISREG(st.st_mode) ? 1 : 0;
+ return(x);
+}
+
+/* S_IFMT of what holds DIR/NAME, itself and not what it leads to; -1 when nothing does. */
+static long kind_of(const char *name)
+{
+ char p[512];
+ struct stat st;
+
+ path_of(p, sizeof p, name);
+ return(lstat(p, &st) == 0 ? (long)(st.st_mode & S_IFMT) : -1L);
+}
+
+/* The bytes of DIR/NAME, NUL bytes included; the count, or -1 when it cannot be read. */
+static long get_bytes(const char *name, char *buf, size_t n)
+{
+ char p[512];
+ FILE *fp;
+ size_t got;
+
+ path_of(p, sizeof p, name);
+ fp = fopen(p, "r");
+ if (!fp)
+  return(-1);
+ got = fread(buf, 1, n, fp);
+ fclose(fp);
+ return((long)got);
+}
+
+/* @scenario SC-write-owner-H2a-01: a pipe under the name is never waited for
+   and never written: the open does not block, the type is read from the
+   file's own mode, and the outcome's fields (not the system's errno) say what
+   it was.  Bounded by the watchdog: on a tree that opens with plain
+   O_WRONLY the open of a pipe with no reader hangs here and the row fails by
+   the alarm. */
+static void test_the_assistants_write_refuses_a_pipe_and_does_not_wait(void)
+{
+ WpeWriteOutcome o;
+ WpeWriteExpect look;
+ char p[512], say[1024];
+ int reader;
+
+ make_dir();
+ path_of(p, sizeof p, "t.c");
+ chk_int("the pipe", mkfifo(p, 0600), 0);
+ look = look_at("t.c");
+ test_watchdog_case("test_the_assistants_write_refuses_a_pipe_and_does_not_wait", PIPE_ROW_LIFETIME_S);
+ chk_int("refused with no reader", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), -1);
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("says it is not a regular file", o.not_regular, 1);
+ chk_int("and that it is a pipe", (long)o.not_regular_kind, (long)S_IFIFO);
+ chk_int("not taken for a link", o.replaced_by_link, 0);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence names a pipe", say, "it is not a regular file (a pipe).  Nothing was written.");
+ reader = open(p, O_RDONLY | O_NONBLOCK);
+ chk_int("a reader is there", reader >= 0, 1);
+ chk_int("refused with a reader", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), -1);
+ chk_int("says it is not a regular file again", o.not_regular, 1);
+ chk_int("and that it is a pipe again", (long)o.not_regular_kind, (long)S_IFIFO);
+ if (reader >= 0)
+  close(reader);
+ chk_int("a revert refuses it the same way", wpe_write_restore_text(p, "old\n", 4, 0644, NULL, &look, &o), -1);
+ chk_int("revert: not a regular file", o.not_regular, 1);
+ chk_int("the pipe is still a pipe", kind_of("t.c"), (long)S_IFIFO);
+ chk_int("no backup of a pipe", mode_of("t.bak"), -1);
+ test_watchdog_disarm();
+}
+
+/* @scenario SC-write-owner-H2a-02: a file swapped in under the name after the
+   look is not written: the file opened must be the file looked at. */
+static void test_the_assistants_write_refuses_a_file_swapped_in_after_the_look(void)
+{
+ WpeWriteOutcome o;
+ WpeWriteExpect look;
+ char p[512], buf[256], say[1024];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ look = look_at("t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), -1);
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("says it is not the file that was checked", o.swapped, 1);
+ chk_int("their text is untouched", strcmp(get_file("t.c", buf, sizeof buf), "theirs\n"), 0);
+ chk_int("no backup of a file that was not written", mode_of("t.bak"), -1);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "it is not the file that was checked");
+ chk_int("a revert is held to its look too",
+         wpe_write_restore_text(p, "old\n", 4, 0644, NULL, &look, &o), -1);
+ chk_int("revert: not the file that was checked", o.swapped, 1);
+ chk_int("their text is still untouched", strcmp(get_file("t.c", buf, sizeof buf), "theirs\n"), 0);
+}
+
+/* @scenario SC-write-owner-H2a-03: a name the file gained after the look is a
+   refusal: a hard link made while the question was up leads somewhere the
+   user was not shown. */
+static void test_the_assistants_write_refuses_a_name_gained_after_the_look(void)
+{
+ WpeWriteOutcome o;
+ WpeWriteExpect look;
+ char p[512], q[512], buf[256], say[1024];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ look = look_at("t.c");
+ path_of(p, sizeof p, "t.c");
+ path_of(q, sizeof q, "h");
+ chk_int("the other name", link(p, q), 0);
+ chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), -1);
+ chk_int("says the file gained a name", o.gained_name, 1);
+ chk_int("not another file", o.swapped, 0);
+ chk_int("the file is untouched", strcmp(get_file("t.c", buf, sizeof buf), "old\n"), 0);
+ chk_int("through its other name too", strcmp(get_file("h", buf, sizeof buf), "old\n"), 0);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "gained another name after the check");
+}
+
+/* @scenario SC-write-owner-H2a-04: a name the look found free must be made by
+   the write: a file that appeared there since is refused and never written
+   (a hard link planted at a new name is taken by the exclusive create's
+   re-open otherwise); a name still free is made, and a file that is the one
+   looked at is written. */
+static void test_the_assistants_write_of_a_free_name_must_make_the_file(void)
+{
+ WpeWriteOutcome o;
+ WpeWriteExpect look;
+ char p[512], buf[256];
+
+ make_dir();
+ look = look_at("fresh.c");
+ chk_int("the look found nothing", look.exists, 0);
+ put_file("fresh.c", "theirs\n", 0644);
+ path_of(p, sizeof p, "fresh.c");
+ chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), -1);
+ chk_int("says it is not the file that was checked", o.swapped, 1);
+ chk_int("their text is untouched", strcmp(get_file("fresh.c", buf, sizeof buf), "theirs\n"), 0);
+ unlink(p);
+ chk_int("a name still free is made", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), 0);
+ chk_int("the text is on disk", strcmp(get_file("fresh.c", buf, sizeof buf), "new\n"), 0);
+ look = look_at("fresh.c");
+ chk_int("a file that is the one looked at is written",
+         wpe_write_save_text(p, "newer\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), 0);
+ chk_int("the new text", strcmp(get_file("fresh.c", buf, sizeof buf), "newer\n"), 0);
+ chk_int("the old text is in the backup", strcmp(get_file("fresh.bak", buf, sizeof buf), "new\n"), 0);
+}
+
+/* @scenario SC-write-owner-H2a-14: a file the look saw and that was removed
+   before the open is not made again as an empty file: the write is refused
+   with its own sentence and the name is still absent, for a write and for a
+   revert.  Red on a tree that takes the create path for it: the name holds an
+   empty file afterwards and the sentence says another file took the name. */
+static void test_a_file_removed_after_the_look_is_not_made_again(void)
+{
+ WpeWriteOutcome o;
+ WpeWriteExpect look;
+ char p[512], say[1024];
+
+ make_dir();
+ put_file("gone.c", "old\n", 0644);
+ look = look_at("gone.c");
+ path_of(p, sizeof p, "gone.c");
+ chk_int("removed", unlink(p), 0);
+ chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), -1);
+ chk_int("says it was removed", o.vanished, 1);
+ chk_int("not another file", o.swapped, 0);
+ chk_int("the name is still absent", kind_of("gone.c"), -1);
+ chk_int("no backup", mode_of("gone.bak"), -1);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "the file was removed after the check.  Nothing was written.");
+ chk_int("a revert is refused too", wpe_write_restore_text(p, "old\n", 4, 0644, NULL, &look, &o), -1);
+ chk_int("revert: says it was removed", o.vanished, 1);
+ chk_int("revert: the name is still absent", kind_of("gone.c"), -1);
+}
+
+/* @scenario SC-write-owner-H2a-15: a link at the name is refused with its own
+   sentence, which a revert shows. */
+static void test_a_link_at_the_name_is_refused_and_named(void)
+{
+ WpeWriteOutcome o;
+ char p[512], q[512], buf[256], say[1024];
+
+ make_dir();
+ put_file("victim", "USER DATA\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ path_of(q, sizeof q, "victim");
+ chk_int("the link", symlink(q, p), 0);
+ chk_int("refused", wpe_write_restore_text(p, "old\n", 4, WPE_WRITE_NO_RECORDED_MODE, NULL, NULL, &o), -1);
+ chk_int("a link took the name", o.replaced_by_link, 1);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "a link has taken the name.  Nothing was written.");
+ chk_int("the file it leads to is untouched", strcmp(get_file("victim", buf, sizeof buf), "USER DATA\n"), 0);
+}
+
+/* @scenario SC-write-owner-H2a-05: the assistant's write with the look of the
+   file is a Save in every respect: the bit back, the .bak made. */
+static void test_the_assistants_write_with_the_look_keeps_the_bit_and_makes_the_backup(void)
+{
+ WpeWriteOutcome o;
+ WpeWriteExpect look;
+ char p[512], buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "the assistant's write with a look",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ look = look_at("t.c");
+ path_of(p, sizeof p, "t.c");
+ chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), 0);
+ chk_int("the new text", strcmp(get_file("t.c", buf, sizeof buf), "new\n"), 0);
+ chk_int("the file keeps its setgid bit", mode_of("t.c"), 02755);
+ chk_int("the old text is in the backup", strcmp(get_file("t.bak", buf, sizeof buf), "old\n"), 0);
+ chk_int("the backup is reported", strcmp(o.bak_path + strlen(o.bak_path) - strlen("t.bak"), "t.bak"), 0);
+}
+
+/* @scenario SC-write-owner-H2a-06: a before image that holds a NUL byte goes
+   back whole, the length travelling with the text. */
+static void test_a_revert_puts_back_a_before_image_that_holds_a_nul_byte(void)
+{
+ static const char image[] = { 'a', '\0', 'b', '\n' };
+ WpeWriteOutcome o;
+ char p[512], buf[64];
+
+ make_dir();
+ put_file("t.c", "agent\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ chk_int("restored", wpe_write_restore_text(p, image, sizeof image, WPE_WRITE_NO_RECORDED_MODE, NULL,
+                                            NULL, &o), 0);
+ chk_int("all four bytes are back", get_bytes("t.c", buf, sizeof buf), (long)sizeof image);
+ chk_int("the same bytes", memcmp(buf, image, sizeof image), 0);
+}
+
+/* @scenario SC-write-owner-H2a-07: a file with no recorded mode (a command
+   changed it) is put back wearing the bits it has, never another file's. */
+static void test_a_revert_with_no_recorded_mode_keeps_the_files_own_bits(void)
+{
+ WpeWriteOutcome o;
+ char p[512], buf[256];
+
+ make_dir();
+ put_file("t.c", "agent\n", 0600);
+ path_of(p, sizeof p, "t.c");
+ chk_int("restored", wpe_write_restore_text(p, "old\n", 4, WPE_WRITE_NO_RECORDED_MODE, NULL, NULL, &o), 0);
+ chk_int("the old text is back", strcmp(get_file("t.c", buf, sizeof buf), "old\n"), 0);
+ chk_int("its own nine bits", mode_of("t.c"), 0600);
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a revert with no mode keeps a bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("p.c", "agent\n", 02755);
+ path_of(p, sizeof p, "p.c");
+ chk_int("restored a program", wpe_write_restore_text(p, "old\n", 4, WPE_WRITE_NO_RECORDED_MODE, NULL, NULL, &o), 0);
+ chk_int("its own bits, the special one too", mode_of("p.c"), 02755);
+ chk_int("no backup is made", mode_of("p.bak"), -1);
+}
+
+/* @scenario SC-write-owner-H2a-13: what the assistant is told.  A save that
+   worked but could not keep a bit gives the clause that follows "written, but",
+   and one that kept everything gives none; a failure gives the owner's
+   sentence with nothing about "your text in the window", which the assistant
+   has none of. */
+static void test_the_assistants_sentences_say_a_lost_bit_and_keep_no_window_text(void)
+{
+ WpeWriteOutcome o;
+ char clause[512], say[1024];
+
+ memset(&o, 0, sizeof o);
+ o.status = WPE_WRITE_WRITTEN;
+ snprintf(o.path, sizeof o.path, "/w/t.c");
+ chk_int("a save that kept everything has no clause", wpe_write_written_clause(clause, sizeof clause, &o), 0);
+ o.file_kept.lost = S_ISGID;
+ o.file_kept.err = EPERM;
+ chk_int("a lost bit has a clause", wpe_write_written_clause(clause, sizeof clause, &o) > 0, 1);
+ chk_has("the clause names the bit", clause, "the setgid bit was not kept: ");
+ o.backup_err = EACCES;
+ (void)wpe_write_written_clause(clause, sizeof clause, &o);
+ chk_has("and the missing backup", clause, "; no backup was made: ");
+ memset(&o, 0, sizeof o);
+ o.status = WPE_WRITE_FAILED;
+ o.err = ENOSPC;
+ snprintf(o.path, sizeof o.path, "/w/t.c");
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+ chk_has("a failure names the path", say, "Cannot write /w/t.c: ");
+ chk_lacks("and speaks of no window text", say, "Your text is still in the window");
+ chk_int("and ends with its own full stop", say[strlen(say) - 1], '.');
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_has("a Save still says its text is kept", say, "Your text is still in the window");
 }
 
 static void stub_mouse_shape(WpeMouseShape s) { (void)s; }
@@ -3653,6 +3965,16 @@ int main(void)
  test_a_save_refused_before_the_bits_are_dropped_names_none();
  test_a_text_with_no_window_is_written_only_after_the_bit_is_off();
  test_the_assistants_write_refuses_a_file_that_is_not_regular();
+ test_the_assistants_write_refuses_a_pipe_and_does_not_wait();
+ test_the_assistants_write_refuses_a_file_swapped_in_after_the_look();
+ test_the_assistants_write_refuses_a_name_gained_after_the_look();
+ test_the_assistants_write_of_a_free_name_must_make_the_file();
+ test_the_assistants_write_with_the_look_keeps_the_bit_and_makes_the_backup();
+ test_a_file_removed_after_the_look_is_not_made_again();
+ test_a_link_at_the_name_is_refused_and_named();
+ test_a_revert_puts_back_a_before_image_that_holds_a_nul_byte();
+ test_a_revert_with_no_recorded_mode_keeps_the_files_own_bits();
+ test_the_assistants_sentences_say_a_lost_bit_and_keep_no_window_text();
  free_garbage();
  remove_made_dirs();
  fails += test_dir_failures;

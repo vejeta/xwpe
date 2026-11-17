@@ -429,6 +429,24 @@ out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
   reviewed after, in that changeset, and stays one `Ctrl-U` away from undone in
   the window that shows the file.
 
+An agent write is a Save, the same as `F2`. The text the file had goes to the
+file's `.bak` beside it (`t.c` becomes `t.bak`; `t.c` and `t.h` share `t.bak`,
+and an earlier `t.bak` is replaced without notice, as `F2` does), the file
+keeps its inode, its other names and its setuid, setgid and sticky bits, and a
+bit the system would not keep is named in the pane and in what the model
+reads: `(written, but the setgid bit was not kept: ...)`. A failed write gives
+the model the same sentence the editor shows for its own Save. A pipe, a
+device or a socket is never written, whatever its name, and a file that is not
+the one that was checked when the write began (another file put under the
+name, or a new hard link made to it) is refused with nothing written. The
+`.bak` is the price of the write and not the run's work: the review never
+lists it and `r` never removes it. A revert puts the before image back into
+the very same file, with the permission bits the file had before the run's
+first write to it; a file the run only changed by a command keeps the bits it
+has, and a revert makes no `.bak`. A revert never writes or removes through a
+link, at the file name or at any folder on the way, the workspace folder
+itself included; it names what it refused.
+
 The dial is read live. Raising it with `Alt-G y` while a run waits for the
 model applies to the next tool, and the first write that follows takes the
 checkpoint the launch would have taken (the pane shows the same

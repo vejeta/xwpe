@@ -972,8 +972,23 @@ unseen.  The commit holds the files the review listed and nothing else, so an
 edit of yours made before the run stays uncommitted where you left it.  When
 git refuses the commit after the files were staged (a hook, for instance), the
 pane gives git's reason and says the listed files stay staged, so you can fix
-what the hook asked for and commit them yourself.  Reverting a file the agent
-created deletes it, and only a file the run created.  When a file cannot be put back (the workspace refuses,
+what the hook asked for and commit them yourself.  An agent write is a Save,
+the same as @kbd{F2}: the text the file had goes to its @file{.bak} beside it
+(@file{t.c} becomes @file{t.bak}; @file{t.c} and @file{t.h} share
+@file{t.bak}, and an earlier @file{t.bak} is replaced without notice, as
+@kbd{F2} does), the file keeps its inode, its other names and its setuid,
+setgid and sticky bits, and a bit the system would not keep is named in the
+pane and in what the model reads.  A pipe, a device or a socket is never
+written, and a file that is not the one that was checked when the write began
+(another file put under the name, or a new hard link made to it) is refused
+with nothing written.  The @file{.bak} is the price of the write and not the
+run's work: the review never lists it and @kbd{r} never removes it.  A revert
+puts the before image back into the very same file, with the permission bits
+the file had before the run's first write to it; a file the run only changed by
+a command keeps the bits it has, and a revert makes no @file{.bak}.  A revert
+never writes or removes through a link, at the file name or at any folder on
+the way, the workspace folder itself included; it names what it refused.  Reverting
+a file the agent created deletes it, and only a file the run created.  When a file cannot be put back (the workspace refuses,
 the created file cannot be removed, the checkpoint holds no copy of it) the
 pane says which file and why, the review's summary counts it as kept, and its
 window is left as it is; nothing claims a revert that did not happen.  This

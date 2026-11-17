@@ -10836,27 +10836,79 @@ static char *ai_scope_skipped_note(const char *tool, const char *arg)
  return note;
 }
 
-/* What the model reads when a write could not be made. */
-#define AI_TOOL_WRITE_FAILED_RESULT "(write failed)"
+/* What the model reads when a write could not be made, up to the sentence. */
+#define AI_TOOL_WRITE_FAILED_HEAD "(write failed"
 
 /**
  * ai_agent_report_write_failed - Record a write that could not be made: model, pane, trace.
- * @f: the window the pane belongs to; @path: the file the agent named.
+ * @f: the window the pane belongs to; @path: the file the agent named;
+ * @sentence: the write owner's sentence for the failure, or "" when it has none.
  *
  * "(write failed)" used to reach the model alone: the pane's last word was
  * "auto-approved", so a user whose agent wrote into a directory that does not
- * exist believed the file was there.  The pane now says "[agent] write
- * failed: <path>" and the trace has the same fact, so the failure is read
- * where the approval was.
+ * exist believed the file was there.  The pane now gives the owner's sentence
+ * (why, and whether the file is as it was) and then "[agent] write failed:
+ * <path>" as the last word, and the model reads the same sentence in its
+ * result, so it can act on the reason; the trace has the same fact.
  * Return: the malloc'd result the model reads.
  */
-static char *ai_agent_report_write_failed(FENSTER *f, const char *path)
+static char *ai_agent_report_write_failed(FENSTER *f, const char *path, const char *sentence)
 {
- char line[AI_AGENT_ARG_LINE_MAX];
+ char line[AI_AGENT_ARG_LINE_MAX], *result;
+ size_t room = strlen(AI_TOOL_WRITE_FAILED_HEAD) + strlen(sentence) + 8;
  snprintf(line, sizeof line, "[agent] write failed: %s", path);
+ if (sentence[0]) ai_pane(f, sentence, AI_ROLE_ERROR, 0);
  ai_pane(f, line, AI_ROLE_ERROR, 0);
  wpe_ai_trace("agent write failed %s", path);
- return strdup(AI_TOOL_WRITE_FAILED_RESULT);
+ result = malloc(room);
+ if (!result) return NULL;
+ if (sentence[0]) snprintf(result, room, "%s: %s)", AI_TOOL_WRITE_FAILED_HEAD, sentence);
+ else snprintf(result, room, "%s)", AI_TOOL_WRITE_FAILED_HEAD);
+ return result;
+}
+
+/**
+ * ai_agent_report_write_unlooked - Record a write whose place could not even be found.
+ * @f: the window the pane belongs to; @path: the file the agent named; @err:
+ * the errno of the look (a path that loops, a name that is too long).
+ * Return: the malloc'd result the model reads.
+ */
+static char *ai_agent_report_write_unlooked(FENSTER *f, const char *path, int err)
+{
+ char sentence[AI_AGENT_ARG_LINE_MAX + 128];
+ snprintf(sentence, sizeof sentence, "Cannot write %s: %s.  Nothing was written.", path,
+          strerror(err));
+ return ai_agent_report_write_failed(f, path, sentence);
+}
+
+/**
+ * ai_agent_write_failed_sentence - The write owner's words for a write that failed.
+ * @o: the outcome; @sentence/@sz: receives them.
+ *
+ * The same sentence the editor shows for its own Save, without the "your text
+ * is still in the window" the assistant has no window text to keep.
+ */
+static void ai_agent_write_failed_sentence(const WpeWriteOutcome *o, char *sentence, size_t sz)
+{
+ wpe_write_sentence(sentence, sz, o, WPE_WRITE_THEN_NOTHING_MORE);
+}
+
+/**
+ * ai_agent_written_result - The result the model reads after a write that worked.
+ * @f: the window the pane belongs to; @o: the outcome of the write.
+ * Return: the malloc'd result: "(written)", or, when the file could not keep
+ * something (a setgid bit, the .bak), "(written, but the setgid bit was not
+ * kept: Operation not permitted)"; the pane says it too, so the user and the
+ * model learn of a lost bit at once.
+ */
+static char *ai_agent_written_result(FENSTER *f, const WpeWriteOutcome *o)
+{
+ char clause[WPE_WRITE_SENTENCE_MAX], sentence[WPE_WRITE_SENTENCE_MAX], result[WPE_WRITE_SENTENCE_MAX + 32];
+ if (wpe_write_written_clause(clause, sizeof clause, o) == 0) return strdup("(written)");
+ wpe_write_sentence(sentence, sizeof sentence, o, WPE_WRITE_THEN_NOTHING_MORE);
+ if (sentence[0]) ai_pane(f, sentence, AI_ROLE_ERROR, 0);
+ snprintf(result, sizeof result, "(written, but %s)", clause);
+ return strdup(result);
 }
 
 /**
@@ -11378,20 +11430,6 @@ static void ai_plan_mark_done(FENSTER *f, const char *arg)
 }
 
 /**
- * ai_agent_write_file - Put the agent's content on disk.
- * @path: the file, as the agent named it; @content: its complete new text.
- *
- * The file is opened at the place the scope check looked at (wpe_path_open_write):
- * a link made on the last component after the question was asked makes the
- * open fail instead of sending the bytes somewhere the user was not shown.
- * Return: 1 when written, 0 when the file could not be opened for writing.
- */
-static int ai_agent_write_file(const char *path, const char *content)
-{
- return wpe_ai_write_judged_file(path, content) == 0;
-}
-
-/**
  * ai_agent_report_undo_hint - Tell the user how far Ctrl-U reaches after a write.
  * @f: the window the pane belongs to; @path: the file, as the agent named it.
  *
@@ -11611,22 +11649,36 @@ static void ai_agent_ensure_checkpoint(ai_async_op *op)
  * (ai_agent_ensure_checkpoint), so a dial raised mid-run still ends in a
  * review.  A refusal is recorded by ai_agent_deny, as for a command.  Runs the
  * post-edit hook after a successful write, within the write's undo step.
+ * The place is looked at once, before the question, and the write goes to
+ * that place and into the file that was seen there (wpe_path_look_write,
+ * wpe_ai_write_judged_file): the write is a Save, and the sentence the write
+ * owner says, for a failure or for a bit that was not kept, reaches the pane
+ * and the model's result.
  * Returns a malloc'd TOOL RESULT.
  */
 static char *ai_agent_commit_write(ai_async_op *op, const char *tool, const char *path,
                                    const char *content)
 {
  FENSTER *f = op->f;
- int where, allow;
+ char real[WPE_PATH_RESOLVED_MAX], sentence[WPE_WRITE_SENTENCE_MAX];
+ WpeWriteExpect look;
+ WpeWriteOutcome o;
+ int where, allow, looked, look_err;
  if (!content) return strdup("(no content)");
  ai_agent_ensure_checkpoint(op);
+ looked = wpe_path_look_write(path, real, sizeof real, &look);
+ look_err = errno;
  where = wpe_ai_scope_judge(f, path, WPE_SCOPE_WRITE, NULL, 0);
  allow = ai_agent_decide_write(f, where, path, content);
  if (!allow) return ai_agent_deny(f, tool, path);
- if (!ai_agent_write_file(path, content)) return ai_agent_report_write_failed(f, path);
+ if (looked != 0) return ai_agent_report_write_unlooked(f, path, look_err);
+ if (wpe_ai_write_judged_file(f, real, content, &look, &o) != 0) {
+  ai_agent_write_failed_sentence(&o, sentence, sizeof sentence);
+  return ai_agent_report_write_failed(f, path, sentence);
+ }
  ai_agent_show_written(f, path);
  if (where == WPE_SCOPE_OUTSIDE) ai_agent_report_outside(f, path);
- return strdup("(written)");
+ return ai_agent_written_result(f, &o);
 }
 
 /**

@@ -615,34 +615,105 @@ int wpe_path_lands_outside(const char *root, const char *path, char *real, size_
 }
 
 /**
- * wpe_path_open_write - Open a file for writing at the place the check judged.
- * @path: the file, as the model named it (relative to the working directory
- * or absolute).
- *
- * What the user gains: the write goes where the scope check looked.  The path
- * is followed first, exactly as the check followed it, and the place it leads
- * to is opened without following one more link.  A link put in the last place
- * between the check and the open makes the open fail instead of sending the
- * bytes somewhere the user was never shown.  The file is created when absent
- * and emptied when present.
- *
- * Return: the descriptor, or -1 with errno set (ELOOP for a path that cannot
- * be followed or a link made after the check).
+ * path_make_absolute - Join a path to the working directory when it is relative.
+ * @path: the path, as the model named it; @abs/@sz: receives the absolute path.
+ * Return: 0, or -1 with errno set (ENOENT for an empty name, ENAMETOOLONG).
  */
-int wpe_path_open_write(const char *path)
+static int path_make_absolute(const char *path, char *abs, size_t sz)
 {
- char abs[WPE_PATH_RESOLVED_MAX], real[WPE_PATH_RESOLVED_MAX];
  int n;
  if (!path || !path[0]) { errno = ENOENT; return -1; }
- if (path[0] == '/') n = snprintf(abs, sizeof abs, "%s", path);
+ if (path[0] == '/') n = snprintf(abs, sz, "%s", path);
  else {
   char cwd[WPE_PATH_RESOLVED_MAX];
   if (!getcwd(cwd, sizeof cwd)) return -1;
-  n = snprintf(abs, sizeof abs, "%s/%s", cwd, path);
+  n = snprintf(abs, sz, "%s/%s", cwd, path);
  }
- if (n < 0 || (size_t)n >= sizeof abs) { errno = ENAMETOOLONG; return -1; }
- if (wpe_path_resolve(abs, real, sizeof real) != WPE_PATH_RESOLVED) { errno = ELOOP; return -1; }
- return open(real, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0666);
+ if (n < 0 || (size_t)n >= sz) { errno = ENAMETOOLONG; return -1; }
+ return 0;
+}
+
+/**
+ * path_look_leaf - Fill a look from what lstat says of a resolved place.
+ * @real: the place; @x: receives the look.
+ * Return: 0, or -1 with errno set for an error other than "nothing there".
+ */
+static int path_look_leaf(const char *real, WpeWriteExpect *x)
+{
+ struct stat st;
+ if (lstat(real, &st) != 0) {
+  if (errno != ENOENT) return -1;
+  x->judged = 1;
+  return 0;
+ }
+ x->judged = 1;
+ x->exists = 1;
+ x->dev = st.st_dev;
+ x->ino = st.st_ino;
+ x->nlink = st.st_nlink;
+ x->regular = S_ISREG(st.st_mode) ? 1 : 0;
+ return 0;
+}
+
+/**
+ * wpe_path_look_write - Look at the place a write will land, once, before the question.
+ * @path: the file, as the model named it (relative to the working directory
+ * or absolute); @real/@sz: receives the place it really leads to; @x: receives
+ * what is there.
+ *
+ * What the user gains: the write goes where the scope check looked and into
+ * the file it looked at.  The path is followed here, once, exactly as the
+ * check follows it, and the place it leads to is written under that very
+ * name, never resolved again.  What is there (no file, or which file by
+ * device and inode, how many names it has, whether it is a regular file) is
+ * kept in @x, so the write owner refuses a file swapped in, or given another
+ * name, while the user was being asked.  The last place itself is looked at
+ * with lstat: a link there is not followed, and the owner refuses it.
+ *
+ * Return: 0 with @real and @x filled (x->judged is 1), or -1 with errno set
+ * (ELOOP for a path that cannot be followed, or the error of the look).
+ */
+int wpe_path_look_write(const char *path, char *real, size_t sz, WpeWriteExpect *x)
+{
+ char abs[WPE_PATH_RESOLVED_MAX];
+ memset(x, 0, sizeof *x);
+ if (sz) real[0] = '\0';
+ if (path_make_absolute(path, abs, sizeof abs) != 0) return -1;
+ if (wpe_path_resolve(abs, real, sz) != WPE_PATH_RESOLVED) { errno = ELOOP; return -1; }
+ return path_look_leaf(real, x);
+}
+
+/**
+ * wpe_path_look_name - Look at the reviewed NAME itself, never through a link at its end.
+ * @path: the file, as the review names it (absolute or relative to the working
+ * directory); @real/@sz: receives the resolved folder and the name; @x: receives
+ * what is at the name.
+ *
+ * What the user gains: a revert puts text back into the file the review listed
+ * and nowhere else.  Only the folder is followed; the last part is looked at
+ * with lstat, so a link planted at the name (or one that was there and now
+ * leads elsewhere) is seen as the link it is, and the write owner refuses it
+ * instead of writing into whatever it leads to.
+ *
+ * Return: 0 with @real and @x filled (x->judged is 1), or -1 with errno set.
+ */
+int wpe_path_look_name(const char *path, char *real, size_t sz, WpeWriteExpect *x)
+{
+ char abs[WPE_PATH_RESOLVED_MAX], dir[WPE_PATH_RESOLVED_MAX], rdir[WPE_PATH_RESOLVED_MAX];
+ const char *slash, *leaf;
+ int n;
+ memset(x, 0, sizeof *x);
+ if (sz) real[0] = '\0';
+ if (path_make_absolute(path, abs, sizeof abs) != 0) return -1;
+ slash = strrchr(abs, '/');
+ leaf = slash + 1;
+ if (!*leaf || !strcmp(leaf, ".") || !strcmp(leaf, "..")) { errno = EINVAL; return -1; }
+ n = slash == abs ? snprintf(dir, sizeof dir, "/") : snprintf(dir, sizeof dir, "%.*s", (int)(slash - abs), abs);
+ if (n < 0 || (size_t)n >= sizeof dir) { errno = ENAMETOOLONG; return -1; }
+ if (wpe_path_resolve(dir, rdir, sizeof rdir) != WPE_PATH_RESOLVED) { errno = ELOOP; return -1; }
+ n = snprintf(real, sz, "%s%s%s", rdir, strcmp(rdir, "/") ? "/" : "", leaf);
+ if (n < 0 || (size_t)n >= sz) { errno = ENAMETOOLONG; real[0] = '\0'; return -1; }
+ return path_look_leaf(real, x);
 }
 
 /* The state of one look for links that lead out of a directory. */

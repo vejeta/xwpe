@@ -90,6 +90,23 @@ typedef struct {
  ino_t  ino;
 } WpeNameSeen;
 
+/** What a caller saw at a name before it asked the user or decided to write:
+    whether a file was there and, if so, which one (device and inode), how many
+    names it had and whether it was a regular file.  The write owner holds the
+    file it opens up against this, so a file put under the name afterwards (a
+    swapped file, a hard link made in the meantime) is refused and never
+    written into.  judged == 0 means no one looked and nothing is compared;
+    judged == 1 with exists == 0 means the name was free, and the write must
+    make the file or be refused. */
+typedef struct {
+ int     judged;
+ int     exists;
+ dev_t   dev;
+ ino_t   ino;
+ nlink_t nlink;
+ int     regular;
+} WpeWriteExpect;
+
 typedef struct {
  WpeWriteStatus status;
  int err;                        /* errno of the failure, else 0 */
@@ -102,6 +119,18 @@ typedef struct {
  int not_regular;                /* a write with no one to ask found something that is
                                     not a regular file (a device, a terminal, a pipe)
                                     under the name: nothing was written */
+ mode_t not_regular_kind;        /* with not_regular: S_IFMT of what was found (S_IFIFO,
+                                    S_IFCHR, S_IFSOCK, ...); 0 when it is not known.
+                                    Read from the file's own mode, never from an errno */
+ int not_regular_tty;            /* with not_regular: it is a terminal (isatty on the
+                                    opened file), said as "a terminal" */
+ int vanished;                   /* the caller looked at a file and it was removed before
+                                    the open: nothing was made and nothing written */
+ int swapped;                    /* the file the write reached is not the one the caller
+                                    looked at (another file under the name, or a name
+                                    that was free and is not): nothing was written */
+ int gained_name;                /* the file has more names than when the caller looked:
+                                    nothing was written */
  mode_t file_off;               /* a failed write left no backup to put back: the
                                     special bits the file had and, read back from
                                     the file, no longer has (0: none, or unknown) */
@@ -147,9 +176,12 @@ typedef enum {
  WPE_WRITE_THEN_NO_PROJECT,  /* "No project was created." */
  WPE_WRITE_THEN_PROJECT_KEPT,/* "The project list is still in its window." */
  WPE_WRITE_THEN_NO_OPTIONS,  /* "The options were not saved." */
- WPE_WRITE_THEN_USER_KEYS_STAY /* "Your own settings (hook, engine command,
+ WPE_WRITE_THEN_USER_KEYS_STAY, /* "Your own settings (hook, engine command,
                                   endpoints, dial) are still in it; take them
                                   out before you share the file." */
+ WPE_WRITE_THEN_NOTHING_MORE  /* nothing: the caller has no text of the user's
+                                  to keep (the assistant's write: the file is as
+                                  it was, and the sentence says so itself) */
 } WpeWriteThen;
 
 /* Whoever drops the outcome of a write has lost the news that the text is
@@ -170,6 +202,10 @@ struct stat;
 void wpe_write_identity_take(WpeFileIdentity *id, const struct stat *st);
 void wpe_write_identity_forget(WpeFileIdentity *id);
 int  wpe_write_identity_of_name(const char *dir, const char *name, WpeFileIdentity *id);
+/* A window takes the identity a write reported (WpeWriteOutcome.written), and
+   a question: is this window's file the one with that device and inode. */
+void wpe_write_identity_set(WpeFileIdentity *id, const WpeFileIdentity *from);
+int  wpe_write_identity_is(const WpeFileIdentity *id, dev_t dev, ino_t ino);
 
 /* The user's own file. */
 WPE_WRITE_RESULT int wpe_write_file(struct FNST *f, WpeWriteOutcome *o);
@@ -189,6 +225,9 @@ mode_t wpe_write_overwrite_drops(const char *path, const WpeFileIdentity *own);
 /* Text that is not a window's rows. */
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o);
+/* The same for @len bytes that may hold NUL bytes. */
+WPE_WRITE_RESULT int wpe_write_bytes(const char *path, const char *text, size_t len,
+                                     WpeWriteOutcome *o);
 
 /** wpe_write_save_text flag: a link at the end of @path is refused (the
     o->err is ELOOP, POSIX's word for O_NOFOLLOW on a link, and
@@ -208,19 +247,35 @@ WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWrite
    whose file is not the one at the name is refused, with nothing written:
    this face has no one to ask, and a caller that can show the question asks
    first, as Save does.  A name that is not there is made with mode 0666 less the
-   umask (WRITE_NEW_FILE_MODE), as every new file of the editor. */
+   umask (WRITE_NEW_FILE_MODE), as every new file of the editor.
+
+   With WPE_WRITE_NOFOLLOW the file is opened without waiting (a pipe with no
+   reader is never waited for) and anything that is not a regular file is
+   refused from its own mode (o->not_regular and o->not_regular_kind); a pipe,
+   a socket or a device is never written.  @expect is what the caller saw at
+   the name (NULL: nothing is compared): the file opened must be that file,
+   with no more names than it had, and a name that was free must be made by
+   this write; otherwise nothing is written (o->swapped, o->gained_name). */
 WPE_WRITE_RESULT int wpe_write_save_text(const char *path, const char *text,
                                          const WpeFileIdentity *own, int flags,
-                                         WpeWriteOutcome *o);
-/* A revert: the before image's text put back with the twelve permission bits
-   recorded with it (the nine before the text, the special ones after it is on
-   disk).  @path is a name the caller has already resolved; it is opened with
-   WPE_WRITE_NOFOLLOW, so a link at its end is refused.  @own as above.  A
-   name that is not there is made as wpe_write_save_text makes it, with
-   0666 less the umask and then the recorded nine bits.  No .bak is made: the
-   before image the text comes from is the copy. */
-WPE_WRITE_RESULT int wpe_write_restore_text(const char *path, const char *text, mode_t recorded,
-                                            const WpeFileIdentity *own, WpeWriteOutcome *o);
+                                         const WpeWriteExpect *expect, WpeWriteOutcome *o);
+/** WPE_WRITE_NO_RECORDED_MODE as @recorded: no mode was recorded for the
+    before image, so the file keeps the bits it has now. */
+#define WPE_WRITE_NO_RECORDED_MODE ((mode_t)-1)
+/* A revert: the before image's text (@len bytes, which may hold NUL bytes)
+   put back with the twelve permission bits recorded with it (the nine before
+   the text, the special ones after it is on disk), or, with
+   WPE_WRITE_NO_RECORDED_MODE, with the bits the file has now: a file that
+   only a command changed is never given another file's mode.  @path is a name
+   the caller has already resolved; it is opened with WPE_WRITE_NOFOLLOW, so a
+   link at its end is refused, and a pipe or a device is refused from its own
+   mode.  @own and @expect as above.  A name that is not there is made as
+   wpe_write_save_text makes it, with 0666 less the umask and then the
+   recorded nine bits.  No .bak is made: the before image the text comes from
+   is the copy. */
+WPE_WRITE_RESULT int wpe_write_restore_text(const char *path, const char *text, size_t len,
+                                            mode_t recorded, const WpeFileIdentity *own,
+                                            const WpeWriteExpect *expect, WpeWriteOutcome *o);
 
 /* A file that is printed line by line (a project list, the options): the
    stream is opened here and closed here, and the outcome of the close says
@@ -273,5 +328,9 @@ void wpe_write_guard_leave(void);
 /* The one message. */
 void wpe_write_say(struct FNST *f, const WpeWriteOutcome *o, WpeWriteThen then);
 int  wpe_write_sentence(char *out, size_t n, const WpeWriteOutcome *o, WpeWriteThen then);
+/* What a save that worked could not keep, as a clause with no capital and no
+   full stop ("the setgid bit was not kept: Operation not permitted"); 0 and
+   "" when it kept everything. */
+int  wpe_write_written_clause(char *out, size_t n, const WpeWriteOutcome *o);
 
 #endif /* WE_WRITE_H */

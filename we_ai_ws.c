@@ -23,6 +23,7 @@
 #include <strings.h>
 #include <stdio.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <limits.h>
@@ -96,12 +97,22 @@ void wpe_ai_free_list(char **list, int n)
  free(list);
 }
 
-static char *ws_read_file(const char *path, size_t maxlen)
+/**
+ * ws_read_file_len - Read a file whole, up to @maxlen bytes, and say how long it is.
+ * @path: the file; @maxlen: the most bytes taken; @len: receives the count, or NULL.
+ *
+ * What the user gains: a before image that holds a NUL byte is read in full
+ * and can be put back in full, because the length travels with the text.  The
+ * buffer is NUL-terminated for the callers that treat it as a string.
+ * Return: the malloc'd bytes, or NULL when the file cannot be read.
+ */
+static char *ws_read_file_len(const char *path, size_t maxlen, size_t *len_out)
 {
  FILE *fp = fopen(path, "rb");
  char *buf;
  size_t cap = 4096, len = 0;
  int ch;
+ if (len_out) *len_out = 0;
  if (!fp) return NULL;
  buf = malloc(cap);
  if (!buf) { fclose(fp); return NULL; }
@@ -111,68 +122,81 @@ static char *ws_read_file(const char *path, size_t maxlen)
  }
  buf[len] = '\0';
  fclose(fp);
+ if (len_out) *len_out = len;
  return buf;
 }
 
-/**
- * ws_write_file - Write @text to @path, replacing what was there.
- *
- * Every file this layer writes is one the user relies on later: the
- * conversation to resume, the before image a revert restores, the copy a
- * post-edit command formats.  A disk that filled up or a device that went
- * away reports itself at the flush, not at the write, so the close is part of
- * the answer: the text is on disk only when all of it was written and the
- * close agreed.
- * Return: 0 when the file holds @text, -1 with errno saying why it does not.
- */
-static int ws_write_file(const char *path, const char *text)
+static char *ws_read_file(const char *path, size_t maxlen)
 {
- FILE *fp = fopen(path, "wb");
- size_t want, got;
- int err;
- if (!fp) return -1;
- want = strlen(text);
- got = fwrite(text, 1, want, fp);
- if (got != want) {
-  err = errno ? errno : ENOSPC;      /* a short write is a full device until told otherwise */
-  fclose(fp);
-  errno = err;
+ return ws_read_file_len(path, maxlen, NULL);
+}
+
+/**
+ * ws_state_leaf_ok - May this name be a file under the editor's state folder?
+ * @leaf: a path relative to the state folder.
+ *
+ * A leaf is relative and stays below the folder: no leading slash, no empty
+ * name and no ".." part.  A user's path is never one by accident, so the
+ * state-file writer cannot be handed one.
+ * Return: 1 when it may.
+ */
+static int ws_state_leaf_ok(const char *leaf)
+{
+ const char *p = leaf;
+ if (!leaf || !leaf[0] || leaf[0] == '/') return 0;
+ while (*p) {
+  size_t part = strcspn(p, "/");
+  if (part == 2 && p[0] == '.' && p[1] == '.') return 0;
+  p += part;
+  if (*p == '/') p++;
+ }
+ return 1;
+}
+
+/**
+ * ws_state_path - The full path of a file under the editor's state folder.
+ * @leaf: its path below the state folder; @path/@sz: receives the full path.
+ * Return: 0, or -1 with errno set (EINVAL for a leaf that is not below the
+ * folder, ENAMETOOLONG).
+ */
+static int ws_state_path(const char *leaf, char *path, size_t sz)
+{
+ char dir[WPE_PATH_SIZE];
+ if (!ws_state_leaf_ok(leaf)) { errno = EINVAL; return -1; }
+ ws_state_dir(dir, sizeof dir);
+ if (snprintf(path, sz, "%s/%s", dir, leaf) >= (int)sz) {
+  errno = ENAMETOOLONG;
   return -1;
  }
- if (fclose(fp) != 0) return -1;    /* the buffered tail never reached the disk */
  return 0;
 }
 
 /**
- * wpe_ai_write_judged_file - Put the model's text in a file at the place the scope judged.
- * @path: the file, as the model named it; @text: its whole new content.
+ * ws_write_state_bytes - Write @len bytes to a file under the editor's state folder.
+ * @leaf: the file's path below the state folder; @text/@len: the bytes.
  *
- * What the user gains: an approved write goes where the box said it would.
- * The file is opened by wpe_path_open_write, which follows the path as the
- * scope did and does not follow one more link at the end, so a link put there
- * after the question makes the write fail instead of landing elsewhere.  Every
- * byte is written and the close is part of the answer, as for ws_write_file.
- * Return: 0 when the file holds @text, -1 with errno set when it does not.
+ * Every file this layer keeps for itself is one the user relies on later: the
+ * conversation to resume, the before image and the recorded mode a revert
+ * puts back.  The path is built here, from the state folder and a leaf, so no
+ * user path can reach this function; and the write is the editor's one
+ * writer of text (wpe_write_bytes), so a disk that filled up or a device that
+ * went away is a failure and not a half file.
+ * Return: 0 when the file holds the bytes, -1 with errno saying why it does not.
  */
-int wpe_ai_write_judged_file(const char *path, const char *text)
+static int ws_write_state_bytes(const char *leaf, const char *text, size_t len)
 {
- int fd = wpe_path_open_write(path), err;
- size_t left = strlen(text);
- const char *p = text;
- if (fd < 0) return -1;
- while (left) {
-  ssize_t n = write(fd, p, left);
-  if (n < 0) {
-   if (errno == EINTR) continue;
-   err = errno;
-   close(fd);
-   errno = err;
-   return -1;
-  }
-  p += n;
-  left -= (size_t)n;
- }
- return close(fd);
+ char path[WPE_PATH_SIZE];
+ WpeWriteOutcome o;
+ if (ws_state_path(leaf, path, sizeof path) != 0) return -1;
+ if (wpe_write_bytes(path, text, len, &o) == 0) return 0;
+ errno = o.err ? o.err : EIO;
+ return -1;
+}
+
+/** ws_write_state_file - ws_write_state_bytes for a string. */
+static int ws_write_state_file(const char *leaf, const char *text)
+{
+ return ws_write_state_bytes(leaf, text, strlen(text));
 }
 
 /**
@@ -503,6 +527,12 @@ static int    ck_mode;                 /* 0 none, 1 git ref, 2 snapshot copies *
 #define WS_CK_SNAPSHOT 2
 static char   ck_ref[160];
 static char   ck_dir[WPE_PATH_SIZE];
+/* the workspace folder as it really was when the checkpoint was taken, and the
+   device and inode it had; a revert trusts the folder only while it is still
+   that one */
+static char   ck_rdir[WPE_PATH_RESOLVED_MAX];
+static dev_t  ck_rdev;
+static ino_t  ck_rino;
 static char   ck_snapdir[1024];
 static char **ck_files;
 static int    ck_n;
@@ -516,6 +546,17 @@ static char **ck_untracked; static int ck_untracked_n;
    folder as one entry ending in '/'.  A run that edits .gitignore can make
    these show up as untracked; they are still the user's. */
 static char **ck_ignored; static int ck_ignored_n;
+/* The checkpoint's folder below the state folder ("checkpoints/<time>": the
+   before images, and the modes recorded for them), and what the assistant's
+   own writes leave behind: the files whose permission bits were recorded
+   before its first write to them (the list position is the record's number),
+   and the .bak copies those writes made.  The copies are the price of a write
+   being a Save, not the run's work: the review never lists them and a revert
+   never removes them. */
+#define WS_LEAF_MAX 96
+static char   ck_leaf[WS_LEAF_MAX];
+static char **ck_mode_paths; static int ck_mode_n, ck_mode_cap;
+static char **ck_baks;       static int ck_baks_n,  ck_baks_cap;
 /* snapshot mode: every directory the checkpoint's walk met, and those whose
    entries it listed to the end.  A name missing from a listed directory was
    made after the checkpoint; in a directory the bound cut short, nobody can
@@ -534,6 +575,11 @@ static void ck_clear(void)
  wpe_ai_free_list(ck_ignored, ck_ignored_n);
  wpe_ai_free_list(ck_met, ck_met_n);
  wpe_ai_free_list(ck_listed, ck_listed_n);
+ wpe_ai_free_list(ck_mode_paths, ck_mode_n);
+ wpe_ai_free_list(ck_baks, ck_baks_n);
+ ck_mode_paths = NULL; ck_mode_n = ck_mode_cap = 0;
+ ck_baks = NULL; ck_baks_n = ck_baks_cap = 0;
+ ck_leaf[0] = '\0';
  ck_files = NULL; ck_n = 0;
  ck_before = NULL; ck_before_n = 0;
  ck_dirs = NULL; ck_dirs_n = 0;
@@ -542,6 +588,27 @@ static void ck_clear(void)
  ck_met = NULL; ck_met_n = ck_met_cap = 0;
  ck_listed = NULL; ck_listed_n = ck_listed_cap = 0;
  ck_mode = 0; ck_ref[0] = '\0';
+ ck_rdir[0] = '\0'; ck_rdev = 0; ck_rino = 0;
+}
+
+/**
+ * ws_root_unchanged - Is the workspace folder still the one the checkpoint saw?
+ *
+ * What the user gets: if a command moved the workspace folder aside and put a
+ * link to another place under its name, the review lists nothing from that
+ * place and a revert writes and removes nothing there.  The folder is judged
+ * by its resolved name and its device and inode from checkpoint time, so a
+ * workspace opened through a link keeps working: the link was followed once,
+ * at the checkpoint, and only the real folder is compared afterwards.  A link
+ * put at the resolved name, or a different folder under it, has another inode.
+ * Return: 1 while it is the same folder, 0 when it was replaced or is gone.
+ */
+static int ws_root_unchanged(void)
+{
+ struct stat st;
+ if (!ck_rdir[0]) return 0;
+ if (stat(ck_rdir, &st) != 0) return 0;
+ return st.st_dev == ck_rdev && st.st_ino == ck_rino;
 }
 
 static void ws_strip_slash(char *d);
@@ -646,6 +713,9 @@ static int ws_list_watched_files(char ***l, int *n, int record)
     and a directory that is not there cannot be met by the walk */
  skip = realpath(own, real) ? real : NULL;
  *l = NULL; *n = 0;
+ /* a workspace folder replaced since the checkpoint lists nothing: whatever
+    the name leads to now is not the run's work */
+ if (!record && !ws_root_unchanged()) return 0;
  if (record) {
   wpe_ai_free_list(ck_met, ck_met_n);
   wpe_ai_free_list(ck_listed, ck_listed_n);
@@ -1034,6 +1104,30 @@ static int ws_git_record_untracked(void)
                     &ck_ignored, &ck_ignored_n);
 }
 
+/**
+ * ws_record_root - Note which real folder the workspace is, for the revert.
+ *
+ * Resolves the workspace folder once, through any link it was opened by, and
+ * keeps its real name, device and inode.  What the user gets: a review that
+ * can tell the workspace from a link put in its place later.  When the folder
+ * cannot be resolved or looked at, no checkpoint is taken and the trace says
+ * why, rather than a revert with nothing to hold it to.
+ * Return: 0 when recorded, -1 when not (ck_clear state is left).
+ */
+static int ws_record_root(void)
+{
+ struct stat st;
+ if (wpe_path_resolve(ck_dir, ck_rdir, sizeof ck_rdir) != WPE_PATH_RESOLVED ||
+     stat(ck_rdir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+  ck_rdir[0] = '\0';
+  wpe_ai_trace("checkpoint refused: workspace folder cannot be resolved");
+  return -1;
+ }
+ ck_rdev = st.st_dev;
+ ck_rino = st.st_ino;
+ return 0;
+}
+
 int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
 {
  char *root = ws_root(f);
@@ -1050,6 +1144,7 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  }
  ws_strip_slash(ck_dir);
  free(root);
+ if (ws_record_root() != 0) return -1;
 
  /* git mode needs the workspace tracked, the user's untracked and ignored
     files on record, and an image of the worktree to go back to; short of any
@@ -1068,21 +1163,22 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
 
  /* snapshot copies */
  {
-  char sdir[1024];
   time_t now = time(NULL);
   int failed = 0, told = 0, readable = 0, have_dir;
-  ws_state_dir(sdir, sizeof sdir);
-  snprintf(ck_snapdir, sizeof ck_snapdir, "%s/checkpoints/%ld", sdir, (long)now);
+  snprintf(ck_leaf, sizeof ck_leaf, "checkpoints/%ld", (long)now);
+  ck_snapdir[0] = '\0';
   /* without the folder no copy can exist, and the folder's own failure has
      just been reported: the loop stays out rather than repeat it per file */
-  have_dir = ws_make_dir(f, ck_snapdir) == 0;
+  have_dir = ws_state_path(ck_leaf, ck_snapdir, sizeof ck_snapdir) == 0 &&
+             ws_make_dir(f, ck_snapdir) == 0;
   if (have_dir) {
    for (i = 0; i < nscope; i++) {
-    char *text = ws_read_file(scope[i], 4000000), dst[1200];
+    size_t tlen = 0;
+    char *text = ws_read_file_len(scope[i], 4000000, &tlen), dst[WS_LEAF_MAX + 16];
     if (!text) continue;
     readable++;
-    snprintf(dst, sizeof dst, "%s/%d", ck_snapdir, ck_n);
-    if (ws_write_file(dst, text) == 0) {
+    snprintf(dst, sizeof dst, "%s/%d", ck_leaf, ck_n);
+    if (ws_write_state_bytes(dst, text, tlen) == 0) {
      int cap = ck_n;
      ws_list_push(&ck_files, &ck_n, &cap, ws_strdup(scope[i]));
     } else {
@@ -1118,6 +1214,168 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  return 0;
 }
 
+/* ===================== the assistant's writes ============================ */
+
+/* How many digits a recorded mode needs (07777 is four, plus the newline), and
+   the room for the name of a record's file below the checkpoint's folder. */
+#define WS_MODE_TEXT_MAX 16
+#define WS_MODE_LEAF_MAX (WS_LEAF_MAX + 32)
+/* The twelve permission bits: the nine, setuid, setgid and sticky. */
+#define WS_MODE_BITS 07777
+
+/**
+ * ws_mode_of_file - The twelve permission bits a file has, read from the file itself.
+ * @real: the file, already resolved; @mode: receives the bits.
+ * Return: 0, or -1 when it cannot be read or is not a regular file.
+ *
+ * The file is opened without following a link and without waiting, and the
+ * bits come from fstat of that descriptor: never from a name looked up
+ * separately, which is the mode of a link when a link took the place.
+ */
+static int ws_mode_of_file(const char *real, mode_t *mode)
+{
+ struct stat st, seen;
+ int fd;
+ if (lstat(real, &seen) != 0 || !S_ISREG(seen.st_mode)) return -1;   /* a device is never opened */
+ fd = open(real, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+ if (fd < 0) return -1;
+ if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_ino != seen.st_ino ||
+     st.st_dev != seen.st_dev) { close(fd); return -1; }
+ close(fd);
+ *mode = st.st_mode & WS_MODE_BITS;
+ return 0;
+}
+
+/**
+ * ws_modes_folder_ready - Make the folder a checkpoint keeps its recorded modes in.
+ * @f: any window of the editor.
+ * Return: 0 when the folder is there, -1 when it could not be made (said in the pane).
+ *
+ * A snapshot checkpoint has its folder from the start; a git checkpoint keeps
+ * its before image in git and gets this folder at the first write it must
+ * remember the permissions of.
+ */
+static int ws_modes_folder_ready(FENSTER *f)
+{
+ char dir[WPE_PATH_SIZE];
+ if (!ck_leaf[0]) snprintf(ck_leaf, sizeof ck_leaf, "checkpoints/%ld-modes", (long)time(NULL));
+ if (ws_state_path(ck_leaf, dir, sizeof dir) != 0) return -1;
+ return ws_make_dir(f, dir);
+}
+
+/**
+ * ws_mode_record - Remember a file's permission bits before the assistant's first write to it.
+ * @f: any window of the editor; @real: the file the write will change, resolved.
+ *
+ * What the user gains: a revert puts back the bits the file had, a setgid
+ * program still a program, never the mode git would give a new file.  The bits
+ * are read from the file just before the run's first write to it and kept in
+ * a record under the state folder; a file that is not there yet has nothing to
+ * record, and a file the run only changes by a command has no record, so a
+ * revert leaves its bits alone.  Only a run with a checkpoint records.
+ */
+static void ws_mode_record(FENSTER *f, const char *real)
+{
+ char leaf[WS_MODE_LEAF_MAX], text[WS_MODE_TEXT_MAX];
+ mode_t mode;
+ if (!ck_mode || ws_list_has(ck_mode_paths, ck_mode_n, real)) return;
+ if (ws_mode_of_file(real, &mode) != 0 || ws_modes_folder_ready(f) != 0) return;
+ snprintf(leaf, sizeof leaf, "%s/m%d.mode", ck_leaf, ck_mode_n);
+ snprintf(text, sizeof text, "%o\n", (unsigned)mode);
+ if (ws_write_state_file(leaf, text) != 0) {
+  ws_write_failed(f, "record the permissions of", real, errno);
+  return;
+ }
+ ws_list_push(&ck_mode_paths, &ck_mode_n, &ck_mode_cap, ws_strdup(real));
+}
+
+/**
+ * ws_mode_recorded - The permission bits recorded for a file before the assistant wrote it.
+ * @real: the file, resolved.
+ * Return: the twelve bits, or WPE_WRITE_NO_RECORDED_MODE when none was recorded
+ * or the record cannot be read: the revert then keeps the file's own bits.
+ */
+static mode_t ws_mode_recorded(const char *real)
+{
+ char leaf[WS_MODE_LEAF_MAX], path[WPE_PATH_SIZE], *text, *end;
+ unsigned long bits;
+ int i;
+ for (i = 0; i < ck_mode_n; i++) if (!strcmp(ck_mode_paths[i], real)) break;
+ if (i == ck_mode_n) return WPE_WRITE_NO_RECORDED_MODE;
+ snprintf(leaf, sizeof leaf, "%s/m%d.mode", ck_leaf, i);
+ if (ws_state_path(leaf, path, sizeof path) != 0) return WPE_WRITE_NO_RECORDED_MODE;
+ text = ws_read_file(path, WS_MODE_TEXT_MAX);
+ if (!text) return WPE_WRITE_NO_RECORDED_MODE;
+ bits = strtoul(text, &end, 8);
+ if (end == text || bits > WS_MODE_BITS) bits = WPE_WRITE_NO_RECORDED_MODE;
+ free(text);
+ return (mode_t)bits;
+}
+
+/**
+ * ws_backup_note - Remember a .bak that an assistant write made.
+ * @bak: the .bak's path as the write owner reported it ("" when none).
+ *
+ * The review, the created-file detection and the revert skip exactly the
+ * files noted here (ws_is_run_backup).  Only a run with a checkpoint notes.
+ */
+static void ws_backup_note(const char *bak)
+{
+ if (!ck_mode || !bak[0] || ws_list_has(ck_baks, ck_baks_n, bak)) return;
+ ws_list_push(&ck_baks, &ck_baks_n, &ck_baks_cap, ws_strdup(bak));
+}
+
+/**
+ * ws_window_of_file - The open window that holds a file the assistant is about to write.
+ * @f: any window of the editor; @real: the file, resolved; @x: what the look found there.
+ * Return: the window, or NULL when none is open on it.
+ *
+ * Found by name first and then by the file's identity, so a window opened
+ * through another spelling of the path (a link, a hard link) is the same
+ * window.
+ */
+static FENSTER *ws_window_of_file(FENSTER *f, const char *real, const WpeWriteExpect *x)
+{
+ FENSTER *w = ws_find_window(f, real);
+ int i;
+ if (w || !x || !x->exists) return w;
+ for (i = f->ed->mxedt; i > 0; i--) {
+  FENSTER *c = f->ed->f[i];
+  if (ws_is_real_file_window(c) && wpe_write_identity_is(&c->file_id, x->dev, x->ino)) return c;
+ }
+ return NULL;
+}
+
+/**
+ * wpe_ai_write_judged_file - Put the assistant's text in the file the scope judged: a Save.
+ * @f: any window of the editor; @real: the place the look resolved, written
+ * exactly as it is and never resolved again; @text: the file's whole new
+ * content; @x: what the look saw there; @o: receives the outcome.
+ *
+ * What the user gains: an approved write is a Save, as the editor's own.  The
+ * old text is kept in the file's .bak, the file keeps its inode, its other
+ * names and its setuid, setgid and sticky bits, and a bit the system would not
+ * keep is named.  It goes where the box said it would, into the file the box
+ * was about: a link put in the last place, another file swapped in, or a name
+ * the file gained while the question was up refuses the write with nothing
+ * changed.  When a window is open on the file its identity is passed, so a
+ * file that is not the one the window read is refused as a Save refuses it.
+ * Before the run's first write to a file its permission bits are recorded for
+ * the revert, and the .bak is noted, so the review never lists it and the
+ * revert never removes it.
+ * Return: 0 when the file holds @text, -1 when not (@o says why).
+ */
+int wpe_ai_write_judged_file(FENSTER *f, const char *real, const char *text,
+                             const WpeWriteExpect *x, WpeWriteOutcome *o)
+{
+ FENSTER *w = ws_window_of_file(f, real, x);
+ int rc;
+ ws_mode_record(f, real);
+ rc = wpe_write_save_text(real, text, w ? &w->file_id : NULL, WPE_WRITE_NOFOLLOW, x, o);
+ ws_backup_note(o->bak_path);
+ return rc;
+}
+
 /* ===================== changeset ========================================= */
 
 typedef struct { char *path; int line; char *text; int is_new; } ws_change;
@@ -1138,11 +1396,33 @@ static void ws_path_norm(char *p)
  *w = '\0';
 }
 
+/**
+ * ws_is_run_backup - Is this file a .bak that one of the assistant's writes made?
+ * @path: a file as the review or the revert names it.
+ *
+ * What the user gains: the .bak copies the assistant's writes leave beside
+ * your files (the price of a write being a Save) are not listed as new files
+ * of the run, are not offered for removal, and a revert never takes one away.
+ * Only the exact files the writes reported are meant, never a name that
+ * merely ends in .bak: a backup of yours stays yours.  The path is compared
+ * as spelled and as it resolves, the way the write recorded it.
+ * Return: 1 when a write of this run made it.
+ */
+static int ws_is_run_backup(const char *path)
+{
+ char real[WPE_PATH_RESOLVED_MAX];
+ if (ck_baks_n == 0 || !path) return 0;
+ if (ws_list_has(ck_baks, ck_baks_n, path)) return 1;
+ if (wpe_path_resolve(path, real, sizeof real) != WPE_PATH_RESOLVED) return 0;
+ return ws_list_has(ck_baks, ck_baks_n, real);
+}
+
 static void ws_add_change(ws_change **c, int *n, int *cap, const char *path,
                           int line, const char *text, int is_new)
 {
  char *np = ws_strdup(path);
  int i;
+ if (ws_is_run_backup(path)) { free(np); return; }
  if (np) ws_path_norm(np);
  for (i = 0; i < *n; i++)                       /* drop a duplicate for the same spot */
   if ((*c)[i].line == line && np && (*c)[i].path && !strcmp((*c)[i].path, np))
@@ -1929,14 +2209,15 @@ int wpe_ai_refresh_open_window(FENSTER *f, const char *path)
 int wpe_ai_window_hook_copy(FENSTER *w, char *tmp, size_t sz)
 {
  char name[600], *full, *text;
+ WpeWriteOutcome o;
  if (!ws_is_real_file_window(w)) return 0;
  snprintf(name, sizeof name, ".ai-hook-%ld-%s", (long)getpid(), w->datnam);
  full = e_mkfilename(w->dirct, name);
  if (!full) return 0;
  text = ws_window_text(w);
  if (!text || strlen(full) >= sz) { free(text); free(full); return 0; }
- if (ws_write_file(full, text) != 0) {
-  int err = errno;
+ if (wpe_write_text(full, text, &o) != 0) {
+  int err = o.err;
   ws_write_failed(w, "write the post-edit copy of", full, err);
   wpe_ai_trace("post-edit copy failed %s: %s", full, strerror(err));
   free(text);
@@ -1978,26 +2259,71 @@ static int ws_revert_failed(FENSTER *f, const char *what, const char *path, cons
 #define WS_OUTSIDE_WORKSPACE "it is outside the workspace"
 #define WS_NOT_RUN_CREATED   "the run did not create it"
 #define WS_NAME_TOO_LONG     "its name is too long to hand to the shell whole"
+/* The most bytes of one file a before image holds. */
+#define WS_BEFORE_IMAGE_MAX  4000000
+/* The longest sentence the write owner says about a revert. */
+#define WS_REVERT_SENTENCE_MAX WPE_WRITE_SENTENCE_MAX
 
 /**
- * ws_revert_command - The shell command that puts one git-mode file back.
- * @cmd/@sz: the command; @rel: the file, relative to the workspace;
- * @is_new: remove it rather than restore it.
+ * ws_revert_command - The shell command that removes one file a git-mode run created.
+ * @cmd/@sz: the command; @rel: the file, relative to the workspace.
  *
+ * The only shell command a revert still runs: a file the run created is taken
+ * away, and git has no before image of it.  A file that existed is put back by
+ * ws_restore_before_image, never by a command that would make a new inode.
  * The workspace and the file name are quoted whole or not at all, and the
  * command is built whole or not at all, so a revert never acts on a name
  * other than the one the review listed.
  * Return: 0 with @cmd ready to run, -1 when it could not be built whole.
  */
-static int ws_revert_command(char *cmd, size_t sz, const char *rel, int is_new)
+static int ws_revert_command(char *cmd, size_t sz, const char *rel)
 {
  char q[1100], qf[1300];
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, rel) != 0)
   return -1;
- if (is_new)
-  return ws_format_whole(cmd, sz, "cd %s && rm -f -- %s 2>&1", q, qf);
- return ws_format_whole(cmd, sz, "cd %s && git --literal-pathspecs checkout %s -- %s 2>&1",
-                        q, ck_ref, qf);
+ return ws_format_whole(cmd, sz, "cd %s && rm -f -- %s 2>&1", q, qf);
+}
+
+/**
+ * ws_git_show - Fetch a file's content as the checkpoint's git ref holds it.
+ * @rel: the file, relative to the workspace; @buf/@len: receive the malloc'd
+ * bytes and their count; @reason/@rsz: receive git's own sentence on failure.
+ * Return: 0 with the content, -1 when git refused or the content could not be read.
+ *
+ * What the user gains: the before image comes from git, byte for byte, and
+ * goes back into the very file through the write owner, so the file keeps its
+ * inode, its other names and its bits.  The content goes through a file under
+ * the state folder (made by mkstemp, so its name is never a known one) and not
+ * through the command's captured text, which is cut short and holds no NUL byte.
+ */
+static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, size_t rsz)
+{
+ char dir[WPE_PATH_SIZE], file[WPE_PATH_SIZE + 24], q[1100], spec[1300], qs[2700], qf[1300];
+ char cmd[4200], *out;
+ int fd, status = 0;
+ *buf = NULL; *len = 0;
+ ws_state_dir(dir, sizeof dir);
+ ws_make_dir_parents(dir);
+ if (ws_format_whole(file, sizeof file, "%s/git-show-XXXXXX", dir) != 0) return -1;
+ fd = mkstemp(file);
+ if (fd < 0) { snprintf(reason, rsz, "%s", strerror(errno)); return -1; }
+ close(fd);
+ if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, file) != 0 ||
+     ws_format_whole(spec, sizeof spec, "%s:./%s", ck_ref, rel) != 0 ||
+     ws_quote_whole(qs, sizeof qs, spec) != 0 ||
+     ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs show %s 2>&1 >%s",
+                     q, qs, qf) != 0) {
+  unlink(file);
+  snprintf(reason, rsz, "%s", WS_NAME_TOO_LONG);
+  return -1;
+ }
+ out = wpe_ai_run_capture_status(cmd, &status);
+ if (status != 0) ws_output_reason(out, status, reason, rsz);
+ else *buf = ws_read_file_len(file, WS_BEFORE_IMAGE_MAX, len);
+ free(out);
+ unlink(file);
+ if (status == 0 && !*buf) snprintf(reason, rsz, "%s", "git's copy could not be read");
+ return *buf ? 0 : -1;
 }
 
 /**
@@ -2020,6 +2346,236 @@ static int ws_git_run_created(const char *path)
  return yes;
 }
 
+/* Why a revert refused a path whose folders now lead outside the tree.  Git
+   mode refuses too: `git checkout` of a path beyond a link touches nothing
+   outside but also exits 0 having restored nothing, which the review must not
+   count as a file put back. */
+#define WS_FOLDER_LINK "a link has taken the place of a folder on the way.  Nothing was written."
+#define WS_ROOT_LINK   "the workspace folder was replaced by a link; nothing was restored or removed."
+
+/**
+ * ws_revert_root_refused - Refuse a revert when the workspace folder was replaced.
+ * @f: any window of the editor; @what: "restore" or "remove"; @path: the file.
+ * Return: 0 when the folder is still the one of the checkpoint, -1 after
+ * saying the refusal (counted as a failure by the caller).
+ *
+ * Asked before a revert writes or removes anything, so a link put in place of
+ * the workspace folder never leads a restore or a removal to another place.
+ */
+static int ws_revert_root_refused(FENSTER *f, const char *what, const char *path)
+{
+ if (ws_root_unchanged()) return 0;
+ return ws_revert_failed(f, what, path, WS_ROOT_LINK);
+}
+
+/**
+ * ws_real_stays_in_tree - Does the reviewed path still lead where the review listed it?
+ * @path: the file as the review names it; @real: where its folder really leads,
+ * from the look.
+ * Return: 1 when @real is the resolved workspace plus the path's own part, or
+ * when the path is not below the workspace at all (a file beyond it, which no
+ * folder link inside the tree can have moved); 0 when a link sits on the way.
+ *
+ * What the user gains: a link a command planted in place of a folder inside the
+ * workspace cannot lead a revert to a file outside it.  The workspace itself is
+ * resolved once, at the checkpoint (ck_rdir), so one reached through a link keeps
+ * working, and one replaced by a link later is caught by ws_root_unchanged.
+ */
+static int ws_real_stays_in_tree(const char *path, const char *real)
+{
+ char want[WPE_PATH_RESOLVED_MAX];
+ const char *rel = ws_workspace_rel(path);
+ if (!rel) return 1;
+ if (snprintf(want, sizeof want, "%s%s%s", ck_rdir, strcmp(ck_rdir, "/") ? "/" : "", rel) >= (int)sizeof want)
+  return 0;
+ return strcmp(real, want) == 0;
+}
+
+/**
+ * ws_folders_stay_in_tree - Do the folders of a reviewed path still lead where the review listed them?
+ * @path: the file as the review names it.
+ * Return: 1 when they do (or the path is not below the workspace), 0 when a
+ * link sits on the way or the folders cannot be followed.
+ *
+ * Asked before any link branch of a revert, so a file reached through a
+ * planted folder link is never restored, checked out or counted as put back.
+ */
+static int ws_folders_stay_in_tree(const char *path)
+{
+ char real[WPE_PATH_RESOLVED_MAX];
+ WpeWriteExpect x;
+ if (!ws_workspace_rel(path)) return 1;
+ if (wpe_path_look_name(path, real, sizeof real, &x) != 0) return 0;
+ return ws_real_stays_in_tree(path, real);
+}
+
+/**
+ * ws_restore_before_image - Put a file's before image back, through the write owner.
+ * @f: any window of the editor; @path: the file, as the review names it;
+ * @text/@len: the before image, which may hold NUL bytes.
+ *
+ * The one place a revert writes a user's file.  What the user gets: the file
+ * is what it was before the run, in the very same file (the inode, the other
+ * names and a window's identity are kept), wearing the permission bits recorded
+ * before the assistant's first write, or its own when none was recorded.  The
+ * name is looked at afresh, without following a link at its end (only the
+ * folder is followed), and the write is held to that look, so a link planted
+ * at the name, or a file swapped in, since the review began is refused and
+ * said: the revert never writes into whatever a link leads to.  No
+ * .bak is made, and a bit the system would not give back is named in the pane.
+ * Return: 0 when the file holds the before image, -1 when it kept the change.
+ */
+static int ws_restore_before_image(FENSTER *f, const char *path, const char *text, size_t len)
+{
+ char real[WPE_PATH_RESOLVED_MAX], say[WS_REVERT_SENTENCE_MAX];
+ WpeWriteExpect x;
+ WpeWriteOutcome o;
+ FENSTER *w;
+ if (wpe_path_look_name(path, real, sizeof real, &x) != 0)
+  return ws_revert_failed(f, "restore", path, strerror(errno));
+ if (!ws_real_stays_in_tree(path, real))
+  return ws_revert_failed(f, "restore", path, WS_FOLDER_LINK);
+ w = ws_window_of_file(f, real, &x);
+ if (wpe_write_restore_text(real, text, len, ws_mode_recorded(real),
+                            w ? &w->file_id : NULL, &x, &o) != 0) {
+  wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+  return ws_revert_failed(f, "restore", path, say);
+ }
+ if (w) wpe_write_identity_set(&w->file_id, &o.written);
+ if (wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE) > 0)
+  wpe_ai_pane_error(f, say);
+ return 0;
+}
+
+/**
+ * ws_git_entry_is_link - Is this file a symbolic link in the checkpoint's git ref?
+ * @rel: the file, relative to the workspace.
+ * Return: 1 when git's entry for it has mode 120000, else 0 (also when git
+ * could not say).
+ */
+static int ws_git_entry_is_link(const char *rel)
+{
+ char q[1100], spec[1300], qs[2700], cmd[4200], *out;
+ int status = 0, yes;
+ if (ws_quote_whole(q, sizeof q, ck_dir) != 0 ||
+     ws_format_whole(spec, sizeof spec, "./%s", rel) != 0 ||
+     ws_quote_whole(qs, sizeof qs, spec) != 0 ||
+     ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs ls-tree %s -- %s 2>/dev/null",
+                     q, ck_ref, qs) != 0) return 0;
+ out = wpe_ai_run_capture_status(cmd, &status);
+ yes = status == 0 && out && !strncmp(out, "120000", 6);
+ free(out);
+ return yes;
+}
+
+/**
+ * ws_revert_by_checkout - Put one git entry back with git itself.
+ * @f: any window of the editor; @path: the file; @rel: relative to the workspace.
+ *
+ * Used where the entry is a link, in git's ref or at the name now: a link has
+ * no inode to keep and no bits to record, and a checkout replaces the entry
+ * and never writes through a link, so a revert of a link, or of a file a link
+ * took the place of, cannot reach what the link leads to.
+ * Return: 0 when git put it back, -1 when it refused (git's sentence is said).
+ */
+static int ws_revert_by_checkout(FENSTER *f, const char *path, const char *rel)
+{
+ char q[1100], qf[1300], cmd[2800], reason[600], *out;
+ int status = 0;
+ if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, rel) != 0 ||
+     ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs checkout %s -- %s 2>&1",
+                     q, ck_ref, qf) != 0)
+  return ws_revert_failed(f, "restore", path, WS_NAME_TOO_LONG);
+ out = wpe_ai_run_capture_status(cmd, &status);
+ if (status != 0) ws_output_reason(out, status, reason, sizeof reason);
+ free(out);
+ return status != 0 ? ws_revert_failed(f, "restore", path, reason) : 0;
+}
+
+/**
+ * ws_name_is_link - Is there a symbolic link at this name now?
+ * @path: the file.
+ */
+static int ws_name_is_link(const char *path)
+{
+ struct stat st;
+ return lstat(path, &st) == 0 && S_ISLNK(st.st_mode);
+}
+
+/**
+ * ws_revert_git - Put one git-mode file back, or take away one the run created.
+ * @f: any window of the editor; @path: the file; @is_new: the run created it.
+ *
+ * A file that existed comes back from git's copy of it (git show) through
+ * ws_restore_before_image, never from a checkout that would unlink it and make
+ * a new file with the umask's mode.  The one exception is a link, in git's ref
+ * or at the name now, which a checkout puts back (ws_revert_by_checkout); a
+ * path in the run's .bak list never gets here (ws_revert_path skips it).  A
+ * file the run created is removed by the
+ * one shell command left, and only when it is untracked now and was not there
+ * at the checkpoint.
+ * Return: 0 when the file is back, -1 when it kept the change.
+ */
+static int ws_revert_git(FENSTER *f, const char *path, int is_new)
+{
+ const char *what = is_new ? "remove" : "restore";
+ const char *rel = ws_workspace_rel(path);
+ char cmd[2800], *out, reason[600], *text;
+ size_t len;
+ int status = 0, rc;
+ if (!rel) return ws_revert_failed(f, what, path, WS_OUTSIDE_WORKSPACE);
+ if (ws_revert_root_refused(f, what, path) != 0) return -1;
+ if (!is_new) {
+  if (!ws_folders_stay_in_tree(path))
+   return ws_revert_failed(f, what, path, WS_FOLDER_LINK);
+  if (ws_git_entry_is_link(rel) || ws_name_is_link(path))
+   return ws_revert_by_checkout(f, path, rel);
+  if (ws_git_show(rel, &text, &len, reason, sizeof reason) != 0)
+   return ws_revert_failed(f, what, path, reason);
+  rc = ws_restore_before_image(f, path, text, len);
+  free(text);
+  return rc;
+ }
+ if (!ws_git_run_created(path)) return ws_revert_failed(f, what, path, WS_NOT_RUN_CREATED);
+ if (!ws_folders_stay_in_tree(path)) return ws_revert_failed(f, what, path, WS_FOLDER_LINK);
+ if (ws_revert_command(cmd, sizeof cmd, rel) != 0)
+  return ws_revert_failed(f, what, path, WS_NAME_TOO_LONG);
+ out = wpe_ai_run_capture_status(cmd, &status);
+ if (status != 0) ws_output_reason(out, status, reason, sizeof reason);
+ free(out);
+ return status != 0 ? ws_revert_failed(f, what, path, reason) : 0;
+}
+
+/**
+ * ws_revert_snapshot - Put one snapshot-mode file back, or take away one the run created.
+ * @f: any window of the editor; @path: the file; @is_new: the run created it.
+ *
+ * The before image is the copy the checkpoint made; it goes back through
+ * ws_restore_before_image whole, a NUL byte included.
+ * Return: 0 when the file is back, -1 when it kept the change.
+ */
+static int ws_revert_snapshot(FENSTER *f, const char *path, int is_new)
+{
+ char snap[1200], *text;
+ size_t len;
+ int i, rc;
+ if (ws_revert_root_refused(f, is_new ? "remove" : "restore", path) != 0) return -1;
+ if (is_new) {
+  if (!ws_snapshot_run_created(path)) return ws_revert_failed(f, "remove", path, WS_NOT_RUN_CREATED);
+  if (!ws_folders_stay_in_tree(path)) return ws_revert_failed(f, "remove", path, WS_FOLDER_LINK);
+  if (unlink(path) != 0) return ws_revert_failed(f, "remove", path, strerror(errno));
+  return 0;
+ }
+ for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) break;
+ if (i == ck_n) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
+ snprintf(snap, sizeof snap, "%s/%d", ck_snapdir, i);
+ text = ws_read_file_len(snap, WS_BEFORE_IMAGE_MAX, &len);
+ if (!text) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
+ rc = ws_restore_before_image(f, path, text, len);
+ free(text);
+ return rc;
+}
+
 /**
  * ws_revert_path - Put one file back the way the checkpoint found it.
  * @f: any window of the editor; @path: the file to put back;
@@ -2035,44 +2591,11 @@ static int ws_git_run_created(const char *path)
  */
 static int ws_revert_path(FENSTER *f, const char *path, int is_new)
 {
- if (ck_mode == 1) {
-  char cmd[2800], *out, reason[600];
-  int status = 0;
-  const char *rel = ws_workspace_rel(path);
-  if (!rel) return ws_revert_failed(f, is_new ? "remove" : "restore", path, WS_OUTSIDE_WORKSPACE);
-  if (is_new && !ws_git_run_created(path))
-   return ws_revert_failed(f, "remove", path, WS_NOT_RUN_CREATED);
-  if (ws_revert_command(cmd, sizeof cmd, rel, is_new) != 0)
-   return ws_revert_failed(f, is_new ? "remove" : "restore", path, WS_NAME_TOO_LONG);
-  out = wpe_ai_run_capture_status(cmd, &status);
-  if (status != 0) {
-   ws_output_reason(out, status, reason, sizeof reason);
-   free(out);
-   return ws_revert_failed(f, is_new ? "remove" : "restore", path, reason);
-  }
-  free(out);
- } else if (ck_mode == 2) {
-  char snap[1200], *text;
-  int i;
-  if (is_new) {
-   if (!ws_snapshot_run_created(path))
-    return ws_revert_failed(f, "remove", path, WS_NOT_RUN_CREATED);
-   if (unlink(path) != 0) return ws_revert_failed(f, "remove", path, strerror(errno));
-   wpe_ai_trace("changeset revert %s", path);
-   return 0;
-  }
-  for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) break;
-  if (i == ck_n) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
-  snprintf(snap, sizeof snap, "%s/%d", ck_snapdir, i);
-  text = ws_read_file(snap, 4000000);
-  if (!text) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
-  if (ws_write_file(path, text) != 0) {
-   int err = errno;
-   free(text);
-   return ws_revert_failed(f, "restore", path, strerror(err));
-  }
-  free(text);
- }
+ int rc = 0;
+ if (ws_is_run_backup(path)) return 0;       /* the price of a write, not the run's work */
+ if (ck_mode == WS_CK_GIT) rc = ws_revert_git(f, path, is_new);
+ else if (ck_mode == WS_CK_SNAPSHOT) rc = ws_revert_snapshot(f, path, is_new);
+ if (rc != 0) return rc;
  if (!is_new) ws_reload_window(f, path);
  wpe_ai_trace("changeset revert %s", path);
  return 0;
@@ -2164,23 +2687,6 @@ static const char *ws_path_under_root(const char *path, const char *root)
 #define WS_PATHSPEC_WHAT "write the path list"
 
 /**
- * ws_close_written - Close a file the editor wrote and say whether all of it landed.
- * @fp: the open stream.
- *
- * A write error noted on the stream and a failed close are the same thing to
- * the user: the file on disk is not the one meant.  The stream is closed in
- * both cases so no descriptor is left open.
- * Return: 0 when every byte landed, -1 otherwise.
- */
-static int ws_close_written(FILE *fp)
-{
- int short_write = ferror(fp);
- if (fclose(fp) != 0) return -1;
- if (short_write) return -1;
- return 0;
-}
-
-/**
  * ws_write_pathspec - Write the changeset's paths, one per file, for git to read.
  * @f: any window of the editor; @c/@n: the changeset on screen; @buf/@sz:
  * receives the list file's path.
@@ -2198,22 +2704,24 @@ static int ws_write_pathspec(FENSTER *f, ws_change *c, int n, char *buf, size_t 
 {
  char dir[1024];
  char **done = NULL; int nd = 0, cap = 0, i;
+ WpeWriteOutcome o;
  FILE *fp;
  ws_state_dir(dir, sizeof dir);
  if (ws_make_dir(f, dir) != 0) return -1;
  snprintf(buf, sz, "%s/changeset-%ld.pathspec", dir, (long)getpid());
- fp = fopen(buf, "w");
- if (!fp) { ws_write_failed(f, WS_PATHSPEC_WHAT, buf, errno); return -1; }
+ fp = wpe_write_stream_open(buf, &o);
+ if (!fp) { ws_write_failed(f, WS_PATHSPEC_WHAT, buf, o.err); return -1; }
  for (i = 0; i < n; i++) {
   const char *rel;
   if (ws_list_has(done, nd, c[i].path)) continue;        /* one file, one entry */
   ws_list_push(&done, &nd, &cap, ws_strdup(c[i].path));
   rel = ws_path_under_root(c[i].path, ck_dir);
-  fwrite(rel, 1, strlen(rel) + 1, fp);                    /* the NUL included */
+  fputs(rel, fp);
+  fputc('\0', fp);                                        /* the NUL ends each path */
  }
  wpe_ai_free_list(done, nd);
- if (ws_close_written(fp) != 0) {
-  ws_write_failed(f, WS_PATHSPEC_WHAT, buf, errno);
+ if (wpe_write_stream_close(fp, &o) != 0) {
+  ws_write_failed(f, WS_PATHSPEC_WHAT, buf, o.err);
   unlink(buf);                                            /* no half list left behind */
   return -1;
  }
@@ -2505,6 +3013,38 @@ static unsigned long ws_hash(const char *s)
  return h;
 }
 
+/**
+ * ws_session_leaf - Where a conversation is kept below the state folder.
+ * @f: the window the conversation belongs to; @leaf/@sz: receives the leaf.
+ * Return: 1 with the leaf, 0 when a project is open: its conversation lives
+ * in the project's own folder, not the state folder.
+ */
+static int ws_session_leaf(FENSTER *f, char *leaf, size_t sz)
+{
+ if (e_project_is_open()) return 0;
+ snprintf(leaf, sz, "ai/%lu.session", ws_hash(f->dirct ? f->dirct : "."));
+ return 1;
+}
+
+/**
+ * ws_session_store - Write the conversation to the file it is kept in.
+ * @f: the window; @path: ws_session_path's answer; @text: the JSON.
+ * Return: 0 when the file holds @text, -1 with errno set when not.
+ *
+ * Under the state folder it is a state file (built from a leaf, so no user
+ * path reaches it); in a project's folder it goes through the write owner by
+ * the path ws_session_path built.
+ */
+static int ws_session_store(FENSTER *f, const char *path, const char *text)
+{
+ char leaf[WS_MODE_LEAF_MAX];
+ WpeWriteOutcome o;
+ if (ws_session_leaf(f, leaf, sizeof leaf)) return ws_write_state_file(leaf, text);
+ if (wpe_write_text(path, text, &o) == 0) return 0;
+ errno = o.err ? o.err : EIO;
+ return -1;
+}
+
 static void ws_session_path(FENSTER *f, char *buf, size_t sz)
 {
  if (e_project_is_open()) {
@@ -2648,7 +3188,7 @@ void wpe_ai_session_save(FENSTER *f)
  /* The conversation on screen stays usable when this fails, so the turn is not
     abandoned: the user is told the exchange was not persisted, and the trace
     says so instead of naming a file that is not there. */
- if (ws_write_file(path, json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN)) != 0) {
+ if (ws_session_store(f, path, json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN)) != 0) {
   int err = errno;
   json_object_put(o);
   ws_write_failed(f, "save the conversation to", path, err);

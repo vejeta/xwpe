@@ -532,6 +532,25 @@ Changes
   it opened, keeping the special bits the script had, and never through a
   link that takes the name while the change is made, nor when another file
   has taken the script's name since the window read it.
+* A file the assistant writes is saved as F2 saves it.  Before, the write
+  emptied the file in place: a setgid program stopped being one, nothing was
+  kept of the old text, and a pipe named like a source file held the editor
+  waiting.  Now the old text goes to the file's .bak (t.c becomes t.bak, as
+  for F2), the file keeps its inode, its other names and its special bits,
+  and a bit the system will not keep is named in the pane and in what the
+  assistant reads.  A pipe, a device or a socket is never written, and a
+  file that is not the one that was checked when the write began (another
+  file put under the name, or a new hard link made to it) is refused with
+  nothing written.  A failed write gives the assistant the same sentence the
+  editor shows for its own Save.  The .bak is not part of the run's change:
+  the review does not list it and a revert does not remove it.  A revert puts
+  the old text back into the very same file (a git workspace too: the text
+  comes from git and no new file is made, so other names of the file are
+  restored with it), with the permission bits the file had before the
+  assistant's first write to it, a file with a NUL byte included.  A file
+  that only a command changed keeps its bits.  A revert never writes or
+  removes through a link, at the file name or at any folder on the way,
+  the workspace folder itself included; it names what it refused.
 * A window remembers which file it read (its device and inode), and Save
   writes only into that file.  Before, Save looked the name up again, so a
   setuid program put under the name by another program received your text

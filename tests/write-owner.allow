@@ -20,14 +20,8 @@ we_prog.c|r4:e_comp_start|1|P3|a build save
 we_prog.c|r4:e_exec_make|1|P3|a build save
 we_prog.c|r4:e_prj_save_file|1|P3|a build save
 we_prog.c|r4:e_run_sh|1|P3|a build save
-we_ai_path.c|r2:wpe_path_open_write|1|P4|the judged write into the user's own file
 we_ai_ui.c|r2:ai_transcript_write|1|P4|the transcript
-we_ai_ws.c|r2:ws_write_file|1|P4|the workspace's copies
-we_ai_ws.c|r2:ws_write_pathspec|1|P4|the conversation
 we_wind.c|r8:e_close_window|2|P2|the .ASV and .ESV copies by name, until the pass that makes the copies
-we_ai_ws.c|r8:ws_revert_path|1|P4|the assistant's revert of its own write: the pass of the assistant's writers decides whether it moves
-we_ai_ws.c|r9:ws_write_file|1|P4|the workspace's copies
-we_ai_ws.c|r9:ws_write_pathspec|1|P4|the conversation
 
 # not the user's text
 we_ai.c|r2:wpe_ai_trace|1|keep|a behaviour trace
@@ -67,7 +61,9 @@ we_ai_ui.c|r8:ai_hook_after_accept|1|keep|the hook's own marker file
 we_ai_ws.c|r8:wpe_ai_session_reset|1|keep|the assistant's own session file
 we_ai_ws.c|r8:ws_commit_changeset_steps|1|keep|the assistant's own change set
 we_ai_ws.c|r8:ws_git_list|3|keep|the temporary lists of the git command it runs
+we_ai_ws.c|r8:ws_git_show|2|keep|the temporary copy of a file's content that git prints, removed once read
 we_ai_ws.c|r8:ws_make_dir_parents|2|keep|the folders of a file the assistant writes
+we_ai_ws.c|r8:ws_revert_snapshot|1|keep|the removal of a file the run created, which the review listed as new and no before image holds
 we_ai_ws.c|r8:ws_write_pathspec|1|keep|the temporary pathspec file
 we_debug.c|r8:e_d_compile_drop|1|keep|the debugger's own marker
 we_debug.c|r8:e_d_compile_tell|2|keep|the debugger's own marker
