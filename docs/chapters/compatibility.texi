@@ -1057,8 +1057,12 @@ the editor could be ended by the limit.  xwpe puts the old content back
 from the backup copy into the same file, so a link, a second name for
 the file, its owner and its group stay as they were.  When the old content
 cannot be put back, or no backup copy could be made, the box says the file
-may be cut short and names the backup copy when there is one.  The reason:
-the save that fails must not also destroy the file.
+may be cut short and names the backup copy when there is one.  When there
+is no backup copy and the file had a setuid, setgid or sticky bit that it
+no longer has, the box says so too (@samp{no backup copy was made, and the
+setgid bit it had is off}); it says this only after reading the file, so a
+bit that is still on is not reported as lost.  The reason: the save that
+fails must not also destroy the file.
 
 @item The backup copy
 The original showed a second box, @samp{Can't open file for writing}, when
@@ -1102,8 +1106,11 @@ nothing.  A replacement that has a special bit, or belongs to another user,
 is refused (@samp{Cannot write t.c: the name leads to a different file than
 the one this window read.  Nothing was written.  Use Save As to write your
 text over that file.}), the text stays in the window, and Save As onto the
-same name writes it.  A window that read no file, or whose file did not
-exist, saves as a copy and then takes the file it made.  A name that now
+same name writes it.  When the name changes again while the question is up,
+the write is refused with a sentence that says so (@samp{the name changed
+again while you were being asked}), and the way out is the same.  A window
+that read no file, or whose file did not exist, saves as a copy and then
+takes the file it made.  A name that now
 leads to something that is not a regular file (a link to @file{/dev/null},
 say) is refused the same way, never written into.  Save As onto another
 file, Block Write, the autosave and emergency copies and the print copy

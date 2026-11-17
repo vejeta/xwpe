@@ -23,7 +23,7 @@
 #     pasted), and nowhere else but the owner's table in we_buffer.[ch].
 #  3. The selection bit has its readers: ED_BLOCK_SELECTION appears in
 #     options.h, we_edit.c and we_opt.c and nowhere else.
-#  4. The final line break has one writer: write_rows in we_write.c gives
+#  4. The final line break has one writer: write_source_fill in we_write.c gives
 #     e_eol_write write_keeps_file_ending, and every other caller outside
 #     the line-ending owner passes 0.
 #  5. The block Ctrl-K B leaves open has one owner: only we_buffer.c sets or
@@ -102,7 +102,7 @@ scan() {
       }' "$f"
   done
   if ! grep -q 'e_eol_write(fp, b, ya, xa, ye, xe, write_keeps_file_ending(' "$dir/we_write.c"; then
-    echo "4|we_write.c|write_rows does not give e_eol_write write_keeps_file_ending"
+    echo "4|we_write.c|write_source_fill does not give e_eol_write write_keeps_file_ending"
   fi
 }
 

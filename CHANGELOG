@@ -536,7 +536,14 @@ Changes
   writes a copy with no special bit and the window follows the new file, No
   or Esc writes nothing.  A replacement with a special bit, another owner
   or no regular file at all (a link to /dev/null) is refused with the way
-  out (Save As), and the text stays in the window.
+  out (Save As), and the text stays in the window.  When the name changes
+  again while the question is up, the write is refused and the box says
+  that the name changed again while you were being asked.
+* A save that fails after the file was emptied, with no backup copy to put
+  back, now also says which setuid, setgid or sticky bit the file had and
+  no longer has ("...no backup copy was made, and the setgid bit it had is
+  off."), read from the file itself.  When the bit is still on, the box
+  says nothing about it.
 
 * The .bak copy is made once the save has opened the file, and from that
   very file: a file that cannot be written leaves no new .bak, and a name

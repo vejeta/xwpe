@@ -1343,20 +1343,119 @@ static int write_keeps_file_ending(FENSTER *f, BUFFER *b, int xa, int ya, int xe
  return(whole && (f->ed->edopt & ED_KEEP_FILE_ENDING) != 0);
 }
 
+/** The part of a window's text a write takes: from (xa, ya) to (xe, ye). */
+typedef struct {
+ int xa, ya, xe, ye;
+} WriteRange;
+
+/** What a write puts into the file: a window's rows (@f and @r, @text NULL),
+    or a text (@text; @f is then NULL, a text has no window).  The one shape
+    both the editor's saves and the assistant's writes take, so a file is
+    written one way whoever asked. */
+typedef struct {
+ FENSTER    *f;
+ WriteRange  r;
+ const char *text;
+} WriteSource;
+
+/** How the file's name is opened. */
+typedef enum {
+ WRITE_OPEN_NAMED,          /* the name the user typed: a link at its end is followed,
+                               and one that leads nowhere is made */
+ WRITE_OPEN_NAMED_NOFOLLOW  /* a name the caller has already resolved and judged: a
+                               link at its end is refused (the system's refusal of a
+                               link: ELOOP on Linux), never followed */
+ /* A third way, for a name the editor chose itself (the autosave, the emergency
+    copy), made new and never opened existing, arrives with the pass that moves
+    those copies here. */
+} WriteOpenHow;
+
+/** What the write is for. */
+typedef enum {
+ WRITE_AIM_SAVE,     /* the window's own file: the identity it read must be the file
+                        opened, when it is known */
+ WRITE_AIM_REPLACE,  /* the file at the name is the file (the assistant's write with no
+                        window open on it, a revert): its own special bits are kept */
+ WRITE_AIM_COPY      /* another file: it never gets a special bit */
+} WriteAimKind;
+
+/** What a write does when its name leads to another file than the window read. */
+typedef enum {
+ WRITE_REPLACED_AS_COPY,   /* Save As, Block Write, the autosave: a second file, no question */
+ WRITE_REPLACED_ASK,       /* a plain Save, first pass: stop, nothing touched, and say the
+                              user is to be asked (o->ask_overwrite) */
+ WRITE_REPLACED_ACCEPTED,  /* a plain Save, after the user said Yes: write it as a copy */
+ WRITE_REPLACED_REFUSE     /* a write with no one to ask: refuse, nothing written */
+} WriteReplaced;
+
+/** The policy of one write for a name that leads to another file.  After a
+    Yes, @asked is the file the user was asked about: only that one may be
+    written, never another that took the name while the box was up. */
+typedef struct {
+ WriteReplaced   how;
+ WpeFileIdentity asked;
+} WriteReplacedPolicy;
+
+/** What the write is for, and everything about the file it needs beyond the
+    text: @own is the identity of the file the window read (NULL: none known),
+    @replaced the policy for another file under the name, @open how the name is
+    opened, and, for a revert, @recorded the twelve bits the text is to wear
+    again (@has_recorded; the nine go on before the text, the special ones
+    after it is on disk). */
+typedef struct {
+ WriteAimKind          kind;
+ const WpeFileIdentity *own;
+ WriteReplacedPolicy   replaced;
+ WriteOpenHow          open;
+ int                   has_recorded;
+ mode_t                recorded;
+} WriteAim;
+
 /**
- * write_rows - Put a range of the buffer into an open file, judged.
- * @fp: the file; @f: the window; @b: its buffer; the range.
- * @written: receives fstat of the file when it could be taken.
- * Return: 0, or the errno of the first thing that failed (the rows, the
+ * write_text_put - Put a text into an open stream.
+ * @text: the bytes; @fp: the stream.
+ * Return: 1 when it did not all go (errno says why, or is 0), else 0.
+ */
+static int write_text_put(const char *text, FILE *fp)
+{
+ size_t len = strlen(text);
+
+ return(len > 0 && fwrite(text, 1, len, fp) != len);
+}
+
+/**
+ * write_source_fill - Put the source into an open stream, whichever it is.
+ * @s: the source; @fp: the stream.
+ * Return: 1 when the write failed, else 0.
+ *
+ * A window's rows go through the line-ending owner, in the window's own line
+ * style; a text goes as it is.
+ */
+static int write_source_fill(const WriteSource *s, FILE *fp)
+{
+ FENSTER *f = s->f;
+ BUFFER *b;
+ int xa = s->r.xa, ya = s->r.ya, xe = s->r.xe, ye = s->r.ye;
+
+ if (s->text != NULL)
+  return(write_text_put(s->text, fp));
+ b = f->b;
+ return(e_eol_write(fp, b, ya, xa, ye, xe, write_keeps_file_ending(f, b, xa, ya, xe, ye)) != 0);
+}
+
+/**
+ * write_source_put - Put the source into an open file, judged, and close it.
+ * @s: the source; @fp: the file; @written: receives fstat of the file when it
+ * could be taken; @have_written: receives whether it was.
+ * Return: 0, or the errno of the first thing that failed (the bytes, the
  * flush, the stream's error flag, the close).
  */
-static int write_rows(FILE *fp, FENSTER *f, BUFFER *b, int xa, int ya, int xe, int ye,
-                      struct stat *written, int *have_written)
+static int write_source_put(const WriteSource *s, FILE *fp, struct stat *written, int *have_written)
 {
  int failed, err;
 
  errno = 0;
- failed = (e_eol_write(fp, b, ya, xa, ye, xe, write_keeps_file_ending(f, b, xa, ya, xe, ye)) != 0);
+ failed = write_source_fill(s, fp);
  if (!failed && fflush(fp) != 0)
   failed = 1;
  if (!failed && ferror(fp))
@@ -1366,6 +1465,29 @@ static int write_rows(FILE *fp, FENSTER *f, BUFFER *b, int xa, int ya, int xe, i
  if (fclose(fp) != 0 && !failed)
   err = write_error_number(errno);
  return(err);
+}
+
+/**
+ * write_bits_found_off - Which special bits a file had and no longer has,
+ * read from the file itself.
+ * @fd: a descriptor of the file, or -1; @had: the bits it had (the nine and
+ * the special ones, or 0 when it had no special bit).
+ * Return: the special bits of @had that the file does not have now; 0 when
+ * it had none, when it still has them all, or when it cannot be read.
+ *
+ * What a failed write with no backup tells the user about a program's bits.
+ * It is read back, never inferred: a write that failed before it touched the
+ * mode (a refused open, a cut that did not happen) left the bit on, and
+ * saying otherwise would be false.
+ */
+static mode_t write_bits_found_off(int fd, mode_t had)
+{
+ struct stat now;
+ mode_t special = had & WRITE_SPECIAL_BITS;
+
+ if (fd < 0 || special == 0 || fstat(fd, &now) != 0)
+  return(0);
+ return(special & ~now.st_mode);
 }
 
 /**
@@ -1387,6 +1509,7 @@ static void write_after_failure(WpeWriteOutcome *o, const char *path, BackupResu
 {
  if (bk != BACKUP_MADE)
  {
+  o->file_off = write_bits_found_off(again, keep);
   write_close_both(again, bak_fd);
   o->restore_err = ENOENT;
   return;
@@ -1500,15 +1623,24 @@ static int write_backup_refuses_save(const WriteBackup *bk, WpeWriteOutcome *o)
  * user's file and backed up, not taken for ours.  A name that leads nowhere
  * (a link to a file to be made) cannot be made with O_EXCL and is made
  * without, as before.
+ *
+ * @how says what a link at the end of the name means.  A name the user typed
+ * is followed (NAMED).  A name the caller already resolved and judged
+ * (NAMED_NOFOLLOW) is opened with O_NOFOLLOW both times and never takes the
+ * dangling-link way: a link found there was put there since, the open fails
+ * with the system's refusal of a link (ELOOP on Linux), and nothing is
+ * created through it.
  */
-static int write_target_open_fd(const char *path, int *created)
+static int write_target_open_fd(const char *path, WriteOpenHow how, int *created)
 {
- int fd = open(path, O_WRONLY | O_NOCTTY | O_CLOEXEC);
+ int follow = (how == WRITE_OPEN_NAMED_NOFOLLOW ? O_NOFOLLOW : 0);
+ int flags = O_NOCTTY | O_CLOEXEC | follow;
+ int fd = open(path, O_WRONLY | flags);
 
  *created = 0;
  if (fd >= 0 || errno != ENOENT)
   return(fd);
- fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, WRITE_NEW_FILE_MODE);
+ fd = open(path, O_WRONLY | O_CREAT | O_EXCL | flags, WRITE_NEW_FILE_MODE);
  if (fd >= 0)
  {
   *created = 1;
@@ -1516,17 +1648,56 @@ static int write_target_open_fd(const char *path, int *created)
  }
  if (errno != EEXIST)
   return(-1);
- fd = open(path, O_WRONLY | O_NOCTTY | O_CLOEXEC);
+ fd = open(path, O_WRONLY | flags);
  if (fd >= 0 || errno != ENOENT)
   return(fd);
+ if (how == WRITE_OPEN_NAMED_NOFOLLOW)
+  return(-1);
  *created = 1;
  return(open(path, O_WRONLY | O_CREAT | O_NOCTTY | O_CLOEXEC, WRITE_NEW_FILE_MODE));
 }
 
 /**
+ * write_aim_purpose - What a write is for, from what it aimed at and what it opened.
+ * @aim: what the caller wants; @opened: fstat of the file opened; @created:
+ * this write made the file.
+ * Return: the purpose.
+ *
+ * A copy is a copy and a replace is a save of the file at the name, but only
+ * a regular file: anything else already there (a device, a pty) is a
+ * replacement the write must refuse, as a window's own Save refuses it.  A
+ * save of a window's file is decided by the identity the window read
+ * (write_purpose_for_target).
+ */
+static WritePurpose write_aim_purpose(const WriteAim *aim, const struct stat *opened, int created)
+{
+ if (aim->kind == WRITE_AIM_COPY)
+  return(WRITE_PURPOSE_COPY);
+ if (aim->kind == WRITE_AIM_REPLACE && !created && !S_ISREG(opened->st_mode))
+  return(WRITE_PURPOSE_REPLACED);
+ if (aim->kind == WRITE_AIM_REPLACE)
+  return(WRITE_PURPOSE_SAVE);
+ return(write_purpose_for_target(aim->own, opened, created));
+}
+
+/**
+ * write_aim_keep - The special bits a write gives back after the text.
+ * @aim: what the caller wants; @t: the target, opened.
+ * Return: the bits a revert recorded when it has some, else those the file
+ * had for a save, else none (a copy never gets one).
+ */
+static mode_t write_aim_keep(const WriteAim *aim, const WriteTarget *t)
+{
+ if (aim->has_recorded)
+  return(aim->recorded & WRITE_SPECIAL_BITS);
+ if (t->purpose == WRITE_PURPOSE_SAVE)
+  return(t->before & WRITE_SPECIAL_BITS);
+ return(0);
+}
+
+/**
  * write_target_open - Open the file a write goes to, without cutting it.
- * @path: the file; @own: the file the window read, or NULL; @t: receives the
- * target.
+ * @path: the file; @aim: what the write is for; @t: receives the target.
  * Return: 0, or the errno of what failed (nothing was truncated).
  *
  * The write clears a file's setuid and setgid bits in the open itself when
@@ -1535,12 +1706,12 @@ static int write_target_open_fd(const char *path, int *created)
  * before or a mode recorded when the window loaded the file, means a bit the
  * user took off since stays off and a file that is new has none to get.
  */
-static int write_target_open(const char *path, const WpeFileIdentity *own, WriteTarget *t)
+static int write_target_open(const char *path, const WriteAim *aim, WriteTarget *t)
 {
  int err;
 
  memset(t, 0, sizeof *t);
- t->fd = write_target_open_fd(path, &t->created);
+ t->fd = write_target_open_fd(path, aim->open, &t->created);
  if (t->fd < 0)
   return(errno);
  if (fstat(t->fd, &t->st) == 0)
@@ -1553,9 +1724,8 @@ static int write_target_open(const char *path, const WpeFileIdentity *own, Write
  }
  if (S_ISREG(t->st.st_mode))
   t->before = t->st.st_mode & WRITE_TWELVE_BITS;
- t->purpose = write_purpose_for_target(own, &t->st, t->created);
- if (t->purpose == WRITE_PURPOSE_SAVE)
-  t->keep = t->before & WRITE_SPECIAL_BITS;
+ t->purpose = write_aim_purpose(aim, &t->st, t->created);
+ t->keep = write_aim_keep(aim, t);
  return(0);
 }
 
@@ -1589,22 +1759,42 @@ static int write_target_truncate(const WriteTarget *t)
 }
 
 /**
- * write_mode_before_data - Give the file the window's nine permission bits
- * before it holds any text.
- * @t: the target; @f: the window.
- *
- * The only place the editor's recorded mode of a file (what the window read
- * when it loaded it) is consulted, and only for the nine bits, so an
- * autosave of a private file is private from its first byte.  Special bits
- * never come from here.  A mode that did not change is not a lost save: the
- * text is written.
+ * write_target_has_special_bits - Did the file have a setuid, setgid or
+ * sticky bit when it was opened?
+ * @t: the target.
+ * Return: 1 when it did.
  */
-static void write_mode_before_data(const WriteTarget *t, FENSTER *f)
+static int write_target_has_special_bits(const WriteTarget *t)
+{
+ return((t->before & WRITE_SPECIAL_BITS) != 0);
+}
+
+/**
+ * write_mode_before_data - Give the file its nine permission bits before it
+ * holds any text.
+ * @t: the target; @s: the source; @aim: what the write is for.
+ *
+ * With a window these are the nine bits the window recorded when it loaded
+ * the file (the only place that mode is consulted, and only for the nine
+ * bits), so an autosave of a private file is private from its first byte.  A
+ * revert gives the nine bits it recorded.  A text with no window and no
+ * recorded mode changes nothing, except on a file that has a special bit
+ * right now: it is given its own nine bits at once, which takes the bit off,
+ * so no byte of the text goes into a file that is a program (for root the
+ * system would not take it off by itself).  Special bits never come from
+ * here: the save puts them back after the text is on disk.  A mode that did
+ * not change is not a lost save: the text is written.
+ */
+static void write_mode_before_data(const WriteTarget *t, const WriteSource *s, const WriteAim *aim)
 {
  WpeModeKept kept;
 
- if (f->filemode >= 0)
-  (void)wpe_write_set_mode_fd(t->fd, (mode_t)f->filemode & WRITE_NINE_BITS, &kept);
+ if (aim->has_recorded)
+  (void)wpe_write_set_mode_fd(t->fd, aim->recorded & WRITE_NINE_BITS, &kept);
+ else if (s->f != NULL && s->f->filemode >= 0)
+  (void)wpe_write_set_mode_fd(t->fd, (mode_t)s->f->filemode & WRITE_NINE_BITS, &kept);
+ else if (s->f == NULL && write_target_has_special_bits(t))
+  (void)wpe_write_set_mode_fd(t->fd, t->before & WRITE_NINE_BITS, &kept);
 }
 
 /**
@@ -1671,11 +1861,6 @@ static void write_keep_special_bits(int fd, int fd_err, const WriteTarget *t, Wp
   write_bits_mark_lost(k, t->keep, err);
 }
 
-/** The part of a window's text a write takes: from (xa, ya) to (xe, ye). */
-typedef struct {
- int xa, ya, xe, ye;
-} WriteRange;
-
 /** XWPE_TEST_FAIL=write-other-owner: the replaced file looks owned by another
     user, the case a test run by one user cannot make with a real file. */
 #define WPE_WRITE_TEST_OTHER_OWNER "write-other-owner"
@@ -1704,26 +1889,13 @@ static int write_replaced_is_ours(const struct stat *st)
  return(owner == geteuid());
 }
 
-/** What a write does when its name leads to another file than the window read. */
-typedef enum {
- WRITE_REPLACED_AS_COPY,   /* Save As, Block Write, the autosave: a second file, no question */
- WRITE_REPLACED_ASK,       /* a plain Save, first pass: stop, nothing touched, and say the
-                              user is to be asked (o->ask_overwrite) */
- WRITE_REPLACED_ACCEPTED   /* a plain Save, after the user said Yes: write it as a copy */
-} WriteReplaced;
-
-/** The policy of one write for a name that leads to another file.  After a
-    Yes, @asked is the file the user was asked about: only that one may be
-    written, never another that took the name while the box was up. */
-typedef struct {
- WriteReplaced   how;
- WpeFileIdentity asked;
-} WriteReplacedPolicy;
-
 /** The policy of every write that never asks: a copy is a second file. */
 static const WriteReplacedPolicy write_replaced_as_copy = { WRITE_REPLACED_AS_COPY, { 0, 0, 0 } };
 /** The policy of a plain Save's first pass: stop and report the file to ask about. */
 static const WriteReplacedPolicy write_replaced_ask = { WRITE_REPLACED_ASK, { 0, 0, 0 } };
+/** The policy of a write with no one to ask: another file under the name is
+    refused, nothing written. */
+static const WriteReplacedPolicy write_replaced_refuse = { WRITE_REPLACED_REFUSE, { 0, 0, 0 } };
 
 /**
  * write_replaced_may_go_on - Decide a write whose name leads to another file
@@ -1737,7 +1909,9 @@ static const WriteReplacedPolicy write_replaced_ask = { WRITE_REPLACED_ASK, { 0,
  * After a Yes only the file the user was asked about is written.  Another
  * file that took the name while the box was up is refused, with Save As as
  * the way out, not asked about again: the user never answers a question
- * about one file with a write into another.
+ * about one file with a write into another; the outcome says the name
+ * changed while the user was being asked.  A write that cannot ask anybody
+ * (the REFUSE policy) refuses at once, nothing written.
  *
  * An editor that saves by renaming (vim, sed -i, git checkout, rsync) gives
  * the name a new file under the window's feet, and the user then sees one
@@ -1754,9 +1928,16 @@ static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *p
                   (!policy->asked.known || policy->asked.dev != t->st.st_dev ||
                    policy->asked.ino != t->st.st_ino));
 
- if (not_asked || !write_replaced_is_ours(&t->st))
+ if (policy->how == WRITE_REPLACED_REFUSE && !S_ISREG(t->st.st_mode))
+ {
+  o->not_regular = 1;
+  o->err = WPE_WRITE_REPLACED_ERR;
+  return(0);
+ }
+ if (not_asked || policy->how == WRITE_REPLACED_REFUSE || !write_replaced_is_ours(&t->st))
  {
   o->other_file = 1;
+  o->changed_while_asked = not_asked;
   o->err = WPE_WRITE_REPLACED_ERR;
   return(0);
  }
@@ -1772,11 +1953,12 @@ static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *p
 
 /**
  * write_run_open - Open the file a write goes to and make it ready for text.
- * @f: the window; @path: the file; @backup: 1 to copy an existing file to its
- * .bak; @own: the file the window read, or NULL; @replaced: what to do when
- * the name leads to another file; @t: receives the target; @bk: receives what the backup did and holds the .bak's
- * descriptor; @o: receives err when it fails.
- * Return: 0 when the file is open, cut to nothing and has the window's nine
+ * @s: the source; @path: the file; @backup: 1 to copy an existing file to its
+ * .bak; @aim: what the write is for, which file it is allowed to be and what
+ * to do when the name leads to another; @t: receives the target; @bk:
+ * receives what the backup did and holds the .bak's descriptor; @o: receives
+ * err when it fails.
+ * Return: 0 when the file is open, cut to nothing and has its nine
  * permission bits; -1 when not (nothing was written, the old file is as it
  * was, and nothing stays open).
  *
@@ -1787,11 +1969,10 @@ static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *p
  * file the save will not overwrite.  The cut comes last, when the old text is
  * safe.
  */
-static int write_run_open(FENSTER *f, const char *path, int backup, const WpeFileIdentity *own,
-                          const WriteReplacedPolicy *replaced, WriteTarget *t, WriteBackup *bk,
-                          WpeWriteOutcome *o)
+static int write_run_open(const WriteSource *s, const char *path, int backup, const WriteAim *aim,
+                          WriteTarget *t, WriteBackup *bk, WpeWriteOutcome *o)
 {
- int err = write_target_open(path, own, t);
+ int err = write_target_open(path, aim, t);
 
  bk->result = BACKUP_NONE;
  bk->fd = -1;
@@ -1800,8 +1981,8 @@ static int write_run_open(FENSTER *f, const char *path, int backup, const WpeFil
   o->err = write_error_number(err);
   return(-1);
  }
- if (t->purpose == WRITE_PURPOSE_REPLACED && replaced->how != WRITE_REPLACED_AS_COPY &&
-     !write_replaced_may_go_on(t, replaced, o))
+ if (t->purpose == WRITE_PURPOSE_REPLACED && aim->replaced.how != WRITE_REPLACED_AS_COPY &&
+     !write_replaced_may_go_on(t, &aim->replaced, o))
  {
   fclose(t->fp);
   return(-1);
@@ -1821,16 +2002,16 @@ static int write_run_open(FENSTER *f, const char *path, int backup, const WpeFil
   fclose(t->fp);
   return(-1);
  }
- write_mode_before_data(t, f);
+ write_mode_before_data(t, s, aim);
  return(0);
 }
 
 /**
- * write_run_finish - Put the rows into the open target, then give a Save's
+ * write_run_finish - Put the source into the open target, then give a Save's
  * file its special bits back, or put the old content back when it failed.
- * @f: the window; @path: the file; @r: the range; @t: the open target,
- * closed here; @bk: what the backup did and the .bak's descriptor, closed
- * here; @o: receives the outcome.
+ * @s: the source; @path: the file; @t: the open target, closed here; @bk:
+ * what the backup did and the .bak's descriptor, closed here; @o: receives
+ * the outcome.
  *
  * The restore, and the special bits after the text, go through a second
  * descriptor of this same file, never through whatever the name points at by
@@ -1839,7 +2020,7 @@ static int write_run_open(FENSTER *f, const char *path, int backup, const WpeFil
  * modified and the old content goes back, because bytes that may not have
  * reached the disk must not wear the bits of a program.
  */
-static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, WriteTarget *t,
+static void write_run_finish(const WriteSource *s, const char *path, WriteTarget *t,
                              WriteBackup *bk, WpeWriteOutcome *o)
 {
  struct stat written;
@@ -1847,7 +2028,7 @@ static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, 
 
  again = fcntl(t->fd, F_DUPFD_CLOEXEC, 0);
  again_err = errno;
- err = write_rows(t->fp, f, f->b, r->xa, r->ya, r->xe, r->ye, &written, &have_written);
+ err = write_source_put(s, t->fp, &written, &have_written);
  if (err == 0 && again >= 0)
   err = wpe_write_sync_before_bits(again, t->keep, 0);
  if (err != 0)
@@ -1867,19 +2048,19 @@ static void write_run_finish(FENSTER *f, const char *path, const WriteRange *r, 
 }
 
 /**
- * write_run - Write a range of a window's text to a path, judged.
- * @f: the window; @path: the file; @r: the range; @backup: 1 to copy an
- * existing file to its .bak first; @own: the file the window read, which gets
- * its special bits back, or NULL (every other file is a copy and gets none);
- * @replaced: what to do when the name now leads to another file; @o:
- * receives the outcome.
+ * write_run - Write a source (a window's rows or a text) to a path, judged.
+ * @s: the source; @path: the file; @backup: 1 to copy an existing file to its
+ * .bak first; @aim: what the write is for (a save of the window's file, which
+ * gets its special bits back; a replace of the file at the name, which
+ * does too; or a copy, which gets none), how the name is opened and what to do
+ * when it now leads to another file; @o: receives the outcome.
  *
- * The one place a window's rows reach a file.  A write that fails after
- * the file was opened puts the old content back (write_restore) when a
+ * The one place the editor's text reaches a user's file, whoever asked: the
+ * window's Save, a block, and the assistant's writes.  A write that fails
+ * after the file was opened puts the old content back (write_restore) when a
  * .bak was made, and the outcome says what could not be done.
  */
-static void write_run(FENSTER *f, const char *path, const WriteRange *r, int backup,
-                      const WpeFileIdentity *own, const WriteReplacedPolicy *replaced,
+static void write_run(const WriteSource *s, const char *path, int backup, const WriteAim *aim,
                       WpeWriteOutcome *o)
 {
  WriteBackup bk;
@@ -1888,16 +2069,59 @@ static void write_run(FENSTER *f, const char *path, const WriteRange *r, int bac
  memset(o, 0, sizeof *o);
  o->status = WPE_WRITE_FAILED;
  write_set_path(o, path);
- if (f->ins == WPE_WRITE_WINDOW_READ_ONLY)
+ if (s->f != NULL && s->f->ins == WPE_WRITE_WINDOW_READ_ONLY)
  {
   o->err = EACCES;
   o->read_only = 1;
   return;
  }
  wpe_write_guard_enter();
- if (write_run_open(f, path, backup, own, replaced, &t, &bk, o) == 0)
-  write_run_finish(f, path, r, &t, &bk, o);
+ if (write_run_open(s, path, backup, aim, &t, &bk, o) == 0)
+  write_run_finish(s, path, &t, &bk, o);
  wpe_write_guard_leave();
+}
+
+/**
+ * write_aim_make - Say what a write is for.
+ * @aim: receives it; @kind: save, replace or copy; @own: the identity of the
+ * file the window read, or NULL; @replaced: what to do when the name leads to
+ * another file; @open: how the name is opened.
+ *
+ * A revert adds its recorded mode afterwards (write_aim_record).
+ */
+static void write_aim_make(WriteAim *aim, WriteAimKind kind, const WpeFileIdentity *own,
+                           const WriteReplacedPolicy *replaced, WriteOpenHow open)
+{
+ memset(aim, 0, sizeof *aim);
+ aim->kind = kind;
+ aim->own = own;
+ aim->replaced = *replaced;
+ aim->open = open;
+}
+
+/** write_aim_record - A revert's aim wears again the twelve bits it recorded. */
+static void write_aim_record(WriteAim *aim, mode_t recorded)
+{
+ aim->has_recorded = 1;
+ aim->recorded = recorded;
+}
+
+/** write_source_window - A window's rows from (xa, ya) to (xe, ye) as a source. */
+static void write_source_window(WriteSource *s, FENSTER *f, int xa, int ya, int xe, int ye)
+{
+ memset(s, 0, sizeof *s);
+ s->f = f;
+ s->r.xa = xa;
+ s->r.ya = ya;
+ s->r.xe = xe;
+ s->r.ye = ye;
+}
+
+/** write_source_text - A text, which has no window, as a source. */
+static void write_source_text(WriteSource *s, const char *text)
+{
+ memset(s, 0, sizeof *s);
+ s->text = text;
 }
 
 /**
@@ -1915,13 +2139,94 @@ static void write_run(FENSTER *f, const char *path, const WriteRange *r, int bac
 int wpe_write_range(FENSTER *f, const char *path, int xa, int ya, int xe, int ye, int backup,
                     WpeWriteOutcome *o)
 {
- WriteRange r;
+ WriteSource s;
+ WriteAim aim;
 
- r.xa = xa;
- r.ya = ya;
- r.xe = xe;
- r.ye = ye;
- write_run(f, path, &r, backup, NULL, &write_replaced_as_copy, o);
+ write_source_window(&s, f, xa, ya, xe, ye);
+ write_aim_make(&aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, WRITE_OPEN_NAMED);
+ write_run(&s, path, backup, &aim, o);
+ return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+}
+
+/**
+ * write_open_how_of - How a name is opened, from the caller's flags.
+ * @flags: WPE_WRITE_NOFOLLOW or 0.
+ */
+static WriteOpenHow write_open_how_of(int flags)
+{
+ if (flags & WPE_WRITE_NOFOLLOW)
+  return(WRITE_OPEN_NAMED_NOFOLLOW);
+ return(WRITE_OPEN_NAMED);
+}
+
+/**
+ * write_text_kind - What a text written into a user's file is for.
+ * @own: the identity of the window open on the file, or NULL.
+ * Return: a save of that window's file, or, with no window, a replace of
+ * the file at the name.
+ */
+static WriteAimKind write_text_kind(const WpeFileIdentity *own)
+{
+ if (own != NULL && own->known)
+  return(WRITE_AIM_SAVE);
+ return(WRITE_AIM_REPLACE);
+}
+
+/**
+ * wpe_write_save_text - Write a whole text into a file of the user's, as a
+ * Save does.
+ * @path: the file; @text: the bytes; @own: the identity of the window open on
+ * that file, or NULL; @flags: WPE_WRITE_NOFOLLOW to refuse a link at the end
+ * of @path; @o: receives the outcome.
+ * Return: 0 when the file holds the text, -1 when not (the outcome says why).
+ *
+ * What the user gets when the assistant changes a file: the old text kept in
+ * its .bak, a program's setuid, setgid or sticky bit still on it after the
+ * text is on disk (or named, when the system would not keep it), and, when
+ * a window is open on the file, a refusal instead of a write into a different
+ * file that took the name since the window read it.  This face refuses: it
+ * has no one to ask.  A caller that can show the question asks first, as
+ * Save does, and writes only on a Yes.
+ */
+int wpe_write_save_text(const char *path, const char *text, const WpeFileIdentity *own, int flags,
+                        WpeWriteOutcome *o)
+{
+ WriteSource s;
+ WriteAim aim;
+
+ write_source_text(&s, text);
+ write_aim_make(&aim, write_text_kind(own), own, &write_replaced_refuse, write_open_how_of(flags));
+ write_run(&s, path, 1, &aim, o);
+ return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+}
+
+/**
+ * wpe_write_restore_text - Put a before image's text back into a file, with
+ * the permission bits recorded with it.
+ * @path: the file, already resolved by the caller; @text: the bytes;
+ * @recorded: the twelve bits to give back; @own: the identity of the window
+ * open on the file, or NULL; @o: receives the outcome.
+ * Return: 0 when the file holds the text, -1 when not (the outcome says why).
+ *
+ * The name is opened without following a link at its end
+ * (WRITE_OPEN_NAMED_NOFOLLOW): the caller resolved it once, and a link put
+ * there since is refused.  A file that is not there is made with
+ * WRITE_NEW_FILE_MODE (0666 less the umask) and then given the recorded nine
+ * bits.  What the user gets: after a revert the file is what it was before
+ * the assistant's run, a program still a program, and a bit the system would
+ * not give back is named.  No .bak is made: the before image the text comes
+ * from is the copy, and a revert leaves no new file beside the user's.
+ */
+int wpe_write_restore_text(const char *path, const char *text, mode_t recorded,
+                           const WpeFileIdentity *own, WpeWriteOutcome *o)
+{
+ WriteSource s;
+ WriteAim aim;
+
+ write_source_text(&s, text);
+ write_aim_make(&aim, write_text_kind(own), own, &write_replaced_refuse, WRITE_OPEN_NAMED_NOFOLLOW);
+ write_aim_record(&aim, recorded);
+ write_run(&s, path, 0, &aim, o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
 }
 
@@ -2072,13 +2377,12 @@ mode_t wpe_write_overwrite_drops(const char *path, const WpeFileIdentity *own)
 static void write_window_pass(FENSTER *f, const char *path, const WriteReplacedPolicy *replaced,
                               WpeWriteOutcome *o)
 {
- WriteRange r;
+ WriteSource s;
+ WriteAim aim;
 
- r.xa = 0;
- r.ya = 0;
- r.xe = E_BUFFER_ROW_END(f->b);
- r.ye = f->b->mxlines - 1;
- write_run(f, path, &r, 1, &f->file_id, replaced, o);
+ write_source_window(&s, f, 0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1);
+ write_aim_make(&aim, WRITE_AIM_SAVE, &f->file_id, replaced, WRITE_OPEN_NAMED);
+ write_run(&s, path, 1, &aim, o);
 }
 
 /**
@@ -2374,6 +2678,30 @@ static void write_bits_clause(char *out, size_t n, const WpeModeKept *k)
  snprintf(out, n, "the %s %s not kept: %s", words, several ? "were" : "was", reason);
 }
 
+/** Room for ", and the setuid and setgid bits it had are off". */
+#define WRITE_OFF_CLAUSE_MAX 96
+
+/**
+ * write_bits_off_clause - Name the special bits a failed write left off a
+ * file that had them.
+ * @out, @n: the room; @off: the bits, as write_bits_found_off read them.
+ *
+ * ", and the setgid bit it had is off", or "" when there is none to name, so
+ * the sentence of a failed write with no backup can end with it.  Said only
+ * of bits read back from the file.
+ */
+static void write_bits_off_clause(char *out, size_t n, mode_t off)
+{
+ char words[64];
+ int several = ((off & (off - 1)) != 0);
+
+ out[0] = '\0';
+ if (off == 0)
+  return;
+ wpe_write_bits_words(words, sizeof words, off);
+ snprintf(out, n, ", and the %s it had %s off", words, several ? "are" : "is");
+}
+
 /**
  * write_failed_head - The first sentence of a failed write.
  * @out, @n: the room; @o: the outcome.
@@ -2387,10 +2715,17 @@ static void write_bits_clause(char *out, size_t n, const WpeModeKept *k)
 static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
 {
  const char *path = (o->path[0] != '\0' ? o->path : "the file");
- char bits[WRITE_BITS_CLAUSE_MAX];
+ char bits[WRITE_BITS_CLAUSE_MAX], off[WRITE_OFF_CLAUSE_MAX];
 
  if (o->read_only)
   snprintf(out, n, "%s is read-only.", write_base_name(path));
+ else if (o->not_regular)
+  snprintf(out, n, "Cannot write %s: it is not a regular file (a device, a terminal or a pipe).  "
+           "Nothing was written.", path);
+ else if (o->other_file && o->changed_while_asked)
+  snprintf(out, n, "Cannot write %s: the name changed again while you were being asked, and now "
+           "leads to yet another file.  Nothing was written.  Use Save As to write your text "
+           "over that file.", path);
  else if (o->other_file)
   snprintf(out, n, "Cannot write %s: the name leads to a different file than the one this window "
            "read.  Nothing was written.  Use Save As to write your text over that file.",
@@ -2405,8 +2740,11 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
   snprintf(out, n, "Cannot write %s: %s.  The file on disk may be cut short; its previous "
            "content is in %s.", path, strerror(o->err), o->bak_path);
  else if (o->restore_err != 0)
+ {
+  write_bits_off_clause(off, sizeof off, o->file_off);
   snprintf(out, n, "Cannot write %s: %s.  The file on disk may be cut short; no backup copy "
-           "was made.", path, strerror(o->err));
+           "was made%s.", path, strerror(o->err), off);
+ }
  else if (o->restore_kept.lost != 0)
  {
   write_bits_clause(bits, sizeof bits, &o->restore_kept);

@@ -82,6 +82,15 @@ typedef struct {
  int other_file;                 /* the name leads to another file than the one the
                                     window read: nothing was written, the save is
                                     refused (the file is not the user's own) */
+ int changed_while_asked;        /* with other_file: the user had said Yes about one
+                                    file, and by the time of the write the name led
+                                    to yet another: the sentence says so */
+ int not_regular;                /* a write with no one to ask found something that is
+                                    not a regular file (a device, a terminal, a pipe)
+                                    under the name: nothing was written */
+ mode_t file_off;               /* a failed write left no backup to put back: the
+                                    special bits the file had and, read back from
+                                    the file, no longer has (0: none, or unknown) */
  int ask_overwrite;              /* a plain Save found another file under the name and
                                     wrote nothing: the caller asks the user (owner-internal
                                     between the two passes of a Save) */
@@ -163,6 +172,36 @@ mode_t wpe_write_overwrite_drops(const char *path, const WpeFileIdentity *own);
 /* Text that is not a window's rows. */
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o);
+
+/** wpe_write_save_text flag: a link at the end of @path is refused (the
+    system's refusal of a link: ELOOP on Linux), never followed.  For a name
+    the caller has already resolved and judged, so that a link put there
+    afterwards cannot lead the write elsewhere. */
+#define WPE_WRITE_NOFOLLOW 1
+
+/* A whole text written into a file of the user's, in every respect as a Save
+   writes it: the old file is copied to its .bak first, the write never
+   truncates before the old bits are read, the file's own setuid, setgid and
+   sticky bits are put back after the text is on disk, and a bit that could
+   not be kept is named in the outcome.  For what the assistant writes into
+   the user's files.  @own is the identity of the window open on that file,
+   or NULL when none is (then the file at the name is the file); a window
+   whose file is not the one at the name is refused, with nothing written:
+   this face has no one to ask, and a caller that can show the question asks
+   first, as Save does.  A name that is not there is made with mode 0666 less the
+   umask (WRITE_NEW_FILE_MODE), as every new file of the editor. */
+WPE_WRITE_RESULT int wpe_write_save_text(const char *path, const char *text,
+                                         const WpeFileIdentity *own, int flags,
+                                         WpeWriteOutcome *o);
+/* A revert: the before image's text put back with the twelve permission bits
+   recorded with it (the nine before the text, the special ones after it is on
+   disk).  @path is a name the caller has already resolved; it is opened with
+   WPE_WRITE_NOFOLLOW, so a link at its end is refused.  @own as above.  A
+   name that is not there is made as wpe_write_save_text makes it, with
+   0666 less the umask and then the recorded nine bits.  No .bak is made: the
+   before image the text comes from is the copy. */
+WPE_WRITE_RESULT int wpe_write_restore_text(const char *path, const char *text, mode_t recorded,
+                                            const WpeFileIdentity *own, WpeWriteOutcome *o);
 
 /* A file that is printed line by line (a project list, the options): the
    stream is opened here and closed here, and the outcome of the close says

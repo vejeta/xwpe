@@ -148,15 +148,43 @@ int e_eol_write(FILE *fp, BUFFER *b, int ya, int xa, int ye, int xe, int keep_fi
 /* ---- helpers ---- */
 
 static char dir[256];
-static char made[32][256];
+/* Every folder this test made, in a list that grows with the rows, so that
+   none is left behind whatever the number of rows. */
+static char (*made)[256];
 static int made_n;
+static int made_room;
+
+static void remove_made_dirs(void);
+
+/* Remember the folder just made; a list that cannot grow is a failure that
+   removes what is known and stops, not a folder left in /tmp. */
+static void remember_made_dir(void)
+{
+ char (*grown)[256];
+
+ if (made_n == made_room)
+ {
+  grown = realloc(made, (size_t)(made_room + 64) * sizeof *made);
+  if (grown == NULL)
+  {
+   printf("FAIL: no room to remember the test folders\n");
+   remove_made_dirs();
+   exit(2);
+  }
+  made = grown;
+  made_room += 64;
+ }
+ snprintf(made[made_n++], sizeof made[0], "%s", dir);
+}
 
 static void make_dir(void)
 {
  if (test_dir_make(dir, sizeof dir, "wo") != 0 && dir[0] == '\0')
+ {
+  remove_made_dirs();
   exit(2);
- if (made_n < 32)
-  snprintf(made[made_n++], sizeof made[0], "%s", dir);
+ }
+ remember_made_dir();
 }
 
 static int remove_entry(const char *path, const struct stat *sb, int type, struct FTW *ftw)
@@ -171,6 +199,9 @@ static void remove_made_dirs(void)
 {
  while (made_n > 0)
   nftw(made[--made_n], remove_entry, 8, FTW_DEPTH | FTW_PHYS);
+ free(made);
+ made = NULL;
+ made_room = 0;
 }
 
 static void path_of(char *out, size_t n, const char *name)
@@ -1886,13 +1917,15 @@ static void a_third_file_takes_the_name(void)
 static void test_yes_does_not_reach_a_file_that_took_the_name_during_the_question(void)
 {
  WpeWriteOutcome o;
+ WpeFileIdentity original;
  FENSTER *f;
- char buf[256];
+ char buf[256], say[1024];
 
  make_dir();
  put_file("t.c", "old\n", 0644);
  f = window_of_file_with_mode(0644);
  window_reads(f, "t.c");
+ original = f->file_id;
  keep_alive("t.c", "old.keep");
  another_file_takes_the_name("t.c", "theirs\n", 0644);
  keep_alive("t.c", "theirs.keep");
@@ -1904,6 +1937,14 @@ static void test_yes_does_not_reach_a_file_that_took_the_name_during_the_questio
  chk_int("asked once", question_count, 1);
  chk_has("the third file is untouched", get_file("t.c", buf, sizeof buf), "third\n");
  chk_int("the window keeps the file it read", window_holds_the_file_at(f, "t.c"), 0);
+ chk_int("and still holds the original inode, not the second or the third",
+         f->file_id.known && f->file_id.dev == original.dev && f->file_id.ino == original.ino, 1);
+ chk_int("the refusal says the name changed during the question", o.changed_while_asked, 1);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence says the name changed again while the user was asked", say,
+         "the name changed again while you were being asked");
+ chk_has("nothing was written", say, "Nothing was written.");
+ chk_has("the way out", say, "Use Save As");
 }
 
 int posix_openpt(int flags);
@@ -2988,6 +3029,310 @@ static void test_a_name_that_leads_nowhere_is_not_reached(void)
  chk_int("not reached", k.unreached, 1);
 }
 
+/* ---- class A: the assistant's writes and a revert go through the owner ---- */
+
+/* The identity of the file NAME of the test folder, as a window would hold it. */
+static WpeFileIdentity identity_of(const char *name)
+{
+ WpeFileIdentity id;
+
+ memset(&id, 0, sizeof id);
+ chk_int("take the identity", wpe_write_identity_of_name(dir, name, &id), 1);
+ return(id);
+}
+
+/* Is this errno the system's refusal to open a link with O_NOFOLLOW?  Linux
+   says ELOOP, FreeBSD EMLINK and NetBSD EFTYPE. */
+static int system_refuses_a_link(int err)
+{
+ if (err == ELOOP)
+  return(1);
+#ifdef EMLINK
+ if (err == EMLINK)
+  return(1);
+#endif
+#ifdef EFTYPE
+ if (err == EFTYPE)
+  return(1);
+#endif
+ return(0);
+}
+
+/* @scenario SC-write-owner-A-01: the assistant's write is a Save: the old
+   text in the .bak (which has no special bit), the new text on disk, the
+   file's own bit back after one sync of the saved file. */
+static void test_the_assistants_write_is_a_save(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity id;
+ char p[512], buf[256];
+ struct stat st;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "the assistant's write is a save",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ id = identity_of("t.c");
+ path_of(p, sizeof p, "t.c");
+ fsync_reset();
+ chk_int("written", wpe_write_save_text(p, "new\n", &id, 0, &o), 0);
+ chk_int("status", o.status, WPE_WRITE_WRITTEN);
+ chk_int("the new text is on disk", strcmp(get_file("t.c", buf, sizeof buf), "new\n"), 0);
+ chk_int("the file keeps its setgid bit", mode_of("t.c"), 02755);
+ chk_int("the old text is in the .bak", strcmp(get_file("t.bak", buf, sizeof buf), "old\n"), 0);
+ chk_int("the .bak has no special bit", mode_of("t.bak"), 0755);
+ stat(p, &st);
+ chk_int("one sync", fsync_calls, 1);
+ chk_int("on the saved file", (long)(fsync_last_ino == st.st_ino), 1);
+ chk_int("the outcome names no lost bit", (long)o.file_kept.lost, 0);
+}
+
+/* @scenario SC-write-owner-A-02: a name the caller resolved is not followed
+   when a link has taken its place: nothing is written through it. */
+static void test_the_assistants_write_refuses_a_link_at_the_end(void)
+{
+ WpeWriteOutcome o;
+ char p[512], q[512], buf[256];
+
+ make_dir();
+ put_file("other", "keep me\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ path_of(q, sizeof q, "other");
+ chk_int("the link", symlink(q, p), 0);
+ chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), -1);
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("the reason is the system's refusal of a link", system_refuses_a_link(o.err), 1);
+ chk_int("the file it leads to is untouched", strcmp(get_file("other", buf, sizeof buf), "keep me\n"), 0);
+ chk_int("no backup of it", mode_of("t.bak"), -1);
+ chk_int("followed without the flag, as the user's own names are",
+         wpe_write_save_text(p, "new\n", NULL, 0, &o), 0);
+ chk_int("then the file it leads to holds the text", strcmp(get_file("other", buf, sizeof buf), "new\n"), 0);
+}
+
+/* @scenario SC-write-owner-A-03: with no window open on the file, the file at
+   the name is the file, and its own bits are kept. */
+static void test_the_assistants_write_with_no_window_keeps_the_files_own_bits(void)
+{
+ WpeWriteOutcome o;
+ char p[512];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a write with no window keeps the bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ path_of(p, sizeof p, "t.c");
+ chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), 0);
+ chk_int("the file keeps its setgid bit", mode_of("t.c"), 02755);
+}
+
+/* A window open on the file that is not the file at the name: refused, as a
+   Save is, with nothing written (the assistant cannot be asked). */
+static void test_the_assistants_write_over_a_different_file_than_the_windows_is_refused(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity id;
+ char p[512], buf[256], say[1024];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ id = identity_of("t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused", wpe_write_save_text(p, "new\n", &id, 0, &o), -1);
+ chk_int("says it is another file", o.other_file, 1);
+ chk_int("nothing was asked", question_count, 0);
+ chk_int("their text is untouched", strcmp(get_file("t.c", buf, sizeof buf), "theirs\n"), 0);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "the name leads to a different file than the one this window read");
+}
+
+/* A name that is not there is made, with no backup of nothing. */
+static void test_the_assistants_write_makes_a_new_file(void)
+{
+ WpeWriteOutcome o;
+ char p[512], buf[256];
+
+ make_dir();
+ path_of(p, sizeof p, "fresh.c");
+ chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), 0);
+ chk_int("the text is on disk", strcmp(get_file("fresh.c", buf, sizeof buf), "new\n"), 0);
+ chk_int("no backup", mode_of("fresh.bak"), -1);
+}
+
+/* @scenario SC-write-owner-A-04: a revert gives back the bits recorded with
+   the before image, not the ones the file has now. */
+static void test_a_revert_puts_back_the_recorded_bits(void)
+{
+ WpeWriteOutcome o;
+ char p[512], buf[256];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a revert puts the bit back",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "agent\n", 0755);
+ path_of(p, sizeof p, "t.c");
+ fsync_reset();
+ chk_int("restored", wpe_write_restore_text(p, "old\n", 02755, NULL, &o), 0);
+ chk_int("the old text is back", strcmp(get_file("t.c", buf, sizeof buf), "old\n"), 0);
+ chk_int("with the recorded bits", mode_of("t.c"), 02755);
+ chk_int("one sync before the bit", fsync_calls, 1);
+ chk_int("no backup is made beside the file", mode_of("t.bak"), -1);
+}
+
+/* The nine bits recorded are given too, and a revert refuses a link as the
+   assistant's write does. */
+static void test_a_revert_gives_the_recorded_nine_bits_and_refuses_a_link(void)
+{
+ WpeWriteOutcome o;
+ char p[512], q[512], target[512], buf[256];
+
+ make_dir();
+ put_file("t.c", "agent\n", 0600);
+ path_of(p, sizeof p, "t.c");
+ chk_int("restored", wpe_write_restore_text(p, "old\n", 0644, NULL, &o), 0);
+ chk_int("the nine bits are the recorded ones", mode_of("t.c"), 0644);
+ put_file("other", "keep me\n", 0644);
+ path_of(q, sizeof q, "link.c");
+ path_of(target, sizeof target, "other");
+ chk_int("the link", symlink(target, q), 0);
+ chk_int("refused", wpe_write_restore_text(q, "old\n", 0644, NULL, &o), -1);
+ chk_int("the reason is the system's refusal of a link", system_refuses_a_link(o.err), 1);
+ chk_int("the target is untouched", strcmp(get_file("other", buf, sizeof buf), "keep me\n"), 0);
+}
+
+/* @scenario SC-write-owner-A-05: a failed save that left no backup names the
+   special bit the file had and no longer has, read back from the file. */
+static void test_a_failed_save_with_no_backup_names_the_lost_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a failed copy names the lost bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(0755);
+ set_rows(big(4096, 'n'));
+ path_of(p, sizeof p, "t.c");
+ limit_file_size(2048);
+ chk_int("the write fails", wpe_write_range(f, p, 0, 0, 1, 1, 0, &o), -1);
+ no_file_size_limit();
+ chk_int("no backup was made", o.bak_path[0], '\0');
+ chk_int("the file lost its bit", mode_of("t.c") & 07000, 0);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_has("the sentence", say, "no backup copy was made, and the setgid bit it had is off.");
+}
+
+/* The same failure on a file whose bit the failed write did not take off
+   (no mode of the window was applied, and the system keeps a setgid bit of a
+   file with no group execute bit): the sentence says nothing of a bit. */
+static void test_a_failed_save_that_left_the_bit_on_does_not_say_it_is_off(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f = make_window();
+ char p[512], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a failed copy that kept the bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02644);
+ set_rows(big(4096, 'n'));
+ path_of(p, sizeof p, "t.c");
+ limit_file_size(0);   /* the first byte fails: no write ever touched the file's mode */
+ chk_int("the write fails", wpe_write_range(f, p, 0, 0, 1, 1, 0, &o), -1);
+ no_file_size_limit();
+ chk_int("no backup was made", o.bak_path[0], '\0');
+ chk_int("the bit is still on", mode_of("t.c") & 07000, 02000);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_has("the file may be cut short", say, "may be cut short");
+ chk_lacks("no word of a bit", say, "it had");
+ chk_lacks("no word of a bit being off", say, "is off");
+}
+
+/* A failure before anything was written (the cut is refused) leaves the file
+   and its bit as they were, and the sentence says no more than the reason. */
+static void test_a_save_refused_before_the_bits_are_dropped_names_none(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a refused cut names no bit",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02755);
+ f = window_of_file_with_mode(0755);
+ set_rows("new\n");
+ path_of(p, sizeof p, "t.c");
+ ftruncate_fails = 1;
+ chk_int("refused", wpe_write_range(f, p, 0, 0, 1, 1, 0, &o), -1);
+ ftruncate_fails = 0;
+ chk_int("the file keeps its bit", mode_of("t.c"), 02755);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_has("the reason", say, "Operation not permitted");
+ chk_lacks("no word of a bit", say, "it had");
+}
+
+/* @scenario SC-write-owner-A-06: no byte of a text goes into a file while a
+   special bit is on it: the nine bits are given first, which takes the bit
+   off, and the bit goes back after the text.  02644 has no group execute
+   bit, so the system itself would keep the bit through the write. */
+static void test_a_text_with_no_window_is_written_only_after_the_bit_is_off(void)
+{
+ WpeWriteOutcome o;
+ char p[512];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "no byte while a bit is on",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 02644);
+ path_of(p, sizeof p, "t.c");
+ fsync_reset();
+ chk_int("written", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &o), 0);
+ chk_int("the first sync saw no special bit on the file", fsync_first_special, 0);
+ chk_int("the bit is back after the text", mode_of("t.c"), 02644);
+}
+
+/* @scenario SC-write-owner-A-07: with no window, a thing that is not a
+   regular file (the slave of a pty the user owns) is refused, with a
+   sentence that says what it is and speaks of no window; nothing is written
+   into it. */
+static void test_the_assistants_write_refuses_a_file_that_is_not_regular(void)
+{
+ WpeWriteOutcome o;
+ char *slave_name, say[1024];
+ int master, slave;
+
+ make_dir();
+ master = posix_openpt(O_RDWR | O_NOCTTY);
+ if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 || (slave_name = ptsname(master)) == NULL)
+ {
+  printf("SKIP: the assistant's write refuses a non-regular file: no pty here\n");
+  if (master >= 0)
+   close(master);
+  return;
+ }
+ slave = open(slave_name, O_RDWR | O_NOCTTY);
+ chk_int("refused", wpe_write_save_text(slave_name, "new\n", NULL, 0, &o), -1);
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("says it is not a regular file", o.not_regular, 1);
+ chk_int("nothing was asked", question_count, 0);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "it is not a regular file (a device, a terminal or a pipe).  Nothing was written.");
+ chk_lacks("no word of a window", say, "this window read");
+ if (slave >= 0)
+  close(slave);
+ close(master);
+}
+
 static void stub_mouse_shape(WpeMouseShape s) { (void)s; }
 static void stub_mouse_restore(void) { }
 
@@ -3081,6 +3426,18 @@ int main(void)
  test_add_perm_adds_x_and_keeps_the_special_bits();
  test_add_perm_on_a_link_the_user_named_follows_it_once();
  test_a_name_that_leads_nowhere_is_not_reached();
+ test_the_assistants_write_is_a_save();
+ test_the_assistants_write_refuses_a_link_at_the_end();
+ test_the_assistants_write_with_no_window_keeps_the_files_own_bits();
+ test_the_assistants_write_over_a_different_file_than_the_windows_is_refused();
+ test_the_assistants_write_makes_a_new_file();
+ test_a_revert_puts_back_the_recorded_bits();
+ test_a_revert_gives_the_recorded_nine_bits_and_refuses_a_link();
+ test_a_failed_save_with_no_backup_names_the_lost_bit();
+ test_a_failed_save_that_left_the_bit_on_does_not_say_it_is_off();
+ test_a_save_refused_before_the_bits_are_dropped_names_none();
+ test_a_text_with_no_window_is_written_only_after_the_bit_is_off();
+ test_the_assistants_write_refuses_a_file_that_is_not_regular();
  free_garbage();
  remove_made_dirs();
  fails += test_dir_failures;
