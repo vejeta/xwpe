@@ -769,7 +769,7 @@ int e_edit(ECNT *cn, char *filename)
  if (fp != NULL && fstat(fileno(fp), buf) == 0)
  {
   f->filemode = buf->st_mode;
-  wpe_write_identity_take(&f->file_id, buf);
+  wpe_write_identity_take_fd(&f->file_id, fileno(fp));
  }
  else
  {

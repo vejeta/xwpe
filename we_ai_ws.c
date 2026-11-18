@@ -1340,7 +1340,9 @@ static void ws_backup_note(const char *bak)
  *
  * Found by name first and then by the file's identity, so a window opened
  * through another spelling of the path (a link, a hard link) is the same
- * window.
+ * window.  A file that cannot be proven the window's, nor another, still
+ * finds its window (wpe_write_identity_may_be): the window's own guard then
+ * asks the user, and the window is not lost.
  */
 static FENSTER *ws_window_of_file(FENSTER *f, const char *real, const WpeWriteExpect *x)
 {
@@ -1349,7 +1351,7 @@ static FENSTER *ws_window_of_file(FENSTER *f, const char *real, const WpeWriteEx
  if (w || !x || !x->exists) return w;
  for (i = f->ed->mxedt; i > 0; i--) {
   FENSTER *c = f->ed->f[i];
-  if (ws_is_real_file_window(c) && wpe_write_identity_is(&c->file_id, x->dev, x->ino)) return c;
+  if (ws_is_real_file_window(c) && wpe_write_identity_may_be(&c->file_id, &x->seen)) return c;
  }
  return NULL;
 }
@@ -1369,7 +1371,7 @@ int wpe_ai_window_file_replaced(FENSTER *f, const char *real, const WpeWriteExpe
 {
  FENSTER *w = ws_window_of_file(f, real, x);
  if (!w || !x || !x->judged || !x->exists) return 0;
- return wpe_write_identity_differs(&w->file_id, x->dev, x->ino);
+ return wpe_write_identity_differs(&w->file_id, &x->seen);
 }
 
 /**

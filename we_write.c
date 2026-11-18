@@ -815,9 +815,7 @@ int wpe_write_add_perm(const char *path, const WpeFileIdentity *own, mode_t add,
 
  if (own == NULL || !own->known)
   return(write_mode_change(path, NULL, NULL, WRITE_CHANGE_ADD, add, k));
- memset(&shown, 0, sizeof shown);
- shown.st_dev = own->dev;
- shown.st_ino = own->ino;
+ wpe_seen_into_stat(own, &shown);
  shown.st_mode = S_IFREG;
  return(write_mode_change(path, &shown, NULL, WRITE_CHANGE_ADD, add, k));
 }
@@ -1478,8 +1476,9 @@ static void write_close_both(int a, int b)
  * write_restore_by_rename_ok - May the .bak replace the file by rename?
  * @path: the file as the user named it; @written: what fstat said of the
  * descriptor the write used.
- * @bak: the .bak's name; @bak_fd: the descriptor the backup kept; @keep: the
- * mode with special bits the restore gives back, or 0.
+ * @bak: the .bak's name; @bak_fd: the descriptor the backup kept; @again: the
+ * second descriptor of the written file, or -1; @keep: the mode with special
+ * bits the restore gives back, or 0.
  * Return: 1 when the name is that very regular file, with one link, ours,
  * not writable by others, has no special bit to give back, and the .bak is
  * still the file the backup made (write_bak_is_ours) with the file's group
@@ -1492,12 +1491,21 @@ static void write_close_both(int a, int b)
  * either: the .bak never has the bits, and the failed write has already
  * cleared them on the file, so only a write back through the file can give
  * them back.
+ *
+ * The name is compared with @written, a number kept from the write.  Only a
+ * descriptor still open on the file stops a file system from giving that
+ * number to another file, so with no @again the rename is refused.  The
+ * restore then has no descriptor to write the old text back through and
+ * fails with EBADF (write_restore); the .bak keeps the old text and the
+ * outcome names it.
  */
 static int write_restore_by_rename_ok(const char *path, const char *bak, int bak_fd,
-                                      const struct stat *written, mode_t keep)
+                                      const struct stat *written, int again, mode_t keep)
 {
  struct stat now, copy;
 
+ if (again < 0)
+  return(0);
  if ((keep & WRITE_SPECIAL_BITS) != 0)
   return(0);
  if (lstat(path, &now) != 0 || !S_ISREG(now.st_mode))
@@ -1543,7 +1551,8 @@ static int write_restore(const char *path, const char *bak, int bak_fd, const st
  }
  if (hook && strcmp(hook, WPE_WRITE_TEST_FAIL_SWAP_BAK) == 0)
   write_test_swap_bak(bak);
- if (written && write_restore_by_rename_ok(path, bak, bak_fd, written, keep) && rename(bak, path) == 0)
+ if (written && write_restore_by_rename_ok(path, bak, bak_fd, written, again, keep) &&
+     rename(bak, path) == 0)
  {
   write_close_both(again, bak_fd);
   return(0);
@@ -1685,11 +1694,15 @@ static int write_source_fill(const WriteSource *s, FILE *fp)
 /**
  * write_source_put - Put the source into an open file, judged, and close it.
  * @s: the source; @fp: the file; @written: receives fstat of the file when it
- * could be taken; @have_written: receives whether it was.
+ * could be taken; @have_written: receives whether it was; @final: receives the
+ * owner's look at the descriptor (wpe_seen_look_fd) made after the last byte
+ * and the flush, before the close, so the record carries the file's final
+ * stamps and its birth time while the descriptor still holds the file.
  * Return: 0, or the errno of the first thing that failed (the bytes, the
  * flush, the stream's error flag, the close).
  */
-static int write_source_put(const WriteSource *s, FILE *fp, struct stat *written, int *have_written)
+static int write_source_put(const WriteSource *s, FILE *fp, struct stat *written, int *have_written,
+                            WpeSeen *final)
 {
  int failed, err;
 
@@ -1701,6 +1714,8 @@ static int write_source_put(const WriteSource *s, FILE *fp, struct stat *written
   failed = 1;
  err = failed ? write_error_number(errno) : 0;
  *have_written = (fstat(fileno(fp), written) == 0);
+ if (failed || wpe_seen_look_fd(fileno(fp), final) != 0)
+  wpe_seen_forget(final);
  if (fclose(fp) != 0 && !failed)
   err = write_error_number(errno);
  return(err);
@@ -1749,30 +1764,45 @@ typedef enum { WRITE_PURPOSE_SAVE, WRITE_PURPOSE_COPY, WRITE_PURPOSE_REPLACED } 
 /**
  * write_purpose_for_target - Is the file this write opened the window's own?
  * @own: the file the window read (FENSTER.file_id), or NULL.
- * @opened: fstat of the file the write opened.
+ * @opened: the look at the file the write opened.
  * @created: this write made the file, so nothing was there to be replaced.
- * Return: Save when it is the same regular file (same device and inode),
- * Replaced when the window knows its file and this is another regular file
- * that was already there, else copy.
+ * @unsure: receives 1 when the file is not proven to be the window's, and
+ * not proven to be another one either (see wpe_seen_judge); may be NULL.
+ * Return: Save when the judge says it is the window's own regular file,
+ * Replaced when the window knows its file and this is another or an unproven
+ * file that was already there, else copy.
  *
  * The one place that decides it, by identity and never by name: the same
  * folder and name, a hard link to it and a path through a symbolic link all
- * reach one inode and one program, which keeps its bits; the same name in
- * another folder is another file, which gets none.  Callers pass what they
- * know and never the purpose; no knowledge means a copy, which fails safe.
+ * reach one object and one program, which keeps its bits; the same name in
+ * another folder is another file, which gets none.  A file made after the
+ * window read, which a file system may have given the old inode number,
+ * is told from the window's by the judge's stamps, never by the number.
+ * Callers pass what they know and never the purpose; no knowledge means a
+ * copy, which fails safe.
  * A file this write created is never a replacement: the one the window read
  * is gone, and the save makes it again.  Whatever else holds the name, of
  * any type (a link to /dev/null, a device), is a replacement too, so the
  * window's text is never poured into it unasked.  A FIFO under the name
  * still blocks in open(O_WRONLY) before this is reached, as it always has.
  */
-static WritePurpose write_purpose_for_target(const WpeFileIdentity *own, const struct stat *opened,
-                                             int created)
+static WritePurpose write_purpose_for_target(const WpeFileIdentity *own, const WpeSeen *opened,
+                                             int created, int *unsure)
 {
+ WpeSeenIs is;
+
+ if (unsure != NULL)
+  *unsure = 0;
  if (own == NULL || !own->known)
   return(WRITE_PURPOSE_COPY);
- if (S_ISREG(opened->st_mode) && own->dev == opened->st_dev && own->ino == opened->st_ino)
-  return(WRITE_PURPOSE_SAVE);
+ if (wpe_seen_kind(opened) == S_IFREG)
+ {
+  is = wpe_seen_judge(own, opened);
+  if (is == WPE_SEEN_SAME)
+   return(WRITE_PURPOSE_SAVE);
+  if (unsure != NULL && is == WPE_SEEN_UNSURE && !created)
+   *unsure = 1;
+ }
  return(created ? WRITE_PURPOSE_COPY : WRITE_PURPOSE_REPLACED);
 }
 
@@ -1783,6 +1813,9 @@ typedef struct {
  int         fd;      /* open O_WRONLY|O_CREAT, never O_TRUNC */
  FILE       *fp;      /* fdopen(fd, "w"): the rows go through it, fclose closes fd */
  struct stat st;      /* fstat right after the open */
+ WpeSeen     seen;    /* the owner's look at the same descriptor, made with it */
+ int         unsure;  /* the file is not proven to be the window's own, and not proven
+                         another (write_purpose_for_target) */
  mode_t      before;  /* the twelve bits the inode had, 0 when it is not a regular file
                          or was just made */
  mode_t      keep;    /* the special bits this write gives back: those of @before for a
@@ -1886,8 +1919,8 @@ static int write_target_open_fd(const char *path, WriteOpenHow how, int may_crea
 
 /**
  * write_aim_purpose - What a write is for, from what it aimed at and what it opened.
- * @aim: what the caller wants; @opened: fstat of the file opened; @created:
- * this write made the file.
+ * @aim: what the caller wants; @t: the target, opened and looked at (its
+ * seen and created are read, its unsure is set).
  * Return: the purpose.
  *
  * A copy is a copy and a replace is a save of the file at the name, but only
@@ -1896,15 +1929,16 @@ static int write_target_open_fd(const char *path, WriteOpenHow how, int may_crea
  * save of a window's file is decided by the identity the window read
  * (write_purpose_for_target).
  */
-static WritePurpose write_aim_purpose(const WriteAim *aim, const struct stat *opened, int created)
+static WritePurpose write_aim_purpose(const WriteAim *aim, WriteTarget *t)
 {
+ t->unsure = 0;
  if (aim->kind == WRITE_AIM_COPY)
   return(WRITE_PURPOSE_COPY);
- if (aim->kind == WRITE_AIM_REPLACE && !created && !S_ISREG(opened->st_mode))
+ if (aim->kind == WRITE_AIM_REPLACE && !t->created && !S_ISREG(t->st.st_mode))
   return(WRITE_PURPOSE_REPLACED);
  if (aim->kind == WRITE_AIM_REPLACE)
   return(WRITE_PURPOSE_SAVE);
- return(write_purpose_for_target(aim->own, opened, created));
+ return(write_purpose_for_target(aim->own, &t->seen, t->created, &t->unsure));
 }
 
 /**
@@ -1961,21 +1995,33 @@ static void write_note_not_regular(WpeWriteOutcome *o, const WriteTarget *t)
  * Return: 0 when it is, else the errno the refusal carries.
  *
  * Decided on the opened descriptor, never on the name: the file must be the
- * one with the device and inode the caller saw, with no more names than it
- * had, and a name that was free must have been made by this very open.  A
- * file swapped in under the name while the user was being asked, or a hard
- * link made to it, is refused with nothing written; the sentence says so.
+ * object the caller saw (wpe_seen_judge: a file that took the old inode number
+ * is not it), with no more names than it had, and a name that was free must
+ * have been made by this very open.  A file swapped in under the name while
+ * the user was being asked, or a hard link made to it, is refused with nothing
+ * written; the sentence says so.  A file that cannot be proven the one seen,
+ * nor another (o->unsure), is refused as well, and the sentence says it may
+ * have been changed.
  */
 static int write_target_expected(const WriteTarget *t, const WpeWriteExpect *expect,
                                  WpeWriteOutcome *o)
 {
+ WpeSeenIs is;
+
  if (expect == NULL || !expect->judged)
   return(0);
  if (!expect->exists && t->created)
   return(0);
- if (!expect->exists || t->created || t->st.st_dev != expect->dev || t->st.st_ino != expect->ino)
+ if (!expect->exists || t->created)
  {
   o->swapped = 1;
+  return(WPE_WRITE_REPLACED_ERR);
+ }
+ is = wpe_seen_judge(&expect->seen, &t->seen);
+ if (is != WPE_SEEN_SAME)
+ {
+  o->swapped = 1;
+  o->unsure = (is == WPE_SEEN_UNSURE);
   return(WPE_WRITE_REPLACED_ERR);
  }
  if (t->st.st_nlink > expect->nlink)
@@ -2076,6 +2122,8 @@ static int write_target_open(const char *path, const WriteAim *aim, WriteTarget 
  if (t->fd < 0)
   return(errno);
  err = (fstat(t->fd, &t->st) == 0 ? 0 : errno);
+ if (err == 0 && wpe_seen_look_fd(t->fd, &t->seen) != 0)
+  err = errno;
  if (err == 0)
   err = write_target_hold(t, aim, o);
  if (err == 0 && (t->fp = fdopen(t->fd, "w")) == NULL)
@@ -2087,7 +2135,7 @@ static int write_target_open(const char *path, const WriteAim *aim, WriteTarget 
  }
  if (S_ISREG(t->st.st_mode))
   t->before = t->st.st_mode & WRITE_TWELVE_BITS;
- t->purpose = write_aim_purpose(aim, &t->st, t->created);
+ t->purpose = write_aim_purpose(aim, t);
  t->keep = write_aim_keep(aim, t);
  return(0);
 }
@@ -2343,27 +2391,41 @@ static void write_read_back_stays(int fd, const WriteTarget *t, const struct sta
 #define WPE_WRITE_TEST_OTHER_OWNER "write-other-owner"
 
 /**
- * write_replaced_is_ours - May the editor ask about overwriting this file?
+ * write_replaced_refusal - Why the editor will not ask about overwriting this file.
  * @st: fstat of the file that took the window's name.
- * Return: 1 for a regular file with no setuid, setgid or sticky bit that
- * belongs to the user running the editor, else 0.
+ * Return: WPE_UNSURE_ASKABLE for a regular file with no setuid, setgid or
+ * sticky bit that belongs to the user running the editor, else the reason
+ * it is refused: not a regular file, a special bit, or another owner.
  *
  * A file another user owns, one that is a program, and anything that is not
  * a regular file (a device, a link to /dev/null) is never overwritten on a
- * yes typed at a box: the user may not know what it is.
+ * yes typed at a box: the user may not know what it is.  The reason is what
+ * the sentence tells a user who is sent to Save As.
  */
-static int write_replaced_is_ours(const struct stat *st)
+static WpeUnsureWhy write_replaced_refusal(const struct stat *st)
 {
  const char *hook = getenv(WPE_WRITE_TEST_FAIL_ENV);
  uid_t owner = st->st_uid;
 
  if (!S_ISREG(st->st_mode))
-  return(0);
+  return(WPE_UNSURE_NOT_REGULAR);
  if (hook != NULL && strstr(hook, WPE_WRITE_TEST_OTHER_OWNER) != NULL)
   owner = (uid_t)(owner + 1);
  if (st->st_mode & WRITE_SPECIAL_BITS)
-  return(0);
- return(owner == geteuid());
+  return(WPE_UNSURE_SPECIAL_BITS);
+ if (owner != geteuid())
+  return(WPE_UNSURE_OTHER_OWNER);
+ return(WPE_UNSURE_ASKABLE);
+}
+
+/**
+ * write_replaced_is_ours - May the editor ask about overwriting this file?
+ * @st: fstat of the file that took the window's name.
+ * Return: 1 when write_replaced_refusal has no reason, else 0.
+ */
+static int write_replaced_is_ours(const struct stat *st)
+{
+ return(write_replaced_refusal(st) == WPE_UNSURE_ASKABLE);
 }
 
 /** XWPE_TEST_FAIL=write-replacement-check-no: wpe_write_replacement_may_be_asked
@@ -2378,6 +2440,32 @@ static const WriteReplacedPolicy write_replaced_ask = { WRITE_REPLACED_ASK, { 0,
 /** The policy of a write with no one to ask: another file under the name is
     refused, nothing written. */
 static const WriteReplacedPolicy write_replaced_refuse = { WRITE_REPLACED_REFUSE, { 0, 0, 0 } };
+
+/**
+ * write_replaced_not_asked - Is the file opened other than the one the user said Yes about?
+ * @policy: what the caller does about a replaced file; @t: the target, open;
+ * @unsure: receives 1 when the file is not proven the asked one but not proven
+ * another either.
+ * Return: 1 after a Yes (ACCEPTED) when the file opened cannot be proven the
+ * file the user was asked about, else 0.
+ *
+ * Keeps a Yes about one file from writing into another that took the name
+ * while the box was up, whatever inode number it was given.
+ */
+static int write_replaced_not_asked(const WriteReplacedPolicy *policy, const WriteTarget *t,
+                                    int *unsure)
+{
+ WpeSeenIs is;
+
+ *unsure = 0;
+ if (policy->how != WRITE_REPLACED_ACCEPTED)
+  return(0);
+ if (!policy->asked.known)
+  return(1);
+ is = wpe_seen_judge(&policy->asked, &t->seen);
+ *unsure = (is == WPE_SEEN_UNSURE);
+ return(is != WPE_SEEN_SAME);
+}
 
 /**
  * write_replaced_may_go_on - Decide a write whose name leads to another file
@@ -2406,9 +2494,8 @@ static const WriteReplacedPolicy write_replaced_refuse = { WRITE_REPLACED_REFUSE
 static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *policy,
                                     WpeWriteOutcome *o)
 {
- int not_asked = (policy->how == WRITE_REPLACED_ACCEPTED &&
-                  (!policy->asked.known || policy->asked.dev != t->st.st_dev ||
-                   policy->asked.ino != t->st.st_ino));
+ int asked_unsure;
+ int not_asked = write_replaced_not_asked(policy, t, &asked_unsure);
 
  if (policy->how == WRITE_REPLACED_REFUSE && !S_ISREG(t->st.st_mode))
  {
@@ -2420,12 +2507,16 @@ static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *p
  {
   o->other_file = 1;
   o->changed_while_asked = not_asked;
+  o->unsure = (t->unsure || asked_unsure);
+  if (o->unsure)
+   o->unsure_why = write_replaced_refusal(&t->st);
   o->err = WPE_WRITE_REPLACED_ERR;
   return(0);
  }
  if (policy->how == WRITE_REPLACED_ASK)
  {
-  wpe_write_identity_take(&o->asked, &t->st);
+  o->asked = t->seen;
+  o->unsure = t->unsure;
   o->ask_overwrite = 1;
   return(0);
  }
@@ -2514,6 +2605,32 @@ static int write_run_open(const WriteSource *s, const char *path, int backup, co
 }
 
 /**
+ * write_look_after_text - Record the file as it is once the text is on it.
+ * @id: receives the record (WpeWriteOutcome.written); @again: the second
+ * descriptor of the written file, or -1; @final: the owner's look at the
+ * write's own descriptor after the last byte (write_source_put).
+ *
+ * What the user gets: the window's next Save finds its own file unchanged.
+ * The record is made after the text, the mode and the read-backs, because the
+ * write moves the file's status-change time and size; a record made when the
+ * file was opened would never match the file as saved, and the second Save
+ * would ask (on a system with no birth time) about a file the editor itself
+ * just wrote.  It is taken from @again while that descriptor still holds the
+ * file, so it includes the mode and the read-backs.  With no @again nothing
+ * more was done to the file (no bit is given back without a descriptor), so
+ * the look made by the write's own descriptor after the text is the final
+ * state, birth time included.  The name is never looked at again: a name
+ * swapped meanwhile must not become the window's file.
+ */
+static void write_look_after_text(WpeFileIdentity *id, int again, const WpeSeen *final)
+{
+ if (again < 0 || wpe_seen_look_fd(again, id) != 0)
+  *id = *final;
+ if (id->known && !S_ISREG(wpe_seen_kind(id)))
+  wpe_seen_forget(id);
+}
+
+/**
  * write_run_finish - Put the source into the open target, then give a Save's
  * file its special bits back, or put the old content back when it failed.
  * @s: the source; @path: the file; @t: the open target, closed here; @bk:
@@ -2531,11 +2648,12 @@ static void write_run_finish(const WriteSource *s, const char *path, WriteTarget
                              WriteBackup *bk, WpeWriteOutcome *o)
 {
  struct stat written;
+ WpeSeen final;
  int have_written = 0, err, again, again_err;
 
  again = fcntl(t->fd, F_DUPFD_CLOEXEC, 0);
  again_err = errno;
- err = write_source_put(s, t->fp, &written, &have_written);
+ err = write_source_put(s, t->fp, &written, &have_written, &final);
  if (err == 0 && again >= 0)
   err = wpe_write_sync_before_bits(again, t->keep, 0);
  if (err != 0)
@@ -2548,10 +2666,10 @@ static void write_run_finish(const WriteSource *s, const char *path, WriteTarget
  }
  write_keep_special_bits(again, again_err, t, &written, have_written, &o->file_kept);
  write_read_back_stays(again, t, &written, have_written, &o->file_stays);
+ write_look_after_text(&o->written, again, &final);
  if (again >= 0)
   close(again);
  write_backup_release(bk);
- wpe_write_identity_take(&o->written, &t->st);
  o->status = WPE_WRITE_WRITTEN;
 }
 
@@ -2691,17 +2809,19 @@ int wpe_write_copy(FENSTER *f, const char *path, WpeWriteOutcome *o)
  * What the user gets: closing a window leaves no .ASV or .ESV that it made
  * itself, while a copy from an earlier session (the one "wpe -r" brings
  * back) or one the user made is never deleted by a plain close.  Only the
- * very file the window wrote, still a regular file of this user, is removed.
+ * very file the window wrote, still a regular file of this user, is removed:
+ * a file that took the copy's name, even with its inode number, is not.
  */
 void wpe_write_copy_remove(const char *path, const WpeFileIdentity *own)
 {
  struct stat st;
+ WpeSeen now;
 
  if (own == NULL || !own->known)
   return;
  if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid())
   return;
- if (!wpe_write_identity_is(own, st.st_dev, st.st_ino))
+ if (wpe_seen_look_name(path, 0, &now) != 0 || !wpe_write_identity_is(own, &now))
   return;
  (void)unlink(path);
 }
@@ -2914,19 +3034,20 @@ static int write_window_listed(FENSTER *f)
 }
 
 /**
- * wpe_write_identity_take - Remember the file a window just read.
- * @id: the window's FENSTER.file_id; @st: fstat of the descriptor that read it.
+ * wpe_write_identity_take_fd - Remember the file a window just read.
+ * @id: the window's FENSTER.file_id; @fd: the descriptor that read it.
  *
  * Known when it is a regular file; anything else (a device, a pipe) leaves
  * the window with no file to write into by identity.  Taken from the open
  * descriptor, never from a second look at the name, so it is the file whose
- * text the window holds.
+ * text the window holds.  The owner records its stamps and, where the system
+ * has one, its birth time, so a later Save tells the file from another that
+ * was given its inode number.
  */
-void wpe_write_identity_take(WpeFileIdentity *id, const struct stat *st)
+void wpe_write_identity_take_fd(WpeFileIdentity *id, int fd)
 {
- id->known = S_ISREG(st->st_mode) ? 1 : 0;
- id->dev = id->known ? st->st_dev : 0;
- id->ino = id->known ? st->st_ino : 0;
+ if (wpe_seen_look_fd(fd, id) != 0 || wpe_seen_kind(id) != S_IFREG)
+  wpe_seen_forget(id);
 }
 
 /**
@@ -2957,30 +3078,47 @@ void wpe_write_identity_set(WpeFileIdentity *id, const WpeFileIdentity *from)
 }
 
 /**
- * wpe_write_identity_is - Is this the file with that device and inode?
- * @id: a window's FENSTER.file_id; @dev, @ino: a file's.
- * Return: 1 when the window read that very file.
+ * wpe_write_identity_is - Is this look the file the window read?
+ * @id: a window's FENSTER.file_id; @now: a look at a file made just now.
+ * Return: 1 when the judge proves it is that very file.
  *
- * What finds the window that is open on a file the assistant is about to
- * write, whatever name or link the window was opened by.
+ * Decides what is removed or written as the window's own, whatever name or
+ * link the window was opened by.  A file that only has the same inode number
+ * is not it.
  */
-int wpe_write_identity_is(const WpeFileIdentity *id, dev_t dev, ino_t ino)
+int wpe_write_identity_is(const WpeFileIdentity *id, const WpeSeen *now)
 {
- return(id->known && id->dev == dev && id->ino == ino);
+ return(id->known && wpe_seen_judge(id, now) == WPE_SEEN_SAME);
 }
 
 /**
- * wpe_write_identity_differs - Did the window read a file other than this one?
- * @id: a window's FENSTER.file_id; @dev, @ino: the file now at its name.
- * Return: 1 when the window knows the file it read and it is not that one,
- * 0 when it is, or when the window knows no file.
+ * wpe_write_identity_may_be - Could this look be the file the window read?
+ * @id: a window's FENSTER.file_id; @now: a look at a file made just now.
+ * Return: 1 when the window knows its file and nothing proves @now is
+ * another one (the judge says SAME or UNSURE).
+ *
+ * What finds the window that is open on a file the assistant is about to
+ * write.  A file whose stamps moved and that has no birth time to tell it
+ * apart still has its window found, so the window's own guard asks the user
+ * and the window is not lost.
+ */
+int wpe_write_identity_may_be(const WpeFileIdentity *id, const WpeSeen *now)
+{
+ return(id->known && wpe_seen_judge(id, now) != WPE_SEEN_OTHER);
+}
+
+/**
+ * wpe_write_identity_differs - Did the window read a file not proven to be this one?
+ * @id: a window's FENSTER.file_id; @now: a look at the file now at its name.
+ * Return: 1 when the window knows the file it read and the judge does not say
+ * SAME, 0 when it does, or when the window knows no file.
  *
  * What lets the editor say, before a write, that the file under the window's
- * name was replaced.
+ * name was replaced or changed.
  */
-int wpe_write_identity_differs(const WpeFileIdentity *id, dev_t dev, ino_t ino)
+int wpe_write_identity_differs(const WpeFileIdentity *id, const WpeSeen *now)
 {
- return(id->known && (id->dev != dev || id->ino != ino));
+ return(id->known && wpe_seen_judge(id, now) != WPE_SEEN_SAME);
 }
 
 /**
@@ -3017,7 +3155,6 @@ int wpe_write_replacement_may_be_asked(const char *path)
  */
 int wpe_write_identity_of_name(const char *dir, const char *name, WpeFileIdentity *id)
 {
- struct stat st;
  char *path;
 
  wpe_write_identity_forget(id);
@@ -3026,8 +3163,8 @@ int wpe_write_identity_of_name(const char *dir, const char *name, WpeFileIdentit
  path = e_mkfilename((char *)dir, (char *)name);
  if (path == NULL)
   return(0);
- if (stat(path, &st) == 0)
-  wpe_write_identity_take(id, &st);
+ if (wpe_seen_look_name(path, 1, id) != 0 || wpe_seen_kind(id) != S_IFREG)
+  wpe_seen_forget(id);
  FREE(path);
  return(id->known);
 }
@@ -3058,6 +3195,7 @@ void wpe_write_overwrite_bits(const char *path, const WpeFileIdentity *own, mode
                               mode_t *stays)
 {
  struct stat st;
+ WpeSeen now;
  mode_t bits;
  int can_drop;
 
@@ -3065,7 +3203,9 @@ void wpe_write_overwrite_bits(const char *path, const WpeFileIdentity *own, mode
  *stays = 0;
  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
   return;
- if (write_purpose_for_target(own, &st, 0) == WRITE_PURPOSE_SAVE)
+ if (wpe_seen_look_name(path, 1, &now) != 0)
+  return;
+ if (write_purpose_for_target(own, &now, 0, NULL) == WRITE_PURPOSE_SAVE)
   return;
  bits = st.st_mode & WRITE_SPECIAL_BITS;
  can_drop = (st.st_uid == geteuid() || geteuid() == 0);
@@ -3113,8 +3253,12 @@ static void write_window_after_question(FENSTER *f, const char *path, WpeWriteOu
 
  accepted.how = WRITE_REPLACED_ACCEPTED;
  accepted.asked = o->asked;
- snprintf(question, sizeof question, "%s was replaced on disk since this window read it. "
-          "Overwrite it?", write_base_name(path));
+ if (o->unsure)
+  snprintf(question, sizeof question, "%s was changed or replaced since this window read it. "
+           "Write anyway?", write_base_name(path));
+ else
+  snprintf(question, sizeof question, "%s was replaced on disk since this window read it. "
+           "Overwrite it?", write_base_name(path));
  WpeMouseRestoreShape();
  if (e_message(1, question, f) != 'Y')
  {
@@ -3914,6 +4058,33 @@ static const char *write_kind_words(const WpeWriteOutcome *o)
  }
 }
 
+/** The room for the clause that says why a file not proven to be the window's is not asked about. */
+#define WRITE_UNSURE_CLAUSE_MAX 96
+
+/**
+ * write_unsure_clause - The reason a file that may have been replaced is not asked about.
+ * @out, @n: the room; @o: the outcome (unsure set).
+ * Return: @out: ", and it has a setuid, setgid or sticky bit", ", and it belongs to
+ * another user", ", and it is not a regular file", or "" when the user was
+ * simply not asked because no one could be.
+ *
+ * Gives the user the reason Save As is the only way out of a file the editor
+ * cannot tell from the one it read, and that is a program or another user's.
+ */
+static const char *write_unsure_clause(char *out, size_t n, const WpeWriteOutcome *o)
+{
+ const char *why = "";
+
+ if (o->unsure_why == WPE_UNSURE_SPECIAL_BITS)
+  why = ", and it has a setuid, setgid or sticky bit";
+ else if (o->unsure_why == WPE_UNSURE_OTHER_OWNER)
+  why = ", and it belongs to another user";
+ else if (o->unsure_why == WPE_UNSURE_NOT_REGULAR)
+  why = ", and it is not a regular file";
+ snprintf(out, n, "%s", why);
+ return(out);
+}
+
 /**
  * write_failed_head - The first sentence of a failed write.
  * @out, @n: the room; @o: the outcome.
@@ -3927,7 +4098,7 @@ static const char *write_kind_words(const WpeWriteOutcome *o)
 static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
 {
  const char *path = (o->path[0] != '\0' ? o->path : "the file");
- char bits[WRITE_BITS_CLAUSE_MAX], off[WRITE_OFF_CLAUSE_MAX];
+ char bits[WRITE_BITS_CLAUSE_MAX], off[WRITE_OFF_CLAUSE_MAX], why[WRITE_UNSURE_CLAUSE_MAX];
 
  if (o->read_only)
   snprintf(out, n, "%s is read-only.", write_base_name(path));
@@ -3945,6 +4116,9 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
            "written.", path);
  else if (o->replaced_by_link)
   snprintf(out, n, "Cannot write %s: a link has taken the name.  Nothing was written.", path);
+ else if (o->swapped && o->unsure)
+  snprintf(out, n, "Cannot write %s: it may not be the file that was checked; it was changed or "
+           "replaced since.  Nothing was written.", path);
  else if (o->swapped)
   snprintf(out, n, "Cannot write %s: it is not the file that was checked; another file has taken "
            "the name since.  Nothing was written.", path);
@@ -3955,6 +4129,10 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
   snprintf(out, n, "Cannot write %s: the name changed again while you were being asked, and now "
            "leads to yet another file.  Nothing was written.  Use Save As to write your text "
            "over that file.", path);
+ else if (o->other_file && o->unsure)
+  snprintf(out, n, "Cannot write %s: it was changed or replaced since this window read it%s.  "
+           "Nothing was written.  Use Save As to write your text over that file.", path,
+           write_unsure_clause(why, sizeof why, o));
  else if (o->other_file)
   snprintf(out, n, "Cannot write %s: the name leads to a different file than the one this window "
            "read.  Nothing was written.  Use Save As to write your text over that file.",
@@ -4014,13 +4192,20 @@ static void write_other_file_sentence(char *out, size_t n, const WpeWriteOutcome
                                       WpeWriteThen then)
 {
  const char *path = (o->path[0] != '\0' ? o->path : "the file");
+ char why[WRITE_UNSURE_CLAUSE_MAX];
 
- if (then == WPE_WRITE_THEN_PUT_BACK)
+ if (then == WPE_WRITE_THEN_PUT_BACK && o->unsure)
+  snprintf(out, n, "Cannot put back %s: it was changed or replaced since the window showed it%s.  "
+           "Nothing was changed.", path, write_unsure_clause(why, sizeof why, o));
+ else if (then == WPE_WRITE_THEN_PUT_BACK)
   snprintf(out, n, "Cannot put back %s: the name now leads to a different file than the one the "
            "window shows.  Nothing was changed.", path);
  else if (o->changed_while_asked)
   snprintf(out, n, "Cannot write %s: the name changed again while you were being asked, and now "
            "leads to yet another file.  Nothing was written.", path);
+ else if (o->unsure)
+  snprintf(out, n, "Cannot write %s: it was changed or replaced since the window showed it%s.  "
+           "Nothing was written.", path, write_unsure_clause(why, sizeof why, o));
  else
   snprintf(out, n, "Cannot write %s: the name now leads to a different file than the one the "
            "window shows, and it is not a plain file of yours without a special bit.  Nothing "

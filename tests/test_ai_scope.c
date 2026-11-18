@@ -355,10 +355,10 @@ static int real_is_at(const char *real, const char *rel)
 static int look_found(const WpeWriteExpect *x, const char *rel, int nlink)
 {
  char p[PATH_ROOM];
- struct stat st;
+ WpeSeen now;
  under_base(p, sizeof p, rel);
- if (!x->judged || !x->exists || stat(p, &st) != 0) return 0;
- return x->dev == st.st_dev && x->ino == st.st_ino && x->nlink == (nlink_t)nlink;
+ if (!x->judged || !x->exists || wpe_seen_look_name(p, 1, &now) != 0) return 0;
+ return wpe_seen_judge(&x->seen, &now) == WPE_SEEN_SAME && x->nlink == (nlink_t)nlink;
 }
 
 /* @scenario SC-write-owner-A-06: the judge's look resolves the name once and
@@ -410,14 +410,14 @@ static void look_kinds_cases(void)
 static void look_name_cases(void)
 {
  char p[PATH_ROOM], real[PATH_ROOM];
- struct stat st;
+ WpeSeen seen;
  WpeWriteExpect x;
  under_base(p, sizeof p, "ws/fileout");
  if (wpe_path_look_name(p, real, sizeof real, &x) != 0 || !real_is_at(real, "ws/fileout") ||
      !x.exists || x.regular)
   fail("look at a link by name", "a link at the name was followed or taken for a regular file");
  under_base(p, sizeof p, "ws/fileout");
- if (lstat(p, &st) != 0 || x.ino != st.st_ino)
+ if (wpe_seen_look_name(p, 0, &seen) != 0 || wpe_seen_judge(&x.seen, &seen) != WPE_SEEN_SAME)
   fail("look at a link by name", "the identity is not the link's own");
  under_base(p, sizeof p, "ws/dang");
  if (wpe_path_look_name(p, real, sizeof real, &x) != 0 || !real_is_at(real, "ws/dang") || !x.exists)

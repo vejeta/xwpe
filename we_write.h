@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include "we_path.h"
+#include "we_seen.h"
 
 /* A caller tests the status, never a number: WRITTEN is 0, so `!= WRITTEN`
    reads "the text is not on disk" and a window that has nothing to write
@@ -70,17 +71,13 @@ typedef struct {
                        proof of what was changed. */
 } WpeModeKept;
 
-/** The file a window read, as the system knows it: device and inode, which
-    stay the same under any name, hard link or path.  A window remembers it
-    from the moment it read its file, so a Save writes into that file or
-    asks, and never decides by looking at the name again.  known == 0 for a
-    window that read no file (a new one, a clipboard, a file that did not
-    exist). */
-typedef struct {
- dev_t dev;
- ino_t ino;
- int   known;
-} WpeFileIdentity;
+/** The file a window read, as the system knows it: one record of the owner of
+    "is this the object I saw" (we_seen.h).  A window remembers it from the
+    moment it read its file, so a Save writes into that file or asks, and never
+    decides by looking at the name again; the judge says SAME, OTHER or UNSURE
+    and no caller reads a number.  known == 0 for a window that read no file (a
+    new one, a clipboard, a file that did not exist). */
+typedef WpeSeen WpeFileIdentity;
 
 /** What a name was, itself and not what it leads to, when the user was shown
     it: its kind (S_IFLNK for a link), device and inode.  known == 0 when no
@@ -91,6 +88,17 @@ typedef struct {
  dev_t  dev;
  ino_t  ino;
 } WpeNameSeen;
+
+/** Why a file that is not proven to be the one the window read is refused
+    with Save As as the way out and not asked about (the reason the sentence
+    gives).  ASKABLE is no refusal: a plain file of the user's own, which the
+    user is asked about. */
+typedef enum {
+ WPE_UNSURE_ASKABLE,
+ WPE_UNSURE_SPECIAL_BITS,    /* it has a setuid, setgid or sticky bit */
+ WPE_UNSURE_OTHER_OWNER,     /* it belongs to another user */
+ WPE_UNSURE_NOT_REGULAR      /* it is not a regular file */
+} WpeUnsureWhy;
 
 /** What a caller saw at a name before it asked the user or decided to write:
     whether a file was there and, if so, which one (device and inode), how many
@@ -103,8 +111,7 @@ typedef struct {
 typedef struct {
  int     judged;
  int     exists;
- dev_t   dev;
- ino_t   ino;
+ WpeSeen seen;       /* the look at the name itself, judged against the opened file */
  nlink_t nlink;
  int     regular;
 } WpeWriteExpect;
@@ -115,6 +122,13 @@ typedef struct {
  int other_file;                 /* the name leads to another file than the one the
                                     window read: nothing was written, the save is
                                     refused (the file is not the user's own) */
+ int unsure;                     /* with other_file, swapped or ask_overwrite: the file
+                                    could not be proven to be another one, only not
+                                    proven to be the one seen (its stamps moved and
+                                    the system has no birth time to settle it).  The
+                                    sentence says "changed or replaced", never "another
+                                    file took the name" */
+ WpeUnsureWhy unsure_why;        /* with other_file and unsure: why no question is asked */
  int changed_while_asked;        /* with other_file: the user had said Yes about one
                                     file, and by the time of the write the name led
                                     to yet another: the sentence says so */
@@ -214,14 +228,18 @@ struct stat;
    descriptor that read it (take), forgotten for a window that has no file
    (forget), or by name for a window that read a copy of its file (of_name:
    the recovery, which read the .ESV). */
-void wpe_write_identity_take(WpeFileIdentity *id, const struct stat *st);
+void wpe_write_identity_take_fd(WpeFileIdentity *id, int fd);
 void wpe_write_identity_forget(WpeFileIdentity *id);
 int  wpe_write_identity_of_name(const char *dir, const char *name, WpeFileIdentity *id);
 /* A window takes the identity a write reported (WpeWriteOutcome.written), and
-   a question: is this window's file the one with that device and inode. */
+   three questions about a look made now (we_seen.h): is this window's file
+   proven to be that object (is), may it be that object (may_be: no proof
+   against it, for finding the window of a file) and does the window know its
+   file and fail to find it there (differs). */
 void wpe_write_identity_set(WpeFileIdentity *id, const WpeFileIdentity *from);
-int  wpe_write_identity_is(const WpeFileIdentity *id, dev_t dev, ino_t ino);
-int  wpe_write_identity_differs(const WpeFileIdentity *id, dev_t dev, ino_t ino);
+int  wpe_write_identity_is(const WpeFileIdentity *id, const WpeSeen *now);
+int  wpe_write_identity_may_be(const WpeFileIdentity *id, const WpeSeen *now);
+int  wpe_write_identity_differs(const WpeFileIdentity *id, const WpeSeen *now);
 /* May a file that took a window's name be written on a Yes: a plain file of the
    user's own with no special bit.  Anything else the owner refuses at once. */
 int  wpe_write_replacement_may_be_asked(const char *path);

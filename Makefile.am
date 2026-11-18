@@ -535,7 +535,7 @@ test_lineend_CFLAGS = $(TEST_CFLAGS)
 # (private, counted as made only when whole), the restore after a write
 # that fails half way (by rename, through a link, with a hard link, one that
 # fails), the size limit as an outcome and SIGXFSZ put back.
-test_write_owner_SOURCES = tests/test_write_owner.c we_write.c we_places.c we_path.c
+test_write_owner_SOURCES = tests/test_write_owner.c tests/seen_rows.h tests/testdir.h we_write.c we_places.c we_path.c we_seen.c
 test_write_owner_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of copying, moving, linking and removing the user's files
@@ -543,7 +543,7 @@ test_write_owner_CFLAGS = $(TEST_CFLAGS)
 # stubs: the atom (a copy is new, private, whole or absent, and one rename
 # puts it in place), the name that is not replaced, the sentence per step,
 # the wastebasket.
-test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c
+test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c we_seen.c
 test_fileop_CFLAGS = $(TEST_CFLAGS)
 
 # The one place a C test makes its folder and states what it assumes about
@@ -1219,9 +1219,9 @@ AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
 if WPE_AI
 check_PROGRAMS += $(AI_TESTS)
 TESTS += $(AI_TESTS)
-test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c
+test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c we_seen.c
 test_ai_path_CFLAGS = $(TEST_CFLAGS)
-test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c
+test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c we_seen.c
 test_ai_scope_CFLAGS = $(TEST_CFLAGS)
 # What a saved conversation may hold (we_ai_session.c): the resume id's shape
 # and the judge of a conversation file, with json-c and nothing of the editor.

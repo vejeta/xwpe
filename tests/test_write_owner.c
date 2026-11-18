@@ -31,6 +31,7 @@
 #include "../edit.h"
 #include "../we_write.h"
 #include "testdir.h"
+#include "seen_rows.h"
 #include "fakechmod.h"
 #include "test_watchdog.h"
 
@@ -1192,6 +1193,7 @@ static int ftruncate_fails;       /* 1: ftruncate fails with EPERM */
 static int ftruncate_spares_empty_time; /* 1: cutting an empty file to nothing does
                                      nothing at all, its time included, as POSIX allows */
 static int dup_fails_at;          /* N > 0: the Nth F_DUPFD_CLOEXEC from now fails */
+static void (*dup_fail_action)(void); /* what happens to the folder as that duplication fails */
 
 int ftruncate(int fd, off_t length)
 {
@@ -1228,6 +1230,8 @@ int fcntl(int fd, int cmd, ...)
  va_end(ap);
  if (cmd == F_DUPFD_CLOEXEC && dup_fails_at > 0 && --dup_fails_at == 0)
  {
+  if (dup_fail_action != NULL)
+   dup_fail_action();
   errno = EMFILE;
   return(-1);
  }
@@ -2536,12 +2540,12 @@ static void another_file_takes_the_name(const char *name, const char *text, mode
 static int window_holds_the_file_at(const FENSTER *f, const char *name)
 {
  char p[512];
- struct stat st;
+ WpeSeen now;
 
  path_of(p, sizeof p, name);
- if (stat(p, &st) != 0 || !f->file_id.known)
+ if (!f->file_id.known || wpe_seen_look_name(p, 1, &now) != 0)
   return(0);
- return(f->file_id.dev == st.st_dev && f->file_id.ino == st.st_ino);
+ return(wpe_write_identity_is(&f->file_id, &now));
 }
 
 static int descriptors_open(void)
@@ -2753,7 +2757,7 @@ static void test_a_removed_file_is_made_again_and_the_window_takes_it(void)
  WpeWriteOutcome o;
  FENSTER *f;
  char p[512];
- struct stat st;
+ WpeSeen now;
 
  make_dir();
  put_file("t.c", "old\n", 0644);
@@ -2764,8 +2768,8 @@ static void test_a_removed_file_is_made_again_and_the_window_takes_it(void)
  set_rows("new\n");
  chk_int("write", save_window(f, "t.c", &o), 0);
  chk_int("nothing was asked", question_count, 0);
- chk_int("stat", stat(p, &st), 0);
- chk_int("the outcome names the new file", o.written.known && o.written.ino == st.st_ino, 1);
+ chk_int("the outcome names the new file", o.written.known &&
+         wpe_seen_look_name(p, 1, &now) == 0 && wpe_write_identity_is(&o.written, &now), 1);
  chk_int("the window takes it", window_holds_the_file_at(f, "t.c"), 1);
 }
 
@@ -2817,16 +2821,14 @@ static void test_a_device_under_the_name_is_refused(void)
  WpeWriteOutcome o;
  FENSTER *f;
  char p[512];
- dev_t was_dev;
- ino_t was_ino;
+ WpeFileIdentity was;
  int open_before;
 
  make_dir();
  put_file("t.c", "old\n", 0644);
  f = window_of_file_with_mode(0644);
  window_reads(f, "t.c");
- was_dev = f->file_id.dev;
- was_ino = f->file_id.ino;
+ was = f->file_id;
  path_of(p, sizeof p, "t.c");
  chk_int("remove", unlink(p), 0);
  chk_int("link to the null device", symlink("/dev/null", p), 0);
@@ -2840,7 +2842,7 @@ static void test_a_device_under_the_name_is_refused(void)
  chk_int("no descriptor left open", descriptors_open(), open_before);
  chk_int("the window still reads as modified", f->save, 1);
  chk_int("the window still holds the file it read",
-         f->file_id.known && f->file_id.dev == was_dev && f->file_id.ino == was_ino, 1);
+         f->file_id.known && wpe_seen_judge(&was, &f->file_id) == WPE_SEEN_SAME, 1);
 }
 
 /* @scenario SC-write-owner-F-15: the question is asked with no write open:
@@ -2909,7 +2911,7 @@ static void test_yes_does_not_reach_a_file_that_took_the_name_during_the_questio
  chk_has("the third file is untouched", get_file("t.c", buf, sizeof buf), "third\n");
  chk_int("the window keeps the file it read", window_holds_the_file_at(f, "t.c"), 0);
  chk_int("and still holds the original inode, not the second or the third",
-         f->file_id.known && f->file_id.dev == original.dev && f->file_id.ino == original.ino, 1);
+         f->file_id.known && wpe_seen_judge(&original, &f->file_id) == WPE_SEEN_SAME, 1);
  chk_int("the refusal says the name changed during the question", o.changed_while_asked, 1);
  save_sentence(&o, say, sizeof say);
  chk_has("the sentence says the name changed again while the user was asked", say,
@@ -4256,6 +4258,7 @@ static void test_the_assistants_write_asks_about_a_replaced_file(void)
 {
  WpeWriteOutcome o;
  WpeFileIdentity id, asked;
+ WpeSeen now;
  char p[512], buf[256], say[1024];
 
  make_dir();
@@ -4272,8 +4275,8 @@ static void test_the_assistants_write_asks_about_a_replaced_file(void)
  chk_int("after a Yes it writes", wpe_write_save_text_ask(p, "new\n", &id, 0, &asked, NULL, &o), 0);
  chk_int("the text is on disk", strcmp(get_file("t.c", buf, sizeof buf), "new\n"), 0);
  chk_int("a copy has no special bit", mode_of("t.c") & 07000, 0);
- chk_int("the outcome names the file now there", wpe_write_identity_is(&o.written,
-         identity_of("t.c").dev, identity_of("t.c").ino), 1);
+ chk_int("the file now there is looked at", wpe_seen_look_name(p, 1, &now), 0);
+ chk_int("the outcome names the file now there", wpe_write_identity_is(&o.written, &now), 1);
  another_file_takes_the_name("t.c", "theirs again\n", 0644);
  chk_int("a third file is refused", wpe_write_save_text_ask(p, "newer\n", &id, 0, &asked, NULL, &o), -1);
  chk_int("it says the name changed", o.changed_while_asked, 1);
@@ -4579,8 +4582,7 @@ static WpeWriteExpect look_at(const char *name)
  if (lstat(p, &st) != 0)
   return(x);
  x.exists = 1;
- x.dev = st.st_dev;
- x.ino = st.st_ino;
+ (void)wpe_seen_look_name(p, 0, &x.seen);
  x.nlink = st.st_nlink;
  x.regular = S_ISREG(st.st_mode) ? 1 : 0;
  return(x);
@@ -5240,6 +5242,585 @@ static void test_remove_takes_only_a_regular_file_of_ours(void)
  own_row_end();
 }
 
+/* ---- class name-identity: the file the window read, not a file that was given its inode number ----
+
+   A file system gives an inode number back after its file is gone, so the
+   rows that need it run on a disk (the build tree, or XWPE_TEST_REUSE_DIR),
+   and say which file system they ran on.  A file system that never gives a
+   number back is a SKIP with that reason; a file system that does, where the
+   number was not reached, is a FAIL. */
+
+/** Make the folder of a reuse row on a disk and keep it for the clean-up. */
+static void make_reuse_dir(void)
+{
+ char whole[sizeof dir];
+
+ if (seen_rows_dir(dir, sizeof dir, "wo") != 0 || realpath(dir, whole) == NULL)
+ {
+  remove_made_dirs();
+  exit(2);
+ }
+ snprintf(dir, sizeof dir, "%s", whole);     /* absolute: a link made to a file here leads to it */
+ remember_made_dir();
+}
+
+/** Say where a reuse row ran, so a log shows the row was not skipped. */
+static void say_reuse_ran(const char *row)
+{
+ char fs[SEEN_ROWS_NAME_SIZE];
+
+ seen_rows_fs_name(dir, fs, sizeof fs);
+ printf("RAN %s: fs=%s\n", row, fs);
+}
+
+/** What a reuse row hands the callbacks: the window that reads the old file. */
+typedef struct {
+ FENSTER *f;
+ const char *name;
+} ReuseWindow;
+
+/** look_old of the windowed rows: the window reads the old file while it exists. */
+static void reuse_window_reads(const char *path, void *ctx)
+{
+ ReuseWindow *w = (ReuseWindow *)ctx;
+
+ (void)path;
+ window_reads(w->f, w->name);
+}
+
+/** look_old of the assistant's row: the look the write is held to. */
+static void reuse_look_at(const char *path, void *ctx)
+{
+ (void)path;
+ *(WpeWriteExpect *)ctx = look_at("t.c");
+}
+
+/** look_old of the copy row: the identity of the copy this window wrote. */
+static void reuse_copy_identity(const char *path, void *ctx)
+{
+ (void)path;
+ (void)wpe_write_identity_of_name(dir, "t.c.ASV", (WpeFileIdentity *)ctx);
+}
+
+/**
+ * make_the_number_come_again - Give a new file the number of the old one that is gone.
+ * @row: what the row is called in the log; @pc: the case (old object, its look, new object).
+ * @name: where both are made.
+ * Return: 1 when the new file holds the old number; 0 after a SKIP (the file
+ * system never gives a number back) or a FAIL (it does, and the row could not
+ * make it come again).
+ */
+static int make_the_number_come_again(const char *row, const SeenRowsCase *pc, const char *name)
+{
+ if (seen_rows_reuse_the_number(dir, name, pc))
+ {
+  say_reuse_ran(row);
+  return(1);
+ }
+ if (seen_rows_never_gives_back(dir))
+ {
+  printf("SKIP: %s: this file system never gives a number back\n", row);
+  return(0);
+ }
+ printf("FAIL: %s: the number was not reached on a file system that gives numbers back\n", row);
+ fails++;
+ return(0);
+}
+
+/** A case whose old and new objects are files of the given texts, the window reading the old one. */
+static void reuse_case_of_files(SeenRowsCase *pc, const char *old_text, void (*look)(const char *, void *),
+                                void *look_ctx, const char *new_text)
+{
+ memset(pc, 0, sizeof *pc);
+ pc->make_old = seen_rows_make_file_text;
+ pc->old_ctx = (void *)old_text;
+ pc->look_old = look;
+ pc->look_ctx = look_ctx;
+ pc->make_new = seen_rows_make_file_text;
+ pc->new_ctx = (void *)new_text;
+}
+
+/* @scenario SC-name-identity-02: a file that took the window's inode number is
+   another file: a plain Save asks and No writes nothing. */
+static void test_a_file_that_has_the_windows_inode_number_is_asked_about(void)
+{
+ ReuseWindow w;
+ SeenRowsCase pc;
+ WpeWriteOutcome o;
+ char buf[256];
+
+ make_reuse_dir();
+ w.f = window_of_file_with_mode(0600);
+ w.name = "t.c";
+ reuse_case_of_files(&pc, "old\n", reuse_window_reads, &w, "theirs\n");
+ if (!make_the_number_come_again("row 2 (plain Save, answer N)", &pc, "t.c"))
+  return;
+ set_rows("mine\n");
+ question_answer = 'N';
+ chk_int("declined", save_window(w.f, "t.c", &o), -1);
+ chk_int("status DECLINED", o.status, WPE_WRITE_DECLINED);
+ chk_int("one question", question_count, 1);
+ chk_has("the question is the replaced one", question_text,
+         "t.c was replaced on disk since this window read it. Overwrite it?");
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "theirs\n");
+ chk_int("no backup", mode_of("t.bak"), -1);
+}
+
+/* @scenario SC-name-identity-02b: the same file with no one to ask is refused. */
+static void test_a_write_with_no_one_to_ask_refuses_a_file_with_the_windows_number(void)
+{
+ ReuseWindow w;
+ SeenRowsCase pc;
+ WpeWriteOutcome o;
+ char buf[256], p[512];
+
+ make_reuse_dir();
+ w.f = window_of_file_with_mode(0600);
+ w.name = "t.c";
+ reuse_case_of_files(&pc, "old\n", reuse_window_reads, &w, "theirs\n");
+ if (!make_the_number_come_again("row 2b (no one to ask)", &pc, "t.c"))
+  return;
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused", wpe_write_save_text(p, "mine\n", &w.f->file_id, WPE_WRITE_NOFOLLOW, NULL, &o), -1);
+ chk_int("status FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("another file", o.other_file, 1);
+ chk_int("not merely unsure", o.unsure, 0);
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "theirs\n");
+ chk_int("no backup", mode_of("t.bak"), -1);
+}
+
+/** Add text to a file of the test folder without replacing it (the file is touched in place). */
+static void append_in_place(const char *name, const char *text)
+{
+ char p[512];
+ int fd;
+
+ path_of(p, sizeof p, name);
+ fd = open(p, O_WRONLY | O_APPEND);
+ chk_int("open to append", fd >= 0, 1);
+ if (fd < 0)
+  return;
+ chk_int("append", write(fd, text, strlen(text)) == (ssize_t)strlen(text), 1);
+ close(fd);
+}
+
+/* @scenario SC-name-identity-03: a file the window read and that was touched in
+   place since is still the window's file: Save writes it, with no question. */
+static void test_a_touched_file_is_still_the_windows_file(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ append_in_place("t.c", "more\n");
+ set_rows("mine\n");
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_int("nothing was asked", question_count, 0);
+ chk_has("the text is on disk", get_file("t.c", buf, sizeof buf), "mine\n");
+}
+
+/* @scenario SC-name-identity-04: the same on a system with no birth time (played
+   by XWPE_TEST_FAIL=seen-no-birth): the file cannot be told from a new one, so
+   it is not written silently.  With no one to ask it is refused with the
+   "changed or replaced" sentence; a plain Save asks, No writes nothing, Yes
+   writes. */
+static void test_a_touched_file_without_a_birth_time_is_asked_about(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], say[1024], p[512];
+
+ make_dir();
+ chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, WPE_SEEN_TEST_FAIL_NO_BIRTH, 1), 0);
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ append_in_place("t.c", "more\n");
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused when there is no one to ask",
+         wpe_write_save_text(p, "mine\n", &f->file_id, 0, NULL, &o), -1);
+ chk_int("status FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("not proven the window's file", o.other_file, 1);
+ chk_int("unsure", o.unsure, 1);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence says changed or replaced", say, "was changed or replaced since this window read it");
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "old\nmore\n");
+ set_rows("mine\n");
+ question_answer = 'N';
+ chk_int("No declines", save_window(f, "t.c", &o), -1);
+ chk_int("status DECLINED", o.status, WPE_WRITE_DECLINED);
+ chk_int("one question", question_count, 1);
+ chk_has("the question", question_text, "t.c was changed or replaced since this window read it. Write anyway?");
+ chk_has("nothing was written", get_file("t.c", buf, sizeof buf), "old\nmore\n");
+ question_answer = 'Y';
+ question_count = 0;
+ chk_int("Yes writes", save_window(f, "t.c", &o), 0);
+ chk_int("asked once", question_count, 1);
+ chk_has("the text is on disk", get_file("t.c", buf, sizeof buf), "mine\n");
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+/* @scenario SC-name-identity-05: a second Save with nothing between is the
+   window's own: the record is taken after the text, so the file the first Save
+   wrote still matches it.  Run with and without a birth time; without one, a
+   record made when the file was opened would not match (its ctime and size are
+   old) and the second Save would ask. */
+static void second_save_is_the_windows_own(const char *hook)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ if (hook != NULL)
+  chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ set_rows("one\n");
+ chk_int("first Save", save_window(f, "t.c", &o), 0);
+ chk_int("first Save asked nothing", question_count, 0);
+ set_rows("two\n");
+ chk_int("second Save", save_window(f, "t.c", &o), 0);
+ chk_int("second Save asked nothing", question_count, 0);
+ chk_has("the text is on disk", get_file("t.c", buf, sizeof buf), "two\n");
+ if (hook != NULL)
+  unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+static void test_a_second_save_is_the_windows_own(void)
+{
+ second_save_is_the_windows_own(NULL);
+ second_save_is_the_windows_own(WPE_SEEN_TEST_FAIL_NO_BIRTH);
+}
+
+/* @scenario SC-name-identity-08: the assistant's look is held to the file it saw,
+   not to a file that took its number. */
+static void test_a_look_is_not_met_by_a_file_with_its_number(void)
+{
+ WpeWriteExpect look;
+ SeenRowsCase pc;
+ WpeWriteOutcome o;
+ char buf[256], p[512];
+
+ make_reuse_dir();
+ memset(&look, 0, sizeof look);
+ reuse_case_of_files(&pc, "old\n", reuse_look_at, &look, "theirs\n");
+ if (!make_the_number_come_again("row 8 (the assistant's look)", &pc, "t.c"))
+  return;
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), -1);
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("swapped", o.swapped, 1);
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "theirs\n");
+ chk_int("no backup", mode_of("t.bak"), -1);
+}
+
+/* @scenario SC-name-identity-09: the copy a window made is removed only if it is
+   still that copy, not a file that took its number. */
+static void test_another_file_with_the_copys_number_is_not_removed(void)
+{
+ WpeFileIdentity own;
+ SeenRowsCase pc;
+ char p[512];
+
+ make_reuse_dir();
+ wpe_write_identity_forget(&own);
+ reuse_case_of_files(&pc, "copy\n", reuse_copy_identity, &own, "theirs\n");
+ if (!make_the_number_come_again("row 9 (copy removal)", &pc, "t.c.ASV"))
+  return;
+ path_of(p, sizeof p, "t.c.ASV");
+ chk_int("the copy's identity was taken", own.known, 1);
+ wpe_write_copy_remove(p, &own);
+ chk_int("the other file is still there", mode_of("t.c.ASV"), 0600);
+}
+
+/** Row 6 is red until the mode owner moves onto the same judge.  It accepts
+    only the one wrong answer known today (@known_wrong) and prints XFAIL; any
+    other value is a failure, and so is the right one (XPASS): the pass that
+    fixes the mode owner must drop this marker and assert @want. */
+static void chk_int_until_the_mode_owner(const char *what, long got, long want, long known_wrong)
+{
+ if (got == known_wrong)
+ {
+  printf("XFAIL: %s: got %ld want %ld (the mode owner pass fixes it)\n", what, got, want);
+  return;
+ }
+ if (got == want)
+  printf("FAIL: XPASS: %s is right now; replace this marker with chk_int\n", what);
+ else
+  printf("FAIL: %s: got %ld, neither the known wrong %ld nor the wanted %ld\n", what, got,
+         known_wrong, want);
+ fails++;
+}
+
+/** What row 6 needs of the folder: the names of the sequence. */
+typedef struct {
+ char p[512], t[512], t_new[512];
+ struct stat shown;
+ WpeNameSeen seen;
+} LinkRow;
+
+/** make_old of row 6: the link z, which leads to t. */
+static int make_the_link_to_t(const char *path, void *ctx)
+{
+ return(symlink(((LinkRow *)ctx)->t, path));
+}
+
+/** look_old of row 6: what the dialog showed, then t is replaced by rename. */
+static void link_row_look(const char *path, void *ctx)
+{
+ LinkRow *r = (LinkRow *)ctx;
+
+ put_file("t.new", "y\n", 0644);
+ (void)stat(path, &r->shown);
+ wpe_write_name_seen(path, &r->seen);
+ chk_int("the target is replaced", rename(r->t_new, r->t), 0);
+}
+
+/* @scenario SC-name-identity-06: the sequence of the link row, with the number of
+   the old link given back to another link: the new link is another one.  The
+   mode owner still judges a name by its number, so the last line is expected
+   red until that pass. */
+static void test_a_link_that_took_the_dialogs_number_is_another_link(void)
+{
+ LinkRow r;
+ SeenRowsCase pc;
+ WpeModeKept k;
+ char u[512];
+
+ make_reuse_dir();
+ put_file("t", "x\n", 0644);
+ put_file("u", "z\n", 0644);
+ path_of(r.p, sizeof r.p, "z");
+ path_of(r.t, sizeof r.t, "t");
+ path_of(r.t_new, sizeof r.t_new, "t.new");
+ path_of(u, sizeof u, "u");
+ memset(&pc, 0, sizeof pc);
+ pc.make_old = make_the_link_to_t;
+ pc.old_ctx = &r;
+ pc.look_old = link_row_look;
+ pc.look_ctx = &r;
+ pc.make_new = seen_rows_make_link;
+ pc.new_ctx = u;
+ if (!make_the_number_come_again("row 6 (another link with the number)", &pc, "z"))
+  return;
+ chk_int("refused for another link", wpe_write_set_perm_seen(r.p, &r.shown, &r.seen, 0600, &k), ESTALE);
+ chk_int_until_the_mode_owner("by a link: it is another one", k.replaced_kind, S_IFLNK, 0);
+ chk_int("the file it leads to is as it was", mode_of("u"), 0644);
+}
+
+/* ---- a file not proven to be the window's (no birth time, played by the hook) ---- */
+
+/** Set the test hook: a system with no birth time, with more hooks after it when wanted. */
+static void no_birth_hook(const char *more)
+{
+ char hook[128];
+
+ snprintf(hook, sizeof hook, "%s%s%s", WPE_SEEN_TEST_FAIL_NO_BIRTH, more[0] ? "," : "", more);
+ chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
+}
+
+/** A window of t.c that read it, then t.c touched in place (so it is not proven the same). */
+static FENSTER *window_of_a_touched_file(mode_t mode)
+{
+ FENSTER *f;
+
+ put_file("t.c", "old\n", mode);
+ f = window_of_file_with_mode(mode);
+ window_reads(f, "t.c");
+ append_in_place("t.c", "more\n");
+ return(f);
+}
+
+/* @scenario SC-name-identity-12: under no birth time a touched file with a
+   special bit, or another owner's, is not asked about: a plain Save refuses
+   with the reason and Save As is the way out. */
+static void unsure_is_refused_with_the_reason(const char *more, mode_t mode, const char *reason)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024], buf[256];
+
+ make_dir();
+ if (mode & 07000)
+ {
+  if (!test_premise(test_premise_special_bits_settable(dir, mode & 07000), "unsure and refused",
+                    "this user cannot set the special bit in the test folder"))
+   return;
+ }
+ no_birth_hook(more);
+ f = window_of_a_touched_file(mode);
+ set_rows("mine\n");
+ question_answer = 'Y';
+ chk_int("refused", save_window(f, "t.c", &o), -1);
+ chk_int("status FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("no question is asked", question_count, 0);
+ chk_int("another file", o.other_file, 1);
+ chk_int("unsure", o.unsure, 1);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the reason", say, reason);
+ chk_has("Save As is the way out", say, "Use Save As");
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "old\nmore\n");
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+static void test_unsure_on_a_file_with_a_special_bit_or_another_owner_is_refused(void)
+{
+ /* a group that cannot run the file: a write to it does not clear the bit */
+ unsure_is_refused_with_the_reason("", 02644, ", and it has a setuid, setgid or sticky bit");
+ unsure_is_refused_with_the_reason("write-other-owner", 0644, ", and it belongs to another user");
+}
+
+/** What happens while the box is up: the file is touched in place again. */
+static void touch_during_the_question(void)
+{
+ append_in_place("t.c", "again\n");
+}
+
+/* @scenario SC-name-identity-13: a Yes is about the file that was asked about:
+   when that file is touched again while the box is up, and no birth time can
+   say it is the same, the write is refused and the sentence says the name
+   changed while the user was asked. */
+static void test_a_yes_does_not_reach_a_file_touched_during_the_question(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+
+ make_dir();
+ no_birth_hook("");
+ f = window_of_a_touched_file(0644);
+ set_rows("mine\n");
+ question_during = touch_during_the_question;
+ question_answer = 'Y';
+ chk_int("refused", save_window(f, "t.c", &o), -1);
+ chk_int("asked once", question_count, 1);
+ chk_int("status FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("another file", o.other_file, 1);
+ chk_int("changed while asked", o.changed_while_asked, 1);
+ chk_int("unsure", o.unsure, 1);
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "old\nmore\nagain\n");
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+/* @scenario SC-name-identity-14: the assistant's look is held to the file it
+   saw: a file touched in place since, with no birth time to settle it, is
+   refused as unproven, and the sentence says it may not be the file checked. */
+static void test_a_look_is_not_met_by_a_touched_file_without_a_birth_time(void)
+{
+ WpeWriteExpect look;
+ WpeWriteOutcome o;
+ char say[1024], buf[256], p[512];
+
+ make_dir();
+ no_birth_hook("");
+ put_file("t.c", "old\n", 0644);
+ look = look_at("t.c");
+ append_in_place("t.c", "more\n");
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused", wpe_write_save_text(p, "new\n", NULL, WPE_WRITE_NOFOLLOW, &look, &o), -1);
+ chk_int("FAILED", o.status, WPE_WRITE_FAILED);
+ chk_int("swapped", o.swapped, 1);
+ chk_int("unsure", o.unsure, 1);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence", say, "may not be the file that was checked");
+ chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "old\nmore\n");
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+/* @scenario SC-name-identity-15: the sentences of a caller with no text of the
+   user's (the assistant's write, a revert) say "changed or replaced", and give
+   the reason when the file is another user's. */
+static void test_the_unsure_sentences_of_a_caller_with_no_text(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024], p[512];
+
+ make_dir();
+ no_birth_hook("write-other-owner");
+ f = window_of_a_touched_file(0644);
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused", wpe_write_save_text(p, "new\n", &f->file_id, 0, NULL, &o), -1);
+ chk_int("unsure", o.unsure, 1);
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+ chk_has("a write says changed or replaced", say, "was changed or replaced since the window showed it");
+ chk_has("a write gives the reason", say, ", and it belongs to another user");
+ chk_has("a write says nothing was written", say, "Nothing was written.");
+ chk_int("no advice about Save As", strstr(say, "Save As") == NULL, 1);
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_PUT_BACK);
+ chk_has("a revert says put back", say, "Cannot put back");
+ chk_has("a revert says changed or replaced", say, "was changed or replaced since the window showed it");
+ chk_has("a revert says nothing was changed", say, "Nothing was changed.");
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+/** What happens as the second descriptor of a Save is refused: another file takes the name. */
+static void swap_the_name_at_the_dup(void)
+{
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+}
+
+/* @scenario SC-name-identity-16: a Save that has no second descriptor still
+   records the file it wrote, from its own descriptor after the text, never from
+   the name: the name swapped meanwhile is not the window's file, so the next
+   Save asks and never writes a copy unasked.  Without the swap the record
+   matches the file as saved (no question), with and without a birth time. */
+static void save_with_no_second_descriptor(const char *hook, int swap)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256];
+ int took;
+
+ make_dir();
+ if (hook != NULL)
+  no_birth_hook("");
+ put_file("t.c", "old\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "t.c");
+ set_rows("mine\n");
+ dup_fail_action = swap ? swap_the_name_at_the_dup : NULL;
+ dup_fails_at = 2;    /* the first duplication is the backup's, the second is the save's */
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ took = (dup_fails_at == 0);
+ dup_fails_at = 0;
+ dup_fail_action = NULL;
+ if (test_observation(took, "a save with no second descriptor",
+                      "fcntl is not interposable for F_DUPFD_CLOEXEC in this C library"))
+ {
+  chk_int("the window still knows its file", f->file_id.known, 1);
+  set_rows("again\n");
+  question_count = 0;
+  question_answer = 'N';
+  if (swap)
+  {
+   chk_int("the next Save is declined", save_window(f, "t.c", &o), -1);
+   chk_int("it asked", question_count, 1);
+   chk_has("their file is untouched", get_file("t.c", buf, sizeof buf), "theirs\n");
+  }
+  else
+  {
+   chk_int("the next Save writes", save_window(f, "t.c", &o), 0);
+   chk_int("it asked nothing", question_count, 0);
+  }
+ }
+ if (hook != NULL)
+  unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+static void test_a_save_with_no_second_descriptor_keeps_the_window_its_file(void)
+{
+ save_with_no_second_descriptor(NULL, 1);
+ save_with_no_second_descriptor(NULL, 0);
+ save_with_no_second_descriptor("no birth", 0);
+}
+
 int main(void)
 {
  WpeMouseChangeShape = stub_mouse_shape;
@@ -5393,6 +5974,19 @@ int main(void)
  test_a_revert_puts_back_a_before_image_that_holds_a_nul_byte();
  test_a_revert_with_no_recorded_mode_keeps_the_files_own_bits();
  test_the_assistants_sentences_say_a_lost_bit_and_keep_no_window_text();
+ test_a_file_that_has_the_windows_inode_number_is_asked_about();
+ test_a_write_with_no_one_to_ask_refuses_a_file_with_the_windows_number();
+ test_a_touched_file_is_still_the_windows_file();
+ test_a_touched_file_without_a_birth_time_is_asked_about();
+ test_a_second_save_is_the_windows_own();
+ test_a_look_is_not_met_by_a_file_with_its_number();
+ test_another_file_with_the_copys_number_is_not_removed();
+ test_a_link_that_took_the_dialogs_number_is_another_link();
+ test_unsure_on_a_file_with_a_special_bit_or_another_owner_is_refused();
+ test_a_yes_does_not_reach_a_file_touched_during_the_question();
+ test_a_look_is_not_met_by_a_touched_file_without_a_birth_time();
+ test_the_unsure_sentences_of_a_caller_with_no_text();
+ test_a_save_with_no_second_descriptor_keeps_the_window_its_file();
  free_garbage();
  remove_made_dirs();
  fails += test_dir_failures;

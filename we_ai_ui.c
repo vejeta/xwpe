@@ -7319,8 +7319,7 @@ typedef struct ai_async_op ai_async_op;
    user answered, not to a path: a name that is added afterwards, or the same
    path leading to another file, asks again. */
 typedef struct {
- dev_t   dev;
- ino_t   ino;
+ WpeSeen seen;
  nlink_t nlink;
 } ai_linked_yes;
 #define AI_LINKED_YES_MAX 16
@@ -11761,15 +11760,16 @@ static int ai_write_has_many_names(const WpeWriteExpect *look)
 /**
  * ai_linked_yes_recalls - Did the user already allow this run to write this file with this many names?
  * @op: the running agent task; @look: what the look saw.
- * Return: 1 when the same device and inode, with the same number of names,
- * was allowed earlier in this run.
+ * Return: 1 when the judge proves the same file, with the same number of
+ * names, was allowed earlier in this run (a file that only has the same
+ * inode number is asked about again).
  */
 static int ai_linked_yes_recalls(const ai_async_op *op, const WpeWriteExpect *look)
 {
  int i;
  for (i = 0; i < op->linked_yes_n; i++) {
   const ai_linked_yes *y = &op->linked_yes[i];
-  if (y->dev == look->dev && y->ino == look->ino && y->nlink == look->nlink) return 1;
+  if (y->nlink == look->nlink && wpe_seen_judge(&y->seen, &look->seen) == WPE_SEEN_SAME) return 1;
  }
  return 0;
 }
@@ -11787,8 +11787,7 @@ static void ai_linked_yes_remember(ai_async_op *op, const WpeWriteExpect *look)
  ai_linked_yes *y;
  if (op->linked_yes_n >= AI_LINKED_YES_MAX) return;
  y = &op->linked_yes[op->linked_yes_n++];
- y->dev = look->dev;
- y->ino = look->ino;
+ y->seen = look->seen;
  y->nlink = look->nlink;
 }
 

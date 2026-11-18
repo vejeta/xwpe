@@ -54,6 +54,22 @@ mode_t wpe_seen_kind(const WpeSeen *s)
 }
 
 /**
+ * wpe_seen_into_stat - Give a record as the struct stat the mode owner still takes.
+ * @s: the record; @st: receives the device, inode and kind of object.
+ *
+ * A bridge for Ctrl-F9 (wpe_write_add_perm), which hands the window's record
+ * to the mode owner as the "shown" file.  It carries only the number, as
+ * before.  The pass that moves the mode owner onto records deletes it.
+ */
+void wpe_seen_into_stat(const WpeSeen *s, struct stat *st)
+{
+ memset(st, 0, sizeof *st);
+ st->st_dev = s->seen_dev;
+ st->st_ino = s->seen_ino;
+ st->st_mode = s->seen_kind;
+}
+
+/**
  * seen_test_drops_birth - Does the test hook ask every look to drop the birth?
  *
  * XWPE_TEST_FAIL=seen-no-birth lets a row on Linux play a system without a

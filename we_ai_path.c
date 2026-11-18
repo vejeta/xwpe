@@ -648,8 +648,7 @@ static int path_look_leaf(const char *real, WpeWriteExpect *x)
  }
  x->judged = 1;
  x->exists = 1;
- x->dev = st.st_dev;
- x->ino = st.st_ino;
+ if (wpe_seen_look_name(real, 0, &x->seen) != 0) return -1;
  x->nlink = st.st_nlink;
  x->regular = S_ISREG(st.st_mode) ? 1 : 0;
  return 0;

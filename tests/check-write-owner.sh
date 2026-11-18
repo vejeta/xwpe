@@ -135,7 +135,7 @@
 # 24. "Is this the object I saw" is judged in one place, we_seen.c (22 and 23
 #     belong to the read owner and the path walk).  Strings and comments are
 #     blanked, names bounded by word, a macro counts as a site of its own.
-#     Each clause has its own tag in the allow file (r24a to r24e):
+#     Each clause has its own tag in the allow file (r24a to r24g):
 #     a. st_ino and st_dev appear in no product source but we_seen.c.  The one
 #        permanent row is we_startcmd.c built_rec_identify, which writes the
 #        numbers to a store and asks "unchanged", never "same".
@@ -154,6 +154,9 @@
 #        to 0 appears only in other_object_while_held (tests/seen_rows.h),
 #        which takes the descriptor that holds the first object.  "Another
 #        inode" asserted with nothing held is the defect itself.
+#     g. a call of wpe_seen_into_stat outside we_seen.c.  The bridge hands a
+#        record to the mode owner as a device and inode; the pass that moves
+#        the mode owner onto records deletes it and its allow row.
 #     Clauses (a) to (c) scan the product sources and headers, not the tests:
 #     a test makes files and reads their numbers on purpose.  The sites still
 #     to move are lines of the allow file, each naming its function and the
@@ -365,6 +368,9 @@ scan() {
     #         three arguments (the number and the device passed by hand), anywhere
     #   r24e  (tests only) st_ino compared with != or asserted equal to 0
     #         outside other_object_while_held
+    #   r24g  a call of wpe_seen_into_stat outside we_seen.c: the bridge that
+    #         hands a record to the mode owner as a number, deleted with the
+    #         pass that moves the mode owner onto records
     # The count of the arguments of a call: the commas at its own depth plus one.
     function arg_count(s, p,   depth, i, n, c, commas) {
       depth = 0; commas = 0; n = length(s)
@@ -421,6 +427,7 @@ scan() {
       t = m
       while (match(t, /(^|[^A-Za-z0-9_])statx[ \t]*[(]/)) { note("r24c", 1); t = substr(t, RSTART + RLENGTH) }
       count_word(m, "st_birthtim|st_birthtimespec|stx_btime", "r24c")
+      count_word(m, "wpe_seen_into_stat", "r24g")
     }
     function note24_everywhere(m,   t, p) {
       count_word(m, "ck_rdev|ck_rino", "r24d")
@@ -625,7 +632,7 @@ scan() {
       m = s; gsub(/"([^"\\]|\\.)*"/, "\"\"", m)
       # rule 25: the editors own places and the names it chooses
       note25(s, m)
-      # rule 24 (clauses a to d): the identity of an object is judged in we_seen.c
+      # rule 24 (clauses a to d, f and g; e scans the tests): the identity of an object is judged in we_seen.c
       note24_inside(m)
       note24_everywhere(m)
       # rule 8: a name of the user'"'"'s files made, moved or removed outside the owners
@@ -1169,6 +1176,11 @@ int fake_ck(FENSTER *c, struct stat *x)
   return(1);
  return(wpe_write_identity_differs(&w->file_id, st.st_dev, st.st_ino));
 }
+int fake_bridge(WpeSeen *rec, struct stat *st)
+{
+ wpe_seen_into_stat(rec, st);
+ return(0);
+}
 int fake_shown(const char *filen, struct stat *buf, WpeNameSeen *seen)
 {
  int rc = wpe_fileop_chmod_shown(filen, buf, &seen, 0644, &fo);
@@ -1413,7 +1425,7 @@ EOF
               "r24a we_fake_r24.c fake_inode 4" "r24b we_fake_r24.c fake_member 2" \
               "r24c we_fake_r24.c fake_statx 4" "r24d we_fake_r24.c fake_ck 4" \
               "r24a we_fake_r24.c fake_ck 2" "r24a we_fake_r24.h (preprocessor) 2" \
-              "r24f we_fake_r24.c fake_shown 2" \
+              "r24f we_fake_r24.c fake_shown 2" "r24g we_fake_r24.c fake_bridge 1" \
               "r24e test_fake.c fake_row 4" "r24d test_fake.c fake_row 1" \
               "r15 we_fake.c fake_save 1" "r15 we_fake.c (preprocessor) 1" \
               "r15 we_fake_r15a.c write_mode_before_data 1" \
@@ -1439,7 +1451,7 @@ EOF
   done
   # rule 24: the owner's own file, and the one helper that asserts "another
   # inode" with a descriptor held, are no offence
-  if grep -q "^r24[abc] we_seen.c " "$WORK/fake.found"; then
+  if grep -q "^r24[abcg] we_seen.c " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: a file named we_seen.c was counted by rule 24; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
@@ -1645,6 +1657,8 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": statx, st_birthtim, st_birthtimespec or stx_btime outside we_seen.c.  The birth time is read in one place, with its system notes: take a WpeSeen"
       else if (rule == "r24d")
         print "offender: " $1 " " $2 ": ck_rdev or ck_rino (a folder number kept by hand: hold the folder with wpe_seen_hold_dir and ask wpe_seen_held_is), or wpe_write_identity_is or _differs with the device and inode as two arguments (pass the WpeSeen of the look)"
+      else if (rule == "r24g")
+        print "offender: " $1 " " $2 ": wpe_seen_into_stat is called outside we_seen.c.  It hands a record to the mode owner as a device and inode, which a file system gives back: the mode owner takes a WpeSeen and asks wpe_seen_judge.  A site still to move is a line of the allow file with its pass"
       else if (rule == "r24f")
         print "offender: " $1 " " $2 ": the file the user was shown is passed to wpe_fileop_chmod_shown or wpe_write_set_perm_seen as something other than NULL or a WpeSeen called shown.  A struct stat there compiles (incompatible pointers are accepted) and is compared by inode number: take a WpeSeen with wpe_seen_look_name next to the dialog'"'"'s stat"
       else if (rule == "r24e")

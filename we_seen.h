@@ -92,6 +92,7 @@ void wpe_seen_from_stat(WpeSeen *s, const struct stat *st);
 void wpe_seen_forget(WpeSeen *s);
 int  wpe_seen_known(const WpeSeen *s);
 mode_t wpe_seen_kind(const WpeSeen *s);
+void wpe_seen_into_stat(const WpeSeen *s, struct stat *st);   /* bridge for the mode owner, removed with it */
 
 WpeSeenIs wpe_seen_judge(const WpeSeen *then, const WpeSeen *now);
 WpeSeenIs wpe_seen_name_judge(const WpeSeenName *then, const WpeSeenName *now);

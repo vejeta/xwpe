@@ -1094,8 +1094,11 @@ was usually an ordinary file afterwards.  xwpe puts back, after the text,
 the special bits the file had on disk when the save opened it: not the bits
 it had when the window read it, so a bit removed since then stays removed.
 Only a write onto the window's own file puts them back, and that is the
-file the window read, remembered by its device and inode (not looked up
-again by name), also when Save As names it again or names a hard link to it.
+file the window read, remembered by its device, inode, owner, times and,
+where the system has one, the time the file was made (not looked up again
+by name), also when Save As names it again or names a hard link to it.  A
+file system can give an inode number back after its file is gone, so a new
+file that has the old number is not taken for the window's file.
 When the name now leads to a different file, which is what an editor that
 saves by renaming (vim, @command{sed -i}, git checkout, rsync) leaves
 behind, F2 does not write into it unasked.  A plain file with no special
@@ -1108,7 +1111,13 @@ the one this window read.  Nothing was written.  Use Save As to write your
 text over that file.}), the text stays in the window, and Save As onto the
 same name writes it.  When the name changes again while the question is up,
 the write is refused with a sentence that says so (@samp{the name changed
-again while you were being asked}), and the way out is the same.  A window
+again while you were being asked}), and the way out is the same.  Where the
+system records no time of making (OpenBSD, an NFS mount before version 4.2,
+ext3), a file that was touched since the window read it cannot be told from a
+new file that has its number.  F2 then asks with another sentence
+(@samp{t.c was changed or replaced since this window read it. Write
+anyway?}), and for a file with a special bit or another owner it refuses
+with the reason and leaves Save As as the way out.  A window
 that read no file, or whose file did not exist, saves as a copy and then
 takes the file it made.  A name that now
 leads to something that is not a regular file (a link to @file{/dev/null},
