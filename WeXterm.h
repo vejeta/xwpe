@@ -57,7 +57,6 @@ typedef struct wpeXStruct {
  XftDraw *xftdraw;
  XftColor xftcolors[24];   /* 16 base + up to 8 LSP truecolor slots (we_lsp.h
                               LSP_SEM_TC_MAX): a fg index 16+slot picks a slot */
- Pixmap backbuf;
  FcPattern *xftpattern;
  FcFontSet *xftfont_set;
 #endif
@@ -109,11 +108,10 @@ typedef enum EXRenderRoute {
  E_X_RENDER_INDEXED
 } EXRenderRoute;
 EXRenderRoute e_x_render_route(void);
-#ifdef HAVE_XFT
-/* The glyph surface for the back buffer, made in that same colormap. */
-XftDraw *e_x_xftdraw_create(void);
-#endif
-
+/* The pixel a new back buffer starts in: the editor's own black on a palette
+   display (where the screen's black pixel may be no colour of the editor's),
+   the screen's black otherwise. */
+unsigned long e_x_blank_pixel(void);
 #ifdef __cplusplus
 }
 #endif

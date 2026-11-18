@@ -374,6 +374,15 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* xwpe no longer exits with BadDrawable when Xft finds no font.  On a
+  machine where fontconfig has no usable font (a minimal container, a
+  remote X display from a host with no fonts, a broken FONTCONFIG_FILE)
+  the editor now draws with the core font, and stays up at start and on
+  every resize.  Before, it ended at start under a window manager that
+  sizes the window, and on the first resize under any other.  Also, an X11
+  build without Xft and Cairo compiles again (configure takes
+  --without-xft and --without-cairo for it) and survives a resize.
+
 * The manual viewer calls man the same way on every system (man 1 ls):
   FreeBSD and macOS could not open a page from a SEE ALSO button.
 

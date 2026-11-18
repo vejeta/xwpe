@@ -84,7 +84,8 @@ wl_display_dispatch|wl_display_roundtrip|wl_display_dispatch_pending we_wayland.
 wl_display_dispatch_queue|wl_display_dispatch_queue_pending|wl_display_roundtrip_queue|wl_display_prepare_read_queue|wl_display_prepare_read|wl_display_read_events we_wayland.o we_wlframe.o
 fork|vfork|forkpty|openpty|posix_spawn|posix_spawnp|popen|pclose|system|execv|execvp|execve|execl|execlp|execle|setsid|setpgid|setpgrp|waitpid|wait|wait3|wait4|pidfd_open|killpg|kill we_child.o
 close_range|closefrom we_child.o
-WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o
+WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o we_xbackbuf.o
+XCopyArea|XCreatePixmap|XFreePixmap we_xbackbuf.o
 e_add_undo we_buffer.o we_edit.o
 wpe_child_start we_child.o we_startplan.o
 wpe_child_capture|wpe_child_probe|wpe_child_run_to_file|wpe_child_capture_plan|wpe_child_probe_plan|wpe_child_run_to_file_plan we_child.o we_startplan.o
@@ -122,9 +123,9 @@ EOF
 # (edit.h), which every display fills.  "name-prefix-regex  objects allowed
 # to import it".  An exact rule above wins for a name it already lists.
 cat > "$WORK/prefixrules" <<'EOF'
-X[A-Za-z] we_xterm.o WeXterm.o we_render_cairo.o
+X[A-Za-z] we_xterm.o WeXterm.o we_render_cairo.o we_xbackbuf.o
 cairo_xlib_ we_render_cairo.o
-e_x_ we_xterm.o WeXterm.o we_render_cairo.o
+e_x_ we_xterm.o WeXterm.o we_render_cairo.o we_xbackbuf.o
 EOF
 
 # The source scan: "word-regex  source files allowed to contain it".
@@ -167,7 +168,7 @@ wpe_modal_active we_paint.c
 g_lsp_modal_depth we_paint.c
 g_lsp_ui_suspended we_paint.c
 wpe_chrome_suppress we_paint.c
-e_x_ we_xterm.c WeXterm.c we_render_cairo.c
+e_x_ we_xterm.c WeXterm.c we_render_cairo.c we_xbackbuf.c
 mxlines_write we_buffer.c
 bf_alloc we_buffer.c
 pos_field we_buffer.c

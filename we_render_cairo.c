@@ -16,6 +16,7 @@
 #include FT_FREETYPE_H
 #include <pango/pangocairo.h>
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>        /* XGetPixel, XPutPixel, XAddPixel, XDestroyImage */
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -27,8 +28,11 @@
 
 #ifndef NO_XWINDOWS
 #include "WeXterm.h"
+#include "we_xbackbuf.h"
 #include "we_lsp.h"           /* e_lsp_sem_slot_rgb, LSP_SEM_TC_MAX */
+#ifdef HAVE_XFT
 #include <X11/Xft/Xft.h>
+#endif
 #endif
 
 static cairo_surface_t *cr_surface;
@@ -400,8 +404,7 @@ static void cr_direct_present(int x, int y, int w, int h)
 {
 #ifndef NO_XWINDOWS
  cairo_surface_flush(cr_surface);
- XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-   WpeXInfo.gc, x, y, w, h, x, y);
+ e_x_backbuf_present(x, y, w, h);
 #endif
 }
 
@@ -434,8 +437,7 @@ static void cr_direct_blit(int sx, int sy, int dx, int dy, int w, int h)
 {
 #ifndef NO_XWINDOWS
  cairo_surface_flush(cr_surface);
- XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.backbuf,
-   WpeXInfo.gc, sx, sy, w, h, dx, dy);
+ e_x_backbuf_scroll(sx, sy, dx, dy, w, h);
  cairo_surface_mark_dirty_rectangle(cr_surface, dx, dy, w, h);
 #endif
 }
@@ -451,52 +453,19 @@ static void cr_direct_blit(int sx, int sy, int dx, int dy, int w, int h)
 static void cr_direct_resize(int pixel_w, int pixel_h)
 {
 #ifndef NO_XWINDOWS
- static int prev_w = 0, prev_h = 0;
- Pixmap old_buf = WpeXInfo.backbuf;
-
- WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-   pixel_w, pixel_h,
-   DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-
- XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-   BlackPixel(WpeXInfo.display, WpeXInfo.screen));
- XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-   0, 0, pixel_w, pixel_h);
-
- if (old_buf && prev_w > 0 && prev_h > 0)
- {
-  int cw = pixel_w < prev_w ? pixel_w : prev_w;
-  int ch = pixel_h < prev_h ? pixel_h : prev_h;
-  XCopyArea(WpeXInfo.display, old_buf, WpeXInfo.backbuf, WpeXInfo.gc,
-    0, 0, cw, ch, 0, 0);
- }
- prev_w = pixel_w;
- prev_h = pixel_h;
-
- if (cr)
-  cairo_destroy(cr);
- if (cr_surface)
-  cairo_surface_destroy(cr_surface);
-
- cr_surface = cairo_xlib_surface_create(WpeXInfo.display,
-   WpeXInfo.backbuf,
-   DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-   pixel_w, pixel_h);
- cr = cairo_create(cr_surface);
- cr_apply_antialias();
-
- if (old_buf)
-  XFreePixmap(WpeXInfo.display, old_buf);
+ e_x_backbuf_remake(pixel_w, pixel_h, 1, e_x_blank_pixel());
 #endif
 }
 
 /**
- * cr_direct_cleanup - Give back the cairo context and surface.
+ * cr_direct_release - Give back the cairo context and surface.
  *
- * When the editor closes its window, so nothing still points at the back
- * buffer.
+ * Registered with the back buffer's owner, which calls it before it replaces
+ * the buffer (so what cairo still holds is flushed before the picture is
+ * carried over) and again when the editor closes its window, so nothing
+ * still points at the buffer.
  */
-static void cr_direct_cleanup(void)
+static void cr_direct_release(void)
 {
  if (cr)
  {
@@ -511,21 +480,48 @@ static void cr_direct_cleanup(void)
 }
 
 /**
+ * cr_direct_cleanup - Give back the cairo context and surface for good.
+ *
+ * When the editor closes its window: the buffer's owner stops asking this
+ * sink to wrap the buffer again.
+ */
+static void cr_direct_cleanup(void)
+{
+ e_x_backbuf_hooks_drop(cr_direct_release);
+ cr_direct_release();
+}
+
+/**
+ * cr_direct_wrap - Wrap the back buffer in a cairo surface and context.
+ * @pixel_w: width of the back buffer, in pixels
+ * @pixel_h: height of the back buffer, in pixels
+ *
+ * Registered with the back buffer's owner, which calls it after every
+ * replacement of the buffer, so the next frame is painted straight into the
+ * new buffer.
+ */
+static void cr_direct_wrap(int pixel_w, int pixel_h)
+{
+ cr_surface = cairo_xlib_surface_create(WpeXInfo.display,
+   e_x_backbuf_target(),
+   DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
+   pixel_w, pixel_h);
+ cr = cairo_create(cr_surface);
+ cr_apply_antialias();
+}
+
+/**
  * cr_direct_init - Wrap the back buffer in a cairo surface and context.
  * @pixel_w: width of the back buffer, in pixels
  * @pixel_h: height of the back buffer, in pixels
  *
  * At start-up, so the first frame the user sees is painted straight into
- * the back buffer.
+ * the back buffer, and every later buffer is wrapped the same way.
  */
 static void cr_direct_init(int pixel_w, int pixel_h)
 {
- cr_surface = cairo_xlib_surface_create(WpeXInfo.display,
-   WpeXInfo.backbuf,
-   DefaultVisual(WpeXInfo.display, WpeXInfo.screen),
-   pixel_w, pixel_h);
- cr = cairo_create(cr_surface);
- cr_apply_antialias();
+ e_x_backbuf_hooks_add(cr_direct_release, cr_direct_wrap);
+ cr_direct_wrap(pixel_w, pixel_h);
 }
 
 static const struct cr_sink cr_sink_direct = {
@@ -880,10 +876,9 @@ static unsigned long cr_ix_put_bytes(const cairo_rectangle_int_t *r)
  */
 static void cr_ix_put_rect(const cairo_rectangle_int_t *r)
 {
- XPutImage(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc, cr_ix_image,
+ XPutImage(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc, cr_ix_image,
    r->x, r->y, r->x, r->y, r->width, r->height);
- XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-   WpeXInfo.gc, r->x, r->y, r->width, r->height, r->x, r->y);
+ e_x_backbuf_present(r->x, r->y, r->width, r->height);
  cr_ix_bytes += cr_ix_put_bytes(r);
 }
 
@@ -1092,22 +1087,6 @@ static void cr_ix_blit(int sx, int sy, int dx, int dy, int w, int h)
  cr_ix_touch(dx, dy, w, h);
 }
 
-/**
- * cr_ix_fill_backbuf - Paint the back buffer in palette entry 0.
- * @pixel_w: width, in pixels
- * @pixel_h: height, in pixels
- *
- * A new back buffer starts in a colour the editor allocated, so whatever
- * the window shows before the first frame is the editor's own black, also
- * in a private colormap where the screen's black pixel may be no colour.
- */
-static void cr_ix_fill_backbuf(int pixel_w, int pixel_h)
-{
- XSetForeground(WpeXInfo.display, WpeXInfo.gc, e_x_palette_pixel(0));
- XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-   0, 0, pixel_w, pixel_h);
-}
-
 /* The test fault $XWPE_TEST_FAULT names for the indexed route,
    "palette-image:<n>": the n-th picture memory the route asks for is
    refused, as on a machine out of memory. */
@@ -1256,7 +1235,6 @@ static void cr_ix_make_surface(int pixel_w, int pixel_h)
 static void cr_ix_init(int pixel_w, int pixel_h)
 {
  cr_ix_load_palette();
- cr_ix_fill_backbuf(pixel_w, pixel_h);
  cr_ix_make_image(pixel_w, pixel_h);
  cr_ix_make_surface(pixel_w, pixel_h);
  cr_ix_dirty = cairo_region_create();
@@ -1275,15 +1253,11 @@ static void cr_ix_init(int pixel_w, int pixel_h)
 static void cr_ix_resize(int pixel_w, int pixel_h)
 {
  cairo_surface_t *old_surface = cr_surface;
- Pixmap old_buf = WpeXInfo.backbuf;
  cairo_rectangle_int_t all;
 
- WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-   pixel_w, pixel_h,
-   DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
- cr_ix_fill_backbuf(pixel_w, pixel_h);
- if (old_buf)
-  XFreePixmap(WpeXInfo.display, old_buf);
+ /* The picture lives in the image, which is carried below, so the buffer
+    starts in the editor's black. */
+ e_x_backbuf_remake(pixel_w, pixel_h, 0, e_x_palette_pixel(0));
 
  if (cr_ix_image)
   XDestroyImage(cr_ix_image);

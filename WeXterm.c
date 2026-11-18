@@ -25,6 +25,7 @@
 #include <X11/Xatom.h>
 #include "Xwpe.h"
 #include "WeXterm.h"
+#include "we_xbackbuf.h"
 #include "we_render.h"
 
 /* needed for the time being to call old routines */
@@ -435,21 +436,54 @@ static void e_x_xftdraw_trace(Colormap cmap)
 /**
  * e_x_xftdraw_create - Make the glyph surface for the back buffer.
  *
- * Every place that rebuilds the text surface (start, resize, font change)
- * calls this, so the editor's text is always painted in the colormap the 16
- * colours were allocated in.  With the pcmap resource on, that is the private
- * colormap, and text made in the screen's default one would come out in the
- * wrong colours on a palette display.
+ * The one place that makes the text surface (the back buffer's owner calls it
+ * after every new buffer, through e_x_xftdraw_rewrap), so the editor's text is
+ * always painted in the colormap the 16 colours were allocated in.  With the
+ * pcmap resource on, that is the private colormap, and text made in the
+ * screen's default one would come out in the wrong colours on a palette
+ * display.
  *
  * Return: the new XftDraw, to be given back with XftDrawDestroy.
  */
-XftDraw *e_x_xftdraw_create(void)
+static XftDraw *e_x_xftdraw_create(void)
 {
  Colormap cmap = e_x_palette_colormap();
 
  e_x_xftdraw_trace(cmap);
- return XftDrawCreate(WpeXInfo.display, WpeXInfo.backbuf,
+ return XftDrawCreate(WpeXInfo.display, e_x_backbuf_target(),
                       DefaultVisual(WpeXInfo.display, WpeXInfo.screen), cmap);
+}
+
+/**
+ * e_x_xftdraw_release - Give back the glyph surface before the buffer goes.
+ *
+ * Registered with the back buffer's owner, which calls it ahead of every
+ * replacement of the buffer.
+ */
+static void e_x_xftdraw_release(void)
+{
+ if (WpeXInfo.xftdraw)
+ {
+  XftDrawDestroy(WpeXInfo.xftdraw);
+  WpeXInfo.xftdraw = NULL;
+ }
+}
+
+/**
+ * e_x_xftdraw_rewrap - Make the glyph surface on the new back buffer.
+ * @pixel_w: the new buffer's width (not needed here)
+ * @pixel_h: the new buffer's height (not needed here)
+ *
+ * Registered with the back buffer's owner, which calls it after every
+ * replacement of the buffer.  Without an Xft font nothing is drawn with Xft,
+ * so there is no surface to make.
+ */
+static void e_x_xftdraw_rewrap(int pixel_w, int pixel_h)
+{
+ (void)pixel_w;
+ (void)pixel_h;
+ if (WpeXInfo.xftfont)
+  WpeXInfo.xftdraw = e_x_xftdraw_create();
 }
 #endif
 
@@ -527,6 +561,25 @@ static EXRenderRoute x_render_route = E_X_RENDER_DIRECT;
 EXRenderRoute e_x_render_route(void)
 {
  return x_render_route;
+}
+
+/**
+ * e_x_blank_pixel - The pixel a new back buffer starts in.
+ *
+ * Until the first frame is painted the window shows the buffer's fill, so it
+ * is the editor's own black: on a palette display the entry the editor
+ * allocated (the screen's black pixel may be no colour of its palette, in a
+ * private colormap), otherwise the screen's black.
+ *
+ * Return: the pixel to fill a new buffer with.
+ */
+unsigned long e_x_blank_pixel(void)
+{
+#ifdef HAVE_CAIRO
+ if (x_render_route == E_X_RENDER_INDEXED)
+  return e_x_palette_pixel(0);
+#endif
+ return BlackPixel(WpeXInfo.display, WpeXInfo.screen);
 }
 
 /**
@@ -1520,7 +1573,12 @@ void WpeXInit(int *argc, char **argv)
  XMapWindow(WpeXInfo.display, WpeXInfo.window);
 
 #ifdef HAVE_XFT
- /* Create back buffer Pixmap and XftDraw (after XMapWindow so window exists) */
+ /* The glyph surface follows the back buffer through its owner, also when the
+    buffer first appears later (a font change finding Xft where the start did
+    not). */
+ e_x_backbuf_hooks_add(e_x_xftdraw_release, e_x_xftdraw_rewrap);
+ /* Create the back buffer (after XMapWindow so window exists).  With no Xft
+    font there is none: the editor draws with the core font on the window. */
  if (WpeXInfo.xftfont)
  {
   /* Size the initial cell grid from the MAPPED window rather than the requested
@@ -1546,15 +1604,8 @@ void WpeXInit(int *argc, char **argv)
     size_hints.height = MAXSLNS * WpeXInfo.font_height;
    }
   }
-  WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-    size_hints.width, size_hints.height,
-    DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-  WpeXInfo.xftdraw = e_x_xftdraw_create();
-  /* Clear the back buffer to black */
-  XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-    BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-  XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-    0, 0, size_hints.width, size_hints.height);
+  e_x_backbuf_remake(size_hints.width, size_hints.height, 0,
+    e_x_blank_pixel());
 #ifdef HAVE_CAIRO
   wpe_render_cairo_init();
   /* cr_init_pango_font() may have overwritten WpeXInfo.font_width/height
@@ -1583,12 +1634,7 @@ void WpeXInit(int *argc, char **argv)
       handler, so the first dialog is not clipped to the stale surface. */
    if ((size_hints.width != old_w || size_hints.height != old_h) &&
        WpeRender.resize)
-   {
-    if (WpeXInfo.xftdraw)
-     XftDrawDestroy(WpeXInfo.xftdraw);
     WpeRender.resize(size_hints.width, size_hints.height);
-    WpeXInfo.xftdraw = e_x_xftdraw_create();
-   }
   }
 #endif
  }

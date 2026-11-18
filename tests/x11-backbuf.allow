@@ -1,0 +1,3 @@
+# The counted exceptions of tests/check-x11-backbuf.sh:
+#   file|rN:function|count|keep|reason
+# The X11 back buffer has one owner (we_xbackbuf.c) and there is none to list.

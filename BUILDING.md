@@ -13,7 +13,11 @@ For the per-platform dependency commands, see the install guides:
 xwpe needs a C compiler, autotools and pkg-config, plus **ncursesw** (required),
 **libvterm** and **json-c**. **X11 + Xft + Cairo + Pango** are optional -- only
 the graphical `xwpe` uses them; the terminal `wpe` builds without them
-(`--without-x`). **GPM** is optional (Linux-console mouse; not on macOS).
+(`--without-x`). `--without-xft` and `--without-cairo` leave those two out
+of a graphical build: the X11 window then draws with the core font (the
+machine needs a fixed-width one such as `8x13`, package `xfonts-base`), and
+`--without-cairo` also rules out the native Wayland backend. **GPM** is
+optional (Linux-console mouse; not on macOS).
 
 ## One command (Linux, macOS or BSD)
 

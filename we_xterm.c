@@ -20,6 +20,7 @@
 
 /* partial conversion in place */
 #include "WeXterm.h"
+#include "we_xbackbuf.h"
 
 #ifndef XWPE_DLL
 #define WpeDllInit WpeXtermInit
@@ -113,7 +114,7 @@ extern struct mouse e_mouse;
    (via WpeRender.cleanup) and libXft's font glyph cache and colour cells.
    Free those explicitly -- the one-time init leaks the valgrind sweep (#166)
    flagged -- then close the display.  cr_cleanup runs first because its cairo
-   surface wraps WpeXInfo.backbuf. */
+   surface wraps the back buffer. */
 static void e_x_display_end(void)
 {
  if (!WpeXInfo.display)
@@ -216,22 +217,22 @@ int WpeDllInit(int *argc, char **argv)
    XSetForeground(WpeXInfo.display, WpeXInfo.gc, 						     \
 			!(extbyte[n] & 16) ? WpeXInfo.colors[0] : WpeXInfo.colors[15]);\
    if(extbyte[n] & 2)							     \
-	XDrawLine(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*((x)+1)-1, 		     \
+	XDrawLine(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc, WpeXInfo.font_width*((x)+1)-1, 		     \
 		WpeXinfo.font_height*(y), WpeXInfo.font_width*((x)+1)-1, 			     \
 					   WpeXInfo.font_height*((y)+1)-1);	     \
    if(extbyte[n] & 4)							     \
-   	XDrawLine(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*(x), 			     \
+   	XDrawLine(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc, WpeXInfo.font_width*(x), 			     \
 		WpeXInfo.font_height*((y)+1)-1, 					     \
 		WpeXInfo.font_width*((x)+1)-1, WpeXInfo.font_height*((y)+1)-1);		     \
 									     \
    XSetForeground(WpeXInfo.display, WpeXInfo.gc, 						     \
 		!(extbyte[n] & 16) ? WpeXInfo.colors[15] : WpeXInfo.colors[0]);	     \
    if(extbyte[n] & 8)							     \
-	XDrawLine(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*(x), 			     \
+	XDrawLine(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc, WpeXInfo.font_width*(x), 			     \
 		WpeXInfo.font_height*(y), WpeXInfo.font_width*(x), 				     \
 		WpeXInfo.font_height*((y)+1)-1);					     \
    if(extbyte[n] & 1)							     \
-	XDrawLine(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*(x), 			     \
+	XDrawLine(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc, WpeXInfo.font_width*(x), 			     \
 		WpeXInfo.font_height*(y), WpeXInfo.font_width*((x)+1)-1, 			     \
 		WpeXInfo.font_height*(y));					     \
   }
@@ -281,13 +282,7 @@ int e_XLookupString(XKeyEvent *event, char *buffer_return, int buffer_size,
 void e_flush_xrect()
 {
  int i;
- Drawable target;
-
-#ifdef HAVE_XFT
- target = WpeXInfo.xftfont ? WpeXInfo.backbuf : WpeXInfo.window;
-#else
- target = WpeXInfo.window;
-#endif
+ Drawable target = e_x_backbuf_target();
 
  for (i = 0; i < 8; i++)
   if (nseg[i])
@@ -442,7 +437,7 @@ int fk_show_cursor()
   return(0);
 
 #ifdef HAVE_XFT
- if (WpeXInfo.xftfont)
+ if (e_x_backbuf_exists())
  {
   if (cur_x < 0 || cur_x >= MAXSCOL || cur_y < 0 || cur_y >= MAXSLNS)
    return 1;
@@ -476,7 +471,7 @@ int fk_show_cursor()
      WpeXInfo.colors[oa % 16]);
    XSetBackground(WpeXInfo.display, WpeXInfo.gc,
      WpeXInfo.colors[oa / 16]);
-   XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
+   XDrawImageString(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc,
      WpeXInfo.font_width*old_cursor_x,
      WpeXInfo.font_height*(old_cursor_y+1) - WpeXInfo.font_descent,
      obuf, 1);
@@ -497,7 +492,7 @@ int fk_show_cursor()
      WpeXInfo.colors[ca / 16]);
    XSetBackground(WpeXInfo.display, WpeXInfo.gc,
      WpeXInfo.colors[ca % 16]);
-   XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
+   XDrawImageString(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc,
      WpeXInfo.font_width * cur_x,
      WpeXInfo.font_height * (cur_y + 1) - WpeXInfo.font_descent,
      cbuf, 1);
@@ -508,6 +503,27 @@ int fk_show_cursor()
  old_cursor_y = cur_y;
  return(cur_on);
 }
+
+#ifdef HAVE_XFT
+/**
+ * e_x_resize_frame - Make the frame the editor paints fit a new grid.
+ * @pixel_w: the grid's width, in pixels
+ * @pixel_h: the grid's height, in pixels
+ *
+ * After a resize the user sees the old picture kept in place while the editor
+ * lays the screen out again.  The renderer (Cairo) remakes the back buffer
+ * itself when there is one; otherwise the buffer's owner does, starting
+ * black.  Either way the glyph surface follows through the owner, so no
+ * caller rewraps it.
+ */
+static void e_x_resize_frame(int pixel_w, int pixel_h)
+{
+ if (WpeRender.resize)
+  WpeRender.resize(pixel_w, pixel_h);
+ else
+  e_x_backbuf_remake(pixel_w, pixel_h, 0, e_x_blank_pixel());
+}
+#endif
 
 int e_ini_size()
 {
@@ -536,33 +552,8 @@ int e_ini_size()
 
 #ifdef HAVE_XFT
  if (WpeXInfo.xftfont)
- {
-  int new_w = WpeXInfo.font_width * MAXSCOL;
-  int new_h = WpeXInfo.font_height * MAXSLNS;
-
-  if (WpeRender.resize)
-  {
-   if (WpeXInfo.xftdraw)
-    XftDrawDestroy(WpeXInfo.xftdraw);
-   WpeRender.resize(new_w, new_h);
-   WpeXInfo.xftdraw = e_x_xftdraw_create();
-  }
-  else
-  {
-   if (WpeXInfo.xftdraw)
-    XftDrawDestroy(WpeXInfo.xftdraw);
-   if (WpeXInfo.backbuf)
-    XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
-   WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-     new_w, new_h,
-     DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-   WpeXInfo.xftdraw = e_x_xftdraw_create();
-   XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-     BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-   XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-     0, 0, new_w, new_h);
-  }
- }
+  e_x_resize_frame(WpeXInfo.font_width * MAXSCOL,
+                   WpeXInfo.font_height * MAXSLNS);
 #endif
 
  return(0);
@@ -865,10 +856,8 @@ static void e_xft_copy_cell_area(int x1, int y1, int x2, int y2)
  if (y2 > MAXSLNS) y2 = MAXSLNS;
  if (x2 <= x1 || y2 <= y1)
   return;
- XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-   WpeXInfo.gc, WpeXInfo.font_width * x1, WpeXInfo.font_height * y1,
-   WpeXInfo.font_width * (x2 - x1), WpeXInfo.font_height * (y2 - y1),
-   WpeXInfo.font_width * x1, WpeXInfo.font_height * y1);
+ e_x_backbuf_present(WpeXInfo.font_width * x1, WpeXInfo.font_height * y1,
+   WpeXInfo.font_width * (x2 - x1), WpeXInfo.font_height * (y2 - y1));
 }
 
 static int e_x_render_dirty_cells(int force, int *x1, int *y1, int *x2, int *y2)
@@ -1230,7 +1219,7 @@ int e_x_refresh()
    fk_cursor(0);
 
 #ifdef HAVE_XFT
-   if (WpeXInfo.xftfont)
+   if (e_x_backbuf_exists())
    {
 #ifdef HAVE_CAIRO
     if (WpeRender.draw_rect)
@@ -1267,14 +1256,14 @@ int e_x_refresh()
 #ifdef NOXCACHE
       XSetForeground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sab % 16]);
       XSetBackground(WpeXInfo.display, WpeXInfo.gc, WpeXInfo.colors[sab / 16]);
-      XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc, WpeXInfo.font_width*j,
+      XDrawImageString(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc, WpeXInfo.font_width*j,
           WpeXInfo.font_height*(i+1) - WpeXInfo.font_descent, &xc, 1);
 #else
       if (   oldback != WpeXInfo.colors[sab / 16]
           || oldfore != WpeXInfo.colors[sab % 16]
           || i != oldI || j > oldJ+1 || stringcount >= STRBUFSIZE)
       {
-       XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
+       XDrawImageString(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc,
            oldX, oldY, stringbuf, stringcount);
        oldback = WpeXInfo.colors[sab / 16];
        oldfore = WpeXInfo.colors[sab % 16];
@@ -1300,7 +1289,7 @@ int e_x_refresh()
      }
     } } /* _n block */
 #ifndef NOXCACHE
-    XDrawImageString(WpeXInfo.display, WpeXInfo.window, WpeXInfo.gc,
+    XDrawImageString(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc,
         oldX, oldY, stringbuf, stringcount);
 #ifdef NEWSTYLE
     e_flush_xrect();
@@ -1394,52 +1383,12 @@ static int e_x_apply_size(int raw_w, int raw_h, int *pw, int *ph,
  MAXSLNS = h / WpeXInfo.font_height;
 #ifdef HAVE_XFT
  if (WpeXInfo.xftfont)
- {
-  if (WpeXInfo.xftdraw)
-   XftDrawDestroy(WpeXInfo.xftdraw);
-  if (WpeRender.resize)
-  {
-   WpeRender.resize(w, h);
-  }
-  else
-  {
-   if (WpeXInfo.backbuf)
-    XFreePixmap(WpeXInfo.display, WpeXInfo.backbuf);
-   WpeXInfo.backbuf = XCreatePixmap(WpeXInfo.display, WpeXInfo.window,
-     w, h, DefaultDepth(WpeXInfo.display, WpeXInfo.screen));
-   XSetForeground(WpeXInfo.display, WpeXInfo.gc,
-     BlackPixel(WpeXInfo.display, WpeXInfo.screen));
-   XFillRectangle(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.gc,
-     0, 0, w, h);
-  }
-  WpeXInfo.xftdraw = e_x_xftdraw_create();
- }
+  e_x_resize_frame(w, h);
 #endif
  *pw = w;
  *ph = h;
  return 1;
 }
-
-#ifdef HAVE_XFT
-/* Copy an Expose rect from the Xft backbuf to the window, clamped to the
-   snapped whole-cell grid.  backbuf is MAXSCOL*font_width by MAXSLNS*font_height,
-   but under libx11-compat an Expose carries the full physical window size, whose
-   sub-cell remainder band runs past the pixmap after a live-resize.  Copying that
-   off-pixmap area drops the trailing row (the bottom function-key bar), so clamp
-   the extent; the remainder band is cleared separately by e_x_apply_resize.
-   Shared by both Expose handlers below so the clamp arithmetic lives in one
-   place. */
-static void e_x_copy_backbuf_clamped(int x, int y, int w, int h)
-{
- int bw = MAXSCOL * WpeXInfo.font_width;
- int bh = MAXSLNS * WpeXInfo.font_height;
- if (x + w > bw) w = bw - x;
- if (y + h > bh) h = bh - y;
- if (w > 0 && h > 0)
-  XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-    WpeXInfo.gc, x, y, w, h, x, y);
-}
-#endif
 
 /**
  * e_x_answer_expose - Repaint the part of the window an Expose event names.
@@ -1447,34 +1396,29 @@ static void e_x_copy_backbuf_clamped(int x, int y, int w, int h)
  * window that this answer reads ahead.
  *
  * Whoever covered the window and moved away gets the editor's picture back
- * from the backing store, or from the screen buffer without Xft.
+ * from the back buffer, or, in the core-font state with no buffer, from the
+ * screen cells.  Every Expose already waiting is answered in the same run (one
+ * refresh for the whole run without a buffer).  With a buffer, a pending size
+ * change is taken first: the layout repaints after it, so the old picture
+ * would only flash.  This is the one place an Expose is handled.
  */
 static void e_x_answer_expose(XEvent *report)
 {
  XExposeEvent *expose_report = (XExposeEvent *)report;
 
-#ifdef HAVE_XFT
- if (WpeXInfo.xftfont)
- {
-  if (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+ if (e_x_backbuf_exists() &&
+     XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
       ConfigureNotify, report))
-  {
-   XPutBackEvent(WpeXInfo.display, report);
-   return;
-  }
-  do {
-   e_x_copy_backbuf_clamped(expose_report->x, expose_report->y,
-     expose_report->width, expose_report->height);
-  } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
-           Expose, report));
+ {
+  XPutBackEvent(WpeXInfo.display, report);
   return;
  }
-#endif
- e_refresh_area(expose_report->x/WpeXInfo.font_width,
-                        expose_report->y/WpeXInfo.font_height,
-                        expose_report->width/WpeXInfo.font_width+2,
-                        expose_report->height/WpeXInfo.font_height+2);
- e_refresh();
+ do {
+  e_x_backbuf_restore(expose_report->x, expose_report->y,
+    expose_report->width, expose_report->height);
+ } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
+          Expose, report));
+ e_x_backbuf_restore_done();
 }
 
 /**
@@ -1527,8 +1471,7 @@ static int e_x_apply_pending_resize(void)
  if (!e_x_apply_size(e_x_size_pending_w, e_x_size_pending_h, &pw, &ph,
                      &old_scol, &old_slns))
   return 0;
- XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-   WpeXInfo.gc, 0, 0, pw, ph, 0, 0);
+ e_x_backbuf_present(0, 0, pw, ph);
  wpe_layout_screen_resized(old_scol, old_slns);
  return 1;
 }
@@ -1869,7 +1812,7 @@ static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
  /* The cell grid snaps DOWN to whole font cells, but under libx11-compat the
     window backing is the full physical pixel size.  That leaves a sub-cell
     remainder band at the right/bottom edge (< one font cell) that we never
-    draw into: the backbuf->window XCopyArea below only covers the snapped
+    draw into: the back buffer's copy to the window only covers the snapped
     grid.  During a live-resize grow the shim carries the old backing over to
     avoid a flash, so stale pixels (e.g. the previous bottom function-key bar)
     survive in that band and show as a second, half-drawn bar.  Clear the band
@@ -1878,12 +1821,7 @@ static void e_x_apply_resize(int win_pixel_w, int win_pixel_h)
     enlarges the backing without changing the grid) is handled too.  Uses the
     same XClearArea path the shim uses for its own growth-margin clears, so the
     band matches the surrounding background and never flashes real content. */
- if (win_pixel_w > snap_w)
-  XClearArea(WpeXInfo.display, WpeXInfo.window, snap_w, 0,
-    win_pixel_w - snap_w, win_pixel_h, False);
- if (win_pixel_h > snap_h)
-  XClearArea(WpeXInfo.display, WpeXInfo.window, 0, snap_h,
-    win_pixel_w, win_pixel_h - snap_h, False);
+ e_x_backbuf_clear_outside(win_pixel_w, win_pixel_h, snap_w, snap_h);
  /* The grid, its buffers and the layout follow at the top of the key reader
     (e_x_apply_pending_resize), never from this callback: the editor may be
     in the middle of a paint that still reads the old grid. */
@@ -1973,48 +1911,18 @@ int e_x_getch()
   switch (report.type)
   {
    case Expose:
-#ifdef HAVE_XFT
-    if (WpeXInfo.xftfont)
-    {
-     if (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
-         ConfigureNotify, &report))
-     {
-      XPutBackEvent(WpeXInfo.display, &report);
-      break;
-     }
-     do {
-      e_x_copy_backbuf_clamped(report.xexpose.x, report.xexpose.y,
-        report.xexpose.width, report.xexpose.height);
-     } while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
-              Expose, &report));
-    }
-    else
-#endif
-    {
-     do
-     {
-      /* Reason for +2 : Assumes extra character on either side. */
-      e_refresh_area(report.xexpose.x / WpeXInfo.font_width,
-        report.xexpose.y / WpeXInfo.font_height,
-        report.xexpose.width / WpeXInfo.font_width + 2,
-        report.xexpose.height / WpeXInfo.font_height + 2);
-     } while (XCheckMaskEvent(WpeXInfo.display, ExposureMask, &report) == True);
-     e_refresh();
-    }
+    e_x_answer_expose(&report);
     break;
    case ConfigureNotify:
     { int _pw, _ph, _old_scol, _old_slns;
       if (e_x_apply_configure(&report, &_pw, &_ph, &_old_scol, &_old_slns))
       {
-       XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-         WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
+       e_x_backbuf_present(0, 0, _pw, _ph);
        XFlush(WpeXInfo.display);
 
        /* The layout owner lays the windows and every box out again, and
           forgets a stale last view first (the grid, and so every pic, was
           just resized). */
-       XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
-         WpeXInfo.gc, 0, 0, _pw, _ph, 0, 0);
        wpe_layout_screen_resized(_old_scol, _old_slns);
        return WPE_RESIZE;
       }

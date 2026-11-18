@@ -135,7 +135,7 @@ we_SOURCES = \
 # scripts (WPE_FEATURE_SOURCES, below) so that "this object is not here" is
 # answered by name: not built here, or a blind scan.  The word before each
 # list is the configure option's (see `we --version`).
-X11_SOURCES     = we_xterm.c WeXterm.c
+X11_SOURCES     = we_xterm.c WeXterm.c we_xbackbuf.c
 CAIRO_SOURCES   = we_render_cairo.c
 GPM_SOURCES     = we_gpm.c
 VTERM_SOURCES   = we_vterm.c
@@ -252,6 +252,7 @@ noinst_HEADERS = \
   Xwpe.h \
   WeString.h \
   WeXterm.h \
+  we_xbackbuf.h \
   WeProg.h \
   WeExpArr.h \
   we_debprompt.h \
@@ -1046,6 +1047,30 @@ TESTS += tests/check-tty-open.sh
 # recorder (no display); it defines the two globals the owner reads (WpeWl,
 # WpeRender).
 TESTS += tests/check-wayland-frame.sh
+
+# One owner of the X11 back buffer (we_xbackbuf.c): tests/check-x11-backbuf.sh
+# fails when another file creates, frees or copies the pixmap, when its handle
+# is a member of anything, or when Expose is handled outside
+# e_x_answer_expose.  It scans sources, so it runs on every build.
+TESTS += tests/check-x11-backbuf.sh
+# test_xbackbuf runs the owner's sequencing with Xlib replaced by a recorder
+# (no display): every release, the new buffer, the carry, every back, the old
+# buffer freed; nothing copied while there is no buffer.
+if HAVE_X11
+check_PROGRAMS += test_xbackbuf
+TESTS += test_xbackbuf
+test_xbackbuf_SOURCES = tests/test_xbackbuf.c we_xbackbuf.c
+test_xbackbuf_CFLAGS = $(TEST_CFLAGS) $(X_CFLAGS) $(XFT_CFLAGS) $(NCURSESW_CFLAGS)
+endif
+
+# Build configurations the default build does not make (an X11 build without
+# Xft and Cairo, with and without the Wayland backend): each row is configured,
+# built and asked what it contains in a copy of the tree.  Not part of
+# `make check`: it nests a whole configure and build, so it is its own target
+# and a CI job runs it.
+check-build-configs:
+	$(SHELL) $(srcdir)/tests/build-config-row.sh --srcdir $(srcdir)
+.PHONY: check-build-configs
 if HAVE_WAYLAND
 check_PROGRAMS += test_wlframe
 TESTS += test_wlframe
@@ -1260,6 +1285,10 @@ EXTRA_DIST = \
   tests/tty-open.allow \
   tests/check-wayland-frame.sh \
   tests/wayland-frame.allow \
+  tests/check-x11-backbuf.sh \
+  tests/test_xbackbuf.c \
+  tests/x11-backbuf.allow \
+  tests/build-config-row.sh \
   tests/test_wlframe.c \
   tests/wayland/test_surface_bound.py \
   tests/wayland/test_display_lost.py \

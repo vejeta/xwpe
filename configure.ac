@@ -682,8 +682,23 @@ AS_IF([test "x$have_x11" != xyes], [
 AM_CONDITIONAL([HAVE_X11], [test "x$have_x11" = xyes])
 
 # --- Optional: Xft (antialiased font rendering, requires X11) ---
+# Default: auto (use it when found).  --without-xft skips the probe, and the
+# X11 side then runs the core font; --with-xft makes a missing library an
+# error instead of a quiet "no".  The same two switches follow for Cairo.
+AC_ARG_WITH([xft],
+  [AS_HELP_STRING([--without-xft],
+     [Do not use Xft: the X11 side runs the core font (default: auto)])],
+  [], [with_xft=auto])
+AC_ARG_WITH([cairo],
+  [AS_HELP_STRING([--without-cairo],
+     [Do not use Cairo and Pango; this also rules out the native Wayland
+      backend (default: auto)])],
+  [], [with_cairo=auto])
+
 have_xft=no
-AS_IF([test "x$have_x11" = xyes], [
+AS_IF([test "x$with_xft" = xyes && test "x$have_x11" != xyes],
+  [AC_MSG_ERROR([--with-xft needs X11, which this build does not have])])
+AS_IF([test "x$have_x11" = xyes && test "x$with_xft" != xno], [
   AS_IF([test "x$with_libx11_compat" != xno], [
     # The shim provides Xft (libXft.so -> libXft-compat.so); take it from there
     # instead of pkg-config, which would find the system/XQuartz Xft.
@@ -697,7 +712,9 @@ AS_IF([test "x$have_x11" = xyes], [
     PKG_CHECK_MODULES([XFT], [xft fontconfig], [
       have_xft=yes
       AC_DEFINE([HAVE_XFT], [1], [Define if Xft is available])
-    ], [have_xft=no])
+    ], [have_xft=no
+        AS_IF([test "x$with_xft" = xyes],
+          [AC_MSG_ERROR([--with-xft given but the xft and fontconfig development files were not found])])])
   ])
 ])
 
@@ -706,19 +723,29 @@ AS_IF([test "x$have_x11" = xyes], [
 # directly (FT_Get_Char_Index, cairo_ft_scaled_font_lock_face), so libfreetype
 # must be on the link line.  Xft/Cairo pull it transitively, but a strict
 # linker (Fedora's -Wl,--no-undefined-ish ld) requires the DSO named directly.
+# The same goes for fontconfig (FcDefaultSubstitute): without Xft it is no
+# longer on the line through XFT_LIBS.
 have_cairo=no
-AS_IF([test "x$have_x11" = xyes && test "x$with_libx11_compat" = xno], [
-  PKG_CHECK_MODULES([CAIRO], [cairo cairo-xlib freetype2], [
+AS_IF([test "x$with_cairo" = xyes && test "x$have_x11" != xyes],
+  [AC_MSG_ERROR([--with-cairo needs X11, which this build does not have])])
+AS_IF([test "x$with_cairo" = xyes && test "x$with_libx11_compat" != xno],
+  [AC_MSG_ERROR([--with-cairo cannot be combined with --with-libx11-compat: the shim build has no Cairo stack])])
+AS_IF([test "x$have_x11" = xyes && test "x$with_libx11_compat" = xno && test "x$with_cairo" != xno], [
+  PKG_CHECK_MODULES([CAIRO], [cairo cairo-xlib freetype2 fontconfig], [
     have_cairo=yes
     AC_DEFINE([HAVE_CAIRO], [1], [Define if Cairo is available])
-  ], [have_cairo=no])
+  ], [have_cairo=no
+      AS_IF([test "x$with_cairo" = xyes],
+        [AC_MSG_ERROR([--with-cairo given but the cairo, cairo-xlib, freetype2 and fontconfig development files were not found])])])
 ])
 have_pango=no
 AS_IF([test "x$have_cairo" = xyes], [
   PKG_CHECK_MODULES([PANGO], [pangocairo], [
     have_pango=yes
     AC_DEFINE([HAVE_PANGO], [1], [Define if Pango is available])
-  ], [have_pango=no])
+  ], [have_pango=no
+      AS_IF([test "x$with_cairo" = xyes],
+        [AC_MSG_ERROR([--with-cairo given but the pangocairo development files were not found])])])
 ])
 AM_CONDITIONAL([HAVE_CAIRO], [test "x$have_cairo" = xyes])
 
@@ -758,7 +785,9 @@ AS_IF([test "x$xwpe_wayland_probe" != xno], [
     ], [AS_IF([test "x$with_wayland" = xyes],
           [AC_MSG_ERROR([Wayland requested but wayland-client/wayland-cursor/xkbcommon not found])])])
   ], [AS_IF([test "x$with_wayland" = xyes],
-        [AC_MSG_ERROR([the Wayland backend requires Cairo+Pango, which were not found])])])
+        [AS_IF([test "x$with_cairo" = xno],
+          [AC_MSG_ERROR([--with-wayland=yes cannot be combined with --without-cairo: the Wayland backend needs Cairo and Pango])],
+          [AC_MSG_ERROR([the Wayland backend requires Cairo+Pango, which were not found])])])])
 ])
 AM_CONDITIONAL([HAVE_WAYLAND], [test "x$have_wayland" = xyes])
 AC_SUBST([WAYLAND_PROTOCOLS_DIR])

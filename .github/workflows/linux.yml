@@ -249,3 +249,67 @@ jobs:
             wl-logs/
             tests/harness/out/
           if-no-files-found: ignore
+
+  x11-core:
+    name: X11 core-font build (no Xft, no Cairo)
+    # A build without Xft and Cairo has no back buffer and draws with the
+    # core font straight on the window.  The default build never makes that
+    # program, so this job builds each such configuration and runs the X11
+    # resize and uncover rows on it.  Same workflow as the job above, so one
+    # dispatch still starts one run.
+    runs-on: ubuntu-latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      XDG_CONFIG_HOME: ""
+      XDG_STATE_HOME: ""
+      XWPE_TEST_WAIT_SCALE: "3"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build + GUI-test dependencies
+        # xfonts-base is the core font ("8x13") this build draws with; without
+        # it the editor exits at start, and xvfb does not depend on it.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake autopoint pkg-config \
+            libncursesw5-dev ncurses-term libx11-dev libxext-dev \
+            libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
+            libjson-c-dev zlib1g-dev libssl-dev \
+            libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
+            xvfb x11-utils x11-xserver-utils xauth xdotool x11-apps \
+            xfonts-base matchbox-window-manager imagemagick \
+            python3 python3-pip python3-venv python3-pil
+
+      - name: Build the X11 core-font program
+        run: |
+          autoreconf -fi
+          ./configure --without-xft --without-cairo --without-wayland
+          make -j"$(nproc)"
+          ./we --version | grep -q 'xft=no cairo=no pango=no'
+
+      - name: Every core-font configuration builds and says what it has
+        run: make -s check-build-configs
+
+      - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
+        run: |
+          python3 -m venv /tmp/ptenv
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pillow
+          mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
+
+      - name: X11 resize and uncover rows on the core-font program
+        env:
+          XDG_RUNTIME_DIR: /tmp/xdg
+        run: >-
+          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q
+          tests/x11/test_resize.py tests/x11/test_expose.py
+          tests/x11/test_short_command_repaint.py
+          --basetemp "$PWD/x11-core-logs" -rxX
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: x11-core-test-logs
+          path: x11-core-logs/
+          if-no-files-found: ignore
