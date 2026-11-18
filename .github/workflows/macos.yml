@@ -117,7 +117,8 @@ jobs:
           test_syntax_def test_fdloop test_child test_childsig test_dap
           test_bsp_close test_lsp_requests test_startplan test_clipboard
           test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor
-          test_fileop test_write_owner test_childfds test_childfds_loop"
+          test_fileop test_write_owner test_childfds test_childfds_loop
+          test_rowfind test_rowfind_copy test_rowfind_macsim tests/check-platform.sh"
           || { cat test-suite.log; exit 1; }
 
       - name: make check (the tests that need a toolchain)

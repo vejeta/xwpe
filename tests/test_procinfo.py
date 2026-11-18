@@ -395,8 +395,13 @@ def test_a_binary_is_known_by_its_executable_not_its_comm(tmp_path):
         # the same name, another file: not the program the editor would run
         copy = tmp_path / "other" / "sleep"
         copy.parent.mkdir()
-        shutil.copy2(shutil.which("sleep"), copy)
+        # bytes and execute mode only: copy2 also copies file flags, which a
+        # user cannot set on a copy of a SIP-protected system binary (macOS)
+        original = shutil.which("sleep")
+        shutil.copyfile(original, copy)
+        os.chmod(copy, os.stat(original).st_mode & 0o755)
         impostor = procinfo.program("sleep", path=str(copy.parent))
+        assert impostor.kind == procinfo.EXECUTABLE, impostor.describe()
         impostor_runs = impostor.runs(facts)
     finally:
         _end(child)
