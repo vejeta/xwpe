@@ -651,6 +651,7 @@ if ! grep -q 'WPE_EXPECT_FACTS' "$SRCDIR/.github/workflows/macos.yml" 2>/dev/nul
 		fail "row 13: the macOS job does not expect REGEX_SAFE_BOUNDARY=1 (WPE_EXPECT_FACTS): a failed probe would turn the word escapes off without a red job"
 	fi
 fi
+echo "ok: row 13"
 ROWS=$((ROWS + 1))
 
 # Row 14: the compiler is run as configure gave it, flags and all, and only
@@ -666,8 +667,12 @@ ROWS=$((ROWS + 1))
 #  b. unit: compiler.sh works with a CC that carries a flag, and with CC=cc
 #     (through a shim, so it holds on a host where cc is a program): a
 #     function named cc would call itself without end there.
-#  c. mutants: a copy of compiler.sh that quotes the variable, and a copy
-#     whose function is named cc, must each fail the unit check.
+#  c. text: compiler.sh defines no function named like a word CC can take
+#     (cc, gcc, clang, c99), seen in three spellings.  Never run: such a
+#     function recurses without end, and a shell with no depth limit (macOS
+#     /bin/sh) grows until the job is killed.  A copy of compiler.sh that
+#     quotes the variable must fail the unit check (it ends at once).
+#     Every run of the unit script is held by tests/with-deadline.sh.
 # The patterns are built from pieces so this row does not match itself.
 Q='"'
 P_QUOTED="${Q}"'\$\{?(CC|cc|MAINT_CC)\}?'"${Q}"
@@ -692,52 +697,98 @@ if [ -n "$PY_OFFENDERS" ]; then
 	echo "$PY_OFFENDERS"
 fi
 
-# owner_unit FILE CC - FILE sourced with CC given: both calls must succeed.
+# The unit script: FILE sourced with CC given, both calls must succeed.  It
+# runs as its own program under tests/with-deadline.sh, so a compiler that
+# waits for input or a loop that does not end is a named FAIL after
+# UNIT_LIMIT seconds, not a job killed after ten minutes.
+UNIT_LIMIT=20
+cat > "$WORK/unit.sh" <<'UNIT'
+#!/bin/sh
+ulimit -c 0 2> /dev/null
+CC=$2
+. "$1"
+test_cc_require && test_cc --version && test_cc -c -o /dev/null "$3"
+UNIT
+# owner_unit FILE CC - status 0 when the unit script passes, 124 on timeout.
 owner_unit() {
-	(
-		ulimit -c 0 2> /dev/null
-		CC=$2
-		. "$1"
-		test_cc_require && test_cc --version && test_cc -c -o /dev/null "$WORK/empty.c"
-	) > /dev/null 2>&1
+	"$HERE/with-deadline.sh" "$UNIT_LIMIT" sh "$WORK/unit.sh" "$1" "$2" "$WORK/empty.c" < /dev/null > /dev/null 2>&1
 }
 # owner_unit_as_cc FILE - the same with CC=cc, where cc is a shim for the
-# configured compiler first in PATH (a plain call would find the function).
+# configured compiler first in PATH.
 owner_unit_as_cc() {
 	(
 		PATH="$WORK/shim:$PATH"
 		owner_unit "$1" cc
 	)
 }
+# unit_fail TEXT STATUS - the FAIL line, naming a timeout as one.
+unit_fail() {
+	if [ "$2" -eq 124 ]; then
+		fail "row 14: $1: no end after $UNIT_LIMIT s"
+	else
+		fail "row 14: $1"
+	fi
+}
+# owner_defines_word FILE - status 0 when FILE defines a function named like
+# a word CC can take (cc, gcc, clang, c99): "cc()", "cc ()" or "function cc".
+# Such a function would be called by "$CC" when CC is that word, forever.
+owner_defines_word() {
+	grep -qE '^[[:space:]]*(function[[:space:]]+(cc|gcc|clang|c99)([[:space:]]|\(|\{|$)|(cc|gcc|clang|c99)[[:space:]]*\(\))' "$1"
+}
 mkdir "$WORK/shim"
 set -- $CC
 REAL_CC_PATH=$(command -v "$1")
 shift
-printf '#!/bin/sh\nexec %s %s "$@"\n' "$REAL_CC_PATH" "$*" > "$WORK/shim/cc"
+printf '#!/bin/sh\nexec %s %s "$@" < /dev/null\n' "$REAL_CC_PATH" "$*" > "$WORK/shim/cc"
 chmod +x "$WORK/shim/cc"
 printf 'int x;\n' > "$WORK/empty.c"
 OWNER="$HERE/compiler.sh"
 if [ ! -f "$OWNER" ]; then
 	fail "row 14: $OWNER is missing"
-elif ! owner_unit "$OWNER" "$CC -O0"; then
-	fail "row 14: tests/compiler.sh does not run a CC that carries a flag (CC=\"$CC -O0\")"
-elif ! owner_unit_as_cc "$OWNER"; then
-	fail "row 14: tests/compiler.sh does not run with CC=cc (a function named cc calls itself)"
 else
+	owner_unit "$OWNER" "$CC -O0"
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		unit_fail "tests/compiler.sh does not run a CC that carries a flag (CC=\"$CC -O0\")" $rc
+	else
+		echo "ok: row 14 (a CC with a flag)"
+	fi
+	owner_unit_as_cc "$OWNER"
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		unit_fail "tests/compiler.sh does not run with CC=cc" $rc
+	else
+		echo "ok: row 14 (CC=cc)"
+	fi
+	if owner_defines_word "$OWNER"; then
+		fail "row 14: tests/compiler.sh defines a function named like a compiler word (cc, gcc, clang, c99): it would call itself when CC is that word"
+	else
+		echo "ok: row 14 (no function named like a compiler)"
+	fi
+	# The static check must see the three spellings.  The mutants are only
+	# read, never run: such a function does not end.
+	for spelling in 'cc() {' 'cc () {' 'function cc {'; do
+		printf '%s\n\t$CC "$@"\n}\n' "$spelling" > "$WORK/mutant-function-cc.sh"
+		if ! owner_defines_word "$WORK/mutant-function-cc.sh"; then
+			fail "row 14: the check for a function named cc does not see \"$spelling\": the row is blind"
+		fi
+	done
+	echo "ok: row 14 (the function-name check sees cc(), cc () and function cc)"
 	MUT_CALL='\$CC "\$@"'
 	MUT_QUOTED="${Q}\$CC${Q} ${Q}\$@${Q}"
 	sed "s/$MUT_CALL/$MUT_QUOTED/" "$OWNER" > "$WORK/mutant-quoted.sh"
-	{
-		sed 's/^test_cc()/cc()/' "$OWNER"
-		printf 'test_cc() {\n\tcc "$@"\n}\n'
-	} > "$WORK/mutant-function-cc.sh"
 	if cmp -s "$OWNER" "$WORK/mutant-quoted.sh"; then
 		fail "row 14: the quoting mutant is the owner unchanged: the row is blind"
-	elif owner_unit "$WORK/mutant-quoted.sh" "$CC -O0"; then
-		fail "row 14: a compiler.sh that quotes the variable passes the unit check: the row is blind"
-	fi
-	if owner_unit_as_cc "$WORK/mutant-function-cc.sh"; then
-		fail "row 14: a compiler.sh whose function is named cc passes the unit check: the row is blind"
+	else
+		owner_unit "$WORK/mutant-quoted.sh" "$CC -O0"
+		rc=$?
+		if [ $rc -eq 0 ]; then
+			fail "row 14: a compiler.sh that quotes the variable passes the unit check: the row is blind"
+		elif [ $rc -eq 124 ]; then
+			fail "row 14: the quoting mutant did not end after $UNIT_LIMIT s"
+		else
+			echo "ok: row 14 (the quoting mutant fails the unit check)"
+		fi
 	fi
 fi
 ROWS=$((ROWS + 1))
