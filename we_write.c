@@ -1300,6 +1300,29 @@ static BackupResult write_backup(const char *path, const struct stat *target, in
 /* --- putting the old content back ----------------------------------------- */
 
 /**
+ * write_bits_found_off - Which special bits a file had and no longer has,
+ * read from the file itself.
+ * @fd: a descriptor of the file, or -1; @had: the bits it had (the nine and
+ * the special ones, or 0 when it had no special bit).
+ * Return: the special bits of @had that the file does not have now; 0 when
+ * it had none, when it still has them all, or when it cannot be read.
+ *
+ * What a failed write, or a refused call for a bit, tells the user about a
+ * program's bits.  It is read back, never inferred: a write that failed
+ * before it touched the mode (a refused open, a cut that did not happen)
+ * left the bit on, and saying otherwise would be false.
+ */
+static mode_t write_bits_found_off(int fd, mode_t had)
+{
+ struct stat now;
+ mode_t special = had & WRITE_SPECIAL_BITS;
+
+ if (fd < 0 || special == 0 || fstat(fd, &now) != 0)
+  return(0);
+ return(special & ~now.st_mode);
+}
+
+/**
  * write_back_give_bits - Put the special bits on a file that holds its old
  * text again, and record the ones that could not go.
  * @to: the file; @keep: the mode to give back (the nine bits and the special
@@ -1313,10 +1336,16 @@ static void write_back_give_bits(int to, mode_t keep, WpeModeKept *k)
 {
  int err = wpe_write_sync_before_bits(to, keep, 0);
 
+ mode_t lost;
+
  if (err == 0)
   err = wpe_write_set_special_bits(to, keep, k);
- if (err != 0)
-  write_bits_mark_lost(k, keep, err);
+ if (err == 0)
+  return;
+ lost = write_bits_found_off(to, keep);
+ memset(k, 0, sizeof *k);
+ if (lost != 0)
+  write_bits_mark_lost(k, lost, err);
 }
 
 /**
@@ -1636,29 +1665,6 @@ static int write_source_put(const WriteSource *s, FILE *fp, struct stat *written
 }
 
 /**
- * write_bits_found_off - Which special bits a file had and no longer has,
- * read from the file itself.
- * @fd: a descriptor of the file, or -1; @had: the bits it had (the nine and
- * the special ones, or 0 when it had no special bit).
- * Return: the special bits of @had that the file does not have now; 0 when
- * it had none, when it still has them all, or when it cannot be read.
- *
- * What a failed write with no backup tells the user about a program's bits.
- * It is read back, never inferred: a write that failed before it touched the
- * mode (a refused open, a cut that did not happen) left the bit on, and
- * saying otherwise would be false.
- */
-static mode_t write_bits_found_off(int fd, mode_t had)
-{
- struct stat now;
- mode_t special = had & WRITE_SPECIAL_BITS;
-
- if (fd < 0 || special == 0 || fstat(fd, &now) != 0)
-  return(0);
- return(special & ~now.st_mode);
-}
-
-/**
  * write_after_failure - Say how a failed write left the file.
  * @o: the outcome; @path: the file; @bk: what the backup did; @bak_fd: the
  * descriptor it kept (closed here), or -1; @written: what the write's
@@ -1742,6 +1748,9 @@ typedef struct {
  WritePurpose purpose; /* what write_purpose_for_target said of this file */
  int         created; /* the name did not exist: this open made the file, so there is
                          nothing to back up */
+ int         nine_err; /* errno of the call that gave the file its nine bits before the
+                         text (write_mode_before_data), 0 when it worked or none was
+                         made: what a copy says when it could not drop a special bit */
 } WriteTarget;
 
 /** What the backup left a write holding: what it did, and the descriptor of the
@@ -2138,18 +2147,20 @@ static int write_target_has_special_bits(const WriteTarget *t)
  * so no byte of the text goes into a file that is a program (for root the
  * system would not take it off by itself).  Special bits never come from
  * here: the save puts them back after the text is on disk.  A mode that did
- * not change is not a lost save: the text is written.
+ * not change is not a lost save: the text is written.  The errno of the
+ * call is kept in t->nine_err, so a copy that could not drop a special bit
+ * can say why.
  */
-static void write_mode_before_data(const WriteTarget *t, const WriteSource *s, const WriteAim *aim)
+static void write_mode_before_data(WriteTarget *t, const WriteSource *s, const WriteAim *aim)
 {
  WpeModeKept kept;
 
  if (aim->has_recorded)
-  (void)wpe_write_set_mode_fd(t->fd, aim->recorded & WRITE_NINE_BITS, &kept);
+  t->nine_err = wpe_write_set_mode_fd(t->fd, aim->recorded & WRITE_NINE_BITS, &kept);
  else if (s->f != NULL && s->f->filemode >= 0)
-  (void)wpe_write_set_mode_fd(t->fd, (mode_t)s->f->filemode & WRITE_NINE_BITS, &kept);
+  t->nine_err = wpe_write_set_mode_fd(t->fd, (mode_t)s->f->filemode & WRITE_NINE_BITS, &kept);
  else if (s->f == NULL && write_target_has_special_bits(t))
-  (void)wpe_write_set_mode_fd(t->fd, t->before & WRITE_NINE_BITS, &kept);
+  t->nine_err = wpe_write_set_mode_fd(t->fd, t->before & WRITE_NINE_BITS, &kept);
 }
 
 /**
@@ -2188,32 +2199,118 @@ static mode_t write_restore_mode(const WriteTarget *t)
 }
 
 /**
+ * write_mode_after_text - The mode the file has now, read from the file.
+ * @fd: a descriptor of it, or -1; @written: what fstat showed right after the
+ * text, when @have_written; @mode: receives the mode.
+ * Return: 1 when the mode could be read, else 0.
+ *
+ * The one read-back of what a write left on the file: the descriptor when
+ * there is one, else the fstat taken after the text.  A report about special
+ * bits is made from this and from nothing else.
+ */
+static int write_mode_after_text(int fd, const struct stat *written, int have_written, mode_t *mode)
+{
+ struct stat now;
+
+ if (fd >= 0 && fstat(fd, &now) == 0)
+ {
+  *mode = now.st_mode;
+  return(1);
+ }
+ if (!have_written)
+  return(0);
+ *mode = written->st_mode;
+ return(1);
+}
+
+/**
+ * write_note_unsure - Record special bits a write may have cleared when the
+ * file could not be read to find out.
+ * @k: receives the record; @bits: the bits; @err: why there is no descriptor.
+ *
+ * The status row then says the bits "may not have been kept", not that they
+ * were lost.
+ */
+static void write_note_unsure(WpeModeKept *k, mode_t bits, int err)
+{
+ write_bits_mark_lost(k, bits, err);
+ k->unsure = 1;
+}
+
+/**
  * write_keep_special_bits - Put the saved file's setuid, setgid and sticky
  * bits back after the text, and record the ones it could not keep.
  * @fd: a descriptor of the saved file, or -1 when none could be made;
  * @fd_err: why there is none; @t: the target, whose @keep are the bits to
- * give back; @k: receives the bits not kept.
+ * give back; @written, @have_written: the file as fstat showed it after the
+ * text; @k: receives the bits not kept.
  *
  * The write clears these bits, so a setgid program saved by its owner would
  * stop being setgid without a word.  Called after the last byte, on the
  * descriptor of the file written, never on its name: a link put in the
  * name's place cannot be given the bits.  A bit the system refuses, drops
  * or cannot be asked for is recorded for the status row; the text is on
- * disk either way, so this never fails the save.
+ * disk either way, so this never fails the save.  Whatever failed, the file
+ * is read back before anything is said (the descriptor, or without one the
+ * fstat taken after the text): a bit that is on the file is not lost, so the
+ * user is never told a program stopped being one when it did not.  With
+ * nothing to read, the bits are said to be possibly not kept.
  */
-static void write_keep_special_bits(int fd, int fd_err, const WriteTarget *t, WpeModeKept *k)
+static void write_keep_special_bits(int fd, int fd_err, const WriteTarget *t,
+                                    const struct stat *written, int have_written, WpeModeKept *k)
 {
  int err;
+ mode_t lost, mode;
 
  memset(k, 0, sizeof *k);
  if (t->keep == 0)
   return;
- if (fd >= 0)
-  err = write_give_back_bits(fd, t->keep, k);
- else
+ if (fd < 0)
+ {
   err = (fd_err != 0 ? fd_err : EBADF);
- if (err != 0)
-  write_bits_mark_lost(k, t->keep, err);
+  if (!write_mode_after_text(-1, written, have_written, &mode))
+   write_note_unsure(k, t->keep, err);
+  else if ((t->keep & ~mode) != 0)
+   write_bits_mark_lost(k, t->keep & ~mode, err);
+  return;
+ }
+ err = write_give_back_bits(fd, t->keep, k);
+ if (err == 0)
+  return;
+ lost = write_bits_found_off(fd, t->keep);
+ memset(k, 0, sizeof *k);
+ if (lost != 0)
+  write_bits_mark_lost(k, lost, err);
+}
+
+/**
+ * write_read_back_stays - Record the special bits a copy was to drop and
+ * still has.
+ * @fd: a descriptor of the file written, or -1; @t: the target;
+ * @written, @have_written: the file as fstat showed it after the text; @k:
+ * receives the bits that stayed and the errno of the call that was to drop
+ * them.
+ *
+ * A copy is never a program: the nine bits it is given before the text take
+ * the setuid, setgid and sticky bits of the file it overwrote off.  When that
+ * call is refused (a file the user does not own) a bit can stay, and the
+ * user is told so.  Said only of bits read from the file after the text.
+ */
+static void write_read_back_stays(int fd, const WriteTarget *t, const struct stat *written,
+                                  int have_written, WpeModeKept *k)
+{
+ mode_t mode;
+
+ memset(k, 0, sizeof *k);
+ if (t->keep != 0 || (t->before & WRITE_SPECIAL_BITS) == 0)
+  return;
+ if (!write_mode_after_text(fd, written, have_written, &mode))
+  return;
+ k->lost = (t->before & WRITE_SPECIAL_BITS) & mode;
+ if (k->lost == 0)
+  return;
+ k->err = t->nine_err;
+ k->in_group = 1;
 }
 
 /** XWPE_TEST_FAIL=write-other-owner: the replaced file looks owned by another
@@ -2424,7 +2521,8 @@ static void write_run_finish(const WriteSource *s, const char *path, WriteTarget
   bk->fd = -1;
   return;
  }
- write_keep_special_bits(again, again_err, t, &o->file_kept);
+ write_keep_special_bits(again, again_err, t, &written, have_written, &o->file_kept);
+ write_read_back_stays(again, t, &written, have_written, &o->file_stays);
  if (again >= 0)
   close(again);
  write_backup_release(bk);
@@ -2910,28 +3008,49 @@ int wpe_write_identity_of_name(const char *dir, const char *name, WpeFileIdentit
 }
 
 /**
- * wpe_write_overwrite_drops - The special bits a write onto an existing file
- * would not keep.
+ * wpe_write_overwrite_bits - What a write onto an existing file would do to
+ * its special bits.
  * @path: the file the user picked; @own: the file the window read (its
- * FENSTER.file_id), or NULL for a block (always a copy).
- * Return: the setuid, setgid and sticky bits of @path, or 0 when it is not a
- * regular file, has none, or is the window's own file (which keeps them).
+ * FENSTER.file_id), or NULL for a block (always a copy); @drops, @stays:
+ * receive the setuid, setgid and sticky bits the copy will not keep, and
+ * those it will keep (only the sticky bit, of a file the user does not own).
  *
  * Asked before Save As or Write Block replaces a file, so the user is told
- * that the copy will not be a program before answering, not after.  It uses
- * the identity rule of the write itself (write_purpose_for_target), so the
+ * that the copy will not be a program, or that it will stay one, before
+ * answering, not after.  Both are 0 for a file that is not regular, has no
+ * such bit, or is the window's own file (which keeps them).  It uses the
+ * identity rule of the write itself (write_purpose_for_target), so the
  * question and the write cannot disagree about which file is the window's.
- * A link is followed, as the write follows it.
+ * A link is followed, as the write follows it.  The split is a prediction.
+ * The owner or root may change a mode, so every bit drops.  For a file the
+ * user does not own the system itself clears the setuid and setgid bits on
+ * a write (Linux and the BSDs), so those drop too, and only the sticky bit
+ * stays, because the call that would take it off is refused.  Where an ACL
+ * or a capability makes this wrong, the status row after the write tells
+ * the truth.
  */
-mode_t wpe_write_overwrite_drops(const char *path, const WpeFileIdentity *own)
+void wpe_write_overwrite_bits(const char *path, const WpeFileIdentity *own, mode_t *drops,
+                              mode_t *stays)
 {
  struct stat st;
+ mode_t bits;
+ int can_drop;
 
+ *drops = 0;
+ *stays = 0;
  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
-  return(0);
+  return;
  if (write_purpose_for_target(own, &st, 0) == WRITE_PURPOSE_SAVE)
-  return(0);
- return(st.st_mode & WRITE_SPECIAL_BITS);
+  return;
+ bits = st.st_mode & WRITE_SPECIAL_BITS;
+ can_drop = (st.st_uid == geteuid() || geteuid() == 0);
+ if (can_drop)
+  *drops = bits;
+ else
+ {
+  *drops = bits & (S_ISUID | S_ISGID);
+  *stays = bits & S_ISVTX;
+ }
 }
 
 /**
@@ -3259,7 +3378,46 @@ static void write_bits_clause(char *out, size_t n, const WpeModeKept *k)
 
  wpe_write_bits_words(words, sizeof words, k->lost);
  wpe_write_bits_reason(reason, sizeof reason, k);
- snprintf(out, n, "the %s %s not kept: %s", words, several ? "were" : "was", reason);
+ if (k->unsure)
+  snprintf(out, n, "the %s may not have been kept: %s", words, reason);
+ else
+  snprintf(out, n, "the %s %s not kept: %s", words, several ? "were" : "was", reason);
+}
+
+/**
+ * write_stays_clause - Name the special bits a copy still has, and why.
+ * @out, @n: the room; @k: what stayed (lost) and the errno that refused to
+ * drop it (err).
+ *
+ * "it keeps the sticky bit: Operation not permitted", with no capital and no
+ * full stop, so it sits where the lost clause sits.  A bit that stayed with
+ * no refused call says the system would not take it off.
+ */
+static void write_stays_clause(char *out, size_t n, const WpeModeKept *k)
+{
+ char words[64];
+ int several = ((k->lost & (k->lost - 1)) != 0);
+ const char *none = (several ? "the system did not take them off" : "the system did not take it off");
+
+ wpe_write_bits_words(words, sizeof words, k->lost);
+ snprintf(out, n, "it keeps the %s: %s", words, k->err != 0 ? strerror(k->err) : none);
+}
+
+/**
+ * write_written_bits_clause - What a save that worked says about the special
+ * bits of its file, or "" when there is nothing to say.
+ * @out, @n: the room; @o: the outcome of a write that was WRITTEN.
+ *
+ * A Save says which bit it could not give back; a copy says which bit it
+ * could not take off.  A write is one or the other, never both.
+ */
+static void write_written_bits_clause(char *out, size_t n, const WpeWriteOutcome *o)
+{
+ out[0] = '\0';
+ if (o->file_kept.lost != 0)
+  write_bits_clause(out, n, &o->file_kept);
+ else if (o->file_stays.lost != 0)
+  write_stays_clause(out, n, &o->file_stays);
 }
 
 /** Room for ", and the setuid and setgid bits it had are off". */
@@ -3428,27 +3586,29 @@ static void write_other_file_sentence(char *out, size_t n, const WpeWriteOutcome
  * Two things can need saying, and one sentence says both so that neither
  * hides the other: a special bit the file did not keep (a setgid program
  * saved from the editor learns at once that it no longer is one, instead of
- * when it stops working) and the backup that could not be made.  A save
- * with neither says nothing, and a copy that went elsewhere says where.
+ * when it stops working) or, for a copy, one it could not take off (it keeps
+ * the sticky bit of a file the user does not own), and the backup that could
+ * not be made.  A save with neither says nothing, and a copy that went
+ * elsewhere says where.
  */
 static void write_written_sentence(char *out, size_t n, const WpeWriteOutcome *o)
 {
  const char *base = write_base_name(o->path);
  char bits[WRITE_BITS_CLAUSE_MAX];
 
- if (o->backup_err == 0 && o->file_kept.lost == 0)
+ write_written_bits_clause(bits, sizeof bits, o);
+ if (o->backup_err == 0 && bits[0] == '\0')
  {
   if (o->kept)
    snprintf(out, n, "%s's copy could not go beside the file (%s); it is in %s.", base,
             strerror(o->err), o->kept_path);
   return;
  }
- if (o->file_kept.lost == 0)
+ if (bits[0] == '\0')
  {
   snprintf(out, n, "%s written; no backup was made: %s.", base, strerror(o->backup_err));
   return;
  }
- write_bits_clause(bits, sizeof bits, &o->file_kept);
  if (o->backup_err == 0)
   snprintf(out, n, "%s written, but %s.", base, bits);
  else
@@ -3475,8 +3635,7 @@ int wpe_write_written_clause(char *out, size_t n, const WpeWriteOutcome *o)
  out[0] = '\0';
  if (o->status != WPE_WRITE_WRITTEN)
   return(0);
- if (o->file_kept.lost != 0)
-  write_bits_clause(out, n, &o->file_kept);
+ write_written_bits_clause(out, n, o);
  used = strlen(out);
  if (o->backup_err != 0)
   snprintf(out + used, n - used, "%sno backup was made: %s", used > 0 ? "; " : "",

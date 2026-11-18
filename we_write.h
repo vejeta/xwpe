@@ -57,6 +57,8 @@ typedef struct {
  gid_t  gid;        /* the file's group, read back */
  int    in_group;   /* the caller is in that group */
  int    changed;    /* a call succeeded: a failure after it is not "nothing was changed" */
+ int    unsure;     /* the file could not be read after the write, so @lost is what the
+                       write may have cleared, not what it was seen to clear */
  WpeModeOwners owners;  /* a bit dropped on purpose because the copy has another owner or group */
  mode_t asked;      /* the special bits the call asked for */
  int    unreached;  /* a change of mode by name: the name could not be reached, no call was made */
@@ -164,6 +166,10 @@ typedef struct {
                                     (lost == 0: all kept, or it had none).  The
                                     .bak is never given them, so it has no such
                                     record. */
+ WpeModeKept file_stays;         /* the special bits a copy was to drop and, read back
+                                    after the text, still has (lost) and why the call
+                                    that was to drop them failed (err): a copy over a
+                                    file the user does not own.  lost == 0: none */
  WpeModeKept restore_kept;       /* the same for a restore by write-back after a
                                     failed write: the old content is back and
                                     these bits could not be put with it (lost == 0
@@ -227,10 +233,15 @@ WPE_WRITE_RESULT int wpe_write_range(struct FNST *f, const char *path,
    NULL for a plain Save.  A plain Save writes into the file the window read
    (f->file_id); when the name now leads to another file it asks or refuses. */
 int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_name);
-/* The special bits that a write onto the existing file @path would not keep
-   (0: none, not a regular file, or the window's own file, given by its
-   identity, or NULL for a block): what the overwrite question names. */
-mode_t wpe_write_overwrite_drops(const char *path, const WpeFileIdentity *own);
+/* The special bits of the existing file @path, split by what a write onto it
+   would do: @drops, the ones the copy will not keep, and @stays, the ones it
+   cannot take off because the user does not own the file.  Both 0 when it is
+   not a regular file, has none, or is the window's own file (given by its
+   identity, or NULL for a block).  What the overwrite question names; a
+   prediction by the rule of chmod, and the status row after the write says
+   what happened. */
+void wpe_write_overwrite_bits(const char *path, const WpeFileIdentity *own, mode_t *drops,
+                              mode_t *stays);
 
 /* A copy of a window's whole text under a name the editor chose beside the
    user's file (the autosave's .ASV, the emergency save's .ESV, the post-edit

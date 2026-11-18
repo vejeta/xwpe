@@ -868,6 +868,42 @@ static int owner_fake_takes(const char *name)
  return(lstat(p, &st) == 0 && st.st_uid != geteuid());
 }
 
+/* stat, with its own owner fake, for the question that asks about a name the
+   user picked: for the one armed path the file looks owned by another user.
+   It is separate from the lstat fake so a row arms only what it needs.  The
+   real call is fstatat, which every system has.  A row proves the fake took
+   (owner_stat_fake_takes) and skips by name when it did not. */
+static char owner_stat_fake_path[512];
+
+static void owner_stat_fake_arm(const char *name)
+{
+ path_of(owner_stat_fake_path, sizeof owner_stat_fake_path, name);
+}
+
+static void owner_stat_fake_disarm(void)
+{
+ owner_stat_fake_path[0] = '\0';
+}
+
+int stat(const char *path, struct stat *st)
+{
+ int r = fstatat(AT_FDCWD, path, st, 0);
+
+ if (r == 0 && owner_stat_fake_path[0] != '\0' && strcmp(path, owner_stat_fake_path) == 0)
+  st->st_uid = (uid_t)(geteuid() + 1);
+ return(r);
+}
+
+/* Did the armed fake change what stat says about the file NAME? */
+static int owner_stat_fake_takes(const char *name)
+{
+ struct stat st;
+ char p[512];
+
+ path_of(p, sizeof p, name);
+ return(stat(p, &st) == 0 && st.st_uid != geteuid());
+}
+
 /* fsync, watched: the calls on regular files are counted, the special bits
    the first one found on its file are remembered, and an armed call fails
    with EIO.  Off, it passes every call on. */
@@ -1359,6 +1395,330 @@ static void test_a_save_whose_modes_are_all_refused_is_still_written(void)
  chk_has("the bit is named", say, "setgid bit was not kept");
 }
 
+/* @scenario SC-write-owner-E-01: a save never says a bit was lost when the
+   file still has it.  The user cannot change the file's mode (refuse all), a
+   setgid file without group execute and a sticky file are not touched by the
+   write, so the bit is on after the save, whatever the refused call said.
+   Red when the owner marks the bit lost from the refusal and not from the
+   file. */
+static void test_a_save_on_a_file_that_keeps_its_bit_says_nothing_false(void)
+{
+ static const mode_t modes[] = { 02664, 01664 };
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024];
+ size_t i;
+
+ for (i = 0; i < sizeof modes / sizeof modes[0]; i++)
+ {
+  make_dir();
+  if (!test_premise(test_premise_special_bits_settable(dir, modes[i] & 07000),
+                    "a save on a file that keeps its bit says nothing false",
+                    "this user cannot set the bit in the test folder"))
+   continue;
+  put_file("t.c", "old\n", modes[i]);
+  f = window_of_file_with_mode(modes[i]);
+  set_rows("new\n");
+  fakechmod_set(FAKECHMOD_REFUSE, 07777);
+  chk_int("write", save_window(f, "t.c", &o), 0);
+  fakechmod_set(FAKECHMOD_OFF, 0);
+  chk_int("written", o.status, WPE_WRITE_WRITTEN);
+  chk_int("the mode is as it was", mode_of("t.c"), (int)modes[i]);
+  save_sentence(&o, say, sizeof say);
+  chk_int("it says nothing", (long)strlen(say), 0);
+ }
+}
+
+/* Does this system clear a setgid bit when a file with group execute is
+   written, as the kernel does for a user without the privilege to keep it? */
+static int the_system_clears_setgid_on_write(void)
+{
+ char p[512];
+ FILE *fp;
+
+ put_file("probe_clear", "x\n", 02775);
+ path_of(p, sizeof p, "probe_clear");
+ fp = fopen(p, "w");
+ if (fp != NULL)
+ {
+  fputs("y\n", fp);
+  fclose(fp);
+ }
+ return(mode_of("probe_clear") == 0775);
+}
+
+/* @scenario SC-write-owner-E-02: a bit the kernel cleared is named, with the
+   system's reason.  Guard for row E-01: reading back must not hide a real
+   loss.  The row needs a system that clears setgid on write for this user,
+   and skips by name where it does not (a user with CAP_FSETID). */
+static void test_a_save_on_a_file_whose_bit_the_kernel_cleared_names_it(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID),
+                   "a bit the kernel cleared is named", "this user cannot set setgid in the test folder"))
+  return;
+ if (!test_observation(the_system_clears_setgid_on_write(), "a bit the kernel cleared is named",
+                       "this user keeps setgid through a write (CAP_FSETID)"))
+  return;
+ put_file("t.c", "old\n", 02775);
+ f = window_of_file_with_mode(02775);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("the bit is off", mode_of("t.c"), 0775);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the bit is named", say, "the setgid bit was not kept: Operation not permitted");
+}
+
+/* @scenario SC-write-owner-E-03: a block written over a sticky file whose
+   mode the user cannot change keeps the bit, and says so.  Red when the
+   owner never reads the bits that stayed. */
+static void test_a_block_write_onto_a_sticky_file_that_cannot_be_chmoded_says_it_stays(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "a copy says a bit stays",
+                   "this user cannot set the sticky bit in the test folder"))
+  return;
+ put_file("blk.txt", "old\n", 01664);
+ f = window_of_file_with_mode(0664);
+ set_rows("block\n");
+ path_of(p, sizeof p, "blk.txt");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("block write with a backup", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("written", o.status, WPE_WRITE_WRITTEN);
+ chk_int("the bit stays", mode_of("blk.txt"), 01664);
+ save_sentence(&o, say, sizeof say);
+ chk_int("it says so",
+         strcmp(say, "blk.txt written, but it keeps the sticky bit: Operation not permitted."), 0);
+}
+
+/* @scenario SC-write-owner-E-04: a copy over a file of ours that has a
+   setgid or a sticky bit gets no bit and says nothing.  Guard: the nine bits
+   of the file already match the window's, and the call that gives them is the
+   one that takes the special bits off, so skipping it as "nothing to do" turns
+   this row red. */
+static void test_a_copy_over_02644_and_over_01644_gets_no_bit(void)
+{
+ static const mode_t modes[] = { 02644, 01644 };
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], say[1024];
+ size_t i;
+
+ for (i = 0; i < sizeof modes / sizeof modes[0]; i++)
+ {
+  make_dir();
+  if (!test_premise(test_premise_special_bits_settable(dir, modes[i] & 07000),
+                    "a copy over 02644 and 01644 gets no bit",
+                    "this user cannot set the bit in the test folder"))
+   continue;
+  put_file("blk.txt", "old\n", modes[i]);
+  f = window_of_file_with_mode(0644);
+  set_rows("block\n");
+  path_of(p, sizeof p, "blk.txt");
+  chk_int("block write", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+  chk_int("written", o.status, WPE_WRITE_WRITTEN);
+  chk_int("the copy has no bit", mode_of("blk.txt"), 0644);
+  save_sentence(&o, say, sizeof say);
+  chk_int("it says nothing", (long)strlen(say), 0);
+ }
+}
+
+/* @scenario SC-write-owner-E-05: the overwrite question says a bit stays on a
+   file the user does not own.  Played by the stat fake (the file looks owned
+   by another user), which a row proves took and skips by name otherwise;
+   root may change any mode, so there is no such file for it. */
+static void test_the_question_says_a_bit_stays_on_a_file_we_do_not_own(void)
+{
+ mode_t drops = 0, stays = 0;
+ char p[512];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "the question says a bit stays",
+                   "this user cannot set the sticky bit in the test folder"))
+  return;
+ put_file("s.c", "x\n", 01644);
+ path_of(p, sizeof p, "s.c");
+ wpe_write_overwrite_bits(p, NULL, &drops, &stays);
+ chk_int("a file of ours: the bit drops", (long)drops, (long)S_ISVTX);
+ chk_int("a file of ours: nothing stays", (long)stays, 0);
+ if (!test_observation(geteuid() != 0, "the question says a bit stays",
+                       "root may change any mode: no file it does not own"))
+  return;
+ owner_stat_fake_arm("s.c");
+ if (!test_observation(owner_stat_fake_takes("s.c"), "the question says a bit stays",
+                       "stat is not interposable in this C library"))
+ {
+  owner_stat_fake_disarm();
+  return;
+ }
+ wpe_write_overwrite_bits(p, NULL, &drops, &stays);
+ owner_stat_fake_disarm();
+ chk_int("another user's file: nothing drops", (long)drops, 0);
+ chk_int("another user's file: the bit stays", (long)stays, (long)S_ISVTX);
+ owner_stat_fake_disarm();
+}
+
+/* @scenario SC-write-owner-E-06: of a file the user does not own, the system
+   clears setuid and setgid on a write and only the sticky bit stays, so the
+   question says the first two drop and only the third stays.  Red when it
+   predicts every bit stays (or every bit drops) by the owner alone. */
+static void test_the_question_for_a_file_we_do_not_own_says_only_sticky_stays(void)
+{
+ static const mode_t modes[] = { 06644, 05644, 07644 };
+ mode_t drops = 0, stays = 0;
+ char p[512];
+ size_t i;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, 07000), "only the sticky bit stays",
+                   "this user cannot set the three special bits in the test folder"))
+  return;
+ if (!test_observation(geteuid() != 0, "only the sticky bit stays",
+                       "root may change any mode: no file it does not own"))
+  return;
+ path_of(p, sizeof p, "o.c");
+ for (i = 0; i < sizeof modes / sizeof modes[0]; i++)
+ {
+  put_file("o.c", "x\n", modes[i]);
+  owner_stat_fake_arm("o.c");
+  if (!test_observation(owner_stat_fake_takes("o.c"), "only the sticky bit stays",
+                        "stat is not interposable in this C library"))
+  {
+   owner_stat_fake_disarm();
+   return;
+  }
+  wpe_write_overwrite_bits(p, NULL, &drops, &stays);
+  owner_stat_fake_disarm();
+  chk_int("setuid and setgid drop", (long)drops, (long)(modes[i] & (S_ISUID | S_ISGID)));
+  chk_int("only sticky stays", (long)stays, (long)(modes[i] & S_ISVTX));
+ }
+}
+
+/* @scenario SC-write-owner-E-07: a copy over a setgid file whose mode the user
+   cannot change gets no bit from the kernel, and says nothing.  The twin of
+   E-02 for a copy: the bit that stays is read from the file, not taken from the
+   refusal.  Skips by name where the kernel keeps setgid through a write. */
+static void test_a_copy_over_a_setgid_file_the_kernel_cleared_says_nothing(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a cleared bit on a copy is not said to stay",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ if (!test_observation(the_system_clears_setgid_on_write(), "a cleared bit on a copy is not said to stay",
+                       "this user keeps setgid through a write (CAP_FSETID)"))
+  return;
+ put_file("blk.txt", "old\n", 02775);
+ f = window_of_file_with_mode(0775);
+ set_rows("block\n");
+ path_of(p, sizeof p, "blk.txt");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("block write", wpe_write_range(f, p, 0, 0, 1, 1, 1, &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("the kernel cleared the bit", mode_of("blk.txt"), 0775);
+ chk_int("nothing stays", (long)o.file_stays.lost, 0);
+ save_sentence(&o, say, sizeof say);
+ chk_int("it says nothing", (long)strlen(say), 0);
+}
+
+/* @scenario SC-write-owner-E-08: a save that lost one bit and kept another
+   names only the lost one.  03775 with every call refused: the kernel clears
+   setgid, sticky stays; the sentence is about setgid and does not mention
+   sticky.  Red when the record names every bit that was to be given back. */
+static void test_a_save_that_lost_one_bit_and_kept_another_names_only_the_lost(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID | S_ISVTX), "a partial loss names one bit",
+                   "this user cannot set setgid and sticky in the test folder"))
+  return;
+ if (!test_observation(the_system_clears_setgid_on_write(), "a partial loss names one bit",
+                       "this user keeps setgid through a write (CAP_FSETID)"))
+  return;
+ put_file("t.c", "old\n", 03775);
+ f = window_of_file_with_mode(03775);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("sticky is still on", mode_of("t.c"), 01775);
+ chk_int("only setgid is recorded", (long)o.file_kept.lost, (long)S_ISGID);
+ save_sentence(&o, say, sizeof say);
+ chk_int("the sentence names setgid",
+         strcmp(say, "t.c written, but the setgid bit was not kept: Operation not permitted."), 0);
+}
+
+/* @scenario SC-write-owner-E-09: with no descriptor to give the bits back on,
+   the file is still read: a bit the text left on the file is not said lost.
+   The duplication of the descriptor for the bits is made to fail.  A sticky file is
+   not touched by the write, so the save says nothing. */
+static void test_a_save_with_no_descriptor_does_not_call_a_standing_bit_lost(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "no descriptor, a bit that stands",
+                   "this user cannot set the sticky bit in the test folder"))
+  return;
+ put_file("t.c", "old\n", 01664);
+ f = window_of_file_with_mode(01664);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777); /* the nine-bit call before the text is refused too */
+ dup_fails_at = 2; /* the first duplication is the backup's, the second is the save's */
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ dup_fails_at = 0;
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("written", o.status, WPE_WRITE_WRITTEN);
+ chk_int("sticky is on", mode_of("t.c"), 01664);
+ save_sentence(&o, say, sizeof say);
+ chk_int("it says nothing", (long)strlen(say), 0);
+}
+
+/* @scenario SC-write-owner-E-10: a restore after a failed write says nothing
+   of a bit the failed write left on the file.  A sticky file is not touched by
+   the write; the restore's call for the bits is refused; the file still has
+   the bit, so the box does not say it was lost. */
+static void test_a_restore_does_not_call_a_standing_bit_lost(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char *old = big(1024, 'o'), say[2048];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "a restore leaves a standing bit unsaid",
+                   "this user cannot set the sticky bit in the test folder"))
+  return;
+ put_file("t.c", old, 01664);
+ f = window_of_file_with_mode(0664);
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ write_past_limit(f, "t.c", &o, 2048, 4096);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("restored", o.restore_err, 0);
+ chk_int("sticky is on", mode_of("t.c"), 01664);
+ chk_int("no bit is recorded lost", (long)o.restore_kept.lost, 0);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_int("the box does not name sticky", strstr(say, "sticky") == NULL, 1);
+}
+
 /* The backup is a copy of old text: no setuid, setgid or sticky bit at any
    moment, whatever the file had. */
 static void test_the_backup_never_has_the_special_bits(void)
@@ -1560,20 +1920,28 @@ static void test_an_old_copy_of_ours_is_replaced_by_a_new_inode(void)
 {
  WpeWriteOutcome o;
  FENSTER *f;
- struct stat before, after;
- char p[512], buf[256];
+ struct stat before, after, held;
+ char p[512], keep[512], buf[256];
 
  make_dir();
  put_file("t.c.ASV", "old\n", 0644);
  path_of(p, sizeof p, "t.c.ASV");
+ path_of(keep, sizeof keep, "old.keep");
  chk_int("the old copy is there", stat(p, &before), 0);
+ /* A second name keeps the old inode alive, so its number cannot be given
+    to the new file by a file system that reuses numbers. */
+ chk_int("a second name for the old copy", link(p, keep), 0);
  f = window_for_a_copy(0640);
  chk_int("the copy is written", wpe_write_copy(f, p, &o), 0);
  chk_int("written", o.status, WPE_WRITE_WRITTEN);
  chk_has("the new text", get_file("t.c.ASV", buf, sizeof buf), "copy\n");
+ chk_has("the second name keeps the old text", get_file("old.keep", buf, sizeof buf), "old\n");
  chk_int("the copy has the window's nine bits", mode_of("t.c.ASV"), 0640);
  chk_int("stat after", stat(p, &after), 0);
- chk_int("it is a new inode", after.st_ino != before.st_ino, 1);
+ chk_int("stat of the second name", stat(keep, &held), 0);
+ chk_int("the second name is still the old file",
+         held.st_ino == before.st_ino && held.st_dev == before.st_dev, 1);
+ chk_int("it is a new inode", after.st_ino != held.st_ino, 1);
  chk_has("the path written is named", o.path, "t.c.ASV");
 }
 
@@ -1906,6 +2274,7 @@ static void test_a_hard_link_to_the_windows_file_is_its_own_file(void)
  WpeWriteOutcome o;
  FENSTER *f;
  char own[512], link_to[512];
+ mode_t drops, stays;
 
  make_dir();
  if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a hard link is its own file",
@@ -1918,7 +2287,9 @@ static void test_a_hard_link_to_the_windows_file_is_its_own_file(void)
  f = window_of_file_with_mode(02755);
  window_reads(f, "t.c");
  set_rows("new\n");
- chk_int("the question names no bit", (long)wpe_write_overwrite_drops(link_to, &f->file_id), 0);
+ wpe_write_overwrite_bits(link_to, &f->file_id, &drops, &stays);
+ chk_int("the question names no bit that drops", (long)drops, 0);
+ chk_int("the question names no bit that stays", (long)stays, 0);
  chk_int("Save As onto the link", save_window_as(f, dir, "h.c", dir, "t.c"), WPE_WRITE_WRITTEN);
  chk_int("the link keeps setgid", mode_of("h.c"), 02755);
  chk_int("nothing was asked", question_count, 0);
@@ -4254,6 +4625,16 @@ int main(void)
  test_a_saved_setgid_file_keeps_its_bit();
  test_a_save_names_the_bit_the_system_refuses();
  test_a_save_whose_modes_are_all_refused_is_still_written();
+ test_a_save_on_a_file_that_keeps_its_bit_says_nothing_false();
+ test_a_save_on_a_file_whose_bit_the_kernel_cleared_names_it();
+ test_a_block_write_onto_a_sticky_file_that_cannot_be_chmoded_says_it_stays();
+ test_a_copy_over_02644_and_over_01644_gets_no_bit();
+ test_the_question_says_a_bit_stays_on_a_file_we_do_not_own();
+ test_the_question_for_a_file_we_do_not_own_says_only_sticky_stays();
+ test_a_copy_over_a_setgid_file_the_kernel_cleared_says_nothing();
+ test_a_save_that_lost_one_bit_and_kept_another_names_only_the_lost();
+ test_a_save_with_no_descriptor_does_not_call_a_standing_bit_lost();
+ test_a_restore_does_not_call_a_standing_bit_lost();
  test_the_backup_never_has_the_special_bits();
  test_the_nine_bits_of_a_save_are_unchanged();
  test_a_restore_keeps_the_special_bits();

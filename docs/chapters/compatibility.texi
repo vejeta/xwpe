@@ -1120,7 +1120,17 @@ that has a setuid, setgid or sticky bit, the question says so
 (@samp{x.c already exists. Overwrite it?} and a second line,
 @samp{It has the setgid bit; the copy will not keep that bit.}), so the
 answer is given knowing it; Save As onto the window's own file does not
-say it, because the bit stays.  A write that fails
+say it, because the bit stays.  When the file is one the user does not own,
+the system clears its setuid and setgid bits on a write all the same, but
+refuses the change of mode that would take the sticky bit off, so only the
+sticky bit stays, and the question says that on a line of its own
+(@samp{It has the sticky bit; you do not own the file, so the copy will keep
+that bit.}) beside the line for the bits that drop.  That is a prediction
+by the rule of @code{chmod} (the owner or root may change a mode).  It does
+not cover a user with root's ID but no right to change other users' files
+(a user namespace, dropped capabilities), an ACL that changes who may set a
+mode, or the extra write-security ACL of macOS; where it is wrong, the
+status row after the write tells the truth.  A write that fails
 half way and is undone puts back the bits the overwritten file had.  The
 backup copy never gets the bits.
 
@@ -1131,7 +1141,11 @@ there is one (@samp{t.c written, but the setgid bit was not kept: Operation
 not permitted; no backup was made: File exists.}).  A save that fails half
 way and is undone says in its box when the old text is back but a bit could
 not be put with it (@samp{The file holds its previous content, but the setgid
-bit was not kept: Operation not permitted.}).  The text is made to reach the
+bit was not kept: Operation not permitted.}).  A copy that could not take a
+bit off the file it overwrote says so the same way (@samp{blk.txt written,
+but it keeps the sticky bit: Operation not permitted.}); a bit is named only
+when the file was read back and has it, never from what the call returned.
+The text is made to reach the
 disk (@code{fsync}) before a special bit goes back on it, and only then, so a
 power cut cannot leave a setuid or setgid file with the bits on and the text
 lost; a file with no such bit costs no sync.  A sync that fails is a failed

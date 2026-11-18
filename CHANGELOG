@@ -639,6 +639,15 @@ Changes
   As and Write Block over a file that has such a bit ask "x.c already
   exists. Overwrite it?" and say that the copy will not keep the bit; Save
   As onto the window's own file does not, because the bit stays.
+* A save never says a setuid, setgid or sticky bit was lost when the file
+  still has it: the file is read back before the sentence is written, and
+  a save that lost one bit and kept another names only the lost one.  A
+  copy (Block Write, Save As onto another file) over a file whose sticky
+  bit it cannot take off, a file you do not own, says "blk.txt written,
+  but it keeps the sticky bit: Operation not permitted".  Only the sticky
+  bit stays on such a file: the system clears its setuid and setgid bits
+  on the write, and the overwrite question says so, with one line for the
+  bits that drop and one for the sticky bit that stays.
 
 * "Don't overwrite" now leaves the existing file alone and says so on the
   status row; it used to overwrite it.  Replacing a file asks once, a name

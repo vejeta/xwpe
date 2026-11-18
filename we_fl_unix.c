@@ -660,56 +660,79 @@ static int WpeSaveAsTranscript(FENSTER *f, FENSTER *fe, char *filen,
 
 /** Room for the overwrite question: a file name, its sentence and the line
     that names the special bits. */
-#define WPE_OVERWRITE_QUESTION_MAX (WPE_NAME_SIZE + 192)
+#define WPE_OVERWRITE_QUESTION_MAX (WPE_NAME_SIZE + 384)
+
+/**
+ * WpeOverwriteBitsLine - One line of the overwrite question about special bits.
+ * @out, @n: the room; @bits: the bits the line names; @stays: 0 for bits the
+ * copy will not keep, 1 for bits it will keep because the user does not own
+ * the file.
+ *
+ * "\nIt has the setgid bit; the copy will not keep that bit." or
+ * "\nIt has the sticky bit; you do not own the file, so the copy will keep
+ * that bit."  A file the user does not own can have both lines: the system
+ * clears setuid and setgid on a write and refuses to clear sticky.
+ */
+static void WpeOverwriteBitsLine(char *out, size_t n, mode_t bits, int stays)
+{
+  char words[64];
+  const char *them = ((bits & (bits - 1)) != 0 ? "those bits" : "that bit");
+
+  wpe_write_bits_words(words, sizeof words, bits);
+  if(stays)
+    snprintf(out, n, "\nIt has the %s; you do not own the file, so the copy will keep %s.",
+             words, them);
+  else
+    snprintf(out, n, "\nIt has the %s; the copy will not keep %s.", words, them);
+}
 
 /**
  * WpeOverwriteQuestion - The question asked before Save As or Write Block
  * replaces a file that exists.
  * @out, @n: the room; @filen: the file; @dropped: the special bits the file
- * has and the write will not give back, or 0.
+ * has and the write will not give back, or 0; @stays: the special bits the
+ * copy will keep because the user does not own the file, or 0.
  *
  * When the file is a setuid, setgid or sticky program the question says so,
  * so the user who is about to overwrite one with a copy learns that the
- * copy will not be a program, before the answer and not after.
+ * copy will not be a program, or that it will stay one, before the answer
+ * and not after.
  */
-static void WpeOverwriteQuestion(char *out, size_t n, const char *filen, mode_t dropped)
+static void WpeOverwriteQuestion(char *out, size_t n, const char *filen, mode_t dropped,
+                                 mode_t stays)
 {
-  char words[64];
-  const char *them;
+  size_t used;
 
-  if(dropped == 0)
-  {
-    snprintf(out, n, "%s already exists. Overwrite it?", filen);
-    return;
-  }
-  wpe_write_bits_words(words, sizeof words, dropped);
-  if((dropped & (dropped - 1)) != 0)
-    them = "those bits";
-  else
-    them = "that bit";
-  snprintf(out, n, "%s already exists. Overwrite it?\nIt has the %s; the copy will not keep %s.",
-           filen, words, them);
+  snprintf(out, n, "%s already exists. Overwrite it?", filen);
+  used = strlen(out);
+  if(dropped != 0)
+    WpeOverwriteBitsLine(out + used, n - used, dropped, 0);
+  used = strlen(out);
+  if(stays != 0)
+    WpeOverwriteBitsLine(out + used, n - used, stays, 1);
 }
 
 /**
- * WpeOverwriteDrops - The special bits an overwrite of @filen would not keep.
+ * WpeOverwriteBits - What an overwrite of @filen would do to its special bits.
  * @b: the file manager's buffer (what it is for); @fe: the window being
- * saved; @filen: the file that exists.
- * Return: the bits, or 0 when the file has none or is the window's own file
- * (Save As onto itself keeps them).
+ * saved; @filen: the file that exists; @drops, @stays: receive the bits the
+ * copy will not keep and the bits it will keep (both 0 when the file has
+ * none or is the window's own file: Save As onto itself keeps them).
  *
  * Save As and Write Block are asked alike; the owner of writing decides
  * which file is the window's own, by identity and not by name.  The
  * assistant's transcript is never a window's own file (the pane holds no
  * file), so writing it over a program is always a copy that loses the bits.
  */
-static mode_t WpeOverwriteDrops(FLBFFR *b, FENSTER *fe, const char *filen)
+static void WpeOverwriteBits(FLBFFR *b, FENSTER *fe, const char *filen, mode_t *drops,
+                             mode_t *stays)
 {
   if(WpeSaveAsIsTranscript(b, fe))
-    return(wpe_write_overwrite_drops(filen, NULL));
-  if(b->sw == 4)
-    return(wpe_write_overwrite_drops(filen, &fe->file_id));
-  return(wpe_write_overwrite_drops(filen, NULL));
+    wpe_write_overwrite_bits(filen, NULL, drops, stays);
+  else if(b->sw == 4)
+    wpe_write_overwrite_bits(filen, &fe->file_id, drops, stays);
+  else
+    wpe_write_overwrite_bits(filen, NULL, drops, stays);
 }
 
 /**
@@ -721,8 +744,10 @@ static mode_t WpeOverwriteDrops(FLBFFR *b, FENSTER *fe, const char *filen)
 static int WpeAskOverwrite(FENSTER *f, FLBFFR *b, FENSTER *fe, const char *filen)
 {
   char question[WPE_OVERWRITE_QUESTION_MAX];
+  mode_t drops, stays;
 
-  WpeOverwriteQuestion(question, sizeof question, filen, WpeOverwriteDrops(b, fe, filen));
+  WpeOverwriteBits(b, fe, filen, &drops, &stays);
+  WpeOverwriteQuestion(question, sizeof question, filen, drops, stays);
   return(e_message(1, question, f));
 }
 
