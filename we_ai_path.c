@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "we_ai_path.h"
+#include "we_places.h"
 
 /* The walk's state: what is resolved so far, what is left to read, and how
    many links were followed.  `missing` is set from the first component that
@@ -478,7 +479,8 @@ static int path_hooks_folder(const char *rroot, const char *gitdir, char *out, s
 {
  char file[WPE_PATH_RESOLVED_MAX], common[WPE_PATH_RESOLVED_MAX];
  char value[WPE_GITDIR_LINE_MAX] = "", target[WPE_PATH_RESOLVED_MAX];
- const char *home = getenv("HOME");
+ char home[WPE_PATH_RESOLVED_MAX];
+ int have_home = wpe_user_home(home, sizeof home) == 0;
  if (path_git_common_folder(gitdir, common, sizeof common) &&
      path_join(file, sizeof file, common, PATH_GIT_CONFIG_NAME) == 0)
   path_config_hooks_path(file, value, sizeof value);
@@ -486,7 +488,7 @@ static int path_hooks_folder(const char *rroot, const char *gitdir, char *out, s
   path_config_hooks_path(file, value, sizeof value);
  if (!value[0]) return 0;
  if (value[0] == '/') snprintf(target, sizeof target, "%s", value);
- else if (value[0] == '~' && value[1] == '/' && home && *home) {
+ else if (value[0] == '~' && value[1] == '/' && have_home) {
   if (path_join(target, sizeof target, home, value + 2) < 0) return 0;
  } else if (path_join(target, sizeof target, rroot, value) < 0) return 0;
  return wpe_path_resolve(target, out, sz) == WPE_PATH_RESOLVED;

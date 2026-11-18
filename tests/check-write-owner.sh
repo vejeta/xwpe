@@ -178,8 +178,10 @@
 #        included).
 #     c. no working-folder substitute, and no allow line: a literal starting
 #        with a dot assigned to a name with home, dir, base, state or config in
-#        it, the literal ./.local, and a snprintf of a literal starting with a
-#        dot in a function that also calls getenv(.
+#        it (also as the source of a strcpy, strncpy, wpe_path_copy, snprintf
+#        or sprintf into such a name), the literal ./.local, and, in a
+#        function that also calls getenv(, a snprintf of a literal starting
+#        with a dot and a ?: whose last branch is ".".
 #     d. wpe_state_dir( is called only in we_places.c, write_own_base
 #        (we_write.c), wpe_crash_path_init (we_unix.c) and startcmd_state_dir
 #        (we_startcmd.c, whose unit tests link no write owner).  No allow line.
@@ -189,6 +191,14 @@
 #     g. wpe_write_own_bytes( and wpe_write_own_remove( take a WPE_OWN_ kind as
 #        their first argument, never a variable.  No allow line.
 #     h. wpe_write_bytes( appears nowhere.  No allow line.
+#     i. getenv("HOME"), secure_getenv("HOME") and getpwuid( appear only in
+#        we_places.c (the user's home is asked of wpe_user_home).  A use that
+#        is not a place of the editor's own is a line of the allow file with
+#        the reason (the `~` of a path the user typed, the name of an owner of
+#        a file).  Limits, said plainly: this is a review gate, not a proof.
+#        It does not see a ?: whose "." is split across functions, a fallback
+#        to "." through a name with no place word in it (home, dir, base,
+#        state, config), nor getenv(MACRO) where the macro hides "HOME".
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -298,11 +308,13 @@ scan() {
     function note(rule, n) { if (ppmode) ppcnt[rule] += n; else cnt[rule] += n }
     function flush_fn(   r) {
       if (fn == "") return
-      # rule 25c: a literal that starts with a dot is the format of a snprintf
-      # in a function that also reads the environment (a place that falls back
-      # on the working folder when the variable is not set)
+      # rule 25c: a literal that starts with a dot is the format of a snprintf,
+      # or the last branch of a ?:, in a function that also reads the
+      # environment (a place that falls back on the working folder when the
+      # variable is not set)
       if (fn_getenv && fn_dotfmt > 0) cnt["r25c"] += fn_dotfmt
-      fn_getenv = 0; fn_dotfmt = 0
+      if (fn_getenv && fn_dotternary > 0) cnt["r25c"] += fn_dotternary
+      fn_getenv = 0; fn_dotfmt = 0; fn_dotternary = 0
       for (r in cnt) if (cnt[r] > 0) print r, file, fn, cnt[r]
       delete cnt; delete taken; bound17 = 0
     }
@@ -524,6 +536,7 @@ scan() {
     #         wpe_ai_resume_id_take
     #   r25g  wpe_write_own_bytes( or wpe_write_own_remove( whose first
     #         argument does not start with WPE_OWN_ (a kind, never a variable)
+    #   r25i  getenv("HOME") or getpwuid( outside we_places.c
     function note25(s, m,   t, p, a, lit) {
       if (file == "we_places.c" || file == "we_places.h") return
       t = m
@@ -548,9 +561,17 @@ scan() {
       t = s
       while (match(t, "[A-Za-z_0-9]*(home|dir|base|state|config)[A-Za-z_0-9]*[ \t]*=[ \t]*\"[.]")) { note("r25c", 1); t = substr(t, RSTART + RLENGTH) }
       t = s
+      while (match(t, "=[^=;]*[?][^;]*:[ \t]*\"[.]\"")) { fn_dotternary++; t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, "(strcpy|strncpy|wpe_path_copy|snprintf|sprintf)[ \t]*[(][ \t]*[A-Za-z_0-9.>-]*(home|dir|base|state|config)[A-Za-z_0-9]*[ \t]*,([^,]*,)?[ \t]*\"[.]")) { note("r25c", 1); t = substr(t, RSTART + RLENGTH) }
+      t = s
       while (match(t, "[.]/[.]local")) { note("r25c", 1); t = substr(t, RSTART + RLENGTH) }
       t = s
       while (match(t, "snprintf[ \t]*[(][^,]*,[^,]*,[ \t]*\"[.]")) { fn_dotfmt++; t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, /(^|[^A-Za-z0-9_.>])(secure_)?getenv[ \t]*[(][ \t]*"HOME"[ \t]*[)]/)) { note("r25i", 1); t = substr(t, RSTART + RLENGTH) }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])getpwuid(_r)?[ \t]*[(]/)) { note("r25i", 1); t = substr(t, RSTART + RLENGTH) }
       if (m ~ /(^|[^A-Za-z0-9_.>])getenv[ \t]*[(]/) fn_getenv = 1
       t = m
       while (match(t, /(^|[^A-Za-z0-9_.>])wpe_state_dir[ \t]*[(]/)) {
@@ -1267,6 +1288,33 @@ int fake_dot_base(char *buf, size_t n)
  char *path = "./.local/state/xwpe";
  return(base != path);
 }
+int fake_ternary(char *buf, size_t n)
+{
+ const char *home = getenv("XWPE_PLACE");
+ const char *p = home ? home : ".";
+ return(p != NULL);
+}
+int fake_plain_ternary(char *buf, size_t n)
+{
+ const char *dir = (buf != NULL) ? buf : ".";
+ return(dir != NULL);
+}
+int fake_strcpy(char *buf, size_t n)
+{
+ char home[64];
+ strcpy(home, ".");
+ wpe_path_copy(state_dir, n, ".");
+ wpe_path_copy(buf, n, ".");
+ return(buf != NULL);
+}
+int fake_home_env(char *buf, size_t n)
+{
+ const char *h = getenv("HOME");
+ struct passwd *pw = getpwuid(getuid());
+ const char *other = getenv("HOMEWORK");
+ const char *sec = secure_getenv("HOME");
+ return(h != NULL && pw != NULL && other != NULL && sec != NULL);
+}
 int fake_consent(char *buf, size_t n)
 {
  const char *home = getenv("HOME");
@@ -1320,6 +1368,8 @@ EOF
 int wpe_state_dir(char *buf, size_t n)
 {
  const char *x = getenv("XDG_STATE_HOME");
+ const char *h = getenv("HOME");
+ struct passwd *pw = getpwuid(geteuid());
  const char *home = ".";
  snprintf(buf, n, "%s/.local/state/xwpe", x);
  return(wpe_state_dir(buf, n));
@@ -1438,6 +1488,8 @@ EOF
               "r25c we_fake_r25.c fake_home 1" \
               "r25c we_fake_r25.c fake_dot_base 2" "r25b we_fake_r25.c fake_dot_base 1" \
               "r25c we_fake_r25.c fake_consent 1" \
+              "r25c we_fake_r25.c fake_ternary 1" "r25c we_fake_r25.c fake_strcpy 2" \
+              "r25i we_fake_r25.c fake_home 1" "r25i we_fake_r25.c fake_home_env 3" \
               "r25d we_fake_r25.c fake_state 1" "r25e we_fake_r25.c fake_tmp 1" \
               "r25f we_fake_r25.c fake_resume 2" "r25g we_fake_r25.c fake_own 2" \
               "r25b we_fake_r25.c (preprocessor) 1" \
@@ -1469,7 +1521,7 @@ EOF
   fi
   # rule 25: the owners (we_places.c, and in we_write.c and we_unix.c the one
   # function that asks for the state folder) and the shapes that are no offence
-  if grep -q "^r25[a-h] we_places.c \|^r25d we_write.c write_own_base \|^r25a we_write.c \|^r25g we_write.c \|^r25d we_unix.c \|^r25d we_startcmd.c startcmd_state_dir \|^r25c we_fake_r25.c fake_no_getenv \|^r25f we_fake_r25.c wpe_ai_resume_id_take " "$WORK/fake.found"; then
+  if grep -q "^r25[a-i] we_places.c \|^r25d we_write.c write_own_base \|^r25a we_write.c \|^r25g we_write.c \|^r25d we_unix.c \|^r25d we_startcmd.c startcmd_state_dir \|^r25c we_fake_r25.c fake_no_getenv \|^r25c we_fake_r25.c fake_plain_ternary \|^r25i we_fake_r25.c fake_no_getenv \|^r25f we_fake_r25.c wpe_ai_resume_id_take " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: an owner or a shape rule 25 allows was counted; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
@@ -1679,6 +1731,8 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": e_ai_resume_session or e_ai_last_session_id is assigned outside wpe_ai_resume_id_take.  The word after --resume is an id or nothing: go through the setter.  No allow line"
       else if (rule == "r25g")
         print "offender: " $1 " " $2 ": wpe_write_own_bytes or wpe_write_own_remove is called with a first argument that is not a WPE_OWN_ kind.  The owner judges its own folder; a variable there could carry a folder nobody judged.  No allow line"
+      else if (rule == "r25i")
+        print "offender: " $1 " " $2 ": getenv(\"HOME\") or getpwuid( outside we_places.c.  Where the user'"'"'s home is has one owner: ask wpe_user_home (or wpe_user_database_home when the database'"'"'s answer is wanted on purpose).  A use that is not a place of the editor'"'"'s own (the ~ of a path the user typed, the name of a file'"'"'s owner) is a line of the allow file with that reason"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else

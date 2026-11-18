@@ -31,7 +31,9 @@ static inline int wpe_own_dir_mine_alone(const struct stat *st)
    separated by commas) makes the password-file step answer "none".  It can
    only remove a place, never add one, so it cannot weaken a guard; a row
    that removes HOME needs it so that it never resolves the home of the user
-   running the tests. */
+   running the tests.  Under the seam the user-database home is also gone
+   from startplan_is_users_startup, which compares a folder's start-up file
+   with that home as well as with $HOME. */
 #define WPE_PLACES_TEST_FAIL_ENV  "XWPE_TEST_FAIL"
 #define WPE_PLACES_NO_PASSWD_HOME "no-passwd-home"
 
@@ -53,6 +55,15 @@ static inline int wpe_own_dir_mine_alone(const struct stat *st)
    of the password file's entry of geteuid() when that is absolute, else
    none.  0 with @buf filled, -1 when there is none or it does not fit. */
 int wpe_user_home(char *buf, size_t n);
+
+/* The home the user database gives for geteuid() when it is absolute, for
+   code that compares it with $HOME on purpose (a tool that takes its home
+   from the database whatever $HOME says).  0 with @buf filled, or -1. */
+int wpe_user_database_home(char *buf, size_t n);
+
+/* <home>/.xwpe, where older editors kept their settings; only the migration
+   to the XDG folders reads it.  0, or -1 when there is no home folder. */
+int wpe_legacy_dir(char *buf, size_t n);
 
 /* $XDG_STATE_HOME/xwpe when that variable is absolute, else
    <home>/.local/state/xwpe.  Not made here.  0, or -1 when there is no place. */

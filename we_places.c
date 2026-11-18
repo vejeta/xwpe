@@ -13,6 +13,7 @@
 /** The folders below a home folder, and the ones below an XDG base. */
 #define PLACES_STATE_BELOW_HOME  ".local/state"
 #define PLACES_CONFIG_BELOW_HOME ".config"
+#define PLACES_LEGACY_BELOW_HOME ".xwpe"
 
 /** The variables the XDG Base Directory specification names. */
 #define PLACES_XDG_STATE_ENV  "XDG_STATE_HOME"
@@ -85,6 +86,42 @@ static int places_password_home(char *buf, size_t n)
  if (cached[0] == '\0')
   return -1;
  return wpe_path_copy(buf, n, cached);
+}
+
+/**
+ * wpe_user_database_home - The home folder the user database gives, or none.
+ * @buf/@n: receive it.
+ * Return: 0 with an absolute path, -1 when there is none.
+ *
+ * What the user gets: a tool that takes its home from the user database
+ * whatever $HOME says (Java does) is judged against that folder too.  Only
+ * code that must compare the two asks for this one; everything else asks
+ * wpe_user_home.
+ */
+int wpe_user_database_home(char *buf, size_t n)
+{
+ return places_password_home(buf, n);
+}
+
+/**
+ * wpe_legacy_dir - The folder older editors kept their settings in.
+ * @buf/@n: receive it.
+ * Return: 0, or -1 when there is no home folder or the path does not fit.
+ *
+ * <home>/.xwpe.  Only the migration to the XDG folders reads it, and leaves
+ * a note in it.
+ */
+int wpe_legacy_dir(char *buf, size_t n)
+{
+ char home[WPE_PATH_SIZE];
+
+ if (wpe_user_home(home, sizeof home) != 0)
+ {
+  if (n > 0)
+   buf[0] = '\0';
+  return -1;
+ }
+ return wpe_path_join(buf, n, home, PLACES_LEGACY_BELOW_HOME);
 }
 
 /**

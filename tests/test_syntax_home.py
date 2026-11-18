@@ -1,4 +1,4 @@
-"""With HOME unset, the personal syntax file is looked for in the root folder.
+"""With no home folder known, there is no personal syntax file.
 
 The editor used to join an unset HOME as an empty folder, which named
 ".xwpe/syntax_def" under the folder the editor was started in.  That folder

@@ -560,8 +560,9 @@ def test_fpc_program_is_loaded_from_the_build_folder_with_an_exedir(tmp_path):
 def test_rust_debug_binary_goes_under_exedir(tmp_path):
     """Exedir out.d, Ctrl-G r on a.rs: the compiler is told -o <folder>/out.d/a.dbg.
     It was told <folder>/a.dbg.  Only the -o word is asserted: the compiler's
-    error file (a.dbgerr, named by the same owner call beside it) goes to the
-    shell as an argument the stand-in compiler does not see."""
+    error file is in the editor's private folder of the run, not beside the
+    source, and goes to the shell as an argument the stand-in compiler does
+    not see."""
     from test_path_debugger import _compiler_started, _recorded_arguments, _recording_env
     from test_signal_save import DAP_RUST_PROG
     folder = tmp_path / "work"
@@ -587,8 +588,9 @@ def test_rust_debug_binary_goes_under_exedir(tmp_path):
 def test_a_folders_exedir_outside_never_gets_the_debug_compile_unasked(tmp_path):
     """The start folder's xwperc sets Exedir ../elsewhere, which holds an
     a.dbgerr of its own; Ctrl-G r on a.rs.  The compile for debug writes its
-    binary and its error file beside the source, so nothing in ../elsewhere
-    is written or removed unless a question came first."""
+    binary beside the source and its error file in the editor's private
+    folder of the run, so nothing in ../elsewhere is written or removed unless
+    a question came first."""
     from test_path_debugger import _compiler_started, _recorded_arguments, _recording_env
     from test_signal_save import DAP_RUST_PROG
     folder = tmp_path / "work"

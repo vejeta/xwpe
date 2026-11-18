@@ -19,8 +19,7 @@ we_prog.c|r4:e_run_sh|1|P3|a build save
 
 # not the user's text
 we_ai.c|r2:wpe_ai_trace|1|keep|a behaviour trace
-we_ai.c|r2:wpe_ai_write_openai_key|2|keep|the key file, written with its own mode
-we_ai_ui.c|r2:ai_consent_remember|1|keep|the consent marker
+we_ai_ui.c|r2:ai_consent_write_named|1|keep|the marker file the user named with XWPE_AI_CONSENT_FILE, written as a shell redirect is
 we_child.c|r2:wpe_child_io_tty_path|1|keep|the editor's terminal, handed to a child
 we_child.c|r2:wpe_child_tty_open_named|1|keep|a child's terminal, opened by its name
 we_child.c|r2:wpe_child_stdout_to_file|1|keep|a child's output file
@@ -31,15 +30,13 @@ we_debug.c|r2:e_lsp_ui_trace|1|keep|a test trace
 we_edit.c|r2:wpe_buffer_trace|1|keep|a behaviour trace
 we_fl_unix.c|r2:e_man_run|1|keep|the temporary output of the man command
 we_lsp.c|r2:lsp_trace_file|1|keep|a trace
-we_main.c|r2:e_copy_file|1|keep|the XDG migration copy
-we_main.c|r2:e_leave_moved_note|1|keep|the XDG migration note
 we_main.c|r2:e_binding_trace|1|keep|a keystroke trace
 we_paint.c|r2:wpe_ui_trace|1|keep|a keystroke trace
 we_prog.c|r2:e_comp_start|1|keep|a behaviour trace
 we_prog.c|r2:e_p_make_then|1|keep|a behaviour trace
 we_prog.c|r2:e_run|1|keep|a behaviour trace
 we_term.c|r2:e_t_flush_input|1|keep|a behaviour trace
-we_trace.c|r2:wpe_trace_file|1|keep|the trace owner
+we_trace.c|r2:wpe_trace_file|1|keep|the file WPE_TRACE_FILE names: the user's own redirect, and no default name
 we_unix.c|r2:wpe_crash_file_open|1|keep|the crash log, made new (O_EXCL, O_NOFOLLOW) under a name of its own per process
 we_wayland.c|r2:wpe_wl_dump_ppm|1|keep|a test screen dump
 we_wlframe.c|r2:wlf_trace|1|keep|a frame trace
@@ -48,16 +45,12 @@ we_xterm.c|r2:wpe_x_dump_ppm|1|keep|a test screen dump
 
 # rule 8: names of files that are not the user's files
 we_ai.c|r8:ai_mock_reply_file|1|keep|the mock backend's own reply file
-we_ai.c|r8:wpe_ai_write_openai_key|1|keep|the key file, written with its own mode
 we_ai_path.c|r8:path_follow_link|1|keep|reads a link to judge a path, writes nothing
-we_ai_ui.c|r8:ai_consent_remember|1|keep|the consent marker's folder
 we_ai_ui.c|r8:ai_hook_after_accept|1|keep|the hook's own marker file
 we_ai_ui.c|r8:ai_test_swap_after_look|3|keep|the test hook that puts a link where a folder was, unset in every real run
 we_ai_ws.c|r8:ws_git_list|3|keep|the temporary lists of the git command it runs, made by mkstemp in the run's private folder
 we_ai_ws.c|r8:ws_git_show|2|keep|the temporary copy of a file's content that git prints, made by mkstemp in the run's private folder and removed once read
 we_ai_ws.c|r8:ws_revert_snapshot|1|keep|the removal of a file the run created, which the review listed as new and no before image holds
-we_debug.c|r8:e_d_compile_drop|1|keep|the debugger's own marker
-we_debug.c|r8:e_d_compile_tell|2|keep|the debugger's own marker
 we_debug.c|r8:e_d_debugger_pid_forget|1|keep|the debugger's own pid file
 we_debug.c|r8:e_d_fifos_make|1|keep|the debugger's own pipes
 we_debug.c|r8:e_d_quit_basic|5|keep|the debugger's own pipes and scripts
@@ -69,9 +62,7 @@ we_fl_fkt.c|r8:e_unpack_to_file|1|keep|the editor's own help archive
 we_fl_unix.c|r8:e_ed_man|5|keep|the temporary output of the man command
 we_fl_unix.c|r8:e_man_give_up|2|keep|the temporary output of the man command
 we_fl_unix.c|r8:WpePrintFile|1|keep|the print copy, the write owner's temporary
-we_main.c|r8:e_mkdirs|2|keep|the configuration folders
 we_opt.c|r8:e_save_opt|1|keep|the options file's folder
-we_prog.c|r8:e_new_message|1|keep|the build's message file
 we_unix.c|r8:wpe_crash_dir_make|1|keep|the state folder of the crash file, made 0700 only when a crash happens and judged by lstat
 we_startcmd.c|r8:startcmd_dir_trusted|1|keep|the start command's own private folder
 we_startcmd.c|r8:startcmd_dir_private|1|keep|the start command's own private folder, tightened on the descriptor it opened
@@ -116,7 +107,7 @@ we_ai_ui.c|r9:ai_project_memory|1|keep|reads a file, copies nothing
 we_ai_ui.c|r9:ai_slurp_file|1|keep|reads a file, copies nothing
 we_ai_ws.c|r9:ws_git_list|1|keep|reads the git command's output
 we_debug.c|r9:e_lsp_read_file_text|1|keep|reads a file, copies nothing
-we_main.c|r9:e_copy_file|2|keep|the XDG migration copy; the next change to it moves it onto wpe_write_copy_fd
+we_main.c|r9:e_read_whole|1|keep|reads the old option file whole, copies nothing
 we_term.c|r9:e_t_user_screen|1|keep|a screen dump
 we_wayland.c|r9:wpe_wl_dump_ppm|1|keep|a test screen dump
 we_xterm.c|r9:wpe_x_dump_ppm|1|keep|a test screen dump
@@ -222,22 +213,23 @@ we_child.c|r24a:wpe_child_tty_name_is|4|N5|site 22: the name is the terminal on 
 test_write_owner.c|r24e:test_an_old_copy_of_ours_is_replaced_by_a_new_inode|1|N5|C-03: "a new inode" asserted by number
 test_testdir.c|r24e:test_put_mode_makes_a_new_file_with_its_mode|1|N5|the file is held by a second name made before
 # rule 25: the editor's own places and the names it chooses.  r25a lists each
-# by-name text face outside the owner with how the user named the path; r25b
-# and r25e list the sites that still read a place by hand or name a fixed file
-# in /tmp, with the pass that moves them.  r25c, r25d, r25f, r25g and r25h have
-# no line: they are never allowed.  The start command's store keeps its own
-# resolver call (startcmd_state_dir) because its unit tests link no write owner.
+# by-name text face outside the owner with how the user named the path; r25i
+# lists the uses of the home folder that are not a place of the editor's own.
+# r25b, r25c, r25d, r25e, r25f, r25g and r25h have no line: they are never
+# allowed.  The start command's store keeps its own resolver call
+# (startcmd_state_dir) because its unit tests link no write owner.
 we_ai_ui.c|r25a:ai_transcript_write|1|keep|the transcript name the user typed
-we_opt.c|r25a:e_opt_lines_store|1|keep|the options file the options came from
-we_opt.c|r25a:e_save_opt|1|keep|the options file the options came from
+we_opt.c|r25a:e_opt_lines_store|1|keep|the options file the options came from; NOFOLLOW for the start folder's xwperc
+we_opt.c|r25a:e_save_opt|1|keep|the options file the options came from; NOFOLLOW for the start folder's xwperc
 we_prog.c|r25a:e_write_default_prj|1|keep|the project name the user typed in New Project
-we_prog.c|r25a:e_wrt_prj_fl|1|C2b|the open project's file, which the user opened or a start folder named
-we_ai.c|r25b:ai_get_api_key|2|C2b|the key file's folder is read from the environment by hand
-we_ai.c|r25b:wpe_ai_read_openai_key_file|3|C2b|the key file's folder is read from the environment by hand
-we_ai.c|r25b:wpe_ai_write_openai_key|2|C2b|the key file's folder is read from the environment by hand
-we_ai_ws.c|r25b:(preprocessor)|1|C2b|the default folder below the home, for the user's configuration
-we_ai_ws.c|r25b:ws_in_user_config|1|C2b|the user's configuration folder is read from the environment by hand
-we_trace.c|r25e:wpe_trace_file|1|C2b|the trace's default name in /tmp
+we_prog.c|r25a:e_wrt_prj_fl|1|keep|the open project's file; NOFOLLOW when a start folder named it
+# r25i: getenv("HOME") and getpwuid( outside we_places.c.  The home of a place
+# the editor keeps its own files in is asked of wpe_user_home; these are not
+# such places.
+we_fl_unix.c|r25i:WpeFileManagerReturnHome|1|keep|a chdir to the home folder when the working folder cannot be read; nothing is written there
+we_fl_unix.c|r25i:WpeGetCurrentDir|1|keep|a chdir to the home folder when the working folder cannot be read; nothing is written there
+we_fl_unix.c|r25i:WpeHandleFileManager|7|keep|a chdir to the home folder when the working folder cannot be read; nothing is written there
+we_write.c|r25i:write_user_words|1|keep|getpwuid of the owner's uid, for the name in a sentence; not a home
 
 # kept
 we_seen.c|r8:seen_read_link_text|1|keep|reads a link's target text to word a sentence; nothing is made, moved or removed

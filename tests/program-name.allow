@@ -30,7 +30,6 @@ we_prog.c|e_check_header|2|keep|a source and its headers: their times against th
 we_prog.c|e_make_library|1|keep|ar -cr when the library is absent; a library this editor did not build is removed first
 we_prog.c|e_make_multifile_hint|2|keep|looks for the folder's Makefile: names no output
 we_prog.c|e_create_project|1|keep|is the project file there: a source, not an output
-we_prog.c|e_new_message|1|keep|is the Messages file there: not a build output
 we_prog.c|e_p_file_exists|1|keep|is a file there: asked of a source by name
 we_prog.c|e_project_open_error|1|keep|is the project file there: a source, not an output
 we_prog.c|e_select_project|1|keep|is the chosen project file there: a source, not an output

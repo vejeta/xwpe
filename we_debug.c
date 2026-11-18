@@ -8964,6 +8964,7 @@ void e_d_dap_end_at_exit(void)
 #define E_D_COMPILE_SOURCE_WHAT    "source"
 #define E_D_COMPILE_BINARY_WHAT    "program"
 #define E_D_COMPILE_ERRF_WHAT      "compiler error file"
+#define E_D_COMPILE_ERRF_LEAF      "dbgerr"      /* its name in the run folder */
 #define E_D_COMPILE_COMMAND_WHAT   "compiler command"
 #define E_D_COMPILE_ERR_LINE_MAX   512
 #define E_D_COMPILE_DEFAULT_CC     "rustc"
@@ -9012,14 +9013,55 @@ static const char *e_d_exedir(void)
 }
 
 /**
+ * e_d_compile_errors_place - Name the compiler's error file, in the editor's
+ * own run folder.
+ * @f: the source window.
+ *
+ * What the user gets: the compiler's messages never go to a file beside the
+ * source, where a file of the user's own with that name (or a link a cloned
+ * folder brought) would be overwritten and then removed.  They go to a
+ * private folder of this run, and Messages shows them from there.
+ * Return: 0, or -1 (said in a box).
+ */
+static int e_d_compile_errors_place(FENSTER *f)
+{
+ WpeOwnDir d;
+ WpeWriteOutcome o;
+
+ if (wpe_own_dir(WPE_OWN_RUN, NULL, WPE_OWN_MAKE, &d, &o) != 0)
+ {
+  wpe_write_say(f, &o, WPE_WRITE_THEN_NO_BUILD);
+  return(-1);
+ }
+ if (wpe_path_join(e_d_compile.errf, sizeof e_d_compile.errf, d.path, E_D_COMPILE_ERRF_LEAF))
+ {
+  e_d_compile_too_long(f, E_D_COMPILE_ERRF_WHAT);
+  return(-1);
+ }
+ return(0);
+}
+
+/**
+ * e_d_compile_errors_remove - Take the compiler's error file away when the
+ * compile no longer needs it.
+ *
+ * Only the file of the run folder is removed, and only when it is a regular
+ * file of the user's; nothing beside the source is ever touched.
+ */
+static void e_d_compile_errors_remove(void)
+{
+ wpe_write_own_remove(WPE_OWN_RUN, NULL, E_D_COMPILE_ERRF_LEAF);
+}
+
+/**
  * e_d_compile_paths - Name the source, the binary and the error file of the
  * compile for debug of @f.
  * @f: the source window.
  *
- * The program-name owner names the binary and the compiler's error file;
- * both are written beside the source, in the source's folder, whatever
- * Exedir says.  Each path is whole or the compile does not start: a box
- * names the one that does not fit.
+ * The program-name owner names the binary, written beside the source, in the
+ * source's folder, whatever Exedir says; the compiler's error file is in the
+ * editor's run folder (e_d_compile_errors_place).  Each path is whole or the
+ * compile does not start: a box names the one that does not fit.
  * Return: 0, or -1 (said in a box).
  */
 static int e_d_compile_paths(FENSTER *f)
@@ -9037,12 +9079,7 @@ static int e_d_compile_paths(FENSTER *f)
   e_d_compile_too_long(f, E_D_COMPILE_BINARY_WHAT);
   return(-1);
  }
- if (wpe_progname_debug_errors(e_d_compile.errf, sizeof e_d_compile.errf, &s))
- {
-  e_d_compile_too_long(f, E_D_COMPILE_ERRF_WHAT);
-  return(-1);
- }
- return(0);
+ return(e_d_compile_errors_place(f));
 }
 
 /**
@@ -9174,11 +9211,11 @@ static void e_d_compile_tell(void)
  {
   e_d_resume_drop();
   e_d_compile_show_errors(top);
-  unlink(e_d_compile.errf);
+  e_d_compile_errors_remove();
   e_error(E_D_COMPILE_FAILED_LINE, 0, top->fb);
   return;
  }
- unlink(e_d_compile.errf);
+ e_d_compile_errors_remove();
  if (e_d_swtch || e_d_start_busy() || !e_d_compile_file_open())
  {
   e_d_resume_drop();
@@ -9326,7 +9363,7 @@ static void e_d_compile_drop(void)
   return;
  e_d_compile.running = 0;
  wpe_child_end_detached(&e_d_compile.child, SIGTERM);
- unlink(e_d_compile.errf);
+ e_d_compile_errors_remove();
 }
 
 /**

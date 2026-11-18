@@ -168,31 +168,71 @@ static char *e_info_search_path(const char *fallback)
  return(path);
 }
 
-/* Create `path` and any missing parent directories (best-effort, mode 0700). */
-static void e_mkdirs(const char *path)
+/* The most an option file the migration copies may be: an old xwperc is a
+   few kilobytes, and one beyond this is not an option file to carry over. */
+#define E_MIGRATE_MAX (1024 * 1024)
+
+/**
+ * e_config_dir_make - Make the user's configuration folder, if it is missing.
+ *
+ * What the user gets: Options > Save works on a fresh machine.  The folder
+ * is made readable by you alone and judged as the editor's own (a link at
+ * its name is the user's choice and is followed; another user's folder is not
+ * taken for it).  Best effort: when it cannot be made the options are read
+ * from, and saved to, what is there, and the save says why it failed.
+ */
+static void e_config_dir_make(void)
 {
- char tmp[WPE_PATH_SIZE];
- size_t i, n = strlen(path);
- if (n == 0 || n >= sizeof tmp) return;
- memcpy(tmp, path, n + 1);
- for (i = 1; i < n; i++)
-  if (tmp[i] == '/') { tmp[i] = '\0'; mkdir(tmp, 0700); tmp[i] = '/'; }
- mkdir(tmp, 0700);
+ WpeOwnDir d;
+ WpeWriteOutcome o;
+
+ if (wpe_own_dir(WPE_OWN_CONFIG, NULL, WPE_OWN_MAKE, &d, &o) != 0)
+  return;                       /* said by the save that needs the folder */
 }
 
-/* Copy file `src` to `dst` (best-effort).  Returns 0 on success. */
-static int e_copy_file(const char *src, const char *dst)
+/**
+ * e_read_whole - Read a small file into memory.
+ * @path: the file; @out: receives a malloc'd copy; @len: receives its size.
+ * Return: 0, or -1 when it cannot be read whole or is over E_MIGRATE_MAX.
+ */
+static int e_read_whole(const char *path, char **out, size_t *len)
 {
- FILE *in = fopen(src, "rb"), *out;
- char buf[4096];
- size_t r;
+ FILE *in = fopen(path, "rb");
+ char *buf;
+ size_t got;
+
+ *out = NULL;
  if (!in) return -1;
- out = fopen(dst, "wb");
- if (!out) { fclose(in); return -1; }
- while ((r = fread(buf, 1, sizeof buf, in)) > 0)
-  if (fwrite(buf, 1, r, out) != r) { fclose(in); fclose(out); return -1; }
+ buf = MALLOC(E_MIGRATE_MAX + 1);
+ if (!buf) { fclose(in); return -1; }
+ got = fread(buf, 1, E_MIGRATE_MAX + 1, in);
+ if (ferror(in) || got > E_MIGRATE_MAX) { fclose(in); FREE(buf); return -1; }
  fclose(in);
- return fclose(out) == 0 ? 0 : -1;
+ *out = buf;
+ *len = got;
+ return 0;
+}
+
+/**
+ * e_copy_legacy_options - Carry the old ~/.xwpe/xwperc over to the XDG folder.
+ * @legacy: the old file.
+ * Return: 0 when the new file holds it, -1 when it could not be carried over
+ * (the caller then keeps reading the old one, so nothing is lost).
+ *
+ * The new file is made new in the configuration folder, readable by you alone;
+ * a link or another user's file at its name is never written through.
+ */
+static int e_copy_legacy_options(const char *legacy)
+{
+ WpeWriteOutcome o;
+ char *text;
+ size_t len;
+ int rc;
+
+ if (e_read_whole(legacy, &text, &len) != 0) return -1;
+ rc = wpe_write_own_bytes(WPE_OWN_CONFIG, NULL, OPTION_FILE, text, len, &o);
+ FREE(text);
+ return rc;
 }
 
 /**
@@ -232,32 +272,28 @@ static int e_legacy_exists(const char *legacy)
  return legacy[0] != '\0' && access(legacy, F_OK) == 0;
 }
 
+/* The note a migration leaves in the old folder. */
+#define E_MOVED_NOTE_LEAF "MOVED_TO_XDG.txt"
+
 /**
  * e_leave_moved_note - Tell anyone who looks in the old folder where the
  * settings went.
- * @legacy: the old option file's path; @xdgfile: the new one.
+ * @xdgfile: the new option file's path.
  *
- * Written beside the old file after the migration copy; the old folder is
- * kept as a backup, not deleted.  Best effort: no note is not a failed
- * migration.
+ * Written in the old folder after the migration copy, as a new file readable
+ * by you alone (never through a link); the old folder is kept as a backup,
+ * not deleted.  Best effort: no note is not a failed migration.
  */
-static void e_leave_moved_note(const char *legacy, const char *xdgfile)
+static void e_leave_moved_note(const char *xdgfile)
 {
- char note[WPE_PATH_SIZE];
- const char *slash = strrchr(legacy, '/');
- FILE *nf;
+ char text[WPE_PATH_SIZE + sizeof WPE_PLACES_MOVED_NOTE_FMT + sizeof XWPE_HOME];
+ WpeWriteOutcome o;
+ int len = snprintf(text, sizeof text, WPE_PLACES_MOVED_NOTE_FMT, xdgfile, XWPE_HOME);
 
- if (slash == NULL || (size_t)(slash - legacy) >= sizeof note)
+ if (len < 0 || (size_t)len >= sizeof text)
   return;
- memcpy(note, legacy, (size_t)(slash - legacy));
- note[slash - legacy] = '\0';
- if (wpe_path_cat(note, sizeof note, "/MOVED_TO_XDG.txt") != 0)
+ if (wpe_write_own_bytes(WPE_OWN_LEGACY, NULL, E_MOVED_NOTE_LEAF, text, (size_t)len, &o) != 0)
   return;
- nf = fopen(note, "w");
- if (nf == NULL)
-  return;
- fprintf(nf, WPE_PLACES_MOVED_NOTE_FMT, xdgfile, XWPE_HOME);
- fclose(nf);
 }
 
 /* The user config file per the XDG Base Directory spec:
@@ -275,12 +311,12 @@ static char *e_xdg_config_file(void)
  if (e_xdg_config_paths(dir, xdgfile, legacy) != 0)
   return NULL;
 
- e_mkdirs(dir);                          /* so saving here works even on a fresh box */
+ e_config_dir_make();                    /* so saving here works even on a fresh box */
  if (access(xdgfile, F_OK) != 0 && e_legacy_exists(legacy)) {
-  if (e_copy_file(legacy, xdgfile) != 0) {   /* migration failed: keep the legacy file */
+  if (e_copy_legacy_options(legacy) != 0) {   /* migration failed: keep the legacy file */
    n = strlen(legacy) + 1; p = MALLOC(n); if (p) memcpy(p, legacy, n); return p;
   }
-  e_leave_moved_note(legacy, xdgfile);
+  e_leave_moved_note(xdgfile);
  }
  n = strlen(xdgfile) + 1; p = MALLOC(n); if (p) memcpy(p, xdgfile, n); return p;
 }

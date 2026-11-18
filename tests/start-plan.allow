@@ -99,10 +99,8 @@ we_dap.c|dap_plan_of/adapter|1|keep|the fixed plan of a C test with no planner
 
 # --- files the editor removes that are not a start's (rule 2) ---
 # A start's own files go through wpe_startplan_remove.  These are the file
-# manager's, the debug session's own fifos and scripts, the man page's copy,
-# the Messages file and the assistant's workspace.
-we_debug.c|e_d_compile_tell/remove|2|P3c|removed when the debug compile gets its plan
-we_debug.c|e_d_compile_drop/remove|1|P3c|removed when the debug compile gets its plan
+# manager's, the debug session's own fifos and scripts, the man page's copy
+# and the assistant's workspace.
 we_debug.c|e_d_debugger_pid_forget/remove|1|keep|the debug session's own pid file
 we_debug.c|e_d_quit_basic/remove|5|keep|the debug session's own fifos
 we_debug.c|e_d_fifos_make/remove|1|keep|the debug session's own fifo, made again
@@ -110,7 +108,6 @@ we_debug.c|e_d_start_in_script/remove|1|keep|the debug session's own start scrip
 we_fl_unix.c|WpePrintFile/remove|1|keep|the print's copy of the file
 we_fl_unix.c|e_man_give_up/remove|1|keep|the man page's copy
 we_fl_unix.c|e_ed_man/remove|2|keep|the man page's copy
-we_prog.c|e_new_message/remove|1|keep|the Messages file
 we_xterm.c|e_x_system/remove|1|keep|the script file of the command's own terminal
 we_ai_ws.c|ws_git_list/remove|3|keep|the temporary list git answers through, in the run's private folder
 we_ai_ws.c|ws_revert_snapshot/remove|1|keep|the assistant's workspace revert: the removal of a file the run created

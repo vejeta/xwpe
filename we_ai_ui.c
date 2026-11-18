@@ -10113,6 +10113,25 @@ static void ai_opt_sync_widgets(void)
 }
 
 /**
+ * ai_opt_save_key - Keep a key typed in the settings, and say when it is not kept.
+ * @provider: the profile the key belongs to (NULL or "" for the generic one);
+ * @key: the key typed.
+ *
+ * The key stays in use for this session either way.  When the file cannot be
+ * made (no home folder, a link or another user's file at its name) a box says
+ * which file and why, so a key that will not survive the session is never a
+ * surprise at the next start.
+ */
+static void ai_opt_save_key(const char *provider, const char *key)
+{
+ WpeWriteOutcome o;
+
+ if (wpe_ai_write_openai_key(provider, key, &o) == 0 || !WpeEditor)
+  return;
+ wpe_write_say(WpeEditor->f[WpeEditor->mxedt], &o, WPE_WRITE_THEN_NOTHING_MORE);
+}
+
+/**
  * ai_opt_switch_provider - Make a saved profile the active one.
  * @p: the picked profile
  * @key_typed: the key field carried a key for the profile being left
@@ -10126,7 +10145,7 @@ static void ai_opt_sync_widgets(void)
 static void ai_opt_switch_provider(const struct wpe_ai_provider *p, int key_typed)
 {
  if (key_typed)
-  wpe_ai_write_openai_key(e_ai_provider, e_ai_key);
+  ai_opt_save_key(e_ai_provider, e_ai_key);
  e_ai_backend = WPE_AI_OPENAI;
  free(e_ai_endpoint); e_ai_endpoint = strdup(p->endpoint);
  free(e_ai_model);    e_ai_model    = strdup((p->model && *p->model) ? p->model : "");
@@ -10188,7 +10207,7 @@ static void ai_opt_save_provider_as(FENSTER *f)
  wpe_ai_provider_set(name, e_ai_endpoint ? e_ai_endpoint : "", e_ai_model, e_ai_cafile);
  free(e_ai_provider); e_ai_provider = strdup(name);
  if (e_ai_key && *e_ai_key)
-  wpe_ai_write_openai_key(name, e_ai_key);
+  ai_opt_save_key(name, e_ai_key);
 }
 
 /* Provider button (Alt-V): pick a saved OpenAI-compatible provider profile, or
@@ -10467,7 +10486,7 @@ int e_ai_options(FENSTER *f)
  if (ai_opt_commit_connection_fields(o))
   /* Persist a newly typed key to the active provider's file (or the generic
      one), so it survives the session; e_ai_key holds it meanwhile. */
-  wpe_ai_write_openai_key(e_ai_provider, e_ai_key);
+  ai_opt_save_key(e_ai_provider, e_ai_key);
 #ifdef WPE_AI_AGENT_HOST
  e_ai_agent_engine = (o->pstr[2]->num == 1) ? WPE_AI_ENGINE_CLAUDE_HOST
                                             : WPE_AI_ENGINE_BUILTIN;
@@ -10508,6 +10527,20 @@ static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
 
 /* ======================= first-use consent ============================= */
 
+/* The marker's name in the configuration folder, and its content. */
+#define AI_CONSENT_LEAF "ai_consented"
+#define AI_CONSENT_TEXT "1\n"
+
+/**
+ * ai_consent_named - The marker file the user named, if he did.
+ * Return: XWPE_AI_CONSENT_FILE's value, or NULL when it is unset or empty.
+ */
+static const char *ai_consent_named(void)
+{
+ const char *e = getenv("XWPE_AI_CONSENT_FILE");
+ return (e && *e) ? e : NULL;
+}
+
 /**
  * ai_consent_path - Path of the "first-use notice accepted" marker file.
  * @buf: destination; @n: its size.  Overridable with XWPE_AI_CONSENT_FILE.
@@ -10520,14 +10553,14 @@ static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
  */
 static const char *ai_consent_path(char *buf, size_t n)
 {
- const char *e = getenv("XWPE_AI_CONSENT_FILE");
+ const char *e = ai_consent_named();
  char dir[WPE_PATH_SIZE];
- if (e && *e) {
+ if (e) {
   snprintf(buf, n, "%s", e);
   return buf;
  }
  if (wpe_config_dir(dir, sizeof dir) != 0) return NULL;
- if (wpe_path_join(buf, n, dir, "ai_consented") != 0) return NULL;
+ if (wpe_path_join(buf, n, dir, AI_CONSENT_LEAF) != 0) return NULL;
  return buf;
 }
 
@@ -10550,19 +10583,36 @@ static int ai_consent_given(void)
 }
 
 /**
+ * ai_consent_write_named - Write the marker to the file the user named.
+ * @path: XWPE_AI_CONSENT_FILE's value.
+ *
+ * The user chose this name for the test or the script that set it, so it is
+ * written as named, as a redirect in a shell is.
+ */
+static void ai_consent_write_named(const char *path)
+{
+ FILE *fp = fopen(path, "w");
+ if (fp) { fputs(AI_CONSENT_TEXT, fp); fclose(fp); }
+}
+
+/**
  * ai_consent_remember - Persist that the first-use notice was accepted.
  *
- * With no configuration folder nothing is kept, and the notice comes back at
- * the next start.
+ * The marker is a new file in the user's own configuration folder, readable
+ * by you alone, and is never written through a link.  With no configuration
+ * folder nothing is kept, and the notice comes back at the next start.
  */
 static void ai_consent_remember(void)
 {
- char buf[WPE_PATH_SIZE];
- char *slash;
- if (ai_consent_path(buf, sizeof buf) == NULL) return;
- slash = strrchr(buf, '/');
- if (slash) { *slash = '\0'; mkdir(buf, 0700); *slash = '/'; }  /* best-effort dir */
- { FILE *fp = fopen(buf, "w"); if (fp) { fputs("1\n", fp); fclose(fp); } }
+ const char *named = ai_consent_named();
+ WpeWriteOutcome o;
+ if (named) {
+  ai_consent_write_named(named);
+  return;
+ }
+ if (wpe_write_own_bytes(WPE_OWN_CONFIG, NULL, AI_CONSENT_LEAF, AI_CONSENT_TEXT,
+                         strlen(AI_CONSENT_TEXT), &o) != 0)
+  wpe_ai_trace("consent not kept: %s", o.path);
 }
 
 /* Shared with the AI action menu below (defined next to e_ai_menu_items):

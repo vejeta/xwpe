@@ -144,7 +144,6 @@ COPY|we_opt.c|e_about_box_draw|1|text|the version string into 60 bytes
 COPY|we_opt.c|e_opt_save|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_save_opt|7|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_opt_note_ignored_key|2|checked|the length is tested against the array before the copy
-COPY|we_opt.c|e_opt_note_folder|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_opt_lines_add_copy|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_add_arguments|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_add_txtstr|1|sized|the destination is allocated at its sources' length just before

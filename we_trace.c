@@ -11,8 +11,10 @@
 #include <stdarg.h>
 
 /* wpe_trace_file -- the lazily-opened append handle for the trace file.
- * Opened once, on the first trace; returns NULL (tracing silently off) if the
- * file cannot be opened, and does not retry. */
+ * Opened once, on the first trace, and only when $WPE_TRACE_FILE names a file
+ * the user chose: with no name the trace is off, so a name fixed in a shared
+ * folder is never written by a trace build.  Returns NULL (tracing silently
+ * off) if there is no name or the file cannot be opened, and does not retry. */
 static FILE *wpe_trace_file(void)
 {
     static FILE *fp = NULL;
@@ -20,9 +22,8 @@ static FILE *wpe_trace_file(void)
 
     if (!tried) {
         const char *path = getenv("WPE_TRACE_FILE");
-        if (!path || !*path)
-            path = "/tmp/xwpe-trace.txt";
-        fp = fopen(path, "a");
+        if (path && *path)
+            fp = fopen(path, "a");
         tried = 1;
     }
     return fp;

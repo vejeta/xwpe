@@ -1176,6 +1176,38 @@ must not make a second program out of a copy; and a bit that is lost must not
 be lost in silence.
 @end table
 
+@section Files named like the editor's own
+@cindex Messages file
+@cindex dbgerr
+
+@table @asis
+@item A file called @file{Messages}
+The original removed @file{./Messages} at every build and read a file of that
+name, and of @file{Watches} and @file{Stack}, into the windows of those names.
+xwpe never removes it and never loads it: those windows are the editor's own,
+filled by the build and the debugger.  The reason: a file of yours, or one a
+cloned folder brings, is not a build's output.  @samp{wpe -pm @var{file}}
+still reads the file you name as messages.
+
+@item A link at @file{./xwperc}
+The original rewrote the @file{xwperc} of the folder it was started in through
+a link, into whatever file the link named.  xwpe refuses, says so in a box, and
+leaves the options unsaved there; @samp{Save Options} lets you type another
+file name.  Your own @file{~/.config/xwpe/xwperc} may be a link.  The reason:
+a folder you cloned can commit that link.
+
+@item A @code{Project} outside the start folder
+The original opened any project the folder's @file{xwperc} named.  xwpe opens
+one only when it lies inside that folder (links followed); another is not
+opened and a box says so.  The reason: a cloned folder must not make the
+editor take another of your projects, and its conversation, for its own.
+
+@item The debug compile's messages
+The compiler's messages for a debug session go to a file in the editor's
+private folder of the run, not to @file{@var{program}.dbgerr} beside the
+source, so a file of that name is neither overwritten nor removed.
+@end table
+
 @section The file manager's Copy, Move, Link and Remove
 
 @table @asis

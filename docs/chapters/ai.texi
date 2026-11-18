@@ -151,7 +151,8 @@ acceptance is remembered in a marker file,
 with @env{XWPE_AI_CONSENTED=1} skips the notice.  With no home folder known
 there is no such file: nothing is remembered and the notice is shown at every
 start, and a marker file in the folder you started the editor in is never
-taken for your consent.
+taken for your consent.  The marker is a new file readable by you alone, and a
+link at its name is not written through.
 
 @section Backends
 
@@ -1159,7 +1160,10 @@ backend to OpenAI-compatible and applies the profile's endpoint, model and CA
 file.  Each profile's API key lives in
 @file{~/.config/xwpe/openai-api-key-@var{name}} (falling back to the generic
 @file{openai-api-key}), so Groq, a Proton Lumo bridge and so on can each carry
-their own key.
+their own key.  A key you type in the settings is written as a new file
+readable by you alone; a link at that name is not written through, and the
+dialog says the key was not kept.  A relative @env{XDG_CONFIG_HOME} is
+ignored, so a key is never read from a folder under the one you started in.
 @item AIProviderName
 The active profile's name (empty for an ad-hoc endpoint typed into the field).
 @item AIPolicy

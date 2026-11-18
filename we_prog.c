@@ -9925,6 +9925,47 @@ int freedfN(struct dirfile **df, int n)
 }
 
 /**
+ * e_prj_write_flags - How the open project's file may be opened for writing.
+ * Return: WPE_WRITE_NOFOLLOW when a start folder's xwperc named the project,
+ * else 0.
+ *
+ * What the user gets: a project a cloned folder names is never rewritten
+ * through a link the repository committed at its name (a link to a shell
+ * start-up file, say).  A project the user opened, typed or named in his own
+ * configuration is his file and is followed as before.
+ */
+static int e_prj_write_flags(void)
+{
+ if (e_opt_value_from(E_OPT_SCOPE_PROGRAMMING, "Project", e_prog.project) == WPE_FROM_FOLDER)
+  return(WPE_WRITE_NOFOLLOW);
+ return(0);
+}
+
+/**
+ * e_prj_say_write_refused - Tell why the project's file could not be opened.
+ * @f: a window of the desktop; @o: the refusal.
+ *
+ * A link at the name of a project the start folder named has its own
+ * sentence, so the user knows the folder, not the disk, is the reason and
+ * that the list is still in its window; any other refusal is the owner's.
+ */
+static void e_prj_say_write_refused(FENSTER *f, const WpeWriteOutcome *o)
+{
+ char text[WPE_PATH_SIZE + 256];
+
+ if (!o->replaced_by_link)
+ {
+  wpe_write_say(f, o, WPE_WRITE_THEN_PROJECT_KEPT);
+  return;
+ }
+ snprintf(text, sizeof text,
+          "%s is a link, and the xwperc of the folder you started in named this project: "
+          "the project list was not written through it.  The project list is still in its "
+          "window.", o->path);
+ e_message(0, text, f);
+}
+
+/**
  * e_wrt_prj_fl - Write the open project's list and settings to its .prj.
  * @f: a window of the desktop.
  * Return: 0 when the file holds the project, -1 when not.
@@ -9933,6 +9974,8 @@ int freedfN(struct dirfile **df, int n)
  * full disk) and "The project list is still in its window.", so the user
  * knows the edits are not lost.  The caller keeps the project window open
  * on -1.  Running out of memory for the path says so and writes nothing.
+ * A link at the name of a project a start folder's xwperc named is refused
+ * (e_prj_write_flags).
  */
 int e_wrt_prj_fl(FENSTER *f)
 {
@@ -9947,11 +9990,11 @@ int e_wrt_prj_fl(FENSTER *f)
   e_error(e_msg[ERR_LOWMEM], 0, f->fb);
   return(-1);
  }
- fp = wpe_write_stream_open(path, &o);
+ fp = wpe_write_stream_open_flags(path, e_prj_write_flags(), &o);
  FREE(path);
  if (fp == NULL)
  {
-  wpe_write_say(f, &o, WPE_WRITE_THEN_PROJECT_KEPT);
+  e_prj_say_write_refused(f, &o);
   return(-1);
  }
  fprintf(fp, "#\n# xwpe - project-file: %s\n", e_prog.project);
@@ -10182,8 +10225,6 @@ int e_new_message(FENSTER *f)
    e_close_window(cn->f[cn->mxedt]);
    break;
   }
- if (access("Messages", 0) == 0)
-  remove("Messages");
  if (e_edit(cn, "Messages"))
   return(WPE_ESC);
  return(0);

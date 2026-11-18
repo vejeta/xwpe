@@ -199,8 +199,11 @@ extern char *e_ai_provider;
  * (the key file is named openai-api-key-<name>, so '/' would make a path). */
 int         wpe_ai_provider_name_usable(const char *name);
 extern char *e_ai_key;        /* session OpenAI key from the dialog; NULL=use files */
-/* Persist an OpenAI key to ~/.config/xwpe/openai-api-key[-<provider>] (0600). */
-int         wpe_ai_write_openai_key(const char *provider, const char *key);
+/* Persist an OpenAI key to <config folder>/openai-api-key[-<provider>] as a new
+ * file readable by you alone, never through a link at that name.  0, or -1 with
+ * @o saying why (no home folder, a link or another user's file in the way). */
+WPE_WRITE_RESULT int wpe_ai_write_openai_key(const char *provider, const char *key,
+                                             WpeWriteOutcome *o);
 /* Read the stored OpenAI key file for a provider (NULL => generic); NULL if none. */
 char       *wpe_ai_read_openai_key_file(const char *provider);
 int         wpe_ai_provider_count(void);

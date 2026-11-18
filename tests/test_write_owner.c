@@ -5821,9 +5821,91 @@ static void test_a_save_with_no_second_descriptor_keeps_the_window_its_file(void
  save_with_no_second_descriptor("no birth", 0);
 }
 
+/* @scenario SC-chosen-names-29: a stream opened with NOFOLLOW is never led through a link. */
+static void test_a_stream_with_nofollow_is_not_led_through_a_link(void)
+{
+ WpeWriteOutcome o;
+ char victim[512], link[512], buf[64];
+ FILE *fp;
+
+ make_dir();
+ put_file("victim", "KEEP\n", 0644);
+ path_of(victim, sizeof victim, "victim");
+ path_of(link, sizeof link, "xwperc");
+ if (symlink(victim, link) != 0)
+  perror("symlink");
+ fp = wpe_write_stream_open_flags(link, WPE_WRITE_NOFOLLOW, &o);
+ chk_int("the open is refused", fp == NULL, 1);
+ chk_int("it says a link is in the way", o.replaced_by_link, 1);
+ chk_has("the victim keeps its text", read_at(victim, buf, sizeof buf), "KEEP");
+ chk_int("the link is still a link", name_is_link(link), 1);
+ fp = wpe_write_stream_open_flags(link, 0, &o);
+ chk_int("without the flag the link is followed, as a Save follows it", fp != NULL, 1);
+ if (fp != NULL)
+ {
+  fputs("DONE\n", fp);
+  chk_int("the stream closes", wpe_write_stream_close(fp, &o), 0);
+ }
+ chk_has("the followed link wrote its target", read_at(victim, buf, sizeof buf), "DONE");
+}
+
+/* @scenario SC-chosen-names-30: a dangling link with NOFOLLOW creates nothing. */
+static void test_a_nofollow_stream_at_a_dangling_link_creates_nothing(void)
+{
+ WpeWriteOutcome o;
+ char target[512], link[512];
+ FILE *fp;
+
+ make_dir();
+ path_of(target, sizeof target, "made");
+ path_of(link, sizeof link, "project.prj");
+ if (symlink(target, link) != 0)
+  perror("symlink");
+ fp = wpe_write_stream_open_flags(link, WPE_WRITE_NOFOLLOW, &o);
+ chk_int("the open is refused", fp == NULL, 1);
+ chk_int("the file the link names was not made", mode_at(target), -1);
+}
+
+/* @scenario SC-chosen-names-31: the note of the migration is written in the old folder, new and private. */
+static void test_the_legacy_folder_takes_a_new_private_note_and_no_link(void)
+{
+ WpeWriteOutcome o;
+ char home[512], file[512], victim[512], buf[64], leg[512];
+
+ env_keep_all();
+ make_dir();
+ path_of(home, sizeof home, "home");
+ snprintf(leg, sizeof leg, "%s/.xwpe", home);
+ if (mkdir(home, 0700) != 0 || mkdir(leg, 0755) != 0)
+  perror("mkdir");
+ setenv("HOME", home, 1);
+ chk_int("the legacy folder is under the home", wpe_legacy_dir(buf, sizeof buf), 0);
+ chk_has("its name", buf, "/home/.xwpe");
+ chk_int("a note is written", wpe_write_own_bytes(WPE_OWN_LEGACY, NULL, "MOVED.txt", "moved\n", 6, &o), 0);
+ snprintf(file, sizeof file, "%s/MOVED.txt", leg);
+ chk_has("its text", read_at(file, buf, sizeof buf), "moved");
+ chk_int("it is private", mode_at(file), 0600);
+ put_file("victim", "KEEP\n", 0644);
+ path_of(victim, sizeof victim, "victim");
+ snprintf(file, sizeof file, "%s/LINKED.txt", leg);
+ if (symlink(victim, file) != 0)
+  perror("symlink");
+ chk_int("a link at the note's name is refused",
+         wpe_write_own_bytes(WPE_OWN_LEGACY, NULL, "LINKED.txt", "x", 1, &o), -1);
+ chk_has("the victim keeps its text", read_at(victim, buf, sizeof buf), "KEEP");
+ unsetenv("HOME");
+ setenv("XWPE_TEST_FAIL", "no-passwd-home", 1);
+ chk_int("with no home there is no legacy folder", wpe_legacy_dir(buf, sizeof buf), -1);
+ chk_int("nor a database home", wpe_user_database_home(buf, sizeof buf), -1);
+ env_restore_all();
+}
+
 int main(void)
 {
  WpeMouseChangeShape = stub_mouse_shape;
+ test_a_stream_with_nofollow_is_not_led_through_a_link();
+ test_a_nofollow_stream_at_a_dangling_link_creates_nothing();
+ test_the_legacy_folder_takes_a_new_private_note_and_no_link();
  test_an_own_file_is_never_written_through_a_link();
  test_an_own_file_at_a_dangling_link_creates_nothing();
  test_an_old_own_file_is_replaced_by_a_new_private_file();

@@ -3410,6 +3410,8 @@ static int write_own_base(WpeOwnKind kind, char *buf, size_t n)
   return(wpe_run_dir(buf, n));
  case WPE_OWN_CONFIG:
   return(wpe_config_dir(buf, n));
+ case WPE_OWN_LEGACY:
+  return(wpe_legacy_dir(buf, n));
  }
  return(-1);
 }
@@ -3839,6 +3841,40 @@ static void write_stream_confirm_stays(FILE *fp, WpeWriteOutcome *o)
 }
 
 /**
+ * wpe_write_stream_open_flags - wpe_write_stream_open with a policy for a link at the name.
+ * @path, @o: as for wpe_write_stream_open; @flags: WPE_WRITE_NOFOLLOW to
+ * refuse a link at the end of @path, or 0 to follow it as a Save does.
+ * Return: the stream, or NULL (the outcome says why; a refused link has
+ * o->replaced_by_link set).
+ *
+ * What the user gets: a file that a folder you did not make can name (the
+ * ./xwperc of a cloned project, its project list) is never written through a
+ * link a repository committed there.
+ */
+FILE *wpe_write_stream_open_flags(const char *path, int flags, WpeWriteOutcome *o)
+{
+ WriteSource s;
+ WriteAim aim;
+ WriteTarget t;
+ WriteBackup bk;
+
+ memset(o, 0, sizeof *o);
+ o->status = WPE_WRITE_FAILED;
+ write_set_path(o, path);
+ write_source_text(&s, "", 0);
+ write_aim_make(&aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, write_open_how_of(flags));
+ wpe_write_guard_enter();
+ if (write_run_open(&s, path, 0, &aim, &t, &bk, o) != 0)
+ {
+  wpe_write_guard_leave();
+  return(NULL);
+ }
+ write_stream_read_back(&t, o);
+ o->status = WPE_WRITE_WRITTEN;
+ return(t.fp);
+}
+
+/**
  * wpe_write_stream_open - Create or replace a file the caller prints into.
  * @path: the file; @o: receives the outcome, with the path.
  * Return: the stream, or NULL when the file could not be opened (the outcome
@@ -3856,25 +3892,7 @@ static void write_stream_confirm_stays(FILE *fp, WpeWriteOutcome *o)
  */
 FILE *wpe_write_stream_open(const char *path, WpeWriteOutcome *o)
 {
- WriteSource s;
- WriteAim aim;
- WriteTarget t;
- WriteBackup bk;
-
- memset(o, 0, sizeof *o);
- o->status = WPE_WRITE_FAILED;
- write_set_path(o, path);
- write_source_text(&s, "", 0);
- write_named_copy_aim(&aim);
- wpe_write_guard_enter();
- if (write_run_open(&s, path, 0, &aim, &t, &bk, o) != 0)
- {
-  wpe_write_guard_leave();
-  return(NULL);
- }
- write_stream_read_back(&t, o);
- o->status = WPE_WRITE_WRITTEN;
- return(t.fp);
+ return(wpe_write_stream_open_flags(path, 0, o));
 }
 
 /**

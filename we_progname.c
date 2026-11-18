@@ -232,18 +232,6 @@ int wpe_progname_debug_binary(char *out, size_t n, const WpeProgramSource *s)
 }
 
 /**
- * wpe_progname_debug_errors - The file a compile-for-debug writes its
- * messages to.
- * @out/@n: receive the path; @s: the source.
- *
- * Return: 0, or -1 with @out empty when it does not fit.
- */
-int wpe_progname_debug_errors(char *out, size_t n, const WpeProgramSource *s)
-{
- return progname_placed_stem_with(out, n, s, WPE_DEBUG_ERRORS_SUFFIX);
-}
-
-/**
  * wpe_progname_project_program - A project's program, under Exedir.
  * @out/@n: receive the path; @exename_word: the project's EXENAME word, or
  * NULL or "" when it has none; @exedir: Exedir, NULL or "" for the build

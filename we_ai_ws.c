@@ -2009,11 +2009,6 @@ char *wpe_ai_workspace_dir(FENSTER *f)
  return out;
 }
 
-/* The folder below the config home that holds the user's own xwperc. */
-#define WS_CONFIG_SUBDIR "xwpe"
-/* The config home when $XDG_CONFIG_HOME is not set, below $HOME. */
-#define WS_CONFIG_HOME_DEFAULT ".config"
-
 /**
  * ws_in_user_config - Does a resolved path lie in the user's own config folder?
  * @rpath: the place a write would really land.
@@ -2022,23 +2017,16 @@ char *wpe_ai_workspace_dir(FENSTER *f)
  * command, the endpoints and the dial, and the same folder holds the API key
  * files.  When the workspace is the home folder (a note edited in ~), that
  * folder is inside it, so without this check an assistant under auto could
- * plant a hook there that then runs in every project.  Both the XDG folder
- * and the legacy ~/.xwpe are covered, as the editor reads either.
+ * plant a hook there that then runs in every project.  Both the folder the
+ * editor reads its configuration from (we_places.c) and the legacy ~/.xwpe
+ * are covered, as the editor reads either.
  * Return: 1 when @rpath lies in one of them.
  */
 static int ws_in_user_config(const char *rpath)
 {
- const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
  char dir[WPE_PATH_RESOLVED_MAX];
- if (xdg && *xdg) {
-  snprintf(dir, sizeof dir, "%s/%s", xdg, WS_CONFIG_SUBDIR);
-  if (wpe_path_lies_in(dir, rpath)) return 1;
- }
- if (!home || !*home) return 0;
- snprintf(dir, sizeof dir, "%s/%s/%s", home, WS_CONFIG_HOME_DEFAULT, WS_CONFIG_SUBDIR);
- if (wpe_path_lies_in(dir, rpath)) return 1;
- snprintf(dir, sizeof dir, "%s/%s", home, XWPE_HOME);
- return wpe_path_lies_in(dir, rpath);
+ if (wpe_config_dir(dir, sizeof dir) == 0 && wpe_path_lies_in(dir, rpath)) return 1;
+ return wpe_legacy_dir(dir, sizeof dir) == 0 && wpe_path_lies_in(dir, rpath);
 }
 
 /**

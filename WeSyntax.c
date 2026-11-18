@@ -24,6 +24,7 @@
 #include "WeExpArr.h"
 #include "WeProg.h"
 #include "WeString.h"
+#include "we_places.h"
 
 unsigned char *WpeCReservedWord[] = {
  "auto", "break", "case", "char", "const", "continue", "default", "do",
@@ -80,20 +81,25 @@ int WpeReservedWordCompare(const void *x, const void *y)
  *
  * The user's file is read in preference to the system's, so a home folder
  * the system cannot hold (a long temporary folder, say) gives no personal
- * file rather than the file of a cut folder.
- * Return: 0, or -1 with @filename empty when the path does not fit.
+ * file rather than the file of a cut folder.  With no home folder known
+ * there is no personal file: never one in the root folder, and never one in
+ * the folder the editor was started in, which may be a cloned project's.
+ * Return: 0, or -1 with @filename empty when there is no home or the path
+ * does not fit.
  */
 static int WpeSyntaxGetPersonal(char *filename, size_t n)
 {
 #ifdef DJGPP
  return wpe_path_copy(filename, n, "./" SYNTAX_FILE);
 #else
- const char *home = getenv("HOME");
+ char home[WPE_PATH_SIZE];
 
- /* No HOME is the root folder, as before: never the folder the editor was
-    started in, which may be a cloned project's. */
- if (!home || !*home)
-  home = "/";
+ if (wpe_user_home(home, sizeof home) != 0)
+ {
+  if (n)
+   filename[0] = '\0';
+  return -1;
+ }
  if (wpe_path_join(filename, n, home, XWPE_HOME) ||
      wpe_path_cat(filename, n, "/" SYNTAX_FILE))
  {

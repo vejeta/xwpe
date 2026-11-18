@@ -9,8 +9,8 @@
  * to turn it on.  When it is off -- the default -- every WPE_TRACE() call
  * expands to nothing and costs nothing at run time.
  *
- * Output is appended to $WPE_TRACE_FILE when that variable is set, otherwise
- * to /tmp/xwpe-trace.txt.  Each call writes "[category] " followed by your
+ * Output is appended to the file $WPE_TRACE_FILE names; with that variable
+ * unset nothing is written.  Each call writes "[category] " followed by your
  * formatted text (include your own '\n'), so a subsystem can tag its trace
  * and you can grep one out:
  *

@@ -24,7 +24,6 @@
 #define WPE_OBJECT_SUFFIX           ".o"
 #define WPE_CLASS_SUFFIX            ".class"
 #define WPE_DEBUG_SUFFIX            ".dbg"
-#define WPE_DEBUG_ERRORS_SUFFIX     ".dbgerr"
 #define WPE_PROJECT_DEFAULT_PROGRAM "a.out"
 
 /* A source as the build sees it.  Every field may be NULL except name. */
@@ -63,10 +62,10 @@ int wpe_progname_program(char *out, size_t n, const WpeProgramSource *s);
    placed under Exedir. */
 int wpe_progname_object(char *out, size_t n, const WpeProgramSource *s);
 
-/* The binary a compile-for-debug writes (stem plus ".dbg") and its error
-   file (".dbgerr"); placed under Exedir. */
+/* The binary a compile-for-debug writes (stem plus ".dbg"); placed under
+   Exedir.  Its error file is not named here: it is a file of the editor's own
+   run folder (we_debug.c), never one beside the source. */
 int wpe_progname_debug_binary(char *out, size_t n, const WpeProgramSource *s);
-int wpe_progname_debug_errors(char *out, size_t n, const WpeProgramSource *s);
 
 /* A project's program: its EXENAME word, or "a.out" when it has none, placed
    under @exedir. */

@@ -295,8 +295,9 @@ WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWrite
 
 /* The editor's own folders and the files it keeps in them: the conversation,
    the before images and the recorded modes of a run, the lists git reads.
-   A folder of the editor's own is one of three (the state folder, this
-   run's private folder, the configuration folder); its base is resolved by
+   A folder of the editor's own is one of four (the state folder, this
+   run's private folder, the configuration folder, and the old ~/.xwpe the
+   settings are moved out of); its base is resolved by
    name in we_places.c and followed, and only what is below it is judged.
    Nothing here takes a path: a caller names a kind, a folder below it and a
    file in it, so a name the editor did not judge cannot be written.
@@ -311,7 +312,8 @@ WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWrite
 typedef enum {
  WPE_OWN_STATE,     /* $XDG_STATE_HOME/xwpe (wpe_state_dir) */
  WPE_OWN_RUN,       /* the folder of this run (wpe_run_dir) */
- WPE_OWN_CONFIG     /* $XDG_CONFIG_HOME/xwpe (wpe_config_dir) */
+ WPE_OWN_CONFIG,    /* $XDG_CONFIG_HOME/xwpe (wpe_config_dir) */
+ WPE_OWN_LEGACY     /* <home>/.xwpe (wpe_legacy_dir), the migration's note */
 } WpeOwnKind;
 
 /* WPE_OWN_MAKE judges and makes what is missing; WPE_OWN_LOOK judges and
@@ -413,6 +415,11 @@ WPE_WRITE_RESULT int wpe_write_restore_text(const char *path, const char *text, 
    whether the last byte reached the disk.  A caller that goes through
    fprintf in between never judges the stream itself. */
 WPE_WRITE_RESULT FILE *wpe_write_stream_open(const char *path, WpeWriteOutcome *o);
+/* The same with a flag (WPE_WRITE_NOFOLLOW, defined below): a link at the
+   name is refused instead of followed.  For a name a folder the user did not
+   make can choose (the ./xwperc of a cloned project, its project list). */
+WPE_WRITE_RESULT FILE *wpe_write_stream_open_flags(const char *path, int flags,
+                                                   WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_stream_close(FILE *fp, WpeWriteOutcome *o);
 
 /* The bytes of a copy, for the owner of names (we_fileop.c): the one byte

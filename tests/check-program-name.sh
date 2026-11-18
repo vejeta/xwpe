@@ -425,7 +425,7 @@ elif [ "$NMTOOL" = ":" ] || ! command -v "$NMTOOL" >/dev/null 2>&1; then
 else
   . "$HERE/objsyms.sh"
   "$NMTOOL" -u "$DEBUG_OBJ" 2>/dev/null | nm_undefined_names > "$WORK/debug-imports"
-  for sym in wpe_progname_program wpe_progname_debug_binary wpe_progname_debug_errors wpe_progname_stem wpe_progname_extension; do
+  for sym in wpe_progname_program wpe_progname_debug_binary wpe_progname_stem wpe_progname_extension; do
     grep -qx "$sym" "$WORK/debug-imports" ||
       problem "symbol: $DEBUG_OBJ does not import $sym: the debugger names a program, a debug binary or a class by a rule of its own"
   done

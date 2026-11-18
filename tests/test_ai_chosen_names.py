@@ -46,6 +46,7 @@ FORGED_WORD = "--dangerously-skip-permissions"
 A_UUID = "3f2b8c1e-5a47-4d0e-9b61-0c7d2e8a4f15"
 NO_PASSWD_HOME = "no-passwd-home"
 SESSION_GLOB = "xwpe/ai/*.session"
+KEEP_TEXT = "KEEP\n"
 
 
 def _stub_claude(tmp_path, session_id=A_UUID):
@@ -342,3 +343,186 @@ def test_an_old_session_file_in_a_project_is_said_once(tmp_path):
     assert after_first == 1, "the first turn did not say the old file is unused"
     assert after_second == 1, "the notice came back on the next turn"
     assert old.read_text() == _session_json([("user", "earlier")]), "the old file was changed"
+
+
+def _own_config_folder(home):
+    folder = Path(home) / ".config" / "xwpe"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _home_env(home, extra=None):
+    """A home of the row's own, with the XDG folders at their defaults."""
+    env = {"HOME": str(home), "XDG_CONFIG_HOME": "", "XDG_STATE_HOME": "",
+           "OPENAI_API_KEY": ""}
+    env.update(extra or {})
+    return env
+
+
+# @scenario SC-ai-chosen-names-13
+def test_the_key_file_is_never_written_through_a_link(tmp_path):
+    """A key typed in the settings goes to a new file; a link at the key
+    file's name is not written through (fchmod would also land on its target),
+    and the dialog says the key was not kept."""
+    home = tmp_path / "home"
+    cfg = _own_config_folder(home)
+    victim = tmp_path / "victim"
+    victim.write_text(KEEP_TEXT)
+    victim.chmod(0o644)
+    (cfg / "openai-api-key").symlink_to(victim)
+    work = tmp_path / "work"
+    work.mkdir()
+    with WpeSession(str(work), SEED,
+                    env_extra=_home_env(home, {"XWPE_AI_ENABLE": "1"})) as s:
+        s.key("\033o", delay=0.5)
+        s.key("i", delay=0.6)
+        s.key("\033k", delay=0.5)                 # Alt-K: the API key field
+        for ch in "sk-typed-key":
+            s.key(ch, delay=0.03)
+        s.key("\033o", delay=1.2)                 # Ok
+        shown = "\n".join(s.display())
+    assert victim.read_text() == KEEP_TEXT, \
+        "the key was written into the file the link names:\n" + victim.read_text()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644, "the link's target was made private"
+    assert (cfg / "openai-api-key").is_symlink(), "the link was replaced"
+    assert "Cannot write" in shown, "the user was not told the key was not kept:\n" + shown
+
+
+# @scenario SC-ai-chosen-names-13b
+def test_a_typed_key_replaces_an_old_key_file_with_a_private_new_one(tmp_path):
+    """Guard: with no link in the way the key is kept, readable by you alone
+    from its first byte, over an older key file made with a wider mode."""
+    home = tmp_path / "home"
+    cfg = _own_config_folder(home)
+    old = cfg / "openai-api-key"
+    old.write_text("old-key\n")
+    old.chmod(0o644)
+    work = tmp_path / "work"
+    work.mkdir()
+    with WpeSession(str(work), SEED, env_extra=_home_env(home, {"XWPE_AI_ENABLE": "1"})) as s:
+        s.key("\033o", delay=0.5)
+        s.key("i", delay=0.6)
+        s.key("\033k", delay=0.5)
+        for ch in "new-key-value":
+            s.key(ch, delay=0.03)
+        s.key("\033o", delay=1.2)
+    text = old.read_text()
+    assert "new-key-value" in text, "the typed key was not kept:\n" + text
+    assert stat.S_IMODE(old.stat().st_mode) == 0o600, "the key file is not private"
+
+
+# @scenario SC-ai-chosen-names-24b
+def test_a_relative_xdg_config_home_is_not_where_the_key_is_read_from(tmp_path):
+    """XDG_CONFIG_HOME="rel" names a folder that depends on where the editor
+    was started, which may be a cloned project: the key is read from the
+    user's real configuration folder, never from ./rel/xwpe."""
+    from test_ai_options import _auth_recording_server
+    srv, port, seen = _auth_recording_server()
+    try:
+        home = tmp_path / "home"
+        cfg = _own_config_folder(home)
+        (cfg / "xwperc").write_text(
+            "[Programming]\nAIBackend : 1\nAIEndpoint : http://127.0.0.1:%d/v1\n"
+            "AIPolicy : ask\n" % port)
+        (cfg / "openai-api-key").write_text("REALKEY\n")
+        work = tmp_path / "work"
+        (work / "rel" / "xwpe").mkdir(parents=True)
+        (work / "rel" / "xwpe" / "openai-api-key").write_text("CLONEKEY\n")
+        env = _home_env(home, {"XWPE_AI_ENABLE": "1", "XDG_CONFIG_HOME": "rel"})
+        with WpeSession(str(work), SEED, env_extra=env) as s:
+            s.key("\033o", delay=0.5)
+            s.key("i", delay=0.6)
+            s.key("\033m", delay=1.5)             # Alt-M: list the models, sending the key
+    finally:
+        srv.shutdown()
+    assert seen["auth"] == "Bearer REALKEY", \
+        "the key came from the folder the editor was started in: %r" % seen["auth"]
+
+
+def _consent_session(home, work):
+    """Alt-G a with the assistant switched on by the user's own config and no
+    consent given yet: the first-use notice, answered with Enter."""
+    env = _home_env(home, {"XWPE_AI_ENABLE": None, "XWPE_AI_CONSENTED": None,
+                           "XWPE_AI_BACKEND": "mock"})
+    with WpeSession(str(work), SEED, env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("a")
+        s._drain(1.0)
+        noticed = "first use" in "\n".join(s.display())
+        s.key("\r", delay=1.0)
+        s._drain(1.0)
+    return noticed
+
+
+# @scenario SC-ai-chosen-names-38
+def test_the_consent_marker_is_not_written_through_a_link(tmp_path):
+    home = tmp_path / "home"
+    cfg = _own_config_folder(home)
+    (cfg / "xwperc").write_text("[General]\nOptions2 : 512\n")
+    target = tmp_path / "made"                    # a link that leads nowhere: no consent yet
+    (cfg / "ai_consented").symlink_to(target)
+    work = tmp_path / "work"
+    work.mkdir()
+    assert _consent_session(home, work), "the first-use notice did not show"
+    assert not target.exists(), "the marker was made where the link leads"
+    assert (cfg / "ai_consented").is_symlink(), "the link was replaced"
+
+
+# @scenario SC-ai-chosen-names-39
+def test_the_consent_marker_is_a_new_private_file_that_ends_the_notice(tmp_path):
+    """Guard: accepting the notice leaves a private marker in the user's own
+    configuration folder, and the next start does not ask again."""
+    old = os.umask(0o022)
+    try:
+        home = tmp_path / "home"
+        cfg = _own_config_folder(home)
+        (cfg / "xwperc").write_text("[General]\nOptions2 : 512\n")
+        work = tmp_path / "work"
+        work.mkdir()
+        assert _consent_session(home, work), "the first-use notice did not show"
+        marker = cfg / "ai_consented"
+        assert marker.is_file(), "no marker was kept"
+        assert stat.S_IMODE(marker.stat().st_mode) == 0o600, "the marker is not private"
+        assert not _consent_session(home, work), "the notice came back after it was accepted"
+    finally:
+        os.umask(old)
+
+
+# @scenario SC-ai-chosen-names-31
+def test_a_folder_naming_another_of_my_projects_does_not_load_its_conversation(tmp_path):
+    """A cloned folder's xwperc names the absolute path of another project of
+    the user's.  That project's conversation is not loaded into this folder's
+    chat, nothing is appended to it, and the editor says the project was not
+    opened."""
+    state = tmp_path / "state"
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "real.prj").write_text(PROJECT_FILE.replace("p.prj", "real.prj"))
+    (real / "xwperc").write_text("[Programming]\nProject : real.prj\n")
+    first = _turn(real, _env(tmp_path, state), prompt="real question", wait=3.0)
+    saved = [l for l in first.splitlines() if l.startswith("session save ")]
+    assert saved, "the real project saved no conversation:\n" + first
+    real_session = Path(saved[-1].split(" ", 2)[2].rsplit(" cli=", 1)[0])
+    before = real_session.read_bytes()
+    (tmp_path / "ai.trace").unlink()
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "xwperc").write_text("[Programming]\nProject : %s\n" % (real / "real.prj"))
+    env = _env(tmp_path, state)
+    with WpeSession(str(clone), SEED, env_extra=env, wait=2.0) as s:
+        shown = "\n".join(s.display())
+        s.key("\r", delay=0.6)
+        s.key(ALT.AI)
+        s.key("a")
+        s.key("hello from the clone")
+        s.key("\r", delay=1.0)
+        s._drain(3.0)
+    trace = (tmp_path / "ai.trace").read_text()
+    assert "outside this folder" in shown, \
+        "the editor did not say the project was not opened:\n" + shown
+    assert str(real_session) not in trace, \
+        "the real project's conversation was used by the clone:\n" + trace
+    assert "real question" not in trace, trace
+    assert real_session.read_bytes() == before, \
+        "the clone appended to the real project's conversation"

@@ -1219,9 +1219,9 @@ AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
 if WPE_AI
 check_PROGRAMS += $(AI_TESTS)
 TESTS += $(AI_TESTS)
-test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c we_seen.c
+test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c we_seen.c we_places.c we_path.c
 test_ai_path_CFLAGS = $(TEST_CFLAGS)
-test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c we_seen.c
+test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c we_seen.c we_places.c we_path.c
 test_ai_scope_CFLAGS = $(TEST_CFLAGS)
 # What a saved conversation may hold (we_ai_session.c): the resume id's shape
 # and the judge of a conversation file, with json-c and nothing of the editor.

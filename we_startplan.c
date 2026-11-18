@@ -11,11 +11,11 @@
  */
 #include "we_startplan.h"
 #include "we_startcmd.h"
+#include "we_places.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <pwd.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -841,23 +841,16 @@ static int startplan_under(const char *path, const char *dir)
  * startplan_home - The home folder, resolved.
  * @out: receives it (WPE_PATH_SIZE bytes).
  *
- * $HOME, or the user database's entry when $HOME is not set: an editor
- * started without $HOME must still never take the home folder for a
- * project's own, or ~/.local/bin would be "inside" it.
+ * The user's home as we_places.c gives it ($HOME when absolute, else the user
+ * database's entry): an editor started without $HOME must still never take
+ * the home folder for a project's own, or ~/.local/bin would be "inside" it.
  * Return: 1 when it is known.
  */
 static int startplan_home(char *out)
 {
- const char *h = getenv("HOME");
- struct passwd *pw;
+ char home[WPE_PATH_SIZE];
 
- if (!h || !*h)
- {
-  pw = getpwuid(getuid());
-  if (pw)
-   h = pw->pw_dir;
- }
- return h && *h && realpath(h, out) != NULL;
+ return wpe_user_home(home, sizeof home) == 0 && realpath(home, out) != NULL;
 }
 
 /**
@@ -2347,11 +2340,12 @@ static int startplan_same_file_as_in(const char *dir, const char *name, const st
  */
 static int startplan_is_users_startup(const char *name, const struct stat *st)
 {
- struct passwd *pw = getpwuid(getuid());
+ char home[WPE_PATH_SIZE];
 
- if (startplan_same_file_as_in(getenv("HOME"), name, st))
+ if (wpe_user_home(home, sizeof home) == 0 && startplan_same_file_as_in(home, name, st))
   return 1;
- return pw && startplan_same_file_as_in(pw->pw_dir, name, st);
+ return wpe_user_database_home(home, sizeof home) == 0 &&
+        startplan_same_file_as_in(home, name, st);
 }
 
 /**

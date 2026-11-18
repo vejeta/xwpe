@@ -445,6 +445,9 @@ static void e_edit_refuse_file(ECNT *cn, FENSTER *f, FILE *fp)
 /* What e_edit opens: a file the user edits, or one of the views below. */
 #define E_EDIT_A_FILE 0
 
+/* The bit of e_we_sw that `-pm` sets: the file named next is read as messages. */
+#define E_EDIT_SW_PARSE_MESSAGES 8
+
 /**
  * e_edit_read_refused - The read of a window being opened was refused for
  * want of memory: decide whether the window opens.
@@ -466,6 +469,27 @@ static int e_edit_read_refused(ECNT *cn, FENSTER *f, FILE *fp, int ftype)
  }
  wpe_buffer_say_nomem(f->b, "reading the file");
  return(0);
+}
+
+/**
+ * e_edit_reads_file - Does a window of this kind take its text from a file?
+ * @ftype: E_EDIT_A_FILE, or the view (Help, Messages, Watches, Stack) it is.
+ * Return: 1 when the window reads the file it is named after.
+ *
+ * What the user gets: a view the editor fills itself (the build's Messages,
+ * the debugger's Watches and Stack) never shows a file of the same name
+ * from the folder, such as a "Messages" of the user's own or one a cloned
+ * project brought, and never parses it into the error list.  The one
+ * exception is `-pm <file>`, where the user names the file to read as
+ * messages on the command line.
+ */
+static int e_edit_reads_file(int ftype)
+{
+#ifdef PROG
+ if (e_we_sw & E_EDIT_SW_PARSE_MESSAGES)
+  return(1);
+#endif
+ return(ftype == E_EDIT_A_FILE);
 }
 
 /**
@@ -754,7 +778,7 @@ int e_edit(ECNT *cn, char *filename)
   e_use_editor_bar(f, f->blst);
  if (ftype != 0)
   e_buffer_mark_view(f->b);       /* Help, Messages, Watches and Stack */
- if (ftype != 1)
+ if (e_edit_reads_file(ftype))
   fp = fopen(complete_fname, "rb");
  if (fp != NULL && access(complete_fname, 2) != 0)
   f->ins = WPE_INS_READONLY;
@@ -762,7 +786,7 @@ int e_edit(ECNT *cn, char *filename)
     writable (mode 000) is still a locked file -- mark it read-only so the title
     shows the lock, instead of a silently-empty editable buffer that would fail
     to save.  access(,2) is W_OK; access(,0) is F_OK (exists). */
- else if (fp == NULL && ftype != 1 &&
+ else if (fp == NULL && e_edit_reads_file(ftype) &&
           access(complete_fname, 0) == 0 && access(complete_fname, 2) != 0)
   f->ins = WPE_INS_READONLY;
 #ifdef UNIX
@@ -792,12 +816,12 @@ int e_edit(ECNT *cn, char *filename)
 #ifdef PROG
   if (WpeIsProg())
   {
-   if (e_we_sw & 8)
+   if (e_we_sw & E_EDIT_SW_PARSE_MESSAGES)
    {
     /* the window's name is "Noname" or the file given: shorter than the word */
     WpeFree(f->datnam);
     f->datnam = WpeStrdup("Messages");
-    e_we_sw &= ~8;
+    e_we_sw &= ~E_EDIT_SW_PARSE_MESSAGES;
    }
    if (!strcmp(f->datnam, "Messages"))
    {

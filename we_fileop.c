@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include "we_write.h"
+#include "we_places.h"
 #include "we_fileop.h"
 
 /** The longest name a file system takes on every system built on. */
@@ -617,13 +618,13 @@ static int fileop_wastebasket_name(char *out, size_t n, const char *wb, const ch
 
 int wpe_fileop_wastebasket(char *out, size_t n, WpeFileOpOutcome *o)
 {
- const char *home = getenv("HOME");
+ char home[WPE_PATH_SIZE];
  char path[WPE_PATH_SIZE];
  struct stat st;
  int fd;
 
  fileop_begin(o, WPE_FILEOP_MKDIR, "", "");
- if (home == NULL || home[0] == '\0')
+ if (wpe_user_home(home, sizeof home) != 0)
   return(fileop_fail(o, WPE_FILEOP_STEP_WASTEBASKET, ENOENT));
  if (wpe_path_join(path, sizeof path, home, WPE_FILEOP_WASTEBASKET) != 0 || strlen(path) >= n)
   return(fileop_fail(o, WPE_FILEOP_STEP_WASTEBASKET, ENAMETOOLONG));

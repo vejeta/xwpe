@@ -1223,37 +1223,66 @@ const char *wpe_ai_ollama_endpoint_fixup(const char *url)
  return l ? "http://localhost:11434" : NULL;
 }
 
-/* Owner read and write only: nobody else on the machine reads a key file. */
-#define AI_KEY_FILE_MODE 0600
+/* The key file's name in the configuration folder, without a provider. */
+#define AI_KEY_FILE_BASE "openai-api-key"
 
-/* Write the OpenAI API key for a provider (NULL/"" => the generic file) to
- * $XDG_CONFIG_HOME/xwpe/openai-api-key[-<provider>] with 0600 perms, so a key
- * typed in the settings dialog persists.  Returns 0 on success. */
-int wpe_ai_write_openai_key(const char *provider, const char *key)
+/* The most a key line may be: the reader (ai_read_first_line) takes 1023 bytes
+   of a line, so a longer key would be read back cut. */
+#define AI_KEY_LINE_MAX 1024
+
+/**
+ * ai_key_leaf - The name of a provider's key file.
+ * @provider: the profile, or NULL or "" for the generic file; @out/@n: receive it.
+ * Return: 0, or -1 when it does not fit.
+ */
+static int ai_key_leaf(const char *provider, char *out, size_t n)
 {
- const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
- char dir[1024], path[1200];
- FILE *fp;
- int fd;
- if (!key) return -1;
- if (xdg && *xdg) snprintf(dir, sizeof dir, "%s/xwpe", xdg);
- else if (home)   snprintf(dir, sizeof dir, "%s/.config/xwpe", home);
- else return -1;
+ int len;
  if (provider && *provider)
-  snprintf(path, sizeof path, "%s/openai-api-key-%s", dir, provider);
+  len = snprintf(out, n, "%s-%s", AI_KEY_FILE_BASE, provider);
  else
-  snprintf(path, sizeof path, "%s/openai-api-key", dir);
- fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, AI_KEY_FILE_MODE);
- if (fd < 0) return -1;
- /* The open's mode applies only to a new file: a key file that already
-    existed (made by hand, or by an older version) keeps its wider mode unless
-    it is set here, before the new key is written into it. */
- if (fchmod(fd, AI_KEY_FILE_MODE) != 0) { close(fd); return -1; }
- fp = fdopen(fd, "w");
- if (!fp) { close(fd); return -1; }
- fprintf(fp, "%s\n", key);
- fclose(fp);
- return 0;
+  len = snprintf(out, n, "%s", AI_KEY_FILE_BASE);
+ return (len < 0 || (size_t)len >= n) ? -1 : 0;
+}
+
+/**
+ * ai_config_file - The path of a file in the user's configuration folder.
+ * @leaf: the file's name; @out/@n: receive the path.
+ * Return: 0, or -1 when the editor has no configuration folder (no home
+ * folder is known) or the path does not fit.
+ *
+ * A configuration folder is the user's own, or there is none: a key is never
+ * looked for in a ".config" under the folder the editor was started in.
+ */
+static int ai_config_file(const char *leaf, char *out, size_t n)
+{
+ char dir[WPE_PATH_SIZE];
+ if (wpe_config_dir(dir, sizeof dir) != 0) return -1;
+ return wpe_path_join(out, n, dir, leaf);
+}
+
+/**
+ * wpe_ai_write_openai_key - Keep the OpenAI key typed in the settings dialog.
+ * @provider: the profile (NULL or "" for the generic file); @key: the key;
+ * @o: receives why it was not kept.
+ * Return: 0 when the file holds the key, -1 when not.
+ *
+ * What the user gets: the key is in <config folder>/openai-api-key[-<provider>],
+ * a new file readable by you alone from its first byte.  A link at that name,
+ * or a file of another user, is never written through (the key would land in
+ * whatever file the link names), and the dialog says so.
+ */
+int wpe_ai_write_openai_key(const char *provider, const char *key, WpeWriteOutcome *o)
+{
+ char leaf[WPE_NAME_SIZE], text[AI_KEY_LINE_MAX];
+ int len;
+ memset(o, 0, sizeof *o);
+ o->status = WPE_WRITE_FAILED;
+ o->err = EINVAL;
+ if (!key || ai_key_leaf(provider, leaf, sizeof leaf) != 0) return -1;
+ len = snprintf(text, sizeof text, "%s\n", key);
+ if (len < 0 || (size_t)len >= sizeof text) return -1;
+ return wpe_write_own_bytes(WPE_OWN_CONFIG, NULL, leaf, text, (size_t)len, o);
 }
 
 /* Read the stored OpenAI key for a provider from its file (NULL/"" => the generic
@@ -1262,15 +1291,9 @@ int wpe_ai_write_openai_key(const char *provider, const char *key)
  * key).  Returns a malloc'd string or NULL. */
 char *wpe_ai_read_openai_key_file(const char *provider)
 {
- const char *xdg = getenv("XDG_CONFIG_HOME"), *home = getenv("HOME");
- char path[1200];
- if (xdg && *xdg) {
-  if (provider && *provider) snprintf(path, sizeof path, "%s/xwpe/openai-api-key-%s", xdg, provider);
-  else                       snprintf(path, sizeof path, "%s/xwpe/openai-api-key", xdg);
- } else if (home) {
-  if (provider && *provider) snprintf(path, sizeof path, "%s/.config/xwpe/openai-api-key-%s", home, provider);
-  else                       snprintf(path, sizeof path, "%s/.config/xwpe/openai-api-key", home);
- } else return NULL;
+ char leaf[WPE_NAME_SIZE], path[WPE_PATH_SIZE];
+ if (ai_key_leaf(provider, leaf, sizeof leaf) != 0) return NULL;
+ if (ai_config_file(leaf, path, sizeof path) != 0) return NULL;
  return ai_read_first_line(path);
 }
 
@@ -1318,17 +1341,13 @@ static char *ai_read_first_line(const char *path)
  * Returns malloc'd key or NULL. */
 static char *ai_get_api_key(const char *env_name, const char *file_base)
 {
- const char *e = getenv(env_name), *home, *xdg;
- char fenv[80], path[1024];
+ const char *e = getenv(env_name);
+ char fenv[80], path[WPE_PATH_SIZE];
  if (e && *e) return ai_strdup(e);
  snprintf(fenv, sizeof fenv, "%s_FILE", env_name);
  e = getenv(fenv);
  if (e && *e) { char *k = ai_read_first_line(e); if (k) return k; }
- xdg = getenv("XDG_CONFIG_HOME");
- home = getenv("HOME");
- if (xdg && *xdg) snprintf(path, sizeof path, "%s/xwpe/%s", xdg, file_base);
- else if (home)   snprintf(path, sizeof path, "%s/.config/xwpe/%s", home, file_base);
- else return NULL;
+ if (ai_config_file(file_base, path, sizeof path) != 0) return NULL;
  return ai_read_first_line(path);
 }
 

@@ -104,8 +104,24 @@ static char *e_opt_user_file;
 #define E_OPT_IGNORED_CUT_MARK "..."
 #define E_OPT_IGNORED_LINE_MAX (E_OPT_IGNORED_MAX + 80)
 
+/* What the box says when a start-folder xwperc names a project outside its folder. */
+#define E_OPT_PROJECT_REFUSED_FMT \
+ "./xwperc names the project\n%s\nwhich is outside this folder.\nIt was not opened."
+
+/* What the box says when the start folder's xwperc is a link and the options
+   were not written through it. */
+#define E_OPT_LINK_REFUSED_FMT \
+ "%s is a link, so the options were not saved there.\n" \
+ "Options > Save lets you give another file name."
+
 /* The room of the print command's field in Options > Editor. */
 #define E_OPT_PRINT_FIELD_ROOM 128
+
+/* Set by e_opt_read when the xwperc of the folder the editor was started in
+   is the user's own file (started from ~/.config/xwpe, or from ~/.xwpe after
+   a migration that left the old file in use): it may be a link a dotfiles
+   manager made, and is followed when saved.  Cleared on every read. */
+static int e_opt_start_is_users_own;
 
 /* The start-folder xwperc the options come from, and the folder that holds
    it; NULL when the options come from the user's own file. */
@@ -1895,6 +1911,8 @@ int WpeWriteLanguage(ECNT *cn, char *section, FILE *opt_file)
 }
 
 static void e_opt_move_user_only_keys(ECNT *cn);
+static int e_opt_write_flags(const char *path);
+static void e_opt_say_not_saved(FENSTER *f, const WpeWriteOutcome *o);
 static void e_opt_bad_forgive(void);
 
 /**
@@ -1956,10 +1974,10 @@ int e_save_opt(FENSTER *f)
  str_line[i] = '\0';
  if (access(str_line, 0)) mkdir(str_line, 0700);
  FREE(str_line);
- fp = wpe_write_stream_open(cn->optfile, &o);
+ fp = wpe_write_stream_open_flags(cn->optfile, e_opt_write_flags(cn->optfile), &o);
  if (fp == NULL)
  {
-  wpe_write_say(f, &o, WPE_WRITE_THEN_NO_OPTIONS);
+  e_opt_say_not_saved(f, &o);
   return(-1);
  }
  str_line = OPT_SECTION_GENERAL;
@@ -2122,11 +2140,16 @@ static void e_opt_note_folder(ECNT *cn)
 
  e_opt_forget_folder();
  e_opt_folder_file = WpeStrdup(cn->optfile);
- e_opt_folder_dir = WpeStrdup(cn->optfile);
- slash = strrchr(e_opt_folder_dir, DIRC);
- if (slash == e_opt_folder_dir) slash[1] = '\0';
- else if (slash) *slash = '\0';
- else strcpy(e_opt_folder_dir, ".");
+ slash = strrchr(cn->optfile, DIRC);
+ if (slash == NULL)
+  e_opt_folder_dir = WpeStrdup(cn->dirct);       /* a bare name is in the folder the editor is in */
+ else if (slash == cn->optfile)
+  e_opt_folder_dir = WpeStrdup("/");
+ else
+ {
+  e_opt_folder_dir = WpeStrdup(cn->optfile);
+  e_opt_folder_dir[slash - cn->optfile] = '\0';
+ }
 }
 
 /* The folder the editor was started in, as it was at start. */
@@ -2152,6 +2175,53 @@ void e_opt_note_launch_dir(const char *dir)
 const char *e_opt_launch_dir(void)
 {
  return(e_opt_launch);
+}
+
+/**
+ * e_opt_write_flags - How an option file may be opened for writing.
+ * @path: the file the options are saved to.
+ * Return: WPE_WRITE_NOFOLLOW when @path is the xwperc of the folder the
+ * editor was started in, else 0.
+ *
+ * What the user gets: the xwperc of a folder you cloned is never rewritten
+ * through a link the repository committed at its name (a link to a shell
+ * start-up file, say).  Your own configuration file, which a dotfiles manager
+ * may link, and any file you name in the Save dialog are followed as before.
+ */
+static int e_opt_write_flags(const char *path)
+{
+ char *start;
+ int same;
+
+ if (!e_opt_launch || !path) return(0);
+ start = e_mkfilename(e_opt_launch, OPTION_FILE);
+ if (!start) return(0);
+ same = strcmp(start, path) == 0;
+ FREE(start);
+ if (!same) return(0);
+ if (e_opt_start_is_users_own) return(0);
+ if (e_opt_user_file && strcmp(e_opt_user_file, path) == 0) return(0);
+ return(WPE_WRITE_NOFOLLOW);
+}
+
+/**
+ * e_opt_say_not_saved - Tell why the options were not saved.
+ * @f: a window of the desktop; @o: the refusal.
+ *
+ * A link at the name of the start folder's xwperc has its own sentence: the
+ * folder, not the disk, is the reason, and the Save dialog is the way out.
+ */
+static void e_opt_say_not_saved(FENSTER *f, const WpeWriteOutcome *o)
+{
+ char text[WPE_PATH_SIZE + 160];
+
+ if (!o->replaced_by_link)
+ {
+  wpe_write_say(f, o, WPE_WRITE_THEN_NO_OPTIONS);
+  return;
+ }
+ snprintf(text, sizeof text, E_OPT_LINK_REFUSED_FMT, o->path);
+ e_message(0, text, f);
 }
 
 /**
@@ -2588,6 +2658,118 @@ static void e_opt_note_named(const char *section, const char *option, const char
   e_opt_named_deb = atoi(value);
 }
 
+/* The Project a start-folder xwperc named that lies outside that folder, kept
+   for the sentence the editor says once it can; NULL when none. */
+static char *e_opt_refused_project;
+
+/**
+ * e_opt_path_under - Is a resolved path the folder or inside it?
+ * @root: a resolved folder; @path: a resolved path.
+ */
+static int e_opt_path_under(const char *root, const char *path)
+{
+ size_t len = strlen(root);
+
+ if (len > 1 && root[len - 1] == DIRC) len--;
+ if (strncmp(path, root, len) != 0) return 0;
+ return len == 1 || path[len] == '\0' || path[len] == DIRC;
+}
+
+/**
+ * e_opt_real_or_parent - Resolve a path whose last name may not exist yet.
+ * @path: the path; @out/@n: receive the resolved path.
+ * Return: 0, or -1 when it cannot be resolved, or its last name is a link that
+ * leads nowhere (a project cannot be told to lie inside through one).
+ */
+static int e_opt_real_or_parent(const char *path, char *out, size_t n)
+{
+ char real[WPE_PATH_SIZE], dir[WPE_PATH_SIZE], parent[WPE_PATH_SIZE];
+ const char *slash;
+ struct stat st;
+ size_t len;
+
+ if (realpath(path, real) != NULL)
+  return wpe_path_copy(out, n, real);
+ if (lstat(path, &st) == 0) return -1;
+ slash = strrchr(path, DIRC);
+ if (slash == NULL) return -1;
+ len = slash == path ? 1 : (size_t)(slash - path);
+ if (len >= sizeof dir) return -1;
+ memcpy(dir, path, len);
+ dir[len] = '\0';
+ if (realpath(dir, parent) == NULL) return -1;
+ return wpe_path_join(out, n, parent, slash + 1);
+}
+
+/**
+ * e_opt_project_inside - Does a start folder's Project lie inside that folder?
+ * @value: the Project as the xwperc wrote it (relative to that folder, or
+ * absolute).
+ * Return: 1 when its resolved path (links followed) is in the resolved start
+ * folder, 0 when it is outside or cannot be told.
+ */
+static int e_opt_project_inside(const char *value)
+{
+ char root[WPE_PATH_SIZE], joined[WPE_PATH_SIZE], real[WPE_PATH_SIZE];
+
+ if (e_opt_folder_dir == NULL || realpath(e_opt_folder_dir, root) == NULL) return 0;
+ if (value[0] == DIRC)
+ {
+  if (wpe_path_copy(joined, sizeof joined, value) != 0) return 0;
+ }
+ else if (wpe_path_join(joined, sizeof joined, e_opt_folder_dir, value) != 0)
+  return 0;
+ if (e_opt_real_or_parent(joined, real, sizeof real) != 0) return 0;
+ return e_opt_path_under(root, real);
+}
+
+/**
+ * e_opt_project_refused - Is this line a start-folder Project outside the folder?
+ * @section/@option/@value: the key of the file being read; @mode: how it is read.
+ * Return: 1 when the line is not to be applied (and it is remembered for
+ * e_opt_say_project_refused), else 0.
+ *
+ * What the user gets: a project folder you cloned cannot make the editor open
+ * another of your projects by naming it in its xwperc (the conversation of
+ * that project would be loaded into this folder's chat).  The project is not
+ * opened and the editor says why.  A project you open yourself, or name in
+ * your own configuration, is not judged here.
+ */
+static int e_opt_project_refused(const char *section, const char *option, const char *value,
+                                 int mode)
+{
+ if (mode != E_OPT_READ_SHARED) return 0;
+ if (strncmp(section, OPT_SECTION_PROGRAMMING, strlen(OPT_SECTION_PROGRAMMING)) != 0) return 0;
+ if (WpeStrccmp("Project", option) != 0 || value[0] == '\0') return 0;
+ if (e_opt_project_inside(value)) return 0;
+ if (e_opt_refused_project) FREE(e_opt_refused_project);
+ e_opt_refused_project = WpeStrdup(value);
+ return 1;
+}
+
+/**
+ * e_opt_say_project_refused - Say that the start folder's Project was not opened.
+ * @cn: the editor.
+ *
+ * Shown once at start, in a box, so a project that does not open is never a
+ * silent surprise.
+ */
+static void e_opt_say_project_refused(ECNT *cn)
+{
+ char *text;
+ size_t size;
+
+ if (!e_opt_refused_project || !cn || !cn->fb) return;
+ size = strlen(e_opt_refused_project) + strlen(E_OPT_PROJECT_REFUSED_FMT) + 1;
+ text = MALLOC(size);
+ if (!text) return;
+ snprintf(text, size, E_OPT_PROJECT_REFUSED_FMT, e_opt_refused_project);
+ e_message(0, text, cn->f[0]);
+ FREE(text);
+ FREE(e_opt_refused_project);
+ e_opt_refused_project = NULL;
+}
+
 /**
  * e_opt_note_own_values - Count what the user's own file sets as his own.
  *
@@ -2868,11 +3050,14 @@ static int e_opt_lines_load(const char *path, e_opt_lines *l)
  * @path: the file; @l: the lines; @o: receives the outcome (path and the
  * system's reason when the write failed).
  * Return: 0, or -1 when the file could not be written.
+ *
+ * The start folder's xwperc is opened as e_save_opt opens it, so a link
+ * there is refused (e_opt_write_flags).
  */
 static WPE_WRITE_RESULT int e_opt_lines_store(const char *path, const e_opt_lines *l,
                                               WpeWriteOutcome *o)
 {
- FILE *fp = wpe_write_stream_open(path, o);
+ FILE *fp = wpe_write_stream_open_flags(path, e_opt_write_flags(path), o);
  int i;
  if (!fp) return -1;
  for (i = 0; i < l->n; i++) fprintf(fp, "%s\n", l->line[i]);
@@ -3284,7 +3469,8 @@ static void e_opt_reader_apply(e_opt_reader *rd, char *option, char *value)
  }
  if (rd->mode == E_OPT_READ_SHARED)
   e_opt_note_named(rd->section, option, value);
- if (e_opt_line_applies(rd->section, option, rd->mode))
+ if (e_opt_line_applies(rd->section, option, rd->mode) &&
+     !e_opt_project_refused(rd->section, option, value, rd->mode))
   (*WpeSectionRead[i].function)(rd->cn, rd->section, option, value);
  else if (rd->mode == E_OPT_READ_USER_ONLY)
   e_opt_capture_own(rd->section, option, value);
@@ -3420,10 +3606,16 @@ int e_opt_read(ECNT *cn)
  int mode = E_OPT_READ_ALL, err;
 
  e_opt_ignored_keys[0] = '\0';
+ if (e_opt_refused_project) FREE(e_opt_refused_project);
+ e_opt_refused_project = NULL;
  e_opt_bad_reset();
  if (e_opt_file_missing(cn)) return 0;   /* said at start by e_opt_say_file_missing */
+ e_opt_start_is_users_own = 0;
  if (e_opt_user_file && e_opt_same_file(e_opt_user_file, cn->optfile))
+ {
+  e_opt_start_is_users_own = 1;
   e_opt_use_user_file(NULL);
+ }
  e_opt_forget_folder();
  if (e_opt_user_file)
  {
@@ -3479,11 +3671,14 @@ int e_opt_ignored_line(char *buf, size_t n, int room)
  * A project's xwperc that tries to set a hook, an engine command, the dial
  * or an endpoint has no effect, and the user would otherwise not know why
  * the setting he sees in the file is not the one in force.  The line stays
- * on the bottom row until the next key.
+ * on the bottom row until the next key.  A Project of that file that lies
+ * outside its folder and was not opened is said first, in a box
+ * (e_opt_project_refused).
  */
 void e_opt_say_ignored_keys(ECNT *cn)
 {
  char line[E_OPT_IGNORED_LINE_MAX];
+ e_opt_say_project_refused(cn);
  if (!e_opt_ignored_keys[0] || !cn || !cn->fb) return;
  e_opt_ignored_line(line, sizeof line, e_status_room());
  e_status_hold(line);

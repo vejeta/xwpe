@@ -403,6 +403,20 @@ Changes
   folder.  The manual says plainly that auto mode runs commands with your
   whole environment, your files and the network.
 
+* A folder you clone can no longer make the editor write through a link or
+  remove a file of yours.  Options > Save does not rewrite the folder's
+  xwperc through a link, and the project list is not written through a link
+  at the name of a project that xwperc named; both say why.  A Project that
+  the folder's xwperc names outside the folder is not opened, and the editor
+  says so.  A build no longer removes a file called Messages in the folder
+  and the Messages window no longer shows it, and the debug compile's
+  messages no longer go to a <program>.dbgerr beside the source.  The key
+  you type in the AI settings, the first-use marker and the copy of an old
+  ~/.xwpe/xwperc are new files readable by you alone, never written through
+  a link.  With no home folder, or a relative XDG_CONFIG_HOME, nothing is read
+  from or written to a folder under the one you started in.  The fixed
+  /tmp/xwpe-trace.txt of trace builds is gone: set WPE_TRACE_FILE.
+
 * Find with a word boundary (\b, \B, \<, \>) now judges the place where the
   search starts by the character before it on every system.  Searching
   \ba from the middle of "xab" found the second letter as a word start on

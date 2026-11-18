@@ -1290,6 +1290,9 @@ void WpeXOptionsGet(XrmDatabase xresdb, XrmQuark *name_list,
  }
 }
 
+/* The file in the home folder that holds the user's X resources. */
+#define WPE_XDEFAULTS_FILE ".Xdefaults"
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeXDefaults - Gets the X default resources.
 
@@ -1297,26 +1300,21 @@ void WpeXOptionsGet(XrmDatabase xresdb, XrmQuark *name_list,
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 XrmDatabase WpeXDefaults()
 {
- char *s, *home_env;
+ char *s;
+ char home[WPE_PATH_SIZE], path[WPE_PATH_SIZE];
 
  s = XResourceManagerString(WpeXInfo.display);
  if (s)
  {
   return XrmGetStringDatabase(s);
  }
- /* The password file should be checked if HOME isn't set but not done yet. */
- home_env = getenv("HOME");
- if (home_env)
- {
-  XrmDatabase tmpdb;
-
-  s = malloc(strlen(home_env) + 12);
-  snprintf(s, strlen(home_env) + 12, "%s/.Xdefaults", home_env);
-  tmpdb = XrmGetFileDatabase(s);
-  free(s);
-  return (tmpdb);
- }
- return NULL;
+ /* The user's home as the editor knows it everywhere (we_places.c): $HOME,
+    else the password file's entry. */
+ if (wpe_user_home(home, sizeof home) != 0)
+  return NULL;
+ if (wpe_path_join(path, sizeof path, home, WPE_XDEFAULTS_FILE) != 0)
+  return NULL;
+ return XrmGetFileDatabase(path);
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
