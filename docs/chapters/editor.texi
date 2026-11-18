@@ -320,6 +320,11 @@ A byte that is no UTF-8 is one character (see below).
 @tab The escapes are refused: Find reports a bad expression.  Use
 @code{\<} and @code{\>} for word edges.  A byte that is no UTF-8 is one
 character (see below).
+@item macOS
+@tab The four escapes are used in the engine's own mode, which Find turns
+on.  configure measures the escapes and whether the engine keeps the text
+before the place a search starts (see below); the macOS check of the build
+fails if the escapes are refused.
 @item OpenBSD
 @tab The escapes are read as the letters @samp{b}, @samp{w} and so on, and
 find nothing else.  The engine reads bytes, so Case Sensitive off folds
@@ -329,6 +334,23 @@ byte, so one character, as on the other systems.
 @end multitable
 
 On any other system the two configure lines give the answer.
+
+@cindex word boundary, where a search starts
+@cindex regex start context
+A word boundary sees the character before the place where the search
+starts.  Search from the middle of @samp{xab} for @code{\ba} and Find says
+the text is not found, because the @samp{x} stands before the @samp{a}; the
+same holds at the cursor, after a hit that was rejected, and at each window
+of a backward search, so the answer does not depend on where Find began to
+look.  A system whose engine keeps the text before the start (Linux)
+answers that itself.  Where configure measures that it does not, or the C
+library has no @code{REG_STARTEND}, Find asks the engine from one character earlier with
+the expression wrapped in a group, and the configure summary line
+@samp{regex start context} says no.  There a text with a @code{)} that has
+no @code{(} before it, or with @code{\9}, is refused with a sentence, since
+wrapping it could change what it means.  A start at the first column of a
+row that continues a wrapped line still cannot see the end of the row
+before it.
 
 @cindex Find, bytes that are no UTF-8
 @cindex Latin-1 file, Find

@@ -147,6 +147,29 @@ if [ -n "$WPE_EXPECT_BUILT" ]; then
   done
 fi
 
+# --- the system facts the job expects of config.h
+#     WPE_EXPECT_FACTS ("REGEX_SAFE_BOUNDARY=1 REGEX_WORD_ESCAPES=1") names
+#     WPE_HAS_ facts that configure measured by running the system.  A job
+#     whose system must pass a measurement (macOS must not make Find refuse
+#     the word-boundary escapes) sets it, so a probe that starts failing is a
+#     red job by name and not a row that quietly skips.
+expect_facts() {
+  [ -n "$WPE_EXPECT_FACTS" ] || return 0
+  if [ ! -f "$CONFIG_H" ]; then
+    problem "WPE_EXPECT_FACTS is set but there is no config.h to read ($CONFIG_H)"
+    return 0
+  fi
+  for pair in $WPE_EXPECT_FACTS; do
+    fname=${pair%%=*}
+    fvalue=${pair#*=}
+    factual=$(sed -n "s/^#define WPE_HAS_$fname \\([01]\\)\$/\\1/p" "$CONFIG_H" | head -n 1)
+    [ -n "$factual" ] || { problem "this job expects WPE_HAS_$fname=$fvalue but config.h does not define it"; continue; }
+    [ "$factual" = "$fvalue" ] ||
+      problem "this job expects WPE_HAS_$fname=$fvalue but config.h says $factual (configure's measurement of this system failed: read its summary)"
+  done
+}
+expect_facts
+
 # --- R5f: test_bindings says what it could not check
 #     A build without the assistant has no assistant bars; the program then
 #     prints one SKIP line naming them, and a build with the assistant prints

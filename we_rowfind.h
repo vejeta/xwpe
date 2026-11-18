@@ -9,14 +9,48 @@
    only libc and the UTF-8 rule of we_utf8.h, so its C test links it alone.
 
    Where the C library has no REG_STARTEND (musl) the engine matches a copy
-   of the row from where each call starts, so a \b, \B, \< or \> at that
-   place is judged without the byte before it: at the cursor, after each
-   rejected match and at the start of each backward window. */
+   of the row from where each call starts, and some engines that have it
+   (macOS) lose the text before the start as well.  A \b, \B, \< or \> at a
+   start would then read as the start of the text, so the owner
+   hands such an engine that character itself (see
+   WPE_ROWFIND_START_CONTEXT below): the answer at a start is the answer the
+   engine gives reading the row from its first column. */
 
 #ifndef WE_ROWFIND_H
 #define WE_ROWFIND_H
 
 #include "edit.h"
+
+/* The engine runs REG_STARTEND (the row, whole, with the range to look in)
+   where the C library has it.  WPE_ROWFIND_NO_STARTEND forces the copy path
+   that a C library without it (musl) needs, so the test can build it. */
+#if defined(HAVE_DECL_REG_STARTEND) && HAVE_DECL_REG_STARTEND && \
+    !defined(WPE_ROWFIND_NO_STARTEND)
+#define WPE_ROWFIND_STARTEND 1
+#endif
+
+/* Whether the engine, called at a start inside the row, still sees the text
+   before it (so a \b at the start is judged by the character beside it): 1
+   only where configure measured it with REG_STARTEND
+   (WPE_HAS_REGEX_START_CONTEXT) and this build uses REG_STARTEND.  Where it
+   is 0 the owner reads one character before each start with a second
+   expression, so the answer is the same on every system.  The owner and its
+   test read this one decision and never the WPE_HAS_ name.
+   WPE_ROWFIND_NO_START_CONTEXT forces 0, so a test can build the engine that
+   takes a start for the beginning on a system whose engine is not that.
+   WPE_ROWFIND_ENGINE_START_CONTEXT is the measure alone, whatever is forced:
+   what the C library's own engine does, for a test whose reference asks it. */
+#if WPE_HAS_REGEX_START_CONTEXT
+#define WPE_ROWFIND_ENGINE_START_CONTEXT 1
+#else
+#define WPE_ROWFIND_ENGINE_START_CONTEXT 0
+#endif
+#if WPE_ROWFIND_ENGINE_START_CONTEXT && defined(WPE_ROWFIND_STARTEND) && \
+    !defined(WPE_ROWFIND_NO_START_CONTEXT)
+#define WPE_ROWFIND_START_CONTEXT 1
+#else
+#define WPE_ROWFIND_START_CONTEXT 0
+#endif
 
 /** A hit on a row: byte columns of the row, both on a character start or at
  *  the row's length.  eo == so is a zero-width hit: a position. */
@@ -122,6 +156,15 @@ const char *wpe_rowfind_error(void);
 int wpe_rowfind_refuses(const char *text, unsigned sw);
 int wpe_rowfind_refuses_when(const char *text, unsigned sw, int group_safe, int boundary_safe);
 void wpe_rowfind_release(void);
+
+/** wpe_rowfind_context_builds - How many second expressions (the ones that
+ * give the engine the character before a start) the owner has compiled since
+ * the process began.
+ *
+ * Find on a system whose engine keeps the text before a start never compiles
+ * one, and a Find text with no word-boundary escape never does either; the
+ * test reads this to show that the fast path stayed the fast path. */
+int wpe_rowfind_context_builds(void);
 
 /* Where the last search left the cursor, so that the next one knows it goes
    on from a hit (zero-width hits are found once per place). */

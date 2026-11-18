@@ -307,7 +307,11 @@ AS_IF([test "x$wpe_fact_REGEX_MULTIBYTE" = x1],
 # answer differs from the same call over a row whose multibyte characters are
 # plain letters (FreeBSD 14 misjudges \< beside a character, and crashes on
 # \> . with no alternation at all, so those are controls).  The row is placed
-# before an unmapped page so a read past it crashes.  The probe repeats the set under
+# before an unmapped page so a read past it crashes.  macOS's regexec answers a
+# start inside a character with REG_ILLSEQ; that answer to the one call that
+# starts there (gt-dot-1) is readable and safe, because the editor never starts
+# inside a character, and gt-dot-2 asks the same expression from the character
+# start behind it.  Any other answer is judged as before.  The probe repeats the set under
 # the C ctype and reports it; only the UTF-8 part is judged.
 AC_CACHE_CHECK([what regexec does with a word-boundary escape beside |],
   [xwpe_cv_regex_boundary],
@@ -332,7 +336,11 @@ AC_CACHE_CHECK([what regexec does with a word-boundary escape beside |],
    wrong (a match at 3..4) over a space, U+00C3, "bb"; no alternation is needed. */
 #define ROW4 "\\303\\203 b"
 
-struct shape { const char *name; const char *pat; int icase; const char *row; int len; int so; int eflags; int control; };
+/* @midchar marks the shape whose first call starts inside a character (so is
+   not a character start).  The editor never makes such a call, and macOS's
+   regexec answers it with REG_ILLSEQ, so that one answer is readable and safe
+   there and nowhere else (see one_call). */
+struct shape { const char *name; const char *pat; int icase; const char *row; int len; int so; int eflags; int control; int midchar; };
 
 static const struct shape shapes[] = {
  { "B-group", "\\\\B(a|b)[ab]", 0, ROW5, 5, 1, 0, 0 },
@@ -351,7 +359,8 @@ static const struct shape shapes[] = {
  { "ctl-B-rep", "\\\\Bb*b", 0, ROW5, 5, 1, 0, 1 },
  { "ctl-B-seq", "\\\\B(ab)b", 0, ROW5, 5, 1, 0, 1 },
  { "gt-dot", "\\\\>.", 0, ROW4, 4, 0, 0, 1 },
- { "gt-dot-1", "\\\\>.", 0, ROW4, 4, 1, 0, 1 },
+ { "gt-dot-1", "\\\\>.", 0, ROW4, 4, 1, 0, 1, 1 },
+ { "gt-dot-2", "\\\\>.", 0, ROW4, 4, 2, 0, 1, 0 },
  { "lt-b", "\\\\<b", 0, ROW5, 5, 0, 0, 1 },
  { "lt-b-1", "\\\\<b", 0, ROW5, 5, 1, 0, 1 },
  { "gt-br-dot", "[[:>:]].", 0, ROW4, 4, 0, 0, 1 },
@@ -404,16 +413,34 @@ static void ask(const regex_t *re, const struct shape *s, const char *row, int s
  a->eo = m.rm_eo;
 }
 
+/* Whether @rc is the refusal of a start inside a character (macOS answers
+   REG_ILLSEQ, 17).  A system that has no such code never answers it. */
+static int is_illseq(int rc)
+{
+#ifdef REG_ILLSEQ
+ return rc == REG_ILLSEQ;
+#else
+ (void) rc;
+ return 0;
+#endif
+}
+
 /* 0 an answer inside the range (or no match), 2 a match outside it, 3 any
    other answer, 4 an answer that differs from the one the same call gives
    when every byte of a multibyte character is a plain letter ("wrong": the
    engine misjudged a boundary beside a character, and a hit inside the range
-   is no proof). */
-static int one_call(const regex_t *re, const struct shape *s, int so, int eflags)
+   is no proof), 5 the refusal of a start inside a character, REG_ILLSEQ,
+   given to the call @midchar says starts there.  The editor starts only on a
+   character start (char_start_up) and takes any non-zero code as no match,
+   so that answer to that call is safe; the same code to any other call, or
+   any other code to that one, is judged as before. */
+#define ONE_CALL_ILLSEQ 5
+static int one_call(const regex_t *re, const struct shape *s, int so, int eflags, int midchar)
 {
  struct answer a, b;
  ask(re, s, place_row(s->row, s->len, 0), so, eflags, &a);
  if (a.rc == REG_NOMATCH) a.so = a.eo = -1;
+ else if (midchar && is_illseq(a.rc)) return ONE_CALL_ILLSEQ;
  else if (a.rc != 0) return 3;
  else if (a.so < so || a.so > a.eo || a.eo > s->len) return 2;
  if (!compare_swapped) return 0;
@@ -424,7 +451,8 @@ static int one_call(const regex_t *re, const struct shape *s, int so, int eflags
 }
 
 /* The child: no core file, five seconds, then the shape's two calls.  Its exit
-   status is the answer: 0 ok, 42 refused by regcomp, 2 range, 3 other, 4 wrong.
+   status is the answer: 0 ok, 42 refused by regcomp, 2 range, 3 other, 4 wrong,
+   5 illseq (the mid-character call of a shape that has one, and nothing worse).
    Refused is 42 because a sanitizer that catches a crash in the child ends it
    with an exit status of its own (AddressSanitizer and UBSan 1, LeakSanitizer
    23), and that must read as a crash, not as a refusal. */
@@ -439,11 +467,12 @@ static int child_answer(const struct shape *s)
  setrlimit(RLIMIT_CORE, &rl);
  alarm(5);
  if (regcomp(&re, s->pat, REG_EXTENDED | s->icase | $xwpe_regex_flag)) return EXIT_REFUSED;
- first = one_call(&re, s, s->so, s->eflags);
- second = one_call(&re, s, 0, REG_NOTBOL | REG_NOTEOL);
+ first = one_call(&re, s, s->so, s->eflags, s->midchar);
+ second = one_call(&re, s, 0, REG_NOTBOL | REG_NOTEOL, 0);
  if (first == 2 || second == 2) return 2;
  if (first == 3 || second == 3) return 3;
  if (first == 4 || second == 4) return 4;
+ if (first == ONE_CALL_ILLSEQ) return ONE_CALL_ILLSEQ;
  return 0;
 }
 
@@ -464,6 +493,7 @@ static const char *measure(const struct shape *s)
  if (WEXITSTATUS(st) == 2) return "range";
  if (WEXITSTATUS(st) == 3) return "other";
  if (WEXITSTATUS(st) == 4) return "wrong";
+ if (WEXITSTATUS(st) == ONE_CALL_ILLSEQ) return "illseq";
  return "crash";
 }
 
@@ -941,6 +971,72 @@ AC_CHECK_DECLS([REG_STARTEND], [], [], [[#include <sys/types.h>
 # test.
 AC_CHECK_FUNCS([newlocale uselocale])
 
+# Whether the engine, started inside a row with REG_STARTEND, still sees the
+# text before the start.  glibc does (a \b at the start is judged by the
+# character before it); macOS's regexec takes the start for the beginning of
+# the string and answers as if no letter were before it.  The search owner
+# reads WPE_HAS_REGEX_START_CONTEXT (through the decision in we_rowfind.h) and,
+# where it is 0, hands the engine the character before every start itself.
+# The probe runs under the owner's UTF-8 ctype and says yes only when all
+# hold, each with REG_STARTEND and REG_NOTBOL from offset 1: \ba on "xab" has
+# no match, \Ba on "xab" is 1..2, and \ba on " ab" is 1..2 (so an engine that
+# never matches does not pass).  Where \b does not compile the same three run
+# with [[:<:]]a and, for the second, [[:>:]] and a space on "a b" (the
+# bracket forms have no \B).  A cross build, a C library with no REG_STARTEND,
+# no UTF-8 locale or an engine with neither spelling says 0, which is the safe
+# value: the context path is right on every engine.  This is not the cross
+# default of the word-escapes probe above, which says yes when it knows a flag.
+AC_CACHE_CHECK([whether regexec started inside a row sees the text before it],
+  [xwpe_cv_regex_start_context],
+  [AS_IF([test "x$cross_compiling" = xyes],
+     [xwpe_cv_regex_start_context="no (cross build)"],
+     [test "x$ac_cv_have_decl_REG_STARTEND" != xyes],
+     [xwpe_cv_regex_start_context="no (no REG_STARTEND)"],
+     [AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <locale.h>
+#include <string.h>
+#include <sys/types.h>
+#include <regex.h>
+
+/* One call as the editor makes it at a start inside a row.  Return: regexec's
+   code, or -1 when the pattern does not compile. */
+static int call_from(const char *pat, const char *row, int so, regmatch_t *m)
+{
+ regex_t re;
+ int rc;
+ if (regcomp(&re, pat, REG_EXTENDED | $xwpe_regex_flag)) return -1;
+ m->rm_so = so;
+ m->rm_eo = (regoff_t) strlen(row);
+ rc = regexec(&re, row, 1, m, REG_STARTEND | REG_NOTBOL);
+ regfree(&re);
+ return rc;
+}
+
+static int hits(int rc, const regmatch_t *m, int so, int eo)
+{
+ return rc == 0 && m->rm_so == so && m->rm_eo == eo;
+}]], [[regmatch_t m;
+ const char *start = "\\\\ba", *edge = "\\\\Ba", *edge_row = "xab";
+ if (!setlocale(LC_CTYPE, "C.UTF-8") && !setlocale(LC_CTYPE, "en_US.UTF-8")) return 2;
+ if (call_from(start, "xab", 1, &m) == -1)
+ {
+  start = "[[:<:]]a";
+  edge = "[[:>:]] ";
+  edge_row = "a b";
+  if (call_from(start, "xab", 1, &m) == -1) return 3;
+ }
+ if (call_from(start, "xab", 1, &m) != REG_NOMATCH) return 1;
+ if (!hits(call_from(edge, edge_row, 1, &m), &m, 1, 2)) return 1;
+ if (!hits(call_from(start, " ab", 1, &m), &m, 1, 2)) return 1;
+ return 0;]])],
+       [xwpe_cv_regex_start_context=yes],
+       [xwpe_cv_regex_start_context=no],
+       [xwpe_cv_regex_start_context="no (cross build)"])])])
+WPE_FACT([REGEX_START_CONTEXT], [test "x$xwpe_cv_regex_start_context" = xyes],
+  [the regular expression engine, started inside a row, still sees the text before the start])
+AS_IF([test "x$xwpe_cv_regex_start_context" = xyes],
+  [xwpe_say_regex_start_context="yes (a \\b at a start is judged by the character before it)"],
+  [xwpe_say_regex_start_context="no (Find reads one character before each start)"])
+
 # --- A debugger that dies with the editor ---
 # Linux has prctl(PR_SET_PDEATHSIG) and FreeBSD procctl(PROC_PDEATHSIG_CTL):
 # the system sends the child a signal when its parent is killed.  The other
@@ -1172,5 +1268,6 @@ AC_MSG_RESULT([
       regex reads UTF-8: $xwpe_say_regex_multibyte
       regex boundary groups: $xwpe_say_regex_safe_boundary_group
       regex boundary escapes: $xwpe_say_regex_safe_boundary
+      regex start context: $xwpe_say_regex_start_context
       linker --wrap:     $have_ld_wrap
 ])

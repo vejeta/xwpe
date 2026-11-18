@@ -31,6 +31,15 @@ needs_word_escapes = pytest.mark.skipif(
     reason="this system's regex has no word escapes (configure: "
            "'regex word escapes: no'); a \\w \\b or \\< in Find matches nothing")
 
+# Where configure measured the engine unsafe for a word-boundary escape
+# (NetBSD has the escapes and both safety facts 0) Find refuses the
+# expression by design, so a row about what a \b sees has nothing to say
+# there.  macOS must not be in that group: its job expects the fact to be 1.
+needs_safe_boundary = pytest.mark.skipif(
+    procinfo.build_has("WPE_HAS_REGEX_SAFE_BOUNDARY") is False,
+    reason="this system's regex is measured unsafe for \\b \\B \\< \\> (configure: "
+           "'regex boundary escapes: no'); Find refuses them by design")
+
 ALT_R = alt("r")     # Regular expression
 ALT_B = alt("b")     # Backward
 ALT_N = alt("n")     # New Text of the Replace dialog
@@ -81,6 +90,7 @@ def test_w_survives_a_case_insensitive_search(tmp_path):
 
 # @scenario SC-edit-model-56
 @needs_word_escapes
+@needs_safe_boundary
 def test_a_word_boundary_sees_the_text_before_where_the_search_starts(tmp_path):
     """The cursor is in the middle of "xab": `\\ba` has no word start at it."""
     with EditSession(str(tmp_path), "xab\n") as s:
@@ -88,6 +98,20 @@ def test_a_word_boundary_sees_the_text_before_where_the_search_starts(tmp_path):
         w = _find(s, "\\ba", ALT_R, ALT_C)
         assert w.cursor == (0, 1), "cursor %s" % (w.cursor,)
         assert NOT_FOUND in _screen(s)
+
+
+# @scenario SC-edit-model-56
+@needs_word_escapes
+@needs_safe_boundary
+def test_a_non_boundary_is_found_at_the_place_the_search_starts(tmp_path):
+    """The other direction: with the cursor between the letters of "ab",
+    `\\Bb` is a hit at the cursor, one an engine that forgets the text before
+    the start would miss."""
+    with EditSession(str(tmp_path), "ab\n") as s:
+        s.send([RIGHT])
+        w = _find(s, "\\Bb", ALT_R, ALT_C)
+        assert w.cursor == (0, 2), "cursor %s" % (w.cursor,)
+        assert NOT_FOUND not in _screen(s)
 
 
 # @scenario SC-edit-model-56

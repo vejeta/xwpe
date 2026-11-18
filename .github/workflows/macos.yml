@@ -104,6 +104,12 @@ jobs:
           WPE_EXPECT_BUILT: >-
             enable-ai=yes enable-ai-agent-host=yes enable-ai-tls=yes
             with-x=no with-wayland=no with-gpm=no
+          # What configure must measure of this system's regex: its word
+          # escapes work and survive the safety probe, so Find does not refuse
+          # \b \B \< \> here.  A probe that starts failing is a red job by
+          # name, not a row that skips.
+          WPE_EXPECT_FACTS: >-
+            REGEX_WORD_ESCAPES=1 REGEX_SAFE_BOUNDARY=1 REGEX_SAFE_BOUNDARY_GROUP=1
         run: >-
           make check
           LOG_COMPILER="$PWD/tests/with-deadline.sh 600"

@@ -41,6 +41,15 @@
 # 10. The two regex facts (the GNU escapes, reading UTF-8) are measured by
 #     running the engine, three-valued for the escapes, and the search owner
 #     and its test read them.
+# 11. The safety probe for the word-boundary escapes runs each shape in a
+#     child and tells a crash, a hang, a wrong answer, a match outside the
+#     range and macOS's refusal of a start inside a character apart from ok.
+# 12. That probe is run, not read: against a stub engine with each fault, and
+#     against the host's real engine, whose two words must be config.h's facts.
+# 13. A Find at a start inside a row is judged by the character before it on
+#     every engine: regexec has one caller, engine_exec two, configure
+#     measures whether the engine keeps the text before a start, and the
+#     nocontext and macsim builds are in the test lists.
 #
 # Exit: 0 clean, 1 a row failed, 2 the script could not run.
 
@@ -355,7 +364,7 @@ if ! grep -q 'WPE_HAS_REGEX_GNU_ESCAPES' "$WORK/test_rowfind.nocomment"; then
 	fail "tests/test_rowfind.c does not read WPE_HAS_REGEX_GNU_ESCAPES outside a comment: a row would run where the engine cannot pass it"
 fi
 if ! grep -q 'WPE_HAS_REGEX_WORD_ESCAPES' "$WORK/test_rowfind.nocomment"; then
-	fail "tests/test_rowfind.c does not read WPE_HAS_REGEX_WORD_ESCAPES outside a comment: the copy build would be told to differ where no word-boundary escape reaches the engine"
+	fail "tests/test_rowfind.c does not read WPE_HAS_REGEX_WORD_ESCAPES outside a comment: its word-boundary rows would run where the engine has no such escape"
 fi
 ROWS=$((ROWS + 1))
 
@@ -373,13 +382,13 @@ BNDPROBE=$(sed -n '/what regexec does with a word-boundary escape/,/^WPE_FACT(\[
 if [ -z "$BNDPROBE" ]; then
 	fail "configure.ac has no probe of what regexec does with a word-boundary escape"
 fi
-for word in crash range hang wrong; do
+for word in crash range hang wrong illseq; do
 	case $BNDPROBE in
 	*"return \"$word\""*) ;;
 	*) fail "configure's probe of the word-boundary escapes never answers \"$word\" (no return \"$word\"): a crash of the engine would read as safe" ;;
 	esac
 done
-for shape in '\\\\B(a|b)' '\\\\b(a|b)' '(a|b)\\\\B' '\\\\<(a|b)' '\\\\B(b)b' '"editor-call"' '\\\\>.' '\\\\<b' '[[:>:]].' '[[:<:]]b' '"gt-dot-1"' '"lt-b-1"'; do
+for shape in '\\\\B(a|b)' '\\\\b(a|b)' '(a|b)\\\\B' '\\\\<(a|b)' '\\\\B(b)b' '"editor-call"' '\\\\>.' '\\\\<b' '[[:>:]].' '[[:<:]]b' '"gt-dot-1"' '"gt-dot-2"' '"lt-b-1"'; do
 	case $BNDPROBE in
 	*"$shape"*) ;;
 	*) fail "configure's probe of the word-boundary escapes does not run the shape spelt $shape in configure.ac" ;;
@@ -452,7 +461,12 @@ cat > "$WORK/bndstub.h" <<'EOF'
    refused (every pattern is refused), crash (a row that starts with U+00C3,
    the control of the probe), hang and range (the editor-call row, which
    starts with a tab), wrong (an answer that depends on the second byte being
-   a multibyte one).  Anything else is an engine that finds nothing. */
+   a multibyte one), illseq (a start inside a character is refused with
+   REG_ILLSEQ, as macOS's regexec does) and illseq-all (every call is refused
+   so).  Anything else is an engine that finds nothing. */
+#ifndef REG_ILLSEQ
+#define REG_ILLSEQ 17
+#endif
 static int stub_regcomp(regex_t *re, const char *pat, int fl)
 {
 	const char *f = getenv("STUB_FAULT");
@@ -463,12 +477,15 @@ static int stub_regcomp(regex_t *re, const char *pat, int fl)
 static int stub_regexec(const regex_t *re, const char *s, size_t n, regmatch_t *m, int fl)
 {
 	const char *f = getenv("STUB_FAULT");
-	(void) re; (void) n; (void) m; (void) fl;
+	(void) re; (void) n;
 	if (f == NULL) f = "none";
 	if (strcmp(f, "crash") == 0 && s[0] == (char) 0xC3) raise(SIGSEGV);
 	if (strcmp(f, "hang") == 0 && s[0] == 0x09) for (;;) ;
 	if (strcmp(f, "range") == 0 && s[0] == 0x09) { m[0].rm_so = 0; m[0].rm_eo = 500; return 0; }
 	if (strcmp(f, "wrong") == 0 && (unsigned char) s[1] >= 0x80) { m[0].rm_so = 3; m[0].rm_eo = 4; return 0; }
+	if (strcmp(f, "illseq-all") == 0) return REG_ILLSEQ;
+	if (strcmp(f, "illseq") == 0 && (fl & REG_STARTEND) && m[0].rm_so > 0 &&
+	    ((unsigned char) s[m[0].rm_so] & 0xC0) == 0x80) return REG_ILLSEQ;
 	return REG_NOMATCH;
 }
 #define regcomp stub_regcomp
@@ -480,10 +497,13 @@ bnd_expect() { # name multibyte-fact fault want
 		fail "row 12: the probe taken out of configure.ac does not build against the stub ($1): $(head -n 3 "$WORK/bndprobe.log" | tr '\n' ' ')"
 		return
 	fi
-	got=$(STUB_FAULT=$3 "$WORK/bndprobe" 2>/dev/null | cut -d' ' -f1,2)
-	case $got in
-	"group=unknown boundary=unknown") echo "SKIP: row 12 ($1): no UTF-8 locale here to run the probe in"; return ;;
+	said=$(STUB_FAULT=$3 "$WORK/bndprobe" 2>/dev/null)
+	# "unknown" is also an answer of the engine (a refused call), so only the
+	# probe's own no-locale line is a SKIP.
+	case $said in
+	"group=unknown boundary=unknown no-utf8-locale") echo "SKIP: row 12 ($1): no UTF-8 locale here to run the probe in"; return ;;
 	esac
+	got=$(printf '%s\n' "$said" | cut -d' ' -f1,2)
 	if [ "$got" != "$4" ]; then
 		fail "row 12: the probe says \"$got\" for $1, wanted \"$4\" (a probe that does not count it, or compares where it must not)"
 		return
@@ -514,10 +534,11 @@ bnd_real_engine() {
 		fail "row 12: the probe taken out of configure.ac does not build against the host's engine: $(head -n 3 "$WORK/bndreal.log" | tr '\n' ' ')"
 		return
 	fi
-	got=$("$WORK/bndreal" 2>/dev/null | cut -d' ' -f1,2)
-	case $got in
-	"group=unknown boundary=unknown") echo "SKIP: row 12 (the host's real engine): no UTF-8 locale here to run the probe in"; return ;;
+	said=$("$WORK/bndreal" 2>/dev/null)
+	case $said in
+	"group=unknown boundary=unknown no-utf8-locale") echo "SKIP: row 12 (the host's real engine): no UTF-8 locale here to run the probe in"; return ;;
 	esac
+	got=$(printf '%s\n' "$said" | cut -d' ' -f1,2)
 	group_word=${got%% *}
 	group_word=${group_word#group=}
 	boundary_word=${got#* }
@@ -540,7 +561,90 @@ bnd_expect "a wrong in-range answer" 1 wrong "group=unsafe boundary=unsafe"
 bnd_expect "a match outside the range" 1 range "group=unsafe boundary=safe"
 bnd_expect "a hang" 1 hang "group=unsafe boundary=safe"
 bnd_expect "an engine that reads bytes" 0 wrong "group=safe boundary=safe"
+bnd_expect "a refusal of a start inside a character" 1 illseq "group=safe boundary=safe"
+bnd_expect "a refusal of every call (REG_ILLSEQ)" 1 illseq-all "group=unknown boundary=unknown"
 bnd_real_engine
+ROWS=$((ROWS + 1))
+
+# Row 13: a Find at a start inside a row is judged by the character before
+# it on every engine, and one place decides how.  An engine that takes the
+# start of a call for the beginning of the text (macOS) is handed that
+# character by the owner (the context expression), an engine that keeps the
+# text is asked as it is, and configure measures which is which by running
+# it.  The structure that keeps this true:
+#  - regexec is called only inside engine_regexec, and engine_exec only by
+#    engine_match_direct and engine_match_with_context, so no third path
+#    reads a row without deciding what stands before the start;
+#  - we_rowfind.h decides from WPE_HAS_REGEX_START_CONTEXT in an #if, and
+#    neither the owner nor its test reads that name (they read the decision);
+#  - configure runs the probe with REG_STARTEND and the word-escapes flag;
+#  - test_rowfind_nocontext is in TESTS, no test keeps a look-behind
+#    exception, and no text still says a start is "judged without" its
+#    character;
+#  - the macOS job expects the boundary facts configure must measure there.
+calls_outside() { # file name allowed-functions: call lines of NAME( in a function not in the list
+	awk -v name="$2" -v allowed=" $3 " '
+		/^[^ \t{}#]/ && /\(/ && !/;/ { cur = $0; sub(/\(.*/, "", cur); n = split(cur, w, /[ *]+/); cur = w[n] }
+		{
+			line = $0
+			if (line ~ /^static /) next
+			pat = "(^|[^A-Za-z0-9_])" name "\\("
+			if (line ~ pat && index(allowed, " " cur " ") == 0) print FILENAME ": " cur ": " $0
+		}' "$1"
+}
+strip_comments "$SRCDIR/we_rowfind.c" | blank_strings /dev/stdin > "$WORK/rowfind.calls"
+OUTSIDE=$(calls_outside "$WORK/rowfind.calls" regexec engine_regexec)
+if [ -n "$OUTSIDE" ]; then
+	fail "row 13: regexec is called outside engine_regexec in we_rowfind.c, a path that does not decide what stands before the start:"
+	echo "$OUTSIDE"
+fi
+if ! grep -qE '(^|[^A-Za-z0-9_])regexec\(' "$WORK/rowfind.calls"; then
+	fail "row 13: we_rowfind.c has no regexec call the rule could see (the check reads nothing)"
+fi
+OUTSIDE=$(calls_outside "$WORK/rowfind.calls" engine_exec "engine_match_direct engine_match_with_context")
+if [ -n "$OUTSIDE" ]; then
+	fail "row 13: engine_exec is called outside engine_match_direct and engine_match_with_context:"
+	echo "$OUTSIDE"
+fi
+if ! grep -qE '^[[:space:]]*#[[:space:]]*(if|elif).*WPE_HAS_REGEX_START_CONTEXT' "$WORK/we_rowfind_h.nocomment"; then
+	fail "row 13: we_rowfind.h does not test WPE_HAS_REGEX_START_CONTEXT in an #if: the owner would take every engine for one that keeps the text before a start"
+fi
+if grep -q 'WPE_HAS_REGEX_START_CONTEXT' "$WORK/rowfind.nocomment" "$WORK/test_rowfind.nocomment"; then
+	fail "row 13: we_rowfind.c or tests/test_rowfind.c reads WPE_HAS_REGEX_START_CONTEXT: read the decision WPE_ROWFIND_START_CONTEXT"
+fi
+SCPROBE=$(sed -n '/whether regexec started inside a row sees the text before it/,/^WPE_FACT(\[REGEX_START_CONTEXT\]/p' "$SRCDIR/configure.ac")
+case $SCPROBE in
+*'regcomp(&re, pat, REG_EXTENDED | $xwpe_regex_flag)'*) ;;
+*) fail "row 13: configure's start-context probe does not compile with the word-escapes flag (regcomp(&re, pat, REG_EXTENDED | \$xwpe_regex_flag))" ;;
+esac
+case $SCPROBE in
+*'regexec(&re, row, 1, m, REG_STARTEND | REG_NOTBOL)'*) ;;
+*) fail "row 13: configure's start-context probe does not call regexec with REG_STARTEND | REG_NOTBOL from a start inside the row" ;;
+esac
+case $SCPROBE in
+*AC_RUN_IFELSE*) ;;
+*) fail "row 13: configure's start-context probe does not run the engine (AC_RUN_IFELSE)" ;;
+esac
+for build in test_rowfind_nocontext test_rowfind_macsim; do
+	LISTED=$(grep -E "^[^#]*[[:space:]]$build([[:space:]]|\$)" "$SRCDIR/Makefile.am" | grep -vE '_(SOURCES|CFLAGS|CPPFLAGS)[[:space:]]*=' | wc -l | tr -d ' ')
+	if [ "$LISTED" -lt 2 ]; then
+		fail "row 13: Makefile.am's check_PROGRAMS and TESTS do not both list $build (nocontext proves the owner hands an engine the character before a start against a reference with context; macsim runs the macOS path of the test, where the reference has none)"
+	fi
+done
+if grep -qE 'COPY_DIFFERENCE_EXPECTED|OWNER_SEES_BEFORE|copy_differences' "$WORK/test_rowfind.nocomment"; then
+	fail "row 13: tests/test_rowfind.c keeps a look-behind exception for the copy build (COPY_DIFFERENCE_EXPECTED, OWNER_SEES_BEFORE, copy_differences)"
+fi
+JUDGED=$(grep -n 'judged without' "$SRCDIR/we_rowfind.c" "$SRCDIR/we_rowfind.h" "$SRCDIR/Makefile.am" "$SRCDIR/tests/test_rowfind.c")
+if [ -n "$JUDGED" ]; then
+	fail "row 13: a text still says a start is \"judged without\" the character before it, which the owner now supplies:"
+	echo "$JUDGED"
+fi
+if ! grep -q 'WPE_EXPECT_FACTS' "$SRCDIR/.github/workflows/macos.yml" 2>/dev/null ||
+   ! grep -A3 'WPE_EXPECT_FACTS' "$SRCDIR/.github/workflows/macos.yml" | grep -q 'REGEX_SAFE_BOUNDARY=1'; then
+	if [ -f "$SRCDIR/.github/workflows/macos.yml" ]; then
+		fail "row 13: the macOS job does not expect REGEX_SAFE_BOUNDARY=1 (WPE_EXPECT_FACTS): a failed probe would turn the word escapes off without a red job"
+	fi
+fi
 ROWS=$((ROWS + 1))
 
 if [ $FAIL -eq 0 ]; then

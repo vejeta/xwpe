@@ -48,14 +48,6 @@
 #include <locale.h>
 #endif
 
-/* The engine runs REG_STARTEND (the row, whole, with the range to look in)
-   where the C library has it.  WPE_ROWFIND_NO_STARTEND forces the copy path
-   that a C library without it (musl) needs, so the test can build it. */
-#if defined(HAVE_DECL_REG_STARTEND) && HAVE_DECL_REG_STARTEND && \
-    !defined(WPE_ROWFIND_NO_STARTEND)
-#define WPE_ROWFIND_STARTEND 1
-#endif
-
 /* Only the BSDs' and macOS's multibyte engines have REG_ILLSEQ; the owner
    never hands them a byte that would earn it, and the name is here so that
    ROWFIND_BAD_ANSWER below is checked against it.  Where the name does not
@@ -79,6 +71,32 @@ typedef char rowfind_bad_answer_is_new[
  "\\b \\B \\< \\> beside | can crash this system's regex: search refused"
 #define ROWFIND_UNSAFE_ESCAPE_SENTENCE \
  "\\b \\B \\< \\> can crash this system's regex: search refused"
+
+/* The sentence Find says when an engine that loses the text before a start
+   cannot be given it for this Find text: a `)` with no `(`, a lone backslash
+   at the end, or a back-reference \9 (see pattern_with_context). */
+#define ROWFIND_NO_CONTEXT_SENTENCE \
+ "\\b \\B \\< \\> with a lone ) or \\9 not supported here: refused"
+
+/* The character the context expression takes before the start: any one
+   character a row can hold.  A row never holds its line break, so the bracket
+   leaves it out (the real byte, 0x0A), and a NUL is taken like any other. */
+#define ROWFIND_CONSUMER "[^\n]"
+#define ROWFIND_CONSUMER_LEN 4
+
+/* A copy of the row from a start that begins with a NUL would be an empty
+   string to the engine, so the copy path writes this byte (a non-word byte
+   that is not a line break) in its place for the character before a start. */
+#define ROWFIND_NUL_STAND_IN 0x01
+
+/* The groups the context call asks for.  The owner reads two: the whole match
+   and group 1, the hit itself.  But glibc's regexec answers "no match" for a
+   back-reference \k when 2 <= nmatch <= k (measured: "(a)(b)\2" on "abb" fails
+   with nmatch 2 and matches with 0, 1 or 3), and the wrapping group shifts the
+   text's \1 to \9 up to \2 to \10, so the call asks for group 10 as well:
+   nmatch 11 is the least that is right for every back-reference a text can
+   hold. */
+#define ROWFIND_CONTEXT_GROUPS 11
 
 /* The first byte that is part of a word whatever the locale says: a letter
    beyond ASCII is a word letter, as it was in the Latin-1 locale of the
@@ -119,12 +137,15 @@ typedef struct {
  int reads_utf8;                    /* the engine reads UTF-8 characters: stand-ins are in use */
  int failed;                        /* the engine refused the text */
  int compiled;
+ int needs_context;                 /* the engine must be handed the character before a start */
+ int ctx_compiled;                  /* ctx_re holds the context expression */
  int cflags;
  char pattern[ROWFIND_PATTERN_MAX];
 #ifdef WPE_ROWFIND_LOCALES
  locale_t ctype;                    /* ctype to run the engine under, or 0 for the process's */
 #endif
  regex_t re;
+ regex_t ctx_re;                    /* ROWFIND_CONSUMER "(" pattern ")", when needs_context */
 } RowfindCache;
 
 /* The last row the owner made an engine text of, and what it made.  A
@@ -146,6 +167,7 @@ typedef struct {
 } EngineText;
 
 static RowfindCache g_cache;
+static int g_context_builds;        /* context expressions compiled since the start */
 static EngineText g_text;
 static char g_error[ROWFIND_ERROR_MAX];
 static int g_has_error;
@@ -232,11 +254,13 @@ static void ctype_leave(int entered, locale_t prev)
 
 /* ---- the compiled search ---- */
 
-/** cache_clear - Free the compiled engine; the text stays unset. */
+/** cache_clear - Free the compiled engine and its context expression; the text stays unset. */
 static void cache_clear(RowfindCache *c)
 {
  if (c->compiled)
   regfree(&c->re);
+ if (c->ctx_compiled)
+  regfree(&c->ctx_re);
  memset(c, 0, sizeof(*c));
 }
 
@@ -281,6 +305,10 @@ static void refusal_note(const char *sentence)
 #define ERE_PLAIN  0   /* nothing the refusal looks for */
 #define ERE_BOUND  1   /* \b \B \< or \> */
 #define ERE_ALT    2   /* an alternation bar */
+#define ERE_OPEN   3   /* a ( that opens a group */
+#define ERE_CLOSE  4   /* a ) outside a bracket and not escaped */
+#define ERE_BACKREF 5  /* \1 to \9 */
+#define ERE_TRAILING 6 /* a backslash that ends the text */
 
 /* FreeBSD's (and, by its sources, NetBSD's and macOS's) libc also spell the
    start and the end of a word as bracket expressions; they reach the same
@@ -330,7 +358,9 @@ static const char *ere_skip_bracket(const char *p)
  * ere_next - Read one piece of an extended expression.
  * @p: where to read, not at the terminating zero.
  * @kind: receives ERE_BOUND for a word-boundary escape (or [[:<:]], [[:>:]]), ERE_ALT for an
- * unescaped bar outside a bracket, else ERE_PLAIN.
+ * unescaped bar outside a bracket, ERE_OPEN and ERE_CLOSE for an unescaped
+ * parenthesis outside a bracket, ERE_BACKREF for \1 to \9, ERE_TRAILING for a
+ * backslash that ends the text, else ERE_PLAIN.
  * Return: where the next piece starts.
  *
  * A backslash and the byte after it are one piece, so an escaped backslash
@@ -351,13 +381,22 @@ static const char *ere_next(const char *p, int *kind)
  if (*p == '\\')
  {
   if (p[1] == '\0')
+  {
+   *kind = ERE_TRAILING;
    return(p + 1);
+  }
   if (strchr("bB<>", p[1]) != NULL)
    *kind = ERE_BOUND;
+  else if (p[1] >= '1' && p[1] <= '9')
+   *kind = ERE_BACKREF;
   return(p + 2);
  }
  if (*p == '|')
   *kind = ERE_ALT;
+ else if (*p == '(')
+  *kind = ERE_OPEN;
+ else if (*p == ')')
+  *kind = ERE_CLOSE;
  return(p + 1);
 }
 
@@ -416,6 +455,97 @@ int wpe_rowfind_refuses(const char *text, unsigned sw)
 {
  return(wpe_rowfind_refuses_when(text, sw, WPE_ROWFIND_BOUNDARY_GROUP_SAFE,
                                  WPE_ROWFIND_BOUNDARY_SAFE));
+}
+
+/* ---- the context expression: the character before a start ---- */
+
+/* What pattern_with_context answers when it cannot keep the text's meaning. */
+#define ROWFIND_CONTEXT_REFUSED (-1)
+
+/* The context expression: the consumer, "(", the pattern, ")", and the end. */
+#define ROWFIND_CONTEXT_PATTERN_MAX (ROWFIND_PATTERN_MAX + ROWFIND_CONSUMER_LEN + 3)
+
+/**
+ * context_piece_refused - Would wrapping this piece change what the text means?
+ * @p, @kind: the piece, as ere_next read it.
+ * @depth: the groups open so far; changed by a ( or a ).
+ *
+ * A `)` with no `(` is a plain character to some engines (glibc takes it so),
+ * and inside the wrapping group it would close that group instead; a lone
+ * backslash at the end would escape the wrapping `)`; and \9 cannot be
+ * renumbered to \10.
+ * Return: 1 refuse the text, 0 the piece can be wrapped.
+ */
+static int context_piece_refused(const char *p, int kind, int *depth)
+{
+ if (kind == ERE_TRAILING)
+  return(1);
+ if (kind == ERE_BACKREF)
+  return(p[1] == '9');
+ if (kind == ERE_OPEN)
+  (*depth)++;
+ if (kind == ERE_CLOSE)
+ {
+  if (*depth == 0)
+   return(1);
+  (*depth)--;
+ }
+ return(0);
+}
+
+/**
+ * context_emit_piece - Append one piece of the pattern to the context expression.
+ * @o: the bytes written so far.
+ *
+ * The wrapping group is group 1, so a back-reference \N of the pattern is \N+1
+ * here.
+ * Return: the bytes written now.
+ */
+static int context_emit_piece(char *out, int o, const char *p, const char *next, int kind)
+{
+ if (kind == ERE_BACKREF)
+ {
+  out[o++] = '\\';
+  out[o++] = (char)(p[1] + 1);
+  return(o);
+ }
+ memcpy(out + o, p, (size_t)(next - p));
+ return(o + (int)(next - p));
+}
+
+/**
+ * pattern_with_context - The expression that finds the pattern one character
+ * after where it would start.
+ * @pattern: the expression the engine reads; @out: ROWFIND_CONTEXT_PATTERN_MAX bytes.
+ *
+ * An engine that loses the text before a start judges a \b at that start as if
+ * a line began there.  Asked from one character earlier, with this expression,
+ * it takes that character and then judges the pattern with it behind: a hit
+ * of the pattern is group 1.  The starts map one to one (a match at t here is
+ * a match of the pattern at the next character start), so the leftmost and the
+ * longest hit are the ones the pattern alone would give.
+ * Return: 0 made, ROWFIND_CONTEXT_REFUSED when the text could mean something
+ * else once wrapped (see context_piece_refused).
+ */
+static int pattern_with_context(const char *pattern, char *out)
+{
+ const char *p = pattern, *next;
+ int kind, depth = 0, o = ROWFIND_CONSUMER_LEN + 1;
+
+ memcpy(out, ROWFIND_CONSUMER "(", (size_t)o);
+ while (*p != '\0')
+ {
+  next = ere_next(p, &kind);
+  if (context_piece_refused(p, kind, &depth))
+   return(ROWFIND_CONTEXT_REFUSED);
+  o = context_emit_piece(out, o, p, next, kind);
+  p = next;
+ }
+ if (depth != 0)
+  return(ROWFIND_CONTEXT_REFUSED);
+ out[o++] = ')';
+ out[o] = '\0';
+ return(0);
 }
 
 /* ---- what the engine reads: a stand-in for each glyph that is no UTF-8 ---- */
@@ -724,10 +854,11 @@ static void engine_choose_reading(RowfindCache *c)
 }
 
 /**
- * engine_compile - Compile the cache's pattern.
+ * engine_compile_pattern - Compile @pattern into @re with the cache's flags,
+ * under the ctype the engine runs under.
  * Return: 0 compiled, else regcomp's code.
  */
-static int engine_compile(RowfindCache *c)
+static int engine_compile_pattern(RowfindCache *c, regex_t *re, const char *pattern)
 {
  int rc;
 #ifdef WPE_ROWFIND_LOCALES
@@ -735,15 +866,76 @@ static int engine_compile(RowfindCache *c)
  int entered = ctype_enter(c->ctype, &prev);
 #endif
 
- rc = regcomp(&c->re, c->pattern, c->cflags);
+ rc = regcomp(re, pattern, c->cflags);
 #ifdef WPE_ROWFIND_LOCALES
  ctype_leave(entered, prev);
 #endif
+ return(rc);
+}
+
+/**
+ * engine_compile - Compile the cache's pattern.
+ * Return: 0 compiled, else regcomp's code.
+ */
+static int engine_compile(RowfindCache *c)
+{
+ int rc = engine_compile_pattern(c, &c->re, c->pattern);
+
  if (rc == 0)
   c->compiled = 1;
  else
   error_note(rc, &c->re);
  return(rc);
+}
+
+/**
+ * context_compile - Compile the expression that hands the engine the
+ * character before a start.
+ *
+ * Done with the Find text, not at the first row, so a text the owner cannot
+ * wrap is refused once and for every row, like a text the engine refuses: Find
+ * never gives a hit for a text and a refusal for the same text later.
+ * Return: 0 compiled, else ROWFIND_CONTEXT_REFUSED with the refusal's sentence
+ * kept as the error (also when the wrapped text does not compile although the
+ * text alone did).
+ */
+static int context_compile(RowfindCache *c)
+{
+ char wrapped[ROWFIND_CONTEXT_PATTERN_MAX];
+
+ g_context_builds++;
+ if (pattern_with_context(c->pattern, wrapped) != 0 ||
+     engine_compile_pattern(c, &c->ctx_re, wrapped) != 0)
+ {
+  refusal_note(ROWFIND_NO_CONTEXT_SENTENCE);
+  return(ROWFIND_CONTEXT_REFUSED);
+ }
+ c->ctx_compiled = 1;
+ return(0);
+}
+
+/**
+ * context_prepare - Make the context expression when this Find text needs one.
+ *
+ * Only a regular expression with a word-boundary escape reads the text before
+ * a start, and only an engine that loses that text needs it handed over
+ * (WPE_ROWFIND_START_CONTEXT is 0): everything else keeps the one compiled
+ * expression and the one call per start.
+ * Return: 0 ready or not needed, else context_compile's refusal.
+ */
+static int context_prepare(RowfindCache *c)
+{
+ c->needs_context = !WPE_ROWFIND_START_CONTEXT && (c->bits & FIND_REGULAR) &&
+                    ere_has_boundary_escape(c->text);
+ if (!c->needs_context)
+  return(0);
+ return(context_compile(c));
+}
+
+/** wpe_rowfind_context_builds - See we_rowfind.h. */
+int wpe_rowfind_context_builds(void)
+{
+ return(g_context_builds);
 }
 
 /**
@@ -755,7 +947,9 @@ static int engine_compile(RowfindCache *c)
  * system.  A regular expression the engine is measured to crash on (see
  * wpe_rowfind_refuses) is not compiled: the refusal is kept as the error and
  * the text is cached as failed, so Change All over a hundred thousand rows
- * asks once.
+ * asks once.  Where the engine loses the text before a start, a Find text
+ * with a word-boundary escape also gets its context expression here
+ * (context_prepare), or a refusal when the text could not be wrapped.
  * Return: 1 when the engine is there, 0 when the text does not compile or is
  * refused.
  */
@@ -784,6 +978,8 @@ static int cache_build(RowfindCache *c, const FIND *fd)
   return(0);
  }
  rc = engine_compile(c);
+ if (rc == 0)
+  rc = context_prepare(c);
  c->failed = (rc != 0);
  return(rc == 0);
 }
@@ -861,60 +1057,184 @@ static int answer_to_row(const RowSearch *x, int base, const regmatch_t *m, int 
  return(0);
 }
 
+/* What the byte of the engine's text at the start of a call is. */
+#define ROWFIND_START_IS_TEXT    0   /* the first byte of what the pattern reads */
+#define ROWFIND_START_IS_CONTEXT 1   /* the character the context expression takes */
+
+#ifdef WPE_ROWFIND_STARTEND
 /**
- * engine_exec - Match from byte @pos of the row with the engine.
- * @flags: REG_NOTBOL and REG_NOTEOL as the row's kind says.
- * @so, @eo: receive the match's columns of the whole row.
- * Return: 0 a match, else regexec's code (REG_NOMATCH or a refusal), or
- * ROWFIND_BAD_ANSWER when the engine said it matched outside the range or
- * inside a stand-in.
+ * engine_regexec - One regexec over the whole engine text, from @start.
+ * @base: receives 0, the engine column the answer's columns count from.
+ * @lead: not read here; the engine sees the byte at @start as it is.
+ *
+ * The engine reads the row whole and is told where to begin, so it may judge
+ * a \b at @start by the byte before it (WPE_ROWFIND_START_CONTEXT says
+ * whether it does).
  */
-static int engine_exec(RowfindCache *c, const RowSearch *x, int pos, int flags, int *so, int *eo)
+static int engine_regexec(const regex_t *re, const RowSearch *x, int start, int flags,
+                          int lead, size_t nmatch, regmatch_t *m, int *base)
 {
- regmatch_t m;
- int rc, epos = engine_column(x, pos);
+ (void)lead;
+ *base = 0;
+ m[0].rm_so = start;
+ m[0].rm_eo = x->eng_len;
+ return(regexec(re, (const char *)x->eng, nmatch, m, flags | REG_STARTEND));
+}
+#else
+/**
+ * engine_regexec - One regexec over a NUL-terminated copy of the engine text
+ * from @start.
+ * @base: receives @start, the engine column the answer's columns count from.
+ * @lead: ROWFIND_START_IS_CONTEXT when the byte at @start is the character the
+ * context expression takes.
+ *
+ * The byte before @start is out of the engine's sight, so a \b or \< at
+ * @start would read as the start of the text: the context expression is what
+ * gives it back.
+ * A NUL at @start would end the copy before it begins, and every hit after
+ * it would be lost, so the character that stands there is written as a byte
+ * that is no word and no line break.
+ */
+static int engine_regexec(const regex_t *re, const RowSearch *x, int start, int flags,
+                          int lead, size_t nmatch, regmatch_t *m, int *base)
+{
+ size_t tail = (size_t)(x->eng_len - start);
+ void *copy = grown(g_scratch, &g_scratch_size, tail + 1, 1);
+
+ if (copy == NULL)
+  return(REG_ESPACE);
+ g_scratch = copy;
+ memcpy(g_scratch, x->eng + start, tail);
+ g_scratch[tail] = '\0';
+ if (lead == ROWFIND_START_IS_CONTEXT && tail > 0 && g_scratch[0] == '\0')
+  g_scratch[0] = ROWFIND_NUL_STAND_IN;
+ *base = start;
+ return(regexec(re, g_scratch, nmatch, m, flags));
+}
+#endif
+
+/**
+ * engine_exec - The one place the engine is called: one regexec from the
+ * engine column @start, under the engine's ctype.
+ * @re: the compiled search, or its context expression.
+ * @flags: REG_NOTBOL and REG_NOTEOL as the row's kind says.
+ * @lead: what the byte at @start is (ROWFIND_START_IS_TEXT or _CONTEXT).
+ * @nmatch, @m: how many groups to ask for and where they are put; their
+ * columns count from @base.
+ * @base: receives the engine column the columns of @m count from.
+ * Return: regexec's code (0 a match, REG_NOMATCH, or a refusal).
+ */
+static int engine_exec(const RowfindCache *c, const regex_t *re, const RowSearch *x, int start,
+                       int flags, int lead, size_t nmatch, regmatch_t *m, int *base)
+{
+ int rc;
 #ifdef WPE_ROWFIND_LOCALES
  locale_t prev = (locale_t)0;
  int entered = ctype_enter(c->ctype, &prev);
 #endif
 
-#ifdef WPE_ROWFIND_STARTEND
- m.rm_so = epos;
- m.rm_eo = x->eng_len;
- rc = regexec(&c->re, (const char *)x->eng, 1, &m, flags | REG_STARTEND);
- /* the check is on the engine's own type, before the cast to int */
- if (rc == 0 && !answer_in_range(m.rm_so, m.rm_eo, epos, x->eng_len))
-  rc = ROWFIND_BAD_ANSWER;
- if (rc == 0)
-  rc = answer_to_row(x, 0, &m, so, eo);
-#else
- /* No REG_STARTEND: the engine sees a NUL-terminated copy from @epos on.  The
-    byte before it is out of its sight, so a \b or \< at @pos is judged
-    without it. */
- size_t tail = (size_t)(x->eng_len - epos);
- void *copy = grown(g_scratch, &g_scratch_size, tail + 1, 1);
-
- if (copy == NULL)
- {
-  rc = REG_ESPACE;
-  goto done;
- }
- g_scratch = copy;
- memcpy(g_scratch, x->eng + epos, tail);
- g_scratch[tail] = '\0';
- rc = regexec(&c->re, g_scratch, 1, &m, flags);
- /* the copy starts at @epos, so the columns are relative to it */
- if (rc == 0 && !answer_in_range(m.rm_so, m.rm_eo, 0, (regoff_t)tail))
-  rc = ROWFIND_BAD_ANSWER;
- if (rc == 0)
-  rc = answer_to_row(x, epos, &m, so, eo);
-done:
-#endif
- if (rc != 0)
-  *so = *eo = 0;
+ rc = engine_regexec(re, x, start, flags, lead, nmatch, m, base);
 #ifdef WPE_ROWFIND_LOCALES
  ctype_leave(entered, prev);
+#else
+ (void)c;
 #endif
+ return(rc);
+}
+
+/**
+ * engine_match_direct - Ask the engine for the first match from byte @pos.
+ * @so, @eo: receive the match's columns of the whole row.
+ * Return: 0 a match, else regexec's code, or ROWFIND_BAD_ANSWER when the
+ * engine said it matched outside the range or inside a stand-in.
+ *
+ * The engine is asked from @pos itself: at column 0, with no \b to read, or
+ * where it still sees the text before the start.
+ */
+static int engine_match_direct(RowfindCache *c, const RowSearch *x, int pos, int flags,
+                               int *so, int *eo)
+{
+ regmatch_t m[1];
+ int base, rc, epos = engine_column(x, pos);
+
+ rc = engine_exec(c, &c->re, x, epos, flags, ROWFIND_START_IS_TEXT, 1, m, &base);
+ /* the check is on the engine's own type, before the cast to int */
+ if (rc == 0 && !answer_in_range(m[0].rm_so, m[0].rm_eo, epos - base, x->eng_len - base))
+  rc = ROWFIND_BAD_ANSWER;
+ if (rc == 0)
+  rc = answer_to_row(x, base, &m[0], so, eo);
+ return(rc);
+}
+
+/**
+ * engine_char_before - The engine column of the character before @epos.
+ *
+ * One character to an engine that reads characters (a glyph of its text, a
+ * stand-in whole), one byte to an engine that reads bytes.
+ */
+static int engine_char_before(const RowfindCache *c, const RowSearch *x, int epos)
+{
+ if (!c->reads_utf8)
+  return(epos - 1);
+ return(e_utf8_glyph_floor(x->eng, x->eng_len, epos - 1));
+}
+
+/** engine_char_bytes - The bytes of the character of the engine's text at @col. */
+static int engine_char_bytes(const RowfindCache *c, const RowSearch *x, int col)
+{
+ if (!c->reads_utf8)
+  return(1);
+ return(e_utf8_seq_len(x->eng + col, x->eng_len - col));
+}
+
+/**
+ * context_answer_valid - Is the context expression's answer the shape it must be?
+ * @base: the engine column the columns of @m count from; @epos: where the
+ * pattern may begin.
+ *
+ * The whole match is one character and then the hit, so group 1 must end where
+ * the match ends, begin one character after it begins, and lie in the range
+ * the engine was asked to look in.  Any other shape is an engine that reports
+ * a group wrongly, and it is no hit, as an answer outside the range is.
+ * Return: 1 valid, 0 not.
+ */
+static int context_answer_valid(const RowfindCache *c, const RowSearch *x, int base, int epos,
+                                const regmatch_t *m)
+{
+ if (m[0].rm_so < 0 || m[1].rm_so < 0)
+  return(0);
+ if (!answer_in_range(m[1].rm_so, m[1].rm_eo, epos - base, x->eng_len - base))
+  return(0);
+ if (m[1].rm_eo != m[0].rm_eo || m[0].rm_so >= x->eng_len - base)
+  return(0);
+ return(m[1].rm_so == m[0].rm_so + engine_char_bytes(c, x, base + (int)m[0].rm_so));
+}
+
+/**
+ * engine_match_with_context - Ask the engine for the first match from byte
+ * @pos, with the character before it in sight.
+ * @so, @eo: receive the match's columns of the whole row.
+ * Return: as engine_match_direct.
+ *
+ * The call starts one character earlier, with the context expression, and
+ * the hit is its group 1: a \b at @pos is judged with that character beside
+ * it on every engine, so Find from the middle of "xab" does not take the
+ * `a` for the start of a word.  The row is past its start (@pos > 0), so
+ * REG_NOTBOL always holds; a `^` of the text cannot match behind the
+ * character the expression takes either.
+ */
+static int engine_match_with_context(RowfindCache *c, const RowSearch *x, int pos, int flags,
+                                     int *so, int *eo)
+{
+ regmatch_t m[ROWFIND_CONTEXT_GROUPS];
+ int base, rc, epos = engine_column(x, pos), start = engine_char_before(c, x, epos);
+
+ rc = engine_exec(c, &c->ctx_re, x, start, flags | REG_NOTBOL, ROWFIND_START_IS_CONTEXT,
+                  ROWFIND_CONTEXT_GROUPS, m, &base);
+ if (rc == 0 && !context_answer_valid(c, x, base, epos, m))
+  rc = ROWFIND_BAD_ANSWER;
+ if (rc == 0)
+  rc = answer_to_row(x, base, &m[1], so, eo);
  return(rc);
 }
 
@@ -934,17 +1254,27 @@ static int goes_on_forward(const RowSearch *x)
  * Any answer that is neither a match nor "no match" (a match outside the row
  * or inside a stand-in) is no match on this row: the engine reads the row one
  * way, so there is no other reading to try.
+ * A \b, \B, \< or \> at a start inside the row is judged with the character
+ * before it on every system: where the engine loses that text the owner
+ * hands it over (engine_match_with_context), so the answer at a start is the
+ * answer the engine gives reading the row from its first column.
  * Return: 1 a match, 0 none.
  */
 static int engine_match(RowfindCache *c, const RowSearch *x, int pos, int *so, int *eo)
 {
- int flags = 0;
+ int flags = 0, rc;
 
  if (pos > 0 || !(x->kind & WPE_ROW_STARTS_LINE) || goes_on_forward(x))
   flags |= REG_NOTBOL;
  if (!(x->kind & WPE_ROW_ENDS_LINE))
   flags |= REG_NOTEOL;
- return(engine_exec(c, x, pos, flags, so, eo) == 0);
+ if (pos > 0 && c->needs_context)
+  rc = engine_match_with_context(c, x, pos, flags, so, eo);
+ else
+  rc = engine_match_direct(c, x, pos, flags, so, eo);
+ if (rc != 0)
+  *so = *eo = 0;
+ return(rc == 0);
 }
 
 /* ---- what a hit may be ---- */

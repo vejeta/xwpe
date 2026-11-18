@@ -13,8 +13,15 @@
  *   test_rowfind         the engine runs on the whole row (REG_STARTEND);
  *   test_rowfind_copy    WPE_ROWFIND_NO_STARTEND: the engine runs on a copy
  *                        from the start of each call, which cannot see the
- *                        byte before it; the word boundary patterns differ
- *                        from the reference there and only there;
+ *                        byte before it; the owner hands it that character
+ *                        itself (the context expression), so no row may
+ *                        differ from the reference;
+ *   test_rowfind_nocontext  WPE_ROWFIND_MOCK_NOCONTEXT and
+ *                        WPE_ROWFIND_NO_START_CONTEXT: a mock engine that
+ *                        takes the start of a call for the beginning of the
+ *                        string (macOS's does) under REG_STARTEND, with the
+ *                        reference calling the real engine through the mock's
+ *                        hook: again no row may differ;
  *   test_rowfind_reject  WPE_ROWFIND_NO_UTF8_CTYPE: no UTF-8 ctype to run the
  *                        engine under, so a process locale that is not UTF-8
  *                        leaves the engine reading bytes and the owner has
@@ -41,9 +48,7 @@
  *                        (WPE_ROWFIND_NO_STARTEND with
  *                        WPE_ROWFIND_UNSAFE_BOUNDARY): no word-boundary
  *                        escape reaches the engine, as on a system whose
- *                        engine is measured unsafe, so the copy path must
- *                        show no look-behind difference at all (the other
- *                        side of the copy build's expectation).
+ *                        engine is measured unsafe.
  * Each runs its passes under the C locale, C.UTF-8 and en_US.iso885915 (a
  * pass whose locale is missing says so and is skipped).
  *
@@ -112,11 +117,11 @@
 #define OWNER_HAS_UTF8_CTYPE 1
 #endif
 
-#ifdef WPE_ROWFIND_NO_STARTEND
-#define OWNER_SEES_BEFORE 0
-#else
-#define OWNER_SEES_BEFORE 1
-#endif
+/* Whether a word-boundary escape reaches the engine in this build, so that
+   the context path has rows to run: the engine understands the escapes
+   (WPE_HAS_REGEX_GNU_ESCAPES, the spelling the rows use) and the owner does
+   not refuse them (WPE_ROWFIND_BOUNDARY_SAFE). */
+#define ESCAPE_REACHES_ENGINE (WPE_HAS_REGEX_GNU_ESCAPES && WPE_ROWFIND_BOUNDARY_SAFE)
 
 #define SW_CASE   128
 #define SW_WORD    64
@@ -126,7 +131,6 @@
 #define KIND_BOTH (WPE_ROW_STARTS_LINE | WPE_ROW_ENDS_LINE)
 
 static int fails, checks;
-static int copy_differences;       /* owner != reference, on a word boundary pattern */
 /* glibc judges \B after an atom that may match empty differently when a call
    starts before the place and when it starts there, on ASCII rows too
    (measured with a bare regexec: ".*\B" on " ..e" from 2 gives 3..3, from 3
@@ -134,6 +138,21 @@ static int copy_differences;       /* owner != reference, on a word boundary pat
    reference; engine_self_inconsistent finds those rows, which are counted
    and said, and every other row is compared. */
 static int byte_engine_quirks;
+/* Whether the engine the reference asks keeps the text before a start.  The
+   C library's own does on glibc; macOS's does not (the reference then calls
+   the same engine the owner has to work around), and the macsim build puts
+   the mock under the reference too.  Where it does not, a row with a
+   word-boundary escape that the owner and the reference answer differently
+   cannot be settled by the reference, and the test must not write the
+   owner's own wrapper a second time to settle it: such rows are counted as
+   unverifiable and printed.  The named rows, which run everywhere, and the
+   nocontext build, whose reference is glibc with context, are the oracle. */
+#if defined(WPE_ROWFIND_MOCK_MACSIM) || !WPE_ROWFIND_ENGINE_START_CONTEXT
+#define REF_ENGINE_HAS_CONTEXT 0
+#else
+#define REF_ENGINE_HAS_CONTEXT 1
+#endif
+static int unverifiable_rows;
 /* Rows where owner and reference both said "refused" because the engine is
    measured unsafe for the text (wpe_rowfind_refuses): the log shows the path
    ran on a system that has it (NetBSD 10) and 0 on one that has not. */
@@ -404,7 +423,14 @@ static int ref_exec(const regex_t *re, const RefText *t, int epos, int flags, re
 {
  m->rm_so = epos;
  m->rm_eo = t->eng_len;
+#ifdef WPE_ROWFIND_MOCK_NOCONTEXT
+ /* the mock engine under the owner loses the text before the start; the
+    reference is what the engine answers reading from the first column, so it
+    asks the C library's own */
+ return(mock_real_regexec(re, (const char *)t->eng, 1, m, flags | REG_STARTEND) == 0);
+#else
  return(regexec(re, (const char *)t->eng, 1, m, flags | REG_STARTEND) == 0);
+#endif
 }
 
 /** ref_compile_text - Compile the Find text @fd as the owner does: escaped
@@ -679,12 +705,13 @@ static int run_isolated(const char *name, void (*body)(void))
  return(st != 0 ? st : -1);
 }
 
-/* One search; the result is rc, and the columns when rc == 1. */
-static int run(const char *text, unsigned sw, const char *row, unsigned kind,
-               int from, int to, unsigned how, int *so, int *eo)
+/* One search over the @len bytes of @row (which may hold a NUL); the result
+   is rc, and the columns when rc == 1. */
+static int run_bytes(const char *text, unsigned sw, const char *row, int len, unsigned kind,
+                     int from, int to, unsigned how, int *so, int *eo)
 {
  WpeRowHit h = { -7, -7 };
- int len = (int)strlen(row), rc;
+ int rc;
  TestRow r;
 
  row_make(&r, row, len);
@@ -697,20 +724,35 @@ static int run(const char *text, unsigned sw, const char *row, unsigned kind,
  return(rc);
 }
 
-static void expect(const char *name, const char *text, unsigned sw, const char *row,
-                   unsigned kind, int from, int to, unsigned how, int want_rc,
-                   int want_so, int want_eo)
+/* One search; the result is rc, and the columns when rc == 1. */
+static int run(const char *text, unsigned sw, const char *row, unsigned kind,
+               int from, int to, unsigned how, int *so, int *eo)
 {
- int so = -7, eo = -7, rc = run(text, sw, row, kind, from, to, how, &so, &eo);
+ return(run_bytes(text, sw, row, (int)strlen(row), kind, from, to, how, so, eo));
+}
+
+/** expect_bytes - One named row over the @len bytes of @row; the same checks as expect. */
+static void expect_bytes(const char *name, const char *text, unsigned sw, const char *row, int len,
+                         unsigned kind, int from, int to, unsigned how, int want_rc,
+                         int want_so, int want_eo)
+{
+ int so = -7, eo = -7, rc = run_bytes(text, sw, row, len, kind, from, to, how, &so, &eo);
  char msg[400];
 
  checks++;
  if (rc != want_rc || (rc == 1 && (so != want_so || eo != want_eo)))
  {
-  snprintf(msg, sizeof msg, "%s: Find \"%s\" on \"%s\": got rc %d %d..%d, want rc %d %d..%d",
-           name, text, row, rc, so, eo, want_rc, want_so, want_eo);
+  snprintf(msg, sizeof msg, "%s: Find \"%s\" on %d bytes starting \"%.8s\": got rc %d %d..%d, want rc %d %d..%d",
+           name, text, len, row, rc, so, eo, want_rc, want_so, want_eo);
   fail(msg);
  }
+}
+
+static void expect(const char *name, const char *text, unsigned sw, const char *row,
+                   unsigned kind, int from, int to, unsigned how, int want_rc,
+                   int want_so, int want_eo)
+{
+ expect_bytes(name, text, sw, row, (int)strlen(row), kind, from, to, how, want_rc, want_so, want_eo);
 }
 
 /* ---- the named rows ---- */
@@ -745,11 +787,149 @@ static void gnu_escape_rows(void)
   expect("b boundary at to", "b\\b", SW_REGEX | SW_CASE, "abc", KIND_BOTH, 0, 2, 0, -1, 0, 0);
   return;
  }
- /* look-behind at the start of the call: the owner sees the byte before */
- expect("ba from 1", "\\ba", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0,
-        OWNER_SEES_BEFORE ? 0 : 1, 1, 2);
+ /* look-behind at the start of the call: the owner sees the byte before, on
+    every build (the engine's own, or the context expression's) */
+ expect("ba from 1", "\\ba", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, 0, 0, 0);
  /* the block's end is a range, not the end of the text */
  expect("b boundary at to", "b\\b", SW_REGEX | SW_CASE, "abc", KIND_BOTH, 0, 2, 0, 0, 0, 0);
+}
+
+/* What Find says when it cannot give an engine the character before a start
+   (user-visible, so the rows pin the words). */
+#define TEST_NO_CONTEXT_SENTENCE "\\b \\B \\< \\> with a lone ) or \\9 not supported here: refused"
+
+/** expect_no_context_refusal - A text Find refuses with the sentence of an
+ * engine that has to be handed the character before a start.
+ *
+ * Only where the owner builds a context expression: an engine that keeps the
+ * text before a start takes the text as it is. */
+static void expect_no_context_refusal(const char *name, const char *text)
+{
+ const char *err;
+ int rc = run(text, SW_REGEX | SW_CASE, "xa)b", KIND_BOTH, 0, -1, 0, NULL, NULL);
+ char msg[300];
+
+ checks++;
+ err = wpe_rowfind_error();
+ if (rc != -1 || err == NULL || strcmp(err, TEST_NO_CONTEXT_SENTENCE) != 0)
+ {
+  snprintf(msg, sizeof msg, "%s: Find \"%s\": rc %d, error \"%s\", want -1 and the context sentence",
+           name, text, rc, err != NULL ? err : "(none)");
+  fail(msg);
+ }
+}
+
+/** context_refusal_rows - The texts that cannot be wrapped with the character
+ * before a start are refused once, whole, and never answered wrongly.
+ *
+ * A `)` with no `(` (an ordinary character to glibc) would close the wrapping
+ * group, and `a)|b` would turn into a top-level alternation; \9 cannot be
+ * renumbered.  A user who types one gets the sentence, not a hit at the wrong
+ * place. */
+static void context_refusal_rows(void)
+{
+ if (WPE_ROWFIND_START_CONTEXT)
+ {
+  skip_row("a text the context expression cannot wrap", "an engine that loses the text before a start");
+  return;
+ }
+ expect_no_context_refusal("lone ) after an escape", "\\ba)");
+ if (WPE_ROWFIND_BOUNDARY_GROUP_SAFE)
+  expect_no_context_refusal("lone ) before a bar", "\\ba)|b");
+ else
+  skip_row("lone ) before a bar", "an engine measured safe for an escape beside | (the bar is refused first)");
+ expect_no_context_refusal("lone ) between groups", "x)(y)\\b");
+ expect_no_context_refusal("back-reference 9", "\\b(a)(a)(a)(a)(a)(a)(a)(a)(a)\\9");
+}
+
+/** context_group_rows - The rows that need an escape beside an alternation. */
+static void context_group_rows(void)
+{
+ if (!WPE_ROWFIND_BOUNDARY_GROUP_SAFE)
+ {
+  skip_row("an alternation beside an escape, from 1", "an engine measured safe for an escape beside |");
+  return;
+ }
+ /* the alternative that is no escape matches at 1 on its own; the other is no
+    word start there, and the text before the start says so */
+ expect("x or ba from 1", "x|\\ba", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, 0, 0, 0);
+ expect("B or ba from 1", "\\Ba|\\bq", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, 1, 1, 2);
+}
+
+/** context_character_rows - What stands before the start decides a \b there:
+ * a letter, a letter of two bytes, a stray byte, a NUL.
+ *
+ * The expected answers are written out here, not asked of the engine: the
+ * differential proves the owner agrees with the engine, and these name what a
+ * user sees. */
+static void context_character_rows(void)
+{
+ static const char after_nul[] = { 'x', 0, 'a', 'b' };
+
+ expect("ba from 1", "\\ba", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, 0, 0, 0);
+ expect("lt a from 1", "\\<a", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, 0, 0, 0);
+ expect("Ba from 1", "\\Ba", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, 1, 1, 2);
+ expect("ba after a space", "\\ba", SW_REGEX | SW_CASE, " ab", KIND_BOTH, 1, -1, 0, 1, 1, 2);
+ expect("b gt, a control with nothing behind it", "b\\>", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, 1, 2, 3);
+ expect_bytes("ba after a NUL", "\\ba", SW_REGEX | SW_CASE, after_nul, 4, KIND_BOTH, 2, -1, 0, 1, 2, 3);
+ if (engine_reads_chars())
+ {
+  expect("ba after a letter of two bytes", "\\ba", SW_REGEX | SW_CASE, "\xC3\xA9" "ab", KIND_BOTH, 2, -1, 0, 0, 0, 0);
+  expect("ba after a stray byte", "\\ba", SW_REGEX | SW_CASE, "\xE9" "ab", KIND_BOTH, 1, -1, 0, 1, 1, 2);
+ }
+ else
+  skip_row("a \\b after a character of more than one byte", "an engine that reads UTF-8 characters here");
+}
+
+/** context_progress_rows - The search that goes on from a hit, with a
+ * back-reference, with Whole words on, and a block's edge. */
+static void context_progress_rows(void)
+{
+ /* \b at 1 of "abcd" is no boundary: the next one is the end of the row */
+ expect("zero-width b going on from a hit", "\\b", SW_REGEX | SW_CASE, "abcd", KIND_BOTH, 1, -1, AFT, 1, 4, 4);
+ /* the group of the text is group 2 of the expression that wraps it */
+ expect("b (a) back-reference 1", "\\b(a)\\1", SW_REGEX | SW_CASE, " aab", KIND_BOTH, 1, -1, 0, 1, 1, 3);
+ expect("b (a) back-reference 1 after a letter", "\\b(a)\\1", SW_REGEX | SW_CASE, "xaa", KIND_BOTH, 1, -1, 0, 0, 0, 0);
+ expect("whole words with b", "\\b.", SW_REGEX | SW_CASE | SW_WORD, "a a", KIND_BOTH, 1, -1, 0, 1, 2, 3);
+ /* the block ends at 2: the `c` is outside it, so \b is judged inside */
+ expect("b boundary at the block's end", "b\\b", SW_REGEX | SW_CASE, "abc", KIND_BOTH, 1, 2, 0, 0, 0, 0);
+}
+
+/** context_window_rows - A backward search starts a window at a column inside
+ * the row, and a word letter just before it must still count.
+ *
+ * The row is longer than the first window, all letters: the only word start is
+ * column 0.  A window that begins at 16 and takes its start for a word start
+ * would give 16 (and the answer would change with the width of the window). */
+#define TEST_LONG_WORD 40   /* more than twice the owner's first backward window (16 bytes) */
+
+static void context_window_rows(void)
+{
+ char row[TEST_LONG_WORD + 1];
+
+ memset(row, 'a', sizeof row - 1);
+ row[sizeof row - 1] = '\0';
+ expect("backward ba over a long word", "\\ba", SW_REGEX | SW_CASE, row, KIND_BOTH, 0, -1, BWD, 1, 0, 1);
+ expect("backward a gt over a long word", "a\\>", SW_REGEX | SW_CASE, row, KIND_BOTH, 0, -1, BWD, 1,
+        (int)sizeof row - 2, (int)sizeof row - 1);
+ expect("backward Ba over a long word", "\\Ba", SW_REGEX | SW_CASE, row, KIND_BOTH, 0, -1, BWD, 1,
+        (int)sizeof row - 2, (int)sizeof row - 1);
+}
+
+/** context_rows - The rows of the context path (we_rowfind.c, engine_match_with_context). */
+static void context_rows(void)
+{
+ if (!ESCAPE_REACHES_ENGINE || !WPE_HAS_REGEX_WORD_ESCAPES)
+ {
+  skip_row("a word boundary at a start", "a word-boundary escape the engine is measured safe for "
+           "(WPE_HAS_REGEX_WORD_ESCAPES, WPE_ROWFIND_BOUNDARY_SAFE)");
+  return;
+ }
+ context_character_rows();
+ context_progress_rows();
+ context_window_rows();
+ context_group_rows();
+ context_refusal_rows();
 }
 
 static void named_rows(void)
@@ -758,6 +938,7 @@ static void named_rows(void)
  int so, eo, rc, i;
 
  gnu_escape_rows();
+ context_rows();
  expect("b at to", "b", SW_CASE, "abc", KIND_BOTH, 0, 2, 0, 1, 1, 2);
  expect("c at to", "c", SW_CASE, "abc", KIND_BOTH, 0, 2, 0, 0, 0, 0);
  /* the row's kind */
@@ -841,10 +1022,8 @@ static void named_rows(void)
  /* the look-behind probe: reports, and asserts what each build must say */
  rc = run("\\<b", SW_REGEX | SW_CASE, "ab", KIND_BOTH, 1, -1, 0, &so, &eo);
  checks++;
- if (rc == 1 && OWNER_SEES_BEFORE)
-  fail("look-behind: \\<b on \"ab\" from 1 hit although the engine sees the byte before");
  if (rc == 1)
-  printf("note [%s]: engine without look-behind at the start of a call (copy path)\n", pass_name);
+  fail("look-behind: \\<b on \"ab\" from 1 hit although the byte before it is a letter");
  /* a window that has to double: the hit is at the far start of a long row */
  {
   char row[2100];
@@ -1116,6 +1295,41 @@ static void diagnostic_reads_behind(void)
   printf("note [%s]: the engine reads the byte behind the range (rm_eo); the row's line break must stand there\n",
          pass_name);
 }
+
+#ifdef WPE_ROWFIND_MOCK_NOCONTEXT
+/* ---- an engine that reports the hit's group wrongly ---- */
+
+/** lie_row - Find `\Ba` from 1 of "xab" while the mock misreports group 1.
+ * @lie: a MOCK_LIE_* mode; @name: what the engine got wrong.
+ *
+ * The true answer is the hit 1..2 (the control row, with no lie).  An engine
+ * that reports its group out of shape gives no hit, never a hit at columns the
+ * owner took on trust. */
+static void lie_row(const char *name, int lie)
+{
+ mock_nocontext_lie = lie;
+ expect(name, "\\Ba", SW_REGEX | SW_CASE, "xab", KIND_BOTH, 1, -1, 0, lie == MOCK_LIE_NONE ? 1 : 0, 1, 2);
+ mock_nocontext_lie = MOCK_LIE_NONE;
+}
+
+/** nocontext_lie_rows - The owner checks the group the context expression reports.
+ *
+ * Group 1 must end where the whole match ends, begin one character after it
+ * begins and lie inside the range; each way to break that is a row. */
+static void nocontext_lie_rows(void)
+{
+ if (!ESCAPE_REACHES_ENGINE || !WPE_HAS_REGEX_WORD_ESCAPES)
+ {
+  skip_row("an engine that misreports its group", "a word-boundary escape the engine is measured safe for");
+  return;
+ }
+ lie_row("group 1 as the engine gives it", MOCK_LIE_NONE);
+ lie_row("group 1 ends before the match does", MOCK_LIE_SHORT_END);
+ lie_row("group 1 starts with the whole match", MOCK_LIE_STARTS_AT_0);
+ lie_row("group 1 did not take part", MOCK_LIE_UNSET);
+ lie_row("the match is far past the row", MOCK_LIE_PAST_RANGE);
+}
+#endif
 
 #ifdef WPE_ROWFIND_MOCK_BADENGINE
 /* ---- the mock engine's answers outside the row ---- */
@@ -1400,8 +1614,8 @@ static void compare_case(const char *text, unsigned sw, const unsigned char *tmp
   fail("the owner changed the row");
  if (rc_own != rc_ref || (rc_own == 1 && (own.so != ref.so || own.eo != ref.eo)))
  {
-  if (!OWNER_SEES_BEFORE && has_boundary_escape(text, sw))
-   copy_differences++;
+  if (!REF_ENGINE_HAS_CONTEXT && has_boundary_escape(text, sw))
+   unverifiable_rows++;
   else if (has_boundary_escape(text, sw) && engine_self_inconsistent(fd, row, len, kind))
    byte_engine_quirks++;
   else
@@ -2083,6 +2297,9 @@ static void one_pass(const char *locale, int with_perf, int iterations)
 #ifdef WPE_ROWFIND_MOCK_BADENGINE
  badengine_rows();
 #endif
+#ifdef WPE_ROWFIND_MOCK_NOCONTEXT
+ nocontext_lie_rows();
+#endif
  diagnostic_reads_behind();
  pinned_rows();
  stray_byte_rows();
@@ -2098,53 +2315,67 @@ static void one_pass(const char *locale, int with_perf, int iterations)
  wpe_rowfind_release();
 }
 
-/* Whether the copy build must differ from the reference.  The copy path
-   differs from the REG_STARTEND path in one thing only: the byte before the
-   call's start, which only \b \B \< \> read.  So the difference exists only
-   where such an escape reaches the engine: the engine understands the word
-   escapes at all (WPE_HAS_REGEX_WORD_ESCAPES) and the owner does not refuse
-   them (WPE_ROWFIND_BOUNDARY_SAFE).  Everywhere else the two paths are the
-   same by design and the copy build must show no difference. */
-#if !OWNER_SEES_BEFORE && WPE_HAS_REGEX_WORD_ESCAPES && WPE_ROWFIND_BOUNDARY_SAFE
-#define COPY_DIFFERENCE_EXPECTED 1
-#else
-#define COPY_DIFFERENCE_EXPECTED 0
-#endif
-
-/** check_copy_difference - Prove the copy path's look-behind difference where it can exist.
+/** check_context_path - The second expression is made where the engine needs
+ * it, and nowhere else.
  *
- * Find on a system without REG_STARTEND runs the engine on a copy of the row,
- * so a word boundary at the start of a call is judged without the byte before
- * it.  This says, at the end of the run, whether the build showed that
- * difference when it had to, and showed none when no word-boundary escape
- * could reach the engine, so a copy path that drifts from the reference where
- * nothing should differ is a failure too and not a silence.  Reads
- * copy_differences, counted by the differential. */
-static void check_copy_difference(void)
+ * The owner hands an engine that loses the text before a start the character
+ * before it, with a second compiled expression (the context path).  An engine
+ * that keeps the text (glibc with REG_STARTEND) must never cause one to be
+ * compiled, so the fast path stays the fast path; an engine that does not
+ * must have had one compiled by the rows, or the rows never reached the
+ * path and the run proves nothing about it. */
+static void check_context_path(void)
 {
- if (OWNER_SEES_BEFORE)
-  return;
- if (COPY_DIFFERENCE_EXPECTED)
+ int builds = wpe_rowfind_context_builds();
+
+ checks++;
+ if (WPE_ROWFIND_START_CONTEXT)
  {
-  if (copy_differences == 0)
+  if (builds != 0)
   {
-   printf("FAIL: the copy build shows no look-behind difference (the expected one is untested)\n");
+   printf("FAIL: the engine keeps the text before a start, but %d context expressions were compiled\n",
+          builds);
    fails++;
   }
   else
-   printf("copy path: %d differential rows differ on a word boundary, as expected\n", copy_differences);
+   printf("context path: none compiled (the engine sees the text before a start)\n");
   return;
  }
- printf("SKIP: the copy build's look-behind difference: needs a word-boundary escape the engine is measured "
-        "safe for (WPE_HAS_REGEX_WORD_ESCAPES, WPE_ROWFIND_BOUNDARY_SAFE)\n");
- if (copy_differences != 0)
+ if (!ESCAPE_REACHES_ENGINE || !WPE_HAS_REGEX_WORD_ESCAPES)
  {
-  printf("FAIL: the copy build differs from the reference on %d rows with no word-boundary escape in play\n",
-         copy_differences);
+  printf("SKIP: the context path: needs a word-boundary escape the engine is measured safe for "
+         "(WPE_HAS_REGEX_WORD_ESCAPES, WPE_ROWFIND_BOUNDARY_SAFE)\n");
+  return;
+ }
+ if (builds == 0)
+ {
+  printf("FAIL: the engine loses the text before a start, but no context expression was compiled\n");
   fails++;
  }
  else
-  printf("copy path: 0 differential rows differ on a word boundary, as expected\n");
+  printf("context path: %d expressions compiled\n", builds);
+}
+
+/** check_unverifiable_rows - Say how many rows the reference could not settle.
+ *
+ * Only an engine that loses the text before a start has any (macOS, the
+ * macsim build); the count is printed so a log shows the path ran, and the
+ * macsim build fails on 0, since then the exemption was never needed and
+ * the build proves nothing about it. */
+static void check_unverifiable_rows(void)
+{
+ if (REF_ENGINE_HAS_CONTEXT)
+  return;
+ printf("unverifiable: %d differential rows with a word-boundary escape (the reference engine loses the text before a start)\n",
+        unverifiable_rows);
+#ifdef WPE_ROWFIND_MOCK_MACSIM
+ checks++;
+ if (unverifiable_rows == 0)
+ {
+  printf("FAIL: the macsim build counted no unverifiable row\n");
+  fails++;
+ }
+#endif
 }
 
 #ifdef WPE_ROWFIND_MOCK_ILLSEQ
@@ -2179,7 +2410,8 @@ int main(void)
  one_pass("C", 0, iterations);
  one_pass("C.UTF-8", 1, iterations);
  one_pass("en_US.iso885915", 0, iterations);
- check_copy_difference();
+ check_context_path();
+ check_unverifiable_rows();
 #ifdef WPE_ROWFIND_MOCK_ILLSEQ
  check_engine_saw_only_utf8();
 #endif

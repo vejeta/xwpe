@@ -402,7 +402,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
+check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -570,13 +570,31 @@ test_layout_CFLAGS = $(TEST_CFLAGS)
 # against the engine run by hand on every start of a row, the invariants of
 # every hit, the progress of Search Again and Change All on rows wrapped at
 # a chosen width, and the speed bounds.  Built twice: the second build forces
-# the copy path that a C library without REG_STARTEND needs, where a word
-# boundary at the start of a call is judged without the byte before it.
+# the copy path that a C library without REG_STARTEND needs, where the engine
+# cannot see the byte before a call's start and the owner hands it that
+# character itself, so no row may differ from the reference.
 test_rowfind_SOURCES = tests/test_rowfind.c we_rowfind.c
 test_rowfind_CFLAGS = $(TEST_CFLAGS)
 test_rowfind_copy_SOURCES = tests/test_rowfind.c we_rowfind.c
 test_rowfind_copy_CFLAGS = $(TEST_CFLAGS)
 test_rowfind_copy_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_NO_STARTEND
+# The nocontext build keeps REG_STARTEND and puts a mock engine under the owner
+# that takes the start of a call for the beginning of the string, as macOS's
+# regexec does, with the owner's decision forced to "no start context".  The
+# reference asks the C library's own engine through the mock's hook.  Again
+# no row may differ, and a group the engine reports wrongly is no hit.
+test_rowfind_nocontext_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_nocontext.c tests/mock_nocontext.h
+test_rowfind_nocontext_CFLAGS = $(TEST_CFLAGS)
+test_rowfind_nocontext_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_NOCONTEXT -DWPE_ROWFIND_NO_START_CONTEXT -include $(srcdir)/tests/mock_nocontext.h
+# The macsim build is the nocontext build with the reference on the mock engine too, as
+# on macOS, where the reference is the same engine that loses the text before
+# a start: a row with a word-boundary escape that the reference then cannot
+# answer is counted as unverifiable and printed.  The real oracle stays the
+# third build (its reference is the C library's own engine); this one runs the
+# macOS path of the test on Linux.
+test_rowfind_macsim_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_nocontext.c tests/mock_nocontext.h
+test_rowfind_macsim_CFLAGS = $(TEST_CFLAGS)
+test_rowfind_macsim_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_MACSIM -DWPE_ROWFIND_NO_START_CONTEXT -include $(srcdir)/tests/mock_nocontext.h
 # The third build has no UTF-8 ctype to make (OpenBSD, a minimal system): the
 # engine then reads bytes under a process locale that is not UTF-8, and the
 # owner rejects a match that covers part of a character instead of widening it.
@@ -588,7 +606,9 @@ test_rowfind_reject_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_NO_UTF8_CTYPE
 # owner's two fallbacks to bytes run on Linux too, where glibc never refuses.
 test_rowfind_illseq_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_illseq.c tests/mock_illseq.h
 test_rowfind_illseq_CFLAGS = $(TEST_CFLAGS)
-test_rowfind_illseq_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_ILLSEQ -include $(srcdir)/tests/mock_illseq.h
+# It also forces "no start context": the character the owner hands the engine
+# before a start (a stand-in or a letter) must be valid UTF-8 too.
+test_rowfind_illseq_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_ILLSEQ -DWPE_ROWFIND_NO_START_CONTEXT -include $(srcdir)/tests/mock_illseq.h
 # The fifth build puts a mock engine under the owner that crashes on a
 # word-boundary escape beside an alternation over a multibyte row (NetBSD
 # 10's regexec does) and answers matches outside the row, with the owner's
@@ -612,8 +632,8 @@ test_rowfind_boundary_CFLAGS = $(TEST_CFLAGS)
 test_rowfind_boundary_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_UNSAFE_BOUNDARY
 # The eighth build is the seventh on the copy path.  With every word-boundary
 # escape refused nothing reaches the engine that reads the byte before a
-# call, so the copy path and the REG_STARTEND path are the same and the build
-# must show no look-behind difference: the case of a system (FreeBSD, NetBSD)
+# call, so the copy path and the REG_STARTEND path are the same and no
+# context expression is ever compiled: the case of a system (FreeBSD, NetBSD)
 # whose engine is measured unsafe, run here on one whose engine is not.
 test_rowfind_boundary_copy_SOURCES = tests/test_rowfind.c we_rowfind.c
 test_rowfind_boundary_copy_CFLAGS = $(TEST_CFLAGS)
@@ -624,7 +644,8 @@ test_rowfind_boundary_copy_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_NO_STARTEND -
 # still reach the engine as characters, which only the owner can make of it.
 test_rowfind_nolocale_SOURCES = tests/test_rowfind.c we_rowfind.c tests/mock_illseq.c tests/mock_illseq.h
 test_rowfind_nolocale_CFLAGS = $(TEST_CFLAGS)
-test_rowfind_nolocale_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_ILLSEQ -DWPE_ROWFIND_NO_LOCALES -include $(srcdir)/tests/mock_illseq.h
+# It forces "no start context" as well, as the fourth does.
+test_rowfind_nolocale_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_ROWFIND_MOCK_ILLSEQ -DWPE_ROWFIND_NO_LOCALES -DWPE_ROWFIND_NO_START_CONTEXT -include $(srcdir)/tests/mock_illseq.h
 # The tenth build is the fourth on the copy path (no REG_STARTEND): the copy
 # the engine reads is a second piece of code that could hand it a byte which
 # is not UTF-8, and only a build with the strict mock under it proves it does not.
@@ -915,7 +936,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
+  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)

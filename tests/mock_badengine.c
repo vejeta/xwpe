@@ -210,7 +210,16 @@ int mock_regexec(const regex_t *re, const char *text, size_t nmatch,
  else
   end = (regoff_t)strlen(text);
  if (nmatch > 0 && marker_answer(text, pos, end, &pmatch[0]))
+ {
+  /* a call that asks for groups (the owner's context expression) gets the
+     same wrong answer in each, so it is the owner's check of the answer that
+     says no, not a group that was left unset */
+  size_t g;
+
+  for (g = 1; g < nmatch; g++)
+   pmatch[g] = pmatch[0];
   return(0);
+ }
  if (MB_CUR_MAX > 1 && is_crash_pattern(pattern_of(re)) &&
      range_has_high_byte((const unsigned char *)text + pos, (size_t)(end - pos)))
   raise(SIGSEGV);

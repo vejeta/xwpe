@@ -374,6 +374,27 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Find with a word boundary (\b, \B, \<, \>) now judges the place where the
+  search starts by the character before it on every system.  Searching
+  \ba from the middle of "xab" found the second letter as a word start on
+  an engine that takes the start of a call for the start of the text or
+  reads a copy of the row (a C library without REG_STARTEND); the same
+  happened after each rejected hit and at each step of a backward search,
+  so a backward \b could answer differently for a short row and a long
+  one.  configure now measures whether the engine keeps the text before a
+  start ("regex start context" in its summary).  Where it does not, Find
+  hands the engine the character before the start and takes the hit after
+  it; glibc keeps the text itself and pays nothing.  On such a system a
+  text with a ) that has no ( before it, or with \9, is refused with a
+  sentence, because it could change its meaning once wrapped.
+* configure's safety probe for \b, \B, \< and \> no longer takes an
+  engine's refusal (REG_ILLSEQ) of a search that starts inside a character
+  for a crash.  Find never starts there, and the probe had turned the
+  escapes off on macOS with "can crash this system's regex".  It now
+  excuses that one answer to that one call, and asks the same expression
+  from the next character start.  The macOS test job fails if configure
+  reports "regex boundary escapes" as anything but yes.
+
 * The copies xwpe keeps beside your file (the autosave's .ASV, the
   emergency save's .ESV, the copy the post-edit command works on) are never
   written through a name somebody else put there.  Before, a link named
