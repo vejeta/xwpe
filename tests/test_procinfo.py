@@ -528,3 +528,84 @@ def test_a_relative_argument_is_resolved_against_the_childs_folder(tmp_path):
         _end(child)
     assert os.path.realpath(tool) in facts.argv_files, facts.argv_files
     assert runs, prog.verdict(facts)
+
+
+# ------------------------------------------------- a session asks by program
+
+class _Asker(procinfo.ChildAsker):
+    """The part of a session a row uses to ask: the editor's Popen and the
+    PATH it was started with."""
+
+    def __init__(self, proc, exec_path):
+        self.proc = proc
+        self.exec_path = exec_path
+
+
+def test_a_session_finds_an_env_shebang_stub_by_the_word_it_was_started_as(
+        tmp_path):
+    """The editor's execvp of "sdb" ends in a script whose process is named
+    python3 by the kernel; the session asks for "sdb" and gets that child, and
+    remembers which file it looked for."""
+    stub = _write_script(tmp_path / "bin" / "sdb",
+                         "#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+    child = subprocess.Popen([str(stub)])
+    try:
+        asker = _Asker(_Me(), str(stub.parent))
+        found = _until(lambda: asker.running("sdb"), bool)
+    finally:
+        _end(child)
+    assert found == [child.pid], asker.asked.describe()
+    assert asker.asked.describe() == "sdb -> script %s" % os.path.realpath(stub)
+
+
+def test_a_session_whose_row_removed_the_path_asks_on_the_default_path():
+    """A removed PATH means execvp's own default path, not this process's."""
+    asker = _Asker(_Me(), None)
+    asker.running("sleep")
+    expected = os.confstr("CS_PATH") if hasattr(os, "confstr") else None
+    assert asker.asked.path == (expected or "/usr/bin:/bin")
+
+def test_a_session_asking_for_a_program_not_on_its_path_says_so(tmp_path):
+    asker = _Asker(_Me(), str(tmp_path))
+    assert asker.running("sdb") == []
+    assert "not on the editor's PATH" in asker.asked.describe()
+
+
+def test_running_below_the_editor_leaves_out_what_is_not_below_it(tmp_path):
+    child = subprocess.Popen(["sh", "-c", "sleep %d; :" % SLEEP_S],
+                             start_new_session=True)
+    try:
+        asker = _Asker(_Me(), os.environ["PATH"])
+        below = _until(lambda: asker.running_below("sleep"), bool)
+        direct = asker.running("sleep")
+    finally:
+        os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+    assert below and child.pid not in below
+    assert direct == []
+
+
+class _Me:
+    """The pid of this process, as a session's `proc` gives the editor's."""
+    pid = os.getpid()
+
+
+def test_a_cwd_keeps_only_the_processes_working_in_that_folder(tmp_path):
+    here = tmp_path / "here"
+    there = tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    near = subprocess.Popen(["sleep", str(SLEEP_S)], cwd=str(here))
+    far = subprocess.Popen(["sleep", str(SLEEP_S)], cwd=str(there))
+    try:
+        prog = procinfo.program("sleep")
+        both = _until(lambda: procinfo.children_running(os.getpid(), prog),
+                      lambda pids: {near.pid, far.pid} <= set(pids))
+        in_here = procinfo.children_running(os.getpid(), prog, str(here))
+        anywhere = procinfo.processes_running(prog, str(there))
+    finally:
+        _end(near)
+        _end(far)
+    assert {near.pid, far.pid} <= set(both)
+    assert in_here == [near.pid]
+    assert anywhere == [far.pid]

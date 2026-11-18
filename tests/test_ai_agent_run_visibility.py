@@ -28,6 +28,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+import procinfo
 from wpe_driver import (WpeSession, ALT, WPE_BIN, title_row, pane_rows,
                         pane_logical_lines, pane_text_with_history)
 
@@ -127,17 +128,6 @@ def _traced_tool_pid(txt):
     return int(m.group(1)) if m else None
 
 
-def _proc_comm(pid):
-    """The command name of `pid` from /proc, or None when the process is gone.
-    Only ever called for a pid read from the editor's own trace."""
-    try:
-        with open("/proc/%d/stat" % pid) as fh:
-            stat = fh.read()
-    except OSError:
-        return None
-    return stat[stat.index("(") + 1:stat.rindex(")")]
-
-
 # @scenario SC-ai-agent-40
 def test_agent_slow_command_shows_running_line_and_times_out(tmp_path):
     _seed_xwperc(tmp_path, ["AIToolTimeout : %d" % TOOL_TIMEOUT_S])
@@ -150,7 +140,7 @@ def test_agent_slow_command_shows_running_line_and_times_out(tmp_path):
         s._drain(1.0)
         txt = _trace(tmp_path)
         pid = _traced_tool_pid(txt)
-        comm = _proc_comm(pid) if pid else None
+        command_ended = procinfo.all_ended([pid]) if pid else None
         s.key(ESC, delay=0.8)                 # leave the pane, back to the file
         s.key(TYPED_AFTER, delay=0.4)
         screen_after = _screen(s)
@@ -163,8 +153,8 @@ def test_agent_slow_command_shows_running_line_and_times_out(tmp_path):
         "the trace does not carry the timeout fed back to the model:\n" + txt
     assert "agent done" in txt, "the run did not go on after the timeout:\n" + txt
     assert pid is not None, "the trace does not name the tool child's pid:\n" + txt
-    assert comm not in ("sleep", "sh", "bash", "dash"), \
-        "the timed-out command is still running as pid %d (%s)" % (pid, comm)
+    assert command_ended, \
+        "the timed-out command is still running as pid %d" % pid
     assert TYPED_AFTER in screen_after, \
         "a key typed after the timeout did not reach the editor:\n" + screen_after
     assert TYPED_AFTER in on_disk, \

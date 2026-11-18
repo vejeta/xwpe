@@ -1138,6 +1138,11 @@ TESTS += tests/check-keymap.sh tests/check-keymap-docs.sh
 # tests/check-menus.sh fails on a site that does otherwise.
 TESTS += tests/check-menus.sh
 
+# One owner of what the process table says: tests/procinfo.py.  No test file
+# builds a ps(1) argument vector of its own; tests/check-test-processes.sh
+# fails on one that is not in tests/test-processes.allow, with its pass.
+TESTS += tests/check-test-processes.sh
+
 # The feature macros have one owner, configure (AC_USE_SYSTEM_EXTENSIONS
 # writes them into config.h): tests/check-platform.sh fails on a source that
 # sets one of its own, and on a test that compiles without config.h's.  The
@@ -1308,6 +1313,9 @@ EXTRA_DIST = \
   tests/check-keymap.allow \
   tests/check-menus.sh \
   tests/check-menus.allow \
+  tests/check-test-processes.sh \
+  tests/check_test_processes.py \
+  tests/test-processes.allow \
   tests/test_menus.c \
   tests/test_menu_golden.py \
   tests/test_menu_refusals.py \

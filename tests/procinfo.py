@@ -8,12 +8,13 @@ its command line is.  Linux answers them from /proc; systems without /proc
 
 The same on both: the set of direct children, the run state letter (R, S,
 Z, ...; GONE once reaped), CPU time in clock ticks, and that an ended or
-zombie child is never reported as running.  Different: the name a child
-runs under is the kernel's command name on Linux, cut to 15 characters,
-but the full base name of what was executed elsewhere (see command_run);
-and ps(1) prints a command line with its words joined by blanks, so
-without /proc a word that holds a blank is taken as two words when the
-name is worked out from it.
+zombie child is never reported as running.  Different: ps(1) prints a
+command line with its words joined by blanks, so without /proc a word that
+holds a blank is taken as two words.
+
+Whether a child is "the program P" is decided in one place, Program.runs,
+by the file P is (see program()), never by a name a test computed.
+command_run keeps the name a child runs under for reports only.
 """
 import os
 import re
@@ -41,11 +42,21 @@ RUNNING = "R"            # run state of a process on a CPU or ready for one
 # The interpreter path a "#!" line names is at most this many words before
 # the script's own path on the command line: the interpreter and one option.
 SHEBANG_MAX_WORDS = 2
-# The macOS framework Python's `python3` is a launcher that re-executes
-# Python.app under this path and records the path it was run as in
-# LAUNCHER_VAR, so the command the editor ran is found there.
-FRAMEWORK_PYTHON_SUFFIX = "/Python.app/Contents/MacOS/Python"
-LAUNCHER_VAR = "__PYVENV_LAUNCHER__"
+FALLBACK_EXECVP_PATH = "/usr/bin:/bin"
+
+
+def _system_default_path():
+    """What execvp searches when the environment has no PATH at all: the
+    system's default path where it says (confstr CS_PATH), else the usual
+    one."""
+    try:
+        found = os.confstr("CS_PATH")
+    except (AttributeError, ValueError, OSError):
+        found = None
+    return found or FALLBACK_EXECVP_PATH
+
+
+EXECVP_DEFAULT_PATH = _system_default_path()
 SECONDS_PER_MINUTE = 60
 SECONDS_PER_HOUR = 3600
 HOURS_PER_DAY = 24
@@ -245,74 +256,17 @@ def _shebang_words(path):
     return first[2:].decode("utf-8", "replace").strip().split(None, 1)
 
 
-def _script_run(argv):
-    """The script's path when argv is the kernel's rewrite of a "#!" script
-    (interpreter first, then the script), else None."""
-    for words in range(1, SHEBANG_MAX_WORDS + 1):
-        if len(argv) > words and _shebang_words(argv[words]) == argv[:words]:
-            return argv[words]
-    return None
-
-
-def _framework_launcher_path(pid, argv):
-    """The path the macOS framework Python launcher was run as, when pid is
-    the Python.app it re-executed, else None."""
-    if not argv[0].endswith(FRAMEWORK_PYTHON_SUFFIX):
-        return None
-    words = _ps_field(pid, "args", "-E", "-ww")
-    if not words:
-        return None
-    prefix = LAUNCHER_VAR + "="
-    for word in words.split():
-        if word.startswith(prefix):
-            return word[len(prefix):]
-    return None
-
-
-def _ps_command_run(pid):
-    """The name of the command that was run to start pid, from ps(1)."""
-    words = command_line(pid)
-    if not words:
-        return None
-    argv = words.split()
-    launcher = _framework_launcher_path(pid, argv)
-    if launcher is not None:
-        return os.path.basename(launcher)
-    script = _script_run(argv)
-    if script is not None:
-        return os.path.basename(script)
-    return os.path.basename(argv[0])
-
-
 def command_run(pid):
-    """The name pid runs under, or None once it is gone.
+    """The name pid runs under, or None once it is gone; for a report of
+    what a process is, never for deciding that it is a program (Program.runs
+    decides that).
 
-    On Linux it is the kernel's command name: the base name of the program
-    or script that was executed, cut to its first 15 characters.  Without
-    /proc it is the base name of what was passed to exec (the script's own
-    name for a "#!" script, the launcher's for the framework Python), not
-    cut.  The names the debugger tests look for are shorter than 15
-    characters, so both give the same answer for them."""
+    On Linux it is the kernel's command name, cut to its first 15
+    characters.  Without /proc it is the base name of argv[0], not cut."""
     if has_procfs():
         return _proc_comm(pid)
-    return _ps_command_run(pid)
-
-
-def _live_and_named(pid, name):
-    """True when pid has not ended (neither gone nor a zombie) and runs as
-    `name`: an ended debugger the editor has not reaped yet is not there."""
-    if run_state(pid) in (GONE, ZOMBIE):
-        return False
-    return command_run(pid) == name
-
-
-def children_named(ppid, name):
-    """PIDs of ppid's direct children started as the command `name` that
-    have not ended.
-
-    A test needs it to find the debugger the editor started (and only that
-    child: not another child, not a grandchild), or to see it has ended."""
-    return [pid for pid in _child_pids(ppid) if _live_and_named(pid, name)]
+    words = (command_line(pid) or "").split()
+    return os.path.basename(words[0]) if words else None
 
 
 def descendants(ppid):
@@ -546,14 +500,54 @@ def program(name, path=None):
     return Program(name, path, shutil.which(name, path=path))
 
 
+def program_beside(name, beside, path=None):
+    """The Program @name found in the folder of the real file the editor
+    finds for @beside on @path.
+
+    The editor starts some programs not off its PATH but from the folder of
+    another it found there: jdb's VM is the java beside the jdb the user has,
+    so a machine with two JDKs runs the one that made the class.  When
+    @beside is not on @path nothing can be told and that Program (missing)
+    is returned, which says so."""
+    anchor = program(beside, path)
+    if anchor.file is None:
+        return anchor
+    return program(name, os.path.dirname(os.path.realpath(anchor.file)))
+
+
+def program_from_trace(trace_path, key, path=None):
+    """The Program the editor said it chose, read from its trace: the last
+    line "<key> <java>" of the file @trace_path, or None when there is none.
+
+    A value with a slash is the file the editor chose; a bare word is looked
+    up on @path as execvp does.  The choice is the editor's own (which JDK
+    the Scala tools run on, for one), so no test repeats the rule that made
+    it."""
+    try:
+        with open(trace_path, errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except (OSError, TypeError):
+        return None
+    prefix = key + " "
+    chosen = [line[len(prefix):] for line in lines if line.startswith(prefix)]
+    if not chosen:
+        return None
+    value = chosen[-1].strip()
+    if "/" in value:
+        return program(os.path.basename(value), os.path.dirname(value))
+    return program(value, path)
+
+
 class ChildFacts:
     """What the process table says about one child, read once: its run
     state, the real path of its executable (None when this system cannot
     say), its argument words, and the real paths of the first few that name
     an existing file (the script path of a "#!" child is among them)."""
 
-    def __init__(self, pid, state, exe, argv, argv_files, argv0_file):
+    def __init__(self, pid, state, exe, argv, argv_files, argv0_file,
+                 cwd=None):
         self.pid = pid
+        self.cwd = cwd
         self.state = state
         self.exe = exe
         self.argv = argv
@@ -664,24 +658,93 @@ def child_facts(pid):
     first = None
     if argv and "/" in argv[0]:
         first = _resolved_file(argv[0], cwd)
-    return ChildFacts(pid, state, _exe_of_pid(pid), argv, files, first)
+    return ChildFacts(pid, state, _exe_of_pid(pid), argv, files, first, cwd)
 
 
-def children_running(ppid, prog):
+def _runs_in(prog, pid, cwd):
+    """True when pid runs the Program @prog, and, when @cwd is given, has
+    that folder as its working folder."""
+    facts = child_facts(pid)
+    if not prog.runs(facts):
+        return False
+    if cwd is None:
+        return True
+    return facts.cwd is not None and (
+        os.path.realpath(facts.cwd) == os.path.realpath(cwd))
+
+
+def children_running(ppid, prog, cwd=None):
     """PIDs of ppid's direct children that run the Program @prog and have
-    not ended.
+    not ended; with @cwd, only those working in that folder.
 
     A test needs it to find the debugger the editor started (and only that
     child: not another child, not a grandchild), or to see it has ended."""
-    return [pid for pid in _child_pids(ppid) if prog.runs(child_facts(pid))]
+    return [pid for pid in _child_pids(ppid) if _runs_in(prog, pid, cwd)]
 
 
-def descendants_running(ppid, prog):
-    """PIDs of every live process below ppid that runs the Program @prog.
+def descendants_running(ppid, prog, cwd=None):
+    """PIDs of every live process below ppid that runs the Program @prog;
+    with @cwd, only those working in that folder.
 
     A test needs it to find a debugger that is not a direct child (the
     editor started a shell that started it) or to see none is left."""
-    return [pid for pid in descendants(ppid) if prog.runs(child_facts(pid))]
+    return [pid for pid in descendants(ppid) if _runs_in(prog, pid, cwd)]
+
+
+def processes_running(prog, cwd=None):
+    """PIDs of every live process of the system that runs the Program @prog;
+    with @cwd, only those working in that folder.
+
+    A test needs it for a program a shared server started for the session,
+    which is not below the editor: a Scala program runs as a child of the
+    Bloop build server, in the folder of the source."""
+    return [pid for pid in _all_pids() if _runs_in(prog, pid, cwd)]
+
+
+class ChildAsker:
+    """What a session of the editor does to ask "is that child the program
+    P": it remembers the Program it asked for, so a row that found nothing
+    says which file it looked for.
+
+    A session class takes this as a base and has `proc` (the editor's
+    Popen) and, once started, `exec_path`: the PATH the editor was started
+    with, None when the row removed it (execvp then searches
+    EXECVP_DEFAULT_PATH).  Not to be confused with OwnedProcess.running(),
+    which answers a bool, whether the process is still alive: running(name)
+    here answers a list of pids."""
+
+    exec_path = None
+    asked = None
+
+    def _ask(self, name):
+        """The Program for @name on the editor's PATH, remembered as the
+        last one asked for."""
+        path = self.exec_path
+        if path is None:
+            path = EXECVP_DEFAULT_PATH
+        self.asked = program(name, path)
+        return self.asked
+
+    def running(self, name):
+        """PIDs of the editor's live direct children that run the program
+        the editor's execvp finds for @name (a list, empty when none)."""
+        return children_running(self.proc.pid, self._ask(name))
+
+    def running_beside(self, name, beside):
+        """PIDs of the editor's live direct children that run @name as the
+        editor finds it beside @beside (jdb's VM is the java next to jdb,
+        not the first java on the PATH)."""
+        path = self.exec_path
+        if path is None:
+            path = EXECVP_DEFAULT_PATH
+        self.asked = program_beside(name, beside, path)
+        return children_running(self.proc.pid, self.asked)
+
+    def running_below(self, name, cwd=None):
+        """PIDs of every live process below the editor that runs the
+        program the editor's execvp finds for @name; with @cwd, only those
+        working in that folder."""
+        return descendants_running(self.proc.pid, self._ask(name), cwd)
 
 
 def _asked_lines(asked):
@@ -752,40 +815,11 @@ def _proc_cwd(pid):
         return None
 
 
-def _live_comm_in(pid, comm, workdir):
-    """True when pid has not ended, its kernel command name is comm and its
-    working directory is workdir."""
-    if run_state(pid) in (GONE, ZOMBIE) or _proc_comm(pid) != comm:
-        return False
-    return _proc_cwd(pid) == os.path.realpath(workdir)
-
-
-def processes_in(workdir, comm):
-    """PIDs of live processes named comm (the kernel's command name) whose
-    working directory is workdir; Linux only, [] elsewhere.
-
-    A test needs it to find a program a shared server started for the
-    session, which is not a descendant of the editor: a Scala program runs
-    as a child of the Bloop build server, in the directory of the source.
-    Only the command name and the directory are read, never a command
-    line."""
-    if not has_procfs():
-        return []
-    return [int(e) for e in os.listdir(PROC_ROOT)
-            if e.isdigit() and _live_comm_in(int(e), comm, workdir)]
-
-
-def children_in(ppid, workdir, comm):
-    """PIDs of ppid's live direct children named comm whose working
-    directory is workdir; Linux only, [] elsewhere.
-
-    A test needs it to count what a shared server still runs for one
-    session (its programs), leaving the server itself and the programs of
-    other sessions out."""
-    if not has_procfs():
-        return []
-    return [pid for pid in _proc_child_pids(ppid)
-            if _live_comm_in(pid, comm, workdir)]
+def _all_pids():
+    """PIDs of every process in the table, whatever it runs."""
+    if has_procfs():
+        return [int(e) for e in os.listdir(PROC_ROOT) if e.isdigit()]
+    return [pid for pid, _parent, _state, _comm in _ps_table_rows()]
 
 
 # ---------------------------------------------------------------- path limit

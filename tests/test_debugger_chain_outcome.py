@@ -21,6 +21,7 @@ import sys
 
 import pytest
 
+import procinfo
 from wpe_driver import WpeSession, wait_screen
 from test_startplan_debug import (CTRL_G, SEED_C, RUN_IT, USE_MINE, RAN_WAIT, SETTLE,
                                   _debug_box, _screen, _wait)
@@ -178,20 +179,10 @@ SEED_LOOKS_LIKE_A_PROMPT = (
 STOP_LINE = 6
 
 
-def _pdb_pids(root):
-    """The pids of the pdb processes whose command line names @root."""
-    found = []
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            with open("/proc/%s/cmdline" % pid, "rb") as fh:
-                argv = fh.read().split(b"\0")
-        except OSError:
-            continue
-        if b"pdb" in argv and any(root.encode() in a for a in argv):
-            found.append(int(pid))
-    return found
+def _pdb_pids(s):
+    """The pids of the live processes below the editor of session @s that
+    run the python3 the editor starts pdb with."""
+    return s.running_below("python3")
 
 
 # @scenario SC-debug-138
@@ -210,7 +201,7 @@ def test_pdb_left_at_another_prompt_at_a_stop_refuses_every_resume(tmp_path):
         s.key(CTRL_G, "r", delay=1.0)
         assert _wait(lambda: s.mark_line() == STOP_LINE, STOP_S), \
             "%s\n%s" % (_screen(s), s.process_report())
-        pids = _pdb_pids(str(tmp_path))
+        pids = _pdb_pids(s)
         s.key(CTRL_G, "w", delay=1.0)
         s.key("f()", delay=0.3)
         s.key(ENTER, delay=1.0)
@@ -225,8 +216,8 @@ def test_pdb_left_at_another_prompt_at_a_stop_refuses_every_resume(tmp_path):
             assert s.mark_line() == STOP_LINE, "a resume reached pdb"
         s.key(CTRL_G, "q", delay=2.0)
         s._drain(2.0)
-    assert pids, "no pdb process was found"
-    assert not [p for p in pids if os.path.exists("/proc/%d" % p)], "pdb outlived Quit"
+    assert pids, "no pdb process was found:\n%s" % s.process_report()
+    assert procinfo.all_ended(pids), "pdb outlived Quit"
 
 
 # ---- gdb ----

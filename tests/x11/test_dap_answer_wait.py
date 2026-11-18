@@ -22,7 +22,6 @@ from conftest import _sleep
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
-import procinfo  # noqa: E402
 
 START_TIMEOUT_S = 90            # dlv builds the package with a cold cache
 ANSWER_TIMEOUT_S = 20
@@ -109,7 +108,7 @@ def test_dlv_keys_reach_the_editor_while_it_answers(xwpe):
     xwpe.key("ctrl+g", "r", delay=1.0)
     assert _wait(lambda: _count(xwpe.screenshot(), STOP_GREEN) >= MIN_BAR_PIXELS,
                  START_TIMEOUT_S), "Ctrl-G R should stop on the breakpoint"
-    pids = procinfo.children_named(xwpe.proc.pid, ADAPTER)
+    pids = xwpe.running(ADAPTER)
     assert pids, "dlv should be a child of the editor"
     pid = pids[0]
     try:
@@ -125,7 +124,7 @@ def test_dlv_keys_reach_the_editor_while_it_answers(xwpe):
         assert _wait(lambda: TYPED in xwpe.saved_text(), ANSWER_TIMEOUT_S), \
             "keys typed while dlv answers should reach the editor " \
             "(file on disk:\n%r)" % xwpe.saved_text()
-        assert procinfo.children_named(xwpe.proc.pid, ADAPTER) == [pid], \
+        assert xwpe.running(ADAPTER) == [pid], \
             "the keys should be taken while dlv is still held"
         _let_go(pid)
         assert _wait(lambda: _count(xwpe.screenshot(), STOP_GREEN) >=

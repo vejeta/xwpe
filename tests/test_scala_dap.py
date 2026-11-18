@@ -19,7 +19,8 @@ import time
 import pytest
 
 import procinfo
-from wpe_driver import WpeSession, ALT, WAIT_SCALE
+from wpe_driver import (WpeSession, ALT, WAIT_SCALE, SERVER_JDK_KEY,
+                        server_program)
 
 # Iterative factorial; `f` grows 1 -> 2 -> 6 -> 24 -> ...  Breakpoint on line 6
 # (the multiply), reached every loop iteration.
@@ -127,7 +128,16 @@ BREAK_LINE = 6
 START_S = 150            # a build server, cold, before scaling
 PROGRAM_ENDS_S = 10      # the program ends within this after Quit
 POLL_S = 0.2
-JAVA = "java"            # the kernel's command name of a JVM
+def _jvm(workdir):
+    """The program the build server's JVM runs as for the session in
+    @workdir: the java the editor said it chose in its trace.  A row that
+    asks before the editor has said fails here, never waits on a program it
+    could not recognise."""
+    chosen = server_program(workdir)
+    assert chosen is not None, \
+        "the editor wrote no %r line to its trace in %s" \
+        % (SERVER_JDK_KEY, workdir)
+    return chosen
 
 
 def _drain_until(w, predicate, seconds):
@@ -162,7 +172,7 @@ def _stopped_with_its_program(w, workdir):
     w.key(CTRL_G, "r", delay=1.0)
     assert _drain_until(w, lambda: _mark_line(w) == BREAK_LINE, START_S), \
         "the session should stop at line %d:\n%s" % (BREAK_LINE, _text(w))
-    programs = procinfo.processes_in(workdir, JAVA)
+    programs = procinfo.processes_running(_jvm(workdir), workdir)
     assert len(programs) == 1, \
         "one program JVM should run in %s (found %s)" % (workdir, programs)
     return programs[0], procinfo.parent_of(programs[0])
@@ -171,7 +181,10 @@ def _stopped_with_its_program(w, workdir):
 def _end_program_if_left(workdir):
     """A failed row must not leave its program running under the shared
     build server: end that JVM, found by its directory, and nothing else."""
-    for pid in procinfo.processes_in(workdir, JAVA):
+    jvm = server_program(workdir)
+    if jvm is None:
+        return                      # the editor never chose a JDK: no program
+    for pid in procinfo.processes_running(jvm, workdir):
         os.kill(pid, signal.SIGKILL)
 
 
@@ -189,7 +202,8 @@ def test_quit_ends_the_scala_program(tmp_path):
             program, server = _stopped_with_its_program(w, workdir)
             w.menu(ALT.DEBUG, "q", delay=0.5)
             assert _drain_until(
-                w, lambda: not procinfo.children_in(server, workdir, JAVA),
+                w, lambda: not procinfo.children_running(
+                    server, _jvm(workdir), workdir),
                 PROGRAM_ENDS_S), \
                 "the program (pid %d) should end on Quit:\n%s" \
                 % (program, _text(w))
@@ -213,7 +227,8 @@ def test_sigterm_to_the_editor_ends_the_scala_program(tmp_path):
             program, server = _stopped_with_its_program(w, workdir)
             os.kill(w.proc.pid, signal.SIGTERM)
             assert _wait_until(
-                lambda: not procinfo.children_in(server, workdir, JAVA),
+                lambda: not procinfo.children_running(
+                    server, _jvm(workdir), workdir),
                 PROGRAM_ENDS_S), \
                 "the program (pid %d) should end with the editor" % program
     finally:
@@ -249,7 +264,7 @@ def _no_program_left(w, workdir, server):
     editor is drained while it still has a terminal to drain."""
     if w.alive() and w.master_fd >= 0:
         w._drain(POLL_S)
-    return not procinfo.children_in(server, workdir, JAVA)
+    return not procinfo.children_running(server, _jvm(workdir), workdir)
 
 
 # @scenario SC-debug-47
@@ -289,7 +304,7 @@ def test_a_killed_editors_test_leaves_no_scala_program(tmp_path):
             program, server = _stopped_with_its_program(w, workdir)
         finally:
             w.close()
-        left = procinfo.children_in(server, workdir, JAVA)
+        left = procinfo.children_running(server, _jvm(workdir), workdir)
         assert not left, \
             "the session's close left its program running under the build " \
             "server %d: %s" % (server, left)

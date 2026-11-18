@@ -29712,6 +29712,25 @@ static int e_find_supported_jdk(char *out, size_t sz)
  return(0);
 }
 
+/* What e_scala_trace_jdk says when the JVM is whichever java the PATH names. */
+#define E_SCALA_JDK_ON_PATH "java"
+
+/**
+ * e_scala_trace_jdk - Write which java the Scala tools will run on to the
+ * trace, as the line "scala jdk <java>".
+ * @java: the path of the java chosen, or E_SCALA_JDK_ON_PATH when the one on
+ * PATH is left in place.
+ *
+ * A test that must find, or end, the JVM the build server runs for a session
+ * reads the editor's own choice here instead of repeating the choice of
+ * e_scala_pin_jdk, which would drift from it.  Nothing is written unless
+ * XWPE_UI_TRACE is set.
+ */
+static void e_scala_trace_jdk(const char *java)
+{
+ wpe_ui_trace("scala jdk %s", java);
+}
+
 /* Pin the JVM a Scala tool runs on away from a too-new default JDK.  The Scala 3
    compiler crashes at start-up on JDK >= 24 ("asTerm called on not-a-Term"),
    which silently breaks whatever drives it: for @who "Metals" the presentation
@@ -29735,19 +29754,28 @@ static void e_scala_pin_jdk(FENSTER *f, const char *who)
  if (jh && *jh && wpe_path_join(jbin, sizeof jbin, jh, "bin/java") == 0)
  {
   if (e_jdk_major(jbin) <= 23)
-   return;                       /* user pinned a usable JAVA_HOME: respect it */
+  {
+   e_scala_trace_jdk(jbin);      /* user pinned a usable JAVA_HOME: respect it */
+   return;
+  }
  }
  major = e_jdk_major("java");    /* the default on PATH */
  if (major < 24)
-  return;                        /* default is fine, or unknown -- do not meddle */
+ {
+  e_scala_trace_jdk(E_SCALA_JDK_ON_PATH);  /* default is fine, or unknown */
+  return;
+ }
  if (!e_find_supported_jdk(jdk, sizeof(jdk)))
  {
+  e_scala_trace_jdk(E_SCALA_JDK_ON_PATH);
   snprintf(msg, sizeof(msg), "%s: default JDK %d is too new for the Scala "
            "compiler and no LTS JDK (17/21) was found -- set JAVA_HOME to one.",
            who, major);
   e_d_p_message(msg, f, 1);
   return;
  }
+ if (wpe_path_join(jbin, sizeof jbin, jdk, "bin/java") == 0)
+  e_scala_trace_jdk(jbin);
  setenv("JAVA_HOME", jdk, 1);
  oldpath = getenv("PATH");
  if (!oldpath)

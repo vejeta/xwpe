@@ -67,9 +67,10 @@ XWPE_LIB_DIR = os.path.dirname(os.path.abspath(WPE_BIN))
 
 # A session on one of these files runs its program under a build server the
 # editor does not own (scala-cli's Bloop): close() ends that program, found
-# by the kernel's command name and this session's folder.
+# by the JVM it runs as and this session's folder.
 SERVER_PROGRAM_SUFFIXES = (".scala", ".sc")
-SERVER_PROGRAM_COMM = "java"
+SERVER_TRACE_NAME = ".ui-trace"  # the editor's trace in the session's folder
+SERVER_JDK_KEY = "scala jdk"     # the trace line naming the java it chose
 SERVER_PROGRAM_GONE_S = 10      # the server reaps a killed program well within this
 SERVER_PROGRAM_POLL_S = 0.1
 
@@ -193,6 +194,20 @@ def late_reader_c_program(go_path):
 #   row's env_extra holds.
 # The ioctl numbers of the terminal differ by architecture, which is why the
 # owner uses termios.TIOCSWINSZ and not a constant.
+
+
+def server_program(workdir, ui_trace=None, path=None):
+    """The Program the build server's JVM runs as for the session in
+    @workdir, as the editor chose it, or None when the editor has not said.
+
+    The editor picks the JDK the Scala tools run on (it leaves a too-new
+    default aside), so a test that must find or end the program's JVM reads
+    that choice from the trace line the editor writes, never repeating the
+    rule.  @ui_trace is the trace the session was given, else the one the
+    driver gave a Scala session in its folder."""
+    if ui_trace is None:
+        ui_trace = os.path.join(workdir, SERVER_TRACE_NAME)
+    return procinfo.program_from_trace(ui_trace, SERVER_JDK_KEY, path)
 
 
 def session_env_extra(env_extra):
@@ -572,9 +587,15 @@ def pane_text_with_history(session, needle_words, pages=PANE_HISTORY_PAGES,
     return pane_logical_lines(rows)
 
 
-class WpeSession:
+class WpeSession(procinfo.ChildAsker):
     """A live wpe instance under a pyte-backed pty, with helpers to send
     keys, drive menus, save, and read back the file or the screen.
+
+    ``running(name)`` is the one way a row finds a child of the editor by
+    the program it is (a list of pids); it is not ``owned.running()``, the
+    owner's bool for whether a process is alive.  ``exec_path`` is the PATH
+    the editor was started with and ``asked`` the Program the last
+    ``running(name)`` looked for, which ``process_report()`` prints.
 
     ``real_login=True`` is for the one kind of test that talks to a real
     `claude` CLI: it links the machine's ``~/.claude`` and ``~/.claude.json``
@@ -654,6 +675,11 @@ class WpeSession:
             os.makedirs(_xd, exist_ok=True)
             shutil.copyfile(_synt, os.path.join(_xd, "syntax_def"))
         extra_env = session_env_extra(env_extra)
+        if filename.endswith(SERVER_PROGRAM_SUFFIXES):
+            # The editor says which java it chose in its trace; a session on
+            # a Scala file always has one, unless the row names its own.
+            extra_env.setdefault("XWPE_UI_TRACE",
+                                 os.path.join(workdir, SERVER_TRACE_NAME))
         owner = gui_owner.current()
         self.input_fd = self.master_fd
         stdin_arg = None            # the pty: the editor's input is a terminal
@@ -674,6 +700,9 @@ class WpeSession:
         # The trace the editor was given (the row's, else the machine's);
         # None: there is no trace to read.
         self.ui_trace = self.owned.env.get("XWPE_UI_TRACE")
+        # The PATH the editor's execvp searches (None: the row removed it),
+        # which running(name) looks a program up on.
+        self.exec_path = self.owned.env.get("PATH")
         os.close(slave_fd)
         if not stdin_is_terminal:
             os.close(stdin_arg)
@@ -934,7 +963,8 @@ class WpeSession:
         of the editor's own trace (when the session writes one, the file
         XWPE_UI_TRACE names), where a program that could not be started says
         which step failed and why."""
-        return "%s\n%s" % (procinfo.describe_children(self.proc.pid),
+        return "%s\n%s" % (procinfo.describe_children(self.proc.pid,
+                                                       self.asked),
                            ui_trace_tail(self.ui_trace))
 
     def exit_code(self):
@@ -968,6 +998,12 @@ class WpeSession:
             except OSError:
                 pass
 
+    def server_program(self):
+        """The Program the build server's JVM runs as for this session, as
+        the editor chose it (None before it has said)."""
+        path = self.exec_path or procinfo.EXECVP_DEFAULT_PATH
+        return server_program(self.workdir, self.ui_trace, path)
+
     def _end_programs_left_under_a_server(self):
         """End the program a shared build server ran for this session.
 
@@ -980,15 +1016,17 @@ class WpeSession:
         server and never another session's program."""
         if not self.path.endswith(SERVER_PROGRAM_SUFFIXES):
             return
-        import procinfo
         if not procinfo.has_procfs():
             return
-        for pid in procinfo.processes_in(self.workdir, SERVER_PROGRAM_COMM):
+        jvm = self.server_program()
+        if jvm is None:
+            return                  # the editor never chose a JDK: no program
+        for pid in procinfo.processes_running(jvm, self.workdir):
             try:
                 os.kill(pid, 9)
             except ProcessLookupError:
                 pass
         deadline = time.time() + SERVER_PROGRAM_GONE_S
-        while (procinfo.processes_in(self.workdir, SERVER_PROGRAM_COMM)
+        while (procinfo.processes_running(jvm, self.workdir)
                and time.time() < deadline):
             time.sleep(SERVER_PROGRAM_POLL_S)

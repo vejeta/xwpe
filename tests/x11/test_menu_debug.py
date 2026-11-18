@@ -45,14 +45,7 @@ RUN_TIMEOUT_S = 40
 def _gdb(xwpe):
     """The live gdb among the editor's descendants: under X11 the debugger
     is started through a helper process (we_sys), not by the editor itself."""
-    found = []
-    todo = [xwpe.proc.pid]
-    while todo:
-        for pid in procinfo._child_pids(todo.pop()):
-            todo.append(pid)
-            if procinfo._live_and_named(pid, "gdb"):
-                found.append(pid)
-    return found
+    return xwpe.running_below("gdb")
 
 
 def _wait(predicate, timeout):

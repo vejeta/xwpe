@@ -46,6 +46,7 @@ if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
 import gui_owner as owner_api  # noqa: E402
+import procinfo  # noqa: E402
 from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
 from gui_owner import PreviousRowLeft  # noqa: E402,F401  (rows import it from here)
 
@@ -275,14 +276,21 @@ def _load_ppm(path):
     return Image.frombytes("RGB", (w, h), data[i:])
 
 
-class WaylandSession:
+class WaylandSession(procinfo.ChildAsker):
     """A native-Wayland xwpe instance under headless weston, with the same
     helper API as the X11 suite's XwpeSession (key/click/type/menu/save/
-    screenshot/saved_text), so test bodies can be shared."""
+    screenshot/saved_text), so test bodies can be shared.
+
+    ``running(name)`` finds a child of the editor by the program it is (a
+    list of pids; ``owned.running()`` is the owner's bool for whether a
+    process is alive).  ``exec_path`` is the PATH the editor was started
+    with."""
 
     def __init__(self, proc, env, wid, dump, owned=None):
         self.proc = proc
         self.env = env
+        if env is not None:
+            self.exec_path = env.get("PATH")
         self.wid = wid          # the weston X11 window (xdotool target)
         self.dump = dump        # XWPE_WL_DUMP path (continuously refreshed PPM)
         self.owned = owned      # the owner's record of the editor

@@ -17,7 +17,6 @@ import time
 
 import pytest
 
-import procinfo
 from host_tools import require
 from wpe_driver import WpeSession, ALT, WAIT_SCALE, assistant_build
 
@@ -156,14 +155,15 @@ def test_program_output_kept_under_the_debug_menu_survives_quitting_from_it(
         assert DEFERRED_OUTPUT in _read(str(trace)), \
             "the output that came under the menu should wait:\n%s" \
             % _read(str(trace))
+        assert w.running("gdb"), \
+            "gdb should be running before Quit:\n%s" % w.process_report()
         w.key("q", delay=0.6)
         assert _wait_for(w, lambda: REPLAYED_OUTPUT in _read(str(trace)),
                          QUIT_TIMEOUT_S), \
             "the kept output should be drawn once the menu has closed:\n%s" \
             % _read(str(trace))
         assert w.alive(), "wpe died drawing output kept for an ended session"
-        assert _wait_for(w, lambda: not procinfo.children_named(w.proc.pid,
-                                                                "gdb"),
+        assert _wait_for(w, lambda: not w.running("gdb"),
                          QUIT_TIMEOUT_S), \
             "Debug > Quit should have ended gdb:\n%s" % _screen(w)
         w.key("Q", delay=0.3)

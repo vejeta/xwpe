@@ -26,7 +26,7 @@ import pytest
 import gui_owner
 import procinfo
 from host_tools import require, require_absent
-from wpe_driver import (WpeSession, ALT, WAIT_SCALE,
+from wpe_driver import (WpeSession, ALT, WAIT_SCALE, server_program,
                         CURRENT_LINE_BG, BREAKPOINT_BG,
                         UNCONFIRMED_BREAKPOINT_FG, incoherence,
                         late_reader_c_program, paste_text, end_paste_until,
@@ -259,27 +259,18 @@ def _screen(w):
     return "\n".join(w.display(drain=0))
 
 
-def _python3_run_name():
-    """The name the `python3` on PATH runs under.  pkgsrc's python3 is a
-    shell wrapper that execs python3.N, so pdb's process is python3.N
-    there; elsewhere it is python3."""
-    python3 = shutil.which("python3")
-    if python3 is None:
-        return "python3"
-    out = subprocess.run([python3, "-c",
-                          "import os, sys; "
-                          "print(os.path.basename(sys.executable))"],
-                         capture_output=True, text=True).stdout.strip()
-    return out or "python3"
-
-
-# The command the editor runs -> the name its process runs under.
-RUN_NAMES = {"python3": _python3_run_name()}
-
-
 def _children(w, name):
-    """PIDs of the editor's direct children started as the command `name`."""
-    return procinfo.children_named(w.proc.pid, RUN_NAMES.get(name, name))
+    """PIDs of the editor's direct children that run the program the
+    editor's execvp finds for the command `name` (the session says which
+    file it looked for when a row finds none)."""
+    return w.running(name)
+
+
+def _vm_children(w):
+    """PIDs of the editor's direct children that run jdb's VM: the java
+    beside the jdb the editor starts, which on a machine with two JDKs is
+    not the first java on the PATH."""
+    return w.running_beside("java", "jdb")
 
 
 def _cpu_ticks(pid):
@@ -593,8 +584,7 @@ def _start_silent_session(w):
 def _process_gone(pid):
     """True once `pid` is no longer in the process table (a zombie that was
     not reaped is still listed)."""
-    return subprocess.run(["ps", "-p", str(pid)],
-                          capture_output=True).returncode != 0
+    return procinfo.run_state(pid) == procinfo.GONE
 
 
 # @scenario SC-debug-17
@@ -6265,8 +6255,9 @@ def test_jdb_end_names_the_signal_that_killed_the_program(tmp_path):
     with WpeSession(str(tmp_path), JDB_READ_PROG, filename="P.java",
                     wait=1.5) as w:
         _start_jdb_reading_program(w)
-        vms = _children(w, "java")
-        assert len(vms) == 1, "the editor's one java child: %s" % vms
+        vms = _vm_children(w)
+        assert len(vms) == 1, "the editor's one java child: %s\n%s" \
+            % (vms, w.process_report())
         os.kill(vms[0], signal.SIGKILL)
         assert _wait_for(w, lambda: _messages_hold(w, JDB_KILLED_END),
                          STEP_TIMEOUT_S), \
@@ -7044,7 +7035,6 @@ GO_PAUSE_LINES = (7, (8, 9))
 RUST_PAUSE_LINES = (3, (4, 5))
 SCALA_PAUSE_LINES = (4, (5, 6))
 PAUSE_RUN_BAR_S = 8
-JVM_COMM = "java"       # the kernel's command name of a JVM
 
 
 def _assert_paused_in_loop(w, loop, what):
@@ -7189,8 +7179,17 @@ def test_pause_marks_where_the_program_is_under_scala(tmp_path):
                                      SCALA_START_TIMEOUT_S)
             _quit_ends_the_scala_program(w, workdir)
     finally:
-        for pid in procinfo.processes_in(workdir, JVM_COMM):
-            os.kill(pid, signal.SIGKILL)
+        _kill_jvm_programs_in(workdir)
+
+
+def _kill_jvm_programs_in(workdir):
+    """End the JVMs working in the session's folder, so a failed row leaves
+    no program under the shared build server."""
+    jvm = server_program(workdir)
+    if jvm is None:
+        return                      # the editor never chose a JDK: no program
+    for pid in procinfo.processes_running(jvm, workdir):
+        os.kill(pid, signal.SIGKILL)
 
 
 def _quit_ends_the_scala_program(w, workdir):
@@ -7199,13 +7198,16 @@ def _quit_ends_the_scala_program(w, workdir):
     it may be the editor's descendant (this session's launcher started it)
     and rightly outlives Quit, so the program is counted, not the editor's
     tree."""
-    programs = procinfo.processes_in(workdir, JVM_COMM)
+    jvm = w.server_program()
+    assert jvm is not None, \
+        "the editor wrote no JDK line to its trace:\n%s" % w.process_report()
+    programs = procinfo.processes_running(jvm, workdir)
     assert len(programs) == 1, \
         "one program JVM should run in %s (found %s)" % (workdir, programs)
     server = procinfo.parent_of(programs[0])
     w.menu(ALT.DEBUG, "q", delay=0.5)
     assert _wait_for(
-        w, lambda: not procinfo.children_in(server, workdir, JVM_COMM),
+        w, lambda: not procinfo.children_running(server, jvm, workdir),
         STEP_TIMEOUT_S), \
         "the program (pid %d) should end on Quit:\n%s" \
         % (programs[0], _screen(w))
@@ -8916,8 +8918,7 @@ def test_a_breakpoint_set_while_running_turns_solid_while_it_runs_under_scala(
             _assert_solid(w, SCALA_TAIL_LINE, "after the stop")
             _quit_ends_the_scala_program(w, workdir)
     finally:
-        for pid in procinfo.processes_in(workdir, JVM_COMM):
-            os.kill(pid, signal.SIGKILL)
+        _kill_jvm_programs_in(workdir)
 
 
 SCALA_TAIL_LINE = 7        # println(n), past the loop
@@ -8942,8 +8943,7 @@ def test_a_breakpoint_set_while_running_stops_the_program_there_under_scala(
             _assert_stops_on(w, body, "under Scala")
             _quit_ends_the_scala_program(w, workdir)
     finally:
-        for pid in procinfo.processes_in(workdir, JVM_COMM):
-            os.kill(pid, signal.SIGKILL)
+        _kill_jvm_programs_in(workdir)
 
 
 # ---- watches changed while the program runs ----
@@ -9234,8 +9234,7 @@ def test_a_watch_added_while_running_shows_at_the_next_stop_under_scala(
             _pause_and_see_the_watch_filled(w, "n")
             _quit_ends_the_scala_program(w, workdir)
     finally:
-        for pid in procinfo.processes_in(workdir, JVM_COMM):
-            os.kill(pid, signal.SIGKILL)
+        _kill_jvm_programs_in(workdir)
 
 
 # @scenario SC-debug-07

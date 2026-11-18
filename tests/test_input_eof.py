@@ -11,10 +11,10 @@ keyboard, so the keyboard can end while the screen stays alive.
 """
 import os
 import pty
-import subprocess
 import time
 
 import gui_owner
+import procinfo
 from wpe_driver import WPE_BIN, WAIT_SCALE, XWPE_LIB_DIR
 
 # The editor must be gone this long after its input ended.
@@ -122,31 +122,11 @@ def test_an_idle_wpe_with_a_live_keyboard_uses_no_cpu(tmp_path):
     try:
         drain_screen(master, 1.5 * WAIT_SCALE)
         assert proc.poll() is None
-        before = cpu_seconds(proc.pid)
+        before = procinfo.cpu_seconds(proc.pid)
         drain_screen(master, IDLE_WATCH_S)
         assert proc.poll() is None, "wpe left although its keyboard is open"
-        used = cpu_seconds(proc.pid) - before
+        used = procinfo.cpu_seconds(proc.pid) - before
         assert used < IDLE_CPU_BUDGET_S, "idle editor used %.2fs of CPU in %.1fs" % (used, IDLE_WATCH_S)
     finally:
         os.close(write_end)
         stop(owned, master)
-
-
-def cpu_seconds(pid):
-    """User plus system CPU time of ``pid``, read from ps(1) so the row
-    also runs on macOS and the BSDs, which have no Linux /proc."""
-    out = subprocess.run(["ps", "-o", "time=", "-p", str(pid)],
-                         capture_output=True, text=True).stdout.strip()
-    return _ps_time_seconds(out)
-
-
-def _ps_time_seconds(text):
-    """Seconds in a ps(1) TIME field: [[dd-]hh:]mm:ss[.frac]."""
-    days = 0
-    if "-" in text:
-        day_text, text = text.split("-", 1)
-        days = int(day_text)
-    seconds = 0.0
-    for part in text.split(":"):
-        seconds = seconds * 60 + float(part)
-    return days * 86400 + seconds

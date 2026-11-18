@@ -1,0 +1,5 @@
+# file rule count pass
+# The test files that still run ps(1) themselves (rule HA) or name a process
+# by a computed name (rule HB), exact counts; a count may only fall.
+tests/test_macos_smoke.py HA 1 MQ5 (a %cpu probe of the smoke run; no procinfo face answers a percentage)
+tests/gui_owner.py HB 1 MQ2 (command_name reports a leftover process; a report, not a decision)

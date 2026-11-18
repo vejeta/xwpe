@@ -95,8 +95,7 @@ def _wait(predicate, timeout):
 
 def _gdb(xwpe):
     """The live gdb among the editor's descendants."""
-    return [pid for pid in procinfo.descendants(xwpe.proc.pid)
-            if procinfo._live_and_named(pid, "gdb")]
+    return xwpe.running_below("gdb")
 
 
 def _run_gdb_until_blocked(xwpe):

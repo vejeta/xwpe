@@ -43,6 +43,7 @@ if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
 import gui_owner as owner_api  # noqa: E402
+import procinfo  # noqa: E402
 from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
 from gui_owner import PreviousRowLeft  # noqa: E402,F401  (rows import it from here)
 
@@ -260,14 +261,21 @@ def changed_pixels(img_a, img_b, thresh=40):
     return diff.point(lambda p: 255 if p > thresh else 0).histogram()[255]
 
 
-class XwpeSession:
+class XwpeSession(procinfo.ChildAsker):
     """A running xwpe instance under the headless display, with helpers
-    to send input and screenshot the result."""
+    to send input and screenshot the result.
+
+    ``running(name)`` finds a child of the editor by the program it is (a
+    list of pids; ``owned.running()`` is the owner's bool for whether a
+    process is alive).  ``exec_path`` is the PATH the editor was started
+    with."""
 
     def __init__(self, proc, win, owned=None):
         self.proc = proc
         self.win = win
         self.owned = owned
+        if owned is not None and owned.env is not None:
+            self.exec_path = owned.env.get("PATH")
 
     def _note_children(self):
         """Tell the owner what the editor has started so far.

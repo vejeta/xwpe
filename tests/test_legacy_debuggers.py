@@ -403,8 +403,9 @@ def test_the_programs_end_is_named_where_the_editor_says(tmp_path, backend):
 
 
 def _stub_running(w, backend):
-    """PIDs of the editor's children running the stub for @backend."""
-    return procinfo.children_named(w.proc.pid, backend)
+    """PIDs of the editor's children running the stub for @backend: the
+    program the editor's execvp finds for that word on its PATH."""
+    return w.running(backend)
 
 
 def _quit_while_the_program_runs(tmp_path, backend):

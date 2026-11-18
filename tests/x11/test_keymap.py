@@ -17,7 +17,6 @@ from host_tools import needs
 from conftest import changed_pixels, _sleep
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import procinfo  # noqa: E402  (the tests/ directory is added just above)
 
 # A program that waits for a line on stdin, so the session is running.
 BLOCKED_PROG = (
@@ -53,14 +52,7 @@ def _wait(predicate, timeout):
 
 def _gdb(xwpe):
     """The live gdb among the editor's descendants."""
-    found = []
-    todo = [xwpe.proc.pid]
-    while todo:
-        for pid in procinfo._child_pids(todo.pop()):
-            todo.append(pid)
-            if procinfo._live_and_named(pid, "gdb"):
-                found.append(pid)
-    return found
+    return xwpe.running_below("gdb")
 
 
 # @scenario SC-debug-26

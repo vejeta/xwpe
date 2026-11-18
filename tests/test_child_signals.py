@@ -30,7 +30,8 @@ import gui_owner
 import procinfo
 from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
 from test_debugger_integration import (C_PROG, JAVA_PROG, _children, _need,
-                                       _start_c_session, _start_java_session)
+                                       _start_c_session, _start_java_session,
+                                       _vm_children)
 
 F9 = "\033[20~"                           # Make: compile and link
 CTRL_F9 = "\033[20;5~"                    # Run: build, then run the program
@@ -75,6 +76,14 @@ def _only_child(w, name):
     return pids[0]
 
 
+def _only_vm(w):
+    """The pid of the one VM the editor started beside jdb."""
+    pids = _vm_children(w)
+    assert len(pids) == 1, "the editor's one VM child: %s\n%s" \
+        % (pids, w.process_report())
+    return pids[0]
+
+
 # @scenario SC-debug-13
 def test_gdb_starts_with_sigchld_unblocked(tmp_path):
     """gdb, stopped on a breakpoint, has SIGCHLD neither blocked nor
@@ -97,7 +106,7 @@ def test_jdb_and_its_vm_start_with_sigchld_unblocked(tmp_path):
                     wait=1.5) as w:
         _start_java_session(w)
         jdb = _state_of(_only_child(w, "jdb"))
-        vm = _state_of(_only_child(w, "java"))
+        vm = _state_of(_only_vm(w))
     _assert_sigchld_clear("jdb", jdb)
     _assert_sigchld_clear("the program's VM", vm)
 
