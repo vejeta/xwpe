@@ -40,6 +40,10 @@ Bugs fixed in 1.6.x:
   escapes, OpenBSD reads them as letters and reads bytes).
 * The box that refuses an over-long path names the system's limit, not 4096
   on every system.
+* A word of 4096 bytes or more in ~/.xwpe/syntax_def ended the editor at
+  start; a box now says 'A word of the personal syntax_def is too long:' and
+  names the file, and the languages read before it stay.  Function Index builds its man page pattern within its
+  buffer, and a text field handed more text than it holds is left as it was.
 * New Project in a folder the system will not write to said 'Project file
   not found' and set the typed name as the project; it now says the file and
   the system's reason ('Cannot write .../ok.prj: Permission denied.  No

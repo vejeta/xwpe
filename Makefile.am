@@ -285,6 +285,7 @@ noinst_HEADERS = \
   we_errpat.h \
   we_optval.h \
   we_fieldtake.h \
+  we_manpat.h \
   we_wayland.h \
   we_wlframe.h \
   we_fdloop.h \
@@ -481,6 +482,12 @@ test_number_parse_CFLAGS = $(AM_CFLAGS)
 # does not fit its destination is refused, never written past it.
 test_fieldtake_SOURCES = tests/test_fieldtake.c
 test_fieldtake_CFLAGS = $(TEST_CFLAGS)
+
+# The pattern Function Index looks for in every MANPATH folder
+# (we_manpat.h): built through the path owner, whole or refused.
+check_PROGRAMS += test_manpat
+test_manpat_SOURCES = tests/test_manpat.c we_path.c
+test_manpat_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of the start plan: we_startplan.c with the store (we_startcmd.c)
 # and the children's owner it starts through.  The operand rule on every
@@ -1035,7 +1042,7 @@ TESTS += tests/check-chain-outcome.sh
 # numbers, a path number of a file's own, the system's PATH_MAX named outside
 # the owner, and a strcpy, strcat, strncpy or sprintf nobody has judged
 # (counted per function in tests/path-buffers.allow, which may only shrink).
-TESTS += tests/check-path-buffers.sh
+TESTS += tests/check-path-buffers.sh test_manpat
 
 # One owner of a help or Info token taken into fixed storage (we_helpbuf.h)
 # and of a buffer row's bytes (we_buffer.c): tests/check-help-buffers.sh

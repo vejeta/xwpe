@@ -15,6 +15,7 @@
 #include "we_startcmd.h"
 #include "we_startplan.h"
 #include "we_fileop.h"
+#include "we_manpat.h"
 
 #ifdef UNIX
 
@@ -4041,7 +4042,8 @@ int e_funct(FENSTER * f)
 struct dirfile *e_make_funct(char *man)
 {
  struct dirfile *df = NULL, *dout = MALLOC(sizeof(struct dirfile));
- char *sustr, *subpath, *manpath;
+ char sustr[WPE_PATH_SIZE];
+ char *subpath, *manpath;
  int ret = 0, n, i = 0, j, k, l = 0;
 
  manpath = NULL;
@@ -4056,8 +4058,6 @@ struct dirfile *e_make_funct(char *man)
  {
   manpath = strdup("/usr/man:/usr/share/man:/usr/X11R6/man:/usr/local/man");
  }
- /* Allocate the maximum possible rather than continually realloc. */
- sustr = malloc(strlen(manpath) + 10);
  while (manpath[i])
  {
   subpath = manpath + i;
@@ -4067,7 +4067,8 @@ struct dirfile *e_make_funct(char *man)
    manpath[i] = '\0';
    i++;
   }
-  sprintf(sustr, "%s/man%s/*", subpath, man);
+  if (wpe_man_pattern(sustr, sizeof sustr, subpath, man))
+   continue;
   df = e_find_files(sustr, 0);
   if (!df->anz)
   {
@@ -4132,7 +4133,6 @@ struct dirfile *e_make_funct(char *man)
   FREE(df);
  }
  free(manpath);
- free(sustr);
  WpeMouseRestoreShape();
  return(dout);
 }

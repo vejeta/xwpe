@@ -51,7 +51,15 @@
 #     its sources' length), "text" (a fixed or checked text into a larger
 #     array) or "checked" (the length is tested just before).  A path that
 #     fits none of them is not listed: it goes through the owner.  A count
-#     may only fall, and a line the scan does not meet is stale.
+#     may only fall, and a line the scan does not meet is stale.  The same
+#     goes for a scanf, fscanf or sscanf (also vscanf, vfscanf, vsscanf) that
+#     reads a word with %s or %[ and no width (%*s and %ms do not count; a
+#     positional %1$s is unbounded, %1$255s is not): such a word is as long as
+#     its input, so it is bounded by its buffer, or listed as a SCAN line with
+#     the reason the input is bounded.  Read in .c and .h files, the format
+#     anywhere in the call however many lines it spans, adjacent literals
+#     joined.  Not seen: a format held in a macro or a variable, and a wrapper
+#     under another name.
 # 10. The cuts of every pass stay gone.  The private numbers of the passes
 #     (WPE_BUILD_PATH_MAX, E_LSP_PATH_MAX, ...) and the strncpy of a path into
 #     the buffers they moved are named in no source, and no string literal but
@@ -193,6 +201,86 @@ function strip_heads(s,    done, i, len, depth, c) {
 function tight(l) {
   gsub(/[ \t]+\[/, "[", l); gsub(/\[[ \t]+/, "[", l); gsub(/[ \t]+\]/, "]", l)
   return l
+}
+'
+
+# The awk functions rule 9 reads a scan with.
+#   unbounded_in_lit(lit): how many conversions of one format read a word with
+#     %s or %[ and no width.  The width is the digits after the % (after a
+#     positional "n$" if there is one); %*s stores nothing and %ms allocates,
+#     so neither counts; %1$s is unbounded, %1$255s is not.
+#   unbounded_in_call(call): the same over every string literal of a call's
+#     text, adjacent literals ("%d" "%s") joined into one format first.
+#   feed(line): add @line to the call being read, up to the paren that closes
+#     it, skipping parens inside literals; returns what follows that paren, or
+#     "" while the call is still open.  Uses CALL_BUF, CALL_DEPTH, CALL_OPEN.
+AWK_SCAN_LIB='
+function unbounded_in_lit(lit,    i, j, n, c, count, suppress, alloc, width) {
+  count = 0; n = length(lit); i = 1
+  while (i <= n) {
+    c = substr(lit, i, 1)
+    if (c != "%") { i++; continue }
+    i++
+    if (substr(lit, i, 1) == "%") { i++; continue }
+    j = i
+    while (substr(lit, j, 1) ~ /[0-9]/) j++
+    if (j > i && substr(lit, j, 1) == "$") i = j + 1
+    suppress = 0; alloc = 0; width = 0
+    if (substr(lit, i, 1) == "*") { suppress = 1; i++ }
+    while (substr(lit, i, 1) ~ /[0-9]/) { width = 1; i++ }
+    while (substr(lit, i, 1) ~ /[hlLqjzt]/) i++
+    if (substr(lit, i, 1) == "m") { alloc = 1; i++ }
+    c = substr(lit, i, 1); i++
+    if ((c == "s" || c == "[") && !suppress && !alloc && !width) count++
+  }
+  return count
+}
+function unbounded_in_call(call,    i, n, c, cur, count, in_group) {
+  count = 0; n = length(call); i = 1; cur = ""; in_group = 0
+  while (i <= n) {
+    c = substr(call, i, 1)
+    if (c == "\"") {
+      i++
+      while (i <= n && substr(call, i, 1) != "\"") {
+        if (substr(call, i, 1) == "\\") { cur = cur substr(call, i, 2); i += 2 }
+        else { cur = cur substr(call, i, 1); i++ }
+      }
+      i++; in_group = 1
+      continue
+    }
+    if (c ~ /[ \t]/ && in_group) { i++; continue }
+    if (in_group) { count += unbounded_in_lit(cur); cur = ""; in_group = 0 }
+    if (c == "\047") {
+      i++
+      while (i <= n && substr(call, i, 1) != "\047") i += (substr(call, i, 1) == "\\") ? 2 : 1
+    }
+    i++
+  }
+  if (in_group) count += unbounded_in_lit(cur)
+  return count
+}
+function feed(line,    i, n, c, q) {
+  n = length(line); i = 1
+  while (i <= n) {
+    c = substr(line, i, 1)
+    if (c == "\"" || c == "\047") {
+      q = c; CALL_BUF = CALL_BUF c; i++
+      while (i <= n && substr(line, i, 1) != q) {
+        if (substr(line, i, 1) == "\\") { CALL_BUF = CALL_BUF substr(line, i, 2); i += 2 }
+        else { CALL_BUF = CALL_BUF substr(line, i, 1); i++ }
+      }
+      CALL_BUF = CALL_BUF q; i++
+      continue
+    }
+    if (c == "(") CALL_DEPTH++
+    else if (c == ")") {
+      CALL_DEPTH--
+      if (CALL_DEPTH == 0) { CALL_OPEN = 0; return substr(line, i + 1) }
+    }
+    CALL_BUF = CALL_BUF c; i++
+  }
+  CALL_BUF = CALL_BUF " "
+  return ""
 }
 '
 
@@ -468,6 +556,58 @@ scan_tree() {
       for (k in al) if (!(k in got)) print "R9: stale allow line, delete it: " k
     }' "$allow" "$t/copies.sorted" >> "$out"
 
+  # Rule 9, the other way into a buffer: a scan that reads a word with %s or
+  # %[ and no width writes as many bytes as the input has.  Counted per
+  # function like the copies, against SCAN allow lines.
+  : > "$t/scans"
+  for f in "$t"/s/*.c "$t"/s/*.h; do
+    [ -f "$f" ] || continue
+    rel=${f#"$t"/s/}
+    awk -v rel="$rel" "$AWK_SCAN_LIB"'
+      BEGIN { fn = "(file scope)"; CALL_OPEN = 0 }
+      {
+        out = $0
+        if (!CALL_OPEN && out ~ /^[A-Za-z_]/ && out ~ /[(]/ && out !~ /;[ \t]*$/ && out !~ /^(typedef|struct[^(]*[{])/) {
+          name = out; sub(/[ \t]*[(].*/, "", name); sub(/.*[^A-Za-z0-9_]/, "", name)
+          if (name != "") fn = name
+        }
+        s = out
+        while (1) {
+          if (CALL_OPEN) {
+            s = feed(s)
+            if (CALL_OPEN) break
+            cnt[call_fn] += unbounded_in_call(CALL_BUF)
+          } else {
+            if (!match(s, /(^|[^A-Za-z0-9_])(scanf|fscanf|sscanf|vscanf|vfscanf|vsscanf)[ \t]*[(]/)) break
+            s = substr(s, RSTART + RLENGTH)
+            CALL_OPEN = 1; CALL_DEPTH = 1; CALL_BUF = ""; call_fn = fn
+          }
+        }
+      }
+      END { for (f in cnt) if (cnt[f] > 0) print rel "|" f "|" cnt[f] }' "$f" >> "$t/scans"
+  done
+  sort "$t/scans" > "$t/scans.sorted"
+  cp "$t/scans.sorted" "$WORK/last-scans"
+  awk -F'|' '
+    FILENAME == ARGV[1] {
+      if ($1 != "SCAN") next
+      key = $2 "|" $3
+      if (NF < 5 || $4 !~ /^[0-9]+$/ || $5 == "") { print "R9: malformed allow line: " $0; next }
+      al[key] = $4; next
+    }
+    {
+      key = $1 "|" $2; got[key] = 1
+      if (!(key in al))
+        print "R9: " $1 ": " $2 " reads " $3 " word(s) with %s or %[ and no width: bound the scan by its buffer (a width, or a line reader and wpe_field_take), or list it as a SCAN line with its reason"
+      else if ($3 + 0 > al[key] + 0)
+        print "R9: " $1 ": " $2 " reads " $3 " unbounded word(s), the allow file says " al[key]
+      else if ($3 + 0 < al[key] + 0)
+        print "R9: " $1 ": " $2 " reads " $3 " unbounded word(s), lower the allow line from " al[key]
+    }
+    END {
+      for (k in al) if (!(k in got)) print "R9: stale allow line, delete it: " k
+    }' "$allow" "$t/scans.sorted" >> "$out"
+
   # Rule 11: the system's reason is said, not guessed.  Per function, over
   # the comment stripped sources (strings kept): "P" when it holds a word of
   # the project's "did not open" sentences, "G" when it asks the system about
@@ -539,7 +679,8 @@ plant_tree() {
   code=$1; lines=$2
   c=$(mktemp -d "$WORK/canary.XXXXXX")
   cp "$SRCDIR/$OWNER_HEADER" "$c"/ 2>/dev/null
-  printf '%s\n' "$code" > "$c/we_planted.c"
+  : > "$c/we_planted.c"    # the rules that read the sources want one to exist
+  printf '%s\n' "$code" > "$c/${PLANT_FILE:-we_planted.c}"
   : > "$c/allow"
   [ -z "$lines" ] || printf '%s\n' "$lines" > "$c/allow"
   scan_tree "$c" "$c/out" "$c/allow"
@@ -670,6 +811,61 @@ canary R9 'void planted(char *a, char *b) { (void)a; (void)b; }' 'COPY|we_plante
 canary R9 'void planted(char *a, char *b) { strcpy(a, b); }' 'COPY|we_planted.c|planted|1|path|a path' || blind=1
 quiet_canary R9 'void planted(char *a, char *b) { strcpy(a, b); }' 'COPY|we_planted.c|planted|1|sized|allocated at its length' || blind=1
 quiet_canary R9 'void planted(char *a, char *b) { snprintf(a, 9, "%s", b); (void)memcpy(a, b, 1); }' || blind=1
+# Rule 9, the scans: a word read with %s or %[ and no width.  Seen: the call
+# in a .c or a .h file (a static inline owner lives in a header), its format
+# anywhere between the paren that opens the call and the one that closes it
+# however many lines apart, adjacent string literals joined into one format,
+# and a positional %n$s or %n$[ with no width.  NOT seen, by design: a format
+# held in a macro or in a variable (fscanf(f, FMT, w), fscanf(f, fmt, w)), and
+# a scan through a wrapper under another name.  A function that reads with a
+# format it did not spell out has to say so in a SCAN line or be bounded by
+# its buffer some other way.  The forms below that must stay clean are the
+# bounded ones.
+canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%s", w); }' || blind=1
+canary R9 'int planted(char *s, char *w) { return sscanf(s, "%d %s", &s, w); }' || blind=1
+canary R9 'int planted(char *w) { return scanf("%[^\n]", w); }' || blind=1
+canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%ls", w); }' || blind=1
+canary R9 'int planted(FILE *f, char *w) {
+ return fscanf(f,
+               "%d%s", &f, w);
+}' || blind=1
+PLANT_FILE=we_planted.h
+canary R9 'static inline int planted(FILE *f, char *w) { return fscanf(f, "%s", w); }' || blind=1
+canary R9 'static inline int planted(char *s, char *w) { return sscanf(s, "%[a-z]", w); }' || blind=1
+quiet_canary R9 'static inline int planted(FILE *f, char *w) { return fscanf(f, "%255s", w); }' || blind=1
+quiet_canary R9 'static inline int planted(FILE *f, char *w) { return fscanf(f, "%s", w); }' 'SCAN|we_planted.h|planted|1|the input is a line the caller measured' || blind=1
+PLANT_FILE=we_planted.c
+canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%d" "%s", &f, w); }' || blind=1
+canary R9 'int planted(FILE *f, char *w) {
+ return fscanf(f, "%d"
+                  " %"
+                  "s", &f, w);
+}' || blind=1
+quiet_canary R9 'int planted(FILE *f, char *w) {
+ return fscanf(f, "%d"
+                  " %"
+                  "255s", &f, w);
+}' || blind=1
+canary R9 'int planted(FILE *f, char *w) {
+ return fscanf(
+     f,
+     w == 0 ? w : w,
+     "%s",
+     w);
+}' || blind=1
+canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%1$s", w); }' || blind=1
+canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%2$[a-z]", w); }' || blind=1
+quiet_canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%1$255s", w); }' || blind=1
+quiet_canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%1$*s", w); }' || blind=1
+canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%s", w); }' 'SCAN|we_planted.c|planted|2|two' || blind=1
+canary R9 'int planted(FILE *f, char *w) { return f != w; }' 'SCAN|we_planted.c|planted|1|stale' || blind=1
+quiet_canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%255s", w); }' || blind=1
+quiet_canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%d%d", &f, &f); }' || blind=1
+quiet_canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%*s%c", w); }' || blind=1
+quiet_canary R9 'int planted(FILE *f, char **w) { return fscanf(f, "%ms", w); }' || blind=1
+quiet_canary R9 'int planted(char *s, char *w) { return sscanf(s, "%12[a-z]", w); }' || blind=1
+quiet_canary R9 'int planted(FILE *f) { return fscanf(f, "100%% %d", &f); }' || blind=1
+quiet_canary R9 'int planted(FILE *f, char *w) { return fscanf(f, "%s", w); }' 'SCAN|we_planted.c|planted|1|a word the file format bounds elsewhere' || blind=1
 # Rule 10: a private number or a cut that is back, and a sentence of its own.
 canary R10 'void planted(void) { char a[E_LSP_PATH_MAX]; }' || blind=1
 canary R10 'void planted(void) { char a[WPE_BUILD_PATH_MAX]; }' || blind=1
@@ -713,6 +909,7 @@ scan_tree "$SRCDIR" "$WORK/problems" "$ALLOW"
 if [ "$LIST" -eq 1 ]; then
   awk -F'|' '{ print "COPY|" $1 "|" $2 "|" $3 "|sized|reason" }' "$WORK/last-copies"
   awk -F'|' '$1 == "G" { print "GUESS|" $2 "|" $3 "|keep|reason" }' "$WORK/last-words"
+  awk -F'|' '{ print "SCAN|" $1 "|" $2 "|" $3 "|reason" }' "$WORK/last-scans"
   exit 0
 fi
 if [ -s "$WORK/problems" ]; then

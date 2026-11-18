@@ -17,6 +17,7 @@
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   Includes
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include "Xwpe.h"
@@ -167,24 +168,173 @@ static void WpeSyntaxAddBuiltinRules(void)
  /*WpeSyntaxDef[2] = &WpeHSyntaxExt;*/
 }
 
+/** How many bytes one word of a syntax_def may take, with its terminator. */
+#define WPE_SYNTAX_WORD_SIZE 4096
+
+/** What the user reads when a word of the syntax_def does not fit; the
+ *  first %s says which file ("personal" or "installed"), the second names it. */
+#define WPE_SYNTAX_WORD_TOO_LONG_FMT "A word of the %s syntax_def is too long: "
+
+/** Room for that sentence with the file's path in it. */
+#define WPE_SYNTAX_MSG_SIZE 1024
+
+/** Columns an error box keeps for its frame and the margin of the screen. */
+#define WPE_SYNTAX_BOX_MARGIN 12
+
+/** The least of the path that is worth showing when the screen is narrow. */
+#define WPE_SYNTAX_PATH_MIN_SHOWN 8
+
+/** What stands for the front of a path the box has no room for. */
+#define WPE_SYNTAX_ELLIPSIS "..."
+
+/** The file being read: the open file, which of the two it is, and its path. */
+typedef struct
+{
+ FILE *file;
+ const char *which;
+ const char *path;
+} WpeSyntaxSource;
+
+/** The answers of WpeSyntaxReadWord. */
+#define WPE_SYNTAX_WORD_OK 1
+#define WPE_SYNTAX_WORD_END 0
+#define WPE_SYNTAX_WORD_LONG (-1)
+
+/**
+ * WpeSyntaxReadWord - Read the next blank separated word of a syntax_def.
+ * @syntax_file: the open file; @word/@n: the buffer and its size.
+ *
+ * A word longer than the buffer is read to its end and refused, never cut
+ * and never written past the buffer, so a damaged or hostile personal
+ * syntax_def cannot end the editor when it starts.
+ * Return: WPE_SYNTAX_WORD_OK with the word in @word, WPE_SYNTAX_WORD_END at
+ * the end of the file, WPE_SYNTAX_WORD_LONG with @word empty.
+ */
+static int WpeSyntaxReadWord(FILE *syntax_file, char *word, size_t n)
+{
+ size_t len = 0;
+ int c, too_long = 0;
+
+ word[0] = '\0';
+ do
+  c = getc(syntax_file);
+ while (c != EOF && isspace(c));
+ if (c == EOF)
+  return WPE_SYNTAX_WORD_END;
+ while (c != EOF && !isspace(c))
+ {
+  if (len + 1 < n)
+   word[len++] = (char)c;
+  else
+   too_long = 1;
+  c = getc(syntax_file);
+ }
+ if (c != EOF)
+  ungetc(c, syntax_file);
+ word[len] = '\0';
+ if (too_long)
+ {
+  word[0] = '\0';
+  return WPE_SYNTAX_WORD_LONG;
+ }
+ return WPE_SYNTAX_WORD_OK;
+}
+
+/**
+ * WpeSyntaxPathTail - The part of a path a box of @room columns can show.
+ * @path: the file's path; @room: the columns left for it.
+ *
+ * Only for what the user reads: the whole path is kept wherever it is used.
+ * A path that does not fit loses its front, the file's own name and folder
+ * being what tells which file it is, and never starts in the middle of a
+ * UTF-8 character.
+ * Return: @path itself when it fits, else the tail to show after "...".
+ */
+static const char *WpeSyntaxPathTail(const char *path, int room)
+{
+ size_t len = strlen(path);
+ const char *tail;
+
+ if ((int)len <= room)
+  return path;
+ tail = path + len - (room - (int)strlen(WPE_SYNTAX_ELLIPSIS));
+ while ((*tail & 0xC0) == 0x80)
+  tail++;
+ return tail;
+}
+
+/**
+ * WpeSyntaxSayWordTooLong - Tell the user which syntax_def has a word the
+ * editor cannot hold.
+ * @cn: part of the old code e_error needs; @src: the file being read.
+ *
+ * A user with a personal file and the installed one needs to know which to
+ * edit: the box names the kind and the path, shortened at its front so the
+ * box stays within the screen.
+ */
+static void WpeSyntaxSayWordTooLong(ECNT *cn, const WpeSyntaxSource *src)
+{
+ char head[WPE_SYNTAX_MSG_SIZE];
+ char msg[WPE_SYNTAX_MSG_SIZE];
+ const char *shown;
+ int room;
+
+ snprintf(head, sizeof head, WPE_SYNTAX_WORD_TOO_LONG_FMT, src->which);
+ room = MAXSCOL - WPE_SYNTAX_BOX_MARGIN - (int)strlen(head);
+ if (room < WPE_SYNTAX_PATH_MIN_SHOWN)
+  room = WPE_SYNTAX_PATH_MIN_SHOWN;
+ shown = WpeSyntaxPathTail(src->path, room);
+ if (shown == src->path)
+  snprintf(msg, sizeof msg, "%s%s", head, shown);
+ else
+  snprintf(msg, sizeof msg, "%s%s%s", head, WPE_SYNTAX_ELLIPSIS, shown);
+ e_error(msg, 0, cn->fb);
+}
+
+/**
+ * WpeSyntaxNeedWord - Read a word the entry in the file cannot do without.
+ * @cn: part of the old code e_error needs; @src: the file being read;
+ * @word, @n: as WpeSyntaxReadWord.
+ *
+ * Says in a box why the entry is given up: the file ends early, or a word
+ * is longer than the editor holds.
+ * Return: 1 with the word, 0 after the box.
+ */
+static int WpeSyntaxNeedWord(ECNT *cn, const WpeSyntaxSource *src, char *word, size_t n)
+{
+ int state = WpeSyntaxReadWord(src->file, word, n);
+
+ if (state == WPE_SYNTAX_WORD_OK)
+  return 1;
+ if (state == WPE_SYNTAX_WORD_LONG)
+  WpeSyntaxSayWordTooLong(cn, src);
+ else
+  e_error("Error reading syntax_def", 0, cn->fb);
+ return 0;
+}
+
 /**
  * WpeSyntaxParseFile - Read every language of an open syntax_def into
  * WpeSyntaxDef.
- * @cn: part of the old code e_error needs; @syntax_file: the open file.
+ * @cn: part of the old code e_error needs; @src: the open file with its
+ * kind and path.
  *
- * Stops at the first entry that is cut short and says so.  Does not close
+ * Stops at the first entry that is cut short and says so; the languages
+ * read before it stay.  Does not close
  * the file: whoever opened it does, once, so no return path can leave the
  * editor holding the file for as long as it runs (and handing it to every
  * program it starts).
  */
-static void WpeSyntaxParseFile(ECNT *cn, FILE *syntax_file)
+static void WpeSyntaxParseFile(ECNT *cn, const WpeSyntaxSource *src)
 {
+ FILE *syntax_file = src->file;
  WpeSyntaxExt *new_syntax;
- char tmp[WPE_PATH_SIZE];
+ char tmp[WPE_SYNTAX_WORD_SIZE];
  int reserved_num, long_op_num;
- int i, k;
+ int i, k, state;
 
- while (fscanf(syntax_file, "%s", tmp) == 1)
+ while ((state = WpeSyntaxReadWord(syntax_file, tmp, sizeof tmp)) ==
+        WPE_SYNTAX_WORD_OK)
  {
   new_syntax = WpeMalloc(sizeof(WpeSyntaxExt));
   i = atoi(tmp);
@@ -193,11 +343,8 @@ static void WpeSyntaxParseFile(ECNT *cn, FILE *syntax_file)
    new_syntax->extension = (char **)WpeExpArrayCreate(i, sizeof(char *), 1);
    for (k = 0; k < i; k++)
    {
-    if (fscanf(syntax_file, "%s", tmp) != 1)
-    {
-     e_error("Error reading syntax_def", 0, cn->fb);
+    if (!WpeSyntaxNeedWord(cn, src, tmp, sizeof tmp))
      return ;
-    }
     new_syntax->extension[k] = WpeStrdup(tmp);
    }
   }
@@ -216,11 +363,8 @@ static void WpeSyntaxParseFile(ECNT *cn, FILE *syntax_file)
                                                      sizeof(char *));
   for (i = 0; i < reserved_num; i++)
   {
-   if (fscanf(syntax_file, "%s", tmp) != 1)
-   {
-    e_error("Error reading syntax_def", 0, cn->fb);
+   if (!WpeSyntaxNeedWord(cn, src, tmp, sizeof tmp))
     return ;
-   }
    new_syntax->syntax_rule->reserved_word[i] = WpeStrdup(tmp);
   }
   new_syntax->syntax_rule->reserved_word[i] = NULL;
@@ -233,43 +377,25 @@ static void WpeSyntaxParseFile(ECNT *cn, FILE *syntax_file)
                                                      sizeof(char *));
   for (i = 0; i < long_op_num; i++)
   {
-   if (fscanf(syntax_file, "%s", tmp) != 1)
-   {
-    e_error("Error reading syntax_def", 0, cn->fb);
+   if (!WpeSyntaxNeedWord(cn, src, tmp, sizeof tmp))
     return ;
-   }
    new_syntax->syntax_rule->long_operator[i] = WpeStrdup(tmp);
   }
   new_syntax->syntax_rule->long_operator[i] = NULL;
-  if (fscanf(syntax_file, "%s", tmp) != 1)
-  {
-   e_error("Error reading syntax_def", 0, cn->fb);
+  if (!WpeSyntaxNeedWord(cn, src, tmp, sizeof tmp))
    return ;
-  }
   new_syntax->syntax_rule->single_operator = WpeStrdup(strcmp(tmp, "NULL") ? tmp : "");
-  if (fscanf(syntax_file, "%s", tmp) != 1)
-  {
-   e_error("Error reading syntax_def", 0, cn->fb);
+  if (!WpeSyntaxNeedWord(cn, src, tmp, sizeof tmp))
    return ;
-  }
   new_syntax->syntax_rule->begin_comment = WpeStrdup(strcmp(tmp, "NULL") ? tmp : "");
-  if (fscanf(syntax_file, "%s", tmp) != 1)
-  {
-   e_error("Error reading syntax_def", 0, cn->fb);
+  if (!WpeSyntaxNeedWord(cn, src, tmp, sizeof tmp))
    return ;
-  }
   new_syntax->syntax_rule->end_comment = WpeStrdup(strcmp(tmp, "NULL") ? tmp : "");
-  if (fscanf(syntax_file, "%s", tmp) != 1)
-  {
-   e_error("Error reading syntax_def", 0, cn->fb);
+  if (!WpeSyntaxNeedWord(cn, src, tmp, sizeof tmp))
    return ;
-  }
   new_syntax->syntax_rule->line_comment = WpeStrdup(strcmp(tmp, "NULL") ? tmp : "");
-  if (fscanf(syntax_file, "%s", tmp) != 1)
-  {
-   e_error("Error reading syntax_def", 0, cn->fb);
+  if (!WpeSyntaxNeedWord(cn, src, tmp, sizeof tmp))
    return ;
-  }
   new_syntax->syntax_rule->special_comment = WpeStrdup(strcmp(tmp, "NULL") ? tmp : "");
   if (fscanf(syntax_file, " %c%c%c%c%c%c",
              &new_syntax->syntax_rule->string_constant,
@@ -334,6 +460,8 @@ static void WpeSyntaxParseFile(ECNT *cn, FILE *syntax_file)
         WpeReservedWordCompare);
   WpeExpArrayAdd((void **)&WpeSyntaxDef, &new_syntax);
  }
+ if (state == WPE_SYNTAX_WORD_LONG)
+  WpeSyntaxSayWordTooLong(cn, src);
 }
 
 /**
@@ -346,19 +474,24 @@ static void WpeSyntaxParseFile(ECNT *cn, FILE *syntax_file)
  */
 void WpeSyntaxReadFile(ECNT *cn)
 {
- FILE *syntax_file;
+ WpeSyntaxSource src;
  char tmp[WPE_PATH_SIZE];
 
  WpeSyntaxDef = (WpeSyntaxExt **)WpeExpArrayCreate(0, sizeof(WpeSyntaxExt *), 4);
- syntax_file = WpeSyntaxOpenPersonal(tmp, sizeof tmp);
- if (syntax_file == NULL)
-  syntax_file = WpeSyntaxOpenSystem(tmp, sizeof tmp);
- if (syntax_file == NULL)
+ src.which = "personal";
+ src.file = WpeSyntaxOpenPersonal(tmp, sizeof tmp);
+ if (src.file == NULL)
+ {
+  src.which = "installed";
+  src.file = WpeSyntaxOpenSystem(tmp, sizeof tmp);
+ }
+ if (src.file == NULL)
  {
   WpeSyntaxAddBuiltinRules();
   return ;
  }
- WpeSyntaxParseFile(cn, syntax_file);
- fclose(syntax_file);
+ src.path = tmp;
+ WpeSyntaxParseFile(cn, &src);
+ fclose(src.file);
 }
 

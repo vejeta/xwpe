@@ -657,6 +657,12 @@ where comment status depends on column position (e.g.@: Fortran).
 comments (1000 for none).
 @end enumerate
 
+A word of the file (an extension, a keyword, an operator) may be up to 4095
+bytes long.  A longer word stops the reading at that language, and a box says
+@samp{A word of the personal syntax_def is too long} (or @samp{installed}),
+followed by the file's path, shortened at its front when the screen is too
+narrow for it; the languages read before it stay.
+
 The default @file{syntax_def} shipped with xwpe includes definitions
 for C, C++, Fortran, Pascal, Java, Perl, Python, shell, Makefile,
 Algol 68 (@code{.a68}/@code{.alg}), and, for the languages debugged over

@@ -55,7 +55,7 @@ we_debug.c:e_lsp_ui_rename:* 1 dialog field editing
 we_debug.c:e_lsp_ui_workspace_symbols:* 1 dialog field editing
 we_e_aus.c:e_field_is_pasted_break:* 1 dialog field editing
 we_e_aus.c:e_pasted_control_byte:* 6 dialog field editing
-we_e_aus.c:e_schreib_leiste_lines:* 42 dialog field editing
+we_e_aus.c:e_schreib_leiste_lines:* 43 dialog field editing
 we_e_aus.c:e_schreib_zif:* 5 dialog field editing
 we_edit.c:e_key_cancels_answer:* 2 dialog field editing
 we_fl_fkt.c:e_help_options:* 1 dialog field editing

@@ -636,6 +636,10 @@ static int e_field_take_pasted_break(unsigned char *tmp, int *l, int *jc,
  * to run its lines together.  A field with a @lines_key keeps the breaks and,
  * when the paste ends, returns @lines_key with the whole text, so its dialog
  * can open an editor that holds lines (the assistant's composer).
+ *
+ * A text already longer than @max is never edited: the call returns WPE_ESC
+ * with the text untouched, so a caller that hands over more than its field
+ * holds loses nothing and overruns nothing.
  */
 int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
                            int fs, int lines_key)
@@ -650,8 +654,14 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
  int vcur;
 
  e_field_limit_said = 0;
+ if (wpe_field_take(s, (char *)tmp, (size_t)max + 1))
+ {
+  /* A text longer than the field is not edited in a cut copy: the field is
+     left as it was, as if the user had pressed Esc. */
+  FREE(tmp);
+  return(WPE_ESC);
+ }
  fk_cursor(1);
- strcpy(tmp, s);
  jc = l;
  vcur = e_utf8_visual_width(tmp, 0, jc);
  if (vcur > n-3) jc = 0;

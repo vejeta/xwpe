@@ -23,6 +23,18 @@
 #       The calls below were read at the pass that wrote this file; "sized"
 #       says the allocation is next to the copy, not that every site was
 #       measured under a sanitizer.
+#
+#   SCAN|file|function|count|reason
+#       The scanf, fscanf or sscanf conversions of a function that read a
+#       word with %s or %[ and no width.  A word read so is as long as the
+#       input and is written whole into the caller's buffer: bound it by the
+#       buffer (a width, or a line reader and wpe_field_take) instead.  A line
+#       is listed only when the input is bounded by something the scan cannot
+#       see, and the reason says what.  "count" may only fall.  None today.
+#       The scan reads .c and .h files, finds the format anywhere in the call
+#       (adjacent literals joined, a positional %1$s unbounded).  It does NOT
+#       see a format held in a macro or in a variable, nor a wrapper under
+#       another name: such a read is judged by hand, not by this file.
 
 # --- NUMBER: not a path ---
 NUMBER|WPE_AI_PROVIDER_NAME_MAX|the longest name of an assistant provider
@@ -97,7 +109,7 @@ COPY|we_debug.c|e_d_dap_start|1|text|a fixed message with an adapter name into 1
 COPY|we_debug.c|e_d_dap_watch_put|1|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_d_start_end|1|checked|cut at the label's size minus one, a label
 COPY|we_debug.c|e_deb_run|10|text|command words into a line buffer sized for them
-COPY|we_e_aus.c|e_schreib_leiste_lines|5|sized|copies between a field's buffer and a copy of the field's own size plus one
+COPY|we_e_aus.c|e_schreib_leiste_lines|4|sized|copies back into the field's buffer from a copy of the field's own size plus one, which wpe_field_take filled whole or refused
 COPY|we_edit.c|e_zlsplt|1|text|two numbers into 20 bytes
 COPY|we_edit.c|WpeFilenameToPathFile|3|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_fkt.c|e_new_qual|4|sized|the caller allocates the name, a dot and the ending
@@ -121,7 +133,6 @@ COPY|we_fl_unix.c|WpeGraphicalFileList|1|sized|the destination is allocated at i
 COPY|we_fl_unix.c|WpeTreeLabel|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeSearchFiles|11|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeGrepWindow|1|text|the selected text of under 80 bytes into the Find text of 129
-COPY|we_fl_unix.c|e_make_funct|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|e_data_first|1|sized|the destination is allocated at its sources' length just before
 COPY|we_hfkt.c|e_num_kst|1|sized|the destination is allocated at its sources' length just before
 COPY|we_hfkt.c|e_status_paint|3|sized|the destination is allocated at its sources' length just before
