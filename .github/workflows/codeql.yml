@@ -1,0 +1,66 @@
+# CodeQL security static analysis for xwpe (C).
+#
+# Why it exists: an independent security analysis of every push to the
+# ai-assistant branch, separate from the unit, UI and sanitizer test lanes.
+# It runs the "security-extended" query suite over a full build (ncurses,
+# native Wayland and the assistant with its agent host), so the code that
+# the other lanes only exercise is also read for memory-safety, injection
+# and unchecked-input defects.  Results go to the repository's code
+# scanning alerts as SARIF under the category below.
+#
+# It can also be started by hand:
+#     gh workflow run codeql.yml --repo vejeta/xwpe
+
+name: CodeQL
+
+on:
+  push:
+    branches: [ai-assistant]
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyze (c-cpp)
+    runs-on: ubuntu-latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake autopoint pkg-config \
+            libncursesw5-dev ncurses-term libx11-dev libxext-dev libxft-dev \
+            libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
+            libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev libssl-dev \
+            libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+
+      - name: Build
+        run: |
+          autoreconf -fi
+          ./configure --with-wayland --enable-ai --enable-ai-agent-host
+          make -j"$(nproc)"
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: "/language:c-cpp"
