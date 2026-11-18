@@ -69,6 +69,8 @@ BAD=1
 NMTOOL=${NM:-nm}
 OBJECTS=$ONE_OWNER_OBJECTS
 . "$HERE/objsyms.sh"
+# The one owner of the compiler call (tests/compiler.sh).
+. "$HERE/compiler.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -307,10 +309,8 @@ canary_fine() {
 
 # parser_linked CODE - the undefined symbols of CODE compiled, one per line.
 parser_linked() {
-  cc=${CC:-cc}
-  command -v "$cc" >/dev/null 2>&1 || return 1
   printf '%s\n' "$1" > "$WORK/linked.c"
-  "$cc" -O2 -c -o "$WORK/linked.o" "$WORK/linked.c" 2>/dev/null || return 1
+  test_cc -O2 -c -o "$WORK/linked.o" "$WORK/linked.c" 2>/dev/null || return 1
   "$NMTOOL" -u "$WORK/linked.o" 2>/dev/null | nm_undefined_source_names | awk '{ n = $0; sub(/@.*/, "", n); print n }'
 }
 
@@ -320,12 +320,19 @@ parser_linked() {
 # edit.h, which needs the editor's configuration to compile; they are read
 # for the same macro.
 probe_attribute() {
-  cc=${CC:-cc}
-  command -v "$cc" >/dev/null 2>&1 || return 0
+  printf 'int x;\n' > "$WORK/probe_empty.c"
+  if ! test_cc -c -o /dev/null -Werror=unused-result "$WORK/probe_empty.c" 2>/dev/null; then
+    echo "SKIP: attribute probe: $CC has no -Werror=unused-result"
+    return 0
+  fi
   printf '#include "we_number.h"\nint planted(const char *t) { int v; return wpe_number_parse(t, WPE_NUM(WPE_NUM_TAB), &v); }\n' > "$WORK/probe_good.c"
-  "$cc" -I"$SRCDIR" -c -o /dev/null -Werror=unused-result "$WORK/probe_good.c" 2>/dev/null || return 0
+  if ! test_cc -I"$SRCDIR" -c -o /dev/null -Werror=unused-result "$WORK/probe_good.c" 2>"$WORK/probe_good.err"; then
+    echo "canary attribute: $CC knows -Werror=unused-result but the program that reads the answer does not compile, so the probe is blind:"
+    head -n 3 "$WORK/probe_good.err"
+    return 1
+  fi
   printf '#include "we_number.h"\nvoid planted(const char *t, int c) { int v; if (c) wpe_number_parse(t, WPE_NUM(WPE_NUM_TAB), &v); }\n' > "$WORK/probe_bad.c"
-  if "$cc" -I"$SRCDIR" -c -o /dev/null -Werror=unused-result "$WORK/probe_bad.c" 2>/dev/null; then
+  if test_cc -I"$SRCDIR" -c -o /dev/null -Werror=unused-result "$WORK/probe_bad.c" 2>/dev/null; then
     echo "canary attribute: an ignored wpe_number_parse compiles; warn_unused_result is gone from we_number.h"
     return 1
   fi
@@ -335,6 +342,7 @@ probe_attribute() {
       return 1
     fi
   done
+  echo "check-number-fields: the attribute probe compiled with $CC and was judged"
   return 0
 }
 
@@ -461,6 +469,7 @@ done < "$WORK/allow"
 
 # --- the canaries: a scanner that sees nothing must fail, not pass
 blind=0
+test_cc_require
 probe_attribute || blind=1
 
 # rule 1, source form and as linked
@@ -475,7 +484,8 @@ int planted(const char *s) { int v = 0; sscanf(s, "%d", &v); return atoi(s) + v;
   seen=$(printf '%s\n' "$linked" | awk -v re="^$PARSER_RE\$" '$0 ~ re { n++ } END { print n + 0 }')
   [ "$seen" -ge 2 ] || { echo "canary R1: a compiled atoi and sscanf show $seen parser names as linked, not 2 ($(echo $linked))"; blind=1; }
 else
-  echo "check-number-fields: no compiler, the compiled canaries are skipped" >&2
+  echo "canary R1: the program with an atoi and an sscanf does not compile or its objects cannot be read"
+  blind=1
 fi
 if [ "$nm_checked" -gt 0 ]; then
   n=$(nm_names "$(object_of we_number.c 2>/dev/null)" 2>/dev/null | wc -l)

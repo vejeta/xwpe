@@ -50,6 +50,9 @@
 #     every engine: regexec has one caller, engine_exec two, configure
 #     measures whether the engine keeps the text before a start, and the
 #     nocontext and macsim builds are in the test lists.
+# 14. The compiler is run as configure gave it, flags and all, only through
+#     tests/compiler.sh: no test quotes the variable, and the owner is proved
+#     on a CC with a flag, on CC=cc, and by two mutants that must fail.
 #
 # Exit: 0 clean, 1 a row failed, 2 the script could not run.
 
@@ -83,7 +86,10 @@ if [ ! -f "$CONFIG" ]; then
 	echo "check-platform: no $CONFIG" >&2
 	exit 2
 fi
-CC=${CC:-cc}
+# The one owner of the compiler call (tests/compiler.sh); row 14 holds it.
+HERE=$(dirname "$0")
+. "$HERE/compiler.sh"
+test_cc_require
 SRC="$SRCDIR/tests/test_write_owner.c"
 
 mkdir "$WORK/mutant"
@@ -99,7 +105,7 @@ for f in $NCURSESW_CFLAGS; do
 done
 
 compile() { # config.h, output file
-	"$CC" -fsyntax-only -include "$1" -I"$SRCDIR" -I"$BUILDDIR" $INCFLAGS "$SRC" > "$2" 2>&1
+	test_cc -fsyntax-only -include "$1" -I"$SRCDIR" -I"$BUILDDIR" $INCFLAGS "$SRC" > "$2" 2>&1
 }
 
 if ! compile "$CONFIG" "$WORK/real.out"; then
@@ -109,7 +115,7 @@ fi
 ROWS=2
 printf '#include <limits.h>\n#ifndef __GLIBC__\n#error not glibc\n#endif\n' > "$WORK/glibc.c"
 if compile "$WORK/mutant/config.h" "$WORK/mutant.out"; then
-	if "$CC" -fsyntax-only "$WORK/glibc.c" > /dev/null 2>&1; then
+	if test_cc -fsyntax-only "$WORK/glibc.c" > /dev/null 2>&1; then
 		fail "tests/test_write_owner.c compiles without the feature macros in config.h: the row is blind"
 	else
 		echo "SKIP: row 2: this C library declares nftw at its default level, so the mutant compiles and proves nothing here"
@@ -202,17 +208,17 @@ DECLFLAG=$(sed -n 's/^XWPE_DECLFLAG = //p' "$BUILDDIR/Makefile")
 printf 'int main(void) { return undeclared_call(1); }\n' > "$WORK/impl.c"
 printf 'int x;\n' > "$WORK/empty.c"
 if [ -z "$DECLFLAG" ] &&
-   "$CC" -Werror -Werror=implicit-function-declaration -fsyntax-only "$WORK/empty.c" > /dev/null 2>&1; then
+   test_cc -Werror -Werror=implicit-function-declaration -fsyntax-only "$WORK/empty.c" > /dev/null 2>&1; then
 	fail "configure chose no declaration flag, but $CC accepts -Werror=implicit-function-declaration (the probe is broken)"
 elif [ -z "$DECLFLAG" ]; then
 	echo "SKIP: row 4: this compiler has no flag that makes an implicit declaration an error"
 else
 	# gcc 7 (NetBSD 9) only warns by default: -Wno-error= puts that default
 	# back, and the configured flag has to win over it.
-	if "$CC" -fsyntax-only -Wno-error=implicit-function-declaration "$WORK/impl.c" > /dev/null 2>&1 &&
-	   ! "$CC" -fsyntax-only -Wno-error=implicit-function-declaration $DECLFLAG "$WORK/impl.c" > /dev/null 2>&1; then
+	if test_cc -fsyntax-only -Wno-error=implicit-function-declaration "$WORK/impl.c" > /dev/null 2>&1 &&
+	   ! test_cc -fsyntax-only -Wno-error=implicit-function-declaration $DECLFLAG "$WORK/impl.c" > /dev/null 2>&1; then
 		ROWS=$((ROWS + 1))
-	elif ! "$CC" -fsyntax-only -Wno-error=implicit-function-declaration "$WORK/impl.c" > /dev/null 2>&1; then
+	elif ! test_cc -fsyntax-only -Wno-error=implicit-function-declaration "$WORK/impl.c" > /dev/null 2>&1; then
 		echo "SKIP: row 4: this compiler refuses an implicit declaration even when told not to; the flag cannot be shown to matter here"
 	else
 		fail "the configured flag $DECLFLAG does not make an undeclared call an error"
@@ -223,11 +229,11 @@ fi
 # compile prints no "unknown warning option" (clang prints one per flag per
 # file otherwise).
 WARNFLAGS=$(sed -n 's/^XWPE_WARNFLAGS = //p' "$BUILDDIR/Makefile")
-"$CC" -fsyntax-only $WARNFLAGS "$WORK/empty.c" > "$WORK/warn.out" 2>&1
+test_cc -fsyntax-only $WARNFLAGS "$WORK/empty.c" > "$WORK/warn.out" 2>&1
 if grep -qi 'unknown warning option\|unrecognized command.line option' "$WORK/warn.out"; then
 	fail "$CC does not know the warning flags configure chose ($WARNFLAGS):"
 	cat "$WORK/warn.out"
-elif "$CC" --version 2>/dev/null | grep -qi clang; then
+elif test_cc --version 2>/dev/null | grep -qi clang; then
 	ROWS=$((ROWS + 1))
 else
 	# gcc accepts an unknown -Wno- flag in silence, so only clang can fail here.
@@ -246,9 +252,9 @@ fi
 # without it, configure names libm (LIBM) and the link with it succeeds.
 LIBM=$(sed -n 's/^LIBM = //p' "$BUILDDIR/Makefile")
 printf '#include <math.h>\nvolatile double v = 1.5;\nint main(void) { return (int) floor(v) + (int) ceil(v); }\n' > "$WORK/libm.c"
-if "$CC" -o "$WORK/libm-bare" "$WORK/libm.c" > /dev/null 2>&1; then
+if test_cc -o "$WORK/libm-bare" "$WORK/libm.c" > /dev/null 2>&1; then
 	echo "SKIP: row 7: floor and ceil link without -lm on this system, so only OpenBSD shows the need"
-elif "$CC" -o "$WORK/libm-named" "$WORK/libm.c" $LIBM > "$WORK/libm.out" 2>&1; then
+elif test_cc -o "$WORK/libm-named" "$WORK/libm.c" $LIBM > "$WORK/libm.out" 2>&1; then
 	ROWS=$((ROWS + 1))
 else
 	fail "floor and ceil need libm and configure's LIBM ($LIBM) does not provide it:"
@@ -493,7 +499,7 @@ static int stub_regexec(const regex_t *re, const char *s, size_t n, regmatch_t *
 EOF
 bnd_expect() { # name multibyte-fact fault want
 	bnd_probe_source "$2" > "$WORK/bndprobe.c"
-	if ! "$CC" -include "$WORK/bndstub.h" -o "$WORK/bndprobe" "$WORK/bndprobe.c" > "$WORK/bndprobe.log" 2>&1; then
+	if ! test_cc -include "$WORK/bndstub.h" -o "$WORK/bndprobe" "$WORK/bndprobe.c" > "$WORK/bndprobe.log" 2>&1; then
 		fail "row 12: the probe taken out of configure.ac does not build against the stub ($1): $(head -n 3 "$WORK/bndprobe.log" | tr '\n' ' ')"
 		return
 	fi
@@ -530,7 +536,7 @@ bnd_real_engine() {
 	# escapes (REG_GNU on NetBSD, REG_ENHANCED on macOS), so this run does too.
 	real_flag=$(sed -n 's/^#define WPE_REGEX_WORD_ESCAPES \(.*\)$/\1/p' "$CONFIG" | head -n 1)
 	bnd_probe_source "$FACT_MULTIBYTE_SEED" "${real_flag:-0}" > "$WORK/bndreal.c"
-	if ! "$CC" -o "$WORK/bndreal" "$WORK/bndreal.c" > "$WORK/bndreal.log" 2>&1; then
+	if ! test_cc -o "$WORK/bndreal" "$WORK/bndreal.c" > "$WORK/bndreal.log" 2>&1; then
 		fail "row 12: the probe taken out of configure.ac does not build against the host's engine: $(head -n 3 "$WORK/bndreal.log" | tr '\n' ' ')"
 		return
 	fi
@@ -643,6 +649,95 @@ if ! grep -q 'WPE_EXPECT_FACTS' "$SRCDIR/.github/workflows/macos.yml" 2>/dev/nul
    ! grep -A3 'WPE_EXPECT_FACTS' "$SRCDIR/.github/workflows/macos.yml" | grep -q 'REGEX_SAFE_BOUNDARY=1'; then
 	if [ -f "$SRCDIR/.github/workflows/macos.yml" ]; then
 		fail "row 13: the macOS job does not expect REGEX_SAFE_BOUNDARY=1 (WPE_EXPECT_FACTS): a failed probe would turn the word escapes off without a red job"
+	fi
+fi
+ROWS=$((ROWS + 1))
+
+# Row 14: the compiler is run as configure gave it, flags and all, and only
+# through tests/compiler.sh.  macOS configures CC="gcc -std=gnu23"; a call
+# that quotes the variable looks for a program of that whole name and fails
+# "command not found", and a check that tests for the program first and
+# skips passes having tested nothing.  Three parts:
+#  a. text: no tests/*.sh quotes the compiler variable (CC, cc, MAINT_CC),
+#     asks command -v about it, or assigns another variable from CC outside
+#     compiler.sh; no tests/*.py reads CC without shlex.split.  Comment lines
+#     are not read.  run-tests.sh and check-child-exec.sh use their compiler
+#     variable unquoted, so they split it already and are not named.
+#  b. unit: compiler.sh works with a CC that carries a flag, and with CC=cc
+#     (through a shim, so it holds on a host where cc is a program): a
+#     function named cc would call itself without end there.
+#  c. mutants: a copy of compiler.sh that quotes the variable, and a copy
+#     whose function is named cc, must each fail the unit check.
+# The patterns are built from pieces so this row does not match itself.
+Q='"'
+P_QUOTED="${Q}"'\$\{?(CC|cc|MAINT_CC)\}?'"${Q}"
+P_COMMAND_V='command -v "?\$\{?(CC|cc)'
+P_ASSIGN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\{?CC[:}]?'
+P_COMMENT='^[^:]*:[0-9]+:[[:space:]]*#'
+COMPILER_OFFENDERS=
+for f in "$SRCDIR"/tests/*.sh; do
+	PAT="$P_QUOTED|$P_COMMAND_V"
+	if [ "${f##*/}" != compiler.sh ]; then
+		PAT="$PAT|$P_ASSIGN"
+	fi
+	COMPILER_OFFENDERS="$COMPILER_OFFENDERS$(grep -nHE "$PAT" "$f" | grep -vE "$P_COMMENT")"
+done
+if [ -n "$COMPILER_OFFENDERS" ]; then
+	fail "row 14: a test script handles the compiler variable itself instead of test_cc:"
+	echo "$COMPILER_OFFENDERS"
+fi
+PY_OFFENDERS=$(grep -nHE 'environ(\.get\(|\[)"CC"' "$SRCDIR"/tests/*.py | grep -v 'shlex\.split')
+if [ -n "$PY_OFFENDERS" ]; then
+	fail "row 14: a test reads CC without shlex.split, so a CC with flags is not found:"
+	echo "$PY_OFFENDERS"
+fi
+
+# owner_unit FILE CC - FILE sourced with CC given: both calls must succeed.
+owner_unit() {
+	(
+		ulimit -c 0 2> /dev/null
+		CC=$2
+		. "$1"
+		test_cc_require && test_cc --version && test_cc -c -o /dev/null "$WORK/empty.c"
+	) > /dev/null 2>&1
+}
+# owner_unit_as_cc FILE - the same with CC=cc, where cc is a shim for the
+# configured compiler first in PATH (a plain call would find the function).
+owner_unit_as_cc() {
+	(
+		PATH="$WORK/shim:$PATH"
+		owner_unit "$1" cc
+	)
+}
+mkdir "$WORK/shim"
+set -- $CC
+REAL_CC_PATH=$(command -v "$1")
+shift
+printf '#!/bin/sh\nexec %s %s "$@"\n' "$REAL_CC_PATH" "$*" > "$WORK/shim/cc"
+chmod +x "$WORK/shim/cc"
+printf 'int x;\n' > "$WORK/empty.c"
+OWNER="$HERE/compiler.sh"
+if [ ! -f "$OWNER" ]; then
+	fail "row 14: $OWNER is missing"
+elif ! owner_unit "$OWNER" "$CC -O0"; then
+	fail "row 14: tests/compiler.sh does not run a CC that carries a flag (CC=\"$CC -O0\")"
+elif ! owner_unit_as_cc "$OWNER"; then
+	fail "row 14: tests/compiler.sh does not run with CC=cc (a function named cc calls itself)"
+else
+	MUT_CALL='\$CC "\$@"'
+	MUT_QUOTED="${Q}\$CC${Q} ${Q}\$@${Q}"
+	sed "s/$MUT_CALL/$MUT_QUOTED/" "$OWNER" > "$WORK/mutant-quoted.sh"
+	{
+		sed 's/^test_cc()/cc()/' "$OWNER"
+		printf 'test_cc() {\n\tcc "$@"\n}\n'
+	} > "$WORK/mutant-function-cc.sh"
+	if cmp -s "$OWNER" "$WORK/mutant-quoted.sh"; then
+		fail "row 14: the quoting mutant is the owner unchanged: the row is blind"
+	elif owner_unit "$WORK/mutant-quoted.sh" "$CC -O0"; then
+		fail "row 14: a compiler.sh that quotes the variable passes the unit check: the row is blind"
+	fi
+	if owner_unit_as_cc "$WORK/mutant-function-cc.sh"; then
+		fail "row 14: a compiler.sh whose function is named cc passes the unit check: the row is blind"
 	fi
 fi
 ROWS=$((ROWS + 1))

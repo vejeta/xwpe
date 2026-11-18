@@ -69,6 +69,8 @@ SRCDIR=${srcdir:-.}
 HERE=$(dirname "$0")
 # The one blanker of comments and literals (tests/blank-c.awk).
 BLANK_C=$(cat "$HERE/blank-c.awk")
+# The one owner of the compiler call (tests/compiler.sh).
+. "$HERE/compiler.sh"
 ALLOW=
 LIST=0
 BAD=1
@@ -575,27 +577,37 @@ quiet_canary() {
 # build cannot make the warning an error (a distribution builds with
 # _FORTIFY_SOURCE).  This proves the declarations still carry the attribute:
 # a program that ignores a refusal must fail under -Werror=unused-result and
-# the same program reading it must compile.  No compiler, or one that does
-# not know the flag, skips the probe.
+# the same program reading it must compile.  A compiler that does not know the
+# flag skips the probe in plain view; one that knows it and cannot compile the
+# good program fails the script.
 probe_attribute() {
-  cc=${CC:-cc}
-  command -v "$cc" >/dev/null 2>&1 || return 0
+  printf 'int x;\n' > "$WORK/probe_empty.c"
+  if ! test_cc -c -o /dev/null -Werror=unused-result "$WORK/probe_empty.c" 2>/dev/null; then
+    echo "SKIP: attribute probe: $CC has no -Werror=unused-result"
+    return 0
+  fi
   good=$WORK/probe_good.c
   printf '#include <string.h>\n#include "we_path.h"\n#include "we_fieldtake.h"\nint planted(char *a) { return wpe_path_copy(a, 4, "x") + wpe_path_join(a, 4, "x", "y") + wpe_path_cat(a, 4, "x") + wpe_field_take("x", a, 4); }\n' > "$good"
-  "$cc" -I"$SRCDIR" -c -o /dev/null -Werror=unused-result "$good" 2>/dev/null || return 0
+  if ! test_cc -I"$SRCDIR" -c -o /dev/null -Werror=unused-result "$good" 2>"$WORK/probe_good.err"; then
+    echo "canary attribute: $CC knows -Werror=unused-result but the program that reads the answers does not compile, so the probe is blind:"
+    head -n 3 "$WORK/probe_good.err"
+    return 1
+  fi
   for call in 'wpe_path_copy(a, 4, "x")' 'wpe_path_join(a, 4, "x", "y")' \
               'wpe_path_cat(a, 4, "x")' 'wpe_field_take("x", a, 4)'; do
     bad=$WORK/probe_bad.c
     printf '#include <string.h>\n#include "we_path.h"\n#include "we_fieldtake.h"\nvoid planted(char *a, int c) { if (c) %s; }\n' "$call" > "$bad"
-    if "$cc" -I"$SRCDIR" -c -o /dev/null -Werror=unused-result "$bad" 2>/dev/null; then
+    if test_cc -I"$SRCDIR" -c -o /dev/null -Werror=unused-result "$bad" 2>/dev/null; then
       echo "canary attribute: an ignored $call compiles; warn_unused_result is gone from we_path.h or we_fieldtake.h"
       return 1
     fi
   done
+  echo "check-path-buffers: the attribute probe compiled with $CC and was judged"
   return 0
 }
 
 blind=0
+test_cc_require
 probe_attribute || blind=1
 canary R1 '#define WPE_PATH_MAX 1024' || blind=1
 canary R2 'void planted(char *buf, W_OPTSTR *o) { strcpy(buf, o->wstr[0]->txt); }' || blind=1

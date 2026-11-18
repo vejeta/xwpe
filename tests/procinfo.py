@@ -18,6 +18,7 @@ command_run keeps the name a child runs under for reports only.
 """
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -968,7 +969,7 @@ def sigstate_program(tmp_path):
     if os.path.exists(built) and os.path.getmtime(built) >= os.path.getmtime(source):
         return built
     out = str(tmp_path / "sigstate")
-    cmd = [os.environ.get("CC", "cc"), "-o", out]
+    cmd = shlex.split(os.environ.get("CC") or "cc") + ["-o", out]
     config_h = os.path.join(top, "config.h")
     if os.path.exists(config_h):
         cmd += ["-include", config_h]

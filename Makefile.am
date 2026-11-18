@@ -1266,6 +1266,7 @@ EXTRA_DIST = \
   tests/test_lineend.c \
   tests/check-platform.sh \
   tests/objsyms.sh \
+  tests/compiler.sh \
   tests/nm-undefined.sh \
   tests/build-config.sh \
   tests/check-build-config.sh \
