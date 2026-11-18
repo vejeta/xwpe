@@ -130,6 +130,9 @@ typedef struct {
                                     post-edit copy): something that is not an old copy of
                                     ours (a link, another user's file, a folder) holds the
                                     name, so nothing was made and nothing written */
+ int no_place;                   /* a file of the editor's own folder: there is no folder to
+                                    put it in (no home folder, no run folder), so nothing
+                                    was made and nothing written */
  int vanished;                   /* the caller looked at a file and it was removed before
                                     the open: nothing was made and nothing written */
  int swapped;                    /* the file the write reached is not the one the caller
@@ -271,9 +274,61 @@ void wpe_write_copy_remove(const char *path, const WpeFileIdentity *own);
 /* Text that is not a window's rows. */
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o);
-/* The same for @len bytes that may hold NUL bytes. */
-WPE_WRITE_RESULT int wpe_write_bytes(const char *path, const char *text, size_t len,
-                                     WpeWriteOutcome *o);
+
+/* The editor's own folders and the files it keeps in them: the conversation,
+   the before images and the recorded modes of a run, the lists git reads.
+   A folder of the editor's own is one of three (the state folder, this
+   run's private folder, the configuration folder); its base is resolved by
+   name in we_places.c and followed, and only what is below it is judged.
+   Nothing here takes a path: a caller names a kind, a folder below it and a
+   file in it, so a name the editor did not judge cannot be written.
+
+   The folders above the base are made 0700 if missing and never judged (a
+   link there is the user's choice).  The base is opened as a folder,
+   following a link, and judged on that descriptor: another user's folder or a
+   file is refused, and one that others can read or write is made 0700.
+   Below the base each component is made 0700 if missing and judged without
+   following links: a link, another user's folder or a file is refused, and
+   one that others can read or write is made 0700. */
+typedef enum {
+ WPE_OWN_STATE,     /* $XDG_STATE_HOME/xwpe (wpe_state_dir) */
+ WPE_OWN_RUN,       /* the folder of this run (wpe_run_dir) */
+ WPE_OWN_CONFIG     /* $XDG_CONFIG_HOME/xwpe (wpe_config_dir) */
+} WpeOwnKind;
+
+/* WPE_OWN_MAKE judges and makes what is missing; WPE_OWN_LOOK judges and
+   tightens but never makes, so a reader never leaves a folder behind: a
+   missing folder is o->err ENOENT with no sentence. */
+typedef enum {
+ WPE_OWN_MAKE,
+ WPE_OWN_LOOK
+} WpeOwnHow;
+
+/* The path of a judged folder, for a caller that must name it to a child
+   (git --pathspec-from-file, a mkstemp template).  It is an answer only:
+   nothing accepts one back, so a path nobody judged cannot be written. */
+typedef struct {
+ char path[WPE_PATH_SIZE];
+} WpeOwnDir;
+
+/* Resolve and judge the folder of @kind, below it @sub (NULL, one component
+   or two joined by '/'; no "." or ".."), as above.  Return 0 with d->path,
+   or -1 with the outcome: o->no_place when there is no base at all (no home
+   folder), o->planted with the component's path when something that is not
+   the user's own folder is in the way (err EEXIST, ENOTDIR for a file), and
+   o->err ENOENT for a LOOK at a folder that is not there. */
+WPE_WRITE_RESULT int wpe_own_dir(WpeOwnKind kind, const char *sub, WpeOwnHow how,
+                                 WpeOwnDir *d, WpeWriteOutcome *o);
+/* A file of the editor's own: @leaf is one component (no '/', not "." or
+   ".."; else EINVAL).  An old regular file of this user is replaced; anything
+   else there (a link, another user's file, a folder) is left alone and said
+   (o->planted).  The new file is made with O_EXCL and O_NOFOLLOW, 0600 from
+   its first byte, so the inode written is one this call created.  @len bytes,
+   NUL bytes included. */
+WPE_WRITE_RESULT int wpe_write_own_bytes(WpeOwnKind kind, const char *sub, const char *leaf,
+                                         const char *bytes, size_t len, WpeWriteOutcome *o);
+/* Remove such a file: only a regular file of this user, else nothing. */
+void wpe_write_own_remove(WpeOwnKind kind, const char *sub, const char *leaf);
 
 /** wpe_write_save_text flag: a link at the end of @path is refused (the
     o->err is ELOOP, POSIX's word for O_NOFOLLOW on a link, and

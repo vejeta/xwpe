@@ -66,14 +66,6 @@ void wpe_ai_shell_quote(char *dst, size_t sz, const char *src)
  dst[o] = '\0';
 }
 
-/* Base directory for xwpe's runtime state, per the XDG Base Directory spec:
-   $XDG_STATE_HOME/xwpe (default ~/.local/state/xwpe).  Writes into buf. */
-static void ws_state_dir(char *buf, size_t sz)
-{
- if (wpe_state_dir(buf, sz) != 0)
-  snprintf(buf, sz, "./.local/state/xwpe");   /* no absolute place known: under the working folder, as before */
-}
-
 static void ws_list_push(char ***l, int *n, int *cap, char *s)
 {
  if (*n == *cap) { *cap = *cap ? *cap * 2 : 8; *l = realloc(*l, (size_t)(*cap) * sizeof **l); }
@@ -130,72 +122,63 @@ static char *ws_read_file(const char *path, size_t maxlen)
 }
 
 /**
- * ws_state_leaf_ok - May this name be a file under the editor's state folder?
- * @leaf: a path relative to the state folder.
+ * ws_write_state_bytes - Write @len bytes to a file in the editor's state folder.
+ * @sub: the folder below the state folder (NULL, or one or two names);
+ * @leaf: the file's name; @text/@len: the bytes; @o: receives the outcome.
  *
- * A leaf is relative and stays below the folder: no leading slash, no empty
- * name and no ".." part.  A user's path is never one by accident, so the
- * state-file writer cannot be handed one.
- * Return: 1 when it may.
+ * Every file this layer keeps for itself is one the user relies on later: the
+ * conversation to resume, the before image and the recorded mode a revert
+ * puts back.  The owner of the editor's own folders makes the folder private
+ * to the user, judges every component of it, and writes the file new and
+ * private (wpe_write_own_bytes), so a link or a file somebody else put there
+ * is never written through, and a disk that filled up or a device that went
+ * away is a failure and not a half file.
+ * Return: 0 when the file holds the bytes, -1 with the reason in @o (and
+ * errno).
  */
-static int ws_state_leaf_ok(const char *leaf)
+static int ws_write_state_bytes(const char *sub, const char *leaf, const char *text, size_t len,
+                                WpeWriteOutcome *o)
 {
- const char *p = leaf;
- if (!leaf || !leaf[0] || leaf[0] == '/') return 0;
- while (*p) {
-  size_t part = strcspn(p, "/");
-  if (part == 2 && p[0] == '.' && p[1] == '.') return 0;
-  p += part;
-  if (*p == '/') p++;
- }
- return 1;
+ if (wpe_write_own_bytes(WPE_OWN_STATE, sub, leaf, text, len, o) == 0) return 0;
+ errno = o->err ? o->err : EIO;
+ return -1;
+}
+
+/** ws_write_state_file - ws_write_state_bytes for a string. */
+static int ws_write_state_file(const char *sub, const char *leaf, const char *text,
+                               WpeWriteOutcome *o)
+{
+ return ws_write_state_bytes(sub, leaf, text, strlen(text), o);
 }
 
 /**
- * ws_state_path - The full path of a file under the editor's state folder.
- * @leaf: its path below the state folder; @path/@sz: receives the full path.
- * Return: 0, or -1 with errno set (EINVAL for a leaf that is not below the
- * folder, ENAMETOOLONG).
+ * ws_state_file_path - Where a file of the state folder is, for reading it.
+ * @sub: the folder below the state folder; @leaf: the file's name;
+ * @path/@sz: receive the full path.
+ * Return: 0 with the path, -1 with errno ENOENT when the folder is not there
+ * (no home folder, or nothing was ever kept), and no folder made.
+ *
+ * What the user gets: reading what the editor kept never leaves an empty
+ * folder behind, and never looks in a folder somebody else owns.
  */
-static int ws_state_path(const char *leaf, char *path, size_t sz)
+static int ws_state_file_path(const char *sub, const char *leaf, char *path, size_t sz)
 {
- char dir[WPE_PATH_SIZE];
- if (!ws_state_leaf_ok(leaf)) { errno = EINVAL; return -1; }
- ws_state_dir(dir, sizeof dir);
- if (snprintf(path, sz, "%s/%s", dir, leaf) >= (int)sz) {
+ WpeOwnDir d;
+ WpeWriteOutcome o;
+
+ if (wpe_own_dir(WPE_OWN_STATE, sub, WPE_OWN_LOOK, &d, &o) != 0) {
+  errno = o.err ? o.err : ENOENT;
+  return -1;
+ }
+ if (wpe_path_join(path, sz, d.path, leaf) != 0) {
   errno = ENAMETOOLONG;
   return -1;
  }
  return 0;
 }
 
-/**
- * ws_write_state_bytes - Write @len bytes to a file under the editor's state folder.
- * @leaf: the file's path below the state folder; @text/@len: the bytes.
- *
- * Every file this layer keeps for itself is one the user relies on later: the
- * conversation to resume, the before image and the recorded mode a revert
- * puts back.  The path is built here, from the state folder and a leaf, so no
- * user path can reach this function; and the write is the editor's one
- * writer of text (wpe_write_bytes), so a disk that filled up or a device that
- * went away is a failure and not a half file.
- * Return: 0 when the file holds the bytes, -1 with errno saying why it does not.
- */
-static int ws_write_state_bytes(const char *leaf, const char *text, size_t len)
-{
- char path[WPE_PATH_SIZE];
- WpeWriteOutcome o;
- if (ws_state_path(leaf, path, sizeof path) != 0) return -1;
- if (wpe_write_bytes(path, text, len, &o) == 0) return 0;
- errno = o.err ? o.err : EIO;
- return -1;
-}
-
-/** ws_write_state_file - ws_write_state_bytes for a string. */
-static int ws_write_state_file(const char *leaf, const char *text)
-{
- return ws_write_state_bytes(leaf, text, strlen(text));
-}
+/** Why the editor has no state folder of its own to keep a run's files in. */
+#define WS_NO_HOME_REASON "no home folder is known (HOME is not set)"
 
 /**
  * ws_say_failed -Tell the user one file this layer could not do what it promised.
@@ -262,59 +245,34 @@ static void ws_output_reason(const char *out, int status, char *buf, size_t sz)
  snprintf(buf, sz, "the command failed (status %d)", status);
 }
 
-/* The permissions a folder this layer makes gets, before the user's umask. */
-#define WS_DIR_MODE 0777
-
 /**
- * ws_make_dir_parents - Make @path and every folder above it that is missing.
- * @path: the directory.
- *
- * What `mkdir -p` does, done here: no shell is started for it, so making a
- * folder for the agent's write or a checkpoint costs the editor no process
- * and no wait.  Each failure is left to the check that follows, which asks
- * the filesystem.
- */
-static void ws_make_dir_parents(const char *path)
-{
- char buf[WPE_PATH_SIZE];
- size_t i, n = strlen(path);
-
- if (n == 0 || n >= sizeof buf) return;
- memcpy(buf, path, n + 1);
- for (i = 1; i < n; i++) {
-  if (buf[i] != '/') continue;
-  buf[i] = '\0';
-  mkdir(buf, WS_DIR_MODE);
-  buf[i] = '/';
- }
- mkdir(buf, WS_DIR_MODE);
-}
-
-/**
- * ws_make_dir - Create a directory this layer is about to write into.
- * @f: any window of the editor; @path: the directory to create.
+ * ws_state_folder_make - Make the state folder a feature is about to write into.
+ * @f: any window of the editor; @sub: the folder below the state folder;
+ * @path/@sz: receive its path.
+ * Return: 0 when it is the user's own private folder afterwards.
  *
  * The result used to be dropped: every write below it then failed too, and
  * the user was told nothing about either.  Checking turns that into one pane
- * line naming the directory and the reason, before the writes that need it
- * are attempted, so a folder that is missing is reported once and not once
- * per file that would have gone into it.
- *
- * The check asks the filesystem.  What the writes need is a directory at
- * @path, however it came to be there.
- * Return: 0 when @path is a directory afterwards.
+ * line naming the folder and the reason, before the writes that need it are
+ * attempted, so a folder that is missing is reported once and not once per
+ * file that would have gone into it.  With no home folder there is no state
+ * folder, which is said instead of a folder made under the working folder.
  */
-static int ws_make_dir(FENSTER *f, const char *path)
+static int ws_state_folder_make(FENSTER *f, const char *sub, char *path, size_t sz)
 {
- struct stat st;
+ WpeOwnDir d;
+ WpeWriteOutcome o;
 
- ws_make_dir_parents(path);
- errno = 0;
- if (stat(path, &st) == 0) {
-  if (S_ISDIR(st.st_mode)) return 0;
-  errno = ENOTDIR;               /* a file is in the way, which stat does not call an error */
+ if (wpe_own_dir(WPE_OWN_STATE, sub, WPE_OWN_MAKE, &d, &o) == 0) {
+  if (wpe_path_copy(path, sz, d.path) == 0) return 0;
+  ws_write_failed(f, "create the folder", d.path, ENAMETOOLONG);
+  return -1;
  }
- ws_write_failed(f, "create the folder", path, errno);
+ path[0] = '\0';
+ if (o.no_place)
+  ws_say_failed(f, "make", "the editor's state folder", WS_NO_HOME_REASON);
+ else
+  ws_write_failed(f, "create the folder", o.path, o.err);
  return -1;
 }
 
@@ -555,6 +513,30 @@ static char **ck_ignored; static int ck_ignored_n;
 static char   ck_leaf[WS_LEAF_MAX];
 static char **ck_mode_paths; static int ck_mode_n, ck_mode_cap;
 static char **ck_baks;       static int ck_baks_n,  ck_baks_cap;
+
+/** What a checkpoint's folder holds: the before images with the modes recorded
+    for them (a snapshot), or only the modes (a git checkpoint, whose before
+    image is in git). */
+enum { WS_CK_IMAGES, WS_CK_MODES_ONLY };
+
+/**
+ * ws_checkpoint_sub - The folder of a new checkpoint, below the state folder.
+ * @sub/@sz: receive "checkpoints/<time>-<pid>" (with "-modes" for a git
+ * checkpoint); @kind: WS_CK_IMAGES or WS_CK_MODES_ONLY.
+ *
+ * The process number makes the name this editor's own: two editors that start
+ * a checkpoint in the same second no longer share a folder and overwrite each
+ * other's before images.
+ */
+static void ws_checkpoint_sub(char *sub, size_t sz, int kind)
+{
+ long now = (long)time(NULL), pid = (long)getpid();
+
+ if (kind == WS_CK_MODES_ONLY)
+  snprintf(sub, sz, "checkpoints/%ld-%ld-modes", now, pid);
+ else
+  snprintf(sub, sz, "checkpoints/%ld-%ld", now, pid);
+}
 /* snapshot mode: every directory the checkpoint's walk met, and those whose
    entries it listed to the end.  A name missing from a listed directory was
    made after the checkpoint; in a directory the bound cut short, nobody can
@@ -702,14 +684,18 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
  */
 static int ws_list_watched_files(char ***l, int *n, int record)
 {
- char own[WPE_PATH_SIZE], real[WPE_PATH_SIZE];
+ char real[WPE_PATH_SIZE];
  const char *skip;
+ WpeOwnDir own;
+ WpeWriteOutcome o;
  int cap = 0, k, stopped = 0;
- ws_state_dir(own, sizeof own);
- /* resolved, so "state/", "state//" and a path through a link all name the
-    one directory the walk compares against; unresolvable means not there,
-    and a directory that is not there cannot be met by the walk */
- skip = realpath(own, real) ? real : NULL;
+ /* the state folder is looked at, never made: a walk leaves nothing behind.
+    Resolved, so "state/", "state//" and a path through a link all name the
+    one directory the walk compares against; one that is not there cannot be
+    met by the walk */
+ skip = NULL;
+ if (wpe_own_dir(WPE_OWN_STATE, NULL, WPE_OWN_LOOK, &own, &o) == 0 && realpath(own.path, real))
+  skip = real;
  *l = NULL; *n = 0;
  /* a workspace folder replaced since the checkpoint lists nothing: whatever
     the name leads to now is not the run's work */
@@ -947,12 +933,42 @@ static void ws_parse_nul_list(const char *buf, size_t len, char ***l, int *n)
  }
 }
 
+/** The first part of the name of the file git's answer goes through. */
+#define WS_GIT_LIST_STEM "git-list"
+#define WS_GIT_SHOW_STEM "git-show"
+
+/**
+ * ws_run_temp_file - Make a file of a name nobody chose, in the run's private folder.
+ * @stem: what the name starts with; @file/@sz: receive its path.
+ * Return: 0 with the path of an empty file made, -1 with errno when not.
+ *
+ * What the user gets: the answer of a git command goes through a file only
+ * the user can reach, made new by mkstemp, so two editors, or a link left
+ * at a known name, never decide where it is written.  The folder is the one
+ * the editor made for this run and removes at its end.
+ */
+static int ws_run_temp_file(const char *stem, char *file, size_t sz)
+{
+ WpeOwnDir d;
+ WpeWriteOutcome o;
+ char name[WS_LEAF_MAX];
+ int fd;
+
+ if (wpe_own_dir(WPE_OWN_RUN, NULL, WPE_OWN_MAKE, &d, &o) != 0) { errno = o.err ? o.err : EIO; return -1; }
+ if (ws_format_whole(name, sizeof name, "%s-XXXXXX", stem) != 0) { errno = ENAMETOOLONG; return -1; }
+ if (wpe_path_join(file, sz, d.path, name) != 0) { errno = ENAMETOOLONG; return -1; }
+ fd = mkstemp(file);
+ if (fd < 0) return -1;
+ close(fd);
+ return 0;
+}
+
 /**
  * ws_git_list - Ask git for a list of files in the workspace, whatever their names.
  * @git_args: the git words after "git --literal-pathspecs", ending in -z output;
  * @l/@n: receives the full paths, in git's order.
  *
- * The answer goes through a file under the state folder, not through the
+ * The answer goes through a file in the run's private folder, not through the
  * command's captured text: the capture is cut at a few thousand bytes and a
  * list cut short would let a file that was there all along look like one the
  * run made.  git runs from the workspace, so its paths are relative to it.
@@ -963,17 +979,12 @@ static void ws_parse_nul_list(const char *buf, size_t len, char ***l, int *n)
  */
 static int ws_git_list(const char *git_args, char ***l, int *n)
 {
- char dir[1024], file[1100], q[1100], qf[1100], cmd[2800], *out, *buf;
- int status = 0, fd;
+ char file[1100], q[1100], qf[1100], cmd[2800], *out, *buf;
+ int status = 0;
  long len;
  FILE *fp;
  *l = NULL; *n = 0;
- ws_state_dir(dir, sizeof dir);
- ws_make_dir_parents(dir);
- if (ws_format_whole(file, sizeof file, "%s/git-list-XXXXXX", dir) != 0) return -1;
- fd = mkstemp(file);
- if (fd < 0) return -1;
- close(fd);
+ if (ws_run_temp_file(WS_GIT_LIST_STEM, file, sizeof file) != 0) return -1;
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, file) != 0 ||
      ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs %s > %s 2>/dev/null",
                      q, git_args, qf) != 0) {
@@ -1161,22 +1172,21 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
 
  /* snapshot copies */
  {
-  time_t now = time(NULL);
   int failed = 0, told = 0, readable = 0, have_dir;
-  snprintf(ck_leaf, sizeof ck_leaf, "checkpoints/%ld", (long)now);
+  ws_checkpoint_sub(ck_leaf, sizeof ck_leaf, WS_CK_IMAGES);
   ck_snapdir[0] = '\0';
   /* without the folder no copy can exist, and the folder's own failure has
      just been reported: the loop stays out rather than repeat it per file */
-  have_dir = ws_state_path(ck_leaf, ck_snapdir, sizeof ck_snapdir) == 0 &&
-             ws_make_dir(f, ck_snapdir) == 0;
+  have_dir = ws_state_folder_make(f, ck_leaf, ck_snapdir, sizeof ck_snapdir) == 0;
   if (have_dir) {
    for (i = 0; i < nscope; i++) {
     size_t tlen = 0;
-    char *text = ws_read_file_len(scope[i], 4000000, &tlen), dst[WS_LEAF_MAX + 16];
+    char *text = ws_read_file_len(scope[i], 4000000, &tlen), dst[WS_LEAF_MAX];
+    WpeWriteOutcome wo;
     if (!text) continue;
     readable++;
-    snprintf(dst, sizeof dst, "%s/%d", ck_leaf, ck_n);
-    if (ws_write_state_bytes(dst, text, tlen) == 0) {
+    snprintf(dst, sizeof dst, "%d", ck_n);
+    if (ws_write_state_bytes(ck_leaf, dst, text, tlen, &wo) == 0) {
      int cap = ck_n;
      ws_list_push(&ck_files, &ck_n, &cap, ws_strdup(scope[i]));
     } else {
@@ -1256,9 +1266,8 @@ static int ws_mode_of_file(const char *real, mode_t *mode)
 static int ws_modes_folder_ready(FENSTER *f)
 {
  char dir[WPE_PATH_SIZE];
- if (!ck_leaf[0]) snprintf(ck_leaf, sizeof ck_leaf, "checkpoints/%ld-modes", (long)time(NULL));
- if (ws_state_path(ck_leaf, dir, sizeof dir) != 0) return -1;
- return ws_make_dir(f, dir);
+ if (!ck_leaf[0]) ws_checkpoint_sub(ck_leaf, sizeof ck_leaf, WS_CK_MODES_ONLY);
+ return ws_state_folder_make(f, ck_leaf, dir, sizeof dir);
 }
 
 /**
@@ -1275,12 +1284,13 @@ static int ws_modes_folder_ready(FENSTER *f)
 static void ws_mode_record(FENSTER *f, const char *real)
 {
  char leaf[WS_MODE_LEAF_MAX], text[WS_MODE_TEXT_MAX];
+ WpeWriteOutcome wo;
  mode_t mode;
  if (!ck_mode || ws_list_has(ck_mode_paths, ck_mode_n, real)) return;
  if (ws_mode_of_file(real, &mode) != 0 || ws_modes_folder_ready(f) != 0) return;
- snprintf(leaf, sizeof leaf, "%s/m%d.mode", ck_leaf, ck_mode_n);
+ snprintf(leaf, sizeof leaf, "m%d.mode", ck_mode_n);
  snprintf(text, sizeof text, "%o\n", (unsigned)mode);
- if (ws_write_state_file(leaf, text) != 0) {
+ if (ws_write_state_file(ck_leaf, leaf, text, &wo) != 0) {
   ws_write_failed(f, "record the permissions of", real, errno);
   return;
  }
@@ -1300,8 +1310,8 @@ static mode_t ws_mode_recorded(const char *real)
  int i;
  for (i = 0; i < ck_mode_n; i++) if (!strcmp(ck_mode_paths[i], real)) break;
  if (i == ck_mode_n) return WPE_WRITE_NO_RECORDED_MODE;
- snprintf(leaf, sizeof leaf, "%s/m%d.mode", ck_leaf, i);
- if (ws_state_path(leaf, path, sizeof path) != 0) return WPE_WRITE_NO_RECORDED_MODE;
+ snprintf(leaf, sizeof leaf, "m%d.mode", i);
+ if (ws_state_file_path(ck_leaf, leaf, path, sizeof path) != 0) return WPE_WRITE_NO_RECORDED_MODE;
  text = ws_read_file(path, WS_MODE_TEXT_MAX);
  if (!text) return WPE_WRITE_NO_RECORDED_MODE;
  bits = strtoul(text, &end, 8);
@@ -2319,22 +2329,21 @@ static int ws_revert_command(char *cmd, size_t sz, const char *rel)
  *
  * What the user gains: the before image comes from git, byte for byte, and
  * goes back into the very file through the write owner, so the file keeps its
- * inode, its other names and its bits.  The content goes through a file under
- * the state folder (made by mkstemp, so its name is never a known one) and not
- * through the command's captured text, which is cut short and holds no NUL byte.
+ * inode, its other names and its bits.  The content goes through a file in
+ * the run's private folder (made by mkstemp, so its name is never a known
+ * one) and not through the command's captured text, which is cut short and
+ * holds no NUL byte.
  */
 static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, size_t rsz)
 {
- char dir[WPE_PATH_SIZE], file[WPE_PATH_SIZE + 24], q[1100], spec[1300], qs[2700], qf[1300];
+ char file[WPE_PATH_SIZE + 24], q[1100], spec[1300], qs[2700], qf[1300];
  char cmd[4200], *out;
- int fd, status = 0;
+ int status = 0;
  *buf = NULL; *len = 0;
- ws_state_dir(dir, sizeof dir);
- ws_make_dir_parents(dir);
- if (ws_format_whole(file, sizeof file, "%s/git-show-XXXXXX", dir) != 0) return -1;
- fd = mkstemp(file);
- if (fd < 0) { snprintf(reason, rsz, "%s", strerror(errno)); return -1; }
- close(fd);
+ if (ws_run_temp_file(WS_GIT_SHOW_STEM, file, sizeof file) != 0) {
+  snprintf(reason, rsz, "%s", strerror(errno));
+  return -1;
+ }
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, file) != 0 ||
      ws_format_whole(spec, sizeof spec, "%s:./%s", ck_ref, rel) != 0 ||
      ws_quote_whole(qs, sizeof qs, spec) != 0 ||
@@ -2714,42 +2723,77 @@ static const char *ws_path_under_root(const char *path, const char *root)
 #define WS_PATHSPEC_WHAT "write the path list"
 
 /**
- * ws_write_pathspec - Write the changeset's paths, one per file, for git to read.
+ * ws_pathspec_leaf - The name of this run's path list file.
+ * @leaf/@sz: receive "changeset-<pid>.pathspec".
+ */
+static void ws_pathspec_leaf(char *leaf, size_t sz)
+{
+ snprintf(leaf, sz, "changeset-%ld.pathspec", (long)getpid());
+}
+
+/**
+ * ws_pathspec_build - The changeset's paths, one per file, as git reads them.
+ * @c/@n: the changeset on screen; @len: receives the byte count.
+ * Return: the malloc'd list, NUL-terminated entries, or NULL when out of memory.
+ *
+ * Each file is listed once, by its path under the workspace root, and the NUL
+ * ends each path so a name may hold anything a file name may.
+ */
+static char *ws_pathspec_build(ws_change *c, int n, size_t *len)
+{
+ char **done = NULL, *buf;
+ int nd = 0, cap = 0, i;
+ size_t total = 0, off = 0;
+
+ for (i = 0; i < n; i++) {
+  if (ws_list_has(done, nd, c[i].path)) continue;        /* one file, one entry */
+  ws_list_push(&done, &nd, &cap, ws_strdup(c[i].path));
+  total += strlen(ws_path_under_root(c[i].path, ck_dir)) + 1;
+ }
+ buf = malloc(total ? total : 1);
+ for (i = 0; buf && i < nd; i++) {
+  const char *rel = ws_path_under_root(done[i], ck_dir);
+  size_t rl = strlen(rel) + 1;
+  memcpy(buf + off, rel, rl);
+  off += rl;
+ }
+ wpe_ai_free_list(done, nd);
+ *len = total;
+ return buf;
+}
+
+/**
+ * ws_write_pathspec - Write the changeset's paths for git to read.
  * @f: any window of the editor; @c/@n: the changeset on screen; @buf/@sz:
  * receives the list file's path.
  *
  * git reads the list through --pathspec-from-file, so the paths never meet a
- * shell and a changeset of any length is one command.  Each file is written
- * once, by its path under the workspace root, NUL-terminated so a name may
- * hold anything a file name may.  The list lives under the editor's state
- * directory, named for this process, and is removed once git has read it.
+ * shell and a changeset of any length is one command.  The list lives in the
+ * run's private folder, named for this process, written new and private by
+ * the owner of the editor's own files, and removed once git has read it.
  * Return: 0 with @buf filled, -1 when the list could not be written, said in
- * the pane like any other write the editor could not make; a list written
- * only in part is removed, so nothing of it waits under the state directory.
+ * the pane like any other write the editor could not make; nothing of it
+ * waits behind.
  */
 static int ws_write_pathspec(FENSTER *f, ws_change *c, int n, char *buf, size_t sz)
 {
- char dir[1024];
- char **done = NULL; int nd = 0, cap = 0, i;
+ char leaf[WS_LEAF_MAX], *list;
+ size_t len;
  WpeWriteOutcome o;
- FILE *fp;
- ws_state_dir(dir, sizeof dir);
- if (ws_make_dir(f, dir) != 0) return -1;
- snprintf(buf, sz, "%s/changeset-%ld.pathspec", dir, (long)getpid());
- fp = wpe_write_stream_open(buf, &o);
- if (!fp) { ws_write_failed(f, WS_PATHSPEC_WHAT, buf, o.err); return -1; }
- for (i = 0; i < n; i++) {
-  const char *rel;
-  if (ws_list_has(done, nd, c[i].path)) continue;        /* one file, one entry */
-  ws_list_push(&done, &nd, &cap, ws_strdup(c[i].path));
-  rel = ws_path_under_root(c[i].path, ck_dir);
-  fputs(rel, fp);
-  fputc('\0', fp);                                        /* the NUL ends each path */
+ int rc;
+
+ ws_pathspec_leaf(leaf, sizeof leaf);
+ list = ws_pathspec_build(c, n, &len);
+ if (!list) { ws_write_failed(f, WS_PATHSPEC_WHAT, leaf, ENOMEM); return -1; }
+ rc = wpe_write_own_bytes(WPE_OWN_RUN, NULL, leaf, list, len, &o);
+ free(list);
+ if (rc != 0) {
+  ws_write_failed(f, WS_PATHSPEC_WHAT, o.path[0] ? o.path : leaf, o.err ? o.err : EIO);
+  return -1;
  }
- wpe_ai_free_list(done, nd);
- if (wpe_write_stream_close(fp, &o) != 0) {
-  ws_write_failed(f, WS_PATHSPEC_WHAT, buf, o.err);
-  unlink(buf);                                            /* no half list left behind */
+ if (wpe_path_copy(buf, sz, o.path) != 0) {
+  wpe_write_own_remove(WPE_OWN_RUN, NULL, leaf);
+  ws_write_failed(f, WS_PATHSPEC_WHAT, o.path, ENAMETOOLONG);
   return -1;
  }
  return 0;
@@ -2820,9 +2864,10 @@ static void ws_say_left_staged(FENSTER *f)
 static int ws_commit_changeset_steps(FENSTER *f, ws_change *c, int n,
                                      const char *msg, char **out)
 {
- char list[1100], qm[600], verb[800];
+ char list[1100], leaf[WS_LEAF_MAX], qm[600], verb[800];
  int rc;
  if (ws_write_pathspec(f, c, n, list, sizeof list) != 0) return -1;
+ ws_pathspec_leaf(leaf, sizeof leaf);
  rc = ws_git_on_changeset(f, "stage", "add", list, NULL);
  if (rc == 0) {
   wpe_ai_shell_quote(qm, sizeof qm, msg);
@@ -2830,7 +2875,7 @@ static int ws_commit_changeset_steps(FENSTER *f, ws_change *c, int n,
   rc = ws_git_on_changeset(f, "commit", verb, list, out);
   if (rc != 0) ws_say_left_staged(f);
  }
- unlink(list);
+ wpe_write_own_remove(WPE_OWN_RUN, NULL, leaf);
  return rc;
 }
 
@@ -2975,9 +3020,12 @@ int wpe_ai_changeset_review(FENSTER *f)
 /* ===================== sessions ========================================== */
 
 static struct {
- char  *cli;                 /* claudecli session id                         */
- char **role, **content;
+ char  *cli;                 /* claudecli session id (an id: see we_ai_session.h) */
+ wpe_ai_turn_role *role;     /* who spoke each turn: only the two the editor writes */
+ char **content;
  int    n;
+ int    unkept_told;         /* the pane said there is no folder to keep the
+                                conversation in; said once per conversation    */
  int    project_announced;   /* the pane has said which project instructions
                                 this session folds in; cleared with the session */
  int    tool_turn_opened;    /* a chat turn of this session answered with a tool
@@ -2994,9 +3042,10 @@ static void sess_free(void)
 {
  int i;
  free(sess.cli); sess.cli = NULL;
- for (i = 0; i < sess.n; i++) { free(sess.role[i]); free(sess.content[i]); }
+ for (i = 0; i < sess.n; i++) free(sess.content[i]);
  free(sess.role); free(sess.content);
- sess.role = sess.content = NULL; sess.n = 0;
+ sess.role = NULL; sess.content = NULL; sess.n = 0;
+ sess.unkept_told = 0;
  sess.dropped = 0;
  sess.project_announced = 0;
  sess.tool_turn_opened = 0;
@@ -3040,57 +3089,101 @@ static unsigned long ws_hash(const char *s)
  return h;
 }
 
-/**
- * ws_session_leaf - Where a conversation is kept below the state folder.
- * @f: the window the conversation belongs to; @leaf/@sz: receives the leaf.
- * Return: 1 with the leaf, 0 when a project is open: its conversation lives
- * in the project's own folder, not the state folder.
- */
-static int ws_session_leaf(FENSTER *f, char *leaf, size_t sz)
-{
- if (e_project_is_open()) return 0;
- snprintf(leaf, sz, "ai/%lu.session", ws_hash(f->dirct ? f->dirct : "."));
- return 1;
-}
+/** The folder below the state folder that holds the conversations, and the
+    start of a project conversation's file name. */
+#define WS_SESSION_SUB            "ai"
+#define WS_SESSION_PROJECT_PREFIX "project-"
 
 /**
- * ws_session_store - Write the conversation to the file it is kept in.
- * @f: the window; @path: ws_session_path's answer; @text: the JSON.
- * Return: 0 when the file holds @text, -1 with errno set when not.
+ * ws_session_project_file - The project file the conversation is kept for.
+ * @place/@sz: receive its resolved path.
+ * Return: 0 with the path, -1 when it does not fit.
  *
- * Under the state folder it is a state file (built from a leaf, so no user
- * path reaches it); in a project's folder it goes through the write owner by
- * the path ws_session_path built.
+ * Resolved, so the same project reached by two names has one conversation.
  */
-static int ws_session_store(FENSTER *f, const char *path, const char *text)
+static int ws_session_project_file(char *place, size_t sz)
 {
- char leaf[WS_MODE_LEAF_MAX];
- WpeWriteOutcome o;
- if (ws_session_leaf(f, leaf, sizeof leaf)) return ws_write_state_file(leaf, text);
- if (wpe_write_text(path, text, &o) == 0) return 0;
- errno = o.err ? o.err : EIO;
- return -1;
+ char real[WPE_PATH_SIZE];
+
+ if (realpath(e_prog.project, real)) return wpe_path_copy(place, sz, real);
+ return wpe_path_copy(place, sz, e_prog.project);
 }
 
-static void ws_session_path(FENSTER *f, char *buf, size_t sz)
+/**
+ * ws_session_place - Which file keeps this window's conversation, and for what.
+ * @f: the window the conversation belongs to; @leaf/@lsz: receive the file's
+ * name; @place/@psz: receive the project file, or the folder, it is kept for.
+ * Return: 0, or -1 when the place does not fit.
+ *
+ * What the user gets: a project's conversation is one file in the state
+ * folder, "project-<hash>.session", and a folder's is "<hash>.session"; the
+ * conversation never lives in the project, where a repository the user only
+ * cloned could hand the assistant turns of its own or catch what is saved.
+ * The file names the place it was kept for, so two places whose names hash
+ * alike never resume each other's conversation.
+ */
+static int ws_session_place(FENSTER *f, char *leaf, size_t lsz, char *place, size_t psz)
 {
  if (e_project_is_open()) {
-  char *root = ws_root(f);
-  snprintf(buf, sz, "%s/.xwpe-ai-session", root);
-  free(root);
- } else {
-  char sdir[1024];
-  ws_state_dir(sdir, sizeof sdir);
-  snprintf(buf, sz, "%s/ai", sdir);
-  ws_make_dir(f, buf);        /* the write that follows says so if this failed */
-  snprintf(buf, sz, "%s/ai/%lu.session", sdir, ws_hash(f->dirct ? f->dirct : "."));
+  if (ws_session_project_file(place, psz) != 0) return -1;
+  snprintf(leaf, lsz, WS_SESSION_PROJECT_PREFIX "%lu.session", ws_hash(place));
+  return 0;
  }
+ if (wpe_path_copy(place, psz, f->dirct ? f->dirct : ".") != 0) return -1;
+ snprintf(leaf, lsz, "%lu.session", ws_hash(place));
+ return 0;
 }
 
-void wpe_ai_session_append(const char *role, const char *content)
+/**
+ * ws_session_say_unkept - Say, once, that the conversation is not being kept.
+ * @f: the window; @o: the outcome of the write that found no folder.
+ *
+ * With no home folder known there is no state folder.  The editor, the
+ * assistant's turns and the reviews all work; only the persistence is lost,
+ * and the user is told so instead of finding a folder made under the one the
+ * editor was started in.
+ */
+static void ws_session_say_unkept(FENSTER *f, const WpeWriteOutcome *o)
+{
+ if (!o->no_place || sess.unkept_told) return;
+ sess.unkept_told = 1;
+ wpe_ai_pane_error(f, "the conversation is not kept: no folder for the editor's state "
+                      "(HOME is not set)");
+}
+
+/** The file name an older editor kept a project's conversation under. */
+#define WS_OLD_SESSION_FILE ".xwpe-ai-session"
+
+/**
+ * wpe_ai_old_session_file_due - Should the pane tell about an old conversation file?
+ * @f: the window the conversation belongs to.
+ * Return: 1 the first time, for each project, that a project's folder holds a
+ * file an older editor kept the conversation in; else 0.
+ *
+ * What the user gets: after the upgrade the old file is no longer read, and
+ * one line says so, so a conversation that seems gone is not a mystery.  The
+ * file is only asked about by name (access); it is never opened or read.
+ */
+int wpe_ai_old_session_file_due(FENSTER *f)
+{
+ static char told[WPE_PATH_SIZE];
+ char path[WPE_PATH_SIZE], *root;
+ int rc;
+
+ if (!e_project_is_open()) return 0;
+ root = ws_root(f);
+ rc = wpe_path_join(path, sizeof path, root, WS_OLD_SESSION_FILE);
+ if (rc == 0 && strcmp(told, root) == 0) rc = -1;
+ if (rc == 0 && access(path, F_OK) != 0) rc = -1;
+ if (rc == 0 && wpe_path_copy(told, sizeof told, root) != 0) rc = -1;
+ free(root);
+ return rc == 0;
+}
+
+void wpe_ai_session_append(wpe_ai_turn_role role, const char *content)
 {
  if (sess.n == WS_SESS_MAX) {                     /* drop the oldest turn */
-  free(sess.role[0]); free(sess.content[0]);
+  free(sess.content[0]);
   memmove(sess.role, sess.role + 1, (size_t)(sess.n - 1) * sizeof *sess.role);
   memmove(sess.content, sess.content + 1, (size_t)(sess.n - 1) * sizeof *sess.content);
   sess.n--;
@@ -3098,7 +3191,7 @@ void wpe_ai_session_append(const char *role, const char *content)
  }
  sess.role = realloc(sess.role, (size_t)(sess.n + 1) * sizeof *sess.role);
  sess.content = realloc(sess.content, (size_t)(sess.n + 1) * sizeof *sess.content);
- sess.role[sess.n] = ws_strdup(role);
+ sess.role[sess.n] = role;
  sess.content[sess.n] = ws_strdup(content);
  sess.n++;
 }
@@ -3106,7 +3199,11 @@ void wpe_ai_session_append(const char *role, const char *content)
 int wpe_ai_session_messages(wpe_ai_msg *buf, int max)
 {
  int start = sess.n > max ? sess.n - max : 0, i, k = 0;
- for (i = start; i < sess.n; i++) { buf[k].role = sess.role[i]; buf[k].content = sess.content[i]; k++; }
+ for (i = start; i < sess.n; i++) {
+  buf[k].role = wpe_ai_turn_role_name(sess.role[i]);
+  buf[k].content = sess.content[i];
+  k++;
+ }
  return k;
 }
 
@@ -3167,74 +3264,123 @@ void wpe_ai_session_window(size_t budget, wpe_ai_history_window *w)
  w->dropped = sess.dropped;
 }
 
+/**
+ * ws_session_take - Make a judged file's conversation the session.
+ * @in: what ws_session_parse took out of the file.
+ *
+ * The resume word goes through the one setter, so it is an id or nothing.
+ */
+static void ws_session_take(const ws_session_in *in)
+{
+ int i;
+
+ wpe_ai_resume_id_take(&e_ai_resume_session, in->id);
+ if (e_ai_resume_session) sess.cli = ws_strdup(e_ai_resume_session);
+ for (i = 0; i < in->n; i++) wpe_ai_session_append(in->role[i], in->content[i]);
+}
+
+/**
+ * wpe_ai_session_load - Resume this window's conversation, if the editor kept one.
+ * @f: the window.
+ *
+ * What the user gets: the talk with the assistant picks up where it stopped,
+ * for this project or folder.  Only a file the editor wrote is used: one
+ * with a turn of a role the editor never writes, a resume word that is not an
+ * id, or another place's name is not read at all, so nobody who can put a
+ * file in the state folder can speak to the assistant in the user's name.
+ */
 void wpe_ai_session_load(FENSTER *f)
 {
- char path[1300], *text;
- struct json_object *o, *v, *arr;
+ char path[WPE_PATH_SIZE], leaf[WS_LEAF_MAX], place[WPE_PATH_SIZE], *text;
+ ws_session_verdict v;
+ ws_session_in in;
+
  sess_free();
- free(e_ai_resume_session); e_ai_resume_session = NULL;
- ws_session_path(f, path, sizeof path);
+ wpe_ai_resume_id_take(&e_ai_resume_session, NULL);
+ if (ws_session_place(f, leaf, sizeof leaf, place, sizeof place) != 0) return;
+ if (ws_state_file_path(WS_SESSION_SUB, leaf, path, sizeof path) != 0) return;
  text = ws_read_file(path, 2000000);
  if (!text) return;
- o = json_tokener_parse(text);
+ v = ws_session_parse(text, place, &in);
  free(text);
- if (!o) return;
- if (json_object_object_get_ex(o, "cli_session", &v)) {
-  const char *s = json_object_get_string(v);
-  if (s && *s) { sess.cli = ws_strdup(s); e_ai_resume_session = ws_strdup(s); }
+ if (v != WS_SESSION_OK) {
+  wpe_ai_trace("session refused %s: %s", path, ws_session_verdict_words(v));
+  return;
  }
- if (json_object_object_get_ex(o, "messages", &arr)) {
-  int L = json_object_array_length(arr), i;
-  for (i = 0; i < L; i++) {
-   struct json_object *m = json_object_array_get_idx(arr, i), *r, *c;
-   if (json_object_object_get_ex(m, "role", &r) && json_object_object_get_ex(m, "content", &c))
-    wpe_ai_session_append(json_object_get_string(r), json_object_get_string(c));
-  }
- }
- json_object_put(o);
+ ws_session_take(&in);
+ ws_session_in_free(&in);
  wpe_ai_trace("session load %s cli=%s n=%d", path, sess.cli ? sess.cli : "-", sess.n);
 }
 
-void wpe_ai_session_save(FENSTER *f)
+/**
+ * ws_session_json - The conversation as the file that keeps it.
+ * @place: the project file or folder it is kept for.
+ * Return: the JSON object, to be released with json_object_put.
+ */
+static struct json_object *ws_session_json(const char *place)
 {
- char path[1300];
  struct json_object *o = json_object_new_object(), *arr = json_object_new_array();
  int i;
- if (e_ai_last_session_id && *e_ai_last_session_id) {
-  free(sess.cli); sess.cli = ws_strdup(e_ai_last_session_id);
- }
+
  json_object_object_add(o, "cli_session", json_object_new_string(sess.cli ? sess.cli : ""));
+ json_object_object_add(o, "place", json_object_new_string(place));
  for (i = 0; i < sess.n; i++) {
   struct json_object *m = json_object_new_object();
-  json_object_object_add(m, "role", json_object_new_string(sess.role[i]));
+  json_object_object_add(m, "role", json_object_new_string(wpe_ai_turn_role_name(sess.role[i])));
   json_object_object_add(m, "content", json_object_new_string(sess.content[i]));
   json_object_array_add(arr, m);
  }
  json_object_object_add(o, "messages", arr);
- ws_session_path(f, path, sizeof path);
- /* The conversation on screen stays usable when this fails, so the turn is not
-    abandoned: the user is told the exchange was not persisted, and the trace
-    says so instead of naming a file that is not there. */
- if (ws_session_store(f, path, json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN)) != 0) {
-  int err = errno;
-  json_object_put(o);
-  ws_write_failed(f, "save the conversation to", path, err);
-  wpe_ai_trace("session save failed %s: %s", path, strerror(err));
+ return o;
+}
+
+/**
+ * ws_session_save_failed - Tell the user and the trace the conversation was not kept.
+ * @f: the window; @o: the outcome of the write.
+ *
+ * The conversation on screen stays usable, so the turn is not abandoned: the
+ * user is told the exchange was not persisted, and the trace says so instead
+ * of naming a file that is not there.  With no state folder at all the pane
+ * says that once.
+ */
+static void ws_session_save_failed(FENSTER *f, const WpeWriteOutcome *o)
+{
+ int err = o->err ? o->err : EIO;
+
+ if (o->no_place) ws_session_say_unkept(f, o);
+ else ws_write_failed(f, "save the conversation to", o->path, err);
+ wpe_ai_trace("session save failed %s: %s", o->path, o->no_place ? WS_NO_HOME_REASON : strerror(err));
+}
+
+void wpe_ai_session_save(FENSTER *f)
+{
+ char leaf[WS_LEAF_MAX], place[WPE_PATH_SIZE];
+ struct json_object *o;
+ WpeWriteOutcome wo;
+ int rc;
+
+ if (e_ai_last_session_id && *e_ai_last_session_id)
+  wpe_ai_resume_id_take(&sess.cli, e_ai_last_session_id);
+ if (ws_session_place(f, leaf, sizeof leaf, place, sizeof place) != 0) return;
+ o = ws_session_json(place);
+ rc = ws_write_state_file(WS_SESSION_SUB, leaf, json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN), &wo);
+ json_object_put(o);
+ if (rc != 0) {
+  ws_session_save_failed(f, &wo);
   return;
  }
- json_object_put(o);
- wpe_ai_trace("session save %s cli=%s n=%d", path, sess.cli ? sess.cli : "-", sess.n);
+ wpe_ai_trace("session save %s cli=%s n=%d", wo.path, sess.cli ? sess.cli : "-", sess.n);
 }
 
 void wpe_ai_session_reset(FENSTER *f)
 {
- char path[1300];
+ char leaf[WS_LEAF_MAX], place[WPE_PATH_SIZE];
  sess_free();
  ws_grants_clear();                      /* a granted folder lasts as long as the conversation */
- free(e_ai_resume_session); e_ai_resume_session = NULL;
- free(e_ai_last_session_id); e_ai_last_session_id = NULL;
- ws_session_path(f, path, sizeof path);
- unlink(path);
+ wpe_ai_resume_id_take(&e_ai_resume_session, NULL);
+ wpe_ai_resume_id_take(&e_ai_last_session_id, NULL);
+ if (ws_session_place(f, leaf, sizeof leaf, place, sizeof place) == 0)
+  wpe_write_own_remove(WPE_OWN_STATE, WS_SESSION_SUB, leaf);
  wpe_ai_trace("session reset");
 }
 

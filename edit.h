@@ -28,6 +28,7 @@
 #include <limits.h>
 #include "we_paint.h"
 #include "we_path.h"        /* how long a path or a name the editor holds may be */
+#include "we_places.h"      /* where the user's home, state and configuration folders are */
 #include "we_number.h"      /* what a number the user or a file gives the editor may be */
 #include "we_fieldtake.h"   /* the copy of a dialog field's text out into a buffer */
 
@@ -636,9 +637,6 @@ char *e_make_postf(char *out, size_t n, const char *name, const char *pf);
    folder, on the heap, or NULL when the name does not fit or the file system
    cannot hold such a name (a DOS one). */
 char *e_copy_path(FENSTER *f, const char *suffix);
-/* The folder for the editor's runtime state ($XDG_STATE_HOME/xwpe or
-   ~/.local/state/xwpe), not made: 0, or -1 when no absolute place is known. */
-int wpe_state_dir(char *buf, size_t n);
 
 /*   we_e_aus.c   */
 void e_cls(int frb, int chr);

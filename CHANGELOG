@@ -378,6 +378,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The assistant's conversation of a project is kept in your state folder
+  ($XDG_STATE_HOME/xwpe/ai or ~/.local/state/xwpe/ai), not as
+  .xwpe-ai-session in the project, so a repository you clone cannot hand
+  the assistant a conversation or catch what it saves.  A conversation the
+  editor did not write is not resumed.  The state folder and what the
+  editor keeps in it (the conversation, the copies a run keeps to revert
+  to) are readable by you alone, a link or another user's file at their
+  names is left alone, and the editor never puts them, or looks for your
+  configuration or your acceptance of the first-use notice, under the
+  folder it was started in: with no home folder known it says that the
+  conversation is not kept, and a ".config" folder or a marker file that a
+  cloned folder brings is not yours.  The lists the editor hands to git
+  during a review now go through its own folder of the run, not the state
+  folder.  The manual says plainly that auto mode runs commands with your
+  whole environment, your files and the network.
+
 * Find with a word boundary (\b, \B, \<, \>) now judges the place where the
   search starts by the character before it on every system.  Searching
   \ba from the middle of "xab" found the second letter as a word start on

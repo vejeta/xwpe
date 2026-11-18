@@ -640,15 +640,19 @@ static void wpe_crash_path_init(void)
  * Return: 0 when the crash file may go there, -1 when it may not.
  *
  * Called from the crash handler, so only calls a signal handler may make
- * (mkdir, lstat).  A folder that is not a real folder of this user (a link,
- * another user's, one that others may write in) is refused: the crash file
- * is not written there.
+ * (mkdir, open, fstat).  The folder is judged as every other folder of the
+ * editor's own is: a link at the state folder is followed (a state folder
+ * kept in a dotfiles tree is the user's choice) and the folder it leads to
+ * must be the user's and not writable by others, else the crash file is not
+ * written there.  It refuses such a folder, where the other features make it
+ * private: a signal handler does no more than it must.
  */
 static int wpe_crash_dir_make(void)
 {
  char path[WPE_PATH_SIZE];
  struct stat st;
  char *p, end;
+ int fd, judged;
 
  if (wpe_crash_dir[0] == '\0')
   return(0);
@@ -664,9 +668,12 @@ static int wpe_crash_dir_make(void)
   if (end == '\0')
    break;
  }
- if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid())
+ fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+ if (fd < 0)
   return(-1);
- return((st.st_mode & (S_IWGRP | S_IWOTH)) ? -1 : 0);
+ judged = fstat(fd, &st) == 0 && wpe_own_dir_mine_alone(&st);
+ close(fd);
+ return(judged ? 0 : -1);
 }
 
 /**

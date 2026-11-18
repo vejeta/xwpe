@@ -526,6 +526,22 @@ def test_an_editor_is_refused_a_display_the_owner_did_not_start(owner, tmp_path,
         "a refused start still started something"
 
 
+# @scenario SC-harness-owner-04
+def test_a_row_may_remove_home_only_with_the_password_file_seam(owner, tmp_path):
+    """With no HOME the editor asks the password file for the user's home,
+    which is the machine's own.  A row that removes HOME is refused unless it
+    also names the seam that makes that step answer "none"."""
+    for extra in ({"HOME": None}, {"HOME": None, "XWPE_TEST_FAIL": "restore"}):
+        with pytest.raises(gui_owner.OwnerRefused) as raised:
+            gui_owner._check_extra_displays(owner, extra)
+        assert "no-passwd-home" in str(raised.value), str(raised.value)
+    gui_owner._check_extra_displays(owner, {"HOME": None, "XWPE_TEST_FAIL": "no-passwd-home"})
+    gui_owner._check_extra_displays(owner, {"HOME": None,
+                                            "XWPE_TEST_FAIL": "restore,no-passwd-home"})
+    with pytest.raises(gui_owner.OwnerRefused):
+        gui_owner._check_extra_displays(owner, {"HOME": os.path.expanduser("~")})
+
+
 # @scenario SC-harness-owner-05
 def test_wait_for_names_the_event_and_the_scale(monkeypatch):
     monkeypatch.setenv(gui_owner.WAIT_SCALE_VAR, "1.5")

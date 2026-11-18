@@ -24,7 +24,11 @@ An @file{xwperc} in the folder xwpe is started in, if there is one
 @item
 Your own file: @file{$XDG_CONFIG_HOME/xwpe/xwperc}, by default
 @file{~/.config/xwpe/xwperc}.  An older @file{~/.xwpe/xwperc} is copied
-there the first time.
+there the first time.  The home folder is @env{HOME}, or, when that is not
+set, the one the password file gives for you.  When neither is known there is
+no personal file: xwpe reads none and does not look for one in the folder it
+was started in, so a @file{.config} that a cloned folder brings is never read
+as yours.
 @item
 System-wide file: @file{/usr/local/lib/xwpe/xwperc} (or the path set
 by @code{LIBRARY_DIR} at compile time; on Debian this is
@@ -208,7 +212,8 @@ approved through the dialog.
 The answers are kept in @file{$XDG_STATE_HOME/xwpe/start-commands} (by
 default @file{~/.local/state/xwpe/start-commands}), never in the
 project, so a clone cannot approve its own commands; the folder is made
-readable by you alone.  It is a text
+readable by you alone, and with no home folder known there is none, so
+nothing is remembered.  It is a text
 file, one answer per line (@samp{yes} or @samp{no}, the key, the
 folder, the command or the build's plan); delete a folder's lines to be
 asked again.  It keeps at most 64 answers per folder and 512 in all,
@@ -843,7 +848,9 @@ is left alone and the report printed at the end says the @file{.ESV} could
 not be saved.  A crash writes a file named @file{crash-@var{pid}.txt}, one
 per process, in the editor's state folder (@file{$XDG_STATE_HOME/xwpe}, else
 @file{~/.local/state/xwpe}), which is made, readable by you alone, when the
-crash happens.  An @file{.ESV} is never removed by closing or quitting an
+crash happens.  A state folder that other users can write is not used for it,
+and with no home folder known the file is written as
+@file{/tmp/xwpe-crash-@var{pid}.txt}.  An @file{.ESV} is never removed by closing or quitting an
 ordinary session; it is removed only with the window reopened from it by
 @command{wpe -r}, as described below.
 

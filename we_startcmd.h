@@ -39,9 +39,6 @@
 /* The first line of a version-1 store, read as an empty store. */
 #define WPE_STARTCMD_STORE_MAGIC_V1 "xwpe-start-commands 1"
 
-/* The state folder when $XDG_STATE_HOME is not set, below $HOME. */
-#define WPE_STARTCMD_STATE_DEFAULT ".local/state"
-
 /* The keys, as the store names them. */
 #define WPE_STARTCMD_KEY_PRINT    "PrintCmd"
 #define WPE_STARTCMD_KEY_DEBUGGER "Debugger"

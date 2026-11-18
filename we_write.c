@@ -23,6 +23,8 @@
 #include "edit.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
+#include "we_path.h"
+#include "we_places.h"
 #include "we_write.h"
 
 /** The bytes the backup copy and the restore move at a time. */
@@ -3239,30 +3241,376 @@ int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o)
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
 }
 
+/* --- The editor's own folders and files -------------------------------------- */
+
+/** The mode of a folder the editor makes, and the bits that make one not
+    private to its user. */
+#define WRITE_OWN_DIR_MODE   0700
+#define WRITE_OWN_OTHERS     (S_IRWXG | S_IRWXO)
+
+/** How many folders a name below a base may have. */
+#define WRITE_OWN_SUB_MAX    2
+
 /**
- * wpe_write_bytes - Create or replace a file with @len bytes, judged.
- * @path: the file; @text, @len: the bytes, which may hold NUL bytes; @o:
- * receives the outcome, with the path.
- * Return: 0 when written, else -1.
- *
- * For a copy of a file's content that must come back whole, a before image
- * that holds a NUL byte included.
+ * write_own_base - The base folder of a kind, resolved by name.
+ * @kind: which of the editor's folders; @buf/@n: receive its path.
+ * Return: 0, or -1 when there is none (no home folder, no run folder).
  */
-int wpe_write_bytes(const char *path, const char *text, size_t len, WpeWriteOutcome *o)
+static int write_own_base(WpeOwnKind kind, char *buf, size_t n)
 {
+ switch (kind)
+ {
+ case WPE_OWN_STATE:
+  return(wpe_state_dir(buf, n));
+ case WPE_OWN_RUN:
+  return(wpe_run_dir(buf, n));
+ case WPE_OWN_CONFIG:
+  return(wpe_config_dir(buf, n));
+ }
+ return(-1);
+}
+
+/**
+ * write_own_name_ok - May this be one component of a folder or file name?
+ * @name: the text; @len: how much of it is the component.
+ * Return: 1 when it is a name the editor may make: not empty, not "." or "..".
+ */
+static int write_own_name_ok(const char *name, size_t len)
+{
+ if (len == 0 || len >= WPE_NAME_SIZE)
+  return(0);
+ if (len == 1 && name[0] == '.')
+  return(0);
+ return(!(len == 2 && name[0] == '.' && name[1] == '.'));
+}
+
+/**
+ * write_own_sub_ok - May this be the folder below a base?
+ * @sub: NULL, or one or two names joined by '/'.
+ * Return: 1 when every component is a name and there are at most two.
+ */
+static int write_own_sub_ok(const char *sub)
+{
+ size_t parts = 0, len;
+
+ if (sub == NULL)
+  return(1);
+ for (;;)
+ {
+  len = strcspn(sub, "/");
+  if (!write_own_name_ok(sub, len))
+   return(0);
+  parts++;
+  if (sub[len] == '\0')
+   break;
+  sub += len + 1;
+ }
+ return(parts <= WRITE_OWN_SUB_MAX);
+}
+
+/**
+ * write_own_leaf_ok - May this be the name of a file in an own folder?
+ * @leaf: the text.
+ * Return: 1 when it is one component and not "." or "..".
+ */
+static int write_own_leaf_ok(const char *leaf)
+{
+ size_t len;
+
+ if (leaf == NULL)
+  return(0);
+ len = strlen(leaf);
+ return(strchr(leaf, '/') == NULL && write_own_name_ok(leaf, len));
+}
+
+/**
+ * write_own_failed - Record why an own folder or file was refused.
+ * @o: the outcome; @err: the errno; @planted: 1 when something that is not
+ * the user's own folder holds the name.
+ * Return: -1.
+ */
+static int write_own_failed(WpeWriteOutcome *o, int err, int planted)
+{
+ o->status = WPE_WRITE_FAILED;
+ o->err = err;
+ o->planted = planted;
+ return(-1);
+}
+
+/**
+ * write_own_make_above - Make the folders above a base that are missing.
+ * @base: the base folder's path.
+ *
+ * Each is made 0700 and never judged: a link at ~/.local/state is the
+ * user's own choice.  A failure is met when the base is opened.
+ */
+static void write_own_make_above(const char *base)
+{
+ char path[WPE_PATH_SIZE];
+ size_t i, len = strlen(base);
+
+ if (len == 0 || len >= sizeof path)
+  return;
+ memcpy(path, base, len + 1);
+ for (i = 1; i < len; i++)
+ {
+  if (path[i] != '/')
+   continue;
+  path[i] = '\0';
+  (void)mkdir(path, WRITE_OWN_DIR_MODE);
+  path[i] = '/';
+ }
+}
+
+/**
+ * write_own_judge - Judge an open folder: the user's own, and the user's alone.
+ * @fd: the folder, open.
+ * Return: 0 when it may be used, else the errno that says why not (ENOTDIR
+ * for something that is not a folder, EEXIST for another user's folder).
+ *
+ * A folder that others can read or write is made 0700, through the mode
+ * owner: the conversations and before images in it are the user's alone.
+ */
+static int write_own_judge(int fd)
+{
+ struct stat st;
+ WpeModeKept kept;
+
+ if (fstat(fd, &st) != 0)
+  return(errno);
+ if (!S_ISDIR(st.st_mode))
+  return(ENOTDIR);
+ if (st.st_uid != geteuid())
+  return(EEXIST);
+ if ((st.st_mode & WRITE_OWN_OTHERS) == 0)
+  return(0);
+ return(wpe_write_set_mode_fd(fd, WRITE_OWN_DIR_MODE, &kept));
+}
+
+/**
+ * write_own_planted - Is this errno the word for "not the user's own folder"?
+ * @err: what write_own_judge or an open said.
+ */
+static int write_own_planted(int err)
+{
+ return(err == ENOTDIR || err == EEXIST);
+}
+
+/**
+ * write_own_open_base - Open and judge the base folder of an own kind.
+ * @base: its path; @how: make it or only look; @o: receives the refusal.
+ * Return: the open folder, or -1.
+ *
+ * The base is resolved by name and a link at it is followed (a state folder
+ * kept in a dotfiles tree is the user's choice); what is judged is the folder
+ * it leads to.
+ */
+static int write_own_open_base(const char *base, WpeOwnHow how, WpeWriteOutcome *o)
+{
+ int fd, err;
+
+ if (how == WPE_OWN_MAKE)
+ {
+  write_own_make_above(base);
+  (void)mkdir(base, WRITE_OWN_DIR_MODE);
+ }
+ fd = open(base, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+ if (fd < 0)
+ {
+  err = errno;
+  return(write_own_failed(o, err, write_own_planted(err)));
+ }
+ err = write_own_judge(fd);
+ if (err != 0)
+ {
+  close(fd);
+  return(write_own_failed(o, err, write_own_planted(err)));
+ }
+ return(fd);
+}
+
+/**
+ * write_own_step - Go one folder down below the base, judged.
+ * @fd: the folder we are in; @name: the next component (NUL-terminated);
+ * @how: make it or only look; @o: receives the refusal.
+ * Return: the open folder below, or -1.
+ *
+ * Nothing here follows a link: what is found at the name is looked at first,
+ * and a link, another user's folder or a file is refused.
+ */
+static int write_own_step(int fd, const char *name, WpeOwnHow how, WpeWriteOutcome *o)
+{
+ struct stat st;
+ int below, err;
+
+ if (how == WPE_OWN_MAKE)
+  (void)mkdirat(fd, name, WRITE_OWN_DIR_MODE);
+ if (fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+  return(write_own_failed(o, errno, 0));
+ if (S_ISLNK(st.st_mode))
+  return(write_own_failed(o, EEXIST, 1));
+ if (!S_ISDIR(st.st_mode))
+  return(write_own_failed(o, ENOTDIR, 1));
+ below = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+ if (below < 0)
+  return(write_own_failed(o, errno, 0));
+ err = write_own_judge(below);
+ if (err != 0)
+ {
+  close(below);
+  return(write_own_failed(o, err, write_own_planted(err)));
+ }
+ return(below);
+}
+
+/**
+ * write_own_walk - Walk the components of @sub below an open base, judging each.
+ * @fd: the base, open (closed here); @sub: NULL or one or two names;
+ * @how: make or look; @o: receives the refusal.
+ * Return: 0 when every component is the user's own folder, else -1.
+ */
+static int write_own_walk(int fd, const char *sub, WpeOwnHow how, WpeWriteOutcome *o)
+{
+ char name[WPE_NAME_SIZE];
+ size_t len;
+ int below;
+
+ while (sub != NULL && *sub != '\0')
+ {
+  len = strcspn(sub, "/");
+  memcpy(name, sub, len);
+  name[len] = '\0';
+  below = write_own_step(fd, name, how, o);
+  close(fd);
+  if (below < 0)
+   return(-1);
+  fd = below;
+  sub += len + (sub[len] == '/' ? 1 : 0);
+ }
+ close(fd);
+ return(0);
+}
+
+/**
+ * write_own_path - The path of an own folder: the base, then @sub.
+ * @path/@n: receive it; @base: the base's path; @sub: NULL or below it.
+ * Return: 0, or -1 when it does not fit.
+ */
+static int write_own_path(char *path, size_t n, const char *base, const char *sub)
+{
+ if (sub == NULL)
+  return(wpe_path_copy(path, n, base));
+ return(wpe_path_join(path, n, base, sub));
+}
+
+/**
+ * wpe_own_dir - Resolve and judge one of the editor's own folders.
+ * @kind: the state, run or configuration folder; @sub: NULL, or the folder
+ * below it (one or two names joined by '/'); @how: WPE_OWN_MAKE or
+ * WPE_OWN_LOOK; @d: receives the folder's path; @o: receives the refusal.
+ * Return: 0 when the folder is the user's own and private, else -1.
+ *
+ * What the user gets: what the editor keeps for itself (the conversation, the
+ * before images of a run, the lists it hands to git) is in a folder that is
+ * the user's alone, made when it is first needed, and never in a folder a
+ * cloned repository could have planted, and with no home folder known it is
+ * said so instead of written under the folder the editor was started in.  A
+ * reader that only looks never leaves a folder behind.
+ */
+int wpe_own_dir(WpeOwnKind kind, const char *sub, WpeOwnHow how, WpeOwnDir *d, WpeWriteOutcome *o)
+{
+ char base[WPE_PATH_SIZE];
  int fd;
 
  memset(o, 0, sizeof *o);
- write_set_path(o, path);
- fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
- if (fd < 0)
+ d->path[0] = '\0';
+ o->status = WPE_WRITE_FAILED;
+ if (!write_own_sub_ok(sub))
+  return(write_own_failed(o, EINVAL, 0));
+ if (write_own_base(kind, base, sizeof base) != 0)
  {
-  o->status = WPE_WRITE_FAILED;
-  o->err = errno;
+  o->no_place = 1;
+  return(write_own_failed(o, ENOENT, 0));
+ }
+ if (write_own_path(d->path, sizeof d->path, base, sub) != 0)
+  return(write_own_failed(o, ENAMETOOLONG, 0));
+ write_set_path(o, d->path);
+ fd = write_own_open_base(base, how, o);
+ if (fd < 0 || write_own_walk(fd, sub, how, o) != 0)
+  return(-1);
+ o->status = WPE_WRITE_WRITTEN;
+ return(0);
+}
+
+/**
+ * wpe_write_own_bytes - Write a file of the editor's own folder, new and private.
+ * @kind, @sub: the folder (see wpe_own_dir); @leaf: the file's name, one
+ * component; @bytes, @len: the content, which may hold NUL bytes; @o: receives
+ * the outcome, with the path.
+ * Return: 0 when the file holds the bytes, else -1.
+ *
+ * What the user gets: the conversation, a before image or a recorded mode is
+ * never written through a link or into a file that somebody else put at its
+ * name, and is readable by the user alone from its first byte.  An old file
+ * of ours is replaced by a new one; anything else at the name is left alone
+ * and said.
+ *
+ * How: the folders are judged on open descriptors (wpe_own_dir).  The final
+ * leaf is then reached by name, inside a folder just proven to be the user's
+ * alone at 0700, so nobody else can put anything there between the judgement
+ * and the write; the file itself is made with O_EXCL and O_NOFOLLOW.
+ */
+int wpe_write_own_bytes(WpeOwnKind kind, const char *sub, const char *leaf, const char *bytes,
+                        size_t len, WpeWriteOutcome *o)
+{
+ char path[WPE_PATH_SIZE];
+ WpeOwnDir d;
+ WriteSource s;
+ WriteAim aim;
+
+ if (!write_own_leaf_ok(leaf))
+ {
+  memset(o, 0, sizeof *o);
+  (void)write_own_failed(o, EINVAL, 0);
   return(-1);
  }
- write_fd_into(fd, text, len, o);
+ if (wpe_own_dir(kind, sub, WPE_OWN_MAKE, &d, o) != 0)
+  return(-1);
+ if (wpe_path_join(path, sizeof path, d.path, leaf) != 0)
+  return(write_own_failed(o, ENAMETOOLONG, 0));
+ write_source_text(&s, bytes, len);
+ write_aim_make(&aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, WRITE_OPEN_NEW);
+ write_run(&s, path, 0, &aim, o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+}
+
+/**
+ * wpe_write_own_remove - Remove a file the editor keeps in its own folder.
+ * @kind, @sub, @leaf: as for wpe_write_own_bytes.
+ *
+ * Only a regular file of this user is removed, so closing a conversation or
+ * finishing a run never deletes something that is not ours.  A folder that
+ * is not there is nothing to remove, and none is made.
+ *
+ * How: the folders are judged on open descriptors (wpe_own_dir).  The leaf
+ * is then looked at and removed by name, inside a folder just proven to be the
+ * user's alone at 0700.
+ */
+void wpe_write_own_remove(WpeOwnKind kind, const char *sub, const char *leaf)
+{
+ char path[WPE_PATH_SIZE];
+ WpeWriteOutcome o;
+ struct stat st;
+ WpeOwnDir d;
+
+ if (!write_own_leaf_ok(leaf))
+  return;
+ if (wpe_own_dir(kind, sub, WPE_OWN_LOOK, &d, &o) != 0)
+  return;
+ if (wpe_path_join(path, sizeof path, d.path, leaf) != 0)
+  return;
+ if (lstat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid())
+  (void)unlink(path);
 }
 
 /**
@@ -3583,6 +3931,9 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
 
  if (o->read_only)
   snprintf(out, n, "%s is read-only.", write_base_name(path));
+ else if (o->no_place)
+  snprintf(out, n, "Cannot write %s: the editor has no folder of its own for it (no home "
+           "folder is known).  Nothing was written.", write_base_name(path));
  else if (o->planted)
   snprintf(out, n, "Cannot write %s: something that is not a copy of ours is in its place.  "
            "Nothing was written.", write_base_name(path));

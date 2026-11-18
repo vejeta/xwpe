@@ -36,7 +36,9 @@ key or by a click on the bar entry, a one-time notice states the trust model;
 Enter or `y` accepts, `n` or Esc declines, and a menu letter both accepts and
 runs that action. The acceptance is kept in `$XDG_CONFIG_HOME/xwpe/ai_consented`
 (else `~/.config/xwpe/ai_consented`); `XWPE_AI_ENABLE` or `XWPE_AI_CONSENTED=1`
-skips the notice. With the menu open, a second `Alt-G` changes nothing, a main
+skips the notice. With no home folder known nothing is remembered and the
+notice comes back at every start; a marker in the folder you started in never
+counts. With the menu open, a second `Alt-G` changes nothing, a main
 menu's own letter (`Alt-F`, `Alt-E`, ...) opens that menu, and the arrow keys
 step over the divider.
 
@@ -171,6 +173,16 @@ least the newest one. When earlier messages stay behind, the pane says
 both counts when both happen. The line comes back only when N changes. The
 `claudecli` backend resumes its own session and keeps its own history, so it
 shows no such line.
+
+**Where the conversation is kept**: in your state folder,
+`$XDG_STATE_HOME/xwpe/ai/` (default `~/.local/state/xwpe/ai/`), one file for
+each project or folder, readable by you alone; never in the project. A
+`.xwpe-ai-session` an older editor left in a project is neither read nor
+written. A conversation file the editor did not write (a turn that is not
+yours or the assistant's, a resume word that is not a session id, a file kept
+for another project) is not resumed. With no home folder known the editor has
+no state folder, says once that the conversation is not kept, and the
+assistant works as usual.
 
 The `Alt-G` menu groups the **actions** above and, below a divider, the quick
 **settings**: *Permissions* (shows and cycles ask/edits/auto), *Clear
@@ -409,7 +421,9 @@ out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
 - **edits** -- writes apply automatically; commands still ask.
 - **auto** -- runs unattended inside the workspace (reads and writes beyond it
   still ask, and so do writes to the files inside it that run code, see
-  below); a checkpoint is taken first and every change is
+  below). The commands it runs have your whole environment, your files and the
+  network: the workspace limits what the editor's own tools write, not what a
+  command can reach. A checkpoint is taken first and every change is
   listed in the end-of-run changeset (keep all / revert all / file-by-file /
   commit). The review holds only what the run changed: untracked or ignored
   files you had before the run are never listed as new and `r` never removes

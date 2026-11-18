@@ -180,31 +180,6 @@ static void e_mkdirs(const char *path)
  mkdir(tmp, 0700);
 }
 
-/**
- * wpe_state_dir - The folder for what the editor writes while it runs.
- * @buf: receives the path; @n: its size.
- * Return: 0, or -1 when no absolute place is known or it does not fit.
- *
- * $XDG_STATE_HOME/xwpe, else ~/.local/state/xwpe, the place the first start
- * names to the user (e_xdg_config_file).  A variable that is not an
- * absolute path is ignored, so a crash report or a session file is never
- * put in a folder that depends on where the editor was started.  The
- * folder itself is not made here.
- */
-int wpe_state_dir(char *buf, size_t n)
-{
- const char *xdg = getenv("XDG_STATE_HOME");
- const char *home = getenv("HOME");
-
- if (xdg != NULL && xdg[0] == '/')
-  return(wpe_path_join(buf, n, xdg, "xwpe") ? -1 : 0);
- if (home == NULL || home[0] != '/')
-  return(-1);
- if (wpe_path_join(buf, n, home, ".local/state"))
-  return(-1);
- return(wpe_path_cat(buf, n, "/xwpe") ? -1 : 0);
-}
-
 /* Copy file `src` to `dst` (best-effort).  Returns 0 on success. */
 static int e_copy_file(const char *src, const char *dst)
 {
@@ -223,74 +198,89 @@ static int e_copy_file(const char *src, const char *dst)
 /**
  * e_xdg_config_paths - Where the configuration folder, its xwperc and the
  * legacy xwperc are.
- * @xdg: $XDG_CONFIG_HOME or NULL; @home: the home folder.
- * @dir/@xdgfile/@legacy: receive the paths, each of WPE_PATH_SIZE bytes.
+ * @dir/@xdgfile/@legacy: receive the paths, each of WPE_PATH_SIZE bytes;
+ * @legacy is "" when there is no home folder, so no legacy file exists.
  *
- * A path is whole or the call fails: cut at some length, the configuration
- * folder would be created, and the options saved, somewhere the user never
- * named.
- * Return: 0, or -1 when one of them does not fit.
+ * The places come from we_places.c: an absolute $XDG_CONFIG_HOME, else the
+ * user's home.  With neither there is no configuration folder, and the call
+ * fails: the editor reads no personal configuration, and never takes a
+ * ".config" in the folder it was started in for one.  A path is whole or the
+ * call fails: cut at some length, the configuration folder would be created,
+ * and the options saved, somewhere the user never named.
+ * Return: 0, or -1 when there is no place or one of them does not fit.
  */
-static int e_xdg_config_paths(const char *xdg, const char *home,
-                              char *dir, char *xdgfile, char *legacy)
+static int e_xdg_config_paths(char *dir, char *xdgfile, char *legacy)
 {
- if (xdg && *xdg)
- {
-  if (wpe_path_join(dir, WPE_PATH_SIZE, xdg, "xwpe")) return -1;
- }
- else
- {
-  if (wpe_path_join(dir, WPE_PATH_SIZE, home, ".config")) return -1;
-  if (wpe_path_cat(dir, WPE_PATH_SIZE, "/xwpe")) return -1;
- }
+ char home[WPE_PATH_SIZE];
+
+ legacy[0] = '\0';
+ if (wpe_config_dir(dir, WPE_PATH_SIZE) != 0) return -1;
  if (wpe_path_join(xdgfile, WPE_PATH_SIZE, dir, OPTION_FILE)) return -1;
+ if (wpe_user_home(home, sizeof home) != 0) return 0;
  if (wpe_path_join(legacy, WPE_PATH_SIZE, home, XWPE_HOME)) return -1;
  if (wpe_path_cat(legacy, WPE_PATH_SIZE, "/" OPTION_FILE)) return -1;
  return 0;
+}
+
+/**
+ * e_legacy_exists - Is there a legacy option file to migrate?
+ * @legacy: its path, or "" when there is no home folder.
+ * Return: 1 when it is there.
+ */
+static int e_legacy_exists(const char *legacy)
+{
+ return legacy[0] != '\0' && access(legacy, F_OK) == 0;
+}
+
+/**
+ * e_leave_moved_note - Tell anyone who looks in the old folder where the
+ * settings went.
+ * @legacy: the old option file's path; @xdgfile: the new one.
+ *
+ * Written beside the old file after the migration copy; the old folder is
+ * kept as a backup, not deleted.  Best effort: no note is not a failed
+ * migration.
+ */
+static void e_leave_moved_note(const char *legacy, const char *xdgfile)
+{
+ char note[WPE_PATH_SIZE];
+ const char *slash = strrchr(legacy, '/');
+ FILE *nf;
+
+ if (slash == NULL || (size_t)(slash - legacy) >= sizeof note)
+  return;
+ memcpy(note, legacy, (size_t)(slash - legacy));
+ note[slash - legacy] = '\0';
+ if (wpe_path_cat(note, sizeof note, "/MOVED_TO_XDG.txt") != 0)
+  return;
+ nf = fopen(note, "w");
+ if (nf == NULL)
+  return;
+ fprintf(nf, WPE_PLACES_MOVED_NOTE_FMT, xdgfile, XWPE_HOME);
+ fclose(nf);
 }
 
 /* The user config file per the XDG Base Directory spec:
    $XDG_CONFIG_HOME/xwpe/xwperc (default ~/.config/xwpe/xwperc).  A legacy
    ~/.xwpe/xwperc is migrated (copied) the first time so existing settings carry
    over; if that copy fails, the legacy file is used so nothing is lost.  Returns
-   a malloc'd path, or NULL when the folder's path is longer than the system
-   allows (the editor then runs with its defaults and says so). */
+   a malloc'd path, or NULL when there is no configuration folder (no home
+   folder is known) or its path is longer than the system allows: the editor
+   then runs with its defaults and says so. */
 static char *e_xdg_config_file(void)
 {
- const char *xdg = getenv("XDG_CONFIG_HOME");
- const char *home = getenv("HOME");
  char dir[WPE_PATH_SIZE], xdgfile[WPE_PATH_SIZE], legacy[WPE_PATH_SIZE];
  char *p;
  size_t n;
- if (!home || !*home) home = ".";
- if (e_xdg_config_paths(xdg, home, dir, xdgfile, legacy) != 0)
+ if (e_xdg_config_paths(dir, xdgfile, legacy) != 0)
   return NULL;
 
  e_mkdirs(dir);                          /* so saving here works even on a fresh box */
- if (access(xdgfile, F_OK) != 0 && access(legacy, F_OK) == 0) {
+ if (access(xdgfile, F_OK) != 0 && e_legacy_exists(legacy)) {
   if (e_copy_file(legacy, xdgfile) != 0) {   /* migration failed: keep the legacy file */
    n = strlen(legacy) + 1; p = MALLOC(n); if (p) memcpy(p, legacy, n); return p;
   }
-  /* Migrated: leave a note in the old directory so anyone who looks there knows
-     where the settings went (the legacy dir is kept as a backup, not deleted). */
-  {
-   char note[WPE_PATH_SIZE];
-   FILE *nf = NULL;
-   if (wpe_path_join(note, sizeof note, home, XWPE_HOME) == 0 &&
-       wpe_path_cat(note, sizeof note, "/MOVED_TO_XDG.txt") == 0)
-    nf = fopen(note, "w");
-   if (nf) {
-    fprintf(nf,
-      "xwpe now stores its files following the XDG Base Directory specification.\n"
-      "Your settings were copied automatically:\n\n"
-      "  configuration : %s\n"
-      "  runtime state : $XDG_STATE_HOME/xwpe/  (default ~/.local/state/xwpe/)\n\n"
-      "This directory (~/%s) is kept only as a backup and is no longer read.\n"
-      "You can delete it once the new location works for you.\n",
-      xdgfile, XWPE_HOME);
-    fclose(nf);
-   }
-  }
+  e_leave_moved_note(legacy, xdgfile);
  }
  n = strlen(xdgfile) + 1; p = MALLOC(n); if (p) memcpy(p, xdgfile, n); return p;
 }
@@ -330,18 +320,19 @@ static void e_binding_trace(int code, int style, int context, int action)
  */
 static int e_profile_is_new(void)
 {
- const char *home = getenv("HOME");
+ char home[WPE_PATH_SIZE];
  char dir[WPE_PATH_SIZE], xdgfile[WPE_PATH_SIZE], legacy[WPE_PATH_SIZE], legacydir[WPE_PATH_SIZE];
 
- if (!home || !*home) home = ".";
- if (e_xdg_config_paths(getenv("XDG_CONFIG_HOME"), home, dir, xdgfile, legacy) != 0)
-  return 0;
- if (wpe_path_join(legacydir, WPE_PATH_SIZE, home, XWPE_HOME) != 0)
+ if (e_xdg_config_paths(dir, xdgfile, legacy) != 0)
+  return 0;                        /* no configuration folder: no profile to be new */
+ legacydir[0] = '\0';
+ if (wpe_user_home(home, sizeof home) == 0 &&
+     wpe_path_join(legacydir, WPE_PATH_SIZE, home, XWPE_HOME) != 0)
   return 0;
  if (access(OPTION_FILE, F_OK) == 0)
   return 0;
- return access(xdgfile, F_OK) != 0 && access(legacy, F_OK) != 0 &&
-        access(dir, F_OK) != 0 && access(legacydir, F_OK) != 0;
+ return access(xdgfile, F_OK) != 0 && !e_legacy_exists(legacy) &&
+        access(dir, F_OK) != 0 && (legacydir[0] == '\0' || access(legacydir, F_OK) != 0);
 }
 
 /**
@@ -433,6 +424,7 @@ int main(int argc, char **argv)
  /* A debugger the editor starts runs in a folder of its own under the
     editor's temporary folder, which goes with the editor. */
  wpe_startplan_debug_base_set(e_tmp_dir);
+ wpe_run_dir_set(e_tmp_dir);     /* the editor's own folder of this run (wpe_own_dir) */
 
  for (i = 1; i < argc; i++)
  {

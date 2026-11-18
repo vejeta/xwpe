@@ -2876,7 +2876,7 @@ static void ai_chat_record_tool_result(const char *tr)
  if (!m)
   return;
  snprintf(m, n, AI_TOOL_RESULT_HEAD "%s", tr);
- wpe_ai_session_append("user", m);
+ wpe_ai_session_append(WPE_AI_TURN_USER, m);
  free(m);
 }
 
@@ -2910,7 +2910,7 @@ static int ai_chat_take_tool_turn(ai_chat_session *s)
  char *tr = NULL;
  if (s->turns < AI_CHAT_MAX_TOOL_TURNS)
   tr = ai_chat_tool_result(s, s->full);
- wpe_ai_session_append("assistant", s->full);
+ wpe_ai_session_append(WPE_AI_TURN_ASSISTANT, s->full);
  if (!tr)
   return 0;
  wpe_ai_session_mark_tool_turn();
@@ -3042,7 +3042,7 @@ static void ai_chat_save_cut_reply(ai_chat_session *s, const char *emsg)
  if (!kept)
   return;
  snprintf(kept, n, "%s" AI_CHAT_CUT_NOTE_FMT, s->full, emsg);
- wpe_ai_session_append("assistant", kept);
+ wpe_ai_session_append(WPE_AI_TURN_ASSISTANT, kept);
  free(kept);
 }
 
@@ -4647,6 +4647,24 @@ static void ai_chat_echo_question(FENSTER *f, const char *text)
  free(line);
 }
 
+/** The pane line that says an older conversation file is no longer read. */
+#define AI_OLD_SESSION_NOTICE \
+ "an older conversation file in this project is no longer read; you may delete it"
+
+/**
+ * ai_say_old_session_file - Tell once that a project's old conversation file is unused.
+ * @f: the window the pane belongs to.
+ *
+ * What the user gets: after an upgrade a project's .xwpe-ai-session no longer
+ * resumes, and the first chat turn says so in one pane line, once, so the
+ * missing history is explained and the file can be deleted.
+ */
+static void ai_say_old_session_file(FENSTER *f)
+{
+ if (wpe_ai_old_session_file_due(f))
+  ai_pane(f, AI_OLD_SESSION_NOTICE, AI_ROLE_MACHINERY, 1);
+}
+
 /**
  * ai_chat_launch - Start one chat turn now: echo, record, stream.
  * @f: the window the pane belongs to; @text: the question as typed.
@@ -4669,7 +4687,8 @@ static void ai_chat_launch(FENSTER *f, const char *text)
  wpe_ai_trace("chat prompt=%s", tosend);
  ai_chat_refresh_header(f);
  ai_chat_echo_question(f, text);
- wpe_ai_session_append("user", tosend);
+ ai_say_old_session_file(f);
+ wpe_ai_session_append(WPE_AI_TURN_USER, tosend);
  free(expanded);
  s = calloc(1, sizeof *s);
  if (!s) return;
@@ -10493,17 +10512,23 @@ static void e_ai_cycle_policy(FENSTER *f);  /* defined below e_ai_ui_key    */
 /**
  * ai_consent_path - Path of the "first-use notice accepted" marker file.
  * @buf: destination; @n: its size.  Overridable with XWPE_AI_CONSENT_FILE.
- * Return: buf.
+ * Return: buf, or NULL when the editor has no configuration folder.
+ *
+ * What the user gets: the notice is skipped only for a marker the user's own
+ * configuration folder holds.  With no home folder known there is none, so
+ * the notice is shown, and a marker file committed in the folder the editor
+ * was started in never counts as consent.
  */
 static const char *ai_consent_path(char *buf, size_t n)
 {
  const char *e = getenv("XWPE_AI_CONSENT_FILE");
- const char *xdg = getenv("XDG_CONFIG_HOME");
- const char *home = getenv("HOME");
- if (e && *e)          snprintf(buf, n, "%s", e);
- else if (xdg && *xdg) snprintf(buf, n, "%s/xwpe/ai_consented", xdg);
- else if (home)        snprintf(buf, n, "%s/.config/xwpe/ai_consented", home);
- else                  snprintf(buf, n, ".xwpe_ai_consented");
+ char dir[WPE_PATH_SIZE];
+ if (e && *e) {
+  snprintf(buf, n, "%s", e);
+  return buf;
+ }
+ if (wpe_config_dir(dir, sizeof dir) != 0) return NULL;
+ if (wpe_path_join(buf, n, dir, "ai_consented") != 0) return NULL;
  return buf;
 }
 
@@ -10516,19 +10541,26 @@ static const char *ai_consent_path(char *buf, size_t n)
  */
 static int ai_consent_given(void)
 {
- char buf[1024];
+ char buf[WPE_PATH_SIZE];
  const char *e = getenv("XWPE_AI_CONSENTED");
+ const char *marker;
  if (e) return *e == '1';
- if (access(ai_consent_path(buf, sizeof buf), F_OK) == 0) return 1;
+ marker = ai_consent_path(buf, sizeof buf);
+ if (marker && access(marker, F_OK) == 0) return 1;
  return getenv("XWPE_AI_ENABLE") ? 1 : 0;
 }
 
-/** ai_consent_remember - Persist that the first-use notice was accepted. */
+/**
+ * ai_consent_remember - Persist that the first-use notice was accepted.
+ *
+ * With no configuration folder nothing is kept, and the notice comes back at
+ * the next start.
+ */
 static void ai_consent_remember(void)
 {
- char buf[1024];
+ char buf[WPE_PATH_SIZE];
  char *slash;
- ai_consent_path(buf, sizeof buf);
+ if (ai_consent_path(buf, sizeof buf) == NULL) return;
  slash = strrchr(buf, '/');
  if (slash) { *slash = '\0'; mkdir(buf, 0700); *slash = '/'; }  /* best-effort dir */
  { FILE *fp = fopen(buf, "w"); if (fp) { fputs("1\n", fp); fclose(fp); } }
@@ -13652,7 +13684,7 @@ static void ai_agent_offer_follow_up(ai_async_op *op)
 static void ai_agent_finish(ai_async_op *op)
 {
  if (op->ml.n > 0 && !strcmp(op->ml.role[op->ml.n - 1], "assistant"))
-  wpe_ai_session_append("assistant", op->ml.content[op->ml.n - 1]);
+  wpe_ai_session_append(WPE_AI_TURN_ASSISTANT, op->ml.content[op->ml.n - 1]);
  wpe_ai_session_save(op->f);
  /* A run that took a checkpoint is reviewed whatever the dial reads now: the
     dial may have been lowered again after the writes it allowed. */
@@ -13803,7 +13835,7 @@ static void ai_agent_compose(ai_async_op *op, const char *goal, const char *extr
  ai_ml_add_diagnostics(&op->ml);
  ai_agent_add_prior_turns(&op->ml, op->f);
  ai_ml_add(&op->ml, "user", goal);
- wpe_ai_session_append("user", goal);
+ wpe_ai_session_append(WPE_AI_TURN_USER, goal);
 }
 
 /**
@@ -14487,7 +14519,7 @@ static void ai_plan_finish(ai_async_op *op)
  int i, np = pd->np, mode, applied = 0;
 
  if (op->ml.n > 0 && !strcmp(op->ml.role[op->ml.n - 1], "assistant"))
-  wpe_ai_session_append("assistant", op->ml.content[op->ml.n - 1]);
+  wpe_ai_session_append(WPE_AI_TURN_ASSISTANT, op->ml.content[op->ml.n - 1]);
  wpe_ai_session_save(f);
 
  if (np == 0) {
@@ -14621,7 +14653,7 @@ static void ai_plan_launch(FENSTER *f, const char *task)
    free(u);
   }
  }
- wpe_ai_session_append("user", task);
+ wpe_ai_session_append(WPE_AI_TURN_USER, task);
  ai_conv_start(op, AI_MULTIFILE_PREFIX " working");
 }
 

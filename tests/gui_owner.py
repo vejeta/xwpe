@@ -1010,12 +1010,36 @@ def _base_env(home, runtime_dir):
     return env
 
 
-def _check_home(home):
+NO_PASSWD_HOME = "no-passwd-home"
+TEST_FAIL_VARIABLE = "XWPE_TEST_FAIL"
+
+
+def _home_removal_is_safe(extra_env):
+    """May this row run with no HOME at all?
+
+    With no HOME the editor asks the password file for the home of the user
+    running it, which is the machine's own home folder.  The seam
+    XWPE_TEST_FAIL=no-passwd-home makes that step answer "none", so the row
+    can never reach the tester's real home; without it a row that removes
+    HOME is refused."""
+    value = (extra_env or {}).get(TEST_FAIL_VARIABLE) or ""
+    return NO_PASSWD_HOME in value.split(",")
+
+
+def _check_home(home, extra_env=None):
     """Refuse the machine's own home folder as a process's HOME.
 
     With XDG_CONFIG_HOME empty the editor reads its settings and keys from
     HOME, so a row given the real one would run on the user's configuration
-    and could change it."""
+    and could change it.  A row that removes HOME (@home is None) is allowed
+    only with the password-file seam, named above."""
+    if home is None:
+        if not _home_removal_is_safe(extra_env):
+            raise OwnerRefused("a row that removes HOME must also set %s=%s, "
+                               "or the editor resolves this machine's own "
+                               "home folder from the password file"
+                               % (TEST_FAIL_VARIABLE, NO_PASSWD_HOME))
+        return
     if os.path.realpath(home) == os.path.realpath(os.path.expanduser("~")):
         raise OwnerRefused("HOME %s is this machine's own home folder" % home)
 
@@ -1032,7 +1056,7 @@ def _check_extra_displays(owner, extra_env):
         raise OwnerRefused("WAYLAND_SOCKET hands down a compositor connection "
                            "the owner did not open")
     if "HOME" in extra_env:
-        _check_home(extra_env["HOME"])
+        _check_home(extra_env["HOME"], extra_env)
     if "DISPLAY" in extra_env:
         owner.x_display(extra_env["DISPLAY"])
     if "XDG_RUNTIME_DIR" in extra_env \

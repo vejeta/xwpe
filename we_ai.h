@@ -12,7 +12,8 @@
 
 #include <stddef.h>   /* size_t */
 #include "we_ai_http.h"
-#include "we_write.h"  /* WpeWriteExpect, WpeWriteOutcome: what an assistant write is held to */
+#include "we_ai_session.h"   /* wpe_ai_turn_role, wpe_ai_session_id_valid */
+#include "we_write.h" /* WpeWriteExpect, WpeWriteOutcome: what an assistant write is held to */
 
 /* ----- backend selection ------------------------------------------------- */
 enum {
@@ -58,6 +59,10 @@ enum { WPE_AI_ENGINE_BUILTIN = 0, WPE_AI_ENGINE_CLAUDE_HOST = 1 };
 extern int   e_ai_agent_engine;
 extern char *e_ai_resume_session;      /* passed as --resume <id>, or NULL     */
 extern char *e_ai_last_session_id;     /* session_id from the last CLI reply   */
+/* The one writer of the two ids above: it keeps @s (a copy) only when it is a
+   session id (wpe_ai_session_id_valid), else the slot is NULL, so no word of
+   a file's or a program's choice ever follows --resume.  @s NULL clears. */
+void  wpe_ai_resume_id_take(char **slot, const char *s);
 
 /* How much of a tool result the model gets: a command's output and a file read
  * with read_file are both cut here, and a cut result ends with a line saying
@@ -562,7 +567,12 @@ struct BFF *wpe_ai_open_window_buffer(struct FNST *f, const char *path);
 void  wpe_ai_session_load(struct FNST *f);
 void  wpe_ai_session_save(struct FNST *f);
 void  wpe_ai_session_reset(struct FNST *f);
-void  wpe_ai_session_append(const char *role, const char *content);
+/* Add a turn to the conversation.  The role is one of the two the editor
+   writes (we_ai_session.h), so no other role can enter the store. */
+void  wpe_ai_session_append(wpe_ai_turn_role role, const char *content);
+/* 1 once per project when its folder holds the conversation file an older
+   editor kept there (asked by name, never opened). */
+int   wpe_ai_old_session_file_due(struct FNST *f);
 int   wpe_ai_session_messages(wpe_ai_msg *buf, int max);
 /* The stored messages a turn sends: the newest that fit a byte budget, whole,
    always at least the newest one, and what was left out and why. */

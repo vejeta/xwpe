@@ -32,7 +32,7 @@ we_edit.c|r2:wpe_buffer_trace|1|keep|a behaviour trace
 we_fl_unix.c|r2:e_man_run|1|keep|the temporary output of the man command
 we_lsp.c|r2:lsp_trace_file|1|keep|a trace
 we_main.c|r2:e_copy_file|1|keep|the XDG migration copy
-we_main.c|r2:e_xdg_config_file|1|keep|the XDG migration note
+we_main.c|r2:e_leave_moved_note|1|keep|the XDG migration note
 we_main.c|r2:e_binding_trace|1|keep|a keystroke trace
 we_paint.c|r2:wpe_ui_trace|1|keep|a keystroke trace
 we_prog.c|r2:e_comp_start|1|keep|a behaviour trace
@@ -53,13 +53,9 @@ we_ai_path.c|r8:path_follow_link|1|keep|reads a link to judge a path, writes not
 we_ai_ui.c|r8:ai_consent_remember|1|keep|the consent marker's folder
 we_ai_ui.c|r8:ai_hook_after_accept|1|keep|the hook's own marker file
 we_ai_ui.c|r8:ai_test_swap_after_look|3|keep|the test hook that puts a link where a folder was, unset in every real run
-we_ai_ws.c|r8:wpe_ai_session_reset|1|keep|the assistant's own session file
-we_ai_ws.c|r8:ws_commit_changeset_steps|1|keep|the assistant's own change set
-we_ai_ws.c|r8:ws_git_list|3|keep|the temporary lists of the git command it runs
-we_ai_ws.c|r8:ws_git_show|2|keep|the temporary copy of a file's content that git prints, removed once read
-we_ai_ws.c|r8:ws_make_dir_parents|2|keep|the folders of a file the assistant writes
+we_ai_ws.c|r8:ws_git_list|3|keep|the temporary lists of the git command it runs, made by mkstemp in the run's private folder
+we_ai_ws.c|r8:ws_git_show|2|keep|the temporary copy of a file's content that git prints, made by mkstemp in the run's private folder and removed once read
 we_ai_ws.c|r8:ws_revert_snapshot|1|keep|the removal of a file the run created, which the review listed as new and no before image holds
-we_ai_ws.c|r8:ws_write_pathspec|1|keep|the temporary pathspec file
 we_debug.c|r8:e_d_compile_drop|1|keep|the debugger's own marker
 we_debug.c|r8:e_d_compile_tell|2|keep|the debugger's own marker
 we_debug.c|r8:e_d_debugger_pid_forget|1|keep|the debugger's own pid file
@@ -78,7 +74,8 @@ we_opt.c|r8:e_save_opt|1|keep|the options file's folder
 we_prog.c|r8:e_new_message|1|keep|the build's message file
 we_unix.c|r8:wpe_crash_dir_make|1|keep|the state folder of the crash file, made 0700 only when a crash happens and judged by lstat
 we_startcmd.c|r8:startcmd_dir_trusted|1|keep|the start command's own private folder
-we_startcmd.c|r8:startcmd_make_dirs|2|keep|the start command's own private folder
+we_startcmd.c|r8:startcmd_dir_private|1|keep|the start command's own private folder, tightened on the descriptor it opened
+we_startcmd.c|r8:startcmd_make_dirs|1|keep|the start command's own private folder
 we_startcmd.c|r8:startcmd_save_file|4|keep|the start command's own file
 we_startplan.c|r8:startplan_follow_dangling|1|keep|reads a link, writes nothing
 we_startplan.c|r8:wpe_startplan_debug_dir_end|1|keep|the debug run's own folder
@@ -168,7 +165,6 @@ we_opt.c|r14:WpeReadProgramming|1|keep|the saved option, read at start before an
 we_debug.c|r16:e_d_script_write|1|P2e|the debugger script, in the editor's own 0700 folder
 we_fl_unix.c|r16:e_ed_man|3|P2e|the man page's temporary output, in the editor's own 0700 folder
 we_fl_unix.c|r16:e_man_give_up|1|P2e|the man page's temporary output, in the editor's own 0700 folder
-we_startcmd.c|r16:startcmd_make_dirs|1|P2e|the start command's folder under the user's own state folder; an existing folder may be chmod'ed
 we_xterm.c|r16:e_x_system_script|1|P2e|the external terminal's script, in the editor's own 0700 folder
 
 # rule 24: whether a file is the one the editor saw earlier is judged in
@@ -238,6 +234,24 @@ test_write_owner.c|r24d:test_the_assistants_write_asks_about_a_replaced_file|1|N
 test_write_owner.c|r24e:test_an_old_copy_of_ours_is_replaced_by_a_new_inode|1|N5|C-03: "a new inode" asserted by number
 test_ai_scope.c|r24e:look_name_cases|1|N5|the look's inode compared with nothing held
 test_testdir.c|r24e:test_put_mode_makes_a_new_file_with_its_mode|1|N5|the file is held by a second name made before
+# rule 25: the editor's own places and the names it chooses.  r25a lists each
+# by-name text face outside the owner with how the user named the path; r25b
+# and r25e list the sites that still read a place by hand or name a fixed file
+# in /tmp, with the pass that moves them.  r25c, r25d, r25f, r25g and r25h have
+# no line: they are never allowed.  The start command's store keeps its own
+# resolver call (startcmd_state_dir) because its unit tests link no write owner.
+we_ai_ui.c|r25a:ai_transcript_write|1|keep|the transcript name the user typed
+we_opt.c|r25a:e_opt_lines_store|1|keep|the options file the options came from
+we_opt.c|r25a:e_save_opt|1|keep|the options file the options came from
+we_prog.c|r25a:e_write_default_prj|1|keep|the project name the user typed in New Project
+we_prog.c|r25a:e_wrt_prj_fl|1|C2b|the open project's file, which the user opened or a start folder named
+we_ai.c|r25b:ai_get_api_key|2|C2b|the key file's folder is read from the environment by hand
+we_ai.c|r25b:wpe_ai_read_openai_key_file|3|C2b|the key file's folder is read from the environment by hand
+we_ai.c|r25b:wpe_ai_write_openai_key|2|C2b|the key file's folder is read from the environment by hand
+we_ai_ws.c|r25b:(preprocessor)|1|C2b|the default folder below the home, for the user's configuration
+we_ai_ws.c|r25b:ws_in_user_config|1|C2b|the user's configuration folder is read from the environment by hand
+we_trace.c|r25e:wpe_trace_file|1|C2b|the trace's default name in /tmp
+
 # kept
 we_seen.c|r8:seen_read_link_text|1|keep|reads a link's target text to word a sentence; nothing is made, moved or removed
 we_startcmd.c|r24a:built_rec_identify|2|keep|the built-outputs store writes the numbers to disk and asks "unchanged", never "same": it also compares size, mtime and ctime in nanoseconds

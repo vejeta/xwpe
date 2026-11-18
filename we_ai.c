@@ -195,8 +195,32 @@ char *wpe_ai_take_dropped_model(void)
 int   e_ai_policy          = WPE_AI_POLICY_ASK;
 int   e_ai_agent_engine    = WPE_AI_ENGINE_BUILTIN;
 int   e_ai_cli_mode        = WPE_AI_CLI_TEXTONLY;
-char *e_ai_resume_session  = NULL;
-char *e_ai_last_session_id = NULL;
+char *e_ai_resume_session;          /* written only by wpe_ai_resume_id_take */
+char *e_ai_last_session_id;         /* likewise */
+
+/**
+ * wpe_ai_resume_id_take - Keep a session id, or nothing.
+ * @slot: e_ai_resume_session or e_ai_last_session_id; @s: the word offered,
+ * or NULL to clear the slot.
+ *
+ * What the user gets: the word after --resume on the Claude command line
+ * tool's command line is always an id of the shape the tool gives, whether it
+ * came from a saved conversation or from the tool's own answer; a word that
+ * is not one (a flag, a forged file's choice) is dropped and the next turn
+ * simply starts a fresh conversation.
+ */
+void wpe_ai_resume_id_take(char **slot, const char *s)
+{
+ free(*slot);
+ *slot = NULL;
+ if (s == NULL || *s == '\0')
+  return;
+ if (!wpe_ai_session_id_valid(s)) {
+  wpe_ai_trace("resume id refused");
+  return;
+ }
+ *slot = ai_strdup(s);
+}
 
 int wpe_ai_policy_from_name(const char *name)
 {
@@ -2346,8 +2370,7 @@ static void ai_parse_claudecli(const char *body, char **delta, int *had_error)
  if (json_object_object_get_ex(o, "is_error", &ie) && json_object_get_boolean(ie))
   if (had_error) *had_error = 1;
  if (json_object_object_get_ex(o, "session_id", &r)) {   /* for --resume */
-  free(e_ai_last_session_id);
-  e_ai_last_session_id = ai_strdup(json_object_get_string(r));
+  wpe_ai_resume_id_take(&e_ai_last_session_id, json_object_get_string(r));
  }
  json_object_put(o);
 }

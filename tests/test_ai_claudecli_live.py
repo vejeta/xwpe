@@ -51,6 +51,12 @@ def test_ai_claudecli_chat(tmp_path):
     assert "backend=claudecli" in txt, txt
     assert "chat done" in txt, "claude CLI never completed:\n" + txt
     assert "pong" in disp.lower(), "reply not visible in pane:\n" + disp
+    # The editor resumes a conversation only with a session id of the shape
+    # 8-4-4-4-12 hex digits (wpe_ai_session_id_valid) and says "resume id
+    # refused" when the CLI answers another one: this row is where a change in
+    # the CLI's id shape shows, since the stub rows can only assume it.
+    assert "resume id refused" not in txt, \
+        "the real CLI answered a session id of another shape:\n" + txt
 
 
 def test_ai_claudecli_agent_uses_tool_protocol(tmp_path):

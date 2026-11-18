@@ -1,0 +1,33 @@
+{
+ "capability": "chosen-names",
+ "scenarios": [
+  {"id": "SC-chosen-names-01", "requirement": "A file of the editor's own is never written through a link", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-02", "requirement": "A link that leads nowhere creates nothing", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-03", "requirement": "An old file of ours is replaced by a new private file", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-04", "requirement": "The state folder is made the user's alone", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-04b", "requirement": "Another user's folder is refused", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-05", "requirement": "A link below the state folder is refused, one at the base is followed", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-06", "requirement": "No place of the user's is ever relative", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-26", "requirement": "A look makes nothing and a bad name is refused", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-27", "requirement": "With no home folder there is no place and it is said", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-28", "requirement": "Only a regular file of ours is removed", "layer": "c-unit", "test": "test_write_owner", "status": "new"},
+  {"id": "SC-chosen-names-23", "requirement": "Only a UUID is a resume id", "layer": "c-unit", "test": "test_ai_session", "status": "new"},
+  {"id": "SC-chosen-names-29", "requirement": "A conversation the editor wrote is read", "layer": "c-unit", "test": "test_ai_session", "status": "new"},
+  {"id": "SC-chosen-names-30", "requirement": "One foreign turn refuses the whole file", "layer": "c-unit", "test": "test_ai_session", "status": "new"},
+  {"id": "SC-chosen-names-31", "requirement": "A resume word that is not an id refuses the file", "layer": "c-unit", "test": "test_ai_session", "status": "new"},
+  {"id": "SC-chosen-names-32", "requirement": "A file kept for another place is not read", "layer": "c-unit", "test": "test_ai_session", "status": "new"},
+  {"id": "SC-chosen-names-18", "requirement": "A cloned session is never loaded", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_cloned_session_is_never_loaded", "status": "new"},
+  {"id": "SC-chosen-names-19", "requirement": "A cloned resume word never reaches the CLI", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_cloned_resume_word_never_reaches_the_cli", "status": "new"},
+  {"id": "SC-chosen-names-20", "requirement": "A state session with a foreign role loads empty", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_state_session_with_a_foreign_role_loads_empty", "status": "new"},
+  {"id": "SC-chosen-names-21", "requirement": "A state session with a dash id never resumes", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_state_session_with_a_dash_id_never_resumes", "status": "new"},
+  {"id": "SC-chosen-names-22", "requirement": "A CLI answer with a bad id is not kept", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_cli_answer_with_a_bad_id_is_not_kept", "status": "new"},
+  {"id": "SC-chosen-names-07", "requirement": "A project session link in a clone is not written through", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_project_session_link_in_a_clone_is_not_written_through", "status": "new"},
+  {"id": "SC-chosen-names-08", "requirement": "A dangling project session link creates nothing", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_dangling_project_session_link_creates_nothing", "status": "new"},
+  {"id": "SC-chosen-names-09", "requirement": "No state is ever put under the working folder", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_no_state_is_ever_put_under_the_working_folder", "status": "new"},
+  {"id": "SC-chosen-names-10", "requirement": "The state folder and the conversation are private", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_the_state_folder_and_conversation_are_private", "status": "new"},
+  {"id": "SC-chosen-names-12", "requirement": "A cloned consent marker does not grant consent", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_cloned_consent_marker_does_not_grant_consent", "status": "new"},
+  {"id": "SC-chosen-names-14", "requirement": "No configuration folder is made under the working folder", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_no_config_folder_is_made_under_the_working_folder", "status": "new"},
+  {"id": "SC-chosen-names-25", "requirement": "An old session file in a project is said once", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_an_old_session_file_in_a_project_is_said_once", "status": "new"},
+  {"id": "SC-chosen-names-24", "requirement": "A cloned .config is not the user's config", "layer": "ncurses", "test": "tests/test_ai_chosen_names.py::test_a_cloned_dot_config_is_not_the_users_config", "status": "new"}
+ ]
+}

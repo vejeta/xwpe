@@ -4875,9 +4875,384 @@ static void test_the_assistants_sentences_say_a_lost_bit_and_keep_no_window_text
 static void stub_mouse_shape(WpeMouseShape s) { (void)s; }
 static void stub_mouse_restore(void) { }
 
+/* ---- the editor's own folders and files (we_write.c, we_places.c) ---- */
+
+/** The variables the places are read from, kept so a row puts back what it found. */
+typedef struct {
+ const char *name;
+ char       *saved;     /* a copy of the value, NULL when it was not set */
+} EnvKeep;
+
+static EnvKeep env_kept[] = {
+ { "HOME", NULL }, { "XDG_STATE_HOME", NULL }, { "XDG_CONFIG_HOME", NULL }, { "XWPE_TEST_FAIL", NULL }
+};
+#define ENV_KEPT_N ((int)(sizeof env_kept / sizeof env_kept[0]))
+
+/** env_keep_all - Remember the variables the places are read from. */
+static void env_keep_all(void)
+{
+ int i;
+
+ for (i = 0; i < ENV_KEPT_N; i++)
+ {
+  const char *v = getenv(env_kept[i].name);
+
+  free(env_kept[i].saved);
+  env_kept[i].saved = v != NULL ? strdup(v) : NULL;
+ }
+}
+
+/** env_restore_all - Put back the variables env_keep_all remembered. */
+static void env_restore_all(void)
+{
+ int i;
+
+ for (i = 0; i < ENV_KEPT_N; i++)
+ {
+  if (env_kept[i].saved != NULL)
+   setenv(env_kept[i].name, env_kept[i].saved, 1);
+  else
+   unsetenv(env_kept[i].name);
+ }
+}
+
+/** own_row_start - A fresh folder, the state folder's base below it, and the
+    run folder named: what every row of the own folders begins with. */
+static void own_row_start(void)
+{
+ char state[512], run[512];
+
+ env_keep_all();
+ make_dir();
+ path_of(state, sizeof state, "state");
+ path_of(run, sizeof run, "run");
+ setenv("XDG_STATE_HOME", state, 1);
+ if (mkdir(run, 0700) != 0)
+  perror("mkdir run");
+ wpe_run_dir_set(run);
+}
+
+/** own_row_end - Put the environment back. */
+static void own_row_end(void)
+{
+ env_restore_all();
+ wpe_run_dir_set(NULL);
+}
+
+/** read_at - A file's text by its full path, "" when it cannot be read. */
+static char *read_at(const char *path, char *buf, size_t n)
+{
+ FILE *fp = fopen(path, "r");
+ size_t got = 0;
+
+ buf[0] = '\0';
+ if (fp == NULL)
+  return(buf);
+ got = fread(buf, 1, n - 1, fp);
+ buf[got] = '\0';
+ fclose(fp);
+ return(buf);
+}
+
+/** mode_at - The twelve bits of a path (a link not followed), or -1. */
+static int mode_at(const char *path)
+{
+ struct stat st;
+
+ return(lstat(path, &st) == 0 ? (int)(st.st_mode & 07777) : -1);
+}
+
+/** size_at - The size of a path in bytes, or -1. */
+static long size_at(const char *path)
+{
+ struct stat st;
+
+ return(lstat(path, &st) == 0 ? (long)st.st_size : -1L);
+}
+
+/** state_path - A path below the state folder the row made, "<dir>/state/xwpe/<tail>". */
+static void state_path(char *out, size_t n, const char *tail)
+{
+ snprintf(out, n, "%s/state/xwpe/%s", dir, tail);
+}
+
+/* @scenario SC-chosen-names-01: an own file is never written through a link. */
+static void test_an_own_file_is_never_written_through_a_link(void)
+{
+ WpeWriteOutcome o;
+ char victim[512], link[512], buf[64];
+
+ own_row_start();
+ put_file("victim", "KEEP\n", 0644);
+ path_of(victim, sizeof victim, "victim");
+ chk_int("the folder is made", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "first", "x", 1, &o), 0);
+ state_path(link, sizeof link, "ai/x.session");
+ if (symlink(victim, link) != 0)
+  perror("symlink");
+ chk_int("the write is refused", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "x.session", "evil", 4, &o), -1);
+ chk_int("it says something else is in the name", o.planted, 1);
+ chk_int("status", o.status, WPE_WRITE_FAILED);
+ chk_has("the victim keeps its text", read_at(victim, buf, sizeof buf), "KEEP");
+ chk_int("the link is still a link", name_is_link(link), 1);
+ own_row_end();
+}
+
+/* @scenario SC-chosen-names-02: a link that leads nowhere creates nothing. */
+static void test_an_own_file_at_a_dangling_link_creates_nothing(void)
+{
+ WpeWriteOutcome o;
+ char target[512], link[512];
+
+ own_row_start();
+ chk_int("the folder is made", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "first", "x", 1, &o), 0);
+ path_of(target, sizeof target, "made");
+ state_path(link, sizeof link, "ai/x.session");
+ if (symlink(target, link) != 0)
+  perror("symlink");
+ chk_int("the write is refused", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "x.session", "evil", 4, &o), -1);
+ chk_int("the file the link names was not made", mode_at(target), -1);
+ own_row_end();
+}
+
+/* @scenario SC-chosen-names-03: an old own file is replaced by a new private file. */
+static void test_an_old_own_file_is_replaced_by_a_new_private_file(void)
+{
+ WpeWriteOutcome o;
+ char file[512], buf[64];
+ int held;
+
+ own_row_start();
+ chk_int("the folder is made", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "first", "x", 1, &o), 0);
+ state_path(file, sizeof file, "ai/x.session");
+ test_put_mode(dir, "state/xwpe/ai/x.session", "old", 0644);
+ held = open(file, O_RDONLY);
+ chk_int("the old file is open", held >= 0, 1);
+ chk_int("written", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "x.session", "new", 3, &o), 0);
+ chk_int("status", o.status, WPE_WRITE_WRITTEN);
+ chk_has("the name reads the new text", read_at(file, buf, sizeof buf), "new");
+ chk_int("the new file is private", mode_at(file), 0600);
+ if (held >= 0)
+ {
+  ssize_t got = pread(held, buf, sizeof buf - 1, 0);
+
+  buf[got > 0 ? got : 0] = '\0';
+  chk_has("the held old file still reads the old text", buf, "old");
+  close(held);
+ }
+ own_row_end();
+}
+
+/** put_dir_mode - Make a folder with exactly this mode, whatever the umask. */
+static void put_dir_mode(const char *path, mode_t mode)
+{
+ if (mkdir(path, mode) != 0 && errno != EEXIST)
+  perror("mkdir");
+ if (chmod(path, mode) != 0)
+  perror("chmod");
+}
+
+/* @scenario SC-chosen-names-04: the state folder is made the user's alone. */
+static void test_the_state_folder_is_made_the_users_alone(void)
+{
+ WpeOwnDir d;
+ WpeWriteOutcome o;
+ char base[512], ai[512], state[512];
+
+ own_row_start();
+ state_path(base, sizeof base, "");
+ base[strlen(base) - 1] = '\0';                 /* "<dir>/state/xwpe" */
+ path_of(state, sizeof state, "state");
+ state_path(ai, sizeof ai, "ai");
+ chk_int("an absent base is made", wpe_own_dir(WPE_OWN_STATE, "ai", WPE_OWN_MAKE, &d, &o), 0);
+ chk_int("the base is 0700", mode_at(base), 0700);
+ chk_int("the folder below is 0700", mode_at(ai), 0700);
+ chk_int("the folder above the base is 0700 too", mode_at(state), 0700);
+ put_dir_mode(base, 0755);
+ put_dir_mode(ai, 0755);
+ chk_int("a folder that others read is accepted", wpe_own_dir(WPE_OWN_STATE, "ai", WPE_OWN_MAKE, &d, &o), 0);
+ chk_int("the base is made 0700", mode_at(base), 0700);
+ chk_int("the folder below is made 0700", mode_at(ai), 0700);
+ chk_has("the path says where it is", d.path, "/state/xwpe/ai");
+ own_row_end();
+}
+
+/* @scenario SC-chosen-names-04b: another user's folder, as the base or below it, is refused. */
+static void test_another_users_folder_is_refused(void)
+{
+ WpeOwnDir d;
+ WpeWriteOutcome o;
+ struct stat st;
+
+ own_row_start();
+ if (geteuid() == 0 || stat("/usr", &st) != 0 || st.st_uid == geteuid())
+ {
+  printf("SKIP: another user's folder is refused: no folder of another user to use\n");
+  own_row_end();
+  return;
+ }
+ wpe_run_dir_set("/usr");
+ chk_int("another user's base is refused", wpe_own_dir(WPE_OWN_RUN, NULL, WPE_OWN_MAKE, &d, &o), -1);
+ chk_int("it is said as not ours", o.planted, 1);
+ wpe_run_dir_set("/");
+ chk_int("another user's folder below the base is refused", wpe_own_dir(WPE_OWN_RUN, "usr", WPE_OWN_MAKE, &d, &o), -1);
+ chk_int("it is said as not ours too", o.planted, 1);
+ chk_int("a file of ours is not written there", wpe_write_own_bytes(WPE_OWN_RUN, "usr", "x", "x", 1, &o), -1);
+ own_row_end();
+}
+
+/* @scenario SC-chosen-names-05: a link below the state folder is refused, a link at the base is followed. */
+static void test_a_link_below_the_state_folder_is_refused(void)
+{
+ WpeOwnDir d;
+ WpeWriteOutcome o;
+ char elsewhere[512], base[512], ai[512], real[512], buf[64], say[1024];
+
+ own_row_start();
+ path_of(elsewhere, sizeof elsewhere, "elsewhere");
+ put_dir_mode(elsewhere, 0700);
+ chk_int("the base is made", wpe_own_dir(WPE_OWN_STATE, NULL, WPE_OWN_MAKE, &d, &o), 0);
+ state_path(ai, sizeof ai, "ai");
+ if (symlink(elsewhere, ai) != 0)
+  perror("symlink");
+ chk_int("a link below the base is refused", wpe_own_dir(WPE_OWN_STATE, "ai", WPE_OWN_MAKE, &d, &o), -1);
+ chk_int("it is said as not ours", o.planted, 1);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+ chk_has("the sentence names the folder", say, "ai");
+ chk_int("a write through it is refused", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "x.session", "x", 1, &o), -1);
+ snprintf(real, sizeof real, "%s/x.session", elsewhere);
+ chk_int("nothing went to the folder the link names", mode_at(real), -1);
+ /* a link at the base itself is the user's own choice and is followed */
+ state_path(base, sizeof base, "");
+ base[strlen(base) - 1] = '\0';
+ unlink(ai);
+ rmdir(base);
+ put_dir_mode(elsewhere, 0755);
+ if (symlink(elsewhere, base) != 0)
+  perror("symlink base");
+ chk_int("a link at the base is followed", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "x.session", "kept", 4, &o), 0);
+ snprintf(real, sizeof real, "%s/ai/x.session", elsewhere);
+ chk_has("the file is in the folder the link names", read_at(real, buf, sizeof buf), "kept");
+ chk_int("the folder it leads to is made 0700", mode_at(elsewhere), 0700);
+ own_row_end();
+}
+
+/* @scenario SC-chosen-names-06: no place of the user's is ever relative. */
+static void test_no_per_user_place_is_ever_relative(void)
+{
+ char buf[512];
+ int rc;
+
+ env_keep_all();
+ unsetenv("HOME");
+ unsetenv("XDG_STATE_HOME");
+ unsetenv("XDG_CONFIG_HOME");
+ setenv("XWPE_TEST_FAIL", "no-passwd-home", 1);
+ chk_int("no home, no state folder", wpe_state_dir(buf, sizeof buf), -1);
+ chk_int("no home, no configuration folder", wpe_config_dir(buf, sizeof buf), -1);
+ chk_int("no home, no home", wpe_user_home(buf, sizeof buf), -1);
+ setenv("HOME", "rel", 1);
+ setenv("XDG_STATE_HOME", "rel2", 1);
+ setenv("XDG_CONFIG_HOME", "rel3", 1);
+ chk_int("a relative home is no place", wpe_state_dir(buf, sizeof buf), -1);
+ chk_int("a relative configuration base is no place", wpe_config_dir(buf, sizeof buf), -1);
+ unsetenv("XWPE_TEST_FAIL");
+ unsetenv("XDG_STATE_HOME");
+ unsetenv("HOME");
+ rc = wpe_state_dir(buf, sizeof buf);
+ chk_int("with the password file, a place is absolute or there is none", rc == -1 || buf[0] == '/', 1);
+ setenv("HOME", "/h", 1);
+ chk_int("an absolute home gives the state folder", wpe_state_dir(buf, sizeof buf), 0);
+ chk_has("the state folder", buf, "/h/.local/state/xwpe");
+ setenv("XDG_STATE_HOME", "/x", 1);
+ chk_int("an absolute base wins", wpe_state_dir(buf, sizeof buf), 0);
+ chk_has("the state folder below the base", buf, "/x/xwpe");
+ unsetenv("XDG_CONFIG_HOME");
+ chk_int("the configuration folder", wpe_config_dir(buf, sizeof buf), 0);
+ chk_has("below home", buf, "/h/.config/xwpe");
+ env_restore_all();
+}
+
+/* @scenario SC-chosen-names-26: a look makes nothing; the faces refuse what they should not take. */
+static void test_a_look_makes_nothing_and_a_bad_name_is_refused(void)
+{
+ WpeOwnDir d;
+ WpeWriteOutcome o;
+ char base[512], file[512];
+
+ own_row_start();
+ state_path(base, sizeof base, "");
+ base[strlen(base) - 1] = '\0';
+ chk_int("a look at a missing folder fails", wpe_own_dir(WPE_OWN_STATE, "ai", WPE_OWN_LOOK, &d, &o), -1);
+ chk_int("with no word, only ENOENT", o.err == ENOENT && !o.planted && !o.no_place, 1);
+ chk_int("and nothing was made", mode_at(base), -1);
+ chk_int("a sub with a dot dot is refused", wpe_own_dir(WPE_OWN_STATE, "../x", WPE_OWN_MAKE, &d, &o), -1);
+ chk_int("three components are refused", wpe_own_dir(WPE_OWN_STATE, "a/b/c", WPE_OWN_MAKE, &d, &o), -1);
+ chk_int("a leaf with a slash is refused", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "a/b", "x", 1, &o), -1);
+ chk_int("it is EINVAL", o.err, EINVAL);
+ chk_int("a leaf of dots is refused", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "..", "x", 1, &o), -1);
+ chk_int("a NUL byte is written whole", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "n.bin", "a\0b", 3, &o), 0);
+ state_path(file, sizeof file, "ai/n.bin");
+ chk_int("the file is private", mode_at(file), 0600);
+ chk_int("three bytes are there", (int)size_at(file), 3);
+ own_row_end();
+}
+
+/* @scenario SC-chosen-names-27: with no home folder there is no place, and it is said. */
+static void test_with_no_home_a_write_says_there_is_no_place(void)
+{
+ WpeWriteOutcome o;
+ char say[1024];
+
+ env_keep_all();
+ unsetenv("HOME");
+ unsetenv("XDG_STATE_HOME");
+ setenv("XWPE_TEST_FAIL", "no-passwd-home", 1);
+ chk_int("a write with no state folder is refused", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "x.session", "x", 1, &o), -1);
+ chk_int("it says there is no place", o.no_place, 1);
+ chk_int("and it made no folder under the working folder", mode_at(".local"), -1);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+ chk_has("the sentence", say, "no home folder is known");
+ env_restore_all();
+}
+
+/* @scenario SC-chosen-names-28: only a regular file of ours is removed. */
+static void test_remove_takes_only_a_regular_file_of_ours(void)
+{
+ WpeWriteOutcome o;
+ char file[512], link[512], victim[512], buf[64];
+
+ own_row_start();
+ chk_int("a file is made", wpe_write_own_bytes(WPE_OWN_STATE, "ai", "x.session", "x", 1, &o), 0);
+ state_path(file, sizeof file, "ai/x.session");
+ wpe_write_own_remove(WPE_OWN_STATE, "ai", "x.session");
+ chk_int("our file is removed", mode_at(file), -1);
+ put_file("victim", "KEEP\n", 0644);
+ path_of(victim, sizeof victim, "victim");
+ state_path(link, sizeof link, "ai/y.session");
+ if (symlink(victim, link) != 0)
+  perror("symlink");
+ wpe_write_own_remove(WPE_OWN_STATE, "ai", "y.session");
+ chk_int("a link is left alone", name_is_link(link), 1);
+ chk_has("and what it names", read_at(victim, buf, sizeof buf), "KEEP");
+ wpe_write_own_remove(WPE_OWN_STATE, "nothere", "x");
+ state_path(link, sizeof link, "nothere");
+ chk_int("a remove makes no folder", mode_at(link), -1);
+ own_row_end();
+}
+
 int main(void)
 {
  WpeMouseChangeShape = stub_mouse_shape;
+ test_an_own_file_is_never_written_through_a_link();
+ test_an_own_file_at_a_dangling_link_creates_nothing();
+ test_an_old_own_file_is_replaced_by_a_new_private_file();
+ test_the_state_folder_is_made_the_users_alone();
+ test_another_users_folder_is_refused();
+ test_a_link_below_the_state_folder_is_refused();
+ test_no_per_user_place_is_ever_relative();
+ test_a_look_makes_nothing_and_a_bad_name_is_refused();
+ test_with_no_home_a_write_says_there_is_no_place();
+ test_remove_takes_only_a_regular_file_of_ours();
  WpeMouseRestoreShape = stub_mouse_restore;
  test_a_swapped_backup_is_not_written_back();
  test_a_swapped_backup_is_not_renamed_into_place();

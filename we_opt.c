@@ -1924,11 +1924,14 @@ int e_opt_file_missing(ECNT *cn)
  */
 int e_opt_say_file_missing(ECNT *cn, const char *what)
 {
- char sentence[WPE_PATH_MSG_MAX], line[WPE_PATH_MSG_MAX + 32];
+ char sentence[WPE_PATH_MSG_MAX], line[WPE_PATH_MSG_MAX + 32], home[WPE_PATH_SIZE];
 
  if (!e_opt_file_missing(cn)) return(0);
  if (!cn || !cn->fb) return(1);
- wpe_path_say_too_long(sentence, sizeof sentence, "configuration folder");
+ if (wpe_user_home(home, sizeof home) != 0)
+  snprintf(sentence, sizeof sentence, "no home folder is known, so there are no personal options");
+ else
+  wpe_path_say_too_long(sentence, sizeof sentence, "configuration folder");
  snprintf(line, sizeof line, "%s: %s", what, sentence);
  e_status_hold(line);
  e_status_paint(cn->fb, line);

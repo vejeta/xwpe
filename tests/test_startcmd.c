@@ -304,8 +304,12 @@ static void case_no_home(void)
  char *home = getenv("HOME") ? strdup(getenv("HOME")) : NULL;
  unsetenv("XDG_STATE_HOME");
  unsetenv("HOME");
+ /* with no HOME the home folder is the password file's: the seam removes
+    that step, so the row can never keep an answer in the real home */
+ setenv("XWPE_TEST_FAIL", "no-passwd-home", 1);
  expect_int("nowhere to keep answers asks", wpe_startcmd_check(proj, "PrintCmd", "lpr"), WPE_STARTCMD_ASK);
  expect_int("nowhere to keep answers keeps none", wpe_startcmd_remember(proj, "PrintCmd", "lpr", WPE_STARTCMD_YES), -1);
+ unsetenv("XWPE_TEST_FAIL");
  if (home) { setenv("HOME", home, 1); free(home); }
  setenv("XDG_STATE_HOME", state, 1);
 }

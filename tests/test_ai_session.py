@@ -32,6 +32,11 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
+# The shape of the id the CLI gives (a UUID): the editor passes only a word of
+# that shape after --resume, so the stub answers with one.
+SESSION_ID = "6d1f0a52-8c3e-4b79-a1d4-2e5f7b9c0a13"
+
+
 def _fake_claude(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -42,7 +47,7 @@ def _fake_claude(tmp_path):
         "cat >/dev/null\n"
         'echo "$@" >> "%s"\n' % log
         + "printf '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,"
-          "\"result\":\"PONG\",\"session_id\":\"sess-123\"}'\n")
+          "\"result\":\"PONG\",\"session_id\":\"%s\"}'\n" % SESSION_ID)
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     return bindir, log
 
@@ -102,11 +107,11 @@ def test_ai_session_claudecli_resume(tmp_path):
     assert "backend=claudecli" in txt and "chat done" in txt, txt
     files = _session_files(tmp_path)
     assert files, "no session file written"
-    assert "sess-123" in open(files[0]).read()
+    assert SESSION_ID in open(files[0]).read()
     assert "--resume" not in log.read_text(), "first run must not resume"
 
     txt = _chat(tmp_path, env, "again")
-    assert "--resume sess-123" in log.read_text(), log.read_text()
+    assert "--resume " + SESSION_ID in log.read_text(), log.read_text()
 
     # Alt-G n forgets the workspace session
     trace = tmp_path / "ai.trace"

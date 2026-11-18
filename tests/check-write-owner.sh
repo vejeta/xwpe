@@ -160,6 +160,32 @@
 #     pass (N2 to N5) that deletes it.  tests/seen_rows.h and the rows of
 #     tests/test_seen.c read members of the record on purpose and are held to
 #     (d) and (e) only.
+# 25. The editor's own places and the names it chooses itself are decided in
+#     one place each.  A name the editor picks (the conversation, a before
+#     image, a list for git) is written by the owner of its own folders
+#     (wpe_own_dir, wpe_write_own_bytes in we_write.c), never through a link;
+#     where the user's home, state and configuration are is decided in
+#     we_places.c.  Strings are kept and comments blanked, names bounded by
+#     word.  Each clause has its own tag in the allow file (r25a to r25h):
+#     a. wpe_write_text(, wpe_write_stream_open( and _flags( appear outside
+#        we_write.c only in the functions the allow file lists, each with how
+#        the user named the path.
+#     b. XDG_STATE_HOME, XDG_CONFIG_HOME, the piece .local/state and a ".config"
+#        piece appear only in we_places.c and we_places.h (headers and macros
+#        included).
+#     c. no working-folder substitute, and no allow line: a literal starting
+#        with a dot assigned to a name with home, dir, base, state or config in
+#        it, the literal ./.local, and a snprintf of a literal starting with a
+#        dot in a function that also calls getenv(.
+#     d. wpe_state_dir( is called only in we_places.c, write_own_base
+#        (we_write.c), wpe_crash_path_init (we_unix.c) and startcmd_state_dir
+#        (we_startcmd.c, whose unit tests link no write owner).  No allow line.
+#     e. a literal that starts with /tmp/ ends in XXXXXX (a template).
+#     f. e_ai_resume_session and e_ai_last_session_id are assigned only in
+#        wpe_ai_resume_id_take.  No allow line.
+#     g. wpe_write_own_bytes( and wpe_write_own_remove( take a WPE_OWN_ kind as
+#        their first argument, never a variable.  No allow line.
+#     h. wpe_write_bytes( appears nowhere.  No allow line.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -269,6 +295,11 @@ scan() {
     function note(rule, n) { if (ppmode) ppcnt[rule] += n; else cnt[rule] += n }
     function flush_fn(   r) {
       if (fn == "") return
+      # rule 25c: a literal that starts with a dot is the format of a snprintf
+      # in a function that also reads the environment (a place that falls back
+      # on the working folder when the variable is not set)
+      if (fn_getenv && fn_dotfmt > 0) cnt["r25c"] += fn_dotfmt
+      fn_getenv = 0; fn_dotfmt = 0
       for (r in cnt) if (cnt[r] > 0) print r, file, fn, cnt[r]
       delete cnt; delete taken; bound17 = 0
     }
@@ -467,6 +498,77 @@ scan() {
       t = m
       while (match(t, /<</)) { note("r15", 1); t = substr(t, RSTART + RLENGTH) }
     }
+    # rule 25 (the editors own places and the names it chooses), for one
+    # statement: S has its strings kept and M has them blanked.  Clauses, each
+    # its own tag:
+    #   r25a  wpe_write_text(, wpe_write_stream_open( and _flags( outside
+    #         we_write.c: a name the user typed, with its reason in the allow file
+    #   r25h  wpe_write_bytes( anywhere (the face is deleted)
+    #   r25b  XDG_STATE_HOME, XDG_CONFIG_HOME, .local/state or a ".config"
+    #         piece outside we_places.c and we_places.h
+    #   r25c  a name of a place that is the working folder: a literal that
+    #         starts with a dot assigned to home, dir, base, state or config,
+    #         the literal ./.local, and a snprintf of a literal that starts
+    #         with a dot in a function that also calls getenv(
+    #   r25d  wpe_state_dir( outside we_places.c, write_own_base (we_write.c)
+    #         and wpe_crash_path_init (we_unix.c)
+    #   r25e  a literal that starts with /tmp/ and does not end in XXXXXX
+    #   r25f  e_ai_resume_session or e_ai_last_session_id assigned outside
+    #         wpe_ai_resume_id_take
+    #   r25g  wpe_write_own_bytes( or wpe_write_own_remove( whose first
+    #         argument does not start with WPE_OWN_ (a kind, never a variable)
+    function note25(s, m,   t, p, a, lit) {
+      if (file == "we_places.c" || file == "we_places.h") return
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])wpe_write_bytes[ \t]*[(]/)) { note("r25h", 1); t = substr(t, RSTART + RLENGTH) }
+      if (file != "we_write.c") {
+        t = m
+        while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_write_text|wpe_write_stream_open|wpe_write_stream_open_flags)[ \t]*[(]/)) { note("r25a", 1); t = substr(t, RSTART + RLENGTH) }
+        t = m
+        while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_write_own_bytes|wpe_write_own_remove)[ \t]*[(]/)) {
+          p = RSTART + RLENGTH - 1
+          a = nth_arg(t, p, 1)
+          if (a !~ /^WPE_OWN_/) note("r25g", 1)
+          t = substr(t, p + 1)
+        }
+      }
+      t = s
+      while (match(t, /XDG_(STATE|CONFIG)_HOME/)) { note("r25b", 1); t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, "[.]local/state")) { note("r25b", 1); t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, "[\"/][.]config")) { note("r25b", 1); t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, "[A-Za-z_0-9]*(home|dir|base|state|config)[A-Za-z_0-9]*[ \t]*=[ \t]*\"[.]")) { note("r25c", 1); t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, "[.]/[.]local")) { note("r25c", 1); t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, "snprintf[ \t]*[(][^,]*,[^,]*,[ \t]*\"[.]")) { fn_dotfmt++; t = substr(t, RSTART + RLENGTH) }
+      if (m ~ /(^|[^A-Za-z0-9_.>])getenv[ \t]*[(]/) fn_getenv = 1
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])wpe_state_dir[ \t]*[(]/)) {
+        if (!(file == "we_write.c" && fn == "write_own_base") && !(file == "we_unix.c" && fn == "wpe_crash_path_init") && !(file == "we_startcmd.c" && fn == "startcmd_state_dir")) note("r25d", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
+      t = s
+      while (match(t, "\"/tmp/[^\"]*\"")) {
+        lit = substr(t, RSTART, RLENGTH)
+        if (lit !~ /XXXXXX"$/) note("r25e", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])(e_ai_resume_session|e_ai_last_session_id)[ \t]*=[^=]/)) {
+        if (fn != "wpe_ai_resume_id_take") note("r25f", 1)
+        t = substr(t, RSTART + RLENGTH - 1)
+      }
+    }
+    # the same tokens on a preprocessor line, where a macro may carry them
+    function note25_pp(raw) {
+      if (file == "we_places.c" || file == "we_places.h") return
+      while (match(raw, /XDG_(STATE|CONFIG)_HOME/)) { note("r25b", 1); raw = substr(raw, RSTART + RLENGTH) }
+      while (match(raw, "[.]local/state")) { note("r25b", 1); raw = substr(raw, RSTART + RLENGTH) }
+      while (match(raw, "[\"/][.]config")) { note("r25b", 1); raw = substr(raw, RSTART + RLENGTH) }
+    }
     function statement(s,   t, p, q, e, rest, name, v, c, m, ident) {
       # a test source is held to rule 24 only (clauses d and e)
       if (tests == 1) { m = s; gsub(/"([^"\\]|\\.)*"/, "\"\"", m); note24_tests(m); return }
@@ -521,6 +623,8 @@ scan() {
       while (match(m, /Can[\\\047]*t open File/)) { note("r6", 1); m = substr(m, RSTART + RLENGTH) }
       # rules 8, 9 and 10 look at code: the strings are blanked
       m = s; gsub(/"([^"\\]|\\.)*"/, "\"\"", m)
+      # rule 25: the editors own places and the names it chooses
+      note25(s, m)
       # rule 24 (clauses a to d): the identity of an object is judged in we_seen.c
       note24_inside(m)
       note24_everywhere(m)
@@ -625,7 +729,7 @@ scan() {
         if (tests == 1) next
         while (match(pp, /(^|[^A-Za-z0-9_])filemode([^A-Za-z0-9_]|$)/)) { pp15++; pp = substr(pp, RSTART + RLENGTH - 1) }
         # rule 24: a macro may carry an inode, a stamp or a statx call too
-        ppmode = 1; note24_inside(pp); note24_everywhere(pp); ppmode = 0
+        ppmode = 1; note24_inside(pp); note24_everywhere(pp); note25_pp(out); ppmode = 0
         next
       }
       # a table of strings at file scope is named by its array, not by the
@@ -660,7 +764,7 @@ scan_tests() {
 # inline function), except the member declaration of the window (`int
 # filemode`), which scan leaves out.
 scan_header_mode() {
-  scan "$1" | awk '$1 == "r15" || $1 ~ /^r24/'
+  scan "$1" | awk '$1 == "r15" || $1 ~ /^r24/ || $1 == "r25b"'
 }
 
 # --selftest: each rule must name its offence in a fixture.
@@ -1107,7 +1211,153 @@ int fake_row(struct stat a, struct stat b, struct stat *p)
  return(wpe_write_identity_is(&o.written, a.st_dev, a.st_ino));
 }
 EOF
+  # rule 25: one fixture for each clause, and the shapes that are no offence.
+  # (a) the three by-name faces and (h) the deleted one, (b) the places read
+  # by hand, (c) a place that falls back on the working folder in three
+  # spellings and in a second function, (d) the state folder asked outside
+  # its resolver, (e) a fixed name in /tmp, (f) the resume ids assigned, (g) an
+  # own face given a variable.  The files named we_places.c, we_write.c and
+  # we_unix.c are the owners and are exempt where the rule says so.
+  cat > "$WORK/we_fake_r25.c" <<'EOF'
+int fake_by_name(const char *p, const char *t, WpeWriteOutcome *o)
+{
+ char *say = "wpe_write_text( is in a string";
+ /* wpe_write_stream_open(p, o) in a comment */
+ int fine = j->wpe_write_text(p, t, o);
+ int a = wpe_write_text(p, t, o);
+ FILE *b = wpe_write_stream_open(p, o);
+ FILE *c = wpe_write_stream_open_flags(p, 1, o);
+ return(wpe_write_bytes(p, t, 4, o) + fine);
+}
+int fake_places(char *buf, size_t n)
+{
+ const char *x = getenv("XDG_STATE_HOME");
+ const char *y = getenv("XDG_CONFIG_HOME");
+ const char *say = "my.config is no piece";
+ const char *dir = ".config";
+ /* XDG_STATE_HOME in a comment is no offence */
+ snprintf(buf, n, "%s/.local/state/xwpe", x);
+ return(y != NULL);
+}
+int fake_home(char *buf, size_t n)
+{
+ const char *home = ".";
+ const char *fine = "/";
+ const char *name = ".";
+ const char *want = getenv("HOME");
+ if (home == NULL || want == NULL)
+  return(0);
+ return(home != fine);
+}
+int fake_dot_base(char *buf, size_t n)
+{
+ char *base = "./x";
+ char *path = "./.local/state/xwpe";
+ return(base != path);
+}
+int fake_consent(char *buf, size_t n)
+{
+ const char *home = getenv("HOME");
+ if (home)
+  snprintf(buf, n, "%s/plain", home);
+ else
+  snprintf(buf, n, ".xwpe_ai_consented");
+ return(0);
+}
+int fake_no_getenv(char *buf, size_t n)
+{
+ snprintf(buf, n, ".hidden-name");
+ return(0);
+}
+int fake_state(char *buf, size_t n)
+{
+ return(wpe_state_dir(buf, n));
+}
+int fake_tmp(void)
+{
+ FILE *a = fopen("/tmp/xwpe-fixed.txt", "a");
+ char *t = "/tmp/xwpe_XXXXXX";
+ char *d = "/tmp";
+ return(mkdtemp(t) != NULL);
+}
+int fake_resume(const char *s)
+{
+ e_ai_resume_session = ws_strdup(s);
+ e_ai_last_session_id = NULL;
+ if (e_ai_resume_session == NULL)
+  return(0);
+ return(wpe_ai_resume_id_take(&e_ai_resume_session, s));
+}
+int wpe_ai_resume_id_take(char **slot, const char *s)
+{
+ e_ai_resume_session = *slot;
+ return(0);
+}
+int fake_own(int kind, WpeWriteOutcome *o)
+{
+ int a = wpe_write_own_bytes(WPE_OWN_STATE, "ai", "x.session", "t", 1, o);
+ int b = wpe_write_own_bytes(kind, "ai", "x.session", "t", 1, o);
+ wpe_write_own_remove(d, "ai", "x.session");
+ wpe_write_own_remove(WPE_OWN_RUN, NULL, "x");
+ return(a + b);
+}
+#define FAKE_DIR ".config"
+EOF
+  mkdir "$WORK/r25" || exit $BAD
+  cat > "$WORK/r25/we_places.c" <<'EOF'
+int wpe_state_dir(char *buf, size_t n)
+{
+ const char *x = getenv("XDG_STATE_HOME");
+ const char *home = ".";
+ snprintf(buf, n, "%s/.local/state/xwpe", x);
+ return(wpe_state_dir(buf, n));
+}
+EOF
+  mkdir "$WORK/r25w" || exit $BAD
+  cat > "$WORK/r25w/we_write.c" <<'EOF'
+static int write_own_base(WpeOwnKind kind, char *buf, size_t n)
+{
+ return(wpe_state_dir(buf, n));
+}
+static int write_other(char *buf, size_t n)
+{
+ return(wpe_state_dir(buf, n) + wpe_write_text(buf, "x", 0));
+}
+int wpe_write_own_bytes(WpeOwnKind kind, const char *sub, const char *leaf, const char *bytes,
+                        size_t len, WpeWriteOutcome *o)
+{
+ return(wpe_write_stream_open(sub, o) != NULL);
+}
+EOF
+  mkdir "$WORK/r25u" || exit $BAD
+  cat > "$WORK/r25u/we_unix.c" <<'EOF'
+static void wpe_crash_path_init(void)
+{
+ wpe_state_dir(wpe_crash_dir, sizeof wpe_crash_dir);
+}
+EOF
+  mkdir "$WORK/r25s" || exit $BAD
+  cat > "$WORK/r25s/we_startcmd.c" <<'EOF'
+static int startcmd_state_dir(char *out, size_t sz)
+{
+ return wpe_state_dir(out, sz) == 0 ? 0 : -1;
+}
+static int startcmd_other(char *out, size_t sz)
+{
+ return wpe_state_dir(out, sz);
+}
+EOF
+  cat > "$WORK/we_fake_r25.h" <<'EOF'
+#define WPE_STATE_BELOW ".local/state"
+#define WPE_ENV "XDG_CONFIG_HOME"
+EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
+  scan "$WORK/we_fake_r25.c" >> "$WORK/fake.found"
+  scan "$WORK/r25/we_places.c" >> "$WORK/fake.found"
+  scan "$WORK/r25w/we_write.c" >> "$WORK/fake.found"
+  scan "$WORK/r25u/we_unix.c" >> "$WORK/fake.found"
+  scan "$WORK/r25s/we_startcmd.c" >> "$WORK/fake.found"
+  scan_header_mode "$WORK/we_fake_r25.h" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r24.c" >> "$WORK/fake.found"
   scan_header_mode "$WORK/we_fake_r24.h" >> "$WORK/fake.found"
   scan "$WORK/r24/we_seen.c" >> "$WORK/fake.found"
@@ -1170,7 +1420,17 @@ EOF
               "r15 we_fake_r15b.c write_mode_before_data 3" \
               "r15 we_fake_r15d.c write_mode_before_data 3" \
               "r15 we_fake.h (preprocessor) 1" \
-              "r15 we_fake2.h - 1" "r15 we_fake3.h window_mode 1"; do
+              "r15 we_fake2.h - 1" "r15 we_fake3.h window_mode 1" \
+              "r25a we_fake_r25.c fake_by_name 3" "r25h we_fake_r25.c fake_by_name 1" \
+              "r25b we_fake_r25.c fake_places 4" "r25c we_fake_r25.c fake_places 1" \
+              "r25c we_fake_r25.c fake_home 1" \
+              "r25c we_fake_r25.c fake_dot_base 2" "r25b we_fake_r25.c fake_dot_base 1" \
+              "r25c we_fake_r25.c fake_consent 1" \
+              "r25d we_fake_r25.c fake_state 1" "r25e we_fake_r25.c fake_tmp 1" \
+              "r25f we_fake_r25.c fake_resume 2" "r25g we_fake_r25.c fake_own 2" \
+              "r25b we_fake_r25.c (preprocessor) 1" \
+              "r25d we_write.c write_other 1" "r25d we_startcmd.c startcmd_other 1" \
+              "r25b we_fake_r25.h (preprocessor) 2"; do
     grep -qx "$want" "$WORK/fake.found" || {
       echo "check-write-owner: FAIL (selftest: the scan does not name \"$want\"; it found:)"
       cat "$WORK/fake.found"
@@ -1192,6 +1452,13 @@ EOF
   # the two functions rule 21 allows, with a look, are no offence
   if grep -q "^r21 we_ai_fake.c wpe_ai_write_judged_file " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: the assistant's write with a look was counted by rule 21; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  # rule 25: the owners (we_places.c, and in we_write.c and we_unix.c the one
+  # function that asks for the state folder) and the shapes that are no offence
+  if grep -q "^r25[a-h] we_places.c \|^r25d we_write.c write_own_base \|^r25a we_write.c \|^r25g we_write.c \|^r25d we_unix.c \|^r25d we_startcmd.c startcmd_state_dir \|^r25c we_fake_r25.c fake_no_getenv \|^r25f we_fake_r25.c wpe_ai_resume_id_take " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: an owner or a shape rule 25 allows was counted; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
@@ -1302,7 +1569,7 @@ for f in "$SRCDIR"/we_*.c "$SRCDIR"/We*.c; do
   # makes and moves names and copies bytes, and the line endings owner
   # (we_lineend.c) walks rows, so each is exempt from the rule it is the owner of
   case ${f##*/} in
-    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15" || $1 == "r16" || $1 == "r20" || $1 ~ /^r24/' >> "$WORK/srcfound"; continue ;;
+    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15" || $1 == "r16" || $1 == "r20" || $1 ~ /^r24/ || $1 ~ /^r25/' >> "$WORK/srcfound"; continue ;;
     we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
     we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11" && $1 != "r12" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
   esac
@@ -1382,6 +1649,22 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": the file the user was shown is passed to wpe_fileop_chmod_shown or wpe_write_set_perm_seen as something other than NULL or a WpeSeen called shown.  A struct stat there compiles (incompatible pointers are accepted) and is compared by inode number: take a WpeSeen with wpe_seen_look_name next to the dialog'"'"'s stat"
       else if (rule == "r24e")
         print "offender: " $1 " " $2 ": a test asserts \"another inode\" by comparing st_ino with nothing held.  A file system may give the first number to the newcomer: assert it with other_object_while_held (tests/seen_rows.h), which takes the descriptor that holds the first object"
+      else if (rule == "r25a")
+        print "offender: " $1 " " $2 ": wpe_write_text, wpe_write_stream_open or wpe_write_stream_open_flags writes a name the user typed or opened.  A name the editor chose (a conversation, a before image, a list for git) goes through wpe_write_own_bytes or wpe_write_copy, which never write through a link.  List the function with the way the user named the path, or move it"
+      else if (rule == "r25h")
+        print "offender: " $1 " " $2 ": wpe_write_bytes opens a name by name with O_TRUNC and follows a link.  It is deleted: write a file of the editor'"'"'s own folder with wpe_write_own_bytes.  No allow line"
+      else if (rule == "r25b")
+        print "offender: " $1 " " $2 ": XDG_STATE_HOME, XDG_CONFIG_HOME, .local/state or a .config piece outside we_places.c.  The place of the user'"'"'s home, state and configuration is decided in one file: ask wpe_user_home, wpe_state_dir or wpe_config_dir.  A site still to move is a line of the allow file with its pass"
+      else if (rule == "r25c")
+        print "offender: " $1 " " $2 ": a place of the user'"'"'s falls back on the working folder (home = \".\", ./.local, a snprintf of a dot name beside a getenv).  The folder the editor was started in may belong to a repository the user only cloned: with no home folder there is no place, and the caller says so.  No allow line"
+      else if (rule == "r25d")
+        print "offender: " $1 " " $2 ": wpe_state_dir is called outside we_places.c, write_own_base (we_write.c), wpe_crash_path_init (we_unix.c) and startcmd_state_dir (we_startcmd.c).  A feature asks wpe_own_dir for its folder, which judges it, and never builds the path itself.  No allow line"
+      else if (rule == "r25e")
+        print "offender: " $1 " " $2 ": a literal that starts with /tmp/ and is not a mkstemp or mkdtemp template (ending in XXXXXX) is a fixed name in a folder others can write.  A site still to move is a line of the allow file with its pass"
+      else if (rule == "r25f")
+        print "offender: " $1 " " $2 ": e_ai_resume_session or e_ai_last_session_id is assigned outside wpe_ai_resume_id_take.  The word after --resume is an id or nothing: go through the setter.  No allow line"
+      else if (rule == "r25g")
+        print "offender: " $1 " " $2 ": wpe_write_own_bytes or wpe_write_own_remove is called with a first argument that is not a WPE_OWN_ kind.  The owner judges its own folder; a variable there could carry a folder nobody judged.  No allow line"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else

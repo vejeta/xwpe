@@ -148,7 +148,10 @@ so a habitual @kbd{Alt-G a} still lands straight in Ask on the first use.  The
 acceptance is remembered in a marker file,
 @file{$XDG_CONFIG_HOME/xwpe/ai_consented} or, with that variable unset,
 @file{~/.config/xwpe/ai_consented}; starting with @env{XWPE_AI_ENABLE} set or
-with @env{XWPE_AI_CONSENTED=1} skips the notice.
+with @env{XWPE_AI_CONSENTED=1} skips the notice.  With no home folder known
+there is no such file: nothing is remembered and the notice is shown at every
+start, and a marker file in the folder you started the editor in is never
+taken for your consent.
 
 @section Backends
 
@@ -601,7 +604,9 @@ writes go through automatically; commands still ask.
 @item @code{auto}
 everything inside the workspace runs unattended; you review the result
 afterwards.  Reads and writes beyond the workspace still ask, and so do writes
-to the files inside it that run code (below).
+to the files inside it that run code (below).  The commands it runs have your
+whole environment, your files and the network: the workspace limits what the
+editor's own tools write, not what a command can reach.
 @end table
 
 The dial decides how much you are asked about work @emph{inside} the
@@ -1031,10 +1036,18 @@ stored but past the budget, @samp{(older than the saved session)} when the
 transcript has already dropped them, and both counts when both happen.  The
 line comes back only when N changes, not on every turn.  @code{claudecli}
 resumes its own session and keeps its own history, so it shows no such line.
-It is stored beside the project file (as @file{.xwpe-ai-session}) when a project
-is open, otherwise under @file{$XDG_STATE_HOME/xwpe/ai/} (default
-@file{~/.local/state/xwpe/ai/}).  @kbd{Alt-G n}, @samp{Clear conversation},
-forgets the current session and starts fresh.
+It is kept in your state folder, @file{$XDG_STATE_HOME/xwpe/ai/} (default
+@file{~/.local/state/xwpe/ai/}), one file for each project or folder, readable
+by you alone.  It is never kept in the project, and a
+@file{.xwpe-ai-session} an older editor left in a project is neither read nor
+written; when a project's folder holds one, the first chat turn says in one
+pane line that it is no longer read and may be deleted.  A conversation file the editor did not write is not resumed: a file
+with a turn that is not yours or the assistant's, a resume word that is not a
+session id, or a file kept for another project or folder is left alone and the
+talk starts fresh.  With no home folder known the editor has no state folder,
+says once that the conversation is not kept, and the assistant works as usual.
+@kbd{Alt-G n}, @samp{Clear conversation}, forgets the current session and
+starts fresh.
 
 @section Configuration
 

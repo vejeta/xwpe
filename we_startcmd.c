@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "we_places.h"
 #include "we_platform.h"
 
 #ifndef O_NOFOLLOW
@@ -157,20 +158,14 @@ int wpe_startcmd_resolve_folder(const char *folder, char *out, size_t sz)
 /**
  * startcmd_state_dir - The folder that holds the store.
  * @out/@sz: receive it.
- * Return: 0, or -1 when neither $XDG_STATE_HOME nor $HOME is set.
+ * Return: 0, or -1 when the editor has no state folder (no absolute
+ * $XDG_STATE_HOME and no home folder).  The place is decided in one
+ * function, wpe_state_dir (we_places.c), as for every other file the editor
+ * keeps.
  */
 static int startcmd_state_dir(char *out, size_t sz)
 {
- const char *xdg = getenv("XDG_STATE_HOME"), *home = getenv("HOME");
- int n;
- if (xdg && *xdg)
-  n = snprintf(out, sz, "%s/%s", xdg, WPE_STARTCMD_STATE_SUBDIR);
- else if (home && *home)
-  n = snprintf(out, sz, "%s/%s/%s", home, WPE_STARTCMD_STATE_DEFAULT, WPE_STARTCMD_STATE_SUBDIR);
- else
-  return -1;
- if (n < 0 || (size_t)n >= sz) return -1;
- return 0;
+ return wpe_state_dir(out, sz) == 0 ? 0 : -1;
 }
 
 /**
@@ -545,6 +540,8 @@ static int startcmd_write_records(FILE *fp, const startcmd_store *s)
  return 0;
 }
 
+static int startcmd_dir_private(const char *dir);
+
 /**
  * startcmd_make_dirs - Make the state folder, and the folders above it below
  * the base, each the user's alone.
@@ -554,7 +551,6 @@ static int startcmd_write_records(FILE *fp, const startcmd_store *s)
 static int startcmd_make_dirs(const char *dir)
 {
  char path[WPE_STARTCMD_FOLDER_MAX];
- struct stat st;
  size_t i, n = strlen(dir);
  if (n == 0 || n >= sizeof path) return -1;
  memcpy(path, dir, n + 1);
@@ -564,10 +560,29 @@ static int startcmd_make_dirs(const char *dir)
   if (mkdir(path, STARTCMD_DIR_MODE) != 0 && errno != EEXIST) return -1;
   if (i < n) path[i] = '/';
  }
- if (lstat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
- if ((st.st_mode & 0777) != STARTCMD_DIR_MODE && chmod(dir, STARTCMD_DIR_MODE) != 0)
-  return -1;                           /* an existing one is made the user's alone */
- return 0;
+ return startcmd_dir_private(dir);
+}
+
+/**
+ * startcmd_dir_private - Judge the state folder and make it the user's alone.
+ * @dir: the folder.
+ * Return: 0 when it is a folder of the user's afterwards, else -1.
+ *
+ * The folder is opened as a folder, a link at it followed (a state folder
+ * kept in a dotfiles tree is the user's choice, as for every other feature),
+ * and judged and tightened on that descriptor, never by name.
+ */
+static int startcmd_dir_private(const char *dir)
+{
+ struct stat st;
+ int fd, ok;
+ fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+ if (fd < 0) return -1;
+ ok = fstat(fd, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == geteuid();
+ if (ok && (st.st_mode & 0777) != STARTCMD_DIR_MODE)
+  ok = fchmod(fd, STARTCMD_DIR_MODE) == 0;   /* an existing one is made the user's alone */
+ close(fd);
+ return ok ? 0 : -1;
 }
 
 /**

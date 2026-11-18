@@ -35,7 +35,8 @@ def test_no_home_does_not_read_the_start_folders_syntax_file(tmp_path):
     work.mkdir()
     with WpeSession(str(work), PASCAL_LINE, filename="t.p", wait=2.0,
                     cols=100,
-                    env_extra={"HOME": None, "XWPE_LIB": str(no_lib)}) as w:
+                    env_extra={"HOME": None, "XWPE_LIB": str(no_lib),
+                               "XWPE_TEST_FAIL": "no-passwd-home"}) as w:
         assert w.alive(), "the editor died starting without HOME"
         assert os.path.exists(os.path.join(str(work), ".xwpe", "syntax_def")), \
             "the start folder's syntax file is not in place"
