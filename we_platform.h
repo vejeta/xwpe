@@ -98,6 +98,54 @@ static inline struct timespec wpe_platform_whole_seconds(time_t seconds)
 #endif
 
 /**
+ * WPE_PLATFORM_STATX_BTIME - Does the system have statx with a birth time?
+ * WPE_PLATFORM_STAT_BIRTH - Which member of struct stat carries a birth time.
+ *
+ * Linux (glibc 2.28 and later) gives a file's birth time through statx, and
+ * only the kernel sets it.  FreeBSD and NetBSD name it st_birthtim, macOS
+ * st_birthtimespec, and there the file's owner can set it.  OpenBSD and old
+ * Linux headers have neither: no birth time, and the owner of "is this the
+ * object I saw" (we_seen.c) then answers "not proven" for a touched file.
+ * Always defined, to 0 or 1; the member is one of the three
+ * WPE_PLATFORM_STAT_BIRTH* values.
+ */
+#if defined(HAVE_STATX) && defined(HAVE_DECL_STATX_BTIME) && HAVE_DECL_STATX_BTIME
+# define WPE_PLATFORM_STATX_BTIME 1
+# include <fcntl.h>
+# include <sys/sysmacros.h>   /* makedev, to name the device statx reports */
+#else
+# define WPE_PLATFORM_STATX_BTIME 0
+#endif
+/**
+ * WPE_PLATFORM_STATFS_KIND - How a program reads the name of a file system.
+ *
+ * Linux gives a magic number in f_type of statfs (<sys/vfs.h>); FreeBSD,
+ * NetBSD, OpenBSD and macOS give the name in f_fstypename (<sys/mount.h>).
+ * Where neither is there, a test says it cannot tell.  Always defined.
+ */
+#define WPE_PLATFORM_STATFS_NONE        0
+#define WPE_PLATFORM_STATFS_F_TYPE      1
+#define WPE_PLATFORM_STATFS_FSTYPENAME  2
+#if defined(HAVE_STRUCT_STATFS_F_FSTYPENAME)
+# define WPE_PLATFORM_STATFS_KIND WPE_PLATFORM_STATFS_FSTYPENAME
+#elif defined(HAVE_SYS_VFS_H)
+# define WPE_PLATFORM_STATFS_KIND WPE_PLATFORM_STATFS_F_TYPE
+#else
+# define WPE_PLATFORM_STATFS_KIND WPE_PLATFORM_STATFS_NONE
+#endif
+
+#define WPE_PLATFORM_STAT_BIRTH_NONE         0
+#define WPE_PLATFORM_STAT_BIRTHTIM           1
+#define WPE_PLATFORM_STAT_BIRTHTIMESPEC      2
+#if defined(HAVE_STRUCT_STAT_ST_BIRTHTIM)
+# define WPE_PLATFORM_STAT_BIRTH WPE_PLATFORM_STAT_BIRTHTIM
+#elif defined(HAVE_STRUCT_STAT_ST_BIRTHTIMESPEC)
+# define WPE_PLATFORM_STAT_BIRTH WPE_PLATFORM_STAT_BIRTHTIMESPEC
+#else
+# define WPE_PLATFORM_STAT_BIRTH WPE_PLATFORM_STAT_BIRTH_NONE
+#endif
+
+/**
  * WPE_X11_DEFAULT_ALTMASK - The X modifier the editor takes as Alt when the
  * display's own modifier map says nothing.
  *

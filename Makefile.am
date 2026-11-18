@@ -93,6 +93,7 @@ we_SOURCES = \
   we_startcmd.c \
   we_startplan.c \
   we_path.c \
+  we_seen.c \
   we_number.c \
   we_progname.c \
   we_listsel.c \
@@ -276,6 +277,7 @@ noinst_HEADERS = \
   we_startcmd.h \
   we_startplan.h \
   we_path.h \
+  we_seen.h \
   we_number.h \
   we_progname.h \
   we_listsel.h \
@@ -544,6 +546,15 @@ test_fileop_CFLAGS = $(TEST_CFLAGS)
 check_PROGRAMS += test_testdir
 test_testdir_SOURCES = tests/test_testdir.c tests/testdir.h tests/fakechmod.h
 test_testdir_CFLAGS = $(TEST_CFLAGS)
+
+# The owner of "is this the object I saw" (we_seen.c): the judge's table
+# built by hand, the held folder, and the rows that need a file system that
+# gives an inode number back.  Those rows run on a disk file system (the
+# build tree, or XWPE_TEST_REUSE_DIR) and print which one; on one that never
+# gives a number back they say SKIP and why.
+check_PROGRAMS += test_seen
+test_seen_SOURCES = tests/test_seen.c tests/seen_rows.h tests/testdir.h we_seen.c
+test_seen_CFLAGS = $(TEST_CFLAGS)
 
 # The same owner behind a line protocol, for the edit model's walks
 # (tests/edit_model/cdriver.py).  Built by `make check`, not run by it.
@@ -964,6 +975,11 @@ TESTS += tests/check-bsd-known-failures.sh
 # test_testdir); tests/check-mode-premise.sh fails a test that does it
 # without.
 TESTS += test_testdir tests/check-mode-premise.sh
+
+# The owner of "is this the object I saw" (we_seen.c, tested by test_seen):
+# a record kept from an earlier moment is judged SAME, OTHER or UNSURE, never
+# by an inode number alone.
+TESTS += test_seen
 
 # One owner of what the editor decides about a program it starts: the
 # start plan (we_startplan.c).  Every line of the start sites that builds a

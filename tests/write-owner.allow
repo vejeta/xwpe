@@ -171,3 +171,74 @@ we_fl_unix.c|r16:e_ed_man|3|P2e|the man page's temporary output, in the editor's
 we_fl_unix.c|r16:e_man_give_up|1|P2e|the man page's temporary output, in the editor's own 0700 folder
 we_startcmd.c|r16:startcmd_make_dirs|1|P2e|the start command's folder under the user's own state folder; an existing folder may be chmod'ed
 we_xterm.c|r16:e_x_system_script|1|P2e|the external terminal's script, in the editor's own 0700 folder
+
+# rule 24: whether a file is the one the editor saw earlier is judged in
+# we_seen.c, by wpe_seen_judge, never by an inode number kept from an earlier
+# moment (a file system gives a number back after its file is gone).
+# Clause a (r24a) is st_ino and st_dev, d (r24d) the folder numbers kept by
+# hand and the three-argument identity question, e (r24e) a test that asserts
+# "another inode" with nothing held, f (r24f) the file the user was shown
+# passed to the mode owner as anything but a WpeSeen called shown.  Each pass
+# deletes the rows of the sites it moves onto the owner: N2 the write owner and
+# the assistant's look, N3 the mode owner, N4 the assistant's checkpoint and
+# window lookup, N5 the two-look sites and the tests.
+# Two sites compare the .dev and .ino members of an old record and spell no
+# st_ino, so clause a cannot list them:
+#  - the assistant's remembered Yes (we_ai_ui.c, the ai_linked_yes record and
+#    ai_linked_yes_recalls and _remember).  It belongs to N4, but it stops
+#    compiling in N2, when WpeWriteExpect loses its dev and ino members, so N2
+#    must keep it building and N4 moves it onto a WpeSeen.
+#  - the Attributes dialog (we_fl_unix.c, WpeFileDirAttributes).  It passes a
+#    struct stat as the shown record through wpe_fileop_chmod_shown into
+#    wpe_write_set_perm_seen, and the build accepts that incompatible pointer,
+#    so nothing breaks when the type changes.  Clause f lists it (r24f rows
+#    below); N3 must move it by hand onto a WpeSeen called shown.
+# N2: the write owner
+we_write.c|r24a:wpe_write_identity_take|2|N2|the window's record is taken from the open's fstat, before the text
+we_write.c|r24d:wpe_write_identity_is|1|N2|the identity question takes a device and an inode by hand
+we_write.c|r24d:wpe_write_identity_differs|1|N2|the identity question takes a device and an inode by hand
+we_write.h|r24d:-|2|N2|the prototypes of the two identity questions
+we_write.c|r24a:write_purpose_for_target|2|N2|site 1: the window's own file by a remembered number
+we_write.c|r24a:write_target_expected|2|N2|site 4: the file opened is the one the look saw
+we_write.c|r24a:write_replaced_may_go_on|2|N2|site 5: the Yes was about this file
+we_write.c|r24a:wpe_write_copy_remove|2|N2|site 3: the .ASV or .ESV this window made
+we_write.c|r24d:wpe_write_copy_remove|1|N2|site 3: the identity question with a device and an inode
+we_ai_path.c|r24a:path_look_leaf|2|N2|the assistant's look feeds the write's expectation
+# N3: the mode owner
+we_write.c|r24a:write_mode_same_file|4|N3|site 11: the descriptor is the file lstat saw
+we_write.c|r24a:write_mode_shown_kind|2|N3|site 7: a link took the name, or another file
+we_write.c|r24a:wpe_write_name_seen|2|N3|site 7: the name's record
+we_write.c|r24a:wpe_write_add_perm|2|N3|site 8: Ctrl-F9 builds the shown record from the window's
+we_write.c|r24f:wpe_write_set_perm_seen|1|N3|the definition takes the shown record as a struct stat
+we_write.h|r24f:wpe_write_set_perm_seen|1|N3|the prototype takes the shown record as a struct stat
+we_fileop.c|r24f:wpe_fileop_chmod_shown|1|N3|the definition takes the shown record as a struct stat
+we_fileop.h|r24f:wpe_fileop_chmod_shown|1|N3|the prototype takes the shown record as a struct stat
+we_fl_unix.c|r24f:WpeFileDirAttributes|1|N3|the Attributes dialog passes its struct stat as the shown record
+# N4: the assistant
+we_ai_ws.c|r24a:ws_record_root|2|N4|site 9: the workspace folder's number kept by hand
+we_ai_ws.c|r24d:ws_record_root|2|N4|site 9: ck_rdev and ck_rino
+we_ai_ws.c|r24a:ws_root_unchanged|2|N4|site 9: the revert trusts the folder by its number
+we_ai_ws.c|r24d:ws_root_unchanged|2|N4|site 9: ck_rdev and ck_rino
+we_ai_ws.c|r24d:ck_clear|2|N4|site 9: ck_rdev and ck_rino reset
+we_ai_ws.c|r24d:wpe_ai_read_scope_file|2|N4|the file-scope declarations of ck_rdev and ck_rino, counted under the function above them
+we_ai_ws.c|r24d:ws_window_of_file|1|N4|site 2: which window is open on a file, by a device and an inode
+we_ai_ws.c|r24d:wpe_ai_window_file_replaced|1|N4|site 2: the file was replaced, by a device and an inode
+we_ai_ws.c|r24a:ws_mode_of_file|4|N4|site 16: lstat, open and fstat agree
+# N5: the two-look sites and the tests
+we_write.c|r24a:write_backup_source|4|N5|site 13: the backup reads the file the write holds
+we_write.c|r24a:write_bak_is_ours|4|N5|site 14: the .bak is the one the backup made
+we_write.c|r24a:write_restore_by_rename_ok|4|N5|site 15: the name is the file the write used
+we_fileop.c|r24a:fileop_job_judge_dst|4|N5|site 17: source and destination are one file
+we_fileop.c|r24a:fileop_job_names_target_of_source|4|N5|site 17: source and destination are one file
+we_opt.c|r24a:e_opt_same_file|4|N5|site 18: two option files are one
+we_prog.c|r24a:e_prj_same_file|4|N5|site 19: two project paths are one
+we_startplan.c|r24a:startplan_add_program_startup|4|N5|site 21: a file is the one in HOME
+we_startplan.c|r24a:startplan_same_file_as_in|4|N5|site 21: a file is the one in HOME
+we_child.c|r24a:wpe_child_tty_name_is|4|N5|site 22: the name is the terminal on the descriptor
+test_write_owner.c|r24d:test_the_assistants_write_asks_about_a_replaced_file|1|N2|a test of the identity question with a device and an inode
+test_write_owner.c|r24e:test_an_old_copy_of_ours_is_replaced_by_a_new_inode|1|N5|C-03: "a new inode" asserted by number
+test_ai_scope.c|r24e:look_name_cases|1|N5|the look's inode compared with nothing held
+test_testdir.c|r24e:test_put_mode_makes_a_new_file_with_its_mode|1|N5|the file is held by a second name made before
+# kept
+we_seen.c|r8:seen_read_link_text|1|keep|reads a link's target text to word a sentence; nothing is made, moved or removed
+we_startcmd.c|r24a:built_rec_identify|2|keep|the built-outputs store writes the numbers to disk and asks "unchanged", never "same": it also compares size, mtime and ctime in nanoseconds

@@ -191,6 +191,35 @@ AC_CHECK_MEMBERS([struct stat.st_mtim, struct stat.st_ctim,
                   struct stat.st_mtimespec, struct stat.st_ctimespec],
                  [], [], [[#include <sys/types.h>
 #include <sys/stat.h>]])
+
+# What the owner of "is this the object I saw" (we_seen.c) can ask a system:
+# the birth time of a file (statx and its STATX_BTIME on Linux, st_birthtim on
+# FreeBSD and NetBSD, st_birthtimespec on macOS).  A system with none of them
+# still builds: a touched file is then "not proven the same" and the user is
+# asked.  STATX_BTIME is declared from glibc 2.28; older headers have no
+# struct statx.
+AC_CHECK_MEMBERS([struct stat.st_birthtim, struct stat.st_birthtimespec],
+                 [], [], [[#include <sys/types.h>
+#include <sys/stat.h>]])
+AC_CHECK_FUNCS([statx])
+AC_CHECK_DECLS([STATX_BTIME], [], [], [[#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>]])
+xwpe_say_birth="no birth time: a file touched in place asks before Save"
+AS_IF([test "x$ac_cv_func_statx" = xyes && test "x$ac_cv_have_decl_STATX_BTIME" = xyes],
+  [xwpe_say_birth="statx (a file touched in place is still told from a new one)"],
+  [test "x$ac_cv_member_struct_stat_st_birthtim" = xyes],
+  [xwpe_say_birth="st_birthtim (a file touched in place is still told from a new one)"],
+  [test "x$ac_cv_member_struct_stat_st_birthtimespec" = xyes],
+  [xwpe_say_birth="st_birthtimespec (a file touched in place is still told from a new one)"])
+
+# The name of the file system a test ran on (tests/seen_rows.h): Linux says it
+# in f_type of statfs (<sys/vfs.h>), the BSDs and macOS in f_fstypename
+# (<sys/mount.h>).
+AC_CHECK_HEADERS([sys/vfs.h])
+AC_CHECK_MEMBERS([struct statfs.f_fstypename], [], [], [[#include <sys/param.h>
+#include <sys/mount.h>]])
+
 AS_IF([test "x$ac_cv_member_struct_stat_st_mtim" = xyes],
   [xwpe_say_stat="st_mtim (nanoseconds)"],
   [test "x$ac_cv_member_struct_stat_st_mtimespec" = xyes],
@@ -1263,6 +1292,7 @@ AC_MSG_RESULT([
       openpty header:    $xwpe_say_pty
       backtrace:         $xwpe_say_backtrace
       stat times:        $xwpe_say_stat
+      birth time:        $xwpe_say_birth
       regex word escapes: $xwpe_say_regex
       regex GNU escapes: $xwpe_say_regex_gnu_escapes
       regex reads UTF-8: $xwpe_say_regex_multibyte

@@ -132,6 +132,34 @@
 #     revert), and each call passes the expectation of a look (the last but
 #     one argument is a variable, never a literal NULL or 0), so the owner
 #     holds the write to the file the user was shown.  No allow line.
+# 24. "Is this the object I saw" is judged in one place, we_seen.c (22 and 23
+#     belong to the read owner and the path walk).  Strings and comments are
+#     blanked, names bounded by word, a macro counts as a site of its own.
+#     Each clause has its own tag in the allow file (r24a to r24e):
+#     a. st_ino and st_dev appear in no product source but we_seen.c.  The one
+#        permanent row is we_startcmd.c built_rec_identify, which writes the
+#        numbers to a store and asks "unchanged", never "same".
+#     b. a member access .seen_ or ->seen_ (the members of a WpeSeen) appears
+#        only in we_seen.c and we_seen.h.  A second reader is a second judge.
+#     c. statx(, st_birthtim, st_birthtimespec and stx_btime appear only in
+#        we_seen.c.
+#     d. ck_rdev, ck_rino, and wpe_write_identity_is( or _differs( with three
+#        arguments (a device and an inode passed by hand) appear nowhere, in
+#        the product sources and in the tests.
+#     f. the second argument of wpe_fileop_chmod_shown( and
+#        wpe_write_set_perm_seen( (the file the user was shown) is NULL or a
+#        WpeSeen called shown.  The build accepts incompatible pointers, so a
+#        struct stat passed there compiles and is compared by number.
+#     e. in tests/*.c and tests/*.h, st_ino compared with != or asserted equal
+#        to 0 appears only in other_object_while_held (tests/seen_rows.h),
+#        which takes the descriptor that holds the first object.  "Another
+#        inode" asserted with nothing held is the defect itself.
+#     Clauses (a) to (c) scan the product sources and headers, not the tests:
+#     a test makes files and reads their numbers on purpose.  The sites still
+#     to move are lines of the allow file, each naming its function and the
+#     pass (N2 to N5) that deletes it.  tests/seen_rows.h and the rows of
+#     tests/test_seen.c read members of the record on purpose and are held to
+#     (d) and (e) only.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -223,7 +251,7 @@ require_owner_object() {
 # by "(" and does not end with ";" (a prototype); a statement is the text up
 # to the next ; { or }.
 scan() {
-  awk -v file="$(basename "$1")" "$BLANK_C"'
+  awk -v file="$(basename "$1")" -v tests="${2:-0}" "$BLANK_C"'
     function ident_end(s, i,   n) { n = length(s); while (i <= n && substr(s, i, 1) ~ /[A-Za-z0-9_]/) i++; return i }
     # the index just past the ")" that closes the "(" at position p
     function close_paren(s, p,   depth, i, n, c) {
@@ -236,7 +264,9 @@ scan() {
       }
       return 0
     }
-    function note(rule, n) { cnt[rule] += n }
+    # a hit on a preprocessor line is counted apart (ppmode), under the name
+    # "(preprocessor)", so a macro is not charged to the function above it
+    function note(rule, n) { if (ppmode) ppcnt[rule] += n; else cnt[rule] += n }
     function flush_fn(   r) {
       if (fn == "") return
       for (r in cnt) if (cnt[r] > 0) print r, file, fn, cnt[r]
@@ -292,6 +322,94 @@ scan() {
         else if (rest ~ /(^|,)[ \t]*(NULL|0)[ \t]*,[^,]*$/) note("r21", 1)
         t = substr(t, RSTART + RLENGTH)
       }
+    }
+    # rule 24 (the owner of "is this the object I saw", we_seen.c), for the
+    # code of one statement, strings blanked.  Clauses, each its own tag:
+    #   r24a  st_ino or st_dev, outside we_seen.c (an inode number remembered
+    #         and compared later is what a file system gives back)
+    #   r24b  a member access .seen_X or ->seen_X outside we_seen.c and
+    #         we_seen.h (a second judge reads the record itself)
+    #   r24c  statx(, st_birthtim, st_birthtimespec, stx_btime outside we_seen.c
+    #   r24d  ck_rdev, ck_rino, and wpe_write_identity_is( or _differs( with
+    #         three arguments (the number and the device passed by hand), anywhere
+    #   r24e  (tests only) st_ino compared with != or asserted equal to 0
+    #         outside other_object_while_held
+    # The count of the arguments of a call: the commas at its own depth plus one.
+    function arg_count(s, p,   depth, i, n, c, commas) {
+      depth = 0; commas = 0; n = length(s)
+      for (i = p; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "(" || c == "[" || c == "{") depth++
+        else if (c == ")" || c == "]" || c == "}") { depth--; if (depth == 0) return commas + 1 }
+        else if (c == "," && depth == 1) commas++
+      }
+      return 0
+    }
+    # every word-bounded match of the extended regex re in t counts for tag
+    function count_word(t, re, tag,   hits) {
+      while (match(t, "(^|[^A-Za-z0-9_])(" re ")([^A-Za-z0-9_]|$)")) { note(tag, 1); t = substr(t, RSTART + RLENGTH - 1) }
+    }
+    # the nth top-level argument (1-based) of the call whose "(" is at p in s,
+    # blanks trimmed; "" when the call has fewer
+    function nth_arg(s, p, n,   depth, i, len, c, k, start) {
+      depth = 0; k = 1; len = length(s); start = p + 1
+      for (i = p; i <= len; i++) {
+        c = substr(s, i, 1)
+        if (c == "(" || c == "[" || c == "{") depth++
+        else if (c == ")" || c == "]" || c == "}") {
+          depth--
+          if (depth == 0) { if (k == n) return trim(substr(s, start, i - start)); return "" }
+        } else if (c == "," && depth == 1) {
+          if (k == n) return trim(substr(s, start, i - start))
+          k++; start = i + 1
+        }
+      }
+      return ""
+    }
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    # clause f: the record of "the file the user was shown" (the Attributes
+    # dialog, Ctrl-F9) is a WpeSeen called shown.  The second argument of
+    # wpe_fileop_chmod_shown and wpe_write_set_perm_seen is NULL or shown; a
+    # struct stat passed there compiles (the build accepts incompatible
+    # pointers) and is compared by number, so it is a site.
+    function note24_shown(m,   t, p, a) {
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])(wpe_fileop_chmod_shown|wpe_write_set_perm_seen)[ \t]*[(]/)) {
+        p = RSTART + RLENGTH - 1
+        a = nth_arg(t, p, 2)
+        if (a !~ /^(NULL|&?shown|const[ \t]+WpeSeen[ \t]*\*[ \t]*shown)$/) note("r24f", 1)
+        t = substr(t, p + 1)
+      }
+    }
+    function note24_inside(m,   t) {
+      if (file == "we_seen.c" || file == "we_seen.h") return
+      note24_shown(m)
+      count_word(m, "st_ino|st_dev", "r24a")
+      t = m
+      while (match(t, /(\.|->)[ \t]*seen_[a-z_]+/)) { note("r24b", 1); t = substr(t, RSTART + RLENGTH) }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])statx[ \t]*[(]/)) { note("r24c", 1); t = substr(t, RSTART + RLENGTH) }
+      count_word(m, "st_birthtim|st_birthtimespec|stx_btime", "r24c")
+    }
+    function note24_everywhere(m,   t, p) {
+      count_word(m, "ck_rdev|ck_rino", "r24d")
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])wpe_write_identity_(is|differs)[ \t]*[(]/)) {
+        p = RSTART + RLENGTH - 1
+        if (arg_count(t, p) == 3) note("r24d", 1)
+        t = substr(t, p + 1)
+      }
+    }
+    function note24_tests(m,   t) {
+      note24_everywhere(m)
+      if (fn == "other_object_while_held") return
+      t = m
+      while (match(t, /st_ino[ \t]*!=|!=[ \t]*[A-Za-z_][A-Za-z0-9_]*(\.|->)st_ino|st_ino[ \t]*==[^,;]*,[ \t]*0[ \t]*[,)]/)) { note("r24e", 1); t = substr(t, RSTART + RLENGTH) }
+    }
+    # the preprocessor lines of a product source: a macro may carry the tokens
+    function note24_pp(pp) {
+      note24_inside(pp)
+      note24_everywhere(pp)
     }
     # rule 20 for one name of an errno: is it allowed in this function?
     function allowed20(id) {
@@ -350,6 +468,8 @@ scan() {
       while (match(t, /<</)) { note("r15", 1); t = substr(t, RSTART + RLENGTH) }
     }
     function statement(s,   t, p, q, e, rest, name, v, c, m, ident) {
+      # a test source is held to rule 24 only (clauses d and e)
+      if (tests == 1) { m = s; gsub(/"([^"\\]|\\.)*"/, "\"\"", m); note24_tests(m); return }
       # rule 2: every way to open a file for writing
       t = s
       while (match(t, /(^|[^A-Za-z0-9_])(fopen|freopen|fdopen)[ \t]*[(]/)) {
@@ -401,6 +521,9 @@ scan() {
       while (match(m, /Can[\\\047]*t open File/)) { note("r6", 1); m = substr(m, RSTART + RLENGTH) }
       # rules 8, 9 and 10 look at code: the strings are blanked
       m = s; gsub(/"([^"\\]|\\.)*"/, "\"\"", m)
+      # rule 24 (clauses a to d): the identity of an object is judged in we_seen.c
+      note24_inside(m)
+      note24_everywhere(m)
       # rule 8: a name of the user'"'"'s files made, moved or removed outside the owners
       t = m
       while (match(t, /(^|[^A-Za-z0-9_.>])(rename|renameat|renameat2|renamex_np|renameatx_np|link|linkat|symlink|symlinkat|unlink|unlinkat|remove|rmdir|mkdir|mkdirat|chmod|fchmod|fchmodat|chown|fchown|lchown|readlink|readlinkat)[ \t]*[(]/)) {
@@ -499,7 +622,10 @@ scan() {
         # rule 15: a macro can carry the window'"'"'s mode anywhere, so the
         # token counts on a preprocessor line, as a site of its own
         pp = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", pp)
+        if (tests == 1) next
         while (match(pp, /(^|[^A-Za-z0-9_])filemode([^A-Za-z0-9_]|$)/)) { pp15++; pp = substr(pp, RSTART + RLENGTH - 1) }
+        # rule 24: a macro may carry an inode, a stamp or a statx call too
+        ppmode = 1; note24_inside(pp); note24_everywhere(pp); ppmode = 0
         next
       }
       # a table of strings at file scope is named by its array, not by the
@@ -516,7 +642,17 @@ scan() {
       stmt = stmt " " out
       if (out ~ /[;{}][ \t]*$/) { statement(stmt); stmt = "" }
     }
-    END { statement(stmt); flush_fn(); if (pp15 > 0) print "r15", file, "(preprocessor)", pp15 }' "$1"
+    END {
+      statement(stmt); flush_fn()
+      if (pp15 > 0) print "r15", file, "(preprocessor)", pp15
+      for (r in ppcnt) if (ppcnt[r] > 0) print r, file, "(preprocessor)", ppcnt[r]
+    }' "$1"
+}
+
+# scan_tests FILE - the rule 24 clauses a test source is held to (d and e),
+# in the same "rule file function count" lines.
+scan_tests() {
+  scan "$1" 1
 }
 
 # scan_header_mode FILE - rule 15 for a header: every `filemode` of a header
@@ -524,7 +660,7 @@ scan() {
 # inline function), except the member declaration of the window (`int
 # filemode`), which scan leaves out.
 scan_header_mode() {
-  scan "$1" | awk '$1 == "r15"'
+  scan "$1" | awk '$1 == "r15" || $1 ~ /^r24/'
 }
 
 # --selftest: each rule must name its offence in a fixture.
@@ -887,7 +1023,95 @@ typedef struct {
 } FakeWindow;
 #define WPE_WINDOW_MODE(f) ((f)->filemode)
 EOF
+  # rule 24: one fixture for each of its clauses.  (a) an inode and a device
+  # compared outside the owner (the comment, the string and a longer name are
+  # no offence), (b) a member of a record read outside it, (c) statx and the
+  # birth members called outside it, (d) the old folder numbers and the
+  # three-argument form of the identity question, (e) in a test, "another
+  # inode" asserted with nothing held.  A file named we_seen.c is the owner and
+  # is exempt from (a) to (c).
+  cat > "$WORK/we_fake_r24.c" <<'EOF'
+int fake_inode(struct stat *sa, struct stat *sb)
+{
+ /* sa->st_ino == sb->st_ino in a comment */
+ char *say = "st_ino in a string";
+ int my_st_inode = 0;
+
+ if (sa->st_ino == sb->st_ino && sa->st_dev == sb->st_dev)
+  return(1);
+ return(my_st_inode);
+}
+int fake_member(WpeSeen *rec, WpeSeenName *n)
+{
+ int seen_ino = 0;
+
+ if (rec->seen_ino != 0 && n->seen.seen_ctime.tv_sec)
+  return(seen_ino);
+ return(0);
+}
+int fake_statx(int fd)
+{
+ struct statx sx;
+ struct stat st;
+
+ return(statx(fd, "", 0, 0, &sx) + (int)sx.stx_btime.tv_sec + (int)st.st_birthtim.tv_sec + (int)st.st_birthtimespec.tv_sec);
+}
+int fake_ck(FENSTER *c, struct stat *x)
+{
+ ck_rdev = x->dev;
+ if (wpe_write_identity_is(&c->file_id, x->dev, x->ino))
+  return(ck_rino);
+ if (wpe_write_identity_is(&c->file_id, &seen))
+  return(1);
+ return(wpe_write_identity_differs(&w->file_id, st.st_dev, st.st_ino));
+}
+int fake_shown(const char *filen, struct stat *buf, WpeNameSeen *seen)
+{
+ int rc = wpe_fileop_chmod_shown(filen, buf, &seen, 0644, &fo);
+
+ rc += wpe_fileop_chmod_shown(filen, NULL, seen, 0644, &fo);
+ rc += wpe_write_set_perm_seen(filen, &shown, seen, 0644, &kept);
+ rc += wpe_write_set_perm_seen(filen, f(a, b), seen, 0644, &kept);
+ return(rc);
+}
+EOF
+  cat > "$WORK/we_fake_r24.h" <<'EOF'
+#define SAME_FILE(a, b) ((a)->st_ino == (b)->st_ino)
+EOF
+  mkdir "$WORK/r24" || exit $BAD
+  cat > "$WORK/r24/we_seen.c" <<'EOF'
+int owner_judge(struct stat *sa, WpeSeen *rec)
+{
+ struct statx sx;
+
+ return(sa->st_ino == rec->seen_ino && statx(0, "", 0, 0, &sx) == 0 && sx.stx_btime.tv_sec);
+}
+EOF
+  mkdir "$WORK/r24t" || exit $BAD
+  cat > "$WORK/r24t/test_fake.c" <<'EOF'
+static int other_object_while_held(int held_fd, const struct stat *now)
+{
+ struct stat held;
+
+ return(held.st_ino != now->st_ino);
+}
+int fake_row(struct stat a, struct stat b, struct stat *p)
+{
+ chk_int("a new inode", a.st_ino != b.st_ino, 1);
+ chk_int("not the same", a.st_ino == b.st_ino, 0);
+ chk_int("the same", a.st_ino == b.st_ino, 1);
+ if (lstat(q, &st) != 0 || x.ino != st.st_ino)
+  return(1);
+ if (p->st_ino != 0)
+  return(2);
+ return(wpe_write_identity_is(&o.written, a.st_dev, a.st_ino));
+}
+EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
+  scan "$WORK/we_fake_r24.c" >> "$WORK/fake.found"
+  scan_header_mode "$WORK/we_fake_r24.h" >> "$WORK/fake.found"
+  scan "$WORK/r24/we_seen.c" >> "$WORK/fake.found"
+  scan_tests "$WORK/r24t/test_fake.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r15d.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r17a.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r17b.c" >> "$WORK/fake.found"
@@ -936,6 +1160,11 @@ EOF
               "r20 we_write.c write_target_open_check 1" \
               "r20 we_fileop.c fileop_rename_noreplace_at 1" \
               "r20 we_fileop.c fileop_elsewhere 4" \
+              "r24a we_fake_r24.c fake_inode 4" "r24b we_fake_r24.c fake_member 2" \
+              "r24c we_fake_r24.c fake_statx 4" "r24d we_fake_r24.c fake_ck 4" \
+              "r24a we_fake_r24.c fake_ck 2" "r24a we_fake_r24.h (preprocessor) 2" \
+              "r24f we_fake_r24.c fake_shown 2" \
+              "r24e test_fake.c fake_row 4" "r24d test_fake.c fake_row 1" \
               "r15 we_fake.c fake_save 1" "r15 we_fake.c (preprocessor) 1" \
               "r15 we_fake_r15a.c write_mode_before_data 1" \
               "r15 we_fake_r15b.c write_mode_before_data 3" \
@@ -948,6 +1177,18 @@ EOF
       exit $BAD
     }
   done
+  # rule 24: the owner's own file, and the one helper that asserts "another
+  # inode" with a descriptor held, are no offence
+  if grep -q "^r24[abc] we_seen.c " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: a file named we_seen.c was counted by rule 24; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  if grep -q "^r24e test_fake.c other_object_while_held " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: other_object_while_held was counted by rule 24e; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
   # the two functions rule 21 allows, with a look, are no offence
   if grep -q "^r21 we_ai_fake.c wpe_ai_write_judged_file " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: the assistant's write with a look was counted by rule 21; it found:)"
@@ -1061,7 +1302,7 @@ for f in "$SRCDIR"/we_*.c "$SRCDIR"/We*.c; do
   # makes and moves names and copies bytes, and the line endings owner
   # (we_lineend.c) walks rows, so each is exempt from the rule it is the owner of
   case ${f##*/} in
-    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15" || $1 == "r16" || $1 == "r20"' >> "$WORK/srcfound"; continue ;;
+    we_write.c) scan "$f" | awk '$1 == "r12" || $1 == "r15" || $1 == "r16" || $1 == "r20" || $1 ~ /^r24/' >> "$WORK/srcfound"; continue ;;
     we_fileop.c) scan "$f" | awk '$1 != "r8" && $1 != "r9" && $1 != "r10" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
     we_lineend.c) scan "$f" | awk '$1 != "r9" && $1 != "r11" && $1 != "r12" && $1 != "r15"' >> "$WORK/srcfound"; continue ;;
   esac
@@ -1071,6 +1312,13 @@ done
 for f in "$SRCDIR"/*.h; do
   [ -f "$f" ] || continue
   scan_header_mode "$f" >> "$WORK/srcfound"
+done
+# rule 24 in the tests: clauses (d) and (e) only.  Clauses (a) to (c) are not
+# asked of a test, which makes files and reads their numbers on purpose; what a
+# test may not do is assert "another inode" with nothing held (clause e).
+for f in "$SRCDIR"/tests/*.c "$SRCDIR"/tests/*.h; do
+  [ -f "$f" ] || continue
+  scan_tests "$f" >> "$WORK/srcfound"
 done
 {
   awk '{ print $2 "|" $1 ":" $3 "|" $4 }' "$WORK/srcfound"
@@ -1122,6 +1370,18 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": another file at the name is decided from an errno (ELOOP, ENXIO, EMLINK, EOPNOTSUPP, ENOTSUP or EFTYPE), which each system spells differently: look at the name again (lstat and compare with what was first seen: write_mode_name_changed, write_name_kind) and never ask the errno.  No allow line"
       else if (rule == "r21")
         print "offender: " $1 " " $2 ": the assistant writes a user'"'"'s file outside wpe_ai_write_judged_file and ws_restore_before_image, or passes no look (a literal NULL or 0 for the expectation): take the look with wpe_path_look_write and write through those two.  No allow line"
+      else if (rule == "r24a")
+        print "offender: " $1 " " $2 ": st_ino or st_dev is read outside we_seen.c.  An inode number remembered from an earlier moment is given back by the file system after its file is gone: keep a WpeSeen (wpe_seen_look_fd, _name, _at) and ask wpe_seen_judge, or for two looks of one moment wpe_seen_same_now.  A site still to move is a line of the allow file with its pass"
+      else if (rule == "r24b")
+        print "offender: " $1 " " $2 ": a member of a WpeSeen (.seen_ or ->seen_) is read outside we_seen.c.  A second reader of the record is a second judge: use wpe_seen_judge, wpe_seen_known or wpe_seen_kind"
+      else if (rule == "r24c")
+        print "offender: " $1 " " $2 ": statx, st_birthtim, st_birthtimespec or stx_btime outside we_seen.c.  The birth time is read in one place, with its system notes: take a WpeSeen"
+      else if (rule == "r24d")
+        print "offender: " $1 " " $2 ": ck_rdev or ck_rino (a folder number kept by hand: hold the folder with wpe_seen_hold_dir and ask wpe_seen_held_is), or wpe_write_identity_is or _differs with the device and inode as two arguments (pass the WpeSeen of the look)"
+      else if (rule == "r24f")
+        print "offender: " $1 " " $2 ": the file the user was shown is passed to wpe_fileop_chmod_shown or wpe_write_set_perm_seen as something other than NULL or a WpeSeen called shown.  A struct stat there compiles (incompatible pointers are accepted) and is compared by inode number: take a WpeSeen with wpe_seen_look_name next to the dialog'"'"'s stat"
+      else if (rule == "r24e")
+        print "offender: " $1 " " $2 ": a test asserts \"another inode\" by comparing st_ino with nothing held.  A file system may give the first number to the newcomer: assert it with other_object_while_held (tests/seen_rows.h), which takes the descriptor that holds the first object"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else
