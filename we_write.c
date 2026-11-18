@@ -31,7 +31,7 @@
 /** A copy the owner makes is private to the user until it is complete. */
 #define WPE_WRITE_COPY_MODE 0600
 
-/** The window flag of a read-only window (what e_write refused). */
+/** The window flag of a read-only window (what the write owner refuses). */
 #define WPE_WRITE_WINDOW_READ_ONLY 8
 
 /** The permission bits a restore by rename would change for someone else. */
@@ -1092,27 +1092,43 @@ typedef enum {
 } BackupResult;
 
 /**
- * write_backup_clear_old - Make room for a new .bak.
- * @bak: the .bak's name; @o: receives backup_err.
- * Return: 0 when the name is free, -1 when something there stays.
+ * write_chosen_clear_old - Make room for a new file under a name the editor
+ * chose (a .bak, an .ASV, an .ESV).
+ * @name: the name.
+ * Return: 0 when the name is free, EEXIST when something there stays (a
+ * link, a pipe, a folder, another user's file), else the errno of the
+ * unlink.
  *
- * An old .bak that is a regular file of the user's is replaced, as the
- * original did; a link, a pipe or another user's file is left alone.
+ * An old copy that is a regular file of this user is replaced, as the
+ * original did; anything else is left alone, so the new file is never made
+ * through a link planted at the name and another user's file is never
+ * removed by a copy of ours.
  */
-static int write_backup_clear_old(const char *bak, WpeWriteOutcome *o)
+static int write_chosen_clear_old(const char *name)
 {
  struct stat st;
 
- if (lstat(bak, &st) != 0)
+ if (lstat(name, &st) != 0)
   return(0);
- if (!S_ISREG(st.st_mode) || st.st_uid != getuid())
+ if (!S_ISREG(st.st_mode) || st.st_uid != geteuid())
+  return(EEXIST);
+ if (unlink(name) != 0)
+  return(errno);
+ return(0);
+}
+
+/**
+ * write_backup_clear_old - Make room for a new .bak.
+ * @bak: the .bak's name; @o: receives backup_err.
+ * Return: 0 when the name is free, -1 when something there stays.
+ */
+static int write_backup_clear_old(const char *bak, WpeWriteOutcome *o)
+{
+ int err = write_chosen_clear_old(bak);
+
+ if (err != 0)
  {
-  o->backup_err = EEXIST;
-  return(-1);
- }
- if (unlink(bak) != 0)
- {
-  o->backup_err = errno;
+  o->backup_err = err;
   return(-1);
  }
  return(0);
@@ -1510,12 +1526,13 @@ typedef struct {
 typedef enum {
  WRITE_OPEN_NAMED,          /* the name the user typed: a link at its end is followed,
                                and one that leads nowhere is made */
- WRITE_OPEN_NAMED_NOFOLLOW  /* a name the caller has already resolved and judged: a
+ WRITE_OPEN_NAMED_NOFOLLOW, /* a name the caller has already resolved and judged: a
                                link at its end is refused (ELOOP and
                                replaced_by_link, on every system), never followed */
- /* A third way, for a name the editor chose itself (the autosave, the emergency
-    copy), made new and never opened existing, arrives with the pass that moves
-    those copies here. */
+ WRITE_OPEN_NEW             /* a name the editor chose itself (the autosave, the emergency
+                               copy, the post-edit copy): an old copy of ours is removed,
+                               anything else there is refused (planted), and the file is
+                               made new with O_EXCL and O_NOFOLLOW, never opened existing */
 } WriteOpenHow;
 
 /** What the write is for. */
@@ -1949,6 +1966,40 @@ static int write_target_hold(const WriteTarget *t, const WriteAim *aim, WpeWrite
 }
 
 /**
+ * write_target_make_new - Make the file under a name the editor chose.
+ * @path: the name; @created: receives 1 when it was made; @o: receives
+ * planted when something that is not ours holds the name.
+ * Return: the descriptor, or -1 with errno.
+ *
+ * The file is private (0600) when it is made; the window's own nine bits
+ * are given to it before its first byte (write_mode_before_data), so the
+ * copy of a private file is never readable by others, not even for a moment.
+ * What the user gets: the autosave, the emergency copy and the hook's copy
+ * never write through a link or into a file somebody else put at their name.
+ * An old copy of ours is removed first (write_chosen_clear_old), anything
+ * else there is left alone and said, and the new file is made with O_EXCL
+ * and O_NOFOLLOW (wpe_write_create_private), so the inode written is one
+ * this call created, whatever is put at the name in between.
+ */
+static int write_target_make_new(const char *path, int *created, WpeWriteOutcome *o)
+{
+ int fd = -1, err = write_chosen_clear_old(path);
+
+ *created = 0;
+ if (err == 0)
+  err = wpe_write_create_private(AT_FDCWD, path, WPE_WRITE_COPY_MODE, &fd);
+ if (err == EEXIST)
+  o->planted = 1;
+ if (err != 0)
+ {
+  errno = err;
+  return(-1);
+ }
+ *created = 1;
+ return(fd);
+}
+
+/**
  * write_target_open - Open the file a write goes to, without cutting it.
  * @path: the file; @aim: what the write is for; @t: receives the target;
  * @o: receives the reason the file was refused, when it is.
@@ -1966,8 +2017,11 @@ static int write_target_open(const char *path, const WriteAim *aim, WriteTarget 
  int err;
 
  memset(t, 0, sizeof *t);
- t->fd = write_target_open_fd(path, aim->open, !(aim->expect != NULL && aim->expect->judged &&
-                                                    aim->expect->exists), &t->created);
+ if (aim->open == WRITE_OPEN_NEW)
+  t->fd = write_target_make_new(path, &t->created, o);
+ else
+  t->fd = write_target_open_fd(path, aim->open, !(aim->expect != NULL && aim->expect->judged &&
+                                                     aim->expect->exists), &t->created);
  if (t->fd < 0)
   return(errno);
  err = (fstat(t->fd, &t->st) == 0 ? 0 : errno);
@@ -2006,7 +2060,7 @@ static int write_open_failure(const char *path, const WriteAim *aim, int err, Wp
 {
  mode_t kind;
 
- if (o->not_regular || o->swapped || o->gained_name)
+ if (o->not_regular || o->swapped || o->gained_name || o->planted)
   return(err);
  kind = write_name_kind(path);
  if (kind == 0 && aim->expect != NULL && aim->expect->judged && aim->expect->exists)
@@ -2257,6 +2311,30 @@ static int write_replaced_may_go_on(WriteTarget *t, const WriteReplacedPolicy *p
  return(1);
 }
 
+/** XWPE_TEST_FAIL=emergency-save-hangs: TEST ONLY.  The emergency save blocks
+    after its copy is made and before its first byte, as a save on a dead
+    disk would, so a test can prove that a second SIGTERM ends the editor.
+    Without the variable it does nothing. */
+#define WPE_WRITE_TEST_EMERGENCY_HANGS "emergency-save-hangs"
+
+/**
+ * write_test_emergency_hang - Test hook: block the emergency save here.
+ * @aim: what the write is for.
+ *
+ * Only the copy made while the editor is ending is held, never an autosave
+ * or a Save.  A signal that ends the editor still ends it.
+ */
+static void write_test_emergency_hang(const WriteAim *aim)
+{
+ const char *hook = getenv(WPE_WRITE_TEST_FAIL_ENV);
+
+ if (aim->open != WRITE_OPEN_NEW || hook == NULL ||
+     strstr(hook, WPE_WRITE_TEST_EMERGENCY_HANGS) == NULL || !e_emergency_save_running())
+  return;
+ for (;;)
+  pause();
+}
+
 /**
  * write_run_open - Open the file a write goes to and make it ready for text.
  * @s: the source; @path: the file; @backup: 1 to copy an existing file to its
@@ -2309,6 +2387,7 @@ static int write_run_open(const WriteSource *s, const char *path, int backup, co
   return(-1);
  }
  write_mode_before_data(t, s, aim);
+ write_test_emergency_hang(aim);
  return(0);
 }
 
@@ -2453,6 +2532,64 @@ int wpe_write_range(FENSTER *f, const char *path, int xa, int ya, int xe, int ye
  write_aim_make(&aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, WRITE_OPEN_NAMED);
  write_run(&s, path, backup, &aim, o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+}
+
+/**
+ * wpe_write_copy - Write a window's whole text to a copy the editor named.
+ * @f: the window; @path: the copy's name (the autosave's .ASV, the emergency
+ * save's .ESV, the hook's post-edit copy); @o: receives the outcome, with
+ * @path in o->path.
+ * Return: 0 when the copy holds the text, -1 when not (the outcome says why).
+ *
+ * What the user gets: the copy the editor keeps beside a file is never
+ * written through a link or into a file that somebody else put at its name.
+ * An old copy of ours (a regular file of this user) is replaced by a new
+ * file; anything else there is left alone and said (o->planted), with
+ * nothing written.  The new file has the window's nine permission bits
+ * before its first byte, never a special bit, and no .bak is made: the copy
+ * is not the user's file.
+ */
+int wpe_write_copy(FENSTER *f, const char *path, WpeWriteOutcome *o)
+{
+ WriteSource s;
+ WriteAim aim;
+
+ write_source_window(&s, f, 0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1);
+ write_aim_make(&aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, WRITE_OPEN_NEW);
+ write_run(&s, path, 0, &aim, o);
+ return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+}
+
+/**
+ * wpe_write_copy_remove - Remove a copy the editor named when its window closes.
+ * @path: the copy's name; @own: the identity of the copy this window wrote
+ * or read in this session.
+ *
+ * What the user gets: closing a window leaves no .ASV or .ESV that it made
+ * itself, while a copy from an earlier session (the one "wpe -r" brings
+ * back) or one the user made is never deleted by a plain close.  Only the
+ * very file the window wrote, still a regular file of this user, is removed.
+ */
+void wpe_write_copy_remove(const char *path, const WpeFileIdentity *own)
+{
+ struct stat st;
+
+ if (own == NULL || !own->known)
+  return;
+ if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid())
+  return;
+ if (!wpe_write_identity_is(own, st.st_dev, st.st_ino))
+  return;
+ (void)unlink(path);
+}
+
+/**
+ * wpe_write_copies_forget - A new window has made and read no copy.
+ * @c: the window's copies.
+ */
+void wpe_write_copies_forget(WpeWindowCopies *c)
+{
+ memset(c, 0, sizeof *c);
 }
 
 /**
@@ -3190,6 +3327,9 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
 
  if (o->read_only)
   snprintf(out, n, "%s is read-only.", write_base_name(path));
+ else if (o->planted)
+  snprintf(out, n, "Cannot write %s: something that is not a copy of ours is in its place.  "
+           "Nothing was written.", write_base_name(path));
  else if (o->not_regular)
   snprintf(out, n, "Cannot write %s: it is not a regular file (%s).  Nothing was written.", path,
            write_kind_words(o));
@@ -3445,28 +3585,3 @@ int e_save(FENSTER *f)
  return(wpe_write_save(f, WPE_WRITE_THEN_KEPT, NULL));
 }
 
-/**
- * e_write - Write a range of a window to the file its dirct and datnam name.
- * @xa, @ya, @xe, @ye: the range; @f: the window; @backup: WPE_BACKUP to keep
- * the file's old content in its .bak.
- * Return: 0 when written, WPE_ESC when not (the user has been told).
- *
- * For the writers of a copy that borrow the window's name (the autosave
- * and the emergency save): they move to wpe_write_copy with the pass that
- * makes the copies.
- */
-int e_write(int xa, int ya, int xe, int ye, FENSTER *f, int backup)
-{
- WpeWriteOutcome o;
- char *path = e_mkfilename(f->dirct, f->datnam);
- int rc;
-
- if (path == NULL)
-  return(WPE_ESC);
- rc = wpe_write_range(f, path, xa, ya, xe, ye, backup == WPE_BACKUP, &o);
- FREE(path);
- if (rc == 0)
-  return(0);
- wpe_write_say(f, &o, WPE_WRITE_THEN_KEPT);
- return(WPE_ESC);
-}

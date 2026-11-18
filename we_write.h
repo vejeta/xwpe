@@ -124,6 +124,10 @@ typedef struct {
                                     Read from the file's own mode, never from an errno */
  int not_regular_tty;            /* with not_regular: it is a terminal (isatty on the
                                     opened file), said as "a terminal" */
+ int planted;                    /* a copy under a name the editor chose (.ASV, .ESV, the
+                                    post-edit copy): something that is not an old copy of
+                                    ours (a link, another user's file, a folder) holds the
+                                    name, so nothing was made and nothing written */
  int vanished;                   /* the caller looked at a file and it was removed before
                                     the open: nothing was made and nothing written */
  int swapped;                    /* the file the write reached is not the one the caller
@@ -227,6 +231,31 @@ int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_name);
    (0: none, not a regular file, or the window's own file, given by its
    identity, or NULL for a block): what the overwrite question names. */
 mode_t wpe_write_overwrite_drops(const char *path, const WpeFileIdentity *own);
+
+/* A copy of a window's whole text under a name the editor chose beside the
+   user's file (the autosave's .ASV, the emergency save's .ESV, the post-edit
+   copy the hook works on).  An old copy of ours (a regular file of this user)
+   is replaced; anything else under the name (a link, another user's file) is
+   left alone and said (o->planted).  The new file is made with O_EXCL and
+   O_NOFOLLOW, with the window's nine permission bits before its first byte,
+   so a private file's copy is private from the start, and never given a
+   special bit.  No .bak is made.  o->path is the file written. */
+WPE_WRITE_RESULT int wpe_write_copy(struct FNST *f, const char *path, WpeWriteOutcome *o);
+/* The copies a window itself made or read in this session: the .ASV its
+   autosave wrote last, and the .ESV it was recovered from.  Only these are
+   removed when the window closes; a copy left by an earlier session, or one
+   the user made, is never taken for ours.  Forgotten after each allocation
+   of a window (wpe_write_copies_forget). */
+typedef struct {
+ WpeFileIdentity asv;
+ WpeFileIdentity esv;
+} WpeWindowCopies;
+void wpe_write_copies_forget(WpeWindowCopies *c);
+/* Remove a copy when its window closes: only the file with identity @own (the
+   one this window wrote or read this session), and only while it is still a
+   regular file of this user.  A link at the name, another user's file, a file
+   that took the name since, or an unknown @own leaves the name alone. */
+void wpe_write_copy_remove(const char *path, const WpeFileIdentity *own);
 
 /* Text that is not a window's rows. */
 WPE_WRITE_RESULT int wpe_write_fd(int fd, const char *text, WpeWriteOutcome *o);

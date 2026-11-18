@@ -34,7 +34,7 @@ NUMBER|E_D_JDB_EXCEPTION_NAME_MAX|the name of an exception class in jdb's words
 NUMBER|E_D_FRAME_NAME_MAX|a function's name in the Stack window
 NUMBER|E_LSP_NAME_MAX|the name of a language server's menu entry
 NUMBER|E_BUFFER_FAULT_NAME_MAX|the name of a buffer fault in the trace
-NUMBER|E_ESV_MIN_NAME_MAX|the shortest file name the emergency save needs
+NUMBER|E_COPY_MIN_NAME_MAX|the shortest file name limit that can hold an .ASV or .ESV name
 
 # --- SENTENCE: another owner's words about a path's length ---
 SENTENCE|we_ai_ui.c|the assistant's fix-build line: the file's path does not go into a command
@@ -171,7 +171,6 @@ COPY|WeString.c|WpeStrdup|1|sized|the destination is allocated at its sources' l
 COPY|we_term.c|init_key|1|sized|the destination is allocated at its sources' length just before
 COPY|we_term.c|init_spchr|1|sized|the destination is allocated at its sources' length just before
 COPY|we_testdump.c|wpe_test_ctx_enter|1|checked|a window title cut at its array's size, not a path
-COPY|we_unix.c|e_err_save_window|1|sized|the destination is allocated at its sources' length just before
 COPY|we_unix.c|e_compstr|1|sized|the destination is allocated at its sources' length just before
 COPY|we_unix.c|e_find_files|1|sized|the destination is allocated at its sources' length just before
 COPY|we_unix.c|e_find_dir|1|sized|the destination is allocated at its sources' length just before

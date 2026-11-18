@@ -336,6 +336,9 @@ typedef struct FNST {
  int filemode, flg;
  WpeFileIdentity file_id; /* the file this window read: set by e_edit, e_recover and
                              a successful save, forgotten after each allocation */
+ WpeWindowCopies copies; /* the .ASV this window wrote and the .ESV it was recovered
+                            from, this session: the only copies its close removes;
+                            forgotten after each allocation */
  int *c_sw;
  struct wpeSyntaxRule *c_st;
  struct CNT *ed;  /* parent control structure ??? */
@@ -629,6 +632,13 @@ int e_autosave(FENSTER *f);
 /* The name of a window's autosave or emergency-save file: its name and an
    ending, or NULL when that does not fit the buffer. */
 char *e_make_postf(char *out, size_t n, const char *name, const char *pf);
+/* The full path of a window's copy (@suffix ".ASV" or ".ESV") in its own
+   folder, on the heap, or NULL when the name does not fit or the file system
+   cannot hold such a name (a DOS one). */
+char *e_copy_path(FENSTER *f, const char *suffix);
+/* The folder for the editor's runtime state ($XDG_STATE_HOME/xwpe or
+   ~/.local/state/xwpe), not made: 0, or -1 when no absolute place is known. */
+int wpe_state_dir(char *buf, size_t n);
 
 /*   we_e_aus.c   */
 void e_cls(int frb, int chr);
@@ -715,7 +725,6 @@ int e_m_save(FENSTER *f);
 int e_save(FENSTER *f);
 int e_saveall(FENSTER *f);
 int e_quit(FENSTER *f);
-int e_write(int xa, int ya, int xe, int ye, FENSTER *f, int backup);
 char *e_new_qual(char *s, char *ns, char *sb);
 char *e_bakfilename(char *s);
 int freedf(struct dirfile *df);

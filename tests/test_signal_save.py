@@ -120,16 +120,17 @@ def test_sigterm_with_nothing_unsaved_writes_no_esv(tmp_path):
 
 # @scenario SC-signal-save-05
 def test_a_second_sigterm_ends_an_editor_whose_save_hangs(tmp_path):
-    """t.c.ESV is a FIFO nobody reads, so writing it waits for ever.  The
+    """The emergency save blocks (the test hook emergency-save-hangs stops it
+    after its copy is made, as a dead disk would), so it never returns.  The
     first SIGTERM starts the save, which hangs; the second one ends the
     editor at once, without going on with the rest of the exit (a hang
     that the signal does not interrupt would never let it finish)."""
-    os.mkfifo(str(tmp_path / "t.c.ESV"))
-    with WpeSession(str(tmp_path), "") as w:
+    with WpeSession(str(tmp_path), "",
+                    env_extra={"XWPE_TEST_FAIL": "emergency-save-hangs"}) as w:
         type_into_buffer(w)
         os.kill(w.proc.pid, signal.SIGTERM)
         assert wait_for_exit(w, HUNG_SAVE_WATCH_S) is None, \
-            "the save should be waiting on the FIFO"
+            "the save should be waiting on the hook"
         before = len(w.raw)
         os.kill(w.proc.pid, signal.SIGTERM)
         code = wait_for_exit(w, EXIT_DEADLINE_S)
@@ -137,7 +138,9 @@ def test_a_second_sigterm_ends_an_editor_whose_save_hangs(tmp_path):
         assert code == -signal.SIGTERM, code
         assert SAVE_FAILED_REPORT not in bytes(w.raw[before:]), \
             "the second SIGTERM let the exit go on instead of ending the editor"
-        assert stat.S_ISFIFO(os.stat(str(tmp_path / "t.c.ESV")).st_mode)
+        # The FIFO this row used to leave is gone with its setup; what stays
+        # true is that the hung save never wrote a byte.
+        assert os.stat(str(tmp_path / "t.c.ESV")).st_size == 0
 
 
 # A Rust program debugged through a debug adapter that speaks DAP on its

@@ -544,6 +544,7 @@ int e_edit(ECNT *cn, char *filename)
  if ((f = (FENSTER *)MALLOC(sizeof(FENSTER))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
  wpe_write_identity_forget(&f->file_id);
+ wpe_write_copies_forget(&f->copies);
 
  f->fb = cn->fb;
  cn->f[cn->mxedt] = f;
@@ -4284,38 +4285,94 @@ void e_mouse_bar(int x, int y, int n, int sw, int frb)
  }
 }
 
+/** The shortest file-name limit that can hold an .ASV or .ESV name; below it
+    the file system is a DOS one, where the suffix would replace the
+    extension. */
+#define E_COPY_MIN_NAME_MAX 12
+
+/**
+ * e_copy_path - The full path of a window's autosave or emergency copy.
+ * @f: the window; @suffix: ".ASV" or ".ESV".
+ * Return: the path in the window's own folder, on the heap, or NULL when the
+ * name with its ending does not fit or the file system cannot hold such a
+ * name (a DOS one), so that nothing is saved and nothing removed under a name
+ * cut short.
+ *
+ * The one place the names of the editor's copies are made, for the autosave,
+ * the emergency save and the removal when the window closes.
+ */
+char *e_copy_path(FENSTER *f, const char *suffix)
+{
+ char name[WPE_PATH_SIZE];
+ long maxname = pathconf(f->dirct, _PC_NAME_MAX);
+
+ if (maxname < (long)(strlen(f->datnam) + strlen(suffix)) || maxname <= E_COPY_MIN_NAME_MAX)
+  return(NULL);
+ if (!e_make_postf(name, sizeof name, f->datnam, suffix))
+  return(NULL);
+ return(e_mkfilename(f->dirct, name));
+}
+
+/** The room for the autosave's one-line sentence. */
+#define E_AUTOSAVE_SAY_MAX (WPE_NAME_SIZE + 128)
+
+/**
+ * e_autosave_say_failed - Say on the bottom row that the autosave copy was
+ * not written.
+ * @f: the window; @o: the outcome of the failed copy.
+ *
+ * Leads with what it is and which file ("Autosave: t.txt.ASV not written:
+ * ..."), short enough that an 80-column row keeps the head, so the user
+ * learns what was refused and not only why.  The owner's full sentence is
+ * for boxes and the exit report.
+ */
+static void e_autosave_say_failed(FENSTER *f, const WpeWriteOutcome *o)
+{
+ char say[E_AUTOSAVE_SAY_MAX];
+ const char *slash = strrchr(o->path, '/');
+ const char *name = (slash != NULL ? slash + 1 : o->path);
+
+ if (o->planted)
+  snprintf(say, sizeof say, "Autosave: %s not written: a file that is not ours is in its place.",
+           name);
+ else
+  snprintf(say, sizeof say, "Autosave: %s not written: %s.", name, strerror(o->err));
+ e_status_say(f, say);
+}
+
+/**
+ * e_autosave_copy - Write the window's autosave copy and say on the status
+ * row when it cannot be made.
+ * @f: the window.
+ *
+ * The autosave is not the user's action, so a copy that cannot be made (a
+ * link or another user's file at the .ASV name, a full disk) is said in
+ * one line on the bottom row and never in a box that would stop the user at
+ * every interval.
+ */
+static void e_autosave_copy(FENSTER *f)
+{
+ WpeWriteOutcome o;
+ char *path = e_copy_path(f, ".ASV");
+
+ if (path == NULL)
+  return;
+ WpeMouseChangeShape(WpeWorkingShape);
+ if (wpe_write_copy(f, path, &o) == 0)
+  wpe_write_identity_set(&f->copies.asv, &o.written);
+ else
+  e_autosave_say_failed(f, &o);
+ WpeMouseRestoreShape();
+ wpe_test_dump_note_autosave();
+ FREE(path);
+}
+
 int e_autosave(FENSTER *f)
 {
- char *tmp, *str;
- long maxname;
-
  f->save = 1;
  if (!(f->ed->autosv & 2)) return(0);
- /* Check if file system could have an autosave or emergency save file
-    >12 check is to eliminate dos file systems */
- if (((maxname = pathconf(f->dirct, _PC_NAME_MAX)) >= strlen(f->datnam) + 4) &&
-   (maxname > 12))
- {
-  size_t room = strlen(f->datnam) + 5;
-
-  str = MALLOC(room);
-  if (!str || !e_make_postf(str, room, f->datnam, ".ASV"))
-  {
-   if (str)
-    FREE(str);
-   return(0);
-  }
-  tmp = f->datnam;
-  f->datnam = str;
-  /*e_save(f);*/
-  WpeMouseChangeShape(WpeWorkingShape);
-  e_write(0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines-1, f, WPE_NOBACKUP);
-  WpeMouseRestoreShape();
-  wpe_test_dump_note_autosave();
-  f->datnam = tmp;
-  f->save = 1;
-  FREE(str);
- }
+ e_autosave_copy(f);
+ f->save = 1;
  return(0);
 }
 

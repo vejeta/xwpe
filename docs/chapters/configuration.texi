@@ -325,8 +325,12 @@ Save all options automatically when quitting.
 @item Alt-H
 Enable periodic auto-save.  After N changes (configurable in the
 Max.@: Changes field), the file is saved with an @file{.ASV} extension.
-The original file is not modified.  The @file{.ASV} file is deleted on
-normal exit.
+The original file is not modified.  The @file{.ASV} file is deleted when
+you close the window that wrote it; an @file{.ASV} from an earlier session,
+or one you made yourself, is never deleted by a close.  An old @file{.ASV}
+of yours is replaced by a new file; a link or another user's file at that
+name is left alone, and the bottom row says that the autosave of that file
+was not written because a file that is not ours is in its place.
 @end table
 
 @subsubheading Keys (function key bindings)
@@ -827,7 +831,15 @@ While a program the editor started holds the whole terminal (or its own
 xwpe saved every window; only the modified ones are saved now.  A second
 @code{SIGTERM} or @code{SIGHUP} while the save is running ends the editor
 at once.  A crash, and
-@code{SIGKILL}, end the editor without this save.
+@code{SIGKILL}, end the editor without this save.  An old @file{.ESV} of
+yours is replaced by a new file; a link or another user's file at that name
+is left alone and the report printed at the end says the @file{.ESV} could
+not be saved.  A crash writes a file named @file{crash-@var{pid}.txt}, one
+per process, in the editor's state folder (@file{$XDG_STATE_HOME/xwpe}, else
+@file{~/.local/state/xwpe}), which is made, readable by you alone, when the
+crash happens.  An @file{.ESV} is never removed by closing or quitting an
+ordinary session; it is removed only with the window reopened from it by
+@command{wpe -r}, as described below.
 
 However the editor ends (the quit command, an error, a signal or a
 crash), the terminal it ran in is handed back as the shell had it: the
@@ -858,4 +870,8 @@ wpe -r
 @end example
 
 This reopens each @file{.ESV} file of the current directory with its
-unsaved changes.
+unsaved changes.  Such a @file{.ESV} is removed only when you close the
+window that was reopened from it.  Opening the file in an ordinary
+session (@command{wpe t.c}), closing that window or quitting never deletes
+an @file{.ESV} left by an earlier session: it stays until you recover it
+or delete it yourself.

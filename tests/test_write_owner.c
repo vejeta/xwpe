@@ -243,13 +243,27 @@ static int mode_of(const char *name)
 }
 
 /* What a test allocates is freed once, at the end. */
-static void *garbage[256];
+#define GARBAGE_STEP 256            /* room added each time the list is full */
+static void **garbage;
 static int garbage_n;
+static int garbage_room;
 
 static void *keep(void *p)
 {
- if (garbage_n < (int)(sizeof garbage / sizeof garbage[0]))
-  garbage[garbage_n++] = p;
+ void **grown;
+
+ if (garbage_n == garbage_room)
+ {
+  grown = realloc(garbage, (size_t)(garbage_room + GARBAGE_STEP) * sizeof *garbage);
+  if (grown == NULL)
+  {
+   printf("FAIL: no room to remember what a row allocated\n");
+   exit(2);
+  }
+  garbage = grown;
+  garbage_room += GARBAGE_STEP;
+ }
+ garbage[garbage_n++] = p;
  return(p);
 }
 
@@ -257,6 +271,9 @@ static void free_garbage(void)
 {
  while (garbage_n > 0)
   free(garbage[--garbage_n]);
+ free(garbage);
+ garbage = NULL;
+ garbage_room = 0;
  free(rows_text);
  rows_text = NULL;
 }
@@ -812,6 +829,43 @@ int unlink(const char *path)
    perror("link");
  }
  return(r);
+}
+
+/* lstat, with an owner fake: for the one armed path the file looks owned by
+   another user, the case a test run by one user cannot make with a real
+   file.  Everything else is as the system answers.  The real call is the
+   system's fstatat with AT_SYMLINK_NOFOLLOW, which every system has, so the
+   fake never needs dlsym.  A row proves the fake took (owner_fake_takes)
+   and skips by name when the C library did not route the call through it. */
+static char owner_fake_path[512];
+
+static void owner_fake_arm(const char *name)
+{
+ path_of(owner_fake_path, sizeof owner_fake_path, name);
+}
+
+static void owner_fake_disarm(void)
+{
+ owner_fake_path[0] = '\0';
+}
+
+int lstat(const char *path, struct stat *st)
+{
+ int r = fstatat(AT_FDCWD, path, st, AT_SYMLINK_NOFOLLOW);
+
+ if (r == 0 && owner_fake_path[0] != '\0' && strcmp(path, owner_fake_path) == 0)
+  st->st_uid = (uid_t)(geteuid() + 1);
+ return(r);
+}
+
+/* Did the armed fake change what lstat says about the file NAME? */
+static int owner_fake_takes(const char *name)
+{
+ struct stat st;
+ char p[512];
+
+ path_of(p, sizeof p, name);
+ return(lstat(p, &st) == 0 && st.st_uid != geteuid());
 }
 
 /* fsync, watched: the calls on regular files are counted, the special bits
@@ -1427,6 +1481,208 @@ static void test_a_copy_over_an_existing_setgid_file_gets_no_bit(void)
  chk_int("the autosave ends with the nine bits", mode_of("t.c.ASV"), 0755);
  save_sentence(&o, say, sizeof say);
  chk_int("nothing to say for the autosave", (long)strlen(say), 0);
+}
+
+/* ---- the copies the editor names itself: .ASV, .ESV, the post-edit copy ---- */
+
+/* Is this name a link, itself and not what it leads to? */
+static int name_is_link(const char *path)
+{
+ struct stat st;
+
+ return(lstat(path, &st) == 0 && S_ISLNK(st.st_mode));
+}
+
+/* The window of t.c whose copy t.c.ASV is written, with this mode. */
+static FENSTER *window_for_a_copy(mode_t mode)
+{
+ FENSTER *f = window_of_file_with_mode(mode);
+
+ f->dirct = dir;
+ f->datnam = "t.c";
+ set_rows("copy\n");
+ return(f);
+}
+
+/* @scenario SC-write-owner-C-01: a name the editor chose that is a link is
+   never written through.  The link leads to a program with a setgid bit:
+   writing through it would strip the bit and replace the program's text, in
+   silence. */
+static void test_a_chosen_name_that_is_a_link_is_left_alone_and_said(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], q[512], buf[256], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a link at a chosen name is left alone",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("prog", "program\n", 02755);
+ path_of(p, sizeof p, "t.c.ASV");
+ path_of(q, sizeof q, "prog");
+ if (symlink(q, p) != 0)
+  perror("symlink");
+ f = window_for_a_copy(0644);
+ chk_int("the copy is refused", wpe_write_copy(f, p, &o), -1);
+ chk_int("it says something else is in the name", o.planted, 1);
+ chk_int("nothing was written", o.status, WPE_WRITE_FAILED);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+ chk_has("the sentence", say, "something that is not a copy of ours is in its place.  Nothing was written.");
+ chk_has("the program keeps its text", get_file("prog", buf, sizeof buf), "program\n");
+ chk_int("the program keeps its setgid bit", mode_of("prog"), 02755);
+ chk_int("the link is still a link", name_is_link(p), 1);
+}
+
+/* @scenario SC-write-owner-C-02: a link that leads nowhere is not followed
+   to make the file it names. */
+static void test_a_dangling_chosen_name_creates_nothing_elsewhere(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], target[512];
+
+ make_dir();
+ path_of(target, sizeof target, "elsewhere.txt");
+ path_of(p, sizeof p, "t.c.ASV");
+ if (symlink(target, p) != 0)
+  perror("symlink");
+ f = window_for_a_copy(0644);
+ chk_int("the copy is refused", wpe_write_copy(f, p, &o), -1);
+ chk_int("it says something else is in the name", o.planted, 1);
+ chk_int("the file the link names was not made", mode_of("elsewhere.txt"), -1);
+}
+
+/* @scenario SC-write-owner-C-03: an old copy of ours is replaced by a new
+   file, not rewritten in place, so a hard link made to it earlier keeps the
+   old text. */
+static void test_an_old_copy_of_ours_is_replaced_by_a_new_inode(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ struct stat before, after;
+ char p[512], buf[256];
+
+ make_dir();
+ put_file("t.c.ASV", "old\n", 0644);
+ path_of(p, sizeof p, "t.c.ASV");
+ chk_int("the old copy is there", stat(p, &before), 0);
+ f = window_for_a_copy(0640);
+ chk_int("the copy is written", wpe_write_copy(f, p, &o), 0);
+ chk_int("written", o.status, WPE_WRITE_WRITTEN);
+ chk_has("the new text", get_file("t.c.ASV", buf, sizeof buf), "copy\n");
+ chk_int("the copy has the window's nine bits", mode_of("t.c.ASV"), 0640);
+ chk_int("stat after", stat(p, &after), 0);
+ chk_int("it is a new inode", after.st_ino != before.st_ino, 1);
+ chk_has("the path written is named", o.path, "t.c.ASV");
+}
+
+/* @scenario SC-write-owner-C-04: another user's file at the name is left
+   alone and said.  Played by the owner fake. */
+static void test_another_users_copy_is_left_alone(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], buf[256];
+
+ make_dir();
+ put_file("t.c.ASV", "theirs\n", 0644);
+ owner_fake_arm("t.c.ASV");
+ if (!test_observation(owner_fake_takes("t.c.ASV"), "another user's copy is left alone",
+                       "lstat is not interposable in this C library"))
+ {
+  owner_fake_disarm();
+  return;
+ }
+ path_of(p, sizeof p, "t.c.ASV");
+ f = window_for_a_copy(0644);
+ chk_int("the copy is refused", wpe_write_copy(f, p, &o), -1);
+ owner_fake_disarm();
+ chk_int("it says something else is in the name", o.planted, 1);
+ chk_has("their text is untouched", get_file("t.c.ASV", buf, sizeof buf), "theirs\n");
+}
+
+/* @scenario SC-write-owner-C-05: the copy of a private file is private from
+   its first byte (guard: it holds with and without the fix). */
+static void test_a_copy_of_a_private_file_is_private_from_its_first_byte(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512];
+
+ make_dir();
+ path_of(p, sizeof p, "t.c.ASV");
+ f = window_for_a_copy(0600);
+ write_shared_bits = 0;
+ watch_writes = 1;
+ chk_int("the copy is written", wpe_write_copy(f, p, &o), 0);
+ watch_writes = 0;
+ chk_int("no byte went in while others could read the file", write_shared_bits, 0);
+ chk_int("the copy is private", mode_of("t.c.ASV"), 0600);
+}
+
+/* @scenario SC-write-owner-C-06: a copy removed at close: a link at the name
+   and another user's file stay, a regular file of ours goes. */
+static void test_copy_remove_leaves_a_link_and_another_users_file_alone(void)
+{
+ char p[512], q[512];
+ WpeFileIdentity own, nobody;
+
+ make_dir();
+ memset(&nobody, 0, sizeof nobody);
+ put_file("victim", "keep me\n", 0644);
+ chk_int("the victim's identity", wpe_write_identity_of_name(dir, "victim", &own), 1);
+ path_of(p, sizeof p, "t.c.ASV");
+ path_of(q, sizeof q, "victim");
+ if (symlink(q, p) != 0)
+  perror("symlink");
+ wpe_write_copy_remove(p, &own);
+ chk_int("the link stays", name_is_link(p), 1);
+ chk_int("what it leads to stays", mode_of("victim"), 0644);
+ unlink(p);
+ put_file("t.c.ASV", "theirs\n", 0644);
+ owner_fake_arm("t.c.ASV");
+ chk_int("its identity", wpe_write_identity_of_name(dir, "t.c.ASV", &own), 1);
+ if (test_observation(owner_fake_takes("t.c.ASV"), "another user's copy stays at close",
+                      "lstat is not interposable in this C library"))
+ {
+  wpe_write_copy_remove(p, &own);
+  chk_int("another user's copy stays", mode_of("t.c.ASV"), 0644);
+ }
+ owner_fake_disarm();
+ wpe_write_copy_remove(p, &nobody);
+ chk_int("a copy this window did not write stays", mode_of("t.c.ASV"), 0644);
+ wpe_write_copy_remove(p, NULL);
+ chk_int("no identity, nothing removed", mode_of("t.c.ASV"), 0644);
+ put_file("other", "x\n", 0644);
+ chk_int("another file's identity", wpe_write_identity_of_name(dir, "other", &nobody), 1);
+ wpe_write_copy_remove(p, &nobody);
+ chk_int("a copy of another identity stays", mode_of("t.c.ASV"), 0644);
+ wpe_write_copy_remove(p, &own);
+ chk_int("the copy this window wrote goes", mode_of("t.c.ASV"), -1);
+}
+
+/* @scenario SC-write-owner-C-07: the window between clearing an old copy and
+   making the new one.  Another program puts a hard link to a file of its own
+   at the name just after the old copy is unlinked; the new file is made with
+   O_EXCL and O_NOFOLLOW, so it is refused and the file keeps its text. */
+static void test_a_name_planted_between_the_clear_and_the_create_is_refused(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char p[512], buf[256];
+
+ make_dir();
+ put_file("t.c.ASV", "old\n", 0644);
+ put_file("victim", "victim text\n", 0644);
+ path_of(p, sizeof p, "t.c.ASV");
+ path_of(plant_at, sizeof plant_at, "t.c.ASV");
+ path_of(plant_from, sizeof plant_from, "victim");
+ f = window_for_a_copy(0644);
+ chk_int("the copy is refused", wpe_write_copy(f, p, &o), -1);
+ plant_at[0] = '\0';
+ chk_int("it says something else is in the name", o.planted, 1);
+ chk_has("the victim keeps its text", get_file("victim", buf, sizeof buf), "victim text\n");
 }
 
 /* A user who took setuid off a program to make it safe does not get it back
@@ -3958,6 +4214,13 @@ int main(void)
  test_a_backup_with_no_descriptor_to_keep_stops_the_save();
  test_a_block_write_to_a_new_name_gets_no_bit();
  test_a_copy_over_an_existing_setgid_file_gets_no_bit();
+ test_a_chosen_name_that_is_a_link_is_left_alone_and_said();
+ test_a_dangling_chosen_name_creates_nothing_elsewhere();
+ test_an_old_copy_of_ours_is_replaced_by_a_new_inode();
+ test_another_users_copy_is_left_alone();
+ test_a_copy_of_a_private_file_is_private_from_its_first_byte();
+ test_copy_remove_leaves_a_link_and_another_users_file_alone();
+ test_a_name_planted_between_the_clear_and_the_create_is_refused();
  test_a_bit_removed_on_disk_is_not_restored();
  test_a_bit_added_on_disk_since_loading_is_kept();
  test_a_longer_file_saved_short_leaves_no_tail();

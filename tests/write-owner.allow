@@ -11,17 +11,12 @@
 # a permanent exception and the reason says why the text is not the user's.
 
 # the next passes of the owner
-we_edit.o|r1:e_write|1|P2|autosave writes through e_write until wpe_write_copy
-we_unix.o|r1:e_write|1|P2|the emergency save writes through e_write until wpe_write_copy
-we_edit.c|r4:e_autosave|1|P2|the autosave drops the outcome until it becomes a copy
-we_unix.c|r5:e_err_save_window|1|P2|the emergency save compares e_write with WPE_ESC until wpe_write_copy
 we_prog.c|r4:e_chk_save_if_open|1|P3|a build save
 we_prog.c|r4:e_comp_start|1|P3|a build save
 we_prog.c|r4:e_exec_make|1|P3|a build save
 we_prog.c|r4:e_prj_save_file|1|P3|a build save
 we_prog.c|r4:e_run_sh|1|P3|a build save
 we_ai_ui.c|r2:ai_transcript_write|1|P4|the transcript
-we_wind.c|r8:e_close_window|2|P2|the .ASV and .ESV copies by name, until the pass that makes the copies
 
 # not the user's text
 we_ai.c|r2:wpe_ai_trace|1|keep|a behaviour trace
@@ -46,7 +41,7 @@ we_prog.c|r2:e_p_make_then|1|keep|a behaviour trace
 we_prog.c|r2:e_run|1|keep|a behaviour trace
 we_term.c|r2:e_t_flush_input|1|keep|a behaviour trace
 we_trace.c|r2:wpe_trace_file|1|keep|the trace owner
-we_unix.c|r2:WpeSignalUnknown|1|keep|the crash log
+we_unix.c|r2:wpe_crash_file_open|1|keep|the crash log, made new (O_EXCL, O_NOFOLLOW) under a name of its own per process
 we_wayland.c|r2:wpe_wl_dump_ppm|1|keep|a test screen dump
 we_wlframe.c|r2:wlf_trace|1|keep|a frame trace
 we_xterm.c|r2:e_x_system_script|1|keep|the script of the external terminal
@@ -82,6 +77,7 @@ we_fl_unix.c|r8:WpePrintFile|1|keep|the print copy, the write owner's temporary
 we_main.c|r8:e_mkdirs|2|keep|the configuration folders
 we_opt.c|r8:e_save_opt|1|keep|the options file's folder
 we_prog.c|r8:e_new_message|1|keep|the build's message file
+we_unix.c|r8:wpe_crash_dir_make|1|keep|the state folder of the crash file, made 0700 only when a crash happens and judged by lstat
 we_startcmd.c|r8:startcmd_dir_trusted|1|keep|the start command's own private folder
 we_startcmd.c|r8:startcmd_make_dirs|2|keep|the start command's own private folder
 we_startcmd.c|r8:startcmd_save_file|4|keep|the start command's own file

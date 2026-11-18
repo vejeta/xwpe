@@ -2566,13 +2566,46 @@ static int e_close_save_failed(FENSTER *f)
  return(e_save(f) != WPE_WRITE_WRITTEN);
 }
 
+/**
+ * e_close_remove_one - Remove one of a closing window's copies.
+ * @f: the window; @suffix: ".ASV" or ".ESV"; @own: the copy this window
+ * made or read in this session.
+ */
+static void e_close_remove_one(FENSTER *f, const char *suffix, const WpeFileIdentity *own)
+{
+ char *path = e_copy_path(f, suffix);
+
+ if (path == NULL)
+  return;
+ wpe_write_copy_remove(path, own);
+ FREE(path);
+}
+
+/**
+ * e_close_remove_copies - Remove the autosave and recovery copies this
+ * window made, when it closes.
+ * @f: the window, still whole.
+ *
+ * What the user gets: closing a window leaves no .ASV of its own autosave
+ * beside the file, found in the window's own folder, and a .ESV it was
+ * recovered from is removed with it.  A .ASV or .ESV from an earlier
+ * session, one the user made, a link or another user's file is never
+ * removed: only the very file this window wrote or read.
+ */
+static void e_close_remove_copies(FENSTER *f)
+{
+ if (f->dirct == NULL || f->datnam == NULL)
+  return;
+ e_close_remove_one(f, ".ASV", &f->copies.asv);
+ e_close_remove_one(f, ".ESV", &f->copies.esv);
+}
+
 /*    close window */
 int e_close_window(FENSTER *f)
 {
  ECNT *cn = f->ed;
  FENSTER *f0 = f->ed->f[0];
  int c = 0;
- long maxname;
  char text[256];
 
  f = cn->f[cn->mxedt];
@@ -2658,16 +2691,7 @@ int e_close_window(FENSTER *f)
      is freed below. */
   e_lsp_window_closing(f);
 #endif
-  /* Check if file system could have an autosave or emergency save file
-     >12 check is to eliminate dos file systems */
-  if ((maxname = pathconf(f->dirct, _PC_NAME_MAX) >= strlen(f->datnam) + 4) &&
-    (maxname > 12))
-  {
-   if (e_make_postf(text, sizeof text, f->datnam, ".ASV"))
-    remove(text);
-   if (e_make_postf(text, sizeof text, f->datnam, ".ESV"))
-    remove(text);
-  }
+  e_close_remove_copies(f);
   if (strcmp(f->datnam, "Messages") && strcmp(f->datnam, "Watches"))
    e_close_buffer(f->b);
   else
@@ -3465,6 +3489,7 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
  if ((f = (FENSTER *) MALLOC(sizeof(FENSTER))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
  wpe_write_identity_forget(&f->file_id);
+ wpe_write_copies_forget(&f->copies);
  if (xe > MAXSCOL-3) {  xe = MAXSCOL - 3;  xa = xe - 21;  }
  if (ye > MAXSLNS-3) {  ye = MAXSLNS - 3;  ya = ye - 6;  }
  f->fb = cn->fb;

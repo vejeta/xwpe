@@ -107,6 +107,7 @@ char e_we_sw = 0;
 WpeGfxBackend e_gfx_backend = WPE_GFX_X11;
 
 void WpeSignalUnknown(int sig);
+static void wpe_crash_path_init(void);
 void WpeSignalChild(int sig);
 void WpeSignalTerm(int sig);
 static void wpe_end_request_open(void);
@@ -508,6 +509,7 @@ int e_ini_unix(int *argc, char **argv)
  e_menu_bar_from_heads(wpe_menu_bar_composition(WpeIsProg() != 0));
 
  /* Unknown error signal handling */
+ wpe_crash_path_init();
  act.sa_handler = WpeSignalUnknown;
  sigfillset(&act.sa_mask); /* Mask all signals while running */
  act.sa_flags = 0;
@@ -593,10 +595,100 @@ static void wpe_end_children_from_handler(void)
  wpe_child_end_from_handler();
 }
 
+/** The permissions of the state folder the crash file goes in, and of the
+    crash file: the user's alone. */
+#define WPE_CRASH_DIR_MODE  0700
+#define WPE_CRASH_FILE_MODE 0600
+/** The room for the process number in the crash file's name. */
+#define WPE_CRASH_NAME_ROOM 64
+/** Where a crash file goes when no state folder is known. */
+#define WPE_CRASH_FALLBACK_DIR "/tmp"
+
+static char wpe_crash_dir[WPE_PATH_SIZE];    /* the state folder, or "" when none is known */
+static char wpe_crash_file[WPE_PATH_SIZE];   /* the crash file's name, one per process */
+
+/**
+ * wpe_crash_path_init - Decide, once at start, where this process's crash
+ * file goes.
+ *
+ * What the user gets: a crash leaves "crash-<pid>.txt" in the editor's state
+ * folder ($XDG_STATE_HOME/xwpe or ~/.local/state/xwpe), one file per process,
+ * never a fixed name in /tmp that another user could have planted a link at.
+ * With no usable state folder it is "/tmp/xwpe-crash-<pid>.txt".  Nothing is
+ * made here: the folder is made only if a crash happens, so a run that does
+ * not crash leaves nothing behind.
+ */
+static void wpe_crash_path_init(void)
+{
+ char name[WPE_CRASH_NAME_ROOM];
+
+ wpe_crash_dir[0] = '\0';
+ if (wpe_state_dir(wpe_crash_dir, sizeof wpe_crash_dir) == 0)
+ {
+  snprintf(name, sizeof name, "crash-%ld.txt", (long)getpid());
+  if (wpe_path_join(wpe_crash_file, sizeof wpe_crash_file, wpe_crash_dir, name) == 0)
+   return;
+  wpe_crash_dir[0] = '\0';
+ }
+ snprintf(wpe_crash_file, sizeof wpe_crash_file, "%s/xwpe-crash-%ld.txt", WPE_CRASH_FALLBACK_DIR,
+          (long)getpid());
+}
+
+/**
+ * wpe_crash_dir_make - Make the crash file's folder, if it is not there, and
+ * judge it.
+ * Return: 0 when the crash file may go there, -1 when it may not.
+ *
+ * Called from the crash handler, so only calls a signal handler may make
+ * (mkdir, lstat).  A folder that is not a real folder of this user (a link,
+ * another user's, one that others may write in) is refused: the crash file
+ * is not written there.
+ */
+static int wpe_crash_dir_make(void)
+{
+ char path[WPE_PATH_SIZE];
+ struct stat st;
+ char *p, end;
+
+ if (wpe_crash_dir[0] == '\0')
+  return(0);
+ memcpy(path, wpe_crash_dir, strlen(wpe_crash_dir) + 1);
+ for (p = path + 1;; p++)
+ {
+  if (*p != '/' && *p != '\0')
+   continue;
+  end = *p;
+  *p = '\0';
+  mkdir(path, WPE_CRASH_DIR_MODE);
+  *p = end;
+  if (end == '\0')
+   break;
+ }
+ if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid())
+  return(-1);
+ return((st.st_mode & (S_IWGRP | S_IWOTH)) ? -1 : 0);
+}
+
+/**
+ * wpe_crash_file_open - Open this process's crash file, new.
+ * Return: the descriptor, or -1 (the file is then not written).
+ *
+ * Made with O_EXCL and O_NOFOLLOW under a name of its own, so it is never
+ * written through a link planted at the name and never over another file; a
+ * name that is already there (a reused process number) is left alone.
+ */
+static int wpe_crash_file_open(void)
+{
+ if (wpe_crash_dir_make() != 0)
+  return(-1);
+ return(open(wpe_crash_file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+             WPE_CRASH_FILE_MODE));
+}
+
 void WpeSignalUnknown(int sig)
 {
  wpe_end_children_from_handler();
- int fd = open("/tmp/xwpe-crash.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
+ int fd = wpe_crash_file_open();
  if (fd >= 0)
  {
   char line[256];
@@ -870,11 +962,8 @@ void e_display_lost(const char *what, const char *why)
    file.  What it did is kept here and told once the terminal is restored,
    where the user can still read it after the editor is gone. */
 #define E_ESV_SUFFIX ".ESV"
-/* Shortest file-name limit that can hold an .ESV name; below it the file
-   system is a DOS one, where the suffix would replace the extension. */
-#define E_ESV_MIN_NAME_MAX 12
 static struct {
- const char *name;
+ char name[WPE_PATH_SIZE];   /* the .ESV written, or the window's own name when none could be named */
  int saved;
 } e_esv_result[MAXEDT + 1];
 static int e_esv_results = 0;
@@ -898,31 +987,35 @@ int e_emergency_save_running(void)
 /**
  * e_err_save_window - Write one window with unsaved changes to its .ESV
  * file, beside its own file.
- * @f: a text window with unsaved changes.
+ * @f: a text window with unsaved changes; @shown: receives the file the
+ * report names (the .ESV, or the window's own name when no .ESV name fits);
+ * @n: its size.
  *
  * The user's work survives the end of the editor, and "wpe -r" brings it
  * back.  No backup is made: the .ESV is not the user's file, and the
  * backup of an .ESV would be named like the backup of the file itself.
+ *
+ * The window is not renamed: the copy is made under its own name by the write
+ * owner, which never writes through a link or into a file that is not an old
+ * copy of ours.  A name that is taken by such a file is refused and the
+ * report says the .ESV could not be saved.
  * Return: 0 when it was written, -1 when it could not be.
  */
-static int e_err_save_window(FENSTER *f)
+static int e_err_save_window(FENSTER *f, char *shown, size_t n)
 {
- long maxname = pathconf(f->dirct, _PC_NAME_MAX);
- char *esv;
+ WpeWriteOutcome o;
+ char *esv = e_copy_path(f, E_ESV_SUFFIX);
+ int rc;
 
- if (maxname < (long)(strlen(f->datnam) + strlen(E_ESV_SUFFIX)))
+ if (esv == NULL)
+ {
+  snprintf(shown, n, "%s", f->datnam);
   return(-1);
- if (maxname <= E_ESV_MIN_NAME_MAX)
-  return(-1);
- esv = MALLOC(strlen(f->datnam) + strlen(E_ESV_SUFFIX) + 1);
- if (!esv)
-  return(-1);
- sprintf(esv, "%s%s", f->datnam, E_ESV_SUFFIX);
- FREE(f->datnam);
- f->datnam = esv;
- if (e_write(0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1, f, WPE_NOBACKUP) == WPE_ESC)
-  return(-1);
- return(0);
+ }
+ rc = wpe_write_copy(f, esv, &o);
+ snprintf(shown, n, "%s", o.path);
+ FREE(esv);
+ return(rc);
 }
 
 /**
@@ -941,15 +1034,28 @@ static int e_err_save_wanted(FENSTER *f)
 
 /**
  * e_err_save_note - Keep what the save did with one window for the report.
- * @f: the window; @saved: whether its .ESV was written.
+ * @shown: the file the save named (the .ESV it wrote, or tried to);
+ * @saved: whether it was written.
  */
-static void e_err_save_note(FENSTER *f, int saved)
+static void e_err_save_note(const char *shown, int saved)
 {
  if (e_esv_results > MAXEDT)
   return;
- e_esv_result[e_esv_results].name = f->datnam;
+ snprintf(e_esv_result[e_esv_results].name, sizeof e_esv_result[0].name, "%s", shown);
  e_esv_result[e_esv_results].saved = saved;
  e_esv_results++;
+}
+
+/**
+ * e_err_save_one - Keep the work of one window and note it for the report.
+ * @f: a text window with unsaved changes.
+ */
+static void e_err_save_one(FENSTER *f)
+{
+ char shown[WPE_PATH_SIZE];
+ int saved = (e_err_save_window(f, shown, sizeof shown) == 0);
+
+ e_err_save_note(shown, saved);
 }
 
 void e_err_save()
@@ -966,7 +1072,7 @@ void e_err_save()
  {
   if (!e_err_save_wanted(cn->f[i]))
    continue;
-  e_err_save_note(cn->f[i], e_err_save_window(cn->f[i]) == 0);
+  e_err_save_one(cn->f[i]);
  }
  e_esv_running = 0;
 }
@@ -1496,8 +1602,11 @@ int e_recover(ECNT *cn)
    continue;                    /* not opened: no window of it to recover into */
   f = cn->f[cn->mxedt];
   f->datnam[strlen(f->datnam)-4] = '\0';
-  /* The window read the .ESV copy; its own file is the one under the
-     original name, if there is one. */
+  /* The window read the .ESV copy (e_edit took its identity): that is the
+     copy its close may remove, and only after the user dealt with the
+     recovered text.  Its own file is the one under the original name, if
+     there is one. */
+  wpe_write_identity_set(&f->copies.esv, &f->file_id);
   (void)wpe_write_identity_of_name(f->dirct, f->datnam, &f->file_id);
   if (!strcmp(f->datnam, BUFFER_NAME))
   {

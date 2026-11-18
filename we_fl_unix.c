@@ -149,6 +149,7 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   if((f = (FENSTER *)MALLOC(sizeof(FENSTER))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   wpe_write_identity_forget(&f->file_id);
+  wpe_write_copies_forget(&f->copies);
 
   /* allocate buffer related to the window (NOT proper type, later casted) */
   if((b = (FLBFFR *) MALLOC(sizeof(FLBFFR))) == NULL)
@@ -4143,6 +4144,7 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
   if((f = (FENSTER *) MALLOC(sizeof(FENSTER))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   wpe_write_identity_forget(&f->file_id);
+  wpe_write_copies_forget(&f->copies);
   if((fw = (FLWND *) MALLOC(sizeof(FLWND))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   f->fb = cn->fb;

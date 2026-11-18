@@ -70,10 +70,8 @@ void wpe_ai_shell_quote(char *dst, size_t sz, const char *src)
    $XDG_STATE_HOME/xwpe (default ~/.local/state/xwpe).  Writes into buf. */
 static void ws_state_dir(char *buf, size_t sz)
 {
- const char *xdg = getenv("XDG_STATE_HOME");
- const char *home = getenv("HOME");
- if (xdg && *xdg) snprintf(buf, sz, "%s/xwpe", xdg);
- else             snprintf(buf, sz, "%s/.local/state/xwpe", (home && *home) ? home : ".");
+ if (wpe_state_dir(buf, sz) != 0)
+  snprintf(buf, sz, "./.local/state/xwpe");   /* no absolute place known: under the working folder, as before */
 }
 
 static void ws_list_push(char ***l, int *n, int *cap, char *s)
@@ -2240,24 +2238,21 @@ int wpe_ai_refresh_open_window(FENSTER *f, const char *path)
  */
 int wpe_ai_window_hook_copy(FENSTER *w, char *tmp, size_t sz)
 {
- char name[600], *full, *text;
+ char name[600], *full;
  WpeWriteOutcome o;
  if (!ws_is_real_file_window(w)) return 0;
  snprintf(name, sizeof name, ".ai-hook-%ld-%s", (long)getpid(), w->datnam);
  full = e_mkfilename(w->dirct, name);
  if (!full) return 0;
- text = ws_window_text(w);
- if (!text || strlen(full) >= sz) { free(text); free(full); return 0; }
- if (wpe_write_text(full, text, &o) != 0) {
+ if (strlen(full) >= sz) { free(full); return 0; }
+ if (wpe_write_copy(w, full, &o) != 0) {
   int err = o.err;
   ws_write_failed(w, "write the post-edit copy of", full, err);
   wpe_ai_trace("post-edit copy failed %s: %s", full, strerror(err));
-  free(text);
   free(full);
   return 0;
  }
  strcpy(tmp, full);
- free(text);
  free(full);
  return 1;
 }

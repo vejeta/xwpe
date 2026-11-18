@@ -374,6 +374,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The copies xwpe keeps beside your file (the autosave's .ASV, the
+  emergency save's .ESV, the copy the post-edit command works on) are never
+  written through a name somebody else put there.  Before, a link named
+  t.c.ASV that led to a program had the program's text replaced and its
+  setgid bit stripped by the next autosave, in silence.  Now an old copy of
+  yours is replaced by a new file, and anything else at the name (a link,
+  another user's file) is left alone: the autosave says so on the bottom
+  row, and the exit report says the .ESV could not be saved.  The report
+  names the .ESV it wrote, with its folder.  Closing a window removes the
+  .ASV it wrote again, as the manual always said (the removal had stopped
+  working long ago), and the .ESV it was reopened from by wpe -r; an .ASV
+  or .ESV from an earlier session, or one you made, is never removed.  A
+  crash writes crash-<pid>.txt in your state folder ($XDG_STATE_HOME/xwpe
+  or ~/.local/state/xwpe, made 0700 on the crash), not the fixed name
+  /tmp/xwpe-crash.txt.
+
 * xwpe no longer exits with BadDrawable when Xft finds no font.  On a
   machine where fontconfig has no usable font (a minimal container, a
   remote X display from a host with no fonts, a broken FONTCONFIG_FILE)

@@ -180,6 +180,31 @@ static void e_mkdirs(const char *path)
  mkdir(tmp, 0700);
 }
 
+/**
+ * wpe_state_dir - The folder for what the editor writes while it runs.
+ * @buf: receives the path; @n: its size.
+ * Return: 0, or -1 when no absolute place is known or it does not fit.
+ *
+ * $XDG_STATE_HOME/xwpe, else ~/.local/state/xwpe, the place the first start
+ * names to the user (e_xdg_config_file).  A variable that is not an
+ * absolute path is ignored, so a crash report or a session file is never
+ * put in a folder that depends on where the editor was started.  The
+ * folder itself is not made here.
+ */
+int wpe_state_dir(char *buf, size_t n)
+{
+ const char *xdg = getenv("XDG_STATE_HOME");
+ const char *home = getenv("HOME");
+
+ if (xdg != NULL && xdg[0] == '/')
+  return(wpe_path_join(buf, n, xdg, "xwpe") ? -1 : 0);
+ if (home == NULL || home[0] != '/')
+  return(-1);
+ if (wpe_path_join(buf, n, home, ".local/state"))
+  return(-1);
+ return(wpe_path_cat(buf, n, "/xwpe") ? -1 : 0);
+}
+
 /* Copy file `src` to `dst` (best-effort).  Returns 0 on success. */
 static int e_copy_file(const char *src, const char *dst)
 {

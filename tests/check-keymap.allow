@@ -141,7 +141,6 @@ we_progn.c:e_p_beautify:* 11 dialog field editing
 we_progn.c:e_pr_c_line:* 3 dialog field editing
 we_progn.c:e_program_opt:* 10 dialog field editing
 we_progn.c:e_sh_def:* 1 dialog field editing
-we_unix.c:e_err_save_window:* 1 dialog field editing
 we_unix.c:e_frb_t_menue:* 5 dialog field editing
 we_wind.c:e_close_window:* 3 dialog field editing
 we_wind.c:e_ed_zoom:* 1 dialog field editing
@@ -153,7 +152,6 @@ we_wind.c:e_pr_line:* 3 dialog field editing
 we_wind.c:e_schr_lst_wsv:* 4 dialog field editing
 we_wind.c:e_startcmd_add_buttons:* 3 dialog field editing
 we_wind.c:e_sv_window:* 2 dialog field editing
-we_write.c:e_write:* 2 dialog field editing
 
 # ---- not yet in the table: the editor's own keys (context editing) ---------
 we_edit.c:e_cursor:* 1 not yet in the table, context editing (K-d1)
