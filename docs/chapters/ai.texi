@@ -395,7 +395,10 @@ time, in the editor's Save As dialog under the title @samp{Save transcript},
 and writes the transcript there as UTF-8 text: each line as the pane shows it
 (@samp{You: } your questions, @samp{AI: } the replies, @samp{[AI]} and the
 other bracketed lines the machinery), one per line and not wrapped at the
-pane's width.  The status row says @samp{saved @var{name}}.  The pane keeps the
+pane's width.  The status row says @samp{saved @var{name}}, or
+@samp{could not save @var{name}: } and the system's reason when the file could
+not be written.  Over a file that has a setuid, setgid or sticky bit the
+transcript does not keep that bit, and the file question says so first.  The pane keeps the
 name until it is closed, so a later @key{F2} saves there again without asking.
 @samp{File}, @samp{Save As} asks every time; @key{Esc} in the dialog writes
 nothing.  In the Modern key set the same save is @kbd{Ctrl-S}; in both

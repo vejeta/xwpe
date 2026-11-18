@@ -1080,6 +1080,51 @@ static void write_bits_mark_lost(WpeModeKept *k, mode_t bits, int err)
  k->in_group = 1;
 }
 
+/**
+ * write_note_unsure - Record special bits a write may have cleared when the
+ * file could not be read to find out.
+ * @k: receives the record; @bits: the bits; @err: why the file could not be
+ * read (no descriptor, or the descriptor would not say).
+ *
+ * The status row then says the bits "may not have been kept", not that they
+ * were lost.
+ */
+static void write_note_unsure(WpeModeKept *k, mode_t bits, int err)
+{
+ write_bits_mark_lost(k, bits, err);
+ k->unsure = 1;
+}
+
+/**
+ * write_bits_read_back - Record which special bits a file does not have after
+ * a call to put them on failed.
+ * @fd: a descriptor of the file; @had: the bits it was to have; @err: the
+ * errno of the call that failed; @k: receives the record.
+ *
+ * The one place a failed give-back is turned into words, for a save and for
+ * a restore.  A bit that is on the file is not lost, whatever the call said.
+ * A descriptor that will not say what the file has leaves the bits "may not
+ * have been kept", the same words as a file that could not be opened at all
+ * (a descriptor of -1 fails the same read): never silence, never a flat
+ * "lost".
+ */
+static void write_bits_read_back(int fd, mode_t had, int err, WpeModeKept *k)
+{
+ struct stat now;
+ mode_t special = had & WRITE_SPECIAL_BITS;
+
+ memset(k, 0, sizeof *k);
+ if (special == 0)
+  return;
+ if (fstat(fd, &now) != 0)
+ {
+  write_note_unsure(k, special, err);
+  return;
+ }
+ if ((special & ~now.st_mode) != 0)
+  write_bits_mark_lost(k, special & ~now.st_mode, err);
+}
+
 /* --- the backup copy ------------------------------------------------------ */
 
 typedef enum {
@@ -1336,16 +1381,11 @@ static void write_back_give_bits(int to, mode_t keep, WpeModeKept *k)
 {
  int err = wpe_write_sync_before_bits(to, keep, 0);
 
- mode_t lost;
-
  if (err == 0)
   err = wpe_write_set_special_bits(to, keep, k);
  if (err == 0)
   return;
- lost = write_bits_found_off(to, keep);
- memset(k, 0, sizeof *k);
- if (lost != 0)
-  write_bits_mark_lost(k, lost, err);
+ write_bits_read_back(to, keep, err, k);
 }
 
 /**
@@ -2224,20 +2264,6 @@ static int write_mode_after_text(int fd, const struct stat *written, int have_wr
 }
 
 /**
- * write_note_unsure - Record special bits a write may have cleared when the
- * file could not be read to find out.
- * @k: receives the record; @bits: the bits; @err: why there is no descriptor.
- *
- * The status row then says the bits "may not have been kept", not that they
- * were lost.
- */
-static void write_note_unsure(WpeModeKept *k, mode_t bits, int err)
-{
- write_bits_mark_lost(k, bits, err);
- k->unsure = 1;
-}
-
-/**
  * write_keep_special_bits - Put the saved file's setuid, setgid and sticky
  * bits back after the text, and record the ones it could not keep.
  * @fd: a descriptor of the saved file, or -1 when none could be made;
@@ -2260,7 +2286,7 @@ static void write_keep_special_bits(int fd, int fd_err, const WriteTarget *t,
                                     const struct stat *written, int have_written, WpeModeKept *k)
 {
  int err;
- mode_t lost, mode;
+ mode_t mode;
 
  memset(k, 0, sizeof *k);
  if (t->keep == 0)
@@ -2277,10 +2303,7 @@ static void write_keep_special_bits(int fd, int fd_err, const WriteTarget *t,
  err = write_give_back_bits(fd, t->keep, k);
  if (err == 0)
   return;
- lost = write_bits_found_off(fd, t->keep);
- memset(k, 0, sizeof *k);
- if (lost != 0)
-  write_bits_mark_lost(k, lost, err);
+ write_bits_read_back(fd, t->keep, err, k);
 }
 
 /**
@@ -3243,13 +3266,84 @@ int wpe_write_bytes(const char *path, const char *text, size_t len, WpeWriteOutc
 }
 
 /**
+ * write_named_copy_aim - What a text or a stream the user named is for.
+ * @aim: receives it.
+ *
+ * A file the user named for a list or a text (an options file, a project, the
+ * AI transcript) is a copy: the name is followed as Save follows it, the
+ * file is cut only after its bits are read, and a setuid, setgid or sticky
+ * bit it had is taken off, never given back, because the new content is not
+ * the program that was there.
+ */
+static void write_named_copy_aim(WriteAim *aim)
+{
+ write_aim_make(aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, WRITE_OPEN_NAMED);
+}
+
+/**
  * wpe_write_text - Create or replace a file with a string, judged.
  * @path: the file; @text: the bytes; @o: receives the outcome, with the path.
  * Return: 0 when written, else -1.
+ *
+ * What the user gets: the file the user named is written the way a Save
+ * writes it (opened without cutting it, bits read from the file itself, cut
+ * only then, errors named by their reason), but as a copy: over a setgid or
+ * sticky file of the user's the text drops the bit, and when the system
+ * refuses to drop it the outcome says the file keeps it (file_stays).
  */
 int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o)
 {
- return(wpe_write_bytes(path, text, strlen(text), o));
+ WriteSource s;
+ WriteAim aim;
+
+ write_source_text(&s, text, strlen(text));
+ write_named_copy_aim(&aim);
+ write_run(&s, path, 0, &aim, o);
+ return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+}
+
+/**
+ * write_stream_read_back - Record the special bits a stream's file still has.
+ * @t: the target of the stream, open; @o: receives file_stays.
+ *
+ * Read from the open file after the nine-bit call that was to take its
+ * special bits off.  This is only the list of bits to check: a system may
+ * clear a bit when the text is written (FreeBSD, NetBSD and macOS for a user
+ * who is not root), and the user may change the file's mode while the stream
+ * is open.  write_stream_confirm_stays reads the file again at the close and
+ * keeps only the bits it still has; the sentence names those and no others.
+ */
+static void write_stream_read_back(const WriteTarget *t, WpeWriteOutcome *o)
+{
+ struct stat unused;
+
+ write_read_back_stays(t->fd, t, &unused, 0, &o->file_stays);
+}
+
+/**
+ * write_stream_confirm_stays - Keep, of the bits a stream's file was found to
+ * keep at the open, only those it has when the stream ends.
+ * @fp: the stream, still open; @o: holds file_stays from the open.
+ *
+ * What the user gets: "written, but it keeps the sticky bit" is said only of
+ * a bit that is on the file when the last byte is in, never of one the system
+ * or the user took off in between.  When the file cannot be read, nothing is
+ * said: a bit is never claimed to stay on a guess.
+ */
+static void write_stream_confirm_stays(FILE *fp, WpeWriteOutcome *o)
+{
+ struct stat now;
+
+ if (o->file_stays.lost == 0)
+  return;
+ if (fstat(fileno(fp), &now) != 0)
+ {
+  memset(&o->file_stays, 0, sizeof o->file_stays);
+  return;
+ }
+ o->file_stays.lost &= now.st_mode & WRITE_SPECIAL_BITS;
+ if (o->file_stays.lost == 0)
+  memset(&o->file_stays, 0, sizeof o->file_stays);
 }
 
 /**
@@ -3260,35 +3354,35 @@ int wpe_write_text(const char *path, const char *text, WpeWriteOutcome *o)
  *
  * For a list of unknown length (the project's lines, the options): the user
  * who names a folder that refuses the file hears the system's reason instead
- * of a guess.  The caller must end with wpe_write_stream_close and read its
- * result; the file size limit is ignored until then, so a full limit is a
- * failed outcome and not the end of the editor.
+ * of a guess.  The file is opened and cut the way a Save does it
+ * (write_run_open), as a copy of what was there, so a setgid or sticky bit on
+ * the old file is taken off before the first byte, and a link at the name is
+ * followed as Save follows it.  The caller must end with
+ * wpe_write_stream_close and read its result; the file size limit is ignored
+ * until then, so a full limit is a failed outcome and not the end of the
+ * editor.
  */
 FILE *wpe_write_stream_open(const char *path, WpeWriteOutcome *o)
 {
- FILE *fp;
- int fd;
+ WriteSource s;
+ WriteAim aim;
+ WriteTarget t;
+ WriteBackup bk;
 
  memset(o, 0, sizeof *o);
+ o->status = WPE_WRITE_FAILED;
  write_set_path(o, path);
- fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
- if (fd < 0)
- {
-  o->status = WPE_WRITE_FAILED;
-  o->err = errno;
-  return(NULL);
- }
- fp = fdopen(fd, "w");
- if (fp == NULL)
- {
-  o->status = WPE_WRITE_FAILED;
-  o->err = write_error_number(errno);
-  close(fd);
-  return(NULL);
- }
+ write_source_text(&s, "", 0);
+ write_named_copy_aim(&aim);
  wpe_write_guard_enter();
+ if (write_run_open(&s, path, 0, &aim, &t, &bk, o) != 0)
+ {
+  wpe_write_guard_leave();
+  return(NULL);
+ }
+ write_stream_read_back(&t, o);
  o->status = WPE_WRITE_WRITTEN;
- return(fp);
+ return(t.fp);
 }
 
 /**
@@ -3298,7 +3392,9 @@ FILE *wpe_write_stream_open(const char *path, WpeWriteOutcome *o)
  *
  * The file was emptied when it was opened, so a failure here leaves it cut
  * short: the outcome says so (no backup copy exists for a stream), and the
- * sentence the user reads says the file may be cut short.
+ * sentence the user reads says the file may be cut short.  When the stream
+ * worked, the special bits the open found the file keeping are read again
+ * from the file before it is closed (write_stream_confirm_stays).
  */
 int wpe_write_stream_close(FILE *fp, WpeWriteOutcome *o)
 {
@@ -3308,6 +3404,8 @@ int wpe_write_stream_close(FILE *fp, WpeWriteOutcome *o)
   err = write_error_number(errno);
  if (err == 0 && ferror(fp))
   err = EIO;
+ if (err == 0)
+  write_stream_confirm_stays(fp, o);
  if (fclose(fp) != 0 && err == 0)
   err = write_error_number(errno);
  wpe_write_guard_leave();

@@ -668,7 +668,17 @@ Changes
   but it keeps the sticky bit: Operation not permitted".  Only the sticky
   bit stays on such a file: the system clears its setuid and setgid bits
   on the write, and the overwrite question says so, with one line for the
-  bits that drop and one for the sticky bit that stays.
+  bits that drop and one for the sticky bit that stays.  When the file
+  cannot be read back to find out, the bit is said to be one that "may not
+  have been kept", never silence.
+* The project list, the options file and the AI pane's transcript are
+  written the way a Save writes: a link at the name is followed, the file
+  is cut only after its bits are read, and a setuid, setgid or sticky bit
+  on the file they replace is taken off (the transcript left a sticky bit
+  on the file it overwrote, though the question promised the copy would not
+  keep it).  The transcript's status row says "saved t.txt" only when the
+  file is on disk, "could not save t.txt: <reason>" when it is not, and
+  names a bit the file keeps when the system would not take it off.
 
 * "Don't overwrite" now leaves the existing file alone and says so on the
   status row; it used to overwrite it.  Replacing a file asks once, a name

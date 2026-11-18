@@ -151,7 +151,9 @@ the same line. A long paste is painted once, when it ends.
 with the pane focused saves its transcript. The first time it asks a file name
 in the Save As dialog, titled `Save transcript`; the file is UTF-8 text, each
 line as the pane shows it (`You: `, `AI: `, the bracketed machinery lines), one
-per line and not wrapped. The status row says `saved <name>`, and a later `F2`
+per line and not wrapped. The status row says `saved <name>` (or
+`could not save <name>: <reason>`; over a file with a setuid, setgid or sticky
+bit the copy does not keep that bit, and the question says so first), and a later `F2`
 saves there again without asking until the pane is closed. *File > Save As*
 asks every time; Esc in the dialog writes nothing. In the Modern key set the
 same save is `Ctrl-S`; in both key sets `Alt-F2` is Window > Size/Move.

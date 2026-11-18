@@ -2183,12 +2183,14 @@ void wpe_ai_pane_before_paint(FENSTER *f)
  * save asks a name in the editor's Save As dialog under its own title, and
  * the pane keeps that name until it is closed. */
 #define AI_TRANSCRIPT_DIALOG_TITLE "Save transcript"
-#define AI_TRANSCRIPT_SAY_MAX      (WPE_PATH_SIZE + 64)
+#define AI_TRANSCRIPT_SAY_MAX      WPE_WRITE_SENTENCE_MAX
 
 /* The file the transcript was last saved to (absolute), NULL before the first save. */
 static char *g_ai_transcript_path = NULL;
-/* The outcome of the last write: 0 saved, else the errno it failed with. */
-static int g_ai_transcript_errno = 0;
+/* How the last write of the transcript ended, as the write owner reported it
+ * (we_write.c): written, or failed with a reason, and any special bit the
+ * file kept or lost.  Only read after a write has been made. */
+static WpeWriteOutcome g_ai_transcript_outcome;
 
 /**
  * ai_transcript_forget - The pane closed: its next transcript asks a name again.
@@ -2256,24 +2258,49 @@ static int ai_transcript_put_lines(FENSTER *wf, FILE *fp)
 }
 
 /**
- * ai_transcript_write - Write the pane's transcript to @path.
- * @wf: the pane.
+ * ai_transcript_mark_cut - Record that the transcript stopped before its end.
+ * @o: the outcome of a stream that closed without an error of its own;
+ * @err: why the lines stopped.
  *
- * The pane itself is left as it is: read-only, never marked modified.
- * Return: 0 on success, else the errno of the failure.
+ * The lines could not all be built (no memory) though every byte given to
+ * the file reached it, so the stream reports nothing wrong.  The file is
+ * shorter than the conversation, which the user must be told: the outcome
+ * becomes a failed write, and the file may be cut short.
+ */
+static void ai_transcript_mark_cut(WpeWriteOutcome *o, int err)
+{
+ o->status = WPE_WRITE_FAILED;
+ o->err = err;
+ o->restore_err = ENOENT;
+ o->bak_path[0] = '\0';
+}
+
+/**
+ * ai_transcript_write - Write the pane's transcript to @path.
+ * @wf: the pane; @path: the file.
+ *
+ * The file is written by the write owner (we_write.c), as the editor writes
+ * any file the user names: a link at the name is followed, a setgid or sticky
+ * bit the old file had is taken off, and the outcome says what happened.  It
+ * is left in g_ai_transcript_outcome for wpe_ai_pane_report_save.  The pane
+ * itself is left as it is: read-only, never marked modified.
+ * Return: 0 when the file holds the transcript, else -1.
  */
 static int ai_transcript_write(FENSTER *wf, const char *path)
 {
- FILE *fp = fopen(path, "wb");
- int err = 0;
- if (!fp)
-  return errno ? errno : EIO;
- if (ai_transcript_put_lines(wf, fp))
-  err = errno ? errno : EIO;
- if (fclose(fp) && !err)
-  err = errno ? errno : EIO;
- wpe_ai_trace("transcript save path=%s err=%d", path, err);
- return err;
+ WpeWriteOutcome *o = &g_ai_transcript_outcome;
+ FILE *fp = wpe_write_stream_open(path, o);
+ int put_err = 0;
+
+ if (fp) {
+  if (ai_transcript_put_lines(wf, fp))
+   put_err = errno ? errno : EIO;
+  if (wpe_write_stream_close(fp, o) == 0 && put_err)
+   ai_transcript_mark_cut(o, put_err);
+ }
+ wpe_ai_trace("transcript save path=%s err=%d", path,
+              o->status == WPE_WRITE_WRITTEN ? 0 : o->err);
+ return o->status == WPE_WRITE_WRITTEN ? 0 : -1;
 }
 
 /**
@@ -2288,24 +2315,40 @@ static const char *ai_transcript_base_name(const char *path)
 }
 
 /**
+ * ai_transcript_sentence - The words for how the last transcript save ended.
+ * @say, @n: the room; @name: the file name the status row shows.
+ *
+ * A failure names the file and the system's reason.  A save that worked says
+ * "saved <name>", unless the write owner has something true to add (a
+ * special bit the file keeps because it could not be taken off), and then it
+ * says the owner's sentence instead.
+ */
+static void ai_transcript_sentence(char *say, size_t n, const char *name)
+{
+ const WpeWriteOutcome *o = &g_ai_transcript_outcome;
+
+ if (o->status != WPE_WRITE_WRITTEN) {
+  snprintf(say, n, "could not save %s: %s", name, strerror(o->err));
+  return;
+ }
+ if (wpe_write_sentence(say, n, o, WPE_WRITE_THEN_NOTHING_MORE) == 0)
+  snprintf(say, n, "saved %s", name);
+}
+
+/**
  * wpe_ai_pane_report_save - Say on the status row how the last save went.
  * @f: any window of the desktop (the bar takes its colours).
  *
  * "saved <name>" tells the user the transcript is on disk and where; a
- * failure names the file and the reason, so nothing fails in silence.
+ * failure names the file and the reason, and a special bit the file keeps
+ * is named, so nothing fails or surprises in silence.
  */
 void wpe_ai_pane_report_save(FENSTER *f)
 {
  char say[AI_TRANSCRIPT_SAY_MAX];
- const char *name;
  if (!g_ai_transcript_path)
   return;
- name = ai_transcript_base_name(g_ai_transcript_path);
- if (g_ai_transcript_errno)
-  snprintf(say, sizeof say, "could not save %s: %s", name,
-           strerror(g_ai_transcript_errno));
- else
-  snprintf(say, sizeof say, "saved %s", name);
+ ai_transcript_sentence(say, sizeof say, ai_transcript_base_name(g_ai_transcript_path));
  e_status_say(f, say);
 }
 
@@ -2325,10 +2368,7 @@ int wpe_ai_pane_write_transcript(FENSTER *wf, const char *name)
   return -1;
  ai_transcript_forget();
  g_ai_transcript_path = path;
- g_ai_transcript_errno = ai_transcript_write(wf, path);
- if (g_ai_transcript_errno)
-  return -1;
- return 0;
+ return ai_transcript_write(wf, path);
 }
 
 /**
@@ -2367,7 +2407,7 @@ int wpe_ai_pane_save(FENSTER *f)
 {
  if (!g_ai_transcript_path)
   return wpe_ai_pane_save_as(f);
- g_ai_transcript_errno = ai_transcript_write(f, g_ai_transcript_path);
+ ai_transcript_write(f, g_ai_transcript_path);
  wpe_ai_pane_report_save(f);
  return 0;
 }

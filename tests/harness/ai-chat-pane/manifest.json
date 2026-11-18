@@ -687,6 +687,27 @@
    "layer": "ncurses",
    "test": "tests/test_ai_chat_history_window.py::test_messages_dropped_from_the_store_are_said",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-61",
+   "requirement": "Save As asks every time",
+   "layer": "ncurses",
+   "test": "tests/test_ai_transcript_save.py::test_save_as_of_the_transcript_over_a_sticky_file_drops_the_bit",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-61",
+   "requirement": "Save As asks every time",
+   "layer": "ncurses",
+   "test": "tests/test_ai_transcript_save.py::test_save_as_of_the_transcript_over_a_plain_file_says_saved",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-chat-61",
+   "requirement": "Save As asks every time",
+   "layer": "ncurses",
+   "test": "tests/test_ai_transcript_save.py::test_a_second_f2_onto_a_file_made_read_only_names_the_reason",
+   "status": "new"
   }
  ]
 }

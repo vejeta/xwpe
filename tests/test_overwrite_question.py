@@ -10,9 +10,10 @@ nothing to say either.  No and Esc write nothing.
 Not covered here, on purpose: the line "It has the sticky bit; you do not own
 the file, so the copy will keep that bit." is asked only for a file another
 user owns, and a pyte session runs as one user, so it cannot be produced
-through the editor.  The C row
-test_the_question_says_a_bit_stays_on_a_file_we_do_not_own in
-tests/test_write_owner.c is its guard (the stat fake makes the file look
+through the editor.  The C rows
+test_the_question_says_a_bit_stays_on_a_file_we_do_not_own (E-05) and
+test_the_question_for_a_file_we_do_not_own_says_only_sticky_stays (E-06) in
+tests/test_write_owner.c are its guard (the stat fake makes the file look
 another user's).
 
 The editor is started as `wpe` (WPE_BIN), the name that keeps the whole

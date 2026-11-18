@@ -1144,7 +1144,17 @@ not be put with it (@samp{The file holds its previous content, but the setgid
 bit was not kept: Operation not permitted.}).  A copy that could not take a
 bit off the file it overwrote says so the same way (@samp{blk.txt written,
 but it keeps the sticky bit: Operation not permitted.}); a bit is named only
-when the file was read back and has it, never from what the call returned.
+when the file was read back and has it, never from what the call returned;
+when the file cannot be read back at all, the bit is said to be one that
+@samp{may not have been kept}.  The other files xwpe writes under a name you
+give it (the project list, the options file, and the AI pane's transcript
+saved with Save As) are written the same way: a link at the name is
+followed, the file is cut only after its bits are read, a setuid, setgid or
+sticky bit on the file they replace is taken off, and when the system
+refuses to take it off the status row says the file keeps it.  The
+transcript's status row says @samp{saved t.txt} only when the file is on
+disk, and @samp{could not save t.txt: } and the system's reason when it is
+not.
 The text is made to reach the
 disk (@code{fsync}) before a special bit goes back on it, and only then, so a
 power cut cannot leave a setuid or setgid file with the bits on and the text

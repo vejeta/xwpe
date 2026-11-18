@@ -16,7 +16,6 @@ we_prog.c|r4:e_comp_start|1|P3|a build save
 we_prog.c|r4:e_exec_make|1|P3|a build save
 we_prog.c|r4:e_prj_save_file|1|P3|a build save
 we_prog.c|r4:e_run_sh|1|P3|a build save
-we_ai_ui.c|r2:ai_transcript_write|1|P4|the transcript
 
 # not the user's text
 we_ai.c|r2:wpe_ai_trace|1|keep|a behaviour trace

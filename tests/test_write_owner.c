@@ -443,6 +443,108 @@ static void test_text(void)
  chk_int("SIGXFSZ not ignored afterwards", after.sa_handler == SIG_IGN, 0);
 }
 
+/* Write @text over the file @name through the stream pair, the way a list is
+   written; the outcome is left in @o. */
+static int stream_write_text(const char *name, const char *text, WpeWriteOutcome *o)
+{
+ char p[512];
+ FILE *fp;
+
+ path_of(p, sizeof p, name);
+ fp = wpe_write_stream_open(p, o);
+ chk_int("the stream opens", fp != NULL, 1);
+ if (fp == NULL)
+  return(-1);
+ fputs(text, fp);
+ return(wpe_write_stream_close(fp, o));
+}
+
+/* @scenario SC-write-owner-E-11: a text written over a setgid or sticky file
+   of ours drops the bit, as a copy does, through both faces (the text and
+   the stream pair).  Open with O_TRUNC left the bit on (the kernel clears
+   setuid, and setgid only with group execute), so this row is red when
+   either face opens with O_TRUNC again. */
+static void test_a_text_written_over_a_setgid_file_of_ours_drops_the_bit(void)
+{
+ static const mode_t modes[] = { 02644, 01644 };
+ WpeWriteOutcome o;
+ char buf[64], p[512];
+ size_t i;
+
+ for (i = 0; i < sizeof modes / sizeof modes[0]; i++)
+ {
+  make_dir();
+  if (!test_premise(test_premise_special_bits_settable(dir, modes[i] & 07000),
+                    "a text over a file with a special bit drops it",
+                    "this user cannot set the bit in the test folder"))
+   continue;
+  put_file("list.txt", "old\n", modes[i]);
+  path_of(p, sizeof p, "list.txt");
+  chk_int("text over it", wpe_write_text(p, "new\n", &o), 0);
+  chk_int("text: the bit is gone", mode_of("list.txt"), 0644);
+  chk_has("text: the new text", get_file("list.txt", buf, sizeof buf), "new\n");
+  chk_int("text: nothing stays", (long)o.file_stays.lost, 0);
+  put_file("list.txt", "old\n", modes[i]);
+  chk_int("stream over it", stream_write_text("list.txt", "streamed\n", &o), 0);
+  chk_int("stream: the bit is gone", mode_of("list.txt"), 0644);
+  chk_has("stream: the new text", get_file("list.txt", buf, sizeof buf), "streamed\n");
+  chk_int("stream: nothing stays", (long)o.file_stays.lost, 0);
+ }
+}
+
+/* @scenario SC-write-owner-E-12: a text or a stream over a sticky file whose
+   mode the user cannot change keeps the bit, and the outcome says so, with
+   the system's reason.  Red when the faces never read the bits that stayed. */
+static void test_a_text_over_a_file_whose_bit_cannot_be_dropped_says_it_stays(void)
+{
+ WpeWriteOutcome o;
+ char p[512], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "a text says a bit stays",
+                   "this user cannot set the sticky bit in the test folder"))
+  return;
+ put_file("list.txt", "old\n", 01664);
+ path_of(p, sizeof p, "list.txt");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("text over it", wpe_write_text(p, "new\n", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("text: written", o.status, WPE_WRITE_WRITTEN);
+ chk_int("text: the bit stays", mode_of("list.txt"), 01664);
+ chk_int("text: the outcome names it", (long)o.file_stays.lost, (long)S_ISVTX);
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_int("text: it says so",
+         strcmp(say, "list.txt written, but it keeps the sticky bit: Operation not permitted."), 0);
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("stream over it", stream_write_text("list.txt", "streamed\n", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("stream: the bit stays", mode_of("list.txt"), 01664);
+ chk_int("stream: the outcome names it", (long)o.file_stays.lost, (long)S_ISVTX);
+}
+
+/* @scenario SC-write-owner-E-13: a text written to a name that is a link goes
+   to the file the link leads to, as a Save writes it, and the link stays. */
+static void test_a_text_written_to_a_link_goes_to_its_target(void)
+{
+ WpeWriteOutcome o;
+ char buf[64], p[512], l[512];
+
+ make_dir();
+ put_file("real.txt", "old\n", 0644);
+ path_of(p, sizeof p, "real.txt");
+ path_of(l, sizeof l, "link.txt");
+ if (symlink(p, l) != 0)
+ {
+  perror("symlink");
+  return;
+ }
+ chk_int("text to the link", wpe_write_text(l, "new\n", &o), 0);
+ chk_has("the target holds it", get_file("real.txt", buf, sizeof buf), "new\n");
+ chk_int("stream to the link", stream_write_text("link.txt", "streamed\n", &o), 0);
+ chk_has("the target holds the stream", get_file("real.txt", buf, sizeof buf), "streamed\n");
+ chk_int("the link is still a link", mode_of("link.txt") >= 0 && readlink(l, buf, sizeof buf) > 0, 1);
+}
+
 /* ---- the project's and the options' follow-up sentences ---- */
 
 /* A name longer than the system holds is refused by the system on the write;
@@ -1132,6 +1234,44 @@ int fcntl(int fd, int cmd, ...)
  return(real(fd, cmd, arg));
 }
 
+/* fstat, with a fake for a file that cannot be read back: once a change of
+   mode has been refused (fakechmod_refusals), every fstat fails with EIO until
+   the row switches the fake off.  Nothing before the first refusal is touched,
+   so the open and the backup of a write see the file as it is, and only the
+   read-back after the text finds nothing to read.  fstat_fake_hits counts the
+   calls it failed, so a row proves the fake took (a C library that does not
+   route the call through here leaves it at 0) and skips by name when it did
+   not. */
+typedef int (*fstat_fn)(int, struct stat *);
+
+static int fstat_fails_after_refusal;
+static int fstat_fake_hits;
+
+int fstat(int fd, struct stat *st)
+{
+ static fstat_fn real;
+
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "fstat");
+ if (fstat_fails_after_refusal && fakechmod_refusals > 0)
+ {
+  fstat_fake_hits++;
+  errno = EIO;
+  return(-1);
+ }
+ return(real(fd, st));
+}
+
+/* Switch the fstat fake off; return whether it failed a call. */
+static int fstat_fake_off(void)
+{
+ int took = (fstat_fake_hits > 0);
+
+ fstat_fails_after_refusal = 0;
+ fstat_fake_hits = 0;
+ return(took);
+}
+
 /* A 0600 file's backup never holds its text while others may read it, under
    any umask: the mode is narrowed before the first byte, not after the last. */
 static void test_the_backup_is_private_while_it_holds_text(void)
@@ -1737,6 +1877,7 @@ static void test_a_save_with_no_descriptor_does_not_call_a_standing_bit_lost(voi
  WpeWriteOutcome o;
  FENSTER *f;
  char say[1024];
+ int took;
 
  make_dir();
  if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "no descriptor, a bit that stands",
@@ -1748,8 +1889,12 @@ static void test_a_save_with_no_descriptor_does_not_call_a_standing_bit_lost(voi
  fakechmod_set(FAKECHMOD_REFUSE, 07777); /* the nine-bit call before the text is refused too */
  dup_fails_at = 2; /* the first duplication is the backup's, the second is the save's */
  chk_int("write", save_window(f, "t.c", &o), 0);
+ took = (dup_fails_at == 0); /* the second duplication was reached and failed */
  dup_fails_at = 0;
  fakechmod_set(FAKECHMOD_OFF, 0);
+ if (!test_observation(took, "no descriptor, a bit that stands",
+                       "fcntl is not interposable for F_DUPFD_CLOEXEC in this C library"))
+  return;
  chk_int("written", o.status, WPE_WRITE_WRITTEN);
  chk_int("sticky is on", mode_of("t.c"), 01664);
  save_sentence(&o, say, sizeof say);
@@ -1780,6 +1925,107 @@ static void test_a_restore_does_not_call_a_standing_bit_lost(void)
  chk_int("no bit is recorded lost", (long)o.restore_kept.lost, 0);
  wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
  chk_int("the box does not name sticky", strstr(say, "sticky") == NULL, 1);
+}
+
+/* @scenario SC-write-owner-E-14: a stream names a bit the file keeps only when
+   the file still has it when the stream ends.  The nine-bit call is refused at
+   the open, so the bit is on the file then; the bit is taken off by name
+   before the close (as a system that clears it at write time would), and the
+   sentence must say nothing.  Red when the open-time read is what is said. */
+static void test_a_stream_does_not_name_a_bit_the_file_lost_before_the_close(void)
+{
+ WpeWriteOutcome o;
+ char p[512], say[1024];
+ FILE *fp;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "a stream names only a bit that stands",
+                   "this user cannot set the sticky bit in the test folder"))
+  return;
+ put_file("s.txt", "old\n", 01664);
+ path_of(p, sizeof p, "s.txt");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ fp = wpe_write_stream_open(p, &o);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("the stream opens", fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ chk_int("the open found the bit staying", (long)o.file_stays.lost, (long)S_ISVTX);
+ chk_int("the bit is taken off by name", chmod(p, 0664), 0);
+ fputs("streamed\n", fp);
+ chk_int("the stream closes", wpe_write_stream_close(fp, &o), 0);
+ chk_int("the file has no bit", mode_of("s.txt"), 0664);
+ chk_int("nothing stays", (long)o.file_stays.lost, 0);
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_int("it says nothing", (long)strlen(say), 0);
+}
+
+/* @scenario SC-write-owner-E-15: a save whose file cannot be read back after
+   the text says the bit "may not have been kept": not silence, and not a flat
+   "was not kept".  The call for the bit is refused and the fstat that would
+   say what the file has fails (the fstat fake).  Red when the read-back says
+   nothing on an fstat that fails. */
+static void test_a_save_whose_file_cannot_be_read_back_says_it_may_not_have_kept_the_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024];
+ int took;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "an unreadable file: the bit may not be kept",
+                   "this user cannot set the sticky bit in the test folder"))
+  return;
+ put_file("t.c", "old\n", 01664);
+ f = window_of_file_with_mode(01664);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ fstat_fails_after_refusal = 1;
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ took = fstat_fake_off();
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ if (!test_observation(took, "an unreadable file: the bit may not be kept",
+                       "fstat is not interposable in this C library"))
+  return;
+ chk_int("written", o.status, WPE_WRITE_WRITTEN);
+ chk_int("the record is unsure", o.file_kept.unsure, 1);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence says it may not have been kept", say, "sticky bit may not have been kept");
+ chk_lacks("the sentence does not say it was lost", say, "was not kept");
+}
+
+/* @scenario SC-write-owner-E-16: with no descriptor to give the bits back on
+   and no way to read the file either, the same words.  The duplication of the
+   descriptor fails (as in E-09) and so does every fstat.  Red when the no-
+   descriptor path says nothing when the file cannot be read. */
+static void test_a_save_with_no_descriptor_and_no_read_says_it_may_not_have_kept_the_bit(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024];
+ int took, dup_took;
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "no descriptor and no read: the bit may not be kept",
+                   "this user cannot set the sticky bit in the test folder"))
+  return;
+ put_file("t.c", "old\n", 01664);
+ f = window_of_file_with_mode(01664);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ fstat_fails_after_refusal = 1;
+ dup_fails_at = 2; /* the first duplication is the backup's, the second is the save's */
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ dup_took = (dup_fails_at == 0);
+ dup_fails_at = 0;
+ took = fstat_fake_off();
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ if (!test_observation(took && dup_took, "no descriptor and no read: the bit may not be kept",
+                       "fcntl or fstat is not interposable in this C library"))
+  return;
+ chk_int("written", o.status, WPE_WRITE_WRITTEN);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence says it may not have been kept", say, "sticky bit may not have been kept");
 }
 
 /* The backup is a copy of old text: no setuid, setgid or sticky bit at any
@@ -4698,11 +4944,17 @@ int main(void)
  test_a_save_that_lost_one_bit_and_kept_another_names_only_the_lost();
  test_a_save_with_no_descriptor_does_not_call_a_standing_bit_lost();
  test_a_restore_does_not_call_a_standing_bit_lost();
+ test_a_stream_does_not_name_a_bit_the_file_lost_before_the_close();
+ test_a_save_whose_file_cannot_be_read_back_says_it_may_not_have_kept_the_bit();
+ test_a_save_with_no_descriptor_and_no_read_says_it_may_not_have_kept_the_bit();
  test_the_backup_never_has_the_special_bits();
  test_the_nine_bits_of_a_save_are_unchanged();
  test_a_restore_keeps_the_special_bits();
  test_sentence();
  test_text();
+ test_a_text_written_over_a_setgid_file_of_ours_drops_the_bit();
+ test_a_text_over_a_file_whose_bit_cannot_be_dropped_says_it_stays();
+ test_a_text_written_to_a_link_goes_to_its_target();
  test_follow_ups_after_a_name_the_system_refuses();
  test_stream_in_a_folder_that_refuses();
  test_stream_onto_full_device();
