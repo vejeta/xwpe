@@ -1395,48 +1395,17 @@ static void test_a_save_whose_modes_are_all_refused_is_still_written(void)
  chk_has("the bit is named", say, "setgid bit was not kept");
 }
 
-/* @scenario SC-write-owner-E-01: a save never says a bit was lost when the
-   file still has it.  The user cannot change the file's mode (refuse all), a
-   setgid file without group execute and a sticky file are not touched by the
-   write, so the bit is on after the save, whatever the refused call said.
-   Red when the owner marks the bit lost from the refusal and not from the
-   file. */
-static void test_a_save_on_a_file_that_keeps_its_bit_says_nothing_false(void)
-{
- static const mode_t modes[] = { 02664, 01664 };
- WpeWriteOutcome o;
- FENSTER *f;
- char say[1024];
- size_t i;
-
- for (i = 0; i < sizeof modes / sizeof modes[0]; i++)
- {
-  make_dir();
-  if (!test_premise(test_premise_special_bits_settable(dir, modes[i] & 07000),
-                    "a save on a file that keeps its bit says nothing false",
-                    "this user cannot set the bit in the test folder"))
-   continue;
-  put_file("t.c", "old\n", modes[i]);
-  f = window_of_file_with_mode(modes[i]);
-  set_rows("new\n");
-  fakechmod_set(FAKECHMOD_REFUSE, 07777);
-  chk_int("write", save_window(f, "t.c", &o), 0);
-  fakechmod_set(FAKECHMOD_OFF, 0);
-  chk_int("written", o.status, WPE_WRITE_WRITTEN);
-  chk_int("the mode is as it was", mode_of("t.c"), (int)modes[i]);
-  save_sentence(&o, say, sizeof say);
-  chk_int("it says nothing", (long)strlen(say), 0);
- }
-}
-
-/* Does this system clear a setgid bit when a file with group execute is
-   written, as the kernel does for a user without the privilege to keep it? */
-static int the_system_clears_setgid_on_write(void)
+/* Does this system clear a setgid bit when a file of this mode is written,
+   as the kernel does for a user without the privilege to keep it?  Linux
+   clears it only when the file has group execute; the BSDs and macOS clear
+   it whatever the group execute bit says.  Asks the system with a plain
+   write, no fake in the way, and answers for the mode given. */
+static int the_system_clears_setgid_on_write_of(mode_t before, mode_t after)
 {
  char p[512];
  FILE *fp;
 
- put_file("probe_clear", "x\n", 02775);
+ put_file("probe_clear", "x\n", before);
  path_of(p, sizeof p, "probe_clear");
  fp = fopen(p, "w");
  if (fp != NULL)
@@ -1444,7 +1413,101 @@ static int the_system_clears_setgid_on_write(void)
   fputs("y\n", fp);
   fclose(fp);
  }
- return(mode_of("probe_clear") == 0775);
+ return(mode_of("probe_clear") == (int)after);
+}
+
+/* Does this system clear setgid when a file with group execute is written? */
+static int the_system_clears_setgid_on_write(void)
+{
+ return(the_system_clears_setgid_on_write_of(02775, 0775));
+}
+
+/* Does this system clear setgid when a file without group execute is
+   written?  Linux does not; macOS and the BSDs do. */
+static int the_system_clears_setgid_without_group_exec_on_write(void)
+{
+ return(the_system_clears_setgid_on_write_of(02664, 0664));
+}
+
+/* Save a file of this mode with every mode call refused, and read back the
+   mode and the sentence.  The one body of the E-01 halves. */
+static void save_with_every_chmod_refused(mode_t mode, WpeWriteOutcome *o, char *say, size_t say_size)
+{
+ FENSTER *f;
+
+ put_file("t.c", "old\n", mode);
+ f = window_of_file_with_mode(mode);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("write", save_window(f, "t.c", o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("written", o->status, WPE_WRITE_WRITTEN);
+ save_sentence(o, say, say_size);
+}
+
+/* E-01, sticky half.  Every system leaves a sticky bit alone on a write, so
+   the bit is on after the save and the sentence is empty. */
+static void a_save_on_a_sticky_file_says_nothing_false(void)
+{
+ WpeWriteOutcome o;
+ char say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX),
+                   "a save on a file that keeps its bit says nothing false",
+                   "this user cannot set the bit in the test folder"))
+  return;
+ save_with_every_chmod_refused(01664, &o, say, sizeof say);
+ chk_int("the mode is as it was", mode_of("t.c"), 01664);
+ chk_int("it says nothing", (long)strlen(say), 0);
+}
+
+/* E-01, setgid half, on a system that keeps setgid without group execute
+   through a write (Linux): the bit is on after the save and the sentence is
+   empty, whatever the refused call said. */
+static void a_save_on_a_setgid_file_the_system_keeps_says_nothing_false(void)
+{
+ WpeWriteOutcome o;
+ char say[1024];
+
+ save_with_every_chmod_refused(02664, &o, say, sizeof say);
+ chk_int("the mode is as it was", mode_of("t.c"), 02664);
+ chk_int("it says nothing", (long)strlen(say), 0);
+}
+
+/* E-01, setgid half, on a system that clears setgid on any write (macOS and
+   the BSDs): the bit is off after the save and the sentence names it, so the
+   editor still tells the truth where the premise of the other branch fails. */
+static void a_save_on_a_setgid_file_the_system_cleared_names_it(void)
+{
+ WpeWriteOutcome o;
+ char say[1024];
+
+ save_with_every_chmod_refused(02664, &o, say, sizeof say);
+ chk_int("the system cleared the bit", mode_of("t.c"), 0664);
+ chk_has("the bit is named", say, "setgid bit was not kept");
+}
+
+/* @scenario SC-write-owner-E-01: a save never says a bit was lost when the
+   file still has it, and says so when the system took it.  The user cannot
+   change the file's mode (refuse all).  A sticky file is not touched by the
+   write.  A setgid file without group execute is kept by Linux and cleared by
+   macOS and the BSDs, so the row asks the system first and checks the half
+   that holds there: kept, the sentence is empty; cleared, it names setgid.
+   Red when the owner marks the bit lost from the refusal and not from the
+   file. */
+static void test_a_save_on_a_file_that_keeps_its_bit_says_nothing_false(void)
+{
+ a_save_on_a_sticky_file_says_nothing_false();
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID),
+                   "a save on a file that keeps its bit says nothing false",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ if (the_system_clears_setgid_without_group_exec_on_write())
+  a_save_on_a_setgid_file_the_system_cleared_names_it();
+ else
+  a_save_on_a_setgid_file_the_system_keeps_says_nothing_false();
 }
 
 /* @scenario SC-write-owner-E-02: a bit the kernel cleared is named, with the
