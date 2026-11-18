@@ -179,9 +179,11 @@ typedef enum {
  WPE_WRITE_THEN_USER_KEYS_STAY, /* "Your own settings (hook, engine command,
                                   endpoints, dial) are still in it; take them
                                   out before you share the file." */
- WPE_WRITE_THEN_NOTHING_MORE  /* nothing: the caller has no text of the user's
+ WPE_WRITE_THEN_NOTHING_MORE, /* nothing: the caller has no text of the user's
                                   to keep (the assistant's write: the file is as
                                   it was, and the sentence says so itself) */
+ WPE_WRITE_THEN_PUT_BACK      /* a revert: it puts text back and says "Cannot put
+                                  back", never advice about Save As */
 } WpeWriteThen;
 
 /* Whoever drops the outcome of a write has lost the news that the text is
@@ -206,6 +208,10 @@ int  wpe_write_identity_of_name(const char *dir, const char *name, WpeFileIdenti
    a question: is this window's file the one with that device and inode. */
 void wpe_write_identity_set(WpeFileIdentity *id, const WpeFileIdentity *from);
 int  wpe_write_identity_is(const WpeFileIdentity *id, dev_t dev, ino_t ino);
+int  wpe_write_identity_differs(const WpeFileIdentity *id, dev_t dev, ino_t ino);
+/* May a file that took a window's name be written on a Yes: a plain file of the
+   user's own with no special bit.  Anything else the owner refuses at once. */
+int  wpe_write_replacement_may_be_asked(const char *path);
 
 /* The user's own file. */
 WPE_WRITE_RESULT int wpe_write_file(struct FNST *f, WpeWriteOutcome *o);
@@ -259,6 +265,18 @@ WPE_WRITE_RESULT int wpe_write_bytes(const char *path, const char *text, size_t 
 WPE_WRITE_RESULT int wpe_write_save_text(const char *path, const char *text,
                                          const WpeFileIdentity *own, int flags,
                                          const WpeWriteExpect *expect, WpeWriteOutcome *o);
+/* The same Save of a text, for a caller that can ask the user when the file
+   the window read was replaced on disk by another plain file of the user's
+   own (no setuid, setgid or sticky bit).  @asked NULL: the first pass, which
+   writes nothing and sets o->ask_overwrite with the file in o->asked; the
+   caller shows its question and, on a Yes, calls again with that identity in
+   @asked, and the text is written as a copy (no special bit; the window takes
+   the file as its own).  Any other file under the name, a program, another
+   user's file or a file that is not a regular one, is refused as before. */
+WPE_WRITE_RESULT int wpe_write_save_text_ask(const char *path, const char *text,
+                                             const WpeFileIdentity *own, int flags,
+                                             const WpeFileIdentity *asked,
+                                             const WpeWriteExpect *expect, WpeWriteOutcome *o);
 /** WPE_WRITE_NO_RECORDED_MODE as @recorded: no mode was recorded for the
     before image, so the file keeps the bits it has now. */
 #define WPE_WRITE_NO_RECORDED_MODE ((mode_t)-1)

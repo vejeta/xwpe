@@ -127,7 +127,7 @@
 #     every system) and fileop_walk (the depth limit, set and not read).
 #     ENXIO and EFTYPE appear nowhere in we_fileop.c.  No allow line.
 # 21. The assistant writes a user's file in two places only.  In we_ai*.c
-#     wpe_write_save_text( and wpe_write_restore_text( appear only inside
+#     wpe_write_save_text(, wpe_write_save_text_ask( and wpe_write_restore_text( appear only inside
 #     wpe_ai_write_judged_file (its writes) and ws_restore_before_image (the
 #     revert), and each call passes the expectation of a look (the last but
 #     one argument is a variable, never a literal NULL or 0), so the owner
@@ -286,7 +286,7 @@ scan() {
     # user was shown.
     function note21(m,   t, rest) {
       t = m
-      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_write_save_text|wpe_write_restore_text)[ \t]*[(]/)) {
+      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_write_save_text|wpe_write_save_text_ask|wpe_write_restore_text)[ \t]*[(]/)) {
         rest = substr(t, RSTART + RLENGTH); sub(/;.*/, "", rest)
         if (fn != "wpe_ai_write_judged_file" && fn != "ws_restore_before_image") note("r21", 1)
         else if (rest ~ /(^|,)[ \t]*(NULL|0)[ \t]*,[^,]*$/) note("r21", 1)
@@ -809,16 +809,20 @@ EOF
 int wpe_ai_write_judged_file(FENSTER *f, const char *real, const char *text,
                              const WpeWriteExpect *x, WpeWriteOutcome *o)
 {
- return(wpe_write_save_text(real, text, w ? &w->file_id : NULL, WPE_WRITE_NOFOLLOW, x, o));
+ if (w)
+  return(wpe_write_save_text_ask(real, text, &w->file_id, WPE_WRITE_NOFOLLOW, asked, x, o));
+ return(wpe_write_save_text(real, text, NULL, WPE_WRITE_NOFOLLOW, x, o));
 }
 static int ws_restore_before_image(FENSTER *f, const char *path, const char *text, size_t len)
 {
  int ok = wpe_write_restore_text(path, text, len, mode, w ? &w->file_id : NULL, &x, &o);
+ ok += wpe_write_save_text_ask(path, text, NULL, 0, NULL, NULL, &o);
  return(wpe_write_restore_text(path, text, len, mode, NULL, NULL, &o) + ok);
 }
 static int ai_sneaky(FENSTER *f)
 {
- return(wpe_write_save_text(p, t, NULL, 0, &x, &o));
+ int ok = wpe_write_save_text_ask(p, t, NULL, 0, NULL, &x, &o);
+ return(wpe_write_save_text(p, t, NULL, 0, &x, &o) + ok);
 }
 EOF
   # rule 20: the rule looks at we_write.c and we_fileop.c by name, so the
@@ -926,8 +930,8 @@ EOF
               "r17 we_fake_r17c.c fileop_stash 1" \
               "r17 we_fake_r17d.c fileop_job_fill_temp 1" \
               "r18 we_fake_r18.c fake_identity 3" \
-              "r21 we_ai_fake.c ws_restore_before_image 1" \
-              "r21 we_ai_fake.c ai_sneaky 1" \
+              "r21 we_ai_fake.c ws_restore_before_image 2" \
+              "r21 we_ai_fake.c ai_sneaky 2" \
               "r20 we_write.c write_mode_open_failed 6" \
               "r20 we_write.c write_target_open_check 1" \
               "r20 we_fileop.c fileop_rename_noreplace_at 1" \

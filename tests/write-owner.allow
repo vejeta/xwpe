@@ -58,6 +58,7 @@ we_ai.c|r8:wpe_ai_write_openai_key|1|keep|the key file, written with its own mod
 we_ai_path.c|r8:path_follow_link|1|keep|reads a link to judge a path, writes nothing
 we_ai_ui.c|r8:ai_consent_remember|1|keep|the consent marker's folder
 we_ai_ui.c|r8:ai_hook_after_accept|1|keep|the hook's own marker file
+we_ai_ui.c|r8:ai_test_swap_after_look|3|keep|the test hook that puts a link where a folder was, unset in every real run
 we_ai_ws.c|r8:wpe_ai_session_reset|1|keep|the assistant's own session file
 we_ai_ws.c|r8:ws_commit_changeset_steps|1|keep|the assistant's own change set
 we_ai_ws.c|r8:ws_git_list|3|keep|the temporary lists of the git command it runs

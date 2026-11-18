@@ -2190,6 +2190,11 @@ static int write_replaced_is_ours(const struct stat *st)
  return(owner == geteuid());
 }
 
+/** XWPE_TEST_FAIL=write-replacement-check-no: wpe_write_replacement_may_be_asked
+    says no for a file the open then finds askable, the disagreement a file
+    changing between the two looks would make. */
+#define WPE_WRITE_TEST_REPLACEMENT_NO "write-replacement-check-no"
+
 /** The policy of every write that never asks: a copy is a second file. */
 static const WriteReplacedPolicy write_replaced_as_copy = { WRITE_REPLACED_AS_COPY, { 0, 0, 0 } };
 /** The policy of a plain Save's first pass: stop and report the file to ask about. */
@@ -2475,6 +2480,27 @@ static WriteAimKind write_text_kind(const WpeFileIdentity *own)
 }
 
 /**
+ * write_text_run - Write a whole text into a user's file under a policy for
+ * a name that leads to another file than the window read.
+ * @path, @text, @own, @flags, @expect, @o: as for wpe_write_save_text;
+ * @policy: refuse, ask, or write what the user said Yes about.
+ * Return: 0 when the file holds the text, -1 when not.
+ */
+static int write_text_run(const char *path, const char *text, const WpeFileIdentity *own, int flags,
+                          const WriteReplacedPolicy *policy, const WpeWriteExpect *expect,
+                          WpeWriteOutcome *o)
+{
+ WriteSource s;
+ WriteAim aim;
+
+ write_source_text(&s, text, strlen(text));
+ write_aim_make(&aim, write_text_kind(own), own, policy, write_open_how_of(flags));
+ aim.expect = expect;
+ write_run(&s, path, 1, &aim, o);
+ return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+}
+
+/**
  * wpe_write_save_text - Write a whole text into a file of the user's, as a
  * Save does.
  * @path: the file; @text: the bytes; @own: the identity of the window open on
@@ -2496,14 +2522,42 @@ static WriteAimKind write_text_kind(const WpeFileIdentity *own)
 int wpe_write_save_text(const char *path, const char *text, const WpeFileIdentity *own, int flags,
                         const WpeWriteExpect *expect, WpeWriteOutcome *o)
 {
- WriteSource s;
- WriteAim aim;
+ return(write_text_run(path, text, own, flags, &write_replaced_refuse, expect, o));
+}
 
- write_source_text(&s, text, strlen(text));
- write_aim_make(&aim, write_text_kind(own), own, &write_replaced_refuse, write_open_how_of(flags));
- aim.expect = expect;
- write_run(&s, path, 1, &aim, o);
- return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
+/**
+ * wpe_write_save_text_ask - The same Save of a text, for a caller that can
+ * ask the user when the window's file was replaced on disk.
+ * @path, @text, @own, @flags, @expect, @o: as for wpe_write_save_text;
+ * @asked: NULL on the first pass, else the file the user said Yes about.
+ * Return: 0 when the file holds the text, -1 when not.
+ *
+ * What the user gets: when the name leads to another file than the one the
+ * window read, a plain file of the user's own with no setuid, setgid or
+ * sticky bit, the assistant does not refuse and does not write behind the
+ * user's back; it asks, as Save does.  The first pass (@asked NULL) writes
+ * nothing and sets o->ask_overwrite with the file in o->asked; the caller
+ * shows the question and, on a Yes, calls again with that identity in
+ * @asked.  That pass writes the text as a copy: the file gets no special
+ * bit and the window takes it as its own.  Only the file the user was asked
+ * about is written; one that took the name while the box was up is refused.
+ * A program, another user's file or one that is not a regular file is
+ * refused on the first pass, as it is for Save.
+ */
+int wpe_write_save_text_ask(const char *path, const char *text, const WpeFileIdentity *own,
+                            int flags, const WpeFileIdentity *asked, const WpeWriteExpect *expect,
+                            WpeWriteOutcome *o)
+{
+ WriteReplacedPolicy policy;
+
+ if (asked == NULL)
+  policy = write_replaced_ask;
+ else
+ {
+  policy.how = WRITE_REPLACED_ACCEPTED;
+  policy.asked = *asked;
+ }
+ return(write_text_run(path, text, own, flags, &policy, expect, o));
 }
 
 /**
@@ -2653,6 +2707,43 @@ void wpe_write_identity_set(WpeFileIdentity *id, const WpeFileIdentity *from)
 int wpe_write_identity_is(const WpeFileIdentity *id, dev_t dev, ino_t ino)
 {
  return(id->known && id->dev == dev && id->ino == ino);
+}
+
+/**
+ * wpe_write_identity_differs - Did the window read a file other than this one?
+ * @id: a window's FENSTER.file_id; @dev, @ino: the file now at its name.
+ * Return: 1 when the window knows the file it read and it is not that one,
+ * 0 when it is, or when the window knows no file.
+ *
+ * What lets the editor say, before a write, that the file under the window's
+ * name was replaced.
+ */
+int wpe_write_identity_differs(const WpeFileIdentity *id, dev_t dev, ino_t ino)
+{
+ return(id->known && (id->dev != dev || id->ino != ino));
+}
+
+/**
+ * wpe_write_replacement_may_be_asked - May a replaced file be written on a Yes?
+ * @path: the file now at the window's name.
+ * Return: 1 when it is a plain file of the user's own with no setuid, setgid
+ * or sticky bit (the owner's own rule, write_replaced_is_ours), else 0.
+ *
+ * What lets a caller that asks before it writes (the assistant's box under
+ * ask) skip a question the owner would refuse after the Yes: a program,
+ * another user's file or anything that is not a regular file is refused at
+ * once, with the sentence, as when there is no one to ask.
+ */
+int wpe_write_replacement_may_be_asked(const char *path)
+{
+ const char *hook = getenv(WPE_WRITE_TEST_FAIL_ENV);
+ struct stat st;
+
+ if (hook != NULL && strstr(hook, WPE_WRITE_TEST_REPLACEMENT_NO) != NULL)
+  return(0);                       /* the file changed after this look: the open decides otherwise */
+ if (lstat(path, &st) != 0)
+  return(0);
+ return(write_replaced_is_ours(&st));
 }
 
 /**
@@ -3147,6 +3238,49 @@ static void write_failed_head(char *out, size_t n, const WpeWriteOutcome *o)
 }
 
 /**
+ * write_other_file_is_not_a_save - Is the caller one that has no text of the
+ * user's to write over another file?
+ * @then: what the caller keeps.
+ * Return: 1 for the assistant's write and for a revert, 0 for Save and the rest.
+ * Such a caller also adds no "your text is still in the window" to a failure.
+ *
+ * "Use Save As to write your text over that file" is advice to a user who
+ * has the text in a window.  The assistant's write and the revert have no
+ * such text, so they say what happened and that nothing was changed.
+ */
+static int write_other_file_is_not_a_save(WpeWriteThen then)
+{
+ return(then == WPE_WRITE_THEN_NOTHING_MORE || then == WPE_WRITE_THEN_PUT_BACK);
+}
+
+/**
+ * write_other_file_sentence - The sentence for a name that leads to another
+ * file, for a caller that has no text to keep.
+ * @out, @n: the room; @o: the outcome (other_file set); @then: the caller.
+ *
+ * A revert says "Cannot put back t.c: the name now leads to a different file
+ * than the one the window shows.  Nothing was changed."; the assistant's write
+ * says the same about writing, and, when the user had said Yes about one file
+ * and the name changed again, says so.
+ */
+static void write_other_file_sentence(char *out, size_t n, const WpeWriteOutcome *o,
+                                      WpeWriteThen then)
+{
+ const char *path = (o->path[0] != '\0' ? o->path : "the file");
+
+ if (then == WPE_WRITE_THEN_PUT_BACK)
+  snprintf(out, n, "Cannot put back %s: the name now leads to a different file than the one the "
+           "window shows.  Nothing was changed.", path);
+ else if (o->changed_while_asked)
+  snprintf(out, n, "Cannot write %s: the name changed again while you were being asked, and now "
+           "leads to yet another file.  Nothing was written.", path);
+ else
+  snprintf(out, n, "Cannot write %s: the name now leads to a different file than the one the "
+           "window shows, and it is not a plain file of yours without a special bit.  Nothing "
+           "was written.", path);
+}
+
+/**
  * write_written_sentence - Say how a save that worked left the file, when
  * there is something to say.
  * @out, @n: the room; @o: the outcome.
@@ -3234,8 +3368,13 @@ int wpe_write_sentence(char *out, size_t n, const WpeWriteOutcome *o, WpeWriteTh
   write_written_sentence(out, n, o);
   return((int)strlen(out));
  }
+ if (o->other_file && write_other_file_is_not_a_save(then))
+ {
+  write_other_file_sentence(out, n, o, then);
+  return((int)strlen(out));
+ }
  write_failed_head(head, sizeof head, o);
- if (then == WPE_WRITE_THEN_NOTHING_MORE)
+ if (write_other_file_is_not_a_save(then))
   snprintf(out, n, "%s", head);
  else
   snprintf(out, n, "%s  %s", head, write_then_text(o, then, name, sizeof name));

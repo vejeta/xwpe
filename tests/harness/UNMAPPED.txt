@@ -27,5 +27,7 @@ tests/test_ai_plan_live.py
 tests/test_ai_prompt.py
 tests/test_ai_tls.py
 tests/test_ai_tool_feedback.py
+tests/wayland/test_ai_agent_write.py
 tests/wayland/test_ai_resize.py
+tests/x11/test_ai_agent_write.py
 tests/x11/test_ai_resize.py

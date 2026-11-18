@@ -3312,6 +3312,87 @@ static void test_the_assistants_write_over_a_different_file_than_the_windows_is_
  chk_has("the sentence", say, "the name leads to a different file than the one this window read");
 }
 
+/* @scenario SC-write-owner-H2b-01: the assistant's write into a file replaced
+   under its window asks, as Save does.  The first pass writes nothing and says
+   whom to ask about; a Yes pass writes the text as a copy (no special bit); a
+   file that took the name while the box was up is refused, not written. */
+static void test_the_assistants_write_asks_about_a_replaced_file(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity id, asked;
+ char p[512], buf[256], say[1024];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ id = identity_of("t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ chk_int("the first pass writes nothing", wpe_write_save_text_ask(p, "new\n", &id, 0, NULL, NULL, &o), -1);
+ chk_int("it says to ask", o.ask_overwrite, 1);
+ chk_int("about a file it names", o.asked.known, 1);
+ chk_int("their text is untouched", strcmp(get_file("t.c", buf, sizeof buf), "theirs\n"), 0);
+ chk_int("no backup was made", mode_of("t.bak"), -1);
+ asked = o.asked;
+ chk_int("after a Yes it writes", wpe_write_save_text_ask(p, "new\n", &id, 0, &asked, NULL, &o), 0);
+ chk_int("the text is on disk", strcmp(get_file("t.c", buf, sizeof buf), "new\n"), 0);
+ chk_int("a copy has no special bit", mode_of("t.c") & 07000, 0);
+ chk_int("the outcome names the file now there", wpe_write_identity_is(&o.written,
+         identity_of("t.c").dev, identity_of("t.c").ino), 1);
+ another_file_takes_the_name("t.c", "theirs again\n", 0644);
+ chk_int("a third file is refused", wpe_write_save_text_ask(p, "newer\n", &id, 0, &asked, NULL, &o), -1);
+ chk_int("it says the name changed", o.changed_while_asked, 1);
+ chk_int("their text is untouched too", strcmp(get_file("t.c", buf, sizeof buf), "theirs again\n"), 0);
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+ chk_has("the assistant's sentence", say, "the name changed again while you were being asked");
+ chk_int("no advice about Save As", strstr(say, "Save As") == NULL, 1);
+}
+
+/* @scenario SC-write-owner-H2b-02: a program, another owner's file or a file
+   that is not a plain one is refused on the first pass, nothing asked. */
+static void test_the_assistants_write_refuses_a_replaced_program(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity id;
+ char p[512], buf[256], say[1024];
+
+ make_dir();
+ if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID), "a replaced program is refused",
+                   "this user cannot set setgid in the test folder"))
+  return;
+ put_file("t.c", "old\n", 0644);
+ id = identity_of("t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 02755);
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused", wpe_write_save_text_ask(p, "new\n", &id, 0, NULL, NULL, &o), -1);
+ chk_int("not asked", o.ask_overwrite, 0);
+ chk_int("another file", o.other_file, 1);
+ chk_int("their text is untouched", strcmp(get_file("t.c", buf, sizeof buf), "theirs\n"), 0);
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+ chk_has("the assistant's sentence", say, "Cannot write");
+ chk_int("no advice about Save As", strstr(say, "Save As") == NULL, 1);
+}
+
+/* @scenario SC-write-owner-H2b-03: a revert that finds the name leading to a
+   different file says it put nothing back, and gives no Save As advice. */
+static void test_a_revert_that_finds_another_file_says_nothing_was_changed(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity id;
+ char p[512], say[1024];
+
+ make_dir();
+ put_file("t.c", "old\n", 0644);
+ id = identity_of("t.c");
+ another_file_takes_the_name("t.c", "theirs\n", 0644);
+ path_of(p, sizeof p, "t.c");
+ chk_int("refused", wpe_write_restore_text(p, "old\n", 4, WPE_WRITE_NO_RECORDED_MODE, &id, NULL, &o), -1);
+ (void)wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_PUT_BACK);
+ chk_has("the revert's sentence", say, "Cannot put back");
+ chk_has("what the name leads to", say, "the name now leads to a different file than the one the window shows");
+ chk_has("what is kept", say, "Nothing was changed.");
+ chk_int("no advice about Save As", strstr(say, "Save As") == NULL, 1);
+}
+
 /* A name that is not there is made, with no backup of nothing. */
 static void test_the_assistants_write_makes_a_new_file(void)
 {
@@ -3968,6 +4049,9 @@ int main(void)
  test_the_assistants_write_refuses_a_pipe_and_does_not_wait();
  test_the_assistants_write_refuses_a_file_swapped_in_after_the_look();
  test_the_assistants_write_refuses_a_name_gained_after_the_look();
+ test_the_assistants_write_asks_about_a_replaced_file();
+ test_the_assistants_write_refuses_a_replaced_program();
+ test_a_revert_that_finds_another_file_says_nothing_was_changed();
  test_the_assistants_write_of_a_free_name_must_make_the_file();
  test_the_assistants_write_with_the_look_keeps_the_bit_and_makes_the_backup();
  test_a_file_removed_after_the_look_is_not_made_again();

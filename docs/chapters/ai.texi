@@ -982,7 +982,23 @@ pane and in what the model reads.  A pipe, a device or a socket is never
 written, and a file that is not the one that was checked when the write began
 (another file put under the name, or a new hard link made to it) is refused
 with nothing written.  The @file{.bak} is the price of the write and not the
-run's work: the review never lists it and @kbd{r} never removes it.  A revert
+run's work: the review never lists it and @kbd{r} never removes it.  A file
+with several names on disk asks at every dial, @samp{auto} included: the box
+says @samp{This file has 3 names on disk; one may lie outside the workspace},
+then the whole path on a row of its own, and that writing changes all of them.
+Only @kbd{y} allows; Enter does not.  A yes holds for the rest of the run for
+that file with that many names, and a name added afterwards asks again.  When a
+file open in a window was replaced on disk by another plain file of yours (a
+program that saves by renaming), the write asks, as @kbd{F2} does:
+@samp{t.c was replaced on disk since this window read it; the text goes into
+the file now there, as a copy}.  A @kbd{y} writes the text into the file now
+there as a copy, with no special bit, and the window follows it; @kbd{n} and
+@key{Esc} write nothing, and Enter is not yes.  Under @samp{ask} there is one
+box: the diff of the write carries these warnings (both, for a file that is
+replaced and has several names), and only @kbd{y} allows.  Under @samp{edits}
+and @samp{auto}, where there is no diff box, the warning is a box of its own.
+A replacement that is a program, belongs to another user or is not a plain file
+is refused.  A revert
 puts the before image back into the very same file, with the permission bits
 the file had before the run's first write to it; a file the run only changed by
 a command keeps the bits it has, and a revert makes no @file{.bak}.  A revert

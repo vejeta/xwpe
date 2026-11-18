@@ -1347,6 +1347,24 @@ static FENSTER *ws_window_of_file(FENSTER *f, const char *real, const WpeWriteEx
 }
 
 /**
+ * wpe_ai_window_file_replaced - Was the file an open window read replaced on disk?
+ * @f: any window of the editor; @real: the place the look resolved; @x: what
+ * the look saw there.
+ * Return: 1 when a window is open on that place and the file there now is not
+ * the one the window read, 0 otherwise (no window, no file, the same file).
+ *
+ * What the user gets: before the assistant's write, the editor can say in the
+ * one box it shows under ask that the file under the window's name is another
+ * one, instead of asking about it in a second box afterwards.
+ */
+int wpe_ai_window_file_replaced(FENSTER *f, const char *real, const WpeWriteExpect *x)
+{
+ FENSTER *w = ws_window_of_file(f, real, x);
+ if (!w || !x || !x->judged || !x->exists) return 0;
+ return wpe_write_identity_differs(&w->file_id, x->dev, x->ino);
+}
+
+/**
  * wpe_ai_write_judged_file - Put the assistant's text in the file the scope judged: a Save.
  * @f: any window of the editor; @real: the place the look resolved, written
  * exactly as it is and never resolved again; @text: the file's whole new
@@ -1363,16 +1381,30 @@ static FENSTER *ws_window_of_file(FENSTER *f, const char *real, const WpeWriteEx
  * Before the run's first write to a file its permission bits are recorded for
  * the revert, and the .bak is noted, so the review never lists it and the
  * revert never removes it.
- * Return: 0 when the file holds @text, -1 when not (@o says why).
+ *
+ * When the window's file was replaced on disk by another plain file of the
+ * user's own, the first pass (@asked NULL) writes nothing and sets
+ * @o->ask_overwrite with the file in @o->asked, so the caller can ask, as
+ * Save does; the pass after a Yes gives that identity back in @asked and
+ * writes the text as a copy, and the window follows the file now there.
+ * With no window open on the file there is no one to ask and a file under
+ * the name is the file.
+ * Return: 0 when the file holds @text, -1 when not (@o says why, or says
+ * to ask).
  */
 int wpe_ai_write_judged_file(FENSTER *f, const char *real, const char *text,
-                             const WpeWriteExpect *x, WpeWriteOutcome *o)
+                             const WpeWriteExpect *x, const WpeFileIdentity *asked,
+                             WpeWriteOutcome *o)
 {
  FENSTER *w = ws_window_of_file(f, real, x);
  int rc;
  ws_mode_record(f, real);
- rc = wpe_write_save_text(real, text, w ? &w->file_id : NULL, WPE_WRITE_NOFOLLOW, x, o);
+ if (w)
+  rc = wpe_write_save_text_ask(real, text, &w->file_id, WPE_WRITE_NOFOLLOW, asked, x, o);
+ else
+  rc = wpe_write_save_text(real, text, NULL, WPE_WRITE_NOFOLLOW, x, o);
  ws_backup_note(o->bak_path);
+ if (rc == 0 && w) wpe_write_identity_set(&w->file_id, &o->written);
  return rc;
 }
 
@@ -2438,7 +2470,7 @@ static int ws_restore_before_image(FENSTER *f, const char *path, const char *tex
  w = ws_window_of_file(f, real, &x);
  if (wpe_write_restore_text(real, text, len, ws_mode_recorded(real),
                             w ? &w->file_id : NULL, &x, &o) != 0) {
-  wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_NOTHING_MORE);
+  wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_PUT_BACK);
   return ws_revert_failed(f, "restore", path, say);
  }
  if (w) wpe_write_identity_set(&w->file_id, &o.written);

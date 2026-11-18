@@ -1016,7 +1016,7 @@ REVERT_WAIT_S = 30
 
 
 @contextlib.contextmanager
-def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None):
+def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None, answer=None):
     """An unattended run over t.c, stopped at the review's prompt.
 
     Yields (session, t.c, trace).  `workspace` is "git" (a committed t.c, so the
@@ -1024,6 +1024,8 @@ def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None):
     copies).  `prepare(t)` runs once the editor has read the file and before the
     run starts: where a row sets up the file's bits or another name for it.  The
     trace and the state folder stay outside the workspace, so neither is a change.
+    `answer` is a key for the question the write asks first (a file with several
+    names asks at every dial); it is pressed once the question is on screen.
     """
     t = tmp_path / "t.c"
     trace = tmp_path.parent / (tmp_path.name + ".trace")
@@ -1042,6 +1044,10 @@ def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None):
         s.key("g")
         s.key("rewrite it")
         s.key("\r", delay=2.0)
+        if answer:
+            assert _wait_trace(trace, "agent write linked", 60), \
+                "the write never asked about the file's names:\n" + _trace_text(trace)
+            s.key(answer, delay=0.8)
         assert _wait_trace(trace, "changeset n=", 60), \
             "the review never opened:\n" + _trace_text(trace)
         yield s, t, trace
@@ -1434,7 +1440,10 @@ def test_git_revert_keeps_the_inode_and_the_other_names(tmp_path):
         os.link(t, tmp_path / "h.c")
         ino.append(os.stat(t).st_ino)
 
-    with _auto_run(tmp_path, "git", WRITE_REPLY % (tmp_path / "t.c"), prepare=prepare) as (s, t, trace):
+    # one more key than before the question existed: the write to a file with
+    # two names asks first, and this row is about the revert that follows a yes
+    with _auto_run(tmp_path, "git", WRITE_REPLY % (tmp_path / "t.c"), prepare=prepare,
+                   answer="y") as (s, t, trace):
         _revert_all(s, trace)
     assert t.read_text() == ORIG
     assert t.stat().st_ino == ino[0], "the revert made a new file"

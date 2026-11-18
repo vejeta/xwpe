@@ -520,8 +520,10 @@ int   wpe_ai_scope_count_skipped_links(const char *path, int depth, int *truncat
  * resolved (@real, written as it is, the last link not followed) and into
  * the file the look saw (@x).  0 when the file holds @text, -1 with the
  * outcome @o saying why.  See we_ai_ws.c. */
+int   wpe_ai_window_file_replaced(struct FNST *f, const char *real, const WpeWriteExpect *x);
 int   wpe_ai_write_judged_file(struct FNST *f, const char *real, const char *text,
-                               const WpeWriteExpect *x, WpeWriteOutcome *o);
+                               const WpeWriteExpect *x, const WpeFileIdentity *asked,
+                               WpeWriteOutcome *o);
 /* Checkpoint before an edits/auto run: a git ref (stash create / HEAD) when
  * the workspace is a git tree, else snapshot copies of the scope files.
  * Returns 0 when the checkpoint is active, -1 when it was not taken because it

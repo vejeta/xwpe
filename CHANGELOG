@@ -551,6 +551,21 @@ Changes
   that only a command changed keeps its bits.  A revert never writes or
   removes through a link, at the file name or at any folder on the way,
   the workspace folder itself included; it names what it refused.
+* The assistant asks before it writes a file that has several names on
+  disk, at every dial, auto included.  Before, it wrote the file silently,
+  and one of its names could lie outside the workspace.  The box says how
+  many names the file has, shows the whole path on a row of its own and says
+  that writing changes all of them; only y allows, and a yes holds for the
+  rest of the run for that file with that many names, so a name added later
+  asks again.  The same kind of box asks when a file open in a window was
+  replaced on disk by another plain file of yours, as F2 does: y writes the
+  text into the file now there as a copy, with no special bit, and the window
+  follows it; n and Esc write nothing, and Enter is not yes.  Before, that
+  write was refused.  With the dial on ask there is one box, not two: the
+  diff of the write carries these warnings, both for a file that is replaced
+  and has several names.  A revert that finds the name leading to a different
+  file than the window shows now says so and that nothing was changed,
+  without advice to use Save As.
 * A window remembers which file it read (its device and inode), and Save
   writes only into that file.  Before, Save looked the name up again, so a
   setuid program put under the name by another program received your text
