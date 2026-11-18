@@ -34,7 +34,6 @@ LIST=0
 ROWS=
 BAD=1
 USAGE=2
-ROOT_PREFIX=/var/tmp/xwpe-row
 
 # row_switches ROW - the configure switches of a row, or nothing when the row
 # does not exist.
@@ -83,13 +82,10 @@ if ! (cd "$SRCDIR" && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
   exit $USAGE
 fi
 
-DIR=$(mktemp -d "$ROOT_PREFIX.XXXXXX") || exit $USAGE
-case $DIR in
-  "$ROOT_PREFIX".?*) ;;
-  *) echo "build-config-row: refusing to use $DIR" >&2; exit $USAGE ;;
-esac
-trap 'rm -rf -- "$DIR"' EXIT
-trap 'exit 130' HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+WORK_BASE=/var/tmp
+work_dir xwpe-row $USAGE
+DIR=$WORK
 
 # copy_tree DEST - the tree's files, listed by git, into DEST.
 copy_tree() {

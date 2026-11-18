@@ -78,8 +78,8 @@ REASONS='dialog field editing|menu navigation|AI pane text keys|compose|help vie
 # allow lines name each key, so a decision planted among them is a new line.
 KEYLOOPS='e_eingabe|e_tst_cur|WpeHandleFileManager|e_data_eingabe|WpeHandleMainmenu|WpeHandleSubmenu_run|main'
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/keymap.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir keymap $BAD
 
 # The key constants, read from the headers.
 for h in keys.h unixkeys.h; do

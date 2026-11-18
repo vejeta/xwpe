@@ -421,7 +421,9 @@ selftest_ci_copies_logs_before_the_check() {
 # selftest: run this script on fixture logs for each thing it must report:
 # nothing new, NEW, STALE, NO ROW LOG, NO SUMMARY and CHECK FAILED.
 selftest() {
-  T=$(mktemp -d "${TMPDIR:-/tmp}/bsdkf.XXXXXX") || return 1
+  . "$(dirname "$0")/workdir.sh"
+  work_dir bsdkf 1
+  T=$WORK
   selftest_failed=0
   unset WPE_TEST_UNPRIVILEGED
 
@@ -532,7 +534,6 @@ selftest() {
 
   selftest_ci_copies_logs_before_the_check
 
-  rm -rf "$T"
   if [ $selftest_failed = 0 ]; then
     echo "bsd-known-failures --selftest: all cases ok"
     return 0

@@ -42,8 +42,9 @@ SRCDIR=${srcdir:-.}
 SCRIPT=$SRCDIR/tests/with-deadline.sh
 [ -f "$SCRIPT" ] || SCRIPT=$SRCDIR/with-deadline.sh
 BAD=0
-DIR=$(mktemp -d "${TMPDIR:-/tmp}/check-with-deadline.XXXXXX") || exit 1
-trap 'rm -rf "$DIR"' EXIT
+. "$(dirname "$0")/workdir.sh"
+work_dir check-with-deadline 1
+DIR=$WORK
 
 fail() { echo "FAIL: $1"; BAD=1; }
 
@@ -137,7 +138,7 @@ command_gone "row 1 (dies on TERM)" "$PIDFILE"
 # Row 2.  The command ignores TERM (an ignored signal stays ignored through
 # exec), so only KILL ends it, GRACE after TERM.
 PIDFILE=$DIR/pid2
-timed_run "$PIDFILE" "trap '' TERM; echo \$\$ > '$PIDFILE'; exec sleep 30"
+timed_run "$PIDFILE" "trap '' TERM; echo \$\$ > '$PIDFILE'; exec sleep 30"  # workdir: a test child that must ignore TERM
 check_timeout "row 2 (ignores TERM)"
 check_between "row 2 (ignores TERM)" "$((DEADLINE_MS + GRACE_MS))" \
 	"$((DEADLINE_MS + GRACE_MS + SLACK_MS))"

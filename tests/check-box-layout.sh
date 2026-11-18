@@ -68,8 +68,8 @@ done
 [ $LIST -eq 1 ] && WPE_BUILD_QUIET=1
 . "$HERE/build-config.sh"
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/box-layout.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir box-layout $BAD
 : > "$WORK/problems"
 : > "$WORK/found"
 : > "$WORK/notbuilt"       # one word per line, for what this build lacks

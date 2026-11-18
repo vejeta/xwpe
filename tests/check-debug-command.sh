@@ -69,8 +69,8 @@ we_debug.c E_D_WATCH_CMD_MAX E_D_REQ_CMD_MAX
 we_debug.c E_D_BRK_CMD_MAX E_D_REQ_CMD_MAX
 we_debug.c E_D_GO_CMD_MAX E_D_REQ_CMD_MAX'
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/debug-command.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir debug-command $BAD
 : > "$WORK/problems"
 
 problem() { echo "$*" >> "$WORK/problems"; }

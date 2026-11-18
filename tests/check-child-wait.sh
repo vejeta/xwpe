@@ -92,8 +92,8 @@ if [ ! -f "$ALLOW" ]; then
   exit $BAD
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/child-wait.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir child-wait $BAD
 
 # The names each rule reads.  Passed to awk through the environment, which
 # keeps a backslash whole.

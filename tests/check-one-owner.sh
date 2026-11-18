@@ -70,8 +70,8 @@ fi
 [ $LIST -eq 1 ] && WPE_BUILD_QUIET=1
 . "$HERE/build-config.sh"
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/one-owner.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir one-owner $BAD
 
 # Who may import what.  "symbol-regex  objects allowed to import it".
 # Kept as one table so the rule and the exceptions read together.

@@ -40,7 +40,9 @@ case $grace in
 *[!0-9]* | "") grace=2 ;;
 esac
 
-flag=$(mktemp -d "${TMPDIR:-/tmp}/with-deadline.XXXXXX") || exit 2
+. "$(dirname "$0")/workdir.sh"
+work_dir with-deadline 2
+flag=$WORK
 
 "$@" &
 pid=$!
@@ -80,11 +82,7 @@ sleeper=
 wait "$watcher" 2>/dev/null
 
 if [ -e "$flag/fired" ]; then
-	rm -f "$flag/fired" "$flag/done" "$flag/sleeper"
-	rmdir "$flag"
 	echo "TIMEOUT: $* after $secs s"
 	exit 124
 fi
-rm -f "$flag/done" "$flag/sleeper"
-rmdir "$flag"
 exit "$rc"

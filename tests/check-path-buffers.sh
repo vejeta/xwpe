@@ -63,7 +63,8 @@
 #     WPE_PLATFORM_PATH_MAX or WPE_PLATFORM_NAME_MAX as an argument (a site
 #     says wpe_path_say_too_long or wpe_path_say_name_too_long).
 #
-# Exit: 0 clean, 1 offenders or a blind scanner.
+# Exit: 0 clean, 1 offenders or a blind scanner, 2 the script could not run
+# (the compiler does not run).
 
 SRCDIR=${srcdir:-.}
 HERE=$(dirname "$0")
@@ -88,8 +89,8 @@ done
 
 OWNER_HEADER=we_path.h
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/path-buffers.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir path-buffers $BAD
 
 # strip_comments FILE - the file's lines with comments blanked, string
 # literals kept, one output line per input line.

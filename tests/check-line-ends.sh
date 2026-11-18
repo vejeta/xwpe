@@ -59,8 +59,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ALLOW" ] || ALLOW=$HERE/line-ends.allow
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/line-ends.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir line-ends $BAD
 : > "$WORK/problems"
 problem() { echo "$*" >> "$WORK/problems"; }
 

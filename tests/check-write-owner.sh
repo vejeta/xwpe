@@ -201,8 +201,8 @@ done
 [ -n "$OBJECTS" ] || OBJECTS=$ONE_OWNER_OBJECTS
 [ -n "$ALLOW" ] || ALLOW=$HERE/write-owner.allow
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/write-owner.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir write-owner $BAD
 : > "$WORK/problems"
 problem() { echo "$*" >> "$WORK/problems"; }
 : > "$WORK/notbuilt"       # one word per line, for what this build lacks

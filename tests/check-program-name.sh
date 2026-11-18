@@ -107,8 +107,8 @@ TIME_RE='(st_mtime|st_mtim|last_time)[^;]*(<=|>=|==|!=|<|[^-]>)|(<=|>=|==|!=|<|[
 STAT_RE='(^|[^A-Za-z0-9_])(stat|lstat|fstatat|statx|stat64|lstat64|access|faccessat|eaccess|euidaccess)[ \t]*[(]'
 WE_PROG_RE="$ALL_RE|$TIME_RE|$STAT_RE"
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/program-name.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir program-name $BAD
 : > "$WORK/problems"
 
 problem() { echo "$*" >> "$WORK/problems"; }

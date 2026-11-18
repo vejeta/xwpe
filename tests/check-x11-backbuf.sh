@@ -61,9 +61,8 @@ if [ ! -f "$ALLOW" ]; then
   exit $BAD
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/x11-backbuf.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT
-trap 'exit 130' HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir x11-backbuf $BAD
 
 # The scan reads C as bytes (see check-wayland-frame.sh).
 LC_ALL=C

@@ -28,8 +28,8 @@ if [ ! -x "$TOOL" ]; then
   exit $SKIP
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/keymap-docs.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir keymap-docs $BAD
 
 status=0
 

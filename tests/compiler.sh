@@ -21,8 +21,8 @@
 # tests/*.sh for it).  run-tests.sh and check-child-exec.sh use their
 # compiler variable unquoted, so they split it already.
 #
-# Written to fold into the shared check-script library that
-# tests/check-sh-idiom.sh announces.
+# Its sibling tests/workdir.sh is the one way a check script makes its work
+# folder; the two are separate files because they are separate concerns.
 
 CC=${CC:-cc}
 

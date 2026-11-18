@@ -142,8 +142,8 @@ if ! find_objdump; then
   exit $SKIP
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/child-exec.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir child-exec $BAD
 
 # --- the flags -----------------------------------------------------------
 

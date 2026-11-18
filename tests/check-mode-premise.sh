@@ -66,8 +66,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$TESTSDIR" ] || TESTSDIR=$SRCDIR/tests
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/mode-premise.XXXXXX") || exit 1
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir mode-premise 1
 
 # The scanner.  kind is c or py; the output is one line per offence,
 # "file:line: what".  Comments and strings are blanked first, so a mode that

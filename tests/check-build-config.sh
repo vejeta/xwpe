@@ -52,8 +52,8 @@ done
 
 . "$HERE/build-config.sh"
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/build-config.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir build-config $BAD
 : > "$WORK/problems"
 problem() { echo "$*" >> "$WORK/problems"; }
 

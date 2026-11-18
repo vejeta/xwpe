@@ -110,8 +110,8 @@ ROWS_FILE=we_startplan.c
 # own, so a function's build lines and its removals are never one count.
 REMOVE_PATTERN='(^|[^A-Za-z0-9_])(unlink|remove)[ \t]*[(]'
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/start-plan.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir start-plan $BAD
 : > "$WORK/found"
 : > "$WORK/problems"
 

@@ -167,8 +167,8 @@ plant() {
 }
 
 if [ $SELFTEST -eq 1 ]; then
-  WORK=$(mktemp -d "${TMPDIR:-/tmp}/brk-bounds.XXXXXX") || exit 1
-  trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+  . "$(dirname "$0")/workdir.sh"
+  work_dir brk-bounds 1
   plant "$FILE" "$WORK/planted.c"
   scan "$WORK/planted.c" > "$WORK/found.txt"
   missing=0

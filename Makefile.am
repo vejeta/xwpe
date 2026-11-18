@@ -1283,6 +1283,7 @@ EXTRA_DIST = \
   tests/check-platform.sh \
   tests/objsyms.sh \
   tests/compiler.sh \
+  tests/workdir.sh \
   tests/nm-undefined.sh \
   tests/build-config.sh \
   tests/check-build-config.sh \

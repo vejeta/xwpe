@@ -80,8 +80,8 @@ fi
 
 # Row 2: mutation.
 CONFIG="$BUILDDIR/config.h"
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/platform.XXXXXX") || exit 2
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir platform 2
 if [ ! -f "$CONFIG" ]; then
 	echo "check-platform: no $CONFIG" >&2
 	exit 2
@@ -507,7 +507,7 @@ bnd_expect() { # name multibyte-fact fault want
 	# "unknown" is also an answer of the engine (a refused call), so only the
 	# probe's own no-locale line is a SKIP.
 	case $said in
-	"group=unknown boundary=unknown no-utf8-locale") echo "SKIP: row 12 ($1): no UTF-8 locale here to run the probe in"; return ;;
+	"group=unknown boundary=unknown no-utf8-locale") echo "SKIP: row 12 ($1): no UTF-8 locale here to run the probe in"; BND_SKIPPED=1; return ;;
 	esac
 	got=$(printf '%s\n' "$said" | cut -d' ' -f1,2)
 	if [ "$got" != "$4" ]; then
@@ -542,7 +542,7 @@ bnd_real_engine() {
 	fi
 	said=$("$WORK/bndreal" 2>/dev/null)
 	case $said in
-	"group=unknown boundary=unknown no-utf8-locale") echo "SKIP: row 12 (the host's real engine): no UTF-8 locale here to run the probe in"; return ;;
+	"group=unknown boundary=unknown no-utf8-locale") echo "SKIP: row 12 (the host's real engine): no UTF-8 locale here to run the probe in"; BND_SKIPPED=1; return ;;
 	esac
 	got=$(printf '%s\n' "$said" | cut -d' ' -f1,2)
 	group_word=${got%% *}
@@ -558,6 +558,7 @@ bnd_real_engine() {
 	fi
 	echo "ok: row 12 (the host's real engine, flag ${real_flag:-0}): $got; config.h holds WPE_HAS_REGEX_SAFE_BOUNDARY_GROUP=${want_group:-0} WPE_HAS_REGEX_SAFE_BOUNDARY=${want_boundary:-0}"
 }
+BND_SKIPPED=
 FACT_MULTIBYTE_SEED=$(bnd_fact REGEX_MULTIBYTE)
 FACT_MULTIBYTE_SEED=${FACT_MULTIBYTE_SEED:-0}
 bnd_expect "an engine with no fault" 1 none "group=safe boundary=safe"
@@ -570,7 +571,10 @@ bnd_expect "an engine that reads bytes" 0 wrong "group=safe boundary=safe"
 bnd_expect "a refusal of a start inside a character" 1 illseq "group=safe boundary=safe"
 bnd_expect "a refusal of every call (REG_ILLSEQ)" 1 illseq-all "group=unknown boundary=unknown"
 bnd_real_engine
-ROWS=$((ROWS + 1))
+# A row with a SKIP did not prove its claim here.
+if [ -z "$BND_SKIPPED" ]; then
+	ROWS=$((ROWS + 1))
+fi
 
 # Row 13: a Find at a start inside a row is judged by the character before
 # it on every engine, and one place decides how.  An engine that takes the
@@ -668,17 +672,29 @@ ROWS=$((ROWS + 1))
 #     (through a shim, so it holds on a host where cc is a program): a
 #     function named cc would call itself without end there.
 #  c. text: compiler.sh defines no function named like a word CC can take
-#     (cc, gcc, clang, c99), seen in three spellings.  Never run: such a
+#     (cc, gcc, clang, c99, or the first word of the real CC, such as
+#     gcc-14 or c89), seen as "w()", "w ()", "w ( )" and "function w", and
+#     test_cc() is not flagged.  The text rules of part a are run on samples
+#     of each form (quoted defaults, local, mid-line, Python single quotes,
+#     getenv) and on harmless ones (CCACHE_DIR).  Never run: such a
 #     function recurses without end, and a shell with no depth limit (macOS
 #     /bin/sh) grows until the job is killed.  A copy of compiler.sh that
 #     quotes the variable must fail the unit check (it ends at once).
 #     Every run of the unit script is held by tests/with-deadline.sh.
 # The patterns are built from pieces so this row does not match itself.
 Q='"'
-P_QUOTED="${Q}"'\$\{?(CC|cc|MAINT_CC)\}?'"${Q}"
+S="'"
+D='$'
+# A quoted use: "$CC", "${CC}", "${CC:-cc}", "${CC-cc}".  An empty default
+# ("${MAINT_CC:-}") only asks whether the variable is set, and is not one.
+P_QUOTED="${Q}"'\$(\{(CC|cc|MAINT_CC)(:?[-=+?][^}]+)?\}|(CC|cc|MAINT_CC))'"${Q}"
 P_COMMAND_V='command -v "?\$\{?(CC|cc)'
-P_ASSIGN='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\{?CC[:}]?'
+# Another variable set from CC: at the start of a line (after local, export,
+# readonly or declare) or after ; & | ( on the same line.  CCACHE_DIR is not CC.
+P_FROM_CC='[A-Za-z_][A-Za-z0-9_]*=\$\{?(CC|MAINT_CC)([^A-Za-z0-9_]|$)'
+P_ASSIGN="(^|[;&|({]|(^|[[:space:]])(then|do|else|if|while|until|!))[[:space:]]*((local|export|readonly|declare)[[:space:]]+)?${P_FROM_CC}"
 P_COMMENT='^[^:]*:[0-9]+:[[:space:]]*#'
+P_PY='(environ(\.get\(|\[)|getenv\()[[:space:]]*['"${Q}${S}"'](CC|MAINT_CC)['"${Q}${S}"']'
 COMPILER_OFFENDERS=
 for f in "$SRCDIR"/tests/*.sh; do
 	PAT="$P_QUOTED|$P_COMMAND_V"
@@ -691,7 +707,71 @@ if [ -n "$COMPILER_OFFENDERS" ]; then
 	fail "row 14: a test script handles the compiler variable itself instead of test_cc:"
 	echo "$COMPILER_OFFENDERS"
 fi
-PY_OFFENDERS=$(grep -nHE 'environ(\.get\(|\[)"CC"' "$SRCDIR"/tests/*.py | grep -v 'shlex\.split')
+# The text rules are run on samples, with the same pattern variables: each
+# form must be seen, and the harmless ones must not be.  The samples are made
+# from pieces so this file does not contain them as text.
+# text_sees PATTERN TEXT - status 0 when PATTERN matches TEXT.
+text_sees() {
+	printf '%s\n' "$2" | grep -qE "$1"
+}
+TEXT_BLIND=0
+for sample in \
+	"X=${D}{CC:-cc}" \
+	"${Q}${D}CC${Q} -c x.c" \
+	"${Q}${D}{CC}${Q} -c x.c" \
+	"${Q}${D}{CC:-cc}${Q} -c x.c" \
+	"${Q}${D}{CC-cc}${Q} -c x.c" \
+	"local cc=${D}CC" \
+	"export cc=${D}CC" \
+	"if true; then c=${D}CC; fi" \
+	"a=1; b=${D}{CC}" \
+	"true && c=${D}CC" \
+	"if c=${D}CC; then :; fi" \
+	"while c=${D}CC; do :; done" \
+	"until c=${D}CC; do :; done" \
+	"! c=${D}CC" \
+	"command -v ${D}CC"; do
+	if ! text_sees "$P_QUOTED|$P_COMMAND_V|$P_ASSIGN" "$sample"; then
+		fail "row 14: the text rule does not see \"$sample\": the row is blind"
+		TEXT_BLIND=1
+	fi
+done
+for sample in \
+	"X=${D}CCACHE_DIR" \
+	"X=${D}{CCACHE_DIR:-x}" \
+	"${Q}${D}CCACHE${Q}" \
+	"[ -z ${Q}${D}{MAINT_CC:-}${Q} ]" \
+	"test_cc -c x.c" \
+	"${Q}${D}XCC${Q}"; do
+	if text_sees "$P_QUOTED|$P_COMMAND_V|$P_ASSIGN" "$sample"; then
+		fail "row 14: the text rule flags \"$sample\", which is not the compiler variable"
+		TEXT_BLIND=1
+	fi
+done
+for sample in \
+	"os.environ.get(${S}CC${S})" \
+	"os.environ.get(${Q}CC${Q})" \
+	"os.environ.get(${Q}CC${Q}, ${Q}cc${Q})" \
+	"os.environ[${S}CC${S}]" \
+	"os.environ[${Q}CC${Q}]" \
+	"os.getenv(${Q}CC${Q})" \
+	"os.environ.get(${Q}MAINT_CC${Q})" \
+	"os.getenv(${S}CC${S}, ${Q}cc${Q})"; do
+	if ! text_sees "$P_PY" "$sample"; then
+		fail "row 14: the Python rule does not see \"$sample\": the row is blind"
+		TEXT_BLIND=1
+	fi
+done
+for sample in "os.environ.get(${Q}CCACHE_DIR${Q})" "os.getenv(${Q}CXX${Q})"; do
+	if text_sees "$P_PY" "$sample"; then
+		fail "row 14: the Python rule flags \"$sample\", which is not CC"
+		TEXT_BLIND=1
+	fi
+done
+if [ $TEXT_BLIND -eq 0 ]; then
+	echo "ok: row 14 (the text rules see every form and miss the harmless ones)"
+fi
+PY_OFFENDERS=$(grep -nHE "$P_PY" "$SRCDIR"/tests/*.py | grep -v 'shlex\.split')
 if [ -n "$PY_OFFENDERS" ]; then
 	fail "row 14: a test reads CC without shlex.split, so a CC with flags is not found:"
 	echo "$PY_OFFENDERS"
@@ -729,11 +809,35 @@ unit_fail() {
 		fail "row 14: $1"
 	fi
 }
-# owner_defines_word FILE - status 0 when FILE defines a function named like
-# a word CC can take (cc, gcc, clang, c99): "cc()", "cc ()" or "function cc".
-# Such a function would be called by "$CC" when CC is that word, forever.
+# compiler_words CCSTRING - the words CC can take, as an ERE alternation: the
+# fixed list and the basename of the first word of CCSTRING (gcc-14, clang-18,
+# c89, a full path), each character that is not a letter, digit or _ in a
+# bracket so it is read literally.
+compiler_words() {
+	if [ $# -gt 0 ]; then
+		set -- $1
+	else
+		set -- $CC
+	fi
+	first=${1##*/}
+	literal=$(printf '%s' "$first" | sed 's/[^A-Za-z0-9_]/[&]/g')
+	if [ -n "$literal" ]; then
+		echo "cc|gcc|clang|c99|$literal"
+	else
+		echo "cc|gcc|clang|c99"
+	fi
+}
+# owner_defines_word FILE [CCSTRING] - status 0 when FILE defines a function
+# named like a word CC can take (the fixed list and CCSTRING's first word):
+# "cc()", "cc ()", "cc ( )" or "function cc".  Such a function would be called
+# by "$CC" when CC is that word, forever.
 owner_defines_word() {
-	grep -qE '^[[:space:]]*(function[[:space:]]+(cc|gcc|clang|c99)([[:space:]]|\(|\{|$)|(cc|gcc|clang|c99)[[:space:]]*\(\))' "$1"
+	if [ $# -gt 1 ]; then
+		words=$(compiler_words "$2")
+	else
+		words=$(compiler_words)
+	fi
+	grep -qE "^[[:space:]]*(function[[:space:]]+($words)([[:space:]]|\\(|\\{|\$)|($words)[[:space:]]*\\([[:space:]]*\\))" "$1"
 }
 mkdir "$WORK/shim"
 set -- $CC
@@ -761,19 +865,36 @@ else
 		echo "ok: row 14 (CC=cc)"
 	fi
 	if owner_defines_word "$OWNER"; then
-		fail "row 14: tests/compiler.sh defines a function named like a compiler word (cc, gcc, clang, c99): it would call itself when CC is that word"
+		fail "row 14: tests/compiler.sh defines a function named like a compiler word (cc, gcc, clang, c99, or the first word of CC: $CC): it would call itself when CC is that word"
 	else
 		echo "ok: row 14 (no function named like a compiler)"
 	fi
-	# The static check must see the three spellings.  The mutants are only
-	# read, never run: such a function does not end.
-	for spelling in 'cc() {' 'cc () {' 'function cc {'; do
+	# The static check must see each spelling, for the fixed words and for the
+	# first word of a CC outside the list, and must not see test_cc().  The
+	# mutants are only read, never run: such a function does not end.
+	MUTANT_BLIND=0
+	for pair in 'cc|cc() {' 'cc|cc () {' 'cc|cc ( ) {' 'cc|function cc {' \
+		'gcc-14 -std=gnu23|gcc-14() {' 'clang-18|clang-18 ( ) {' \
+		'/usr/bin/c89|function c89 {' 'c89|c89 () {' 'x86_64-linux-gnu-gcc|x86_64-linux-gnu-gcc() {' \
+		'g++|function g++ {'; do
+		mutant_cc=${pair%%|*}
+		spelling=${pair#*|}
 		printf '%s\n\t$CC "$@"\n}\n' "$spelling" > "$WORK/mutant-function-cc.sh"
-		if ! owner_defines_word "$WORK/mutant-function-cc.sh"; then
-			fail "row 14: the check for a function named cc does not see \"$spelling\": the row is blind"
+		if ! owner_defines_word "$WORK/mutant-function-cc.sh" "$mutant_cc"; then
+			fail "row 14: the check for a function named like CC (CC=$mutant_cc) does not see \"$spelling\": the row is blind"
+			MUTANT_BLIND=1
 		fi
 	done
-	echo "ok: row 14 (the function-name check sees cc(), cc () and function cc)"
+	for spelling in 'test_cc() {' 'test_cc ( ) {' 'mycc() {' 'function test_cc {'; do
+		printf '%s\n\t$CC "$@"\n}\n' "$spelling" > "$WORK/mutant-function-cc.sh"
+		if owner_defines_word "$WORK/mutant-function-cc.sh" "gcc-14 -O2"; then
+			fail "row 14: the check for a function named like CC flags \"$spelling\", which is not a compiler word"
+			MUTANT_BLIND=1
+		fi
+	done
+	if [ $MUTANT_BLIND -eq 0 ]; then
+		echo "ok: row 14 (the function-name check sees cc(), cc (), cc ( ), function cc and the first word of CC, and not test_cc())"
+	fi
 	MUT_CALL='\$CC "\$@"'
 	MUT_QUOTED="${Q}\$CC${Q} ${Q}\$@${Q}"
 	sed "s/$MUT_CALL/$MUT_QUOTED/" "$OWNER" > "$WORK/mutant-quoted.sh"
@@ -793,7 +914,10 @@ else
 fi
 ROWS=$((ROWS + 1))
 
+# ROWS counts the rows that proved their claim; a SKIP line leaves its row
+# out.  The total is the "# Row N:" comments of this file, so it cannot drift.
+ROWS_TOTAL=$(grep -c '^# Row [0-9][0-9]*:' "$0")
 if [ $FAIL -eq 0 ]; then
-	echo "PASS: platform decisions have one owner ($ROWS rows)"
+	echo "PASS: platform decisions have one owner ($ROWS_TOTAL rows, $((ROWS_TOTAL - ROWS)) skipped here)"
 fi
 exit $FAIL

@@ -49,8 +49,8 @@ done
 
 OWNER_FILES="we_listsel.c we_listsel.h"
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/list-entry.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir list-entry $BAD
 : > "$WORK/problems"
 
 problem() { echo "$*" >> "$WORK/problems"; }

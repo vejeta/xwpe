@@ -52,8 +52,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/selection-mode.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir selection-mode $BAD
 
 # scan DIR - "rule|file:line|text" for every offence in the sources of DIR.
 # One awk pass over the files: comments are blanked, then each rule is a

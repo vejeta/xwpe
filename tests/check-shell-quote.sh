@@ -42,8 +42,9 @@ scan() {
     grep -vE '^[^:]*:[0-9]+:[[:space:]]*wpe_ai_trace[[:space:]]*\('
 }
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/check-shell-quote.XXXXXX") || exit 1
-trap 'rm -rf "$TMP"' EXIT
+. "$(dirname "$0")/workdir.sh"
+work_dir check-shell-quote 1
+TMP=$WORK
 Q="'"
 for canary in "snprintf(o, n, \"gcc -c ${Q}%s${Q}\", f);" \
               "snprintf(o, n, \"rm -- ${Q}%-10s${Q}\", f);" \

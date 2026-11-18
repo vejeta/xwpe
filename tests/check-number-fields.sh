@@ -56,7 +56,8 @@
 # that does not name it fails the script as blind.
 #
 # Environment (set by make check): NM, ONE_OWNER_OBJECTS, CC, srcdir.
-# Exit: 0 clean, 1 offenders or a blind scanner.
+# Exit: 0 clean, 1 offenders or a blind scanner, 2 the script could not run
+# (the compiler does not run).
 
 SRCDIR=${srcdir:-.}
 HERE=$(dirname "$0")
@@ -104,8 +105,8 @@ GUARDED='tabn|maxcol|autoindent'
 WRITE_RE="->($FIELDS)[ \t]*(([-+*/%|&^]|<<|>>)?=[^=]|[+][+]|--)|([+][+]|--)[ \t]*[A-Za-z_>.-]*->($FIELDS)|&[A-Za-z_>.-]*->($FIELDS)([^A-Za-z0-9_]|\$)"
 GUARD_RE="(^|[^A-Za-z0-9_])($GUARDED)[ \t]*(>=|<=|==|!=|>|<)[ \t]*[01]([^0-9]|\$)|[^0-9][01][ \t]*[<>]=?[ \t]*[A-Za-z_>.-]*($GUARDED)([^A-Za-z0-9_]|\$)|![ \t]*[A-Za-z_>.-]*->($GUARDED)([^A-Za-z0-9_]|\$)"
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/number-fields.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir number-fields $BAD
 
 # strip_c FILE - the file's lines with comments, strings and characters
 # blanked, one output line per input line.

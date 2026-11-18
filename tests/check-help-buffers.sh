@@ -47,8 +47,8 @@ done
 OWNER_SOURCE=we_helpbuf.c
 ROW_OWNER_SOURCE=we_buffer.c
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/help-buffers.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir help-buffers $BAD
 
 # The one blanker of comments and literals (tests/blank-c.awk).
 BLANK_C=$(cat "$(dirname "$0")/blank-c.awk")

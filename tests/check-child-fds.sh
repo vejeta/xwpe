@@ -52,8 +52,8 @@ if [ ! -f "$ALLOW" ]; then
   exit $BAD
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/child-fds.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir child-fds $BAD
 
 # scan FILE... - one tab separated record per call that matters, "base
 # function line call", and one "base - 0 file" per file read.

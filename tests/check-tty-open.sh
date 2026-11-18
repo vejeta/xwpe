@@ -45,8 +45,8 @@ if [ ! -f "$ALLOW" ]; then
   exit $BAD
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/tty-open.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir tty-open $BAD
 
 # The scan reads C as bytes (substr and length count characters in a UTF-8
 # locale, which costs the size of the file at every step on some awks).

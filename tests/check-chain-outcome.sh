@@ -74,8 +74,8 @@ VERDICT_CMDS='e_d_gb_add_cmd|e_d_gsdb_add_cmd|e_d_cl_cmd'
 # not run past a cursor or a start the debugger was not given.
 LEFT_OUT='e_d_ga_cursor_set_cmd e_d_gg_start_cmd'
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/chain-outcome.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir chain-outcome $BAD
 : > "$WORK/problems"
 
 problem() { echo "$*" >> "$WORK/problems"; }

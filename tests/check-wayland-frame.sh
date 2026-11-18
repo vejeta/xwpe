@@ -79,8 +79,8 @@ if [ ! -f "$ALLOW" ]; then
   exit $BAD
 fi
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/wayland-frame.XXXXXX") || exit $BAD
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+. "$(dirname "$0")/workdir.sh"
+work_dir wayland-frame $BAD
 
 # The scan reads C as bytes: in a UTF-8 locale substr and length count
 # characters, which costs the size of the file at every step on some awks.
