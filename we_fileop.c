@@ -15,6 +15,9 @@
    The bytes are the write owner's (we_write.c).  No drawing, no key reads:
    the questions go through the policy's callback. */
 
+/* This file defines the function the type check of we_fileop.h wraps. */
+#define WPE_FILEOP_DEFINING_SHOWN 1
+
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -1508,6 +1511,7 @@ static int fileop_chmod_failed(WpeFileOpOutcome *o, const WpeModeKept *k, int er
  if (k->replaced)
  {
   o->replaced_by_link = S_ISLNK(k->replaced_kind);
+  o->replaced_unsure = k->replaced_unsure;
   return(fileop_fail(o, WPE_FILEOP_STEP_CHANGED, err));
  }
  return(fileop_fail(o, WPE_FILEOP_STEP_MODE, err));
@@ -1520,7 +1524,7 @@ int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpOutcome *o)
 
 /**
  * wpe_fileop_chmod_shown - Change the permissions of the file the user was shown.
- * @path: the name; @shown: the stat the Attributes dialog showed; @seen:
+ * @path: the name; @shown: the record the Attributes dialog took of it; @seen:
  * what the name itself was then (wpe_write_name_seen), or NULL when not
  * known; @perm: the nine bits; @o: the outcome.
  *
@@ -1531,7 +1535,7 @@ int wpe_fileop_chmod(const char *path, mode_t perm, WpeFileOpOutcome *o)
  * link: if only the file the link leads to was replaced, the user reads
  * "another file", not "a link".  Not known never says "a link".
  */
-int wpe_fileop_chmod_shown(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+int wpe_fileop_chmod_shown(const char *path, const WpeSeen *shown, const WpeNameSeen *seen,
                            mode_t perm, WpeFileOpOutcome *o)
 {
  WpeModeKept kept;
@@ -2611,7 +2615,12 @@ static const char *fileop_past(WpeFileOpKind kind);
  */
 static void fileop_replaced_words(char *out, size_t n, const WpeFileOpOutcome *o)
 {
- if (o->replaced_by_link && o->src_kept)
+ if (o->replaced_unsure && o->src_kept)
+  snprintf(out, n, "%s was changed or replaced", o->src);
+ else if (o->replaced_unsure)
+  snprintf(out, n, "%s was changed or replaced while its permissions were being changed; "
+           "the file now under that name may have been changed", o->src);
+ else if (o->replaced_by_link && o->src_kept)
   snprintf(out, n, "%s was replaced by a link; the file it leads to was not changed", o->src);
  else if (o->replaced_by_link)
   snprintf(out, n, "%s was replaced by a link while its permissions were being changed; "

@@ -420,13 +420,15 @@ scan() {
     # dialog, Ctrl-F9) is a WpeSeen called shown.  The second argument of
     # wpe_fileop_chmod_shown and wpe_write_set_perm_seen is NULL or shown; a
     # struct stat passed there compiles (the build accepts incompatible
-    # pointers) and is compared by number, so it is a site.
+    # pointers) and is compared by number, so it is a site.  The compiler
+    # checks the type as well (WPE_SHOWN_RECORD, we_write.h), and the body of
+    # that check, where the argument is wrapped in it, is not a site.
     function note24_shown(m,   t, p, a) {
       t = m
       while (match(t, /(^|[^A-Za-z0-9_])(wpe_fileop_chmod_shown|wpe_write_set_perm_seen)[ \t]*[(]/)) {
         p = RSTART + RLENGTH - 1
         a = nth_arg(t, p, 2)
-        if (a !~ /^(NULL|&?shown|const[ \t]+WpeSeen[ \t]*\*[ \t]*shown)$/) note("r24f", 1)
+        if (a !~ /^(NULL|&?shown|const[ \t]+WpeSeen[ \t]*\*[ \t]*shown|WPE_SHOWN_RECORD[ \t]*[(][ \t]*shown[ \t]*[)])$/) note("r24f", 1)
         t = substr(t, p + 1)
       }
     }

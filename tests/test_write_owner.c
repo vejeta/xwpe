@@ -3751,7 +3751,7 @@ static void test_a_link_swapped_in_after_the_dialog_is_not_followed(void)
 {
  WpeModeKept k;
  WpeNameSeen seen;
- struct stat shown;
+ WpeSeen shown;
  char p[512], v[512];
 
  make_dir();
@@ -3759,7 +3759,7 @@ static void test_a_link_swapped_in_after_the_dialog_is_not_followed(void)
  put_file("victim", "y\n", 0600);
  path_of(p, sizeof p, "f");
  path_of(v, sizeof v, "victim");
- stat(p, &shown);
+ wpe_seen_look_name(p, 1, &shown);
  wpe_write_name_seen(p, &seen);
  unlink(p);
  if (symlink(v, p) != 0)
@@ -3776,7 +3776,7 @@ static void test_a_link_swapped_in_after_the_dialog_is_not_followed(void)
 static void test_a_named_link_shown_by_the_dialog_is_changed(void)
 {
  WpeModeKept k;
- struct stat shown;
+ WpeSeen shown;
  char p[512], to[512];
 
  make_dir();
@@ -3785,7 +3785,7 @@ static void test_a_named_link_shown_by_the_dialog_is_changed(void)
  path_of(to, sizeof to, "real");
  if (symlink(to, p) != 0)
   perror("symlink");
- stat(p, &shown);
+ wpe_seen_look_name(p, 1, &shown);
  chk_int("changed", wpe_write_set_perm(p, &shown, 0600, &k), 0);
  chk_int("the target changed", mode_of("real"), 0600);
 }
@@ -3797,7 +3797,7 @@ static void test_a_folder_swapped_after_the_dialog_is_refused(void)
 {
  WpeModeKept k;
  WpeNameSeen seen;
- struct stat shown;
+ WpeSeen shown;
  char p[512], d[512], d_away[512], e[512];
 
  make_dir();
@@ -3811,7 +3811,7 @@ static void test_a_folder_swapped_after_the_dialog_is_refused(void)
  path_of(p, sizeof p, "L");
  if (symlink("d/T", p) != 0)
   perror("symlink");
- stat(p, &shown);
+ wpe_seen_look_name(p, 1, &shown);
  wpe_write_name_seen(p, &seen);
  rename(d, d_away);
  if (symlink(e, d) != 0)
@@ -3832,7 +3832,7 @@ static void test_a_link_the_dialog_named_is_not_a_link_that_took_the_name(void)
 {
  WpeModeKept k;
  WpeNameSeen seen;
- struct stat shown;
+ WpeSeen shown;
  char p[512], t[512], t_new[512], u[512];
 
  make_dir();
@@ -3845,10 +3845,10 @@ static void test_a_link_the_dialog_named_is_not_a_link_that_took_the_name(void)
  path_of(u, sizeof u, "u");
  if (symlink(t, p) != 0)
   perror("symlink");
- stat(p, &shown);
+ wpe_seen_look_name(p, 1, &shown);
  wpe_write_name_seen(p, &seen);
- chk_int("the name was a link when shown", seen.kind, S_IFLNK);
- chk_int("known", seen.known, 1);
+ chk_int("the name was a link when shown", wpe_seen_kind(&seen.seen), S_IFLNK);
+ chk_int("known", wpe_seen_known(&seen.seen), 1);
  chk_int("the target is replaced", rename(t_new, t), 0);
  chk_int("refused", wpe_write_set_perm_seen(p, &shown, &seen, 0600, &k), ESTALE);
  chk_int("said to be replaced", k.replaced, 1);
@@ -3869,7 +3869,7 @@ static void test_a_link_the_dialog_named_is_not_a_link_that_took_the_name(void)
 static void test_a_socket_swapped_for_a_hard_link_changes_nothing(void)
 {
  WpeModeKept k;
- struct stat shown;
+ WpeSeen shown;
  char p[512], v[512];
 
  make_dir();
@@ -3881,7 +3881,7 @@ static void test_a_socket_swapped_for_a_hard_link_changes_nothing(void)
   fails++;
   return;
  }
- stat(p, &shown);
+ wpe_seen_look_name(p, 1, &shown);
  unlink(p);
  if (link(v, p) != 0)
   perror("link");
@@ -5498,6 +5498,231 @@ static void test_a_second_save_is_the_windows_own(void)
  second_save_is_the_windows_own(WPE_SEEN_TEST_FAIL_NO_BIRTH);
 }
 
+/* @scenario SC-name-identity-17: Ctrl-F9 makes the script executable and moves
+   its status-change time; the window's record is renewed, so the next Save is
+   still the window's own and asks nothing.  Without a birth time a record
+   left from before the change would not match and the Save would ask. */
+static void ctrl_f9_then_save(const char *hook)
+{
+ WpeWriteOutcome o;
+ WpeModeKept k;
+ FENSTER *f;
+ char buf[256], p[512];
+
+ make_dir();
+ if (hook != NULL)
+  chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
+ put_file("s.sh", "echo\n", 0644);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "s.sh");
+ path_of(p, sizeof p, "s.sh");
+ chk_int("made runnable", wpe_write_add_perm(p, &f->file_id, S_IXUSR, &k), 0);
+ set_rows("echo two\n");
+ chk_int("Save", save_window(f, "s.sh", &o), 0);
+ chk_int("the Save asked nothing", question_count, 0);
+ chk_has("the text is on disk", get_file("s.sh", buf, sizeof buf), "echo two\n");
+ if (hook != NULL)
+  unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+static void test_a_save_after_ctrl_f9_is_the_windows_own(void)
+{
+ ctrl_f9_then_save(NULL);
+ ctrl_f9_then_save(WPE_SEEN_TEST_FAIL_NO_BIRTH);
+}
+
+/** The inode number of what holds a name (a link itself), or 0. */
+static ino_t ino_of_name(const char *path)
+{
+ struct stat st;
+
+ return(lstat(path, &st) == 0 ? st.st_ino : 0);
+}
+
+/** What an attempt of a swap row found: the number came back, it did not (another
+    process took it, or this file system never gives one back: try again), or
+    the swap never happened (already counted as a FAIL). */
+typedef enum { SWAP_REACHED, SWAP_MISSED, SWAP_BROKEN } SwapOutcome;
+
+/**
+ * swap_outcome - Did the fake make the swap the row needs?
+ * Return: SWAP_REACHED; SWAP_MISSED when the swap was made and the number was
+ * not reached (the caller redoes the whole attempt, as the reuse rows do,
+ * because another process can take the freed number; whether the file system
+ * ever gives one back is asked once, at the end, by swap_missed_every_time);
+ * SWAP_BROKEN, a FAIL, when the swap did not happen at all: the row would test
+ * nothing.
+ */
+static SwapOutcome swap_outcome(const char *row)
+{
+ if (!fakechmod_fifo_fired)
+ {
+  printf("FAIL: %s: the swap did not happen\n", row);
+  fails++;
+  return(SWAP_BROKEN);
+ }
+ if (fakechmod_fifo_reused)
+  return(SWAP_REACHED);
+ return(SWAP_MISSED);
+}
+
+/**
+ * swap_missed_every_time - No attempt of a swap row reached the number.
+ *
+ * The only place that asks whether this file system ever gives a number back:
+ * a SKIP by name when it never does, a FAIL when it does (the row proved
+ * nothing).  Asking after every miss could lose the probe's own race.
+ */
+static void swap_missed_every_time(const char *row)
+{
+ if (seen_rows_never_gives_back(dir))
+ {
+  printf("SKIP: %s: this file system never gives a number back\n", row);
+  return;
+ }
+ printf("FAIL: %s: the number was not reached on a file system that gives numbers back\n", row);
+ fails++;
+}
+
+/* @scenario SC-name-identity-18: a FIFO is changed by name; another FIFO that
+   holds the old one's inode number takes the name inside the change.  The
+   change is refused after the fact as a replaced file, with a birth time
+   (another birth) and without (not proven, which the sentence says as
+   "changed or replaced").  The hook is set inside the row. */
+/**
+ * chk_swapped_sentence_kind - Is a swapped file said to be "changed or replaced" only when not proven another?
+ * @unsure: the mode owner's replaced_unsure; @no_birth: the row played a system without a birth time.
+ *
+ * Without a birth time the answer is always "not proven" (1).  With one it is
+ * "another file" (0) where only the kernel sets the birth (statx, Linux); the
+ * BSDs and macOS let the owner set it, so there a differing birth is not
+ * proof either, and the answer is not asserted for the plain half.
+ */
+static void chk_swapped_sentence_kind(int unsure, int no_birth)
+{
+ if (no_birth)
+  chk_int("not proven: the sentence says changed or replaced", unsure, 1);
+#if WPE_PLATFORM_STATX_BTIME
+ else
+  chk_int("another birth: the sentence says another file", unsure, 0);
+#endif
+}
+
+static SwapOutcome fifo_swapped_once(const char *hook)
+{
+ WpeModeKept k;
+ SwapOutcome out;
+ char p[512];
+ int rc;
+
+ make_reuse_dir();
+ if (hook != NULL)
+  chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
+ path_of(p, sizeof p, "f");
+ chk_int("a FIFO", mkfifo(p, 0644), 0);
+ fakechmod_swap_fifo_reusing_at(p, ino_of_name(p));
+ rc = wpe_write_set_perm(p, NULL, 0640, &k);
+ out = swap_outcome("row 18 (a FIFO swapped inside the change)");
+ if (out == SWAP_REACHED)
+ {
+  chk_int("the change is refused", rc, ESTALE);
+  chk_int("said to be replaced", k.replaced, 1);
+  chk_swapped_sentence_kind(k.replaced_unsure, hook != NULL);
+ }
+ fakechmod_swap_fifo_reusing_at("", 0);
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+ return(out);
+}
+
+/** fifo_swapped_inside_the_chmod - The row, redone while another process keeps taking the number. */
+static void fifo_swapped_inside_the_chmod(const char *hook)
+{
+ int attempt;
+
+ for (attempt = 0; attempt < SEEN_ROWS_ATTEMPTS; attempt++)
+  if (fifo_swapped_once(hook) != SWAP_MISSED)
+   return;
+ swap_missed_every_time("row 18 (a FIFO swapped inside the change)");
+}
+
+static void test_a_fifo_swapped_inside_the_change_is_replaced(void)
+{
+ fifo_swapped_inside_the_chmod(NULL);
+ fifo_swapped_inside_the_chmod(WPE_SEEN_TEST_FAIL_NO_BIRTH);
+}
+
+/* @scenario SC-name-identity-19: a FIFO changed by name with nothing swapped is
+   changed, on a system with a birth time and on one without (the change moved
+   its status-change time and mode, and nothing else). */
+static void fifo_changed_by_name(const char *hook)
+{
+ WpeModeKept k;
+ char p[512];
+
+ make_reuse_dir();
+ if (hook != NULL)
+  chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
+ path_of(p, sizeof p, "f");
+ chk_int("a FIFO", mkfifo(p, 0644), 0);
+ chk_int("changed", wpe_write_set_perm(p, NULL, 0640, &k), 0);
+ chk_int("not replaced", k.replaced, 0);
+ chk_int("the mode is given", mode_of("f"), 0640);
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+static void test_a_fifo_changed_by_name_is_not_replaced(void)
+{
+ fifo_changed_by_name(NULL);
+ fifo_changed_by_name(WPE_SEEN_TEST_FAIL_NO_BIRTH);
+}
+
+/* @scenario SC-name-identity-20: Ctrl-F9 on a script this user cannot open
+   (mode 000, so it is changed by name) renews the window's record from the
+   look that proved the file, not from a later look at the name: a file that
+   takes the name after that look is not the window's own.  Any newcomer
+   serves, whatever its number: a record taken from a later look would be the
+   newcomer's own, so the row does not wait for the old number to come back. */
+static void ctrl_f9_then_a_newcomer(const char *hook)
+{
+ WpeModeKept k;
+ WpeSeen fresh;
+ FENSTER *f;
+ char p[512];
+ int rc;
+
+ make_reuse_dir();
+ if (hook != NULL)
+  chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
+ put_file("s.sh", "echo\n", 0000);
+ f = window_of_file_with_mode(0644);
+ window_reads(f, "s.sh");
+ path_of(p, sizeof p, "s.sh");
+ fakechmod_swap_after_look_at(p, FAKECHMOD_ANY_NUMBER);
+ rc = wpe_write_add_perm(p, &f->file_id, S_IXUSR, &k);
+ if (swap_outcome("row 20 (a file takes the name after the look)") != SWAP_BROKEN)
+ {
+  chk_int("made runnable", rc, 0);
+  chk_int("the newcomer was looked at", wpe_seen_look_name(p, 0, &fresh), 0);
+  chk_int("the window's record is not the newcomer's", wpe_seen_judge(&f->file_id, &fresh) != WPE_SEEN_SAME, 1);
+ }
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+static void test_ctrl_f9_renews_the_record_from_the_judged_look(void)
+{
+#if WPE_PLATFORM_STATX_BTIME
+ if (geteuid() == 0)
+ {
+  printf("SKIP: row 20: the superuser opens a mode 000 file, so the change is by descriptor\n");
+  return;
+ }
+ ctrl_f9_then_a_newcomer(NULL);
+ ctrl_f9_then_a_newcomer(WPE_SEEN_TEST_FAIL_NO_BIRTH);
+#else
+ printf("SKIP: row 20: the looks of this system are not made with statx\n");
+#endif
+}
+
 /* @scenario SC-name-identity-08: the assistant's look is held to the file it saw,
    not to a file that took its number. */
 static void test_a_look_is_not_met_by_a_file_with_its_number(void)
@@ -5539,29 +5764,10 @@ static void test_another_file_with_the_copys_number_is_not_removed(void)
  chk_int("the other file is still there", mode_of("t.c.ASV"), 0600);
 }
 
-/** Row 6 is red until the mode owner moves onto the same judge.  It accepts
-    only the one wrong answer known today (@known_wrong) and prints XFAIL; any
-    other value is a failure, and so is the right one (XPASS): the pass that
-    fixes the mode owner must drop this marker and assert @want. */
-static void chk_int_until_the_mode_owner(const char *what, long got, long want, long known_wrong)
-{
- if (got == known_wrong)
- {
-  printf("XFAIL: %s: got %ld want %ld (the mode owner pass fixes it)\n", what, got, want);
-  return;
- }
- if (got == want)
-  printf("FAIL: XPASS: %s is right now; replace this marker with chk_int\n", what);
- else
-  printf("FAIL: %s: got %ld, neither the known wrong %ld nor the wanted %ld\n", what, got,
-         known_wrong, want);
- fails++;
-}
-
 /** What row 6 needs of the folder: the names of the sequence. */
 typedef struct {
  char p[512], t[512], t_new[512];
- struct stat shown;
+ WpeSeen shown;
  WpeNameSeen seen;
 } LinkRow;
 
@@ -5577,15 +5783,16 @@ static void link_row_look(const char *path, void *ctx)
  LinkRow *r = (LinkRow *)ctx;
 
  put_file("t.new", "y\n", 0644);
- (void)stat(path, &r->shown);
+ (void)wpe_seen_look_name(path, 1, &r->shown);
  wpe_write_name_seen(path, &r->seen);
  chk_int("the target is replaced", rename(r->t_new, r->t), 0);
 }
 
 /* @scenario SC-name-identity-06: the sequence of the link row, with the number of
-   the old link given back to another link: the new link is another one.  The
-   mode owner still judges a name by its number, so the last line is expected
-   red until that pass. */
+   the old link given back to another link: the new link is another one, told
+   by its target text.  The same link made again, with the same text, is not
+   another link: that is the definition, so the sentence does not say a link
+   took the name. */
 static void test_a_link_that_took_the_dialogs_number_is_another_link(void)
 {
  LinkRow r;
@@ -5610,8 +5817,42 @@ static void test_a_link_that_took_the_dialogs_number_is_another_link(void)
  if (!make_the_number_come_again("row 6 (another link with the number)", &pc, "z"))
   return;
  chk_int("refused for another link", wpe_write_set_perm_seen(r.p, &r.shown, &r.seen, 0600, &k), ESTALE);
- chk_int_until_the_mode_owner("by a link: it is another one", k.replaced_kind, S_IFLNK, 0);
+ chk_int("by a link: it is another one", k.replaced_kind, S_IFLNK);
  chk_int("the file it leads to is as it was", mode_of("u"), 0644);
+ pc.make_new = seen_rows_make_link;
+ pc.new_ctx = r.t;
+ if (!make_the_number_come_again("row 6 (the same link made again)", &pc, "z"))
+  return;
+ chk_int("refused: the file shown was replaced", wpe_write_set_perm_seen(r.p, &r.shown, &r.seen, 0600, &k), ESTALE);
+ chk_int("the same link made again is not another link", k.replaced_kind, 0);
+}
+
+/** look_old of row 7: what the Attributes dialog took of the file it shows. */
+static void shown_row_look(const char *path, void *ctx)
+{
+ (void)wpe_seen_look_name(path, 1, (WpeSeen *)ctx);
+}
+
+/* @scenario SC-name-identity-07: the Attributes dialog showed a file; the file
+   was removed and another took its inode number.  Ok changes the mode of
+   neither: the new file keeps the mode it has. */
+static void test_the_dialogs_file_swapped_for_one_with_its_number_is_not_changed(void)
+{
+ WpeSeen shown;
+ SeenRowsCase pc;
+ WpeModeKept k;
+ char p[512];
+
+ make_reuse_dir();
+ wpe_seen_forget(&shown);
+ reuse_case_of_files(&pc, "old\n", shown_row_look, &shown, "theirs\n");
+ if (!make_the_number_come_again("row 7 (the Attributes dialog's file)", &pc, "t.c"))
+  return;
+ path_of(p, sizeof p, "t.c");
+ chk_int("the dialog's record was taken", wpe_seen_known(&shown), 1);
+ chk_int("refused as replaced", wpe_write_set_perm(p, &shown, 0640, &k), ESTALE);
+ chk_int("said to be replaced", k.replaced, 1);
+ chk_int("the new file's mode is as it was", mode_of("t.c"), 0600);
 }
 
 /* ---- a file not proven to be the window's (no birth time, played by the hook) ---- */
@@ -5870,7 +6111,7 @@ static void test_a_nofollow_stream_at_a_dangling_link_creates_nothing(void)
 static void test_the_legacy_folder_takes_a_new_private_note_and_no_link(void)
 {
  WpeWriteOutcome o;
- char home[512], file[512], victim[512], buf[64], leg[512];
+ char home[512], file[512], victim[512], buf[WPE_PATH_SIZE], leg[512];
 
  env_keep_all();
  make_dir();
@@ -6064,6 +6305,11 @@ int main(void)
  test_a_look_is_not_met_by_a_file_with_its_number();
  test_another_file_with_the_copys_number_is_not_removed();
  test_a_link_that_took_the_dialogs_number_is_another_link();
+ test_the_dialogs_file_swapped_for_one_with_its_number_is_not_changed();
+ test_a_save_after_ctrl_f9_is_the_windows_own();
+ test_a_fifo_swapped_inside_the_change_is_replaced();
+ test_a_fifo_changed_by_name_is_not_replaced();
+ test_ctrl_f9_renews_the_record_from_the_judged_look();
  test_unsure_on_a_file_with_a_special_bit_or_another_owner_is_refused();
  test_a_yes_does_not_reach_a_file_touched_during_the_question();
  test_a_look_is_not_met_by_a_touched_file_without_a_birth_time();

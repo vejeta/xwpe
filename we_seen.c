@@ -54,22 +54,6 @@ mode_t wpe_seen_kind(const WpeSeen *s)
 }
 
 /**
- * wpe_seen_into_stat - Give a record as the struct stat the mode owner still takes.
- * @s: the record; @st: receives the device, inode and kind of object.
- *
- * A bridge for Ctrl-F9 (wpe_write_add_perm), which hands the window's record
- * to the mode owner as the "shown" file.  It carries only the number, as
- * before.  The pass that moves the mode owner onto records deletes it.
- */
-void wpe_seen_into_stat(const WpeSeen *s, struct stat *st)
-{
- memset(st, 0, sizeof *st);
- st->st_dev = s->seen_dev;
- st->st_ino = s->seen_ino;
- st->st_mode = s->seen_kind;
-}
-
-/**
  * seen_test_drops_birth - Does the test hook ask every look to drop the birth?
  *
  * XWPE_TEST_FAIL=seen-no-birth lets a row on Linux play a system without a
@@ -449,6 +433,53 @@ WpeSeenIs wpe_seen_judge(const WpeSeen *then, const WpeSeen *now)
  if (seen_time_equal(&then->seen_ctime, &now->seen_ctime))
   return(seen_judge_same_stamp(then, now));
  return(seen_judge_touched(then, now));
+}
+
+/**
+ * seen_after_own_change_agrees - Did only the editor's own chmod differ between two looks?
+ *
+ * A change of mode moves the status-change time forward and the mode, and
+ * nothing else: owner, group, size and modification time are the same, and
+ * the time did not go back.  A file that took the number in between has
+ * its own modification time (and, made by another user, its own owner).
+ */
+static int seen_after_own_change_agrees(const WpeSeen *before, const WpeSeen *after)
+{
+ if (before->seen_uid != after->seen_uid || before->seen_gid != after->seen_gid)
+  return(0);
+ if (before->seen_size != after->seen_size || !seen_time_equal(&before->seen_mtime, &after->seen_mtime))
+  return(0);
+ if (after->seen_ctime.tv_sec != before->seen_ctime.tv_sec)
+  return(after->seen_ctime.tv_sec > before->seen_ctime.tv_sec);
+ return(after->seen_ctime.tv_nsec >= before->seen_ctime.tv_nsec);
+}
+
+/**
+ * wpe_seen_judge_after_own_change - Is the object the one the editor just changed the mode of?
+ * @before: a look made just before the editor changed the object's mode;
+ * @after: a look made just after.
+ *
+ * Lets the mode owner tell, after it changed the permissions of a file by
+ * name, that the name still leads to that file, and not to a file that took
+ * its number in between.  The change moved the status-change time and the
+ * mode, so the plain judge can fail to say SAME.  Where both looks have a
+ * birth time that judge decides (a newcomer has another birth).  Without one
+ * the answer is SAME only if the owner, group, size and modification time
+ * agree and the time did not go back; anything else is UNSURE, never SAME.
+ * Only for two looks around one call of the editor's own: a record kept from
+ * an earlier moment is judged by wpe_seen_judge.
+ */
+WpeSeenIs wpe_seen_judge_after_own_change(const WpeSeen *before, const WpeSeen *after)
+{
+ WpeSeenIs is = wpe_seen_judge(before, after);
+
+ if (is != WPE_SEEN_UNSURE || seen_births_comparable(before, after))
+  return(is);
+ if (!before->known || !after->known)
+  return(WPE_SEEN_UNSURE);
+ if (seen_after_own_change_agrees(before, after))
+  return(WPE_SEEN_SAME);
+ return(WPE_SEEN_UNSURE);
 }
 
 /**

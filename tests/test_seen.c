@@ -415,6 +415,62 @@ static void table_same_now(void)
  chk_int("same_now: another kind", wpe_seen_same_now(&a, &b), 0);
 }
 
+/** after_mode_change - The look after the editor's own chmod: later ctime, other mode. */
+static void after_mode_change(WpeSeen *now)
+{
+ rec_base(now);
+ rec_touch(now);
+ now->seen_mode = 0600;
+}
+
+/* @scenario SC-name-identity-21: the judge of the look after the editor's own
+   change of mode.  Only the status-change time and the mode may move; a birth
+   decides where both sides have one. */
+static void table_after_own_change(void)
+{
+ WpeSeen then, now;
+
+ rec_base(&then);
+ after_mode_change(&now);
+ chk_is("own: no birth, only ctime and mode moved", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_SAME);
+ now.seen_uid = BASE_UID + 1;
+ chk_is("own: no birth, another owner", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_UNSURE);
+ after_mode_change(&now);
+ now.seen_gid = BASE_GID + 1;
+ chk_is("own: no birth, another group", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_UNSURE);
+ after_mode_change(&now);
+ now.seen_size = BASE_SIZE + 1;
+ chk_is("own: no birth, another size", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_UNSURE);
+ after_mode_change(&now);
+ now.seen_mtime.tv_nsec = BASE_NSEC + 1;
+ chk_is("own: no birth, another modification time", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_UNSURE);
+ after_mode_change(&now);
+ now.seen_ctime.tv_sec = BASE_CTIME - 1;
+ chk_is("own: no birth, ctime went back", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_UNSURE);
+ after_mode_change(&now);
+ now.seen_ctime.tv_sec = BASE_CTIME;
+ now.seen_ctime.tv_nsec = BASE_NSEC - 1;
+ chk_is("own: no birth, ctime went back inside the second", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_UNSURE);
+ after_mode_change(&now);
+ now.seen_ino = BASE_INO + 1;
+ chk_is("own: another inode", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_OTHER);
+ after_mode_change(&now);
+ wpe_seen_forget(&now);
+ chk_is("own: an unknown look", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_UNSURE);
+ rec_birth(&then, BIRTH_A, BIRTH_KERNEL_SET);
+ after_mode_change(&now);
+ rec_birth(&now, BIRTH_A, BIRTH_KERNEL_SET);
+ chk_is("own: equal kernel births", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_SAME);
+ rec_birth(&now, BIRTH_B, BIRTH_KERNEL_SET);
+ chk_is("own: another kernel birth", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_OTHER);
+ rec_birth(&then, BIRTH_A, BIRTH_USER_SET);
+ rec_birth(&now, BIRTH_B, BIRTH_USER_SET);
+ chk_is("own: another birth its owner can set", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_UNSURE);
+ rec_birth(&now, BIRTH_A, BIRTH_KERNEL_SET);
+ now.seen_mtime.tv_nsec = BASE_NSEC + 1;
+ chk_is("own: equal births decide over the stamps", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_SAME);
+}
+
 /** Row 1: every line of the judge, with no file system involved. */
 static void test_the_table(void)
 {
@@ -422,6 +478,7 @@ static void test_the_table(void)
  table_step_b();
  table_step_c();
  table_step_d();
+ table_after_own_change();
  table_unknown();
  table_from_stat_has_no_birth();
  table_names();

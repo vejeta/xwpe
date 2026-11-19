@@ -1402,8 +1402,9 @@ The original rebuilt the permissions from the nine switches of the dialog,
 so changing one cleared setuid, setgid and the sticky bit.  xwpe keeps the
 bits the dialog does not show, and when the system does not let this user
 keep one of them, the nine bits are applied and the status row names the
-bit.  The permissions are changed on the file the dialog showed (the same
-device and inode), however long the dialog stayed open: when another file has
+bit.  The permissions are changed on the file the dialog showed (not a new
+file that took its name and was given the old file's inode number), however
+long the dialog stayed open: when another file has
 taken the name by the time Ok is pressed, nothing is changed and the status
 row says @samp{replaced by another file}, or @samp{replaced by a link} when a
 link took the name (a link is never followed: the file it leads to is not

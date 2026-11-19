@@ -65,6 +65,8 @@ typedef struct {
  int    unreached;  /* a change of mode by name: the name could not be reached, no call was made */
  int    replaced;   /* a change of mode by name: another file had taken the name since it was
                        read; that file was not the one whose bits were read */
+ int    replaced_unsure; /* with replaced: the file was not proven to be the one named, and not proven
+                       another either (no birth time): the sentence says "changed or replaced" */
  mode_t replaced_kind; /* with replaced: S_IFMT of what holds the name after the call (S_IFLNK
                        for a link); 0 when nothing does or it is not known.  It says what is
                        at the name now, not what the call reached: with changed set it is no
@@ -80,14 +82,18 @@ typedef struct {
 typedef WpeSeen WpeFileIdentity;
 
 /** What a name was, itself and not what it leads to, when the user was shown
-    it: its kind (S_IFLNK for a link), device and inode.  known == 0 when no
-    one looked (Ctrl-F9, a caller with no dialog). */
-typedef struct {
- int    known;
- mode_t kind;
- dev_t  dev;
- ino_t  ino;
-} WpeNameSeen;
+    it: a record of the owner of "is this the object I saw" with the text of a
+    link (we_seen.h).  Not known when no one looked (Ctrl-F9, a caller with
+    no dialog). */
+typedef WpeSeenName WpeNameSeen;
+
+/** The argument that is the file the user was shown (the Attributes dialog,
+    Ctrl-F9): a WpeSeen, or NULL.  The build accepts incompatible pointers, so
+    a struct stat handed over in its place would compile and be compared by
+    number; through this check it does not compile.  The calls of
+    wpe_write_set_perm, wpe_write_set_perm_seen, wpe_write_add_perm and
+    wpe_fileop_chmod_shown go through it. */
+#define WPE_SHOWN_RECORD(p) _Generic((p), const WpeSeen *: (p), WpeSeen *: (p), void *: (p))
 
 /** Why a file that is not proven to be the one the window read is refused
     with Save As as the way out and not asked about (the reason the sentence
@@ -439,22 +445,31 @@ int  wpe_write_create_private(int dirfd, const char *name, mode_t mode, int *fd)
    link that took the name since, and the mode is read from and given to that
    very file, so its special bits are the ones it had.  set_perm replaces the
    nine permission bits; add_perm adds bits to the twelve.  set_perm takes the
-   stat the dialog showed (NULL when none), add_perm the identity of the file
-   the window read (NULL when none): only that file, by device and inode, is
-   changed.  When another file has taken the name, k->replaced says
-   so and the errno is not 0. */
-struct stat;
+   record the dialog took of the file it showed (a WpeSeen, NULL when none),
+   add_perm the record of the file the window read (NULL when none): only that
+   file, as wpe_seen_judge says, is changed.  add_perm refreshes that record
+   when it succeeds, because the change moved the file's status-change time.
+   When another file has taken the name, k->replaced says so and the errno is
+   not 0. */
 int  wpe_write_sync_before_bits(int fd, mode_t mode, int durable);
 int  wpe_write_set_special_bits(int fd, mode_t mode, WpeModeKept *k);
 int  wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k);
-int  wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, WpeModeKept *k);
+int  wpe_write_set_perm(const char *path, const WpeSeen *shown, mode_t nine, WpeModeKept *k);
 /* The same for a dialog that took wpe_write_name_seen of the name when it
    opened (NULL: not known, and then a link at the name is never claimed to
    have taken it). */
 void wpe_write_name_seen(const char *path, WpeNameSeen *seen);
-int  wpe_write_set_perm_seen(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+int  wpe_write_set_perm_seen(const char *path, const WpeSeen *shown, const WpeNameSeen *seen,
                              mode_t nine, WpeModeKept *k);
-int  wpe_write_add_perm(const char *path, const WpeFileIdentity *own, mode_t add, WpeModeKept *k);
+int  wpe_write_add_perm(const char *path, WpeFileIdentity *own, mode_t add, WpeModeKept *k);
+#ifndef WPE_WRITE_DEFINING_SHOWN
+# define wpe_write_set_perm(path, shown, nine, k) \
+   wpe_write_set_perm((path), WPE_SHOWN_RECORD(shown), (nine), (k))
+# define wpe_write_set_perm_seen(path, shown, seen, nine, k) \
+   wpe_write_set_perm_seen((path), WPE_SHOWN_RECORD(shown), (seen), (nine), (k))
+# define wpe_write_add_perm(path, own, add, k) \
+   wpe_write_add_perm((path), WPE_SHOWN_RECORD(own), (add), (k))
+#endif
 int  wpe_write_caller_in_group(gid_t gid);
 void wpe_write_kept_merge(WpeModeKept *to, const WpeModeKept *from);
 /* "setgid bit", "setuid and setgid bits"; and why they were not kept. */

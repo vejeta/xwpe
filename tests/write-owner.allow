@@ -166,31 +166,19 @@ we_xterm.c|r16:e_x_system_script|1|P2e|the external terminal's script, in the ed
 # folder numbers kept by hand and the three-argument identity question, e
 # (r24e) a test that asserts "another inode" with nothing held, f (r24f) the
 # file the user was shown passed to the mode owner as anything but a WpeSeen
-# called shown, g (r24g) a call of the bridge wpe_seen_into_stat.  Each pass
-# deletes the rows of the sites it moves onto the owner: N2 the write owner and
-# the assistant's look, N3 the mode owner, N4 the assistant's checkpoint and
-# window lookup, N5 the two-look sites and the tests.
-# Two sites compare the .dev and .ino members of an old record and spell no
-# st_ino, so clause a cannot list them:
-#  - the assistant's remembered Yes (we_ai_ui.c, the ai_linked_yes record and
-#    ai_linked_yes_recalls and _remember).  It belongs to N4, but it stops
-#    compiling in N2, when WpeWriteExpect loses its dev and ino members, so N2
-#    must keep it building and N4 moves it onto a WpeSeen.
-#  - the Attributes dialog (we_fl_unix.c, WpeFileDirAttributes).  It passes a
-#    struct stat as the shown record through wpe_fileop_chmod_shown into
-#    wpe_write_set_perm_seen, and the build accepts that incompatible pointer,
-#    so nothing breaks when the type changes.  Clause f lists it (r24f rows
-#    below); N3 must move it by hand onto a WpeSeen called shown.
-# N3: the mode owner
-we_write.c|r24g:wpe_write_add_perm|1|N3|site 8: Ctrl-F9 hands the window's record to the mode owner as a number
-we_write.c|r24a:write_mode_same_file|4|N3|site 11: the descriptor is the file lstat saw
-we_write.c|r24a:write_mode_shown_kind|2|N3|site 7: a link took the name, or another file
-we_write.c|r24a:wpe_write_name_seen|2|N3|site 7: the name's record
-we_write.c|r24f:wpe_write_set_perm_seen|1|N3|the definition takes the shown record as a struct stat
-we_write.h|r24f:wpe_write_set_perm_seen|1|N3|the prototype takes the shown record as a struct stat
-we_fileop.c|r24f:wpe_fileop_chmod_shown|1|N3|the definition takes the shown record as a struct stat
-we_fileop.h|r24f:wpe_fileop_chmod_shown|1|N3|the prototype takes the shown record as a struct stat
-we_fl_unix.c|r24f:WpeFileDirAttributes|1|N3|the Attributes dialog passes its struct stat as the shown record
+# called shown, g (r24g) a call of the removed bridge wpe_seen_into_stat, kept
+# so that it cannot come back.  Each pass deletes the rows of the sites it
+# moves onto the owner: N2 the write owner and the assistant's look, N3 the
+# mode owner (done: no row of clause f or g is left; the type of the shown
+# record is also checked by the compiler, WPE_SHOWN_RECORD in we_write.h), N4
+# the assistant's checkpoint and window lookup, N5 the two-look sites and the
+# tests.
+# One site compares the .dev and .ino members of an old record and spells no
+# st_ino, so clause a cannot list it: the assistant's remembered Yes
+# (we_ai_ui.c, the ai_linked_yes record and ai_linked_yes_recalls and
+# _remember).  It belongs to N4, but it stops compiling in N2, when
+# WpeWriteExpect loses its dev and ino members, so N2 must keep it building
+# and N4 moves it onto a WpeSeen.
 # N4: the assistant
 we_ai_ws.c|r24a:ws_record_root|2|N4|site 9: the workspace folder's number kept by hand
 we_ai_ws.c|r24d:ws_record_root|2|N4|site 9: ck_rdev and ck_rino

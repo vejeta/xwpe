@@ -2153,20 +2153,26 @@ int WpeMakeNewDir(FENSTER *f)
 int WpeFileDirAttributes(char *filen, FENSTER * f)
 {
   struct stat     buf[1];
+  WpeSeen         shown;
   WpeNameSeen     seen;
   int             mode, ret, rc;
   W_OPTSTR       *o = e_init_opt_kst(f);
   WpeFileOpOutcome fo;
 
+  /* the record of the file the dialog shows (a link followed), taken BEFORE
+     the stat whose mode the dialog shows: if the name changes hands between
+     the two, the record is of the old file, the nine switches show the new
+     one, and Ok is refused instead of changing a file nobody was shown.
+     What the name itself is decides whether a later refusal may say a link
+     took it */
+  (void)wpe_seen_look_name(filen, 1, &shown);
+  wpe_write_name_seen(filen, &seen);
   /* if cannot access or error */
   if(stat(filen, buf))
   {
     e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
     return 1;
   }
-  /* the dialog shows the file a link leads to; what the name itself is
-     decides whether a later refusal may say a link took it */
-  wpe_write_name_seen(filen, &seen);
   mode = buf->st_mode;
   if(o == NULL)
     return(1);
@@ -2199,7 +2205,7 @@ int WpeFileDirAttributes(char *filen, FENSTER * f)
       (o->sstr[4]->num << 4) + (o->sstr[5]->num << 3) +
       (o->sstr[6]->num << 2) + (o->sstr[7]->num << 1) +
       o->sstr[8]->num;
-    rc = wpe_fileop_chmod_shown(filen, buf, &seen, (mode_t)mode, &fo);
+    rc = wpe_fileop_chmod_shown(filen, &shown, &seen, (mode_t)mode, &fo);
     fm_say(f, &fo);
     freeostr(o);
     return(rc != 0 ? 1 : 0);

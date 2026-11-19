@@ -9,6 +9,9 @@
    for the user goes through here, and the outcome is one of three values a
    caller reads: written, declined or failed (we_write.h). */
 
+/* This file defines the functions the type check of we_write.h wraps. */
+#define WPE_WRITE_DEFINING_SHOWN 1
+
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -190,10 +193,15 @@ typedef struct {
  WriteModeHow how;
  int          fd;        /* the descriptor, for BY_FD; -1 when none was opened */
  const char  *name;      /* the name, for BY_NAME and for the open */
- struct stat  first;     /* what lstat said of the name before it was opened */
+ WpeSeen      first;     /* what the name was when it was first looked at, before it was opened */
+ const WpeSeen *shown;   /* what the user was shown when naming the file, or NULL */
  char         real[WPE_PATH_SIZE];  /* where a link the user named leads */
  int          replaced;  /* the name stopped leading to the file `first` describes */
  mode_t       replaced_kind;  /* S_IFMT of what holds the name then; 0 when none, or gone */
+ int          replaced_unsure;  /* with replaced: the judge could not tell the file from the first, it did
+                                   not say it was another */
+ WpeSeen      after;     /* the look that proved, after a change by name, that the name still led to
+                            the file: what the window's record is renewed from */
 } WriteModeTarget;
 
 /** What the name leads to now, compared with what lstat saw of it first. */
@@ -403,33 +411,37 @@ int wpe_write_set_mode_fd(int fd, mode_t mode, WpeModeKept *k)
 #define WRITE_MODE_OPEN_FLAGS (O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
 
 /**
- * write_mode_same_file - Is this the file the name led to the first time?
- * @first: what lstat said then; @now: what the file in hand says.
- * Return: 1 for the same device, inode and kind of file, and not a link.
+ * write_mode_verdict - Is this the file the name led to the first time?
+ * @first: what the name was then; @now: what the file in hand is.
+ * Return: the judge's answer of we_seen.c, with a link always OTHER.
+ *
+ * Lets a change of mode go only to the file the user named (SAME).  A file
+ * that took the name in the moment between the first look and the open is
+ * another object even if the file system gave it the first one's number, and
+ * one the judge cannot tell from the first (UNSURE) is refused as well; the
+ * caller keeps the two apart for the sentence.
  */
-static int write_mode_same_file(const struct stat *first, const struct stat *now)
+static WpeSeenIs write_mode_verdict(const WpeSeen *first, const WpeSeen *now)
 {
- if (S_ISLNK(now->st_mode))
-  return(0);
- if (first->st_dev != now->st_dev || first->st_ino != now->st_ino)
-  return(0);
- return((first->st_mode & S_IFMT) == (now->st_mode & S_IFMT));
+ if (wpe_seen_kind(now) == S_IFLNK)
+  return(WPE_SEEN_OTHER);
+ return(wpe_seen_judge(first, now));
 }
 
 /**
  * write_name_look - Look at what holds a name right now, without following a link.
- * @path: the name; @st: receives what lstat says.
- * Return: 1 when something holds the name, 0 when lstat fails.
+ * @path: the name; @now: receives the record of what the name is.
+ * Return: 1 when something holds the name, 0 when the look fails.
  *
  * The one look every decision of "another file took the name" is made
  * from, in the mode owner and in the write owner (write_name_kind,
- * write_mode_name_changed and write_mode_shown_kind all call it).  What a
- * system's open or chmod answered for such a file (ELOOP, EMLINK, EFTYPE,
- * ENXIO, EOPNOTSUPP) is one system's word for it and is never asked.
+ * write_mode_name_changed call it).  What a system's open or chmod answered
+ * for such a file (ELOOP, EMLINK, EFTYPE, ENXIO, EOPNOTSUPP) is one system's
+ * word for it and is never asked.
  */
-static int write_name_look(const char *path, struct stat *st)
+static int write_name_look(const char *path, WpeSeen *now)
 {
- return(lstat(path, st) == 0);
+ return(wpe_seen_look_name(path, 0, now) == 0);
 }
 
 /**
@@ -440,35 +452,27 @@ static int write_name_look(const char *path, struct stat *st)
  */
 static mode_t write_name_kind(const char *path)
 {
- struct stat now;
+ WpeSeen now;
 
  if (!write_name_look(path, &now))
   return(0);
- return(now.st_mode & S_IFMT);
+ return(wpe_seen_kind(&now));
 }
 
 /**
  * wpe_write_name_seen - Remember what a name was when the user was shown it.
- * @path: the name; @seen: receives its kind, device and inode, looked at
- * without following a link.
+ * @path: the name; @seen: receives the name itself, looked at without
+ * following a link, with the text of a link.
  *
  * For the Attributes dialog, which shows the file a link leads to.  When the
  * user presses Ok the owner can then tell a link that was there all along
  * (only its target changed) from a link that took the name since, and the
- * sentence the user reads is true of what happened to the name.  known stays
- * 0 when the name cannot be looked at.
+ * sentence the user reads is true of what happened to the name.  The record
+ * stays unknown when the name cannot be looked at.
  */
 void wpe_write_name_seen(const char *path, WpeNameSeen *seen)
 {
- struct stat st;
-
- memset(seen, 0, sizeof *seen);
- if (!write_name_look(path, &st))
-  return;
- seen->known = 1;
- seen->kind = st.st_mode & S_IFMT;
- seen->dev = st.st_dev;
- seen->ino = st.st_ino;
+ wpe_seen_name_look(path, seen);
 }
 
 /**
@@ -480,41 +484,66 @@ void wpe_write_name_seen(const char *path, WpeNameSeen *seen)
  * ("another file", not "a link").  Without @seen a link is never claimed (0):
  * the name may have been a link all along, and the sentence must not say
  * otherwise.
+ *
+ * Only the sentence is decided here.  A link made again with a number the
+ * file system gave back is told from the one shown by its target text, which
+ * the judge of we_seen.c compares; the change itself was refused before this
+ * is asked.
  */
 static mode_t write_mode_shown_kind(const char *path, const WpeNameSeen *seen)
 {
- struct stat now;
+ WpeNameSeen now;
 
- if (!write_name_look(path, &now))
+ wpe_seen_name_look(path, &now);
+ if (!wpe_seen_known(&now.seen))
   return(0);
- if (!S_ISLNK(now.st_mode))
-  return(now.st_mode & S_IFMT);
- if (seen == NULL || !seen->known)
+ if (wpe_seen_kind(&now.seen) != S_IFLNK)
+  return(wpe_seen_kind(&now.seen));
+ if (seen == NULL || !wpe_seen_known(&seen->seen))
   return(0);
- if (seen->kind == S_IFLNK && seen->dev == now.st_dev && seen->ino == now.st_ino)
+ if (wpe_seen_kind(&seen->seen) == S_IFLNK && wpe_seen_name_judge(seen, &now) == WPE_SEEN_SAME)
   return(0);
  return(S_IFLNK);
 }
 
+/** When the name is looked at again: before the editor changed the file's
+    mode (the first look and this one differ only if another file took the
+    name), or after (the change moved the file's own status-change time and
+    mode, so wpe_seen_judge_after_own_change decides). */
+typedef enum {
+ WRITE_NAME_BEFORE_CHANGE,
+ WRITE_NAME_AFTER_CHANGE
+} WriteNameWhen;
+
 /**
  * write_mode_name_changed - Did the name change hands since the user named it?
  * @t: the target; t->replaced_kind receives what holds the name now when
- * another file does.
+ * another file does; @when: whether the editor has changed the file's mode
+ * since the first look.
  * Return: WRITE_NAME_CHANGED for a link, a socket, a hard link or any other
  * file put under the name, whatever the system said when it refused to
- * open it; WRITE_NAME_SAME for the file the first lstat saw;
+ * open it; WRITE_NAME_SAME for the file the first look saw;
  * WRITE_NAME_GONE when nothing is at the name (the open's own errno then
  * tells why).
  */
-static WriteNameNow write_mode_name_changed(WriteModeTarget *t)
+static WriteNameNow write_mode_name_changed(WriteModeTarget *t, WriteNameWhen when)
 {
- struct stat now;
+ WpeSeen now;
+ WpeSeenIs is;
 
  if (!write_name_look(t->name, &now))
   return(WRITE_NAME_GONE);
- if (write_mode_same_file(&t->first, &now))
+ if (when == WRITE_NAME_AFTER_CHANGE && wpe_seen_kind(&now) != S_IFLNK)
+  is = wpe_seen_judge_after_own_change(&t->first, &now);
+ else
+  is = write_mode_verdict(&t->first, &now);
+ if (is == WPE_SEEN_SAME)
+ {
+  t->after = now;
   return(WRITE_NAME_SAME);
- t->replaced_kind = now.st_mode & S_IFMT;
+ }
+ t->replaced_kind = wpe_seen_kind(&now);
+ t->replaced_unsure = (is == WPE_SEEN_UNSURE);
  return(WRITE_NAME_CHANGED);
 }
 
@@ -530,14 +559,14 @@ static WriteNameNow write_mode_name_changed(WriteModeTarget *t)
 static int write_mode_name_first(const char *path, WriteModeTarget *t)
 {
  t->name = path;
- if (lstat(path, &t->first) != 0)
+ if (wpe_seen_look_name(path, 0, &t->first) != 0)
   return(errno);
- if (!S_ISLNK(t->first.st_mode))
+ if (wpe_seen_kind(&t->first) != S_IFLNK)
   return(0);
  if (realpath(path, t->real) == NULL)
   return(errno);
  t->name = t->real;
- return(lstat(t->name, &t->first) == 0 ? 0 : errno);
+ return(wpe_seen_look_name(t->name, 0, &t->first) == 0 ? 0 : errno);
 }
 
 /**
@@ -558,7 +587,7 @@ static int write_mode_open_descriptor(WriteModeTarget *t)
  if (t->fd >= 0)
   return(0);
  err = errno;
- if (err != EACCES || !S_ISREG(t->first.st_mode))
+ if (err != EACCES || wpe_seen_kind(&t->first) != S_IFREG)
   return(err);
  t->fd = open(t->name, O_WRONLY | WRITE_MODE_OPEN_FLAGS);
  if (t->fd >= 0)
@@ -567,21 +596,46 @@ static int write_mode_open_descriptor(WriteModeTarget *t)
 }
 
 /**
- * write_mode_check_descriptor - Is the open file the one lstat saw?
+ * write_mode_descriptor_is_shown - Is the open file also the one the user was shown?
+ * @t: the target; @opened: the record of the open descriptor.
+ * Return: the judge's answer for the shown record against the descriptor,
+ * SAME when nothing was shown.
+ */
+static WpeSeenIs write_mode_descriptor_is_shown(const WriteModeTarget *t, const WpeSeen *opened)
+{
+ if (t->shown == NULL)
+  return(WPE_SEEN_SAME);
+ return(write_mode_verdict(t->shown, opened));
+}
+
+/**
+ * write_mode_check_descriptor - Is the open file the one the name led to?
  * @t: the target with t->fd open.
  * Return: 0, or ESTALE (and t->replaced, the descriptor closed) when the
- * name had been given to another file between the lstat and the open.
+ * name had been given to another file between the first look and the open,
+ * or when the file held is not the one the user was shown.
+ *
+ * The descriptor itself is looked at: the number it carries cannot be given
+ * to another file while it is open, so this is the proof of which file the
+ * mode will reach.
  */
 static int write_mode_check_descriptor(WriteModeTarget *t)
 {
- struct stat now;
+ WpeSeen opened;
+ WpeSeenIs first_is = WPE_SEEN_UNSURE, shown_is = WPE_SEEN_UNSURE;
 
- if (fstat(t->fd, &now) == 0 && write_mode_same_file(&t->first, &now))
+ if (wpe_seen_look_fd(t->fd, &opened) == 0)
+ {
+  first_is = write_mode_verdict(&t->first, &opened);
+  shown_is = write_mode_descriptor_is_shown(t, &opened);
+ }
+ if (first_is == WPE_SEEN_SAME && shown_is == WPE_SEEN_SAME)
   return(0);
  close(t->fd);
  t->fd = -1;
  t->replaced = 1;
- (void)write_mode_name_changed(t);
+ (void)write_mode_name_changed(t, WRITE_NAME_BEFORE_CHANGE);
+ t->replaced_unsure = (first_is != WPE_SEEN_OTHER && shown_is != WPE_SEEN_OTHER);
  return(ESTALE);
 }
 
@@ -602,7 +656,7 @@ static int write_mode_check_descriptor(WriteModeTarget *t)
  */
 static int write_mode_open_failed(WriteModeTarget *t, int err)
 {
- WriteNameNow now = write_mode_name_changed(t);
+ WriteNameNow now = write_mode_name_changed(t, WRITE_NAME_BEFORE_CHANGE);
 
  if (now == WRITE_NAME_CHANGED)
  {
@@ -640,25 +694,31 @@ static int write_mode_open_failed(WriteModeTarget *t, int err)
  * O_PATH is used: it is Linux's, and fchmod on such a descriptor is
  * refused there.
  */
-static int write_mode_target_open(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+static int write_mode_target_open(const char *path, const WpeSeen *shown, const WpeNameSeen *seen,
                                   WriteModeTarget *t)
 {
  int err;
+ WpeSeenIs shown_is;
 
  t->how = WRITE_MODE_BY_FD;
  t->fd = -1;
  t->replaced = 0;
  t->replaced_kind = 0;
+ t->replaced_unsure = 0;
+ wpe_seen_forget(&t->after);
+ t->shown = shown;
  err = write_mode_name_first(path, t);
  if (err != 0)
   return(err);
- if (shown != NULL && !write_mode_same_file(shown, &t->first))
+ shown_is = (shown == NULL) ? WPE_SEEN_SAME : write_mode_verdict(shown, &t->first);
+ if (shown_is != WPE_SEEN_SAME)
  {
   t->replaced = 1;
+  t->replaced_unsure = (shown_is == WPE_SEEN_UNSURE);
   t->replaced_kind = write_mode_shown_kind(path, seen);
   return(ESTALE);
  }
- if (!S_ISREG(t->first.st_mode) && !S_ISDIR(t->first.st_mode))
+ if (wpe_seen_kind(&t->first) != S_IFREG && wpe_seen_kind(&t->first) != S_IFDIR)
  {
   t->how = WRITE_MODE_BY_NAME;
   return(0);
@@ -683,24 +743,55 @@ static void write_mode_target_close(WriteModeTarget *t)
 
 /**
  * write_mode_name_still_leads - After a change by name, is it the same file?
- * @t: the target; @err: what the change returned.
+ * @t: the target; @err: what the change returned; @when: whether the
+ * change has been made.
  * Return: @err, or ESTALE (with t->replaced) when the name leads to another
- * file than the one lstat saw, a link included, or to nothing.
+ * file than the one first looked at, a link included, or to nothing.
  *
  * Nothing is trusted that was done through a name: a file swapped in
- * after the first lstat is told, not reported as changed.  On a system
+ * after the first look is told, not reported as changed.  On a system
  * whose fchmodat acts on a link the swapped file is a link; here too the
  * name no longer leads to what was read.  What the call did to a file
  * that was swapped in cannot be undone; it can only be said.
  */
-static int write_mode_name_still_leads(WriteModeTarget *t, int err)
+static int write_mode_name_still_leads(WriteModeTarget *t, int err, WriteNameWhen when)
 {
  if (t->how != WRITE_MODE_BY_NAME)
   return(err);
- if (write_mode_name_changed(t) == WRITE_NAME_SAME)
+ if (write_mode_name_changed(t, when) == WRITE_NAME_SAME)
   return(err);
  t->replaced = 1;
  return(ESTALE);
+}
+
+/**
+ * write_mode_refresh_record - Look again at the file whose mode was just changed.
+ * @t: the target, still open; @rec: the record to renew, or NULL.
+ *
+ * A change of mode moves the file's status-change time.  A window that
+ * remembers its file (Ctrl-F9 on its script) takes the look again, so the
+ * next Save still finds the file it read and does not ask, on a system with
+ * no birth time as well.  Through a descriptor the look is of the file held.
+ * Through a name the record is the look that was just judged to be the
+ * file (t->after), never a third look by name: a file that took the name
+ * after that judgement would become the window's own and the next Save
+ * would write into it.  A look that fails leaves the record as it was: it
+ * then says "not proven" and the next Save asks.
+ */
+static void write_mode_refresh_record(const WriteModeTarget *t, WpeSeen *rec)
+{
+ WpeSeen again;
+
+ if (rec == NULL)
+  return;
+ if (t->how == WRITE_MODE_BY_NAME)
+ {
+  if (wpe_seen_known(&t->after))
+   *rec = t->after;
+  return;
+ }
+ if (wpe_seen_look_fd(t->fd, &again) == 0)
+  *rec = again;
 }
 
 /** How a name's mode is to be made from the mode the file has now. */
@@ -721,7 +812,8 @@ static mode_t write_mode_wanted(WriteModeChange how, mode_t current, mode_t bits
  * write_mode_change - Change the mode of a file the user named.
  * @path: the name; @shown: the file the user was shown, or NULL;
  * @seen: what the name was then, or NULL (not known);
- * @how and @bits: what to ask for; @k: what was not kept.
+ * @how and @bits: what to ask for; @k: what was not kept; @refresh: the
+ * record of the file that is kept up to date, or NULL.
  * Return: 0, or the errno.
  *
  * The file is opened once; its special bits are read from that open file
@@ -730,8 +822,8 @@ static mode_t write_mode_wanted(WriteModeChange how, mode_t current, mode_t bits
  * followed, and the caller reads k->replaced.  k->unreached says no call
  * was made at all (the name leads nowhere).
  */
-static int write_mode_change(const char *path, const struct stat *shown, const WpeNameSeen *seen,
-                             WriteModeChange how, mode_t bits, WpeModeKept *k)
+static int write_mode_change(const char *path, const WpeSeen *shown, const WpeNameSeen *seen,
+                             WriteModeChange how, mode_t bits, WpeModeKept *k, WpeSeen *refresh)
 {
  WriteModeTarget t;
  struct stat now;
@@ -741,30 +833,34 @@ static int write_mode_change(const char *path, const struct stat *shown, const W
  err = write_mode_target_open(path, shown, seen, &t);
  k->replaced = t.replaced;
  k->replaced_kind = t.replaced_kind;
+ k->replaced_unsure = t.replaced_unsure;
  if (err != 0)
  {
   k->unreached = !t.replaced;
   return(err);
  }
- err = write_mode_name_still_leads(&t, 0);
+ err = write_mode_name_still_leads(&t, 0, WRITE_NAME_BEFORE_CHANGE);
  if (err == 0)
   err = write_mode_read(&t, &now);
  if (err == 0)
   err = write_mode_apply(&t, write_mode_wanted(how, now.st_mode, bits), k);
- after = write_mode_name_still_leads(&t, err);
+ after = write_mode_name_still_leads(&t, err, WRITE_NAME_AFTER_CHANGE);
  if (err == 0 && after != 0)
   k->changed = 1;
+ if (err == 0 && after == 0)
+  write_mode_refresh_record(&t, refresh);
  k->replaced = t.replaced;
  k->replaced_kind = t.replaced_kind;
+ k->replaced_unsure = t.replaced_unsure;
  write_mode_target_close(&t);
  return(after);
 }
 
 /**
  * wpe_write_set_perm - Give a file the user named these permissions.
- * @path: the file or folder; @shown: the stat the dialog showed the user
- * (a link already followed), or NULL; @nine: the nine permission bits; @k:
- * receives what was not kept.
+ * @path: the file or folder; @shown: the record the dialog took of the file
+ * it showed the user (wpe_seen_look_name with the link followed), or NULL;
+ * @nine: the nine permission bits; @k: receives what was not kept.
  * Return: 0, or the errno when even the nine bits were refused.
  *
  * For the Attributes dialog.  A file the user may write but not read, or a
@@ -774,7 +870,7 @@ static int write_mode_change(const char *path, const struct stat *shown, const W
  * the dialog showed, however long the dialog stayed open: a file that took
  * its name meanwhile is refused with k->replaced and nothing changed.
  */
-int wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, WpeModeKept *k)
+int wpe_write_set_perm(const char *path, const WpeSeen *shown, mode_t nine, WpeModeKept *k)
 {
  return(wpe_write_set_perm_seen(path, shown, NULL, nine, k));
 }
@@ -791,10 +887,10 @@ int wpe_write_set_perm(const char *path, const struct stat *shown, mode_t nine, 
  * Not known is the safe default: a link at the name is then never claimed to
  * have taken it, because it may have been a link all along.
  */
-int wpe_write_set_perm_seen(const char *path, const struct stat *shown, const WpeNameSeen *seen,
+int wpe_write_set_perm_seen(const char *path, const WpeSeen *shown, const WpeNameSeen *seen,
                             mode_t nine, WpeModeKept *k)
 {
- return(write_mode_change(path, shown, seen, WRITE_CHANGE_NINE, nine, k));
+ return(write_mode_change(path, shown, seen, WRITE_CHANGE_NINE, nine, k, NULL));
 }
 
 /**
@@ -807,17 +903,15 @@ int wpe_write_set_perm_seen(const char *path, const struct stat *shown, const Wp
  * that took its name after the call began.  @own is the file the window read
  * (NULL, or not known, when it read none): when another file has since taken
  * the name, the script is not touched and k->replaced says so, exactly as a
- * Save refuses to write into it.
+ * Save refuses to write into it.  When the mode was changed the record is
+ * renewed, because the change moved the file's status-change time and the
+ * window's next Save must still find the file it read.
  */
-int wpe_write_add_perm(const char *path, const WpeFileIdentity *own, mode_t add, WpeModeKept *k)
+int wpe_write_add_perm(const char *path, WpeFileIdentity *own, mode_t add, WpeModeKept *k)
 {
- struct stat shown;
-
- if (own == NULL || !own->known)
-  return(write_mode_change(path, NULL, NULL, WRITE_CHANGE_ADD, add, k));
- wpe_seen_into_stat(own, &shown);
- shown.st_mode = S_IFREG;
- return(write_mode_change(path, &shown, NULL, WRITE_CHANGE_ADD, add, k));
+ if (own == NULL || !wpe_seen_known(own))
+  return(write_mode_change(path, NULL, NULL, WRITE_CHANGE_ADD, add, k, NULL));
+ return(write_mode_change(path, own, NULL, WRITE_CHANGE_ADD, add, k, own));
 }
 
 /**

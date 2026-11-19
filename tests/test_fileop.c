@@ -2694,13 +2694,13 @@ static void test_attributes_refuses_a_name_that_changed_hands_after_the_dialog(v
 {
  WpeFileOpOutcome o;
  WpeNameSeen seen;
- struct stat shown;
+ WpeSeen shown;
 
  make_dir();
  chdir(dir);
  put("f", "x\n", 0644);
  put("victim", "y\n", 0600);
- stat("f", &shown);
+ wpe_seen_look_name("f", 1, &shown);
  wpe_write_name_seen("f", &seen);
  unlink("f");
  symlink("victim", "f");
@@ -2713,6 +2713,32 @@ static void test_attributes_refuses_a_name_that_changed_hands_after_the_dialog(v
  clean();
 }
 
+/* @scenario SC-name-identity-22: on a system with no birth time the dialog's
+   file was touched while the dialog was open (its status-change time moved).
+   It cannot be told from a file that took the name, so nothing is changed and
+   the sentence says "changed or replaced", never "replaced by another file". */
+static void test_attributes_on_a_touched_file_without_a_birth_says_changed_or_replaced(void)
+{
+ WpeFileOpOutcome o;
+ WpeNameSeen seen;
+ WpeSeen shown;
+
+ make_dir();
+ chdir(dir);
+ chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, WPE_SEEN_TEST_FAIL_NO_BIRTH, 1), 0);
+ put("f", "x\n", 0644);
+ wpe_seen_look_name("f", 1, &shown);
+ wpe_write_name_seen("f", &seen);
+ chk_int("touched", chmod("f", 0604), 0);
+ chk_int("refused", wpe_fileop_chmod_shown("f", &shown, &seen, 0600, &o), -1);
+ chk_int("the file is as it was touched", mode_of("f"), 0604);
+ chk_str("the sentence", said(&o),
+         "Cannot change the permissions of f: f was changed or replaced.  Nothing was changed.");
+ chk_lacks("not another file", said(&o), "another file");
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+ clean();
+}
+
 /* Attributes is opened on a link z -> t and shows t; t is then replaced by an
    atomic save before Ok.  z was a link the whole time, so the sentence says
    another file took the name, never that a link did, and nothing was
@@ -2721,14 +2747,14 @@ static void test_attributes_on_a_named_link_whose_target_was_replaced_says_anoth
 {
  WpeFileOpOutcome o;
  WpeNameSeen seen;
- struct stat shown;
+ WpeSeen shown;
 
  make_dir();
  chdir(dir);
  put("t", "x\n", 0644);
  put("t.new", "y\n", 0644);
  symlink("t", "z");
- stat("z", &shown);
+ wpe_seen_look_name("z", 1, &shown);
  wpe_write_name_seen("z", &seen);
  rename("t.new", "t");
  chk_int("refused", wpe_fileop_chmod_shown("z", &shown, &seen, 0600, &o), -1);
@@ -2983,6 +3009,7 @@ int main(void)
  test_attributes_says_a_hard_link_that_took_the_name_may_be_changed();
  test_attributes_on_a_missing_name_says_so();
  test_attributes_refuses_a_name_that_changed_hands_after_the_dialog();
+ test_attributes_on_a_touched_file_without_a_birth_says_changed_or_replaced();
  test_attributes_on_a_named_link_whose_target_was_replaced_says_another_file();
  fails += test_dir_failures;
  if (fails) {

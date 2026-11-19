@@ -29,6 +29,14 @@ Bugs fixed in 1.6.x:
   asks 'was changed or replaced since this window read it. Write anyway?',
   and refuses with the reason for a file with a special bit or another owner.
   A second Save of the same window is its own file again, with no question.
+* The Attributes dialog and Ctrl-F9 on a script are held to the file they
+  showed or the window read in the same way: a file that took the name and
+  was given the old file's inode number is not changed, and the status row
+  says it was replaced.  A link made again with another target is told from
+  the link the dialog was opened on, so the row says 'replaced by a link'
+  when one took the name and 'replaced by another file' when only the file
+  the link leads to was replaced.  After Ctrl-F9 the window still counts the
+  script as its own file, so the next Save does not ask.
 * Find on a Latin-1 file under a UTF-8 locale gives the same hits on every
   system: a byte that is no UTF-8 is one character, found by `.` and by
   itself, and it is not the Latin-1 letter.  NetBSD said bad expression or

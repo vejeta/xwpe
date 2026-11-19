@@ -45,6 +45,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "../we_platform.h"
+
 #define FAKECHMOD_ENV "XWPE_TEST_FAKE_FCHMOD"
 
 /* FAKECHMOD_VANISH: a chmod by name succeeds, and the name is gone right
@@ -104,11 +106,83 @@ static void fakechmod_swap_hard_at(const char *name, const char *target)
  fakechmod_swap_hard = 1;
 }
 
+/* The swap of a FIFO for another FIFO that holds the old one's inode number:
+   the name another user of the folder can use, on a file system that gives
+   a number back.  A FIFO is changed by name, never opened. */
+#define FAKECHMOD_FIFO_TRIES 16
+/* The wanted number of a swap that takes any newcomer: no inode is 0, so the
+   first FIFO made stays under the name. */
+#define FAKECHMOD_ANY_NUMBER ((ino_t)0)
+static char fakechmod_fifo_name[512];   /* the name whose FIFO is swapped just before the next change through it */
+static ino_t fakechmod_fifo_want;       /* the inode number the new FIFO is to hold */
+static int fakechmod_fifo_fired;        /* the swap was made */
+static int fakechmod_fifo_reused;       /* the new FIFO holds the wanted number */
+
+/**
+ * fakechmod_swap_fifo_reusing_at - Put a new FIFO with a given inode number
+ * under a name just before the next change of mode through that name.
+ * @name: the name the editor will change; @want: the inode number of the
+ * FIFO that is there now (the new one is made to hold it again).
+ *
+ * The moment between the editor's last look and its change.  After it
+ * fakechmod_fifo_fired says the swap happened and fakechmod_fifo_reused says
+ * the file system gave the number back (it never does on tmpfs).
+ */
+static void fakechmod_swap_fifo_reusing_at(const char *name, ino_t want)
+{
+ snprintf(fakechmod_fifo_name, sizeof fakechmod_fifo_name, "%s", name);
+ fakechmod_fifo_want = want;
+ fakechmod_fifo_fired = 0;
+ fakechmod_fifo_reused = 0;
+}
+
+/**
+ * fakechmod_fifo_make_reusing - Make FIFOs at a name until one holds the wanted number.
+ *
+ * A FIFO that lands on a lower number is kept under a filler name, which makes
+ * the next one higher (the way the reuse rows of seen_rows.h do it).
+ */
+static void fakechmod_fifo_make_reusing(const char *path)
+{
+ char filler[640];
+ struct stat st;
+ int i;
+
+ for (i = 0; i < FAKECHMOD_FIFO_TRIES; i++)
+ {
+  if (mkfifo(path, 0644) != 0 || lstat(path, &st) != 0)
+   return;
+  if (st.st_ino == fakechmod_fifo_want)
+  {
+   fakechmod_fifo_reused = 1;
+   return;
+  }
+  if (st.st_ino > fakechmod_fifo_want)
+   return;
+  snprintf(filler, sizeof filler, "%s.filler%d", path, i);
+  if (rename(path, filler) != 0)
+   return;
+ }
+}
+
+/** fakechmod_fifo_fire - Make the armed FIFO swap, when this is its name. */
+static void fakechmod_fifo_fire(const char *path)
+{
+ if (fakechmod_fifo_name[0] == '\0' || strcmp(path, fakechmod_fifo_name) != 0)
+  return;
+ fakechmod_fifo_name[0] = '\0';
+ fakechmod_fifo_fired = 1;
+ if (unlink(path) != 0)
+  return;
+ fakechmod_fifo_make_reusing(path);
+}
+
 /** fakechmod_swap_fire - Make the armed swap, when this is its name. */
 static void fakechmod_swap_fire(const char *path)
 {
  int rc;
 
+ fakechmod_fifo_fire(path);
  if (fakechmod_swap_name[0] == '\0' || strcmp(path, fakechmod_swap_name) != 0)
   return;
  fakechmod_swap_name[0] = '\0';
@@ -120,6 +194,50 @@ static void fakechmod_swap_fire(const char *path)
   rc = symlink(fakechmod_swap_target, path);
  if (rc != 0)
   perror("fakechmod swap");
+}
+
+/* The swap that comes after the look that proved the file: armed for a name,
+   it waits for the next change of mode through the name, then for the first
+   look at the name (statx, the one call every look of we_seen.c makes) after
+   that change, lets that look answer, and only then replaces the file by a
+   FIFO holding the old number.  A look made after it, by name, sees the
+   newcomer. */
+typedef enum { FAKECHMOD_AFTER_OFF, FAKECHMOD_AFTER_WAIT_CHMOD, FAKECHMOD_AFTER_WAIT_LOOK } FakeChmodAfter;
+static char fakechmod_after_name[512];
+static FakeChmodAfter fakechmod_after = FAKECHMOD_AFTER_OFF;
+
+/**
+ * fakechmod_swap_after_look_at - Replace the file just after the look that follows the next change of mode.
+ * @name: the name the editor will change; @want: the inode number of the file there now.
+ *
+ * The moment between the editor's judgement that the name still leads to its
+ * file and any later use of the name.  fakechmod_fifo_fired says it happened.
+ */
+static void fakechmod_swap_after_look_at(const char *name, ino_t want)
+{
+ snprintf(fakechmod_after_name, sizeof fakechmod_after_name, "%s", name);
+ fakechmod_fifo_want = want;
+ fakechmod_fifo_fired = 0;
+ fakechmod_fifo_reused = 0;
+ fakechmod_after = FAKECHMOD_AFTER_WAIT_CHMOD;
+}
+
+/** fakechmod_after_saw_change - A change of mode through this name was made: the next look is the one. */
+static void fakechmod_after_saw_change(const char *path)
+{
+ if (fakechmod_after == FAKECHMOD_AFTER_WAIT_CHMOD && strcmp(path, fakechmod_after_name) == 0)
+  fakechmod_after = FAKECHMOD_AFTER_WAIT_LOOK;
+}
+
+/** fakechmod_after_saw_look - A look at this name was answered: make the swap, once. */
+static void fakechmod_after_saw_look(const char *path)
+{
+ if (fakechmod_after != FAKECHMOD_AFTER_WAIT_LOOK || path == NULL || strcmp(path, fakechmod_after_name) != 0)
+  return;
+ fakechmod_after = FAKECHMOD_AFTER_OFF;
+ fakechmod_fifo_fired = 1;
+ if (unlink(path) == 0)
+  fakechmod_fifo_make_reusing(path);
 }
 
 /**
@@ -293,7 +411,29 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags)
  fakechmod_last_rc = real(dirfd, path, mode, flags);
  if (fakechmod_face == FAKECHMOD_VANISH && fakechmod_last_rc == 0)
   (void)remove(path);
+ if (fakechmod_last_rc == 0)
+  fakechmod_after_saw_change(path);
  return(fakechmod_last_rc);
 }
+
+/* Only where the looks of we_seen.c are made with statx (Linux); elsewhere the
+   row that arms the swap does not run. */
+#if WPE_PLATFORM_STATX_BTIME
+typedef int (*fakechmod_statx_fn)(int, const char *, int, unsigned int, struct statx *);
+
+/** statx: transparent, except that it makes the swap of fakechmod_swap_after_look_at. */
+int statx(int dirfd, const char *path, int flags, unsigned int mask, struct statx *buf)
+{
+ static fakechmod_statx_fn real;
+ int rc;
+
+ if (real == NULL)
+  *(void **)&real = fakechmod_next("statx");
+ rc = real(dirfd, path, flags, mask, buf);
+ if (fakechmod_after == FAKECHMOD_AFTER_WAIT_LOOK && dirfd == AT_FDCWD)
+  fakechmod_after_saw_look(path);
+ return(rc);
+}
+#endif
 
 #endif
