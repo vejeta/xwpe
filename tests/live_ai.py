@@ -20,7 +20,12 @@ import os
 import urllib.request
 
 import pytest
+from live_gate import require_live_gate
 from wpe_driver import WAIT_SCALE
+
+# Before anything below runs: PROVIDER and _resolve() reach for the local
+# Ollama.  A run that opened no gate skips here.
+require_live_gate()
 
 OLLAMA_ENDPOINT = "http://localhost:11434"
 CLAUDE_ENDPOINT = "https://api.anthropic.com"

@@ -15,7 +15,10 @@ import os
 import subprocess
 import pytest
 import live_ai
+from live_gate import require_live_gate
 from wpe_driver import WpeSession, ALT, WPE_BIN
+
+require_live_gate()
 
 
 def _ai_build():

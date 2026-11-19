@@ -9,7 +9,10 @@ Requires metals + scala-cli.  Skips otherwise.  Slow (boots Metals).
 from host_tools import needs
 import time
 
+from live_gate import require_live_gate
 from wpe_driver import WpeSession
+
+require_live_gate()
 
 PROG = (
     "object Factorial:\n"

@@ -38,6 +38,8 @@ import subprocess
 
 import pytest
 
+import engine_guard
+
 TOOLS_OFF_VARIABLE = "XWPE_TEST_TOOLS_OFF"
 NOT_EXERCISED = "not exercised by this job"   # the reason's tail; the harness reads it
 MISSING_FORMAT = "no %s on this host"
@@ -101,6 +103,11 @@ def tool_usable(name, *args):
     path = shutil.which(name)
     if path is None:
         return False
+    if not engine_guard.is_baseline_tool(name):
+        # Only a tool the farm provides is ever run here.  Any other name
+        # (a new AI engine's `--version` may call out to its account) is
+        # checked for presence and nothing more.
+        return True
     probe = list(args) if args else probe_of(name)
     if probe is PRESENCE_ONLY:
         return True

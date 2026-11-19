@@ -1,0 +1,27 @@
+# file rule count reason
+# The test sites that start a program outside tests/gui_owner.py (rule T1) or
+# name an engine-like path (rule T4), exact counts; a count may only fall.
+# None of them can reach an AI engine: each runs a tool of the baseline, a
+# program the row itself built, or a stand-in of its own.
+tests/edit_model/cdriver.py T1 1 compiler command of the C model's own build
+tests/host_tools.py T1 1 runs `<tool> --version` for a baseline tool only (a name outside the baseline is checked for presence, never run)
+tests/maintainability.py T1 2 compiler of the maintainability scan
+tests/procinfo.py T1 3 ps and tool probes of the process-table owner
+tests/test_ai_contain_credentials.py T1 1 prlimit around a nested pytest of the same file, started with the machine's environment (the inner row starts its editor through the owner)
+tests/test_ai_fix_build_quoting.py T1 1 sh -c with PATH "fakebin:/usr/bin:/bin"; no engine in /usr/bin here, other machines may differ (a later pass moves it onto run_tool)
+tests/test_ai_plan_live.py T1 1 runs the program the live row's own build made
+tests/test_debugger_command_length.py T1 1 runs a program the row compiled
+tests/test_gui_owner.py T1 8 the owner's own canaries start stand-ins of their own
+tests/test_gui_owner.py T4 1 canary path /nonexistent/agent, a file that does not exist
+tests/test_keymap_docs.py T1 1 the keymap dump tool built from this tree
+tests/test_modern_keys.py T1 1 the modern-keys dump tool built from this tree
+tests/test_procinfo.py T1 7 stand-ins of the process-table rows
+tests/test_regex_start_probe.py T1 2 compiles and runs the row's own probe
+tests/test_startplan_gdb_apart.py T1 1 runs gdb (a baseline tool) directly in the row's folder with the machine's PATH and the row's HOME, to see whether its markers fire
+tests/wayland/test_clipboard.py T1 5 wl-copy and wl-paste of the compositor under test
+tests/x11/conftest.py T1 6 xmodmap, xwd and xprop of the display under test
+tests/x11/test_clipboard.py T1 4 xclip of the display under test
+tests/x11/test_pcmap.py T1 1 xwininfo of the display under test
+tests/x11/test_screen_owner.py T1 1 ldd or otool of the editor binary, to see whether it links libvterm
+tests/x11/test_shim_hooks_inert.py T1 1 nm of the built editor
+tests/x11/test_user_screen.py T1 1 ldd or otool of the editor binary, to see whether it links libvterm

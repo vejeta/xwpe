@@ -35,9 +35,9 @@ def _scrollbar_column(rows):
     return [rows[i][-1] for i in range(2, 19) if len(rows[i]) > 1]
 
 
-def test_scrollbar_track_and_thumb_glyphs():
+def test_scrollbar_track_and_thumb_glyphs(tmp_path):
     seed = "".join("line %d\n" % i for i in range(1, 60))
-    with WpeSession("/tmp", seed, filename="t_scroll.c") as w:
+    with WpeSession(str(tmp_path), seed, filename="t_scroll.c") as w:
         time.sleep(0.5)
         col = _scrollbar_column(w.display())
         body = [c for c in col if c not in ARROWS and c != " "]

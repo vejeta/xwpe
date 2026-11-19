@@ -38,9 +38,9 @@ def _title_row(rows):
     return rows[1]
 
 
-def test_non_utf8_console_shows_ascii_buttons():
+def test_non_utf8_console_shows_ascii_buttons(tmp_path):
     """In the C locale the close/zoom boxes degrade to ASCII 'x'/'^', not blanks."""
-    with WpeSession("/tmp", SEED, filename="t_chrome.c",
+    with WpeSession(str(tmp_path), SEED, filename="t_chrome.c",
                     env_extra={"LC_ALL": "C", "LANG": "C",
                                "LC_CTYPE": "C"}) as w:
         row = _title_row(w.display())
@@ -59,9 +59,9 @@ def test_non_utf8_console_shows_ascii_buttons():
             "title-bar border should span the full width (REP), row=%r" % row
 
 
-def test_utf8_console_keeps_unicode_buttons():
+def test_utf8_console_keeps_unicode_buttons(tmp_path):
     """In a UTF-8 locale the title bar keeps the real Unicode boxes (no regression)."""
-    with WpeSession("/tmp", SEED, filename="t_chrome.c",
+    with WpeSession(str(tmp_path), SEED, filename="t_chrome.c",
                     env_extra={"LC_ALL": UTF8_LOCALE, "LANG": UTF8_LOCALE}) as w:
         row = _title_row(w.display())
         assert w.alive(), "wpe died in the UTF-8 locale"

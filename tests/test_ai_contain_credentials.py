@@ -24,6 +24,7 @@ import textwrap
 import time
 
 import pytest
+from host_tools import needs
 from wpe_driver import WpeSession, ALT, WAIT_SCALE, WPE_BIN, assistant_build, wait_screen, \
     pane_text_with_history
 
@@ -103,17 +104,20 @@ def test_a_run_command_never_sees_the_editors_keys_or_loader_variables(tmp_path)
 # @scenario SC-ai-contain-21
 def test_a_run_command_still_has_what_a_build_needs(tmp_path):
     out = tmp_path / "cmd.env"
-    reply = ("TOOL run_command echo HOME=$HOME PATH=$PATH TERM=$TERM > %s"
-             "@@TURN@@DONE listed" % out)
+    reply = ("TOOL run_command (echo HOME=$HOME TERM=$TERM; cc --version; "
+             "make --version) > %s@@TURN@@DONE listed" % out)
     env = _agent_env(tmp_path, reply, JAVA_HOME="/opt/some-jdk")
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _run_agent(s, "show the environment")
         ran = _wait_file(s, out)
-        s._drain(0.5)
+        s._drain(1.5)
     text = _read(out)
     assert ran, "the command never ran:\n" + _read(tmp_path / "ai.trace")
     assert "HOME=" + str(tmp_path) in text, text
-    assert "/usr/bin" in text or "/bin" in text, "PATH lost its system folders:\n" + text
+    # What a build needs is that the compiler and make are found and run, not
+    # which folders PATH names: each answers `--version` with its own name.
+    assert "cc" in text.lower() and "GNU Make" in text, \
+        "the compiler or make did not run:\n" + text
     assert "TERM=dumb" in text, text
 
 
@@ -237,6 +241,16 @@ def _fake_claude(bindir, env_out, argv_out=None):
     fake.chmod(0o755)
 
 
+def _next_claude(tmp_path_factory):
+    """A stand-in `claude` in a folder outside the workspace: the next one on
+    PATH once the workspace's own folder is dropped.  Returns the file its run
+    writes and its folder."""
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    seen = elsewhere / "claude.env"
+    _fake_claude(elsewhere / "bin", seen)
+    return seen, elsewhere / "bin"
+
+
 def _claude_env(tmp_path, bindir, **extra):
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "claudecli", "XWPE_AI_MODEL": "default",
            "XWPE_AI_TRACE": str(tmp_path / "ai.trace"),
@@ -269,17 +283,20 @@ def test_the_claude_backend_keeps_its_login_variables_and_no_others(tmp_path):
 
 
 # @scenario SC-ai-contain-28
-def test_a_program_the_workspace_planted_is_never_the_engine(tmp_path):
+def test_a_program_the_workspace_planted_is_never_the_engine(tmp_path, tmp_path_factory):
     seen = tmp_path / "claude.env"
     _fake_claude(tmp_path / "bin", seen)
+    next_seen, next_bin = _next_claude(tmp_path_factory)
     env = _claude_env(tmp_path, tmp_path / "bin")
     del env["XWPE_AI_CONTAIN_PATH_ALLOW"]          # no seam: the workspace's bin is not trusted
-    env["PATH"] = str(tmp_path / "bin") + ":/usr/bin:/bin"    # no real claude behind the stand-in
+    env["PATH"] = "%s:%s:/usr/bin:/bin" % (tmp_path / "bin", next_bin)
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         s.key(ALT.AI); s.key("a")
         s.key("hello"); s.key("\r", delay=1.0)
-        s._drain(3.0)
+        ran_next = _wait_file(s, next_seen)
+        s._drain(1.0)
     assert not seen.exists(), "an engine named claude ran out of the workspace's own folder"
+    assert ran_next, "the next claude on PATH, outside the workspace, never ran"
 
 
 HOST_MOCK = textwrap.dedent('''\
@@ -395,7 +412,7 @@ def test_inner_a_command_starts_under_a_lower_hard_limit(tmp_path):
 
 # @scenario SC-ai-contain-34
 @pytest.mark.skipif(LOW_FSIZE_ENV in os.environ, reason="the outer row")
-@pytest.mark.skipif(not __import__("shutil").which("prlimit"), reason="no prlimit on this system")
+@needs("prlimit")
 def test_every_command_still_starts_when_the_editor_inherits_a_lower_hard_limit(tmp_path):
     """A hard file-size limit below the 8 GiB default (a login shell's, a
     container's) used to make setrlimit fail in every assistant child, so no
@@ -417,12 +434,16 @@ def test_every_command_still_starts_when_the_editor_inherits_a_lower_hard_limit(
 # -------------------------------------- an engine in a folder PATH drops --
 
 # @scenario SC-ai-contain-35
-def test_an_engine_in_a_dropped_workspace_folder_is_named_in_the_pane(tmp_path):
+def test_an_engine_in_a_dropped_workspace_folder_is_named_in_the_pane(tmp_path, tmp_path_factory):
     seen = tmp_path / "claude.env"
     _fake_claude(tmp_path / "bin", seen)
+    # The pane names the dropped folder only when no other `claude` is left:
+    # the rest of PATH is a folder outside the workspace with no engine in it
+    # (none of the machine's folders, so no stub of the tool farm either).
+    no_engine = tmp_path_factory.mktemp("noengine")
     env = _claude_env(tmp_path, tmp_path / "bin")
     del env["XWPE_AI_CONTAIN_PATH_ALLOW"]
-    env["PATH"] = str(tmp_path / "bin") + ":/usr/bin:/bin"    # no real claude behind the stand-in
+    env["PATH"] = "%s:%s" % (tmp_path / "bin", no_engine)
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         s.key(ALT.AI); s.key("a")
         s.key("hello"); s.key("\r", delay=1.0)

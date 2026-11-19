@@ -16,8 +16,19 @@ import pytest
 import build_config
 import gui_owner
 import host_tools
+# A live file is not imported unless the run opened the gate (live_gate.py):
+# pytest finds the hook of a conftest by its name.
+from live_gate import pytest_pycollect_makemodule  # noqa: F401
 
 os.environ.setdefault("XWPE_KEYS", "borland")
+
+
+def pytest_sessionstart(session):
+    """Put the owner's tool farm under the session's pytest basetemp: it goes
+    with the session and is outside the working folder of every row."""
+    factory = getattr(session.config, "_tmp_path_factory", None)
+    if factory is not None:
+        gui_owner.current().use_farm_base(str(factory.getbasetemp()))
 
 
 def pytest_configure(config):
@@ -50,6 +61,9 @@ def pytest_runtest_setup(item):
     declaration becomes a skip.  It runs before any fixture, so nothing is
     started for a row that cannot run.
     """
+    # The owner learns which row and file run before any fixture starts a
+    # process: the tool farm's live opt-out is allowed by the file's name.
+    gui_owner.current().begin_row(item.nodeid, item.path)
     for mark in item.iter_markers("wpe_requires"):
         try:
             lacking = build_config.missing(mark.args, mark.kwargs.get("binary"))
@@ -84,10 +98,9 @@ def process_owner():
     yield owner
     gui_owner.install(None)
     late = owner.finish()
-    if late:
-        raise gui_owner.LeakedProcesses(
-            "left at the session's end, now ended:\n  %s"
-            % "\n  ".join(leak.describe() for leak in late))
+    error = gui_owner.session_error(owner.stray_engine_hits, late)
+    if error is not None:
+        raise error
 
 
 @pytest.fixture(autouse=True)

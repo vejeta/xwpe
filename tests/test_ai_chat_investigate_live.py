@@ -9,7 +9,10 @@ import json
 import subprocess
 import urllib.request
 import pytest
+from live_gate import require_live_gate
 from wpe_driver import WpeSession, ALT, WPE_BIN
+
+require_live_gate()
 
 OLLAMA = "http://localhost:11434"
 PREFERRED = ["qwen2.5-coder:32b", "deepseek-coder:33b", "codellama:34b",

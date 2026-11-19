@@ -69,6 +69,7 @@ TOP = os.path.dirname(HERE)
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import engine_guard  # noqa: E402
 import procinfo  # noqa: E402  (needs HERE on the path)
 
 IS_LINUX = procinfo.IS_LINUX
@@ -144,7 +145,11 @@ NEVER_PASSED = ("LINES", "COLUMNS")
 # session, and HOME is the row's folder.
 NEVER_INHERITED = ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET",
                    "XDG_RUNTIME_DIR", "HOME", "XAUTHORITY",
-                   "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GPG_AGENT_INFO")
+                   "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "GPG_AGENT_INFO",
+                   engine_guard.REAL_ENGINE_VAR, engine_guard.TOOLS_VAR)
+# The machine's PATH as it was when this module was imported, before any row
+# changed it: the tool farm of every owner is made from it (engine_guard.py).
+MACHINE_TOOLS = engine_guard.MachineTools.from_path(os.environ.get("PATH"))
 # What a nested run of the harness needs from the machine: which editor it
 # tests and how it scales its waits.
 HARNESS_VARS = ("WPE_BIN", "XWPE_BIN", "XWPE_TEST_WAIT_SCALE",
@@ -203,8 +208,42 @@ class OwnerRefused(RuntimeError):
     """The launcher refused to start something it could not own safely."""
 
 
+class EngineReached(AssertionError):
+    """A row ran a program the tool farm denies (engine_guard.py)."""
+
+
 class LeakedProcesses(AssertionError):
     """A row ended and left processes behind; the sweep ended them."""
+
+
+def is_account_data(path):
+    """True when the realpath of @path is the home folder of the account
+    running the tests (what the password file says) or inside it: the user's
+    own engine logins are there, whatever link reaches them."""
+    own = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+    real = os.path.realpath(path)
+    return real == own or real.startswith(own.rstrip(os.sep) + os.sep)
+
+
+def session_error(stray_hits, late):
+    """The error that fails the session, or None.
+
+    It collects both what the tool farm denied when no row was running
+    (@stray_hits, lines) and the processes left at the session's end (@late,
+    leaks) before raising either, so one never hides the other.  It is an
+    EngineReached when a denied program ran, else LeakedProcesses."""
+    problems = []
+    if stray_hits:
+        problems.append("a program the tool farm denies ran when no row was "
+                        "running:\n  %s" % "\n  ".join(stray_hits))
+    if late:
+        problems.append("left at the session's end, now ended "
+                        "(LeakedProcesses):\n  %s"
+                        % "\n  ".join(leak.describe() for leak in late))
+    if not problems:
+        return None
+    kind = EngineReached if stray_hits else LeakedProcesses
+    return kind("\n".join(problems))
 
 
 class OutputHandlerFailed(AssertionError):
@@ -1113,7 +1152,7 @@ def _terminal_env(env):
     return _common_editor_env(env)
 
 
-def _inherit(env, names, log_dir):
+def _inherit(owner, env, names, log_dir):
     """Copy the machine's variables a row named, when they are set.
 
     A row that needs one more variable of the machine (an API key for a live
@@ -1124,6 +1163,11 @@ def _inherit(env, names, log_dir):
     for name in names:
         if name in NEVER_INHERITED or name in NEVER_PASSED:
             raise OwnerRefused("%s is never inherited from the machine" % name)
+        if name in engine_guard.API_KEY_NAMES and not owner.row_is_live():
+            raise OwnerRefused("%s is inherited only by a row of a live file "
+                               "(%s) with %s=1 in the environment of the test "
+                               "run" % (name, engine_guard.LIVE_FILE_PATTERN,
+                                        engine_guard.LIVE_GATE_VAR))
         value = os.environ.get(name)
         if value is not None:
             env[name] = value
@@ -1173,8 +1217,18 @@ class Owner:
     fixture, so every row's processes are started, watched and ended the
     same way, and what a row leaves behind is found and named."""
 
-    def __init__(self, out_dir):
+    def __init__(self, out_dir, machine=None):
         self.out_dir = out_dir
+        # What the machine's PATH holds (engine_guard.MachineTools); a test
+        # of the guard passes a folder of its own.
+        self._machine = machine or MACHINE_TOOLS
+        self._farm = None
+        self._farm_base = None
+        self._row_node = None
+        self._row_file = None
+        self._row_log_start = 0
+        self._charged = []
+        self.stray_engine_hits = []
         self.ledger = Ledger()
         self.leaks = []
         self._x_displays = {}
@@ -1210,6 +1264,8 @@ class Owner:
         for owned in self.ledger.entries():
             late.extend(owned.end_collect())
         late.extend(self._final_sweep())
+        self._collect_stray_hits()
+        self._remove_farm()
         self._remove_runtime_dirs()
         self._remove_tool_home()
         if self._begun:
@@ -1340,6 +1396,7 @@ class Owner:
             raise OwnerRefused("%s for %s: a process cannot be both detached "
                                "from the terminal and have one as its "
                                "controlling terminal" % (kind, label))
+        self._guard_tools(argv, env, cwd, kind, label)
         log_path = _free_log_path(log_dir, kind)
         log = open(log_path, "wb")
         stage_read, stage_write = os.pipe()
@@ -1423,12 +1480,129 @@ class Owner:
                          if not leak.declared)
         errors.extend(self._row_errors)
         self._row_errors = []
+        self._raise_engine_hits()
         if errors:
             raise errors[0]
         if leaks:
             raise LeakedProcesses("the row left %d process(es) behind, now "
                                   "ended:\n  %s" % (len(leaks), "\n  ".join(
                                       leak.describe() for leak in leaks)))
+
+    # -- the tool farm (engine_guard.py) -------------------------------------
+
+    def begin_row(self, nodeid, path):
+        """Say which row (and which file) runs now, before its fixtures start
+        a process.  The live opt-out and the inheriting of an API key are
+        allowed by the file's name, and the deny log is read from here."""
+        self._row_node = nodeid
+        self._row_file = str(path)
+        self._row_log_start = self._farm.size() if self._farm else 0
+
+    def row_is_live(self):
+        """True when the running row is of a live file and the person running
+        the suite opened the live gate in the test run's own environment."""
+        return engine_guard.live_row_allowed(self._row_file, os.environ)
+
+    def use_farm_base(self, folder):
+        """Make the farm under @folder (the session's pytest basetemp: it is
+        removed with the session and is outside every row's working folder).
+        Takes effect only before the first launch made the farm, and not
+        when @folder is inside this process's own working folder (a nested
+        run started with its basetemp under its cwd): the farm would then be
+        inside the working folder of what it starts."""
+        inside_cwd = os.path.realpath(folder).startswith(
+            os.path.realpath(os.getcwd()).rstrip(os.sep) + os.sep)
+        if self._farm is None and not inside_cwd:
+            self._farm_base = folder
+
+    def _farm_made(self):
+        """The tool farm, made on first use in a private folder."""
+        if self._farm is None:
+            root = tempfile.mkdtemp(prefix="xwpe-farm-",
+                                    dir=self._farm_base or _short_tmp_base())
+            self._farm = engine_guard.ToolFarm(root, self._machine)
+        return self._farm
+
+    def _remove_farm(self):
+        """Remove the farm, if one was made, by its exact path."""
+        if self._farm is not None:
+            _remove_tree(self._farm.root)
+            self._farm = None
+
+    def _guard_tools(self, argv, env, cwd, kind, label):
+        """Give a process the PATH of the farm, in place in @env, or refuse
+        the row (engine_guard.py says what is refused and why)."""
+        try:
+            self._apply_farm(argv, env, cwd)
+        except engine_guard.GuardRefused as error:
+            raise OwnerRefused("%s for %s: %s" % (kind, label, error)) from None
+
+    def _apply_farm(self, argv, env, cwd):
+        """The guard itself; it raises engine_guard.GuardRefused.  A row of a
+        live file that sets REAL_ENGINE_VAR keeps the machine's PATH."""
+        real_engine = env.pop(engine_guard.REAL_ENGINE_VAR, None)
+        extras = engine_guard.take_tools(env)
+        if real_engine is not None:
+            if not self.row_is_live():
+                raise engine_guard.GuardRefused(
+                    "%s is allowed only to a row of a live file (%s) with %s=1 "
+                    "in the environment of the test run"
+                    % (engine_guard.REAL_ENGINE_VAR,
+                       engine_guard.LIVE_FILE_PATTERN,
+                       engine_guard.LIVE_GATE_VAR))
+            return
+        engine_guard.check_path_present(env)
+        farm = self._farm_made()
+        engine_guard.check_farm_outside(farm, cwd)
+        scratch = [cwd or os.getcwd()]
+        if env.get("HOME"):
+            scratch.append(env["HOME"])
+        engine_guard.check_host_command(env, farm, scratch)
+        engine_guard.check_no_unprovided_program(argv, env, farm, extras)
+        env["PATH"] = engine_guard.farm_path(env["PATH"], self._machine, farm,
+                                             extras, scratch)
+
+    def _charge_row_hits(self):
+        """The lines the deny stubs wrote since the row began; they are
+        charged to the row, so the session does not count them again."""
+        if self._farm is None:
+            return []
+        lines, end = self._farm.read(self._row_log_start)
+        self._charged.append((self._row_log_start, end))
+        self._row_log_start = end
+        return lines
+
+    def _raise_engine_hits(self):
+        """Fail the row that ran a program the farm denies, naming it."""
+        lines = self._charge_row_hits()
+        if not lines:
+            return
+        names = sorted(set(line.split("\t")[0] for line in lines))
+        raise EngineReached(
+            "row %s ran a program the tool farm denies (%s).  Put a stand-in "
+            "first on the row's PATH, or declare the tool with %s.  Lines "
+            "written while a module or session fixture's process ran count "
+            "against the row running then.\n  %s"
+            % (self._row_node, ", ".join(names), engine_guard.TOOLS_VAR,
+               "\n  ".join(lines)))
+
+    def _collect_stray_hits(self):
+        """Keep the log lines no row was charged with (a stub run between two
+        rows, or after the last), for the session fixture to fail on."""
+        if self._farm is None:
+            return
+        with open(self._farm.log, "rb") as fh:
+            data = fh.read()
+        offset = 0
+        for raw in data.splitlines(keepends=True):
+            start, offset = offset, offset + len(raw)
+            if raw.strip() and not self._is_charged(start):
+                self.stray_engine_hits.append(
+                    raw.decode("utf-8", "replace").rstrip())
+
+    def _is_charged(self, offset):
+        """True when a row was charged with the log byte at @offset."""
+        return any(low <= offset < high for low, high in self._charged)
 
     def hold_error(self, error):
         """Keep an error found while a process was being ended (a driver's
@@ -2105,7 +2279,7 @@ class Editor:
         env = _editor_env(_backend_env(owner, backend, display, home))
         if dump is not False:
             _add_dump(env, backend, dump or os.path.join(log_dir, "frame.ppm"))
-        _inherit(env, inherit, log_dir)
+        _inherit(owner, env, inherit, log_dir)
         _apply_extra(env, extra_env)
         env["XWPE_BACKEND"] = backend
         owned = owner.launch([binary] + list(args), env, cwd, log_dir, "xwpe",
@@ -2174,7 +2348,7 @@ def _terminal_editor_env(owner, home, log_dir, extra_env, inherit):
     merged = owner.merged_env(extra_env)
     _check_extra_displays(owner, merged)
     env = _terminal_env(_base_env(home, owner.x_runtime_dir()))
-    _inherit(env, inherit, log_dir)
+    _inherit(owner, env, inherit, log_dir)
     _pass_traces(env, merged)
     return _apply_extra(env, merged)
 
@@ -2256,7 +2430,7 @@ def tool_env(display=None, inherit=(), home=None, extra_env=None):
     merged = dict(extra_env or {})
     _check_extra_displays(owner, merged)
     env = _display_env(owner, _base_env(home, None), display)
-    _inherit(env, inherit, home)
+    _inherit(owner, env, inherit, home)
     return _apply_extra(env, merged)
 
 

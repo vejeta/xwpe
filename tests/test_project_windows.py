@@ -15,12 +15,12 @@ import os
 import pty
 import re
 import select
-import subprocess
 import time
 
 import pyte
 import pytest
 
+import gui_owner
 from test_utf8_border import SafeScreen
 from wpe_driver import WpeSession
 
@@ -37,17 +37,15 @@ def run_wpe(workdir, keys, wait=1.5, key_delay=0.5, settle=0.7):
     stream = pyte.Stream(screen)
     master_fd, slave_fd = pty.openpty()
 
-    env = os.environ.copy()
-    env['TERM'] = 'xterm-256color'
-    env['COLUMNS'] = str(COLS)
-    env['LINES'] = str(ROWS)
-    env['LC_ALL'] = 'en_US.UTF-8'
-    env['HOME'] = workdir          # isolate from the user's ~/.xwpe config
-
-    proc = subprocess.Popen(
-        [WPE_BIN, 'main.c'],
-        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        cwd=workdir, env=env, preexec_fn=os.setsid)
+    # The owner starts the editor: the whitelisted environment (HOME is the
+    # row's folder, never the user's ~/.xwpe configuration), the tool farm's
+    # PATH, and its end and leftovers are the owner's.  Nothing is given to
+    # on_output: the owner reads what the editor writes while it ends it
+    # (its teardown clears the last screen row), and the screen this row
+    # returns is the one the row's own reads built.
+    owned = gui_owner.Terminal.start(
+        gui_owner.current(), WPE_BIN, ['main.c'], workdir, workdir,
+        master_fd, slave_fd, (COLS, ROWS), label='project windows')
     os.close(slave_fd)
 
     def drain(timeout):
@@ -70,12 +68,8 @@ def run_wpe(workdir, keys, wait=1.5, key_delay=0.5, settle=0.7):
             drain(key_delay)
         drain(settle)
     finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), 9)
-        except Exception:
-            pass
+        owned.end_for_row()
         os.close(master_fd)
-        proc.wait()
     return screen
 
 

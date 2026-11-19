@@ -1241,6 +1241,15 @@ TESTS += tests/check-test-processes.sh
 # and is not in tests/test-threads.allow.
 TESTS += tests/check-test-threads.sh
 
+# One owner of what a row can run: the tool farm (tests/engine_guard.py), the
+# PATH every process of a row gets, made by tests/gui_owner.py.  A program
+# that is not in its baseline is not found, so a row never reaches an AI
+# engine of the machine.  tests/check-test-real-tools.sh fails on a door
+# around it (a program or the editor started outside the owner, the live-only
+# opt-out in a file that is not live, an engine named by an absolute path)
+# that is not in tests/test-real-tools.allow.
+TESTS += tests/check-test-real-tools.sh
+
 # The feature macros have one owner, configure (AC_USE_SYSTEM_EXTENSIONS
 # writes them into config.h): tests/check-platform.sh fails on a source that
 # sets one of its own, and on a test that compiles without config.h's.  The
@@ -1442,6 +1451,11 @@ EXTRA_DIST = \
   tests/check-test-threads.sh \
   tests/check_test_threads.py \
   tests/test-threads.allow \
+  tests/check-test-real-tools.sh \
+  tests/check_test_real_tools.py \
+  tests/test-real-tools.allow \
+  tests/engine_guard.py \
+  tests/live_gate.py \
   tests/test_menus.c \
   tests/test_menu_golden.py \
   tests/test_menu_refusals.py \

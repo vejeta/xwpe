@@ -98,6 +98,8 @@ XWPE_LIB_DIR = os.path.dirname(os.path.abspath(WPE_BIN))
 # editor does not own (scala-cli's Bloop): close() ends that program, found
 # by the JVM it runs as and this session's folder.
 SERVER_PROGRAM_SUFFIXES = (".scala", ".sc")
+# The files of the claude login that real_login links into a row's HOME.
+LOGIN_NAMES = (".claude", ".claude.json")
 SERVER_TRACE_NAME = ".ui-trace"  # the editor's trace in the session's folder
 SERVER_JDK_KEY = "scala jdk"     # the trace line naming the java it chose
 SERVER_PROGRAM_GONE_S = 10      # the server reaps a killed program well within this
@@ -635,9 +637,29 @@ class WpeSession(procinfo.ChildAsker):
     it."""
 
     @staticmethod
+    def _refuse_account_login(login_home):
+        """Refuse to link a login file that is, by its realpath, in this
+        account's own home folder, unless the row is a live file's with the
+        live gate open.  It is decided per file (``.claude``,
+        ``.claude.json``) and not by the folder HOME names: a HOME in a
+        scratch folder whose ``.claude`` is a link into the account's home
+        still reaches the user's real login.  A row whose logins are files
+        of its own (a fake login in its scratch) is testing the link, not
+        the engine, and passes."""
+        for name in LOGIN_NAMES:
+            src = os.path.join(login_home, name)
+            if os.path.lexists(src) and gui_owner.is_account_data(src) \
+                    and not gui_owner.current().row_is_live():
+                raise gui_owner.OwnerRefused(
+                    "real_login=True would link %s, which is this account's "
+                    "own login: allowed only to a row of a live file with "
+                    "XWPE_TEST_LIVE=1 in the environment of the test run"
+                    % src)
+
+    @staticmethod
     def _link_real_login(real_home, workdir):
         """Link the machine's claude login into ``workdir`` (see real_login)."""
-        for name in (".claude", ".claude.json"):
+        for name in LOGIN_NAMES:
             src = os.path.join(real_home, name)
             dst = os.path.join(workdir, name)
             if os.path.exists(src) and not os.path.exists(dst):
@@ -694,7 +716,9 @@ class WpeSession(procinfo.ChildAsker):
         # self-skips.  Every other test keeps a HOME with nothing of the
         # user's in it.  ~/.xwpe stays isolated either way.
         if real_login:
-            self._link_real_login(os.path.expanduser("~"), workdir)
+            login_home = os.path.expanduser("~")
+            self._refuse_account_login(login_home)
+            self._link_real_login(login_home, workdir)
         # Make the editor under test use THIS repo's syntax_def, not whatever
         # stale copy is installed on the machine: it reads $HOME/.xwpe/syntax_def
         # first and we set HOME=workdir, so drop the build-tree copy there.

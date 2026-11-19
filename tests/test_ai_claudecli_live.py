@@ -7,7 +7,10 @@ import subprocess
 import pytest
 import live_ai
 from host_tools import needs
+from live_gate import require_live_gate
 from wpe_driver import WpeSession, ALT, WPE_BIN
+
+require_live_gate()
 
 
 def _ai_build():
@@ -31,6 +34,9 @@ def test_ai_claudecli_chat(tmp_path):
         "XWPE_AI_ENABLE": "1",
         "XWPE_AI_BACKEND": "claudecli",
         "XWPE_AI_TRACE": str(trace),
+        # This row talks to the real CLI: only a live file may keep the
+        # machine's PATH (tests/engine_guard.py).
+        "XWPE_TEST_REAL_ENGINE": "1",
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env, real_login=True,
@@ -74,6 +80,8 @@ def test_ai_claudecli_agent_uses_tool_protocol(tmp_path):
         "XWPE_AI_BACKEND": "claudecli",
         "XWPE_AI_POLICY": "auto",
         "XWPE_AI_TRACE": str(trace),
+        # The real CLI again: see the first row.
+        "XWPE_TEST_REAL_ENGINE": "1",
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env, filename="t.c", real_login=True,

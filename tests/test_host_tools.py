@@ -128,15 +128,17 @@ def test_a_job_that_switched_nothing_off_prints_nothing(tmp_path):
 
 def test_a_shim_that_does_not_run_is_not_usable(tmp_path, monkeypatch):
     import host_tools
-    shim = tmp_path / "shimtool"
+    # The probe runs only for a tool of the baseline (engine_guard.py): a
+    # name outside it is checked for presence and never started.
+    shim = tmp_path / "gdb"
     shim.write_text("#!/bin/sh\nexit 3\n")
     shim.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
-    assert not host_tools.tool_usable("shimtool")
-    good = tmp_path / "goodtool"
+    assert not host_tools.tool_usable("gdb")
+    good = tmp_path / "lldb"
     good.write_text("#!/bin/sh\nexit 0\n")
     good.chmod(0o755)
-    assert host_tools.tool_usable("goodtool")
+    assert host_tools.tool_usable("lldb")
 
 
 # @scenario SC-platform-host-tools-03

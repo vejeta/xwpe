@@ -74,6 +74,7 @@ Under a bare ``python3`` that has no pyte, nothing collects and every row is
 reported as a problem, which reads like total drift and is only a missing
 import.
 """
+import ast
 import json
 import os
 import subprocess
@@ -82,6 +83,9 @@ import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.dirname(os.path.dirname(HERE))
+# engine_guard.py is stdlib only: it names the live files.
+sys.path.insert(0, os.path.dirname(HERE))
+import engine_guard  # noqa: E402
 PYTHON_LAYERS = ("ncurses", "x11", "wayland", "asan", "config-file", "live")
 
 
@@ -108,6 +112,24 @@ def scenarios_for_layer(manifest, layer):
 def test_file(test_id):
     """``tests/x.py::fn[param]`` -> ``tests/x.py``; C program names pass through."""
     return test_id.split("::", 1)[0]
+
+
+def live_gated_test_exists(test_id):
+    """True when @test_id names a test function of a live file (tests/conftest
+    does not import a live file unless the run opened the gate, so pytest
+    collects one skipping stand-in for it, never the functions).  The check
+    reads the file as text, with ast, and never imports it."""
+    path = test_file(test_id)
+    if not engine_guard.is_live_file(path):
+        return False
+    name = test_id.split("::", 1)[1].split("[", 1)[0] if "::" in test_id else ""
+    try:
+        with open(os.path.join(TOP, path), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=path)
+    except (OSError, SyntaxError):
+        return False
+    return any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and node.name == name for node in ast.walk(tree))
 
 
 def cmd_files(capability, layer):
@@ -360,7 +382,8 @@ def cmd_check():
             if scenario["layer"] in PYTHON_LAYERS:
                 mapped_files.add(test_file(test_id))
                 base = test_id.split("[", 1)[0]
-                if not any(n == test_id or n.startswith(base) for n in node_ids):
+                collects = any(n == test_id or n.startswith(base) for n in node_ids)
+                if not collects and not live_gated_test_exists(test_id):
                     problems.append("%s: %s -> %s does not collect" % (entry, scenario["id"], test_id))
     allowed = unmapped_allowed()
     for path in ai_test_files():
