@@ -66,6 +66,7 @@
 #define FAKE_LATE        "late"
 #define FAKE_SILENT      "silent"
 #define FAKE_DIE         "die"
+#define FAKE_DIE_SECOND  "die-second"
 #define FAKE_TOGETHER    "together"
 #define FAKE_HOLDER      "holder"
 #define FAKE_COMMAND     "command"
@@ -257,6 +258,18 @@ static void fake_command_take(int id, const char *method, struct json_object *m)
 }
 
 /**
+ * fake_second_request - Count a request read after `initialize`.
+ * Return: 1 when it is the second, the one that ends the "die-second" fake,
+ * so both of the editor's writes have landed before the server exits.
+ */
+static int fake_second_request(void)
+{
+ static int read_so_far;
+
+ return ++read_so_far >= 2;
+}
+
+/**
  * fake_take - One message read: note it, and answer, hold or drop it as
  * the mode says.
  * @mode: the fake's mode; @m: the message; @held, @nheld: what is held.
@@ -295,6 +308,8 @@ static int fake_take(const char *mode, struct json_object *m, fake_req *held,
   return 1;
  }
  if (!strcmp(mode, FAKE_DIE))
+  return 0;
+ if (!strcmp(mode, FAKE_DIE_SECOND) && fake_second_request())
   return 0;
  if (!strcmp(mode, FAKE_COMMAND))
  {
@@ -713,7 +728,7 @@ static void test_deadline_gives_the_request_up_and_the_start_has_none(void)
 
 static void test_a_server_that_ends_tells_every_request_it_is_gone(void)
 {
- e_lsp_session *s = open_fake(FAKE_DIE);
+ e_lsp_session *s = open_fake(FAKE_DIE_SECOND);
  told hover, def;
 
  memset(&hover, 0, sizeof hover);
@@ -729,6 +744,56 @@ static void test_a_server_that_ends_tells_every_request_it_is_gone(void)
        "the hover is told the server is gone");
  check(def.n == 1 && def.how[0] == E_D_REQ_GONE,
        "so is the definition");
+ e_lsp_close(s);
+}
+
+/**
+ * wait_for_server_exit - Block until the server's output is at its end,
+ * without reading it, so the session has not noticed yet.
+ * @s: the session; @ms: how long to wait at most.
+ *
+ * The stand-in closes its input before its output when it exits, so once
+ * this returns, the next message written to it meets a closed pipe.
+ * Return: 1 when the server's output is at its end.
+ */
+static int wait_for_server_exit(e_lsp_session *s, int ms)
+{
+ long deadline = now_ms() + ms;
+ int fd = e_lsp_fd(s);
+
+ while (wpe_fd_readable_now(fd) != WPE_FD_READABLE && now_ms() < deadline)
+  wpe_fd_poll(LOOP_SLICE_MS);
+ return wpe_fd_readable_now(fd) == WPE_FD_READABLE;
+}
+
+/*
+ * A request written to a server that has already gone fails at the write,
+ * not at a read.  The session ends there, so the request out before it is
+ * told the server is gone at that moment; no read of the dead output is
+ * needed, and a loop that stops on e_lsp_dead has nothing left to wait for.
+ */
+static void test_a_write_to_a_gone_server_tells_the_request_out(void)
+{
+ e_lsp_session *s = open_fake(FAKE_DIE);
+ told hover, def;
+ int sent;
+
+ memset(&hover, 0, sizeof hover);
+ memset(&def, 0, sizeof def);
+ check(s != NULL, "the session starts on the stand-in");
+ if (!s)
+  return;
+ e_lsp_hover_async(s, ASKED_FILE, 1, COL(1), told_text, &hover);
+ check(wait_for_server_exit(s, ANSWER_WAIT_MS),
+       "the stand-in has exited before the second request is written");
+ sent = e_lsp_locate_async(s, E_LSP_LOCATE_DEFINITION, ASKED_FILE, 1, COL(1),
+                           told_location, &def);
+ check(sent == E_D_SEND_GONE, "the definition is refused: the server is gone");
+ check(e_lsp_dead(s), "the failed write ended the session");
+ check(hover.n == 1 && hover.how[0] == E_D_REQ_GONE,
+       "at the failed write the hover is told the server is gone");
+ check(def.n == 0, "the refused definition is not also told");
+ check(e_lsp_requests_owed(s) == 0, "nothing is left owed");
  e_lsp_close(s);
 }
 
@@ -973,6 +1038,7 @@ int main(int argc, char **argv)
  RUN(test_cancel_tells_each_owner_once_and_drops_the_late_answer);
  RUN(test_deadline_gives_the_request_up_and_the_start_has_none);
  RUN(test_a_server_that_ends_tells_every_request_it_is_gone);
+ RUN(test_a_write_to_a_gone_server_tells_the_request_out);
  RUN(test_an_answer_read_by_a_waited_request_reaches_its_owner);
  RUN(test_a_newer_overlay_fetch_replaces_the_older);
  RUN(test_a_command_edit_reaches_the_text_it_was_run_on);

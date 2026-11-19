@@ -404,6 +404,12 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A hover or a go-to-definition no longer waits for an answer from a language
+  server that has exited.  When the editor found the server gone while
+  writing to it (the write failed), the requests already out were never told,
+  and the status row stayed silent until the next read of the server.  They
+  now end at once, and Alt-Q starts a fresh server.
+
 * A command the assistant runs no longer receives your environment.  Every
   program the assistant starts (a tool's command, the post-edit hook, git
   for the checkpoint and the review, the claude backend, a hosted engine)

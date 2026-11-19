@@ -106,6 +106,8 @@ struct e_lsp_session {
 
 /* ---- transport --------------------------------------------------------- */
 
+static void lsp_server_gone(e_lsp_session *s);
+
 /**
  * lsp_write_all - Hand one whole message (header and body) to the server.
  * @s: the session; @buf, @n: the framed message.
@@ -118,6 +120,9 @@ struct e_lsp_session {
  * closed its input) would leave it with a view of the files the editor does
  * not share, so the session is given up as a server that ended: the user is
  * told, and Alt-Q starts a fresh one.
+ * A lost session is ended by lsp_server_gone, which tells every request out
+ * at that moment, so hover and definition never wait for an answer from a
+ * server that can no longer be written to.
  * Return: 0 when the message is on its way, -1 when the session was lost.
  */
 static int lsp_write_all(e_lsp_session *s, const char *buf, size_t n)
@@ -130,7 +135,7 @@ static int lsp_write_all(e_lsp_session *s, const char *buf, size_t n)
  if (r == WPE_FD_WRITE_SENT || r == WPE_FD_WRITE_QUEUED)
   return 0;
  s->input_lost = 1;
- s->dead = 1;
+ lsp_server_gone(s);
  return -1;
 }
 
@@ -989,6 +994,7 @@ static int lsp_request_work(e_lsp_session *s, int kind, const char *method,
                             void *ctx, lsp_work *work)
 {
  lsp_pending *p;
+ int id;
 
  if (!s || s->dead || s->input_lost || s->ending)
  {
@@ -1009,18 +1015,19 @@ static int lsp_request_work(e_lsp_session *s, int kind, const char *method,
    json_object_put(params);
   return E_D_SEND_FULL;
  }
+ id = ++s->id;
+ /* The request is entered only once it is sent: a write that fails ends the
+    session and tells every request out, and this one is refused by the
+    return value instead, so it is never told twice. */
+ if (lsp_send(s, id, method, params) != 0)
+  return E_D_SEND_GONE;
  p->kind = kind;
- p->id = ++s->id;
+ p->id = id;
  p->fn = fn;
  p->ctx = ctx;
  p->work = work;
  p->sent_ms = lsp_now(s);
  snprintf(p->method, sizeof p->method, "%s", method);
- if (lsp_send(s, p->id, method, params) != 0)
- {
-  lsp_release(p);
-  return E_D_SEND_GONE;
- }
  lsp_calls_time(s);
  return E_D_SEND_OK;
 }
@@ -1561,6 +1568,21 @@ static void lsp_ended(e_lsp_session *s)
  e_lsp_requests_cancel(s, E_D_REQ_GONE);
 }
 
+/**
+ * lsp_server_gone - The one place a session is marked dead: from now on
+ * nothing is sent to it, and every request out is told the server is gone.
+ * @s: the session.
+ *
+ * Used when the server's output ends and when a message cannot be handed
+ * to it.  The user sees the answer to a hover or a definition end at once,
+ * not when the loop next reads a server that has nothing more to say.
+ */
+static void lsp_server_gone(e_lsp_session *s)
+{
+ s->dead = 1;
+ lsp_ended(s);
+}
+
 /* The notification that says the server's view of a file has changed. */
 #define LSP_NEWS_METHOD "textDocument/publishDiagnostics"
 
@@ -1588,7 +1610,7 @@ static int lsp_is_news(struct json_object *m)
 
 int e_lsp_poll(e_lsp_session *s)
 {
- int handled = 0, guard = 0;
+ int handled = 0, guard = 0, eof = 0;
 
  if (!s || s->out_fd < 0)
   return -1;
@@ -1606,7 +1628,7 @@ int e_lsp_poll(e_lsp_session *s)
    break;
   n = read(s->out_fd, buf, sizeof(buf));
   if (n == 0)                  /* EOF: the server closed its stdout -- it died */
-  {  s->dead = 1;  break;  }
+  {  eof = 1;  break;  }
   if (n < 0)                   /* EAGAIN/EINTR: nothing more right now */
    break;
   e_dap_reader_push(&s->rd, buf, (size_t)n);
@@ -1623,7 +1645,11 @@ int e_lsp_poll(e_lsp_session *s)
   lsp_dispatch(s, m);   /* answers, server requests, diagnostics, the handshake */
   json_object_put(m);
  }
- if (s->dead)
+ /* The end is entered after the answers already read have been handed over,
+    so a reply that came with the EOF still reaches its owner. */
+ if (eof)
+  lsp_server_gone(s);
+ else if (s->dead)
   lsp_ended(s);
  return handled;
 }
