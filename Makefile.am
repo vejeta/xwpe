@@ -1023,6 +1023,13 @@ TESTS += tests/check-start-plan.sh
 # we_ai*.c holds a hand-written '%s'.
 TESTS += tests/check-shell-quote.sh
 
+# One record of every version the CI pipelines run (tests/ci-versions.txt):
+# tests/check-ci-versions.sh fails when a workflow, ci-run.sh or run-tests.sh
+# disagrees with it, on a -latest runner label, an action not pinned by SHA
+# or two versions of one action.  It exits 77 where .github is absent (a
+# source tarball).  Offline; the record's age is checked by codeql.yml.
+TESTS += tests/check-ci-versions.sh
+
 # One owner of how the assistant's children are held (we_contain.c): every
 # program the assistant starts goes through wpe_contain_start with the profile
 # of what it is, and the start gate refuses one that names none.
@@ -1366,6 +1373,8 @@ EXTRA_DIST = \
   tests/check-start-plan.sh \
   tests/start-plan.allow \
   tests/check-shell-quote.sh \
+  tests/check-ci-versions.sh \
+  tests/ci-versions.txt \
   tests/check-contain-sites.sh \
   tests/check-line-ends.sh \
   tests/line-ends.allow \

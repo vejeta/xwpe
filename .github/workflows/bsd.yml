@@ -2,7 +2,8 @@
 #
 # Codeberg/Forgejo has no BSD runners, so the BSDs run on the GitHub
 # push-mirror (github.com/vejeta/xwpe), like macOS (macos.yml). Each system is a
-# real virtual machine started by a vmactions action on an ubuntu-latest runner:
+# real virtual machine started by a vmactions action on a GitHub Ubuntu runner
+# (the label is in tests/ci-versions.txt; the vmactions tests use it too):
 #     gh workflow run bsd.yml --repo vejeta/xwpe -f os=openbsd
 #     gh workflow run bsd.yml --repo vejeta/xwpe -f tests="tests/test_menu_file.py"
 # It never runs on push: a run is 30 to 60 minutes of emulated machine.
@@ -17,6 +18,16 @@
 # It is built like the Linux job (--enable-ai --enable-ai-agent-host): with the
 # assistant off, test_menus and four check scripts fail on every system for a
 # reason that has nothing to do with the BSD.
+#
+# Versions: each job has a one-element matrix.release, used in the job name and
+# in the action's release input, so the number is written once per system.
+# tests/ci-versions.txt records each release and its source;
+# tests/check-ci-versions.sh keeps the two equal.  Raise a release only to one
+# that the pinned action tag's README table lists: the action refuses an
+# unlisted one, and a "leading part only" value such as "15" moves without a
+# commit.  When a new release is out but the action does not list it yet, the
+# record says "waiting: <action> <tag>", and the release moves in the same
+# change that raises the action to the first tag that lists it.
 #
 # Action inputs used (checked against memory of each README, not against the
 # README itself, so a first run may refuse one):
@@ -60,23 +71,26 @@ env:
 
 jobs:
   freebsd:
-    name: FreeBSD 14
+    name: FreeBSD ${{ matrix.release }}
     # A scheduled run has no inputs: it runs everything.
     if: github.event_name != 'workflow_dispatch' || inputs.os == 'all' || inputs.os == 'freebsd'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        release: ["15.1"]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Test on FreeBSD
         # Packages, build, tests and probes all run inside this one VM step.
         timeout-minutes: 100
-        uses: vmactions/freebsd-vm@v1.6.0
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1.6.0
         env:
           SELECTED_TESTS: ${{ inputs.tests }}
           WPE_EXPECT_BUILT: ${{ env.WPE_EXPECT_BUILT }}
         with:
-          release: "14.3"          # a 14.x release the action lists; pin it
+          release: ${{ matrix.release }}
           usesh: true
           mem: 4096
           cpu: 4
@@ -89,8 +103,9 @@ jobs:
               libX11 libXft cairo pango libvterm json-c texinfo openssl \
               xorg-vfbserver twm xdpyinfo python3 dejavu \
               py312-pytest py312-pyte py312-wcwidth
-            # FreeBSD's default Python is 3.12: the py312- flavours are the ones
-            # the package index carries (checked in packagesite, 2026-11-15).
+            # FreeBSD's default Python is still 3.12: the py312- flavours are
+            # the only ones the FreeBSD:15 quarterly packagesite carries for
+            # pytest, pyte and wcwidth (checked 2026-11-19; no py313-pyte).
             # freetype2.pc requires bzip2, which the base system does not ship a
             # .pc for: without this stub configure reports "Xft: no".
             if ! pkg-config --exists bzip2 2>/dev/null; then
@@ -118,7 +133,7 @@ jobs:
       - name: Upload logs
         if: always()
         timeout-minutes: 5
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bsd-freebsd-logs
           path: |
@@ -128,21 +143,24 @@ jobs:
           if-no-files-found: ignore
 
   openbsd:
-    name: OpenBSD 7.7
+    name: OpenBSD ${{ matrix.release }}
     if: github.event_name != 'workflow_dispatch' || inputs.os == 'all' || inputs.os == 'openbsd'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        release: ["8.0"]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Test on OpenBSD
         timeout-minutes: 100
-        uses: vmactions/openbsd-vm@v1.4.9
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1.4.9
         env:
           SELECTED_TESTS: ${{ inputs.tests }}
           WPE_EXPECT_BUILT: ${{ env.WPE_EXPECT_BUILT }}
         with:
-          release: "7.7"           # or the newest the action lists; older ones are pruned from the mirrors
+          release: ${{ matrix.release }}
           usesh: true
           mem: 4096
           cpu: 4
@@ -151,11 +169,15 @@ jobs:
           envs: "SELECTED_TESTS WPE_EXPECT_BUILT"
           prepare: |
             uname -a
-            # metaauto wraps autoconf and automake: the versions are named below.
+            # metaauto wraps autoconf and automake.  Several versions of each
+            # sit side by side in the package set, so pkg_add needs the version
+            # flavor (%): the newest in the 8.0 index (2.73 and 1.19), checked
+            # in https://cdn.openbsd.org/pub/OpenBSD/8.0/packages/amd64/index.txt
+            # on 2026-11-19.  python-3.14.7 is the only python-3 there.
             # OpenBSD has no ncurses package (wide curses is in base) and its
             # TLS is libtls in base, so openssl is not installed.
-            pkg_add -I gmake metaauto autoconf%2.72 automake%1.16 pkgconf \
-              cairo pango json-c libvterm python%3.12 \
+            pkg_add -I gmake metaauto autoconf%2.73 automake%1.19 pkgconf \
+              cairo pango json-c libvterm python%3.14 \
               py3-test py3-pyte py3-wcwidth
             # twm, Xvfb and xdpyinfo are in OpenBSD's base X sets, not packages.
           run: |
@@ -181,7 +203,7 @@ jobs:
       - name: Upload logs
         if: always()
         timeout-minutes: 5
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bsd-openbsd-logs
           path: |
@@ -191,21 +213,24 @@ jobs:
           if-no-files-found: ignore
 
   netbsd:
-    name: NetBSD 10
+    name: NetBSD ${{ matrix.release }}
     if: github.event_name != 'workflow_dispatch' || inputs.os == 'all' || inputs.os == 'netbsd'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        release: ["11.1"]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Test on NetBSD
         timeout-minutes: 100
-        uses: vmactions/netbsd-vm@v1.5.3
+        uses: vmactions/netbsd-vm@5957cf330aef2e6ddc63c604364c99ce2e02b91d # v1.5.3
         env:
           SELECTED_TESTS: ${{ inputs.tests }}
           WPE_EXPECT_BUILT: ${{ env.WPE_EXPECT_BUILT }}
         with:
-          release: "10.1"          # NetBSD 9.x package repositories are pruned: 10.x only
+          release: ${{ matrix.release }}
           usesh: true
           mem: 4096
           cpu: 4
@@ -220,10 +245,12 @@ jobs:
             command -v pkgin >/dev/null 2>&1 || /usr/sbin/pkg_add pkgin
             pkgin -y update
             pkgin -y install gmake autoconf automake pkgconf cairo pango json-c \
-              ncurses openssl python313 py313-test py313-pyte py313-wcwidth \
+              ncurses openssl python314 py314-test py314-pyte py314-wcwidth \
               libvterm03
-            # libvterm03 is libvterm 0.3, the version the other systems build with
-            # (both libvterm01 and libvterm03 are in the 10.0_2026Q3 index).
+            # libvterm03 is libvterm 0.3, the version the other systems build with.
+            # Names checked in the NetBSD/x86_64/11.1 pkg_summary on 2026-11-19:
+            # python314-3.14.7, py314-test-9.1.1, py314-pyte-0.8.2nb2,
+            # py314-wcwidth-0.8.3, libvterm03-0.3.3.
           run: |
             mkdir -p bsd-out
             # The VM step must end with status 0 so its logs are copied back;
@@ -246,7 +273,7 @@ jobs:
       - name: Upload logs
         if: always()
         timeout-minutes: 5
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bsd-netbsd-logs
           path: |

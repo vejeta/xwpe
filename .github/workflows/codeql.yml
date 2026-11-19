@@ -30,7 +30,10 @@ permissions:
 jobs:
   analyze:
     name: Analyze (c-cpp)
-    runs-on: ubuntu-latest
+    # ubuntu-26.04 is the newest image GitHub offers; it is labelled a public
+    # preview, and ubuntu-latest still means 24.04 (tests/ci-versions.txt
+    # keeps the source and the date).
+    runs-on: ubuntu-26.04
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
@@ -42,7 +45,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential autoconf automake autopoint pkg-config \
-            libncursesw5-dev ncurses-term libx11-dev libxext-dev libxft-dev \
+            libncurses-dev ncurses-term libx11-dev libxext-dev libxft-dev \
             libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
             libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev libssl-dev \
             libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev
@@ -64,3 +67,17 @@ jobs:
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: "/language:c-cpp"
+
+  # The CI version record (tests/ci-versions.txt) must be re-checked about
+  # once a release cycle.  This job fails when its oldest date is older than
+  # 45 days.  It is offline and a separate job, so a stale record never stops
+  # the security scan above.
+  record-fresh:
+    name: CI version record is fresh
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the record's date
+        run: sh tests/check-ci-versions.sh --max-age 45

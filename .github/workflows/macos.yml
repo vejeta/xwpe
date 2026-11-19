@@ -7,10 +7,12 @@
 #     gh workflow run macos.yml --repo vejeta/xwpe
 #
 # It runs on BOTH architectures, because they are genuinely different targets:
-#   - macos-15       : Apple Silicon (arm64)
-#   - macos-15-intel : Intel (x86_64)   <- the arch Homebrew bottles as "*-x86_64"
-# (macos-13 was retired in December 2025 and macos-14 in November 2026; a
-# job on a retired image is refused or waits forever without a runner.)
+#   - the arm64 label of the matrix below : Apple Silicon (arm64)
+#   - the intel label of the matrix below : Intel (x86_64), the arch Homebrew
+#     bottles as "*-x86_64"
+# The labels are named in tests/ci-versions.txt and checked by
+# tests/check-ci-versions.sh; the Intel image is the last one GitHub offers.
+# (A job on a retired image is refused or waits forever without a runner.)
 # Skipping Intel here is what let an x86_64-only regression reach Homebrew-core
 # unseen, so both are first-class in the matrix now.
 #
@@ -40,8 +42,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15         # Apple Silicon (arm64)
-          - runner: macos-15-intel   # Intel (x86_64)
+          - runner: macos-26         # Apple Silicon (arm64)
+          - runner: macos-26-intel   # Intel (x86_64)
     runs-on: ${{ matrix.runner }}
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -50,7 +52,7 @@ jobs:
       # silence the upcoming tap-trust warning instead of chasing them.
       HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Show arch
         run: |
@@ -179,7 +181,7 @@ jobs:
           SELECTED_TESTS: ${{ inputs.tests }}
         run: |
           python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pytest-xdist
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.2 pytest pytest-rerunfailures pytest-xdist
           # Load the in-app help from the checkout (the editor's "_eng" fallback)
           # so the Help/manual scenarios pass without a `make install`.
           export XWPE_LIB="$PWD"
@@ -433,7 +435,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-logs-${{ matrix.runner }}
           # test-suite.log is the automake summary; test_*.log are the per-test
@@ -458,15 +460,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15         # Apple Silicon (arm64)
-          - runner: macos-15-intel   # Intel (x86_64)
+          - runner: macos-26         # Apple Silicon (arm64)
+          - runner: macos-26-intel   # Intel (x86_64)
     runs-on: ${{ matrix.runner }}
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
       HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install deps
         run: brew install autoconf automake pkgconf ncurses json-c libvterm texinfo openssl@3
@@ -500,7 +502,7 @@ jobs:
             exit 0
           fi
           python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pytest-xdist
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.2 pytest pytest-rerunfailures pytest-xdist
           export XWPE_LIB="$PWD"
           export XWPE_UI_TRACE="$RUNNER_TEMP/ui-trace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.log"
           echo "XWPE_TEST_TOOLS_OFF=$XWPE_TEST_TOOLS_OFF"
@@ -517,7 +519,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: assistant-logs-${{ matrix.runner }}
           path: |

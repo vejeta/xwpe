@@ -14,6 +14,12 @@
 #     clipboard interop (wl-clipboard).
 # All three front-ends share one SCREENCELL/editor core, so running the same
 # operations under each catches a divergence in any single backend.
+#
+# Versions: the runner, the actions and pyte are named in tests/ci-versions.txt
+# and checked by tests/check-ci-versions.sh.  ubuntu-26.04 is the newest image
+# (GitHub calls it a public preview; ubuntu-latest is still 24.04).  The first
+# run on a new image compares its passed and skipped counts with the last run
+# on the old one: a rise in skips is a finding, not a green.
 
 name: Linux (manual)
 
@@ -23,7 +29,7 @@ on:
 jobs:
   linux:
     name: Linux build + GUI test gates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       DEBIAN_FRONTEND: noninteractive
       # The runner exports XDG_CONFIG_HOME.  The editor reads it before HOME,
@@ -38,14 +44,14 @@ jobs:
       # as failures -- same knob the Debian autopkgtest uses.
       XWPE_TEST_WAIT_SCALE: "3"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build + GUI-test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential autoconf automake autopoint pkg-config \
-            libncursesw5-dev ncurses-term libx11-dev libxext-dev libxft-dev \
+            libncurses-dev ncurses-term libx11-dev libxext-dev libxft-dev \
             libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
             libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev libssl-dev \
             libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
@@ -94,7 +100,7 @@ jobs:
       - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
         run: |
           python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pytest-rerunfailures pytest-xdist pillow
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.2 pytest pytest-rerunfailures pytest-xdist pillow
           mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
 
       - name: ncurses UI suite (pyte, pseudo-terminal)
@@ -239,7 +245,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-test-logs
           path: |
@@ -257,14 +263,14 @@ jobs:
     # program, so this job builds each such configuration and runs the X11
     # resize and uncover rows on it.  Same workflow as the job above, so one
     # dispatch still starts one run.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       DEBIAN_FRONTEND: noninteractive
       XDG_CONFIG_HOME: ""
       XDG_STATE_HOME: ""
       XWPE_TEST_WAIT_SCALE: "3"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build + GUI-test dependencies
         # xfonts-base is the core font ("8x13") this build draws with; without
@@ -273,7 +279,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential autoconf automake autopoint pkg-config \
-            libncursesw5-dev ncurses-term libx11-dev libxext-dev \
+            libncurses-dev ncurses-term libx11-dev libxext-dev \
             libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
             libjson-c-dev zlib1g-dev libssl-dev \
             libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
@@ -294,7 +300,7 @@ jobs:
       - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
         run: |
           python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.1 pytest pillow
+          /tmp/ptenv/bin/pip install --quiet pyte==0.8.2 pytest pillow
           mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
 
       - name: X11 resize and uncover rows on the core-font program
@@ -308,7 +314,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: x11-core-test-logs
           path: x11-core-logs/

@@ -41,17 +41,28 @@ export HOME USER LOGNAME WPE_TEST_UNPRIVILEGED
 
 mkdir -p bsd-out
 
+# find_python: print the Python interpreter the packages installed.  The
+# workflow names the Python packages in one place (its prepare script); this
+# finds whichever minor version they brought, so a release bump there needs
+# no edit here.  Takes python3 when a link by that name exists, otherwise the
+# highest python3.N in the package prefixes.  Prints nothing when none is
+# installed, and the caller stops with a message instead of a vague pytest
+# error later.
+find_python() {
+  command -v python3 && return 0
+  ls /usr/local/bin/python3.[0-9]* /usr/pkg/bin/python3.[0-9]* 2>/dev/null \
+    | grep -E 'python3\.[0-9]+$' | sort -t. -k2,2n | tail -1
+}
+
 # os_environment OS: set PY (the Python interpreter the packages installed)
 # and the variables the system's toolchain needs to find its libraries.
 os_environment() {
   case $1 in
     freebsd)
-      PY=python3.12
+      PY=$(find_python)
       ;;
     openbsd)
-      # The python package installs python3.12; take python3 only if a link
-      # by that name exists.
-      PY=$(command -v python3 || command -v python3.12)
+      PY=$(find_python)
       AUTOCONF_VERSION="$(ls /usr/local/bin/autoconf-* 2>/dev/null | sed 's/.*autoconf-//' | sort -V | tail -1)"
       AUTOMAKE_VERSION="$(ls -d /usr/local/share/automake-* 2>/dev/null | sed 's/.*automake-//' | sort -V | tail -1)"
       export AUTOCONF_VERSION AUTOMAKE_VERSION
@@ -59,8 +70,8 @@ os_environment() {
       export PKG_CONFIG_PATH
       ;;
     netbsd)
-      PY=python3.13
       PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH
+      PY=$(find_python)
       PKG_CONFIG_PATH=/usr/pkg/lib/pkgconfig:/usr/X11R7/lib/pkgconfig:/usr/lib/pkgconfig
       export PATH PKG_CONFIG_PATH
       ;;
@@ -114,6 +125,7 @@ run_xvfb_smoke() {
 
 rc=0
 os_environment "$os"
+[ -n "$PY" ] || { echo "ci-run: no python3 installed by the prepare step"; exit 1; }
 write_env_log
 
 autoreconf -fi > bsd-out/autoreconf.log 2>&1 || { tail -20 bsd-out/autoreconf.log; exit 1; }

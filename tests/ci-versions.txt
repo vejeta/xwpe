@@ -1,0 +1,40 @@
+# CI version record.  One line per item, fields separated by "|":
+#   name | version | sha (actions only, else -) | source URL | date checked | note
+# The workflows under .github/workflows, contrib/bsd-test/ci-run.sh and
+# tests/run-tests.sh must say what this file says; tests/check-ci-versions.sh
+# fails when they do not.  A migration edits this file and the workflows in
+# one change.  The date is the day the version was read from the source; the
+# codeql.yml job "record-fresh" fails when the oldest date is over 45 days old.
+#
+# note: "keep: <reason>" says why a version is not the newest of its kind;
+# "waiting: <action> <tag>" says a newer release exists but the action does not
+# list it yet (the release moves in the change that raises the action).
+#
+# Runner labels (GitHub-hosted images).
+runner-ubuntu|ubuntu-26.04|-|https://github.com/actions/runner-images#available-images|2026-11-19|keep: GitHub calls the 26.04 image a public preview (Ubuntu2604-Readme.md); ubuntu-latest still maps to 24.04. Newest anyway by the project rule. vmactions/freebsd-vm v1.6.0 .github/workflows/test.yml also runs on ubuntu-26.04, so it is a supported host for the vmactions actions.
+runner-macos-arm|macos-26|-|https://github.com/actions/runner-images#available-images|2026-11-19|macos-latest maps to macos-26 (arm64)
+runner-macos-intel|macos-26-intel|-|https://github.com/actions/runner-images#available-images|2026-11-19|keep: the last Intel image GitHub offers; no macos-27-intel will follow
+#
+# BSD releases (each must be listed in the pinned vmactions tag's README).
+bsd-freebsd|15.1|-|https://www.freebsd.org/releases/ and https://github.com/vmactions/freebsd-vm/blob/v1.6.0/README.md|2026-11-19|15.2 and 14.6 are listed as upcoming
+bsd-netbsd|11.1|-|https://www.netbsd.org/releases/ and https://github.com/vmactions/netbsd-vm/blob/v1.5.3/README.md|2026-11-19|
+bsd-openbsd|8.0|-|https://www.openbsd.org/ and https://github.com/vmactions/openbsd-vm/blob/v1.4.9/README.md|2026-11-19|
+#
+# Actions: tag and the commit it points to.
+action:actions/checkout|v7.0.1|3d3c42e5aac5ba805825da76410c181273ba90b1|https://github.com/actions/checkout/releases/latest|2026-11-19|
+action:actions/upload-artifact|v7.0.2|cf430e030ddbb5b0abf93d22962f4752f3646cd9|https://github.com/actions/upload-artifact/releases/latest|2026-11-19|
+action:github/codeql-action|v4.39.3|33d7b85da1a04171e211befe2c739303b9a4c066|https://github.com/github/codeql-action/tags|2026-11-19|releases/latest names a bundle, so the newest v4 tag is used
+action:vmactions/freebsd-vm|v1.6.0|811efaaac0668df8bfb8308c3ec997b5ab50037b|https://github.com/vmactions/freebsd-vm/releases/latest|2026-11-19|
+action:vmactions/netbsd-vm|v1.5.3|5957cf330aef2e6ddc63c604364c99ce2e02b91d|https://github.com/vmactions/netbsd-vm/releases/latest|2026-11-19|
+action:vmactions/openbsd-vm|v1.4.9|f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3|https://github.com/vmactions/openbsd-vm/releases/latest|2026-11-19|
+#
+# Python tooling.
+pyte|0.8.2|-|https://pypi.org/project/pyte/|2026-11-19|
+#
+# Package names inside the BSD virtual machines, read from each release's own
+# package index.
+pkg-freebsd-python|py312|-|https://pkg.freebsd.org/FreeBSD:15:amd64/quarterly/packagesite.pkg|2026-11-19|keep: FreeBSD's default Python is 3.12; there is no py313-pytest or py313-pyte in the index
+pkg-openbsd-python|3.14|-|https://cdn.openbsd.org/pub/OpenBSD/8.0/packages/amd64/index.txt|2026-11-19|python-3.14.7p0 is the only python-3 in the 8.0 index
+pkg-openbsd-autoconf|2.73|-|https://cdn.openbsd.org/pub/OpenBSD/8.0/packages/amd64/index.txt|2026-11-19|pkg_add needs the version flavor; 2.73 is the newest
+pkg-openbsd-automake|1.19|-|https://cdn.openbsd.org/pub/OpenBSD/8.0/packages/amd64/index.txt|2026-11-19|pkg_add needs the version flavor; 1.19 is the newest
+pkg-netbsd-python|314|-|https://cdn.netbsd.org/pub/pkgsrc/packages/NetBSD/x86_64/11.1/All/pkg_summary.gz|2026-11-19|python314-3.14.7 with py314-test, py314-pyte and py314-wcwidth

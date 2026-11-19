@@ -169,7 +169,7 @@ else
     python3 -m venv "$VENV"
     # hypothesis is for the edit model's stateful machine; without it
     # (python3-hypothesis on Debian) that one test skips, nothing else does.
-    "$VENV/bin/pip" install --quiet pyte==0.8.1 pytest hypothesis
+    "$VENV/bin/pip" install --quiet pyte==0.8.2 pytest hypothesis
   fi
   PY="$VENV/bin/python"
 fi
