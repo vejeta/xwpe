@@ -1,0 +1,5 @@
+# file rule count reason
+# The test files that run work on a thread or a pool on purpose (rule TA names
+# a pool, rule TB a launch from a thread), exact counts; a count may only fall.
+tests/maintainability.py TA 2 a multiprocessing fork pool parses source files; it starts no editor
+tests/test_gui_owner.py TB 1 the row that proves the owner refuses a launch off the main thread

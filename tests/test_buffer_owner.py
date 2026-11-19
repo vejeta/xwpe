@@ -11,7 +11,6 @@ Breakpoints are set without a debugger session (Ctrl-G B), as
 tests/test_menu_debug.py does; the margin's red line is what the user sees.
 The assistant rows use the in-process mock backend.
 """
-import concurrent.futures
 import os
 import subprocess
 import time
@@ -19,7 +18,7 @@ import time
 import pytest
 
 from host_tools import require
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, sweep_cuts
 from edit_model.oracle import EditSession
 import test_ai_edit_hook_contracts as hook_contracts
 import test_debugger_integration as dbg
@@ -1107,7 +1106,6 @@ FAULT_MOVED = _model_move(SEED, (0, BAR_ROW), (0, RETURN_ROW), FAULT_DROP)
 FAULT_MOVED_BREAKPOINTS = [INT_A_ROW + 2]          # baz(a); on row 3
 FAULT_SEED_BREAKPOINTS = [BAR_ROW + 1, BAZ_ROW + 1]
 FAULT_SWEEP_MAX = 64
-FAULT_SWEEP_BATCH = 8       # sessions run side by side, so the sweep stays short
 
 
 def _block_move_with_fault(s):
@@ -1182,24 +1180,12 @@ def _one_faulted_move(tmp_path, n):
         return "nothing"
 
 
-def _faulted_moves(tmp_path, cuts, pool):
-    """Run the faulted move once for each cut in @cuts, side by side, each in
-    a session of its own.  Return: {cut: outcome}."""
-    return dict(zip(cuts, pool.map(lambda n: _one_faulted_move(tmp_path, n), cuts)))
-
-
 # @scenario SC-buffer-08
 def test_a_block_move_fault_sweep_ends_in_a_whole_move(tmp_path):
     """Memory cut at the first allocation of a block move, then the second,
     and on: every refused move changed nothing, the first one is refused,
     and once the cut comes after the move's last allocation it is whole."""
-    outcomes = {}
-    first = 1
-    with concurrent.futures.ThreadPoolExecutor(FAULT_SWEEP_BATCH) as pool:
-        while first <= FAULT_SWEEP_MAX and "whole" not in outcomes.values():
-            last = min(first + FAULT_SWEEP_BATCH, FAULT_SWEEP_MAX + 1)
-            outcomes.update(_faulted_moves(tmp_path, range(first, last), pool))
-            first = last
+    outcomes = sweep_cuts(lambda n: _one_faulted_move(tmp_path, n), FAULT_SWEEP_MAX)
     whole = [n for n in sorted(outcomes) if outcomes[n] == "whole"]
     assert outcomes[1] == "nothing", "the first allocation refused still moved the block"
     assert whole, "no cut up to %d allocations let the move through" % FAULT_SWEEP_MAX
@@ -2380,14 +2366,7 @@ def test_an_undo_of_a_backspace_join_fault_sweep_ends_in_a_whole_undo(tmp_path):
     """Memory cut at the first allocation of the join's Undo, then the
     second, and on: every refused Undo changed nothing, the first one is
     refused, and once the cut comes after its last allocation it is whole."""
-    outcomes = {}
-    first = 1
-    with concurrent.futures.ThreadPoolExecutor(FAULT_SWEEP_BATCH) as pool:
-        while first <= UNDO_SWEEP_MAX and WHOLE not in outcomes.values():
-            last = min(first + FAULT_SWEEP_BATCH, UNDO_SWEEP_MAX + 1)
-            cuts = range(first, last)
-            outcomes.update(zip(cuts, pool.map(lambda n: _join_undone_in(tmp_path, n), cuts)))
-            first = last
+    outcomes = sweep_cuts(lambda n: _join_undone_in(tmp_path, n), UNDO_SWEEP_MAX, WHOLE)
     whole = [n for n in sorted(outcomes) if outcomes[n] == WHOLE]
     assert outcomes[1] == NOTHING, "the first allocation refused still made the Undo"
     assert whole, "no cut up to %d allocations let the Undo through" % UNDO_SWEEP_MAX
@@ -2846,15 +2825,8 @@ def test_an_undo_of_a_backspace_in_an_indent_fault_sweep_ends_in_a_whole_undo(tm
     on: every refused Undo changed nothing and said so, and once the cut
     comes after its last allocation the whole action is taken back and one
     Ctrl-R gives it again."""
-    outcomes = {}
-    first = 1
-    with concurrent.futures.ThreadPoolExecutor(FAULT_SWEEP_BATCH) as pool:
-        while first <= UNDO_SWEEP_MAX and WHOLE not in outcomes.values():
-            last = min(first + FAULT_SWEEP_BATCH, UNDO_SWEEP_MAX + 1)
-            cuts = range(first, last)
-            outcomes.update(zip(cuts, pool.map(
-                lambda n: _indent_backspace_undone_in(tmp_path, n), cuts)))
-            first = last
+    outcomes = sweep_cuts(lambda n: _indent_backspace_undone_in(tmp_path, n),
+                          UNDO_SWEEP_MAX, WHOLE)
     whole = [n for n in sorted(outcomes) if outcomes[n] == WHOLE]
     assert outcomes[1] == NOTHING, "the first allocation refused still made the Undo"
     assert whole, "no cut up to %d allocations let the Undo through" % UNDO_SWEEP_MAX
@@ -2966,17 +2938,10 @@ def _cut_dir(tmp_path, n):
 
 
 def _fault_sweep(tmp_path, one):
-    """Run @one(work, n) for n = 1, 2, ... in batches side by side until one
-    is whole.  Return: {n: outcome}, checked: the first cut refused, every
+    """Run @one(work, n) for n = 1, 2, ... one after another until one is
+    whole.  Return: {n: outcome}, checked: the first cut refused, every
     cut before the first whole one refused."""
-    outcomes = {}
-    first = 1
-    with concurrent.futures.ThreadPoolExecutor(FAULT_SWEEP_BATCH) as pool:
-        while first <= ACTION_SWEEP_MAX and WHOLE not in outcomes.values():
-            last = min(first + FAULT_SWEEP_BATCH, ACTION_SWEEP_MAX + 1)
-            cuts = range(first, last)
-            outcomes.update(zip(cuts, pool.map(lambda n: one(_cut_dir(tmp_path, n), n), cuts)))
-            first = last
+    outcomes = sweep_cuts(lambda n: one(_cut_dir(tmp_path, n), n), ACTION_SWEEP_MAX, WHOLE)
     whole = [n for n in sorted(outcomes) if outcomes[n] == WHOLE]
     assert outcomes[1] == NOTHING, "the first allocation refused still made the action"
     assert whole, "no cut up to %d allocations let the action through" % ACTION_SWEEP_MAX

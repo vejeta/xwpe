@@ -1216,6 +1216,12 @@ TESTS += tests/check-menus.sh
 # fails on one that is not in tests/test-processes.allow, with its pass.
 TESTS += tests/check-test-processes.sh
 
+# One owner of who forks a test process: the main thread (an editor's death
+# signal follows the thread that forked it).  tests/check-test-threads.sh
+# fails on a test file that starts a session from a thread pool or a thread
+# and is not in tests/test-threads.allow.
+TESTS += tests/check-test-threads.sh
+
 # The feature macros have one owner, configure (AC_USE_SYSTEM_EXTENSIONS
 # writes them into config.h): tests/check-platform.sh fails on a source that
 # sets one of its own, and on a test that compiles without config.h's.  The
@@ -1410,6 +1416,9 @@ EXTRA_DIST = \
   tests/check-test-processes.sh \
   tests/check_test_processes.py \
   tests/test-processes.allow \
+  tests/check-test-threads.sh \
+  tests/check_test_threads.py \
+  tests/test-threads.allow \
   tests/test_menus.c \
   tests/test_menu_golden.py \
   tests/test_menu_refusals.py \

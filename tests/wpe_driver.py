@@ -55,6 +55,35 @@ def ui_trace_tail(path):
     return "ui trace (last %d lines of %s):\n%s" % (
         TRACE_TAIL_LINES, path, "\n".join(lines[-TRACE_TAIL_LINES:]))
 
+
+def sweep_cuts(one, last_cut, whole="whole"):
+    """Run @one(n) for the cuts n = 1, 2, ... up to @last_cut, one after
+    another, and stop after the first cut whose outcome is @whole.
+    Return: {cut: outcome}.
+
+    A fault sweep cuts the editor's memory at the n-th allocation of one
+    action, for each n in turn.  What it proves: the action has a first
+    allocation, a last allocation, and nothing in between that it can fail
+    on halfway.  Every cut before the last allocation must leave the text
+    as it was (the caller asserts that on the returned outcomes), and the
+    first cut after it must let the action through whole, so the first
+    "whole" is the action's own allocation count and nothing past it needs
+    a run.
+
+    The cuts run on the calling thread, never from a pool: the process
+    owner (gui_owner) refuses a launch off the main thread, because the
+    death signal of an editor follows the thread that forked it and a pool
+    thread that ends would take the editor down with it."""
+    outcomes = {}
+    for cut in range(1, last_cut + 1):
+        outcomes[cut] = one(cut)
+        if outcomes[cut] == whole:
+            break
+    assert list(outcomes) == list(range(1, len(outcomes) + 1)), \
+        "a sweep must run the cuts 1..n in order, got %s" % list(outcomes)
+    return outcomes
+
+
 WPE_BIN = os.environ.get("WPE_BIN") or os.path.join(os.path.dirname(__file__), "..", "wpe")
 
 # The data files xwpe loads at runtime (the in-app help, syntax_def) live under

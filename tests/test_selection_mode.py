@@ -15,12 +15,11 @@ independent of the key style (Options2 bits 0x400, 0x800, 0x1000):
 Every row drives the running editor through the state channel (one dump per
 key) and asserts on the editor's own state or on the bytes on disk.
 """
-import concurrent.futures
 import os
 
 import pytest
 
-from wpe_driver import ALT, WpeSession, checkbox_mark
+from wpe_driver import ALT, WpeSession, checkbox_mark, sweep_cuts
 from edit_model.oracle import (BACKSPACE, DELETE, DOWN, END, ENTER, F2, HOME, INSERT,
                                LEFT, RIGHT, SHIFT_DOWN, SHIFT_LEFT, SHIFT_RIGHT, TAB,
                                UP, EditSession, ctrl)
@@ -42,7 +41,6 @@ HELLO_SELECTED = [SHIFT_RIGHT] * 5
 TWO_ROWS_SELECTED = [SHIFT_DOWN, SHIFT_RIGHT, SHIFT_RIGHT]
 CTRL_U, CTRL_R = ctrl("u"), ctrl("r")
 FAULT_SWEEP_MAX = 40
-FAULT_BATCH = 8
 
 
 def _rows(d):
@@ -361,14 +359,8 @@ def test_a_replacement_refused_for_memory_changes_nothing_and_a_sweep_ends_whole
     the Undo step count exactly as they were and said so on the status row,
     and from the action's last allocation on it is made whole.  The deletion
     never stands without the character that replaces it."""
-    outcomes = {}
-    first = 1
-    with concurrent.futures.ThreadPoolExecutor(FAULT_BATCH) as pool:
-        while first <= FAULT_SWEEP_MAX and "whole" not in outcomes.values():
-            cuts = list(range(first, first + FAULT_BATCH))
-            outcomes.update(zip(cuts, pool.map(
-                lambda n: _replace_with_fault(tmp_path / ("n%02d" % n), n), cuts)))
-            first += FAULT_BATCH
+    outcomes = sweep_cuts(lambda n: _replace_with_fault(tmp_path / ("n%02d" % n), n),
+                          FAULT_SWEEP_MAX)
     whole = [n for n in sorted(outcomes) if outcomes[n] == "whole"]
     assert outcomes[1] == "nothing", "the first allocation refused still made the action"
     assert whole, "no cut up to %d allocations let the action through" % FAULT_SWEEP_MAX
@@ -500,14 +492,8 @@ def _paste_with_fault(work, n):
 
 # @scenario SC-selection-20
 def test_a_paste_refused_for_memory_changes_nothing_and_a_sweep_ends_whole(tmp_path):
-    outcomes = {}
-    first = 1
-    with concurrent.futures.ThreadPoolExecutor(FAULT_BATCH) as pool:
-        while first <= FAULT_SWEEP_MAX and "whole" not in outcomes.values():
-            cuts = list(range(first, first + FAULT_BATCH))
-            outcomes.update(zip(cuts, pool.map(
-                lambda n: _paste_with_fault(tmp_path / ("n%02d" % n), n), cuts)))
-            first += FAULT_BATCH
+    outcomes = sweep_cuts(lambda n: _paste_with_fault(tmp_path / ("n%02d" % n), n),
+                          FAULT_SWEEP_MAX)
     whole = [n for n in sorted(outcomes) if outcomes[n] == "whole"]
     assert outcomes[1] == "nothing"
     assert whole, "no cut up to %d allocations let the paste through" % FAULT_SWEEP_MAX
