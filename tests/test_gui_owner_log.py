@@ -11,6 +11,7 @@ fire, stay quiet, and obey a declaration.
 The libwayland text the scanner matches is pinned to libwayland-client 1.26.
 """
 import os
+import pty
 import signal
 import sys
 
@@ -33,6 +34,9 @@ PLANT_CHILD ="wl-copy: failed to connect to a Wayland server"
 CLEAN_LOG = "xwpe: started\nredraw 80x30\nFile t.c saved!\n"
 READY_S = 20.0
 SEGV_AT_ONCE = "import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n"
+# The stand-ins here die of crash signals to test the owner, never to leave
+# a core file on the machine.
+NO_CORE = 0
 
 
 # @scenario SC-harness-owner-70
@@ -95,7 +99,7 @@ def _standin_editor(owner, tmp_path, name, code):
     os.makedirs(log_dir)
     return owner.launch([sys.executable, "-E", "-s", "-c", code],
                         {"PATH": os.environ["PATH"]}, log_dir, log_dir,
-                        "xwpe", name)
+                        "xwpe", name, core_limit=NO_CORE)
 
 
 def _wait_log(editor, text):
@@ -252,3 +256,147 @@ def test_a_crash_while_the_owner_ends_the_editor_fails_the_row(owner, tmp_path):
     with pytest.raises(gui_owner.UnexpectedExit) as raised:
         editor.end()
     assert "SIGSEGV" in str(raised.value)
+
+
+# ---------------------------------------------------------------------------
+# The terminal editor: every exit is judged where the row ends it.
+
+# A stand-in that gives itself no core file, for the rows that crash it
+# without declaring it (the owner must not be the one to leave a dump).
+SELF_NO_CORE = ("import resource\n"
+                "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n")
+SLEEP_FOR_A_WHILE = "import time\ntime.sleep(60)\n"
+
+
+def _terminal_standin(owner, tmp_path, name, code, expect_crash=None,
+                      extra_env=None):
+    """Start a python stand-in through Terminal.start, as a terminal row
+    starts the editor; return (owned, master side of its pty)."""
+    log_dir = str(tmp_path / name)
+    os.makedirs(log_dir)
+    master, slave = pty.openpty()
+    owned = gui_owner.Terminal.start(
+        owner, sys.executable, ["-E", "-s", "-c", code], log_dir, log_dir,
+        master, slave, extra_env=extra_env, label=name,
+        expect_crash=expect_crash)
+    os.close(slave)
+    return owned, master
+
+
+def _end_terminal_standin(owner, owned, master, before):
+    """End the stand-in as a driver's close() does, then give the row's last
+    word; return the error it raised, or None."""
+    owned.end_for_row()
+    os.close(master)
+    try:
+        owner.end_since(before)
+    except AssertionError as error:
+        return error
+    return None
+
+
+def _run_terminal_standin(owner, tmp_path, name, code, expect_crash=None,
+                          wait_for_end=True):
+    """Start, let it end by itself (unless it is made to run), end it as a
+    driver does; return the row's error or None."""
+    before = owner.ledger.pids()
+    owned, master = _terminal_standin(owner, tmp_path, name, code,
+                                      expect_crash=expect_crash)
+    if wait_for_end:
+        gui_owner.wait_for(lambda: not owned.running(),
+                           "the stand-in to end by itself", READY_S)
+    return _end_terminal_standin(owner, owned, master, before)
+
+
+# @scenario SC-harness-owner-88
+def test_a_terminal_editor_that_crashes_undeclared_fails_the_row(owner, tmp_path):
+    error = _run_terminal_standin(owner, tmp_path, "t-crash",
+                                  SELF_NO_CORE + SEGV_AT_ONCE)
+    assert isinstance(error, gui_owner.UnexpectedExit)
+    assert "SIGSEGV" in str(error)
+
+
+# @scenario SC-harness-owner-88
+@pytest.mark.parametrize("sig", [signal.SIGQUIT, signal.SIGTRAP, signal.SIGSYS])
+def test_every_signal_the_editor_handles_as_a_crash_is_one(owner, tmp_path, sig):
+    code = SELF_NO_CORE + "import os\nos.kill(os.getpid(), %d)\n" % sig
+    error = _run_terminal_standin(owner, tmp_path, "t-sig%d" % sig, code)
+    assert isinstance(error, gui_owner.UnexpectedExit)
+    assert sig.name in str(error)
+
+
+# @scenario SC-harness-owner-88
+def test_a_declared_crash_passes_and_leaves_no_core_allowed(owner, tmp_path):
+    """The declared stand-in dies of SIGSEGV with nothing set by itself: the
+    owner started it with RLIMIT_CORE 0."""
+    code = ("import resource\n"
+            "limit = resource.getrlimit(resource.RLIMIT_CORE)\n"
+            "import os, signal, sys\n"
+            "if limit != (0, 0):\n"
+            "    sys.exit(7)\n"
+            "os.kill(os.getpid(), signal.SIGSEGV)\n")
+    error = _run_terminal_standin(owner, tmp_path, "t-declared", code,
+                                  expect_crash=signal.SIGSEGV)
+    assert error is None, error
+
+
+# @scenario SC-harness-owner-88
+def test_a_declared_crash_that_does_not_happen_fails_the_row(owner, tmp_path):
+    ended = _run_terminal_standin(owner, tmp_path, "t-quiet",
+                                  "raise SystemExit(0)\n",
+                                  expect_crash=signal.SIGSEGV)
+    assert isinstance(ended, gui_owner.UnexpectedExit)
+    assert "expected SIGSEGV" in str(ended)
+    running = _run_terminal_standin(owner, tmp_path, "t-running",
+                                    SLEEP_FOR_A_WHILE,
+                                    expect_crash=signal.SIGSEGV,
+                                    wait_for_end=False)
+    assert isinstance(running, gui_owner.UnexpectedExit)
+    assert "expected SIGSEGV" in str(running)
+    assert "still running" in str(running)
+
+
+# @scenario SC-harness-owner-88
+def test_a_declared_crash_by_another_signal_fails_the_row(owner, tmp_path):
+    error = _run_terminal_standin(
+        owner, tmp_path, "t-other",
+        "import os, signal\nos.kill(os.getpid(), signal.SIGABRT)\n",
+        expect_crash=signal.SIGSEGV)
+    assert isinstance(error, gui_owner.UnexpectedExit)
+    assert "expected SIGSEGV" in str(error)
+
+
+# @scenario SC-harness-owner-88
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="reads /proc/<pid>/limits")
+def test_a_declared_editor_starts_with_no_core_file_allowed(owner, tmp_path):
+    before = owner.ledger.pids()
+    owned, master = _terminal_standin(owner, tmp_path, "t-limits",
+                                      SLEEP_FOR_A_WHILE,
+                                      expect_crash=signal.SIGSEGV)
+    with open("/proc/%d/limits" % owned.pid) as fh:
+        line = [l for l in fh if l.startswith("Max core file size")][0]
+    _end_terminal_standin(owner, owned, master, before)
+    assert line.split()[4:6] == ["0", "0"], line
+
+
+# @scenario SC-harness-owner-88
+def test_a_terminal_editor_may_be_killed_or_lose_its_input(owner, tmp_path):
+    """Ordinary ends of a terminal row, which the crash rule leaves alone:
+    SIGKILL (a row that kills the editor to see its debugger go) and exit
+    code 1 (the editor's way to end when its input is gone)."""
+    killed = _run_terminal_standin(
+        owner, tmp_path, "t-kill",
+        "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n")
+    assert killed is None, killed
+    code_one = _run_terminal_standin(owner, tmp_path, "t-one",
+                                     "raise SystemExit(1)\n")
+    assert code_one is None, code_one
+
+
+# @scenario SC-harness-owner-88
+def test_a_self_crash_variable_without_a_declaration_is_refused(owner, tmp_path):
+    with pytest.raises(gui_owner.OwnerRefused) as raised:
+        _terminal_standin(owner, tmp_path, "t-refused", SLEEP_FOR_A_WHILE,
+                          extra_env={"XWPE_TEST_CRASH": "1"})
+    assert "expect_crash" in str(raised.value)

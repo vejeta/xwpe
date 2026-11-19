@@ -1242,6 +1242,12 @@ TESTS += tests/check-menus.sh
 # fails on one that is not in tests/test-processes.allow, with its pass.
 TESTS += tests/check-test-processes.sh
 
+# One owner of a core file a test child leaves: a child that dies by a core
+# signal on purpose gives up its core file first (test_child_dies_on_purpose
+# in tests/test_watchdog.h); tests/check-test-core-exits.sh fails on a C test
+# that does not and is not in tests/test-core-exits.allow, with its reason.
+TESTS += tests/check-test-core-exits.sh
+
 # One owner of who forks a test process: the main thread (an editor's death
 # signal follows the thread that forked it).  tests/check-test-threads.sh
 # fails on a test file that starts a session from a thread pool or a thread
@@ -1457,6 +1463,9 @@ EXTRA_DIST = \
   tests/check-test-processes.sh \
   tests/check_test_processes.py \
   tests/test-processes.allow \
+  tests/check-test-core-exits.sh \
+  tests/check_test_core_exits.py \
+  tests/test-core-exits.allow \
   tests/check-test-threads.sh \
   tests/check_test_threads.py \
   tests/test-threads.allow \

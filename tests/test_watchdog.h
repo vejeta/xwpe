@@ -27,8 +27,12 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #include "linebuf.h"
 
@@ -140,6 +144,29 @@ static inline void test_lifetime_arm(int secs)
 
 	signal(SIGALRM, SIG_DFL);
 	alarm((unsigned)(scaled < 1 ? 1 : scaled));
+}
+
+/** test_child_dies_on_purpose - Call first in a forked child that is about to
+    end by a core-dumping signal (abort(), raise(SIGSEGV), a default action
+    restored on purpose): the machine then keeps no core file of it and the
+    journal no record of it, so the one core a developer finds is a real
+    failure.  RLIMIT_CORE 0 stops the file (and leaves one "Storage: none"
+    line in systemd-coredump); where the system has it (Linux) the process
+    is also made non-dumpable, so the kernel never hands it to the core
+    handler at all.  Never call it in the test's own process: a crash there
+    is the failure the test exists to show, and a non-dumpable parent hands
+    its children /proc entries that its own user cannot read.  An exec
+    resets the dumpable flag; the limit stays. */
+static inline void test_child_dies_on_purpose(void)
+{
+	struct rlimit none;
+
+	none.rlim_cur = 0;
+	none.rlim_max = 0;
+	setrlimit(RLIMIT_CORE, &none);
+#ifdef __linux__
+	prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+#endif
 }
 
 /** test_watchdog_disarm - No guard. */

@@ -388,6 +388,9 @@ AC_CACHE_CHECK([what regexec does with a word-boundary escape beside |],
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <regex.h>
 
 /* The rows: a space, U+00C3, "bb", and the 9 bytes of the call that killed
@@ -527,6 +530,11 @@ static int child_answer(const struct shape *s)
  rl.rlim_cur = 0;
  rl.rlim_max = 0;
  setrlimit(RLIMIT_CORE, &rl);
+#ifdef __linux__
+ /* Not dumpable either: the kernel then never hands a crash of the probe
+    to the system's core handler, so no journal line is written. */
+ prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+#endif
  alarm(5);
  if (regcomp(&re, s->pat, REG_EXTENDED | s->icase | $xwpe_regex_flag)) return EXIT_REFUSED;
  first = one_call(&re, s, s->so, s->eflags, s->midchar);

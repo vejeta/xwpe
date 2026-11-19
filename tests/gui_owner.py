@@ -52,6 +52,7 @@ import fcntl
 import os
 import pwd
 import re
+import resource
 import select
 import signal
 import struct
@@ -296,9 +297,12 @@ DISPLAY_ERROR_LINE = re.compile(
     r"|XIO: "
     r"|xwpe: connection to .* lost: )")
 
-# Signals that mean the editor crashed, whoever sent the end.
+# Signals that mean the editor crashed, whoever sent the end.  The editor's
+# crash handler catches every one of them, writes its crash file and raises
+# the signal again with the default action, so each leaves a core.
 CRASH_SIGNALS = (signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS,
-                 signal.SIGFPE, signal.SIGILL)
+                 signal.SIGFPE, signal.SIGILL, signal.SIGQUIT,
+                 signal.SIGTRAP, signal.SIGSYS)
 # The only signals a row or the user sends to end an editor on purpose; an
 # editor found dead by any other signal before the row ended it is flagged.
 QUIET_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
@@ -672,8 +676,14 @@ def _take_controlling_tty():
         fcntl.ioctl(STDOUT_FD, termios.TIOCSCTTY, 0)
 
 
-def _child_setup(parent_pid, controlling_tty=False, stage_fd=None):
+def _child_setup(parent_pid, controlling_tty=False, stage_fd=None,
+                 core_limit=None):
     """Return the function a new child runs before exec.
+
+    With core_limit (a byte count, 0 for none) the child's core file size
+    limit is set to it before exec, and the process and everything it starts
+    inherit it: a row that kills its editor with a crash signal on purpose
+    gives the machine no core file to keep and no journal record to read.
 
     On Linux it asks for SIGTERM when pytest's main thread dies, so a
     pytest that was killed takes its displays and editors with it, and it
@@ -691,6 +701,8 @@ def _child_setup(parent_pid, controlling_tty=False, stage_fd=None):
             raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG)")
         if os.getppid() != parent_pid:
             os._exit(1)
+        if core_limit is not None:
+            resource.setrlimit(resource.RLIMIT_CORE, (core_limit, core_limit))
         if controlling_tty:
             try:
                 _take_controlling_tty()
@@ -1370,8 +1382,12 @@ class Owner:
     def launch(self, argv, env, cwd, log_dir, kind, label, request=None,
                daemons=None, ladder_s=SERVICE_GRACE_S, pass_fds=(),
                detached_from_terminal=False, stdio=LOG, stdin_fd=None,
-               controlling_tty=False):
+               controlling_tty=False, core_limit=None):
         """Start argv as an owned process and return it.
+
+        core_limit sets the process's core file size limit before it runs
+        (0: no core file); a row that ends a process with a crash signal on
+        purpose passes 0 so the machine keeps no core of it.
 
         stdio says where the standard streams go.  LOG (the default): the
         output goes to the process's log and its input is empty.  PIPES:
@@ -1425,7 +1441,8 @@ class Owner:
                                     pass_fds=pass_fds,
                                     preexec_fn=_child_setup(os.getpid(),
                                                             controlling_tty,
-                                                            stage_write))
+                                                            stage_write,
+                                                            core_limit))
         except subprocess.SubprocessError as error:
             raise OwnerRefused(_start_failure_text(kind, label,
                                                    _read_stage(stage_read))) from error
@@ -1491,8 +1508,10 @@ class Owner:
         errors = self._row_errors
         self._row_errors = []
         for owned in self.entries_since(pids):
-            leaks.extend(leak for leak in owned.end_collect()
-                         if not leak.declared)
+            found, exit_error = owned.end_and_judge()
+            leaks.extend(found)
+            if exit_error is not None:
+                errors.append(exit_error)
         errors.extend(self._row_errors)
         self._row_errors = []
         self._raise_engine_hits()
@@ -1972,6 +1991,7 @@ class OwnedProcess:
         self.display_loss_expected = False
         self.exit_declared = False
         self.exit_code_declared = None
+        self.crash_declared = None
         self.early_returncode = None
         self.final_returncode = None
 
@@ -1993,6 +2013,17 @@ class OwnedProcess:
         that a crash or an exit nobody asked for still fails the row."""
         self.exit_declared = True
         self.exit_code_declared = code
+
+    def expect_crash(self, sig):
+        """Declare that this editor is made to die of the signal sig.
+
+        The row passes only when the editor was found dead of exactly that
+        signal before the row ended it; an editor still running, or one that
+        ended any other way, fails the row, so a crash a row provokes is
+        proven to have happened.  The declaration must be made at start
+        (Terminal.start, Editor.start: expect_crash=) so the editor is also
+        started with no core file allowed."""
+        self.crash_declared = signal.Signals(sig)
 
     def refresh_tree(self):
         """Note what the process has started so far, while it runs.
@@ -2192,25 +2223,101 @@ class OwnedProcess:
         when the row failed before its first wait was over.  Calling it a
         second time does nothing."""
         first = not self.ended
-        undeclared = [leak for leak in self.end_collect() if not leak.declared]
-        if undeclared:
+        leaks, error = self.end_and_judge()
+        if leaks:
             raise LeakedProcesses("%s left %d process(es) behind, now ended:\n  %s"
-                                  % (self.label, len(undeclared),
-                                     "\n  ".join(l.describe() for l in undeclared)))
+                                  % (self.label, len(leaks),
+                                     "\n  ".join(l.describe() for l in leaks)))
         if first and self.kind == "xwpe":
             self._check_display_log()
-            self._check_exit()
+        if error is not None:
+            raise error
 
     def end_for_row(self):
         """End the process and leave what it left to the row's own end.
 
         For a driver that ends its editor where an error would hide the
         row's own failure (the exit of a `with` block): the leaks are kept
-        (Owner.hold_for_row) and the row errors, naming them, when it ends.
-        Returns the leaks."""
-        leaks = [leak for leak in self.end_collect() if not leak.declared]
+        (Owner.hold_for_row) and a bad exit is kept too (Owner.hold_error),
+        and the row errors, naming them, when it ends.  Returns the leaks."""
+        leaks, error = self.end_and_judge()
         self.owner.hold_for_row(leaks)
+        if error is not None:
+            self.owner.hold_error(error)
         return leaks
+
+    def end_and_judge(self):
+        """End the process once; return (undeclared leaks, exit error or None).
+
+        The one place an end is judged, for every way a row ends an editor
+        (end, end_for_row, Owner.end_since): the exit is read only on the
+        first end, so a second call returns nothing to report."""
+        first = not self.ended
+        leaks = [leak for leak in self.end_collect() if not leak.declared]
+        error = self.exit_error() if first else None
+        return leaks, error
+
+    def exit_error(self):
+        """The error for how this editor ended, or None when it ended well.
+
+        A declared crash (expect_crash) is judged by that alone: the editor
+        must have been found dead of exactly that signal.  Otherwise a
+        graphical editor (kind xwpe) fails for a crash signal, a failure
+        code nobody declared, or any signal but SIGTERM and SIGHUP while it
+        was found already dead.  A terminal editor (kind wpe) fails for a
+        crash signal only, whether it died by itself or while the owner's
+        ladder ended it.  The terminal rule is narrower on purpose: terminal
+        rows end the editor with SIGKILL, and with the loss of its input
+        (exit code 1), as a way of testing it, and no row has been audited
+        for its exit codes.  Out of scope, its own class: auditing terminal
+        rows for exit codes; revisit with the first terminal row that hides a
+        wrong exit code.  A process of any other kind is not judged."""
+        if self.crash_declared is not None:
+            return self._declared_crash_error()
+        if self.kind == "xwpe":
+            return self._graphical_exit_error()
+        if self.kind == "wpe":
+            return self._terminal_exit_error()
+        return None
+
+    def _declared_crash_error(self):
+        """The error when the editor did not die of the declared signal
+        before the row ended it, else None."""
+        wanted = self.crash_declared
+        if self.early_returncode == -wanted:
+            return None
+        if self.early_returncode is None:
+            what = "was still running when the row ended it"
+        else:
+            what = unexpected_exit_text(self.early_returncode) or "exited by itself"
+        return UnexpectedExit("%s: expected %s, the editor %s (log %s)"
+                              % (self.label, wanted.name, what, self.log))
+
+    def _terminal_exit_error(self):
+        """The error when a terminal editor died of a crash signal."""
+        for code in (self.early_returncode, self.final_returncode):
+            if code is not None and code < 0 and -code in CRASH_SIGNALS:
+                return UnexpectedExit("%s: the editor killed by %s (log %s)"
+                                      % (self.label,
+                                         signal.Signals(-code).name, self.log))
+        return None
+
+    def _graphical_exit_error(self):
+        """The error when a graphical editor ended by itself and badly.
+
+        An editor found already ended before the row ended it crashed or
+        left with a failure code unless the row declared that exit (a
+        declaration accepts a non-zero code, never a signal); a quiet exit
+        0 or a SIGTERM the row sent is how rows end it.  An editor the
+        owner's ladder ended is flagged only when it died of a crash
+        signal."""
+        if self.early_returncode is not None:
+            return self._early_exit_error()
+        what = unexpected_exit_text(self.final_returncode, by_ladder=True)
+        if what is None:
+            return None
+        return UnexpectedExit("%s: the editor %s while the owner "
+                              "ended it (log %s)" % (self.label, what, self.log))
 
     def _check_display_log(self):
         """Error the row when the editor's log reports a lost display.
@@ -2229,39 +2336,47 @@ class OwnedProcess:
                 "%s: the editor's log reports a lost display:\n  %s\n(log %s)"
                 % (self.label, "\n  ".join(lines), self.log))
 
-    def _check_exit(self):
-        """Error the row when the editor ended by itself and badly.
-
-        An editor found already ended before the row ended it crashed or
-        left with a failure code unless the row declared that exit (a
-        declaration accepts a non-zero code, never a signal); a quiet exit
-        0 or a SIGTERM the row sent is how rows end it.  An editor the
-        owner's ladder ended is flagged only when it died of a crash
-        signal."""
-        if self.early_returncode is not None:
-            self._check_early_exit()
-        else:
-            what = unexpected_exit_text(self.final_returncode, by_ladder=True)
-            if what is not None:
-                raise UnexpectedExit("%s: the editor %s while the owner "
-                                     "ended it (log %s)"
-                                     % (self.label, what, self.log))
-
-    def _check_early_exit(self):
+    def _early_exit_error(self):
         """The rule for an editor that was already dead when the row ended it."""
         code = self.early_returncode
         what = unexpected_exit_text(code)
         if what is None:
-            return
+            return None
         if self.exit_declared and code > 0 and self.exit_code_declared in (
                 None, code):
-            return
-        raise UnexpectedExit("%s: the editor %s before the row ended it "
-                             "(log %s)" % (self.label, what, self.log))
+            return None
+        return UnexpectedExit("%s: the editor %s before the row ended it "
+                              "(log %s)" % (self.label, what, self.log))
 
 
 # ---------------------------------------------------------------------------
 # The launchers rows call
+
+
+SELF_CRASH_VAR = "XWPE_TEST_CRASH"
+NO_CORE_BYTES = 0
+
+
+def _core_limit_for(expect_crash):
+    """The core file limit an editor starts with: none when the row makes
+    it crash on purpose, else the machine's own."""
+    return NO_CORE_BYTES if expect_crash is not None else None
+
+
+def _declare_crash(owned, expect_crash):
+    """Record on the owned editor the crash its row declared, if any."""
+    if expect_crash is not None:
+        owned.expect_crash(expect_crash)
+
+
+def _refuse_undeclared_self_crash(env, expect_crash, kind, label):
+    """Refuse to start an editor told to crash itself by a row that did not
+    declare the crash, so a self-crash can never leave a core nobody
+    expected."""
+    if env.get(SELF_CRASH_VAR) and expect_crash is None:
+        raise OwnerRefused("%s for %s: %s makes the editor crash itself; "
+                           "the row must start it with expect_crash="
+                           % (kind, label, SELF_CRASH_VAR))
 
 
 class Editor:
@@ -2270,8 +2385,15 @@ class Editor:
     @staticmethod
     def start(owner, binary, args, backend, display, cwd, home, log_dir=None,
               extra_env=None, label="", request=None, daemons=None, dump=None,
-              detached_from_terminal=False, stdio=LOG, inherit=()):
+              detached_from_terminal=False, stdio=LOG, inherit=(),
+              expect_crash=None):
         """Start the editor on a display this owner started.
+
+        expect_crash (a signal) declares that the row makes the editor die
+        of it; the editor is then started with no core file allowed, and the
+        row fails unless it died of exactly that signal (see
+        OwnedProcess.expect_crash).  The variable that makes the editor
+        crash itself (XWPE_TEST_CRASH) is refused without it.
 
         With stdio an int (the slave side of a pty, see Owner.launch) the
         editor's standard streams are that terminal, so a row can read what
@@ -2298,11 +2420,14 @@ class Editor:
         _inherit(owner, env, inherit, log_dir)
         _apply_extra(env, extra_env)
         env["XWPE_BACKEND"] = backend
+        _refuse_undeclared_self_crash(env, expect_crash, "xwpe", label)
         owned = owner.launch([binary] + list(args), env, cwd, log_dir, "xwpe",
                              label, request=request, daemons=daemons,
                              ladder_s=editor_end_ladder_s(),
                              detached_from_terminal=detached_from_terminal,
-                             stdio=stdio)
+                             stdio=stdio,
+                             core_limit=_core_limit_for(expect_crash))
+        _declare_crash(owned, expect_crash)
         owned.env = env
         return owned
 
@@ -2386,9 +2511,18 @@ class Terminal:
     def start(owner, binary, args, cwd, home, master_fd, slave_fd,
               size=(COLS, ROWS), stdin_fd=None, extra_env=None, inherit=(),
               label="", request=None, daemons=None, log_dir=None,
-              pass_fds=(), on_output=None, extra_drains=()):
+              pass_fds=(), on_output=None, extra_drains=(),
+              expect_crash=None):
         """Start the editor on the pty (master_fd, slave_fd) and return the
         owned process; its .proc is the Popen a driver exposes.
+
+        expect_crash (a signal) declares that the row makes the editor die
+        of it: the editor is started with no core file allowed (the machine
+        keeps no dump of a crash the row provoked), and the row fails unless
+        the editor died of exactly that signal before the row ended it.
+        Without it the row fails when the editor dies of any crash signal,
+        and the variable that makes the editor crash itself (XWPE_TEST_CRASH)
+        is refused.
 
         While the editor is ended the owner reads the pty's master, and each
         (fd, callback) of extra_drains, so a full terminal or pipe never
@@ -2408,11 +2542,14 @@ class Terminal:
         log_dir = log_dir or home
         env = _terminal_editor_env(owner, home, log_dir, extra_env, inherit)
         set_pty_size(master_fd, *size)
+        _refuse_undeclared_self_crash(env, expect_crash, "wpe", label)
         owned = owner.launch([binary] + list(args), env, cwd, log_dir, "wpe",
                              label, request=request, daemons=daemons,
                              ladder_s=editor_end_ladder_s(), pass_fds=pass_fds,
                              stdio=slave_fd, stdin_fd=stdin_fd,
-                             controlling_tty=True)
+                             controlling_tty=True,
+                             core_limit=_core_limit_for(expect_crash))
+        _declare_crash(owned, expect_crash)
         owned.env = env
         owned.add_drain_source(master_fd, on_output)
         for fd, callback in extra_drains:

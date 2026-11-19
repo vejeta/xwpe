@@ -48,7 +48,8 @@ def _crash(w):
 # @scenario SC-chosen-names-07
 def test_a_crash_leaves_its_file_under_a_per_process_name(tmp_path):
     state = _state_env(tmp_path)
-    with WpeSession(str(tmp_path), "int x;\n", env_extra={"XDG_STATE_HOME": state}) as w:
+    with WpeSession(str(tmp_path), "int x;\n", env_extra={"XDG_STATE_HOME": state},
+                    expect_crash=signal.SIGSEGV) as w:
         pid = w.proc.pid
         assert _crash(w) == -signal.SIGSEGV
     crash = os.path.join(state, "xwpe", "crash-%d.txt" % pid)
@@ -66,7 +67,8 @@ def test_a_crash_does_not_write_through_a_planted_link(tmp_path):
     os.makedirs(folder, mode=0o700)
     victim = tmp_path / "victim"
     victim.write_text(VICTIM_TEXT)
-    with WpeSession(str(tmp_path), "int x;\n", env_extra={"XDG_STATE_HOME": state}) as w:
+    with WpeSession(str(tmp_path), "int x;\n", env_extra={"XDG_STATE_HOME": state},
+                    expect_crash=signal.SIGSEGV) as w:
         planted = os.path.join(folder, "crash-%d.txt" % w.proc.pid)
         os.symlink(str(victim), planted)
         assert _crash(w) == -signal.SIGSEGV

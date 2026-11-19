@@ -140,7 +140,8 @@ def test_a_crash_writes_the_whole_release_string_last(tmp_path):
     the shell is back."""
     database = terminfo.private_database(tmp_path)
     env = dict(terminfo.environment(database), XWPE_TEST_CRASH="1")
-    with WpeSession(str(tmp_path), SEED, env_extra=env) as w:
+    with WpeSession(str(tmp_path), SEED, env_extra=env,
+                    expect_crash=signal.SIGSEGV) as w:
         w._drain(2.0)
         raw = bytes(w.raw)
         assert not w.alive(), "the editor did not crash"
@@ -233,7 +234,8 @@ def test_a_crash_while_a_shell_has_the_terminal_resets_nothing_twice(tmp_path):
     """SIGSEGV during File > Shell: the handler leaves the keyboard modes and
     the screen alone, which the hand-over already gave back."""
     shell = write_sleeping_shell(str(tmp_path))
-    with WpeSession(str(tmp_path), SEED, env_extra={"SHELL": shell}) as w:
+    with WpeSession(str(tmp_path), SEED, env_extra={"SHELL": shell},
+                    expect_crash=signal.SIGSEGV) as w:
         mark = shell_has_the_terminal(w)
         os.kill(w.proc.pid, signal.SIGSEGV)
         wait_for_exit(w)
@@ -260,7 +262,8 @@ def user_screen_is_up(w):
 @needs_gcc
 def test_a_crash_on_the_user_screen_resets_nothing_twice(tmp_path):
     """SIGSEGV on the User Screen, which has the terminal handed over."""
-    with WpeSession(str(tmp_path), PROG, filename="t.c", wait=1.5) as w:
+    with WpeSession(str(tmp_path), PROG, filename="t.c", wait=1.5,
+                    expect_crash=signal.SIGSEGV) as w:
         mark = user_screen_is_up(w)
         os.kill(w.proc.pid, signal.SIGSEGV)
         wait_for_exit(w)

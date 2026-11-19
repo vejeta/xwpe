@@ -1153,8 +1153,10 @@ int __wrap_chdir(const char *path)
 {
 	if (getpid() != test_pid && gate_path)
 		wait_at_gate();
-	if (getpid() != test_pid && chdir_raises)
+	if (getpid() != test_pid && chdir_raises) {
+		test_child_dies_on_purpose();
 		raise(chdir_raises);
+	}
 	return __real_chdir(path);
 }
 
@@ -1292,14 +1294,6 @@ static void test_a_report_nobody_reads_does_not_kill_the_child(void)
 
 /* ---- the program ----------------------------------------------------------------- */
 
-static void keep_the_rows_from_dumping_core(void)
-{
-	struct rlimit rl;
-
-	rl.rlim_cur = rl.rlim_max = 0;
-	setrlimit(RLIMIT_CORE, &rl);
-}
-
 int main(void)
 {
 	test_pid = getpid();
@@ -1309,7 +1303,6 @@ int main(void)
 		printf("FAIL: no shared memory\n");
 		return 1;
 	}
-	keep_the_rows_from_dumping_core();
 	test_watchdog_case("test_childsafe (what a child may do between fork and "
 	                   "exec): a child never ended", HANG_SECONDS);
 	WpeChildWakeOpen();

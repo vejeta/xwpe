@@ -116,6 +116,7 @@ static int run_child_that_ends(void (*body)(void), char *message)
  {
   struct sigaction ign;
 
+  test_child_dies_on_purpose();
   memset(&ign, 0, sizeof ign);
   ign.sa_handler = SIG_DFL;
   sigaction(SIGABRT, &ign, NULL);

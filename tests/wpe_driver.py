@@ -671,8 +671,14 @@ class WpeSession(procinfo.ChildAsker):
     def __init__(self, workdir, seed, filename="t.c", cols=COLS, rows=ROWS,
                  wait=1.3, env_extra=None, real_login=False,
                  stdin_is_terminal=True, answer_server_start=False,
-                 args=(), new_profile=False, inherit=()):
+                 args=(), new_profile=False, inherit=(), expect_crash=None):
         """``args`` are command-line options put before the file name.
+        ``expect_crash`` is the signal a row that crashes its editor on
+        purpose names (``signal.SIGSEGV``): the editor starts with no core
+        file allowed and the row fails unless it died of exactly that
+        signal.  It must be given here, at start, so the limit is in place.
+        A row that does not give it fails when its editor dies of a crash
+        signal.
         ``inherit`` names the variables of the machine this row's editor may
         have on top of the owner's allow-list (an API key for a live row);
         everything else of the machine's environment stays out.
@@ -748,7 +754,7 @@ class WpeSession(procinfo.ChildAsker):
             self.master_fd, slave_fd, (cols, rows), stdin_fd=stdin_arg,
             extra_env=extra_env, inherit=inherit,
             label="%s %s" % (os.path.basename(workdir), filename),
-            on_output=self._take_output)
+            on_output=self._take_output, expect_crash=expect_crash)
         self.proc = self.owned.proc
         # The trace the editor was given (the row's, else the machine's);
         # None: there is no trace to read.

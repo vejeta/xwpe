@@ -131,7 +131,8 @@ def test_a_crash_gives_the_modes_back_as_the_last_thing_written(tmp_path):
     screen: the release string is the last thing written."""
     database = terminfo.private_database(tmp_path)
     env = dict(terminfo.environment(database), XWPE_TEST_CRASH="1")
-    with WpeSession(str(tmp_path), SEED, env_extra=env) as w:
+    with WpeSession(str(tmp_path), SEED, env_extra=env,
+                    expect_crash=signal.SIGSEGV) as w:
         w._drain(2.0)
         raw = bytes(w.raw)
         assert not w.alive(), "the editor did not crash"

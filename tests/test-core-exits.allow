@@ -1,0 +1,6 @@
+# file function count why
+# The C test functions that end by a core signal without calling
+# test_child_dies_on_purpose() first, exact counts; a count may only fall.
+tests/interpose.h wpe_interpose_die 1 the one place an interposed call dies; the row that provokes it (test_interpose.c) takes the core file away in its own child first
+tests/mock_badengine.c mock_regexec 1 a crash here is the failure its row exists to catch (a regex engine that dies on a bad pattern), so it keeps its core
+tests/fakechmod.h fakechmod_arm_from_env 1 an unknown face name is a mistake in the test that set it; the abort is the failure and keeps its core
