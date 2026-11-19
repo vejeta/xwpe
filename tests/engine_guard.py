@@ -477,11 +477,17 @@ def check_path_present(env):
 
 def check_farm_outside(farm, cwd):
     """Refuse a working folder that holds the farm: the product drops PATH
-    folders inside the workspace from an engine's PATH."""
-    work = cwd or os.getcwd()
-    if _inside(farm.root, work):
+    folders inside the workspace from an engine's PATH.
+
+    Only a working folder the launch names is a workspace.  A launch with no
+    cwd (a short tool of the session, xdotool) inherits the session's own,
+    which may hold the pytest basetemp and so the farm, and is no row's
+    workspace."""
+    if cwd is None:
+        return
+    if _inside(farm.root, cwd):
         raise GuardRefused("the tool farm %s is inside the working folder %s"
-                           % (farm.root, work))
+                           % (farm.root, cwd))
 
 
 def check_host_command(env, farm, scratch):

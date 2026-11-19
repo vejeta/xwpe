@@ -465,6 +465,9 @@ def _account_and_scratch_home(tmp_path, monkeypatch):
     os.symlink(str(account / ".claude"), str(scratch / ".claude"))
     monkeypatch.setattr(pwd, "getpwuid",
                         lambda uid: types.SimpleNamespace(pw_dir=str(account)))
+    # The account here is in the row's scratch, which is inside the session's
+    # basetemp: the basetemp exemption is not what these rows are about.
+    monkeypatch.setattr(gui_owner, "_SESSION_BASETEMP", None)
     return account, scratch
 
 
@@ -587,14 +590,58 @@ def test_the_session_error_collects_both_what_was_denied_and_what_leaked():
 
 
 # @scenario SC-test-real-tools-26
-def test_the_farm_is_made_under_the_folder_the_session_names(machine):
-    """The farm goes under the pytest basetemp of the session, so it is outside
-    every row's working folder and goes with the session."""
+@pytest.mark.parametrize("inside", [True, False],
+                         ids=["basetemp-inside-cwd", "basetemp-outside-cwd"])
+def test_the_farm_is_made_under_the_folder_the_session_names(
+        machine, monkeypatch, inside):
+    """The farm goes under the pytest basetemp of the session and goes with
+    it, wherever the session was started: a row runs in its own folder (a
+    sibling of the farm), and a launch with no folder of its own is no row's
+    workspace."""
     base = machine.tmp / "basetemp"
     base.mkdir()
+    elsewhere = machine.tmp / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(machine.tmp if inside else elsewhere)
+    monkeypatch.setattr(gui_owner, "_SESSION_BASETEMP", None)   # restored after
     machine.owner.use_farm_base(str(base))
-    machine.run("true")
+    assert machine.run("true") == 0
+    owned = machine.owner.launch(["/bin/sh", "-c", "true"], machine.env(), None,
+                                 str(machine.tmp), "tool", "no folder")
+    assert owned.proc.wait(timeout=RUN_S) == 0
     assert os.path.dirname(machine.owner._farm.root) == str(base)
+
+
+# @scenario SC-test-real-tools-32
+def test_a_fake_login_under_a_basetemp_inside_the_account_home_is_allowed(
+        machine, monkeypatch):
+    """When TMPDIR or --basetemp sits inside the account's home, a login a row
+    made in its scratch is not the user's; a link from the scratch to the
+    account's own .claude still resolves outside the basetemp and is refused."""
+    import types
+    import wpe_driver
+    account = machine.tmp / "acct-home"
+    (account / ".claude").mkdir(parents=True)
+    base = account / "base"
+    base.mkdir()
+    fake_login = base / "fake-login-home"
+    (fake_login / ".claude").mkdir(parents=True)
+    linked = base / "linked-home"
+    linked.mkdir()
+    os.symlink(str(account / ".claude"), str(linked / ".claude"))
+    monkeypatch.setattr(pwd, "getpwuid",
+                        lambda uid: types.SimpleNamespace(pw_dir=str(account)))
+    monkeypatch.setattr(gui_owner, "_SESSION_BASETEMP", None)   # restored after
+    machine.owner.use_farm_base(str(base))
+    previous = gui_owner._CURRENT
+    gui_owner.install(machine.owner)
+    try:
+        machine.owner.begin_row(ROW, PLAIN_FILE)
+        wpe_driver.WpeSession._refuse_account_login(str(fake_login))
+        with pytest.raises(gui_owner.OwnerRefused, match=r"\.claude"):
+            wpe_driver.WpeSession._refuse_account_login(str(linked))
+    finally:
+        gui_owner.install(previous)
 
 
 # @scenario SC-test-real-tools-27

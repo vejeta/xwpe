@@ -222,7 +222,22 @@ def is_account_data(path):
     own engine logins are there, whatever link reaches them."""
     own = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
     real = os.path.realpath(path)
-    return real == own or real.startswith(own.rstrip(os.sep) + os.sep)
+    if _SESSION_BASETEMP is not None and _is_inside(real, _SESSION_BASETEMP):
+        # The session's own scratch is never the user's login, even when the
+        # temporary folder is inside the home; a link from there to the real
+        # login resolves outside it and is judged below.
+        return False
+    return _is_inside(real, own)
+
+
+def _is_inside(real, folder):
+    """True when the realpath @real is the realpath of @folder or below it."""
+    folder = os.path.realpath(folder)
+    return real == folder or real.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+# The session's pytest basetemp, noted by Owner.use_farm_base.
+_SESSION_BASETEMP = None
 
 
 def session_error(stray_hits, late):
@@ -1506,13 +1521,14 @@ class Owner:
     def use_farm_base(self, folder):
         """Make the farm under @folder (the session's pytest basetemp: it is
         removed with the session and is outside every row's working folder).
-        Takes effect only before the first launch made the farm, and not
-        when @folder is inside this process's own working folder (a nested
-        run started with its basetemp under its cwd): the farm would then be
-        inside the working folder of what it starts."""
-        inside_cwd = os.path.realpath(folder).startswith(
-            os.path.realpath(os.getcwd()).rstrip(os.sep) + os.sep)
-        if self._farm is None and not inside_cwd:
+        Takes effect only before the first launch made the farm.  The session's
+        own working folder does not matter, so a --basetemp inside it is
+        fine: a row's folder is its own tmp_path, a sibling of the farm, and
+        launch refuses an explicit working folder that holds the farm
+        (engine_guard.check_farm_outside)."""
+        global _SESSION_BASETEMP
+        _SESSION_BASETEMP = folder
+        if self._farm is None:
             self._farm_base = folder
 
     def _farm_made(self):
