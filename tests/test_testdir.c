@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "testdir.h"
@@ -83,6 +84,28 @@ int chown(const char *path, uid_t uid, gid_t gid)
  return(real(path, uid, gid));
 }
 
+/* ---- the fchdir of a socket plant, as the test's own ---- */
+
+static int fchdir_fail_at;        /* the Nth call from now fails; 0: none */
+static int fchdir_calls;
+
+int fchdir(int fd)
+{
+ static int (*real)(int);
+
+ fchdir_calls++;
+ if (fchdir_fail_at != 0 && fchdir_calls == fchdir_fail_at)
+ {
+  errno = EACCES;
+  return(-1);
+ }
+ if (real == NULL)
+  *(void **)&real = dlsym(RTLD_NEXT, "fchdir");
+ if (real == NULL)
+  abort();
+ return(real(fd));
+}
+
 /* ---- helpers of the test ---- */
 
 static char out_text[4096];
@@ -126,11 +149,11 @@ static long mode_of(const char *dir, const char *name)
  char p[512];
  struct stat st;
 
- snprintf(p, sizeof p, "%s/%s", dir, name);
+ test_path_join(p, sizeof p, dir, name);
  return(lstat(p, &st) == 0 ? (long)(st.st_mode & 07777) : -1L);
 }
 
-static char folder[256];
+static char folder[TEST_DIR_PATH_SIZE];
 
 static void make_folder(void)
 {
@@ -170,7 +193,7 @@ static void test_dir_make_gives_the_users_group(void)
    the failure is counted so the test's exit status shows it. */
 static void test_dir_make_says_when_the_group_is_refused(void)
 {
- char dir[256];
+ char dir[TEST_DIR_PATH_SIZE];
  int rc;
 
  collect_begin();
@@ -191,7 +214,7 @@ static void test_dir_make_says_when_the_group_is_refused(void)
    second file system under /dev/shm) decides. */
 static void test_dir_make_under_a_missing_base_is_quiet(void)
 {
- char dir[256];
+ char dir[TEST_DIR_PATH_SIZE];
  int rc;
 
  collect_begin();
@@ -207,7 +230,7 @@ static void test_dir_make_under_a_missing_base_is_quiet(void)
    write to) is a counted failure by name, not a quiet "no such base". */
 static void test_dir_make_under_an_unwritable_base_is_a_failure(void)
 {
- char dir[256];
+ char dir[TEST_DIR_PATH_SIZE];
  int rc;
 
  if (access("/", W_OK) == 0)
@@ -483,9 +506,142 @@ static void test_other_group_is_a_group_of_ours(void)
  chk_int("not the effective one", g != getegid(), 1);
 }
 
+/* A template that does not fit the caller's buffer is a counted FAIL that
+   names both lengths, and no folder is made under a cut name. */
+static void test_dir_make_under_refuses_a_cut_template(void)
+{
+ char dir[16];
+ int rc;
+
+ collect_begin();
+ rc = test_dir_make_under("/var/tmp/a-base-longer-than-the-buffer", dir, sizeof dir, "td");
+ collect_end();
+ chk_int("make_under fails", rc, -1);
+ chk_int("the folder name is empty", dir[0], '\0');
+ chk_has("the line says the path is too long", out_text, "the path needs ");
+ chk_has("the line says what the buffer holds", out_text, "the buffer holds 16");
+ chk_int("the failure is counted", test_dir_failures, 1);
+ test_dir_failures = 0;
+}
+
+/* A join that does not fit is a counted FAIL and an empty name, never a
+   shorter path in another folder. */
+static void test_path_join_refuses_a_cut_path(void)
+{
+ char out[8];
+ int rc;
+
+ chk_int("a path that fits", test_path_join(out, sizeof out, "ab", "cd"), 0);
+ chk_has("is joined with a slash", out, "ab/cd");
+ collect_begin();
+ rc = test_path_join(out, sizeof out, "abcd", "efgh");
+ collect_end();
+ chk_int("a path that does not fit fails", rc, -1);
+ chk_int("the name is empty", out[0], '\0');
+ chk_has("the line names the path", out_text, "path abcd/efgh");
+ chk_int("the failure is counted", test_dir_failures, 1);
+ test_dir_failures = 0;
+}
+
+/* A socket is planted in a folder whose path is longer than a socket name
+   holds, is a socket, and nothing is left under a cut name outside the
+   folder. */
+static void test_plant_socket_in_a_folder_longer_than_a_socket_name(void)
+{
+ char deep[TEST_DIR_PATH_SIZE], path[TEST_DIR_PATH_SIZE], cwd_before[TEST_DIR_PATH_SIZE];
+ char cwd_after[TEST_DIR_PATH_SIZE];
+ struct stat st;
+ size_t used;
+
+ make_folder();
+ snprintf(deep, sizeof deep, "%s", folder);
+ for (used = strlen(deep); used < test_plant_socket_name_max() + 40; used = strlen(deep))
+ {
+  strcat(deep, "/dddddddddddddddddddddddddddddddddddd");
+  chk_int("a deeper folder", mkdir(deep, 0700), 0);
+ }
+ test_path_join(path, sizeof path, deep, "s");
+ if (getcwd(cwd_before, sizeof cwd_before) == NULL)
+  cwd_before[0] = '\0';
+ chk_int("the socket is planted", test_plant_socket(path), 0);
+ chk_int("it is there", lstat(path, &st), 0);
+ chk_int("it is a socket", S_ISSOCK(st.st_mode) != 0, 1);
+ if (getcwd(cwd_after, sizeof cwd_after) == NULL)
+  cwd_after[0] = '\0';
+ chk_int("the working folder is as it was", strcmp(cwd_before, cwd_after), 0);
+ chk_int("no failure was counted", test_dir_failures, 0);
+ drop_folder();
+}
+
+/* A last name longer than a socket name holds is refused by name, and the
+   working folder is put back. */
+static void test_plant_socket_refuses_a_name_longer_than_a_socket_name(void)
+{
+ char path[TEST_DIR_PATH_SIZE], name[200];
+ int rc;
+
+ make_folder();
+ memset(name, 'n', sizeof name - 1);
+ name[sizeof name - 1] = '\0';
+ test_path_join(path, sizeof path, folder, name);
+ collect_begin();
+ rc = test_plant_socket(path);
+ collect_end();
+ chk_int("the plant fails", rc, -1);
+ chk_has("the line says the name is too long", out_text, "is longer than a socket name holds");
+ chk_int("the failure is counted", test_dir_failures, 1);
+ test_dir_failures = 0;
+ drop_folder();
+}
+
+/* A plant that cannot return to the working folder ends the run at once with
+   a line naming the reason: the child's second fchdir fails, and it must exit
+   2 and say so, never return to the next row in the wrong folder. */
+static void test_plant_socket_that_cannot_return_ends_the_run(void)
+{
+ char path[TEST_DIR_PATH_SIZE], line[512];
+ int pipefd[2], status = 0;
+ ssize_t got;
+ pid_t pid;
+
+ make_folder();
+ test_path_join(path, sizeof path, folder, "s");
+ if (pipe(pipefd) != 0)
+ {
+  chk_int("a pipe", -1, 0);
+  drop_folder();
+  return;
+ }
+ fflush(stdout);
+ pid = fork();
+ if (pid == 0)
+ {
+  close(pipefd[0]);
+  dup2(pipefd[1], STDOUT_FILENO);
+  fchdir_calls = 0;
+  fchdir_fail_at = 2;
+  test_plant_socket(path);
+  _exit(0);
+ }
+ close(pipefd[1]);
+ got = read(pipefd[0], line, sizeof line - 1);
+ line[got > 0 ? got : 0] = '\0';
+ close(pipefd[0]);
+ if (pid < 0 || waitpid(pid, &status, 0) != pid)
+  status = -1;
+ chk_int("the run ended with exit 2", WIFEXITED(status) ? WEXITSTATUS(status) : -1, 2);
+ chk_has("the line says it could not return", line, "cannot return to the working folder: Permission denied");
+ drop_folder();
+}
+
 int main(void)
 {
  fakechmod_set(FAKECHMOD_OFF, 0);       /* the rows arm the fake themselves */
+ test_plant_socket_that_cannot_return_ends_the_run();
+ test_dir_make_under_refuses_a_cut_template();
+ test_path_join_refuses_a_cut_path();
+ test_plant_socket_in_a_folder_longer_than_a_socket_name();
+ test_plant_socket_refuses_a_name_longer_than_a_socket_name();
  test_dir_make_gives_the_users_group();
  test_dir_make_says_when_the_group_is_refused();
  test_dir_make_under_a_missing_base_is_quiet();

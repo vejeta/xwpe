@@ -30,12 +30,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #define TEST_DIR_UNPRIVILEGED_ENV "WPE_TEST_UNPRIVILEGED"
-#define TEST_DIR_PATH_SIZE   1024
+#define TEST_DIR_PATH_SIZE   4096
 #define TEST_DIR_WHY_SIZE    160
 #define TEST_DIR_GROUPS_MAX  64
 #define TEST_DIR_MODE_BITS   07777
@@ -78,6 +80,27 @@ static void test_dir_fail(const char *fmt, ...)
 }
 
 /**
+ * test_path_join - Put DIR/NAME in OUT, or say why it does not fit.
+ *
+ * A row's file under a deep TMPDIR is never a silently shorter name in
+ * another folder; the row reads a FAIL that names both lengths.
+ *
+ * Return: 0, or -1 (OUT empty, printed and counted).
+ */
+static int test_path_join(char *out, size_t n, const char *dir, const char *name)
+{
+ int len = snprintf(out, n, "%s/%s", dir, name);
+
+ if (len >= 0 && (size_t)len < n)
+  return(0);
+ test_dir_fail("FAIL: path %s/%s: it needs %d bytes, the buffer holds %zu\n",
+               dir, name, len, n);
+ if (n > 0)
+  out[0] = '\0';
+ return(-1);
+}
+
+/**
  * test_dir_make_under - Make a test folder under BASE, in a group of this user.
  *
  * Where BASE does not exist (ENOENT, ENOTDIR) the result is -1 with DIR
@@ -95,8 +118,15 @@ static int test_dir_make_under(const char *base, char *dir, size_t n, const char
 {
  struct stat st;
  gid_t me = getegid();
+ int len = snprintf(dir, n, "%s/%s.XXXXXX", base, prefix);
 
- snprintf(dir, n, "%s/%s.XXXXXX", base, prefix);
+ if (len < 0 || (size_t)len >= n)
+ {
+  test_dir_fail("FAIL: test folder under %s: the path needs %d bytes, the buffer holds %zu\n",
+                base, len, n);
+  dir[0] = '\0';
+  return(-1);
+ }
  if (mkdtemp(dir) == NULL)
  {
   int why = errno;
@@ -173,7 +203,11 @@ static int test_dir_put_step(const char *dir, const char *name, const char *text
  ssize_t got;
  int fd;
 
- snprintf(path, sizeof path, "%s/%s", dir, name);
+ if (test_path_join(path, sizeof path, dir, name) != 0)
+ {
+  snprintf(why, n, "path too long");
+  return(-1);
+ }
  if (unlink(path) != 0 && errno != ENOENT)
  {
   test_dir_why(why, n, "unlink");
@@ -228,9 +262,12 @@ static int test_dir_put_step(const char *dir, const char *name, const char *text
 static int test_put_mode(const char *dir, const char *name, const char *text, mode_t mode)
 {
  char why[TEST_DIR_WHY_SIZE];
+ int before = test_dir_failures;
 
  if (test_dir_put_step(dir, name, text, mode, why, sizeof why) == 0)
   return(0);
+ if (test_dir_failures != before)
+  return(-1);                   /* the step counted it already (a cut path) */
  test_dir_fail("FAIL: put %s 0%o: %s\n", name, (unsigned)mode, why);
  return(-1);
 }
@@ -270,7 +307,8 @@ static int test_mkdir_mode(const char *dir, const char *name, mode_t mode)
 {
  char path[TEST_DIR_PATH_SIZE], why[TEST_DIR_WHY_SIZE];
 
- snprintf(path, sizeof path, "%s/%s", dir, name);
+ if (test_path_join(path, sizeof path, dir, name) != 0)
+  return(-1);
  if (mkdir(path, 0700) != 0)
   test_dir_why(why, sizeof why, "mkdir");
  else if (test_dir_mode_check(path, mode, why, sizeof why) == 0)
@@ -288,7 +326,8 @@ static int test_chmod_mode(const char *dir, const char *name, mode_t mode)
 {
  char path[TEST_DIR_PATH_SIZE], why[TEST_DIR_WHY_SIZE];
 
- snprintf(path, sizeof path, "%s/%s", dir, name);
+ if (test_path_join(path, sizeof path, dir, name) != 0)
+  return(-1);
  if (test_dir_mode_check(path, mode, why, sizeof why) == 0)
   return(0);
  test_dir_fail("FAIL: chmod %s 0%o: %s\n", name, (unsigned)mode, why);
@@ -355,7 +394,8 @@ static int test_premise_folder_refuses_new_files(const char *dir)
  char p[TEST_DIR_PATH_SIZE];
  int fd, refused;
 
- snprintf(p, sizeof p, "%s/probe_new", dir);
+ if (test_path_join(p, sizeof p, dir, "probe_new") != 0)
+  return(0);
  if (chmod(dir, 0500) != 0)
  {
   test_dir_fail("FAIL: probe: chmod %s 0500: %s\n", dir, strerror(errno));
@@ -390,7 +430,8 @@ static int test_premise_file_0200_is_unreadable(const char *dir)
 
  if (test_put_mode(dir, "probe_read", "x\n", 0200) != 0)
   return(0);
- snprintf(p, sizeof p, "%s/probe_read", dir);
+ if (test_path_join(p, sizeof p, dir, "probe_read") != 0)
+  return(0);
  fd = open(p, O_RDONLY);
  refused = (fd < 0);
  if (fd >= 0)
@@ -417,8 +458,8 @@ static int test_premise_special_bits_settable(const char *dir, mode_t bits)
  int holds;
 
  holds = (test_dir_put_step(dir, "probe_bits", "x\n", 0644 | bits, why, sizeof why) == 0);
- snprintf(p, sizeof p, "%s/probe_bits", dir);
- unlink(p);
+ if (test_path_join(p, sizeof p, dir, "probe_bits") == 0)
+  unlink(p);
  return(holds);
 }
 
@@ -440,6 +481,138 @@ static gid_t test_other_group(void)
   if (groups[i] != getegid())
    return(groups[i]);
  return(TEST_DIR_NO_GROUP);
+}
+
+/**
+ * test_plant_socket_name_max - How many bytes the last name of a socket may hold.
+ *
+ * A row that wants a name too long for a socket asks here, so no test names
+ * the system's field itself.
+ */
+static size_t test_plant_socket_name_max(void)
+{
+ struct sockaddr_un addr;
+
+ return(sizeof addr.sun_path - 1);
+}
+
+/**
+ * test_plant_socket_named - Bind a socket at NAME in the working folder.
+ *
+ * Return: 0, or -1 with WHY naming the step.
+ */
+static int test_plant_socket_named(const char *name, char *why, size_t n)
+{
+ struct sockaddr_un addr;
+ int fd;
+
+ if (strlen(name) > test_plant_socket_name_max())
+ {
+  snprintf(why, n, "the last name is %zu bytes and is longer than a socket name holds (%zu)",
+           strlen(name), test_plant_socket_name_max());
+  return(-1);
+ }
+ fd = socket(AF_UNIX, SOCK_STREAM, 0);
+ if (fd < 0)
+ {
+  test_dir_why(why, n, "socket");
+  return(-1);
+ }
+ memset(&addr, 0, sizeof addr);
+ addr.sun_family = AF_UNIX;
+ memcpy(addr.sun_path, name, strlen(name));
+ if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0)
+ {
+  test_dir_why(why, n, "bind");
+  close(fd);
+  return(-1);
+ }
+ close(fd);
+ return(0);
+}
+
+/**
+ * test_plant_socket_lost - Stop the test when it cannot return to its working folder.
+ *
+ * Every later row would run in the socket's folder and read or write the
+ * wrong files, so the run ends at once with a line that says why, written to
+ * stdout whatever sink the helpers use.
+ */
+static void test_plant_socket_lost(const char *name, int why)
+{
+ printf("FAIL: socket %s: cannot return to the working folder: %s\n", name, strerror(why));
+ fflush(stdout);
+ exit(2);
+}
+
+/**
+ * test_plant_socket_in - Go into FOLDER, bind NAME there, and come back.
+ *
+ * The working folder is put back on every path out, so a failed plant never
+ * leaves the row somewhere else.
+ *
+ * Return: 0, or -1 with WHY naming the step.
+ */
+static int test_plant_socket_in(const char *folder, const char *name, char *why, size_t n)
+{
+ int home = open(".", O_RDONLY | O_DIRECTORY);
+ int there = open(folder, O_RDONLY | O_DIRECTORY);
+ int rc = -1;
+
+ if (home < 0 || there < 0)
+  test_dir_why(why, n, "open the folder");
+ else if (fchdir(there) != 0)
+  test_dir_why(why, n, "fchdir into the folder");
+ else
+ {
+  rc = test_plant_socket_named(name, why, n);
+  if (fchdir(home) != 0)
+   test_plant_socket_lost(name, errno);
+ }
+ if (home >= 0)
+  close(home);
+ if (there >= 0)
+  close(there);
+ return(rc);
+}
+
+/**
+ * test_plant_socket - Put a socket file (nobody listening) at PATH.
+ *
+ * Bound by its name inside its folder (fchdir to the folder, bind the last
+ * name, fchdir back), so a folder of any length holds one; only a last name
+ * longer than sun_path is refused.  A row that swaps a file for a socket
+ * under a deep TMPDIR no longer skips, and never leaves a socket under a cut
+ * name outside its folder.
+ *
+ * Return: 0, or -1 (printed and counted).
+ */
+static int test_plant_socket(const char *path)
+{
+ char folder[TEST_DIR_PATH_SIZE], why[TEST_DIR_WHY_SIZE];
+ const char *slash = strrchr(path, '/');
+ size_t len;
+
+ if (slash == NULL)
+  snprintf(folder, sizeof folder, ".");
+ else if (slash == path)
+  snprintf(folder, sizeof folder, "/");
+ else
+ {
+  len = (size_t)(slash - path);
+  if (len >= sizeof folder)
+  {
+   test_dir_fail("FAIL: socket %s: the folder needs %zu bytes, the buffer holds %zu\n",
+                 path, len + 1, sizeof folder);
+   return(-1);
+  }
+  memcpy(folder, path, len);
+  folder[len] = '\0';
+ }
+ if (test_plant_socket_in(folder, slash != NULL ? slash + 1 : path, why, sizeof why) == 0)
+  return(0);
+ test_dir_fail("FAIL: socket %s: %s\n", path, why);
+ return(-1);
 }
 
 #endif

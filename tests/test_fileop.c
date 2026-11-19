@@ -103,8 +103,8 @@ int e_eol_write(FILE *fp, BUFFER *b, int ya, int xa, int ye, int xe, int keep_fi
 
 /* ---- helpers ---- */
 
-static char dir[256];
-static char other[256];     /* a folder on another file system, or "" */
+static char dir[TEST_DIR_PATH_SIZE];
+static char other[TEST_DIR_PATH_SIZE];    /* a folder on another file system, or "" */
 
 static int remove_entry(const char *path, const struct stat *sb, int type, struct FTW *ftw)
 {
@@ -143,7 +143,7 @@ static void clean(void)
 
 static void path_of(char *out, size_t n, const char *name)
 {
- snprintf(out, n, "%s/%s", dir, name);
+ test_path_join(out, n, dir, name);
 }
 
 /* A file of the test folder with this text and exactly this mode.  A setup
@@ -171,7 +171,7 @@ static int get(const char *path, char *buf, size_t n)
 
 static void chk_file(const char *what, const char *name, const char *want)
 {
- char p[512], buf[256];
+ char p[TEST_DIR_PATH_SIZE], buf[256];
 
  path_of(p, sizeof p, name);
  if (get(p, buf, sizeof buf) != 0) {
@@ -184,7 +184,7 @@ static void chk_file(const char *what, const char *name, const char *want)
 
 static void chk_absent(const char *what, const char *name)
 {
- char p[512];
+ char p[TEST_DIR_PATH_SIZE];
  struct stat st;
 
  path_of(p, sizeof p, name);
@@ -572,20 +572,20 @@ static void test_move(void)
  text[n > 0 ? n : 0] = '\0';
  chk_str("the target text is kept", text, "x");
  if (other[0]) {
-  snprintf(dst, sizeof dst, "%s/dst.txt", other);
+  test_path_join(dst, sizeof dst, other, "dst.txt");
   put("src2.txt", "ACROSS\n", 0640);
   chk_int("move across devices", wpe_fileop_move("src2.txt", dst, &p, &o), 0);
   chk_absent("source gone after the copy", "src2.txt");
   get(dst, buf, sizeof buf);
   chk_str("copied bytes", buf, "ACROSS\n");
-  snprintf(link, sizeof link, "%s/l2", other);
+  test_path_join(link, sizeof link, other, "l2");
   symlink("y", "l2");
   chk_int("move a link across devices", wpe_fileop_move("l2", link, &p, &o), 0);
   n = readlink(link, text, sizeof text - 1);
   text[n > 0 ? n : 0] = '\0';
   chk_str("same text", text, "y");
   put("src3.txt", "KEEP\n", 0644);
-  snprintf(dst, sizeof dst, "%s/dst3.txt", other);
+  test_path_join(dst, sizeof dst, other, "dst3.txt");
   setenv("XWPE_TEST_FAIL", "fileop-remove-source", 1);
   chk_int("the source cannot be removed", wpe_fileop_move("src3.txt", dst, &p, &o), -1);
   unsetenv("XWPE_TEST_FAIL");
@@ -598,7 +598,7 @@ static void test_move(void)
   chk_has("says where the copy is", buf, "holds the copy");
   chk_has("and that the source stays", buf, "is still in place");
   /* a destination that is a link to a device is replaced, not written through */
-  snprintf(dst, sizeof dst, "%s/sink", other);
+  test_path_join(dst, sizeof dst, other, "sink");
   symlink("/dev/full", dst);
   put("src4.txt", "THROUGH\n", 0644);
   policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
@@ -637,7 +637,7 @@ static void test_link(void)
  chk_int("declined", o.status, WPE_FILEOP_DECLINED);
  p.hardlink_first = 1;
  if (other[0]) {
-  snprintf(link, sizeof link, "%s/x", other);
+  test_path_join(link, sizeof link, other, "x");
   chk_int("hard link across devices falls back", wpe_fileop_link("src.txt", link, &p, &o), 0);
   lstat(link, &st);
   chk_int("to a symbolic link", S_ISLNK(st.st_mode), 1);
@@ -791,11 +791,11 @@ static void test_tree_never_enters_a_link(void)
  chk_file("outside, move", "precious/keep.txt", "KEEP\n");
 
  if (other[0]) {
-  snprintf(dst, sizeof dst, "%s/rd", other);
+  test_path_join(dst, sizeof dst, other, "rd");
   tree_policy(&p, WPE_REPLACE_ASK, WPE_REMOVE_NOW);
   chk_int("move across file systems", wpe_fileop_move_tree("mv", dst, &p, &o), 0);
   chk_absent("source gone, across", "mv");
-  snprintf(dst, sizeof dst, "%s/rd/lnk", other);
+  test_path_join(dst, sizeof dst, other, "rd/lnk");
   chk_int("a link across file systems", is_link(dst), 1);
   link_text_is("its text across", dst, "../precious");
   chk_file("outside, move across", "precious/keep.txt", "KEEP\n");
@@ -1111,8 +1111,8 @@ static int swap_progress(void *ctx, const char *verb, const char *src, const cha
 
 static void swap_plan(WpeFileOpPolicy *p, const char *entry, const char *outside, int at)
 {
- snprintf(swap_entry, sizeof swap_entry, "%s/%s", dir, entry);
- snprintf(swap_out, sizeof swap_out, "%s/%s", dir, outside);
+ test_path_join(swap_entry, sizeof swap_entry, dir, entry);
+ test_path_join(swap_out, sizeof swap_out, dir, outside);
  swap_at = at;
  p->progress = swap_progress;
  progress_calls = 0;
@@ -1367,8 +1367,8 @@ static void test_tree_move_across_survives_a_swap_for_a_link(void)
  }
  chdir(dir);
  swap_fixture();
- snprintf(dst, sizeof dst, "%s/dst", other);
- snprintf(sub, sizeof sub, "%s/dst/sub", other);
+ test_path_join(dst, sizeof dst, other, "dst");
+ test_path_join(sub, sizeof sub, other, "dst/sub");
  mkdir(dst, 0755);
  mkdir(sub, 0755);
  tree_policy(&p, WPE_REPLACE_ALWAYS, WPE_REMOVE_NOW);
@@ -1399,7 +1399,7 @@ static int run_tree_op(int op, WpeFileOpPolicy *p, WpeFileOpOutcome *o)
  if (op == OP_REMOVE)
   return(wpe_fileop_remove_tree("src", p, o));
  if (op == OP_MOVE_ACROSS) {
-  snprintf(dst, sizeof dst, "%s/dst", other);
+  test_path_join(dst, sizeof dst, other, "dst");
   return(wpe_fileop_move_tree("src", dst, p, o));
  }
  return(wpe_fileop_move_tree("src", "dst", p, o));
@@ -1412,9 +1412,9 @@ static void make_swap_destination(int op)
  char sub[512];
 
  if (op == OP_MOVE_ACROSS) {
-  snprintf(sub, sizeof sub, "%s/dst", other);
+  test_path_join(sub, sizeof sub, other, "dst");
   mkdir(sub, 0755);
-  snprintf(sub, sizeof sub, "%s/dst/sub", other);
+  test_path_join(sub, sizeof sub, other, "dst/sub");
   mkdir(sub, 0755);
   return;
  }
@@ -1427,7 +1427,7 @@ static void chk_nothing_outside_in_destination(int op)
 {
  char dst[512];
 
- snprintf(dst, sizeof dst, "%s/dst", other);
+ test_path_join(dst, sizeof dst, other, "dst");
  outside_found = 0;
  if (op == OP_MOVE_ACROSS)
   nftw(dst, look_for_outside, 8, FTW_PHYS);
@@ -1563,7 +1563,7 @@ static void test_tree_a_link_with_a_slash_is_not_followed(void)
  if (other[0]) {
   char dst[512];
 
-  snprintf(dst, sizeof dst, "%s/mv", other);
+  test_path_join(dst, sizeof dst, other, "mv");
   chk_int("move lnk/ across", wpe_fileop_move_tree("lnk/", dst, &p, &o), -1);
   chk_file("outside, untouched, across", "out/keep.txt", "OUTSIDE\n");
   chk_int("the link stays, across", is_link("lnk"), 1);
@@ -2527,7 +2527,7 @@ static void test_a_move_across_file_systems_with_another_owner_drops_setuid(void
   return;
  }
  policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
- snprintf(dst, sizeof dst, "%s/t.moved", other);
+ test_path_join(dst, sizeof dst, other, "t.moved");
  owner_hook(OWNER_HOOK_OTHER);
  chk_int("the move is made", wpe_fileop_move("t.txt", dst, &p, &o), 0);
  owner_hook_off();

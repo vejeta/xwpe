@@ -131,9 +131,11 @@ static int seen_rows_dir(char *dir, size_t n, const char *prefix)
 
  if (base == NULL || base[0] == '\0')
   base = SEEN_ROWS_DEFAULT_DIR;
+ int before = test_dir_failures;
+
  if (test_dir_make_under(base, dir, n, prefix) != 0)
  {
-  if (dir[0] == '\0')
+  if (dir[0] == '\0' && test_dir_failures == before)
    test_dir_fail("FAIL: reuse folder: cannot make one under %s\n", base);
   return(-1);
  }
@@ -207,10 +209,15 @@ static int seen_rows_never_gives_back(const char *dir)
  struct stat first, second;
  int round, gave_back = 0;
 
- snprintf(scratch, sizeof scratch, "%s/probe", dir);
+ if (test_path_join(scratch, sizeof scratch, dir, "probe") != 0)
+  return(0);
  if (mkdir(scratch, 0700) != 0)
   return(0);
- snprintf(path, sizeof path, "%s/p", scratch);
+ if (test_path_join(path, sizeof path, scratch, "p") != 0)
+ {
+  rmdir(scratch);
+  return(0);
+ }
  for (round = 0; round < SEEN_ROWS_PROBE_ROUNDS && !gave_back; round++)
  {
   if (seen_rows_make_file(path, NULL) != 0 || lstat(path, &first) != 0)
@@ -230,7 +237,10 @@ static int seen_rows_never_gives_back(const char *dir)
  */
 static void seen_rows_filler_name(const char *dir, int n, char *out, size_t size)
 {
- snprintf(out, size, "%s/filler%d", dir, n);
+ char name[SEEN_ROWS_NAME_SIZE];
+
+ snprintf(name, sizeof name, "filler%d", n);
+ test_path_join(out, size, dir, name);
 }
 
 /**
@@ -255,7 +265,8 @@ static int seen_rows_reuse_once(const char *dir, const char *name, SeenRowsMake 
  struct stat st;
  int tries;
 
- snprintf(path, sizeof path, "%s/%s", dir, name);
+ if (test_path_join(path, sizeof path, dir, name) != 0)
+  return(0);
  for (tries = 0; tries < SEEN_ROWS_TRIES; tries++)
  {
   if (make(path, ctx) != 0 || lstat(path, &st) != 0)
@@ -309,7 +320,8 @@ static int seen_rows_attempt(const char *dir, const char *name, const SeenRowsCa
  char path[TEST_DIR_PATH_SIZE];
  struct stat st;
 
- snprintf(path, sizeof path, "%s/%s", dir, name);
+ if (test_path_join(path, sizeof path, dir, name) != 0)
+  return(0);
  if (pc->make_old(path, pc->old_ctx) != 0 || lstat(path, &st) != 0)
   return(0);
  if (pc->look_old != NULL)
@@ -326,7 +338,8 @@ static void seen_rows_clean_attempt(const char *dir, const char *name)
  char path[TEST_DIR_PATH_SIZE];
  int n;
 
- snprintf(path, sizeof path, "%s/%s", dir, name);
+ if (test_path_join(path, sizeof path, dir, name) != 0)
+  return;
  seen_rows_remove_entry(path);
  for (n = 0; n < SEEN_ROWS_TRIES; n++)
  {

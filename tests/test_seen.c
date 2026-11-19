@@ -490,7 +490,8 @@ static void test_the_table(void)
 /** Make the subfolder of one row: a fresh folder, so no filler of another row is in it. */
 static int row_folder(const char *base, const char *name, char *out, size_t n)
 {
- snprintf(out, n, "%s/%s", base, name);
+ if (test_path_join(out, n, base, name) != 0)
+  return(-1);
  if (mkdir(out, 0700) != 0)
  {
   printf("FAIL: row folder %s: %s\n", out, strerror(errno));
@@ -565,8 +566,8 @@ static void test_the_look_routes(const char *base)
 
  if (row_folder(base, "routes", dir, sizeof dir) != 0)
   return;
- snprintf(file, sizeof file, "%s/t", dir);
- snprintf(link, sizeof link, "%s/l", dir);
+ test_path_join(file, sizeof file, dir, "t");
+ test_path_join(link, sizeof link, dir, "l");
  chk_int("make the file", put_file(file, "text\n"), 0);
  chk_int("make the link", symlink("t", link), 0);
  fd = open(file, O_RDONLY);
@@ -609,7 +610,7 @@ static void test_a_touched_file_and_the_no_birth_hook(const char *base)
 
  if (row_folder(base, "touched", dir, sizeof dir) != 0)
   return;
- snprintf(file, sizeof file, "%s/t", dir);
+ test_path_join(file, sizeof file, dir, "t");
  chk_int("make the file", put_file(file, "text\n"), 0);
  chk_int("look before", wpe_seen_look_name(file, 1, &then), 0);
  chk_int("append in place", append_to(file, "more\n"), 0);
@@ -678,7 +679,7 @@ static void file_took_the_number(const char *base, const char *row, const char *
   return;
  if (hook != NULL)
   chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
- snprintf(file, sizeof file, "%s/t", dir);
+ test_path_join(file, sizeof file, dir, "t");
  wpe_seen_forget(&then);
  pc.make_old = seen_rows_make_file_text;
  pc.old_ctx = (void *)"old text\n";
@@ -730,7 +731,7 @@ static void link_took_the_number(const char *base, const char *row, const char *
   return;
  if (!reuse_possible(dir, "a link that took the number"))
   return;
- snprintf(link, sizeof link, "%s/l", dir);
+ test_path_join(link, sizeof link, dir, "l");
  wpe_seen_forget(&then.seen);
  pc.make_old = seen_rows_make_link;
  pc.old_ctx = (void *)old_text;
@@ -773,7 +774,7 @@ static void test_a_held_folder_never_shares_its_number(const char *base)
 
  if (row_folder(base, "held", dir, sizeof dir) != 0)
   return;
- snprintf(ws, sizeof ws, "%s/ws", dir);
+ test_path_join(ws, sizeof ws, dir, "ws");
  chk_int("make the workspace", mkdir(ws, 0700), 0);
  chk_int("hold it", wpe_seen_hold_dir(ws, &held), 0);
  chk_int("the held folder is the path", wpe_seen_held_is(&held, ws), 1);
@@ -825,8 +826,8 @@ static void test_the_hold_refuses_what_is_not_a_folder(const char *base)
 
  if (row_folder(base, "hold-misc", dir, sizeof dir) != 0)
   return;
- snprintf(file, sizeof file, "%s/f", dir);
- snprintf(link, sizeof link, "%s/l", dir);
+ test_path_join(file, sizeof file, dir, "f");
+ test_path_join(link, sizeof link, dir, "l");
  chk_int("make a file", put_file(file, "x"), 0);
  chk_int("make a link to the folder", symlink(".", link), 0);
  chk_int("a missing folder is not held", wpe_seen_hold_dir("no-such-folder-here", &h), -1);
@@ -848,9 +849,9 @@ static void test_two_names_of_one_file(const char *base)
 
  if (row_folder(base, "names", dir, sizeof dir) != 0)
   return;
- snprintf(a, sizeof a, "%s/a", dir);
- snprintf(b, sizeof b, "%s/b", dir);
- snprintf(c, sizeof c, "%s/c", dir);
+ test_path_join(a, sizeof a, dir, "a");
+ test_path_join(b, sizeof b, dir, "b");
+ test_path_join(c, sizeof c, dir, "c");
  chk_int("make a", put_file(a, "x"), 0);
  chk_int("make c", put_file(c, "x"), 0);
  chk_int("a second name for a", link(a, b), 0);
@@ -966,7 +967,7 @@ static void test_statx_answers(const char *base)
 
  if (row_folder(base, "shim", dir, sizeof dir) != 0)
   return;
- snprintf(file, sizeof file, "%s/t", dir);
+ test_path_join(file, sizeof file, dir, "t");
  chk_int("make the file", put_file(file, "text\n"), 0);
  fd = open(file, O_RDONLY);
  dfd = open(dir, O_RDONLY | O_DIRECTORY);
@@ -990,7 +991,7 @@ static void test_a_link_read_short_has_no_text(const char *base)
 
  if (row_folder(base, "linkshort", dir, sizeof dir) != 0)
   return;
- snprintf(link, sizeof link, "%s/l", dir);
+ test_path_join(link, sizeof link, dir, "l");
  chk_int("make the link", symlink("target-a", link), 0);
  wpe_seen_name_look(link, &whole);
  chk_int("a link read whole has its text", whole.has_text, 1);

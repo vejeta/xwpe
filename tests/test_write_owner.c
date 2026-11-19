@@ -148,10 +148,10 @@ int e_eol_write(FILE *fp, BUFFER *b, int ya, int xa, int ye, int xe, int keep_fi
 
 /* ---- helpers ---- */
 
-static char dir[256];
+static char dir[TEST_DIR_PATH_SIZE];
 /* Every folder this test made, in a list that grows with the rows, so that
    none is left behind whatever the number of rows. */
-static char (*made)[256];
+static char (*made)[TEST_DIR_PATH_SIZE];
 static int made_n;
 static int made_room;
 
@@ -161,7 +161,7 @@ static void remove_made_dirs(void);
    removes what is known and stops, not a folder left in /tmp. */
 static void remember_made_dir(void)
 {
- char (*grown)[256];
+ char (*grown)[TEST_DIR_PATH_SIZE];
 
  if (made_n == made_room)
  {
@@ -207,7 +207,7 @@ static void remove_made_dirs(void)
 
 static void path_of(char *out, size_t n, const char *name)
 {
- snprintf(out, n, "%s/%s", dir, name);
+ test_path_join(out, n, dir, name);
 }
 
 /* A file of the test folder with this text and exactly this mode; a setup
@@ -1061,27 +1061,6 @@ int fsync(int fd)
  return(real(fd));
 }
 
-/* plant_socket - A socket file at this name (nothing listens on it).  Returns
-   0, or -1 after saying why. */
-static int plant_socket(const char *path)
-{
- struct sockaddr_un addr;
- int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-
- if (fd < 0)
-  return(-1);
- memset(&addr, 0, sizeof addr);
- addr.sun_family = AF_UNIX;
- snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path);
- if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
-  perror("bind");
-  close(fd);
-  return(-1);
- }
- close(fd);
- return(0);
-}
-
 /* open, watched: a read-only open of the armed name, the first one only, is
    preceded by a second file taking that name.  It is the moment between the
    owner opening the file it will overwrite and opening the same name to copy
@@ -1134,8 +1113,12 @@ static int open_hooked(const char *path, int flags, mode_t mode)
  if (open_socket_at[0] != '\0' && strcmp(path, open_socket_at) == 0)
  {
   open_socket_at[0] = '\0';
-  if (unlink(path) != 0 || plant_socket(path) != 0)
+  if (unlink(path) != 0 || test_plant_socket(path) != 0)
+  {
    perror("socket swap");
+   remove_made_dirs();
+   exit(2);
+  }
  }
  if (open_plant_at[0] != '\0' && (flags & O_EXCL) && strcmp(path, open_plant_at) == 0)
  {
@@ -3876,11 +3859,8 @@ static void test_a_socket_swapped_for_a_hard_link_changes_nothing(void)
  put_file("victim", "y\n", 0600);
  path_of(p, sizeof p, "s");
  path_of(v, sizeof v, "victim");
- if (plant_socket(p) != 0) {
-  printf("FAIL: a socket could not be planted\n");
-  fails++;
+ if (test_plant_socket(p) != 0)
   return;
- }
  wpe_seen_look_name(p, 1, &shown);
  unlink(p);
  if (link(v, p) != 0)
@@ -4975,7 +4955,10 @@ static long size_at(const char *path)
 /** state_path - A path below the state folder the row made, "<dir>/state/xwpe/<tail>". */
 static void state_path(char *out, size_t n, const char *tail)
 {
- snprintf(out, n, "%s/state/xwpe/%s", dir, tail);
+ char rel[TEST_DIR_PATH_SIZE];
+
+ snprintf(rel, sizeof rel, "state/xwpe/%s", tail);
+ test_path_join(out, n, dir, rel);
 }
 
 /* @scenario SC-chosen-names-01: an own file is never written through a link. */

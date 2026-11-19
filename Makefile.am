@@ -1118,6 +1118,23 @@ endif
 check-build-configs:
 	$(SHELL) $(srcdir)/tests/build-config-row.sh --srcdir $(srcdir)
 .PHONY: check-build-configs
+
+# The C tests at a long TMPDIR: `make check` once with TMPDIR of 120 bytes and
+# once with 300, on a long base made on disk in the build tree.  A test that
+# depends on how long its folder's path is passes at a short one and fails
+# here.  Not part of `make check`: it runs the whole C suite twice, so it is
+# its own target and a CI job runs it.  tests/check-test-paths.sh names the
+# sites it can see statically (a socket bound by full name, a folder buffer
+# of a number, a bare join).
+check-path-lengths:
+	+MAKE='$(MAKE)' $(SHELL) $(srcdir)/tests/path-lengths.sh --make '$(MAKE)' 120 300
+.PHONY: check-path-lengths
+
+# One owner of how long a test folder's path may be (tests/testdir.h makes the
+# folder, joins a name onto it and plants a socket in it): the check fails a
+# test that binds a socket by its full path, declares a folder buffer of a
+# number, or joins onto the folder with a bare snprintf.
+TESTS += tests/check-test-paths.sh
 if HAVE_WAYLAND
 check_PROGRAMS += test_wlframe
 TESTS += test_wlframe
@@ -1299,6 +1316,8 @@ EXTRA_DIST = \
   tests/objsyms.sh \
   tests/compiler.sh \
   tests/workdir.sh \
+  tests/check-test-paths.sh \
+  tests/path-lengths.sh \
   tests/nm-undefined.sh \
   tests/build-config.sh \
   tests/check-build-config.sh \
