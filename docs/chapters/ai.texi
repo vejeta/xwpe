@@ -335,7 +335,9 @@ pane instead of ending cut at the border, and a reply that wraps over
 several rows is copied as the one line it is.
 
 The pane opens with a header line, @samp{[AI: <backend> | model: <model> |
-policy: <dial>]} (with @samp{| web} appended while web access is on), and
+policy: <dial>]} (with @samp{| web} appended while web access is on, and
+ending with @samp{| UNCONTAINED} while the commands are not held,
+@pxref{Containment}), and
 two hint lines naming the input keys and the slash
 shortcuts; they appear the first time the chat is opened in a session, even
 when another action had already written to the pane.  When the backend, the
@@ -606,7 +608,8 @@ writes go through automatically; commands still ask.
 everything inside the workspace runs unattended; you review the result
 afterwards.  Reads and writes beyond the workspace still ask, and so do writes
 to the files inside it that run code (below).  The commands it runs have your
-whole environment, your files and the network: the workspace limits what the
+files and the network (not your environment's keys, @pxref{Containment}): the
+workspace limits what the
 editor's own tools write, not what a command can reach.
 @end table
 
@@ -733,10 +736,67 @@ followed)} so a short answer is not taken for the whole tree.
 
 @strong{What this does not cover.}  A command you let the assistant run
 (@code{run_command}, or the hosted engine's shell, unasked under @code{auto})
-can read anything you can.  The scope judges the paths the tools name; it does
-not read inside a command line, and guessing at one would be wrong in both
+has your files and your network.  The scope judges the paths the tools name; it
+does not read inside a command line, and guessing at one would be wrong in both
 directions.  Keep @code{run_command} on @code{ask} or @code{edits} when that
-matters.  A sandbox for the commands themselves is a separate piece of work.
+matters.  What a command is given, and what it is not yet kept from, is in the
+next section.
+
+@anchor{Containment}
+@cindex AI, containment
+@cindex AIContain
+@cindex AIContainEnv
+@cindex UNCONTAINED
+@strong{Containment: what a command is given today.}  Every program the
+assistant starts (@code{run_command} and the other shell tools, the post-edit
+hook, git for the checkpoint and the review, the @command{claude} backend, a
+hosted engine) is started through a containment profile that says what it gets.
+Its environment is built from a list instead of passed on from the editor.  It
+gets no provider key (@env{ANTHROPIC_API_KEY}, @env{OPENAI_API_KEY},
+@env{XWPE_AI_KEY}, the @code{*_FILE} pointers to key files), no agent socket
+(@env{SSH_AUTH_SOCK}), no desktop or session bus variable, and no
+@env{LD_PRELOAD} or @env{BASH_ENV}.  @env{PATH} keeps its absolute entries
+only.  @env{HOME}, the language and locale, the toolchain variables
+(@env{JAVA_HOME}, @env{GOPATH}, @env{CARGO_HOME}, @env{VIRTUAL_ENV},
+@env{CC}, @dots{}) and git's author and committer names stay, and
+@code{AIContainEnv} adds names of your own.  The @command{claude} backend and
+the hosted Claude engine keep their own login variables (@env{ANTHROPIC_*},
+@env{CLAUDE_CODE_*}) and the proxy and certificate variables; a hosted command
+of your own keeps @env{OPENAI_*} and the names in @code{AIHostEnv}.  Neither
+runs a @command{claude} that sits in the workspace's own folders on
+@env{PATH}.  A command also has a file-size limit (8 GiB, or
+@env{XWPE_AI_CONTAIN_FSIZE} for one session; 0 means none), no core file, and
+no way to gain privileges (@code{no_new_privs}).
+
+@strong{Not contained yet:} the files you can read, the network, other
+processes and the desktop.  Under @code{auto} a command the assistant runs
+still has your files and your network.  It no longer receives the secrets of
+your environment, and that is all this stage holds.  @code{AIContain : strict}
+therefore refuses every start and says so; @code{standard}, the default, runs
+the commands with what is held and says what is not; @code{off} keeps only the
+environment list.  The pane header ends with @samp{UNCONTAINED} and the first
+run of a session says the same in the error colour, so it is read before any
+command runs.
+
+@strong{What that leaves reachable, and what the limits cost.}  @env{HOME} is
+kept, so @file{~/.ssh}, @file{~/.aws} and the editor's own key file can be
+read, and the ssh-agent, gpg-agent, D-Bus and Wayland sockets can be reached
+by path (only the variables that name them are dropped).  @code{no_new_privs}
+makes a set-user-ID program give no extra rights, so @command{sudo},
+@command{su}, @command{pkexec}, @command{fusermount} (sshfs, AppImage) and
+@command{newuidmap} (rootless podman) do not work inside an assistant
+command.  The file-size limit ends a writer that passes it with SIGXFSZ; raise
+it with @env{XWPE_AI_CONTAIN_FSIZE} (0 for none).
+
+@strong{Starting in your home folder.}  An engine (the @command{claude}
+backend, a hosted engine) never runs a program from a @env{PATH} folder inside
+the workspace.  When the workspace is your home folder, @file{~/.local/bin} is
+inside it and is dropped; the pane then names the folder.  Name it in
+@code{AIContainPathAllow} (colon separated folders, your own file only;
+@env{XWPE_AI_CONTAIN_PATH_ALLOW} for one session) or start the editor in a
+project folder instead.  Starting the editor in @file{/} makes every
+@env{PATH} folder ``inside the workspace'', so every engine is refused; the
+message names the folder.
 
 @cindex AI, command output
 Whatever the dial allows, a command the assistant runs cannot reach your screen.
@@ -903,8 +963,8 @@ started in the workspace folder, so a relative path means the same place to it
 and to the editor, and its own idea of the project's folder is the workspace,
 not the folder the editor was started in.  The folders
 you already opened are passed to the CLI as @option{--add-dir}.  A command the
-engine runs (@code{Bash}) is not judged by path: it can read anything you can,
-and under @code{auto} it runs unasked.  A refusal answers the
+engine runs (@code{Bash}) is not judged by path: it has your files and your
+network (@pxref{Containment}), and under @code{auto} it runs unasked.  A refusal answers the
 CLI ``Denied by the user'' and the pane shows @samp{[agent] denied: <tool>
 <arg>}, as for a built-in tool.  Either way xwpe takes a checkpoint at the start
 of the session and says so with the same @samp{[agent] checkpoint taken} line as
@@ -1077,7 +1137,9 @@ that start a program, decide what the assistant reads, where its requests go,
 the dial or the web switch: @code{AIBackend}, @code{AIEndpoint},
 @code{AIProvider}, @code{AIProviderName}, @code{AICAFile}, @code{AISearchURL},
 @code{AIEditHook}, @code{AIHostCommand}, @code{AIHostAdapter},
-@code{AIAgentEngine}, @code{AIReadRoots}, @code{AIPolicy} and @code{AIWeb}.  They
+@code{AIAgentEngine}, @code{AIReadRoots}, @code{AIPolicy}, @code{AIWeb},
+@code{AIContain}, @code{AIContainEnv}, @code{AIContainPathAllow} and
+@code{AIHostEnv}.  They
 come from your own file and the @env{XWPE_AI_*} variables in every folder, and
 the status line names any the folder's file tried to set
 (@pxref{Folder xwperc}).  The print command, compilers and debugger it sets
@@ -1186,6 +1248,28 @@ example @code{AIReadRoots : /usr/share/doc:/home/me/notes}.  Written by hand
 in the @samp{[Programming]} section; the editor keeps the line when it rewrites
 the file and never adds to it (a folder opened from a read box lasts for the
 session only).  Reads there are not asked about; writes are never widened.
+@item AIContain
+@code{strict}, @code{standard} (default) or @code{off}: how the assistant's
+commands are held (@pxref{Containment}).  Only your own file may set it; the
+environment's @env{XWPE_AI_CONTAIN} overrides it for one session.  With the
+files and the network not held yet, @code{strict} refuses every start.
+Written by hand; the editor keeps the line when it rewrites the file.
+@item AIContainEnv
+Names of environment variables every assistant command keeps, comma
+separated, for example @code{AIContainEnv : MY_SDK_HOME,LD_LIBRARY_PATH}.
+A provider key, an agent socket or a desktop variable named there is still
+dropped; @env{LD_LIBRARY_PATH} is the one name of the drop list that may be
+kept.  Only your own file may set it; @env{XWPE_AI_CONTAIN_ENV} overrides it
+for one session.
+@item AIContainPathAllow
+Folders, colon separated, that an engine's @env{PATH} keeps although they lie
+inside the workspace (@pxref{Containment}).  Only your own file may set it;
+@env{XWPE_AI_CONTAIN_PATH_ALLOW} overrides it for one session.
+@item AIHostEnv
+Names of environment variables the hosted command of your own
+(@code{AIHostCommand}) keeps besides @env{OPENAI_*}, comma separated.  No
+other profile keeps them.  Only your own file may set it;
+@env{XWPE_AI_HOST_ENV} overrides it for one session.
 @item AIModelFallback
 A model retried once, automatically, when the primary fails a turn (unavailable,
 or too slow / timed out); xwpe says @samp{primary model failed @dots{} retrying

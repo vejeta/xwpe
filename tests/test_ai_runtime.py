@@ -16,7 +16,8 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from wpe_driver import WpeSession, ALT, WAIT_SCALE, WPE_BIN, assistant_build, wait_screen
+from wpe_driver import WpeSession, ALT, WAIT_SCALE, WPE_BIN, assistant_build, wait_screen, \
+    pane_text_with_history
 
 pytestmark = pytest.mark.skipif(not assistant_build(),
                                 reason="wpe built without --enable-ai")
@@ -476,7 +477,10 @@ def test_build_and_fix_checks_a_lone_c_file_with_the_compiler(tmp_path):
     with WpeSession(str(tmp_path), SEED, filename="lone.c", env_extra=env) as s:
         s.key(ALT.AI, delay=0.5); s.key("b", delay=1.0)
         wait_screen(s, "build command", 5)
-        disp = screen(s)
+        # The run's first lines come after the containment line the first
+        # run says, so the build line may sit above the pane's view: page
+        # back to it, as a user would.
+        disp = "\n".join(pane_text_with_history(s, ["build command"]))
     want = "gcc -fsyntax-only -Wall '%s'" % (tmp_path / "lone.c")
     assert "fix-build cmd=" + want in trace.read_text(), \
         "the build command for a lone C file is not a syntax check:\n" + trace.read_text()

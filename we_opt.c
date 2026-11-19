@@ -9,6 +9,9 @@
 #include "edit.h"
 #include "WeExpArr.h"
 #include "we_ai.h"        /* AI backend config keys (guarded by WPE_AI) */
+#ifdef WPE_AI
+#include "we_contain.h"   /* AIContain, AIContainEnv, AIHostEnv */
+#endif
 #include "we_lineend.h"
 #include "we_testdump.h"
 #include "we_startcmd.h"
@@ -85,6 +88,10 @@ static const e_opt_user_only e_opt_user_only_keys[] = {
  {OPT_SECTION_PROGRAMMING, "AIReadRoots"},
  {OPT_SECTION_PROGRAMMING, "AIPolicy"},
  {OPT_SECTION_PROGRAMMING, "AIWeb"},
+ {OPT_SECTION_PROGRAMMING, "AIContain"},
+ {OPT_SECTION_PROGRAMMING, "AIContainEnv"},
+ {OPT_SECTION_PROGRAMMING, "AIHostEnv"},
+ {OPT_SECTION_PROGRAMMING, "AIContainPathAllow"},
  {NULL, NULL}
 };
 
@@ -1599,6 +1606,28 @@ static void e_ai_read_provider(const char *value)
  if (nf >= 2 && f[0][0])
   wpe_ai_provider_set(f[0], f[1], nf >= 3 ? f[2] : "", nf >= 4 ? f[3] : "");
 }
+
+/**
+ * e_opt_write_contain - Keep the containment keys a user wrote by hand when
+ * the options are saved.
+ * @opt_file: the file being written.
+ *
+ * The editor has no dialog for these keys yet, so a save from Options must not
+ * drop the strict mode or the names a user chose: they are written only when
+ * the file set them, and an environment override of the session never lands in
+ * the file.
+ */
+static void e_opt_write_contain(FILE *opt_file)
+{
+ if (wpe_contain_mode_file() != WPE_CONTAIN_MODE_STANDARD)
+  fprintf(opt_file, "AIContain : %s\n", wpe_contain_mode_name(wpe_contain_mode_file()));
+ if (wpe_contain_keep_names_file())
+  fprintf(opt_file, "AIContainEnv : %s\n", wpe_contain_keep_names_file());
+ if (wpe_contain_path_allow_file())
+  fprintf(opt_file, "AIContainPathAllow : %s\n", wpe_contain_path_allow_file());
+ if (wpe_contain_host_names_file())
+  fprintf(opt_file, "AIHostEnv : %s\n", wpe_contain_host_names_file());
+}
 #endif
 
 int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
@@ -1633,6 +1662,14 @@ int WpeReadProgramming(ECNT *cn, char *section, char *option, char *value)
  } else if (WpeStrccmp("AIHostCommand", option) == 0) {
   free(e_ai_host_command);
   e_ai_host_command = (value && *value) ? WpeStrdup(value) : NULL;
+ } else if (WpeStrccmp("AIContain", option) == 0) {
+  wpe_contain_mode_set(wpe_contain_mode_from_name(value));
+ } else if (WpeStrccmp("AIContainEnv", option) == 0) {
+  wpe_contain_keep_names_set(value);
+ } else if (WpeStrccmp("AIHostEnv", option) == 0) {
+  wpe_contain_host_names_set(value);
+ } else if (WpeStrccmp("AIContainPathAllow", option) == 0) {
+  wpe_contain_path_allow_set(value);
  } else if (WpeStrccmp("AIReadRoots", option) == 0) {
   free(e_ai_read_roots);
   e_ai_read_roots = (value && *value) ? WpeStrdup(value) : NULL;
@@ -1696,6 +1733,7 @@ int WpeWriteProgramming(ECNT *cn, char *section, FILE *opt_file)
     editor never adds one itself. */
  if (e_ai_read_roots && *e_ai_read_roots)
   fprintf(opt_file, "AIReadRoots : %s\n", e_ai_read_roots);
+ e_opt_write_contain(opt_file);
  if (wpe_ai_cfg_int_to_save(WPE_AI_CFG_HOST_ADAPTER) == WPE_AI_HOST_ADAPTER_TEXT)
   fprintf(opt_file, "AIHostAdapter : text\n");
  fprintf(opt_file, "AICAFile : %s\n", wpe_ai_cfg_str_to_save(WPE_AI_CFG_CAFILE));

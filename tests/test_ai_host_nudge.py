@@ -13,6 +13,7 @@ import pytest
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
 PGUP = "\033[5~"
+PGUP_PAGES = 4        # pages back at most while looking for the tip
 TIP_TEXT = "full autonomy"
 
 
@@ -45,6 +46,9 @@ def test_agent_nudges_to_host_engine(tmp_path):
         "XWPE_AI_POLICY": "auto",
         "XWPE_AI_MODEL": "default",
         "PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
+        # The stand-in lives in the workspace, which an engine's PATH does not
+        # trust: the seam names the one folder this row runs it from.
+        "XWPE_AI_CONTAIN_PATH_ALLOW": str(bindir),
     }
     with WpeSession(tempfile.mkdtemp(), "int main(void){return 0;}\n",
                     env_extra=env, filename="a.c") as s:
@@ -57,7 +61,11 @@ def test_agent_nudges_to_host_engine(tmp_path):
         # run's lines, the hint lines and the input row have pushed its first
         # row above the pane, so read it the way a user does: PgUp from the
         # input row the finished run armed.
-        if TIP_TEXT not in disp:
+        # The containment line the first run says comes before the tip and
+        # pushes it up by a few more rows: page back until it is seen.
+        for _ in range(PGUP_PAGES):
+            if TIP_TEXT in disp:
+                break
             s.key(PGUP); s._drain(0.3)
             disp = "\n".join(s.display())
 

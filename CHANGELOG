@@ -404,6 +404,25 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A command the assistant runs no longer receives your environment.  Every
+  program the assistant starts (a tool's command, the post-edit hook, git
+  for the checkpoint and the review, the claude backend, a hosted engine)
+  is started through a profile that builds its environment from a list: no
+  provider key (ANTHROPIC_API_KEY, OPENAI_API_KEY, XWPE_AI_KEY and the
+  pointers to key files), no agent socket, no desktop or session bus
+  variable, no LD_PRELOAD or BASH_ENV, and a PATH without empty, "." or
+  relative entries.  The claude backend and the hosted Claude engine keep
+  their own login variables, a hosted command of your own keeps OPENAI_*,
+  and neither runs a claude that sits in the workspace's own folders on
+  PATH.  A command also has a file-size limit (8 GiB), no core file and no
+  way to gain privileges.  New keys AIContain (strict, standard, off),
+  AIContainEnv and AIHostEnv, read only from your own configuration.  The
+  files you can read, the network, other processes and the desktop are not
+  contained yet: under auto a command still has your files and your
+  network, the pane header says UNCONTAINED, the first run of a session
+  says it in the error colour, and strict refuses every start until they
+  are.
+
 * The assistant's conversation of a project is kept in your state folder
   ($XDG_STATE_HOME/xwpe/ai or ~/.local/state/xwpe/ai), not as
   .xwpe-ai-session in the project, so a repository you clone cannot hand

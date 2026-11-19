@@ -32,6 +32,7 @@
 #include "we_ai_http.h"
 #include "we_optval.h"   /* one line of a trace is an escaped value */
 #include "we_child.h"    /* every command and CLI the assistant runs */
+#include "we_contain.h"  /* ... started only through its profile */
 #include "we_fdloop.h"   /* the mock's delay is a timer on the editor's loop */
 
 static char *ai_strdup(const char *s);            /* defined below; used early */
@@ -561,17 +562,19 @@ static void ai_capture_on_ended(WpeChild *child, int wstatus, int how, void *dat
 
 /**
  * ai_capture_spawn - Start the command in a session of its own.
- * @c: the run; @cmd: the command line, handed to `/bin/sh -c` as written.
+ * @c: the run; @cmd: the command line, handed to `/bin/sh -c` as written;
+ * @profile: what kind of command it is, which decides what it is given.
  *
  * Its own session: no controlling terminal, so the command cannot paint on
  * the editor's screen through /dev/tty, and a signal to its group ends a
  * pipeline whole.  Its input is /dev/null, so a command that reads input
  * fails at once instead of taking the user's keys; its standard error joins
  * standard output, the one stream every caller parses.  It dies with the
- * editor.
+ * editor.  Only the capture faces below call it, each with its own profile.
  * Return: 0 when it runs, -1 when it could not be started.
  */
-static int ai_capture_spawn(struct wpe_ai_capture *c, const char *cmd)
+static int ai_capture_spawn(struct wpe_ai_capture *c, const char *cmd,
+                            const WpeContainProfile *profile)
 {
  char *argv[4];
  WpeChildSpec spec;
@@ -590,8 +593,7 @@ static int ai_capture_spawn(struct wpe_ai_capture *c, const char *cmd)
  spec.side_pty_slave = WPE_CHILD_NO_FD;
  spec.tty_fd = WPE_CHILD_NO_FD;
  spec.what = AI_CAPTURE_WHAT;
- spec.origin = WPE_CHILD_ORIGIN_AI;
- if (wpe_child_start(&spec, &c->child, ai_capture_on_ended, c) != 0) return -1;
+ if (wpe_contain_start(profile, &spec, &c->child, ai_capture_on_ended, c) != 0) return -1;
  c->leader = c->child.pid;
  c->out_open = 1;
  wpe_ai_trace("agent tool pid=%d", c->leader);
@@ -675,13 +677,20 @@ static int ai_capture_watch(struct wpe_ai_capture *c)
  return 0;
 }
 
-wpe_ai_capture *wpe_ai_capture_start(const char *cmd, int timeout_s,
-                                     wpe_ai_captured_fn done, void *ud)
+/**
+ * ai_capture_start - Start a command on the loop, held as @profile says.
+ * @cmd, @timeout_s, @done, @ud: as wpe_ai_capture_start; @profile: the kind
+ * of command it is.
+ * Return: the run, or NULL when it could not be started.
+ */
+static wpe_ai_capture *ai_capture_start(const char *cmd, int timeout_s,
+                                        wpe_ai_captured_fn done, void *ud,
+                                        const WpeContainProfile *profile)
 {
  struct wpe_ai_capture *c = ai_capture_new(timeout_s);
 
  if (!c) return NULL;
- if (ai_capture_spawn(c, cmd) != 0) {
+ if (ai_capture_spawn(c, cmd, profile) != 0) {
   ai_capture_free(c);
   return NULL;
  }
@@ -693,6 +702,12 @@ wpe_ai_capture *wpe_ai_capture_start(const char *cmd, int timeout_s,
   return NULL;
  }
  return c;
+}
+
+wpe_ai_capture *wpe_ai_capture_start_tool(const char *cmd, int timeout_s,
+                                          wpe_ai_captured_fn done, void *ud)
+{
+ return ai_capture_start(cmd, timeout_s, done, ud, &wpe_contain_tool);
 }
 
 void wpe_ai_capture_cancel(wpe_ai_capture *c)
@@ -853,13 +868,21 @@ static void ai_capture_report(int *status, int exited, int *timed_out, int fired
  if (timed_out) *timed_out = fired;
 }
 
-char *wpe_ai_run_capture_bounded(const char *cmd, int timeout_s,
-                                 int *status, int *timed_out)
+/**
+ * ai_run_capture - Run a command and wait for it on the loop, held as
+ * @profile says.
+ * @cmd: the command line; @timeout_s: the bound; @status, @timed_out: as
+ * wpe_ai_run_capture_git_status (either may be NULL); @profile: the kind of
+ * command it is.
+ * Return: the malloc'd result (never NULL: a start that failed gives a note).
+ */
+static char *ai_run_capture(const char *cmd, int timeout_s, int *status,
+                            int *timed_out, const WpeContainProfile *profile)
 {
  struct wpe_ai_capture *c = ai_capture_new(timeout_s);
  char *out;
 
- if (!c || ai_capture_spawn(c, cmd) != 0) {
+ if (!c || ai_capture_spawn(c, cmd, profile) != 0) {
   if (c) ai_capture_free(c);
   ai_capture_report(status, AI_CAPTURE_NOEXEC, timed_out, 0);
   return ai_strdup(AI_CAPTURE_NOT_STARTED);
@@ -876,14 +899,26 @@ char *wpe_ai_run_capture_bounded(const char *cmd, int timeout_s,
  return out;
 }
 
-char *wpe_ai_run_capture_status(const char *cmd, int *status)
+char *wpe_ai_run_capture_git_status(const char *cmd, int *status)
 {
- return wpe_ai_run_capture_bounded(cmd, e_ai_tool_timeout, status, NULL);
+ return ai_run_capture(cmd, e_ai_tool_timeout, status, NULL, &wpe_contain_git);
 }
 
-char *wpe_ai_run_capture(const char *cmd)
+char *wpe_ai_run_capture_git(const char *cmd)
 {
- return wpe_ai_run_capture_status(cmd, NULL);
+ return wpe_ai_run_capture_git_status(cmd, NULL);
+}
+
+char *wpe_ai_run_capture_git_commit_status(const char *cmd, int *status, int ssh_signing)
+{
+ if (ssh_signing)
+  return ai_run_capture(cmd, e_ai_tool_timeout, status, NULL, &wpe_contain_git_commit_ssh);
+ return ai_run_capture(cmd, e_ai_tool_timeout, status, NULL, &wpe_contain_git_commit);
+}
+
+char *wpe_ai_run_capture_hook_status(const char *cmd, int *status)
+{
+ return ai_run_capture(cmd, e_ai_tool_timeout, status, NULL, &wpe_contain_hook);
 }
 
 int wpe_ai_enabled(void)
@@ -1719,7 +1754,16 @@ int wpe_ai_preflight_start(int backend, wpe_ai_reached_fn done, void *ud,
  *out = NULL;
  if (backend == WPE_AI_MOCK) return WPE_AI_REACH_OK;
  if (backend == WPE_AI_CLAUDECLI) {
-  if (wpe_ai_claude_cli_available()) return WPE_AI_REACH_OK;
+  if (wpe_ai_claude_cli_available()) {
+   /* On the editor's PATH, but maybe only in a workspace folder the engine's
+      PATH drops: say which folder and why, instead of "produced no output". */
+   char note[WPE_CONTAIN_NOTE_MAX];
+   if (wpe_contain_engine_note(&wpe_contain_cli_text, "claude", NULL, note, sizeof note)) {
+    if (errbuf) snprintf(errbuf, errsz, "%s", note);
+    return WPE_AI_REACH_FAILED;
+   }
+   return WPE_AI_REACH_OK;
+  }
   if (errbuf) snprintf(errbuf, errsz,
     "Claude Code CLI not found - install `claude` and log in (claude auth)");
   return WPE_AI_REACH_FAILED;
@@ -2210,8 +2254,17 @@ static int ai_cli_deny_web(char **argv, int a)
 /* How the command-line backend is named in the owner's and the writer's lines. */
 #define AI_CLI_WHAT "the claude CLI"
 #define AI_CLI_ENDS "Esc cancels the request"
-/* Room for the CLI's argument vector: the longest dial builds 19 words. */
-#define AI_CLI_ARGV_MAX 24
+/* Room for the CLI's argument vector.  The longest build today is 17 words
+   (claude -p --output-format json, --model m, --resume r, the three words of
+   --allowedTools with the web on, and the six of the text-only deny list);
+   the isolation flags a later pass adds to the CLI's line (a project-only
+   setting source, no MCP, no slash commands) bring six more, and the list
+   ends with NULL.  The rest is margin. */
+#define AI_CLI_WORDS_LONGEST 17
+#define AI_CLI_ISOLATION_WORDS 6
+#define AI_CLI_ARGV_MAX 40
+_Static_assert(AI_CLI_ARGV_MAX > AI_CLI_WORDS_LONGEST + AI_CLI_ISOLATION_WORDS + 1,
+               "the CLI's argument vector must hold the longest build, the isolation flags and the NULL");
 
 /**
  * ai_claudecli_argv - The command line of one `claude -p` request.
@@ -2300,8 +2353,7 @@ static int ai_claudecli_spawn(struct wpe_ai_stream *st, char **argv)
  spec.side_pty_slave = WPE_CHILD_NO_FD;
  spec.tty_fd = WPE_CHILD_NO_FD;
  spec.what = AI_CLI_WHAT;
- spec.origin = WPE_CHILD_ORIGIN_AI;
- return wpe_child_start(&spec, &st->child, ai_claudecli_on_ended, st);
+ return wpe_contain_start(&wpe_contain_cli_text, &spec, &st->child, ai_claudecli_on_ended, st);
 }
 
 /**

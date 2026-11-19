@@ -261,7 +261,8 @@ into the file window to work there; typing any character in the input row
 returns the view to the prompt so the next key lands in the input. The pane's
 first lines are a header,
 `[AI: <backend> | model: <model> | policy: <dial>]` (`| web` is appended
-while web access is on), and two hint lines; when
+while web access is on, and the line ends with `| UNCONTAINED` while the
+commands are not held, see Permission policy), and two hint lines; when
 the backend, the model or the permission dial change while the chat is open, a
 new header line with the current values precedes the next turn. Ok in
 Options > AI changes only what you touched: on a backend the Backend radio does
@@ -421,8 +422,8 @@ out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
 - **edits** -- writes apply automatically; commands still ask.
 - **auto** -- runs unattended inside the workspace (reads and writes beyond it
   still ask, and so do writes to the files inside it that run code, see
-  below). The commands it runs have your whole environment, your files and the
-  network: the workspace limits what the editor's own tools write, not what a
+  below). The commands it runs have your files and the
+  network (not your environment's keys, see Containment below): the workspace limits what the editor's own tools write, not what a
   command can reach. A checkpoint is taken first and every change is
   listed in the end-of-run changeset (keep all / revert all / file-by-file /
   commit). The review holds only what the run changed: untracked or ignored
@@ -550,9 +551,52 @@ project that leads out counts as outside) and judges where a path really lands:
 - `grep` and `glob` search from the working directory, so that directory is
   what is judged. A search does not follow a link that leads out of the folder
   it started in, and its result says how many it left alone.
-- **Not covered:** a command you let the assistant run (`run_command`, the hosted
-  engine's `Bash`, unasked under *auto*) can read anything you can; the scope
-  judges the paths tools name, not what is inside a command line.
+- **Containment, what a command is given today.** Every program the assistant
+  starts (`run_command` and the other shell tools, the post-edit hook, git for
+  the checkpoint and the review, the `claude` backend, a hosted engine) is
+  started through a containment profile that says what it gets. Its environment
+  is built from a list instead of passed on from the editor: no provider key
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XWPE_AI_KEY`, the `*_FILE` pointers to
+  key files), no agent socket (`SSH_AUTH_SOCK`), no desktop or session bus
+  variable, no `LD_PRELOAD` or `BASH_ENV`; `PATH` keeps its absolute entries
+  only. `HOME`, the language and locale, the toolchain variables (`JAVA_HOME`,
+  `GOPATH`, `CARGO_HOME`, `VIRTUAL_ENV`, `CC`, ...) and git's author and
+  committer names stay, and `AIContainEnv` adds names of your own. The `claude`
+  backend and the hosted Claude engine keep their own login variables
+  (`ANTHROPIC_*`, `CLAUDE_CODE_*`) and the proxy and certificate variables; a
+  hosted command of your own keeps `OPENAI_*` and the names in `AIHostEnv`.
+  The `claude` backend and the hosted engines never run a `claude` that sits in
+  the workspace's own folders on `PATH`. A command also runs with a file-size
+  limit (8 GiB, `XWPE_AI_CONTAIN_FSIZE` for one session; 0 is no limit), no core
+  file, and no way to gain privileges (`no_new_privs`).
+- **Not contained yet:** the files you can read, the network, other processes
+  and the desktop. Under *auto* a command the assistant runs still has your
+  files and your network; it no longer receives the secrets of your
+  environment, and that is all this stage holds. `AIContain : strict` therefore
+  refuses every start, saying so; `standard` (the default) runs the commands
+  with what is held and says what is not; `off` keeps only the environment
+  list. The pane header ends with `UNCONTAINED` and the first run of a session
+  says the same in the error colour, so the word is read before any command
+  runs. Keep `run_command` on *ask* or *edits* when your files or your network
+  matter. The scope judges the paths tools name, not what is inside a command
+  line.
+- **What that leaves reachable, and what the limits cost.** `HOME` is kept, so
+  `~/.ssh`, `~/.aws` and the editor's own key file can be read, and the
+  ssh-agent, gpg-agent, D-Bus and Wayland sockets can be reached by path (only
+  the variables that name them are dropped). `no_new_privs` makes a set-user-ID
+  program give no extra rights, so `sudo`, `su`, `pkexec`, `fusermount` (sshfs,
+  AppImage) and `newuidmap` (rootless podman) do not work inside an assistant
+  command. The file-size limit ends a writer that passes it with SIGXFSZ; raise
+  it with `XWPE_AI_CONTAIN_FSIZE` (0 for none). A limit above the one the
+  editor inherited is lowered to the inherited one.
+- **Starting in your home folder.** An engine (the `claude` backend, a hosted
+  engine) never runs a program from a `PATH` folder inside the workspace. When
+  the workspace is your home folder, `~/.local/bin` is inside it and is
+  dropped; the pane then names the folder. Name it in `AIContainPathAllow`
+  (colon separated folders, your own config file only; `XWPE_AI_CONTAIN_PATH_ALLOW`
+  for one session) or start the editor in a project folder instead. Starting
+  the editor in `/` makes every `PATH` folder "inside the workspace", so every
+  engine is refused; the message names the folder.
 
 Whatever the dial says, a command the assistant runs **cannot reach your
 screen**: it runs in a session of its own with no terminal attached, so its
@@ -617,6 +661,11 @@ fixed setup:
 | `XWPE_AI_POLICY` | `ask` / `edits` / `auto` |
 | `XWPE_AI_WEB` | `1` / `0`: web access for one session (`AIWeb`, asked once at first need, off by default). Governs the chat's and the agent's web tools, and what the browsing backends are launched with (see "Web access" above) |
 | `XWPE_AI_TOOL_TIMEOUT` | seconds a tool command may run before it is ended (`AIToolTimeout`, default 60) |
+| `XWPE_AI_CONTAIN` | `strict` / `standard` / `off` for one session (`AIContain`, default `standard`) |
+| `XWPE_AI_CONTAIN_ENV` | names of environment variables every assistant command keeps (`AIContainEnv`, comma separated) |
+| `XWPE_AI_CONTAIN_PATH_ALLOW` | folders (colon separated) an engine's `PATH` may keep although they lie inside the workspace (`AIContainPathAllow`) |
+| `XWPE_AI_HOST_ENV` | names the hosted command of your own keeps (`AIHostEnv`, comma separated) |
+| `XWPE_AI_CONTAIN_FSIZE` | the file-size limit of an assistant command, in bytes (K, M or G allowed); default 8 GiB, 0 for none |
 | `XWPE_AI_TIMEOUT` | seconds a request waits for the server's first byte: connect, TLS handshake and that byte (`AIAnswerTimeout`, default 600). Once the answer streams there is no deadline; Esc ends it |
 | `XWPE_AI_PROJECT_INSTRUCTIONS` | where the project instructions file is folded in: `agent` (default), `all` or `off` (`AIProjectInstructions`) |
 | `XWPE_AI_PROJECT_INSTRUCTIONS_MAX` | bytes of the project instructions file the prompt carries (`AIProjectInstructionsMax`, default 4095, at most 65536) |
@@ -629,7 +678,9 @@ compilers), but not the ones that start a program, decide what the assistant
 reads, where its requests go, the dial or the web switch: `AIBackend`,
 `AIEndpoint`, `AIProvider`, `AIProviderName`, `AICAFile`, `AISearchURL`,
 `AIEditHook`, `AIHostCommand`, `AIHostAdapter`, `AIAgentEngine`, `AIReadRoots`,
-`AIPolicy` and `AIWeb`. Those come from your own `~/.config/xwpe/xwperc` and
+`AIPolicy`, `AIWeb`, `AIContain`, `AIContainEnv`, `AIContainPathAllow` and
+`AIHostEnv`. Those come
+from your own `~/.config/xwpe/xwperc` and
 the `XWPE_AI_*` variables, in every folder. When the folder's file names one,
 the status line says so at start:
 `./xwperc may not set (only your own config may): AIEditHook`. Saving the
@@ -710,3 +761,8 @@ connections") does not make the model refuse the editor's own web search.
 - Every AI edit is preview-then-apply and undoable; agent writes/commands are
   gated by the permission dial, and unattended runs are checkpointed and
   reviewable.
+- **Under *auto* a command the assistant runs has your files and your network.**
+  Its environment no longer carries your provider keys, agent sockets or
+  desktop variables, and it has a file-size limit and no way to gain
+  privileges, but nothing yet keeps it from reading the files you can read or
+  from using the network. The pane header says `UNCONTAINED` until it can.

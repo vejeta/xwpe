@@ -1320,7 +1320,12 @@ static void case_unplanned_refused(void)
 {
  char mark[PATH_ROOM], script[PATH_ROOM];
  char *argv[] = { "/bin/sh", "-c", NULL, NULL };
- char *ok[] = { "true", NULL };
+ char *ok[] = { "sh", "-c", "exit 0", NULL };
+ char *const no_env[] = { NULL };
+ /* What the assistant's containment prepares (we_contain.c): the program as a
+    path, its environment, and no limit: hand-built here, since this test
+    links the start plan and the owner of children only. */
+ WpeChildContain held = { "a test profile", "/bin/sh", no_env, 0, 0, 0, NULL };
  WpeChildSpec spec;
  WpeChild c;
  int rc;
@@ -1346,6 +1351,12 @@ static void case_unplanned_refused(void)
 
  spec.argv = ok;
  spec.origin = WPE_CHILD_ORIGIN_AI;
+ errno = 0;
+ rc = wpe_child_start(&spec, &c, NULL, NULL);
+ expect_int("an assistant start that names no containment is refused", rc, -1);
+ expect_int("with EPERM too", errno, EPERM);
+
+ spec.contain = &held;
  rc = wpe_child_start(&spec, &c, NULL, NULL);
  expect_int("the assistant's child starts, held by its own control", rc, 0);
  if (rc == 0)

@@ -493,7 +493,7 @@ def test_altg_y_mid_chat_keeps_the_transcript_and_shows_in_the_next_header(tmp_p
         s.key("a", delay=0.6)
         _ask(s, "first")
         assert wait_screen(s, "AI: ONE"), _screen(s)
-        assert "[AI: mock | model: mock-model | policy: ask]" in _screen(s), _screen(s)
+        assert "[AI: mock | model: mock-model | policy: ask | UNCONTAINED]" in _screen(s), _screen(s)
         s.key("draft", delay=0.4)
 
         s.key(ALT.AI, delay=0.5)
@@ -509,10 +509,11 @@ def test_altg_y_mid_chat_keeps_the_transcript_and_shows_in_the_next_header(tmp_p
         assert wait_screen(s, "AI: TWO"), _screen(s)
         rows = s.display()
         idx = {k: next((i for i, r in enumerate(rows) if k in r), -1) for k in (
-            "You: first", "AI: ONE", "[AI: mock | model: mock-model | policy: edits]",
+            "You: first", "AI: ONE",
+            "[AI: mock | model: mock-model | policy: edits | UNCONTAINED]",
             "You: draft", "AI: TWO")}
         order = [idx[k] for k in ("You: first", "AI: ONE",
-                                  "[AI: mock | model: mock-model | policy: edits]",
+                                  "[AI: mock | model: mock-model | policy: edits | UNCONTAINED]",
                                   "You: draft", "AI: TWO")]
         assert -1 not in order and order == sorted(order), \
             "the new header does not precede the next turn:\n" + "\n".join(rows)
@@ -534,7 +535,7 @@ def test_options_ok_changes_only_the_permission_mid_chat(tmp_path):
         s.key("a", delay=0.6)
         _ask(s, "first")
         assert wait_screen(s, "AI: ONE"), _screen(s)
-        assert "[AI: mock | model: mock-model | policy: ask]" in _screen(s), _screen(s)
+        assert "[AI: mock | model: mock-model | policy: ask | UNCONTAINED]" in _screen(s), _screen(s)
         s.key("draft", delay=0.4)
 
         s.key(ALT.OPTIONS, delay=0.5)
@@ -554,7 +555,7 @@ def test_options_ok_changes_only_the_permission_mid_chat(tmp_path):
 
         s.key("\r", delay=1.0)
         assert wait_screen(s, "AI: TWO"), _screen(s)
-        assert "[AI: mock | model: mock-model | policy: edits]" in _screen(s), \
+        assert "[AI: mock | model: mock-model | policy: edits | UNCONTAINED]" in _screen(s), \
             "the next header does not show the same backend and model:\n" + _screen(s)
 
 

@@ -1090,6 +1090,29 @@ WPE_FACT([PARENT_DEATH_SIGNAL],
   [test "x$xwpe_say_pdeath" = xprctl || test "x$xwpe_say_pdeath" = xprocctl],
   [the system signals a child when its parent dies])
 
+# --- An assistant child that can never gain privileges ---
+# Linux has prctl(PR_SET_NO_NEW_PRIVS) and FreeBSD
+# procctl(PROC_NO_NEW_PRIVS_CTL): after it, an exec of a set-user-ID program
+# does not raise the child's rights.  The other systems have no such call,
+# and the containment report then says privs=none.
+AC_CHECK_DECLS([PR_SET_NO_NEW_PRIVS], [], [],
+  [[#ifdef HAVE_SYS_PRCTL_H
+#include <sys/prctl.h>
+#endif]])
+AC_CHECK_DECLS([PROC_NO_NEW_PRIVS_CTL], [], [],
+  [[#include <sys/types.h>
+#ifdef HAVE_SYS_PROCCTL_H
+#include <sys/procctl.h>
+#endif]])
+AS_IF([test "x$ac_cv_have_decl_PR_SET_NO_NEW_PRIVS" = xyes],
+  [xwpe_say_no_new_privs=prctl],
+  [test "x$ac_cv_have_decl_PROC_NO_NEW_PRIVS_CTL" = xyes],
+  [xwpe_say_no_new_privs=procctl],
+  [xwpe_say_no_new_privs="none (an assistant command can gain privileges by running a set-user-ID program)"])
+WPE_FACT([NO_NEW_PRIVS],
+  [test "x$ac_cv_have_decl_PR_SET_NO_NEW_PRIVS" = xyes || test "x$ac_cv_have_decl_PROC_NO_NEW_PRIVS_CTL" = xyes],
+  [the system lets a child give up the right to gain privileges])
+
 # --- Optional: WPE_TRACE debug logging (off by default, zero-cost) ---
 AC_ARG_ENABLE([trace],
   [AS_HELP_STRING([--enable-trace],
@@ -1284,6 +1307,7 @@ AC_MSG_RESULT([
       declaration check: $xwpe_say_decl
       library feature macros: $xwpe_say_libmacros
       parent-death signal: $xwpe_say_pdeath
+      no new privileges: $xwpe_say_no_new_privs
       memfd_create:      $xwpe_say_memfd
       close_range:       $xwpe_say_close_range
       closefrom:         $xwpe_say_closefrom

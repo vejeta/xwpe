@@ -70,7 +70,7 @@ FOLLOWUP_LINE = "type a follow-up"
 # halves it, so the header and the write line wrap over two rows and the
 # run's oldest lines scroll above the view: the pane is read as its logical
 # lines, paged back with PgUp.
-HEADER_AUTO = "[AI: mock | model: mock-model | policy: auto]"
+HEADER_AUTO = "[AI: mock | model: mock-model | policy: auto | UNCONTAINED]"
 AUTO_WRITE_LINE = "[agent] auto-approved (auto): write out.txt"
 INPUT_LINE = ">"
 # The review lists the written file by its full path in the Messages window,
@@ -269,6 +269,9 @@ def test_prompt_states_the_tool_list_stands_after_the_project_block(tmp_path):
         "XWPE_AI_MODEL": "sonnet",
         "XWPE_AI_POLICY": "ask",
         "PATH": bindir + ":" + os.environ.get("PATH", ""),
+        # The stand-in lives in the workspace, which an engine's PATH does not
+        # trust: the seam names the one folder this row runs it from.
+        "XWPE_AI_CONTAIN_PATH_ALLOW": bindir,
         "XWPE_AI_TRACE": str(tmp_path / "ai.trace"),
     }
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
@@ -385,6 +388,9 @@ def _claudecli_env(tmp_path, bindir):
         "XWPE_AI_MODEL": "sonnet",
         "XWPE_AI_POLICY": "ask",
         "PATH": bindir + ":" + os.environ.get("PATH", ""),
+        # The stand-in lives in the workspace, which an engine's PATH does not
+        # trust: the seam names the one folder this row runs it from.
+        "XWPE_AI_CONTAIN_PATH_ALLOW": bindir,
         "XWPE_AI_TRACE": str(tmp_path / "ai.trace"),
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
     }

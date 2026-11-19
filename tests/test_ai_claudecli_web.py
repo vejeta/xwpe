@@ -50,6 +50,9 @@ def _argv_of_one_turn(tmp_path, web):
         "XWPE_AI_MODEL": "default",
         "XWPE_AI_WEB": web,
         "PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
+        # The stand-in lives in the workspace, which an engine's PATH does not
+        # trust: the seam names the one folder this row may run it from.
+        "XWPE_AI_CONTAIN_PATH_ALLOW": str(bindir),
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:

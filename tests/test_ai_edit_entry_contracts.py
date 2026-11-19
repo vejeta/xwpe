@@ -70,15 +70,16 @@ def _wait_screen(s, needle, tmo=12):
     return False
 
 
-def _stub_claude(dir_, body):
-    """A fake `claude` CLI that ignores its prompt and prints `body` on stdout,
-    the same technique test_ai_edit_error_guard.py uses: no real network, no
-    real model, just a deterministic backend-error envelope."""
+def _stub_claude(dir_, body, marker):
+    """A fake `claude` CLI that writes @marker, ignores its prompt and prints
+    `body` on stdout, the same technique test_ai_edit_error_guard.py uses: no
+    real network, no real model, just a deterministic backend-error envelope.
+    The marker tells a row that the stand-in answered."""
     d = os.path.join(dir_, "bin")
     os.makedirs(d, exist_ok=True)
     p = os.path.join(d, "claude")
     with open(p, "w") as f:
-        f.write("#!/bin/sh\ncat >/dev/null 2>&1\nprintf '%s' '" + body + "'\n")
+        f.write("#!/bin/sh\n: > " + marker + "\ncat >/dev/null 2>&1\nprintf '%s' '" + body + "'\n")
     os.chmod(p, 0o755)
     return d
 
@@ -288,21 +289,27 @@ def test_complete_no_suggestion_on_empty_reply(tmp_path):
 
 
 def test_complete_backend_error(tmp_path):
+    marker = tmp_path / "stub.ran"
     bindir = _stub_claude(
         str(tmp_path),
         '{"type":"result","subtype":"error_during_execution",'
         '"is_error":true,"result":"Not logged in - Please run /login",'
-        '"session_id":"stub"}')
+        '"session_id":"stub"}', str(marker))
     env = {
         "XWPE_AI_ENABLE": "1",
         "XWPE_AI_BACKEND": "claudecli",
         "XWPE_AI_MODEL": "sonnet",
-        "PATH": bindir + ":" + os.environ.get("PATH", ""),
+        # The stand-in is in the workspace, which an engine's PATH does not
+        # trust: the user's own setting names its folder, and the rest of PATH
+        # holds no other `claude`, so the real CLI can never answer.
+        "XWPE_AI_CONTAIN_PATH_ALLOW": bindir,
+        "PATH": bindir + ":/usr/bin:/bin",
         "XWPE_AI_TRACE": str(tmp_path / "e.trace"),
     }
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("c", delay=0.8)
         assert _wait_screen(s, "[AI complete] backend error", tmo=20), \
             "the exact 'backend error' line never appeared:\n" + "\n".join(s.display())
+        assert marker.exists(), "the stand-in never ran, so the line is not its answer"
         s.save()
         assert s.text() == ORIG, "disk changed when the backend errored"

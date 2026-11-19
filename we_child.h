@@ -65,8 +65,25 @@ typedef enum {
                                     reads the terminal the editor came from */
 } WpeChildGroup;
 
+/* How an assistant child is held, prepared in the parent by we_contain.c and
+   only read in the child: the program to run (resolved to an absolute path,
+   never searched for after the fork), the environment it is given instead of
+   the editor's, the limits it runs under, and, when the start must not
+   happen, why.  A start that carries one runs through execve; the owner of
+   the start (this file) calls setrlimit and the no_new_privs call itself, so
+   the child path stays inside one object (tests/check-child-exec.sh). */
+typedef struct WpeChildContain {
+ const char *name;               /* the profile's name: the trace line, the status row */
+ const char *prog;               /* execve's path; "" when the program was not found */
+ char *const *envp;              /* the environment the child gets, NULL-terminated */
+ unsigned long long fsize_limit; /* RLIMIT_FSIZE in bytes (soft and hard), 0 = leave */
+ int core_zero;                  /* RLIMIT_CORE 0: a killed program leaves no dump */
+ int no_new_privs;               /* the system is told the child may never gain privileges */
+ const char *refusal;            /* not NULL: the start is refused and this is said */
+} WpeChildContain;
+
 typedef struct {
- char *const *argv;              /* execvp */
+ char *const *argv;              /* execvp, or execve when @contain is set */
  const char *cwd;                /* chdir in the child, or NULL */
  WpeChildIo io;
  WpeChildGroup group;
@@ -124,6 +141,9 @@ typedef struct {
  const struct WpeStartPlan *plan; /* what the editor decided this child is (we_startplan.c),
                                     or NULL for a start not converted yet */
  int origin;                     /* WPE_CHILD_ORIGIN_*: who asked for the child */
+ const WpeChildContain *contain; /* how an assistant child is held (we_contain.c),
+                                    or NULL: required for WPE_CHILD_ORIGIN_AI,
+                                    never set for a user's start */
 } WpeChildSpec;
 
 /* Who asked for a child.  0 is "not said", so a site that forgot the field
@@ -137,6 +157,13 @@ typedef struct {
    text. */
 #define WPE_CHILD_REFUSE_UNPLANNED_TEXT \
  "not started: a program the editor starts must come from a start plan"
+
+/* An assistant start that names no containment profile: refused (EPERM),
+   traced ("child uncontained <what>") and said with this text.  A profile
+   that refuses the start itself (Strict) is traced the same way and says its
+   own sentence. */
+#define WPE_CHILD_REFUSE_UNCONTAINED_TEXT \
+ "not started: an assistant command must name how it is contained"
 void wpe_child_trace_set(void (*trace)(const char *line));
 
 typedef struct {

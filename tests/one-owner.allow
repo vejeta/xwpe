@@ -98,9 +98,8 @@ we_xterm.o poll 1 P9o the paste wait for SelectionNotify
 # shell entries, the install lines, the language and build servers, the
 # debug session's starts and the short commands (through
 # wpe_startplan_capture and its kin).  we_child.c refuses a start with no
-# plan; the assistant's children are the only others, marked AI origin.
-we_ai.o wpe_child_start 2 P1 the assistant's tool command and CLI: AI origin, held by the containment profile
-we_ai_host.o wpe_child_start 1 P1 the hosted engine: AI origin, held by the containment profile
+# plan; the assistant's children are the only others, started in we_contain.c
+# (wpe_contain_start) with the profile of what each is, marked AI origin there.
 
 # the screen: every box, menu, prefix and dialog reads its keys through the
 # owner's bracket.  The main loop's read and the owner's key hook stay in

@@ -82,7 +82,9 @@ trusts, or set the permission dial and the web switch:
 @code{AIBackend}, @code{AIEndpoint}, @code{AIProvider},
 @code{AIProviderName}, @code{AICAFile}, @code{AISearchURL},
 @code{AIEditHook}, @code{AIHostCommand}, @code{AIHostAdapter},
-@code{AIAgentEngine}, @code{AIReadRoots}, @code{AIPolicy}, @code{AIWeb}.
+@code{AIAgentEngine}, @code{AIReadRoots}, @code{AIPolicy}, @code{AIWeb},
+@code{AIContain}, @code{AIContainEnv}, @code{AIContainPathAllow},
+@code{AIHostEnv}.
 
 These keys are read from your own file (@file{~/.config/xwpe/xwperc})
 and from the @env{XWPE_AI_*} environment variables, in every folder.

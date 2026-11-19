@@ -129,18 +129,22 @@ int          wpe_ai_project_max_from_text(const char *text);
 /* Run a shell command; capture bounded stdout+stderr (malloc'd, never NULL on
  * a spawn failure -- returns a short note instead).  The command runs in a
  * session of its own, so it cannot reach the editor's screen, and is ended
- * after e_ai_tool_timeout seconds. */
-char *wpe_ai_run_capture(const char *cmd);
-/* The same, also handing back the command's exit status (0 = success, a
+ * after e_ai_tool_timeout seconds (TERM, then KILL).
+ *
+ * One face per kind of command, because the kind decides what the command is
+ * given (we_contain.h): its environment, its limits.  A caller names its kind
+ * by the function it calls; there is no face that takes none.
+ *   _git:         the checkpoint's and the review's git reads and reverts;
+ *   _git_commit:  the review's stage and commit; @ssh_signing keeps the
+ *                 agent's socket for a commit signed with ssh;
+ *   _hook:        the post-edit hook.
+ * The _status faces also hand back the command's exit status (0 = success, a
  * shell-style 128+signal when it was killed, 127 when it could not start),
  * for a caller that must know whether the command did its job. */
-char *wpe_ai_run_capture_status(const char *cmd, int *status);
-/* The same with an explicit bound: after timeout_s seconds the command's
- * process group is ended (TERM, then KILL), *timed_out is set and the result
- * is the "TOOL ERROR: timed out after N s" line the model reads.  Both
- * out-parameters may be NULL. */
-char *wpe_ai_run_capture_bounded(const char *cmd, int timeout_s,
-                                 int *status, int *timed_out);
+char *wpe_ai_run_capture_git(const char *cmd);
+char *wpe_ai_run_capture_git_status(const char *cmd, int *status);
+char *wpe_ai_run_capture_git_commit_status(const char *cmd, int *status, int ssh_signing);
+char *wpe_ai_run_capture_hook_status(const char *cmd, int *status);
 /* Append the "(output cut at N bytes)" line to a result that was cut at
  * WPE_AI_TOOL_OUT_MAX.  Takes the malloc'd result and its length; returns the
  * (possibly reallocated) result, or the input unchanged when memory is short. */
@@ -161,8 +165,8 @@ int   wpe_ai_shell_quote_whole(char *dst, size_t sz, const char *src);
  * could not be started (nothing runs, @done never comes). */
 typedef struct wpe_ai_capture wpe_ai_capture;
 typedef void (*wpe_ai_captured_fn)(char *result, int status, int timed_out, void *ud);
-wpe_ai_capture *wpe_ai_capture_start(const char *cmd, int timeout_s,
-                                     wpe_ai_captured_fn done, void *ud);
+wpe_ai_capture *wpe_ai_capture_start_tool(const char *cmd, int timeout_s,
+                                          wpe_ai_captured_fn done, void *ud);
 /* Esc or the task's end: the command is ended, @done never comes. */
 void  wpe_ai_capture_cancel(wpe_ai_capture *c);
 

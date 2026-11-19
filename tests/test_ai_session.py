@@ -101,7 +101,10 @@ def _session_files(tmp_path, env=None):
 def test_ai_session_claudecli_resume(tmp_path):
     bindir, log = _fake_claude(tmp_path)
     env = {"XWPE_AI_BACKEND": "claudecli",
-           "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", "")}
+           "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+           # The stand-in lives in the workspace, which an engine's PATH does
+           # not trust: the seam names the one folder this row runs it from.
+           "XWPE_AI_CONTAIN_PATH_ALLOW": str(bindir)}
 
     txt = _chat(tmp_path, env, "hello")
     assert "backend=claudecli" in txt and "chat done" in txt, txt

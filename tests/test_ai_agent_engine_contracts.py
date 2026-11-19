@@ -47,7 +47,7 @@ PROCFACTS = (
 
 HOST_MOCK = textwrap.dedent('''\
     import sys, json, os
-    facts = os.environ.get("HOST_FACTS")
+    facts = os.environ.get("XWPE_STUB_HOST_FACTS")
     if facts:
         with open(facts, "a") as fh:
             fh.write("pid=%d sid=%d\\n" % (os.getpid(), os.getsid(0)))
@@ -258,6 +258,9 @@ def _claudecli_agent(tmp_path, policy):
     # switch is on (tests/test_ai_claudecli_web.py owns both of its states).
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "claudecli", "XWPE_AI_MODEL": "sonnet",
            "XWPE_AI_POLICY": policy, "PATH": bindir + ":" + os.environ.get("PATH", ""),
+           # The stub lives in the workspace, which an engine's PATH does not
+           # trust: the seam names the one folder this row runs it from.
+           "XWPE_AI_CONTAIN_PATH_ALLOW": bindir,
            "XWPE_AI_WEB": "1",
            "XWPE_AI_TRACE": str(tmp_path / "ai.trace")}
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
@@ -354,7 +357,12 @@ def _host_run(tmp_path, policy, end_session=False, web=None):
     facts = str(tmp_path / "host.facts")
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_AGENT_ENGINE": "claude-code",
            "XWPE_AI_POLICY": policy, "XWPE_AI_TRACE": str(tmp_path / "ai.trace"),
-           "PATH": bindir + ":" + os.environ.get("PATH", ""), "HOST_FACTS": facts}
+           "PATH": bindir + ":" + os.environ.get("PATH", ""), "XWPE_STUB_HOST_FACTS": facts,
+           # The stub lives in the workspace, which an engine's PATH does not
+           # trust, and it reads XWPE_STUB_HOST_FACTS from its environment:
+           # the two seams name the one folder and the stub prefix this row needs.
+           "XWPE_AI_CONTAIN_PATH_ALLOW": bindir,
+           "XWPE_AI_CONTAIN_PASS_ENV": "XWPE_STUB_"}
     # No XWPE_AI_WEB unless a case asks for one, so the default run has the
     # switch unanswered, which is what a user meets on a first launch.
     if web is not None:

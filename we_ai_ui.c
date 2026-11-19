@@ -18,6 +18,7 @@
 #include "we_ai.h"
 #include "we_ai_path.h"
 #include "we_ai_host.h"
+#include "we_contain.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -3145,11 +3146,15 @@ static void ai_identity_text(char *buf, size_t n)
 
 /* Room for the part of the header that says how many folders are open for reading. */
 #define AI_STATUS_READS_MAX 40
+/* Room for the containment notice: the report line and the words after it. */
+#define AI_CONTAIN_NOTICE_MAX 700
 
 /**
  * ai_status_text - One-line "who am I talking to" indicator for the pane header:
  * the active backend, model and permission policy, and how many folders the
- * user opened for reading in this session (none: nothing is added).
+ * user opened for reading in this session (none: nothing is added), and, last,
+ * how far the commands it runs are contained (UNCONTAINED while this system
+ * holds neither their files nor their network).
  * @buf: destination; @n: its size.
  *
  * Shown at the top of a fresh AI pane so the working setup is visible without
@@ -3161,16 +3166,38 @@ static void ai_status_text(char *buf, size_t n)
  const char *be = wpe_ai_backend_name(e_ai_backend);
  const char *pol = wpe_ai_policy_name(e_ai_policy);
  const char *model = (e_ai_model && *e_ai_model) ? e_ai_model : "(default)";
+ const char *word = wpe_contain_word();
  char reads[AI_STATUS_READS_MAX];
  int grants = wpe_ai_scope_grant_count();
  reads[0] = '\0';
  if (grants > 0)
   snprintf(reads, sizeof reads, " | reads: %d folder%s", grants, grants == 1 ? "" : "s");
  if (wpe_ai_web_state() == WPE_AI_WEB_ON) {
-  snprintf(buf, n, "[AI: %s | model: %s | policy: %s | web%s]", be, model, pol, reads);
+  snprintf(buf, n, "[AI: %s | model: %s | policy: %s | web%s | %s]", be, model, pol, reads, word);
   return;
  }
- snprintf(buf, n, "[AI: %s | model: %s | policy: %s%s]", be, model, pol, reads);
+ snprintf(buf, n, "[AI: %s | model: %s | policy: %s%s | %s]", be, model, pol, reads, word);
+}
+
+/**
+ * ai_contain_notice_once - Tell the user, once per session, what the
+ * assistant's commands can still reach.
+ * @f: the window whose pane shows it.
+ *
+ * Said in the error colour before the first command or engine of the
+ * session, because a user who sets the dial to auto should read, right
+ * there, that the commands still run with their files and network.  The
+ * line is the containment report of this system; it is the same words the
+ * manual uses.
+ */
+static void ai_contain_notice_once(FENSTER *f)
+{
+ char line[AI_CONTAIN_NOTICE_MAX];
+
+ if (!wpe_contain_notice_once(line, sizeof line))
+  return;
+ ai_pane(f, line, AI_ROLE_ERROR, 1);
+ wpe_ai_trace("agent containment notice said");
 }
 
 /* ----- the pane header follows the configuration ---------------------------
@@ -3250,6 +3277,8 @@ static void ai_chat_emit_header_if_due(FENSTER *wf)
  ai_announce_dropped_model(wf);
  if (!ai_chat_header_due())
   return;
+ if (e_ai_backend == WPE_AI_CLAUDECLI)      /* the one chat backend that starts a program */
+  ai_contain_notice_once(wf);
  ai_header_text_shown(st, sizeof st);
  ai_pane(wf, st, AI_ROLE_MACHINERY, 0);     /* wrapped to the pane's width */
 }
@@ -5535,7 +5564,7 @@ static int ai_hook_run_on_file(FENSTER *f, const char *path, const char *shown)
  int status = AI_HOOK_OK;
  ai_hook_announce(f, shown);
  ai_hook_command(cmd, sizeof cmd, path);
- out = wpe_ai_run_capture_status(cmd, &status);
+ out = wpe_ai_run_capture_hook_status(cmd, &status);
  if (status != AI_HOOK_OK) ai_hook_report_failure(f, shown, status, out);
  free(out);
  wpe_ai_trace("edit hook ran on %s status %d", shown, status);
@@ -13043,8 +13072,8 @@ static char *ai_tool_command_start(const char *cmd, int report_timeout)
  if (!g_ai_page.op)
   return strdup(AI_TOOL_NOT_STARTED_RESULT);
  g_ai_page.report_timeout = report_timeout;
- g_ai_page.capture = wpe_ai_capture_start(cmd, e_ai_tool_timeout,
-                                          ai_page_command_done, NULL);
+ g_ai_page.capture = wpe_ai_capture_start_tool(cmd, e_ai_tool_timeout,
+                                               ai_page_command_done, NULL);
  if (g_ai_page.capture)
   return AI_TOOL_WAITS;
  return strdup(AI_TOOL_NOT_STARTED_RESULT);
@@ -13865,6 +13894,7 @@ static void ai_agent_announce_task(FENSTER *f, const char *goal)
 {
  char st[AI_HEADER_MAX], line[AI_AGENT_TASK_LINE_MAX];
  int wanted;
+ ai_contain_notice_once(f);       /* before the header: the header, the task and what follows stay together */
  ai_header_text_shown(st, sizeof st);
  ai_pane(f, st, AI_ROLE_MACHINERY, 0);
  wanted = snprintf(line, sizeof line, "[agent] task: %s", goal);
@@ -13872,6 +13902,7 @@ static void ai_agent_announce_task(FENSTER *f, const char *goal)
  ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("agent task=%s", goal);
  wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
+ wpe_ai_trace("agent containment=%s", wpe_contain_word());
 }
 
 /**
@@ -15482,6 +15513,7 @@ int e_ai_host(FENSTER *f)
  }
  if (!g_host) {
   err[0] = '\0';
+  ai_contain_notice_once(f);
   g_host = host_start_session(f, err, sizeof err);
   if (!g_host) {
    char l[360];

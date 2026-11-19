@@ -14,6 +14,7 @@
 #include "we_ai_http.h"
 #include "we_ai_host.h"
 #include "we_child.h"
+#include "we_contain.h"
 #include "we_fdloop.h"
 #include "we_path.h"
 
@@ -27,9 +28,15 @@
 #include <json-c/json.h>
 
 #define HOST_MAX_EDITS 32
-/* Room for the hosted CLI's argument vector: the longest dial builds 22 words,
-   and each folder the user already allowed adds one. */
+/* Room for the hosted CLI's argument vector.  The longest build today is 37
+   words (the fixed flags, a model and a resume id, the web deny list, and
+   --add-dir with WPE_HOST_ADD_DIR_MAX folders), and the NULL; the isolation
+   flags a later pass adds bring six more, which still fit. */
+#define HOST_ARGV_WORDS_LONGEST 37
+#define HOST_ARGV_ISOLATION_WORDS 6
 #define HOST_ARGV_MAX  48
+_Static_assert(HOST_ARGV_MAX > HOST_ARGV_WORDS_LONGEST + HOST_ARGV_ISOLATION_WORDS,
+               "the hosted CLI's argument vector must hold the longest build, the isolation flags and the NULL");
 
 /* The CLI's permission modes, by dial.  The auto dial runs the CLI in the
    same mode as edits: its prompts are routed to the editor, and the editor
@@ -204,15 +211,52 @@ static void host_on_ended(WpeChild *c, int status, int how, void *data)
 }
 
 /**
- * host_spawn - Start the engine in a session of its own.
- * @h: the session; @argv: its command line.
+ * host_profile - How the engine is held: the built-in claude argv or a
+ * command the user wrote.
+ * @hostcmd: the configured command, or NULL for the built-in engine.
+ */
+static const WpeContainProfile *host_profile(const char *hostcmd)
+{
+ if (hostcmd && hostcmd[0])
+  return &wpe_contain_host_command;
+ return &wpe_contain_host_claude;
+}
+
+/**
+ * host_start_failure_text - Why the engine did not start, in the user's words.
+ * @hostcmd: the configured command, or NULL for the built-in `claude`;
+ * @cwd: the folder the engine was to run in (the workspace it is judged
+ * against), or NULL for the editor's own; @err, @errsz: receives it.
  *
- * @cwd: the folder it starts in, or NULL for the editor's own.
+ * When `claude` sits in a PATH folder inside the workspace (the workspace is
+ * the home folder and the program is in ~/.local/bin) the engine's PATH
+ * drops it; the text then names the folder and the reason instead of a bare
+ * "Operation not permitted".
+ */
+static void host_start_failure_text(const char *hostcmd, const char *cwd, char *err, size_t errsz)
+{
+ int why = errno;
+ char note[WPE_CONTAIN_NOTE_MAX];
+
+ if (!(hostcmd && hostcmd[0]) &&
+     wpe_contain_engine_note(&wpe_contain_host_claude, "claude", cwd, note, sizeof note))
+  snprintf(err, errsz, "start: %s", note);
+ else
+  snprintf(err, errsz, "start: %s", strerror(why));
+}
+
+/**
+ * host_spawn - Start the engine in a session of its own.
+ * @h: the session; @argv: its command line; @cwd: the folder it starts in,
+ * or NULL for the editor's own; @profile: which engine it is, which decides
+ * the login variables it keeps.
+ *
  * Its own session, so it cannot paint on the editor's screen; its stderr to
  * /dev/null (its answers are the stream on stdout); it dies with the editor.
  * Return: 0, or -1 with errno when it could not be started.
  */
-static int host_spawn(wpe_host *h, char **argv, const char *cwd)
+static int host_spawn(wpe_host *h, char **argv, const char *cwd,
+                      const WpeContainProfile *profile)
 {
  WpeChildSpec spec;
 
@@ -226,8 +270,7 @@ static int host_spawn(wpe_host *h, char **argv, const char *cwd)
  spec.side_pty_slave = WPE_CHILD_NO_FD;
  spec.tty_fd = WPE_CHILD_NO_FD;
  spec.what = HOST_WHAT;
- spec.origin = WPE_CHILD_ORIGIN_AI;
- return wpe_child_start(&spec, &h->child, host_on_ended, h);
+ return wpe_contain_start(profile, &spec, &h->child, host_on_ended, h);
 }
 
 wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
@@ -253,8 +296,8 @@ wpe_host *wpe_host_start(const char *model, const char *resume, int policy,
   return NULL;
  }
  host_argv(argv, hostcmd, model, resume, policy, add_dirs);
- if (host_spawn(h, argv, cwd) != 0) {
-  if (err) snprintf(err, errsz, "start: %s", strerror(errno));
+ if (host_spawn(h, argv, cwd, host_profile(hostcmd)) != 0) {
+  if (err) host_start_failure_text(hostcmd, cwd, err, errsz);
   free(h);
   return NULL;
  }

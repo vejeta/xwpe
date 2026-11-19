@@ -44,6 +44,9 @@ def test_stale_ollama_model_not_forwarded(tmp_path):
         "XWPE_AI_BACKEND": "claudecli",
         "XWPE_AI_MODEL": "qwen3.8:27b",     # stale, from an earlier Ollama session
         "PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
+        # The stand-in lives in the workspace, which an engine's PATH does not
+        # trust: the seam names the one folder this row runs it from.
+        "XWPE_AI_CONTAIN_PATH_ALLOW": str(bindir),
     }
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     env_extra=env) as s:

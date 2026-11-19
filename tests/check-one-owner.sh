@@ -87,7 +87,7 @@ close_range|closefrom we_child.o
 WpeXInfo we_xterm.o WeXterm.o we_render_cairo.o we_xbackbuf.o
 XCopyArea|XCreatePixmap|XFreePixmap we_xbackbuf.o
 e_add_undo we_buffer.o we_edit.o
-wpe_child_start we_child.o we_startplan.o
+wpe_child_start we_child.o we_startplan.o we_contain.o
 wpe_child_capture|wpe_child_probe|wpe_child_run_to_file|wpe_child_capture_plan|wpe_child_probe_plan|wpe_child_run_to_file_plan we_child.o we_startplan.o
 regcomp|regexec|regfree|regerror we_rowfind.o
 wpe_rowfind_row we_block.o we_fl_unix.o

@@ -142,9 +142,9 @@ CAIRO_SOURCES   = we_render_cairo.c
 GPM_SOURCES     = we_gpm.c
 VTERM_SOURCES   = we_vterm.c
 WAYLAND_SOURCES = we_wayland.c we_render_wayland.c we_wlframe.c
-AI_SOURCES      = we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_ws.c we_ai_path.c we_ai_session.c
+AI_SOURCES      = we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_ws.c we_ai_path.c we_ai_session.c we_contain.c
 AI_HOST_SOURCES = we_ai_host.c
-AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope test_ai_session
+AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope test_ai_session test_ai_contain
 AI_TLS_CHECK    = test_ai_tls_live
 
 if HAVE_X11
@@ -275,6 +275,7 @@ noinst_HEADERS = \
   we_childsig.h \
   we_platform.h \
   we_child.h \
+  we_contain.h \
   we_startcmd.h \
   we_startplan.h \
   we_path.h \
@@ -1003,6 +1004,14 @@ TESTS += tests/check-start-plan.sh
 # we_ai*.c holds a hand-written '%s'.
 TESTS += tests/check-shell-quote.sh
 
+# One owner of how the assistant's children are held (we_contain.c): every
+# program the assistant starts goes through wpe_contain_start with the profile
+# of what it is, and the start gate refuses one that names none.
+# tests/check-contain-sites.sh fails when a we_ai*.c starts a child itself,
+# spells WPE_CHILD_ORIGIN_AI, passes no profile, keeps an old capture face
+# that took none, or an exec appears outside we_child.c.
+TESTS += tests/check-contain-sites.sh
+
 # One owner of a file's line endings (we_lineend.c): no second reader or
 # writer of the bytes of a line break.  Offenders still to go are in
 # tests/line-ends.allow.
@@ -1240,6 +1249,14 @@ test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c we_seen.c we_places.c w
 test_ai_path_CFLAGS = $(TEST_CFLAGS)
 test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c we_seen.c we_places.c we_path.c
 test_ai_scope_CFLAGS = $(TEST_CFLAGS)
+# How the assistant's children are held (we_contain.c): the environment each
+# profile gives its child, the PATH and the program resolved in the parent,
+# the limits and the report, and, through the owner of children (we_child.c,
+# with the refusal of an assistant start that names no profile on), what a
+# started child really gets.
+test_ai_contain_SOURCES = tests/test_ai_contain.c we_contain.c we_child.c we_fdloop.c
+test_ai_contain_CFLAGS = $(TEST_CFLAGS)
+test_ai_contain_LDADD = $(UTIL_LIBS)
 # What a saved conversation may hold (we_ai_session.c): the resume id's shape
 # and the judge of a conversation file, with json-c and nothing of the editor.
 test_ai_session_SOURCES = tests/test_ai_session.c we_ai_session.c
@@ -1311,6 +1328,7 @@ EXTRA_DIST = \
   tests/check-start-plan.sh \
   tests/start-plan.allow \
   tests/check-shell-quote.sh \
+  tests/check-contain-sites.sh \
   tests/check-line-ends.sh \
   tests/line-ends.allow \
   tests/test_lineend.c \

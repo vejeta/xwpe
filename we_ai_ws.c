@@ -1005,7 +1005,7 @@ static int ws_git_list(const char *git_args, char ***l, int *n)
   unlink(file);
   return -1;
  }
- out = wpe_ai_run_capture_status(cmd, &status);
+ out = wpe_ai_run_capture_git_status(cmd, &status);
  free(out);
  fp = status == 0 ? fopen(file, "rb") : NULL;
  if (!fp) { unlink(file); return -1; }
@@ -1040,13 +1040,13 @@ static int ws_git_tracks_workspace(const char *q)
  int ntracked, yes;
  if (ws_format_whole(cmd, sizeof cmd, "cd %s && git rev-parse --is-inside-work-tree 2>/dev/null",
                      q) != 0) return 0;
- out = wpe_ai_run_capture(cmd);
+ out = wpe_ai_run_capture_git(cmd);
  yes = out && !strncmp(out, "true", 4);
  free(out);
  if (!yes) return 0;
  if (ws_format_whole(cmd, sizeof cmd, "cd %s && git check-ignore -q . 2>/dev/null && echo ignored",
                      q) != 0) return 0;
- out = wpe_ai_run_capture(cmd);
+ out = wpe_ai_run_capture_git(cmd);
  yes = !(out && !strncmp(out, "ignored", 7));
  free(out);
  if (!yes) return 0;
@@ -1081,7 +1081,7 @@ static int ws_git_stash_ref(const char *q)
  if (ws_format_whole(cmd, sizeof cmd,
                      "cd %s && { git update-index -q --refresh 2>/dev/null; git stash create 2>/dev/null; }",
                      q) != 0) return -1;
- out = wpe_ai_run_capture_status(cmd, &status);
+ out = wpe_ai_run_capture_git_status(cmd, &status);
  if (status != 0 || !out) { free(out); return -1; }
  l = strlen(out);
  while (l && (out[l-1] == '\n' || out[l-1] == ' ')) out[--l] = '\0';
@@ -1604,7 +1604,7 @@ static void ws_collect_git_edits(ws_change **c, int *n, int *cap)
    ws_add_change(c, n, cap, names[i], 1, WS_CHANGED_UNREAD, 0);
    continue;
   }
-  d = wpe_ai_run_capture(cmd);
+  d = wpe_ai_run_capture_git(cmd);
   ws_changes_from_gitdiff(d ? d : "", names[i], c, n, cap);
   free(d);
  }
@@ -2379,7 +2379,7 @@ static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, s
   snprintf(reason, rsz, "%s", WS_NAME_TOO_LONG);
   return -1;
  }
- out = wpe_ai_run_capture_status(cmd, &status);
+ out = wpe_ai_run_capture_git_status(cmd, &status);
  if (status != 0) ws_output_reason(out, status, reason, rsz);
  else *buf = ws_read_file_len(file, WS_BEFORE_IMAGE_MAX, len);
  free(out);
@@ -2524,7 +2524,7 @@ static int ws_git_entry_is_link(const char *rel)
      ws_quote_whole(qs, sizeof qs, spec) != 0 ||
      ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs ls-tree %s -- %s 2>/dev/null",
                      q, ck_ref, qs) != 0) return 0;
- out = wpe_ai_run_capture_status(cmd, &status);
+ out = wpe_ai_run_capture_git_status(cmd, &status);
  yes = status == 0 && out && !strncmp(out, "120000", 6);
  free(out);
  return yes;
@@ -2548,7 +2548,7 @@ static int ws_revert_by_checkout(FENSTER *f, const char *path, const char *rel)
      ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs checkout %s -- %s 2>&1",
                      q, ck_ref, qf) != 0)
   return ws_revert_failed(f, "restore", path, WS_NAME_TOO_LONG);
- out = wpe_ai_run_capture_status(cmd, &status);
+ out = wpe_ai_run_capture_git_status(cmd, &status);
  if (status != 0) ws_output_reason(out, status, reason, sizeof reason);
  free(out);
  return status != 0 ? ws_revert_failed(f, "restore", path, reason) : 0;
@@ -2602,7 +2602,7 @@ static int ws_revert_git(FENSTER *f, const char *path, int is_new)
  if (!ws_folders_stay_in_tree(path)) return ws_revert_failed(f, what, path, WS_FOLDER_LINK);
  if (ws_revert_command(cmd, sizeof cmd, rel) != 0)
   return ws_revert_failed(f, what, path, WS_NAME_TOO_LONG);
- out = wpe_ai_run_capture_status(cmd, &status);
+ out = wpe_ai_run_capture_git_status(cmd, &status);
  if (status != 0) ws_output_reason(out, status, reason, sizeof reason);
  free(out);
  return status != 0 ? ws_revert_failed(f, what, path, reason) : 0;
@@ -2825,6 +2825,48 @@ static int ws_write_pathspec(FENSTER *f, ws_change *c, int n, char *buf, size_t 
  return 0;
 }
 
+/* The words of the question "does this repository sign its commits with
+   ssh?": git itself reads commit.gpgsign as a boolean (true, yes, on, 1, a
+   bare key) and answers true or false, and names gpg.format. */
+#define WS_SIGN_SETTINGS_FMT \
+ "cd %s && echo sign=$(git config --type=bool --get commit.gpgsign 2>/dev/null) && " \
+ "echo format=$(git config --get gpg.format 2>/dev/null)"
+#define WS_SIGN_SSH_FORMAT "format=ssh"
+#define WS_SIGN_ON "sign=true"
+
+/**
+ * ws_commit_signs_with_ssh - Does git sign this repository's commits with ssh?
+ * @q: the shell-quoted repository folder.
+ *
+ * Only a commit signed with ssh needs the agent's socket, so only then does
+ * the commit keep it; every other commit and every stage runs without it.
+ * Return: 1 when commit.gpgsign is true and gpg.format is ssh.
+ */
+static int ws_commit_signs_with_ssh(const char *q)
+{
+ char cmd[1200], *out;
+ int signs, ssh;
+
+ if (ws_format_whole(cmd, sizeof cmd, WS_SIGN_SETTINGS_FMT, q) != 0) return 0;
+ out = wpe_ai_run_capture_git(cmd);
+ if (!out) return 0;
+ signs = strstr(out, WS_SIGN_ON) != NULL;
+ ssh = strstr(out, WS_SIGN_SSH_FORMAT) != NULL;
+ free(out);
+ return signs && ssh;
+}
+
+/**
+ * ws_step_needs_ssh_agent - Does this step of the changeset need the signing agent?
+ * @what: "stage" or "commit"; @q: the shell-quoted repository folder.
+ * Return: 1 only for the commit step of a repository that signs with ssh.
+ */
+static int ws_step_needs_ssh_agent(const char *what, const char *q)
+{
+ if (strcmp(what, "commit") != 0) return 0;
+ return ws_commit_signs_with_ssh(q);
+}
+
 /**
  * ws_git_on_changeset - Run one git command over the changeset's path list.
  * @f: any window of the editor; @what: the verb for the pane when git refuses
@@ -2850,7 +2892,7 @@ static int ws_git_on_changeset(FENSTER *f, const char *what, const char *verb,
   ws_say_failed(f, what, "the changeset", WS_NAME_TOO_LONG);
   return -1;
  }
- o = wpe_ai_run_capture_status(cmd, &status);
+ o = wpe_ai_run_capture_git_commit_status(cmd, &status, ws_step_needs_ssh_agent(what, q));
  if (status != 0) {
   ws_output_reason(o, status, reason, sizeof reason);
   free(o);

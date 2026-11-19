@@ -37,8 +37,8 @@ ESC = "\033"
 WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
 TURN_POLL_S = 20 * WAIT_SCALE
 
-HEADER_ASK = "[AI: mock | model: mock-model | policy: ask]"
-HEADER_ASK_WEB = "[AI: mock | model: mock-model | policy: ask | web]"
+HEADER_ASK = "[AI: mock | model: mock-model | policy: ask | UNCONTAINED]"
+HEADER_ASK_WEB = "[AI: mock | model: mock-model | policy: ask | web | UNCONTAINED]"
 NOTICE_FIRST = "Web access -- first use"
 NOTICE_KEYS = "n / Esc = not now"
 NOTICE_ENABLE = "y = enable web access"

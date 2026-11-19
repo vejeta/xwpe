@@ -108,7 +108,7 @@ def test_header_and_task_line_are_adjacent(tmp_path):
         s._drain(1.0)
         rows = s.display()
     text = "\n".join(rows)
-    assert "[AI: mock | model: mock-model | policy: ask]" in text, text
+    assert "[AI: mock | model: mock-model | policy: ask | UNCONTAINED]" in text, text
     assert "[agent] task: tidy the code" in text, text
     hdr = next(i for i, r in enumerate(rows) if "[AI: mock" in r)
     task = next(i for i, r in enumerate(rows) if "[agent] task:" in r)
@@ -171,7 +171,7 @@ def test_bogus_policy_env_reads_ask(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _start_agent(s, "x", delay=1.5)
         text = _screen(s)
-    assert "policy: ask]" in text, text
+    assert "policy: ask | UNCONTAINED]" in text, text
     assert "agent policy=ask" in _trace(tmp_path)
 
 
@@ -183,7 +183,7 @@ def test_bogus_policy_xwperc_reads_ask(tmp_path):
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _start_agent(s, "x", delay=1.5)
         text = _screen(s)
-    assert "policy: ask]" in text, text
+    assert "policy: ask | UNCONTAINED]" in text, text
 
 
 # @scenario SC-ai-agent-18

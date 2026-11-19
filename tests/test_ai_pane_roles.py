@@ -257,6 +257,9 @@ def test_chat_context_is_the_file_not_the_transcript(tmp_path):
         "XWPE_AI_BACKEND": "claudecli",
         "XWPE_AI_MODEL": "sonnet",
         "PATH": bindir + ":" + os.environ.get("PATH", ""),
+        # The stand-in lives in the workspace, which an engine's PATH does not
+        # trust: the seam names the one folder this row runs it from.
+        "XWPE_AI_CONTAIN_PATH_ALLOW": bindir,
         "XWPE_AI_TRACE": str(tmp_path / "c.trace"),
     }
     with WpeSession(str(tmp_path), orig, env_extra=env, filename="t.c") as s:

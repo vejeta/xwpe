@@ -39,6 +39,8 @@
 #include "we_path.h"
 #include "we_fdloop.h"
 
+extern char **environ;           /* a contained child's environment replaces it */
+
 #define WPE_CHILD_EXEC_FAILED 1          /* a command that could not run */
 #define WPE_CHILD_SAID_FAILED 127        /* one that said why, as a shell's */
 #define WPE_CHILD_TTY_PATH_SIZE   WPE_PATH_SIZE  /* a terminal's path */
@@ -131,6 +133,9 @@ static void (*wpe_child_trace_hook)(const char *line);
 /* The trace line of a user start that came from no start plan. */
 #define WPE_CHILD_UNPLANNED_FMT "child unplanned %s"
 
+/* The trace line of an assistant start that was not contained as it asked. */
+#define WPE_CHILD_UNCONTAINED_FMT "child uncontained %s"
+
 /**
  * wpe_child_trace_set - Where the owner's trace lines go.
  * @trace: the editor's trace, or NULL (the C tests).
@@ -144,34 +149,75 @@ void wpe_child_trace_set(void (*trace)(const char *line))
 }
 
 /**
- * wpe_child_unplanned - Is this a start the editor must refuse, because it
- * did not come from a start plan?
+ * wpe_child_trace_start_line - Trace a refused or doubtful start, naming it.
+ * @fmt: the line's format with one %s; @spec: the start.
+ */
+static void wpe_child_trace_start_line(const char *fmt, const WpeChildSpec *spec)
+{
+ char line[WPE_CHILD_LINE_MAX];
+ const char *what = spec->what;
+
+ if (!wpe_child_trace_hook)
+  return;
+ if (!what)
+  what = WPE_CHILD_UNNAMED;
+ snprintf(line, sizeof line, fmt, what);
+ wpe_child_trace_hook(line);
+}
+
+/**
+ * wpe_child_uncontained - Is this assistant start one the editor must refuse,
+ * because nothing says how the child is held, or the profile that holds it
+ * cannot give what the user asked for?
+ * @spec: the start, @spec->origin the assistant.
+ *
+ * Every command the assistant runs names its containment profile
+ * (we_contain.c).  A start that names none would be a program that runs with
+ * the editor's whole environment and no limit, so it is refused whatever the
+ * build; a profile that refuses by itself (Strict, when this system cannot
+ * hold the file system and the network) says its own sentence on the status
+ * row.  Both are traced ("child uncontained <what>").
+ * Return: 1 when it must be refused.
+ */
+static int wpe_child_uncontained(const WpeChildSpec *spec)
+{
+ const char *text = NULL;
+
+ if (!spec->contain)
+  text = WPE_CHILD_REFUSE_UNCONTAINED_TEXT;
+ else if (spec->contain->refusal)
+  text = spec->contain->refusal;
+ if (!text)
+  return(0);
+ wpe_child_trace_start_line(WPE_CHILD_UNCONTAINED_FMT, spec);
+ if (wpe_child_say_hook)
+  wpe_child_say_hook(text);
+ return(1);
+}
+
+/**
+ * wpe_child_unplanned - Is this a start the editor must refuse?  The one
+ * judge of who may start a program.
  * @spec: the start.
  *
  * Every program the editor starts for the user comes from a start plan
  * (we_startplan.c), which shows and asks about what a folder decided; a
  * start without one would be a program whose command line nobody judged,
- * so it is refused, said on the status row and traced.  The assistant's
- * children are held by their own control instead and say so in @origin.
- * The owner's own unit test, which exercises the mechanics with hand-built
- * specs, is compiled with WPE_CHILD_MECHANICS_TEST and is the only build in
- * which such a start runs.
+ * so it is refused, said on the status row and traced.  Every program the
+ * assistant starts (@origin) must instead name how it is contained, which
+ * wpe_child_uncontained judges.  The owner's own unit test, which exercises
+ * the mechanics with hand-built user specs, is compiled with
+ * WPE_CHILD_MECHANICS_TEST and is the only build in which such a start
+ * runs; an assistant start with no profile is refused in it too.
  * Return: 1 when it must be refused.
  */
 static int wpe_child_unplanned(const WpeChildSpec *spec)
 {
- char line[WPE_CHILD_LINE_MAX];
- const char *what = spec->what;
-
- if (spec->plan || spec->origin == WPE_CHILD_ORIGIN_AI)
+ if (spec->origin == WPE_CHILD_ORIGIN_AI)
+  return(wpe_child_uncontained(spec));
+ if (spec->plan)
   return(0);
- if (!what)
-  what = WPE_CHILD_UNNAMED;
- if (wpe_child_trace_hook)
- {
-  snprintf(line, sizeof line, WPE_CHILD_UNPLANNED_FMT, what);
-  wpe_child_trace_hook(line);
- }
+ wpe_child_trace_start_line(WPE_CHILD_UNPLANNED_FMT, spec);
 #ifdef WPE_CHILD_MECHANICS_TEST
  return(0);
 #else
@@ -721,6 +767,7 @@ static int wpe_child_ladder_outlives_leader(const WpeChild *c)
 #define WPE_CHILD_STAGE_OUT_FILE    5   /* the file for its output would not open */
 #define WPE_CHILD_STAGE_DIR         6   /* its working folder could not be entered */
 #define WPE_CHILD_STAGE_EXEC        7   /* nothing ran: the exec failed */
+#define WPE_CHILD_STAGE_LIMITS      8   /* the limits of a contained child could not be set: not run */
 #define WPE_CHILD_REPORT_FMT "child report %s %s %d"
 #define WPE_CHILD_RAN_FMT    "child ran %s"
 
@@ -733,7 +780,8 @@ typedef struct {
 static const char *wpe_child_stage_name(int stage)
 {
  static const char *const names[] = { "none", "editor-gone", "tty-open", "tty",
-                                      "tty-without", "out-file", "dir", "exec" };
+                                      "tty-without", "out-file", "dir", "exec",
+                                      "limits" };
 
  if (stage < 0 || stage >= (int)(sizeof names / sizeof names[0]))
   return("unknown");
@@ -2071,6 +2119,63 @@ static void wpe_child_close_others(const WpeChildKeep *k)
 }
 
 /**
+ * wpe_child_contain_limits - In the child: the limits an assistant child
+ * runs under, set before its program starts.
+ * @c: what the parent prepared (we_contain.c).
+ *
+ * A command the assistant runs leaves no core file, cannot write a file past
+ * the size limit (a runaway `yes > f` stops at the limit instead of filling
+ * the disk), and, where the system has the call, can never gain privileges
+ * by running a set-user-ID program.  The limits are the hard ones, so the
+ * program cannot raise them again.  Only system calls, no allocation.
+ * Return: 0, or -1 with errno set by the call that failed.
+ */
+static int wpe_child_contain_limits(const WpeChildContain *c)
+{
+ struct rlimit lim;
+
+ if (c->core_zero)
+ {
+  lim.rlim_cur = 0;
+  lim.rlim_max = 0;
+  if (setrlimit(RLIMIT_CORE, &lim) != 0)
+   return(-1);
+ }
+ if (c->fsize_limit)
+ {
+  lim.rlim_cur = (rlim_t)c->fsize_limit;
+  lim.rlim_max = (rlim_t)c->fsize_limit;
+  if (setrlimit(RLIMIT_FSIZE, &lim) != 0)
+   return(-1);
+ }
+#if WPE_HAS_NO_NEW_PRIVS
+ if (c->no_new_privs && !wpe_platform_no_new_privs())
+  return(-1);
+#endif
+ return(0);
+}
+
+/**
+ * wpe_child_program - In the child: the program to exec, and the environment
+ * it gets.
+ * @spec: the child.
+ *
+ * A contained child runs the path the parent resolved (it always holds a
+ * slash, or is empty and then not found), so the exec searches nothing, and
+ * gets the environment the parent built: it replaces the child's own copy of
+ * the editor's.  Any other child runs its program as written, searched along
+ * the PATH it inherited.  No allocation, one variable set.
+ * Return: what execvp is given.
+ */
+static const char *wpe_child_program(const WpeChildSpec *spec)
+{
+ if (!spec->contain)
+  return(spec->argv[0]);
+ environ = (char **)spec->contain->envp;
+ return(spec->contain->prog);
+}
+
+/**
  * wpe_child_exec - In the child: set it up as @spec says and run it.
  * @spec: the child; @p: the pipes; @t: the pty; @k: the descriptors it
  * keeps; @w: the bytes the parent prepared; @editor: the editor's process
@@ -2086,7 +2191,8 @@ static void wpe_child_close_others(const WpeChildKeep *k)
  *
  * Between the fork and the exec this calls only what takes no lock and
  * allocates nothing (system calls, the signal calls, memcpy, and execvp,
- * which only reads the environment and builds its paths on the stack), reads
+ * which only reads the environment and builds its paths on the stack, and
+ * searches nothing for a contained child, whose path is resolved), reads
  * only @w and descriptors, and formats nothing: the command line and every
  * sentence are bytes the parent made.  A failure is also told to the editor
  * on the report pipe, as a stage and an errno.
@@ -2106,9 +2212,11 @@ wpe_child_exec(const WpeChildSpec *spec, int (*p)[2], WpeChildPty *t,
  if (spec->cwd && chdir(spec->cwd) != 0)
   wpe_child_stop_saying(spec, w, WPE_CHILD_STAGE_DIR,
                         w->said ? &w->said->dir : NULL);
+ if (spec->contain && wpe_child_contain_limits(spec->contain) != 0)
+  wpe_child_stop(w, WPE_CHILD_STAGE_LIMITS);
  if (w->echo)
   wpe_child_write_all(STDERR_FILENO, w->echo, w->echo_len);
- execvp(spec->argv[0], spec->argv);
+ execvp(wpe_child_program(spec), spec->argv);
  exec_err = errno;
  if (w->failed)
   wpe_child_write_all(STDERR_FILENO, w->failed, w->failed_len);

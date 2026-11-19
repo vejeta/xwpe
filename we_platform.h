@@ -185,4 +185,28 @@ static inline int wpe_platform_die_with_parent(int sig)
 #endif
 }
 
+/**
+ * wpe_platform_no_new_privs - In a forked child: give up the right to gain
+ * privileges through an exec.
+ *
+ * An assistant command that runs a set-user-ID program (or a file with
+ * capabilities) gets no more rights from it than the editor has.  Linux
+ * (prctl) and FreeBSD (procctl) have the call; where WPE_HAS_NO_NEW_PRIVS is
+ * 0 nothing is set and the containment report says so.
+ * Return: 1 when the system was asked and agreed, 0 when it refused or this
+ * system has no such call.
+ */
+static inline int wpe_platform_no_new_privs(void)
+{
+#if WPE_HAS_NO_NEW_PRIVS && HAVE_DECL_PR_SET_NO_NEW_PRIVS
+ return prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0;
+#elif WPE_HAS_NO_NEW_PRIVS && HAVE_DECL_PROC_NO_NEW_PRIVS_CTL
+ int arg = PROC_NO_NEW_PRIVS_ENABLE;
+
+ return procctl(P_PID, 0, PROC_NO_NEW_PRIVS_CTL, &arg) == 0;
+#else
+ return 0;
+#endif
+}
+
 #endif /* WE_PLATFORM_H */

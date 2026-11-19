@@ -32,7 +32,7 @@ EDITS_WRITE_LINE = "[agent] auto-approved (edits): write a.txt (5 bytes)"
 DENIED_WEB_LINE = "[agent] denied: web_search x"
 AUTO_WEB_LINE = "[agent] auto-approved (auto): x y"
 RUNNING_WEB_LINE = "[agent] running web_search ... (result follows)"
-EDITS_HEADER_TAIL = "policy: edits]"
+EDITS_HEADER_TAIL = "policy: edits | UNCONTAINED]"
 # The review's per-file question names the file by its full path in the
 # Messages window, an ordinary editor window that is cut at its border, not
 # wrapped; the question is read with the terminal widened, as a user with a

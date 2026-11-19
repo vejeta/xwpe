@@ -29,12 +29,15 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
-def _stub_claude(dir_):
+def _stub_claude(dir_, marker):
+    """The stand-in; it writes @marker when it runs, so a row can tell that
+    the stand-in (and not some other `claude`) answered."""
     d = os.path.join(dir_, "bin")
     os.makedirs(d, exist_ok=True)
     p = os.path.join(d, "claude")
     with open(p, "w") as f:
         f.write('#!/bin/sh\n'
+                ': > ' + marker + '\n'
                 'cat >/dev/null 2>&1\n'   # consume the prompt on stdin
                 'printf \'%s\' \'{"type":"result","subtype":"error_during_execution",'
                 '"is_error":true,"result":"Not logged in - Please run /login",'
@@ -44,14 +47,19 @@ def _stub_claude(dir_):
 
 
 def test_edit_refuses_backend_error(tmp_path):
-    bindir = _stub_claude(str(tmp_path))
+    marker = tmp_path / "stub.ran"
+    bindir = _stub_claude(str(tmp_path), str(marker))
     trace = tmp_path / "e.trace"
     orig = "int main(void)\n{\n    return 0;\n}\n"
     env = {
         "XWPE_AI_ENABLE": "1",
         "XWPE_AI_BACKEND": "claudecli",
         "XWPE_AI_MODEL": "sonnet",
-        "PATH": bindir + ":" + os.environ.get("PATH", ""),
+        # The stand-in is in the workspace, which an engine's PATH does not
+        # trust: the user's own setting names its folder, and the rest of PATH
+        # holds no other `claude`, so the real CLI can never answer.
+        "XWPE_AI_CONTAIN_PATH_ALLOW": bindir,
+        "PATH": bindir + ":/usr/bin:/bin",
         "XWPE_AI_TRACE": str(trace),
     }
     with WpeSession(str(tmp_path), orig, env_extra=env, filename="t.c") as s:
@@ -68,6 +76,7 @@ def test_edit_refuses_backend_error(tmp_path):
         disp = "\n".join(s.display())
 
     txt = trace.read_text() if trace.exists() else ""
+    assert marker.exists(), "the stand-in never ran, so the refusal is not its answer:\n" + txt
     assert "edit error (not applied)" in txt, "error turn was not flagged:\n" + txt
     assert "edit applied" not in txt, "an error was APPLIED to the file:\n" + txt
     # the buffer still holds the original code, not the error string

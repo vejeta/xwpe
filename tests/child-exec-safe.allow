@@ -62,11 +62,15 @@ write|SAFE|in the list
 ioctl|SYSCALL|one system call: the controlling terminal step (TIOCSCTTY)
 close_range|SYSCALL|one system call, tried first and followed by a loop of close on failure|WPE_HAS_CLOSE_RANGE
 closefrom|SYSCALL|one system call where the system has it and not close_range (never on glibc, where it lists /proc)|WPE_HAS_CLOSEFROM && !WPE_HAS_CLOSE_RANGE
-prctl|SYSCALL|one system call: the parent-death signal on Linux|WPE_HAS_PARENT_DEATH_SIGNAL && HAVE_DECL_PR_SET_PDEATHSIG
-procctl|SYSCALL|one system call: the parent-death signal on FreeBSD|WPE_HAS_PARENT_DEATH_SIGNAL && HAVE_DECL_PROC_PDEATHSIG_CTL
+prctl|SYSCALL|one system call: the parent-death signal and the no-new-privileges flag on Linux|(WPE_HAS_PARENT_DEATH_SIGNAL && HAVE_DECL_PR_SET_PDEATHSIG) + (WPE_HAS_NO_NEW_PRIVS && HAVE_DECL_PR_SET_NO_NEW_PRIVS) > 0
+procctl|SYSCALL|one system call: the parent-death signal and the no-new-privileges flag on FreeBSD|(WPE_HAS_PARENT_DEATH_SIGNAL && HAVE_DECL_PROC_PDEATHSIG_CTL) + (WPE_HAS_NO_NEW_PRIVS && HAVE_DECL_PROC_NO_NEW_PRIVS_CTL) > 0
+setrlimit|SYSCALL|one system call: the core and file-size limits of an assistant child
 
 # --- the exec ---
-execvp|EXEC|takes no lock and allocates nothing: measured on glibc 2.43 (getenv, string functions, alloca cutoff, execve); musl and the BSDs build the path on the stack
+execvp|EXEC|takes no lock and allocates nothing: measured on glibc 2.43 (getenv, string functions, alloca cutoff, execve); musl and the BSDs build the path on the stack.  An assistant child is given a path with a slash (resolved in the parent), which execvp passes to execve without a search
+
+# --- the environment of an assistant child ---
+environ|RUNTIME|the C library's variable: an assistant child's environment, built in the parent, is stored there before the exec
 
 # --- the fortified spellings of the above, and the compiler's own ---
 __memcpy_chk|SAFE|memcpy with a length check against the destination's size, under _FORTIFY_SOURCE|optional

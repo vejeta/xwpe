@@ -252,7 +252,10 @@ def test_a_long_prompt_reaches_the_cli_whole(tmp_path):
            "XWPE_AI_MODEL": "default", "XWPE_AI_POLICY": "auto",
            "XWPE_AI_TRACE": str(trace),
            "XWPE_AI_PROJECT_INSTRUCTIONS_MAX": "65536",
-           "PATH": str(tmp_path / "bin") + ":" + os.environ.get("PATH", "")}
+           "PATH": str(tmp_path / "bin") + ":" + os.environ.get("PATH", ""),
+           # The stand-in lives in the workspace, which an engine's PATH does
+           # not trust: the seam names the one folder this row runs it from.
+           "XWPE_AI_CONTAIN_PATH_ALLOW": str(tmp_path / "bin")}
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         s.key(ALT.AI); s.key("g", delay=0.5)           # the agent folds the instructions in
         s.key("follow the instructions"); s.key("\r", delay=0.3)

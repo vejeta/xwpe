@@ -578,6 +578,14 @@ plant_all() {
   plant environ \
     'extern char **environ;' \
     'NOINLINE void wpe_child_exec(void) { if (environ == 0) _exit(3); _exit(1); }'
+  # What the owner does for a contained child: store its environment, then
+  # lower a limit; each must be named unless the allow file lists it.
+  plant environ-store \
+    'extern char **environ;' \
+    'NOINLINE void wpe_child_exec(char **e) { environ = e; _exit(1); }'
+  plant setrlimit \
+    'extern int setrlimit(int, const void *);' \
+    'NOINLINE void wpe_child_exec(const void *l) { if (setrlimit(1, l) != 0) _exit(3); _exit(1); }'
 }
 
 # --- the canaries --------------------------------------------------------
@@ -658,6 +666,7 @@ run_canaries() {
   allow_lines min-optional-reached '_exit|SAFE|canary' 'memcpy|SAFE|canary|optional'
   allow_lines min-environ-data '_exit|SAFE|canary' 'environ|DATA|canary'
   allow_lines min-environ-runtime '_exit|SAFE|canary' 'environ|RUNTIME|canary'
+  allow_lines min-setrlimit '_exit|SAFE|canary' 'setrlimit|SYSCALL|canary'
   allow_lines min-fact1 '_exit|SAFE|canary' 'write|SAFE|canary' 'execve|EXEC|canary' \
     'nosuch|SAFE|canary|1'
   allow_lines min-data '_exit|SAFE|canary' 'counter|DATA|canary'
@@ -690,6 +699,10 @@ run_canaries() {
   canary_both optional-reached "$WORK/copy.c" "$WORK/min-optional-reached" 1 silent
   canary_both libc-variable-as-data "$WORK/environ.c" "$WORK/min-environ-data" 1 named "marked DATA"
   canary_both libc-variable-as-runtime "$WORK/environ.c" "$WORK/min-environ-runtime" 1 silent
+  canary_both environ-store-unlisted "$WORK/environ-store.c" "$WORK/min" 0 named environ
+  canary_both environ-store-listed "$WORK/environ-store.c" "$WORK/min-environ-runtime" 1 silent
+  canary_both setrlimit-unlisted "$WORK/setrlimit.c" "$WORK/min" 0 named setrlimit
+  canary_both setrlimit-listed "$WORK/setrlimit.c" "$WORK/min-setrlimit" 1 silent
   canary_both unknown-section "$WORK/section.c" "$WORK/min" 0 named ".mytext"
 
   # An entry the compiler turned into a clone must still be read: at -O2 the
