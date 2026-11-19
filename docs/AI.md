@@ -470,13 +470,25 @@ Esc write nothing, and Enter is not yes. Under `ask` there is one box: the diff
 of the write carries these warnings (both, for a file that is replaced and has
 several names), and only `y` allows. Under `edits` and `auto`, where there is
 no diff box, the warning is a box of its own. A replacement that is a program,
-belongs to another user or is not a plain file is refused.
+belongs to another user or is not a plain file is refused. Where the system
+records no time of making (OpenBSD, an NFS mount before version 4.2, ext3), a
+file that was touched since the window read it cannot be told from a new file
+that has its number: the box then says `t.c was changed or replaced since this
+window read it` and claims no more, and a file with a special bit or another
+owner is refused with the reason. A yes for a file with several names is for
+that file: another file that is given its inode number, with as many names,
+asks again.
 A revert puts the before image back into
 the very same file, with the permission bits the file had before the run's
 first write to it; a file the run only changed by a command keeps the bits it
 has, and a revert makes no `.bak`. A revert never writes or removes through a
 link, at the file name or at any folder on the way, the workspace folder
-itself included; it names what it refused.
+itself included; it names what it refused. The checkpoint keeps the workspace
+folder open, so a folder removed and made again under its name (even one the
+file system gives the old folder's inode number) is not the folder the review
+listed, and a revert writes nothing into it. The folder stays open until the
+next checkpoint or until the editor ends, so a workspace on a removable or
+network disk cannot be unmounted before then.
 
 The dial is read live. Raising it with `Alt-G y` while a run waits for the
 model applies to the next tool, and the first write that follows takes the

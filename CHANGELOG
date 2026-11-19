@@ -29,6 +29,15 @@ Bugs fixed in 1.6.x:
   asks 'was changed or replaced since this window read it. Write anyway?',
   and refuses with the reason for a file with a special bit or another owner.
   A second Save of the same window is its own file again, with no question.
+* The assistant is held to the same rule.  A workspace folder removed and made
+  again under its name, even one given the old folder's inode number, is no
+  longer taken for the folder the review listed (the checkpoint keeps the
+  folder open until the next checkpoint or the end of the editor, which also
+  keeps a removable workspace mounted until then).  A yes to the question about
+  a file with several names is for that file and is kept after the write that
+  followed it, and where there is no time of making the box for a file the
+  window read says 'was changed or replaced since this window read it'
+  instead of claiming a replacement it cannot know.
 * The Attributes dialog and Ctrl-F9 on a script are held to the file they
   showed or the window read in the same way: a file that took the name and
   was given the old file's inode number is not changed, and the status row

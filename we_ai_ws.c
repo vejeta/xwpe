@@ -484,11 +484,11 @@ static int    ck_mode;                 /* 0 none, 1 git ref, 2 snapshot copies *
 static char   ck_ref[160];
 static char   ck_dir[WPE_PATH_SIZE];
 /* the workspace folder as it really was when the checkpoint was taken, and the
-   device and inode it had; a revert trusts the folder only while it is still
-   that one */
+   folder itself, held open from then on; a revert trusts the folder only while
+   the name still leads to the one held (a held folder cannot have its number
+   given to another folder, so a folder removed and made again is not it) */
 static char   ck_rdir[WPE_PATH_RESOLVED_MAX];
-static dev_t  ck_rdev;
-static ino_t  ck_rino;
+static WpeSeenHeld ck_root = WPE_SEEN_HELD_NONE;
 static char   ck_snapdir[1024];
 static char **ck_files;
 static int    ck_n;
@@ -546,6 +546,19 @@ static char **ck_listed;  static int ck_listed_n, ck_listed_cap;
 
 int wpe_ai_checkpoint_active(void) { return ck_mode != 0; }
 
+/**
+ * ws_root_forget - Let go of the workspace folder the checkpoint held.
+ *
+ * Called when a checkpoint is cleared and when one is refused after its folder
+ * was held, so the descriptor never outlives the checkpoint that wanted it and
+ * a removable or network workspace can be unmounted again.
+ */
+static void ws_root_forget(void)
+{
+ wpe_seen_release(&ck_root);
+ ck_rdir[0] = '\0';
+}
+
 static void ck_clear(void)
 {
  wpe_ai_free_list(ck_files, ck_n);
@@ -568,7 +581,7 @@ static void ck_clear(void)
  ck_met = NULL; ck_met_n = ck_met_cap = 0;
  ck_listed = NULL; ck_listed_n = ck_listed_cap = 0;
  ck_mode = 0; ck_ref[0] = '\0';
- ck_rdir[0] = '\0'; ck_rdev = 0; ck_rino = 0;
+ ws_root_forget();
 }
 
 /**
@@ -577,18 +590,19 @@ static void ck_clear(void)
  * What the user gets: if a command moved the workspace folder aside and put a
  * link to another place under its name, the review lists nothing from that
  * place and a revert writes and removes nothing there.  The folder is judged
- * by its resolved name and its device and inode from checkpoint time, so a
+ * by its resolved name against the folder the checkpoint holds open, so a
  * workspace opened through a link keeps working: the link was followed once,
  * at the checkpoint, and only the real folder is compared afterwards.  A link
- * put at the resolved name, or a different folder under it, has another inode.
+ * put at the resolved name, or a different folder under it, is not the held
+ * one, even when the folder was removed and made again and the file system
+ * handed its old number to the new one: while the descriptor is open the
+ * number cannot be given back.
  * Return: 1 while it is the same folder, 0 when it was replaced or is gone.
  */
 static int ws_root_unchanged(void)
 {
- struct stat st;
  if (!ck_rdir[0]) return 0;
- if (stat(ck_rdir, &st) != 0) return 0;
- return st.st_dev == ck_rdev && st.st_ino == ck_rino;
+ return wpe_seen_held_is(&ck_root, ck_rdir);
 }
 
 static void ws_strip_slash(char *d);
@@ -1117,23 +1131,29 @@ static int ws_git_record_untracked(void)
  * ws_record_root - Note which real folder the workspace is, for the revert.
  *
  * Resolves the workspace folder once, through any link it was opened by, and
- * keeps its real name, device and inode.  What the user gets: a review that
- * can tell the workspace from a link put in its place later.  When the folder
- * cannot be resolved or looked at, no checkpoint is taken and the trace says
- * why, rather than a revert with nothing to hold it to.
- * Return: 0 when recorded, -1 when not (ck_clear state is left).
+ * keeps its real name and the folder itself, open, until the checkpoint ends.
+ * What the user gets: a review that can tell the workspace from a link, or from
+ * another folder made under its name later, even one that got its number.  The
+ * open folder keeps a removable or network workspace mounted until the next
+ * checkpoint or the end of the editor.  When the folder cannot be resolved or
+ * held, no checkpoint is taken and the trace says which, rather than a revert
+ * with nothing to hold it to.
+ * Return: 0 when recorded, -1 when not (nothing is held).
  */
 static int ws_record_root(void)
 {
- struct stat st;
- if (wpe_path_resolve(ck_dir, ck_rdir, sizeof ck_rdir) != WPE_PATH_RESOLVED ||
-     stat(ck_rdir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+ if (wpe_path_resolve(ck_dir, ck_rdir, sizeof ck_rdir) != WPE_PATH_RESOLVED) {
   ck_rdir[0] = '\0';
   wpe_ai_trace("checkpoint refused: workspace folder cannot be resolved");
   return -1;
  }
- ck_rdev = st.st_dev;
- ck_rino = st.st_ino;
+ if (wpe_seen_hold_dir(ck_rdir, &ck_root) != 0) {
+  int err = errno;
+  ck_rdir[0] = '\0';
+  wpe_ai_trace("checkpoint refused: workspace folder cannot be held: %s", strerror(err));
+  return -1;
+ }
+ wpe_ai_trace("checkpoint holds workspace folder %s", ck_rdir);
  return 0;
 }
 
@@ -1213,6 +1233,7 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
      there was nothing of theirs to save, and a run that only CREATES files
      still gets a working revert, which needs no before image. */
   if (!have_dir || (readable && ck_n == 0)) {
+   ws_root_forget();                 /* no checkpoint: no folder to keep open */
    wpe_ai_trace("checkpoint refused n=%d failed=%d dir=%s", ck_n, failed, ck_snapdir);
    return -1;
   }
@@ -1236,21 +1257,26 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  * @real: the file, already resolved; @mode: receives the bits.
  * Return: 0, or -1 when it cannot be read or is not a regular file.
  *
- * The file is opened without following a link and without waiting, and the
- * bits come from fstat of that descriptor: never from a name looked up
- * separately, which is the mode of a link when a link took the place.
+ * The name is looked at first, without following a link, so a device is never
+ * opened.  The file is then opened without following a link and without
+ * waiting, and the bits come from the look at that descriptor, never from a
+ * name looked up separately, which is the mode of a link when a link took
+ * the place.  Nothing is held between the look at the name and the open, so
+ * the descriptor's look is judged against the name's: a file that took the
+ * name in between, even one with the same number, is not the file seen and
+ * its bits are not recorded.
  */
 static int ws_mode_of_file(const char *real, mode_t *mode)
 {
- struct stat st, seen;
+ WpeSeen named, opened;
  int fd;
- if (lstat(real, &seen) != 0 || !S_ISREG(seen.st_mode)) return -1;   /* a device is never opened */
+ if (wpe_seen_look_name(real, 0, &named) != 0 || wpe_seen_kind(&named) != S_IFREG) return -1;
  fd = open(real, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
  if (fd < 0) return -1;
- if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_ino != seen.st_ino ||
-     st.st_dev != seen.st_dev) { close(fd); return -1; }
+ if (wpe_seen_look_fd(fd, &opened) != 0 || wpe_seen_kind(&opened) != S_IFREG ||
+     wpe_seen_judge(&named, &opened) != WPE_SEEN_SAME) { close(fd); return -1; }
  close(fd);
- *mode = st.st_mode & WS_MODE_BITS;
+ *mode = wpe_seen_mode(&opened) & WS_MODE_BITS;
  return 0;
 }
 
@@ -1357,21 +1383,31 @@ static FENSTER *ws_window_of_file(FENSTER *f, const char *real, const WpeWriteEx
 }
 
 /**
- * wpe_ai_window_file_replaced - Was the file an open window read replaced on disk?
+ * wpe_ai_window_file_state - Was the file an open window read replaced or changed on disk?
  * @f: any window of the editor; @real: the place the look resolved; @x: what
  * the look saw there.
- * Return: 1 when a window is open on that place and the file there now is not
- * the one the window read, 0 otherwise (no window, no file, the same file).
+ * Return: WPE_AI_WINDOW_FILE_REPLACED when a window is open on that place and
+ * the file there now is another file than the one the window read,
+ * WPE_AI_WINDOW_FILE_CHANGED when it is not proven to be that file nor another
+ * (touched since, on a system or file system with no birth time),
+ * WPE_AI_WINDOW_FILE_UNCHANGED otherwise (no window, no file, the same file).
  *
  * What the user gets: before the assistant's write, the editor can say in the
  * one box it shows under ask that the file under the window's name is another
- * one, instead of asking about it in a second box afterwards.
+ * one, or may be, instead of asking about it in a second box afterwards, and
+ * the box says only what is known: "replaced" for another file, "changed or
+ * replaced" when the judge cannot tell.
  */
-int wpe_ai_window_file_replaced(FENSTER *f, const char *real, const WpeWriteExpect *x)
+WpeAiWindowFile wpe_ai_window_file_state(FENSTER *f, const char *real, const WpeWriteExpect *x)
 {
  FENSTER *w = ws_window_of_file(f, real, x);
- if (!w || !x || !x->judged || !x->exists) return 0;
- return wpe_write_identity_differs(&w->file_id, &x->seen);
+ if (!w || !x || !x->judged || !x->exists || !wpe_seen_known(&w->file_id))
+  return WPE_AI_WINDOW_FILE_UNCHANGED;
+ switch (wpe_seen_judge(&w->file_id, &x->seen)) {
+ case WPE_SEEN_SAME:   return WPE_AI_WINDOW_FILE_UNCHANGED;
+ case WPE_SEEN_OTHER:  return WPE_AI_WINDOW_FILE_REPLACED;
+ default:              return WPE_AI_WINDOW_FILE_CHANGED;
+ }
 }
 
 /**

@@ -636,23 +636,27 @@ static int path_make_absolute(const char *path, char *abs, size_t sz)
 }
 
 /**
- * path_look_leaf - Fill a look from what lstat says of a resolved place.
+ * path_look_leaf - Fill a look from one look at the name of a resolved place.
  * @real: the place; @x: receives the look.
  * Return: 0, or -1 with errno set for an error other than "nothing there".
+ *
+ * The name is looked at once, without following a link: the record the write
+ * owner later judges the opened file against, the kind that says whether it
+ * is a regular file and the number of names the question about links asks
+ * about all come from that one look, so no second look can find another file
+ * under the name.
  */
 static int path_look_leaf(const char *real, WpeWriteExpect *x)
 {
- struct stat st;
- if (lstat(real, &st) != 0) {
+ if (wpe_seen_look_name(real, 0, &x->seen) != 0) {
   if (errno != ENOENT) return -1;
   x->judged = 1;
   return 0;
  }
  x->judged = 1;
  x->exists = 1;
- if (wpe_seen_look_name(real, 0, &x->seen) != 0) return -1;
- x->nlink = st.st_nlink;
- x->regular = S_ISREG(st.st_mode) ? 1 : 0;
+ x->nlink = wpe_seen_nlink(&x->seen);
+ x->regular = wpe_seen_kind(&x->seen) == S_IFREG ? 1 : 0;
  return 0;
 }
 

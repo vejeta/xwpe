@@ -524,11 +524,20 @@ void  wpe_ai_scope_folder_of(const char *path, char *dir, size_t sz);
  * folder); the depth is WPE_SCAN_ONE_LEVEL or WPE_SCAN_ALL_LEVELS and
  * *truncated says the look stopped at its entry bound. */
 int   wpe_ai_scope_count_skipped_links(const char *path, int depth, int *truncated);
+/* What the file at a place is, to the open window that read it: the file the
+ * window read, another file (replaced), or a file that is not proven to be
+ * either (changed: its status moved and the system has no birth time to say
+ * whether it is a new file).  The box words them differently. */
+typedef enum {
+ WPE_AI_WINDOW_FILE_UNCHANGED = 0,
+ WPE_AI_WINDOW_FILE_REPLACED,
+ WPE_AI_WINDOW_FILE_CHANGED
+} WpeAiWindowFile;
+WpeAiWindowFile wpe_ai_window_file_state(struct FNST *f, const char *real, const WpeWriteExpect *x);
 /* Write a whole file the assistant's way: a Save, at the place the look
  * resolved (@real, written as it is, the last link not followed) and into
  * the file the look saw (@x).  0 when the file holds @text, -1 with the
  * outcome @o saying why.  See we_ai_ws.c. */
-int   wpe_ai_window_file_replaced(struct FNST *f, const char *real, const WpeWriteExpect *x);
 int   wpe_ai_write_judged_file(struct FNST *f, const char *real, const char *text,
                                const WpeWriteExpect *x, const WpeFileIdentity *asked,
                                WpeWriteOutcome *o);

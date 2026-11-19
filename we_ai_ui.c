@@ -6671,6 +6671,8 @@ static int ai_diff_review_hunk(FENSTER *f, wpe_ai_seg *segs, int nseg,
    with any warning takes only "y" as yes. */
 #define AI_WRITE_WARN_LINKED    1u  /* a file with several names on disk     */
 #define AI_WRITE_WARN_REPLACED  2u  /* the open window's file was replaced   */
+#define AI_WRITE_WARN_CHANGED   4u  /* the open window's file was changed, or
+                                       replaced: the judge cannot tell which */
 /* The most rows the warnings of one box take: each has three. */
 #define AI_WRITE_WARN_ROWS      6
 
@@ -6819,18 +6821,26 @@ static void ai_diff_add_linked_rows(char **rt, int *ra, int *nrows, const char *
 /**
  * ai_diff_add_replaced_rows - The warning for a file replaced under its window.
  * @rt/@ra/@nrows: the rows so far, advanced by three; @path: the file;
- * @attr: the colour.
+ * @attr: the colour; @unsure: the judge could not tell whether the file is
+ * another one or the same one touched.
  *
  * "! t.c was replaced on disk since this window read it;", the full path and
- * "the text goes into the file now there, as a copy. Allow? (y/n)".
+ * "the text goes into the file now there, as a copy. Allow? (y/n)".  When the
+ * judge cannot tell, the first row says "was changed or replaced since this
+ * window read it;" instead: the box claims only what is known.
  */
-static void ai_diff_add_replaced_rows(char **rt, int *ra, int *nrows, const char *path, int attr)
+static void ai_diff_add_replaced_rows(char **rt, int *ra, int *nrows, const char *path, int attr,
+                                      int unsure)
 {
  char first[1400];
  const char *slash = strrchr(path, '/');
  const char *base = (slash && slash[1]) ? slash + 1 : path;
- snprintf(first, sizeof first, "%s %s was replaced on disk since this window read it;",
-          AI_PLAN_OUTSIDE_MARK, base);
+ if (unsure)
+  snprintf(first, sizeof first, "%s %s was changed or replaced since this window read it;",
+           AI_PLAN_OUTSIDE_MARK, base);
+ else
+  snprintf(first, sizeof first, "%s %s was replaced on disk since this window read it;",
+           AI_PLAN_OUTSIDE_MARK, base);
  ai_diff_add_row(rt, ra, nrows, first, attr);
  ai_diff_add_path_row(rt, ra, nrows, path, attr);
  ai_diff_add_row(rt, ra, nrows,
@@ -6853,7 +6863,9 @@ static void ai_diff_add_marks(FENSTER *f, char **rt, int *ra, int *nrows, const 
  if (warn & AI_WRITE_WARN_LINKED)
   ai_diff_add_linked_rows(rt, ra, nrows, path, attr, links);
  if (warn & AI_WRITE_WARN_REPLACED)
-  ai_diff_add_replaced_rows(rt, ra, nrows, path, attr);
+  ai_diff_add_replaced_rows(rt, ra, nrows, path, attr, 0);
+ if (warn & AI_WRITE_WARN_CHANGED)
+  ai_diff_add_replaced_rows(rt, ra, nrows, path, attr, 1);
 }
 
 /* The rows of the preview box as they are built: the text, the colour of each
@@ -6941,7 +6953,7 @@ static void ai_diff_emit_context(ai_diff_rows *rows, const wpe_ai_seg *seg,
    `mark` other than AI_WRITE_MARK_NONE says the file lies outside the
    workspace, or is a protected file inside it: the box then opens even for an
    unchanged file and its first row carries the mark and the reason.  `warn`
-   (AI_WRITE_WARN_LINKED, AI_WRITE_WARN_REPLACED) adds the warnings of a file
+   (AI_WRITE_WARN_LINKED, AI_WRITE_WARN_REPLACED, AI_WRITE_WARN_CHANGED) adds the warnings of a file
    with several names (`links` is how many) and of a file replaced under its
    window, each with the full path on a row of its own, and then only "y"
    allows: Enter does not.  This is the one box under ask. */
@@ -11842,6 +11854,30 @@ static void ai_linked_yes_remember(ai_async_op *op, const WpeWriteExpect *look)
 }
 
 /**
+ * ai_linked_yes_refresh - Move the user's remembered "yes" onto the file as the write left it.
+ * @op: the running agent task; @look: what the look saw before the write;
+ * @written: the record the write owner took of the file after the write.
+ *
+ * A write changes the file's status time, and on a system with no birth time
+ * a record kept from before it can no longer be proven the same file, so the
+ * second write of the run would ask again about a file the user already
+ * allowed.  The entry the write was made under is replaced by the record of
+ * the file as the write left it; a write that made another file leaves every
+ * entry alone.
+ */
+static void ai_linked_yes_refresh(ai_async_op *op, const WpeWriteExpect *look,
+                                  const WpeFileIdentity *written)
+{
+ int i;
+ if (!wpe_seen_known(written)) return;
+ for (i = 0; i < op->linked_yes_n; i++) {
+  ai_linked_yes *y = &op->linked_yes[i];
+  if (y->nlink == look->nlink && wpe_seen_judge(&y->seen, &look->seen) == WPE_SEEN_SAME)
+   y->seen = *written;
+ }
+}
+
+/**
  * ai_agent_names_need_asking - Must the user be asked about the names of this file?
  * @op: the running agent task; @look: what the look saw.
  * Return: 1 when the file has several names and the user has not allowed
@@ -11878,19 +11914,35 @@ static int ai_agent_ask_linked_write(ai_async_op *op, const char *path, const ch
 /**
  * ai_agent_ask_replaced_write - Ask about a write into the file that took an open window's name.
  * @f: the window the pane belongs to; @path: the file, as the agent named it;
- * @content: its new text.
+ * @content: its new text; @unsure: the write owner could not tell whether the
+ * file is another one or the one the window read, touched since.
  *
  * The window read one file and the name now leads to another plain file of
- * the user's, put there by a program that saves by renaming.  As for the
- * editor's own Save, the user is asked; a "yes" writes the text into the
- * file now there as a copy (no special bit) and the window follows it.  Only
- * "y" allows.
+ * the user's, put there by a program that saves by renaming, or to a file
+ * that may be that one changed.  As for the editor's own Save, the user is
+ * asked, and the box says "replaced" only when it is known and "changed or
+ * replaced" when it is not; a "yes" writes the text into the file now there
+ * as a copy (no special bit) and the window follows it.  Only "y" allows.
  * Return: 1 to allow, 0 to deny.
  */
-static int ai_agent_ask_replaced_write(FENSTER *f, const char *path, const char *content)
+static int ai_agent_ask_replaced_write(FENSTER *f, const char *path, const char *content,
+                                       int unsure)
 {
+ unsigned warn = unsure ? AI_WRITE_WARN_CHANGED : AI_WRITE_WARN_REPLACED;
  wpe_ai_trace("agent write replaced %s", path);
- return ai_agent_confirm_write(f, path, content, AI_WRITE_MARK_NONE, AI_WRITE_WARN_REPLACED, 0);
+ return ai_agent_confirm_write(f, path, content, AI_WRITE_MARK_NONE, warn, 0);
+}
+
+/**
+ * ai_write_warn_of_window - The box warning that says what became of the window's file.
+ * @window: what wpe_ai_window_file_state found.
+ * Return: AI_WRITE_WARN_REPLACED, AI_WRITE_WARN_CHANGED or 0.
+ */
+static unsigned ai_write_warn_of_window(WpeAiWindowFile window)
+{
+ if (window == WPE_AI_WINDOW_FILE_REPLACED) return AI_WRITE_WARN_REPLACED;
+ if (window == WPE_AI_WINDOW_FILE_CHANGED) return AI_WRITE_WARN_CHANGED;
+ return 0;
 }
 
 /**
@@ -11908,8 +11960,8 @@ static int ai_agent_where_mark(int where)
 /**
  * ai_agent_ask_one_box - Under ask, show the write, its mark and its warnings in one box.
  * @op: the running agent task; @where: the scope's answer; @path: the file;
- * @content: its new text; @look: what the look saw; @replaced: the file under
- * an open window is not the one the window read.
+ * @content: its new text; @look: what the look saw; @window: what became of
+ * the file under an open window (replaced, or changed or replaced).
  *
  * What the user gets: one box, not two.  The diff of the write carries what
  * the file is (beyond the workspace, one that runs code), that it has several
@@ -11920,9 +11972,9 @@ static int ai_agent_where_mark(int where)
  * Return: 1 to allow, 0 to deny.
  */
 static int ai_agent_ask_one_box(ai_async_op *op, int where, const char *path, const char *content,
-                                const WpeWriteExpect *look, int replaced)
+                                const WpeWriteExpect *look, WpeAiWindowFile window)
 {
- unsigned warn = 0;
+ unsigned warn = ai_write_warn_of_window(window);
  int allow, names = ai_agent_names_need_asking(op, look);
  if (where == WPE_SCOPE_OUTSIDE) wpe_ai_trace("agent write outside workspace %s", path);
  if (where == WPE_SCOPE_PROTECTED) wpe_ai_trace("agent write protected %s", path);
@@ -11930,10 +11982,8 @@ static int ai_agent_ask_one_box(ai_async_op *op, int where, const char *path, co
   warn |= AI_WRITE_WARN_LINKED;
   wpe_ai_trace("agent write linked %s names=%lu", path, (unsigned long)look->nlink);
  }
- if (replaced) {
-  warn |= AI_WRITE_WARN_REPLACED;
+ if (window != WPE_AI_WINDOW_FILE_UNCHANGED)
   wpe_ai_trace("agent write replaced %s", path);
- }
  allow = ai_agent_confirm_write(op->f, path, content, ai_agent_where_mark(where), warn,
                                 (unsigned long)look->nlink);
  if (allow && names) ai_linked_yes_remember(op, look);
@@ -11944,7 +11994,7 @@ static int ai_agent_ask_one_box(ai_async_op *op, int where, const char *path, co
  * ai_agent_decide_write - Ask or let the dial decide a write, by where it lands.
  * @op: the running agent task; @where: the scope's answer for the write;
  * @path: the file; @content: its new text; @look: what the look saw there;
- * @replaced: the file under an open window is not the one the window read.
+ * @window: what became of the file under an open window.
  *
  * Under ask the diff box is the one box: it carries the mark and the
  * warnings (ai_agent_ask_one_box).  Under edits and auto, where there is no
@@ -11956,12 +12006,12 @@ static int ai_agent_ask_one_box(ai_async_op *op, int where, const char *path, co
  * Return: 1 to allow, 0 to deny.
  */
 static int ai_agent_decide_write(ai_async_op *op, int where, const char *path, const char *content,
-                                 const WpeWriteExpect *look, int replaced)
+                                 const WpeWriteExpect *look, WpeAiWindowFile window)
 {
  FENSTER *f = op->f;
  int names;
  if (e_ai_policy == WPE_AI_POLICY_ASK)
-  return ai_agent_ask_one_box(op, where, path, content, look, replaced);
+  return ai_agent_ask_one_box(op, where, path, content, look, window);
  names = ai_agent_names_need_asking(op, look);
  if (where == WPE_SCOPE_OUTSIDE)
   return ai_agent_ask_outside_write(f, path, content) &&
@@ -12161,7 +12211,8 @@ static int ai_agent_write_asking(FENSTER *f, const char *path, const char *real,
  if (!o->ask_overwrite) return AI_WRITE_REFUSED;
  if (box_skipped) return AI_WRITE_CHANGED;
  asked = o->asked;
- if (!asked_in_box && !ai_agent_ask_replaced_write(f, path, content)) return AI_WRITE_DECLINED;
+ if (!asked_in_box && !ai_agent_ask_replaced_write(f, path, content, o->unsure))
+  return AI_WRITE_DECLINED;
  if (wpe_ai_write_judged_file(f, real, content, look, &asked, o) == 0) return AI_WRITE_PUT;
  return AI_WRITE_REFUSED;
 }
@@ -12200,6 +12251,7 @@ static char *ai_agent_commit_write(ai_async_op *op, const char *tool, const char
  WpeWriteExpect look;
  WpeWriteOutcome o;
  int where, allow, looked, look_err, put, replaced, refused, boxed;
+ WpeAiWindowFile window = WPE_AI_WINDOW_FILE_UNCHANGED;
  if (!content) return strdup("(no content)");
  ai_agent_ensure_checkpoint(op);
  looked = wpe_path_look_write(path, real, sizeof real, &look);
@@ -12208,12 +12260,14 @@ static char *ai_agent_commit_write(ai_async_op *op, const char *tool, const char
  if (looked == 0 && !ai_agent_judge_look(f, real, &where))
   return ai_agent_report_write_moved(f, path);
  if (looked != 0) where = wpe_ai_scope_judge(f, path, WPE_SCOPE_WRITE, NULL, 0);
- replaced = looked == 0 && wpe_ai_window_file_replaced(f, real, &look);
+ if (looked == 0) window = wpe_ai_window_file_state(f, real, &look);
+ replaced = window != WPE_AI_WINDOW_FILE_UNCHANGED;
  refused = replaced && !wpe_write_replacement_may_be_asked(real);
- replaced = replaced && !refused;           /* a refused replacement is never asked about */
+ if (refused) window = WPE_AI_WINDOW_FILE_UNCHANGED;   /* a refused replacement is never asked about */
+ replaced = replaced && !refused;
  boxed = replaced && e_ai_policy == WPE_AI_POLICY_ASK;     /* the diff box asked it */
  if (refused && e_ai_policy == WPE_AI_POLICY_ASK) allow = 1;   /* no box: the owner's sentence follows */
- else allow = ai_agent_decide_write(op, where, path, content, &look, replaced);
+ else allow = ai_agent_decide_write(op, where, path, content, &look, window);
  if (!allow) return ai_agent_deny(f, tool, path);
  if (looked != 0) return ai_agent_report_write_unlooked(f, path, look_err);
  put = ai_agent_write_asking(f, path, real, content, &look, boxed,
@@ -12224,6 +12278,7 @@ static char *ai_agent_commit_write(ai_async_op *op, const char *tool, const char
   ai_agent_write_failed_sentence(&o, sentence, sizeof sentence);
   return ai_agent_report_write_failed(f, path, sentence);
  }
+ ai_linked_yes_refresh(op, &look, &o.written);
  ai_agent_show_written(f, path);
  if (where == WPE_SCOPE_OUTSIDE) ai_agent_report_outside(f, path);
  return ai_agent_written_result(f, &o);

@@ -1304,6 +1304,8 @@ EXTRA_DIST = \
   tests/check-bsd-known-failures.sh \
   tests/check-mode-premise.sh \
   tests/mode_premise.py \
+  tests/seen_reuse.py \
+  tests/seen_premise.py \
   tests/check-with-deadline.sh \
   tests/test_watchdog.h \
   tests/check-start-plan.sh \

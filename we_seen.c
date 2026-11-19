@@ -54,6 +54,28 @@ mode_t wpe_seen_kind(const WpeSeen *s)
 }
 
 /**
+ * wpe_seen_mode - The twelve permission and special bits a look found.
+ *
+ * Lets a caller that wants a file's bits (the revert's record of them) read
+ * them from the very look that proved the object, not from a second stat.
+ */
+mode_t wpe_seen_mode(const WpeSeen *s)
+{
+ return(s->seen_mode);
+}
+
+/**
+ * wpe_seen_nlink - How many names the object had when the look was made.
+ *
+ * Lets the assistant's question about a file with several names be asked
+ * from the one look that found the file, not from a second stat of the name.
+ */
+nlink_t wpe_seen_nlink(const WpeSeen *s)
+{
+ return(s->seen_nlink);
+}
+
+/**
  * seen_test_drops_birth - Does the test hook ask every look to drop the birth?
  *
  * XWPE_TEST_FAIL=seen-no-birth lets a row on Linux play a system without a
@@ -85,6 +107,7 @@ static void seen_fill_common(WpeSeen *s, const struct stat *st)
  s->seen_gid = st->st_gid;
  s->seen_mode = st->st_mode & WPE_SEEN_MODE_BITS;
  s->seen_size = st->st_size;
+ s->seen_nlink = st->st_nlink;
  s->seen_ctime = WPE_STAT_CTIM(st);
  s->seen_mtime = WPE_STAT_MTIM(st);
 }
@@ -174,6 +197,7 @@ static void seen_fill_statx(WpeSeen *s, const struct statx *sx)
  s->seen_gid = sx->stx_gid;
  s->seen_mode = sx->stx_mode & WPE_SEEN_MODE_BITS;
  s->seen_size = (off_t)sx->stx_size;
+ s->seen_nlink = (nlink_t)sx->stx_nlink;
  s->seen_ctime.tv_sec = (time_t)sx->stx_ctime.tv_sec;
  s->seen_ctime.tv_nsec = (long)sx->stx_ctime.tv_nsec;
  s->seen_mtime.tv_sec = (time_t)sx->stx_mtime.tv_sec;

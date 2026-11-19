@@ -14,12 +14,15 @@ review's summary nor the trace claims work that did not happen.
 """
 import os
 import re
+import shutil
 import subprocess
 import time
 import pytest
 from host_tools import needs
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, pane_text_with_history
 from mode_premise import special_bits_settable, workdir_in_my_group
+from seen_premise import reports_birth_time
+from seen_reuse import fs_type, make_folder_with_number
 
 
 def _ai_build():
@@ -441,6 +444,48 @@ def test_ai_checkpoint_without_a_before_image_offers_no_revert(tmp_path):
     assert not _lying_revert_lines(txt), \
         "the trace claims a revert that did not happen:\n" + txt
     assert alive, "a checkpoint that could not be saved ended the editor"
+
+
+def _holds_folder_open(s, folder):
+    """Does the editor the session started have a descriptor on `folder`?
+    Read from the editor's own /proc entry: the session started it."""
+    fds = "/proc/%d/fd" % s.proc.pid
+    for name in os.listdir(fds):
+        try:
+            if os.readlink(os.path.join(fds, name)) == str(folder):
+                return True
+        except OSError:
+            continue                  # a descriptor that closed while listing
+    return False
+
+
+# @scenario SC-name-identity-29
+def test_a_checkpoint_holds_its_workspace_folder_until_it_is_refused_or_ends(tmp_path):
+    """While a checkpoint is live the editor keeps the workspace folder open, so
+    the folder cannot be removed and made again with its inode number.  A
+    checkpoint that is refused after its folder was taken (here no before image
+    could be saved) lets the folder go at once: no descriptor outlives it."""
+    with _auto_run(tmp_path, "snapshot", WRITE_REPLY % (tmp_path / "t.c")) as (s, t, trace):
+        assert _holds_folder_open(s, tmp_path), "a live checkpoint does not hold its folder open"
+    blocker = tmp_path.parent / (tmp_path.name + "-refused")
+    blocker.mkdir()
+    (blocker / "regular").write_text("a regular file, where a directory was needed\n")
+    refused_trace = tmp_path.parent / (tmp_path.name + "-refused.trace")
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_POLICY": "auto",
+           "XWPE_AI_MOCK_REPLY": WRITE_REPLY % (blocker / "t.c"),
+           "XWPE_AI_TRACE": str(refused_trace), "XDG_STATE_HOME": str(blocker / "regular" / "state")}
+    with WpeSession(str(blocker), ORIG, env_extra=env) as s:
+        s.key(ALT.AI)
+        s.key("g")
+        s.key("rewrite it")
+        s.key("\r", delay=2.0)
+        assert _wait_trace(refused_trace, "checkpoint refused", 60), \
+            "the checkpoint was not refused:\n" + _trace_text(refused_trace)
+        assert not _holds_folder_open(s, blocker), \
+            "a refused checkpoint still holds its workspace folder open"
+    assert "checkpoint holds workspace folder" in _trace_text(refused_trace), \
+        "the refused checkpoint never held its folder, so this row proves nothing:\n" + \
+        _trace_text(refused_trace)
 
 
 # @scenario SC-ai-agent-65
@@ -1013,10 +1058,18 @@ import stat
 
 WORKSPACES = ["snapshot", "git"]
 REVERT_WAIT_S = 30
+# The hook of the owner of "is this the file I saw": every look drops the birth
+# time, as on OpenBSD, ext3 or most FUSE.
+NO_BIRTH_ENV = {"XWPE_TEST_FAIL": "seen-no-birth"}
+CHANGED_WORDS = "was changed or replaced since this window read it"
+REPLACED_WORDS = "was replaced on disk since this window read it"
+REFUSED_SETGID_WORDS = ("it was changed or replaced since the window showed it, and it has a "
+                        "setuid, setgid or sticky bit")
 
 
 @contextlib.contextmanager
-def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None, answer=None):
+def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None, answer=None, sub=None,
+              env_extra=None, review=True, answers=()):
     """An unattended run over t.c, stopped at the review's prompt.
 
     Yields (session, t.c, trace).  `workspace` is "git" (a committed t.c, so the
@@ -1026,18 +1079,31 @@ def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None, answer=None):
     trace and the state folder stay outside the workspace, so neither is a change.
     `answer` is a key for the question the write asks first (a file with several
     names asks at every dial); it is pressed once the question is on screen.
+    `sub` names a folder under tmp_path that is the workspace, with the editor
+    started one folder above it (a row that removes the workspace folder must
+    not leave the editor standing in it, which would keep its inode alive).
+    `env_extra` adds to the editor's environment (a row that plays a system
+    with no birth time).  `review` False is a run whose write is refused, so the
+    review has nothing to offer: the row waits for the empty review's trace line
+    instead of its prompt.  `answers` is a pair of keys for a file with several
+    names that the window cannot prove its own: the names question, then the
+    "changed or replaced" box (see _answer_linked_then_changed).
     """
-    t = tmp_path / "t.c"
+    t = tmp_path / "t.c" if sub is None else tmp_path / sub / "t.c"
+    if sub is not None:
+        (tmp_path / sub).mkdir()
     trace = tmp_path.parent / (tmp_path.name + ".trace")
     state = tmp_path.parent / (tmp_path.name + ".state")
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": reply,
            "XWPE_AI_POLICY": "auto", "XWPE_AI_TRACE": str(trace),
            "XDG_STATE_HOME": str(state)}
+    env.update(env_extra or {})
     if workspace == "git":
         _git_repo(tmp_path)
         if isinstance(seed, bytes):
             raise ValueError("a git row seeds its file with the commit's own text")
-    with WpeSession(str(tmp_path), seed, env_extra=env) as s:
+    filename = "t.c" if sub is None else sub + "/t.c"
+    with WpeSession(str(tmp_path), seed, env_extra=env, filename=filename) as s:
         if prepare:
             prepare(t)
         s.key(ALT.AI)
@@ -1048,9 +1114,43 @@ def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None, answer=None):
             assert _wait_trace(trace, "agent write linked", 60), \
                 "the write never asked about the file's names:\n" + _trace_text(trace)
             s.key(answer, delay=0.8)
-        assert _wait_trace(trace, "changeset n=", 60), \
-            "the review never opened:\n" + _trace_text(trace)
+        if answers:
+            _answer_linked_then_changed(s, trace, answers)
+        if review:
+            assert _wait_trace(trace, "changeset n=", 60), \
+                "the review never opened:\n" + _trace_text(trace)
+        else:
+            assert _wait_trace(trace, "changeset empty", 60), \
+                "the run did not end with an empty review:\n" + _trace_text(trace)
         yield s, t, trace
+
+
+def _answer_linked_then_changed(s, trace, answers):
+    """Answer the two questions of a file with several names whose status the
+    window cannot prove (no birth time): the names question, then the box that
+    says the file was "changed or replaced since this window read it" and never
+    "replaced on disk"."""
+    first, second = answers
+    assert _wait_trace(trace, "agent write linked", 60), \
+        "the write never asked about the file's names:\n" + _trace_text(trace)
+    s.key(first, delay=0.8)
+    assert _wait_trace(trace, "agent write replaced", 60), \
+        "no second question about the file the window read:\n" + _trace_text(trace)
+    assert _wait_screen_text(s, CHANGED_WORDS), \
+        "the second box does not say changed or replaced:\n" + "\n".join(s.display())
+    assert REPLACED_WORDS not in "\n".join(s.display()), \
+        "the second box claims a replacement it cannot know"
+    s.key(second, delay=0.8)
+
+
+def _wait_screen_text(s, needle, secs=30):
+    """Drain the editor until `needle` is on the screen."""
+    end = time.time() + secs
+    while time.time() < end:
+        s._drain(0.4)
+        if needle in "\n".join(s.display()):
+            return True
+    return False
 
 
 def _revert_all(s, trace):
@@ -1081,7 +1181,14 @@ def test_revert_puts_back_the_bits_the_file_had(tmp_path, workspace):
     is a Save); the revert puts the before image back wearing the bits recorded
     before the first write, in the very same file, in a git workspace (the
     content comes from git) as in a plain folder (from the checkpoint's copy).
+
+    Where the system keeps no birth time the file, made setgid after the window
+    read it, is not proven to be the window's own: the write is refused, there
+    is nothing to review and nothing to revert (_refused_setgid_run).
     """
+    if not reports_birth_time(tmp_path.parent, {}):
+        _refused_setgid_run(tmp_path, workspace, WRITE_REPLY % (tmp_path / "t.c"), 0o2755)
+        return
     ino = []
 
     def prepare(t):
@@ -1109,10 +1216,18 @@ def test_revert_puts_back_the_recorded_bits_after_a_command_took_them_off(tmp_pa
     The run writes the setgid file (the record is made then) and then a command
     of the run takes every special bit off.  The revert puts the text back and
     the record's bits with it.
+
+    Where the system keeps no birth time the write is refused (the file, made
+    setgid after the window read it, is not proven the window's own), so the
+    command only takes the bits off a file whose text never changed
+    (_refused_setgid_run).
     """
     t = tmp_path / "t.c"
     reply = (WRITE_REPLY % t).replace("@@TURN@@DONE rewrote it",
                                       "@@TURN@@TOOL run_command chmod 0755 %s@@TURN@@DONE rewrote it" % t)
+    if not reports_birth_time(tmp_path.parent, {}):
+        _refused_setgid_run(tmp_path, workspace, reply, 0o755)
+        return
     with _auto_run(tmp_path, workspace, reply, prepare=_set_setgid) as (s, t, trace):
         assert stat.S_IMODE(t.stat().st_mode) == 0o755, \
             "the command did not take the bits off: %o" % stat.S_IMODE(t.stat().st_mode)
@@ -1127,7 +1242,14 @@ def test_revert_puts_back_the_recorded_bits_after_a_command_took_them_off(tmp_pa
 def test_revert_keeps_the_bits_of_a_file_only_a_command_changed(tmp_path, workspace):
     """A file the run never wrote has no record: the revert leaves its bits as
     they are (here 0600, which git's 100644 would have widened).  The command
-    changes the file's text; the assistant's own write goes to another file."""
+    changes the file's text; the assistant's own write goes to another file.
+
+    Where the system keeps no birth time the file, chmod'ed after the window
+    read it, is not proven the window's own, so the revert is refused
+    (_revert_refused_for_a_touched_window_file)."""
+    if not reports_birth_time(tmp_path.parent, {}):
+        _revert_refused_for_a_touched_window_file(tmp_path, workspace, {})
+        return
     t = tmp_path / "t.c"
     reply = ("TOOL run_command printf 'int main(void){return 5;}\\n' > %s@@TURN@@DONE changed it" % t)
     with _auto_run(tmp_path, workspace, reply, prepare=lambda p: os.chmod(p, 0o600)) as (s, t, trace):
@@ -1136,6 +1258,58 @@ def test_revert_keeps_the_bits_of_a_file_only_a_command_changed(tmp_path, worksp
     assert t.read_text() == ORIG
     assert stat.S_IMODE(t.stat().st_mode) == 0o600, \
         "the revert gave the file another file's bits: %o" % stat.S_IMODE(t.stat().st_mode)
+
+
+def _refused_setgid_run(tmp_path, workspace, reply, mode_after):
+    """A run over a setgid t.c that the window read before it was made setgid,
+    on a system with no birth time: the write is refused with the reason, the
+    review is empty and there is no revert.  The text and the .bak are as they
+    were, the file's mode is `mode_after` (the bit the file had, or what a
+    command left)."""
+    ino = []
+
+    def prepare(t):
+        _set_setgid(t)
+        ino.append(os.stat(t).st_ino)
+
+    with _auto_run(tmp_path, workspace, reply, prepare=prepare, review=False) as (s, t, trace):
+        txt = _trace_text(trace)
+        assert "agent write failed" in txt and REFUSED_SETGID_WORDS in txt, \
+            "the refusal is not counted and named:\n" + txt
+    assert t.read_text() == ORIG, "the write changed a file it could not prove the window's"
+    assert stat.S_IMODE(t.stat().st_mode) == mode_after, \
+        "the file's mode is not %o: %o" % (mode_after, stat.S_IMODE(t.stat().st_mode))
+    assert t.stat().st_ino == ino[0], "the run made a new file"
+    assert not (tmp_path / "t.bak").exists(), "a refused write left a .bak"
+
+
+def _revert_refused_for_a_touched_window_file(tmp_path, workspace, env_extra):
+    """On a system that records no time of making, a file the window read and a
+    program then touched in place (here its mode) cannot be told from a new file
+    with its number.  The revert puts nothing back into it, says it was changed
+    or replaced, and leaves the file as the command left it.  The outcome of
+    test_revert_keeps_the_bits_of_a_file_only_a_command_changed with no birth time."""
+    t = tmp_path / "t.c"
+    reply = ("TOOL run_command printf 'int main(void){return 5;}\\n' > %s@@TURN@@DONE changed it" % t)
+    with _auto_run(tmp_path, workspace, reply, prepare=lambda p: os.chmod(p, 0o600),
+                   env_extra=env_extra) as (s, t, trace):
+        assert "return 5" in t.read_text(), "the command did not change the file"
+        _revert_all(s, trace)
+        pane = " ".join(pane_text_with_history(s, ["changed or replaced"]))
+    txt = _trace_text(trace)
+    assert "return 5" in t.read_text(), "the revert wrote into a file it could not prove the window's"
+    assert "changeset revert failed" in txt and "changed or replaced" in txt, \
+        "the refused revert is not counted and named:\n" + txt
+    assert "changed or replaced" in pane, "the pane does not name the refusal:\n" + pane
+
+
+# @scenario SC-name-identity-25
+@pytest.mark.parametrize("workspace", WORKSPACES)
+def test_revert_of_a_window_file_touched_since_the_read_is_refused_without_a_birth_time(
+        tmp_path, workspace):
+    """The no-birth outcome of test_revert_keeps_the_bits_of_a_file_only_a_command_changed,
+    forced on a host that does have a birth time."""
+    _revert_refused_for_a_touched_window_file(tmp_path, workspace, NO_BIRTH_ENV)
 
 
 # @scenario SC-write-owner-A-07
@@ -1433,7 +1607,11 @@ def test_snapshot_parent_link(tmp_path):
 def test_git_revert_keeps_the_inode_and_the_other_names(tmp_path):
     """The git revert writes git's copy into the very file: the inode is the same
     after it, and a second name of the file shows the restored text too (a
-    checkout would have made a new file and left the other name with the change)."""
+    checkout would have made a new file and left the other name with the change).
+
+    Where the system keeps no birth time the name made after the window read the
+    file moves its status time, so the write asks a second question, "changed or
+    replaced", and the row answers both."""
     ino = []
 
     def prepare(t):
@@ -1442,11 +1620,65 @@ def test_git_revert_keeps_the_inode_and_the_other_names(tmp_path):
 
     # one more key than before the question existed: the write to a file with
     # two names asks first, and this row is about the revert that follows a yes
+    asking = {"answer": "y"}
+    if not reports_birth_time(tmp_path.parent, {}):
+        asking = {"answers": ("y", "y")}
     with _auto_run(tmp_path, "git", WRITE_REPLY % (tmp_path / "t.c"), prepare=prepare,
-                   answer="y") as (s, t, trace):
+                   **asking) as (s, t, trace):
         _revert_all(s, trace)
     assert t.read_text() == ORIG
     assert t.stat().st_ino == ino[0], "the revert made a new file"
     h = tmp_path / "h.c"
     assert h.stat().st_ino == ino[0] and h.read_text() == ORIG, \
         "the other name of the file does not show the restored text:\n" + h.read_text()
+
+
+OTHERS_TEXT = "somebody else's t.c\n"
+
+
+REMADE_WORKSPACE = "ws"
+REMADE_FILE = "n.c"     # a file the run creates, which no window has open
+
+
+def _remake_the_folder_with_its_number(folder):
+    """With the review open: remove the workspace folder and make another under
+    its name, keeping every folder that lands below the old number aside until
+    one has it, and put an n.c of somebody else's in it.  Returns whether the new
+    folder has the old folder's number (it cannot while the checkpoint holds the
+    old folder open)."""
+    old = os.stat(folder).st_ino
+    shutil.rmtree(folder)
+    fillers, reached = make_folder_with_number(folder, old)
+    (folder / REMADE_FILE).write_text(OTHERS_TEXT)
+    for filler in fillers:
+        os.rmdir(filler)
+    return reached
+
+
+# @scenario SC-name-identity-10
+def test_a_workspace_folder_made_again_with_its_number_is_not_the_checkpoints(tmp_path):
+    """The review is open.  The folder the checkpoint saw is removed and another
+    is made under its name, with the old folder's inode number when the file
+    system gives it back.  The revert touches nothing in the new folder: the
+    checkpoint holds the old one open, so no other folder can take its number
+    (the new folder has another), and the name no longer leads to the held
+    folder.
+
+    Red on the tree before the checkpoint held its folder: nothing held the old
+    folder, the file system gave its number to the new one on ext4, the number
+    alone said "the same folder" and the revert removed the n.c it found there
+    as "the file the run created".  The editor stands one folder above the
+    workspace, so the editor itself does not keep the old inode from being
+    given back, and the file is one no window has open (a window's own identity
+    check would refuse the revert by itself)."""
+    ws = tmp_path / REMADE_WORKSPACE
+    n = ws / REMADE_FILE
+    print("row SC-name-identity-10 ran on %s" % fs_type(tmp_path.parent))
+    with _auto_run(tmp_path, "snapshot", WRITE_REPLY % n, sub=REMADE_WORKSPACE) as (s, t, trace):
+        assert "checkpoint holds workspace folder %s" % ws in _trace_text(trace), \
+            "the checkpoint does not hold its workspace folder:\n" + _trace_text(trace)
+        _remake_the_folder_with_its_number(ws)
+        _revert_all(s, trace)
+    assert n.exists() and n.read_text() == OTHERS_TEXT, \
+        "the revert removed a file of a folder that only had the checkpoint's number (%s):\n%s" \
+        % (fs_type(tmp_path.parent), _trace_text(trace))

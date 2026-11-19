@@ -16,6 +16,8 @@ import subprocess
 import pytest
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 from mode_premise import special_bits_settable, workdir_in_my_group
+from seen_premise import reports_birth_time
+from seen_reuse import fs_type, make_file_with_number, reached_or_say
 
 
 def _ai_build():
@@ -104,7 +106,14 @@ def _setgid_or_skip(path):
 # @scenario SC-write-owner-A-06
 def test_agent_write_keeps_the_files_setgid_bit(tmp_path):
     """An approved write is a Save: the program is still a program afterwards,
-    and the text it had is in the .bak beside it (t.c becomes t.bak, as for F2)."""
+    and the text it had is in the .bak beside it (t.c becomes t.bak, as for F2).
+
+    Where the system keeps no birth time the file, made setgid after the window
+    read it, is not proven to be the window's own: the write is refused with the
+    reason (_refused_setgid_write)."""
+    if not reports_birth_time(tmp_path.parent, {}):
+        _refused_setgid_write(tmp_path, {})
+        return
     t = tmp_path / "t.c"
     trace = _trace_of(tmp_path)
     with WpeSession(str(tmp_path), OLD, env_extra=_agent_env(trace, NEW_REPLY),
@@ -129,7 +138,14 @@ def test_agent_write_keeps_the_inode_and_the_other_names(tmp_path):
     A guard, not a red row against truncation: a write that empties the file in
     place also keeps the inode and passes.  It turns red under the mutation "write
     a temporary file and rename it over the name", which makes a new inode and
-    leaves the other name with the old text."""
+    leaves the other name with the old text.
+
+    Where the system keeps no birth time the name made after the window read the
+    file moves its status time, so a second question follows the first
+    (_added_name_asks_twice)."""
+    if not reports_birth_time(tmp_path.parent, {}):
+        _added_name_asks_twice(tmp_path, {})
+        return
     t = tmp_path / "t.c"
     h = tmp_path / "h.c"
     trace = _trace_of(tmp_path)
@@ -296,16 +312,40 @@ def test_yes_to_a_linked_write_keeps_the_inode(tmp_path):
         "the old text is not in x.bak: %r" % sorted(os.listdir(tmp_path))
 
 
+# The system the editor runs on has a birth time for its files, or plays one
+# that has none (the hook of the owner of "is this the file I saw": OpenBSD,
+# ext3, most FUSE): the same rows hold on both.
+BIRTH_MODES = ["with-birth", "no-birth"]
+NO_BIRTH_ENV = {"XWPE_TEST_FAIL": "seen-no-birth"}
+# A row whose outcome depends on the birth time runs as the host is
+# ("observed": reports_birth_time says which outcome) and again forced to play a
+# host with none, so both outcomes are asserted on every host.
+OBSERVED_OR_FORCED = ["observed", "no-birth"]
+
+
+def _birth_env(env, birth):
+    """`env` with the no-birth hook set when the row runs as a system with none."""
+    if birth == "no-birth":
+        env.update(NO_BIRTH_ENV)
+    return env
+
+
 # @scenario SC-write-owner-H2b-07
-def test_a_yes_to_a_linked_write_is_kept_until_the_name_count_changes(tmp_path):
+# @scenario SC-name-identity-23
+@pytest.mark.parametrize("birth", BIRTH_MODES)
+def test_a_yes_to_a_linked_write_is_kept_until_the_name_count_changes(tmp_path, birth):
     """The second write of the same run to the same file does not ask again.
     A name added between the two writes is another question: the yes was for
-    two names, not for three."""
+    two names, not for three.
+
+    With no birth time the first write moves the file's status time, so the
+    yes kept from before it is refreshed from the file as the write left it:
+    without that the second write would ask again (red before the refresh)."""
     secret, x = _linked_pair(tmp_path)
     trace = _trace_of(tmp_path)
     turns = ("TOOL write_file x\none\n@@END@@TURN@@TOOL write_file x\ntwo\n@@END"
              "@@TURN@@TOOL write_file x\nthree\n@@END@@TURN@@DONE ok")
-    env = _agent_env(trace, turns)
+    env = _birth_env(_agent_env(trace, turns), birth)
     env["XWPE_AI_MOCK_DELAY_MS"] = str(SLOW_TURN_MS)
     with WpeSession(str(tmp_path), OLD, env_extra=env, filename="t.c") as s:
         _ask(s, "write x three times")
@@ -329,6 +369,163 @@ def test_a_yes_to_a_linked_write_is_kept_until_the_name_count_changes(tmp_path):
         "the refused third write changed the file"
 
 
+# @scenario SC-name-identity-11
+def test_a_yes_to_a_linked_write_is_not_for_another_file_with_its_number(tmp_path):
+    """The user said yes for a file with two names.  Before the run's next
+    write both names are removed and another file with two names is made, and
+    the file system gives it the first file's inode number.  The yes was for
+    the first file: the second write asks again, and n leaves the new file as
+    it is.
+
+    A guard once the remembered yes is judged by the owner of "is this the
+    file I saw" (red under the mutation that compares the number alone)."""
+    secret, x = _linked_pair(tmp_path)
+    trace = _trace_of(tmp_path)
+    ino = os.stat(x).st_ino
+    turns = ("TOOL write_file x\none\n@@END@@TURN@@TOOL write_file x\ntwo\n@@END"
+             "@@TURN@@DONE ok")
+    env = _agent_env(trace, turns)
+    env["XWPE_AI_MOCK_DELAY_MS"] = str(SLOW_TURN_MS)
+    with WpeSession(str(tmp_path), OLD, env_extra=env, filename="t.c") as s:
+        _ask(s, "write x twice")
+        assert _wait_screen(s, "This file has 2 names"), _trace_text(trace)
+        s.key("y", delay=0.5)
+        end = time.time() + WAIT_S
+        while time.time() < end and x.read_text() != "one\n":
+            s._drain(0.4)
+        assert x.read_text() == "one\n", "the first write was not made:\n" + _trace_text(trace)
+        os.unlink(x)
+        os.unlink(secret)
+        fillers, reached = make_file_with_number(secret.parent, "secret", ino, text=PLANTED)
+        reached_or_say(secret.parent, os.stat(secret).st_ino if reached else -1, ino)
+        os.link(secret, x)
+        assert _wait_screen(s, "This file has 2 names"), \
+            "a file with the first one's number was written without asking (%s):\n%s" \
+            % (fs_type(tmp_path), _trace_text(trace))
+        s.key("n", delay=0.8)
+        assert _wait_trace(s, trace, "agent deny write_file x"), _trace_text(trace)
+        s.key("a", delay=0.5)
+    assert x.read_text() == PLANTED and secret.read_text() == PLANTED, \
+        "the refused write changed the other file"
+
+
+# @scenario SC-name-identity-24
+@pytest.mark.parametrize("hook", OBSERVED_OR_FORCED)
+def test_write_after_the_windows_file_was_touched_in_place(tmp_path, hook):
+    """The window read t.c; a program then changed it in place (its times, as
+    touch does).  With a birth time the file is proven to be the one the window
+    read, so the write is a Save with no question.  With none it cannot be told
+    from a new file: the box says "changed or replaced", never "replaced on
+    disk", and a yes writes the text into the file.  The row branches on what
+    this run observes (the system, the build, the hook); the forced parameter
+    plays a system with no birth time on any host."""
+    t = tmp_path / "t.c"
+    trace = _trace_of(tmp_path)
+    env = _birth_env(_agent_env(trace, NEW_REPLY + "@@TURN@@DONE ok"), hook)
+    with WpeSession(str(tmp_path), OLD, env_extra=env, filename="t.c") as s:
+        os.utime(t, (1000000000, 1000000000))
+        _ask(s, "change the return value in t.c")
+        if not reports_birth_time(tmp_path.parent, env):
+            assert _wait_screen(s, CHANGED_BOX), "no question for a file that may be another:\n" + \
+                "\n".join(s.display()) + "\n" + _trace_text(trace)
+            assert REPLACED_BOX not in "\n".join(s.display()), "the box claims a replacement it cannot know"
+            _answer_and_finish(s, trace, "y")
+        else:
+            assert _wait_trace(s, trace, "changeset"), _trace_text(trace)
+            assert _count(trace, "agent write confirm") == 0, \
+                "a file proven to be the window's own was asked about:\n" + _trace_text(trace)
+            s.key("a", delay=0.5)
+    assert "return 7" in t.read_text(), "the text was not written:\n" + t.read_text()
+
+
+# @scenario SC-name-identity-30
+def test_under_ask_the_one_box_says_changed_or_replaced_without_a_birth_time(tmp_path):
+    """Under ask the diff box itself carries the warning, before any write is
+    tried.  For a file the window read and a program then touched, on a system
+    with no birth time, it says "changed or replaced" and shows the diff, never
+    "replaced on disk"; n leaves the file alone."""
+    t = tmp_path / "t.c"
+    trace = _trace_of(tmp_path)
+    env = _birth_env(_agent_env(trace, NEW_REPLY + "@@TURN@@DONE no", "ask"), "no-birth")
+    with WpeSession(str(tmp_path), OLD, env_extra=env, filename="t.c") as s:
+        os.utime(t, (1000000000, 1000000000))
+        _ask(s, "change the return value in t.c")
+        assert _wait_screen(s, CHANGED_BOX), "no warning in the box:\n" + "\n".join(s.display()) + \
+            "\n" + _trace_text(trace)
+        shown = "\n".join(s.display())
+        assert REPLACED_BOX not in shown, "the box claims a replacement it cannot know"
+        assert "return 7" in shown, "under ask the warning box carries no diff"
+        s.key("n", delay=0.8)
+        assert _wait_trace(s, trace, "agent deny write_file t.c"), _trace_text(trace)
+    assert _count(trace, "agent write confirm") == 1, "more than one box:\n" + _trace_text(trace)
+    assert t.read_text() == OLD, "a refused write changed the file"
+
+
+def _refused_setgid_write(tmp_path, env_extra):
+    """With no birth time the window's setgid file, made a program after the
+    window read it, cannot be told from a new file with its number.  A copy
+    would lose the bit, so the owner refuses (it does not ask) and says why:
+    the file keeps its text and its bit, and there is no .bak.  The outcome of
+    test_agent_write_keeps_the_files_setgid_bit on a system with no birth time."""
+    t = tmp_path / "t.c"
+    trace = _trace_of(tmp_path)
+    env = _agent_env(trace, NEW_REPLY + "@@TURN@@DONE no")
+    env.update(env_extra)
+    with WpeSession(str(tmp_path), OLD, env_extra=env, filename="t.c") as s:
+        _setgid_or_skip(t)
+        _ask(s, "change the return value in t.c")
+        assert _wait_trace(s, trace, "agent write failed"), _trace_text(trace)
+        s.key("a", delay=0.5)
+    txt = _trace_text(trace)
+    assert "changed or replaced since the window showed it" in txt, \
+        "the refusal does not say the file may be another:\n" + txt
+    assert t.read_text() == OLD, "the write changed a file it could not prove the window's"
+    assert stat.S_IMODE(t.stat().st_mode) == 0o2755, "the file lost its bit"
+    assert not (tmp_path / "t.bak").exists(), "a refused write left a .bak"
+
+
+# @scenario SC-name-identity-26
+def test_agent_write_to_a_setgid_file_touched_since_the_read_is_refused_without_a_birth_time(tmp_path):
+    """The no-birth outcome of test_agent_write_keeps_the_files_setgid_bit,
+    forced on a host that does have a birth time."""
+    _refused_setgid_write(tmp_path, NO_BIRTH_ENV)
+
+
+def _added_name_asks_twice(tmp_path, env_extra):
+    """The window read t.c; a second name was made for it afterwards (the file's
+    status time moved).  With a birth time the file is the window's own: one
+    question, about the names.  With none it cannot be told from a new file: the
+    second question says "changed or replaced", and two yes writes the text into
+    the very file, so the other name shows it.  The outcome of
+    test_agent_write_keeps_the_inode_and_the_other_names with no birth time."""
+    t = tmp_path / "t.c"
+    h = tmp_path / "h.c"
+    trace = _trace_of(tmp_path)
+    env = _agent_env(trace, NEW_REPLY)
+    env.update(env_extra)
+    with WpeSession(str(tmp_path), OLD, env_extra=env, filename="t.c") as s:
+        os.link(t, h)
+        ino = os.stat(t).st_ino
+        _ask(s, "change the return value in t.c")
+        assert _wait_screen(s, LINKED_BOX), "no question for a file with two names"
+        s.key("y", delay=0.8)
+        assert _wait_screen(s, CHANGED_BOX), "no second question:\n" + "\n".join(s.display())
+        assert REPLACED_BOX not in "\n".join(s.display()), "the box claims a replacement it cannot know"
+        s.key("y", delay=0.8)
+        assert _wait_trace(s, trace, "changeset"), _trace_text(trace)
+        s.key("a", delay=0.5)
+    assert os.stat(t).st_ino == ino, "the write made a new file"
+    assert os.stat(h).st_ino == ino and "return 7" in h.read_text(), \
+        "the other name of the file does not show the new text"
+
+
+# @scenario SC-name-identity-27
+def test_agent_write_after_a_name_was_added_since_the_read_asks_twice_without_a_birth_time(tmp_path):
+    """The no-birth outcome of test_agent_write_keeps_the_inode_and_the_other_names,
+    forced on a host that does have a birth time."""
+    _added_name_asks_twice(tmp_path, NO_BIRTH_ENV)
+
+
 # @scenario SC-write-owner-H2b-08
 @pytest.mark.parametrize("key", ["\r", "\n"])
 def test_enter_is_not_yes_to_a_linked_write(tmp_path, key):
@@ -349,6 +546,7 @@ def test_enter_is_not_yes_to_a_linked_write(tmp_path, key):
 
 REPLACEMENT = "int main(void){return 3;}\n"
 REPLACED_BOX = "was replaced on disk since this window read it"
+CHANGED_BOX = "was changed or replaced since this window read it"
 
 
 def _replace_on_disk(tmp_path, name, text):

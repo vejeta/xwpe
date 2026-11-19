@@ -48,6 +48,7 @@ typedef struct {
  gid_t  seen_gid;
  mode_t seen_mode;                  /* the twelve permission and special bits */
  off_t  seen_size;
+ nlink_t seen_nlink;                /* how many names the object had; not judged, only told */
  struct timespec seen_ctime;        /* status change: only the kernel sets it */
  struct timespec seen_mtime;
  int    seen_has_birth;             /* the system said when the object was made */
@@ -92,6 +93,8 @@ void wpe_seen_from_stat(WpeSeen *s, const struct stat *st);
 void wpe_seen_forget(WpeSeen *s);
 int  wpe_seen_known(const WpeSeen *s);
 mode_t wpe_seen_kind(const WpeSeen *s);
+mode_t wpe_seen_mode(const WpeSeen *s);
+nlink_t wpe_seen_nlink(const WpeSeen *s);
 
 WpeSeenIs wpe_seen_judge(const WpeSeen *then, const WpeSeen *now);
 WpeSeenIs wpe_seen_judge_after_own_change(const WpeSeen *before, const WpeSeen *after);

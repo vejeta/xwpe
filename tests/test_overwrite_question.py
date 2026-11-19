@@ -31,6 +31,7 @@ pytest.importorskip("pyte")
 
 from mode_premise import special_bits_settable, workdir_in_my_group   # noqa: E402
 from wpe_driver import ALT, WpeSession                                # noqa: E402
+from seen_premise import reports_birth_time                           # noqa: E402
 
 ESC = "\033"
 SEED = "alpha\n"
@@ -126,7 +127,14 @@ def test_save_as_over_a_plain_file_has_no_bit_line(tmp_path):
 # @scenario SC-unsaved-text-71
 def test_save_as_onto_the_windows_own_setgid_file_has_no_bit_line(tmp_path):
     """Save As onto the window's own file is a save: the bit is kept, so the
-    question must not say it will be lost."""
+    question must not say it will be lost.
+
+    Where the system keeps no birth time the file, made setgid after the window
+    read it, is not proven to be the window's own, so the outcome is the other
+    one (_save_as_onto_a_touched_setgid_file_names_the_bit)."""
+    if not reports_birth_time(tmp_path, {}):
+        _save_as_onto_a_touched_setgid_file_names_the_bit(tmp_path, {})
+        return
     work, env = _setup(tmp_path)
     with WpeSession(work, SEED, env_extra=env) as s:
         own = os.path.join(work, "t.c")
@@ -139,6 +147,35 @@ def test_save_as_onto_the_windows_own_setgid_file_has_no_bit_line(tmp_path):
         time.sleep(SETTLE_S)
     assert _read(own) == "Xalpha\n"
     assert _special(own) == stat.S_ISGID, "a save keeps the bit"
+
+
+def _save_as_onto_a_touched_setgid_file_names_the_bit(tmp_path, env_extra):
+    """On a system that records no time of making, the window's own file made
+    setgid after the window read it cannot be told from a new file with its
+    number, so Save As onto it is a copy and the question says the bit will not
+    be kept.  The outcome of
+    test_save_as_onto_the_windows_own_setgid_file_has_no_bit_line with no birth time."""
+    work, env = _setup(tmp_path)
+    env.update(env_extra)
+    with WpeSession(work, SEED, env_extra=env) as s:
+        own = os.path.join(work, "t.c")
+        os.chmod(own, 0o2755)
+        _save_as(s, "t.c")
+        shown = _screen(s)
+        assert QUESTION in shown, shown
+        assert BIT_LINE in shown, shown
+        s.key("y")
+        time.sleep(SETTLE_S)
+    assert _read(own) == "Xalpha\n"
+    assert _special(own) == 0, "the line promised the copy would not keep the bit"
+
+
+# @scenario SC-name-identity-28
+def test_save_as_onto_a_setgid_file_touched_since_the_read_names_the_bit_without_a_birth_time(tmp_path):
+    """The no-birth outcome of
+    test_save_as_onto_the_windows_own_setgid_file_has_no_bit_line, forced on a
+    host that does have a birth time."""
+    _save_as_onto_a_touched_setgid_file_names_the_bit(tmp_path, {"XWPE_TEST_FAIL": "seen-no-birth"})
 
 
 # @scenario SC-unsaved-text-71

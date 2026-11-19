@@ -582,6 +582,9 @@ static void test_the_look_routes(const char *base)
  printf("note: a birth time is %s here\n", by_fd.seen_has_birth ? "reported" : "not reported");
  chk_int("a record of a regular file", wpe_seen_kind(&by_fd) == S_IFREG, 1);
  chk_int("the record is the file's number", stat(file, &st) == 0 && st.st_ino == by_fd.seen_ino, 1);
+ chk_int("every route tells the names the file has", wpe_seen_nlink(&by_fd) == (nlink_t)st.st_nlink &&
+         wpe_seen_nlink(&by_name) == (nlink_t)st.st_nlink && wpe_seen_nlink(&by_at) == (nlink_t)st.st_nlink, 1);
+ chk_int("the record carries the file's bits", wpe_seen_mode(&by_fd) == (st.st_mode & 07777), 1);
  chk_int("look at the link itself", wpe_seen_look_name(link, 0, &itself), 0);
  chk_int("look through the link", wpe_seen_look_name(link, 1, &through), 0);
  chk_int("the link itself is a link", wpe_seen_kind(&itself) == S_IFLNK, 1);

@@ -173,20 +173,9 @@ we_xterm.c|r16:e_x_system_script|1|P2e|the external terminal's script, in the ed
 # record is also checked by the compiler, WPE_SHOWN_RECORD in we_write.h), N4
 # the assistant's checkpoint and window lookup, N5 the two-look sites and the
 # tests.
-# One site compares the .dev and .ino members of an old record and spells no
-# st_ino, so clause a cannot list it: the assistant's remembered Yes
-# (we_ai_ui.c, the ai_linked_yes record and ai_linked_yes_recalls and
-# _remember).  It belongs to N4, but it stops compiling in N2, when
-# WpeWriteExpect loses its dev and ino members, so N2 must keep it building
-# and N4 moves it onto a WpeSeen.
-# N4: the assistant
-we_ai_ws.c|r24a:ws_record_root|2|N4|site 9: the workspace folder's number kept by hand
-we_ai_ws.c|r24d:ws_record_root|2|N4|site 9: ck_rdev and ck_rino
-we_ai_ws.c|r24a:ws_root_unchanged|2|N4|site 9: the revert trusts the folder by its number
-we_ai_ws.c|r24d:ws_root_unchanged|2|N4|site 9: ck_rdev and ck_rino
-we_ai_ws.c|r24d:ck_clear|2|N4|site 9: ck_rdev and ck_rino reset
-we_ai_ws.c|r24d:wpe_ai_read_scope_file|2|N4|the file-scope declarations of ck_rdev and ck_rino, counted under the function above them
-we_ai_ws.c|r24a:ws_mode_of_file|4|N4|site 16: lstat, open and fstat agree
+# N4 (done): the assistant's checkpoint holds its workspace folder open, its
+# mode record judges the look at the name against the descriptor's, and its
+# remembered Yes is a WpeSeen: no row is left for we_ai_ws.c or we_ai_ui.c.
 # N5: the two-look sites and the tests
 we_write.c|r24a:write_backup_source|4|N5|site 13: the backup reads the file the write holds
 we_write.c|r24a:write_bak_is_ours|4|N5|site 14: the .bak is the one the backup made
