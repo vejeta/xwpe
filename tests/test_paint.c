@@ -9,6 +9,7 @@
  * keys (a replay on leave), or a lost update nobody is told about (bound).
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <poll.h>

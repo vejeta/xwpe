@@ -12,6 +12,7 @@
  */
 /* @scenario SC-line-endings-17 */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>

@@ -34,8 +34,8 @@
  * openpty prototype; the configure fact that names glibc's header says
  * where that holds. */
 #if defined(HAVE_PTY_H)
-# include <dlfcn.h>
 # include <pty.h>
+# include "interpose.h"
 #endif
 
 #include "../we_child.h"
@@ -114,8 +114,12 @@ int openpty(int *master, int *slave, char *name, const struct termios *tio,
             const struct winsize *ws)
 {
 	int (*real)(int *, int *, char *, const struct termios *,
-	            const struct winsize *) = dlsym(RTLD_NEXT, "openpty");
-	int r = real(master, slave, name, tio, ws);
+	            const struct winsize *);
+	int r;
+	WPE_HOOK_GUARD(openpty);
+
+	real = WPE_REAL(openpty);
+	r = real(master, slave, name, tio, ws);
 
 	if (r == 0 && name && fake_tty_name)
 		strcpy(name, fake_tty_name);
@@ -124,8 +128,10 @@ int openpty(int *master, int *slave, char *name, const struct termios *tio,
 
 int ttyname_r(int fd, char *buf, size_t n)
 {
-	int (*real)(int, char *, size_t) = dlsym(RTLD_NEXT, "ttyname_r");
+	int (*real)(int, char *, size_t);
+	WPE_HOOK_GUARD(ttyname_r);
 
+	real = WPE_REAL(ttyname_r);
 	if (!fake_tty_name)
 		return real(fd, buf, n);
 	if (strlen(fake_tty_name) >= n)

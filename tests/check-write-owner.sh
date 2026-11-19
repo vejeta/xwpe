@@ -1523,13 +1523,13 @@ EOF
   fi
   # rule 25: the owners (we_places.c, and in we_write.c and we_unix.c the one
   # function that asks for the state folder) and the shapes that are no offence
-  if grep -q "^r25[a-i] we_places.c \|^r25d we_write.c write_own_base \|^r25a we_write.c \|^r25g we_write.c \|^r25d we_unix.c \|^r25d we_startcmd.c startcmd_state_dir \|^r25c we_fake_r25.c fake_no_getenv \|^r25c we_fake_r25.c fake_plain_ternary \|^r25i we_fake_r25.c fake_no_getenv \|^r25f we_fake_r25.c wpe_ai_resume_id_take " "$WORK/fake.found"; then
+  if grep -Eq "^r25[a-i] we_places.c |^r25d we_write.c write_own_base |^r25a we_write.c |^r25g we_write.c |^r25d we_unix.c |^r25d we_startcmd.c startcmd_state_dir |^r25c we_fake_r25.c fake_no_getenv |^r25c we_fake_r25.c fake_plain_ternary |^r25i we_fake_r25.c fake_no_getenv |^r25f we_fake_r25.c wpe_ai_resume_id_take " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: an owner or a shape rule 25 allows was counted; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
   # the functions rule 20 allows, and the names it bounds by word, are no offence
-  if grep -q "^r20 we_write.c write_mode_refusal \|^r20 we_write.c write_open_failure \|^r20 we_fileop.c fileop_job_dst_is_folder " "$WORK/fake.found"; then
+  if grep -Eq "^r20 we_write.c write_mode_refusal |^r20 we_write.c write_open_failure |^r20 we_fileop.c fileop_job_dst_is_folder " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: an errno where rule 20 allows it was counted; it found:)"
     cat "$WORK/fake.found"
     exit $BAD

@@ -10,6 +10,7 @@
  * when memory ran out, or a view (Messages, Help) collecting undo.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>

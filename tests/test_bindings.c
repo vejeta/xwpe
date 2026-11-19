@@ -14,6 +14,7 @@
  * code a click sends.  The third part checks the rules of the table itself.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 
 #include "../edit.h"

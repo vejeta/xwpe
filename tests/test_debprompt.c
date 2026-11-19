@@ -10,6 +10,7 @@
  * overflow cases are the reason this test is worth building under -fsanitize.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 
 #include "../we_debprompt.h"

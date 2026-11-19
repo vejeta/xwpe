@@ -230,7 +230,7 @@ fi
 # file otherwise).
 WARNFLAGS=$(sed -n 's/^XWPE_WARNFLAGS = //p' "$BUILDDIR/Makefile")
 test_cc -fsyntax-only $WARNFLAGS "$WORK/empty.c" > "$WORK/warn.out" 2>&1
-if grep -qi 'unknown warning option\|unrecognized command.line option' "$WORK/warn.out"; then
+if grep -Eqi 'unknown warning option|unrecognized command.line option' "$WORK/warn.out"; then
 	fail "$CC does not know the warning flags configure chose ($WARNFLAGS):"
 	cat "$WORK/warn.out"
 elif test_cc --version 2>/dev/null | grep -qi clang; then
@@ -873,12 +873,14 @@ else
 	# first word of a CC outside the list, and must not see test_cc().  The
 	# mutants are only read, never run: such a function does not end.
 	MUTANT_BLIND=0
-	for pair in 'cc|cc() {' 'cc|cc () {' 'cc|cc ( ) {' 'cc|function cc {' \
-		'gcc-14 -std=gnu23|gcc-14() {' 'clang-18|clang-18 ( ) {' \
-		'/usr/bin/c89|function c89 {' 'c89|c89 () {' 'x86_64-linux-gnu-gcc|x86_64-linux-gnu-gcc() {' \
-		'g++|function g++ {'; do
-		mutant_cc=${pair%%|*}
-		spelling=${pair#*|}
+	# Each pair is the CC to read, a colon, the spelling; a colon is no pattern
+	# character in any shell (a bar is alternation in the ksh of OpenBSD).
+	for pair in 'cc:cc() {' 'cc:cc () {' 'cc:cc ( ) {' 'cc:function cc {' \
+		'gcc-14 -std=gnu23:gcc-14() {' 'clang-18:clang-18 ( ) {' \
+		'/usr/bin/c89:function c89 {' 'c89:c89 () {' 'x86_64-linux-gnu-gcc:x86_64-linux-gnu-gcc() {' \
+		'g++:function g++ {'; do
+		mutant_cc=${pair%%:*}
+		spelling=${pair#*:}
 		printf '%s\n\t$CC "$@"\n}\n' "$spelling" > "$WORK/mutant-function-cc.sh"
 		if ! owner_defines_word "$WORK/mutant-function-cc.sh" "$mutant_cc"; then
 			fail "row 14: the check for a function named like CC (CC=$mutant_cc) does not see \"$spelling\": the row is blind"

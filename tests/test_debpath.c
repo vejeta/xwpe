@@ -9,6 +9,7 @@
  * stay untouched.
  */
 #include <limits.h>
+#include "linebuf.h"
 #include <stdio.h>
 #include <string.h>
 

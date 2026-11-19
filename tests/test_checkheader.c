@@ -5,6 +5,7 @@
 /* GNU General Public License, see the file COPYING.      */
 
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>

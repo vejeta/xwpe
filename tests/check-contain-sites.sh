@@ -166,7 +166,7 @@ report() {
 report 1 "an assistant file starts a child itself; start it with wpe_contain_start and a profile:" \
   "$(blank $AI_FILES | scan_starts)"
 
-OTHERS=$(for f in $ALL_FILES; do case $f in we_contain.c|we_child.c) ;; *) echo "$f" ;; esac; done)
+OTHERS=$(for f in $ALL_FILES; do case $f in (we_contain.c|we_child.c) ;; (*) echo "$f" ;; esac; done)
 # shellcheck disable=SC2086
 report 2 "WPE_CHILD_ORIGIN_AI outside we_contain.c and we_child.c:" "$(blank $OTHERS | scan_origin)"
 
@@ -197,7 +197,7 @@ report 4 "host_spawn called without a profile:" "$off"
 # shellcheck disable=SC2086
 report 5 "an old capture face that took no profile:" "$(blank $ALL_FILES | scan_old_faces)"
 
-EXECS=$(for f in $ALL_FILES; do case $f in we_child.c) ;; *) echo "$f" ;; esac; done)
+EXECS=$(for f in $ALL_FILES; do case $f in (we_child.c) ;; (*) echo "$f" ;; esac; done)
 # shellcheck disable=SC2086
 report 6 "an exec outside we_child.c:" "$(blank $EXECS | scan_exec)"
 

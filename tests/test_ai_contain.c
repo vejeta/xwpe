@@ -24,6 +24,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#if HAVE_DECL_PROC_NO_NEW_PRIVS_CTL
+# include <sys/procctl.h>
+#endif
 
 #include "../we_child.h"
 #include "../we_contain.h"
@@ -72,12 +75,108 @@ static int inherited_fsize_shown(const char *out)
 #define NOTE_NAME        "xwpe-note-engine"
 /* A hard file-size limit below the 8 GiB default: 1 GB, a multiple of 1024 and 512. */
 #define LOW_HARD_FSIZE   (1000000000UL / 1024UL * 1024UL)
-/* What the child prints: the environment, then its limits, one per line. */
-#define PROBE_SCRIPT \
- "env; echo FSIZE=$(ulimit -f); echo CORE=$(ulimit -c); " \
- "if [ -r /proc/self/status ]; then grep '^NoNewPrivs' /proc/self/status; else echo NoNewPrivs:\tnone; fi"
+/* The option of this program that prints the no-new-privileges state of the
+   process that runs it (where the system has it by a call, not by a file). */
+#define NNP_STATUS_OPTION "--no-new-privs-status"
+#define PROBE_SCRIPT_MAX  (2 * PATH_MAX + 512)
+
+/* What the child prints: the environment, then its limits, one per line, then
+   the line "NoNewPrivs:<tab>0|1|none" (see nnp_probe_part). */
+static char probe_script[PROBE_SCRIPT_MAX];
+#define PROBE_SCRIPT probe_script
 
 static int fails;
+
+/**
+ * print_no_new_privs_status - The helper mode: say whether this process can gain privileges.
+ *
+ * Run as the contained child.  FreeBSD keeps the state in the kernel, read by
+ * procctl, and has no file that shows it.  Prints the one line
+ * "NoNewPrivs:<tab>1" or "NoNewPrivs:<tab>0", the same line Linux's
+ * /proc/self/status has.
+ * Return: the program's exit status.
+ */
+static int print_no_new_privs_status(void)
+{
+#if HAVE_DECL_PROC_NO_NEW_PRIVS_CTL
+	int status = 0;
+
+	if (procctl(P_PID, 0, PROC_NO_NEW_PRIVS_STATUS, &status) != 0)
+		return 1;
+	printf("NoNewPrivs:\t%d\n", status == PROC_NO_NEW_PRIVS_ENABLE);
+	return 0;
+#else
+	return 1;
+#endif
+}
+
+/**
+ * nnp_probe_part - The part of the probe script that prints the NoNewPrivs line.
+ * @self: this program's own path, for the helper mode.
+ *
+ * Where the system gives the state by a call (HAVE_DECL_PROC_NO_NEW_PRIVS_CTL)
+ * the child runs this program in the helper mode.  Elsewhere it reads the
+ * Linux line of /proc/self/status and says "none" when the system has no such
+ * line (a tab written by printf, not a raw tab in the script).
+ */
+static void nnp_probe_part(char *part, size_t n, const char *self)
+{
+#if HAVE_DECL_PROC_NO_NEW_PRIVS_CTL
+	snprintf(part, n, "'%s' " NNP_STATUS_OPTION, self);
+#else
+	(void)self;
+	snprintf(part, n, "if grep '^NoNewPrivs' /proc/self/status 2>/dev/null; then :; "
+	                  "else printf 'NoNewPrivs:\\tnone\\n'; fi");
+#endif
+}
+
+/** build_probe_script - Fill probe_script: the environment, the limits, the NoNewPrivs line. */
+static void build_probe_script(const char *self)
+{
+	char part[PROBE_SCRIPT_MAX / 2];
+
+	nnp_probe_part(part, sizeof part, self);
+	snprintf(probe_script, sizeof probe_script,
+	         "env; echo FSIZE=$(ulimit -f); echo CORE=$(ulimit -c); %s", part);
+}
+
+/**
+ * nnp_state - What the probe's NoNewPrivs line says.
+ * Return: 1 (cannot gain privileges), 0 (can), -1 (no such line: the system
+ * shows no state to read, so the rows that need it say SKIP).
+ */
+static int nnp_state(const char *out)
+{
+	if (strstr(out, "NoNewPrivs:\t1") != NULL)
+		return 1;
+	if (strstr(out, "NoNewPrivs:\t0") != NULL)
+		return 0;
+	return -1;
+}
+
+/**
+ * nnp_rows_run - Can the NoNewPrivs rows assert on this system?
+ * @row: the row's name, for the SKIP line.  @out: what the probe printed.
+ *
+ * Not where the product has no such protection (WPE_HAS_NO_NEW_PRIVS is 0:
+ * NetBSD, OpenBSD), and not where the probe found no state to read.  Each says
+ * SKIP and names the fact.
+ */
+static int nnp_rows_run(const char *row, const char *out)
+{
+#if WPE_HAS_NO_NEW_PRIVS
+	if (nnp_state(out) < 0) {
+		printf("SKIP: %s: the child printed no NoNewPrivs line (no /proc/self/status line, "
+		       "and no procctl status here)\n", row);
+		return 0;
+	}
+	return 1;
+#else
+	(void)out;
+	printf("SKIP: %s: this system has no no-new-privileges protection (WPE_HAS_NO_NEW_PRIVS is 0)\n", row);
+	return 0;
+#endif
+}
 
 static void chk(const char *what, long got, long want)
 {
@@ -731,10 +830,8 @@ static void test_a_contained_child_sees_the_built_environment_and_its_limits(voi
 		chk_true("its file-size limit is the documented 8 GiB", strstr(out, want) != NULL);
 	}
 	chk_true("it leaves no core file", strstr(out, "CORE=0") != NULL);
-	chk_true("it can never gain privileges (or the system has no /proc to say)",
-	         strstr(out, "NoNewPrivs:\t1") != NULL || strstr(out, "NoNewPrivs:\tnone") != NULL);
-	if (access("/proc/self/status", R_OK) == 0)
-		chk_true("on Linux the flag is set", strstr(out, "NoNewPrivs:\t1") != NULL);
+	if (nnp_rows_run("it can never gain privileges", out))
+		chk_true("it can never gain privileges", nnp_state(out) == 1);
 
 	setenv(WPE_CONTAIN_ENV_FSIZE, "64M", 1);
 	rc = run_through(&wpe_contain_tool, "echo FSIZE=$(ulimit -f)", NULL, out, sizeof out, &st);
@@ -761,8 +858,8 @@ static void test_off_keeps_the_environment_and_nothing_else(void)
 	chk("the probe runs under Off", rc, 0);
 	chk_true("the environment is still built", strstr(out, MARKER) == NULL);
 	chk_true("and the limit is left as the editor inherited it", inherited_fsize_shown(out));
-	if (access("/proc/self/status", R_OK) == 0)
-		chk_true("nor no_new_privs", strstr(out, "NoNewPrivs:\t0") != NULL);
+	if (nnp_rows_run("Off leaves no_new_privs unset", out))
+		chk_true("nor no_new_privs", nnp_state(out) == 0);
 	clear_settings();
 	clear_polluted_process_environment();
 }
@@ -965,8 +1062,15 @@ static void test_a_lower_inherited_hard_limit_is_kept_not_raised(void)
 	reset_notes();
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	char self[PATH_MAX];
+
+	if (argc > 1 && strcmp(argv[1], NNP_STATUS_OPTION) == 0)
+		return print_no_new_privs_status();
+	if (realpath(argv[0], self) == NULL)
+		snprintf(self, sizeof self, "%s", argv[0]);
+	build_probe_script(self);
 	test_watchdog_case("test_ai_contain (the assistant's children are held as "
 	                   "their profile says): a child's end never came", HANG_SECONDS);
 	WpeChildWakeOpen();

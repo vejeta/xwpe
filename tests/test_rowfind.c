@@ -2361,7 +2361,14 @@ static void check_context_path(void)
  * Only an engine that loses the text before a start has any (macOS, the
  * macsim build); the count is printed so a log shows the path ran, and the
  * macsim build fails on 0, since then the exemption was never needed and
- * the build proves nothing about it. */
+ * the build proves nothing about it.  It does so only where the owner hands
+ * word-boundary escapes to the engine (WPE_ROWFIND_BOUNDARY_SAFE): where the
+ * host's engine is measured unsafe for them (FreeBSD and NetBSD 10) the owner
+ * refuses those rows, there is nothing to count, and the build says SKIP and
+ * why.  The gate is the refusal itself and not the narrower one of the context
+ * path (check_context_path, which also needs the GNU spelling): OpenBSD's
+ * engine takes the other spellings, has no GNU escapes, and counts 242 rows,
+ * so there the assertion stays live. */
 static void check_unverifiable_rows(void)
 {
  if (REF_ENGINE_HAS_CONTEXT)
@@ -2369,6 +2376,12 @@ static void check_unverifiable_rows(void)
  printf("unverifiable: %d differential rows with a word-boundary escape (the reference engine loses the text before a start)\n",
         unverifiable_rows);
 #ifdef WPE_ROWFIND_MOCK_MACSIM
+ if (!WPE_ROWFIND_BOUNDARY_SAFE)
+ {
+  printf("SKIP: the macsim build counts no unverifiable row: the owner refuses word-boundary escapes here "
+         "(WPE_ROWFIND_BOUNDARY_SAFE is 0: configure measured the host's engine unsafe for them)\n");
+  return;
+ }
  checks++;
  if (unverifiable_rows == 0)
  {

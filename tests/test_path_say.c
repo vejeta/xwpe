@@ -10,6 +10,7 @@
  * checks read this system's real PATH_MAX.
  */
 #include <limits.h>
+#include "linebuf.h"
 #include <stdio.h>
 #include <string.h>
 

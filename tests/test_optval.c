@@ -14,6 +14,7 @@
  * sanitizer or by the guard check.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

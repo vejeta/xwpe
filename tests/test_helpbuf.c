@@ -12,6 +12,7 @@
  *    the line stays as it was.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

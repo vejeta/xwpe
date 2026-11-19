@@ -23,6 +23,7 @@
  *   drop           a wrapper that was dropped is not called
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 #include <X11/Xlib.h>
 

@@ -9,6 +9,7 @@
  * dangling link is judged by where the link leads, a loop is outside.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>

@@ -8,6 +8,7 @@
  * editor's mode.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 
 #include "../we_termrelease.h"

@@ -34,7 +34,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/utsname.h>
 #include <unistd.h>
+
+#include "linebuf.h"
 
 #define TEST_DIR_UNPRIVILEGED_ENV "WPE_TEST_UNPRIVILEGED"
 #define TEST_DIR_PATH_SIZE   4096
@@ -461,6 +464,110 @@ static int test_premise_special_bits_settable(const char *dir, mode_t bits)
  if (test_path_join(p, sizeof p, dir, "probe_bits") == 0)
   unlink(p);
  return(holds);
+}
+
+/** What the system says to a user who asks for special bits on a file in the test folder. */
+typedef enum
+{
+ TEST_BITS_HELD,                /* the file keeps every bit asked for */
+ TEST_BITS_REFUSED_FOR_FILES,   /* the sticky bit is refused to a regular file, a folder takes it */
+ TEST_BITS_REFUSED              /* refused or dropped for another reason */
+} TestBitsAnswer;
+
+/**
+ * test_folder_takes_bits - Ask the system whether a folder in DIR keeps these special bits.
+ *
+ * Makes a folder, asks for 0755 with BITS, reads the mode back and removes it.
+ * Together with the answer for a file it says whether a refusal is about the
+ * bit or about the kind of object the user asked it for.
+ *
+ * Return: 1 when every bit of BITS is on afterwards, else 0.
+ */
+static int test_folder_takes_bits(const char *dir, mode_t bits)
+{
+ char p[TEST_DIR_PATH_SIZE], why[TEST_DIR_WHY_SIZE];
+ int holds;
+
+ if (test_path_join(p, sizeof p, dir, "probe_folder_bits") != 0)
+  return(0);
+ if (mkdir(p, 0700) != 0)
+  return(0);
+ holds = (test_dir_mode_check(p, 0755 | bits, why, sizeof why) == 0);
+ rmdir(p);
+ return(holds);
+}
+
+/**
+ * test_special_bits_answer - Say which of three things the system does with these bits on a file.
+ *
+ * FreeBSD, NetBSD and OpenBSD refuse the sticky bit on a regular file to any
+ * user (EFTYPE) and give it to a folder.  A row that needs a file whose bit
+ * stands after a write cannot be made there, and that is a fact about the
+ * system, not about this user's privileges.  The answer is measured here in
+ * DIR, never read from the system's name: sticky is refused for files only
+ * when the file probe refuses it, the folder probe takes it, and the bits
+ * other than sticky (if any) are kept.
+ *
+ * Return: the answer.
+ */
+static TestBitsAnswer test_special_bits_answer(const char *dir, mode_t bits)
+{
+ mode_t others = bits & ~(mode_t)S_ISVTX;
+
+ if (test_premise_special_bits_settable(dir, bits))
+  return(TEST_BITS_HELD);
+ if ((bits & S_ISVTX) == 0)
+  return(TEST_BITS_REFUSED);
+ if (others != 0 && !test_premise_special_bits_settable(dir, others))
+  return(TEST_BITS_REFUSED);
+ if (test_premise_special_bits_settable(dir, S_ISVTX))
+  return(TEST_BITS_REFUSED);
+ if (!test_folder_takes_bits(dir, S_ISVTX))
+  return(TEST_BITS_REFUSED);
+ return(TEST_BITS_REFUSED_FOR_FILES);
+}
+
+/** test_system_name - What the system calls itself (uname -s), for a SKIP line that names the fact and the system. */
+static const char *test_system_name(void)
+{
+ static struct utsname u;
+
+ if (u.sysname[0] == '\0' && uname(&u) != 0)
+  return("this system");
+ return(u.sysname);
+}
+
+/**
+ * test_premise_special_bits - Say by name why a row about special bits cannot run here.
+ * @dir: the test folder.
+ * @bits: the special bits the row's file must keep.
+ * @row: the row's name, for the line.
+ * @missing: what the row needs, for a refusal that is about the user.
+ *
+ * A system that refuses the sticky bit to every regular file (the three BSDs)
+ * has no file whose bit stands after a write, so a row that needs one is a SKIP
+ * that names the fact and the system, whatever WPE_TEST_UNPRIVILEGED says: the
+ * flag means modes are honoured, not that every kernel gives every bit to a
+ * file.  Any other refusal is test_premise's: a SKIP, or a counted FAIL in an
+ * unprivileged run.  A row that is not about a bit standing (setuid and setgid,
+ * where the user gets them) calls test_premise with the probe as before.
+ *
+ * Return: 1 when the file keeps the bits, so the caller can write
+ * "if (!test_premise_special_bits(...)) return;".
+ */
+static int test_premise_special_bits(const char *dir, mode_t bits, const char *row, const char *missing)
+{
+ TestBitsAnswer answer = test_special_bits_answer(dir, bits);
+
+ if (answer == TEST_BITS_HELD)
+  return(1);
+ if (answer == TEST_BITS_REFUSED_FOR_FILES)
+ {
+  test_dir_say("SKIP: %s: %s refuses the sticky bit on a regular file to this user (a folder takes it), "
+               "so no file keeps a bit after a write here\n", row, test_system_name());
+  return(0);
+ }
+ return(test_premise(0, row, missing));
 }
 
 /**

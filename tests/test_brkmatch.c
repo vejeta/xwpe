@@ -32,6 +32,7 @@
  * tests/run-tests.sh --asan runs on this unit as a local gate.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

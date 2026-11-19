@@ -10,6 +10,7 @@
  * library); the test is what proves those numbers right.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 
 #include "../we_keymap.h"

@@ -9,6 +9,7 @@
  * or a resize that is lost because a draw ran another one.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

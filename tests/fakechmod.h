@@ -6,7 +6,7 @@
  * in, so this header defines fchmod and chmod in the test program, where they
  * take the place of the C library's for every caller linked into it (the
  * editor's files compiled into the test included), and reach the library's
- * through dlsym(RTLD_NEXT).  Both faces are the system's own:
+ * through the one resolver of tests/interpose.h.  Both faces are the system's own:
  *
  *	refuse-sgid	a call that asks for S_ISGID fails with EPERM, nothing changes
  *	drop-sgid	the call is made without S_ISGID and returns 0
@@ -46,6 +46,7 @@
 #include <unistd.h>
 
 #include "../we_platform.h"
+#include "interpose.h"
 
 #define FAKECHMOD_ENV "XWPE_TEST_FAKE_FCHMOD"
 
@@ -53,8 +54,12 @@
    after, so the read-back of the mode that follows fails; a chmod by
    descriptor succeeds and the descriptor is closed right after, so the
    read-back through it fails the same way. */
+/* FAKECHMOD_REFUSE_FILES: a change that asks for the given bits on a regular
+   file fails with EFTYPE (EPERM where the system has no EFTYPE), and the same
+   change on a folder goes through: what FreeBSD, NetBSD and OpenBSD say to a
+   user who asks for the sticky bit on a file. */
 typedef enum { FAKECHMOD_OFF, FAKECHMOD_REFUSE, FAKECHMOD_DROP, FAKECHMOD_VANISH,
-               FAKECHMOD_LCHMOD } FakeChmodFace;
+               FAKECHMOD_LCHMOD, FAKECHMOD_REFUSE_FILES } FakeChmodFace;
 
 typedef int (*fakechmod_fchmod_fn)(int, mode_t);
 typedef int (*fakechmod_chmod_fn)(const char *, mode_t);
@@ -117,6 +122,9 @@ static char fakechmod_fifo_name[512];   /* the name whose FIFO is swapped just b
 static ino_t fakechmod_fifo_want;       /* the inode number the new FIFO is to hold */
 static int fakechmod_fifo_fired;        /* the swap was made */
 static int fakechmod_fifo_reused;       /* the new FIFO holds the wanted number */
+static int fakechmod_fifo_twin_mtime_was_equal; /* the new FIFO's modification time equalled the old one's before it was set apart */
+/** Seconds between the old FIFO's modification time and the twin's. */
+#define FAKECHMOD_TWIN_APART_S 1
 
 /**
  * fakechmod_swap_fifo_reusing_at - Put a new FIFO with a given inode number
@@ -165,16 +173,49 @@ static void fakechmod_fifo_make_reusing(const char *path)
  }
 }
 
+/**
+ * fakechmod_fifo_set_twin_apart - Set the new FIFO's modification time one second away from the old one's.
+ * @path: the name the new FIFO holds.
+ * @old: what the old FIFO's stat said before it was removed.
+ *
+ * A twin made in the same tick of the file system's clock carries the same
+ * modification time, size and owner as the FIFO it replaces, and a system with
+ * no birth time then cannot tell them apart: that is the documented limit of
+ * such a system, not what the row is about.  The row is about "another FIFO
+ * with the old number took the name", so the twin differs in a member on every
+ * system.  fakechmod_fifo_twin_mtime_was_equal records whether it already
+ * differed, for the log.
+ */
+static void fakechmod_fifo_set_twin_apart(const char *path, const struct stat *old)
+{
+ struct stat twin;
+ struct timespec twin_mtim, old_mtim, apart[2];
+
+ if (lstat(path, &twin) != 0)
+  return;
+ twin_mtim = WPE_STAT_MTIM(&twin);
+ old_mtim = WPE_STAT_MTIM(old);
+ fakechmod_fifo_twin_mtime_was_equal = (twin_mtim.tv_sec == old_mtim.tv_sec && twin_mtim.tv_nsec == old_mtim.tv_nsec);
+ apart[0] = old_mtim;
+ apart[0].tv_sec += FAKECHMOD_TWIN_APART_S;
+ apart[1] = apart[0];
+ if (utimensat(AT_FDCWD, path, apart, AT_SYMLINK_NOFOLLOW) != 0)
+  perror("fakechmod twin mtime");
+}
+
 /** fakechmod_fifo_fire - Make the armed FIFO swap, when this is its name. */
 static void fakechmod_fifo_fire(const char *path)
 {
+ struct stat old;
+
  if (fakechmod_fifo_name[0] == '\0' || strcmp(path, fakechmod_fifo_name) != 0)
   return;
  fakechmod_fifo_name[0] = '\0';
  fakechmod_fifo_fired = 1;
- if (unlink(path) != 0)
+ if (lstat(path, &old) != 0 || unlink(path) != 0)
   return;
  fakechmod_fifo_make_reusing(path);
+ fakechmod_fifo_set_twin_apart(path, &old);
 }
 
 /** fakechmod_swap_fire - Make the armed swap, when this is its name. */
@@ -259,6 +300,24 @@ static int fakechmod_errno_after;       /* what every later refused call fails w
 static int fakechmod_refusals;          /* refused calls since fakechmod_set */
 
 /**
+ * fakechmod_first_errno - The errno a face's first refused call fails with.
+ * @face: the face being set.
+ *
+ * EPERM for the faces that refuse a bit to a user outside the file's group;
+ * EFTYPE, where the system has it, for the face that refuses a bit to every
+ * regular file.
+ */
+static int fakechmod_first_errno(FakeChmodFace face)
+{
+#ifdef EFTYPE
+ if (face == FAKECHMOD_REFUSE_FILES)
+  return(EFTYPE);
+#endif
+ (void)face;
+ return(EPERM);
+}
+
+/**
  * fakechmod_refuse - Make the calling chmod or fchmod fail as a refused one.
  *
  * The first refusal is EPERM (the BSDs' answer for a setgid bit of a group the
@@ -298,9 +357,41 @@ static void fakechmod_set(FakeChmodFace face, mode_t bits)
  fakechmod_face = face;
  fakechmod_bits = bits;
  fakechmod_ready = 1;
- fakechmod_errno = EPERM;
+ fakechmod_errno = fakechmod_first_errno(face);
  fakechmod_errno_after = 0;
  fakechmod_refusals = 0;
+}
+
+/**
+ * fakechmod_asks_bits_of_a_file - Is this change the one FAKECHMOD_REFUSE_FILES refuses?
+ * @mode: the mode asked for.
+ * @st: what the system says of the target, or NULL when it cannot be read.
+ *
+ * Return: 1 when the face is that one, @mode holds a bit it names, and the
+ * target is a regular file; a folder, a link and an unreadable target are
+ * let through.
+ */
+static int fakechmod_asks_bits_of_a_file(mode_t mode, const struct stat *st)
+{
+ if (fakechmod_face != FAKECHMOD_REFUSE_FILES || (mode & fakechmod_bits) == 0)
+  return(0);
+ return(st != NULL && S_ISREG(st->st_mode));
+}
+
+/** fakechmod_file_by_descriptor - The state of the file FD names, or NULL. */
+static const struct stat *fakechmod_file_by_descriptor(int fd, struct stat *st)
+{
+ if (fstat(fd, st) != 0)
+  return(NULL);
+ return(st);
+}
+
+/** fakechmod_file_by_name - The state of the entry DIRFD and PATH name, links not followed when FLAGS say so, or NULL. */
+static const struct stat *fakechmod_file_by_name(int dirfd, const char *path, int flags, struct stat *st)
+{
+ if (fstatat(dirfd, path, st, flags & AT_SYMLINK_NOFOLLOW) != 0)
+  return(NULL);
+ return(st);
 }
 
 /**
@@ -323,34 +414,28 @@ static void fakechmod_arm_from_env(void)
   fakechmod_set(FAKECHMOD_REFUSE, S_ISGID);
  else if (strcmp(v, "drop-sgid") == 0)
   fakechmod_set(FAKECHMOD_DROP, S_ISGID);
+ else if (strcmp(v, "refuse-sticky-files") == 0)
+  fakechmod_set(FAKECHMOD_REFUSE_FILES, S_ISVTX);
  else
  {
-  fprintf(stderr, "%s=%s: not a face (refuse-sgid or drop-sgid)\n", FAKECHMOD_ENV, v);
+  fprintf(stderr, "%s=%s: not a face (refuse-sgid, drop-sgid or refuse-sticky-files)\n", FAKECHMOD_ENV, v);
   abort();
  }
-}
-
-static void *fakechmod_next(const char *name)
-{
- void *fn = dlsym(RTLD_NEXT, name);
-
- if (fn == NULL)
- {
-  fprintf(stderr, "fakechmod: the C library has no %s to pass on to\n", name);
-  abort();
- }
- return(fn);
 }
 
 int fchmod(int fd, mode_t mode)
 {
  static fakechmod_fchmod_fn real;
+ struct stat st;
+ WPE_HOOK_GUARD(fchmod);
 
  fakechmod_arm_from_env();
  if (real == NULL)
-  *(void **)&real = fakechmod_next("fchmod");
+  real = WPE_REAL(fchmod);
  fakechmod_by_fd++;
  if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
+  return(fakechmod_refuse());
+ if (fakechmod_asks_bits_of_a_file(mode, fakechmod_file_by_descriptor(fd, &st)))
   return(fakechmod_refuse());
  if (fakechmod_face == FAKECHMOD_DROP)
   mode &= ~fakechmod_bits;
@@ -368,13 +453,17 @@ int fchmod(int fd, mode_t mode)
 int chmod(const char *path, mode_t mode)
 {
  static fakechmod_chmod_fn real;
+ struct stat st;
+ WPE_HOOK_GUARD(chmod);
 
  fakechmod_arm_from_env();
  if (real == NULL)
-  *(void **)&real = fakechmod_next("chmod");
+  real = WPE_REAL(chmod);
  fakechmod_by_name++;
  fakechmod_swap_fire(path);
  if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
+  return(fakechmod_refuse());
+ if (fakechmod_asks_bits_of_a_file(mode, fakechmod_file_by_name(AT_FDCWD, path, 0, &st)))
   return(fakechmod_refuse());
  if (fakechmod_face == FAKECHMOD_DROP)
   mode &= ~fakechmod_bits;
@@ -392,10 +481,12 @@ int chmod(const char *path, mode_t mode)
 int fchmodat(int dirfd, const char *path, mode_t mode, int flags)
 {
  static fakechmod_fchmodat_fn real;
+ struct stat st;
+ WPE_HOOK_GUARD(fchmodat);
 
  fakechmod_arm_from_env();
  if (real == NULL)
-  *(void **)&real = fakechmod_next("fchmodat");
+  real = WPE_REAL(fchmodat);
  fakechmod_by_name++;
  fakechmod_last_rc = -1;
  fakechmod_swap_fire(path);
@@ -405,6 +496,8 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags)
   return(0);
  }
  if (fakechmod_face == FAKECHMOD_REFUSE && (mode & fakechmod_bits))
+  return(fakechmod_last_rc = fakechmod_refuse());
+ if (fakechmod_asks_bits_of_a_file(mode, fakechmod_file_by_name(dirfd, path, flags, &st)))
   return(fakechmod_last_rc = fakechmod_refuse());
  if (fakechmod_face == FAKECHMOD_DROP)
   mode &= ~fakechmod_bits;
@@ -426,9 +519,10 @@ int statx(int dirfd, const char *path, int flags, unsigned int mask, struct stat
 {
  static fakechmod_statx_fn real;
  int rc;
+ WPE_HOOK_GUARD(statx);
 
  if (real == NULL)
-  *(void **)&real = fakechmod_next("statx");
+  real = WPE_REAL(statx);
  rc = real(dirfd, path, flags, mask, buf);
  if (fakechmod_after == FAKECHMOD_AFTER_WAIT_LOOK && dirfd == AT_FDCWD)
   fakechmod_after_saw_look(path);

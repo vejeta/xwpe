@@ -32,6 +32,7 @@
 #include "../we_write.h"
 #include "testdir.h"
 #include "seen_rows.h"
+#include "interpose.h"
 #include "fakechmod.h"
 #include "test_watchdog.h"
 
@@ -475,9 +476,9 @@ static void test_a_text_written_over_a_setgid_file_of_ours_drops_the_bit(void)
  for (i = 0; i < sizeof modes / sizeof modes[0]; i++)
  {
   make_dir();
-  if (!test_premise(test_premise_special_bits_settable(dir, modes[i] & 07000),
-                    "a text over a file with a special bit drops it",
-                    "this user cannot set the bit in the test folder"))
+  if (!test_premise_special_bits(dir, modes[i] & 07000,
+                                 "a text over a file with a special bit drops it",
+                                 "this user cannot set the bit in the test folder"))
    continue;
   put_file("list.txt", "old\n", modes[i]);
   path_of(p, sizeof p, "list.txt");
@@ -502,8 +503,8 @@ static void test_a_text_over_a_file_whose_bit_cannot_be_dropped_says_it_stays(vo
  char p[512], say[1024];
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "a text says a bit stays",
-                   "this user cannot set the sticky bit in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISVTX, "a text says a bit stays",
+                                "this user cannot set the sticky bit in the test folder"))
   return;
  put_file("list.txt", "old\n", 01664);
  path_of(p, sizeof p, "list.txt");
@@ -896,7 +897,7 @@ static write_fn real_write(void)
  static write_fn fn;
 
  if (fn == NULL)
-  *(void **)&fn = dlsym(RTLD_NEXT, "write");
+  fn = WPE_REAL(write);
  return(fn);
 }
 
@@ -905,13 +906,14 @@ static unlink_fn real_unlink(void)
  static unlink_fn fn;
 
  if (fn == NULL)
-  *(void **)&fn = dlsym(RTLD_NEXT, "unlink");
+  fn = WPE_REAL(unlink);
  return(fn);
 }
 
 ssize_t write(int fd, const void *buf, size_t n)
 {
  struct stat st;
+ WPE_HOOK_GUARD(write);
 
  if (watch_writes && fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
  {
@@ -923,6 +925,7 @@ ssize_t write(int fd, const void *buf, size_t n)
 
 int unlink(const char *path)
 {
+ WPE_HOOK_GUARD(unlink);
  int r = real_unlink()(path);
 
  if (r == 0 && plant_at[0] != '\0' && strcmp(path, plant_at) == 0)
@@ -977,15 +980,45 @@ static int owner_fake_takes(const char *name)
    real call is fstatat, which every system has.  A row proves the fake took
    (owner_stat_fake_takes) and skips by name when it did not. */
 static char owner_stat_fake_path[512];
+static mode_t owner_stat_fake_bits;     /* special bits the fake adds to the mode stat reports */
+static int owner_stat_fake_other_owner; /* 1: the file looks owned by another user */
 
-static void owner_stat_fake_arm(const char *name)
+/**
+ * owner_stat_fake_arm_as - Make stat tell a different story about one file.
+ * @name: the file of the test folder; @bits: special bits stat reports on top
+ * of the real mode (0 for none); @other_owner: 1 to make it look owned by
+ * another user.
+ *
+ * Where the system refuses the sticky bit to a regular file, the question the
+ * editor asks before it replaces a file ("a bit stays") is still made from what
+ * stat says, so a row proves that question by having stat say the bit is there.
+ */
+static void owner_stat_fake_arm_as(const char *name, mode_t bits, int other_owner)
 {
  path_of(owner_stat_fake_path, sizeof owner_stat_fake_path, name);
+ owner_stat_fake_bits = bits;
+ owner_stat_fake_other_owner = other_owner;
+}
+
+/* A file that looks owned by another user, with its real mode. */
+static void owner_stat_fake_arm(const char *name)
+{
+ owner_stat_fake_arm_as(name, 0, 1);
 }
 
 static void owner_stat_fake_disarm(void)
 {
  owner_stat_fake_path[0] = '\0';
+ owner_stat_fake_bits = 0;
+ owner_stat_fake_other_owner = 0;
+}
+
+/* What the armed fake changes in the answer for its file. */
+static void owner_stat_fake_apply(struct stat *st)
+{
+ if (owner_stat_fake_other_owner)
+  st->st_uid = (uid_t)(geteuid() + 1);
+ st->st_mode |= owner_stat_fake_bits;
 }
 
 int stat(const char *path, struct stat *st)
@@ -993,11 +1026,11 @@ int stat(const char *path, struct stat *st)
  int r = fstatat(AT_FDCWD, path, st, 0);
 
  if (r == 0 && owner_stat_fake_path[0] != '\0' && strcmp(path, owner_stat_fake_path) == 0)
-  st->st_uid = (uid_t)(geteuid() + 1);
+  owner_stat_fake_apply(st);
  return(r);
 }
 
-/* Did the armed fake change what stat says about the file NAME? */
+/* Did the armed fake change what stat says about the file NAME's owner? */
 static int owner_stat_fake_takes(const char *name)
 {
  struct stat st;
@@ -1005,6 +1038,16 @@ static int owner_stat_fake_takes(const char *name)
 
  path_of(p, sizeof p, name);
  return(stat(p, &st) == 0 && st.st_uid != geteuid());
+}
+
+/* Did the armed fake make stat report all of BITS on the file NAME? */
+static int owner_stat_fake_reports(const char *name, mode_t bits)
+{
+ struct stat st;
+ char p[512];
+
+ path_of(p, sizeof p, name);
+ return(stat(p, &st) == 0 && (st.st_mode & bits) == bits);
 }
 
 /* fsync, watched: the calls on regular files are counted, the special bits
@@ -1032,9 +1075,10 @@ int fdatasync(int fd)
 {
  static fsync_fn real;
  struct stat st;
+ WPE_HOOK_GUARD(fdatasync);
 
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "fdatasync");
+  real = WPE_REAL(fdatasync);
  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
   fdatasync_calls++;
  return(real(fd));
@@ -1044,9 +1088,10 @@ int fsync(int fd)
 {
  static fsync_fn real;
  struct stat st;
+ WPE_HOOK_GUARD(fsync);
 
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "fsync");
+  real = WPE_REAL(fsync);
  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
  {
   if (fsync_calls++ == 0)
@@ -1093,9 +1138,10 @@ static int  open_fail_with;
 static int open_hooked(const char *path, int flags, mode_t mode)
 {
  static open_fn real;
+ WPE_HOOK_GUARD(open);
 
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "open");
+  real = WPE_REAL(open);
  if (open_swap_at[0] != '\0' && (flags & O_ACCMODE) == O_RDONLY && strcmp(path, open_swap_at) == 0)
  {
   open_swap_at[0] = '\0';
@@ -1181,9 +1227,10 @@ static void (*dup_fail_action)(void); /* what happens to the folder as that dupl
 int ftruncate(int fd, off_t length)
 {
  static ftruncate_fn real;
+ WPE_HOOK_GUARD(ftruncate);
 
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "ftruncate");
+  real = WPE_REAL(ftruncate);
  if (ftruncate_fails)
  {
   errno = EPERM;
@@ -1205,9 +1252,10 @@ int fcntl(int fd, int cmd, ...)
  static fcntl_fn real;
  va_list ap;
  void *arg;
+ WPE_HOOK_GUARD(fcntl);
 
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "fcntl");
+  real = WPE_REAL(fcntl);
  va_start(ap, cmd);
  arg = va_arg(ap, void *);
  va_end(ap);
@@ -1237,9 +1285,10 @@ static int fstat_fake_hits;
 int fstat(int fd, struct stat *st)
 {
  static fstat_fn real;
+ WPE_HOOK_GUARD(fstat);
 
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "fstat");
+  real = WPE_REAL(fstat);
  if (fstat_fails_after_refusal && fakechmod_refusals > 0)
  {
   fstat_fake_hits++;
@@ -1498,8 +1547,14 @@ static void test_a_save_names_the_bit_the_system_refuses(void)
  chk_has("a dropped bit has its reason", say, "the system cleared it");
 }
 
+static int the_system_clears_setgid_on_write_of(mode_t before, mode_t after);
+
 /* The nine permission bits refused after the text is on disk is a mode that
-   did not change, not a lost save. */
+   did not change, not a lost save.  Whether the file keeps its setgid bit
+   through the write is the file system's (NetBSD clears it on ffs and keeps it
+   on tmpfs, where /tmp is), so the row asks the folder it runs in: where the
+   write clears it the sentence names the bit, where the write keeps it the bit
+   is on and the sentence says nothing false. */
 static void test_a_save_whose_modes_are_all_refused_is_still_written(void)
 {
  WpeWriteOutcome o;
@@ -1519,7 +1574,13 @@ static void test_a_save_whose_modes_are_all_refused_is_still_written(void)
  chk_int("written", o.status, WPE_WRITE_WRITTEN);
  chk_has("file written", get_file("t.c", buf, sizeof buf), "new\n");
  save_sentence(&o, say, sizeof say);
- chk_has("the bit is named", say, "setgid bit was not kept");
+ if (the_system_clears_setgid_on_write_of(02755, 0755))
+  chk_has("the bit is named", say, "setgid bit was not kept");
+ else
+ {
+  chk_int("the file system kept the bit", mode_of("t.c"), 02755);
+  chk_int("it says nothing", (long)strlen(say), 0);
+ }
 }
 
 /* Does this system clear a setgid bit when a file of this mode is written,
@@ -1580,9 +1641,9 @@ static void a_save_on_a_sticky_file_says_nothing_false(void)
  char say[1024];
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX),
-                   "a save on a file that keeps its bit says nothing false",
-                   "this user cannot set the bit in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISVTX,
+                                "a save on a file that keeps its bit says nothing false",
+                                "this user cannot set the bit in the test folder"))
   return;
  save_with_every_chmod_refused(01664, &o, say, sizeof say);
  chk_int("the mode is as it was", mode_of("t.c"), 01664);
@@ -1675,8 +1736,8 @@ static void test_a_block_write_onto_a_sticky_file_that_cannot_be_chmoded_says_it
  char p[512], say[1024];
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "a copy says a bit stays",
-                   "this user cannot set the sticky bit in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISVTX, "a copy says a bit stays",
+                                "this user cannot set the sticky bit in the test folder"))
   return;
  put_file("blk.txt", "old\n", 01664);
  f = window_of_file_with_mode(0664);
@@ -1708,9 +1769,9 @@ static void test_a_copy_over_02644_and_over_01644_gets_no_bit(void)
  for (i = 0; i < sizeof modes / sizeof modes[0]; i++)
  {
   make_dir();
-  if (!test_premise(test_premise_special_bits_settable(dir, modes[i] & 07000),
-                    "a copy over 02644 and 01644 gets no bit",
-                    "this user cannot set the bit in the test folder"))
+  if (!test_premise_special_bits(dir, modes[i] & 07000,
+                                 "a copy over 02644 and 01644 gets no bit",
+                                 "this user cannot set the bit in the test folder"))
    continue;
   put_file("blk.txt", "old\n", modes[i]);
   f = window_of_file_with_mode(0644);
@@ -1724,34 +1785,92 @@ static void test_a_copy_over_02644_and_over_01644_gets_no_bit(void)
  }
 }
 
+/**
+ * put_file_with_standing_bits - Put the file a prediction row asks about, with
+ * its special bits as far as the system allows them on a file.
+ * @name, @text, @mode: as put_file.
+ * @row: the row's name, for the line it prints.
+ * @reported: receives the special bits the system would not keep on the file,
+ * which the row then has stat report (owner_stat_fake_arm_as); 0 where the
+ * file really has every bit.
+ *
+ * The question the editor asks before it replaces a file is made from what
+ * stat says about it.  Where the system keeps the bits (Linux) the row uses a
+ * real file.  Where it refuses the sticky bit to a regular file (the BSDs) the
+ * file is made without that bit and stat says it is there, so the row still
+ * proves the prediction instead of dropping out; the line names the system.
+ *
+ * Return: 1 when the row can go on, 0 when it skipped or failed by name.
+ */
+static int put_file_with_standing_bits(const char *name, const char *text, mode_t mode,
+                                       const char *row, mode_t *reported)
+{
+ TestBitsAnswer answer = test_special_bits_answer(dir, mode & 07000);
+
+ *reported = 0;
+ if (answer == TEST_BITS_HELD)
+ {
+  put_file(name, text, mode);
+  return(1);
+ }
+ if (answer == TEST_BITS_REFUSED_FOR_FILES)
+ {
+  *reported = mode & S_ISVTX;
+  put_file(name, text, mode & ~(mode_t)S_ISVTX);
+  test_dir_say("NOTE: %s: %s refuses the sticky bit on a regular file, so stat reports it for this row\n",
+               row, test_system_name());
+  return(1);
+ }
+ return(test_premise(0, row, "this user cannot set the special bits in the test folder"));
+}
+
+/**
+ * arm_stat_fake_for_prediction - Arm the stat fake for a prediction row and say whether it took.
+ * @name: the file; @bits: what stat must report on it; @other_owner: 1 for a file of another user.
+ * @row: the row's name for the SKIP line.
+ *
+ * Return: 1 when stat answers as armed, 0 (disarmed, SKIP printed) when this C
+ * library does not route the call through the fake.
+ */
+static int arm_stat_fake_for_prediction(const char *name, mode_t bits, int other_owner, const char *row)
+{
+ int bits_took, owner_took;
+
+ owner_stat_fake_arm_as(name, bits, other_owner);
+ bits_took = (bits == 0) || owner_stat_fake_reports(name, bits);
+ owner_took = (other_owner == 0) || owner_stat_fake_takes(name);
+ if (test_observation(bits_took && owner_took, row, "stat is not interposable in this C library"))
+  return(1);
+ owner_stat_fake_disarm();
+ return(0);
+}
+
 /* @scenario SC-write-owner-E-05: the overwrite question says a bit stays on a
    file the user does not own.  Played by the stat fake (the file looks owned
    by another user), which a row proves took and skips by name otherwise;
-   root may change any mode, so there is no such file for it. */
+   root may change any mode, so there is no such file for it.  Where the system
+   refuses the sticky bit to a file (the BSDs) the fake also reports the bit,
+   for a file of ours and a file of another user alike. */
 static void test_the_question_says_a_bit_stays_on_a_file_we_do_not_own(void)
 {
- mode_t drops = 0, stays = 0;
+ mode_t drops = 0, stays = 0, reported;
  char p[512];
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "the question says a bit stays",
-                   "this user cannot set the sticky bit in the test folder"))
+ if (!put_file_with_standing_bits("s.c", "x\n", 01644, "the question says a bit stays", &reported))
   return;
- put_file("s.c", "x\n", 01644);
  path_of(p, sizeof p, "s.c");
+ if (!arm_stat_fake_for_prediction("s.c", reported, 0, "the question says a bit stays"))
+  return;
  wpe_write_overwrite_bits(p, NULL, &drops, &stays);
+ owner_stat_fake_disarm();
  chk_int("a file of ours: the bit drops", (long)drops, (long)S_ISVTX);
  chk_int("a file of ours: nothing stays", (long)stays, 0);
  if (!test_observation(geteuid() != 0, "the question says a bit stays",
                        "root may change any mode: no file it does not own"))
   return;
- owner_stat_fake_arm("s.c");
- if (!test_observation(owner_stat_fake_takes("s.c"), "the question says a bit stays",
-                       "stat is not interposable in this C library"))
- {
-  owner_stat_fake_disarm();
+ if (!arm_stat_fake_for_prediction("s.c", reported, 1, "the question says a bit stays"))
   return;
- }
  wpe_write_overwrite_bits(p, NULL, &drops, &stays);
  owner_stat_fake_disarm();
  chk_int("another user's file: nothing drops", (long)drops, 0);
@@ -1762,32 +1881,28 @@ static void test_the_question_says_a_bit_stays_on_a_file_we_do_not_own(void)
 /* @scenario SC-write-owner-E-06: of a file the user does not own, the system
    clears setuid and setgid on a write and only the sticky bit stays, so the
    question says the first two drop and only the third stays.  Red when it
-   predicts every bit stays (or every bit drops) by the owner alone. */
+   predicts every bit stays (or every bit drops) by the owner alone.  Where
+   the system refuses the sticky bit to a file (the BSDs) the file is made with
+   the bits it takes and stat reports the rest, so the setuid and setgid half
+   runs for real there. */
 static void test_the_question_for_a_file_we_do_not_own_says_only_sticky_stays(void)
 {
  static const mode_t modes[] = { 06644, 05644, 07644 };
- mode_t drops = 0, stays = 0;
+ mode_t drops = 0, stays = 0, reported;
  char p[512];
  size_t i;
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, 07000), "only the sticky bit stays",
-                   "this user cannot set the three special bits in the test folder"))
-  return;
  if (!test_observation(geteuid() != 0, "only the sticky bit stays",
                        "root may change any mode: no file it does not own"))
   return;
  path_of(p, sizeof p, "o.c");
  for (i = 0; i < sizeof modes / sizeof modes[0]; i++)
  {
-  put_file("o.c", "x\n", modes[i]);
-  owner_stat_fake_arm("o.c");
-  if (!test_observation(owner_stat_fake_takes("o.c"), "only the sticky bit stays",
-                        "stat is not interposable in this C library"))
-  {
-   owner_stat_fake_disarm();
+  if (!put_file_with_standing_bits("o.c", "x\n", modes[i], "only the sticky bit stays", &reported))
    return;
-  }
+  if (!arm_stat_fake_for_prediction("o.c", reported, 1, "only the sticky bit stays"))
+   return;
   wpe_write_overwrite_bits(p, NULL, &drops, &stays);
   owner_stat_fake_disarm();
   chk_int("setuid and setgid drop", (long)drops, (long)(modes[i] & (S_ISUID | S_ISGID)));
@@ -1836,8 +1951,8 @@ static void test_a_save_that_lost_one_bit_and_kept_another_names_only_the_lost(v
  char say[1024];
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISGID | S_ISVTX), "a partial loss names one bit",
-                   "this user cannot set setgid and sticky in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISGID | S_ISVTX, "a partial loss names one bit",
+                                "this user cannot set setgid and sticky in the test folder"))
   return;
  if (!test_observation(the_system_clears_setgid_on_write(), "a partial loss names one bit",
                        "this user keeps setgid through a write (CAP_FSETID)"))
@@ -1855,6 +1970,38 @@ static void test_a_save_that_lost_one_bit_and_kept_another_names_only_the_lost(v
          strcmp(say, "t.c written, but the setgid bit was not kept: Operation not permitted."), 0);
 }
 
+/* E-08 again, with a bit that stands that every system can give a file:
+   06765 with every call refused.  Where a write clears setuid and keeps
+   setgid (Linux for a mode with no group execute, NetBSD on tmpfs) the file
+   ends 02765, only setuid is recorded and the sentence names setuid and not
+   setgid.  The row asks the folder it runs in (one probe of exactly this mode)
+   and skips by name where the system does something else. */
+static void test_a_save_that_lost_setuid_and_kept_setgid_names_only_setuid(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char say[1024];
+
+ make_dir();
+ if (!test_premise_special_bits(dir, S_ISUID | S_ISGID, "a partial loss names setuid",
+                                "this user cannot set setuid and setgid in the test folder"))
+  return;
+ if (!test_observation(the_system_clears_setgid_on_write_of(06765, 02765), "a partial loss names setuid",
+                       "a write here does not clear setuid and keep setgid on a 06765 file"))
+  return;
+ put_file("t.c", "old\n", 06765);
+ f = window_of_file_with_mode(06765);
+ set_rows("new\n");
+ fakechmod_set(FAKECHMOD_REFUSE, 07777);
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("setgid is still on", mode_of("t.c"), 02765);
+ chk_int("only setuid is recorded", (long)o.file_kept.lost, (long)S_ISUID);
+ save_sentence(&o, say, sizeof say);
+ chk_has("the sentence names setuid", say, "setuid bit was not kept");
+ chk_lacks("the sentence does not name setgid", say, "setgid");
+}
+
 /* @scenario SC-write-owner-E-09: with no descriptor to give the bits back on,
    the file is still read: a bit the text left on the file is not said lost.
    The duplication of the descriptor for the bits is made to fail.  A sticky file is
@@ -1867,8 +2014,8 @@ static void test_a_save_with_no_descriptor_does_not_call_a_standing_bit_lost(voi
  int took;
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "no descriptor, a bit that stands",
-                   "this user cannot set the sticky bit in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISVTX, "no descriptor, a bit that stands",
+                                "this user cannot set the sticky bit in the test folder"))
   return;
  put_file("t.c", "old\n", 01664);
  f = window_of_file_with_mode(01664);
@@ -1899,8 +2046,8 @@ static void test_a_restore_does_not_call_a_standing_bit_lost(void)
  char *old = big(1024, 'o'), say[2048];
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "a restore leaves a standing bit unsaid",
-                   "this user cannot set the sticky bit in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISVTX, "a restore leaves a standing bit unsaid",
+                                "this user cannot set the sticky bit in the test folder"))
   return;
  put_file("t.c", old, 01664);
  f = window_of_file_with_mode(0664);
@@ -1926,8 +2073,8 @@ static void test_a_stream_does_not_name_a_bit_the_file_lost_before_the_close(voi
  FILE *fp;
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "a stream names only a bit that stands",
-                   "this user cannot set the sticky bit in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISVTX, "a stream names only a bit that stands",
+                                "this user cannot set the sticky bit in the test folder"))
   return;
  put_file("s.txt", "old\n", 01664);
  path_of(p, sizeof p, "s.txt");
@@ -1960,8 +2107,8 @@ static void test_a_save_whose_file_cannot_be_read_back_says_it_may_not_have_kept
  int took;
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "an unreadable file: the bit may not be kept",
-                   "this user cannot set the sticky bit in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISVTX, "an unreadable file: the bit may not be kept",
+                                "this user cannot set the sticky bit in the test folder"))
   return;
  put_file("t.c", "old\n", 01664);
  f = window_of_file_with_mode(01664);
@@ -1993,8 +2140,8 @@ static void test_a_save_with_no_descriptor_and_no_read_says_it_may_not_have_kept
  int took, dup_took;
 
  make_dir();
- if (!test_premise(test_premise_special_bits_settable(dir, S_ISVTX), "no descriptor and no read: the bit may not be kept",
-                   "this user cannot set the sticky bit in the test folder"))
+ if (!test_premise_special_bits(dir, S_ISVTX, "no descriptor and no read: the bit may not be kept",
+                                "this user cannot set the sticky bit in the test folder"))
   return;
  put_file("t.c", "old\n", 01664);
  f = window_of_file_with_mode(01664);
@@ -5323,13 +5470,33 @@ static void reuse_case_of_files(SeenRowsCase *pc, const char *old_text, void (*l
  pc->new_ctx = (void *)new_text;
 }
 
+/**
+ * question_of_a_replaced_file - The question a Save asks about a file that took the window's number.
+ * @verdict: what the judge answers here (seen_rows_expect).
+ *
+ * The user is told "was replaced on disk" only where the judge proves another
+ * file (the birth time only the kernel sets); where it cannot prove it (a birth
+ * time the owner can set, or none) the question says "changed or replaced", and
+ * both ask before anything is written.
+ */
+static const char *question_of_a_replaced_file(WpeSeenIs verdict)
+{
+ if (verdict == WPE_SEEN_OTHER)
+  return("t.c was replaced on disk since this window read it. Overwrite it?");
+ return("t.c was changed or replaced since this window read it. Write anyway?");
+}
+
 /* @scenario SC-name-identity-02: a file that took the window's inode number is
-   another file: a plain Save asks and No writes nothing. */
+   another file: a plain Save asks and No writes nothing.  The question says
+   "replaced" where the system proves another file by the birth time, and
+   "changed or replaced" where it cannot (FreeBSD and NetBSD let the owner set
+   the birth, OpenBSD has none); either way it asks and writes nothing. */
 static void test_a_file_that_has_the_windows_inode_number_is_asked_about(void)
 {
  ReuseWindow w;
  SeenRowsCase pc;
  WpeWriteOutcome o;
+ WpeSeenIs expected;
  char buf[256];
 
  make_reuse_dir();
@@ -5338,23 +5505,26 @@ static void test_a_file_that_has_the_windows_inode_number_is_asked_about(void)
  reuse_case_of_files(&pc, "old\n", reuse_window_reads, &w, "theirs\n");
  if (!make_the_number_come_again("row 2 (plain Save, answer N)", &pc, "t.c"))
   return;
+ expected = seen_rows_expect("row 2 (plain Save, answer N)", dir, SEEN_BIRTHS_DIFFER);
  set_rows("mine\n");
  question_answer = 'N';
  chk_int("declined", save_window(w.f, "t.c", &o), -1);
  chk_int("status DECLINED", o.status, WPE_WRITE_DECLINED);
  chk_int("one question", question_count, 1);
- chk_has("the question is the replaced one", question_text,
-         "t.c was replaced on disk since this window read it. Overwrite it?");
+ chk_has("the question is the one this system's judge allows", question_text, question_of_a_replaced_file(expected));
  chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "theirs\n");
  chk_int("no backup", mode_of("t.bak"), -1);
 }
 
-/* @scenario SC-name-identity-02b: the same file with no one to ask is refused. */
+/* @scenario SC-name-identity-02b: the same file with no one to ask is refused.
+   Not proven another file where the system cannot prove it by the birth time
+   (see row 2); refused either way, with their text untouched. */
 static void test_a_write_with_no_one_to_ask_refuses_a_file_with_the_windows_number(void)
 {
  ReuseWindow w;
  SeenRowsCase pc;
  WpeWriteOutcome o;
+ WpeSeenIs expected;
  char buf[256], p[512];
 
  make_reuse_dir();
@@ -5363,11 +5533,12 @@ static void test_a_write_with_no_one_to_ask_refuses_a_file_with_the_windows_numb
  reuse_case_of_files(&pc, "old\n", reuse_window_reads, &w, "theirs\n");
  if (!make_the_number_come_again("row 2b (no one to ask)", &pc, "t.c"))
   return;
+ expected = seen_rows_expect("row 2b (no one to ask)", dir, SEEN_BIRTHS_DIFFER);
  path_of(p, sizeof p, "t.c");
  chk_int("refused", wpe_write_save_text(p, "mine\n", &w.f->file_id, WPE_WRITE_NOFOLLOW, NULL, &o), -1);
  chk_int("status FAILED", o.status, WPE_WRITE_FAILED);
  chk_int("another file", o.other_file, 1);
- chk_int("not merely unsure", o.unsure, 0);
+ chk_int("merely unsure exactly where the judge cannot prove it", o.unsure, expected == WPE_SEEN_UNSURE);
  chk_has("their text is untouched", get_file("t.c", buf, sizeof buf), "theirs\n");
  chk_int("no backup", mode_of("t.bak"), -1);
 }
@@ -5387,23 +5558,52 @@ static void append_in_place(const char *name, const char *text)
  close(fd);
 }
 
-/* @scenario SC-name-identity-03: a file the window read and that was touched in
-   place since is still the window's file: Save writes it, with no question. */
-static void test_a_touched_file_is_still_the_windows_file(void)
+/** A touched file the judge proves the window's own: Save writes it and asks nothing. */
+static void a_touched_file_is_written_with_no_question(FENSTER *f)
 {
  WpeWriteOutcome o;
- FENSTER *f;
  char buf[256];
 
+ chk_int("write", save_window(f, "t.c", &o), 0);
+ chk_int("nothing was asked", question_count, 0);
+ chk_has("the text is on disk", get_file("t.c", buf, sizeof buf), "mine\n");
+}
+
+/** A touched file nothing can prove the window's own (no birth time): Save asks, and No writes nothing. */
+static void a_touched_file_with_no_birth_is_asked_about(FENSTER *f)
+{
+ WpeWriteOutcome o;
+ char buf[256];
+
+ question_answer = 'N';
+ chk_int("No declines", save_window(f, "t.c", &o), -1);
+ chk_int("status DECLINED", o.status, WPE_WRITE_DECLINED);
+ chk_int("one question", question_count, 1);
+ chk_has("the question", question_text, "t.c was changed or replaced since this window read it. Write anyway?");
+ chk_has("nothing was written", get_file("t.c", buf, sizeof buf), "old\nmore\n");
+}
+
+/* @scenario SC-name-identity-03: a file the window read and that was touched in
+   place since is still the window's file: Save writes it, with no question.
+   Where the system has no birth time (OpenBSD, or a file system that gives
+   none) nothing tells a touched file from a new one, so the same Save asks and
+   writes nothing until it is answered. */
+static void test_a_touched_file_is_still_the_windows_file(void)
+{
+ FENSTER *f;
+ WpeSeenIs expected;
+
  make_dir();
+ expected = seen_rows_expect("row 3 (touched in place)", dir, SEEN_SAME_BIRTH_TOUCHED);
  put_file("t.c", "old\n", 0644);
  f = window_of_file_with_mode(0644);
  window_reads(f, "t.c");
  append_in_place("t.c", "more\n");
  set_rows("mine\n");
- chk_int("write", save_window(f, "t.c", &o), 0);
- chk_int("nothing was asked", question_count, 0);
- chk_has("the text is on disk", get_file("t.c", buf, sizeof buf), "mine\n");
+ if (expected == WPE_SEEN_SAME)
+  a_touched_file_is_written_with_no_question(f);
+ else
+  a_touched_file_with_no_birth_is_asked_about(f);
 }
 
 /* @scenario SC-name-identity-04: the same on a system with no birth time (played
@@ -5573,22 +5773,41 @@ static void swap_missed_every_time(const char *row)
    (another birth) and without (not proven, which the sentence says as
    "changed or replaced").  The hook is set inside the row. */
 /**
- * chk_swapped_sentence_kind - Is a swapped file said to be "changed or replaced" only when not proven another?
- * @unsure: the mode owner's replaced_unsure; @no_birth: the row played a system without a birth time.
+ * swap_expected_verdict - What the judge must answer for a FIFO swapped inside the change.
+ * @hook: the hook that plays a system without a birth time, or NULL.
  *
- * Without a birth time the answer is always "not proven" (1).  With one it is
- * "another file" (0) where only the kernel sets the birth (statx, Linux); the
- * BSDs and macOS let the owner set it, so there a differing birth is not
- * proof either, and the answer is not asserted for the plain half.
+ * The twin's modification time is set one second away from the old FIFO's
+ * (fakechmod_fifo_make_reusing), so a member differs on every system and the
+ * only thing that decides the sentence is the birth time: another file where
+ * only the kernel sets it, not proven where the owner can set it or there is
+ * none.  The hook is the second case played on any system.
  */
-static void chk_swapped_sentence_kind(int unsure, int no_birth)
+static WpeSeenIs swap_expected_verdict(const char *hook)
 {
- if (no_birth)
+ if (hook != NULL)
+  return(WPE_SEEN_UNSURE);
+ return(seen_rows_expect("row 18 (a FIFO swapped inside the change)", dir, SEEN_BIRTHS_DIFFER));
+}
+
+/**
+ * chk_swapped_sentence_kind - Is a swapped file said to be "changed or replaced" only when not proven another?
+ * @unsure: the mode owner's replaced_unsure; @expected: swap_expected_verdict.
+ */
+static void chk_swapped_sentence_kind(int unsure, WpeSeenIs expected)
+{
+ if (expected == WPE_SEEN_UNSURE)
   chk_int("not proven: the sentence says changed or replaced", unsure, 1);
-#if WPE_PLATFORM_STATX_BTIME
  else
   chk_int("another birth: the sentence says another file", unsure, 0);
-#endif
+}
+
+/** Say whether the twin's modification time already equalled the old FIFO's before the row set it apart. */
+static void say_the_clock_fact_of_the_swap(void)
+{
+ if (fakechmod_fifo_twin_mtime_was_equal)
+  printf("note: row 18: the twin's modification time equalled the old FIFO's (one tick of the file system's clock); the row set it one second apart\n");
+ else
+  printf("note: row 18: the twin's modification time already differed from the old FIFO's; the row set it one second apart\n");
 }
 
 static SwapOutcome fifo_swapped_once(const char *hook)
@@ -5610,7 +5829,8 @@ static SwapOutcome fifo_swapped_once(const char *hook)
  {
   chk_int("the change is refused", rc, ESTALE);
   chk_int("said to be replaced", k.replaced, 1);
-  chk_swapped_sentence_kind(k.replaced_unsure, hook != NULL);
+  chk_swapped_sentence_kind(k.replaced_unsure, swap_expected_verdict(hook));
+  say_the_clock_fact_of_the_swap();
  }
  fakechmod_swap_fifo_reusing_at("", 0);
  unsetenv(WPE_SEEN_TEST_FAIL_ENV);
@@ -5849,6 +6069,22 @@ static void no_birth_hook(const char *more)
  chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
 }
 
+/**
+ * put_the_special_bits_back - Give a touched file the special bits its row asked for.
+ * @name: the file of the test folder; @mode: the mode the row put it in.
+ *
+ * A write by a user who is not root clears setuid and setgid on macOS and the
+ * BSDs, and on Linux when the group may run the file.  A row about a touched
+ * file that has a special bit needs the bit after the touch, whatever the
+ * system does to it, so it is set again by the helper that reads it back.
+ */
+static void put_the_special_bits_back(const char *name, mode_t mode)
+{
+ if ((mode & 07000) == 0)
+  return;
+ chk_int("the special bits are put back", test_chmod_mode(dir, name, mode), 0);
+}
+
 /** A window of t.c that read it, then t.c touched in place (so it is not proven the same). */
 static FENSTER *window_of_a_touched_file(mode_t mode)
 {
@@ -5858,6 +6094,7 @@ static FENSTER *window_of_a_touched_file(mode_t mode)
  f = window_of_file_with_mode(mode);
  window_reads(f, "t.c");
  append_in_place("t.c", "more\n");
+ put_the_special_bits_back("t.c", mode);
  return(f);
 }
 
@@ -5895,7 +6132,8 @@ static void unsure_is_refused_with_the_reason(const char *more, mode_t mode, con
 
 static void test_unsure_on_a_file_with_a_special_bit_or_another_owner_is_refused(void)
 {
- /* a group that cannot run the file: a write to it does not clear the bit */
+ /* the touch may clear the bit (macOS and the BSDs always do, Linux when the
+    group may run the file), so the row puts it back after the touch */
  unsure_is_refused_with_the_reason("", 02644, ", and it has a setuid, setgid or sticky bit");
  unsure_is_refused_with_the_reason("write-other-owner", 0644, ", and it belongs to another user");
 }
@@ -6204,6 +6442,7 @@ int main(void)
  test_the_question_for_a_file_we_do_not_own_says_only_sticky_stays();
  test_a_copy_over_a_setgid_file_the_kernel_cleared_says_nothing();
  test_a_save_that_lost_one_bit_and_kept_another_names_only_the_lost();
+ test_a_save_that_lost_setuid_and_kept_setgid_names_only_setuid();
  test_a_save_with_no_descriptor_does_not_call_a_standing_bit_lost();
  test_a_restore_does_not_call_a_standing_bit_lost();
  test_a_stream_does_not_name_a_bit_the_file_lost_before_the_close();

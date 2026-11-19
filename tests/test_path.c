@@ -6,6 +6,7 @@
  * fitting.  A folder and a name that each fit can be too long joined.
  */
 #include <limits.h>
+#include "linebuf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

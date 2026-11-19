@@ -25,6 +25,7 @@
  * starts at (it reads from the next one), and the frozen result.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

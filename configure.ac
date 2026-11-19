@@ -36,6 +36,39 @@ LDFLAGS="$ace_save_LDFLAGS"
 AC_MSG_RESULT([$have_ld_wrap])
 AM_CONDITIONAL([HAVE_LD_WRAP], [test "x$have_ld_wrap" = xyes])
 
+# The flag that makes an executable export its own functions to the dynamic
+# linker, so a C test's hook of a C library function (tests/interpose.h) can
+# be found by dladdr under the name the compiler bound it to.  GNU ld, lld,
+# and the BSDs' ld take -Wl,-E or -rdynamic; Mach-O exports globals already
+# and takes neither, so it measures to nothing.  Each candidate is linked
+# with a program that asks dladdr for its own function's exported name.
+AC_MSG_CHECKING([for the flag that exports a program's functions to dladdr])
+TEST_EXPORT_DYNAMIC=
+ace_save_LDFLAGS="$LDFLAGS"
+ace_found_export=no
+for ace_try in "" "-Wl,-E" "-rdynamic"; do
+  LDFLAGS="$ace_save_LDFLAGS $ace_try"
+  AC_RUN_IFELSE(
+    [AC_LANG_PROGRAM([[#include <dlfcn.h>
+#include <string.h>
+int ace_exported_probe(void) { return 0; }]],
+       [[Dl_info info;
+         if (dladdr((void *)ace_exported_probe, &info) == 0 || info.dli_sname == NULL)
+           return 1;
+         return strcmp(info.dli_sname, "ace_exported_probe") != 0
+                || info.dli_saddr != (void *)ace_exported_probe;]])],
+    [ace_found_export=yes; TEST_EXPORT_DYNAMIC="$ace_try"],
+    [], [ace_found_export=no])
+  test "x$ace_found_export" = xyes && break
+done
+LDFLAGS="$ace_save_LDFLAGS"
+if test "x$ace_found_export" = xyes; then
+  AC_MSG_RESULT([${TEST_EXPORT_DYNAMIC:-none needed}])
+else
+  AC_MSG_RESULT([none works])
+fi
+AC_SUBST([TEST_EXPORT_DYNAMIC])
+
 # Pick a C standard flag that keeps K&R unprototyped '()' semantics (so the
 # 1993 code still compiles) and that the compiler actually supports. Modern
 # GCC/Clang take -std=gnu17; NetBSD 9's base GCC 7 only knows up to gnu11,

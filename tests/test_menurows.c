@@ -9,6 +9,7 @@
  * with nothing to pick.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 
 #include "../we_menurows.h"

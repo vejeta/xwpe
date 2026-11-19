@@ -538,6 +538,7 @@ test_lineend_CFLAGS = $(TEST_CFLAGS)
 # fails), the size limit as an outcome and SIGXFSZ put back.
 test_write_owner_SOURCES = tests/test_write_owner.c tests/seen_rows.h tests/testdir.h we_write.c we_places.c we_path.c we_seen.c
 test_write_owner_CFLAGS = $(TEST_CFLAGS)
+test_write_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
 # The owner of copying, moving, linking and removing the user's files
 # (we_fileop.c) over the write owner's bytes, the editor's side played by
@@ -546,6 +547,7 @@ test_write_owner_CFLAGS = $(TEST_CFLAGS)
 # the wastebasket.
 test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c we_seen.c
 test_fileop_CFLAGS = $(TEST_CFLAGS)
+test_fileop_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
 # The one place a C test makes its folder and states what it assumes about
 # the user running it (tests/testdir.h): the folder is in a group of the
@@ -557,6 +559,21 @@ test_fileop_CFLAGS = $(TEST_CFLAGS)
 check_PROGRAMS += test_testdir
 test_testdir_SOURCES = tests/test_testdir.c tests/testdir.h tests/fakechmod.h
 test_testdir_CFLAGS = $(TEST_CFLAGS)
+test_testdir_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
+
+# The one resolver of "the C library's function behind a test's hook"
+# (tests/interpose.h): a hook is found under the name the compiler bound it
+# to, so a system that renames a function (NetBSD's fstat is __fstat50) cannot
+# send the hook back to itself.  The program hooks fstat, calls it once and
+# proves the library's answer came back, and that a hook the library's
+# function leads back into ends the program with its name.  Every hooking
+# program links with TEST_EXPORT_DYNAMIC, which configure measures.
+# tests/check-interpose.sh fails a test that looks a function up by its C
+# spelling anywhere else.
+check_PROGRAMS += test_interpose
+test_interpose_SOURCES = tests/test_interpose.c tests/interpose.h tests/linebuf.h
+test_interpose_CFLAGS = $(TEST_CFLAGS)
+test_interpose_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
 # The owner of "is this the object I saw" (we_seen.c): the judge's table
 # built by hand, the held folder, and the rows that need a file system that
@@ -712,6 +729,7 @@ test_menus_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_MENU_TABLE_ONLY
 # fails if any other target or the editor names that switch.
 test_child_SOURCES = tests/test_child.c we_child.c we_fdloop.c
 test_child_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST
+test_child_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 test_child_LDADD = $(UTIL_LIBS)
 
 # A read that waits survives the editor's SIGCHLD: the handler is installed
@@ -986,6 +1004,7 @@ TESTS += tests/check-bsd-known-failures.sh
 # test_testdir); tests/check-mode-premise.sh fails a test that does it
 # without.
 TESTS += test_testdir tests/check-mode-premise.sh
+TESTS += test_interpose tests/check-interpose.sh
 
 # The owner of "is this the object I saw" (we_seen.c, tested by test_seen):
 # a record kept from an earlier moment is judged SAME, OTHER or UNSURE, never
@@ -1331,6 +1350,10 @@ EXTRA_DIST = \
   tests/seen_premise.py \
   tests/check-with-deadline.sh \
   tests/test_watchdog.h \
+  tests/interpose.h \
+  tests/linebuf.h \
+  tests/test_interpose.c \
+  tests/check-interpose.sh \
   tests/check-start-plan.sh \
   tests/start-plan.allow \
   tests/check-shell-quote.sh \

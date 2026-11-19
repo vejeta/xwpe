@@ -176,6 +176,25 @@ compile() {
     -fno-jump-tables -c "$cc_src" -o "$cc_obj"
 }
 
+# find_thunk_flag - the flag that makes this compiler call through a register
+# by a thunk (retpoline), or nothing.  OpenBSD's clang does it by default, so
+# there every indirect call is "call __llvm_retpoline_r11" and a canary needs
+# no flag; elsewhere the thunk canary is compiled with the flag so the thunk
+# rule of indirect_calls is proved on any x86-64 system whose compiler has one.
+# Each candidate is tried on an empty source and kept only when accepted.
+find_thunk_flag() {
+  THUNK_FLAG=
+  printf 'int canary_probe;\n' > "$WORK/thunk-probe.c"
+  for cand in -mindirect-branch=thunk -mretpoline; do
+    # shellcheck disable=SC2086
+    if $MAINT_CC $cand -c "$WORK/thunk-probe.c" -o "$WORK/thunk-probe.o" > /dev/null 2>&1; then
+      THUNK_FLAG=$cand
+      return 0
+    fi
+  done
+  return 0
+}
+
 # object_is_elf OBJECT
 object_is_elf() {
   "$OBJDUMP" -f "$1" 2>/dev/null | grep -Ei 'file format elf' >/dev/null
@@ -296,6 +315,14 @@ indirect_calls() {
       grep -vE '(call|jmp)[a-z]*[[:space:]]+\*(0x)?[0-9a-f]*\(%rip\)' |
       while IFS= read -r ins; do
         echo "indirect call or jump in $sec (a target relocations cannot see):$ins"
+      done
+    # A call through a register that the compiler made by a thunk
+    # (retpoline): no call * in the object, a call to the thunk, either a
+    # relocation against it or its body in the object.
+    "$OBJDUMP" -dr -j "$sec" "$obj" 2>/dev/null |
+      grep -E "R_X86_64_[A-Z0-9]+[[:space:]]+(__llvm_(external_)?retpoline_|__x86_indirect_thunk_)|(call|jmp)[a-z]*[[:space:]]+[0-9a-fx]+[[:space:]]+<(__llvm_(external_)?retpoline_|__x86_indirect_thunk_)" |
+      while IFS= read -r ins; do
+        echo "indirect call or jump in $sec (a call through a thunk, so a target relocations cannot see):$ins"
       done
   done
 }
@@ -607,7 +634,8 @@ canary() {
   c_obj=$WORK/$c_label.o
   # The planted sources are checked for what they call, not for what the
   # build's hardening adds around it.
-  if ! compile "$c_src" "$c_obj" "$c_level" -w -fno-stack-protector \
+  # shellcheck disable=SC2086
+  if ! compile "$c_src" "$c_obj" "$c_level" -w -fno-stack-protector $CANARY_FLAGS \
       > "$WORK/cc.out" 2>&1; then
     echo "canary $c_label: the planted source did not compile:"
     sed 's/^/  /' "$WORK/cc.out"
@@ -645,6 +673,8 @@ canary_both() {
 }
 
 run_canaries() {
+  CANARY_FLAGS=
+  find_thunk_flag
   plant_all
   allow_lines min '_exit|SAFE|canary' 'write|SAFE|canary' 'execve|EXEC|canary'
   allow_lines min-stale '_exit|SAFE|canary' 'write|SAFE|canary' 'execve|EXEC|canary' \
@@ -715,6 +745,16 @@ run_canaries() {
     canary_both indirect "$WORK/indirect.c" "$WORK/min" 0 named "indirect call or jump"
     canary_both indirect-tail-call "$WORK/tailcall.c" "$WORK/min" 0 named "indirect call or jump"
     canary_both inline-asm-jump "$WORK/asmjump.c" "$WORK/min" 0 named "indirect call or jump"
+    if [ -n "$THUNK_FLAG" ]; then
+      # The same indirect call, made through the compiler's thunk: no call *
+      # is left in the object, only a call to __x86_indirect_thunk_* or
+      # __llvm_retpoline_*, and that is the same indirect call.
+      CANARY_FLAGS=$THUNK_FLAG
+      canary_both indirect-thunk "$WORK/indirect.c" "$WORK/min" 0 named "indirect call or jump"
+      CANARY_FLAGS=
+    else
+      echo "note: this compiler has no flag for calling through a thunk, the thunk canary is skipped"
+    fi
   else
     echo "note: not x86-64, the indirect call sub-check is skipped"
   fi

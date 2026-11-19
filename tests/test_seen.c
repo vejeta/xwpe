@@ -703,7 +703,8 @@ static void file_took_the_number(const char *base, const char *row, const char *
   if (hook != NULL)
    chk_is("another file with the number, no birth time", verdict, WPE_SEEN_UNSURE);
   else if (then.seen_has_birth && now.seen_has_birth && births_differ(&then, &now))
-   chk_is("another file with the number, the births differ", verdict, WPE_SEEN_OTHER);
+   chk_is("another file with the number, the births differ", verdict,
+          seen_rows_expect("another file with the number", dir, SEEN_BIRTHS_DIFFER));
   else
    printf("note: the new file's birth time equals the old one's or is not reported; only 'not SAME' was asserted\n");
  }

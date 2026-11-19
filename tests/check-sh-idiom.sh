@@ -45,11 +45,42 @@
 # trap (ends the script never) and an EXIT-only trap (leaves the folder on
 # dash and busybox; with no such shell that canary says SKIP).
 #
+# Rule 3, over every tests/*.sh, tests/*/*.sh, contrib/*.sh, contrib/*/*.sh and
+# the *.sh of the top folder: a parameter expansion that strips a pattern
+# (${V%P}, ${V%%P}, ${V#P}, ${V##P}) has no character in P that a shell reads
+# as pattern syntax beyond the plain glob: a | (alternation in the ksh of
+# OpenBSD, where ${pair%%|*} gives nothing and ${pair#*|} gives the whole
+# pair; measured there, a | inside a bracket expression [|] is read the same
+# way), or @( +( !( ?( (ksh extended patterns).  A | that is quoted ("|" or
+# '|') or escaped (\|) is not named: the same ksh strips it right.  Split on
+# a character no shell reads as syntax (a colon, a newline), or with IFS.
+#
+# Rule 4, over the same files: grep and sed take a basic regular expression
+# unless the command says -E (sed also -r, grep also -F or -P), and \| \+ \?
+# are GNU extensions of it.  The grep of OpenBSD takes \| as a literal
+# bar and never matches the alternative, so a scan built on it is blind
+# there with no error.  Named: a grep or sed word whose options carry none of
+# those letters and whose command (up to an unquoted | ; & or a closing
+# parenthesis) holds \| \+ or \?.  An awk regular expression is not read: awk
+# takes \| as a literal on every system.  A command split over lines is read
+# per line, so its pattern line is not tied to its options: write the pattern
+# on the line of the command.
+#
+# Rule 5, over the same files: a case inside $( ) has its patterns in the
+# POSIX form (pattern) with the leading parenthesis.  The ksh of OpenBSD counts
+# parentheses inside a substitution, so the ) of a bare pattern ends it and
+# the script stops with a syntax error at the following ;;.  A case that
+# follows a closed $( ) on the line, or whose subject is a $( ), is not
+# named.  A case split over lines inside $( ) is read per line.
+#
+# A line that carries `# portable:` and a reason (the text is an example, or
+# the system it runs on is known) is not named by rules 3, 4 and 5.
+#
 # Canaries (--selftest, and at the start of every run): an offender per
 # clause, on one line, and the same line with the marker and with the
 # linear idiom; a scanner that does not name every offender, or names a
-# clean line, fails the script as blind.  The offenders of rule 1 are built
-# from pieces so that this file does not name itself.
+# clean line, fails the script as blind.  The offenders of rules 1, 3 and 4
+# are built from pieces so that this file does not name itself.
 #
 # Exit: 0 clean, 1 offenders or a blind scanner.
 
@@ -152,10 +183,175 @@ canary1() {
   return 1
 }
 
+# scan_portable FILE... - "file:line: clause: text" for each line of rules 3
+# and 4.  Comment lines and lines with the marker `# portable: <reason>` are
+# not read.  Every loop is over one line, so the cost is linear in the file.
+scan_portable() {
+  for f in "$@"; do
+    awk -v file="$f" '
+      # The pattern of a strip expansion that starts at character i of the
+      # line, as the shell reads it: what is quoted, escaped or inside a
+      # bracket expression is dropped, so what is left is what is pattern
+      # syntax.  It ends at the closing brace of the expansion.
+      function pattern_chars(i,   out, c, depth, q) {
+        out = ""; depth = 0
+        while (i <= n) {
+          c = ch[i]
+          if (c == "\\") { i += 2; continue }
+          if (c == "\047" || c == "\"") {
+            q = c; i++
+            while (i <= n && ch[i] != q) {
+              if (q == "\"" && ch[i] == "\\") i++
+              i++
+            }
+            i++
+            continue
+          }
+          if (c == "$" && ch[i + 1] == "{") { depth++; i += 2; continue }
+          if (c == "}") {
+            if (depth == 0) break
+            depth--; i++
+            continue
+          }
+          out = out c; i++
+        }
+        return out
+      }
+      function pattern_hazards(   s, off, at, pat) {
+        s = $0; off = 0
+        while (match(s, /\$\{[A-Za-z0-9_]+(%%|%|##|#)/)) {
+          at = off + RSTART + RLENGTH
+          pat = pattern_chars(at)
+          if (pat ~ /[|]/ || pat ~ /[@+!?][(]/)
+            print file ":" FNR ": 3. a | or an extended pattern in a strip expansion (ksh reads it as syntax): " text
+          off = at - 1
+          s = substr($0, at)
+        }
+      }
+      # The text of the command whose words start at character i: up to an
+      # unquoted | ; & or ) or the end of the line.
+      function command_text(i,   out, c, q) {
+        out = ""
+        while (i <= n) {
+          c = ch[i]
+          if (c == "\\") { out = out c ch[i + 1]; i += 2; continue }
+          if (c == "\047" || c == "\"") {
+            q = c; out = out c; i++
+            while (i <= n && ch[i] != q) {
+              if (q == "\"" && ch[i] == "\\") { out = out ch[i]; i++ }
+              out = out ch[i]; i++
+            }
+            out = out q; i++
+            continue
+          }
+          if (c == "|" || c == ";" || c == "&" || c == ")") break
+          out = out c; i++
+        }
+        return out
+      }
+      # 1 when an option of the command makes its expression extended or
+      # literal: -E -F -P (grep), -E -r (sed), and their long names.
+      function says_extended(word, cmd,   nt, tk, k) {
+        nt = split(cmd, tk, /[ \t]+/)
+        for (k = 1; k <= nt; k++) {
+          if (tk[k] ~ /^--(extended-regexp|regexp-extended|fixed-strings|perl-regexp)$/) return 1
+          if (word == "grep" && tk[k] ~ /^-[A-Za-z]*[EFP][A-Za-z]*$/) return 1
+          if (word == "sed" && tk[k] ~ /^-[A-Za-z]*[Er][A-Za-z]*$/) return 1
+        }
+        return 0
+      }
+      function gnu_bre(   s, off, w, at, cmd) {
+        s = $0; off = 0
+        while (match(s, /(^|[^A-Za-z0-9_.\/-])(grep|sed)([ \t]|$)/)) {
+          w = substr(s, RSTART, RLENGTH)
+          sub(/^[^gs]*/, "", w)
+          sub(/[ \t]+$/, "", w)
+          at = off + RSTART + RLENGTH
+          cmd = command_text(at)
+          if (cmd ~ /\\[|+?]/ && !says_extended(w, cmd))
+            print file ":" FNR ": 4. a GNU \\| \\+ or \\? in a basic expression (write -E, or the plain pattern): " text
+          off = at - 1
+          s = substr($0, at)
+        }
+      }
+      # 1 when the text of a $( ) before position upto already closes it: a
+      # ) with no ( before it.
+      function subst_closed_before(inner, upto,   pc, m, k, d) {
+        m = split(substr(inner, 1, upto - 1), pc, "")
+        d = 0
+        for (k = 1; k <= m; k++) {
+          if (pc[k] == "(") d++
+          else if (pc[k] == ")") { d--; if (d < 0) return 1 }
+        }
+        return 0
+      }
+      # 1 when a case pattern (the first, or one after a ;;) of this text has
+      # no leading ( : the word after in, or after ;; , starts with anything
+      # but ( and is not esac.
+      function bare_case_pattern(inner,   t, w) {
+        if (!match(inner, /(^|[^A-Za-z0-9_])case[ \t][^;]*[ \t]in[ \t]*/)) return 0
+        t = substr(inner, RSTART + RLENGTH)
+        if (t !~ /^\(/ && t !~ /^esac/ && t != "") return 1
+        while (match(t, /;;[ \t]*/)) {
+          t = substr(t, RSTART + RLENGTH)
+          if (t !~ /^\(/ && t !~ /^esac/ && t != "") return 1
+        }
+        return 0
+      }
+      # Rule 5: a case inside $( ) whose pattern has no leading ( : the ksh of
+      # OpenBSD counts parentheses and ends the substitution at the ) of the pattern.
+      function case_in_subst(   s, at, inner) {
+        s = $0
+        while ((at = index(s, "$(")) > 0) {
+          inner = substr(s, at + 2)
+          if (match(inner, /(^|[^A-Za-z0-9_])case[ \t]/) && !subst_closed_before(inner, RSTART) && bare_case_pattern(inner))
+            print file ":" FNR ": 5. a case pattern without its leading ( inside $( ) (the ksh of OpenBSD ends the substitution at its ) ): " text
+          s = inner
+        }
+      }
+      {
+        text = $0
+        sub(/^[ \t]+/, "", text)
+        if (text ~ /^#/) next
+        if ($0 ~ /#[ \t]*portable:[ \t]*[^ \t]/) next
+        n = split($0, ch, "")
+        pattern_hazards()
+        gnu_bre()
+        case_in_subst()
+      }' "$f"
+  done
+}
+
+# canary_portable NAME CODE EXPECT - CODE is one line of shell; EXPECT is the
+# rule (3 or 4) scan_portable must name, or "none".
+canary_portable() {
+  printf '%s\n' "$2" > "$WORK/plant3.sh"
+  got=$(scan_portable "$WORK/plant3.sh")
+  if [ "$3" = none ]; then
+    [ -z "$got" ] || { echo "canary $1: a clean line was named: $got"; return 1; }
+    return 0
+  fi
+  case $got in
+    *": $3. "*) return 0 ;;
+  esac
+  echo "canary $1: the offender was not named (wanted rule $3, got: $got)"
+  return 1
+}
+
 # The words of the offenders are cut in two so this file does not hold them.
 TR=tr
 MK=mk
 WK=w
+GR=gr
+EP=ep
+SD=s
+ED=ed
+CS=cas
+CE=e
+PC='%%'
+PC1='%'
+HS='#'
+BAR='|'
 TAB=$(printf '\t')
 
 # unit_write_child FILE - the child of the unit row.  It takes the owner's
@@ -361,6 +557,48 @@ canary once-ok    '      n = length(all); for (i = 1; i <= n; i++) { c = ch[i] }
 canary slice-ok   '      after = substr(all, pos, 160)' none || blind=1
 canary line-ok    '      c = substr(line, i, 1)' none || blind=1
 canary comment-ok '      # for (i = 1; i <= length(all); i++) c = substr(all, i, 1)' none || blind=1
+# Rule 3: a pattern character in a strip expansion.
+canary_portable bar-long    "x=\${p${PC}${BAR}*}" 3 || blind=1
+canary_portable bar-short   "y=\${p${HS}*${BAR}}" 3 || blind=1
+canary_portable bar-alt     "y=\${p${HS}${HS}(a${BAR}b)*}" 3 || blind=1
+canary_portable ext-at      "y=\${p${HS}@(x)}" 3 || blind=1
+canary_portable ext-plus    "y=\${p${PC1}+(x)}" 3 || blind=1
+canary_portable ext-bang    "y=\${p${PC1}!(x)}" 3 || blind=1
+canary_portable ext-query   "y=\${p${PC1}?(x)}" 3 || blind=1
+canary_portable bar-inline  "echo \"\${p${PC}${BAR}*}\" \"\${p${HS}*${BAR}}\"" 3 || blind=1
+canary_portable bar-quoted  "x=\${p${PC}\"${BAR}\"*}" none || blind=1
+canary_portable bar-single  "x=\${p${PC}'${BAR}'*}" none || blind=1
+canary_portable bar-bracket "x=\${p${PC}[${BAR}]*}" 3 || blind=1
+canary_portable bar-escaped "x=\${p${PC}\\${BAR}*}" none || blind=1
+canary_portable strip-slash "x=\${0${HS}${HS}*/} y=\${f${HS}\"\$1\"/}" none || blind=1
+canary_portable strip-plain "x=\${p${PC}:*} y=\${p${HS}*:} z=\${#p}" none || blind=1
+canary_portable alt-default "x=\${p:-a${BAR}b}" none || blind=1
+canary_portable bar-marked  "x=\${p${PC}${BAR}*}  # portable: the shell is known" none || blind=1
+canary_portable bar-comment "# x=\${p${PC}${BAR}*}" none || blind=1
+# Rule 4: a GNU escape in a basic expression.
+canary_portable bre-alt     "${GR}${EP} -q 'a\\|b' \"\$f\"" 4 || blind=1
+canary_portable bre-plus    "${SD}${ED} -n '/a\\+/p' f" 4 || blind=1
+canary_portable bre-query   "${GR}${EP} 'ab\\?' f" 4 || blind=1
+canary_portable bre-pipe    "cat f | ${GR}${EP} 'a\\|b'" 4 || blind=1
+canary_portable bre-subst   "n=\$(${GR}${EP} -c 'a\\|b' f)" 4 || blind=1
+canary_portable bre-and     "${GR}${EP} -q 'a\\|b' f && x=1" 4 || blind=1
+canary_portable bre-sed     "${SD}${ED} 's/\\(a\\)\\+/b/' f" 4 || blind=1
+canary_portable ere-ok      "${GR}${EP} -qE 'a|b' f" none || blind=1
+canary_portable ere-escaped "${GR}${EP} -E 'a\\|b' f" none || blind=1
+canary_portable fixed-ok    "${GR}${EP} -F 'a\\|b' f" none || blind=1
+canary_portable sed-ere-ok  "${SD}${ED} -E 's/a\\+/b/' f" none || blind=1
+canary_portable sed-r-ok    "${SD}${ED} -nr '/a\\+/p' f" none || blind=1
+canary_portable awk-ok      "awk '/\\|=/ { print }' f" none || blind=1
+canary_portable after-pipe  "${GR}${EP} -q a f | awk '/\\|/'" none || blind=1
+canary_portable plain-ok    "${GR}${EP} -q 'a.b' f" none || blind=1
+canary_portable word-ok     "egrep 'a\\|b' f" none || blind=1
+# Rule 5: a case pattern with no leading ( inside $( ).
+canary_portable case-bare    "OTH=\$(for f in a; do ${CS}${CE} \$f in a${BAR}b) ;; *) echo x ;; esac; done)" 5 || blind=1
+canary_portable case-paren   "OTH=\$(for f in a; do ${CS}${CE} \$f in (a${BAR}b) ;; (*) echo x ;; esac; done)" none || blind=1
+canary_portable case-before  "${CS}${CE} \$(cmd) in a${BAR}b) echo x ;; esac" none || blind=1
+canary_portable case-outside "x=\$(cmd); ${CS}${CE} \$y in a) ;; esac" none || blind=1
+canary_portable case-second  "OTH=\$(${CS}${CE} \$f in (a) ;; b) echo x ;; esac)" 5 || blind=1
+canary_portable bre-marked  "${GR}${EP} -q 'a\\|b' f  # portable: an example" none || blind=1
 if [ $blind -ne 0 ] || [ $unit_blind -ne 0 ]; then
   echo "check-sh-idiom: the scanner is blind"
   exit 1
@@ -382,6 +620,17 @@ wfound=$(scan_workdir $wfiles)
 if [ -n "$wfound" ]; then
   echo "check-sh-idiom: a work folder or a trap outside tests/workdir.sh (call work_dir NAME [STATUS] once, or mark the line '# workdir: <reason>'):"
   printf '%s\n' "$wfound"
+  exit 1
+fi
+
+# Rules 3 and 4 read the same files and the build scripts of contrib/ and the
+# top folder.  This script is read too: its canaries are built from pieces.
+pfiles=$(ls "$SRCDIR"/tests/*.sh "$SRCDIR"/tests/*/*.sh "$SRCDIR"/contrib/*.sh "$SRCDIR"/contrib/*/*.sh "$SRCDIR"/*.sh 2>/dev/null)
+# shellcheck disable=SC2086
+pfound=$(scan_portable $pfiles)
+if [ -n "$pfound" ]; then
+  echo "check-sh-idiom: a shell or grep idiom that is not portable (quote the bar, split on a colon, write grep -E; or mark the line '# portable: <reason>'):"
+  printf '%s\n' "$pfound"
   exit 1
 fi
 

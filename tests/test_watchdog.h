@@ -30,6 +30,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include "linebuf.h"
+
 #define TEST_WATCHDOG_DEFAULT_S 60
 #define TEST_WATCHDOG_LINE_MAX  320
 #define TEST_WAIT_STEP_MS       10

@@ -8,6 +8,7 @@
  * one for anything else, a stray byte included), never computed by the
  * owner. */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <json-c/json.h>

@@ -2,6 +2,7 @@
  * RFC 4648 base64 vectors and the OSC 52 framing written to an fd.
  * Links we_clip.c only; no editor, no X11 -- always runs (no skip). */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>

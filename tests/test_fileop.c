@@ -49,6 +49,7 @@
 #include "../we_write.h"
 #include "../we_fileop.h"
 #include "testdir.h"
+#include "interpose.h"
 #include "fakechmod.h"
 
 static int fails;
@@ -2126,9 +2127,10 @@ int fsync(int fd)
 {
  static fsync_fn real;
  struct stat st;
+ WPE_HOOK_GUARD(fsync);
 
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "fsync");
+  real = WPE_REAL(fsync);
  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
  {
   fsync_calls++;
@@ -2147,9 +2149,10 @@ int fdatasync(int fd)
 {
  static fsync_fn real;
  struct stat st;
+ WPE_HOOK_GUARD(fdatasync);
 
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "fdatasync");
+  real = WPE_REAL(fdatasync);
  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
   fdatasync_calls++;
  return(real(fd));

@@ -5,6 +5,7 @@
  * this replaces) and never cut to fit (the strncpy it would be replaced by).
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

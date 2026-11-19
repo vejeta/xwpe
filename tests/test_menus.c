@@ -10,6 +10,7 @@
  * that no Alt letter of the bar is bound to a key that would hide the menu.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 #include <ctype.h>
 

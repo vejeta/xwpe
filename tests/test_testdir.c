@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include "testdir.h"
+#include "interpose.h"
 #include "fakechmod.h"
 
 static int fails;
@@ -65,6 +66,7 @@ static gid_t chown_last_gid;
 int chown(const char *path, uid_t uid, gid_t gid)
 {
  static chown_fn real;
+ WPE_HOOK_GUARD(chown);
 
  chown_calls++;
  chown_last_uid = uid;
@@ -75,12 +77,7 @@ int chown(const char *path, uid_t uid, gid_t gid)
   return(-1);
  }
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "chown");
- if (real == NULL)
- {
-  fprintf(stderr, "test_testdir: the C library has no chown to pass on to\n");
-  abort();
- }
+  real = WPE_REAL(chown);
  return(real(path, uid, gid));
 }
 
@@ -92,6 +89,7 @@ static int fchdir_calls;
 int fchdir(int fd)
 {
  static int (*real)(int);
+ WPE_HOOK_GUARD(fchdir);
 
  fchdir_calls++;
  if (fchdir_fail_at != 0 && fchdir_calls == fchdir_fail_at)
@@ -100,9 +98,7 @@ int fchdir(int fd)
   return(-1);
  }
  if (real == NULL)
-  *(void **)&real = dlsym(RTLD_NEXT, "fchdir");
- if (real == NULL)
-  abort();
+  real = WPE_REAL(fchdir);
  return(real(fd));
 }
 
@@ -380,6 +376,62 @@ static void test_special_bits_probe_follows_the_system(void)
  drop_folder();
 }
 
+/* A system that refuses the sticky bit to a regular file and gives it to a
+   folder (the three BSDs: EFTYPE) is measured as such, and a row that needs a
+   file whose bit stands is a SKIP that names the fact and the system, even in
+   a run that says it is unprivileged.  Setgid on the same system is still
+   held.  Red under the mutation "the answer never asks the folder". */
+static void test_sticky_refused_for_files_is_a_skip_that_names_the_system(void)
+{
+ int rc;
+
+ make_folder();
+ fakechmod_set(FAKECHMOD_REFUSE_FILES, S_ISVTX);
+ chk_int("the probe for a file says no", test_premise_special_bits_settable(folder, S_ISVTX), 0);
+ chk_int("a folder takes the bit", test_folder_takes_bits(folder, S_ISVTX), 1);
+ chk_int("refused for files", test_special_bits_answer(folder, S_ISVTX), TEST_BITS_REFUSED_FOR_FILES);
+ chk_int("setgid with it: refused for files", test_special_bits_answer(folder, S_ISGID | S_ISVTX), TEST_BITS_REFUSED_FOR_FILES);
+ chk_int("setgid alone is held", test_special_bits_answer(folder, S_ISGID), TEST_BITS_HELD);
+ setenv(TEST_DIR_UNPRIVILEGED_ENV, "1", 1);
+ collect_begin();
+ rc = test_premise_special_bits(folder, S_ISVTX, "a row", "what it needs");
+ collect_end();
+ unsetenv(TEST_DIR_UNPRIVILEGED_ENV);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("the row does not run", rc, 0);
+ chk_has("the line is a SKIP", out_text, "SKIP: a row: ");
+ chk_has("it names the fact", out_text, "refuses the sticky bit on a regular file");
+ chk_has("it names the system", out_text, test_system_name());
+ chk_lacks("it is not a FAIL", out_text, "FAIL");
+ chk_int("an unprivileged run counts nothing", test_dir_failures, 0);
+ chk_int("the probe leaves no folder", mode_of(folder, "probe_folder_bits"), -1);
+ drop_folder();
+}
+
+/* A system that refuses the sticky bit to folders as well is not the BSD case:
+   the row's premise is a FAIL in an unprivileged run, as before.  Red under
+   the mutation "the answer never asks the folder" (it would be a SKIP). */
+static void test_sticky_refused_everywhere_is_still_a_fail_when_unprivileged(void)
+{
+ int rc;
+
+ make_folder();
+ fakechmod_set(FAKECHMOD_REFUSE, S_ISVTX);
+ chk_int("a folder does not take the bit", test_folder_takes_bits(folder, S_ISVTX), 0);
+ chk_int("refused", test_special_bits_answer(folder, S_ISVTX), TEST_BITS_REFUSED);
+ setenv(TEST_DIR_UNPRIVILEGED_ENV, "1", 1);
+ collect_begin();
+ rc = test_premise_special_bits(folder, S_ISVTX, "a row", "what it needs");
+ collect_end();
+ unsetenv(TEST_DIR_UNPRIVILEGED_ENV);
+ fakechmod_set(FAKECHMOD_OFF, 0);
+ chk_int("the row does not run", rc, 0);
+ chk_has("the FAIL line", out_text, "FAIL: a row: the run is unprivileged, so this must hold: what it needs\n");
+ chk_int("and counted", test_dir_failures, 1);
+ test_dir_failures = 0;
+ drop_folder();
+}
+
 /* fakechmod_last_rc is the value of the call just made, on every path: a
    call that succeeded before, then one the face refuses, leaves the refusal,
    and a count reset leaves no earlier value to be inherited.  Red under the
@@ -651,6 +703,8 @@ int main(void)
  test_put_mode_says_when_a_bit_was_dropped();
  test_mkdir_and_chmod_mode_read_back();
  test_special_bits_probe_follows_the_system();
+ test_sticky_refused_for_files_is_a_skip_that_names_the_system();
+ test_sticky_refused_everywhere_is_still_a_fail_when_unprivileged();
  test_fakechmod_last_rc_is_the_last_calls();
  test_premise_skips_or_fails_by_the_run();
  test_an_observation_skips_under_the_unprivileged_flag();

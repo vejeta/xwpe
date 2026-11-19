@@ -3,6 +3,7 @@
  * the GET run against a socketpair and a listening socket on 127.0.0.1, the
  * GET on the editor's own loop (we_fdloop.c), which the test drives. */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>

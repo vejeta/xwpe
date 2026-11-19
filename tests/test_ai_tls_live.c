@@ -5,6 +5,7 @@
  *   ./test_ai_tls_live [https://host] [/path]
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 #include <poll.h>
 #include "we_ai_http_sync.h"

@@ -26,11 +26,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "testdir.h"
 #include "../we_platform.h"
+#include "../we_seen.h"
 
 #if WPE_PLATFORM_STATFS_KIND == WPE_PLATFORM_STATFS_F_TYPE
 # include <sys/vfs.h>
@@ -45,6 +48,8 @@
 #define SEEN_ROWS_TRIES       64     /* makes of one object before the number is called not reached */
 #define SEEN_ROWS_PROBE_ROUNDS 16     /* unlink and make again, to ask "does it ever give a number back" */
 #define SEEN_ROWS_NAME_SIZE   64
+#define SEEN_ROWS_FORGE_BACK_S  1000  /* seconds a probe sets a file's times back to see whether its birth follows */
+#define SEEN_ROWS_FORGE_SLACK_S 2     /* seconds of slack when reading the birth back */
 
 /** What a row calls to make the object again under NAME (a file, a link or a folder). */
 typedef int (*SeenRowsMake)(const char *path, void *ctx);
@@ -194,6 +199,52 @@ static int seen_rows_make_link(const char *path, void *ctx)
 }
 
 /**
+ * seen_rows_probe_gives_back - Run the one-shot probe and keep the numbers it saw.
+ * @dir: a folder on the file system the row will use.
+ * @first, @second: the two numbers of the last round that ran (0 when none did).
+ *
+ * Make a file, remember its number, remove it, make another, compare, for a few
+ * rounds, in a scratch subfolder.  The numbers are kept so a row that gave up
+ * can print what the probe saw next to what the walk saw.
+ * Return: 1 when a round gave the number back (or the probe could not be set
+ * up), else 0.
+ */
+static int seen_rows_probe_gives_back(const char *dir, ino_t *first_ino, ino_t *second_ino)
+{
+ char scratch[TEST_DIR_PATH_SIZE], path[TEST_DIR_PATH_SIZE];
+ struct stat first, second;
+ int round, gave_back = 0;
+
+ *first_ino = 0;
+ *second_ino = 0;
+ /* A probe that cannot be set up says "gives back": the row then runs and
+    fails by name instead of skipping on a probe that never ran. */
+ if (test_path_join(scratch, sizeof scratch, dir, "probe") != 0)
+  return(1);
+ if (mkdir(scratch, 0700) != 0)
+  return(1);
+ if (test_path_join(path, sizeof path, scratch, "p") != 0)
+ {
+  rmdir(scratch);
+  return(1);
+ }
+ for (round = 0; round < SEEN_ROWS_PROBE_ROUNDS && !gave_back; round++)
+ {
+  if (seen_rows_make_file(path, NULL) != 0 || lstat(path, &first) != 0)
+   break;
+  unlink(path);
+  if (seen_rows_make_file(path, NULL) != 0 || lstat(path, &second) != 0)
+   break;
+  *first_ino = first.st_ino;
+  *second_ino = second.st_ino;
+  gave_back = (first.st_ino == second.st_ino);
+  unlink(path);
+ }
+ rmdir(scratch);
+ return(gave_back);
+}
+
+/**
  * seen_rows_never_gives_back - Does this folder's file system never reuse a number?
  * @dir: a folder on the file system the row will use.
  *
@@ -205,31 +256,9 @@ static int seen_rows_make_link(const char *path, void *ctx)
  */
 static int seen_rows_never_gives_back(const char *dir)
 {
- char scratch[TEST_DIR_PATH_SIZE], path[TEST_DIR_PATH_SIZE];
- struct stat first, second;
- int round, gave_back = 0;
+ ino_t first, second;
 
- if (test_path_join(scratch, sizeof scratch, dir, "probe") != 0)
-  return(0);
- if (mkdir(scratch, 0700) != 0)
-  return(0);
- if (test_path_join(path, sizeof path, scratch, "p") != 0)
- {
-  rmdir(scratch);
-  return(0);
- }
- for (round = 0; round < SEEN_ROWS_PROBE_ROUNDS && !gave_back; round++)
- {
-  if (seen_rows_make_file(path, NULL) != 0 || lstat(path, &first) != 0)
-   break;
-  unlink(path);
-  if (seen_rows_make_file(path, NULL) != 0 || lstat(path, &second) != 0)
-   break;
-  gave_back = (first.st_ino == second.st_ino);
-  unlink(path);
- }
- rmdir(scratch);
- return(!gave_back);
+ return(!seen_rows_probe_gives_back(dir, &first, &second));
 }
 
 /**
@@ -241,6 +270,60 @@ static void seen_rows_filler_name(const char *dir, int n, char *out, size_t size
 
  snprintf(name, sizeof name, "filler%d", n);
  test_path_join(out, size, dir, name);
+}
+
+/** How a walk that did not reach the wanted number ended. */
+typedef enum
+{
+ SEEN_REUSE_MAKE_FAILED,     /* the object could not be made or looked at */
+ SEEN_REUSE_ABOVE_WANTED,    /* the new object took a number above the wanted one */
+ SEEN_REUSE_RENAME_FAILED,   /* a lower number could not be kept under a filler name */
+ SEEN_REUSE_TRIES_RAN_OUT    /* SEEN_ROWS_TRIES objects and none held the number */
+} SeenRowsGiveUpExit;
+
+/**
+ * SeenRowsGiveUp - What the last walk that gave up saw, kept for the row that
+ * reports it (seen_rows_say_giveup).  One walk at a time, as the rows are.
+ */
+typedef struct
+{
+ const char *dir, *name;
+ SeenRowsMake make;
+ void *ctx;
+ ino_t want;
+ SeenRowsGiveUpExit how;
+ int err;                              /* errno at the exit, 0 when the exit has none */
+ int tries;                            /* numbers noted */
+ ino_t got[SEEN_ROWS_TRIES];           /* the number of every try, in order */
+} SeenRowsGiveUp;
+
+static SeenRowsGiveUp seen_rows_last_giveup;
+
+/** seen_rows_giveup_begin - Start the record of a walk. */
+static void seen_rows_giveup_begin(SeenRowsGiveUp *g, const char *dir, const char *name,
+                                   SeenRowsMake make, void *ctx, ino_t want)
+{
+ memset(g, 0, sizeof *g);
+ g->dir = dir;
+ g->name = name;
+ g->make = make;
+ g->ctx = ctx;
+ g->want = want;
+}
+
+/** seen_rows_giveup_note - Keep the number one try gave. */
+static void seen_rows_giveup_note(SeenRowsGiveUp *g, ino_t got)
+{
+ if (g->tries < SEEN_ROWS_TRIES)
+  g->got[g->tries++] = got;
+}
+
+/** seen_rows_giveup_end - Keep how the walk ended; always 0, the walk's answer. */
+static int seen_rows_giveup_end(SeenRowsGiveUp *g, SeenRowsGiveUpExit how, int err)
+{
+ g->how = how;
+ g->err = err;
+ return(0);
 }
 
 /**
@@ -262,24 +345,27 @@ static int seen_rows_reuse_once(const char *dir, const char *name, SeenRowsMake 
                                 void *ctx, ino_t want)
 {
  char path[TEST_DIR_PATH_SIZE], filler[TEST_DIR_PATH_SIZE];
+ SeenRowsGiveUp *g = &seen_rows_last_giveup;
  struct stat st;
  int tries;
 
  if (test_path_join(path, sizeof path, dir, name) != 0)
   return(0);
+ seen_rows_giveup_begin(g, dir, name, make, ctx, want);
  for (tries = 0; tries < SEEN_ROWS_TRIES; tries++)
  {
   if (make(path, ctx) != 0 || lstat(path, &st) != 0)
-   return(0);
+   return(seen_rows_giveup_end(g, SEEN_REUSE_MAKE_FAILED, errno));
+  seen_rows_giveup_note(g, st.st_ino);
   if (st.st_ino == want)
    return(1);
   if (st.st_ino > want)
-   return(0);
+   return(seen_rows_giveup_end(g, SEEN_REUSE_ABOVE_WANTED, 0));
   seen_rows_filler_name(dir, tries, filler, sizeof filler);
   if (rename(path, filler) != 0)
-   return(0);
+   return(seen_rows_giveup_end(g, SEEN_REUSE_RENAME_FAILED, errno));
  }
- return(0);
+ return(seen_rows_giveup_end(g, SEEN_REUSE_TRIES_RAN_OUT, 0));
 }
 
 /**
@@ -348,6 +434,118 @@ static void seen_rows_clean_attempt(const char *dir, const char *name)
  }
 }
 
+/** seen_rows_giveup_exit_name - The exit of a walk in words. */
+static const char *seen_rows_giveup_exit_name(SeenRowsGiveUpExit how)
+{
+ if (how == SEEN_REUSE_MAKE_FAILED)
+  return("the object could not be made or looked at");
+ if (how == SEEN_REUSE_ABOVE_WANTED)
+  return("the new object took a number above the wanted one");
+ if (how == SEEN_REUSE_RENAME_FAILED)
+  return("a lower number could not be kept under a filler name");
+ return("every try gave a number below the wanted one");
+}
+
+/** seen_rows_fs_flags - The mount flags of the file system DIR is on, or 0 where the system gives none. */
+static unsigned long seen_rows_fs_flags(const char *dir)
+{
+#if WPE_PLATFORM_STATFS_KIND == WPE_PLATFORM_STATFS_NONE
+ (void)dir;
+ return(0);
+#else
+ struct statfs sf;
+
+ if (statfs(dir, &sf) != 0)
+  return(0);
+ return((unsigned long)sf.f_flags);
+#endif
+}
+
+/** seen_rows_say_giveup_walk - What the walk saw: the exit, the wanted number, every try's number, errno. */
+static void seen_rows_say_giveup_walk(const SeenRowsGiveUp *g)
+{
+ int i;
+
+ fprintf(stderr, "REUSE-GIVEUP exit: %s; want=%lu; errno=%d (%s); tries=%d; got=",
+         seen_rows_giveup_exit_name(g->how), (unsigned long)g->want, g->err,
+         g->err != 0 ? strerror(g->err) : "none", g->tries);
+ for (i = 0; i < g->tries; i++)
+  fprintf(stderr, "%s%lu", i > 0 ? "," : "", (unsigned long)g->got[i]);
+ fprintf(stderr, "\n");
+}
+
+/** seen_rows_say_giveup_system - What the probe found, the file system and its flags, and the system release. */
+static void seen_rows_say_giveup_system(const char *dir)
+{
+ char fs[SEEN_ROWS_NAME_SIZE];
+ struct utsname u;
+ ino_t first, second;
+ int gave_back = seen_rows_probe_gives_back(dir, &first, &second);
+
+ seen_rows_fs_name(dir, fs, sizeof fs);
+ fprintf(stderr, "REUSE-GIVEUP probe: first=%lu second=%lu gave_back=%d\n",
+         (unsigned long)first, (unsigned long)second, gave_back);
+ fprintf(stderr, "REUSE-GIVEUP file system: %s, mount flags 0x%lx\n", fs, seen_rows_fs_flags(dir));
+ if (uname(&u) == 0)
+  fprintf(stderr, "REUSE-GIVEUP system: %s %s\n", u.sysname, u.release);
+}
+
+/**
+ * seen_rows_extra_try_after_sync - One more try after the folder and the disk are flushed.
+ * @g: the walk that gave up.
+ *
+ * Separates two causes that look alike in a log: the file system defers
+ * giving a freed number back (soft updates; the fix is a sync before the new
+ * object is made), or it allocates above the wanted number whatever is done
+ * (the fix is another method).  Removes the object the walk left under the
+ * name, flushes the folder with fsync and everything with sync, makes the
+ * object again and says whether it holds the wanted number.
+ */
+static void seen_rows_extra_try_after_sync(const SeenRowsGiveUp *g)
+{
+ char path[TEST_DIR_PATH_SIZE];
+ struct stat st;
+ int fd;
+
+ if (test_path_join(path, sizeof path, g->dir, g->name) != 0)
+  return;
+ seen_rows_remove_entry(path);
+ fd = open(g->dir, O_RDONLY);
+ if (fd >= 0)
+ {
+  if (fsync(fd) != 0)
+   fprintf(stderr, "REUSE-GIVEUP fsync of the folder: %s\n", strerror(errno));
+  close(fd);
+ }
+ sync();
+ if (g->make(path, g->ctx) != 0 || lstat(path, &st) != 0)
+ {
+  fprintf(stderr, "REUSE-GIVEUP after fsync of the folder and sync: the object could not be made: %s\n",
+          strerror(errno));
+  return;
+ }
+ fprintf(stderr, "REUSE-GIVEUP after fsync of the folder and sync: got=%lu want=%lu reached=%d\n",
+         (unsigned long)st.st_ino, (unsigned long)g->want, st.st_ino == g->want);
+ seen_rows_remove_entry(path);
+}
+
+/**
+ * seen_rows_say_giveup - Say, on stderr, everything a log needs to settle why the number was not reached.
+ * @g: the record of the walk that gave up.
+ *
+ * When a row fails on a file system that gives numbers back, the log of the
+ * failed run is the only evidence there is: it names the exit the walk took,
+ * every number it saw, the error, what the one-shot probe found, the file
+ * system and its flags, the release of the system, and whether one more try
+ * after a flush reached the number.
+ */
+static void seen_rows_say_giveup(const SeenRowsGiveUp *g)
+{
+ seen_rows_say_giveup_walk(g);
+ seen_rows_say_giveup_system(g->dir);
+ seen_rows_extra_try_after_sync(g);
+}
+
 /**
  * seen_rows_reuse_the_number - Make the file system give an old object's number to a new object.
  * @dir: the folder of the row (fresh, so no filler of another row is in it).
@@ -365,12 +563,14 @@ static int seen_rows_reuse_the_number(const char *dir, const char *name, const S
 {
  int attempt;
 
+ seen_rows_giveup_begin(&seen_rows_last_giveup, dir, name, pc->make_new, pc->new_ctx, 0);
  for (attempt = 0; attempt < SEEN_ROWS_ATTEMPTS; attempt++)
  {
   if (seen_rows_attempt(dir, name, pc))
    return(1);
   seen_rows_clean_attempt(dir, name);
  }
+ seen_rows_say_giveup(&seen_rows_last_giveup);
  return(0);
 }
 
@@ -391,6 +591,217 @@ static int other_object_while_held(int held_fd, const struct stat *now)
  if (held_fd < 0 || fstat(held_fd, &held) != 0)
   return(0);
  return(held.st_ino != now->st_ino || held.st_dev != now->st_dev);
+}
+
+/** Who can say when a file was made on this system: the kernel alone, the file's owner too, or nobody. */
+typedef enum
+{
+ SEEN_BIRTH_TRUSTED,           /* statx (Linux): only the kernel sets the birth time */
+ SEEN_BIRTH_OWNER_SETTABLE,    /* st_birthtim, st_birthtimespec (FreeBSD, NetBSD, macOS): the owner can set it */
+ SEEN_BIRTH_ABSENT             /* no birth time on this system or on this file system */
+} SeenBirthFact;
+
+/** What a row is about: another file took the number (the births differ), or the same file was touched in place. */
+typedef enum
+{
+ SEEN_BIRTHS_DIFFER,
+ SEEN_SAME_BIRTH_TOUCHED
+} SeenScenario;
+
+/**
+ * seen_rows_birth_route - How this build reads a birth time, from the build's own facts.
+ *
+ * The design input of the judge (we_seen.c): a differing birth is another
+ * object where only the kernel sets it, and is not proof where the owner can
+ * set it.  It is read from the platform macros, not from the judge, so the
+ * expectation is independent of the code it judges.
+ */
+static SeenBirthFact seen_rows_birth_route(void)
+{
+#if WPE_PLATFORM_STATX_BTIME
+ return(SEEN_BIRTH_TRUSTED);
+#elif WPE_PLATFORM_STAT_BIRTH != WPE_PLATFORM_STAT_BIRTH_NONE
+ return(SEEN_BIRTH_OWNER_SETTABLE);
+#else
+ return(SEEN_BIRTH_ABSENT);
+#endif
+}
+
+/**
+ * seen_rows_system_gives_birth - Does the system itself report a birth time for this file?
+ * @path: a file just made in the row's folder.
+ *
+ * Asked of the system, never of the product (we_seen.c answers "no birth" under
+ * the test hook that plays a system without one, and a fact read from the
+ * judge cannot check the judge).  Where the build reads the birth through
+ * statx: STATX_BTIME must come back in the mask with a non-zero time.  Where it
+ * reads it from struct stat: st_birthtim or st_birthtimespec must be neither
+ * 0 nor -1.
+ * Return: 1 when the system gives one.
+ */
+static int seen_rows_system_gives_birth(const char *path)
+{
+#if WPE_PLATFORM_STATX_BTIME
+ struct statx sx;
+
+ if (statx(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_BTIME, &sx) != 0)
+  return(0);
+ if ((sx.stx_mask & STATX_BTIME) == 0)
+  return(0);
+ return(sx.stx_btime.tv_sec != 0 || sx.stx_btime.tv_nsec != 0);
+#elif WPE_PLATFORM_STAT_BIRTH != WPE_PLATFORM_STAT_BIRTH_NONE
+ struct stat st;
+ time_t birth;
+
+ if (lstat(path, &st) != 0)
+  return(0);
+# if WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTHTIM
+ birth = st.st_birthtim.tv_sec;
+# else
+ birth = st.st_birthtimespec.tv_sec;
+# endif
+ return(birth != 0 && birth != (time_t)-1);
+#else
+ (void)path;
+ return(0);
+#endif
+}
+
+/**
+ * seen_rows_birth_fact - Which of the three a file made in DIR has.
+ * @dir: the row's folder.
+ *
+ * The route says what the build can read; whether this file system gives a
+ * birth time at all (msdosfs, some tmpfs) is measured on a fresh file in the
+ * row's own folder, by asking the system (seen_rows_system_gives_birth).
+ */
+static SeenBirthFact seen_rows_birth_fact(const char *dir)
+{
+ SeenBirthFact route = seen_rows_birth_route();
+ char path[TEST_DIR_PATH_SIZE];
+ int has;
+
+ if (route == SEEN_BIRTH_ABSENT)
+  return(SEEN_BIRTH_ABSENT);
+ if (test_path_join(path, sizeof path, dir, "probe_birth") != 0)
+  return(SEEN_BIRTH_ABSENT);
+ if (seen_rows_make_file(path, NULL) != 0)
+  return(SEEN_BIRTH_ABSENT);
+ has = seen_rows_system_gives_birth(path);
+ unlink(path);
+ if (has)
+  return(route);
+ return(SEEN_BIRTH_ABSENT);
+}
+
+/**
+ * seen_rows_expected_verdict - What the judge must answer for a scenario on a system with this birth fact.
+ *
+ * Another file took the number and the births differ: OTHER where only the
+ * kernel sets the birth, UNSURE where the owner can set it (a twin made by the
+ * owner can copy it) and where there is none.  The same file touched in place:
+ * SAME where both records have a birth that agrees, UNSURE where there is none
+ * (nothing tells a touched file from a new one, so the user is asked, never
+ * written over in silence).
+ */
+static WpeSeenIs seen_rows_expected_verdict(SeenScenario scenario, SeenBirthFact fact)
+{
+ if (scenario == SEEN_BIRTHS_DIFFER)
+ {
+  if (fact == SEEN_BIRTH_TRUSTED)
+   return(WPE_SEEN_OTHER);
+  return(WPE_SEEN_UNSURE);
+ }
+ if (fact == SEEN_BIRTH_ABSENT)
+  return(WPE_SEEN_UNSURE);
+ return(WPE_SEEN_SAME);
+}
+
+/** seen_rows_birth_fact_name - The fact in words, for the line a row prints. */
+static const char *seen_rows_birth_fact_name(SeenBirthFact fact)
+{
+ if (fact == SEEN_BIRTH_TRUSTED)
+  return("a birth time only the kernel sets");
+ if (fact == SEEN_BIRTH_OWNER_SETTABLE)
+  return("a birth time its owner can set");
+ return("no birth time");
+}
+
+/** seen_rows_verdict_name - The judge's answer in words. */
+static const char *seen_rows_verdict_name(WpeSeenIs verdict)
+{
+ if (verdict == WPE_SEEN_SAME)
+  return("SAME");
+ if (verdict == WPE_SEEN_OTHER)
+  return("OTHER");
+ return("UNSURE");
+}
+
+/**
+ * seen_rows_utimes_moves_birth - Does setting a file's times back move its birth time back?
+ * @dir: the row's folder.
+ *
+ * A measurement, not an input: it shows in the log that the design's premise
+ * (the owner can forge a birth time) holds on this system.  FreeBSD and NetBSD
+ * pull the birth back to the time given.
+ * Return: 1 when it moved, 0 when it did not, -1 where the build has no birth
+ * member to read (statx and no-birth systems).
+ */
+static int seen_rows_utimes_moves_birth(const char *dir)
+{
+#if WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTH_NONE
+ (void)dir;
+ return(-1);
+#else
+ char path[TEST_DIR_PATH_SIZE];
+ struct timeval back[2];
+ struct stat st;
+ time_t past = time(NULL) - SEEN_ROWS_FORGE_BACK_S;
+ time_t birth;
+
+ if (test_path_join(path, sizeof path, dir, "probe_forge") != 0 || seen_rows_make_file(path, NULL) != 0)
+  return(-1);
+ back[0].tv_sec = back[1].tv_sec = past;
+ back[0].tv_usec = back[1].tv_usec = 0;
+ if (utimes(path, back) != 0 || lstat(path, &st) != 0)
+ {
+  unlink(path);
+  return(-1);
+ }
+ unlink(path);
+# if WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTHTIM
+ birth = st.st_birthtim.tv_sec;
+# else
+ birth = st.st_birthtimespec.tv_sec;
+# endif
+ return(birth <= past + SEEN_ROWS_FORGE_SLACK_S);
+#endif
+}
+
+/**
+ * seen_rows_expect - The verdict a row must see here, and the facts that make it so, in the log.
+ * @row: the row's name.  @dir: its folder.  @scenario: what it is about.
+ *
+ * One call per row, so no row repeats the birth rule: the verdict comes from
+ * the scenario and the birth fact measured in the row's own folder.  The line
+ * it prints names the fact, whether utimes forges the birth on this system,
+ * and the verdict, so a log says which branch of a row ran and why.
+ * Return: the verdict the judge must answer.
+ */
+static WpeSeenIs seen_rows_expect(const char *row, const char *dir, SeenScenario scenario)
+{
+ SeenBirthFact fact = seen_rows_birth_fact(dir);
+ WpeSeenIs verdict = seen_rows_expected_verdict(scenario, fact);
+ int forged = seen_rows_utimes_moves_birth(dir);
+
+ printf("note: %s: %s; the judge must answer %s", row, seen_rows_birth_fact_name(fact),
+        seen_rows_verdict_name(verdict));
+ if (forged == 1)
+  printf(" (utimes moved the birth time back here)");
+ else if (forged == 0)
+  printf(" (utimes did not move the birth time here)");
+ printf("\n");
+ return(verdict);
 }
 
 #endif

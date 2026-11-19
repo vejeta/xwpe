@@ -710,7 +710,36 @@ def measure_tree(config, jobs=None):
     if MOUSE_FILE in sources and MOUSE_FILE not in result.failed:
         seen = set(units[sources.index(MOUSE_FILE)].get("mouse", ()))
         result.mouse_missing = [s for s in MOUSE_SYMBOLS if s not in seen]
+    if not result.directives_only:
+        reread_rows_5_6_raw(config, result, sources)
     return result
+
+
+def reread_rows_5_6_raw(config, result, sources):
+    """Rows 5 and 6 from the raw source, for a compiler that expands macros.
+
+    With no -fdirectives-only the preprocessed text has a macro's value in
+    place of its name: a getenv(WPE_SEEN_TEST_FAIL_ENV) reads as a literal
+    "XWPE_TEST_FAIL" at the call, and KEY_MOUSE reads as a number.  Row 5
+    (the string literal kept, comments hollowed) and row 6 (the symbols in
+    code) are judged on the file as written instead.  The count is of every
+    arm of an #if, not only the arms this build compiles; a count above the
+    allow line then points at a getenv the build may not compile, which a
+    reader checks against the source."""
+    result.found["getenv"] = defaultdict(list)
+    for name in list(sources) + top_level(config, ".h"):
+        if name in result.failed:
+            continue
+        with open(os.path.join(config.srcdir, name), encoding="latin-1") as fh:
+            text = fh.read()
+        lines = find_getenv(text, strip_code(text))
+        if lines:
+            result.found["getenv"][name] = lines
+    if MOUSE_FILE in sources and MOUSE_FILE not in result.failed:
+        with open(os.path.join(config.srcdir, MOUSE_FILE), encoding="latin-1") as fh:
+            code = strip_code(fh.read())
+        seen = set(re.findall(r"\b(%s)\b" % "|".join(MOUSE_SYMBOLS), code))
+        result.mouse_missing = [s for s in MOUSE_SYMBOLS if s not in seen]
 
 
 def add_unit(result, name, unit):
@@ -878,6 +907,8 @@ def report(result, allow, out):
     if not result.directives_only:
         out("rows 1-2: this compiler has no -fdirectives-only, macros are "
             "expanded and the numbers are not the reference's")
+        out("rows 5-6: read from the source as written (every #if arm), not "
+            "from the expanded text")
     out("  %-18s %7s %5s %6s %4s %7s" % ("file", "longest", "nest", ">6par",
                                          "dup", "statics"))
     ranked = sorted(result.files.items(), key=lambda kv: -kv[1]["longest"])
@@ -1007,6 +1038,9 @@ def selftest(cc):
         write_fixture(folder, plant_source(), TERM_WITHOUT_MOUSE)
         config = Config(folder, cc, ["-I" + folder], ["fixture.c", MOUSE_FILE], True)
         result = measure_tree(config, jobs=1)
+        # The fixtures test the rows' own logic; whether this compiler keeps
+        # directives is the run's fact and is tried on its own just below.
+        result.directives_only = True
         errors = judge(result, {}, False, {"fixture.c", MOUSE_FILE, "fixture.h"})
         wanted = (("row 3", "fixture.c: row 3"), ("row 4", "fixture.c: row 4"),
                   ("row 5", "fixture.c: row 5"), ("row 6", MOUSE_FILE + ": row 6"))
@@ -1014,6 +1048,18 @@ def selftest(cc):
             if not any(e.startswith(prefix) for e in errors):
                 failures.append("the planted offence of %s was not named: %r"
                                 % (label, errors))
+        # A compiler that expands macros: rows 5 and 6 are read again from
+        # the raw files.  The findings of the preprocessed run are cleared
+        # first, so only the raw reading can name them.
+        result.found["getenv"] = defaultdict(list)
+        result.mouse_missing = None
+        reread_rows_5_6_raw(config, result, config.sources)
+        expanded = judge(result, {}, False, {"fixture.c", MOUSE_FILE, "fixture.h"})
+        for label, prefix in (("row 5", "fixture.c: row 5"),
+                              ("row 6", MOUSE_FILE + ": row 6")):
+            if not any(e.startswith(prefix) for e in expanded):
+                failures.append("read from the raw source, the planted offence of %s was "
+                                "not named: %r" % (label, expanded))
         for kind, want in (("noproto", 2), ("extern", 2)):
             got = len(result.found[kind].get("fixture.c", ()))
             if got != want:
@@ -1028,6 +1074,7 @@ def selftest(cc):
                                 % (field, row[field], floor))
         write_fixture(folder, CLEAN_SOURCE, TERM_WITH_MOUSE)
         result = measure_tree(config, jobs=1)
+        result.directives_only = True
         built = {"fixture.c", MOUSE_FILE, "fixture.h"}
         errors = judge(result, {}, False, built)
         if errors:

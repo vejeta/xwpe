@@ -1,5 +1,6 @@
 /* Unit test: the AI line diff (we_ai_diff.c).  No editor, no network. */
 #include <stdio.h>
+#include "linebuf.h"
 #include <string.h>
 #include <stdlib.h>
 #include "we_ai.h"

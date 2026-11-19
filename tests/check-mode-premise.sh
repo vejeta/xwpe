@@ -16,7 +16,9 @@
 # mask, not a mode being set):
 #  1. A tests/*.c with a special-bit mode (a five-character octal literal
 #     0[1-7]nnn, or S_ISUID, S_ISGID, S_ISVTX) includes "testdir.h", calls
-#     test_premise_special_bits_settable( and does not call mkdtemp itself.
+#     test_premise_special_bits_settable( or test_premise_special_bits( (the
+#     probe, and the premise that also knows a system refuses the sticky bit
+#     to every regular file) and does not call mkdtemp itself.
 #  2. In such a file a line with such a mode calls none of chmod, fchmod,
 #     fchmodat, mkdir, mkdirat, open, openat, creat: the helpers
 #     (test_put_mode, test_mkdir_mode, test_chmod_mode), the owner under test
@@ -217,7 +219,7 @@ BEGIN {
     }
     note_premises(line)
     if (line ~ /(^|[^A-Za-z0-9_])test_premise[ \t]*[(]/) has_premise = 1
-    if (line ~ /(^|[^A-Za-z0-9_])test_premise_special_bits_settable[ \t]*[(]/) has_bits_probe = 1
+    if (line ~ /(^|[^A-Za-z0-9_])test_premise_special_bits(_settable)?[ \t]*[(]/) has_bits_probe = 1
     if (line ~ /(^|[^A-Za-z0-9_])test_premise_file_0200_is_unreadable[ \t]*[(]/) has_file_probe = 1
     if (line ~ /(^|[^A-Za-z0-9_])test_premise_folder_refuses_new_files[ \t]*[(]/) has_folder_probe = 1
   } else {
@@ -289,6 +291,7 @@ selftest() {
   printf '%s\n' '#include "testdir.h"' 'static void row(void) { chmod("x", 02755); }' > "$fx/bad_raw.c"
   printf '%s\n' '#include "testdir.h"' 'static void row(char *d) { test_premise(test_premise_special_bits_settable(d, S_ISGID), "r", "m"); test_chmod_mode(d, "x", 02755); }' > "$fx/good_helper.c"
   printf '%s\n' '#include "testdir.h"' 'static void row(char *d) { test_chmod_mode(d, "x", 02755); }' > "$fx/bad_noprobe.c"
+  printf '%s\n' '#include "testdir.h"' 'static void row(char *d) { if (!test_premise_special_bits(d, S_ISVTX, "r", "m")) return; test_chmod_mode(d, "x", 01755); }' > "$fx/good_bits_premise.c"
   printf '%s\n' 'import os' 'from stat import S_ISGID' 'def test_a(p):' '    os.chmod(p, 0o644 | S_ISGID)' > "$fx/bad_py_bare.py"
   printf '%s\n' '#include <sys/stat.h>' 'static int m(struct stat *s) { return s->st_mode & 07777; }' \
     'static void row(void) { /* a 02755 file */ chmod("x", 0644); puts("0500"); }' > "$fx/good_mask.c"
@@ -327,7 +330,7 @@ selftest() {
   selftest_expect "a pytest row with no helper" "$out" \
     "bad_py.py:3: rule 3: sets a special-bit mode and never calls workdir_in_my_group(" \
     "bad_py.py:3: rule 3: sets a special-bit mode and never calls special_bits_settable("
-  for good in good_helper.c good_mask.c good_deny.c good_py.py good_py_mask.py good_premise_forms.c; do
+  for good in good_helper.c good_bits_premise.c good_mask.c good_deny.c good_py.py good_py_mask.py good_premise_forms.c; do
     if printf '%s\n' "$out" | grep -q "^$good:"; then
       echo "FAIL: $good must pass, and the scan named it:"
       printf '%s\n' "$out" | grep "^$good:" | sed 's/^/    | /'

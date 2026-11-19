@@ -14,6 +14,7 @@
  * obeys (.git, xwperc, .claude, ...) is told apart as protected.
  */
 #include <errno.h>
+#include "linebuf.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>

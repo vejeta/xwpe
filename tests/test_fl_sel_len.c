@@ -15,6 +15,7 @@
    rather than silent undefined behaviour. */
 
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

@@ -10,6 +10,7 @@
  *  - dragging an ancestor row of the directory tree names no folder.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

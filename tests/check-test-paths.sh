@@ -164,7 +164,7 @@ scan_dir() {
     uses=0
     case $name in
       testdir.h|seen_rows.h) uses=1 ;;
-      *) grep -q '^[ 	]*#[ 	]*include[ 	]*"\(testdir\|seen_rows\)\.h"' "$f" && uses=1 ;;
+      *) grep -Eq '^[ 	]*#[ 	]*include[ 	]*"(testdir|seen_rows)\.h"' "$f" && uses=1 ;;
     esac
     awk -v file="$name" -v uses="$uses" "$BLANK_C
 $C_AWK" "$f"
@@ -280,6 +280,7 @@ if [ -n "$out" ]; then
   printf '%s\n' "$out" | while IFS= read -r l; do echo "  $l"; done
   status=1
 fi
-sh "$0" --selftest > /dev/null 2>&1 || { echo "check-test-paths: FAIL: canary: the scan is blind (run $0 --selftest)"; status=1; }
+selftest_out=$(sh "$0" --selftest 2>&1) \
+  || { echo "check-test-paths: FAIL: canary: the scan is blind (run $0 --selftest); it said:"; printf '%s\n' "$selftest_out" | sed 's/^/  | /'; status=1; }
 [ $status = 0 ] && echo "check-test-paths: ok ($scanned files)"
 exit $status

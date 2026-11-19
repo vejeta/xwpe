@@ -6,6 +6,7 @@
  * sent.  No real time passes and nothing waits.
  */
 #include <stdio.h>
+#include "linebuf.h"
 #include <stdlib.h>
 #include <string.h>
 

@@ -12,6 +12,7 @@
  * others refuse and say the range).
  */
 #include <limits.h>
+#include "linebuf.h"
 #include <stdio.h>
 #include <string.h>
 
