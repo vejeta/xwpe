@@ -531,25 +531,26 @@ static int append_to(const char *path, const char *text)
  return(close(fd));
 }
 
-/** What a row says about a file system whose reuse the rows below need. */
-static int reuse_possible(const char *dir, const char *what)
+/**
+ * reuse_row - Make a reuse row's number come again, and count how it ended.
+ * @dir: the row's folder.  @row: its name.  @name: where the objects are made.  @pc: the case.
+ *
+ * The call of every reuse row here: the one owner of the SKIP-or-FAIL decision
+ * (seen_rows_reuse_or_skip) says what to print, and this counts it.  The walk
+ * runs first and the probe only after the walk missed, so a row that reaches
+ * the number is never skipped.
+ * Return: 1 when the new object holds the old number and the row goes on, 0
+ * after a SKIP or a FAIL.
+ */
+static int reuse_row(const char *dir, const char *row, const char *name, const SeenRowsCase *pc)
 {
- char msg[160];
+ SeenRowsOutcome out = seen_rows_reuse_or_skip(dir, row, name, pc);
 
- if (seen_rows_never_gives_back(dir))
- {
-  snprintf(msg, sizeof msg, "%s: this file system never gives a number back; the table row carries the proof", what);
-  skip(msg);
-  return(0);
- }
- return(1);
-}
-
-/** The number was not reached on a file system that gives numbers back: a FAIL, never a SKIP. */
-static void not_reached(const char *what)
-{
- printf("FAIL: %s: the number was not reached on a file system that gives numbers back\n", what);
- fails++;
+ if (out == SEEN_ROWS_SKIP)
+  skips++;
+ if (out == SEEN_ROWS_FAIL)
+  fails++;
+ return(out == SEEN_ROWS_RAN);
 }
 
 /**
@@ -678,8 +679,6 @@ static void file_took_the_number(const char *base, const char *row, const char *
 
  if (row_folder(base, row, dir, sizeof dir) != 0)
   return;
- if (!reuse_possible(dir, "a file that took the number"))
-  return;
  if (hook != NULL)
   chk_int("the hook is set", setenv(WPE_SEEN_TEST_FAIL_ENV, hook, 1), 0);
  test_path_join(file, sizeof file, dir, "t");
@@ -690,9 +689,7 @@ static void file_took_the_number(const char *base, const char *row, const char *
  pc.look_ctx = &then;
  pc.make_new = seen_rows_make_file;
  pc.new_ctx = NULL;
- if (!seen_rows_reuse_the_number(dir, "t", &pc))
-  not_reached("a file that took the number");
- else
+ if (reuse_row(dir, "a file that took the number", "t", &pc))
  {
   chk_int("the look before was taken", wpe_seen_known(&then), 1);
   chk_int("give the new file other text", append_to(file, "other, and longer\n"), 0);
@@ -733,8 +730,6 @@ static void link_took_the_number(const char *base, const char *row, const char *
 
  if (row_folder(base, row, dir, sizeof dir) != 0)
   return;
- if (!reuse_possible(dir, "a link that took the number"))
-  return;
  test_path_join(link, sizeof link, dir, "l");
  wpe_seen_forget(&then.seen);
  pc.make_old = seen_rows_make_link;
@@ -743,11 +738,8 @@ static void link_took_the_number(const char *base, const char *row, const char *
  pc.look_ctx = &then;
  pc.make_new = seen_rows_make_link;
  pc.new_ctx = (void *)new_text;
- if (!seen_rows_reuse_the_number(dir, "l", &pc))
- {
-  not_reached("a link that took the number");
+ if (!reuse_row(dir, row, "l", &pc))
   return;
- }
  chk_int("the name look keeps the target text", then.has_text, 1);
  chk_int("the text is the whole target", then.len == strlen(old_text) && strcmp(then.text, old_text) == 0, 1);
  wpe_seen_name_look(link, &now);
@@ -808,8 +800,6 @@ static void test_a_held_folder_never_shares_its_number(const char *base)
  chk_int("a released hold is the path of nothing", wpe_seen_held_is(&held, ws), 0);
  wpe_seen_release(&held);
  chk_int("a second release is harmless", held.fd, -1);
- if (!reuse_possible(dir, "a folder that took the number once the hold is released"))
-  return;
  chk_int("remove the workspace", rmdir(ws), 0);
  pc.make_old = seen_rows_make_folder;
  pc.old_ctx = NULL;
@@ -817,8 +807,131 @@ static void test_a_held_folder_never_shares_its_number(const char *base)
  pc.look_ctx = NULL;
  pc.make_new = seen_rows_make_folder;
  pc.new_ctx = NULL;
- if (!seen_rows_reuse_the_number(dir, "ctl", &pc))
-  not_reached("a folder that took the number once the hold is released");
+ (void)reuse_row(dir, "a folder that took the number once the hold is released", "ctl", &pc);
+}
+
+/** The kinds the probe is asked about, one after the other; index order of the arrays below. */
+#define PROBE_KINDS 4
+
+/**
+ * case_of_kind - The case a reuse row of that kind walks with (old and new object the same kind).
+ * @pc: receives it.  @kind: 0 file, 1 link, 2 folder, 3 FIFO.
+ */
+static void case_of_kind(SeenRowsCase *pc, int kind)
+{
+ memset(pc, 0, sizeof *pc);
+ if (kind == 0)
+  pc->make_old = pc->make_new = seen_rows_make_file;
+ else if (kind == 1)
+  pc->make_old = pc->make_new = seen_rows_make_link;
+ else if (kind == 2)
+  pc->make_old = pc->make_new = seen_rows_make_folder;
+ else
+  pc->make_old = pc->make_new = seen_rows_make_fifo;
+ pc->old_ctx = pc->new_ctx = (void *)"target-a";
+}
+
+#define KIND_LINK 1
+
+/** The S_IFMT the objects of a kind index have. */
+static mode_t kind_mode(int kind)
+{
+ static const mode_t modes[PROBE_KINDS] = { S_IFREG, S_IFLNK, S_IFDIR, S_IFIFO };
+
+ return(modes[kind]);
+}
+
+/** The word a kind index is called in a row's name. */
+static const char *kind_index_word(int kind)
+{
+ static const char *const words[PROBE_KINDS] = { "file", "link", "folder", "FIFO" };
+
+ return(words[kind]);
+}
+
+/**
+ * A walk that reaches the number is RAN, whatever the probe would have said:
+ * the probe is asked only after a walk missed.  The hook says "never gives
+ * back" for every kind, and the file walk on a file system that does give a
+ * number back still runs.  Only asked where the file system is known to give
+ * the number back (ext2/3/4), so a miss there is a fault of the row.
+ */
+static void test_a_reached_walk_is_never_skipped(const char *dir)
+{
+ SeenRowsCase pc;
+
+ case_of_kind(&pc, 0);
+ chk_int("the hook is set",
+         setenv(SEEN_ROWS_PROBE_ENV, "never:file,never:link,never:folder,never:fifo", 1), 0);
+ chk_int("a walk that reached the number ran, the hook's answer unasked",
+         seen_rows_reuse_or_skip(dir, "a reached walk under the hook", "hook", &pc), SEEN_ROWS_RAN);
+ chk_int("the hook is unset", unsetenv(SEEN_ROWS_PROBE_ENV), 0);
+}
+
+/**
+ * Where the file system is ext2/3/4 (a disk file system of Linux that gives a
+ * freed number back), the probe gives back for every kind a row walks with:
+ * file, link, folder and FIFO.  So no reuse row is skipped there.  Measured on
+ * ext4 before this row was written: 20 trials in 20 for each kind, with no
+ * flush, as the rows make them.  On any other file system the row prints what
+ * the probe said and asserts nothing: each system is its own fact.
+ */
+static void test_ext4_gives_every_kind_back(const char *base)
+{
+ char dir[TEST_DIR_PATH_SIZE], fs[SEEN_ROWS_NAME_SIZE], what[SEEN_ROWS_NAME_SIZE + 64];
+ SeenRowsCase pc;
+ int kind, never;
+
+ if (row_folder(base, "ext4", dir, sizeof dir) != 0)
+  return;
+ seen_rows_fs_name(dir, fs, sizeof fs);
+ for (kind = 0; kind < PROBE_KINDS; kind++)
+ {
+  case_of_kind(&pc, kind);
+  never = seen_rows_never_gives_back(dir, &pc);
+  if (strcmp(fs, "ext2/3/4") == 0)
+  {
+   snprintf(what, sizeof what, "ext2/3/4 gives a freed %s number back", kind_index_word(kind));
+   chk_int(what, never, 0);
+  }
+  else
+   printf("note: %s: a freed %s number %s on this file system\n", fs, kind_index_word(kind),
+          never ? "was not given back" : "was given back");
+ }
+ if (strcmp(fs, "ext2/3/4") == 0)
+  test_a_reached_walk_is_never_skipped(dir);
+}
+
+/**
+ * The probe is asked about the kind the row walks with.  The decision of a
+ * missed walk is played with the hook that answers per kind
+ * (XWPE_TEST_REUSE_PROBE): with "never:link" and every other kind giving
+ * back, a missed link walk is a SKIP and a missed file, folder or FIFO walk
+ * is a FAIL.  A probe that ignored the case and always made a file would give
+ * a link the file's answer, and the first check would turn red.
+ */
+static void test_the_probe_asks_about_the_kind(const char *base)
+{
+ char dir[TEST_DIR_PATH_SIZE];
+ SeenRowsProbe pr;
+ SeenRowsCase pc;
+ int kind;
+
+ if (row_folder(base, "kinds", dir, sizeof dir) != 0)
+  return;
+ chk_int("the hook is set",
+         setenv(SEEN_ROWS_PROBE_ENV, "never:link,gives:file,gives:folder,gives:fifo", 1), 0);
+ for (kind = 0; kind < PROBE_KINDS; kind++)
+ {
+  case_of_kind(&pc, kind);
+  if (kind == KIND_LINK)
+   chk_int("a missed link walk is a SKIP", seen_rows_decide_miss(dir, &pc, &pr), SEEN_ROWS_SKIP);
+  else
+   chk_int("a missed walk of another kind is a FAIL", seen_rows_decide_miss(dir, &pc, &pr), SEEN_ROWS_FAIL);
+  chk_int("the answer was the hook's", pr.hooked, 1);
+  chk_int("the probe made the kind of the case", pr.kind == kind_mode(kind), 1);
+ }
+ chk_int("the hook is unset", unsetenv(SEEN_ROWS_PROBE_ENV), 0);
 }
 
 /** The hold on things that are not a folder to keep, and what a hold does across exec. */
@@ -1058,6 +1171,8 @@ static void test_the_disk_rows(void)
  test_a_file_that_took_the_number(base);
  test_a_link_that_took_the_number(base);
  test_a_held_folder_never_shares_its_number(base);
+ test_the_probe_asks_about_the_kind(base);
+ test_ext4_gives_every_kind_back(base);
  test_the_hold_refuses_what_is_not_a_folder(base);
  test_two_names_of_one_file(base);
  test_the_played_calls(base);

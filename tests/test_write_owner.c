@@ -34,6 +34,7 @@
 #include "seen_rows.h"
 #include "interpose.h"
 #include "fakechmod.h"
+#define TEST_WANT_CHILD_STATE   /* the process table, for "has it ended" */
 #include "test_watchdog.h"
 
 /** How long the FIFO row's writer may live, whatever happens to the row. */
@@ -4200,7 +4201,7 @@ static void test_a_writer_waiting_on_a_fifo_is_not_released_by_a_change_of_mode(
  for (waited = 0; waited < WRITER_WATCH_MS && blocked_in_open(pid) == 1; waited += TEST_WAIT_STEP_MS)
   test_sleep_ms(TEST_WAIT_STEP_MS);
  chk_int("the writer is still waiting in its open", blocked_in_open(pid), 1);
- chk_int("the writer is alive", kill(pid, 0), 0);
+ chk_int("the writer is alive", !child_pid_ended(pid), 1);
  kill(pid, SIGKILL);
  test_wait_child(pid, WRITER_END_MS);
 }
@@ -5394,15 +5395,6 @@ static void make_reuse_dir(void)
  remember_made_dir();
 }
 
-/** Say where a reuse row ran, so a log shows the row was not skipped. */
-static void say_reuse_ran(const char *row)
-{
- char fs[SEEN_ROWS_NAME_SIZE];
-
- seen_rows_fs_name(dir, fs, sizeof fs);
- printf("RAN %s: fs=%s\n", row, fs);
-}
-
 /** What a reuse row hands the callbacks: the window that reads the old file. */
 typedef struct {
  FENSTER *f;
@@ -5442,19 +5434,11 @@ static void reuse_copy_identity(const char *path, void *ctx)
  */
 static int make_the_number_come_again(const char *row, const SeenRowsCase *pc, const char *name)
 {
- if (seen_rows_reuse_the_number(dir, name, pc))
- {
-  say_reuse_ran(row);
-  return(1);
- }
- if (seen_rows_never_gives_back(dir))
- {
-  printf("SKIP: %s: this file system never gives a number back\n", row);
-  return(0);
- }
- printf("FAIL: %s: the number was not reached on a file system that gives numbers back\n", row);
- fails++;
- return(0);
+ SeenRowsOutcome out = seen_rows_reuse_or_skip(dir, row, name, pc);
+
+ if (out == SEEN_ROWS_FAIL)
+  fails++;
+ return(out == SEEN_ROWS_RAN);
 }
 
 /** A case whose old and new objects are files of the given texts, the window reading the old one. */
@@ -5752,19 +5736,20 @@ static SwapOutcome swap_outcome(const char *row)
 /**
  * swap_missed_every_time - No attempt of a swap row reached the number.
  *
- * The only place that asks whether this file system ever gives a number back:
- * a SKIP by name when it never does, a FAIL when it does (the row proved
- * nothing).  Asking after every miss could lose the probe's own race.
+ * The only place this row asks whether the file system gives a FIFO's number
+ * back, and it asks seen_rows_missed (the one owner of that decision): a SKIP
+ * by name when it never does, a FAIL when it does (the row proved nothing).
+ * Asking after every miss could lose the probe's own race.
  */
 static void swap_missed_every_time(const char *row)
 {
- if (seen_rows_never_gives_back(dir))
- {
-  printf("SKIP: %s: this file system never gives a number back\n", row);
-  return;
- }
- printf("FAIL: %s: the number was not reached on a file system that gives numbers back\n", row);
- fails++;
+ SeenRowsCase pc;
+
+ memset(&pc, 0, sizeof pc);
+ pc.make_old = seen_rows_make_fifo;
+ pc.make_new = seen_rows_make_fifo;
+ if (seen_rows_missed(dir, row, &pc) == SEEN_ROWS_FAIL)
+  fails++;
 }
 
 /* @scenario SC-name-identity-18: a FIFO is changed by name; another FIFO that
@@ -5974,6 +5959,13 @@ typedef struct {
  WpeNameSeen seen;
 } LinkRow;
 
+/* Where the file system does not give a freed link's number back, row 6 is
+   skipped; its same-number case is still tested, on every system, by
+   SC-name-identity-06b, which tells the number instead of waiting for it.  Both
+   names say so, so the SKIP line of each carries it. */
+#define ROW6_OTHER_LINK "row 6 (another link with the number; carried by SC-name-identity-06b)"
+#define ROW6_SAME_LINK  "row 6 (the same link made again; carried by SC-name-identity-06b)"
+
 /** make_old of row 6: the link z, which leads to t. */
 static int make_the_link_to_t(const char *path, void *ctx)
 {
@@ -6017,17 +6009,72 @@ static void test_a_link_that_took_the_dialogs_number_is_another_link(void)
  pc.look_ctx = &r;
  pc.make_new = seen_rows_make_link;
  pc.new_ctx = u;
- if (!make_the_number_come_again("row 6 (another link with the number)", &pc, "z"))
-  return;
- chk_int("refused for another link", wpe_write_set_perm_seen(r.p, &r.shown, &r.seen, 0600, &k), ESTALE);
- chk_int("by a link: it is another one", k.replaced_kind, S_IFLNK);
- chk_int("the file it leads to is as it was", mode_of("u"), 0644);
+ if (make_the_number_come_again(ROW6_OTHER_LINK, &pc, "z"))
+ {
+  chk_int("refused for another link", wpe_write_set_perm_seen(r.p, &r.shown, &r.seen, 0600, &k), ESTALE);
+  chk_int("by a link: it is another one", k.replaced_kind, S_IFLNK);
+  chk_int("the file it leads to is as it was", mode_of("u"), 0644);
+ }
  pc.make_new = seen_rows_make_link;
  pc.new_ctx = r.t;
- if (!make_the_number_come_again("row 6 (the same link made again)", &pc, "z"))
-  return;
+ if (make_the_number_come_again(ROW6_SAME_LINK, &pc, "z"))
+ {
+  chk_int("refused: the file shown was replaced", wpe_write_set_perm_seen(r.p, &r.shown, &r.seen, 0600, &k), ESTALE);
+  chk_int("the same link made again is not another link", k.replaced_kind, 0);
+ }
+}
+
+/**
+ * link_with_the_old_number - The sequence of row 6 with the old number told, not given back.
+ * @r: the names of the sequence, filled; @leads_to: the file of the new
+ * folder ("t" or "u") the new link leads to.
+ *
+ * Makes the link z, lets the dialog look at it, replaces the file it leads to,
+ * removes z and makes it again leading to @leads_to.  The file system is not
+ * asked to give the old number back (FreeBSD soft updates do not, for a link):
+ * every look of the name, link not followed, is told the old link's number
+ * (fakechmod_play_number_at), so the editor reaches the name judge with the
+ * same number on every system.
+ */
+static void link_with_the_old_number(LinkRow *r, const char *leads_to)
+{
+ char target[512];
+
+ make_reuse_dir();
+ put_file("t", "x\n", 0644);
+ put_file("u", "z\n", 0644);
+ path_of(r->p, sizeof r->p, "z");
+ path_of(r->t, sizeof r->t, "t");
+ path_of(r->t_new, sizeof r->t_new, "t.new");
+ chk_int("the old link", symlink(r->t, r->p), 0);
+ link_row_look(r->p, r);
+ chk_int("remove the old link", unlink(r->p), 0);
+ path_of(target, sizeof target, leads_to);
+ chk_int("make it again", symlink(target, r->p), 0);
+ fakechmod_play_number_at(r->p, r->seen.seen.seen_ino);
+}
+
+/* @scenario SC-name-identity-06b: row 6's last step on every system: the new
+   link holds the old link's number (told by the interposed look, not given
+   back by the file system), so the name judge decides by the target text.
+   Another text is another link; the same text made again is not.  The file
+   the dialog showed was replaced in both, so the change is refused. */
+static void test_a_link_with_the_dialogs_number_told_is_judged_by_its_text(void)
+{
+ LinkRow r;
+ WpeModeKept k;
+
+ link_with_the_old_number(&r, "u");
+ chk_int("refused for another link", wpe_write_set_perm_seen(r.p, &r.shown, &r.seen, 0600, &k), ESTALE);
+ chk_int("the look of the name was told the number", fakechmod_ino_hits > 0, 1);
+ chk_int("by a link: it is another one", k.replaced_kind, S_IFLNK);
+ chk_int("the file it leads to is as it was", mode_of("u"), 0644);
+ fakechmod_play_number_at("", 0);
+ link_with_the_old_number(&r, "t");
  chk_int("refused: the file shown was replaced", wpe_write_set_perm_seen(r.p, &r.shown, &r.seen, 0600, &k), ESTALE);
+ chk_int("the look of the name was told the number again", fakechmod_ino_hits > 0, 1);
  chk_int("the same link made again is not another link", k.replaced_kind, 0);
+ fakechmod_play_number_at("", 0);
 }
 
 /** look_old of row 7: what the Attributes dialog took of the file it shows. */
@@ -6527,6 +6574,7 @@ int main(void)
  test_a_look_is_not_met_by_a_file_with_its_number();
  test_another_file_with_the_copys_number_is_not_removed();
  test_a_link_that_took_the_dialogs_number_is_another_link();
+ test_a_link_with_the_dialogs_number_told_is_judged_by_its_text();
  test_the_dialogs_file_swapped_for_one_with_its_number_is_not_changed();
  test_a_save_after_ctrl_f9_is_the_windows_own();
  test_a_fifo_swapped_inside_the_change_is_replaced();

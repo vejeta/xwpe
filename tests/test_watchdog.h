@@ -219,18 +219,28 @@ static inline int test_wait_child(pid_t pid, long ms)
 	return -1;
 }
 
-/** test_wait_gone - Wait until @pid (a child or not) is gone, at most @ms.
+/* test_wait_gone is built on tests/child_state.h, which on the BSDs includes
+   the kernel's process headers (sys/user.h, sys/proc.h).  Those declare names
+   a test may define for itself (accept, state ...), so the header comes in
+   only for a program that asks for it with
+	#define TEST_WANT_CHILD_STATE
+   before it includes this file.  Every other program is as it was. */
+#ifdef TEST_WANT_CHILD_STATE
+# include "child_state.h"
+
+/** test_wait_gone - Wait until @pid (a child or not) is reaped, at most @ms.
     Returns 1 when gone, 0 at the deadline.  @ms is not scaled: the callers
     assert how soon a program ends after Quit, a bound of the product.
-    kill(pid, 0) between short sleeps: no pidfd, no kqueue, the same on
-    every system.  A child not yet reaped is a zombie and still "there"
-    until something waits for it. */
+    The question is "is it gone from the process table" (child_pid_reaped of
+    tests/child_state.h), asked between short sleeps: no pidfd, no kqueue, the
+    same on every system.  A child not yet reaped is a zombie and still
+    "there" until something waits for it. */
 static inline int test_wait_gone(pid_t pid, long ms)
 {
 	long left = ms;
 
 	for (;;) {
-		if (kill(pid, 0) != 0 && errno == ESRCH)
+		if (child_pid_reaped(pid))
 			return 1;
 		if (left <= 0)
 			return 0;
@@ -238,5 +248,6 @@ static inline int test_wait_gone(pid_t pid, long ms)
 		left -= TEST_WAIT_STEP_MS;
 	}
 }
+#endif /* TEST_WANT_CHILD_STATE */
 
 #endif /* TEST_WATCHDOG_H */

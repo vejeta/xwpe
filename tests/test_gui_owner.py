@@ -2246,7 +2246,8 @@ def test_group_running_ignores_members_that_have_ended(owner):
         maker.kill()
         gui_owner.wait_for(lambda: not gui_owner.group_running(pgid),
                            "the group to have no running member", READY_S)
-        os.killpg(pgid, 0)          # the zombies are still in the group
+        assert procinfo.ZOMBIE in procinfo.group_member_states(pgid), \
+            "the zombies are still in the group"
         maker.wait()
         gui_owner.wait_for(lambda: gui_owner.process_gone(child),
                            "pytest to adopt the orphan", READY_S)
@@ -2256,6 +2257,91 @@ def test_group_running_ignores_members_that_have_ended(owner):
         if maker.poll() is None:
             maker.kill()
             maker.wait()
+
+
+# @scenario SC-harness-owner-86
+def test_group_member_states_names_a_running_and_a_zombie_member_by_ps_too(
+        owner, monkeypatch):
+    """The members of a group come from the process table the way the system
+    gives it: /proc where it describes processes, ps(1) elsewhere.  Here both
+    routes are asked of the same group (a running stand-in and its zombie
+    child), so the route a BSD takes is read on Linux too."""
+    maker, child = _start_zombie_maker()
+    pgid = maker.pid
+    try:
+        for route in ("proc", "ps"):
+            if route == "ps":
+                monkeypatch.setattr(procinfo, "has_procfs", lambda: False)
+            states = procinfo.group_member_states(pgid)
+            assert procinfo.ZOMBIE in states, \
+                "%s: the zombie member was not listed: %r" % (route, states)
+            assert any(s != procinfo.ZOMBIE for s in states), \
+                "%s: the running member was not listed: %r" % (route, states)
+    finally:
+        maker.stdout.close()
+        maker.kill()
+        maker.wait()
+        gui_owner.wait_for(lambda: gui_owner.process_gone(child),
+                           "pytest to adopt the orphan", READY_S)
+        os.waitpid(child, 0)
+
+
+# @scenario SC-harness-owner-87
+def test_group_running_off_linux_does_not_count_a_zombie_member(owner, monkeypatch):
+    """Where the group is read from ps(1) (not Linux), a group whose members
+    have all ended is not running, though a zombie is still in it: the answer
+    kill(-pgid, 0) gave counted it, as BT20 did for a launcher."""
+    monkeypatch.setattr(gui_owner, "IS_LINUX", False)
+    monkeypatch.setattr(procinfo, "has_procfs", lambda: False)
+    maker, child = _start_zombie_maker()
+    pgid = maker.pid
+    try:
+        assert gui_owner.group_running(pgid), "a running member was not counted"
+        maker.kill()
+        gui_owner.wait_for(lambda: not gui_owner.group_running(pgid),
+                           "the group to have no running member", READY_S)
+        monkeypatch.undo()      # the clean-up below reads the real system
+        maker.wait()
+        gui_owner.wait_for(lambda: gui_owner.process_gone(child),
+                           "pytest to adopt the orphan", READY_S)
+        os.waitpid(child, 0)
+    finally:
+        monkeypatch.undo()
+        maker.stdout.close()
+        if maker.poll() is None:
+            maker.kill()
+            maker.wait()
+
+
+# @scenario SC-harness-owner-89
+def test_a_failed_ps_is_an_error_not_an_empty_group(monkeypatch):
+    """A ps(1) that fails must not read as "the group has no member": that
+    answer means the group ended, and the row would pass on a broken ps."""
+    failed = subprocess.CompletedProcess([], 1, stdout="", stderr="no ps here")
+    monkeypatch.setattr(procinfo, "_ps_run", lambda argv: failed)
+    monkeypatch.setattr(procinfo, "has_procfs", lambda: False)
+    with pytest.raises(RuntimeError):
+        procinfo.group_member_states(1)
+
+
+# @scenario SC-harness-owner-90
+def test_a_tree_is_made_when_the_system_has_no_session_for_the_caller(monkeypatch):
+    """OpenBSD answers getsid(0) with ESRCH once the caller's session leader
+    has ended (a run left in the background after its ssh session closed).
+    The owner then has no session of its own to keep out of a sweep, and a
+    tree is still made and still extended."""
+    real = os.getsid
+
+    def getsid(pid):
+        if pid == 0:
+            raise ProcessLookupError(errno.ESRCH, "No such process")
+        return real(pid)
+
+    monkeypatch.setattr(os, "getsid", getsid)
+    assert gui_owner.own_session() is None
+    tree = gui_owner.Tree(os.getpid(), "no session")
+    tree.extend(os.getpid())
+    tree.close()
 
 
 # Ticks (10 ms) a child may start after the mark: spawning and reading its

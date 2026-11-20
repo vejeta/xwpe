@@ -31,6 +31,7 @@
 #include "../we_child.h"
 #include "../we_dap_proto.h"
 #include "../we_fdloop.h"
+#define TEST_WANT_CHILD_STATE   /* the process table, for "has it ended" and "is it reaped" */
 #include "test_watchdog.h"
 
 /* Every case runs under the watchdog with its own name: a hang fails naming
@@ -262,20 +263,43 @@ static int exists(const char *dir, const char *name)
  return stat(path, &st) == 0;
 }
 
-/** process_alive - True while @pid exists (a zombie counts as gone). */
-static int process_alive(pid_t pid)
+/**
+ * check_reaped - The watched process is gone from the process table, and the
+ * line of a failure says what the table did say (pid, state, errno).
+ * @w: the process as first seen.  @what: the check's words.
+ *
+ * "Reaped" and not only "ended": a launcher the editor never waited for is a
+ * zombie, and a row called "gone and reaped" must fail on it.  Asked of the
+ * process table (tests/child_state.h), which never waits itself, so the
+ * editor's own reaper is the only one that can have taken the status.
+ */
+static void check_reaped(const ChildWatch *w, const char *what)
 {
- char path[PATH_TEXT_MAX], state = '?';
- FILE *f;
- int ok;
+ char said[160];
 
- snprintf(path, sizeof path, "/proc/%ld/stat", (long)pid);
- f = fopen(path, "r");
- if (!f)
-  return kill(pid, 0) == 0;
- ok = fscanf(f, "%*d (%*[^)]) %c", &state) == 1;
- fclose(f);
- return ok && state != 'Z';
+ if (w->pid > 0 && child_reaped(w))
+ {
+  check(1, what);
+  return;
+ }
+ child_describe(w, said, sizeof said);
+ printf("  %s\n", said);
+ check(0, what);
+}
+
+/** check_running - The watched process has not ended (a zombie has). */
+static void check_running(const ChildWatch *w, const char *what)
+{
+ char said[160];
+
+ if (w->pid > 0 && !child_ended(w))
+ {
+  check(1, what);
+  return;
+ }
+ child_describe(w, said, sizeof said);
+ printf("  %s\n", said);
+ check(0, what);
 }
 
 /** write_connection_file - The .bsp file that makes e_bsp_start run us. */
@@ -318,6 +342,8 @@ struct closed {
  long  gone_ms;     /* from the close until the launcher was reaped   */
  pid_t launcher;
  pid_t daemon;
+ ChildWatch launcher_w;   /* the launcher as first seen, before the close */
+ ChildWatch daemon_w;     /* the stand-in daemon as first seen */
 };
 
 /* The handler the editor installs (WpeSignalChild), in its essentials. */
@@ -334,14 +360,15 @@ static void install_reaper(void)
 }
 
 /**
- * loop_until_gone - Run the editor's loop until @pid is reaped, or @ms.
+ * loop_until_gone - Run the editor's loop until the watched process is
+ * reaped, or @ms.
  * Return: how long it took, from @t0 on.
  */
-static long loop_until_gone(pid_t pid, long t0, long ms)
+static long loop_until_gone(const ChildWatch *w, long t0, long ms)
 {
  long deadline = now_ms() + ms;
 
- while (process_alive(pid) && now_ms() < deadline)
+ while (!child_reaped(w) && now_ms() < deadline)
   wpe_fd_poll(LOOP_SLICE_MS);
  return now_ms() - t0;
 }
@@ -371,10 +398,12 @@ static int start_and_close(const char *dir, const char *mode,
  }
  out->launcher = read_pid(dir, "launcher.pid");
  out->daemon = read_pid(dir, "daemon.pid");
+ out->launcher_w = child_watch(out->launcher);
+ out->daemon_w = child_watch(out->daemon);
  t0 = now_ms();
  e_bsp_close(b);
  out->ms = now_ms() - t0;
- out->gone_ms = loop_until_gone(out->launcher, t0, GONE_WAIT_MS);
+ out->gone_ms = loop_until_gone(&out->launcher_w, t0, GONE_WAIT_MS);
  return 0;
 }
 
@@ -412,10 +441,9 @@ static void test_close_lets_the_launcher_end_after_sigterm(void)
        "a launcher that needs a moment after SIGTERM ends by itself");
  check(c.gone_ms < SLOW_TERM_BOUND_MS,
        "it is reaped as soon as it has ended");
- check(c.launcher > 0 && !process_alive(c.launcher),
-       "the launcher is gone and reaped");
- check(c.daemon > 0 && process_alive(c.daemon),
-       "the launcher's own child (the shared server) is not signalled");
+ check_reaped(&c.launcher_w, "the launcher is gone and reaped");
+ check_running(&c.daemon_w,
+               "the launcher's own child (the shared server) is not signalled");
  end_daemon(c.daemon);
  remove_dir(dir);
 }
@@ -447,10 +475,9 @@ static void test_close_ends_a_launcher_that_ignores_sigterm(void)
        "a launcher that ignores SIGTERM gets the whole grace first");
  check(c.gone_ms < WPE_CHILD_END_GRACE_MS + CLOSE_SLACK_MS,
        "and is then killed: its end stays bounded");
- check(c.launcher > 0 && !process_alive(c.launcher),
-       "the launcher is gone and reaped (launcher that ignores SIGTERM)");
- check(c.daemon > 0 && process_alive(c.daemon),
-       "the launcher's own child (the shared server) is not signalled");
+ check_reaped(&c.launcher_w, "the launcher is gone and reaped (launcher that ignores SIGTERM)");
+ check_running(&c.daemon_w,
+               "the launcher's own child (the shared server) is not signalled");
  end_daemon(c.daemon);
  remove_dir(dir);
 }

@@ -135,10 +135,16 @@ def _proc_comm(pid):
     return stat[stat.find("(") + 1:stat.rfind(")")]
 
 
+def _ps_run(argv):
+    """Run one ps(1) command line and return the finished process: the one
+    place this file starts ps."""
+    return subprocess.run(argv, capture_output=True, text=True)
+
+
 def _ps_field(pid, field, *options):
     """One ps(1) column for pid, stripped, or None once pid is gone."""
     argv = ["ps"] + list(options) + ["-p", str(pid), "-o", field + "="]
-    result = subprocess.run(argv, capture_output=True, text=True)
+    result = _ps_run(argv)
     if result.returncode != 0:
         return None
     return result.stdout.strip()
@@ -158,6 +164,52 @@ def run_state(pid):
     if not state:
         return GONE
     return state[:1]
+
+
+PROC_STAT_PGRP = 2      # index of the process group in _proc_stat_fields
+
+
+def _group_states_from_proc(pgid):
+    """The run state letters of the members of group pgid, read from /proc."""
+    states = []
+    for entry in os.listdir(PROC_ROOT):
+        if not entry.isdigit():
+            continue
+        fields = _proc_stat_fields(int(entry))
+        if fields is not None and int(fields[PROC_STAT_PGRP]) == pgid:
+            states.append(fields[0])
+    return states
+
+
+def _group_states_from_ps(pgid):
+    """The run state letters of the members of group pgid, read from ps(1):
+    one row of "pgid state" per process of the system."""
+    argv = ["ps", "-A", "-o", "pgid=", "-o", "state="]
+    result = _ps_run(argv)
+    if result.returncode != 0:
+        # An empty list would say "the group has no member", which a row reads
+        # as "it ended": a ps that failed must stop the row, not pass it.
+        raise RuntimeError("%s failed with status %d: %s"
+                           % (" ".join(argv), result.returncode, result.stderr.strip()))
+    states = []
+    for line in result.stdout.splitlines():
+        words = line.split()
+        if len(words) >= 2 and words[0].isdigit() and int(words[0]) == pgid:
+            states.append(words[1][:1])
+    return states
+
+
+def group_member_states(pgid):
+    """The run state letter (R, S, Z, ...) of every process in group pgid; an
+    empty list once the group has no member.
+
+    A test needs the states, not only whether the group exists: a member that
+    ended and waits to be collected (a zombie) is still in the group, and
+    killpg(pgid, 0) finds it, so it cannot tell a running group from an ended
+    one.  /proc where it describes processes the Linux way, ps(1) elsewhere."""
+    if has_procfs():
+        return _group_states_from_proc(pgid)
+    return _group_states_from_ps(pgid)
 
 
 def _ticks_from_ps_time(text):

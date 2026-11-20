@@ -702,6 +702,27 @@ or debugging a pyte test -- they are easy to relearn the slow way.
   and prints `IGNORED:` and `BLOCKED:` lines of names; the `SigIgn` line of
   `/proc/<pid>/status` exists on Linux only.
 
+- **A zombie is not alive, and `kill(pid, 0)` finds it.** A row that asks
+  whether a process has ended or has been reaped reads the process table, in
+  one owner per language: `tests/child_state.h` in C (`child_ended`,
+  `child_reaped`, and `child_watch` to record the start time at first sight, so
+  a reused pid is told apart; `/proc` on Linux, `sysctl` `KERN_PROC` on FreeBSD
+  and OpenBSD, `KERN_PROC2` on NetBSD, and it never waits, so it cannot take
+  the status of a child the editor is meant to reap) and
+  `gui_owner.process_running` / `group_running` in Python. A system with no
+  reader answers `CHILD_UNKNOWN` and the row says SKIP by the system's name.
+  `tests/check-child-state.sh` fails a test that calls `kill` or `killpg` with
+  the signal 0 outside them; `test_child_state` is the canary that makes a
+  child run, end unwaited, and be waited for, on every system.
+
+- **A freed inode number is given back per kind, per system.** FreeBSD soft
+  updates gave a file's number back 20 times in 20 and a link's or folder's 0
+  in 20. A reuse row asks `tests/seen_rows.h` (`seen_rows_reuse_or_skip`): it
+  walks first, and only after a missed walk probes the file system with the
+  same kind of object, then prints SKIP with what was measured, or FAIL.
+  `XWPE_TEST_REUSE_PROBE=never:link,gives:file` plays the probe's answer for a
+  kind; `tests/check-seen-rows.sh` fails a row that decides on its own.
+
 - **One terminfo database for the editor and for the row.** macOS has two:
   Homebrew's ncurses carries its own, newer entries than the system's, so a row
   that compares what the editor wrote with the host's `tput` compares two

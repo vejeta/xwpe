@@ -778,8 +778,19 @@ endif
 # whole test after SECS is tests/with-deadline.sh, tested by
 # tests/check-with-deadline.sh.
 check_PROGRAMS += test_watchdog
-test_watchdog_SOURCES = tests/test_watchdog.c tests/test_watchdog.h
+test_watchdog_SOURCES = tests/test_watchdog.c tests/test_watchdog.h tests/child_state.h
 test_watchdog_CFLAGS = $(TEST_CFLAGS)
+
+# The one reader of "is this process alive" for the C tests
+# (tests/child_state.h): the process table of each system (Linux /proc,
+# FreeBSD KERN_PROC, NetBSD KERN_PROC2, OpenBSD KERN_PROC), never
+# kill(pid, 0), which finds a zombie.  Its canary makes a child run, end
+# without being waited for, and be waited for, and the reader must say
+# running, zombie, gone on every system; tests/check-child-state.sh fails a
+# test that asks kill or killpg with the signal 0 outside the owners.
+check_PROGRAMS += test_child_state
+test_child_state_SOURCES = tests/test_child_state.c tests/child_state.h tests/test_watchdog.h
+test_child_state_CFLAGS = $(TEST_CFLAGS)
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
@@ -994,6 +1005,8 @@ TESTS += tests/check-maintainability.sh
 
 # The test hang guard and the per-test deadline runner (see test_watchdog).
 TESTS += test_watchdog tests/check-with-deadline.sh
+TESTS += test_child_state tests/check-child-state.sh
+TESTS += tests/check-seen-rows.sh
 
 # The BSD CI's list of known failures reports what it must (NEW, STALE, NO ROW
 # LOG, NO SUMMARY, CHECK FAILED), so Linux runs its own self-test.
@@ -1372,6 +1385,11 @@ EXTRA_DIST = \
   tests/seen_premise.py \
   tests/check-with-deadline.sh \
   tests/test_watchdog.h \
+  tests/child_state.h \
+  tests/test_child_state.c \
+  tests/check-child-state.sh \
+  tests/check_child_state.py \
+  tests/check-seen-rows.sh \
   tests/interpose.h \
   tests/linebuf.h \
   tests/test_interpose.c \

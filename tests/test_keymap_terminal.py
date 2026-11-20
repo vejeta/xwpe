@@ -22,6 +22,7 @@ import time
 
 import pytest
 
+import gui_owner
 import terminfo
 from wpe_driver import WpeSession, incoherence, wait_screen
 from edit_model.oracle import EditSession
@@ -717,7 +718,7 @@ def test_ctrl_c_in_a_protocol_form_stops_the_program_run_runs(tmp_path, ctrl_c):
             RUN_WAIT_S), "Run never started the program"
         pid = int(pidfile.read_text())
         w.key(ctrl_c, delay=0.5)
-        gone = _drain_until(w, lambda: not os.path.exists("/proc/%d" % pid),
+        gone = _drain_until(w, lambda: not gui_owner.process_running(pid),
                             RUN_WAIT_S)
         if not gone:
             os.kill(pid, 9)            # the pid the program wrote, nobody else's

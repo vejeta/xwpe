@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+import gui_owner as owner_api
 from conftest import _find_xwpe_window
 
 # The query's deadline is 1.5 s; the window must be up well inside this.
@@ -24,13 +25,9 @@ exec sleep 30
 
 
 def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    """True while pid runs (a zombie has ended), asked of the process table
+    through the one owner (gui_owner.process_running), never kill(pid, 0)."""
+    return owner_api.process_running(pid)
 
 
 def _state(pid):

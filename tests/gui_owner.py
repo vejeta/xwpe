@@ -490,6 +490,17 @@ def session_of(pid):
         return None
 
 
+def own_session():
+    """The session id of this very process, or None when the system says it has
+    none.  OpenBSD answers getsid(0) with ESRCH once the session leader of the
+    caller has exited, as in a run left in the background after its ssh session
+    ended; then there is no session of pytest's to keep out of a sweep."""
+    try:
+        return os.getsid(0)
+    except OSError:
+        return None
+
+
 def start_ticks(pid):
     """When pid started, in clock ticks since boot (Linux), or None.
 
@@ -783,15 +794,12 @@ def group_running(pgid):
     A member that has ended and waits to be collected (a zombie) is not
     running, though kill(-pgid, 0) still finds it: under the subreaper the
     orphans of an ended process group stay zombies of pytest until the row's
-    sweep, so a row that asks whether a group is gone asks here."""
+    sweep, so a row that asks whether a group is gone asks here.  Off Linux
+    the members come from the process table (procinfo.group_member_states),
+    so a zombie there is not running either."""
     if not IS_LINUX:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
+        states = procinfo.group_member_states(pgid)
+        return any(state != procinfo.ZOMBIE for state in states)
     for entry in os.listdir(PROC_ROOT):
         if not entry.isdigit():
             continue
@@ -1792,7 +1800,7 @@ class Tree:
             self.groups[pid] = (group_of(pid), session_of(pid))
             self.started[pid] = start_ticks(pid)
         # pytest's own session is never a candidate's, whatever a tree held.
-        self.sids.discard(os.getsid(0))
+        self.sids.discard(own_session())
         # The process's own group: an editor started as a terminal starts it
         # shares pytest's session, so a child it left in its group (a script
         # that asks the user something) is found by the group instead.
@@ -1809,7 +1817,7 @@ class Tree:
             self.groups[child] = (group_of(child), session_of(child))
             self.started[child] = start_ticks(child)
             sid = session_of(child)
-            if sid is not None and sid != os.getsid(0):
+            if sid is not None and sid != own_session():
                 self.sids.add(sid)
 
     def close(self):

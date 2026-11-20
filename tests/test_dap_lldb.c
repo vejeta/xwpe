@@ -17,6 +17,7 @@
 #include <signal.h>
 
 #include "../we_dap.h"
+#define TEST_WANT_CHILD_STATE   /* test_wait_gone: the process table */
 #include "test_watchdog.h"
 
 /* The whole run (build, adapter, a stop, Quit) must end within this, else the

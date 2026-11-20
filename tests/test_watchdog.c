@@ -23,6 +23,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#define TEST_WANT_CHILD_STATE   /* test_wait_gone: the process table */
 #include "test_watchdog.h"
 
 #define VICTIM_FLAG       "--victim"
@@ -150,7 +151,7 @@ static void test_wait_child_returns_the_status_or_kills(void)
 	pid = start_child(0, CHILD_LONG_S);
 	st = test_wait_child(pid, CHILD_SHORT_MS);
 	check(st == -1, "test_wait_child did not give up on a child that stayed");
-	check(kill(pid, 0) != 0, "the child that stayed was not ended and reaped");
+	check(child_pid_reaped(pid), "the child that stayed was not ended and reaped");
 }
 
 static void test_wait_gone_says_whether_the_process_ended(void)

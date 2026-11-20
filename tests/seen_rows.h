@@ -8,11 +8,14 @@
  * folder XWPE_TEST_REUSE_DIR names.  It prints which file system it ran on, so
  * a log shows whether the rows ran or were skipped.
  *
- * Two outcomes are kept apart on purpose.  A file system that never gives a
- * number back (a one-shot probe in a scratch folder) is SKIP: the table row of
- * test_seen carries the proof there.  A file system that does give numbers
- * back, but where the row could not make the number come again, is a FAIL: the
- * row proved nothing and must not pass for a row that did.
+ * Two outcomes are kept apart on purpose, and one function decides them
+ * (seen_rows_reuse_or_skip, which asks seen_rows_missed after a walk that
+ * missed).  A file system that never gives a number back for the row's own
+ * kind of object (a probe in a scratch folder, made the way the row makes it)
+ * is SKIP, with what was measured and on which system.  A file system that
+ * does give numbers back, but where the row could not make the number come
+ * again, is a FAIL: the row proved nothing and must not pass for a row that
+ * did.  Each system answers for itself: the probe is never a list of systems.
  *
  * Static inline, libc only, like testdir.h.
  */
@@ -35,6 +38,16 @@
 #include "../we_platform.h"
 #include "../we_seen.h"
 
+/* NetBSD has no statfs (its struct statvfs carries the file system's name in
+   f_fstypename and the mount flags in f_flag), so the build's statfs fact says
+   "none" there; the name and flags are read from statvfs. */
+#if defined(__NetBSD__) && WPE_PLATFORM_STATFS_KIND == WPE_PLATFORM_STATFS_NONE
+# define SEEN_ROWS_STATVFS 1
+# include <sys/statvfs.h>
+#else
+# define SEEN_ROWS_STATVFS 0
+#endif
+
 #if WPE_PLATFORM_STATFS_KIND == WPE_PLATFORM_STATFS_F_TYPE
 # include <sys/vfs.h>
 #elif WPE_PLATFORM_STATFS_KIND == WPE_PLATFORM_STATFS_FSTYPENAME
@@ -44,6 +57,7 @@
 
 #define SEEN_ROWS_DIR_ENV     "XWPE_TEST_REUSE_DIR"
 #define SEEN_ROWS_DEFAULT_DIR "."
+#define SEEN_ROWS_PROBE_ENV   "XWPE_TEST_REUSE_PROBE"   /* test hook: "never:<kind>,gives:<kind>" plays the probe's answer */
 #define SEEN_ROWS_ATTEMPTS    16      /* whole cases redone when another process takes the freed number */
 #define SEEN_ROWS_TRIES       64     /* makes of one object before the number is called not reached */
 #define SEEN_ROWS_PROBE_ROUNDS 16     /* unlink and make again, to ask "does it ever give a number back" */
@@ -90,6 +104,13 @@ static void seen_rows_fs_name(const char *dir, char *out, size_t n)
  case 0x4D44UL:     snprintf(out, n, "vfat"); break;
  default:           snprintf(out, n, "0x%lx", (unsigned long)sf.f_type); break;
  }
+#elif SEEN_ROWS_STATVFS
+ struct statvfs sv;
+
+ if (statvfs(dir, &sv) != 0)
+  snprintf(out, n, "unknown (%s)", strerror(errno));
+ else
+  snprintf(out, n, "%s", sv.f_fstypename);
 #else
  (void)dir;
  snprintf(out, n, "unknown (this system gives no file system type)");
@@ -199,66 +220,214 @@ static int seen_rows_make_link(const char *path, void *ctx)
 }
 
 /**
- * seen_rows_probe_gives_back - Run the one-shot probe and keep the numbers it saw.
- * @dir: a folder on the file system the row will use.
- * @first, @second: the two numbers of the last round that ran (0 when none did).
- *
- * Make a file, remember its number, remove it, make another, compare, for a few
- * rounds, in a scratch subfolder.  The numbers are kept so a row that gave up
- * can print what the probe saw next to what the walk saw.
- * Return: 1 when a round gave the number back (or the probe could not be set
- * up), else 0.
+ * seen_rows_remove_entry - Remove one file, link, folder or FIFO, quietly.
  */
-static int seen_rows_probe_gives_back(const char *dir, ino_t *first_ino, ino_t *second_ino)
+static void seen_rows_remove_entry(const char *path)
 {
- char scratch[TEST_DIR_PATH_SIZE], path[TEST_DIR_PATH_SIZE];
- struct stat first, second;
- int round, gave_back = 0;
+ struct stat st;
 
- *first_ino = 0;
- *second_ino = 0;
- /* A probe that cannot be set up says "gives back": the row then runs and
-    fails by name instead of skipping on a probe that never ran. */
- if (test_path_join(scratch, sizeof scratch, dir, "probe") != 0)
-  return(1);
- if (mkdir(scratch, 0700) != 0)
-  return(1);
- if (test_path_join(path, sizeof path, scratch, "p") != 0)
- {
-  rmdir(scratch);
-  return(1);
- }
- for (round = 0; round < SEEN_ROWS_PROBE_ROUNDS && !gave_back; round++)
- {
-  if (seen_rows_make_file(path, NULL) != 0 || lstat(path, &first) != 0)
-   break;
+ if (lstat(path, &st) != 0)
+  return;
+ if (S_ISDIR(st.st_mode))
+  rmdir(path);
+ else
   unlink(path);
-  if (seen_rows_make_file(path, NULL) != 0 || lstat(path, &second) != 0)
-   break;
-  *first_ino = first.st_ino;
-  *second_ino = second.st_ino;
-  gave_back = (first.st_ino == second.st_ino);
-  unlink(path);
- }
- rmdir(scratch);
- return(gave_back);
 }
 
 /**
- * seen_rows_never_gives_back - Does this folder's file system never reuse a number?
- * @dir: a folder on the file system the row will use.
+ * seen_rows_make_fifo - Make a FIFO (a SeenRowsMake), the object of the swap row.
+ */
+static int seen_rows_make_fifo(const char *path, void *ctx)
+{
+ (void)ctx;
+ return(mkfifo(path, 0644));
+}
+
+/** What a reuse row needs to say: the old object, the new one, and what to do while the old exists. */
+typedef struct {
+ SeenRowsMake make_old;                                  /* makes the object that will go */
+ void *old_ctx;
+ void (*look_old)(const char *path, void *ctx);          /* takes the look while the old one exists; may be NULL */
+ void *look_ctx;
+ SeenRowsMake make_new;                                  /* makes the object that should take its number */
+ void *new_ctx;
+} SeenRowsCase;
+
+/** How a reuse row ended: it ran, it was skipped by name, or it proved nothing. */
+typedef enum
+{
+ SEEN_ROWS_RAN,
+ SEEN_ROWS_SKIP,
+ SEEN_ROWS_FAIL
+} SeenRowsOutcome;
+
+/**
+ * What a probe saw.  kind is the S_IFMT of the first object it made, so the
+ * words of a log name the kind the row really walks with.
+ */
+typedef struct
+{
+ ino_t first, second;       /* the two numbers of the last round that ran (0 when none did) */
+ mode_t kind;               /* S_IFMT of the first object made, 0 when none was */
+ int gave_back;             /* a round gave the number back, or the probe could not be set up */
+ int hooked;                /* the answer came from the test hook, not from the file system */
+} SeenRowsProbe;
+
+/** seen_rows_kind_word - The kind of an object in words, for the lines a row prints. */
+static const char *seen_rows_kind_word(mode_t kind)
+{
+ if (kind == S_IFREG)
+  return("file");
+ if (kind == S_IFLNK)
+  return("link");
+ if (kind == S_IFDIR)
+  return("folder");
+ if (kind == S_IFIFO)
+  return("FIFO");
+ return("object");
+}
+
+/** seen_rows_hook_has - Does the comma-separated list of the test hook hold exactly TOKEN? */
+static int seen_rows_hook_has(const char *list, const char *token)
+{
+ size_t len = strlen(token);
+
+ while (*list != '\0')
+ {
+  const char *end = strchr(list, ',');
+  size_t item = (end != NULL) ? (size_t)(end - list) : strlen(list);
+
+  if (item == len && strncmp(list, token, len) == 0)
+   return(1);
+  if (end == NULL)
+   break;
+  list = end + 1;
+ }
+ return(0);
+}
+
+/**
+ * seen_rows_hook_answer - What the test hook says about one kind of object.
+ * @kind: S_IFMT of the object the probe made.
  *
- * A one-shot probe in a scratch subfolder: make a file, remember its number,
- * remove it, make another, compare, for a few rounds.  A file system that gave
- * the number back even once returns 0.  This is the only thing that may turn
- * a row into a SKIP: "the number was not reached" never does.
+ * XWPE_TEST_REUSE_PROBE is a comma list of "never:<kind>" and "gives:<kind>"
+ * (kind: file, link, folder, fifo, in lower case).  It plays the file system's
+ * answer for that kind alone, so a canary can show the probe asks about the
+ * kind the row walks with: with "never:link" the link rows are skipped and the
+ * file rows are not.  It acts only where a walk already failed, because the
+ * probe is asked only then.
+ * Return: 0 never gives back, 1 gives back, -1 the hook says nothing.
+ */
+static int seen_rows_hook_answer(mode_t kind)
+{
+ const char *list = getenv(SEEN_ROWS_PROBE_ENV);
+ char never[SEEN_ROWS_NAME_SIZE], gives[SEEN_ROWS_NAME_SIZE], word[SEEN_ROWS_NAME_SIZE];
+ size_t i;
+
+ if (list == NULL)
+  return(-1);
+ snprintf(word, sizeof word, "%s", seen_rows_kind_word(kind));
+ for (i = 0; word[i] != '\0'; i++)
+  if (word[i] >= 'A' && word[i] <= 'Z')
+   word[i] = (char)(word[i] - 'A' + 'a');
+ snprintf(never, sizeof never, "never:%s", word);
+ snprintf(gives, sizeof gives, "gives:%s", word);
+ if (seen_rows_hook_has(list, never))
+  return(0);
+ if (seen_rows_hook_has(list, gives))
+  return(1);
+ return(-1);
+}
+
+/**
+ * seen_rows_probe_round - One round of the probe: the row's own make, look, removal and make.
+ * @path: the name in the scratch folder.  @pc: the case.  @pr: receives the numbers.
+ * Return: 1 when the number came back, 0 when it did not, -1 when a step failed.
+ */
+static int seen_rows_probe_round(const char *path, const SeenRowsCase *pc, SeenRowsProbe *pr)
+{
+ struct stat first, second;
+
+ if (pc->make_old(path, pc->old_ctx) != 0 || lstat(path, &first) != 0)
+  return(-1);
+ pr->kind = first.st_mode & S_IFMT;
+ seen_rows_remove_entry(path);
+ if (pc->make_new(path, pc->new_ctx) != 0 || lstat(path, &second) != 0)
+  return(-1);
+ pr->first = first.st_ino;
+ pr->second = second.st_ino;
+ seen_rows_remove_entry(path);
+ return(first.st_ino == second.st_ino);
+}
+
+/**
+ * seen_rows_probe - Ask the file system whether it gives back a freed number, in the row's own shape.
+ * @dir: a folder on the file system the row will use.
+ * @pc: the case the row walks with.  @pr: receives what the probe saw.
+ *
+ * Makes the case's old object in a scratch subfolder, removes it the way the
+ * walk does, makes the new object, and compares the two numbers, for a few
+ * rounds.  The shape is the row's own and nothing more: the same two makers,
+ * no flush between make and removal (the walk does none), and a measured fact
+ * behind it: on FreeBSD soft updates a file removed with no flush gave its
+ * number back 20 times in 20 and a link or a folder 0 in 20, so a probe that
+ * always made a file would say "gives back" for a link row that cannot.  The
+ * one difference from the walk is look_old, which is not run: it has side
+ * effects in the row's window (row 6 makes and renames files in it).  If the
+ * probe and the row then disagree the row FAILs with the REUSE-GIVEUP lines.
+ *
+ * A probe that cannot be set up says "gives back": the row then fails by name
+ * instead of skipping on a probe that never ran.
+ */
+static void seen_rows_probe(const char *dir, const SeenRowsCase *pc, SeenRowsProbe *pr)
+{
+ char scratch[TEST_DIR_PATH_SIZE], path[TEST_DIR_PATH_SIZE];
+ int round, said = 0;
+
+ memset(pr, 0, sizeof *pr);
+ pr->gave_back = 1;
+ if (test_path_join(scratch, sizeof scratch, dir, "probe") != 0 || mkdir(scratch, 0700) != 0)
+  return;
+ if (test_path_join(path, sizeof path, scratch, "p") != 0)
+ {
+  rmdir(scratch);
+  return;
+ }
+ pr->gave_back = 0;
+ for (round = 0; round < SEEN_ROWS_PROBE_ROUNDS && !pr->gave_back; round++)
+ {
+  said = seen_rows_probe_round(path, pc, pr);
+  if (said < 0)
+  {
+   pr->gave_back = 1;
+   break;
+  }
+  pr->gave_back = said;
+  if (round == 0 && seen_rows_hook_answer(pr->kind) >= 0)
+  {
+   pr->gave_back = seen_rows_hook_answer(pr->kind);
+   pr->hooked = 1;
+   break;
+  }
+ }
+ seen_rows_remove_entry(path);
+ rmdir(scratch);
+}
+
+/**
+ * seen_rows_never_gives_back - Does this folder's file system never reuse a number for the row's kind?
+ * @dir: a folder on the file system the row will use.  @pc: the case.
+ *
+ * The probe of seen_rows_probe.  The one thing that may turn a missed walk
+ * into a SKIP.
  * Return: 1 when no round gave the number back, 0 when one did.
  */
-static int seen_rows_never_gives_back(const char *dir)
+static int seen_rows_never_gives_back(const char *dir, const SeenRowsCase *pc)
 {
- ino_t first, second;
+ SeenRowsProbe pr;
 
- return(!seen_rows_probe_gives_back(dir, &first, &second));
+ seen_rows_probe(dir, pc, &pr);
+ return(!pr.gave_back);
 }
 
 /**
@@ -369,31 +538,6 @@ static int seen_rows_reuse_once(const char *dir, const char *name, SeenRowsMake 
 }
 
 /**
- * seen_rows_remove_entry - Remove one file, link or folder, quietly.
- */
-static void seen_rows_remove_entry(const char *path)
-{
- struct stat st;
-
- if (lstat(path, &st) != 0)
-  return;
- if (S_ISDIR(st.st_mode))
-  rmdir(path);
- else
-  unlink(path);
-}
-
-/** What a reuse row needs to say: the old object, the new one, and what to do while the old exists. */
-typedef struct {
- SeenRowsMake make_old;                                  /* makes the object that will go */
- void *old_ctx;
- void (*look_old)(const char *path, void *ctx);          /* takes the look while the old one exists; may be NULL */
- void *look_ctx;
- SeenRowsMake make_new;                                  /* makes the object that should take its number */
- void *new_ctx;
-} SeenRowsCase;
-
-/**
  * seen_rows_attempt - One whole attempt: a new old object, its number, its removal, the new object.
  * @pc: the case.  @dir, @name: where.
  *
@@ -449,7 +593,13 @@ static const char *seen_rows_giveup_exit_name(SeenRowsGiveUpExit how)
 /** seen_rows_fs_flags - The mount flags of the file system DIR is on, or 0 where the system gives none. */
 static unsigned long seen_rows_fs_flags(const char *dir)
 {
-#if WPE_PLATFORM_STATFS_KIND == WPE_PLATFORM_STATFS_NONE
+#if SEEN_ROWS_STATVFS
+ struct statvfs sv;
+
+ if (statvfs(dir, &sv) != 0)
+  return(0);
+ return((unsigned long)sv.f_flag);
+#elif WPE_PLATFORM_STATFS_KIND == WPE_PLATFORM_STATFS_NONE
  (void)dir;
  return(0);
 #else
@@ -475,16 +625,16 @@ static void seen_rows_say_giveup_walk(const SeenRowsGiveUp *g)
 }
 
 /** seen_rows_say_giveup_system - What the probe found, the file system and its flags, and the system release. */
-static void seen_rows_say_giveup_system(const char *dir)
+static void seen_rows_say_giveup_system(const char *dir, const SeenRowsCase *pc)
 {
  char fs[SEEN_ROWS_NAME_SIZE];
  struct utsname u;
- ino_t first, second;
- int gave_back = seen_rows_probe_gives_back(dir, &first, &second);
+ SeenRowsProbe pr;
 
+ seen_rows_probe(dir, pc, &pr);
  seen_rows_fs_name(dir, fs, sizeof fs);
- fprintf(stderr, "REUSE-GIVEUP probe: first=%lu second=%lu gave_back=%d\n",
-         (unsigned long)first, (unsigned long)second, gave_back);
+ fprintf(stderr, "REUSE-GIVEUP probe: kind=%s first=%lu second=%lu gave_back=%d\n",
+         seen_rows_kind_word(pr.kind), (unsigned long)pr.first, (unsigned long)pr.second, pr.gave_back);
  fprintf(stderr, "REUSE-GIVEUP file system: %s, mount flags 0x%lx\n", fs, seen_rows_fs_flags(dir));
  if (uname(&u) == 0)
   fprintf(stderr, "REUSE-GIVEUP system: %s %s\n", u.sysname, u.release);
@@ -539,10 +689,10 @@ static void seen_rows_extra_try_after_sync(const SeenRowsGiveUp *g)
  * system and its flags, the release of the system, and whether one more try
  * after a flush reached the number.
  */
-static void seen_rows_say_giveup(const SeenRowsGiveUp *g)
+static void seen_rows_say_giveup(const SeenRowsGiveUp *g, const SeenRowsCase *pc)
 {
  seen_rows_say_giveup_walk(g);
- seen_rows_say_giveup_system(g->dir);
+ seen_rows_say_giveup_system(g->dir, pc);
  seen_rows_extra_try_after_sync(g);
 }
 
@@ -570,8 +720,102 @@ static int seen_rows_reuse_the_number(const char *dir, const char *name, const S
    return(1);
   seen_rows_clean_attempt(dir, name);
  }
- seen_rows_say_giveup(&seen_rows_last_giveup);
+ seen_rows_say_giveup(&seen_rows_last_giveup, pc);
  return(0);
+}
+
+/** seen_rows_say_ran - Say where a reuse row ran, so a log shows the row was not skipped. */
+static void seen_rows_say_ran(const char *row, const char *dir)
+{
+ char fs[SEEN_ROWS_NAME_SIZE];
+
+ seen_rows_fs_name(dir, fs, sizeof fs);
+ printf("RAN %s: fs=%s\n", row, fs);
+}
+
+/**
+ * seen_rows_say_skip - Say what the probe measured, as the reason a row is skipped.
+ * @row: the row.  @dir: its folder.  @pr: what the probe saw.
+ *
+ * Words only what was measured: the kind of object, the file system, the
+ * system and the mount flags.  (Inferred, not measured here: FreeBSD soft
+ * updates defer releasing a freed inode until its removal has been written,
+ * and a freed link or folder then does not come back within a row.)
+ */
+static void seen_rows_say_skip(const char *row, const char *dir, const SeenRowsProbe *pr)
+{
+ char fs[SEEN_ROWS_NAME_SIZE];
+ struct utsname u;
+
+ seen_rows_fs_name(dir, fs, sizeof fs);
+ printf("SKIP: %s: a freed %s number did not come back on %s", row, seen_rows_kind_word(pr->kind), fs);
+ if (uname(&u) == 0)
+  printf(" (%s %s, mount flags 0x%lx)", u.sysname, u.release, seen_rows_fs_flags(dir));
+ printf(" in the probe%s\n", pr->hooked ? " (played by the test hook)" : "");
+}
+
+/**
+ * seen_rows_decide_miss - What a walk that missed the number is: a SKIP or a FAIL.
+ * @dir: the row's folder.  @pc: the case it walks with.  @pr: receives what the probe saw.
+ *
+ * The decision itself, with nothing printed.  The probe asks the file system,
+ * in the row's own shape and kind, whether a freed number ever comes back.
+ * When it does not, the row cannot be run on this system: SKIP.  When it does,
+ * the row proved nothing and must not pass for one that did: FAIL.
+ * Return: SEEN_ROWS_SKIP or SEEN_ROWS_FAIL.
+ */
+static SeenRowsOutcome seen_rows_decide_miss(const char *dir, const SeenRowsCase *pc, SeenRowsProbe *pr)
+{
+ seen_rows_probe(dir, pc, pr);
+ if (!pr->gave_back)
+  return(SEEN_ROWS_SKIP);
+ return(SEEN_ROWS_FAIL);
+}
+
+/**
+ * seen_rows_missed - A row's walk did not reach the number: SKIP by name or FAIL.
+ * @dir: the row's folder.  @row: its name.  @pc: the case it walks with.
+ *
+ * The one place that decides and says it, for every row (the reuse rows of
+ * test_seen, test_write_owner and the FIFO swap).  Asked only after the walk
+ * missed, so a walk that reached the number is always RAN, whatever the probe
+ * would have said.  A SKIP names what was measured; a FAIL names the kind the
+ * probe got back.
+ * Return: SEEN_ROWS_SKIP or SEEN_ROWS_FAIL; the caller counts it.
+ */
+static SeenRowsOutcome seen_rows_missed(const char *dir, const char *row, const SeenRowsCase *pc)
+{
+ SeenRowsProbe pr;
+ SeenRowsOutcome out = seen_rows_decide_miss(dir, pc, &pr);
+
+ if (out == SEEN_ROWS_SKIP)
+ {
+  seen_rows_say_skip(row, dir, &pr);
+  return(out);
+ }
+ printf("FAIL: %s: the number was not reached, and a freed %s number came back in the probe\n",
+        row, seen_rows_kind_word(pr.kind));
+ return(out);
+}
+
+/**
+ * seen_rows_reuse_or_skip - Walk to the old object's number; on a miss, SKIP by name or FAIL.
+ * @dir: the row's folder (fresh).  @row: its name.  @name: where the objects are made.  @pc: the case.
+ *
+ * The call every reuse row makes.  The walk first (seen_rows_reuse_the_number);
+ * the probe only after the walk failed (seen_rows_missed).
+ * Return: SEEN_ROWS_RAN with the new object at NAME holding the old number,
+ * else SEEN_ROWS_SKIP or SEEN_ROWS_FAIL.
+ */
+static SeenRowsOutcome seen_rows_reuse_or_skip(const char *dir, const char *row, const char *name,
+                                               const SeenRowsCase *pc)
+{
+ if (seen_rows_reuse_the_number(dir, name, pc))
+ {
+  seen_rows_say_ran(row, dir);
+  return(SEEN_ROWS_RAN);
+ }
+ return(seen_rows_missed(dir, row, pc));
 }
 
 /**

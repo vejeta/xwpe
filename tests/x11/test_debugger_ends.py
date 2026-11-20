@@ -17,6 +17,8 @@ import time
 import pytest
 from host_tools import needs
 
+import gui_owner as owner_api
+
 from test_debug_answer_wait import (
     DBX_BREAK_LINE, DBX_STUB_ENV, DBX_STUB_LOG, MIN_BAR_PIXELS, STOP_GREEN,
     STOP_TIMEOUT_S, _count, _go_to_line, _wait, dbx_stub)
@@ -40,15 +42,9 @@ def _read_pid(path):
 
 
 def _gone(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    try:
-        with open("/proc/%d/stat" % pid) as fh:
-            return fh.read().split(")")[-1].split()[0] == "Z"
-    except OSError:
-        return False
+    """True once pid has ended (a zombie has), asked of the process table
+    through the one owner (gui_owner.process_running), never kill(pid, 0)."""
+    return not owner_api.process_running(pid)
 
 
 # @scenario SC-debug-57

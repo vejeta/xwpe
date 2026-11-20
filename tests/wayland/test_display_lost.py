@@ -97,15 +97,9 @@ def _read_pid(path):
 
 
 def _gone(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    try:
-        with open("/proc/%d/stat" % pid) as fh:
-            return fh.read().split(")")[-1].split()[0] == "Z"
-    except OSError:
-        return False
+    """True once pid has ended (a zombie has), asked of the process table
+    through the one owner (gui_owner.process_running), never kill(pid, 0)."""
+    return not owner_api.process_running(pid)
 
 
 SCREEN_QUIET_READS = 3

@@ -40,6 +40,7 @@
 
 #include "../we_child.h"
 #include "../we_fdloop.h"
+#define TEST_WANT_CHILD_STATE   /* the process table, for "has it ended" and "is it reaped" */
 #include "test_watchdog.h"
 
 #define HANG_SECONDS       30
@@ -586,9 +587,9 @@ static void test_the_group_not_only_the_shell_is_ended(void)
 	loop_until_ended(&r, 1, SLACK_MS);
 	chk("the shell ended", r.calls, 1);
 	deadline = now_ms() + SLACK_MS;
-	while (bg > 0 && kill(bg, 0) == 0 && now_ms() < deadline)
+	while (bg > 0 && !child_pid_reaped(bg) && now_ms() < deadline)
 		wpe_fd_poll(LOOP_SLICE_MS);
-	chk_true("the background child is gone too", bg > 0 && kill(bg, 0) < 0);
+	chk_true("the background child is gone too", bg > 0 && child_pid_reaped(bg));
 	close_ends(&r);
 }
 
@@ -610,12 +611,12 @@ static void test_a_member_deaf_to_sigterm_is_killed_after_its_leader_ended(void)
 	chk("the shell ended at SIGTERM", r.calls, 1);
 	chk_true("before the grace", r.at_ms - t0 < WPE_CHILD_END_GRACE_MS);
 	chk_true("the member outlives the polite signal",
-	         bg > 0 && kill(bg, 0) == 0);
+	         bg > 0 && !child_pid_ended(bg));
 	deadline = t0 + WPE_CHILD_END_GRACE_MS + SLACK_MS;
-	while (bg > 0 && kill(bg, 0) == 0 && now_ms() < deadline)
+	while (bg > 0 && !child_pid_reaped(bg) && now_ms() < deadline)
 		wpe_fd_poll(LOOP_SLICE_MS);
 	chk_true("the member is gone after the grace",
-	         bg > 0 && kill(bg, 0) < 0);
+	         bg > 0 && child_pid_reaped(bg));
 	gone_ms = now_ms() - t0;
 	if (gone_ms < WPE_CHILD_END_GRACE_MS)
 		printf("gone after %ld ms\n", gone_ms);
@@ -646,17 +647,17 @@ static void test_the_rest_of_a_group_whose_leader_ended_is_ended_after_the_grace
 	chk_true("the member's pid", bg > 0);
 	loop_until_ended(&r, 1, SLACK_MS);
 	chk("the shell's end was reported", r.calls, 1);
-	chk_true("the member outlives its shell", bg > 0 && kill(bg, 0) == 0);
+	chk_true("the member outlives its shell", bg > 0 && !child_pid_ended(bg));
 	t0 = now_ms();
 	wpe_child_end_rest(leader, SIGTERM);
 	chk("its end is on the ladder", wpe_child_ending(), 1);
 	wpe_fd_poll(0);
-	chk_true("the member outlives the polite signal", kill(bg, 0) == 0);
+	chk_true("the member outlives the polite signal", !child_pid_ended(bg));
 	deadline = t0 + WPE_CHILD_END_GRACE_MS + SLACK_MS;
-	while (kill(bg, 0) == 0 && now_ms() < deadline)
+	while (!child_pid_reaped(bg) && now_ms() < deadline)
 		wpe_fd_poll(LOOP_SLICE_MS);
 	gone_ms = now_ms() - t0;
-	chk_true("the member is gone after the grace", kill(bg, 0) < 0);
+	chk_true("the member is gone after the grace", child_pid_reaped(bg));
 	if (gone_ms < WPE_CHILD_END_GRACE_MS)
 		printf("gone after %ld ms\n", gone_ms);
 	chk_true("not before it", gone_ms >= WPE_CHILD_END_GRACE_MS);
@@ -704,7 +705,7 @@ static void until_gone(pid_t pid)
 {
 	long deadline = now_ms() + SLACK_MS;
 
-	while (kill(pid, 0) == 0 && now_ms() < deadline)
+	while (!child_pid_reaped(pid) && now_ms() < deadline)
 		wpe_fd_poll(LOOP_SLICE_MS);
 }
 
@@ -738,13 +739,13 @@ static void test_a_named_process_is_ended_alone_after_the_grace(void)
 	wpe_child_end_named(named, SIGTERM);
 	chk("its end is on the ladder", wpe_child_ending(), 1);
 	wpe_fd_poll(0);
-	chk_true("it outlives the polite signal", kill(named, 0) == 0);
+	chk_true("it outlives the polite signal", !child_pid_ended(named));
 	loop_while_ending(WPE_CHILD_END_GRACE_MS + SLACK_MS);
 	gone_ms = now_ms() - t0;
 	chk_true("it was killed after the grace", gone_ms >= WPE_CHILD_END_GRACE_MS);
 	until_gone(named);
-	chk_true("it is gone", kill(named, 0) < 0);
-	chk_true("its group's other member is left running", kill(other, 0) == 0);
+	chk_true("it is gone", child_pid_reaped(named));
+	chk_true("its group's other member is left running", !child_pid_ended(other));
 
 	wpe_child_end_named(other, WPE_CHILD_NO_SIGNAL);
 	chk("the other is on the ladder", wpe_child_ending(), 1);
@@ -803,7 +804,7 @@ static void test_a_detached_child_is_ended_with_nobody_called_back(void)
 		wpe_fd_poll(LOOP_SLICE_MS);
 	loop_for(LOOP_SLICE_MS);
 	chk("nothing is being ended any more", wpe_child_ending(), 0);
-	chk_true("it is gone", pid > 0 && kill(pid, 0) < 0);
+	chk_true("it is gone", pid > 0 && child_pid_reaped(pid));
 	chk("nobody was called back", r.calls, 0);
 	chk_true("no \"did not end\"", strstr(said, DID_NOT_END) == NULL);
 }
@@ -862,7 +863,7 @@ static void test_signals_reach_only_the_leader_when_asked(void)
 	chk("the leader ended at SIGTERM", r.calls, 1);
 	loop_for(WPE_CHILD_END_GRACE_MS + SLACK_MS);
 	chk_true("what it started was never signalled",
-	         bg > 0 && kill(bg, 0) == 0);
+	         bg > 0 && !child_pid_ended(bg));
 	if (bg > 0)
 		kill(bg, SIGKILL);
 	close_ends(&r);
@@ -1459,8 +1460,8 @@ static void test_the_handlers_end_every_child_and_its_group(void)
 	chk_true("the leader-only child was killed", alone.calls == 1 &&
 	         WIFSIGNALED(alone.status) && WTERMSIG(alone.status) == SIGKILL);
 	loop_for(LOOP_SLICE_MS * 5);
-	chk_true("its group went with it", bg_grp > 0 && kill(bg_grp, 0) < 0);
-	chk_true("the shared group was left alone", bg_alone > 0 && kill(bg_alone, 0) == 0);
+	chk_true("its group went with it", bg_grp > 0 && child_pid_reaped(bg_grp));
+	chk_true("the shared group was left alone", bg_alone > 0 && !child_pid_ended(bg_alone));
 	if (bg_alone > 0)
 		kill(bg_alone, SIGKILL);
 	close_ends(&grp);

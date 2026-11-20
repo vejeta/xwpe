@@ -24,6 +24,7 @@
 
 #include "../we_bsp.h"
 #include "../we_dap.h"
+#define TEST_WANT_CHILD_STATE   /* test_wait_gone: the process table */
 #include "test_watchdog.h"
 
 /* Line 6 is the loop body; `f` is in scope and grows 1,1,2,6,24,120,... */
@@ -177,8 +178,8 @@ static int is_program_in(int pid, const char *dir)
  * @pid: the program.
  *
  * The process is not the test's child, so waitpid cannot wait for it:
- * test_wait_gone asks kill(pid, 0) between short sleeps, the same on every
- * system (no pidfd, so macOS waits too).
+ * test_wait_gone asks the process table (tests/child_state.h) between short
+ * sleeps: no pidfd, no kqueue, so every system waits the same way.
  * Return: 1 once it has ended.
  */
 static int wait_program_end(int pid)

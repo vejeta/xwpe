@@ -24,6 +24,7 @@
 
 #include "../we_dap_proto.h"
 #include "../we_dap.h"
+#define TEST_WANT_CHILD_STATE   /* the process table, for "has it ended" and "is it reaped" */
 #include "test_watchdog.h"
 
 static int failures = 0;
@@ -1850,7 +1851,7 @@ static e_dap_session *fake_session(const char *mode, const char *marker)
 /* Never leave the fake behind, whatever the engine did. */
 static void fake_gone_or_killed(pid_t pid)
 {
- if (pid <= 0 || kill(pid, 0) != 0)
+ if (pid <= 0 || child_pid_reaped(pid))
   return;
  kill(pid, SIGKILL);
  test_wait_child(pid, FAKE_REAP_MS);
@@ -1877,7 +1878,7 @@ static void test_close_waits_for_the_disconnect_answer(void)
  CHECK(access(marker, F_OK) == 0,
        "the adapter was killed before it answered disconnect and exited");
  CHECK(took < ANSWERED_QUIT_BOUND_MS, "close waited past its bound");
- CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the adapter was not reaped");
+ CHECK(child_pid_reaped(pid), "the adapter was not reaped");
  fake_gone_or_killed(pid);
  unlink(marker);
  rmdir(dir);
@@ -1907,7 +1908,7 @@ static void test_close_terms_before_it_kills(void)
  CHECK(access(marker, F_OK) == 0,
        "the adapter was killed without SIGTERM and time to end");
  CHECK(took < QUIT_TERM_MS + QUIT_SLACK_MS, "close waited too long");
- CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the adapter was not reaped");
+ CHECK(child_pid_reaped(pid), "the adapter was not reaped");
  fake_gone_or_killed(pid);
  unlink(marker);
  rmdir(dir);
@@ -1937,7 +1938,7 @@ static void test_close_does_not_spin_on_an_adapter_that_closed_its_pipes(void)
  took = ms_now() - t0;
  CHECK(cpu < QUIT_CPU_MAX_MS, "Quit spun on the closed pipes while it waited");
  CHECK(took < UNANSWERED_QUIT_BOUND_MS, "close went past the ladder's bound");
- CHECK(kill(pid, 0) != 0 && errno == ESRCH,
+ CHECK(child_pid_reaped(pid),
        "the lingering adapter was left running or unreaped");
  fake_gone_or_killed(pid);
 }
@@ -1962,7 +1963,7 @@ static void test_close_hangs_up_before_the_ladder(void)
  e_dap_close(s);
  CHECK(access(marker, F_OK) == 0,
        "Quit did not close the adapter's input before ending it");
- CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the adapter was not reaped");
+ CHECK(child_pid_reaped(pid), "the adapter was not reaped");
  fake_gone_or_killed(pid);
  unlink(marker);
  rmdir(dir);
@@ -2023,7 +2024,7 @@ static void test_close_ends_under_an_adapter_that_floods(void)
  test_watchdog_rearm_case();
  CHECK(took < UNANSWERED_QUIT_BOUND_MS,
        "Quit under a flooding adapter went past its bound");
- CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the adapter was not reaped");
+ CHECK(child_pid_reaped(pid), "the adapter was not reaped");
  fake_gone_or_killed(pid);
 }
 
@@ -2044,7 +2045,7 @@ static void test_close_kills_an_adapter_that_never_answers(void)
  took = ms_now() - t0;
  CHECK(took < UNANSWERED_QUIT_BOUND_MS,
        "close did not give up on a silent adapter");
- CHECK(kill(pid, 0) != 0 && errno == ESRCH,
+ CHECK(child_pid_reaped(pid),
        "a silent adapter was left running or unreaped");
  fake_gone_or_killed(pid);
 }
@@ -2090,7 +2091,7 @@ static void test_an_adapter_reaped_but_not_reported_is_known_gone_with_its_statu
   ;
  CHECK(!e_dap_adapter_gone(s), "gone before the handler reaped it");
  sigprocmask(SIG_SETMASK, &saved, NULL);   /* the handler reaps it here */
- CHECK(kill(pid, 0) != 0 && errno == ESRCH, "the handler did not reap it");
+ CHECK(child_pid_reaped(pid), "the handler did not reap it");
  CHECK(e_dap_adapter_gone(s), "not known gone before its end is reported");
  CHECK(e_dap_adapter_end_status(s, &st) == 1 && WIFSIGNALED(st) &&
        WTERMSIG(st) == SIGKILL,

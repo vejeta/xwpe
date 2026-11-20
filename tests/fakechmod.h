@@ -38,6 +38,8 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -509,12 +511,46 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags)
  return(fakechmod_last_rc);
 }
 
-/* Only where the looks of we_seen.c are made with statx (Linux); elsewhere the
-   row that arms the swap does not run. */
+/* The played inode number: the look of a name that does not follow a link is
+   told a number of the row's choosing.  It lets a row reach the judge's
+   "same number" case on every system, with no help from a file system that
+   gives a freed number back (FreeBSD soft updates do not, for a link). */
+static char fakechmod_ino_name[512];    /* the name whose own look is told the number; "" when none */
+static ino_t fakechmod_ino_played;      /* the number told */
+static int fakechmod_ino_hits;          /* looks that were told it since fakechmod_play_number_at */
+
+/**
+ * fakechmod_play_number_at - Tell every look of a name, link not followed, a given inode number.
+ * @name: the name as the editor spells it (the whole path); "" to stop.
+ * @ino: the number to tell.
+ *
+ * What a row uses to put a new link under the old link's number without the
+ * file system giving it back.  The look still reports the real device, kind,
+ * times and size; only the number is played.  fakechmod_ino_hits says how many
+ * looks it changed, so a row proves the editor's look went through it.
+ */
+static void fakechmod_play_number_at(const char *name, ino_t ino)
+{
+ snprintf(fakechmod_ino_name, sizeof fakechmod_ino_name, "%s", name);
+ fakechmod_ino_played = ino;
+ fakechmod_ino_hits = 0;
+}
+
+/** fakechmod_plays_number - Is this look the one whose number is played (this name, link not followed)? */
+static int fakechmod_plays_number(int dirfd, const char *path, int nofollow)
+{
+ if (fakechmod_ino_name[0] == '\0' || !nofollow || dirfd != AT_FDCWD || path == NULL)
+  return(0);
+ return(strcmp(path, fakechmod_ino_name) == 0);
+}
+
+/* Where the looks of we_seen.c are made with statx (Linux), statx carries the
+   swap and the played number; elsewhere they are made with fstatat, which
+   carries the played number, and the row that arms the swap does not run. */
 #if WPE_PLATFORM_STATX_BTIME
 typedef int (*fakechmod_statx_fn)(int, const char *, int, unsigned int, struct statx *);
 
-/** statx: transparent, except that it makes the swap of fakechmod_swap_after_look_at. */
+/** statx: transparent, except that it makes the swap of fakechmod_swap_after_look_at and plays a number. */
 int statx(int dirfd, const char *path, int flags, unsigned int mask, struct statx *buf)
 {
  static fakechmod_statx_fn real;
@@ -524,8 +560,33 @@ int statx(int dirfd, const char *path, int flags, unsigned int mask, struct stat
  if (real == NULL)
   real = WPE_REAL(statx);
  rc = real(dirfd, path, flags, mask, buf);
+ if (rc == 0 && fakechmod_plays_number(dirfd, path, (flags & AT_SYMLINK_NOFOLLOW) != 0))
+ {
+  buf->stx_ino = (uint64_t)fakechmod_ino_played;
+  fakechmod_ino_hits++;
+ }
  if (fakechmod_after == FAKECHMOD_AFTER_WAIT_LOOK && dirfd == AT_FDCWD)
   fakechmod_after_saw_look(path);
+ return(rc);
+}
+#else
+typedef int (*fakechmod_fstatat_fn)(int, const char *, struct stat *, int);
+
+/** fstatat: transparent, except that it plays a number (fakechmod_play_number_at). */
+int fstatat(int dirfd, const char *path, struct stat *st, int flag)
+{
+ static fakechmod_fstatat_fn real;
+ int rc;
+ WPE_HOOK_GUARD(fstatat);
+
+ if (real == NULL)
+  real = WPE_REAL(fstatat);
+ rc = real(dirfd, path, st, flag);
+ if (rc == 0 && fakechmod_plays_number(dirfd, path, (flag & AT_SYMLINK_NOFOLLOW) != 0))
+ {
+  st->st_ino = fakechmod_ino_played;
+  fakechmod_ino_hits++;
+ }
  return(rc);
 }
 #endif
