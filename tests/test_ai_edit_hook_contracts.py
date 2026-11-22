@@ -19,6 +19,7 @@ import stat
 import time
 import subprocess
 import pytest
+from deep_folder import folder_of_length, held
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 CTRL_U = "\x15"
@@ -206,3 +207,49 @@ def test_failed_hook_is_reported_with_its_status_and_the_buffer_is_not_reloaded(
         assert "return 1;" in shown, "the agent write did not reach the buffer:\n" + shown
         assert MARK not in shown, \
             "the buffer was reloaded from the output of a failed hook:\n" + shown
+
+
+# A hook command longer than the editor runs; the xwperc line that sets it has no limit.
+LONG_HOOK_BYTES = 3000
+COMMAND_SENTENCE = "the AIEditHook command is longer than"
+
+
+# @scenario SC-ai-edit-56
+def test_a_hook_command_too_long_is_refused_with_its_own_sentence(tmp_path):
+    marker = tmp_path / "hook-ran.txt"
+    command = "touch %s; : " % marker
+    command += "x" * (LONG_HOOK_BYTES - len(command))
+    home = _home_with_hook(tmp_path, command)
+    env = _edit_env(home, EDIT_NEW, tmp_path / "e.trace")
+    with WpeSession(str(tmp_path), EDIT_ORIG, env_extra=env, filename="t.c") as s:
+        _accept_edit(s, tmp_path, "e.trace")
+        shown = "\n".join(s.display())
+        pane = "\n".join(pane_text_with_history(s, [COMMAND_SENTENCE]))
+    assert not marker.exists(), "the hook command ran although it is longer than the editor runs"
+    assert COMMAND_SENTENCE in pane, "the pane did not say the command is too long:\n" + pane
+    assert "hook file" not in pane, "the sentence blames the file's path:\n" + pane
+    assert "int b = 22;" in shown, "the accepted edit is not in the buffer:\n" + shown
+
+
+# The folder an accepted Edit's temporary copy is made in: with the copy's
+# name its path is over the 1200 bytes the hook's quoted path was once kept in.
+LONG_HOOK_FOLDER = 1300
+
+
+# @scenario SC-ai-edit-55
+def test_hook_gets_the_whole_path_of_a_long_folder_never_a_prefix(tmp_path):
+    held(str(tmp_path), LONG_HOOK_FOLDER + 80)
+    folder = folder_of_length(tmp_path, LONG_HOOK_FOLDER)
+    record = str(tmp_path / "argument.txt")
+    hook = _hook_script(tmp_path, 'printf %%s "$1" > %s; printf %s >> "$1"' % (record, MARK))
+    home = _home_with_hook(tmp_path, hook)
+    env = _edit_env(home, EDIT_NEW, tmp_path / "e.trace")
+    with WpeSession(folder, EDIT_ORIG, env_extra=env, filename="t.c") as s:
+        _accept_edit(s, tmp_path, "e.trace")
+        shown = "\n".join(s.display())
+    assert os.path.exists(record), "the hook did not run on the long path"
+    with open(record) as fh:
+        given = fh.read()
+    assert given.startswith(folder + "/") and len(given) > len(folder) + 1, \
+        "the hook was given a prefix of the path (%d bytes): %s" % (len(given), given[-60:])
+    assert MARK in shown, "the hook's rewrite did not reach the buffer:\n" + shown

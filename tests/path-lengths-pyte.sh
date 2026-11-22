@@ -66,56 +66,31 @@ BAD=2
 # changed until it names the class.  (The title the editor cuts at its head,
 # dropping the file name and cutting by bytes, is the other open product
 # question, we_wind.c e_std_rahmen: its row is marked as an incoherence in
-# tests/test_compile_and_messages.py.)  The contain rows are a product defect
-# of the path-buffers class (we_contain.c CONTAIN_TOKEN_MAX cuts a folder named
-# in AIContainPathAllow at 255 bytes), and the hosted read_scope rows end on
-# the farm's deny stub and are unexplained: both are in FINDINGS-open.md.
+# tests/test_compile_and_messages.py.)  The contain rows that the 255 byte cut
+# of AIContainPathAllow made red are green since that cut is gone.  Two stay:
+# the dropped-folder note is cut in a 400 byte line (path-buffers class), and
+# a hosted row fails at every length on the tool farm's refusal of a missing
+# absolute path.  The hosted read_scope rows end on the farm's deny stub and
+# are unexplained: see FINDINGS-open.md.
 EXPECTED_RED='tests/test_debugger_integration.py::test_jdb_vm_that_cannot_enter_its_directory_says_why|the box that says jdb cannot enter a folder keeps the path and loses the reason when the path is long
 tests/test_buffer_owner.py::test_a_stack_shrinking_by_two_leaves_no_stale_row|the Stack window lists a frame by its whole path, which at a long folder fills the window so the third frame is out of view; not yet classified
 tests/test_debugger_integration.py::test_gdb_stop_deep_in_a_recursion_is_marked[gdb-mi]|no current-line mark appears at a long folder; not yet classified
-tests/test_ai_agent_engine_contracts.py::test_claudecli_spawn_is_its_own_session_with_no_terminal|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_engine_contracts.py::test_claudecli_text_only_under_ask_no_tip|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_engine_contracts.py::test_claudecli_text_only_under_auto_with_tip|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_opens_the_web_once_the_switch_is_on|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_ask|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_auto|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_engine_contracts.py::test_hosted_engine_argv_under_edits|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_engine_contracts.py::test_hosted_engine_spawn_is_its_own_session_with_no_terminal|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_engine_contracts.py::test_hosted_session_end_at_the_prompt_reviews_then_says_so|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_agent_carries_project_instructions_under_the_default|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_ask_plain_turn_carries_no_project_instructions|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_bound_key_cuts_the_file_and_names_itself[env]|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_bound_key_cuts_the_file_and_names_itself[xwperc]|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_chat_carries_project_instructions_from_its_first_tool_turn|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_prompt_states_the_tool_list_stands_after_the_project_block|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_scope_all_folds_project_instructions_into_a_plain_ask[env]|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_scope_all_folds_project_instructions_into_a_plain_ask[xwperc]|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_scope_off_keeps_project_instructions_out_of_the_agent|CONTAIN_TOKEN_MAX
-tests/test_ai_agent_project_instructions.py::test_specific_file_wins_over_agents_md|CONTAIN_TOKEN_MAX
-tests/test_ai_claudecli_stale_model.py::test_stale_ollama_model_not_forwarded|CONTAIN_TOKEN_MAX
-tests/test_ai_claudecli_web.py::test_claudecli_allows_web_tools_when_the_switch_is_on|CONTAIN_TOKEN_MAX
-tests/test_ai_claudecli_web.py::test_claudecli_denies_web_tools_when_the_switch_is_off|CONTAIN_TOKEN_MAX
-tests/test_ai_contain_credentials.py::test_an_engine_in_a_dropped_workspace_folder_is_named_in_the_pane|CONTAIN_TOKEN_MAX
-tests/test_ai_contain_credentials.py::test_the_claude_backend_keeps_its_login_variables_and_no_others|CONTAIN_TOKEN_MAX
-tests/test_ai_contain_credentials.py::test_the_users_own_config_can_allow_the_folder_an_engine_sits_in|CONTAIN_TOKEN_MAX
-tests/test_ai_edit_entry_contracts.py::test_complete_backend_error|CONTAIN_TOKEN_MAX
-tests/test_ai_edit_error_guard.py::test_edit_refuses_backend_error|CONTAIN_TOKEN_MAX
-tests/test_ai_edit_request_body.py::test_whole_file_edit_sends_instruction_windows_header_and_file|CONTAIN_TOKEN_MAX
-tests/test_ai_pane_roles.py::test_chat_context_is_the_file_not_the_transcript|CONTAIN_TOKEN_MAX
-tests/test_ai_session.py::test_ai_session_claudecli_resume|CONTAIN_TOKEN_MAX
-tests/test_ai_tool_children.py::test_a_long_prompt_reaches_the_cli_whole|CONTAIN_TOKEN_MAX
+tests/test_ai_agent_engine_contracts.py::test_hosted_unexecutable_command_reports_send_failed|FARM_MISSING_PATH
+tests/test_ai_contain_credentials.py::test_an_engine_in_a_dropped_workspace_folder_is_named_in_the_pane|CONTAIN_NOTE_CUT
 tests/test_ai_read_scope.py::test_the_hosted_engine_is_told_the_folders_the_user_already_allowed|HOSTED_UNEXPLAINED
 tests/test_ai_read_scope.py::test_the_hosted_engine_routes_its_prompts_to_the_editor_at_every_dial[ask-manual]|HOSTED_UNEXPLAINED
 tests/test_ai_read_scope.py::test_the_hosted_engine_routes_its_prompts_to_the_editor_at_every_dial[auto-acceptEdits]|HOSTED_UNEXPLAINED
 tests/test_ai_read_scope.py::test_the_hosted_engine_routes_its_prompts_to_the_editor_at_every_dial[edits-acceptEdits]|HOSTED_UNEXPLAINED'
 
 # The two reasons the lines above name by a word (a line is "id|WORD").
-REASON_CONTAIN="a folder in PATH or in AIContainPathAllow is cut at 255 bytes (we_contain.c CONTAIN_TOKEN_MAX), so the stand-in engine of the row is never found; product, path-buffers class, in FINDINGS-open.md"
+REASON_NOTE_CUT="the note that names a dropped engine folder is written into a 400 byte line (we_ai_ui.c ai_ready_say_failed, AI_MODEL_LINE_MAX) and cut at a long folder, so the pane loses the folder's end and the words that follow it; product, path-buffers class (a sentence that holds a path, cut)"
+REASON_FARM="the tool farm refuses a missing absolute path, so the row fails at every folder length; another pass is fixing the row"
 REASON_HOSTED="the hosted engine's prompts end on the farm's deny stub claude at a long folder; unexplained, evidence pending, in FINDINGS-open.md"
 
 # expected_with_reasons - EXPECTED_RED, a word standing for its full reason.
 expected_with_reasons() {
-  printf '%s\n' "$EXPECTED_RED" | sed -e "s#|CONTAIN_TOKEN_MAX\$#|$REASON_CONTAIN#" \
+  printf '%s\n' "$EXPECTED_RED" | sed -e "s#|CONTAIN_NOTE_CUT\$#|$REASON_NOTE_CUT#" \
+    -e "s#|FARM_MISSING_PATH\$#|$REASON_FARM#" \
     -e "s#|HOSTED_UNEXPLAINED\$#|$REASON_HOSTED#"
 }
 

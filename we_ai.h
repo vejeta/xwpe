@@ -11,6 +11,7 @@
 #ifdef WPE_AI
 
 #include <stddef.h>   /* size_t */
+#include "we_path.h"  /* WPE_PATH_SIZE: the room a quoted path is sized from */
 #include "we_ai_http.h"
 #include "we_ai_session.h"   /* wpe_ai_turn_role, wpe_ai_session_id_valid */
 #include "we_write.h" /* WpeWriteExpect, WpeWriteOutcome: what an assistant write is held to */
@@ -155,6 +156,13 @@ void  wpe_ai_shell_quote(char *dst, size_t sz, const char *src);
 /* The same, but 0 only when all of src fits in dst; -1 and nothing cut when
  * it does not. */
 int   wpe_ai_shell_quote_whole(char *dst, size_t sz, const char *src);
+/* The room a path of any length the editor holds needs once quoted for the
+ * shell: a quote inside it is written as four bytes, and the closing quote
+ * and the end of the text come on top.  Every command that names a path
+ * quotes it into a buffer of this size with wpe_ai_shell_quote_whole. */
+#define WPE_AI_QUOTE_GROWTH 4
+#define WPE_AI_QUOTE_SLACK  5
+#define WPE_AI_QUOTED_PATH_SIZE (WPE_AI_QUOTE_GROWTH * WPE_PATH_SIZE + WPE_AI_QUOTE_SLACK)
 
 /* A command run for a tool step, its result handed back on the editor's loop:
  * the editor takes keys while it runs.  The command runs in a session of its

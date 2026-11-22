@@ -20,6 +20,17 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* A folder in AIContainPathAllow can be any length and can hold spaces: the
+  list is split at the colons only, as the manual says, and a folder or a
+  variable name is never cut short to a shorter one.  Before, a folder of
+  256 bytes or more was cut, so the program an engine was meant to run from
+  it was not found, and a cut folder could keep a different folder of the
+  workspace on the engine's PATH.  A PATH entry or a workspace too long for
+  the system to open is now dropped or refused with a sentence, and the
+  assistant's checkpoint, git lists and Build and fix keep working in folders
+  longer than a thousand bytes.  The post-edit hook gets the whole path of
+  its file or is not run, with the sentence about the path in the pane; it was
+  given a path cut short, which could name a parent folder.
 * Save, the assistant's write and the removal of a window's autosave copy no
   longer take a new file for the window's own because a file system gave it
   the old file's inode number.  The editor now remembers the file's owner,

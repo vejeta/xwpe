@@ -5492,6 +5492,17 @@ static void ai_launch_chat(FENSTER *f, const char *goal)
 /* The exit status a hook returns when its work is done; any other status is a
    failure the user is told about, and the buffer is left as it was. */
 #define AI_HOOK_OK 0
+/* The status of a hook that was not started because its command would not fit. */
+#define AI_HOOK_REFUSED (-1)
+/* The room the hook's own words get beside the quoted path. */
+#define AI_HOOK_WORDS_ROOM 2048
+#define AI_HOOK_COMMAND_SIZE (WPE_AI_QUOTED_PATH_SIZE + AI_HOOK_WORDS_ROOM)
+/* The longest AIEditHook command that is run: its words, a blank and the
+   quoted path then always fit AI_HOOK_COMMAND_SIZE. */
+#define AI_HOOK_WORDS_LIMIT (AI_HOOK_WORDS_ROOM - 2)
+/* Why ai_hook_command built nothing. */
+#define AI_HOOK_PATH_TOO_LONG    (-1)   /* the file's path does not fit */
+#define AI_HOOK_COMMAND_TOO_LONG (-2)   /* the configured command is longer than AI_HOOK_WORDS_LIMIT */
 
 /**
  * ai_hook_configured - Whether the user set a post-edit hook (AIEditHook).
@@ -5510,13 +5521,29 @@ static int ai_hook_configured(void)
  *
  * The path is single-quoted for /bin/sh, so a file called "a b.c", or one
  * with a quote in its name, reaches the hook as one argument instead of
- * being split into two files the user never asked for.
+ * being split into two files the user never asked for.  The path is quoted
+ * whole or the command is refused: a path cut short could name a parent
+ * folder, and a formatter run on it would rewrite every file there.
+ * A hook command longer than AI_HOOK_WORDS_LIMIT is refused too: the
+ * xwperc line that sets it has no limit, and a command cut short could run
+ * something else.
+ * Return: 0; AI_HOOK_PATH_TOO_LONG or AI_HOOK_COMMAND_TOO_LONG with @cmd
+ * empty when it does not fit.
  */
-static void ai_hook_command(char *cmd, size_t sz, const char *path)
+static int ai_hook_command(char *cmd, size_t sz, const char *path)
 {
- char quoted[1200];
- wpe_ai_shell_quote(quoted, sizeof quoted, path);
- snprintf(cmd, sz, "%s %s", e_ai_edit_hook, quoted);
+ char quoted[WPE_AI_QUOTED_PATH_SIZE];
+
+ cmd[0] = '\0';
+ if (strlen(e_ai_edit_hook) > AI_HOOK_WORDS_LIMIT)
+  return AI_HOOK_COMMAND_TOO_LONG;
+ if (wpe_ai_shell_quote_whole(quoted, sizeof quoted, path) != 0)
+  return AI_HOOK_PATH_TOO_LONG;
+ if ((size_t)snprintf(cmd, sz, "%s %s", e_ai_edit_hook, quoted) >= sz) {
+  cmd[0] = '\0';
+  return AI_HOOK_COMMAND_TOO_LONG;
+ }
+ return 0;
 }
 
 /**
@@ -5551,6 +5578,42 @@ static void ai_hook_report_failure(FENSTER *f, const char *shown, int status,
 }
 
 /**
+ * ai_hook_report_too_long - Say that the hook was not run for want of room.
+ * @f: the window the pane belongs to; @shown: the file as the user knows it.
+ *
+ * The user sees why nothing was reformatted, in the editor's one sentence
+ * for a path the system could not hold, and the buffer stays as the
+ * assistant left it.
+ */
+static void ai_hook_report_too_long(FENSTER *f, const char *shown)
+{
+ char sentence[WPE_PATH_MSG_MAX], line[WPE_PATH_MSG_MAX + 64];
+
+ wpe_path_say_too_long(sentence, sizeof sentence, "hook file");
+ snprintf(line, sizeof line, "[hook] not run: %s (buffer kept as the assistant left it)", sentence);
+ ai_pane(f, line, AI_ROLE_ERROR, 1);
+ wpe_ai_trace("edit hook refused on %s: path too long", shown);
+}
+
+/**
+ * ai_hook_report_command_too_long - Say that the configured hook command is
+ * longer than the editor runs.
+ * @f: the window the pane belongs to; @shown: the file as the user knows it.
+ *
+ * The user is told it is the AIEditHook line that is too long, with the
+ * limit, not the file's path.
+ */
+static void ai_hook_report_command_too_long(FENSTER *f, const char *shown)
+{
+ char line[WPE_PATH_MSG_MAX + 64];
+
+ snprintf(line, sizeof line, "[hook] not run: the AIEditHook command is longer than %d bytes "
+          "(buffer kept as the assistant left it)", AI_HOOK_WORDS_LIMIT);
+ ai_pane(f, line, AI_ROLE_ERROR, 1);
+ wpe_ai_trace("edit hook refused on %s: command too long", shown);
+}
+
+/**
  * ai_hook_run_on_file - Run the hook on one file on disk.
  * @f: the window the pane belongs to; @path: the file handed to the hook;
  * @shown: the name the pane shows for it (the real file when the hook works
@@ -5560,10 +5623,18 @@ static void ai_hook_report_failure(FENSTER *f, const char *shown, int status,
  */
 static int ai_hook_run_on_file(FENSTER *f, const char *path, const char *shown)
 {
- char cmd[2000], *out;
- int status = AI_HOOK_OK;
+ char cmd[AI_HOOK_COMMAND_SIZE], *out;
+ int status = AI_HOOK_OK, built;
  ai_hook_announce(f, shown);
- ai_hook_command(cmd, sizeof cmd, path);
+ built = ai_hook_command(cmd, sizeof cmd, path);
+ if (built == AI_HOOK_COMMAND_TOO_LONG) {
+  ai_hook_report_command_too_long(f, shown);
+  return AI_HOOK_REFUSED;
+ }
+ if (built == AI_HOOK_PATH_TOO_LONG) {
+  ai_hook_report_too_long(f, shown);
+  return AI_HOOK_REFUSED;
+ }
  out = wpe_ai_run_capture_hook_status(cmd, &status);
  if (status != AI_HOOK_OK) ai_hook_report_failure(f, shown, status, out);
  free(out);
@@ -5601,7 +5672,7 @@ static void ai_run_edit_hook(FENSTER *f, const char *path)
  */
 static void ai_hook_after_accept(FENSTER *f)
 {
- char tmp[1400], *shown;
+ char tmp[WPE_PATH_SIZE], *shown;
  if (!ai_hook_configured()) return;
  if (!wpe_ai_window_hook_copy(f, tmp, sizeof tmp)) return;
  shown = e_mkfilename(f->dirct, f->datnam);
@@ -14059,11 +14130,11 @@ static int ai_build_command(FENSTER *f, char *out, size_t sz)
 {
  const char *dir = (f->dirct && f->dirct[0]) ? f->dirct : ".";
  const char *mk[] = { "GNUmakefile", "makefile", "Makefile", NULL };
- char path[1200];
+ char path[WPE_PATH_SIZE];
  int i;
  struct stat st;
  for (i = 0; mk[i]; i++) {
-  snprintf(path, sizeof path, "%s%c%s", dir, DIRC, mk[i]);
+  if (wpe_path_join(path, sizeof path, dir, mk[i]) != 0) continue;
   if (!stat(path, &st)) { snprintf(out, sz, "make"); return 1; }
  }
  if (f->datnam && f->datnam[0]) {
@@ -14197,6 +14268,30 @@ static void ai_launch_fix_build(FENSTER *f, const char *goal)
 
 typedef struct { char *path; char *text; } ai_proposal;
 
+/** The words that begin a proposal's line: the path follows them. */
+#define AI_PLAN_PROPOSE_WORD "PROPOSE "
+
+/**
+ * ai_plan_path_of_line - The path a PROPOSE line names, whole.
+ * @line: the start of the line; @len: its length without the newline.
+ *
+ * A plan names the files it will change by the path the model wrote.  The
+ * path is taken at its own length, minus the blanks and the carriage return
+ * at its end, so a long path is never cut into the path of another file the
+ * user would then be asked to accept a change for.
+ * Return: the path, malloc'd; NULL when out of memory.
+ */
+static char *ai_plan_path_of_line(const char *line, size_t len)
+{
+ size_t skip = strlen(AI_PLAN_PROPOSE_WORD);
+ size_t pl = len > skip ? len - skip : 0;
+ const char *start = line + skip;
+
+ while (pl && (start[pl - 1] == ' ' || start[pl - 1] == '\r'))
+  pl--;
+ return strndup(start, pl);
+}
+
 /* Collect PROPOSE <path> ... @@END blocks from a reply.  Returns 1 if the reply
  * also carried @@PLAN-DONE (or DONE). */
 static int ai_plan_parse(const char *reply, ai_proposal *props, int *np)
@@ -14208,18 +14303,13 @@ static int ai_plan_parse(const char *reply, ai_proposal *props, int *np)
   size_t l = nl ? (size_t)(nl - p) : strlen(p);
   if (!strncmp(p, "@@PLAN-DONE", 11) || (l >= 4 && !strncmp(p, "DONE", 4))) done = 1;
   else if (!strncmp(p, "PROPOSE ", 8) && *np < AI_PLAN_MAX) {
-   char path[1024];
-   size_t pl = l - 8;
    const char *body, *endm;
-   if (pl >= sizeof path) pl = sizeof path - 1;
-   memcpy(path, p + 8, pl); path[pl] = '\0';
-   while (pl && (path[pl-1] == ' ' || path[pl-1] == '\r')) path[--pl] = '\0';
    body = nl ? nl + 1 : p + l;
    endm = strstr(body, "\n@@END");
    if (!endm && !strncmp(body, "@@END", 5)) endm = body;
    {
     size_t cl = endm ? (size_t)(endm - body) : strlen(body);
-    props[*np].path = strdup(path);
+    props[*np].path = ai_plan_path_of_line(p, l);
     /* The same cleaner as an Edit reply: one final newline, CRLF made LF, so
        a proposal with Windows line endings is diffed against the buffer on
        equal terms and shows only its real changes. */

@@ -594,7 +594,9 @@ project that leads out counts as outside) and judges where a path really lands:
   the workspace is your home folder, `~/.local/bin` is inside it and is
   dropped; the pane then names the folder. Name it in `AIContainPathAllow`
   (colon separated folders, your own config file only; `XWPE_AI_CONTAIN_PATH_ALLOW`
-  for one session) or start the editor in a project folder instead. Starting
+  for one session; a folder may be any length the system takes and may hold
+  spaces, and one longer than that is ignored) or start the editor in a
+  project folder instead. Starting
   the editor in `/` makes every `PATH` folder "inside the workspace", so every
   engine is refused; the message names the folder.
 

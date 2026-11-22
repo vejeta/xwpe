@@ -993,7 +993,7 @@ static void test_an_engine_that_sits_in_a_dropped_workspace_folder_is_explained(
 static void test_the_note_names_a_long_folder_whole(void)
 {
 	char ws[PATH_MAX], d1[PATH_MAX], d2[PATH_MAX], prog[PATH_MAX], path[3 * PATH_MAX];
-	char a[LONG_PART + 1], b[LONG_PART + 1], oldpath[PATH_MAX];
+	char a[LONG_PART + 1], b[LONG_PART + 1], oldpath[PATH_MAX], out_unused[OUT_MAX];
 	char *argv[2];
 	WpeChildSpec spec;
 	Run r;
@@ -1032,12 +1032,258 @@ static void test_the_note_names_a_long_folder_whole(void)
 	chk_true("and the sentence holds the whole folder", strstr(said, d2) != NULL);
 	chk_true("and still says what to do", strstr(said, "AIContainPathAllow") != NULL);
 
+	wpe_contain_path_allow_set(d2);
+	memset(&r, 0, sizeof r);
+	reset_notes();
+	chk("the same deep folder, allowed whole: the engine starts",
+	    wpe_contain_start(&wpe_contain_cli_text, &spec, &r.c, on_ended, &r), 0);
+	wait_for_end(&r, "the engine of the deep allowed folder");
+	read_all(&r, out_unused, sizeof out_unused);
+	wpe_contain_path_allow_set(NULL);
+
 	unlink(prog);
 	rmdir(d2);
 	rmdir(d1);
 	setenv("PATH", oldpath, 1);
 	clear_settings();
 	reset_notes();
+}
+
+/* ---- long folders and long words in the lists the user writes ------------- */
+
+/* How long each folder of a deep test folder is, and the length at which the
+   old reader cut a word. */
+#define DEEP_PART     200
+#define OLD_CUT_AT    255
+#define HUGE_ENTRY    5000
+#define FOLDER_LONG   3000
+#define FOLDER_MEDIUM 300
+
+/**
+ * deep_dir_make - Make nested folders under @base so that the last one's
+ * path is exactly @want bytes long.
+ * @base: an existing folder; @want: the length of the result; @fill: the
+ * letter the folder names are made of (two rows use two letters, so their
+ * folders never meet); @out: receives it.
+ */
+static void deep_dir_make(const char *base, size_t want, int fill, char *out, size_t n)
+{
+	char part[DEEP_PART + 1];
+	size_t left;
+
+	snprintf(out, n, "%s", base);
+	while (strlen(out) + 1 + 1 <= want) {
+		left = want - strlen(out) - 1;
+		if (left > DEEP_PART)
+			left = DEEP_PART;
+		memset(part, fill, left);
+		part[left] = '\0';
+		snprintf(out + strlen(out), n - strlen(out), "/%s", part);
+		make_dir(out);
+	}
+}
+
+/**
+ * deep_dir_drop - Remove the folders deep_dir_make made, from the last up to
+ * @base (which stays).
+ */
+static void deep_dir_drop(const char *base, char *dir)
+{
+	char *slash;
+
+	while (strlen(dir) > strlen(base) && (slash = strrchr(dir, '/')) != NULL) {
+		rmdir(dir);
+		*slash = '\0';
+	}
+}
+
+/** engine_path_of - What an engine's PATH is when @path is the editor's and @ws the workspace. */
+static char *engine_path_of(const char *path, const char *ws)
+{
+	return wpe_contain_path_make(&wpe_contain_cli_text, path, ws);
+}
+
+/* @scenario SC-ai-contain-38 */
+static void test_an_allowed_folder_of_any_length_is_kept_whole(void)
+{
+	char ws[PATH_MAX], d300[PATH_MAX], d3000[PATH_MAX], allow[3 * PATH_MAX], path[3 * PATH_MAX];
+	char huge[HUGE_ENTRY + 1];
+	char *got;
+
+	clear_settings();
+	snprintf(ws, sizeof ws, "%s/ws", root);
+	deep_dir_make(ws, FOLDER_MEDIUM, 'm', d300, sizeof d300);
+	snprintf(allow, sizeof allow, "%s", d300);
+	chk("the medium folder is 300 bytes", (long)strlen(d300), FOLDER_MEDIUM);
+	snprintf(path, sizeof path, "%s:/usr/bin", d300);
+	wpe_contain_path_allow_set(allow);
+	got = engine_path_of(path, ws);
+	chk_true("a 300-byte allowed folder is kept", got && !strcmp(got, path));
+	free(got);
+	wpe_contain_path_allow_set(NULL);
+
+	deep_dir_make(ws, FOLDER_LONG, 'l', d3000, sizeof d3000);
+	chk("the long folder is 3000 bytes", (long)strlen(d3000), FOLDER_LONG);
+	/* a first word no system could open: it is skipped, the two after it are read */
+	huge[0] = '/';
+	memset(huge + 1, 'x', HUGE_ENTRY - 1);
+	huge[HUGE_ENTRY] = '\0';
+	snprintf(allow, sizeof allow, "%s:%s:%s", huge, d300, d3000);
+	snprintf(path, sizeof path, "%s:/usr/bin:%s", d3000, d300);
+	wpe_contain_path_allow_set(allow);
+	got = engine_path_of(path, ws);
+	chk_true("a 3000-byte allowed folder is kept, with the 300-byte one, in order",
+	         got && !strcmp(got, path));
+	free(got);
+	wpe_contain_path_allow_set(NULL);
+	got = engine_path_of(path, ws);
+	chk_true("and without the allowance both are dropped", got && !strcmp(got, "/usr/bin"));
+	free(got);
+
+	deep_dir_drop(ws, d3000);
+	deep_dir_drop(ws, d300);
+	clear_settings();
+}
+
+/* @scenario SC-ai-contain-39 */
+static void test_a_word_cut_short_never_allows_the_folder_it_begins_with(void)
+{
+	char ws[PATH_MAX], keep[PATH_MAX], allow[2 * PATH_MAX], path[3 * PATH_MAX];
+	char *got;
+
+	clear_settings();
+	snprintf(ws, sizeof ws, "%s/ws", root);
+	deep_dir_make(ws, OLD_CUT_AT, 'k', keep, sizeof keep);
+	snprintf(allow, sizeof allow, "%s/%0100d", keep, 0);
+	snprintf(path, sizeof path, "%s:/usr/bin", keep);
+	wpe_contain_path_allow_set(allow);
+	got = engine_path_of(path, ws);
+	chk_true("an allowed word longer than the old cut does not allow the folder it begins with",
+	         got && !strcmp(got, "/usr/bin"));
+	free(got);
+	wpe_contain_path_allow_set(NULL);
+	deep_dir_drop(ws, keep);
+	clear_settings();
+}
+
+/* @scenario SC-ai-contain-40 */
+static void test_a_path_entry_no_system_could_open_is_dropped_for_an_engine(void)
+{
+	char ws[PATH_MAX], huge[HUGE_ENTRY + 2], path[2 * HUGE_ENTRY], want[64];
+	char *got;
+
+	clear_settings();
+	snprintf(ws, sizeof ws, "%s/ws", root);
+	huge[0] = '/';
+	memset(huge + 1, 'x', HUGE_ENTRY - 1);
+	huge[HUGE_ENTRY] = '\0';
+	snprintf(path, sizeof path, "/usr/bin:%s:/bin", huge);
+	snprintf(want, sizeof want, "/usr/bin:/bin");
+	got = engine_path_of(path, ws);
+	chk_true("an engine drops the entry and keeps the ones around it, in order",
+	         got && !strcmp(got, want));
+	free(got);
+	got = wpe_contain_path_make(&wpe_contain_tool, path, ws);
+	chk_true("a command's PATH keeps it as written", got && !strcmp(got, path));
+	free(got);
+	clear_settings();
+}
+
+/* @scenario SC-ai-contain-41 */
+static void test_a_folder_with_a_space_is_one_folder_in_the_allow_list(void)
+{
+	char ws[PATH_MAX], mine[PATH_MAX], tools[PATH_MAX], path[3 * PATH_MAX], want[3 * PATH_MAX];
+	char *got;
+
+	clear_settings();
+	snprintf(ws, sizeof ws, "%s/ws", root);
+	snprintf(mine, sizeof mine, "%s/My", ws);
+	snprintf(tools, sizeof tools, "%s/My Tools", ws);
+	make_dir(mine);
+	make_dir(tools);
+	snprintf(path, sizeof path, "%s:%s:/usr/bin", mine, tools);
+	snprintf(want, sizeof want, "%s:/usr/bin", tools);
+	wpe_contain_path_allow_set(tools);
+	got = engine_path_of(path, ws);
+	chk_true("the folder named with a space is kept and the one before the space is not",
+	         got && !strcmp(got, want));
+	free(got);
+	wpe_contain_path_allow_set(NULL);
+	rmdir(tools);
+	rmdir(mine);
+	clear_settings();
+}
+
+/* @scenario SC-ai-contain-42 */
+static void test_a_name_cut_short_never_keeps_the_variable_it_begins_with(void)
+{
+	char name[OLD_CUT_AT + 1], longer[OLD_CUT_AT + 100], var[OLD_CUT_AT + 8];
+	char *from[4];
+	char **v;
+
+	clear_settings();
+	memset(name, 'N', OLD_CUT_AT);
+	name[OLD_CUT_AT] = '\0';
+	snprintf(longer, sizeof longer, "%sMORE_TEXT_TO_MAKE_IT_LONGER_THAN_ANY_NAME_THE_LIST_COULD_HOLD", name);
+	snprintf(var, sizeof var, "%s=1", name);
+	from[0] = "PATH=/usr/bin:/bin";
+	from[1] = var;
+	from[2] = "KEEPME=1";
+	from[3] = NULL;
+
+	wpe_contain_keep_names_set(name);
+	v = wpe_contain_env_make(&wpe_contain_tool, from, "/nonexistent-ws");
+	chk_true("a name that fits is kept", has(v, name) != NULL);
+	wpe_contain_env_free(v);
+
+	snprintf(longer + strlen(longer), sizeof longer - strlen(longer), ",KEEPME");
+	wpe_contain_keep_names_set(longer);
+	v = wpe_contain_env_make(&wpe_contain_tool, from, "/nonexistent-ws");
+	chk_true("a longer name keeps no variable named by its first bytes", has(v, name) == NULL);
+	chk_true("and the name after it in the list is still read", has(v, "KEEPME") != NULL);
+	wpe_contain_env_free(v);
+	clear_settings();
+}
+
+/* @scenario SC-ai-contain-43 */
+static void test_a_workspace_no_system_could_open_refuses_the_start(void)
+{
+	char huge[HUGE_ENTRY + 1], *argv[2];
+	WpeChildSpec spec;
+	Run r;
+	char *got;
+	int rc;
+
+	clear_settings();
+	huge[0] = '/';
+	memset(huge + 1, 'w', HUGE_ENTRY - 1);
+	huge[HUGE_ENTRY] = '\0';
+	got = engine_path_of("/usr/bin:/bin", huge);
+	chk_true("an engine's PATH judged against a workspace that cannot be held keeps nothing",
+	         got && got[0] == '\0');
+	free(got);
+
+	memset(&spec, 0, sizeof spec);
+	argv[0] = "sh";
+	argv[1] = NULL;
+	spec.argv = argv;
+	spec.cwd = huge;
+	spec.io = WPE_CHILD_IO_PIPES;
+	spec.group = WPE_CHILD_OWN_SESSION;
+	spec.stdin_null = 1;
+	spec.side_pty_slave = WPE_CHILD_NO_FD;
+	spec.tty_fd = WPE_CHILD_NO_FD;
+	spec.what = "the test engine";
+	memset(&r, 0, sizeof r);
+	reset_notes();
+	rc = wpe_contain_start(&wpe_contain_cli_text, &spec, &r.c, on_ended, &r);
+	chk("a workspace that does not fit refuses the start", rc, -1);
+	chk_true("and says the path is longer than the system allows",
+	         strstr(said, "longer than the system allows") != NULL && strstr(said, "workspace") != NULL);
+	if (rc == 0)
+		wait_for_end(&r, "the start that should have been refused");
+	reset_notes();
+	clear_settings();
 }
 
 /* @scenario SC-ai-contain-16 */
@@ -1109,6 +1355,12 @@ int main(int argc, char **argv)
 	test_an_engine_never_runs_a_program_the_workspace_planted();
 	test_an_engine_that_sits_in_a_dropped_workspace_folder_is_explained();
 	test_the_note_names_a_long_folder_whole();
+	test_an_allowed_folder_of_any_length_is_kept_whole();
+	test_a_word_cut_short_never_allows_the_folder_it_begins_with();
+	test_a_path_entry_no_system_could_open_is_dropped_for_an_engine();
+	test_a_folder_with_a_space_is_one_folder_in_the_allow_list();
+	test_a_name_cut_short_never_keeps_the_variable_it_begins_with();
+	test_a_workspace_no_system_could_open_refuses_the_start();
 	test_a_lower_inherited_hard_limit_is_kept_not_raised();   /* last: the limit cannot be raised again */
 
 	drop_root();

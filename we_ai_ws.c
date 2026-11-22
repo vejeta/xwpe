@@ -489,7 +489,7 @@ static char   ck_dir[WPE_PATH_SIZE];
    given to another folder, so a folder removed and made again is not it) */
 static char   ck_rdir[WPE_PATH_RESOLVED_MAX];
 static WpeSeenHeld ck_root = WPE_SEEN_HELD_NONE;
-static char   ck_snapdir[1024];
+static char   ck_snapdir[WPE_PATH_SIZE];
 static char **ck_files;
 static int    ck_n;
 static char **ck_before;  static int ck_before_n;  /* files present before   */
@@ -815,7 +815,12 @@ static void ws_watch_dirs(char **scope, int nscope)
 #define WS_GIT_LIST_MAX 16000000L
 /* What wpe_ai_shell_quote needs beyond the quoted text itself: room it keeps
    free for the last escape, the closing quote and the terminating NUL. */
-#define WS_QUOTE_SLACK 5
+#define WS_QUOTE_SLACK WPE_AI_QUOTE_SLACK
+/* The room a path needs once quoted for the shell (we_ai.h). */
+#define WS_QUOTED_PATH_SIZE WPE_AI_QUOTED_PATH_SIZE
+/* A command that names two such paths, with the words around them. */
+#define WS_COMMAND_WORDS_ROOM 256
+#define WS_TWO_PATHS_COMMAND_SIZE (2 * WS_QUOTED_PATH_SIZE + WS_COMMAND_WORDS_ROOM)
 
 /**
  * ws_quote_whole - Shell-quote a path only when all of it fits.
@@ -993,7 +998,8 @@ static int ws_run_temp_file(const char *stem, char *file, size_t sz)
  */
 static int ws_git_list(const char *git_args, char ***l, int *n)
 {
- char file[1100], q[1100], qf[1100], cmd[2800], *out, *buf;
+ char file[WPE_PATH_SIZE], q[WS_QUOTED_PATH_SIZE], qf[WS_QUOTED_PATH_SIZE];
+ char cmd[WS_TWO_PATHS_COMMAND_SIZE], *out, *buf;
  int status = 0;
  long len;
  FILE *fp;
@@ -1637,6 +1643,26 @@ static void ws_collect_git_new_files(ws_change **c, int *n, int *cap)
  wpe_ai_free_list(now, nn);
 }
 
+/** The room for the file number that names a snapshot copy ("12"). */
+#define WS_SNAPSHOT_NUMBER_SIZE 24
+
+/**
+ * ws_snapshot_path - Where the checkpoint's copy of the @i-th file is kept.
+ * @out, @sz: receive the path; @i: the file's number in the checkpoint.
+ *
+ * The state folder may be any length the system takes, so the copy's path is
+ * made whole or refused, never cut into the path of another copy.  A copy
+ * that is refused is read as a copy that is not there.
+ * Return: 0, or -1 with @out empty when the path does not fit.
+ */
+static int ws_snapshot_path(char *out, size_t sz, int i)
+{
+ char number[WS_SNAPSHOT_NUMBER_SIZE];
+
+ snprintf(number, sizeof number, "%d", i);
+ return wpe_path_join(out, sz, ck_snapdir, number);
+}
+
 static int ws_collect_changes(ws_change **c, int *n)
 {
  int cap = 0;
@@ -1649,11 +1675,11 @@ static int ws_collect_changes(ws_change **c, int *n)
  if (ck_mode == 2) {
   int i;
   for (i = 0; i < ck_n; i++) {
-   char snap[1200];
+   char snap[WPE_PATH_SIZE];
    char *old, *now;
    wpe_ai_seg *segs;
    int ns, k, newline = 1;
-   snprintf(snap, sizeof snap, "%s/%d", ck_snapdir, i);
+   if (ws_snapshot_path(snap, sizeof snap, i) != 0) continue;
    old = ws_read_file(snap, 4000000);
    now = ws_read_file(ck_files[i], 4000000);
    if (!old || !now) { free(old); free(now); continue; }
@@ -1789,15 +1815,13 @@ static void ws_path_resolve_dots(char *p)
  */
 static const char *ws_absolute_path(const char *path, char *buf, size_t sz)
 {
- char cwd[1024];
+ char cwd[WPE_PATH_SIZE];
  if (!path) return path;
  if (path[0] == '/') {
-  if (strlen(path) >= sz) return path;
-  snprintf(buf, sz, "%s", path);
+  if (wpe_path_copy(buf, sz, path) != 0) return path;
  } else {
   if (!getcwd(cwd, sizeof cwd)) return path;
-  if (strlen(cwd) + 1 + strlen(path) >= sz) return path;
-  snprintf(buf, sz, "%s/%s", cwd, path);
+  if (wpe_path_join(buf, sz, cwd, path) != 0) return path;
  }
  ws_path_norm(buf);
  ws_path_resolve_dots(buf);
@@ -2618,7 +2642,7 @@ static int ws_revert_git(FENSTER *f, const char *path, int is_new)
  */
 static int ws_revert_snapshot(FENSTER *f, const char *path, int is_new)
 {
- char snap[1200], *text;
+ char snap[WPE_PATH_SIZE], *text;
  size_t len;
  int i, rc;
  if (ws_revert_root_refused(f, is_new ? "remove" : "restore", path) != 0) return -1;
@@ -2630,7 +2654,7 @@ static int ws_revert_snapshot(FENSTER *f, const char *path, int is_new)
  }
  for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) break;
  if (i == ck_n) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
- snprintf(snap, sizeof snap, "%s/%d", ck_snapdir, i);
+ if (ws_snapshot_path(snap, sizeof snap, i) != 0) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
  text = ws_read_file_len(snap, WS_BEFORE_IMAGE_MAX, &len);
  if (!text) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
  rc = ws_restore_before_image(f, path, text, len);

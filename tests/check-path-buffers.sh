@@ -10,9 +10,10 @@
 # thought, and one that ignores a refusal hands an empty path to chdir,
 # fopen or a command.
 #
-#   check-path-buffers.sh [--srcdir DIR] [--allow FILE] [--list]
+#   check-path-buffers.sh [--srcdir DIR] [--allow FILE] [--list] [--selftest]
 #
-# Ten rules, each with canaries: the script plants an offender in a copy of
+# --selftest runs only the canaries.  Twelve rules (the first ten numbered
+# below, the system's reason is said (R11), and the owner's size (R12)), each with canaries: the script plants an offender in a copy of
 # the sources and fails when the rule does not name it, so a scanner gone
 # blind fails instead of passing.  The compiler holds the same line from the
 # other end: warn_unused_result on the owner's declarations warns on a refusal
@@ -70,6 +71,19 @@
 #     snprintf or sprintf takes WPE_PATH_MAX, WPE_NAME_MAX,
 #     WPE_PLATFORM_PATH_MAX or WPE_PLATFORM_NAME_MAX as an argument (a site
 #     says wpe_path_say_too_long or wpe_path_say_name_too_long).
+# 11. The system's reason is said, not guessed (R11a, R11b).
+# 12. A buffer that holds a path is the owner's size.  A char array, local or
+#     file scope, passed as a path to a libc call that takes one (stat, fopen,
+#     getcwd, unlink ...), as the destination of the owner's writers, or as
+#     the argument a PATHFN line of the allow file names, is sized by
+#     WPE_PATH_SIZE, WPE_PATH_MAX or WPE_NAME_SIZE: directly, through defines,
+#     or plus other terms.  A product, a division or a bare number is named.
+#     ARRAY lines excuse an array with a reason; a stale PATHFN or ARRAY line
+#     is R12x.  R13, in the same pass: wpe_ai_shell_quote cuts a text that does
+#     not fit, so only ws_quote_whole and the ai_tool_* functions call it;
+#     any other function quotes a path with wpe_ai_shell_quote_whole or is
+#     listed as a QUOTE line.  Not seen: an array of several dimensions, one declared over
+#     several statements, and a path handed on through a pointer variable.
 #
 # Exit: 0 clean, 1 offenders or a blind scanner, 2 the script could not run
 # (the compiler does not run).
@@ -82,6 +96,7 @@ BLANK_C=$(cat "$HERE/blank-c.awk")
 . "$HERE/compiler.sh"
 ALLOW=
 LIST=0
+SELFTEST=0
 BAD=1
 
 while [ $# -gt 0 ]; do
@@ -89,6 +104,7 @@ while [ $# -gt 0 ]; do
     --srcdir) shift; SRCDIR=$1 ;;
     --allow) shift; ALLOW=$1 ;;
     --list) LIST=1 ;;
+    --selftest) SELFTEST=1 ;;
     *) echo "check-path-buffers: unknown argument $1" >&2; exit $BAD ;;
   esac
   shift
@@ -453,7 +469,7 @@ scan_tree() {
   # Rules 8 and 10, over every comment stripped source but the owner.
   awk -F'|' -v owner="$OWNER_HEADER" "$AWK_LIB"'
     BEGIN {
-      nid = split("WPE_BUILD_PATH_MAX E_EXECUTE_PATH_MAX E_D_COMPILE_PATH_MAX E_LSP_PATH_MAX E_DAP_FRAME_PATH_MAX HOST_PATH_MAX E_GDBMI_PATH_MAX E_SCALA_SETUP_DIR_MAX E_LSP_ROOT_MAX WPE_SYNTAX_PATH_MAX AI_TRANSCRIPT_PATH_MAX", ids, " ")
+      nid = split("WPE_BUILD_PATH_MAX E_EXECUTE_PATH_MAX E_D_COMPILE_PATH_MAX E_LSP_PATH_MAX E_DAP_FRAME_PATH_MAX HOST_PATH_MAX E_GDBMI_PATH_MAX E_SCALA_SETUP_DIR_MAX E_LSP_ROOT_MAX WPE_SYNTAX_PATH_MAX AI_TRANSCRIPT_PATH_MAX CONTAIN_TOKEN_MAX WLF_NAME_SIZE", ids, " ")
     }
     FILENAME == ARGV[1] { if ($1 == "SENTENCE") sent[$2] = 1; next }
     {
@@ -465,6 +481,8 @@ scan_tree() {
       for (i = 1; i <= nid; i++)
         if (l ~ ("(^|[^A-Za-z0-9_])" ids[i] "([^A-Za-z0-9_]|$)"))
           print "R10: " rel ":" FNR ": a private path number is back: " ids[i]
+      if (l ~ /(^|[^A-Za-z0-9_])char[ \t]+path\[1024\]/)
+        print "R10: " rel ":" FNR ": a path from the model is held in 1024 bytes and cut: take it whole (strndup)"
       if (l ~ /strncpy[ \t]*\([ \t]*(g_lsp_file|g_dap_progdir|g_dap_stop_file|e_d_file|ck_dir)[^A-Za-z0-9_]/)
         print "R10: " rel ":" FNR ": a path is cut by strncpy into a buffer the owner sized"
       if (l ~ /"[^"]*(path is longer than|path is too long)[^"]*"/) {
@@ -670,6 +688,158 @@ scan_tree() {
       for (k in pw) if (!(k in pwseen)) print "R11a: stale allow line, delete it: PROJECTWORDS " k
       for (k in gs) if (!(k in gsseen)) print "R11b: stale allow line, delete it: GUESS " k
     }' "$allow" "$t/words.sorted" >> "$out"
+
+  # Rule 12: a buffer that receives or names a path is the owner's size.  A
+  # char array, of any scope, whose size is not WPE_PATH_SIZE, WPE_PATH_MAX or
+  # WPE_NAME_SIZE (directly, through defines, or plus other terms) is named
+  # when it is passed as a path to a libc call that takes one, to the owner's
+  # writers (as the destination), or to a function a PATHFN line of the allow
+  # file names.  The statements of one file are read in order with the brace
+  # depth, so an array is known from its declaration to the end of its
+  # function (a file scope array to the end of the file).
+  awk -F'|' "$AWK_LIB"'
+    function expand(e, depth,    out, rest, id, pre) {
+      out = ""; rest = e
+      while (match(rest, /[A-Za-z_][A-Za-z0-9_]*/)) {
+        id = substr(rest, RSTART, RLENGTH); pre = substr(rest, 1, RSTART - 1)
+        rest = substr(rest, RSTART + RLENGTH)
+        if (id ~ /^(WPE_PATH_SIZE|WPE_PATH_MAX|WPE_NAME_SIZE)$/ || !(id in val) || depth >= 8)
+          out = out pre id
+        else
+          out = out pre "(" expand(val[id], depth + 1) ")"
+      }
+      return out rest
+    }
+    # sized_by_owner(e) - is the size @e the owners number, alone or plus other terms?
+    function sized_by_owner(e,    x) {
+      x = expand(e, 0)
+      gsub(/"[^"]*"/, "", x)
+      if (x ~ /[*\/%-]|<<|>>/) return 0
+      return (x ~ /(^|[^A-Za-z0-9_])(WPE_PATH_SIZE|WPE_PATH_MAX|WPE_NAME_SIZE)([^A-Za-z0-9_]|$)/)
+    }
+    function declare(name, size, fn,    tbl) {
+      gsub(/[ \t]+/, "", size)
+      if (fn == "(file scope)") { fsize[name] = size; ffn[name] = fn; return }
+      lsize[name] = size; lfn[name] = fn
+    }
+    # declarations(stmt, fn) - the char arrays a declaration statement makes
+    function declarations(t, fn,    rest, pre, m, after, nm, closep, size, ptr, multi) {
+      while (t ~ /^(static|const|register|extern|volatile|unsigned|signed)[ \t]+/) sub(/^[A-Za-z]+[ \t]+/, "", t)
+      if (t !~ /^char([ \t*]|$)/) return
+      rest = substr(t, 5)
+      while (match(rest, /[A-Za-z_][A-Za-z0-9_]*[ \t]*\[/)) {
+        pre = substr(rest, 1, RSTART - 1); m = substr(rest, RSTART, RLENGTH)
+        after = substr(rest, RSTART + RLENGTH)
+        nm = m; sub(/[ \t]*\[$/, "", nm)
+        closep = index(after, "]"); if (!closep) break
+        size = substr(after, 1, closep - 1); rest = substr(after, closep + 1)
+        ptr = (pre ~ /\*[ \t]*$/); multi = (rest ~ /^[ \t]*\[/)
+        if (!ptr && !multi && size !~ /^[ \t]*$/) declare(nm, size, fn)
+      }
+    }
+    # array_named(arg) - the name of the array @arg is, or points into, or ""
+    function array_named(a,    nm) {
+      sub(/^[ \t]+/, "", a); sub(/[ \t]+$/, "", a)
+      if (a ~ /^[A-Za-z_][A-Za-z0-9_]*$/) return a
+      if (match(a, /^&[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\[/)) { nm = substr(a, 2, RLENGTH - 2); gsub(/[ \t\[]/, "", nm); return nm }
+      if (match(a, /^[A-Za-z_][A-Za-z0-9_]*[ \t]*\+/)) { nm = substr(a, 1, RLENGTH - 1); gsub(/[ \t]/, "", nm); return nm }
+      return ""
+    }
+    function check_call(rest, fname, ids,    start, n, k, nm, size, fn, key) {
+      while (match(rest, "(^|[^A-Za-z0-9_.>])" fname "[ \t]*\\(")) {
+        start = RSTART + RLENGTH
+        n = arg_split(rest, start)
+        for (k = 1; k <= n; k++) {
+          if (index(ids, " " (k - 1) " ") == 0) continue
+          nm = array_named(ARGS[k])
+          if (nm == "") continue
+          if (nm in lsize) { size = lsize[nm]; fn = lfn[nm] }
+          else if (nm in fsize) { size = fsize[nm]; fn = ffn[nm] }
+          else continue
+          if (sized_by_owner(size)) continue
+          key = REL "|" fn "|" nm
+          if (key in ex) { exused[key] = 1; continue }
+          print "R12: " REL ":" LN ": " nm "[" size "] is passed to " fname " as a path: size it WPE_PATH_SIZE, WPE_PATH_MAX or WPE_NAME_SIZE, or list it as an ARRAY line"
+        }
+        rest = substr(rest, start)
+      }
+    }
+    BEGIN {
+      # the libc calls that take a path, and which arguments (0 based) are one
+      split("stat:0 lstat:0 open:0 openat:1 fopen:0 freopen:0 access:0 chdir:0 mkdir:0 rmdir:0 unlink:0 remove:0 rename:0,1 link:0,1 symlink:0,1 readlink:0,1 realpath:0,1 getcwd:0 opendir:0 mkstemp:0 mkostemp:0 mkdtemp:0 truncate:0 chmod:0 execv:0 execve:0 execvp:0 statvfs:0 fstatat:1 wpe_path_copy:0 wpe_path_join:0 wpe_path_cat:0 wpe_path_search_in:2", sk, " ")
+      for (i in sk) {
+        split(sk[i], kv, ":"); gsub(/,/, " ", kv[2])
+        sink[kv[1]] = " " kv[2] " "
+      }
+    }
+    FILENAME == ARGV[1] {
+      if ($1 == "PATHFN") {
+        if (NF < 5 || $4 !~ /^[0-9]+$/ || $5 == "") { print "R12x: malformed allow line: " $0; next }
+        sink[$3] = sink[$3] " " $4 " "
+        pathfn[$2 "|" $3] = 1
+      } else if ($1 == "QUOTE") {
+        if (NF < 4 || $4 == "") { print "R12x: malformed allow line: " $0; next }
+        qok[$2 "|" $3] = 1
+      } else if ($1 == "ARRAY") {
+        if (NF < 5 || $5 == "") { print "R12x: malformed allow line: " $0; next }
+        ex[$2 "|" $3 "|" $4] = 1
+      }
+      next
+    }
+    FILENAME == ARGV[2] {
+      v = $0; sub(/^[^|]*\|[^|]*\|[^|]*\|?/, "", v)
+      if (!($3 in val)) val[$3] = v
+      next
+    }
+    {
+      cut_stmt($0)
+      if (REL != lastrel) {
+        lastrel = REL; depth = 0; infn = 0; pending = ""
+        for (k in lsize) delete lsize[k]
+        for (k in fsize) delete fsize[k]
+      }
+      s = S; sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s)
+      if (s ~ /^#/) next
+      opens = (s ~ /\{$/); closes = (s ~ /\}$/)
+      if (depth == 0) {
+        if (opens && s !~ /=/ && s ~ /\(/) {
+          fname = s; sub(/[ \t]*\(.*/, "", fname); sub(/.*[^A-Za-z0-9_]/, "", fname)
+          defs[REL "|" fname] = 1
+          for (k in lsize) delete lsize[k]
+          infn = 1
+        } else if (s == "{" && pending != "") {
+          fname = pending; defs[REL "|" fname] = 1
+          for (k in lsize) delete lsize[k]
+          infn = 1
+        } else if (!opens) {
+          if (s ~ /\(/ && s !~ /=/ && s !~ /^typedef/) {
+            pending = s; sub(/[ \t]*\(.*/, "", pending); sub(/.*[^A-Za-z0-9_]/, "", pending)
+          }
+          declarations(s, "(file scope)")
+        }
+      } else if (infn) {
+        declarations(s, fname)
+        # The cutting quoter: a path quoted by it into a buffer too small is
+        # cut into the path of another file.  Only ws_quote_whole and the
+        # tools (which quote the model'"'"'s words, not a path) call it.
+        if (s ~ /(^|[^A-Za-z0-9_.>])wpe_ai_shell_quote[ \t]*\(/ && fname != "ws_quote_whole" && fname !~ /^ai_tool_/) {
+          if ((REL "|" fname) in qok) qused[REL "|" fname] = 1
+          else print "R13: " REL ":" LN ": " fname " calls wpe_ai_shell_quote, which cuts: quote a path with wpe_ai_shell_quote_whole, or list the function as a QUOTE line"
+        }
+        if (s ~ /\(/ && (length(lsize) > 0 || length(fsize) > 0))
+          for (nm in sink) check_call(s, nm, sink[nm])
+      }
+      if (opens) depth++
+      else if (closes) { depth--; if (depth <= 0) { depth = 0; infn = 0 } }
+    }
+    END {
+      for (k in pathfn) {
+        split(k, p, "|")
+        if (!(k in defs)) print "R12x: stale allow line, delete it: PATHFN " p[1] " " p[2] " (no such function in the file)"
+      }
+      for (k in ex) if (!(k in exused)) print "R12x: stale allow line, delete it: ARRAY " k
+      for (k in qok) if (!(k in qused)) print "R12x: stale allow line, delete it: QUOTE " k
+    }' "$allow" "$t/defines" "$t/stmts" >> "$out"
 }
 
 # plant_tree CODE ALLOWLINES - a tree of its own (the owner's header and one
@@ -900,7 +1070,79 @@ canary R11a 'void planted(FENSTER *f) { e_error("Project file not found", 0, f->
 canary R11a 'void planted(FENSTER *f) { e_error("Cannot open project x", 0, f->fb); }' || blind=1
 quiet_canary R11a 'void planted(FENSTER *f) { e_error("Project file not found", 0, f->fb); }' 'PROJECTWORDS|we_planted.c|planted|the reporter' || blind=1
 canary R11a 'void planted(FENSTER *f) { }' 'PROJECTWORDS|we_planted.c|planted|stale' || blind=1
+# Rule 10, the cuts of the containment pass: its token number and the model's
+# path in 1024 bytes.
+canary R10 '#define CONTAIN_TOKEN_MAX 256' || blind=1
+canary R10 'void planted(const char *p) { char path[1024]; memcpy(path, p, 9); }' || blind=1
+quiet_canary R10 'void planted(const char *p) { char path_name[1024]; char *path = 0; (void)p; }' || blind=1
+# Rule 12: a buffer that holds a path is the size the owner gave.  K1 is the shape of
+# the cut that sat in we_contain.c: a token array sized by a number of its own
+# and handed to the folder resolver.
+K_CONTAIN='static int contain_csv_next(const char **c, char *tok, size_t n) { return 0; }
+static int contain_real(const char *dir, char *out, size_t n) { return 0; }
+#define CONTAIN_TOKEN_MAX 256
+void planted(const char *c)
+{
+ char tok[CONTAIN_TOKEN_MAX], real[WPE_PATH_SIZE];
+ while (contain_csv_next(&c, tok, sizeof tok))
+  contain_real(tok, real, sizeof real);
+}'
+canary R12 "$K_CONTAIN" 'PATHFN|we_planted.c|contain_real|0|a folder' || blind=1
+# K2: the same, through the reader of folders.
+canary R12 'static int contain_folder_next(const char **c, char *tok, size_t n) { return 0; }
+#define CONTAIN_TOKEN_MAX 256
+void planted(const char *c)
+{
+ char tok[CONTAIN_TOKEN_MAX];
+ while (contain_folder_next(&c, tok, sizeof tok)) { }
+}' 'PATHFN|we_planted.c|contain_folder_next|1|a folder' || blind=1
+# K3: a working folder read into a number.
+canary R12 'void planted(void) { char cwd[1024]; getcwd(cwd, sizeof cwd); }' || blind=1
+# K4: a file scope array handed to a function of ours that takes a path.
+canary R12 'static char d[1024];
+static int wrap(const char *a, char *b) { return 0; }
+void planted(void) { wrap("x", d); }' 'PATHFN|we_planted.c|wrap|1|receives a path' || blind=1
+# K5: a path built into a buffer of a size of its own and looked up.
+canary R12 'void planted(const char *dir) { char p[1200]; struct stat st; snprintf(p, sizeof p, "%s/x", dir); stat(p, &st); }' || blind=1
+canary R12 'void planted(const char *dir) { char p[WPE_PATH_SIZE / 4]; if (wpe_path_copy(p, sizeof p, dir) < 0) return; }' || blind=1
+canary R12 'void planted(void) { char a[WPE_PATH_SIZE * 2]; (void)realpath(".", a); }' || blind=1
+canary R12 'void planted(const char *dir) { char *argv[2]; char p[512]; (void)argv; unlink(p + 1); }' || blind=1
+canary R12 'int planted(a) char *a;
+{
+ char p[300];
+ return chdir(p);
+}' || blind=1
+# Q1..Q4: the safe spellings stay quiet.
+quiet_canary R12 'static int contain_real(const char *dir, char *out, size_t n) { return 0; }
+void planted(const char *c) { char tok[WPE_PATH_SIZE]; contain_real(c, tok, sizeof tok); }' 'PATHFN|we_planted.c|contain_real|1|a folder' || blind=1
+quiet_canary R12 '#define A_SIZE B_SIZE
+#define B_SIZE WPE_PATH_SIZE
+void planted(void) { char p[A_SIZE]; struct stat st; stat(p, &st); }' || blind=1
+quiet_canary R12 '#define SUFFIX ".o"
+void planted(void) { char p[WPE_PATH_SIZE + sizeof SUFFIX]; struct stat st; stat(p, &st); }' || blind=1
+quiet_canary R12 'void planted(const char *dir) { char row[1400]; snprintf(row, sizeof row, "%s", dir); puts(row); }' || blind=1
+quiet_canary R12 'void planted(void) { char n[WPE_NAME_SIZE]; char p[WPE_PATH_MAX]; unlink(n); unlink(p); }' || blind=1
+quiet_canary R12 'void planted(void) { static char *tab[3]; char (*q)[4]; (void)tab; (void)q; }' || blind=1
+quiet_canary R12 'void planted(void) { char p[1024]; unlink(p); }' 'ARRAY|we_planted.c|planted|p|a name the system itself bounds' || blind=1
+# Rule 12, the cutting quoter: a path quoted by wpe_ai_shell_quote is cut.
+canary R13 'void planted(const char *path) { char q[1200]; wpe_ai_shell_quote(q, sizeof q, path); }' || blind=1
+canary R13 'void ai_hook_command(const char *path) { char q[1200]; wpe_ai_shell_quote(q, sizeof q, path); }' || blind=1
+quiet_canary R13 'void ai_tool_quote_or(const char *arg) { char q[1200]; wpe_ai_shell_quote(q, sizeof q, arg); }' || blind=1
+quiet_canary R13 'void ws_quote_whole(const char *p) { char q[1200]; wpe_ai_shell_quote(q, sizeof q, p); }' || blind=1
+quiet_canary R13 'void planted(const char *p) { char q[WPE_PATH_SIZE]; (void)wpe_ai_shell_quote_whole(q, sizeof q, p); }' || blind=1
+quiet_canary R13 'void planted(const char *m) { char q[600]; wpe_ai_shell_quote(q, sizeof q, m); }' 'QUOTE|we_planted.c|planted|a message' || blind=1
+canary R12x 'void planted(void) { }' 'QUOTE|we_planted.c|planted|stale' || blind=1
+canary R12x 'void planted(void) { }' 'ARRAY|we_planted.c|planted|p|stale' || blind=1
+canary R12x 'void planted(void) { }' 'PATHFN|we_planted.c|gone|0|stale' || blind=1
+canary R12x 'void planted(void) { }' 'PATHFN|we_planted.c|planted|x|malformed' || blind=1
 
+if [ "$SELFTEST" -eq 1 ]; then
+  # Only the canaries: every rule must name its planted offender and stay
+  # quiet on the safe spellings, whatever the tree holds.
+  [ "$blind" -eq 0 ] || exit $BAD
+  echo "check-path-buffers: selftest ok"
+  exit 0
+fi
 if [ ! -f "$ALLOW" ]; then
   echo "check-path-buffers: no allow file at $ALLOW"
   exit $BAD

@@ -117,8 +117,16 @@ static const char *const contain_pass_refused[] = {
 #define CONTAIN_PASS_PREFIX "XWPE_STUB_"
 #define CONTAIN_DEFAULT_PATH "/usr/local/bin:/usr/bin:/bin"
 #define CONTAIN_TERM_VALUE   "TERM=dumb"
-#define CONTAIN_TOKEN_MAX    256
 #define CONTAIN_VARNAME_LIMIT 256   /* the longest environment name read from an entry */
+
+/* What a list reader says (contain_word_next, contain_folder_next). */
+#define CONTAIN_WORD_TOO_LONG (-1)  /* a word that does not fit: skipped, never cut */
+#define CONTAIN_WORD_END      0     /* no word is left */
+#define CONTAIN_WORD_READ     1     /* a word was read whole */
+
+/* What separates the words of a list of names, and the folders of the list of folders. */
+#define CONTAIN_NAME_SEPARATORS   ",: \t"
+#define CONTAIN_FOLDER_SEPARATORS ":"
 
 /* ---- settings ------------------------------------------------------------- */
 
@@ -241,38 +249,73 @@ static const char *contain_names_in_force(const char *shadow, const char *file)
 /* ---- small text helpers --------------------------------------------------- */
 
 /**
- * contain_csv_next - The next word of a list written with commas, colons or
- * spaces between the words.
- * @cursor: where the list is read (moved on); @tok: receives the word.
- * Return: 1 when a word was read, 0 at the end.
+ * contain_list_next - The next word of a list, whole or not at all.
+ * @cursor: where the list is read (moved past the word, however long);
+ * @seps: the characters that separate the words; @tok, @n: receive the word.
+ *
+ * A word that does not fit @tok is never written as a prefix of itself: a
+ * folder cut short names another folder, and a name cut short names another
+ * variable.  The word is skipped and the caller reads on.
+ * Return: CONTAIN_WORD_READ, CONTAIN_WORD_END or CONTAIN_WORD_TOO_LONG (@tok
+ * is then empty).
  */
-static int contain_csv_next(const char **cursor, char *tok, size_t n)
+static int contain_list_next(const char **cursor, const char *seps, char *tok, size_t n)
 {
  const char *p = *cursor;
- size_t len = 0;
+ size_t len;
 
- while (p && (*p == ',' || *p == ':' || *p == ' ' || *p == '\t'))
+ tok[0] = '\0';
+ while (p && *p && strchr(seps, *p))
   p++;
  if (!p || !*p)
-  return 0;
- while (*p && *p != ',' && *p != ':' && *p != ' ' && *p != '\t') {
-  if (len + 1 < n)
-   tok[len++] = *p;
-  p++;
- }
+  return CONTAIN_WORD_END;
+ len = 0;
+ while (p[len] && !strchr(seps, p[len]))
+  len++;
+ *cursor = p + len;
+ if (len >= n)
+  return CONTAIN_WORD_TOO_LONG;
+ memcpy(tok, p, len);
  tok[len] = '\0';
- *cursor = p;
- return 1;
+ return CONTAIN_WORD_READ;
+}
+
+/**
+ * contain_word_next - The next name, or name prefix, of a list written with
+ * commas, colons or spaces between the words (AIContainEnv, AIHostEnv, the
+ * test seam's prefixes).
+ * @cursor: where the list is read; @tok: receives the word, room for
+ * CONTAIN_VARNAME_LIMIT bytes.
+ * Return: as contain_list_next.
+ */
+static int contain_word_next(const char **cursor, char *tok, size_t n)
+{
+ return contain_list_next(cursor, CONTAIN_NAME_SEPARATORS, tok, n);
+}
+
+/**
+ * contain_folder_next - The next folder of AIContainPathAllow, which is
+ * colon separated: a folder may hold a space, so "/work/My Tools" is one
+ * folder.
+ * @cursor: where the list is read; @tok: receives the folder, room for
+ * WPE_PATH_SIZE bytes.
+ * Return: as contain_list_next; a folder the system could not open is
+ * CONTAIN_WORD_TOO_LONG and the user's other folders are still read.
+ */
+static int contain_folder_next(const char **cursor, char *tok, size_t n)
+{
+ return contain_list_next(cursor, CONTAIN_FOLDER_SEPARATORS, tok, n);
 }
 
 /** contain_list_has - Is @name one of the words of the list @csv? */
 static int contain_list_has(const char *csv, const char *name)
 {
- char tok[CONTAIN_TOKEN_MAX];
+ char tok[CONTAIN_VARNAME_LIMIT];
  const char *c = csv;
+ int rc;
 
- while (c && contain_csv_next(&c, tok, sizeof tok))
-  if (strcmp(tok, name) == 0)
+ while (c && (rc = contain_word_next(&c, tok, sizeof tok)) != CONTAIN_WORD_END)
+  if (rc == CONTAIN_WORD_READ && strcmp(tok, name) == 0)
    return 1;
  return 0;
 }
@@ -399,10 +442,12 @@ static int contain_pass_prefix_refused(const char *prefix)
 static int contain_passes_by_seam(const char *name)
 {
  const char *c = getenv(WPE_CONTAIN_ENV_PASS);
- char tok[CONTAIN_TOKEN_MAX];
+ char tok[CONTAIN_VARNAME_LIMIT];
+ int rc;
 
- while (c && contain_csv_next(&c, tok, sizeof tok))
-  if (!contain_pass_prefix_refused(tok) && strncmp(name, tok, strlen(tok)) == 0)
+ while (c && (rc = contain_word_next(&c, tok, sizeof tok)) != CONTAIN_WORD_END)
+  if (rc == CONTAIN_WORD_READ && !contain_pass_prefix_refused(tok) &&
+      strncmp(name, tok, strlen(tok)) == 0)
    return 1;
  return 0;
 }
@@ -603,16 +648,20 @@ static int contain_inside(const char *dir, const char *root)
 
 /**
  * contain_real - A folder's real path, or the text as given when it has none.
- * @dir: a path; @out: receives it.
+ * @dir: a path; @out, @n: receive it.
+ *
+ * A folder the system could not open (longer than a path may be) has no real
+ * path and no text that fits: it is refused, never cut into the path of a
+ * folder it only begins with.
+ * Return: 0, or -1 with @out empty when @dir does not fit.
  */
-static void contain_real(const char *dir, char *out, size_t n)
+static int contain_real(const char *dir, char *out, size_t n)
 {
  char real[WPE_PATH_SIZE];
 
  if (realpath(dir, real) && strlen(real) < n)
-  snprintf(out, n, "%s", real);
- else
-  snprintf(out, n, "%s", dir);
+  return wpe_path_copy(out, n, real);
+ return wpe_path_copy(out, n, dir);
 }
 
 /**
@@ -624,10 +673,12 @@ static void contain_real(const char *dir, char *out, size_t n)
 static int contain_path_allowed_inside(const char *dir)
 {
  const char *c = contain_names_in_force(WPE_CONTAIN_ENV_PATH_OK, contain_path_allow);
- char tok[CONTAIN_TOKEN_MAX], real[WPE_PATH_SIZE];
+ char tok[WPE_PATH_SIZE], real[WPE_PATH_SIZE];
+ int rc;
 
- while (c && contain_csv_next(&c, tok, sizeof tok)) {
-  contain_real(tok, real, sizeof real);
+ while (c && (rc = contain_folder_next(&c, tok, sizeof tok)) != CONTAIN_WORD_END) {
+  if (rc == CONTAIN_WORD_TOO_LONG || contain_real(tok, real, sizeof real) < 0)
+   continue;
   if (strcmp(real, dir) == 0)
    return 1;
  }
@@ -642,7 +693,9 @@ static int contain_path_allowed_inside(const char *dir)
  * An empty, "." or relative entry means "the folder the program runs in",
  * which for the assistant is the workspace: a `make` or a `claude` the model
  * wrote there would win over the real one.  An engine's PATH also drops every
- * entry inside the workspace.
+ * entry inside the workspace, and an entry too long for the system to open,
+ * which cannot be judged inside or outside and holds no program the kernel
+ * could run.
  */
 static int contain_path_entry_ok(const WpeContainProfile *p, const char *entry,
                                  const char *root)
@@ -653,7 +706,8 @@ static int contain_path_entry_ok(const WpeContainProfile *p, const char *entry,
   return 0;
  if (!p->path_skips_workspace || !root)
   return 1;
- contain_real(entry, real, sizeof real);
+ if (contain_real(entry, real, sizeof real) < 0)
+  return 0;
  if (!contain_inside(real, root))
   return 1;
  return contain_path_allowed_inside(real);
@@ -679,7 +733,10 @@ char *wpe_contain_path_make(const WpeContainProfile *p, const char *path,
   return NULL;
  }
  if (workspace && *workspace) {
-  contain_real(workspace, root, sizeof root);
+  if (contain_real(workspace, root, sizeof root) < 0 && p->path_skips_workspace) {
+   free(copy);      /* no folder can be judged against a workspace that is not known */
+   return out;
+  }
   rootp = root;
  }
  for (entry = strtok_r(copy, ":", &save); entry; entry = strtok_r(NULL, ":", &save)) {
@@ -763,7 +820,7 @@ int wpe_contain_engine_note(const WpeContainProfile *p, const char *name,
                             const char *workspace, char *buf, size_t n)
 {
  const char *have = getenv("PATH");
- char here[WPE_PATH_SIZE], root[WPE_PATH_SIZE], real[WPE_PATH_SIZE], cand[2 * WPE_PATH_SIZE];
+ char here[WPE_PATH_SIZE], root[WPE_PATH_SIZE], real[WPE_PATH_SIZE], cand[WPE_PATH_SIZE];
  char *copy, *entry, *save = NULL, *safe;
  int found = 0;
 
@@ -771,7 +828,8 @@ int wpe_contain_engine_note(const WpeContainProfile *p, const char *name,
   return 0;
  if (!workspace && !getcwd(here, sizeof here))
   return 0;
- contain_real(workspace ? workspace : here, root, sizeof root);
+ if (contain_real(workspace ? workspace : here, root, sizeof root) < 0)
+  return 0;
  safe = wpe_contain_path_make(p, have, root);
  if (safe && (copy = wpe_contain_resolve(name, safe)) != NULL) {
   free(copy);
@@ -784,8 +842,9 @@ int wpe_contain_engine_note(const WpeContainProfile *p, const char *name,
       entry = strtok_r(NULL, ":", &save)) {
   if (entry[0] != '/')
    continue;
-  contain_real(entry, real, sizeof real);
-  snprintf(cand, sizeof cand, "%s/%s", real, name);
+  if (contain_real(entry, real, sizeof real) < 0 ||
+      wpe_path_join(cand, sizeof cand, real, name) < 0)
+   continue;
   if (contain_inside(real, root) && contain_is_runnable(cand)) {
    contain_note_make(name, real, buf, n);
    found = 1;
@@ -856,14 +915,17 @@ static unsigned long long contain_fsize_in_force(void)
 static void contain_collect_pass(WpeContainReport *r)
 {
  const char *c = getenv(WPE_CONTAIN_ENV_PASS);
- char tok[CONTAIN_TOKEN_MAX];
+ char tok[CONTAIN_VARNAME_LIMIT];
+ int rc;
 
  r->pass[0] = '\0';
  r->refused[0] = '\0';
- while (c && contain_csv_next(&c, tok, sizeof tok)) {
+ while (c && (rc = contain_word_next(&c, tok, sizeof tok)) != CONTAIN_WORD_END) {
   char *dst = contain_pass_prefix_refused(tok) ? r->refused : r->pass;
   size_t have = strlen(dst);
 
+  if (rc == CONTAIN_WORD_TOO_LONG)
+   continue;
   if (have + strlen(tok) + 2 > sizeof r->pass)
    continue;
   snprintf(dst + have, sizeof r->pass - have, "%s%s", have ? "," : "", tok);
@@ -978,6 +1040,25 @@ static const char *contain_workspace_of(const WpeChildSpec *spec, char *buf, siz
 }
 
 /**
+ * contain_workspace_too_long - Is the folder the child works in one the system
+ * could not open?
+ * @workspace: the folder, or NULL.
+ *
+ * Such a start is refused with the owner's sentence: the child could not
+ * change into it, and a PATH judged against a cut folder would be judged
+ * against the wrong one.
+ * Return: 1 when it does not fit a path buffer, 0 otherwise.
+ */
+static int contain_workspace_too_long(const char *workspace)
+{
+ char real[WPE_PATH_SIZE];
+
+ if (!workspace || !*workspace)
+  return 0;
+ return contain_real(workspace, real, sizeof real) < 0;
+}
+
+/**
  * contain_resolve_program - The path execve runs.
  * @spec: the start; @env: the child's environment (its PATH is searched).
  * Return: malloc'd.  A name with a '/' is used as written; a bare name is
@@ -1079,7 +1160,10 @@ int wpe_contain_plan_make(WpeContainPlan *plan, const WpeContainProfile *p,
  plan->child.prog = plan->prog;
  plan->child.envp = plan->vec;
  contain_plan_limits(plan);
- if (!plan->prog[0] &&
+ if (contain_workspace_too_long(workspace)) {
+  wpe_path_say_too_long(plan->refusal, sizeof plan->refusal, "workspace");
+  plan->child.refusal = plan->refusal;
+ } else if (!plan->prog[0] &&
      wpe_contain_engine_note(p, spec->argv[0], workspace, plan->refusal, sizeof plan->refusal))
   plan->child.refusal = plan->refusal;
  if (contain_strict_refuses(p)) {

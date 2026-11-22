@@ -1186,7 +1186,7 @@ TESTS += tests/check-test-paths.sh
 if HAVE_WAYLAND
 check_PROGRAMS += test_wlframe
 TESTS += test_wlframe
-test_wlframe_SOURCES = tests/test_wlframe.c we_wlframe.c
+test_wlframe_SOURCES = tests/test_wlframe.c we_wlframe.c we_path.c
 test_wlframe_CFLAGS = $(TEST_CFLAGS) $(WAYLAND_CFLAGS)
 test_wlframe_LDADD = $(WAYLAND_LIBS)
 endif
@@ -1327,7 +1327,7 @@ test_ai_scope_CFLAGS = $(TEST_CFLAGS)
 # the limits and the report, and, through the owner of children (we_child.c,
 # with the refusal of an assistant start that names no profile on), what a
 # started child really gets.
-test_ai_contain_SOURCES = tests/test_ai_contain.c we_contain.c we_child.c we_fdloop.c
+test_ai_contain_SOURCES = tests/test_ai_contain.c we_contain.c we_path.c we_child.c we_fdloop.c
 test_ai_contain_CFLAGS = $(TEST_CFLAGS)
 test_ai_contain_LDADD = $(UTIL_LIBS)
 # What a saved conversation may hold (we_ai_session.c): the resume id's shape

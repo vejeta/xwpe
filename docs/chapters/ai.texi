@@ -793,8 +793,9 @@ backend, a hosted engine) never runs a program from a @env{PATH} folder inside
 the workspace.  When the workspace is your home folder, @file{~/.local/bin} is
 inside it and is dropped; the pane then names the folder.  Name it in
 @code{AIContainPathAllow} (colon separated folders, your own file only;
-@env{XWPE_AI_CONTAIN_PATH_ALLOW} for one session) or start the editor in a
-project folder instead.  Starting the editor in @file{/} makes every
+@env{XWPE_AI_CONTAIN_PATH_ALLOW} for one session; a folder may be any length
+the system takes and may hold spaces, and one longer than that is ignored) or
+start the editor in a project folder instead.  Starting the editor in @file{/} makes every
 @env{PATH} folder ``inside the workspace'', so every engine is refused; the
 message names the folder.
 
@@ -1263,7 +1264,9 @@ kept.  Only your own file may set it; @env{XWPE_AI_CONTAIN_ENV} overrides it
 for one session.
 @item AIContainPathAllow
 Folders, colon separated, that an engine's @env{PATH} keeps although they lie
-inside the workspace (@pxref{Containment}).  Only your own file may set it;
+inside the workspace (@pxref{Containment}).  A folder may be any length the
+system takes and may hold spaces; one longer than that is ignored.  Only your
+own file may set it;
 @env{XWPE_AI_CONTAIN_PATH_ALLOW} overrides it for one session.
 @item AIHostEnv
 Names of environment variables the hosted command of your own

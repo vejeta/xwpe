@@ -1,5 +1,6 @@
-# What tests/check-path-buffers.sh lets stand.  Five kinds of line (NUMBER,
-# SENTENCE and COPY below; PROJECTWORDS and GUESS before COPY):
+# What tests/check-path-buffers.sh lets stand.  Eight kinds of line (NUMBER,
+# SENTENCE and COPY below; PROJECTWORDS and GUESS before COPY; PATHFN, ARRAY
+# and QUOTE after them):
 #
 #   NUMBER|name|reason
 #       A #define whose name ends like a path number (PATH_MAX, DIR_MAX,
@@ -67,6 +68,30 @@ SENTENCE|we_startplan.h|the start plan's reason for refusing a folder or program
 PROJECTWORDS|we_prog.c|e_prj_say_not_opened|the reporter: ENOENT says not found, every other errno says the system's reason
 GUESS|we_progn.c|e_show_nm_f|keep|the word is about the symbol searched; the access only chooses the project's files over the window's
 GUESS|we_startplan.c|startplan_embedded_file|read-refused|"(not found)" stands for any failed access of the script file; the read side's owner takes it over
+
+# --- PATHFN and ARRAY: a buffer that holds a path is the owner's size ---
+# PATHFN|file|function|argument|reason
+#     A function of ours whose argument (counted from 0) is a path: a char
+#     array passed there must be sized WPE_PATH_SIZE, WPE_PATH_MAX or
+#     WPE_NAME_SIZE, as one passed to stat or fopen must.  A line whose
+#     function the file does not define is stale.
+# ARRAY|file|function|name|reason
+#     A char array that is passed to a path call and is not owner sized, and
+#     why that is right (today: e_d_tty).  A line that excuses nothing is stale.
+# QUOTE|file|function|reason
+#     A function that calls wpe_ai_shell_quote, which cuts a text that does not
+#     fit, and quotes no path.  Only ws_quote_whole and the ai_tool_* functions
+#     (the model's own words) may call it unlisted; a path is quoted with
+#     wpe_ai_shell_quote_whole.  A line that excuses nothing is stale.
+PATHFN|we_contain.c|contain_real|0|the folder to resolve
+PATHFN|we_contain.c|contain_folder_next|1|receives a folder of AIContainPathAllow
+PATHFN|we_ai_ws.c|ws_read_file|0|the file to read
+PATHFN|we_ai_ws.c|ws_read_file_len|0|the file to read
+PATHFN|we_ai_ws.c|ws_run_temp_file|1|receives the temporary file's path
+PATHFN|we_ai_ws.c|wpe_ai_window_hook_copy|1|receives the copy's path
+PATHFN|we_ai_ws.c|ws_state_folder_make|2|receives the state folder's path
+ARRAY|we_debug.c|(file scope)|e_d_tty|a terminal's device name (ttyname_r, a pty slave), set by two readers: e_d_program_tty_name refuses a name that does not fit, and e_d_script_connect (we_debug.c:8447) reads the helper script's name up to the array's 80 bytes
+QUOTE|we_ai_ws.c|ws_commit_changeset_steps|the commit message, a sentence the user wrote, not a path
 
 # --- COPY ---
 COPY|we_ai.c|ai_mock_open|1|text|the fixed word mock into a host name array

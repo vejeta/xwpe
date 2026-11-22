@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <stdint.h>
+#include "we_path.h"         /* how long a path the editor holds may be */
 #include "we_platform.h"     /* memfd_create where the system has it */
 
 #include "we_render.h"       /* WpeRender: the renderer to re-point */
@@ -38,7 +39,7 @@
 #define WLF_REMAINDER_XRGB 0xff000000u
 #define WLF_SPLASH_XRGB    0xff0000a8u
 
-#define WLF_NAME_SIZE 4096
+#define WLF_TEMP_LEAF "xwpe-wl-XXXXXX"   /* the name mkostemp makes the buffer's file from */
 #define WLF_BYTES_PER_PIXEL 4
 #define WLF_COMPOSITOR_DAMAGE_BUFFER 4   /* wl_surface.damage_buffer since v4 */
 
@@ -271,12 +272,12 @@ static int wlf_anon_file(size_t size)
  if (fd < 0)
  {
   const char *dir = getenv("XDG_RUNTIME_DIR");
-  char name[WLF_NAME_SIZE];
+  char name[WPE_PATH_SIZE];
 
   if (!dir || !*dir)
    dir = "/tmp";
-  snprintf(name, sizeof name, "%s/xwpe-wl-XXXXXX", dir);
-  fd = mkostemp(name, O_CLOEXEC);
+  if (wpe_path_join(name, sizeof name, dir, WLF_TEMP_LEAF) == 0)
+   fd = mkostemp(name, O_CLOEXEC);
   if (fd >= 0)
    unlink(name);
  }
