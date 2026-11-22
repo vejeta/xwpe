@@ -224,6 +224,26 @@ static void bsp_out_end(e_bsp_session *b, E_D_REQ_END why)
 }
 
 /**
+ * bsp_out_fill - Register the request that went out: the one write of the
+ * session's request slot.
+ * @b: the session; @id, @method: the request; @answered, @ctx: who is told.
+ *
+ * The slot is written only after the build server was handed the request,
+ * so a send that fails leaves no request out and nobody can be told about
+ * a request that never went.
+ */
+static void bsp_out_fill(e_bsp_session *b, int id, const char *method,
+                         e_d_answered_fn answered, void *ctx)
+{
+ b->out_id = id;
+ snprintf(b->out_method, sizeof b->out_method, "%s", method);
+ b->out_fn = answered;
+ b->out_ctx = ctx;
+ b->sent_ms = bsp_now(b);
+ b->waiting_shown = 0;
+}
+
+/**
  * bsp_req_request - The chain's requester: send the staged request @cmd.
  * @engine: the session; @cmd: the method; @answered, @ctx: who is told.
  * Return: E_D_SEND_OK, or why it was not sent (then nobody is told).
@@ -233,6 +253,7 @@ static int bsp_req_request(void *engine, const char *cmd,
 {
  e_bsp_session *b = engine;
  struct json_object *args = NULL;
+ int id;
 
  if (b->staged_cmd[0] && !strcmp(b->staged_cmd, cmd))
  {
@@ -246,18 +267,13 @@ static int bsp_req_request(void *engine, const char *cmd,
    json_object_put(args);
   return E_D_SEND_GONE;
  }
- b->out_id = ++b->id;
- if (bsp_send(b, b->out_id, cmd, args) != 0)
+ id = ++b->id;
+ if (bsp_send(b, id, cmd, args) != 0)
  {
-  b->out_id = BSP_NO_ID;
   snprintf(b->err, sizeof b->err, "BSP send failed: %s", cmd);
   return E_D_SEND_GONE;
  }
- snprintf(b->out_method, sizeof b->out_method, "%s", cmd);
- b->out_fn = answered;
- b->out_ctx = ctx;
- b->sent_ms = bsp_now(b);
- b->waiting_shown = 0;
+ bsp_out_fill(b, id, cmd, answered, ctx);
  bsp_arm(b, E_D_TIMER_QUIET, E_D_REQ_QUIET_MS);
  bsp_arm(b, E_D_TIMER_DEADLINE, BSP_TMO_BUILD);
  return E_D_SEND_OK;

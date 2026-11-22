@@ -1,0 +1,9 @@
+# Functions excused from a clause of tests/check-session-end.sh, one line each:
+#
+#   Cn|file|function|reason|revisit
+#
+# The clause C5 (a request is registered after a good send) has no excuse
+# and reads no line.  The clauses that do (the whole-table ends and the
+# writers of a child's input) land with the pass that moves their callers
+# onto the owner, and each line there fails as stale once its function no
+# longer needs it.  Until then a line in this file is refused.

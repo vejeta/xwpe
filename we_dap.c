@@ -580,16 +580,6 @@ static void dap_pending_release(dap_pending *p)
 }
 
 /**
- * dap_send_owned - Send a request and register who owns its answer.
- * @s: the session; @command, @args: the request (@args is taken over);
- * @kind: DAP_REQ_*, what the answer is for.
- *
- * A request is not sent when its answer could not be routed (the table is
- * full of unanswered requests, or the adapter is gone): the caller then
- * knows at once instead of waiting for an answer that would be dropped.
- * Return: the request's seq, or DAP_NO_SEQ when it was not sent.
- */
-/**
  * dap_pending_free_slot - A table slot no request owns, or NULL when every
  * one waits for an answer.
  * @s: the session.
@@ -604,10 +594,37 @@ static dap_pending *dap_pending_free_slot(e_dap_session *s)
  return NULL;
 }
 
+/**
+ * dap_slot_fill - Register a request that went out: the one write through
+ * a table slot.
+ * @p: a free slot; @what: the request as the caller described it.
+ *
+ * A request is registered only after the adapter was handed it, so a send
+ * that fails leaves the table as it was and nobody can be told twice about
+ * a request that never went out.  Callers describe the request in a local
+ * and call this once, after the send.
+ */
+static void dap_slot_fill(dap_pending *p, const dap_pending *what)
+{
+ *p = *what;
+}
+
+/**
+ * dap_send_owned - Send a request and register who owns its answer.
+ * @s: the session; @command, @args: the request (@args is taken over);
+ * @kind: DAP_REQ_*, what the answer is for.
+ *
+ * A request is not sent when its answer could not be routed (the table is
+ * full of unanswered requests, or the adapter is gone): the caller then
+ * knows at once instead of waiting for an answer that would be dropped.
+ * Return: the request's seq, or DAP_NO_SEQ when it was not sent.
+ */
 static int dap_send_owned(e_dap_session *s, const char *command,
                           struct json_object *args, int kind)
 {
  dap_pending *p = dap_pending_free_slot(s);
+ dap_pending what;
+ int seq;
 
  if (!p || s->eof)
  {
@@ -615,12 +632,14 @@ static int dap_send_owned(e_dap_session *s, const char *command,
    json_object_put(args);
   return DAP_NO_SEQ;
  }
- p->kind = kind;
- p->seq = dap_send(s, command, args);
- if (p->seq != DAP_NO_SEQ)
-  return p->seq;
- dap_pending_release(p);           /* clears the slot, its seq with it */
- return DAP_NO_SEQ;
+ seq = dap_send(s, command, args);
+ if (seq == DAP_NO_SEQ)
+  return DAP_NO_SEQ;
+ memset(&what, 0, sizeof what);
+ what.kind = kind;
+ what.seq = seq;
+ dap_slot_fill(p, &what);
+ return seq;
 }
 
 /**
@@ -1564,27 +1583,34 @@ const char *e_dap_request_waited(const e_dap_session *s, long *secs)
  * taken over); @file, @lines, @n: for a setBreakpoints, what it asks for
  * (taken over), else NULL, NULL, 0.
  * Return: E_D_SEND_OK, or E_D_SEND_GONE when the adapter could not be
- * given the request: the slot is freed and @fn is never called, so the
- * caller ends the request at once instead of waiting for its deadline.
+ * given the request: the slot is never filled (it was not registered) and
+ * @fn is never called, so the caller ends the request at once instead of
+ * waiting for its deadline.  @file and @lines are freed here then.
  */
 static int dap_call_send(e_dap_session *s, dap_pending *p, const char *command,
                          struct json_object *args, char *file, int *lines,
                          int n, e_d_answered_fn fn, void *ctx)
 {
- p->kind = DAP_REQ_CALL;
- p->fn = fn;
- p->ctx = ctx;
- p->file = file;
- p->lines = lines;
- p->n = n;
- snprintf(p->cmd, sizeof p->cmd, "%s", command);
- p->sent_ms = dap_now(s);
- p->seq = dap_send(s, command, args);
- if (p->seq == DAP_NO_SEQ)
+ dap_pending what;
+ int seq = dap_send(s, command, args);
+
+ if (seq == DAP_NO_SEQ)
  {
-  dap_pending_release(p);
+  free(file);
+  free(lines);
   return E_D_SEND_GONE;
  }
+ memset(&what, 0, sizeof what);
+ what.kind = DAP_REQ_CALL;
+ what.seq = seq;
+ what.fn = fn;
+ what.ctx = ctx;
+ what.file = file;
+ what.lines = lines;
+ what.n = n;
+ snprintf(what.cmd, sizeof what.cmd, "%s", command);
+ what.sent_ms = dap_now(s);
+ dap_slot_fill(p, &what);
  dap_calls_time(s);
  return E_D_SEND_OK;
 }

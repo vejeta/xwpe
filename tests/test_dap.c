@@ -2126,6 +2126,43 @@ static int told_answered(E_D_REQ_END how, E_D_ANSWER *ans, void *ctx)
  return E_D_STEP_STOP;
 }
 
+/* A breakpoint list the adapter cannot take, sent through the requester, is
+   refused at once and leaves nothing behind: its owner is never told (the
+   refusal is the only answer), no request is counted as out, and ending the
+   session tells nobody about it later.  The list's file and lines are
+   freed once (a leak or a double free is named by the sanitizer build).
+   @scenario SC-debug-78 */
+static void test_a_failed_send_by_callback_registers_nothing(void)
+{
+ static const int lines[] = { 6, 9 };
+ char cmd[CALL_CMD_MAX];
+ e_dap_reader rd;
+ e_dap_host host;
+ struct seen r;
+ struct told t;
+ e_dap_session *s;
+ long secs = 0;
+ int conn = -1, lfd = -1;
+
+ e_dap_reader_init(&rd);
+ seen_host(&host, &r);
+ s = stopped_session(&host, &conn, &lfd, &rd);
+ if (!s)
+  return;
+ memset(&t, 0, sizeof t);
+ CHECK(e_dap_stage_breakpoints(s, TEST_FILE, lines, 2, cmd, sizeof cmd) == 1,
+       "setBreakpoints could not be staged");
+ transport_would_block(s);
+ CHECK(e_dap_req_request(s, cmd, told_answered, &t) == E_D_SEND_GONE,
+       "a request the adapter could not take was not refused as gone");
+ CHECK(t.calls == 0, "a refused request was also told to its owner");
+ CHECK(!e_dap_requests_pending(s), "a refused request is counted as out");
+ CHECK(e_dap_request_waited(s, &secs) == NULL,
+       "a refused request is shown as waited for");
+ end_session(s, conn, lfd, &rd);
+ CHECK(t.calls == 0, "ending the session told the owner of a refused request");
+}
+
 /* Read what the adapter wrote, as the editor's loop does at a stop: once
    the transport is readable, without taking the run's answer. */
 static void read_when_readable(e_dap_session *s)
@@ -2891,6 +2928,7 @@ int main(int argc, char **argv)
  RUN(test_answer_read_with_an_evaluate_answer);
  RUN(test_refused_continue_is_a_stop_where_it_was);
  RUN(test_a_request_the_adapter_cannot_take_is_not_sent);
+ RUN(test_a_failed_send_by_callback_registers_nothing);
  RUN(test_evaluate_names_the_stopped_frame);
  RUN(test_pump_before_the_start_is_ready_never_blocks);
  RUN(test_eof_in_the_middle_of_a_message_ends_the_pump);

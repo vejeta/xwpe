@@ -1086,6 +1086,14 @@ TESTS += tests/check-debug-command.sh
 # sentences of other owners, each with its reason).
 TESTS += tests/check-chain-outcome.sh
 
+# One owner of how a session ends and of when a request is registered.  A
+# request is written into its client's table only after the send succeeded:
+# tests/check-session-end.sh fails when the debug adapter's or the build
+# server's send function fills its slot first, writes the slot another way,
+# or hands the slot to another function (tests/session-end.allow holds the
+# functions each clause excuses, none for this one).
+TESTS += tests/check-session-end.sh
+
 # One owner of how long a path the editor holds may be (we_path.h) and of a
 # dialog field's way out (we_fieldtake.h): tests/check-path-buffers.sh fails
 # on an unbounded copy of a field's text, a refusal nobody reads, a call of
@@ -1451,6 +1459,8 @@ EXTRA_DIST = \
   tests/debug-command.allow \
   tests/check-chain-outcome.sh \
   tests/chain-outcome.allow \
+  tests/check-session-end.sh \
+  tests/session-end.allow \
   tests/check-path-buffers.sh \
   tests/path-buffers.allow \
   tests/check-help-buffers.sh \
